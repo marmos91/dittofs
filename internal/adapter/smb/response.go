@@ -417,13 +417,25 @@ func SendResponseWithHooks(reqHeader *header.SMB2Header, ctx *handlers.SMBHandle
 	preWrite := func(wirePlaintext []byte) {
 		RunAfterHooks(connInfo, reqHeader.Command, wirePlaintext)
 	}
-	return sendMessage(respHeader, body, connInfo, preWrite)
+	err := sendMessage(respHeader, body, connInfo, preWrite)
+	// Per D-09: fire ReleaseData AFTER the wire write completes, regardless of
+	// write success. The pooled buffer is no longer referenced once the write
+	// attempt returns, so release is safe whether or not the bytes landed.
+	if result.ReleaseData != nil {
+		result.ReleaseData()
+	}
+	return err
 }
 
 // SendResponse sends an SMB2 response with credit management and signing.
 func SendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *HandlerResult, connInfo *ConnInfo) error {
 	respHeader, body := buildResponseHeaderAndBody(reqHeader, ctx, result, connInfo)
-	return SendMessage(respHeader, body, connInfo)
+	err := SendMessage(respHeader, body, connInfo)
+	// Per D-09: see SendResponseWithHooks — release pooled buffer after wire write.
+	if result.ReleaseData != nil {
+		result.ReleaseData()
+	}
+	return err
 }
 
 // buildResponseHeaderAndBody constructs the response header and body from a
