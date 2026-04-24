@@ -1578,14 +1578,19 @@ func (lm *Manager) breakOpLocks(
 			targetState = lock.Lease.LeaseState &^ LeaseStateHandle
 		}
 
-		// Per MS-SMB2 2.2.23.2, the break carries ACK_REQUIRED iff the
-		// current state holds Write or Handle. Without ACK_REQUIRED the
-		// client never responds, so leaving Breaking=true would block
-		// same-key reopens (nobreakself) until forceCompleteBreaks fires.
-		// Downgrade inline for those cases.
-		ackRequired := (lock.Lease.LeaseState & (LeaseStateWrite | LeaseStateHandle)) != 0
+		// Per MS-SMB2 3.3.4.7, a break is ack-required iff the current state
+		// is NOT pure Read. Without ACK_REQUIRED the client never responds,
+		// so leaving Breaking=true would block same-key reopens (nobreakself)
+		// until forceCompleteBreaks fires — downgrade inline for those cases.
+		ackRequired := lock.Lease.LeaseState != LeaseStateRead
 
+		// Advance the lease epoch on the live record first so the snapshot
+		// that feeds dispatchOpLockBreak carries the new epoch (NewEpoch per
+		// MS-SMB2 2.2.23.2), then snapshot while LeaseState still holds the
+		// pre-break value for the notification's CurrentLeaseState field.
 		advanceEpoch(lock.Lease)
+		snapshot := lock.Clone()
+
 		switch {
 		case ackRequired:
 			lock.Lease.Breaking = true
@@ -1606,7 +1611,7 @@ func (lm *Manager) breakOpLocks(
 			}
 			kept = append(kept, lock)
 		}
-		toBreak = append(toBreak, breakEntry{lock: lock, breakToState: targetState})
+		toBreak = append(toBreak, breakEntry{lock: snapshot, breakToState: targetState})
 	}
 	if removed {
 		if len(kept) == 0 {
@@ -1614,13 +1619,6 @@ func (lm *Manager) breakOpLocks(
 		} else {
 			lm.unifiedLocks[handleKey] = kept
 		}
-	}
-	// Clone locks before releasing mu so that dispatchOpLockBreak receives
-	// snapshots. Without this, concurrent AcknowledgeLeaseBreak can mutate
-	// the live *UnifiedLock while the break callback reads it.
-	// This matches the pattern in requestLeaseImpl (leases.go).
-	for i := range toBreak {
-		toBreak[i].lock = toBreak[i].lock.Clone()
 	}
 	lm.mu.Unlock()
 
