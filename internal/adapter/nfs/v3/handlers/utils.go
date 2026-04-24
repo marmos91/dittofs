@@ -202,11 +202,17 @@ func readMFsymlinkContentForNFS(
 		return nil, err
 	}
 
-	data := make([]byte, mfsymlink.Size)
-	n, err := blockStore.ReadAt(ctx, string(payloadID), data, 0)
+	// Routed through common.ReadFromBlockStore so the Phase-12 []BlockRef
+	// plumbing lands in one place (see common/doc.go Phase-12 seam / D-12).
+	// The copy below materialises the pooled buffer into a caller-owned
+	// slice because the MFsymlink path retains the bytes past Release().
+	result, err := common.ReadFromBlockStore(ctx, blockStore, payloadID, 0, uint32(mfsymlink.Size))
 	if err != nil {
 		return nil, err
 	}
+	defer result.Release()
 
-	return data[:n], nil
+	out := make([]byte, len(result.Data))
+	copy(out, result.Data)
+	return out, nil
 }

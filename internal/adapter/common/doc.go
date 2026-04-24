@@ -31,12 +31,43 @@
 //
 // # Phase-12 seam for []BlockRef (ADAPT-04 / D-12)
 //
-// Adapter call sites today speak the current
-// engine.BlockStore.ReadAt(ctx, payloadID, dest, offset) signature — the
-// wire protocols (NFS3/4, SMB2/3) communicate (offset, length) and know
-// nothing about blocks. Phase 12 (META-01 + API-01) reintroduces
-// FileAttr.Blocks as []BlockRef and changes the engine signature to take
-// resolved []BlockRef. The fetch-and-slice logic will land inside
-// ReadFromBlockStore / WriteToBlockStore in exactly one place; protocol
-// handlers remain untouched.
+// The helpers ReadFromBlockStore, WriteToBlockStore, and CommitBlockStore are
+// the single place where Phase 12 (#423) will add []BlockRef plumbing. Today
+// these helpers are thin passthroughs to engine.BlockStore.ReadAt /
+// WriteAt / Flush, which accept (ctx, payloadID, buf, offset) — exactly what
+// the wire protocols (NFS3 READ, NFS4 READ, SMB2 READ; NFS3 WRITE, NFS4
+// WRITE, SMB2 WRITE; NFS3 COMMIT, NFS4 COMMIT, SMB2 CLOSE flush) hand us.
+//
+// In Phase 12:
+//   - META-01 reintroduces FileAttr.Blocks as []BlockRef (sorted by offset,
+//     populated at sync finalization).
+//   - API-01 changes engine.BlockStore.ReadAt / WriteAt to accept []BlockRef
+//     instead of (payloadID, offset). A binary search on []BlockRef resolves
+//     the (offset, length) range to the chunks covering it.
+//
+// The Phase-12 change to ReadFromBlockStore and WriteToBlockStore will be,
+// essentially:
+//
+//  1. fetch FileAttr.Blocks via the narrow MetadataService interface
+//  2. slice the []BlockRef list to the range covering [offset, offset+len)
+//  3. pass the resolved slice to the new engine.ReadAt/WriteAt signature
+//
+// Every protocol handler code path is UNCHANGED by Phase 12 because they all
+// call common.ReadFromBlockStore / common.WriteToBlockStore /
+// common.CommitBlockStore. Wire protocol fidelity is preserved — handlers
+// continue to receive and emit (offset, length) on the wire. NFS and SMB
+// have no concept of blocks; []BlockRef remains internal plumbing between
+// the adapter and the engine.
+//
+// Phase 09 engine contract (unchanged in this phase):
+//
+//	ReadAt(ctx, payloadID string, data []byte, offset uint64) (int, error)
+//	WriteAt(ctx, payloadID string, data []byte, offset uint64) error
+//	Flush(ctx, payloadID string) (*blockstore.FlushResult, error)
+//
+// Note the asymmetry: ReadAt returns (int, error) because short reads are
+// observable by the caller (EOF handling); WriteAt returns error only —
+// successful writes are full-length by contract, and partial writes surface
+// as an error. WriteToBlockStore mirrors this exactly: a nil return means
+// the full data slice was persisted at offset.
 package common

@@ -180,11 +180,13 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 	// Flush cached data to ensure durability.
 	// Unlike NFS COMMIT which is non-blocking, SMB CLOSE requires immediate durability.
+	// Routed through common.CommitBlockStore so the Phase-12 []BlockRef plumbing
+	// lands in one place (see common/doc.go Phase-12 seam / D-12).
 	if !openFile.IsDirectory && openFile.PayloadID != "" {
 		blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, openFile.MetadataHandle)
 		if bsErr != nil {
 			logger.Warn("CLOSE: block store not available for handle", "path", openFile.Path, "error", bsErr)
-		} else if _, flushErr := blockStore.Flush(ctx.Context, string(openFile.PayloadID)); flushErr != nil {
+		} else if flushErr := common.CommitBlockStore(ctx.Context, blockStore, openFile.PayloadID); flushErr != nil {
 			logger.Warn("CLOSE: flush failed", "path", openFile.Path, "error", flushErr)
 		} else {
 			logger.Debug("CLOSE: flushed", "path", openFile.Path, "payloadID", openFile.PayloadID)
@@ -521,14 +523,20 @@ func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFil
 		return nil, fmt.Errorf("block store not available: %w", err)
 	}
 
-	// Read the MFsymlink content (always 1067 bytes)
-	data := make([]byte, mfsymlink.Size)
-	n, err := blockStore.ReadAt(ctx.Context, string(openFile.PayloadID), data, 0)
+	// Read the MFsymlink content (always 1067 bytes).
+	// Routed through common.ReadFromBlockStore so the Phase-12 []BlockRef
+	// plumbing lands in one place (see common/doc.go Phase-12 seam / D-12).
+	// The bytes are copied into a caller-owned slice because the MFsymlink
+	// parse path retains them past Release().
+	result, err := common.ReadFromBlockStore(ctx.Context, blockStore, openFile.PayloadID, 0, uint32(mfsymlink.Size))
 	if err != nil {
 		return nil, err
 	}
+	defer result.Release()
 
-	return data[:n], nil
+	out := make([]byte, len(result.Data))
+	copy(out, result.Data)
+	return out, nil
 }
 
 // convertToRealSymlink removes the regular file and creates a symlink in its place.

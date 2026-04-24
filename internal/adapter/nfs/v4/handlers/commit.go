@@ -118,7 +118,9 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 		}
 	}
 
-	_, flushErr := blockStore.Flush(authCtx.Context, string(file.PayloadID))
+	// Routed through common.CommitBlockStore so the Phase-12 []BlockRef
+	// plumbing lands in one place (see common/doc.go Phase-12 seam / D-12).
+	flushErr := common.CommitBlockStore(authCtx.Context, blockStore, file.PayloadID)
 	if flushErr != nil {
 		logger.Debug("NFSv4 COMMIT flush failed",
 			"error", flushErr,

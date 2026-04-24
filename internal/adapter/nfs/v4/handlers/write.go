@@ -244,8 +244,10 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 			"client", ctx.ClientAddr)
 	}
 
-	// Phase 2: Write actual data via BlockStore
-	err = blockStore.WriteAt(ctx.Context, string(intent.PayloadID), data, offset)
+	// Phase 2: Write actual data via BlockStore.
+	// Routed through common.WriteToBlockStore so the Phase-12 []BlockRef
+	// plumbing lands in one place (see common/doc.go Phase-12 seam / D-12).
+	err = common.WriteToBlockStore(ctx.Context, blockStore, intent.PayloadID, data, offset)
 	if err != nil {
 		logger.Debug("NFSv4 WRITE payload error",
 			"error", err,

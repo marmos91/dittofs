@@ -262,8 +262,10 @@ func (h *Handler) Write(
 		return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
 
-	// Write to BlockStore (uses local cache, will be flushed on COMMIT)
-	err = blockStore.WriteAt(ctx.Context, string(writeIntent.PayloadID), req.Data, req.Offset)
+	// Write to BlockStore (uses local cache, will be flushed on COMMIT).
+	// Routed through common.WriteToBlockStore so the Phase-12 []BlockRef
+	// plumbing lands in one place (see common/doc.go Phase-12 seam / D-12).
+	err = common.WriteToBlockStore(ctx.Context, blockStore, writeIntent.PayloadID, req.Data, req.Offset)
 	if err != nil {
 		logError(ctx.Context, err, "WRITE failed: BlockStore write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "payload_id", writeIntent.PayloadID, "client", clientIP)
 		status := xdr.MapContentErrorToNFSStatus(err)
