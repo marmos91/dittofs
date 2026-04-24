@@ -438,7 +438,13 @@ func TestCrossProtocol_ErrorConformance(t *testing.T) {
 		{name: "ErrStaleHandle", code: merrs.ErrStaleHandle, trigger: helpers.TriggerErrStaleHandle},
 		{name: "ErrAccessDenied", code: merrs.ErrAccessDenied, trigger: helpers.TriggerErrAccessDenied},
 		{name: "ErrPermissionDenied", code: merrs.ErrPermissionDenied, trigger: helpers.TriggerErrPermissionDenied},
-		{name: "ErrReadOnly", code: merrs.ErrReadOnly, trigger: helpers.TriggerErrReadOnly, useReadOnlyMount: true},
+		// ErrReadOnly: SMB framework's MountSMB hardcodes the "/export" share
+		// path, so we cannot currently mount the read-only "/archive" share
+		// over SMB — the fixture aliases SMBReadOnlyMount to the rw mount.
+		// Running TriggerErrReadOnly against a rw SMB mount would return
+		// success (no errno), failing the subtest for the wrong reason.
+		// Skip the SMB leg until the framework gains share-path support.
+		{name: "ErrReadOnly", code: merrs.ErrReadOnly, trigger: helpers.TriggerErrReadOnly, useReadOnlyMount: true, skipSMB: true, skipSMBReason: "SMB framework MountSMB hardcodes /export; /archive mount pending framework update"},
 		{name: "ErrLocked", code: merrs.ErrLocked, trigger: helpers.TriggerErrLocked},
 		// Codes with reliable triggers ending here. Remaining e2e-tier
 		// entries (ErrIOError, ErrNoSpace, ErrNotSupported, ErrAuthRequired,
@@ -477,6 +483,9 @@ func TestCrossProtocol_ErrorConformance(t *testing.T) {
 
 			// SMB side.
 			t.Run("smb", func(t *testing.T) {
+				if c.skipSMB {
+					t.Skipf("SMB subtest skipped: %s", c.skipSMBReason)
+				}
 				got := c.trigger(t, smbRoot)
 				assertErrnoMatches(t, "SMB "+c.name, got, wantSMBErrno)
 			})
@@ -501,6 +510,12 @@ type errorConformanceCase struct {
 	// required for ErrReadOnly and any future code that needs a non-rw
 	// mount to reproduce.
 	useReadOnlyMount bool
+	// skipSMB skips the SMB leg of this subtest. Used when the framework
+	// cannot currently set up the required SMB fixture (e.g. read-only
+	// share — MountSMB hardcodes the share path). Document the reason in
+	// skipSMBReason so the skip is intentional and tracked.
+	skipSMB       bool
+	skipSMBReason string
 }
 
 // errorConformanceFixture holds the shared state for
