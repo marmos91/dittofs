@@ -207,11 +207,13 @@ type LockManager interface {
 	// or the context is cancelled.
 	WaitForBreakCompletion(ctx context.Context, handleKey string) error
 
-	// HasBreakingLeaseForKey reports whether any lease on handleKey is both
-	// keyed on leaseKey and in Breaking state. The SMB CREATE path uses this
-	// to skip the break-completion wait on same-key reopens so the response
-	// can carry SMB2_LEASE_FLAG_BREAK_IN_PROGRESS per MS-SMB2 3.3.5.9.8.
-	HasBreakingLeaseForKey(handleKey string, leaseKey [16]byte) bool
+	// WaitForBreakCompletionExceptKey is WaitForBreakCompletion scoped to
+	// ignore any breaking lease keyed on exceptKey. The SMB CREATE path uses
+	// this on same-key reopens: MS-SMB2 3.3.5.9.8 requires the opener to
+	// observe Breaking=true on its own key (to emit
+	// SMB2_LEASE_FLAG_BREAK_IN_PROGRESS), which forceCompleteBreaks would
+	// otherwise clear, while other-key breaks still need to drain first.
+	WaitForBreakCompletionExceptKey(ctx context.Context, handleKey string, exceptKey [16]byte) error
 
 	// ========================================================================
 	// Break Callbacks
@@ -1385,21 +1387,47 @@ func (lm *Manager) CheckAndBreakCachingForDelete(handleKey string, excludeOwner 
 	return nil
 }
 
-// HasBreakingLeaseForKey reports whether any lease on handleKey has
-// LeaseKey == leaseKey AND Breaking == true. Used by the SMB CREATE path
-// to decide whether to skip WaitForBreakCompletion when the opener's own
-// lease is already mid-break: per MS-SMB2 3.3.5.9.8 the same-key reopener
-// must observe Breaking=true (and receive SMB2_LEASE_FLAG_BREAK_IN_PROGRESS
-// in its response), which forceCompleteBreaks would otherwise clear.
-func (lm *Manager) HasBreakingLeaseForKey(handleKey string, leaseKey [16]byte) bool {
-	lm.mu.RLock()
-	defer lm.mu.RUnlock()
-	for _, l := range lm.unifiedLocks[handleKey] {
-		if l.Lease != nil && l.Lease.LeaseKey == leaseKey && l.Lease.Breaking {
-			return true
+// WaitForBreakCompletionExceptKey is WaitForBreakCompletion scoped to ignore
+// any breaking lease whose LeaseKey matches exceptKey. Used by the SMB CREATE
+// path on a same-key reopen: MS-SMB2 3.3.5.9.8 requires the opener to observe
+// Breaking=true on its own key (to emit SMB2_LEASE_FLAG_BREAK_IN_PROGRESS),
+// which forceCompleteBreaks would otherwise clear — but any other-key breaks
+// still need to drain before the CREATE proceeds (MS-SMB2 3.3.4.7). On
+// timeout, own-key is preserved and only other-key leases are force-completed.
+func (lm *Manager) WaitForBreakCompletionExceptKey(ctx context.Context, handleKey string, exceptKey [16]byte) error {
+	for {
+		lm.mu.Lock()
+		hasOther := false
+		for _, l := range lm.unifiedLocks[handleKey] {
+			if l.Lease != nil && l.Lease.Breaking && l.Lease.LeaseKey != exceptKey {
+				hasOther = true
+				break
+			}
+			if l.Delegation != nil && l.Delegation.Breaking {
+				hasOther = true
+				break
+			}
+		}
+		if !hasOther {
+			lm.mu.Unlock()
+			return nil
+		}
+
+		ch, ok := lm.breakWaitChans[handleKey]
+		if !ok {
+			ch = make(chan struct{})
+			lm.breakWaitChans[handleKey] = ch
+		}
+		lm.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			lm.forceCompleteBreaksExceptKey(handleKey, exceptKey)
+			return ctx.Err()
+		case <-ch:
+			continue
 		}
 	}
-	return false
 }
 
 // WaitForBreakCompletion blocks until all breaking locks on a file resolve
@@ -1454,25 +1482,30 @@ func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string)
 // BreakToState, as if the client had acknowledged. Called when the break
 // wait times out. Leases breaking to None are removed entirely.
 func (lm *Manager) forceCompleteBreaks(handleKey string) {
+	lm.forceCompleteBreaksExceptKey(handleKey, [16]byte{})
+}
+
+// forceCompleteBreaksExceptKey is forceCompleteBreaks that leaves any lease
+// keyed on exceptKey untouched. Zero exceptKey means "no exclusion" (same
+// semantics as forceCompleteBreaks).
+func (lm *Manager) forceCompleteBreaksExceptKey(handleKey string, exceptKey [16]byte) {
 	lm.mu.Lock()
 	locks := lm.unifiedLocks[handleKey]
 
 	var remaining []*UnifiedLock
 	modified := false
 	for _, l := range locks {
-		if l.Lease != nil && l.Lease.Breaking {
+		if l.Lease != nil && l.Lease.Breaking && l.Lease.LeaseKey != exceptKey {
 			modified = true
 			if l.Lease.BreakToState == LeaseStateNone {
-				// Remove entirely
 				if lm.lockStore != nil {
 					_ = lm.lockStore.DeleteLock(context.Background(), l.ID)
 				}
 				logger.Debug("forceCompleteBreaks: removed lease (break-to None)",
 					"handleKey", handleKey,
 					"leaseKey", fmt.Sprintf("%x", l.Lease.LeaseKey))
-				continue // skip adding to remaining
+				continue
 			}
-			// Downgrade to break-to state
 			l.Lease.LeaseState = l.Lease.BreakToState
 			l.Lease.Breaking = false
 			l.Lease.BreakToState = 0

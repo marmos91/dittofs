@@ -431,17 +431,16 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpen(
 		return err
 	}
 
-	// Same-key reopen while the opener's own lease is mid-break: must not
-	// wait, or WaitForBreakCompletion's forceCompleteBreaks fallback clears
-	// Breaking before ProcessLeaseCreateContext reads it, dropping
-	// SMB2_LEASE_FLAG_BREAK_IN_PROGRESS (MS-SMB2 3.3.5.9.8).
-	if exclude != nil && exclude.ExcludeLeaseKey != ([16]byte{}) &&
-		lockMgr.HasBreakingLeaseForKey(handleKey, exclude.ExcludeLeaseKey) {
-		return nil
-	}
-
 	waitCtx, cancel := context.WithTimeout(ctx, handleLeaseBreakWaitTimeout)
 	defer cancel()
+
+	// A same-key reopen must still wait for any OTHER breaking leases on
+	// this handle to drain (MS-SMB2 3.3.4.7), but it must not force-complete
+	// the opener's own Breaking lease — RequestLease needs to observe it and
+	// emit SMB2_LEASE_FLAG_BREAK_IN_PROGRESS per MS-SMB2 3.3.5.9.8.
+	if exclude != nil && exclude.ExcludeLeaseKey != ([16]byte{}) {
+		return lockMgr.WaitForBreakCompletionExceptKey(waitCtx, handleKey, exclude.ExcludeLeaseKey)
+	}
 	return lockMgr.WaitForBreakCompletion(waitCtx, handleKey)
 }
 
