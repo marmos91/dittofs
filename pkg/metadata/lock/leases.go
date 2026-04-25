@@ -31,6 +31,24 @@ var ErrLeaseBreakInProgress = errors.New("lease break in progress")
 // Read). Per MS-SMB2 3.3.5.9.8, the caller must return STATUS_INVALID_PARAMETER.
 var ErrInvalidLeaseState = errors.New("invalid lease state")
 
+// ErrAcknowledgedStateExceedsBreakTo is returned by AcknowledgeLeaseBreak when
+// the client acknowledges with a state containing bits not present in the
+// server's BreakToState. Per MS-SMB2 3.3.5.22.2, the caller must return
+// STATUS_REQUEST_NOT_ACCEPTED.
+var ErrAcknowledgedStateExceedsBreakTo = errors.New("acknowledged state exceeds break-to state")
+
+// ErrLeaseAckNotFound is returned by AcknowledgeLeaseBreak when no lease
+// exists for the given lease key (e.g., the client sent CLOSE before the
+// ack and the lease was released). The SMB wrapper treats this as a no-op
+// success; if it surfaces to the wire it maps to STATUS_OBJECT_NAME_NOT_FOUND.
+var ErrLeaseAckNotFound = errors.New("no lease for key")
+
+// ErrLeaseAckNotBreaking is returned by AcknowledgeLeaseBreak when the lease
+// exists but is not in the Breaking state (e.g., the client acks a break that
+// did not require acknowledgment, or re-acks an already-completed break).
+// Per MS-SMB2 3.3.5.22.2, the caller must return STATUS_UNSUCCESSFUL.
+var ErrLeaseAckNotBreaking = errors.New("lease not in breaking state")
+
 // validUpgrades defines allowed lease state upgrade transitions.
 // A lease can only be upgraded (more permissions), never downgraded via RequestLease.
 // Downgrade happens only through lease break.
@@ -475,11 +493,11 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 
 	handleKey, lock, idx := lm.findLeaseByKey(leaseKey)
 	if lock == nil {
-		return fmt.Errorf("no lease found with key %x", leaseKey)
+		return ErrLeaseAckNotFound
 	}
 
 	if !lock.Lease.Breaking {
-		return fmt.Errorf("lease %x is not in breaking state", leaseKey)
+		return ErrLeaseAckNotBreaking
 	}
 
 	// Validate epoch if provided (V2 staleness check).
@@ -489,9 +507,11 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 		return fmt.Errorf("stale epoch: expected %d, got %d", lock.Lease.Epoch, epoch)
 	}
 
-	// Client cannot claim bits not offered (bitwise subset check)
+	// Client cannot claim bits not offered (bitwise subset check).
+	// Per MS-SMB2 3.3.5.22.2, this must surface as STATUS_REQUEST_NOT_ACCEPTED.
 	if acknowledgedState & ^lock.Lease.BreakToState != 0 {
-		return fmt.Errorf("acknowledged state %s exceeds break-to state %s",
+		return fmt.Errorf("%w: %s exceeds break-to %s",
+			ErrAcknowledgedStateExceedsBreakTo,
 			LeaseStateToString(acknowledgedState),
 			LeaseStateToString(lock.Lease.BreakToState))
 	}
