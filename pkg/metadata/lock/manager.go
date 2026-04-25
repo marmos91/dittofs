@@ -1695,6 +1695,16 @@ func (lm *Manager) breakOpLocks(
 			removed = true
 		} else {
 			kept = append(kept, lock)
+			// Persist the in-flight Breaking state so a crash/restart
+			// preserves the break-in-progress and parked CREATEs aren't
+			// stranded waiting for a notification that was already sent
+			// over the wire. applyBreakStageLocked only persists the
+			// fire-and-forget downgrade path; the ack-required path
+			// (which is the common case) is persisted here.
+			if lm.lockStore != nil {
+				pl := ToPersistedLock(lock, 0)
+				_ = lm.lockStore.PutLock(context.Background(), pl)
+			}
 		}
 		toBreak = append(toBreak, breakEntry{lock: snapshot, breakToState: targetState})
 	}

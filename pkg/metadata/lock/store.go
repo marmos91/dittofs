@@ -83,7 +83,9 @@ type PersistedLock struct {
 	// BreakingToRequired is the cumulative final break-to target
 	// (Samba `breaking_to_required`). May be stricter than BreakToState
 	// when concurrent breaks AND-merged a tighter target during an
-	// in-flight stage. 0 if no break in progress.
+	// in-flight stage. Note that 0 is also a valid final target
+	// (break-to None lease state), so callers must consult Breaking
+	// and/or BreakToState to distinguish that from "no break in progress".
 	BreakingToRequired uint32 `json:"breaking_to_required,omitempty"`
 
 	// Breaking indicates a lease break is in progress awaiting acknowledgment.
@@ -390,6 +392,20 @@ func FromPersistedLock(pl *PersistedLock) *UnifiedLock {
 			ParentLeaseKey:     parentLeaseKey,
 			IsDirectory:        pl.IsDirectory,
 			// BreakStarted is runtime-only, not persisted
+		}
+		// Backwards compat: locks persisted before BreakingToRequired existed
+		// have BreakingToRequired==0. The zero value is ambiguous (could mean
+		// "break-to None" for an active break, or "no break" otherwise).
+		// Restore the invariant: when not breaking, BreakingToRequired tracks
+		// LeaseState; when breaking, it defaults to BreakToState (the in-flight
+		// target) since older records didn't track a stricter cumulative
+		// target.
+		if el.Lease.BreakingToRequired == 0 {
+			if el.Lease.Breaking {
+				el.Lease.BreakingToRequired = el.Lease.BreakToState
+			} else {
+				el.Lease.BreakingToRequired = el.Lease.LeaseState
+			}
 		}
 	}
 

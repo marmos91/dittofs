@@ -610,10 +610,16 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 			"epoch", lock.Lease.Epoch)
 
 		// Release lm.mu before dispatching to avoid deadlock with the
-		// SMB transport callback (mirrors breakOpLocks pattern).
-		lm.mu.Unlock()
-		lm.dispatchOpLockBreak(handleKey, snapshot, nextTarget)
-		lm.mu.Lock()
+		// SMB transport callback (mirrors breakOpLocks pattern). Wrap in a
+		// closure with a deferred re-Lock so the surrounding function's
+		// `defer lm.mu.Unlock()` always sees the mutex held — without this,
+		// a panic inside dispatchOpLockBreak would unwind through an
+		// unlocked mutex and the outer defer would double-unlock.
+		func() {
+			lm.mu.Unlock()
+			defer lm.mu.Lock()
+			lm.dispatchOpLockBreak(handleKey, snapshot, nextTarget)
+		}()
 
 		// Re-validate: a concurrent CLOSE / release / timeout could have
 		// removed the lease during the dispatch window. The `lock` pointer

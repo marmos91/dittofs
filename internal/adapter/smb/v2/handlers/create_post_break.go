@@ -141,9 +141,10 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		logger.Debug("CREATE: handle lease break failed", "error", err)
 	}
 
-	// No conflicting holder has the W bit ⇒ no flush required. Let the CREATE
-	// complete inline. The break notification still went out so the holder
-	// invalidates its caches; we just don't block on its ACK.
+	// No conflicting holder intersects the per-reason delay_mask (W for
+	// non-violation/destructive, H for sharing-violation) ⇒ no wait needed.
+	// Let the CREATE complete inline. The break notification still went out
+	// so the holder invalidates its caches; we just don't block on its ACK.
 	if !needsParkForFlush {
 		return 0
 	}
