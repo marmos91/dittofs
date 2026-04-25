@@ -3,6 +3,7 @@ package handlers
 import (
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -112,5 +113,33 @@ func TestFileAttrToSMBAttributes_Directory(t *testing.T) {
 
 	if attrs&0x10 == 0 { // FileAttributeDirectory = 0x10
 		t.Error("Directory should have Directory attribute")
+	}
+}
+
+// TestSMBModeFromAttrs_OverwriteForcesArchive locks down the contract that
+// overwriteFile relies on: per MS-FSA 2.1.5.1.2.1, OVERWRITE/SUPERSEDE always
+// sets FILE_ATTRIBUTE_ARCHIVE on the post-overwrite metadata, so the mode
+// produced from the request attrs OR'd with ARCHIVE must round-trip to a
+// FileAttr whose SMB attrs include ARCHIVE — even when the client only sent
+// FILE_ATTRIBUTE_NORMAL (the case smbtorture breaking2/breaking5 exercises).
+func TestSMBModeFromAttrs_OverwriteForcesArchive(t *testing.T) {
+	cases := []struct {
+		name    string
+		reqAttr types.FileAttributes
+	}{
+		{"client sent zero", 0},
+		{"client sent NORMAL", types.FileAttributeNormal},
+		{"client sent HIDDEN", types.FileAttributeHidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			forced := tc.reqAttr | types.FileAttributeArchive
+			mode := SMBModeFromAttrs(forced, false)
+			attr := &metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: mode}
+			got := FileAttrToSMBAttributes(attr)
+			if got&types.FileAttributeArchive == 0 {
+				t.Errorf("ARCHIVE missing from round-trip attrs 0x%x (mode 0x%x)", got, mode)
+			}
+		})
 	}
 }

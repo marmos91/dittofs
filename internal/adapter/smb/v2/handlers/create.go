@@ -1244,14 +1244,14 @@ func (h *Handler) overwriteFile(
 		Size: &zeroSize,
 	}
 
-	// Per MS-FSA 2.1.5.1.1: OVERWRITE/SUPERSEDE should apply FileAttributes
-	// from the request. Preserve modeDOSCompressed from existing metadata since
-	// compression state is controlled only via FSCTL_SET_COMPRESSION.
-	if req.FileAttributes != 0 {
-		mode := SMBModeFromAttrs(req.FileAttributes, existingFile.Type == metadata.FileTypeDirectory)
-		mode |= existingFile.Mode & modeDOSCompressed
-		setAttrs.Mode = &mode
-	}
+	// Per MS-FSA 2.1.5.1.2.1: OVERWRITE/SUPERSEDE forces FILE_ATTRIBUTE_ARCHIVE
+	// on the post-overwrite metadata regardless of what the client sent — the
+	// data is "needs backup" again. Apply the requested attributes plus ARCHIVE,
+	// and preserve modeDOSCompressed (controlled only via FSCTL_SET_COMPRESSION).
+	attrs := req.FileAttributes | types.FileAttributeArchive
+	mode := SMBModeFromAttrs(attrs, existingFile.Type == metadata.FileTypeDirectory)
+	mode |= existingFile.Mode & modeDOSCompressed
+	setAttrs.Mode = &mode
 
 	metaSvc := h.Registry.GetMetadataService()
 	err = metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs)
