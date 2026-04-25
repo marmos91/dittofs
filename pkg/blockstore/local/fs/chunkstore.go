@@ -53,11 +53,16 @@ func (bc *FSStore) StoreChunk(ctx context.Context, h blockstore.ContentHash, dat
 		return fmt.Errorf("chunkstore: mkdir: %w", err)
 	}
 
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	// Use a unique temp filename per attempt so two concurrent StoreChunk
+	// calls for the same hash (whether on Unix or Windows) do not race on
+	// the same .tmp file. The destination is content-addressed and idempotent;
+	// if the rename target already exists from a winning concurrent call,
+	// treat that as success after re-stating the destination.
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("chunkstore: create tmp: %w", err)
 	}
+	tmp := f.Name()
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
@@ -73,6 +78,14 @@ func (bc *FSStore) StoreChunk(ctx context.Context, h blockstore.ContentHash, dat
 		return fmt.Errorf("chunkstore: close tmp: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
+		// On Windows, os.Rename fails if the destination already exists.
+		// CAS writes are idempotent — if the destination is already there
+		// with the same content (a concurrent winner stored the same hash),
+		// treat that as success and clean up our tmp.
+		if _, statErr := os.Stat(path); statErr == nil {
+			_ = os.Remove(tmp)
+			return nil
+		}
 		_ = os.Remove(tmp)
 		return fmt.Errorf("chunkstore: rename: %w", err)
 	}

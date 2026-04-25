@@ -1192,10 +1192,14 @@ func CreateLocalStoreFromConfig(
 			// silently truncate. Warn so a misconfigured budget surfaces in
 			// logs instead of producing a budget that is off by hundreds of
 			// kilobytes from what the operator typed.
+			// Reject out-of-range and non-integer values rather than perform
+			// an implementation-defined float64->int64 cast (which on out-of-range
+			// inputs can produce a negative or garbage budget).
 			if n > float64(math.MaxInt64) || n != math.Trunc(n) {
-				logger.Warn("config: max_log_bytes loses precision as float64", "value", n)
+				logger.Warn("config: max_log_bytes is out of range or non-integer; keeping default", "value", n)
+			} else {
+				fsOpts.MaxLogBytes = int64(n)
 			}
-			fsOpts.MaxLogBytes = int64(n)
 		} else {
 			logger.Warn("block store config has max_log_bytes but it is invalid or non-positive; ignoring", "value", v)
 		}
