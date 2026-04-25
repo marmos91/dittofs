@@ -275,6 +275,11 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 //	16      var   Buffer          Name (padded) + Data
 func decodeCreateContexts(buf []byte) ([]CreateContext, error) {
 	var contexts []CreateContext
+	// Windows rejects duplicate create-context tags with STATUS_INVALID_PARAMETER
+	// (smbtorture smb2.lease.duplicate_create / duplicate_open). MS-SMB2
+	// §2.2.13.2 implies each tag is single-occurrence by design; the explicit
+	// MUST is not stated in §3.3.5.9.
+	var seen map[string]struct{}
 	offset := 0
 
 	for offset < len(buf) {
@@ -342,6 +347,13 @@ func decodeCreateContexts(buf []byte) ([]CreateContext, error) {
 		}
 
 		if name != "" {
+			if _, dup := seen[name]; dup {
+				return nil, fmt.Errorf("duplicate create context tag: %q", name)
+			}
+			if seen == nil {
+				seen = make(map[string]struct{})
+			}
+			seen[name] = struct{}{}
 			contexts = append(contexts, CreateContext{
 				Name: name,
 				Data: data,

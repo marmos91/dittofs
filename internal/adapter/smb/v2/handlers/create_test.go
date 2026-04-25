@@ -1010,6 +1010,18 @@ func TestCreate_CreateContextBlobValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("DuplicateTagRejected", func(t *testing.T) {
+		ctxs := []CreateContext{
+			{Name: "MxAc", Data: nil},
+			{Name: "MxAc", Data: nil},
+		}
+		buf, _, _ := EncodeCreateContexts(ctxs)
+		_, err := decodeCreateContexts(buf)
+		if err == nil {
+			t.Error("Expected error for duplicate create context tag")
+		}
+	})
+
 	t.Run("DecodeCreateRequest_MalformedContextReturnsError", func(t *testing.T) {
 		body := buildCreateRequestBody("test.txt", types.FileOpenIf, 0)
 
