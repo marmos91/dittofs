@@ -153,9 +153,21 @@ type OpLock struct {
 	// Use HasRead(), HasWrite(), HasHandle() to check individual flags.
 	LeaseState uint32
 
-	// BreakToState is the target state during an active break.
-	// Zero if no break is in progress.
+	// BreakToState is the target state of the IN-FLIGHT break notification
+	// (Samba `breaking_to_requested`). Zero if no break is in progress. Used
+	// to validate ACKs: an ACK that claims state outside this mask is rejected
+	// with STATUS_REQUEST_NOT_ACCEPTED. May be a multi-stage intermediate
+	// (e.g. RH→R while the cumulative final target is None).
 	BreakToState uint32
+
+	// BreakingToRequired is the cumulative FINAL break-to target across all
+	// conflicting opens that arrived while this lease was Breaking (Samba
+	// `breaking_to_required`, source3/smbd/smb2_oplock.c). May be stricter
+	// (smaller bitmask) than BreakToState. On each ACK, if LeaseState still
+	// has bits beyond BreakingToRequired, the next progressive stage is
+	// dispatched via nextProgressiveBreakTarget. Zero only when there is no
+	// active break or when the target is full release.
+	BreakingToRequired uint32
 
 	// Breaking indicates a lease break is in progress awaiting acknowledgment.
 	// When true, the client has been notified and must acknowledge.
@@ -258,16 +270,35 @@ func (l *OpLock) Clone() *OpLock {
 		return nil
 	}
 	return &OpLock{
-		LeaseKey:       l.LeaseKey, // Fixed-size array, copied by value
-		LeaseState:     l.LeaseState,
-		BreakToState:   l.BreakToState,
-		Breaking:       l.Breaking,
-		Epoch:          l.Epoch,
-		BreakStarted:   l.BreakStarted,
-		Reclaim:        l.Reclaim,
-		ParentLeaseKey: l.ParentLeaseKey, // Fixed-size array, copied by value
-		IsDirectory:    l.IsDirectory,
+		LeaseKey:           l.LeaseKey, // Fixed-size array, copied by value
+		LeaseState:         l.LeaseState,
+		BreakToState:       l.BreakToState,
+		BreakingToRequired: l.BreakingToRequired,
+		Breaking:           l.Breaking,
+		Epoch:              l.Epoch,
+		BreakStarted:       l.BreakStarted,
+		Reclaim:            l.Reclaim,
+		ParentLeaseKey:     l.ParentLeaseKey, // Fixed-size array, copied by value
+		IsDirectory:        l.IsDirectory,
 	}
+}
+
+// nextProgressiveBreakTarget computes the next break-to target after a client
+// has acknowledged a partial break. Mirrors Samba's behavior in
+// source3/smbd/smb2_oplock.c::downgrade_lease lines 569-586: when the
+// acknowledged state still has W or H, the next stage keeps R as an
+// intermediate; otherwise drop straight to required.
+//
+// Produces the wire sequence smbtorture asserts for breaking3/v2_breaking3:
+//
+//	ack RWH→RH (has H)  → next = required(0) | R = R   ⇒ wire: RH→R
+//	ack RH→R   (no W/H) → next = required(0)            ⇒ wire: R→""
+func nextProgressiveBreakTarget(ackedState, required uint32) uint32 {
+	next := required
+	if ackedState&(LeaseStateWrite|LeaseStateHandle) != 0 {
+		next |= LeaseStateRead
+	}
+	return next
 }
 
 // OpLocksConflict checks if two leases on the same file conflict.
@@ -286,10 +317,14 @@ func OpLocksConflict(existing, requested *OpLock) bool {
 		return false
 	}
 
-	// If existing lease is breaking, treat as having BreakToState
+	// If existing lease is breaking, treat as having its cumulative final
+	// target (BreakingToRequired) rather than the in-flight intermediate
+	// (BreakToState). Otherwise a same-handle reopen arriving mid-stage
+	// could re-dispatch a redundant strip-W against an RH that is heading
+	// to None.
 	existingState := existing.LeaseState
 	if existing.Breaking {
-		existingState = existing.BreakToState
+		existingState = existing.BreakingToRequired
 	}
 
 	// Check Write conflicts

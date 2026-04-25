@@ -103,6 +103,29 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		reason = lock.BreakReasonSharingViolation
 	}
 
+	var waitExceptKey [16]byte
+	if d.excludeOwner != nil {
+		waitExceptKey = d.excludeOwner.ExcludeLeaseKey
+	}
+
+	// Snapshot the per-reason delay-mask intersection BEFORE dispatching.
+	// Per Samba `delay_for_oplock_fn` (source3/smbd/open.c lines 2458, 2577):
+	//   - sharing violation              → delay_mask = SMB2_LEASE_HANDLE
+	//   - non-violation (default/destr)  → delay_mask = SMB2_LEASE_WRITE
+	// A CREATE only delays for a lease break when the existing holder's lease
+	// type intersects the delay_mask. Without an intersecting bit, the break
+	// is informational and the new opener proceeds inline while the holder is
+	// notified asynchronously (smbtorture breaking4 contract). With the bit
+	// set, dirty/cached state must be flushed before the new opener can see
+	// consistent post-break state (timeout-disconnect / breaking3 contract).
+	var delayMask uint32
+	if reason == lock.BreakReasonSharingViolation {
+		delayMask = lock.LeaseStateHandle
+	} else {
+		delayMask = lock.LeaseStateWrite
+	}
+	needsParkForFlush := h.LeaseManager.AnyHolderHasLeaseBits(lockFileHandle, shareName, waitExceptKey, delayMask)
+
 	// Directory branch: fire-and-forget. The single-threaded test driver
 	// can't ack until this CREATE returns, so waiting would deadlock.
 	if d.existingFile.Type == metadata.FileTypeDirectory {
@@ -112,14 +135,18 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		return 0
 	}
 
-	// File branch: dispatch the break (non-blocking), then park async or wait.
+	// File branch: dispatch the break (non-blocking), then decide between
+	// inline completion (no W to flush), async park, or sync wait.
 	if err := h.LeaseManager.BreakHandleLeasesOnOpenAsync(lockFileHandle, shareName, reason, d.excludeOwner); err != nil {
 		logger.Debug("CREATE: handle lease break failed", "error", err)
 	}
 
-	var waitExceptKey [16]byte
-	if d.excludeOwner != nil {
-		waitExceptKey = d.excludeOwner.ExcludeLeaseKey
+	// No conflicting holder intersects the per-reason delay_mask (W for
+	// non-violation/destructive, H for sharing-violation) ⇒ no wait needed.
+	// Let the CREATE complete inline. The break notification still went out
+	// so the holder invalidates its caches; we just don't block on its ACK.
+	if !needsParkForFlush {
+		return 0
 	}
 
 	// Async park is only safe when this CREATE is the last op in its message

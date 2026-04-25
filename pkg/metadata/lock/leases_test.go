@@ -2,6 +2,7 @@ package lock
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -344,6 +345,7 @@ func TestAcknowledgeLeaseBreak_ToReadState(t *testing.T) {
 			if lock.Lease != nil && lock.Lease.LeaseKey == key1 {
 				lock.Lease.Breaking = true
 				lock.Lease.BreakToState = LeaseStateRead
+				lock.Lease.BreakingToRequired = LeaseStateRead
 				lock.Lease.BreakStarted = time.Now()
 			}
 		}
@@ -601,6 +603,7 @@ func setBreaking(t *testing.T, mgr *Manager, key [16]byte, breakTo uint32) {
 			if lock.Lease != nil && lock.Lease.LeaseKey == key {
 				lock.Lease.Breaking = true
 				lock.Lease.BreakToState = breakTo
+				lock.Lease.BreakingToRequired = breakTo
 				lock.Lease.BreakStarted = time.Now()
 				advanceEpoch(lock.Lease) // matches RequestLease at leases.go:256
 				return
@@ -970,4 +973,260 @@ func TestRequestLease_CrossKeyConflict_DoesNotBlockOnAck(t *testing.T) {
 			"this is the WPTS BVT_DirectoryLeasing_LeaseBreakOnMultiClients "+
 			"deadlock. breakCalled=%v", breakCalled.Load())
 	}
+}
+
+// ============================================================================
+// Progressive multi-stage lease-break tests (issue #449)
+// ============================================================================
+//
+// These exercise the smbtorture smb2.lease.breaking3 / v2_breaking3 wire
+// shape: when a fresh break is in flight and a stricter conflicting open
+// arrives, the cumulative final target (BreakingToRequired) is AND-merged
+// without dispatching a new notification; on each subsequent ACK the
+// next progressive stage is dispatched (RH→R then R→"") until LeaseState
+// reaches BreakingToRequired.
+
+// recordBreakNotifications collects break-to states in order, returning a
+// callback registration suitable for testBreakCallbacks.
+func recordBreakNotifications() (cb *testBreakCallbacks, breaks *[]uint32, mu *sync.Mutex) {
+	var muLocal sync.Mutex
+	var seen []uint32
+	cb = &testBreakCallbacks{
+		onOpLockBreak: func(_ string, _ *UnifiedLock, breakToState uint32) {
+			muLocal.Lock()
+			seen = append(seen, breakToState)
+			muLocal.Unlock()
+		},
+	}
+	return cb, &seen, &muLocal
+}
+
+func snapshotBreaks(mu *sync.Mutex, breaks *[]uint32) []uint32 {
+	mu.Lock()
+	defer mu.Unlock()
+	out := make([]uint32, len(*breaks))
+	copy(out, *breaks)
+	return out
+}
+
+// TestProgressiveLeaseBreak_RWH_AndMerge_ToNone exercises the breaking3 wire
+// shape end-to-end: RWH lease, default opener (strip W), then a destructive
+// opener AND-merges the cumulative target down to None. Each ACK drives the
+// next progressive stage; req2/req3-equivalent waiters are tracked via
+// signalBreakWait and only released when LeaseState reaches BreakingToRequired.
+func TestProgressiveLeaseBreak_RWH_AndMerge_ToNone(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	cb, breaks, breakMu := recordBreakNotifications()
+	mgr.RegisterBreakCallbacks(cb)
+
+	ctx := context.Background()
+	key1 := [16]byte{0xA1}
+	handleKey := "file-449"
+
+	// Grant RWH directly to seed the test (skip RequestLease's grant path
+	// which itself doesn't trigger breaks on first grant anyway).
+	_, _, err := mgr.RequestLease(ctx, FileHandle(handleKey), key1, [16]byte{},
+		"owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+
+	// Stage 1: a default opener arrives (strip W). RWH→RH dispatched.
+	require.NoError(t, mgr.BreakLeasesOnOpenConflict(handleKey, &LockOwner{
+		OwnerID: "owner-default", ClientID: "client-default",
+	}, BreakReasonDefault))
+
+	got := snapshotBreaks(breakMu, breaks)
+	require.Len(t, got, 1, "stage 1: exactly one notification dispatched")
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, got[0],
+		"stage 1: RWH→RH (strip W)")
+
+	// Lease should now be Breaking with BreakToState=RH and BreakingToRequired=RH.
+	mgr.mu.Lock()
+	_, lock, _ := mgr.findLeaseByKey(key1)
+	require.NotNil(t, lock)
+	assert.True(t, lock.Lease.Breaking)
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, lock.Lease.BreakToState)
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, lock.Lease.BreakingToRequired)
+	mgr.mu.Unlock()
+
+	// Stage 2: a destructive opener arrives mid-stage → AND-merge.
+	// BreakingToRequired = RH & 0 = 0. No new notification.
+	require.NoError(t, mgr.BreakLeasesOnOpenConflict(handleKey, &LockOwner{
+		OwnerID: "owner-destr", ClientID: "client-destr",
+	}, BreakReasonDestructive))
+
+	got = snapshotBreaks(breakMu, breaks)
+	require.Len(t, got, 1, "stage 2: AND-merge must NOT dispatch a new notification")
+
+	mgr.mu.Lock()
+	_, lock, _ = mgr.findLeaseByKey(key1)
+	require.NotNil(t, lock)
+	assert.Equal(t, uint32(0), lock.Lease.BreakingToRequired,
+		"AND-merge must tighten BreakingToRequired to 0 (None)")
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, lock.Lease.BreakToState,
+		"BreakToState (in-flight) is unchanged by AND-merge")
+	mgr.mu.Unlock()
+
+	// Stage 3: client ACKs RWH→RH. Re-eval finds acked state has H bit ⇒
+	// next target = required(0) | R = R. Dispatch RH→R.
+	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx,
+		key1, LeaseStateRead|LeaseStateHandle, 0))
+
+	got = snapshotBreaks(breakMu, breaks)
+	require.Len(t, got, 2, "stage 3: ACK RWH→RH triggers RH→R notification")
+	assert.Equal(t, LeaseStateRead, got[1], "stage 3: target = R")
+
+	mgr.mu.Lock()
+	_, lock, _ = mgr.findLeaseByKey(key1)
+	require.NotNil(t, lock)
+	assert.True(t, lock.Lease.Breaking,
+		"lease still Breaking after partial ACK with stricter required")
+	assert.Equal(t, LeaseStateRead, lock.Lease.BreakToState)
+	assert.Equal(t, uint32(0), lock.Lease.BreakingToRequired)
+	mgr.mu.Unlock()
+
+	// Stage 4: client ACKs RH→R. Re-eval finds acked state has neither W nor
+	// H ⇒ next target = required(0) = 0. Dispatch R→"" (fire-and-forget,
+	// inline downgrade). Lease removed.
+	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, key1, LeaseStateRead, 0))
+
+	got = snapshotBreaks(breakMu, breaks)
+	require.Len(t, got, 3, "stage 4: ACK RH→R triggers R→\"\" notification")
+	assert.Equal(t, LeaseStateNone, got[2], "stage 4: target = None")
+
+	_, _, found := mgr.GetLeaseState(ctx, key1)
+	assert.False(t, found, "stage 4: lease removed after final stage")
+}
+
+// TestProgressiveLeaseBreak_NoSpuriousAfterReachingRequired confirms that a
+// single-shot break (no concurrent AND-merge) does NOT trigger a second
+// progressive stage when the client ACKs to the offered state. This is the
+// breaking4-style invariant — fresh dispatch stays single-shot.
+func TestProgressiveLeaseBreak_NoSpuriousAfterReachingRequired(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	cb, breaks, breakMu := recordBreakNotifications()
+	mgr.RegisterBreakCallbacks(cb)
+
+	ctx := context.Background()
+	key1 := [16]byte{0xB1}
+	handleKey := "file-449-noprog"
+
+	_, _, err := mgr.RequestLease(ctx, FileHandle(handleKey), key1, [16]byte{},
+		"owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.BreakLeasesOnOpenConflict(handleKey, &LockOwner{
+		OwnerID: "owner-default", ClientID: "client-default",
+	}, BreakReasonDefault))
+	require.Len(t, snapshotBreaks(breakMu, breaks), 1)
+
+	// Client ACKs to the offered state. No concurrent break has tightened
+	// BreakingToRequired ⇒ no second stage dispatched.
+	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx,
+		key1, LeaseStateRead|LeaseStateHandle, 0))
+
+	assert.Len(t, snapshotBreaks(breakMu, breaks), 1,
+		"single-shot break must not trigger a second progressive stage")
+
+	mgr.mu.Lock()
+	_, lock, _ := mgr.findLeaseByKey(key1)
+	require.NotNil(t, lock)
+	assert.False(t, lock.Lease.Breaking, "Breaking cleared after final ACK")
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, lock.Lease.LeaseState)
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, lock.Lease.BreakingToRequired,
+		"BreakingToRequired equals LeaseState when not Breaking (invariant)")
+	mgr.mu.Unlock()
+}
+
+// TestForceCompleteBreaks_DrainsToBreakingToRequired confirms that a non-acking
+// client triggers the timeout path which drains to the cumulative final
+// target, not the in-flight intermediate. Otherwise a non-ack would leave
+// the lease parked at e.g. RH when a later destructive opener had AND-merged
+// the target down to None.
+func TestForceCompleteBreaks_DrainsToBreakingToRequired(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	cb, _, _ := recordBreakNotifications()
+	mgr.RegisterBreakCallbacks(cb)
+
+	ctx := context.Background()
+	key1 := [16]byte{0xC1}
+	handleKey := "file-449-force"
+
+	_, _, err := mgr.RequestLease(ctx, FileHandle(handleKey), key1, [16]byte{},
+		"owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+
+	// First break: RWH→RH (BreakingToRequired=RH).
+	require.NoError(t, mgr.BreakLeasesOnOpenConflict(handleKey, &LockOwner{
+		OwnerID: "owner-default", ClientID: "client-default",
+	}, BreakReasonDefault))
+
+	// AND-merge tighter target: BreakingToRequired=0.
+	require.NoError(t, mgr.BreakLeasesOnOpenConflict(handleKey, &LockOwner{
+		OwnerID: "owner-destr", ClientID: "client-destr",
+	}, BreakReasonDestructive))
+
+	// Force-complete should drain to BreakingToRequired (= 0), removing the
+	// lease entirely. Pre-fix this drained to BreakToState (= RH), leaving
+	// the lease at RH which would block the destructive opener.
+	mgr.forceCompleteBreaks(handleKey)
+
+	_, _, found := mgr.GetLeaseState(ctx, key1)
+	assert.False(t, found, "force-complete must drain to None (BreakingToRequired), not RH (BreakToState)")
+}
+
+// TestAnyHolderHasLeaseBits covers the cross-key per-bit query that gates the
+// SMB CREATE post-break park decision (#449). Mirrors Samba `delay_for_oplock_fn`:
+//   - sharing violation              → mask = HANDLE (park if any holder has H)
+//   - non-violation/default/destruct → mask = WRITE  (park if any holder has W)
+func TestAnyHolderHasLeaseBits(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	keyRH := [16]byte{0xD1}
+	keyRW := [16]byte{0xD2}
+	keyR := [16]byte{0xD3}
+
+	// Empty: no holders.
+	assert.False(t, mgr.AnyHolderHasLeaseBits("absent", [16]byte{}, LeaseStateWrite))
+
+	// Grant RH (no W). W-mask must report false; H-mask must report true.
+	_, _, err := mgr.RequestLease(ctx, FileHandle("h-rh"), keyRH, [16]byte{},
+		"o1", "c1", "/share", LeaseStateRead|LeaseStateHandle, false)
+	require.NoError(t, err)
+	assert.False(t, mgr.AnyHolderHasLeaseBits("h-rh", [16]byte{}, LeaseStateWrite),
+		"RH lease has no W ⇒ W-mask reports false (breaking4: no flush, no park)")
+	assert.True(t, mgr.AnyHolderHasLeaseBits("h-rh", [16]byte{}, LeaseStateHandle),
+		"RH lease has H ⇒ H-mask reports true (sharing-violation: must park)")
+
+	// Grant RW. W-mask reports true.
+	_, _, err = mgr.RequestLease(ctx, FileHandle("h-rw"), keyRW, [16]byte{},
+		"o2", "c2", "/share", LeaseStateRead|LeaseStateWrite, false)
+	require.NoError(t, err)
+	assert.True(t, mgr.AnyHolderHasLeaseBits("h-rw", [16]byte{}, LeaseStateWrite),
+		"RW lease has W ⇒ W-mask reports true")
+
+	// Exclusion: same key excluded ⇒ false.
+	assert.False(t, mgr.AnyHolderHasLeaseBits("h-rw", keyRW, LeaseStateWrite),
+		"excluding the only W holder must report false")
+
+	// Empty mask is a no-op short-circuit.
+	assert.False(t, mgr.AnyHolderHasLeaseBits("h-rw", [16]byte{}, 0))
+
+	// Multiple R-only holders: neither W nor H mask matches.
+	_, _, err = mgr.RequestLease(ctx, FileHandle("h-mixed"), keyR, [16]byte{},
+		"o3", "c3", "/share", LeaseStateRead, false)
+	require.NoError(t, err)
+	keyMix := [16]byte{0xD4}
+	_, _, err = mgr.RequestLease(ctx, FileHandle("h-mixed"), keyMix, [16]byte{},
+		"o4", "c4", "/share", LeaseStateRead, false)
+	require.NoError(t, err)
+	assert.False(t, mgr.AnyHolderHasLeaseBits("h-mixed", [16]byte{}, LeaseStateWrite))
+	assert.False(t, mgr.AnyHolderHasLeaseBits("h-mixed", [16]byte{}, LeaseStateHandle))
 }
