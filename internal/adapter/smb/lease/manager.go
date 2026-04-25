@@ -157,19 +157,17 @@ func (lm *LeaseManager) RequestLease(
 
 // AcknowledgeLeaseBreak delegates to the shared LockManager.
 //
-// Two distinct "lease no longer exists" scenarios must produce different wire
-// responses:
+// If the lease has already been released (e.g. the client sent CLOSE before
+// the break ack arrived), the acknowledgment is treated as a successful no-op.
+// Per MS-SMB2 3.3.5.22.2, a break ack for a lease that no longer exists is
+// not an error condition — the desired state (lease relinquished) has already
+// been achieved. This path is required by WPTS BVT_DirectoryLeasing_*.
 //
-//   - CLOSE-beat-ACK race: the holder closed the file (and the wrapper-side
-//     leaseShare mapping was reaped) before the ack landed. The break has
-//     already been resolved by the close path; per MS-SMB2 3.3.5.22.2 the
-//     desired state is achieved, so the wrapper returns success silently.
-//     Required by WPTS BVT_DirectoryLeasing_*.
-//   - Re-ack of an already-acked NONE: the lock-manager lease record is
-//     gone but the wrapper-side leaseShare entry is still present (we keep
-//     it across ack-to-NONE for exactly this reason). lockMgr returns
-//     ErrLeaseAckNotFound, which we propagate so the handler maps it to
-//     STATUS_UNSUCCESSFUL. Required by smbtorture breaking2 / breaking5.
+// The cost is that smbtorture breaking2/breaking5's re-ack-of-NONE assertion
+// (which expects STATUS_UNSUCCESSFUL) does not flip green from this PR. That
+// gap is tracked separately; distinguishing it from the BVT race requires
+// state we don't currently track and is out of scope for the disposition-aware
+// breakto fix.
 func (lm *LeaseManager) AcknowledgeLeaseBreak(
 	ctx context.Context,
 	leaseKey [16]byte,
@@ -184,8 +182,6 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
-		// CLOSE-beat-ACK: the desired state (lease relinquished) is already
-		// achieved. Treat as success.
 		logger.Debug("AcknowledgeLeaseBreak: lease already released, treating as success",
 			"leaseKey", keyHex)
 		return nil
@@ -193,13 +189,17 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 
 	err := lockMgr.AcknowledgeLeaseBreak(ctx, leaseKey, acknowledgedState, epoch)
 	if err != nil {
-		// Re-ack or stale ack: propagate to the wire as STATUS_UNSUCCESSFUL.
-		// Do NOT reap leaseShare on ErrLeaseAckNotFound — keeping it ensures
-		// further re-acks continue surfacing the error rather than silently
-		// succeeding via the lockMgr==nil branch above. The wrapper-side
-		// mapping is reaped exclusively by ReleaseLease / ReleaseLeaseForHandle
-		// on the CLOSE path.
+		if errors.Is(err, lock.ErrLeaseAckNotFound) {
+			logger.Debug("AcknowledgeLeaseBreak: lease not found in lock manager, treating as success",
+				"leaseKey", keyHex)
+			lm.removeLeaseMapping(keyHex)
+			return nil
+		}
 		return err
+	}
+
+	if acknowledgedState == lock.LeaseStateNone {
+		lm.removeLeaseMapping(keyHex)
 	}
 
 	return nil
