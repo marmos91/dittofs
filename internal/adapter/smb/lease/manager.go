@@ -400,6 +400,21 @@ func (lm *LeaseManager) HasOtherBreakingLeases(fileHandle lock.FileHandle, share
 	return lockMgr.HasOtherBreakingLeases(string(fileHandle), excludeKey)
 }
 
+// AnyHolderHasLeaseBits reports whether any lease on fileHandle except
+// excludeKey currently has any bit in mask set. Non-blocking. Used by the SMB
+// CREATE post-break park decision: per Samba `delay_for_oplock_fn`, a CREATE
+// delays only when the existing holder's lease type intersects the delay_mask
+// (W for non-violation/destructive, H for sharing-violation). Without that
+// bit, the new opener proceeds inline while the holder is notified
+// asynchronously. Returns false when no LockManager is bound for the share.
+func (lm *LeaseManager) AnyHolderHasLeaseBits(fileHandle lock.FileHandle, shareName string, excludeKey [16]byte, mask uint32) bool {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return false
+	}
+	return lockMgr.AnyHolderHasLeaseBits(string(fileHandle), excludeKey, mask)
+}
+
 // WaitForOtherKeyBreaks waits on ctx for all breaks on fileHandle other than
 // excludeKey to drain. The caller controls the cancellation context — the
 // SMB CREATE async-park path passes a context whose lifetime is bound to
