@@ -247,6 +247,38 @@ Per-share block storage is configured via `dfsctl store` / `dfsctl share` comman
 
 There is no top-level `cache:` section in the server config — cache sizing for a share follows the share's local storage limits, and the read cache is tuned internally by the engine. See `dfsctl share create --help` and `dfsctl store create --help` for the per-share knobs.
 
+#### Hybrid append-log tier (Phase 10 / LSL-04/05, experimental)
+
+> **Warning (D-24):** The append-log path is **experimental in v0.15.0**. Do NOT
+> enable in production before v0.15.0's Phase 11 (A2) ships the mark-sweep GC:
+> without it, the `blocks/{hh}/{hh}/` directory grows unbounded (see phase 10
+> context D-38). The flag defaults to `false` through Phase 10; A2 flips it.
+
+These keys live inside the per-share `local` block store's `config` JSON
+(passed via `dfsctl store local add --config '{...}'` or the REST API).
+They only take effect when the local store type is `fs`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `use_append_log` | bool | `false` | Enable the hybrid append-log + hash-keyed blocks tier (LSL-01/02/03). |
+| `max_log_bytes` | int | `1073741824` (1 GiB) | Per-share total-log-bytes budget; writers block on pressure when exceeded (LSL-04, INV-05). Values above 2^53 (~9 PiB) lose precision through JSON parsing. |
+| `rollup_workers` | int | `2` | Number of rollup goroutines (BLAKE3 + FastCDC) per share (D-13/D-33). |
+| `stabilization_ms` | int | `250` | Dirty-interval stabilization window in milliseconds before rollup (D-16). |
+| `orphan_log_min_age_seconds` | int | `3600` (1h) | Minimum log-file mtime age before the boot-time orphan sweep may unlink it. Prevents fresh (not-yet-rolled-up) logs from being swept when metadata is absent (D-28, Warning 3). |
+
+Env-var mapping follows the existing dot-path convention:
+`DITTOFS_BLOCKSTORE_LOCAL_FS_USE_APPEND_LOG`,
+`DITTOFS_BLOCKSTORE_LOCAL_FS_MAX_LOG_BYTES`,
+`DITTOFS_BLOCKSTORE_LOCAL_FS_ROLLUP_WORKERS`,
+`DITTOFS_BLOCKSTORE_LOCAL_FS_STABILIZATION_MS`,
+`DITTOFS_BLOCKSTORE_LOCAL_FS_ORPHAN_LOG_MIN_AGE_SECONDS`.
+
+**Requirement:** enabling `use_append_log` requires a metadata backend that
+implements `metadata.RollupStore` (memory, badger, and postgres all qualify
+in Phase 10). Attempting to enable the flag against a metadata backend
+without this interface yields an explicit error at share creation —
+there is no silent fallthrough (threat T-10-08-04).
+
 ### 7. Metadata Configuration
 
 Metadata configuration has two parts: filesystem capabilities (server config file) and store instances (managed via CLI).

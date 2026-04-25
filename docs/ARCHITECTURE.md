@@ -217,6 +217,94 @@ DittoFS uses a three-tier storage model for block data:
 - Read buffer: LRU eviction when memory limit reached. No data loss (local store has the data).
 - Local store: Manual eviction via `dfsctl store block evict`. Only blocks already synced to remote can be evicted (safety check prevents data loss).
 
+## Block Store -- Hybrid Local Tier (experimental, v0.15.0 Phase 10)
+
+The hybrid local tier is a second write path inside `pkg/blockstore/local/fs/`,
+gated by the `use_append_log` flag (defaults to `false` through v0.15.0
+Phase 10; flipped to `true` in Phase 11). When enabled, writes flow through
+an append-only log per file; a rollup pool chunks the log via FastCDC,
+hashes each chunk with BLAKE3, and persists the chunks under a
+content-addressable `blocks/{hh}/{hh}/{hex}` directory.
+
+**Phase 10 is plumbing-only.** No existing write path consumes the chunker
+or the log in v0.15.0 Phase 10; the engine keeps using the legacy
+`tryDirectDiskWrite` / `.blk` path. Phase 11 (A2) flips the default,
+rewires the syncer, and adds mark-sweep GC for the `blocks/` directory.
+
+### Pipeline
+
+```
+                                                       (log header + records)
+                                                       logs/{payloadID}.log
+  AppendWrite ---> per-file log (append-only)  ---------------+
+  (per-file mutex)   CRC per record                           |
+                                                              v
+                                                       chunkRollup pool
+                                                       (default 2 workers)
+                                                              |
+                                       BLAKE3 + FastCDC       |
+                                       (min 1 MiB / avg 4 MiB / max 16 MiB)
+                                                              |
+                                                              v
+                                                       StoreChunk
+                                                       blocks/{hh}/{hh}/{hex}
+                                                       (.tmp + rename + fsync)
+                                                              |
+                                        CommitChunks atomic:  |
+                                         1. metadata.SetRollupOffset (source of truth)
+                                         2. advanceRollupOffset + fsync log header
+                                         3. tree.ConsumeUpTo + logBytesTotal.Sub
+                                         4. non-blocking signal on pressureCh
+                                                              |
+                                                              v
+                                                       (blocked AppendWrite unblocks)
+```
+
+### Layout
+
+```
+<baseDir>/logs/<payloadID>.log        per-file append-only log
+<baseDir>/blocks/<hh>/<hh>/<hex>      content-addressed chunks (CAS)
+```
+
+Log header (64 bytes): magic `DFLG` | version | `rollup_offset` | flags |
+`created_at` | header CRC | 32 B reserved. Record framing:
+`payload_len` (u32 LE) | `file_offset` (u64 LE) | `crc32c` (u32 LE) |
+payload.
+
+### Invariants
+
+- **INV-03** (`rollup_offset` monotone): metadata is source of truth; the
+  filesystem header is idempotent derived state. Recovery reconciles header
+  from metadata on boot.
+- **INV-05** (log length bounded): `logBytesTotal <= max_log_bytes` per
+  `FSStore`. Writers block on `pressureCh` when the budget is exceeded;
+  rollup drains and non-blocking signals when bytes are reclaimed.
+
+### Crash recovery
+
+Recovery (`pkg/blockstore/local/fs/recovery.go`) scans logs from
+`rollup_offset`, truncates at first bad CRC, and rebuilds per-file interval
+trees. Orphan logs (no metadata referrer, no live FileBlock, mtime older
+than `orphan_log_min_age_seconds`) are swept. Orphan chunks under
+`blocks/{hh}/{hh}/{hex}` are left intact; Phase 11's mark-sweep GC is what
+reclaims them.
+
+### Per-`FSStore` surface
+
+Per CLAUDE.md Rule 4 (block stores are per-share), every hybrid-tier field
+-- log-fd map, per-file mutex map, interval-tree map, rollup worker pool,
+pressure channel, `maxLogBytes` budget, stabilization window -- lives
+inside `*FSStore`. No global state across shares.
+
+**Experimental:** Do not enable `use_append_log` in production before
+v0.15.0 Phase 11 (A2). Without Phase 11's mark-sweep GC, the `blocks/`
+directory grows unbounded. See `docs/CONFIGURATION.md` (`use_append_log`,
+`max_log_bytes`, `rollup_workers`, `stabilization_ms`,
+`orphan_log_min_age_seconds`) and
+`.planning/phases/10-fastcdc-chunker-hybrid-local-store-a1/10-CONTEXT.md`
+for full design detail.
+
 ## Adapter Pattern
 
 DittoFS uses the Adapter pattern to provide clean protocol abstractions:
@@ -452,9 +540,14 @@ dittofs/
 │   │   ├── store.go              # FileBlockStore interface
 │   │   ├── types.go              # FileBlock, BlockState types
 │   │   ├── errors.go             # BlockStore error types
+│   │   ├── chunker/              # FastCDC content-defined chunker (Phase 10 A1)
+│   │   │                         # min=1 MiB / avg=4 MiB / max=16 MiB, lvl 2;
+│   │   │                         # BLAKE3 hashing; consumed by local rollup pool
 │   │   ├── engine/               # BlockStore orchestrator + read cache + syncer + GC
 │   │   ├── local/                # Local store interface
 │   │   │   ├── fs/               # Filesystem-backed local store
+│   │   │   │                     # (+ hybrid append-log + CAS blocks/ tier,
+│   │   │   │                     #  gated by use_append_log, Phase 10 A1)
 │   │   │   └── memory/           # In-memory local store (testing)
 │   │   └── remote/               # Remote store interface
 │   │       ├── s3/               # S3-backed remote store

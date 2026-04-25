@@ -14,6 +14,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // retentionConfig holds retention policy settings read/written atomically.
@@ -134,6 +135,81 @@ type FSStore struct {
 	done      chan struct{}
 	closeOnce sync.Once
 	wg        sync.WaitGroup
+
+	// --- Append-log path (Phase 10, LSL-01/03, flag-gated per D-02/D-36). ---
+	//
+	// When useAppendLog=false (default through Phase 10 per D-03), every
+	// field in this block is its zero value and FSStore is byte-for-byte
+	// equivalent to the Phase 09 write path: no log file is created on disk,
+	// no rollup worker is started, and AppendWrite rejects with
+	// ErrAppendLogDisabled.
+	//
+	// maxLogBytes and stabilizationMS / rollupWorkers are kept populated with
+	// their defaults even when the flag is off so NewWithOptions can raise
+	// the flag without a second initialization pass.
+	useAppendLog    bool
+	maxLogBytes     int64
+	stabilizationMS int
+	rollupWorkers   int
+
+	// logBytesTotal is the current total bytes of un-rolled-up log content
+	// across every payloadID in this FSStore. Incremented by AppendWrite
+	// (framed-record size) and decremented by the rollup (Phase 10-06).
+	// AppendWrite blocks on pressureCh when logBytesTotal > maxLogBytes
+	// (D-14, D-15).
+	logBytesTotal atomic.Int64
+
+	// pressureCh is a buffered channel (size 1) that the rollup pulses after
+	// freeing log budget. AppendWrite selects on it inside the pressure loop
+	// along with ctx.Done() and bc.done.
+	pressureCh chan struct{}
+
+	// logsMu guards logFDs, logLocks, dirtyIntervals, and tombstones.
+	// Double-checked locking idiom matches blocksMu / memBlocks in
+	// getOrCreateMemBlock.
+	logsMu         sync.RWMutex
+	logFDs         map[string]*logFile      // payloadID -> open log fd wrapper (D-34: one fd per file, bypasses fdPool)
+	logLocks       map[string]*sync.Mutex   // payloadID -> per-file append mutex (D-32)
+	dirtyIntervals map[string]*intervalTree // payloadID -> dirty-region tree (D-16)
+	// tombstones marks payloadIDs whose append log has been (or is being)
+	// deleted by DeleteAppendLog (plan 09). rollupFile (plan 06) consults
+	// this BEFORE and AFTER the per-file mutex hand-off to ensure no
+	// rollup_offset gets persisted for a dead payload. Initialized in New
+	// alongside the other logs-* maps.
+	tombstones map[string]struct{}
+
+	// truncations records per-payload truncation boundaries set by
+	// TruncateAppendLog (D-29 / plan 09). rollupFile consults this after
+	// reading the record batch and filters / clips records whose
+	// file_offset >= boundary so the emitted chunk stream never includes
+	// bytes past the truncation point. Entries are cleared when the
+	// payload is deleted; they persist otherwise so subsequent rollup
+	// passes keep honoring the boundary.
+	truncations map[string]uint64
+
+	// --- Phase 10-06 rollup pool (D-13/D-33). ---
+	//
+	// When useAppendLog=false, these fields remain their zero values and
+	// StartRollup rejects with ErrAppendLogDisabled. When the flag is on,
+	// StartRollup launches bc.rollupWorkers goroutines that consume
+	// payloadIDs from bc.rollupCh (AppendWrite non-blocking send) and also
+	// scan bc.dirtyIntervals on a stabilization-tuned ticker.
+	rollupStore   metadata.RollupStore
+	rollupCh      chan string
+	rollupStarted atomic.Bool
+	rollupWg      sync.WaitGroup
+
+	// orphanLogMinAgeSeconds gates the append-log orphan sweep during
+	// recovery (D-28 / Warning 3). A log is considered orphan only when
+	// (a) its rollup_offset in metadata is 0, (b) no FileBlock exists for
+	// block-0 of the payloadID, AND (c) the log file's mtime is older
+	// than this threshold. The mtime gate guarantees freshly-created logs
+	// with no rolled-up metadata yet are never swept at boot.
+	//
+	// Default 3600 (1h) is set by NewWithOptions when the option is left
+	// at zero. Configurable via
+	// `blockstore.local.fs.orphan_log_min_age_seconds` (plan 08 wiring).
+	orphanLogMinAgeSeconds int
 }
 
 // New creates a new FSStore.
@@ -168,6 +244,84 @@ func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blocksto
 		done:          make(chan struct{}),
 	}
 	bc.evictionEnabled.Store(true)
+
+	// Phase 10 append-log plumbing — maps + pressure channel always
+	// initialized so NewWithOptions can enable the flag atomically. When
+	// useAppendLog=false (the New() default), AppendWrite returns
+	// ErrAppendLogDisabled and nothing else in this block touches disk.
+	// D-36: zero behavior change when the flag is off.
+	bc.pressureCh = make(chan struct{}, 1)
+	bc.logFDs = make(map[string]*logFile)
+	bc.logLocks = make(map[string]*sync.Mutex)
+	bc.dirtyIntervals = make(map[string]*intervalTree)
+	bc.tombstones = make(map[string]struct{})
+	bc.truncations = make(map[string]uint64)
+	bc.maxLogBytes = 1 << 30 // 1 GiB default (D-14)
+	bc.stabilizationMS = 250 // D-16 default
+	bc.rollupWorkers = 2     // D-13/D-33 default
+	// rollupCh buffered so AppendWrite's non-blocking send rarely drops;
+	// on drop, the ticker arm in chunkRollupWorker picks up the payload
+	// on the next scan.
+	bc.rollupCh = make(chan string, bc.rollupWorkers*4)
+
+	return bc, nil
+}
+
+// FSStoreOptions configures the Phase 10 append-log path. Zero value means
+// the append log is disabled (D-03 default through Phase 10); setting
+// UseAppendLog=true opts into the new write path wired by
+// `AppendWrite`. MaxLogBytes, RollupWorkers, and StabilizationMS default
+// via New() when left zero here.
+type FSStoreOptions struct {
+	UseAppendLog    bool
+	MaxLogBytes     int64
+	RollupWorkers   int
+	StabilizationMS int
+	// RollupStore persists per-file rollup_offset (LSL-05). Required when
+	// UseAppendLog=true AND StartRollup will be called. Nil is accepted when
+	// UseAppendLog is false (the flag path is fully bypassed) or when the
+	// caller will not start the rollup pool.
+	RollupStore metadata.RollupStore
+	// OrphanLogMinAgeSeconds is the minimum age (seconds) a log file must
+	// have before recovery will classify it as orphan and sweep it.
+	// Defaults to 3600 (1h) when zero. See FSStore.orphanLogMinAgeSeconds
+	// and D-28 / Warning 3 in 10-CONTEXT.md for the rationale.
+	OrphanLogMinAgeSeconds int
+}
+
+// NewWithOptions constructs an FSStore with the append-log path optionally
+// enabled. When opts.UseAppendLog is false (the default through Phase 10
+// per D-03), the returned store is byte-for-byte identical to one from
+// New() — no log file on disk, no rollup worker. Phase 11 (A2) flips the
+// default.
+//
+// Non-zero values in opts override the defaults set by New(); zero values
+// keep the New() defaults (1 GiB log, 250ms stabilization, 2 rollup
+// workers).
+func NewWithOptions(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.FileBlockStore, opts FSStoreOptions) (*FSStore, error) {
+	bc, err := New(baseDir, maxDisk, maxMemory, fileBlockStore)
+	if err != nil {
+		return nil, err
+	}
+	bc.useAppendLog = opts.UseAppendLog
+	if opts.MaxLogBytes > 0 {
+		bc.maxLogBytes = opts.MaxLogBytes
+	}
+	if opts.RollupWorkers > 0 {
+		bc.rollupWorkers = opts.RollupWorkers
+		// Re-size rollupCh to match the caller-specified pool size so the
+		// non-blocking send in AppendWrite has proportional headroom.
+		bc.rollupCh = make(chan string, bc.rollupWorkers*4)
+	}
+	if opts.StabilizationMS > 0 {
+		bc.stabilizationMS = opts.StabilizationMS
+	}
+	bc.rollupStore = opts.RollupStore
+	if opts.OrphanLogMinAgeSeconds > 0 {
+		bc.orphanLogMinAgeSeconds = opts.OrphanLogMinAgeSeconds
+	} else {
+		bc.orphanLogMinAgeSeconds = 3600
+	}
 	return bc, nil
 }
 
@@ -210,9 +364,25 @@ func (bc *FSStore) Close() error {
 	// Safe to call even when Start was never invoked — Wait() on a zero
 	// counter returns immediately.
 	bc.wg.Wait()
+	// Join rollup workers (if any were started by StartRollup). Zero-counter
+	// Wait() is a no-op when the flag is off. Must run before we close log
+	// fds below so no rollup goroutine touches an already-closed fd.
+	bc.rollupWg.Wait()
 	bc.SyncFileBlocks(context.Background())
 	bc.fdPool.CloseAll()
 	bc.readFDPool.CloseAll()
+
+	// Close append-log fds (Phase 10). Safe after closedFlag.Store(true) +
+	// wg.Wait above: no new AppendWrite can acquire an fd (isClosed guard),
+	// and any rollup worker (Phase 10-06) has already joined via wg.
+	bc.logsMu.Lock()
+	for pid, lf := range bc.logFDs {
+		if lf != nil && lf.f != nil {
+			_ = lf.f.Close()
+		}
+		delete(bc.logFDs, pid)
+	}
+	bc.logsMu.Unlock()
 	return nil
 }
 

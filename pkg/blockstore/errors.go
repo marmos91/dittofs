@@ -122,6 +122,11 @@ var (
 	// remote block store.
 	ErrBlockNotFound = errors.New("block not found")
 
+	// ErrChunkNotFound indicates the requested content-addressed chunk does
+	// not exist in the local chunk store. Mirrors ErrBlockNotFound /
+	// ErrContentNotFound style (Phase 10, LSL-02).
+	ErrChunkNotFound = errors.New("chunk not found")
+
 	// ErrStoreClosed is returned when operations are attempted on a closed store.
 	ErrStoreClosed = errors.New("store is closed")
 
