@@ -91,12 +91,15 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 
 	// Per Samba delay_for_oplock_fn: break-target depends on the new
 	// opener's intent. Destructive disposition (OVERWRITE/SUPERSEDE) →
-	// break to None; share-mode violation → strip Handle; otherwise →
-	// strip Write.
+	// break to None; share-mode violation or DELETE_ON_CLOSE → strip
+	// Handle so other holders drop cached handles ahead of the delete;
+	// otherwise → strip Write.
 	reason := lock.BreakReasonDefault
-	if isDestructiveDisposition(d.req.CreateDisposition) {
+	switch {
+	case isDestructiveDisposition(d.req.CreateDisposition):
 		reason = lock.BreakReasonDestructive
-	} else if h.checkShareModeConflict(d.existingHandle, d.req.DesiredAccess, d.req.ShareAccess, d.filename) {
+	case d.req.CreateOptions&types.FileDeleteOnClose != 0,
+		h.checkShareModeConflict(d.existingHandle, d.req.DesiredAccess, d.req.ShareAccess, d.filename):
 		reason = lock.BreakReasonSharingViolation
 	}
 
