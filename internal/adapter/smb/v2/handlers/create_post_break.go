@@ -52,6 +52,18 @@ func (d *createDraft) finalize() *createDraft {
 	return d
 }
 
+// isDestructiveDisposition reports whether a CreateDisposition will replace
+// existing file content. OVERWRITE/OVERWRITE_IF/SUPERSEDE invalidate cached
+// data and handles entirely (per MS-SMB2 3.3.4.7 / Samba delay_for_oplock_fn);
+// other dispositions only require flushing dirty data.
+func isDestructiveDisposition(d types.CreateDisposition) bool {
+	switch d {
+	case types.FileSupersede, types.FileOverwrite, types.FileOverwriteIf:
+		return true
+	}
+	return false
+}
+
 // breakAndMaybeParkCreate dispatches the handle-lease break required before
 // the post-break share-mode check, then decides between parking the CREATE on
 // an interim STATUS_PENDING (returning a non-zero AsyncId) or waiting
@@ -77,22 +89,28 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	lockFileHandle := lock.FileHandle(d.existingHandle)
 	shareName := d.tree.ShareName
 
-	// Per Samba delay_for_oplock_fn: break-target depends on whether this
-	// open sharing-conflicts with an existing one. Violation → strip Handle;
-	// no violation → strip Write.
-	hasSharingViolation := h.checkShareModeConflict(d.existingHandle, d.req.DesiredAccess, d.req.ShareAccess, d.filename)
+	// Per Samba delay_for_oplock_fn: break-target depends on the new
+	// opener's intent. Destructive disposition (OVERWRITE/SUPERSEDE) →
+	// break to None; share-mode violation → strip Handle; otherwise →
+	// strip Write.
+	reason := lock.BreakReasonDefault
+	if isDestructiveDisposition(d.req.CreateDisposition) {
+		reason = lock.BreakReasonDestructive
+	} else if h.checkShareModeConflict(d.existingHandle, d.req.DesiredAccess, d.req.ShareAccess, d.filename) {
+		reason = lock.BreakReasonSharingViolation
+	}
 
 	// Directory branch: fire-and-forget. The single-threaded test driver
 	// can't ack until this CREATE returns, so waiting would deadlock.
 	if d.existingFile.Type == metadata.FileTypeDirectory {
-		if err := h.LeaseManager.BreakHandleLeasesOnOpenAsync(lockFileHandle, shareName, hasSharingViolation, d.excludeOwner); err != nil {
+		if err := h.LeaseManager.BreakHandleLeasesOnOpenAsync(lockFileHandle, shareName, reason, d.excludeOwner); err != nil {
 			logger.Debug("CREATE: directory handle lease break failed", "error", err)
 		}
 		return 0
 	}
 
 	// File branch: dispatch the break (non-blocking), then park async or wait.
-	if err := h.LeaseManager.BreakHandleLeasesOnOpenAsync(lockFileHandle, shareName, hasSharingViolation, d.excludeOwner); err != nil {
+	if err := h.LeaseManager.BreakHandleLeasesOnOpenAsync(lockFileHandle, shareName, reason, d.excludeOwner); err != nil {
 		logger.Debug("CREATE: handle lease break failed", "error", err)
 	}
 

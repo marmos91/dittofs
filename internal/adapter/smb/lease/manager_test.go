@@ -31,18 +31,18 @@ type fakeLockManager struct {
 }
 
 type breakCall struct {
-	HandleKey           string
-	ExcludeOwner        *lock.LockOwner
-	HasSharingViolation bool
+	HandleKey    string
+	ExcludeOwner *lock.LockOwner
+	Reason       lock.BreakReason
 }
 
-func (f *fakeLockManager) BreakLeasesOnOpenConflict(handleKey string, excludeOwner *lock.LockOwner, hasSharingViolation bool) error {
+func (f *fakeLockManager) BreakLeasesOnOpenConflict(handleKey string, excludeOwner *lock.LockOwner, reason lock.BreakReason) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.breakHandleCalls = append(f.breakHandleCalls, breakCall{
-		HandleKey:           handleKey,
-		ExcludeOwner:        excludeOwner,
-		HasSharingViolation: hasSharingViolation,
+		HandleKey:    handleKey,
+		ExcludeOwner: excludeOwner,
+		Reason:       reason,
 	})
 	f.callOrder = append(f.callOrder, "BreakLeasesOnOpenConflict")
 	return nil
@@ -85,8 +85,9 @@ func (r *fakeResolver) GetLockManagerForShare(_ string) lock.LockManager {
 // BreakParentHandleLeasesOnCreate calls WaitForBreakCompletion AFTER
 // BreakLeasesOnOpenConflict and BEFORE returning. Per MS-SMB2 3.3.4.7, the
 // server must wait for LEASE_BREAK_ACK before completing the triggering CREATE.
-// The parent-dir break uses hasSharingViolation=true to select the Handle-strip
-// mask (MS-FSA 2.1.5.14: child-set change invalidates directory Handle cache).
+// The parent-dir break uses BreakReasonSharingViolation to select the
+// Handle-strip mask (MS-FSA 2.1.5.14: child-set change invalidates directory
+// Handle cache).
 func TestBreakParentHandleLeasesOnCreate_WaitsForAck(t *testing.T) {
 	t.Parallel()
 
@@ -108,8 +109,8 @@ func TestBreakParentHandleLeasesOnCreate_WaitsForAck(t *testing.T) {
 		t.Errorf("BreakLeasesOnOpenConflict handleKey = %q, want %q",
 			fake.breakHandleCalls[0].HandleKey, string(parentHandle))
 	}
-	if !fake.breakHandleCalls[0].HasSharingViolation {
-		t.Errorf("parent-dir Handle break must pass hasSharingViolation=true (strip Handle mask); got false")
+	if got := fake.breakHandleCalls[0].Reason; got != lock.BreakReasonSharingViolation {
+		t.Errorf("parent-dir Handle break must pass BreakReasonSharingViolation (strip Handle mask); got %d", got)
 	}
 
 	if got := len(fake.waitForBreakCompletionKeys); got != 1 {

@@ -249,13 +249,11 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 		}
 
 		if OpLocksConflict(lock.Lease, requested) {
-			// Compute break-to state via ComputeLeaseBreakTo per MS-SMB2
-			// 3.3.4.7 and Samba delay_for_oplock_fn. RequestLease runs only
-			// after the new opener's CREATE has already passed share-mode
-			// resolution (STATUS_SHARING_VIOLATION would have returned
-			// before RqLs processing), so hasSharingViolation is always
-			// false here — strip Write, keep Read + Handle. RWH→RH, RW→R.
-			breakTo := ComputeLeaseBreakTo(lock.Lease.LeaseState, false)
+			// CREATE-time SMB share-mode/disposition checks run before
+			// RqLs processing, so the cross-key conflicts that reach this
+			// path are non-violating, non-destructive lease conflicts —
+			// strip Write, keep Read + Handle. RWH→RH, RW→R.
+			breakTo := ComputeLeaseBreakTo(lock.Lease.LeaseState, BreakReasonDefault)
 
 			// If existing lease has no Write bit, the break is a no-op
 			// (e.g., existing=R, breakTo=R). In this case, don't dispatch

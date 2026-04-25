@@ -279,9 +279,8 @@ func TestOpLock_Clone_Nil(t *testing.T) {
 // ComputeLeaseBreakTo Matrix Tests
 // ============================================================================
 
-// TestComputeLeaseBreakTo_Matrix covers every valid existing-state row × both
-// sharing-violation outcomes. Mirrors Samba delay_for_oplock_fn semantics per
-// MS-SMB2 3.3.4.7.
+// TestComputeLeaseBreakTo_Matrix covers every valid existing-state row × every
+// BreakReason. Mirrors Samba delay_for_oplock_fn semantics per MS-SMB2 3.3.4.7.
 func TestComputeLeaseBreakTo_Matrix(t *testing.T) {
 	t.Parallel()
 
@@ -292,30 +291,37 @@ func TestComputeLeaseBreakTo_Matrix(t *testing.T) {
 	tests := []struct {
 		name          string
 		existing      uint32
-		hasViolation  bool
+		reason        BreakReason
 		expectedBreak uint32
 	}{
-		// No violation → strip Write, keep Handle.
-		{"None/noViolation", LeaseStateNone, false, LeaseStateNone},
-		{"R/noViolation", R, false, R},
-		{"RH/noViolation", R | H, false, R | H},
-		{"RW/noViolation", R | W, false, R},
-		{"RWH/noViolation", R | W | H, false, R | H},
+		// Default → strip Write, keep Handle.
+		{"None/default", LeaseStateNone, BreakReasonDefault, LeaseStateNone},
+		{"R/default", R, BreakReasonDefault, R},
+		{"RH/default", R | H, BreakReasonDefault, R | H},
+		{"RW/default", R | W, BreakReasonDefault, R},
+		{"RWH/default", R | W | H, BreakReasonDefault, R | H},
 
-		// Violation → strip Handle, keep Write.
-		{"None/violation", LeaseStateNone, true, LeaseStateNone},
-		{"R/violation", R, true, R},
-		{"RH/violation", R | H, true, R},
-		{"RW/violation", R | W, true, R | W},
-		{"RWH/violation", R | W | H, true, R | W},
+		// SharingViolation → strip Handle, keep Write.
+		{"None/violation", LeaseStateNone, BreakReasonSharingViolation, LeaseStateNone},
+		{"R/violation", R, BreakReasonSharingViolation, R},
+		{"RH/violation", R | H, BreakReasonSharingViolation, R},
+		{"RW/violation", R | W, BreakReasonSharingViolation, R | W},
+		{"RWH/violation", R | W | H, BreakReasonSharingViolation, R | W},
+
+		// Destructive → break to None regardless of starting state.
+		{"None/destructive", LeaseStateNone, BreakReasonDestructive, LeaseStateNone},
+		{"R/destructive", R, BreakReasonDestructive, LeaseStateNone},
+		{"RH/destructive", R | H, BreakReasonDestructive, LeaseStateNone},
+		{"RW/destructive", R | W, BreakReasonDestructive, LeaseStateNone},
+		{"RWH/destructive", R | W | H, BreakReasonDestructive, LeaseStateNone},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ComputeLeaseBreakTo(tc.existing, tc.hasViolation)
+			got := ComputeLeaseBreakTo(tc.existing, tc.reason)
 			assert.Equalf(t, tc.expectedBreak, got,
-				"ComputeLeaseBreakTo(%s, violation=%v) = %s, want %s",
-				LeaseStateToString(tc.existing), tc.hasViolation,
+				"ComputeLeaseBreakTo(%s, reason=%d) = %s, want %s",
+				LeaseStateToString(tc.existing), tc.reason,
 				LeaseStateToString(got), LeaseStateToString(tc.expectedBreak))
 		})
 	}
