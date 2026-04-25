@@ -504,8 +504,7 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 	// The epoch was already advanced during break initiation, so the client
 	// should echo the current epoch value from the break notification.
 	if epoch != 0 && lock.Lease.Epoch != epoch {
-		return fmt.Errorf("%w: stale epoch (expected %d, got %d)",
-			ErrAcknowledgedStateExceedsBreakTo, lock.Lease.Epoch, epoch)
+		return fmt.Errorf("stale epoch: expected %d, got %d", lock.Lease.Epoch, epoch)
 	}
 
 	// Client cannot claim bits not offered (bitwise subset check).

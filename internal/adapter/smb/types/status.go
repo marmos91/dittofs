@@ -203,6 +203,8 @@ func (s Status) String() string {
 	switch s {
 	case StatusSuccess:
 		return "STATUS_SUCCESS"
+	case StatusUnsuccessful:
+		return "STATUS_UNSUCCESSFUL"
 	case StatusPending:
 		return "STATUS_PENDING"
 	case StatusMoreProcessingRequired:
