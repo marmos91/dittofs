@@ -54,6 +54,11 @@ const (
 
 	// Error codes (severity = 11, both high bits set)
 
+	// StatusUnsuccessful indicates the request failed for unspecified reasons.
+	// Used for lease-break ACKs that have no matching break in progress
+	// (per MS-SMB2 3.3.5.22.2).
+	StatusUnsuccessful Status = 0xC0000001
+
 	// StatusInvalidInfoClass indicates an invalid information class was requested.
 	StatusInvalidInfoClass Status = 0xC0000003
 

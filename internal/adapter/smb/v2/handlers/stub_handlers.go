@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"unicode/utf16"
 
@@ -477,6 +478,12 @@ func (h *Handler) handleLeaseBreakAck(ctx *SMBHandlerContext, body []byte) (*Han
 		logger.Warn("LEASE_BREAK_ACK: acknowledgment failed",
 			"leaseKey", fmt.Sprintf("%x", ack.LeaseKey),
 			"error", err)
+		switch {
+		case errors.Is(err, lock.ErrAcknowledgedStateExceedsBreakTo):
+			return NewErrorResult(types.StatusRequestNotAccepted), nil
+		case errors.Is(err, lock.ErrLeaseAckNoBreak):
+			return NewErrorResult(types.StatusUnsuccessful), nil
+		}
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
