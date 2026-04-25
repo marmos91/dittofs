@@ -182,6 +182,31 @@ See `pkg/blockstore/local/fs/` for a complete filesystem-backed local store impl
 - Atomic writes
 - Block listing for sync operations
 
+### Phase 10 additions (flag-gated, experimental)
+
+v0.15.0 Phase 10 adds a hybrid append-log + content-addressed (CAS) chunk
+tier inside `*fs.FSStore`, gated by the `use_append_log` config flag
+(defaults to `false`; see `docs/CONFIGURATION.md`). New methods on
+`*fs.FSStore` (NOT yet on the `LocalStore` interface): `AppendWrite`,
+`StoreChunk`, `ReadChunk`, `HasChunk`, `DeleteChunk`, `DeleteAppendLog`,
+`TruncateAppendLog`, `StartRollup`. The `LocalStore` interface is
+deliberately unchanged in v0.15.0 Phase 10 -- LSL-07 narrows it in Phase
+11 (A2). Existing `LocalStore` implementations in v0.15.0 Phase 10 do NOT
+need to change to stay compatible.
+
+A new per-file metadata surface `metadata.RollupStore` (two methods:
+`SetRollupOffset`, `GetRollupOffset`) is required only when
+`use_append_log=true`. The built-in memory, Badger, and Postgres backends
+all implement it. New metadata backends targeting the hybrid tier must add
+equivalent persistence keyed by `payloadID`, backed by an atomic upsert
+(metadata is source of truth for the log's `rollup_offset`; see
+`docs/ARCHITECTURE.md` INV-03). Backends that stay on the legacy write
+path need not implement `RollupStore`.
+
+**Experimental:** Do not enable `use_append_log` in production before
+v0.15.0 Phase 11 lands -- the `blocks/` directory grows unbounded without
+Phase 11's mark-sweep GC.
+
 ### Conformance Tests
 
 Test your local store with the conformance suite:

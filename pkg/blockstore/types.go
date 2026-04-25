@@ -13,15 +13,28 @@ import (
 // their own copies.
 const BlockSize = 8 * 1024 * 1024
 
-// HashSize is the size of content hashes (SHA-256 = 32 bytes).
+// HashSize is the size of content hashes (BLAKE3 = 32 bytes).
 const HashSize = 32
 
-// ContentHash represents a SHA-256 hash of content.
+// ContentHash represents a BLAKE3-256 content hash.
+//
+// Width is 32 bytes, matching SHA-256 wire-compat so legacy metadata
+// deserializes unchanged. Live hash semantics switch to BLAKE3 in Phase 11
+// (A2) when the CAS write path wires up; Phase 10 ships the type doc
+// refresh + CASKey() helper ahead of that wiring.
 type ContentHash [HashSize]byte
 
 // String returns the hex-encoded hash string.
 func (h ContentHash) String() string {
 	return hex.EncodeToString(h[:])
+}
+
+// CASKey returns the content-addressed key in scheme "blake3:{hex}".
+// Used by BSCAS-01 (local CAS key format) and BSCAS-06 (S3
+// x-amz-meta-content-hash header). Phase 10 defines the helper; Phase 11
+// starts populating it on the hot path.
+func (h ContentHash) CASKey() string {
+	return "blake3:" + hex.EncodeToString(h[:])
 }
 
 // IsZero returns true if the hash is all zeros (uninitialized).
@@ -99,7 +112,7 @@ type FileBlock struct {
 	// ID is a stable UUID for this block.
 	ID string
 
-	// Hash is the SHA-256 of block data. Zero value means pending/incomplete.
+	// Hash is the BLAKE3-256 of block data. Zero value means pending/incomplete.
 	Hash ContentHash
 
 	// DataSize is the actual bytes written in this block.

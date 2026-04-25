@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"unicode/utf16"
 
@@ -457,23 +456,6 @@ func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	return h.handleOplockBreakAck(ctx, body)
 }
 
-// mapLeaseAckErr maps an AcknowledgeLeaseBreak error to its SMB2 status code
-// per MS-SMB2 3.3.5.22.2 (lease) and 3.3.5.22.1 (traditional oplock, which is
-// internally backed by a synthetic lease). Unknown errors default to
-// STATUS_INVALID_PARAMETER.
-func mapLeaseAckErr(err error) types.Status {
-	switch {
-	case errors.Is(err, lock.ErrAcknowledgedStateExceedsBreakTo):
-		return types.StatusRequestNotAccepted
-	case errors.Is(err, lock.ErrLeaseAckNotBreaking):
-		return types.StatusUnsuccessful
-	case errors.Is(err, lock.ErrLeaseAckNotFound):
-		return types.StatusObjectNameNotFound
-	default:
-		return types.StatusInvalidParameter
-	}
-}
-
 // handleLeaseBreakAck handles an SMB2 Lease Break Acknowledgment [MS-SMB2] 2.2.24.2.
 func (h *Handler) handleLeaseBreakAck(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	ack, err := DecodeLeaseBreakAcknowledgment(body)
@@ -495,7 +477,7 @@ func (h *Handler) handleLeaseBreakAck(ctx *SMBHandlerContext, body []byte) (*Han
 		logger.Warn("LEASE_BREAK_ACK: acknowledgment failed",
 			"leaseKey", fmt.Sprintf("%x", ack.LeaseKey),
 			"error", err)
-		return NewErrorResult(mapLeaseAckErr(err)), nil
+		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
 	// Build lease break response
@@ -553,7 +535,7 @@ func (h *Handler) handleOplockBreakAck(ctx *SMBHandlerContext, body []byte) (*Ha
 		logger.Warn("OPLOCK_BREAK_ACK: acknowledgment failed",
 			"fileID", fmt.Sprintf("%x", ack.FileID),
 			"error", err)
-		return NewErrorResult(mapLeaseAckErr(err)), nil
+		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
 	// Update the oplock level on the open file

@@ -1,8 +1,75 @@
 package blockstore
 
 import (
+	"strings"
 	"testing"
 )
+
+// TestContentHash_CASKey_Format is the FIX-9 explicit format guard:
+// asserts the prefix, total length, and exact hex serialization of CASKey
+// for a deterministic hash pattern. This sits alongside TestContentHashCASKey
+// (which only asserts the exact string) so accidental changes to the prefix
+// or hex width fail loudly.
+func TestContentHash_CASKey_Format(t *testing.T) {
+	var h ContentHash
+	for i := range h {
+		h[i] = byte(i) // 00 01 02 ... 1F
+	}
+	got := h.CASKey()
+	want := "blake3:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+	if got != want {
+		t.Fatalf("CASKey() = %q, want %q", got, want)
+	}
+	if !strings.HasPrefix(got, "blake3:") {
+		t.Fatalf("CASKey() lacks blake3: prefix: %q", got)
+	}
+	if len(got) != len("blake3:")+64 {
+		t.Fatalf("CASKey() len = %d, want %d", len(got), len("blake3:")+64)
+	}
+}
+
+// TestContentHashCASKey asserts CASKey returns the "blake3:{hex}" scheme
+// for a known hash pattern. Phase 10 ships the helper ahead of the Phase 11
+// CAS write-path wiring (D-06).
+func TestContentHashCASKey(t *testing.T) {
+	var h ContentHash
+	for i := 0; i < HashSize; i++ {
+		h[i] = byte(i)
+	}
+	got := h.CASKey()
+	want := "blake3:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+	if got != want {
+		t.Fatalf("CASKey mismatch:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestContentHashCASKey_ZeroValue covers the uninitialized ContentHash path
+// — the zero value must still produce a well-formed CAS key.
+func TestContentHashCASKey_ZeroValue(t *testing.T) {
+	var h ContentHash
+	got := h.CASKey()
+	want := "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+	if got != want {
+		t.Fatalf("CASKey zero value: got %q want %q", got, want)
+	}
+}
+
+// TestContentHashString_Unchanged locks in the invariant that CASKey and
+// String differ only by the "blake3:" prefix — ensures legacy String()
+// callers are not disturbed by the CASKey addition.
+func TestContentHashString_Unchanged(t *testing.T) {
+	var h ContentHash
+	for i := 0; i < HashSize; i++ {
+		h[i] = byte(0xAA)
+	}
+	wantHex := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if got := h.String(); got != wantHex {
+		t.Fatalf("String: got %q want %q", got, wantHex)
+	}
+	if got := h.CASKey(); got != "blake3:"+h.String() {
+		t.Fatalf("CASKey should equal \"blake3:\" + String(); got %q", got)
+	}
+}
 
 // TestParseStoreKey_RoundTrip covers the canonical external store-key parser
 // (format: "{payloadID}/block-{N}"). Added here for symmetry with ParseBlockID

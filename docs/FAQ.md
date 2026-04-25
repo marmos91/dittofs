@@ -124,6 +124,20 @@ and import possible.
 Not currently, but the block store abstraction allows for implementing content-addressable storage
 with deduplication. This could be added as a custom block store or a wrapper around existing stores.
 
+### Does DittoFS deduplicate blocks across files?
+
+Not yet in production. The v0.15.0 milestone is the refactor that puts
+content-addressable storage (CAS) and FastCDC content-defined chunking
+into place. Phase 10 ships the chunker (min=1 MiB / avg=4 MiB / max=16 MiB,
+normalization level 2), BLAKE3 hashing, and the local hybrid tier
+(append-only log + hash-keyed `blocks/{hh}/{hh}/{hex}` directory) behind
+the experimental `use_append_log` feature flag. Phase 11 wires the remote
+CAS write path and adds mark-sweep GC. Phase 13 delivers the file-level
+dedup short-circuit that's expected to drive the primary VM-workload
+40-80% storage reduction target.
+
+Track progress: [#419](https://github.com/marmos91/dittofs/issues/419).
+
 ## Usage Questions
 
 ### Can I use this with Windows clients?

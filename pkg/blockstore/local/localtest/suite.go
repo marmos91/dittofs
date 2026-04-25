@@ -13,7 +13,14 @@ import (
 // Each test calls Factory to get a fresh, independent store.
 type Factory func(t *testing.T) local.LocalStore
 
-// RunSuite runs the full conformance test suite against a LocalStore implementation.
+// RunSuite runs the full conformance test suite against a LocalStore
+// implementation.
+//
+// For the Phase 10 append-log / rollup / recovery scenarios (D-22), see
+// RunAppendLogSuite in appendlog_suite.go — it uses a separate factory
+// type (*fs.FSStore) because the new methods are not on the LocalStore
+// interface through Phase 10 (D-04). Callers that want both suites can
+// invoke them independently.
 func RunSuite(t *testing.T, factory Factory) {
 	t.Run("WriteAndRead", func(t *testing.T) { testWriteAndRead(t, factory) })
 	t.Run("ReadMiss", func(t *testing.T) { testReadMiss(t, factory) })

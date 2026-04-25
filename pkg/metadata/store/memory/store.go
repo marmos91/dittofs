@@ -235,6 +235,15 @@ type MemoryMetadataStore struct {
 	// the API surface: the ID must be non-empty on construction and stable
 	// across calls on the same instance.
 	storeID string
+
+	// rollupMu guards rollupOffsets for Phase 10 rollup_offset persistence
+	// (LSL-05). Kept separate from s.mu so rollup_offset read/compare/write
+	// does not contend with unrelated metadata operations. INV-03 is enforced
+	// here: the read+compare+write all happen under rollupMu.
+	rollupMu sync.RWMutex
+	// rollupOffsets maps payloadID -> persisted rollup_offset. Lazily
+	// initialized on first Set; Get treats absence as zero.
+	rollupOffsets map[string]uint64
 }
 
 // MemoryMetadataStoreConfig contains configuration for creating a memory metadata store.
@@ -301,6 +310,8 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		// though memory-backed stores do not survive restart, the
 		// identifier is stable for the lifetime of the instance.
 		storeID: ulid.Make().String(),
+		// Phase 10 (LSL-05): rollup_offset persistence (see rollup.go).
+		rollupOffsets: make(map[string]uint64),
 	}
 
 	// Initialize the sync.Pool for FileAttr allocations

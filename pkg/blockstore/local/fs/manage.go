@@ -91,6 +91,10 @@ func (bc *FSStore) DeleteBlockFile(ctx context.Context, payloadID string, blockI
 // After deleting all blocks, it also:
 //   - Removes the file from the files tracking map
 //   - Attempts to remove the empty parent directory (ignores ENOTEMPTY)
+//   - When useAppendLog is enabled, runs DeleteAppendLog (D-28) to
+//     tombstone the log, wait for in-flight rollup, clear rollup_offset
+//     metadata, and unlink the log file. Phase 11 mark-sweep GC cleans
+//     up orphan content-addressed chunks in blocks/.
 func (bc *FSStore) DeleteAllBlockFiles(ctx context.Context, payloadID string) error {
 	// List all blocks for this file from the store
 	blocks, err := bc.blockStore.ListFileBlocks(ctx, payloadID)
@@ -125,6 +129,15 @@ func (bc *FSStore) DeleteAllBlockFiles(ctx context.Context, payloadID string) er
 	if len(payloadID) >= 2 {
 		payloadDir := filepath.Join(bc.baseDir, payloadID[:2], payloadID)
 		_ = os.Remove(payloadDir) // Ignore ENOTEMPTY or ENOENT
+	}
+
+	// Append-log tier cleanup (D-28 / plan 09). Safe to call
+	// unconditionally: DeleteAppendLog is a no-op when useAppendLog is
+	// false and idempotent when the payload has no log. This keeps the
+	// legacy delete path and the new log path observing the same
+	// "delete is a single caller-visible operation" invariant.
+	if delErr := bc.DeleteAppendLog(ctx, payloadID); delErr != nil {
+		logger.Warn("local store: DeleteAppendLog failed", "payloadID", payloadID, "error", delErr)
 	}
 
 	return nil

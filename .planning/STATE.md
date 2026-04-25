@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v0.15.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 09 context gathered
-last_updated: "2026-04-24T07:23:54.334Z"
-last_activity: 2026-04-24 -- Phase 09 execution started
+stopped_at: Completed 10-12-PLAN.md (Phase 10 final plan, docs surface)
+last_updated: "2026-04-24T19:57:20.294Z"
+last_activity: 2026-04-24
 progress:
   total_phases: 8
-  completed_phases: 1
-  total_plans: 22
-  completed_plans: 17
-  percent: 77
+  completed_phases: 3
+  total_plans: 34
+  completed_plans: 34
+  percent: 100
 ---
 
 # Project State
@@ -21,15 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-23)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 09 — adapter-layer-cleanup-adapt
+**Current focus:** Phase 10 — fastcdc-chunker-hybrid-local-store-a1
 
 ## Current Position
 
 Milestone: v0.15.0
-Phase: 09 (adapter-layer-cleanup-adapt) — EXECUTING
-Plan: 1 of 5
-Status: Executing Phase 09
-Last activity: 2026-04-24 -- Phase 09 execution started
+Phase: 10 (fastcdc-chunker-hybrid-local-store-a1) — EXECUTING
+Plan: 12 of 12
+Status: Ready to execute
+Last activity: 2026-04-24
 
 ## Next Actionable
 
@@ -64,7 +64,8 @@ Phase 08 (A0 — Pre-refactor cleanup) and Phase 09 (ADAPT — Adapter layer cle
 - v0.13.0 archive lives at `.planning/milestones/v0.13.0-archive/`
 - Fine granularity (from config.json) — 8 phases preserving natural plan boundaries: A0, ADAPT, A1–A6
 - Two parallel pre-cleanup tracks (A0 / ADAPT) converge at A3 (engine API change consumes ADAPT groundwork)
-- Block key scheme: content-addressable `cas/{hash[0:2]}/{hash[2:4]}/{hash_hex}` with BLAKE3 (via `github.com/zeebo/blake3`)
+- Block key scheme: content-addressable `cas/{hash[0:2]}/{hash[2:4]}/{hash_hex}` with BLAKE3 (via `lukechampine.com/blake3`; D-08 amended 2026-04-24 — swapped from `zeebo/blake3`, user-approved)
+- D-41 gate is platform-aware (amended 2026-04-24, user-approved Option A): amd64 requires BLAKE3 ≥ 3.0× SHA-256; arm64 requires ≥ 1.0× (hw-SHA vs portable-Go BLAKE3 asymmetry). Hard 3× target validated on CI amd64 perf lane per D-43.
 - Chunking: in-house FastCDC (~200 LoC), min=1MB / avg=4MB / max=16MB, normalization level 2
 - Dedup scope: global per metadata store (RefCount spans shares when remote config shared)
 - Merkle-root `FileAttr.ObjectID` is lazy (computed at file quiesce), not eager — revisit if dedup hit rate demands eager update
@@ -90,8 +91,8 @@ None.
 
 ## Session Continuity
 
-Last session: --stopped-at
-Stopped at: Phase 09 context gathered
+Last session: 2026-04-24T19:57:20.289Z
+Stopped at: Completed 10-12-PLAN.md (Phase 10 final plan, docs surface)
 Next action: `/gsd-plan-phase 8` (A0 — Pre-refactor cleanup) OR `/gsd-plan-phase 9` (ADAPT) — both are actionable in parallel
 
-**Planned Phase:** 09 (Adapter layer cleanup (ADAPT)) — 5 plans — 2026-04-24T07:23:11.918Z
+**Planned Phase:** 10 (fastcdc-chunker-hybrid-local-store-a1) — 12 plans — 2026-04-24T13:55:22.578Z

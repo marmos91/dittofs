@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -1171,6 +1172,56 @@ func CreateLocalStoreFromConfig(
 		}
 	}
 
+	// Phase 10 (LSL-04/05) append-log flag + budgets. All defaults are
+	// "off / New() defaults" per D-02/D-03 — Phase 10 ships the flag false
+	// and A2 (Phase 11) flips it. Values surface through FSStoreOptions to
+	// fs.NewWithOptions; invalid values are warned and ignored, matching the
+	// max_size idiom above (T-10-08-01 mitigation).
+	var fsOpts fs.FSStoreOptions
+	if v, ok := config["use_append_log"]; ok {
+		if b, ok := v.(bool); ok {
+			fsOpts.UseAppendLog = b
+		} else {
+			logger.Warn("block store config has use_append_log but it is not a bool; ignoring", "value", v)
+		}
+	}
+	if v, ok := config["max_log_bytes"]; ok {
+		if n, ok := v.(float64); ok && n > 0 {
+			// FIX-15: JSON-decoded numbers land here as float64. Values above
+			// 2^53 (~9 PiB) lose integer precision, and non-integer values
+			// silently truncate. Warn so a misconfigured budget surfaces in
+			// logs instead of producing a budget that is off by hundreds of
+			// kilobytes from what the operator typed.
+			if n > float64(math.MaxInt64) || n != math.Trunc(n) {
+				logger.Warn("config: max_log_bytes loses precision as float64", "value", n)
+			}
+			fsOpts.MaxLogBytes = int64(n)
+		} else {
+			logger.Warn("block store config has max_log_bytes but it is invalid or non-positive; ignoring", "value", v)
+		}
+	}
+	if v, ok := config["rollup_workers"]; ok {
+		if n, ok := v.(float64); ok && n > 0 {
+			fsOpts.RollupWorkers = int(n)
+		} else {
+			logger.Warn("block store config has rollup_workers but it is invalid or non-positive; ignoring", "value", v)
+		}
+	}
+	if v, ok := config["stabilization_ms"]; ok {
+		if n, ok := v.(float64); ok && n > 0 {
+			fsOpts.StabilizationMS = int(n)
+		} else {
+			logger.Warn("block store config has stabilization_ms but it is invalid or non-positive; ignoring", "value", v)
+		}
+	}
+	if v, ok := config["orphan_log_min_age_seconds"]; ok {
+		if n, ok := v.(float64); ok && n > 0 {
+			fsOpts.OrphanLogMinAgeSeconds = int(n)
+		} else {
+			logger.Warn("block store config has orphan_log_min_age_seconds but it is invalid or non-positive; ignoring", "value", v)
+		}
+	}
+
 	switch storeType {
 	case "fs":
 		basePath, ok := config["path"].(string)
@@ -1192,6 +1243,31 @@ func CreateLocalStoreFromConfig(
 		blockDir := filepath.Join(expanded, "shares", sanitized, "blocks")
 		if err := os.MkdirAll(blockDir, 0755); err != nil {
 			return nil, fmt.Errorf("failed to create block store directory: %w", err)
+		}
+
+		// Append-log path: wire a RollupStore from the metadata backend and
+		// start the rollup worker pool. Nit 2 (plan objective): the type
+		// assertion couples the block-store factory to a metadata-layer
+		// interface via runtime type check. Accepted for Phase 10 because
+		// memory / badger / postgres all implement both FileBlockStore and
+		// RollupStore on the same Store type; revisit in Phase 11 LSL-07
+		// when the factory is refactored to take a metadata.Store explicitly.
+		if fsOpts.UseAppendLog {
+			rs, ok := fileBlockStore.(metadata.RollupStore)
+			if !ok {
+				// T-10-08-04: explicit error, not silent fallthrough.
+				return nil, fmt.Errorf("fs local store: use_append_log requires a metadata backend implementing metadata.RollupStore (Phase 10 LSL-05)")
+			}
+			fsOpts.RollupStore = rs
+			store, err := fs.NewWithOptions(blockDir, maxDisk, maxMemory, fileBlockStore, fsOpts)
+			if err != nil {
+				return nil, err
+			}
+			if err := store.StartRollup(ctx); err != nil {
+				_ = store.Close()
+				return nil, fmt.Errorf("fs local store: StartRollup: %w", err)
+			}
+			return store, nil
 		}
 		return fs.New(blockDir, maxDisk, maxMemory, fileBlockStore)
 

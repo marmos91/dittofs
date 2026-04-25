@@ -15,7 +15,8 @@
 ### Block-store key scheme & chunking (BSCAS)
 
 - [ ] **BSCAS-01**: Remote block keys use content-addressable format `cas/{hash[0:2]}/{hash[2:4]}/{hash_hex}` with 2-level fanout. Keys carry `blake3:` prefix.
-- [ ] **BSCAS-02**: FastCDC content-defined chunking with parameters min=1 MB / avg=4 MB / max=16 MB (normalization level 2). Runs at sync finalization over dirty regions with stabilization window.
+- [x] **BSCAS-02
+**: FastCDC content-defined chunking with parameters min=1 MB / avg=4 MB / max=16 MB (normalization level 2). Runs at sync finalization over dirty regions with stabilization window.
 - [ ] **BSCAS-03**: BLAKE3 hashing via `github.com/zeebo/blake3` replaces SHA-256 for block identity and file-level integrity.
 - [ ] **BSCAS-04**: `FileAttr.ObjectID` populated lazily (at file quiesce) as BLAKE3 Merkle root over sorted block hashes.
 - [ ] **BSCAS-05**: File-level dedup short-circuits chunking on full-file writes when provisional `ObjectID` matches an existing file — reuse `BlockRef` list, zero new uploads.
@@ -23,12 +24,16 @@
 
 ### Local store — hybrid Logs + Blocks (LSL)
 
-- [ ] **LSL-01**: Per-file append-only write log at `logs/{payloadID}.log` with 64-byte header (magic, version, consumed_pos) + CRC-per-record format.
-- [ ] **LSL-02**: Hash-keyed chunk directory at `blocks/{hash[0:2]}/{hash[2:4]}/{hash_hex}` for long-lived on-disk chunks.
-- [ ] **LSL-03**: `AppendWrite` replaces legacy `WriteAt` + `tryDirectDiskWrite` — one code path, append to log.
-- [ ] **LSL-04**: Pressure channel signals syncer when log exceeds budget; writer blocks on excess, unblocks when syncer drains.
-- [ ] **LSL-05**: `CommitChunks` is atomic: metadata txn + log `consumed_pos` advance happen as one unit.
-- [ ] **LSL-06**: Crash recovery per-file: scan from `consumed_pos`, truncate at first bad CRC, re-chunk surviving records on first sync.
+- [x] **LSL-01
+**: Per-file append-only write log at `logs/{payloadID}.log` with 64-byte header (magic, version, consumed_pos) + CRC-per-record format.
+- [x] **LSL-02**: Hash-keyed chunk directory at `blocks/{hash[0:2]}/{hash[2:4]}/{hash_hex}` for long-lived on-disk chunks.
+- [x] **LSL-03**: `AppendWrite` replaces legacy `WriteAt` + `tryDirectDiskWrite` — one code path, append to log.
+- [x] **LSL-04
+**: Pressure channel signals syncer when log exceeds budget; writer blocks on excess, unblocks when syncer drains.
+- [x] **LSL-05
+**: `CommitChunks` is atomic: metadata txn + log `consumed_pos` advance happen as one unit.
+- [x] **LSL-06
+**: Crash recovery per-file: scan from `consumed_pos`, truncate at first bad CRC, re-chunk surviving records on first sync.
 - [ ] **LSL-07**: `LocalStore` interface narrowed from 22 methods to ~17 — removes implementation-detail leaks (`MarkBlockRemote`, `GetDirtyBlocks`, `SetSkipFsync`, etc.).
 - [ ] **LSL-08**: Local store no longer calls `FileBlockStore` on write hot path — eviction driven from on-disk state only.
 

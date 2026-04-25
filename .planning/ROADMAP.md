@@ -124,7 +124,19 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - FastCDC parameter choice must preserve boundary stability — benchmark against restic-FastCDC's published dedup ratios on synthetic fixtures before finalizing
   - Log-based write path must match or beat current `tryDirectDiskWrite` perf — microbench large sequential writes under the feature flag before wiring it by default
   - Crash recovery must tolerate torn writes at any byte offset — property test with random mid-record kill
-**Plans**: TBD
+**Plans**: 12 plans
+  - [ ] 10-01-PLAN.md — ContentHash doc refresh + CASKey() helper + zeebo/blake3 dep + D-41 BLAKE3 3x SHA-256 gate
+  - [ ] 10-02-PLAN.md — BSCAS-02: FastCDC chunker package (params + gear + Next) + D-42 70% boundary stability gate
+  - [ ] 10-03-PLAN.md — LSL-01: log header + record framing + CRC32C helpers + torn-write tests
+  - [ ] 10-04-PLAN.md — LSL-03: AppendWrite + per-file mutex + interval tree + pressure loop (flag-gated, default off)
+  - [ ] 10-05-PLAN.md — LSL-02: StoreChunk/ReadChunk/HasChunk/DeleteChunk with .tmp+rename+fsync + two-level shard
+  - [ ] 10-06-PLAN.md — LSL-04/05: chunkRollup worker pool + CommitChunks atomicity + RollupStore interface + memory impl
+  - [ ] 10-07-PLAN.md — LSL-06: crash recovery (header reconcile, torn-record truncate, orphan sweep)
+  - [ ] 10-08-PLAN.md — LSL-05: config wiring (use_append_log etc.) + Badger/Postgres RollupStore + docs/CONFIGURATION.md
+  - [ ] 10-09-PLAN.md — LSL-05: DeleteAppendLog (D-28) + TruncateAppendLog (D-29) with tombstone coordination
+  - [ ] 10-10-PLAN.md — LSL-01..06: localtest/RunAppendLogSuite 5-scenario conformance (round-trip, pressure, torn, storm, monotone)
+  - [ ] 10-11-PLAN.md — D-40 perf gate (AppendWrite <= 1.05x tryDirectDiskWrite) + BENCHMARKS.md update
+  - [ ] 10-12-PLAN.md — docs: ARCHITECTURE/IMPLEMENTING_STORES/FAQ/package godoc + 10-DESIGN.md one-pager
 
 ### Phase 11: CAS write path + GC rewrite (A2)
 **Goal**: Rewrite the sync/upload path to content-addressable storage (`cas/{hash[0:2]}/{hash[2:4]}/{hash_hex}`), deliver the simplified three-state block lifecycle (Pending → Syncing → Remote), and replace path-prefix GC with a fail-closed mark-sweep algorithm.
