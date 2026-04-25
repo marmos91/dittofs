@@ -13,7 +13,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -187,12 +186,12 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 
 	err := lockMgr.AcknowledgeLeaseBreak(ctx, leaseKey, acknowledgedState, epoch)
 	if err != nil {
-		// If the underlying lock manager says "no lease found", the lease was
-		// released between our map lookup and the ack call. Treat as success.
-		if strings.Contains(err.Error(), "no lease found") {
+		// Lease released between our map lookup and the ack call (CLOSE beat
+		// the ack). Per MS-SMB2 3.3.5.22.2 the desired state is already
+		// achieved — treat as success and reap stale wrapper-side mappings.
+		if errors.Is(err, lock.ErrLeaseAckNotFound) {
 			logger.Debug("AcknowledgeLeaseBreak: lease not found in lock manager, treating as success",
 				"leaseKey", keyHex)
-			// Clean up our maps if they still have stale entries
 			lm.removeLeaseMapping(keyHex)
 			return nil
 		}
