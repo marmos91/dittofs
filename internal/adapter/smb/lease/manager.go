@@ -160,8 +160,14 @@ func (lm *LeaseManager) RequestLease(
 // If the lease has already been released (e.g. the client sent CLOSE before
 // the break ack arrived), the acknowledgment is treated as a successful no-op.
 // Per MS-SMB2 3.3.5.22.2, a break ack for a lease that no longer exists is
-// not an error condition -- the desired state (lease relinquished) has already
-// been achieved.
+// not an error condition — the desired state (lease relinquished) has already
+// been achieved. This path is required by WPTS BVT_DirectoryLeasing_*.
+//
+// The cost is that smbtorture breaking2/breaking5's re-ack-of-NONE assertion
+// (which expects STATUS_UNSUCCESSFUL) does not flip green from this PR. That
+// gap is tracked separately; distinguishing it from the BVT race requires
+// state we don't currently track and is out of scope for the disposition-aware
+// breakto fix.
 func (lm *LeaseManager) AcknowledgeLeaseBreak(
 	ctx context.Context,
 	leaseKey [16]byte,
@@ -170,15 +176,12 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 ) error {
 	keyHex := hex.EncodeToString(leaseKey[:])
 
-	// Resolve the LockManager for this lease's share
 	lm.mu.RLock()
 	shareName := lm.leaseShare[keyHex]
 	lm.mu.RUnlock()
 
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
-		// Lease was already released (CLOSE cleaned up the maps).
-		// The break ack is a no-op -- the lease is already gone.
 		logger.Debug("AcknowledgeLeaseBreak: lease already released, treating as success",
 			"leaseKey", keyHex)
 		return nil
@@ -186,9 +189,6 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 
 	err := lockMgr.AcknowledgeLeaseBreak(ctx, leaseKey, acknowledgedState, epoch)
 	if err != nil {
-		// Lease released between our map lookup and the ack call (CLOSE beat
-		// the ack). Per MS-SMB2 3.3.5.22.2 the desired state is already
-		// achieved — treat as success and reap stale wrapper-side mappings.
 		if errors.Is(err, lock.ErrLeaseAckNotFound) {
 			logger.Debug("AcknowledgeLeaseBreak: lease not found in lock manager, treating as success",
 				"leaseKey", keyHex)
@@ -198,7 +198,6 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 		return err
 	}
 
-	// If acknowledged to None, remove from session map
 	if acknowledgedState == lock.LeaseStateNone {
 		lm.removeLeaseMapping(keyHex)
 	}
@@ -432,13 +431,14 @@ const AsyncCreateBreakWaitTimeout = handleLeaseBreakWaitTimeout
 // deadlock the single-threaded test driver: the other client only acks after
 // this CREATE returns.
 //
-// Break-to semantics match BreakHandleLeasesOnOpen (see that doc comment).
+// reason selects the per-lease break-to mask via ComputeLeaseBreakTo
+// (Default → strip W, SharingViolation → strip H, Destructive → break to None).
 // excludeOwner is optional and can contain ExcludeLeaseKey to prevent
 // breaking same-key leases (nobreakself per MS-SMB2).
 func (lm *LeaseManager) BreakHandleLeasesOnOpenAsync(
 	fileHandle lock.FileHandle,
 	shareName string,
-	hasSharingViolation bool,
+	reason lock.BreakReason,
 	excludeOwner ...*lock.LockOwner,
 ) error {
 	lockMgr := lm.resolveLockManager(shareName)
@@ -453,7 +453,7 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpenAsync(
 		exclude = excludeOwner[0]
 	}
 
-	return lockMgr.BreakLeasesOnOpenConflict(handleKey, exclude, hasSharingViolation)
+	return lockMgr.BreakLeasesOnOpenConflict(handleKey, exclude, reason)
 }
 
 // BreakFileHandleLeasesOnDelete strips Handle caching from all leases on a
@@ -482,10 +482,10 @@ func (lm *LeaseManager) BreakFileHandleLeasesOnDelete(
 	if len(excludeOwner) > 0 {
 		exclude = excludeOwner[0]
 	}
-	// hasSharingViolation=true selects the strip-Handle mask via
+	// SharingViolation reason selects the strip-Handle mask via
 	// ComputeLeaseBreakTo; the triggering "conflict" here is the unlink,
 	// not a share-mode violation, but the break-to outcome is identical.
-	return lockMgr.BreakLeasesOnOpenConflict(string(fileHandle), exclude, true)
+	return lockMgr.BreakLeasesOnOpenConflict(string(fileHandle), exclude, lock.BreakReasonSharingViolation)
 }
 
 // resolveParentBreakArgs resolves the lock manager, handle key, and exclude
@@ -533,13 +533,12 @@ func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
 		return nil
 	}
 	// Parent directory Handle-lease break on child create: strip Handle
-	// (not Write) so cached entries are invalidated. Pass
-	// hasSharingViolation=true to BreakLeasesOnOpenConflict because that
-	// selects the Handle-strip mask; semantically this is MS-FSA 2.1.5.14
-	// (child-set change invalidates directory Handle caching), not a
-	// share-mode violation, but the break-to matrix collapses to the same
-	// strip-H outcome.
-	if err := lockMgr.BreakLeasesOnOpenConflict(handleKey, excludeOwner, true); err != nil {
+	// (not Write) so cached entries are invalidated. SharingViolation
+	// reason selects the Handle-strip mask in ComputeLeaseBreakTo;
+	// semantically this is MS-FSA 2.1.5.14 (child-set change invalidates
+	// directory Handle caching), not a share-mode violation, but the
+	// break-to matrix collapses to the same strip-H outcome.
+	if err := lockMgr.BreakLeasesOnOpenConflict(handleKey, excludeOwner, lock.BreakReasonSharingViolation); err != nil {
 		return err
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, parentLeaseBreakWaitTimeout)

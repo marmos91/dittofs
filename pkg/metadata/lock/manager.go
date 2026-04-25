@@ -190,11 +190,8 @@ type LockManager interface {
 
 	// BreakLeasesOnOpenConflict breaks existing leases before an SMB CREATE
 	// proceeds, per MS-SMB2 3.3.4.7 and Samba `source3/smbd/open.c::delay_for_oplock_fn`.
-	// The bit stripped depends on whether the new open conflicts on share mode:
-	//   - Sharing violation → strip Handle (keep Read + Write).
-	//   - No sharing violation → strip Write (keep Read + Handle).
-	// Each per-lease target state is computed via ComputeLeaseBreakTo.
-	BreakLeasesOnOpenConflict(handleKey string, excludeOwner *LockOwner, hasSharingViolation bool) error
+	// Per-lease target state is computed via ComputeLeaseBreakTo(state, reason).
+	BreakLeasesOnOpenConflict(handleKey string, excludeOwner *LockOwner, reason BreakReason) error
 
 	// BreakReadLeasesForParentDir breaks Read leases on a parent directory
 	// when directory content changes (CREATE, RENAME, DELETE on close).
@@ -1344,25 +1341,12 @@ func (lm *Manager) CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner 
 
 // BreakLeasesOnOpenConflict breaks leases held by other clients when an SMB
 // CREATE arrives. Per MS-SMB2 3.3.4.7 and Samba
-// `source3/smbd/open.c::delay_for_oplock_fn`:
-//
-//   - hasSharingViolation == true → strip Handle (keep Read + Write). The
-//     existing holder must release cached open handles; dirty writes stay
-//     cached because the holder will close the handle anyway.
-//     (RWH → RW, RH → R)
-//   - hasSharingViolation == false → strip Write (keep Read + Handle). The
-//     existing holder flushes dirty data while keeping cached handles.
-//     (RWH → RH, RW → R)
-//
-// Per-lease target state is computed via ComputeLeaseBreakTo. A lease is
-// broken only when the computed target differs from its current state.
-func (lm *Manager) BreakLeasesOnOpenConflict(handleKey string, excludeOwner *LockOwner, hasSharingViolation bool) error {
-	sentinel := BreakToStripWrite
-	if hasSharingViolation {
-		sentinel = BreakToStripHandle
-	}
-	return lm.breakOpLocks(handleKey, excludeOwner, sentinel, func(lease *OpLock) bool {
-		return ComputeLeaseBreakTo(lease.LeaseState, hasSharingViolation) != lease.LeaseState
+// `source3/smbd/open.c::delay_for_oplock_fn`. Per-lease target state is
+// computed via ComputeLeaseBreakTo(state, reason); a lease is broken only
+// when the computed target differs from its current state.
+func (lm *Manager) BreakLeasesOnOpenConflict(handleKey string, excludeOwner *LockOwner, reason BreakReason) error {
+	return lm.breakOpLocks(handleKey, excludeOwner, breakSentinelForReason(reason), func(lease *OpLock) bool {
+		return ComputeLeaseBreakTo(lease.LeaseState, reason) != lease.LeaseState
 	})
 }
 

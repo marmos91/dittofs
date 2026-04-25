@@ -461,14 +461,18 @@ func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 // per MS-SMB2 3.3.5.22.2 (lease) and 3.3.5.22.1 (traditional oplock, which is
 // internally backed by a synthetic lease). Unknown errors default to
 // STATUS_INVALID_PARAMETER.
+//
+// "No lease for key" maps to STATUS_UNSUCCESSFUL rather than
+// OBJECT_NAME_NOT_FOUND: the smbtorture breaking2 / breaking5 tests prove
+// Windows uses UNSUCCESSFUL when the client re-acks an already-released lease
+// or acks a break that did not require acknowledgment.
 func mapLeaseAckErr(err error) types.Status {
 	switch {
 	case errors.Is(err, lock.ErrAcknowledgedStateExceedsBreakTo):
 		return types.StatusRequestNotAccepted
-	case errors.Is(err, lock.ErrLeaseAckNotBreaking):
+	case errors.Is(err, lock.ErrLeaseAckNotBreaking),
+		errors.Is(err, lock.ErrLeaseAckNotFound):
 		return types.StatusUnsuccessful
-	case errors.Is(err, lock.ErrLeaseAckNotFound):
-		return types.StatusObjectNameNotFound
 	default:
 		return types.StatusInvalidParameter
 	}

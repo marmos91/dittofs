@@ -46,31 +46,64 @@ const (
 	BreakToStripHandle uint32 = 0xFFFFFFFE
 )
 
+// BreakReason classifies why an existing lease must be broken so
+// ComputeLeaseBreakTo can pick the correct target state per MS-SMB2 3.3.4.7
+// (and Samba `source3/smbd/open.c::delay_for_oplock_fn`).
+type BreakReason uint8
+
+const (
+	// BreakReasonDefault: a non-conflicting open that just needs the existing
+	// holder to flush dirty data. Strip Write, keep Read + Handle.
+	// (RWH→RH, RW→R, RH/R→unchanged)
+	BreakReasonDefault BreakReason = iota
+
+	// BreakReasonSharingViolation: the new open conflicts on share mode, so
+	// the existing holder must release its cached handles. Strip Handle, keep
+	// Read + Write. (RWH→RW, RH→R, RW/R→unchanged)
+	BreakReasonSharingViolation
+
+	// BreakReasonDestructive: the new opener will replace existing content
+	// (FILE_OVERWRITE / FILE_OVERWRITE_IF / FILE_SUPERSEDE), so cached data
+	// and handles are both invalid. Break to None.
+	// (any state → None)
+	BreakReasonDestructive
+)
+
 // ComputeLeaseBreakTo returns the new lease state for a break triggered by a
-// conflicting SMB open. The bit stripped depends on whether the new open
-// conflicts with the existing open on share mode.
-//
-// Per MS-SMB2 3.3.4.7 and Samba `source3/smbd/open.c::delay_for_oplock_fn`:
-//   - Sharing violation → strip Handle (keep Read + Write). The existing holder
-//     must release its cached open handles so the new opener can proceed;
-//     writes stay cached because the holder will close the handle anyway.
-//   - No sharing violation → strip Write (keep Read + Handle). The existing
-//     holder must flush dirty data but may keep cached handles, and the new
-//     opener will coexist.
+// conflicting SMB open, given why the conflict arose.
 //
 // Examples:
 //
-//	existing=RWH, violation=true  → RW  (strip H)
-//	existing=RWH, violation=false → RH  (strip W)
-//	existing=RH,  violation=true  → R   (strip H)
-//	existing=RW,  violation=false → R   (strip W)
-//	existing=R,   violation=*     → R   (no-op, nothing to strip)
-func ComputeLeaseBreakTo(existingState uint32, hasSharingViolation bool) uint32 {
-	mask := LeaseStateWrite
-	if hasSharingViolation {
-		mask = LeaseStateHandle
+//	existing=RWH, reason=Default          → RH  (strip W)
+//	existing=RWH, reason=SharingViolation → RW  (strip H)
+//	existing=RWH, reason=Destructive      → None
+//	existing=RH,  reason=SharingViolation → R   (strip H)
+//	existing=RW,  reason=Default          → R   (strip W)
+//	existing=R,   reason=Default          → R   (no-op, nothing to strip)
+func ComputeLeaseBreakTo(existingState uint32, reason BreakReason) uint32 {
+	switch reason {
+	case BreakReasonDestructive:
+		return LeaseStateNone
+	case BreakReasonSharingViolation:
+		return existingState &^ LeaseStateHandle
+	default:
+		return existingState &^ LeaseStateWrite
 	}
-	return existingState &^ mask
+}
+
+// breakSentinelForReason returns the breakOpLocks sentinel value that pairs
+// with reason. Kept next to ComputeLeaseBreakTo so the two stay in sync —
+// a lease is broken iff ComputeLeaseBreakTo returns a different state, and
+// the sentinel selects how breakOpLocks computes the per-lease target.
+func breakSentinelForReason(reason BreakReason) uint32 {
+	switch reason {
+	case BreakReasonDestructive:
+		return LeaseStateNone
+	case BreakReasonSharingViolation:
+		return BreakToStripHandle
+	default:
+		return BreakToStripWrite
+	}
 }
 
 // ValidFileLeaseStates contains all valid lease state combinations for files.
