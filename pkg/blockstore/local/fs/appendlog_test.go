@@ -29,7 +29,7 @@ func tmpLog(t *testing.T) (string, *os.File) {
 // returns (_, _, false, nil) on clean EOF.
 func TestAppendLog_RoundTrip(t *testing.T) {
 	path, f := tmpLog(t)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	type rec struct {
 		off     uint64
@@ -59,7 +59,7 @@ func TestAppendLog_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f2.Close()
+	defer func() { _ = f2.Close() }()
 	if _, err := f2.Seek(logHeaderSize, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestAppendLog_TornPayload_DetectedByCRC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f2.Close()
+	defer func() { _ = f2.Close() }()
 	if _, err := f2.Seek(logHeaderSize, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestAppendLog_CorruptedCRC_Detected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f2.Close()
+	defer func() { _ = f2.Close() }()
 	if _, err := f2.Seek(logHeaderSize, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestAppendLog_HeaderCRC_Detected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f2.Close()
+	defer func() { _ = f2.Close() }()
 	_, err = readLogHeader(f2)
 	if err == nil {
 		t.Fatal("expected error on corrupted header")
@@ -217,7 +217,7 @@ func TestAppendLog_HeaderCRC_Detected(t *testing.T) {
 // times — no CRC drift, no accumulated error.
 func TestAppendLog_AdvanceRollupOffset_Idempotent(t *testing.T) {
 	_, f := tmpLog(t)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := advanceRollupOffset(f, 1024); err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestAppendLog_AdvanceRollupOffset_Idempotent(t *testing.T) {
 // responsible for the monotonicity check; this helper is a pure pwrite.
 func TestAppendLog_AdvanceRollupOffset_Monotone_NotEnforcedByFunction(t *testing.T) {
 	_, f := tmpLog(t)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := advanceRollupOffset(f, 1024); err != nil {
 		t.Fatal(err)
 	}

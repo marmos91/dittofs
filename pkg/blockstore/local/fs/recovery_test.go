@@ -190,7 +190,7 @@ func TestRecovery_HeaderReconcile_AfterMetadataAdvance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	hdr, err := readLogHeader(f)
 	if err != nil {
 		t.Fatalf("readLogHeader: %v", err)
@@ -224,7 +224,7 @@ func TestRecovery_BadHeaderMagic_Reinit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open after re-init: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	hdr, err := readLogHeader(f)
 	if err != nil {
 		t.Fatalf("after re-init: readLogHeader err=%v", err)

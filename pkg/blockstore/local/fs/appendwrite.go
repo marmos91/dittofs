@@ -340,11 +340,15 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 	// Step 2: wait for any in-flight AppendWrite / rollupFile to drain.
 	// When mu is nil the payload never had a log — no race to wait for.
 	if mu != nil {
+		// Lock+Unlock sequence is the in-flight barrier — staticcheck SA2001
+		// would flag this as an "empty critical section" if naively written
+		// as `mu.Lock(); mu.Unlock()`. The pattern is intentional: we wait
+		// for any goroutine currently holding `mu` (an AppendWrite or
+		// rollupFile pass) to complete before clearing per-payload state.
+		// Subsequent state mutation is guarded by bc.logsMu.
+		//nolint:staticcheck // SA2001: intentional in-flight drain barrier
 		mu.Lock()
-		// Immediately release. The mutex's purpose here is the Lock()
-		// barrier, not continued ownership; subsequent state mutation is
-		// guarded by bc.logsMu.
-		mu.Unlock()
+		mu.Unlock() //nolint:staticcheck // SA2001: see above
 	}
 
 	// Step 3: clear metadata row (source of truth advance). INV-03
