@@ -102,6 +102,16 @@ func (lm *Manager) findLeaseByKey(leaseKey [16]byte) (string, *UnifiedLock, int)
 	return "", nil, -1
 }
 
+// removeLeaseAtLocked deletes the lease at index idx from unifiedLocks[handleKey],
+// removing the bucket entirely when it becomes empty. Caller must hold lm.mu.
+func (lm *Manager) removeLeaseAtLocked(handleKey string, idx int) {
+	locks := lm.unifiedLocks[handleKey]
+	lm.unifiedLocks[handleKey] = append(locks[:idx], locks[idx+1:]...)
+	if len(lm.unifiedLocks[handleKey]) == 0 {
+		delete(lm.unifiedLocks, handleKey)
+	}
+}
+
 // RequestLease requests a new or upgraded lease on a file or directory.
 //
 // For new leases, the granted state may be less than requested if conflicts exist.
@@ -126,12 +136,34 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 		return LeaseStateNone, 0, ErrInvalidLeaseState
 	}
 
-	// None is always granted trivially
+	handleKey := string(fileHandle)
+
+	// LeaseStateNone probe: clients (and smbtorture breaking4) issue empty-state
+	// requests to query the current lease without taking new caching rights. If
+	// a same-key lease is already in Breaking state, surface ErrLeaseBreakInProgress
+	// so the CREATE response carries SMB2_LEASE_FLAG_BREAK_IN_PROGRESS with the
+	// pre-break LeaseState. Otherwise grant trivially.
 	if requestedState == LeaseStateNone {
+		lm.mu.Lock()
+		for _, lock := range lm.unifiedLocks[handleKey] {
+			if lock.Lease == nil || lock.Lease.LeaseKey != leaseKey {
+				continue
+			}
+			if lock.Lease.Breaking {
+				currentState := lock.Lease.LeaseState
+				epoch := lock.Lease.Epoch
+				lm.mu.Unlock()
+				logger.Debug("RequestLease: None-probe on breaking same-key lease, surfacing break-in-progress",
+					"fileHandle", handleKey,
+					"currentState", LeaseStateToString(currentState),
+					"epoch", epoch)
+				return currentState, epoch, ErrLeaseBreakInProgress
+			}
+			break
+		}
+		lm.mu.Unlock()
 		return LeaseStateNone, 0, nil
 	}
-
-	handleKey := string(fileHandle)
 
 	// Check recently-broken cache for directories
 	if isDirectory && lm.recentlyBroken != nil && lm.recentlyBroken.IsRecentlyBroken(handleKey) {
@@ -278,6 +310,7 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 			// Mark lease as breaking before dispatching callbacks
 			lock.Lease.Breaking = true
 			lock.Lease.BreakToState = breakTo
+			lock.Lease.BreakingToRequired = breakTo
 			lock.Lease.BreakStarted = time.Now()
 			advanceEpoch(lock.Lease)
 
@@ -516,11 +549,7 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 
 	// If acknowledging to None, remove the lease entirely
 	if acknowledgedState == LeaseStateNone {
-		locks := lm.unifiedLocks[handleKey]
-		lm.unifiedLocks[handleKey] = append(locks[:idx], locks[idx+1:]...)
-		if len(lm.unifiedLocks[handleKey]) == 0 {
-			delete(lm.unifiedLocks, handleKey)
-		}
+		lm.removeLeaseAtLocked(handleKey, idx)
 
 		// Remove from persistent store
 		if lm.lockStore != nil {
@@ -544,6 +573,71 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 
 	// Update lock type based on new state
 	lock.Type = lockTypeForLeaseState(acknowledgedState)
+
+	// Progressive multi-stage break: if the cumulative final target
+	// (BreakingToRequired) is stricter than what the client just
+	// acknowledged, dispatch the next stage. Mirrors Samba
+	// `downgrade_lease` (source3/smbd/smb2_oplock.c lines 569-586): if the
+	// acked state still has W or H, the next target keeps R as an
+	// intermediate; otherwise drop straight to the cumulative required.
+	//
+	// This produces the smbtorture breaking3 / v2_breaking3 wire shape:
+	//   ack RWH→RH  ⇒ next target = R  ⇒ wire: RH→R
+	//   ack RH→R    ⇒ next target = 0  ⇒ wire: R→""
+	if acknowledgedState != LeaseStateNone &&
+		acknowledgedState&^lock.Lease.BreakingToRequired != 0 {
+		nextTarget := nextProgressiveBreakTarget(acknowledgedState, lock.Lease.BreakingToRequired)
+		snapshot, removed := lm.applyBreakStageLocked(lock, nextTarget)
+		if removed {
+			lm.removeLeaseAtLocked(handleKey, idx)
+		}
+
+		// Persist the next-stage state BEFORE releasing lm.mu so the durable
+		// store reflects Breaking=true / BreakToState=nextTarget. Otherwise a
+		// crash between the ACK-clear (Breaking=false written above) and the
+		// next-stage-set would lose the second progressive stage on restart,
+		// leaving parked CREATEs to wait until the scanner timeout.
+		if !removed && lm.lockStore != nil {
+			pl := ToPersistedLock(lock, 0)
+			_ = lm.lockStore.PutLock(ctx, pl)
+		}
+
+		logger.Debug("AcknowledgeLeaseBreak: progressive break next stage",
+			"leaseKey", fmt.Sprintf("%x", leaseKey),
+			"ackedState", LeaseStateToString(acknowledgedState),
+			"required", LeaseStateToString(lock.Lease.BreakingToRequired),
+			"nextTarget", LeaseStateToString(nextTarget),
+			"epoch", lock.Lease.Epoch)
+
+		// Release lm.mu before dispatching to avoid deadlock with the
+		// SMB transport callback (mirrors breakOpLocks pattern).
+		lm.mu.Unlock()
+		lm.dispatchOpLockBreak(handleKey, snapshot, nextTarget)
+		lm.mu.Lock()
+
+		// Re-validate: a concurrent CLOSE / release / timeout could have
+		// removed the lease during the dispatch window. The `lock` pointer
+		// may now reference an orphaned UnifiedLock — read fields off the
+		// re-found record (or signal waiters and return when gone).
+		_, currentLock, _ := lm.findLeaseByKey(leaseKey)
+		if currentLock == nil {
+			lm.signalBreakWaitLocked(handleKey)
+			return nil
+		}
+
+		// Do NOT signal waiters: the break is still in progress (or just
+		// completed inline via fire-and-forget downgrade, in which case
+		// the inline path already updated state and the next stage will
+		// not arrive — fall through and signal once we've fully drained).
+		if removed || nextTarget == currentLock.Lease.LeaseState {
+			lm.signalBreakWaitLocked(handleKey)
+		}
+		return nil
+	}
+
+	// Reached BreakingToRequired (or full release): mirror invariant
+	// "BreakingToRequired == LeaseState when not Breaking" and signal.
+	lock.Lease.BreakingToRequired = acknowledgedState
 
 	// Persist updated state
 	if lm.lockStore != nil {

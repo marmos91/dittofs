@@ -75,9 +75,16 @@ type PersistedLock struct {
 	// 0 for byte-range locks.
 	LeaseEpoch uint16 `json:"lease_epoch,omitempty"`
 
-	// BreakToState is the target state during an active lease break.
+	// BreakToState is the in-flight notification's break-to target
+	// (Samba `breaking_to_requested`). Used for ACK validation.
 	// 0 if no break in progress.
 	BreakToState uint32 `json:"break_to_state,omitempty"`
+
+	// BreakingToRequired is the cumulative final break-to target
+	// (Samba `breaking_to_required`). May be stricter than BreakToState
+	// when concurrent breaks AND-merged a tighter target during an
+	// in-flight stage. 0 if no break in progress.
+	BreakingToRequired uint32 `json:"breaking_to_required,omitempty"`
 
 	// Breaking indicates a lease break is in progress awaiting acknowledgment.
 	// False for byte-range locks.
@@ -311,6 +318,7 @@ func ToPersistedLock(lock *UnifiedLock, epoch uint64) *PersistedLock {
 		pl.LeaseState = lock.Lease.LeaseState
 		pl.LeaseEpoch = lock.Lease.Epoch
 		pl.BreakToState = lock.Lease.BreakToState
+		pl.BreakingToRequired = lock.Lease.BreakingToRequired
 		pl.Breaking = lock.Lease.Breaking
 		pl.IsDirectory = lock.Lease.IsDirectory
 
@@ -373,13 +381,14 @@ func FromPersistedLock(pl *PersistedLock) *UnifiedLock {
 		}
 
 		el.Lease = &OpLock{
-			LeaseKey:       leaseKey,
-			LeaseState:     pl.LeaseState,
-			Epoch:          pl.LeaseEpoch,
-			BreakToState:   pl.BreakToState,
-			Breaking:       pl.Breaking,
-			ParentLeaseKey: parentLeaseKey,
-			IsDirectory:    pl.IsDirectory,
+			LeaseKey:           leaseKey,
+			LeaseState:         pl.LeaseState,
+			Epoch:              pl.LeaseEpoch,
+			BreakToState:       pl.BreakToState,
+			BreakingToRequired: pl.BreakingToRequired,
+			Breaking:           pl.Breaking,
+			ParentLeaseKey:     parentLeaseKey,
+			IsDirectory:        pl.IsDirectory,
 			// BreakStarted is runtime-only, not persisted
 		}
 	}

@@ -219,6 +219,17 @@ type LockManager interface {
 	// interim and resumes from a goroutine. Zero exceptKey means "match any".
 	HasOtherBreakingLeases(handleKey string, exceptKey [16]byte) bool
 
+	// AnyHolderHasLeaseBits reports whether any lease on handleKey (excluding
+	// exceptKey) currently has any bit in mask set. Non-blocking peek used by
+	// the SMB CREATE post-break park decision: per Samba `delay_for_oplock_fn`
+	// (source3/smbd/open.c line 2458), a CREATE delays only if the existing
+	// holder's lease type intersects the delay_mask, where:
+	//   - sharing violation         → mask = SMB2_LEASE_HANDLE
+	//   - non-violation (default,
+	//     overwrite, destructive)   → mask = SMB2_LEASE_WRITE
+	// Zero exceptKey means "match any".
+	AnyHolderHasLeaseBits(handleKey string, exceptKey [16]byte, mask uint32) bool
+
 	// ========================================================================
 	// Break Callbacks
 	// ========================================================================
@@ -1421,6 +1432,32 @@ func (lm *Manager) WaitForBreakCompletionExceptKey(ctx context.Context, handleKe
 	}
 }
 
+// AnyHolderHasLeaseBits reports whether any lease on handleKey (other than
+// exceptKey) currently has any bit in mask set. Non-blocking. Used by the SMB
+// CREATE post-break park decision per Samba `delay_for_oplock_fn`: a new opener
+// only needs to wait for the in-flight break ACK when the existing holder's
+// lease type intersects the delay_mask. Zero exceptKey means "no exclusion".
+func (lm *Manager) AnyHolderHasLeaseBits(handleKey string, exceptKey [16]byte, mask uint32) bool {
+	if mask == 0 {
+		return false
+	}
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	hasExclusion := exceptKey != ([16]byte{})
+	for _, l := range lm.unifiedLocks[handleKey] {
+		if l.Lease == nil {
+			continue
+		}
+		if hasExclusion && l.Lease.LeaseKey == exceptKey {
+			continue
+		}
+		if l.Lease.LeaseState&mask != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // HasOtherBreakingLeases reports whether any lease (other than exceptKey) or
 // any delegation on handleKey is currently Breaking. Non-blocking. Used by the
 // SMB CREATE async-park path to decide whether to emit STATUS_PENDING and
@@ -1492,8 +1529,9 @@ func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string)
 }
 
 // forceCompleteBreaks auto-downgrades all breaking leases on a file to their
-// BreakToState, as if the client had acknowledged. Called when the break
-// wait times out. Leases breaking to None are removed entirely.
+// cumulative final target, as if the client had acknowledged every progressive
+// stage. Called when the break wait times out. Leases whose final target is
+// None are removed entirely.
 func (lm *Manager) forceCompleteBreaks(handleKey string) {
 	lm.forceCompleteBreaksExceptKey(handleKey, [16]byte{})
 }
@@ -1501,6 +1539,12 @@ func (lm *Manager) forceCompleteBreaks(handleKey string) {
 // forceCompleteBreaksExceptKey is forceCompleteBreaks that leaves any lease
 // keyed on exceptKey untouched. Zero exceptKey means "no exclusion" (same
 // semantics as forceCompleteBreaks).
+//
+// Drains to BreakingToRequired (the cumulative final target across any
+// concurrent breaks that AND-merged during the in-flight stage) rather than
+// the in-flight BreakToState — otherwise a non-acking client could leave the
+// lease parked at an intermediate state that the post-ACK re-eval would
+// normally have progressed past.
 func (lm *Manager) forceCompleteBreaksExceptKey(handleKey string, exceptKey [16]byte) {
 	lm.mu.Lock()
 	locks := lm.unifiedLocks[handleKey]
@@ -1510,7 +1554,8 @@ func (lm *Manager) forceCompleteBreaksExceptKey(handleKey string, exceptKey [16]
 	for _, l := range locks {
 		if l.Lease != nil && l.Lease.Breaking && l.Lease.LeaseKey != exceptKey {
 			modified = true
-			if l.Lease.BreakToState == LeaseStateNone {
+			finalTarget := l.Lease.BreakingToRequired
+			if finalTarget == LeaseStateNone {
 				if lm.lockStore != nil {
 					_ = lm.lockStore.DeleteLock(context.Background(), l.ID)
 				}
@@ -1519,7 +1564,8 @@ func (lm *Manager) forceCompleteBreaksExceptKey(handleKey string, exceptKey [16]
 					"leaseKey", fmt.Sprintf("%x", l.Lease.LeaseKey))
 				continue
 			}
-			l.Lease.LeaseState = l.Lease.BreakToState
+			l.Lease.LeaseState = finalTarget
+			l.Lease.BreakingToRequired = finalTarget
 			l.Lease.Breaking = false
 			l.Lease.BreakToState = 0
 			l.Lease.BreakStarted = time.Time{}
@@ -1573,6 +1619,13 @@ func (lm *Manager) signalBreakWaitLocked(handleKey string) {
 // breakToState is the target state for the break. Pass BreakToStripWrite
 // to compute the per-lease break-to state by stripping the Write bit from
 // each lease's current state (preserving Read and Handle).
+//
+// Concurrent-break behavior: when a lease is already Breaking, the new
+// target is AND-merged into BreakingToRequired (cumulative final target)
+// without dispatching a new notification or advancing the epoch. This
+// mirrors Samba `process_oplock_break_message` lines 956-965; the next
+// progressive stage is dispatched from acknowledgeLeaseBreakImpl after the
+// in-flight ACK arrives.
 func (lm *Manager) breakOpLocks(
 	handleKey string,
 	excludeOwner *LockOwner,
@@ -1609,52 +1662,38 @@ func (lm *Manager) breakOpLocks(
 				continue
 			}
 		}
-		if lock.Lease.Breaking || !shouldBreak(lock.Lease) {
+		if !shouldBreak(lock.Lease) {
 			kept = append(kept, lock)
 			continue
 		}
 
-		targetState := breakToState
-		switch targetState {
-		case BreakToStripWrite:
-			// Per MS-SMB2 3.3.5.9: RWH -> RH, RW -> R.
-			targetState = lock.Lease.LeaseState &^ LeaseStateWrite
-		case BreakToStripHandle:
-			// Per MS-SMB2 3.3.5.9 Step 10: RWH -> RW, RH -> R.
-			targetState = lock.Lease.LeaseState &^ LeaseStateHandle
-		}
+		targetState := computeFreshTarget(lock.Lease.LeaseState, breakToState)
 
-		// Per MS-SMB2 3.3.4.7, a break is ack-required iff the current state
-		// is NOT pure Read. Without ACK_REQUIRED the client never responds,
-		// so leaving Breaking=true would block same-key reopens (nobreakself)
-		// until forceCompleteBreaks fires — downgrade inline for those cases.
-		ackRequired := lock.Lease.LeaseState != LeaseStateRead
-
-		// Advance the lease epoch on the live record first so the snapshot
-		// that feeds dispatchOpLockBreak carries the new epoch (NewEpoch per
-		// MS-SMB2 2.2.23.2), then snapshot while LeaseState still holds the
-		// pre-break value for the notification's CurrentLeaseState field.
-		advanceEpoch(lock.Lease)
-		snapshot := lock.Clone()
-
-		switch {
-		case ackRequired:
-			lock.Lease.Breaking = true
-			lock.Lease.BreakToState = targetState
-			lock.Lease.BreakStarted = time.Now()
-			kept = append(kept, lock)
-		case targetState == LeaseStateNone:
-			if lm.lockStore != nil {
-				_ = lm.lockStore.DeleteLock(context.Background(), lock.ID)
-			}
-			removed = true
-		default:
-			lock.Lease.LeaseState = targetState
-			lock.Type = lockTypeForLeaseState(targetState)
+		if lock.Lease.Breaking {
+			// Concurrent break: AND-merge the new opener's target into the
+			// cumulative final target. No notification, no epoch bump
+			// (Samba intentionally skips the bump per its inline comment).
+			// The next progressive stage will be dispatched on ACK.
+			lock.Lease.BreakingToRequired &= targetState
 			if lm.lockStore != nil {
 				pl := ToPersistedLock(lock, 0)
 				_ = lm.lockStore.PutLock(context.Background(), pl)
 			}
+			kept = append(kept, lock)
+			continue
+		}
+
+		// Fresh dispatch: BreakingToRequired starts at this opener's target.
+		// Subsequent concurrent breaks may tighten it via the AND-merge above.
+		// Advance the epoch here so the dispatched notification's NewEpoch is
+		// pre-bumped (per MS-SMB2 2.2.23.2). Post-ACK progressive stages do
+		// NOT advance — the multi-stage progression is one logical break.
+		lock.Lease.BreakingToRequired = targetState
+		advanceEpoch(lock.Lease)
+		snapshot, wasRemoved := lm.applyBreakStageLocked(lock, targetState)
+		if wasRemoved {
+			removed = true
+		} else {
 			kept = append(kept, lock)
 		}
 		toBreak = append(toBreak, breakEntry{lock: snapshot, breakToState: targetState})
@@ -1673,6 +1712,72 @@ func (lm *Manager) breakOpLocks(
 	}
 
 	return nil
+}
+
+// computeFreshTarget resolves a breakOpLocks sentinel against the current
+// lease state, returning the actual per-lease target. Direct state values
+// pass through unchanged.
+func computeFreshTarget(currentState, sentinel uint32) uint32 {
+	switch sentinel {
+	case BreakToStripWrite:
+		// Per MS-SMB2 3.3.5.9: RWH -> RH, RW -> R.
+		return currentState &^ LeaseStateWrite
+	case BreakToStripHandle:
+		// Per MS-SMB2 3.3.5.9 Step 10: RWH -> RW, RH -> R.
+		return currentState &^ LeaseStateHandle
+	}
+	return sentinel
+}
+
+// applyBreakStageLocked performs a single break stage on lock targeting
+// `target`. Caller must hold lm.mu, must have already set
+// lock.Lease.BreakingToRequired appropriately, and is responsible for
+// dispatching the returned snapshot via dispatchOpLockBreak after releasing
+// lm.mu.
+//
+// Returns the snapshot (always non-nil) and a removed flag that's true when
+// the lease was deleted from unifiedLocks (target == None and !ackRequired).
+//
+// Per MS-SMB2 3.3.4.7, a break is ack-required iff the current state is NOT
+// pure Read. Without ACK_REQUIRED the client never responds, so leaving
+// Breaking=true would block same-key reopens — instead we resolve inline.
+func (lm *Manager) applyBreakStageLocked(lock *UnifiedLock, target uint32) (*UnifiedLock, bool) {
+	ackRequired := lock.Lease.LeaseState != LeaseStateRead
+
+	// Snapshot while LeaseState still holds the pre-break value for
+	// CurrentLeaseState in the notification. Caller is responsible for
+	// advancing the epoch on fresh dispatch (per MS-SMB2 2.2.23.2). Progressive
+	// next-stage dispatch from a post-ACK re-eval does NOT advance epoch — the
+	// multi-stage break is one continuous progression and Samba's
+	// `downgrade_lease` (source3/smbd/smb2_oplock.c line 607) reuses the
+	// existing epoch unchanged for each intermediate stage.
+	snapshot := lock.Clone()
+
+	if ackRequired {
+		lock.Lease.Breaking = true
+		lock.Lease.BreakToState = target
+		lock.Lease.BreakStarted = time.Now()
+		return snapshot, false
+	}
+
+	// Fire-and-forget downgrade: client won't ACK (current state is pure R).
+	lock.Lease.Breaking = false
+	lock.Lease.BreakToState = 0
+	lock.Lease.BreakStarted = time.Time{}
+	if target == LeaseStateNone {
+		if lm.lockStore != nil {
+			_ = lm.lockStore.DeleteLock(context.Background(), lock.ID)
+		}
+		return snapshot, true
+	}
+	lock.Lease.LeaseState = target
+	lock.Lease.BreakingToRequired = target
+	lock.Type = lockTypeForLeaseState(target)
+	if lm.lockStore != nil {
+		pl := ToPersistedLock(lock, 0)
+		_ = lm.lockStore.PutLock(context.Background(), pl)
+	}
+	return snapshot, false
 }
 
 // ============================================================================

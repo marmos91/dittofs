@@ -149,6 +149,7 @@ func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType
 		if lock.Lease != nil && lock.Lease.IsDirectory && !lock.Lease.Breaking {
 			lock.Lease.Breaking = true
 			lock.Lease.BreakToState = LeaseStateNone
+			lock.Lease.BreakingToRequired = LeaseStateNone
 			lock.Lease.BreakStarted = time.Now()
 			advanceEpoch(lock.Lease)
 			leasesToBreak = append(leasesToBreak, lock)

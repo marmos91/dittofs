@@ -387,19 +387,21 @@ func TestOpLocksConflict_BreakingLease(t *testing.T) {
 	key1 := [16]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 	key2 := [16]byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 
-	// Breaking lease - should use BreakToState for conflict check
+	// Breaking lease — conflict check uses BreakingToRequired (cumulative final
+	// target) rather than BreakToState (in-flight intermediate). Otherwise a
+	// concurrent reopen mid-stage could re-evaluate against the wrong target.
 	existing := &OpLock{
-		LeaseKey:     key1,
-		LeaseState:   LeaseStateRead | LeaseStateWrite, // Currently has RW
-		BreakToState: LeaseStateRead,                   // Breaking to R
-		Breaking:     true,
+		LeaseKey:           key1,
+		LeaseState:         LeaseStateRead | LeaseStateWrite, // Currently has RW
+		BreakToState:       LeaseStateRead,                   // In-flight target R
+		BreakingToRequired: LeaseStateRead,                   // Cumulative final R
+		Breaking:           true,
 	}
 	requested := &OpLock{LeaseKey: key2, LeaseState: LeaseStateRead | LeaseStateWrite}
 
-	// After break completes, existing will be R only - no conflict with new RW
-	// But during break, we use BreakToState (R) for conflict check
-	// R doesn't conflict with RW request's Read component, but RW request has Write
-	// which conflicts with any existing read (need exclusive)
+	// After break completes, existing will be R only — no conflict with new RW's
+	// Read component, but the requested RW has Write which conflicts with any
+	// existing Read (Write requires exclusive).
 	assert.True(t, OpLocksConflict(existing, requested), "Write request conflicts with Read lease")
 }
 
@@ -608,4 +610,39 @@ func TestIsUnifiedLockConflicting_SameOwner(t *testing.T) {
 
 	// Same owner - never conflicts
 	assert.False(t, IsUnifiedLockConflicting(lock1, lock2))
+}
+
+// TestNextProgressiveBreakTarget_Matrix verifies the helper that drives the
+// post-ACK progressive lease-break dispatcher (#449). Mirrors Samba
+// `downgrade_lease` (source3/smbd/smb2_oplock.c lines 569-586): when the
+// acknowledged state still has W or H, the next stage keeps R as an
+// intermediate; otherwise drop straight to required.
+func TestNextProgressiveBreakTarget_Matrix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		ackedState uint32
+		required   uint32
+		want       uint32
+	}{
+		// breaking3 wire shape: required = 0 throughout the multi-stage drain.
+		{"ack RH→R intermediate (acked has H)", LeaseStateRead | LeaseStateHandle, 0, LeaseStateRead},
+		{"ack R→\"\" final stage (acked is pure R)", LeaseStateRead, 0, 0},
+		// Acked state still has W: keep R as intermediate.
+		{"ack RW→R intermediate (acked has W)", LeaseStateRead | LeaseStateWrite, 0, LeaseStateRead},
+		{"ack RWH→R intermediate (acked has both)", LeaseStateRead | LeaseStateWrite | LeaseStateHandle, 0, LeaseStateRead},
+		// Required=R: acked above R passes through, acked at R returns R.
+		{"required=R, acked=RH → R", LeaseStateRead | LeaseStateHandle, LeaseStateRead, LeaseStateRead},
+		{"required=R, acked=R → R", LeaseStateRead, LeaseStateRead, LeaseStateRead},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := nextProgressiveBreakTarget(tc.ackedState, tc.required)
+			assert.Equal(t, tc.want, got,
+				"acked=%s required=%s",
+				LeaseStateToString(tc.ackedState),
+				LeaseStateToString(tc.required))
+		})
+	}
 }
