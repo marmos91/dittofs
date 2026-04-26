@@ -265,7 +265,7 @@ func TestBlockStoreImmutableOverwrites(t *testing.T) {
 		t.Logf("step 5 INV-06 PASS: read after tamper returned error (BLAKE3 verifier "+
 			"caught the mismatch on re-fetch): %v", tamperedErr)
 	} else if !bytesContain(tamperedRead, tamperedBody) {
-		t.Logf("step 5 INV-06 PASS (cache-served): read after tamper returned the "+
+		t.Logf("step 5 INV-06 PASS (cache-served): read after tamper returned the " +
 			"original (verified) bytes from cache; tampered bytes were not surfaced")
 	} else {
 		t.Errorf("INV-06 VIOLATION: read after tamper returned tampered bytes — "+

@@ -249,7 +249,7 @@ func testListRemoteBlocks(t *testing.T, factory StoreFactory) {
 	blocks := []*blockstore.FileBlock{
 		{ID: "file-a/0", State: blockstore.BlockStateRemote, LocalPath: "/cache/a0", BlockStoreKey: "s3://a0", DataSize: 100, RefCount: 1, LastAccess: time.Now().Add(-2 * time.Hour), CreatedAt: time.Now()},
 		{ID: "file-a/1", State: blockstore.BlockStateRemote, LocalPath: "/cache/a1", BlockStoreKey: "s3://a1", DataSize: 200, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now()},
-		{ID: "file-b/0", State: blockstore.BlockStateRemote, LocalPath: "", BlockStoreKey: "s3://b0", DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},               // Not cached
+		{ID: "file-b/0", State: blockstore.BlockStateRemote, LocalPath: "", BlockStoreKey: "s3://b0", DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},                 // Not cached
 		{ID: "file-c/0", State: blockstore.BlockStatePending, LocalPath: "/cache/c0", DataSize: 400, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)}, // Local, not Remote
 		{ID: "file-d/0", State: blockstore.BlockStatePending, LocalPath: "/cache/d0", DataSize: 500, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)}, // Dirty
 	}

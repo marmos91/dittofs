@@ -621,4 +621,3 @@ func cleanupTempGCStateRoot(dir string) {
 		slog.Warn("GC: temp gc-state cleanup failed", "dir", dir, "err", err)
 	}
 }
-

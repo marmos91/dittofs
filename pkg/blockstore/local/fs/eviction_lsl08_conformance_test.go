@@ -45,7 +45,7 @@ type countingFBSWrapper struct {
 	counter int
 }
 
-func (c *countingFBSWrapper) ResetCount()    { c.counter = 0 }
+func (c *countingFBSWrapper) ResetCount()     { c.counter = 0 }
 func (c *countingFBSWrapper) TotalCount() int { return c.counter }
 
 func (c *countingFBSWrapper) GetFileBlock(ctx context.Context, id string) (*blockstore.FileBlock, error) {

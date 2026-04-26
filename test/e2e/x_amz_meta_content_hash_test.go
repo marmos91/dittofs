@@ -14,10 +14,10 @@
 //  2. Drains uploads.
 //  3. Lists every cas/.../ object directly via the AWS SDK (NOT
 //     through DittoFS) and, for each one:
-//       - calls HEAD; asserts resp.Metadata["content-hash"] is present
-//         and prefixed "blake3:";
-//       - GETs the body; computes BLAKE3 ourselves; asserts the header
-//         value equals "blake3:" + hex(BLAKE3(body)).
+//     - calls HEAD; asserts resp.Metadata["content-hash"] is present
+//     and prefixed "blake3:";
+//     - GETs the body; computes BLAKE3 ourselves; asserts the header
+//     value equals "blake3:" + hex(BLAKE3(body)).
 //
 // This proves the wire format matches what `aws s3api head-object` would
 // print — operators can audit DittoFS-written CAS objects with stock
