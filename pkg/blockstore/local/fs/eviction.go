@@ -92,4 +92,3 @@ func fileOrFallbackSize(path string, fallback int64) int64 {
 	}
 	return fallback
 }
-
