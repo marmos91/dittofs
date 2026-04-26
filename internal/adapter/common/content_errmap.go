@@ -28,6 +28,17 @@ func MapContentToNFS3(err error) uint32 {
 	if err == nil {
 		return nfs3types.NFS3OK
 	}
+	// Phase 11 BSCAS-06 / INV-06 — CAS key parse failure indicates
+	// corrupted metadata; surfaced as invalid argument.
+	if goerrors.Is(err, blockstore.ErrCASKeyMalformed) {
+		return nfs3types.NFS3ErrInval
+	}
+	// Phase 11 BSCAS-06 / INV-06 — silent S3 corruption surfaced as
+	// I/O error to the client. The streaming verifier rejected bytes
+	// before they reached the caller; the protocol arm reports EIO.
+	if goerrors.Is(err, blockstore.ErrCASContentMismatch) {
+		return nfs3types.NFS3ErrIO
+	}
 	if goerrors.Is(err, blockstore.ErrRemoteUnavailable) {
 		return nfs3types.NFS3ErrIO
 	}
@@ -39,6 +50,12 @@ func MapContentToNFS4(err error) uint32 {
 	if err == nil {
 		return nfs4types.NFS4_OK
 	}
+	if goerrors.Is(err, blockstore.ErrCASKeyMalformed) {
+		return nfs4types.NFS4ERR_INVAL
+	}
+	if goerrors.Is(err, blockstore.ErrCASContentMismatch) {
+		return nfs4types.NFS4ERR_IO
+	}
 	if goerrors.Is(err, blockstore.ErrRemoteUnavailable) {
 		return nfs4types.NFS4ERR_IO
 	}
@@ -49,6 +66,16 @@ func MapContentToNFS4(err error) uint32 {
 func MapContentToSMB(err error) smbtypes.Status {
 	if err == nil {
 		return smbtypes.StatusSuccess
+	}
+	if goerrors.Is(err, blockstore.ErrCASKeyMalformed) {
+		return smbtypes.StatusInvalidParameter
+	}
+	if goerrors.Is(err, blockstore.ErrCASContentMismatch) {
+		// SMB does not have a dedicated data-checksum status that maps
+		// cleanly to the client (StatusDataError is not in our types
+		// table); StatusUnexpectedIOError is the closest analog and is
+		// also what the existing fallback uses for opaque I/O failures.
+		return smbtypes.StatusUnexpectedIOError
 	}
 	if goerrors.Is(err, blockstore.ErrRemoteUnavailable) {
 		return smbtypes.StatusUnexpectedIOError
