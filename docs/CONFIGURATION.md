@@ -353,15 +353,16 @@ blockstore:
   if you observe sweep-phase wall time as a bottleneck; back off on
   S3 503 SlowDown. The hard cap is 32.
 
-Env-var mapping (dot-path convention):
-`DITTOFS_BLOCKSTORE_SYNCER_TICK`,
-`DITTOFS_BLOCKSTORE_SYNCER_CLAIM_BATCH_SIZE`,
-`DITTOFS_BLOCKSTORE_SYNCER_UPLOAD_CONCURRENCY`,
-`DITTOFS_BLOCKSTORE_SYNCER_CLAIM_TIMEOUT`,
-`DITTOFS_BLOCKSTORE_GC_INTERVAL`,
-`DITTOFS_BLOCKSTORE_GC_SWEEP_CONCURRENCY`,
-`DITTOFS_BLOCKSTORE_GC_GRACE_PERIOD`,
-`DITTOFS_BLOCKSTORE_GC_DRY_RUN_SAMPLE_SIZE`.
+Env-var mapping (dot-path convention; viper binds the top-level `syncer`
+and `gc` blocks directly, with no `blockstore.` prefix):
+`DITTOFS_SYNCER_TICK`,
+`DITTOFS_SYNCER_CLAIM_BATCH_SIZE`,
+`DITTOFS_SYNCER_UPLOAD_CONCURRENCY`,
+`DITTOFS_SYNCER_CLAIM_TIMEOUT`,
+`DITTOFS_GC_INTERVAL`,
+`DITTOFS_GC_SWEEP_CONCURRENCY`,
+`DITTOFS_GC_GRACE_PERIOD`,
+`DITTOFS_GC_DRY_RUN_SAMPLE_SIZE`.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep-v0150-phase-11)
 for the full mark-sweep design and [CLI.md](CLI.md) for the on-demand
