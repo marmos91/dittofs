@@ -145,8 +145,13 @@ func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType
 			continue
 		}
 
-		// Check directory leases
-		if lock.Lease != nil && lock.Lease.IsDirectory && !lock.Lease.Breaking {
+		// Check directory leases. Skip records already at LeaseState=None
+		// (kept alive after ack-to-None awaiting CLOSE — handle-bound
+		// lifetime). Dispatching another break for an already-released
+		// lease would set Breaking=true on a None record and block any
+		// caller waiting on WaitForBreakCompletion until the timeout.
+		if lock.Lease != nil && lock.Lease.IsDirectory &&
+			lock.Lease.LeaseState != LeaseStateNone && !lock.Lease.Breaking {
 			lock.Lease.Breaking = true
 			lock.Lease.BreakToState = LeaseStateNone
 			lock.Lease.BreakingToRequired = LeaseStateNone
