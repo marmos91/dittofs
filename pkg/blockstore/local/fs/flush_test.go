@@ -85,7 +85,7 @@ func TestFlushBlock_DoesNotBlockReaderDuringDiskIO(t *testing.T) {
 	}()
 
 	flushStart := time.Now()
-	if _, _, err := bc.flushBlock(context.Background(), "p1", 0, mb); err != nil {
+	if _, _, err := bc.flushBlock(context.Background(), "p1", 0, mb, true); err != nil {
 		t.Fatalf("flushBlock: %v", err)
 	}
 	flushTotal := time.Since(flushStart)
@@ -131,7 +131,7 @@ func TestFlushBlock_OnDiskMatchesStagedSnapshot(t *testing.T) {
 		}
 	}()
 
-	path, sz, err := bc.flushBlock(context.Background(), "p1", 0, mb)
+	path, sz, err := bc.flushBlock(context.Background(), "p1", 0, mb, true)
 	stop.Store(true)
 	wg.Wait()
 
@@ -163,7 +163,7 @@ func TestFlushBlock_StateCoherenceAfterSuccess(t *testing.T) {
 	data := bytes.Repeat([]byte{0xCC}, 4096)
 	mb := stageMemBlockDirectly(t, bc, "p1", 0, data)
 
-	if _, _, err := bc.flushBlock(context.Background(), "p1", 0, mb); err != nil {
+	if _, _, err := bc.flushBlock(context.Background(), "p1", 0, mb, true); err != nil {
 		t.Fatalf("flushBlock: %v", err)
 	}
 
@@ -188,7 +188,7 @@ func TestFlushBlock_DiskUsedUpdatedOnSuccess(t *testing.T) {
 	mb := stageMemBlockDirectly(t, bc, "p1", 0, data)
 
 	beforeDisk := bc.diskUsed.Load()
-	if _, _, err := bc.flushBlock(context.Background(), "p1", 0, mb); err != nil {
+	if _, _, err := bc.flushBlock(context.Background(), "p1", 0, mb, true); err != nil {
 		t.Fatalf("flushBlock: %v", err)
 	}
 	afterDisk := bc.diskUsed.Load()
@@ -205,15 +205,49 @@ func TestFlushBlock_NoOpOnCleanBlock(t *testing.T) {
 	mb := stageMemBlockDirectly(t, bc, "p1", 0, data)
 
 	// First flush: dirty -> on disk.
-	if _, _, err := bc.flushBlock(context.Background(), "p1", 0, mb); err != nil {
+	if _, _, err := bc.flushBlock(context.Background(), "p1", 0, mb, true); err != nil {
 		t.Fatalf("flushBlock 1: %v", err)
 	}
 	// Second flush: clean (data nil, dirty false) -> no-op.
-	path, sz, err := bc.flushBlock(context.Background(), "p1", 0, mb)
+	path, sz, err := bc.flushBlock(context.Background(), "p1", 0, mb, true)
 	if err != nil {
 		t.Fatalf("flushBlock 2: %v", err)
 	}
 	if path != "" || sz != 0 {
 		t.Fatalf("expected no-op, got path=%q size=%d", path, sz)
+	}
+}
+
+// TestFlushBlock_PressureDrivenDoesNotFsync asserts that
+// flushOldestDirtyBlock (the memory-pressure path) flushes a block to disk
+// without invoking fsync, while the explicit Flush (NFS COMMIT) path does.
+// Regression guard for the Copilot review on PR #453: previously
+// flushBlock unconditionally fsynced, which made every pressure-driven
+// flush pay a per-block durability cost on the write hot path.
+func TestFlushBlock_PressureDrivenDoesNotFsync(t *testing.T) {
+	bc := newFSStoreForFlushTest(t)
+	data := bytes.Repeat([]byte{0xAB}, 4096)
+
+	// Pressure-driven path: stage a dirty memBlock and run
+	// flushOldestDirtyBlock directly. Counter must not advance.
+	_ = stageMemBlockDirectly(t, bc, "p-pressure", 0, data)
+	before := bc.FlushFsyncCountForTest()
+	if !bc.flushOldestDirtyBlock(context.Background()) {
+		t.Fatalf("flushOldestDirtyBlock returned false; expected a flush")
+	}
+	if got := bc.FlushFsyncCountForTest(); got != before {
+		t.Fatalf("pressure-driven flush bumped fsync counter %d -> %d; expected no fsync",
+			before, got)
+	}
+
+	// COMMIT path: same payload, fresh dirty memBlock. Counter must advance.
+	_ = stageMemBlockDirectly(t, bc, "p-commit", 0, data)
+	before = bc.FlushFsyncCountForTest()
+	if _, err := bc.Flush(context.Background(), "p-commit"); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if got := bc.FlushFsyncCountForTest(); got <= before {
+		t.Fatalf("COMMIT-driven flush did not bump fsync counter (before=%d after=%d)",
+			before, got)
 	}
 }

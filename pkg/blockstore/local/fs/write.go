@@ -94,7 +94,10 @@ func (bc *FSStore) WriteAt(ctx context.Context, payloadID string, data []byte, o
 		mb.mu.Unlock()
 
 		if isFull {
-			if _, _, err := bc.flushBlock(ctx, payloadID, blockIdx, mb); err != nil {
+			// Block-fill flush: no fsync. NFS COMMIT (Flush) supplies the
+			// durability fence; fsyncing per filled block would impose a
+			// per-block fsync on the write hot path.
+			if _, _, err := bc.flushBlock(ctx, payloadID, blockIdx, mb, false); err != nil {
 				return err
 			}
 		}

@@ -24,6 +24,13 @@ import (
 // BaseDirForTest returns the FSStore baseDir.
 func (bc *FSStore) BaseDirForTest() string { return bc.baseDir }
 
+// FlushFsyncCountForTest returns the cumulative number of fsyncs issued by
+// flushBlock since FSStore startup. Used by tests that assert the
+// pressure-driven and block-fill flush paths do NOT fsync (only Flush /
+// NFS COMMIT does). Reset is not provided; tests should sample twice and
+// compute the delta.
+func (bc *FSStore) FlushFsyncCountForTest() int64 { return bc.flushFsyncCount.Load() }
+
 // RollupOffsetForTest returns the metadata rollup_offset for payloadID.
 // Returns (0, nil) when no RollupStore is configured.
 func (bc *FSStore) RollupOffsetForTest(ctx context.Context, payloadID string) (uint64, error) {

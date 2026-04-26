@@ -83,6 +83,12 @@ type FSStore struct {
 	memUsed  atomic.Int64
 	diskUsed atomic.Int64
 
+	// flushFsyncCount counts how many times flushBlock has invoked fsync.
+	// Test-only observable surfaced via FlushFsyncCountForTest. Incremented
+	// only on the COMMIT-driven path (withFsync=true); pressure and
+	// block-fill paths flush without fsync and do not bump this counter.
+	flushFsyncCount atomic.Int64
+
 	// pendingFBs queues FileBlock metadata updates for async persistence.
 	// Keyed by blockID (string) -> *blockstore.FileBlock.
 	// Drained every 200ms by SyncFileBlocks, and on Close/Flush.

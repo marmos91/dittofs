@@ -19,9 +19,11 @@ import (
 // collapse: Pending replaces the legacy Local state), meaning it is on disk
 // and ready for the syncer to claim and upload.
 //
-// Returns the list of blocks that were flushed. Per-block fsync happens
-// inside flushBlock (post-LSL-07 the SetSkipFsync gate is gone — disk
-// durability is unconditional).
+// Returns the list of blocks that were flushed. fsync is requested here
+// (the COMMIT durability point) and propagated to flushBlock via the
+// withFsync flag. Pressure-driven and block-fill paths flush without fsync
+// to avoid a per-block fsync penalty on the write hot path; durability is
+// established later by an explicit COMMIT or the chunkstore rollup.
 func (bc *FSStore) Flush(ctx context.Context, payloadID string) ([]local.FlushedBlock, error) {
 	if bc.isClosed() {
 		return nil, ErrStoreClosed
@@ -49,7 +51,7 @@ func (bc *FSStore) Flush(ctx context.Context, payloadID string) ([]local.Flushed
 		isDirty := mb.dirty
 		mb.mu.RUnlock()
 		if isDirty {
-			path, dataSize, err := bc.flushBlock(ctx, key.payloadID, key.blockIdx, mb)
+			path, dataSize, err := bc.flushBlock(ctx, key.payloadID, key.blockIdx, mb, true)
 			if err != nil {
 				return nil, err
 			}
@@ -84,7 +86,13 @@ func (bc *FSStore) Flush(ctx context.Context, payloadID string) ([]local.Flushed
 //
 // Returns the path and dataSize of the flushed file, or empty string if no
 // flush was needed.
-func (bc *FSStore) flushBlock(ctx context.Context, payloadID string, blockIdx uint64, mb *memBlock) (string, uint32, error) {
+//
+// withFsync controls whether the .tmp file is fsynced before rename. The
+// COMMIT path (Flush) passes true to satisfy NFS durability semantics;
+// pressure-driven (flushOldestDirtyBlock) and block-fill (WriteAt) paths
+// pass false to avoid the per-block fsync throughput hit, deferring
+// durability to an explicit COMMIT or the chunkstore rollup.
+func (bc *FSStore) flushBlock(ctx context.Context, payloadID string, blockIdx uint64, mb *memBlock, withFsync bool) (string, uint32, error) {
 	_ = ctx // retained for signature compatibility; disk I/O is unbuffered.
 
 	// STAGE under lock — capture an immutable snapshot.
@@ -129,10 +137,13 @@ func (bc *FSStore) flushBlock(ctx context.Context, payloadID string, blockIdx ui
 		_ = os.Remove(tmpPath)
 		return "", 0, fmt.Errorf("write block tmp file: %w", err)
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmpPath)
-		return "", 0, fmt.Errorf("fsync block tmp file: %w", err)
+	if withFsync {
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			_ = os.Remove(tmpPath)
+			return "", 0, fmt.Errorf("fsync block tmp file: %w", err)
+		}
+		bc.flushFsyncCount.Add(1)
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmpPath)
@@ -205,7 +216,9 @@ func (bc *FSStore) flushOldestDirtyBlock(ctx context.Context) bool {
 	bc.blocksMu.RUnlock()
 
 	if oldestMB != nil {
-		if _, _, err := bc.flushBlock(ctx, oldestKey.payloadID, oldestKey.blockIdx, oldestMB); err != nil {
+		// Pressure-driven flush: no fsync. Durability is established later
+		// by an explicit COMMIT (Flush) or the chunkstore rollup pipeline.
+		if _, _, err := bc.flushBlock(ctx, oldestKey.payloadID, oldestKey.blockIdx, oldestMB, false); err != nil {
 			logger.Warn("local store: failed to flush oldest block", "error", err)
 			return false
 		}
