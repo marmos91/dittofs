@@ -184,19 +184,34 @@ func testPressureChannelINV05(t *testing.T, factory AppendLogFactory) {
 func testTornWriteRecovery(t *testing.T, factory AppendLogFactory) {
 	bc := factory(t)
 	ctx := context.Background()
+	baseDir := bc.BaseDirForTest()
+	rs := bc.RollupStoreForTest()
+	// Close the factory-created store and reopen WITHOUT a rollup
+	// pool. The factory enables rollup with a short stabilization
+	// window (50 ms) so the unrelated subtests in this suite can
+	// exercise the rollup path; on slow-IO platforms (Windows NTFS)
+	// 5 sequential AppendWrite + fsync iterations exceed that window
+	// and the rollup advances rollup_offset past records mid-test,
+	// leaving Recover with fewer intervals than were actually
+	// written. ReopenForTest constructs an FSStore without calling
+	// StartRollup, so AppendWrites stay durably in the log until we
+	// close it ourselves.
+	if err := bc.Close(); err != nil {
+		t.Fatalf("Close factory store: %v", err)
+	}
+	bcWrite, err := fs.ReopenForTest(baseDir, rs)
+	if err != nil {
+		t.Fatalf("ReopenForTest (write phase): %v", err)
+	}
 	const records = 5
 	payload := bytes.Repeat([]byte{0xCD}, 256)
 	for i := 0; i < records; i++ {
-		if err := bc.AppendWrite(ctx, "torn", payload, uint64(i*4096)); err != nil {
+		if err := bcWrite.AppendWrite(ctx, "torn", payload, uint64(i*4096)); err != nil {
 			t.Fatalf("AppendWrite %d: %v", i, err)
 		}
 	}
-	baseDir := bc.BaseDirForTest()
-	rs := bc.RollupStoreForTest()
-	// Close the store before poking the log file — a concurrent rollup
-	// worker could otherwise race our truncation.
-	if err := bc.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	if err := bcWrite.Close(); err != nil {
+		t.Fatalf("Close write phase: %v", err)
 	}
 
 	// Append random garbage to the log. Recovery must discard everything
