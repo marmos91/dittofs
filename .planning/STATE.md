@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v0.15.0
 milestone_name: milestone
-status: executing
-stopped_at: Completed 10-12-PLAN.md (Phase 10 final plan, docs surface)
-last_updated: "2026-04-24T19:57:20.294Z"
-last_activity: 2026-04-24
+status: ready-to-plan
+stopped_at: Phase 11 (A2) shipped via PR #453 (squash 2b96c965). Phase 12 (A3) ready to plan.
+last_updated: "2026-04-26T18:30:00.000Z"
+last_activity: 2026-04-26
 progress:
   total_phases: 8
-  completed_phases: 3
-  total_plans: 34
-  completed_plans: 34
-  percent: 100
+  completed_phases: 5
+  total_plans: 52
+  completed_plans: 52
+  percent: 62.5
 ---
 
 # Project State
@@ -21,22 +21,24 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-23)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 10 — fastcdc-chunker-hybrid-local-store-a1
+**Current focus:** Phase 12 — CDC read path + metadata schema + engine API (A3)
 
 ## Current Position
 
 Milestone: v0.15.0
-Phase: 10 (fastcdc-chunker-hybrid-local-store-a1) — EXECUTING
-Plan: 12 of 12
-Status: Ready to execute
-Last activity: 2026-04-24
+Phase: 12 (cdc-read-path-metadata-engine-api-a3) — READY TO PLAN
+Branch: `gsd/phase-12-cdc-read-path-metadata-engine-api`
+Status: Phase 11 (A2) shipped; Phase 12 (A3) unblocked
+Last activity: 2026-04-26
 
 ## Next Actionable
 
-Phase 08 (A0 — Pre-refactor cleanup) and Phase 09 (ADAPT — Adapter layer cleanup) are both pre-A1 tracks with no dependencies. Either can start immediately; they proceed in parallel.
+Phase 12 (A3): CDC read path + metadata schema + engine API. 14 requirements across META-01/03/04, API-01/02/03/04, CACHE-01..06, INV-02. Estimated ~2 weeks. Dependencies satisfied: Phase 11 (A2, #422, shipped PR #453) + Phase 09 (ADAPT, #427, shipped PR #438).
 
-- `/gsd-plan-phase 8` — Pre-refactor cleanup (TD-01..TD-04), GH #420
-- `/gsd-plan-phase 9` — Adapter layer cleanup (ADAPT-01..ADAPT-05), GH #427
+- `/gsd-discuss-phase 12 --chain` — interactive discuss → auto plan + execute
+- `/gsd-discuss-phase 12 --auto` — fully autonomous (Claude picks defaults)
+- `/gsd-plan-phase 12` — skip discuss, go straight to planning
+- GH issue: #423
 
 ## Completed Milestones
 
@@ -56,6 +58,19 @@ Phase 08 (A0 — Pre-refactor cleanup) and Phase 09 (ADAPT — Adapter layer cle
 | v0.13.0 Metadata Backup & Restore | 1-7 | 38 | Apr 2026 | phases complete; not released |
 
 ## Accumulated Context
+
+### v0.15.0 Progress
+
+| Phase | Name | Status | PR |
+|-------|------|--------|-----|
+| 08 | Pre-refactor cleanup (A0) | shipped | #437 |
+| 09 | Adapter layer cleanup (ADAPT) | shipped | #438 |
+| 10 | FastCDC chunker + hybrid local store (A1) | shipped | #443 |
+| 11 | CAS write path + GC rewrite (A2) | shipped | #453 (squash 2b96c965, merged 2026-04-26) |
+| 12 | CDC read path + metadata schema + engine API (A3) | **ready to plan** | #423 (issue) |
+| 13 | Merkle root + file-level dedup (A4) | blocked by 12 | #424 |
+| 14 | Migration tool (A5) | blocked by 13 | #425 |
+| 15 | Legacy cleanup (A6) | deferred until A5 in production | #426 |
 
 ### v0.15.0 Decisions
 
@@ -80,8 +95,10 @@ Historical v0.13.0 decisions preserved in `.planning/milestones/v0.13.0-archive/
 
 ### Pending Todos
 
-- After Phase 08 + Phase 09 planning: run both phases in parallel (independent cleanup tracks)
-- Before Phase 11 (A2) start: ensure `TestBlockStoreImmutableOverwrites` E2E skeleton is drafted and is confirmed failing on `develop` (proof of bug)
+- Phase 12 (A3) follow-ups carried from Phase 11 review:
+  - DEFERRED IN-4-03: async GC + 202+poll REST surface (long-running mark-sweep would otherwise time out reverse proxies)
+  - DEFERRED WR-3-02 wiring: `gc.interval` periodic-ticker not yet wired into Runtime startup; currently warn-only if set in config
+  - DEFERRED WR-4-01 follow-up: dedup short-circuit still leaks donor refcount; needs design decision (mirror increment to `fb` vs. drop short-circuit vs. point `fb` at `existing.ID` with ID-mapping)
 - Before Phase 14 (A5) ship: benchmark VM-fleet dedup fixture achieves ≥40% reduction (VER-03 gate)
 - Before Phase 15 (A6) merge: confirm `dfsctl blockstore migrate status` reports 100% for every production share
 
@@ -91,8 +108,9 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-24T19:57:20.289Z
-Stopped at: Completed 10-12-PLAN.md (Phase 10 final plan, docs surface)
-Next action: `/gsd-plan-phase 8` (A0 — Pre-refactor cleanup) OR `/gsd-plan-phase 9` (ADAPT) — both are actionable in parallel
+Last session: 2026-04-26T18:30:00.000Z
+Stopped at: Phase 11 (A2) shipped via PR #453 (squash 2b96c965, merged 2026-04-26). Branched to `gsd/phase-12-cdc-read-path-metadata-engine-api`, ready to plan.
+Next action: `/gsd-discuss-phase 12 --chain` (interactive discuss → auto plan + execute) OR `/gsd-plan-phase 12` (skip discuss)
 
-**Planned Phase:** 10 (fastcdc-chunker-hybrid-local-store-a1) — 12 plans — 2026-04-24T13:55:22.578Z
+**Shipped Phase:** 11 (cas-write-path-gc-rewrite-a2) — 9 plans + ~30 review/fix commits — 2026-04-26T18:03:03Z (PR #453)
+**Planned Phase:** 12 (cdc-read-path-metadata-engine-api-a3) — TBD plans — branch: `gsd/phase-12-cdc-read-path-metadata-engine-api`
