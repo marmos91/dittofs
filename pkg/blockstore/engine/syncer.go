@@ -415,8 +415,13 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 // signal.
 //
 // Phase 11 Plan 02 (D-13/D-15/D-25): each cycle calls claimBatch to flip up
-// to ClaimBatchSize Pending rows to Syncing in one metadata transaction —
-// that transaction is the serialization point against duplicate uploads.
+// to ClaimBatchSize Pending rows to Syncing via per-row PutFileBlock writes
+// (no batched/transactional FileBlockStore API exists today — Phase 12+).
+// Each row's CAS Pending→Syncing flip is atomic on its own, but the batch
+// is NOT collectively atomic; a syncer crash mid-batch leaves a mix of
+// Syncing and Pending rows. CAS idempotency tolerates that: on restart,
+// reconciler reclaims orphaned Syncing rows back to Pending, and a second
+// uploadOne over the same hash is a no-op against the immutable CAS object.
 // A bounded pool of UploadConcurrency goroutines then drives uploadOne for
 // every claimed block. The cycle repeats until claimBatch returns an empty
 // batch (no more Pending work).
@@ -486,8 +491,15 @@ func (m *Syncer) SyncNow(ctx context.Context) error {
 	return errors.Join(uploadErrs...)
 }
 
-// claimBatch flips up to max Pending blocks to Syncing in a logical batch
-// and stamps LastSyncAttemptAt = now.
+// claimBatch flips up to max Pending blocks to Syncing via per-row
+// PutFileBlock writes (FileBlockStore exposes no batched/transactional
+// claim API today; Phase 12+). Each row's transition is atomic on its own
+// but the batch is NOT collectively atomic — a syncer crash mid-batch
+// leaves a mix of Syncing and Pending rows. CAS idempotency tolerates the
+// resulting partial state: recoverStaleSyncing returns the abandoned
+// Syncing rows to Pending, and any duplicate uploadOne over the same hash
+// is a no-op against the immutable CAS object. Stamps
+// LastSyncAttemptAt = now on every claimed row.
 //
 // Serialization scope (D-13): WITHIN ONE syncer instance, PutFileBlock is
 // applied per row before the next iteration sees it, so two concurrent
