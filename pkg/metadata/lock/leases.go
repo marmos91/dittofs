@@ -52,7 +52,19 @@ var ErrLeaseAckNotBreaking = errors.New("lease not in breaking state")
 // validUpgrades defines allowed lease state upgrade transitions.
 // A lease can only be upgraded (more permissions), never downgraded via RequestLease.
 // Downgrade happens only through lease break.
+//
+// LeaseStateNone is a re-lease source: a record kept alive after ack-to-None
+// (handle-bound lifetime) can be re-granted to any valid state by a same-key
+// RequestLease. Without this entry the persisted None record would be treated
+// as a downgrade source and the request would be rejected (smbtorture
+// nobreakself: a same-key reopen after a break must re-grant the lease).
 var validUpgrades = map[uint32][]uint32{
+	LeaseStateNone: {
+		LeaseStateRead,
+		LeaseStateRead | LeaseStateWrite,
+		LeaseStateRead | LeaseStateHandle,
+		LeaseStateRead | LeaseStateWrite | LeaseStateHandle,
+	},
 	LeaseStateRead: {
 		LeaseStateRead | LeaseStateWrite,
 		LeaseStateRead | LeaseStateHandle,
@@ -547,16 +559,27 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 			LeaseStateToString(lock.Lease.BreakToState))
 	}
 
-	// If acknowledging to None, remove the lease entirely
+	// Ack-to-None: keep the record alive at LeaseState=None until the holding
+	// handle CLOSEs (ReleaseLeaseForHandle removes it). This mirrors Samba
+	// behavior and lets the wrapper distinguish a duplicate ack on an
+	// already-released lease (record present, Breaking=false → ErrLeaseAck-
+	// NotBreaking → STATUS_UNSUCCESSFUL, smbtorture breaking2/breaking5)
+	// from a CLOSE-beat-ack race (record gone → ErrLeaseAckNotFound →
+	// silent success, WPTS BVT_DirectoryLeasing_ReadWriteHandleCaching).
 	if acknowledgedState == LeaseStateNone {
-		lm.removeLeaseAtLocked(handleKey, idx)
+		lock.Lease.LeaseState = LeaseStateNone
+		lock.Lease.Breaking = false
+		lock.Lease.BreakToState = 0
+		lock.Lease.BreakingToRequired = LeaseStateNone
+		lock.Lease.BreakStarted = time.Time{}
+		lock.Type = lockTypeForLeaseState(LeaseStateNone)
 
-		// Remove from persistent store
 		if lm.lockStore != nil {
-			_ = lm.lockStore.DeleteLock(ctx, lock.ID)
+			pl := ToPersistedLock(lock, 0)
+			_ = lm.lockStore.PutLock(ctx, pl)
 		}
 
-		logger.Debug("AcknowledgeLeaseBreak: lease fully released",
+		logger.Debug("AcknowledgeLeaseBreak: lease released to None (record kept until CLOSE)",
 			"leaseKey", fmt.Sprintf("%x", leaseKey))
 		lm.signalBreakWaitLocked(handleKey)
 		return nil

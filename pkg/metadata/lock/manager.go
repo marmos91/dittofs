@@ -1555,15 +1555,10 @@ func (lm *Manager) forceCompleteBreaksExceptKey(handleKey string, exceptKey [16]
 		if l.Lease != nil && l.Lease.Breaking && l.Lease.LeaseKey != exceptKey {
 			modified = true
 			finalTarget := l.Lease.BreakingToRequired
-			if finalTarget == LeaseStateNone {
-				if lm.lockStore != nil {
-					_ = lm.lockStore.DeleteLock(context.Background(), l.ID)
-				}
-				logger.Debug("forceCompleteBreaks: removed lease (break-to None)",
-					"handleKey", handleKey,
-					"leaseKey", fmt.Sprintf("%x", l.Lease.LeaseKey))
-				continue
-			}
+			// Auto-downgrade in place. For finalTarget=None keep the record
+			// alive at LeaseState=None (handle-bound lifetime) so a later
+			// unsolicited or duplicate ack surfaces as ErrLeaseAckNotBreaking
+			// → STATUS_UNSUCCESSFUL. Same rationale as applyBreakStageLocked.
 			l.Lease.LeaseState = finalTarget
 			l.Lease.BreakingToRequired = finalTarget
 			l.Lease.Breaking = false
@@ -1771,15 +1766,15 @@ func (lm *Manager) applyBreakStageLocked(lock *UnifiedLock, target uint32) (*Uni
 	}
 
 	// Fire-and-forget downgrade: client won't ACK (current state is pure R).
+	// Apply target inline. For target=None we keep the record alive at
+	// LeaseState=None (handle-bound lifetime) so a later unsolicited ack
+	// from the client surfaces as ErrLeaseAckNotBreaking →
+	// STATUS_UNSUCCESSFUL per MS-SMB2 3.3.5.22.2 and the smbtorture
+	// breaking5 contract. The record is removed when the holding handle
+	// CLOSEs (ReleaseLeaseForHandle).
 	lock.Lease.Breaking = false
 	lock.Lease.BreakToState = 0
 	lock.Lease.BreakStarted = time.Time{}
-	if target == LeaseStateNone {
-		if lm.lockStore != nil {
-			_ = lm.lockStore.DeleteLock(context.Background(), lock.ID)
-		}
-		return snapshot, true
-	}
 	lock.Lease.LeaseState = target
 	lock.Lease.BreakingToRequired = target
 	lock.Type = lockTypeForLeaseState(target)

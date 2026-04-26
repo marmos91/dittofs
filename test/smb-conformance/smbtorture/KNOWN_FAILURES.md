@@ -510,8 +510,6 @@ incomplete break notification delivery and multi-client coordination.
 | smb2.lease.oplock | Leases | Lease + oplock interaction not fully working | #429 |
 | smb2.lease.multibreak | Leases | Multi-client lease break not fully working | #429 |
 | smb2.lease.breaking1 | Leases | Lease breaking state handling not fully working | #429 |
-| smb2.lease.breaking2 | Leases | Lease breaking state handling not fully working | #429 |
-| smb2.lease.breaking5 | Leases | Lease breaking state handling not fully working | #429 |
 | smb2.lease.breaking6 | Leases | Lease breaking state handling not fully working | #429 |
 | smb2.lease.lock1 | Leases | Lease + lock interaction not fully working | #429 |
 | smb2.lease.timeout | Leases | Lease timeout handling not fully working | #429 |
