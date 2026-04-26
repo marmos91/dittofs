@@ -4,12 +4,62 @@ import (
 	"container/list"
 	"context"
 	"sync"
+
+	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// blockKey is the composite key for a cached block entry.
+// keyKind discriminates the three coexisting key spaces in the read
+// buffer during the dual-read window. The kinds share one eviction
+// budget but cannot collide because blockKey is value-compared and the
+// kind byte differs.
+type keyKind uint8
+
+const (
+	// keyKindCoord: (payloadID, blockIdx) — the legacy engine.ReadAt
+	// entry path that does not consult metadata before serving from
+	// cache.
+	keyKindCoord keyKind = 0
+
+	// keyKindCAS: ContentHash — cross-file dedup (two callers reading
+	// the same content share one cache line).
+	keyKindCAS keyKind = 1
+
+	// keyKindLegacy: pre-Phase-11 storeKey string ({payloadID}/block-{N}).
+	keyKindLegacy keyKind = 2
+)
+
+// blockKey is the composite key for a cached block entry. The kind
+// discriminator MUST be checked first; the matching field carries the
+// actual key bytes. Cross-space collision is impossible by construction
+// because blockKey is value-compared and the kind byte differs.
 type blockKey struct {
+	kind keyKind
+
+	// keyKindCoord fields:
 	payloadID string
 	blockIdx  uint64
+
+	// keyKindCAS field:
+	cas blockstore.ContentHash
+
+	// keyKindLegacy field:
+	legacy string
+}
+
+// coordKey constructs a coordinate-space key (legacy engine.ReadAt path).
+func coordKey(payloadID string, blockIdx uint64) blockKey {
+	return blockKey{kind: keyKindCoord, payloadID: payloadID, blockIdx: blockIdx}
+}
+
+// casKey constructs a CAS-space key (D-22 — verified read path).
+func casKey(h blockstore.ContentHash) blockKey {
+	return blockKey{kind: keyKindCAS, cas: h}
+}
+
+// legacyKey constructs a legacy-space key keyed by the legacy
+// {payloadID}/block-{N} string.
+func legacyKey(storeKey string) blockKey {
+	return blockKey{kind: keyKindLegacy, legacy: storeKey}
 }
 
 // cacheEntry holds the buffered block data stored in each list.Element.
@@ -51,56 +101,35 @@ func NewReadBuffer(maxBytes int64) *ReadBuffer {
 	}
 }
 
-// Get reads a buffered block into dest starting from offset within the block data.
-// Returns the number of bytes copied and whether the block was found.
-// If offset >= dataSize, returns (0, false).
-// Copy-on-read: modifying dest does not affect buffered data.
+// Get reads a buffered block (coordinate space) into dest starting from
+// offset within the block data. Returns bytes copied and whether the
+// block was found. Copy-on-read: modifying dest does not affect the
+// buffer. See GetCAS / GetLegacy for the dual-read window APIs.
 func (c *ReadBuffer) Get(payloadID string, blockIdx uint64, dest []byte, offset uint32) (int, bool) {
 	if c == nil {
 		return 0, false
 	}
-
-	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
-
-	c.mu.RLock()
-	elem, ok := c.entries[key]
-	if !ok {
-		c.mu.RUnlock()
-		return 0, false
-	}
-	entry := elem.Value.(*cacheEntry)
-	if offset >= entry.dataSize {
-		c.mu.RUnlock()
-		return 0, false
-	}
-	n := copy(dest, entry.data[offset:entry.dataSize])
-	c.mu.RUnlock()
-
-	// Promote under WLock (separate lock acquisition to avoid holding RLock
-	// while taking WLock, which would deadlock).
-	c.mu.Lock()
-	// Re-check: entry may have been evicted between RUnlock and WLock.
-	if elem2, still := c.entries[key]; still {
-		c.lru.MoveToFront(elem2)
-	}
-	c.mu.Unlock()
-
-	return n, true
+	return c.getAt(coordKey(payloadID, blockIdx), dest, offset)
 }
 
-// Put inserts or updates a block in the read buffer. A heap copy of data is made.
-// If the read buffer exceeds maxBytes, LRU entries are evicted synchronously.
-// Blocks larger than maxBytes are silently skipped to prevent permanent over-budget.
+// Put inserts or updates a coordinate-space block in the read buffer.
+// A heap copy of data is made. LRU entries are evicted synchronously
+// when over budget; blocks larger than maxBytes are silently skipped.
+// See PutCAS / PutLegacy for the dual-read window APIs.
 func (c *ReadBuffer) Put(payloadID string, blockIdx uint64, data []byte, dataSize uint32) {
+	c.putAt(coordKey(payloadID, blockIdx), data, dataSize)
+}
+
+// putAt is the shared insert path for all three key spaces. Eviction
+// follows the existing LRU policy and the byFile secondary index is
+// maintained only for coordinate keys.
+func (c *ReadBuffer) putAt(key blockKey, data []byte, dataSize uint32) {
 	if c == nil {
 		return
 	}
 	if int64(dataSize) > c.maxBytes {
 		return
 	}
-
-	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
-
 	// Clamp dataSize to len(data) to prevent out-of-bounds panic from callers
 	// passing inconsistent values.
 	if int(dataSize) > len(data) {
@@ -135,16 +164,131 @@ func (c *ReadBuffer) Put(payloadID string, blockIdx uint64, data []byte, dataSiz
 	c.entries[key] = elem
 	c.curBytes += int64(dataSize)
 
-	idxSet, ok := c.byFile[payloadID]
-	if !ok {
-		idxSet = make(map[uint64]struct{})
-		c.byFile[payloadID] = idxSet
+	if key.kind == keyKindCoord {
+		idxSet, ok := c.byFile[key.payloadID]
+		if !ok {
+			idxSet = make(map[uint64]struct{})
+			c.byFile[key.payloadID] = idxSet
+		}
+		idxSet[key.blockIdx] = struct{}{}
 	}
-	idxSet[blockIdx] = struct{}{}
 
 	for c.curBytes > c.maxBytes && c.lru.Len() > 1 {
 		c.evictLRU()
 	}
+}
+
+// GetCAS reads a CAS-cached block (D-22) into dest. Returns (n, true)
+// if the hash is in the cache. The verifier is the source of truth for
+// content integrity; the cache only serves bytes that were verified on
+// insert. Phase 12 CACHE-02 collapses the buffer to this single API.
+func (c *ReadBuffer) GetCAS(hash blockstore.ContentHash, dest []byte, offset uint32) (int, bool) {
+	if c == nil {
+		return 0, false
+	}
+	return c.getAt(casKey(hash), dest, offset)
+}
+
+// PutCAS inserts data into the CAS key space, keyed by ContentHash.
+// Cross-file dedup: two payloads referencing the same hash share one
+// cache line. Heap-copies data per the existing copy-on-write semantics.
+func (c *ReadBuffer) PutCAS(hash blockstore.ContentHash, data []byte, dataSize uint32) {
+	c.putAt(casKey(hash), data, dataSize)
+}
+
+// GetLegacy reads a legacy-string-keyed block (dual-read window only,
+// D-22). The legacy storeKey is the FormatStoreKey output for
+// pre-Phase-11 file blocks. Removed when the dual-read code path
+// retires in Phase 15.
+func (c *ReadBuffer) GetLegacy(storeKey string, dest []byte, offset uint32) (int, bool) {
+	if c == nil {
+		return 0, false
+	}
+	return c.getAt(legacyKey(storeKey), dest, offset)
+}
+
+// PutLegacy inserts data into the legacy storeKey space.
+func (c *ReadBuffer) PutLegacy(storeKey string, data []byte, dataSize uint32) {
+	c.putAt(legacyKey(storeKey), data, dataSize)
+}
+
+// getAt is the shared read path for all three key spaces.
+func (c *ReadBuffer) getAt(key blockKey, dest []byte, offset uint32) (int, bool) {
+	c.mu.RLock()
+	elem, ok := c.entries[key]
+	if !ok {
+		c.mu.RUnlock()
+		return 0, false
+	}
+	entry := elem.Value.(*cacheEntry)
+	if offset >= entry.dataSize {
+		c.mu.RUnlock()
+		return 0, false
+	}
+	n := copy(dest, entry.data[offset:entry.dataSize])
+	c.mu.RUnlock()
+
+	c.mu.Lock()
+	if elem2, still := c.entries[key]; still {
+		c.lru.MoveToFront(elem2)
+	}
+	c.mu.Unlock()
+
+	return n, true
+}
+
+// InvalidateCAS removes a CAS entry by ContentHash. Returned bool
+// indicates whether an entry was present.
+func (c *ReadBuffer) InvalidateCAS(hash blockstore.ContentHash) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	elem, ok := c.entries[casKey(hash)]
+	if !ok {
+		return false
+	}
+	c.removeEntry(elem)
+	return true
+}
+
+// InvalidateLegacy removes a legacy entry by its storeKey string.
+func (c *ReadBuffer) InvalidateLegacy(storeKey string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	elem, ok := c.entries[legacyKey(storeKey)]
+	if !ok {
+		return false
+	}
+	c.removeEntry(elem)
+	return true
+}
+
+// ContainsCAS reports whether a CAS hash is buffered. Does not promote LRU.
+func (c *ReadBuffer) ContainsCAS(hash blockstore.ContentHash) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	_, ok := c.entries[casKey(hash)]
+	c.mu.RUnlock()
+	return ok
+}
+
+// ContainsLegacy reports whether a legacy storeKey is buffered. Does not
+// promote LRU.
+func (c *ReadBuffer) ContainsLegacy(storeKey string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	_, ok := c.entries[legacyKey(storeKey)]
+	c.mu.RUnlock()
+	return ok
 }
 
 // Invalidate removes a single block entry from the read buffer.
@@ -153,7 +297,7 @@ func (c *ReadBuffer) Invalidate(payloadID string, blockIdx uint64) {
 		return
 	}
 
-	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
+	key := coordKey(payloadID, blockIdx)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -181,7 +325,7 @@ func (c *ReadBuffer) InvalidateFile(payloadID string) {
 	}
 
 	for blockIdx := range idxSet {
-		c.unlinkEntry(blockKey{payloadID: payloadID, blockIdx: blockIdx})
+		c.unlinkEntry(coordKey(payloadID, blockIdx))
 	}
 	delete(c.byFile, payloadID)
 }
@@ -203,7 +347,7 @@ func (c *ReadBuffer) InvalidateAbove(payloadID string, threshold uint64) {
 
 	for blockIdx := range idxSet {
 		if blockIdx >= threshold {
-			c.unlinkEntry(blockKey{payloadID: payloadID, blockIdx: blockIdx})
+			c.unlinkEntry(coordKey(payloadID, blockIdx))
 			delete(idxSet, blockIdx)
 		}
 	}
@@ -219,7 +363,7 @@ func (c *ReadBuffer) Contains(payloadID string, blockIdx uint64) bool {
 		return false
 	}
 
-	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
+	key := coordKey(payloadID, blockIdx)
 
 	c.mu.RLock()
 	_, ok := c.entries[key]
@@ -392,6 +536,12 @@ func (c *ReadBuffer) removeEntry(elem *list.Element) {
 	entry := elem.Value.(*cacheEntry)
 	c.unlinkEntry(entry.key)
 
+	// Secondary byFile index only tracks coordinate-space entries. CAS
+	// and legacy-string entries are not file-scoped (CAS spans files;
+	// legacy keys are dual-read-window only and aged out per-key).
+	if entry.key.kind != keyKindCoord {
+		return
+	}
 	if idxSet, ok := c.byFile[entry.key.payloadID]; ok {
 		delete(idxSet, entry.key.blockIdx)
 		if len(idxSet) == 0 {
