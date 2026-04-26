@@ -392,7 +392,7 @@ the dual-read shim until Phase 14 (A5).
 //     safe.
 //   - Errors are returned as typed values mapped through
 //     internal/adapter/common/.
-WriteBlockWithHash(ctx context.Context, h ContentHash, data []byte) error
+WriteBlockWithHash(ctx context.Context, blockKey string, hash ContentHash, data []byte) error
 ```
 
 External tooling (e.g. `aws s3api head-object`) MUST be able to verify
@@ -418,7 +418,7 @@ verifier criterion.
 //   - The streaming verifier sees bytes once (zero extra allocation).
 //   - Verification is hard-required (INV-06): there is no opt-out
 //     knob.
-ReadBlockVerified(ctx context.Context, h ContentHash) ([]byte, error)
+ReadBlockVerified(ctx context.Context, blockKey string, expected ContentHash) ([]byte, error)
 ```
 
 Header pre-check + streaming recompute is "fail-closed twice" by
