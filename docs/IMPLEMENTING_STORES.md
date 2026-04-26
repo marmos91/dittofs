@@ -110,6 +110,47 @@ The metadata store interface and implementation guide remains the same as before
 
 Conformance tests: `pkg/metadata/storetest/`
 
+### MetadataStore.EnumerateFileBlocks (v0.15.0 Phase 11)
+
+v0.15.0 (Phase 11 / A2) adds a new mandatory cursor method that the
+mark-sweep garbage collector uses to enumerate every live block hash
+without loading the full file/block set into application memory.
+
+```go
+// EnumerateFileBlocks streams every FileBlock's ContentHash to fn.
+// Implementations MUST:
+//   - Iterate using a backend-native cursor (Badger prefix iterator,
+//     Postgres server-side cursor with batched fetch, in-memory map
+//     iteration) -- no full-set load.
+//   - Honor ctx.Done(): return ctx.Err() promptly when the context is
+//     cancelled.
+//   - Emit zero-hash FileBlocks (legacy pre-Phase-11 data) the same way
+//     as non-zero-hash blocks; the GC live-set ignores zero hashes.
+//   - Abort iteration and return the fn error verbatim if fn returns
+//     non-nil; do NOT swallow it.
+//   - Be safe under concurrent writes: it is acceptable for the cursor
+//     to miss FileBlocks created mid-iteration; the next mark cycle
+//     will pick them up.
+EnumerateFileBlocks(ctx context.Context, fn func(ContentHash) error) error
+```
+
+Conformance scenarios live in `pkg/metadata/storetest/` and every
+backend MUST pass them:
+
+1. **Empty store**: `fn` is never invoked; returns `nil`.
+2. **Single file**: `fn` is invoked once per FileBlock for the file.
+3. **Large fanout** (`N` files × `M` blocks): `fn` is invoked exactly
+   `N*M` times in any order; no duplicates, no omissions.
+4. **fn-error mid-iteration**: returning a non-nil error from `fn`
+   aborts iteration and propagates the error.
+5. **Context cancellation**: cancelling `ctx` mid-iteration causes
+   the call to return `ctx.Err()` within the polling interval.
+
+Memory-store reference: direct `range` over the in-memory map.
+Badger-store reference: `txn.NewIterator` over the FileBlock prefix.
+Postgres-store reference: server-side cursor (`DECLARE` + `FETCH`)
+with batches of 1000 rows.
+
 ## Implementing a Local Store
 
 Local stores provide fast, per-share block storage. Each share gets an isolated local storage directory.
@@ -320,6 +361,71 @@ See `pkg/blockstore/remote/s3/` for a production S3 remote store implementation 
 - Health check via HEAD bucket
 - Efficient multipart uploads for large blocks
 
+### CAS contracts (v0.15.0 Phase 11)
+
+v0.15.0 (Phase 11 / A2) routes all new uploads through a
+content-addressable keyspace `cas/{hh}/{hh}/{hex}` and verifies every
+byte downloaded from the remote against the expected BLAKE3 hash. Two
+new contract methods are required for any RemoteStore implementation
+that wants to participate in the v0.15.0 write path; backends remaining
+on the legacy `{payloadID}/block-{N}` keyspace continue to work via
+the dual-read shim until Phase 14 (A5).
+
+#### RemoteStore.WriteBlockWithHash
+
+```go
+// WriteBlockWithHash uploads data under the CAS key derived from h
+// and sets a backend-native object-metadata header carrying the hash.
+//
+// Semantics:
+//   - The key MUST be derived from h via FormatCASKey (cas/{hh}/{hh}/{hex}).
+//   - The backend-native object metadata MUST set "content-hash" to
+//     "blake3:" + hex(h). For S3, this becomes the user-metadata header
+//     x-amz-meta-content-hash. For other backends, set the equivalent
+//     custom-metadata field.
+//   - The PUT MUST be atomic: either the object exists at the CAS key
+//     with the correct bytes AND the metadata header, or it does not
+//     exist at all.
+//   - The call MUST be idempotent: re-uploading the same h with the
+//     same bytes is a no-op (or an overwrite that yields identical
+//     state). This is what makes the syncer's restart-recovery janitor
+//     safe.
+//   - Errors are returned as typed values mapped through
+//     internal/adapter/common/.
+WriteBlockWithHash(ctx context.Context, blockKey string, hash ContentHash, data []byte) error
+```
+
+External tooling (e.g. `aws s3api head-object`) MUST be able to verify
+the header without DittoFS metadata — this is the BSCAS-06 external
+verifier criterion.
+
+#### RemoteStore.ReadBlockVerified
+
+```go
+// ReadBlockVerified reads the object at the CAS key derived from h
+// and verifies its bytes against h end-to-end before returning them
+// to the caller.
+//
+// Semantics:
+//   - HEAD-style pre-check: if the backend exposes the content-hash
+//     header cheaply (S3 GetObject returns it in the same response,
+//     so no extra round-trip is needed), reject early with
+//     ErrCASContentMismatch when the header does not match h.
+//   - Streaming verification: the body is fed to a blake3.Hasher as
+//     the caller reads it. On EOF, hasher.Sum(nil) MUST equal h or
+//     the call returns ErrCASContentMismatch and the buffer is
+//     discarded -- corrupt bytes MUST NOT be surfaced upstream.
+//   - The streaming verifier sees bytes once (zero extra allocation).
+//   - Verification is hard-required (INV-06): there is no opt-out
+//     knob.
+ReadBlockVerified(ctx context.Context, blockKey string, expected ContentHash) ([]byte, error)
+```
+
+Header pre-check + streaming recompute is "fail-closed twice" by
+design: the header alone is not sufficient (would trust the backend
+to never silently corrupt); recompute alone wastes a body read on a
+definitively-wrong object.
+
 ### Conformance Tests
 
 Test your remote store with the conformance suite:
@@ -338,6 +444,12 @@ func TestMyRemoteStore(t *testing.T) {
     remotetest.RunRemoteStoreTests(t, store)
 }
 ```
+
+The v0.15.0 conformance suite extends `remotetest` with scenarios for
+`WriteBlockWithHash` (header is set; key shape matches `cas/...`;
+re-PUT is idempotent) and `ReadBlockVerified` (round-trip succeeds;
+header-mismatch returns `ErrCASContentMismatch`; body-mismatch returns
+`ErrCASContentMismatch`; corrupt bytes never surface upstream).
 
 ## Best Practices
 

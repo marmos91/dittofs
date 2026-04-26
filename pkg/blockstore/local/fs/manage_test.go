@@ -367,30 +367,18 @@ func TestManageSetEvictionReEnabled(t *testing.T) {
 	bc.SetEvictionEnabled(false)
 	bc.SetEvictionEnabled(true)
 
-	// Put a remote block that can be evicted
-	blkPath := filepath.Join(bc.baseDir, "evictable.blk")
-	if err := os.WriteFile(blkPath, make([]byte, 50), 0644); err != nil {
-		t.Fatalf("write evictable file: %v", err)
-	}
-	fb := &blockstore.FileBlock{
-		ID:            "evict-file/0",
-		LocalPath:     blkPath,
-		BlockStoreKey: "s3://bucket/evict",
-		State:         blockstore.BlockStateRemote,
-		DataSize:      50,
-		RefCount:      1,
-		LastAccess:    time.Now().Add(-time.Hour),
-		CreatedAt:     time.Now().Add(-time.Hour),
-	}
-	if err := bc.blockStore.PutFileBlock(ctx, fb); err != nil {
-		t.Fatalf("PutFileBlock failed: %v", err)
+	// Put a CAS chunk that can be evicted via the LSL-08 LRU.
+	data := make([]byte, 50)
+	h := hashBytes(data)
+	if err := bc.StoreChunk(ctx, h, data); err != nil {
+		t.Fatalf("StoreChunk failed: %v", err)
 	}
 
+	// Pad diskUsed to put us near the maxDisk limit.
 	bc.diskUsed.Store(180)
 
-	// ensureSpace should succeed by evicting the remote block
-	err := bc.ensureSpace(ctx, 30)
-	if err != nil {
+	// ensureSpace should succeed by evicting the LRU-tracked chunk.
+	if err := bc.ensureSpace(ctx, 30); err != nil {
 		t.Fatalf("expected ensureSpace to succeed with eviction re-enabled, got: %v", err)
 	}
 }

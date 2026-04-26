@@ -282,7 +282,8 @@ DittoFS uses a Service-oriented architecture where **stores are simple CRUD inte
 3. Implement root directory creation (`CreateRootDirectory`)
 4. Ensure thread safety (concurrent access across shares)
 5. Consider persistence strategy for handles
-6. **Note**: Permission checking is handled by `MetadataService`, not stores
+6. Implement `EnumerateFileBlocks(ctx, authCtx, fn)` using a backend-native cursor (no full-set load, honors `ctx.Done()`); pass the v0.15.0 conformance scenarios in `pkg/metadata/storetest/`. See [IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md#metadatastoreenumeratefileblocks-v0150-phase-11).
+7. **Note**: Permission checking is handled by `MetadataService`, not stores
 
 **Block Store (Local):**
 

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -120,6 +121,52 @@ func (s *MemoryMetadataStore) ListFileBlocks(ctx context.Context, payloadID stri
 	return s.listFileBlocksLocked(ctx, payloadID)
 }
 
+// EnumerateFileBlocks streams every FileBlock's ContentHash through fn.
+// The memory backend snapshots hashes under the read lock then releases the
+// lock before invoking fn so callers can issue further metadata operations.
+// See GC-01 / D-02.
+func (s *MemoryMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
+	s.mu.RLock()
+	var snapshot []blockstore.ContentHash
+	if s.fileBlockData != nil {
+		snapshot = make([]blockstore.ContentHash, 0, len(s.fileBlockData.blocks))
+		for _, b := range s.fileBlockData.blocks {
+			snapshot = append(snapshot, b.Hash)
+		}
+	}
+	s.mu.RUnlock()
+	for _, h := range snapshot {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("enumerate file blocks: %w", err)
+		}
+		if err := fn(h); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// EnumerateSyncingBlocks returns every FileBlock currently in
+// BlockStateSyncing. Phase 11 D-14: the engine.Syncer janitor uses this to
+// requeue rows abandoned by a previous syncer instance. The memory backend
+// implements this via direct map iteration; other backends may opt in
+// when their query surface allows.
+func (s *MemoryMetadataStore) EnumerateSyncingBlocks(_ context.Context) ([]*metadata.FileBlock, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.fileBlockData == nil {
+		return nil, nil
+	}
+	var result []*metadata.FileBlock
+	for _, block := range s.fileBlockData.blocks {
+		if block.State == metadata.BlockStateSyncing {
+			b := *block
+			result = append(result, &b)
+		}
+	}
+	return result, nil
+}
+
 // ============================================================================
 // Helper Methods
 // ============================================================================
@@ -177,6 +224,10 @@ func (tx *memoryTransaction) ListUnreferenced(ctx context.Context, limit int) ([
 
 func (tx *memoryTransaction) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
 	return tx.store.listFileBlocksLocked(ctx, payloadID)
+}
+
+func (tx *memoryTransaction) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
+	return tx.store.EnumerateFileBlocks(ctx, fn)
 }
 
 // ============================================================================
@@ -289,7 +340,7 @@ func (s *MemoryMetadataStore) listLocalBlocksLocked(_ context.Context, olderThan
 	}
 	var result []*metadata.FileBlock
 	for _, block := range s.fileBlockData.blocks {
-		if block.State != metadata.BlockStateLocal || !block.HasLocalFile() {
+		if block.State != metadata.BlockStatePending || !block.HasLocalFile() {
 			continue
 		}
 		if filterByAge && !block.LastAccess.Before(cutoff) {

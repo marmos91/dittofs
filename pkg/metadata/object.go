@@ -34,9 +34,12 @@ type ObjectID = ContentHash
 type BlockState = blockstore.BlockState
 
 // BlockState constants re-exported from blockstore.
+//
+// Phase 11 (STATE-01) collapsed the previous 4-state machine
+// (Dirty/Local/Syncing/Remote) to 3 states (Pending/Syncing/Remote);
+// Pending(0) replaces both Dirty(0) and Local(1).
 const (
-	BlockStateDirty   = blockstore.BlockStateDirty
-	BlockStateLocal   = blockstore.BlockStateLocal
+	BlockStatePending = blockstore.BlockStatePending
 	BlockStateSyncing = blockstore.BlockStateSyncing
 	BlockStateRemote  = blockstore.BlockStateRemote
 )

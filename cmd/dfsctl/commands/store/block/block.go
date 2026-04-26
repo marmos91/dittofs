@@ -37,4 +37,6 @@ func init() {
 	Cmd.AddCommand(statsCmd)
 	Cmd.AddCommand(evictCmd)
 	Cmd.AddCommand(healthCmd)
+	Cmd.AddCommand(gcCmd)
+	Cmd.AddCommand(gcStatusCmd)
 }

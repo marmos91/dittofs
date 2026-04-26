@@ -68,6 +68,16 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 	if config.PrefetchBlocks <= 0 {
 		config.PrefetchBlocks = DefaultPrefetchBlocks
 	}
+	// Phase 11 Plan 02 (D-13/D-14/D-25) — apply CAS-path defaults.
+	if config.ClaimBatchSize <= 0 {
+		config.ClaimBatchSize = 32
+	}
+	if config.UploadConcurrency <= 0 {
+		config.UploadConcurrency = 8
+	}
+	if config.ClaimTimeout <= 0 {
+		config.ClaimTimeout = 10 * time.Minute
+	}
 
 	m := &Syncer{
 		local:          local,
@@ -201,6 +211,14 @@ func (m *Syncer) DrainAllUploads(ctx context.Context) error {
 }
 
 // GetFileSize returns the total size of a file from the remote store.
+//
+// Phase 11 (CAS): blocks are stored under content-addressed keys
+// (cas/XX/YY/<hash>), so the legacy {payloadID}/block-{N} prefix scan no
+// longer finds them. We resolve via FileBlock metadata: enumerate every
+// block belonging to payloadID, find the highest-indexed Remote block,
+// and compute size = maxIdx*BlockSize + lastBlock.DataSize. DataSize is
+// stamped by uploadOne before flipping State to Remote, so no extra S3
+// round-trip is needed.
 func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return 0, err
@@ -216,36 +234,38 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 		return 0, m.remoteUnavailableError()
 	}
 
-	prefix := payloadID + "/"
-	blocks, err := m.remoteStore.ListByPrefix(ctx, prefix)
+	blocks, err := m.fileBlockStore.ListFileBlocks(ctx, payloadID)
 	if err != nil {
-		return 0, fmt.Errorf("list blocks: %w", err)
+		return 0, fmt.Errorf("list file blocks for %s: %w", payloadID, err)
 	}
 	if len(blocks) == 0 {
 		return 0, nil
 	}
 
-	var maxBlockIdx uint64
-	for _, bk := range blocks {
-		pid, blockIdx, ok := blockstore.ParseStoreKey(bk)
-		if !ok || pid != payloadID {
+	// ListFileBlocks returns blocks ordered by block index. Walk from the
+	// end to find the highest-indexed Remote block (skip any trailing
+	// Pending/Syncing rows that haven't been confirmed in the remote
+	// store yet — they MUST NOT contribute to the remote-side size).
+	for i := len(blocks) - 1; i >= 0; i-- {
+		fb := blocks[i]
+		if fb.State != blockstore.BlockStateRemote {
 			continue
 		}
-		if blockIdx > maxBlockIdx {
-			maxBlockIdx = blockIdx
+		_, blockIdx, ok := parseBlockID(fb.ID, payloadID)
+		if !ok {
+			continue
 		}
+		return blockIdx*uint64(BlockSize) + uint64(fb.DataSize), nil
 	}
-
-	lastBlockKey := blockstore.FormatStoreKey(payloadID, maxBlockIdx)
-	lastBlockData, err := m.remoteStore.ReadBlock(ctx, lastBlockKey)
-	if err != nil {
-		return 0, fmt.Errorf("read last block %s: %w", lastBlockKey, err)
-	}
-
-	return maxBlockIdx*uint64(BlockSize) + uint64(len(lastBlockData)), nil
+	return 0, nil
 }
 
 // Exists checks if any blocks exist for a file in the remote store.
+//
+// Phase 11 (CAS): metadata-driven existence check. Returns true iff at
+// least one FileBlock for payloadID has reached BlockStateRemote (i.e.
+// the engine has confirmed at least one PUT into CAS storage). Pending
+// and Syncing rows do NOT count — those are still local-only.
 func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return false, err
@@ -260,15 +280,34 @@ func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
 		return false, m.remoteUnavailableError()
 	}
 
-	firstBlockKey := blockstore.FormatStoreKey(payloadID, 0)
-	_, err := m.remoteStore.ReadBlock(ctx, firstBlockKey)
-	if err == nil {
-		return true, nil
+	blocks, err := m.fileBlockStore.ListFileBlocks(ctx, payloadID)
+	if err != nil {
+		return false, fmt.Errorf("list file blocks for %s: %w", payloadID, err)
 	}
-	if errors.Is(err, blockstore.ErrBlockNotFound) {
-		return false, nil
+	for _, fb := range blocks {
+		if fb.State == blockstore.BlockStateRemote {
+			return true, nil
+		}
 	}
-	return false, fmt.Errorf("check block: %w", err)
+	return false, nil
+}
+
+// parseBlockID extracts the block index from a FileBlock.ID of the form
+// "{payloadID}/{blockIdx}". Returns (payloadID, blockIdx, true) on a
+// well-formed match for the expected payloadID; (_, 0, false) otherwise.
+func parseBlockID(blockID, expectedPayloadID string) (string, uint64, bool) {
+	prefix := expectedPayloadID + "/"
+	if len(blockID) <= len(prefix) || blockID[:len(prefix)] != prefix {
+		return "", 0, false
+	}
+	var idx uint64
+	for _, c := range blockID[len(prefix):] {
+		if c < '0' || c > '9' {
+			return "", 0, false
+		}
+		idx = idx*10 + uint64(c-'0')
+	}
+	return expectedPayloadID, idx, true
 }
 
 // Truncate removes blocks beyond the new size from the remote store.
@@ -352,6 +391,14 @@ func (m *Syncer) Start(ctx context.Context) {
 		return
 	}
 
+	// Phase 11 D-14: one-shot janitor pass before the periodic uploader
+	// starts. Requeues Syncing rows abandoned by a previous instance.
+	// Failure here is logged at WARN — a bad metadata read should not
+	// prevent the syncer from running its periodic loop.
+	if err := m.recoverStaleSyncing(ctx); err != nil {
+		logger.Warn("Syncer janitor: recoverStaleSyncing failed", "error", err)
+	}
+
 	m.startHealthMonitor(ctx)
 	m.startPeriodicUploader(ctx)
 }
@@ -390,17 +437,26 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 }
 
 // SyncNow triggers an immediate upload cycle for all local blocks,
-// bypassing the UploadDelay. Blocks until all eligible blocks are uploaded
+// bypassing any age filter. Blocks until all eligible blocks are uploaded
 // or the context is cancelled. Returns nil on full success, ctx.Err() on
-// cancellation (both at gate acquisition and between blocks), or a joined
-// error listing every block that failed to upload — callers such as the
-// REST /drain-uploads endpoint and Close() rely on this signal.
+// cancellation, or a joined error listing every block that failed to upload —
+// callers such as the REST /drain-uploads endpoint and Close() rely on this
+// signal.
 //
-// SyncNow serializes against both the periodic uploader and other concurrent
-// SyncNow callers via the m.uploading gate. Without this, two SyncNow
-// callers could each obtain a copy of the same FileBlock from
-// ListLocalBlocks, race on its state transitions, and leave the store
-// flapping between Syncing/Remote.
+// Phase 11 Plan 02 (D-13/D-15/D-25): each cycle calls claimBatch to flip up
+// to ClaimBatchSize Pending rows to Syncing via per-row PutFileBlock writes
+// (no batched/transactional FileBlockStore API exists today — Phase 12+).
+// Each row's CAS Pending→Syncing flip is atomic on its own, but the batch
+// is NOT collectively atomic; a syncer crash mid-batch leaves a mix of
+// Syncing and Pending rows. CAS idempotency tolerates that: on restart,
+// reconciler reclaims orphaned Syncing rows back to Pending, and a second
+// uploadOne over the same hash is a no-op against the immutable CAS object.
+// A bounded pool of UploadConcurrency goroutines then drives uploadOne for
+// every claimed block. The cycle repeats until claimBatch returns an empty
+// batch (no more Pending work).
+//
+// SyncNow also serializes against the periodic uploader via the m.uploading
+// gate so concurrent callers do not double-claim the same row.
 func (m *Syncer) SyncNow(ctx context.Context) error {
 	if m.remoteStore == nil {
 		return nil
@@ -417,47 +473,169 @@ func (m *Syncer) SyncNow(ctx context.Context) error {
 	// Flush queued FileBlock metadata to the store so ListLocalBlocks can find them.
 	m.local.SyncFileBlocks(ctx)
 
-	// Drain in batches to keep peak memory bounded on large stores — one
-	// ListLocalBlocks call with limit=0 would deserialize every pending
-	// FileBlock at once (potentially thousands). syncFileBlock advances
-	// blocks out of BlockStateLocal on success, so successive ListLocalBlocks
-	// queries return distinct pages; on per-block failure revertToLocal
-	// keeps the block in Local state — we break after one no-progress pass
-	// so a permanently-failing block cannot spin the drain forever.
 	var uploadErrs []error
-	var prevFailed int
 	for {
 		if err := ctx.Err(); err != nil {
+			if len(uploadErrs) > 0 {
+				return errors.Join(append(uploadErrs, err)...)
+			}
 			return err
 		}
-		pending, err := m.fileBlockStore.ListLocalBlocks(ctx, 0, maxUploadBatch)
+		batch, err := m.claimBatch(ctx, m.config.ClaimBatchSize)
 		if err != nil {
-			return fmt.Errorf("list local blocks: %w", err)
+			return fmt.Errorf("claim batch: %w", err)
 		}
-		if len(pending) == 0 {
+		if len(batch) == 0 {
 			break
 		}
-		failedThisBatch := 0
-		for _, fb := range pending {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
+
+		// Bounded share-wide upload pool (D-25).
+		sem := make(chan struct{}, m.config.UploadConcurrency)
+		var wg gosync.WaitGroup
+		var errMu gosync.Mutex
+		for _, fb := range batch {
+			fb := fb
 			if fb.LocalPath == "" {
 				continue
 			}
-			if err := m.syncFileBlock(ctx, fb); err != nil {
-				uploadErrs = append(uploadErrs, err)
-				failedThisBatch++
-			}
+			wg.Add(1)
+			sem <- struct{}{}
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+				if err := m.uploadOne(ctx, fb); err != nil {
+					// Per D-14, the row is left in Syncing on failure —
+					// the janitor (or the next SyncNow after ClaimTimeout)
+					// will requeue it. Logged at DEBUG.
+					logger.Debug("uploadOne failed; row remains Syncing",
+						"blockID", fb.ID, "error", err)
+					errMu.Lock()
+					uploadErrs = append(uploadErrs, err)
+					errMu.Unlock()
+				}
+			}()
 		}
-		// If every block in this batch failed, the next ListLocalBlocks will
-		// return the same set — stop instead of looping.
-		if failedThisBatch == len(pending) && failedThisBatch == prevFailed {
-			break
-		}
-		prevFailed = failedThisBatch
+		wg.Wait()
 	}
 	return errors.Join(uploadErrs...)
+}
+
+// claimBatch flips up to max Pending blocks to Syncing via per-row
+// PutFileBlock writes (FileBlockStore exposes no batched/transactional
+// claim API today; Phase 12+). Each row's transition is atomic on its own
+// but the batch is NOT collectively atomic — a syncer crash mid-batch
+// leaves a mix of Syncing and Pending rows. CAS idempotency tolerates the
+// resulting partial state: recoverStaleSyncing returns the abandoned
+// Syncing rows to Pending, and any duplicate uploadOne over the same hash
+// is a no-op against the immutable CAS object. Stamps
+// LastSyncAttemptAt = now on every claimed row.
+//
+// Serialization scope (D-13): WITHIN ONE syncer instance, PutFileBlock is
+// applied per row before the next iteration sees it, so two concurrent
+// claimBatch callers in the same process cannot both observe + claim the
+// same row (the m.uploading gate also serializes SyncNow against the
+// periodic uploader at a coarser layer).
+//
+// ACROSS syncer instances (multi-process / multi-node) this method does
+// NOT serialize: two syncers can each ListLocalBlocks the same Pending
+// row before either calls PutFileBlock, both flip it to Syncing, and
+// both upload. This is TOLERATED because CAS keys are content-defined
+// (D-11 / INV-03) — the duplicate PUT is byte-identical to the same
+// key and the second PutFileBlock simply overwrites the first with the
+// same payload. A future ChangeStream / SELECT FOR UPDATE / WHERE-state
+// guard could close the cross-process window without coordination, but
+// the CAS idempotency makes the current contract correct.
+func (m *Syncer) claimBatch(ctx context.Context, max int) ([]*blockstore.FileBlock, error) {
+	if max <= 0 {
+		max = m.config.ClaimBatchSize
+	}
+	pending, err := m.fileBlockStore.ListLocalBlocks(ctx, 0, max)
+	if err != nil {
+		return nil, fmt.Errorf("list local blocks: %w", err)
+	}
+	if len(pending) == 0 {
+		return nil, nil
+	}
+	now := time.Now()
+	claimed := make([]*blockstore.FileBlock, 0, len(pending))
+	for _, fb := range pending {
+		if fb == nil || fb.State != blockstore.BlockStatePending {
+			continue
+		}
+		fb.State = blockstore.BlockStateSyncing
+		fb.LastSyncAttemptAt = now
+		if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
+			return nil, fmt.Errorf("claim block %s: %w", fb.ID, err)
+		}
+		claimed = append(claimed, fb)
+	}
+	return claimed, nil
+}
+
+// recoverStaleSyncing requeues blocks left in Syncing by a previous run
+// (e.g., process killed mid-upload). Per D-14, any Syncing row whose
+// LastSyncAttemptAt is older than cfg.ClaimTimeout is flipped back to
+// Pending with LastSyncAttemptAt cleared. CAS idempotency makes the
+// re-upload safe even if the original upload eventually completes — both
+// writes target byte-identical bytes at byte-identical keys.
+//
+// Backends that opt in to syncingEnumerator return precise candidates;
+// others degrade to a no-op (safe — claimBatch will not double-claim a
+// Syncing row).
+func (m *Syncer) recoverStaleSyncing(ctx context.Context) error {
+	if m.fileBlockStore == nil {
+		return nil
+	}
+	enum, ok := m.fileBlockStore.(syncingEnumerator)
+	if !ok {
+		return nil
+	}
+	candidates, err := enum.EnumerateSyncingBlocks(ctx)
+	if err != nil {
+		return fmt.Errorf("enumerate syncing blocks: %w", err)
+	}
+	cutoff := time.Now().Add(-m.config.ClaimTimeout)
+	requeued := 0
+	failed := 0
+	var firstErr error
+	for _, fb := range candidates {
+		if fb.State != blockstore.BlockStateSyncing {
+			continue
+		}
+		if !fb.LastSyncAttemptAt.IsZero() && fb.LastSyncAttemptAt.After(cutoff) {
+			continue
+		}
+		fb.State = blockstore.BlockStatePending
+		fb.LastSyncAttemptAt = time.Time{}
+		if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
+			// Phase 11 IN-02: elevate per-row failure to ERROR and track
+			// counts so a fully-broken metadata path produces a non-nil
+			// return error visible to the caller (Start logs it at WARN).
+			logger.Error("janitor: requeue failed", "blockID", fb.ID, "error", err)
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		requeued++
+	}
+	if requeued > 0 {
+		logger.Info("Syncer janitor requeued stale Syncing rows",
+			"count", requeued, "claim_timeout", m.config.ClaimTimeout)
+	}
+	if failed > 0 {
+		return fmt.Errorf("janitor: %d of %d candidate rows failed to requeue (first error: %w)",
+			failed, failed+requeued, firstErr)
+	}
+	return nil
+}
+
+// syncingEnumerator is an optional capability a FileBlockStore may
+// implement so the syncer's restart-recovery janitor can find stale
+// Syncing rows without a full table scan.
+type syncingEnumerator interface {
+	EnumerateSyncingBlocks(ctx context.Context) ([]*blockstore.FileBlock, error)
 }
 
 // periodicUploader runs every interval, scanning for blocks to upload.

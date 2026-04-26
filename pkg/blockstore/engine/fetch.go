@@ -9,18 +9,53 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// resolveStoreKey returns the remote store key for downloading a block.
-// Returns "" if no FileBlock exists (sparse) or if the block is not yet remote.
-func (m *Syncer) resolveStoreKey(ctx context.Context, payloadID string, blockIdx uint64) (string, error) {
+// resolveFileBlock returns the FileBlock for (payloadID, blockIdx) or
+// (nil, nil) if the row does not exist (sparse / not yet uploaded). The
+// dual-read engine resolver consults fb.Hash and fb.BlockStoreKey to
+// route the per-block S3 fetch (D-21).
+func (m *Syncer) resolveFileBlock(ctx context.Context, payloadID string, blockIdx uint64) (*blockstore.FileBlock, error) {
 	blockID := fmt.Sprintf("%s/%d", payloadID, blockIdx)
 	fb, err := m.fileBlockStore.GetFileBlock(ctx, blockID)
 	if err != nil {
 		if errors.Is(err, blockstore.ErrFileBlockNotFound) {
-			return "", nil // Sparse block, not uploaded yet
+			return nil, nil // Sparse — not an error
 		}
-		return "", fmt.Errorf("resolve store key %s: %w", blockID, err)
+		return nil, fmt.Errorf("resolve file block %s: %w", blockID, err)
 	}
-	return fb.BlockStoreKey, nil
+	return fb, nil
+}
+
+// dispatchRemoteFetch routes a per-block S3 GET between the new CAS path
+// (with BLAKE3 verification) and the legacy {payloadID}/block-{N} path
+// (no verification possible — legacy bytes were never hashed). Per D-21
+// the routing is metadata-driven (FileBlock.Hash.IsZero()), NOT S3
+// trial-and-error. One DB lookup per block; no doubled GET cost.
+//
+// Returns ("", nil, nil) if the FileBlock has no actionable key (sparse
+// or never-uploaded). Errors from the remote store flow through unchanged.
+func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *blockstore.FileBlock) (string, []byte, error) {
+	if fb == nil {
+		return "", nil, nil
+	}
+	if !fb.Hash.IsZero() {
+		// CAS path: verified read. Prefer the row's BlockStoreKey when
+		// set (post-Phase-11 syncer writes the CAS key here) and fall
+		// back to FormatCASKey(hash) for resilience against future
+		// schema variants.
+		key := fb.BlockStoreKey
+		if key == "" {
+			key = blockstore.FormatCASKey(fb.Hash)
+		}
+		data, err := m.remoteStore.ReadBlockVerified(ctx, key, fb.Hash)
+		return key, data, err
+	}
+	// Legacy path: pre-Phase-11 row, no hash, unverifiable. The legacy
+	// key was persisted at upload time. Removed in Phase 15 (A6).
+	if fb.BlockStoreKey == "" {
+		return "", nil, nil
+	}
+	data, err := m.remoteStore.ReadBlock(ctx, fb.BlockStoreKey)
+	return fb.BlockStoreKey, data, err
 }
 
 // fetchBlock downloads a single block from the remote store and writes it to the local store.
@@ -43,20 +78,38 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 		return nil, m.remoteUnavailableError()
 	}
 
-	storeKey, err := m.resolveStoreKey(ctx, payloadID, blockIdx)
+	fb, err := m.resolveFileBlock(ctx, payloadID, blockIdx)
 	if err != nil {
 		return nil, err
 	}
-	if storeKey == "" {
+	if fb == nil {
 		return nil, nil
 	}
 
-	data, err := m.remoteStore.ReadBlock(ctx, storeKey)
+	storeKey, data, err := m.dispatchRemoteFetch(ctx, fb)
 	if err != nil {
 		if errors.Is(err, blockstore.ErrBlockNotFound) {
-			return nil, nil
+			// Phase 11 IN-3-05: fail-closed on the CAS path. A row
+			// with a non-zero hash is a live reference to a CAS
+			// object; if that object is missing from the remote, the
+			// invariant has been violated (INV-04 GC fail-closed
+			// should make this impossible). Returning silent zeros
+			// here would corrupt the caller's read with no log trace.
+			// Surface ErrBlockNotFound so the caller sees the data
+			// loss explicitly. Legacy rows (zero hash) preserve the
+			// historical sparse-block semantics.
+			if !fb.Hash.IsZero() {
+				logger.Error("CAS object missing for live FileBlock — possible GC race or live-data-loss",
+					"block_id", fb.ID, "store_key", storeKey, "hash", fb.Hash.String())
+				return nil, fmt.Errorf("CAS object missing for live row %s (key %s): %w",
+					fb.ID, storeKey, blockstore.ErrBlockNotFound)
+			}
+			return nil, nil // legacy sparse — preserve historical behavior
 		}
 		return nil, fmt.Errorf("download block %s: %w", storeKey, err)
+	}
+	if storeKey == "" || data == nil {
+		return nil, nil
 	}
 
 	offset := blockIdx * uint64(BlockSize)
@@ -182,23 +235,40 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 		}
 	}()
 
-	storeKey, err := m.resolveStoreKey(ctx, payloadID, blockIdx)
+	fb, err := m.resolveFileBlock(ctx, payloadID, blockIdx)
 	if err != nil {
 		completionErr = err
 		return nil, false, err
 	}
-	if storeKey == "" {
+	if fb == nil {
 		return nil, true, nil
 	}
 
 	// Caller (EnsureAvailableAndRead) already verified remoteStore != nil.
-	data, err := m.remoteStore.ReadBlock(ctx, storeKey)
+	// Dual-read dispatch (D-21): CAS path with verification when fb.Hash
+	// is set; legacy ReadBlock otherwise.
+	storeKey, data, err := m.dispatchRemoteFetch(ctx, fb)
 	if err != nil {
 		if errors.Is(err, blockstore.ErrBlockNotFound) {
+			// Phase 11 IN-3-05: fail-closed on the CAS path. See
+			// fetchBlock for the rationale — a non-zero-hash row that
+			// resolves to a missing CAS object is a live-data-loss
+			// signal that must NOT silently return zeros.
+			if !fb.Hash.IsZero() {
+				logger.Error("CAS object missing for live FileBlock — possible GC race or live-data-loss",
+					"block_id", fb.ID, "store_key", storeKey, "hash", fb.Hash.String())
+				wrapped := fmt.Errorf("CAS object missing for live row %s (key %s): %w",
+					fb.ID, storeKey, blockstore.ErrBlockNotFound)
+				completionErr = wrapped
+				return nil, false, wrapped
+			}
 			return nil, true, nil
 		}
 		completionErr = err
 		return nil, false, fmt.Errorf("download block %s: %w", storeKey, err)
+	}
+	if storeKey == "" || data == nil {
+		return nil, true, nil
 	}
 
 	// Store locally synchronously; data is already downloaded so there's no

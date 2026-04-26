@@ -85,12 +85,19 @@ func (bc *FSStore) WriteAt(ctx context.Context, payloadID string, data []byte, o
 		}
 		mb.dirty = true
 		mb.lastWrite = time.Now()
+		// Bump writeGen so a concurrent flushBlock (stage-and-release, TD-09)
+		// notices a writer interleaved during disk I/O and preserves the new
+		// bytes instead of nilling mb.data on the post-write flag flip.
+		mb.writeGen++
 
 		isFull := mb.dataSize >= uint32(blockstore.BlockSize)
 		mb.mu.Unlock()
 
 		if isFull {
-			if _, _, err := bc.flushBlock(ctx, payloadID, blockIdx, mb); err != nil {
+			// Block-fill flush: no fsync. NFS COMMIT (Flush) supplies the
+			// durability fence; fsyncing per filled block would impose a
+			// per-block fsync on the write hot path.
+			if _, _, err := bc.flushBlock(ctx, payloadID, blockIdx, mb, false); err != nil {
 				return err
 			}
 		}
@@ -190,10 +197,13 @@ func (bc *FSStore) tryDirectDiskWrite(ctx context.Context, payloadID string, blo
 		fb.DataSize = end
 	}
 	if fb.State == 0 {
-		// New block, never synced -- mark Local so the syncer picks it up.
-		fb.State = blockstore.BlockStateLocal
+		// New block, never synced -- mark Pending so the syncer picks it up.
+		// Pending=0 is the safe zero value, so this assignment is mostly
+		// documentary, but kept explicit for symmetry with the (Remote -> Pending)
+		// reset path.
+		fb.State = blockstore.BlockStatePending
 	}
-	// Remote blocks: don't revert to Local on pwrite. Avoids triggering 8MB
+	// Remote blocks: don't revert to Pending on pwrite. Avoids triggering 8MB
 	// re-syncs on every 4KB random write. Re-sync on explicit Flush.
 	fb.LastAccess = now
 	bc.queueFileBlockUpdate(fb)

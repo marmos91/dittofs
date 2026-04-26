@@ -15,6 +15,33 @@ type FileBlockStore interface {
 	GetFileBlock(ctx context.Context, id string) (*FileBlock, error)
 
 	// PutFileBlock stores or updates a file block.
+	//
+	// Upsert semantics are by ID: an INSERT for a new ID, or an UPDATE
+	// when the ID already exists. The Hash column is NOT a uniqueness
+	// constraint at the contract level — engines like the dedup
+	// short-circuit (engine.uploadOne) WILL produce two distinct
+	// FileBlock IDs sharing the same ContentHash when two file regions
+	// hash-match. Backends MUST tolerate this without erroring.
+	//
+	// Phase 11 IN-3-02 / WR-4-01: backend implementations:
+	//
+	//   - memory + badger maintain hash→id maps that silently overwrite
+	//     on collision (the most recent writer wins the hash index).
+	//   - postgres has a non-UNIQUE partial index on (hash WHERE NOT NULL)
+	//     for FindFileBlockByHash speed (see migrations 000010 and 000011).
+	//     The index was UNIQUE in the original 000010 cut; that violated
+	//     this contract by rejecting cross-row hash duplicates and was
+	//     dropped to a regular partial index in 000011 to match the
+	//     memory + badger behavior.
+	//
+	// The pinned contract: PutFileBlock returns nil for any
+	// hash-already-present-on-another-row case. FindFileBlockByHash MAY
+	// return either of the colliding rows. Callers (the dedup short-
+	// circuit in engine.uploadOne) treat the lookup as best-effort —
+	// they re-PUT with the donor's BlockStoreKey regardless.
+	//
+	// The conformance test storetest.testPutFileBlock_TwoIDsSameHash
+	// pins this contract across all three backends.
 	PutFileBlock(ctx context.Context, block *FileBlock) error
 
 	// DeleteFileBlock removes a file block by its ID.
@@ -50,6 +77,19 @@ type FileBlockStore interface {
 	// all blocks whose ID starts with "{payloadID}/".
 	// Returns empty slice (not nil) if no blocks found.
 	ListFileBlocks(ctx context.Context, payloadID string) ([]*FileBlock, error)
+
+	// EnumerateFileBlocks streams every FileBlock's ContentHash through fn in
+	// implementation-defined order. Returns the first non-nil error from fn or
+	// from the underlying store iterator. Implementations MUST NOT load the
+	// full set into application memory — use server-side cursors or prefix
+	// iterators.
+	//
+	// Used by the GC mark phase (Phase 11). Callers respect ctx.Done() to
+	// bound iteration time. Implementations SHOULD check ctx every batch.
+	//
+	// Zero-valued ContentHashes (legacy rows pre-CAS) are emitted; callers
+	// skip them as needed. See GC-01 / D-02.
+	EnumerateFileBlocks(ctx context.Context, fn func(ContentHash) error) error
 }
 
 // Reader defines read operations on the block store.
@@ -124,4 +164,30 @@ type Stats struct {
 	AvailableSize uint64 // Remaining available space in bytes
 	ContentCount  uint64 // Total number of content items
 	AverageSize   uint64 // Average size of content items in bytes
+}
+
+// RemoteObjectInfo describes a single remote object listed by the GC sweep
+// phase via the RemoteStore.ListByPrefixWithMeta cursor (D-05). The full
+// interface declaration lives in pkg/blockstore/remote/remote.go alongside
+// the rest of the RemoteStore surface; this re-export documents the shape
+// at the package root for readers tracing GC plumbing.
+type RemoteObjectInfo struct {
+	Key          string
+	Size         int64
+	LastModified time.Time
+}
+
+// RemoteStoreSweepSurface is a documentation-only interface that captures
+// the subset of remote.RemoteStore methods consumed by the GC sweep phase
+// (Phase 11 Plan 06, D-05/D-07). The real interface is remote.RemoteStore
+// in pkg/blockstore/remote/remote.go — this declaration exists at the
+// blockstore package root so callers tracing the sweep plumbing can find
+// the shape without crossing package boundaries.
+//
+// Implementations (memory, s3) live alongside the real interface; this
+// type is never used as a parameter — the production code uses
+// remote.RemoteStore directly.
+type RemoteStoreSweepSurface interface {
+	Delete(ctx context.Context, key string) error
+	ListByPrefixWithMeta(ctx context.Context, prefix string) ([]RemoteObjectInfo, error)
 }

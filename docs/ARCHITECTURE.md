@@ -229,7 +229,11 @@ content-addressable `blocks/{hh}/{hh}/{hex}` directory.
 **Phase 10 is plumbing-only.** No existing write path consumes the chunker
 or the log in v0.15.0 Phase 10; the engine keeps using the legacy
 `tryDirectDiskWrite` / `.blk` path. Phase 11 (A2) flips the default,
-rewires the syncer, and adds mark-sweep GC for the `blocks/` directory.
+rewires the syncer to write to the remote CAS keyspace
+(`cas/{hh}/{hh}/{hex}`), and adds mark-sweep GC for the remote `cas/`
+prefix. See [Garbage Collection (mark-sweep)](#garbage-collection-mark-sweep-v0150-phase-11)
+and [Block Lifecycle (three-state)](#block-lifecycle-three-state-v0150-phase-11)
+below for the v0.15.0 Phase 11 design that consumes this tier.
 
 ### Pipeline
 
@@ -304,6 +308,147 @@ directory grows unbounded. See `docs/CONFIGURATION.md` (`use_append_log`,
 `orphan_log_min_age_seconds`) and
 `.planning/phases/10-fastcdc-chunker-hybrid-local-store-a1/10-CONTEXT.md`
 for full design detail.
+
+## Block Lifecycle (three-state, v0.15.0 Phase 11)
+
+Phase 11 (A2) collapses the block lifecycle to three persisted states held
+on `FileBlock.State` indexed by `ContentHash`. There is no parallel state
+in memory, in fd pools, or anywhere else (STATE-03): the metadata store
+is the single source of truth, and `engine.Syncer` is the sole owner of
+state transitions (D-15).
+
+```
+   Pending ──claim batch──▶ Syncing ──PUT success + meta txn──▶ Remote
+                              ▲                                    │
+                              └──janitor (>claim_timeout)──────────┘
+                                                                   │
+                                                     (RefCount → 0)│
+                                                                   ▼
+                                                              GC eligible
+```
+
+- **Pending**: `RefCount ≥ 1`; bytes are local; not yet uploaded.
+- **Syncing**: a syncer goroutine has claimed the block (batched per
+  `syncer.claim_batch_size`, default 32); the upload is in flight.
+- **Remote**: PUT to the remote CAS keyspace returned 200 AND the
+  metadata transaction setting `State=Remote` committed (INV-03 — no
+  orphan flag without metadata-txn success).
+
+**Restart recovery (D-14):** at syncer Start, a one-shot janitor pass
+requeues any `Syncing` row whose `last_sync_attempt_at` is older than
+`syncer.claim_timeout` (default 10m) back to `Pending`. CAS keys are
+content-defined so a duplicate re-upload writes the same bytes to the
+same key — idempotent by construction.
+
+**Why a metadata write for every claim?** The Pending → Syncing
+transition is the serialization point against duplicate uploads across
+syncer instances. With `claim_batch_size=32` the cost is a single
+batched txn per tick, in exchange for exact restart recovery and a
+single-query introspection of stuck blocks (`State=Syncing AND
+last_sync_attempt_at < now − 1h`).
+
+## Garbage Collection (mark-sweep, v0.15.0 Phase 11)
+
+Phase 11 replaces the previous path-prefix GC with a fail-closed
+mark-sweep over the union of every live `FileBlock.ContentHash` across
+shares pointing at the same remote.
+
+### Algorithm
+
+1. **Mark phase.** Stream every `FileBlock`'s `ContentHash` via the new
+   `MetadataStore.EnumerateFileBlocks(ctx, fn)` cursor (D-02). The cursor
+   is implemented natively per backend (memory, Badger, Postgres) and
+   never loads the full set into application memory. Hashes are appended
+   to an on-disk live set under `<localStore>/gc-state/<runID>/db/`
+   (Badger temp store; D-01). Snapshot time `T` is captured at the
+   start of the run. Cross-share aggregation keys on **remote-store
+   identity** (`bucket+endpoint+prefix`), not share name (D-03), so an
+   object reachable from any share that targets the same remote is
+   considered live.
+2. **Sweep phase.** A bounded worker pool (default
+   `gc.sweep_concurrency=16`, max 32) walks the 256 top-level
+   `cas/{XX}/` prefixes in parallel (D-04). For each S3 key, the worker
+   keeps the object iff the hash is present in the live set OR the
+   object's `LastModified` is newer than `T − gc.grace_period` (default
+   1h, D-05). Otherwise the worker issues a DELETE.
+
+### Fail-closed posture (INV-04)
+
+Mark-phase and sweep-phase failures are treated asymmetrically (D-06,
+D-07):
+
+- **Mark errors abort the sweep entirely.** Any uncertainty about the
+  live set could lead to deleting referenced data. Sweep workers do not
+  start if the mark phase returned any error.
+- **Sweep-side per-prefix DELETE errors are captured and continue.** A
+  single S3 503 transient should not waste a successful mark phase. The
+  run summary reports `error_count` and the first N error samples;
+  garbage that survives a transient is reclaimed on the next run.
+
+### gc-state directory layout
+
+```
+<localStore>/gc-state/
+  20260425T143022Z-abc/
+    db/                          (Badger temp store for the live set)
+    incomplete.flag              (removed by MarkComplete; cleaned by next run)
+  20260425T153122Z-def/
+    db/
+    (no incomplete.flag — successful run)
+  last-run.json                  (most recent GCRunSummary)
+```
+
+Each run writes `incomplete.flag` at start; the next run detects stale
+directories (by leftover flag) and deletes them before starting fresh.
+Mark is idempotent so resume-on-restart is intentionally not built —
+simpler test surface (D-01).
+
+### Triggers and observability
+
+- **Periodic GC is deferred to a follow-up phase.** `gc.interval` is
+  parsed and validated but unwired in v0.15.0; any non-zero value emits
+  a startup WARN and is otherwise ignored. Schedule via cron until the
+  scheduler ships.
+- **On-demand** via `dfsctl store block gc <share> [--dry-run]`
+  (D-08, D-09); `--dry-run` skips DELETEs and prints up to
+  `gc.dry_run_sample_size` candidate keys (default 1000).
+- **Observability** via structured slog INFO at start/end with `run_id`,
+  `hashes_marked`, `objects_swept`, `bytes_freed`, `duration_ms`,
+  `error_count`, plus a persisted summary at
+  `<localStore>/gc-state/last-run.json` (D-10). Inspect via
+  `dfsctl store block gc-status <share>`. Prometheus metrics are
+  intentionally deferred to a metrics phase (D-35).
+
+GC is decoupled from any backup-hold protocol: Phase 08 deleted
+`BackupHoldProvider`, and GC-04 forbids reintroducing one. The v0.16.0
+atomic-backup design uses CAS immutability + manifest snapshots, which
+need no hold protocol (D-17).
+
+See `docs/CONFIGURATION.md` for every `gc.*` and `syncer.*` knob, and
+`docs/CLI.md` for the `dfsctl store block gc` reference.
+
+## Dual-Read Window (Phase 11 → Phase 14)
+
+During the v0.15.0 → v0.15.x window, the engine resolves block reads
+from two coexisting key spaces (D-21, D-22):
+
+- **`FileBlock.Hash` non-zero** → CAS path: read from
+  `cas/{hh}/{hh}/{hex}`, BLAKE3-verified end-to-end (header pre-check
+  on `x-amz-meta-content-hash` + streaming verifier over the body,
+  INV-06).
+- **`FileBlock.Hash` zero** → legacy path: read from
+  `{payloadID}/block-{N}` (`FormatStoreKey`/`ParseStoreKey`) with no
+  verification (verification cannot be retroactively applied to data
+  written before BSCAS-06).
+
+Resolution is by metadata key shape (one DB lookup per block), NOT by
+S3 trial-and-error — there is no doubled GET cost.
+
+The legacy code path lives Phase 11 → Phase 14 (A5). Phase 14 ships
+`dfsctl blockstore migrate` to re-chunk all legacy data to CAS; Phase
+15 (A6) deletes the legacy path entirely. The dual-read code is
+intentionally on a deletion clock — anyone touching it should know
+its lifespan.
 
 ## Adapter Pattern
 

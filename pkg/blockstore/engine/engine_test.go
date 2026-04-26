@@ -45,6 +45,9 @@ func (s *stubFileBlockStore) ListUnreferenced(_ context.Context, _ int) ([]*bloc
 func (s *stubFileBlockStore) ListFileBlocks(_ context.Context, _ string) ([]*blockstore.FileBlock, error) {
 	return nil, nil
 }
+func (s *stubFileBlockStore) EnumerateFileBlocks(_ context.Context, _ func(blockstore.ContentHash) error) error {
+	return nil
+}
 
 // newTestEngine creates an engine.BlockStore with memory local store, nil remote,
 // optional read buffer and prefetch settings.

@@ -65,6 +65,7 @@ type Runtime struct {
 
 	localStoreDefaults *shares.LocalStoreDefaults
 	syncerDefaults     *shares.SyncerDefaults
+	gcDefaults         *GCDefaults
 	settingsWatcher    *SettingsWatcher
 
 	adapterProviders   map[string]any
@@ -449,6 +450,38 @@ func (r *Runtime) SetSyncerDefaults(cfg *shares.SyncerDefaults) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.syncerDefaults = cfg
+}
+
+// GCDefaults captures the operator-configured GC knobs the runtime threads
+// into engine.Options on every CollectGarbage invocation. Phase 11 WR-01:
+// without this wiring the engine silently fell back to its hardcoded
+// defaults (1h grace, 16-way sweep, 1000-sample dry run) regardless of
+// what the operator put in gc.* config.
+type GCDefaults struct {
+	GracePeriod      time.Duration
+	SweepConcurrency int
+	DryRunSampleSize int
+}
+
+// SetGCDefaults sets the operator-configured GC knobs the runtime forwards
+// to engine.CollectGarbage via engine.Options. Pass nil to revert to engine
+// defaults.
+func (r *Runtime) SetGCDefaults(cfg *GCDefaults) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.gcDefaults = cfg
+}
+
+// gcDefaultsSnapshot returns a copy of the current GCDefaults under the
+// runtime lock, or nil when the operator has not configured them.
+func (r *Runtime) gcDefaultsSnapshot() *GCDefaults {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.gcDefaults == nil {
+		return nil
+	}
+	cp := *r.gcDefaults
+	return &cp
 }
 
 // DrainAllUploads waits for all in-flight uploads across all per-share BlockStores to complete.

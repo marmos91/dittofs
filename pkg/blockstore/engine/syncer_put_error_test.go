@@ -76,7 +76,7 @@ func TestSyncFileBlock_PropagatesPutError(t *testing.T) {
 		ID:         payloadID + "/0",
 		LocalPath:  blockFile,
 		DataSize:   uint32(len(data)),
-		State:      blockstore.BlockStateLocal,
+		State:      blockstore.BlockStatePending,
 		RefCount:   1,
 		LastAccess: time.Now(),
 		CreatedAt:  time.Now(),

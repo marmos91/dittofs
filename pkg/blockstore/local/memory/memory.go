@@ -37,7 +37,6 @@ type MemoryStore struct {
 
 	closed          bool
 	evictionEnabled bool
-	skipFsync       bool
 }
 
 // New creates a new MemoryStore.
@@ -162,7 +161,7 @@ func (s *MemoryStore) WriteAt(_ context.Context, payloadID string, data []byte, 
 		if !ok {
 			mb = &memBlock{
 				data:  make([]byte, blockstore.BlockSize),
-				state: blockstore.BlockStateDirty,
+				state: blockstore.BlockStatePending,
 			}
 			s.blocks[key] = mb
 		}
@@ -235,8 +234,8 @@ func (s *MemoryStore) Flush(_ context.Context, payloadID string) ([]local.Flushe
 		}
 		if mb.dirty {
 			mb.dirty = false
-			if mb.state == blockstore.BlockStateDirty {
-				mb.state = blockstore.BlockStateLocal
+			if mb.state == blockstore.BlockStatePending {
+				mb.state = blockstore.BlockStatePending
 			}
 			blockIdx := blockstore.ParseBlockIdx(key, payloadID)
 			flushed = append(flushed, local.FlushedBlock{
@@ -248,38 +247,6 @@ func (s *MemoryStore) Flush(_ context.Context, payloadID string) ([]local.Flushe
 	}
 
 	return flushed, nil
-}
-
-// GetDirtyBlocks flushes and returns all blocks in Local state as PendingBlocks.
-func (s *MemoryStore) GetDirtyBlocks(ctx context.Context, payloadID string) ([]local.PendingBlock, error) {
-	// Flush first
-	_, err := s.Flush(ctx, payloadID)
-	if err != nil {
-		return nil, err
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var result []local.PendingBlock
-
-	for key, mb := range s.blocks {
-		if !blockstore.KeyBelongsToFile(key, payloadID) {
-			continue
-		}
-		if mb.state == blockstore.BlockStateLocal && mb.data != nil && mb.dataSize > 0 {
-			data := make([]byte, mb.dataSize)
-			copy(data, mb.data[:mb.dataSize])
-			blockIdx := blockstore.ParseBlockIdx(key, payloadID)
-			result = append(result, local.PendingBlock{
-				BlockIndex: blockIdx,
-				Data:       data,
-				DataSize:   mb.dataSize,
-			})
-		}
-	}
-
-	return result, nil
 }
 
 // SyncFileBlocks is a no-op in the memory store (no persistent store to sync to).
@@ -378,13 +345,6 @@ func (s *MemoryStore) TruncateBlockFiles(_ context.Context, payloadID string, ne
 	return nil
 }
 
-// SetSkipFsync is a no-op in the memory store.
-func (s *MemoryStore) SetSkipFsync(skip bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.skipFsync = skip
-}
-
 // SetEvictionEnabled controls whether eviction is enabled (no-op effect in memory store).
 func (s *MemoryStore) SetEvictionEnabled(enabled bool) {
 	s.mu.Lock()
@@ -426,48 +386,6 @@ func (s *MemoryStore) ListFiles() []string {
 		result = append(result, payloadID)
 	}
 	return result
-}
-
-// MarkBlockRemote marks a block as confirmed in the remote block store.
-func (s *MemoryStore) MarkBlockRemote(_ context.Context, payloadID string, blockIdx uint64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	key := blockKey(payloadID, blockIdx)
-	mb, ok := s.blocks[key]
-	if !ok {
-		return false
-	}
-	mb.state = blockstore.BlockStateRemote
-	return true
-}
-
-// MarkBlockSyncing claims a block for sync to remote (Local -> Syncing).
-func (s *MemoryStore) MarkBlockSyncing(_ context.Context, payloadID string, blockIdx uint64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	key := blockKey(payloadID, blockIdx)
-	mb, ok := s.blocks[key]
-	if !ok || mb.state != blockstore.BlockStateLocal {
-		return false
-	}
-	mb.state = blockstore.BlockStateSyncing
-	return true
-}
-
-// MarkBlockLocal reverts a block to Local state after a failed sync attempt.
-func (s *MemoryStore) MarkBlockLocal(_ context.Context, payloadID string, blockIdx uint64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	key := blockKey(payloadID, blockIdx)
-	mb, ok := s.blocks[key]
-	if !ok {
-		return false
-	}
-	mb.state = blockstore.BlockStateLocal
-	return true
 }
 
 // GetStoredFileSize returns the total stored data size for a file.

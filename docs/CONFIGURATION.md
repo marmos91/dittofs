@@ -279,6 +279,95 @@ in Phase 10). Attempting to enable the flag against a metadata backend
 without this interface yields an explicit error at share creation —
 there is no silent fallthrough (threat T-10-08-04).
 
+#### Syncer + GC knobs (v0.15.0 Phase 11)
+
+v0.15.0 (Phase 11 / A2) introduces the CAS write path and a fail-closed
+mark-sweep garbage collector. The new knobs live inside the per-share
+local block store's `config` JSON under the `syncer` and `gc` sub-maps:
+
+```yaml
+blockstore:
+  syncer:
+    tick: 30s                   # Periodic sync interval. Default 30s.
+    claim_batch_size: 32        # Pending blocks claimed per syncer cycle.
+                                # Default 32. Bounds metadata write rate
+                                # to 1 batched txn per tick rather than
+                                # one per block.
+    upload_concurrency: 8       # Parallel uploads per share.
+                                # Default 8; MUST be <= claim_batch_size
+                                # (a goroutine cannot upload a block that
+                                # was not claimed). Caps S3 connections
+                                # per share.
+    claim_timeout: 10m          # Janitor at syncer Start requeues any
+                                # Syncing row whose last_sync_attempt_at
+                                # is older than this back to Pending.
+                                # Default 10m. Tune lower for workloads
+                                # with strict RPO; higher for slow links.
+  gc:
+    interval: 0                 # Reserved for a future periodic-GC
+                                # scheduler. v0.15.0 ships only on-demand
+                                # GC (dfsctl store block gc <share> or
+                                # POST /api/v1/shares/{name}/blockgc):
+                                # any non-zero value is accepted by the
+                                # config validator but emits a startup
+                                # WARN and is otherwise ignored. Schedule
+                                # via cron until the periodic scheduler
+                                # ships in a follow-up phase.
+    sweep_concurrency: 16       # Parallel cas/{XX}/ prefix workers.
+                                # Default 16, max 32. Higher values
+                                # accelerate sweep on large buckets but
+                                # increase risk of S3 503 SlowDown.
+    grace_period: 1h            # Objects whose LastModified is newer than
+                                # (snapshot - grace_period) are NEVER
+                                # deleted. Default 1h. Values in (0, 5m)
+                                # are REJECTED at config load; values in
+                                # [5m, 10m) are accepted but emit a
+                                # warning. The cushion protects in-flight
+                                # uploads whose metadata-txn lands after
+                                # the snapshot.
+    dry_run_sample_size: 1000   # Maximum candidate keys reported in
+                                # --dry-run mode. Default 1000.
+```
+
+**Tuning guidance:**
+
+- v0.15.0 ships only on-demand GC. Run via
+  `dfsctl store block gc <share> --dry-run` (capped by
+  `gc.dry_run_sample_size`) until you have measured the
+  hashes_marked / objects_swept ratio for your workload, then schedule
+  the real run via cron at the cadence that matches your delete rate.
+  `gc.interval` is reserved for a periodic-scheduler phase: any
+  non-zero value emits a startup WARN and is otherwise ignored today.
+- `syncer.upload_concurrency` × `syncer.tick` × average chunk size
+  (~4 MiB with the default FastCDC) bounds steady-state upload
+  throughput per share. Keep `syncer.upload_concurrency <=
+  syncer.claim_batch_size`.
+- `syncer.claim_timeout` controls how aggressively the restart-recovery
+  janitor requeues stuck `Syncing` rows: shorter values surface stalls
+  faster, longer values tolerate slow remotes. The default 10m fits
+  most S3 workloads.
+- `gc.grace_period` MUST be longer than your worst-case
+  metadata-commit latency after a successful PUT. The default 1h is
+  comfortable for any commit path that completes in seconds.
+- `gc.sweep_concurrency=16` is the validated default. Increase only
+  if you observe sweep-phase wall time as a bottleneck; back off on
+  S3 503 SlowDown. The hard cap is 32.
+
+Env-var mapping (dot-path convention; viper binds the top-level `syncer`
+and `gc` blocks directly, with no `blockstore.` prefix):
+`DITTOFS_SYNCER_TICK`,
+`DITTOFS_SYNCER_CLAIM_BATCH_SIZE`,
+`DITTOFS_SYNCER_UPLOAD_CONCURRENCY`,
+`DITTOFS_SYNCER_CLAIM_TIMEOUT`,
+`DITTOFS_GC_INTERVAL`,
+`DITTOFS_GC_SWEEP_CONCURRENCY`,
+`DITTOFS_GC_GRACE_PERIOD`,
+`DITTOFS_GC_DRY_RUN_SAMPLE_SIZE`.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep-v0150-phase-11)
+for the full mark-sweep design and [CLI.md](CLI.md) for the on-demand
+`dfsctl store block gc` command.
+
 ### 7. Metadata Configuration
 
 Metadata configuration has two parts: filesystem capabilities (server config file) and store instances (managed via CLI).

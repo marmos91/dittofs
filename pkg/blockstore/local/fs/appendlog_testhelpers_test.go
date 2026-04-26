@@ -44,6 +44,9 @@ func (nopFBS) ListUnreferenced(_ context.Context, _ int) ([]*blockstore.FileBloc
 func (nopFBS) ListFileBlocks(_ context.Context, _ string) ([]*blockstore.FileBlock, error) {
 	return nil, nil
 }
+func (nopFBS) EnumerateFileBlocks(_ context.Context, _ func(blockstore.ContentHash) error) error {
+	return nil
+}
 
 // newFSStoreForTest constructs an FSStore in t.TempDir with the given
 // options and a nopFBS backing store. Registers t.Cleanup to Close the

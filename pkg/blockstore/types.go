@@ -16,12 +16,8 @@ const BlockSize = 8 * 1024 * 1024
 // HashSize is the size of content hashes (BLAKE3 = 32 bytes).
 const HashSize = 32
 
-// ContentHash represents a BLAKE3-256 content hash.
-//
-// Width is 32 bytes, matching SHA-256 wire-compat so legacy metadata
-// deserializes unchanged. Live hash semantics switch to BLAKE3 in Phase 11
-// (A2) when the CAS write path wires up; Phase 10 ships the type doc
-// refresh + CASKey() helper ahead of that wiring.
+// ContentHash represents a BLAKE3-256 content hash. Width is 32 bytes,
+// matching SHA-256 wire-compat so legacy metadata deserializes unchanged.
 type ContentHash [HashSize]byte
 
 // String returns the hex-encoded hash string.
@@ -30,9 +26,7 @@ func (h ContentHash) String() string {
 }
 
 // CASKey returns the content-addressed key in scheme "blake3:{hex}".
-// Used by BSCAS-01 (local CAS key format) and BSCAS-06 (S3
-// x-amz-meta-content-hash header). Phase 10 defines the helper; Phase 11
-// starts populating it on the hot path.
+// Used for the local CAS key format and the S3 x-amz-meta-content-hash header.
 func (h ContentHash) CASKey() string {
 	return "blake3:" + hex.EncodeToString(h[:])
 }
@@ -61,53 +55,44 @@ func ParseContentHash(s string) (ContentHash, error) {
 	return h, nil
 }
 
-// BlockState represents the lifecycle state of a FileBlock.
+// BlockState is the lifecycle state of a FileBlock: Pending -> Syncing -> Remote.
 //
-// State machine: Dirty -> Local -> Syncing -> Remote
+//   - Pending (0): RefCount >= 1, not yet uploaded. Safe zero value for legacy
+//     rows deserialized without this field.
+//   - Syncing (1): Claimed by a syncer goroutine; upload in flight.
+//   - Remote (2):  PUT + metadata-txn confirmed; eligible for local eviction.
 //
-//   - Dirty (0):   Receiving writes, NOT syncable. Zero value is safe default
-//     for legacy blocks deserialized without this field.
-//   - Local (1):   Complete block on local disk, eligible for sync to remote.
-//     Set when the next block starts receiving writes, or when DataSize == BlockSize.
-//   - Syncing (2): Sync to remote store in progress. Reverts to Local on failure.
-//   - Remote (3):  Confirmed in remote block store. Eligible for local eviction.
-//
-// Write-after-sync resets: Remote -> Dirty (clears Hash + BlockStoreKey).
+// Write-after-sync resets Remote -> Pending (clears Hash + BlockStoreKey).
 type BlockState uint8
 
 const (
-	BlockStateDirty   BlockState = 0 // Receiving writes, NOT syncable
-	BlockStateLocal   BlockState = 1 // Complete, on disk, eligible for sync to remote
-	BlockStateSyncing BlockState = 2 // Sync to remote in progress
-	BlockStateRemote  BlockState = 3 // Confirmed in remote block store
+	BlockStatePending BlockState = 0
+	BlockStateSyncing BlockState = 1
+	BlockStateRemote  BlockState = 2
 )
 
 // String returns the string representation of BlockState.
 func (s BlockState) String() string {
 	switch s {
-	case BlockStateDirty:
-		return "Dirty"
-	case BlockStateLocal:
-		return "Local"
+	case BlockStatePending:
+		return "Pending"
 	case BlockStateSyncing:
 		return "Syncing"
 	case BlockStateRemote:
 		return "Remote"
 	default:
-		return "Unknown"
+		return fmt.Sprintf("BlockState(%d)", s)
 	}
 }
 
-// FileBlock is the single block entity in DittoFS.
-// Content-addressed: blocks with the same hash are shared across files for dedup.
+// FileBlock is the single block entity in DittoFS. Content-addressed:
+// blocks with the same hash are shared across files for dedup.
 //
 // Lifecycle:
-//  1. Created on write: ID=uuid, LocalPath=path, State=Dirty
-//  2. Local: block is complete (next block started or DataSize==BlockSize)
-//  3. Syncing: sync to remote store in progress
-//  4. Remote: BlockStoreKey set after background sync to remote store
-//  5. Remote + local: both LocalPath and BlockStoreKey set, State=Remote
-//  6. Evicted: LocalPath cleared, data only in remote store
+//  1. Pending  — created on write (LocalPath set, BlockStoreKey empty).
+//  2. Syncing  — claim batch flipped State and stamped LastSyncAttemptAt.
+//  3. Remote   — PUT + metadata-txn confirmed (BlockStoreKey set).
+//  4. Evicted  — LocalPath cleared; data lives only in the remote store.
 type FileBlock struct {
 	// ID is a stable UUID for this block.
 	ID string
@@ -131,11 +116,16 @@ type FileBlock struct {
 	// LastAccess is used for LRU eviction.
 	LastAccess time.Time
 
+	// LastSyncAttemptAt is the time the syncer last claimed this block.
+	// The restart-recovery janitor requeues Syncing rows whose attempt
+	// exceeds syncer.claim_timeout. Zero value means never attempted.
+	LastSyncAttemptAt time.Time `json:"last_sync_attempt_at,omitempty"`
+
 	// CreatedAt is when the block was created.
 	CreatedAt time.Time
 
-	// State is the block lifecycle state (Dirty -> Local -> Syncing -> Remote).
-	// Zero value (Dirty) is the safe default for legacy blocks.
+	// State is the block lifecycle state. Zero value (Pending) is the safe
+	// default for legacy blocks.
 	State BlockState `json:"state"`
 }
 
@@ -152,14 +142,14 @@ func NewFileBlock(id string, localPath string) *FileBlock {
 }
 
 // IsRemote returns true if the block has been synced to the remote block store.
-// Migration fallback: legacy blocks (State==0/Dirty) with BlockStoreKey set
-// are treated as Remote -- they were created before the state machine existed.
+// Dual-read fallback (D-21): legacy zero-valued rows (State==Pending) that
+// already carry a BlockStoreKey were uploaded under the legacy non-CAS path
+// and must still be treated as Remote during the dual-read window.
 func (b *FileBlock) IsRemote() bool {
 	if b.State == BlockStateRemote {
 		return true
 	}
-	// Migration fallback for legacy blocks without State field
-	return b.State == BlockStateDirty && b.BlockStoreKey != ""
+	return b.State == BlockStatePending && b.BlockStoreKey != ""
 }
 
 // HasLocalFile returns true if the block exists in the local store.
@@ -167,19 +157,22 @@ func (b *FileBlock) HasLocalFile() bool {
 	return b.LocalPath != ""
 }
 
-// IsFinalized returns true if the block's hash has been computed.
+// IsFinalized returns true if the block's upload is complete (State==Remote).
 func (b *FileBlock) IsFinalized() bool {
-	return !b.Hash.IsZero()
+	return b.State == BlockStateRemote
 }
 
-// IsDirty returns true if the block is receiving writes and not yet complete.
+// IsDirty returns true if the block is Pending and has never been uploaded
+// (no BlockStoreKey) — distinguishing a freshly-written block from a
+// Pending block that already exists remotely (legacy path).
 func (b *FileBlock) IsDirty() bool {
-	return b.State == BlockStateDirty
+	return b.State == BlockStatePending && b.BlockStoreKey == ""
 }
 
-// IsLocal returns true if the block is complete and eligible for sync to remote.
+// IsLocal returns true if the block is Pending with data on the local
+// filesystem — i.e. eligible for the syncer to claim and upload.
 func (b *FileBlock) IsLocal() bool {
-	return b.State == BlockStateLocal
+	return b.State == BlockStatePending && b.LocalPath != ""
 }
 
 // FormatStoreKey returns the block store key (S3 object key) for a block.
@@ -202,6 +195,48 @@ func ParseStoreKey(storeKey string) (payloadID string, blockIdx uint64, ok bool)
 		return "", 0, false
 	}
 	return payloadID, blockIdx, true
+}
+
+// FormatCASKey returns the flat S3 object key for a content-addressed block.
+// Format: "cas/{hex[0:2]}/{hex[2:4]}/{hex}". Two-level fanout caps the
+// top-level prefix count at 256 and bounds per-prefix file count predictably.
+// Mirror to ParseCASKey. See BSCAS-01.
+func FormatCASKey(h ContentHash) string {
+	hexStr := hex.EncodeToString(h[:])
+	return "cas/" + hexStr[0:2] + "/" + hexStr[2:4] + "/" + hexStr
+}
+
+// ParseCASKey parses an S3 object key produced by FormatCASKey and returns
+// the embedded ContentHash. Returns ErrCASKeyMalformed wrapped with the
+// offending input on any shape, length, or hex error.
+// Symmetric to FormatCASKey. See BSCAS-01 / D-29.
+func ParseCASKey(key string) (ContentHash, error) {
+	const prefix = "cas/"
+	if !strings.HasPrefix(key, prefix) {
+		return ContentHash{}, fmt.Errorf("%w: missing %q prefix in %q", ErrCASKeyMalformed, prefix, key)
+	}
+	rest := key[len(prefix):]
+	parts := strings.Split(rest, "/")
+	if len(parts) != 3 {
+		return ContentHash{}, fmt.Errorf("%w: expected 3 segments after prefix in %q", ErrCASKeyMalformed, key)
+	}
+	shard1, shard2, hexStr := parts[0], parts[1], parts[2]
+	if len(shard1) != 2 || len(shard2) != 2 {
+		return ContentHash{}, fmt.Errorf("%w: shard segments must be 2 hex chars in %q", ErrCASKeyMalformed, key)
+	}
+	if len(hexStr) != HashSize*2 {
+		return ContentHash{}, fmt.Errorf("%w: hex hash must be %d chars in %q", ErrCASKeyMalformed, HashSize*2, key)
+	}
+	if hexStr[0:2] != shard1 || hexStr[2:4] != shard2 {
+		return ContentHash{}, fmt.Errorf("%w: shard prefix does not match hash in %q", ErrCASKeyMalformed, key)
+	}
+	raw, err := hex.DecodeString(hexStr)
+	if err != nil {
+		return ContentHash{}, fmt.Errorf("%w: %v", ErrCASKeyMalformed, err)
+	}
+	var h ContentHash
+	copy(h[:], raw)
+	return h, nil
 }
 
 // ParseBlockID extracts the payloadID and block index from an internal

@@ -244,10 +244,8 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		_ = lf.f.Close()
 		return fmt.Errorf("append log: %w", err)
 	}
-	if !bc.skipFsync {
-		if err := lf.f.Sync(); err != nil {
-			return fmt.Errorf("log fsync: %w", err)
-		}
+	if err := lf.f.Sync(); err != nil {
+		return fmt.Errorf("log fsync: %w", err)
 	}
 	bc.logBytesTotal.Add(int64(n))
 	tree.Insert(offset, uint32(len(data)), time.Now())

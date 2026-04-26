@@ -24,6 +24,8 @@ func ApplyDefaults(cfg *Config) {
 	applyAdminDefaults(&cfg.Admin)
 	applyLockDefaults(&cfg.Lock)
 	applyKerberosDefaults(&cfg.Kerberos)
+	cfg.Syncer.ApplyDefaults()
+	cfg.GC.ApplyDefaults()
 }
 
 // applyLoggingDefaults sets logging defaults and normalizes values.

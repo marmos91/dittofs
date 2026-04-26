@@ -79,7 +79,7 @@ func (s *BadgerMetadataStore) PutFileBlock(ctx context.Context, block *metadata.
 		// Maintain local index: add when Local, remove otherwise.
 		// This allows ListLocalBlocks to iterate O(local) instead of O(all).
 		localKey := []byte(fileBlockLocalPrefix + block.ID)
-		if block.State == metadata.BlockStateLocal {
+		if block.State == metadata.BlockStatePending {
 			if err := txn.Set(localKey, nil); err != nil {
 				return err
 			}
@@ -434,6 +434,37 @@ func (s *BadgerMetadataStore) ListFileBlocks(ctx context.Context, payloadID stri
 	return result, nil
 }
 
+// EnumerateFileBlocks streams every FileBlock's ContentHash through fn using
+// a Badger prefix iterator over fb:. The iterator yields one row per block
+// (no allocation of a full slice in application memory). See GC-01 / D-02.
+func (s *BadgerMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
+	return s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = true
+		opts.PrefetchSize = 256
+		prefix := []byte(fileBlockPrefix)
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("enumerate file blocks: %w", err)
+			}
+			var block metadata.FileBlock
+			if err := it.Item().Value(func(val []byte) error {
+				return json.Unmarshal(val, &block)
+			}); err != nil {
+				return fmt.Errorf("decode file block: %w", err)
+			}
+			if err := fn(block.Hash); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // parseBlockIdx extracts the numeric block index from a block ID ("{payloadID}/{blockIdx}").
 func parseBlockIdx(id string) int {
 	if idx := strings.LastIndex(id, "/"); idx >= 0 {
@@ -490,4 +521,8 @@ func (tx *badgerTransaction) ListUnreferenced(ctx context.Context, limit int) ([
 
 func (tx *badgerTransaction) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
 	return tx.store.ListFileBlocks(ctx, payloadID)
+}
+
+func (tx *badgerTransaction) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
+	return tx.store.EnumerateFileBlocks(ctx, fn)
 }

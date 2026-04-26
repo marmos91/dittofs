@@ -67,6 +67,153 @@ type Config struct {
 	//   DITTOFS_KERBEROS_KEYTAB overrides KeytabPath (DITTOFS_KERBEROS_KEYTAB_PATH for compat)
 	//   DITTOFS_KERBEROS_PRINCIPAL overrides ServicePrincipal (DITTOFS_KERBEROS_SERVICE_PRINCIPAL for compat)
 	Kerberos KerberosConfig `mapstructure:"kerberos" yaml:"kerberos"`
+
+	// Syncer configures the engine.Syncer claim/upload cycle (Phase 11 D-13/D-14/D-25).
+	// These knobs apply globally to every share's *engine.BlockStore syncer.
+	Syncer SyncerConfig `mapstructure:"syncer" yaml:"syncer"`
+
+	// GC configures the engine.CollectGarbage mark-sweep run (Phase 11 D-04..D-08).
+	// These knobs apply globally to every block-store GC invocation.
+	GC GCConfig `mapstructure:"gc" yaml:"gc"`
+}
+
+// SyncerConfig configures the engine.Syncer claim/upload cycle. See Phase 11
+// CONTEXT.md decisions D-13 (batched claim), D-14 (restart-recovery janitor),
+// D-24 (periodic-only sync trigger), D-25 (bounded share-wide upload pool).
+//
+// All four fields have non-zero defaults applied via ApplyDefaults; Validate
+// enforces the only constraint that defaults cannot guarantee:
+// UploadConcurrency <= ClaimBatchSize (otherwise the upload pool would block
+// on an empty queue).
+type SyncerConfig struct {
+	// ClaimBatchSize is the maximum number of Pending blocks the syncer
+	// flips to Syncing in a single metadata transaction per claim cycle (D-13).
+	// Default: 32.
+	ClaimBatchSize int `mapstructure:"claim_batch_size" yaml:"claim_batch_size"`
+
+	// UploadConcurrency is the per-share upload goroutine pool size (D-25).
+	// Caps S3 connections per share; predictable throughput. Must be <= ClaimBatchSize.
+	// Default: 8.
+	UploadConcurrency int `mapstructure:"upload_concurrency" yaml:"upload_concurrency"`
+
+	// ClaimTimeout bounds how long a row may remain in Syncing before the
+	// restart-recovery janitor requeues it back to Pending (D-14). CAS
+	// idempotency makes a duplicate re-upload a benign no-op.
+	// Default: 10 minutes.
+	ClaimTimeout time.Duration `mapstructure:"claim_timeout" yaml:"claim_timeout"`
+
+	// Tick is the periodic uploader cadence (D-24). The pressure channel from
+	// Phase 10 LSL-04 also drives sync drains independently.
+	// Default: 30 seconds.
+	Tick time.Duration `mapstructure:"tick" yaml:"tick"`
+}
+
+// ApplyDefaults fills any zero-valued field with the Phase 11 defaults.
+func (c *SyncerConfig) ApplyDefaults() {
+	if c.ClaimBatchSize <= 0 {
+		c.ClaimBatchSize = 32
+	}
+	if c.UploadConcurrency <= 0 {
+		c.UploadConcurrency = 8
+	}
+	if c.ClaimTimeout <= 0 {
+		c.ClaimTimeout = 10 * time.Minute
+	}
+	if c.Tick <= 0 {
+		c.Tick = 30 * time.Second
+	}
+}
+
+// Validate returns an error if the SyncerConfig has invalid values. Negative
+// or zero batch / concurrency are nonsensical; concurrency above batch would
+// leave goroutines parked on an exhausted batch every cycle.
+func (c *SyncerConfig) Validate() error {
+	if c.ClaimBatchSize <= 0 {
+		return fmt.Errorf("syncer.claim_batch_size must be > 0 (got %d)", c.ClaimBatchSize)
+	}
+	if c.UploadConcurrency <= 0 {
+		return fmt.Errorf("syncer.upload_concurrency must be > 0 (got %d)", c.UploadConcurrency)
+	}
+	if c.UploadConcurrency > c.ClaimBatchSize {
+		return fmt.Errorf("syncer.upload_concurrency (%d) must be <= claim_batch_size (%d)",
+			c.UploadConcurrency, c.ClaimBatchSize)
+	}
+	return nil
+}
+
+// GCConfig configures the engine.CollectGarbage mark-sweep run. See Phase
+// 11 CONTEXT.md decisions D-04 (sweep concurrency), D-05 (grace TTL),
+// D-06 (mark fail-closed — INV-04), D-07 (sweep continue+capture),
+// D-08 (interval defaults to disabled — operator opt-in).
+type GCConfig struct {
+	// Interval is reserved for a future periodic-GC scheduler. Phase 11
+	// WR-3-02: v0.15.0 ships only on-demand GC (dfsctl/REST). The field
+	// is parsed and validated, but any non-zero value is reported with
+	// a startup WARN at server boot and otherwise ignored — the periodic
+	// scheduler is tracked for a follow-up phase. Schedule via cron in
+	// the meantime.
+	Interval time.Duration `mapstructure:"interval" yaml:"interval"`
+
+	// SweepConcurrency bounds the worker pool that walks the 256
+	// cas/XX/* prefixes during the sweep phase (D-04). Defaults to 16,
+	// capped at 32 to prevent storming the remote endpoint.
+	SweepConcurrency int `mapstructure:"sweep_concurrency" yaml:"sweep_concurrency"`
+
+	// GracePeriod is the TTL applied during sweep: an object whose
+	// LastModified is within snapshot - GracePeriod is preserved (D-05).
+	// Defaults to 1 hour. Values in (0, 5m) are rejected at config load;
+	// values in [5m, 10m) are accepted but emit a warning.
+	GracePeriod time.Duration `mapstructure:"grace_period" yaml:"grace_period"`
+
+	// DryRunSampleSize bounds the number of candidate keys captured by a
+	// dry-run report. Defaults to 1000.
+	DryRunSampleSize int `mapstructure:"dry_run_sample_size" yaml:"dry_run_sample_size"`
+}
+
+// ApplyDefaults fills any zero-valued field with the Phase 11 defaults.
+func (c *GCConfig) ApplyDefaults() {
+	// Interval default is 0 (disabled — operator opt-in per D-08).
+	if c.SweepConcurrency <= 0 {
+		c.SweepConcurrency = 16
+	}
+	if c.GracePeriod <= 0 {
+		c.GracePeriod = time.Hour
+	}
+	if c.DryRunSampleSize <= 0 {
+		c.DryRunSampleSize = 1000
+	}
+}
+
+// Validate returns an error if the GCConfig has invalid values.
+//
+// GracePeriod: zero is allowed (the engine substitutes the 1h default in
+// ApplyDefaults / engine.Options). Any positive value below 5m is
+// rejected: server-S3 clock skew under sustained load can easily exceed
+// a few minutes, and a sub-5m grace TTL collapses the snapshot-grace
+// contract that protects in-flight CAS PUTs from being reaped on the
+// same sweep (D-05). Values in [5m, 10m) are accepted but emit a warn —
+// they're inside spec but tighter than the recommended floor.
+func (c *GCConfig) Validate() error {
+	if c.SweepConcurrency > 32 {
+		return fmt.Errorf("gc.sweep_concurrency must be <= 32 (got %d)", c.SweepConcurrency)
+	}
+	if c.SweepConcurrency < 0 {
+		return fmt.Errorf("gc.sweep_concurrency must be >= 0 (got %d)", c.SweepConcurrency)
+	}
+	if c.GracePeriod < 0 {
+		return fmt.Errorf("gc.grace_period must be >= 0 (got %v)", c.GracePeriod)
+	}
+	if c.GracePeriod > 0 && c.GracePeriod < 5*time.Minute {
+		return fmt.Errorf("gc.grace_period must be >= 5m to absorb server/S3 clock skew (got %v); set 0 to use the 1h default", c.GracePeriod)
+	}
+	if c.GracePeriod >= 5*time.Minute && c.GracePeriod < 10*time.Minute {
+		logger.Warn("gc.grace_period is below the recommended 10m floor; CAS PUTs racing the mark phase may be reaped if clock skew exceeds the configured window",
+			"configured", c.GracePeriod)
+	}
+	if c.DryRunSampleSize < 0 {
+		return fmt.Errorf("gc.dry_run_sample_size must be >= 0 (got %d)", c.DryRunSampleSize)
+	}
+	return nil
 }
 
 // LockConfig contains lock manager configuration.

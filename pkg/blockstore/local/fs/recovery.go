@@ -96,15 +96,16 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 			needsUpdate = true
 		}
 
-		// Blocks with a BlockStoreKey but still Dirty -> already synced to remote
-		if fb.BlockStoreKey != "" && fb.State == blockstore.BlockStateDirty {
+		// Blocks with a BlockStoreKey but still Pending -> already synced to remote
+		// (legacy zero-valued rows; D-21 dual-read window).
+		if fb.BlockStoreKey != "" && fb.State == blockstore.BlockStatePending {
 			fb.State = blockstore.BlockStateRemote
 			needsUpdate = true
 		}
 
-		// Revert interrupted syncs so they get retried
+		// Revert interrupted syncs so they get retried (Syncing -> Pending; D-14).
 		if fb.State == blockstore.BlockStateSyncing {
-			fb.State = blockstore.BlockStateLocal
+			fb.State = blockstore.BlockStatePending
 			needsUpdate = true
 			syncsReverted++
 		}

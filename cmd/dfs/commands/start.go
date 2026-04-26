@@ -163,6 +163,24 @@ func runStart(cmd *cobra.Command, args []string) error {
 		ParallelDownloads: deduced.ParallelFetches,
 		PrefetchWorkers:   deduced.PrefetchWorkers,
 	})
+	// Phase 11 WR-01: wire operator-configured GC knobs into the runtime so
+	// engine.CollectGarbage receives them in engine.Options. Without this,
+	// the validated gc.* config in pkg/config/config.go is silently dropped
+	// and the engine falls back to hardcoded defaults.
+	rt.SetGCDefaults(&runtime.GCDefaults{
+		GracePeriod:      cfg.GC.GracePeriod,
+		SweepConcurrency: cfg.GC.SweepConcurrency,
+		DryRunSampleSize: cfg.GC.DryRunSampleSize,
+	})
+	// Phase 11 WR-3-02: gc.interval is parsed and validated but no
+	// periodic-GC scheduler is wired in v0.15.0 — the docs were updated
+	// to reflect the deferred status, and any operator who configured a
+	// non-zero value gets a loud startup WARN so the silent
+	// "feature non-existence" failure mode does not bite.
+	if cfg.GC.Interval > 0 {
+		logger.Warn("gc.interval is configured but no periodic-GC scheduler ships in v0.15.0 — the value is ignored. Trigger GC on demand via `dfsctl store block gc <share>` (or schedule via cron). Periodic scheduling is tracked for a follow-up phase.",
+			"configured_interval", cfg.GC.Interval)
+	}
 
 	// Load shares (per-share BlockStores are created during AddShare).
 	if err := runtime.LoadSharesFromStore(ctx, rt, cpStore); err != nil {

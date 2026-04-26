@@ -24,6 +24,13 @@ import (
 // BaseDirForTest returns the FSStore baseDir.
 func (bc *FSStore) BaseDirForTest() string { return bc.baseDir }
 
+// FlushFsyncCountForTest returns the cumulative number of fsyncs issued by
+// flushBlock since FSStore startup. Used by tests that assert the
+// pressure-driven and block-fill flush paths do NOT fsync (only Flush /
+// NFS COMMIT does). Reset is not provided; tests should sample twice and
+// compute the delta.
+func (bc *FSStore) FlushFsyncCountForTest() int64 { return bc.flushFsyncCount.Load() }
+
 // RollupOffsetForTest returns the metadata rollup_offset for payloadID.
 // Returns (0, nil) when no RollupStore is configured.
 func (bc *FSStore) RollupOffsetForTest(ctx context.Context, payloadID string) (uint64, error) {
@@ -132,6 +139,64 @@ func RecomputeHeaderCRCForTest(header []byte) {
 	binary.LittleEndian.PutUint32(header[28:32], crc)
 }
 
+// EnsureSpaceForTest invokes ensureSpace from external test packages.
+// Used by the LSL-08 conformance suite (RunEvictionLSL08Suite).
+func (bc *FSStore) EnsureSpaceForTest(ctx context.Context, needed int64) error {
+	return bc.ensureSpace(ctx, needed)
+}
+
+// ChunkPathForTest returns the absolute path where a chunk addressed by h
+// would live under blocks/{hh}/{hh}/{hex}. Used by the LSL-08 conformance
+// suite to assert eviction unlinked the file.
+func (bc *FSStore) ChunkPathForTest(h blockstore.ContentHash) string {
+	return bc.chunkPath(h)
+}
+
+// SeedLRUFromDiskForTest re-runs the cold-start LRU seeding pass against
+// the current on-disk blocks/ tree. Returns true unconditionally so a
+// callable factory can override behavior; the LSL-08 suite uses the
+// boolean as a "is this supported" probe.
+func (bc *FSStore) SeedLRUFromDiskForTest() bool {
+	bc.seedLRUFromDisk()
+	return true
+}
+
+// fbsCallCounterForTest hooks for the LSL-08 "no FileBlockStore calls
+// during ensureSpace" assertion. Backends that wrap FBS in a counting
+// wrapper expose ResetFBSCallCounterForTest / FBSCallCountForTest;
+// otherwise these helpers are no-ops returning 0.
+//
+// FSStore implements them via the *countingFileBlockStore wrapper
+// installed by the LSL-08 factory in localtest. When the field is nil
+// (not-counted), both helpers are no-ops.
+
+// FBSCounter is implemented by counting wrappers around FileBlockStore.
+// Used by the LSL-08 conformance suite to assert ensureSpace makes zero
+// FileBlockStore calls. Exported so cross-package test wrappers can
+// satisfy it.
+type FBSCounter interface {
+	ResetCount()
+	TotalCount() int
+}
+
+// ResetFBSCallCounterForTest zeroes the counter on a counting wrapper
+// around FileBlockStore. No-op when the underlying store is not counted.
+func (bc *FSStore) ResetFBSCallCounterForTest() {
+	if c, ok := bc.blockStore.(FBSCounter); ok {
+		c.ResetCount()
+	}
+}
+
+// FBSCallCountForTest returns the number of FileBlockStore method calls
+// recorded since the last ResetFBSCallCounterForTest. Returns 0 if the
+// underlying store is not counted.
+func (bc *FSStore) FBSCallCountForTest() int {
+	if c, ok := bc.blockStore.(FBSCounter); ok {
+		return c.TotalCount()
+	}
+	return 0
+}
+
 // nopFBSForTest is a no-op FileBlockStore used by the ReopenForTest
 // helper. Every read returns ErrFileBlockNotFound; every write is a
 // no-op. Sufficient for the append-log conformance suite because
@@ -169,4 +234,7 @@ func (nopFBSForTest) ListUnreferenced(_ context.Context, _ int) ([]*blockstore.F
 }
 func (nopFBSForTest) ListFileBlocks(_ context.Context, _ string) ([]*blockstore.FileBlock, error) {
 	return nil, nil
+}
+func (nopFBSForTest) EnumerateFileBlocks(_ context.Context, _ func(blockstore.ContentHash) error) error {
+	return nil
 }

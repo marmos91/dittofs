@@ -91,6 +91,10 @@ func (c *countingFileBlockStore) ListFileBlocks(ctx context.Context, payloadID s
 	return c.inner.ListFileBlocks(ctx, payloadID)
 }
 
+func (c *countingFileBlockStore) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
+	return c.inner.EnumerateFileBlocks(ctx, fn)
+}
+
 // snapshot captures the current call counts for comparison.
 type fbsCallSnapshot struct {
 	get, put, del, inc, dec, find, listLocal, listRemote, listUnref, listFile int64
@@ -124,6 +128,35 @@ func diffSnapshot(before, after fbsCallSnapshot) fbsCallSnapshot {
 		listUnref:  after.listUnref - before.listUnref,
 		listFile:   after.listFile - before.listFile,
 	}
+}
+
+// ResetCount and TotalCount satisfy the FBSCounter interface declared in
+// test_hooks.go so the LSL-08 conformance suite can assert no
+// FileBlockStore calls happen during ensureSpace.
+func (c *countingFileBlockStore) ResetCount() {
+	c.getFileBlock.Store(0)
+	c.putFileBlock.Store(0)
+	c.deleteFileBlock.Store(0)
+	c.incrementRefCount.Store(0)
+	c.decrementRefCount.Store(0)
+	c.findFileBlockByHash.Store(0)
+	c.listLocalBlocks.Store(0)
+	c.listRemoteBlocks.Store(0)
+	c.listUnreferenced.Store(0)
+	c.listFileBlocks.Store(0)
+}
+
+func (c *countingFileBlockStore) TotalCount() int {
+	return int(c.getFileBlock.Load() +
+		c.putFileBlock.Load() +
+		c.deleteFileBlock.Load() +
+		c.incrementRefCount.Load() +
+		c.decrementRefCount.Load() +
+		c.findFileBlockByHash.Load() +
+		c.listLocalBlocks.Load() +
+		c.listRemoteBlocks.Load() +
+		c.listUnreferenced.Load() +
+		c.listFileBlocks.Load())
 }
 
 // newTestCache creates an FSStore with a temporary directory and in-memory block store.
@@ -639,6 +672,90 @@ func TestWriteFromRemote(t *testing.T) {
 	}
 }
 
+// TestWriteFromRemote_PreservesCASMetadata is the regression test for
+// Pass-2 CR-2-01. WriteFromRemote MUST NOT clobber the canonical CAS
+// metadata (Hash + BlockStoreKey) on the FileBlockStore row when the
+// in-process diskIndex misses (the steady-state case after a server
+// restart, or for any block this node never produced locally).
+//
+// Pre-fix bug: diskIndex miss -> NewFileBlock(blockID, "") with zero Hash,
+// then BlockStoreKey was overwritten with the legacy "{payloadID}/block-N"
+// format and queueFileBlockUpdate UPSERTed a row with Hash=zero. The next
+// fetchBlock fell into the legacy path, hit the never-existing legacy key,
+// and returned a sparse "zero" read. GC's mark phase then skipped the
+// zero-hash row and reaped the live CAS object.
+func TestWriteFromRemote_PreservesCASMetadata(t *testing.T) {
+	bc := newTestCache(t, 256*1024*1024)
+	ctx := context.Background()
+
+	const payloadID = "file-cas"
+	const blockIdx = uint64(0)
+
+	// Seed the FileBlockStore with the canonical CAS row that the syncer
+	// would have written at upload time: Hash=H, BlockStoreKey=cas/.../<hex>.
+	data := bytes.Repeat([]byte{0xCC}, 4096)
+	hash := hashBytes(data)
+	casKey := blockstore.FormatCASKey(hash)
+	blockID := makeBlockID(blockKey{payloadID: payloadID, blockIdx: blockIdx})
+
+	row := blockstore.NewFileBlock(blockID, "")
+	row.Hash = hash
+	row.BlockStoreKey = casKey
+	row.State = blockstore.BlockStateRemote
+	row.DataSize = uint32(len(data))
+	if err := bc.blockStore.PutFileBlock(ctx, row); err != nil {
+		t.Fatalf("seed PutFileBlock: %v", err)
+	}
+
+	// Simulate the post-restart state: the diskIndex is empty (no local
+	// .blk file ever materialized for this block). WriteFromRemote MUST
+	// fall back to the FileBlockStore lookup and preserve the CAS row.
+	bc.diskIndex.Range(func(k, _ any) bool {
+		bc.diskIndex.Delete(k)
+		return true
+	})
+
+	if err := bc.WriteFromRemote(ctx, payloadID, data, 0); err != nil {
+		t.Fatalf("WriteFromRemote failed: %v", err)
+	}
+
+	// Drain any queued FileBlock updates so the assertion below sees the
+	// post-WriteFromRemote row, not the seeded one.
+	bc.SyncFileBlocks(ctx)
+
+	got, err := bc.blockStore.GetFileBlock(ctx, blockID)
+	if err != nil {
+		t.Fatalf("GetFileBlock after WriteFromRemote: %v", err)
+	}
+	if got.Hash != hash {
+		t.Errorf("CR-2-01 regression: Hash clobbered\n  got:  %s\n  want: %s",
+			got.Hash.String(), hash.String())
+	}
+	if got.BlockStoreKey != casKey {
+		t.Errorf("CR-2-01 regression: BlockStoreKey clobbered\n  got:  %q\n  want: %q",
+			got.BlockStoreKey, casKey)
+	}
+	if got.State != blockstore.BlockStateRemote {
+		t.Errorf("State not Remote after WriteFromRemote: got %v", got.State)
+	}
+	if got.LocalPath == "" {
+		t.Errorf("LocalPath empty after WriteFromRemote (cache file should be tracked)")
+	}
+
+	// Read-back: bytes must round-trip from the local cache.
+	dest := make([]byte, len(data))
+	found, err := bc.ReadAt(ctx, payloadID, dest, 0)
+	if err != nil {
+		t.Fatalf("ReadAt failed: %v", err)
+	}
+	if !found {
+		t.Fatal("ReadAt local store miss after WriteFromRemote")
+	}
+	if !bytes.Equal(dest, data) {
+		t.Fatal("ReadAt wrong data after WriteFromRemote")
+	}
+}
+
 // TestFSStoreStartCloseNoGoroutineLeak verifies that FSStore.Close() joins the
 // background goroutine launched by Start(), preventing a goroutine leak across
 // repeated Start/Close cycles. Regression test for TD-02a.
@@ -763,16 +880,10 @@ func TestLocalWritePath_NoFileBlockStoreCall(t *testing.T) {
 
 		ctx := context.Background()
 
-		// Seed two Remote-state blocks directly on disk. populateRemoteBlock
-		// calls bc.blockStore.PutFileBlock internally to register them — those
-		// seed-time calls are expected. The counter is snapshotted AFTER
-		// seeding so only the eviction path is measured.
-		populateRemoteBlock(t, bc, "rfile1", 0, 500)
-		populateRemoteBlock(t, bc, "rfile2", 0, 500)
-		bc.accessTracker.mu.Lock()
-		bc.accessTracker.times["rfile1"] = time.Now().Add(-2 * time.Hour) // oldest
-		bc.accessTracker.times["rfile2"] = time.Now().Add(-1 * time.Hour)
-		bc.accessTracker.mu.Unlock()
+		// Seed two CAS chunks via StoreChunk (the canonical write path
+		// post-LSL-08; eviction is now LRU-driven keyed by ContentHash).
+		_ = storeChunk(t, bc, bytes.Repeat([]byte{0xA1}, 500))
+		_ = storeChunk(t, bc, bytes.Repeat([]byte{0xA2}, 500))
 
 		bc.SetEvictionEnabled(true)
 		bc.SetRetentionPolicy(blockstore.RetentionLRU, 0)
@@ -780,7 +891,7 @@ func TestLocalWritePath_NoFileBlockStoreCall(t *testing.T) {
 		before := counter.snapshot()
 
 		// diskUsed=1000, maxDisk=1500, needed=600 -> over limit by 100 bytes,
-		// forcing eviction of at least one of the 500B blocks.
+		// forcing eviction of at least one of the 500B chunks.
 		if err := bc.ensureSpace(ctx, 600); err != nil {
 			t.Fatalf("ensureSpace failed: %v", err)
 		}

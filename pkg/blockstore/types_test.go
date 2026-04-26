@@ -1,6 +1,7 @@
 package blockstore
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -218,5 +219,184 @@ func TestParseBlockID_Invalid(t *testing.T) {
 				t.Fatalf("expected error for %q, got payloadID=%q blockIdx=%d", tt.blockID, pid, idx)
 			}
 		})
+	}
+}
+
+// blake3EmptyHex is the BLAKE3-256 of the empty input — used as a known
+// vector for the FormatCASKey/ParseCASKey round-trip tests (BSCAS-01, D-29).
+const blake3EmptyHex = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+
+// TestFormatCASKey asserts FormatCASKey returns exactly
+// "cas/{hex[0:2]}/{hex[2:4]}/{hex}" for both the all-zero hash and a
+// known-vector hash. See BSCAS-01.
+func TestFormatCASKey(t *testing.T) {
+	tests := []struct {
+		name string
+		hash func() ContentHash
+		want string
+	}{
+		{
+			name: "all-zero hash",
+			hash: func() ContentHash { return ContentHash{} },
+			want: "cas/00/00/0000000000000000000000000000000000000000000000000000000000000000",
+		},
+		{
+			name: "known vector (blake3 of empty input)",
+			hash: func() ContentHash {
+				h, err := ParseContentHash(blake3EmptyHex)
+				if err != nil {
+					t.Fatalf("setup: ParseContentHash(%q) error: %v", blake3EmptyHex, err)
+				}
+				return h
+			},
+			want: "cas/af/13/" + blake3EmptyHex,
+		},
+		{
+			name: "incrementing-byte hash",
+			hash: func() ContentHash {
+				var h ContentHash
+				for i := range h {
+					h[i] = byte(i)
+				}
+				return h
+			},
+			want: "cas/00/01/000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatCASKey(tt.hash())
+			if got != tt.want {
+				t.Fatalf("FormatCASKey() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseCASKey_RoundTrip asserts ParseCASKey accepts the output of
+// FormatCASKey and returns the original hash unchanged. See BSCAS-01.
+func TestParseCASKey_RoundTrip(t *testing.T) {
+	hashes := []func() ContentHash{
+		func() ContentHash { return ContentHash{} },
+		func() ContentHash {
+			h, _ := ParseContentHash(blake3EmptyHex)
+			return h
+		},
+		func() ContentHash {
+			var h ContentHash
+			for i := range h {
+				h[i] = byte(0xAA)
+			}
+			return h
+		},
+	}
+	for i, mk := range hashes {
+		h := mk()
+		key := FormatCASKey(h)
+		got, err := ParseCASKey(key)
+		if err != nil {
+			t.Fatalf("case %d: ParseCASKey(%q) error: %v", i, key, err)
+		}
+		if got != h {
+			t.Fatalf("case %d: ParseCASKey round-trip mismatch:\n got: %x\nwant: %x", i, got, h)
+		}
+	}
+}
+
+// TestParseCASKey_Malformed asserts ParseCASKey rejects malformed inputs
+// with ErrCASKeyMalformed wrapped via fmt.Errorf %w.
+func TestParseCASKey_Malformed(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "empty string", key: ""},
+		{name: "missing prefix", key: "blake3/00/00/" + blake3EmptyHex},
+		{name: "wrong prefix", key: "chunk/af/13/" + blake3EmptyHex},
+		{name: "shard1 too short", key: "cas/a/13/" + blake3EmptyHex},
+		{name: "shard1 too long", key: "cas/aff/13/" + blake3EmptyHex},
+		{name: "shard2 too short", key: "cas/af/1/" + blake3EmptyHex},
+		{name: "missing third segment", key: "cas/af/13"},
+		{name: "extra trailing segment", key: "cas/af/13/" + blake3EmptyHex + "/extra"},
+		{name: "odd-length hex", key: "cas/af/13/" + blake3EmptyHex + "0"},
+		{name: "non-hex chars", key: "cas/zz/13/" + strings.Repeat("z", 64)},
+		{name: "shard does not match hash prefix", key: "cas/00/00/" + blake3EmptyHex},
+		{name: "payload-style key", key: "export/file.txt/block-0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseCASKey(tt.key)
+			if err == nil {
+				t.Fatalf("expected error for %q, got nil", tt.key)
+			}
+			if !errors.Is(err, ErrCASKeyMalformed) {
+				t.Fatalf("ParseCASKey(%q) error = %v, want errors.Is(err, ErrCASKeyMalformed)", tt.key, err)
+			}
+		})
+	}
+}
+
+// TestBlockStateConstants asserts the post-Phase-11 collapsed state machine:
+// exactly three named constants Pending=0, Syncing=1, Remote=2 with matching
+// String() output. Pending=0 is the safe default for legacy zero-valued rows
+// (D-12). See STATE-01.
+func TestBlockStateConstants(t *testing.T) {
+	if BlockStatePending != 0 {
+		t.Errorf("BlockStatePending = %d, want 0", BlockStatePending)
+	}
+	if BlockStateSyncing != 1 {
+		t.Errorf("BlockStateSyncing = %d, want 1", BlockStateSyncing)
+	}
+	if BlockStateRemote != 2 {
+		t.Errorf("BlockStateRemote = %d, want 2", BlockStateRemote)
+	}
+
+	cases := []struct {
+		s    BlockState
+		want string
+	}{
+		{BlockStatePending, "Pending"},
+		{BlockStateSyncing, "Syncing"},
+		{BlockStateRemote, "Remote"},
+	}
+	for _, tc := range cases {
+		if got := tc.s.String(); got != tc.want {
+			t.Errorf("BlockState(%d).String() = %q, want %q", tc.s, got, tc.want)
+		}
+	}
+}
+
+// TestFileBlockLastSyncAttemptAt asserts the new field exists on the
+// FileBlock zero value as a zero time.Time (D-13/D-14: janitor uses this to
+// requeue stale Syncing rows; never-attempted = zero value).
+func TestFileBlockLastSyncAttemptAt(t *testing.T) {
+	var fb FileBlock
+	if !fb.LastSyncAttemptAt.IsZero() {
+		t.Fatalf("FileBlock zero value LastSyncAttemptAt = %v, want zero", fb.LastSyncAttemptAt)
+	}
+}
+
+// TestErrCASSentinels asserts the new exported sentinels exist, are
+// distinct, self-identical via errors.Is, and have non-empty messages
+// prefixed with "blockstore:" — matching ErrInvalidHash / ErrBlockNotFound
+// style.
+func TestErrCASSentinels(t *testing.T) {
+	if !errors.Is(ErrCASContentMismatch, ErrCASContentMismatch) {
+		t.Error("errors.Is(ErrCASContentMismatch, ErrCASContentMismatch) = false")
+	}
+	if !errors.Is(ErrCASKeyMalformed, ErrCASKeyMalformed) {
+		t.Error("errors.Is(ErrCASKeyMalformed, ErrCASKeyMalformed) = false")
+	}
+	if errors.Is(ErrCASContentMismatch, ErrCASKeyMalformed) {
+		t.Error("ErrCASContentMismatch and ErrCASKeyMalformed should be distinct")
+	}
+	for _, err := range []error{ErrCASContentMismatch, ErrCASKeyMalformed} {
+		msg := err.Error()
+		if msg == "" {
+			t.Errorf("sentinel error has empty message: %v", err)
+		}
+		if !strings.HasPrefix(msg, "blockstore:") {
+			t.Errorf("sentinel error message %q does not start with %q", msg, "blockstore:")
+		}
 	}
 }
