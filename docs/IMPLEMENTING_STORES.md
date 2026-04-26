@@ -131,7 +131,7 @@ without loading the full file/block set into application memory.
 //   - Be safe under concurrent writes: it is acceptable for the cursor
 //     to miss FileBlocks created mid-iteration; the next mark cycle
 //     will pick them up.
-EnumerateFileBlocks(ctx context.Context, authCtx *AuthContext, fn func(ContentHash) error) error
+EnumerateFileBlocks(ctx context.Context, fn func(ContentHash) error) error
 ```
 
 Conformance scenarios live in `pkg/metadata/storetest/` and every
