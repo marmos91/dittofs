@@ -138,6 +138,76 @@ dedup short-circuit that's expected to drive the primary VM-workload
 
 Track progress: [#419](https://github.com/marmos91/dittofs/issues/419).
 
+### How does garbage collection work in v0.15.0?
+
+v0.15.0 (Phase 11 / A2) replaces the previous path-prefix GC with a
+fail-closed mark-sweep over the union of every live block's
+`ContentHash`:
+
+1. **Mark.** Stream every `FileBlock`'s `ContentHash` via the
+   `MetadataStore.EnumerateFileBlocks(ctx, fn)` cursor across **every
+   share that targets the same remote** (cross-share aggregation by
+   `bucket+endpoint+prefix`, not share name). The live set is built on
+   disk under `<localStore>/gc-state/<runID>/db/` (memory-bounded
+   regardless of metadata size).
+2. **Sweep.** Bounded worker pool (default `gc.sweep_concurrency=16`)
+   walks the 256 `cas/{XX}/` prefixes in parallel. An object is kept
+   iff its hash is in the live set OR its `LastModified` is newer than
+   `snapshot − gc.grace_period` (default 1h). Otherwise it is deleted.
+
+The mark phase is fail-closed: any error aborts the sweep entirely.
+Sweep-side per-object DELETE failures are captured and continue;
+garbage that survives a transient is reclaimed on the next run.
+
+Triggers:
+
+- v0.15.0 ships only on-demand GC. `gc.interval` is reserved for a
+  periodic-scheduler phase — any configured value emits a startup WARN
+  and is otherwise ignored today; schedule via cron until then.
+- On-demand via `dfsctl store block gc <share> [--dry-run]`. Inspect the
+  most recent run with `dfsctl store block gc-status <share>`.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep-v0150-phase-11)
+and [CONFIGURATION.md](CONFIGURATION.md) for the full design and every
+`gc.*` knob.
+
+### What is the dual-read window?
+
+Phase 11 introduces the CAS keyspace `cas/{hh}/{hh}/{hex}`, but
+existing data written before v0.15.0 lives at the legacy
+`{payloadID}/block-{N}` keys. Both keyspaces coexist during the
+**dual-read window** (Phase 11 → Phase 14):
+
+- Reads consult the metadata store: a `FileBlock` row with a non-zero
+  `ContentHash` is read from CAS with end-to-end BLAKE3 verification
+  (header pre-check on `x-amz-meta-content-hash` plus streaming
+  verifier over the body).
+- A `FileBlock` row with a zero `ContentHash` is read from the legacy
+  key with no verification (BLAKE3 cannot be retroactively applied).
+
+Resolution is by metadata key shape (one DB lookup per block), NOT by
+S3 trial-and-error.
+
+Phase 14 (A5) ships `dfsctl blockstore migrate`, which re-chunks all
+legacy data to CAS. Phase 15 (A6) deletes the legacy code path
+entirely. The dual-read code is intentionally on a deletion clock.
+
+### Why are residual `{payloadID}/block-{N}` keys present after upgrading to v0.15.0?
+
+Those are legacy data written before v0.15.0. Phase 11's CAS write path
+only generates `cas/{hh}/{hh}/{hex}` keys; existing `{payloadID}/block-`
+objects remain in place and are read via the dual-read shim (see
+above). The Phase 11 mark-sweep GC **does NOT delete legacy keys** — it
+only sweeps the `cas/` prefix. Legacy objects are migrated to CAS by
+the v0.15.x `dfsctl blockstore migrate` tool (Phase 14), and the
+legacy code path is removed in Phase 15.
+
+If you see residual legacy keys and want to reclaim the space before
+Phase 14 ships, you can manually delete `{payloadID}/block-` objects
+for files you have since deleted from DittoFS — but this is not
+required for correctness, and the migration tool handles it
+automatically.
+
 ## Usage Questions
 
 ### Can I use this with Windows clients?

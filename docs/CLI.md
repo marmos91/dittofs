@@ -240,6 +240,65 @@ dfsctl context current
 dfsctl logout
 ```
 
+### Block Store Garbage Collection (v0.15.0 Phase 11)
+
+v0.15.0 (Phase 11 / A2) replaces the previous path-prefix GC with a
+fail-closed mark-sweep over the union of every live block's
+`ContentHash`. Two `dfsctl` subcommands drive and inspect it:
+
+#### `dfsctl store block gc <share> [--dry-run]`
+
+Run garbage collection for the named share. The mark phase enumerates
+every live `ContentHash` across all shares pointing at the same remote
+(cross-share aggregation by `bucket+endpoint+prefix`). The sweep phase
+deletes any `cas/.../` object that is absent from the live set AND
+whose `LastModified` is older than the configured grace period
+(default `gc.grace_period=1h`).
+
+```bash
+# Run mark-sweep against the default remote configured for share /archive
+dfsctl store block gc /archive
+
+# Dry-run: skip DELETEs; print up to gc.dry_run_sample_size candidate keys
+dfsctl store block gc /archive --dry-run
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dry-run` | `false` | Skip DELETEs; print up to `gc.dry_run_sample_size` candidate keys (default 1000). Critical for first-time deployment confidence. |
+
+**Output:** A `GCStats` record with `hashes_marked`, `objects_swept`,
+`bytes_freed`, `duration_ms`, and `error_count` plus a sample of the
+first errors when `error_count > 0`.
+
+**Fail-closed posture:** any mark-phase error aborts the sweep entirely
+(no objects are deleted). Sweep-side per-prefix DELETE errors are
+captured and the sweep continues; surviving garbage is reclaimed on
+the next run.
+
+#### `dfsctl store block gc-status <share>`
+
+Print the most recent `GCRunSummary` for the named share, read from
+`<localStore>/gc-state/last-run.json`. Useful for inspecting a
+periodic run launched via `gc.interval` without having to grep slog
+output.
+
+```bash
+dfsctl store block gc-status /archive
+```
+
+**Output:** the `GCRunSummary` JSON: `run_id`, `started_at`,
+`finished_at`, `hashes_marked`, `objects_swept`, `bytes_freed`,
+`duration_ms`, `error_count`, `error_samples`, plus the
+configuration snapshot (`grace_period`, `sweep_concurrency`,
+`dry_run`) used for the run.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep-v0150-phase-11)
+for the full mark-sweep design and [CONFIGURATION.md](CONFIGURATION.md)
+for every `gc.*` knob.
+
 ## Global Flags
 
 ### dfs
