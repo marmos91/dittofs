@@ -83,10 +83,6 @@ type LocalStore interface {
 	// Returns the list of blocks that were flushed.
 	Flush(ctx context.Context, payloadID string) ([]FlushedBlock, error)
 
-	// GetDirtyBlocks flushes all in-memory blocks for a file to disk, then returns
-	// all blocks in Local state as PendingBlocks ready for upload.
-	GetDirtyBlocks(ctx context.Context, payloadID string) ([]PendingBlock, error)
-
 	// SyncFileBlocks persists all queued FileBlock metadata updates to the store.
 	SyncFileBlocks(ctx context.Context)
 
@@ -117,9 +113,6 @@ type LocalStore interface {
 	// TruncateBlockFiles removes all blocks whose start offset >= newSize.
 	TruncateBlockFiles(ctx context.Context, payloadID string, newBlockCount uint64) error
 
-	// SetSkipFsync disables fsync in Flush() for S3 backends.
-	SetSkipFsync(skip bool)
-
 	// SetEvictionEnabled controls whether the local store can evict blocks to make room.
 	SetEvictionEnabled(enabled bool)
 
@@ -134,15 +127,6 @@ type LocalStore interface {
 
 	// ListFiles returns the payloadIDs of all files currently tracked in the local store.
 	ListFiles() []string
-
-	// MarkBlockRemote marks a block as confirmed in the remote block store.
-	MarkBlockRemote(ctx context.Context, payloadID string, blockIdx uint64) bool
-
-	// MarkBlockSyncing claims a block for sync to remote (Local -> Syncing).
-	MarkBlockSyncing(ctx context.Context, payloadID string, blockIdx uint64) bool
-
-	// MarkBlockLocal reverts a block to Local state after a failed sync attempt.
-	MarkBlockLocal(ctx context.Context, payloadID string, blockIdx uint64) bool
 
 	// GetStoredFileSize returns the total stored data size for a file by summing
 	// the DataSize of all FileBlock records in the metadata store.

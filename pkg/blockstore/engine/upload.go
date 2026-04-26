@@ -2,36 +2,20 @@ package engine
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
-	"strings"
 	"time"
+
+	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// maxUploadBatch limits how many blocks are uploaded per periodic tick.
-// Each block read from disk is ~8MB. Sequential processing ensures only
-// 1 block (~8MB) is in heap at a time.
-const maxUploadBatch = 4
-
-// revertToLocal reverts a FileBlock to Local state so the periodic syncer retries it.
-func (m *Syncer) revertToLocal(ctx context.Context, fb *blockstore.FileBlock) {
-	fb.State = blockstore.BlockStateLocal
-	_ = m.fileBlockStore.PutFileBlock(ctx, fb)
-}
-
-// syncLocalBlocks scans FileBlockStore for local blocks not yet synced
-// to remote, and uploads them sequentially. Called by the periodic syncer.
-//
-// Memory safety: ListLocalBlocks is called with limit=maxUploadBatch to
-// avoid scanning and deserializing thousands of FileBlock entries from BadgerDB.
-// The periodic syncer guards against overlapping ticks, so at most one
-// instance of this function runs at a time.
+// syncLocalBlocks runs one claim+upload cycle for the periodic uploader
+// tick path; SyncNow reuses claimBatch + uploadOne directly with a bounded
+// pool.
 func (m *Syncer) syncLocalBlocks(ctx context.Context) {
 	if m.remoteStore == nil {
 		return
@@ -40,108 +24,126 @@ func (m *Syncer) syncLocalBlocks(ctx context.Context) {
 	// Flush queued FileBlock metadata so ListLocalBlocks can find recently flushed blocks.
 	m.local.SyncFileBlocks(ctx)
 
-	pending, err := m.fileBlockStore.ListLocalBlocks(ctx, m.config.UploadDelay, maxUploadBatch)
+	batch, err := m.claimBatch(ctx, m.config.ClaimBatchSize)
 	if err != nil {
-		logger.Warn("Periodic sync: failed to list local blocks", "error", err)
+		logger.Warn("Periodic sync: claim batch failed", "error", err)
+		return
+	}
+	if len(batch) == 0 {
 		return
 	}
 
-	if len(pending) == 0 {
-		return
-	}
+	logger.Info("Periodic sync: claimed batch", "count", len(batch))
 
-	logger.Info("Periodic sync: found local blocks", "count", len(pending))
-
-	// Upload sequentially to minimize memory: only 1 block (~8MB) in memory at a time.
-	// Individual block failures are already logged inside syncFileBlock; the
-	// periodic uploader intentionally continues so a bad block doesn't starve
-	// the queue.
-	for _, fb := range pending {
+	for _, fb := range batch {
 		if fb.LocalPath == "" {
 			continue
 		}
-		_ = m.syncFileBlock(ctx, fb)
+		if err := m.uploadOne(ctx, fb); err != nil {
+			// Row stays in Syncing; janitor will requeue after ClaimTimeout.
+			logger.Debug("Periodic uploadOne failed", "blockID", fb.ID, "error", err)
+		}
 	}
 }
 
-// syncFileBlock reads a local block from the local store, dedup-checks, and
-// syncs to remote store. Returns nil on success (including the dedup fast path)
-// or an error describing why the block was not uploaded. The block's state is
-// always reverted to Local before a non-nil error is returned so the next
-// drain/tick can retry it.
+// syncFileBlock performs the Pending → Syncing → Remote transition for a
+// single FileBlock. Deprecated: prefer claimBatch + uploadOne. Retained
+// for direct test callers that exercise the post-PUT metadata error
+// contract (the row stays Syncing on failure; the janitor owns the
+// requeue per D-14).
 func (m *Syncer) syncFileBlock(ctx context.Context, fb *blockstore.FileBlock) error {
-	if fb.State != blockstore.BlockStateLocal {
+	if fb.State != blockstore.BlockStatePending {
 		return nil
 	}
-
 	fb.State = blockstore.BlockStateSyncing
+	fb.LastSyncAttemptAt = time.Now()
 	if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
 		return fmt.Errorf("mark block %s syncing: %w", fb.ID, err)
 	}
+	return m.uploadOne(ctx, fb)
+}
 
+// uploadOne uploads a single Syncing block to CAS storage and flips it to
+// Remote. Sole owner of the Syncing → Remote transition (D-15).
+//
+// INV-03: Remote is persisted ONLY after PUT-success AND metadata-txn
+// success. On any failure the row stays Syncing — the janitor requeues it
+// after ClaimTimeout, and CAS keys being content-defined make any
+// re-upload byte-identical and idempotent. Orphan CAS objects from
+// post-PUT meta failures are reaped by GC after the grace period.
+func (m *Syncer) uploadOne(ctx context.Context, fb *blockstore.FileBlock) error {
+	if fb.State != blockstore.BlockStateSyncing {
+		return fmt.Errorf("uploadOne: expected BlockStateSyncing for %s, got %v", fb.ID, fb.State)
+	}
 	startTime := time.Now()
 
 	data, err := os.ReadFile(fb.LocalPath)
 	if err != nil {
-		logger.Warn("Sync: failed to read local store file",
-			"blockID", fb.ID, "localPath", fb.LocalPath, "error", err)
-		m.revertToLocal(ctx, fb)
-		return fmt.Errorf("read local block %s: %w", fb.ID, err)
+		return fmt.Errorf("read local block %s at %s: %w", fb.ID, fb.LocalPath, err)
 	}
 
-	hash := sha256.Sum256(data)
+	// BLAKE3-256 (Phase 10 D-08 amendment + BSCAS-03).
+	h := blake3.Sum256(data)
+	var hash blockstore.ContentHash
+	copy(hash[:], h[:])
 
-	existing, err := m.fileBlockStore.FindFileBlockByHash(ctx, hash)
-	if err == nil && existing != nil && existing.IsRemote() {
-		_ = m.fileBlockStore.IncrementRefCount(ctx, existing.ID)
-		fb.Hash = blockstore.ContentHash(hash)
+	// Pre-PUT dedup short-circuit (DEDUP-01 carried over from Phase 10).
+	// If another block in the metadata store already holds this hash and is
+	// confirmed Remote, we skip the PUT entirely and re-use its CAS key.
+	//
+	// Phase 11 WR-03: surface IncrementRefCount errors. The previous code
+	// silently dropped them, which meant a transient metadata error left
+	// the new fb pointing at the donor's CAS key without a balanced
+	// refcount bump and with no observable signal. The dedup short-circuit
+	// itself still leaks a refcount on the donor (no decrement path
+	// reverses it on file delete) — see WR-03 follow-up; for now we at
+	// least do not also swallow the error path.
+	if existing, derr := m.fileBlockStore.FindFileBlockByHash(ctx, hash); derr == nil && existing != nil && existing.IsRemote() {
+		if err := m.fileBlockStore.IncrementRefCount(ctx, existing.ID); err != nil {
+			return fmt.Errorf("dedup increment refcount on donor %s: %w", existing.ID, err)
+		}
+		fb.Hash = hash
 		fb.DataSize = uint32(len(data))
 		fb.BlockStoreKey = existing.BlockStoreKey
 		fb.State = blockstore.BlockStateRemote
 		if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
-			logger.Error("Sync: failed to persist dedup block metadata",
-				"blockID", fb.ID, "error", err)
-			m.revertToLocal(ctx, fb)
 			return fmt.Errorf("persist dedup block %s: %w", fb.ID, err)
 		}
-		logger.Debug("Sync dedup: block already exists", "blockID", fb.ID)
+		logger.Debug("uploadOne dedup: hash already remote", "blockID", fb.ID, "key", fb.BlockStoreKey)
 		return nil
 	}
 
-	lastSlash := strings.LastIndex(fb.ID, "/")
-	payloadID := fb.ID[:lastSlash]
-	blockIdx, err := strconv.ParseUint(fb.ID[lastSlash+1:], 10, 64)
-	if err != nil {
-		logger.Warn("Sync: failed to parse block index", "blockID", fb.ID, "error", err)
-		m.revertToLocal(ctx, fb)
-		return fmt.Errorf("parse block index for %s: %w", fb.ID, err)
-	}
-	storeKey := blockstore.FormatStoreKey(payloadID, blockIdx)
-
-	if err := m.remoteStore.WriteBlock(ctx, storeKey, data); err != nil {
-		logger.Error("Sync: upload to remote failed", "blockID", fb.ID, "error", err)
-		m.revertToLocal(ctx, fb)
-		return fmt.Errorf("upload block %s: %w", fb.ID, err)
+	// CAS PUT (BSCAS-01 + BSCAS-06). content-hash header is set inside
+	// WriteBlockWithHash by the s3 store implementation.
+	casKey := blockstore.FormatCASKey(hash)
+	if err := m.remoteStore.WriteBlockWithHash(ctx, casKey, hash, data); err != nil {
+		return fmt.Errorf("upload block %s to %s: %w", fb.ID, casKey, err)
 	}
 
-	fb.Hash = blockstore.ContentHash(hash)
+	// PUT succeeded; only NOW promote to Remote (INV-03 ordering).
+	fb.Hash = hash
 	fb.DataSize = uint32(len(data))
-	fb.BlockStoreKey = storeKey
+	fb.BlockStoreKey = casKey
 	fb.State = blockstore.BlockStateRemote
 	if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
-		logger.Error("Sync: failed to persist remote block metadata",
-			"blockID", fb.ID, "error", err)
-		m.revertToLocal(ctx, fb)
-		return fmt.Errorf("persist remote block %s: %w", fb.ID, err)
+		// S3 object exists; row stayed Syncing. GC + janitor will resolve
+		// (D-11/D-14). INV-03 honored — Remote is not persisted.
+		return fmt.Errorf("mark remote block %s: %w", fb.ID, err)
 	}
 
-	logger.Info("Sync complete",
-		"blockID", fb.ID, "size", len(data), "duration", time.Since(startTime))
+	logger.Info("uploadOne complete",
+		"blockID", fb.ID, "size", len(data), "key", casKey,
+		"duration", time.Since(startTime))
 	return nil
 }
 
 // uploadBlock uploads a single block from local store to remote store.
 // Called by queue workers for block-level upload requests.
+//
+// Phase 11: now drives the CAS path for parity with uploadOne. The legacy
+// FormatStoreKey path is gone from the upload write path. Reads of legacy
+// objects (Phase 11 → Phase 14 dual-read window) are still serviced by
+// the engine's read path resolver.
 func (m *Syncer) uploadBlock(ctx context.Context, payloadID string, blockIdx uint64) error {
 	if !m.canProcess(ctx) {
 		return ErrClosed
@@ -155,10 +157,12 @@ func (m *Syncer) uploadBlock(ctx context.Context, payloadID string, blockIdx uin
 		return fmt.Errorf("block not in local store (blockIdx=%d): %w", blockIdx, err)
 	}
 
-	storeKey := blockstore.FormatStoreKey(payloadID, blockIdx)
-	if err := m.remoteStore.WriteBlock(ctx, storeKey, data); err != nil {
-		return fmt.Errorf("upload block %s: %w", storeKey, err)
+	h := blake3.Sum256(data)
+	var hash blockstore.ContentHash
+	copy(hash[:], h[:])
+	casKey := blockstore.FormatCASKey(hash)
+	if err := m.remoteStore.WriteBlockWithHash(ctx, casKey, hash, data); err != nil {
+		return fmt.Errorf("upload block %s: %w", casKey, err)
 	}
-
 	return nil
 }

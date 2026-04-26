@@ -512,9 +512,16 @@ func (bs *BlockStore) populateBlockCounts(stats *BlockStoreStats, files []string
 		for _, b := range blocks {
 			stats.BlocksTotal++
 			switch b.State {
-			case blockstore.BlockStateDirty:
-				stats.BlocksDirty++
-			case blockstore.BlockStateLocal, blockstore.BlockStateSyncing:
+			case blockstore.BlockStatePending:
+				// Pending now covers both legacy Dirty (no LocalPath / no key)
+				// and Local (complete, awaiting sync). Distinguish by data
+				// state to keep the existing introspection counters meaningful.
+				if b.LocalPath != "" || b.BlockStoreKey != "" {
+					stats.BlocksLocal++
+				} else {
+					stats.BlocksDirty++
+				}
+			case blockstore.BlockStateSyncing:
 				stats.BlocksLocal++
 			case blockstore.BlockStateRemote:
 				stats.BlocksRemote++

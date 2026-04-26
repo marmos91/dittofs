@@ -1,12 +1,15 @@
 package fs
 
 import (
+	"container/list"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,6 +34,9 @@ var (
 
 	// ErrBlockNotFound is an alias for blockstore.ErrBlockNotFound.
 	ErrBlockNotFound = blockstore.ErrBlockNotFound
+
+	// errLRUEmpty is returned by lruEvictOne when there are no candidates left.
+	errLRUEmpty = errors.New("local store: LRU empty, no eviction candidates")
 )
 
 // Compile-time interface satisfaction check.
@@ -106,12 +112,6 @@ type FSStore struct {
 	// readFDPool pools open file descriptors (O_RDONLY) for .blk files
 	// to avoid open+close syscalls on every 4KB random read in readFromDisk.
 	readFDPool *fdPool
-
-	// skipFsync skips fsync in Flush() for S3 backends where data durability
-	// comes from S3 upload, not local disk. The local .blk files are just
-	// staging buffers -- losing them on power failure means re-downloading
-	// from S3, not data loss. Saves ~0.5-2ms per COMMIT.
-	skipFsync bool
 
 	// evictionEnabled controls whether ensureSpace can evict blocks.
 	// When false, ensureSpace returns ErrDiskFull if over limit instead of
@@ -199,6 +199,26 @@ type FSStore struct {
 	rollupStarted atomic.Bool
 	rollupWg      sync.WaitGroup
 
+	// --- Phase 11 LSL-08: in-process LRU for CAS chunks. ---
+	//
+	// Eviction is driven entirely from on-disk presence under
+	// blocks/{hh}/{hh}/{hex}, indexed by ContentHash in lruIndex/lruList.
+	// Eviction = unlink the file directly; no FileBlockStore lookup happens
+	// on the write hot path (D-27).
+	//
+	// Population:
+	//   - StoreChunk(...)   -> lruTouch on rename success.
+	//   - ReadChunk(...)    -> lruTouch on read success (re-promote).
+	//   - seedLRUFromDisk() -> alphabetical scan at New() so warm-started
+	//                          stores have a deterministic LRU position.
+	//
+	// Mutations (Touch / EvictOne) are serialized by lruMu. Disk unlinks
+	// happen under lruMu; concurrent ReadChunk that races an evict surfaces
+	// as ENOENT and falls through to the engine refetch path (T-11-B-08).
+	lruMu    sync.Mutex
+	lruIndex map[blockstore.ContentHash]*list.Element // *lruEntry
+	lruList  *list.List                               // most-recent at front
+
 	// orphanLogMinAgeSeconds gates the append-log orphan sweep during
 	// recovery (D-28 / Warning 3). A log is considered orphan only when
 	// (a) its rollup_offset in metadata is 0, (b) no FileBlock exists for
@@ -245,6 +265,10 @@ func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blocksto
 	}
 	bc.evictionEnabled.Store(true)
 
+	// Phase 11 LSL-08: in-process LRU for CAS chunks (see field comments).
+	bc.lruIndex = make(map[blockstore.ContentHash]*list.Element)
+	bc.lruList = list.New()
+
 	// Phase 10 append-log plumbing — maps + pressure channel always
 	// initialized so NewWithOptions can enable the flag atomically. When
 	// useAppendLog=false (the New() default), AppendWrite returns
@@ -264,7 +288,115 @@ func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blocksto
 	// on the next scan.
 	bc.rollupCh = make(chan string, bc.rollupWorkers*4)
 
+	// Seed the in-process LRU (LSL-08) from any chunks already present on
+	// disk under blocks/{hh}/{hh}/{hex}. Cold-start order is alphabetical
+	// for determinism; subsequent reads/writes promote chunks to the front.
+	bc.seedLRUFromDisk()
+
 	return bc, nil
+}
+
+// lruEntry is a single LRU-tracked CAS chunk on disk.
+type lruEntry struct {
+	hash blockstore.ContentHash
+	size int64
+	path string // absolute path under <baseDir>/blocks/<hh>/<hh>/<hex>
+}
+
+// lruTouch promotes (or inserts) a chunk to the most-recent end of the LRU.
+// Called from StoreChunk on rename success and from ReadChunk on cache hit.
+// Safe to call from concurrent goroutines.
+func (bc *FSStore) lruTouch(h blockstore.ContentHash, size int64, path string) {
+	bc.lruMu.Lock()
+	defer bc.lruMu.Unlock()
+	if el, ok := bc.lruIndex[h]; ok {
+		bc.lruList.MoveToFront(el)
+		// Update size/path in case the chunk was re-stored (idempotent CAS).
+		entry := el.Value.(*lruEntry)
+		entry.size = size
+		entry.path = path
+		return
+	}
+	el := bc.lruList.PushFront(&lruEntry{hash: h, size: size, path: path})
+	bc.lruIndex[h] = el
+}
+
+// lruEvictOne removes the least-recently-used chunk from the LRU and
+// unlinks its on-disk file. Returns the freed byte count, or 0 + sentinel
+// when the LRU is empty. Concurrent ReadChunk that races an evict surfaces
+// as blockstore.ErrChunkNotFound (T-11-B-08, accept/refetch posture).
+func (bc *FSStore) lruEvictOne() (int64, error) {
+	bc.lruMu.Lock()
+	el := bc.lruList.Back()
+	if el == nil {
+		bc.lruMu.Unlock()
+		return 0, errLRUEmpty
+	}
+	entry := el.Value.(*lruEntry)
+	bc.lruList.Remove(el)
+	delete(bc.lruIndex, entry.hash)
+	bc.lruMu.Unlock()
+
+	if err := os.Remove(entry.path); err != nil && !os.IsNotExist(err) {
+		// File system error: re-insert to avoid losing the bookkeeping
+		// (the chunk is still on disk, it just couldn't be unlinked).
+		bc.lruMu.Lock()
+		bc.lruIndex[entry.hash] = bc.lruList.PushBack(entry)
+		bc.lruMu.Unlock()
+		return 0, fmt.Errorf("evict %s: %w", entry.path, err)
+	}
+	return entry.size, nil
+}
+
+// seedLRUFromDisk walks <baseDir>/blocks/ at startup and registers every
+// chunk file in the LRU. Order is deterministic (alphabetical hash hex)
+// so repeated startups produce the same cold-start eviction order.
+//
+// Best-effort: any per-file error is silently skipped (the next StoreChunk
+// or ReadChunk will register the chunk on demand).
+func (bc *FSStore) seedLRUFromDisk() {
+	blocksDir := filepath.Join(bc.baseDir, "blocks")
+	if _, err := os.Stat(blocksDir); err != nil {
+		return
+	}
+	type seed struct {
+		hash blockstore.ContentHash
+		size int64
+		path string
+	}
+	var seeds []seed
+	_ = filepath.WalkDir(blocksDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		// Path layout: <baseDir>/blocks/<hh>/<hh>/<hex>.
+		name := d.Name()
+		if len(name) != blockstore.HashSize*2 {
+			return nil
+		}
+		raw, err := hex.DecodeString(name)
+		if err != nil || len(raw) != blockstore.HashSize {
+			return nil
+		}
+		var h blockstore.ContentHash
+		copy(h[:], raw)
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		seeds = append(seeds, seed{hash: h, size: info.Size(), path: path})
+		return nil
+	})
+	// Sort alphabetically by hash hex for deterministic cold-start order.
+	// Files visited by WalkDir are already lexicographically ordered within
+	// directories, but cross-directory order depends on filesystem
+	// traversal — sort explicitly to be safe.
+	sort.Slice(seeds, func(i, j int) bool {
+		return seeds[i].hash.String() < seeds[j].hash.String()
+	})
+	for _, s := range seeds {
+		bc.lruTouch(s.hash, s.size, s.path)
+	}
 }
 
 // FSStoreOptions configures the Phase 10 append-log path. Zero value means
@@ -323,13 +455,6 @@ func NewWithOptions(baseDir string, maxDisk, maxMemory int64, fileBlockStore blo
 		bc.orphanLogMinAgeSeconds = 3600
 	}
 	return bc, nil
-}
-
-// SetSkipFsync disables fsync in Flush() for S3 backends.
-// Data durability comes from S3 upload, not local disk -- the local .blk files
-// are staging buffers, not the final store. Saves ~0.5-2ms per COMMIT.
-func (bc *FSStore) SetSkipFsync(skip bool) {
-	bc.skipFsync = skip
 }
 
 // SetRetentionPolicy updates the retention policy and TTL for eviction decisions.
@@ -694,7 +819,13 @@ func (bc *FSStore) ListFiles() []string {
 //
 // Metadata lookup uses the in-process diskIndex first (TD-02d / D-19) so
 // repopulation after an evict-then-refetch cycle does not round-trip through
-// the FileBlockStore.
+// the FileBlockStore. On a diskIndex miss (the steady-state case after a
+// server restart, or when this node never produced the block locally), the
+// canonical FileBlock row is fetched from the FileBlockStore so the existing
+// CAS Hash + BlockStoreKey are preserved. Without this fallback the local
+// store would clobber the CAS row with a zero-hash legacy-key row, after
+// which subsequent reads would silently return zero data and GC would reap
+// the still-live CAS object as an orphan (Pass-2 CR-2-01).
 func (bc *FSStore) WriteFromRemote(ctx context.Context, payloadID string, data []byte, offset uint64) error {
 	blockIdx := offset / blockstore.BlockSize
 	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
@@ -702,9 +833,21 @@ func (bc *FSStore) WriteFromRemote(ctx context.Context, payloadID string, data [
 
 	fb, ok := bc.diskIndexLookup(blockID)
 	if !ok {
-		fb = blockstore.NewFileBlock(blockID, "")
+		// diskIndex miss: prefer the FileBlockStore row (which carries the
+		// CAS Hash + BlockStoreKey populated by the syncer at upload time).
+		// Only fall back to a brand-new FileBlock when the row is absent —
+		// this is the genuine first-registration path for a never-seen
+		// block (e.g. local-only stores with no remote upload trail).
+		if existing, err := bc.lookupFileBlock(ctx, blockID); err == nil && existing != nil {
+			fb = existing
+		} else {
+			fb = blockstore.NewFileBlock(blockID, "")
+		}
 	}
-	fb.BlockStoreKey = blockstore.FormatStoreKey(payloadID, blockIdx)
+	// Treat the block as evictable now that bytes are landing in the local
+	// cache. DO NOT touch fb.Hash or fb.BlockStoreKey here — the canonical
+	// CAS metadata is owned by the syncer/uploader and re-stamping would
+	// clobber it (CR-2-01).
 	fb.State = blockstore.BlockStateRemote
 
 	path := bc.blockPath(blockID)
@@ -729,46 +872,6 @@ func (bc *FSStore) WriteFromRemote(ctx context.Context, payloadID string, data [
 	bc.accessTracker.Touch(payloadID)
 
 	return nil
-}
-
-// GetDirtyBlocks flushes all in-memory blocks for a file to disk, then returns
-// all blocks in Local state (written to disk but not yet synced to remote).
-// Used by the syncer to find blocks that need syncing.
-//
-// Optimization: uses the flushed block list from Flush() directly to read data,
-// avoiding the expensive SyncFileBlocksForFile + ListLocalBlocks round-trip
-// (write to BadgerDB then immediately read back). The pending FileBlock metadata
-// is persisted asynchronously by the background ticker -- the syncer doesn't
-// need it to be in BadgerDB since it gets data from local .blk files.
-func (bc *FSStore) GetDirtyBlocks(ctx context.Context, payloadID string) ([]local.PendingBlock, error) {
-	flushed, err := bc.Flush(ctx, payloadID)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(flushed) == 0 {
-		return nil, nil
-	}
-
-	// Read data from local .blk files for each freshly-flushed block.
-	// No BadgerDB round-trip needed -- Flush() already told us which blocks
-	// were written and where. The FileBlock metadata (with state=Local)
-	// is queued in pendingFBs and will be persisted by the background ticker.
-	var result []local.PendingBlock
-	for _, fb := range flushed {
-		data, err := readFile(fb.LocalPath, fb.DataSize)
-		if err != nil {
-			continue
-		}
-
-		result = append(result, local.PendingBlock{
-			BlockIndex: fb.BlockIndex,
-			Data:       data,
-			DataSize:   fb.DataSize,
-		})
-	}
-
-	return result, nil
 }
 
 // GetBlockData returns the raw data for a specific block, checking memory first
@@ -801,42 +904,6 @@ func (bc *FSStore) GetBlockData(ctx context.Context, payloadID string, blockIdx 
 	}
 
 	return data, fb.DataSize, nil
-}
-
-// transitionBlockState atomically transitions a block's state in the FileBlockStore.
-// If requireState > 0, the transition only succeeds when the block is in that state
-// (CAS semantics for upload claim). Pass requireState = 0 for unconditional transition.
-func (bc *FSStore) transitionBlockState(ctx context.Context, payloadID string, blockIdx uint64, requireState, targetState blockstore.BlockState) bool {
-	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
-	blockID := makeBlockID(key)
-	fb, err := bc.lookupFileBlock(ctx, blockID)
-	if err != nil {
-		return false
-	}
-	if requireState != 0 && fb.State != requireState {
-		return false
-	}
-	fb.State = targetState
-	bc.queueFileBlockUpdate(fb)
-	return true
-}
-
-// MarkBlockRemote marks a block as confirmed in the remote block store.
-// Remote blocks are eligible for disk eviction since they can be re-fetched.
-func (bc *FSStore) MarkBlockRemote(ctx context.Context, payloadID string, blockIdx uint64) bool {
-	return bc.transitionBlockState(ctx, payloadID, blockIdx, 0, blockstore.BlockStateRemote)
-}
-
-// MarkBlockSyncing claims a block for sync to remote (Local -> Syncing).
-// Only succeeds if the block is currently Local, preventing duplicate syncs.
-func (bc *FSStore) MarkBlockSyncing(ctx context.Context, payloadID string, blockIdx uint64) bool {
-	return bc.transitionBlockState(ctx, payloadID, blockIdx, blockstore.BlockStateLocal, blockstore.BlockStateSyncing)
-}
-
-// MarkBlockLocal reverts a block to Local state after a failed sync attempt,
-// so the syncer will retry it on the next sync cycle.
-func (bc *FSStore) MarkBlockLocal(ctx context.Context, payloadID string, blockIdx uint64) bool {
-	return bc.transitionBlockState(ctx, payloadID, blockIdx, 0, blockstore.BlockStateLocal)
 }
 
 // IsBlockLocal checks if a specific block is available locally (memory or disk).

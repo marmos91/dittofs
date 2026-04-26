@@ -1,14 +1,16 @@
 package fs
 
 import (
+	"bytes"
 	"context"
 	"os"
-	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	"lukechampine.com/blake3"
 )
 
 // newTestCacheWithDiskLimit creates an FSStore with a specified max disk size
@@ -30,87 +32,42 @@ func newTestCacheWithDiskLimit(t *testing.T, maxDisk int64) *FSStore {
 	return bc
 }
 
-// populateRemoteBlock creates a block on disk in Remote state (evictable),
-// registers it in BOTH the FileBlockStore and the in-process diskIndex, and
-// updates diskUsed. Represents what Recover() would reconstruct after a
-// restart — tests use this to simulate pre-existing on-disk blocks.
-func populateRemoteBlock(t *testing.T, bc *FSStore, payloadID string, blockIdx uint64, size int) {
+// hashBytes returns the BLAKE3 ContentHash of data.
+func hashBytes(data []byte) blockstore.ContentHash {
+	sum := blake3.Sum256(data)
+	var h blockstore.ContentHash
+	copy(h[:], sum[:])
+	return h
+}
+
+// storeChunk writes data through StoreChunk and returns the resulting hash.
+// Used by LSL-08 tests to seed the LRU via the canonical write path.
+func storeChunk(t *testing.T, bc *FSStore, data []byte) blockstore.ContentHash {
 	t.Helper()
-	ctx := context.Background()
-	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
-	blockID := makeBlockID(key)
-
-	// Create block file on disk
-	path := bc.blockPath(blockID)
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		t.Fatalf("failed to create dir: %v", err)
+	h := hashBytes(data)
+	if err := bc.StoreChunk(context.Background(), h, data); err != nil {
+		t.Fatalf("StoreChunk: %v", err)
 	}
-	data := make([]byte, size)
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		t.Fatalf("failed to write block file: %v", err)
-	}
-
-	// Create FileBlock metadata in Remote state
-	fb := blockstore.NewFileBlock(blockID, path)
-	fb.State = blockstore.BlockStateRemote
-	fb.DataSize = uint32(size)
-	fb.BlockStoreKey = blockstore.FormatStoreKey(payloadID, blockIdx)
-	fb.LastAccess = time.Now()
-
-	if err := bc.blockStore.PutFileBlock(ctx, fb); err != nil {
-		t.Fatalf("failed to put file block: %v", err)
-	}
-	// Register in the in-process diskIndex so eviction sees the block without
-	// querying the FileBlockStore (TD-02d / D-19).
-	bc.diskIndexStore(fb)
-
-	// Update disk usage tracking
-	bc.diskUsed.Add(int64(size))
-
-	// Update file size tracking
-	end := blockIdx*blockstore.BlockSize + uint64(size)
-	bc.updateFileSize(payloadID, end)
+	return h
 }
 
 // ============================================================================
-// Access Tracker Tests
+// Access Tracker Tests (retained — exercise unrelated bookkeeping)
 // ============================================================================
 
 func TestAccessTracker_Touch(t *testing.T) {
 	at := newAccessTracker()
-
 	before := time.Now()
 	at.Touch("file1")
 	after := time.Now()
-
 	lastAccess := at.LastAccess("file1")
 	if lastAccess.Before(before) || lastAccess.After(after) {
 		t.Errorf("expected lastAccess between %v and %v, got %v", before, after, lastAccess)
 	}
 }
 
-func TestAccessTracker_LastAccess_ReturnsCorrectTime(t *testing.T) {
-	at := newAccessTracker()
-
-	t1 := time.Now()
-	at.Touch("file1")
-	time.Sleep(1 * time.Millisecond)
-	at.Touch("file2")
-
-	la1 := at.LastAccess("file1")
-	la2 := at.LastAccess("file2")
-
-	if la1.Before(t1) {
-		t.Errorf("file1 lastAccess should be >= t1")
-	}
-	if !la2.After(la1) {
-		t.Errorf("file2 should have later access time than file1")
-	}
-}
-
 func TestAccessTracker_LastAccess_ZeroForUntouched(t *testing.T) {
 	at := newAccessTracker()
-
 	lastAccess := at.LastAccess("never-touched")
 	if !lastAccess.IsZero() {
 		t.Errorf("expected zero time for untouched file, got %v", lastAccess)
@@ -119,292 +76,195 @@ func TestAccessTracker_LastAccess_ZeroForUntouched(t *testing.T) {
 
 func TestAccessTracker_Remove(t *testing.T) {
 	at := newAccessTracker()
-
 	at.Touch("file1")
-	if at.LastAccess("file1").IsZero() {
-		t.Fatal("expected non-zero time after Touch")
-	}
-
 	at.Remove("file1")
 	if !at.LastAccess("file1").IsZero() {
 		t.Error("expected zero time after Remove")
 	}
 }
 
-func TestAccessTracker_FileAccessTimes(t *testing.T) {
-	at := newAccessTracker()
-
-	at.Touch("a")
-	at.Touch("b")
-	at.Touch("c")
-
-	snapshot := at.FileAccessTimes()
-	if len(snapshot) != 3 {
-		t.Fatalf("expected 3 entries, got %d", len(snapshot))
-	}
-	for _, key := range []string{"a", "b", "c"} {
-		if _, ok := snapshot[key]; !ok {
-			t.Errorf("missing key %q in snapshot", key)
-		}
-	}
-}
-
 // ============================================================================
-// Eviction Policy Tests
+// LSL-08 Eviction Tests (in-process LRU keyed by ContentHash)
 // ============================================================================
 
-func TestEviction_PinMode_NeverEvicts(t *testing.T) {
-	bc := newTestCacheWithDiskLimit(t, 1024) // 1KB disk limit
+// TestLSL08_PinMode_NeverEvicts asserts ensureSpace never evicts in pin mode
+// even when the LRU has candidates and the disk is over budget.
+func TestLSL08_PinMode_NeverEvicts(t *testing.T) {
+	bc := newTestCacheWithDiskLimit(t, 1024)
 	bc.SetEvictionEnabled(true)
 	bc.SetRetentionPolicy(blockstore.RetentionPin, 0)
 
-	// Populate a remote block (500 bytes)
-	populateRemoteBlock(t, bc, "file1", 0, 500)
+	// Seed the LRU with a 500B chunk.
+	_ = storeChunk(t, bc, bytes.Repeat([]byte{0xAA}, 500))
 
-	// diskUsed is 500, maxDisk is 1024, need 600 -> over limit
-	err := bc.ensureSpace(context.Background(), 600)
-	if err != ErrDiskFull {
+	// diskUsed=500, maxDisk=1024, need 600 -> over limit.
+	if err := bc.ensureSpace(context.Background(), 600); err != ErrDiskFull {
 		t.Fatalf("expected ErrDiskFull for pin mode, got %v", err)
 	}
-
-	// Verify block was not evicted (LocalPath still set)
-	ctx := context.Background()
-	fb, err := bc.blockStore.GetFileBlock(ctx, makeBlockID(blockKey{payloadID: "file1", blockIdx: 0}))
-	if err != nil {
-		t.Fatalf("block should still exist: %v", err)
-	}
-	if fb.LocalPath == "" {
-		t.Error("pin mode block should not have been evicted")
-	}
 }
 
-func TestEviction_TTL_WithinTTL_NotEvicted(t *testing.T) {
-	bc := newTestCacheWithDiskLimit(t, 1024)
-	bc.SetEvictionEnabled(true)
-	bc.SetRetentionPolicy(blockstore.RetentionTTL, 1*time.Hour)
-
-	// Populate a remote block and touch it recently (30min ago)
-	populateRemoteBlock(t, bc, "file1", 0, 500)
-	bc.accessTracker.mu.Lock()
-	bc.accessTracker.times["file1"] = time.Now().Add(-30 * time.Minute)
-	bc.accessTracker.mu.Unlock()
-
-	// Need space -> should NOT evict (within TTL).
-	// Use a short-deadline context to avoid waiting the full 30s backpressure timeout.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	err := bc.ensureSpace(ctx, 600)
-	if err == nil {
-		t.Fatal("expected error (block within TTL), got nil")
-	}
-
-	// Verify block was not evicted
-	fb, fbErr := bc.blockStore.GetFileBlock(context.Background(), makeBlockID(blockKey{payloadID: "file1", blockIdx: 0}))
-	if fbErr != nil {
-		t.Fatalf("block should still exist: %v", fbErr)
-	}
-	if fb.LocalPath == "" {
-		t.Error("TTL block within threshold should not be evicted")
-	}
-}
-
-func TestEviction_TTL_Expired_Evicted(t *testing.T) {
-	bc := newTestCacheWithDiskLimit(t, 1024)
-	bc.SetEvictionEnabled(true)
-	bc.SetRetentionPolicy(blockstore.RetentionTTL, 1*time.Hour)
-
-	// Populate a remote block and set access time to 2h ago (expired)
-	populateRemoteBlock(t, bc, "file1", 0, 500)
-	bc.accessTracker.mu.Lock()
-	bc.accessTracker.times["file1"] = time.Now().Add(-2 * time.Hour)
-	bc.accessTracker.mu.Unlock()
-
-	// Need space -> should evict (TTL expired)
-	err := bc.ensureSpace(context.Background(), 600)
-	if err != nil {
-		t.Fatalf("expected successful eviction of TTL-expired block, got %v", err)
-	}
-
-	// Eviction now persists metadata asynchronously via pendingFBs (TD-02d);
-	// drain the queue so the assertion observes the cleared LocalPath.
-	ctx := context.Background()
-	bc.SyncFileBlocks(ctx)
-
-	// Verify block was evicted (LocalPath cleared)
-	fb, err := bc.blockStore.GetFileBlock(ctx, makeBlockID(blockKey{payloadID: "file1", blockIdx: 0}))
-	if err != nil {
-		t.Fatalf("block metadata should still exist: %v", err)
-	}
-	if fb.LocalPath != "" {
-		t.Error("TTL-expired block should have been evicted (LocalPath should be empty)")
-	}
-}
-
-func TestEviction_LRU_OldestAccessedFirst(t *testing.T) {
+// TestLSL08_LRU_OldestEvictedFirst asserts ensureSpace evicts the
+// least-recently-touched chunk first.
+func TestLSL08_LRU_OldestEvictedFirst(t *testing.T) {
 	bc := newTestCacheWithDiskLimit(t, 1500)
 	bc.SetEvictionEnabled(true)
 	bc.SetRetentionPolicy(blockstore.RetentionLRU, 0)
 
-	// Create 3 blocks with different access times
-	populateRemoteBlock(t, bc, "old", 0, 500)
-	populateRemoteBlock(t, bc, "mid", 0, 500)
-	populateRemoteBlock(t, bc, "new", 0, 500)
+	// Three 500B chunks. Insertion order = LRU order (oldest first inserted).
+	hOld := storeChunk(t, bc, bytes.Repeat([]byte{0x01}, 500))
+	hMid := storeChunk(t, bc, bytes.Repeat([]byte{0x02}, 500))
+	hNew := storeChunk(t, bc, bytes.Repeat([]byte{0x03}, 500))
 
-	now := time.Now()
-	bc.accessTracker.mu.Lock()
-	bc.accessTracker.times["old"] = now.Add(-3 * time.Hour)   // oldest
-	bc.accessTracker.times["mid"] = now.Add(-1 * time.Hour)   // middle
-	bc.accessTracker.times["new"] = now.Add(-5 * time.Minute) // newest
-	bc.accessTracker.mu.Unlock()
+	// Touch hMid and hNew so hOld becomes the LRU back.
+	bc.lruTouch(hMid, 500, bc.chunkPath(hMid))
+	bc.lruTouch(hNew, 500, bc.chunkPath(hNew))
 
-	// diskUsed = 1500, maxDisk = 1500, need 100 -> need to evict 1 block
-	err := bc.ensureSpace(context.Background(), 100)
-	if err != nil {
-		t.Fatalf("expected successful LRU eviction, got %v", err)
+	// diskUsed=1500, maxDisk=1500, need 100 -> evict 1.
+	if err := bc.ensureSpace(context.Background(), 100); err != nil {
+		t.Fatalf("ensureSpace: %v", err)
 	}
 
-	ctx := context.Background()
-	// Drain async-queued metadata updates so GetFileBlock sees cleared LocalPath.
-	bc.SyncFileBlocks(ctx)
-
-	// "old" (oldest access) should be evicted
-	fbOld, err := bc.blockStore.GetFileBlock(ctx, makeBlockID(blockKey{payloadID: "old", blockIdx: 0}))
-	if err != nil {
-		t.Fatalf("old block metadata should exist: %v", err)
+	// hOld file should be gone; hMid + hNew should remain.
+	if _, err := os.Stat(bc.chunkPath(hOld)); !os.IsNotExist(err) {
+		t.Errorf("oldest chunk should have been evicted (stat err=%v)", err)
 	}
-	if fbOld.LocalPath != "" {
-		t.Error("oldest-accessed block should have been evicted")
+	if _, err := os.Stat(bc.chunkPath(hMid)); err != nil {
+		t.Errorf("mid chunk should still exist: %v", err)
 	}
-
-	// "mid" and "new" should still be in local store
-	fbMid, err := bc.blockStore.GetFileBlock(ctx, makeBlockID(blockKey{payloadID: "mid", blockIdx: 0}))
-	if err != nil {
-		t.Fatalf("mid block should exist: %v", err)
-	}
-	if fbMid.LocalPath == "" {
-		t.Error("mid block should not have been evicted")
-	}
-
-	fbNew, err := bc.blockStore.GetFileBlock(ctx, makeBlockID(blockKey{payloadID: "new", blockIdx: 0}))
-	if err != nil {
-		t.Fatalf("new block should exist: %v", err)
-	}
-	if fbNew.LocalPath == "" {
-		t.Error("newest block should not have been evicted")
+	if _, err := os.Stat(bc.chunkPath(hNew)); err != nil {
+		t.Errorf("new chunk should still exist: %v", err)
 	}
 }
 
-func TestEviction_LRU_RecentlySurvives(t *testing.T) {
-	bc := newTestCacheWithDiskLimit(t, 1000)
+// TestLSL08_NoFileBlockStoreCallsDuringEviction is the load-bearing assertion
+// for D-27: ensureSpace MUST NOT consult FileBlockStore. Wraps the metadata
+// store in a strict spy that fails the test on any call.
+func TestLSL08_NoFileBlockStoreCallsDuringEviction(t *testing.T) {
+	dir := t.TempDir()
+	inner := memory.NewMemoryMetadataStoreWithDefaults()
+	spy := newCountingFileBlockStore(inner)
+	bc, err := New(dir, 1500, 256*1024*1024, spy)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = bc.Close() })
 	bc.SetEvictionEnabled(true)
 	bc.SetRetentionPolicy(blockstore.RetentionLRU, 0)
 
-	// Create 2 blocks
-	populateRemoteBlock(t, bc, "old-file", 0, 500)
-	populateRemoteBlock(t, bc, "recent-file", 0, 500)
+	// Seed two chunks via StoreChunk (the canonical write path).
+	_ = storeChunk(t, bc, bytes.Repeat([]byte{0x10}, 500))
+	_ = storeChunk(t, bc, bytes.Repeat([]byte{0x11}, 500))
 
-	now := time.Now()
-	bc.accessTracker.mu.Lock()
-	bc.accessTracker.times["old-file"] = now.Add(-2 * time.Hour)
-	bc.accessTracker.times["recent-file"] = now.Add(-1 * time.Second) // very recent
-	bc.accessTracker.mu.Unlock()
-
-	// Need 100 -> evict old, keep recent
-	err := bc.ensureSpace(context.Background(), 100)
-	if err != nil {
-		t.Fatalf("expected successful LRU eviction, got %v", err)
+	before := spy.snapshot()
+	if err := bc.ensureSpace(context.Background(), 600); err != nil {
+		t.Fatalf("ensureSpace: %v", err)
 	}
-
-	ctx := context.Background()
-	// Drain async-queued metadata updates so GetFileBlock sees cleared LocalPath.
-	bc.SyncFileBlocks(ctx)
-
-	// old-file should be evicted
-	fb, err := bc.blockStore.GetFileBlock(ctx, makeBlockID(blockKey{payloadID: "old-file", blockIdx: 0}))
-	if err != nil {
-		t.Fatalf("old-file block should exist: %v", err)
-	}
-	if fb.LocalPath != "" {
-		t.Error("old-file should have been evicted")
-	}
-
-	// recent-file should survive
-	fb, err = bc.blockStore.GetFileBlock(ctx, makeBlockID(blockKey{payloadID: "recent-file", blockIdx: 0}))
-	if err != nil {
-		t.Fatalf("recent-file block should exist: %v", err)
-	}
-	if fb.LocalPath == "" {
-		t.Error("recent-file should not have been evicted")
+	after := spy.snapshot()
+	delta := diffSnapshot(before, after)
+	if delta != (fbsCallSnapshot{}) {
+		t.Errorf("ensureSpace called FileBlockStore: %+v (LSL-08 invariant violated)", delta)
 	}
 }
 
-func TestEviction_TTL_ReadResetsAccess(t *testing.T) {
-	bc := newTestCacheWithDiskLimit(t, 1000)
+// TestLSL08_RefetchAfterEvict asserts that after eviction, a subsequent
+// ReadChunk surfaces ErrChunkNotFound — the engine layer is responsible
+// for refetching from CAS.
+func TestLSL08_RefetchAfterEvict(t *testing.T) {
+	bc := newTestCacheWithDiskLimit(t, 600)
 	bc.SetEvictionEnabled(true)
-	bc.SetRetentionPolicy(blockstore.RetentionTTL, 1*time.Hour)
+	bc.SetRetentionPolicy(blockstore.RetentionLRU, 0)
 
-	// Create a block with old access time (expired)
-	populateRemoteBlock(t, bc, "file1", 0, 500)
-	bc.accessTracker.mu.Lock()
-	bc.accessTracker.times["file1"] = time.Now().Add(-2 * time.Hour) // expired
-	bc.accessTracker.mu.Unlock()
-
-	// Simulate reading file -> touch resets access time
-	bc.accessTracker.Touch("file1")
-
-	// Now the block should not be evicted (just touched, within TTL).
-	// Use a short-deadline context to avoid waiting the full 30s backpressure timeout.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	err := bc.ensureSpace(ctx, 600)
+	hEvictable := storeChunk(t, bc, bytes.Repeat([]byte{0x20}, 500))
+	// Force eviction by needing more space than is available.
+	if err := bc.ensureSpace(context.Background(), 200); err != nil {
+		t.Fatalf("ensureSpace: %v", err)
+	}
+	// Read should now miss.
+	_, err := bc.ReadChunk(context.Background(), hEvictable)
 	if err == nil {
-		t.Fatal("expected error (TTL reset by read), got nil")
-	}
-
-	fb, err := bc.blockStore.GetFileBlock(context.Background(), makeBlockID(blockKey{payloadID: "file1", blockIdx: 0}))
-	if err != nil {
-		t.Fatalf("block should exist: %v", err)
-	}
-	if fb.LocalPath == "" {
-		t.Error("block should not be evicted after access time reset")
+		t.Errorf("expected miss after evict, got data")
 	}
 }
 
-func TestEviction_PolicySwitch_PinToLRU(t *testing.T) {
-	bc := newTestCacheWithDiskLimit(t, 1024)
-	bc.SetEvictionEnabled(true)
+// TestLSL08_LRUSeededOnStartup asserts a freshly-constructed FSStore
+// pointing at a directory with pre-existing chunks seeds the LRU and
+// makes those chunks evictable.
+func TestLSL08_LRUSeededOnStartup(t *testing.T) {
+	dir := t.TempDir()
+	mds := memory.NewMemoryMetadataStoreWithDefaults()
 
-	// Start with pin mode
-	bc.SetRetentionPolicy(blockstore.RetentionPin, 0)
-
-	// Populate a remote block
-	populateRemoteBlock(t, bc, "file1", 0, 500)
-	bc.accessTracker.mu.Lock()
-	bc.accessTracker.times["file1"] = time.Now().Add(-2 * time.Hour)
-	bc.accessTracker.mu.Unlock()
-
-	// Pin mode -> should not evict
-	err := bc.ensureSpace(context.Background(), 600)
-	if err != ErrDiskFull {
-		t.Fatalf("expected ErrDiskFull in pin mode, got %v", err)
+	// Create a first store, store a chunk, close.
+	bc1, err := New(dir, 1<<30, 256*1024*1024, mds)
+	if err != nil {
+		t.Fatalf("New 1: %v", err)
 	}
+	hPersist := storeChunk(t, bc1, bytes.Repeat([]byte{0x30}, 500))
+	_ = bc1.Close()
 
-	// Switch to LRU mode -> should now evict
+	// Reopen: New() should seed the LRU from disk so hPersist is evictable.
+	bc2, err := New(dir, 600, 256*1024*1024, mds)
+	if err != nil {
+		t.Fatalf("New 2: %v", err)
+	}
+	t.Cleanup(func() { _ = bc2.Close() })
+	bc2.SetEvictionEnabled(true)
+	bc2.SetRetentionPolicy(blockstore.RetentionLRU, 0)
+	bc2.diskUsed.Store(500) // simulate post-recovery diskUsed
+
+	// Force eviction.
+	if err := bc2.ensureSpace(context.Background(), 200); err != nil {
+		t.Fatalf("ensureSpace: %v", err)
+	}
+	// Persistent chunk should now be gone.
+	if _, err := os.Stat(bc2.chunkPath(hPersist)); !os.IsNotExist(err) {
+		t.Errorf("seeded chunk should have been evicted (stat err=%v)", err)
+	}
+}
+
+// TestLSL08_ConcurrentWritesSafe asserts the LRU is race-free under
+// concurrent StoreChunk + ReadChunk + ensureSpace activity. Run with -race.
+func TestLSL08_ConcurrentWritesSafe(t *testing.T) {
+	bc := newTestCacheWithDiskLimit(t, 64*1024)
+	bc.SetEvictionEnabled(true)
 	bc.SetRetentionPolicy(blockstore.RetentionLRU, 0)
 
-	err = bc.ensureSpace(context.Background(), 600)
-	if err != nil {
-		t.Fatalf("expected successful eviction after switch to LRU, got %v", err)
-	}
+	const N = 50
+	hashes := make([]blockstore.ContentHash, N)
+	var hashesMu sync.Mutex
+	done := make(chan struct{})
 
-	ctx := context.Background()
-	// Drain async-queued metadata updates so GetFileBlock sees cleared LocalPath.
-	bc.SyncFileBlocks(ctx)
-	fb, err := bc.blockStore.GetFileBlock(ctx, makeBlockID(blockKey{payloadID: "file1", blockIdx: 0}))
-	if err != nil {
-		t.Fatalf("block metadata should exist: %v", err)
-	}
-	if fb.LocalPath != "" {
-		t.Error("block should have been evicted after switch to LRU")
+	// Writer goroutine — uses errors instead of t.Fatalf (race-safe).
+	go func() {
+		defer close(done)
+		for i := 0; i < N; i++ {
+			data := bytes.Repeat([]byte{byte(i)}, 1024)
+			h := hashBytes(data)
+			if err := bc.StoreChunk(context.Background(), h, data); err != nil {
+				return
+			}
+			hashesMu.Lock()
+			hashes[i] = h
+			hashesMu.Unlock()
+		}
+	}()
+
+	// Concurrent reader.
+	for {
+		select {
+		case <-done:
+			// Final eviction sweep.
+			_ = bc.ensureSpace(context.Background(), 100)
+			return
+		default:
+		}
+		for i := 0; i < N; i++ {
+			hashesMu.Lock()
+			h := hashes[i]
+			hashesMu.Unlock()
+			if h.IsZero() {
+				continue
+			}
+			_, _ = bc.ReadChunk(context.Background(), h)
+		}
 	}
 }

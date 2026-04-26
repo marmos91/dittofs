@@ -65,6 +65,15 @@ type memBlock struct {
 	dataSize  uint32    // Highest byte offset written (valid data extent)
 	dirty     bool      // true if buffer has data not yet flushed to disk
 	lastWrite time.Time // Timestamp of last write; used for LRU flush ordering
+
+	// writeGen is bumped (under mu) on every WriteAt that mutates the buffer.
+	// flushBlock (TD-09 stage-and-release) snapshots writeGen at stage time;
+	// if writeGen is unchanged when flushBlock re-acquires the lock for the
+	// post-write flag flip, no concurrent writer interleaved during the disk
+	// I/O window — safe to clear data/dataSize/dirty. If writeGen advanced,
+	// new bytes arrived in mb.data and dirty stays true so the next flush
+	// picks them up.
+	writeGen uint64
 }
 
 // fileInfo tracks per-file metadata in the local store.

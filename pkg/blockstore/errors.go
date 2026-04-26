@@ -150,6 +150,16 @@ var (
 	//   - SMB: STATUS_UNEXPECTED_IO_ERROR (0xC00000E9)
 	//   - HTTP: 503 Service Unavailable
 	ErrRemoteUnavailable = errors.New("remote store unavailable")
+
+	// ErrCASContentMismatch is returned by the streaming BLAKE3 verifier on
+	// S3 GET when the recomputed hash (or the x-amz-meta-content-hash header)
+	// does not match the expected ContentHash. Per INV-06, the buffer is
+	// discarded and this error surfaces — bad bytes never reach the caller.
+	ErrCASContentMismatch = errors.New("blockstore: CAS content hash mismatch")
+
+	// ErrCASKeyMalformed is returned by ParseCASKey for any input that does
+	// not match the cas/{hh}/{hh}/{hex} shape. See BSCAS-01.
+	ErrCASKeyMalformed = errors.New("blockstore: malformed CAS key")
 )
 
 // BlockStoreError wraps sentinel block store errors with structured debugging context.

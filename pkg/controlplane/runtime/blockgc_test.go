@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	"github.com/marmos91/dittofs/pkg/health"
@@ -19,13 +20,22 @@ type fakeRemoteStore struct {
 }
 
 func (f *fakeRemoteStore) WriteBlock(_ context.Context, _ string, _ []byte) error { return nil }
-func (f *fakeRemoteStore) ReadBlock(_ context.Context, _ string) ([]byte, error)  { return nil, nil }
+func (f *fakeRemoteStore) WriteBlockWithHash(_ context.Context, _ string, _ blockstore.ContentHash, _ []byte) error {
+	return nil
+}
+func (f *fakeRemoteStore) ReadBlock(_ context.Context, _ string) ([]byte, error) { return nil, nil }
+func (f *fakeRemoteStore) ReadBlockVerified(_ context.Context, _ string, _ blockstore.ContentHash) ([]byte, error) {
+	return nil, nil
+}
 func (f *fakeRemoteStore) ReadBlockRange(_ context.Context, _ string, _, _ int64) ([]byte, error) {
 	return nil, nil
 }
 func (f *fakeRemoteStore) DeleteBlock(_ context.Context, _ string) error    { return nil }
 func (f *fakeRemoteStore) DeleteByPrefix(_ context.Context, _ string) error { return nil }
 func (f *fakeRemoteStore) ListByPrefix(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeRemoteStore) ListByPrefixWithMeta(_ context.Context, _ string) ([]remote.ObjectInfo, error) {
 	return nil, nil
 }
 func (f *fakeRemoteStore) CopyBlock(_ context.Context, _, _ string) error { return nil }
@@ -100,8 +110,11 @@ func TestRunBlockGC_DedupesSharedRemoteStores(t *testing.T) {
 	}
 }
 
-// TestRunBlockGC_DryRunPropagates asserts dryRun + sharePrefix flow into
-// the Options struct passed to CollectGarbage.
+// TestRunBlockGC_DryRunPropagates asserts dryRun flows into the Options
+// struct passed to CollectGarbage. Phase 11 WR-04 removed
+// engine.Options.SharePrefix because the mark-sweep design has a global
+// live set; the historical sharePrefix argument on RunBlockGC is preserved
+// for caller compatibility but ignored.
 func TestRunBlockGC_DryRunPropagates(t *testing.T) {
 	captured := installCollectGarbageSpy(t)
 
@@ -118,9 +131,6 @@ func TestRunBlockGC_DryRunPropagates(t *testing.T) {
 	}
 	if !(*captured)[0].DryRun {
 		t.Fatal("expected DryRun=true on captured Options")
-	}
-	if (*captured)[0].SharePrefix != "/prefix" {
-		t.Fatalf("expected SharePrefix=\"/prefix\" on captured Options; got %q", (*captured)[0].SharePrefix)
 	}
 }
 

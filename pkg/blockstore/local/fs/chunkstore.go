@@ -98,6 +98,10 @@ func (bc *FSStore) StoreChunk(ctx context.Context, h blockstore.ContentHash, dat
 		_ = dir.Close()
 	}
 	bc.diskUsed.Add(int64(len(data)))
+	// LSL-08: register the chunk with the in-process LRU so eviction can
+	// reach it. This is the canonical post-write touch — readers use a
+	// separate ReadChunk wiring to promote on cache hits.
+	bc.lruTouch(h, int64(len(data)), path)
 	return nil
 }
 
@@ -122,6 +126,16 @@ func (bc *FSStore) ReadChunk(ctx context.Context, h blockstore.ContentHash) ([]b
 	data, err := io.ReadAll(f)
 	if err != nil {
 		return nil, fmt.Errorf("chunkstore: read: %w", err)
+	}
+	// LSL-08: promote on cache hit so frequently-read chunks survive
+	// eviction. A concurrent lruEvictOne may have unlinked the file
+	// between os.Open and here — the open fd still reads on POSIX, but
+	// re-inserting into the LRU would create a ghost entry that points at
+	// a path that no longer exists. Re-stat before re-inserting; if the
+	// file is gone, skip the touch (the next read will surface
+	// ErrChunkNotFound under the engine's accept-and-refetch posture).
+	if _, statErr := os.Stat(path); statErr == nil {
+		bc.lruTouch(h, int64(len(data)), path)
 	}
 	return data, nil
 }
@@ -170,5 +184,13 @@ func (bc *FSStore) DeleteChunk(ctx context.Context, h blockstore.ContentHash) er
 	if statErr == nil && st.Size() > 0 {
 		bc.diskUsed.Add(-st.Size())
 	}
+	// LSL-08: prune from the in-process LRU so a future ensureSpace doesn't
+	// try to unlink a file we just deleted.
+	bc.lruMu.Lock()
+	if el, ok := bc.lruIndex[h]; ok {
+		bc.lruList.Remove(el)
+		delete(bc.lruIndex, h)
+	}
+	bc.lruMu.Unlock()
 	return nil
 }

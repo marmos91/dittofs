@@ -68,7 +68,19 @@ type Share struct {
 
 	// remoteConfigID tracks which remote store config this share uses (for ref counting).
 	remoteConfigID string
+
+	// gcStateRoot is the on-disk directory under which the GC engine
+	// persists per-run gc-state and `last-run.json` (Phase 11 D-01/D-10).
+	// Populated for fs-backed local stores at share creation; empty for
+	// in-memory stores (no persistent gc-state then — last-run.json is
+	// skipped, matching engine.PersistLastRunSummary's empty-root contract).
+	gcStateRoot string
 }
+
+// GCStateRoot returns the per-share gc-state directory used by the GC
+// engine to persist last-run.json. Empty when the share's local store
+// has no persistent root (in-memory backend).
+func (s *Share) GCStateRoot() string { return s.gcStateRoot }
 
 // ShareConfig contains all configuration needed to create a share.
 type ShareConfig struct {
@@ -448,7 +460,8 @@ func (s *Service) createBlockStoreForShare(
 	// Eviction requires a remote store (so evicted blocks can be re-fetched) and
 	// must not be pin mode (pin keeps blocks stored locally indefinitely).
 	localStore.SetEvictionEnabled(remoteStore != nil && config.RetentionPolicy != blockstore.RetentionPin)
-	localStore.SetSkipFsync(remoteStore != nil)
+	// Note: SetSkipFsync was removed in LSL-07. Local-disk durability is now
+	// unconditional (the syncer will refetch from S3 on the rare crash path).
 	localStore.SetRetentionPolicy(config.RetentionPolicy, config.RetentionTTL)
 
 	syncerCfg := buildSyncerConfigFromDefaults(syncerDefaults)
@@ -497,6 +510,11 @@ func (s *Service) createBlockStoreForShare(
 	// Safe without lock: share is not yet in the registry.
 	share.BlockStore = bs
 	share.remoteConfigID = remoteConfigID
+	// Compute the persistent gc-state directory for this share. Only fs-backed
+	// local stores produce a non-empty path; in-memory backends skip
+	// last-run.json persistence entirely (engine.PersistLastRunSummary is a
+	// no-op on empty rootDir).
+	share.gcStateRoot = deriveGCStateRoot(localCfg, config.Name)
 
 	logger.Info("Per-share BlockStore initialized",
 		"share", config.Name,
@@ -769,6 +787,23 @@ func (s *Service) GetShare(name string) (*Share, error) {
 		return nil, fmt.Errorf("share %q not found", name)
 	}
 	return share, nil
+}
+
+// GetGCStateDirForShare returns the per-share gc-state directory used by
+// the GC engine to persist `last-run.json` (Phase 11 D-10). Returns an
+// empty string when the share's local store has no persistent root
+// (in-memory backend) — callers should treat empty as "no run summary
+// available". Returns an ErrShareNotFound-wrapped error if the share is
+// unknown.
+func (s *Service) GetGCStateDirForShare(name string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	share, exists := s.registry[name]
+	if !exists {
+		return "", fmt.Errorf("%w: %q", ErrShareNotFound, name)
+	}
+	return share.gcStateRoot, nil
 }
 
 func (s *Service) GetRootHandle(shareName string) (metadata.FileHandle, error) {
@@ -1138,6 +1173,36 @@ func (s *Service) EvictBlockStore(ctx context.Context, shareName string, opts Ev
 	}
 
 	return &result, nil
+}
+
+// deriveGCStateRoot returns the per-share gc-state directory used by the
+// GC engine to persist its run state and last-run.json (Phase 11 D-01/D-10).
+// Mirrors the path layout used in CreateLocalStoreFromConfig for fs-backed
+// local stores (`<basePath>/shares/<sanitized>/gc-state`). Returns "" for
+// any non-fs backend or when the config does not yield a usable absolute
+// path — engine.PersistLastRunSummary treats "" as "do not persist".
+func deriveGCStateRoot(localCfg interface {
+	GetConfig() (map[string]any, error)
+}, shareName string) string {
+	if localCfg == nil {
+		return ""
+	}
+	cfg, err := localCfg.GetConfig()
+	if err != nil {
+		return ""
+	}
+	basePath, ok := cfg["path"].(string)
+	if !ok || basePath == "" {
+		return ""
+	}
+	expanded, err := pathutil.ExpandPath(basePath)
+	if err != nil {
+		return ""
+	}
+	if !filepath.IsAbs(expanded) {
+		return ""
+	}
+	return filepath.Join(expanded, "shares", sanitizeShareName(shareName), "gc-state")
 }
 
 // CreateLocalStoreFromConfig creates a local store instance from a block store config.

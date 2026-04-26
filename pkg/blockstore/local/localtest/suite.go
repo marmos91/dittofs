@@ -26,7 +26,6 @@ func RunSuite(t *testing.T, factory Factory) {
 	t.Run("ReadMiss", func(t *testing.T) { testReadMiss(t, factory) })
 	t.Run("WriteMultiBlock", func(t *testing.T) { testWriteMultiBlock(t, factory) })
 	t.Run("Flush", func(t *testing.T) { testFlush(t, factory) })
-	t.Run("GetDirtyBlocks", func(t *testing.T) { testGetDirtyBlocks(t, factory) })
 	t.Run("Truncate", func(t *testing.T) { testTruncate(t, factory) })
 	t.Run("EvictMemory", func(t *testing.T) { testEvictMemory(t, factory) })
 	t.Run("DeleteBlockFile", func(t *testing.T) { testDeleteBlockFile(t, factory) })
@@ -35,7 +34,6 @@ func RunSuite(t *testing.T, factory Factory) {
 	t.Run("ListFiles", func(t *testing.T) { testListFiles(t, factory) })
 	t.Run("Stats", func(t *testing.T) { testStats(t, factory) })
 	t.Run("WriteFromRemote", func(t *testing.T) { testWriteFromRemote(t, factory) })
-	t.Run("MarkBlockState", func(t *testing.T) { testMarkBlockState(t, factory) })
 	t.Run("GetBlockData", func(t *testing.T) { testGetBlockData(t, factory) })
 	t.Run("IsBlockLocal", func(t *testing.T) { testIsBlockLocal(t, factory) })
 	t.Run("CloseRejectsOps", func(t *testing.T) { testCloseRejectsOps(t, factory) })
@@ -132,27 +130,6 @@ func testFlush(t *testing.T, factory Factory) {
 	}
 	if !bytes.Equal(dest, data) {
 		t.Fatal("ReadAt after Flush returned wrong data")
-	}
-}
-
-func testGetDirtyBlocks(t *testing.T, factory Factory) {
-	store := factory(t)
-	ctx := context.Background()
-
-	data := bytes.Repeat([]byte{0xCD}, 4096)
-	if err := store.WriteAt(ctx, "file1", data, 0); err != nil {
-		t.Fatalf("WriteAt failed: %v", err)
-	}
-
-	pending, err := store.GetDirtyBlocks(ctx, "file1")
-	if err != nil {
-		t.Fatalf("GetDirtyBlocks failed: %v", err)
-	}
-	if len(pending) == 0 {
-		t.Fatal("expected at least one pending block")
-	}
-	if pending[0].DataSize != 4096 {
-		t.Fatalf("expected DataSize 4096, got %d", pending[0].DataSize)
 	}
 }
 
@@ -326,41 +303,6 @@ func testWriteFromRemote(t *testing.T, factory Factory) {
 	}
 	if !bytes.Equal(dest, data) {
 		t.Fatal("ReadAt wrong data")
-	}
-}
-
-func testMarkBlockState(t *testing.T, factory Factory) {
-	store := factory(t)
-	ctx := context.Background()
-
-	data := bytes.Repeat([]byte{0xEE}, 4096)
-	if err := store.WriteAt(ctx, "file1", data, 0); err != nil {
-		t.Fatalf("WriteAt failed: %v", err)
-	}
-
-	// Flush to make it Local
-	if _, err := store.Flush(ctx, "file1"); err != nil {
-		t.Fatalf("Flush failed: %v", err)
-	}
-
-	// Mark as syncing
-	if !store.MarkBlockSyncing(ctx, "file1", 0) {
-		t.Error("MarkBlockSyncing should succeed after flush")
-	}
-
-	// Can't mark syncing again (not Local anymore)
-	if store.MarkBlockSyncing(ctx, "file1", 0) {
-		t.Error("MarkBlockSyncing should fail when already Syncing")
-	}
-
-	// Mark remote
-	if !store.MarkBlockRemote(ctx, "file1", 0) {
-		t.Error("MarkBlockRemote should succeed")
-	}
-
-	// Revert to local
-	if !store.MarkBlockLocal(ctx, "file1", 0) {
-		t.Error("MarkBlockLocal should succeed")
 	}
 }
 
