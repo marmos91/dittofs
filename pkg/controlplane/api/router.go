@@ -177,6 +177,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 
 			// Handlers shared between multiple route groups.
 			blockStoreHandler := handlers.NewBlockStoreStatsHandler(rt)
+			blockGCHandler := handlers.NewBlockStoreGCHandler(rt)
 			mountHandler := handlers.NewMountHandler(rt)
 
 			// Share management (admin only)
@@ -205,6 +206,13 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				// Per-share block store management
 				r.Get("/{name}/blockstore/stats", blockStoreHandler.Stats)
 				r.Post("/{name}/blockstore/evict", blockStoreHandler.Evict)
+				// Phase 11 D-08/D-10: per-share GC trigger + last-run summary.
+				// Mounted under /shares/{name}/blockstore/... so the route
+				// pattern stays consistent with stats/evict and avoids the
+				// /store/block/{kind} wildcard collision (chi cannot disambiguate
+				// {kind} vs {name} at the same segment).
+				r.Post("/{name}/blockstore/gc", blockGCHandler.RunGC)
+				r.Get("/{name}/blockstore/gc-status", blockGCHandler.GCStatus)
 			})
 
 			// Global block store management (admin only)
