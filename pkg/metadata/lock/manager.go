@@ -1560,13 +1560,19 @@ func (lm *Manager) forceCompleteBreaksExceptKey(handleKey string, exceptKey [16]
 		// alive at LeaseState=None (handle-bound lifetime) so a later
 		// unsolicited or duplicate ack surfaces as ErrLeaseAckNotBreaking
 		// → STATUS_UNSUCCESSFUL. Same rationale as applyBreakStageLocked.
+		//
+		// Do NOT advance Epoch: this is the timeout/internal completion
+		// path for an already-dispatched break. Per MS-SMB2 §3.3.4.7 the
+		// epoch advances only when a break notification is dispatched (and
+		// was already advanced when the in-flight break started). Bumping
+		// it here would invalidate any straggling client ack still echoing
+		// the original epoch.
 		finalTarget := l.Lease.BreakingToRequired
 		l.Lease.LeaseState = finalTarget
 		l.Lease.BreakingToRequired = finalTarget
 		l.Lease.Breaking = false
 		l.Lease.BreakToState = 0
 		l.Lease.BreakStarted = time.Time{}
-		advanceEpoch(l.Lease)
 		l.Type = lockTypeForLeaseState(l.Lease.LeaseState)
 
 		if lm.lockStore != nil {
