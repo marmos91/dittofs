@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
@@ -171,6 +172,56 @@ func TestStore_ListByPrefix(t *testing.T) {
 	}
 	if len(keys) != 4 {
 		t.Errorf("ListByPrefix returned %d keys, want 4", len(keys))
+	}
+}
+
+// TestStore_ListByPrefixWithMeta_LargePrefix exercises the >1000-key
+// path that the S3 backend's paginator handles: the in-memory backend
+// is single-page by construction, so this serves as a regression
+// guardrail — the GC sweep depends on ListByPrefixWithMeta returning
+// every object under a CAS prefix (D-05). If a future refactor caps
+// the response at the SDK page size (1000), this test catches the
+// silent under-counting that would otherwise let orphans persist past
+// the grace window.
+func TestStore_ListByPrefixWithMeta_LargePrefix(t *testing.T) {
+	ctx := context.Background()
+	s := New()
+	defer func() { _ = s.Close() }()
+
+	const total = 1500 // > 1000 (default S3 ListObjectsV2 page size)
+	for i := 0; i < total; i++ {
+		key := fmt.Sprintf("cas/aa/bb/%04x", i)
+		if err := s.WriteBlock(ctx, key, []byte{byte(i & 0xff)}); err != nil {
+			t.Fatalf("WriteBlock(%s): %v", key, err)
+		}
+	}
+
+	objects, err := s.ListByPrefixWithMeta(ctx, "cas/aa/bb/")
+	if err != nil {
+		t.Fatalf("ListByPrefixWithMeta failed: %v", err)
+	}
+	if len(objects) != total {
+		t.Fatalf("ListByPrefixWithMeta returned %d objects, want %d", len(objects), total)
+	}
+
+	// Spot-check a few keys to make sure the metadata wiring is intact
+	// (Key/Size populated; LastModified non-zero so the sweep grace-window
+	// filter has a real timestamp to compare against).
+	seen := make(map[string]bool, len(objects))
+	for _, o := range objects {
+		seen[o.Key] = true
+		if o.Size != 1 {
+			t.Errorf("object %s: size=%d, want 1", o.Key, o.Size)
+		}
+		if o.LastModified.IsZero() {
+			t.Errorf("object %s: LastModified is zero", o.Key)
+		}
+	}
+	for i := 0; i < total; i++ {
+		key := fmt.Sprintf("cas/aa/bb/%04x", i)
+		if !seen[key] {
+			t.Fatalf("key %s missing from ListByPrefixWithMeta result", key)
+		}
 	}
 }
 
