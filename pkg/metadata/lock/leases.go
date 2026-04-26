@@ -150,11 +150,14 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 
 	handleKey := string(fileHandle)
 
-	// LeaseStateNone probe: clients (and smbtorture breaking4) issue empty-state
-	// requests to query the current lease without taking new caching rights. If
-	// a same-key lease is already in Breaking state, surface ErrLeaseBreakInProgress
-	// so the CREATE response carries SMB2_LEASE_FLAG_BREAK_IN_PROGRESS with the
-	// pre-break LeaseState. Otherwise grant trivially.
+	// LeaseStateNone probe: clients (and smbtorture breaking4 / upgrade2)
+	// issue empty-state requests to query the current lease without taking
+	// new caching rights. Per Samba upgrade2 the response is the current
+	// state of any same-key lease (R returns R, RH returns RH, …) — *not*
+	// always None. The general same-key path below handles the upgrade2
+	// matrix correctly; a None probe with no same-key lease still returns
+	// None trivially, short-circuited here so we don't enter the cross-key
+	// break dispatch path with requestedState=None.
 	if requestedState == LeaseStateNone {
 		lm.mu.Lock()
 		for _, lock := range lm.unifiedLocks[handleKey] {
@@ -171,7 +174,10 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 					"epoch", epoch)
 				return currentState, epoch, ErrLeaseBreakInProgress
 			}
-			break
+			currentState := lock.Lease.LeaseState
+			epoch := lock.Lease.Epoch
+			lm.mu.Unlock()
+			return currentState, epoch, nil
 		}
 		lm.mu.Unlock()
 		return LeaseStateNone, 0, nil
@@ -243,8 +249,32 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 			return currentState, lock.Lease.Epoch, nil
 		}
 
-		// Check if this is a valid upgrade
-		if isValidUpgrade(currentState, requestedState) {
+		// Check if this is a valid upgrade AND can coexist with any other
+		// leases on the same file (Samba upgrade3 contended-case rule):
+		// the upgrade applies iff the requested state is a strict superset
+		// of the current AND does not conflict with any other-key holder.
+		// If the upgrade would conflict, leave the current state unchanged
+		// — the rule explicitly forbids breaking other holders to satisfy
+		// a same-key upgrade.
+		canUpgrade := isValidUpgrade(currentState, requestedState)
+		if canUpgrade {
+			requestedLease := &OpLock{LeaseKey: leaseKey, LeaseState: requestedState}
+			for _, other := range locks {
+				if other.Lease == nil || other.Lease.LeaseKey == leaseKey {
+					continue
+				}
+				if OpLocksConflict(other.Lease, requestedLease) {
+					canUpgrade = false
+					logger.Debug("RequestLease: upgrade blocked by other-key holder",
+						"fileHandle", handleKey,
+						"current", LeaseStateToString(currentState),
+						"requested", LeaseStateToString(requestedState),
+						"otherState", LeaseStateToString(other.Lease.LeaseState))
+					break
+				}
+			}
+		}
+		if canUpgrade {
 			// Upgrade the lease
 			locks[i].Lease.LeaseState = requestedState
 			advanceEpoch(locks[i].Lease)
@@ -268,13 +298,20 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 			return requestedState, epoch, nil
 		}
 
-		// Invalid transition (downgrade)
+		// Non-superset request (downgrade or sidegrade): per Samba upgrade2,
+		// same-key RequestLease changes the lease iff requested is a strict
+		// superset of current. Otherwise the existing state is returned
+		// unchanged (e.g. RH + request RW → return RH; R + request "" → R).
+		// Returning None here would silently drop the holder's caching
+		// rights and break the smbtorture upgrade / upgrade2 / upgrade3
+		// matrix.
+		epoch := locks[i].Lease.Epoch
 		lm.mu.Unlock()
-		logger.Debug("RequestLease: invalid state transition (downgrade)",
+		logger.Debug("RequestLease: same-key non-superset request, returning existing state",
 			"fileHandle", handleKey,
-			"from", LeaseStateToString(currentState),
-			"to", LeaseStateToString(requestedState))
-		return LeaseStateNone, 0, nil
+			"current", LeaseStateToString(currentState),
+			"requested", LeaseStateToString(requestedState))
+		return currentState, epoch, nil
 	}
 
 	// No existing lease with same key. Check for cross-key conflicts.

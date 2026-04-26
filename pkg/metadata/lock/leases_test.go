@@ -185,7 +185,7 @@ func TestRequestLease_SameKeySameState_NoEpochChange(t *testing.T) {
 	assert.Equal(t, uint16(1), epoch, "epoch should not change for same state")
 }
 
-func TestRequestLease_SameKeyDowngrade_Rejected(t *testing.T) {
+func TestRequestLease_SameKeyNonSuperset_ReturnsCurrent(t *testing.T) {
 	t.Parallel()
 
 	mgr := NewManager()
@@ -197,10 +197,13 @@ func TestRequestLease_SameKeyDowngrade_Rejected(t *testing.T) {
 	_, _, err := mgr.RequestLease(ctx, FileHandle("file1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
 	require.NoError(t, err)
 
-	// Attempt downgrade to R
+	// Per Samba upgrade2: a same-key request that is not a strict superset
+	// of the current state returns the existing state unchanged. Downgrade
+	// to R against current RWH must therefore return RWH, not None.
 	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateRead, false)
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateNone, state, "downgrade should be rejected")
+	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state,
+		"non-superset request must return existing lease state")
 }
 
 func TestRequestLease_CrossKeyConflict(t *testing.T) {

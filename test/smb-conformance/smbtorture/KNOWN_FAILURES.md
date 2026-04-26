@@ -503,10 +503,6 @@ incomplete break notification delivery and multi-client coordination.
 | smb2.lease.request | Leases | Lease request handling not fully working | #429 |
 | smb2.lease.statopen | Leases | Lease + stat open interaction not fully working | #429 |
 | smb2.lease.statopen4 | Leases | Lease + stat open interaction not fully working | #429 |
-| smb2.lease.upgrade | Leases | Lease upgrade not fully working | #429 |
-| smb2.lease.upgrade2 | Leases | Lease upgrade not fully working | #429 |
-| smb2.lease.upgrade3 | Leases | Lease upgrade not fully working | #429 |
-| smb2.lease.break | Leases | Lease break notification not fully working | #429 |
 | smb2.lease.oplock | Leases | Lease + oplock interaction not fully working | #429 |
 | smb2.lease.multibreak | Leases | Multi-client lease break not fully working | #429 |
 | smb2.lease.breaking1 | Leases | Lease breaking state handling not fully working | #429 |
