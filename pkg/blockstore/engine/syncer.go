@@ -211,6 +211,14 @@ func (m *Syncer) DrainAllUploads(ctx context.Context) error {
 }
 
 // GetFileSize returns the total size of a file from the remote store.
+//
+// Phase 11 (CAS): blocks are stored under content-addressed keys
+// (cas/XX/YY/<hash>), so the legacy {payloadID}/block-{N} prefix scan no
+// longer finds them. We resolve via FileBlock metadata: enumerate every
+// block belonging to payloadID, find the highest-indexed Remote block,
+// and compute size = maxIdx*BlockSize + lastBlock.DataSize. DataSize is
+// stamped by uploadOne before flipping State to Remote, so no extra S3
+// round-trip is needed.
 func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return 0, err
@@ -226,36 +234,38 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 		return 0, m.remoteUnavailableError()
 	}
 
-	prefix := payloadID + "/"
-	blocks, err := m.remoteStore.ListByPrefix(ctx, prefix)
+	blocks, err := m.fileBlockStore.ListFileBlocks(ctx, payloadID)
 	if err != nil {
-		return 0, fmt.Errorf("list blocks: %w", err)
+		return 0, fmt.Errorf("list file blocks for %s: %w", payloadID, err)
 	}
 	if len(blocks) == 0 {
 		return 0, nil
 	}
 
-	var maxBlockIdx uint64
-	for _, bk := range blocks {
-		pid, blockIdx, ok := blockstore.ParseStoreKey(bk)
-		if !ok || pid != payloadID {
+	// ListFileBlocks returns blocks ordered by block index. Walk from the
+	// end to find the highest-indexed Remote block (skip any trailing
+	// Pending/Syncing rows that haven't been confirmed in the remote
+	// store yet — they MUST NOT contribute to the remote-side size).
+	for i := len(blocks) - 1; i >= 0; i-- {
+		fb := blocks[i]
+		if fb.State != blockstore.BlockStateRemote {
 			continue
 		}
-		if blockIdx > maxBlockIdx {
-			maxBlockIdx = blockIdx
+		_, blockIdx, ok := parseBlockID(fb.ID, payloadID)
+		if !ok {
+			continue
 		}
+		return blockIdx*uint64(BlockSize) + uint64(fb.DataSize), nil
 	}
-
-	lastBlockKey := blockstore.FormatStoreKey(payloadID, maxBlockIdx)
-	lastBlockData, err := m.remoteStore.ReadBlock(ctx, lastBlockKey)
-	if err != nil {
-		return 0, fmt.Errorf("read last block %s: %w", lastBlockKey, err)
-	}
-
-	return maxBlockIdx*uint64(BlockSize) + uint64(len(lastBlockData)), nil
+	return 0, nil
 }
 
 // Exists checks if any blocks exist for a file in the remote store.
+//
+// Phase 11 (CAS): metadata-driven existence check. Returns true iff at
+// least one FileBlock for payloadID has reached BlockStateRemote (i.e.
+// the engine has confirmed at least one PUT into CAS storage). Pending
+// and Syncing rows do NOT count — those are still local-only.
 func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return false, err
@@ -270,15 +280,34 @@ func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
 		return false, m.remoteUnavailableError()
 	}
 
-	firstBlockKey := blockstore.FormatStoreKey(payloadID, 0)
-	_, err := m.remoteStore.ReadBlock(ctx, firstBlockKey)
-	if err == nil {
-		return true, nil
+	blocks, err := m.fileBlockStore.ListFileBlocks(ctx, payloadID)
+	if err != nil {
+		return false, fmt.Errorf("list file blocks for %s: %w", payloadID, err)
 	}
-	if errors.Is(err, blockstore.ErrBlockNotFound) {
-		return false, nil
+	for _, fb := range blocks {
+		if fb.State == blockstore.BlockStateRemote {
+			return true, nil
+		}
 	}
-	return false, fmt.Errorf("check block: %w", err)
+	return false, nil
+}
+
+// parseBlockID extracts the block index from a FileBlock.ID of the form
+// "{payloadID}/{blockIdx}". Returns (payloadID, blockIdx, true) on a
+// well-formed match for the expected payloadID; (_, 0, false) otherwise.
+func parseBlockID(blockID, expectedPayloadID string) (string, uint64, bool) {
+	prefix := expectedPayloadID + "/"
+	if len(blockID) <= len(prefix) || blockID[:len(prefix)] != prefix {
+		return "", 0, false
+	}
+	var idx uint64
+	for _, c := range blockID[len(prefix):] {
+		if c < '0' || c > '9' {
+			return "", 0, false
+		}
+		idx = idx*10 + uint64(c-'0')
+	}
+	return expectedPayloadID, idx, true
 }
 
 // Truncate removes blocks beyond the new size from the remote store.
