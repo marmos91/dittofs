@@ -146,10 +146,16 @@ func (lm *LeaseManager) RequestLease(
 		return 0, 0, err
 	}
 
-	// Remove pre-registered mapping if the lease was denied (None state means
-	// the LockManager rejected the request without an error code).
+	// Remove pre-registered mapping only if the LockManager has no record
+	// for this key. grantedState == None can mean either:
+	//   - rejected request (no record created) — must reap pre-registration
+	//   - successful None probe / existing released-to-None record — keep
+	//     the mapping so a later unsolicited or duplicate ack still resolves
+	//     and surfaces ErrLeaseAckNotBreaking (smbtorture breaking5).
 	if grantedState == lock.LeaseStateNone {
-		lm.removeLeaseMapping(keyHex)
+		if _, _, found := lockMgr.GetLeaseState(ctx, leaseKey); !found {
+			lm.removeLeaseMapping(keyHex)
+		}
 	}
 
 	return grantedState, epoch, err
@@ -157,17 +163,20 @@ func (lm *LeaseManager) RequestLease(
 
 // AcknowledgeLeaseBreak delegates to the shared LockManager.
 //
-// If the lease has already been released (e.g. the client sent CLOSE before
-// the break ack arrived), the acknowledgment is treated as a successful no-op.
-// Per MS-SMB2 3.3.5.22.2, a break ack for a lease that no longer exists is
-// not an error condition — the desired state (lease relinquished) has already
-// been achieved. This path is required by WPTS BVT_DirectoryLeasing_*.
+// Two failure modes are wire-indistinguishable from this layer but must
+// produce different SMB statuses:
 //
-// The cost is that smbtorture breaking2/breaking5's re-ack-of-NONE assertion
-// (which expects STATUS_UNSUCCESSFUL) does not flip green from this PR. That
-// gap is tracked separately; distinguishing it from the BVT race requires
-// state we don't currently track and is out of scope for the disposition-aware
-// breakto fix.
+//   - Duplicate or unsolicited ack on a lease that has already been released
+//     to None: smbtorture breaking2/breaking5 require STATUS_UNSUCCESSFUL
+//     per MS-SMB2 3.3.5.22.2. The lock manager keeps the record alive at
+//     LeaseState=None until CLOSE, so this surfaces as ErrLeaseAckNotBreaking
+//     and propagates to the handler.
+//
+//   - CLOSE-beat-ACK race (client closed the handle before its own ack
+//     arrived): the record is gone and the desired state is already achieved.
+//     WPTS BVT_DirectoryLeasing_* requires silent success here. We detect
+//     this via ErrLeaseAckNotFound (lock manager scrubbed the record on
+//     ReleaseLeaseForHandle) or a missing wrapper-side mapping.
 func (lm *LeaseManager) AcknowledgeLeaseBreak(
 	ctx context.Context,
 	leaseKey [16]byte,
@@ -182,7 +191,7 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
-		logger.Debug("AcknowledgeLeaseBreak: lease already released, treating as success",
+		logger.Debug("AcknowledgeLeaseBreak: no lock manager for lease (CLOSE-beat-ack), treating as success",
 			"leaseKey", keyHex)
 		return nil
 	}
@@ -190,7 +199,7 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 	err := lockMgr.AcknowledgeLeaseBreak(ctx, leaseKey, acknowledgedState, epoch)
 	if err != nil {
 		if errors.Is(err, lock.ErrLeaseAckNotFound) {
-			logger.Debug("AcknowledgeLeaseBreak: lease not found in lock manager, treating as success",
+			logger.Debug("AcknowledgeLeaseBreak: lease record absent (CLOSE-beat-ack), treating as success",
 				"leaseKey", keyHex)
 			lm.removeLeaseMapping(keyHex)
 			return nil
@@ -198,10 +207,11 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 		return err
 	}
 
-	if acknowledgedState == lock.LeaseStateNone {
-		lm.removeLeaseMapping(keyHex)
-	}
-
+	// Do NOT reap leaseShare on ack-to-None: the lock manager keeps the
+	// record alive at state=None until CLOSE, so a duplicate ack on the same
+	// key must continue to find the lockMgr and surface
+	// ErrLeaseAckNotBreaking. ReleaseLeaseForHandle clears the mapping when
+	// no records remain (see GetLeaseState-found check there).
 	return nil
 }
 

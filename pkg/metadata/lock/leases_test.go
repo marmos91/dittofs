@@ -185,7 +185,7 @@ func TestRequestLease_SameKeySameState_NoEpochChange(t *testing.T) {
 	assert.Equal(t, uint16(1), epoch, "epoch should not change for same state")
 }
 
-func TestRequestLease_SameKeyDowngrade_Rejected(t *testing.T) {
+func TestRequestLease_SameKeyNonSuperset_ReturnsCurrent(t *testing.T) {
 	t.Parallel()
 
 	mgr := NewManager()
@@ -197,10 +197,13 @@ func TestRequestLease_SameKeyDowngrade_Rejected(t *testing.T) {
 	_, _, err := mgr.RequestLease(ctx, FileHandle("file1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
 	require.NoError(t, err)
 
-	// Attempt downgrade to R
+	// Per Samba upgrade2: a same-key request that is not a strict superset
+	// of the current state returns the existing state unchanged. Downgrade
+	// to R against current RWH must therefore return RWH, not None.
 	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateRead, false)
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateNone, state, "downgrade should be rejected")
+	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state,
+		"non-superset request must return existing lease state")
 }
 
 func TestRequestLease_CrossKeyConflict(t *testing.T) {
@@ -319,11 +322,14 @@ func TestAcknowledgeLeaseBreak_CompletesBreak(t *testing.T) {
 	assert.Equal(t, LeaseStateRead, state, "should grant R lease after break removes existing")
 	assert.True(t, breakCalled, "break callback should have been called")
 
-	// key1's lease should be removed once the async ack-to-None lands.
+	// After ack-to-None, key1's lease record persists at LeaseState=None
+	// (handle-bound lifetime — removed on CLOSE). A duplicate ack on this
+	// state-None record must surface ErrLeaseAckNotBreaking →
+	// STATUS_UNSUCCESSFUL per smbtorture breaking2/breaking5.
 	assert.Eventually(t, func() bool {
-		_, _, found := mgr.GetLeaseState(ctx, key1)
-		return !found
-	}, 3*time.Second, 10*time.Millisecond, "key1 lease should be removed after ack to None")
+		state, _, found := mgr.GetLeaseState(ctx, key1)
+		return found && state == LeaseStateNone
+	}, 3*time.Second, 10*time.Millisecond, "key1 lease should drop to LeaseState=None after ack")
 }
 
 func TestAcknowledgeLeaseBreak_ToReadState(t *testing.T) {
@@ -379,7 +385,7 @@ func TestAcknowledgeLeaseBreak_NoActiveBreak(t *testing.T) {
 	assert.Error(t, err, "should error when no break in progress")
 }
 
-func TestAcknowledgeLeaseBreak_AckToNone_RemovesLease(t *testing.T) {
+func TestAcknowledgeLeaseBreak_AckToNone_KeepsRecordAtNone(t *testing.T) {
 	t.Parallel()
 
 	mgr := NewManager()
@@ -390,14 +396,15 @@ func TestAcknowledgeLeaseBreak_AckToNone_RemovesLease(t *testing.T) {
 	_, _, err := mgr.RequestLease(ctx, FileHandle("file1"), key1, [16]byte{}, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite, false)
 	require.NoError(t, err)
 
-	// Manually set the lease to breaking state (simulating a break to R).
+	// Manually set the lease to breaking state (simulating a break to None).
 	// This avoids triggering RequestLease which waits for break completion.
 	mgr.mu.Lock()
 	for _, locks := range mgr.unifiedLocks {
 		for _, lock := range locks {
 			if lock.Lease != nil && lock.Lease.LeaseKey == key1 {
 				lock.Lease.Breaking = true
-				lock.Lease.BreakToState = LeaseStateRead
+				lock.Lease.BreakToState = LeaseStateNone
+				lock.Lease.BreakingToRequired = LeaseStateNone
 				lock.Lease.BreakStarted = time.Now()
 			}
 		}
@@ -408,9 +415,22 @@ func TestAcknowledgeLeaseBreak_AckToNone_RemovesLease(t *testing.T) {
 	err = mgr.AcknowledgeLeaseBreak(ctx, key1, LeaseStateNone, 0)
 	require.NoError(t, err)
 
-	// Lease should be removed
-	_, _, found := mgr.GetLeaseState(ctx, key1)
-	assert.False(t, found, "lease should be removed after ack to None")
+	// Per MS-SMB2 3.3.5.22.2 + smbtorture breaking2/breaking5: the lease
+	// record persists at LeaseState=None until CLOSE so a duplicate ack
+	// can be distinguished from CLOSE-beat-ack.
+	state, _, found := mgr.GetLeaseState(ctx, key1)
+	assert.True(t, found, "lease record should persist after ack-to-None")
+	assert.Equal(t, LeaseStateNone, state, "lease state should be None")
+
+	// Duplicate ack on the released record → ErrLeaseAckNotBreaking.
+	err = mgr.AcknowledgeLeaseBreak(ctx, key1, LeaseStateNone, 0)
+	assert.ErrorIs(t, err, ErrLeaseAckNotBreaking, "duplicate ack must surface ErrLeaseAckNotBreaking")
+
+	// CLOSE removes the record fully.
+	err = mgr.ReleaseLeaseForHandle(ctx, "file1", key1)
+	require.NoError(t, err)
+	_, _, found = mgr.GetLeaseState(ctx, key1)
+	assert.False(t, found, "lease should be gone after CLOSE")
 }
 
 // ============================================================================
@@ -1088,15 +1108,17 @@ func TestProgressiveLeaseBreak_RWH_AndMerge_ToNone(t *testing.T) {
 
 	// Stage 4: client ACKs RH→R. Re-eval finds acked state has neither W nor
 	// H ⇒ next target = required(0) = 0. Dispatch R→"" (fire-and-forget,
-	// inline downgrade). Lease removed.
+	// inline downgrade). Record persists at LeaseState=None (handle-bound
+	// lifetime — only CLOSE removes it).
 	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, key1, LeaseStateRead, 0))
 
 	got = snapshotBreaks(breakMu, breaks)
 	require.Len(t, got, 3, "stage 4: ACK RH→R triggers R→\"\" notification")
 	assert.Equal(t, LeaseStateNone, got[2], "stage 4: target = None")
 
-	_, _, found := mgr.GetLeaseState(ctx, key1)
-	assert.False(t, found, "stage 4: lease removed after final stage")
+	state, _, found := mgr.GetLeaseState(ctx, key1)
+	assert.True(t, found, "stage 4: record persists after R→None auto-downgrade")
+	assert.Equal(t, LeaseStateNone, state, "stage 4: state drained to None")
 }
 
 // TestProgressiveLeaseBreak_NoSpuriousAfterReachingRequired confirms that a
@@ -1171,13 +1193,16 @@ func TestForceCompleteBreaks_DrainsToBreakingToRequired(t *testing.T) {
 		OwnerID: "owner-destr", ClientID: "client-destr",
 	}, BreakReasonDestructive))
 
-	// Force-complete should drain to BreakingToRequired (= 0), removing the
-	// lease entirely. Pre-fix this drained to BreakToState (= RH), leaving
-	// the lease at RH which would block the destructive opener.
+	// Force-complete should drain to BreakingToRequired (= 0), keeping the
+	// record at LeaseState=None (handle-bound lifetime). Pre-fix this drained
+	// to BreakToState (= RH), leaving the lease at RH which would block the
+	// destructive opener.
 	mgr.forceCompleteBreaks(handleKey)
 
-	_, _, found := mgr.GetLeaseState(ctx, key1)
-	assert.False(t, found, "force-complete must drain to None (BreakingToRequired), not RH (BreakToState)")
+	state, _, found := mgr.GetLeaseState(ctx, key1)
+	require.True(t, found, "force-complete keeps the record alive until CLOSE")
+	assert.Equal(t, LeaseStateNone, state,
+		"force-complete must drain to None (BreakingToRequired), not RH (BreakToState)")
 }
 
 // TestAnyHolderHasLeaseBits covers the cross-key per-bit query that gates the

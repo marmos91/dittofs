@@ -52,7 +52,19 @@ var ErrLeaseAckNotBreaking = errors.New("lease not in breaking state")
 // validUpgrades defines allowed lease state upgrade transitions.
 // A lease can only be upgraded (more permissions), never downgraded via RequestLease.
 // Downgrade happens only through lease break.
+//
+// LeaseStateNone is a re-lease source: a record kept alive after ack-to-None
+// (handle-bound lifetime) can be re-granted to any valid state by a same-key
+// RequestLease. Without this entry the persisted None record would be treated
+// as a downgrade source and the request would be rejected (smbtorture
+// nobreakself: a same-key reopen after a break must re-grant the lease).
 var validUpgrades = map[uint32][]uint32{
+	LeaseStateNone: {
+		LeaseStateRead,
+		LeaseStateRead | LeaseStateWrite,
+		LeaseStateRead | LeaseStateHandle,
+		LeaseStateRead | LeaseStateWrite | LeaseStateHandle,
+	},
 	LeaseStateRead: {
 		LeaseStateRead | LeaseStateWrite,
 		LeaseStateRead | LeaseStateHandle,
@@ -102,16 +114,6 @@ func (lm *Manager) findLeaseByKey(leaseKey [16]byte) (string, *UnifiedLock, int)
 	return "", nil, -1
 }
 
-// removeLeaseAtLocked deletes the lease at index idx from unifiedLocks[handleKey],
-// removing the bucket entirely when it becomes empty. Caller must hold lm.mu.
-func (lm *Manager) removeLeaseAtLocked(handleKey string, idx int) {
-	locks := lm.unifiedLocks[handleKey]
-	lm.unifiedLocks[handleKey] = append(locks[:idx], locks[idx+1:]...)
-	if len(lm.unifiedLocks[handleKey]) == 0 {
-		delete(lm.unifiedLocks, handleKey)
-	}
-}
-
 // RequestLease requests a new or upgraded lease on a file or directory.
 //
 // For new leases, the granted state may be less than requested if conflicts exist.
@@ -138,28 +140,31 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 
 	handleKey := string(fileHandle)
 
-	// LeaseStateNone probe: clients (and smbtorture breaking4) issue empty-state
-	// requests to query the current lease without taking new caching rights. If
-	// a same-key lease is already in Breaking state, surface ErrLeaseBreakInProgress
-	// so the CREATE response carries SMB2_LEASE_FLAG_BREAK_IN_PROGRESS with the
-	// pre-break LeaseState. Otherwise grant trivially.
+	// LeaseStateNone probe: clients (and smbtorture breaking4 / upgrade2)
+	// issue empty-state requests to query the current lease without taking
+	// new caching rights. Per Samba upgrade2 the response is the current
+	// state of any same-key lease (R returns R, RH returns RH, …) — *not*
+	// always None. A None probe with no same-key lease still returns None
+	// trivially, short-circuited here so we don't enter the cross-key break
+	// dispatch path with requestedState=None.
 	if requestedState == LeaseStateNone {
 		lm.mu.Lock()
 		for _, lock := range lm.unifiedLocks[handleKey] {
 			if lock.Lease == nil || lock.Lease.LeaseKey != leaseKey {
 				continue
 			}
-			if lock.Lease.Breaking {
-				currentState := lock.Lease.LeaseState
-				epoch := lock.Lease.Epoch
-				lm.mu.Unlock()
+			currentState := lock.Lease.LeaseState
+			epoch := lock.Lease.Epoch
+			breaking := lock.Lease.Breaking
+			lm.mu.Unlock()
+			if breaking {
 				logger.Debug("RequestLease: None-probe on breaking same-key lease, surfacing break-in-progress",
 					"fileHandle", handleKey,
 					"currentState", LeaseStateToString(currentState),
 					"epoch", epoch)
 				return currentState, epoch, ErrLeaseBreakInProgress
 			}
-			break
+			return currentState, epoch, nil
 		}
 		lm.mu.Unlock()
 		return LeaseStateNone, 0, nil
@@ -231,8 +236,32 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 			return currentState, lock.Lease.Epoch, nil
 		}
 
-		// Check if this is a valid upgrade
-		if isValidUpgrade(currentState, requestedState) {
+		// Check if this is a valid upgrade AND can coexist with any other
+		// leases on the same file (Samba upgrade3 contended-case rule):
+		// the upgrade applies iff the requested state is a strict superset
+		// of the current AND does not conflict with any other-key holder.
+		// If the upgrade would conflict, leave the current state unchanged
+		// — the rule explicitly forbids breaking other holders to satisfy
+		// a same-key upgrade.
+		canUpgrade := isValidUpgrade(currentState, requestedState)
+		if canUpgrade {
+			requestedLease := &OpLock{LeaseKey: leaseKey, LeaseState: requestedState}
+			for _, other := range locks {
+				if other.Lease == nil || other.Lease.LeaseKey == leaseKey {
+					continue
+				}
+				if OpLocksConflict(other.Lease, requestedLease) {
+					canUpgrade = false
+					logger.Debug("RequestLease: upgrade blocked by other-key holder",
+						"fileHandle", handleKey,
+						"current", LeaseStateToString(currentState),
+						"requested", LeaseStateToString(requestedState),
+						"otherState", LeaseStateToString(other.Lease.LeaseState))
+					break
+				}
+			}
+		}
+		if canUpgrade {
 			// Upgrade the lease
 			locks[i].Lease.LeaseState = requestedState
 			advanceEpoch(locks[i].Lease)
@@ -256,13 +285,20 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 			return requestedState, epoch, nil
 		}
 
-		// Invalid transition (downgrade)
+		// Non-superset request (downgrade or sidegrade): per Samba upgrade2,
+		// same-key RequestLease changes the lease iff requested is a strict
+		// superset of current. Otherwise the existing state is returned
+		// unchanged (e.g. RH + request RW → return RH; R + request "" → R).
+		// Returning None here would silently drop the holder's caching
+		// rights and break the smbtorture upgrade / upgrade2 / upgrade3
+		// matrix.
+		epoch := locks[i].Lease.Epoch
 		lm.mu.Unlock()
-		logger.Debug("RequestLease: invalid state transition (downgrade)",
+		logger.Debug("RequestLease: same-key non-superset request, returning existing state",
 			"fileHandle", handleKey,
-			"from", LeaseStateToString(currentState),
-			"to", LeaseStateToString(requestedState))
-		return LeaseStateNone, 0, nil
+			"current", LeaseStateToString(currentState),
+			"requested", LeaseStateToString(requestedState))
+		return currentState, epoch, nil
 	}
 
 	// No existing lease with same key. Check for cross-key conflicts.
@@ -515,14 +551,15 @@ func lockTypeForLeaseState(state uint32) LockType {
 // AcknowledgeLeaseBreak processes a client's lease break acknowledgment.
 //
 // The client must acknowledge with a state <= breakToState. If acknowledgedState
-// is LeaseStateNone, the lease is fully released (removed).
+// is LeaseStateNone, the lease is downgraded to None but the record is kept
+// alive until the holding handle CLOSEs (see ack-to-None block below).
 func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]byte,
 	acknowledgedState uint32, epoch uint16) error {
 
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
-	handleKey, lock, idx := lm.findLeaseByKey(leaseKey)
+	handleKey, lock, _ := lm.findLeaseByKey(leaseKey)
 	if lock == nil {
 		return ErrLeaseAckNotFound
 	}
@@ -547,16 +584,27 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 			LeaseStateToString(lock.Lease.BreakToState))
 	}
 
-	// If acknowledging to None, remove the lease entirely
+	// Ack-to-None: keep the record alive at LeaseState=None until the holding
+	// handle CLOSEs (ReleaseLeaseForHandle removes it). This mirrors Samba
+	// behavior and lets the wrapper distinguish a duplicate ack on an
+	// already-released lease (record present, Breaking=false → ErrLeaseAck-
+	// NotBreaking → STATUS_UNSUCCESSFUL, smbtorture breaking2/breaking5)
+	// from a CLOSE-beat-ack race (record gone → ErrLeaseAckNotFound →
+	// silent success, WPTS BVT_DirectoryLeasing_ReadWriteHandleCaching).
 	if acknowledgedState == LeaseStateNone {
-		lm.removeLeaseAtLocked(handleKey, idx)
+		lock.Lease.LeaseState = LeaseStateNone
+		lock.Lease.Breaking = false
+		lock.Lease.BreakToState = 0
+		lock.Lease.BreakingToRequired = LeaseStateNone
+		lock.Lease.BreakStarted = time.Time{}
+		lock.Type = lockTypeForLeaseState(LeaseStateNone)
 
-		// Remove from persistent store
 		if lm.lockStore != nil {
-			_ = lm.lockStore.DeleteLock(ctx, lock.ID)
+			pl := ToPersistedLock(lock, 0)
+			_ = lm.lockStore.PutLock(ctx, pl)
 		}
 
-		logger.Debug("AcknowledgeLeaseBreak: lease fully released",
+		logger.Debug("AcknowledgeLeaseBreak: lease released to None (record kept until CLOSE)",
 			"leaseKey", fmt.Sprintf("%x", leaseKey))
 		lm.signalBreakWaitLocked(handleKey)
 		return nil
@@ -587,17 +635,14 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 	if acknowledgedState != LeaseStateNone &&
 		acknowledgedState&^lock.Lease.BreakingToRequired != 0 {
 		nextTarget := nextProgressiveBreakTarget(acknowledgedState, lock.Lease.BreakingToRequired)
-		snapshot, removed := lm.applyBreakStageLocked(lock, nextTarget)
-		if removed {
-			lm.removeLeaseAtLocked(handleKey, idx)
-		}
+		snapshot := lm.applyBreakStageLocked(lock, nextTarget)
 
 		// Persist the next-stage state BEFORE releasing lm.mu so the durable
 		// store reflects Breaking=true / BreakToState=nextTarget. Otherwise a
 		// crash between the ACK-clear (Breaking=false written above) and the
 		// next-stage-set would lose the second progressive stage on restart,
 		// leaving parked CREATEs to wait until the scanner timeout.
-		if !removed && lm.lockStore != nil {
+		if lm.lockStore != nil {
 			pl := ToPersistedLock(lock, 0)
 			_ = lm.lockStore.PutLock(ctx, pl)
 		}
@@ -631,11 +676,11 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 			return nil
 		}
 
-		// Do NOT signal waiters: the break is still in progress (or just
-		// completed inline via fire-and-forget downgrade, in which case
-		// the inline path already updated state and the next stage will
-		// not arrive — fall through and signal once we've fully drained).
-		if removed || nextTarget == currentLock.Lease.LeaseState {
+		// Signal waiters only when the break has fully drained: either the
+		// inline fire-and-forget path already updated LeaseState to nextTarget
+		// (no further ACK will arrive), or a concurrent path removed the lease.
+		// Otherwise the break is still in progress and waiters must keep waiting.
+		if nextTarget == currentLock.Lease.LeaseState {
 			lm.signalBreakWaitLocked(handleKey)
 		}
 		return nil

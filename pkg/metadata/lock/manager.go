@@ -1530,8 +1530,9 @@ func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string)
 
 // forceCompleteBreaks auto-downgrades all breaking leases on a file to their
 // cumulative final target, as if the client had acknowledged every progressive
-// stage. Called when the break wait times out. Leases whose final target is
-// None are removed entirely.
+// stage. Called when the break wait times out. Records whose final target is
+// None are kept alive at LeaseState=None (handle-bound lifetime) so a later
+// unsolicited ack surfaces as ErrLeaseAckNotBreaking → STATUS_UNSUCCESSFUL.
 func (lm *Manager) forceCompleteBreaks(handleKey string) {
 	lm.forceCompleteBreaksExceptKey(handleKey, [16]byte{})
 }
@@ -1547,52 +1548,46 @@ func (lm *Manager) forceCompleteBreaks(handleKey string) {
 // normally have progressed past.
 func (lm *Manager) forceCompleteBreaksExceptKey(handleKey string, exceptKey [16]byte) {
 	lm.mu.Lock()
-	locks := lm.unifiedLocks[handleKey]
+	defer lm.mu.Unlock()
 
-	var remaining []*UnifiedLock
 	modified := false
-	for _, l := range locks {
-		if l.Lease != nil && l.Lease.Breaking && l.Lease.LeaseKey != exceptKey {
-			modified = true
-			finalTarget := l.Lease.BreakingToRequired
-			if finalTarget == LeaseStateNone {
-				if lm.lockStore != nil {
-					_ = lm.lockStore.DeleteLock(context.Background(), l.ID)
-				}
-				logger.Debug("forceCompleteBreaks: removed lease (break-to None)",
-					"handleKey", handleKey,
-					"leaseKey", fmt.Sprintf("%x", l.Lease.LeaseKey))
-				continue
-			}
-			l.Lease.LeaseState = finalTarget
-			l.Lease.BreakingToRequired = finalTarget
-			l.Lease.Breaking = false
-			l.Lease.BreakToState = 0
-			l.Lease.BreakStarted = time.Time{}
-			advanceEpoch(l.Lease)
-			l.Type = lockTypeForLeaseState(l.Lease.LeaseState)
-
-			if lm.lockStore != nil {
-				pl := ToPersistedLock(l, 0)
-				_ = lm.lockStore.PutLock(context.Background(), pl)
-			}
-			logger.Debug("forceCompleteBreaks: auto-downgraded lease",
-				"handleKey", handleKey,
-				"leaseKey", fmt.Sprintf("%x", l.Lease.LeaseKey),
-				"newState", LeaseStateToString(l.Lease.LeaseState))
+	for _, l := range lm.unifiedLocks[handleKey] {
+		if l.Lease == nil || !l.Lease.Breaking || l.Lease.LeaseKey == exceptKey {
+			continue
 		}
-		remaining = append(remaining, l)
+		modified = true
+		// Auto-downgrade in place. For finalTarget=None keep the record
+		// alive at LeaseState=None (handle-bound lifetime) so a later
+		// unsolicited or duplicate ack surfaces as ErrLeaseAckNotBreaking
+		// → STATUS_UNSUCCESSFUL. Same rationale as applyBreakStageLocked.
+		//
+		// Do NOT advance Epoch: this is the timeout/internal completion
+		// path for an already-dispatched break. Per MS-SMB2 §3.3.4.7 the
+		// epoch advances only when a break notification is dispatched (and
+		// was already advanced when the in-flight break started). Bumping
+		// it here would invalidate any straggling client ack still echoing
+		// the original epoch.
+		finalTarget := l.Lease.BreakingToRequired
+		l.Lease.LeaseState = finalTarget
+		l.Lease.BreakingToRequired = finalTarget
+		l.Lease.Breaking = false
+		l.Lease.BreakToState = 0
+		l.Lease.BreakStarted = time.Time{}
+		l.Type = lockTypeForLeaseState(l.Lease.LeaseState)
+
+		if lm.lockStore != nil {
+			pl := ToPersistedLock(l, 0)
+			_ = lm.lockStore.PutLock(context.Background(), pl)
+		}
+		logger.Debug("forceCompleteBreaks: auto-downgraded lease",
+			"handleKey", handleKey,
+			"leaseKey", fmt.Sprintf("%x", l.Lease.LeaseKey),
+			"newState", LeaseStateToString(l.Lease.LeaseState))
 	}
 
 	if modified {
-		if len(remaining) == 0 {
-			delete(lm.unifiedLocks, handleKey)
-		} else {
-			lm.unifiedLocks[handleKey] = remaining
-		}
 		lm.signalBreakWaitLocked(handleKey)
 	}
-	lm.mu.Unlock()
 }
 
 // signalBreakWait broadcasts to all waiters by closing the wait channel and
@@ -1640,17 +1635,13 @@ func (lm *Manager) breakOpLocks(
 		breakToState uint32
 	}
 	var toBreak []breakEntry
-	kept := locks[:0]
-	removed := false
 	for _, lock := range locks {
 		if lock.Lease == nil {
-			kept = append(kept, lock)
 			continue
 		}
 		if excludeOwner != nil {
 			if lock.Owner.OwnerID == excludeOwner.OwnerID ||
 				(excludeOwner.ClientID != "" && lock.Owner.ClientID == excludeOwner.ClientID) {
-				kept = append(kept, lock)
 				continue
 			}
 			// Per MS-SMB2 3.3.5.9: opens with the same lease key must not
@@ -1658,12 +1649,10 @@ func (lm *Manager) breakOpLocks(
 			// open's LeaseKey, no break is required").
 			if excludeOwner.ExcludeLeaseKey != ([16]byte{}) &&
 				lock.Lease.LeaseKey == excludeOwner.ExcludeLeaseKey {
-				kept = append(kept, lock)
 				continue
 			}
 		}
 		if !shouldBreak(lock.Lease) {
-			kept = append(kept, lock)
 			continue
 		}
 
@@ -1679,7 +1668,6 @@ func (lm *Manager) breakOpLocks(
 				pl := ToPersistedLock(lock, 0)
 				_ = lm.lockStore.PutLock(context.Background(), pl)
 			}
-			kept = append(kept, lock)
 			continue
 		}
 
@@ -1690,30 +1678,18 @@ func (lm *Manager) breakOpLocks(
 		// NOT advance — the multi-stage progression is one logical break.
 		lock.Lease.BreakingToRequired = targetState
 		advanceEpoch(lock.Lease)
-		snapshot, wasRemoved := lm.applyBreakStageLocked(lock, targetState)
-		if wasRemoved {
-			removed = true
-		} else {
-			kept = append(kept, lock)
-			// Persist the in-flight Breaking state so a crash/restart
-			// preserves the break-in-progress and parked CREATEs aren't
-			// stranded waiting for a notification that was already sent
-			// over the wire. applyBreakStageLocked only persists the
-			// fire-and-forget downgrade path; the ack-required path
-			// (which is the common case) is persisted here.
-			if lm.lockStore != nil {
-				pl := ToPersistedLock(lock, 0)
-				_ = lm.lockStore.PutLock(context.Background(), pl)
-			}
+		snapshot := lm.applyBreakStageLocked(lock, targetState)
+		// Persist the in-flight Breaking state so a crash/restart preserves
+		// the break-in-progress and parked CREATEs aren't stranded waiting
+		// for a notification that was already sent over the wire.
+		// applyBreakStageLocked only persists the fire-and-forget downgrade
+		// path; the ack-required path (which is the common case) is
+		// persisted here.
+		if lm.lockStore != nil {
+			pl := ToPersistedLock(lock, 0)
+			_ = lm.lockStore.PutLock(context.Background(), pl)
 		}
 		toBreak = append(toBreak, breakEntry{lock: snapshot, breakToState: targetState})
-	}
-	if removed {
-		if len(kept) == 0 {
-			delete(lm.unifiedLocks, handleKey)
-		} else {
-			lm.unifiedLocks[handleKey] = kept
-		}
 	}
 	lm.mu.Unlock()
 
@@ -1745,15 +1721,16 @@ func computeFreshTarget(currentState, sentinel uint32) uint32 {
 // dispatching the returned snapshot via dispatchOpLockBreak after releasing
 // lm.mu.
 //
-// Returns the snapshot (always non-nil) and a removed flag that's true when
-// the lease was deleted from unifiedLocks (target == None and !ackRequired).
-//
 // Per MS-SMB2 3.3.4.7, a break is ack-required iff the current state is NOT
 // pure Read. Without ACK_REQUIRED the client never responds, so leaving
 // Breaking=true would block same-key reopens — instead we resolve inline.
-func (lm *Manager) applyBreakStageLocked(lock *UnifiedLock, target uint32) (*UnifiedLock, bool) {
-	ackRequired := lock.Lease.LeaseState != LeaseStateRead
-
+//
+// For target=None on the inline (fire-and-forget) path we keep the record
+// alive at LeaseState=None (handle-bound lifetime) so a later unsolicited
+// ack from the client surfaces as ErrLeaseAckNotBreaking →
+// STATUS_UNSUCCESSFUL per MS-SMB2 3.3.5.22.2 (smbtorture breaking5). The
+// record is removed when the holding handle CLOSEs (ReleaseLeaseForHandle).
+func (lm *Manager) applyBreakStageLocked(lock *UnifiedLock, target uint32) *UnifiedLock {
 	// Snapshot while LeaseState still holds the pre-break value for
 	// CurrentLeaseState in the notification. Caller is responsible for
 	// advancing the epoch on fresh dispatch (per MS-SMB2 2.2.23.2). Progressive
@@ -1763,23 +1740,18 @@ func (lm *Manager) applyBreakStageLocked(lock *UnifiedLock, target uint32) (*Uni
 	// existing epoch unchanged for each intermediate stage.
 	snapshot := lock.Clone()
 
+	ackRequired := lock.Lease.LeaseState != LeaseStateRead
 	if ackRequired {
 		lock.Lease.Breaking = true
 		lock.Lease.BreakToState = target
 		lock.Lease.BreakStarted = time.Now()
-		return snapshot, false
+		return snapshot
 	}
 
 	// Fire-and-forget downgrade: client won't ACK (current state is pure R).
 	lock.Lease.Breaking = false
 	lock.Lease.BreakToState = 0
 	lock.Lease.BreakStarted = time.Time{}
-	if target == LeaseStateNone {
-		if lm.lockStore != nil {
-			_ = lm.lockStore.DeleteLock(context.Background(), lock.ID)
-		}
-		return snapshot, true
-	}
 	lock.Lease.LeaseState = target
 	lock.Lease.BreakingToRequired = target
 	lock.Type = lockTypeForLeaseState(target)
@@ -1787,7 +1759,7 @@ func (lm *Manager) applyBreakStageLocked(lock *UnifiedLock, target uint32) (*Uni
 		pl := ToPersistedLock(lock, 0)
 		_ = lm.lockStore.PutLock(context.Background(), pl)
 	}
-	return snapshot, false
+	return snapshot
 }
 
 // ============================================================================
