@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"lukechampine.com/blake3"
@@ -30,28 +29,6 @@ func flipped(data []byte) []byte {
 		out[0] ^= 0xFF
 	}
 	return out
-}
-
-// trackingReader wraps a bytes.Reader and counts how many times Read was
-// called. Used to assert no body reads happen on header-pre-check failure.
-type trackingReader struct {
-	r          *bytes.Reader
-	readCalls  atomic.Int64
-	closeCalls atomic.Int64
-}
-
-func newTrackingReader(data []byte) *trackingReader {
-	return &trackingReader{r: bytes.NewReader(data)}
-}
-
-func (t *trackingReader) Read(p []byte) (int, error) {
-	t.readCalls.Add(1)
-	return t.r.Read(p)
-}
-
-func (t *trackingReader) Close() error {
-	t.closeCalls.Add(1)
-	return nil
 }
 
 // shortReader returns one byte at a time so we exercise the verifier's

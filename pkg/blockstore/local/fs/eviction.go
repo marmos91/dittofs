@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
@@ -85,15 +83,6 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 	return nil
 }
 
-// extractPayloadID extracts the payloadID from a blockID (format: "payloadID/blockIdx").
-// Retained for callers outside ensureSpace that still parse legacy block IDs.
-func extractPayloadID(blockID string) string {
-	if idx := strings.LastIndex(blockID, "/"); idx >= 0 {
-		return blockID[:idx]
-	}
-	return blockID
-}
-
 // fileOrFallbackSize returns the file's actual size on disk, falling back
 // to fallback if os.Stat fails (e.g., file already deleted). Retained for
 // callers in manage.go that delete legacy .blk files outside the LRU.
@@ -104,18 +93,3 @@ func fileOrFallbackSize(path string, fallback int64) int64 {
 	return fallback
 }
 
-// recalcDiskUsed walks the block store directory and recalculates diskUsed.
-// Used by tests and rare reconciliation paths; not on the hot path.
-func (bc *FSStore) recalcDiskUsed() {
-	var actual int64
-	_ = filepath.WalkDir(bc.baseDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if info, infoErr := d.Info(); infoErr == nil {
-			actual += info.Size()
-		}
-		return nil
-	})
-	bc.diskUsed.Store(actual)
-}

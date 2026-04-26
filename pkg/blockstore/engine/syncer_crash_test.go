@@ -92,7 +92,6 @@ type crashFixture struct {
 	ms            *crashingFileBlockStore
 	memMeta       *metadatamemory.MemoryMetadataStore
 	fb            *blockstore.FileBlock
-	expectedKey   string
 	expectedBytes []byte
 }
 

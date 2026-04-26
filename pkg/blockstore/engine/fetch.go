@@ -9,38 +9,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// resolveStoreKey returns the remote store key for downloading a block.
-// Returns "" if no FileBlock exists (sparse) or if the block is not yet remote.
-//
-// Kept for backwards compatibility with callers that only need the key
-// (in-flight dedup map keying). For the actual fetch, see resolveFileBlock
-// + dispatchRemoteFetch which carry the dual-read decision.
-func (m *Syncer) resolveStoreKey(ctx context.Context, payloadID string, blockIdx uint64) (string, error) {
-	blockID := fmt.Sprintf("%s/%d", payloadID, blockIdx)
-	fb, err := m.fileBlockStore.GetFileBlock(ctx, blockID)
-	if err != nil {
-		if errors.Is(err, blockstore.ErrFileBlockNotFound) {
-			return "", nil // Sparse block, not uploaded yet
-		}
-		return "", fmt.Errorf("resolve store key %s: %w", blockID, err)
-	}
-	// Dual-read window (D-21): post-Phase-11 rows carry a non-zero Hash
-	// but their BlockStoreKey is the CAS object key. For CAS dispatch
-	// callers prefer dispatchRemoteFetch which selects the verified path.
-	// Pre-Phase-11 rows have a zero Hash and the legacy
-	// {payloadID}/block-{N} key.
-	if fb.BlockStoreKey != "" {
-		return fb.BlockStoreKey, nil
-	}
-	if !fb.Hash.IsZero() {
-		// Defensive: the post-Phase-11 syncer always writes both
-		// fields, but a future schema migration that drops
-		// BlockStoreKey from CAS rows would still be routable here.
-		return blockstore.FormatCASKey(fb.Hash), nil
-	}
-	return "", nil
-}
-
 // resolveFileBlock returns the FileBlock for (payloadID, blockIdx) or
 // (nil, nil) if the row does not exist (sparse / not yet uploaded). The
 // dual-read engine resolver consults fb.Hash and fb.BlockStoreKey to
