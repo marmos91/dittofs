@@ -713,6 +713,41 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
+		// Directory rename: break H-leases on every open child file (RH→R
+		// strip-H) and wait for each break to drain. After the wait, ANY
+		// remaining open child blocks the parent rename per MS-FSA §2.1.5.14
+		// (smbtorture rename_dir_openfile: 8 sub-cases all hinge on whether
+		// every H-leased child closes-on-break or stays open after ACK).
+		// Children without an H-lease are no-op'd by ComputeLeaseBreakTo and
+		// stay open → fall through to the open-child recheck below, which
+		// produces the immediate ACCESS_DENIED for the "no-hleases" case.
+		if openFile.IsDirectory && h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
+			children := h.snapshotOpenChildren(openFile.MetadataHandle)
+			for _, child := range children {
+				if err := h.LeaseManager.BreakHandleLeasesOnOpenAsync(
+					lock.FileHandle(child), openFile.ShareName, lock.BreakReasonSharingViolation,
+				); err != nil {
+					logger.Debug("SET_INFO: dir-rename child break dispatch failed",
+						"child", string(child), "error", err)
+				}
+			}
+			for _, child := range children {
+				waitCtx, cancelChild := context.WithTimeout(authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
+				if err := h.LeaseManager.WaitForOtherKeyBreaks(
+					waitCtx, lock.FileHandle(child), openFile.ShareName, [16]byte{},
+				); err != nil {
+					logger.Debug("SET_INFO: dir-rename child break wait completed",
+						"child", string(child), "error", err)
+				}
+				cancelChild()
+			}
+			if h.anyOpenChild(openFile.MetadataHandle) {
+				logger.Debug("SET_INFO: dir rename blocked by open child",
+					"dir", openFile.Path)
+				return setInfoStatus(types.StatusAccessDenied), nil
+			}
+		}
+
 		// Save old path info for notification before modification
 		oldPath := openFile.Path
 		oldFileName := openFile.FileName

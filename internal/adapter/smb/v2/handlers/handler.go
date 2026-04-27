@@ -1192,6 +1192,44 @@ func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 	return conflict
 }
 
+// snapshotOpenChildren returns the metadata handles of every open file whose
+// ParentHandle equals dirHandle. Caller must read h.files only once; iterating
+// twice could observe inconsistent open state across a concurrent CLOSE.
+func (h *Handler) snapshotOpenChildren(dirHandle metadata.FileHandle) []metadata.FileHandle {
+	var children []metadata.FileHandle
+	h.files.Range(func(_, value any) bool {
+		of := value.(*OpenFile)
+		if len(of.ParentHandle) == 0 || len(of.MetadataHandle) == 0 {
+			return true
+		}
+		if !bytes.Equal(of.ParentHandle, dirHandle) {
+			return true
+		}
+		children = append(children, of.MetadataHandle)
+		return true
+	})
+	return children
+}
+
+// anyOpenChild reports whether any open file currently has ParentHandle ==
+// dirHandle. Cheaper than snapshotOpenChildren when only the boolean is
+// needed (post-break recheck in the directory-rename path).
+func (h *Handler) anyOpenChild(dirHandle metadata.FileHandle) bool {
+	open := false
+	h.files.Range(func(_, value any) bool {
+		of := value.(*OpenFile)
+		if len(of.ParentHandle) == 0 {
+			return true
+		}
+		if !bytes.Equal(of.ParentHandle, dirHandle) {
+			return true
+		}
+		open = true
+		return false
+	})
+	return open
+}
+
 // hasOpenHandleOnFile reports whether any open file handle (other than the
 // renamer's own handle) currently references targetMeta. Used by the
 // SET_INFO FileRenameInformation handler to enforce MS-FSA §2.1.5.14.10
