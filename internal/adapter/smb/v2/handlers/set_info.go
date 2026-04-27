@@ -2,12 +2,14 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"path"
 	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
+	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -630,6 +632,44 @@ func (h *Handler) setFileInfoFromStore(
 		if len(openFile.ParentHandle) == 0 {
 			logger.Debug("SET_INFO: cannot rename root directory", "path", openFile.Path)
 			return setInfoStatus(types.StatusAccessDenied), nil
+		}
+
+		// Pre-rename lease break: per MS-FSA §2.1.5.14.10 + Samba
+		// `source3/smbd/smb2_setinfo.c::smbd_smb2_rename`, dispatch breaks on
+		// any other-key lease holder of the source file before applying the
+		// rename. Sync wait (mirrors BreakParentHandleLeasesOnCreate) — rename
+		// is not in the compound-CREATE hot path so we don't need the round-4
+		// async-park machinery; the bounded WaitForOtherKeyBreaks deadline
+		// auto-downgrades non-acking holders identically to that path.
+		//
+		// Renamer's own lease (openFile.LeaseKey, zero for non-leased opens)
+		// is excluded by lease key only — NOT by ClientID — because a single
+		// client may hold two distinct leases on the same file (smbtorture
+		// rename_wait LEASE1=h1 / LEASE2=h2); a ClientID exclusion would skip
+		// the second lease and deadlock the rename behind a never-acked break
+		// that was never sent.
+		//
+		// Destination break is deferred — overwrite handling lives in #433
+		// follow-up. C3 covers source-file break + parking only, which flips
+		// smbtorture rename_wait + v2_rename.
+		if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
+			srcMetaHandle := lock.FileHandle(openFile.MetadataHandle)
+			if err := h.LeaseManager.BreakLeasesOnRename(
+				srcMetaHandle,
+				lock.FileHandle(""),
+				openFile.ShareName,
+				openFile.LeaseKey,
+				false, // overwrite handling lands in a follow-up commit
+			); err != nil {
+				logger.Debug("SET_INFO: rename lease break dispatch failed", "error", err)
+			}
+			waitCtx, cancelWait := context.WithTimeout(authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
+			if waitErr := h.LeaseManager.WaitForOtherKeyBreaks(
+				waitCtx, srcMetaHandle, openFile.ShareName, openFile.LeaseKey,
+			); waitErr != nil {
+				logger.Debug("SET_INFO: rename break wait completed", "error", waitErr)
+			}
+			cancelWait()
 		}
 
 		// Save old path info for notification before modification
