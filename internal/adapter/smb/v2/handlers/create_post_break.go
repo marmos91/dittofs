@@ -300,6 +300,20 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			)
 			if err != nil {
 				if errors.Is(err, lock.ErrInvalidLeaseState) || errors.Is(err, lock.ErrLeaseKeyInUse) {
+					// Roll back the open we already performed at Step 7. Without
+					// this, a CREATE_NEW that fails the lease_match check leaves
+					// an orphaned inode in the metadata store with no handle
+					// referencing it. Samba's open path closes the fd on
+					// lease_match failure for the same reason. Rollback only
+					// applies to FileCreated; FileOpened reuses an existing
+					// file we did not create, and FileOverwritten/FileSuperseded
+					// would lose user data — leave those intact.
+					if createAction == types.FileCreated {
+						if _, delErr := metaSvc.RemoveFile(authCtx, parentHandle, baseName); delErr != nil {
+							logger.Warn("CREATE: failed to roll back orphaned file after lease rejection",
+								"name", baseName, "error", delErr)
+						}
+					}
 					return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}
 				}
 				logger.Debug("CREATE: lease context processing failed", "error", err)

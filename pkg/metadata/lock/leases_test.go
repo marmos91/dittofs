@@ -295,20 +295,48 @@ func TestRequestLease_DuplicateKeyDifferentFile_Rejected(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state)
 
-	// Same key on file2 must be rejected.
+	// Same client, same key, different file must be rejected.
 	state, _, err = mgr.RequestLease(ctx, FileHandle("file2"), leaseKey, parentKey,
 		"owner1", "client1", "/share",
 		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
 	require.ErrorIs(t, err, ErrLeaseKeyInUse)
 	assert.Equal(t, LeaseStateNone, state)
 
-	// None probe on file2 with the same key must also reject (key is bound
-	// elsewhere, no matter the requested state).
+	// None probe on file2 with the same key is a state query, not a grant
+	// request — it must NOT trip the lease_match check (Samba behavior).
+	// No same-key record on file2's bucket exists, so it returns None silently.
 	state, _, err = mgr.RequestLease(ctx, FileHandle("file2"), leaseKey, parentKey,
 		"owner1", "client1", "/share",
 		LeaseStateNone, false)
-	require.ErrorIs(t, err, ErrLeaseKeyInUse)
+	require.NoError(t, err)
 	assert.Equal(t, LeaseStateNone, state)
+}
+
+// TestRequestLease_DuplicateKeyDifferentClient_Allowed: lease key uniqueness
+// is per-(ClientGuid, LeaseKey). Two unrelated clients reusing the same
+// numeric LeaseKey on different files must both succeed — smbtorture's fixed
+// LEASE1/LEASE2 macros across separate connections rely on this.
+func TestRequestLease_DuplicateKeyDifferentClient_Allowed(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	leaseKey := [16]byte{0xAA, 0xBB, 0xCC}
+	parentKey := [16]byte{}
+
+	// Client A grants on file1.
+	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), leaseKey, parentKey,
+		"ownerA", "clientA", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+	require.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state)
+
+	// Client B reuses the same numeric key on file2 — must be allowed.
+	state, _, err = mgr.RequestLease(ctx, FileHandle("file2"), leaseKey, parentKey,
+		"ownerB", "clientB", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state)
 }
 
 // TestRequestLease_DuplicateKey_AfterFile1Released_Allowed: once file1's lease
