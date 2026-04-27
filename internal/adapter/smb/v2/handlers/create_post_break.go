@@ -299,10 +299,39 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 				file.Type == metadata.FileTypeDirectory,
 			)
 			if err != nil {
-				if errors.Is(err, lock.ErrInvalidLeaseState) {
-					return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}
+				if errors.Is(err, lock.ErrInvalidLeaseState) || errors.Is(err, lock.ErrLeaseKeyInUse) {
+					// Step 7 already executed the open. The cleanup here depends
+					// on what that open did:
+					//   - FileCreated: roll back the orphan inode so a CREATE_NEW
+					//     that failed lease_match doesn't leave a metadata entry
+					//     no client can reach. Samba's open path closes the fd
+					//     for the same reason.
+					//   - FileOverwritten / FileSuperseded: the prior file's
+					//     content was already truncated. Returning
+					//     STATUS_INVALID_PARAMETER would tell the client the
+					//     CREATE failed while the data is gone — unrecoverable.
+					//     Complete the CREATE with no lease instead; the data
+					//     loss is committed, but the client at least gets a
+					//     working handle.
+					//   - FileOpened: nothing destructive happened, fail safely.
+					switch createAction {
+					case types.FileCreated:
+						if _, delErr := metaSvc.RemoveFile(authCtx, parentHandle, baseName); delErr != nil {
+							logger.Warn("CREATE: failed to roll back orphaned file after lease rejection",
+								"name", baseName, "error", delErr)
+						}
+						return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}
+					case types.FileOverwritten, types.FileSuperseded:
+						logger.Warn("CREATE: lease request rejected after destructive open; completing CREATE without lease",
+							"name", baseName, "createAction", createAction, "error", err)
+						leaseResponse = nil
+						grantedOplock = OplockLevelNone
+					default:
+						return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}
+					}
+				} else {
+					logger.Debug("CREATE: lease context processing failed", "error", err)
 				}
-				logger.Debug("CREATE: lease context processing failed", "error", err)
 			}
 			if leaseResponse != nil {
 				grantedOplock = OplockLevelLease
