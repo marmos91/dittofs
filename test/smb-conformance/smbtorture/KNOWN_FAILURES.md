@@ -511,8 +511,6 @@ incomplete break notification delivery and multi-client coordination.
 | smb2.lease.timeout | Leases | Lease timeout handling not fully working | #429 |
 | smb2.lease.unlink | Leases | Lease + unlink interaction not fully working | #429 |
 | smb2.lease.rename_wait | Leases | Lease + rename wait not fully working | #429 |
-| smb2.lease.duplicate_create | Leases | Duplicate lease create not fully working | #429 |
-| smb2.lease.duplicate_open | Leases | Duplicate lease open not fully working | #429 |
 | smb2.lease.rename_dir_openfile | Leases | Lease + directory rename with open file not fully working | #429 |
 | smb2.lease.lease-epoch | Leases | Lease epoch tracking not fully working | #429 |
 | smb2.lease.v2_flags_parentkey | Leases V2 | Lease V2 parent key flags not fully working | #429 |

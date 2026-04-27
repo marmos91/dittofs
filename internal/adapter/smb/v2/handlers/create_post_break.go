@@ -299,7 +299,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 				file.Type == metadata.FileTypeDirectory,
 			)
 			if err != nil {
-				if errors.Is(err, lock.ErrInvalidLeaseState) {
+				if errors.Is(err, lock.ErrInvalidLeaseState) || errors.Is(err, lock.ErrLeaseKeyInUse) {
 					return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}
 				}
 				logger.Debug("CREATE: lease context processing failed", "error", err)

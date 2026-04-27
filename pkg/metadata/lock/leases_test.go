@@ -277,6 +277,94 @@ func TestRequestLease_InvalidFileState(t *testing.T) {
 	assert.Equal(t, LeaseStateNone, state, "Write alone should be invalid")
 }
 
+// TestRequestLease_DuplicateKeyDifferentFile_Rejected: per MS-SMB2 3.3.5.9.8 /
+// Samba lease_match, a lease key bound to a record on file1 must NOT be
+// grantable on file2. Covers smbtorture smb2.lease.duplicate_create.
+func TestRequestLease_DuplicateKeyDifferentFile_Rejected(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	leaseKey := [16]byte{0xAA, 0xBB, 0xCC}
+	parentKey := [16]byte{}
+
+	// Grant LEASE1 on file1.
+	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), leaseKey, parentKey,
+		"owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+	require.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state)
+
+	// Same key on file2 must be rejected.
+	state, _, err = mgr.RequestLease(ctx, FileHandle("file2"), leaseKey, parentKey,
+		"owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.ErrorIs(t, err, ErrLeaseKeyInUse)
+	assert.Equal(t, LeaseStateNone, state)
+
+	// None probe on file2 with the same key must also reject (key is bound
+	// elsewhere, no matter the requested state).
+	state, _, err = mgr.RequestLease(ctx, FileHandle("file2"), leaseKey, parentKey,
+		"owner1", "client1", "/share",
+		LeaseStateNone, false)
+	require.ErrorIs(t, err, ErrLeaseKeyInUse)
+	assert.Equal(t, LeaseStateNone, state)
+}
+
+// TestRequestLease_DuplicateKey_AfterFile1Released_Allowed: once file1's lease
+// record is released (handle CLOSE), the same key MUST be grantable on file2.
+func TestRequestLease_DuplicateKey_AfterFile1Released_Allowed(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	leaseKey := [16]byte{0xDE, 0xAD, 0xBE, 0xEF}
+	parentKey := [16]byte{}
+
+	// Grant LEASE1 on file1, then release the record (CLOSE).
+	_, _, err := mgr.RequestLease(ctx, FileHandle("file1"), leaseKey, parentKey,
+		"owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+	require.NoError(t, mgr.ReleaseLeaseForHandle(ctx, "file1", leaseKey))
+
+	// Same key on file2 should now succeed.
+	state, _, err := mgr.RequestLease(ctx, FileHandle("file2"), leaseKey, parentKey,
+		"owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state)
+}
+
+// TestRequestLease_SameKeySameFile_StillWorks: same key on the same file is a
+// reopen / upgrade, not a cross-file violation. Regression guard for
+// smbtorture breaking2 / breaking4 / nobreakself.
+func TestRequestLease_SameKeySameFile_StillWorks(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	leaseKey := [16]byte{0x11, 0x22}
+	parentKey := [16]byte{}
+
+	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), leaseKey, parentKey,
+		"owner1", "client1", "/share", LeaseStateRead, false)
+	require.NoError(t, err)
+	require.Equal(t, LeaseStateRead, state)
+
+	// Same key, same file, upgrade R → RH.
+	state, _, err = mgr.RequestLease(ctx, FileHandle("file1"), leaseKey, parentKey,
+		"owner1", "client1", "/share", LeaseStateRead|LeaseStateHandle, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state)
+
+	// Same key, same file, no-op (same state).
+	state, _, err = mgr.RequestLease(ctx, FileHandle("file1"), leaseKey, parentKey,
+		"owner1", "client1", "/share", LeaseStateRead|LeaseStateHandle, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state)
+}
+
 // ============================================================================
 // AcknowledgeLeaseBreak Tests
 // ============================================================================
@@ -474,25 +562,29 @@ func TestReleaseLease_NonexistentKey(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestReleaseLeaseForHandle_ScopedToSingleBucket covers the fix in 249fd668:
-// smbtorture reuses fixed LEASE1/LEASE2 keys across tests, so the same
-// LeaseKey can live under two distinct handleKey buckets at the same time.
-// Releasing one bucket must not erase the other — otherwise stale records
-// accumulate on the surviving file and break ACK lookup.
+// TestReleaseLeaseForHandle_ScopedToSingleBucket: ReleaseLeaseForHandle must
+// only touch the handleKey it is given — releasing fileA must not delete or
+// alter records on fileB. Originally written for the smbtorture cross-test
+// key-reuse scenario (fix 249fd668). After round 3 closed cross-file lease
+// keys (ErrLeaseKeyInUse, MS-SMB2 3.3.5.9.8), the bucket scoping invariant is
+// still required: keys may be reused across files only after the previous
+// holder's CLOSE, and the per-handle release path must not cascade. Use two
+// distinct keys to set up the multi-bucket state legitimately.
 func TestReleaseLeaseForHandle_ScopedToSingleBucket(t *testing.T) {
 	t.Parallel()
 
 	mgr := NewManager()
 	ctx := context.Background()
-	leaseKey := [16]byte{1, 2, 3}
+	keyA := [16]byte{1, 2, 3}
+	keyB := [16]byte{4, 5, 6}
 
-	_, _, err := mgr.RequestLease(ctx, FileHandle("/share:fileA"), leaseKey, [16]byte{}, "ownerA", "client", "/share", LeaseStateRead, false)
+	_, _, err := mgr.RequestLease(ctx, FileHandle("/share:fileA"), keyA, [16]byte{}, "ownerA", "client", "/share", LeaseStateRead, false)
 	require.NoError(t, err)
-	_, _, err = mgr.RequestLease(ctx, FileHandle("/share:fileB"), leaseKey, [16]byte{}, "ownerB", "client", "/share", LeaseStateRead, false)
+	_, _, err = mgr.RequestLease(ctx, FileHandle("/share:fileB"), keyB, [16]byte{}, "ownerB", "client", "/share", LeaseStateRead, false)
 	require.NoError(t, err)
 
-	// Release only fileA's bucket.
-	require.NoError(t, mgr.ReleaseLeaseForHandle(ctx, "/share:fileA", leaseKey))
+	// Release only fileA's bucket (by its own key).
+	require.NoError(t, mgr.ReleaseLeaseForHandle(ctx, "/share:fileA", keyA))
 
 	// fileA's bucket should be gone; fileB's lease record must survive.
 	mgr.mu.RLock()
@@ -501,7 +593,7 @@ func TestReleaseLeaseForHandle_ScopedToSingleBucket(t *testing.T) {
 	mgr.mu.RUnlock()
 	assert.False(t, aStillThere, "fileA bucket should be removed when emptied")
 	require.Len(t, bBucket, 1, "fileB bucket must survive intact")
-	assert.Equal(t, leaseKey, bBucket[0].Lease.LeaseKey)
+	assert.Equal(t, keyB, bBucket[0].Lease.LeaseKey)
 }
 
 // ============================================================================
