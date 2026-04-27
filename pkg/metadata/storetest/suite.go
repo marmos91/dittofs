@@ -40,6 +40,15 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	t.Run("FileBlockOps", func(t *testing.T) {
 		runFileBlockOpsTests(t, factory)
 	})
+
+	// BlockRefOps: META-04 conformance for FileAttr.Blocks []BlockRef
+	// round-trip across PutFile/GetFile, replace semantics, and the
+	// Postgres-only FK-cascade behavior (Plan 02 D-03). Memory and
+	// Badger skip the cascade scenario via FileBlockRefsAccessor
+	// type-assertion failure.
+	t.Run("BlockRefOps", func(t *testing.T) {
+		runBlockRefOpsTests(t, factory)
+	})
 }
 
 // createTestShare is a helper that creates a share and root directory for testing.
