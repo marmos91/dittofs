@@ -86,6 +86,12 @@ func EncodeLeaseV2ResponseContext(
 ) []byte {
 	if hasParent {
 		flags |= LeaseResponseFlagParentKeySet
+	} else {
+		// Per MS-SMB2 §2.2.14.2.11 the ParentLeaseKey field is meaningful
+		// only when SMB2_LEASE_FLAG_PARENT_LEASE_KEY_SET is set. When the
+		// flag is clear the field MUST be zero on the wire — defense in
+		// depth so a caller passing a stale key doesn't leak it.
+		parentLeaseKey = [16]byte{}
 	}
 
 	w := NewWriter(LeaseV2ContextSize)
@@ -93,7 +99,7 @@ func EncodeLeaseV2ResponseContext(
 	w.WriteUint32(leaseState)       // LeaseState
 	w.WriteUint32(flags)            // Flags
 	w.WriteUint64(0)                // LeaseDuration
-	w.WriteBytes(parentLeaseKey[:]) // ParentLeaseKey (16 bytes)
+	w.WriteBytes(parentLeaseKey[:]) // ParentLeaseKey (16 bytes, zeroed when !hasParent)
 	w.WriteUint16(epoch)            // Epoch
 	w.WriteUint16(0)                // Reserved
 	return w.Bytes()

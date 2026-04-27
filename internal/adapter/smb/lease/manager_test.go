@@ -88,6 +88,68 @@ func (r *fakeResolver) GetLockManagerForShare(_ string) lock.LockManager {
 // The parent-dir break uses BreakReasonSharingViolation to select the
 // Handle-strip mask (MS-FSA 2.1.5.14: child-set change invalidates directory
 // Handle cache).
+// TestMarkLeaseVersionIfUnset_StickyV2: a lease first marked V2 stays V2
+// even when MarkLeaseVersionIfUnset is later called with isV2=false. Per
+// smbtorture v2_epoch2 the V2 lease keeps producing V2 responses for V1
+// reopens on the same key.
+func TestMarkLeaseVersionIfUnset_StickyV2(t *testing.T) {
+	t.Parallel()
+
+	lm := NewLeaseManager(nil, nil)
+	key := [16]byte{0xAA}
+
+	lm.MarkLeaseVersionIfUnset(key, true) // first grant: V2
+	if !lm.IsV2(key) {
+		t.Fatalf("expected IsV2=true after V2 first grant")
+	}
+	if !lm.IsLeaseVersionKnown(key) {
+		t.Fatalf("expected version known after first grant")
+	}
+
+	lm.MarkLeaseVersionIfUnset(key, false) // V1 reopen — must NOT downgrade
+	if !lm.IsV2(key) {
+		t.Errorf("V1 reopen wrongly cleared V2 mark")
+	}
+}
+
+// TestMarkLeaseVersionIfUnset_StickyV1: a lease first marked V1 stays V1
+// even when a later request is V2 (smbtorture v2_epoch3).
+func TestMarkLeaseVersionIfUnset_StickyV1(t *testing.T) {
+	t.Parallel()
+
+	lm := NewLeaseManager(nil, nil)
+	key := [16]byte{0xBB}
+
+	lm.MarkLeaseVersionIfUnset(key, false) // first grant: V1
+	if lm.IsV2(key) {
+		t.Fatalf("V1 first grant wrongly set V2 mark")
+	}
+	if !lm.IsLeaseVersionKnown(key) {
+		t.Fatalf("expected version known after first grant")
+	}
+
+	lm.MarkLeaseVersionIfUnset(key, true) // V2 upgrade — must NOT promote
+	if lm.IsV2(key) {
+		t.Errorf("V2 upgrade wrongly upgraded V1 lease to V2")
+	}
+}
+
+// TestMarkLeaseVersionIfUnset_UnknownByDefault: until first grant marks the
+// lease, IsLeaseVersionKnown returns false (so the response-encoding path
+// falls back to the request's format).
+func TestMarkLeaseVersionIfUnset_UnknownByDefault(t *testing.T) {
+	t.Parallel()
+
+	lm := NewLeaseManager(nil, nil)
+	key := [16]byte{0xCC}
+	if lm.IsLeaseVersionKnown(key) {
+		t.Errorf("fresh key should not be marked known")
+	}
+	if lm.IsV2(key) {
+		t.Errorf("fresh key should default to !IsV2")
+	}
+}
+
 func TestBreakParentHandleLeasesOnCreate_WaitsForAck(t *testing.T) {
 	t.Parallel()
 

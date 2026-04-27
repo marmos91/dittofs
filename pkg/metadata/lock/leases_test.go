@@ -2,6 +2,7 @@ package lock
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -364,6 +365,207 @@ func TestRequestLease_DuplicateKey_AfterFile1Released_Allowed(t *testing.T) {
 	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state)
 }
 
+// TestRequestLease_DuplicateKey_PostRestart_RejectedFromPersistedRecord:
+// post-restart, unifiedLocks is empty until clients reclaim during the grace
+// window. The persisted lockStore is the only authoritative source for key
+// uniqueness. A second client (or the same client across reconnect) trying to
+// bind a key that is still persisted on a different file MUST be rejected
+// with ErrLeaseKeyInUse before any in-memory grant happens.
+func TestRequestLease_DuplicateKey_PostRestart_RejectedFromPersistedRecord(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	store := newMockLockStore()
+	mgr.SetLockStore(store)
+	ctx := context.Background()
+
+	leaseKey := [16]byte{0x77, 0x88}
+
+	// Simulate a survivor record from before restart: file1 holds the key
+	// for client1. unifiedLocks is intentionally empty (no reclaim yet).
+	pl := &PersistedLock{
+		ID:         "persisted-lock-1",
+		FileID:     "file1",
+		ClientID:   "client1",
+		OwnerID:    "owner1",
+		ShareName:  "/share",
+		LeaseKey:   leaseKey[:],
+		LeaseState: LeaseStateRead | LeaseStateWrite | LeaseStateHandle,
+		LeaseEpoch: 1,
+	}
+	require.NoError(t, store.PutLock(ctx, pl))
+
+	// Same client tries to bind the key to a different file post-restart.
+	state, _, err := mgr.RequestLease(ctx, FileHandle("file2"), leaseKey, [16]byte{},
+		"owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.ErrorIs(t, err, ErrLeaseKeyInUse)
+	assert.Equal(t, LeaseStateNone, state)
+
+	// A different client reusing the same numeric key on a different file
+	// must still succeed — uniqueness is per-(client, key).
+	state, _, err = mgr.RequestLease(ctx, FileHandle("file3"), leaseKey, [16]byte{},
+		"ownerB", "clientB", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state)
+}
+
+// TestRequestLease_DuplicateKey_PostRestart_SameFileAllowed: a persisted
+// record on file1 must NOT block a reopen on file1 with the same key (this
+// would break durable handle reconnect). The excludeHandleKey filter in
+// hasPersistedLeaseKeyOnOtherFile must skip the same FileID.
+func TestRequestLease_DuplicateKey_PostRestart_SameFileAllowed(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	store := newMockLockStore()
+	mgr.SetLockStore(store)
+	ctx := context.Background()
+
+	leaseKey := [16]byte{0x33, 0x44}
+	pl := &PersistedLock{
+		ID:         "persisted-lock-2",
+		FileID:     "file1",
+		ClientID:   "client1",
+		OwnerID:    "owner1",
+		ShareName:  "/share",
+		LeaseKey:   leaseKey[:],
+		LeaseState: LeaseStateRead | LeaseStateHandle,
+		LeaseEpoch: 1,
+	}
+	require.NoError(t, store.PutLock(ctx, pl))
+
+	// Same key, same file, same client — must be allowed (reopen / reclaim).
+	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), leaseKey, [16]byte{},
+		"owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateHandle, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state)
+}
+
+// listLocksFailingStore simulates a transient persistent-store outage on the
+// ListLocks path used by the post-restart cross-file lease-key uniqueness
+// pre-check. PutLock and DeleteLock still work — only the read path fails.
+type listLocksFailingStore struct {
+	*mockLockStore
+	listErr error
+}
+
+func (s *listLocksFailingStore) ListLocks(ctx context.Context, q LockQuery) ([]*PersistedLock, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	return s.mockLockStore.ListLocks(ctx, q)
+}
+
+// TestRequestLease_PersistedCheckFailsClosedOnStoreError: when the lockStore
+// ListLocks call fails (transport, IO, encoding), the cross-file uniqueness
+// pre-check MUST fail CLOSED — reject the CREATE with ErrLeaseKeyInUse rather
+// than silently allow the grant. MS-SMB2 §3.3.5.9.8 uniqueness is a hard
+// correctness contract; a retriable false positive is preferable to a silent
+// spec violation. Copilot review feedback on PR #456.
+func TestRequestLease_PersistedCheckFailsClosedOnStoreError(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	mock := newMockLockStore()
+	store := &listLocksFailingStore{
+		mockLockStore: mock,
+		listErr:       errors.New("simulated store outage"),
+	}
+	mgr.SetLockStore(store)
+	ctx := context.Background()
+
+	// No persisted records at all — yet the request must be rejected because
+	// the store is unreachable and we cannot rule out a conflicting record.
+	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), [16]byte{0x42}, [16]byte{},
+		"owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.ErrorIs(t, err, ErrLeaseKeyInUse,
+		"transient ListLocks failure must fail CLOSED to preserve uniqueness invariant")
+	assert.Equal(t, LeaseStateNone, state)
+}
+
+// TestRequestLease_DeniedByInMemoryByteRangeLock: per MS-SMB2 §3.3.5.9.8, any
+// outstanding byte-range lock on a file forces leaseState=NONE on a pending
+// lease grant. SMB2 LOCK callers route through Manager.Lock which keeps the
+// byte-range entry in the legacy lm.locks map (not pushed to lockStore yet),
+// so the conflict path must consult both views. smbtorture lease-epoch test
+// is the integration check; this is the unit-level guard.
+func TestRequestLease_DeniedByInMemoryByteRangeLock(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+
+	// Acquire an exclusive byte-range lock via the legacy SMB2 LOCK path.
+	require.NoError(t, mgr.Lock("/share:lease-epoch.dat", FileLock{
+		ID:        1,
+		SessionID: 100,
+		Offset:    0,
+		Length:    1,
+		Exclusive: true,
+	}))
+
+	// A Read lease request on the same file MUST be denied (lease=None,
+	// no error — this is a "graceful denial", not an error condition).
+	state, _, err := mgr.RequestLease(ctx, FileHandle("/share:lease-epoch.dat"),
+		[16]byte{0xAA}, [16]byte{}, "owner1", "client1", "/share",
+		LeaseStateRead, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateNone, state, "exclusive byte-range lock must deny Read lease")
+}
+
+// TestRequestLease_SharedByteRangeLockAllowsReadLease: complement to the
+// previous test — only EXCLUSIVE byte-range locks deny a Read lease. A
+// shared lock (e.g. multiple readers) does not conflict per MS-SMB2 rules
+// and the existing CheckNLMLocksForLeaseConflict semantics.
+func TestRequestLease_SharedByteRangeLockAllowsReadLease(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+
+	require.NoError(t, mgr.Lock("/share:shared.dat", FileLock{
+		ID:        1,
+		SessionID: 100,
+		Offset:    0,
+		Length:    1,
+		Exclusive: false,
+	}))
+
+	state, _, err := mgr.RequestLease(ctx, FileHandle("/share:shared.dat"),
+		[16]byte{0xBB}, [16]byte{}, "owner1", "client1", "/share",
+		LeaseStateRead, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateRead, state, "shared byte-range lock must not block Read lease")
+}
+
+// TestRequestLease_AnyByteRangeLockDeniesWriteLease: a Write lease MUST NOT
+// coexist with ANY byte-range lock — even shared locks. The conflict rule
+// for Write requests is more aggressive than for Read requests.
+func TestRequestLease_AnyByteRangeLockDeniesWriteLease(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+
+	require.NoError(t, mgr.Lock("/share:write-conflict.dat", FileLock{
+		ID:        1,
+		SessionID: 100,
+		Offset:    0,
+		Length:    1,
+		Exclusive: false, // shared lock
+	}))
+
+	state, _, err := mgr.RequestLease(ctx, FileHandle("/share:write-conflict.dat"),
+		[16]byte{0xCC}, [16]byte{}, "owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateWrite, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateNone, state, "shared byte-range lock must deny Write lease")
+}
+
 // TestRequestLease_SameKeySameFile_StillWorks: same key on the same file is a
 // reopen / upgrade, not a cross-file violation. Regression guard for
 // smbtorture breaking2 / breaking4 / nobreakself.
@@ -622,6 +824,93 @@ func TestReleaseLeaseForHandle_ScopedToSingleBucket(t *testing.T) {
 	assert.False(t, aStillThere, "fileA bucket should be removed when emptied")
 	require.Len(t, bBucket, 1, "fileB bucket must survive intact")
 	assert.Equal(t, keyB, bBucket[0].Lease.LeaseKey)
+}
+
+// failingDeleteStore wraps mockLockStore to inject a DeleteLock failure.
+// Used to verify ReleaseLeaseForHandle now surfaces persistent-store errors
+// instead of swallowing them silently (round-3 follow-up).
+type failingDeleteStore struct {
+	*mockLockStore
+	deleteErr error
+}
+
+func (s *failingDeleteStore) DeleteLock(ctx context.Context, lockID string) error {
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	return s.mockLockStore.DeleteLock(ctx, lockID)
+}
+
+// TestReleaseLeaseForHandle_SurfacesDeleteLockError: a real persistent-store
+// failure during DeleteLock (transport, IO, encoding) must surface to the
+// caller rather than be swallowed. In-memory state is still cleaned up so the
+// caller can decide whether to retry the persistent delete or accept eventual
+// reconciliation. ErrLockNotFound is intentionally filtered (idempotent
+// delete) and does NOT trigger this path.
+func TestReleaseLeaseForHandle_SurfacesDeleteLockError(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	mock := newMockLockStore()
+	store := &failingDeleteStore{mockLockStore: mock}
+	mgr.SetLockStore(store)
+	ctx := context.Background()
+
+	leaseKey := [16]byte{0xAB, 0xCD}
+
+	// Grant a lease (this also persists via PutLock through the mock).
+	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), leaseKey, [16]byte{},
+		"owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateHandle, false)
+	require.NoError(t, err)
+	require.Equal(t, LeaseStateRead|LeaseStateHandle, state)
+
+	// Inject a transport-shaped failure for the next DeleteLock.
+	injected := errors.New("simulated store failure")
+	store.deleteErr = injected
+
+	err = mgr.ReleaseLeaseForHandle(ctx, "file1", leaseKey)
+	require.Error(t, err, "DeleteLock failure must surface")
+	assert.ErrorIs(t, err, injected, "underlying store error must be wrapped, not swallowed")
+
+	// In-memory state should still be cleaned: the bucket is gone even though
+	// persistence failed. Future GC / disconnect cleanup will reap the orphan.
+	mgr.mu.RLock()
+	_, stillThere := mgr.unifiedLocks["file1"]
+	mgr.mu.RUnlock()
+	assert.False(t, stillThere, "in-memory lease must be released even on persistence failure")
+}
+
+// TestReleaseLeaseForHandle_IgnoresNotFound: round-3 follow-up explicitly
+// filters ErrLockNotFound from the surfaced error set — the persistent delete
+// is idempotent, and a missing record means the lease was already cleaned up
+// (e.g. by a concurrent client-disconnect sweep). This guards against false
+// alarms on benign races.
+func TestReleaseLeaseForHandle_IgnoresNotFound(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	mock := newMockLockStore()
+	mgr.SetLockStore(mock)
+	ctx := context.Background()
+
+	leaseKey := [16]byte{0xEF, 0x01}
+
+	// Grant lease, then proactively delete the persisted record so the
+	// release path will hit ErrLockNotFound.
+	_, _, err := mgr.RequestLease(ctx, FileHandle("file1"), leaseKey, [16]byte{},
+		"owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateHandle, false)
+	require.NoError(t, err)
+
+	mock.mu.Lock()
+	for id := range mock.locks {
+		delete(mock.locks, id)
+	}
+	mock.mu.Unlock()
+
+	require.NoError(t, mgr.ReleaseLeaseForHandle(ctx, "file1", leaseKey),
+		"missing persisted record must not surface as an error")
 }
 
 // ============================================================================

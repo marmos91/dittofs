@@ -323,6 +323,18 @@ func TestPerfGate_VerifierWithinBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Phase 11 D-20 gate runs the rand-read benches; skip under -short")
 	}
+	if raceEnabled {
+		// Race instrumentation inflates benchmark ns/op by an order of
+		// magnitude (shadow-memory bookkeeping per access), so the
+		// "verified vs unverified" comparison stops measuring BLAKE3
+		// overhead and starts measuring the race detector. Beyond being
+		// uninformative, the two benchmarks together run ~10 minutes
+		// under -race and reliably blow past the default test timeout
+		// in the unit-tests workflow (which uses -race without -short).
+		// The strict gate already targets a dedicated perf lane; this
+		// path is only useful without race.
+		t.Skip("D-20 gate is meaningless under -race; run without race for trend tracking")
+	}
 
 	verified := testing.Benchmark(BenchmarkRandReadVerified)
 	unverified := testing.Benchmark(BenchmarkRandReadUnverified)
