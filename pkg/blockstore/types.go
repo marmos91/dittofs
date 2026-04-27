@@ -1,6 +1,7 @@
 package blockstore
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"strconv"
@@ -83,6 +84,70 @@ func (s BlockState) String() string {
 	default:
 		return fmt.Sprintf("BlockState(%d)", s)
 	}
+}
+
+// MarshalJSON encodes a ContentHash as the canonical CAS scheme string
+// "blake3:{hex}" (mirrors CASKey()). Round-trips with UnmarshalJSON.
+//
+// Added in Phase 12 to drive BlockRef JSON serialization (META-01 / D-10).
+// Without this, encoding/json would default to base64 for the [32]byte
+// array — readable diffs in Postgres/Badger payloads would be impossible.
+func (h ContentHash) MarshalJSON() ([]byte, error) {
+	out := make([]byte, 0, 1+len("blake3:")+HashSize*2+1)
+	out = append(out, '"')
+	out = append(out, h.CASKey()...)
+	out = append(out, '"')
+	return out, nil
+}
+
+// UnmarshalJSON accepts the canonical "blake3:{hex}" form, the bare
+// "{hex}" form, and the pre-Phase-12 default base64 form (encoding/json's
+// default for [32]byte arrays without a custom MarshalJSON). The base64
+// fallback preserves backward compatibility for FileBlock rows persisted
+// by Phase 11 Badger before this MarshalJSON existed.
+func (h *ContentHash) UnmarshalJSON(data []byte) error {
+	if len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {
+		return fmt.Errorf("ContentHash.UnmarshalJSON: not a JSON string: %q", data)
+	}
+	s := string(data[1 : len(data)-1])
+	// Canonical / hex form.
+	hexStr := s
+	if strings.HasPrefix(hexStr, "blake3:") {
+		hexStr = hexStr[len("blake3:"):]
+	}
+	if len(hexStr) == HashSize*2 {
+		parsed, err := ParseContentHash(hexStr)
+		if err == nil {
+			*h = parsed
+			return nil
+		}
+	}
+	// Legacy: encoding/json's default base64 form for [32]byte (no custom
+	// MarshalJSON existed before Phase 12). Decode and copy.
+	b, b64Err := base64.StdEncoding.DecodeString(s)
+	if b64Err == nil && len(b) == HashSize {
+		copy(h[:], b)
+		return nil
+	}
+	return fmt.Errorf("ContentHash.UnmarshalJSON: %w (input %q)", ErrInvalidHash, s)
+}
+
+// BlockRef is a single content-addressed reference to a chunk of a
+// file's payload. The list FileAttr.Blocks []BlockRef is sorted by
+// Offset and covers the file end-to-end (gaps within Size are sparse
+// holes, zero-filled on read per Phase 12 D-21).
+//
+// Hash identifies a CAS object (FormatCASKey -> "cas/{hh}/{hh}/{hex}").
+// Offset is the byte offset within the file (uint64 to support files
+// >4 GiB; VM workload requirement).
+// Size is the chunk length in bytes (FastCDC min 1 MiB, max 16 MiB;
+// uint32 chosen to match FileBlock.DataSize column type).
+//
+// See Phase 12 API-01..04, META-01, decisions D-10/D-19.
+type BlockRef struct {
+	Hash   ContentHash `json:"hash"`
+	Offset uint64      `json:"offset"`
+	Size   uint32      `json:"size"`
 }
 
 // FileBlock is the single block entity in DittoFS. Content-addressed:

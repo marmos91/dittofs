@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
@@ -74,6 +75,18 @@ type FileAttr struct {
 
 	// IdempotencyToken for detecting duplicate creation requests.
 	IdempotencyToken uint64 `json:"idempotency_token,omitempty"`
+
+	// Blocks is the authoritative content-addressed chunk list for this
+	// file, sorted by Offset, populated at every sync finalization
+	// (Phase 12 META-01 / D-05). Empty for directories, symlinks, and
+	// legacy files that predate Phase 12 — empty list triggers the
+	// Phase 11 dual-read shim per Phase 12 D-20.
+	//
+	// Storage:
+	//   - Postgres: separate file_block_refs join table (Phase 12 D-01).
+	//   - Badger: rides existing JSON-encoded FileAttr blob (D-05).
+	//   - Memory: typed slice held directly (D-05).
+	Blocks []blockstore.BlockRef `json:"blocks,omitempty"`
 }
 
 // SetAttrs specifies which attributes to update in a SetFileAttributes call.

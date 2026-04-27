@@ -1,6 +1,8 @@
 package blockstore
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -398,5 +400,168 @@ func TestErrCASSentinels(t *testing.T) {
 		if !strings.HasPrefix(msg, "blockstore:") {
 			t.Errorf("sentinel error message %q does not start with %q", msg, "blockstore:")
 		}
+	}
+}
+
+// TestBlockRef_JSON exercises BlockRef zero-value invariants, JSON
+// round-trip, and slice ordering preservation. Phase 12 META-01 / D-10.
+func TestBlockRef_JSON(t *testing.T) {
+	t.Run("zero value", func(t *testing.T) {
+		var br BlockRef
+		if !br.Hash.IsZero() {
+			t.Errorf("zero BlockRef Hash IsZero() = false, want true")
+		}
+		if br.Offset != 0 {
+			t.Errorf("zero BlockRef Offset = %d, want 0", br.Offset)
+		}
+		if br.Size != 0 {
+			t.Errorf("zero BlockRef Size = %d, want 0", br.Size)
+		}
+	})
+
+	t.Run("marshal known vector", func(t *testing.T) {
+		hash, err := ParseContentHash(blake3EmptyHex)
+		if err != nil {
+			t.Fatalf("setup: ParseContentHash: %v", err)
+		}
+		br := BlockRef{Hash: hash, Offset: 4194304, Size: 1048576}
+		got, err := json.Marshal(br)
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+		want := `{"hash":"blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262","offset":4194304,"size":1048576}`
+		if string(got) != want {
+			t.Fatalf("json.Marshal:\n got: %s\nwant: %s", got, want)
+		}
+	})
+
+	t.Run("round trip preserves fields", func(t *testing.T) {
+		hash, err := ParseContentHash(blake3EmptyHex)
+		if err != nil {
+			t.Fatalf("setup: ParseContentHash: %v", err)
+		}
+		want := BlockRef{Hash: hash, Offset: 4194304, Size: 1048576}
+		raw, err := json.Marshal(want)
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+		var got BlockRef
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("json.Unmarshal: %v", err)
+		}
+		if !bytes.Equal(got.Hash[:], want.Hash[:]) {
+			t.Errorf("Hash mismatch:\n got: %x\nwant: %x", got.Hash[:], want.Hash[:])
+		}
+		if got.Offset != want.Offset {
+			t.Errorf("Offset = %d, want %d", got.Offset, want.Offset)
+		}
+		if got.Size != want.Size {
+			t.Errorf("Size = %d, want %d", got.Size, want.Size)
+		}
+	})
+
+	t.Run("slice round trip preserves order", func(t *testing.T) {
+		mkHash := func(seed byte) ContentHash {
+			var h ContentHash
+			for i := range h {
+				h[i] = seed
+			}
+			return h
+		}
+		want := []BlockRef{
+			{Hash: mkHash(0x11), Offset: 0, Size: 4 << 20},
+			{Hash: mkHash(0x22), Offset: 4 << 20, Size: 4 << 20},
+			{Hash: mkHash(0x33), Offset: 8 << 20, Size: 1 << 20},
+		}
+		raw, err := json.Marshal(want)
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+		var got []BlockRef
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("json.Unmarshal: %v", err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("len = %d, want %d", len(got), len(want))
+		}
+		for i := range want {
+			if !bytes.Equal(got[i].Hash[:], want[i].Hash[:]) {
+				t.Errorf("[%d] Hash mismatch:\n got: %x\nwant: %x", i, got[i].Hash[:], want[i].Hash[:])
+			}
+			if got[i].Offset != want[i].Offset {
+				t.Errorf("[%d] Offset = %d, want %d", i, got[i].Offset, want[i].Offset)
+			}
+			if got[i].Size != want[i].Size {
+				t.Errorf("[%d] Size = %d, want %d", i, got[i].Size, want[i].Size)
+			}
+		}
+	})
+
+	t.Run("rejects bad hash length", func(t *testing.T) {
+		// T-12-01 mitigation: a tampered short-hex hash must not deserialize.
+		bad := `{"hash":"blake3:deadbeef","offset":0,"size":0}`
+		var br BlockRef
+		if err := json.Unmarshal([]byte(bad), &br); err == nil {
+			t.Fatalf("expected error for short hash, got nil (br=%+v)", br)
+		}
+	})
+}
+
+// TestContentHash_JSONBackwardCompat asserts UnmarshalJSON accepts both
+// the new canonical "blake3:{hex}" form and the legacy default base64
+// form that encoding/json produced for [32]byte before Phase 12 added a
+// MarshalJSON. Critical for reading FileBlock rows persisted by Phase 11
+// Badger backends.
+func TestContentHash_JSONBackwardCompat(t *testing.T) {
+	hash, err := ParseContentHash(blake3EmptyHex)
+	if err != nil {
+		t.Fatalf("setup: ParseContentHash: %v", err)
+	}
+
+	// Default base64 encoding of the 32 raw hash bytes (legacy wire form).
+	legacyB64 := `"rxNJufX5oaagQE3qNtzJSZvLJcmtwRK3zJqTyuQfMmI="`
+	var got ContentHash
+	if err := got.UnmarshalJSON([]byte(legacyB64)); err != nil {
+		t.Fatalf("UnmarshalJSON legacy base64: %v", err)
+	}
+	if !bytes.Equal(got[:], hash[:]) {
+		t.Fatalf("legacy base64 decode mismatch:\n got: %x\nwant: %x", got[:], hash[:])
+	}
+
+	// New canonical form round-trips.
+	gotCanonical := ContentHash{}
+	if err := gotCanonical.UnmarshalJSON([]byte(`"blake3:` + blake3EmptyHex + `"`)); err != nil {
+		t.Fatalf("UnmarshalJSON canonical: %v", err)
+	}
+	if !bytes.Equal(gotCanonical[:], hash[:]) {
+		t.Fatalf("canonical decode mismatch:\n got: %x\nwant: %x", gotCanonical[:], hash[:])
+	}
+
+	// Bare hex form accepted too.
+	gotBareHex := ContentHash{}
+	if err := gotBareHex.UnmarshalJSON([]byte(`"` + blake3EmptyHex + `"`)); err != nil {
+		t.Fatalf("UnmarshalJSON bare hex: %v", err)
+	}
+	if !bytes.Equal(gotBareHex[:], hash[:]) {
+		t.Fatalf("bare hex decode mismatch:\n got: %x\nwant: %x", gotBareHex[:], hash[:])
+	}
+}
+
+// TestErrBlockRefMissing asserts the new sentinel exists, is self-identical
+// via errors.Is, and has the expected message style ("blockstore:" prefix
+// + mentions "block ref"). Phase 12 D-23.
+func TestErrBlockRefMissing(t *testing.T) {
+	if !errors.Is(ErrBlockRefMissing, ErrBlockRefMissing) {
+		t.Error("errors.Is(ErrBlockRefMissing, ErrBlockRefMissing) = false")
+	}
+	if errors.Is(ErrBlockRefMissing, ErrCASKeyMalformed) {
+		t.Error("ErrBlockRefMissing should be distinct from ErrCASKeyMalformed")
+	}
+	msg := ErrBlockRefMissing.Error()
+	if !strings.HasPrefix(msg, "blockstore:") {
+		t.Errorf("ErrBlockRefMissing.Error() = %q, want prefix %q", msg, "blockstore:")
+	}
+	if !strings.Contains(strings.ToLower(msg), "block ref") {
+		t.Errorf("ErrBlockRefMissing.Error() = %q, want it to mention %q", msg, "block ref")
 	}
 }
