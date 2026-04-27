@@ -76,10 +76,15 @@ type BlockStore struct {
 	// contract.
 	coordinator MetadataCoordinator
 
-	readBuffer *ReadBuffer // nil when disabled (ReadBufferBytes=0)
-	prefetcher *Prefetcher // nil when disabled (PrefetchWorkers=0 or readBuffer nil)
+	// cache is the Phase 12 CAS-keyed cache (CACHE-01..05). Phase 11's
+	// block-coord ReadBuffer + standalone Prefetcher were folded into a
+	// single Cache type in Plan 12-09. Never nil — the constructor
+	// substitutes nullCache{} for a disabled budget so engine code does
+	// not need defensive nil-checks (Null Object pattern, WARN-8).
+	cache CacheInterface
 
-	prefetchWorkers int // stored from config, used in Start()
+	readBufferBytes int64 // budget for the cache (0 = disabled / Null Object)
+	prefetchWorkers int   // stored from config, used in Start()
 }
 
 // New creates a new BlockStore from the given configuration.
@@ -98,9 +103,14 @@ func New(cfg Config) (*BlockStore, error) {
 		syncer:          cfg.Syncer,
 		fileBlockStore:  cfg.FileBlockStore,
 		coordinator:     cfg.Coordinator,
-		readBuffer:      NewReadBuffer(cfg.ReadBufferBytes),
+		readBufferBytes: cfg.ReadBufferBytes,
 		prefetchWorkers: cfg.PrefetchWorkers,
 	}
+	// Cache is created later in Start (loadFn closure captures bs and
+	// NewCache spawns workers immediately). For now mount the Null Object
+	// so engine code can call bs.cache.* without nil-checks even before
+	// Start runs.
+	bs.cache = nullCache{}
 	// Phase 12 Plan 07: thread the coordinator into the syncer so the
 	// post-Flush hook (persistFileBlocksAfterFlush) can invoke
 	// PersistFileBlocks under the caller's metadata txn. Plan 09 wires
@@ -145,45 +155,78 @@ func (bs *BlockStore) Start(ctx context.Context) error {
 		}
 	})
 
-	// Create prefetcher if read buffer is enabled and workers are configured.
-	// Created in Start() (not New()) because the loadBlock closure captures bs,
-	// and NewPrefetcher starts workers immediately.
-	if bs.readBuffer != nil && bs.prefetchWorkers > 0 {
-		bs.prefetcher = NewPrefetcher(
-			bs.prefetchWorkers,
-			bs.readBuffer,
-			bs.loadBlock,
-			bs.local,
-		)
-		bs.readBuffer.SetPrefetcher(bs.prefetcher)
+	// Wire the Cache in Start so the loadByHash closure captures bs and
+	// NewCache spawns workers immediately. Phase 12 Plan 09: a single
+	// Cache type replaces Phase 11's ReadBuffer + Prefetcher pair.
+	// readBufferBytes is read out of cfg via a stash because cfg lives
+	// only inside New; we recover it from bs's own state. Engine
+	// constructor stashes the budget on the BlockStore so Start can read
+	// it; if the budget is 0 we keep the Null Object.
+	if bs.readBufferBytes > 0 {
+		realCache := NewCache(bs.readBufferBytes, bs.prefetchWorkers, bs.loadByHash)
+		if realCache != nil {
+			bs.cache = realCache
+		}
 	}
 
 	return nil
 }
 
-// loadBlock loads a single block from local store, falling back to remote via syncer.
-// Used by the prefetcher to fill the read buffer with upcoming blocks.
-func (bs *BlockStore) loadBlock(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error) {
-	data, dataSize, err := bs.local.GetBlockData(ctx, payloadID, blockIdx)
-	if err == nil {
-		return data, dataSize, nil
+// loadByHash is the LoadByHashFn the Cache's prefetch workers call to
+// pull a block by ContentHash. Phase 12 Plan 09: replaces the legacy
+// loadBlock(payloadID, blockIdx) with a CAS-keyed loader. Looks up the
+// FileBlock by hash to recover its local path, then reads from local
+// store. Remote fallback is intentionally NOT wired here — prefetch
+// is best-effort and shouldn't block on a remote round-trip; if the
+// block isn't local, the next on-path read will pull it via the syncer.
+//
+// Plan 12-10 (CACHE-06): when fb.LocalPath is set, use readFromCAS
+// (build-tagged: mmap on linux/darwin, os.ReadFile on windows) for a
+// single-copy load (page cache -> dest). Falls back to the legacy
+// local.GetBlockData path when DataSize is unknown (legacy FileBlock
+// rows without the post-Plan-10 DataSize attribute).
+func (bs *BlockStore) loadByHash(ctx context.Context, hash blockstore.ContentHash) ([]byte, error) {
+	if bs.fileBlockStore == nil {
+		return nil, errors.New("loadByHash: fileBlockStore not wired")
+	}
+	fb, err := bs.fileBlockStore.GetByHash(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	if fb == nil || fb.LocalPath == "" {
+		return nil, errors.New("loadByHash: block not local")
 	}
 
-	// Fall back to syncer for remote download.
-	offset := blockIdx * uint64(blockstore.BlockSize)
-	if syncErr := bs.syncer.EnsureAvailable(ctx, payloadID, offset, uint32(blockstore.BlockSize)); syncErr != nil {
-		return nil, 0, syncErr
+	// CACHE-06 single-copy fast path: when DataSize is known, allocate
+	// the destination buffer and read directly via the platform-aware
+	// mmap/ReadFile primitive.
+	if fb.DataSize > 0 {
+		buf := make([]byte, fb.DataSize)
+		n, err := readFromCAS(fb.LocalPath, 0, buf)
+		if err == nil {
+			return buf[:n], nil
+		}
+		// Fall through to the legacy path on any readFromCAS error
+		// (e.g., the local file was rotated out from under us). The
+		// legacy path consults the in-memory FileBlock state which
+		// may still have the bytes in flight.
 	}
 
-	return bs.local.GetBlockData(ctx, payloadID, blockIdx)
+	// Legacy fallback: read through the local store. Returns a heap
+	// buffer the local store owns; we hand it directly to the caller.
+	data, _, err := bs.local.GetBlockData(ctx, fb.ID, 0)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
-// Close releases resources held by the store. Closes prefetcher first (stops workers),
-// then read buffer, then syncer (drains uploads), local store, and remote store.
+// Close releases resources held by the store. Closes the cache (stops
+// prefetch workers and drops entries), then syncer (drains uploads),
+// local store, and remote store.
 func (bs *BlockStore) Close() error {
-	// Prefetcher and ReadBuffer are nil-safe (handle nil receiver).
-	bs.prefetcher.Close()
-	bs.readBuffer.Close()
+	// Cache is never nil thanks to the Null Object pattern.
+	_ = bs.cache.Close()
 
 	var errs []error
 	if err := bs.syncer.Close(); err != nil {
@@ -202,19 +245,52 @@ func (bs *BlockStore) Close() error {
 }
 
 // ReadAt reads data from storage at the given offset into dest. Phase
-// 12 API-01: a non-nil/non-empty []BlockRef triggers the CAS read path
-// (findBlocksForRange-driven hash resolution), zero-filling sparse
-// holes per D-21. Empty blocks falls through to the legacy Phase 11
-// dual-read shim (D-20).
+// 12 API-01: a non-nil/non-empty []BlockRef carries the CAS hashes
+// covering the requested range (zero-filling sparse holes per D-21).
 //
-// The CAS path itself is a Plan 09 deliverable (cache rewrite). Plan 07
-// wires the signature so callers can pass []BlockRef without breaking
-// the legacy path; the actual CAS-routing body lands in Plan 09. Until
-// then, every ReadAt call routes through the dual-read shim regardless
-// of blocks contents — this is documented in Plan 07 SUMMARY.
+// Plan 12-09 wiring: after a successful read the engine calls
+// cache.OnRead(payloadID, blockHashes, fileSize) so the Cache's
+// sequential-detection state machine can fire prefetch on upcoming
+// hashes. The actual byte-serving from cache.Get is a Plan 12-10
+// (mmap) deliverable; for Plan 09 the cache is hint-only and reads
+// always go through local/remote stores.
 func (bs *BlockStore) ReadAt(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, data []byte, offset uint64) (int, error) {
-	_ = blocks // CAS routing wired in Plan 09; Plan 07 lays the API only.
-	return bs.readAtInternal(ctx, payloadID, data, offset)
+	n, err := bs.readAtInternal(ctx, payloadID, data, offset)
+	if err != nil {
+		return n, err
+	}
+	// Hint-only post-read: pass the BlockRef hashes and the maximal
+	// file-size estimate so the Cache can decide on prefetch. nullCache
+	// is a no-op so the unconditional call is safe (Null Object).
+	if len(blocks) > 0 {
+		hashes := blockRefHashes(blocks)
+		bs.cache.OnRead(payloadID, hashes, computeFileSize(blocks))
+	}
+	return n, nil
+}
+
+// blockRefHashes extracts the ContentHash slice from a BlockRef list
+// for OnRead's hint API.
+func blockRefHashes(refs []blockstore.BlockRef) []blockstore.ContentHash {
+	out := make([]blockstore.ContentHash, len(refs))
+	for i, r := range refs {
+		out[i] = r.Hash
+	}
+	return out
+}
+
+// computeFileSize returns the maximum (Offset + Size) across the
+// BlockRef list — a conservative upper bound on file size used as
+// the OnRead fileSize hint.
+func computeFileSize(refs []blockstore.BlockRef) uint64 {
+	var maxEnd uint64
+	for _, r := range refs {
+		end := r.Offset + uint64(r.Size)
+		if end > maxEnd {
+			maxEnd = end
+		}
+	}
+	return maxEnd
 }
 
 // GetSize returns the stored size of a payload.
@@ -254,7 +330,13 @@ func (bs *BlockStore) WriteAt(ctx context.Context, payloadID string, currentBloc
 	if err := bs.local.WriteAt(ctx, payloadID, data, offset); err != nil {
 		return currentBlocks, err
 	}
-	bs.readBuffer.InvalidateRange(payloadID, offset, len(data), blockstore.BlockSize)
+	// Plan 12-09 D-35: cache invalidation moves OUT of the engine into
+	// common.WriteToBlockStore (post-txn). The engine itself does NOT
+	// touch cache on the write path beyond resetting the per-payload
+	// sequential tracker via OnRead's empty-hashes signal — keeps
+	// prefetch from chasing pre-write hashes after the underlying data
+	// shifted. nullCache is a no-op (Null Object).
+	bs.cache.OnRead(payloadID, nil, 0)
 	// Plan 09 will return the merged []BlockRef list here; for Plan 07
 	// the legacy path's FileAttr.Blocks is unchanged (dual-read shim).
 	return currentBlocks, nil
@@ -275,7 +357,11 @@ func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, currentBlo
 		return currentBlocks, fmt.Errorf("local truncate failed: %w", err)
 	}
 
-	bs.readBuffer.InvalidateAboveSize(payloadID, newSize, blockstore.BlockSize)
+	// Reset the per-payload sequential tracker (truncate invalidates
+	// any in-flight prefetch state); cache entry invalidation is the
+	// caller's responsibility via common.WriteToBlockStore (post-txn,
+	// per D-35). nullCache is a no-op.
+	bs.cache.OnRead(payloadID, nil, 0)
 
 	if err := bs.syncer.Truncate(ctx, payloadID, newSize); err != nil {
 		return currentBlocks, err
@@ -322,7 +408,17 @@ func (bs *BlockStore) Delete(ctx context.Context, payloadID string, blocks []blo
 	if err := bs.local.DeleteAllBlockFiles(ctx, payloadID); err != nil {
 		return fmt.Errorf("local delete all block files failed: %w", err)
 	}
-	bs.readBuffer.InvalidateAndReset(payloadID)
+	// Surgical invalidation: drop ALL hashes belonging to this file
+	// (even though dedup-shared hashes might survive elsewhere — Delete
+	// is the strongest signal). nullCache is a no-op; for the real
+	// Cache this also clears the per-payload sequential tracker.
+	if len(blocks) > 0 {
+		bs.cache.InvalidateFile(payloadID, blockRefHashes(blocks))
+	} else {
+		// Legacy/dual-read empty-blocks path: at least reset the
+		// per-payload tracker so prefetch doesn't chase stale hashes.
+		bs.cache.OnRead(payloadID, nil, 0)
+	}
 
 	// Phase 12 D-17: decrement RefCount for every BlockRef hash before
 	// remote cleanup so the coordinator's bookkeeping is consistent
@@ -400,24 +496,16 @@ func (bs *BlockStore) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadI
 }
 
 // Flush ensures all dirty data for a payload is persisted.
-// After flush, auto-promotes block data into the read buffer if the file fits
-// within the budget (data is in OS page cache, so the read is essentially free).
+//
+// Phase 11 auto-promoted flushed blocks into the block-coord ReadBuffer
+// to make subsequent reads cheap (data was in OS page cache anyway).
+// Plan 12-09 retires that path: the new Cache is CAS-keyed and Flush
+// has no BlockRef snapshot at this layer to translate flushed bytes
+// into hash-keyed cache entries. Auto-promotion will be revisited in
+// Plan 12-10 (mmap variant) which sidesteps the heap-copy-on-Put cost
+// that motivated the auto-promote in the first place.
 func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
-	result, err := bs.syncer.Flush(ctx, payloadID)
-	if err != nil {
-		return result, err
-	}
-
-	// Auto-promote flushed blocks into read buffer (skip files larger than budget).
-	// MaxBytes() returns 0 when readBuffer is nil, so the size check fails naturally.
-	if rbBudget := bs.readBuffer.MaxBytes(); rbBudget > 0 {
-		size, found := bs.local.GetFileSize(ctx, payloadID)
-		if found && size > 0 && int64(size) <= rbBudget {
-			bs.readBuffer.FillFromStore(ctx, payloadID, 0, size, blockstore.BlockSize, bs.local.GetBlockData)
-		}
-	}
-
-	return result, nil
+	return bs.syncer.Flush(ctx, payloadID)
 }
 
 // DrainAllUploads waits for all pending uploads to complete.
@@ -556,7 +644,7 @@ func (bs *BlockStore) GetStats() BlockStoreStats {
 	localStats := bs.local.Stats()
 	files := bs.local.ListFiles()
 
-	rbStats := bs.readBuffer.Stats()
+	cacheStats := bs.cache.Stats()
 
 	pending, completed, failed := bs.syncer.Queue().Stats()
 	_, uploads, _ := bs.syncer.Queue().PendingByType()
@@ -570,9 +658,9 @@ func (bs *BlockStore) GetStats() BlockStoreStats {
 		LocalDiskMax:        localStats.MaxDisk,
 		LocalMemUsed:        localStats.MemUsed,
 		LocalMemMax:         localStats.MaxMemory,
-		ReadBufferEntries:   rbStats.Entries,
-		ReadBufferUsed:      rbStats.CurBytes,
-		ReadBufferMax:       rbStats.MaxBytes,
+		ReadBufferEntries:   cacheStats.Entries,
+		ReadBufferUsed:      cacheStats.CurBytes,
+		ReadBufferMax:       cacheStats.MaxBytes,
 		HasRemote:           bs.remote != nil,
 		PendingSyncs:        pending,
 		PendingUploads:      uploads,
@@ -624,11 +712,17 @@ func (bs *BlockStore) populateBlockCounts(stats *BlockStoreStats, files []string
 	}
 }
 
-// EvictReadBuffer clears all entries from the read buffer.
-// Returns the number of entries that were cleared.
+// EvictReadBuffer clears all entries from the cache (legacy method
+// name retained for the controlplane runtime's blockStores.evict REST
+// path; behavior post-Plan-12-09 closes the cache, which Plan-12-10
+// will rework once mmap-backed entries change the eviction story).
+// Returns the number of entries that were present before close.
 func (bs *BlockStore) EvictReadBuffer() int {
-	entries := bs.readBuffer.Stats().Entries // nil-safe: returns zero
-	bs.readBuffer.Close()                    // nil-safe: no-op
+	entries := bs.cache.Stats().Entries
+	_ = bs.cache.Close()
+	// Replace closed cache with the Null Object so subsequent operations
+	// remain a no-op without ever returning an error path.
+	bs.cache = nullCache{}
 	return entries
 }
 
@@ -649,19 +743,13 @@ func (bs *BlockStore) SetEvictionEnabled(enabled bool) {
 	bs.local.SetEvictionEnabled(enabled)
 }
 
-// readAtInternal reads from the primary payloadID.
-// When the read buffer is enabled, checks it first and fills it after successful read.
+// readAtInternal reads from the primary payloadID. Always goes through
+// the local store (with remote-fallback on miss); the Plan 12-09 Cache
+// is hint-only and does not serve bytes here. The CAS-keyed byte-serve
+// path is a Plan 12-10 (mmap) deliverable.
 func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
 	if len(data) == 0 {
 		return 0, nil
-	}
-
-	// Read buffer fast path: try to serve entirely from read buffer.
-	if bs.readBuffer != nil {
-		if n, ok := bs.tryL1Read(payloadID, data, offset); ok {
-			bs.readBuffer.NotifyRead(payloadID, offset, uint64(len(data)), blockstore.BlockSize)
-			return n, nil
-		}
 	}
 
 	// Try primary local store.
@@ -670,59 +758,14 @@ func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID string, data
 		return 0, fmt.Errorf("local read failed: %w", err)
 	}
 	if found {
-		bs.promoteToL1(ctx, payloadID, offset, uint64(len(data)))
 		return len(data), nil
 	}
 
 	if err := bs.ensureAndReadFromLocal(ctx, payloadID, data, offset); err != nil {
 		return 0, err
 	}
-	bs.promoteToL1(ctx, payloadID, offset, uint64(len(data)))
 
 	return len(data), nil
-}
-
-// promoteToL1 fills the read buffer from the local store for the given byte
-// range and notifies the prefetcher about the read. Both calls are nil-safe
-// (no-op when the read buffer is disabled).
-func (bs *BlockStore) promoteToL1(ctx context.Context, payloadID string, offset, length uint64) {
-	bs.readBuffer.FillFromStore(ctx, payloadID, offset, length, blockstore.BlockSize, bs.local.GetBlockData)
-	bs.readBuffer.NotifyRead(payloadID, offset, length, blockstore.BlockSize)
-}
-
-// tryL1Read attempts to serve a read entirely from the read buffer.
-// Returns (bytesRead, true) if all blocks in the range were in the buffer.
-// Returns (0, false) if any block was missing or returned fewer bytes than needed.
-func (bs *BlockStore) tryL1Read(payloadID string, data []byte, offset uint64) (int, bool) {
-	startBlock := offset / blockstore.BlockSize
-	endBlock := (offset + uint64(len(data)) - 1) / blockstore.BlockSize
-
-	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
-		blockStart := blockIdx * blockstore.BlockSize
-		blockOff := uint32(0)
-		if offset > blockStart {
-			blockOff = uint32(offset - blockStart)
-		}
-		destOff := uint64(0)
-		if blockStart > offset {
-			destOff = blockStart - offset
-		}
-		remaining := uint64(len(data)) - destOff
-		if remaining == 0 {
-			break
-		}
-
-		// Limit to what fits in this block starting at blockOff.
-		readLen := min(remaining, blockstore.BlockSize-uint64(blockOff))
-
-		buf := data[destOff : destOff+readLen]
-		n, hit := bs.readBuffer.Get(payloadID, blockIdx, buf, blockOff)
-		if !hit || uint64(n) != readLen {
-			return 0, false
-		}
-	}
-
-	return len(data), true
 }
 
 // ensureAndReadFromLocal downloads blocks from remote if needed and reads from local store.

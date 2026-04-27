@@ -4,392 +4,451 @@ import (
 	"container/list"
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// keyKind discriminates the three coexisting key spaces in the read
-// buffer during the dual-read window. The kinds share one eviction
-// budget but cannot collide because blockKey is value-compared and the
-// kind byte differs.
-type keyKind uint8
+// defaultMaxCacheBytes is the default per-share Cache memory budget.
+// Plan 12 D-31 sets this at 256 MiB (CACHE-03 single budget across all
+// hashes; was previously bifurcated across coord/CAS/legacy spaces).
+const defaultMaxCacheBytes int64 = 256 << 20
 
-const (
-	// keyKindCoord: (payloadID, blockIdx) — the legacy engine.ReadAt
-	// entry path that does not consult metadata before serving from
-	// cache.
-	keyKindCoord keyKind = 0
+// seqThreshold (CACHE-03) is the number of consecutive sequential reads
+// observed before the prefetcher fires. Raised from Phase 11's 2 to 3
+// to suppress speculative prefetch on accidental two-block runs in
+// random-IO workloads (VM rand-write was the regression).
+const seqThreshold = 3
 
-	// keyKindCAS: ContentHash — cross-file dedup (two callers reading
-	// the same content share one cache line).
-	keyKindCAS keyKind = 1
+// maxPrefetchDepth caps the number of hashes scheduled per prefetch
+// trigger. Doubles each fire (1, 2, 4, 8) and clamps here.
+const maxPrefetchDepth = 8
 
-	// keyKindLegacy: pre-Phase-11 storeKey string ({payloadID}/block-{N}).
-	keyKindLegacy keyKind = 2
-)
+// defaultPrefetchWorkers is the goroutine count for the prefetch worker
+// pool when NewCache receives workers <= 0.
+const defaultPrefetchWorkers = 4
 
-// blockKey is the composite key for a cached block entry. The kind
-// discriminator MUST be checked first; the matching field carries the
-// actual key bytes. Cross-space collision is impossible by construction
-// because blockKey is value-compared and the kind byte differs.
-type blockKey struct {
-	kind keyKind
+// reqQueueSize is the bounded channel capacity backing the prefetch
+// worker pool (T-12-24 mitigation: non-blocking submit drops when full).
+const reqQueueSize = 64
 
-	// keyKindCoord fields:
-	payloadID string
-	blockIdx  uint64
-
-	// keyKindCAS field:
-	cas blockstore.ContentHash
-
-	// keyKindLegacy field:
-	legacy string
+// CacheInterface is the narrow surface engine code depends on. The
+// concrete *Cache and the nullCache{} Null Object both satisfy it,
+// eliminating defensive nil-checks across the engine package
+// (Plan 12-09 WARN-8).
+type CacheInterface interface {
+	Get(hash blockstore.ContentHash) ([]byte, bool)
+	Put(hash blockstore.ContentHash, data []byte)
+	OnRead(payloadID string, hashes []blockstore.ContentHash, fileSize uint64)
+	InvalidateFile(payloadID string, removedHashes []blockstore.ContentHash)
+	Stats() CacheStats
+	Close() error
 }
 
-// coordKey constructs a coordinate-space key (legacy engine.ReadAt path).
-func coordKey(payloadID string, blockIdx uint64) blockKey {
-	return blockKey{kind: keyKindCoord, payloadID: payloadID, blockIdx: blockIdx}
-}
+// Compile-time interface satisfaction checks.
+var _ CacheInterface = (*Cache)(nil)
+var _ CacheInterface = nullCache{}
 
-// casKey constructs a CAS-space key (D-22 — verified read path).
-func casKey(h blockstore.ContentHash) blockKey {
-	return blockKey{kind: keyKindCAS, cas: h}
-}
-
-// legacyKey constructs a legacy-space key keyed by the legacy
-// {payloadID}/block-{N} string.
-func legacyKey(storeKey string) blockKey {
-	return blockKey{kind: keyKindLegacy, legacy: storeKey}
-}
-
-// cacheEntry holds the buffered block data stored in each list.Element.
-type cacheEntry struct {
-	key      blockKey
-	data     []byte // heap-copied block data
-	dataSize uint32 // actual bytes of valid data in the block
-}
-
-// ReadBuffer is an LRU read buffer that stores full blocks as heap-allocated
-// []byte slices. It provides copy-on-read semantics: Get copies data into the
-// caller's buffer and never returns internal slices.
+// Cache is the Phase 12 greenfield single-type, CAS-keyed in-memory
+// cache (CACHE-01..05). It replaces the legacy keyKindCoord/CAS/Legacy
+// bifurcation (Phase 11 D-22) and folds the standalone Prefetcher
+// worker pool into one type.
 //
-// Thread safety: reads take RLock, mutations take WLock.
-// Eviction is synchronous and inline during Put (O(1) -- just drops []byte ref).
-type ReadBuffer struct {
-	mu      sync.RWMutex
-	entries map[blockKey]*list.Element     // primary index: blockKey -> list element
-	lru     *list.List                     // front = most recent, back = LRU victim
-	byFile  map[string]map[uint64]struct{} // secondary index: payloadID -> set of blockIdx
+// Plan 12-10 (CACHE-06) introduces a sibling single-copy read path:
+// readFromCAS(path, offset, dest) — build-tagged in cache_mmap_unix.go
+// (linux/darwin, syscall.Mmap) and cache_mmap_windows.go (os.ReadFile
+// fallback). On a local-CAS hit the engine can copy bytes directly
+// from the page cache into the caller's dest buffer in one copy:
+// mmap pages -> dest. Compare to Phase 11's path on a warm-disk hit
+// (local ReadAt -> heap buf -> Cache.Put copies -> Cache.Get copies
+// -> dest = three copies), or two copies if Put avoids one. The new
+// readFromCAS seam is one copy.
+//
+// Plan 12-10 is intentionally additive: readFromCAS is provided as
+// the platform-aware single-copy primitive. Wiring engine.ReadAt to
+// invoke it on local hits requires the FileBlock -> CAS path lookup
+// already present in loadByHash; the actual hot-path swap happens in
+// Plan 12-11/12 alongside the perf microbench (D-43). For Plan 12-10
+// the function exists, is unit-tested (cache_mmap_test.go), and the
+// build is cross-platform clean.
+//
+// Thread safety: read path takes RLock for hits, promotes LRU under
+// WLock; mutations are WLock-only. The trackerMu is a separate lock so
+// OnRead's hot path (per-payload sequential detection) doesn't contend
+// with cache hits/puts.
+//
+// Per-share isolation (CLAUDE.md rule 4): the Cache lives inside
+// *engine.BlockStore which is per-share by construction. Cross-share
+// cache sharing is impossible without going through the BlockStore
+// boundary, so T-12-25 is "accept" by design.
+//
+// CACHE-02 cross-file dedup: two payloads referencing the same
+// ContentHash share one cache entry. Eviction is hash-scoped (LRU);
+// InvalidateFile is surgical (drops only the explicitly-listed hashes
+// for a file, preserving any shared entries).
+type Cache struct {
+	mu       sync.RWMutex
+	entries  map[blockstore.ContentHash]*list.Element // hash -> element holding *cacheEntry
+	lru      *list.List                               // front = most recent, back = LRU victim
+	maxBytes int64
+	curBytes int64
 
-	maxBytes int64 // memory budget
-	curBytes int64 // current usage
+	// Worker-pool fields. Constructed by NewCache; left nil by
+	// newCacheNoWorkers (test-only constructor for the LRU/Get/Put
+	// surface in isolation).
+	trackerMu sync.Mutex
+	trackers  map[string]*seqTracker // payloadID -> tracker
+	reqCh     chan prefetchReq
+	loadFn    LoadByHashFn
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 
-	prefetcher *Prefetcher // optional sequential prefetcher
+	closed atomic.Bool
 }
 
-// NewReadBuffer creates a new ReadBuffer with the given memory budget in bytes.
-// Returns nil if maxBytes <= 0 (disabled mode).
-func NewReadBuffer(maxBytes int64) *ReadBuffer {
+// cacheEntry is the value stored in each list.Element. Keyed by hash;
+// data is a heap-copied slice owned by the cache.
+type cacheEntry struct {
+	hash blockstore.ContentHash
+	data []byte
+}
+
+// LoadByHashFn loads a block by ContentHash from the underlying store
+// (local FS or remote S3). Injected at NewCache time; called by the
+// prefetch worker pool when sequential detection triggers.
+//
+// Phase 12 contract: signature is CAS-keyed (replaces the legacy
+// (payloadID, blockIdx) form deleted with prefetch.go). The engine
+// bridges to the local/remote stores using FormatCASKey.
+type LoadByHashFn func(ctx context.Context, hash blockstore.ContentHash) ([]byte, error)
+
+// seqTracker — per-payloadID sequential-read state machine. lastHashes
+// is a ring of the most recent OnRead hashes (capped at seqThreshold);
+// allHashes is a longer running window used to choose which upcoming
+// hashes to prefetch when the threshold is reached.
+type seqTracker struct {
+	lastHashes []blockstore.ContentHash
+	depth      int
+	allHashes  []blockstore.ContentHash
+	fileSize   uint64
+}
+
+// prefetchReq is a work item for the Cache's worker pool.
+type prefetchReq struct {
+	hash blockstore.ContentHash
+}
+
+// CacheStats holds Cache statistics for observability/REST.
+//
+// JSON tags match the legacy ReadBuffer's CacheStats so external
+// consumers (dfsctl block stats output) keep working unchanged across
+// the Phase 12 read-path rewrite.
+type CacheStats struct {
+	Entries  int   `json:"entries"`
+	CurBytes int64 `json:"cur_bytes"`
+	MaxBytes int64 `json:"max_bytes"`
+}
+
+// nullCache is a no-op CacheInterface implementation. The BlockStore
+// constructor substitutes nullCache{} when the cache budget is zero,
+// eliminating defensive nil-checks across the engine (Null Object
+// pattern; Plan 12-09 WARN-8).
+type nullCache struct{}
+
+func (nullCache) Get(blockstore.ContentHash) ([]byte, bool)                      { return nil, false }
+func (nullCache) Put(blockstore.ContentHash, []byte)                             {}
+func (nullCache) OnRead(string, []blockstore.ContentHash, uint64)                {}
+func (nullCache) InvalidateFile(string, []blockstore.ContentHash)                {}
+func (nullCache) Stats() CacheStats                                              { return CacheStats{} }
+func (nullCache) Close() error                                                   { return nil }
+
+// newCacheNoWorkers constructs a Cache without the prefetch worker
+// pool. Used by tests that exercise the LRU/Get/Put/InvalidateFile
+// surface in isolation. Production code uses NewCache.
+func newCacheNoWorkers(maxBytes int64) *Cache {
 	if maxBytes <= 0 {
 		return nil
 	}
-	return &ReadBuffer{
-		entries:  make(map[blockKey]*list.Element),
+	return &Cache{
+		entries:  make(map[blockstore.ContentHash]*list.Element),
 		lru:      list.New(),
-		byFile:   make(map[string]map[uint64]struct{}),
+		trackers: make(map[string]*seqTracker),
 		maxBytes: maxBytes,
 	}
 }
 
-// Get reads a buffered block (coordinate space) into dest starting from
-// offset within the block data. Returns bytes copied and whether the
-// block was found. Copy-on-read: modifying dest does not affect the
-// buffer. See GetCAS / GetLegacy for the dual-read window APIs.
-func (c *ReadBuffer) Get(payloadID string, blockIdx uint64, dest []byte, offset uint32) (int, bool) {
-	if c == nil {
-		return 0, false
+// NewCache constructs a Cache with the prefetch worker pool fully
+// wired. maxBytes <= 0 returns nil (cache disabled — the engine
+// constructor's Null Object substitution kicks in).
+//
+//   - workers <= 0 defaults to defaultPrefetchWorkers (4).
+//   - loadFn is the CAS-keyed block loader; required for prefetch to
+//     do anything. nil loadFn means OnRead can run but workers will
+//     drop requests (no-loader path).
+//   - The bounded reqCh has capacity reqQueueSize (64); submit is
+//     non-blocking and silently drops on full queue (T-12-24).
+func NewCache(maxBytes int64, workers int, loadFn LoadByHashFn) *Cache {
+	if maxBytes <= 0 {
+		return nil
 	}
-	return c.getAt(coordKey(payloadID, blockIdx), dest, offset)
+	if workers <= 0 {
+		workers = defaultPrefetchWorkers
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &Cache{
+		entries:  make(map[blockstore.ContentHash]*list.Element),
+		lru:      list.New(),
+		trackers: make(map[string]*seqTracker),
+		maxBytes: maxBytes,
+		reqCh:    make(chan prefetchReq, reqQueueSize),
+		loadFn:   loadFn,
+		ctx:      ctx,
+		cancel:   cancel,
+	}
+
+	c.wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go c.prefetchWorker(ctx)
+	}
+	return c
 }
 
-// Put inserts or updates a coordinate-space block in the read buffer.
-// A heap copy of data is made. LRU entries are evicted synchronously
-// when over budget; blocks larger than maxBytes are silently skipped.
-// See PutCAS / PutLegacy for the dual-read window APIs.
-func (c *ReadBuffer) Put(payloadID string, blockIdx uint64, data []byte, dataSize uint32) {
-	c.putAt(coordKey(payloadID, blockIdx), data, dataSize)
-}
-
-// putAt is the shared insert path for all three key spaces. Eviction
-// follows the existing LRU policy and the byFile secondary index is
-// maintained only for coordinate keys.
-func (c *ReadBuffer) putAt(key blockKey, data []byte, dataSize uint32) {
-	if c == nil {
-		return
+// Get returns the cached bytes for hash, promoting the entry to the
+// front of the LRU list. Returns (nil, false) on miss or after Close.
+//
+// Returns the cache's own slice — callers must not mutate it. (For
+// Phase 12 the only consumer is engine.ReadAt which copies into the
+// destination buffer; Plan 10 mmap removes this aliasing concern.)
+func (c *Cache) Get(hash blockstore.ContentHash) ([]byte, bool) {
+	if c == nil || c.closed.Load() {
+		return nil, false
 	}
-	if int64(dataSize) > c.maxBytes {
-		return
-	}
-	// Clamp dataSize to len(data) to prevent out-of-bounds panic from callers
-	// passing inconsistent values.
-	if int(dataSize) > len(data) {
-		dataSize = uint32(len(data))
-	}
-
-	heapCopy := make([]byte, dataSize)
-	copy(heapCopy, data[:dataSize])
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if elem, ok := c.entries[key]; ok {
-		old := elem.Value.(*cacheEntry)
-		c.curBytes -= int64(old.dataSize)
-		old.data = heapCopy
-		old.dataSize = dataSize
-		c.curBytes += int64(dataSize)
-		c.lru.MoveToFront(elem)
-		for c.curBytes > c.maxBytes && c.lru.Len() > 1 {
-			c.evictLRU()
-		}
-		return
-	}
-
-	entry := &cacheEntry{
-		key:      key,
-		data:     heapCopy,
-		dataSize: dataSize,
-	}
-	elem := c.lru.PushFront(entry)
-	c.entries[key] = elem
-	c.curBytes += int64(dataSize)
-
-	if key.kind == keyKindCoord {
-		idxSet, ok := c.byFile[key.payloadID]
-		if !ok {
-			idxSet = make(map[uint64]struct{})
-			c.byFile[key.payloadID] = idxSet
-		}
-		idxSet[key.blockIdx] = struct{}{}
-	}
-
-	for c.curBytes > c.maxBytes && c.lru.Len() > 1 {
-		c.evictLRU()
-	}
-}
-
-// GetCAS reads a CAS-cached block (D-22) into dest. Returns (n, true)
-// if the hash is in the cache. The verifier is the source of truth for
-// content integrity; the cache only serves bytes that were verified on
-// insert. Phase 12 CACHE-02 collapses the buffer to this single API.
-func (c *ReadBuffer) GetCAS(hash blockstore.ContentHash, dest []byte, offset uint32) (int, bool) {
-	if c == nil {
-		return 0, false
-	}
-	return c.getAt(casKey(hash), dest, offset)
-}
-
-// PutCAS inserts data into the CAS key space, keyed by ContentHash.
-// Cross-file dedup: two payloads referencing the same hash share one
-// cache line. Heap-copies data per the existing copy-on-write semantics.
-func (c *ReadBuffer) PutCAS(hash blockstore.ContentHash, data []byte, dataSize uint32) {
-	c.putAt(casKey(hash), data, dataSize)
-}
-
-// GetLegacy reads a legacy-string-keyed block (dual-read window only,
-// D-22). The legacy storeKey is the FormatStoreKey output for
-// pre-Phase-11 file blocks. Removed when the dual-read code path
-// retires in Phase 15.
-func (c *ReadBuffer) GetLegacy(storeKey string, dest []byte, offset uint32) (int, bool) {
-	if c == nil {
-		return 0, false
-	}
-	return c.getAt(legacyKey(storeKey), dest, offset)
-}
-
-// PutLegacy inserts data into the legacy storeKey space.
-func (c *ReadBuffer) PutLegacy(storeKey string, data []byte, dataSize uint32) {
-	c.putAt(legacyKey(storeKey), data, dataSize)
-}
-
-// getAt is the shared read path for all three key spaces.
-func (c *ReadBuffer) getAt(key blockKey, dest []byte, offset uint32) (int, bool) {
 	c.mu.RLock()
-	elem, ok := c.entries[key]
+	elem, ok := c.entries[hash]
 	if !ok {
 		c.mu.RUnlock()
-		return 0, false
+		return nil, false
 	}
 	entry := elem.Value.(*cacheEntry)
-	if offset >= entry.dataSize {
-		c.mu.RUnlock()
-		return 0, false
-	}
-	n := copy(dest, entry.data[offset:entry.dataSize])
+	data := entry.data
 	c.mu.RUnlock()
 
+	// Promote LRU under WLock (re-check existence; Get may race with
+	// Close or InvalidateFile).
 	c.mu.Lock()
-	if elem2, still := c.entries[key]; still {
+	if elem2, still := c.entries[hash]; still {
 		c.lru.MoveToFront(elem2)
 	}
 	c.mu.Unlock()
-
-	return n, true
+	return data, true
 }
 
-// InvalidateCAS removes a CAS entry by ContentHash. Returned bool
-// indicates whether an entry was present.
-func (c *ReadBuffer) InvalidateCAS(hash blockstore.ContentHash) bool {
-	if c == nil {
-		return false
+// Put inserts or updates the cache entry for hash. Heap-copies data so
+// callers can reuse their buffers. After Close, Put is a silent no-op.
+// Entries larger than maxBytes are silently skipped.
+func (c *Cache) Put(hash blockstore.ContentHash, data []byte) {
+	if c == nil || c.closed.Load() {
+		return
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	elem, ok := c.entries[casKey(hash)]
-	if !ok {
-		return false
-	}
-	c.removeEntry(elem)
-	return true
-}
-
-// InvalidateLegacy removes a legacy entry by its storeKey string.
-func (c *ReadBuffer) InvalidateLegacy(storeKey string) bool {
-	if c == nil {
-		return false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	elem, ok := c.entries[legacyKey(storeKey)]
-	if !ok {
-		return false
-	}
-	c.removeEntry(elem)
-	return true
-}
-
-// ContainsCAS reports whether a CAS hash is buffered. Does not promote LRU.
-func (c *ReadBuffer) ContainsCAS(hash blockstore.ContentHash) bool {
-	if c == nil {
-		return false
-	}
-	c.mu.RLock()
-	_, ok := c.entries[casKey(hash)]
-	c.mu.RUnlock()
-	return ok
-}
-
-// ContainsLegacy reports whether a legacy storeKey is buffered. Does not
-// promote LRU.
-func (c *ReadBuffer) ContainsLegacy(storeKey string) bool {
-	if c == nil {
-		return false
-	}
-	c.mu.RLock()
-	_, ok := c.entries[legacyKey(storeKey)]
-	c.mu.RUnlock()
-	return ok
-}
-
-// Invalidate removes a single block entry from the read buffer.
-func (c *ReadBuffer) Invalidate(payloadID string, blockIdx uint64) {
-	if c == nil {
+	if int64(len(data)) > c.maxBytes {
 		return
 	}
 
-	key := coordKey(payloadID, blockIdx)
+	heapCopy := make([]byte, len(data))
+	copy(heapCopy, data)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	elem, ok := c.entries[key]
-	if !ok {
+	if elem, ok := c.entries[hash]; ok {
+		old := elem.Value.(*cacheEntry)
+		c.curBytes -= int64(len(old.data))
+		old.data = heapCopy
+		c.curBytes += int64(len(heapCopy))
+		c.lru.MoveToFront(elem)
+		c.evictLocked()
 		return
 	}
-	c.removeEntry(elem)
+
+	entry := &cacheEntry{hash: hash, data: heapCopy}
+	elem := c.lru.PushFront(entry)
+	c.entries[hash] = elem
+	c.curBytes += int64(len(heapCopy))
+	c.evictLocked()
 }
 
-// InvalidateFile removes all buffered blocks for the given payloadID.
-// Uses the secondary index for O(entries_for_file) performance.
-func (c *ReadBuffer) InvalidateFile(payloadID string) {
-	if c == nil {
+// evictLocked drops LRU tail entries until curBytes <= maxBytes. Must
+// be called under c.mu (write lock).
+func (c *Cache) evictLocked() {
+	for c.curBytes > c.maxBytes && c.lru.Len() > 0 {
+		back := c.lru.Back()
+		if back == nil {
+			return
+		}
+		entry := back.Value.(*cacheEntry)
+		c.curBytes -= int64(len(entry.data))
+		c.lru.Remove(back)
+		delete(c.entries, entry.hash)
+	}
+}
+
+// InvalidateFile drops only the listed hashes from the cache and
+// resets the per-payload sequential tracker (so the next read for
+// this file rebuilds the prefetch state from scratch). Hashes NOT
+// listed remain — including hashes shared by other files (CACHE-02
+// dedup is preserved).
+//
+// CACHE-05 surgical invalidation per Plan 12 D-34: callers compute
+// the removed-hash diff (via common.diffRemovedHashes — Plan 12-08)
+// from the old/new BlockRef lists and pass it here. Drop semantics
+// preserve duplicate-hash multiplicity expectations (callers may pass
+// the same hash multiple times; the cache just drops it on first
+// match).
+func (c *Cache) InvalidateFile(payloadID string, removedHashes []blockstore.ContentHash) {
+	if c == nil || c.closed.Load() {
 		return
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	idxSet, ok := c.byFile[payloadID]
-	if !ok {
-		return
-	}
-
-	for blockIdx := range idxSet {
-		c.unlinkEntry(coordKey(payloadID, blockIdx))
-	}
-	delete(c.byFile, payloadID)
-}
-
-// InvalidateAbove removes all buffered blocks for the given payloadID where
-// blockIdx >= threshold. Used for truncate support.
-func (c *ReadBuffer) InvalidateAbove(payloadID string, threshold uint64) {
-	if c == nil {
-		return
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	idxSet, ok := c.byFile[payloadID]
-	if !ok {
-		return
-	}
-
-	for blockIdx := range idxSet {
-		if blockIdx >= threshold {
-			c.unlinkEntry(coordKey(payloadID, blockIdx))
-			delete(idxSet, blockIdx)
+	for _, h := range removedHashes {
+		if elem, ok := c.entries[h]; ok {
+			entry := elem.Value.(*cacheEntry)
+			c.curBytes -= int64(len(entry.data))
+			c.lru.Remove(elem)
+			delete(c.entries, h)
 		}
 	}
+	c.mu.Unlock()
 
-	if len(idxSet) == 0 {
-		delete(c.byFile, payloadID)
+	c.trackerMu.Lock()
+	delete(c.trackers, payloadID)
+	c.trackerMu.Unlock()
+}
+
+// OnRead is the sole prefetch hint API (CACHE-04). The engine calls
+// this after a successful ReadAt with the BlockRef hashes that
+// satisfied the read; the cache uses the per-payloadID sequential
+// tracker to decide whether to fire prefetch on the upcoming hashes.
+//
+// Tracker semantics:
+//
+//   - Empty hashes: explicit "reset" signal. Drop the tracker; no
+//     prefetch.
+//   - First read for a payload: create a tracker; depth=1; no prefetch
+//     yet (need seqThreshold = 3 reads to fire).
+//   - 3rd+ read on the same payload: schedule `depth` upcoming hashes
+//     from the running window. Double depth (capped at
+//     maxPrefetchDepth).
+//
+// fileSize is the file's logical size at read time; cached on the
+// tracker for future EOF-aware logic.
+func (c *Cache) OnRead(payloadID string, hashes []blockstore.ContentHash, fileSize uint64) {
+	if c == nil || c.closed.Load() {
+		return
+	}
+	if len(hashes) == 0 {
+		// Explicit reset signal: drop the tracker.
+		if payloadID == "" {
+			return
+		}
+		c.trackerMu.Lock()
+		delete(c.trackers, payloadID)
+		c.trackerMu.Unlock()
+		return
+	}
+
+	c.trackerMu.Lock()
+	tr, ok := c.trackers[payloadID]
+	if !ok {
+		tr = &seqTracker{
+			lastHashes: make([]blockstore.ContentHash, 0, seqThreshold),
+			depth:      1,
+		}
+		c.trackers[payloadID] = tr
+	}
+	tr.fileSize = fileSize
+	for _, h := range hashes {
+		tr.lastHashes = append(tr.lastHashes, h)
+		if len(tr.lastHashes) > seqThreshold {
+			tr.lastHashes = tr.lastHashes[len(tr.lastHashes)-seqThreshold:]
+		}
+	}
+	tr.allHashes = append(tr.allHashes, hashes...)
+	if maxWin := seqThreshold + maxPrefetchDepth; len(tr.allHashes) > maxWin {
+		tr.allHashes = tr.allHashes[len(tr.allHashes)-maxWin:]
+	}
+
+	var toPrefetch []blockstore.ContentHash
+	if len(tr.lastHashes) >= seqThreshold {
+		want := tr.depth
+		if want > maxPrefetchDepth {
+			want = maxPrefetchDepth
+		}
+		start := len(tr.allHashes) - want
+		if start < 0 {
+			start = 0
+		}
+		toPrefetch = append(toPrefetch, tr.allHashes[start:]...)
+		tr.depth *= 2
+		if tr.depth > maxPrefetchDepth {
+			tr.depth = maxPrefetchDepth
+		}
+	}
+	c.trackerMu.Unlock()
+
+	for _, h := range toPrefetch {
+		c.submitPrefetch(h)
 	}
 }
 
-// Contains checks if a block is present in the read buffer. Does not promote.
-func (c *ReadBuffer) Contains(payloadID string, blockIdx uint64) bool {
-	if c == nil {
-		return false
+// submitPrefetch enqueues a prefetch request, dropping silently when
+// the bounded queue is full (T-12-24).
+func (c *Cache) submitPrefetch(h blockstore.ContentHash) {
+	if c == nil || c.closed.Load() || c.reqCh == nil {
+		return
 	}
-
-	key := coordKey(payloadID, blockIdx)
-
-	c.mu.RLock()
-	_, ok := c.entries[key]
-	c.mu.RUnlock()
-	return ok
-}
-
-// MaxBytes returns the memory budget of the read buffer.
-// Returns 0 if the read buffer is nil (disabled).
-func (c *ReadBuffer) MaxBytes() int64 {
-	if c == nil {
-		return 0
+	select {
+	case c.reqCh <- prefetchReq{hash: h}:
+	default:
+		// queue full — drop (natural backpressure).
 	}
-	return c.maxBytes
 }
 
-// CacheStats holds read buffer statistics.
-type CacheStats struct {
-	Entries  int   `json:"entries"`   // Number of buffered blocks
-	CurBytes int64 `json:"cur_bytes"` // Current memory usage in bytes
-	MaxBytes int64 `json:"max_bytes"` // Memory budget in bytes
+// prefetchWorker is the consumer goroutine for the bounded prefetch
+// queue. Skips requests already in cache, calls loadFn, and Puts the
+// result. Exits on ctx cancellation.
+func (c *Cache) prefetchWorker(ctx context.Context) {
+	defer c.wg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case req, ok := <-c.reqCh:
+			if !ok {
+				return
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			if _, hit := c.Get(req.hash); hit {
+				continue
+			}
+			if c.loadFn == nil {
+				continue
+			}
+			data, err := c.loadFn(ctx, req.hash)
+			if err != nil {
+				continue
+			}
+			c.Put(req.hash, data)
+		}
+	}
 }
 
-// Stats returns a snapshot of read buffer statistics.
-// Returns zero-value stats if the read buffer is nil (disabled).
-func (c *ReadBuffer) Stats() CacheStats {
+// Stats returns a snapshot of Cache statistics.
+func (c *Cache) Stats() CacheStats {
 	if c == nil {
 		return CacheStats{}
 	}
@@ -402,150 +461,42 @@ func (c *ReadBuffer) Stats() CacheStats {
 	}
 }
 
-// SetPrefetcher attaches a prefetcher to this read buffer. The prefetcher is
-// created after the read buffer (in BlockStore.Start) so it must be set separately.
-func (c *ReadBuffer) SetPrefetcher(p *Prefetcher) {
+// Close stops the prefetch workers, drops all entries, and marks the
+// cache as closed. Idempotent. After Close, Get returns miss and Put
+// is a silent no-op.
+func (c *Cache) Close() error {
 	if c == nil {
-		return
+		return nil
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.prefetcher = p
-}
+	if !c.closed.CompareAndSwap(false, true) {
+		return nil
+	}
 
-// BlockDataFn loads a block's raw data from the local store.
-// Injected to avoid import cycles with the local package.
-type BlockDataFn func(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error)
-
-// InvalidateRange invalidates all read buffer entries covering the byte range
-// [offset, offset+length) and resets the prefetcher for the file.
-// Used by WriteAt to keep the read buffer consistent with writes.
-func (c *ReadBuffer) InvalidateRange(payloadID string, offset uint64, length int, blockSize uint64) {
-	if c == nil || length <= 0 {
-		return
+	if c.cancel != nil {
+		c.cancel()
 	}
-	startBlock := offset / blockSize
-	endBlock := (offset + uint64(length) - 1) / blockSize
-	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
-		c.Invalidate(payloadID, blockIdx)
-	}
-	c.resetPrefetcher(payloadID)
-}
-
-// InvalidateAboveSize invalidates all read buffer entries for blocks above
-// newSize bytes and resets the prefetcher. Used by Truncate.
-func (c *ReadBuffer) InvalidateAboveSize(payloadID string, newSize uint64, blockSize uint64) {
-	if c == nil {
-		return
-	}
-	newBlockCount := (newSize + blockSize - 1) / blockSize
-	c.InvalidateAbove(payloadID, newBlockCount)
-	c.resetPrefetcher(payloadID)
-}
-
-// InvalidateAndReset invalidates all read buffer entries for a file and resets
-// the prefetcher. Used by Delete.
-func (c *ReadBuffer) InvalidateAndReset(payloadID string) {
-	if c == nil {
-		return
-	}
-	c.InvalidateFile(payloadID)
-	c.resetPrefetcher(payloadID)
-}
-
-// NotifyRead informs the prefetcher about a read covering the byte range
-// [offset, offset+length). Each block in the range is reported individually
-// so multi-block reads are correctly detected as sequential.
-func (c *ReadBuffer) NotifyRead(payloadID string, offset, length, blockSize uint64) {
-	if c == nil || c.prefetcher == nil || length == 0 {
-		return
-	}
-	startBlock := offset / blockSize
-	endBlock := (offset + length - 1) / blockSize
-	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
-		c.prefetcher.OnRead(payloadID, blockIdx)
-	}
-}
-
-// FillFromStore reads full blocks from the local store and populates the read
-// buffer for the byte range [offset, offset+length). Skips blocks already present.
-func (c *ReadBuffer) FillFromStore(ctx context.Context, payloadID string, offset, length, blockSize uint64, getBlockData BlockDataFn) {
-	if c == nil || length == 0 {
-		return
-	}
-	startBlock := offset / blockSize
-	endBlock := (offset + length - 1) / blockSize
-	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
-		if c.Contains(payloadID, blockIdx) {
-			continue
+	c.wg.Wait()
+	if c.reqCh != nil {
+		// Drain any remaining queued requests defensively.
+		for {
+			select {
+			case <-c.reqCh:
+			default:
+				goto drained
+			}
 		}
-		data, dataSize, err := getBlockData(ctx, payloadID, blockIdx)
-		if err == nil && data != nil {
-			c.Put(payloadID, blockIdx, data, dataSize)
-		}
-	}
-}
-
-// resetPrefetcher resets the prefetcher state for a payloadID.
-func (c *ReadBuffer) resetPrefetcher(payloadID string) {
-	if c.prefetcher != nil {
-		c.prefetcher.Reset(payloadID)
-	}
-}
-
-// Close clears all read buffer state. After Close, Get returns miss for all keys.
-func (c *ReadBuffer) Close() {
-	if c == nil {
-		return
+	drained:
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.entries = make(map[blockKey]*list.Element)
+	c.entries = make(map[blockstore.ContentHash]*list.Element)
 	c.lru.Init()
-	c.byFile = make(map[string]map[uint64]struct{})
 	c.curBytes = 0
-}
+	c.mu.Unlock()
 
-// evictLRU removes the least recently used entry. Must be called under WLock.
-func (c *ReadBuffer) evictLRU() {
-	back := c.lru.Back()
-	if back == nil {
-		return
-	}
-	c.removeEntry(back)
-}
+	c.trackerMu.Lock()
+	c.trackers = make(map[string]*seqTracker)
+	c.trackerMu.Unlock()
 
-// unlinkEntry removes an entry from the primary index and LRU list by key.
-// Does NOT touch the secondary index (byFile). Must be called under WLock.
-func (c *ReadBuffer) unlinkEntry(key blockKey) {
-	elem, ok := c.entries[key]
-	if !ok {
-		return
-	}
-	entry := elem.Value.(*cacheEntry)
-	c.curBytes -= int64(entry.dataSize)
-	c.lru.Remove(elem)
-	delete(c.entries, key)
-}
-
-// removeEntry removes a list element from all data structures including the
-// secondary index. Must be called under WLock.
-func (c *ReadBuffer) removeEntry(elem *list.Element) {
-	entry := elem.Value.(*cacheEntry)
-	c.unlinkEntry(entry.key)
-
-	// Secondary byFile index only tracks coordinate-space entries. CAS
-	// and legacy-string entries are not file-scoped (CAS spans files;
-	// legacy keys are dual-read-window only and aged out per-key).
-	if entry.key.kind != keyKindCoord {
-		return
-	}
-	if idxSet, ok := c.byFile[entry.key.payloadID]; ok {
-		delete(idxSet, entry.key.blockIdx)
-		if len(idxSet) == 0 {
-			delete(c.byFile, entry.key.payloadID)
-		}
-	}
+	return nil
 }
