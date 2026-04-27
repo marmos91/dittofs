@@ -337,9 +337,13 @@ func ProcessLeaseCreateContext(
 		return nil, nil
 	}
 
-	// Parse the lease create context. Track whether V1 (32-byte) or V2 (52-byte)
-	// so the response uses matching format -- SMB 2.1 clients expect V1 responses.
-	isV1 := len(ctxData) < LeaseV2ContextSize
+	// Parse the lease create context. Track whether the REQUEST is V1
+	// (32-byte) or V2 (52-byte). Per smbtorture v2_epoch2 / v2_epoch3 the
+	// RESPONSE format follows the lease's STICKY version (set on first
+	// grant, immutable thereafter), not the current request's size — so
+	// requestIsV1 is the initial guess only; the final responseIsV1 is
+	// resolved below from the lease manager's recorded version.
+	requestIsV1 := len(ctxData) < LeaseV2ContextSize
 	leaseReq, err := DecodeLeaseCreateContext(ctxData)
 	if err != nil {
 		logger.Debug("ProcessLeaseCreateContext: invalid lease context", "error", err)
@@ -386,6 +390,26 @@ func ProcessLeaseCreateContext(
 		epoch = 0
 	}
 
+	// Record the lease's protocol version on FIRST grant (sticky semantics:
+	// once set the version does not change across reopens, even if a later
+	// request uses the other version's create-context format). Skipped on
+	// denials and ErrLeaseBreakInProgress (no new state). Per smbtorture
+	// v2_epoch2 (V2 grant + V1 reopen → V2 response with running epoch) and
+	// v2_epoch3 (V1 grant + V2 upgrade → V1 response throughout).
+	if err == nil && grantedState != lock.LeaseStateNone {
+		leaseMgr.MarkLeaseVersionIfUnset(leaseReq.LeaseKey, !requestIsV1)
+	}
+
+	// Resolve the response version from the lease's recorded version. Fall
+	// back to the request's format when the lease has no recorded version
+	// — that case only happens on denial (no grant occurred to mark) and on
+	// ErrLeaseBreakInProgress (referencing a lease already marked at its
+	// original grant; the !IsLeaseVersionKnown branch is defensive).
+	responseIsV1 := requestIsV1
+	if leaseMgr.IsLeaseVersionKnown(leaseReq.LeaseKey) {
+		responseIsV1 = !leaseMgr.IsV2(leaseReq.LeaseKey)
+	}
+
 	// Per MS-SMB2 3.3.5.9.8: a V2 lease grant is a state change that MUST
 	// advance Epoch by 1 over the client's requested value — unconditionally,
 	// including a first-grant Epoch=0 (server must respond with Epoch=1).
@@ -403,7 +427,12 @@ func ProcessLeaseCreateContext(
 	// epoch increment per MS-SMB2 §2.2.14.2.11. Echo the client's requested
 	// epoch so the response is internally consistent — smbtorture lease-epoch
 	// asserts lease_epoch == requested when state == None.
-	if !isV1 && err == nil {
+	//
+	// Gated on !responseIsV1 (not !requestIsV1): a V1-established lease
+	// stays V1 in the wire response even when the client sends a V2 RqLs
+	// blob with an epoch field — the epoch is not echoed because the V1
+	// response format has no epoch slot.
+	if !responseIsV1 && err == nil {
 		if grantedState != lock.LeaseStateNone {
 			nextEpoch := leaseReq.Epoch + 1
 			if nextEpoch > epoch {
@@ -413,14 +442,6 @@ func ProcessLeaseCreateContext(
 		} else {
 			epoch = leaseReq.Epoch
 		}
-	}
-
-	// Record V1/V2 so break notifications carry NewEpoch correctly
-	// (MS-SMB2 §2.2.23.2 — V1 breaks MUST send NewEpoch = 0). ACK-in-progress
-	// (ErrLeaseBreakInProgress) responses reference an already-tracked lease
-	// — skip re-marking to avoid racing the in-flight state transition.
-	if !isV1 && err == nil && grantedState != lock.LeaseStateNone {
-		leaseMgr.MarkLeaseV2(leaseReq.LeaseKey)
 	}
 
 	// Build response context.
@@ -447,7 +468,7 @@ func ProcessLeaseCreateContext(
 		ParentLeaseKey: parentKey,
 		HasParent:      hasParent,
 		Epoch:          epoch,
-		IsV1:           isV1,
+		IsV1:           responseIsV1,
 	}, nil
 }
 

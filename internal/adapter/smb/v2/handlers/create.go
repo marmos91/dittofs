@@ -660,7 +660,13 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 						// lease untracked and subsequent breaks would send
 						// NewEpoch = 0 even though the lease is V2 (#417).
 						if grantedState != lock.LeaseStateNone {
-							h.LeaseManager.MarkLeaseV2(restored.LeaseKey)
+							// Lease-backed durable handles require SMB 3.0+, so the
+							// reconnect path always re-establishes a V2 lease.
+							// MarkLeaseVersionIfUnset preserves any pre-existing
+							// version recorded by the original grant; an absent
+							// mark (e.g. cleared by intervening release) is set to
+							// V2 here.
+							h.LeaseManager.MarkLeaseVersionIfUnset(restored.LeaseKey, true)
 							restored.OplockLevel = OplockLevelLease
 						}
 					}

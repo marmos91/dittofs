@@ -66,7 +66,17 @@ type LeaseManager struct {
 	// for V2 leases it carries the incremented lease epoch. Sending a
 	// non-zero NewEpoch on a V1 break trips the client (#417 root cause
 	// for smb2.multichannel.leases.test1-3).
-	leaseV2 map[string]bool // hex(leaseKey) -> true iff V2 lease
+	//
+	// Sticky version semantics: per smbtorture v2_epoch2 / v2_epoch3, the
+	// lease's protocol version is set on the FIRST grant for a given key
+	// and does not change across reopens — even when a subsequent request
+	// uses the other version's create-context format. To distinguish
+	// V1-established (mark exists, value false) from
+	// version-not-yet-known (mark absent), we track BOTH versions
+	// explicitly via parallel maps; a single bool can't carry the third
+	// state. leaseV1 is true iff first grant was V1.
+	leaseV2 map[string]bool // hex(leaseKey) -> true iff V2-established
+	leaseV1 map[string]bool // hex(leaseKey) -> true iff V1-established
 	mu      sync.RWMutex
 }
 
@@ -83,6 +93,7 @@ func NewLeaseManager(resolver LockManagerResolver, notifier LeaseBreakNotifier) 
 		sessionMap: make(map[string]uint64),
 		leaseShare: make(map[string]string),
 		leaseV2:    make(map[string]bool),
+		leaseV1:    make(map[string]bool),
 	}
 }
 
@@ -675,29 +686,52 @@ func (lm *LeaseManager) removeLeaseMapping(keyHex string) {
 	delete(lm.sessionMap, keyHex)
 	delete(lm.leaseShare, keyHex)
 	delete(lm.leaseV2, keyHex)
+	delete(lm.leaseV1, keyHex)
 	lm.mu.Unlock()
 }
 
-// MarkLeaseV2 records that the lease with the given key was granted from an
-// SMB2_CREATE_REQUEST_LEASE_V2 context. Callers must invoke this after a
-// successful RequestLease whenever the originating create context was V2 so
-// that subsequent break notifications carry the epoch per MS-SMB2 §2.2.23.2.
-// Leases not marked are treated as V1 and get NewEpoch = 0 on break.
-func (lm *LeaseManager) MarkLeaseV2(leaseKey [16]byte) {
+// MarkLeaseVersionIfUnset records the lease's protocol version on FIRST grant
+// for the given key. Subsequent calls on the same key are no-ops — per
+// smbtorture v2_epoch2 / v2_epoch3 the version is sticky from the originating
+// grant: a V2-established lease keeps responding V2 even to V1 reopens, and
+// a V1-established lease keeps responding V1 even when a V2 upgrade comes in.
+//
+// Callers must invoke this after a successful RequestLease whenever the
+// grantedState is non-None, passing isV2 derived from the request's
+// create-context size (V2 = 52 bytes, V1 = 32 bytes).
+func (lm *LeaseManager) MarkLeaseVersionIfUnset(leaseKey [16]byte, isV2 bool) {
 	keyHex := hex.EncodeToString(leaseKey[:])
 	lm.mu.Lock()
-	lm.leaseV2[keyHex] = true
-	lm.mu.Unlock()
+	defer lm.mu.Unlock()
+	if lm.leaseV1[keyHex] || lm.leaseV2[keyHex] {
+		return
+	}
+	if isV2 {
+		lm.leaseV2[keyHex] = true
+	} else {
+		lm.leaseV1[keyHex] = true
+	}
 }
 
-// IsV2 reports whether the lease was granted from a V2 create context.
-// Returns false for unknown keys (safe default: treat as V1 and send
-// NewEpoch = 0 rather than leak a non-zero epoch).
+// IsV2 reports whether the lease was first granted from a V2 create context.
+// Returns false for V1-established leases AND for unknown keys (safe default:
+// treat as V1 and send NewEpoch = 0 rather than leak a non-zero epoch).
 func (lm *LeaseManager) IsV2(leaseKey [16]byte) bool {
 	keyHex := hex.EncodeToString(leaseKey[:])
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 	return lm.leaseV2[keyHex]
+}
+
+// IsLeaseVersionKnown reports whether the lease's version has been recorded
+// (i.e. a successful grant has occurred for this key and MarkLeaseVersionIfUnset
+// fired). Used by the response-encoding path to decide whether to use the
+// established version or fall back to the current request's format.
+func (lm *LeaseManager) IsLeaseVersionKnown(leaseKey [16]byte) bool {
+	keyHex := hex.EncodeToString(leaseKey[:])
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	return lm.leaseV1[keyHex] || lm.leaseV2[keyHex]
 }
 
 // resolveLockManager resolves the LockManager for a share name.
