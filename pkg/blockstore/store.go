@@ -5,16 +5,38 @@ import (
 	"time"
 )
 
-// FileBlockStore defines operations for content-addressed file block management.
+// FileBlockStore defines content-addressed block CRUD for the engine.
 //
-// FileBlock is the single block entity in DittoFS. Each block is content-addressed
-// by its SHA-256 hash and reference-counted for dedup and GC.
+// Narrowed to 6 methods in Phase 12 (META-03 / D-09): GetByHash, Put,
+// Delete, IncrementRefCount, DecrementRefCount, ListPending. Block
+// identity is hash-keyed at the contract level; backends still use
+// `id VARCHAR PRIMARY KEY + hash non-unique index` internally to
+// preserve the Phase 11 IN-3-02 / WR-4-01 multi-row-per-hash
+// tolerance for legacy data.
+//
+// The Phase 11 contract: Put returned nil for any
+// hash-already-present-on-another-row case. Phase 12 D-37 fixes the
+// dedup short-circuit so the upload path produces only one row per
+// hash going forward; legacy data may still hold dual rows. The
+// conformance test storetest.testPut_TwoIDsSameHash pins
+// this contract for legacy tolerance.
+//
+// Enumeration of all FileBlocks across the store moved up to
+// MetadataStore.EnumerateFileBlocks in Phase 12 (D-08).
+//
+// Backends MAY (and currently do) implement additional methods
+// (GetFileBlock, ListFileBlocks, ListRemoteBlocks, ListUnreferenced)
+// for engine-internal use; those are accessed via a wider engine-
+// internal interface, NOT via this public surface.
 type FileBlockStore interface {
-	// GetFileBlock retrieves a file block by its ID.
-	// Returns ErrFileBlockNotFound if not found.
-	GetFileBlock(ctx context.Context, id string) (*FileBlock, error)
+	// GetByHash returns any FileBlock with the given content hash, or
+	// (nil, nil) when absent. The "any" wording matters: legacy data
+	// may have multiple rows per hash; callers (the engine dedup
+	// short-circuit) treat the result as best-effort and proceed with
+	// any one row's BlockStoreKey. Renamed from FindFileBlockByHash.
+	GetByHash(ctx context.Context, hash ContentHash) (*FileBlock, error)
 
-	// PutFileBlock stores or updates a file block.
+	// Put creates or replaces a FileBlock by ID.
 	//
 	// Upsert semantics are by ID: an INSERT for a new ID, or an UPDATE
 	// when the ID already exists. The Hash column is NOT a uniqueness
@@ -28,68 +50,69 @@ type FileBlockStore interface {
 	//   - memory + badger maintain hash→id maps that silently overwrite
 	//     on collision (the most recent writer wins the hash index).
 	//   - postgres has a non-UNIQUE partial index on (hash WHERE NOT NULL)
-	//     for FindFileBlockByHash speed (see migrations 000010 and 000011).
+	//     for GetByHash speed (see migrations 000010 and 000011).
 	//     The index was UNIQUE in the original 000010 cut; that violated
 	//     this contract by rejecting cross-row hash duplicates and was
 	//     dropped to a regular partial index in 000011 to match the
 	//     memory + badger behavior.
 	//
-	// The pinned contract: PutFileBlock returns nil for any
-	// hash-already-present-on-another-row case. FindFileBlockByHash MAY
+	// The pinned contract: Put returns nil for any
+	// hash-already-present-on-another-row case. GetByHash MAY
 	// return either of the colliding rows. Callers (the dedup short-
 	// circuit in engine.uploadOne) treat the lookup as best-effort —
 	// they re-PUT with the donor's BlockStoreKey regardless.
 	//
-	// The conformance test storetest.testPutFileBlock_TwoIDsSameHash
-	// pins this contract across all three backends.
-	PutFileBlock(ctx context.Context, block *FileBlock) error
+	// The conformance test storetest.testPut_TwoIDsSameHash
+	// pins this contract across all three backends. Renamed from
+	// PutFileBlock.
+	Put(ctx context.Context, block *FileBlock) error
 
-	// DeleteFileBlock removes a file block by its ID.
-	// Returns ErrFileBlockNotFound if not found.
-	DeleteFileBlock(ctx context.Context, id string) error
+	// Delete removes a FileBlock by ID. Returns ErrFileBlockNotFound
+	// if not found. Renamed from DeleteFileBlock.
+	//
+	// Collision check (2026-04-26): no backend struct has a
+	// pre-existing method named exactly `Delete()`; the rename is
+	// collision-free.
+	Delete(ctx context.Context, id string) error
 
-	// IncrementRefCount atomically increments a block's RefCount.
+	// IncrementRefCount atomically bumps RefCount for the given
+	// FileBlock id.
 	IncrementRefCount(ctx context.Context, id string) error
 
-	// DecrementRefCount atomically decrements a block's RefCount.
-	// Returns the new count. When 0, the block is a GC candidate.
+	// DecrementRefCount atomically decrements; returns the new
+	// count. RefCount=0 marks the block as a GC candidate.
 	DecrementRefCount(ctx context.Context, id string) (uint32, error)
 
-	// FindFileBlockByHash looks up a finalized block by its content hash.
-	// Returns nil without error if not found (used for dedup checks).
-	FindFileBlockByHash(ctx context.Context, hash ContentHash) (*FileBlock, error)
+	// ListPending returns up-to-limit Pending FileBlocks older than
+	// olderThan, for the syncer claim path. Replaces the legacy
+	// ListLocalBlocks (Phase 11 narrowed local→pending semantics
+	// already; this is just the rename).
+	ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*FileBlock, error)
+}
 
-	// ListLocalBlocks returns blocks that are in Local state (complete, on disk,
-	// not yet synced to remote) and older than the given duration.
-	// If limit > 0, at most limit blocks are returned. If limit <= 0, all are returned.
-	ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*FileBlock, error)
+// EngineFileBlockStore is the engine-internal extension of FileBlockStore.
+// Phase 12 (META-03 / D-09) narrowed the public FileBlockStore to 6
+// methods; the engine + local/fs packages still need the by-ID and
+// per-file lookups for the dual-read read path, recovery, dedup-delete,
+// and stats fan-out (see Phase 12 plan 04 SUMMARY for the full caller
+// list under pkg/blockstore/{engine,local/fs}/).
+//
+// All three metadata backends (memory/badger/postgres) satisfy this
+// interface — the methods are concrete on the backend struct, just not
+// on the public FileBlockStore surface. Phase 13/14 will eliminate the
+// remaining call sites by routing reads through FileAttr.Blocks
+// (D-13/D-20); the interface goes away with them.
+type EngineFileBlockStore interface {
+	FileBlockStore
 
-	// ListRemoteBlocks returns blocks that are both stored locally and confirmed
-	// in remote store, ordered by LRU (oldest LastAccess first), up to limit.
-	ListRemoteBlocks(ctx context.Context, limit int) ([]*FileBlock, error)
+	// GetFileBlock retrieves a FileBlock by ID. Returns
+	// ErrFileBlockNotFound if absent.
+	GetFileBlock(ctx context.Context, id string) (*FileBlock, error)
 
-	// ListUnreferenced returns blocks with RefCount=0, up to limit.
-	// These are candidates for garbage collection.
-	ListUnreferenced(ctx context.Context, limit int) ([]*FileBlock, error)
-
-	// ListFileBlocks returns all blocks belonging to a file, ordered by block index.
-	// Block IDs follow the format "{payloadID}/{blockIdx}", so this method returns
-	// all blocks whose ID starts with "{payloadID}/".
-	// Returns empty slice (not nil) if no blocks found.
+	// ListFileBlocks returns every FileBlock whose ID begins with
+	// "{payloadID}/", sorted by parsed numeric block index. Returns
+	// an empty (non-nil) slice when no blocks match.
 	ListFileBlocks(ctx context.Context, payloadID string) ([]*FileBlock, error)
-
-	// EnumerateFileBlocks streams every FileBlock's ContentHash through fn in
-	// implementation-defined order. Returns the first non-nil error from fn or
-	// from the underlying store iterator. Implementations MUST NOT load the
-	// full set into application memory — use server-side cursors or prefix
-	// iterators.
-	//
-	// Used by the GC mark phase (Phase 11). Callers respect ctx.Done() to
-	// bound iteration time. Implementations SHOULD check ctx every batch.
-	//
-	// Zero-valued ContentHashes (legacy rows pre-CAS) are emitted; callers
-	// skip them as needed. See GC-01 / D-02.
-	EnumerateFileBlocks(ctx context.Context, fn func(ContentHash) error) error
 }
 
 // Reader defines read operations on the block store.

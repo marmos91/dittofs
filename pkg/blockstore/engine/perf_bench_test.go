@@ -276,7 +276,7 @@ func BenchmarkRandWriteCAS(b *testing.B) {
 			LastAccess:        time.Now(),
 			CreatedAt:         time.Now(),
 		}
-		if err := f.memMeta.PutFileBlock(ctx, fb); err != nil {
+		if err := f.memMeta.Put(ctx, fb); err != nil {
 			b.Fatalf("seed PutFileBlock: %v", err)
 		}
 		jobs[i] = job{fb: fb, path: path}

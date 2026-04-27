@@ -41,7 +41,7 @@ func (m *Syncer) DeleteWithRefCount(ctx context.Context, payloadID string, block
 				}
 			}
 
-			if err := m.fileBlockStore.DeleteFileBlock(ctx, blockID); err != nil {
+			if err := m.fileBlockStore.Delete(ctx, blockID); err != nil {
 				logger.Warn("Failed to delete block metadata",
 					"blockID", blockID,
 					"error", err)

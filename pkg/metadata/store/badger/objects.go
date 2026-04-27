@@ -20,9 +20,16 @@ import (
 // This file implements the FileBlockStore interface for the BadgerDB metadata store.
 // It provides content-addressed file block tracking for deduplication and caching.
 //
+// Phase 12 (META-03 / D-09): the FileBlockStore interface narrowed to 6
+// methods. The backend retains the legacy GetFileBlock + ListFileBlocks
+// helpers as concrete methods on the struct (not on the public interface)
+// for engine-internal callers.
+//
 // Key Prefixes:
 //   - fb:{id}          - FileBlock data (keyed by UUID)
 //   - fb-hash:{hash}   - Hash index: content hash -> block ID
+//   - fb-local:{id}    - Local-state secondary index for ListPending
+//   - fb-file:{pid}:{n}- Per-file secondary index for ListFileBlocks
 //
 // Thread Safety: All operations use BadgerDB transactions for ACID guarantees.
 //
@@ -42,7 +49,9 @@ var _ blockstore.FileBlockStore = (*BadgerMetadataStore)(nil)
 // FileBlock Operations
 // ============================================================================
 
-// GetFileBlock retrieves a file block by its ID.
+// GetFileBlock retrieves a file block by its ID. Not on the narrowed
+// FileBlockStore interface (Phase 12 META-03 / D-09); kept as a backend
+// method for engine-internal callers.
 func (s *BadgerMetadataStore) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
 	var block metadata.FileBlock
 	err := s.db.View(func(txn *badger.Txn) error {
@@ -64,8 +73,9 @@ func (s *BadgerMetadataStore) GetFileBlock(ctx context.Context, id string) (*met
 	return &block, nil
 }
 
-// PutFileBlock stores or updates a file block.
-func (s *BadgerMetadataStore) PutFileBlock(ctx context.Context, block *metadata.FileBlock) error {
+// Put stores or updates a file block. Renamed from PutFileBlock in
+// Phase 12 (META-03 / D-09) to match the narrowed interface.
+func (s *BadgerMetadataStore) Put(ctx context.Context, block *metadata.FileBlock) error {
 	return s.db.Update(func(txn *badger.Txn) error {
 		key := []byte(fileBlockPrefix + block.ID)
 		val, err := json.Marshal(block)
@@ -76,8 +86,8 @@ func (s *BadgerMetadataStore) PutFileBlock(ctx context.Context, block *metadata.
 			return err
 		}
 
-		// Maintain local index: add when Local, remove otherwise.
-		// This allows ListLocalBlocks to iterate O(local) instead of O(all).
+		// Maintain local index: add when Pending, remove otherwise.
+		// This allows ListPending to iterate O(local) instead of O(all).
 		localKey := []byte(fileBlockLocalPrefix + block.ID)
 		if block.State == metadata.BlockStatePending {
 			if err := txn.Set(localKey, nil); err != nil {
@@ -105,8 +115,9 @@ func (s *BadgerMetadataStore) PutFileBlock(ctx context.Context, block *metadata.
 	})
 }
 
-// DeleteFileBlock removes a file block by its ID.
-func (s *BadgerMetadataStore) DeleteFileBlock(ctx context.Context, id string) error {
+// Delete removes a file block by its ID. Renamed from DeleteFileBlock in
+// Phase 12 (META-03 / D-09).
+func (s *BadgerMetadataStore) Delete(ctx context.Context, id string) error {
 	return s.db.Update(func(txn *badger.Txn) error {
 		key := []byte(fileBlockPrefix + id)
 
@@ -205,9 +216,10 @@ func (s *BadgerMetadataStore) DecrementRefCount(ctx context.Context, id string) 
 	return newCount, err
 }
 
-// FindFileBlockByHash looks up a finalized block by its content hash.
-// Returns nil without error if not found.
-func (s *BadgerMetadataStore) FindFileBlockByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
+// GetByHash looks up a finalized block by its content hash.
+// Returns nil without error if not found. Renamed from FindFileBlockByHash
+// in Phase 12 (META-03 / D-09).
+func (s *BadgerMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
 	var block metadata.FileBlock
 	var found bool
 	err := s.db.View(func(txn *badger.Txn) error {
@@ -256,14 +268,16 @@ func (s *BadgerMetadataStore) FindFileBlockByHash(ctx context.Context, hash meta
 	return &block, nil
 }
 
-// ListLocalBlocks returns blocks in Local state (complete, on disk, not yet
-// synced to remote) older than the given duration.
+// ListPending returns blocks in Pending state (complete, on disk, not yet
+// synced to remote) older than the given duration. Renamed from
+// ListLocalBlocks in Phase 12 (META-03 / D-09); the underlying semantics
+// already match Phase 11 STATE-01 ("Local" was renamed Pending).
 // If limit > 0, at most limit blocks are returned.
 //
 // Uses the fb-local: secondary index for O(local) iteration instead of
 // scanning all fb: entries. This eliminates the BadgerDB full-table scan
 // that was the root cause of sequential write throughput degradation.
-func (s *BadgerMetadataStore) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
+func (s *BadgerMetadataStore) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
 	// olderThan <= 0 means "no age filter" — return every local block.
 	var cutoff time.Time
 	filterByAge := olderThan > 0
@@ -312,78 +326,10 @@ func (s *BadgerMetadataStore) ListLocalBlocks(ctx context.Context, olderThan tim
 	return result, err
 }
 
-// ListRemoteBlocks returns blocks that are both cached locally and confirmed
-// in remote store, ordered by LRU (oldest LastAccess first), up to limit.
-func (s *BadgerMetadataStore) ListRemoteBlocks(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
-	var candidates []*metadata.FileBlock
-	err := s.db.View(func(txn *badger.Txn) error {
-		prefix := []byte(fileBlockPrefix)
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = prefix
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			var block metadata.FileBlock
-			if err := item.Value(func(val []byte) error {
-				return json.Unmarshal(val, &block)
-			}); err != nil {
-				continue
-			}
-			if block.HasLocalFile() && block.State == metadata.BlockStateRemote {
-				candidates = append(candidates, &block)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// Sort by LastAccess (oldest first)
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].LastAccess.Before(candidates[j].LastAccess)
-	})
-
-	if limit > 0 && len(candidates) > limit {
-		candidates = candidates[:limit]
-	}
-	return candidates, nil
-}
-
-// ListUnreferenced returns blocks with RefCount=0, up to limit.
-func (s *BadgerMetadataStore) ListUnreferenced(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
-	var result []*metadata.FileBlock
-	err := s.db.View(func(txn *badger.Txn) error {
-		prefix := []byte(fileBlockPrefix)
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = prefix
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			var block metadata.FileBlock
-			if err := item.Value(func(val []byte) error {
-				return json.Unmarshal(val, &block)
-			}); err != nil {
-				continue
-			}
-			if block.RefCount == 0 {
-				result = append(result, &block)
-				if limit > 0 && len(result) >= limit {
-					break
-				}
-			}
-		}
-		return nil
-	})
-	return result, err
-}
-
 // ListFileBlocks returns all blocks belonging to a file, ordered by block index.
 // Uses the fb-file:{payloadID}: secondary index for efficient O(file_blocks) queries.
+// Not on the narrowed FileBlockStore interface (Phase 12 META-03 / D-09);
+// kept as a backend method for engine-internal callers.
 func (s *BadgerMetadataStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
 	var result []*metadata.FileBlock
 	err := s.db.View(func(txn *badger.Txn) error {
@@ -437,6 +383,8 @@ func (s *BadgerMetadataStore) ListFileBlocks(ctx context.Context, payloadID stri
 // EnumerateFileBlocks streams every FileBlock's ContentHash through fn using
 // a Badger prefix iterator over fb:. The iterator yields one row per block
 // (no allocation of a full slice in application memory). See GC-01 / D-02.
+// Phase 12 (META-03 / D-08): lifted from FileBlockStore to MetadataStore —
+// implementation unchanged.
 func (s *BadgerMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
 	return s.db.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
@@ -487,12 +435,12 @@ func (tx *badgerTransaction) GetFileBlock(ctx context.Context, id string) (*meta
 	return tx.store.GetFileBlock(ctx, id)
 }
 
-func (tx *badgerTransaction) PutFileBlock(ctx context.Context, block *metadata.FileBlock) error {
-	return tx.store.PutFileBlock(ctx, block)
+func (tx *badgerTransaction) Put(ctx context.Context, block *metadata.FileBlock) error {
+	return tx.store.Put(ctx, block)
 }
 
-func (tx *badgerTransaction) DeleteFileBlock(ctx context.Context, id string) error {
-	return tx.store.DeleteFileBlock(ctx, id)
+func (tx *badgerTransaction) Delete(ctx context.Context, id string) error {
+	return tx.store.Delete(ctx, id)
 }
 
 func (tx *badgerTransaction) IncrementRefCount(ctx context.Context, id string) error {
@@ -503,20 +451,12 @@ func (tx *badgerTransaction) DecrementRefCount(ctx context.Context, id string) (
 	return tx.store.DecrementRefCount(ctx, id)
 }
 
-func (tx *badgerTransaction) FindFileBlockByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
-	return tx.store.FindFileBlockByHash(ctx, hash)
+func (tx *badgerTransaction) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
+	return tx.store.GetByHash(ctx, hash)
 }
 
-func (tx *badgerTransaction) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	return tx.store.ListLocalBlocks(ctx, olderThan, limit)
-}
-
-func (tx *badgerTransaction) ListRemoteBlocks(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
-	return tx.store.ListRemoteBlocks(ctx, limit)
-}
-
-func (tx *badgerTransaction) ListUnreferenced(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
-	return tx.store.ListUnreferenced(ctx, limit)
+func (tx *badgerTransaction) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
+	return tx.store.ListPending(ctx, olderThan, limit)
 }
 
 func (tx *badgerTransaction) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {

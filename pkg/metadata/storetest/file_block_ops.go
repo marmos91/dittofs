@@ -8,39 +8,51 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// fileBlockStoreLegacy captures the legacy GetFileBlock + ListFileBlocks
+// methods that Phase 12 (META-03 / D-09) removed from the public
+// FileBlockStore interface but kept on each backend struct for engine-
+// internal callers. The conformance suite type-asserts the factory's
+// MetadataStore to this interface so the existing tests can still drive
+// the methods without depending on a concrete backend type.
+type fileBlockStoreLegacy interface {
+	GetFileBlock(ctx context.Context, id string) (*blockstore.FileBlock, error)
+	ListFileBlocks(ctx context.Context, payloadID string) ([]*blockstore.FileBlock, error)
+}
+
+// asLegacy returns the legacy backend interface for a MetadataStore, or
+// fails the test with a clear message when the backend does not provide
+// the kept-but-not-on-interface methods.
+func asLegacy(t *testing.T, store metadata.MetadataStore) fileBlockStoreLegacy {
+	t.Helper()
+	legacy, ok := store.(fileBlockStoreLegacy)
+	if !ok {
+		t.Skipf("backend %T does not implement fileBlockStoreLegacy (GetFileBlock/ListFileBlocks); engine-internal methods unavailable on this backend", store)
+	}
+	return legacy
+}
 
 // runFileBlockOpsTests runs the FileBlockStore conformance suite.
 // MetadataStore embeds FileBlockStore, so the StoreFactory works directly.
 func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 	t.Helper()
 
-	t.Run("ListLocalBlocks", func(t *testing.T) {
-		testListLocalBlocks(t, factory)
+	t.Run("ListPending", func(t *testing.T) {
+		testListPending(t, factory)
 	})
 
-	t.Run("ListLocalBlocks_Limit", func(t *testing.T) {
-		testListLocalBlocksLimit(t, factory)
+	t.Run("ListPending_Limit", func(t *testing.T) {
+		testListPendingLimit(t, factory)
 	})
 
-	t.Run("ListLocalBlocks_OlderThan", func(t *testing.T) {
-		testListLocalBlocksOlderThan(t, factory)
+	t.Run("ListPending_OlderThan", func(t *testing.T) {
+		testListPendingOlderThan(t, factory)
 	})
 
-	t.Run("ListLocalBlocks_EmptyStore", func(t *testing.T) {
-		testListLocalBlocksEmptyStore(t, factory)
-	})
-
-	t.Run("ListRemoteBlocks", func(t *testing.T) {
-		testListRemoteBlocks(t, factory)
-	})
-
-	t.Run("ListRemoteBlocks_Limit", func(t *testing.T) {
-		testListRemoteBlocksLimit(t, factory)
-	})
-
-	t.Run("ListRemoteBlocks_EmptyStore", func(t *testing.T) {
-		testListRemoteBlocksEmptyStore(t, factory)
+	t.Run("ListPending_EmptyStore", func(t *testing.T) {
+		testListPendingEmptyStore(t, factory)
 	})
 
 	t.Run("ListFileBlocks", func(t *testing.T) {
@@ -75,12 +87,12 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 	// Phase 11 WR-4-01: the dedup short-circuit (engine.uploadOne) writes a
 	// second FileBlock with a fresh ID but the same ContentHash whenever two
 	// file regions hash-match. Hash is NOT a uniqueness key at the contract
-	// level (see FileBlockStore.PutFileBlock godoc). Backends that enforce
+	// level (see FileBlockStore.Put godoc). Backends that enforce
 	// hash uniqueness reject the second writer, leak the donor's RefCount,
 	// and leave the FileBlock in Syncing forever. This regression test pins
 	// the contract across all three backends.
-	t.Run("PutFileBlock_TwoIDsSameHash", func(t *testing.T) {
-		testPutFileBlock_TwoIDsSameHash(t, factory)
+	t.Run("Put_TwoIDsSameHash", func(t *testing.T) {
+		testPut_TwoIDsSameHash(t, factory)
 	})
 
 	// Phase 11 Plan 06 (GC-01 / D-02): the GC mark phase calls
@@ -124,10 +136,10 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 }
 
 // ============================================================================
-// ListLocalBlocks Tests
+// ListPending Tests
 // ============================================================================
 
-func testListLocalBlocks(t *testing.T, factory StoreFactory) {
+func testListPending(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
@@ -140,31 +152,31 @@ func testListLocalBlocks(t *testing.T, factory StoreFactory) {
 		{ID: "file-d/0", State: blockstore.BlockStateSyncing, LocalPath: "/cache/d0", DataSize: 500, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
 	}
 	for _, b := range blocks {
-		if err := store.PutFileBlock(ctx, b); err != nil {
-			t.Fatalf("PutFileBlock(%s) failed: %v", b.ID, err)
+		if err := store.Put(ctx, b); err != nil {
+			t.Fatalf("Put(%s) failed: %v", b.ID, err)
 		}
 	}
 
-	result, err := store.ListLocalBlocks(ctx, 0, 0)
+	result, err := store.ListPending(ctx, 0, 0)
 	if err != nil {
-		t.Fatalf("ListLocalBlocks() error: %v", err)
+		t.Fatalf("ListPending() error: %v", err)
 	}
 
 	// Phase 11 (STATE-01) collapsed Dirty + Local into Pending; ListLocalBlocks
 	// now returns every Pending row with a LocalPath. Three of the seeded
 	// blocks (file-a/0, file-a/1, file-b/0) match.
 	if len(result) != 3 {
-		t.Fatalf("ListLocalBlocks() returned %d blocks, want 3 (all Pending+LocalPath)", len(result))
+		t.Fatalf("ListPending() returned %d blocks, want 3 (all Pending+LocalPath)", len(result))
 	}
 
 	for _, b := range result {
 		if b.State != blockstore.BlockStatePending {
-			t.Errorf("ListLocalBlocks() returned block %s with state %v, want Pending", b.ID, b.State)
+			t.Errorf("ListPending() returned block %s with state %v, want Pending", b.ID, b.State)
 		}
 	}
 }
 
-func testListLocalBlocksLimit(t *testing.T, factory StoreFactory) {
+func testListPendingLimit(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
@@ -175,21 +187,21 @@ func testListLocalBlocksLimit(t *testing.T, factory StoreFactory) {
 			LocalPath: fmt.Sprintf("/cache/x%d", i), DataSize: 100, RefCount: 1,
 			LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour),
 		}
-		if err := store.PutFileBlock(ctx, b); err != nil {
-			t.Fatalf("PutFileBlock(%s) failed: %v", b.ID, err)
+		if err := store.Put(ctx, b); err != nil {
+			t.Fatalf("Put(%s) failed: %v", b.ID, err)
 		}
 	}
 
-	result, err := store.ListLocalBlocks(ctx, 0, 1)
+	result, err := store.ListPending(ctx, 0, 1)
 	if err != nil {
-		t.Fatalf("ListLocalBlocks(limit=1) error: %v", err)
+		t.Fatalf("ListPending(limit=1) error: %v", err)
 	}
 	if len(result) != 1 {
-		t.Fatalf("ListLocalBlocks(limit=1) returned %d blocks, want 1", len(result))
+		t.Fatalf("ListPending(limit=1) returned %d blocks, want 1", len(result))
 	}
 }
 
-func testListLocalBlocksOlderThan(t *testing.T, factory StoreFactory) {
+func testListPendingOlderThan(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
@@ -204,117 +216,47 @@ func testListLocalBlocksOlderThan(t *testing.T, factory StoreFactory) {
 		DataSize: 100, RefCount: 1,
 		LastAccess: time.Now(), CreatedAt: time.Now(),
 	}
-	if err := store.PutFileBlock(ctx, old); err != nil {
-		t.Fatalf("PutFileBlock(old) failed: %v", err)
+	if err := store.Put(ctx, old); err != nil {
+		t.Fatalf("Put(old) failed: %v", err)
 	}
-	if err := store.PutFileBlock(ctx, recent); err != nil {
-		t.Fatalf("PutFileBlock(recent) failed: %v", err)
+	if err := store.Put(ctx, recent); err != nil {
+		t.Fatalf("Put(recent) failed: %v", err)
 	}
 
 	// olderThan=1h should only return the old block
-	result, err := store.ListLocalBlocks(ctx, time.Hour, 0)
+	result, err := store.ListPending(ctx, time.Hour, 0)
 	if err != nil {
-		t.Fatalf("ListLocalBlocks(olderThan=1h) error: %v", err)
+		t.Fatalf("ListPending(olderThan=1h) error: %v", err)
 	}
 	if len(result) != 1 {
-		t.Fatalf("ListLocalBlocks(olderThan=1h) returned %d blocks, want 1", len(result))
+		t.Fatalf("ListPending(olderThan=1h) returned %d blocks, want 1", len(result))
 	}
 	if result[0].ID != "file-old/0" {
-		t.Errorf("ListLocalBlocks(olderThan=1h) returned %s, want file-old/0", result[0].ID)
+		t.Errorf("ListPending(olderThan=1h) returned %s, want file-old/0", result[0].ID)
 	}
 }
 
-func testListLocalBlocksEmptyStore(t *testing.T, factory StoreFactory) {
+func testListPendingEmptyStore(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
-	result, err := store.ListLocalBlocks(ctx, 0, 0)
+	result, err := store.ListPending(ctx, 0, 0)
 	if err != nil {
-		t.Fatalf("ListLocalBlocks(empty) error: %v", err)
+		t.Fatalf("ListPending(empty) error: %v", err)
 	}
 	if len(result) != 0 {
-		t.Errorf("ListLocalBlocks(empty) returned %d blocks, want 0", len(result))
-	}
-}
-
-// ============================================================================
-// ListRemoteBlocks Tests
-// ============================================================================
-
-func testListRemoteBlocks(t *testing.T, factory StoreFactory) {
-	store := factory(t)
-	ctx := t.Context()
-
-	// Create 5 blocks with different states
-	blocks := []*blockstore.FileBlock{
-		{ID: "file-a/0", State: blockstore.BlockStateRemote, LocalPath: "/cache/a0", BlockStoreKey: "s3://a0", DataSize: 100, RefCount: 1, LastAccess: time.Now().Add(-2 * time.Hour), CreatedAt: time.Now()},
-		{ID: "file-a/1", State: blockstore.BlockStateRemote, LocalPath: "/cache/a1", BlockStoreKey: "s3://a1", DataSize: 200, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now()},
-		{ID: "file-b/0", State: blockstore.BlockStateRemote, LocalPath: "", BlockStoreKey: "s3://b0", DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},                 // Not cached
-		{ID: "file-c/0", State: blockstore.BlockStatePending, LocalPath: "/cache/c0", DataSize: 400, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)}, // Local, not Remote
-		{ID: "file-d/0", State: blockstore.BlockStatePending, LocalPath: "/cache/d0", DataSize: 500, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)}, // Dirty
-	}
-	for _, b := range blocks {
-		if err := store.PutFileBlock(ctx, b); err != nil {
-			t.Fatalf("PutFileBlock(%s) failed: %v", b.ID, err)
-		}
-	}
-
-	result, err := store.ListRemoteBlocks(ctx, 0)
-	if err != nil {
-		t.Fatalf("ListRemoteBlocks() error: %v", err)
-	}
-
-	if len(result) != 2 {
-		t.Fatalf("ListRemoteBlocks() returned %d blocks, want 2 (Remote + cached)", len(result))
-	}
-
-	// Should be ordered by LastAccess (oldest first = LRU)
-	if result[0].LastAccess.After(result[1].LastAccess) {
-		t.Errorf("ListRemoteBlocks() not ordered by LRU: %v > %v", result[0].LastAccess, result[1].LastAccess)
-	}
-}
-
-func testListRemoteBlocksLimit(t *testing.T, factory StoreFactory) {
-	store := factory(t)
-	ctx := t.Context()
-
-	// Create 3 Remote + cached blocks
-	for i := 0; i < 3; i++ {
-		b := &blockstore.FileBlock{
-			ID: fmt.Sprintf("file-r/%d", i), State: blockstore.BlockStateRemote,
-			LocalPath: fmt.Sprintf("/cache/r%d", i), BlockStoreKey: fmt.Sprintf("s3://r%d", i),
-			DataSize: 100, RefCount: 1,
-			LastAccess: time.Now().Add(-time.Duration(i) * time.Hour), CreatedAt: time.Now(),
-		}
-		if err := store.PutFileBlock(ctx, b); err != nil {
-			t.Fatalf("PutFileBlock(%s) failed: %v", b.ID, err)
-		}
-	}
-
-	result, err := store.ListRemoteBlocks(ctx, 1)
-	if err != nil {
-		t.Fatalf("ListRemoteBlocks(limit=1) error: %v", err)
-	}
-	if len(result) != 1 {
-		t.Fatalf("ListRemoteBlocks(limit=1) returned %d blocks, want 1", len(result))
-	}
-}
-
-func testListRemoteBlocksEmptyStore(t *testing.T, factory StoreFactory) {
-	store := factory(t)
-	ctx := t.Context()
-
-	result, err := store.ListRemoteBlocks(ctx, 0)
-	if err != nil {
-		t.Fatalf("ListRemoteBlocks(empty) error: %v", err)
-	}
-	if len(result) != 0 {
-		t.Errorf("ListRemoteBlocks(empty) returned %d blocks, want 0", len(result))
+		t.Errorf("ListPending(empty) returned %d blocks, want 0", len(result))
 	}
 }
 
 // ============================================================================
 // ListFileBlocks Tests
+//
+// Phase 12 (META-03 / D-09): ListFileBlocks is no longer on the public
+// FileBlockStore interface but is retained as a backend method for engine-
+// internal callers. Tests use the legacyFileBlockStore type assertion to
+// reach the method on each backend; backends that don't implement it
+// (none today) skip cleanly.
 // ============================================================================
 
 func testListFileBlocks(t *testing.T, factory StoreFactory) {
@@ -330,13 +272,13 @@ func testListFileBlocks(t *testing.T, factory StoreFactory) {
 		{ID: "file-B/1", State: blockstore.BlockStatePending, LocalPath: "/cache/b1", DataSize: 500, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
 	}
 	for _, b := range blocks {
-		if err := store.PutFileBlock(ctx, b); err != nil {
-			t.Fatalf("PutFileBlock(%s) failed: %v", b.ID, err)
+		if err := store.Put(ctx, b); err != nil {
+			t.Fatalf("Put(%s) failed: %v", b.ID, err)
 		}
 	}
 
 	// Query file-A
-	resultA, err := store.ListFileBlocks(ctx, "file-A")
+	resultA, err := asLegacy(t, store).ListFileBlocks(ctx, "file-A")
 	if err != nil {
 		t.Fatalf("ListFileBlocks(file-A) error: %v", err)
 	}
@@ -353,7 +295,7 @@ func testListFileBlocks(t *testing.T, factory StoreFactory) {
 	}
 
 	// Query file-B
-	resultB, err := store.ListFileBlocks(ctx, "file-B")
+	resultB, err := asLegacy(t, store).ListFileBlocks(ctx, "file-B")
 	if err != nil {
 		t.Fatalf("ListFileBlocks(file-B) error: %v", err)
 	}
@@ -362,7 +304,7 @@ func testListFileBlocks(t *testing.T, factory StoreFactory) {
 	}
 
 	// Query nonexistent
-	resultN, err := store.ListFileBlocks(ctx, "nonexistent")
+	resultN, err := asLegacy(t, store).ListFileBlocks(ctx, "nonexistent")
 	if err != nil {
 		t.Fatalf("ListFileBlocks(nonexistent) error: %v", err)
 	}
@@ -391,12 +333,12 @@ func testListFileBlocksOrdering(t *testing.T, factory StoreFactory) {
 			LocalPath: fmt.Sprintf("/cache/s%d", idx), DataSize: uint32(idx * 100),
 			RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now(),
 		}
-		if err := store.PutFileBlock(ctx, b); err != nil {
-			t.Fatalf("PutFileBlock(%s) failed: %v", b.ID, err)
+		if err := store.Put(ctx, b); err != nil {
+			t.Fatalf("Put(%s) failed: %v", b.ID, err)
 		}
 	}
 
-	result, err := store.ListFileBlocks(ctx, "file-sort")
+	result, err := asLegacy(t, store).ListFileBlocks(ctx, "file-sort")
 	if err != nil {
 		t.Fatalf("ListFileBlocks(file-sort) error: %v", err)
 	}
@@ -434,13 +376,13 @@ func testListFileBlocksMixedStates(t *testing.T, factory StoreFactory) {
 		if state == blockstore.BlockStateRemote {
 			b.BlockStoreKey = "s3://mix"
 		}
-		if err := store.PutFileBlock(ctx, b); err != nil {
-			t.Fatalf("PutFileBlock(%s) failed: %v", b.ID, err)
+		if err := store.Put(ctx, b); err != nil {
+			t.Fatalf("Put(%s) failed: %v", b.ID, err)
 		}
 	}
 
 	// ListFileBlocks should return ALL blocks regardless of state
-	result, err := store.ListFileBlocks(ctx, "file-mix")
+	result, err := asLegacy(t, store).ListFileBlocks(ctx, "file-mix")
 	if err != nil {
 		t.Fatalf("ListFileBlocks(file-mix) error: %v", err)
 	}
@@ -464,7 +406,7 @@ func testListFileBlocksEmptyStore(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
-	result, err := store.ListFileBlocks(ctx, "any")
+	result, err := asLegacy(t, store).ListFileBlocks(ctx, "any")
 	if err != nil {
 		t.Fatalf("ListFileBlocks(empty) error: %v", err)
 	}
@@ -498,11 +440,11 @@ func testPutGet_LastSyncAttemptAt(t *testing.T, factory StoreFactory) {
 		LastSyncAttemptAt: stamp,
 	}
 
-	if err := store.PutFileBlock(ctx, in); err != nil {
+	if err := store.Put(ctx, in); err != nil {
 		t.Fatalf("PutFileBlock failed: %v", err)
 	}
 
-	out, err := store.GetFileBlock(ctx, in.ID)
+	out, err := asLegacy(t, store).GetFileBlock(ctx, in.ID)
 	if err != nil {
 		t.Fatalf("GetFileBlock failed: %v", err)
 	}
@@ -533,11 +475,11 @@ func testPutGet_LastSyncAttemptAt_Zero(t *testing.T, factory StoreFactory) {
 		// LastSyncAttemptAt deliberately left zero.
 	}
 
-	if err := store.PutFileBlock(ctx, in); err != nil {
+	if err := store.Put(ctx, in); err != nil {
 		t.Fatalf("PutFileBlock failed: %v", err)
 	}
 
-	out, err := store.GetFileBlock(ctx, in.ID)
+	out, err := asLegacy(t, store).GetFileBlock(ctx, in.ID)
 	if err != nil {
 		t.Fatalf("GetFileBlock failed: %v", err)
 	}
@@ -548,7 +490,7 @@ func testPutGet_LastSyncAttemptAt_Zero(t *testing.T, factory StoreFactory) {
 	}
 }
 
-// testPutFileBlock_TwoIDsSameHash asserts that two distinct FileBlock IDs
+// testPut_TwoIDsSameHash asserts that two distinct FileBlock IDs
 // sharing the same ContentHash both round-trip through PutFileBlock without
 // error. Phase 11 WR-4-01: the dedup short-circuit (engine.uploadOne) emits
 // such pairs whenever two file regions hash-match (e.g. all-zero blocks
@@ -561,7 +503,7 @@ func testPutGet_LastSyncAttemptAt_Zero(t *testing.T, factory StoreFactory) {
 // returns one of the two rows non-deterministically). The assertion
 // scope is therefore: both PutFileBlock calls return nil AND
 // FindFileBlockByHash returns one of the two IDs (no error, no nil).
-func testPutFileBlock_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
+func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
@@ -592,25 +534,25 @@ func testPutFileBlock_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 		CreatedAt:     time.Now(),
 	}
 
-	if err := store.PutFileBlock(ctx, a); err != nil {
-		t.Fatalf("PutFileBlock(A) failed: %v", err)
+	if err := store.Put(ctx, a); err != nil {
+		t.Fatalf("Put(A) failed: %v", err)
 	}
 	// THE assertion: the second writer with a colliding hash must NOT error.
-	if err := store.PutFileBlock(ctx, b); err != nil {
-		t.Fatalf("PutFileBlock(B) with duplicate hash failed: %v "+
+	if err := store.Put(ctx, b); err != nil {
+		t.Fatalf("Put(B) with duplicate hash failed: %v "+
 			"(WR-4-01: hash is not a uniqueness key — backends MUST tolerate "+
 			"cross-row hash duplicates from the dedup short-circuit)", err)
 	}
 
 	// Both rows must be retrievable by their IDs.
-	gotA, err := store.GetFileBlock(ctx, a.ID)
+	gotA, err := asLegacy(t, store).GetFileBlock(ctx, a.ID)
 	if err != nil {
 		t.Fatalf("GetFileBlock(A) failed: %v", err)
 	}
 	if gotA.Hash != hash {
 		t.Errorf("GetFileBlock(A).Hash = %x, want %x", gotA.Hash[:8], hash[:8])
 	}
-	gotB, err := store.GetFileBlock(ctx, b.ID)
+	gotB, err := asLegacy(t, store).GetFileBlock(ctx, b.ID)
 	if err != nil {
 		t.Fatalf("GetFileBlock(B) failed: %v", err)
 	}
@@ -621,7 +563,7 @@ func testPutFileBlock_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 	// FindFileBlockByHash must return one of the two — exact identity is
 	// implementation-defined (memory + badger return whichever wrote the
 	// hash→id map last; postgres returns whichever row the planner picks).
-	found, err := store.FindFileBlockByHash(ctx, hash)
+	found, err := store.GetByHash(ctx, hash)
 	if err != nil {
 		t.Fatalf("FindFileBlockByHash failed: %v", err)
 	}
@@ -690,8 +632,8 @@ func testEnumerateFileBlocks_SingleFile(t *testing.T, factory StoreFactory) {
 			LastAccess:    time.Now(),
 			CreatedAt:     time.Now(),
 		}
-		if err := store.PutFileBlock(ctx, b); err != nil {
-			t.Fatalf("PutFileBlock(%s) failed: %v", b.ID, err)
+		if err := store.Put(ctx, b); err != nil {
+			t.Fatalf("Put(%s) failed: %v", b.ID, err)
 		}
 	}
 
@@ -738,8 +680,8 @@ func testEnumerateFileBlocks_LargeFanout(t *testing.T, factory StoreFactory) {
 				LastAccess:    time.Now(),
 				CreatedAt:     time.Now(),
 			}
-			if err := store.PutFileBlock(ctx, b); err != nil {
-				t.Fatalf("PutFileBlock(%s) failed: %v", b.ID, err)
+			if err := store.Put(ctx, b); err != nil {
+				t.Fatalf("Put(%s) failed: %v", b.ID, err)
 			}
 		}
 	}
@@ -792,7 +734,7 @@ func testEnumerateFileBlocks_FnErrorAborts(t *testing.T, factory StoreFactory) {
 			LastAccess: time.Now(),
 			CreatedAt:  time.Now(),
 		}
-		if err := store.PutFileBlock(ctx, b); err != nil {
+		if err := store.Put(ctx, b); err != nil {
 			t.Fatalf("PutFileBlock failed: %v", err)
 		}
 	}
@@ -844,7 +786,7 @@ func testEnumerateFileBlocks_ContextCancellation(t *testing.T, factory StoreFact
 			LastAccess: time.Now(),
 			CreatedAt:  time.Now(),
 		}
-		if err := store.PutFileBlock(ctx, b); err != nil {
+		if err := store.Put(ctx, b); err != nil {
 			t.Fatalf("PutFileBlock failed: %v", err)
 		}
 	}
@@ -885,8 +827,8 @@ func testEnumerateFileBlocks_ZeroHashEmitted(t *testing.T, factory StoreFactory)
 		CreatedAt:  time.Now(),
 		// Hash deliberately zero.
 	}
-	if err := store.PutFileBlock(ctx, legacy); err != nil {
-		t.Fatalf("PutFileBlock(zero) failed: %v", err)
+	if err := store.Put(ctx, legacy); err != nil {
+		t.Fatalf("Put(zero) failed: %v", err)
 	}
 	finalized := &blockstore.FileBlock{
 		ID:            "file-zero/1",
@@ -899,8 +841,8 @@ func testEnumerateFileBlocks_ZeroHashEmitted(t *testing.T, factory StoreFactory)
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}
-	if err := store.PutFileBlock(ctx, finalized); err != nil {
-		t.Fatalf("PutFileBlock(finalized) failed: %v", err)
+	if err := store.Put(ctx, finalized); err != nil {
+		t.Fatalf("Put(finalized) failed: %v", err)
 	}
 
 	zeroSeen, finalizedSeen := false, false
@@ -961,8 +903,8 @@ func testEnumerateFileBlocks_CorruptHashFailsClosed(t *testing.T, factory StoreF
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}
-	if err := store.PutFileBlock(ctx, good); err != nil {
-		t.Fatalf("PutFileBlock(good) failed: %v", err)
+	if err := store.Put(ctx, good); err != nil {
+		t.Fatalf("Put(good) failed: %v", err)
 	}
 
 	// Inject a corrupt-hash row directly. The exact "malformed" payload is

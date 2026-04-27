@@ -129,7 +129,7 @@ func TestDualRead_CASRowRoutesToVerified(t *testing.T) {
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}
-	if err := env.ms.PutFileBlock(ctx, fb); err != nil {
+	if err := env.ms.Put(ctx, fb); err != nil {
 		t.Fatalf("PutFileBlock: %v", err)
 	}
 
@@ -179,7 +179,7 @@ func TestDualRead_LegacyRowRoutesToReadBlock(t *testing.T) {
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}
-	if err := env.ms.PutFileBlock(ctx, fb); err != nil {
+	if err := env.ms.Put(ctx, fb); err != nil {
 		t.Fatalf("PutFileBlock: %v", err)
 	}
 
@@ -250,7 +250,7 @@ func TestDualRead_CASRowMismatchSurfacesError(t *testing.T) {
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}
-	if err := env.ms.PutFileBlock(ctx, fb); err != nil {
+	if err := env.ms.Put(ctx, fb); err != nil {
 		t.Fatalf("PutFileBlock: %v", err)
 	}
 
@@ -293,7 +293,7 @@ func TestDualRead_CASMissingObjectFailsClosed(t *testing.T) {
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}
-	if err := env.ms.PutFileBlock(ctx, fb); err != nil {
+	if err := env.ms.Put(ctx, fb); err != nil {
 		t.Fatalf("PutFileBlock: %v", err)
 	}
 
@@ -330,7 +330,7 @@ func TestDualRead_LegacyMissingObjectReturnsNil(t *testing.T) {
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}
-	if err := env.ms.PutFileBlock(ctx, fb); err != nil {
+	if err := env.ms.Put(ctx, fb); err != nil {
 		t.Fatalf("PutFileBlock: %v", err)
 	}
 

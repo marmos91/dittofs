@@ -450,7 +450,7 @@ func testDownloadOnLocalMiss(t *testing.T, env *testEnv) {
 		t.Fatalf("WriteBlock failed: %v", err)
 	}
 	// Register FileBlock so resolveStoreKey can find the block store key
-	if err := env.fileBlockStore.PutFileBlock(ctx, &blockstore.FileBlock{
+	if err := env.fileBlockStore.Put(ctx, &blockstore.FileBlock{
 		ID:            fmt.Sprintf("%s/0", payloadID),
 		State:         blockstore.BlockStateRemote,
 		BlockStoreKey: blockKey,

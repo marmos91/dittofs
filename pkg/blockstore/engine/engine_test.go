@@ -13,40 +13,37 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// stubFileBlockStore is a minimal FileBlockStore for testing that satisfies the
-// interface but stores nothing. We only need it to construct a Syncer.
+// stubFileBlockStore is a minimal blockstore.EngineFileBlockStore for
+// testing that satisfies the interface but stores nothing. We only need
+// it to construct a Syncer. Phase 12 (META-03 / D-09): the public
+// FileBlockStore narrowed to 6 methods; the engine still consumes the
+// wider EngineFileBlockStore (adds GetFileBlock + ListFileBlocks).
 type stubFileBlockStore struct{}
 
-func (s *stubFileBlockStore) GetFileBlock(_ context.Context, _ string) (*blockstore.FileBlock, error) {
-	return nil, blockstore.ErrFileBlockNotFound
+func (s *stubFileBlockStore) GetByHash(_ context.Context, _ blockstore.ContentHash) (*blockstore.FileBlock, error) {
+	return nil, nil
 }
-func (s *stubFileBlockStore) PutFileBlock(_ context.Context, _ *blockstore.FileBlock) error {
+func (s *stubFileBlockStore) Put(_ context.Context, _ *blockstore.FileBlock) error {
 	return nil
 }
-func (s *stubFileBlockStore) DeleteFileBlock(_ context.Context, _ string) error { return nil }
+func (s *stubFileBlockStore) Delete(_ context.Context, _ string) error { return nil }
 func (s *stubFileBlockStore) IncrementRefCount(_ context.Context, _ string) error {
 	return nil
 }
 func (s *stubFileBlockStore) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
-func (s *stubFileBlockStore) FindFileBlockByHash(_ context.Context, _ blockstore.ContentHash) (*blockstore.FileBlock, error) {
+func (s *stubFileBlockStore) ListPending(_ context.Context, _ time.Duration, _ int) ([]*blockstore.FileBlock, error) {
 	return nil, nil
 }
-func (s *stubFileBlockStore) ListLocalBlocks(_ context.Context, _ time.Duration, _ int) ([]*blockstore.FileBlock, error) {
-	return nil, nil
-}
-func (s *stubFileBlockStore) ListRemoteBlocks(_ context.Context, _ int) ([]*blockstore.FileBlock, error) {
-	return nil, nil
-}
-func (s *stubFileBlockStore) ListUnreferenced(_ context.Context, _ int) ([]*blockstore.FileBlock, error) {
-	return nil, nil
+
+// Engine-internal surface (kept off the public FileBlockStore per
+// META-03 / D-09).
+func (s *stubFileBlockStore) GetFileBlock(_ context.Context, _ string) (*blockstore.FileBlock, error) {
+	return nil, blockstore.ErrFileBlockNotFound
 }
 func (s *stubFileBlockStore) ListFileBlocks(_ context.Context, _ string) ([]*blockstore.FileBlock, error) {
 	return nil, nil
-}
-func (s *stubFileBlockStore) EnumerateFileBlocks(_ context.Context, _ func(blockstore.ContentHash) error) error {
-	return nil
 }
 
 // newTestEngine creates an engine.BlockStore with memory local store, nil remote,

@@ -315,7 +315,37 @@ type MetadataStore interface {
 	Shares         // Share lifecycle and handle management
 	ServerConfig   // Server configuration and capabilities
 	Transactor     // Transaction support for atomic operations
-	FileBlockStore // Content-addressed block management
+	FileBlockStore // Content-addressed block management (narrowed to 6 methods in Phase 12 — META-03 / D-09)
+
+	// EnumerateFileBlocks streams every FileBlock's ContentHash through fn
+	// in implementation-defined order. Returns the first non-nil error
+	// from fn or from the underlying store iterator. Implementations MUST
+	// stream via cursors and respect ctx.Done() — never load the full set
+	// into application memory. See Phase 11 D-02.
+	//
+	// Lifted from FileBlockStore in Phase 12 (META-03 / D-08): the
+	// operation is store-wide, not per-block, and belongs at the
+	// MetadataStore tier. Used by the GC mark phase (Phase 11) and the
+	// INV-02 audit (Phase 12). Zero-valued ContentHashes (legacy rows
+	// pre-CAS) are emitted; callers skip them as needed.
+	EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error
+
+	// GetFileBlock retrieves a FileBlock by its ID. Engine-internal
+	// surface: Phase 12 (META-03 / D-09) narrowed the public
+	// FileBlockStore to 6 methods, but the read-path resolver
+	// (engine.fetch.resolveFileBlock), the dedup-delete path
+	// (engine.dedup.DeleteWithRefCount), and the recovery scan
+	// (local/fs/recovery.go) still need a by-ID lookup until Phase 13/14
+	// reroutes reads through FileAttr.Blocks. See blockstore.EngineFileBlockStore.
+	GetFileBlock(ctx context.Context, id string) (*blockstore.FileBlock, error)
+
+	// ListFileBlocks returns every FileBlock whose ID begins with
+	// "{payloadID}/", sorted by parsed numeric block index. Returns an
+	// empty (non-nil) slice when no blocks match. Engine-internal
+	// surface: used by syncer GetFileSize/Exists, BlockStore stats fan-
+	// out, and local/fs eviction. Same Phase 13/14 deprecation timeline
+	// as GetFileBlock above.
+	ListFileBlocks(ctx context.Context, payloadID string) ([]*blockstore.FileBlock, error)
 
 	// ========================================================================
 	// Usage Tracking

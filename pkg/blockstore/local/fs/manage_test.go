@@ -345,7 +345,7 @@ func TestManageSetEvictionDisabled(t *testing.T) {
 		LastAccess:    time.Now().Add(-time.Hour),
 		CreatedAt:     time.Now().Add(-time.Hour),
 	}
-	if err := bc.blockStore.PutFileBlock(ctx, fb); err != nil {
+	if err := bc.blockStore.Put(ctx, fb); err != nil {
 		t.Fatalf("PutFileBlock failed: %v", err)
 	}
 

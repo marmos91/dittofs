@@ -57,7 +57,7 @@ func (m *Syncer) syncFileBlock(ctx context.Context, fb *blockstore.FileBlock) er
 	}
 	fb.State = blockstore.BlockStateSyncing
 	fb.LastSyncAttemptAt = time.Now()
-	if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
+	if err := m.fileBlockStore.Put(ctx, fb); err != nil {
 		return fmt.Errorf("mark block %s syncing: %w", fb.ID, err)
 	}
 	return m.uploadOne(ctx, fb)
@@ -98,7 +98,7 @@ func (m *Syncer) uploadOne(ctx context.Context, fb *blockstore.FileBlock) error 
 	// itself still leaks a refcount on the donor (no decrement path
 	// reverses it on file delete) — see WR-03 follow-up; for now we at
 	// least do not also swallow the error path.
-	if existing, derr := m.fileBlockStore.FindFileBlockByHash(ctx, hash); derr == nil && existing != nil && existing.IsRemote() {
+	if existing, derr := m.fileBlockStore.GetByHash(ctx, hash); derr == nil && existing != nil && existing.IsRemote() {
 		if err := m.fileBlockStore.IncrementRefCount(ctx, existing.ID); err != nil {
 			return fmt.Errorf("dedup increment refcount on donor %s: %w", existing.ID, err)
 		}
@@ -106,7 +106,7 @@ func (m *Syncer) uploadOne(ctx context.Context, fb *blockstore.FileBlock) error 
 		fb.DataSize = uint32(len(data))
 		fb.BlockStoreKey = existing.BlockStoreKey
 		fb.State = blockstore.BlockStateRemote
-		if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
+		if err := m.fileBlockStore.Put(ctx, fb); err != nil {
 			return fmt.Errorf("persist dedup block %s: %w", fb.ID, err)
 		}
 		logger.Debug("uploadOne dedup: hash already remote", "blockID", fb.ID, "key", fb.BlockStoreKey)
@@ -125,7 +125,7 @@ func (m *Syncer) uploadOne(ctx context.Context, fb *blockstore.FileBlock) error 
 	fb.DataSize = uint32(len(data))
 	fb.BlockStoreKey = casKey
 	fb.State = blockstore.BlockStateRemote
-	if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
+	if err := m.fileBlockStore.Put(ctx, fb); err != nil {
 		// S3 object exists; row stayed Syncing. GC + janitor will resolve
 		// (D-11/D-14). INV-03 honored — Remote is not persisted.
 		return fmt.Errorf("mark remote block %s: %w", fb.ID, err)

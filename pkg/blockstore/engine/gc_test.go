@@ -54,7 +54,7 @@ func (r *gcMSReconciler) SharesForGC() []string { return append([]string(nil), r
 // putBlock seeds a FileBlock with a non-zero hash on the given metadata store.
 func putBlock(t *testing.T, st metadata.MetadataStore, id string, h blockstore.ContentHash) {
 	t.Helper()
-	if err := st.PutFileBlock(t.Context(), &blockstore.FileBlock{
+	if err := st.Put(t.Context(), &blockstore.FileBlock{
 		ID:            id,
 		Hash:          h,
 		State:         blockstore.BlockStateRemote,
@@ -124,7 +124,7 @@ func TestGCMarkSweep_MarkPopulatesLiveSet(t *testing.T) {
 		putBlock(t, st, fmt.Sprintf("file-x/%d", i), hashes[i%3])
 	}
 	// One legacy row with zero hash.
-	if err := st.PutFileBlock(ctx, &blockstore.FileBlock{
+	if err := st.Put(ctx, &blockstore.FileBlock{
 		ID:        "legacy/0",
 		State:     blockstore.BlockStatePending,
 		LocalPath: "/cache/legacy",

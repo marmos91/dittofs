@@ -15,45 +15,48 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// countingFileBlockStore wraps a blockstore.FileBlockStore and counts calls
-// per method. Used by TestLocalWritePath_NoFileBlockStoreCall to assert that
-// the local write hot path (WriteAt / flushBlock / tryDirectDiskWrite) and
-// eviction no longer touch the FileBlockStore directly (TD-02d / D-19).
+// countingFileBlockStore wraps a blockstore.EngineFileBlockStore and
+// counts calls per method. Used by TestLocalWritePath_NoFileBlockStoreCall
+// to assert that the local write hot path (WriteAt / flushBlock /
+// tryDirectDiskWrite) and eviction no longer touch the FileBlockStore
+// directly (TD-02d / D-19).
 //
 // Counters are atomic so tests may observe them without racing the background
 // SyncFileBlocks goroutine that Start() launches.
+//
+// Phase 12 (META-03 / D-09): wrapped surface narrowed to the 6-method
+// FileBlockStore plus the engine-internal GetFileBlock + ListFileBlocks
+// kept on each backend struct (see blockstore.EngineFileBlockStore).
 type countingFileBlockStore struct {
-	inner blockstore.FileBlockStore
+	inner blockstore.EngineFileBlockStore
 
-	getFileBlock        atomic.Int64
-	putFileBlock        atomic.Int64
-	deleteFileBlock     atomic.Int64
-	incrementRefCount   atomic.Int64
-	decrementRefCount   atomic.Int64
-	findFileBlockByHash atomic.Int64
-	listLocalBlocks     atomic.Int64
-	listRemoteBlocks    atomic.Int64
-	listUnreferenced    atomic.Int64
-	listFileBlocks      atomic.Int64
+	get               atomic.Int64 // GetFileBlock (engine-internal)
+	put               atomic.Int64 // Put (was PutFileBlock)
+	del               atomic.Int64 // Delete (was DeleteFileBlock)
+	incrementRefCount atomic.Int64
+	decrementRefCount atomic.Int64
+	getByHash         atomic.Int64 // GetByHash (was FindFileBlockByHash)
+	listPending       atomic.Int64 // ListPending (was ListLocalBlocks)
+	listFileBlocks    atomic.Int64 // engine-internal
 }
 
-func newCountingFileBlockStore(inner blockstore.FileBlockStore) *countingFileBlockStore {
+func newCountingFileBlockStore(inner blockstore.EngineFileBlockStore) *countingFileBlockStore {
 	return &countingFileBlockStore{inner: inner}
 }
 
 func (c *countingFileBlockStore) GetFileBlock(ctx context.Context, id string) (*blockstore.FileBlock, error) {
-	c.getFileBlock.Add(1)
+	c.get.Add(1)
 	return c.inner.GetFileBlock(ctx, id)
 }
 
-func (c *countingFileBlockStore) PutFileBlock(ctx context.Context, block *blockstore.FileBlock) error {
-	c.putFileBlock.Add(1)
-	return c.inner.PutFileBlock(ctx, block)
+func (c *countingFileBlockStore) Put(ctx context.Context, block *blockstore.FileBlock) error {
+	c.put.Add(1)
+	return c.inner.Put(ctx, block)
 }
 
-func (c *countingFileBlockStore) DeleteFileBlock(ctx context.Context, id string) error {
-	c.deleteFileBlock.Add(1)
-	return c.inner.DeleteFileBlock(ctx, id)
+func (c *countingFileBlockStore) Delete(ctx context.Context, id string) error {
+	c.del.Add(1)
+	return c.inner.Delete(ctx, id)
 }
 
 func (c *countingFileBlockStore) IncrementRefCount(ctx context.Context, id string) error {
@@ -66,24 +69,14 @@ func (c *countingFileBlockStore) DecrementRefCount(ctx context.Context, id strin
 	return c.inner.DecrementRefCount(ctx, id)
 }
 
-func (c *countingFileBlockStore) FindFileBlockByHash(ctx context.Context, hash blockstore.ContentHash) (*blockstore.FileBlock, error) {
-	c.findFileBlockByHash.Add(1)
-	return c.inner.FindFileBlockByHash(ctx, hash)
+func (c *countingFileBlockStore) GetByHash(ctx context.Context, hash blockstore.ContentHash) (*blockstore.FileBlock, error) {
+	c.getByHash.Add(1)
+	return c.inner.GetByHash(ctx, hash)
 }
 
-func (c *countingFileBlockStore) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*blockstore.FileBlock, error) {
-	c.listLocalBlocks.Add(1)
-	return c.inner.ListLocalBlocks(ctx, olderThan, limit)
-}
-
-func (c *countingFileBlockStore) ListRemoteBlocks(ctx context.Context, limit int) ([]*blockstore.FileBlock, error) {
-	c.listRemoteBlocks.Add(1)
-	return c.inner.ListRemoteBlocks(ctx, limit)
-}
-
-func (c *countingFileBlockStore) ListUnreferenced(ctx context.Context, limit int) ([]*blockstore.FileBlock, error) {
-	c.listUnreferenced.Add(1)
-	return c.inner.ListUnreferenced(ctx, limit)
+func (c *countingFileBlockStore) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*blockstore.FileBlock, error) {
+	c.listPending.Add(1)
+	return c.inner.ListPending(ctx, olderThan, limit)
 }
 
 func (c *countingFileBlockStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*blockstore.FileBlock, error) {
@@ -91,42 +84,34 @@ func (c *countingFileBlockStore) ListFileBlocks(ctx context.Context, payloadID s
 	return c.inner.ListFileBlocks(ctx, payloadID)
 }
 
-func (c *countingFileBlockStore) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
-	return c.inner.EnumerateFileBlocks(ctx, fn)
-}
-
 // snapshot captures the current call counts for comparison.
 type fbsCallSnapshot struct {
-	get, put, del, inc, dec, find, listLocal, listRemote, listUnref, listFile int64
+	get, put, del, inc, dec, find, listPending, listFile int64
 }
 
 func (c *countingFileBlockStore) snapshot() fbsCallSnapshot {
 	return fbsCallSnapshot{
-		get:        c.getFileBlock.Load(),
-		put:        c.putFileBlock.Load(),
-		del:        c.deleteFileBlock.Load(),
-		inc:        c.incrementRefCount.Load(),
-		dec:        c.decrementRefCount.Load(),
-		find:       c.findFileBlockByHash.Load(),
-		listLocal:  c.listLocalBlocks.Load(),
-		listRemote: c.listRemoteBlocks.Load(),
-		listUnref:  c.listUnreferenced.Load(),
-		listFile:   c.listFileBlocks.Load(),
+		get:         c.get.Load(),
+		put:         c.put.Load(),
+		del:         c.del.Load(),
+		inc:         c.incrementRefCount.Load(),
+		dec:         c.decrementRefCount.Load(),
+		find:        c.getByHash.Load(),
+		listPending: c.listPending.Load(),
+		listFile:    c.listFileBlocks.Load(),
 	}
 }
 
 func diffSnapshot(before, after fbsCallSnapshot) fbsCallSnapshot {
 	return fbsCallSnapshot{
-		get:        after.get - before.get,
-		put:        after.put - before.put,
-		del:        after.del - before.del,
-		inc:        after.inc - before.inc,
-		dec:        after.dec - before.dec,
-		find:       after.find - before.find,
-		listLocal:  after.listLocal - before.listLocal,
-		listRemote: after.listRemote - before.listRemote,
-		listUnref:  after.listUnref - before.listUnref,
-		listFile:   after.listFile - before.listFile,
+		get:         after.get - before.get,
+		put:         after.put - before.put,
+		del:         after.del - before.del,
+		inc:         after.inc - before.inc,
+		dec:         after.dec - before.dec,
+		find:        after.find - before.find,
+		listPending: after.listPending - before.listPending,
+		listFile:    after.listFile - before.listFile,
 	}
 }
 
@@ -134,28 +119,24 @@ func diffSnapshot(before, after fbsCallSnapshot) fbsCallSnapshot {
 // test_hooks.go so the LSL-08 conformance suite can assert no
 // FileBlockStore calls happen during ensureSpace.
 func (c *countingFileBlockStore) ResetCount() {
-	c.getFileBlock.Store(0)
-	c.putFileBlock.Store(0)
-	c.deleteFileBlock.Store(0)
+	c.get.Store(0)
+	c.put.Store(0)
+	c.del.Store(0)
 	c.incrementRefCount.Store(0)
 	c.decrementRefCount.Store(0)
-	c.findFileBlockByHash.Store(0)
-	c.listLocalBlocks.Store(0)
-	c.listRemoteBlocks.Store(0)
-	c.listUnreferenced.Store(0)
+	c.getByHash.Store(0)
+	c.listPending.Store(0)
 	c.listFileBlocks.Store(0)
 }
 
 func (c *countingFileBlockStore) TotalCount() int {
-	return int(c.getFileBlock.Load() +
-		c.putFileBlock.Load() +
-		c.deleteFileBlock.Load() +
+	return int(c.get.Load() +
+		c.put.Load() +
+		c.del.Load() +
 		c.incrementRefCount.Load() +
 		c.decrementRefCount.Load() +
-		c.findFileBlockByHash.Load() +
-		c.listLocalBlocks.Load() +
-		c.listRemoteBlocks.Load() +
-		c.listUnreferenced.Load() +
+		c.getByHash.Load() +
+		c.listPending.Load() +
 		c.listFileBlocks.Load())
 }
 
@@ -703,7 +684,7 @@ func TestWriteFromRemote_PreservesCASMetadata(t *testing.T) {
 	row.BlockStoreKey = casKey
 	row.State = blockstore.BlockStateRemote
 	row.DataSize = uint32(len(data))
-	if err := bc.blockStore.PutFileBlock(ctx, row); err != nil {
+	if err := bc.blockStore.Put(ctx, row); err != nil {
 		t.Fatalf("seed PutFileBlock: %v", err)
 	}
 

@@ -32,7 +32,12 @@ type fetchResult struct {
 type Syncer struct {
 	local          local.LocalStore
 	remoteStore    remote.RemoteStore
-	fileBlockStore blockstore.FileBlockStore // Required: enables content-addressed deduplication
+	// Phase 12 (META-03 / D-09): the syncer is one of the engine-internal
+	// callers that still reaches into the wider EngineFileBlockStore
+	// surface (GetFileBlock for dual-read resolve, ListFileBlocks for
+	// GetFileSize/Exists). Phase 13/14 routes reads through
+	// FileAttr.Blocks and lets us drop the wider interface.
+	fileBlockStore blockstore.EngineFileBlockStore // Required: enables content-addressed deduplication
 	config         SyncerConfig
 
 	queue *SyncQueue // Transfer queue for non-blocking operations
@@ -55,7 +60,7 @@ type Syncer struct {
 }
 
 // NewSyncer creates a new Syncer. The fileBlockStore is required for content-addressed dedup.
-func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlockStore blockstore.FileBlockStore, config SyncerConfig) *Syncer {
+func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlockStore blockstore.EngineFileBlockStore, config SyncerConfig) *Syncer {
 	if fileBlockStore == nil {
 		panic("fileBlockStore is required for Syncer")
 	}
@@ -549,7 +554,7 @@ func (m *Syncer) claimBatch(ctx context.Context, max int) ([]*blockstore.FileBlo
 	if max <= 0 {
 		max = m.config.ClaimBatchSize
 	}
-	pending, err := m.fileBlockStore.ListLocalBlocks(ctx, 0, max)
+	pending, err := m.fileBlockStore.ListPending(ctx, 0, max)
 	if err != nil {
 		return nil, fmt.Errorf("list local blocks: %w", err)
 	}
@@ -564,7 +569,7 @@ func (m *Syncer) claimBatch(ctx context.Context, max int) ([]*blockstore.FileBlo
 		}
 		fb.State = blockstore.BlockStateSyncing
 		fb.LastSyncAttemptAt = now
-		if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
+		if err := m.fileBlockStore.Put(ctx, fb); err != nil {
 			return nil, fmt.Errorf("claim block %s: %w", fb.ID, err)
 		}
 		claimed = append(claimed, fb)
@@ -607,7 +612,7 @@ func (m *Syncer) recoverStaleSyncing(ctx context.Context) error {
 		}
 		fb.State = blockstore.BlockStatePending
 		fb.LastSyncAttemptAt = time.Time{}
-		if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
+		if err := m.fileBlockStore.Put(ctx, fb); err != nil {
 			// Phase 11 IN-02: elevate per-row failure to ERROR and track
 			// counts so a fully-broken metadata path produces a non-nil
 			// return error visible to the caller (Start logs it at WARN).

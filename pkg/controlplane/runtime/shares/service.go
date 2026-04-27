@@ -426,7 +426,7 @@ func (s *Service) createBlockStoreForShare(
 	share *Share,
 	config *ShareConfig,
 	blockStoreProvider BlockStoreConfigProvider,
-	fileBlockStore blockstore.FileBlockStore,
+	fileBlockStore blockstore.EngineFileBlockStore,
 	localStoreDefaults *LocalStoreDefaults,
 	syncerDefaults *SyncerDefaults,
 ) error {
@@ -1214,7 +1214,7 @@ func CreateLocalStoreFromConfig(
 	},
 	shareName string,
 	defaults *LocalStoreDefaults,
-	fileBlockStore blockstore.FileBlockStore,
+	fileBlockStore blockstore.EngineFileBlockStore,
 ) (local.LocalStore, error) {
 	config, err := cfg.GetConfig()
 	if err != nil {

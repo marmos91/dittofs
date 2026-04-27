@@ -19,6 +19,13 @@ import (
 // This file implements the FileBlockStore interface for the in-memory metadata store.
 // It provides content-addressed file block tracking for deduplication and caching.
 //
+// Phase 12 (META-03 / D-09): the FileBlockStore interface narrowed to 6
+// methods. The backend retains the legacy GetFileBlock + ListFileBlocks
+// helpers as concrete methods on the struct (not on the public interface)
+// for engine-internal callers (engine/{fetch,dedup,syncer,engine}.go,
+// blockstore/local/fs/{recovery,manage,fs}.go) that consume them via a
+// wider engine-internal interface — see the SUMMARY for the full list.
+//
 // Thread Safety: All operations are protected by the store's mutex.
 //
 // ============================================================================
@@ -47,22 +54,26 @@ var _ blockstore.FileBlockStore = (*MemoryMetadataStore)(nil)
 // FileBlock Operations
 // ============================================================================
 
-// GetFileBlock retrieves a file block by its ID.
+// GetFileBlock retrieves a file block by its ID. Not on the narrowed
+// FileBlockStore interface (Phase 12 META-03 / D-09); kept as a backend
+// method for engine-internal callers.
 func (s *MemoryMetadataStore) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.getFileBlockLocked(ctx, id)
 }
 
-// PutFileBlock stores or updates a file block.
-func (s *MemoryMetadataStore) PutFileBlock(ctx context.Context, block *metadata.FileBlock) error {
+// Put stores or updates a file block. Renamed from PutFileBlock in
+// Phase 12 (META-03 / D-09) to match the narrowed interface.
+func (s *MemoryMetadataStore) Put(ctx context.Context, block *metadata.FileBlock) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.putFileBlockLocked(ctx, block)
 }
 
-// DeleteFileBlock removes a file block by its ID.
-func (s *MemoryMetadataStore) DeleteFileBlock(ctx context.Context, id string) error {
+// Delete removes a file block by its ID. Renamed from DeleteFileBlock in
+// Phase 12 (META-03 / D-09).
+func (s *MemoryMetadataStore) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.deleteFileBlockLocked(ctx, id)
@@ -82,39 +93,29 @@ func (s *MemoryMetadataStore) DecrementRefCount(ctx context.Context, id string) 
 	return s.decrementRefCountLocked(ctx, id)
 }
 
-// FindFileBlockByHash looks up a finalized block by its content hash.
-// Returns nil without error if not found.
-func (s *MemoryMetadataStore) FindFileBlockByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
+// GetByHash looks up a finalized block by its content hash.
+// Returns nil without error if not found. Renamed from FindFileBlockByHash
+// in Phase 12 (META-03 / D-09).
+func (s *MemoryMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.findFileBlockByHashLocked(ctx, hash)
 }
 
-// ListLocalBlocks returns blocks in Local state (complete, on disk, not yet
-// synced to remote) older than the given duration.
+// ListPending returns blocks in Pending state (complete, on disk, not yet
+// synced to remote) older than the given duration. Renamed from
+// ListLocalBlocks in Phase 12 (META-03 / D-09); the underlying semantics
+// already match Phase 11 STATE-01 ("Local" was renamed Pending).
 // If limit > 0, at most limit blocks are returned.
-func (s *MemoryMetadataStore) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
+func (s *MemoryMetadataStore) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.listLocalBlocksLocked(ctx, olderThan, limit)
 }
 
-// ListRemoteBlocks returns blocks that are both cached locally and confirmed
-// in remote store, ordered by LRU (oldest LastAccess first), up to limit.
-func (s *MemoryMetadataStore) ListRemoteBlocks(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.listRemoteBlocksLocked(ctx, limit)
-}
-
-// ListUnreferenced returns blocks with RefCount=0, up to limit.
-func (s *MemoryMetadataStore) ListUnreferenced(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.listUnreferencedLocked(ctx, limit)
-}
-
 // ListFileBlocks returns all blocks belonging to a file, ordered by block index.
+// Not on the narrowed FileBlockStore interface (Phase 12 META-03 / D-09);
+// kept as a backend method for engine-internal callers.
 func (s *MemoryMetadataStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -124,7 +125,8 @@ func (s *MemoryMetadataStore) ListFileBlocks(ctx context.Context, payloadID stri
 // EnumerateFileBlocks streams every FileBlock's ContentHash through fn.
 // The memory backend snapshots hashes under the read lock then releases the
 // lock before invoking fn so callers can issue further metadata operations.
-// See GC-01 / D-02.
+// See GC-01 / D-02. Phase 12 (META-03 / D-08): lifted from FileBlockStore
+// to MetadataStore — implementation unchanged.
 func (s *MemoryMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
 	s.mu.RLock()
 	var snapshot []blockstore.ContentHash
@@ -190,11 +192,11 @@ func (tx *memoryTransaction) GetFileBlock(ctx context.Context, id string) (*meta
 	return tx.store.getFileBlockLocked(ctx, id)
 }
 
-func (tx *memoryTransaction) PutFileBlock(ctx context.Context, block *metadata.FileBlock) error {
+func (tx *memoryTransaction) Put(ctx context.Context, block *metadata.FileBlock) error {
 	return tx.store.putFileBlockLocked(ctx, block)
 }
 
-func (tx *memoryTransaction) DeleteFileBlock(ctx context.Context, id string) error {
+func (tx *memoryTransaction) Delete(ctx context.Context, id string) error {
 	return tx.store.deleteFileBlockLocked(ctx, id)
 }
 
@@ -206,20 +208,12 @@ func (tx *memoryTransaction) DecrementRefCount(ctx context.Context, id string) (
 	return tx.store.decrementRefCountLocked(ctx, id)
 }
 
-func (tx *memoryTransaction) FindFileBlockByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
+func (tx *memoryTransaction) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
 	return tx.store.findFileBlockByHashLocked(ctx, hash)
 }
 
-func (tx *memoryTransaction) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
+func (tx *memoryTransaction) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
 	return tx.store.listLocalBlocksLocked(ctx, olderThan, limit)
-}
-
-func (tx *memoryTransaction) ListRemoteBlocks(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
-	return tx.store.listRemoteBlocksLocked(ctx, limit)
-}
-
-func (tx *memoryTransaction) ListUnreferenced(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
-	return tx.store.listUnreferencedLocked(ctx, limit)
 }
 
 func (tx *memoryTransaction) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
@@ -350,47 +344,6 @@ func (s *MemoryMetadataStore) listLocalBlocksLocked(_ context.Context, olderThan
 		result = append(result, &b)
 		if limit > 0 && len(result) >= limit {
 			break
-		}
-	}
-	return result, nil
-}
-
-func (s *MemoryMetadataStore) listRemoteBlocksLocked(_ context.Context, limit int) ([]*metadata.FileBlock, error) {
-	if s.fileBlockData == nil {
-		return nil, nil
-	}
-	// Collect all remote blocks (cached + confirmed in remote store)
-	var candidates []*metadata.FileBlock
-	for _, block := range s.fileBlockData.blocks {
-		if block.HasLocalFile() && block.State == metadata.BlockStateRemote {
-			b := *block
-			candidates = append(candidates, &b)
-		}
-	}
-
-	// Sort by LastAccess (oldest first) for LRU
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].LastAccess.Before(candidates[j].LastAccess)
-	})
-
-	if limit > 0 && len(candidates) > limit {
-		candidates = candidates[:limit]
-	}
-	return candidates, nil
-}
-
-func (s *MemoryMetadataStore) listUnreferencedLocked(_ context.Context, limit int) ([]*metadata.FileBlock, error) {
-	if s.fileBlockData == nil {
-		return nil, nil
-	}
-	var result []*metadata.FileBlock
-	for _, block := range s.fileBlockData.blocks {
-		if block.RefCount == 0 {
-			b := *block
-			result = append(result, &b)
-			if limit > 0 && len(result) >= limit {
-				break
-			}
 		}
 	}
 	return result, nil

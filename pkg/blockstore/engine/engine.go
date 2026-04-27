@@ -27,9 +27,12 @@ type Config struct {
 	// Syncer handles async local-to-remote transfers (required).
 	Syncer *Syncer
 
-	// FileBlockStore provides block metadata for block store statistics.
-	// When set, GetStats() populates BlocksLocal/BlocksRemote/BlocksTotal.
-	FileBlockStore blockstore.FileBlockStore
+	// FileBlockStore provides block metadata for block store statistics
+	// AND the engine-internal lookups (GetFileBlock, ListFileBlocks) the
+	// dual-read resolver and populateBlockCounts still consume — see
+	// blockstore.EngineFileBlockStore. When set, GetStats() populates
+	// BlocksLocal/BlocksRemote/BlocksTotal.
+	FileBlockStore blockstore.EngineFileBlockStore
 
 	// ReadBufferBytes is the memory budget for the read buffer per share.
 	// 0 disables the read buffer. Passed directly to NewReadBuffer as byte budget.
@@ -53,7 +56,10 @@ type BlockStore struct {
 	remote remote.RemoteStore
 	syncer *Syncer
 
-	fileBlockStore blockstore.FileBlockStore // optional: for block count stats
+	// Phase 12 (META-03 / D-09): widened to EngineFileBlockStore so
+	// populateBlockCounts can call ListFileBlocks (engine-internal method
+	// not on the public FileBlockStore surface).
+	fileBlockStore blockstore.EngineFileBlockStore // optional: for block count stats
 
 	readBuffer *ReadBuffer // nil when disabled (ReadBufferBytes=0)
 	prefetcher *Prefetcher // nil when disabled (PrefetchWorkers=0 or readBuffer nil)

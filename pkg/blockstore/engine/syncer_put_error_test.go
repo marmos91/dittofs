@@ -19,29 +19,32 @@ import (
 // when its failAfter counter has been reached.
 var errBoomPut = errors.New("boom put")
 
-// failingPutFileBlockStore wraps a real FileBlockStore and can be instructed
-// to fail PutFileBlock calls after the first `allowed` successful calls, so
-// the test can let the initial "mark block syncing" Put succeed while failing
-// the post-upload "mark block remote" Put — exercising the previously-swallowed
-// error path in syncFileBlock.
+// failingPutFileBlockStore wraps a real EngineFileBlockStore and can be
+// instructed to fail Put calls after the first `allowed` successful
+// calls, so the test can let the initial "mark block syncing" Put succeed
+// while failing the post-upload "mark block remote" Put — exercising the
+// previously-swallowed error path in syncFileBlock.
+//
+// Phase 12 (META-03 / D-09): wraps the wider engine-internal interface so
+// the engine's GetFileBlock + ListFileBlocks lookups continue to work.
 type failingPutFileBlockStore struct {
-	blockstore.FileBlockStore
-	putCount atomic.Int64 // total PutFileBlock calls observed
+	blockstore.EngineFileBlockStore
+	putCount atomic.Int64 // total Put calls observed
 	allowed  int64        // number of leading Puts that succeed; subsequent Puts return errBoomPut
 }
 
-func (f *failingPutFileBlockStore) PutFileBlock(ctx context.Context, block *blockstore.FileBlock) error {
+func (f *failingPutFileBlockStore) Put(ctx context.Context, block *blockstore.FileBlock) error {
 	n := f.putCount.Add(1)
 	if n > f.allowed {
 		return errBoomPut
 	}
-	return f.FileBlockStore.PutFileBlock(ctx, block)
+	return f.EngineFileBlockStore.Put(ctx, block)
 }
 
 // TestSyncFileBlock_PropagatesPutError asserts that syncFileBlock returns an
 // error when the FileBlockStore.PutFileBlock call that persists the post-upload
 // BlockStateRemote transition fails. Before TD-02b, this Put was swallowed by
-// `_ = m.fileBlockStore.PutFileBlock(...)` and the block would appear synced
+// `_ = m.fileBlockStore.Put(...)` and the block would appear synced
 // upstream despite metadata drift.
 func TestSyncFileBlock_PropagatesPutError(t *testing.T) {
 	ctx := context.Background()
@@ -54,8 +57,8 @@ func TestSyncFileBlock_PropagatesPutError(t *testing.T) {
 	}
 
 	failingStore := &failingPutFileBlockStore{
-		FileBlockStore: ms,
-		allowed:        1, // First Put (mark Syncing) succeeds; all later Puts fail.
+		EngineFileBlockStore: ms,
+		allowed:              1, // First Put (mark Syncing) succeeds; all later Puts fail.
 	}
 
 	rs := remotememory.New()
