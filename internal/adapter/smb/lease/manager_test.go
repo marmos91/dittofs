@@ -293,3 +293,147 @@ func TestBreakParentHandle_ExcludesTriggeringClient(t *testing.T) {
 		t.Fatalf("WaitForBreakCompletion call count = %d, want 1", len(fake.waitForBreakCompletionKeys))
 	}
 }
+
+// TestBreakLeasesOnRename_SrcOnly_StripHandle: a non-overwrite rename
+// dispatches exactly one break on the source handle with
+// BreakReasonSharingViolation (strip H). Per smbtorture rename_wait the
+// non-renamer's RH must be downgraded to R; per v2_rename the renamer's own
+// lease must NOT be touched. Verified by ExcludeLeaseKey scoping.
+func TestBreakLeasesOnRename_SrcOnly_StripHandle(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeLockManager{}
+	lm := NewLeaseManager(&fakeResolver{mgr: fake}, nil)
+
+	srcHandle := lock.FileHandle("src-handle")
+	renamerKey := [16]byte{0x11, 0x22, 0x33}
+
+	if err := lm.BreakLeasesOnRename(srcHandle, "", "share1", renamerKey, false); err != nil {
+		t.Fatalf("BreakLeasesOnRename returned error: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+
+	if got := len(fake.breakHandleCalls); got != 1 {
+		t.Fatalf("BreakLeasesOnOpenConflict call count = %d, want 1 (src only)", got)
+	}
+	got := fake.breakHandleCalls[0]
+	if got.HandleKey != string(srcHandle) {
+		t.Errorf("handleKey = %q, want %q", got.HandleKey, string(srcHandle))
+	}
+	if got.Reason != lock.BreakReasonSharingViolation {
+		t.Errorf("reason = %d, want BreakReasonSharingViolation (strip H)", got.Reason)
+	}
+	if got.ExcludeOwner == nil {
+		t.Fatal("ExcludeOwner is nil; renamer's own lease key must be excluded")
+	}
+	if got.ExcludeOwner.ExcludeLeaseKey != renamerKey {
+		t.Errorf("ExcludeLeaseKey = %x, want %x", got.ExcludeOwner.ExcludeLeaseKey, renamerKey)
+	}
+	// MUST NOT scope by ClientID — a single client may hold two distinct
+	// leases on the same file (smbtorture rename_wait LEASE1=h1 / LEASE2=h2);
+	// ClientID-scoped exclusion would skip both.
+	if got.ExcludeOwner.ClientID != "" {
+		t.Errorf("ExcludeOwner.ClientID = %q, must be empty (rename exclusion is by lease key only)", got.ExcludeOwner.ClientID)
+	}
+
+	// Fire-and-forget: rename dispatch must NOT call WaitForBreakCompletion
+	// inline. The set_info handler routes the wait through the round-4 async
+	// park path so the request appears as STATUS_PENDING to the client.
+	if len(fake.waitForBreakCompletionKeys) != 0 {
+		t.Errorf("WaitForBreakCompletion called %d times; want 0 (rename break is fire-and-forget; caller routes the wait)",
+			len(fake.waitForBreakCompletionKeys))
+	}
+}
+
+// TestBreakLeasesOnRename_OverwriteBreaksBoth: an overwrite rename onto a
+// non-empty destination dispatches breaks on BOTH source AND destination.
+// Per smbtorture v2_rename_target_overwrite the dst's RWH must break to RW
+// (strip H). The destination break is unscoped — the dst's lease holder is by
+// definition someone other than the renamer.
+func TestBreakLeasesOnRename_OverwriteBreaksBoth(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeLockManager{}
+	lm := NewLeaseManager(&fakeResolver{mgr: fake}, nil)
+
+	srcHandle := lock.FileHandle("src-handle")
+	dstHandle := lock.FileHandle("dst-handle")
+	renamerKey := [16]byte{0xAA}
+
+	if err := lm.BreakLeasesOnRename(srcHandle, dstHandle, "share1", renamerKey, true); err != nil {
+		t.Fatalf("BreakLeasesOnRename returned error: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+
+	if got := len(fake.breakHandleCalls); got != 2 {
+		t.Fatalf("BreakLeasesOnOpenConflict call count = %d, want 2 (src + dst)", got)
+	}
+
+	// Order is src first, then dst — matches the rename code path order.
+	if fake.breakHandleCalls[0].HandleKey != string(srcHandle) {
+		t.Errorf("first break handleKey = %q, want %q (src)", fake.breakHandleCalls[0].HandleKey, string(srcHandle))
+	}
+	if fake.breakHandleCalls[1].HandleKey != string(dstHandle) {
+		t.Errorf("second break handleKey = %q, want %q (dst)", fake.breakHandleCalls[1].HandleKey, string(dstHandle))
+	}
+	if fake.breakHandleCalls[1].Reason != lock.BreakReasonSharingViolation {
+		t.Errorf("dst break reason = %d, want BreakReasonSharingViolation", fake.breakHandleCalls[1].Reason)
+	}
+	// Destination break must NOT carry the renamer's lease key as exclusion —
+	// the dst's lease is by definition held by someone other than the renamer.
+	if fake.breakHandleCalls[1].ExcludeOwner != nil {
+		t.Errorf("dst break excludeOwner = %+v, want nil (no exclusion on cross-file destination)", fake.breakHandleCalls[1].ExcludeOwner)
+	}
+}
+
+// TestBreakLeasesOnRename_NonOverwrite_NoDstBreak: when isOverwrite=false the
+// destination is NOT broken even if a dstHandle is supplied. (Defensive: caller
+// usually passes an empty dstHandle when not overwriting; this test guards
+// against a future refactor introducing a stray break on a name that may not
+// exist.)
+func TestBreakLeasesOnRename_NonOverwrite_NoDstBreak(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeLockManager{}
+	lm := NewLeaseManager(&fakeResolver{mgr: fake}, nil)
+
+	if err := lm.BreakLeasesOnRename(lock.FileHandle("src"), lock.FileHandle("dst"), "share1", [16]byte{}, false); err != nil {
+		t.Fatalf("BreakLeasesOnRename returned error: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+
+	if got := len(fake.breakHandleCalls); got != 1 {
+		t.Fatalf("BreakLeasesOnOpenConflict call count = %d, want 1 (src only when !isOverwrite)", got)
+	}
+	if fake.breakHandleCalls[0].HandleKey != "src" {
+		t.Errorf("handleKey = %q, want \"src\"", fake.breakHandleCalls[0].HandleKey)
+	}
+}
+
+// TestBreakLeasesOnRename_SameSrcDst_NoDstBreak: a self-rename (src==dst)
+// dispatches only one break — never two on the same handle. Guards against an
+// accidental double-break that would advance the epoch twice.
+func TestBreakLeasesOnRename_SameSrcDst_NoDstBreak(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeLockManager{}
+	lm := NewLeaseManager(&fakeResolver{mgr: fake}, nil)
+
+	h := lock.FileHandle("self")
+	if err := lm.BreakLeasesOnRename(h, h, "share1", [16]byte{}, true); err != nil {
+		t.Fatalf("BreakLeasesOnRename returned error: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+
+	if got := len(fake.breakHandleCalls); got != 1 {
+		t.Fatalf("BreakLeasesOnOpenConflict call count = %d, want 1 (self-rename src==dst)", got)
+	}
+}
