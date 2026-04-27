@@ -1042,3 +1042,53 @@ func TestCreate_CreateContextBlobValidation(t *testing.T) {
 		}
 	})
 }
+
+func TestIsStatOnlyOpen(t *testing.T) {
+	const (
+		fileReadData       = uint32(0x00000001)
+		fileWriteData      = uint32(0x00000002)
+		fileReadAttributes = uint32(0x00000080)
+		fileWriteAttrs     = uint32(0x00000100)
+		deleteAccess       = uint32(0x00010000)
+		readControl        = uint32(0x00020000)
+		writeDac           = uint32(0x00040000)
+		writeOwner         = uint32(0x00080000)
+		synchronize        = uint32(0x00100000)
+	)
+
+	cases := []struct {
+		name   string
+		access uint32
+		want   bool
+	}{
+		// stat-open per Samba is_lease_stat_open (statopen4 expect_stat_open=true)
+		{"ReadAttributes only", fileReadAttributes, true},
+		{"WriteAttributes only", fileWriteAttrs, true},
+		{"ReadControl only", readControl, true},
+		{"Synchronize only", synchronize, true},
+		{"All stat bits", fileReadAttributes | fileWriteAttrs | readControl | synchronize, true},
+		{"ReadAttrs+Sync", fileReadAttributes | synchronize, true},
+
+		// non-stat per statopen4 (expect_stat_open=false)
+		{"ReadData", fileReadData, false},
+		{"WriteData", fileWriteData, false},
+		{"Delete", deleteAccess, false},
+		{"WriteDAC", writeDac, false},
+		{"WriteOwner", writeOwner, false},
+
+		// data + stat bits = not a stat open
+		{"ReadData+ReadAttrs", fileReadData | fileReadAttributes, false},
+		{"WriteData+Sync", fileWriteData | synchronize, false},
+
+		// no bits at all = not a stat open (predicate requires at least one stat bit)
+		{"Zero", 0, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isStatOnlyOpen(tc.access); got != tc.want {
+				t.Errorf("isStatOnlyOpen(0x%X) = %v, want %v", tc.access, got, tc.want)
+			}
+		})
+	}
+}

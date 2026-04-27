@@ -890,6 +890,34 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 		}
 	})
 
+	t.Run("StatOnlyExisting_NoConflict", func(t *testing.T) {
+		// Per Samba `share_conflict` (source3/smbd/open.c L1505): an existing
+		// stat-only open (FILE_READ_ATTRIBUTES with share=0) imposes no
+		// share-mode constraint on incoming opens. Regression for
+		// smb2.lease.statopen which expected NT_STATUS_OK at lease.c:776.
+		h := NewHandler()
+
+		const fileReadAttributes = uint32(0x00000080)
+		statOpen := &OpenFile{
+			FileID:         h.GenerateFileID(),
+			Path:           "file.txt",
+			DesiredAccess:  fileReadAttributes,
+			ShareAccess:    0,
+			MetadataHandle: []byte{0x01},
+		}
+		h.StoreOpenFile(statOpen)
+
+		conflict := h.checkShareModeConflict(
+			[]byte{0x01},
+			fileReadData|fileWriteData,
+			fileShareRead|fileShareWrite,
+			"file.txt",
+		)
+		if conflict {
+			t.Error("Expected no conflict: existing stat-only open must not constrain incoming full-access open")
+		}
+	})
+
 	t.Run("PipesSkipped", func(t *testing.T) {
 		h := NewHandler()
 

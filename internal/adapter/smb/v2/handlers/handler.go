@@ -1101,6 +1101,16 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 			return true
 		}
 
+		// Skip stat-only existing opens. Per Samba `share_conflict`
+		// (source3/smbd/open.c L1505): an existing entry with no
+		// data/execute/delete bits imposes no share-mode constraint.
+		// A stat-only open holds e.g. FILE_READ_ATTRIBUTES with share=0;
+		// without this skip, an incoming full-access open would falsely
+		// hit STATUS_SHARING_VIOLATION (smb2.lease.statopen).
+		if isStatOnlyOpen(existing.DesiredAccess) {
+			return true
+		}
+
 		// Check: existing access vs new sharing
 		if hasRead(existing.DesiredAccess) && newShareAccess&fileShareRead == 0 {
 			conflict = true
