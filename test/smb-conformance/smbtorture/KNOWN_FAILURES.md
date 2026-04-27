@@ -504,16 +504,12 @@ incomplete break notification delivery and multi-client coordination.
 | smb2.lease.statopen | Leases | Lease + stat open interaction not fully working | #429 |
 | smb2.lease.statopen4 | Leases | Lease + stat open interaction not fully working | #429 |
 | smb2.lease.oplock | Leases | Lease + oplock interaction not fully working | #429 |
-| smb2.lease.multibreak | Leases | Multi-client lease break not fully working | #429 |
-| smb2.lease.breaking1 | Leases | Lease breaking state handling not fully working | #429 |
-| smb2.lease.breaking6 | Leases | Lease breaking state handling not fully working | #429 |
 | smb2.lease.lock1 | Leases | Lease + lock interaction not fully working | #429 |
 | smb2.lease.timeout | Leases | Lease timeout handling not fully working | #429 |
 | smb2.lease.unlink | Leases | Lease + unlink interaction not fully working | #429 |
 | smb2.lease.rename_wait | Leases | Lease + rename wait not fully working | #429 |
 | smb2.lease.rename_dir_openfile | Leases | Lease + directory rename with open file not fully working | #429 |
 | smb2.lease.lease-epoch | Leases | Lease epoch tracking not fully working | #429 |
-| smb2.lease.v2_flags_parentkey | Leases V2 | Lease V2 parent key flags not fully working | #429 |
 | smb2.lease.v2_epoch2 | Leases V2 | Lease V2 epoch tracking not fully working | #429 |
 | smb2.lease.v2_epoch3 | Leases V2 | Lease V2 epoch tracking not fully working | #429 |
 | smb2.lease.v2_complex1 | Leases V2 | Lease V2 complex scenario not fully working | #429 |

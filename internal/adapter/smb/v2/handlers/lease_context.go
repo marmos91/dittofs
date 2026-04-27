@@ -417,12 +417,25 @@ func ProcessLeaseCreateContext(
 	// Per MS-SMB2 2.2.14.2.10: Flags MUST be 0 for fresh grants.
 	// SMB2_LEASE_FLAG_BREAK_IN_PROGRESS (0x02) is only set when a break is
 	// actively in progress on a same-key lease.
+	//
+	// Per MS-SMB2 §2.2.13.2.10 / §2.2.14.2.11 the parent-lease-key linkage
+	// is signaled by SMB2_LEASE_FLAG_PARENT_LEASE_KEY_SET (0x4) in the
+	// request Flags field — NOT by inspecting the key contents. A request
+	// with Flags=0 and a non-zero ParentLeaseKey carries no parent
+	// linkage; the response MUST clear the flag bit and the parent key
+	// (smbtorture v2_flags_parentkey: ls.lease_flags = 0 with LEASE1 in
+	// ParentLeaseKey expects parent_lease_key=zeros in the response).
+	hasParent := leaseReq.Flags&smbenc.LeaseResponseFlagParentKeySet != 0
+	var parentKey [16]byte
+	if hasParent {
+		parentKey = leaseReq.ParentLeaseKey
+	}
 	return &LeaseResponseContext{
 		LeaseKey:       leaseReq.LeaseKey,
 		LeaseState:     grantedState,
 		Flags:          responseFlags,
-		ParentLeaseKey: leaseReq.ParentLeaseKey,
-		HasParent:      leaseReq.ParentLeaseKey != [16]byte{},
+		ParentLeaseKey: parentKey,
+		HasParent:      hasParent,
 		Epoch:          epoch,
 		IsV1:           isV1,
 	}, nil
