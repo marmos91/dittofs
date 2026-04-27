@@ -49,6 +49,21 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	t.Run("BlockRefOps", func(t *testing.T) {
 		runBlockRefOpsTests(t, factory)
 	})
+
+	// INV02Fuzz: Phase 12 D-36 property-based fuzzer for the global
+	// invariant ∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks). Runs
+	// 10 concurrent goroutines × 10 ops each (create/delete/copy mix)
+	// against every backend. The leak-injection scenario uses an
+	// optional RefCountLeakInjector capability — backends that don't
+	// implement it (Badger / Postgres today) skip cleanly.
+	t.Run("INV02Fuzz", func(t *testing.T) {
+		t.Run("PropertyFuzz", func(t *testing.T) {
+			testINV02_PropertyFuzz(t, factory)
+		})
+		t.Run("LeakInjection", func(t *testing.T) {
+			testINV02_LeakInjection(t, factory)
+		})
+	})
 }
 
 // createTestShare is a helper that creates a share and root directory for testing.

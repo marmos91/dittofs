@@ -53,10 +53,19 @@ func CopyPayload(
 	}
 
 	err = metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		// CR-01 (Phase 12 review iteration 1): bind the active txn into
+		// the context so the per-share metadataCoordinator's
+		// IncrementRefCount / DecrementRefCount calls route through it
+		// instead of the connection pool. Without this, every
+		// successful Increment commits on its own connection and
+		// survives a downstream PutFile rollback — silent INV-02 leak.
+		// See pkg/metadata/tx_context.go for the carrier API.
+		txCtx := metadata.WithTx(ctx, tx)
+
 		// engine.CopyPayload bumps RefCount per unique hash via the
 		// coordinator. The coordinator wires its UPDATEs into the active
 		// txn (see coordinator.go transaction-ownership note).
-		newBlocks, err := blockStore.CopyPayload(ctx, string(srcPayloadID), string(dstPayloadID), srcFile.FileAttr.Blocks)
+		newBlocks, err := blockStore.CopyPayload(txCtx, string(srcPayloadID), string(dstPayloadID), srcFile.FileAttr.Blocks)
 		if err != nil {
 			return fmt.Errorf("engine copy payload: %w", err)
 		}

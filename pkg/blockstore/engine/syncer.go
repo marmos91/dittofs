@@ -127,11 +127,24 @@ func (m *Syncer) SetCoordinator(c MetadataCoordinator) {
 // coordinator.PersistFileBlocks once the chunks are durable in CAS.
 // Plan 07 lays the seam; Plan 09 wires the actual call from the
 // uploadOne success path alongside the cache rewrite.
+//
+// WR-02 (Phase 12 review iteration 1): the production coordinator returns
+// ErrPersistFileBlocksNotWired until the payloadID → fileHandle chain is
+// wired. Surface it as a logged warning rather than a hard error — the
+// dual-read shim (D-20) keeps reads correct so the silent-drop window is
+// recoverable; logging makes it observable for operators.
 func (m *Syncer) persistFileBlocksAfterFlush(ctx context.Context, payloadID string, blocks []blockstore.BlockRef) error {
 	if m.coordinator == nil {
 		return nil
 	}
-	return m.coordinator.PersistFileBlocks(ctx, payloadID, blocks)
+	err := m.coordinator.PersistFileBlocks(ctx, payloadID, blocks)
+	if errors.Is(err, ErrPersistFileBlocksNotWired) {
+		logger.Warn("Syncer: PersistFileBlocks coordinator wiring deferred — dropping post-Flush BlockRef list",
+			"payloadID", payloadID,
+			"blocks", len(blocks))
+		return nil
+	}
+	return err
 }
 
 // SetHealthCallback sets the callback invoked when the remote store health state changes.

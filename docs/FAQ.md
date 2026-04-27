@@ -192,6 +192,94 @@ Phase 14 (A5) ships `dfsctl blockstore migrate`, which re-chunks all
 legacy data to CAS. Phase 15 (A6) deletes the legacy code path
 entirely. The dual-read code is intentionally on a deletion clock.
 
+### Why is the cache cold after a write?
+
+It is **not**. v0.15.0 (Phase 12 / A3) makes cache invalidation
+**surgical** (CACHE-05): a write drops only the chunk-level entries
+that the write actually invalidated, not the entire file. Other chunks
+referenced by the file — and any chunks shared with other files via
+cross-VM dedup (CACHE-02) — stay warm.
+
+If you are seeing whole-file cold misses after a write, that is a bug.
+File a report with the `dfsctl blockstore audit-refcounts <share>`
+output (see below) — refcount drift between `FileBlock.RefCount` and
+`FileAttr.Blocks` is the most common root cause.
+
+The mechanism: `engine.WriteAt` returns the new `[]BlockRef`, the
+caller commits it in the same metadata transaction that updates
+`Mtime`/`Size`, then calls `Cache.InvalidateFile(payloadID,
+removedHashes)` with **only the hashes that disappeared from the
+file**. Hashes that survived (unchanged ranges) and hashes still
+referenced by other files via dedup remain in the cache.
+
+### How do I run the INV-02 audit?
+
+INV-02 is the invariant `∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks)`
+— every block reference in `FileAttr.Blocks` across all files MUST be
+matched by a refcount on the corresponding `FileBlock`. v0.15.0 (Phase
+12 / A3) ships an operator-facing audit:
+
+```bash
+# Aggregate counts to stdout (text by default)
+dfsctl blockstore audit-refcounts /archive
+
+# Structured JSON for log aggregation / alerting
+dfsctl blockstore audit-refcounts /archive --output json
+
+# YAML if your tooling prefers it
+dfsctl blockstore audit-refcounts /archive --output yaml
+```
+
+The output reports `share`, `started_at`, `duration_ms`,
+`total_files`, `total_refs`, `total_refcount`, and `delta`. **A non-zero
+`delta` indicates refcount drift** and SHOULD be triaged. The audit
+also persists its last-run summary at
+`<localStore>/audit-state/last-inv02.json` (mirrors Phase 11 GC's
+`last-run.json`).
+
+The audit is **operator-invoked**, not periodic. Schedule via cron at
+the cadence that matches your operational risk tolerance until a
+periodic-scheduler phase ships.
+
+For belt-and-braces protection, the property-based fuzzer at
+`pkg/metadata/storetest/inv02_fuzz_test.go` runs against all 3
+built-in backends in CI on every PR, asserting INV-02 at every
+quiescent point under concurrent create/delete/copy load.
+
+See [CLI.md](CLI.md#dfsctl-blockstore-audit-refcounts-share) for the
+full reference.
+
+### What's a BlockRef?
+
+A `BlockRef` is the 3-tuple of `(Hash ContentHash, Offset uint64, Size
+uint32)` defined in `pkg/blockstore/types.go`. `FileAttr.Blocks
+[]BlockRef` is the **authoritative content list** for every file in
+v0.15.0 Phase 12+: which chunks compose the file, where each chunk
+sits inside the file, and how big it is.
+
+The list is:
+
+- **Sorted by `Offset`** so the engine can binary-search it
+  (`findBlocksForRange` in `pkg/blockstore/engine/range.go`).
+- **Populated on every sync finalization** — the engine returns the
+  new `[]BlockRef` from `WriteAt`/`Truncate`/`Delete`/`CopyPayload`
+  and the caller persists it in the same metadata transaction.
+- **Empty/nil for legacy files** written before v0.15.0 Phase 12;
+  empty `[]BlockRef` triggers the Phase 11 dual-read shim (D-20),
+  which falls back to the metadata-driven legacy resolver until the
+  Phase 14 migration tool backfills the BlockRef list.
+
+`BlockRef.Hash` is the `ContentHash` (32-byte BLAKE3) under which
+the chunk is stored in the CAS keyspace `cas/{hh}/{hh}/{hex}`.
+Two files referencing the same chunk via dedup share one `Hash`,
+which is what makes cross-VM dedup work both for storage (CAS) and
+in the cache (CACHE-02 cross-file dedup hits the same entry).
+
+See [ARCHITECTURE.md](ARCHITECTURE.md#phase-12-engine-api--blockref--cache-v0150-a3)
+for the full Phase 12 design and
+[IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md#fileattrblocks-blockref-v0150-phase-12)
+for storage-encoding requirements.
+
 ### Why are residual `{payloadID}/block-{N}` keys present after upgrading to v0.15.0?
 
 Those are legacy data written before v0.15.0. Phase 11's CAS write path

@@ -133,6 +133,16 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("EnumerateFileBlocks_CorruptHashFailsClosed", func(t *testing.T) {
 		testEnumerateFileBlocks_CorruptHashFailsClosed(t, factory)
 	})
+
+	// Phase 12 CR-01 (review iteration 1): IncrementRefCount /
+	// DecrementRefCount called via a metadata.Transaction MUST roll back
+	// when the wrapping WithTransaction returns an error. Memory backend
+	// has documented best-effort semantics (single mutex, no rollback
+	// buffer) so its expected behavior differs; Postgres + Badger MUST
+	// honor durable rollback.
+	t.Run("Tx_IncrementRefCount_RollsBack", func(t *testing.T) {
+		testTx_IncrementRefCount_RollsBack(t, factory)
+	})
 }
 
 // ============================================================================
@@ -923,4 +933,96 @@ func testEnumerateFileBlocks_CorruptHashFailsClosed(t *testing.T, factory StoreF
 	}
 	// We do not constrain how many rows are emitted before the failure —
 	// only that an error is returned so the GC mark phase aborts.
+}
+
+// ============================================================================
+// Tx Rollback Tests (Phase 12 CR-01 review iteration 1)
+// ============================================================================
+
+// testTx_IncrementRefCount_RollsBack pins the BLOCKER-2 / CR-01 contract:
+// when IncrementRefCount is invoked through a metadata.Transaction and the
+// wrapping WithTransaction returns an error, the per-row RefCount UPDATE
+// MUST be rolled back atomically. This is the conformance-level pin for
+// the same property that pkg/controlplane/runtime/shares/coordinator_test
+// exercises at the coordinator layer.
+//
+// Memory backend documented limitation: the memory tx has no rollback
+// buffer (see memory/transaction.go). The test detects this and adjusts
+// expectations — memory leaves the increments stuck on rollback (best-
+// effort txn). Postgres and Badger must roll back durably.
+func testTx_IncrementRefCount_RollsBack(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	// Detect best-effort txn backends (memory) by name. The memory store
+	// has WithTransaction that holds a global mutex but does not maintain
+	// a rollback buffer; durable rollback is impossible by construction.
+	storeType := fmt.Sprintf("%T", store)
+	bestEffortTxn := false
+	if storeType == "*memory.MemoryMetadataStore" {
+		bestEffortTxn = true
+	}
+
+	// Seed three FileBlocks with RefCount=1 each.
+	type seed struct {
+		id   string
+		hash blockstore.ContentHash
+	}
+	seeds := []seed{
+		{id: "tx-rollback/0", hash: blockstore.ContentHash{0x10, 0x11, 0x12}},
+		{id: "tx-rollback/1", hash: blockstore.ContentHash{0x20, 0x21, 0x22}},
+		{id: "tx-rollback/2", hash: blockstore.ContentHash{0x30, 0x31, 0x32}},
+	}
+	for _, s := range seeds {
+		fb := &blockstore.FileBlock{
+			ID:         s.id,
+			Hash:       s.hash,
+			DataSize:   4096,
+			RefCount:   1,
+			LastAccess: time.Now(),
+			CreatedAt:  time.Now(),
+			State:      blockstore.BlockStateRemote,
+		}
+		if err := store.Put(ctx, fb); err != nil {
+			t.Fatalf("seed Put(%s): %v", s.id, err)
+		}
+	}
+
+	// Bump every refcount through the txn, then return error to roll back.
+	injected := errors.New("synthetic rollback trigger")
+	err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		for _, s := range seeds {
+			if err := tx.IncrementRefCount(ctx, s.id); err != nil {
+				return fmt.Errorf("tx.IncrementRefCount(%s): %w", s.id, err)
+			}
+		}
+		return injected
+	})
+	if !errors.Is(err, injected) {
+		t.Fatalf("WithTransaction returned %v, want injected %v", err, injected)
+	}
+
+	// Post-rollback: every refcount MUST equal its seeded value (1) on
+	// durable backends. Memory tolerates the documented best-effort
+	// semantics.
+	for _, s := range seeds {
+		got, err := store.GetByHash(ctx, s.hash)
+		if err != nil {
+			t.Fatalf("GetByHash(%x): %v", s.hash[:4], err)
+		}
+		if got == nil {
+			t.Fatalf("GetByHash(%x) returned nil after rollback", s.hash[:4])
+		}
+		if bestEffortTxn {
+			// Memory: increment stuck (no rollback). RefCount=2.
+			if got.RefCount != 2 {
+				t.Errorf("memory backend: RefCount(%s)=%d, want 2 (best-effort txn leaves the increment in place)", s.id, got.RefCount)
+			}
+			continue
+		}
+		// Durable backends MUST roll back.
+		if got.RefCount != 1 {
+			t.Errorf("RefCount(%s)=%d after rollback; want 1 (txn must undo IncrementRefCount)", s.id, got.RefCount)
+		}
+	}
 }

@@ -39,4 +39,5 @@ func init() {
 	Cmd.AddCommand(healthCmd)
 	Cmd.AddCommand(gcCmd)
 	Cmd.AddCommand(gcStatusCmd)
+	Cmd.AddCommand(auditRefcountsCmd)
 }

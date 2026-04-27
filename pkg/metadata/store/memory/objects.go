@@ -380,3 +380,23 @@ func (s *MemoryMetadataStore) listFileBlocksLocked(_ context.Context, payloadID 
 	}
 	return result, nil
 }
+
+// InjectRefCountLeak is a test-only capability hook implementing the
+// storetest.RefCountLeakInjector interface (Phase 12 D-36 INV-02 audit).
+// It bumps the named block's RefCount by leakAmount without touching any
+// FileAttr.Blocks reference, deliberately violating the global INV-02
+// invariant so the leak-injection scenario can verify the reconciliation
+// arithmetic detects the drift. NEVER call from production code.
+func (s *MemoryMetadataStore) InjectRefCountLeak(_ context.Context, blockID string, leakAmount uint32) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fileBlockData == nil {
+		return metadata.ErrFileBlockNotFound
+	}
+	block, ok := s.fileBlockData.blocks[blockID]
+	if !ok {
+		return metadata.ErrFileBlockNotFound
+	}
+	block.RefCount += leakAmount
+	return nil
+}

@@ -1,4 +1,4 @@
-.PHONY: setup-hooks check-hooks fmt lint vet build
+.PHONY: setup-hooks check-hooks fmt lint vet build bench-phase12
 
 # Configure git to use the project's hooks directory and make hooks
 # executable. Safe to re-run.
@@ -46,3 +46,11 @@ vet:
 build:
 	go build -o dfs cmd/dfs/main.go
 	go build -o dfsctl cmd/dfsctl/main.go
+
+# Phase 12 perf gate (D-43): rand-read regression gate vs per-machine
+# microbench floor in test/e2e/BENCHMARKS.md. -benchtime=10s gives a
+# stable b.N auto-tune; -run=^$$ skips all tests so only the gate
+# benchmark runs. The benchmark fails fast (b.Fatalf) on >5%
+# regression, which surfaces as a non-zero exit from `go test -bench`.
+bench-phase12:
+	go test -bench BenchmarkPerfGate_Phase12 -benchtime=10s -run=^$$ ./pkg/blockstore/engine/...

@@ -175,6 +175,96 @@ When the CI perf lane lands:
 Until then the inline gate test passes by design and the benchmarks
 are run on demand for trend visibility.
 
+## v0.15.0 Phase 12 perf gate (D-43)
+
+Phase 12 (`v0.15.0` A3) stacks new risk surface on the read path:
+binary-search lookup over `[]BlockRef` (Plan 07), CAS-keyed Cache
+rewrite (Plan 09), and the mmap single-copy seam on local hits
+(Plan 10). D-43 is the hard regression gate that blocks PR-C merge
+until rand-read latency stays within the per-machine microbench
+floor.
+
+**Gate budget:** ≤5% rand-read regression vs the per-machine in-tree
+microbench floor. Tighter than the global ≤6% per STATE.md so that
+Phase 13 (file-level dedup) and Phase 14 (migration) have headroom
+before the global 6% budget is exhausted.
+
+### Microbench vs real-S3 disclaimer
+
+The Phase 12 in-tree microbench (`BenchmarkPerfGate_Phase12RandReadRegression`)
+runs against the in-process memory local store + nil remote, NOT
+real S3. The Phase 11 / ROADMAP figure of ≥1,350 IOPS rand-read is
+the **bench/infra real-S3 lane** number — Pulumi-deployed Scaleway
+nodes against an `s3.fr-par.scw.cloud` bucket. The two are NOT
+directly comparable: the microbench is a CPU-floor measurement of
+the engine's read path (binary search + Cache.OnRead + buffer copy)
+while the real-S3 lane bottleneck is network + AWS SDK + dedup-cache
+hit-rate.
+
+The microbench gate uses a per-machine-calibrated floor (a numeric
+constant in `perf_bench_phase12_test.go::phase12MicrobenchFloorIOPS`)
+recorded by the first run on a new machine class. Real-S3 perf is
+verified separately at the v0.15.0 milestone gate VER-02.
+
+| Phase   | Gate                                                                       | Tolerance                          | Test                                              |
+| ------- | -------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------- |
+| Phase 12 (A3) | rand-read in-tree microbench >= `phase12MicrobenchFloorIOPS` IOPS    | <= 5% regression vs per-machine floor | `BenchmarkPerfGate_Phase12RandReadRegression`     |
+| Phase 12 (A3) | findBlocksForRange average <1 µs/call across 16K BlockRefs           | hard ceiling                       | `TestPerfGate_Phase12_BinarySearchOverhead`       |
+| Phase 12 (A3) | readFromCAS mmap throughput >= 0.95 × os.ReadFile (linux/darwin)     | hard ratio floor                   | `TestPerfGate_Phase12_MmapHotPath`                |
+
+### Reproduction commands
+
+Local runs use the `bench-phase12` Makefile target (10 s benchtime,
+deterministic `-run=^$`):
+
+```bash
+make bench-phase12
+
+# Or directly:
+go test -bench BenchmarkPerfGate_Phase12 -benchtime=10s -run=^$ \
+    ./pkg/blockstore/engine/...
+
+# Supporting gates (run as normal tests, fast):
+go test -run 'TestPerfGate_Phase12' -count=1 -v ./pkg/blockstore/engine/...
+```
+
+### Indicative microbench numbers (Apple Silicon, Plan 12-12 first run)
+
+These numbers were captured on the executor machine that landed
+Plan 12-12. Use them as a sanity check, not as the gate floor — the
+gate compares against the conservative `phase12MicrobenchFloorIOPS`
+constant (50,000 IOPS) which is anchored well below the M1 Max
+measurement to avoid CI flakes.
+
+- **Date:** 2026-04-27
+- **Hardware:** Apple M1 Max, 10 cores (Darwin arm64)
+- **Benchtime:** 2s (sanity), 10s (gate)
+- **Configuration:** 64 MiB payload, 4 MiB BlockRefs, 4 KiB reads, in-memory local store
+
+| Benchmark                                          | ops/sec   | ns/op | MB/s   | B/op | allocs/op |
+| -------------------------------------------------- | --------: | ----: | -----: | ---: | --------: |
+| BenchmarkRandRead_Phase12                          |   570,000 |  1,752 | 2,338  | 2806 |        15 |
+| BenchmarkPerfGate_Phase12RandReadRegression (gate) |   348,000 |  2,867 | 1,429  | 2823 |        16 |
+
+The gate's per-iteration variance comes from the b.N auto-tuner +
+prefetch worker pool warm-up — every recorded run on this machine
+sat well above the 47,500 IOPS floor (50K × 0.95).
+
+### Re-baselining on a new machine
+
+If the gate fails on a new CI runner / dev machine because the floor
+constant is not appropriate for that machine class:
+
+1. Run `make bench-phase12 -count=5` to capture five runs.
+2. Take the lowest ops/sec figure across all runs.
+3. Multiply by 0.90 (10% margin below the worst observed).
+4. Update `phase12MicrobenchFloorIOPS` in `perf_bench_phase12_test.go`.
+5. Append a row to the table above with date, hardware, and the new
+   floor.
+
+Re-baselining is a deliberate calibration event, not a fix — it MUST
+be reviewed in PR.
+
 ## End-to-end performance reports
 
 For NFSv3/NFSv4.1 + SMB end-to-end numbers against kernel NFS and

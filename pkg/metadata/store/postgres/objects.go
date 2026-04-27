@@ -82,6 +82,13 @@ func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileBlo
 		lastSyncAttemptAt = &t
 	}
 
+	// WR-05 (Phase 12 review iteration 1): omit ref_count from the ON
+	// CONFLICT UPDATE list so concurrent IncrementRefCount / DecrementRefCount
+	// (which run as atomic SQL `+1` / `-1` UPDATEs) cannot be silently
+	// overwritten by a stale Put-with-in-memory-RefCount. RefCount on the
+	// INSERT path is still set verbatim from the caller's *FileBlock
+	// (matches the contract for new rows). For existing rows, RefCount
+	// mutates exclusively through Increment/Decrement.
 	query := `
 		INSERT INTO file_blocks (id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -90,7 +97,6 @@ func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileBlo
 			data_size = EXCLUDED.data_size,
 			cache_path = EXCLUDED.cache_path,
 			block_store_key = EXCLUDED.block_store_key,
-			ref_count = EXCLUDED.ref_count,
 			last_access = EXCLUDED.last_access,
 			state = EXCLUDED.state,
 			last_sync_attempt_at = EXCLUDED.last_sync_attempt_at`
@@ -344,30 +350,149 @@ func scanFileBlockRows(rows pgx.Rows) ([]*metadata.FileBlock, error) {
 // Ensure postgresTransaction implements FileBlockStore
 var _ blockstore.FileBlockStore = (*postgresTransaction)(nil)
 
+// CR-01 (Phase 12 review iteration 1): the FileBlockStore methods on
+// postgresTransaction MUST execute against the txn's own pgx.Tx, not the
+// public store's connection-pool helpers. Previously every method just
+// called `tx.store.X(...)` which routed through the pool — defeating
+// rollback for any caller that bumped RefCount inside WithTransaction
+// then encountered a downstream PutFile failure (BLOCKER-2 silent
+// INV-02 leak). All proxies below are now tx-bound; non-mutating
+// helpers that don't support tx-binding here (ListPending, etc.) keep
+// the pool path because no caller mutates state through them.
+
 func (tx *postgresTransaction) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
-	return tx.store.GetFileBlock(ctx, id)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+		FROM file_blocks WHERE id = $1`
+	row := tx.tx.QueryRow(ctx, query, id)
+	block, err := scanFileBlock(row)
+	if err == pgx.ErrNoRows {
+		return nil, metadata.ErrFileBlockNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get file block: %w", err)
+	}
+	return block, nil
 }
 
 func (tx *postgresTransaction) Put(ctx context.Context, block *metadata.FileBlock) error {
-	return tx.store.Put(ctx, block)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var hashStr *string
+	if block.IsFinalized() {
+		h := block.Hash.String()
+		hashStr = &h
+	}
+	var blockStoreKey *string
+	if block.BlockStoreKey != "" {
+		blockStoreKey = &block.BlockStoreKey
+	}
+	var cachePath *string
+	if block.LocalPath != "" {
+		cachePath = &block.LocalPath
+	}
+	var lastSyncAttemptAt *time.Time
+	if !block.LastSyncAttemptAt.IsZero() {
+		t := block.LastSyncAttemptAt
+		lastSyncAttemptAt = &t
+	}
+	// WR-05: omit ref_count from the ON CONFLICT update list (matches
+	// the pool-path Put). RefCount mutates only via Increment/Decrement.
+	query := `
+		INSERT INTO file_blocks (id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (id) DO UPDATE SET
+			hash = EXCLUDED.hash,
+			data_size = EXCLUDED.data_size,
+			cache_path = EXCLUDED.cache_path,
+			block_store_key = EXCLUDED.block_store_key,
+			last_access = EXCLUDED.last_access,
+			state = EXCLUDED.state,
+			last_sync_attempt_at = EXCLUDED.last_sync_attempt_at`
+	_, err := tx.tx.Exec(ctx, query,
+		block.ID, hashStr, block.DataSize, cachePath, blockStoreKey,
+		block.RefCount, block.LastAccess, block.CreatedAt, block.State, lastSyncAttemptAt)
+	if err != nil {
+		return fmt.Errorf("put file block: %w", err)
+	}
+	return nil
 }
 
 func (tx *postgresTransaction) Delete(ctx context.Context, id string) error {
-	return tx.store.Delete(ctx, id)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	result, err := tx.tx.Exec(ctx, `DELETE FROM file_blocks WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete file block: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return metadata.ErrFileBlockNotFound
+	}
+	return nil
 }
 
+// IncrementRefCount runs the +1 UPDATE on the active pgx.Tx so a
+// subsequent rollback undoes the bump (CR-01 fix). Production callers
+// route here through metadataCoordinator.IncrementRefCount when ctx
+// carries an active tx via metadata.WithTx.
 func (tx *postgresTransaction) IncrementRefCount(ctx context.Context, id string) error {
-	return tx.store.IncrementRefCount(ctx, id)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	result, err := tx.tx.Exec(ctx,
+		`UPDATE file_blocks SET ref_count = ref_count + 1 WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("increment ref count: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return metadata.ErrFileBlockNotFound
+	}
+	return nil
 }
 
+// DecrementRefCount runs the -1 UPDATE on the active pgx.Tx so a
+// subsequent rollback undoes the decrement (CR-01 fix).
 func (tx *postgresTransaction) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
-	return tx.store.DecrementRefCount(ctx, id)
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	query := `UPDATE file_blocks SET ref_count = GREATEST(ref_count - 1, 0) WHERE id = $1 RETURNING ref_count`
+	var newCount uint32
+	err := tx.tx.QueryRow(ctx, query, id).Scan(&newCount)
+	if err == pgx.ErrNoRows {
+		return 0, metadata.ErrFileBlockNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("decrement ref count: %w", err)
+	}
+	return newCount, nil
 }
 
 func (tx *postgresTransaction) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
-	return tx.store.GetByHash(ctx, hash)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+		FROM file_blocks WHERE hash = $1 AND state = 2 /* Remote */`
+	row := tx.tx.QueryRow(ctx, query, hash.String())
+	block, err := scanFileBlock(row)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find file block by hash: %w", err)
+	}
+	return block, nil
 }
 
+// ListPending and ListFileBlocks are read-only helpers; no caller
+// mutates state through them, so they keep the pool path. Same for
+// EnumerateFileBlocks — the GC mark phase / INV-02 audit don't require
+// txn binding (they tolerate concurrent mutation).
 func (tx *postgresTransaction) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
 	return tx.store.ListPending(ctx, olderThan, limit)
 }

@@ -55,3 +55,13 @@ type MetadataCoordinator interface {
 // and for CopyPayload over an empty BlockRef list (no work => no
 // coordinator needed).
 var ErrMetadataCoordinatorNotWired = errors.New("engine: metadata coordinator not wired")
+
+// ErrPersistFileBlocksNotWired signals that PersistFileBlocks was invoked
+// against a coordinator whose payloadID → fileHandle resolution chain has
+// not yet been wired (Phase 12 plan 07 / WR-02). The Syncer's post-Flush
+// hook recognises this sentinel and tolerates it (the dual-read shim keeps
+// reads correct), but logs a warning so the silent-drop window is
+// observable. Other callers should treat it as a hard error so a future
+// plan flipping WriteAt to return real BlockRefs is forced to implement
+// the method rather than silently succeed.
+var ErrPersistFileBlocksNotWired = errors.New("engine: PersistFileBlocks not wired (Phase 12 deferred — dual-read shim covers reads)")

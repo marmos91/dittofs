@@ -431,30 +431,208 @@ func parseBlockIdx(id string) int {
 // Ensure badgerTransaction implements FileBlockStore
 var _ blockstore.FileBlockStore = (*badgerTransaction)(nil)
 
+// CR-01 (Phase 12 review iteration 1): FileBlockStore methods on
+// badgerTransaction MUST run against the txn's *badger.Txn so a
+// rollback (returning an error from WithTransaction's fn) discards the
+// RefCount mutation. Previously every method called `tx.store.X(...)`
+// which opened its own db.Update — defeating rollback for any caller
+// that bumped RefCount inside WithTransaction then encountered a
+// downstream PutFile failure (BLOCKER-2 silent INV-02 leak).
+
 func (tx *badgerTransaction) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
-	return tx.store.GetFileBlock(ctx, id)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	key := []byte(fileBlockPrefix + id)
+	item, err := tx.txn.Get(key)
+	if err == badger.ErrKeyNotFound {
+		return nil, metadata.ErrFileBlockNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	var block metadata.FileBlock
+	if err := item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &block)
+	}); err != nil {
+		return nil, err
+	}
+	return &block, nil
 }
 
 func (tx *badgerTransaction) Put(ctx context.Context, block *metadata.FileBlock) error {
-	return tx.store.Put(ctx, block)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	key := []byte(fileBlockPrefix + block.ID)
+	val, err := json.Marshal(block)
+	if err != nil {
+		return fmt.Errorf("marshal file block: %w", err)
+	}
+	if err := tx.txn.Set(key, val); err != nil {
+		return err
+	}
+	localKey := []byte(fileBlockLocalPrefix + block.ID)
+	if block.State == metadata.BlockStatePending {
+		if err := tx.txn.Set(localKey, nil); err != nil {
+			return err
+		}
+	} else {
+		_ = tx.txn.Delete(localKey)
+	}
+	if parts := strings.SplitN(block.ID, "/", 2); len(parts) == 2 {
+		fileKey := []byte(fileBlockFilePrefix + parts[0] + ":" + parts[1])
+		if err := tx.txn.Set(fileKey, []byte(block.ID)); err != nil {
+			return err
+		}
+	}
+	if block.IsFinalized() {
+		hashKey := []byte(fileBlockHashPrefix + block.Hash.String())
+		return tx.txn.Set(hashKey, []byte(block.ID))
+	}
+	return nil
 }
 
 func (tx *badgerTransaction) Delete(ctx context.Context, id string) error {
-	return tx.store.Delete(ctx, id)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	key := []byte(fileBlockPrefix + id)
+	item, err := tx.txn.Get(key)
+	if err == badger.ErrKeyNotFound {
+		return metadata.ErrFileBlockNotFound
+	}
+	if err != nil {
+		return err
+	}
+	var block metadata.FileBlock
+	if err := item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &block)
+	}); err != nil {
+		return err
+	}
+	if err := tx.txn.Delete(key); err != nil {
+		return err
+	}
+	_ = tx.txn.Delete([]byte(fileBlockLocalPrefix + id))
+	if parts := strings.SplitN(id, "/", 2); len(parts) == 2 {
+		_ = tx.txn.Delete([]byte(fileBlockFilePrefix + parts[0] + ":" + parts[1]))
+	}
+	if block.IsFinalized() {
+		hashKey := []byte(fileBlockHashPrefix + block.Hash.String())
+		_ = tx.txn.Delete(hashKey)
+	}
+	return nil
 }
 
+// IncrementRefCount runs the +1 read-modify-write under the active
+// badger.Txn so a subsequent rollback discards the mutation (CR-01 fix).
 func (tx *badgerTransaction) IncrementRefCount(ctx context.Context, id string) error {
-	return tx.store.IncrementRefCount(ctx, id)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	key := []byte(fileBlockPrefix + id)
+	item, err := tx.txn.Get(key)
+	if err == badger.ErrKeyNotFound {
+		return metadata.ErrFileBlockNotFound
+	}
+	if err != nil {
+		return err
+	}
+	var block metadata.FileBlock
+	if err := item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &block)
+	}); err != nil {
+		return err
+	}
+	block.RefCount++
+	val, err := json.Marshal(&block)
+	if err != nil {
+		return err
+	}
+	return tx.txn.Set(key, val)
 }
 
+// DecrementRefCount runs the -1 read-modify-write under the active
+// badger.Txn so a subsequent rollback discards the mutation (CR-01 fix).
 func (tx *badgerTransaction) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
-	return tx.store.DecrementRefCount(ctx, id)
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	key := []byte(fileBlockPrefix + id)
+	item, err := tx.txn.Get(key)
+	if err == badger.ErrKeyNotFound {
+		return 0, metadata.ErrFileBlockNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	var block metadata.FileBlock
+	if err := item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &block)
+	}); err != nil {
+		return 0, err
+	}
+	if block.RefCount > 0 {
+		block.RefCount--
+	}
+	newCount := block.RefCount
+	val, err := json.Marshal(&block)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.txn.Set(key, val); err != nil {
+		return 0, err
+	}
+	return newCount, nil
 }
 
+// GetByHash runs against the active badger.Txn (BadgerDB transactions
+// see snapshot-isolated reads, so this returns the value AS modified by
+// any prior tx-bound mutations — important when the coordinator does
+// GetByHash → IncrementRefCount inside the same tx).
 func (tx *badgerTransaction) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
-	return tx.store.GetByHash(ctx, hash)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	hashKey := []byte(fileBlockHashPrefix + hash.String())
+	hashItem, err := tx.txn.Get(hashKey)
+	if err == badger.ErrKeyNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var id string
+	if err := hashItem.Value(func(val []byte) error {
+		id = string(val)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	key := []byte(fileBlockPrefix + id)
+	item, err := tx.txn.Get(key)
+	if err == badger.ErrKeyNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var block metadata.FileBlock
+	if err := item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &block)
+	}); err != nil {
+		return nil, err
+	}
+	if !block.IsRemote() {
+		return nil, nil
+	}
+	return &block, nil
 }
 
+// ListPending, ListFileBlocks, EnumerateFileBlocks are read-only and
+// don't require tx-binding for correctness; keep them on the public
+// store path.
 func (tx *badgerTransaction) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
 	return tx.store.ListPending(ctx, olderThan, limit)
 }

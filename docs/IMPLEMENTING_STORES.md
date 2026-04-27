@@ -110,11 +110,20 @@ The metadata store interface and implementation guide remains the same as before
 
 Conformance tests: `pkg/metadata/storetest/`
 
-### MetadataStore.EnumerateFileBlocks (v0.15.0 Phase 11)
+### MetadataStore.EnumerateFileBlocks (v0.15.0 Phase 11; lifted from FileBlockStore in Phase 12)
 
-v0.15.0 (Phase 11 / A2) adds a new mandatory cursor method that the
+v0.15.0 (Phase 11 / A2) added a mandatory cursor method that the
 mark-sweep garbage collector uses to enumerate every live block hash
 without loading the full file/block set into application memory.
+
+> **Phase 12 / META-03 / D-08 note:** `EnumerateFileBlocks` now lives on
+> `MetadataStore`, not `FileBlockStore`. Conceptually it iterates across
+> files for the GC mark phase — a metadata-store-wide concern — so it
+> moved up the stack when `FileBlockStore` was narrowed to its
+> 6-method spec surface (see [FileBlockStore narrowing
+> (v0.15.0 Phase 12)](#fileblockstore-narrowing-v0150-phase-12) below).
+> Backends that already implemented it on the FileBlockStore in Phase 11
+> need only re-attach the same code to the `MetadataStore` interface.
 
 ```go
 // EnumerateFileBlocks streams every FileBlock's ContentHash to fn.
@@ -150,6 +159,124 @@ Memory-store reference: direct `range` over the in-memory map.
 Badger-store reference: `txn.NewIterator` over the FileBlock prefix.
 Postgres-store reference: server-side cursor (`DECLARE` + `FETCH`)
 with batches of 1000 rows.
+
+### FileBlockStore narrowing (v0.15.0 Phase 12)
+
+v0.15.0 (Phase 12 / A3) narrows `pkg/blockstore.FileBlockStore` to
+exactly **6 hash-keyed CRUD methods** per the META-03 spec (D-09).
+Backend implementations are simpler; engine-internal helpers move to a
+separate wider interface.
+
+```go
+// pkg/blockstore/store.go (Phase 12 spec-literal surface)
+type FileBlockStore interface {
+    // GetByHash looks up the FileBlock with the given content hash.
+    // Returns ErrFileBlockNotFound when no row matches.
+    GetByHash(ctx context.Context, hash ContentHash) (*FileBlock, error)
+
+    // Put inserts or updates a FileBlock keyed by hash.
+    Put(ctx context.Context, fb *FileBlock) error
+
+    // Delete removes the FileBlock with the given hash. Idempotent —
+    // deleting a non-existent hash is not an error.
+    Delete(ctx context.Context, hash ContentHash) error
+
+    // IncrementRefCount atomically bumps the FileBlock's RefCount by 1.
+    IncrementRefCount(ctx context.Context, hash ContentHash) error
+
+    // DecrementRefCount atomically decrements RefCount; returns the new
+    // value. Callers MUST NOT decrement below zero.
+    DecrementRefCount(ctx context.Context, hash ContentHash) (int64, error)
+
+    // ListPending streams every Pending FileBlock to fn. Used by syncer.
+    ListPending(ctx context.Context, fn func(*FileBlock) error) error
+}
+```
+
+**Engine-internal companion interface:** `pkg/blockstore.EngineFileBlockStore`
+extends `FileBlockStore` with `GetFileBlock(ctx, id)` and
+`ListFileBlocks(ctx, fn)` for the engine's hot paths. All three built-in
+backends (memory, badger, postgres) satisfy it without changes — the
+narrow public surface is a documentation concern, not a runtime
+restriction. Custom backends implementing `FileBlockStore` SHOULD also
+implement the engine-internal helpers if they intend to slot into the
+`*engine.BlockStore`.
+
+**Internal storage shape is up to the backend.** The Phase 11 schema
+(`id VARCHAR PRIMARY KEY` + `hash` non-unique index) stays in place to
+honor the WR-4-01 multiple-rows-per-hash contract for legacy data;
+the public `GetByHash` surface hides that detail. Phase 15 will
+collapse to hash-PK once Phase 14 migrates legacy data.
+
+### FileAttr.Blocks []BlockRef (v0.15.0 Phase 12)
+
+Phase 12 reintroduces `FileAttr.Blocks []blockstore.BlockRef` as the
+authoritative content list for every file (META-01 / META-04 / D-01..D-05).
+`BlockRef` is the 3-tuple of `(Hash, Offset, Size)` — see
+`pkg/blockstore/types.go`. The list MUST be sorted by `Offset` and is
+populated on every sync finalization.
+
+Encoding requirements per backend:
+
+- **Postgres**: a separate `file_block_refs` join table keyed by
+  `(file_id, offset)`, with `INCLUDE (size, hash)` for index-only scans
+  on the read hot path. Foreign key `file_id REFERENCES files(id) ON
+  DELETE CASCADE` provides a safety net — the engine still decrements
+  `file_blocks.RefCount` for every BlockRef BEFORE deleting the file;
+  cascade catches engine-bug paths that miss the explicit decrement.
+  Hash column is `BYTEA` (32 bytes), not hex `TEXT`. Migration:
+  `pkg/metadata/store/postgres/migrations/000012_file_block_refs.up.sql`.
+- **Badger** and **Memory**: inline-encode `Blocks []BlockRef` inside
+  the existing `FileAttr` blob. Badger goes through
+  `pkg/metadata/store/badger/encoding.go` (gob); Memory holds typed
+  structs directly. Use `omitempty` so legacy pre-Phase-12 blobs
+  decode cleanly with an empty `Blocks` slice (D-06 dual-read trigger).
+
+A new metadata-store method persists the list; in the built-in
+backends this is `MetadataStore.SetFileBlocks(ctx, handle, []BlockRef,
+authCtx) error`. Custom metadata backends MUST persist atomically
+with the same transaction that updates `Size`/`Mtime`/`Ctime` — the
+engine relies on caller-side metadata-txn isolation rather than a
+per-chunk metadata roundtrip (D-22 caller-snapshot semantics).
+
+#### Conformance scenarios
+
+The `pkg/metadata/storetest/` suite extends the Phase 11 tests with:
+
+1. **BlockRef round-trip**: `SetFileBlocks` followed by `GetFileAttr`
+   returns the same offset-sorted slice, byte-for-byte.
+2. **Empty / legacy compat**: `FileAttr` blobs without a `Blocks`
+   field decode to an empty slice without errors.
+3. **FK cascade (Postgres-only)**: deleting a file removes all
+   matching `file_block_refs` rows.
+4. **INV-02 reconcile**: `∑ FileBlock.RefCount` over the FileBlockStore
+   equals `∑ len(FileAttr.Blocks)` over the MetadataStore at every
+   quiescent point.
+5. **INV-02 concurrent fuzz** (`pkg/metadata/storetest/inv02_fuzz_test.go`):
+   100-iteration property-based fuzzer creating, deleting, and copying
+   files concurrently; asserts the invariant after each operation
+   batch. Runs against all 3 built-in backends and any custom backend
+   wired into the conformance harness.
+
+### Engine API surface (Phase 12 / API-01..04)
+
+Custom block-store implementations that compose into `*engine.BlockStore`
+do not see the engine API directly — that surface is consumed by
+adapters via `internal/adapter/common/`. For reference, the Phase 12
+signatures are:
+
+```go
+ReadAt(ctx, payloadID, blocks []BlockRef, dest []byte, offset uint64) (int, error)
+WriteAt(ctx, payloadID, currentBlocks []BlockRef, data []byte, offset uint64) ([]BlockRef, error)
+Truncate(ctx, payloadID, currentBlocks []BlockRef, newSize uint64) ([]BlockRef, error)
+Delete(ctx, payloadID, blocks []BlockRef) error
+CopyPayload(ctx, srcPayloadID, srcBlocks []BlockRef, dstPayloadID) ([]BlockRef, error)
+```
+
+`nil` or empty `blocks` triggers the Phase 11 dual-read shim (D-20)
+for legacy files that have no populated `FileAttr.Blocks` yet.
+Non-empty `blocks` is the CAS path with end-to-end BLAKE3 verification
+(INV-06).
 
 ## Implementing a Local Store
 

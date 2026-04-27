@@ -43,19 +43,46 @@ func newMetadataCoordinator(metadataStore metadata.MetadataStore) engine.Metadat
 	return &metadataCoordinator{metadataStore: metadataStore}
 }
 
+// resolveStore picks between a context-bound metadata.Transaction (when
+// the caller used metadata.WithTx, e.g. common.CopyPayload) and the
+// public metadata.MetadataStore surface (Truncate/Delete which do not
+// run inside a metadata txn). The Transaction interface embeds the
+// FileBlockStore, so GetByHash / IncrementRefCount / DecrementRefCount
+// are available on both surfaces with identical signatures.
+//
+// CR-01 (Phase 12 review iteration 1): without this, every coordinator
+// mutation routes through the Postgres connection pool and commits
+// immediately on its own connection — defeating the BLOCKER-2 atomic
+// rollback contract documented in copy_payload.go and engine.go. The
+// returned blockstore.FileBlockStore-shaped surface is the narrow set
+// of methods the coordinator needs.
+func (c *metadataCoordinator) resolveStore(ctx context.Context) blockstore.FileBlockStore {
+	if tx := metadata.TxFromContext(ctx); tx != nil {
+		return tx
+	}
+	return c.metadataStore
+}
+
 // IncrementRefCount looks up the FileBlock by hash and bumps its
 // RefCount. If no FileBlock with the hash exists, returns
 // ErrFileBlockNotFound (the caller — typically CopyPayload — surfaces
 // this so the metadata txn can roll back).
+//
+// CR-01 (Phase 12 review iteration 1): when the caller has bound an
+// active metadata.Transaction into ctx via metadata.WithTx, both
+// GetByHash and IncrementRefCount route through that tx — keeping the
+// per-row UPDATE inside the caller's txn so a downstream PutFile
+// failure rolls back BOTH the file attrs AND every increment.
 func (c *metadataCoordinator) IncrementRefCount(ctx context.Context, hash blockstore.ContentHash) error {
-	fb, err := c.metadataStore.GetByHash(ctx, hash)
+	store := c.resolveStore(ctx)
+	fb, err := store.GetByHash(ctx, hash)
 	if err != nil {
 		return fmt.Errorf("coordinator: GetByHash(%s): %w", hash.String(), err)
 	}
 	if fb == nil {
 		return fmt.Errorf("coordinator: no FileBlock with hash %s: %w", hash.String(), metadata.ErrFileBlockNotFound)
 	}
-	if err := c.metadataStore.IncrementRefCount(ctx, fb.ID); err != nil {
+	if err := store.IncrementRefCount(ctx, fb.ID); err != nil {
 		return fmt.Errorf("coordinator: IncrementRefCount(%s): %w", fb.ID, err)
 	}
 	return nil
@@ -66,8 +93,17 @@ func (c *metadataCoordinator) IncrementRefCount(ctx context.Context, hash blocks
 // that has no row is tolerated (returns count=0, nil) — a Truncate or
 // Delete on a hash that has already been swept by GC is not a caller
 // error.
+//
+// CR-01 (Phase 12 review iteration 1): when the caller has bound an
+// active metadata.Transaction into ctx via metadata.WithTx, both
+// GetByHash and DecrementRefCount route through that tx. Truncate and
+// Delete from the engine path do NOT currently bind a tx (no wrapping
+// WithTransaction), so those callers route through the public store —
+// the documented Phase 12 stance is that Truncate/Delete are non-atomic
+// at the cross-store level and the INV-02 audit reconciles drift.
 func (c *metadataCoordinator) DecrementRefCount(ctx context.Context, hash blockstore.ContentHash) (uint32, error) {
-	fb, err := c.metadataStore.GetByHash(ctx, hash)
+	store := c.resolveStore(ctx)
+	fb, err := store.GetByHash(ctx, hash)
 	if err != nil {
 		return 0, fmt.Errorf("coordinator: GetByHash(%s): %w", hash.String(), err)
 	}
@@ -76,7 +112,7 @@ func (c *metadataCoordinator) DecrementRefCount(ctx context.Context, hash blocks
 		// the requested decrement effectively succeeded (count is zero).
 		return 0, nil
 	}
-	count, err := c.metadataStore.DecrementRefCount(ctx, fb.ID)
+	count, err := store.DecrementRefCount(ctx, fb.ID)
 	if err != nil {
 		if errors.Is(err, metadata.ErrFileBlockNotFound) {
 			return 0, nil
@@ -107,12 +143,22 @@ func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID s
 	// Phase 12 plan 07: the engine seam exists; production wiring of the
 	// payloadID → fileHandle → PutFile chain lands in plan 08 alongside
 	// the adapter common helper refactor (which has the file handle).
-	// Until then, accept the call and persist nothing — the dual-read
-	// shim (D-20) keeps reads correct, and uploads still complete via
-	// the existing FileBlock.State=Remote path. This is intentionally a
-	// no-op and is the only "pending wiring" surface in plan 07.
+	// The dual-read shim (D-20) keeps reads correct in the meantime; this
+	// path is wire-but-not-implemented.
+	//
+	// WR-02 (Phase 12 review iteration 1): the previous "return nil" silently
+	// swallowed every call. That is dangerous once WriteAt starts producing
+	// non-empty BlockRef lists in a future plan: the syncer would observe
+	// success and never retry the persist, leaving FileAttr.Blocks empty.
+	// Surface the gap by returning engine.ErrPersistFileBlocksNotWired so
+	// callers (today: only Syncer.persistFileBlocksAfterFlush) can recognise
+	// the deferred-wiring case explicitly. The Syncer's post-Flush hook
+	// tolerates this sentinel (dual-read shim covers reads) but logs a
+	// warning so the silent-drop window is observable; a future plan that
+	// flips WriteAt to return real BlockRefs is forced to implement this
+	// method, not silently succeed.
 	_ = ctx
 	_ = payloadID
 	_ = blocks
-	return nil
+	return engine.ErrPersistFileBlocksNotWired
 }

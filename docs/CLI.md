@@ -299,6 +299,66 @@ See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep-v0150-phase-
 for the full mark-sweep design and [CONFIGURATION.md](CONFIGURATION.md)
 for every `gc.*` knob.
 
+### Block Store INV-02 Refcount Audit (v0.15.0 Phase 12)
+
+v0.15.0 (Phase 12 / A3) ships an operator-facing audit for INV-02
+(`∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks)`). The audit runs the
+same metadata enumeration as the GC mark phase (D-36) and emits
+aggregate counts; a non-zero `delta` indicates refcount drift between
+the metadata and block stores.
+
+#### `dfsctl blockstore audit-refcounts <share>`
+
+```
+dfsctl blockstore audit-refcounts <share> [--output table|json|yaml]
+```
+
+Run the INV-02 reconciliation audit for the named share. Emits
+aggregate counts and persists the last-run summary at
+`<localStore>/audit-state/last-inv02.json` (mirrors Phase 11 GC's
+`last-run.json`).
+
+```bash
+# Default text-table output
+dfsctl blockstore audit-refcounts /archive
+
+# Structured JSON for log aggregation / alerting
+dfsctl blockstore audit-refcounts /archive --output json
+
+# YAML for tooling that prefers it
+dfsctl blockstore audit-refcounts /archive --output yaml
+```
+
+**Output fields:**
+
+| Field | Description |
+|-------|-------------|
+| `share` | Share name (matches the CLI argument) |
+| `started_at` | RFC3339 timestamp when the audit started |
+| `duration_ms` | Wall-clock duration of the audit, in milliseconds |
+| `total_files` | Number of files enumerated from `MetadataStore` |
+| `total_refs` | Sum of `len(FileAttr.Blocks)` across all files |
+| `total_refcount` | Sum of `FileBlock.RefCount` across the FileBlockStore |
+| `delta` | `total_refs - total_refcount`. Zero ⇒ INV-02 holds. Non-zero ⇒ drift; investigate. |
+
+**Exit codes:**
+
+- `0` — audit completed successfully **regardless of `delta` value**.
+  A non-zero `delta` is informational, not an error: the CLI reports
+  drift so operators can triage; it does not fail the command.
+- non-zero — infrastructure failure (auth, network, share not found,
+  metadata-store error, etc.).
+
+**Cross-reference:** [FAQ.md](FAQ.md#how-do-i-run-the-inv-02-audit) for
+operator guidance and CI-friendly invocation patterns.
+
+The audit is **operator-invoked**, not periodic. Schedule via cron at
+the cadence that matches your operational risk tolerance until a
+periodic-scheduler phase ships. For belt-and-braces protection, the
+property-based fuzzer at `pkg/metadata/storetest/inv02_fuzz_test.go`
+runs against all 3 built-in backends in CI on every PR, asserting
+INV-02 at every quiescent point under concurrent load.
+
 ## Global Flags
 
 ### dfs

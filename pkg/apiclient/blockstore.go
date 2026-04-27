@@ -130,3 +130,29 @@ func (c *Client) BlockStoreGCStatus(shareName string) (*engine.GCRunSummary, err
 		fmt.Sprintf("/api/v1/shares/%s/blockstore/gc-status", url.PathEscape(normalizeShareNameForAPI(shareName))),
 	)
 }
+
+// BlockStoreAuditResult is the response body for
+// POST /api/v1/shares/{name}/audit/refcounts. Wraps the
+// engine.AuditRefcountsResult value (Phase 12 D-36 INV-02 audit).
+// Mirrors the server-side handlers.BlockStoreAuditResponse shape.
+type BlockStoreAuditResult struct {
+	Result *engine.AuditRefcountsResult `json:"result"`
+}
+
+// BlockStoreAuditRefcounts triggers the on-demand INV-02 reconciliation
+// audit for the named share. Server walks the share's metadata store
+// and computes ∑ FileBlock.RefCount vs ∑ len(FileAttr.Blocks); a
+// non-zero delta indicates drift. The audit persists last-inv02.json
+// under the share's audit-state directory; this client method returns
+// the same summary in the response body for direct consumption by
+// `dfsctl blockstore audit-refcounts`.
+//
+// Mirrors BlockStoreGC's URL/error pattern (per-share path, JSON body,
+// JWT auth via the underlying transport).
+func (c *Client) BlockStoreAuditRefcounts(shareName string) (*BlockStoreAuditResult, error) {
+	return createResource[BlockStoreAuditResult](
+		c,
+		fmt.Sprintf("/api/v1/shares/%s/audit/refcounts", url.PathEscape(normalizeShareNameForAPI(shareName))),
+		struct{}{},
+	)
+}

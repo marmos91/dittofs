@@ -14,6 +14,7 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 - [Directory Structure](#directory-structure)
 - [Horizontal Scaling with PostgreSQL](#horizontal-scaling-with-postgresql)
 - [Durable Handle State Flow](#durable-handle-state-flow)
+- [Phase 12 Engine API + BlockRef + Cache (v0.15.0 A3)](#phase-12-engine-api--blockref--cache-v0150-a3)
 
 ## Core Abstraction Layers
 
@@ -132,7 +133,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 - Each share gets an isolated local storage directory; remote stores can be shared across shares (ref counted)
 - `shares.Service` owns the lifecycle (create on AddShare, close on RemoveShare)
 - Sub-packages:
-  - `engine/`: BlockStore orchestrator — composes local + remote stores and owns the read cache, syncer, prefetcher, and garbage collector (merged from former `readbuffer/`, `sync/`, `gc/` packages per TD-01)
+  - `engine/`: BlockStore orchestrator — composes local + remote stores and owns the unified `Cache` (single CAS-keyed type that absorbed the former `readbuffer/` + `prefetch.go` pair per Phase 12 / CACHE-01), the syncer, and the garbage collector (merged from former `readbuffer/`, `sync/`, `gc/` packages per TD-01). See `pkg/blockstore/engine/cache.go` for the Cache type.
   - `local/`: Local store interface and implementations (`fs/` filesystem, `memory/` in-memory)
   - `remote/`: Remote store interface and implementations (`s3/` production, `memory/` testing)
   - `storetest/`: Conformance test helpers for new backend implementations
@@ -169,7 +170,7 @@ Each share in DittoFS gets its own `*engine.BlockStore` instance, providing comp
 ### Isolation Properties
 
 - **Data Isolation**: Each share's local blocks are stored in separate directories
-- **Read Buffer Independence**: Read buffer is per-share (eviction in one share does not affect others)
+- **Cache Independence**: The unified `Cache` is per-share (eviction in one share does not affect others). Inside a share, the cache is keyed by `ContentHash`, so two files referencing the same chunk via dedup share one cache entry (CACHE-02).
 - **Remote Sharing**: Multiple shares can reference the same remote store (e.g., same S3 bucket) -- blocks are namespaced by share to prevent collisions
 - **Lifecycle Independence**: Block stores are created/closed with share lifecycle
 
@@ -179,15 +180,18 @@ DittoFS uses a three-tier storage model for block data:
 
 ```
 ┌─────────────────────────────────────┐
-│  Read Buffer (In-Memory)            │
-│  pkg/blockstore/engine/ (cache)     │
-│  - LRU eviction                     │
-│  - Fastest access (nanoseconds)     │
+│  Cache (In-Memory, CAS-keyed)       │
+│  pkg/blockstore/engine/cache.go     │
+│  - Single type, keyed by ContentHash│
+│  - LRU eviction (D-30)              │
+│  - Internal sequential prefetch     │
+│    (3-trigger threshold, D-29)      │
+│  - Cross-file dedup (CACHE-02)      │
+│  - Configurable budget per share    │
+│    (cache.size_mib, default 256)    │
 │  - Volatile (lost on restart)       │
-│  - Configurable memory limit        │
-│  - Prefetch for sequential reads    │
 └──────────────┬──────────────────────┘
-               │ buffer miss
+               │ cache miss
                ▼
 ┌─────────────────────────────────────┐
 │  Local Block Store                  │
@@ -209,12 +213,20 @@ DittoFS uses a three-tier storage model for block data:
 └─────────────────────────────────────┘
 ```
 
-**Read Path**: Read buffer hit -> return. Buffer miss -> local hit -> populate buffer, return. Local miss -> remote fetch -> store locally, populate buffer, return.
+**Read Path**: Engine.ReadAt receives `[]BlockRef` from caller, locates the
+covering blocks via `findBlocksForRange` (binary search), serves bytes
+from local CAS (mmap on linux/darwin, ReadFile on windows — CACHE-06)
+or remote CAS (BLAKE3-verified end-to-end, INV-06), calls `Cache.OnRead`
+to update the per-payload sequential tracker for prefetch hints.
 
-**Write Path**: Write to local store. Syncer asynchronously uploads to remote store. Read buffer is populated on subsequent reads.
+**Write Path**: Engine.WriteAt receives `(currentBlocks []BlockRef, data,
+offset)`, FastCDC-rechunks the affected range, returns `newBlocks
+[]BlockRef` to the caller; caller persists newBlocks alongside the
+metadata transaction (Mtime, Size, etc.). Syncer asynchronously uploads
+Pending FileBlocks to remote CAS.
 
 **Eviction**:
-- Read buffer: LRU eviction when memory limit reached. No data loss (local store has the data).
+- Cache: LRU eviction when budget reached. No data loss (local CAS has the data). Cache is per-share but cross-file inside a share (CACHE-02 — same hash referenced by two files shares one entry).
 - Local store: Manual eviction via `dfsctl store block evict`. Only blocks already synced to remote can be evicted (safety check prevents data loss).
 
 ## Block Store -- Hybrid Local Tier (experimental, v0.15.0 Phase 10)
@@ -477,8 +489,11 @@ type NFSAdapter struct {
 func (a *NFSAdapter) handleRead(ctx context.Context, req *ReadRequest) {
     // Resolve per-share block store from file handle
     blockStore, err := a.runtime.GetBlockStoreForHandle(ctx, handle)
-    // Read data via block store
-    data, err := blockStore.ReadAt(ctx, contentID, offset, size)
+    // Phase 12: read data via block store with caller-snapshot []BlockRef.
+    // Engine binary-searches blocks for the requested range; sparse holes
+    // outside any BlockRef are zero-filled (D-21). nil/empty []BlockRef
+    // triggers the legacy dual-read shim (D-20).
+    n, err := blockStore.ReadAt(ctx, payloadID, attr.Blocks, dest, offset)
     // ...
 }
 
@@ -595,16 +610,28 @@ lock, err := metaSvc.AcquireLock(ctx, shareName, handle, offset, length, exclusi
 WRITE operations require coordination between metadata and block stores:
 
 ```go
-// 1. Update metadata (validates permissions, updates size/timestamps)
+// 1. Update metadata (validates permissions, updates size/timestamps);
+//    capture the caller-snapshot []BlockRef for the engine.
 attr, preSize, preMtime, preCtime, err := metadataStore.WriteFile(handle, newSize, authCtx)
+currentBlocks := attr.Blocks  // []blockstore.BlockRef sorted by Offset
 
 // 2. Resolve per-share block store from file handle
 blockStore, err := rt.GetBlockStoreForHandle(ctx, handle)
 
-// 3. Write actual data via per-share block store
-err = blockStore.WriteAt(ctx, string(attr.PayloadID), data, offset)
+// 3. Write actual data via per-share block store; engine FastCDC-rechunks
+//    the affected range and returns the new []BlockRef.
+newBlocks, err := blockStore.WriteAt(ctx, string(attr.PayloadID), currentBlocks, data, offset)
 
-// 4. Return updated attributes to client for cache consistency
+// 4. Persist newBlocks in the same metadata txn that updates Size/Mtime.
+//    Engine never opens the metadata txn itself (API-02).
+err = metadataStore.SetFileBlocks(handle, newBlocks, authCtx)
+
+// 5. Post-txn surgical cache invalidation: drop only the hashes that
+//    disappeared, preserving warm dedup entries (CACHE-05 / D-35).
+removed := diffRemovedHashes(currentBlocks, newBlocks)
+blockStore.Cache().InvalidateFile(string(attr.PayloadID), removed)
+
+// 6. Return updated attributes to client for cache consistency
 ```
 
 ## Built-In and Custom Backends
@@ -909,6 +936,125 @@ OPEN -[disconnect]-> ORPHANED -[scavenger timeout]-> EXPIRED -[cleanup]-> CLOSED
 
 **Admin API**: `GET /api/v1/durable-handles` lists all active handles with remaining timeout. `DELETE /api/v1/durable-handles/{id}` force-closes a specific handle.
 
+## Phase 12 Engine API + BlockRef + Cache (v0.15.0 A3)
+
+Phase 12 (v0.15.0 A3) reshapes the read path so the engine never imports
+`pkg/metadata` on hot paths and consumes a caller-supplied
+`[]BlockRef` snapshot as the authoritative content list for every file.
+
+### BlockRef — the on-the-wire content unit
+
+`BlockRef` is the 3-tuple of `(Hash ContentHash, Offset uint64, Size uint32)`
+defined in `pkg/blockstore/types.go` (D-10/D-19). `FileAttr.Blocks
+[]BlockRef` (in `pkg/metadata/file_types.go`) is the authoritative,
+offset-sorted list of every chunk that composes a file. It is populated
+on every sync finalization; the engine binary-searches it via
+`findBlocksForRange` (`pkg/blockstore/engine/range.go`, D-12).
+
+Storage encodings differ per backend:
+
+- **Postgres** uses a separate `file_block_refs` table (D-01..D-04;
+  migration `000012_file_block_refs.up.sql`) with PK `(file_id, offset)
+  INCLUDE (size, hash)`, FK `ON DELETE CASCADE`, hash column `BYTEA`.
+  Random 4 KiB writes touch 1–2 rows instead of rewriting a ~1.5 MB
+  TOAST blob — the VM-workload decision driver.
+- **Badger** and **Memory** inline-encode `Blocks []BlockRef` inside
+  the existing `FileAttr` blob (gob for Badger, typed structs for
+  Memory) via the same `omitempty` tag for legacy tolerance (D-05).
+
+### Engine API (API-01..04)
+
+```go
+// pkg/blockstore/engine/engine.go (Phase 12 signatures)
+ReadAt(ctx, payloadID, blocks []BlockRef, dest []byte, offset uint64) (int, error)
+WriteAt(ctx, payloadID, currentBlocks []BlockRef, data []byte, offset uint64) ([]BlockRef, error)
+Truncate(ctx, payloadID, currentBlocks []BlockRef, newSize uint64) ([]BlockRef, error)
+Delete(ctx, payloadID, blocks []BlockRef) error
+CopyPayload(ctx, srcPayloadID, srcBlocks []BlockRef, dstPayloadID) ([]BlockRef, error)
+```
+
+Range-coverage semantics: `findBlocksForRange(blocks, offset, size)`
+returns `[start, end)` of the BlockRef slice that overlaps the requested
+range using binary search on the offset-sorted slice; sparse holes
+inside `FileAttr.Size` are zero-filled (D-21) — `no BlockRef for this
+range` is a documented behavior, not a bug. Past `FileAttr.Size`
+returns short-read or EOF.
+
+`CopyPayload` is **O(1)** — a single metadata transaction increments
+`FileBlock.RefCount` for every distinct hash in `srcBlocks` and inserts
+the dst rows (D-11). No data copy. This is the file-level dedup
+primitive Phase 13 (META-02 / BSCAS-04/05) consumes.
+
+`MetadataCoordinator` (`pkg/blockstore/engine/coordinator.go`) is the
+narrow interface the engine uses to mutate refcounts and persist
+`FileAttr.Blocks`. The engine never opens a metadata txn itself —
+the API-02 strict-grep gate enforces zero `pkg/metadata` imports under
+`pkg/blockstore/engine/*.go` production files except a single justified
+exception in `gc.go`.
+
+### Cache (CACHE-01..06)
+
+The `Cache` type (`pkg/blockstore/engine/cache.go`) is keyed solely by
+`ContentHash`. It absorbs the former `readbuffer/cache.go` + standalone
+`prefetch.go` worker pool into a single per-share type with a single
+budget (`cache.size_mib`, default 256 MiB; D-31). Two files reading the
+same chunk hit the same entry (CACHE-02 cross-file dedup).
+
+```go
+// pkg/blockstore/engine/cache.go (CACHE-04 hint API)
+OnRead(payloadID PayloadID, hashes []ContentHash, fileSize uint64)
+InvalidateFile(payloadID PayloadID, removedHashes []ContentHash)  // CACHE-05 surgical
+```
+
+Sequential prefetch triggers after 3 consecutive sequential reads (D-29
+/ CACHE-03; raised from Phase 11's threshold of 2 to suppress
+speculative prefetch on accidental two-block runs in random-IO
+workloads). Bounded concurrency: 4 worker goroutines per cache by
+default. LRU eviction (D-30; ARC/LFU rejected as overkill for v0.15.0).
+
+Single-copy reads: on Linux/Darwin, `readFromCAS`
+(`cache_mmap_unix.go`) `mmap`s the local CAS chunk and `copy(dest,
+mapped[offset:])` once (CACHE-06 / D-33). Chunks below 64 KiB use
+`os.ReadFile` (mmap setup overhead dominates tiny reads). Windows uses
+`os.ReadFile` only.
+
+`InvalidateFile` is **surgical** (CACHE-05): the caller passes only the
+hashes that disappeared from the file, so other files still referencing
+those hashes via dedup keep them warm. Invalidation happens
+**post-txn** (D-35) — caller commits new `[]BlockRef` first, then drops
+cache entries.
+
+### Adapter call sites unchanged
+
+All NFS v3/v4 + SMB v2 protocol handlers stay untouched (D-26). The
+`internal/adapter/common/{ResolveForRead, ResolveForWrite,
+WriteToBlockStore, ReadFromBlockStore}` helpers absorb the new
+`[]BlockRef` threading. Phase 09 (ADAPT-04) seam pays off here:
+Phase 12's adapter diff is confined to the helpers.
+
+### Operator surfaces
+
+- `dfsctl blockstore audit-refcounts <share>` runs the INV-02
+  reconciliation audit (`∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks)`),
+  emits aggregate counts as structured slog INFO, and persists the
+  last-run summary at `<localStore>/audit-state/last-inv02.json`. See
+  `docs/CLI.md` for the full reference and `docs/FAQ.md` for operator
+  guidance.
+- Cache and prefetch knobs (`cache.size_mib`, `cache.prefetch_threshold`,
+  `cache.prefetch_max_depth`, `cache.prefetch_workers`) are documented
+  in `docs/CONFIGURATION.md`.
+
+### Migration window
+
+Phase 12 ships **forward-only** Postgres migration
+`000012_file_block_refs.up.sql`. Legacy files written before Phase 12
+keep using the Phase 11 dual-read shim (D-20: empty/nil `[]BlockRef`
+triggers the metadata-driven legacy resolver). Phase 14 ships
+`dfsctl blockstore migrate` to backfill `[]BlockRef` and CAS-keys
+atomically; Phase 15 retires the dual-read shim. See
+`docs/BLOCKSTORE_MIGRATION.md` for the operator-facing migration
+guide.
+
 ## Performance Characteristics
 
 DittoFS is designed for high performance through several architectural choices:
@@ -917,7 +1063,7 @@ DittoFS is designed for high performance through several architectural choices:
 - **Goroutine-per-connection model**: Leverages Go's lightweight concurrency
 - **Buffer pooling**: Reduces GC pressure for large I/O operations
 - **Streaming I/O**: Efficient handling of large files without full buffering
-- **Three-tier storage**: Read buffer + local disk + remote store for optimal read latency
+- **Three-tier storage**: Unified CAS-keyed `Cache` + local disk + remote store for optimal read latency (Phase 12 collapsed Phase 11's `readbuffer + prefetcher` pair into a single `Cache` type)
 - **Zero-copy aspirations**: Working toward minimal data copying in hot paths
 
 ## Why Pure Go?

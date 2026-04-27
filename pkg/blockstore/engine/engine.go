@@ -353,6 +353,37 @@ func (bs *BlockStore) WriteAt(ctx context.Context, payloadID string, currentBloc
 // the legacy path runs and the returned slice is empty (dual-read
 // shim semantics).
 func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, currentBlocks []blockstore.BlockRef, newSize uint64) ([]blockstore.BlockRef, error) {
+	// WR-03 (Phase 12 review iteration 1): coordinator decrements run FIRST
+	// so a refcount-bookkeeping failure leaves the file untouched on disk
+	// and remote. Previous order (local → cache → syncer → coordinator)
+	// could leave 4-of-5 hashes leaked when step 4 failed mid-loop because
+	// local data was already gone and remote had been swept. Mirrors the
+	// engine.Delete ordering (D-17) and the documented Phase 12 stance
+	// "orphan-not-deleted is preferred over live-data-deleted".
+	//
+	// CAS-path BlockRef pruning + coordinator DecrementRefCount per
+	// dropped hash. Empty input (legacy/dual-read path) skips the
+	// coordinator and returns nil so the caller's PutFile keeps
+	// FileAttr.Blocks untouched.
+	var kept []blockstore.BlockRef
+	if len(currentBlocks) > 0 {
+		kept = make([]blockstore.BlockRef, 0, len(currentBlocks))
+		for _, b := range currentBlocks {
+			if b.Offset >= newSize {
+				// Block fully past newSize — drop it.
+				if bs.coordinator != nil {
+					if _, err := bs.coordinator.DecrementRefCount(ctx, b.Hash); err != nil {
+						return currentBlocks, fmt.Errorf("decrement refcount on truncate-drop %s: %w", b.Hash.String(), err)
+					}
+				}
+				continue
+			}
+			// Block fully or partially before newSize — keep. Plan 09 will
+			// re-chunk the partial-tail block; Plan 07 keeps it as-is.
+			kept = append(kept, b)
+		}
+	}
+
 	if err := bs.local.Truncate(ctx, payloadID, newSize); err != nil {
 		return currentBlocks, fmt.Errorf("local truncate failed: %w", err)
 	}
@@ -363,30 +394,15 @@ func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, currentBlo
 	// per D-35). nullCache is a no-op.
 	bs.cache.OnRead(payloadID, nil, 0)
 
+	// Remote sweep is best-effort: GC will reconcile stragglers, so a
+	// failure here does NOT roll back the coordinator decrements (matches
+	// engine.Delete semantics post-WR-04).
 	if err := bs.syncer.Truncate(ctx, payloadID, newSize); err != nil {
-		return currentBlocks, err
+		return kept, err
 	}
 
-	// CAS-path BlockRef pruning + coordinator DecrementRefCount per
-	// dropped hash. Empty input (legacy/dual-read path) returns nil so
-	// the caller's PutFile keeps FileAttr.Blocks untouched.
 	if len(currentBlocks) == 0 {
 		return nil, nil
-	}
-	kept := make([]blockstore.BlockRef, 0, len(currentBlocks))
-	for _, b := range currentBlocks {
-		if b.Offset >= newSize {
-			// Block fully past newSize — drop it.
-			if bs.coordinator != nil {
-				if _, err := bs.coordinator.DecrementRefCount(ctx, b.Hash); err != nil {
-					return currentBlocks, fmt.Errorf("decrement refcount on truncate-drop %s: %w", b.Hash.String(), err)
-				}
-			}
-			continue
-		}
-		// Block fully or partially before newSize — keep. Plan 09 will
-		// re-chunk the partial-tail block; Plan 07 keeps it as-is.
-		kept = append(kept, b)
 	}
 	return kept, nil
 }
@@ -425,15 +441,33 @@ func (bs *BlockStore) Delete(ctx context.Context, payloadID string, blocks []blo
 	// even if the remote sweep fails (Truncate / janitor will reconcile
 	// orphans). Empty blocks (legacy / dual-read shim) skips the
 	// coordinator entirely.
+	//
+	// WR-04 (Phase 12 review iteration 1): continue past coordinator
+	// errors so the syncer.Delete remote sweep ALWAYS runs. Returning
+	// early left the local data deleted, the metadata partially
+	// decremented, and the remote alive forever — operators saw
+	// inconsistent state until GC's next pass (hours). Now we capture
+	// the first coordinator error, finish decrementing the rest, run
+	// the remote sweep unconditionally, and return errors.Join of both
+	// surfaces so the caller sees the full picture.
+	var coordErr error
 	if len(blocks) > 0 && bs.coordinator != nil {
 		for _, b := range blocks {
 			if _, err := bs.coordinator.DecrementRefCount(ctx, b.Hash); err != nil {
-				return fmt.Errorf("decrement refcount on delete %s: %w", b.Hash.String(), err)
+				if coordErr == nil {
+					coordErr = fmt.Errorf("decrement refcount on delete %s: %w", b.Hash.String(), err)
+				}
 			}
 		}
 	}
 
-	return bs.syncer.Delete(ctx, payloadID)
+	if delErr := bs.syncer.Delete(ctx, payloadID); delErr != nil {
+		if coordErr != nil {
+			return errors.Join(coordErr, delErr)
+		}
+		return delErr
+	}
+	return coordErr
 }
 
 // CopyPayload duplicates a file's BlockRef list with O(1) cost (Phase
