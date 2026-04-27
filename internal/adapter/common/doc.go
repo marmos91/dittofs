@@ -29,45 +29,60 @@
 //     negotiated cap. Revisit when a perf profile shows large reads
 //     dominating.
 //
-// # Phase-12 seam for []BlockRef (ADAPT-04 / D-12)
+// # Phase-12 []BlockRef plumbing (Plan 12-08, ADAPT-04 / D-12, D-22, D-26, D-35)
 //
 // The helpers ReadFromBlockStore, WriteToBlockStore, and CommitBlockStore are
-// the single place where Phase 12 (#423) will add []BlockRef plumbing. Today
-// these helpers are thin passthroughs to engine.BlockStore.ReadAt /
-// WriteAt / Flush, which accept (ctx, payloadID, buf, offset) — exactly what
-// the wire protocols (NFS3 READ, NFS4 READ, SMB2 READ; NFS3 WRITE, NFS4
-// WRITE, SMB2 WRITE; NFS3 COMMIT, NFS4 COMMIT, SMB2 CLOSE flush) hand us.
+// the canonical fan-in points where Phase 12 lands its []BlockRef plumbing.
+// Phase 11 wired engine.BlockStore.ReadAt / WriteAt with the new signatures
+// (`[]BlockRef` parameter on ReadAt; `[]BlockRef` returned from WriteAt);
+// Plan 12-08 adds the post-transaction CacheInvalidator interface and the
+// CopyPayload helper, but defers two pieces:
 //
-// In Phase 12:
-//   - META-01 reintroduces FileAttr.Blocks as []BlockRef (sorted by offset,
-//     populated at sync finalization).
-//   - API-01 changes engine.BlockStore.ReadAt / WriteAt to accept []BlockRef
-//     instead of (payloadID, offset). A binary search on []BlockRef resolves
-//     the (offset, length) range to the chunks covering it.
+//   - Caller-snapshot []BlockRef threading from FileAttr.Blocks into
+//     engine.ReadAt / WriteAt. The plan's strict "no protocol-handler
+//     touches" constraint (D-26) means common.ReadFromBlockStore and
+//     common.WriteToBlockStore keep their existing signatures in this plan;
+//     they continue passing nil []BlockRef so the engine routes through the
+//     dual-read shim (Phase 11 D-21). The actual snapshot threading lands
+//     when the engine's Plan 09 cache rewrite exposes a coordinator-side
+//     GetBlocksForPayload accessor (which avoids re-introducing a metadata
+//     dependency at the adapter call sites).
+//   - Wiring of common.CopyPayload into NFS/SMB CREATE-file copy paths.
+//     Phase 13 (file-level dedup, BSCAS-04/05) routes copy operations
+//     through this helper. For Plan 12-08, the helper exists with full test
+//     coverage and is consumed only by tests.
 //
-// The Phase-12 change to ReadFromBlockStore and WriteToBlockStore will be,
-// essentially:
+// # Caller-snapshot wins (D-22)
 //
-//  1. fetch FileAttr.Blocks via the narrow MetadataService interface
-//  2. slice the []BlockRef list to the range covering [offset, offset+len)
-//  3. pass the resolved slice to the new engine.ReadAt/WriteAt signature
+// Once threading lands, the engine trusts the []BlockRef the adapter handed
+// it. If the snapshot is stale (a concurrent WriteAt updated FileAttr.Blocks
+// after the snapshot was taken), the read returns bytes per the snapshot
+// (or zero-fills past the snapshot's last offset). Snapshot freshness is
+// the caller's responsibility via metadata transaction isolation. This
+// avoids a per-read metadata round-trip on the hot path.
 //
-// Every protocol handler code path is UNCHANGED by Phase 12 because they all
-// call common.ReadFromBlockStore / common.WriteToBlockStore /
-// common.CommitBlockStore. Wire protocol fidelity is preserved — handlers
-// continue to receive and emit (offset, length) on the wire. NFS and SMB
-// have no concept of blocks; []BlockRef remains internal plumbing between
-// the adapter and the engine.
+// # Post-transaction cache invalidation (D-35)
 //
-// Phase 09 engine contract (unchanged in this phase):
+// CACHE-05 invalidation is post-transaction by design: caller commits the
+// metadata transaction first (new BlockRefs persisted), then invokes
+// CacheInvalidator.InvalidateFile with the diff between the old and new
+// BlockRef hashes. If invalidation ran pre-commit and the transaction
+// later rolled back, warm cache entries would be dropped unnecessarily.
+// Post-txn ordering ensures the cache reflects metadata truth.
 //
-//	ReadAt(ctx, payloadID string, data []byte, offset uint64) (int, error)
-//	WriteAt(ctx, payloadID string, data []byte, offset uint64) error
-//	Flush(ctx, payloadID string) (*blockstore.FlushResult, error)
+// The CacheInvalidator interface (cache_invalidator.go) is defined in this
+// package, not imported from pkg/blockstore/engine, so common helpers stay
+// decoupled from the concrete cache type. The engine.Cache implements this
+// interface implicitly via its InvalidateFile method (wired by Plan 12-09).
 //
-// Note the asymmetry: ReadAt returns (int, error) because short reads are
-// observable by the caller (EOF handling); WriteAt returns error only —
-// successful writes are full-length by contract, and partial writes surface
-// as an error. WriteToBlockStore mirrors this exactly: a nil return means
-// the full data slice was persisted at offset.
+// # Engine contract consumed by these helpers (Phase 11 + Plan 12-07)
+//
+//	ReadAt(ctx, payloadID, []BlockRef, dest, offset) (int, error)
+//	WriteAt(ctx, payloadID, currentBlocks []BlockRef, data, offset) ([]BlockRef, error)
+//	CopyPayload(ctx, srcPayloadID, dstPayloadID, srcBlocks []BlockRef) ([]BlockRef, error)
+//	Flush(ctx, payloadID) (*blockstore.FlushResult, error)
+//
+// Empty / nil []BlockRef on Read/Write triggers the Phase 11 dual-read shim
+// (D-20). Non-empty triggers the CAS path with BLAKE3 verification (INV-06,
+// engine-internal).
 package common

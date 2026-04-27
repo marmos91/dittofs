@@ -54,7 +54,12 @@ func ReadFromBlockStore(
 	count uint32,
 ) (BlockReadResult, error) {
 	data := pool.Get(int(count))
-	n, readErr := blockStore.ReadAt(ctx, string(payloadID), data, offset)
+	// Phase 12 API-01: pass nil []BlockRef so engine routes through the
+	// dual-read shim (D-20). The caller-snapshot []BlockRef from
+	// FileAttr.Blocks lands here in Phase 12 Plan 08 (adapter helper
+	// refactor); until then the engine resolves via the legacy
+	// {payloadID}/block-{N} path and the result is identical.
+	n, readErr := blockStore.ReadAt(ctx, string(payloadID), nil, data, offset)
 
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
 		return BlockReadResult{Data: data[:n], EOF: true}, nil

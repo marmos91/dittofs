@@ -65,7 +65,7 @@ func TestWriteToBlockStore_Passthrough(t *testing.T) {
 
 	// Round-trip: read back via engine.ReadAt and compare bytes.
 	readBack := make([]byte, len(data))
-	n, readErr := bs.ReadAt(ctx, payloadID, readBack, 0)
+	n, readErr := bs.ReadAt(ctx, payloadID, nil, readBack, 0)
 	if readErr != nil {
 		t.Fatalf("engine.ReadAt after WriteToBlockStore failed: %v", readErr)
 	}
@@ -94,7 +94,7 @@ func TestWriteToBlockStore_OffsetRespected(t *testing.T) {
 	}
 
 	readBack := make([]byte, len(data))
-	n, readErr := bs.ReadAt(ctx, payloadID, readBack, offset)
+	n, readErr := bs.ReadAt(ctx, payloadID, nil, readBack, offset)
 	if readErr != nil {
 		t.Fatalf("engine.ReadAt at offset %d failed: %v", offset, readErr)
 	}

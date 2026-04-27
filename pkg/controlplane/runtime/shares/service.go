@@ -483,11 +483,23 @@ func (s *Service) createBlockStoreForShare(
 		}
 	}
 
+	// Phase 12 API-02: wire the metadata coordinator so the engine can
+	// invoke RefCount mutations + FileAttr.Blocks persistence without
+	// importing pkg/metadata on its hot paths. The fileBlockStore on the
+	// engine seam is the per-share metadata store cast to
+	// EngineFileBlockStore (Plan 04); the coordinator wraps the same
+	// store as a metadata.MetadataStore for the typed operations.
+	var coordinator engine.MetadataCoordinator
+	if metadataStore, ok := fileBlockStore.(metadata.MetadataStore); ok {
+		coordinator = newMetadataCoordinator(metadataStore)
+	}
+
 	engineCfg := engine.Config{
 		Local:          localStore,
 		Remote:         engineRemote,
 		Syncer:         syncer,
 		FileBlockStore: fileBlockStore,
+		Coordinator:    coordinator,
 	}
 	if effectiveDefaults != nil {
 		engineCfg.ReadBufferBytes = effectiveDefaults.ReadBufferBytes

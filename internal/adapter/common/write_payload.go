@@ -36,7 +36,11 @@ func WriteToBlockStore(
 	data []byte,
 	offset uint64,
 ) error {
-	return blockStore.WriteAt(ctx, string(payloadID), data, offset)
+	// Phase 12 API-01: pass nil currentBlocks so engine runs the
+	// legacy/dual-read path; discard the returned []BlockRef. The
+	// caller-snapshot []BlockRef threading lands in Plan 08.
+	_, err := blockStore.WriteAt(ctx, string(payloadID), nil, data, offset)
+	return err
 }
 
 // CommitBlockStore is the COMMIT/flush seam used by NFSv3 COMMIT, NFSv4

@@ -11,7 +11,6 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // syncLocalBlocks runs one claim+upload cycle for the periodic uploader
@@ -111,7 +110,12 @@ func (m *Syncer) uploadOne(ctx context.Context, fb *blockstore.FileBlock) error 
 		// delete duplicate fb row (Phase 12 D-37). Tolerate a concurrent
 		// worker having already cleaned it up (ErrFileBlockNotFound).
 		if err := m.fileBlockStore.Delete(ctx, fb.ID); err != nil {
-			if !errors.Is(err, metadata.ErrFileBlockNotFound) {
+			// Phase 12 Plan 07 (API-02): use the blockstore-package
+			// sentinel rather than metadata.ErrFileBlockNotFound — they
+			// are aliases (see metadata/object.go) and the
+			// blockstore-package form keeps pkg/metadata out of the
+			// engine import set.
+			if !errors.Is(err, blockstore.ErrFileBlockNotFound) {
 				return fmt.Errorf("delete duplicate fb %s after dedup: %w", fb.ID, err)
 			}
 		}

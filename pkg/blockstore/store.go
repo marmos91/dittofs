@@ -116,9 +116,16 @@ type EngineFileBlockStore interface {
 }
 
 // Reader defines read operations on the block store.
+//
+// Phase 12 API-01..04: read operations thread a caller-supplied
+// []BlockRef snapshot of the file's FileAttr.Blocks. Empty/nil blocks
+// triggers the Phase 11 dual-read shim (D-20) — engine routes through
+// the legacy {payloadID}/block-{N} resolver. Non-empty blocks routes
+// through the CAS path: findBlocksForRange + cache.OnRead.
 type Reader interface {
 	// ReadAt reads data from storage at the given offset into dest.
-	ReadAt(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error)
+	// Empty blocks => dual-read shim (Phase 11 path, D-20).
+	ReadAt(ctx context.Context, payloadID string, blocks []BlockRef, dest []byte, offset uint64) (int, error)
 
 	// GetSize returns the stored size of a payload.
 	GetSize(ctx context.Context, payloadID string) (uint64, error)
@@ -128,21 +135,34 @@ type Reader interface {
 }
 
 // Writer defines write operations on the block store.
+//
+// Phase 12 API-01..04: write operations thread a caller-supplied
+// []BlockRef snapshot of the file's FileAttr.Blocks. WriteAt returns the
+// new []BlockRef (caller persists via PutFile in the same metadata txn).
+// Truncate / Delete invoke the MetadataCoordinator to decrement RefCount
+// for hashes the operation drops; CopyPayload becomes O(1) — increments
+// RefCount per unique source hash, no data copy.
 type Writer interface {
-	// WriteAt writes data to storage at the given offset.
-	WriteAt(ctx context.Context, payloadID string, data []byte, offset uint64) error
+	// WriteAt writes data to storage at the given offset and returns
+	// the file's new BlockRef list (sorted, sparse-hole-preserving).
+	// Caller persists via PutFile in the same metadata txn.
+	WriteAt(ctx context.Context, payloadID string, currentBlocks []BlockRef, data []byte, offset uint64) ([]BlockRef, error)
 
-	// Truncate changes the size of a payload.
-	Truncate(ctx context.Context, payloadID string, newSize uint64) error
+	// Truncate changes the size of a payload. Returns the new BlockRef
+	// list (blocks past newSize are dropped; the coordinator
+	// decrements their RefCount).
+	Truncate(ctx context.Context, payloadID string, currentBlocks []BlockRef, newSize uint64) ([]BlockRef, error)
 
-	// Delete removes all data for a payload.
-	Delete(ctx context.Context, payloadID string) error
+	// Delete removes all data for a payload and decrements RefCount on
+	// every hash in blocks via the coordinator.
+	Delete(ctx context.Context, payloadID string, blocks []BlockRef) error
 
-	// CopyPayload duplicates all blocks from srcPayloadID to dstPayloadID.
-	// For remote-backed stores this leverages server-side copy (e.g., S3 CopyObject)
-	// to avoid data transfer. Local blocks are copied via read+write.
-	// Returns the number of blocks copied and any error encountered.
-	CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID string) (int, error)
+	// CopyPayload duplicates a file's BlockRef list with O(1) cost.
+	// Increments the RefCount of each unique hash via the coordinator
+	// (no per-block data copy); returns a deep copy of srcBlocks as
+	// the destination's BlockRef list. The caller's metadata txn
+	// rolls back all increments on any error per Phase 12 D-11.
+	CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID string, srcBlocks []BlockRef) ([]BlockRef, error)
 }
 
 // Flusher defines flush/sync operations on the block store.

@@ -38,6 +38,10 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
+	// API-02 justification: GC is the cross-share metadata-mark
+	// entrypoint — it MUST bind metadata.MetadataStore /
+	// MetadataReconciler to enumerate live FileBlocks (D-03 / INV-04).
+	// Lifting these to blockstore would create a circular import.
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 

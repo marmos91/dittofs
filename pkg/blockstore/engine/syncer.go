@@ -38,6 +38,15 @@ type Syncer struct {
 	// GetFileSize/Exists). Phase 13/14 routes reads through
 	// FileAttr.Blocks and lets us drop the wider interface.
 	fileBlockStore blockstore.EngineFileBlockStore // Required: enables content-addressed deduplication
+
+	// coordinator is the post-Flush seam (Phase 12 D-37 / D-20).
+	// uploadOne / SyncNow invoke coordinator.PersistFileBlocks once the
+	// new chunks land in CAS so the canonical FileAttr.Blocks list
+	// reflects every Remote BlockRef the engine has produced. Plan 07
+	// wires the field; Plan 09 attaches the actual post-upload trigger
+	// alongside the cache rewrite. May be nil in tests / pre-wiring.
+	coordinator MetadataCoordinator
+
 	config         SyncerConfig
 
 	queue *SyncQueue // Transfer queue for non-blocking operations
@@ -103,6 +112,27 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 
 // Queue returns the transfer queue for stats inspection.
 func (m *Syncer) Queue() *SyncQueue { return m.queue }
+
+// SetCoordinator wires the MetadataCoordinator the post-Flush path
+// invokes (Phase 12 D-37 / D-20). engine.New plumbs the BlockStore's
+// coordinator into the syncer so PersistFileBlocks runs in the
+// caller's metadata txn after each successful uploadOne batch. Idempotent.
+func (m *Syncer) SetCoordinator(c MetadataCoordinator) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.coordinator = c
+}
+
+// persistFileBlocksAfterFlush is the post-Flush hook: invokes
+// coordinator.PersistFileBlocks once the chunks are durable in CAS.
+// Plan 07 lays the seam; Plan 09 wires the actual call from the
+// uploadOne success path alongside the cache rewrite.
+func (m *Syncer) persistFileBlocksAfterFlush(ctx context.Context, payloadID string, blocks []blockstore.BlockRef) error {
+	if m.coordinator == nil {
+		return nil
+	}
+	return m.coordinator.PersistFileBlocks(ctx, payloadID, blocks)
+}
 
 // SetHealthCallback sets the callback invoked when the remote store health state changes.
 // If the HealthMonitor is already running, the callback is forwarded to it immediately.

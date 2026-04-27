@@ -47,7 +47,9 @@ func (s *stubFileBlockStore) ListFileBlocks(_ context.Context, _ string) ([]*blo
 }
 
 // newTestEngine creates an engine.BlockStore with memory local store, nil remote,
-// optional read buffer and prefetch settings.
+// optional read buffer and prefetch settings. Coordinator is left nil — tests
+// that exercise Coordinator-dependent paths (CopyPayload/Delete/Truncate
+// with non-empty BlockRef list) should use newTestEngineWithCoordinator.
 func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *BlockStore {
 	t.Helper()
 	localStore := memory.New()
@@ -71,6 +73,32 @@ func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *Bl
 	return bs
 }
 
+// newTestEngineWithCoordinator creates an engine.BlockStore with the
+// supplied MetadataCoordinator wired in (Phase 12 Plan 07 Task 0).
+// Used by tests that assert engine-coordinator integration without
+// touching the heavier Syncer/Remote setup.
+func newTestEngineWithCoordinator(t *testing.T, c MetadataCoordinator) *BlockStore {
+	t.Helper()
+	localStore := memory.New()
+	fbs := &stubFileBlockStore{}
+	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
+
+	bs, err := New(Config{
+		Local:       localStore,
+		Remote:      nil,
+		Syncer:      syncer,
+		Coordinator: c,
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	if err := bs.Start(context.Background()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = bs.Close() })
+	return bs
+}
+
 // TestReadAt_ReadBufferHit verifies that ReadAt returns data from read buffer without hitting local store.
 func TestReadAt_ReadBufferHit(t *testing.T) {
 	bs := newTestEngine(t, 64*1024*1024, 0) // 64MB read buffer, no prefetch
@@ -80,13 +108,13 @@ func TestReadAt_ReadBufferHit(t *testing.T) {
 	data := []byte("hello world, this is a test of read buffer hit path")
 
 	// Write data to the engine (goes to local store).
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
 	// First read: should miss read buffer and read from local, filling read buffer.
 	buf := make([]byte, len(data))
-	n, err := bs.ReadAt(ctx, payloadID, buf, 0)
+	n, err := bs.ReadAt(ctx, payloadID, nil, buf, 0)
 	if err != nil {
 		t.Fatalf("ReadAt (first) failed: %v", err)
 	}
@@ -101,7 +129,7 @@ func TestReadAt_ReadBufferHit(t *testing.T) {
 
 	// Second read: should hit read buffer directly.
 	buf2 := make([]byte, len(data))
-	n, err = bs.ReadAt(ctx, payloadID, buf2, 0)
+	n, err = bs.ReadAt(ctx, payloadID, nil, buf2, 0)
 	if err != nil {
 		t.Fatalf("ReadAt (second) failed: %v", err)
 	}
@@ -121,7 +149,7 @@ func TestReadAt_ReadBufferMiss_FillsBuffer(t *testing.T) {
 	payloadID := "fill-test"
 	data := []byte("read buffer fill test data")
 
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
@@ -132,7 +160,7 @@ func TestReadAt_ReadBufferMiss_FillsBuffer(t *testing.T) {
 
 	// First read fills read buffer.
 	buf := make([]byte, len(data))
-	_, err := bs.ReadAt(ctx, payloadID, buf, 0)
+	_, err := bs.ReadAt(ctx, payloadID, nil, buf, 0)
 	if err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
@@ -151,12 +179,12 @@ func TestReadAt_ReadBufferDisabled(t *testing.T) {
 	payloadID := "no-cache-test"
 	data := []byte("works without read buffer")
 
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
 	buf := make([]byte, len(data))
-	n, err := bs.ReadAt(ctx, payloadID, buf, 0)
+	n, err := bs.ReadAt(ctx, payloadID, nil, buf, 0)
 	if err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
@@ -181,7 +209,7 @@ func TestReadAt_PrefetcherNotified(t *testing.T) {
 	payloadID := "prefetch-notify-test"
 	data := []byte("prefetch notification test")
 
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
@@ -192,7 +220,7 @@ func TestReadAt_PrefetcherNotified(t *testing.T) {
 
 	// Read to trigger prefetcher notification.
 	buf := make([]byte, len(data))
-	_, err := bs.ReadAt(ctx, payloadID, buf, 0)
+	_, err := bs.ReadAt(ctx, payloadID, nil, buf, 0)
 	if err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
@@ -209,11 +237,11 @@ func TestWriteAt_InvalidatesReadBuffer(t *testing.T) {
 	data := []byte("original data for invalidation test")
 
 	// Write then read to populate read buffer.
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 	buf := make([]byte, len(data))
-	if _, err := bs.ReadAt(ctx, payloadID, buf, 0); err != nil {
+	if _, err := bs.ReadAt(ctx, payloadID, nil, buf, 0); err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
 	if !bs.readBuffer.Contains(payloadID, 0) {
@@ -222,7 +250,7 @@ func TestWriteAt_InvalidatesReadBuffer(t *testing.T) {
 
 	// Write new data - should invalidate read buffer.
 	newData := []byte("modified data")
-	if err := bs.WriteAt(ctx, payloadID, newData, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, newData, 0); err != nil {
 		t.Fatalf("WriteAt (new) failed: %v", err)
 	}
 
@@ -240,14 +268,14 @@ func TestWriteAt_ResetsPrefetcher(t *testing.T) {
 
 	// Do a read first so the prefetcher has state.
 	data := []byte("setup data")
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 	buf := make([]byte, len(data))
-	_, _ = bs.ReadAt(ctx, payloadID, buf, 0)
+	_, _ = bs.ReadAt(ctx, payloadID, nil, buf, 0)
 
 	// Write should reset prefetcher state for this payloadID (no panic = OK).
-	if err := bs.WriteAt(ctx, payloadID, []byte("modified"), 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, []byte("modified"), 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 }
@@ -264,11 +292,11 @@ func TestTruncate_InvalidatesAbove(t *testing.T) {
 	for i := range data {
 		data[i] = byte(i)
 	}
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 	buf := make([]byte, 100)
-	if _, err := bs.ReadAt(ctx, payloadID, buf, 0); err != nil {
+	if _, err := bs.ReadAt(ctx, payloadID, nil, buf, 0); err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
 	if !bs.readBuffer.Contains(payloadID, 0) {
@@ -276,7 +304,7 @@ func TestTruncate_InvalidatesAbove(t *testing.T) {
 	}
 
 	// Truncate to 0 should invalidate all blocks.
-	if err := bs.Truncate(ctx, payloadID, 0); err != nil {
+	if _, err := bs.Truncate(ctx, payloadID, nil, 0); err != nil {
 		t.Fatalf("Truncate failed: %v", err)
 	}
 
@@ -293,12 +321,12 @@ func TestTruncate_ResetsPrefetcher(t *testing.T) {
 	payloadID := "truncate-reset"
 
 	data := []byte("truncate reset test")
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
 	// Truncate should reset prefetcher (no panic = OK).
-	if err := bs.Truncate(ctx, payloadID, 5); err != nil {
+	if _, err := bs.Truncate(ctx, payloadID, nil, 5); err != nil {
 		t.Fatalf("Truncate failed: %v", err)
 	}
 }
@@ -312,11 +340,11 @@ func TestDelete_InvalidatesFile(t *testing.T) {
 	data := []byte("data for delete invalidation")
 
 	// Write then read to populate read buffer.
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 	buf := make([]byte, len(data))
-	if _, err := bs.ReadAt(ctx, payloadID, buf, 0); err != nil {
+	if _, err := bs.ReadAt(ctx, payloadID, nil, buf, 0); err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
 	if !bs.readBuffer.Contains(payloadID, 0) {
@@ -324,7 +352,7 @@ func TestDelete_InvalidatesFile(t *testing.T) {
 	}
 
 	// Delete should invalidate all read buffer entries for this file.
-	if err := bs.Delete(ctx, payloadID); err != nil {
+	if err := bs.Delete(ctx, payloadID, nil); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
 
@@ -341,12 +369,12 @@ func TestDelete_ResetsPrefetcher(t *testing.T) {
 	payloadID := "delete-reset"
 
 	data := []byte("delete reset test")
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
 	// Delete should reset prefetcher (no panic = OK).
-	if err := bs.Delete(ctx, payloadID); err != nil {
+	if err := bs.Delete(ctx, payloadID, nil); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
 }
@@ -360,7 +388,7 @@ func TestFlush_AutoPromote(t *testing.T) {
 	data := []byte("flush auto promote test data")
 
 	// Write data.
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
@@ -382,7 +410,7 @@ func TestFlush_AutoPromote(t *testing.T) {
 
 	// Read should come from read buffer now.
 	buf := make([]byte, len(data))
-	n, err := bs.ReadAt(ctx, payloadID, buf, 0)
+	n, err := bs.ReadAt(ctx, payloadID, nil, buf, 0)
 	if err != nil {
 		t.Fatalf("ReadAt after flush failed: %v", err)
 	}
@@ -416,11 +444,11 @@ func TestClose_ClosesReadBufferAndPrefetcher(t *testing.T) {
 
 	// Write and read to populate read buffer.
 	ctx := context.Background()
-	if err := bs.WriteAt(ctx, "close-test", []byte("data"), 0); err != nil {
+	if _, err := bs.WriteAt(ctx, "close-test", nil, []byte("data"), 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 	buf := make([]byte, 4)
-	_, _ = bs.ReadAt(ctx, "close-test", buf, 0)
+	_, _ = bs.ReadAt(ctx, "close-test", nil, buf, 0)
 
 	// Close should not panic and should clean up.
 	if err := bs.Close(); err != nil {
@@ -447,13 +475,13 @@ func TestMultiBlockRead_PartialReadBuffer(t *testing.T) {
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
 	// Read to fill read buffer.
 	buf := make([]byte, 1024)
-	n, err := bs.ReadAt(ctx, payloadID, buf, 0)
+	n, err := bs.ReadAt(ctx, payloadID, nil, buf, 0)
 	if err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
@@ -475,7 +503,7 @@ func TestMultiBlockRead_PartialReadBuffer(t *testing.T) {
 
 	// Read again - should hit read buffer.
 	buf2 := make([]byte, 512)
-	n, err = bs.ReadAt(ctx, payloadID, buf2, 0)
+	n, err = bs.ReadAt(ctx, payloadID, nil, buf2, 0)
 	if err != nil {
 		t.Fatalf("ReadAt (read buffer hit) failed: %v", err)
 	}
@@ -549,14 +577,14 @@ func TestReadAtPrefetcherWithReadBuffer(t *testing.T) {
 	payloadID := "prefetch-integration"
 	data := []byte("prefetch integration test data blob")
 
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
 	// Multiple sequential reads to trigger prefetcher.
 	buf := make([]byte, len(data))
 	for i := 0; i < 5; i++ {
-		n, err := bs.ReadAt(ctx, payloadID, buf, 0)
+		n, err := bs.ReadAt(ctx, payloadID, nil, buf, 0)
 		if err != nil {
 			t.Fatalf("ReadAt #%d failed: %v", i, err)
 		}
@@ -574,19 +602,19 @@ func TestReadAtSubBlockOffset(t *testing.T) {
 	payloadID := "sub-offset"
 	data := []byte("0123456789abcdef")
 
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
 	// Read entire data to fill read buffer.
 	fullBuf := make([]byte, len(data))
-	if _, err := bs.ReadAt(ctx, payloadID, fullBuf, 0); err != nil {
+	if _, err := bs.ReadAt(ctx, payloadID, nil, fullBuf, 0); err != nil {
 		t.Fatalf("ReadAt (full) failed: %v", err)
 	}
 
 	// Read subset at offset 4 from read buffer.
 	subBuf := make([]byte, 8)
-	n, err := bs.ReadAt(ctx, payloadID, subBuf, 4)
+	n, err := bs.ReadAt(ctx, payloadID, nil, subBuf, 4)
 	if err != nil {
 		t.Fatalf("ReadAt (sub) failed: %v", err)
 	}
@@ -600,64 +628,19 @@ func TestReadAtSubBlockOffset(t *testing.T) {
 	}
 }
 
-// TestCopyPayload_LocalOnly verifies CopyPayload duplicates data between payloads.
-func TestCopyPayload_LocalOnly(t *testing.T) {
-	bs := newTestEngine(t, 0, 0)
-	ctx := context.Background()
-
-	srcPayload := "src-file"
-	dstPayload := "dst-file"
-	data := []byte("hello world, this is test data for copy payload")
-
-	// Write source data
-	if err := bs.WriteAt(ctx, srcPayload, data, 0); err != nil {
-		t.Fatalf("WriteAt failed: %v", err)
-	}
-
-	// Copy payload
-	copied, err := bs.CopyPayload(ctx, srcPayload, dstPayload)
-	if err != nil {
-		t.Fatalf("CopyPayload failed: %v", err)
-	}
-	if copied != 1 {
-		t.Fatalf("CopyPayload returned %d blocks, expected 1", copied)
-	}
-
-	// Read back from destination
-	buf := make([]byte, len(data))
-	n, err := bs.ReadAt(ctx, dstPayload, buf, 0)
-	if err != nil {
-		t.Fatalf("ReadAt on dest failed: %v", err)
-	}
-	if n != len(data) {
-		t.Fatalf("ReadAt returned %d bytes, expected %d", n, len(data))
-	}
-	if string(buf) != string(data) {
-		t.Fatalf("dest data = %q, want %q", buf, data)
-	}
-
-	// Verify source is unchanged
-	srcBuf := make([]byte, len(data))
-	_, err = bs.ReadAt(ctx, srcPayload, srcBuf, 0)
-	if err != nil {
-		t.Fatalf("ReadAt on src failed: %v", err)
-	}
-	if string(srcBuf) != string(data) {
-		t.Fatalf("source data changed: got %q, want %q", srcBuf, data)
-	}
-}
-
 // TestCopyPayload_EmptySource verifies CopyPayload handles empty source gracefully.
+// Phase 12 Plan 07: with an empty []BlockRef the engine returns nil
+// without invoking the coordinator (no work to do).
 func TestCopyPayload_EmptySource(t *testing.T) {
 	bs := newTestEngine(t, 0, 0)
 	ctx := context.Background()
 
-	copied, err := bs.CopyPayload(ctx, "nonexistent", "dst")
+	dst, err := bs.CopyPayload(ctx, "nonexistent", "dst", nil)
 	if err != nil {
 		t.Fatalf("CopyPayload should succeed for empty source, got: %v", err)
 	}
-	if copied != 0 {
-		t.Fatalf("CopyPayload returned %d blocks, expected 0", copied)
+	if len(dst) != 0 {
+		t.Fatalf("CopyPayload returned %d blocks, expected 0", len(dst))
 	}
 }
 
@@ -729,7 +712,7 @@ func TestEngineDelete_RemovesBlockFiles(t *testing.T) {
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
@@ -744,7 +727,7 @@ func TestEngineDelete_RemovesBlockFiles(t *testing.T) {
 	}
 
 	// Delete the payload.
-	if err := bs.Delete(ctx, payloadID); err != nil {
+	if err := bs.Delete(ctx, payloadID, nil); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
 
