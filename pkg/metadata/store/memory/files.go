@@ -4,8 +4,27 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// cloneBlocks returns a deep copy of a []blockstore.BlockRef. BlockRef is a
+// value type (Hash is a [32]byte array, Offset and Size are scalars), so a
+// flat element-wise copy is sufficient — there are no shared pointer fields.
+//
+// Used by PutFile/GetFile in the Memory backend to prevent slice aliasing
+// between the caller's view and the stored view (Phase 12 D-05, T-12-09).
+//
+// Returns nil if the input is nil or empty so the round-trip preserves
+// the omitempty wire form (json:"blocks,omitempty" on FileAttr.Blocks).
+func cloneBlocks(in []blockstore.BlockRef) []blockstore.BlockRef {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]blockstore.BlockRef, len(in))
+	copy(out, in)
+	return out
+}
 
 // ============================================================================
 // CRUD Operations
@@ -215,6 +234,8 @@ func (store *MemoryMetadataStore) ListChildren(ctx context.Context, dirHandle me
 			} else {
 				attr.Nlink = 1
 			}
+			// Deep-copy slice fields (Phase 12 D-05, T-12-09).
+			attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
 			entry.Attr = &attr
 		}
 
@@ -275,9 +296,11 @@ func (store *MemoryMetadataStore) GetFileByPayloadID(
 		if fileData.Attr.PayloadID == payloadID {
 			// Return File with just the attributes we need
 			// ID and Path aren't needed by the flusher (only Size is used)
+			attr := *fileData.Attr
+			attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
 			return &metadata.File{
 				ShareName: fileData.ShareName,
-				FileAttr:  *fileData.Attr,
+				FileAttr:  attr,
 			}, nil
 		}
 	}

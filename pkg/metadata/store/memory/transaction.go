@@ -77,6 +77,10 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 
 	key := handleToKey(handle)
 	attrCopy := file.FileAttr
+	// Deep-copy slice fields so the stored view cannot be mutated by
+	// later caller-side mutation of the input slice (Phase 12 D-05,
+	// T-12-09 mitigation).
+	attrCopy.Blocks = cloneBlocks(file.FileAttr.Blocks)
 
 	// Track size delta for regular files.
 	if file.Type == metadata.FileTypeRegular {
@@ -246,10 +250,12 @@ func (tx *memoryTransaction) ListChildren(ctx context.Context, dirHandle metadat
 			Handle: childHandle,
 		}
 
-		// Try to get attributes
+		// Try to get attributes (deep-copy Blocks per Phase 12 D-05 / T-12-09).
 		childKey := handleToKey(childHandle)
 		if fileData, exists := tx.store.files[childKey]; exists {
-			entry.Attr = fileData.Attr
+			attr := *fileData.Attr
+			attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
+			entry.Attr = &attr
 		}
 
 		entries = append(entries, entry)

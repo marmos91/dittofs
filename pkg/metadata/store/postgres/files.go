@@ -50,6 +50,16 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 		return nil, mapPgError(err, "GetFile", "")
 	}
 
+	// Phase 12 META-01: load FileAttr.Blocks from file_block_refs.
+	// Only regular files carry BlockRef payloads; directories/symlinks have none.
+	if file.Type == metadata.FileTypeRegular {
+		blocks, err := s.loadFileBlockRefs(ctx, id)
+		if err != nil {
+			return nil, mapPgError(err, "GetFile", "load blocks")
+		}
+		file.FileAttr.Blocks = blocks
+	}
+
 	return file, nil
 }
 

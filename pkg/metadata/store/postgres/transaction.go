@@ -149,6 +149,15 @@ func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.File
 		return nil, mapPgError(err, "GetFile", "")
 	}
 
+	// Phase 12 META-01: load FileAttr.Blocks inside the same tx.
+	if file.Type == metadata.FileTypeRegular {
+		blocks, err := getFileBlockRefs(ctx, tx.tx, id)
+		if err != nil {
+			return nil, mapPgError(err, "GetFile", "load blocks")
+		}
+		file.FileAttr.Blocks = blocks
+	}
+
 	// Debug logging to trace file type issues
 	tx.store.logger.Debug("GetFile retrieved",
 		"id", id.String(),
@@ -290,6 +299,16 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			"path", file.Path,
 			"file_type", int(file.Type),
 			"size", file.Size)
+	}
+
+	// Phase 12 META-01: persist FileAttr.Blocks into file_block_refs.
+	// Atomic with the files-row UPDATE/INSERT above (same tx). Only regular
+	// files carry BlockRef payloads. Empty/nil Blocks performs a DELETE-only
+	// pass, ensuring no stale rows survive a write that drops Blocks.
+	if file.Type == metadata.FileTypeRegular {
+		if err := putFileBlockRefs(ctx, tx.tx, file.ID, file.FileAttr.Blocks); err != nil {
+			return mapPgError(err, "PutFile", "blocks")
+		}
 	}
 
 	return nil
