@@ -444,6 +444,49 @@ func TestRequestLease_DuplicateKey_PostRestart_SameFileAllowed(t *testing.T) {
 	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state)
 }
 
+// listLocksFailingStore simulates a transient persistent-store outage on the
+// ListLocks path used by the post-restart cross-file lease-key uniqueness
+// pre-check. PutLock and DeleteLock still work — only the read path fails.
+type listLocksFailingStore struct {
+	*mockLockStore
+	listErr error
+}
+
+func (s *listLocksFailingStore) ListLocks(ctx context.Context, q LockQuery) ([]*PersistedLock, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	return s.mockLockStore.ListLocks(ctx, q)
+}
+
+// TestRequestLease_PersistedCheckFailsClosedOnStoreError: when the lockStore
+// ListLocks call fails (transport, IO, encoding), the cross-file uniqueness
+// pre-check MUST fail CLOSED — reject the CREATE with ErrLeaseKeyInUse rather
+// than silently allow the grant. MS-SMB2 §3.3.5.9.8 uniqueness is a hard
+// correctness contract; a retriable false positive is preferable to a silent
+// spec violation. Copilot review feedback on PR #456.
+func TestRequestLease_PersistedCheckFailsClosedOnStoreError(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	mock := newMockLockStore()
+	store := &listLocksFailingStore{
+		mockLockStore: mock,
+		listErr:       errors.New("simulated store outage"),
+	}
+	mgr.SetLockStore(store)
+	ctx := context.Background()
+
+	// No persisted records at all — yet the request must be rejected because
+	// the store is unreachable and we cannot rule out a conflicting record.
+	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), [16]byte{0x42}, [16]byte{},
+		"owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.ErrorIs(t, err, ErrLeaseKeyInUse,
+		"transient ListLocks failure must fail CLOSED to preserve uniqueness invariant")
+	assert.Equal(t, LeaseStateNone, state)
+}
+
 // TestRequestLease_DeniedByInMemoryByteRangeLock: per MS-SMB2 §3.3.5.9.8, any
 // outstanding byte-range lock on a file forces leaseState=NONE on a pending
 // lease grant. SMB2 LOCK callers route through Manager.Lock which keeps the

@@ -174,6 +174,12 @@ func (lm *Manager) hasLeaseKeyOnOtherFile(leaseKey [16]byte, excludeHandleKey, c
 // the in-memory grant is closed by the second hasLeaseKeyOnOtherFile call
 // inside the critical section: any intervening reclaim or grant lands in
 // unifiedLocks and is caught there.
+//
+// On a transient ListLocks failure the function fails CLOSED — returns true
+// to reject the CREATE with STATUS_INVALID_PARAMETER. The MS-SMB2 §3.3.5.9.8
+// uniqueness invariant is a hard correctness contract: silently allowing a
+// potentially conflicting grant would be worse than a retriable false
+// positive. The error is logged at Error level for ops visibility.
 func (lm *Manager) hasPersistedLeaseKeyOnOtherFile(ctx context.Context, leaseKey [16]byte, excludeHandleKey, clientID string) bool {
 	if lm.lockStore == nil || clientID == "" {
 		return false
@@ -184,10 +190,10 @@ func (lm *Manager) hasPersistedLeaseKeyOnOtherFile(ctx context.Context, leaseKey
 		IsLease:  &isLease,
 	})
 	if err != nil {
-		logger.Debug("hasPersistedLeaseKeyOnOtherFile: ListLocks failed",
+		logger.Error("hasPersistedLeaseKeyOnOtherFile: ListLocks failed; failing closed to preserve cross-file lease-key uniqueness",
 			"clientID", clientID,
 			"error", err)
-		return false
+		return true
 	}
 	for _, pl := range persisted {
 		if len(pl.LeaseKey) != 16 {
