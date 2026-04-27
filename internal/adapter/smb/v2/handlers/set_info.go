@@ -636,11 +636,12 @@ func (h *Handler) setFileInfoFromStore(
 
 		// Pre-rename lease break: per MS-FSA §2.1.5.14.10 + Samba
 		// `source3/smbd/smb2_setinfo.c::smbd_smb2_rename`, dispatch breaks on
-		// any other-key lease holder of the source file before applying the
-		// rename. Sync wait (mirrors BreakParentHandleLeasesOnCreate) — rename
-		// is not in the compound-CREATE hot path so we don't need the round-4
-		// async-park machinery; the bounded WaitForOtherKeyBreaks deadline
-		// auto-downgrades non-acking holders identically to that path.
+		// any other-key lease holder of the source file (and, on overwrite,
+		// the destination too) before applying the rename. Sync wait (mirrors
+		// BreakParentHandleLeasesOnCreate) — rename is not in the compound-
+		// CREATE hot path, so we don't need the round-4 async-park machinery;
+		// the bounded WaitForOtherKeyBreaks deadline auto-downgrades non-
+		// acking holders identically to that path.
 		//
 		// Renamer's own lease (openFile.LeaseKey, zero for non-leased opens)
 		// is excluded by lease key only — NOT by ClientID — because a single
@@ -649,17 +650,33 @@ func (h *Handler) setFileInfoFromStore(
 		// the second lease and deadlock the rename behind a never-acked break
 		// that was never sent.
 		//
-		// Destination break is deferred — overwrite handling lives in #433
-		// follow-up. C3 covers source-file break + parking only, which flips
-		// smbtorture rename_wait + v2_rename.
+		// Destination handling: when ReplaceIfExists=true and the destination
+		// exists, dispatch the dst H-lease break (RWH→RW). Even after that
+		// break drains, ANY open handle on dst blocks the overwrite per
+		// MS-FSA §2.1.5.14.10 — surface STATUS_ACCESS_DENIED. The dst close
+		// path (smbtorture v2_rename_target_overwrite Phase 3) clears the
+		// open and the post-wait recheck then proceeds to the rename.
+		isOverwrite := renameInfo.ReplaceIfExists
+		metaSvc := h.Registry.GetMetadataService()
+		var dstMetaHandle metadata.FileHandle
+		if isOverwrite {
+			dstFile, lookupErr := metaSvc.Lookup(authCtx, toDir, toName)
+			if lookupErr == nil && dstFile != nil {
+				if encoded, encErr := metadata.EncodeFileHandle(dstFile); encErr == nil {
+					dstMetaHandle = encoded
+				}
+			}
+		}
+
 		if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
 			srcMetaHandle := lock.FileHandle(openFile.MetadataHandle)
+			dstLockHandle := lock.FileHandle(dstMetaHandle) // empty when no dst
 			if err := h.LeaseManager.BreakLeasesOnRename(
 				srcMetaHandle,
-				lock.FileHandle(""),
+				dstLockHandle,
 				openFile.ShareName,
 				openFile.LeaseKey,
-				false, // overwrite handling lands in a follow-up commit
+				isOverwrite,
 			); err != nil {
 				logger.Debug("SET_INFO: rename lease break dispatch failed", "error", err)
 			}
@@ -667,9 +684,33 @@ func (h *Handler) setFileInfoFromStore(
 			if waitErr := h.LeaseManager.WaitForOtherKeyBreaks(
 				waitCtx, srcMetaHandle, openFile.ShareName, openFile.LeaseKey,
 			); waitErr != nil {
-				logger.Debug("SET_INFO: rename break wait completed", "error", waitErr)
+				logger.Debug("SET_INFO: rename src break wait completed", "error", waitErr)
 			}
 			cancelWait()
+
+			if isOverwrite && len(dstMetaHandle) > 0 && srcMetaHandle != dstLockHandle {
+				dstWaitCtx, cancelDst := context.WithTimeout(authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
+				// Zero exception key — dst's lease holder is by definition
+				// someone other than the renamer.
+				if waitErr := h.LeaseManager.WaitForOtherKeyBreaks(
+					dstWaitCtx, dstLockHandle, openFile.ShareName, [16]byte{},
+				); waitErr != nil {
+					logger.Debug("SET_INFO: rename dst break wait completed", "error", waitErr)
+				}
+				cancelDst()
+			}
+		}
+
+		// Post-break: any open handle on dst (other than the renamer's own
+		// FileID) blocks the overwrite. The H-lease break above stripped
+		// caching rights, but did NOT close the underlying handle — the
+		// holder must do that itself (smbtorture v2_rename_target_overwrite
+		// Phase 1 / Phase 2: ACK leaves dst open ⇒ ACCESS_DENIED).
+		if isOverwrite && len(dstMetaHandle) > 0 && h.hasOpenHandleOnFile(dstMetaHandle, openFile.FileID) {
+			logger.Debug("SET_INFO: rename overwrite blocked by open handle on destination",
+				"src", openFile.Path,
+				"dst", newPath)
+			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
 		// Save old path info for notification before modification
@@ -682,7 +723,6 @@ func (h *Handler) setFileInfoFromStore(
 		restoreTimestamps := h.saveTimestamps(authCtx, openFile.MetadataHandle)
 
 		// Perform the rename/move
-		metaSvc := h.Registry.GetMetadataService()
 		err = metaSvc.Move(authCtx, openFile.ParentHandle, openFile.FileName, toDir, toName)
 		if err != nil {
 			logger.Debug("SET_INFO: rename failed",

@@ -1192,6 +1192,38 @@ func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 	return conflict
 }
 
+// hasOpenHandleOnFile reports whether any open file handle (other than the
+// renamer's own handle) currently references targetMeta. Used by the
+// SET_INFO FileRenameInformation handler to enforce MS-FSA §2.1.5.14.10
+// "rename overwrite onto an open file" — once any H-lease on the destination
+// has been broken to RW, the destination's open handle still blocks the
+// overwrite and must surface as STATUS_ACCESS_DENIED.
+//
+// excludeFileID is the rename's own SMB FileID (the source handle). It is
+// excluded from the conflict check so a self-rename via the only handle on
+// targetMeta is allowed (degenerate case; matches Samba behavior).
+func (h *Handler) hasOpenHandleOnFile(targetMeta metadata.FileHandle, excludeFileID [16]byte) bool {
+	if len(targetMeta) == 0 {
+		return false
+	}
+	conflict := false
+	h.files.Range(func(_, value any) bool {
+		other := value.(*OpenFile)
+		if other.FileID == excludeFileID {
+			return true
+		}
+		if len(other.MetadataHandle) == 0 {
+			return true
+		}
+		if !bytes.Equal(other.MetadataHandle, targetMeta) {
+			return true
+		}
+		conflict = true
+		return false
+	})
+	return conflict
+}
+
 // hasReadAccess reports whether the given access mask includes read access.
 // Checks FILE_READ_DATA, GENERIC_READ, GENERIC_ALL, and MAXIMUM_ALLOWED.
 func hasReadAccess(access uint32) bool {
