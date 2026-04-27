@@ -126,11 +126,17 @@ func (lm *Manager) findLeaseByKey(leaseKey [16]byte) (string, *UnifiedLock, int)
 // persisted at LeaseState=None after ack-to-None still count as bound: per
 // MS-SMB2 3.3.5.9.8 the binding lasts until CLOSE removes the record.
 //
-// Lease key uniqueness is per-(ClientGuid, LeaseKey) — two unrelated clients
-// may legitimately reuse the same numeric LeaseKey on different files
-// (smbtorture's fixed LEASE1/LEASE2 macros across separate connections, for
-// example). The clientID filter prevents a foreign client's binding from
-// causing a spurious INVALID_PARAMETER on the requesting client's CREATE.
+// Spec scoping is per-(ClientGuid, LeaseKey). The SMB adapter currently
+// derives clientID from the per-session SessionID ("smb:%d"), not the
+// negotiated SMB ClientGuid, so the rejection fires across opens within a
+// single session but NOT across sessions of the same ClientGuid (e.g.
+// multichannel binds, where two channels of the same client get distinct
+// session IDs). This matches the repo's existing ClientID concept (used by
+// NLM lock conflict detection and lock owner tracking) and is sufficient
+// for the smbtorture single-session duplicate_create / duplicate_open
+// cases. Tightening to true ClientGuid scoping is tracked under the
+// multichannel Phase 2 work (#361) where ClientGuid threading is needed
+// for cross-channel break fan-out anyway.
 //
 // Must be called with lm.mu held (read or write).
 func (lm *Manager) hasLeaseKeyOnOtherFile(leaseKey [16]byte, excludeHandleKey, clientID string) bool {
