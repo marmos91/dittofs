@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/logger"
+	storeerrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // ErrLeaseBreakInProgress is returned by RequestLease when a same-key lease
@@ -157,6 +158,54 @@ func (lm *Manager) hasLeaseKeyOnOtherFile(leaseKey [16]byte, excludeHandleKey, c
 	return false
 }
 
+// hasPersistedLeaseKeyOnOtherFile is the post-restart backstop for the
+// in-memory hasLeaseKeyOnOtherFile check. After a server restart the
+// unifiedLocks map is empty until clients reclaim during the grace window;
+// without this lookup, two clients (or the same client across reconnects)
+// could each succeed at binding the same lease key to different files
+// before either reclaim happens, breaking MS-SMB2 3.3.5.9.8 uniqueness.
+//
+// Implementation pulls the client-scoped lease set from lockStore and walks
+// for a matching key on a different FileID. Same scoping caveats as
+// hasLeaseKeyOnOtherFile (clientID is session-scoped today; tracked under
+// #361 Phase 2). Called BEFORE lm.mu.Lock() — same pattern as the existing
+// CheckNLMLocksForLeaseConflict pre-check — so external IO does not block
+// the in-memory critical section. The race window between this snapshot and
+// the in-memory grant is closed by the second hasLeaseKeyOnOtherFile call
+// inside the critical section: any intervening reclaim or grant lands in
+// unifiedLocks and is caught there.
+func (lm *Manager) hasPersistedLeaseKeyOnOtherFile(ctx context.Context, leaseKey [16]byte, excludeHandleKey, clientID string) bool {
+	if lm.lockStore == nil || clientID == "" {
+		return false
+	}
+	isLease := true
+	persisted, err := lm.lockStore.ListLocks(ctx, LockQuery{
+		ClientID: clientID,
+		IsLease:  &isLease,
+	})
+	if err != nil {
+		logger.Debug("hasPersistedLeaseKeyOnOtherFile: ListLocks failed",
+			"clientID", clientID,
+			"error", err)
+		return false
+	}
+	for _, pl := range persisted {
+		if len(pl.LeaseKey) != 16 {
+			continue
+		}
+		var plKey [16]byte
+		copy(plKey[:], pl.LeaseKey)
+		if plKey != leaseKey {
+			continue
+		}
+		if pl.FileID == excludeHandleKey {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // RequestLease requests a new or upgraded lease on a file or directory.
 //
 // For new leases, the granted state may be less than requested if conflicts exist.
@@ -228,6 +277,19 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 				"requestedState", LeaseStateToString(requestedState))
 			return LeaseStateNone, 0, nil
 		}
+	}
+
+	// Cross-file lease-key uniqueness — persisted backstop for post-restart
+	// state. The in-memory check inside lm.mu below catches the steady-state
+	// case; this pre-check covers the window after a restart but before the
+	// owning client has reclaimed the lease into memory.
+	if lm.hasPersistedLeaseKeyOnOtherFile(ctx, leaseKey, handleKey, clientID) {
+		logger.Debug("RequestLease: lease key already bound to another file (persisted record)",
+			"leaseKey", fmt.Sprintf("%x", leaseKey),
+			"fileHandle", handleKey,
+			"clientID", clientID,
+			"requestedState", LeaseStateToString(requestedState))
+		return LeaseStateNone, 0, ErrLeaseKeyInUse
 	}
 
 	lm.mu.Lock()
@@ -821,10 +883,23 @@ func (lm *Manager) releaseLeaseForHandleImpl(ctx context.Context, handleKey stri
 	}
 
 	var remaining []*UnifiedLock
+	var deleteErrs []error
 	for _, lock := range locks {
 		if lock.Lease != nil && lock.Lease.LeaseKey == leaseKey {
 			if lm.lockStore != nil {
-				_ = lm.lockStore.DeleteLock(ctx, lock.ID)
+				if err := lm.lockStore.DeleteLock(ctx, lock.ID); err != nil && !storeerrors.IsNotFoundError(err) {
+					// In-memory removal proceeds regardless: the persisted
+					// record will be reaped by the next client-disconnect or
+					// file-deletion sweep. Surface the error so observability
+					// catches a misbehaving store rather than the lease leak
+					// going silent (round-3 follow-up).
+					logger.Error("ReleaseLeaseForHandle: persistent DeleteLock failed",
+						"handleKey", handleKey,
+						"lockID", lock.ID,
+						"leaseKey", fmt.Sprintf("%x", leaseKey),
+						"error", err)
+					deleteErrs = append(deleteErrs, err)
+				}
 			}
 			continue
 		}
@@ -837,6 +912,9 @@ func (lm *Manager) releaseLeaseForHandleImpl(ctx context.Context, handleKey stri
 		lm.unifiedLocks[handleKey] = remaining
 	}
 
+	if len(deleteErrs) > 0 {
+		return fmt.Errorf("release lease for handle %q: %w", handleKey, errors.Join(deleteErrs...))
+	}
 	return nil
 }
 
