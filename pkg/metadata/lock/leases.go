@@ -49,6 +49,13 @@ var ErrLeaseAckNotFound = errors.New("no lease for key")
 // Per MS-SMB2 3.3.5.22.2, the caller must return STATUS_UNSUCCESSFUL.
 var ErrLeaseAckNotBreaking = errors.New("lease not in breaking state")
 
+// ErrLeaseKeyInUse is returned by RequestLease when the supplied lease key is
+// already bound to a record on a different file (different handleKey bucket).
+// Per MS-SMB2 3.3.5.9.8 and Samba's source3/smbd/smb2_lease.c::lease_match,
+// a lease key MUST be unique across files for a given client; reusing a key
+// across files MUST fail with STATUS_INVALID_PARAMETER.
+var ErrLeaseKeyInUse = errors.New("lease key already in use on another file")
+
 // validUpgrades defines allowed lease state upgrade transitions.
 // A lease can only be upgraded (more permissions), never downgraded via RequestLease.
 // Downgrade happens only through lease break.
@@ -112,6 +119,36 @@ func (lm *Manager) findLeaseByKey(leaseKey [16]byte) (string, *UnifiedLock, int)
 		}
 	}
 	return "", nil, -1
+}
+
+// hasLeaseKeyOnOtherFile reports whether leaseKey is bound to a lease record
+// owned by clientID on a handleKey other than excludeHandleKey. Lease records
+// persisted at LeaseState=None after ack-to-None still count as bound: per
+// MS-SMB2 3.3.5.9.8 the binding lasts until CLOSE removes the record.
+//
+// Lease key uniqueness is per-(ClientGuid, LeaseKey) — two unrelated clients
+// may legitimately reuse the same numeric LeaseKey on different files
+// (smbtorture's fixed LEASE1/LEASE2 macros across separate connections, for
+// example). The clientID filter prevents a foreign client's binding from
+// causing a spurious INVALID_PARAMETER on the requesting client's CREATE.
+//
+// Must be called with lm.mu held (read or write).
+func (lm *Manager) hasLeaseKeyOnOtherFile(leaseKey [16]byte, excludeHandleKey, clientID string) bool {
+	for handleKey, locks := range lm.unifiedLocks {
+		if handleKey == excludeHandleKey {
+			continue
+		}
+		for _, lock := range locks {
+			if lock.Lease == nil || lock.Lease.LeaseKey != leaseKey {
+				continue
+			}
+			if lock.Owner.ClientID != clientID {
+				continue
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // RequestLease requests a new or upgraded lease on a file or directory.
@@ -188,6 +225,31 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 	}
 
 	lm.mu.Lock()
+
+	// Cross-(client, file) lease key uniqueness (MS-SMB2 3.3.5.9.8 / Samba
+	// lease_match in source3/smbd/smb2_lease.c). A lease key bound by THIS
+	// CLIENT to a record on a different file MUST fail the request with
+	// STATUS_INVALID_PARAMETER. The check runs inside the write lock so that
+	// uniqueness and grant are atomic — a downgrade-then-Lock split would
+	// open a TOCTOU window where a concurrent CLOSE turns the rejection into
+	// a false-positive, and where two parallel grants on different files
+	// could both observe "no conflict" and create duplicate records.
+	//
+	// Skipped on None probes: zero-state requests are pure state queries that
+	// cannot acquire caching rights and are not subject to lease_match.
+	// Same-file reopen (h1a/h1b in smbtorture breaking2) lands in the same
+	// handleKey bucket and is allowed; ack-to-None records persisted under
+	// the original handleKey still count as bindings here (handle-bound
+	// lifetime, PR #452).
+	if requestedState != LeaseStateNone && lm.hasLeaseKeyOnOtherFile(leaseKey, handleKey, clientID) {
+		lm.mu.Unlock()
+		logger.Debug("RequestLease: lease key already bound to another file for this client",
+			"leaseKey", fmt.Sprintf("%x", leaseKey),
+			"fileHandle", handleKey,
+			"clientID", clientID,
+			"requestedState", LeaseStateToString(requestedState))
+		return LeaseStateNone, 0, ErrLeaseKeyInUse
+	}
 
 	locks := lm.unifiedLocks[handleKey]
 
