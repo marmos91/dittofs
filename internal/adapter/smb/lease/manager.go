@@ -492,6 +492,57 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpenAsync(
 	return lockMgr.BreakLeasesOnOpenConflict(handleKey, exclude, reason)
 }
 
+// BreakLeasesOnRename dispatches lease break notifications on the source
+// (and optionally destination) file before a SET_INFO FileRenameInformation
+// applies to metadata. Per MS-FSA §2.1.5.14.10 and Samba
+// `source3/smbd/smb2_setinfo.c::smbd_smb2_rename`, rename participates in the
+// same break processing as CREATE: any concurrent open whose Handle caching
+// would be invalidated by the rename must be notified first.
+//
+// The renamer's own lease (renamerLeaseKey) is excluded so a same-key rename
+// produces no self-break. Exclusion is by lease key only — NOT by ClientID —
+// because a single client may hold two distinct leases on the same file (one
+// per handle, smbtorture rename_wait LEASE1=h1 / LEASE2=h2 case); a client
+// scoped exclusion would skip both and miss the required break.
+//
+// Source file leases break with BreakReasonSharingViolation (strip H,
+// preserve R+W): smbtorture rename_wait expects RH→R, v2_rename_target_overwrite
+// expects RWH→RW. Destination file leases (if dstHandle is non-empty AND
+// isOverwrite=true) break the same way; the destination's holder is by
+// definition someone other than the renamer, so no exclusion is applied there.
+//
+// Dispatch is fire-and-forget: this method does NOT wait for ACK. Callers that
+// must park the request behind the break (smbtorture rename_wait) check
+// HasOtherBreakingLeases on the source handle and route to
+// WaitForOtherKeyBreaks. This mirrors the round-3 / round-4 CREATE async-park
+// pattern in create_post_break.go and avoids the multi-client deadlock
+// documented on BreakHandleLeasesOnOpenAsync.
+func (lm *LeaseManager) BreakLeasesOnRename(
+	srcHandle lock.FileHandle,
+	dstHandle lock.FileHandle,
+	shareName string,
+	renamerLeaseKey [16]byte,
+	isOverwrite bool,
+) error {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return nil
+	}
+
+	srcExclude := &lock.LockOwner{ExcludeLeaseKey: renamerLeaseKey}
+	if err := lockMgr.BreakLeasesOnOpenConflict(string(srcHandle), srcExclude, lock.BreakReasonSharingViolation); err != nil {
+		return err
+	}
+
+	if isOverwrite && dstHandle != "" && dstHandle != srcHandle {
+		if err := lockMgr.BreakLeasesOnOpenConflict(string(dstHandle), nil, lock.BreakReasonSharingViolation); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // BreakFileHandleLeasesOnDelete strips Handle caching from all leases on a
 // file that is about to be unlinked (RH → R, RWH → RW). Per MS-FSA 2.1.5.1.5
 // and Samba: deleting a file invalidates Handle caching for every other open

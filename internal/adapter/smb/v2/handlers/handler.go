@@ -1192,6 +1192,76 @@ func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 	return conflict
 }
 
+// snapshotOpenChildren returns the metadata handles of every open file whose
+// ParentHandle equals dirHandle. Caller must read h.files only once; iterating
+// twice could observe inconsistent open state across a concurrent CLOSE.
+func (h *Handler) snapshotOpenChildren(dirHandle metadata.FileHandle) []metadata.FileHandle {
+	var children []metadata.FileHandle
+	h.files.Range(func(_, value any) bool {
+		of := value.(*OpenFile)
+		if len(of.ParentHandle) == 0 || len(of.MetadataHandle) == 0 {
+			return true
+		}
+		if !bytes.Equal(of.ParentHandle, dirHandle) {
+			return true
+		}
+		children = append(children, of.MetadataHandle)
+		return true
+	})
+	return children
+}
+
+// anyOpenChild reports whether any open file currently has ParentHandle ==
+// dirHandle. Cheaper than snapshotOpenChildren when only the boolean is
+// needed (post-break recheck in the directory-rename path).
+func (h *Handler) anyOpenChild(dirHandle metadata.FileHandle) bool {
+	open := false
+	h.files.Range(func(_, value any) bool {
+		of := value.(*OpenFile)
+		if len(of.ParentHandle) == 0 {
+			return true
+		}
+		if !bytes.Equal(of.ParentHandle, dirHandle) {
+			return true
+		}
+		open = true
+		return false
+	})
+	return open
+}
+
+// hasOpenHandleOnFile reports whether any open file handle (other than the
+// renamer's own handle) currently references targetMeta. Used by the
+// SET_INFO FileRenameInformation handler to enforce MS-FSA §2.1.5.14.10
+// "rename overwrite onto an open file" — once any H-lease on the destination
+// has been broken to RW, the destination's open handle still blocks the
+// overwrite and must surface as STATUS_ACCESS_DENIED.
+//
+// excludeFileID is the rename's own SMB FileID (the source handle). It is
+// excluded from the conflict check so a self-rename via the only handle on
+// targetMeta is allowed (degenerate case; matches Samba behavior).
+func (h *Handler) hasOpenHandleOnFile(targetMeta metadata.FileHandle, excludeFileID [16]byte) bool {
+	if len(targetMeta) == 0 {
+		return false
+	}
+	conflict := false
+	h.files.Range(func(_, value any) bool {
+		other := value.(*OpenFile)
+		if other.FileID == excludeFileID {
+			return true
+		}
+		if len(other.MetadataHandle) == 0 {
+			return true
+		}
+		if !bytes.Equal(other.MetadataHandle, targetMeta) {
+			return true
+		}
+		conflict = true
+		return false
+	})
+	return conflict
+}
+
 // hasReadAccess reports whether the given access mask includes read access.
 // Checks FILE_READ_DATA, GENERIC_READ, GENERIC_ALL, and MAXIMUM_ALLOWED.
 func hasReadAccess(access uint32) bool {

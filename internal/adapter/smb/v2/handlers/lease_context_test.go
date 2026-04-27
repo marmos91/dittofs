@@ -1,11 +1,34 @@
 package handlers
 
 import (
+	"context"
 	"encoding/binary"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
+
+// staticLockResolver is a test resolver that returns the same Manager for any
+// share name. Used by lease-context tests that exercise ProcessLeaseCreateContext.
+type staticLockResolver struct {
+	mgr lock.LockManager
+}
+
+func (r *staticLockResolver) GetLockManagerForShare(_ string) lock.LockManager {
+	return r.mgr
+}
+
+// encodeV2LeaseContext writes a 52-byte SMB2_CREATE_REQUEST_LEASE_V2 payload
+// matching the wire layout in DecodeLeaseCreateContext (LeaseKey 16 / State 4 /
+// Flags 4 / LeaseDuration 8 / ParentLeaseKey 16 / Epoch 2 / Reserved 2).
+func encodeV2LeaseContext(leaseKey [16]byte, state uint32, epoch uint16) []byte {
+	buf := make([]byte, LeaseV2ContextSize)
+	copy(buf[0:16], leaseKey[:])
+	binary.LittleEndian.PutUint32(buf[16:20], state)
+	binary.LittleEndian.PutUint16(buf[48:50], epoch)
+	return buf
+}
 
 // TestDecodeLeaseCreateContext tests parsing of SMB2_CREATE_REQUEST_LEASE_V2 contexts.
 func TestDecodeLeaseCreateContext(t *testing.T) {
@@ -323,5 +346,68 @@ func TestLeaseResponseContextEncode(t *testing.T) {
 		if encoded[i] != expected[i] {
 			t.Errorf("byte %d: encoded = %d, expected = %d", i, encoded[i], expected[i])
 		}
+	}
+}
+
+// TestProcessLeaseCreateContext_NoneProbeDoesNotAdvanceEpoch covers the
+// smbtorture v2_rename failure cascade at lease.c:4299. After a CREATE granted
+// LEASE1=RWH at epoch=0x4712, a subsequent same-key None-state probe MUST
+// return that lease unchanged with epoch=0x4712. The pre-fix code advanced to
+// 0x4713 because the V2 epoch-resolution branch unconditionally bumped to
+// max(currentEpoch, requestedEpoch+1) for any non-None grant, including the
+// no-op None-probe path. Per MS-SMB2 §2.2.14.2.11 the epoch advances ONLY on
+// granted state changes — a None-probe is by definition not a state change.
+func TestProcessLeaseCreateContext_NoneProbeDoesNotAdvanceEpoch(t *testing.T) {
+	t.Parallel()
+
+	mgr := lock.NewManager()
+	leaseMgr := lease.NewLeaseManager(&staticLockResolver{mgr: mgr}, nil)
+
+	ctx := context.Background()
+	const shareName = "share1"
+	leaseKey := [16]byte{0xAA, 0xBB, 0xCC}
+	fileHandle := lock.FileHandle("file-handle-1")
+	const sessionID = uint64(42)
+	const clientID = "smb:42"
+	const initialEpoch uint16 = 0x4711
+
+	// First CREATE: grant RWH with requested epoch 0x4711 → response epoch 0x4712.
+	initial := encodeV2LeaseContext(leaseKey, lock.LeaseStateRead|lock.LeaseStateWrite|lock.LeaseStateHandle, initialEpoch)
+	resp1, err := ProcessLeaseCreateContext(ctx, leaseMgr, initial, fileHandle, sessionID, clientID, shareName, false)
+	if err != nil {
+		t.Fatalf("first CREATE returned error: %v", err)
+	}
+	if resp1.LeaseState != lock.LeaseStateRead|lock.LeaseStateWrite|lock.LeaseStateHandle {
+		t.Fatalf("first CREATE granted state = 0x%x, want RWH (0x07)", resp1.LeaseState)
+	}
+	if resp1.Epoch != initialEpoch+1 {
+		t.Fatalf("first CREATE response epoch = 0x%x, want 0x%x (req+1)", resp1.Epoch, initialEpoch+1)
+	}
+	grantedEpoch := resp1.Epoch
+
+	// Same-key None-state probe at the granted epoch — must echo the lease's
+	// current epoch verbatim (no state change → no advance).
+	probe := encodeV2LeaseContext(leaseKey, lock.LeaseStateNone, grantedEpoch)
+	resp2, err := ProcessLeaseCreateContext(ctx, leaseMgr, probe, fileHandle, sessionID, clientID, shareName, false)
+	if err != nil {
+		t.Fatalf("None-probe returned error: %v", err)
+	}
+	if resp2.LeaseState != lock.LeaseStateRead|lock.LeaseStateWrite|lock.LeaseStateHandle {
+		t.Errorf("None-probe returned state = 0x%x, want RWH (0x07) — None-probe must echo existing state",
+			resp2.LeaseState)
+	}
+	if resp2.Epoch != grantedEpoch {
+		t.Errorf("None-probe response epoch = 0x%x, want 0x%x — None-probe is not a state change and MUST NOT advance epoch (smbtorture v2_rename lease.c:4299)",
+			resp2.Epoch, grantedEpoch)
+	}
+
+	// Server-side tracking should also remain unchanged.
+	_, persistedEpoch, found := mgr.GetLeaseState(ctx, leaseKey)
+	if !found {
+		t.Fatal("lease record disappeared after None-probe")
+	}
+	if persistedEpoch != grantedEpoch {
+		t.Errorf("server-side epoch after None-probe = 0x%x, want 0x%x (no advance)",
+			persistedEpoch, grantedEpoch)
 	}
 }
