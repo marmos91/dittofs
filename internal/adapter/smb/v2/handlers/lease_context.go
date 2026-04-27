@@ -433,13 +433,30 @@ func ProcessLeaseCreateContext(
 	// blob with an epoch field — the epoch is not echoed because the V1
 	// response format has no epoch slot.
 	if !responseIsV1 && err == nil {
-		if grantedState != lock.LeaseStateNone {
+		// None-state probe: client requests state=0 to query the current lease
+		// without taking new caching rights (smbtorture upgrade2 / breaking4 /
+		// v2_rename use this to re-read after a break or rename). MS-SMB2
+		// §2.2.14.2.11 requires the epoch to advance only on a granted state
+		// CHANGE; a None-probe never changes state, so we MUST echo the
+		// lease's current epoch verbatim — neither advancing past it nor
+		// taking the client's requested value (which is itself the current
+		// epoch and would drift the server one ahead per round-trip).
+		//
+		// Without this guard, every same-key None-probe SetLeaseEpoch's
+		// to leaseReq.Epoch+1 and accumulates: smbtorture v2_rename re-opens
+		// fname_dst (None-probe) → epoch drifts 0x4712→0x4713; later re-open
+		// of fname after rename-back → drifts again, lease.c:4299 fails
+		// 0x4714 ≠ expected 0x4713.
+		switch {
+		case leaseReq.LeaseState == lock.LeaseStateNone:
+			// epoch already holds the lease's current value from RequestLease.
+		case grantedState != lock.LeaseStateNone:
 			nextEpoch := leaseReq.Epoch + 1
 			if nextEpoch > epoch {
 				leaseMgr.SetLeaseEpoch(leaseReq.LeaseKey, nextEpoch)
 				epoch = nextEpoch
 			}
-		} else {
+		default:
 			epoch = leaseReq.Epoch
 		}
 	}
