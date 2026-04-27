@@ -136,6 +136,56 @@ func TranslateNFSConflictReason(lease *UnifiedLock) string {
 // NLM Lock Conflict Detection for Leases (shared package)
 // ============================================================================
 
+// hasByteRangeLockConflictForLease reports whether any active byte-range lock
+// on handleKey conflicts with a pending lease grant of requestedState. It
+// consults BOTH the persisted lockStore (NLM-side, cross-protocol) AND the
+// in-memory lm.locks map written by SMB2 LOCK callers.
+//
+// Per MS-SMB2 §3.3.5.9.8: if any byte-range lock is outstanding on the file,
+// the server MUST set the granted leaseState to NONE. The check is
+// intentionally client-agnostic — Samba denies even same-client lease+lock
+// combinations (smbtorture lease-epoch verifies this).
+//
+// SMB2 byte-range locks acquired via Manager.Lock are stored only in lm.locks
+// today; they are not yet pushed through lockStore.PutLock (architectural
+// debt). Until that bridge lands, the conflict path needs both views to
+// match the spec.
+//
+// Must be called WITHOUT lm.mu held — it acquires the read lock internally
+// for the in-memory pass and external IO for the persisted pass.
+func (lm *Manager) hasByteRangeLockConflictForLease(ctx context.Context, handleKey string, requestedState uint32, clientID string) bool {
+	if lm.lockStore != nil && CheckNLMLocksForLeaseConflict(lm.lockStore, ctx, handleKey, requestedState, clientID) {
+		return true
+	}
+
+	wantsWrite := requestedState&LeaseStateWrite != 0
+	wantsRead := requestedState&LeaseStateRead != 0
+	if !wantsWrite && !wantsRead {
+		return false
+	}
+
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	for i := range lm.locks[handleKey] {
+		fl := &lm.locks[handleKey][i]
+		if !wantsWrite && !fl.Exclusive {
+			// Read-only lease tolerates shared byte-range locks; only
+			// exclusive byte-range locks conflict (mirrors the persisted
+			// rule in CheckNLMLocksForLeaseConflict).
+			continue
+		}
+		logger.Debug("hasByteRangeLockConflictForLease: in-memory byte-range lock conflicts with lease",
+			"handleKey", handleKey,
+			"lockOwner", lockOwnerID(fl),
+			"clientID", clientID,
+			"wantsWrite", wantsWrite,
+			"wantsRead", wantsRead,
+			"lockExclusive", fl.Exclusive)
+		return true
+	}
+	return false
+}
+
 // CheckNLMLocksForLeaseConflict queries the lock store for NLM byte-range locks
 // that would conflict with a requested SMB lease.
 //
@@ -145,6 +195,12 @@ func TranslateNFSConflictReason(lease *UnifiedLock) string {
 //   - Handle lease (alone): No conflict with NLM locks
 //
 // Returns false if lockStore is nil or no conflicts exist.
+//
+// Note: this function only sees PERSISTED locks. SMB2 byte-range locks taken
+// via Manager.Lock currently live only in the in-memory legacy map; callers
+// inside the lock package should prefer Manager.hasByteRangeLockConflictForLease
+// which combines both views. This function stays exported for external callers
+// (e.g. NFS-side) that only have a LockStore handle.
 func CheckNLMLocksForLeaseConflict(lockStore LockStore, ctx context.Context, handleKey string, requestedState uint32, clientID string) bool {
 	if lockStore == nil {
 		return false

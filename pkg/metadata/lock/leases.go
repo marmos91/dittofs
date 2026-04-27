@@ -269,14 +269,15 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 		return LeaseStateNone, 0, nil
 	}
 
-	// Check NLM lock conflicts
-	if lm.lockStore != nil {
-		if CheckNLMLocksForLeaseConflict(lm.lockStore, ctx, handleKey, requestedState, clientID) {
-			logger.Debug("RequestLease: NLM lock conflict",
-				"fileHandle", handleKey,
-				"requestedState", LeaseStateToString(requestedState))
-			return LeaseStateNone, 0, nil
-		}
+	// Per MS-SMB2 §3.3.5.9.8: if any byte-range lock is outstanding on the
+	// file, the server MUST grant leaseState = NONE. Check both the
+	// persisted lockStore (NLM-side) and the in-memory lm.locks map
+	// (SMB2 LOCK callers; not yet pushed through lockStore).
+	if lm.hasByteRangeLockConflictForLease(ctx, handleKey, requestedState, clientID) {
+		logger.Debug("RequestLease: byte-range lock conflict, denying lease",
+			"fileHandle", handleKey,
+			"requestedState", LeaseStateToString(requestedState))
+		return LeaseStateNone, 0, nil
 	}
 
 	// Cross-file lease-key uniqueness — persisted backstop for post-restart

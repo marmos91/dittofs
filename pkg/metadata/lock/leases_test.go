@@ -444,6 +444,85 @@ func TestRequestLease_DuplicateKey_PostRestart_SameFileAllowed(t *testing.T) {
 	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state)
 }
 
+// TestRequestLease_DeniedByInMemoryByteRangeLock: per MS-SMB2 §3.3.5.9.8, any
+// outstanding byte-range lock on a file forces leaseState=NONE on a pending
+// lease grant. SMB2 LOCK callers route through Manager.Lock which keeps the
+// byte-range entry in the legacy lm.locks map (not pushed to lockStore yet),
+// so the conflict path must consult both views. smbtorture lease-epoch test
+// is the integration check; this is the unit-level guard.
+func TestRequestLease_DeniedByInMemoryByteRangeLock(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+
+	// Acquire an exclusive byte-range lock via the legacy SMB2 LOCK path.
+	require.NoError(t, mgr.Lock("/share:lease-epoch.dat", FileLock{
+		ID:        1,
+		SessionID: 100,
+		Offset:    0,
+		Length:    1,
+		Exclusive: true,
+	}))
+
+	// A Read lease request on the same file MUST be denied (lease=None,
+	// no error — this is a "graceful denial", not an error condition).
+	state, _, err := mgr.RequestLease(ctx, FileHandle("/share:lease-epoch.dat"),
+		[16]byte{0xAA}, [16]byte{}, "owner1", "client1", "/share",
+		LeaseStateRead, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateNone, state, "exclusive byte-range lock must deny Read lease")
+}
+
+// TestRequestLease_SharedByteRangeLockAllowsReadLease: complement to the
+// previous test — only EXCLUSIVE byte-range locks deny a Read lease. A
+// shared lock (e.g. multiple readers) does not conflict per MS-SMB2 rules
+// and the existing CheckNLMLocksForLeaseConflict semantics.
+func TestRequestLease_SharedByteRangeLockAllowsReadLease(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+
+	require.NoError(t, mgr.Lock("/share:shared.dat", FileLock{
+		ID:        1,
+		SessionID: 100,
+		Offset:    0,
+		Length:    1,
+		Exclusive: false,
+	}))
+
+	state, _, err := mgr.RequestLease(ctx, FileHandle("/share:shared.dat"),
+		[16]byte{0xBB}, [16]byte{}, "owner1", "client1", "/share",
+		LeaseStateRead, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateRead, state, "shared byte-range lock must not block Read lease")
+}
+
+// TestRequestLease_AnyByteRangeLockDeniesWriteLease: a Write lease MUST NOT
+// coexist with ANY byte-range lock — even shared locks. The conflict rule
+// for Write requests is more aggressive than for Read requests.
+func TestRequestLease_AnyByteRangeLockDeniesWriteLease(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+
+	require.NoError(t, mgr.Lock("/share:write-conflict.dat", FileLock{
+		ID:        1,
+		SessionID: 100,
+		Offset:    0,
+		Length:    1,
+		Exclusive: false, // shared lock
+	}))
+
+	state, _, err := mgr.RequestLease(ctx, FileHandle("/share:write-conflict.dat"),
+		[16]byte{0xCC}, [16]byte{}, "owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateWrite, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateNone, state, "shared byte-range lock must deny Write lease")
+}
+
 // TestRequestLease_SameKeySameFile_StillWorks: same key on the same file is a
 // reopen / upgrade, not a cross-file violation. Regression guard for
 // smbtorture breaking2 / breaking4 / nobreakself.

@@ -397,11 +397,21 @@ func ProcessLeaseCreateContext(
 	// the breaking lease's current state/epoch read-only and explicitly must
 	// not be mutated. Advancing its epoch here would drift the state that
 	// the in-flight break ACK will re-persist.
-	if !isV1 && err == nil && grantedState != lock.LeaseStateNone {
-		nextEpoch := leaseReq.Epoch + 1
-		if nextEpoch > epoch {
-			leaseMgr.SetLeaseEpoch(leaseReq.LeaseKey, nextEpoch)
-			epoch = nextEpoch
+	//
+	// When the grant is DENIED (state=None due to byte-range lock or other
+	// conflict, but err==nil), there is no state change and therefore no
+	// epoch increment per MS-SMB2 §2.2.14.2.11. Echo the client's requested
+	// epoch so the response is internally consistent — smbtorture lease-epoch
+	// asserts lease_epoch == requested when state == None.
+	if !isV1 && err == nil {
+		if grantedState != lock.LeaseStateNone {
+			nextEpoch := leaseReq.Epoch + 1
+			if nextEpoch > epoch {
+				leaseMgr.SetLeaseEpoch(leaseReq.LeaseKey, nextEpoch)
+				epoch = nextEpoch
+			}
+		} else {
+			epoch = leaseReq.Epoch
 		}
 	}
 
