@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/binary"
 	"testing"
 	"time"
 
@@ -76,19 +77,11 @@ func setupTimestampTest(t *testing.T) (*Handler, *metadata.AuthContext, metadata
 // would be stripped by the time.Time round-trip in EncodeFileBasicInfo.
 func makeBasicInfoBuffer(creationFT, atimeFT, mtimeFT, ctimeFT uint64, fileAttrs uint32) []byte {
 	buf := make([]byte, 40)
-	putU64 := func(off int, v uint64) {
-		for i := 0; i < 8; i++ {
-			buf[off+i] = byte(v >> (8 * i))
-		}
-	}
-	putU64(0, creationFT)
-	putU64(8, atimeFT)
-	putU64(16, mtimeFT)
-	putU64(24, ctimeFT)
-	// FileAttributes at offset 32, Reserved at offset 36
-	for i := 0; i < 4; i++ {
-		buf[32+i] = byte(fileAttrs >> (8 * i))
-	}
+	binary.LittleEndian.PutUint64(buf[0:8], creationFT)
+	binary.LittleEndian.PutUint64(buf[8:16], atimeFT)
+	binary.LittleEndian.PutUint64(buf[16:24], mtimeFT)
+	binary.LittleEndian.PutUint64(buf[24:32], ctimeFT)
+	binary.LittleEndian.PutUint32(buf[32:36], fileAttrs)
 	return buf
 }
 
@@ -378,9 +371,7 @@ func TestDelayedWrite_VsSetEOF(t *testing.T) {
 			closeFile.Mtime, setTime)
 	}
 
-	// Sanity check that openFile is still in the handler (no stale-state
-	// regression caused by my changes — applyFrozenTimestamps must be a
-	// no-op when no field is frozen).
+	// applyFrozenTimestamps MUST be a no-op when nothing is frozen.
 	applyFrozenTimestamps(openFile, closeFile)
 	if !closeFile.Mtime.Equal(setTime) {
 		t.Errorf("applyFrozenTimestamps mutated unfrozen Mtime: got %v want %v",
