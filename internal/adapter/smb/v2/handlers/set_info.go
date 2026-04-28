@@ -349,38 +349,25 @@ func (h *Handler) setFileInfoFromStore(
 			}
 		}
 
-		// Pin sentinel timestamps to their current value so SetFileAttributes
-		// won't auto-update them (e.g., Ctime auto-update when Mode changes).
+		// Pin sentinel timestamps (FREEZE -1 and THAW -2) to their pre-change
+		// value so SetFileAttributes' ctime auto-update on `modified` does
+		// not bump them. Both sentinels are no-ops on the target value per
+		// Samba `lib/util/time.c::nt_time_to_full_timespec` (which maps both
+		// to `make_omit_timespec`); FREEZE additionally suspends future
+		// auto-updates and THAW re-enables them — that bookkeeping happens
+		// in the per-field switch below after SetFileAttributes returns.
 		if preFile != nil {
-			// For freeze (-1): pin to pre-change value to prevent auto-update
-			if creationFT == filetimeFreeze {
+			if isFiletimeSentinel(creationFT) {
 				setAttrs.CreationTime = &preFile.CreationTime
 			}
-			if ctimeFT == filetimeFreeze {
+			if isFiletimeSentinel(ctimeFT) {
 				setAttrs.Ctime = &preFile.Ctime
 			}
-			if mtimeFT == filetimeFreeze {
+			if isFiletimeSentinel(mtimeFT) {
 				setAttrs.Mtime = &preFile.Mtime
 			}
-			if atimeFT == filetimeFreeze {
+			if isFiletimeSentinel(atimeFT) {
 				setAttrs.Atime = &preFile.Atime
-			}
-			// For unfreeze (-2): per MS-FSA 2.1.5.14.2, re-enable auto-update
-			// AND set the timestamp to the current time. CreationTime unfreeze
-			// pins to the pre-change value (it is never auto-updated, so "current
-			// time" semantics don't apply — just re-enable future explicit changes).
-			unfreezeNow := time.Now()
-			if creationFT == filetimeUnfreeze {
-				setAttrs.CreationTime = &preFile.CreationTime
-			}
-			if ctimeFT == filetimeUnfreeze {
-				setAttrs.Ctime = &unfreezeNow
-			}
-			if mtimeFT == filetimeUnfreeze {
-				setAttrs.Mtime = &unfreezeNow
-			}
-			if atimeFT == filetimeUnfreeze {
-				setAttrs.Atime = &unfreezeNow
 			}
 		}
 
