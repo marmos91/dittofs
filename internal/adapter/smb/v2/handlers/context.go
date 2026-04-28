@@ -156,6 +156,12 @@ type SMBHandlerContext struct {
 	// AsyncCreateCompleteCallback docs in pending_create_registry.go.
 	AsyncCreateCompleteCallback AsyncCreateCompleteCallback
 
+	// AsyncLockCompleteCallback delivers the final async LOCK response for a
+	// blocking-lock request that was parked on a byte-range conflict
+	// (MS-SMB2 §3.3.5.14). Set by the dispatch layer for SMB2Lock commands.
+	// See AsyncLockCompleteCallback docs in pending_lock_registry.go.
+	AsyncLockCompleteCallback AsyncLockCompleteCallback
+
 	// TryReserveAsync checks and atomically reserves one async connection slot.
 	// Returns false when the connection is at max_async_credits (512); the caller
 	// must return STATUS_INSUFFICIENT_RESOURCES without registering the operation.

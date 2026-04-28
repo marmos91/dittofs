@@ -250,12 +250,50 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 
 	// Try to cancel a pending blocking LOCK request.
 	// Per MS-SMB2 3.3.5.16: CANCEL uses the same MessageID as the
-	// original request being cancelled. The pending lock goroutine
-	// monitors its context and returns STATUS_CANCELLED when interrupted.
+	// original request being cancelled.
+	//
+	// Two paths:
+	//
+	//  1. Async-park path (PendingLockRegistry): the LOCK already emitted
+	//     an interim STATUS_PENDING and is waiting in a resume goroutine.
+	//     CANCEL must drain the registry entry, deliver a STATUS_CANCELLED
+	//     final response via the async callback, and prune our WFG edges.
+	//
+	//  2. Inline-retry fallback (h.pendingLocks): the LOCK is retrying on
+	//     the dispatch goroutine itself (used when async parking is
+	//     unavailable). CANCEL just signals the cancel func; the dispatch
+	//     goroutine returns STATUS_CANCELLED through the normal response
+	//     path.
+	if h.PendingLockRegistry != nil {
+		var parked *PendingLock
+		if ctx.RequestAsyncId != 0 {
+			parked = h.PendingLockRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
+		} else {
+			parked = h.PendingLockRegistry.UnregisterByMessageID(ctx.ConnID, ctx.MessageID)
+		}
+		if parked != nil {
+			cancelledSomething = true
+			logger.Debug("CANCEL: cancelled pending LOCK",
+				"asyncId", parked.AsyncId,
+				"messageID", parked.MessageID)
+			if parked.Callback != nil {
+				go func(p *PendingLock) {
+					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusCancelled, nil); err != nil {
+						logger.Warn("CANCEL: failed to send STATUS_CANCELLED for LOCK",
+							"messageID", p.MessageID,
+							"error", err)
+					}
+				}(parked)
+			}
+			if h.LockWaitGraph != nil && parked.OwnerID != "" {
+				h.LockWaitGraph.RemoveWaiter(parked.OwnerID)
+			}
+		}
+	}
 	if cancelFn, ok := h.pendingLocks.LoadAndDelete(ctx.MessageID); ok {
 		cancelledSomething = true
 		cancelFn.(context.CancelFunc)()
-		logger.Debug("CANCEL: cancelled pending blocking LOCK",
+		logger.Debug("CANCEL: cancelled inline blocking LOCK",
 			"messageID", ctx.MessageID)
 	}
 

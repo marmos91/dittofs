@@ -72,8 +72,23 @@ type Handler struct {
 	// to drain, then delivers the final response via AsyncCreateCompleteCallback.
 	PendingCreateRegistry *PendingCreateRegistry
 
-	// Pending blocking lock operations (messageID -> cancel func).
-	// Used by CANCEL to interrupt blocking lock requests.
+	// PendingLockRegistry tracks SMB2 LOCK requests parked on a byte-range
+	// conflict (MS-SMB2 §3.3.5.14). The resume goroutine retries the
+	// acquisition until success / timeout / cancellation, then delivers the
+	// final response via AsyncLockCompleteCallback. See pending_lock_registry.go.
+	PendingLockRegistry *PendingLockRegistry
+
+	// LockWaitGraph tracks "is waiting for" relationships among byte-range
+	// lock owners. Consulted by the blocking-LOCK async-park path before
+	// committing to wait, so a request whose grant would close a cycle is
+	// rejected with STATUS_LOCK_NOT_GRANTED instead (MS-SMB2 §3.3.5.14,
+	// smb2.lock.open-brlock-deadlock / ctdb-delrec-deadlock).
+	LockWaitGraph *lock.WaitForGraph
+
+	// Pending blocking lock operations (messageID -> cancel func). Legacy
+	// path for inline retry inside the request goroutine — used as a
+	// fallback when async parking is unavailable (no callback wired,
+	// async-credit pool exhausted, or registry full).
 	pendingLocks sync.Map
 
 	// Per-open last denied lock request tracking for LOCK_NOT_GRANTED vs
@@ -363,6 +378,8 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		NotifyRegistry:          NewNotifyRegistry(),
 		PipeReadRegistry:        NewPipeReadRegistry(),
 		PendingCreateRegistry:   NewPendingCreateRegistry(),
+		PendingLockRegistry:     NewPendingLockRegistry(),
+		LockWaitGraph:           lock.NewWaitForGraph(),
 		MaxTransactSize:         1048576, // 1MB (supports large directory listings; increases per-request memory)
 		MaxReadSize:             1048576, // 1MB
 		MaxWriteSize:            1048576, // 1MB
@@ -775,6 +792,25 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 							"asyncId", p.AsyncId, "messageID", p.MessageID, "error", err)
 					}
 				}(parked)
+			}
+		}
+	}
+	if h.PendingLockRegistry != nil {
+		for _, parked := range h.PendingLockRegistry.UnregisterAllForSession(sessionID) {
+			// MS-SMB2 §3.3.5.14 + smb2.lock.cancel-logoff: parked blocking
+			// LOCK requests on a logged-off session must be completed with
+			// STATUS_RANGE_NOT_LOCKED (matches Samba and Windows behavior on
+			// LOGOFF — the open is gone, the lock state is not "still held").
+			if parked.Callback != nil {
+				go func(p *PendingLock) {
+					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusRangeNotLocked, nil); err != nil {
+						logger.Debug("session cleanup: failed to cancel pending LOCK",
+							"asyncId", p.AsyncId, "messageID", p.MessageID, "error", err)
+					}
+				}(parked)
+			}
+			if h.LockWaitGraph != nil && parked.OwnerID != "" {
+				h.LockWaitGraph.RemoveWaiter(parked.OwnerID)
 			}
 		}
 	}

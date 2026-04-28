@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -166,6 +167,13 @@ func (resp *LockResponse) Encode() ([]byte, error) {
 //
 // Lock requests are processed atomically - if any lock in the request fails,
 // all previously acquired locks in the same request are rolled back.
+//
+// Blocking LOCKs (single-element, no SMB2_LOCKFLAG_FAIL_IMMEDIATELY) that
+// cannot be granted immediately are parked on the PendingLockRegistry and
+// emit an interim STATUS_PENDING; the resume goroutine retries acquisition
+// until success / timeout / cancellation, then delivers the final response
+// asynchronously (MS-SMB2 §3.3.5.14, Samba `smbd_smb2_lock_send`). This
+// prevents the dispatch goroutine from being blocked by a single client.
 func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	// Decode request
 	req, err := DecodeLockRequest(body)
@@ -330,7 +338,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			// Lock operation
 			failImmediately := (lockElem.Flags & SMB2LockFlagFailImmediately) != 0
 
-			lock := metadata.FileLock{
+			fileLock := metadata.FileLock{
 				ID:         0, // SMB doesn't use lock IDs in this implementation
 				SessionID:  ctx.SessionID,
 				OpenID:     openID,
@@ -341,75 +349,77 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 				ClientAddr: ctx.ClientAddr,
 			}
 
-			// For blocking lock requests, register a cancellable context so
-			// CANCEL can interrupt the wait. Per MS-SMB2 3.3.5.14, when a
-			// blocking lock request is outstanding, CANCEL should abort it.
-			lockAuthCtx := authCtx
-			var cancelFn context.CancelFunc
-			if !failImmediately {
-				var cancelCtx context.Context
-				cancelCtx, cancelFn = context.WithCancel(authCtx.Context)
-				lockAuthCtx = &metadata.AuthContext{
-					Context:  cancelCtx,
-					Identity: authCtx.Identity,
+			// First attempt: synchronous, fail-fast. Covers the common case
+			// of an uncontended lock (and is the only path for
+			// FailImmediately requests).
+			err := metaSvc.LockFile(authCtx, openFile.MetadataHandle, fileLock)
+			if err == nil {
+				h.lastDeniedLocks.Delete(openID)
+				acquiredLocks = append(acquiredLocks, lockElem)
+				continue
+			}
+
+			// Non-conflict errors (NotFound, AccessDenied, …) abort the
+			// request immediately, even for blocking requests.
+			var storeErr *metadata.StoreError
+			isLockConflict := goerrors.As(err, &storeErr) && storeErr.Code == merrs.ErrLocked
+			if !isLockConflict {
+				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
+				return NewErrorResult(common.MapLockToSMB(err)), nil
+			}
+
+			// Conflict path. FailImmediately → return immediately with the
+			// LOCK_NOT_GRANTED / FILE_LOCK_CONFLICT distinction.
+			if failImmediately {
+				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
+				return NewErrorResult(h.mapLockConflictStatus(openID, lockElem, isExclusive)), nil
+			}
+
+			// Blocking conflict. Try async parking first; if parking is
+			// unavailable (compound chain, multi-element batch, deadlock,
+			// async-credit pool exhausted, registry full), fall back to
+			// inline retry on the dispatch goroutine.
+			//
+			// Async parking is unsafe in compound chains (NextCommand != 0,
+			// MS-SMB2 §3.3.4.4) and in multi-element requests. The first
+			// guard is enforced by the !ctx.NextCommand check below; the
+			// second is implicit because §3.3.5.14 forbids multi-element
+			// requests with a blocking first element (rejected above), and
+			// we additionally require LockCount == 1 below.
+			if ctx.NextCommand == 0 && req.LockCount == 1 && len(acquiredLocks) == 0 &&
+				h.PendingLockRegistry != nil && ctx.AsyncLockCompleteCallback != nil &&
+				ctx.TryReserveAsync != nil && ctx.ReleaseAsync != nil {
+				if asyncId, parked := h.parkLockOnConflict(ctx, openFile, fileLock, lockElem); parked {
+					return &HandlerResult{
+						Status:  types.StatusPending,
+						AsyncId: asyncId,
+					}, nil
 				}
-				h.pendingLocks.Store(ctx.MessageID, cancelFn)
 			}
 
-			err := h.acquireLockWithRetry(lockAuthCtx, metaSvc, openFile.MetadataHandle, lock, failImmediately)
+			// Fallback: inline retry. Register cancel context for SMB2_CANCEL.
+			cancelCtx, cancelFn := context.WithCancel(authCtx.Context)
+			lockAuthCtx := &metadata.AuthContext{
+				Context:  cancelCtx,
+				Identity: authCtx.Identity,
+			}
+			h.pendingLocks.Store(ctx.MessageID, cancelFn)
 
-			// Capture context error BEFORE cleanup cancellation, to distinguish
-			// external CANCEL from our own post-return cancellation.
+			err = h.acquireLockWithRetry(lockAuthCtx, metaSvc, openFile.MetadataHandle, fileLock, false)
 			ctxErr := lockAuthCtx.Context.Err()
-
-			// Clean up pending lock registration
-			if cancelFn != nil {
-				h.pendingLocks.LoadAndDelete(ctx.MessageID)
-				cancelFn() // prevent context leak
-			}
+			h.pendingLocks.LoadAndDelete(ctx.MessageID)
+			cancelFn()
 
 			if err != nil {
-				logger.Debug("LOCK: lock failed",
-					"offset", lockElem.Offset,
-					"length", lockElem.Length,
-					"exclusive", isExclusive,
-					"failImmediately", failImmediately,
-					"error", err)
-
-				// If the context was cancelled (by CANCEL command), return STATUS_CANCELLED
 				if ctxErr != nil {
 					rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
 					return NewErrorResult(types.StatusCancelled), nil
 				}
-
-				status := common.MapLockToSMB(err)
-
-				// Per MS-SMB2 3.3.5.14: If this lock denial matches the last
-				// denied lock for this open (same offset/length/type), return
-				// FILE_LOCK_CONFLICT instead of LOCK_NOT_GRANTED.
-				if status == types.StatusLockNotGranted {
-					denied := lastDeniedLock{
-						Offset:    lockElem.Offset,
-						Length:    lockElem.Length,
-						Exclusive: isExclusive,
-					}
-					if prev, ok := h.lastDeniedLocks.Load(openID); ok {
-						if prev.(lastDeniedLock) == denied {
-							status = types.StatusFileLockConflict
-						}
-					}
-					h.lastDeniedLocks.Store(openID, denied)
-				}
-
-				// Rollback previously acquired locks
 				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
-				return NewErrorResult(status), nil
+				return NewErrorResult(h.mapLockConflictStatus(openID, lockElem, isExclusive)), nil
 			}
 
-			// Lock succeeded - clear last-denied tracking for this open
 			h.lastDeniedLocks.Delete(openID)
-
-			// Track for potential rollback
 			acquiredLocks = append(acquiredLocks, lockElem)
 		}
 	}
@@ -547,6 +557,40 @@ func rollbackLocks(
 				"error", err)
 		}
 	}
+}
+
+// mapLockConflictStatus maps a byte-range lock conflict (ErrLocked) to the
+// correct SMB status. Per MS-SMB2 3.3.5.14: first denial of a given range
+// returns STATUS_LOCK_NOT_GRANTED; if the same client retries the same
+// (offset, length, type) on the same open and gets denied again, return
+// STATUS_FILE_LOCK_CONFLICT instead. The handler tracks the last-denied
+// triple per OpenID; on success the entry is cleared.
+//
+// Used by the synchronous fail-immediately path, the inline-retry fallback,
+// and the async-park resume goroutine.
+func (h *Handler) mapLockConflictStatus(openID string, lockElem LockElement, isExclusive bool) types.Status {
+	denied := lastDeniedLock{
+		Offset:    lockElem.Offset,
+		Length:    lockElem.Length,
+		Exclusive: isExclusive,
+	}
+	if prev, ok := h.lastDeniedLocks.Load(openID); ok {
+		if prev.(lastDeniedLock) == denied {
+			return types.StatusFileLockConflict
+		}
+	}
+	h.lastDeniedLocks.Store(openID, denied)
+	return types.StatusLockNotGranted
+}
+
+// encodeLockResponseBody encodes the canonical 4-byte SMB2 LOCK response
+// body (StructureSize=4, Reserved=0). Shared by the synchronous and
+// async-park completion paths.
+func encodeLockResponseBody() []byte {
+	w := smbenc.NewWriter(4)
+	w.WriteUint16(4) // StructureSize
+	w.WriteUint16(0) // Reserved
+	return w.Bytes()
 }
 
 // Note (ADAPT-03, D-08 §3): lockErrorToStatus was consolidated into
