@@ -77,7 +77,32 @@ type LeaseManager struct {
 	// state. leaseV1 is true iff first grant was V1.
 	leaseV2 map[string]bool // hex(leaseKey) -> true iff V2-established
 	leaseV1 map[string]bool // hex(leaseKey) -> true iff V1-established
-	mu      sync.RWMutex
+
+	// leaseClientGUID records the ClientGUID that first granted each lease.
+	// Per MS-SMB2 §3.3.5.9.8 a lease is bound to a (ClientGUID, LeaseKey) pair
+	// and break notifications are routed at the client level (Samba
+	// `smbXsrv_pending_break_submit` in source3/smbd/smb2_server.c picks the
+	// FIRST connection of `client->connections` regardless of which session
+	// holds the open). Sticky on FIRST grant: a same-key reopen on a
+	// different session of the same client does NOT change the recorded
+	// GUID; cross-client key reuse is rejected upstream by lease_match.
+	//
+	// Required by smbtorture smb2.lease.v2_complex1 — two sessions of the
+	// same ClientGUID open with different lease keys, and breaks for either
+	// lease must arrive on the FIRST session's primary transport.
+	leaseClientGUID map[string][16]byte // hex(leaseKey) -> ClientGUID
+
+	// clientPrimarySession records the FIRST sessionID seen for each
+	// ClientGUID (first-write wins). When a lease must be broken, its
+	// recorded ClientGUID is resolved to this primary sessionID and the
+	// notifier delivers on that session's primary connection. This mirrors
+	// Samba's `client->connections` head: breaks always go to the oldest
+	// live connection for the client, not to whichever session created the
+	// open. Zero ClientGUID is never registered (would conflate clients
+	// that never sent a NEGOTIATE).
+	clientPrimarySession map[[16]byte]uint64
+
+	mu sync.RWMutex
 }
 
 // NewLeaseManager creates a new SMB LeaseManager.
@@ -88,12 +113,14 @@ type LeaseManager struct {
 //     to SMB clients. May be nil if break notifications are not yet wired.
 func NewLeaseManager(resolver LockManagerResolver, notifier LeaseBreakNotifier) *LeaseManager {
 	return &LeaseManager{
-		resolver:   resolver,
-		notifier:   notifier,
-		sessionMap: make(map[string]uint64),
-		leaseShare: make(map[string]string),
-		leaseV2:    make(map[string]bool),
-		leaseV1:    make(map[string]bool),
+		resolver:             resolver,
+		notifier:             notifier,
+		sessionMap:           make(map[string]uint64),
+		leaseShare:           make(map[string]string),
+		leaseV2:              make(map[string]bool),
+		leaseV1:              make(map[string]bool),
+		leaseClientGUID:      make(map[string][16]byte),
+		clientPrimarySession: make(map[[16]byte]uint64),
 	}
 }
 
@@ -106,6 +133,13 @@ func NewLeaseManager(resolver LockManagerResolver, notifier LeaseBreakNotifier) 
 //   - leaseKey: Client-generated 128-bit key identifying the lease
 //   - parentLeaseKey: Parent directory lease key (V2 only, zero for V1)
 //   - sessionID: The SMB session ID (for break notification routing)
+//   - clientGUID: The 128-bit ClientGUID from the request's connection
+//     (NEGOTIATE). Used to bind the lease to its client at MS-SMB2 §3.3.5.9.8
+//     granularity and to route break notifications to the client's primary
+//     session (Samba `client->connections` head). Zero is accepted (no
+//     ClientGUID-based routing for that lease — falls back to per-lease
+//     sessionMap), which keeps callers that don't have a CryptoState wired
+//     (older durable-reconnect paths, tests) working.
 //   - ownerID: The lock owner identifier
 //   - clientID: The connection tracker client ID
 //   - shareName: The share name
@@ -119,6 +153,7 @@ func (lm *LeaseManager) RequestLease(
 	leaseKey [16]byte,
 	parentLeaseKey [16]byte,
 	sessionID uint64,
+	clientGUID [16]byte,
 	ownerID string,
 	clientID string,
 	shareName string,
@@ -188,6 +223,27 @@ func (lm *LeaseManager) requestLeaseInternal(
 	lm.mu.Lock()
 	lm.sessionMap[keyHex] = sessionID
 	lm.leaseShare[keyHex] = shareName
+	// Bind the lease to a ClientGUID on FIRST grant (sticky). Cross-client
+	// key reuse is rejected upstream by lease_match (ErrLeaseKeyInUse), so
+	// the only paths that re-enter here on the same key are same-client
+	// reopens / upgrades — those must NOT rebind the GUID. Zero ClientGUID
+	// callers (legacy paths) leave the binding unset and fall back to the
+	// per-lease sessionMap for break dispatch.
+	if clientGUID != ([16]byte{}) {
+		if _, bound := lm.leaseClientGUID[keyHex]; !bound {
+			lm.leaseClientGUID[keyHex] = clientGUID
+		}
+		// Register this session as the primary for the ClientGUID iff no
+		// session is currently registered (first-write wins). Mirrors the
+		// Samba head-of-list semantics for `client->connections`: the first
+		// connection of the client receives all break notifications even
+		// when subsequent sessions of the same client open additional opens
+		// or leases (smbtorture v2_complex1 line 4006/4033/4047 expect every
+		// lease break on tree1a's transport, the connection set up first).
+		if _, ok := lm.clientPrimarySession[clientGUID]; !ok {
+			lm.clientPrimarySession[clientGUID] = sessionID
+		}
+	}
 	lm.mu.Unlock()
 
 	// Dispatch to the appropriate Manager method so the new record's
@@ -363,6 +419,21 @@ func (lm *LeaseManager) ReleaseSessionLeases(ctx context.Context, sessionID uint
 		}
 	}
 
+	// Reap any clientPrimarySession entries that pointed at the gone
+	// session. Without this the next break for a lease bound to that
+	// ClientGUID would route to a dead sessionID and the notifier would
+	// silently drop the notification (see GetSessionForBreak fallback).
+	// We do not re-elect a new primary here — the next CREATE / lease
+	// upgrade from a surviving session will repopulate via the
+	// first-write-wins path in RequestLease.
+	lm.mu.Lock()
+	for guid, sid := range lm.clientPrimarySession {
+		if sid == sessionID {
+			delete(lm.clientPrimarySession, guid)
+		}
+	}
+	lm.mu.Unlock()
+
 	return nil
 }
 
@@ -387,6 +458,34 @@ func (lm *LeaseManager) GetSessionForLease(leaseKey [16]byte) (sessionID uint64,
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 	sid, ok := lm.sessionMap[hex.EncodeToString(leaseKey[:])]
+	return sid, ok
+}
+
+// GetSessionForBreak returns the sessionID that should receive a break
+// notification for the given lease. Per MS-SMB2 §3.3.4.7 and Samba
+// `smbXsrv_pending_break_submit` (source3/smbd/smb2_server.c) the break is
+// delivered to the FIRST connection of `client->connections` — i.e. the
+// oldest live connection of the lease's ClientGUID — irrespective of which
+// session opened the file. When the lease has a recorded ClientGUID and a
+// primary session is registered for that GUID, this method returns that
+// session. Otherwise it falls back to the lease's per-record sessionMap
+// entry (legacy callers without ClientGUID; durable-reconnect tests that
+// don't thread a CryptoState).
+//
+// Required by smbtorture smb2.lease.v2_complex1, which opens two sessions
+// of the same ClientGUID and asserts every lease break (including breaks
+// for leases held only by the second session) arrives on the first
+// session's transport.
+func (lm *LeaseManager) GetSessionForBreak(leaseKey [16]byte) (sessionID uint64, found bool) {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	keyHex := hex.EncodeToString(leaseKey[:])
+	if guid, ok := lm.leaseClientGUID[keyHex]; ok {
+		if sid, ok := lm.clientPrimarySession[guid]; ok {
+			return sid, true
+		}
+	}
+	sid, ok := lm.sessionMap[keyHex]
 	return sid, ok
 }
 
@@ -817,12 +916,18 @@ func (lm *LeaseManager) RangeLeases(fn func(leaseKeyHex string, sessionID uint64
 
 // removeLeaseMapping removes a lease key from the session and share maps.
 // Must be called without lm.mu held.
+//
+// clientPrimarySession is intentionally NOT cleared here: it is keyed by
+// ClientGUID, not by lease key, and other leases of the same client may
+// still need it for break routing. The map is reaped by ReleaseSessionLeases
+// when the corresponding session disappears.
 func (lm *LeaseManager) removeLeaseMapping(keyHex string) {
 	lm.mu.Lock()
 	delete(lm.sessionMap, keyHex)
 	delete(lm.leaseShare, keyHex)
 	delete(lm.leaseV2, keyHex)
 	delete(lm.leaseV1, keyHex)
+	delete(lm.leaseClientGUID, keyHex)
 	lm.mu.Unlock()
 }
 

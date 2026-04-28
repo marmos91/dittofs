@@ -134,6 +134,144 @@ func TestMarkLeaseVersionIfUnset_StickyV1(t *testing.T) {
 	}
 }
 
+// TestGetSessionForBreak_RoutesByClientGUIDPrimary covers the
+// smbtorture smb2.lease.v2_complex1 routing requirement: when two sessions
+// of the same ClientGUID open leases on the same file (LEASE1 from session
+// 1, LEASE2 from session 2), every lease break MUST be delivered on the
+// FIRST session of that client (Samba `smbXsrv_pending_break_submit` head
+// of `client->connections`). Per MS-SMB2 §3.3.4.7 the break is a
+// client-level notification, not a session-level one.
+//
+// Pre-fix code keyed break dispatch off the per-lease sessionMap (whichever
+// session was last to call RequestLease wins), which sent LEASE2's break
+// on session 2's transport and tripped the test's
+// CHECK_BREAK_INFO_V2(tree1a->session->transport, ...) assertion.
+func TestGetSessionForBreak_RoutesByClientGUIDPrimary(t *testing.T) {
+	t.Parallel()
+
+	mgr := lock.NewManager()
+	lm := NewLeaseManager(&fakeResolver{mgr: mgr}, nil)
+
+	clientGUID := [16]byte{0xCA, 0xFE, 0xBA, 0xBE}
+	const (
+		session1 uint64 = 100 // tree1a — first connection of the client
+		session2 uint64 = 200 // tree1b — same ClientGUID, established later
+	)
+	lease1 := [16]byte{0x01}
+	lease2 := [16]byte{0x02}
+	fh := lock.FileHandle("file-1")
+
+	// Session 1 grants LEASE1 R first (registers (clientGUID, session1)
+	// as primary).
+	if _, _, err := lm.RequestLease(context.Background(), fh,
+		lease1, [16]byte{}, session1, clientGUID,
+		"owner-1", "client-1", "share1",
+		lock.LeaseStateRead, false); err != nil {
+		t.Fatalf("session1 RequestLease(LEASE1, R): %v", err)
+	}
+
+	// Session 2 (same ClientGUID) requests LEASE2 R on the same file —
+	// must NOT bump the primary session for the ClientGUID.
+	if _, _, err := lm.RequestLease(context.Background(), fh,
+		lease2, [16]byte{}, session2, clientGUID,
+		"owner-2", "client-2", "share1",
+		lock.LeaseStateRead, false); err != nil {
+		t.Fatalf("session2 RequestLease(LEASE2, R): %v", err)
+	}
+
+	// Both leases must route their breaks to session1 — the FIRST session
+	// of the shared ClientGUID — not to whichever session opened the lease.
+	// LEASE2's per-lease sessionMap entry initially points at session2, so
+	// this assertion specifically pins the ClientGUID-aware override.
+	if sid, ok := lm.GetSessionForBreak(lease1); !ok || sid != session1 {
+		t.Errorf("LEASE1 break session = %d (ok=%v), want %d", sid, ok, session1)
+	}
+	if sid, ok := lm.GetSessionForBreak(lease2); !ok || sid != session1 {
+		t.Errorf("LEASE2 break session = %d (ok=%v), want %d (ClientGUID primary, NOT per-lease sessionMap session2=%d)",
+			sid, ok, session1, session2)
+	}
+
+	// The legacy GetSessionForLease still returns the per-lease sessionMap
+	// (used by other paths that genuinely want the registering session;
+	// none currently fault on this distinction but the API contract is
+	// preserved for callers that do).
+	if sid, _ := lm.GetSessionForLease(lease2); sid != session2 {
+		t.Errorf("GetSessionForLease(LEASE2) = %d, want %d (per-lease sessionMap unchanged)",
+			sid, session2)
+	}
+}
+
+// TestGetSessionForBreak_FallsBackToSessionMap covers the legacy /
+// test-context path where ClientGUID is unknown (zero) — typical for unit
+// tests that don't wire a CryptoState. Break dispatch must continue to
+// route via the per-lease sessionMap so we don't regress any existing
+// single-session lease test.
+func TestGetSessionForBreak_FallsBackToSessionMap(t *testing.T) {
+	t.Parallel()
+
+	mgr := lock.NewManager()
+	lm := NewLeaseManager(&fakeResolver{mgr: mgr}, nil)
+
+	const session1 uint64 = 42
+	leaseKey := [16]byte{0xAB}
+	fh := lock.FileHandle("file-1")
+
+	if _, _, err := lm.RequestLease(context.Background(), fh,
+		leaseKey, [16]byte{}, session1, [16]byte{}, // zero ClientGUID
+		"owner-1", "client-1", "share1",
+		lock.LeaseStateRead, false); err != nil {
+		t.Fatalf("RequestLease: %v", err)
+	}
+
+	if sid, ok := lm.GetSessionForBreak(leaseKey); !ok || sid != session1 {
+		t.Errorf("GetSessionForBreak(zero GUID) = %d (ok=%v), want %d (sessionMap fallback)",
+			sid, ok, session1)
+	}
+}
+
+// TestReleaseSessionLeases_ReapsClientPrimary verifies that when a session
+// is torn down (LOGOFF / disconnect), any clientPrimarySession entry that
+// pointed at it is removed. Without this the next break for a lease bound
+// to that ClientGUID would route to a dead sessionID and the notifier
+// would silently drop the notification.
+func TestReleaseSessionLeases_ReapsClientPrimary(t *testing.T) {
+	t.Parallel()
+
+	mgr := lock.NewManager()
+	lm := NewLeaseManager(&fakeResolver{mgr: mgr}, nil)
+
+	clientGUID := [16]byte{0xDE, 0xAD, 0xBE, 0xEF}
+	const session1 uint64 = 100
+	leaseKey := [16]byte{0x07}
+	fh := lock.FileHandle("file-1")
+
+	if _, _, err := lm.RequestLease(context.Background(), fh,
+		leaseKey, [16]byte{}, session1, clientGUID,
+		"owner-1", "client-1", "share1",
+		lock.LeaseStateRead, false); err != nil {
+		t.Fatalf("RequestLease: %v", err)
+	}
+
+	// Sanity: primary is registered.
+	lm.mu.RLock()
+	if got := lm.clientPrimarySession[clientGUID]; got != session1 {
+		lm.mu.RUnlock()
+		t.Fatalf("primary registered = %d, want %d", got, session1)
+	}
+	lm.mu.RUnlock()
+
+	if err := lm.ReleaseSessionLeases(context.Background(), session1); err != nil {
+		t.Fatalf("ReleaseSessionLeases: %v", err)
+	}
+
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	if _, present := lm.clientPrimarySession[clientGUID]; present {
+		t.Errorf("clientPrimarySession[%x] still present after session %d torn down",
+			clientGUID, session1)
+	}
+}
+
 // TestMarkLeaseVersionIfUnset_UnknownByDefault: until first grant marks the
 // lease, IsLeaseVersionKnown returns false (so the response-encoding path
 // falls back to the request's format).

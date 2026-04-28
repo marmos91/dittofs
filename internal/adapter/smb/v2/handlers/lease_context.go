@@ -292,6 +292,18 @@ func (r *LeaseResponseContext) Encode() []byte {
 // Create Context Helper Functions
 // ============================================================================
 
+// connClientGUID returns the 128-bit ClientGUID of the connection that
+// carries `ctx`, or the zero value when no CryptoState is wired (test
+// contexts and some legacy paths). The lease layer treats a zero GUID as
+// "ClientGUID-based break routing disabled for this lease" and falls back
+// to the per-lease sessionMap, so passing zero is always safe.
+func connClientGUID(ctx *SMBHandlerContext) [16]byte {
+	if ctx == nil || ctx.ConnCryptoState == nil {
+		return [16]byte{}
+	}
+	return ctx.ConnCryptoState.GetClientGUID()
+}
+
 // FindCreateContext searches for a create context by name in the request.
 // Returns the context data if found, nil if not found.
 func FindCreateContext(contexts []CreateContext, name string) *CreateContext {
@@ -315,6 +327,12 @@ func FindCreateContext(contexts []CreateContext, name string) *CreateContext {
 //   - ctxData: The raw create context data (RqLs payload)
 //   - fileHandle: The file handle for the opened file
 //   - sessionID: The SMB session ID
+//   - clientGUID: The 128-bit ClientGUID from the connection's NEGOTIATE.
+//     Used by LeaseManager to bind the lease at MS-SMB2 §3.3.5.9.8 granularity
+//     and route break notifications to the client's primary session
+//     (smbtorture v2_complex1). Tests that don't exercise multi-session
+//     routing pass a zero value, which falls back to per-lease sessionMap
+//     dispatch.
 //   - clientID: The connection tracker client ID
 //   - shareName: The share name
 //   - isDirectory: Whether the target is a directory
@@ -328,6 +346,7 @@ func ProcessLeaseCreateContext(
 	ctxData []byte,
 	fileHandle lock.FileHandle,
 	sessionID uint64,
+	clientGUID [16]byte,
 	clientID string,
 	shareName string,
 	isDirectory bool,
@@ -365,6 +384,7 @@ func ProcessLeaseCreateContext(
 		leaseReq.LeaseKey,
 		leaseReq.ParentLeaseKey,
 		sessionID,
+		clientGUID,
 		ownerID,
 		clientID,
 		shareName,
