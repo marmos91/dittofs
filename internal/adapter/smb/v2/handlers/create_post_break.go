@@ -362,7 +362,11 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			lockFileHandle := lock.FileHandle(fileHandle)
 			ownerID := fmt.Sprintf("smb:oplock:%x", smbFileID)
 			clientID := fmt.Sprintf("smb:%d", ctx.SessionID)
-			grantedState, _, err := h.LeaseManager.RequestLease(
+			// RequestLeaseAsOplock tags the new record IsTraditionalOplock=true
+			// so MS-SMB2 §3.3.5.9 cross-tier rules apply on subsequent grants
+			// (Samba `state.got_handle_lease` / `state.got_oplock`). See
+			// `pkg/metadata/lock/leases.go::bestGrantableState`.
+			grantedState, _, err := h.LeaseManager.RequestLeaseAsOplock(
 				authCtx.Context,
 				lockFileHandle,
 				syntheticKey,

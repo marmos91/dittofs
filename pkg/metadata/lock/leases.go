@@ -226,6 +226,26 @@ func (lm *Manager) hasPersistedLeaseKeyOnOtherFile(ctx context.Context, leaseKey
 func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
 	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
 	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
+	return lm.requestLeaseImplWithMode(ctx, fileHandle, leaseKey, parentLeaseKey,
+		ownerID, clientID, shareName, requestedState, isDirectory, false)
+}
+
+// requestLeaseImplWithMode is the underlying lease-grant implementation with
+// the additional `isTraditionalOplock` flag distinguishing real SMB2.1+ leases
+// from synthetic-key records modeling traditional oplocks (LEVEL_II/Exclusive/
+// Batch). The flag is consumed by `bestGrantableState` to apply the MS-SMB2
+// §3.3.5.9 cross-tier rules:
+//
+//   - traditional-oplock requestor + any other-key holder with H bit → NONE
+//     (Samba `state.got_handle_lease` in `delay_for_oplock_fn`)
+//   - real-lease requestor + any other-key traditional-oplock holder → strip H
+//     (Samba `state.got_oplock`)
+//
+// And it propagates the flag onto the new record via `createAndGrantLease`
+// so subsequent grants can detect it.
+func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
+	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
+	requestedState uint32, isDirectory bool, isTraditionalOplock bool) (grantedState uint32, epoch uint16, err error) {
 
 	// Coerce no-Read caching combinations (W=0x04, H=0x02, HW=0x06) to
 	// LeaseState=None and grant successfully. Per Samba
@@ -563,7 +583,7 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 	}
 	// lm.mu is held here (either from initial Lock or re-Lock after break)
 
-	grantState := bestGrantableState(locks, leaseKey, requestedState, isDirectory)
+	grantState := bestGrantableState(locks, leaseKey, requestedState, isDirectory, isTraditionalOplock)
 	if grantState == LeaseStateNone {
 		lm.mu.Unlock()
 		logger.Debug("RequestLease: no compatible state after conflict resolution",
@@ -574,7 +594,7 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 
 	granted, epoch := lm.createAndGrantLease(ctx, handleKey, fileHandle,
 		leaseKey, parentLeaseKey, ownerID, clientID, shareName,
-		grantState, isDirectory)
+		grantState, isDirectory, isTraditionalOplock)
 	lm.mu.Unlock()
 
 	logger.Debug("RequestLease: granted lease",
@@ -593,17 +613,69 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 // state first, then progressively lower states per MS-SMB2 3.3.5.9:
 // requested -> strip W -> strip H -> R only -> None.
 //
+// `isTraditionalOplock` distinguishes the requestor's tier (real lease vs.
+// synthetic-key traditional oplock). Per MS-SMB2 §3.3.5.9 and Samba
+// `source3/smbd/open.c::grant_fsp_oplock_type` (lines 2663-2680):
+//
+//   - traditional-oplock requestor + any other-key holder with H bit
+//     => NONE (Samba `state.got_handle_lease`).
+//   - real-lease requestor + any other-key traditional-oplock holder
+//     => strip H from the candidate before conflict check (Samba
+//     `state.got_oplock`).
+//
+// The H bit in an existing holder is read from BreakingToRequired when
+// the holder is mid-break (so a still-flushing RWH that is heading to RH
+// keeps its H presence visible until ack lands), otherwise from
+// LeaseState — same convention as `OpLocksConflict`.
+//
 // Precondition: caller must hold lm.mu (read or write). The locks slice is
 // read from lm.unifiedLocks[handleKey] under that lock, so no concurrent
 // mutation can occur while this function iterates.
-func bestGrantableState(locks []*UnifiedLock, leaseKey [16]byte, requestedState uint32, isDirectory bool) uint32 {
+func bestGrantableState(locks []*UnifiedLock, leaseKey [16]byte, requestedState uint32, isDirectory bool, isTraditionalOplock bool) uint32 {
+	// Cross-tier pre-pass: scan once for the two sentinels Samba tracks in
+	// `delay_for_oplock_fn` (got_handle_lease, got_oplock). Reading
+	// effectiveLeaseState here keeps the post-break view consistent with
+	// OpLocksConflict — a holder breaking to RH still counts as having H.
+	var otherHasHandle, otherIsTradOplock bool
+	for _, lock := range locks {
+		if lock.Lease == nil || lock.Lease.LeaseKey == leaseKey {
+			continue
+		}
+		state := lock.Lease.LeaseState
+		if lock.Lease.Breaking {
+			state = lock.Lease.BreakingToRequired
+		}
+		if state&LeaseStateHandle != 0 {
+			otherHasHandle = true
+		}
+		if lock.Lease.IsTraditionalOplock {
+			otherIsTradOplock = true
+		}
+	}
+
+	// Rule 1: traditional-oplock requestor against any H-holder => NONE.
+	if isTraditionalOplock && otherHasHandle {
+		return LeaseStateNone
+	}
+
+	// Rule 2 mask: real-lease requestor against any traditional-oplock holder
+	// must have H stripped from each candidate before the conflict check.
+	// Loop-invariant so compute once.
+	var stripMask uint32
+	if !isTraditionalOplock && otherIsTradOplock {
+		stripMask = LeaseStateHandle
+	}
+
 	candidates := downgradeCandidates(requestedState, isDirectory)
 
 outer:
 	for _, candidate := range candidates {
+		effective := candidate &^ stripMask
+		// Stripping may collapse to a state already tried; dedup is
+		// unnecessary because the grant is idempotent.
 		tempLease := &OpLock{
 			LeaseKey:   leaseKey,
-			LeaseState: candidate,
+			LeaseState: effective,
 		}
 		for _, lock := range locks {
 			if lock.Lease == nil || lock.Lease.LeaseKey == leaseKey {
@@ -613,7 +685,9 @@ outer:
 				continue outer
 			}
 		}
-		return candidate
+		// effective may differ from candidate (H stripped); return what
+		// was actually granted so the caller persists the post-strip state.
+		return effective
 	}
 	return LeaseStateNone
 }
@@ -662,6 +736,7 @@ func (lm *Manager) createAndGrantLease(
 	ownerID, clientID, shareName string,
 	requestedState uint32,
 	isDirectory bool,
+	isTraditionalOplock bool,
 ) (uint32, uint16) {
 	newLock := &UnifiedLock{
 		ID: uuid.New().String(),
@@ -676,11 +751,12 @@ func (lm *Manager) createAndGrantLease(
 		Type:       lockTypeForLeaseState(requestedState),
 		AcquiredAt: time.Now(),
 		Lease: &OpLock{
-			LeaseKey:       leaseKey,
-			LeaseState:     requestedState,
-			ParentLeaseKey: parentLeaseKey,
-			IsDirectory:    isDirectory,
-			Epoch:          1, // New leases start at epoch 1
+			LeaseKey:            leaseKey,
+			LeaseState:          requestedState,
+			ParentLeaseKey:      parentLeaseKey,
+			IsDirectory:         isDirectory,
+			IsTraditionalOplock: isTraditionalOplock,
+			Epoch:               1, // New leases start at epoch 1
 		},
 	}
 

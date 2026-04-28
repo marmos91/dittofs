@@ -810,6 +810,21 @@ func (lm *Manager) RequestLease(ctx context.Context, fileHandle FileHandle, leas
 	return lm.requestLeaseImpl(ctx, fileHandle, leaseKey, parentLeaseKey, ownerID, clientID, shareName, requestedState, isDirectory)
 }
 
+// RequestLeaseAsOplock is the traditional-oplock variant of RequestLease.
+// The SMB adapter calls this when a CREATE arrives with a non-Lease
+// OplockLevel (LEVEL_II / Exclusive / Batch); the new record is tagged
+// `IsTraditionalOplock=true` so subsequent grants observe the cross-tier
+// rules described in `bestGrantableState`. All other parameters and
+// semantics match `RequestLease`.
+//
+// Reference: MS-SMB2 §3.3.5.9 / Samba `source3/smbd/open.c::grant_fsp_oplock_type`.
+func (lm *Manager) RequestLeaseAsOplock(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
+	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
+	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
+	return lm.requestLeaseImplWithMode(ctx, fileHandle, leaseKey, parentLeaseKey,
+		ownerID, clientID, shareName, requestedState, isDirectory, true)
+}
+
 // AcknowledgeLeaseBreak processes a client's lease break acknowledgment.
 func (lm *Manager) AcknowledgeLeaseBreak(ctx context.Context, leaseKey [16]byte,
 	acknowledgedState uint32, epoch uint16) error {

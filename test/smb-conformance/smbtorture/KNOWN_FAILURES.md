@@ -500,7 +500,6 @@ incomplete break notification delivery and multi-client coordination.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.lease.oplock | Leases | Lease + oplock interaction not fully working | #429 |
 | smb2.lease.v2_complex1 | Leases V2 | Lease V2 complex scenario not fully working | #429 |
 
 ### Byte-Range Locks (Fix Candidate)
