@@ -102,6 +102,14 @@ type PersistedLock struct {
 	// False for byte-range locks and file leases/delegations.
 	IsDirectory bool `json:"is_directory,omitempty"`
 
+	// IsTraditionalOplock indicates this lease record actually models a
+	// traditional SMB oplock (LEVEL_II / Exclusive / Batch). See
+	// `OpLock.IsTraditionalOplock` for cross-tier grant rule semantics.
+	// Persisted so post-restart reclaim preserves the tier distinction
+	// — a reclaimed traditional oplock must continue to apply MS-SMB2
+	// §3.3.5.9 cross-tier rules against any concurrent real-lease grant.
+	IsTraditionalOplock bool `json:"is_traditional_oplock,omitempty"`
+
 	// ========================================================================
 	// Delegation Fields (omitempty for non-delegation locks)
 	// ========================================================================
@@ -323,6 +331,7 @@ func ToPersistedLock(lock *UnifiedLock, epoch uint64) *PersistedLock {
 		pl.BreakingToRequired = lock.Lease.BreakingToRequired
 		pl.Breaking = lock.Lease.Breaking
 		pl.IsDirectory = lock.Lease.IsDirectory
+		pl.IsTraditionalOplock = lock.Lease.IsTraditionalOplock
 
 		// Only set ParentLeaseKey when non-zero so omitempty works for V1 leases
 		if lock.Lease.ParentLeaseKey != [16]byte{} {
@@ -383,14 +392,15 @@ func FromPersistedLock(pl *PersistedLock) *UnifiedLock {
 		}
 
 		el.Lease = &OpLock{
-			LeaseKey:           leaseKey,
-			LeaseState:         pl.LeaseState,
-			Epoch:              pl.LeaseEpoch,
-			BreakToState:       pl.BreakToState,
-			BreakingToRequired: pl.BreakingToRequired,
-			Breaking:           pl.Breaking,
-			ParentLeaseKey:     parentLeaseKey,
-			IsDirectory:        pl.IsDirectory,
+			LeaseKey:            leaseKey,
+			LeaseState:          pl.LeaseState,
+			Epoch:               pl.LeaseEpoch,
+			BreakToState:        pl.BreakToState,
+			BreakingToRequired:  pl.BreakingToRequired,
+			Breaking:            pl.Breaking,
+			ParentLeaseKey:      parentLeaseKey,
+			IsDirectory:         pl.IsDirectory,
+			IsTraditionalOplock: pl.IsTraditionalOplock,
 			// BreakStarted is runtime-only, not persisted
 		}
 		// Backwards compat: locks persisted before BreakingToRequired existed

@@ -197,6 +197,27 @@ type OpLock struct {
 	// When true, valid lease states are restricted to ValidDirectoryLeaseStates
 	// (None, R, RH).
 	IsDirectory bool
+
+	// IsTraditionalOplock indicates this record models a traditional SMB
+	// oplock (LEVEL_II / Exclusive / Batch) rather than an SMB2.1+ lease.
+	// The SMB adapter creates such records under a *synthetic* lease key
+	// derived from the SMB2 FileID so the lock manager can use a single
+	// caching-rights datatype for both tiers (Samba `op_type`).
+	//
+	// The flag exists because MS-SMB2 §3.3.5.9 imposes cross-tier rules
+	// during CREATE-time grant computation that cannot be expressed in
+	// pure R/W/H state alone:
+	//
+	//   - A traditional-oplock requestor MUST be granted NONE if any
+	//     existing lease holder includes Handle caching (Samba
+	//     `state.got_handle_lease` in `delay_for_oplock_fn`).
+	//   - A real-lease requestor MUST have its Handle bit stripped if
+	//     any existing entry is a traditional oplock (Samba
+	//     `state.got_oplock`).
+	//
+	// `bestGrantableState` consults this field on existing entries to
+	// apply both rules.
+	IsTraditionalOplock bool
 }
 
 // HasRead returns true if the lease includes Read caching permission.
@@ -270,16 +291,17 @@ func (l *OpLock) Clone() *OpLock {
 		return nil
 	}
 	return &OpLock{
-		LeaseKey:           l.LeaseKey, // Fixed-size array, copied by value
-		LeaseState:         l.LeaseState,
-		BreakToState:       l.BreakToState,
-		BreakingToRequired: l.BreakingToRequired,
-		Breaking:           l.Breaking,
-		Epoch:              l.Epoch,
-		BreakStarted:       l.BreakStarted,
-		Reclaim:            l.Reclaim,
-		ParentLeaseKey:     l.ParentLeaseKey, // Fixed-size array, copied by value
-		IsDirectory:        l.IsDirectory,
+		LeaseKey:            l.LeaseKey, // Fixed-size array, copied by value
+		LeaseState:          l.LeaseState,
+		BreakToState:        l.BreakToState,
+		BreakingToRequired:  l.BreakingToRequired,
+		Breaking:            l.Breaking,
+		Epoch:               l.Epoch,
+		BreakStarted:        l.BreakStarted,
+		Reclaim:             l.Reclaim,
+		ParentLeaseKey:      l.ParentLeaseKey, // Fixed-size array, copied by value
+		IsDirectory:         l.IsDirectory,
+		IsTraditionalOplock: l.IsTraditionalOplock,
 	}
 }
 

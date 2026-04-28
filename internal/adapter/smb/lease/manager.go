@@ -125,6 +125,50 @@ func (lm *LeaseManager) RequestLease(
 	requestedState uint32,
 	isDirectory bool,
 ) (grantedState uint32, epoch uint16, err error) {
+	return lm.requestLeaseInternal(ctx, fileHandle, leaseKey, parentLeaseKey,
+		sessionID, ownerID, clientID, shareName, requestedState, isDirectory, false)
+}
+
+// RequestLeaseAsOplock is the traditional-oplock variant of RequestLease.
+// CREATE handlers route LEVEL_II / Exclusive / Batch oplock requests through
+// this method (under a synthetic lease key derived from the FileID) so the
+// underlying lock manager tags the resulting record `IsTraditionalOplock`
+// and can apply the MS-SMB2 §3.3.5.9 cross-tier rules during subsequent
+// grants. See `bestGrantableState` in `pkg/metadata/lock/leases.go`.
+func (lm *LeaseManager) RequestLeaseAsOplock(
+	ctx context.Context,
+	fileHandle lock.FileHandle,
+	leaseKey [16]byte,
+	parentLeaseKey [16]byte,
+	sessionID uint64,
+	ownerID string,
+	clientID string,
+	shareName string,
+	requestedState uint32,
+	isDirectory bool,
+) (grantedState uint32, epoch uint16, err error) {
+	return lm.requestLeaseInternal(ctx, fileHandle, leaseKey, parentLeaseKey,
+		sessionID, ownerID, clientID, shareName, requestedState, isDirectory, true)
+}
+
+// requestLeaseInternal is the shared body of RequestLease /
+// RequestLeaseAsOplock; the only behavior change between the two is which
+// underlying Manager method we dispatch to so the new record gets the
+// correct IsTraditionalOplock tag and the cross-tier rules in
+// bestGrantableState see the right requestor tier.
+func (lm *LeaseManager) requestLeaseInternal(
+	ctx context.Context,
+	fileHandle lock.FileHandle,
+	leaseKey [16]byte,
+	parentLeaseKey [16]byte,
+	sessionID uint64,
+	ownerID string,
+	clientID string,
+	shareName string,
+	requestedState uint32,
+	isDirectory bool,
+	isTraditionalOplock bool,
+) (grantedState uint32, epoch uint16, err error) {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
 		return lock.LeaseStateNone, 0, fmt.Errorf("no lock manager for share %q", shareName)
@@ -146,12 +190,25 @@ func (lm *LeaseManager) RequestLease(
 	lm.leaseShare[keyHex] = shareName
 	lm.mu.Unlock()
 
-	// Delegate to shared LockManager
-	grantedState, epoch, err = lockMgr.RequestLease(
-		ctx, fileHandle, leaseKey, parentLeaseKey,
-		ownerID, clientID, shareName,
-		requestedState, isDirectory,
-	)
+	// Dispatch to the appropriate Manager method so the new record's
+	// IsTraditionalOplock tag is set correctly. The LockManager interface
+	// deliberately stays narrow (no oplock variant): when the configured
+	// store is a *lock.Manager (the only production impl) and this is a
+	// traditional-oplock request, call the tagged method; otherwise fall
+	// through to the plain interface call so test doubles keep working.
+	if mgr, ok := lockMgr.(*lock.Manager); ok && isTraditionalOplock {
+		grantedState, epoch, err = mgr.RequestLeaseAsOplock(
+			ctx, fileHandle, leaseKey, parentLeaseKey,
+			ownerID, clientID, shareName,
+			requestedState, isDirectory,
+		)
+	} else {
+		grantedState, epoch, err = lockMgr.RequestLease(
+			ctx, fileHandle, leaseKey, parentLeaseKey,
+			ownerID, clientID, shareName,
+			requestedState, isDirectory,
+		)
+	}
 	if err != nil && !errors.Is(err, lock.ErrLeaseBreakInProgress) {
 		lm.removeLeaseMapping(keyHex)
 		return 0, 0, err

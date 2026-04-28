@@ -1255,7 +1255,7 @@ func TestBestGrantableState_NoConflicts(t *testing.T) {
 
 	// Empty lock set - full request granted
 	key := [16]byte{1}
-	state := bestGrantableState(nil, key, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	state := bestGrantableState(nil, key, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false, false)
 	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state)
 }
 
@@ -1271,7 +1271,7 @@ func TestBestGrantableState_FileRWH_DowngradesWithExistingR(t *testing.T) {
 
 	// RWH: Write conflicts with existing Read -> skip
 	// RH: Handle doesn't conflict with Read -> grant RH
-	state := bestGrantableState(locks, requestKey, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	state := bestGrantableState(locks, requestKey, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false, false)
 	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state)
 }
 
@@ -1287,7 +1287,7 @@ func TestBestGrantableState_FileRWH_DowngradesToRH(t *testing.T) {
 
 	// RWH: Write conflicts with existing Read -> skip
 	// RH: no conflict -> grant RH
-	state := bestGrantableState(locks, requestKey, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	state := bestGrantableState(locks, requestKey, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false, false)
 	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state)
 }
 
@@ -1300,7 +1300,7 @@ func TestBestGrantableState_SameKeyIgnored(t *testing.T) {
 		{Lease: &OpLock{LeaseKey: sameKey, LeaseState: LeaseStateRead | LeaseStateWrite}},
 	}
 
-	state := bestGrantableState(locks, sameKey, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	state := bestGrantableState(locks, sameKey, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false, false)
 	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state)
 }
 
@@ -1318,7 +1318,7 @@ func TestBestGrantableState_DirectoryRWH_DowngradeCascade(t *testing.T) {
 	// RH: existing W conflicts with requested R -> skip
 	// R: existing W conflicts with requested R -> skip
 	// All candidates conflict -> None
-	state := bestGrantableState(locks, requestKey, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, true)
+	state := bestGrantableState(locks, requestKey, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, true, false)
 	assert.Equal(t, LeaseStateNone, state)
 }
 
@@ -1336,7 +1336,7 @@ func TestBestGrantableState_AllConflict_ReturnsNone(t *testing.T) {
 	// RW: W conflicts with existing R/W -> skip
 	// R: existing W conflicts with requested R -> skip
 	// All candidates conflict -> None
-	state := bestGrantableState(locks, requestKey, LeaseStateRead|LeaseStateWrite, false)
+	state := bestGrantableState(locks, requestKey, LeaseStateRead|LeaseStateWrite, false, false)
 	assert.Equal(t, LeaseStateNone, state)
 }
 
@@ -1769,4 +1769,171 @@ func TestAnyHolderHasLeaseBits(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, mgr.AnyHolderHasLeaseBits("h-mixed", [16]byte{}, LeaseStateWrite))
 	assert.False(t, mgr.AnyHolderHasLeaseBits("h-mixed", [16]byte{}, LeaseStateHandle))
+}
+
+// ============================================================================
+// Cross-Tier Grant Rules (smbtorture smb2.lease.oplock)
+// ============================================================================
+//
+// MS-SMB2 §3.3.5.9 / Samba `source3/smbd/open.c::grant_fsp_oplock_type`
+// (lines 2663-2680) defines two cross-tier rules between SMB2.1+ leases and
+// traditional oplocks (LEVEL_II / Exclusive / Batch). DittoFS models both
+// tiers as lease records (synthetic-key for traditional oplocks) tagged via
+// IsTraditionalOplock; bestGrantableState applies the rules.
+//
+// Coverage matches the smbtorture smb2.lease.oplock test matrix
+// (oplock_results / oplock_results_2 in source4/torture/smb2/lease.c).
+
+// Loop 1: traditional-oplock requestor against existing real-lease holder.
+// `state.got_handle_lease` ⇒ requestor downgraded to NONE iff existing has H.
+
+func TestBestGrantableState_TradOplockRequest_AgainstRH_ReturnsNone(t *testing.T) {
+	t.Parallel()
+
+	// Mirrors oplock_results row {"RH", "s", "RH", ""}: existing real lease
+	// holds RH; new traditional LEVEL_II opener (synthetic key, R) must be
+	// granted NONE because existing has the Handle bit.
+	otherKey := [16]byte{2}
+	requestKey := [16]byte{1}
+	locks := []*UnifiedLock{
+		{Lease: &OpLock{LeaseKey: otherKey, LeaseState: LeaseStateRead | LeaseStateHandle}},
+	}
+	state := bestGrantableState(locks, requestKey, LeaseStateRead, false, true)
+	assert.Equal(t, LeaseStateNone, state, "trad-oplock contender vs RH lease ⇒ NONE")
+}
+
+func TestBestGrantableState_TradOplockRequest_AgainstR_GrantsR(t *testing.T) {
+	t.Parallel()
+
+	// Mirrors oplock_results row {"R", "s", "R", "s"}: existing real lease
+	// holds R; LEVEL_II contender is granted R (mapping back to s on the
+	// wire). H bit is absent ⇒ rule does not fire.
+	otherKey := [16]byte{2}
+	requestKey := [16]byte{1}
+	locks := []*UnifiedLock{
+		{Lease: &OpLock{LeaseKey: otherKey, LeaseState: LeaseStateRead}},
+	}
+	state := bestGrantableState(locks, requestKey, LeaseStateRead, false, true)
+	assert.Equal(t, LeaseStateRead, state, "trad-oplock contender vs R lease ⇒ R")
+}
+
+func TestBestGrantableState_TradOplockRequest_AgainstBreakingRWH_ReturnsNone(t *testing.T) {
+	t.Parallel()
+
+	// Mirrors oplock_results row {"RHW", "s", "RH", ""}: existing RWH lease
+	// is breaking to RH. The H bit must still register as present on the
+	// holder during the break, so the trad-oplock contender gets NONE.
+	otherKey := [16]byte{2}
+	requestKey := [16]byte{1}
+	locks := []*UnifiedLock{
+		{Lease: &OpLock{
+			LeaseKey:           otherKey,
+			LeaseState:         LeaseStateRead | LeaseStateWrite | LeaseStateHandle,
+			Breaking:           true,
+			BreakingToRequired: LeaseStateRead | LeaseStateHandle,
+		}},
+	}
+	state := bestGrantableState(locks, requestKey, LeaseStateRead, false, true)
+	assert.Equal(t, LeaseStateNone, state, "trad-oplock vs RWH→RH (breaking) ⇒ NONE")
+}
+
+// Loop 2: real-lease requestor against existing traditional-oplock holder.
+// `state.got_oplock` ⇒ H bit stripped from grant.
+
+func TestBestGrantableState_LeaseRequest_AgainstTradOplockR_StripsHandle(t *testing.T) {
+	t.Parallel()
+
+	// Mirrors oplock_results_2 row {"s", "RH", "s", "R"}: held LEVEL_II
+	// (synthetic R, IsTraditionalOplock=true); new lease request RH must be
+	// granted R (Handle stripped).
+	otherKey := [16]byte{2}
+	requestKey := [16]byte{1}
+	locks := []*UnifiedLock{
+		{Lease: &OpLock{
+			LeaseKey:            otherKey,
+			LeaseState:          LeaseStateRead,
+			IsTraditionalOplock: true,
+		}},
+	}
+	state := bestGrantableState(locks, requestKey, LeaseStateRead|LeaseStateHandle, false, false)
+	assert.Equal(t, LeaseStateRead, state, "RH lease vs LEVEL_II oplock ⇒ R (H stripped)")
+}
+
+func TestBestGrantableState_LeaseRequest_AgainstTradOplockR_RHW_StripsHandle(t *testing.T) {
+	t.Parallel()
+
+	// Mirrors oplock_results_2 row {"s", "RHW", "s", "R"}: held LEVEL_II
+	// (synthetic R); request RHW. The full RHW conflicts on W vs existing
+	// R; the strip-W candidate is RH; the trad-oplock rule then strips H,
+	// giving R.
+	otherKey := [16]byte{2}
+	requestKey := [16]byte{1}
+	locks := []*UnifiedLock{
+		{Lease: &OpLock{
+			LeaseKey:            otherKey,
+			LeaseState:          LeaseStateRead,
+			IsTraditionalOplock: true,
+		}},
+	}
+	state := bestGrantableState(locks, requestKey,
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false, false)
+	assert.Equal(t, LeaseStateRead, state,
+		"RHW lease vs LEVEL_II oplock ⇒ R (W conflicts, then H stripped)")
+}
+
+func TestBestGrantableState_LeaseRequest_AgainstRealLeaseR_KeepsHandle(t *testing.T) {
+	t.Parallel()
+
+	// Sanity check: when the existing holder is a *real* lease (not a
+	// traditional oplock), Handle is NOT stripped — the cross-tier rule
+	// fires only for traditional-oplock holders.
+	otherKey := [16]byte{2}
+	requestKey := [16]byte{1}
+	locks := []*UnifiedLock{
+		{Lease: &OpLock{LeaseKey: otherKey, LeaseState: LeaseStateRead}},
+	}
+	state := bestGrantableState(locks, requestKey, LeaseStateRead|LeaseStateHandle, false, false)
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state,
+		"RH lease vs real R lease ⇒ RH (no strip)")
+}
+
+func TestRequestLeaseAsOplock_TagsIsTraditionalOplock(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+
+	syntheticKey := [16]byte{0xAA}
+	_, _, err := mgr.RequestLeaseAsOplock(ctx, FileHandle("h1"), syntheticKey, [16]byte{},
+		"smb:oplock:abc", "smb:1", "/share", LeaseStateRead, false)
+	require.NoError(t, err)
+
+	// Inspect the stored record's flag.
+	mgr.mu.RLock()
+	defer mgr.mu.RUnlock()
+	locks := mgr.unifiedLocks["h1"]
+	require.Len(t, locks, 1)
+	require.NotNil(t, locks[0].Lease)
+	assert.True(t, locks[0].Lease.IsTraditionalOplock,
+		"RequestLeaseAsOplock must tag IsTraditionalOplock=true")
+}
+
+func TestRequestLease_DoesNotTagIsTraditionalOplock(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+
+	leaseKey := [16]byte{0xBB}
+	_, _, err := mgr.RequestLease(ctx, FileHandle("h1"), leaseKey, [16]byte{},
+		"smb:lease:abc", "smb:1", "/share", LeaseStateRead, false)
+	require.NoError(t, err)
+
+	mgr.mu.RLock()
+	defer mgr.mu.RUnlock()
+	locks := mgr.unifiedLocks["h1"]
+	require.Len(t, locks, 1)
+	require.NotNil(t, locks[0].Lease)
+	assert.False(t, locks[0].Lease.IsTraditionalOplock,
+		"RequestLease must NOT tag IsTraditionalOplock")
 }

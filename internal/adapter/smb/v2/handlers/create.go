@@ -689,7 +689,12 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 						syntheticKey := generateSyntheticLeaseKey(smbFileID)
 						ownerID := fmt.Sprintf("smb:oplock:%x", smbFileID)
 						clientID := fmt.Sprintf("smb:%d", ctx.SessionID)
-						grantedState, _, leaseErr := h.LeaseManager.RequestLease(
+						// Reconnect path for a previously-granted traditional
+						// oplock. Re-tag IsTraditionalOplock so the cross-tier
+						// rules in bestGrantableState continue to apply for
+						// concurrent real-lease grants (matches Samba's
+						// post-reclaim share_mode_entry op_type semantics).
+						grantedState, _, leaseErr := h.LeaseManager.RequestLeaseAsOplock(
 							authCtx.Context,
 							lockFileHandle,
 							syntheticKey,
