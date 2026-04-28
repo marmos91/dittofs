@@ -905,7 +905,7 @@ test cluster has a home to land work against:
 - **#434** — Timestamps (5 tests): delayed-write + freeze/thaw.
 - **#435** — Charset (1 test): unicode surrogate pair handling.
 - **#436** — `multichannel.leases.test3` spurious lease break on uncontested
-  open (split out of #417 / PR #418 follow-up). FIXED — see fix/smb-issue-436.
+  open (split out of #417 / PR #418 follow-up). FIXED — see #436.
 
 No test reclassifications or pass/fail transitions — pure issue tracking.
 

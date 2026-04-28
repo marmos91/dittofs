@@ -522,7 +522,7 @@ func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle File
 			// from acknowledgeLeaseBreakImpl after the in-flight ACK arrives.
 			//
 			// Required by smbtorture smb2.multichannel.leases.test3 (#436):
-			// exactly ONE RHW→RH break, not two.
+			// exactly ONE RWH→RH break, not two.
 			//
 			// Falls through to bestGrantableState WITHOUT setting
 			// breakDispatched: we never released lm.mu, so the post-break

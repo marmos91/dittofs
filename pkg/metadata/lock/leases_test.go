@@ -292,9 +292,9 @@ func TestRequestLease_CrossKeyConflictOnAlreadyBreakingLease(t *testing.T) {
 	// Client 2 now requests RWH on the same file with a different key. The
 	// pre-existing lease is already Breaking, so the cross-key conflict
 	// branch must suppress its dispatch and accept the AND-merged target.
-	// Result: the new opener still gets the correct downgrade (R, since
-	// key1 is heading to RH and write+read both conflict), and no second
-	// break notification fires.
+	// Result: the new opener still gets the correct downgrade (likely RH,
+	// since key1 is heading to RH and only Write conflicts under the
+	// current rules), and no second break notification fires.
 	state, _, err = mgr.RequestLease(ctx, FileHandle("file1"), key2, parentKey,
 		"owner2", "client2", "/share",
 		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
