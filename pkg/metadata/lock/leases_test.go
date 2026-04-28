@@ -310,6 +310,30 @@ func TestRequestLease_InvalidFileStateCoercedToNone(t *testing.T) {
 	}
 }
 
+// TestRequestLease_ReservedBitsWithRead_StillGrantsRead verifies that the
+// no-Read coercion gate ignores reserved bits: a request like 0x09 (R + an
+// unknown reserved bit) still has the Read bit set, so it must NOT be
+// coerced to None and must grant Read. Per Samba `delay_for_oplock`, only
+// the absence of the Read bit triggers the coercion.
+func TestRequestLease_ReservedBitsWithRead_StillGrantsRead(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	leaseKey := [16]byte{0x42}
+	parentKey := [16]byte{}
+
+	const reservedBit uint32 = 0x08
+	requested := LeaseStateRead | reservedBit
+	state, _, err := mgr.RequestLease(ctx, FileHandle("file-reserved"),
+		leaseKey, parentKey, "owner1", "client1", "/share",
+		requested, false)
+
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateRead, state,
+		"R + reserved bit must grant R (reserved bits ignored), not coerce to None")
+}
+
 // TestRequestLease_DuplicateKeyDifferentFile_Rejected: per MS-SMB2 3.3.5.9.8 /
 // Samba lease_match, a lease key bound to a record on file1 must NOT be
 // grantable on file2. Covers smbtorture smb2.lease.duplicate_create.

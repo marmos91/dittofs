@@ -227,26 +227,28 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
 	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
 
-	// Coerce lease states that lack the Read bit (W=0x04, H=0x02, HW=0x06) to
+	// Coerce no-Read caching combinations (W=0x04, H=0x02, HW=0x06) to
 	// LeaseState=None and grant successfully. Per Samba
-	// source3/smbd/open.c::delay_for_oplock the rule "if neither R nor W is
-	// set, granted = SMB2_LEASE_NONE; W alone or W|H -> NONE" applies
-	// universally — files and directories alike — and is enforced before any
-	// conflict resolution. The smbtorture smb2.lease.request matrix asserts
-	// NT_STATUS_OK with granted state="" for H, W, and HW.
+	// source3/smbd/open.c::delay_for_oplock the rule "any W or H without R
+	// → SMB2_LEASE_NONE" applies universally (files and directories alike)
+	// and is enforced before any conflict resolution. The smbtorture
+	// smb2.lease.request matrix asserts NT_STATUS_OK with granted state=""
+	// for H, W, and HW.
+	//
+	// Gate explicitly on the R/W/H bits (mask off reserved bits first) so
+	// requests like 0x09 (R + reserved bit 0x08) are still treated as
+	// R-bearing and pass through to bestGrantableState rather than being
+	// coerced to None — matching Samba's behavior of ignoring reserved
+	// bits while still honoring Read.
 	//
 	// Returning here (instead of falling through to bestGrantableState) is
-	// deliberate: that helper's degradation chain ends at LeaseStateRead, which
-	// would wrongly grant R for a request whose original intent was a non-Read
-	// caching right.
-	//
-	// Directory-only invalid states (RW, RWH — Write is not valid on a
-	// directory but Read is set) intentionally are NOT caught here; they pass
-	// through to the directory branch of downgradeCandidates inside
-	// bestGrantableState, which applies the directory-specific R / RH
-	// downgrade per the existing test contract.
-	if !IsValidFileLeaseState(requestedState) {
-		logger.Debug("RequestLease: lease state lacks Read bit, coercing to None",
+	// deliberate: that helper's degradation chain ends at LeaseStateRead,
+	// which would wrongly grant R for a W/H/HW request whose original
+	// intent was a non-Read caching right.
+	const knownLeaseBits = LeaseStateRead | LeaseStateWrite | LeaseStateHandle
+	maskedKnown := requestedState & knownLeaseBits
+	if maskedKnown != LeaseStateNone && maskedKnown&LeaseStateRead == 0 {
+		logger.Debug("RequestLease: no-Read caching combination, coercing to None",
 			"state", LeaseStateToString(requestedState),
 			"fileHandle", string(fileHandle),
 			"isDirectory", isDirectory)
