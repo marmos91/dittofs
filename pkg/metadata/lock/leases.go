@@ -27,9 +27,13 @@ import (
 // The returned state and epoch are the current values of the breaking lease.
 var ErrLeaseBreakInProgress = errors.New("lease break in progress")
 
-// ErrInvalidLeaseState is returned by RequestLease when the requested lease
-// state is not a valid combination (e.g., Write without Read, Handle without
-// Read). Per MS-SMB2 3.3.5.9.8, the caller must return STATUS_INVALID_PARAMETER.
+// ErrInvalidLeaseState is reserved for future use. RequestLease no longer
+// returns this for file lease states that lack the Read bit (W, H, WH); per
+// Samba source3/smbd/open.c::delay_for_oplock and the smbtorture
+// smb2.lease.request matrix, those combinations are silently coerced to
+// LeaseState=None and the CREATE succeeds with NT_STATUS_OK. The sentinel is
+// kept so external callers that previously imported it continue to compile;
+// production code paths no longer surface it.
 var ErrInvalidLeaseState = errors.New("invalid lease state")
 
 // ErrAcknowledgedStateExceedsBreakTo is returned by AcknowledgeLeaseBreak when
@@ -223,17 +227,30 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
 	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
 
-	// Validate requested state against valid lease combinations.
-	// Always validate against file lease states here (which accepts R, RW, RH, RWH).
-	// For directories, states like RH/RWH are not directly grantable but are not
-	// protocol errors -- they will be downgraded by bestGrantableState later.
-	// Only truly invalid states (W, H, WH -- missing Read) return an error.
+	// Coerce lease states that lack the Read bit (W=0x04, H=0x02, HW=0x06) to
+	// LeaseState=None and grant successfully. Per Samba
+	// source3/smbd/open.c::delay_for_oplock the rule "if neither R nor W is
+	// set, granted = SMB2_LEASE_NONE; W alone or W|H -> NONE" applies
+	// universally — files and directories alike — and is enforced before any
+	// conflict resolution. The smbtorture smb2.lease.request matrix asserts
+	// NT_STATUS_OK with granted state="" for H, W, and HW.
+	//
+	// Returning here (instead of falling through to bestGrantableState) is
+	// deliberate: that helper's degradation chain ends at LeaseStateRead, which
+	// would wrongly grant R for a request whose original intent was a non-Read
+	// caching right.
+	//
+	// Directory-only invalid states (RW, RWH — Write is not valid on a
+	// directory but Read is set) intentionally are NOT caught here; they pass
+	// through to the directory branch of downgradeCandidates inside
+	// bestGrantableState, which applies the directory-specific R / RH
+	// downgrade per the existing test contract.
 	if !IsValidFileLeaseState(requestedState) {
-		logger.Debug("RequestLease: invalid lease state",
+		logger.Debug("RequestLease: lease state lacks Read bit, coercing to None",
 			"state", LeaseStateToString(requestedState),
 			"fileHandle", string(fileHandle),
 			"isDirectory", isDirectory)
-		return LeaseStateNone, 0, ErrInvalidLeaseState
+		return LeaseStateNone, 0, nil
 	}
 
 	handleKey := string(fileHandle)

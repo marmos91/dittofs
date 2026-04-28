@@ -264,18 +264,50 @@ func TestRequestLease_MultipleReadLeasesNoConflict(t *testing.T) {
 	assert.Equal(t, LeaseStateRead, state, "Read leases should not conflict")
 }
 
-func TestRequestLease_InvalidFileState(t *testing.T) {
+// TestRequestLease_InvalidFileStateCoercedToNone: per Samba
+// source3/smbd/open.c::delay_for_oplock, file lease requests that lack the
+// Read bit (W, H, WH) are silently coerced to LeaseState=None — the CREATE
+// succeeds with granted state="" rather than failing with INVALID_PARAMETER.
+// Covers smbtorture smb2.lease.request request_results entries:
+// {"W",""}, {"H",""}, {"HW",""}.
+func TestRequestLease_InvalidFileStateCoercedToNone(t *testing.T) {
 	t.Parallel()
 
-	mgr := NewManager()
-	ctx := context.Background()
-	leaseKey := [16]byte{1, 2, 3}
-	parentKey := [16]byte{}
+	cases := []struct {
+		name        string
+		requested   uint32
+		isDirectory bool
+	}{
+		{"FileWriteAlone", LeaseStateWrite, false},
+		{"FileHandleAlone", LeaseStateHandle, false},
+		{"FileWriteAndHandle", LeaseStateWrite | LeaseStateHandle, false},
+		// Directories: same Samba rule (no R bit -> NONE). Verifies the
+		// coercion is symmetric across file/directory leases.
+		{"DirWriteAlone", LeaseStateWrite, true},
+		{"DirHandleAlone", LeaseStateHandle, true},
+		{"DirWriteAndHandle", LeaseStateWrite | LeaseStateHandle, true},
+	}
 
-	// Write alone is invalid for files - per MS-SMB2 3.3.5.9.8, must return error
-	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateWrite, false)
-	require.ErrorIs(t, err, ErrInvalidLeaseState)
-	assert.Equal(t, LeaseStateNone, state, "Write alone should be invalid")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			mgr := NewManager()
+			ctx := context.Background()
+			leaseKey := [16]byte{1, 2, 3}
+			parentKey := [16]byte{}
+
+			state, epoch, err := mgr.RequestLease(ctx, FileHandle("file-"+tc.name),
+				leaseKey, parentKey, "owner1", "client1", "/share",
+				tc.requested, tc.isDirectory)
+
+			require.NoError(t, err, "must not fail with INVALID_PARAMETER for %s", tc.name)
+			assert.Equal(t, LeaseStateNone, state,
+				"granted state must be None for %s", tc.name)
+			assert.Equal(t, uint16(0), epoch,
+				"epoch must be 0 when no lease record is created")
+		})
+	}
 }
 
 // TestRequestLease_DuplicateKeyDifferentFile_Rejected: per MS-SMB2 3.3.5.9.8 /
