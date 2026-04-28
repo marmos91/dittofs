@@ -365,22 +365,23 @@ func (h *Handler) setFileInfoFromStore(
 			if atimeFT == filetimeFreeze {
 				setAttrs.Atime = &preFile.Atime
 			}
-			// For unfreeze (-2): per MS-FSA 2.1.5.14.2, re-enable auto-update
-			// AND set the timestamp to the current time. CreationTime unfreeze
-			// pins to the pre-change value (it is never auto-updated, so "current
-			// time" semantics don't apply — just re-enable future explicit changes).
-			unfreezeNow := time.Now()
+			// For thaw (-2): per MS-FSA §2.1.5.14.2 and Samba
+			// `lib/util/time.c::nt_time_to_full_timespec` (NTTIME_THAW maps
+			// to make_omit_timespec), THAW MUST NOT change the value — it
+			// only re-enables future auto-updates. Pin to preFile so the
+			// SetFileAttributes ctime auto-update on `modified` doesn't
+			// bump these fields (smbtorture freeze-thaw step 5/6).
 			if creationFT == filetimeUnfreeze {
 				setAttrs.CreationTime = &preFile.CreationTime
 			}
 			if ctimeFT == filetimeUnfreeze {
-				setAttrs.Ctime = &unfreezeNow
+				setAttrs.Ctime = &preFile.Ctime
 			}
 			if mtimeFT == filetimeUnfreeze {
-				setAttrs.Mtime = &unfreezeNow
+				setAttrs.Mtime = &preFile.Mtime
 			}
 			if atimeFT == filetimeUnfreeze {
-				setAttrs.Atime = &unfreezeNow
+				setAttrs.Atime = &preFile.Atime
 			}
 		}
 
