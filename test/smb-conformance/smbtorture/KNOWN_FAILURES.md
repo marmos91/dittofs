@@ -503,17 +503,30 @@ incomplete break notification delivery and multi-client coordination.
 
 ### Byte-Range Locks (Fix Candidate)
 
-Tier 1+2+3 (16 tests) covered by issue #430's async-LOCK + contention fix:
-async dispatch with interim STATUS_PENDING, deadlock detection via Wait-For
-Graph, cancellation across CANCEL / TREE_DISCONNECT / LOGOFF, and the
-LOCK_NOT_GRANTED → FILE_LOCK_CONFLICT distinction. The 3 replay tests are
-deferred to multichannel work (#416).
+Byte-range locking is partially implemented but smbtorture lock tests still
+fail due to incomplete lock contention and async lock handling.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.lock.replay_broken_windows | Locks | Lock replay needs multichannel support | #416 |
-| smb2.lock.replay_smb3_specification_durable | Locks | Lock replay with durable handles needs multichannel support | #416 |
-| smb2.lock.replay_smb3_specification_multi | Locks | Lock replay with multi-channel needs multichannel support | #416 |
+| smb2.lock.valid-request | Locks | Lock request validation not fully working | #430 |
+| smb2.lock.auto-unlock | Locks | Auto-unlock on close not fully working | #430 |
+| smb2.lock.lock | Locks | Basic lock operation not fully working | #430 |
+| smb2.lock.cancel | Locks | Lock cancel not fully working | #430 |
+| smb2.lock.errorcode | Locks | Lock error codes not fully working | #430 |
+| smb2.lock.zerobytelength | Locks | Zero-length lock not fully working | #430 |
+| smb2.lock.unlock | Locks | Unlock operation not fully working | #430 |
+| smb2.lock.multiple-unlock | Locks | Multiple unlock not fully working | #430 |
+| smb2.lock.stacking | Locks | Lock stacking not fully working | #430 |
+| smb2.lock.range | Locks | Lock range validation not fully working | #430 |
+| smb2.lock.overlap | Locks | Overlapping locks not fully working | #430 |
+| smb2.lock.replay_broken_windows | Locks | Lock replay not fully working | #430 |
+| smb2.lock.replay_smb3_specification_durable | Locks | Lock replay with durable handles not fully working | #430 |
+| smb2.lock.replay_smb3_specification_multi | Locks | Lock replay with multi-channel not fully working | #430 |
+| smb2.lock.cancel-logoff | Locks | Lock cancel on logoff not fully working | #430 |
+| smb2.lock.cancel-tdis | Locks | Blocking lock deadlocks dispatch goroutine (needs async LOCK with interim response) | #430 |
+| smb2.lock.async | Locks | Blocking lock deadlocks dispatch goroutine (needs async LOCK with interim response) | #430 |
+| smb2.lock.open-brlock-deadlock | Locks | Open + byte-range lock deadlock detection not working | #430 |
+| smb2.lock.ctdb-delrec-deadlock | Locks | CTDB delete record deadlock not working | #430 |
 
 ### Rename (Fix Candidate)
 
