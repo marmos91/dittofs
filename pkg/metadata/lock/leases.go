@@ -511,6 +511,40 @@ func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle File
 				break
 			}
 
+			// Already-breaking lease: the SMB CREATE handler dispatches the
+			// pre-RqLs break via BreakLeasesOnOpenConflict before invoking
+			// RequestLease (see create_post_break.go::breakAndMaybeParkCreate).
+			// AND-merge the new opener's target into BreakingToRequired but
+			// suppress dispatch and epoch bump — re-marking would put a
+			// duplicate LEASE_BREAK_NOTIFICATION on the wire and double-bump
+			// the epoch. Mirrors the cumulative-target semantics in
+			// breakOpLocks; the next progressive stage (if any) is dispatched
+			// from acknowledgeLeaseBreakImpl after the in-flight ACK arrives.
+			//
+			// Required by smbtorture smb2.multichannel.leases.test3 (#436):
+			// exactly ONE RWH→RH break, not two.
+			//
+			// Falls through to bestGrantableState WITHOUT setting
+			// breakDispatched: we never released lm.mu, so the post-break
+			// re-Lock below must be skipped to avoid self-deadlock.
+			if lock.Lease.Breaking {
+				lock.Lease.BreakingToRequired &= breakTo
+				if lm.lockStore != nil {
+					pl := ToPersistedLock(lock, 0)
+					if err := lm.lockStore.PutLock(ctx, pl); err != nil {
+						logger.Error("RequestLease: failed to persist tightened break target",
+							"fileHandle", handleKey, "error", err)
+					}
+				}
+				logger.Debug("RequestLease: cross-key conflict on already-breaking lease, suppressed duplicate break",
+					"fileHandle", handleKey,
+					"existingKey", fmt.Sprintf("%x", lock.Lease.LeaseKey),
+					"requestedKey", fmt.Sprintf("%x", leaseKey),
+					"existingBreakingTo", LeaseStateToString(lock.Lease.BreakingToRequired),
+					"requestedState", LeaseStateToString(requestedState))
+				break
+			}
+
 			logger.Debug("RequestLease: cross-key conflict, initiating break",
 				"fileHandle", handleKey,
 				"existingKey", fmt.Sprintf("%x", lock.Lease.LeaseKey),
