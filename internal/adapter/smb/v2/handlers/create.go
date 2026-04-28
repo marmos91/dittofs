@@ -1330,18 +1330,19 @@ func (h *Handler) updateBaseObjectTimestampsForADSWrite(
 	}
 }
 
-// isStatOnlyOpen returns true when DesiredAccess contains only
-// FILE_READ_ATTRIBUTES, optionally combined with SYNCHRONIZE and/or READ_CONTROL.
-// Per MS-SMB2 3.3.5.9.8, stat-only opens must NOT break existing leases.
+// isStatOnlyOpen returns true when DesiredAccess contains only stat-open bits:
+// FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE, READ_CONTROL — in
+// any combination, but with no other (data/delete/dac/owner) bits set. At
+// least one stat bit must be present.
+//
+// Mirrors Samba `is_lease_stat_open` (source3/smbd/open.c). Stat-only opens
+// must NOT break existing leases and do not impose share-mode constraints.
 func isStatOnlyOpen(desiredAccess uint32) bool {
-	const (
-		fileReadAttributes = 0x00000080
-		readControl        = 0x00020000
-		synchronize        = 0x00100000
-	)
-	// Strip allowed non-conflicting bits, check nothing else is requested.
-	masked := desiredAccess &^ (fileReadAttributes | readControl | synchronize)
-	return masked == 0 && desiredAccess&fileReadAttributes != 0
+	const statOpenBits uint32 = 0x00000080 | // FILE_READ_ATTRIBUTES
+		0x00000100 | // FILE_WRITE_ATTRIBUTES
+		0x00020000 | // READ_CONTROL
+		0x00100000 //  SYNCHRONIZE
+	return desiredAccess&statOpenBits != 0 && desiredAccess&^statOpenBits == 0
 }
 
 // computeSessionKeyHash computes the SHA-256 hash of the session's signing key.

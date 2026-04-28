@@ -1101,6 +1101,21 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 			return true
 		}
 
+		// Skip non-conflicting existing opens. Per Samba `share_conflict`
+		// (source3/smbd/open.c L1505): an entry with none of
+		// FILE_READ_DATA|FILE_WRITE_DATA|FILE_APPEND_DATA|FILE_EXECUTE|
+		// DELETE_ACCESS imposes no share-mode constraint. This covers
+		// stat-only opens (smb2.lease.statopen) and also EA-only,
+		// WRITE_DAC-only, and WRITE_OWNER-only opens.
+		// GENERIC_*/MAXIMUM_ALLOWED imply data access, so an existing
+		// open carrying those bits still constrains.
+		if !hasRead(existing.DesiredAccess) &&
+			!hasWrite(existing.DesiredAccess) &&
+			!hasDelete(existing.DesiredAccess) &&
+			existing.DesiredAccess&fileAppendData == 0 {
+			return true
+		}
+
 		// Check: existing access vs new sharing
 		if hasRead(existing.DesiredAccess) && newShareAccess&fileShareRead == 0 {
 			conflict = true

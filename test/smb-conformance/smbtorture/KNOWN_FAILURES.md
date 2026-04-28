@@ -501,8 +501,6 @@ incomplete break notification delivery and multi-client coordination.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.lease.request | Leases | Lease request handling not fully working | #429 |
-| smb2.lease.statopen | Leases | Lease + stat open interaction not fully working | #429 |
-| smb2.lease.statopen4 | Leases | Lease + stat open interaction not fully working | #429 |
 | smb2.lease.oplock | Leases | Lease + oplock interaction not fully working | #429 |
 | smb2.lease.lock1 | Leases | Lease + lock interaction not fully working | #429 |
 | smb2.lease.timeout | Leases | Lease timeout handling not fully working | #429 |
