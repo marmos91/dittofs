@@ -340,28 +340,34 @@ func TestDelayedWrite_VsSetEOF(t *testing.T) {
 	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	preWrite2, _ := metaSvc.GetFile(authCtx.Context, fileHandle)
+	preWrite2, err := metaSvc.GetFile(authCtx.Context, fileHandle)
+	if err != nil {
+		t.Fatalf("GetFile preWrite2: %v", err)
+	}
 	time.Sleep(20 * time.Millisecond)
 
 	one := uint64(1)
 	if err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{Size: &one}); err != nil {
 		t.Fatalf("SetEOF #2: %v", err)
 	}
-	postWrite2, _ := metaSvc.GetFile(authCtx.Context, fileHandle)
+	postWrite2, err := metaSvc.GetFile(authCtx.Context, fileHandle)
+	if err != nil {
+		t.Fatalf("GetFile postWrite2: %v", err)
+	}
 	if !postWrite2.Mtime.After(preWrite2.Mtime) {
 		t.Errorf("SetEOF #2 did not bump Mtime past write time: w2=%v post=%v",
 			preWrite2.Mtime, postWrite2.Mtime)
 	}
 
-	// h2 SetBasic with explicit future write_time. SetFileAttributes from
-	// any handle pins file.Mtime to the explicit value.
+	// SetBasic with explicit future write_time. SetFileAttributes pins
+	// file.Mtime to the explicit value regardless of which handle issues it.
 	setTime := time.Now().UTC().Add(86400 * time.Second).Truncate(time.Microsecond)
 	if err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{Mtime: &setTime}); err != nil {
 		t.Fatalf("SetBasic h2: %v", err)
 	}
 
-	// h1 close: GetFile must reflect the pinned set_time, not the previous
-	// delayed-write value.
+	// On subsequent GetFile, the pinned set_time must surface — not the
+	// previous delayed-write value.
 	closeFile, err := metaSvc.GetFile(authCtx.Context, fileHandle)
 	if err != nil {
 		t.Fatalf("GetFile close: %v", err)
