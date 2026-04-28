@@ -754,24 +754,6 @@ func (h *Handler) setFileInfoFromStore(
 			}
 		}
 
-		// Per MS-FSA §2.1.5.1.2 + §2.1.5.14.10 (mirroring Samba's
-		// `smbd_smb2_setinfo_rename_dst_parent_check`), rename mutates the
-		// destination parent directory's contents. Any open handle on the dst
-		// parent that holds DELETE access OR was opened without
-		// FILE_SHARE_WRITE blocks the rename with STATUS_SHARING_VIOLATION.
-		// Covers smbtorture smb2.rename:
-		//   - share_delete_and_delete_access (parent has DELETE access)
-		//   - no_share_delete_but_delete_access (parent has DELETE access)
-		//   - no_share_delete_no_delete_access (parent share=0)
-		// Excludes the renamer's own FileID so a self-handle on the parent
-		// (e.g. directory rename via its own dir handle) is not self-blocked.
-		if h.checkRenameDstParentShareMode(toDir, openFile.FileID) {
-			logger.Debug("SET_INFO: rename blocked by dst-parent share mode",
-				"path", openFile.Path,
-				"dstParent", fmt.Sprintf("%x", toDir))
-			return setInfoStatus(types.StatusSharingViolation), nil
-		}
-
 		// Save old path info for notification before modification
 		oldPath := openFile.Path
 		oldFileName := openFile.FileName

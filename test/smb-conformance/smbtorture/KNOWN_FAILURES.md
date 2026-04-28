@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-04-28 (Rename share-mode enforcement during rename, #433)
+Last updated: 2026-04-27 (Round 7 lease — request matrix W/H/HW coerced to None, #429)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -528,6 +528,18 @@ fail due to incomplete lock contention and async lock handling.
 | smb2.lock.open-brlock-deadlock | Locks | Open + byte-range lock deadlock detection not working | #430 |
 | smb2.lock.ctdb-delrec-deadlock | Locks | CTDB delete record deadlock not working | #430 |
 
+### Rename (Fix Candidate)
+
+Rename operations partially implemented but tests fail due to incomplete
+share mode enforcement during rename.
+
+| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|
+| smb2.rename.share_delete_and_delete_access | Rename | Share delete + delete access rename not working | #433 |
+| smb2.rename.no_share_delete_but_delete_access | Rename | Rename share mode enforcement not working | #433 |
+| smb2.rename.no_share_delete_no_delete_access | Rename | Rename share mode enforcement not working | #433 |
+| smb2.rename.rename_dir_openfile | Rename | Rename directory with open file not working | #433 |
+
 ### Sessions (Remaining)
 
 Phase 73 Plan 03 implemented session re-authentication with key re-derivation
@@ -890,6 +902,7 @@ test cluster has a home to land work against:
 - **#432** — Durable Handles V2 (33 tests): reopen, disconnected-handle
   preservation/purge, app-instance, persistent-open flagged as separate
   feature work.
+- **#433** — Rename (4 tests): share-mode enforcement during rename.
 - **#434** — Timestamps (5 tests): delayed-write + freeze/thaw.
 - **#435** — Charset (1 test): unicode surrogate pair handling.
 - **#436** — `multichannel.leases.test3` spurious lease break on uncontested
