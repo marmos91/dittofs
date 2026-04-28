@@ -36,7 +36,6 @@ async credit coordination.
 |-----------|----------|--------|-------|
 | smb2.multichannel.leases.test1 | Multi-channel | Cross-channel lease break fan-out is Phase 2 work on #361; test flakes on DittoFS until the primary/secondary channel coordination lands | #361 |
 | smb2.multichannel.leases.test2 | Multi-channel | Requires torture_block_tcp_transport (Samba-internal test-harness operation) to simulate a blocked channel — not implementable | - |
-| smb2.multichannel.leases.test3 | Multi-channel | Spurious lease break on uncontested open — separate bug from #417 epoch drift | #436 |
 | smb2.multichannel.leases.test4 | Multi-channel | Requires torture_block_tcp_transport (Samba-internal test-harness operation) — not implementable | - |
 | smb2.multichannel.oplocks.test2 | Multi-channel | Requires FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT (Samba test-harness FSCTL) to simulate connection failure — not implementable | - |
 | smb2.multichannel.oplocks.test3_windows | Multi-channel | Requires FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT to block TCP transport — not implementable | - |
@@ -906,7 +905,7 @@ test cluster has a home to land work against:
 - **#434** — Timestamps (5 tests): delayed-write + freeze/thaw.
 - **#435** — Charset (1 test): unicode surrogate pair handling.
 - **#436** — `multichannel.leases.test3` spurious lease break on uncontested
-  open (split out of #417 / PR #418 follow-up).
+  open (split out of #417 / PR #418 follow-up). FIXED — see fix/smb-issue-436.
 
 No test reclassifications or pass/fail transitions — pure issue tracking.
 
