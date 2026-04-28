@@ -234,52 +234,115 @@ func testObjectID_ConcurrentQuiesceRace(t *testing.T, factory StoreFactory) {
 	}
 }
 
-// testObjectID_CrossShareDedupScope verifies D-13: FindByObjectID returns a
-// hit for a file in share-A even when the lookup origin would (semantically)
-// be share-B, because the secondary index is per-metadata-store, not
-// per-share. Two shares are created against the SAME factory-produced
-// store, share-A's file is quiesced with a known ObjectID, and the
-// store-level FindByObjectID resolves that ObjectID regardless of share
-// boundary — establishing the DEDUP-02 contract at the conformance tier.
+// testObjectID_CrossShareDedupScope verifies D-13 / DEDUP-02: FindByObjectID
+// resolves at the metadata-store layer, NOT at the share layer. Two shares are
+// created against the SAME factory-produced store, each receives a quiesced
+// file with a DIFFERENT ObjectID, and the store-level FindByObjectID returns
+// each share's BlockRef list correctly when looked up by its respective
+// ObjectID — proving cross-share dedup hits are addressable. A negative
+// lookup against a never-persisted ObjectID returns nil (no false hit
+// across the share boundary either way).
+//
+// Phase 13 plan 13-08 strengthens this scenario from the plan-05 baseline
+// (single file in share-A) to two files in two shares with distinct
+// ObjectIDs, locking the symmetric per-store invariant.
 func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
 	rootA := createTestShare(t, store, "objid-cross-a")
-	_ = createTestShare(t, store, "objid-cross-b")
+	rootB := createTestShare(t, store, "objid-cross-b")
 
 	fileA := createTestFile(t, store, "objid-cross-a", rootA, "shared.bin", 0o644)
+	fileB := createTestFile(t, store, "objid-cross-b", rootB, "other.bin", 0o644)
 
-	blocks := []blockstore.BlockRef{
-		{Hash: hashOfSeed("oid-cross-0"), Offset: 0, Size: 4096},
-		{Hash: hashOfSeed("oid-cross-1"), Offset: 4096, Size: 4096},
+	blocksA := []blockstore.BlockRef{
+		{Hash: hashOfSeed("oid-cross-a-0"), Offset: 0, Size: 4096},
+		{Hash: hashOfSeed("oid-cross-a-1"), Offset: 4096, Size: 4096},
 	}
-	wantOID := blockstore.ComputeObjectID(blocks)
+	blocksB := []blockstore.BlockRef{
+		{Hash: hashOfSeed("oid-cross-b-0"), Offset: 0, Size: 8192},
+		{Hash: hashOfSeed("oid-cross-b-1"), Offset: 8192, Size: 4096},
+		{Hash: hashOfSeed("oid-cross-b-2"), Offset: 12288, Size: 1024},
+	}
+	oidA := blockstore.ComputeObjectID(blocksA)
+	oidB := blockstore.ComputeObjectID(blocksB)
+	if oidA == oidB {
+		t.Fatalf("fixture broken: distinct block fixtures produced equal ObjectID %s", oidA.String())
+	}
 
-	f, err := store.GetFile(ctx, fileA)
-	if err != nil {
-		t.Fatalf("GetFile share-A: %v", err)
-	}
-	f.FileAttr.Blocks = blocks
-	f.FileAttr.ObjectID = wantOID
-	if err := store.PutFile(ctx, f); err != nil {
-		t.Fatalf("PutFile share-A: %v", err)
+	// PutFile each share's file with its respective ObjectID.
+	for _, pair := range []struct {
+		handle metadata.FileHandle
+		blocks []blockstore.BlockRef
+		oid    blockstore.ObjectID
+		label  string
+	}{
+		{fileA, blocksA, oidA, "share-A"},
+		{fileB, blocksB, oidB, "share-B"},
+	} {
+		f, err := store.GetFile(ctx, pair.handle)
+		if err != nil {
+			t.Fatalf("GetFile %s: %v", pair.label, err)
+		}
+		f.FileAttr.Blocks = pair.blocks
+		f.FileAttr.ObjectID = pair.oid
+		if err := store.PutFile(ctx, f); err != nil {
+			t.Fatalf("PutFile %s: %v", pair.label, err)
+		}
 	}
 
 	// Per D-13: the lookup operates at the metadata-store layer, not the
-	// share layer; share-B's existence does not isolate share-A's
-	// ObjectID. The hit returns share-A's BlockRef list.
-	refs, err := store.FindByObjectID(ctx, wantOID)
+	// share layer; either share's ObjectID resolves to its persisted
+	// BlockRef list regardless of which share's file owns it.
+
+	// Lookup A: returns share-A's BlockRefs.
+	gotA, err := store.FindByObjectID(ctx, oidA)
 	if err != nil {
-		t.Fatalf("FindByObjectID (cross-share): %v", err)
+		t.Fatalf("FindByObjectID share-A (cross-share): %v", err)
 	}
-	if len(refs) != len(blocks) {
-		t.Fatalf("FindByObjectID (cross-share): got %d refs, want %d (D-13 per-store scope)",
-			len(refs), len(blocks))
+	if !blockRefSlicesEqual(gotA, blocksA) {
+		t.Errorf("DEDUP-02: cross-share FindByObjectID(A) returned wrong blocks: got %+v, want %+v",
+			gotA, blocksA)
 	}
-	for i, want := range blocks {
-		if refs[i].Hash != want.Hash || refs[i].Offset != want.Offset || refs[i].Size != want.Size {
-			t.Errorf("cross-share refs[%d] = %+v, want %+v", i, refs[i], want)
+
+	// Lookup B: returns share-B's BlockRefs.
+	gotB, err := store.FindByObjectID(ctx, oidB)
+	if err != nil {
+		t.Fatalf("FindByObjectID share-B (cross-share): %v", err)
+	}
+	if !blockRefSlicesEqual(gotB, blocksB) {
+		t.Errorf("DEDUP-02: cross-share FindByObjectID(B) returned wrong blocks: got %+v, want %+v",
+			gotB, blocksB)
+	}
+
+	// Negative: an ObjectID never persisted by either share returns nil.
+	missOID := blockstore.ComputeObjectID([]blockstore.BlockRef{
+		{Hash: hashOfSeed("oid-cross-miss"), Offset: 0, Size: 1},
+	})
+	if missOID == oidA || missOID == oidB {
+		t.Fatalf("fixture broken: miss ObjectID collides with A/B")
+	}
+	gotMiss, err := store.FindByObjectID(ctx, missOID)
+	if err != nil {
+		t.Fatalf("FindByObjectID (cross-share miss): unexpected error: %v", err)
+	}
+	if gotMiss != nil {
+		t.Errorf("DEDUP-02: cross-share miss should return nil, got %d refs", len(gotMiss))
+	}
+}
+
+// blockRefSlicesEqual returns true if a and b have identical BlockRef
+// fields (Hash, Offset, Size) in order. Defined as a local helper so
+// objectid_lookup.go scenarios stay self-contained.
+func blockRefSlicesEqual(a, b []blockstore.BlockRef) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Hash != b[i].Hash || a[i].Offset != b[i].Offset || a[i].Size != b[i].Size {
+			return false
 		}
 	}
+	return true
 }

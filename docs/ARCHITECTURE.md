@@ -15,6 +15,7 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 - [Horizontal Scaling with PostgreSQL](#horizontal-scaling-with-postgresql)
 - [Durable Handle State Flow](#durable-handle-state-flow)
 - [Phase 12 Engine API + BlockRef + Cache (v0.15.0 A3)](#phase-12-engine-api--blockref--cache-v0150-a3)
+- [Phase 13 File-Level Dedup: ObjectID + Merkle Root (v0.15.0 A4)](#phase-13-file-level-dedup-objectid--merkle-root-v0150-a4)
 
 ## Core Abstraction Layers
 
@@ -1054,6 +1055,114 @@ triggers the metadata-driven legacy resolver). Phase 14 ships
 atomically; Phase 15 retires the dual-read shim. See
 `docs/BLOCKSTORE_MIGRATION.md` for the operator-facing migration
 guide.
+
+## Phase 13 File-Level Dedup: ObjectID + Merkle Root (v0.15.0 A4)
+
+Phase 13 (v0.15.0 A4) layers **file-level dedup** on top of the Phase 12
+chunk-level CAS path. Each `FileAttr` carries an `ObjectID` — a BLAKE3
+Merkle root computed over the file's `BlockRef.Hash` values sorted by
+`Offset`, prefixed by the domain-separation tag
+`dittofs:objectid:v1\x00`:
+
+    ObjectID = BLAKE3("dittofs:objectid:v1\x00" || h0 || h1 || ... || hN-1)
+
+Implemented in `blockstore.ComputeObjectID`
+(`pkg/blockstore/objectid.go`). Stable across rename and engine restart
+by construction (BLAKE3 + FastCDC are both deterministic; the prefix
+protects the output space from per-chunk hash collisions and reserves
+room for future input-shape changes via `v2`/`v3`).
+
+### Lifecycle
+
+- **Cleared (zeroed)** on first dirty write that mutates `FileAttr.Blocks`,
+  in the same metadata transaction (D-07).
+- **Recomputed and persisted** at the post-Flush coordinator hook
+  (`Syncer.persistFileBlocksAfterFlush` → `MetadataCoordinator.PersistFileBlocks`),
+  in the same metadata transaction that updates `FileAttr.Blocks`/`Size`/`Mtime` (D-05).
+- **Persisted ONLY on full quiesce** — every block in `Remote` state
+  (D-06). Partial flushes leave `ObjectID` at zero.
+
+A non-zero `ObjectID` always reflects a fully-`Remote` consistent
+state. Lookups (BSCAS-05 short-circuit) trust this without checking
+per-block states. Empty files dedup to one canonical constant
+`BLAKE3("dittofs:objectid:v1\x00")`; legacy pre-Phase-13 files keep
+the all-zero sentinel until Phase 14 backfills.
+
+### File-level dedup short-circuit (BSCAS-05)
+
+When a file's BlockRef list is fully `Pending` (newly chunked, nothing
+uploaded yet) and the file has no prior ObjectID, the syncer:
+
+1. Computes the provisional ObjectID over the chunker output.
+2. Calls `MetadataStore.FindByObjectID(ctx, objectID)`.
+3. **On hit:** increments RefCount on every distinct hash in the
+   target's BlockRef list, replaces the file's BlockRef list with the
+   target's (deep copy), persists the ObjectID, decrements RefCount on
+   any speculative-only hashes, invalidates orphaned cache entries,
+   and truncates the per-file append log. **Zero S3 PUTs.**
+4. **On miss:** continues per-block GetByHash + PUT path; ObjectID is
+   finalized at the post-Flush coordinator hook.
+
+Trigger condition (D-09): `len(Blocks) > 0 AND every block.State ==
+Pending AND file.ObjectID == zero`. This captures fresh-file-create
+(VM image clone — primary target) and full-overwrite (`cp -f`,
+`dd`-overwrite, restore-from-backup). It intentionally excludes the
+running-VM hot path (incremental writes already get chunk-level dedup
+via Phase 11 `GetByHash` and would not benefit from file-level
+fingerprinting that requires a quiesce).
+
+### Concurrent quiesce: first-committer-wins
+
+Two concurrent flushes of byte-identical content race independently
+(no distributed locking). At commit time the partial unique index on
+`object_id` ensures exactly one write succeeds; the loser detects the
+conflict (Postgres SQLSTATE `23505` / `metadata.ErrConflict` on Memory
+and Badger), decrements its just-uploaded refs, swaps to the now-
+existing target's BlockRef list, and re-commits. One wasted upload
+per loser is acceptable; GC reclaims any orphans. See
+`pkg/metadata/storetest/objectid_lookup.go` for the cross-backend
+race conformance scenarios.
+
+### Per-backend ObjectID lookup index
+
+`MetadataStore.FindByObjectID(ctx, ObjectID) ([]BlockRef, error)`
+returns `(nil, nil)` on miss; on hit returns the canonical BlockRef
+list of the matching file (per-metadata-store scope, NOT per-share —
+D-13). Backends maintain a secondary index:
+
+| Backend  | Index                                                                       |
+|----------|-----------------------------------------------------------------------------|
+| Postgres | Partial unique: `files_object_id_idx ON files(object_id) WHERE object_id IS NOT NULL` (migration `000013_object_id`) |
+| Badger   | Secondary key `obj:{hex} -> file_id`, maintained inside each `Put`/`Delete` write batch |
+| Memory   | `map[ContentHash]uuid`, guarded by the existing store mutex                 |
+
+Zero-valued ObjectID (legacy / pre-quiesce) is excluded from the index
+— `FindByObjectID(zero)` short-circuits to `(nil, nil)` at every layer
+so partial states never trigger a false short-circuit.
+
+### Observability
+
+Phase 13 emits slog-only signals (D-20; matches Phase 11 D-35 / Phase
+12 D-42 deferral):
+
+- **DEBUG**: post-Flush ObjectID persisted; short-circuit hit/miss
+  with `payloadID`, `objectID`, `donor_blocks`.
+- **INFO**: cross-VM dedup ratio emitted by the e2e fixture
+  (`test/e2e/dedup_vmfleet_test.go`, nightly).
+
+No new Prometheus surface; metrics roll into the dedicated
+observability phase.
+
+### Performance gate (D-21)
+
+Hard gate: ≤2% rand-write regression vs `BenchmarkRandWriteCAS`
+baseline. The microbench
+(`pkg/blockstore/engine/perf_bench_test.go::BenchmarkRandWrite_Phase13Baseline`)
+mirrors the Phase 12 D-43 paired-bench pattern and is gated by the CI
+perf lane (`D21_STRICT_GATE=1`). ObjectID compute is one BLAKE3 pass
+over `32×N` bytes per quiesce (sub-millisecond at N=16K BlockRefs);
+short-circuit lookup is one indexed query per quiesce. Both fire off
+the random-write hot path.
 
 ## Performance Characteristics
 

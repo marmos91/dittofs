@@ -138,6 +138,58 @@ dedup short-circuit that's expected to drive the primary VM-workload
 
 Track progress: [#419](https://github.com/marmos91/dittofs/issues/419).
 
+### What's an ObjectID and when does it get computed?
+
+An `ObjectID` is a BLAKE3 Merkle root over a file's content-defined
+chunk hashes, defined by Phase 13 (v0.15.0 A4):
+
+    ObjectID = BLAKE3("dittofs:objectid:v1\x00" || h0 || h1 || ... || hN-1)
+
+where `hi` is the i-th `BlockRef.Hash` when `FileAttr.Blocks` is sorted
+by `Offset`. Two files with byte-identical content always have the
+same ObjectID; two files differing in even one byte have different
+ObjectIDs (FastCDC + BLAKE3 are both deterministic, so identical
+chunks yield identical hashes).
+
+DittoFS computes ObjectID **lazily — at file quiesce**, when every
+chunk has finished uploading to remote storage. Mid-write the
+ObjectID is the all-zero sentinel meaning "not yet quiesced". The
+post-Flush coordinator hook
+(`Syncer.persistFileBlocksAfterFlush`) writes it in the same metadata
+transaction that updates `FileAttr.Blocks`/`Size`/`Mtime`. Partial
+flushes (some blocks still `Pending`) leave it at zero so the
+short-circuit lookup never returns a half-quiesced file.
+
+A non-zero ObjectID always reflects a fully-`Remote` consistent
+state. Empty files dedup to one canonical constant
+`BLAKE3("dittofs:objectid:v1\x00")`; legacy pre-Phase-13 files keep
+the all-zero sentinel until Phase 14 backfills.
+
+See
+[ARCHITECTURE.md — Phase 13 File-Level Dedup](ARCHITECTURE.md#phase-13-file-level-dedup-objectid--merkle-root-v0150-a4)
+for the full design.
+
+### Why doesn't my file dedup until I close it?
+
+DittoFS's file-level dedup short-circuit (BSCAS-05) fires at quiesce,
+not on every write. Mid-write, blocks dedup at the *chunk* level
+(Phase 11 `GetByHash`) — if your write produces a chunk that already
+exists remotely, no PUT is issued.
+
+But the savings of skipping every chunk's upload entirely (file-level
+dedup) only kick in once the full file fingerprint exists — the
+ObjectID — and that fingerprint is computed at the post-Flush
+coordinator hook on `Close`/`Flush`/`fsync`, when the BlockRef list
+stabilizes.
+
+This is intentional: file-level dedup targets the workflow of cloning
+a VM image or copying a large file (where the whole content arrives
+in one burst). Random in-place writes inside a running VM benefit
+from the chunk-level path and don't get penalized waiting for a
+quiesce-only fingerprint. The trigger condition (D-09) — "all blocks
+`Pending` AND no prior ObjectID" — explicitly excludes the running-VM
+hot path.
+
 ### How does garbage collection work in v0.15.0?
 
 v0.15.0 (Phase 11 / A2) replaces the previous path-prefix GC with a

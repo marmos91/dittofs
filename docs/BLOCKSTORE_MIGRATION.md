@@ -9,6 +9,7 @@ caveats.
 ## Table of Contents
 
 - [Phase 12 (v0.15.0 A3) — `file_block_refs` table](#phase-12-v0150-a3--file_block_refs-table)
+- [Phase 13 (v0.15.0 A4) — `files.object_id` column](#phase-13-v0150-a4--filesobject_id-column)
 - [Phase 14 (v0.15.x A5) — `dfsctl blockstore migrate`](#phase-14-v015x-a5--dfsctl-blockstore-migrate-placeholder)
 
 ## Phase 12 (v0.15.0 A3) — `file_block_refs` table
@@ -123,6 +124,92 @@ existing `FileAttr` blob (D-05). No separate migration step is required:
   reads fall through to the Phase 11 dual-read shim until a write
   re-chunks the file (or the Phase 14 migration tool runs).
 
+## Phase 13 (v0.15.0 A4) — `files.object_id` column
+
+Phase 13 introduces a Postgres migration `000013_object_id.up.sql`
+that adds the `files.object_id` column backing
+`FileAttr.ObjectID blockstore.ObjectID` (META-02 / BSCAS-04 / BSCAS-05
+/ D-12).
+
+**Schema:**
+
+```sql
+ALTER TABLE files ADD COLUMN IF NOT EXISTS object_id BYTEA;
+
+CREATE UNIQUE INDEX IF NOT EXISTS files_object_id_idx
+    ON files(object_id)
+    WHERE object_id IS NOT NULL;
+```
+
+Design rationale (D-12 in `13-CONTEXT.md`):
+
+- **`BYTEA` (32 bytes)** — `ObjectID` is `[32]byte` (BLAKE3 Merkle root
+  prefixed by `dittofs:objectid:v1\x00`); round-trips directly. Half
+  the storage of hex `TEXT`, faster btree compares, native binary scan.
+- **Partial unique index** (`WHERE object_id IS NOT NULL`) — provides
+  the BSCAS-05 lookup AND enforces D-14 first-committer-wins on
+  concurrent quiesce: the loser's `INSERT`/`UPDATE` rejects with
+  unique-violation (SQLSTATE `23505`), detects, swaps to target's
+  BlockRef list, and retries. Legacy and partially-flushed files
+  (`object_id NULL`) are skipped by the index so they never collide.
+- **Column on `files`, not a separate table** — `ObjectID` is
+  one-to-one with the file row and read on every `GetFile` alongside
+  the rest of the row.
+
+### Forward-only operational posture
+
+The migration ships with a working `000013_object_id.down.sql` (drops
+the index and column), but operators should treat the upgrade as
+forward-only:
+
+- **Pre-deploy / pre-write rollback is supported.** If the migration
+  has been applied but no Phase-13 writes have populated `object_id`,
+  running `migrate down 000013` is safe — the column is `NULL` for
+  every row and dropping it loses nothing.
+- **Post-deploy with writes, rollback re-fingerprints on next
+  quiesce.** Dropping `object_id` after writes have populated it loses
+  the Merkle-root fingerprints for every file modified since the
+  upgrade. There is no in-tree backfill yet (Phase 14 owns that). On
+  re-applying the migration post-rollback, ObjectIDs are recomputed
+  on the next post-Flush coordinator hook for each affected file —
+  operationally equivalent to a re-fingerprint pass over active files.
+
+### No data backfill in Phase 13 (D-03)
+
+Legacy files written before Phase 13 keep the all-zero `ObjectID`
+sentinel — `FindByObjectID(zero)` short-circuits to `(nil, nil)` at
+every layer so partial states never trigger a false dedup match. The
+Phase 14 migration tool backfills `ObjectID` atomically alongside the
+Phase 12 `[]BlockRef` backfill; until then legacy files are skipped
+by the file-level dedup short-circuit (they still benefit from
+chunk-level dedup via `GetByHash`).
+
+### Operator checklist
+
+1. **Apply the migration** as part of your usual schema-deployment
+   pipeline. Auto-applied at server startup if your deployment uses
+   `dfs migrate` / equivalent.
+2. **Capacity:** the column adds 32 bytes per file row plus the
+   partial unique index leaf (~50 bytes per non-NULL entry).
+   Negligible against a typical 10 KiB file row footprint.
+3. **No new tunables.** Phase 13 derives all behaviour from existing
+   FastCDC + cache + sync settings; `docs/CONFIGURATION.md` has no
+   new knobs.
+
+### Badger / Memory backends
+
+Badger and Memory backends inline-encode `FileAttr.ObjectID` inside
+the existing `FileAttr` blob (rides the gob/typed-struct serialization
+the same way `Blocks []BlockRef` does in Phase 12). Secondary index
+maintenance:
+
+- **Memory** holds a `map[ContentHash]uuid` (the `objectIndex`),
+  guarded by the existing store mutex. New writes populate it; old
+  rows decode with the all-zero sentinel and stay out of the index.
+- **Badger** maintains `obj:{hex} -> file_id` keys inside each
+  `Put`/`Delete` write batch. Atomic via Badger's `Txn`. Existing
+  blobs decode cleanly (`omitempty`) with the all-zero sentinel.
+
 ## Phase 14 (v0.15.x A5) — `dfsctl blockstore migrate` (placeholder)
 
 Phase 14 will ship `dfsctl blockstore migrate` to backfill
@@ -130,6 +217,17 @@ Phase 14 will ship `dfsctl blockstore migrate` to backfill
 file written before Phase 12. The migration tool is also responsible
 for retiring the Phase 11 dual-read shim per share once a share has
 been fully migrated.
+
+### ObjectID backfill (Phase 14)
+
+Phase 14 also backfills `FileAttr.ObjectID` for legacy files
+atomically — re-chunking each file via FastCDC and writing both the
+new BlockRef list AND the ObjectID inside the same per-share metadata
+transaction. This means legacy files dedup against post-Phase-13
+files without a second migration pass. Until Phase 14 runs, legacy
+files keep the all-zero ObjectID sentinel and are skipped by the
+file-level dedup short-circuit (they still benefit from chunk-level
+dedup via `GetByHash`).
 
 > **This section is a placeholder.** The Phase 14 plan owns the full
 > operator guide (invocation, dry-run, resumability, per-file failure
@@ -143,8 +241,11 @@ has migrated all production workloads.
 ## Cross-references
 
 - [ARCHITECTURE.md — Phase 12 Engine API + BlockRef + Cache](ARCHITECTURE.md#phase-12-engine-api--blockref--cache-v0150-a3)
+- [ARCHITECTURE.md — Phase 13 File-Level Dedup](ARCHITECTURE.md#phase-13-file-level-dedup-objectid--merkle-root-v0150-a4)
 - [ARCHITECTURE.md — Dual-Read Window](ARCHITECTURE.md#dual-read-window-phase-11--phase-14)
 - [IMPLEMENTING_STORES.md — FileAttr.Blocks []BlockRef](IMPLEMENTING_STORES.md#fileattrblocks-blockref-v0150-phase-12)
+- [IMPLEMENTING_STORES.md — FileAttr.ObjectID + FindByObjectID](IMPLEMENTING_STORES.md#fileattrobjectid--findbyobjectid-v0150-phase-13)
 - [CLI.md — `dfsctl blockstore audit-refcounts`](CLI.md#dfsctl-blockstore-audit-refcounts-share)
 - [FAQ.md — What's a BlockRef?](FAQ.md#whats-a-blockref)
+- [FAQ.md — What's an ObjectID?](FAQ.md#whats-an-objectid-and-when-does-it-get-computed)
 - [CONFIGURATION.md — Unified Cache (v0.15.0 Phase 12)](CONFIGURATION.md#unified-cache-v0150-phase-12)
