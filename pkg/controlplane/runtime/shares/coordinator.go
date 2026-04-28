@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // metadataCoordinator is the per-share implementation of
@@ -173,7 +177,59 @@ func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID s
 	_ = payloadID
 	_ = blocks
 	_ = objectID
-	return engine.ErrPersistFileBlocksNotWired
+	return mapObjectIDConflict(engine.ErrPersistFileBlocksNotWired)
+}
+
+// mapObjectIDConflict wraps backend conflict errors into
+// engine.ErrObjectIDConflict so the BSCAS-05 short-circuit (Phase 13
+// Plan 07) can detect concurrent-quiesce races uniformly across
+// Postgres / Badger / Memory. Returns nil when err is nil; returns the
+// unwrapped error untouched when no conflict signal is present so other
+// failure modes propagate without false positives (T-13-26).
+//
+// Detection rules:
+//
+//  1. Postgres pgconn.PgError with Code "23505" AND ConstraintName
+//     "files_object_id_idx" — strong signal, wrap into
+//     ErrObjectIDConflict.
+//  2. Postgres pgconn.PgError with Code "23505" AND empty
+//     ConstraintName whose Message text mentions "object_id" —
+//     defensive fallback for drivers that strip ConstraintName under
+//     certain configurations. Other 23505 errors (e.g., file path
+//     uniqueness violations) propagate untouched (T-13-26).
+//  3. metadata.errors.StoreError with Code == ErrConflict — Memory and
+//     Badger surface this from Plan 03 maintenance.
+//
+// Wrapping uses errors.Join (Go 1.20+) so callers can both
+// `errors.Is(err, engine.ErrObjectIDConflict)` AND see the underlying
+// driver/store error in logs.
+func mapObjectIDConflict(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	// Postgres path: SQLSTATE 23505 (unique_violation).
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		// Strong signal: matching constraint name.
+		if pgErr.ConstraintName == "files_object_id_idx" {
+			return errors.Join(engine.ErrObjectIDConflict, err)
+		}
+		// Defensive fallback: empty ConstraintName + "object_id" in
+		// message text. Other 23505 errors (e.g., duplicate file path)
+		// propagate without ErrObjectIDConflict wrapping.
+		if pgErr.ConstraintName == "" && strings.Contains(pgErr.Message, "object_id") {
+			return errors.Join(engine.ErrObjectIDConflict, err)
+		}
+	}
+
+	// Memory / Badger path: errors.ErrConflict on the StoreError.
+	var storeErr *mderrors.StoreError
+	if errors.As(err, &storeErr) && storeErr.Code == mderrors.ErrConflict {
+		return errors.Join(engine.ErrObjectIDConflict, err)
+	}
+
+	return err
 }
 
 // FindByObjectID forwards to the underlying metadata store's

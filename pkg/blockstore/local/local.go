@@ -110,6 +110,17 @@ type LocalStore interface {
 	// DeleteAllBlockFiles removes all blocks for a file from memory, disk, and metadata.
 	DeleteAllBlockFiles(ctx context.Context, payloadID string) error
 
+	// DeleteAppendLog removes the per-file append log for a payload
+	// (Phase 10 LSL-05 / D-28). Phase 13 BSCAS-05 invokes this on a
+	// file-level dedup hit to discard speculative chunks the syncer was
+	// about to upload. Implementations MUST be safe to call when no log
+	// exists for the payload (no-op).
+	//
+	// Concrete impl: *fs.FSStore.DeleteAppendLog (appendwrite.go) is the
+	// canonical implementation; in-memory backends with no append log
+	// return nil (the per-file log is a no-op concept on those).
+	DeleteAppendLog(ctx context.Context, payloadID string) error
+
 	// TruncateBlockFiles removes all blocks whose start offset >= newSize.
 	TruncateBlockFiles(ctx context.Context, payloadID string, newBlockCount uint64) error
 

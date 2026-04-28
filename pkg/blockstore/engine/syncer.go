@@ -47,6 +47,16 @@ type Syncer struct {
 	// alongside the cache rewrite. May be nil in tests / pre-wiring.
 	coordinator MetadataCoordinator
 
+	// bs is a back-reference to the owning BlockStore. Phase 13 BSCAS-05
+	// (Plan 07): the file-level dedup short-circuit needs to reach
+	// BlockStore.cache to fire InvalidateFile on orphaned speculative
+	// chunks. Reading through the back-reference (rather than copying a
+	// `cache` field on the Syncer at construction time) lets test code
+	// swap `bs.cache = rec` after construction and still observe the
+	// invalidation — mirrors the TestClose_ClosesCache pattern. May be
+	// nil in pre-wiring tests; callers must nil-check before use.
+	bs *BlockStore
+
 	config         SyncerConfig
 
 	queue *SyncQueue // Transfer queue for non-blocking operations
@@ -121,6 +131,41 @@ func (m *Syncer) SetCoordinator(c MetadataCoordinator) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.coordinator = c
+}
+
+// TrySpeculativeFileLevelDedup is the public seam for the Phase 13
+// BSCAS-05 file-level dedup short-circuit. Higher layers (the per-share
+// adapter-common Flush path that owns the chunker output) MUST invoke
+// this BEFORE any per-block GetByHash + WriteBlockWithHash loop:
+//
+//	hit, err := bs.Syncer().TrySpeculativeFileLevelDedup(
+//	    ctx, payloadID, speculativeBlocks, currentObjectID, blockStates,
+//	)
+//	if err != nil { return err }
+//	if hit { return nil }       // upload bypassed — target re-used
+//	// fall through to per-block upload path
+//
+// On hit the file's BlockRef list is replaced with the target's,
+// refcounts are swapped under the caller's metadata txn, the per-file
+// append log is truncated, and the cache is invalidated for orphaned
+// speculative chunks. On miss, the post-Flush coordinator hook
+// (persistFileBlocksAfterFlush) finalizes the ObjectID after the
+// per-block path completes.
+//
+// The current per-FileBlock claimBatch + uploadOne loop is not the
+// natural call site (it has no per-file BlockRef context); the
+// integration point lives in the adapter-common write path that already
+// owns the FastCDC chunker output. This public method exposes the
+// engine seam so that path can drive the short-circuit without reaching
+// into private symbols.
+func (m *Syncer) TrySpeculativeFileLevelDedup(
+	ctx context.Context,
+	payloadID string,
+	speculativeBlocks []blockstore.BlockRef,
+	fileObjectID blockstore.ObjectID,
+	blockStates []blockstore.BlockState,
+) (bool, error) {
+	return m.trySpeculativeFileLevelDedup(ctx, payloadID, speculativeBlocks, fileObjectID, blockStates)
 }
 
 // persistFileBlocksAfterFlush is the post-Flush hook (Phase 13 D-05).

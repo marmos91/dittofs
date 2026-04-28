@@ -10,9 +10,9 @@ import (
 )
 
 // fakeCoordinator records every IncrementRefCount/DecrementRefCount/
-// PersistFileBlocks call so engine tests can assert what the engine
-// invoked (and with what arguments) without coupling to the real
-// metadata-store wiring.
+// PersistFileBlocks/FindByObjectID call so engine tests can assert what
+// the engine invoked (and with what arguments) without coupling to the
+// real metadata-store wiring.
 type fakeCoordinator struct {
 	mu sync.Mutex
 
@@ -29,6 +29,38 @@ type fakeCoordinator struct {
 	// DecrementRefCount call. Zero disables.
 	failOnNthDecrement int
 	decCallCount       int
+
+	// Phase 13 BSCAS-05 short-circuit support (Plan 06 RED tests).
+	//
+	// findCalls records every ObjectID looked up via FindByObjectID so
+	// tests can assert call sequence + count.
+	findCalls []blockstore.ObjectID
+	// objectIDPersisted records the ObjectID arg passed on every
+	// PersistFileBlocks call (parallel index to persistCalls). Tests
+	// assert the short-circuit threads the provisional ObjectID through
+	// the same metadata txn that writes Blocks.
+	objectIDPersisted []blockstore.ObjectID
+	// objectIDHits is the seedable hit-table: when FindByObjectID is
+	// invoked with an ObjectID present here, returns the canned BlockRef
+	// list (deep-copied on the way out to keep slice-aliasing discipline
+	// per Phase 12 D-05). Empty / unset key means miss → (nil, nil).
+	objectIDHits map[blockstore.ObjectID][]blockstore.BlockRef
+	// persistErr is a single-shot injection: the next PersistFileBlocks
+	// call returns this error and clears the field. Used by the
+	// concurrent-race RED test (D-14) to simulate the loser detecting a
+	// unique-violation on the partial UNIQUE index.
+	persistErr error
+}
+
+// newFakeCoordinator returns a *fakeCoordinator with all maps initialized
+// so tests can seed objectIDHits without a separate make() call. Tests
+// that don't need short-circuit support may continue to use
+// `&fakeCoordinator{}` directly — the FindByObjectID code paths handle a
+// nil map.
+func newFakeCoordinator() *fakeCoordinator {
+	return &fakeCoordinator{
+		objectIDHits: make(map[blockstore.ObjectID][]blockstore.BlockRef),
+	}
 }
 
 type persistRecord struct {
@@ -64,14 +96,27 @@ func (f *fakeCoordinator) PersistFileBlocks(_ context.Context, payloadID string,
 	defer f.mu.Unlock()
 	cp := append([]blockstore.BlockRef(nil), blocks...)
 	f.persistCalls = append(f.persistCalls, persistRecord{payloadID: payloadID, blocks: cp, objectID: objectID})
+	f.objectIDPersisted = append(f.objectIDPersisted, objectID)
+	if f.persistErr != nil {
+		err := f.persistErr
+		f.persistErr = nil // single-shot
+		return err
+	}
 	return nil
 }
 
-// FindByObjectID — Phase 13 META-02. The fake records nothing: tests
-// that assert short-circuit behavior provide their own canned responses
-// in a future plan; for now the engine seam needs the method to satisfy
-// the MetadataCoordinator interface.
-func (f *fakeCoordinator) FindByObjectID(_ context.Context, _ blockstore.ObjectID) ([]blockstore.BlockRef, error) {
+// FindByObjectID — Phase 13 META-02 / BSCAS-05. Records every lookup
+// in findCalls and returns a deep-copied BlockRef slice when the
+// ObjectID is present in the seeded objectIDHits map. Miss returns
+// (nil, nil). The deep copy preserves Phase 12 D-05 slice-aliasing
+// discipline so tests cannot accidentally mutate seeded state.
+func (f *fakeCoordinator) FindByObjectID(_ context.Context, oid blockstore.ObjectID) ([]blockstore.BlockRef, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.findCalls = append(f.findCalls, oid)
+	if hit, ok := f.objectIDHits[oid]; ok {
+		return append([]blockstore.BlockRef(nil), hit...), nil
+	}
 	return nil, nil
 }
 

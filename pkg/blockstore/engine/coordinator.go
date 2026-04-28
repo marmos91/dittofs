@@ -80,3 +80,23 @@ var ErrMetadataCoordinatorNotWired = errors.New("engine: metadata coordinator no
 // plan flipping WriteAt to return real BlockRefs is forced to implement
 // the method rather than silently succeed.
 var ErrPersistFileBlocksNotWired = errors.New("engine: PersistFileBlocks not wired (Phase 12 deferred — dual-read shim covers reads)")
+
+// ErrObjectIDConflict signals that PersistFileBlocks rejected a write
+// because another file already holds the same FileAttr.ObjectID
+// (Phase 13 D-14 first-committer-wins). The BSCAS-05 short-circuit
+// caller (applyFileLevelDedupHit) catches this, rolls back the
+// just-incremented refcounts on the original target, re-fetches the
+// now-canonical target via FindByObjectID, and retries once.
+//
+// Wrapping: the runtime coordinator wraps three sources into this
+// sentinel via errors.Join:
+//  1. Postgres pgconn.PgError with Code "23505" AND ConstraintName
+//     "files_object_id_idx".
+//  2. Postgres pgconn.PgError with Code "23505" AND empty
+//     ConstraintName whose Message text mentions "object_id"
+//     (defensive fallback — some pg drivers strip ConstraintName under
+//     certain configurations; D-14 detection MUST NOT rely solely on
+//     the constraint label).
+//  3. metadata.errors.StoreError with Code == errors.ErrConflict
+//     (Memory and Badger surface this from Plan 03 maintenance).
+var ErrObjectIDConflict = errors.New("engine: object_id already mapped to another file (Phase 13 D-14)")

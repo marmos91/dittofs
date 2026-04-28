@@ -118,6 +118,16 @@ func New(cfg Config) (*BlockStore, error) {
 	if cfg.Syncer != nil && cfg.Coordinator != nil {
 		cfg.Syncer.SetCoordinator(cfg.Coordinator)
 	}
+	// Phase 13 BSCAS-05 (Plan 07): wire the BlockStore back-reference
+	// onto the Syncer so the file-level dedup short-circuit can reach
+	// BlockStore.cache for surgical invalidation of orphaned speculative
+	// chunks. Reading through the back-reference (instead of caching a
+	// CacheInterface field on the Syncer at construction time) lets test
+	// code swap `bs.cache = rec` post-construction and still observe the
+	// invalidation — mirrors the TestClose_ClosesCache pattern.
+	if cfg.Syncer != nil {
+		cfg.Syncer.bs = bs
+	}
 	return bs, nil
 }
 

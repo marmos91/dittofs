@@ -328,6 +328,16 @@ func (s *MemoryStore) DeleteAllBlockFiles(_ context.Context, payloadID string) e
 	return nil
 }
 
+// DeleteAppendLog is a no-op for the in-memory local store: there is no
+// per-file append log. Required to satisfy the local.LocalStore
+// interface widened in Phase 13 BSCAS-05 (Plan 07) so the engine syncer
+// can invoke DeleteAppendLog uniformly across backends. The concrete
+// FS-backed implementation does the real work; in-memory test fixtures
+// have nothing to truncate.
+func (s *MemoryStore) DeleteAppendLog(_ context.Context, _ string) error {
+	return nil
+}
+
 // TruncateBlockFiles removes all blocks whose start offset >= newSize.
 func (s *MemoryStore) TruncateBlockFiles(_ context.Context, payloadID string, newSize uint64) error {
 	s.mu.Lock()
