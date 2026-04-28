@@ -34,6 +34,7 @@ type fakeCoordinator struct {
 type persistRecord struct {
 	payloadID string
 	blocks    []blockstore.BlockRef
+	objectID  blockstore.ObjectID
 }
 
 func (f *fakeCoordinator) IncrementRefCount(_ context.Context, hash blockstore.ContentHash) error {
@@ -58,12 +59,20 @@ func (f *fakeCoordinator) DecrementRefCount(_ context.Context, hash blockstore.C
 	return 0, nil
 }
 
-func (f *fakeCoordinator) PersistFileBlocks(_ context.Context, payloadID string, blocks []blockstore.BlockRef) error {
+func (f *fakeCoordinator) PersistFileBlocks(_ context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cp := append([]blockstore.BlockRef(nil), blocks...)
-	f.persistCalls = append(f.persistCalls, persistRecord{payloadID: payloadID, blocks: cp})
+	f.persistCalls = append(f.persistCalls, persistRecord{payloadID: payloadID, blocks: cp, objectID: objectID})
 	return nil
+}
+
+// FindByObjectID — Phase 13 META-02. The fake records nothing: tests
+// that assert short-circuit behavior provide their own canned responses
+// in a future plan; for now the engine seam needs the method to satisfy
+// the MetadataCoordinator interface.
+func (f *fakeCoordinator) FindByObjectID(_ context.Context, _ blockstore.ObjectID) ([]blockstore.BlockRef, error) {
+	return nil, nil
 }
 
 // Compile-time assertion: fakeCoordinator satisfies MetadataCoordinator.
@@ -123,7 +132,7 @@ func TestMetadataCoordinator_FakeImpl_RecordsCalls(t *testing.T) {
 	if _, err := fc.DecrementRefCount(ctx, h2); err != nil {
 		t.Fatalf("Decrement: %v", err)
 	}
-	if err := fc.PersistFileBlocks(ctx, "pid", []blockstore.BlockRef{{Hash: h1, Offset: 0, Size: 1}}); err != nil {
+	if err := fc.PersistFileBlocks(ctx, "pid", []blockstore.BlockRef{{Hash: h1, Offset: 0, Size: 1}}, blockstore.ObjectID{}); err != nil {
 		t.Fatalf("Persist: %v", err)
 	}
 

@@ -50,6 +50,15 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		runBlockRefOpsTests(t, factory)
 	})
 
+	// ObjectIDOps: META-02 conformance for FileAttr.ObjectID round-trip,
+	// FindByObjectID lookup, mutation lifecycle, and the D-14 first-
+	// committer-wins concurrent-quiesce race (Phase 13 Plan 05). All
+	// three backends implement ObjectIDIndexAccessor so the race
+	// scenario asserts index-row counts directly rather than skipping.
+	t.Run("ObjectIDOps", func(t *testing.T) {
+		runObjectIDOpsTests(t, factory)
+	})
+
 	// INV02Fuzz: Phase 12 D-36 property-based fuzzer for the global
 	// invariant ∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks). Runs
 	// 10 concurrent goroutines × 10 ops each (create/delete/copy mix)

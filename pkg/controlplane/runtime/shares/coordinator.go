@@ -133,13 +133,15 @@ func (c *metadataCoordinator) DecrementRefCount(ctx context.Context, hash blocks
 // invokes this once per uploaded chunk so the canonical FileAttr.Blocks
 // list reflects every Remote BlockRef the engine has produced.
 //
-// The current implementation is a placeholder: routing payloadID →
-// FileHandle requires either a reverse-index in the metadata store or a
-// caller-supplied handle. Phase 12 plans 08+ wire the call site through
-// the per-share runtime service which has the file handle in context;
-// for now this method documents the contract and returns nil so plans
-// 08+ can drop in the real implementation without churning the engine.
-func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID string, blocks []blockstore.BlockRef) error {
+// Phase 13 D-05/D-06: the syncer also computes the BLAKE3 Merkle-root
+// ObjectID over `blocks` and threads it through this hook so the
+// metadata write atomically updates both Blocks AND ObjectID in the same
+// PutFile/transaction. Until the payloadID → fileHandle → PutFile chain
+// is wired (Phase 12 plan 08+), this method returns
+// engine.ErrPersistFileBlocksNotWired so the syncer's post-Flush hook
+// recognizes the deferred-wiring case and logs rather than silently
+// dropping the BlockRef list.
+func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error {
 	// Phase 12 plan 07: the engine seam exists; production wiring of the
 	// payloadID → fileHandle → PutFile chain lands in plan 08 alongside
 	// the adapter common helper refactor (which has the file handle).
@@ -157,8 +159,33 @@ func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID s
 	// warning so the silent-drop window is observable; a future plan that
 	// flips WriteAt to return real BlockRefs is forced to implement this
 	// method, not silently succeed.
+	//
+	// Phase 13 wiring template (Plan 04): once the payloadID → file
+	// resolution chain lands, the body becomes:
+	//   return c.metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
+	//     file, err := tx.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
+	//     if err != nil { return err }
+	//     file.FileAttr.Blocks = blocks
+	//     file.FileAttr.ObjectID = objectID  // Phase 13 D-05/D-06 — same txn.
+	//     return tx.PutFile(ctx, file)
+	//   })
 	_ = ctx
 	_ = payloadID
 	_ = blocks
+	_ = objectID
 	return engine.ErrPersistFileBlocksNotWired
+}
+
+// FindByObjectID forwards to the underlying metadata store's
+// FindByObjectID lookup. Returns (nil, nil) on zero-valued ObjectID
+// (defense-in-depth — backends also short-circuit) and on cache miss.
+//
+// Phase 13 BSCAS-05 / D-12: callers (Plan 07 short-circuit) use this
+// to detect whether a provisional ObjectID matches a previously-quiesced
+// file's BlockRef list, enabling file-level dedup at write time.
+func (c *metadataCoordinator) FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error) {
+	if objectID.IsZero() {
+		return nil, nil
+	}
+	return c.metadataStore.FindByObjectID(ctx, objectID)
 }

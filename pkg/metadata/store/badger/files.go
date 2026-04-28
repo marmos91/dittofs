@@ -2,9 +2,13 @@ package badger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	badgerdb "github.com/dgraph-io/badger/v4"
+	"github.com/google/uuid"
+
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -123,6 +127,112 @@ func (s *BadgerMetadataStore) GetFileByPayloadID(ctx context.Context, payloadID 
 	}
 
 	return result, nil
+}
+
+// FindByObjectID looks up a file by its Merkle-root ObjectID via the
+// secondary key obj:<hex> -> file UUID (binary-marshaled). Returns
+// (nil, nil) on miss (zero-valued input, missing index entry, or index
+// drift where the indexed file row no longer exists). Phase 13 META-02 /
+// D-12.
+//
+// Block list is deep-copied out of the txn-scoped decoded file to avoid
+// slice aliasing into Badger's internal buffers (Phase 12 D-05 discipline).
+func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if objectID.IsZero() {
+		return nil, nil
+	}
+
+	var blocks []blockstore.BlockRef
+	err := s.db.View(func(txn *badgerdb.Txn) error {
+		item, err := txn.Get(keyObjectID(objectID))
+		if errors.Is(err, badgerdb.ErrKeyNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		raw, err := item.ValueCopy(nil)
+		if err != nil {
+			return err
+		}
+
+		var fileID uuid.UUID
+		if err := fileID.UnmarshalBinary(raw); err != nil {
+			return fmt.Errorf("badger FindByObjectID: invalid id bytes: %w", err)
+		}
+
+		// Load the file row by primary key.
+		fileItem, err := txn.Get(keyFile(fileID))
+		if errors.Is(err, badgerdb.ErrKeyNotFound) {
+			// Index drift — secondary key points at a removed file.
+			// Treat as miss; the INV-02 audit reconciles drift.
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		rawFile, err := fileItem.ValueCopy(nil)
+		if err != nil {
+			return err
+		}
+
+		f, err := decodeFile(rawFile)
+		if err != nil {
+			return err
+		}
+
+		// Deep-copy the BlockRef slice so the caller's view does not
+		// alias the JSON-decoded buffer (Phase 12 D-05).
+		if len(f.FileAttr.Blocks) > 0 {
+			blocks = append([]blockstore.BlockRef(nil), f.FileAttr.Blocks...)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return blocks, nil
+}
+
+// CountObjectIDIndexRows implements the storetest.ObjectIDIndexAccessor
+// optional capability. Returns 1 if the obj:<hex> secondary key is
+// present, 0 otherwise.
+//
+// Test-only — never call from production code. Used by the Phase 13
+// Plan 05 ConcurrentQuiesceRace scenario to assert exactly one row
+// survives the D-14 first-committer-wins resolution.
+//
+// Zero-valued objectID inputs short-circuit to (0, nil) without backend
+// access, mirroring FindByObjectID's partial/skip-zero discipline.
+func (s *BadgerMetadataStore) CountObjectIDIndexRows(ctx context.Context, objectID blockstore.ObjectID) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if objectID.IsZero() {
+		return 0, nil
+	}
+
+	var n int
+	err := s.db.View(func(txn *badgerdb.Txn) error {
+		_, gerr := txn.Get(keyObjectID(objectID))
+		if gerr == nil {
+			n = 1
+			return nil
+		}
+		if errors.Is(gerr, badgerdb.ErrKeyNotFound) {
+			return nil
+		}
+		return gerr
+	})
+	if err != nil {
+		return 0, fmt.Errorf("badger CountObjectIDIndexRows: %w", err)
+	}
+	return n, nil
 }
 
 // ============================================================================

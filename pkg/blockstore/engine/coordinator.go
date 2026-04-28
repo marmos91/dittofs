@@ -39,12 +39,27 @@ type MetadataCoordinator interface {
 	// and Truncate (per hash dropped past the new size).
 	DecrementRefCount(ctx context.Context, hash blockstore.ContentHash) (uint32, error)
 
-	// PersistFileBlocks updates FileAttr.Blocks for a given file in a
-	// single metadata txn. Engine invokes this from the syncer's
-	// post-Flush path (where new BlockRefs are produced from a chunk
-	// upload). The runtime wrapper resolves payloadID → fileHandle and
-	// runs PutFile in one txn.
-	PersistFileBlocks(ctx context.Context, payloadID string, blocks []blockstore.BlockRef) error
+	// PersistFileBlocks updates FileAttr.Blocks AND FileAttr.ObjectID
+	// for a given file in a single metadata txn. Engine invokes this
+	// from the syncer's post-Flush path (where new BlockRefs are
+	// produced from a chunk upload). The runtime wrapper resolves
+	// payloadID → fileHandle and runs PutFile in one txn.
+	//
+	// Phase 13 D-05/D-06: ObjectID is the BLAKE3 Merkle root over
+	// blocks (computed by syncer.persistFileBlocksAfterFlush via
+	// blockstore.ComputeObjectID). Pass an all-zero ObjectID to mean
+	// "do not update ObjectID" (e.g., partial flushes — but those
+	// currently never reach this hook per Flush semantics).
+	PersistFileBlocks(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error
+
+	// FindByObjectID looks up a previously-quiesced file in the
+	// metadata store by Merkle-root ObjectID. Returns (nil, nil) on
+	// miss. Used by the BSCAS-05 file-level dedup short-circuit
+	// (Plan 07). Per-metadata-store scope, not per-share (D-13).
+	//
+	// Implementations short-circuit on zero-valued ObjectID and return
+	// (nil, nil) without touching the metadata store.
+	FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error)
 }
 
 // ErrMetadataCoordinatorNotWired is returned when an engine method

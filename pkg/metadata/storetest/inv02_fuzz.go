@@ -34,6 +34,16 @@ import (
 //   - silent backend bugs that under/over-count refs
 // ============================================================================
 
+// Operation constants for the INV-02 fuzz worker switch. Phase 13 Plan 05
+// adds opMutateObjectID to exercise the D-12 secondary-index discipline
+// alongside the original create/delete/copy mix.
+const (
+	opCreate         = 0
+	opDelete         = 1
+	opCopy           = 2
+	opMutateObjectID = 3
+)
+
 // RefCountLeakInjector is an optional backend capability used by the
 // INV-02 leak-injection scenario to artificially desynchronize a
 // single FileBlock's RefCount from the FileAttr.Blocks references that
@@ -82,20 +92,25 @@ func testINV02_PropertyFuzz(t *testing.T, factory StoreFactory) {
 			rng := rand.New(rand.NewSource(int64(workerID) + 1))
 			ws := &workerState{}
 			for op := 0; op < opsPerWorker; op++ {
-				switch rng.Intn(3) {
-				case 0:
+				switch rng.Intn(4) {
+				case opCreate:
 					if err := fuzzCreateFile(ctx, store, shareName, rootHandle, workerID, op, rng, ws); err != nil {
 						t.Errorf("worker %d op %d (create): %v", workerID, op, err)
 						return
 					}
-				case 1:
+				case opDelete:
 					if err := fuzzDeleteFile(ctx, store, rootHandle, rng, ws); err != nil {
 						t.Errorf("worker %d op %d (delete): %v", workerID, op, err)
 						return
 					}
-				case 2:
+				case opCopy:
 					if err := fuzzCopyFile(ctx, store, shareName, rootHandle, workerID, op, rng, ws); err != nil {
 						t.Errorf("worker %d op %d (copy): %v", workerID, op, err)
+						return
+					}
+				case opMutateObjectID:
+					if err := fuzzMutateObjectID(ctx, store, rng, ws); err != nil {
+						t.Errorf("worker %d op %d (mutate-objectid): %v", workerID, op, err)
 						return
 					}
 				}
@@ -117,6 +132,38 @@ func testINV02_PropertyFuzz(t *testing.T, factory StoreFactory) {
 		t.Fatalf("INV-02 violation: ∑len(Blocks)=%d, ∑RefCount=%d, delta=%d",
 			totalRefs, totalRefCount, delta)
 	}
+
+	// Phase 13 Plan 05: ObjectID drift assertion. Walk every regular
+	// file in the share; for any file with a non-zero ObjectID, recompute
+	// it from its current Blocks list and assert byte-equality. A non-
+	// zero ObjectID always reflects a fully-quiesced state (D-06); if
+	// the recomputed value differs, the index discipline drifted somewhere
+	// in the create/delete/copy/mutate cycle.
+	if err := assertObjectIDDrift(ctx, store, shareName); err != nil {
+		t.Fatalf("ObjectID drift detected: %v", err)
+	}
+}
+
+// assertObjectIDDrift walks every regular file in shareName and asserts
+// that ComputeObjectID(file.FileAttr.Blocks) == file.FileAttr.ObjectID
+// for every non-zero stored ObjectID. Zero ObjectIDs (never quiesced or
+// post-mutation pre-quiesce) are tolerated and left unchecked.
+func assertObjectIDDrift(ctx context.Context, store metadata.MetadataStore, shareName string) error {
+	rootHandle, err := store.GetRootHandle(ctx, shareName)
+	if err != nil {
+		return fmt.Errorf("GetRootHandle: %w", err)
+	}
+	return walkShareFiles(ctx, store, rootHandle, func(f *metadata.File) error {
+		if f.FileAttr.ObjectID.IsZero() {
+			return nil
+		}
+		recomputed := blockstore.ComputeObjectID(f.FileAttr.Blocks)
+		if recomputed != f.FileAttr.ObjectID {
+			return fmt.Errorf("file %s: stored ObjectID %s != recompute(Blocks) %s",
+				f.ID, f.FileAttr.ObjectID.String(), recomputed.String())
+		}
+		return nil
+	})
 }
 
 // testINV02_LeakInjection asserts that the storetest reconciliation
@@ -380,6 +427,64 @@ func fuzzCopyFile(ctx context.Context, store metadata.MetadataStore, shareName s
 	dstBlockIDs := append([]string(nil), src.blockIDs...)
 	ws.files = append(ws.files, fuzzFileEntry{handle: handle, name: name, blockIDs: dstBlockIDs})
 	return nil
+}
+
+// fuzzMutateObjectID picks a random file owned by this worker, recomputes
+// its ObjectID from the current Blocks slice, and PutFile-s the result so
+// the secondary index gets refreshed. Mirrors the engine's post-Flush
+// coordinator hook (D-05) at the storetest level — independent of any
+// engine wiring, but exercising the SAME index discipline. Phase 13 D-04
+// confirms recompute-stability is the conformance contract.
+//
+// First-committer-wins (D-14) conflicts are tolerated: independent
+// workers may ship distinct hashes (the create helper seeds per-worker)
+// but the test harness still treats ErrConflict / ErrAlreadyExists as a
+// non-fatal signal so the fuzzer doesn't false-fail.
+func fuzzMutateObjectID(ctx context.Context, store metadata.MetadataStore, rng *rand.Rand, ws *workerState) error {
+	if len(ws.files) == 0 {
+		return nil // nothing to mutate; not an error
+	}
+	idx := rng.Intn(len(ws.files))
+	entry := ws.files[idx]
+
+	f, err := store.GetFile(ctx, entry.handle)
+	if err != nil {
+		// Another worker may have deleted the file between our last op
+		// and this one (cross-worker delete is improbable per the
+		// per-worker isolation but the harness is defensive).
+		var storeErr *metadata.StoreError
+		if errors.As(err, &storeErr) && storeErr.Code == metadata.ErrNotFound {
+			return nil
+		}
+		return fmt.Errorf("GetFile: %w", err)
+	}
+
+	f.FileAttr.ObjectID = blockstore.ComputeObjectID(f.FileAttr.Blocks)
+	if err := store.PutFile(ctx, f); err != nil {
+		// D-14 first-committer-wins: another worker may have claimed
+		// the same ObjectID (improbable for distinct seed-derived
+		// hashes, but legal). Treat as non-fatal.
+		if isConcurrentQuiesceConflict(err) {
+			return nil
+		}
+		return fmt.Errorf("PutFile: %w", err)
+	}
+	return nil
+}
+
+// isConcurrentQuiesceConflict returns true for the per-backend conflict
+// signals surfaced by D-14 first-committer-wins on PutFile. Mirrors the
+// concurrentRaceErrIsConflict helper in objectid_roundtrip.go.
+func isConcurrentQuiesceConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	var storeErr *metadata.StoreError
+	if errors.As(err, &storeErr) {
+		return storeErr.Code == metadata.ErrConflict ||
+			storeErr.Code == metadata.ErrAlreadyExists
+	}
+	return false
 }
 
 // ============================================================================

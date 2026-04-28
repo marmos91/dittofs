@@ -330,6 +330,29 @@ type MetadataStore interface {
 	// pre-CAS) are emitted; callers skip them as needed.
 	EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error
 
+	// FindByObjectID looks up a file by its Merkle-root ObjectID
+	// (Phase 13 META-02 / BSCAS-05 / D-12). Returns (nil, nil) on miss
+	// (no row matches); non-nil result carries the canonical BlockRef
+	// list of the matching file (per-metadata-store scope, NOT
+	// per-share — D-13).
+	//
+	// All three backends maintain a secondary index from ObjectID to
+	// file row:
+	//   - Postgres: partial unique index files_object_id_idx ON
+	//     files(object_id) WHERE object_id IS NOT NULL.
+	//   - Badger: secondary key obj:{hex} -> file_id, maintained inside
+	//     each Put/Delete write batch.
+	//   - Memory: map[ContentHash]string (handle key) guarded by the
+	//     store mutex.
+	//
+	// Zero-valued ObjectID (legacy / pre-quiesce) MUST NOT match any
+	// row — implementations short-circuit and return (nil, nil) on zero
+	// input. The short-circuit caller (BSCAS-05) only invokes this with
+	// a non-zero provisional ObjectID.
+	//
+	// Conformance scenarios live in pkg/metadata/storetest/objectid_*.go.
+	FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error)
+
 	// GetFileBlock retrieves a FileBlock by its ID. Engine-internal
 	// surface: Phase 12 (META-03 / D-09) narrowed the public
 	// FileBlockStore to 6 methods, but the read-path resolver

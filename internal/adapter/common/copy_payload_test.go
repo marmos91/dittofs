@@ -28,6 +28,7 @@ type fakeCoordinator struct {
 type persistCall struct {
 	payloadID string
 	blocks    []blockstore.BlockRef
+	objectID  blockstore.ObjectID
 }
 
 func (f *fakeCoordinator) IncrementRefCount(_ context.Context, hash blockstore.ContentHash) error {
@@ -43,9 +44,17 @@ func (f *fakeCoordinator) DecrementRefCount(_ context.Context, hash blockstore.C
 	return 0, nil
 }
 
-func (f *fakeCoordinator) PersistFileBlocks(_ context.Context, payloadID string, blocks []blockstore.BlockRef) error {
-	f.persistCalls = append(f.persistCalls, persistCall{payloadID: payloadID, blocks: blocks})
+func (f *fakeCoordinator) PersistFileBlocks(_ context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error {
+	f.persistCalls = append(f.persistCalls, persistCall{payloadID: payloadID, blocks: blocks, objectID: objectID})
 	return nil
+}
+
+// FindByObjectID — Phase 13 META-02 stub. Adapter-common tests don't
+// exercise short-circuit lookups (those live in pkg/blockstore/engine
+// and pkg/metadata/storetest); satisfy the interface so the fake
+// satisfies engine.MetadataCoordinator.
+func (f *fakeCoordinator) FindByObjectID(_ context.Context, _ blockstore.ObjectID) ([]blockstore.BlockRef, error) {
+	return nil, nil
 }
 
 // putTestFile creates a file with the given Blocks list in the metadata

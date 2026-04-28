@@ -4,8 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -346,6 +350,36 @@ func (s *PostgresMetadataStore) PutFilesystemMeta(ctx context.Context, shareName
 // Payload ID Operations
 // ============================================================================
 
+// FindByObjectID looks up a file by its Merkle-root ObjectID and returns the
+// canonical BlockRef list of the matching row. Returns (nil, nil) on miss
+// (zero-valued input or no matching row). Phase 13 META-02 / D-12.
+//
+// Uses the partial UNIQUE index files_object_id_idx; the LIMIT 1 is defensive
+// (the partial UNIQUE constraint already enforces single-row matches for
+// non-NULL object_id values).
+func (s *PostgresMetadataStore) FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if objectID.IsZero() {
+		return nil, nil
+	}
+
+	var fileID uuid.UUID
+	err := s.queryRow(ctx,
+		`SELECT id FROM files WHERE object_id = $1 LIMIT 1`,
+		objectID[:],
+	).Scan(&fileID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, mapPgError(err, "FindByObjectID", objectID.String())
+	}
+
+	return s.loadFileBlockRefs(ctx, fileID)
+}
+
 // GetFileByPayloadID retrieves a file by its content ID (used by cache flusher)
 func (s *PostgresMetadataStore) GetFileByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (*metadata.File, error) {
 	if payloadID == "" {
@@ -378,4 +412,29 @@ func (s *PostgresMetadataStore) GetFileByPayloadID(ctx context.Context, payloadI
 	}
 
 	return file, nil
+}
+
+// CountObjectIDIndexRows implements the storetest.ObjectIDIndexAccessor
+// optional capability. Returns the number of files indexed under the
+// given objectID via the partial UNIQUE index files_object_id_idx.
+//
+// Test-only — never call from production code. Used by the Phase 13
+// Plan 05 ConcurrentQuiesceRace scenario to assert exactly one row
+// survives the D-14 first-committer-wins resolution.
+//
+// Zero-valued objectID inputs short-circuit to (0, nil) without backend
+// access, mirroring FindByObjectID's partial/skip-zero discipline.
+func (s *PostgresMetadataStore) CountObjectIDIndexRows(ctx context.Context, objectID blockstore.ObjectID) (int, error) {
+	if objectID.IsZero() {
+		return 0, nil
+	}
+	var n int
+	err := s.queryRow(ctx,
+		`SELECT count(*) FROM files WHERE object_id = $1`,
+		objectID[:],
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count files.object_id: %w", err)
+	}
+	return n, nil
 }

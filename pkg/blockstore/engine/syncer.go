@@ -123,26 +123,45 @@ func (m *Syncer) SetCoordinator(c MetadataCoordinator) {
 	m.coordinator = c
 }
 
-// persistFileBlocksAfterFlush is the post-Flush hook: invokes
-// coordinator.PersistFileBlocks once the chunks are durable in CAS.
-// Plan 07 lays the seam; Plan 09 wires the actual call from the
-// uploadOne success path alongside the cache rewrite.
+// persistFileBlocksAfterFlush is the post-Flush hook (Phase 13 D-05).
+// Invokes coordinator.PersistFileBlocks with the BlockRef list AND the
+// BLAKE3 Merkle-root ObjectID computed from those blocks.
 //
-// WR-02 (Phase 12 review iteration 1): the production coordinator returns
-// ErrPersistFileBlocksNotWired until the payloadID → fileHandle chain is
-// wired. Surface it as a logged warning rather than a hard error — the
-// dual-read shim (D-20) keeps reads correct so the silent-drop window is
-// recoverable; logging makes it observable for operators.
+// D-06 invariant: this hook fires ONLY when every block is Remote
+// (full quiesce). Partial flushes never reach here — Flush() returns
+// Finalized:false. The ObjectID written here therefore always reflects
+// a fully-Remote consistent state (no in-flight blocks).
+//
+// Empty blocks list: ComputeObjectID returns the canonical empty-file
+// constant (BLAKE3 of the domain-separation prefix alone — D-03). The
+// runtime coordinator writes whatever the syncer passed; the lookup
+// index treats only all-zero ObjectIDs as "never quiesced", so the
+// canonical empty-file fingerprint is a real, queryable identity.
+//
+// WR-02 (Phase 12 review iteration 1): the production coordinator may
+// return ErrPersistFileBlocksNotWired until the payloadID → fileHandle
+// chain is wired. Surface as Warn rather than hard error so the
+// dual-read shim (D-20) keeps reads correct while the gap is observable.
+//
+// Phase 13 D-20: success path logs at DEBUG (matches Phase 11/12
+// cadence; no new Prometheus surface this phase).
 func (m *Syncer) persistFileBlocksAfterFlush(ctx context.Context, payloadID string, blocks []blockstore.BlockRef) error {
 	if m.coordinator == nil {
 		return nil
 	}
-	err := m.coordinator.PersistFileBlocks(ctx, payloadID, blocks)
+	objectID := blockstore.ComputeObjectID(blocks)
+	err := m.coordinator.PersistFileBlocks(ctx, payloadID, blocks, objectID)
 	if errors.Is(err, ErrPersistFileBlocksNotWired) {
 		logger.Warn("Syncer: PersistFileBlocks coordinator wiring deferred — dropping post-Flush BlockRef list",
 			"payloadID", payloadID,
 			"blocks", len(blocks))
 		return nil
+	}
+	if err == nil {
+		logger.Debug("post-flush ObjectID persisted",
+			"payloadID", payloadID,
+			"blocks", len(blocks),
+			"objectID", objectID.String())
 	}
 	return err
 }
