@@ -721,31 +721,55 @@ func (h *Handler) setFileInfoFromStore(
 		// Children without an H-lease are no-op'd by ComputeLeaseBreakTo and
 		// stay open → fall through to the open-child recheck below, which
 		// produces the immediate ACCESS_DENIED for the "no-hleases" case.
-		if openFile.IsDirectory && h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
-			children := h.snapshotOpenChildren(openFile.MetadataHandle)
-			for _, child := range children {
-				if err := h.LeaseManager.BreakHandleLeasesOnOpenAsync(
-					lock.FileHandle(child), openFile.ShareName, lock.BreakReasonSharingViolation,
-				); err != nil {
-					logger.Debug("SET_INFO: dir-rename child break dispatch failed",
-						"child", string(child), "error", err)
+		if openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
+			if h.LeaseManager != nil {
+				children := h.snapshotOpenChildren(openFile.MetadataHandle)
+				for _, child := range children {
+					if err := h.LeaseManager.BreakHandleLeasesOnOpenAsync(
+						lock.FileHandle(child), openFile.ShareName, lock.BreakReasonSharingViolation,
+					); err != nil {
+						logger.Debug("SET_INFO: dir-rename child break dispatch failed",
+							"child", string(child), "error", err)
+					}
+				}
+				for _, child := range children {
+					waitCtx, cancelChild := context.WithTimeout(authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
+					if err := h.LeaseManager.WaitForOtherKeyBreaks(
+						waitCtx, lock.FileHandle(child), openFile.ShareName, [16]byte{},
+					); err != nil {
+						logger.Debug("SET_INFO: dir-rename child break wait completed",
+							"child", string(child), "error", err)
+					}
+					cancelChild()
 				}
 			}
-			for _, child := range children {
-				waitCtx, cancelChild := context.WithTimeout(authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
-				if err := h.LeaseManager.WaitForOtherKeyBreaks(
-					waitCtx, lock.FileHandle(child), openFile.ShareName, [16]byte{},
-				); err != nil {
-					logger.Debug("SET_INFO: dir-rename child break wait completed",
-						"child", string(child), "error", err)
-				}
-				cancelChild()
-			}
+			// Open-child recheck always runs (even without LeaseManager): per
+			// MS-FSA §2.1.5.14, a directory rename is blocked by ANY open
+			// descendant (smbtorture rename_dir_openfile: an open child file
+			// with no lease at all must still produce ACCESS_DENIED).
 			if h.anyOpenChild(openFile.MetadataHandle) {
 				logger.Debug("SET_INFO: dir rename blocked by open child",
 					"dir", openFile.Path)
 				return setInfoStatus(types.StatusAccessDenied), nil
 			}
+		}
+
+		// Per MS-FSA §2.1.5.1.2 + §2.1.5.14.10 (mirroring Samba's
+		// `smbd_smb2_setinfo_rename_dst_parent_check`), rename mutates the
+		// destination parent directory's contents. Any open handle on the dst
+		// parent that holds DELETE access OR was opened without
+		// FILE_SHARE_WRITE blocks the rename with STATUS_SHARING_VIOLATION.
+		// Covers smbtorture smb2.rename:
+		//   - share_delete_and_delete_access (parent has DELETE access)
+		//   - no_share_delete_but_delete_access (parent has DELETE access)
+		//   - no_share_delete_no_delete_access (parent share=0)
+		// Excludes the renamer's own FileID so a self-handle on the parent
+		// (e.g. directory rename via its own dir handle) is not self-blocked.
+		if h.checkRenameDstParentShareMode(toDir, openFile.FileID) {
+			logger.Debug("SET_INFO: rename blocked by dst-parent share mode",
+				"path", openFile.Path,
+				"dstParent", fmt.Sprintf("%x", toDir))
+			return setInfoStatus(types.StatusSharingViolation), nil
 		}
 
 		// Save old path info for notification before modification

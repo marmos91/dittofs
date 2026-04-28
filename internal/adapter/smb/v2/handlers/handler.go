@@ -1277,6 +1277,53 @@ func (h *Handler) hasOpenHandleOnFile(targetMeta metadata.FileHandle, excludeFil
 	return conflict
 }
 
+// checkRenameDstParentShareMode reports whether any open handle on the
+// destination parent directory blocks a rename per MS-FSA §2.1.5.1.2 +
+// §2.1.5.14.10. Mirrors Samba's `smbd_smb2_setinfo_rename_dst_parent_check`
+// (source3/smbd/smb2_setinfo.c) + `has_delete_opens` (source3/smbd/close.c):
+// rename of a child mutates the parent directory's contents, so any handle
+// on the parent that
+//
+//   - has DELETE access (SEC_STD_DELETE), or
+//   - was opened without FILE_SHARE_WRITE
+//
+// produces STATUS_SHARING_VIOLATION. The renamer's own FileID is excluded so
+// a single-handle rename on the parent itself isn't blocked by self.
+//
+// Tested by smbtorture smb2.rename:
+//   - share_delete_and_delete_access: parent share=R|W|D, parent has DELETE → fail
+//   - no_share_delete_but_delete_access: parent share=0, parent has DELETE → fail
+//   - share_delete_no_delete_access: parent share=R|W|D, no DELETE → pass
+//   - no_share_delete_no_delete_access: parent share=0, no DELETE → fail (no FILE_SHARE_WRITE)
+func (h *Handler) checkRenameDstParentShareMode(parentHandle metadata.FileHandle, excludeFileID [16]byte) bool {
+	if len(parentHandle) == 0 {
+		return false
+	}
+	const (
+		fileShareWrite = uint32(types.FileShareWrite)
+		secStdDelete   = uint32(types.Delete)
+	)
+	conflict := false
+	h.files.Range(func(_, value any) bool {
+		other := value.(*OpenFile)
+		if other.FileID == excludeFileID {
+			return true
+		}
+		if len(other.MetadataHandle) == 0 {
+			return true
+		}
+		if !bytes.Equal(other.MetadataHandle, parentHandle) {
+			return true
+		}
+		if other.DesiredAccess&secStdDelete != 0 || other.ShareAccess&fileShareWrite == 0 {
+			conflict = true
+			return false
+		}
+		return true
+	})
+	return conflict
+}
+
 // hasReadAccess reports whether the given access mask includes read access.
 // Checks FILE_READ_DATA, GENERIC_READ, GENERIC_ALL, and MAXIMUM_ALLOWED.
 func hasReadAccess(access uint32) bool {
