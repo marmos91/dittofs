@@ -109,11 +109,12 @@ func (h *Handler) parkLockOnConflict(
 // conflictHolders returns the OwnerIDs of locks currently conflicting with
 // fileLock. Used by parkLockOnConflict to feed the Wait-For Graph.
 //
-// Implementation: TestLock returns the FIRST conflicting lock; we then walk
-// ListLocks to surface the rest. We tolerate a slightly stale view — a
-// conflict that resolves between TestLock and the WFG check just makes us
-// wait briefly on a stale edge, which is harmless. A stale "no conflict"
-// view is impossible because TestLock returned non-nil.
+// Implementation: walks ListLocks for the handle and filters by
+// IsLockConflicting against fileLock. We tolerate a slightly stale view —
+// conflicts that resolve between this snapshot and the WFG check just make
+// us wait briefly on a stale edge, which is harmless. A stale "no conflict"
+// view is impossible because the synchronous LockFile attempt that triggered
+// parking already returned ErrLocked.
 func (h *Handler) conflictHolders(handle metadata.FileHandle, fileLock metadata.FileLock) []string {
 	if h.Registry == nil {
 		return nil
@@ -209,7 +210,13 @@ func (h *Handler) resumePendingLock(
 			//       registry entry and fired its own callback; the
 			//       Unregister below will return nil and we exit cleanly
 			//       without a duplicate response.
-			finalStatus = h.mapLockConflictStatus(pending.OwnerID, lockElem, fileLock.Exclusive)
+			//
+			// Only compute the conflict status (which mutates lastDeniedLocks)
+			// in case (a). On external cancel, the canceller owns delivery and
+			// the mutation would taint the next retry from the same OpenID.
+			if goerrors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+				finalStatus = h.mapLockConflictStatus(pending.OwnerID, lockElem, fileLock.Exclusive)
+			}
 			finalBody = nil
 			goto deliver
 		case <-ticker.C:
