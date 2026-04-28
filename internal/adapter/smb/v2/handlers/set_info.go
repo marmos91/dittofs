@@ -857,6 +857,10 @@ func (h *Handler) setFileInfoFromStore(
 			deletePending = buffer[0] != 0
 		}
 
+		// Capture pre-state to suppress redundant break dispatches when the
+		// disposition is reaffirmed (deletePending stays true).
+		wasDeletePending := openFile.DeletePending
+
 		// Validate we have parent info for deletion
 		if deletePending && len(openFile.ParentHandle) == 0 {
 			logger.Debug("SET_INFO: cannot delete root directory", "path", openFile.Path)
@@ -883,6 +887,28 @@ func (h *Handler) setFileInfoFromStore(
 						return setInfoStatus(types.StatusCannotDelete), nil
 					}
 				}
+			}
+		}
+
+		// Per MS-FSA 2.1.5.14.3 / Samba source3/smbd/smb2_setinfo.c
+		// (smbd_smb2_setinfo_lease_break_fsp_check): when delete disposition
+		// is *being set* on a non-directory file, strip Handle caching from
+		// every other holder's lease (RH -> R, RWH -> RW). The file is on
+		// its way out, so cached handles cannot be reopened. Excluding by
+		// our own LeaseKey honors the MS-SMB2 3.3.5.9 nobreakself rule.
+		// Required by smbtorture smb2.lease.unlink.
+		if deletePending && !openFile.IsDirectory && !wasDeletePending &&
+			h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
+			lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
+			var excludeOwner *lock.LockOwner
+			if openFile.LeaseKey != ([16]byte{}) {
+				excludeOwner = &lock.LockOwner{ExcludeLeaseKey: openFile.LeaseKey}
+			}
+			if breakErr := h.LeaseManager.BreakFileHandleLeasesOnDelete(
+				lockFileHandle, openFile.ShareName, excludeOwner,
+			); breakErr != nil {
+				logger.Debug("SET_INFO: delete-disposition handle lease break failed",
+					"path", openFile.Path, "error", breakErr)
 			}
 		}
 

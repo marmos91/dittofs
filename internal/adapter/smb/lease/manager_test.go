@@ -437,3 +437,55 @@ func TestBreakLeasesOnRename_SameSrcDst_NoDstBreak(t *testing.T) {
 		t.Fatalf("BreakLeasesOnOpenConflict call count = %d, want 1 (self-rename src==dst)", got)
 	}
 }
+
+// TestBreakFileHandleLeasesOnDelete_StripsHandleAndExcludesSetterKey verifies
+// the contract used by SET_INFO FileDispositionInformation (set_info.go) and
+// the session/tree teardown DOC path (handler.go::handleDeleteOnClose):
+//
+//   - the break is dispatched against the file's own handle key (not the parent),
+//   - reason = BreakReasonSharingViolation so ComputeLeaseBreakTo strips Handle
+//     (RH→R, RWH→RW) per MS-SMB2 3.3.5.9 / Samba delay_for_oplock_fn,
+//   - the setter's own LeaseKey is excluded so MS-SMB2 nobreakself holds.
+//
+// Required by smbtorture smb2.lease.unlink (the SetDelete-on-close on h2 must
+// dispatch a break to LEASE1 on h1, not to h2's own LEASE2).
+func TestBreakFileHandleLeasesOnDelete_StripsHandleAndExcludesSetterKey(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeLockManager{}
+	lm := NewLeaseManager(&fakeResolver{mgr: fake}, nil)
+
+	fileHandle := lock.FileHandle("file-unlink")
+	setterKey := [16]byte{0x77, 0x88}
+
+	if err := lm.BreakFileHandleLeasesOnDelete(
+		fileHandle, "share1", &lock.LockOwner{ExcludeLeaseKey: setterKey},
+	); err != nil {
+		t.Fatalf("BreakFileHandleLeasesOnDelete returned error: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+
+	if got := len(fake.breakHandleCalls); got != 1 {
+		t.Fatalf("BreakLeasesOnOpenConflict call count = %d, want 1", got)
+	}
+	got := fake.breakHandleCalls[0]
+	if got.HandleKey != string(fileHandle) {
+		t.Errorf("handleKey = %q, want %q (file's own handle, not parent)", got.HandleKey, string(fileHandle))
+	}
+	if got.Reason != lock.BreakReasonSharingViolation {
+		t.Errorf("reason = %d, want BreakReasonSharingViolation (strip H mask)", got.Reason)
+	}
+	if got.ExcludeOwner == nil || got.ExcludeOwner.ExcludeLeaseKey != setterKey {
+		t.Errorf("ExcludeOwner = %+v, want ExcludeLeaseKey = %x", got.ExcludeOwner, setterKey)
+	}
+
+	// Fire-and-forget: matches the SET_INFO disposition contract — the holder
+	// acks on its own transport. Inline waiting would deadlock on a
+	// single-threaded test driver.
+	if len(fake.waitForBreakCompletionKeys) != 0 {
+		t.Errorf("WaitForBreakCompletion called %d times; want 0 (delete-disposition break is fire-and-forget)",
+			len(fake.waitForBreakCompletionKeys))
+	}
+}
