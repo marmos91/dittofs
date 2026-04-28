@@ -695,37 +695,20 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 | smb2.replay.replay5 | Replay | Replay detection not implemented | - |
 | smb2.replay.replay6 | Replay | Replay detection not implemented | - |
 
+### Timestamps (Fix Candidate)
+
+Timestamp update semantics partially implemented but tests fail due to
+incomplete delayed-write and timestamp freeze/unfreeze logic.
+
+| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|
+| smb2.timestamps.delayed-2write | Timestamps | Delayed write timestamp update not working | #434 |
+| smb2.timestamps.delayed-write-vs-flush | Timestamps | Delayed write vs flush timestamp not working | #434 |
+| smb2.timestamps.delayed-write-vs-setbasic | Timestamps | Delayed write vs setbasic timestamp not working | #434 |
+| smb2.timestamps.delayed-write-vs-seteof | Timestamps | Delayed write vs seteof timestamp not working | #434 |
+| smb2.timestamps.freeze-thaw | Timestamps | CreationTime freeze/unfreeze not fully working | #434 |
+
 ## Changelog
-
-### 2026-04-28 — Timestamps: NTTIME_THAW must not change values (#434)
-
-smbtorture `smb2.timestamps.freeze-thaw` step 5 sends `NTTIME_THAW`
-(0xFFFFFFFFFFFFFFFE) for create_time + write_time and asserts both
-remain unchanged. DittoFS was overwriting LastAccessTime, LastWriteTime,
-and ChangeTime with `time.Now()` on the THAW path, so step 6 saw the
-values bumped to the request time and failed.
-
-Per Samba `lib/util/time.c::nt_time_to_full_timespec`, both
-`NTTIME_FREEZE` (-1) and `NTTIME_THAW` (-2) are mapped to
-`make_omit_timespec()` — i.e., MUST NOT change the field. THAW is
-documented as the future "re-enable auto-updates" sentinel, but in the
-current code it shares the no-change semantics with FREEZE.
-
-Fix (signed) in `internal/adapter/smb/v2/handlers/set_info.go`: pin the
-THAW-targeted Mtime/Ctime/Atime to `preFile` (same as FREEZE) so that
-`SetFileAttributes`'s ctime auto-update on `modified` does not bump them.
-The freeze-flag bookkeeping below still clears `MtimeFrozen` etc. on
-THAW so future operations resume auto-update behavior.
-
-Tests: `internal/adapter/smb/v2/handlers/timestamps_test.go` adds
-`TestSetFileInfo_FreezeThaw{,_AllFields}` plus end-to-end coverage for
-the four delayed-write smbtorture tests
-(`TestDelayedWrite_TwoWritesProduceDistinctTimestamps`,
-`TestDelayedWrite_VsFlush`, `TestDelayedWrite_VsSetEOF`,
-`TestSetFileInfo_DelayedWriteVsSetbasic`) — those exercise the
-deferred-commit + flush + GetFile-merge path and confirm no regression.
-
-Closes #434.
 
 ### 2026-04-27 — Round 7 lease cluster: ClientGUID-scoped break dispatch (`v2_complex1`)
 
@@ -920,8 +903,7 @@ test cluster has a home to land work against:
   preservation/purge, app-instance, persistent-open flagged as separate
   feature work.
 - **#433** — Rename (4 tests): share-mode enforcement during rename.
-- **#434** — Timestamps freeze/thaw + delayed-write (closed by THAW
-  no-change fix; see Changelog).
+- **#434** — Timestamps (5 tests): delayed-write + freeze/thaw.
 - **#435** — Charset (1 test): unicode surrogate pair handling.
 - **#436** — `multichannel.leases.test3` spurious lease break on uncontested
   open (split out of #417 / PR #418 follow-up).
