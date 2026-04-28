@@ -154,6 +154,21 @@ func (s *MetadataService) lockManagerForHandle(handle FileHandle) (*LockManager,
 	return nil, fmt.Errorf("no lock manager for share %q", shareName)
 }
 
+// GetLockManagerForHandle returns the lock manager for the share that owns
+// the given handle. Returns an error if the handle is malformed or no lock
+// manager exists for the share.
+//
+// Used by the SMB blocking-lock async-park path (issue #430): the handler
+// needs the conflicting holders' OwnerIDs to feed the Wait-For Graph for
+// deadlock detection, which requires direct access to the share's
+// LockManager.ListLocks. Permission checks are not needed here — this is
+// pure conflict-discovery, not a lock-state mutation.
+//
+// Thread safety: Safe to call concurrently.
+func (s *MetadataService) GetLockManagerForHandle(handle FileHandle) (*LockManager, error) {
+	return s.lockManagerForHandle(handle)
+}
+
 // GetLockManagerForShare returns the lock manager for a specific share.
 //
 // This is used by the NFS adapter to process NLM blocking lock waiters.

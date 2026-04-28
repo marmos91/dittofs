@@ -59,6 +59,28 @@ func (h *Handler) TreeDisconnect(ctx *SMBHandlerContext, body []byte) (*HandlerR
 			"count", filesClosed)
 	}
 
+	// Cancel any blocking-LOCK requests parked on this tree. Per MS-SMB2
+	// §3.3.5.14 + smbtorture smb2.lock.cancel-tdis: TREE_DISCONNECT MUST
+	// unblock pending LOCKs scoped to the tree and complete them with
+	// STATUS_RANGE_NOT_LOCKED (the FileID's open went away with the tree).
+	// Failing to do so leaves the dispatch goroutine waiting for a lock
+	// that no client will ever release.
+	if h.PendingLockRegistry != nil {
+		for _, parked := range h.PendingLockRegistry.UnregisterAllForTree(ctx.TreeID) {
+			if parked.Callback != nil {
+				go func(p *PendingLock) {
+					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusRangeNotLocked, nil); err != nil {
+						logger.Debug("TREE_DISCONNECT: failed to cancel pending LOCK",
+							"asyncId", p.AsyncId, "messageID", p.MessageID, "error", err)
+					}
+				}(parked)
+			}
+			if h.LockWaitGraph != nil && parked.OwnerID != "" {
+				h.LockWaitGraph.RemoveWaiter(parked.OwnerID)
+			}
+		}
+	}
+
 	// ========================================================================
 	// Step 3: Delete the tree connection
 	// ========================================================================

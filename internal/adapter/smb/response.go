@@ -134,6 +134,18 @@ func ProcessSingleRequest(
 		}
 	}
 
+	// For LOCK commands, provide the async completion callback so the LOCK
+	// handler can park on a byte-range conflict, emit an interim
+	// STATUS_PENDING, and deliver the final response from a resume goroutine
+	// once the conflict resolves (MS-SMB2 §3.3.5.14).
+	if reqHeader.Command == types.SMB2Lock {
+		ci := connInfo
+		handlerCtx.AsyncLockCompleteCallback = func(sessionID, messageID, asyncID uint64, status types.Status, body []byte) error {
+			ci.ReleaseAsync()
+			return SendAsyncCompletionResponse(sessionID, messageID, asyncID, types.SMB2Lock, status, body, ci)
+		}
+	}
+
 	// For CANCEL, pass the request's AsyncId so the handler can identify
 	// which async operation to cancel (e.g., pending CHANGE_NOTIFY).
 	if reqHeader.Command == types.SMB2Cancel && reqHeader.Flags.IsAsync() {
@@ -335,6 +347,15 @@ func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.
 		handlerCtx.AsyncCreateCompleteCallback = func(sessionID, messageID, asyncID uint64, status types.Status, body []byte) error {
 			ci.ReleaseAsync()
 			return SendAsyncCompletionResponse(sessionID, messageID, asyncID, types.SMB2Create, status, body, ci)
+		}
+	}
+
+	// For LOCK commands in a compound, wire the async completion callback.
+	if reqHeader.Command == types.SMB2Lock {
+		ci := connInfo
+		handlerCtx.AsyncLockCompleteCallback = func(sessionID, messageID, asyncID uint64, status types.Status, body []byte) error {
+			ci.ReleaseAsync()
+			return SendAsyncCompletionResponse(sessionID, messageID, asyncID, types.SMB2Lock, status, body, ci)
 		}
 	}
 

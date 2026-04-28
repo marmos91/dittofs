@@ -366,6 +366,12 @@ type LockConflict struct {
 
 	// OwnerSessionID identifies the client holding the conflicting lock.
 	OwnerSessionID uint64
+
+	// OwnerID is the effective owner identifier of the conflicting lock
+	// (per-open OpenID for SMB; "session:N" fallback for NFS/NLM). Used by
+	// the SMB blocking-lock async-park path to feed deadlock-detection edges
+	// into the Wait-For Graph (MS-SMB2 §3.3.5.14, smb2.lock.open-brlock-deadlock).
+	OwnerID string
 }
 
 // lockOwnerID returns the effective owner identifier for a FileLock.
@@ -479,6 +485,7 @@ func conflictFrom(fl *FileLock) *LockConflict {
 		Length:         fl.Length,
 		Exclusive:      fl.Exclusive,
 		OwnerSessionID: fl.SessionID,
+		OwnerID:        lockOwnerID(fl),
 	}
 }
 
