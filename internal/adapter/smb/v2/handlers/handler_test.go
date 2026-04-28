@@ -918,6 +918,26 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 		}
 	})
 
+	t.Run("NonConflictingExistingAccess_NoConstraint", func(t *testing.T) {
+		// Per Samba `share_conflict` (source3/smbd/open.c L1505): existing
+		// entries with none of FILE_READ_DATA|FILE_WRITE_DATA|FILE_APPEND_DATA|
+		// FILE_EXECUTE|DELETE_ACCESS impose no share-mode constraint —
+		// even when not strictly stat-only. Verifies WRITE_DAC-only existing
+		// open with share=0 doesn't block an incoming full-access open.
+		const writeDac = uint32(0x00040000)
+		h := NewHandler()
+		h.StoreOpenFile(&OpenFile{
+			FileID:         h.GenerateFileID(),
+			Path:           "file.txt",
+			DesiredAccess:  writeDac,
+			ShareAccess:    0,
+			MetadataHandle: []byte{0x01},
+		})
+		if h.checkShareModeConflict([]byte{0x01}, fileReadData|fileWriteData, fileShareRead|fileShareWrite, "file.txt") {
+			t.Error("Expected no conflict: WRITE_DAC-only existing open must not impose share-mode constraint")
+		}
+	})
+
 	t.Run("PipesSkipped", func(t *testing.T) {
 		h := NewHandler()
 
