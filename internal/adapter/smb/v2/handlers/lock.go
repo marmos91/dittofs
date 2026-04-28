@@ -215,19 +215,35 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	}
 
 	// ========================================================================
-	// Break Batch/Exclusive oplocks before acquiring locks
+	// Break read-caching leases on other clients before acquiring locks
 	// ========================================================================
 	//
-	// Per MS-SMB2 3.3.5.14: Before processing byte-range lock requests,
-	// the server MUST break any Batch or Exclusive oplocks held on the file
-	// by other clients. The requesting client's own lease is excluded.
+	// Per MS-SMB2 3.3.5.14 (Receiving an SMB2 LOCK Request) and Samba
+	// `source3/smbd/smb2_oplock.c::contend_level2_oplocks_begin_default`:
+	// granting a byte-range lock invalidates remote read caching, so every
+	// lease (other than the locker's own, by lease key) that holds Read
+	// caching must be broken to None — full revocation, not "strip W".
+	// The break is fire-and-forget; the lock acquisition itself does not
+	// wait for ACKs.
+	//
+	// Skip the break when every element is an unlock: Samba's
+	// contend_level2_oplocks_begin is called from brl_lock only, not
+	// brl_unlock. Releasing a lock cannot invalidate any remote read cache.
 
-	if h.LeaseManager != nil {
+	hasLockElement := false
+	for _, e := range req.Locks {
+		if (e.Flags & SMB2LockFlagUnlock) == 0 {
+			hasLockElement = true
+			break
+		}
+	}
+
+	if hasLockElement && h.LeaseManager != nil {
 		lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
-		if breakErr := h.LeaseManager.BreakConflictingOplocksOnOpen(lockFileHandle, openFile.ShareName, &lock.LockOwner{
+		if breakErr := h.LeaseManager.BreakLeasesOnByteRangeLock(lockFileHandle, openFile.ShareName, &lock.LockOwner{
 			ExcludeLeaseKey: openFile.LeaseKey,
 		}); breakErr != nil {
-			logger.Debug("LOCK: oplock break failed (non-fatal)", "path", openFile.Path, "error", breakErr)
+			logger.Debug("LOCK: lease break failed (non-fatal)", "path", openFile.Path, "error", breakErr)
 		}
 	}
 

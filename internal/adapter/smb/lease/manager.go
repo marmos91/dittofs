@@ -409,6 +409,34 @@ func (lm *LeaseManager) BreakConflictingOplocksOnOpen(
 	return lockMgr.CheckAndBreakLeasesForSMBOpen(handleKey, exclude)
 }
 
+// BreakLeasesOnByteRangeLock breaks every lease (other than the locker's own
+// lease key) holding Read caching to None when an SMB byte-range LOCK is
+// acquired. Per MS-SMB2 3.3.5.14 and Samba
+// `source3/smbd/smb2_oplock.c::contend_level2_oplocks_begin_default`, a BRL
+// invalidates remote read caches: another client must now observe writes
+// from the locking client. Unlike CREATE breaks (strip W, preserve R+H),
+// this is full revocation to None. The locker's own lease is preserved via
+// excludeOwner.ExcludeLeaseKey ("nobreakself").
+func (lm *LeaseManager) BreakLeasesOnByteRangeLock(
+	fileHandle lock.FileHandle,
+	shareName string,
+	excludeOwner ...*lock.LockOwner,
+) error {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return nil
+	}
+
+	handleKey := string(fileHandle)
+
+	var exclude *lock.LockOwner
+	if len(excludeOwner) > 0 {
+		exclude = excludeOwner[0]
+	}
+
+	return lockMgr.BreakLeasesForByteRangeLock(handleKey, exclude)
+}
+
 // HasOtherBreakingLeases reports whether any lease on fileHandle except excludeKey
 // is currently Breaking. Non-blocking. Used by the SMB CREATE async-park path
 // to decide whether to emit STATUS_PENDING after dispatching the break.

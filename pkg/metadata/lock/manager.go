@@ -188,6 +188,22 @@ type LockManager interface {
 	// preserving Read and Handle (RWH -> RH, RW -> R).
 	CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error
 
+	// BreakLeasesForByteRangeLock breaks every other-key lease that holds
+	// Read caching to None. Per MS-SMB2 3.3.5.14 and Samba
+	// `source3/smbd/smb2_oplock.c::contend_level2_oplocks_begin_default`,
+	// acquiring a byte-range lock invalidates remote read caches because
+	// another client may now read different data from the locked range.
+	// Unlike SMB CREATE breaks (which strip only the Write bit), this is a
+	// full revocation:
+	//   - RWH -> None
+	//   - RW  -> None
+	//   - RH  -> None
+	//   - R   -> None
+	// Leases without Read caching (None, W-only) are not broken: they cannot
+	// be caching reads. The locker's own lease must be excluded via
+	// excludeOwner.ExcludeLeaseKey ("nobreakself" per MS-SMB2 3.3.5.9).
+	BreakLeasesForByteRangeLock(handleKey string, excludeOwner *LockOwner) error
+
 	// BreakLeasesOnOpenConflict breaks existing leases before an SMB CREATE
 	// proceeds, per MS-SMB2 3.3.4.7 and Samba `source3/smbd/open.c::delay_for_oplock_fn`.
 	// Per-lease target state is computed via ComputeLeaseBreakTo(state, reason).
@@ -1347,6 +1363,30 @@ func (lm *Manager) CheckAndBreakCachingForRead(handleKey string, excludeOwner *L
 func (lm *Manager) CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error {
 	return lm.breakOpLocks(handleKey, excludeOwner, BreakToStripWrite, func(lease *OpLock) bool {
 		return lease.HasWrite()
+	})
+}
+
+// BreakLeasesForByteRangeLock breaks every other-key lease that holds Read
+// caching to None when an SMB byte-range lock is acquired.
+//
+// Per MS-SMB2 3.3.5.14 (Receiving an SMB2 LOCK Request) and Samba
+// `source3/smbd/smb2_oplock.c::contend_level2_oplocks_begin_default`
+// (lines 1391-1467) + `do_break_lease_to_none` (lines 1155-1206):
+// when a byte-range lock is granted on an open, every other lease holder
+// whose state has Read caching must be broken to None — Read caching
+// becomes invalid because the locking client may now write data the
+// remote cache can no longer observe.
+//
+// The locker's own lease (typically same lease key, possibly a same-key
+// secondary handle) is excluded via excludeOwner.ExcludeLeaseKey, mirroring
+// Samba's `smb2_lease_equal` no-self-break check.
+//
+// Leases without Read caching (None, or Write-only, which the protocol
+// disallows in practice) are skipped: there is no read cache to flush.
+// The break target is None — full revocation — not "strip W" or "strip H".
+func (lm *Manager) BreakLeasesForByteRangeLock(handleKey string, excludeOwner *LockOwner) error {
+	return lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
+		return lease.HasRead()
 	})
 }
 
