@@ -1572,12 +1572,12 @@ func TestProgressiveLeaseBreak_NoSpuriousAfterReachingRequired(t *testing.T) {
 	mgr.mu.Unlock()
 }
 
-// TestForceCompleteBreaks_DrainsToBreakingToRequired confirms that a non-acking
-// client triggers the timeout path which drains to the cumulative final
-// target, not the in-flight intermediate. Otherwise a non-ack would leave
-// the lease parked at e.g. RH when a later destructive opener had AND-merged
-// the target down to None.
-func TestForceCompleteBreaks_DrainsToBreakingToRequired(t *testing.T) {
+// TestForceCompleteBreaks_DrainsToNone_AndMerged confirms that a non-acking
+// client triggers the timeout path which force-revokes the lease to None.
+// Mirrors Samba lease_timeout_handler (source3/smbd/smb2_oplock.c) which
+// always calls downgrade_lease(..., SMB2_LEASE_NONE) regardless of the
+// cumulative break target.
+func TestForceCompleteBreaks_DrainsToNone_AndMerged(t *testing.T) {
 	t.Parallel()
 
 	mgr := NewManager()
@@ -1602,16 +1602,66 @@ func TestForceCompleteBreaks_DrainsToBreakingToRequired(t *testing.T) {
 		OwnerID: "owner-destr", ClientID: "client-destr",
 	}, BreakReasonDestructive))
 
-	// Force-complete should drain to BreakingToRequired (= 0), keeping the
-	// record at LeaseState=None (handle-bound lifetime). Pre-fix this drained
-	// to BreakToState (= RH), leaving the lease at RH which would block the
-	// destructive opener.
+	// Force-complete revokes to None, keeping the record alive at
+	// LeaseState=None (handle-bound lifetime).
 	mgr.forceCompleteBreaks(handleKey)
 
 	state, _, found := mgr.GetLeaseState(ctx, key1)
 	require.True(t, found, "force-complete keeps the record alive until CLOSE")
 	assert.Equal(t, LeaseStateNone, state,
-		"force-complete must drain to None (BreakingToRequired), not RH (BreakToState)")
+		"force-complete must revoke to None per Samba lease_timeout_handler")
+}
+
+// TestForceCompleteBreaks_DrainsToNone_SingleBreak pins the
+// smb2.lease.timeout scenario: a single RWH lease is broken to RH (the
+// in-flight intermediate), the client never acks, and the wait times out.
+// Per Samba lease_timeout_handler, the lease must be force-revoked to None
+// — not parked at the cumulative BreakingToRequired (RH). Otherwise a probe
+// of the original lease key returns RH instead of the spec-mandated empty
+// state, and any subsequent IO that would conflict with R or H sends
+// spurious break notifications.
+func TestForceCompleteBreaks_DrainsToNone_SingleBreak(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	cb, _, _ := recordBreakNotifications()
+	mgr.RegisterBreakCallbacks(cb)
+
+	ctx := context.Background()
+	key1 := [16]byte{0xD1}
+	handleKey := "file-timeout-single"
+
+	_, _, err := mgr.RequestLease(ctx, FileHandle(handleKey), key1, [16]byte{},
+		"owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+
+	// Single break from RWH: BreakingToRequired=RH (Read+Handle preserved).
+	require.NoError(t, mgr.BreakLeasesOnOpenConflict(handleKey, &LockOwner{
+		OwnerID: "owner-default", ClientID: "client-default",
+	}, BreakReasonDefault))
+
+	// Sanity: BreakingToRequired is RH, not None.
+	mgr.mu.Lock()
+	var observedReq uint32
+	for _, l := range mgr.unifiedLocks[handleKey] {
+		if l.Lease != nil && l.Lease.LeaseKey == key1 {
+			observedReq = l.Lease.BreakingToRequired
+			break
+		}
+	}
+	mgr.mu.Unlock()
+	require.Equal(t, LeaseStateRead|LeaseStateHandle, observedReq,
+		"precondition: single default-reason break sets BreakingToRequired=RH")
+
+	// Client doesn't ACK; the wait times out → force-complete fires.
+	mgr.forceCompleteBreaks(handleKey)
+
+	state, _, found := mgr.GetLeaseState(ctx, key1)
+	require.True(t, found, "force-complete keeps the record alive until CLOSE")
+	assert.Equal(t, LeaseStateNone, state,
+		"force-complete on timeout revokes to None per Samba lease_timeout_handler — "+
+			"NOT to the BreakingToRequired intermediate (RH). Otherwise smb2.lease.timeout "+
+			"probe returns 0x3 instead of 0x0 and subsequent IO triggers spurious breaks.")
 }
 
 // TestAnyHolderHasLeaseBits covers the cross-key per-bit query that gates the

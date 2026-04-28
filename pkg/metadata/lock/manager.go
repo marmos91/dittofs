@@ -1528,11 +1528,10 @@ func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string)
 	}
 }
 
-// forceCompleteBreaks auto-downgrades all breaking leases on a file to their
-// cumulative final target, as if the client had acknowledged every progressive
-// stage. Called when the break wait times out. Records whose final target is
-// None are kept alive at LeaseState=None (handle-bound lifetime) so a later
-// unsolicited ack surfaces as ErrLeaseAckNotBreaking → STATUS_UNSUCCESSFUL.
+// forceCompleteBreaks force-revokes all breaking leases on a file to None when
+// the break wait times out. Records are kept alive at LeaseState=None
+// (handle-bound lifetime) so a later unsolicited ack surfaces as
+// ErrLeaseAckNotBreaking → STATUS_UNSUCCESSFUL.
 func (lm *Manager) forceCompleteBreaks(handleKey string) {
 	lm.forceCompleteBreaksExceptKey(handleKey, [16]byte{})
 }
@@ -1541,11 +1540,14 @@ func (lm *Manager) forceCompleteBreaks(handleKey string) {
 // keyed on exceptKey untouched. Zero exceptKey means "no exclusion" (same
 // semantics as forceCompleteBreaks).
 //
-// Drains to BreakingToRequired (the cumulative final target across any
-// concurrent breaks that AND-merged during the in-flight stage) rather than
-// the in-flight BreakToState — otherwise a non-acking client could leave the
-// lease parked at an intermediate state that the post-ACK re-eval would
-// normally have progressed past.
+// Forces breaking leases to None, mirroring Samba's lease_timeout_handler
+// (source3/smbd/smb2_oplock.c) which calls
+// `downgrade_lease(..., SMB2_LEASE_NONE)` regardless of the in-flight or
+// cumulative break target. A non-acking client must not be allowed to retain
+// any lease bits past the timeout — otherwise a later opener observes stale
+// state (smb2.lease.timeout: probe of original lease key returns RH instead
+// of the spec-mandated empty state) and stale R/H rights would generate
+// spurious break notifications on subsequent IO.
 func (lm *Manager) forceCompleteBreaksExceptKey(handleKey string, exceptKey [16]byte) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
@@ -1556,10 +1558,10 @@ func (lm *Manager) forceCompleteBreaksExceptKey(handleKey string, exceptKey [16]
 			continue
 		}
 		modified = true
-		// Auto-downgrade in place. For finalTarget=None keep the record
-		// alive at LeaseState=None (handle-bound lifetime) so a later
-		// unsolicited or duplicate ack surfaces as ErrLeaseAckNotBreaking
-		// → STATUS_UNSUCCESSFUL. Same rationale as applyBreakStageLocked.
+		// Force-revoke to None and keep the record alive at LeaseState=None
+		// (handle-bound lifetime) so a later unsolicited or duplicate ack
+		// surfaces as ErrLeaseAckNotBreaking → STATUS_UNSUCCESSFUL. Same
+		// rationale as applyBreakStageLocked.
 		//
 		// Do NOT advance Epoch: this is the timeout/internal completion
 		// path for an already-dispatched break. Per MS-SMB2 §3.3.4.7 the
@@ -1567,9 +1569,8 @@ func (lm *Manager) forceCompleteBreaksExceptKey(handleKey string, exceptKey [16]
 		// was already advanced when the in-flight break started). Bumping
 		// it here would invalidate any straggling client ack still echoing
 		// the original epoch.
-		finalTarget := l.Lease.BreakingToRequired
-		l.Lease.LeaseState = finalTarget
-		l.Lease.BreakingToRequired = finalTarget
+		l.Lease.LeaseState = LeaseStateNone
+		l.Lease.BreakingToRequired = LeaseStateNone
 		l.Lease.Breaking = false
 		l.Lease.BreakToState = 0
 		l.Lease.BreakStarted = time.Time{}
