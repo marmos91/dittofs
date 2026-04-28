@@ -500,7 +500,6 @@ incomplete break notification delivery and multi-client coordination.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.lease.v2_complex1 | Leases V2 | Lease V2 complex scenario not fully working | #429 |
 
 ### Byte-Range Locks (Fix Candidate)
 
@@ -710,6 +709,49 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.freeze-thaw | Timestamps | CreationTime freeze/unfreeze not fully working | #434 |
 
 ## Changelog
+
+### 2026-04-27 — Round 7 lease cluster: ClientGUID-scoped break dispatch (`v2_complex1`)
+
+smbtorture `smb2.lease.v2_complex1` opens two SMB sessions on the same
+`ClientGuid` (via `torture_smb2_connection_ext`) and asserts every lease
+break — including breaks for leases held only by the SECOND session —
+arrives on the FIRST session's transport. DittoFS routed breaks via the
+per-lease `sessionMap`, so LEASE2 (held by tree1b) broke on tree1b's
+transport, tripping `CHECK_BREAK_INFO_V2(tree1a->session->transport, ...)`.
+
+Per MS-SMB2 §3.3.4.7 and Samba `smbXsrv_pending_break_submit`
+(source3/smbd/smb2_server.c lines 4361-4400), the lease-break notification
+is a **client-level** event, not a session-level one. Samba walks the head
+of `client->connections` and delivers on the first live connection of the
+lease's ClientGuid regardless of which session created the open. The lease
+itself is bound by `(ClientGuid, LeaseKey)` per §3.3.5.9.8.
+
+Fix (signed):
+
+- `internal/adapter/smb/lease/manager.go` adds two parallel maps:
+  `leaseClientGUID` (lease key → first-grant ClientGuid, sticky) and
+  `clientPrimarySession` (ClientGuid → first sessionID, first-write wins).
+  `RequestLease` accepts a `clientGUID [16]byte` argument and populates
+  both maps; same-key reopens / upgrades do NOT rebind the GUID.
+- New `GetSessionForBreak(leaseKey)` resolves the lease's recorded
+  ClientGuid to its primary session; legacy callers (zero GUID) fall back
+  to the per-lease `sessionMap` so single-session tests are unaffected.
+- `internal/adapter/smb/lease/notifier.go` `OnOpLockBreak` now uses
+  `GetSessionForBreak`.
+- `internal/adapter/smb/v2/handlers/{lease_context,create,create_post_break}.go`
+  thread the ClientGuid from `ConnCryptoState.GetClientGUID()` through
+  every `RequestLease` call (CREATE, durable reconnect, traditional-oplock
+  synthetic-key path).
+- `ReleaseSessionLeases` reaps `clientPrimarySession` entries pointing at
+  the gone session — without this, a follow-up break would route to a dead
+  sessionID and silently drop.
+
+Confirmed via three new unit tests in `manager_test.go`:
+`TestGetSessionForBreak_RoutesByClientGUIDPrimary`,
+`TestGetSessionForBreak_FallsBackToSessionMap`,
+`TestReleaseSessionLeases_ReapsClientPrimary`.
+
+**#429 lease cluster:** `v2_complex1` now expected to PASS.
 
 ### 2026-04-24 — Handle-scoped lease release fixes stale-record accumulation
 

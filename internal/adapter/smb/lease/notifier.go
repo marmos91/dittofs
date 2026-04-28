@@ -58,8 +58,16 @@ func (h *SMBBreakHandler) OnOpLockBreak(handleKey string, ul *lock.UnifiedLock, 
 		return
 	}
 
-	// Look up session for this lease
-	sessionID, found := h.leaseManager.GetSessionForLease(ul.Lease.LeaseKey)
+	// Look up the destination session for this lease's break notification.
+	// Per MS-SMB2 §3.3.4.7 and Samba `smbXsrv_pending_break_submit`
+	// (source3/smbd/smb2_server.c), the break must arrive on the FIRST
+	// connection of the lease's client (`client->connections` head) — NOT
+	// on the session that opened the lease. GetSessionForBreak resolves
+	// via the recorded ClientGUID → primary session map; legacy callers
+	// without a CryptoState (zero ClientGUID at grant time) fall through
+	// to the per-lease sessionMap, preserving prior single-session test
+	// behavior. Required by smbtorture smb2.lease.v2_complex1.
+	sessionID, found := h.leaseManager.GetSessionForBreak(ul.Lease.LeaseKey, ul.Owner.ClientID)
 	if !found {
 		logger.Debug("SMBBreakHandler: no session for lease, skipping break notification",
 			"leaseKey", fmt.Sprintf("%x", ul.Lease.LeaseKey),

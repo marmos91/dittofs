@@ -629,6 +629,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 						restored.LeaseKey,
 						[16]byte{}, // No parent lease key on reconnect
 						ctx.SessionID,
+						connClientGUID(ctx),
 						ownerID,
 						clientID,
 						tree.ShareName,
@@ -700,6 +701,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 							syntheticKey,
 							[16]byte{},
 							ctx.SessionID,
+							connClientGUID(ctx),
 							ownerID,
 							clientID,
 							tree.ShareName,
