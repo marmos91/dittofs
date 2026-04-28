@@ -50,6 +50,7 @@ const (
 	prefixDeviceNumber = "d:"
 	prefixConfig       = "cfg:"
 	prefixCapabilities = "cap:"
+	prefixObjectID     = "obj:" // Phase 13 D-12: ObjectID -> file UUID
 )
 
 // ============================================================================
@@ -94,6 +95,13 @@ func keyServerConfig() []byte {
 // keyFilesystemCapabilities generates the key for filesystem capabilities: "cap:fs"
 func keyFilesystemCapabilities() []byte {
 	return []byte(prefixCapabilities + "fs")
+}
+
+// keyObjectID generates a key for the ObjectID secondary index:
+// "obj:<hex>". Zero-valued ObjectIDs MUST NOT be written through this
+// helper -- caller checks IsZero() first (Phase 13 D-12).
+func keyObjectID(h metadata.ContentHash) []byte {
+	return []byte(prefixObjectID + h.String())
 }
 
 // ============================================================================

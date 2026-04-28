@@ -3,11 +3,14 @@ package badger
 import (
 	"context"
 	"encoding/json"
+	goerrors "errors"
+	"fmt"
 	"time"
 
 	badgerdb "github.com/dgraph-io/badger/v4"
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // ============================================================================
@@ -135,19 +138,25 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		return err
 	}
 
-	// Track size delta for regular files.
-	if file.Type == metadata.FileTypeRegular {
-		var oldSize uint64
-		item, err := tx.txn.Get(keyFile(file.ID))
-		if err == nil {
-			_ = item.Value(func(val []byte) error {
-				existing, decErr := decodeFile(val)
-				if decErr == nil && existing.Type == metadata.FileTypeRegular {
+	// Read existing record once to capture both the size delta (for usedBytes
+	// tracking) and the previous ObjectID (for D-12 secondary-index cleanup).
+	var oldSize uint64
+	var oldObjectID metadata.ContentHash
+	if item, err := tx.txn.Get(keyFile(file.ID)); err == nil {
+		_ = item.Value(func(val []byte) error {
+			existing, decErr := decodeFile(val)
+			if decErr == nil {
+				if existing.Type == metadata.FileTypeRegular {
 					oldSize = existing.Size
 				}
-				return nil
-			})
-		}
+				oldObjectID = existing.FileAttr.ObjectID
+			}
+			return nil
+		})
+	}
+
+	// Track size delta for regular files.
+	if file.Type == metadata.FileTypeRegular {
 		delta := int64(file.Size) - int64(oldSize)
 		if delta != 0 {
 			tx.store.usedBytes.Add(delta)
@@ -159,7 +168,47 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		return err
 	}
 
-	return tx.txn.Set(keyFile(file.ID), data)
+	if err := tx.txn.Set(keyFile(file.ID), data); err != nil {
+		return err
+	}
+
+	// Phase 13 D-12: maintain ObjectID -> file UUID secondary index in the
+	// same Txn as the primary file write (atomic on commit).
+	//
+	// Step 1: drop stale secondary entry if the ObjectID changed.
+	if !oldObjectID.IsZero() && oldObjectID != file.FileAttr.ObjectID {
+		if err := tx.txn.Delete(keyObjectID(oldObjectID)); err != nil && !goerrors.Is(err, badgerdb.ErrKeyNotFound) {
+			return fmt.Errorf("badger PutFile: delete stale obj index: %w", err)
+		}
+	}
+
+	// Step 2: write new secondary entry if non-zero. Detect D-14 race
+	// (another file already claims this ObjectID) and surface as ErrConflict.
+	if !file.FileAttr.ObjectID.IsZero() {
+		if existing, gerr := tx.txn.Get(keyObjectID(file.FileAttr.ObjectID)); gerr == nil {
+			raw, verr := existing.ValueCopy(nil)
+			if verr == nil {
+				var existingID uuid.UUID
+				if uerr := existingID.UnmarshalBinary(raw); uerr == nil && existingID != file.ID {
+					return mderrors.NewConflictError(
+						"badger PutFile",
+						fmt.Sprintf("object_id already mapped to file %s", existingID),
+					)
+				}
+			}
+		} else if !goerrors.Is(gerr, badgerdb.ErrKeyNotFound) {
+			return fmt.Errorf("badger PutFile: probe obj index: %w", gerr)
+		}
+		idBin, merr := file.ID.MarshalBinary()
+		if merr != nil {
+			return fmt.Errorf("badger PutFile: marshal file ID: %w", merr)
+		}
+		if err := tx.txn.Set(keyObjectID(file.FileAttr.ObjectID), idBin); err != nil {
+			return fmt.Errorf("badger PutFile: set obj index: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.FileHandle) error {
@@ -188,11 +237,16 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		return err
 	}
 
-	// Subtract size from counter for regular files.
+	// Subtract size from counter for regular files; capture ObjectID for
+	// secondary-index cleanup (Phase 13 D-12).
+	var existingObjectID metadata.ContentHash
 	_ = item.Value(func(val []byte) error {
 		file, decErr := decodeFile(val)
-		if decErr == nil && file.Type == metadata.FileTypeRegular && file.Size > 0 {
-			tx.store.usedBytes.Add(-int64(file.Size))
+		if decErr == nil {
+			if file.Type == metadata.FileTypeRegular && file.Size > 0 {
+				tx.store.usedBytes.Add(-int64(file.Size))
+			}
+			existingObjectID = file.FileAttr.ObjectID
 		}
 		return nil
 	})
@@ -207,6 +261,13 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 	for _, key := range keys {
 		if err := tx.txn.Delete(key); err != nil && err != badgerdb.ErrKeyNotFound {
 			return err
+		}
+	}
+
+	// Phase 13 D-12: drop ObjectID secondary entry if present.
+	if !existingObjectID.IsZero() {
+		if err := tx.txn.Delete(keyObjectID(existingObjectID)); err != nil && !goerrors.Is(err, badgerdb.ErrKeyNotFound) {
+			return fmt.Errorf("badger DeleteFile: delete obj index: %w", err)
 		}
 	}
 

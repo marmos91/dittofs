@@ -2,9 +2,11 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // ============================================================================
@@ -94,6 +96,31 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		}
 	}
 
+	// Phase 13 D-12: Maintain ObjectID secondary index BEFORE overwriting
+	// tx.store.files[key]. The caller (WithTransaction) holds the write
+	// lock; tx.store.files is mutated directly without per-call locking.
+	//
+	// Step 1: stale-entry cleanup. If the existing record had a non-zero
+	// ObjectID and we are now writing a different (or zero) ObjectID,
+	// drop the old index entry.
+	if existing, exists := tx.store.files[key]; exists && existing.Attr != nil &&
+		!existing.Attr.ObjectID.IsZero() && existing.Attr.ObjectID != attrCopy.ObjectID {
+		delete(tx.store.objectIndex, existing.Attr.ObjectID)
+	}
+
+	// Step 2: race detection (D-14 first-committer-wins). If someone
+	// else's file already claims this ObjectID, reject before we mutate
+	// any state.
+	if !attrCopy.ObjectID.IsZero() {
+		if otherKey, claimed := tx.store.objectIndex[attrCopy.ObjectID]; claimed && otherKey != key {
+			return mderrors.NewConflictError(
+				"memory PutFile",
+				fmt.Sprintf("object_id already mapped to file key %s", otherKey),
+			)
+		}
+		tx.store.objectIndex[attrCopy.ObjectID] = key
+	}
+
 	tx.store.files[key] = &fileData{
 		Attr:      &attrCopy,
 		ShareName: file.ShareName,
@@ -128,6 +155,16 @@ func (tx *memoryTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 	// Subtract size from counter for regular files.
 	if existing.Attr.Type == metadata.FileTypeRegular && existing.Attr.Size > 0 {
 		tx.store.usedBytes.Add(-int64(existing.Attr.Size))
+	}
+
+	// Phase 13 D-12: drop ObjectID secondary entry. The "only if mapped
+	// to this same key" guard is defensive -- under the write lock that
+	// guards both maps a divergence is impossible, but the guard cheaply
+	// protects against future refactors.
+	if existing.Attr != nil && !existing.Attr.ObjectID.IsZero() {
+		if mapped, ok := tx.store.objectIndex[existing.Attr.ObjectID]; ok && mapped == key {
+			delete(tx.store.objectIndex, existing.Attr.ObjectID)
+		}
 	}
 
 	delete(tx.store.files, key)
@@ -475,6 +512,12 @@ func (tx *memoryTransaction) DeleteShare(ctx context.Context, shareName string) 
 			// Subtract size from counter for regular files.
 			if fd.Attr.Type == metadata.FileTypeRegular && fd.Attr.Size > 0 {
 				tx.store.usedBytes.Add(-int64(fd.Attr.Size))
+			}
+			// Phase 13 D-12: drop ObjectID secondary entry too.
+			if fd.Attr != nil && !fd.Attr.ObjectID.IsZero() {
+				if mapped, ok := tx.store.objectIndex[fd.Attr.ObjectID]; ok && mapped == key {
+					delete(tx.store.objectIndex, fd.Attr.ObjectID)
+				}
 			}
 			delete(tx.store.files, key)
 			delete(tx.store.parents, key)

@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -137,7 +139,7 @@ func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.File
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, lc.link_count
+			f.hidden, f.acl, f.object_id, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.id = $1 AND f.share_name = $2
@@ -196,8 +198,9 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			device_major = $12,
 			device_minor = $13,
 			hidden = $14,
-			acl = $15
-		WHERE id = $16 AND share_name = $17
+			acl = $15,
+			object_id = $16
+		WHERE id = $17 AND share_name = $18
 	`
 
 	var deviceMajor, deviceMinor *int32
@@ -229,6 +232,16 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		}
 	}
 
+	// Phase 13 META-02 / BSCAS-04: object_id BYTEA argument.
+	// Zero-valued ObjectID writes SQL NULL so the partial unique index
+	// (files_object_id_idx WHERE object_id IS NOT NULL) skips the row —
+	// legacy / never-quiesced / partially-flushed files never collide on
+	// the all-zero sentinel (Phase 13 D-03 / D-07).
+	var objectIDArg interface{}
+	if !file.FileAttr.ObjectID.IsZero() {
+		objectIDArg = file.FileAttr.ObjectID[:]
+	}
+
 	// Query old size for delta tracking (only for regular files).
 	var oldSize uint64
 	if file.Type == metadata.FileTypeRegular {
@@ -247,7 +260,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		file.Type, file.Mode, file.UID, file.GID, file.Size,
 		file.Atime, file.Mtime, file.Ctime, file.CreationTime,
 		payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
-		file.Hidden, aclJSON,
+		file.Hidden, aclJSON, objectIDArg,
 		file.ID, file.ShareName,
 	)
 	if err != nil {
@@ -270,9 +283,9 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			INSERT INTO files (
 				id, share_name, path, file_type, mode, uid, gid, size,
 				atime, mtime, ctime, creation_time, content_id, link_target,
-				device_major, device_minor, hidden, acl
+				device_major, device_minor, hidden, acl, object_id
 			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
 			)
 		`
 
@@ -281,7 +294,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			file.Type, file.Mode, file.UID, file.GID, file.Size,
 			file.Atime, file.Mtime, file.Ctime, file.CreationTime,
 			payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
-			file.Hidden, aclJSON,
+			file.Hidden, aclJSON, objectIDArg,
 		)
 		if err != nil {
 			return mapPgError(err, "PutFile", "")
@@ -478,7 +491,7 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 
 	query := `
 		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
-		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, lc.link_count
+		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.object_id, lc.link_count
 		FROM parent_child_map dc
 		LEFT JOIN files f ON dc.child_id = f.id
 		LEFT JOIN link_counts lc ON dc.child_id = lc.file_id
@@ -501,10 +514,11 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 		var size int64
 		var atime, mtime, ctime, creationTime time.Time
 		var hidden bool
+		var objectIDRaw []byte
 		var linkCount sql.NullInt32
 
 		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size,
-			&atime, &mtime, &ctime, &creationTime, &hidden, &linkCount)
+			&atime, &mtime, &ctime, &creationTime, &hidden, &objectIDRaw, &linkCount)
 		if err != nil {
 			return nil, "", err
 		}
@@ -527,23 +541,36 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 			}
 		}
 
+		// Phase 13 META-02: hydrate ObjectID for directory entries so the
+		// shape matches GetFile. NULL/empty -> zero (D-03 sentinel).
+		attr := &metadata.FileAttr{
+			Type:         metadata.FileType(fileType),
+			Mode:         uint32(mode),
+			Nlink:        nlink,
+			UID:          uint32(uid),
+			GID:          uint32(gid),
+			Size:         uint64(size),
+			Atime:        atime,
+			Mtime:        mtime,
+			Ctime:        ctime,
+			CreationTime: creationTime,
+			Hidden:       hidden,
+		}
+		if len(objectIDRaw) > 0 {
+			if len(objectIDRaw) != blockstore.HashSize {
+				return nil, "", fmt.Errorf(
+					"postgres ListChildren: object_id has invalid length %d (want %d)",
+					len(objectIDRaw), blockstore.HashSize,
+				)
+			}
+			copy(attr.ObjectID[:], objectIDRaw)
+		}
+
 		entry := metadata.DirEntry{
 			ID:     metadata.HandleToINode(childHandle),
 			Name:   name,
 			Handle: childHandle,
-			Attr: &metadata.FileAttr{
-				Type:         metadata.FileType(fileType),
-				Mode:         uint32(mode),
-				Nlink:        nlink,
-				UID:          uint32(uid),
-				GID:          uint32(gid),
-				Size:         uint64(size),
-				Atime:        atime,
-				Mtime:        mtime,
-				Ctime:        ctime,
-				CreationTime: creationTime,
-				Hidden:       hidden,
-			},
+			Attr:   attr,
 		}
 
 		entries = append(entries, entry)
@@ -1115,7 +1142,7 @@ func (tx *postgresTransaction) GetFileByPayloadID(ctx context.Context, payloadID
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, lc.link_count
+			f.hidden, f.acl, f.object_id, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.content_id_hash = md5($1)

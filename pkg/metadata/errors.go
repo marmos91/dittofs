@@ -45,6 +45,7 @@ const (
 	ErrLockLimitExceeded      = errors.ErrLockLimitExceeded
 	ErrLockConflict           = errors.ErrLockConflict
 	ErrConnectionLimitReached = errors.ErrConnectionLimitReached
+	ErrConflict               = errors.ErrConflict
 )
 
 // ============================================================================
@@ -103,6 +104,12 @@ func NewNotEmptyError(path string) *StoreError {
 // Deprecated: Use errors.NewAlreadyExistsError directly.
 func NewAlreadyExistsError(path string) *StoreError {
 	return errors.NewAlreadyExistsError(path)
+}
+
+// NewConflictError creates a StoreError for ObjectID concurrent-write conflicts (Phase 13 D-14).
+// Deprecated: Use errors.NewConflictError directly.
+func NewConflictError(op, message string) *StoreError {
+	return errors.NewConflictError(op, message)
 }
 
 // NewInvalidArgumentError creates a StoreError for invalid arguments.
@@ -191,4 +198,10 @@ func IsLockConflictError(err error) bool {
 // Deprecated: Use errors.IsDeadlockError directly.
 func IsDeadlockError(err error) bool {
 	return errors.IsDeadlockError(err)
+}
+
+// IsConflictError checks if an error is a StoreError with ErrConflict code (Phase 13 D-14).
+// Deprecated: Use errors.IsConflictError directly.
+func IsConflictError(err error) bool {
+	return errors.IsConflictError(err)
 }

@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -38,7 +40,7 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, lc.link_count
+			f.hidden, f.acl, f.object_id, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.id = $1 AND f.share_name = $2
@@ -212,7 +214,7 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 
 	query := `
 		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
-		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, lc.link_count
+		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.object_id, lc.link_count
 		FROM parent_child_map dc
 		LEFT JOIN files f ON dc.child_id = f.id
 		LEFT JOIN link_counts lc ON dc.child_id = lc.file_id
@@ -235,10 +237,11 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 		var size int64
 		var atime, mtime, ctime, creationTime time.Time
 		var hidden bool
+		var objectIDRaw []byte
 		var linkCount sql.NullInt32
 
 		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size,
-			&atime, &mtime, &ctime, &creationTime, &hidden, &linkCount)
+			&atime, &mtime, &ctime, &creationTime, &hidden, &objectIDRaw, &linkCount)
 		if err != nil {
 			return nil, "", err
 		}
@@ -261,23 +264,38 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 			}
 		}
 
+		// Phase 13 META-02: hydrate ObjectID for directory entries so the
+		// shape matches GetFile (D-13 lookup is per-store; consistency on
+		// DirEntry.Attr makes the field uniformly trustworthy at every
+		// read site). NULL/empty -> zero (D-03 sentinel).
+		attr := &metadata.FileAttr{
+			Type:         metadata.FileType(fileType),
+			Mode:         uint32(mode),
+			Nlink:        nlink,
+			UID:          uint32(uid),
+			GID:          uint32(gid),
+			Size:         uint64(size),
+			Atime:        atime,
+			Mtime:        mtime,
+			Ctime:        ctime,
+			CreationTime: creationTime,
+			Hidden:       hidden,
+		}
+		if len(objectIDRaw) > 0 {
+			if len(objectIDRaw) != blockstore.HashSize {
+				return nil, "", fmt.Errorf(
+					"postgres ListChildren: object_id has invalid length %d (want %d)",
+					len(objectIDRaw), blockstore.HashSize,
+				)
+			}
+			copy(attr.ObjectID[:], objectIDRaw)
+		}
+
 		entry := metadata.DirEntry{
 			ID:     metadata.HandleToINode(childHandle),
 			Name:   name,
 			Handle: childHandle,
-			Attr: &metadata.FileAttr{
-				Type:         metadata.FileType(fileType),
-				Mode:         uint32(mode),
-				Nlink:        nlink,
-				UID:          uint32(uid),
-				GID:          uint32(gid),
-				Size:         uint64(size),
-				Atime:        atime,
-				Mtime:        mtime,
-				Ctime:        ctime,
-				CreationTime: creationTime,
-				Hidden:       hidden,
-			},
+			Attr:   attr,
 		}
 
 		entries = append(entries, entry)
@@ -346,7 +364,7 @@ func (s *PostgresMetadataStore) GetFileByPayloadID(ctx context.Context, payloadI
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, lc.link_count
+			f.hidden, f.acl, f.object_id, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.content_id_hash = md5($1)
