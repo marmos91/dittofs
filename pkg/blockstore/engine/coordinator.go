@@ -60,6 +60,25 @@ type MetadataCoordinator interface {
 	// Implementations short-circuit on zero-valued ObjectID and return
 	// (nil, nil) without touching the metadata store.
 	FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error)
+
+	// GetFileObjectID returns the current FileAttr.ObjectID for
+	// payloadID, or the all-zero sentinel when the file has never
+	// quiesced (or does not exist). Used by Syncer.Flush (Phase 13
+	// Plan 13) to evaluate the D-09 trigger condition for the
+	// file-level dedup short-circuit BEFORE running the per-block
+	// upload pump.
+	//
+	// Implementations MUST NOT open a metadata transaction — this is a
+	// single-row read on the public metadata-store surface. The
+	// runtime coordinator routes through metadataStore.GetFileByPayloadID
+	// directly (no caller-owned txn binding required for the trigger
+	// check).
+	//
+	// Returning the all-zero ObjectID + nil for "no row" is the
+	// authoritative pattern: callers treat zero as "skip short-circuit"
+	// and fall through to the per-block path. Real backend errors
+	// (storage I/O, corrupt row) propagate.
+	GetFileObjectID(ctx context.Context, payloadID string) (blockstore.ObjectID, error)
 }
 
 // ErrMetadataCoordinatorNotWired is returned when an engine method

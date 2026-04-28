@@ -50,6 +50,13 @@ type fakeCoordinator struct {
 	// concurrent-race RED test (D-14) to simulate the loser detecting a
 	// unique-violation on the partial UNIQUE index.
 	persistErr error
+	// fileObjectIDs is the seedable per-payload current-ObjectID lookup
+	// for GetFileObjectID. Phase 13 Plan 13 (BSCAS-05): Syncer.Flush
+	// reads this to evaluate the D-09 trigger condition before the
+	// per-block upload pump. Unset / zero-valued entries mean "never
+	// quiesced" (zero ObjectID), which lets the trigger condition fire
+	// when speculativeBlocks are present and all-Pending.
+	fileObjectIDs map[string]blockstore.ObjectID
 }
 
 // newFakeCoordinator returns a *fakeCoordinator with all maps initialized
@@ -59,7 +66,8 @@ type fakeCoordinator struct {
 // nil map.
 func newFakeCoordinator() *fakeCoordinator {
 	return &fakeCoordinator{
-		objectIDHits: make(map[blockstore.ObjectID][]blockstore.BlockRef),
+		objectIDHits:  make(map[blockstore.ObjectID][]blockstore.BlockRef),
+		fileObjectIDs: make(map[string]blockstore.ObjectID),
 	}
 }
 
@@ -118,6 +126,20 @@ func (f *fakeCoordinator) FindByObjectID(_ context.Context, oid blockstore.Objec
 		return append([]blockstore.BlockRef(nil), hit...), nil
 	}
 	return nil, nil
+}
+
+// GetFileObjectID — Phase 13 Plan 13 (BSCAS-05). Returns the seeded
+// ObjectID for payloadID from the fileObjectIDs map, or the all-zero
+// sentinel + nil when the map is unset / payload absent. Mirrors the
+// runtime coordinator's "no row → zero ObjectID" disposition so unit
+// tests exercise the same trigger-condition code path as production.
+func (f *fakeCoordinator) GetFileObjectID(_ context.Context, payloadID string) (blockstore.ObjectID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if oid, ok := f.fileObjectIDs[payloadID]; ok {
+		return oid, nil
+	}
+	return blockstore.ObjectID{}, nil
 }
 
 // Compile-time assertion: fakeCoordinator satisfies MetadataCoordinator.

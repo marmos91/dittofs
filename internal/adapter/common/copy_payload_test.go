@@ -57,6 +57,14 @@ func (f *fakeCoordinator) FindByObjectID(_ context.Context, _ blockstore.ObjectI
 	return nil, nil
 }
 
+// GetFileObjectID — Phase 13 Plan 13 (BSCAS-05) stub. Adapter-common
+// tests do not drive the Syncer.Flush short-circuit path; returning the
+// zero ObjectID + nil is the "never quiesced" disposition that keeps
+// the interface satisfied without affecting any assertions.
+func (f *fakeCoordinator) GetFileObjectID(_ context.Context, _ string) (blockstore.ObjectID, error) {
+	return blockstore.ObjectID{}, nil
+}
+
 // putTestFile creates a file with the given Blocks list in the metadata
 // store and returns its handle. Used to seed src/dst before CopyPayload.
 func putTestFile(t *testing.T, ms metadata.MetadataStore, path string, payloadID metadata.PayloadID, blocks []blockstore.BlockRef, size uint64) metadata.FileHandle {

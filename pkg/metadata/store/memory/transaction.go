@@ -100,15 +100,18 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	// tx.store.files[key]. The caller (WithTransaction) holds the write
 	// lock; tx.store.files is mutated directly without per-call locking.
 	//
-	// Step 1: stale-entry cleanup. If the existing record had a non-zero
-	// ObjectID and we are now writing a different (or zero) ObjectID,
-	// drop the old index entry.
-	if existing, exists := tx.store.files[key]; exists && existing.Attr != nil &&
-		!existing.Attr.ObjectID.IsZero() && existing.Attr.ObjectID != attrCopy.ObjectID {
-		delete(tx.store.objectIndex, existing.Attr.ObjectID)
-	}
-
-	// Step 2: race detection (D-14 first-committer-wins). If someone
+	// WR-03 (Phase 13 review iteration 1): race detection MUST run before
+	// stale-entry cleanup. memory's WithTransaction has no rollback (see
+	// transaction.go WithTransaction docstring): "If fn returns an error,
+	// no rollback is needed since operations are performed directly on the
+	// maps." If we cleaned the old index entry first and then returned
+	// ErrConflict on the race check, the file row would still hold the
+	// old ObjectID but the index would no longer map it — a subsequent
+	// FindByObjectID(oldObjectID) would return nil even though the file
+	// persists with that ObjectID. Reorder so a failed PutFile leaves
+	// every map untouched.
+	//
+	// Step 1: race detection (D-14 first-committer-wins). If someone
 	// else's file already claims this ObjectID, reject before we mutate
 	// any state.
 	if !attrCopy.ObjectID.IsZero() {
@@ -118,6 +121,19 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 				fmt.Sprintf("object_id already mapped to file key %s", otherKey),
 			)
 		}
+	}
+
+	// Step 2: stale-entry cleanup. If the existing record had a non-zero
+	// ObjectID and we are now writing a different (or zero) ObjectID,
+	// drop the old index entry. Only runs after the race check passes
+	// so a rejected write never leaves orphaned-or-missing index state.
+	if existing, exists := tx.store.files[key]; exists && existing.Attr != nil &&
+		!existing.Attr.ObjectID.IsZero() && existing.Attr.ObjectID != attrCopy.ObjectID {
+		delete(tx.store.objectIndex, existing.Attr.ObjectID)
+	}
+
+	// Step 3: install the new index entry.
+	if !attrCopy.ObjectID.IsZero() {
 		tx.store.objectIndex[attrCopy.ObjectID] = key
 	}
 

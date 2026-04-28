@@ -268,10 +268,23 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 			}
 		}
 
-		// Phase 13 META-02: hydrate ObjectID for directory entries so the
-		// shape matches GetFile (D-13 lookup is per-store; consistency on
-		// DirEntry.Attr makes the field uniformly trustworthy at every
-		// read site). NULL/empty -> zero (D-03 sentinel).
+		// Phase 13 META-02: hydrate ObjectID for directory entries.
+		// NULL/empty -> zero (D-03 sentinel).
+		//
+		// WR-05 (Phase 13 review iteration 1): the shape DOES NOT match
+		// GetFile in this backend. GetFile populates FileAttr.Blocks via
+		// loadFileBlockRefs; ListChildren intentionally does NOT (per-row
+		// BlockRef hydration would be a quadratic cost on directory
+		// listings). Memory and Badger backends include Blocks on
+		// DirEntry.Attr because their underlying serialisation already
+		// carries the slice — Postgres' relational model splits
+		// FileAttr.Blocks into a separate table (file_block_refs) and
+		// listing rows skip the join. Callers MUST treat
+		// DirEntry.Attr.Blocks as not-loaded for Postgres and re-read
+		// via GetFile if the BlockRef list is needed for hot-path
+		// resolution. Current short-circuit code (FindByObjectID-driven)
+		// never consults DirEntry.Attr.ObjectID, so this asymmetry is
+		// benign at the Phase 13 call surface.
 		attr := &metadata.FileAttr{
 			Type:         metadata.FileType(fileType),
 			Mode:         uint32(mode),

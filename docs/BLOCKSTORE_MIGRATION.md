@@ -131,6 +131,15 @@ that adds the `files.object_id` column backing
 `FileAttr.ObjectID blockstore.ObjectID` (META-02 / BSCAS-04 / BSCAS-05
 / D-12).
 
+**Wiring status (post-v0.15.0):** Plans 13-12 and 13-13 closed the
+Phase 13 chain end-to-end. `Syncer.Flush` drives the file-level
+dedup short-circuit (BSCAS-05) and the post-Flush ObjectID compute
+(BSCAS-04). From v0.15.0 onwards every successful file quiesce
+populates `FileAttr.ObjectID` in the same metadata transaction that
+persists `FileAttr.Blocks` (D-05). See
+[ARCHITECTURE.md — Production call chain](ARCHITECTURE.md#production-call-chain-post-plans-13-12--13-13)
+for the end-to-end dispatch graph.
+
 **Schema:**
 
 ```sql
@@ -228,6 +237,11 @@ files without a second migration pass. Until Phase 14 runs, legacy
 files keep the all-zero ObjectID sentinel and are skipped by the
 file-level dedup short-circuit (they still benefit from chunk-level
 dedup via `GetByHash`).
+
+Note: post-v0.15.0 file writes already populate `ObjectID` at quiesce
+(Plans 13-12 + 13-13). Phase 14's backfill is exclusively for files
+written under v0.13.0 and earlier whose `Blocks` list is also
+legacy-format.
 
 > **This section is a placeholder.** The Phase 14 plan owns the full
 > operator guide (invocation, dry-run, resumability, per-file failure

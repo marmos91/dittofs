@@ -210,11 +210,15 @@ func TestWriteAt_ReturnsCurrentBlocks(t *testing.T) {
 	}
 }
 
-// TestSyncer_SetCoordinator asserts the syncer post-Flush wiring point
-// (Plan 07 lays the seam; Plan 09 wires the trigger). Engine.New plumbs
-// the coordinator into the syncer; persistFileBlocksAfterFlush invokes
-// PersistFileBlocks when called.
-func TestSyncer_SetCoordinator(t *testing.T) {
+// TestSyncer_PostFlushHook_Direct asserts the syncer post-Flush wiring
+// point (Plan 07 lays the seam; Plan 13-12 wires Flush -> hook). Engine.New
+// plumbs the coordinator into the syncer; persistFileBlocksAfterFlush
+// invokes PersistFileBlocks when called directly. Fine-grained unit
+// coverage of the seam — the end-to-end Flush()-driven assertion lives in
+// pkg/blockstore/engine/syncer_flush_test.go::TestSyncer_Flush_InvokesPostFlushHook
+// (it requires a real FileBlockStore + LocalStore + RemoteStore which the
+// lightweight stubFileBlockStore harness here cannot provide).
+func TestSyncer_PostFlushHook_Direct(t *testing.T) {
 	fc := &fakeCoordinator{}
 	bs := newTestEngineWithCoordinator(t, fc)
 
@@ -234,5 +238,11 @@ func TestSyncer_SetCoordinator(t *testing.T) {
 	}
 	if fc.persistCalls[0].payloadID != "post-flush-test" {
 		t.Errorf("payloadID = %q, want post-flush-test", fc.persistCalls[0].payloadID)
+	}
+	// Plan 13-12 invariant: the direct-hook path also computes and
+	// passes the BLAKE3 Merkle root ObjectID.
+	if got, want := fc.persistCalls[0].objectID, blockstore.ComputeObjectID(blocks); got != want {
+		t.Errorf("objectID = %s, want ComputeObjectID(blocks) = %s",
+			got.String(), want.String())
 	}
 }

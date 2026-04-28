@@ -1111,6 +1111,61 @@ running-VM hot path (incremental writes already get chunk-level dedup
 via Phase 11 `GetByHash` and would not benefit from file-level
 fingerprinting that requires a quiesce).
 
+### Production call chain (post-Plans 13-12 / 13-13)
+
+The end-to-end wiring as of v0.15.0 (Plans 13-12 + 13-13 closed the
+Phase 13 chain). Reads bottom-up; arrows show synchronous dispatch:
+
+```
+Production call chain (per-write, on quiesce):
+
+  protocol handler (NFSv3 COMMIT, NFSv4 COMMIT, SMB CLOSE)
+    → internal/adapter/common.CommitBlockStore
+    → engine.BlockStore.Flush
+    → engine.Syncer.Flush
+        ├─[BSCAS-05 short-circuit]
+        │   ├─ snapshotPendingBlockRefs(payloadID)         // ListFileBlocks projection
+        │   ├─ coordinator.GetFileObjectID(payloadID)      // trigger-condition check
+        │   ├─ TrySpeculativeFileLevelDedup
+        │   │   ├─ ComputeObjectID(specBlocks)
+        │   │   ├─ coordinator.FindByObjectID
+        │   │   └─ applyFileLevelDedupHit (one metadata txn):
+        │   │       ├─ IncrementRefCount on each target hash
+        │   │       ├─ coordinator.PersistFileBlocks(target.Blocks, provisionalObjectID)
+        │   │       ├─ DecrementRefCount on speculative-only hashes
+        │   │       ├─ Cache.InvalidateFile(removedHashes)
+        │   │       └─ local.DeleteAppendLog(payloadID)
+        │   └─[hit] return Finalized:true (zero new CAS PUTs)
+        │
+        └─[BSCAS-04 post-Flush hook (on miss OR no trigger)]
+            ├─ drainPayloadToRemote (uploadOne per Pending block)
+            ├─ snapshotBlockRefs (every block now Remote)
+            └─ persistFileBlocksAfterFlush
+                └─ ComputeObjectID(blocks)
+                └─ coordinator.PersistFileBlocks(blocks, objectID)
+                    └─ runtime coordinator: WithTransaction(GetFileByPayloadID + PutFile)
+                        // FileAttr.Blocks AND FileAttr.ObjectID
+                        // written in one metadata txn (CR-01)
+```
+
+Both branches finalize `FileAttr.ObjectID` inside the same metadata
+transaction that persists `FileAttr.Blocks` (D-05). The hit branch
+performs zero new CAS PUTs (donor blocks already exist remotely);
+the miss branch uploads each Pending block once via `uploadOne` and
+then runs the post-Flush hook.
+
+Source-of-truth file:line anchors:
+
+- `pkg/blockstore/engine/syncer.go::Flush` — entry point + branch
+  selection; `snapshotPendingBlockRefs` (BSCAS-05 input) and
+  `snapshotBlockRefs` (BSCAS-04 input) helpers.
+- `pkg/blockstore/engine/dedup.go::TrySpeculativeFileLevelDedup` and
+  `applyFileLevelDedupHit` — the metadata-side swap.
+- `pkg/blockstore/engine/dedup.go::persistFileBlocksAfterFlush` — the
+  post-Flush coordinator hook.
+- `pkg/controlplane/runtime/shares/coordinator.go::PersistFileBlocks` /
+  `GetFileObjectID` — runtime forwarders.
+
 ### Concurrent quiesce: first-committer-wins
 
 Two concurrent flushes of byte-identical content race independently

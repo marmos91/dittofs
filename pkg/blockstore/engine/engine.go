@@ -327,12 +327,21 @@ func (bs *BlockStore) Exists(ctx context.Context, payloadID string) (bool, error
 // are invalidated and prefetcher is reset.
 //
 // Phase 12 API-01: signature returns []BlockRef so the caller can
-// persist FileAttr.Blocks in the same metadata txn. Plan 07 wires the
-// API; the FastCDC re-chunking and merged-BlockRef construction land
-// in Plan 09 alongside the cache rewrite. Until then, this method
-// returns currentBlocks unchanged — the legacy syncer path still
-// drives the actual upload; FileAttr.Blocks is populated lazily by
-// the dual-read shim. This is the documented Plan 07 contract.
+// persist FileAttr.Blocks in the same metadata txn.
+//
+// Phase 13 Plan 13-13: WriteAt remains a per-write append into the
+// local store — it does NOT chunk or assemble BlockRefs. The FastCDC
+// chunker runs at the local-store rollup layer (pkg/blockstore/local/
+// fs/rollup.go::rollupFile), which produces Pending FileBlocks
+// carrying chunk hashes. Syncer.Flush projects ListFileBlocks(payloadID)
+// into the canonical sorted []BlockRef list at quiesce time and
+// invokes either the file-level dedup short-circuit (BSCAS-05) or
+// the per-block upload pump + post-Flush hook (BSCAS-04 / META-02).
+// FileAttr.Blocks AND FileAttr.ObjectID are written in the same
+// metadata transaction by the runtime coordinator's PersistFileBlocks.
+//
+// Returns currentBlocks unchanged — the canonical projection happens
+// at Flush time, not WriteAt time.
 func (bs *BlockStore) WriteAt(ctx context.Context, payloadID string, currentBlocks []blockstore.BlockRef, data []byte, offset uint64) ([]blockstore.BlockRef, error) {
 	if len(data) == 0 {
 		return currentBlocks, nil
@@ -347,8 +356,18 @@ func (bs *BlockStore) WriteAt(ctx context.Context, payloadID string, currentBloc
 	// prefetch from chasing pre-write hashes after the underlying data
 	// shifted. nullCache is a no-op (Null Object).
 	bs.cache.OnRead(payloadID, nil, 0)
-	// Plan 09 will return the merged []BlockRef list here; for Plan 07
-	// the legacy path's FileAttr.Blocks is unchanged (dual-read shim).
+	// Phase 13 Plan 13 (BSCAS-05): the FastCDC chunker output is
+	// produced by the local-store rollup pump
+	// (pkg/blockstore/local/fs/rollup.go::rollupFile) and lands as
+	// Pending FileBlocks with chunk-hash populated. The canonical
+	// []BlockRef projection is built at Flush time from
+	// ListFileBlocks(payloadID) — see Syncer.snapshotPendingBlockRefs
+	// (file-level dedup short-circuit input) and Syncer.snapshotBlockRefs
+	// (post-drain canonical list for the post-Flush hook). WriteAt
+	// itself remains a per-write append into the local store and does
+	// NOT need to return a merged []BlockRef; the dual-read shim's
+	// currentBlocks pass-through is preserved for callers that have not
+	// yet migrated to FileAttr.Blocks reads.
 	return currentBlocks, nil
 }
 

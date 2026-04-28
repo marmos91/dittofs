@@ -126,58 +126,46 @@ func (c *metadataCoordinator) DecrementRefCount(ctx context.Context, hash blocks
 	return count, nil
 }
 
-// PersistFileBlocks updates the FileAttr.Blocks slice for the file
-// identified by payloadID in a single PutFile call. The runtime wrapper
-// resolves payloadID → fileHandle → file via the metadata store's
-// existing helpers; if the lookup chain is unavailable on the active
-// backend, returns ErrNotImplemented so the caller can fall back to the
-// legacy path.
+// PersistFileBlocks atomically updates FileAttr.Blocks AND
+// FileAttr.ObjectID for the file identified by payloadID in a single
+// metadata transaction. The runtime wrapper resolves
+// payloadID → fileHandle → file via tx.GetFileByPayloadID and persists
+// the updated FileAttr via tx.PutFile.
 //
 // Phase 12 D-37 / D-20: this is the post-Flush seam — the syncer
-// invokes this once per uploaded chunk so the canonical FileAttr.Blocks
-// list reflects every Remote BlockRef the engine has produced.
+// invokes this after every successful Flush so the canonical
+// FileAttr.Blocks list reflects every Remote BlockRef the engine has
+// produced.
 //
-// Phase 13 D-05/D-06: the syncer also computes the BLAKE3 Merkle-root
-// ObjectID over `blocks` and threads it through this hook so the
-// metadata write atomically updates both Blocks AND ObjectID in the same
-// PutFile/transaction. Until the payloadID → fileHandle → PutFile chain
-// is wired (Phase 12 plan 08+), this method returns
-// engine.ErrPersistFileBlocksNotWired so the syncer's post-Flush hook
-// recognizes the deferred-wiring case and logs rather than silently
-// dropping the BlockRef list.
+// Phase 13 D-05/D-06: the syncer computes the BLAKE3 Merkle-root
+// ObjectID over `blocks` (via blockstore.ComputeObjectID) and threads
+// it through this hook so the metadata write atomically updates both
+// Blocks AND ObjectID in the same PutFile transaction.
+//
+// Conflict mapping: a Postgres unique-violation on files_object_id_idx
+// (Phase 13 D-14 first-committer-wins) — or the equivalent
+// mderrors.ErrConflict from Memory/Badger — is wrapped into
+// engine.ErrObjectIDConflict by mapObjectIDConflict so the BSCAS-05
+// short-circuit retry path in Syncer.applyFileLevelDedupHit detects
+// the race uniformly across backends.
 func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error {
-	// Phase 12 plan 07: the engine seam exists; production wiring of the
-	// payloadID → fileHandle → PutFile chain lands in plan 08 alongside
-	// the adapter common helper refactor (which has the file handle).
-	// The dual-read shim (D-20) keeps reads correct in the meantime; this
-	// path is wire-but-not-implemented.
-	//
-	// WR-02 (Phase 12 review iteration 1): the previous "return nil" silently
-	// swallowed every call. That is dangerous once WriteAt starts producing
-	// non-empty BlockRef lists in a future plan: the syncer would observe
-	// success and never retry the persist, leaving FileAttr.Blocks empty.
-	// Surface the gap by returning engine.ErrPersistFileBlocksNotWired so
-	// callers (today: only Syncer.persistFileBlocksAfterFlush) can recognise
-	// the deferred-wiring case explicitly. The Syncer's post-Flush hook
-	// tolerates this sentinel (dual-read shim covers reads) but logs a
-	// warning so the silent-drop window is observable; a future plan that
-	// flips WriteAt to return real BlockRefs is forced to implement this
-	// method, not silently succeed.
-	//
-	// Phase 13 wiring template (Plan 04): once the payloadID → file
-	// resolution chain lands, the body becomes:
-	//   return c.metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
-	//     file, err := tx.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
-	//     if err != nil { return err }
-	//     file.FileAttr.Blocks = blocks
-	//     file.FileAttr.ObjectID = objectID  // Phase 13 D-05/D-06 — same txn.
-	//     return tx.PutFile(ctx, file)
-	//   })
-	_ = ctx
-	_ = payloadID
-	_ = blocks
-	_ = objectID
-	return mapObjectIDConflict(engine.ErrPersistFileBlocksNotWired)
+	return c.metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		file, err := tx.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
+		if err != nil {
+			return fmt.Errorf("coordinator: GetFileByPayloadID(%s): %w", payloadID, err)
+		}
+		if file == nil {
+			return fmt.Errorf("coordinator: GetFileByPayloadID(%s): nil file (no row)", payloadID)
+		}
+		// FileAttr is embedded on metadata.File (not a pointer).
+		file.FileAttr.Blocks = blocks
+		// Phase 13 D-05/D-06: same-txn write of Blocks AND ObjectID.
+		file.FileAttr.ObjectID = objectID
+		if err := tx.PutFile(ctx, file); err != nil {
+			return mapObjectIDConflict(err)
+		}
+		return nil
+	})
 }
 
 // mapObjectIDConflict wraps backend conflict errors into
@@ -244,4 +232,42 @@ func (c *metadataCoordinator) FindByObjectID(ctx context.Context, objectID block
 		return nil, nil
 	}
 	return c.metadataStore.FindByObjectID(ctx, objectID)
+}
+
+// GetFileObjectID reads the current FileAttr.ObjectID for payloadID
+// from the metadata store. Returns the all-zero ObjectID + nil when
+// the file does not exist or has never quiesced — callers (Syncer.Flush)
+// treat zero as "evaluate short-circuit" / "skip short-circuit" per the
+// D-09 trigger condition.
+//
+// Phase 13 BSCAS-05 / D-09: callers use this to evaluate the trigger
+// condition for file-level dedup BEFORE running the per-block upload
+// pump. Reads on the public metadataStore surface (not bound to a
+// caller-owned txn) — the read is a single-row lookup, not part of any
+// per-flow transaction.
+//
+// Backend NotFound semantics: the Memory and Badger backends return a
+// StoreError with ErrNotFound code when the payloadID has no row; the
+// Postgres backend may return a wrapped sql.ErrNoRows. Both are mapped
+// to (zero ObjectID, nil) here so the caller's trigger evaluation does
+// not see a transient error during the very first quiesce of a fresh
+// file.
+func (c *metadataCoordinator) GetFileObjectID(ctx context.Context, payloadID string) (blockstore.ObjectID, error) {
+	file, err := c.metadataStore.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
+	if err != nil {
+		// NotFound is the steady state for a never-quiesced file. The
+		// caller treats a zero ObjectID as "trigger condition holds"
+		// (the file has no prior Merkle root), so this is the correct
+		// disposition — not a real backend error.
+		if metadata.IsNotFoundError(err) {
+			return blockstore.ObjectID{}, nil
+		}
+		return blockstore.ObjectID{}, fmt.Errorf("coordinator: GetFileObjectID(%s): %w", payloadID, err)
+	}
+	if file == nil {
+		// Defense-in-depth: some backends return (nil, nil) for "no row"
+		// rather than an error. Treat the same as NotFound.
+		return blockstore.ObjectID{}, nil
+	}
+	return file.FileAttr.ObjectID, nil
 }

@@ -141,7 +141,24 @@ func (m *Syncer) applyFileLevelDedupHit(
 			// Concurrent-quiesce race (D-14): someone else committed
 			// first. Roll back our just-incremented refcounts on the
 			// original target, re-fetch the now-canonical target, and
-			// retry once.
+			// retry once. For hashes shared between original and
+			// updated targets, this performs two metadata RTTs (one
+			// decrement here, one re-increment in the retry) — that is
+			// the documented tradeoff. The simpler "decrement
+			// everything, retry from scratch" pattern is correct under
+			// the per-call refcount-accounting model: each
+			// applyFileLevelDedupHit call must own exactly one
+			// increment per target hash by the time it returns
+			// success, so partial rollbacks risk double-counting on
+			// the retry. WR-01 (Phase 13 review iteration 1):
+			// considered the symmetric-difference optimisation but
+			// rejected it because the retry unconditionally
+			// re-increments every updatedTarget hash; skipping shared
+			// hashes here would leave them at +2 after retry instead
+			// of the intended +1. INV-02 audit reconciles any
+			// transient dip while the retry runs (RefCount is
+			// non-blocking; GC keys off FileAttr.Blocks references in
+			// the persisted state, not the in-flight rollback window).
 			for h := range seen {
 				if _, derr := m.coordinator.DecrementRefCount(ctx, h); derr != nil {
 					logger.Warn("file-level dedup race rollback decrement failed",
@@ -175,6 +192,20 @@ func (m *Syncer) applyFileLevelDedupHit(
 	// refcount entries that the GC sweep (Phase 11 GC-01..04) will
 	// reclaim. Logging at WARN matches that contract (orphan; GC will
 	// reclaim).
+	//
+	// WR-02 (Phase 13 review iteration 1): retry-time invariant. On
+	// the retry path (isRetry=true) targetBlocks is the updated
+	// canonical target's slice (passed via the recursive call after
+	// FindByObjectID); seen is the recursive frame's freshly-built
+	// set computed from those same targetBlocks (step 1 above).
+	// speculativeBlocks is invariant across retry — it is the engine's
+	// chunker output, not derived from any per-call lookup. Therefore
+	// targetSet (recomputed each call from targetBlocks) and
+	// speculativeSet are correct for whichever call frame is
+	// executing. If a future refactor introduces partial speculation
+	// (chunker emitting different blocks during retry) the
+	// speculativeSet computation MUST move to
+	// trySpeculativeFileLevelDedup so it cannot drift across retries.
 	targetSet := make(map[blockstore.ContentHash]struct{}, len(targetBlocks))
 	for _, br := range targetBlocks {
 		targetSet[br.Hash] = struct{}{}
@@ -217,6 +248,53 @@ func (m *Syncer) applyFileLevelDedupHit(
 		if err := m.local.DeleteAppendLog(ctx, payloadID); err != nil {
 			logger.Warn("file-level dedup: delete append log",
 				"payloadID", payloadID, "err", err)
+		}
+	}
+
+	// 6. WR-02 (Phase 13 review iteration 2): purge speculative FileBlock
+	// rows for payloadID. After step 2 PersistFileBlocks succeeded,
+	// FileAttr.Blocks points to the target's BlockRefs and reads resolve
+	// via target's hashes (GetByHash routes to the target's persisted
+	// row, whose RefCount we just incremented). The local speculative
+	// rows under "{payloadID}/{idx}" are now orphans:
+	//
+	//   - They are still Pending (the upload pump was bypassed) so the
+	//     periodic uploader's claimBatch (ListPending scan) would
+	//     resurface them on the next tick and call uploadOne — wasted
+	//     work even with CAS idempotency, and a NEW PUT on first hit.
+	//   - A subsequent Flush(payloadID) per-block drain path would feed
+	//     them into snapshotBlockRefs after the periodic uploader marked
+	//     them Remote, computing a Merkle root from speculative content
+	//     and silently overwriting the target-sourced FileAttr.Blocks /
+	//     ObjectID — reverting the dedup hit's atomic swap.
+	//   - Syncer.GetFileSize / Exists consult ListFileBlocks(payloadID);
+	//     a speculative row reaching Remote could diverge from
+	//     FileAttr.Size / target-derived size.
+	//
+	// Speculative-row IDs ("{payloadID}/{idx}") and target-row IDs
+	// ("{target_payloadID}/{idx}") are disjoint by payloadID prefix, so
+	// no filter against target's projection is needed — every row in
+	// ListFileBlocks(payloadID) at this point is a speculative orphan.
+	//
+	// Best-effort: a failure here leaves orphan Pending rows that the
+	// periodic uploader will eventually resurface, but the metadata
+	// commit (step 2) has already swapped FileAttr.Blocks; reads remain
+	// correct. The next successful Flush will re-attempt cleanup via
+	// this same path. Logging at WARN matches the speculative-only
+	// refcount decrement contract above (orphan; periodic janitor or
+	// future quiesce reclaims).
+	if m.fileBlockStore != nil {
+		specRows, lerr := m.fileBlockStore.ListFileBlocks(ctx, payloadID)
+		if lerr != nil {
+			logger.Warn("file-level dedup: list speculative FileBlocks for cleanup",
+				"payloadID", payloadID, "err", lerr)
+		} else {
+			for _, fb := range specRows {
+				if derr := m.fileBlockStore.Delete(ctx, fb.ID); derr != nil {
+					logger.Warn("file-level dedup: delete speculative FileBlock row",
+						"blockID", fb.ID, "err", derr)
+				}
+			}
 		}
 	}
 
