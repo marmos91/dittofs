@@ -183,10 +183,10 @@ func TestGetSessionForBreak_RoutesByClientGUIDPrimary(t *testing.T) {
 	// of the shared ClientGUID — not to whichever session opened the lease.
 	// LEASE2's per-lease sessionMap entry initially points at session2, so
 	// this assertion specifically pins the ClientGUID-aware override.
-	if sid, ok := lm.GetSessionForBreak(lease1); !ok || sid != session1 {
+	if sid, ok := lm.GetSessionForBreak(lease1, "client-1"); !ok || sid != session1 {
 		t.Errorf("LEASE1 break session = %d (ok=%v), want %d", sid, ok, session1)
 	}
-	if sid, ok := lm.GetSessionForBreak(lease2); !ok || sid != session1 {
+	if sid, ok := lm.GetSessionForBreak(lease2, "client-2"); !ok || sid != session1 {
 		t.Errorf("LEASE2 break session = %d (ok=%v), want %d (ClientGUID primary, NOT per-lease sessionMap session2=%d)",
 			sid, ok, session1, session2)
 	}
@@ -223,7 +223,7 @@ func TestGetSessionForBreak_FallsBackToSessionMap(t *testing.T) {
 		t.Fatalf("RequestLease: %v", err)
 	}
 
-	if sid, ok := lm.GetSessionForBreak(leaseKey); !ok || sid != session1 {
+	if sid, ok := lm.GetSessionForBreak(leaseKey, "client-1"); !ok || sid != session1 {
 		t.Errorf("GetSessionForBreak(zero GUID) = %d (ok=%v), want %d (sessionMap fallback)",
 			sid, ok, session1)
 	}
@@ -269,6 +269,108 @@ func TestReleaseSessionLeases_ReapsClientPrimary(t *testing.T) {
 	if _, present := lm.clientPrimarySession[clientGUID]; present {
 		t.Errorf("clientPrimarySession[%x] still present after session %d torn down",
 			clientGUID, session1)
+	}
+}
+
+// TestGetSessionForBreak_CrossClientSameLeaseKey_IsolatesByClientID covers
+// the per-client uniqueness of lease keys: lock.Manager scopes lease-key
+// reuse by Owner.ClientID (round-3 lease_match), so two distinct SMB
+// clients may each hold a record under the same numeric LeaseKey on
+// different files. The composite-keyed leaseClientGUID map must keep
+// their break-routing bindings isolated — client B's break must NOT route
+// to client A's primary session even when their leaseKeys collide.
+func TestGetSessionForBreak_CrossClientSameLeaseKey_IsolatesByClientID(t *testing.T) {
+	t.Parallel()
+
+	mgr := lock.NewManager()
+	lm := NewLeaseManager(&fakeResolver{mgr: mgr}, nil)
+
+	guidA := [16]byte{0xAA, 0xAA}
+	guidB := [16]byte{0xBB, 0xBB}
+	const (
+		sessionA uint64 = 11
+		sessionB uint64 = 22
+	)
+	leaseKey := [16]byte{0xEE} // same numeric key, different clients
+
+	// Client A grants on file-A.
+	if _, _, err := lm.RequestLease(context.Background(), lock.FileHandle("file-A"),
+		leaseKey, [16]byte{}, sessionA, guidA,
+		"owner-A", "client-A", "share1",
+		lock.LeaseStateRead, false); err != nil {
+		t.Fatalf("client A RequestLease: %v", err)
+	}
+
+	// Client B grants the SAME numeric leaseKey on file-B (per-client
+	// namespace allows this — round-3 lease_match scopes by ClientID).
+	if _, _, err := lm.RequestLease(context.Background(), lock.FileHandle("file-B"),
+		leaseKey, [16]byte{}, sessionB, guidB,
+		"owner-B", "client-B", "share1",
+		lock.LeaseStateRead, false); err != nil {
+		t.Fatalf("client B RequestLease: %v", err)
+	}
+
+	// Each client's break must route to its own primary session.
+	if sid, ok := lm.GetSessionForBreak(leaseKey, "client-A"); !ok || sid != sessionA {
+		t.Errorf("client A break = %d (ok=%v), want %d", sid, ok, sessionA)
+	}
+	if sid, ok := lm.GetSessionForBreak(leaseKey, "client-B"); !ok || sid != sessionB {
+		t.Errorf("client B break = %d (ok=%v), want %d", sid, ok, sessionB)
+	}
+}
+
+// TestReleaseSessionLeases_ReElectsPrimaryFromSurvivors covers
+// `client->connections` rehoming on Samba-style session teardown: when the
+// primary session of a ClientGUID is released, the next-oldest surviving
+// session of the same ClientGUID must be elected as the new primary so
+// future breaks continue to route at the client level rather than falling
+// through to the per-lease sessionMap (last-write-wins).
+func TestReleaseSessionLeases_ReElectsPrimaryFromSurvivors(t *testing.T) {
+	t.Parallel()
+
+	mgr := lock.NewManager()
+	lm := NewLeaseManager(&fakeResolver{mgr: mgr}, nil)
+
+	clientGUID := [16]byte{0xC0, 0xFF, 0xEE}
+	const (
+		sessionOldest uint64 = 10 // initial primary
+		sessionMiddle uint64 = 20
+		sessionNewest uint64 = 30
+	)
+	lease1 := [16]byte{0x01}
+	lease2 := [16]byte{0x02}
+	lease3 := [16]byte{0x03}
+	fh := lock.FileHandle("file-elect")
+
+	// All three sessions are the same client (same clientID) holding
+	// distinct leases on the same file. First grant elects sessionOldest
+	// as primary; subsequent grants must NOT bump.
+	for _, tc := range []struct {
+		key [16]byte
+		sid uint64
+	}{{lease1, sessionOldest}, {lease2, sessionMiddle}, {lease3, sessionNewest}} {
+		if _, _, err := lm.RequestLease(context.Background(), fh,
+			tc.key, [16]byte{}, tc.sid, clientGUID,
+			"owner-X", "client-X", "share1",
+			lock.LeaseStateRead, false); err != nil {
+			t.Fatalf("RequestLease(sid=%d): %v", tc.sid, err)
+		}
+	}
+
+	// Release the oldest (the current primary). Re-election must pick
+	// sessionMiddle (smallest surviving sessionID).
+	if err := lm.ReleaseSessionLeases(context.Background(), sessionOldest); err != nil {
+		t.Fatalf("ReleaseSessionLeases(oldest): %v", err)
+	}
+
+	lm.mu.RLock()
+	got, present := lm.clientPrimarySession[clientGUID]
+	lm.mu.RUnlock()
+	if !present {
+		t.Fatalf("primary missing after release; want re-elected to %d", sessionMiddle)
+	}
+	if got != sessionMiddle {
+		t.Errorf("re-elected primary = %d, want %d (smallest surviving sessionID)", got, sessionMiddle)
 	}
 }
 
