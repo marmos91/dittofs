@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-04-24 (Handle-scoped lease release — #429 cluster 33→31 after 2-run confirmation)
+Last updated: 2026-04-27 (Round 7 lease — request matrix W/H/HW coerced to None, #429)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -500,7 +500,6 @@ incomplete break notification delivery and multi-client coordination.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.lease.request | Leases | Lease request handling not fully working | #429 |
 | smb2.lease.oplock | Leases | Lease + oplock interaction not fully working | #429 |
 | smb2.lease.lock1 | Leases | Lease + lock interaction not fully working | #429 |
 | smb2.lease.v2_complex1 | Leases V2 | Lease V2 complex scenario not fully working | #429 |

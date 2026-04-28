@@ -299,7 +299,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 				file.Type == metadata.FileTypeDirectory,
 			)
 			if err != nil {
-				if errors.Is(err, lock.ErrInvalidLeaseState) || errors.Is(err, lock.ErrLeaseKeyInUse) {
+				if errors.Is(err, lock.ErrLeaseKeyInUse) {
 					// Step 7 already executed the open. The cleanup here depends
 					// on what that open did:
 					//   - FileCreated: roll back the orphan inode so a CREATE_NEW

@@ -377,12 +377,16 @@ func ProcessLeaseCreateContext(
 	var responseFlags uint32
 	if errors.Is(err, lock.ErrLeaseBreakInProgress) {
 		responseFlags = smbenc.LeaseResponseFlagBreakInProgress
-	} else if errors.Is(err, lock.ErrInvalidLeaseState) || errors.Is(err, lock.ErrLeaseKeyInUse) {
-		// Per MS-SMB2 3.3.5.9.8: Invalid lease states (Write without Read,
-		// Handle without Read) and a lease key already bound to another file
-		// (Samba lease_match) must fail the CREATE with
-		// STATUS_INVALID_PARAMETER. Propagate the error to the caller, which
+	} else if errors.Is(err, lock.ErrLeaseKeyInUse) {
+		// Per MS-SMB2 3.3.5.9.8 and Samba source3/smbd/smb2_lease.c::lease_match:
+		// a lease key already bound to a record on another file MUST fail the
+		// CREATE with STATUS_INVALID_PARAMETER. Propagate to the caller, which
 		// short-circuits before any open is granted.
+		//
+		// Note: invalid file lease states (W, H, WH) are coerced to
+		// LeaseState=None at the lock-manager boundary (Samba
+		// open.c::delay_for_oplock); CREATE succeeds with granted state="".
+		// See smbtorture smb2.lease.request request_results matrix.
 		return nil, err
 	} else if err != nil {
 		logger.Debug("ProcessLeaseCreateContext: lease request failed", "error", err)
