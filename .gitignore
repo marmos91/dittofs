@@ -83,4 +83,6 @@ test/smb-conformance/ptfconfig-generated/
 test/smb-conformance/dfs
 test/smb-conformance/dfsctl
 .claude/scheduled_tasks.lock
+.claude/worktrees/
+.agent-orphans/
 test/smb-conformance/docker-compose.override.yml
