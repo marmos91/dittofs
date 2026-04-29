@@ -533,7 +533,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	}
 
 	if FindCreateContext(req.CreateContexts, "QFid") != nil {
-		qfidFileID := h.baseFileUUID(authCtx.Context, parentHandle, baseName, file.ID)
+		qfidFileID := h.baseFileUUID(authCtx, parentHandle, baseName, file.ID)
 		qfidResp := make([]byte, 32)
 		copy(qfidResp[0:16], qfidFileID[:16])
 		copy(qfidResp[16:32], h.ServerGUID[:])

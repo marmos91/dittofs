@@ -325,9 +325,10 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 
 	var info []byte
 
+	authCtx, _ := BuildAuthContext(ctx)
 	switch req.InfoType {
 	case types.SMB2InfoTypeFile:
-		info, err = h.buildFileInfoFromStore(ctx.Context, file, openFile, types.FileInfoClass(req.FileInfoClass))
+		info, err = h.buildFileInfoFromStore(authCtx, file, openFile, types.FileInfoClass(req.FileInfoClass))
 	case types.SMB2InfoTypeFilesystem:
 		info, err = h.buildFilesystemInfo(ctx.Context, types.FileInfoClass(req.FileInfoClass), metaSvc, openFile.MetadataHandle)
 	case types.SMB2InfoTypeSecurity:
@@ -520,7 +521,8 @@ func (h *Handler) handlePipeFileInfo(req *QueryInfoRequest, openFile *OpenFile) 
 }
 
 // buildFileInfoFromStore builds file information based on class using metadata store.
-func (h *Handler) buildFileInfoFromStore(ctx context.Context, file *metadata.File, openFile *OpenFile, class types.FileInfoClass) ([]byte, error) {
+func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *metadata.File, openFile *OpenFile, class types.FileInfoClass) ([]byte, error) {
+	ctx := authCtx.Context
 	switch class {
 	case types.FileBasicInformation:
 		basicInfo := FileAttrToFileBasicInfo(&file.FileAttr)
@@ -532,7 +534,7 @@ func (h *Handler) buildFileInfoFromStore(ctx context.Context, file *metadata.Fil
 
 	case types.FileInternalInformation:
 		// FILE_INTERNAL_INFORMATION [MS-FSCC] 2.4.20 (8 bytes)
-		fileID := h.baseFileUUID(ctx, openFile.ParentHandle, openFile.FileName, file.ID)
+		fileID := h.baseFileUUID(authCtx, openFile.ParentHandle, openFile.FileName, file.ID)
 		w := smbenc.NewWriter(8)
 		w.WriteUint64(binary.LittleEndian.Uint64(fileID[:8]))
 		return w.Bytes(), nil
@@ -655,7 +657,7 @@ func (h *Handler) buildFileInfoFromStore(ctx context.Context, file *metadata.Fil
 		return w.Bytes(), nil
 
 	case types.FileAllInformation:
-		return h.buildFileAllInformationFromStore(ctx, file, openFile), nil
+		return h.buildFileAllInformationFromStore(authCtx, file, openFile), nil
 
 	default:
 		return nil, types.ErrNotSupported
@@ -663,7 +665,7 @@ func (h *Handler) buildFileInfoFromStore(ctx context.Context, file *metadata.Fil
 }
 
 // buildFileAllInformationFromStore builds FILE_ALL_INFORMATION from metadata.
-func (h *Handler) buildFileAllInformationFromStore(ctx context.Context, file *metadata.File, openFile *OpenFile) []byte {
+func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext, file *metadata.File, openFile *OpenFile) []byte {
 	// FILE_ALL_INFORMATION [MS-FSCC] 2.4.2 (varies)
 	// Basic (40) + Standard (24) + Internal (8) + EA (4) + Access (4) + Position (8) + Mode (4) + Alignment (4) + Name (variable)
 
@@ -685,7 +687,7 @@ func (h *Handler) buildFileAllInformationFromStore(ctx context.Context, file *me
 	copy(info[40:64], standardBytes)
 
 	// Build remaining fields sequentially using smbenc Writer
-	internalFileID := h.baseFileUUID(ctx, openFile.ParentHandle, openFile.FileName, file.ID)
+	internalFileID := h.baseFileUUID(authCtx, openFile.ParentHandle, openFile.FileName, file.ID)
 	fileIndex := binary.LittleEndian.Uint64(internalFileID[:8])
 
 	w := smbenc.NewWriter(36)
