@@ -531,8 +531,9 @@ func (h *Handler) buildFileInfoFromStore(ctx context.Context, file *metadata.Fil
 
 	case types.FileInternalInformation:
 		// FILE_INTERNAL_INFORMATION [MS-FSCC] 2.4.20 (8 bytes)
-		// Convert UUID to uint64 by using first 8 bytes
-		r := smbenc.NewReader(file.ID[:8])
+		// ADS streams share the base file's FileId per Windows semantics.
+		fileID := h.baseFileUUID(ctx, file, openFile)
+		r := smbenc.NewReader(fileID[:8])
 		fileIndex := r.ReadUint64()
 		w := smbenc.NewWriter(8)
 		w.WriteUint64(fileIndex) // IndexNumber (unique file ID)
@@ -656,7 +657,7 @@ func (h *Handler) buildFileInfoFromStore(ctx context.Context, file *metadata.Fil
 		return w.Bytes(), nil
 
 	case types.FileAllInformation:
-		return h.buildFileAllInformationFromStore(file, openFile), nil
+		return h.buildFileAllInformationFromStore(ctx, file, openFile), nil
 
 	default:
 		return nil, types.ErrNotSupported
@@ -664,7 +665,7 @@ func (h *Handler) buildFileInfoFromStore(ctx context.Context, file *metadata.Fil
 }
 
 // buildFileAllInformationFromStore builds FILE_ALL_INFORMATION from metadata.
-func (h *Handler) buildFileAllInformationFromStore(file *metadata.File, openFile *OpenFile) []byte {
+func (h *Handler) buildFileAllInformationFromStore(ctx context.Context, file *metadata.File, openFile *OpenFile) []byte {
 	// FILE_ALL_INFORMATION [MS-FSCC] 2.4.2 (varies)
 	// Basic (40) + Standard (24) + Internal (8) + EA (4) + Access (4) + Position (8) + Mode (4) + Alignment (4) + Name (variable)
 
@@ -686,7 +687,9 @@ func (h *Handler) buildFileAllInformationFromStore(file *metadata.File, openFile
 	copy(info[40:64], standardBytes)
 
 	// Build remaining fields sequentially using smbenc Writer
-	r := smbenc.NewReader(file.ID[:8])
+	// ADS streams share the base file's FileId per Windows semantics.
+	internalFileID := h.baseFileUUID(ctx, file, openFile)
+	r := smbenc.NewReader(internalFileID[:8])
 	fileIndex := r.ReadUint64()
 
 	w := smbenc.NewWriter(36)

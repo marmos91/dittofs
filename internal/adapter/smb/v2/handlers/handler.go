@@ -942,6 +942,21 @@ func (h *Handler) generateAsyncId() uint64 {
 	return h.nextAsyncId.Add(1)
 }
 
+// baseFileUUID returns the UUID to use for FileInternalInformation.
+// For ADS opens (FileName contains ":"), Windows returns the base file's
+// UUID so that stream handles and the base file share the same FileId.
+func (h *Handler) baseFileUUID(ctx context.Context, file *metadata.File, openFile *OpenFile) [16]byte {
+	if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 && len(openFile.ParentHandle) > 0 {
+		baseName := openFile.FileName[:colonIdx]
+		metaSvc := h.Registry.GetMetadataService()
+		authCtx := &metadata.AuthContext{Context: ctx, Identity: &metadata.Identity{}}
+		if baseFile, err := metaSvc.Lookup(authCtx, openFile.ParentHandle, baseName); err == nil {
+			return baseFile.ID
+		}
+	}
+	return file.ID
+}
+
 // GenerateFileID generates a new unique file ID
 func (h *Handler) GenerateFileID() [16]byte {
 	var fileID [16]byte

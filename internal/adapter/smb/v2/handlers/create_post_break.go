@@ -533,15 +533,25 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	}
 
 	if FindCreateContext(req.CreateContexts, "QFid") != nil {
+		// ADS streams share the base file's FileId per Windows semantics.
+		qfidFileID := file.ID
+		if colonIdx := strings.Index(baseName, ":"); colonIdx > 0 {
+			baseFileName := baseName[:colonIdx]
+			metaSvc := h.Registry.GetMetadataService()
+			lookupCtx := &metadata.AuthContext{Context: authCtx.Context, Identity: &metadata.Identity{}}
+			if baseFile, err := metaSvc.Lookup(lookupCtx, parentHandle, baseFileName); err == nil {
+				qfidFileID = baseFile.ID
+			}
+		}
 		qfidResp := make([]byte, 32)
-		copy(qfidResp[0:16], file.ID[:16])
+		copy(qfidResp[0:16], qfidFileID[:16])
 		copy(qfidResp[16:32], h.ServerGUID[:])
 		resp.CreateContexts = append(resp.CreateContexts, CreateContext{
 			Name: "QFid",
 			Data: qfidResp,
 		})
 		logger.Debug("CREATE: QFid response added",
-			"diskFileId", fmt.Sprintf("%x", file.ID[:16]))
+			"diskFileId", fmt.Sprintf("%x", qfidFileID[:16]))
 	}
 
 	return resp
