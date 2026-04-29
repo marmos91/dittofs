@@ -859,15 +859,27 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
-	// Per MS-FSA 2.1.5.1.2.1: Overwrite/supersede of a read-only file is
-	// not allowed. Return STATUS_ACCESS_DENIED.
+	// Per MS-FSA 2.1.5.1.2.1: Overwrite/supersede attribute mismatch rules.
+	// READONLY on the existing file denies the overwrite entirely.
+	// HIDDEN and SYSTEM must be present in the request if set on the existing file.
 	if fileExists && existingFile.Type != metadata.FileTypeDirectory {
 		if createAction == types.FileOverwritten || createAction == types.FileSuperseded {
-			attrs := FileAttrToSMBAttributes(&existingFile.FileAttr)
-			if attrs&types.FileAttributeReadonly != 0 {
+			existingAttrs := FileAttrToSMBAttributesWithName(&existingFile.FileAttr, baseName)
+			if existingAttrs&types.FileAttributeReadonly != 0 {
 				logger.Debug("CREATE: cannot overwrite read-only file",
 					"path", filename,
 					"action", createAction)
+				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+			}
+			// Per MS-FSA 2.1.5.1.2.2: Hidden and System flags must be preserved.
+			if existingAttrs&types.FileAttributeHidden != 0 && req.FileAttributes&types.FileAttributeHidden == 0 {
+				logger.Debug("CREATE: attribute mismatch — existing hidden, request not hidden",
+					"path", filename)
+				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+			}
+			if existingAttrs&types.FileAttributeSystem != 0 && req.FileAttributes&types.FileAttributeSystem == 0 {
+				logger.Debug("CREATE: attribute mismatch — existing system, request not system",
+					"path", filename)
 				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 			}
 		}
@@ -1189,7 +1201,8 @@ func (h *Handler) createNewFile(
 ) (*metadata.File, metadata.FileHandle, error) {
 	// Build file attributes
 	fileAttr := &metadata.FileAttr{
-		Mode: SMBModeFromAttrs(req.FileAttributes, isDirectory),
+		Mode:   SMBModeFromAttrs(req.FileAttributes, isDirectory),
+		Hidden: req.FileAttributes&types.FileAttributeHidden != 0,
 	}
 
 	// Set owner from auth context
@@ -1265,6 +1278,8 @@ func (h *Handler) overwriteFile(
 	mode := SMBModeFromAttrs(attrs, existingFile.Type == metadata.FileTypeDirectory)
 	mode |= existingFile.Mode & modeDOSCompressed
 	setAttrs.Mode = &mode
+	hiddenVal := req.FileAttributes&types.FileAttributeHidden != 0
+	setAttrs.Hidden = &hiddenVal
 
 	metaSvc := h.Registry.GetMetadataService()
 	err = metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs)

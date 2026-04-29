@@ -293,6 +293,11 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		modified = true
 	}
 
+	if attrs.Hidden != nil {
+		file.Hidden = *attrs.Hidden
+		modified = true
+	}
+
 	// Auto-update ctime when attributes change, unless explicitly set
 	if modified {
 		if attrs.Ctime == nil {

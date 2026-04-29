@@ -116,6 +116,31 @@ func TestFileAttrToSMBAttributes_Directory(t *testing.T) {
 	}
 }
 
+func TestFileAttrToSMBAttributes_SystemBitRoundTrip(t *testing.T) {
+	mode := SMBModeFromAttrs(types.FileAttributeSystem|types.FileAttributeArchive, false)
+	attr := &metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: mode}
+	got := FileAttrToSMBAttributes(attr)
+	if got&types.FileAttributeSystem == 0 {
+		t.Errorf("SYSTEM missing after round-trip: attrs=0x%x mode=0x%x", got, mode)
+	}
+}
+
+func TestFileAttrToSMBAttributesWithName_HiddenByMetadata(t *testing.T) {
+	attr := &metadata.FileAttr{Type: metadata.FileTypeRegular, Hidden: true}
+	got := FileAttrToSMBAttributesWithName(attr, "normalname")
+	if got&types.FileAttributeHidden == 0 {
+		t.Errorf("HIDDEN missing when attr.Hidden=true, attrs=0x%x", got)
+	}
+}
+
+func TestFileAttrToSMBAttributesWithName_HiddenByDotPrefix(t *testing.T) {
+	attr := &metadata.FileAttr{Type: metadata.FileTypeRegular, Hidden: false}
+	got := FileAttrToSMBAttributesWithName(attr, ".dotfile")
+	if got&types.FileAttributeHidden == 0 {
+		t.Errorf("HIDDEN missing for dot-prefix file, attrs=0x%x", got)
+	}
+}
+
 // TestSMBModeFromAttrs_OverwriteForcesArchive locks down the contract that
 // overwriteFile relies on: per MS-FSA 2.1.5.1.2.1, OVERWRITE/SUPERSEDE always
 // sets FILE_ATTRIBUTE_ARCHIVE on the post-overwrite metadata, so the mode
