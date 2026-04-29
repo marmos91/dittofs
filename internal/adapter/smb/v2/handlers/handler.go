@@ -942,19 +942,17 @@ func (h *Handler) generateAsyncId() uint64 {
 	return h.nextAsyncId.Add(1)
 }
 
-// baseFileUUID returns the UUID to use for FileInternalInformation.
-// For ADS opens (FileName contains ":"), Windows returns the base file's
-// UUID so that stream handles and the base file share the same FileId.
-func (h *Handler) baseFileUUID(ctx context.Context, file *metadata.File, openFile *OpenFile) [16]byte {
-	if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 && len(openFile.ParentHandle) > 0 {
-		baseName := openFile.FileName[:colonIdx]
+// baseFileUUID returns the base file's UUID for an ADS path, or fallback for non-ADS.
+// ADS streams share the base file's FileId so that all stream handles compare equal.
+func (h *Handler) baseFileUUID(ctx context.Context, parentHandle metadata.FileHandle, name string, fallback [16]byte) [16]byte {
+	if colonIdx := strings.Index(name, ":"); colonIdx > 0 && len(parentHandle) > 0 {
 		metaSvc := h.Registry.GetMetadataService()
 		authCtx := &metadata.AuthContext{Context: ctx, Identity: &metadata.Identity{}}
-		if baseFile, err := metaSvc.Lookup(authCtx, openFile.ParentHandle, baseName); err == nil {
+		if baseFile, err := metaSvc.Lookup(authCtx, parentHandle, name[:colonIdx]); err == nil {
 			return baseFile.ID
 		}
 	}
-	return file.ID
+	return fallback
 }
 
 // GenerateFileID generates a new unique file ID

@@ -532,9 +532,8 @@ func writeCommonDirFields(entry []byte, offset int, f dirEntryWireFields, fileNa
 	copy(entry[offset:], w.Bytes())
 }
 
-// smbFileIDFromHandle derives the uint64 FileId for use in FileIdBothDirInformation
-// and FileIdFullDirInformation entries. Reads the first 8 bytes of the file's UUID
-// as a little-endian uint64, matching the derivation used by FileInternalInformation.
+// smbFileIDFromHandle returns the SMB FileId for a directory entry.
+// Must match FileInternalInformation's derivation (LE uint64 of uuid[:8]).
 func smbFileIDFromHandle(handle metadata.FileHandle) uint64 {
 	_, id, err := metadata.DecodeFileHandle(handle)
 	if err != nil {

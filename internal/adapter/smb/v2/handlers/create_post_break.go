@@ -533,16 +533,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	}
 
 	if FindCreateContext(req.CreateContexts, "QFid") != nil {
-		// ADS streams share the base file's FileId per Windows semantics.
-		qfidFileID := file.ID
-		if colonIdx := strings.Index(baseName, ":"); colonIdx > 0 {
-			baseFileName := baseName[:colonIdx]
-			metaSvc := h.Registry.GetMetadataService()
-			lookupCtx := &metadata.AuthContext{Context: authCtx.Context, Identity: &metadata.Identity{}}
-			if baseFile, err := metaSvc.Lookup(lookupCtx, parentHandle, baseFileName); err == nil {
-				qfidFileID = baseFile.ID
-			}
-		}
+		qfidFileID := h.baseFileUUID(authCtx.Context, parentHandle, baseName, file.ID)
 		qfidResp := make([]byte, 32)
 		copy(qfidResp[0:16], qfidFileID[:16])
 		copy(qfidResp[16:32], h.ServerGUID[:])

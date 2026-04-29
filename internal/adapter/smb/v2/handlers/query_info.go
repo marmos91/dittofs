@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"strings"
 	"time"
@@ -531,12 +532,9 @@ func (h *Handler) buildFileInfoFromStore(ctx context.Context, file *metadata.Fil
 
 	case types.FileInternalInformation:
 		// FILE_INTERNAL_INFORMATION [MS-FSCC] 2.4.20 (8 bytes)
-		// ADS streams share the base file's FileId per Windows semantics.
-		fileID := h.baseFileUUID(ctx, file, openFile)
-		r := smbenc.NewReader(fileID[:8])
-		fileIndex := r.ReadUint64()
+		fileID := h.baseFileUUID(ctx, openFile.ParentHandle, openFile.FileName, file.ID)
 		w := smbenc.NewWriter(8)
-		w.WriteUint64(fileIndex) // IndexNumber (unique file ID)
+		w.WriteUint64(binary.LittleEndian.Uint64(fileID[:8]))
 		return w.Bytes(), nil
 
 	case types.FileEaInformation:
@@ -687,10 +685,8 @@ func (h *Handler) buildFileAllInformationFromStore(ctx context.Context, file *me
 	copy(info[40:64], standardBytes)
 
 	// Build remaining fields sequentially using smbenc Writer
-	// ADS streams share the base file's FileId per Windows semantics.
-	internalFileID := h.baseFileUUID(ctx, file, openFile)
-	r := smbenc.NewReader(internalFileID[:8])
-	fileIndex := r.ReadUint64()
+	internalFileID := h.baseFileUUID(ctx, openFile.ParentHandle, openFile.FileName, file.ID)
+	fileIndex := binary.LittleEndian.Uint64(internalFileID[:8])
 
 	w := smbenc.NewWriter(36)
 	w.WriteUint64(fileIndex)                                  // InternalInformation (8 bytes) at offset 64
