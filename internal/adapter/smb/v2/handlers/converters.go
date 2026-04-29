@@ -35,6 +35,10 @@ const (
 	// explicitly set. Only meaningful when modeDOSExplicit is also set.
 	modeDOSArchive = uint32(0x20000)
 
+	// modeDOSSystem tracks the DOS SYSTEM bit when DOS attributes have been
+	// explicitly set. Only meaningful when modeDOSExplicit is also set.
+	modeDOSSystem = uint32(0x80000)
+
 	// modeDOSCompressed tracks whether FSCTL_SET_COMPRESSION has been applied
 	// to a file or directory. When set, FILE_ATTRIBUTE_COMPRESSED (0x0800) is
 	// included in the SMB file attributes returned by GETINFO queries.
@@ -143,8 +147,15 @@ func fileAttrToSMBAttributesInternal(attr *metadata.FileAttr, hidden bool) types
 		attrs |= types.FileAttributeCompressed
 	}
 
-	// Set hidden attribute
-	if hidden {
+	// Per MS-FSCC 2.6: FILE_ATTRIBUTE_SYSTEM is stored in modeDOSSystem.
+	if attr.Mode&modeDOSSystem != 0 {
+		attrs |= types.FileAttributeSystem
+	}
+
+	// Per MS-FSCC 2.6: FILE_ATTRIBUTE_HIDDEN is set when either the caller
+	// explicitly passed hidden=true (dot-prefix detection) or when the metadata
+	// Hidden flag was set via a prior SET_INFO FileBasicInformation call.
+	if hidden || attr.Hidden {
 		attrs |= types.FileAttributeHidden
 	}
 
@@ -457,12 +468,15 @@ func SMBModeFromAttrs(attrs types.FileAttributes, isDirectory bool) uint32 {
 		mode &= ^uint32(0222) // Remove write bits
 	}
 
-	// Track that DOS attributes were explicitly set, and whether ARCHIVE is included.
+	// Track that DOS attributes were explicitly set, and which optional bits are set.
 	// This allows fileAttrToSMBAttributesInternal to return exactly the attributes
 	// the client set, rather than unconditionally adding ARCHIVE for regular files.
 	mode |= modeDOSExplicit
 	if attrs&types.FileAttributeArchive != 0 {
 		mode |= modeDOSArchive
+	}
+	if attrs&types.FileAttributeSystem != 0 {
+		mode |= modeDOSSystem
 	}
 
 	return mode

@@ -305,6 +305,10 @@ func (h *Handler) setFileInfoFromStore(
 				mode |= curFile.Mode & modeDOSCompressed
 			}
 			setAttrs.Mode = &mode
+			// Per MS-FSCC 2.6: propagate FILE_ATTRIBUTE_HIDDEN into the metadata
+			// Hidden field so QUERY_INFO and QUERY_DIRECTORY round-trip correctly.
+			hiddenVal := fileAttrs&types.FileAttributeHidden != 0
+			setAttrs.Hidden = &hiddenVal
 		}
 
 		// Per MS-FSA 2.1.5.14.2: Handle timestamp freeze/unfreeze sentinels.
