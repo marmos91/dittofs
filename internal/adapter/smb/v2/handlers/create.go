@@ -860,11 +860,11 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	}
 
 	// Per MS-FSA 2.1.5.1.2.1: Overwrite/supersede attribute mismatch rules.
-	// READONLY, HIDDEN, and SYSTEM on the existing file require the new request
-	// to include those same attributes, otherwise STATUS_ACCESS_DENIED.
+	// READONLY on the existing file denies the overwrite entirely.
+	// HIDDEN and SYSTEM must be present in the request if set on the existing file.
 	if fileExists && existingFile.Type != metadata.FileTypeDirectory {
 		if createAction == types.FileOverwritten || createAction == types.FileSuperseded {
-			existingAttrs := FileAttrToSMBAttributes(&existingFile.FileAttr)
+			existingAttrs := FileAttrToSMBAttributesWithName(&existingFile.FileAttr, baseName)
 			if existingAttrs&types.FileAttributeReadonly != 0 {
 				logger.Debug("CREATE: cannot overwrite read-only file",
 					"path", filename,
