@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/binary"
 	"fmt"
 	"sort"
 	"strings"
@@ -392,22 +393,24 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	var prevNextOffset int
 	entriesReturned := 0
 
+	dirFileID := smbFileIDFromHandle(openFile.MetadataHandle)
+
 	for idx < totalEntries {
 		var entryBytes []byte
 		fileIndex := uint64(idx + 1) // 1-based
 
 		if idx < specialCount {
 			name := "."
-			fileID := fileIndex
+			fileID := dirFileID
 			if idx == 1 {
 				name = ".."
-				fileID = 0 // parent directory reference
+				fileID = 0 // parent directory reference; resolving parent UUID is expensive and ".." is rarely compared
 			}
 			entryBytes = encodeSingleDirEntry(fileInfoClass, name, dirAttr, fileIndex, fileID)
 		} else {
 			realIdx := idx - specialCount
 			e := &filteredEntries[realIdx]
-			entryBytes = encodeSingleDirEntry(fileInfoClass, e.Name, e.Attr, fileIndex, e.ID)
+			entryBytes = encodeSingleDirEntry(fileInfoClass, e.Name, e.Attr, fileIndex, smbFileIDFromHandle(e.Handle))
 		}
 
 		// Check if entry fits in the output buffer
@@ -527,6 +530,17 @@ func writeCommonDirFields(entry []byte, offset int, f dirEntryWireFields, fileNa
 	w.WriteUint32(uint32(f.attrs))
 	w.WriteUint32(uint32(fileNameLen))
 	copy(entry[offset:], w.Bytes())
+}
+
+// smbFileIDFromHandle derives the uint64 FileId for use in FileIdBothDirInformation
+// and FileIdFullDirInformation entries. Reads the first 8 bytes of the file's UUID
+// as a little-endian uint64, matching the derivation used by FileInternalInformation.
+func smbFileIDFromHandle(handle metadata.FileHandle) uint64 {
+	_, id, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return 0
+	}
+	return binary.LittleEndian.Uint64(id[:8])
 }
 
 // allocAlignedEntry allocates a zero-filled byte slice of at least baseSize+nameLen
