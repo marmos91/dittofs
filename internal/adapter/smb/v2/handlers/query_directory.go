@@ -393,7 +393,11 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	var prevNextOffset int
 	entriesReturned := 0
 
-	dirFileID := smbFileIDFromHandle(openFile.MetadataHandle)
+	// Only needed for wildcard queries that emit "." and ".." entries.
+	var dirFileID uint64
+	if specialCount > 0 {
+		dirFileID = smbFileIDFromHandle(openFile.MetadataHandle)
+	}
 
 	for idx < totalEntries {
 		var entryBytes []byte
@@ -537,7 +541,7 @@ func writeCommonDirFields(entry []byte, offset int, f dirEntryWireFields, fileNa
 func smbFileIDFromHandle(handle metadata.FileHandle) uint64 {
 	_, id, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
-		return 0
+		return metadata.HandleToINode(handle)
 	}
 	return binary.LittleEndian.Uint64(id[:8])
 }
