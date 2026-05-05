@@ -214,12 +214,13 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusCannotDelete}}
 			}
 		}
-		// New file with READONLY+DOC is impossible per MS-FSA 2.1.5.1.2.1: the
-		// resulting file would be marked DOC and READONLY simultaneously, but
-		// READONLY blocks the eventual unlink. Reject up-front so we don't
-		// create an undeletable orphan.
-		if !fileExists && req.FileAttributes&types.FileAttributeReadonly != 0 {
-			logger.Debug("CREATE: delete-on-close on new read-only file", "path", filename)
+		// READONLY+DOC is forbidden per MS-FSA 2.1.5.1.2.1: the resulting file
+		// would be marked DOC and READONLY simultaneously, but READONLY blocks
+		// the eventual unlink. Fires for any disposition that propagates the
+		// requested attributes (CREATE/CREATE_IF/SUPERSEDE/OVERWRITE/OVERWRITE_IF)
+		// — Samba's open_match_attributes equivalent.
+		if req.FileAttributes&types.FileAttributeReadonly != 0 {
+			logger.Debug("CREATE: delete-on-close with read-only attribute in request", "path", filename)
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusCannotDelete}}
 		}
 	}
