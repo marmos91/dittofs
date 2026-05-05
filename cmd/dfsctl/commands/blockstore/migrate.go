@@ -61,11 +61,17 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("refusing to migrate share %q: %w", share, err)
 	}
 
+	bps, err := ParseBandwidthLimit(bandwidth)
+	if err != nil {
+		return fmt.Errorf("parse --bandwidth-limit: %w", err)
+	}
+
 	opts := migrateOptions{
 		share:        share,
 		dryRun:       dryRun,
 		parallel:     parallel,
 		bandwidthRaw: bandwidth,
+		bandwidthBPS: bps,
 		stateDir:     stateDir,
 	}
 	return runMigrateLoop(cmd.Context(), opts)

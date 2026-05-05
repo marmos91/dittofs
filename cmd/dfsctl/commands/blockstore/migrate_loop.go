@@ -10,6 +10,8 @@ import (
 
 	"lukechampine.com/blake3"
 
+	"golang.org/x/time/rate"
+
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/chunker"
@@ -19,13 +21,18 @@ import (
 )
 
 // migrateOptions captures the resolved CLI flags for the migration loop.
-// Plan 14-04 will read parallel + bandwidthRaw; this plan wires the
-// fields but the loop is single-threaded today.
+// Plan 14-04 wires parallel + bandwidthBPS into the worker pool +
+// shared rate.Limiter. bandwidthRaw is preserved for diagnostics
+// (logged at startup) — bandwidthBPS is the parsed integer that the
+// limiter consumes.
 type migrateOptions struct {
 	share        string
 	dryRun       bool
 	parallel     int
 	bandwidthRaw string
+	// bandwidthBPS: parsed bytes-per-second cap on aggregate uploads
+	// across all workers. 0 = unlimited (limiter is nil). D-A9 + D-A11.
+	bandwidthBPS int64
 	stateDir     string
 }
 
@@ -92,34 +99,51 @@ func runMigrateLoopWithRuntime(ctx context.Context, rt *offlineRuntime, opts mig
 	}
 	defer journal.Close()
 
+	// Build the shared upload limiter once (D-A9 + D-A11). nil = no
+	// metering. Legacy reads stay unmetered: bandwidthWait is only
+	// invoked on the upload path inside rechunkAndUpload.
+	limiter := newBandwidthLimiter(opts.bandwidthBPS)
+	if limiter != nil {
+		logger.Info("blockstore migrate: bandwidth limit",
+			"bytes_per_sec", opts.bandwidthBPS,
+			"raw", opts.bandwidthRaw,
+			"burst", limiter.Burst(),
+		)
+	}
+
 	result := migrateResult{StartedAt: time.Now()}
 
+	// Phase 1: walk the share into a slice so the worker pool can
+	// dispatch concurrently. For TB-scale shares with millions of
+	// files the slice grows to a bounded sizeof(walkedFile) ~64B
+	// per entry — comfortable for the offline tool's footprint.
+	// A streaming dispatcher is a possible follow-up if 100M-file
+	// shares prove out in production.
+	var files []walkedFile
 	walkErr := migrate.WalkShareFiles(ctx, rt.MetadataStore(), rt.Share(),
 		func(handle metadata.FileHandle, file *metadata.File) error {
-			result.FilesTotal++
-
-			// Resume short-circuit: if the journal already records a
-			// successful commit for this handle, skip.
-			if journal.IsFileDone(string(handle)) {
-				result.FilesSkipped++
-				return nil
-			}
-
-			r, ferr := migrateOneFile(ctx, rt, journal, opts, handle, file)
-			if ferr != nil {
-				return fmt.Errorf("migrate file %q: %w", file.Path, ferr)
-			}
-			if r.Skipped {
-				result.FilesSkipped++
-				return nil
-			}
-			result.FilesDone++
-			result.BytesUploaded += r.BytesUploaded
-			result.BytesDeduped += r.BytesDeduped
+			files = append(files, walkedFile{Handle: handle, Attr: file})
 			return nil
 		})
 	if walkErr != nil {
 		return walkErr
+	}
+	result.FilesTotal = len(files)
+
+	// Phase 2: dispatch through the worker pool. progress reports
+	// per-commit slog + TTY bar; pool clamps parallel into [1,
+	// maxWorkerSoftCap] and short-circuits IsFileDone before
+	// goroutine spawn.
+	progress := newProgressReporter(len(files))
+	defer progress.Close()
+	pool := newWorkerPool(opts.parallel, rt, journal, opts, limiter, progress)
+	poolResult, runErr := pool.Run(ctx, files)
+	result.FilesDone = poolResult.FilesDone
+	result.FilesSkipped = poolResult.FilesSkipped
+	result.BytesUploaded = poolResult.BytesUploaded
+	result.BytesDeduped = poolResult.BytesDeduped
+	if runErr != nil {
+		return runErr
 	}
 
 	// Final snapshot — collapse the journal to a clean snapshot file
@@ -145,6 +169,7 @@ func migrateOneFile(
 	rt *offlineRuntime,
 	journal *migrate.Journal,
 	opts migrateOptions,
+	limiter *rate.Limiter,
 	handle metadata.FileHandle,
 	file *metadata.File,
 ) (perFileResult, error) {
@@ -174,7 +199,7 @@ func migrateOneFile(
 	}
 
 	// Re-chunk via FastCDC and upload (or dedup-probe) each chunk.
-	blocks, bytesUploaded, bytesDeduped, err := rechunkAndUpload(ctx, rt, opts, string(file.PayloadID), legacyReader)
+	blocks, bytesUploaded, bytesDeduped, err := rechunkAndUpload(ctx, rt, opts, limiter, string(file.PayloadID), legacyReader)
 	if err != nil {
 		return res, err
 	}
@@ -245,6 +270,7 @@ func rechunkAndUpload(
 	ctx context.Context,
 	rt *offlineRuntime,
 	opts migrateOptions,
+	limiter *rate.Limiter,
 	payloadID string,
 	r io.Reader,
 ) ([]blockstore.BlockRef, uint64, uint64, error) {
@@ -320,6 +346,11 @@ func rechunkAndUpload(
 				bytesDeduped += uint64(size)
 			} else {
 				// Upload new chunk to remote CAS, persist FileBlock row.
+				// D-A9: meter the upload (and only the upload) through
+				// the shared rate.Limiter. Legacy reads stay unmetered.
+				if err := bandwidthWait(ctx, limiter, len(chunk)); err != nil {
+					return nil, 0, 0, fmt.Errorf("bandwidth wait: %w", err)
+				}
 				casKey := blockstore.FormatCASKey(hash)
 				if err := rt.RemoteStore().WriteBlockWithHash(ctx, casKey, hash, chunk); err != nil {
 					return nil, 0, 0, fmt.Errorf("WriteBlockWithHash %s: %w", casKey, err)
