@@ -98,8 +98,6 @@ func (wp *workerPool) Run(ctx context.Context, files []walkedFile) (migrateResul
 	g.SetLimit(wp.parallel)
 
 	for _, f := range files {
-		f := f
-
 		// Stop submitting once the errgroup ctx is cancelled (first
 		// worker error or external cancellation). errgroup.Go itself
 		// has no early-exit on g context cancel — without this check

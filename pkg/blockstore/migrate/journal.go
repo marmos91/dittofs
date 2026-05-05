@@ -318,19 +318,26 @@ func (j *Journal) Snapshot() error {
 	return j.snapshotLocked()
 }
 
-// snapshotLocked is the locked-by-caller variant; auto-fired Snapshot
-// via Append already holds j.mu.
-func (j *Journal) snapshotLocked() error {
-	// 1. Sorted slice for stable output.
+// sortedDoneEntriesLocked returns the in-memory done set as a slice
+// sorted by FileHandle. Caller must hold j.mu.
+func (j *Journal) sortedDoneEntriesLocked() []JournalEntry {
 	handles := make([]string, 0, len(j.done))
 	for h := range j.done {
 		handles = append(handles, h)
 	}
 	sort.Strings(handles)
-	entries := make([]JournalEntry, 0, len(handles))
+	out := make([]JournalEntry, 0, len(handles))
 	for _, h := range handles {
-		entries = append(entries, j.done[h])
+		out = append(out, j.done[h])
 	}
+	return out
+}
+
+// snapshotLocked is the locked-by-caller variant; auto-fired Snapshot
+// via Append already holds j.mu.
+func (j *Journal) snapshotLocked() error {
+	// 1. Sorted slice for stable output.
+	entries := j.sortedDoneEntriesLocked()
 	data, err := json.Marshal(entries)
 	if err != nil {
 		return fmt.Errorf("migrate: marshal snapshot: %w", err)
@@ -386,16 +393,7 @@ func (j *Journal) snapshotLocked() error {
 func (j *Journal) Replay() ([]JournalEntry, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	handles := make([]string, 0, len(j.done))
-	for h := range j.done {
-		handles = append(handles, h)
-	}
-	sort.Strings(handles)
-	out := make([]JournalEntry, 0, len(handles))
-	for _, h := range handles {
-		out = append(out, j.done[h])
-	}
-	return out, nil
+	return j.sortedDoneEntriesLocked(), nil
 }
 
 // Aggregate is a convenience for the REST status handler (Plan 14-06).

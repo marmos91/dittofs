@@ -95,7 +95,6 @@ func deleteLegacyKeys(ctx context.Context, svc *offlineRuntime, opts migrateOpti
 	)
 
 	for _, k := range legacy {
-		k := k
 		g.Go(func() error {
 			if err := rs.DeleteBlock(gctx, k); err != nil {
 				failuresMu.Lock()

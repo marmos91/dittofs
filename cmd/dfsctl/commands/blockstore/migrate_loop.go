@@ -240,7 +240,7 @@ func migrateOneFile(
 	}
 
 	// Re-chunk via FastCDC and upload (or dedup-probe) each chunk.
-	blocks, bytesUploaded, bytesDeduped, err := rechunkAndUpload(ctx, rt, opts, limiter, string(file.PayloadID), legacyReader)
+	blocks, bytesUploaded, bytesDeduped, err := rechunkAndUpload(ctx, rt, opts, limiter, legacyReader)
 	if err != nil {
 		return res, err
 	}
@@ -312,7 +312,6 @@ func rechunkAndUpload(
 	rt *offlineRuntime,
 	opts migrateOptions,
 	limiter *rate.Limiter,
-	payloadID string,
 	r io.Reader,
 ) ([]blockstore.BlockRef, uint64, uint64, error) {
 	c := chunker.NewChunker()
@@ -323,11 +322,11 @@ func rechunkAndUpload(
 	tmp := make([]byte, 1<<20) // 1 MiB read window
 
 	var (
-		blocks         []blockstore.BlockRef
-		offset         uint64
-		bytesUploaded  uint64
-		bytesDeduped   uint64
-		eof            bool
+		blocks        []blockstore.BlockRef
+		offset        uint64
+		bytesUploaded uint64
+		bytesDeduped  uint64
+		eof           bool
 	)
 
 	for {

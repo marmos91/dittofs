@@ -15,9 +15,9 @@ import (
 // that is internal to the daemon and was never designed for offline-
 // utility use. The migration loop talks to three narrow surfaces:
 //
-//	1. metadata.MetadataStore    — share walk + per-file PutFile txn.
-//	2. blockstore.FileBlockStore — GetByHash dedup probe + IncrementRefCount + Put.
-//	3. remote.RemoteStore        — legacy ReadBlock + WriteBlockWithHash.
+//  1. metadata.MetadataStore    — share walk + per-file PutFile txn.
+//  2. blockstore.FileBlockStore — GetByHash dedup probe + IncrementRefCount + Put.
+//  3. remote.RemoteStore        — legacy ReadBlock + WriteBlockWithHash.
 //
 // All three are wired by openOfflineRuntime in production (Plan 14-04 /
 // Plan 07's runbook) or by newTestOfflineRuntime in unit tests. The
@@ -35,11 +35,11 @@ type offlineRuntime struct {
 	dataDir        string
 }
 
-func (r *offlineRuntime) MetadataStore() metadata.MetadataStore   { return r.metadataStore }
+func (r *offlineRuntime) MetadataStore() metadata.MetadataStore     { return r.metadataStore }
 func (r *offlineRuntime) FileBlockStore() blockstore.FileBlockStore { return r.fileBlockStore }
-func (r *offlineRuntime) RemoteStore() remote.RemoteStore         { return r.remoteStore }
-func (r *offlineRuntime) DataDir() string                         { return r.dataDir }
-func (r *offlineRuntime) Share() string                           { return r.share }
+func (r *offlineRuntime) RemoteStore() remote.RemoteStore           { return r.remoteStore }
+func (r *offlineRuntime) DataDir() string                           { return r.dataDir }
+func (r *offlineRuntime) Share() string                             { return r.share }
 
 // Close releases held resources. Today only the remote store has a
 // close hook; the metadata store and file block store are owned by the

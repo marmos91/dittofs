@@ -4,6 +4,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -221,10 +222,7 @@ func (s *Store) HeadObject(_ context.Context, blockKey string) (remote.HeadResul
 		// Defensive copy — callers may stash the result and we don't
 		// want them mutating the in-memory record. Keys are already
 		// lowercased at WriteBlockWithHash time (the only writer).
-		out.Metadata = make(map[string]string, len(md))
-		for k, v := range md {
-			out.Metadata[k] = v
-		}
+		out.Metadata = maps.Clone(md)
 	}
 	return out, nil
 }

@@ -18,11 +18,11 @@ import (
 // expected DataSize — same semantic the dual-read shim uses for legacy
 // reads against a hole.
 type legacyPayloadReader struct {
-	ctx       context.Context
-	rt        *offlineRuntime
-	blocks    []*blockstore.FileBlock
-	idx       int
-	leftover  []byte
+	ctx      context.Context
+	rt       *offlineRuntime
+	blocks   []*blockstore.FileBlock
+	idx      int
+	leftover []byte
 }
 
 // newLegacyPayloadReader enumerates the file's legacy FileBlock rows

@@ -73,7 +73,7 @@ func ParseBandwidthLimit(s string) (int64, error) {
 	unit := strings.ToUpper(m[2])
 	binary := m[3] != ""
 
-	var multiplier float64 = 1
+	multiplier := 1.0
 	switch unit {
 	case "":
 		// no prefix: pure bytes. A trailing 'i' or 'B' alone here would
@@ -83,7 +83,6 @@ func ParseBandwidthLimit(s string) (int64, error) {
 			// "100iB" or "100i" makes no sense (no unit prefix to scale).
 			return 0, fmt.Errorf("%w: %q (i suffix requires unit prefix)", ErrInvalidBandwidth, s)
 		}
-		multiplier = 1
 	case "K":
 		if binary {
 			multiplier = 1024
@@ -145,10 +144,7 @@ func newBandwidthLimiter(bps int64) *rate.Limiter {
 	if bps <= 0 {
 		return nil
 	}
-	burst := int(bps)
-	if int64(burst) < int64(minBurstFloor) {
-		burst = minBurstFloor
-	}
+	burst := max(int(bps), minBurstFloor)
 	return rate.NewLimiter(rate.Limit(bps), burst)
 }
 
@@ -171,10 +167,7 @@ func bandwidthWait(ctx context.Context, l *rate.Limiter, n int) error {
 		return nil
 	}
 	for n > 0 {
-		take := n
-		if take > burst {
-			take = burst
-		}
+		take := min(n, burst)
 		if err := l.WaitN(ctx, take); err != nil {
 			return fmt.Errorf("bandwidthWait: %w", err)
 		}

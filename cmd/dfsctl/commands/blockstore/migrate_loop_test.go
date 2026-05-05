@@ -23,12 +23,12 @@ import (
 // memory metadata store implements blockstore.FileBlockStore — see
 // pkg/metadata/store/memory/objects.go).
 type loopFixture struct {
-	rt        *offlineRuntime
-	mds       *memmeta.MemoryMetadataStore
-	rs        *memory.Store
-	share     string
-	root      metadata.FileHandle
-	dataDir   string
+	rt      *offlineRuntime
+	mds     *memmeta.MemoryMetadataStore
+	rs      *memory.Store
+	share   string
+	root    metadata.FileHandle
+	dataDir string
 }
 
 func newLoopFixture(t *testing.T) *loopFixture {

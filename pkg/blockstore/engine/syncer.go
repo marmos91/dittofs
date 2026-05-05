@@ -36,8 +36,8 @@ type fetchResult struct {
 // Syncer handles async local-to-remote transfers with eager upload,
 // parallel download, prefetch, in-flight dedup, and content-addressed dedup.
 type Syncer struct {
-	local          local.LocalStore
-	remoteStore    remote.RemoteStore
+	local       local.LocalStore
+	remoteStore remote.RemoteStore
 	// Phase 12 (META-03 / D-09): the syncer is one of the engine-internal
 	// callers that still reaches into the wider EngineFileBlockStore
 	// surface (GetFileBlock for dual-read resolve, ListFileBlocks for
@@ -78,7 +78,7 @@ type Syncer struct {
 	// nil in pre-wiring tests; callers must nil-check before use.
 	bs *BlockStore
 
-	config         SyncerConfig
+	config SyncerConfig
 
 	queue *SyncQueue // Transfer queue for non-blocking operations
 

@@ -101,7 +101,6 @@ func verifyIntegrity(ctx context.Context, svc *offlineRuntime, opts migrateOptio
 
 	rs := svc.RemoteStore()
 	for _, h := range hashes {
-		h := h
 		g.Go(func() error {
 			key := blockstore.FormatCASKey(h)
 			res, err := rs.HeadObject(gctx, key)
