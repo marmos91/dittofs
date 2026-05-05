@@ -106,11 +106,14 @@ func deleteLegacyKeys(ctx context.Context, svc *offlineRuntime, opts migrateOpti
 			return nil
 		})
 	}
-	// Best-effort sweep — every per-key error is captured into
-	// `failures`; g.Wait can only fail if a goroutine panicked, which
-	// would already have crashed the process. We discard the return
-	// for symmetry with the per-key handling.
-	_ = g.Wait()
+	// Best-effort sweep — per-key errors are captured into `failures`.
+	// g.Wait should not return non-nil since worker goroutines never
+	// return errors directly, but log if it does so future regressions
+	// don't go silent.
+	if werr := g.Wait(); werr != nil {
+		logger.Error("blockstore migrate: legacy GC errgroup wait returned",
+			"share", opts.share, "error", werr)
+	}
 
 	count := int(deleted.Load())
 	if len(failures) > 0 {

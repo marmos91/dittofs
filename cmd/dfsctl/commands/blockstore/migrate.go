@@ -14,9 +14,12 @@ import (
 // Phase 14 D-A1..D-A5, D-A14. Offline only — refuses to run when the
 // daemon owning the share is active (D-A5).
 var migrateCmd = &cobra.Command{
-	Use:   "migrate",
-	Short: "Migrate a share's blocks from legacy {payloadID}/block-{idx} keys to v0.15 CAS layout",
-	Long: `Migrate a share from the legacy v0.13/v0.14 path-indexed block layout
+	Use:    "migrate",
+	Hidden: true, // production composition root not yet wired (#425) — kept hidden until openOfflineRuntime ships
+	Short:  "Migrate a share's blocks from legacy {payloadID}/block-{idx} keys to v0.15 CAS layout (EXPERIMENTAL)",
+	Long: `EXPERIMENTAL: production runtime not yet wired (tracked in #425).
+
+Migrate a share from the legacy v0.13/v0.14 path-indexed block layout
 to the v0.15 content-addressed (CAS) layout.
 
 The tool is OFFLINE — stop the daemon owning the share before invoking.

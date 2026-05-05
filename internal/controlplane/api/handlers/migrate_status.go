@@ -2,9 +2,9 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -12,6 +12,23 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// isValidShareName rejects names containing path separators or traversal
+// segments. Defense-in-depth: the share registry lookup is keyed by
+// exact match, but we want to fail fast on obviously hostile inputs
+// before they reach store-layer code that joins the name into a path.
+func isValidShareName(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	if strings.ContainsAny(s, "/\\\x00") {
+		return false
+	}
+	if strings.Contains(s, "..") {
+		return false
+	}
+	return true
+}
 
 // MigrateStatusRuntime is the narrow Runtime surface MigrateStatusHandler
 // consumes. Defining it here (rather than depending on *runtime.Runtime
@@ -109,6 +126,10 @@ func (h *MigrateStatusHandler) Status(w http.ResponseWriter, r *http.Request) {
 		BadRequest(w, "share is required")
 		return
 	}
+	if !isValidShareName(share) {
+		BadRequest(w, "invalid share name")
+		return
+	}
 
 	// 1. Read BlockLayout via the existing GetMetadataStoreForShare
 	//    method (BLOCKER 2 fix — `MetadataStoreFor` from the
@@ -153,8 +174,10 @@ func (h *MigrateStatusHandler) Status(w http.ResponseWriter, r *http.Request) {
 			NotFound(w, "share not found: "+share)
 			return
 		}
-		// Any other lookup failure is a server-side issue. Log + 500.
-		logger.Warn("migrate-status: local store dir lookup failed",
+		// Any other lookup failure indicates state inconsistency between
+		// the share registry and the local-store map — log at Error per
+		// CLAUDE.md rule 6 (unexpected errors).
+		logger.Error("migrate-status: local store dir lookup failed",
 			"share", share, "error", err)
 		InternalServerError(w, "local store dir lookup: "+err.Error())
 		return
@@ -217,6 +240,5 @@ func (h *MigrateStatusHandler) Status(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	WriteJSONOK(w, resp)
 }
