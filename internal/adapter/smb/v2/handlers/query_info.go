@@ -325,7 +325,11 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 
 	var info []byte
 
-	authCtx, _ := BuildAuthContext(ctx)
+	authCtx, authErr := BuildAuthContext(ctx)
+	if authErr != nil {
+		logger.Warn("QUERY_INFO: failed to build auth context", "error", authErr)
+		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+	}
 	switch req.InfoType {
 	case types.SMB2InfoTypeFile:
 		info, err = h.buildFileInfoFromStore(authCtx, file, openFile, types.FileInfoClass(req.FileInfoClass))
@@ -522,7 +526,6 @@ func (h *Handler) handlePipeFileInfo(req *QueryInfoRequest, openFile *OpenFile) 
 
 // buildFileInfoFromStore builds file information based on class using metadata store.
 func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *metadata.File, openFile *OpenFile, class types.FileInfoClass) ([]byte, error) {
-	ctx := authCtx.Context
 	switch class {
 	case types.FileBasicInformation:
 		basicInfo := FileAttrToFileBasicInfo(&file.FileAttr)
@@ -554,7 +557,7 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		// FileStreamInformation [MS-FSCC] 2.4.44
 		// Must enumerate ALL streams: the default unnamed data stream (::$DATA)
 		// plus any Alternate Data Streams (ADS) stored as siblings in the parent dir.
-		return h.buildFileStreamInformation(ctx, file, openFile)
+		return h.buildFileStreamInformation(authCtx, file, openFile)
 
 	case types.FileNetworkOpenInformation:
 		networkInfo := FileAttrToFileNetworkOpenInfo(&file.FileAttr)
@@ -624,9 +627,13 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 	case types.FileIdInformation:
 		// FILE_ID_INFORMATION [MS-FSCC] 2.4.46 (24 bytes)
 		// VolumeSerialNumber (8 bytes) + FileId (16 bytes)
+		// ADS handles report the base file's UUID so a client comparing this
+		// against FileInternalInformation on the same handle gets a consistent
+		// 128-bit identity (refs #478).
+		fileID := h.baseFileUUID(authCtx, openFile.ParentHandle, openFile.FileName, file.ID)
 		w := smbenc.NewWriter(24)
 		w.WriteUint64(ntfsVolumeSerialNumber) // VolumeSerialNumber
-		w.WriteBytes(file.ID[:16])            // FileId (128-bit)
+		w.WriteBytes(fileID[:16])             // FileId (128-bit)
 		return w.Bytes(), nil
 
 	case types.FileCompressionInformation:
@@ -717,7 +724,8 @@ func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext
 //	StreamAllocationSize (8) + StreamName (variable, UTF-16LE)
 //
 // Entries are 8-byte aligned and chained via NextEntryOffset (0 for last).
-func (h *Handler) buildFileStreamInformation(ctx context.Context, file *metadata.File, openFile *OpenFile) ([]byte, error) {
+func (h *Handler) buildFileStreamInformation(authCtx *metadata.AuthContext, file *metadata.File, openFile *OpenFile) ([]byte, error) {
+	ctx := authCtx.Context
 	// Determine the base file name. If the open file is itself an ADS
 	// (e.g., "file.txt:stream1:$DATA"), find the base file first.
 	baseName := openFile.FileName
@@ -745,7 +753,7 @@ func (h *Handler) buildFileStreamInformation(ctx context.Context, file *metadata
 	var defaultSize uint64
 	if !isBaseDirectory && strings.Contains(openFile.FileName, ":") && len(openFile.ParentHandle) > 0 {
 		metaSvc := h.Registry.GetMetadataService()
-		if baseFile, err := metaSvc.Lookup(&metadata.AuthContext{Context: ctx, Identity: &metadata.Identity{}}, openFile.ParentHandle, baseName); err == nil {
+		if baseFile, err := metaSvc.Lookup(authCtx, openFile.ParentHandle, baseName); err == nil {
 			if baseFile.Type == metadata.FileTypeDirectory {
 				isBaseDirectory = true
 			}

@@ -393,10 +393,12 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	var prevNextOffset int
 	entriesReturned := 0
 
-	// Only needed for wildcard queries that emit "." and ".." entries.
-	var dirFileID uint64
+	var dirFileID, parentFileID uint64
 	if specialCount > 0 {
 		dirFileID = smbFileIDFromHandle(openFile.MetadataHandle)
+		if len(openFile.ParentHandle) > 0 {
+			parentFileID = smbFileIDFromHandle(openFile.ParentHandle)
+		}
 	}
 
 	for idx < totalEntries {
@@ -408,7 +410,7 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 			fileID := dirFileID
 			if idx == 1 {
 				name = ".."
-				fileID = 0 // parent directory reference; resolving parent UUID is expensive and ".." is rarely compared
+				fileID = parentFileID // 0 at share root (no parent); else stable inode of the parent dir
 			}
 			entryBytes = encodeSingleDirEntry(fileInfoClass, name, dirAttr, fileIndex, fileID)
 		} else {
