@@ -1243,6 +1243,39 @@ func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 	return conflict
 }
 
+// checkParentDirRenameConflict probes the parent directory's open list as if
+// the rename were issuing an internal open with DesiredAccess ⊇ {DELETE,
+// FILE_ADD_FILE} and ShareAccess = 0 (per MS-FSA 2.1.5.14.11.3 and Samba's
+// rename_internals_fsp). An existing parent-directory open conflicts if it
+// (a) lacks FILE_SHARE_DELETE — denying the rename's DELETE access — or
+// (b) already holds DELETE access — incompatible with the rename's
+// ShareAccess=0. Returns true if a conflict is found.
+func (h *Handler) checkParentDirRenameConflict(renameFile *OpenFile) bool {
+	const fileShareDelete = uint32(0x04) // FILE_SHARE_DELETE
+	if len(renameFile.ParentHandle) == 0 {
+		return false
+	}
+	conflict := false
+	h.files.Range(func(_, value any) bool {
+		other := value.(*OpenFile)
+		if other.FileID == renameFile.FileID {
+			return true
+		}
+		if len(other.MetadataHandle) == 0 {
+			return true
+		}
+		if !bytes.Equal(other.MetadataHandle, renameFile.ParentHandle) {
+			return true
+		}
+		if other.ShareAccess&fileShareDelete == 0 || hasDeleteAccess(other.DesiredAccess) {
+			conflict = true
+			return false
+		}
+		return true
+	})
+	return conflict
+}
+
 // snapshotOpenChildren returns the metadata handles of every open file whose
 // ParentHandle equals dirHandle. Caller must read h.files only once; iterating
 // twice could observe inconsistent open state across a concurrent CLOSE.

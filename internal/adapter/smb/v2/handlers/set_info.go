@@ -489,6 +489,16 @@ func (h *Handler) setFileInfoFromStore(
 				"fileID", fmt.Sprintf("%x", openFile.FileID))
 			return setInfoStatus(types.StatusSharingViolation), nil
 		}
+		// Per MS-FSA 2.1.5.14.11.3: rename also takes an implicit open on the
+		// parent directory with DELETE+FILE_ADD_FILE access and ShareAccess=0.
+		// Any existing parent-dir open that lacks FILE_SHARE_DELETE or holds
+		// DELETE access conflicts — must report STATUS_SHARING_VIOLATION.
+		if conflict := h.checkParentDirRenameConflict(openFile); conflict {
+			logger.Debug("SET_INFO: rename blocked by parent-dir sharing violation",
+				"path", openFile.Path,
+				"fileID", fmt.Sprintf("%x", openFile.FileID))
+			return setInfoStatus(types.StatusSharingViolation), nil
+		}
 
 		// Normalize path separators (Windows uses backslash, we use forward slash)
 		newPath := strings.ReplaceAll(renameInfo.FileName, "\\", "/")
