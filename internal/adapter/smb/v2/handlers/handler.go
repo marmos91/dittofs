@@ -1243,15 +1243,17 @@ func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 	return conflict
 }
 
-// checkParentDirRenameConflict probes the destination directory's open list
-// as if the rename were issuing an internal open with DesiredAccess ⊇ {DELETE,
-// FILE_ADD_FILE} and ShareAccess = 0 (per MS-FSA 2.1.5.14.11.3 and Samba's
-// smbd_smb2_setinfo_rename_dst_parent_check). An existing destination-parent
-// open conflicts if it (a) lacks FILE_SHARE_DELETE — denying the rename's
-// DELETE access — or (b) already holds DELETE access — incompatible with the
-// rename's ShareAccess=0. The renamer's own handle is excluded by FileID.
-// Caller passes the destination parent handle (same as source parent for
-// same-directory rename). Returns true if a conflict is found.
+// checkParentDirRenameConflict applies the destination-parent share-mode
+// rule from MS-FSA 2.1.5.14.11.3 / Samba smbd_smb2_setinfo_rename_dst_parent_check.
+// Rename takes an implicit DELETE-bearing access on the destination parent
+// without granting share-delete; only the DELETE vs FILE_SHARE_DELETE pair
+// matters for the conflict (the ADD_FILE bit doesn't interact with the
+// share-mode word, so we don't probe write/share-write). An existing
+// destination-parent open conflicts when it (a) lacks FILE_SHARE_DELETE —
+// denying the rename's DELETE access — or (b) already holds DELETE access —
+// incompatible with the rename's ShareAccess=0. The renamer's own handle
+// is excluded by FileID. Caller passes the destination parent handle (same
+// as source parent for same-directory rename). Returns true on conflict.
 func (h *Handler) checkParentDirRenameConflict(renamerFileID [16]byte, dstParent metadata.FileHandle) bool {
 	const fileShareDelete = uint32(0x04) // FILE_SHARE_DELETE
 	if len(dstParent) == 0 {
