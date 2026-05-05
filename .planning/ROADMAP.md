@@ -29,7 +29,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 - [ ] **Phase 11: CAS write path + GC rewrite (A2)** — Content-addressable keys, mark-sweep GC, simplified state machine (GH issue: #422)
 - [x] **Phase 12: CDC read path + metadata schema + engine API (A3)** — `[]BlockRef` API, Cache by ContentHash, schema migration (GH issue: #423) (completed 2026-04-27)
 - [x] **Phase 13: Merkle root + file-level dedup (A4)** — `FileAttr.ObjectID` + short-circuit full-file dedup (GH issue: #424) (completed 2026-04-28)
-- [ ] **Phase 14: Migration tool (A5)** — `dfsctl blockstore migrate` offline re-chunk + re-hash (GH issue: #425)
+- [x] **Phase 14: Migration tool (A5)** — `dfsctl blockstore migrate` offline re-chunk + re-hash (GH issue: #425) (phases complete 2026-05-05; production wiring of `openOfflineRuntime` still gates production rollout)
 - [ ] **Phase 15: Legacy cleanup (A6)** — Remove dual-read shim, delete deprecated symbols (GH issue: #426)
 
 ## Phase Details

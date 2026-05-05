@@ -16,6 +16,7 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 - [Durable Handle State Flow](#durable-handle-state-flow)
 - [Phase 12 Engine API + BlockRef + Cache (v0.15.0 A3)](#phase-12-engine-api--blockref--cache-v0150-a3)
 - [Phase 13 File-Level Dedup: ObjectID + Merkle Root (v0.15.0 A4)](#phase-13-file-level-dedup-objectid--merkle-root-v0150-a4)
+- [Migration & Block-Layout Routing (v0.15.x A5)](#migration--block-layout-routing-v015x-a5)
 
 ## Core Abstraction Layers
 
@@ -1218,6 +1219,147 @@ perf lane (`D21_STRICT_GATE=1`). ObjectID compute is one BLAKE3 pass
 over `32×N` bytes per quiesce (sub-millisecond at N=16K BlockRefs);
 short-circuit lookup is one indexed query per quiesce. Both fire off
 the random-write hot path.
+
+## Migration & Block-Layout Routing (v0.15.x A5)
+
+Phase 14 (#425) ships `dfsctl blockstore migrate` — the offline tool
+that converts a v0.13/v0.14 share's block layout from path-indexed
+legacy keys (`{payloadID}/block-{idx}`) to the v0.15 CAS layout
+(`cas/{hh}/{hh}/{hex}`). Two ARCHITECTURE-level pieces ship alongside
+the tool: the per-share **`block_layout`** flag, and the engine-level
+gate that routes reads through the dual-read shim or the CAS-only
+fast path based on that flag.
+
+### Per-share `block_layout` flag
+
+A new field `block_layout` on `metadata.ShareOptions` carries the
+share's authoritative layout state (Plan 14-01, D-A6):
+
+```go
+// pkg/metadata/types.go
+type BlockLayout uint8
+
+const (
+    BlockLayoutLegacy   BlockLayout = iota   // dual-read: shim + CAS
+    BlockLayoutCASOnly                       // CAS-only: legacy reads fail loud
+)
+
+type ShareOptions struct {
+    // ... pre-existing fields ...
+    BlockLayout BlockLayout
+}
+```
+
+Storage:
+
+| Backend  | Layout                                                               |
+|----------|----------------------------------------------------------------------|
+| Postgres | Dedicated `block_layout TEXT NOT NULL DEFAULT 'legacy'` column on `shares` (migration `000014_block_layout.up.sql`, reversible). Authoritative over the legacy options JSON blob. |
+| Badger   | Inline-encoded inside the existing `ShareOptions` blob (gob; `omitempty` on the new field for forward-compat with pre-Phase-14 rows). |
+| Memory   | Direct field on the in-process struct.                               |
+
+`ParseBlockLayout("")` coerces empty / missing values to
+`BlockLayoutLegacy` so pre-Phase-14 metadata rows decode cleanly
+(forward-compat). Unknown values surface
+`metadata.ErrInvalidBlockLayout` rather than silently coercing.
+
+The flag is read **once** by `shares.Service.createBlockStoreForShare`
+when the share's per-share `*engine.BlockStore` is constructed, then
+threaded into `engine.SyncerConfig.BlockLayout`. The engine never
+re-reads it during normal operation; the migration tool's cutover
+runs while the daemon is offline so a stale in-memory copy is
+impossible.
+
+### Dual-read shim and the CAS-only gate
+
+The dual-read shim is the engine code path that resolves block reads
+from two coexisting key spaces (see
+[Dual-Read Window](#dual-read-window-phase-11--phase-14) for the
+per-block resolution rules). The Phase 14 gate sits one level above
+the shim, in `engine.Syncer.dispatchRemoteFetch`:
+
+```text
+        ┌───────────────────────────────────────────┐
+        │ engine.Syncer.dispatchRemoteFetch(block)  │
+        └────────────────────┬──────────────────────┘
+                             │
+                             ▼
+              block.Hash != ZeroContentHash ?
+                ┌────────────┴────────────┐
+              yes (CAS shape)            no (legacy shape)
+                │                          │
+                ▼                          ▼
+       remote.ReadBlockVerified     [BlockLayout gate]
+                │                          │
+                │                ┌─────────┴─────────┐
+                │             legacy              cas-only
+                │                │                  │
+                ▼                ▼                  ▼
+          (CAS path)     remote.ReadBlock    ErrLegacyReadOnCASOnly
+                         (dual-read shim)    (fail loud, slog Error)
+```
+
+Concretely:
+
+- **`block_layout=legacy`** (the default for upgraded shares before
+  migration): the engine resolves CAS-shaped FileBlocks via the CAS
+  path AND legacy-shaped FileBlocks via the dual-read shim. Both key
+  spaces coexist. This is exactly the Phase 11 → Phase 14 dual-read
+  window described above.
+- **`block_layout=cas-only`** (set by the migration tool's cutover
+  txn after integrity passes): legacy-shaped FileBlocks surface
+  `engine.ErrLegacyReadOnCASOnly` as a fail-loud signal. The function
+  logs at Error with `block_id` + `store_key` and returns the wrapped
+  sentinel rather than silently falling through to `ReadBlock`. This
+  guards against the case where a freshly-cutover share encounters a
+  forgotten legacy FileBlock — the engine fails loud rather than
+  reading from a key that the migration tool already deleted.
+
+The gate is defense-in-depth: the migration tool's atomic per-file
+`PutFile` already updates every legacy FileBlock to the CAS shape
+before flipping `block_layout`. Encountering a legacy-shaped block
+post-cutover indicates either a migration-tool bug, a metadata-store
+corruption, or a hand-edited row — all of which are operationally
+distinct from a normal dual-read fallback and demand operator
+attention rather than a silent legacy read.
+
+### Migration tool boundary
+
+The migration tool itself is intentionally **offline-only** (D-A5)
+and lives outside the daemon:
+
+- Tool entrypoint: `cmd/dfsctl/commands/blockstore/migrate.go`,
+  invoked via `dfsctl blockstore migrate --share NAME`.
+- Tool composition root: `openOfflineRuntime` in
+  `cmd/dfsctl/commands/blockstore/migrate_runtime.go`. It composes
+  per-share metadata + remote stores directly from the controlplane
+  DB, deliberately bypassing `pkg/controlplane/runtime.Runtime` so
+  the tool cannot accidentally race a live daemon.
+- Tool refuses to run if a daemon is serving the target share — the
+  `ensureDaemonOffline` PID-file probe is run before any work.
+- The tool's pipeline is: walk → FastCDC re-chunk → `GetByHash` dedup
+  probe → upload (or `IncrementRefCount`) → `PutFile` Blocks +
+  ObjectID → journal Append → integrity HEAD-per-ref → cutover
+  (`block_layout` flip) → legacy delete sweep. See
+  [BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md#phase-14-v015x-a5--dfsctl-blockstore-migrate-runbook)
+  for the full operator-facing runbook.
+
+### Phase 15 (A6) removes the dual-read shim
+
+Phase 15 is intentionally deferred until Phase 14's migration tool has
+been rolled out across production workloads (per-share verification
+via `dfsctl blockstore migrate status`). Once every production share
+is `block_layout=cas-only`, Phase 15 deletes:
+
+- The `engine.Syncer.dispatchRemoteFetch` legacy fallback branch.
+- The Phase 11 D-21 metadata-driven legacy resolver.
+- The `block_layout=legacy` enum variant (collapsed to a single
+  CAS-only routing).
+- Every `{payloadID}/block-{idx}` key-handling code path.
+
+Until Phase 15 ships, anyone touching the dual-read shim should be
+aware it is on a deletion clock — no new behavior should accumulate
+there.
 
 ## Performance Characteristics
 

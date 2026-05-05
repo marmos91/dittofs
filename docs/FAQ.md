@@ -332,6 +332,48 @@ for the full Phase 12 design and
 [IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md#fileattrblocks-blockref-v0150-phase-12)
 for storage-encoding requirements.
 
+### How do I migrate from v0.13 / v0.14 to v0.15?
+
+Use `dfsctl blockstore migrate --share <name>` per share. The
+migration is offline (the daemon must be stopped for the share). See
+[BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md#phase-14-v015x-a5--dfsctl-blockstore-migrate-runbook)
+for the full operator runbook with worked transcripts (happy path,
+TB-scale tuning, crash + auto-resume, integrity-check failure +
+diagnosis).
+
+Quick version:
+
+1. Stop the daemon: `sudo systemctl stop dfs`
+2. Migrate: `dfsctl blockstore migrate --share myshare --parallel 4`
+3. Verify: `dfsctl blockstore migrate status --share myshare` shows
+   `BlockLayout: cas-only`.
+4. Restart: `sudo systemctl start dfs`
+
+The migration is resumable (per-file atomic via the
+`.migration-state.jsonl` journal), dry-run-able (`--dry-run` reports
+upload byte estimates without writing), and bandwidth-cappable
+(`--bandwidth-limit 50MB` honors SI / IEC suffixes; the limit is
+aggregate across `--parallel` workers, not per-worker).
+
+> **Known Limitation (v0.15.0):** The migration tool's production
+> composition root (`openOfflineRuntime`) is not yet wired —
+> end-to-end migration on a real daemon currently exits with
+> `ErrOfflineRuntimeNotWired`. The full re-chunk + integrity +
+> cutover pipeline is unit-tested via in-memory fixtures, and the
+> per-share `block_layout` flag, the engine fail-loud routing, and
+> the `dfsctl blockstore migrate status` CLI + REST surfaces all
+> ship today. Track the production wire-up under
+> [#425](https://github.com/marmos91/dittofs/issues/425); do not
+> schedule a production migration window until it closes. See
+> [BLOCKSTORE_MIGRATION.md — Known Limitation](BLOCKSTORE_MIGRATION.md#known-limitation-openofflineruntime-production-wiring)
+> for the full operator-facing context.
+
+Phase 15 (A6) is intentionally deferred until Phase 14's migration
+tool has been rolled out across production workloads. Once every
+production share reports `BlockLayout: cas-only`, Phase 15 deletes
+the dual-read shim and every legacy `{payloadID}/block-{idx}`
+code path.
+
 ### Why are residual `{payloadID}/block-{N}` keys present after upgrading to v0.15.0?
 
 Those are legacy data written before v0.15.0. Phase 11's CAS write path

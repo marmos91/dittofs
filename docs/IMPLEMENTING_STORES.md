@@ -308,6 +308,82 @@ without per-backend `t.Skip` (the `ObjectIDIndexAccessor` capability is
 the only legitimate type-assertion-skip; backends without that accessor
 are still required to pass the functional scenarios).
 
+### Block layout flag (v0.15+)
+
+Metadata backends MUST persist a `block_layout` field on the share
+record. The field is a `metadata.BlockLayout` enum (string-shaped on
+the wire) with values `legacy` or `cas-only`. Plan 14-01 introduced
+the field as part of the v0.15.0 milestone (Phase 14 / A5;
+[#425](https://github.com/marmos91/dittofs/issues/425)).
+
+```go
+// pkg/metadata/types.go
+type BlockLayout uint8
+
+const (
+    BlockLayoutLegacy   BlockLayout = iota   // dual-read: legacy + CAS coexist
+    BlockLayoutCASOnly                       // CAS-only: legacy reads fail loud
+)
+
+type ShareOptions struct {
+    // ... pre-existing fields ...
+    BlockLayout BlockLayout
+}
+```
+
+**Forward-compat rule:** Empty / missing values MUST coerce to
+`BlockLayoutLegacy` on read so pre-Phase-14 metadata rows decode
+cleanly. Use the `metadata.ParseBlockLayout("")` helper, which
+returns `BlockLayoutLegacy`. Unknown values (anything other than
+`legacy` / `cas-only`) MUST surface `metadata.ErrInvalidBlockLayout`
+rather than coercing — silent coercion would mask bugs in upstream
+backends.
+
+**Round-trip invariant:** `UpdateShareOptions(BlockLayout=cas-only)`
+followed by `GetShare(name)` MUST observe `cas-only`. The migration
+tool's cutover (D-A7) depends on this txn being durable AND visible
+to the engine's next share-open.
+
+The conformance suite scenario `RunBlockLayoutSuite` exercises
+round-trip and update semantics. New backends MUST invoke it from
+their per-backend test file:
+
+```go
+import "github.com/marmos91/dittofs/pkg/metadata/storetest"
+
+func TestBlockLayoutConformance(t *testing.T) {
+    storetest.RunBlockLayoutSuite(t, factoryFunc)
+}
+```
+
+The suite asserts:
+
+1. **Default is `legacy`** for newly created shares (pre-existing
+   shares upgraded into v0.15+ default to `legacy`).
+2. **Round-trip** of `UpdateShareOptions(BlockLayout=cas-only)` →
+   `GetShare()` returns `cas-only`.
+3. **Empty-string coercion** at the parsing boundary
+   (`ParseBlockLayout("") == BlockLayoutLegacy`).
+4. **Unknown-value rejection** via `ErrInvalidBlockLayout`.
+5. **Atomic update** semantics — concurrent updates of the same
+   share's `BlockLayout` serialize through the backend's existing
+   share-update path (D-A7 piggybacks on this).
+
+**Recommended persistence shape per backend:**
+
+| Backend  | Recommended layout                                                   |
+|----------|----------------------------------------------------------------------|
+| Postgres | Dedicated `block_layout TEXT NOT NULL DEFAULT 'legacy'` column on `shares` (migration `000014_block_layout.up.sql` is the reference). Authoritative over the legacy options JSON blob. |
+| Badger   | Inline-encoded inside the existing `ShareOptions` blob (gob; `omitempty` on the new field for forward-compat with pre-Phase-14 rows). |
+| Memory   | Direct field on the in-process struct; no persistence layer.         |
+
+Cross-references:
+
+- [ARCHITECTURE.md — Migration & Block-Layout Routing](ARCHITECTURE.md#migration--block-layout-routing-v015x-a5)
+  for how the engine consumes the flag.
+- [BLOCKSTORE_MIGRATION.md — Phase 14 runbook](BLOCKSTORE_MIGRATION.md#phase-14-v015x-a5--dfsctl-blockstore-migrate-runbook)
+  for the operator-facing migration story.
+
 ### Engine API surface (Phase 12 / API-01..04)
 
 Custom block-store implementations that compose into `*engine.BlockStore`
