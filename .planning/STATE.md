@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v0.15.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 14 Plan 02 shipped — engine-blocklayout-routing (MIG-03)
-last_updated: "2026-05-05T16:01:37.469Z"
+stopped_at: Phase 14 Plan 03 shipped — migrate-tool-core (MIG-01, MIG-02)
+last_updated: "2026-05-05T18:50:00.000Z"
 last_activity: 2026-05-05
 progress:
   total_phases: 8
   completed_phases: 4
   total_plans: 66
-  completed_plans: 60
-  percent: 91
+  completed_plans: 61
+  percent: 92
 ---
 
 # Project State
@@ -27,9 +27,9 @@ See: .planning/PROJECT.md (updated 2026-04-23)
 
 Milestone: v0.15.0
 Phase: 14
-Plan: 02 of 07 complete (engine-blocklayout-routing — MIG-03 routing seam)
+Plan: 03 of 07 complete (migrate-tool-core — MIG-01 + MIG-02 partial)
 Branch: `gsd/phase-12-cdc-read-path-metadata-engine-api`
-Status: Plan 14-02 shipped; Plan 14-03 (migrate-tool-core) ready to execute
+Status: Plan 14-03 shipped; Plan 14-04 (parallel + bandwidth + production runtime composition) ready to execute
 Last activity: 2026-05-05
 
 ## Next Actionable
@@ -70,7 +70,7 @@ Phase 12 (A3): CDC read path + metadata schema + engine API. 14 requirements acr
 | 11 | CAS write path + GC rewrite (A2) | shipped | #453 (squash 2b96c965, merged 2026-04-26) |
 | 12 | CDC read path + metadata schema + engine API (A3) | **ready to plan** | #423 (issue) |
 | 13 | Merkle root + file-level dedup (A4) | blocked by 12 | #424 |
-| 14 | Migration tool (A5) | **in progress** — Plans 01 (share-blocklayout) + 02 (engine-blocklayout-routing) shipped 2026-05-05; MIG-03 routing seam complete | #425 |
+| 14 | Migration tool (A5) | **in progress** — Plans 01–03 shipped 2026-05-05; MIG-01 + MIG-02 partial + MIG-03 routing seam complete; Plan 14-04 (parallel + bandwidth + production runtime composition) is next | #425 |
 | 15 | Legacy cleanup (A6) | deferred until A5 in production | #426 |
 
 ### v0.15.0 Decisions
@@ -102,6 +102,8 @@ Historical v0.13.0 decisions preserved in `.planning/milestones/v0.13.0-archive/
 
 - Phase 14 Plan 02 (MIG-03 / D-A8): per-share `BlockLayout` gate landed inside `engine.Syncer.dispatchRemoteFetch`. New `engine.ErrLegacyReadOnCASOnly` sentinel surfaces as a fail-loud signal when a legacy-shaped FileBlock (zero `Hash`) is encountered on a `cas-only` share — the function logs at Error with `block_id` + `store_key` and returns the wrapped sentinel rather than silently falling back to `ReadBlock`. CAS path untouched; legacy shares preserve the dual-read fallback unchanged (T-14-02-03 non-regression asserted). `BlockLayout` field lives on `Syncer` (binding the routing decision next to the gate); `BlockStore.BlockLayout()` getter delegates for tests + Plan 14-05 cutover reload. `shares.Service.createBlockStoreForShare` reads `BlockLayout` from `metadata.ShareOptions` (D-A6 source-of-truth, casts `EngineFileBlockStore` → `metadata.MetadataStore` mirroring the coordinator-wiring pattern) and threads into `SyncerConfig.BlockLayout`. Empty/unknown values coerce to legacy at `NewSyncer` time (defense-in-depth — engine never trusts the metadata layer's coercion was applied). Three new dual-read tests + getter round-trip + three wiring tests (cas-only / legacy / zero-value) cover the matrix. Commits: `501bc008` (gate + tests), `531fd20b` (wiring + getter).
 
+- Phase 14 Plan 03 (MIG-01 + MIG-02 partial / D-A1..D-A5, D-A14): central FastCDC re-chunk loop landed end-to-end against memory fixtures. New importable `pkg/blockstore/migrate` package hosts the `Journal` (append-only JSONL with periodic snapshot rotation, atomic-rename invariant, read-only open variant for the REST status handler in Plan 14-06) and `WalkShareFiles` helper (composes `GetRootHandle` + `ListChildren` + `GetFile`, paginated, ctx-cancel-aware). Migration loop in `cmd/dfsctl/commands/blockstore`: per-file walk → FastCDC re-chunk over `legacyPayloadReader` → `FileBlockStore.GetByHash` dedup probe → upload-or-IncrementRefCount → `PutFile` Blocks + ObjectID in single metadata txn → journal Append (after PutFile success — T-14-03-02 ordering rule). First-committer-wins ObjectID conflict (D-14): `PutFile` retry with `ObjectID=zero` preserves Blocks while yielding the unique-index entry to the canonical first-committer. Sparse-block zero-fill in legacy reader matches dual-read shim's hole semantic. Empty files journal `file_skipped`. **Production composition deferred:** `openOfflineRuntime` returns `ErrOfflineRuntimeNotWired` today; controlplane-DB plumbing for per-share metadata + remote stores lands in Plan 14-04 alongside parallelism + bandwidth, end-to-end exercise via Plan 14-07 runbook. Loop is fully unit-tested via `newTestOfflineRuntime` test helper (8 loop tests + 8 journal tests + 6 walk tests). Plan-side `<action>` step 4 explicitly authorizes this split. BLOCKER 2 (zero daemon-runtime imports in `migrate_runtime.go`) and BLOCKER 3 (journal lives in `pkg/`, not `cmd/`) both verified by acceptance grep gates. Commits: `f87486fd` (Task 1 — command skeleton + daemon probe, prior session), `2c0263b1` (Task 2 — journal + walk), `3a9bd867` (Task 3 — loop + offline runtime).
+
 ### Pending Todos
 
 - Phase 12 (A3) follow-ups carried from Phase 11 review:
@@ -117,9 +119,9 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-05T16:01:12.414Z
-Stopped at: Phase 14 context gathered
-Next action: Continue Phase 12 — Plan 10 (mmap cache variant — CACHE-06; reintroduces zero-copy byte-serving via cache.Get on top of the Plan 09 hint-only Cache foundation)
+Last session: 2026-05-05T18:50:00.000Z
+Stopped at: Phase 14 Plan 03 shipped — migrate-tool-core (Tasks 2+3 resumed and completed atomically after prior stream-timeout)
+Next action: Plan 14-04 (parallel + bandwidth + production runtime composition). Picks up `openOfflineRuntime` stub (currently returns `ErrOfflineRuntimeNotWired`) and replaces with controlplane-DB-backed composition + upload `*rate.Limiter` + worker-pool wrapping `rechunkAndUpload`. Interface seam (`offlineRuntime` accessors) is stable.
 
 **Shipped Phase:** 11 (cas-write-path-gc-rewrite-a2) — 9 plans + ~30 review/fix commits — 2026-04-26T18:03:03Z (PR #453)
 

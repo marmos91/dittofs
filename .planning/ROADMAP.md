@@ -269,7 +269,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 **Plans**: 7 plans
   - [x] 14-01-share-blocklayout-PLAN.md — MIG-03: ShareOptions.BlockLayout field across Memory/Badger/Postgres + storetest conformance
   - [x] 14-02-engine-blocklayout-routing-PLAN.md — MIG-03: Engine reads BlockLayout at share-open; ErrLegacyReadOnCASOnly fail-loud gate
-  - [ ] 14-03-migrate-tool-core-PLAN.md — MIG-01/MIG-02: blockstore command tree + offline probe + append-only journal + per-file FastCDC re-chunk + GetByHash dedup probe + ObjectID backfill
+  - [x] 14-03-migrate-tool-core-PLAN.md — MIG-01/MIG-02 (partial): blockstore command tree + offline probe + append-only journal + per-file FastCDC re-chunk + GetByHash dedup probe + ObjectID backfill (production controlplane composition deferred to 14-04)
   - [ ] 14-04-bandwidth-parallel-PLAN.md — MIG-02: --parallel errgroup + shared rate.Limiter (KB/MB/GB + KiB/MiB/GiB) + slog progress + TTY bar
   - [ ] 14-05-integrity-cutover-PLAN.md — MIG-04: HEAD-per-ref + content-hash header parity + auto-cutover txn (block_layout flip) + end-of-share legacy GC
   - [ ] 14-06-status-rest-PLAN.md — MIG-01/MIG-02: dfsctl blockstore migrate status (table/JSON/YAML) + GET /api/v1/blockstore/migrate/status REST endpoint (admin-auth)
