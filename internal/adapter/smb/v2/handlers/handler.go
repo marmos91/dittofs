@@ -942,6 +942,18 @@ func (h *Handler) generateAsyncId() uint64 {
 	return h.nextAsyncId.Add(1)
 }
 
+// baseFileUUID returns the base file's UUID for an ADS path, or fallback for non-ADS.
+// ADS streams share the base file's FileId so that all stream handles compare equal.
+func (h *Handler) baseFileUUID(authCtx *metadata.AuthContext, parentHandle metadata.FileHandle, name string, fallback [16]byte) [16]byte {
+	if colonIdx := strings.Index(name, ":"); colonIdx > 0 && len(parentHandle) > 0 {
+		metaSvc := h.Registry.GetMetadataService()
+		if baseFile, err := metaSvc.Lookup(authCtx, parentHandle, name[:colonIdx]); err == nil {
+			return baseFile.ID
+		}
+	}
+	return fallback
+}
+
 // GenerateFileID generates a new unique file ID
 func (h *Handler) GenerateFileID() [16]byte {
 	var fileID [16]byte

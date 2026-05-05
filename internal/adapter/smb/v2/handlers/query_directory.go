@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/binary"
 	"fmt"
 	"sort"
 	"strings"
@@ -392,22 +393,32 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	var prevNextOffset int
 	entriesReturned := 0
 
+	var dirFileID uint64
+	if specialCount > 0 {
+		dirFileID = smbFileIDFromHandle(openFile.MetadataHandle)
+	}
+
 	for idx < totalEntries {
 		var entryBytes []byte
 		fileIndex := uint64(idx + 1) // 1-based
 
 		if idx < specialCount {
 			name := "."
-			fileID := fileIndex
+			fileID := dirFileID
 			if idx == 1 {
 				name = ".."
-				fileID = 0 // parent directory reference
+				// Per WPTS BVT_QueryDirectory_FileId{Full,Both}DirectoryInformation:
+				// the ".." entry MUST report FileId=0 in FILE_ID_*_DIR_INFORMATION.
+				// Windows treats ".." as a non-resolvable reference here, even
+				// though the directory itself has a real FileInternalInformation
+				// inode.
+				fileID = 0
 			}
 			entryBytes = encodeSingleDirEntry(fileInfoClass, name, dirAttr, fileIndex, fileID)
 		} else {
 			realIdx := idx - specialCount
 			e := &filteredEntries[realIdx]
-			entryBytes = encodeSingleDirEntry(fileInfoClass, e.Name, e.Attr, fileIndex, e.ID)
+			entryBytes = encodeSingleDirEntry(fileInfoClass, e.Name, e.Attr, fileIndex, smbFileIDFromHandle(e.Handle))
 		}
 
 		// Check if entry fits in the output buffer
@@ -527,6 +538,16 @@ func writeCommonDirFields(entry []byte, offset int, f dirEntryWireFields, fileNa
 	w.WriteUint32(uint32(f.attrs))
 	w.WriteUint32(uint32(fileNameLen))
 	copy(entry[offset:], w.Bytes())
+}
+
+// smbFileIDFromHandle returns the SMB FileId for a directory entry.
+// Must match FileInternalInformation's derivation (LE uint64 of uuid[:8]).
+func smbFileIDFromHandle(handle metadata.FileHandle) uint64 {
+	_, id, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return metadata.HandleToINode(handle)
+	}
+	return binary.LittleEndian.Uint64(id[:8])
 }
 
 // allocAlignedEntry allocates a zero-filled byte slice of at least baseSize+nameLen
