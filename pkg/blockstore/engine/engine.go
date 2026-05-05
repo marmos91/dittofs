@@ -11,6 +11,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	"github.com/marmos91/dittofs/pkg/health"
+	// API-02 justification: BlockStore.BlockLayout() exposes the per-share
+	// enum read from the share's metadata.ShareOptions at AddShare time
+	// (Plan 14-02 / MIG-03). The engine never opens a metadata txn here;
+	// the type is a pass-through for the Syncer-level field. Plan 15
+	// (A6) removes the dual-read shim and this import.
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // Compile-time interface satisfaction check.
@@ -792,6 +798,22 @@ func (bs *BlockStore) EvictReadBuffer() int {
 // HasRemoteStore returns true if this BlockStore has a remote store configured.
 func (bs *BlockStore) HasRemoteStore() bool {
 	return bs.remote != nil
+}
+
+// BlockLayout returns the per-share BlockLayout currently in effect on
+// this BlockStore (Plan 14-02 / MIG-03). The value is read from the
+// share's metadata.ShareOptions at AddShare time and frozen for the
+// lifetime of the underlying Syncer. Plan 14-05's auto-cutover reloads
+// the share (which constructs a fresh BlockStore + Syncer) so the
+// value picked up here always matches the metadata-store-of-truth.
+//
+// Exposed for tests, dfsctl introspection, and the future cutover
+// reload path. Delegates to the Syncer where the field actually lives.
+func (bs *BlockStore) BlockLayout() metadata.BlockLayout {
+	if bs.syncer == nil {
+		return metadata.BlockLayoutLegacy
+	}
+	return bs.syncer.BlockLayout()
 }
 
 // SetRetentionPolicy updates the retention policy on the underlying local store.

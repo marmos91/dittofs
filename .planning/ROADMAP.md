@@ -268,7 +268,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - Four-week duration includes production rollout window — A6 (Phase 15) intentionally deferred until operators confirm per-share migration complete
 **Plans**: 7 plans
   - [x] 14-01-share-blocklayout-PLAN.md — MIG-03: ShareOptions.BlockLayout field across Memory/Badger/Postgres + storetest conformance
-  - [ ] 14-02-engine-blocklayout-routing-PLAN.md — MIG-03: Engine reads BlockLayout at share-open; ErrLegacyReadOnCASOnly fail-loud gate
+  - [x] 14-02-engine-blocklayout-routing-PLAN.md — MIG-03: Engine reads BlockLayout at share-open; ErrLegacyReadOnCASOnly fail-loud gate
   - [ ] 14-03-migrate-tool-core-PLAN.md — MIG-01/MIG-02: blockstore command tree + offline probe + append-only journal + per-file FastCDC re-chunk + GetByHash dedup probe + ObjectID backfill
   - [ ] 14-04-bandwidth-parallel-PLAN.md — MIG-02: --parallel errgroup + shared rate.Limiter (KB/MB/GB + KiB/MiB/GiB) + slog progress + TTY bar
   - [ ] 14-05-integrity-cutover-PLAN.md — MIG-04: HEAD-per-ref + content-hash header parity + auto-cutover txn (block_layout flip) + end-of-share legacy GC
@@ -323,7 +323,7 @@ Verification requirements VER-01 through VER-06 are phase-independent and gate t
 | 11. CAS write path + GC rewrite (A2) | 0/? | Not started | - |
 | 12. CDC read path + metadata schema + engine API (A3) | 13/13 | Complete    | 2026-04-27 |
 | 13. Merkle root + file-level dedup (A4) | 14/15 | Complete    | 2026-04-28 |
-| 14. Migration tool (A5) | 1/7 | In Progress|  |
+| 14. Migration tool (A5) | 2/7 | In Progress|  |
 | 15. Legacy cleanup (A6) | 0/? | Not started | - |
 
 ## Coverage Summary

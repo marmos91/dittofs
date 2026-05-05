@@ -12,6 +12,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
+	// API-02 justification: per-share BlockLayout enum gates the
+	// dual-read shim inside dispatchRemoteFetch (Plan 14-02 / MIG-03 /
+	// D-A8). The engine never opens a metadata txn against this type —
+	// it is a config-time read of the value stamped on the share record
+	// at AddShare time. Plan 15 (A6) removes the shim and this import.
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // defaultShutdownTimeout is the maximum time to wait for the transfer queue
@@ -91,6 +97,15 @@ type Syncer struct {
 
 	firstOfflineRead    atomic.Bool  // Tracks if WARN was already logged since last healthy->unhealthy transition
 	offlineReadsBlocked atomic.Int64 // Count of read operations blocked by remote unavailability
+
+	// blockLayout is the per-share BlockLayout (legacy | cas-only) read
+	// from the share's metadata.ShareOptions at AddShare time and frozen
+	// for the lifetime of this Syncer. Plan 14-02 (MIG-03 / D-A6 / D-A8):
+	// `cas-only` shares refuse the legacy fallback inside
+	// dispatchRemoteFetch with ErrLegacyReadOnCASOnly. Plan 14-05 will
+	// reload the engine on cutover so a runtime flip from legacy to
+	// cas-only forces a fresh Syncer to pick up the new value.
+	blockLayout metadata.BlockLayout
 }
 
 // NewSyncer creates a new Syncer. The fileBlockStore is required for content-addressed dedup.
@@ -118,6 +133,18 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 		config.ClaimTimeout = 10 * time.Minute
 	}
 
+	// Plan 14-02 (D-A6): coerce empty/unknown BlockLayout to legacy at
+	// construction time so pre-Phase-14 callers (and any path that
+	// forgets to thread the field) keep the dual-read shim active. The
+	// metadata layer already enforces the same coercion via
+	// ParseBlockLayout on the read path; the engine repeats it as
+	// defense-in-depth so a zero-valued SyncerConfig.BlockLayout never
+	// surfaces as "" inside dispatchRemoteFetch.
+	layout := config.BlockLayout
+	if layout != metadata.BlockLayoutLegacy && layout != metadata.BlockLayoutCASOnly {
+		layout = metadata.BlockLayoutLegacy
+	}
+
 	m := &Syncer{
 		local:          local,
 		remoteStore:    remoteStore,
@@ -125,6 +152,7 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 		config:         config,
 		inFlight:       make(map[string]*fetchResult),
 		stopCh:         make(chan struct{}),
+		blockLayout:    layout,
 	}
 
 	queueConfig := DefaultSyncQueueConfig()
@@ -137,6 +165,14 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 
 // Queue returns the transfer queue for stats inspection.
 func (m *Syncer) Queue() *SyncQueue { return m.queue }
+
+// BlockLayout returns the per-share BlockLayout this Syncer was
+// constructed with. Plan 14-02 (MIG-03): exposes the engine's view of
+// the share's block-key scheme for the runtime auto-cutover path
+// (Plan 14-05) and for wiring/observability tests. The value is frozen
+// at NewSyncer time and never mutated during the Syncer's lifetime —
+// runtime flips require an engine reload.
+func (m *Syncer) BlockLayout() metadata.BlockLayout { return m.blockLayout }
 
 // SetCoordinator wires the MetadataCoordinator the post-Flush path
 // invokes (Phase 12 D-37 / D-20). engine.New plumbs the BlockStore's
