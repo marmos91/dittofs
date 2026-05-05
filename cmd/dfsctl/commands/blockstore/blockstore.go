@@ -38,5 +38,7 @@ Examples:
 
 func init() {
 	Cmd.AddCommand(migrateCmd)
-	// migrate-status command lands in Plan 14-06 (REST + CLI status surface).
+	// Plan 14-06 (D-A16): operator-facing status surface, mirrors the
+	// REST endpoint at /api/v1/blockstore/migrate/status.
+	migrateCmd.AddCommand(migrateStatusCmd)
 }

@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v0.15.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 14 Plan 05 shipped — integrity check + auto-cutover + legacy GC (MIG-01 + MIG-04 complete)
-last_updated: "2026-05-05T17:30:08.051Z"
+stopped_at: Phase 14 Plan 06 shipped — status surface (CLI + REST) (MIG-01 + MIG-02 complete)
+last_updated: "2026-05-05T17:44:12Z"
 last_activity: 2026-05-05
 progress:
   total_phases: 8
   completed_phases: 4
   total_plans: 66
-  completed_plans: 63
-  percent: 95
+  completed_plans: 65
+  percent: 98
 ---
 
 # Project State
@@ -27,9 +27,9 @@ See: .planning/PROJECT.md (updated 2026-04-23)
 
 Milestone: v0.15.0
 Phase: 14
-Plan: 05 of 07 complete (integrity + cutover — MIG-01 + MIG-04)
+Plan: 06 of 07 complete (status surface — MIG-01 + MIG-02 complete)
 Branch: `gsd/phase-12-cdc-read-path-metadata-engine-api`
-Status: Plan 14-05 shipped (HeadObject on RemoteStore interface + verifyIntegrity + performCutover + deleteLegacyKeys + end-to-end loop wiring); openOfflineRuntime production composition still deferred — must land before Plan 14-07 runbook can ship; Plan 14-06 (REST status) ready to execute
+Status: Plan 14-06 shipped (CLI + REST status endpoint, Runtime.LocalStoreDir accessor); only Plan 14-07 (docs runbook) remains; openOfflineRuntime production composition still deferred — must land before runbook ships
 Last activity: 2026-05-05
 
 ## Next Actionable
@@ -70,7 +70,7 @@ Phase 12 (A3): CDC read path + metadata schema + engine API. 14 requirements acr
 | 11 | CAS write path + GC rewrite (A2) | shipped | #453 (squash 2b96c965, merged 2026-04-26) |
 | 12 | CDC read path + metadata schema + engine API (A3) | **ready to plan** | #423 (issue) |
 | 13 | Merkle root + file-level dedup (A4) | blocked by 12 | #424 |
-| 14 | Migration tool (A5) | **in progress** — Plans 01–04 shipped 2026-05-05; MIG-01 + MIG-02 + MIG-03 routing seam complete; Plan 14-05 (integrity + cutover) is next; openOfflineRuntime production composition still deferred (must land before Plan 14-07 runbook ships) | #425 |
+| 14 | Migration tool (A5) | **in progress** — Plans 01–06 shipped 2026-05-05; MIG-01 + MIG-02 + MIG-03 routing seam + integrity + cutover + status surface complete; only Plan 14-07 (docs runbook) remains; openOfflineRuntime production composition still deferred (must land before runbook ships) | #425 |
 | 15 | Legacy cleanup (A6) | deferred until A5 in production | #426 |
 
 ### v0.15.0 Decisions
@@ -104,6 +104,8 @@ Historical v0.13.0 decisions preserved in `.planning/milestones/v0.13.0-archive/
 
 - Phase 14 Plan 04 (MIG-02 / D-A9, D-A10, D-A11, D-A15): bandwidth ceiling + worker pool + progress reporter all landed. `ParseBandwidthLimit` accepts SI (KB/MB/GB, 1000-base) + IEC (KiB/MiB/GiB, 1024-base) suffixes; '' / '0' = unlimited; negative + unrecognized → wrapped `ErrInvalidBandwidth`. `newBandwidthLimiter` wraps `rate.NewLimiter` with a 1 MiB burst floor so 16 MiB FastCDC chunks never trip the burst-exceeded guard; `bandwidthWait` splits oversized requests across multiple WaitN calls. Single shared `*rate.Limiter` gates every S3 PUT byte across all workers (D-A9 — uploads only, legacy reads stay unmetered). `workerPool` wraps the share walk in `errgroup.WithContext` + `SetLimit(parallel)` clamped to `[1, 64]`; `journal.IsFileDone` short-circuits BEFORE goroutine spawn; first worker error cancels gctx and the dispatch for-loop's explicit `gctx.Done()` check breaks out via `goto wait` so `g.Wait()` surfaces the canonical first error (pure errgroup wouldn't — Go() keeps queueing submissions even after cancellation, so the dispatch-loop check is what actually stops dispatch). `progressReporter` emits structured slog `migrate.file.committed` events (D-A15) on every commit unconditionally; TTY-detected stdout (via `term.IsTerminal`) gets a 10 fps `\r`-rewriting bar overlay (silenced on pipe / file). `runMigrateLoopWithRuntime` materializes the walk into a `[]walkedFile` slice and dispatches through `pool.Run`. **Production composition still deferred:** `openOfflineRuntime` continues to return `ErrOfflineRuntimeNotWired`. The plan-as-written (read in this session) did NOT include the controlplane-DB plumbing in its task list (despite the Plan 14-03 SUMMARY's forward-reference). Recommended as a small standalone Plan 14-04.5 or absorbed into Plan 14-05 alongside the integrity check + cutover. Loop fully unit-tested via `newTestOfflineRuntime`. Two atomic commits: `95fb5f50` (Task 1 — bandwidth parser + limiter wiring) + `d9552195` (Task 2 — worker pool + progress reporter). 32 unit tests pass; `go vet` + `go build ./...` clean.
 
+- Phase 14 Plan 06 (MIG-01 + MIG-02 / D-A16): operator-visible status surface shipped on two fronts with a single JSON contract. `dfsctl blockstore migrate status --share NAME` (table + JSON + YAML via `-o`) registered under the existing `migrate` cobra tree; `apiclient.MigrateStatusResponse` + `Client.MigrateStatus(share)` codifies the wire shape; URL query escaping covers reserved-character share names. `GET /api/v1/blockstore/migrate/status?share=NAME` registered inside the existing `/api/v1/blockstore` admin group (JWTAuth + RequireAdmin both inherited — T-14-06-01 mitigation). Handler imports `pkg/blockstore/migrate` (BLOCKER 3 — never `cmd/`), uses real `Runtime.GetMetadataStoreForShare` (BLOCKER 2 fix), uses new `Runtime.LocalStoreDir` accessor (BLOCKER 2 fix; delegates to new `shares.Service.LocalStoreDir` which is populated alongside `gcStateRoot` at AddShare time via new `deriveLocalStoreDir` helper), and computes FilesTotal via `migrate.WalkShareFiles` (BLOCKER 2 fix — `Runtime.CountFiles` did not exist). 30s file-walk timeout + -1 sentinel + `?with_total=false` opt-out cover T-14-06-03's DoS surface. Empty-string `LocalStoreDir` is the documented "no journal available" steady state for memory backends, not 404. Test fakes implement narrow `MigrateStatusRuntime` interface (mirrors `BlockGCRuntime` pattern) so future Runtime additions cannot ripple into mock updates. 18 new tests + broad regression clean. Commits: `43ce119e` (Task 1 — CLI + apiclient), `587c59dc` (Task 2 — REST handler + Runtime accessor + Share.localStoreDir field). One Rule-3 deviation: handler test fixture needed `CreateShare` before `UpdateShareOptions` (memory backend doesn't auto-register shares from `CreateRootDirectory`).
+
 - Phase 14 Plan 03 (MIG-01 + MIG-02 partial / D-A1..D-A5, D-A14): central FastCDC re-chunk loop landed end-to-end against memory fixtures. New importable `pkg/blockstore/migrate` package hosts the `Journal` (append-only JSONL with periodic snapshot rotation, atomic-rename invariant, read-only open variant for the REST status handler in Plan 14-06) and `WalkShareFiles` helper (composes `GetRootHandle` + `ListChildren` + `GetFile`, paginated, ctx-cancel-aware). Migration loop in `cmd/dfsctl/commands/blockstore`: per-file walk → FastCDC re-chunk over `legacyPayloadReader` → `FileBlockStore.GetByHash` dedup probe → upload-or-IncrementRefCount → `PutFile` Blocks + ObjectID in single metadata txn → journal Append (after PutFile success — T-14-03-02 ordering rule). First-committer-wins ObjectID conflict (D-14): `PutFile` retry with `ObjectID=zero` preserves Blocks while yielding the unique-index entry to the canonical first-committer. Sparse-block zero-fill in legacy reader matches dual-read shim's hole semantic. Empty files journal `file_skipped`. **Production composition deferred:** `openOfflineRuntime` returns `ErrOfflineRuntimeNotWired` today; controlplane-DB plumbing for per-share metadata + remote stores lands in Plan 14-04 alongside parallelism + bandwidth, end-to-end exercise via Plan 14-07 runbook. Loop is fully unit-tested via `newTestOfflineRuntime` test helper (8 loop tests + 8 journal tests + 6 walk tests). Plan-side `<action>` step 4 explicitly authorizes this split. BLOCKER 2 (zero daemon-runtime imports in `migrate_runtime.go`) and BLOCKER 3 (journal lives in `pkg/`, not `cmd/`) both verified by acceptance grep gates. Commits: `f87486fd` (Task 1 — command skeleton + daemon probe, prior session), `2c0263b1` (Task 2 — journal + walk), `3a9bd867` (Task 3 — loop + offline runtime).
 
 ### Pending Todos
@@ -121,9 +123,9 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-05T17:29:48.784Z
-Stopped at: Phase 14 Plan 04 shipped — bandwidth + parallel + progress (MIG-02 complete)
-Next action: Plan 14-05 (integrity + cutover) OR a small standalone plan to wire `openOfflineRuntime` production composition (controlplane DB read + per-share metadata/remote-store factory dispatch). The controlplane wiring is required before Plan 14-07's runbook can run end-to-end against a hot-but-stopped daemon; recommended either as a Plan 14-04.5 addendum or absorbed into Plan 14-05's task list. Interface seam (`offlineRuntime.MetadataStore() / FileBlockStore() / RemoteStore() / DataDir() / Share() / Close()`) is stable.
+Last session: 2026-05-05T17:44:12Z
+Stopped at: Phase 14 Plan 06 shipped — status surface CLI + REST (MIG-01 + MIG-02 complete)
+Next action: Plan 14-07 (docs runbook) — `docs/BLOCKSTORE_MIGRATION.md` + ARCHITECTURE/IMPLEMENTING_STORES/FAQ updates + four worked transcripts (D-A19). Two prerequisites carried over from Plan 14-05 still unblocked: (1) `openOfflineRuntime` production wiring (controlplane DB read + per-share metadata/remote-store factory dispatch) — interfaces stable; (2) per-payload-id streaming variant of `deleteLegacyKeys` only if real workloads surface S3 LIST cost (T-14-05-04). Status surface (CLI + REST) ships today and is fully usable post-migration.
 
 **Shipped Phase:** 11 (cas-write-path-gc-rewrite-a2) — 9 plans + ~30 review/fix commits — 2026-04-26T18:03:03Z (PR #453)
 

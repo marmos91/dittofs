@@ -156,3 +156,46 @@ func (c *Client) BlockStoreAuditRefcounts(shareName string) (*BlockStoreAuditRes
 		struct{}{},
 	)
 }
+
+// MigrateStatusResponse is the JSON response shape for both
+// GET /api/v1/blockstore/migrate/status and the dfsctl `blockstore migrate status`
+// CLI subcommand. It unifies what the journal (Plan 14-03 OpenJournalReadOnly +
+// Aggregate) reports with the per-share BlockLayout flag (Plan 14-01) and the
+// total file count walked from the metadata store (Plan 14-03 WalkShareFiles).
+//
+// FilesTotal == -1 is the sentinel for "the file walk hit the 30s server-side
+// timeout"; the rest of the fields remain valid. Operators see this on
+// pathologically large shares — they can pass the same query without ?with_total
+// to skip the walk entirely (the REST handler honors `?with_total=false`).
+type MigrateStatusResponse struct {
+	Share           string `json:"share"`
+	BlockLayout     string `json:"block_layout"` // "legacy" | "cas-only"
+	FilesTotal      int    `json:"files_total"`
+	FilesDone       int    `json:"files_done"`
+	FilesSkipped    int    `json:"files_skipped"`
+	BytesUploaded   uint64 `json:"bytes_uploaded"`
+	BytesDeduped    uint64 `json:"bytes_deduped"`
+	JournalPresent  bool   `json:"journal_present"`
+	SnapshotPresent bool   `json:"snapshot_present"`
+	LastCommitAt    string `json:"last_commit_at,omitempty"` // RFC3339
+}
+
+// MigrateStatus queries the per-share migration progress.
+// Endpoint: GET /api/v1/blockstore/migrate/status?share=NAME
+//
+// Returns an APIError with IsNotFound()==true when the share is unknown.
+// Returns a non-API error wrapping the share-required validation when
+// share is empty (no HTTP call is issued).
+func (c *Client) MigrateStatus(share string) (*MigrateStatusResponse, error) {
+	if share == "" {
+		return nil, fmt.Errorf("share is required")
+	}
+	q := url.Values{}
+	q.Set("share", share)
+	path := "/api/v1/blockstore/migrate/status?" + q.Encode()
+	var resp MigrateStatusResponse
+	if err := c.get(path, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}

@@ -75,6 +75,14 @@ type Share struct {
 	// in-memory stores (no persistent gc-state then — last-run.json is
 	// skipped, matching engine.PersistLastRunSummary's empty-root contract).
 	gcStateRoot string
+
+	// localStoreDir is the on-disk per-share local data directory used by
+	// the Phase 14 migration tool to locate `.migration-state.jsonl`
+	// (D-A2) and by the REST status handler (Plan 14-06) to read it back.
+	// Populated for fs-backed local stores at share creation; empty for
+	// in-memory backends — the status handler treats "" as "no journal
+	// available" rather than an error.
+	localStoreDir string
 }
 
 // GCStateRoot returns the per-share gc-state directory used by the GC
@@ -562,6 +570,10 @@ func (s *Service) createBlockStoreForShare(
 	// last-run.json persistence entirely (engine.PersistLastRunSummary is a
 	// no-op on empty rootDir).
 	share.gcStateRoot = deriveGCStateRoot(localCfg, config.Name)
+	// Plan 14-06: per-share local data dir for the migration journal.
+	// Same source-of-truth + emptiness semantics as gcStateRoot — memory
+	// backends produce "" so the status handler can short-circuit.
+	share.localStoreDir = deriveLocalStoreDir(localCfg, config.Name)
 
 	logger.Info("Per-share BlockStore initialized",
 		"share", config.Name,
@@ -851,6 +863,42 @@ func (s *Service) GetGCStateDirForShare(name string) (string, error) {
 		return "", fmt.Errorf("%w: %q", ErrShareNotFound, name)
 	}
 	return share.gcStateRoot, nil
+}
+
+// LocalStoreDir returns the per-share on-disk data directory used by the
+// Phase 14 migration tool to locate `.migration-state.jsonl` (D-A2) and
+// by the REST status handler (Plan 14-06) to read it back. Mirrors
+// GetGCStateDirForShare's empty-string-for-memory-backend contract:
+// callers should treat "" as "no on-disk journal available" rather than
+// an error.
+//
+// Returns an ErrShareNotFound-wrapped error when the share is unknown so
+// callers can map it to a deterministic 404.
+func (s *Service) LocalStoreDir(name string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	share, exists := s.registry[name]
+	if !exists {
+		return "", fmt.Errorf("%w: %q", ErrShareNotFound, name)
+	}
+	return share.localStoreDir, nil
+}
+
+// SetLocalStoreDirForTesting overrides the per-share localStoreDir field.
+// Test-only — used by handler unit tests that bypass the full
+// AddShare composition path (which requires a DB-backed
+// BlockStoreConfig). Returns ErrShareNotFound if the share is not
+// registered.
+func (s *Service) SetLocalStoreDirForTesting(name, dir string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	share, ok := s.registry[name]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
+	}
+	share.localStoreDir = dir
+	return nil
 }
 
 func (s *Service) GetRootHandle(shareName string) (metadata.FileHandle, error) {
@@ -1250,6 +1298,42 @@ func deriveGCStateRoot(localCfg interface {
 		return ""
 	}
 	return filepath.Join(expanded, "shares", sanitizeShareName(shareName), "gc-state")
+}
+
+// deriveLocalStoreDir returns the per-share on-disk data directory the
+// Phase 14 migration tool uses to host `.migration-state.jsonl` and the
+// rolling snapshot (D-A2). Mirrors deriveGCStateRoot's path-extraction
+// logic for fs-backed local stores; returns "" for in-memory or
+// unresolvable configs (the REST status handler treats "" as "no
+// journal available", not an error).
+//
+// Path layout: `<basePath>/shares/<sanitized>/`. Note the absence of a
+// "blocks" or "gc-state" suffix — the migration journal lives at the
+// share root next to the blocks directory, not inside it. This matches
+// the offline migration tool's --state-dir contract: the operator
+// passes the same path the daemon would compute here.
+func deriveLocalStoreDir(localCfg interface {
+	GetConfig() (map[string]any, error)
+}, shareName string) string {
+	if localCfg == nil {
+		return ""
+	}
+	cfg, err := localCfg.GetConfig()
+	if err != nil {
+		return ""
+	}
+	basePath, ok := cfg["path"].(string)
+	if !ok || basePath == "" {
+		return ""
+	}
+	expanded, err := pathutil.ExpandPath(basePath)
+	if err != nil {
+		return ""
+	}
+	if !filepath.IsAbs(expanded) {
+		return ""
+	}
+	return filepath.Join(expanded, "shares", sanitizeShareName(shareName))
 }
 
 // CreateLocalStoreFromConfig creates a local store instance from a block store config.

@@ -227,6 +227,15 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 
 				r.Get("/stats", blockStoreHandler.Stats)
 				r.Post("/evict", blockStoreHandler.Evict)
+
+				// Phase 14 D-A16 (Plan 14-06): per-share migration progress
+				// surface. Mirrors the dfsctl `blockstore migrate status`
+				// CLI's output shape so dittofs-pro consumes a single
+				// contract. RequireAdmin (inherited from this group) +
+				// JWTAuth (inherited from the protected /api/v1 group)
+				// enforce admin-only access (T-14-06-01 mitigation).
+				migrateStatusHandler := handlers.NewMigrateStatusHandler(rt)
+				r.Get("/migrate/status", migrateStatusHandler.Status)
 			})
 
 			// Store management (admin only)
