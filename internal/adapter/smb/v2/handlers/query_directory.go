@@ -393,12 +393,9 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	var prevNextOffset int
 	entriesReturned := 0
 
-	var dirFileID, parentFileID uint64
+	var dirFileID uint64
 	if specialCount > 0 {
 		dirFileID = smbFileIDFromHandle(openFile.MetadataHandle)
-		if len(openFile.ParentHandle) > 0 {
-			parentFileID = smbFileIDFromHandle(openFile.ParentHandle)
-		}
 	}
 
 	for idx < totalEntries {
@@ -410,7 +407,12 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 			fileID := dirFileID
 			if idx == 1 {
 				name = ".."
-				fileID = parentFileID // 0 at share root (no parent); else stable inode of the parent dir
+				// Per WPTS BVT_QueryDirectory_FileId{Full,Both}DirectoryInformation:
+				// the ".." entry MUST report FileId=0 in FILE_ID_*_DIR_INFORMATION.
+				// Windows treats ".." as a non-resolvable reference here, even
+				// though the directory itself has a real FileInternalInformation
+				// inode.
+				fileID = 0
 			}
 			entryBytes = encodeSingleDirEntry(fileInfoClass, name, dirAttr, fileIndex, fileID)
 		} else {
