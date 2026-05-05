@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -247,6 +248,86 @@ func TestHandleToINode(t *testing.T) {
 // ============================================================================
 // Roundtrip Tests
 // ============================================================================
+
+// ============================================================================
+// BlockLayout Tests (Phase 14 Plan 01 — MIG-03 / D-A6)
+// ============================================================================
+
+func TestParseBlockLayout(t *testing.T) {
+	t.Parallel()
+
+	t.Run("legacy string parses to BlockLayoutLegacy", func(t *testing.T) {
+		t.Parallel()
+		got, err := ParseBlockLayout("legacy")
+		require.NoError(t, err)
+		assert.Equal(t, BlockLayoutLegacy, got)
+	})
+
+	t.Run("cas-only string parses to BlockLayoutCASOnly", func(t *testing.T) {
+		t.Parallel()
+		got, err := ParseBlockLayout("cas-only")
+		require.NoError(t, err)
+		assert.Equal(t, BlockLayoutCASOnly, got)
+	})
+
+	t.Run("empty string coerces to BlockLayoutLegacy (forward-compat)", func(t *testing.T) {
+		t.Parallel()
+		// D-A6: pre-Phase-14 DB rows lack the column; reading them must
+		// surface as `legacy` so the dual-read shim stays active.
+		got, err := ParseBlockLayout("")
+		require.NoError(t, err)
+		assert.Equal(t, BlockLayoutLegacy, got)
+	})
+
+	t.Run("unknown value returns ErrInvalidBlockLayout", func(t *testing.T) {
+		t.Parallel()
+		// T-14-01-01: a hand-edited row with a bogus value must fail
+		// loud rather than being silently treated as cas-only.
+		got, err := ParseBlockLayout("bogus")
+		assert.Error(t, err)
+		assert.True(t, errors.Is(err, ErrInvalidBlockLayout))
+		assert.Equal(t, BlockLayout(""), got)
+	})
+
+	t.Run("error wraps the unknown value for diagnostics", func(t *testing.T) {
+		t.Parallel()
+		_, err := ParseBlockLayout("nonsense")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "nonsense")
+	})
+}
+
+func TestBlockLayout_String(t *testing.T) {
+	t.Parallel()
+
+	t.Run("BlockLayoutLegacy stringifies to legacy", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, "legacy", BlockLayoutLegacy.String())
+	})
+
+	t.Run("BlockLayoutCASOnly stringifies to cas-only", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, "cas-only", BlockLayoutCASOnly.String())
+	})
+
+	t.Run("zero value stringifies to empty", func(t *testing.T) {
+		t.Parallel()
+		var b BlockLayout
+		assert.Equal(t, "", b.String())
+	})
+}
+
+func TestShareOptions_BlockLayoutZeroValue(t *testing.T) {
+	t.Parallel()
+
+	// A zero-value ShareOptions{} (e.g. older callers that don't set
+	// BlockLayout) must coerce through ParseBlockLayout to legacy —
+	// the safe default per D-A6.
+	opts := ShareOptions{}
+	got, err := ParseBlockLayout(string(opts.BlockLayout))
+	require.NoError(t, err)
+	assert.Equal(t, BlockLayoutLegacy, got)
+}
 
 func TestFileHandleRoundtrip(t *testing.T) {
 	t.Parallel()

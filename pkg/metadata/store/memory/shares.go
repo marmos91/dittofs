@@ -64,6 +64,16 @@ func (store *MemoryMetadataStore) GetShareOptions(ctx context.Context, shareName
 
 	// Return a copy to avoid external mutation
 	optsCopy := shareData.Share.Options
+	// Coerce BlockLayout: empty / pre-Phase-14 values resolve to
+	// `legacy` (D-A6); unknown values are silently coerced too —
+	// callers that need strict validation use metadata.ParseBlockLayout
+	// directly. This keeps GetShareOptions infallible for the common
+	// case of a zero-valued field on an older record.
+	if normalized, err := metadata.ParseBlockLayout(string(optsCopy.BlockLayout)); err == nil {
+		optsCopy.BlockLayout = normalized
+	} else {
+		optsCopy.BlockLayout = metadata.BlockLayoutLegacy
+	}
 	return &optsCopy, nil
 }
 

@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v0.15.0
 milestone_name: milestone
-status: planning
-stopped_at: Phase 14 context gathered
-last_updated: "2026-05-05T14:40:54.805Z"
-last_activity: 2026-04-28
+status: executing
+stopped_at: Phase 14 Plan 01 shipped — share-blocklayout (MIG-03)
+last_updated: "2026-05-05T15:43:36.065Z"
+last_activity: 2026-05-05
 progress:
   total_phases: 8
   completed_phases: 4
-  total_plans: 59
-  completed_plans: 58
-  percent: 98
+  total_plans: 66
+  completed_plans: 59
+  percent: 89
 ---
 
 # Project State
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-04-23)
 
 Milestone: v0.15.0
 Phase: 14
-Plan: Not started
+Plan: 01 of 07 complete (share-blocklayout — MIG-03)
 Branch: `gsd/phase-12-cdc-read-path-metadata-engine-api`
-Status: Ready to plan
-Last activity: 2026-04-28
+Status: Plan 14-01 shipped; Plan 14-02 ready to execute
+Last activity: 2026-05-05
 
 ## Next Actionable
 
@@ -70,7 +70,7 @@ Phase 12 (A3): CDC read path + metadata schema + engine API. 14 requirements acr
 | 11 | CAS write path + GC rewrite (A2) | shipped | #453 (squash 2b96c965, merged 2026-04-26) |
 | 12 | CDC read path + metadata schema + engine API (A3) | **ready to plan** | #423 (issue) |
 | 13 | Merkle root + file-level dedup (A4) | blocked by 12 | #424 |
-| 14 | Migration tool (A5) | blocked by 13 | #425 |
+| 14 | Migration tool (A5) | **in progress** — Plan 01 (share-blocklayout, MIG-03) shipped 2026-05-05 | #425 |
 | 15 | Legacy cleanup (A6) | deferred until A5 in production | #426 |
 
 ### v0.15.0 Decisions
@@ -98,6 +98,8 @@ Phase 12 (A3): CDC read path + metadata schema + engine API. 14 requirements acr
 
 Historical v0.13.0 decisions preserved in `.planning/milestones/v0.13.0-archive/` for reference; the v0.15.0 refactor deletes `BackupHoldProvider` + `FinalizationCallback` (v0.13.0 scaffolding) in Phase 08.
 
+- Phase 14 Plan 01 (MIG-03 / D-A6): per-share `block_layout` flag landed across Memory + Badger + Postgres backends. New `metadata.BlockLayout` enum (legacy / cas-only) on `ShareOptions`, `ParseBlockLayout` empty-string-coerces-to-legacy for forward-compat with pre-Phase-14 rows, unknown values surface as `ErrInvalidBlockLayout` (T-14-01-01). Postgres uses a dedicated `block_layout TEXT NOT NULL DEFAULT 'legacy'` column (migration 000014, reversible) authoritative over the legacy options JSON blob. Conformance suite `storetest.RunBlockLayoutSuite` invoked from all three backend test files; Memory + Badger pass green by default, Postgres compiles + skips cleanly without `DITTOFS_TEST_POSTGRES_DSN`. **Pre-existing Badger bug fixed:** `CreateRootDirectory.createNewRoot` (and the transactional equivalent) was overwriting `ShareOptions` with a fresh `metadata.Share{Name: shareName}` literal — silently wiping not just BlockLayout but every other share option. Fix preserves the existing `Share.Options` when materializing the root row. Commits: `67af6a8b` (types), `7eff1c34` (backends), `5b30ff05` (conformance + Badger fix).
+
 ### Pending Todos
 
 - Phase 12 (A3) follow-ups carried from Phase 11 review:
@@ -113,7 +115,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-05T14:40:54.795Z
+Last session: 2026-05-05T15:43:29.164Z
 Stopped at: Phase 14 context gathered
 Next action: Continue Phase 12 — Plan 10 (mmap cache variant — CACHE-06; reintroduces zero-copy byte-serving via cache.Get on top of the Plan 09 hint-only Cache foundation)
 

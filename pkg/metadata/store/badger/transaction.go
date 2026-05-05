@@ -714,6 +714,14 @@ func (tx *badgerTransaction) GetShareOptions(ctx context.Context, shareName stri
 			return err
 		}
 		optsCopy := data.Share.Options
+		// Coerce BlockLayout: pre-Phase-14 share blobs lack the
+		// field entirely, so the JSON unmarshal produces an empty
+		// string — D-A6 maps that to `legacy`.
+		if normalized, perr := metadata.ParseBlockLayout(string(optsCopy.BlockLayout)); perr == nil {
+			optsCopy.BlockLayout = normalized
+		} else {
+			optsCopy.BlockLayout = metadata.BlockLayoutLegacy
+		}
 		opts = &optsCopy
 		return nil
 	})
@@ -957,8 +965,32 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 		return nil, err
 	}
 
+	// Preserve existing share configuration (e.g. ShareOptions written
+	// by a prior CreateShare call) when materializing the root row.
+	// Phase 14 Plan 01 (Rule 2 deviation): mirrors the same fix in the
+	// non-transactional createNewRoot — the original code wrote a
+	// fresh `metadata.Share{Name: shareName}` here, silently wiping
+	// any Options the caller had set via CreateShare. Correctness-
+	// critical for ShareOptions.BlockLayout (D-A6).
+	preservedShare := metadata.Share{Name: shareName}
+	if existingItem, getErr := tx.txn.Get(keyShare(shareName)); getErr == nil {
+		if vErr := existingItem.Value(func(val []byte) error {
+			existing, dErr := decodeShareData(val)
+			if dErr != nil {
+				return dErr
+			}
+			preservedShare = existing.Share
+			preservedShare.Name = shareName
+			return nil
+		}); vErr != nil {
+			return nil, fmt.Errorf("failed to read existing share for option preservation: %w", vErr)
+		}
+	} else if getErr != badgerdb.ErrKeyNotFound {
+		return nil, fmt.Errorf("failed to probe existing share: %w", getErr)
+	}
+
 	shareDataObj := &shareData{
-		Share:      metadata.Share{Name: shareName},
+		Share:      preservedShare,
 		RootHandle: rootHandle,
 	}
 	shareBytes, err := encodeShareData(shareDataObj)

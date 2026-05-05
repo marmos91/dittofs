@@ -45,15 +45,24 @@ func (s *PostgresMetadataStore) GetRootHandle(ctx context.Context, shareName str
 
 // GetShareOptions returns the share configuration options.
 // Returns ErrNotFound if the share doesn't exist.
+//
+// The block_layout column is read alongside the legacy options JSON
+// blob and overrides whatever the JSON happens to contain — the
+// dedicated column is the authoritative source per Phase 14 Plan 01
+// (MIG-03 / D-A6). Empty / NULL values coerce to legacy via
+// ParseBlockLayout for forward-compat with pre-migration rows.
 func (s *PostgresMetadataStore) GetShareOptions(ctx context.Context, shareName string) (*metadata.ShareOptions, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	query := `SELECT options FROM shares WHERE share_name = $1`
+	query := `SELECT options, block_layout FROM shares WHERE share_name = $1`
 
-	var optionsJSON []byte
-	err := s.queryRow(ctx, query, shareName).Scan(&optionsJSON)
+	var (
+		optionsJSON     []byte
+		blockLayoutText string
+	)
+	err := s.queryRow(ctx, query, shareName).Scan(&optionsJSON, &blockLayoutText)
 	if err != nil {
 		return nil, mapPgError(err, "GetShareOptions", shareName)
 	}
@@ -65,6 +74,18 @@ func (s *PostgresMetadataStore) GetShareOptions(ctx context.Context, shareName s
 		}
 	}
 
+	// Authoritative: the dedicated block_layout column overrides any
+	// stale value embedded in the JSON blob. ParseBlockLayout coerces
+	// the empty-string default (DEFAULT 'legacy' in the schema, but
+	// also any pre-migration row with NULL→"" via the COALESCE-like
+	// behavior of TEXT NOT NULL DEFAULT) into BlockLayoutLegacy.
+	// Unknown values surface ErrInvalidBlockLayout (T-14-01-01).
+	layout, err := metadata.ParseBlockLayout(blockLayoutText)
+	if err != nil {
+		return nil, fmt.Errorf("share %q: %w", shareName, err)
+	}
+	options.BlockLayout = layout
+
 	return &options, nil
 }
 
@@ -73,14 +94,19 @@ func (s *PostgresMetadataStore) GetShareOptions(ctx context.Context, shareName s
 // ============================================================================
 
 // CreateShare creates a new share with the given configuration.
+//
+// The block_layout column is populated from share.Options.BlockLayout;
+// an unset / zero-value field is normalized through ParseBlockLayout
+// (so it stores as 'legacy', matching the schema DEFAULT and D-A6
+// safe-default semantics).
 func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata.Share) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	query := `
-		INSERT INTO shares (share_name, options)
-		VALUES ($1, $2)
+		INSERT INTO shares (share_name, options, block_layout)
+		VALUES ($1, $2, $3)
 	`
 
 	optionsData, err := json.Marshal(share.Options)
@@ -88,7 +114,16 @@ func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata
 		return err
 	}
 
-	_, err = s.exec(ctx, query, share.Name, optionsData)
+	// Normalize on write so a caller passing an empty-string zero
+	// value lands as 'legacy' in the column, not an empty TEXT (which
+	// the NOT NULL DEFAULT would catch but only if the column is
+	// omitted entirely from the INSERT).
+	layout, err := metadata.ParseBlockLayout(string(share.Options.BlockLayout))
+	if err != nil {
+		return fmt.Errorf("share %q: %w", share.Name, err)
+	}
+
+	_, err = s.exec(ctx, query, share.Name, optionsData, string(layout))
 	if err != nil {
 		return err
 	}
@@ -97,6 +132,12 @@ func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata
 }
 
 // UpdateShareOptions updates the share configuration options.
+//
+// The block_layout column is updated alongside the JSON options blob.
+// This is how `dfsctl blockstore migrate` flips a share from `legacy`
+// to `cas-only` once the integrity check passes (D-A7); the operation
+// is a single SQL UPDATE so the flip is atomic with whatever other
+// option changes the migration tool wants to bundle.
 func (s *PostgresMetadataStore) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -107,8 +148,13 @@ func (s *PostgresMetadataStore) UpdateShareOptions(ctx context.Context, shareNam
 		return fmt.Errorf("failed to marshal share options: %w", err)
 	}
 
-	query := `UPDATE shares SET options = $1 WHERE share_name = $2`
-	result, err := s.exec(ctx, query, optionsData, shareName)
+	layout, err := metadata.ParseBlockLayout(string(options.BlockLayout))
+	if err != nil {
+		return fmt.Errorf("share %q: %w", shareName, err)
+	}
+
+	query := `UPDATE shares SET options = $1, block_layout = $2 WHERE share_name = $3`
+	result, err := s.exec(ctx, query, optionsData, string(layout), shareName)
 	if err != nil {
 		return err
 	}
