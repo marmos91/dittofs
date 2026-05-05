@@ -1271,6 +1271,15 @@ func (h *Handler) checkParentDirRenameConflict(renamerFileID [16]byte, dstParent
 		if !bytes.Equal(other.MetadataHandle, dstParent) {
 			return true
 		}
+		// Stat-only opens (READ_ATTRIBUTES / WRITE_ATTRIBUTES / SYNCHRONIZE /
+		// READ_CONTROL only) impose no share-mode constraint per MS-SMB2
+		// §3.3.5.9.8 + Samba `is_lease_stat_open`. smbtorture rename.msword
+		// opens the parent dir stat-only with ShareAccess=0 and expects the
+		// rename to succeed; without this filter the lack of FILE_SHARE_DELETE
+		// would falsely trip the conflict.
+		if isStatOnlyOpen(other.DesiredAccess) {
+			return true
+		}
 		if other.ShareAccess&fileShareDelete == 0 || hasDeleteAccess(other.DesiredAccess) {
 			conflict = true
 			return false
