@@ -64,10 +64,10 @@ func (r *offlineRuntime) Close() error {
 // The unit tests in migrate_loop_test.go cover all 7 behaviors from
 // Task 3 of Plan 14-03.
 var ErrOfflineRuntimeNotWired = errors.New(
-	"blockstore migrate: offline runtime composition deferred to Plan 14-04 — " +
+	"blockstore migrate: offline runtime composition deferred to Plan 14-04 - " +
 		"production wiring against controlplane DB + per-share metadata/remote stores " +
-		"will land alongside parallelism + bandwidth limits. Today the loop is unit-tested " +
-		"via newTestOfflineRuntime; end-to-end behavior is exercised by Plan 14-07's runbook.",
+		"will land alongside parallelism + bandwidth limits; today the loop is unit-tested " +
+		"via newTestOfflineRuntime; end-to-end behavior is exercised by Plan 14-07's runbook",
 )
 
 // openOfflineRuntime is the production builder. It currently returns

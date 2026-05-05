@@ -188,8 +188,8 @@ func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID block
 
 		// Deep-copy the BlockRef slice so the caller's view does not
 		// alias the JSON-decoded buffer (Phase 12 D-05).
-		if len(f.FileAttr.Blocks) > 0 {
-			blocks = append([]blockstore.BlockRef(nil), f.FileAttr.Blocks...)
+		if len(f.Blocks) > 0 {
+			blocks = append([]blockstore.BlockRef(nil), f.Blocks...)
 		}
 		return nil
 	})

@@ -22,11 +22,10 @@ import (
 // fakeMigrateStatusRuntime is a recording stand-in for MigrateStatusRuntime.
 // Tests assert on captured arguments and feed canned responses.
 type fakeMigrateStatusRuntime struct {
-	mds          metadata.MetadataStore
-	mdsErr       error
-	localDir     string
-	localDirErr  error
-	walkOverride func(ctx context.Context, share string, fn migrate.WalkCallback) error
+	mds         metadata.MetadataStore
+	mdsErr      error
+	localDir    string
+	localDirErr error
 }
 
 func (f *fakeMigrateStatusRuntime) GetMetadataStoreForShare(_ string) (metadata.MetadataStore, error) {

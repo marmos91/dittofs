@@ -44,7 +44,7 @@ func putFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks [
 		)
 	}
 	br := tx.SendBatch(ctx, batch)
-	defer br.Close()
+	defer func() { _ = br.Close() }()
 	for range blocks {
 		if _, err := br.Exec(); err != nil {
 			return fmt.Errorf("insert file_block_ref: %w", err)
@@ -101,9 +101,10 @@ func getFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID) ([]block
 // handles this automatically when the files row is deleted; this helper
 // is exposed for callers that pre-clear refs without dropping the row.
 //
-//nolint:unused // exported as part of the API surface; FK cascade handles
 // the file-delete path today, but plan-defined future callers may need
 // pre-clear semantics.
+//
+//nolint:unused // exported as part of the API surface; FK cascade handles
 func deleteFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM file_block_refs WHERE file_id = $1`, fileID); err != nil {
 		return fmt.Errorf("delete file_block_refs for %s: %w", fileID, err)

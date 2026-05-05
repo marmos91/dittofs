@@ -348,7 +348,7 @@ func TestDedup_RefCountMath(t *testing.T) {
 // and assertion fails. Plan 07 wires the call.
 func TestDedup_CacheInvalidation(t *testing.T) {
 	ctx := context.Background()
-	m, fc := dedupTestSetup(t)
+	_, fc := dedupTestSetup(t)
 
 	rec := &recordingCache{}
 	// BlockStore.cache is package-private; the helper exposed it earlier
@@ -358,7 +358,7 @@ func TestDedup_CacheInvalidation(t *testing.T) {
 	// *BlockStore that owns the syncer.
 	bs := newTestEngineWithCoordinator(t, fc)
 	bs.cache = rec
-	m = bs.syncer
+	m := bs.syncer
 
 	speculative := makeSpeculativeBlocks(0xA1, 0xA2, 0xA3) // A, B, C
 	target := makeSpeculativeBlocks(0xA1, 0xA3)            // A, C

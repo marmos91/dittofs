@@ -52,7 +52,7 @@ func readFromCAS(path string, offset uint32, dest []byte) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("open cas chunk %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	fi, err := f.Stat()
 	if err != nil {

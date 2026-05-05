@@ -72,7 +72,7 @@ var runMigrateLoop = func(ctx context.Context, opts migrateOptions) error {
 	if err != nil {
 		return err
 	}
-	defer rt.Close()
+	defer func() { _ = rt.Close() }()
 	return runMigrateLoopWithRuntime(ctx, rt, opts)
 }
 
@@ -97,7 +97,7 @@ func runMigrateLoopWithRuntime(ctx context.Context, rt *offlineRuntime, opts mig
 	if err != nil {
 		return fmt.Errorf("blockstore migrate: open journal: %w", err)
 	}
-	defer journal.Close()
+	defer func() { _ = journal.Close() }()
 
 	// Build the shared upload limiter once (D-A9 + D-A11). nil = no
 	// metering. Legacy reads stay unmetered: bandwidthWait is only

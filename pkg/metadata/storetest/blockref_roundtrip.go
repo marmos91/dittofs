@@ -73,7 +73,7 @@ func testBlockRef_RoundTripBasic(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (pre-put): %v", err)
 	}
-	file.FileAttr.Blocks = blocks
+	file.Blocks = blocks
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile: %v", err)
 	}
@@ -82,11 +82,11 @@ func testBlockRef_RoundTripBasic(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (round-trip): %v", err)
 	}
-	if len(got.FileAttr.Blocks) != len(blocks) {
-		t.Fatalf("Blocks len: got %d, want %d", len(got.FileAttr.Blocks), len(blocks))
+	if len(got.Blocks) != len(blocks) {
+		t.Fatalf("Blocks len: got %d, want %d", len(got.Blocks), len(blocks))
 	}
 	for i, want := range blocks {
-		g := got.FileAttr.Blocks[i]
+		g := got.Blocks[i]
 		if g.Hash != want.Hash {
 			t.Errorf("Blocks[%d].Hash = %x, want %x", i, g.Hash[:8], want.Hash[:8])
 		}
@@ -116,13 +116,13 @@ func testBlockRef_NilBlocks(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile: %v", err)
 	}
-	if len(got.FileAttr.Blocks) != 0 {
-		t.Errorf("Blocks len: got %d, want 0 (nil-Blocks file)", len(got.FileAttr.Blocks))
+	if len(got.Blocks) != 0 {
+		t.Errorf("Blocks len: got %d, want 0 (nil-Blocks file)", len(got.Blocks))
 	}
 
 	// Now explicitly set Blocks to nil and PutFile; round-trip should
 	// remain empty.
-	got.FileAttr.Blocks = nil
+	got.Blocks = nil
 	if err := store.PutFile(ctx, got); err != nil {
 		t.Fatalf("PutFile (nil Blocks): %v", err)
 	}
@@ -131,8 +131,8 @@ func testBlockRef_NilBlocks(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (post-nil-put): %v", err)
 	}
-	if len(got2.FileAttr.Blocks) != 0 {
-		t.Errorf("Blocks len after nil PutFile: got %d, want 0", len(got2.FileAttr.Blocks))
+	if len(got2.Blocks) != 0 {
+		t.Errorf("Blocks len after nil PutFile: got %d, want 0", len(got2.Blocks))
 	}
 }
 
@@ -159,7 +159,7 @@ func testBlockRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (pre 5): %v", err)
 	}
-	file.FileAttr.Blocks = five
+	file.Blocks = five
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile (5 blocks): %v", err)
 	}
@@ -168,8 +168,8 @@ func testBlockRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (5 blocks): %v", err)
 	}
-	if len(got5.FileAttr.Blocks) != 5 {
-		t.Fatalf("Blocks len after 5-put: got %d, want 5", len(got5.FileAttr.Blocks))
+	if len(got5.Blocks) != 5 {
+		t.Fatalf("Blocks len after 5-put: got %d, want 5", len(got5.Blocks))
 	}
 
 	// Replace with 2 different blocks at different offsets. After the
@@ -179,7 +179,7 @@ func testBlockRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 		{Hash: hashOfSeed("rep-X"), Offset: 0, Size: 2 << 20},
 		{Hash: hashOfSeed("rep-Y"), Offset: 2 << 20, Size: 2 << 20},
 	}
-	got5.FileAttr.Blocks = two
+	got5.Blocks = two
 	if err := store.PutFile(ctx, got5); err != nil {
 		t.Fatalf("PutFile (2 blocks replace): %v", err)
 	}
@@ -188,12 +188,12 @@ func testBlockRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (post-replace): %v", err)
 	}
-	if len(got2.FileAttr.Blocks) != 2 {
+	if len(got2.Blocks) != 2 {
 		t.Fatalf("Blocks len after replace: got %d, want 2 (no leftovers from prior 5)",
-			len(got2.FileAttr.Blocks))
+			len(got2.Blocks))
 	}
 	for i, want := range two {
-		g := got2.FileAttr.Blocks[i]
+		g := got2.Blocks[i]
 		if g.Hash != want.Hash || g.Offset != want.Offset || g.Size != want.Size {
 			t.Errorf("Blocks[%d] = %+v, want %+v", i, g, want)
 		}
@@ -226,7 +226,7 @@ func testBlockRef_CascadeDeleteOnFileDelete(t *testing.T, factory StoreFactory) 
 	if err != nil {
 		t.Fatalf("GetFile: %v", err)
 	}
-	file.FileAttr.Blocks = blocks
+	file.Blocks = blocks
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile: %v", err)
 	}

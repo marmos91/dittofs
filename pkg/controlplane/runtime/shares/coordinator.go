@@ -158,9 +158,9 @@ func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID s
 			return fmt.Errorf("coordinator: GetFileByPayloadID(%s): nil file (no row)", payloadID)
 		}
 		// FileAttr is embedded on metadata.File (not a pointer).
-		file.FileAttr.Blocks = blocks
+		file.Blocks = blocks
 		// Phase 13 D-05/D-06: same-txn write of Blocks AND ObjectID.
-		file.FileAttr.ObjectID = objectID
+		file.ObjectID = objectID
 		if err := tx.PutFile(ctx, file); err != nil {
 			return mapObjectIDConflict(err)
 		}
@@ -269,5 +269,5 @@ func (c *metadataCoordinator) GetFileObjectID(ctx context.Context, payloadID str
 		// rather than an error. Treat the same as NotFound.
 		return blockstore.ObjectID{}, nil
 	}
-	return file.FileAttr.ObjectID, nil
+	return file.ObjectID, nil
 }

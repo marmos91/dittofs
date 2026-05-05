@@ -25,7 +25,7 @@ func (f *failingDeleteRemoteStore) DeleteBlock(ctx context.Context, key string) 
 	if f.deleteFn != nil {
 		return f.deleteFn(ctx, key)
 	}
-	return f.stubRemoteStore.Store.DeleteBlock(ctx, key)
+	return f.stubRemoteStore.DeleteBlock(ctx, key)
 }
 
 var _ remote.RemoteStore = (*failingDeleteRemoteStore)(nil)
@@ -41,7 +41,7 @@ func TestDeleteLegacyKeys_Happy(t *testing.T) {
 	for i := 0; i < totalKeys; i++ {
 		payloadID := fmt.Sprintf("share/file-%d", i/10)
 		key := blockstore.FormatStoreKey(payloadID, uint64(i%10))
-		if err := f.stub.Store.WriteBlock(ctx, key, []byte("legacy-data")); err != nil {
+		if err := f.stub.WriteBlock(ctx, key, []byte("legacy-data")); err != nil {
 			t.Fatalf("seed WriteBlock(%s): %v", key, err)
 		}
 	}
@@ -51,7 +51,7 @@ func TestDeleteLegacyKeys_Happy(t *testing.T) {
 	hashCAS := blockstore.ContentHash{}
 	hashCAS[0] = 0xff
 	casKey := blockstore.FormatCASKey(hashCAS)
-	if err := f.stub.Store.WriteBlockWithHash(ctx, casKey, hashCAS, dataCAS); err != nil {
+	if err := f.stub.WriteBlockWithHash(ctx, casKey, hashCAS, dataCAS); err != nil {
 		t.Fatalf("seed WriteBlockWithHash: %v", err)
 	}
 
@@ -64,13 +64,13 @@ func TestDeleteLegacyKeys_Happy(t *testing.T) {
 	}
 
 	// Post-state: zero legacy keys, one CAS key.
-	allKeys, _ := f.stub.Store.ListByPrefix(ctx, "")
+	allKeys, _ := f.stub.ListByPrefix(ctx, "")
 	for _, k := range allKeys {
 		if !strings.HasPrefix(k, "cas/") {
 			t.Errorf("legacy key %q survived sweep", k)
 		}
 	}
-	if got, _ := f.stub.Store.ListByPrefix(ctx, "cas/"); len(got) != 1 {
+	if got, _ := f.stub.ListByPrefix(ctx, "cas/"); len(got) != 1 {
 		t.Errorf("cas keys after sweep = %d, want 1 (survivor)", len(got))
 	}
 }
@@ -87,7 +87,7 @@ func TestDeleteLegacyKeys_PartialFailure(t *testing.T) {
 	failingKey := blockstore.FormatStoreKey("share/file-1", 2)
 	for i := 0; i < total; i++ {
 		key := blockstore.FormatStoreKey("share/file-1", uint64(i))
-		if err := f.stub.Store.WriteBlock(ctx, key, []byte("data")); err != nil {
+		if err := f.stub.WriteBlock(ctx, key, []byte("data")); err != nil {
 			t.Fatalf("seed WriteBlock(%s): %v", key, err)
 		}
 	}
@@ -99,7 +99,7 @@ func TestDeleteLegacyKeys_PartialFailure(t *testing.T) {
 		if key == failingKey {
 			return errors.New("simulated S3 access denied")
 		}
-		return failing.stubRemoteStore.Store.DeleteBlock(ctx, key)
+		return failing.stubRemoteStore.DeleteBlock(ctx, key)
 	}
 	rt := newTestOfflineRuntime(f.share, f.mds, f.mds, failing, f.dataDir)
 
@@ -127,13 +127,13 @@ func TestDeleteLegacyKeys_SkipsCASKeys(t *testing.T) {
 
 	// One legacy + one CAS.
 	legacyKey := blockstore.FormatStoreKey("share/x", 0)
-	if err := f.stub.Store.WriteBlock(ctx, legacyKey, []byte("legacy")); err != nil {
+	if err := f.stub.WriteBlock(ctx, legacyKey, []byte("legacy")); err != nil {
 		t.Fatal(err)
 	}
 	hashCAS := blockstore.ContentHash{}
 	hashCAS[0] = 0xab
 	casKey := blockstore.FormatCASKey(hashCAS)
-	if err := f.stub.Store.WriteBlockWithHash(ctx, casKey, hashCAS, []byte("cas")); err != nil {
+	if err := f.stub.WriteBlockWithHash(ctx, casKey, hashCAS, []byte("cas")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -145,7 +145,7 @@ func TestDeleteLegacyKeys_SkipsCASKeys(t *testing.T) {
 		t.Errorf("deleted = %d, want 1 (legacy only)", count)
 	}
 	// CAS key must still be readable.
-	if _, err := f.stub.Store.ReadBlock(ctx, casKey); err != nil {
+	if _, err := f.stub.ReadBlock(ctx, casKey); err != nil {
 		t.Errorf("CAS key was deleted by sweep: %v", err)
 	}
 }

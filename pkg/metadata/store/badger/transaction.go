@@ -149,7 +149,7 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 				if existing.Type == metadata.FileTypeRegular {
 					oldSize = existing.Size
 				}
-				oldObjectID = existing.FileAttr.ObjectID
+				oldObjectID = existing.ObjectID
 			}
 			return nil
 		})
@@ -176,7 +176,7 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	// same Txn as the primary file write (atomic on commit).
 	//
 	// Step 1: drop stale secondary entry if the ObjectID changed.
-	if !oldObjectID.IsZero() && oldObjectID != file.FileAttr.ObjectID {
+	if !oldObjectID.IsZero() && oldObjectID != file.ObjectID {
 		if err := tx.txn.Delete(keyObjectID(oldObjectID)); err != nil && !goerrors.Is(err, badgerdb.ErrKeyNotFound) {
 			return fmt.Errorf("badger PutFile: delete stale obj index: %w", err)
 		}
@@ -184,8 +184,8 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 
 	// Step 2: write new secondary entry if non-zero. Detect D-14 race
 	// (another file already claims this ObjectID) and surface as ErrConflict.
-	if !file.FileAttr.ObjectID.IsZero() {
-		if existing, gerr := tx.txn.Get(keyObjectID(file.FileAttr.ObjectID)); gerr == nil {
+	if !file.ObjectID.IsZero() {
+		if existing, gerr := tx.txn.Get(keyObjectID(file.ObjectID)); gerr == nil {
 			raw, verr := existing.ValueCopy(nil)
 			if verr == nil {
 				var existingID uuid.UUID
@@ -203,7 +203,7 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		if merr != nil {
 			return fmt.Errorf("badger PutFile: marshal file ID: %w", merr)
 		}
-		if err := tx.txn.Set(keyObjectID(file.FileAttr.ObjectID), idBin); err != nil {
+		if err := tx.txn.Set(keyObjectID(file.ObjectID), idBin); err != nil {
 			return fmt.Errorf("badger PutFile: set obj index: %w", err)
 		}
 	}
@@ -246,7 +246,7 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 			if file.Type == metadata.FileTypeRegular && file.Size > 0 {
 				tx.store.usedBytes.Add(-int64(file.Size))
 			}
-			existingObjectID = file.FileAttr.ObjectID
+			existingObjectID = file.ObjectID
 		}
 		return nil
 	})

@@ -154,13 +154,13 @@ func assertObjectIDDrift(ctx context.Context, store metadata.MetadataStore, shar
 		return fmt.Errorf("GetRootHandle: %w", err)
 	}
 	return walkShareFiles(ctx, store, rootHandle, func(f *metadata.File) error {
-		if f.FileAttr.ObjectID.IsZero() {
+		if f.ObjectID.IsZero() {
 			return nil
 		}
-		recomputed := blockstore.ComputeObjectID(f.FileAttr.Blocks)
-		if recomputed != f.FileAttr.ObjectID {
+		recomputed := blockstore.ComputeObjectID(f.Blocks)
+		if recomputed != f.ObjectID {
 			return fmt.Errorf("file %s: stored ObjectID %s != recompute(Blocks) %s",
-				f.ID, f.FileAttr.ObjectID.String(), recomputed.String())
+				f.ID, f.ObjectID.String(), recomputed.String())
 		}
 		return nil
 	})
@@ -278,7 +278,7 @@ func fuzzCreateFile(ctx context.Context, store metadata.MetadataStore, shareName
 			CreatedAt:     now,
 		}
 		if err := store.Put(ctx, fb); err != nil {
-			return fmt.Errorf("Put block %s: %w", blockID, err)
+			return fmt.Errorf("put block %s: %w", blockID, err)
 		}
 		blockIDs = append(blockIDs, blockID)
 		refs = append(refs, blockstore.BlockRef{
@@ -341,7 +341,7 @@ func fuzzDeleteFile(ctx context.Context, store metadata.MetadataStore, rootHandl
 		}
 		if newCount == 0 {
 			if err := store.Delete(ctx, blockID); err != nil && !errors.Is(err, metadata.ErrFileBlockNotFound) {
-				return fmt.Errorf("Delete block %s: %w", blockID, err)
+				return fmt.Errorf("delete block %s: %w", blockID, err)
 			}
 		}
 	}
@@ -374,7 +374,7 @@ func fuzzCopyFile(ctx context.Context, store metadata.MetadataStore, shareName s
 	if err != nil {
 		return fmt.Errorf("GetFile src: %w", err)
 	}
-	srcBlocks := append([]blockstore.BlockRef(nil), srcFile.FileAttr.Blocks...)
+	srcBlocks := append([]blockstore.BlockRef(nil), srcFile.Blocks...)
 
 	// Increment RefCount on each source FileBlock — one bump per BlockRef
 	// so multiple refs to the same hash are accounted for explicitly.
@@ -459,7 +459,7 @@ func fuzzMutateObjectID(ctx context.Context, store metadata.MetadataStore, rng *
 		return fmt.Errorf("GetFile: %w", err)
 	}
 
-	f.FileAttr.ObjectID = blockstore.ComputeObjectID(f.FileAttr.Blocks)
+	f.ObjectID = blockstore.ComputeObjectID(f.Blocks)
 	if err := store.PutFile(ctx, f); err != nil {
 		// D-14 first-committer-wins: another worker may have claimed
 		// the same ObjectID (improbable for distinct seed-derived
@@ -531,7 +531,7 @@ func reconcileINV02(ctx context.Context, store metadata.MetadataStore, shareName
 		return 0, 0, fmt.Errorf("GetRootHandle: %w", rootErr)
 	}
 	if walkErr := walkShareFiles(ctx, store, rootHandle, func(f *metadata.File) error {
-		totalRefs += uint64(len(f.FileAttr.Blocks))
+		totalRefs += uint64(len(f.Blocks))
 		return nil
 	}); walkErr != nil {
 		return 0, 0, fmt.Errorf("walkShareFiles: %w", walkErr)
@@ -557,13 +557,13 @@ func walkShareFiles(ctx context.Context, store metadata.MetadataStore, dirHandle
 			if err != nil {
 				return fmt.Errorf("GetFile %s: %w", e.Name, err)
 			}
-			if child.FileAttr.Type == metadata.FileTypeDirectory {
+			if child.Type == metadata.FileTypeDirectory {
 				if err := walkShareFiles(ctx, store, e.Handle, fn); err != nil {
 					return err
 				}
 				continue
 			}
-			if child.FileAttr.Type == metadata.FileTypeRegular {
+			if child.Type == metadata.FileTypeRegular {
 				if err := fn(child); err != nil {
 					return err
 				}

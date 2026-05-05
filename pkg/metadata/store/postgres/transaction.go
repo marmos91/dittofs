@@ -157,7 +157,7 @@ func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.File
 		if err != nil {
 			return nil, mapPgError(err, "GetFile", "load blocks")
 		}
-		file.FileAttr.Blocks = blocks
+		file.Blocks = blocks
 	}
 
 	// Debug logging to trace file type issues
@@ -238,8 +238,8 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	// legacy / never-quiesced / partially-flushed files never collide on
 	// the all-zero sentinel (Phase 13 D-03 / D-07).
 	var objectIDArg interface{}
-	if !file.FileAttr.ObjectID.IsZero() {
-		objectIDArg = file.FileAttr.ObjectID[:]
+	if !file.ObjectID.IsZero() {
+		objectIDArg = file.ObjectID[:]
 	}
 
 	// Query old size for delta tracking (only for regular files).
@@ -319,7 +319,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	// files carry BlockRef payloads. Empty/nil Blocks performs a DELETE-only
 	// pass, ensuring no stale rows survive a write that drops Blocks.
 	if file.Type == metadata.FileTypeRegular {
-		if err := putFileBlockRefs(ctx, tx.tx, file.ID, file.FileAttr.Blocks); err != nil {
+		if err := putFileBlockRefs(ctx, tx.tx, file.ID, file.Blocks); err != nil {
 			return mapPgError(err, "PutFile", "blocks")
 		}
 	}

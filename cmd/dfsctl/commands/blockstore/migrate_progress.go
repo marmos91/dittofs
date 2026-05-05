@@ -121,7 +121,7 @@ func (p *progressReporter) paint(done int) {
 		pct = float64(done) / float64(p.total) * 100
 	}
 	eta := computeETA(p.startedAt, done, p.total)
-	fmt.Fprintf(p.out, "\rMigrating: %d/%d (%.1f%%) ETA %s", done, p.total, pct, eta)
+	_, _ = fmt.Fprintf(p.out, "\rMigrating: %d/%d (%.1f%%) ETA %s", done, p.total, pct, eta)
 }
 
 // computeETA returns a coarse "remaining time" estimate based on the
@@ -148,6 +148,6 @@ func (p *progressReporter) Close() {
 	p.barMu.Lock()
 	defer p.barMu.Unlock()
 	if p.out != nil {
-		fmt.Fprintln(p.out)
+		_, _ = fmt.Fprintln(p.out)
 	}
 }

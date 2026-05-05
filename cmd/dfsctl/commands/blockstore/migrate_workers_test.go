@@ -86,10 +86,7 @@ func TestWorkerPool_Concurrency(t *testing.T) {
 	}()
 
 	deadline := time.After(5 * time.Second)
-	for {
-		if maxInflight.Load() >= int32(parallel) {
-			break
-		}
+	for maxInflight.Load() < int32(parallel) {
 		select {
 		case <-deadline:
 			close(hold)
@@ -207,7 +204,7 @@ func TestWorkerPool_PreservesIsFileDoneSkip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenJournal: %v", err)
 	}
-	defer journal.Close()
+	defer func() { _ = journal.Close() }()
 	doneHandle := metadata.FileHandle("done-h")
 	if err := journal.Append(migrate.JournalEntry{
 		Kind:       "file_done",

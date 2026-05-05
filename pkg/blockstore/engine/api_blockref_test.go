@@ -153,10 +153,10 @@ func TestTruncate_DropsBlocksPastNewSize(t *testing.T) {
 	ctx := context.Background()
 
 	blocks := []blockstore.BlockRef{
-		{Hash: blockstore.ContentHash{0x01}, Offset: 0, Size: 4096},          // kept
-		{Hash: blockstore.ContentHash{0x02}, Offset: 4096, Size: 4096},       // kept (Offset < newSize=8192)
-		{Hash: blockstore.ContentHash{0x03}, Offset: 8192, Size: 4096},       // dropped
-		{Hash: blockstore.ContentHash{0x04}, Offset: 12288, Size: 4096},      // dropped
+		{Hash: blockstore.ContentHash{0x01}, Offset: 0, Size: 4096},     // kept
+		{Hash: blockstore.ContentHash{0x02}, Offset: 4096, Size: 4096},  // kept (Offset < newSize=8192)
+		{Hash: blockstore.ContentHash{0x03}, Offset: 8192, Size: 4096},  // dropped
+		{Hash: blockstore.ContentHash{0x04}, Offset: 12288, Size: 4096}, // dropped
 	}
 
 	kept, err := bs.Truncate(ctx, "trunc-test", blocks, 8192)

@@ -82,7 +82,7 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	// Deep-copy slice fields so the stored view cannot be mutated by
 	// later caller-side mutation of the input slice (Phase 12 D-05,
 	// T-12-09 mitigation).
-	attrCopy.Blocks = cloneBlocks(file.FileAttr.Blocks)
+	attrCopy.Blocks = cloneBlocks(file.Blocks)
 
 	// Track size delta for regular files.
 	if file.Type == metadata.FileTypeRegular {

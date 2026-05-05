@@ -74,8 +74,8 @@ func testObjectID_RoundTripBasic(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (pre-put): %v", err)
 	}
-	file.FileAttr.Blocks = blocks
-	file.FileAttr.ObjectID = wantOID
+	file.Blocks = blocks
+	file.ObjectID = wantOID
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile: %v", err)
 	}
@@ -84,9 +84,9 @@ func testObjectID_RoundTripBasic(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (round-trip): %v", err)
 	}
-	if got.FileAttr.ObjectID != wantOID {
+	if got.ObjectID != wantOID {
 		t.Errorf("ObjectID round-trip: got %s, want %s",
-			got.FileAttr.ObjectID.String(), wantOID.String())
+			got.ObjectID.String(), wantOID.String())
 	}
 }
 
@@ -107,14 +107,14 @@ func testObjectID_ZeroSentinel(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile: %v", err)
 	}
-	if !got.FileAttr.ObjectID.IsZero() {
+	if !got.ObjectID.IsZero() {
 		t.Errorf("ObjectID: got %s, want zero (never-quiesced sentinel)",
-			got.FileAttr.ObjectID.String())
+			got.ObjectID.String())
 	}
 
 	// Explicit PutFile with the zero sentinel.
-	got.FileAttr.Blocks = nil
-	got.FileAttr.ObjectID = blockstore.ObjectID{}
+	got.Blocks = nil
+	got.ObjectID = blockstore.ObjectID{}
 	if err := store.PutFile(ctx, got); err != nil {
 		t.Fatalf("PutFile (zero ObjectID): %v", err)
 	}
@@ -122,9 +122,9 @@ func testObjectID_ZeroSentinel(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (post-zero-put): %v", err)
 	}
-	if !got2.FileAttr.ObjectID.IsZero() {
+	if !got2.ObjectID.IsZero() {
 		t.Errorf("ObjectID after zero PutFile: got %s, want zero",
-			got2.FileAttr.ObjectID.String())
+			got2.ObjectID.String())
 	}
 
 	// FindByObjectID(zero) MUST return (nil, nil) without indexing.
@@ -158,8 +158,8 @@ func testObjectID_MutationLifecycle(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile: %v", err)
 	}
-	file.FileAttr.Blocks = blocks
-	file.FileAttr.ObjectID = wantOID
+	file.Blocks = blocks
+	file.ObjectID = wantOID
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile (quiesced): %v", err)
 	}
@@ -179,7 +179,7 @@ func testObjectID_MutationLifecycle(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (pre-mutate): %v", err)
 	}
-	mutated.FileAttr.ObjectID = blockstore.ObjectID{}
+	mutated.ObjectID = blockstore.ObjectID{}
 	if err := store.PutFile(ctx, mutated); err != nil {
 		t.Fatalf("PutFile (mutation): %v", err)
 	}
@@ -199,8 +199,8 @@ func testObjectID_MutationLifecycle(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (post-mutation): %v", err)
 	}
-	if !got.FileAttr.ObjectID.IsZero() {
-		t.Errorf("ObjectID post-mutation: got %s, want zero", got.FileAttr.ObjectID.String())
+	if !got.ObjectID.IsZero() {
+		t.Errorf("ObjectID post-mutation: got %s, want zero", got.ObjectID.String())
 	}
 }
 
@@ -236,8 +236,8 @@ func testObjectID_SortStability(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile: %v", err)
 	}
-	file.FileAttr.Blocks = blocks
-	file.FileAttr.ObjectID = a
+	file.Blocks = blocks
+	file.ObjectID = a
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile: %v", err)
 	}
@@ -246,10 +246,10 @@ func testObjectID_SortStability(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (round-trip): %v", err)
 	}
-	recomputed := blockstore.ComputeObjectID(got.FileAttr.Blocks)
-	if recomputed != got.FileAttr.ObjectID {
+	recomputed := blockstore.ComputeObjectID(got.Blocks)
+	if recomputed != got.ObjectID {
 		t.Errorf("recompute(stored Blocks) != stored ObjectID: %s vs %s",
-			recomputed.String(), got.FileAttr.ObjectID.String())
+			recomputed.String(), got.ObjectID.String())
 	}
 	if recomputed != a {
 		t.Errorf("recompute(stored Blocks) != original ObjectID: %s vs %s",

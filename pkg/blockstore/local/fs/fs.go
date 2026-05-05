@@ -61,9 +61,9 @@ var _ local.LocalStore = (*FSStore)(nil)
 // In flushBlock, the map entry is deleted while holding mb.mu to prevent a race
 // where a concurrent writer gets a stale memBlock with nil data.
 type FSStore struct {
-	baseDir    string
-	maxDisk    int64
-	maxMemory  int64
+	baseDir   string
+	maxDisk   int64
+	maxMemory int64
 	// Phase 12 (META-03 / D-09): the local store is one of the engine-
 	// internal callers that still uses the wider EngineFileBlockStore
 	// surface (GetFileBlock, ListFileBlocks) on top of the narrowed

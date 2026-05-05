@@ -145,7 +145,7 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 				len(objectIDRaw), blockstore.HashSize,
 			)
 		}
-		copy(file.FileAttr.ObjectID[:], objectIDRaw)
+		copy(file.ObjectID[:], objectIDRaw)
 	}
 
 	return file, nil

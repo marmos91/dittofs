@@ -302,7 +302,11 @@ func TestPerfGate_Phase12_BinarySearchOverhead(t *testing.T) {
 	perCall := time.Since(start) / trials
 	t.Logf("findBlocksForRange over %d blocks: %v per call (%.0f ns)", N, perCall, float64(perCall.Nanoseconds()))
 
-	if perCall > 1*time.Microsecond {
-		t.Fatalf("D-43 supporting gate FAILED: findBlocksForRange %v per call > 1µs (likely linear scan)", perCall)
+	// 10µs tolerance: binary search over 16K blocks measures ~50ns
+	// locally; shared GitHub runners are 6-8x noisier. Linear scan
+	// over 16K BlockRefs would be ~50µs, so this still catches O(N)
+	// regressions while tolerating CI hardware variance.
+	if perCall > 10*time.Microsecond {
+		t.Fatalf("D-43 supporting gate FAILED: findBlocksForRange %v per call > 10µs (likely linear scan)", perCall)
 	}
 }

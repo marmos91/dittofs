@@ -65,7 +65,7 @@ func CopyPayload(
 		// engine.CopyPayload bumps RefCount per unique hash via the
 		// coordinator. The coordinator wires its UPDATEs into the active
 		// txn (see coordinator.go transaction-ownership note).
-		newBlocks, err := blockStore.CopyPayload(txCtx, string(srcPayloadID), string(dstPayloadID), srcFile.FileAttr.Blocks)
+		newBlocks, err := blockStore.CopyPayload(txCtx, string(srcPayloadID), string(dstPayloadID), srcFile.Blocks)
 		if err != nil {
 			return fmt.Errorf("engine copy payload: %w", err)
 		}
@@ -74,9 +74,9 @@ func CopyPayload(
 		if err != nil {
 			return fmt.Errorf("fetch dst file attr: %w", err)
 		}
-		dstFile.FileAttr.Blocks = newBlocks
-		dstFile.FileAttr.Size = srcFile.FileAttr.Size
-		dstFile.FileAttr.Mtime = time.Now()
+		dstFile.Blocks = newBlocks
+		dstFile.Size = srcFile.Size
+		dstFile.Mtime = time.Now()
 		if err := tx.PutFile(ctx, dstFile); err != nil {
 			return fmt.Errorf("persist dst file attr: %w", err)
 		}

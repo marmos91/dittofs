@@ -26,9 +26,9 @@
 //  5. List the bucket's cas/ prefix. Assertions:
 //     - At least one CAS key exists (write actually happened).
 //     - Total CAS object count is bounded by the FastCDC chunk count of
-//       16 MiB (single-file's worth, not 2x). Without dedup, both writes
-//       would produce ~2x the chunk count; with file-level OR block-level
-//       dedup engaged, the same set of chunks is shared.
+//     16 MiB (single-file's worth, not 2x). Without dedup, both writes
+//     would produce ~2x the chunk count; with file-level OR block-level
+//     dedup engaged, the same set of chunks is shared.
 //  6. Read both files back over NFS and verify content equals payload.
 //
 // Tier: nightly only. Requires sudo + kernel NFS client + Localstack +

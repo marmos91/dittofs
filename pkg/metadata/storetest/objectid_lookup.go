@@ -48,8 +48,8 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 		if err != nil {
 			t.Fatalf("GetFile %s: %v", pair.label, err)
 		}
-		f.FileAttr.Blocks = pair.blocks
-		f.FileAttr.ObjectID = pair.oid
+		f.Blocks = pair.blocks
+		f.ObjectID = pair.oid
 		if err := store.PutFile(ctx, f); err != nil {
 			t.Fatalf("PutFile %s: %v", pair.label, err)
 		}
@@ -121,8 +121,8 @@ func testObjectID_RestartStability(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (pre-put): %v", err)
 	}
-	file.FileAttr.Blocks = blocks
-	file.FileAttr.ObjectID = wantOID
+	file.Blocks = blocks
+	file.ObjectID = wantOID
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile: %v", err)
 	}
@@ -131,10 +131,10 @@ func testObjectID_RestartStability(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (post-put): %v", err)
 	}
-	recomputed := blockstore.ComputeObjectID(got.FileAttr.Blocks)
-	if recomputed != got.FileAttr.ObjectID {
+	recomputed := blockstore.ComputeObjectID(got.Blocks)
+	if recomputed != got.ObjectID {
 		t.Errorf("recompute(stored Blocks) != stored ObjectID: %s vs %s",
-			recomputed.String(), got.FileAttr.ObjectID.String())
+			recomputed.String(), got.ObjectID.String())
 	}
 	if recomputed != wantOID {
 		t.Errorf("recompute(stored Blocks) != original ObjectID: %s vs %s",
@@ -189,10 +189,10 @@ func testObjectID_ConcurrentQuiesceRace(t *testing.T, factory StoreFactory) {
 		if err != nil {
 			t.Fatalf("GetFile (stage %s): %v", seed, err)
 		}
-		f.FileAttr.Blocks = []blockstore.BlockRef{
+		f.Blocks = []blockstore.BlockRef{
 			{Hash: hashOfSeed(seed), Offset: 0, Size: 4096},
 		}
-		f.FileAttr.ObjectID = contested
+		f.ObjectID = contested
 		return f
 	}
 	files := [2]*metadata.File{
@@ -285,8 +285,8 @@ func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 		if err != nil {
 			t.Fatalf("GetFile %s: %v", pair.label, err)
 		}
-		f.FileAttr.Blocks = pair.blocks
-		f.FileAttr.ObjectID = pair.oid
+		f.Blocks = pair.blocks
+		f.ObjectID = pair.oid
 		if err := store.PutFile(ctx, f); err != nil {
 			t.Fatalf("PutFile %s: %v", pair.label, err)
 		}

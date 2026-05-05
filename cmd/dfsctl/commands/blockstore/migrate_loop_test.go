@@ -163,7 +163,7 @@ func TestMigrateLoop_EmptyShare(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenJournalReadOnly: %v", err)
 	}
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 	entries, _ := j.Replay()
 	if len(entries) != 0 {
 		t.Errorf("empty share journal entries = %d, want 0", len(entries))
@@ -221,7 +221,7 @@ func TestMigrateLoop_SingleFile_OneChunk(t *testing.T) {
 	}
 	// Journal: exactly one file_done entry.
 	j, _ := migrate.OpenJournalReadOnly(f.dataDir)
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 	entries, _ := j.Replay()
 	if len(entries) != 1 {
 		t.Fatalf("journal entries = %d, want 1", len(entries))
@@ -271,7 +271,7 @@ func TestMigrateLoop_DedupAcrossFiles(t *testing.T) {
 	}
 	// Journal: 2 entries, second has nonzero BytesDeduped.
 	j, _ := migrate.OpenJournalReadOnly(f.dataDir)
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 	entries, _ := j.Replay()
 	if len(entries) != 2 {
 		t.Fatalf("journal entries = %d, want 2", len(entries))
@@ -344,7 +344,7 @@ func TestMigrateLoop_DryRun(t *testing.T) {
 
 	// Journal must contain zero entries — dry-run suppresses Append.
 	j, _ := migrate.OpenJournalReadOnly(f.dataDir)
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 	entries, _ := j.Replay()
 	if len(entries) != 0 {
 		t.Errorf("dry-run wrote journal entries: %d", len(entries))
@@ -371,7 +371,7 @@ func TestMigrateLoop_EmptyFile(t *testing.T) {
 		t.Errorf("empty file got Blocks=%d, want 0", len(updated.Blocks))
 	}
 	j, _ := migrate.OpenJournalReadOnly(f.dataDir)
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 	entries, _ := j.Replay()
 	if len(entries) != 1 {
 		t.Fatalf("journal entries = %d, want 1", len(entries))
@@ -457,7 +457,7 @@ func TestMigrateLoop_EndToEnd(t *testing.T) {
 	}
 
 	// 2. Legacy keys gone — no key matching {payloadID}/block-{idx}.
-	allKeys, _ := f.stub.Store.ListByPrefix(t.Context(), "")
+	allKeys, _ := f.stub.ListByPrefix(t.Context(), "")
 	for _, k := range allKeys {
 		if !strings.HasPrefix(k, "cas/") {
 			t.Errorf("legacy key %q survived end-to-end pipeline", k)
@@ -484,7 +484,7 @@ func TestMigrateLoop_IntegrityFail(t *testing.T) {
 			if originalHEAD != nil {
 				return originalHEAD(ctx, key)
 			}
-			return f.stub.Store.HeadObject(ctx, key)
+			return f.stub.HeadObject(ctx, key)
 		}
 		return remote.HeadResult{}, blockstore.ErrBlockNotFound
 	}
@@ -508,7 +508,7 @@ func TestMigrateLoop_IntegrityFail(t *testing.T) {
 	}
 
 	// At least one legacy key must still exist (sweep was skipped).
-	allKeys, _ := f.stub.Store.ListByPrefix(t.Context(), "")
+	allKeys, _ := f.stub.ListByPrefix(t.Context(), "")
 	hasLegacy := false
 	for _, k := range allKeys {
 		if !strings.HasPrefix(k, "cas/") {
@@ -537,7 +537,7 @@ func TestMigrateLoop_DryRunSkipsCutover(t *testing.T) {
 	if post.BlockLayout == metadata.BlockLayoutCASOnly {
 		t.Errorf("dry-run flipped BlockLayout to cas-only; want unchanged")
 	}
-	allKeys, _ := f.stub.Store.ListByPrefix(t.Context(), "")
+	allKeys, _ := f.stub.ListByPrefix(t.Context(), "")
 	hasLegacy := false
 	for _, k := range allKeys {
 		if !strings.HasPrefix(k, "cas/") {

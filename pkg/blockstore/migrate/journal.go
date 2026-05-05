@@ -231,7 +231,7 @@ func (j *Journal) replayInto(jpath string) error {
 		}
 		return fmt.Errorf("migrate: open journal for replay %q: %w", jpath, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	// Allow large entries (BlockRef list can be sizable).

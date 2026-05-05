@@ -9,11 +9,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// defaultMaxCacheBytes is the default per-share Cache memory budget.
-// Plan 12 D-31 sets this at 256 MiB (CACHE-03 single budget across all
-// hashes; was previously bifurcated across coord/CAS/legacy spaces).
-const defaultMaxCacheBytes int64 = 256 << 20
-
 // seqThreshold (CACHE-03) is the number of consecutive sequential reads
 // observed before the prefetcher fires. Raised from Phase 11's 2 to 3
 // to suppress speculative prefetch on accidental two-block runs in
@@ -156,12 +151,12 @@ type CacheStats struct {
 // pattern; Plan 12-09 WARN-8).
 type nullCache struct{}
 
-func (nullCache) Get(blockstore.ContentHash) ([]byte, bool)                      { return nil, false }
-func (nullCache) Put(blockstore.ContentHash, []byte)                             {}
-func (nullCache) OnRead(string, []blockstore.ContentHash, uint64)                {}
-func (nullCache) InvalidateFile(string, []blockstore.ContentHash)                {}
-func (nullCache) Stats() CacheStats                                              { return CacheStats{} }
-func (nullCache) Close() error                                                   { return nil }
+func (nullCache) Get(blockstore.ContentHash) ([]byte, bool)       { return nil, false }
+func (nullCache) Put(blockstore.ContentHash, []byte)              {}
+func (nullCache) OnRead(string, []blockstore.ContentHash, uint64) {}
+func (nullCache) InvalidateFile(string, []blockstore.ContentHash) {}
+func (nullCache) Stats() CacheStats                               { return CacheStats{} }
+func (nullCache) Close() error                                    { return nil }
 
 // newCacheNoWorkers constructs a Cache without the prefetch worker
 // pool. Used by tests that exercise the LRU/Get/Put/InvalidateFile

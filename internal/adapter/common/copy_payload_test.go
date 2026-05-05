@@ -147,16 +147,16 @@ func TestCopyPayload_AtomicSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFile(dst) after CopyPayload failed: %v", err)
 	}
-	if len(dstFile.FileAttr.Blocks) != 3 {
-		t.Fatalf("dst has %d Blocks, want 3", len(dstFile.FileAttr.Blocks))
+	if len(dstFile.Blocks) != 3 {
+		t.Fatalf("dst has %d Blocks, want 3", len(dstFile.Blocks))
 	}
 	for i := range srcBlocks {
-		if dstFile.FileAttr.Blocks[i].Hash != srcBlocks[i].Hash {
-			t.Errorf("dst.Blocks[%d].Hash = %v, want %v", i, dstFile.FileAttr.Blocks[i].Hash, srcBlocks[i].Hash)
+		if dstFile.Blocks[i].Hash != srcBlocks[i].Hash {
+			t.Errorf("dst.Blocks[%d].Hash = %v, want %v", i, dstFile.Blocks[i].Hash, srcBlocks[i].Hash)
 		}
 	}
-	if dstFile.FileAttr.Size != 12288 {
-		t.Errorf("dst.Size = %d, want 12288", dstFile.FileAttr.Size)
+	if dstFile.Size != 12288 {
+		t.Errorf("dst.Size = %d, want 12288", dstFile.Size)
 	}
 
 	// Cache: InvalidateFile fired POST-txn for dst.
@@ -202,13 +202,13 @@ func TestCopyPayload_RollsBackOnIncrementError(t *testing.T) {
 
 	// dst.Blocks must be unchanged (still nil/empty).
 	dstFile, _ := ms.GetFile(ctx, dstHandle)
-	if dstFile != nil && len(dstFile.FileAttr.Blocks) != 0 {
-		t.Errorf("dst.Blocks = %v, want empty (txn must roll back)", dstFile.FileAttr.Blocks)
+	if dstFile != nil && len(dstFile.Blocks) != 0 {
+		t.Errorf("dst.Blocks = %v, want empty (txn must roll back)", dstFile.Blocks)
 	}
 
 	// dst.Size unchanged (0).
-	if dstFile != nil && dstFile.FileAttr.Size != 0 {
-		t.Errorf("dst.Size = %d, want 0 (txn must roll back)", dstFile.FileAttr.Size)
+	if dstFile != nil && dstFile.Size != 0 {
+		t.Errorf("dst.Size = %d, want 0 (txn must roll back)", dstFile.Size)
 	}
 
 	// Cache: NO InvalidateFile call on failure.
@@ -245,8 +245,8 @@ func TestCopyPayload_LegacyEmptyBlocks(t *testing.T) {
 	if dstFile == nil {
 		t.Fatal("dst not found after CopyPayload")
 	}
-	if len(dstFile.FileAttr.Blocks) != 0 {
-		t.Errorf("legacy dst.Blocks = %v, want empty", dstFile.FileAttr.Blocks)
+	if len(dstFile.Blocks) != 0 {
+		t.Errorf("legacy dst.Blocks = %v, want empty", dstFile.Blocks)
 	}
 
 	// Cache invalidation still fires (dst content notionally changed).

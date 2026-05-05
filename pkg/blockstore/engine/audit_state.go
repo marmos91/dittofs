@@ -126,7 +126,7 @@ func AuditRefcounts(ctx context.Context, share string, store metadata.MetadataSt
 	}
 	if err := walkAuditShareFiles(ctx, store, rootHandle, func(f *metadata.File) error {
 		result.TotalFiles++
-		result.TotalRefs += uint64(len(f.FileAttr.Blocks))
+		result.TotalRefs += uint64(len(f.Blocks))
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("audit-refcounts: walk share %q: %w", share, err)
@@ -159,7 +159,7 @@ func walkAuditShareFiles(ctx context.Context, store metadata.MetadataStore, dirH
 			if err != nil {
 				return fmt.Errorf("get file %q: %w", e.Name, err)
 			}
-			switch child.FileAttr.Type {
+			switch child.Type {
 			case metadata.FileTypeDirectory:
 				if err := walkAuditShareFiles(ctx, store, e.Handle, fn); err != nil {
 					return err

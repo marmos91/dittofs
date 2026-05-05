@@ -491,6 +491,12 @@ const MaxFlushPasses = 16
 // Syncing; uploadOne is then invoked on that Syncing row, producing
 // the at-most-twice upload described above.
 func (m *Syncer) drainPayloadToRemote(ctx context.Context, payloadID string) error {
+	// Local-only mode: blocks stay in BlockStatePending. Flush reports
+	// not-finalized; the post-flush metadata persist hook still records
+	// the canonical BlockRef snapshot.
+	if m.remoteStore == nil {
+		return nil
+	}
 	for pass := 0; pass < MaxFlushPasses; pass++ {
 		if err := ctx.Err(); err != nil {
 			return err

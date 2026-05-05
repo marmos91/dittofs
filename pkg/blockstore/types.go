@@ -111,10 +111,7 @@ func (h *ContentHash) UnmarshalJSON(data []byte) error {
 	}
 	s := string(data[1 : len(data)-1])
 	// Canonical / hex form.
-	hexStr := s
-	if strings.HasPrefix(hexStr, "blake3:") {
-		hexStr = hexStr[len("blake3:"):]
-	}
+	hexStr := strings.TrimPrefix(s, "blake3:")
 	if len(hexStr) == HashSize*2 {
 		parsed, err := ParseContentHash(hexStr)
 		if err == nil {

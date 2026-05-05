@@ -94,7 +94,7 @@ func runFullMigration(t *testing.T, f *integrityFixture) int {
 		t.Fatalf("runMigrateLoopWithRuntime: %v", err)
 	}
 	uniq := map[blockstore.ContentHash]struct{}{}
-	keys, _ := f.stub.Store.ListByPrefix(t.Context(), "cas/")
+	keys, _ := f.stub.ListByPrefix(t.Context(), "cas/")
 	for _, k := range keys {
 		h, err := blockstore.ParseCASKey(k)
 		if err == nil {

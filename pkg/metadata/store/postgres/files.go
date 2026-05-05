@@ -63,7 +63,7 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 		if err != nil {
 			return nil, mapPgError(err, "GetFile", "load blocks")
 		}
-		file.FileAttr.Blocks = blocks
+		file.Blocks = blocks
 	}
 
 	return file, nil

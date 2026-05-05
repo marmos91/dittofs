@@ -30,7 +30,7 @@ func TestJournal_Append_Replay_J1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenJournal: %v", err)
 	}
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 
 	for _, h := range []string{"A", "B", "C"} {
 		if err := j.Append(makeEntry(h)); err != nil {
@@ -43,7 +43,7 @@ func TestJournal_Append_Replay_J1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-OpenJournal: %v", err)
 	}
-	defer j2.Close()
+	defer func() { _ = j2.Close() }()
 	got, err := j2.Replay()
 	if err != nil {
 		t.Fatalf("Replay: %v", err)
@@ -68,7 +68,7 @@ func TestJournal_SnapshotAtThreshold_J2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenJournalWithInterval: %v", err)
 	}
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 
 	for i := 0; i < threshold; i++ {
 		if err := j.Append(makeEntry(fmt.Sprintf("file-%03d", i))); err != nil {
@@ -124,7 +124,7 @@ func TestJournal_CorruptSnapshotFallsBackToJournal_J3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-OpenJournal with corrupt snapshot: %v", err)
 	}
-	defer j2.Close()
+	defer func() { _ = j2.Close() }()
 	got, _ := j2.Replay()
 	if len(got) != 2 {
 		t.Errorf("Replay after corrupt snapshot: got %d entries, want 2", len(got))
@@ -140,7 +140,7 @@ func TestJournal_AtomicRenameInvariant_J4(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenJournal: %v", err)
 	}
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 
 	if err := j.Append(makeEntry("A")); err != nil {
 		t.Fatalf("Append: %v", err)
@@ -165,7 +165,7 @@ func TestJournal_IsFileDone_J5(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenJournal: %v", err)
 	}
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 
 	if j.IsFileDone("A") {
 		t.Error("IsFileDone(A) returned true before any Append")
@@ -189,7 +189,7 @@ func TestJournal_CompactionFloor_J6(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenJournal: %v", err)
 	}
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 
 	if err := j.Append(makeEntry("A")); err != nil {
 		t.Fatalf("Append: %v", err)
@@ -225,7 +225,7 @@ func TestJournal_ReadOnlyRejectsWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenJournalReadOnly: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	if !r.IsFileDone("A") {
 		t.Error("read-only IsFileDone(A) = false, want true")
@@ -246,7 +246,7 @@ func TestJournal_AggregateReportsPresenceFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenJournal: %v", err)
 	}
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 
 	entries, hasJournal, hasSnapshot, _ := j.Aggregate()
 	if len(entries) != 0 {

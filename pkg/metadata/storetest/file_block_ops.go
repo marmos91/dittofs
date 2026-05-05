@@ -958,10 +958,7 @@ func testTx_IncrementRefCount_RollsBack(t *testing.T, factory StoreFactory) {
 	// has WithTransaction that holds a global mutex but does not maintain
 	// a rollback buffer; durable rollback is impossible by construction.
 	storeType := fmt.Sprintf("%T", store)
-	bestEffortTxn := false
-	if storeType == "*memory.MemoryMetadataStore" {
-		bestEffortTxn = true
-	}
+	bestEffortTxn := storeType == "*memory.MemoryMetadataStore"
 
 	// Seed three FileBlocks with RefCount=1 each.
 	type seed struct {
