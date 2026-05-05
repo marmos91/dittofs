@@ -1,7 +1,6 @@
 package blockstore
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -10,21 +9,24 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// TestBlockstoreCmd_HelpListsMigrate asserts that the parent `blockstore`
-// command lists `migrate` in its Available Commands. (Task 1 behavior 1.)
-func TestBlockstoreCmd_HelpListsMigrate(t *testing.T) {
-	cmd := Cmd
-	buf := &bytes.Buffer{}
-	cmd.SetOut(buf)
-	cmd.SetErr(buf)
-	cmd.SetArgs([]string{"--help"})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("blockstore --help: unexpected error: %v", err)
+// TestBlockstoreCmd_RegistersMigrate asserts that the parent `blockstore`
+// command has `migrate` registered as a subcommand. The command is
+// currently `Hidden: true` (production runtime not yet wired — #425),
+// so it does NOT appear in `blockstore --help` output by design;
+// assert via Cobra's command tree instead.
+func TestBlockstoreCmd_RegistersMigrate(t *testing.T) {
+	var found *cobra.Command
+	for _, sub := range Cmd.Commands() {
+		if sub.Name() == "migrate" {
+			found = sub
+			break
+		}
 	}
-	out := buf.String()
-	if !strings.Contains(out, "migrate") {
-		t.Fatalf("blockstore --help did not list 'migrate' subcommand; got:\n%s", out)
+	if found == nil {
+		t.Fatalf("blockstore command tree missing 'migrate' subcommand")
+	}
+	if !found.Hidden {
+		t.Errorf("migrate subcommand should be Hidden until production runtime ships (#425)")
 	}
 }
 

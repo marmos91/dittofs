@@ -2,7 +2,6 @@ package blockstore
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -90,22 +89,13 @@ func TestPerformCutover_NilRuntime(t *testing.T) {
 	if err == nil {
 		t.Fatal("performCutover(nil, ...): expected error, got nil")
 	}
-	if !errors.Is(err, errPerformCutoverNilRuntimeProbe()) {
-		// Looser check: error must mention "nil offlineRuntime" so the
-		// operator can distinguish it from a metadata-store failure.
-		if !contains(err.Error(), "nil") {
-			t.Errorf("error %q does not mention nil-runtime cause", err.Error())
-		}
+	// performCutover does not export a sentinel for this rail (nil
+	// runtime is a programmer error, not a normal failure mode); assert
+	// the error mentions "nil" so an operator can distinguish it from
+	// a metadata-store failure.
+	if !contains(err.Error(), "nil") {
+		t.Errorf("error %q does not mention nil-runtime cause", err.Error())
 	}
-}
-
-// errPerformCutoverNilRuntimeProbe returns a sentinel-shaped probe
-// equivalent to the nil-runtime error performCutover constructs. Used
-// only for the errors.Is check above; performCutover does not export
-// a sentinel because the nil-runtime path is a rail, not a normal
-// failure mode.
-func errPerformCutoverNilRuntimeProbe() error {
-	return errors.New("performCutover: nil offlineRuntime")
 }
 
 // contains is the std-lib-free substring check (avoids importing

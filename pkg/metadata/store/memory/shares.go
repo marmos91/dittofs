@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -62,18 +63,16 @@ func (store *MemoryMetadataStore) GetShareOptions(ctx context.Context, shareName
 		}
 	}
 
-	// Return a copy to avoid external mutation
+	// Return a copy to avoid external mutation.
 	optsCopy := shareData.Share.Options
-	// Coerce BlockLayout: empty / pre-Phase-14 values resolve to
-	// `legacy` (D-A6); unknown values are silently coerced too —
-	// callers that need strict validation use metadata.ParseBlockLayout
-	// directly. This keeps GetShareOptions infallible for the common
-	// case of a zero-valued field on an older record.
-	if normalized, err := metadata.ParseBlockLayout(string(optsCopy.BlockLayout)); err == nil {
-		optsCopy.BlockLayout = normalized
-	} else {
-		optsCopy.BlockLayout = metadata.BlockLayoutLegacy
+	// D-A6: empty BlockLayout is the pre-Phase-14 forward-compat case
+	// and resolves to `legacy`. Unknown values are fail-loud (matches
+	// Postgres backend + ErrInvalidBlockLayout contract).
+	normalized, err := metadata.ParseBlockLayout(string(optsCopy.BlockLayout))
+	if err != nil {
+		return nil, fmt.Errorf("share %q: %w", shareName, err)
 	}
+	optsCopy.BlockLayout = normalized
 	return &optsCopy, nil
 }
 

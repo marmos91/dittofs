@@ -90,15 +90,14 @@ func (s *BadgerMetadataStore) GetShareOptions(ctx context.Context, shareName str
 				return err
 			}
 			optsCopy := data.Share.Options
-			// Coerce BlockLayout: pre-Phase-14 share blobs lack the
-			// field entirely, so the JSON unmarshal produces an empty
-			// string — D-A6 maps that to `legacy` (the safe default
-			// that keeps the dual-read shim active).
-			if normalized, perr := metadata.ParseBlockLayout(string(optsCopy.BlockLayout)); perr == nil {
-				optsCopy.BlockLayout = normalized
-			} else {
-				optsCopy.BlockLayout = metadata.BlockLayoutLegacy
+			// D-A6: empty BlockLayout (pre-Phase-14 share blob without
+			// the field) coerces to `legacy`. Unknown values are
+			// fail-loud — matches Postgres backend + ErrInvalidBlockLayout.
+			normalized, perr := metadata.ParseBlockLayout(string(optsCopy.BlockLayout))
+			if perr != nil {
+				return fmt.Errorf("share %q: %w", shareName, perr)
 			}
+			optsCopy.BlockLayout = normalized
 			opts = &optsCopy
 			return nil
 		})
