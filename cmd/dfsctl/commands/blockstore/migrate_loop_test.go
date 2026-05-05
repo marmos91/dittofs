@@ -3,13 +3,16 @@ package blockstore
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/migrate"
+	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -426,5 +429,123 @@ func TestMigrateLoop_OpenOfflineRuntimeReturnsDeferralSentinel(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("expected ErrOfflineRuntimeNotWired, got nil")
+	}
+}
+
+// TestMigrateLoop_EndToEnd covers Plan 14-05 behavior 6 (happy):
+// after a successful re-chunk loop the post-pipeline runs to
+// completion: integrity passes → BlockLayout flips to cas-only →
+// legacy keys deleted → returns nil.
+func TestMigrateLoop_EndToEnd(t *testing.T) {
+	f := newIntegrityFixture(t)
+	addLegacyFile(t, f.loopFixture, "a.bin", "/a.bin", [][]byte{largeChunk('a')})
+	addLegacyFile(t, f.loopFixture, "b.bin", "/b.bin", [][]byte{largeChunk('b')})
+
+	opts := migrateOptions{share: f.share, stateDir: f.dataDir, parallel: 2}
+	if err := runMigrateLoopWithRuntime(t.Context(), f.rt, opts); err != nil {
+		t.Fatalf("runMigrateLoopWithRuntime: %v", err)
+	}
+
+	// 1. BlockLayout flipped.
+	post, err := f.mds.GetShareOptions(t.Context(), f.share)
+	if err != nil {
+		t.Fatalf("GetShareOptions: %v", err)
+	}
+	if post.BlockLayout != metadata.BlockLayoutCASOnly {
+		t.Errorf("post-end-to-end BlockLayout = %q, want %q",
+			post.BlockLayout, metadata.BlockLayoutCASOnly)
+	}
+
+	// 2. Legacy keys gone — no key matching {payloadID}/block-{idx}.
+	allKeys, _ := f.stub.Store.ListByPrefix(t.Context(), "")
+	for _, k := range allKeys {
+		if !strings.HasPrefix(k, "cas/") {
+			t.Errorf("legacy key %q survived end-to-end pipeline", k)
+		}
+	}
+}
+
+// TestMigrateLoop_IntegrityFail covers Plan 14-05 behavior 6 (fail):
+// integrity check fails → loop returns wrapped ErrIntegrityCheckFailed,
+// performCutover NOT called (BlockLayout still legacy), legacy keys
+// still present.
+func TestMigrateLoop_IntegrityFail(t *testing.T) {
+	f := newIntegrityFixture(t)
+	addLegacyFile(t, f.loopFixture, "a.bin", "/a.bin", [][]byte{largeChunk('a')})
+
+	// Inject a 404 for every HEAD so integrity fails for sure. The
+	// stub kicks in AFTER the migration loop's WriteBlockWithHash —
+	// the override is read at HEAD time, not at WriteBlockWithHash
+	// time, so the loop still completes its uploads.
+	failingHEAD := false
+	originalHEAD := f.stub.headFn
+	f.stub.headFn = func(ctx context.Context, key string) (remote.HeadResult, error) {
+		if !failingHEAD {
+			if originalHEAD != nil {
+				return originalHEAD(ctx, key)
+			}
+			return f.stub.Store.HeadObject(ctx, key)
+		}
+		return remote.HeadResult{}, blockstore.ErrBlockNotFound
+	}
+
+	// Activate the fail switch and run the full loop. The loop will
+	// upload, then fail integrity, then short-circuit.
+	failingHEAD = true
+	opts := migrateOptions{share: f.share, stateDir: f.dataDir, parallel: 2}
+	err := runMigrateLoopWithRuntime(t.Context(), f.rt, opts)
+	if err == nil {
+		t.Fatal("expected integrity-check failure, got nil")
+	}
+	if !errors.Is(err, ErrIntegrityCheckFailed) {
+		t.Fatalf("err = %v, want wrapped ErrIntegrityCheckFailed", err)
+	}
+
+	// BlockLayout MUST still be legacy (or empty == legacy).
+	post, _ := f.mds.GetShareOptions(t.Context(), f.share)
+	if post.BlockLayout == metadata.BlockLayoutCASOnly {
+		t.Errorf("post-fail BlockLayout = cas-only; expected legacy (no cutover on integrity fail)")
+	}
+
+	// At least one legacy key must still exist (sweep was skipped).
+	allKeys, _ := f.stub.Store.ListByPrefix(t.Context(), "")
+	hasLegacy := false
+	for _, k := range allKeys {
+		if !strings.HasPrefix(k, "cas/") {
+			hasLegacy = true
+			break
+		}
+	}
+	if !hasLegacy {
+		t.Errorf("no legacy keys remain; sweep ran despite integrity fail (D-A8 violated)")
+	}
+}
+
+// TestMigrateLoop_DryRunSkipsCutover covers Plan 14-05 behavior 7:
+// dry-run skips integrity, cutover, AND legacy delete entirely.
+// BlockLayout is unchanged; legacy keys survive.
+func TestMigrateLoop_DryRunSkipsCutover(t *testing.T) {
+	f := newIntegrityFixture(t)
+	addLegacyFile(t, f.loopFixture, "a.bin", "/a.bin", [][]byte{largeChunk('a')})
+
+	opts := migrateOptions{share: f.share, stateDir: f.dataDir, parallel: 2, dryRun: true}
+	if err := runMigrateLoopWithRuntime(t.Context(), f.rt, opts); err != nil {
+		t.Fatalf("dry-run end-to-end: %v", err)
+	}
+
+	post, _ := f.mds.GetShareOptions(t.Context(), f.share)
+	if post.BlockLayout == metadata.BlockLayoutCASOnly {
+		t.Errorf("dry-run flipped BlockLayout to cas-only; want unchanged")
+	}
+	allKeys, _ := f.stub.Store.ListByPrefix(t.Context(), "")
+	hasLegacy := false
+	for _, k := range allKeys {
+		if !strings.HasPrefix(k, "cas/") {
+			hasLegacy = true
+			break
+		}
+	}
+	if !hasLegacy {
+		t.Errorf("dry-run deleted legacy keys; expected zero touches")
 	}
 }

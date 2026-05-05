@@ -271,7 +271,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - [x] 14-02-engine-blocklayout-routing-PLAN.md — MIG-03: Engine reads BlockLayout at share-open; ErrLegacyReadOnCASOnly fail-loud gate
   - [x] 14-03-migrate-tool-core-PLAN.md — MIG-01/MIG-02 (partial): blockstore command tree + offline probe + append-only journal + per-file FastCDC re-chunk + GetByHash dedup probe + ObjectID backfill (production controlplane composition deferred to 14-04)
   - [x] 14-04-bandwidth-parallel-PLAN.md — MIG-02: --parallel errgroup + shared rate.Limiter (KB/MB/GB + KiB/MiB/GiB) + slog progress + TTY bar (production composition deferred — see SUMMARY)
-  - [ ] 14-05-integrity-cutover-PLAN.md — MIG-04: HEAD-per-ref + content-hash header parity + auto-cutover txn (block_layout flip) + end-of-share legacy GC
+  - [x] 14-05-integrity-cutover-PLAN.md — MIG-04: HEAD-per-ref + content-hash header parity + auto-cutover txn (block_layout flip) + end-of-share legacy GC
   - [ ] 14-06-status-rest-PLAN.md — MIG-01/MIG-02: dfsctl blockstore migrate status (table/JSON/YAML) + GET /api/v1/blockstore/migrate/status REST endpoint (admin-auth)
   - [ ] 14-07-docs-PLAN.md — MIG-01..04: BLOCKSTORE_MIGRATION.md runbook with 4 worked transcripts + ARCHITECTURE/IMPLEMENTING_STORES/FAQ/CLI updates + human-verify checkpoint
 
@@ -323,7 +323,7 @@ Verification requirements VER-01 through VER-06 are phase-independent and gate t
 | 11. CAS write path + GC rewrite (A2) | 0/? | Not started | - |
 | 12. CDC read path + metadata schema + engine API (A3) | 13/13 | Complete    | 2026-04-27 |
 | 13. Merkle root + file-level dedup (A4) | 14/15 | Complete    | 2026-04-28 |
-| 14. Migration tool (A5) | 2/7 | In Progress|  |
+| 14. Migration tool (A5) | 5/7 | In Progress|  |
 | 15. Legacy cleanup (A6) | 0/? | Not started | - |
 
 ## Coverage Summary

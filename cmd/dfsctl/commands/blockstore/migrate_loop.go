@@ -155,6 +155,47 @@ func runMigrateLoopWithRuntime(ctx context.Context, rt *offlineRuntime, opts mig
 		}
 	}
 
+	// Post-loop pipeline (Plan 14-05): integrity check → cutover →
+	// legacy delete. Each stage gates the next; integrity failure is
+	// fail-loud (D-A8) — leaves BlockLayout=legacy, leaves journal in
+	// place, leaves any uploaded CAS chunks (orphans → GC reclaims),
+	// leaves all legacy keys intact. Dry-run skips all three (no state
+	// to verify).
+	if !opts.dryRun {
+		ir, ierr := verifyIntegrity(ctx, rt, opts)
+		if ierr != nil {
+			logger.Error("blockstore migrate: integrity check failed; aborting cutover and legacy delete",
+				"share", opts.share,
+				"unique_hashes", ir.UniqueHashes,
+				"head_calls", ir.HEADCalls,
+				"failures", len(ir.Failures),
+			)
+			result.DurationMS = time.Since(result.StartedAt).Milliseconds()
+			return ierr
+		}
+		if cerr := performCutover(ctx, rt, opts.share); cerr != nil {
+			result.DurationMS = time.Since(result.StartedAt).Milliseconds()
+			return cerr
+		}
+		// Legacy GC is best-effort (D-A13). Partial failures are
+		// reported via slog + the migrateResult, but do NOT fail the
+		// command — the cutover txn already succeeded, the share is
+		// authoritative cas-only, and orphaned legacy keys are
+		// operator-recoverable via `dfsctl store block gc`.
+		deletedCount, gcErr := deleteLegacyKeys(ctx, rt, opts)
+		result.LegacyKeysDeleted = deletedCount
+		if gcErr != nil {
+			logger.Warn("blockstore migrate: legacy key deletion had partial failures",
+				"share", opts.share,
+				"deleted", deletedCount,
+				"err", gcErr,
+			)
+		}
+	} else {
+		logger.Info("blockstore migrate: dry-run — would have run integrity check, cutover, and legacy delete",
+			"share", opts.share)
+	}
+
 	result.DurationMS = time.Since(result.StartedAt).Milliseconds()
 	return printMigrateResult(result, opts.dryRun)
 }

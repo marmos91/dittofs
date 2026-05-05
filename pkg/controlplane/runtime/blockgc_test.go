@@ -38,6 +38,9 @@ func (f *fakeRemoteStore) ListByPrefix(_ context.Context, _ string) ([]string, e
 func (f *fakeRemoteStore) ListByPrefixWithMeta(_ context.Context, _ string) ([]remote.ObjectInfo, error) {
 	return nil, nil
 }
+func (f *fakeRemoteStore) HeadObject(_ context.Context, _ string) (remote.HeadResult, error) {
+	return remote.HeadResult{}, nil
+}
 func (f *fakeRemoteStore) CopyBlock(_ context.Context, _, _ string) error { return nil }
 func (f *fakeRemoteStore) HealthCheck(_ context.Context) error            { return nil }
 func (f *fakeRemoteStore) Healthcheck(_ context.Context) health.Report {

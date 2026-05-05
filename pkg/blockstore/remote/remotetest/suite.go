@@ -54,6 +54,58 @@ func RunSuite(t *testing.T, factory Factory) {
 	t.Run("ListByPrefixWithMeta_LastModifiedNonZero", func(t *testing.T) {
 		testListByPrefixWithMetaLastModifiedNonZero(t, factory)
 	})
+	t.Run("HeadObjectRoundTrip", func(t *testing.T) { TestHeadObjectRoundTrip(t, factory) })
+}
+
+// TestHeadObjectRoundTrip exercises the D-A12 (Phase 14) HeadObject
+// contract: an existing CAS object surfaces the correct ContentLength +
+// the lowercased "content-hash" header stamped at WriteBlockWithHash
+// time, and a missing key returns wrapped ErrBlockNotFound.
+//
+// Backends advertise the test by composing it from RunSuite; the s3
+// integration suite exercises the same scenario against a live bucket.
+func TestHeadObjectRoundTrip(t *testing.T, factory Factory) {
+	t.Run("Existing", func(t *testing.T) { testHeadObjectExisting(t, factory) })
+	t.Run("Missing", func(t *testing.T) { testHeadObjectMissing(t, factory) })
+}
+
+func testHeadObjectExisting(t *testing.T, factory Factory) {
+	store := factory(t)
+	ctx := context.Background()
+
+	data := []byte("HEAD-per-ref integrity check fixture (D-A12)")
+	hash, key := payloadAndHash(t, data)
+
+	if err := store.WriteBlockWithHash(ctx, key, hash, data); err != nil {
+		t.Fatalf("WriteBlockWithHash setup: %v", err)
+	}
+
+	res, err := store.HeadObject(ctx, key)
+	if err != nil {
+		t.Fatalf("HeadObject(%q): %v", key, err)
+	}
+	if res.ContentLength != int64(len(data)) {
+		t.Errorf("HeadObject ContentLength = %d, want %d", res.ContentLength, len(data))
+	}
+	if res.Metadata == nil {
+		t.Fatalf("HeadObject Metadata == nil; expected lowercased content-hash entry")
+	}
+	if got, want := res.Metadata["content-hash"], hash.CASKey(); got != want {
+		t.Errorf("HeadObject Metadata[\"content-hash\"] = %q, want %q", got, want)
+	}
+}
+
+func testHeadObjectMissing(t *testing.T, factory Factory) {
+	store := factory(t)
+	ctx := context.Background()
+
+	_, err := store.HeadObject(ctx, "cas/zz/zz/missing-object-key-fixture")
+	if err == nil {
+		t.Fatal("HeadObject on unknown key: expected error, got nil")
+	}
+	if !errors.Is(err, blockstore.ErrBlockNotFound) {
+		t.Fatalf("HeadObject err = %v, want wrapped ErrBlockNotFound", err)
+	}
 }
 
 // testListByPrefixWithMetaLastModifiedNonZero asserts the WR-4-02 contract:

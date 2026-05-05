@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v0.15.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 14 Plan 04 shipped — bandwidth + parallel + progress (MIG-02 complete)
-last_updated: "2026-05-05T19:30:00.000Z"
+stopped_at: Phase 14 Plan 05 shipped — integrity check + auto-cutover + legacy GC (MIG-01 + MIG-04 complete)
+last_updated: "2026-05-05T17:30:08.051Z"
 last_activity: 2026-05-05
 progress:
   total_phases: 8
   completed_phases: 4
   total_plans: 66
-  completed_plans: 62
-  percent: 94
+  completed_plans: 63
+  percent: 95
 ---
 
 # Project State
@@ -27,9 +27,9 @@ See: .planning/PROJECT.md (updated 2026-04-23)
 
 Milestone: v0.15.0
 Phase: 14
-Plan: 04 of 07 complete (bandwidth + parallel — MIG-02)
+Plan: 05 of 07 complete (integrity + cutover — MIG-01 + MIG-04)
 Branch: `gsd/phase-12-cdc-read-path-metadata-engine-api`
-Status: Plan 14-04 shipped (bandwidth parser + worker pool + progress reporter); openOfflineRuntime production composition still deferred — must land before Plan 14-07 runbook can ship; Plan 14-05 (integrity + cutover) ready to execute
+Status: Plan 14-05 shipped (HeadObject on RemoteStore interface + verifyIntegrity + performCutover + deleteLegacyKeys + end-to-end loop wiring); openOfflineRuntime production composition still deferred — must land before Plan 14-07 runbook can ship; Plan 14-06 (REST status) ready to execute
 Last activity: 2026-05-05
 
 ## Next Actionable
@@ -121,7 +121,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-05T19:30:00.000Z
+Last session: 2026-05-05T17:29:48.784Z
 Stopped at: Phase 14 Plan 04 shipped — bandwidth + parallel + progress (MIG-02 complete)
 Next action: Plan 14-05 (integrity + cutover) OR a small standalone plan to wire `openOfflineRuntime` production composition (controlplane DB read + per-share metadata/remote-store factory dispatch). The controlplane wiring is required before Plan 14-07's runbook can run end-to-end against a hot-but-stopped daemon; recommended either as a Plan 14-04.5 addendum or absorbed into Plan 14-05's task list. Interface seam (`offlineRuntime.MetadataStore() / FileBlockStore() / RemoteStore() / DataDir() / Share() / Close()`) is stable.
 

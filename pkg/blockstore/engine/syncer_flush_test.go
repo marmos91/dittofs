@@ -128,6 +128,9 @@ func (f *failingRemote) ListByPrefix(ctx context.Context, prefix string) ([]stri
 func (f *failingRemote) ListByPrefixWithMeta(ctx context.Context, prefix string) ([]remote.ObjectInfo, error) {
 	return f.inner.ListByPrefixWithMeta(ctx, prefix)
 }
+func (f *failingRemote) HeadObject(ctx context.Context, key string) (remote.HeadResult, error) {
+	return f.inner.HeadObject(ctx, key)
+}
 func (f *failingRemote) CopyBlock(ctx context.Context, src, dst string) error {
 	return f.inner.CopyBlock(ctx, src, dst)
 }
@@ -322,6 +325,9 @@ func (c *countingRemote) ListByPrefix(ctx context.Context, prefix string) ([]str
 }
 func (c *countingRemote) ListByPrefixWithMeta(ctx context.Context, prefix string) ([]remote.ObjectInfo, error) {
 	return c.inner.ListByPrefixWithMeta(ctx, prefix)
+}
+func (c *countingRemote) HeadObject(ctx context.Context, key string) (remote.HeadResult, error) {
+	return c.inner.HeadObject(ctx, key)
 }
 func (c *countingRemote) CopyBlock(ctx context.Context, src, dst string) error {
 	return c.inner.CopyBlock(ctx, src, dst)

@@ -544,6 +544,9 @@ func (p *prefixDeleteFailerRemote) ListByPrefix(ctx context.Context, k string) (
 func (p *prefixDeleteFailerRemote) ListByPrefixWithMeta(ctx context.Context, k string) ([]remote.ObjectInfo, error) {
 	return p.inner.ListByPrefixWithMeta(ctx, k)
 }
+func (p *prefixDeleteFailerRemote) HeadObject(ctx context.Context, k string) (remote.HeadResult, error) {
+	return p.inner.HeadObject(ctx, k)
+}
 func (p *prefixDeleteFailerRemote) CopyBlock(ctx context.Context, src, dst string) error {
 	return p.inner.CopyBlock(ctx, src, dst)
 }
@@ -589,6 +592,9 @@ func (d *deleteCountingRemote) ListByPrefix(ctx context.Context, k string) ([]st
 }
 func (d *deleteCountingRemote) ListByPrefixWithMeta(ctx context.Context, k string) ([]remote.ObjectInfo, error) {
 	return d.inner.ListByPrefixWithMeta(ctx, k)
+}
+func (d *deleteCountingRemote) HeadObject(ctx context.Context, k string) (remote.HeadResult, error) {
+	return d.inner.HeadObject(ctx, k)
 }
 func (d *deleteCountingRemote) CopyBlock(ctx context.Context, s, t string) error {
 	return d.inner.CopyBlock(ctx, s, t)
@@ -649,6 +655,9 @@ func (c *concurrencyTrackingRemote) ListByPrefixWithMeta(ctx context.Context, k 
 	c.inflight--
 	c.mu.Unlock()
 	return c.inner.ListByPrefixWithMeta(ctx, k)
+}
+func (c *concurrencyTrackingRemote) HeadObject(ctx context.Context, k string) (remote.HeadResult, error) {
+	return c.inner.HeadObject(ctx, k)
 }
 func (c *concurrencyTrackingRemote) CopyBlock(ctx context.Context, s, t string) error {
 	return c.inner.CopyBlock(ctx, s, t)
