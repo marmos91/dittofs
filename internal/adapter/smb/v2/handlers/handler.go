@@ -1243,28 +1243,30 @@ func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 	return conflict
 }
 
-// checkParentDirRenameConflict probes the parent directory's open list as if
-// the rename were issuing an internal open with DesiredAccess ⊇ {DELETE,
+// checkParentDirRenameConflict probes the destination directory's open list
+// as if the rename were issuing an internal open with DesiredAccess ⊇ {DELETE,
 // FILE_ADD_FILE} and ShareAccess = 0 (per MS-FSA 2.1.5.14.11.3 and Samba's
-// rename_internals_fsp). An existing parent-directory open conflicts if it
-// (a) lacks FILE_SHARE_DELETE — denying the rename's DELETE access — or
-// (b) already holds DELETE access — incompatible with the rename's
-// ShareAccess=0. Returns true if a conflict is found.
-func (h *Handler) checkParentDirRenameConflict(renameFile *OpenFile) bool {
+// smbd_smb2_setinfo_rename_dst_parent_check). An existing destination-parent
+// open conflicts if it (a) lacks FILE_SHARE_DELETE — denying the rename's
+// DELETE access — or (b) already holds DELETE access — incompatible with the
+// rename's ShareAccess=0. The renamer's own handle is excluded by FileID.
+// Caller passes the destination parent handle (same as source parent for
+// same-directory rename). Returns true if a conflict is found.
+func (h *Handler) checkParentDirRenameConflict(renamerFileID [16]byte, dstParent metadata.FileHandle) bool {
 	const fileShareDelete = uint32(0x04) // FILE_SHARE_DELETE
-	if len(renameFile.ParentHandle) == 0 {
+	if len(dstParent) == 0 {
 		return false
 	}
 	conflict := false
 	h.files.Range(func(_, value any) bool {
 		other := value.(*OpenFile)
-		if other.FileID == renameFile.FileID {
+		if other.FileID == renamerFileID {
 			return true
 		}
 		if len(other.MetadataHandle) == 0 {
 			return true
 		}
-		if !bytes.Equal(other.MetadataHandle, renameFile.ParentHandle) {
+		if !bytes.Equal(other.MetadataHandle, dstParent) {
 			return true
 		}
 		if other.ShareAccess&fileShareDelete == 0 || hasDeleteAccess(other.DesiredAccess) {

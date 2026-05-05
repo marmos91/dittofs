@@ -483,18 +483,10 @@ func (h *Handler) setFileInfoFromStore(
 		// Per MS-FSA 2.1.5.14.10: Before renaming, check that no other open
 		// handle on the same file conflicts with the rename. Specifically,
 		// all other opens must have FILE_SHARE_DELETE (0x04) in ShareAccess.
+		// (Destination-parent share-mode probe runs further below, after toDir
+		// is resolved and the stream-rename early return has been ruled out.)
 		if conflict := h.checkShareDeleteConflict(openFile); conflict {
 			logger.Debug("SET_INFO: rename blocked by sharing violation",
-				"path", openFile.Path,
-				"fileID", fmt.Sprintf("%x", openFile.FileID))
-			return setInfoStatus(types.StatusSharingViolation), nil
-		}
-		// Per MS-FSA 2.1.5.14.11.3: rename also takes an implicit open on the
-		// parent directory with DELETE+FILE_ADD_FILE access and ShareAccess=0.
-		// Any existing parent-dir open that lacks FILE_SHARE_DELETE or holds
-		// DELETE access conflicts — must report STATUS_SHARING_VIOLATION.
-		if conflict := h.checkParentDirRenameConflict(openFile); conflict {
-			logger.Debug("SET_INFO: rename blocked by parent-dir sharing violation",
 				"path", openFile.Path,
 				"fileID", fmt.Sprintf("%x", openFile.FileID))
 			return setInfoStatus(types.StatusSharingViolation), nil
@@ -633,6 +625,20 @@ func (h *Handler) setFileInfoFromStore(
 		if len(openFile.ParentHandle) == 0 {
 			logger.Debug("SET_INFO: cannot rename root directory", "path", openFile.Path)
 			return setInfoStatus(types.StatusAccessDenied), nil
+		}
+
+		// Per MS-FSA 2.1.5.14.11.3 / Samba smbd_smb2_setinfo_rename_dst_parent_check:
+		// rename takes an implicit open on the destination parent directory
+		// with DELETE+FILE_ADD_FILE and ShareAccess=0. Any existing open of
+		// that directory that lacks FILE_SHARE_DELETE or holds DELETE access
+		// conflicts. Stream renames don't traverse the directory layer and
+		// returned earlier above; we're past that branch here.
+		if conflict := h.checkParentDirRenameConflict(openFile.FileID, toDir); conflict {
+			logger.Debug("SET_INFO: rename blocked by destination-parent sharing violation",
+				"path", openFile.Path,
+				"toDir", fmt.Sprintf("%x", toDir),
+				"fileID", fmt.Sprintf("%x", openFile.FileID))
+			return setInfoStatus(types.StatusSharingViolation), nil
 		}
 
 		// Pre-rename lease break: per MS-FSA §2.1.5.14.10 + Samba
