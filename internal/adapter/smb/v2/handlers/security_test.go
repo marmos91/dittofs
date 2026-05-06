@@ -754,3 +754,65 @@ func TestParseSecurityDescriptor_PreservesSIDForm(t *testing.T) {
 		t.Errorf("ACE.Who = %q, want %q", got, want)
 	}
 }
+
+// TestSecurityDescriptor_SIDFormRoundTrip asserts that a non-POSIX-mappable SID
+// preserved as ACE.Who="sid:..." after parse can be re-encoded by
+// BuildSecurityDescriptor without drift. Regression for the round-trip break
+// flagged on PR #506: PrincipalToSID must honor the "sid:" prefix.
+func TestSecurityDescriptor_SIDFormRoundTrip(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				ACEs: []acl.ACE{
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						Flag:       0,
+						AccessMask: 0x001F01FF,
+						Who:        acl.SpecialAdministrators,
+					},
+				},
+			},
+		},
+	}
+
+	data1, err := BuildSecurityDescriptor(file, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor pass 1: %v", err)
+	}
+	_, _, parsed1, err := ParseSecurityDescriptor(data1)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor pass 1: %v", err)
+	}
+	if parsed1 == nil || len(parsed1.ACEs) != 1 {
+		t.Fatalf("expected 1 ACE after parse 1, got %#v", parsed1)
+	}
+	if got := parsed1.ACEs[0].Who; got != "sid:S-1-5-32-544" {
+		t.Fatalf("parse 1 Who = %q, want %q", got, "sid:S-1-5-32-544")
+	}
+
+	// Re-encode using the parsed ACL (Who = "sid:S-1-5-32-544"). This is the
+	// path Copilot flagged: PrincipalToSID must strip the prefix and produce
+	// the same SID, not a hash-based domain SID.
+	file2 := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL:  parsed1,
+		},
+	}
+	data2, err := BuildSecurityDescriptor(file2, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor pass 2: %v", err)
+	}
+	_, _, parsed2, err := ParseSecurityDescriptor(data2)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor pass 2: %v", err)
+	}
+	if got := parsed2.ACEs[0].Who; got != "sid:S-1-5-32-544" {
+		t.Errorf("round-trip Who = %q, want %q (PrincipalToSID likely missing sid: handling)", got, "sid:S-1-5-32-544")
+	}
+}

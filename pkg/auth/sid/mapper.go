@@ -164,6 +164,8 @@ func (m *SIDMapper) IsDomainSID(s *SID) bool {
 //   - "OWNER@": UserSID(fileOwnerUID)
 //   - "GROUP@": GroupSID(fileOwnerGID)
 //   - "EVERYONE@": WellKnownEveryone (S-1-1-0)
+//   - "sid:<canonical SID>": preserved verbatim (round-trip from SIDToPrincipal
+//     for principals without a POSIX mapping)
 //   - "{uid}@domain": UserSID(uid) if uid is numeric
 //   - Otherwise: hash-based UserSID as fallback
 func (m *SIDMapper) PrincipalToSID(who string, fileOwnerUID, fileOwnerGID uint32) *SID {
@@ -175,6 +177,17 @@ func (m *SIDMapper) PrincipalToSID(who string, fileOwnerUID, fileOwnerGID uint32
 	case acl.SpecialEveryone:
 		return WellKnownEveryone
 	default:
+		// Honor "sid:<canonical SID>" round-trip form produced by SIDToPrincipal
+		// for principals with no POSIX mapping. Stripping and re-parsing the
+		// canonical form preserves the original SID end-to-end across SD
+		// parse/build cycles.
+		if strings.HasPrefix(who, "sid:") {
+			if parsed, err := ParseSIDString(who[len("sid:"):]); err == nil {
+				return parsed
+			}
+			// Fall through to hash-based fallback if the embedded string is invalid.
+		}
+
 		// Try to extract a numeric UID from "1000@localdomain" format
 		if idx := strings.Index(who, "@"); idx > 0 {
 			if uid, err := strconv.ParseUint(who[:idx], 10, 32); err == nil {
