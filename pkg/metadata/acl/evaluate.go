@@ -24,6 +24,22 @@ type EvaluateContext struct {
 	GroupSIDs []string
 }
 
+// HasExplicitDeny reports whether the ACL contains any explicit DENY ACE.
+// Allow-only ACLs are additive and may safely coexist with a share-level
+// write grant; an ACL with a DENY ACE encodes intent that POSIX bits
+// cannot express and must take precedence.
+func HasExplicitDeny(a *ACL) bool {
+	if a == nil {
+		return false
+	}
+	for i := range a.ACEs {
+		if a.ACEs[i].Type == ACE4_ACCESS_DENIED_ACE_TYPE {
+			return true
+		}
+	}
+	return false
+}
+
 // Evaluate implements the NFSv4 ACL evaluation algorithm per RFC 7530
 // Section 6.2.1. It processes ACEs sequentially and returns true only
 // if ALL requested permission bits are explicitly allowed.

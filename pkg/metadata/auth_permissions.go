@@ -242,14 +242,27 @@ func (s *MetadataService) checkFilePermissions(ctx *AuthContext, handle FileHand
 	}
 
 	// Share-level write permission bypass:
-	// If the user has share-level write permission (ctx.ShareWritable), grant write-
-	// related permissions on files in the share, bypassing file-level Unix permission
-	// checks. This allows authenticated users with share write access to create/modify
-	// files even if the file's Unix permissions would normally deny access.
+	// If the user has share-level write permission (ctx.ShareWritable) and the
+	// file's ACL does not contain an explicit DENY ACE, grant write-related
+	// permissions, bypassing file-level Unix permission checks.
 	//
-	// Note: ShareReadOnly takes precedence - if the share is read-only for this user,
-	// write permission is denied regardless of ShareWritable.
-	if ctx.ShareWritable && !ctx.ShareReadOnly {
+	// Bypass remains in effect when:
+	//   - the file has no ACL at all, or
+	//   - the file's ACL is allow-only (no DENY ACE present).
+	// Allow-only ACLs are additive: they only add grants on top of POSIX bits,
+	// so the share-level write grant should still apply. Concretely this keeps
+	// smbtorture stream-inherit-perms (which appends one ALLOW ACE to the
+	// synthesized DACL) and create.multi (which works against allow-only
+	// share-root SDs) passing.
+	//
+	// Bypass disabled only when an explicit DENY ACE is present: a DENY ACE
+	// encodes intent that POSIX bits / share-level grants cannot express and
+	// must take precedence (load-bearing for smbtorture acls.DENY1 and
+	// delete-on-close-perms.*).
+	//
+	// Note: ShareReadOnly takes precedence - if the share is read-only for this
+	// user, write permission is denied regardless of ShareWritable.
+	if ctx.ShareWritable && !ctx.ShareReadOnly && !acl.HasExplicitDeny(file.ACL) {
 		// Only grant write-related permissions via the share-level bypass.
 		// Read permissions still go through normal calculatePermissions checks.
 		writePerms := requested & (PermissionWrite | PermissionDelete)
@@ -437,6 +450,18 @@ func (s *MetadataService) checkPermission(ctx *AuthContext, handle FileHandle, p
 // checkWritePermission checks write permission on a file.
 func (s *MetadataService) checkWritePermission(ctx *AuthContext, handle FileHandle) error {
 	return s.checkPermission(ctx, handle, PermissionWrite, "write permission denied")
+}
+
+// CheckParentWriteAccess verifies the caller may add or remove a child entry
+// in the given directory. It is the public, protocol-facing entry point that
+// SMB / NFS handlers call before attempting an entry-creating or
+// entry-replacing CREATE so that ACL-based denial surfaces as ACCESS_DENIED
+// rather than OBJECT_NAME_COLLISION / DELETE_PENDING.
+//
+// The check is exactly POSIX WRITE on the parent directory; ACL evaluation
+// runs through the same code path as in-process write checks.
+func (s *MetadataService) CheckParentWriteAccess(ctx *AuthContext, parentHandle FileHandle) error {
+	return s.checkWritePermission(ctx, parentHandle)
 }
 
 // checkDeletePermission checks permission to unlink an entry from a parent directory.

@@ -809,6 +809,25 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
+
+	// Pre-disposition parent-DACL gate: any non-pure-OPEN disposition mutates
+	// the parent directory's contents (creating, overwriting, or superseding a
+	// child). MS-FSA 2.1.5.1.1 + MS-SMB2 §3.3.5.9 require parent-write
+	// permission to be evaluated before failing on disposition collisions, so
+	// a deny ACE on the parent surfaces as ACCESS_DENIED rather than
+	// OBJECT_NAME_COLLISION / DELETE_PENDING. FILE_OPEN is the only pure-open
+	// disposition; everything else (CREATE, CREATE_IF, OVERWRITE,
+	// OVERWRITE_IF, SUPERSEDE) is gated.
+	if req.CreateDisposition != types.FileOpen {
+		if err := metaSvc.CheckParentWriteAccess(authCtx, parentHandle); err != nil {
+			logger.Debug("CREATE: parent DACL denies write",
+				"path", filename,
+				"disposition", req.CreateDisposition,
+				"error", err)
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
+		}
+	}
+
 	existingFile, lookupErr := metaSvc.Lookup(authCtx, parentHandle, baseName)
 	fileExists := (lookupErr == nil)
 
