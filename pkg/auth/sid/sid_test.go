@@ -396,7 +396,8 @@ func TestSIDToPrincipal(t *testing.T) {
 		{"CreatorGroup", "S-1-3-1", "GROUP@"},
 		{"DomainUser1000", "S-1-5-21-100-200-300-3000", "1000@localdomain"},
 		{"DomainGroup1000", "S-1-5-21-100-200-300-3001", "1000@localdomain"},
-		{"UnknownSID", "S-1-5-32-544", "S-1-5-32-544"},
+		{"UnknownSID", "S-1-5-32-544", "sid:S-1-5-32-544"},
+		{"UnmappableDomainSID", "S-1-5-21-9-9-9-9999", "sid:S-1-5-21-9-9-9-9999"},
 	}
 
 	for _, tt := range tests {
@@ -468,5 +469,24 @@ func TestWellKnownSIDFormats(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("FormatSID = %q, want %q", got, tt.want)
 		}
+	}
+}
+
+func TestPrincipalToSID_SIDPrefixRoundTrip(t *testing.T) {
+	m := NewSIDMapper(100, 200, 300)
+	cases := []string{
+		"S-1-5-32-544",        // BUILTIN\Administrators
+		"S-1-5-21-9-9-9-9999", // Foreign domain SID
+	}
+	for _, want := range cases {
+		t.Run(want, func(t *testing.T) {
+			got := m.PrincipalToSID("sid:"+want, 0, 0)
+			if got == nil {
+				t.Fatalf("PrincipalToSID(\"sid:%s\") returned nil", want)
+			}
+			if FormatSID(got) != want {
+				t.Errorf("round-trip: got %q, want %q", FormatSID(got), want)
+			}
+		})
 	}
 }

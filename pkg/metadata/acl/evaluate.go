@@ -1,5 +1,10 @@
 package acl
 
+import (
+	"slices"
+	"strings"
+)
+
 // EvaluateContext carries the requestor's identity and the file's
 // owner/group for dynamic OWNER@/GROUP@/EVERYONE@ resolution.
 type EvaluateContext struct {
@@ -9,6 +14,14 @@ type EvaluateContext struct {
 	GIDs         []uint32 // Requestor's supplementary GIDs
 	FileOwnerUID uint32   // File's owner UID (for OWNER@ resolution)
 	FileOwnerGID uint32   // File's owning group GID (for GROUP@ resolution)
+
+	// SID is the requester's Windows SID in canonical string form
+	// (e.g. "S-1-5-21-A-B-C-RID"). Empty when the session is POSIX-only.
+	SID string
+
+	// GroupSIDs is the requester's group SIDs.
+	// Empty when the session is POSIX-only.
+	GroupSIDs []string
 }
 
 // Evaluate implements the NFSv4 ACL evaluation algorithm per RFC 7530
@@ -102,6 +115,15 @@ func aceMatchesWho(ace *ACE, evalCtx *EvaluateContext) bool {
 		return true
 
 	default:
+		// SID-form ACE (set by SD parse): "sid:<canonical SID>".
+		if strings.HasPrefix(ace.Who, "sid:") {
+			target := ace.Who[len("sid:"):]
+			if evalCtx.SID != "" && evalCtx.SID == target {
+				return true
+			}
+			return slices.Contains(evalCtx.GroupSIDs, target)
+		}
+		// Legacy/string match (numeric uid, named principal).
 		return ace.Who == evalCtx.Who
 	}
 }

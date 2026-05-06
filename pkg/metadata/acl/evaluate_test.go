@@ -349,6 +349,54 @@ func TestEvaluate_ComplexACL(t *testing.T) {
 	}
 }
 
+func TestAceMatchesWho_SIDForm(t *testing.T) {
+	cases := []struct {
+		name     string
+		aceWho   string
+		ctxSID   string
+		ctxGSIDs []string
+		want     bool
+	}{
+		{
+			name:   "exact_user_sid_match",
+			aceWho: "sid:S-1-5-21-1-2-3-1001",
+			ctxSID: "S-1-5-21-1-2-3-1001",
+			want:   true,
+		},
+		{
+			name:   "user_sid_mismatch",
+			aceWho: "sid:S-1-5-21-1-2-3-1001",
+			ctxSID: "S-1-5-21-1-2-3-9999",
+			want:   false,
+		},
+		{
+			name:     "group_sid_match_via_groupSIDs",
+			aceWho:   "sid:S-1-5-21-1-2-3-513",
+			ctxSID:   "S-1-5-21-1-2-3-1001",
+			ctxGSIDs: []string{"S-1-5-21-1-2-3-513"},
+			want:     true,
+		},
+		{
+			name:   "missing_ctx_sid",
+			aceWho: "sid:S-1-5-21-1-2-3-1001",
+			ctxSID: "",
+			want:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ace := &ACE{Who: tc.aceWho, Type: ACE4_ACCESS_ALLOWED_ACE_TYPE}
+			ctx := &EvaluateContext{SID: tc.ctxSID, GroupSIDs: tc.ctxGSIDs}
+			got := aceMatchesWho(ace, ctx)
+			if got != tc.want {
+				t.Errorf("aceMatchesWho(%q, SID=%q, GroupSIDs=%v) = %v, want %v",
+					tc.aceWho, tc.ctxSID, tc.ctxGSIDs, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEvaluate_DenyDoesNotAffectAlreadyDecidedBits(t *testing.T) {
 	// ALLOW read first, then DENY read: the bit is already decided as allowed.
 	a := &ACL{

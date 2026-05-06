@@ -125,6 +125,13 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metada
 		authCtx.Identity.UID = &uid
 		authCtx.Identity.GID = &gid
 		authCtx.Identity.Username = user.Username
+		if user.SID != "" {
+			sid := user.SID
+			authCtx.Identity.SID = &sid
+		}
+		if len(user.GroupSIDs) > 0 {
+			authCtx.Identity.GroupSIDs = append([]string(nil), user.GroupSIDs...)
+		}
 	}
 
 	// Set share-level permission flags

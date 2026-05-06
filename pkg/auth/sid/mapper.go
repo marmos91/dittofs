@@ -164,6 +164,8 @@ func (m *SIDMapper) IsDomainSID(s *SID) bool {
 //   - "OWNER@": UserSID(fileOwnerUID)
 //   - "GROUP@": GroupSID(fileOwnerGID)
 //   - "EVERYONE@": WellKnownEveryone (S-1-1-0)
+//   - "sid:<canonical SID>": preserved verbatim (round-trip from SIDToPrincipal
+//     for principals without a POSIX mapping)
 //   - "{uid}@domain": UserSID(uid) if uid is numeric
 //   - Otherwise: hash-based UserSID as fallback
 func (m *SIDMapper) PrincipalToSID(who string, fileOwnerUID, fileOwnerGID uint32) *SID {
@@ -175,6 +177,17 @@ func (m *SIDMapper) PrincipalToSID(who string, fileOwnerUID, fileOwnerGID uint32
 	case acl.SpecialEveryone:
 		return WellKnownEveryone
 	default:
+		// Honor "sid:<canonical SID>" round-trip form produced by SIDToPrincipal
+		// for principals with no POSIX mapping. Stripping and re-parsing the
+		// canonical form preserves the original SID end-to-end across SD
+		// parse/build cycles.
+		if strings.HasPrefix(who, "sid:") {
+			if parsed, err := ParseSIDString(who[len("sid:"):]); err == nil {
+				return parsed
+			}
+			// Fall through to hash-based fallback if the embedded string is invalid.
+		}
+
 		// Try to extract a numeric UID from "1000@localdomain" format
 		if idx := strings.Index(who, "@"); idx > 0 {
 			if uid, err := strconv.ParseUint(who[:idx], 10, 32); err == nil {
@@ -202,7 +215,8 @@ func (m *SIDMapper) PrincipalToSID(who string, fileOwnerUID, fileOwnerGID uint32
 //   - Well-known SIDs are mapped directly (S-1-1-0 -> "EVERYONE@")
 //   - Domain user SIDs extract UID and format as "{uid}@localdomain"
 //   - Domain group SIDs extract GID and format as "{gid}@localdomain"
-//   - Unknown SIDs return their string representation
+//   - Otherwise the SID is preserved as "sid:<canonical SID>" so the ACL
+//     evaluator can match it against EvaluateContext.SID / GroupSIDs.
 func (m *SIDMapper) SIDToPrincipal(s *SID) string {
 	// Check well-known SIDs first
 	sidStr := FormatSID(s)
@@ -225,7 +239,7 @@ func (m *SIDMapper) SIDToPrincipal(s *SID) string {
 		return fmt.Sprintf("%d@localdomain", gid)
 	}
 
-	return sidStr
+	return "sid:" + sidStr
 }
 
 // makeDomainSID constructs a full domain SID with the machine sub-authorities and the given RID.

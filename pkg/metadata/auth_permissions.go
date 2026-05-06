@@ -376,6 +376,11 @@ func evaluateACLPermissions(
 		evalCtx.Who = identity.Username
 	}
 
+	if identity.SID != nil {
+		evalCtx.SID = *identity.SID
+	}
+	evalCtx.GroupSIDs = identity.GroupSIDs
+
 	return evaluateWithACL(file.ACL, evalCtx, requested, shareOpts)
 }
 
