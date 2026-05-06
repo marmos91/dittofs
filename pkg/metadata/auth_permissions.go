@@ -242,14 +242,16 @@ func (s *MetadataService) checkFilePermissions(ctx *AuthContext, handle FileHand
 	}
 
 	// Share-level write permission bypass:
-	// If the user has share-level write permission (ctx.ShareWritable), grant write-
-	// related permissions on files in the share, bypassing file-level Unix permission
-	// checks. This allows authenticated users with share write access to create/modify
-	// files even if the file's Unix permissions would normally deny access.
+	// If the user has share-level write permission (ctx.ShareWritable) AND the
+	// file has no explicit ACL, grant write-related permissions, bypassing
+	// file-level Unix permission checks. Files with an explicit ACL always go
+	// through ACL evaluation so deny ACEs honored on Windows clients (smbtorture
+	// acls.DENY1, delete-on-close-perms.*) are not silently overridden by the
+	// share-level grant.
 	//
-	// Note: ShareReadOnly takes precedence - if the share is read-only for this user,
-	// write permission is denied regardless of ShareWritable.
-	if ctx.ShareWritable && !ctx.ShareReadOnly {
+	// Note: ShareReadOnly takes precedence - if the share is read-only for this
+	// user, write permission is denied regardless of ShareWritable.
+	if ctx.ShareWritable && !ctx.ShareReadOnly && file.ACL == nil {
 		// Only grant write-related permissions via the share-level bypass.
 		// Read permissions still go through normal calculatePermissions checks.
 		writePerms := requested & (PermissionWrite | PermissionDelete)
