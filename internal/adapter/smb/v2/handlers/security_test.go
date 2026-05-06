@@ -712,3 +712,45 @@ func TestBuildSD_SpecialSIDs(t *testing.T) {
 		t.Errorf("Second ACE SID = %s, want S-1-5-32-544 (Administrators)", sid.FormatSID(aceSID2))
 	}
 }
+
+// TestParseSecurityDescriptor_PreservesSIDForm asserts that an SD ACE keyed
+// to a well-known SID (S-1-5-32-544 / "ADMINISTRATORS@") for which the parse
+// path has no POSIX mapping is preserved as ACE.Who="sid:S-1-5-32-544". This
+// is the round-trip side of P2-3 — non-mappable SIDs must reach the ACL
+// evaluator with the "sid:" prefix so SID-aware matching works.
+func TestParseSecurityDescriptor_PreservesSIDForm(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				ACEs: []acl.ACE{
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						Flag:       0,
+						AccessMask: 0x001F01FF,
+						Who:        acl.SpecialAdministrators,
+					},
+				},
+			},
+		},
+	}
+
+	data, err := BuildSecurityDescriptor(file, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+	_, _, parsedACL, err := ParseSecurityDescriptor(data)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor: %v", err)
+	}
+	if parsedACL == nil || len(parsedACL.ACEs) != 1 {
+		t.Fatalf("expected 1 ACE, got %#v", parsedACL)
+	}
+	got := parsedACL.ACEs[0].Who
+	want := "sid:S-1-5-32-544"
+	if got != want {
+		t.Errorf("ACE.Who = %q, want %q", got, want)
+	}
+}

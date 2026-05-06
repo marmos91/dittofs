@@ -202,7 +202,8 @@ func (m *SIDMapper) PrincipalToSID(who string, fileOwnerUID, fileOwnerGID uint32
 //   - Well-known SIDs are mapped directly (S-1-1-0 -> "EVERYONE@")
 //   - Domain user SIDs extract UID and format as "{uid}@localdomain"
 //   - Domain group SIDs extract GID and format as "{gid}@localdomain"
-//   - Unknown SIDs return their string representation
+//   - Otherwise the SID is preserved as "sid:<canonical SID>" so the ACL
+//     evaluator can match it against EvaluateContext.SID / GroupSIDs.
 func (m *SIDMapper) SIDToPrincipal(s *SID) string {
 	// Check well-known SIDs first
 	sidStr := FormatSID(s)
@@ -225,7 +226,7 @@ func (m *SIDMapper) SIDToPrincipal(s *SID) string {
 		return fmt.Sprintf("%d@localdomain", gid)
 	}
 
-	return sidStr
+	return "sid:" + sidStr
 }
 
 // makeDomainSID constructs a full domain SID with the machine sub-authorities and the given RID.

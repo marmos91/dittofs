@@ -396,7 +396,8 @@ func TestSIDToPrincipal(t *testing.T) {
 		{"CreatorGroup", "S-1-3-1", "GROUP@"},
 		{"DomainUser1000", "S-1-5-21-100-200-300-3000", "1000@localdomain"},
 		{"DomainGroup1000", "S-1-5-21-100-200-300-3001", "1000@localdomain"},
-		{"UnknownSID", "S-1-5-32-544", "S-1-5-32-544"},
+		{"UnknownSID", "S-1-5-32-544", "sid:S-1-5-32-544"},
+		{"UnmappableDomainSID", "S-1-5-21-9-9-9-9999", "sid:S-1-5-21-9-9-9-9999"},
 	}
 
 	for _, tt := range tests {
