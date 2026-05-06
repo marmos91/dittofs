@@ -441,6 +441,18 @@ func (s *MetadataService) checkWritePermission(ctx *AuthContext, handle FileHand
 	return s.checkPermission(ctx, handle, PermissionWrite, "write permission denied")
 }
 
+// CheckParentWriteAccess verifies the caller may add or remove a child entry
+// in the given directory. It is the public, protocol-facing entry point that
+// SMB / NFS handlers call before attempting an entry-creating or
+// entry-replacing CREATE so that ACL-based denial surfaces as ACCESS_DENIED
+// rather than OBJECT_NAME_COLLISION / DELETE_PENDING.
+//
+// The check is exactly POSIX WRITE on the parent directory; ACL evaluation
+// runs through the same code path as in-process write checks.
+func (s *MetadataService) CheckParentWriteAccess(ctx *AuthContext, parentHandle FileHandle) error {
+	return s.checkWritePermission(ctx, parentHandle)
+}
+
 // checkDeletePermission checks permission to unlink an entry from a parent directory.
 //
 // Two rules, in order:
