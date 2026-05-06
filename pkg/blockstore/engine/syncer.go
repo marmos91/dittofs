@@ -429,6 +429,12 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*blockstore.Flush
 	if err := m.drainPayloadToRemote(ctx, payloadID); err != nil {
 		return nil, fmt.Errorf("drain payload %s to remote: %w", payloadID, err)
 	}
+	// Local-only or remote-unhealthy: drain was a no-op. Skip the
+	// post-flush snapshot (it would fail the Pending→Remote
+	// precondition). Periodic syncer drains + finalizes on recovery.
+	if m.remoteStore == nil || !m.IsRemoteHealthy() {
+		return &blockstore.FlushResult{Finalized: false}, nil
+	}
 
 	// 4. Build canonical sorted-by-Offset BlockRef snapshot
 	//    (D-01 / Phase 12 META-01 D-10). ListFileBlocks already

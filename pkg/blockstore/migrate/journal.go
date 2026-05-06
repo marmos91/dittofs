@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -374,16 +373,24 @@ func (j *Journal) snapshotLocked() error {
 	// in the same directory; skip there.
 	syncDir(j.dir)
 
-	// 3. Truncate the journal file. The current writable handle still
-	// points at the same path; truncate-and-seek-to-zero resets the
-	// append cursor.
+	// 3. Truncate the journal file. On Windows, files opened with
+	// O_APPEND deny truncate-via-handle, so close + truncate-via-path
+	// + reopen. On POSIX the in-place handle truncate is fine but the
+	// close/reopen path also works, so we use it unconditionally.
 	if j.jf != nil {
-		if err := j.jf.Truncate(0); err != nil {
+		jpath := filepath.Join(j.dir, JournalFile)
+		if err := j.jf.Close(); err != nil {
+			return fmt.Errorf("migrate: close journal pre-truncate: %w", err)
+		}
+		j.jf = nil
+		if err := os.Truncate(jpath, 0); err != nil {
 			return fmt.Errorf("migrate: truncate journal: %w", err)
 		}
-		if _, err := j.jf.Seek(0, io.SeekStart); err != nil {
-			return fmt.Errorf("migrate: seek journal: %w", err)
+		f, err := os.OpenFile(jpath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
+		if err != nil {
+			return fmt.Errorf("migrate: reopen journal post-truncate: %w", err)
 		}
+		j.jf = f
 		if err := j.jf.Sync(); err != nil {
 			return fmt.Errorf("migrate: fsync journal post-truncate: %w", err)
 		}
