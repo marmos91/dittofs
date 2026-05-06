@@ -497,6 +497,12 @@ func (m *Syncer) drainPayloadToRemote(ctx context.Context, payloadID string) err
 	if m.remoteStore == nil {
 		return nil
 	}
+	// Remote-unhealthy: skip the synchronous upload pump. Blocks stay
+	// in Pending and the periodic syncer drains them once health
+	// recovers (matches the gating in SyncNow/uploadOne callers).
+	if !m.IsRemoteHealthy() {
+		return nil
+	}
 	for pass := 0; pass < MaxFlushPasses; pass++ {
 		if err := ctx.Err(); err != nil {
 			return err

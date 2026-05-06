@@ -368,13 +368,11 @@ func (j *Journal) snapshotLocked() error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("migrate: rename snapshot %q: %w", spath, err)
 	}
-	// fsync the directory so the rename is durable across crashes
-	// (POSIX: rename metadata isn't guaranteed on disk until parent dir
-	// is fsynced). Best-effort on platforms where dir-fsync is a no-op.
-	if df, derr := os.Open(j.dir); derr == nil {
-		_ = df.Sync()
-		_ = df.Close()
-	}
+	// fsync the parent directory so the rename is durable across crashes
+	// (POSIX requirement on Linux/macOS). No-op + lock-conflict on Windows
+	// where opening a directory handle blocks subsequent file truncates
+	// in the same directory; skip there.
+	syncDir(j.dir)
 
 	// 3. Truncate the journal file. The current writable handle still
 	// points at the same path; truncate-and-seek-to-zero resets the
