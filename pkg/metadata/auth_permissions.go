@@ -242,16 +242,27 @@ func (s *MetadataService) checkFilePermissions(ctx *AuthContext, handle FileHand
 	}
 
 	// Share-level write permission bypass:
-	// If the user has share-level write permission (ctx.ShareWritable) AND the
-	// file has no explicit ACL, grant write-related permissions, bypassing
-	// file-level Unix permission checks. Files with an explicit ACL always go
-	// through ACL evaluation so deny ACEs honored on Windows clients (smbtorture
-	// acls.DENY1, delete-on-close-perms.*) are not silently overridden by the
-	// share-level grant.
+	// If the user has share-level write permission (ctx.ShareWritable) and the
+	// file's ACL does not contain an explicit DENY ACE, grant write-related
+	// permissions, bypassing file-level Unix permission checks.
+	//
+	// Bypass remains in effect when:
+	//   - the file has no ACL at all, or
+	//   - the file's ACL is allow-only (no DENY ACE present).
+	// Allow-only ACLs are additive: they only add grants on top of POSIX bits,
+	// so the share-level write grant should still apply. Concretely this keeps
+	// smbtorture stream-inherit-perms (which appends one ALLOW ACE to the
+	// synthesized DACL) and create.multi (which works against allow-only
+	// share-root SDs) passing.
+	//
+	// Bypass disabled only when an explicit DENY ACE is present: a DENY ACE
+	// encodes intent that POSIX bits / share-level grants cannot express and
+	// must take precedence (load-bearing for smbtorture acls.DENY1 and
+	// delete-on-close-perms.*).
 	//
 	// Note: ShareReadOnly takes precedence - if the share is read-only for this
 	// user, write permission is denied regardless of ShareWritable.
-	if ctx.ShareWritable && !ctx.ShareReadOnly && file.ACL == nil {
+	if ctx.ShareWritable && !ctx.ShareReadOnly && !acl.HasExplicitDeny(file.ACL) {
 		// Only grant write-related permissions via the share-level bypass.
 		// Read permissions still go through normal calculatePermissions checks.
 		writePerms := requested & (PermissionWrite | PermissionDelete)

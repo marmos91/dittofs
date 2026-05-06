@@ -410,3 +410,35 @@ func TestEvaluate_DenyDoesNotAffectAlreadyDecidedBits(t *testing.T) {
 		t.Error("expected READ_DATA to be allowed (decided by first ACE)")
 	}
 }
+
+func TestHasExplicitDeny(t *testing.T) {
+	t.Run("nil ACL returns false", func(t *testing.T) {
+		if HasExplicitDeny(nil) {
+			t.Error("expected HasExplicitDeny(nil) == false")
+		}
+	})
+
+	t.Run("allow-only ACL returns false", func(t *testing.T) {
+		a := &ACL{
+			ACEs: []ACE{
+				{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, Who: SpecialEveryone, AccessMask: ACE4_READ_DATA | ACE4_WRITE_DATA},
+				{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, Who: SpecialOwner, AccessMask: 0xFFFFFFFF},
+			},
+		}
+		if HasExplicitDeny(a) {
+			t.Error("expected HasExplicitDeny on allow-only ACL == false")
+		}
+	})
+
+	t.Run("ACL with one DENY ACE returns true", func(t *testing.T) {
+		a := &ACL{
+			ACEs: []ACE{
+				{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, Who: SpecialEveryone, AccessMask: ACE4_READ_DATA},
+				{Type: ACE4_ACCESS_DENIED_ACE_TYPE, Who: "sid:S-1-5-21-1-2-3-2001", AccessMask: ACE4_WRITE_DATA},
+			},
+		}
+		if !HasExplicitDeny(a) {
+			t.Error("expected HasExplicitDeny on ACL containing a DENY ACE == true")
+		}
+	})
+}

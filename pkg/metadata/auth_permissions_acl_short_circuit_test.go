@@ -63,4 +63,53 @@ func TestCheckPermissions_ACLDenyOverridesShareWritable(t *testing.T) {
 	}
 }
 
+// TestCheckPermissions_AllowOnlyACLKeepsShareWritableBypass asserts that when
+// a file carries an explicit ACL containing only ALLOW ACEs (no DENY), the
+// share-level ShareWritable bypass continues to grant write. This covers
+// smbtorture stream-inherit-perms (where SET_INFO Security appends one ALLOW
+// ACE to the synthesized DACL) and create.multi (allow-only SD on share root).
+func TestCheckPermissions_AllowOnlyACLKeepsShareWritableBypass(t *testing.T) {
+	f := newTestFixture(t)
+
+	requesterUID := uint32(1001)
+	requesterSID := "S-1-5-21-1-2-3-2001"
+
+	// Allow-only ACL: a single ALLOW ACE for EVERYONE@ with broad mask.
+	// This mirrors what smbtorture stream-inherit-perms ends up with after
+	// SET_INFO Security adds an explicit ALLOW ACE: a DACL flagged as
+	// SMB-explicit but containing zero DENY ACEs.
+	allowOnlyACL := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        acl.SpecialEveryone,
+				AccessMask: 0xFFFFFFFF,
+			},
+		},
+	}
+	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "allow_only.txt",
+		&metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o755,
+			UID:  requesterUID,
+			GID:  1001,
+			ACL:  allowOnlyACL,
+		})
+	require.NoError(t, err)
+	handle, err := metadata.EncodeShareHandle(f.shareName, created.ID)
+	require.NoError(t, err)
+
+	authCtx := f.authContext(requesterUID, 1001)
+	authCtx.Identity.SID = strPtr(requesterSID)
+	authCtx.ShareWritable = true
+	authCtx.ShareReadOnly = false
+
+	got, err := f.service.CheckPermissions(authCtx, handle, metadata.PermissionWrite|metadata.PermissionDelete)
+	require.NoError(t, err)
+	want := metadata.PermissionWrite | metadata.PermissionDelete
+	if got&want != want {
+		t.Errorf("expected share-level write+delete bypass on allow-only ACL, got 0x%x", got)
+	}
+}
+
 func strPtr(s string) *string { return &s }
