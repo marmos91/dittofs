@@ -160,6 +160,65 @@ func (lh *LocalstackHelper) CreateBucket(ctx context.Context, bucketName string)
 	return nil
 }
 
+// S3ObjectInfo is a minimal projection of an S3 ListObjects entry used
+// by Phase 13 dedup ratio assertions.
+type S3ObjectInfo struct {
+	Key  string
+	Size int64
+}
+
+// ListS3PrefixWithSizes lists all objects under the given prefix in
+// the given bucket, returning their key + size. Phase 13 DEDUP-02 +
+// DEDUP-03 use this for byte-summation assertions; mirrors the
+// CleanupBucket enumeration pattern.
+func (lh *LocalstackHelper) ListS3PrefixWithSizes(t *testing.T, bucket, prefix string) []S3ObjectInfo {
+	t.Helper()
+	if lh.Client == nil {
+		t.Fatalf("ListS3PrefixWithSizes: S3 client not initialized")
+	}
+	var out []S3ObjectInfo
+	var continuation *string
+	ctx := context.Background()
+	for {
+		resp, err := lh.Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            aws.String(bucket),
+			Prefix:            aws.String(prefix),
+			ContinuationToken: continuation,
+		})
+		if err != nil {
+			t.Fatalf("ListS3PrefixWithSizes: list %s/%s: %v", bucket, prefix, err)
+		}
+		for _, obj := range resp.Contents {
+			var size int64
+			if obj.Size != nil {
+				size = *obj.Size
+			}
+			key := ""
+			if obj.Key != nil {
+				key = *obj.Key
+			}
+			out = append(out, S3ObjectInfo{Key: key, Size: size})
+		}
+		if resp.IsTruncated == nil || !*resp.IsTruncated {
+			break
+		}
+		continuation = resp.NextContinuationToken
+	}
+	return out
+}
+
+// ListS3Prefix is the name-only sibling of ListS3PrefixWithSizes.
+// Used by tests that only need to count objects, not bytes.
+func (lh *LocalstackHelper) ListS3Prefix(t *testing.T, bucket, prefix string) []string {
+	t.Helper()
+	objs := lh.ListS3PrefixWithSizes(t, bucket, prefix)
+	keys := make([]string, len(objs))
+	for i, o := range objs {
+		keys[i] = o.Key
+	}
+	return keys
+}
+
 // CleanupBucket removes a bucket and all its contents if it exists.
 func (lh *LocalstackHelper) CleanupBucket(ctx context.Context, bucketName string) {
 	listResp, err := lh.Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{

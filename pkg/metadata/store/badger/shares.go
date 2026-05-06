@@ -90,6 +90,14 @@ func (s *BadgerMetadataStore) GetShareOptions(ctx context.Context, shareName str
 				return err
 			}
 			optsCopy := data.Share.Options
+			// D-A6: empty BlockLayout (pre-Phase-14 share blob without
+			// the field) coerces to `legacy`. Unknown values are
+			// fail-loud — matches Postgres backend + ErrInvalidBlockLayout.
+			normalized, perr := metadata.ParseBlockLayout(string(optsCopy.BlockLayout))
+			if perr != nil {
+				return fmt.Errorf("share %q: %w", shareName, perr)
+			}
+			optsCopy.BlockLayout = normalized
 			opts = &optsCopy
 			return nil
 		})
@@ -429,8 +437,35 @@ func (s *BadgerMetadataStore) createNewRoot(txn *badgerdb.Txn, shareName string,
 		return fmt.Errorf("failed to encode root handle: %w", err)
 	}
 
+	// Preserve existing share configuration (e.g. ShareOptions written
+	// by a prior CreateShare call) when materializing the root row.
+	// Phase 14 Plan 01 (Rule 2 deviation): the original code wrote a
+	// fresh `metadata.Share{Name: shareName}` here, silently wiping
+	// any Options the caller had set via CreateShare. That's
+	// correctness-critical now that ShareOptions.BlockLayout is the
+	// per-share dual-read shim gate (D-A6) — losing the field means
+	// the engine can't tell migrated shares from unmigrated ones.
+	preservedShare := metadata.Share{Name: shareName}
+	if existingItem, getErr := txn.Get(keyShare(shareName)); getErr == nil {
+		if vErr := existingItem.Value(func(val []byte) error {
+			existing, dErr := decodeShareData(val)
+			if dErr != nil {
+				return dErr
+			}
+			preservedShare = existing.Share
+			// Defensive: ensure Name stays canonical even if a buggy
+			// caller stored it as "" via CreateShare.
+			preservedShare.Name = shareName
+			return nil
+		}); vErr != nil {
+			return fmt.Errorf("failed to read existing share for option preservation: %w", vErr)
+		}
+	} else if getErr != badgerdb.ErrKeyNotFound {
+		return fmt.Errorf("failed to probe existing share: %w", getErr)
+	}
+
 	shareDataObj := &shareData{
-		Share:      metadata.Share{Name: shareName},
+		Share:      preservedShare,
 		RootHandle: rootHandle,
 	}
 	shareBytes, err := encodeShareData(shareDataObj)

@@ -40,7 +40,7 @@ func TestOfflineReadCachedBlockSucceeds(t *testing.T) {
 	}
 
 	// Write data (goes to local cache).
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
@@ -55,7 +55,7 @@ func TestOfflineReadCachedBlockSucceeds(t *testing.T) {
 
 	// ReadAt should succeed (data is in local cache).
 	readBuf := make([]byte, 4096)
-	n, err := bs.ReadAt(ctx, payloadID, readBuf, 0)
+	n, err := bs.ReadAt(ctx, payloadID, nil, readBuf, 0)
 	if err != nil {
 		t.Fatalf("ReadAt failed during outage: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestOfflineReadRemoteOnlyBlockFails(t *testing.T) {
 	}
 
 	// Write data (goes to local cache).
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
@@ -115,7 +115,7 @@ func TestOfflineReadRemoteOnlyBlockFails(t *testing.T) {
 
 	// ReadAt should fail with ErrRemoteUnavailable.
 	readBuf := make([]byte, 4096)
-	_, err := bs.ReadAt(ctx, payloadID, readBuf, 0)
+	_, err := bs.ReadAt(ctx, payloadID, nil, readBuf, 0)
 	if err == nil {
 		t.Fatal("expected error for remote-only block during outage, got nil")
 	}
@@ -141,7 +141,7 @@ func TestOfflineWriteSucceeds(t *testing.T) {
 	}
 
 	// WriteAt should succeed (goes to local cache).
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed during outage: %v", err)
 	}
 
@@ -152,7 +152,7 @@ func TestOfflineWriteSucceeds(t *testing.T) {
 
 	// ReadAt should succeed (data is in local cache).
 	readBuf := make([]byte, 4096)
-	n, err := bs.ReadAt(ctx, payloadID, readBuf, 0)
+	n, err := bs.ReadAt(ctx, payloadID, nil, readBuf, 0)
 	if err != nil {
 		t.Fatalf("ReadAt of locally-written data failed: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestOfflineReadsBlockedCounter(t *testing.T) {
 	}
 
 	// Write, flush, sync, then evict from local.
-	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 	if _, err := bs.Flush(ctx, payloadID); err != nil {
@@ -205,7 +205,7 @@ func TestOfflineReadsBlockedCounter(t *testing.T) {
 	// Attempt reads (should fail and increment counter).
 	readBuf := make([]byte, 4096)
 	for range 3 {
-		_, _ = bs.ReadAt(ctx, payloadID, readBuf, 0)
+		_, _ = bs.ReadAt(ctx, payloadID, nil, readBuf, 0)
 	}
 
 	stats = bs.GetStats()
@@ -260,7 +260,7 @@ func TestPrefetchSuppressedWhenUnhealthy(t *testing.T) {
 	}
 
 	// Write and flush a block.
-	if err := bsEngine.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if _, err := bsEngine.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 	if _, err := bsEngine.Flush(ctx, payloadID); err != nil {
@@ -276,7 +276,7 @@ func TestPrefetchSuppressedWhenUnhealthy(t *testing.T) {
 
 	// Read cached block -- should succeed, but prefetch should be suppressed.
 	readBuf := make([]byte, 4096)
-	_, err = bsEngine.ReadAt(ctx, payloadID, readBuf, 0)
+	_, err = bsEngine.ReadAt(ctx, payloadID, nil, readBuf, 0)
 	if err != nil {
 		t.Fatalf("ReadAt of cached block failed during outage: %v", err)
 	}

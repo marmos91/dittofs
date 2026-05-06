@@ -440,9 +440,11 @@ func (h *Handler) executeCopyChunks(
 				types.StatusFileLockConflict, chunksWritten, totalBytesWritten), nil
 		}
 
-		// Read from source using pre-allocated buffer
+		// Read from source using pre-allocated buffer.
+		// Phase 12 API-01: nil []BlockRef triggers the dual-read shim
+		// (D-20). Plan 08 threads the source's FileAttr.Blocks here.
 		data := buf[:chunk.Length]
-		n, err := srcBlockStore.ReadAt(ctx.Context, srcPayloadID, data, chunk.SourceOffset)
+		n, err := srcBlockStore.ReadAt(ctx.Context, srcPayloadID, nil, data, chunk.SourceOffset)
 		if err != nil {
 			logger.Warn("COPYCHUNK: source read failed",
 				"chunk", i, "srcPath", srcOpen.Path, "error", err)
@@ -471,8 +473,11 @@ func (h *Handler) executeCopyChunks(
 				common.MapToSMB(err), chunksWritten, totalBytesWritten), nil
 		}
 
-		// Write to destination
-		if err := dstBlockStore.WriteAt(ctx.Context, string(writeOp.PayloadID), data, chunk.TargetOffset); err != nil {
+		// Write to destination.
+		// Phase 12 API-01: nil currentBlocks; legacy / dual-read path
+		// drives the syncer. Returned []BlockRef is discarded — Plan 08
+		// threads the destination's FileAttr.Blocks update.
+		if _, err := dstBlockStore.WriteAt(ctx.Context, string(writeOp.PayloadID), nil, data, chunk.TargetOffset); err != nil {
 			logger.Warn("COPYCHUNK: destination write failed",
 				"chunk", i, "dstPath", dstOpen.Path, "error", err)
 			return copyChunkPartialResponse(ctlCode, dstFileID,

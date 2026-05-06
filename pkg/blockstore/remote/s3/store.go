@@ -381,6 +381,46 @@ func readResponseBody(body io.ReadCloser, contentLength *int64, fallbackSize int
 	return buf.Bytes(), nil
 }
 
+// HeadObject returns object metadata without fetching the body. The
+// AWS SDK normalizes user-metadata keys to lowercase and strips the
+// x-amz-meta- prefix on the wire, so the SDK's output.Metadata map
+// already satisfies the lowercased-keys contract on the [remote.HeadResult].
+// Missing objects (S3 NotFound / NoSuchKey) map to
+// [blockstore.ErrBlockNotFound] — same convention as [Store.ReadBlock].
+func (s *Store) HeadObject(ctx context.Context, blockKey string) (remote.HeadResult, error) {
+	if err := s.checkClosed(); err != nil {
+		return remote.HeadResult{}, err
+	}
+
+	key := s.fullKey(blockKey)
+	resp, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		if isNotFoundError(err) {
+			return remote.HeadResult{}, blockstore.ErrBlockNotFound
+		}
+		return remote.HeadResult{}, fmt.Errorf("s3 head object: %w", err)
+	}
+
+	out := remote.HeadResult{}
+	if resp.ContentLength != nil {
+		out.ContentLength = *resp.ContentLength
+	}
+	if len(resp.Metadata) > 0 {
+		out.Metadata = make(map[string]string, len(resp.Metadata))
+		for k, v := range resp.Metadata {
+			// Defensively lowercase; the SDK already does this on the
+			// happy path, but some non-AWS-SDK S3-compatible servers
+			// (Localstack/MinIO via the SDK's response decoder still
+			// lowercases) preserve the contract.
+			out.Metadata[strings.ToLower(k)] = v
+		}
+	}
+	return out, nil
+}
+
 // CopyBlock copies a block from source to destination key using S3 server-side copy.
 func (s *Store) CopyBlock(ctx context.Context, srcKey, dstKey string) error {
 	if err := s.checkClosed(); err != nil {

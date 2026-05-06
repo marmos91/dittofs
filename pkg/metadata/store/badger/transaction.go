@@ -3,11 +3,14 @@ package badger
 import (
 	"context"
 	"encoding/json"
+	goerrors "errors"
+	"fmt"
 	"time"
 
 	badgerdb "github.com/dgraph-io/badger/v4"
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // ============================================================================
@@ -135,19 +138,25 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		return err
 	}
 
-	// Track size delta for regular files.
-	if file.Type == metadata.FileTypeRegular {
-		var oldSize uint64
-		item, err := tx.txn.Get(keyFile(file.ID))
-		if err == nil {
-			_ = item.Value(func(val []byte) error {
-				existing, decErr := decodeFile(val)
-				if decErr == nil && existing.Type == metadata.FileTypeRegular {
+	// Read existing record once to capture both the size delta (for usedBytes
+	// tracking) and the previous ObjectID (for D-12 secondary-index cleanup).
+	var oldSize uint64
+	var oldObjectID metadata.ContentHash
+	if item, err := tx.txn.Get(keyFile(file.ID)); err == nil {
+		_ = item.Value(func(val []byte) error {
+			existing, decErr := decodeFile(val)
+			if decErr == nil {
+				if existing.Type == metadata.FileTypeRegular {
 					oldSize = existing.Size
 				}
-				return nil
-			})
-		}
+				oldObjectID = existing.ObjectID
+			}
+			return nil
+		})
+	}
+
+	// Track size delta for regular files.
+	if file.Type == metadata.FileTypeRegular {
 		delta := int64(file.Size) - int64(oldSize)
 		if delta != 0 {
 			tx.store.usedBytes.Add(delta)
@@ -159,7 +168,47 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		return err
 	}
 
-	return tx.txn.Set(keyFile(file.ID), data)
+	if err := tx.txn.Set(keyFile(file.ID), data); err != nil {
+		return err
+	}
+
+	// Phase 13 D-12: maintain ObjectID -> file UUID secondary index in the
+	// same Txn as the primary file write (atomic on commit).
+	//
+	// Step 1: drop stale secondary entry if the ObjectID changed.
+	if !oldObjectID.IsZero() && oldObjectID != file.ObjectID {
+		if err := tx.txn.Delete(keyObjectID(oldObjectID)); err != nil && !goerrors.Is(err, badgerdb.ErrKeyNotFound) {
+			return fmt.Errorf("badger PutFile: delete stale obj index: %w", err)
+		}
+	}
+
+	// Step 2: write new secondary entry if non-zero. Detect D-14 race
+	// (another file already claims this ObjectID) and surface as ErrConflict.
+	if !file.ObjectID.IsZero() {
+		if existing, gerr := tx.txn.Get(keyObjectID(file.ObjectID)); gerr == nil {
+			raw, verr := existing.ValueCopy(nil)
+			if verr == nil {
+				var existingID uuid.UUID
+				if uerr := existingID.UnmarshalBinary(raw); uerr == nil && existingID != file.ID {
+					return mderrors.NewConflictError(
+						"badger PutFile",
+						fmt.Sprintf("object_id already mapped to file %s", existingID),
+					)
+				}
+			}
+		} else if !goerrors.Is(gerr, badgerdb.ErrKeyNotFound) {
+			return fmt.Errorf("badger PutFile: probe obj index: %w", gerr)
+		}
+		idBin, merr := file.ID.MarshalBinary()
+		if merr != nil {
+			return fmt.Errorf("badger PutFile: marshal file ID: %w", merr)
+		}
+		if err := tx.txn.Set(keyObjectID(file.ObjectID), idBin); err != nil {
+			return fmt.Errorf("badger PutFile: set obj index: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.FileHandle) error {
@@ -188,11 +237,16 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		return err
 	}
 
-	// Subtract size from counter for regular files.
+	// Subtract size from counter for regular files; capture ObjectID for
+	// secondary-index cleanup (Phase 13 D-12).
+	var existingObjectID metadata.ContentHash
 	_ = item.Value(func(val []byte) error {
 		file, decErr := decodeFile(val)
-		if decErr == nil && file.Type == metadata.FileTypeRegular && file.Size > 0 {
-			tx.store.usedBytes.Add(-int64(file.Size))
+		if decErr == nil {
+			if file.Type == metadata.FileTypeRegular && file.Size > 0 {
+				tx.store.usedBytes.Add(-int64(file.Size))
+			}
+			existingObjectID = file.ObjectID
 		}
 		return nil
 	})
@@ -207,6 +261,13 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 	for _, key := range keys {
 		if err := tx.txn.Delete(key); err != nil && err != badgerdb.ErrKeyNotFound {
 			return err
+		}
+	}
+
+	// Phase 13 D-12: drop ObjectID secondary entry if present.
+	if !existingObjectID.IsZero() {
+		if err := tx.txn.Delete(keyObjectID(existingObjectID)); err != nil && !goerrors.Is(err, badgerdb.ErrKeyNotFound) {
+			return fmt.Errorf("badger DeleteFile: delete obj index: %w", err)
 		}
 	}
 
@@ -653,6 +714,14 @@ func (tx *badgerTransaction) GetShareOptions(ctx context.Context, shareName stri
 			return err
 		}
 		optsCopy := data.Share.Options
+		// Coerce BlockLayout: pre-Phase-14 share blobs lack the
+		// field entirely, so the JSON unmarshal produces an empty
+		// string — D-A6 maps that to `legacy`.
+		if normalized, perr := metadata.ParseBlockLayout(string(optsCopy.BlockLayout)); perr == nil {
+			optsCopy.BlockLayout = normalized
+		} else {
+			optsCopy.BlockLayout = metadata.BlockLayoutLegacy
+		}
 		opts = &optsCopy
 		return nil
 	})
@@ -896,8 +965,32 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 		return nil, err
 	}
 
+	// Preserve existing share configuration (e.g. ShareOptions written
+	// by a prior CreateShare call) when materializing the root row.
+	// Phase 14 Plan 01 (Rule 2 deviation): mirrors the same fix in the
+	// non-transactional createNewRoot — the original code wrote a
+	// fresh `metadata.Share{Name: shareName}` here, silently wiping
+	// any Options the caller had set via CreateShare. Correctness-
+	// critical for ShareOptions.BlockLayout (D-A6).
+	preservedShare := metadata.Share{Name: shareName}
+	if existingItem, getErr := tx.txn.Get(keyShare(shareName)); getErr == nil {
+		if vErr := existingItem.Value(func(val []byte) error {
+			existing, dErr := decodeShareData(val)
+			if dErr != nil {
+				return dErr
+			}
+			preservedShare = existing.Share
+			preservedShare.Name = shareName
+			return nil
+		}); vErr != nil {
+			return nil, fmt.Errorf("failed to read existing share for option preservation: %w", vErr)
+		}
+	} else if getErr != badgerdb.ErrKeyNotFound {
+		return nil, fmt.Errorf("failed to probe existing share: %w", getErr)
+	}
+
 	shareDataObj := &shareData{
-		Share:      metadata.Share{Name: shareName},
+		Share:      preservedShare,
 		RootHandle: rootHandle,
 	}
 	shareBytes, err := encodeShareData(shareDataObj)

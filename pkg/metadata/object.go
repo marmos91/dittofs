@@ -8,10 +8,10 @@ import (
 // Content-Addressed Types (re-exported from blockstore for backward compatibility)
 // ============================================================================
 
-// HashSize is the size of content hashes (SHA-256 = 32 bytes).
+// HashSize is the size of content hashes (BLAKE3 = 32 bytes).
 const HashSize = blockstore.HashSize
 
-// ContentHash represents a SHA-256 hash of content.
+// ContentHash represents a BLAKE3-256 hash of content.
 // Type alias to blockstore.ContentHash -- all definitions live in pkg/blockstore.
 type ContentHash = blockstore.ContentHash
 

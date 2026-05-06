@@ -39,6 +39,14 @@ func MapContentToNFS3(err error) uint32 {
 	if goerrors.Is(err, blockstore.ErrCASContentMismatch) {
 		return nfs3types.NFS3ErrIO
 	}
+	// Phase 12 D-23 — BlockRef.Hash refers to a FileBlock that's been
+	// GC'd or never existed. Operators triage via log inspection
+	// (vs. ErrCASContentMismatch which means bytes don't match the
+	// hash). Both surface as EIO at the wire — a data-integrity
+	// failure the client must retry / refresh against.
+	if goerrors.Is(err, blockstore.ErrBlockRefMissing) {
+		return nfs3types.NFS3ErrIO
+	}
 	if goerrors.Is(err, blockstore.ErrRemoteUnavailable) {
 		return nfs3types.NFS3ErrIO
 	}
@@ -54,6 +62,10 @@ func MapContentToNFS4(err error) uint32 {
 		return nfs4types.NFS4ERR_INVAL
 	}
 	if goerrors.Is(err, blockstore.ErrCASContentMismatch) {
+		return nfs4types.NFS4ERR_IO
+	}
+	// Phase 12 D-23 — BlockRef hash missing (see MapContentToNFS3).
+	if goerrors.Is(err, blockstore.ErrBlockRefMissing) {
 		return nfs4types.NFS4ERR_IO
 	}
 	if goerrors.Is(err, blockstore.ErrRemoteUnavailable) {
@@ -75,6 +87,12 @@ func MapContentToSMB(err error) smbtypes.Status {
 		// cleanly to the client (StatusDataError is not in our types
 		// table); StatusUnexpectedIOError is the closest analog and is
 		// also what the existing fallback uses for opaque I/O failures.
+		return smbtypes.StatusUnexpectedIOError
+	}
+	// Phase 12 D-23 — BlockRef hash missing (see MapContentToNFS3).
+	// SMB clients see the same StatusUnexpectedIOError signal as for
+	// CAS content mismatch; both are CAS-integrity failures.
+	if goerrors.Is(err, blockstore.ErrBlockRefMissing) {
 		return smbtypes.StatusUnexpectedIOError
 	}
 	if goerrors.Is(err, blockstore.ErrRemoteUnavailable) {

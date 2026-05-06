@@ -4,8 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -38,7 +44,7 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, lc.link_count
+			f.hidden, f.acl, f.object_id, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.id = $1 AND f.share_name = $2
@@ -48,6 +54,16 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 	file, err := fileRowToFileWithNlink(row)
 	if err != nil {
 		return nil, mapPgError(err, "GetFile", "")
+	}
+
+	// Phase 12 META-01: load FileAttr.Blocks from file_block_refs.
+	// Only regular files carry BlockRef payloads; directories/symlinks have none.
+	if file.Type == metadata.FileTypeRegular {
+		blocks, err := s.loadFileBlockRefs(ctx, id)
+		if err != nil {
+			return nil, mapPgError(err, "GetFile", "load blocks")
+		}
+		file.Blocks = blocks
 	}
 
 	return file, nil
@@ -202,7 +218,7 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 
 	query := `
 		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
-		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, lc.link_count
+		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.object_id, lc.link_count
 		FROM parent_child_map dc
 		LEFT JOIN files f ON dc.child_id = f.id
 		LEFT JOIN link_counts lc ON dc.child_id = lc.file_id
@@ -225,10 +241,11 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 		var size int64
 		var atime, mtime, ctime, creationTime time.Time
 		var hidden bool
+		var objectIDRaw []byte
 		var linkCount sql.NullInt32
 
 		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size,
-			&atime, &mtime, &ctime, &creationTime, &hidden, &linkCount)
+			&atime, &mtime, &ctime, &creationTime, &hidden, &objectIDRaw, &linkCount)
 		if err != nil {
 			return nil, "", err
 		}
@@ -251,23 +268,51 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 			}
 		}
 
+		// Phase 13 META-02: hydrate ObjectID for directory entries.
+		// NULL/empty -> zero (D-03 sentinel).
+		//
+		// WR-05 (Phase 13 review iteration 1): the shape DOES NOT match
+		// GetFile in this backend. GetFile populates FileAttr.Blocks via
+		// loadFileBlockRefs; ListChildren intentionally does NOT (per-row
+		// BlockRef hydration would be a quadratic cost on directory
+		// listings). Memory and Badger backends include Blocks on
+		// DirEntry.Attr because their underlying serialisation already
+		// carries the slice — Postgres' relational model splits
+		// FileAttr.Blocks into a separate table (file_block_refs) and
+		// listing rows skip the join. Callers MUST treat
+		// DirEntry.Attr.Blocks as not-loaded for Postgres and re-read
+		// via GetFile if the BlockRef list is needed for hot-path
+		// resolution. Current short-circuit code (FindByObjectID-driven)
+		// never consults DirEntry.Attr.ObjectID, so this asymmetry is
+		// benign at the Phase 13 call surface.
+		attr := &metadata.FileAttr{
+			Type:         metadata.FileType(fileType),
+			Mode:         uint32(mode),
+			Nlink:        nlink,
+			UID:          uint32(uid),
+			GID:          uint32(gid),
+			Size:         uint64(size),
+			Atime:        atime,
+			Mtime:        mtime,
+			Ctime:        ctime,
+			CreationTime: creationTime,
+			Hidden:       hidden,
+		}
+		if len(objectIDRaw) > 0 {
+			if len(objectIDRaw) != blockstore.HashSize {
+				return nil, "", fmt.Errorf(
+					"postgres ListChildren: object_id has invalid length %d (want %d)",
+					len(objectIDRaw), blockstore.HashSize,
+				)
+			}
+			copy(attr.ObjectID[:], objectIDRaw)
+		}
+
 		entry := metadata.DirEntry{
 			ID:     metadata.HandleToINode(childHandle),
 			Name:   name,
 			Handle: childHandle,
-			Attr: &metadata.FileAttr{
-				Type:         metadata.FileType(fileType),
-				Mode:         uint32(mode),
-				Nlink:        nlink,
-				UID:          uint32(uid),
-				GID:          uint32(gid),
-				Size:         uint64(size),
-				Atime:        atime,
-				Mtime:        mtime,
-				Ctime:        ctime,
-				CreationTime: creationTime,
-				Hidden:       hidden,
-			},
+			Attr:   attr,
 		}
 
 		entries = append(entries, entry)
@@ -318,6 +363,36 @@ func (s *PostgresMetadataStore) PutFilesystemMeta(ctx context.Context, shareName
 // Payload ID Operations
 // ============================================================================
 
+// FindByObjectID looks up a file by its Merkle-root ObjectID and returns the
+// canonical BlockRef list of the matching row. Returns (nil, nil) on miss
+// (zero-valued input or no matching row). Phase 13 META-02 / D-12.
+//
+// Uses the partial UNIQUE index files_object_id_idx; the LIMIT 1 is defensive
+// (the partial UNIQUE constraint already enforces single-row matches for
+// non-NULL object_id values).
+func (s *PostgresMetadataStore) FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if objectID.IsZero() {
+		return nil, nil
+	}
+
+	var fileID uuid.UUID
+	err := s.queryRow(ctx,
+		`SELECT id FROM files WHERE object_id = $1 LIMIT 1`,
+		objectID[:],
+	).Scan(&fileID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, mapPgError(err, "FindByObjectID", objectID.String())
+	}
+
+	return s.loadFileBlockRefs(ctx, fileID)
+}
+
 // GetFileByPayloadID retrieves a file by its content ID (used by cache flusher)
 func (s *PostgresMetadataStore) GetFileByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (*metadata.File, error) {
 	if payloadID == "" {
@@ -336,7 +411,7 @@ func (s *PostgresMetadataStore) GetFileByPayloadID(ctx context.Context, payloadI
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, lc.link_count
+			f.hidden, f.acl, f.object_id, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.content_id_hash = md5($1)
@@ -350,4 +425,29 @@ func (s *PostgresMetadataStore) GetFileByPayloadID(ctx context.Context, payloadI
 	}
 
 	return file, nil
+}
+
+// CountObjectIDIndexRows implements the storetest.ObjectIDIndexAccessor
+// optional capability. Returns the number of files indexed under the
+// given objectID via the partial UNIQUE index files_object_id_idx.
+//
+// Test-only — never call from production code. Used by the Phase 13
+// Plan 05 ConcurrentQuiesceRace scenario to assert exactly one row
+// survives the D-14 first-committer-wins resolution.
+//
+// Zero-valued objectID inputs short-circuit to (0, nil) without backend
+// access, mirroring FindByObjectID's partial/skip-zero discipline.
+func (s *PostgresMetadataStore) CountObjectIDIndexRows(ctx context.Context, objectID blockstore.ObjectID) (int, error) {
+	if objectID.IsZero() {
+		return 0, nil
+	}
+	var n int
+	err := s.queryRow(ctx,
+		`SELECT count(*) FROM files WHERE object_id = $1`,
+		objectID[:],
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count files.object_id: %w", err)
+	}
+	return n, nil
 }

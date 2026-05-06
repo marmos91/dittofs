@@ -209,32 +209,30 @@ func (bc *FSStore) FBSCallCountForTest() int {
 // FileBlockStore type separately.
 type nopFBSForTest struct{}
 
-func (nopFBSForTest) GetFileBlock(_ context.Context, _ string) (*blockstore.FileBlock, error) {
-	return nil, blockstore.ErrFileBlockNotFound
+// nopFBSForTest satisfies the wider blockstore.EngineFileBlockStore (the
+// 6 narrowed FileBlockStore methods plus the engine-internal GetFileBlock
+// and ListFileBlocks). All operations are no-ops or return
+// ErrFileBlockNotFound.
+func (nopFBSForTest) GetByHash(_ context.Context, _ blockstore.ContentHash) (*blockstore.FileBlock, error) {
+	return nil, nil
 }
-func (nopFBSForTest) PutFileBlock(_ context.Context, _ *blockstore.FileBlock) error { return nil }
-func (nopFBSForTest) DeleteFileBlock(_ context.Context, _ string) error {
+func (nopFBSForTest) Put(_ context.Context, _ *blockstore.FileBlock) error { return nil }
+func (nopFBSForTest) Delete(_ context.Context, _ string) error {
 	return blockstore.ErrFileBlockNotFound
 }
 func (nopFBSForTest) IncrementRefCount(_ context.Context, _ string) error { return nil }
 func (nopFBSForTest) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
-func (nopFBSForTest) FindFileBlockByHash(_ context.Context, _ blockstore.ContentHash) (*blockstore.FileBlock, error) {
+func (nopFBSForTest) ListPending(_ context.Context, _ time.Duration, _ int) ([]*blockstore.FileBlock, error) {
 	return nil, nil
 }
-func (nopFBSForTest) ListLocalBlocks(_ context.Context, _ time.Duration, _ int) ([]*blockstore.FileBlock, error) {
-	return nil, nil
-}
-func (nopFBSForTest) ListRemoteBlocks(_ context.Context, _ int) ([]*blockstore.FileBlock, error) {
-	return nil, nil
-}
-func (nopFBSForTest) ListUnreferenced(_ context.Context, _ int) ([]*blockstore.FileBlock, error) {
-	return nil, nil
+
+// Legacy engine-internal surface (Phase 12 META-03 / D-09 — kept off the
+// public FileBlockStore interface but required by EngineFileBlockStore).
+func (nopFBSForTest) GetFileBlock(_ context.Context, _ string) (*blockstore.FileBlock, error) {
+	return nil, blockstore.ErrFileBlockNotFound
 }
 func (nopFBSForTest) ListFileBlocks(_ context.Context, _ string) ([]*blockstore.FileBlock, error) {
 	return nil, nil
-}
-func (nopFBSForTest) EnumerateFileBlocks(_ context.Context, _ func(blockstore.ContentHash) error) error {
-	return nil
 }

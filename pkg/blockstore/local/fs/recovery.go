@@ -111,7 +111,7 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 		}
 
 		if needsUpdate {
-			if putErr := bc.blockStore.PutFileBlock(ctx, fb); putErr != nil {
+			if putErr := bc.blockStore.Put(ctx, fb); putErr != nil {
 				logger.Warn("local store: recovery failed to update block metadata", "blockID", blockID, "error", putErr)
 			}
 		}

@@ -7,6 +7,12 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
+	// API-02 justification: Plan 14-02 (MIG-03 / D-A8) gates the
+	// dual-read shim's legacy fallback on the per-share BlockLayout
+	// stamped on the Syncer at construction time. The engine reads
+	// the enum, never opens a metadata txn against it. Plan 15 (A6)
+	// removes the shim and this import.
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // resolveFileBlock returns the FileBlock for (payloadID, blockIdx) or
@@ -51,6 +57,24 @@ func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *blockstore.FileBlo
 	}
 	// Legacy path: pre-Phase-11 row, no hash, unverifiable. The legacy
 	// key was persisted at upload time. Removed in Phase 15 (A6).
+	//
+	// Plan 14-02 (MIG-03 / D-A8): per-share gate. If this share's
+	// BlockLayout has been flipped to cas-only, the legacy fallback is
+	// disabled — encountering a legacy-shaped FileBlock here means
+	// either the migration left stale rows behind or a write is racing
+	// the cutover. Either way, refuse the read and surface
+	// ErrLegacyReadOnCASOnly so operators see the live-data-loss
+	// signal instead of stale bytes. This complements the silent-zero
+	// fail-loud change in Phase 11 (IN-3-05) for the CAS path.
+	if m.blockLayout == metadata.BlockLayoutCASOnly {
+		// fb.ID encodes "{payloadID}/{blockIdx}" — keep both the raw ID
+		// and the legacy store key in the log line so operators can
+		// triage which row the migration tool missed.
+		logger.Error("legacy FileBlock encountered on cas-only share — possible migration drift",
+			"block_id", fb.ID,
+			"store_key", fb.BlockStoreKey)
+		return "", nil, fmt.Errorf("%w: block_id=%s", ErrLegacyReadOnCASOnly, fb.ID)
+	}
 	if fb.BlockStoreKey == "" {
 		return "", nil, nil
 	}

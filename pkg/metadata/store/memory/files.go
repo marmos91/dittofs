@@ -4,8 +4,90 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// cloneBlocks returns a deep copy of a []blockstore.BlockRef. BlockRef is a
+// value type (Hash is a [32]byte array, Offset and Size are scalars), so a
+// flat element-wise copy is sufficient — there are no shared pointer fields.
+//
+// Used by PutFile/GetFile in the Memory backend to prevent slice aliasing
+// between the caller's view and the stored view (Phase 12 D-05, T-12-09).
+//
+// Returns nil if the input is nil or empty so the round-trip preserves
+// the omitempty wire form (json:"blocks,omitempty" on FileAttr.Blocks).
+func cloneBlocks(in []blockstore.BlockRef) []blockstore.BlockRef {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]blockstore.BlockRef, len(in))
+	copy(out, in)
+	return out
+}
+
+// ============================================================================
+// FindByObjectID
+// ============================================================================
+
+// FindByObjectID looks up a file by its Merkle-root ObjectID via the
+// in-memory secondary index (objectIndex). Returns (nil, nil) on miss
+// (zero-valued input, missing index entry, or index drift where the
+// indexed handle key no longer points at a valid fileData). Phase 13
+// META-02 / D-12.
+//
+// The objectIndex value is the handle-key string (the same key used in
+// store.files); fileData has no separate UUID identifier. Block list is
+// returned via cloneBlocks to enforce slice-aliasing discipline
+// (Phase 12 D-05).
+func (store *MemoryMetadataStore) FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if objectID.IsZero() {
+		return nil, nil
+	}
+
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+
+	key, ok := store.objectIndex[objectID]
+	if !ok {
+		return nil, nil
+	}
+	fd, exists := store.files[key]
+	if !exists || fd.Attr == nil {
+		// Index drift — the secondary entry points at a removed file.
+		// Treat as miss; INV-02 audit reconciles drift.
+		return nil, nil
+	}
+	return cloneBlocks(fd.Attr.Blocks), nil
+}
+
+// CountObjectIDIndexRows implements the storetest.ObjectIDIndexAccessor
+// optional capability. Returns 1 if the in-memory objectIndex maps the
+// given objectID to a handle key, 0 otherwise.
+//
+// Test-only — never call from production code. Used by the Phase 13
+// Plan 05 ConcurrentQuiesceRace scenario to assert exactly one row
+// survives the D-14 first-committer-wins resolution.
+//
+// Zero-valued objectID inputs short-circuit to (0, nil) without map
+// access, mirroring FindByObjectID's partial/skip-zero discipline.
+func (store *MemoryMetadataStore) CountObjectIDIndexRows(ctx context.Context, objectID blockstore.ObjectID) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if objectID.IsZero() {
+		return 0, nil
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if _, ok := store.objectIndex[objectID]; ok {
+		return 1, nil
+	}
+	return 0, nil
+}
 
 // ============================================================================
 // CRUD Operations
@@ -215,6 +297,8 @@ func (store *MemoryMetadataStore) ListChildren(ctx context.Context, dirHandle me
 			} else {
 				attr.Nlink = 1
 			}
+			// Deep-copy slice fields (Phase 12 D-05, T-12-09).
+			attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
 			entry.Attr = &attr
 		}
 
@@ -275,9 +359,11 @@ func (store *MemoryMetadataStore) GetFileByPayloadID(
 		if fileData.Attr.PayloadID == payloadID {
 			// Return File with just the attributes we need
 			// ID and Path aren't needed by the flusher (only Size is used)
+			attr := *fileData.Attr
+			attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
 			return &metadata.File{
 				ShareName: fileData.ShareName,
-				FileAttr:  *fileData.Attr,
+				FileAttr:  attr,
 			}, nil
 		}
 	}

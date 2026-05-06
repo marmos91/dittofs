@@ -15,6 +15,7 @@ package metadata
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -149,7 +150,66 @@ type ShareOptions struct {
 	// IdentityMapping defines how client identities are mapped
 	// Used for squashing (mapping users to anonymous) and other transformations
 	IdentityMapping *IdentityMapping
+
+	// BlockLayout selects the block-key scheme used by this share's
+	// engine. New shares created post-Phase-14 default to cas-only.
+	// v0.13/v0.14 imports default to legacy; the dual-read shim
+	// serves both legacy {payloadID}/block-{idx} and cas/.../h reads
+	// until `dfsctl blockstore migrate` flips this to cas-only.
+	// Empty string is treated as legacy for forward-compatibility
+	// with pre-Phase-14 metadata rows (see ParseBlockLayout).
+	BlockLayout BlockLayout `json:"block_layout,omitempty"`
 }
+
+// ============================================================================
+// Block Layout
+// ============================================================================
+
+// BlockLayout names the block-key scheme a share is currently using.
+// Per-share gate for the dual-read shim during the v0.13/v0.14 -> v0.15
+// migration window (MIG-03, D-A6). Greenfield v0.15 shares default to
+// cas-only; shares created on v0.13 or v0.14 default to legacy and are
+// flipped to cas-only by `dfsctl blockstore migrate`.
+type BlockLayout string
+
+const (
+	// BlockLayoutLegacy means the share still keys blocks under the
+	// pre-Phase-11 path-indexed scheme `{payloadID}/block-{idx}`. The
+	// dual-read shim is active for these shares.
+	BlockLayoutLegacy BlockLayout = "legacy"
+
+	// BlockLayoutCASOnly means the share keys blocks exclusively under
+	// the v0.15 content-addressable scheme `cas/{hh}/{hh}/{hash_hex}`.
+	// No dual-read shim is needed.
+	BlockLayoutCASOnly BlockLayout = "cas-only"
+)
+
+// ErrInvalidBlockLayout is returned by ParseBlockLayout for unrecognized
+// block-layout strings (anything other than "", "legacy", or "cas-only").
+var ErrInvalidBlockLayout = errors.New("invalid block_layout")
+
+// ParseBlockLayout parses a string into a BlockLayout. The empty string
+// returns BlockLayoutLegacy so that pre-Phase-14 DB rows (which lack the
+// column or have null/empty values) read as `legacy` — the safe default
+// because the dual-read shim must remain active until proven otherwise
+// (D-A6, MIG-03). Unknown values surface as ErrInvalidBlockLayout so a
+// hand-edited row with a bogus value fails loud rather than being
+// silently treated as cas-only (T-14-01-01 mitigation).
+func ParseBlockLayout(s string) (BlockLayout, error) {
+	switch s {
+	case "":
+		return BlockLayoutLegacy, nil
+	case string(BlockLayoutLegacy):
+		return BlockLayoutLegacy, nil
+	case string(BlockLayoutCASOnly):
+		return BlockLayoutCASOnly, nil
+	default:
+		return "", fmt.Errorf("%w: %q", ErrInvalidBlockLayout, s)
+	}
+}
+
+// String returns the wire/storage representation of the BlockLayout.
+func (b BlockLayout) String() string { return string(b) }
 
 // ShareSession represents an active client session on a share.
 type ShareSession struct {

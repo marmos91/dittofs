@@ -578,7 +578,10 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 	// Delete content from block store (optional - ignore errors)
 	if openFile.PayloadID != "" {
 		if blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, openFile.MetadataHandle); bsErr == nil {
-			_ = blockStore.Delete(ctx.Context, string(openFile.PayloadID))
+			// Phase 12 API-01: nil []BlockRef triggers the dual-read /
+			// legacy delete path (D-20). Plan 08 threads the caller's
+			// FileAttr.Blocks snapshot here.
+			_ = blockStore.Delete(ctx.Context, string(openFile.PayloadID), nil)
 		}
 	}
 

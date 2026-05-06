@@ -315,7 +315,60 @@ type MetadataStore interface {
 	Shares         // Share lifecycle and handle management
 	ServerConfig   // Server configuration and capabilities
 	Transactor     // Transaction support for atomic operations
-	FileBlockStore // Content-addressed block management
+	FileBlockStore // Content-addressed block management (narrowed to 6 methods in Phase 12 — META-03 / D-09)
+
+	// EnumerateFileBlocks streams every FileBlock's ContentHash through fn
+	// in implementation-defined order. Returns the first non-nil error
+	// from fn or from the underlying store iterator. Implementations MUST
+	// stream via cursors and respect ctx.Done() — never load the full set
+	// into application memory. See Phase 11 D-02.
+	//
+	// Lifted from FileBlockStore in Phase 12 (META-03 / D-08): the
+	// operation is store-wide, not per-block, and belongs at the
+	// MetadataStore tier. Used by the GC mark phase (Phase 11) and the
+	// INV-02 audit (Phase 12). Zero-valued ContentHashes (legacy rows
+	// pre-CAS) are emitted; callers skip them as needed.
+	EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error
+
+	// FindByObjectID looks up a file by its Merkle-root ObjectID
+	// (Phase 13 META-02 / BSCAS-05 / D-12). Returns (nil, nil) on miss
+	// (no row matches); non-nil result carries the canonical BlockRef
+	// list of the matching file (per-metadata-store scope, NOT
+	// per-share — D-13).
+	//
+	// All three backends maintain a secondary index from ObjectID to
+	// file row:
+	//   - Postgres: partial unique index files_object_id_idx ON
+	//     files(object_id) WHERE object_id IS NOT NULL.
+	//   - Badger: secondary key obj:{hex} -> file_id, maintained inside
+	//     each Put/Delete write batch.
+	//   - Memory: map[ContentHash]string (handle key) guarded by the
+	//     store mutex.
+	//
+	// Zero-valued ObjectID (legacy / pre-quiesce) MUST NOT match any
+	// row — implementations short-circuit and return (nil, nil) on zero
+	// input. The short-circuit caller (BSCAS-05) only invokes this with
+	// a non-zero provisional ObjectID.
+	//
+	// Conformance scenarios live in pkg/metadata/storetest/objectid_*.go.
+	FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error)
+
+	// GetFileBlock retrieves a FileBlock by its ID. Engine-internal
+	// surface: Phase 12 (META-03 / D-09) narrowed the public
+	// FileBlockStore to 6 methods, but the read-path resolver
+	// (engine.fetch.resolveFileBlock), the dedup-delete path
+	// (engine.dedup.DeleteWithRefCount), and the recovery scan
+	// (local/fs/recovery.go) still need a by-ID lookup until Phase 13/14
+	// reroutes reads through FileAttr.Blocks. See blockstore.EngineFileBlockStore.
+	GetFileBlock(ctx context.Context, id string) (*blockstore.FileBlock, error)
+
+	// ListFileBlocks returns every FileBlock whose ID begins with
+	// "{payloadID}/", sorted by parsed numeric block index. Returns an
+	// empty (non-nil) slice when no blocks match. Engine-internal
+	// surface: used by syncer GetFileSize/Exists, BlockStore stats fan-
+	// out, and local/fs eviction. Same Phase 13/14 deprecation timeline
+	// as GetFileBlock above.
+	ListFileBlocks(ctx context.Context, payloadID string) ([]*blockstore.FileBlock, error)
 
 	// ========================================================================
 	// Usage Tracking

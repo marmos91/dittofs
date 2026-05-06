@@ -541,7 +541,10 @@ func truncateExistingFile(
 
 	// Truncate content if file has content
 	if existingFile.PayloadID != "" {
-		if err := blockStore.Truncate(authCtx.Context, string(existingFile.PayloadID), targetSize); err != nil {
+		// Phase 12 API-01: nil currentBlocks triggers the legacy/
+		// dual-read truncate path; returned []BlockRef is discarded.
+		// Plan 08 threads the file's FileAttr.Blocks snapshot here.
+		if _, err := blockStore.Truncate(authCtx.Context, string(existingFile.PayloadID), nil, targetSize); err != nil {
 			logger.Warn("Failed to truncate content", "size", targetSize, "error", err)
 			// Non-fatal: metadata is already updated
 		}

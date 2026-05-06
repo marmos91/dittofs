@@ -4,6 +4,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -196,6 +197,34 @@ func (s *Store) ReadBlockRange(_ context.Context, blockKey string, offset, lengt
 	result := make([]byte, end-offset)
 	copy(result, data[offset:end])
 	return result, nil
+}
+
+// HeadObject returns ContentLength + the recorded per-object metadata
+// (set by WriteBlockWithHash) without copying the underlying bytes.
+// Returns [blockstore.ErrBlockNotFound] for missing keys — same
+// convention as [Store.ReadBlock]. Used by the Phase 14 migration tool's
+// post-migration integrity check (D-A12).
+func (s *Store) HeadObject(_ context.Context, blockKey string) (remote.HeadResult, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return remote.HeadResult{}, blockstore.ErrStoreClosed
+	}
+
+	data, ok := s.blocks[blockKey]
+	if !ok {
+		return remote.HeadResult{}, blockstore.ErrBlockNotFound
+	}
+
+	out := remote.HeadResult{ContentLength: int64(len(data))}
+	if md, ok := s.metadata[blockKey]; ok && len(md) > 0 {
+		// Defensive copy — callers may stash the result and we don't
+		// want them mutating the in-memory record. Keys are already
+		// lowercased at WriteBlockWithHash time (the only writer).
+		out.Metadata = maps.Clone(md)
+	}
+	return out, nil
 }
 
 // CopyBlock copies a block from srcKey to dstKey in memory.

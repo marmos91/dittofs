@@ -57,7 +57,7 @@ func (m *Syncer) syncFileBlock(ctx context.Context, fb *blockstore.FileBlock) er
 	}
 	fb.State = blockstore.BlockStateSyncing
 	fb.LastSyncAttemptAt = time.Now()
-	if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
+	if err := m.fileBlockStore.Put(ctx, fb); err != nil {
 		return fmt.Errorf("mark block %s syncing: %w", fb.ID, err)
 	}
 	return m.uploadOne(ctx, fb)
@@ -92,24 +92,37 @@ func (m *Syncer) uploadOne(ctx context.Context, fb *blockstore.FileBlock) error 
 	// confirmed Remote, we skip the PUT entirely and re-use its CAS key.
 	//
 	// Phase 11 WR-03: surface IncrementRefCount errors. The previous code
-	// silently dropped them, which meant a transient metadata error left
-	// the new fb pointing at the donor's CAS key without a balanced
-	// refcount bump and with no observable signal. The dedup short-circuit
-	// itself still leaks a refcount on the donor (no decrement path
-	// reverses it on file delete) — see WR-03 follow-up; for now we at
-	// least do not also swallow the error path.
-	if existing, derr := m.fileBlockStore.FindFileBlockByHash(ctx, hash); derr == nil && existing != nil && existing.IsRemote() {
+	// silently dropped them.
+	//
+	// Phase 12 D-37 (WR-4-01 follow-up): do NOT write a duplicate fb row.
+	// The donor row is canonical; the caller's FileAttr.Blocks BlockRef.Hash
+	// points at the same hash and the engine resolves to the donor's
+	// BlockStoreKey at read time via GetByHash. After incrementing the
+	// donor's RefCount we delete duplicate fb so INV-02 holds (single row
+	// per hash going forward). Multi-row tolerance is preserved at the
+	// FileBlockStore.Put level for legacy data only (Phase 11
+	// IN-3-02/WR-4-01 contract); UNIQUE-index restoration is deferred to
+	// Phase 15 per D-09.
+	if existing, derr := m.fileBlockStore.GetByHash(ctx, hash); derr == nil && existing != nil && existing.IsRemote() {
 		if err := m.fileBlockStore.IncrementRefCount(ctx, existing.ID); err != nil {
 			return fmt.Errorf("dedup increment refcount on donor %s: %w", existing.ID, err)
 		}
-		fb.Hash = hash
-		fb.DataSize = uint32(len(data))
-		fb.BlockStoreKey = existing.BlockStoreKey
-		fb.State = blockstore.BlockStateRemote
-		if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
-			return fmt.Errorf("persist dedup block %s: %w", fb.ID, err)
+		// delete duplicate fb row (Phase 12 D-37). Tolerate a concurrent
+		// worker having already cleaned it up (ErrFileBlockNotFound).
+		if err := m.fileBlockStore.Delete(ctx, fb.ID); err != nil {
+			// Phase 12 Plan 07 (API-02): use the blockstore-package
+			// sentinel rather than metadata.ErrFileBlockNotFound — they
+			// are aliases (see metadata/object.go) and the
+			// blockstore-package form keeps pkg/metadata out of the
+			// engine import set.
+			if !errors.Is(err, blockstore.ErrFileBlockNotFound) {
+				return fmt.Errorf("delete duplicate fb %s after dedup: %w", fb.ID, err)
+			}
 		}
-		logger.Debug("uploadOne dedup: hash already remote", "blockID", fb.ID, "key", fb.BlockStoreKey)
+		logger.Debug("uploadOne dedup short-circuit",
+			"donor_id", existing.ID,
+			"deleted_dup_id", fb.ID,
+			"hash", hash.String())
 		return nil
 	}
 
@@ -125,7 +138,7 @@ func (m *Syncer) uploadOne(ctx context.Context, fb *blockstore.FileBlock) error 
 	fb.DataSize = uint32(len(data))
 	fb.BlockStoreKey = casKey
 	fb.State = blockstore.BlockStateRemote
-	if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
+	if err := m.fileBlockStore.Put(ctx, fb); err != nil {
 		// S3 object exists; row stayed Syncing. GC + janitor will resolve
 		// (D-11/D-14). INV-03 honored — Remote is not persisted.
 		return fmt.Errorf("mark remote block %s: %w", fb.ID, err)

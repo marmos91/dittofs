@@ -72,7 +72,7 @@ func (bc *FSStore) DeleteBlockFile(ctx context.Context, payloadID string, blockI
 	}
 
 	// 6. Delete FileBlock metadata from store (direct call)
-	if delErr := bc.blockStore.DeleteFileBlock(ctx, blockID); delErr != nil {
+	if delErr := bc.blockStore.Delete(ctx, blockID); delErr != nil {
 		if !errors.Is(delErr, blockstore.ErrFileBlockNotFound) {
 			return delErr
 		}

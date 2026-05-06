@@ -130,3 +130,72 @@ func (c *Client) BlockStoreGCStatus(shareName string) (*engine.GCRunSummary, err
 		fmt.Sprintf("/api/v1/shares/%s/blockstore/gc-status", url.PathEscape(normalizeShareNameForAPI(shareName))),
 	)
 }
+
+// BlockStoreAuditResult is the response body for
+// POST /api/v1/shares/{name}/audit/refcounts. Wraps the
+// engine.AuditRefcountsResult value (Phase 12 D-36 INV-02 audit).
+// Mirrors the server-side handlers.BlockStoreAuditResponse shape.
+type BlockStoreAuditResult struct {
+	Result *engine.AuditRefcountsResult `json:"result"`
+}
+
+// BlockStoreAuditRefcounts triggers the on-demand INV-02 reconciliation
+// audit for the named share. Server walks the share's metadata store
+// and computes ∑ FileBlock.RefCount vs ∑ len(FileAttr.Blocks); a
+// non-zero delta indicates drift. The audit persists last-inv02.json
+// under the share's audit-state directory; this client method returns
+// the same summary in the response body for direct consumption by
+// `dfsctl blockstore audit-refcounts`.
+//
+// Mirrors BlockStoreGC's URL/error pattern (per-share path, JSON body,
+// JWT auth via the underlying transport).
+func (c *Client) BlockStoreAuditRefcounts(shareName string) (*BlockStoreAuditResult, error) {
+	return createResource[BlockStoreAuditResult](
+		c,
+		fmt.Sprintf("/api/v1/shares/%s/audit/refcounts", url.PathEscape(normalizeShareNameForAPI(shareName))),
+		struct{}{},
+	)
+}
+
+// MigrateStatusResponse is the JSON response shape for both
+// GET /api/v1/blockstore/migrate/status and the dfsctl `blockstore migrate status`
+// CLI subcommand. It unifies what the journal (Plan 14-03 OpenJournalReadOnly +
+// Aggregate) reports with the per-share BlockLayout flag (Plan 14-01) and the
+// total file count walked from the metadata store (Plan 14-03 WalkShareFiles).
+//
+// FilesTotal == -1 is the sentinel for "the file walk hit the 30s server-side
+// timeout"; the rest of the fields remain valid. Operators see this on
+// pathologically large shares — they can pass the same query without ?with_total
+// to skip the walk entirely (the REST handler honors `?with_total=false`).
+type MigrateStatusResponse struct {
+	Share           string `json:"share"`
+	BlockLayout     string `json:"block_layout"` // "legacy" | "cas-only"
+	FilesTotal      int    `json:"files_total"`
+	FilesDone       int    `json:"files_done"`
+	FilesSkipped    int    `json:"files_skipped"`
+	BytesUploaded   uint64 `json:"bytes_uploaded"`
+	BytesDeduped    uint64 `json:"bytes_deduped"`
+	JournalPresent  bool   `json:"journal_present"`
+	SnapshotPresent bool   `json:"snapshot_present"`
+	LastCommitAt    string `json:"last_commit_at,omitempty"` // RFC3339
+}
+
+// MigrateStatus queries the per-share migration progress.
+// Endpoint: GET /api/v1/blockstore/migrate/status?share=NAME
+//
+// Returns an APIError with IsNotFound()==true when the share is unknown.
+// Returns a non-API error wrapping the share-required validation when
+// share is empty (no HTTP call is issued).
+func (c *Client) MigrateStatus(share string) (*MigrateStatusResponse, error) {
+	if share == "" {
+		return nil, fmt.Errorf("share is required")
+	}
+	q := url.Values{}
+	q.Set("share", share)
+	path := "/api/v1/blockstore/migrate/status?" + q.Encode()
+	var resp MigrateStatusResponse
+	if err := c.get(path, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}

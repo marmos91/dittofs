@@ -177,6 +177,24 @@ func (r *Runtime) GetMetadataStoreForShare(shareName string) (metadata.MetadataS
 	return r.storesSvc.GetMetadataStore(share.MetadataStore)
 }
 
+// LocalStoreDir returns the on-disk data directory for the named share's
+// local block store. Used by the Phase 14 migration status REST handler
+// (Plan 14-06) to locate the per-share `.migration-state.jsonl` journal.
+//
+// Returns an empty string + nil error when the share's local store has
+// no persistent root (memory backend) — handlers should treat "" as
+// "no journal available" rather than an error. Returns an
+// ErrShareNotFound-wrapped error when the share is unknown so callers
+// can map it deterministically to 404.
+//
+// The accessor is read-only: the path is computed at AddShare time
+// from the controlplane DB's BlockStoreConfig and never mutated
+// afterward, so a value-or-error response is sufficient (no per-call
+// recomputation).
+func (r *Runtime) LocalStoreDir(shareName string) (string, error) {
+	return r.sharesSvc.LocalStoreDir(shareName)
+}
+
 // HealthcheckShare returns the named share's overall health, computed
 // as the worst-of its block store engine and metadata store. The
 // runtime owns both registries, so this is the natural place to wire

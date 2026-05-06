@@ -29,7 +29,7 @@ func TestFileBlockStore_RefCount_Basic(t *testing.T) {
 		RefCount: 1,
 	}
 
-	err := store.PutFileBlock(ctx, block)
+	err := store.Put(ctx, block)
 	require.NoError(t, err)
 
 	// Verify initial RefCount
@@ -75,7 +75,7 @@ func TestFileBlockStore_RefCount_MultipleIncrements(t *testing.T) {
 		RefCount: 1,
 	}
 
-	err := store.PutFileBlock(ctx, block)
+	err := store.Put(ctx, block)
 	require.NoError(t, err)
 
 	// Simulate 5 files sharing this block
@@ -135,11 +135,11 @@ func TestFileBlockStore_FindByHash_Found(t *testing.T) {
 		State: metadata.BlockStateRemote,
 	}
 
-	err := store.PutFileBlock(ctx, block)
+	err := store.Put(ctx, block)
 	require.NoError(t, err)
 
 	// Find the block by hash
-	found, err := store.FindFileBlockByHash(ctx, hash)
+	found, err := store.GetByHash(ctx, hash)
 	require.NoError(t, err)
 	require.NotNil(t, found)
 	assert.Equal(t, id, found.ID)
@@ -154,7 +154,7 @@ func TestFileBlockStore_FindByHash_NotFound(t *testing.T) {
 
 	// Find non-existent block - should return nil without error
 	nonExistentHash := sha256.Sum256([]byte("not stored"))
-	found, err := store.FindFileBlockByHash(ctx, nonExistentHash)
+	found, err := store.GetByHash(ctx, nonExistentHash)
 	require.NoError(t, err)
 	assert.Nil(t, found)
 }
@@ -179,11 +179,11 @@ func TestFileBlockStore_DedupFlow(t *testing.T) {
 		State:         metadata.BlockStateRemote,
 	}
 
-	err := store.PutFileBlock(ctx, block)
+	err := store.Put(ctx, block)
 	require.NoError(t, err)
 
 	// Second file writes same content - check for existing block
-	existing, err := store.FindFileBlockByHash(ctx, hash)
+	existing, err := store.GetByHash(ctx, hash)
 	require.NoError(t, err)
 	require.NotNil(t, existing, "Block should be found for dedup")
 	assert.True(t, existing.IsRemote(), "Block should be remote for dedup to skip upload")
@@ -214,11 +214,11 @@ func TestFileBlockStore_Delete(t *testing.T) {
 		RefCount: 1,
 	}
 
-	err := store.PutFileBlock(ctx, block)
+	err := store.Put(ctx, block)
 	require.NoError(t, err)
 
 	// Delete block
-	err = store.DeleteFileBlock(ctx, id)
+	err = store.Delete(ctx, id)
 	require.NoError(t, err)
 
 	// Verify deleted
@@ -226,7 +226,7 @@ func TestFileBlockStore_Delete(t *testing.T) {
 	assert.ErrorIs(t, err, metadata.ErrFileBlockNotFound)
 
 	// Hash index should also be cleared
-	found, err := store.FindFileBlockByHash(ctx, hash)
+	found, err := store.GetByHash(ctx, hash)
 	require.NoError(t, err)
 	assert.Nil(t, found)
 }
@@ -248,7 +248,7 @@ func TestFileBlockStore_ConcurrentRefCountUpdates(t *testing.T) {
 		RefCount: 0,
 	}
 
-	err := store.PutFileBlock(ctx, block)
+	err := store.Put(ctx, block)
 	require.NoError(t, err)
 
 	// Run concurrent increments

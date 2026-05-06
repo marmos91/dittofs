@@ -61,7 +61,7 @@ func seedPendingBlock(t *testing.T, ms *metadatamemory.MemoryMetadataStore, tmp,
 		LastAccess: time.Now(),
 		CreatedAt:  time.Now(),
 	}
-	if err := ms.PutFileBlock(context.Background(), b); err != nil {
+	if err := ms.Put(context.Background(), b); err != nil {
 		t.Fatalf("PutFileBlock: %v", err)
 	}
 	return b
@@ -131,7 +131,7 @@ func TestUploadOne_PutsCASKeyAndFlipsRemote(t *testing.T) {
 	// uploadOne expects the block to be in Syncing; emulate the claim batch.
 	fb.State = blockstore.BlockStateSyncing
 	fb.LastSyncAttemptAt = time.Now()
-	if err := ms.PutFileBlock(ctx, fb); err != nil {
+	if err := ms.Put(ctx, fb); err != nil {
 		t.Fatalf("PutFileBlock(syncing): %v", err)
 	}
 
@@ -185,14 +185,14 @@ func TestRecoverStaleSyncing_RequeuesOldRows(t *testing.T) {
 	stale := seedPendingBlock(t, ms, tmp, "stale", []byte("s"))
 	stale.State = blockstore.BlockStateSyncing
 	stale.LastSyncAttemptAt = time.Now().Add(-time.Hour) // way past ClaimTimeout
-	if err := ms.PutFileBlock(ctx, stale); err != nil {
+	if err := ms.Put(ctx, stale); err != nil {
 		t.Fatalf("PutFileBlock(stale): %v", err)
 	}
 
 	fresh := seedPendingBlock(t, ms, tmp, "fresh", []byte("f"))
 	fresh.State = blockstore.BlockStateSyncing
 	fresh.LastSyncAttemptAt = time.Now()
-	if err := ms.PutFileBlock(ctx, fresh); err != nil {
+	if err := ms.Put(ctx, fresh); err != nil {
 		t.Fatalf("PutFileBlock(fresh): %v", err)
 	}
 

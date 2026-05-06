@@ -16,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
 	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -72,6 +73,14 @@ type dualReadEnv struct {
 
 func newDualReadEnv(t *testing.T) *dualReadEnv {
 	t.Helper()
+	return newDualReadEnvWithLayout(t, metadata.BlockLayoutLegacy)
+}
+
+// newDualReadEnvWithLayout builds the dual-read fixture with an
+// explicit per-share BlockLayout. The Plan 14-02 gate inside
+// dispatchRemoteFetch consults this value before the legacy fallback.
+func newDualReadEnvWithLayout(t *testing.T, layout metadata.BlockLayout) *dualReadEnv {
+	t.Helper()
 	tmp := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	bc, err := fs.New(tmp, 0, 0, ms)
@@ -85,6 +94,7 @@ func newDualReadEnv(t *testing.T) *dualReadEnv {
 	cfg.ClaimBatchSize = 4
 	cfg.UploadConcurrency = 2
 	cfg.ClaimTimeout = 100 * time.Millisecond
+	cfg.BlockLayout = layout
 
 	m := NewSyncer(bc, rs, ms, cfg)
 	t.Cleanup(func() {
@@ -129,7 +139,7 @@ func TestDualRead_CASRowRoutesToVerified(t *testing.T) {
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}
-	if err := env.ms.PutFileBlock(ctx, fb); err != nil {
+	if err := env.ms.Put(ctx, fb); err != nil {
 		t.Fatalf("PutFileBlock: %v", err)
 	}
 
@@ -179,7 +189,7 @@ func TestDualRead_LegacyRowRoutesToReadBlock(t *testing.T) {
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}
-	if err := env.ms.PutFileBlock(ctx, fb); err != nil {
+	if err := env.ms.Put(ctx, fb); err != nil {
 		t.Fatalf("PutFileBlock: %v", err)
 	}
 
@@ -250,7 +260,7 @@ func TestDualRead_CASRowMismatchSurfacesError(t *testing.T) {
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}
-	if err := env.ms.PutFileBlock(ctx, fb); err != nil {
+	if err := env.ms.Put(ctx, fb); err != nil {
 		t.Fatalf("PutFileBlock: %v", err)
 	}
 
@@ -293,7 +303,7 @@ func TestDualRead_CASMissingObjectFailsClosed(t *testing.T) {
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}
-	if err := env.ms.PutFileBlock(ctx, fb); err != nil {
+	if err := env.ms.Put(ctx, fb); err != nil {
 		t.Fatalf("PutFileBlock: %v", err)
 	}
 
@@ -330,7 +340,7 @@ func TestDualRead_LegacyMissingObjectReturnsNil(t *testing.T) {
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}
-	if err := env.ms.PutFileBlock(ctx, fb); err != nil {
+	if err := env.ms.Put(ctx, fb); err != nil {
 		t.Fatalf("PutFileBlock: %v", err)
 	}
 
@@ -340,5 +350,160 @@ func TestDualRead_LegacyMissingObjectReturnsNil(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("fetchBlock data = %v, want nil for legacy sparse block", got)
+	}
+}
+
+// TestDualRead_CASOnly_RefusesLegacyFallback (Plan 14-02 / MIG-03 / D-A8):
+// when the share's BlockLayout is cas-only, encountering a legacy-shaped
+// FileBlock (zero ContentHash, populated BlockStoreKey) MUST NOT silently
+// fall through to ReadBlock — that fallback is the exact behavior we want
+// to defeat after a successful migration. Surface ErrLegacyReadOnCASOnly
+// so operators see live-data-loss signals instead of stale bytes.
+func TestDualRead_CASOnly_RefusesLegacyFallback(t *testing.T) {
+	env := newDualReadEnvWithLayout(t, metadata.BlockLayoutCASOnly)
+	ctx := context.Background()
+
+	const payloadID = "share/cas-only-with-legacy-row"
+	data := []byte("legacy bytes that must NOT be served on a cas-only share")
+	legacyKey := blockstore.FormatStoreKey(payloadID, 0)
+
+	// Seed the remote so that a successful legacy fallback would actually
+	// return bytes — this proves the gate is the reason we don't get them.
+	if err := env.innerRS.WriteBlock(ctx, legacyKey, data); err != nil {
+		t.Fatalf("seed remote: %v", err)
+	}
+
+	// Legacy-shaped FileBlock: Hash zero, BlockStoreKey set.
+	fb := &blockstore.FileBlock{
+		ID:            fmt.Sprintf("%s/0", payloadID),
+		DataSize:      uint32(len(data)),
+		BlockStoreKey: legacyKey,
+		State:         blockstore.BlockStatePending,
+		RefCount:      1,
+		LastAccess:    time.Now(),
+		CreatedAt:     time.Now(),
+	}
+	if err := env.ms.Put(ctx, fb); err != nil {
+		t.Fatalf("PutFileBlock: %v", err)
+	}
+
+	got, err := env.syncer.fetchBlock(ctx, payloadID, 0)
+	if err == nil {
+		t.Fatalf("fetchBlock: expected ErrLegacyReadOnCASOnly, got nil with data=%v", got)
+	}
+	if !errors.Is(err, ErrLegacyReadOnCASOnly) {
+		t.Fatalf("fetchBlock err = %v, want wrapped ErrLegacyReadOnCASOnly", err)
+	}
+	if got != nil {
+		t.Errorf("fetchBlock data = %v, want nil on cas-only legacy refusal", got)
+	}
+	if env.rs.readCalls.Load() != 0 {
+		t.Errorf("ReadBlock calls = %d, want 0 (gate must short-circuit before remote)", env.rs.readCalls.Load())
+	}
+	if env.rs.readVerifiedCalls.Load() != 0 {
+		t.Errorf("ReadBlockVerified calls = %d, want 0 (legacy row has no hash)", env.rs.readVerifiedCalls.Load())
+	}
+}
+
+// TestDualRead_Legacy_AllowsBothPaths verifies the gate only fires on
+// cas-only. With the default BlockLayoutLegacy, a legacy-shaped FileBlock
+// still routes through ReadBlock as it did pre-Phase-14. (T-14-02-03
+// non-regression: existing legacy shares behave identically.)
+func TestDualRead_Legacy_AllowsBothPaths(t *testing.T) {
+	env := newDualReadEnvWithLayout(t, metadata.BlockLayoutLegacy)
+	ctx := context.Background()
+
+	const payloadID = "share/legacy-share-legacy-row"
+	data := []byte("legacy bytes — legacy share preserves the fallback")
+	legacyKey := blockstore.FormatStoreKey(payloadID, 0)
+
+	if err := env.innerRS.WriteBlock(ctx, legacyKey, data); err != nil {
+		t.Fatalf("seed remote: %v", err)
+	}
+	fb := &blockstore.FileBlock{
+		ID:            fmt.Sprintf("%s/0", payloadID),
+		DataSize:      uint32(len(data)),
+		BlockStoreKey: legacyKey,
+		State:         blockstore.BlockStatePending,
+		RefCount:      1,
+		LastAccess:    time.Now(),
+		CreatedAt:     time.Now(),
+	}
+	if err := env.ms.Put(ctx, fb); err != nil {
+		t.Fatalf("PutFileBlock: %v", err)
+	}
+
+	got, err := env.syncer.fetchBlock(ctx, payloadID, 0)
+	if err != nil {
+		t.Fatalf("fetchBlock: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("fetchBlock data = %q, want %q", got, data)
+	}
+	if env.rs.readCalls.Load() != 1 {
+		t.Errorf("ReadBlock calls = %d, want 1 (legacy share must keep fallback)", env.rs.readCalls.Load())
+	}
+}
+
+// TestDualRead_CASOnly_AllowsCASPath verifies the gate is path-specific:
+// a CAS-shaped FileBlock (non-zero Hash) on a cas-only share routes
+// through ReadBlockVerified untouched.
+func TestDualRead_CASOnly_AllowsCASPath(t *testing.T) {
+	env := newDualReadEnvWithLayout(t, metadata.BlockLayoutCASOnly)
+	ctx := context.Background()
+
+	const payloadID = "share/cas-only-cas-row"
+	data := []byte("CAS bytes — cas-only share serves these via verified read")
+	hash := dualReadHash(data)
+	casKey := blockstore.FormatCASKey(hash)
+
+	if err := env.innerRS.WriteBlockWithHash(ctx, casKey, hash, data); err != nil {
+		t.Fatalf("seed remote: %v", err)
+	}
+	fb := &blockstore.FileBlock{
+		ID:            fmt.Sprintf("%s/0", payloadID),
+		Hash:          hash,
+		DataSize:      uint32(len(data)),
+		BlockStoreKey: casKey,
+		State:         blockstore.BlockStateRemote,
+		RefCount:      1,
+		LastAccess:    time.Now(),
+		CreatedAt:     time.Now(),
+	}
+	if err := env.ms.Put(ctx, fb); err != nil {
+		t.Fatalf("PutFileBlock: %v", err)
+	}
+
+	got, err := env.syncer.fetchBlock(ctx, payloadID, 0)
+	if err != nil {
+		t.Fatalf("fetchBlock: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("fetchBlock data = %q, want %q", got, data)
+	}
+	if env.rs.readVerifiedCalls.Load() != 1 {
+		t.Errorf("ReadBlockVerified calls = %d, want 1", env.rs.readVerifiedCalls.Load())
+	}
+	if env.rs.readCalls.Load() != 0 {
+		t.Errorf("ReadBlock calls = %d, want 0 (CAS path must not fall back)", env.rs.readCalls.Load())
+	}
+}
+
+// TestDualRead_BlockLayoutGetterRoundTrips asserts the Syncer exposes its
+// BlockLayout for Plan 05's auto-cutover path and for the wiring tests
+// in Plan 14-02 task 2.
+func TestDualRead_BlockLayoutGetterRoundTrips(t *testing.T) {
+	envCAS := newDualReadEnvWithLayout(t, metadata.BlockLayoutCASOnly)
+	if got := envCAS.syncer.BlockLayout(); got != metadata.BlockLayoutCASOnly {
+		t.Errorf("Syncer.BlockLayout() = %q, want cas-only", got)
+	}
+	envLegacy := newDualReadEnvWithLayout(t, metadata.BlockLayoutLegacy)
+	if got := envLegacy.syncer.BlockLayout(); got != metadata.BlockLayoutLegacy {
+		t.Errorf("Syncer.BlockLayout() = %q, want legacy", got)
+	}
+	// Empty value must coerce to legacy at construction time (D-A6 forward-compat).
+	envEmpty := newDualReadEnvWithLayout(t, metadata.BlockLayout(""))
+	if got := envEmpty.syncer.BlockLayout(); got != metadata.BlockLayoutLegacy {
+		t.Errorf("Syncer.BlockLayout() = %q, want legacy (zero-value coercion)", got)
 	}
 }

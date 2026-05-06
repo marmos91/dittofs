@@ -118,12 +118,12 @@ func TestPerShareBlockStoreLocalOnly(t *testing.T) {
 
 	// Verify BlockStore works: write and read back data.
 	testData := []byte("hello per-share")
-	if err := shareObj.BlockStore.WriteAt(ctx, "test-payload", testData, 0); err != nil {
+	if _, err := shareObj.BlockStore.WriteAt(ctx, "test-payload", nil, testData, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
 	readBuf := make([]byte, len(testData))
-	n, err := shareObj.BlockStore.ReadAt(ctx, "test-payload", readBuf, 0)
+	n, err := shareObj.BlockStore.ReadAt(ctx, "test-payload", nil, readBuf, 0)
 	if err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
@@ -179,19 +179,19 @@ func TestPerShareBlockStoreIsolation(t *testing.T) {
 
 	// Write data to share-1.
 	data1 := []byte("data for share 1")
-	if err := s1.BlockStore.WriteAt(ctx, "payload-1", data1, 0); err != nil {
+	if _, err := s1.BlockStore.WriteAt(ctx, "payload-1", nil, data1, 0); err != nil {
 		t.Fatalf("share-1 WriteAt failed: %v", err)
 	}
 
 	// Write different data to share-2.
 	data2 := []byte("data for share 2")
-	if err := s2.BlockStore.WriteAt(ctx, "payload-2", data2, 0); err != nil {
+	if _, err := s2.BlockStore.WriteAt(ctx, "payload-2", nil, data2, 0); err != nil {
 		t.Fatalf("share-2 WriteAt failed: %v", err)
 	}
 
 	// Verify share-1 does NOT see share-2's data (different local stores).
 	readBuf1 := make([]byte, len(data2))
-	_, err := s1.BlockStore.ReadAt(ctx, "payload-2", readBuf1, 0)
+	_, err := s1.BlockStore.ReadAt(ctx, "payload-2", nil, readBuf1, 0)
 	// For memory local stores, this should either return zero-filled buffer or
 	// the data won't be found. Since both are memory stores but separate instances,
 	// the data should not be present.
@@ -211,7 +211,7 @@ func TestPerShareBlockStoreIsolation(t *testing.T) {
 
 	// Verify share-2 does NOT see share-1's data.
 	readBuf2 := make([]byte, len(data1))
-	_, err = s2.BlockStore.ReadAt(ctx, "payload-1", readBuf2, 0)
+	_, err = s2.BlockStore.ReadAt(ctx, "payload-1", nil, readBuf2, 0)
 	if err == nil {
 		isZero := true
 		for _, b := range readBuf2 {
@@ -227,7 +227,7 @@ func TestPerShareBlockStoreIsolation(t *testing.T) {
 
 	// Verify each share can read its OWN data.
 	readBuf1Own := make([]byte, len(data1))
-	n, err := s1.BlockStore.ReadAt(ctx, "payload-1", readBuf1Own, 0)
+	n, err := s1.BlockStore.ReadAt(ctx, "payload-1", nil, readBuf1Own, 0)
 	if err != nil {
 		t.Fatalf("share-1 ReadAt own data failed: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestPerShareBlockStoreIsolation(t *testing.T) {
 	}
 
 	readBuf2Own := make([]byte, len(data2))
-	n, err = s2.BlockStore.ReadAt(ctx, "payload-2", readBuf2Own, 0)
+	n, err = s2.BlockStore.ReadAt(ctx, "payload-2", nil, readBuf2Own, 0)
 	if err != nil {
 		t.Fatalf("share-2 ReadAt own data failed: %v", err)
 	}
@@ -376,5 +376,5 @@ func TestRemoveShareClosesBlockStore(t *testing.T) {
 	// After Close(), the syncer and local store are stopped. Depending on the
 	// implementation, WriteAt may return an error or silently succeed to the
 	// closed memory store. We just verify no panic occurs.
-	_ = bs.WriteAt(ctx, "post-close-payload", []byte("should fail or noop"), 0)
+	_, _ = bs.WriteAt(ctx, "post-close-payload", nil, []byte("should fail or noop"), 0)
 }

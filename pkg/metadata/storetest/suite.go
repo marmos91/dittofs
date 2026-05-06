@@ -40,6 +40,39 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	t.Run("FileBlockOps", func(t *testing.T) {
 		runFileBlockOpsTests(t, factory)
 	})
+
+	// BlockRefOps: META-04 conformance for FileAttr.Blocks []BlockRef
+	// round-trip across PutFile/GetFile, replace semantics, and the
+	// Postgres-only FK-cascade behavior (Plan 02 D-03). Memory and
+	// Badger skip the cascade scenario via FileBlockRefsAccessor
+	// type-assertion failure.
+	t.Run("BlockRefOps", func(t *testing.T) {
+		runBlockRefOpsTests(t, factory)
+	})
+
+	// ObjectIDOps: META-02 conformance for FileAttr.ObjectID round-trip,
+	// FindByObjectID lookup, mutation lifecycle, and the D-14 first-
+	// committer-wins concurrent-quiesce race (Phase 13 Plan 05). All
+	// three backends implement ObjectIDIndexAccessor so the race
+	// scenario asserts index-row counts directly rather than skipping.
+	t.Run("ObjectIDOps", func(t *testing.T) {
+		runObjectIDOpsTests(t, factory)
+	})
+
+	// INV02Fuzz: Phase 12 D-36 property-based fuzzer for the global
+	// invariant ∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks). Runs
+	// 10 concurrent goroutines × 10 ops each (create/delete/copy mix)
+	// against every backend. The leak-injection scenario uses an
+	// optional RefCountLeakInjector capability — backends that don't
+	// implement it (Badger / Postgres today) skip cleanly.
+	t.Run("INV02Fuzz", func(t *testing.T) {
+		t.Run("PropertyFuzz", func(t *testing.T) {
+			testINV02_PropertyFuzz(t, factory)
+		})
+		t.Run("LeakInjection", func(t *testing.T) {
+			testINV02_LeakInjection(t, factory)
+		})
+	})
 }
 
 // createTestShare is a helper that creates a share and root directory for testing.

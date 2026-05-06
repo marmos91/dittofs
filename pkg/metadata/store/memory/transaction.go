@@ -2,9 +2,11 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // ============================================================================
@@ -77,6 +79,10 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 
 	key := handleToKey(handle)
 	attrCopy := file.FileAttr
+	// Deep-copy slice fields so the stored view cannot be mutated by
+	// later caller-side mutation of the input slice (Phase 12 D-05,
+	// T-12-09 mitigation).
+	attrCopy.Blocks = cloneBlocks(file.Blocks)
 
 	// Track size delta for regular files.
 	if file.Type == metadata.FileTypeRegular {
@@ -88,6 +94,47 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		if delta != 0 {
 			tx.store.usedBytes.Add(delta)
 		}
+	}
+
+	// Phase 13 D-12: Maintain ObjectID secondary index BEFORE overwriting
+	// tx.store.files[key]. The caller (WithTransaction) holds the write
+	// lock; tx.store.files is mutated directly without per-call locking.
+	//
+	// WR-03 (Phase 13 review iteration 1): race detection MUST run before
+	// stale-entry cleanup. memory's WithTransaction has no rollback (see
+	// transaction.go WithTransaction docstring): "If fn returns an error,
+	// no rollback is needed since operations are performed directly on the
+	// maps." If we cleaned the old index entry first and then returned
+	// ErrConflict on the race check, the file row would still hold the
+	// old ObjectID but the index would no longer map it — a subsequent
+	// FindByObjectID(oldObjectID) would return nil even though the file
+	// persists with that ObjectID. Reorder so a failed PutFile leaves
+	// every map untouched.
+	//
+	// Step 1: race detection (D-14 first-committer-wins). If someone
+	// else's file already claims this ObjectID, reject before we mutate
+	// any state.
+	if !attrCopy.ObjectID.IsZero() {
+		if otherKey, claimed := tx.store.objectIndex[attrCopy.ObjectID]; claimed && otherKey != key {
+			return mderrors.NewConflictError(
+				"memory PutFile",
+				fmt.Sprintf("object_id already mapped to file key %s", otherKey),
+			)
+		}
+	}
+
+	// Step 2: stale-entry cleanup. If the existing record had a non-zero
+	// ObjectID and we are now writing a different (or zero) ObjectID,
+	// drop the old index entry. Only runs after the race check passes
+	// so a rejected write never leaves orphaned-or-missing index state.
+	if existing, exists := tx.store.files[key]; exists && existing.Attr != nil &&
+		!existing.Attr.ObjectID.IsZero() && existing.Attr.ObjectID != attrCopy.ObjectID {
+		delete(tx.store.objectIndex, existing.Attr.ObjectID)
+	}
+
+	// Step 3: install the new index entry.
+	if !attrCopy.ObjectID.IsZero() {
+		tx.store.objectIndex[attrCopy.ObjectID] = key
 	}
 
 	tx.store.files[key] = &fileData{
@@ -124,6 +171,16 @@ func (tx *memoryTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 	// Subtract size from counter for regular files.
 	if existing.Attr.Type == metadata.FileTypeRegular && existing.Attr.Size > 0 {
 		tx.store.usedBytes.Add(-int64(existing.Attr.Size))
+	}
+
+	// Phase 13 D-12: drop ObjectID secondary entry. The "only if mapped
+	// to this same key" guard is defensive -- under the write lock that
+	// guards both maps a divergence is impossible, but the guard cheaply
+	// protects against future refactors.
+	if existing.Attr != nil && !existing.Attr.ObjectID.IsZero() {
+		if mapped, ok := tx.store.objectIndex[existing.Attr.ObjectID]; ok && mapped == key {
+			delete(tx.store.objectIndex, existing.Attr.ObjectID)
+		}
 	}
 
 	delete(tx.store.files, key)
@@ -246,10 +303,12 @@ func (tx *memoryTransaction) ListChildren(ctx context.Context, dirHandle metadat
 			Handle: childHandle,
 		}
 
-		// Try to get attributes
+		// Try to get attributes (deep-copy Blocks per Phase 12 D-05 / T-12-09).
 		childKey := handleToKey(childHandle)
 		if fileData, exists := tx.store.files[childKey]; exists {
-			entry.Attr = fileData.Attr
+			attr := *fileData.Attr
+			attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
+			entry.Attr = &attr
 		}
 
 		entries = append(entries, entry)
@@ -469,6 +528,12 @@ func (tx *memoryTransaction) DeleteShare(ctx context.Context, shareName string) 
 			// Subtract size from counter for regular files.
 			if fd.Attr.Type == metadata.FileTypeRegular && fd.Attr.Size > 0 {
 				tx.store.usedBytes.Add(-int64(fd.Attr.Size))
+			}
+			// Phase 13 D-12: drop ObjectID secondary entry too.
+			if fd.Attr != nil && !fd.Attr.ObjectID.IsZero() {
+				if mapped, ok := tx.store.objectIndex[fd.Attr.ObjectID]; ok && mapped == key {
+					delete(tx.store.objectIndex, fd.Attr.ObjectID)
+				}
 			}
 			delete(tx.store.files, key)
 			delete(tx.store.parents, key)

@@ -299,6 +299,241 @@ See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep-v0150-phase-
 for the full mark-sweep design and [CONFIGURATION.md](CONFIGURATION.md)
 for every `gc.*` knob.
 
+### Block Store INV-02 Refcount Audit (v0.15.0 Phase 12)
+
+v0.15.0 (Phase 12 / A3) ships an operator-facing audit for INV-02
+(`∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks)`). The audit runs the
+same metadata enumeration as the GC mark phase (D-36) and emits
+aggregate counts; a non-zero `delta` indicates refcount drift between
+the metadata and block stores.
+
+#### `dfsctl blockstore audit-refcounts <share>`
+
+```
+dfsctl blockstore audit-refcounts <share> [--output table|json|yaml]
+```
+
+Run the INV-02 reconciliation audit for the named share. Emits
+aggregate counts and persists the last-run summary at
+`<localStore>/audit-state/last-inv02.json` (mirrors Phase 11 GC's
+`last-run.json`).
+
+```bash
+# Default text-table output
+dfsctl blockstore audit-refcounts /archive
+
+# Structured JSON for log aggregation / alerting
+dfsctl blockstore audit-refcounts /archive --output json
+
+# YAML for tooling that prefers it
+dfsctl blockstore audit-refcounts /archive --output yaml
+```
+
+**Output fields:**
+
+| Field | Description |
+|-------|-------------|
+| `share` | Share name (matches the CLI argument) |
+| `started_at` | RFC3339 timestamp when the audit started |
+| `duration_ms` | Wall-clock duration of the audit, in milliseconds |
+| `total_files` | Number of files enumerated from `MetadataStore` |
+| `total_refs` | Sum of `len(FileAttr.Blocks)` across all files |
+| `total_refcount` | Sum of `FileBlock.RefCount` across the FileBlockStore |
+| `delta` | `total_refs - total_refcount`. Zero ⇒ INV-02 holds. Non-zero ⇒ drift; investigate. |
+
+**Exit codes:**
+
+- `0` — audit completed successfully **regardless of `delta` value**.
+  A non-zero `delta` is informational, not an error: the CLI reports
+  drift so operators can triage; it does not fail the command.
+- non-zero — infrastructure failure (auth, network, share not found,
+  metadata-store error, etc.).
+
+**Cross-reference:** [FAQ.md](FAQ.md#how-do-i-run-the-inv-02-audit) for
+operator guidance and CI-friendly invocation patterns.
+
+The audit is **operator-invoked**, not periodic. Schedule via cron at
+the cadence that matches your operational risk tolerance until a
+periodic-scheduler phase ships. For belt-and-braces protection, the
+property-based fuzzer at `pkg/metadata/storetest/inv02_fuzz_test.go`
+runs against all 3 built-in backends in CI on every PR, asserting
+INV-02 at every quiescent point under concurrent load.
+
+### Block Store Migration (v0.15.x Phase 14)
+
+Phase 14 (v0.15.x A5) ships the offline migration tool that converts
+a v0.13/v0.14 share's block layout from the legacy
+`{payloadID}/block-{idx}` keyspace to the v0.15 content-addressable
+(CAS) `cas/{hh}/{hh}/{hex}` keyspace. The tool re-chunks every file
+via FastCDC, uploads CAS chunks (dedup-aware via `GetByHash`), runs
+a HEAD-per-ref integrity check, and atomically flips the per-share
+`block_layout` flag to `cas-only` before deleting legacy keys.
+
+> **`docs/CLI.md` is hand-maintained**, not auto-generated. The
+> sections below mirror the cobra command tree and flag set; they
+> are kept in sync with `cmd/dfsctl/commands/blockstore/migrate.go`
+> on every change. Run `dfsctl blockstore migrate --help` and
+> `dfsctl blockstore migrate status --help` for the canonical
+> on-the-wire reference. The full operator runbook with worked
+> transcripts lives at
+> [BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md#phase-14-v015x-a5--dfsctl-blockstore-migrate-runbook).
+
+#### `dfsctl blockstore migrate`
+
+```text
+dfsctl blockstore migrate --share <name> [flags]
+```
+
+Migrate a share's blocks from the legacy v0.13/v0.14 path-indexed
+layout to the v0.15 content-addressed (CAS) layout.
+
+**Offline-only.** The tool refuses to start while a daemon is
+serving the target share (D-A5). Stop the daemon (or the
+target-share's adapter) before invoking.
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--share NAME` | (required) | Share name to migrate. |
+| `--dry-run` | `false` | Walk the file list and report estimated upload bytes WITHOUT writing any data (no metadata-store, FileBlockStore, or RemoteStore mutation). |
+| `--parallel N` | `4` | Number of concurrent per-file workers. Clamped to `[1, 64]` with a warning log on out-of-range values (D-A10). |
+| `--bandwidth-limit STR` | empty | Aggregate upload-byte ceiling. Accepts SI (`KB`/`MB`/`GB`/`TB`/`PB`, 1000-base) and IEC (`KiB`/`MiB`/`GiB`/`TiB`/`PiB`, 1024-base) suffixes. Empty / `0` = unlimited (D-A11). The limit applies to PUT bytes only; legacy reads stay unmetered (D-A9). |
+| `--state-dir DIR` | `{share-data-dir}/.migration-state` | Override journal/snapshot directory. The journal is `.migration-state.jsonl`; the rolling snapshot is `.migration-state.snapshot.json`. |
+
+**Examples:**
+
+```bash
+# Migrate a share with default 4 workers, no bandwidth cap
+dfsctl blockstore migrate --share myshare
+
+# Estimate upload size before committing to a maintenance window
+dfsctl blockstore migrate --share myshare --dry-run
+
+# Cap aggregate upload at 50 MB/s across all workers
+dfsctl blockstore migrate --share myshare --bandwidth-limit 50MB
+
+# TB-scale share: 16 workers, 200 MB/s aggregate cap
+dfsctl blockstore migrate --share vm-images --parallel 16 --bandwidth-limit 200MB
+
+# Override journal directory (e.g., for shared-FS daemons)
+dfsctl blockstore migrate --share myshare --state-dir /var/lib/dittofs/migrate-state
+```
+
+**Stdout summary** (single-line, machine-parseable):
+
+```text
+Migration applied: files_total=N files_done=N files_skipped=N \
+    bytes_uploaded=N bytes_deduped=N duration_ms=N
+```
+
+The `applied` token is replaced by `dry-run` when `--dry-run` is
+passed.
+
+**Progress reporting:**
+
+- **TTY stdout:** 10 fps `\r`-rewriting progress bar overlaid on
+  stdout (`Migrating: D/T (PCT%) ETA E`). Bar is silenced when
+  stdout is piped.
+- **Structured slog** (always on, machine-parseable): every per-file
+  commit emits a `migrate.file.committed` event with
+  `blocks_count`, `bytes_uploaded`, `bytes_deduped`, `files_done`,
+  `files_total`. Pipe stdout to a logfile to capture the stream.
+
+**Exit codes:**
+
+- `0` — migration completed successfully (all files committed,
+  integrity check passed, `block_layout` flipped to `cas-only`,
+  legacy keys deleted).
+- non-zero — daemon-active probe failed, integrity check failed,
+  or any infrastructure error (auth, network, metadata-store,
+  remote-store). The journal stays in place and a re-run resumes
+  from the last committed file.
+
+**Resume / recovery:** the journal at `{share-data-dir}/.migration-state.jsonl`
+captures every successful per-file commit. Re-running the same
+command resumes from the journal head. See
+[BLOCKSTORE_MIGRATION.md — Recovery](BLOCKSTORE_MIGRATION.md#recovery)
+for the full crash-recovery and integrity-check failure procedures.
+
+**Cross-references:**
+
+- [BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md#phase-14-v015x-a5--dfsctl-blockstore-migrate-runbook) — full operator runbook with worked transcripts.
+- [ARCHITECTURE.md](ARCHITECTURE.md#migration--block-layout-routing-v015x-a5) — design rationale + dual-read shim + per-share `block_layout` flag.
+- [FAQ.md](FAQ.md#how-do-i-migrate-from-v013--v014-to-v015) — operator quick-start.
+
+#### `dfsctl blockstore migrate status`
+
+```text
+dfsctl blockstore migrate status --share <name> [--output table|json|yaml]
+```
+
+Show migration progress for a share. Combines the per-share
+`.migration-state.jsonl` journal (when a migration ran or is running)
+with the share's `BlockLayout` flag from the metadata store, returning
+a unified view of progress and current state.
+
+The command is **online-friendly** — it queries the daemon's REST
+endpoint, so it works against a running daemon (unlike `migrate`
+itself which requires the daemon to be offline for the target share).
+Authentication is via the operator's existing `dfsctl login`
+credentials.
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--share NAME` | (required) | Share name to query. |
+| `--output, -o` | `table` | Output format: `table` (FIELD/VALUE key-value table), `json`, or `yaml`. |
+
+**Output fields:**
+
+| Field | Description |
+|-------|-------------|
+| `Share` | Share name (matches the CLI argument). |
+| `BlockLayout` | `legacy` or `cas-only`. Authoritative state from the metadata store. |
+| `FilesTotal` | Total regular files in the share. `-1` if the server-side walk hit its 30s timeout (TB-scale shares can opt out by querying the REST endpoint with `?with_total=false`). |
+| `FilesDone` | Files committed by the migration journal. |
+| `FilesSkipped` | Files skipped (already CAS-laid-out before the migration started, or zero-byte). |
+| `BytesUploaded` | Sum of bytes PUT to remote across done files. |
+| `BytesDeduped` | Sum of bytes hit by `GetByHash` (skipped at upload). |
+| `JournalPresent` | `true` if `.migration-state.jsonl` exists and is non-empty. |
+| `SnapshotPresent` | `true` if the rolling snapshot exists. |
+| `LastCommitAt` | RFC3339 timestamp (UTC) of the last journal commit. Empty if no journal. |
+
+**Examples:**
+
+```bash
+# Default human-readable table
+dfsctl blockstore migrate status --share myshare
+
+# JSON for log aggregation / dashboard scraping
+dfsctl blockstore migrate status --share myshare -o json
+
+# YAML for tooling that prefers it
+dfsctl blockstore migrate status --share myshare -o yaml
+
+# Pre-flight check before scheduling a maintenance window
+dfsctl blockstore migrate status --share myshare -o json | \
+    jq '{layout: .block_layout, files: .files_total}'
+```
+
+**REST equivalent:** `GET /api/v1/blockstore/migrate/status?share=NAME`
+returns the same JSON shape and is admin-only (JWTAuth +
+RequireAdmin). The `?with_total=false` query parameter skips the
+file-count walk on pathologically large shares.
+
+**Exit codes:**
+
+- `0` — status retrieved successfully (regardless of migration
+  state).
+- non-zero — share unknown (404 maps to a friendly `share %q not
+  found` message), auth failure, network error, or other
+  infrastructure failure.
+
+**Cross-reference:** [BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md#phase-14-v015x-a5--dfsctl-blockstore-migrate-runbook)
+for the full operator runbook with worked transcripts.
+
 ## Global Flags
 
 ### dfs

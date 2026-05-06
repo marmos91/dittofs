@@ -178,6 +178,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			// Handlers shared between multiple route groups.
 			blockStoreHandler := handlers.NewBlockStoreStatsHandler(rt)
 			blockGCHandler := handlers.NewBlockStoreGCHandler(rt)
+			blockAuditHandler := handlers.NewBlockStoreAuditHandler(rt)
 			mountHandler := handlers.NewMountHandler(rt)
 
 			// Share management (admin only)
@@ -213,6 +214,11 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				// {kind} vs {name} at the same segment).
 				r.Post("/{name}/blockstore/gc", blockGCHandler.RunGC)
 				r.Get("/{name}/blockstore/gc-status", blockGCHandler.GCStatus)
+				// Phase 12 D-36: per-share INV-02 reconciliation audit.
+				// Mirrors GC endpoint shape (per-share path, JWT auth via
+				// the inherited admin middleware); persists last-inv02.json
+				// under the share's audit-state directory.
+				r.Post("/{name}/audit/refcounts", blockAuditHandler.RunAudit)
 			})
 
 			// Global block store management (admin only)
@@ -221,6 +227,15 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 
 				r.Get("/stats", blockStoreHandler.Stats)
 				r.Post("/evict", blockStoreHandler.Evict)
+
+				// Phase 14 D-A16 (Plan 14-06): per-share migration progress
+				// surface. Mirrors the dfsctl `blockstore migrate status`
+				// CLI's output shape so dittofs-pro consumes a single
+				// contract. RequireAdmin (inherited from this group) +
+				// JWTAuth (inherited from the protected /api/v1 group)
+				// enforce admin-only access (T-14-06-01 mitigation).
+				migrateStatusHandler := handlers.NewMigrateStatusHandler(rt)
+				r.Get("/migrate/status", migrateStatusHandler.Status)
 			})
 
 			// Store management (admin only)

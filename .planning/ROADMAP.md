@@ -27,9 +27,9 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 - [ ] **Phase 09: Adapter layer cleanup (ADAPT)** — Shared NFS/SMB helpers, SMB pool parity, consolidated error mapping (GH issue: #427)
 - [ ] **Phase 10: FastCDC chunker + hybrid local store (A1)** — Append log + hash-keyed blocks dir + BLAKE3 (GH issue: #421)
 - [ ] **Phase 11: CAS write path + GC rewrite (A2)** — Content-addressable keys, mark-sweep GC, simplified state machine (GH issue: #422)
-- [ ] **Phase 12: CDC read path + metadata schema + engine API (A3)** — `[]BlockRef` API, Cache by ContentHash, schema migration (GH issue: #423)
-- [ ] **Phase 13: Merkle root + file-level dedup (A4)** — `FileAttr.ObjectID` + short-circuit full-file dedup (GH issue: #424)
-- [ ] **Phase 14: Migration tool (A5)** — `dfsctl blockstore migrate` offline re-chunk + re-hash (GH issue: #425)
+- [x] **Phase 12: CDC read path + metadata schema + engine API (A3)** — `[]BlockRef` API, Cache by ContentHash, schema migration (GH issue: #423) (completed 2026-04-27)
+- [x] **Phase 13: Merkle root + file-level dedup (A4)** — `FileAttr.ObjectID` + short-circuit full-file dedup (GH issue: #424) (completed 2026-04-28)
+- [x] **Phase 14: Migration tool (A5)** — `dfsctl blockstore migrate` offline re-chunk + re-hash (GH issue: #425) (phases complete 2026-05-05; production wiring of `openOfflineRuntime` still gates production rollout)
 - [ ] **Phase 15: Legacy cleanup (A6)** — Remove dual-read shim, delete deprecated symbols (GH issue: #426)
 
 ## Phase Details
@@ -163,7 +163,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - Dual-read compatibility (legacy `{payloadID}/block-{idx}` + new `cas/...`) must coexist cleanly during the A2–A5 window — keep `FormatStoreKey` alive; engine falls through to legacy on CAS miss
   - Remote verification BLAKE3 cost on the read hot path must not regress random-read IOPS (target ≥1,350) — measure with and without the verification step in benchmarks
   - Mark phase enumeration cost grows with metadata-store file count — stream via cursor rather than loading into memory; abort on any store error (fail-closed)
-**Plans**: TBD
+**Plans**: 9 plans (shipped)
 
 ### Phase 12: CDC read path + metadata schema + engine API (A3)
 **Goal**: Migrate the metadata schema to `[]BlockRef`, change the engine `ReadAt/WriteAt` signature to take `[]BlockRef` from the caller, collapse `readbuffer`+`prefetcher` into a single `Cache` keyed by `ContentHash`, and update Badger/Postgres/Memory stores to the extended conformance suite.
@@ -190,7 +190,20 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - Postgres schema migration must be reversible and tested against live data — ship behind a migration version bump with forward-only rollout plan; preserve legacy column until A5 migration completes
   - Cache keying change from `(payloadID, blockIdx)` to `ContentHash` could invalidate existing warm cache state on deploy — acceptable since Cache is in-memory only, but document the cold-cache perf blip
   - Property-based INV-02 refcount fuzzer must cover concurrent file creates/deletes/copies across shares
-**Plans**: TBD
+**Plans**: 13 plans
+  - [x] 12-01-PLAN.md — META-01: BlockRef type + FileAttr.Blocks field + ErrBlockRefMissing sentinel (PR-A wave 1 root) — shipped 2026-04-26 (`c3efab10`, `9bb213b1`)
+  - [x] 12-02-PLAN.md — META-01/META-04: Postgres file_block_refs migration + objects.go CRUD + cascade test — shipped 2026-04-27 (`d2003de0`, `c5252bd3`, `e1c6c8f5`)
+  - [x] 12-03-PLAN.md — META-01/META-04: Badger JSON forward-compat + Memory deep-copy of Blocks — shipped 2026-04-27 (`350edd87`, `90cb3013`, `36311ac0`)
+  - [x] 12-04-PLAN.md — META-03: Narrow FileBlockStore to 6 methods + lift EnumerateFileBlocks to MetadataStore — shipped 2026-04-27 (`4440486d`, `11a38b43`, `d9a24b7d`)
+  - [x] 12-05-PLAN.md — INV-02 (D-37): Fix WR-4-01 dedup donor-refcount leak in uploadOne — shipped 2026-04-27 (`9bff89eb`, `f7495b91`)
+  - [x] 12-06-PLAN.md — META-04: storetest BlockRef round-trip + FK cascade conformance scenarios — shipped 2026-04-27 (`f4652cab`, `3664515a`)
+  - [x] 12-07-PLAN.md — API-01..04: Engine ReadAt/WriteAt/CopyPayload/Truncate/Delete []BlockRef signatures + findBlocksForRange + MetadataCoordinator + API-02 gate (PR-B) — shipped 2026-04-27 (`efd4099f`, `9ed5dd00`, `ff7e568c`)
+  - [x] 12-08-PLAN.md — API-01/02: Adapter common — CacheInvalidator + diffRemovedHashes + CopyPayload (BLOCKER-2) + ErrBlockRefMissing errmap (D-23). []BlockRef threading through Read/Write helpers deferred to 12-09 cache rewrite per executor's no-handler-touch constraint — shipped 2026-04-27 (`59d194da`, `1ee234f5`, `0c20cecc`, `e6c1d55c`, `8a6d414d`)
+  - [x] 12-09-PLAN.md — CACHE-01..05: Greenfield Cache rewrite + delete prefetch.go and bifurcation tests (PR-C). Single CAS-keyed Cache type replaces ReadBuffer + Prefetcher; Null Object pattern eliminates defensive nil-checks; engine.ReadAt invokes cache.OnRead post-read; Plan 10 mmap reintroduces byte-serving — shipped 2026-04-27 (`52a73faa`, `f4b24de5`, `8ab2215f`, `59a960bf`, `782d99f5`)
+  - [x] 12-10-PLAN.md — CACHE-06: Build-tagged single-copy mmap (linux/darwin) + ReadFile fallback (windows)
+  - [x] 12-11-PLAN.md — INV-02: Property-based fuzzer in storetest + audit-refcounts CLI + REST endpoint
+  - [x] 12-12-PLAN.md — D-43 perf gate: rand-read regression test, BENCHMARKS.md update
+  - [x] 12-13-PLAN.md — D-41 docs: ARCHITECTURE / IMPLEMENTING_STORES / FAQ / CONFIGURATION / CLI / BLOCKSTORE_MIGRATION
 
 ### Phase 13: Merkle root + file-level dedup (A4)
 **Goal**: Populate `FileAttr.ObjectID` as a BLAKE3 Merkle root over sorted block hashes at file quiesce, and short-circuit chunking on full-file writes when the provisional `ObjectID` matches an existing file — the primary cross-VM dedup win.
@@ -214,7 +227,22 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - Lazy `ObjectID` update means short-circuit misses fresh writes that haven't quiesced — acceptable tradeoff per plan; revisit if dedup hit rate demands eager update
   - Cross-share refcounting requires careful transaction boundaries — verify INV-02 under concurrent multi-share load
   - Synthetic VM-fleet fixture must be representative — use real qcow2 base-image shifted clones, not simple byte-shift
-**Plans**: TBD
+**Plans**: 15 plans (13-01..13-10 SHIPPED; 13-11..13-15 added 2026-04-28 per 13-VERIFICATION.md gap closure)
+  - [x] 13-01-PLAN.md — META-02/BSCAS-04: ComputeObjectID helper + FileAttr.ObjectID field + drive-by SHA-256→BLAKE3 comment fix
+  - [x] 13-02-PLAN.md — META-02 (Postgres): 000013 migration + object_id column read/write in PutFile/GetFile
+  - [x] 13-03-PLAN.md — META-02 (Badger+Memory): secondary index maintenance in PutFile/DeleteFile under existing locks
+  - [x] 13-04-PLAN.md — META-02: MetadataStore.FindByObjectID interface + 3 backend impls + MetadataCoordinator extension + post-Flush ObjectID compute
+  - [x] 13-05-PLAN.md — META-02 conformance: 8 storetest scenarios (round-trip, lookup, race, lifecycle, sort/restart stability, cross-share scope) + INV02Fuzz extension
+  - [x] 13-06-PLAN.md — BSCAS-05/DEDUP-01: TDD-RED unit tests for the file-level dedup short-circuit
+  - [x] 13-07-PLAN.md — BSCAS-05/DEDUP-01: short-circuit implementation + race resolution + cache invalidation + log truncation
+  - [x] 13-08-PLAN.md — DEDUP-02: cross-share scope storetest scenario + e2e smoke test
+  - [x] 13-09-PLAN.md — DEDUP-03: pinned qcow2 + 8 clones nightly fixture asserting ≥40% reduction (VER-03 gate)
+  - [x] 13-10-PLAN.md — D-21 perf gate (≤2% rand-write regression) + D-19 docs updates (ARCHITECTURE/IMPLEMENTING_STORES/FAQ/BLOCKSTORE_MIGRATION)
+  - [x] 13-11-PLAN.md — Gap closure: TDD-RED E2E test (TestObjectIDPopulation_NFSWriteQuiesce) asserting FileAttr.ObjectID populated after NFS write quiesce
+  - [x] 13-12-PLAN.md — Gap closure (BSCAS-04 / META-02): wire Syncer.Flush to invoke persistFileBlocksAfterFlush on full quiesce — closes VERIFICATION must-have #1
+  - [x] 13-13-PLAN.md — Gap closure (BSCAS-05 / DEDUP-01): wire Syncer.Flush to invoke TrySpeculativeFileLevelDedup before per-block drain on D-09 trigger — closes VERIFICATION must-have #2
+  - [ ] 13-14-PLAN.md — Gap closure (DEDUP-03): nightly run + freeze qcow2BaseSHA256 + record observed reduction + verify Plan 13-11 RED→GREEN — closes VERIFICATION must-have #5
+  - [x] 13-15-PLAN.md — Gap closure cleanup: refresh ARCHITECTURE / BLOCKSTORE_MIGRATION docs + remove stale 'deferred wiring' comments in pkg/blockstore/engine/ to reflect wired state
 
 ### Phase 14: Migration tool (A5)
 **Goal**: Ship `dfsctl blockstore migrate --share <name>` offline migration tool — reads legacy path-indexed blocks, re-chunks via FastCDC, uploads as CAS chunks, updates `FileAttr.Blocks`, deletes legacy keys after integrity verification. Supports resumable state, dry-run, bandwidth limits, and parallelism.
@@ -238,7 +266,14 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - Bandwidth limit must apply to the aggregate of parallel workers, not per-worker — use a shared token bucket
   - Legacy key deletion must happen only after all references in `FileAttr.Blocks` are confirmed migrated — enforce via post-migration integrity check before unlink
   - Four-week duration includes production rollout window — A6 (Phase 15) intentionally deferred until operators confirm per-share migration complete
-**Plans**: TBD
+**Plans**: 7 plans
+  - [x] 14-01-share-blocklayout-PLAN.md — MIG-03: ShareOptions.BlockLayout field across Memory/Badger/Postgres + storetest conformance
+  - [x] 14-02-engine-blocklayout-routing-PLAN.md — MIG-03: Engine reads BlockLayout at share-open; ErrLegacyReadOnCASOnly fail-loud gate
+  - [x] 14-03-migrate-tool-core-PLAN.md — MIG-01/MIG-02 (partial): blockstore command tree + offline probe + append-only journal + per-file FastCDC re-chunk + GetByHash dedup probe + ObjectID backfill (production controlplane composition deferred to 14-04)
+  - [x] 14-04-bandwidth-parallel-PLAN.md — MIG-02: --parallel errgroup + shared rate.Limiter (KB/MB/GB + KiB/MiB/GiB) + slog progress + TTY bar (production composition deferred — see SUMMARY)
+  - [x] 14-05-integrity-cutover-PLAN.md — MIG-04: HEAD-per-ref + content-hash header parity + auto-cutover txn (block_layout flip) + end-of-share legacy GC
+  - [x] 14-06-status-rest-PLAN.md — MIG-01/MIG-02: dfsctl blockstore migrate status (table/JSON/YAML) + GET /api/v1/blockstore/migrate/status REST endpoint (admin-auth) + Runtime.LocalStoreDir accessor
+  - [ ] 14-07-docs-PLAN.md — MIG-01..04: BLOCKSTORE_MIGRATION.md runbook with 4 worked transcripts + ARCHITECTURE/IMPLEMENTING_STORES/FAQ/CLI updates + human-verify checkpoint
 
 ### Phase 15: Legacy cleanup (A6)
 **Goal**: After all production shares have migrated, remove the dual-read compatibility shim and delete every deprecated symbol — leaving only the CAS code path and the simplified three-state machine.
@@ -286,9 +321,9 @@ Verification requirements VER-01 through VER-06 are phase-independent and gate t
 | 09. Adapter layer cleanup (ADAPT) | 0/5 | Not started | - |
 | 10. FastCDC chunker + hybrid local store (A1) | 0/? | Not started | - |
 | 11. CAS write path + GC rewrite (A2) | 0/? | Not started | - |
-| 12. CDC read path + metadata schema + engine API (A3) | 0/? | Not started | - |
-| 13. Merkle root + file-level dedup (A4) | 0/? | Not started | - |
-| 14. Migration tool (A5) | 0/? | Not started | - |
+| 12. CDC read path + metadata schema + engine API (A3) | 13/13 | Complete    | 2026-04-27 |
+| 13. Merkle root + file-level dedup (A4) | 14/15 | Complete    | 2026-04-28 |
+| 14. Migration tool (A5) | 5/7 | In Progress|  |
 | 15. Legacy cleanup (A6) | 0/? | Not started | - |
 
 ## Coverage Summary

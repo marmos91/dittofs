@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.15.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 10-12-PLAN.md (Phase 10 final plan, docs surface)
-last_updated: "2026-04-24T19:57:20.294Z"
-last_activity: 2026-04-24
+stopped_at: Phase 14 Plan 07 shipped — operator docs runbook (MIG-01..MIG-04 closed; openOfflineRuntime production wire-up still gates production rollout, tracked under #425)
+last_updated: "2026-05-05T17:59:30.000Z"
+last_activity: 2026-05-05
 progress:
   total_phases: 8
-  completed_phases: 3
-  total_plans: 34
-  completed_plans: 34
+  completed_phases: 6
+  total_plans: 66
+  completed_plans: 66
   percent: 100
 ---
 
@@ -21,22 +21,25 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-23)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 10 — fastcdc-chunker-hybrid-local-store-a1
+**Current focus:** Phase 13 — merkle-root-file-level-dedup-a4
 
 ## Current Position
 
 Milestone: v0.15.0
-Phase: 10 (fastcdc-chunker-hybrid-local-store-a1) — EXECUTING
-Plan: 12 of 12
-Status: Ready to execute
-Last activity: 2026-04-24
+Phase: 14
+Plan: 7 of 07 complete (operator docs runbook — MIG-01..MIG-04 closed; openOfflineRuntime production wire-up still gates production rollout, tracked under #425)
+Branch: `gsd/phase-12-cdc-read-path-metadata-engine-api`
+Status: Phase 14 complete (Plans 01–07 shipped)
+Last activity: 2026-05-05
 
 ## Next Actionable
 
-Phase 08 (A0 — Pre-refactor cleanup) and Phase 09 (ADAPT — Adapter layer cleanup) are both pre-A1 tracks with no dependencies. Either can start immediately; they proceed in parallel.
+Phase 12 (A3): CDC read path + metadata schema + engine API. 14 requirements across META-01/03/04, API-01/02/03/04, CACHE-01..06, INV-02. Estimated ~2 weeks. Dependencies satisfied: Phase 11 (A2, #422, shipped PR #453) + Phase 09 (ADAPT, #427, shipped PR #438).
 
-- `/gsd-plan-phase 8` — Pre-refactor cleanup (TD-01..TD-04), GH #420
-- `/gsd-plan-phase 9` — Adapter layer cleanup (ADAPT-01..ADAPT-05), GH #427
+- `/gsd-discuss-phase 12 --chain` — interactive discuss → auto plan + execute
+- `/gsd-discuss-phase 12 --auto` — fully autonomous (Claude picks defaults)
+- `/gsd-plan-phase 12` — skip discuss, go straight to planning
+- GH issue: #423
 
 ## Completed Milestones
 
@@ -57,6 +60,19 @@ Phase 08 (A0 — Pre-refactor cleanup) and Phase 09 (ADAPT — Adapter layer cle
 
 ## Accumulated Context
 
+### v0.15.0 Progress
+
+| Phase | Name | Status | PR |
+|-------|------|--------|-----|
+| 08 | Pre-refactor cleanup (A0) | shipped | #437 |
+| 09 | Adapter layer cleanup (ADAPT) | shipped | #438 |
+| 10 | FastCDC chunker + hybrid local store (A1) | shipped | #443 |
+| 11 | CAS write path + GC rewrite (A2) | shipped | #453 (squash 2b96c965, merged 2026-04-26) |
+| 12 | CDC read path + metadata schema + engine API (A3) | **ready to plan** | #423 (issue) |
+| 13 | Merkle root + file-level dedup (A4) | blocked by 12 | #424 |
+| 14 | Migration tool (A5) | **phases complete; production wiring deferred** — Plans 01–07 shipped 2026-05-05; MIG-01..MIG-04 all closed; operator runbook `docs/BLOCKSTORE_MIGRATION.md` ships with prominent Known Limitation callout for `openOfflineRuntime` production wire-up gap; production rollout gated on #425 closing | #425 |
+| 15 | Legacy cleanup (A6) | deferred until A5 in production | #426 |
+
 ### v0.15.0 Decisions
 
 - Phase numbering continues from v0.13.0 last phase (7) → v0.15.0 starts at 8 and runs 08-15 (8 phases total)
@@ -73,15 +89,33 @@ Phase 08 (A0 — Pre-refactor cleanup) and Phase 09 (ADAPT — Adapter layer cle
 - v0.13.0 backup backward compatibility NOT required (v0.13.0 never released) — backup code paths are free to break across phases
 - Performance regression tolerance: ≤6% on random write (≥600 IOPS), random read (≥1350), sequential write (≥48 MB/s), sequential read (≥60 MB/s)
 - A6 (Phase 15) intentionally deferred until A5 (Phase 14) rollout confirmed in production
+- Phase 12 Plan 04 (META-03 / D-09): public `blockstore.FileBlockStore` is the spec-literal 6 methods (`GetByHash`, `Put`, `Delete`, `IncrementRefCount`, `DecrementRefCount`, `ListPending`); engine-internal helpers (`GetFileBlock`, `ListFileBlocks`) live on a separate `EngineFileBlockStore` interface and on `metadata.MetadataStore`; `EnumerateFileBlocks` lifted from `FileBlockStore` to `MetadataStore` (D-08).
+- Phase 12 Plan 07 (API-01..04): engine API threads `[]BlockRef` end-to-end on ReadAt/WriteAt/Truncate/Delete/CopyPayload. CopyPayload is now O(1) via `MetadataCoordinator.IncrementRefCount` per unique source hash. API-02 strict-grep gate enforced: zero `pkg/metadata` imports under `pkg/blockstore/engine/*.go` production files except `gc.go` (preceded by `// API-02 justification:`). PayloadID stays as `string` at the engine seam — deviation from plan's `blockstore.PayloadID` alias avoided adapter-wide type-system churn (`metadata.PayloadID` is the convention).
+- Phase 12 Plan 08 (CACHE-05 seam + CopyPayload): adds `common.CacheInvalidator` interface (defined in package common, not engine — Phase 09 narrow-interface pattern), `common.diffRemovedHashes` (BlockRef hash set-diff preserving multiplicity for refcount-aware callers), `common.CopyPayload` (atomic engine.CopyPayload + dst PutFile in one metadata txn — BLOCKER-2 resolution; mid-loop Increment failure rolls back ALL writes; cache.InvalidateFile fires only on commit success per D-35), and explicit `ErrBlockRefMissing` rows in content_errmap.go (D-23 — operators triage CAS-integrity failures via log inspection; wire surface is identical to ErrCASContentMismatch). `common.{Read,Write}ToBlockStore` signatures kept unchanged because the executor's strict critical_constraint forbids touching protocol handlers — the actual []BlockRef threading deferred to Plan 12-09 cache rewrite when an engine-side accessor pattern lands. Plan body's action-step-3 (which directs handler call-site updates) was reconciled in favor of the `<must_haves>` truth that handlers stay untouched (D-26).
+- Phase 12 Plan 09 (CACHE-01..05 + Null Object): greenfield CAS-keyed `engine.Cache` replaces Phase 11's `ReadBuffer` (keyKindCoord/CAS/Legacy bifurcation from D-22) and the standalone `engine.Prefetcher` worker pool. Single keyspace (ContentHash), single budget, single Get/Put/InvalidateFile API. CACHE-03 sequential threshold raised from 2 to 3. CACHE-04 OnRead is the sole prefetch hint API; engine.ReadAt invokes it post-read with BlockRef hashes. CACHE-05 InvalidateFile is surgical (drops only listed hashes; preserves cross-file dedup CACHE-02). `nullCache{}` Null Object eliminates defensive `if bs.cache == nil` guards — verified by grep. Cache is hint-only for Plan 09 (engine.ReadAt does NOT serve from cache.Get); Plan 10 mmap reintroduces byte-serving without heap-copy cost. Flush auto-promote removed (Phase 11 behavior didn't translate to hash-keyed cache; OS page cache covers the hot-path benefit until Plan 10). CacheStats JSON shape preserved (read_buffer_entries / read_buffer_used / read_buffer_max) so dfsctl block stats keeps working. Deviation: Task 1's literal "replace cache.go entirely" would have broken the Task 1 build (engine.go still references ReadBuffer/Prefetcher), so the new Cache was added alongside in Task 1 and the legacy code deleted in Task 3. Plan 12-08's deferred []BlockRef threading through common.{Read,Write}ToBlockStore was NOT addressed in this plan — the engine accessor pattern that would unblock it is still missing; flagged for a future cleanup plan or absorbed into Plan 13's file-level dedup integration.
 
 ### v0.13.0 Decisions (archived context)
 
 Historical v0.13.0 decisions preserved in `.planning/milestones/v0.13.0-archive/` for reference; the v0.15.0 refactor deletes `BackupHoldProvider` + `FinalizationCallback` (v0.13.0 scaffolding) in Phase 08.
 
+- Phase 14 Plan 01 (MIG-03 / D-A6): per-share `block_layout` flag landed across Memory + Badger + Postgres backends. New `metadata.BlockLayout` enum (legacy / cas-only) on `ShareOptions`, `ParseBlockLayout` empty-string-coerces-to-legacy for forward-compat with pre-Phase-14 rows, unknown values surface as `ErrInvalidBlockLayout` (T-14-01-01). Postgres uses a dedicated `block_layout TEXT NOT NULL DEFAULT 'legacy'` column (migration 000014, reversible) authoritative over the legacy options JSON blob. Conformance suite `storetest.RunBlockLayoutSuite` invoked from all three backend test files; Memory + Badger pass green by default, Postgres compiles + skips cleanly without `DITTOFS_TEST_POSTGRES_DSN`. **Pre-existing Badger bug fixed:** `CreateRootDirectory.createNewRoot` (and the transactional equivalent) was overwriting `ShareOptions` with a fresh `metadata.Share{Name: shareName}` literal — silently wiping not just BlockLayout but every other share option. Fix preserves the existing `Share.Options` when materializing the root row. Commits: `67af6a8b` (types), `7eff1c34` (backends), `5b30ff05` (conformance + Badger fix).
+
+- Phase 14 Plan 02 (MIG-03 / D-A8): per-share `BlockLayout` gate landed inside `engine.Syncer.dispatchRemoteFetch`. New `engine.ErrLegacyReadOnCASOnly` sentinel surfaces as a fail-loud signal when a legacy-shaped FileBlock (zero `Hash`) is encountered on a `cas-only` share — the function logs at Error with `block_id` + `store_key` and returns the wrapped sentinel rather than silently falling back to `ReadBlock`. CAS path untouched; legacy shares preserve the dual-read fallback unchanged (T-14-02-03 non-regression asserted). `BlockLayout` field lives on `Syncer` (binding the routing decision next to the gate); `BlockStore.BlockLayout()` getter delegates for tests + Plan 14-05 cutover reload. `shares.Service.createBlockStoreForShare` reads `BlockLayout` from `metadata.ShareOptions` (D-A6 source-of-truth, casts `EngineFileBlockStore` → `metadata.MetadataStore` mirroring the coordinator-wiring pattern) and threads into `SyncerConfig.BlockLayout`. Empty/unknown values coerce to legacy at `NewSyncer` time (defense-in-depth — engine never trusts the metadata layer's coercion was applied). Three new dual-read tests + getter round-trip + three wiring tests (cas-only / legacy / zero-value) cover the matrix. Commits: `501bc008` (gate + tests), `531fd20b` (wiring + getter).
+
+- Phase 14 Plan 04 (MIG-02 / D-A9, D-A10, D-A11, D-A15): bandwidth ceiling + worker pool + progress reporter all landed. `ParseBandwidthLimit` accepts SI (KB/MB/GB, 1000-base) + IEC (KiB/MiB/GiB, 1024-base) suffixes; '' / '0' = unlimited; negative + unrecognized → wrapped `ErrInvalidBandwidth`. `newBandwidthLimiter` wraps `rate.NewLimiter` with a 1 MiB burst floor so 16 MiB FastCDC chunks never trip the burst-exceeded guard; `bandwidthWait` splits oversized requests across multiple WaitN calls. Single shared `*rate.Limiter` gates every S3 PUT byte across all workers (D-A9 — uploads only, legacy reads stay unmetered). `workerPool` wraps the share walk in `errgroup.WithContext` + `SetLimit(parallel)` clamped to `[1, 64]`; `journal.IsFileDone` short-circuits BEFORE goroutine spawn; first worker error cancels gctx and the dispatch for-loop's explicit `gctx.Done()` check breaks out via `goto wait` so `g.Wait()` surfaces the canonical first error (pure errgroup wouldn't — Go() keeps queueing submissions even after cancellation, so the dispatch-loop check is what actually stops dispatch). `progressReporter` emits structured slog `migrate.file.committed` events (D-A15) on every commit unconditionally; TTY-detected stdout (via `term.IsTerminal`) gets a 10 fps `\r`-rewriting bar overlay (silenced on pipe / file). `runMigrateLoopWithRuntime` materializes the walk into a `[]walkedFile` slice and dispatches through `pool.Run`. **Production composition still deferred:** `openOfflineRuntime` continues to return `ErrOfflineRuntimeNotWired`. The plan-as-written (read in this session) did NOT include the controlplane-DB plumbing in its task list (despite the Plan 14-03 SUMMARY's forward-reference). Recommended as a small standalone Plan 14-04.5 or absorbed into Plan 14-05 alongside the integrity check + cutover. Loop fully unit-tested via `newTestOfflineRuntime`. Two atomic commits: `95fb5f50` (Task 1 — bandwidth parser + limiter wiring) + `d9552195` (Task 2 — worker pool + progress reporter). 32 unit tests pass; `go vet` + `go build ./...` clean.
+
+- Phase 14 Plan 06 (MIG-01 + MIG-02 / D-A16): operator-visible status surface shipped on two fronts with a single JSON contract. `dfsctl blockstore migrate status --share NAME` (table + JSON + YAML via `-o`) registered under the existing `migrate` cobra tree; `apiclient.MigrateStatusResponse` + `Client.MigrateStatus(share)` codifies the wire shape; URL query escaping covers reserved-character share names. `GET /api/v1/blockstore/migrate/status?share=NAME` registered inside the existing `/api/v1/blockstore` admin group (JWTAuth + RequireAdmin both inherited — T-14-06-01 mitigation). Handler imports `pkg/blockstore/migrate` (BLOCKER 3 — never `cmd/`), uses real `Runtime.GetMetadataStoreForShare` (BLOCKER 2 fix), uses new `Runtime.LocalStoreDir` accessor (BLOCKER 2 fix; delegates to new `shares.Service.LocalStoreDir` which is populated alongside `gcStateRoot` at AddShare time via new `deriveLocalStoreDir` helper), and computes FilesTotal via `migrate.WalkShareFiles` (BLOCKER 2 fix — `Runtime.CountFiles` did not exist). 30s file-walk timeout + -1 sentinel + `?with_total=false` opt-out cover T-14-06-03's DoS surface. Empty-string `LocalStoreDir` is the documented "no journal available" steady state for memory backends, not 404. Test fakes implement narrow `MigrateStatusRuntime` interface (mirrors `BlockGCRuntime` pattern) so future Runtime additions cannot ripple into mock updates. 18 new tests + broad regression clean. Commits: `43ce119e` (Task 1 — CLI + apiclient), `587c59dc` (Task 2 — REST handler + Runtime accessor + Share.localStoreDir field). One Rule-3 deviation: handler test fixture needed `CreateShare` before `UpdateShareOptions` (memory backend doesn't auto-register shares from `CreateRootDirectory`).
+
+- Phase 14 Plan 07 (MIG-01..MIG-04 closure / D-A17..D-A20): operator-facing documentation landed across five docs files. `docs/BLOCKSTORE_MIGRATION.md` (957 lines) is the primary operator runbook with pre-flight checklist, six-step procedure, bandwidth tuning, four worked transcripts (~10 GB happy path / TB-scale tuning / crash + auto-resume / integrity-check failure + diagnosis + re-run), recovery procedures, internals, and out-of-scope sections. Three coordinated **Known Limitation** callouts (BLOCKSTORE_MIGRATION TOC + dedicated subsection right after Why-migrate, Worked Transcripts blockquote, FAQ.md migration entry blockquote) document the `openOfflineRuntime` production-wiring gap (#425) so operators do not schedule a production migration window before the wire-up closes. `docs/ARCHITECTURE.md` gains a new `## Migration & Block-Layout Routing (v0.15.x A5)` section (~140 lines) covering per-share `block_layout` flag (storage shape per backend, ParseBlockLayout coercion, where the engine reads it), dual-read shim + CAS-only gate (with text-flow diagram of `engine.Syncer.dispatchRemoteFetch` routing decision), migration tool boundary (offline-only invariant, openOfflineRuntime composition root, intentional bypass of `pkg/controlplane/runtime.Runtime`), and Phase 15 deletion timeline. `docs/IMPLEMENTING_STORES.md` gains a `### Block layout flag (v0.15+)` subsection codifying the schema requirement + `ParseBlockLayout("")` empty-coerce-to-legacy forward-compat contract + `storetest.RunBlockLayoutSuite` invocation pattern + recommended persistence shape per backend (Postgres dedicated column / Badger inline gob / Memory direct field). `docs/FAQ.md` gains `### How do I migrate from v0.13 / v0.14 to v0.15?` entry with quick-start procedure and Phase 15 deferral note. `docs/CLI.md` gains a hand-maintained `### Block Store Migration (v0.15.x Phase 14)` section with full reference for `dfsctl blockstore migrate` + `dfsctl blockstore migrate status` (flag tables, examples, output fields, exit codes, recovery cross-links) — blockquote at the section head documents the hand-maintained convention so future agents don't reach for cobra GenMarkdownTree (verified by `grep -r 'GenMarkdown'` returning empty in the repo). Worked transcripts use the exact stdout shape produced by Plans 03+04+05+06 (verified against `printMigrateResult`, `progressReporter`, `migrateStatusRenderer` source). Synthetic share names + plausible byte counts mitigate T-14-07-02 information disclosure. Human-verify checkpoint (Task 3) **skipped per autonomous-mode orchestrator authorization**; grep-gate verification covers the automated portion (line count, transcript count, all CLI/flag references, all cross-doc links). Operator review is a normal post-merge docs pass. Commits: `f05b8650` (Task 1 — operator runbook), `ae7587ee` (Task 2 — supporting docs).
+
+- Phase 14 Plan 03 (MIG-01 + MIG-02 partial / D-A1..D-A5, D-A14): central FastCDC re-chunk loop landed end-to-end against memory fixtures. New importable `pkg/blockstore/migrate` package hosts the `Journal` (append-only JSONL with periodic snapshot rotation, atomic-rename invariant, read-only open variant for the REST status handler in Plan 14-06) and `WalkShareFiles` helper (composes `GetRootHandle` + `ListChildren` + `GetFile`, paginated, ctx-cancel-aware). Migration loop in `cmd/dfsctl/commands/blockstore`: per-file walk → FastCDC re-chunk over `legacyPayloadReader` → `FileBlockStore.GetByHash` dedup probe → upload-or-IncrementRefCount → `PutFile` Blocks + ObjectID in single metadata txn → journal Append (after PutFile success — T-14-03-02 ordering rule). First-committer-wins ObjectID conflict (D-14): `PutFile` retry with `ObjectID=zero` preserves Blocks while yielding the unique-index entry to the canonical first-committer. Sparse-block zero-fill in legacy reader matches dual-read shim's hole semantic. Empty files journal `file_skipped`. **Production composition deferred:** `openOfflineRuntime` returns `ErrOfflineRuntimeNotWired` today; controlplane-DB plumbing for per-share metadata + remote stores lands in Plan 14-04 alongside parallelism + bandwidth, end-to-end exercise via Plan 14-07 runbook. Loop is fully unit-tested via `newTestOfflineRuntime` test helper (8 loop tests + 8 journal tests + 6 walk tests). Plan-side `<action>` step 4 explicitly authorizes this split. BLOCKER 2 (zero daemon-runtime imports in `migrate_runtime.go`) and BLOCKER 3 (journal lives in `pkg/`, not `cmd/`) both verified by acceptance grep gates. Commits: `f87486fd` (Task 1 — command skeleton + daemon probe, prior session), `2c0263b1` (Task 2 — journal + walk), `3a9bd867` (Task 3 — loop + offline runtime).
+
 ### Pending Todos
 
-- After Phase 08 + Phase 09 planning: run both phases in parallel (independent cleanup tracks)
-- Before Phase 11 (A2) start: ensure `TestBlockStoreImmutableOverwrites` E2E skeleton is drafted and is confirmed failing on `develop` (proof of bug)
+- Phase 12 (A3) follow-ups carried from Phase 11 review:
+  - DEFERRED IN-4-03: async GC + 202+poll REST surface (long-running mark-sweep would otherwise time out reverse proxies)
+  - DEFERRED WR-3-02 wiring: `gc.interval` periodic-ticker not yet wired into Runtime startup; currently warn-only if set in config
+  - DEFERRED WR-4-01 follow-up: dedup short-circuit still leaks donor refcount; needs design decision (mirror increment to `fb` vs. drop short-circuit vs. point `fb` at `existing.ID` with ID-mapping)
 - Before Phase 14 (A5) ship: benchmark VM-fleet dedup fixture achieves ≥40% reduction (VER-03 gate)
 - Before Phase 15 (A6) merge: confirm `dfsctl blockstore migrate status` reports 100% for every production share
 
@@ -91,8 +125,22 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-24T19:57:20.289Z
-Stopped at: Completed 10-12-PLAN.md (Phase 10 final plan, docs surface)
-Next action: `/gsd-plan-phase 8` (A0 — Pre-refactor cleanup) OR `/gsd-plan-phase 9` (ADAPT) — both are actionable in parallel
+Last session: 2026-05-05T17:59:30.000Z
+Stopped at: Phase 14 Plan 07 shipped — operator docs runbook (MIG-01..MIG-04 closed)
+Next action: **Phase 14 phase-execution complete.** Two outstanding follow-ups before production rollout: (1) `openOfflineRuntime` production wiring (controlplane DB read + per-share metadata/remote-store factory dispatch) — tracked under #425, interfaces stable, runbook documents this prominently as a Known Limitation; (2) per-payload-id streaming variant of `deleteLegacyKeys` only if real workloads surface S3 LIST cost (T-14-05-04). Status surface (CLI + REST) is fully usable today against a running daemon. Once #425 closes, no runbook changes needed — the four worked transcripts will then run literally rather than aspirationally. Phase 15 (A6 — legacy cleanup) remains intentionally deferred until #425 closes and migration is rolled out across production workloads.
 
-**Planned Phase:** 10 (fastcdc-chunker-hybrid-local-store-a1) — 12 plans — 2026-04-24T13:55:22.578Z
+**Shipped Phase:** 11 (cas-write-path-gc-rewrite-a2) — 9 plans + ~30 review/fix commits — 2026-04-26T18:03:03Z (PR #453)
+
+**Planned Phase:** 13 (Merkle root + file-level dedup (A4)) — 10 plans — 2026-04-28T09:12:48.291Z
+
+### Plan 12-08 / 12-09 carry-forward to Plan 12-10 or later
+
+Plan 12-09 completed the cache rewrite (CACHE-01..05) but did NOT pick up the deferred []BlockRef threading from Plan 12-08. The constraint is still active: the engine's `cache.OnRead` and `cache.InvalidateFile` are wired in `engine.ReadAt` / `engine.Delete` (where the engine has the BlockRef list directly), but `common.ReadFromBlockStore` / `common.WriteToBlockStore` still pass `nil []BlockRef` into the engine because doing otherwise requires changing handler call-site signatures.
+
+Status:
+
+- The seam is fully in place: `common.CacheInvalidator` interface (Plan 12-08), `common.diffRemovedHashes` helper (Plan 12-08), `*engine.Cache` implements `InvalidateFile` (Plan 12-09).
+- engine.ReadAt fires cache.OnRead when called WITH non-empty []BlockRef (which only happens via callers that already have the BlockRef snapshot — currently engine_test.go and any future caller that bypasses the common helpers). Production NFS/SMB read paths still pass nil via common.ReadFromBlockStore.
+- `common.WriteToBlockStore`'s `cache.InvalidateFile` still fires with the placeholder hash list (the helper has the cache reference but no real []BlockRef diff to invalidate against).
+
+The actual end-to-end threading remains deferred. Most pragmatic path forward: pick this up alongside Plan 13's file-level dedup integration (which itself touches the read/write path and benefits from a real BlockRef threading through common helpers). Alternative: a small dedicated cleanup plan post-Plan-13 that updates the helpers + handler call sites in one go.

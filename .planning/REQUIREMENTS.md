@@ -112,10 +112,10 @@
 
 ### Migration (MIG)
 
-- [ ] **MIG-01**: `dfsctl blockstore migrate --share <name>` offline tool — reads legacy blocks, re-chunks via FastCDC, uploads as CAS chunks, updates `FileAttr.Blocks`, deletes legacy keys after verification.
-- [ ] **MIG-02**: Migration is resumable via state file; supports `--dry-run`, `--parallel N`, `--bandwidth-limit MB/s`.
-- [ ] **MIG-03**: Dual-read compatibility shim in engine reads legacy `{payloadID}/block-{idx}` keys until migration complete (A2–A5 window).
-- [ ] **MIG-04**: Post-migration integrity check: every `FileAttr.Blocks[i]` points to a CAS key that exists in S3.
+- [x] **MIG-01**: `dfsctl blockstore migrate --share <name>` offline tool — reads legacy blocks, re-chunks via FastCDC, uploads as CAS chunks, updates `FileAttr.Blocks`, deletes legacy keys after verification.
+- [x] **MIG-02**: Migration is resumable via state file; supports `--dry-run`, `--parallel N`, `--bandwidth-limit MB/s`.
+- [x] **MIG-03**: Dual-read compatibility shim in engine reads legacy `{payloadID}/block-{idx}` keys until migration complete (A2–A5 window).
+- [x] **MIG-04**: Post-migration integrity check: every `FileAttr.Blocks[i]` points to a CAS key that exists in S3.
 
 ### Verification (VER)
 

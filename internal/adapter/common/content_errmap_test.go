@@ -86,6 +86,58 @@ func TestContentErrMap_CASKeyMalformed_Direct(t *testing.T) {
 	}
 }
 
+// TestContentErrMap_BlockRefMissing (Phase 12 D-23) verifies that a
+// wrapped blockstore.ErrBlockRefMissing maps to I/O-class codes in
+// every protocol arm. A BlockRef.Hash referring to a FileBlock that
+// has been GC'd or never existed is a data-integrity failure surfaced
+// to the client identically to ErrCASContentMismatch.
+func TestContentErrMap_BlockRefMissing(t *testing.T) {
+	wrapped := fmt.Errorf("read block %x: %w",
+		[]byte{0xab, 0xcd}, blockstore.ErrBlockRefMissing)
+
+	if got := MapContentToNFS3(wrapped); got != nfs3types.NFS3ErrIO {
+		t.Errorf("MapContentToNFS3(ErrBlockRefMissing) = %d, want NFS3ErrIO (%d)",
+			got, nfs3types.NFS3ErrIO)
+	}
+	if got := MapContentToNFS4(wrapped); got != nfs4types.NFS4ERR_IO {
+		t.Errorf("MapContentToNFS4(ErrBlockRefMissing) = %d, want NFS4ERR_IO (%d)",
+			got, nfs4types.NFS4ERR_IO)
+	}
+	if got := MapContentToSMB(wrapped); got != smbtypes.StatusUnexpectedIOError {
+		t.Errorf("MapContentToSMB(ErrBlockRefMissing) = %v, want StatusUnexpectedIOError",
+			got)
+	}
+}
+
+// TestContentErrMap_BlockRefMissing_Direct asserts the unwrapped
+// sentinel maps correctly across protocols.
+func TestContentErrMap_BlockRefMissing_Direct(t *testing.T) {
+	err := blockstore.ErrBlockRefMissing
+
+	if got := MapContentToNFS3(err); got != nfs3types.NFS3ErrIO {
+		t.Errorf("MapContentToNFS3 direct = %d, want NFS3ErrIO", got)
+	}
+	if got := MapContentToNFS4(err); got != nfs4types.NFS4ERR_IO {
+		t.Errorf("MapContentToNFS4 direct = %d, want NFS4ERR_IO", got)
+	}
+	if got := MapContentToSMB(err); got != smbtypes.StatusUnexpectedIOError {
+		t.Errorf("MapContentToSMB direct = %v, want StatusUnexpectedIOError", got)
+	}
+}
+
+// TestContentErrMap_BlockRefMissing_DistinctFromCASMismatch asserts
+// that ErrBlockRefMissing is its own sentinel (not merely an alias of
+// ErrCASContentMismatch). Both currently map to the same protocol
+// codes (data-integrity failures) but operators distinguish them via
+// log inspection — ErrBlockRefMissing means a hash is gone (GC bug
+// candidate), ErrCASContentMismatch means bytes don't match the hash
+// (corruption candidate).
+func TestContentErrMap_BlockRefMissing_DistinctFromCASMismatch(t *testing.T) {
+	if blockstore.ErrBlockRefMissing == blockstore.ErrCASContentMismatch {
+		t.Fatal("ErrBlockRefMissing must be a distinct sentinel from ErrCASContentMismatch")
+	}
+}
+
 // TestContentErrMap_NonCAS_NoRegression asserts that errors which do
 // NOT wrap either CAS sentinel still flow through the pre-existing
 // table — ErrRemoteUnavailable and unknown errors map to I/O codes.

@@ -61,10 +61,15 @@ var _ local.LocalStore = (*FSStore)(nil)
 // In flushBlock, the map entry is deleted while holding mb.mu to prevent a race
 // where a concurrent writer gets a stale memBlock with nil data.
 type FSStore struct {
-	baseDir    string
-	maxDisk    int64
-	maxMemory  int64
-	blockStore blockstore.FileBlockStore
+	baseDir   string
+	maxDisk   int64
+	maxMemory int64
+	// Phase 12 (META-03 / D-09): the local store is one of the engine-
+	// internal callers that still uses the wider EngineFileBlockStore
+	// surface (GetFileBlock, ListFileBlocks) on top of the narrowed
+	// FileBlockStore. Phase 13/14 routes reads through FileAttr.Blocks
+	// and lets us drop the wider interface entirely.
+	blockStore blockstore.EngineFileBlockStore
 
 	// blocksMu guards the memBlocks and fileBlocks maps. Uses RWMutex for
 	// concurrent reads (the common case: checking if a block is already buffered).
@@ -245,7 +250,7 @@ type FSStore struct {
 //   - maxDisk: maximum total size of on-disk .blk files in bytes. 0 = unlimited.
 //   - maxMemory: memory budget for dirty write buffers in bytes. 0 defaults to 256MB.
 //   - fileBlockStore: persistent store for FileBlock metadata (local path, upload state, etc.)
-func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blockstore.FileBlockStore) (*FSStore, error) {
+func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore) (*FSStore, error) {
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
 		return nil, fmt.Errorf("local store: create base dir: %w", err)
 	}
@@ -436,7 +441,7 @@ type FSStoreOptions struct {
 // Non-zero values in opts override the defaults set by New(); zero values
 // keep the New() defaults (1 GiB log, 250ms stabilization, 2 rollup
 // workers).
-func NewWithOptions(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.FileBlockStore, opts FSStoreOptions) (*FSStore, error) {
+func NewWithOptions(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, opts FSStoreOptions) (*FSStore, error) {
 	bc, err := New(baseDir, maxDisk, maxMemory, fileBlockStore)
 	if err != nil {
 		return nil, err
@@ -556,7 +561,7 @@ func (bc *FSStore) Start(ctx context.Context) {
 func (bc *FSStore) SyncFileBlocks(ctx context.Context) {
 	bc.pendingFBs.Range(func(key, value any) bool {
 		fb := value.(*blockstore.FileBlock)
-		if err := bc.blockStore.PutFileBlock(ctx, fb); err == nil {
+		if err := bc.blockStore.Put(ctx, fb); err == nil {
 			bc.pendingFBs.Delete(key)
 		}
 		return true
@@ -573,7 +578,7 @@ func (bc *FSStore) SyncFileBlocksForFile(ctx context.Context, payloadID string) 
 			return true
 		}
 		fb := value.(*blockstore.FileBlock)
-		if err := bc.blockStore.PutFileBlock(ctx, fb); err == nil {
+		if err := bc.blockStore.Put(ctx, fb); err == nil {
 			bc.pendingFBs.Delete(key)
 		}
 		return true

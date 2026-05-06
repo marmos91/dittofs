@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
@@ -74,6 +75,33 @@ type FileAttr struct {
 
 	// IdempotencyToken for detecting duplicate creation requests.
 	IdempotencyToken uint64 `json:"idempotency_token,omitempty"`
+
+	// Blocks is the authoritative content-addressed chunk list for this
+	// file, sorted by Offset, populated at every sync finalization
+	// (Phase 12 META-01 / D-05). Empty for directories, symlinks, and
+	// legacy files that predate Phase 12 — empty list triggers the
+	// Phase 11 dual-read shim per Phase 12 D-20.
+	//
+	// Storage:
+	//   - Postgres: separate file_block_refs join table (Phase 12 D-01).
+	//   - Badger: rides existing JSON-encoded FileAttr blob (D-05).
+	//   - Memory: typed slice held directly (D-05).
+	Blocks []blockstore.BlockRef `json:"blocks,omitempty"`
+
+	// ObjectID is the BLAKE3 Merkle root over BlockRef.Hash values sorted
+	// by Offset, populated lazily at the post-Flush coordinator hook
+	// (Phase 13 META-02 / BSCAS-04, D-05). All-zero sentinel means
+	// "never quiesced": legacy pre-Phase-12 files, partially-flushed
+	// files (some blocks Pending), and freshly-mutated files awaiting
+	// next quiesce. Phase 14 migration backfills.
+	//
+	// Storage:
+	//   - Postgres: object_id BYTEA column on files + partial unique
+	//     index WHERE object_id IS NOT NULL (Phase 13 D-12).
+	//   - Badger: rides existing JSON FileAttr blob; secondary key
+	//     obj/{hex} -> file_id maintained on Put/Delete.
+	//   - Memory: typed field; map[ContentHash]uuid index in store.
+	ObjectID blockstore.ObjectID `json:"object_id,omitempty"`
 }
 
 // SetAttrs specifies which attributes to update in a SetFileAttributes call.

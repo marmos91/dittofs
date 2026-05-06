@@ -8,6 +8,26 @@ import (
 	"github.com/marmos91/dittofs/pkg/health"
 )
 
+// HeadResult exposes object metadata returned by [RemoteStore.HeadObject].
+// The Metadata map is keyed in lowercase (S3 SDK normalizes; the memory
+// backend mirrors that convention) so callers can read user-metadata
+// headers like "content-hash" without case juggling.
+//
+// Used by the Phase 14 migration tool's post-migration integrity check
+// (D-A12): for every unique ContentHash referenced by any migrated
+// FileAttr.Blocks, HEAD the corresponding cas/.../h key and assert
+// (1) 200 + (2) Metadata["content-hash"] equals "blake3:" + hex(hash).
+type HeadResult struct {
+	// ContentLength is the object's body length in bytes (S3:
+	// Content-Length response header; memory: len(stored data)).
+	ContentLength int64
+	// Metadata mirrors the per-object user metadata stamped at write
+	// time (S3: x-amz-meta-* response headers, with the prefix
+	// stripped and the key lowercased; memory: in-process map). Keys
+	// MUST be lowercased; unset metadata maps to a nil/empty map.
+	Metadata map[string]string
+}
+
 // ObjectInfo describes a single remote object listed by
 // [RemoteStore.ListByPrefixWithMeta]. Used by the GC sweep phase to apply
 // the LastModified > snapshot - GracePeriod TTL filter (D-05) before a
@@ -90,6 +110,22 @@ type RemoteStore interface {
 	// returned Key is symmetric to ListByPrefix (any keyPrefix the store is
 	// configured with is stripped). Order is unspecified.
 	ListByPrefixWithMeta(ctx context.Context, prefix string) ([]ObjectInfo, error)
+
+	// HeadObject returns object metadata (ContentLength + lowercased
+	// user-metadata headers) without transferring the body. Returns
+	// blockstore.ErrBlockNotFound (or a wrapping error) when the key is
+	// missing.
+	//
+	// Used by the Phase 14 migration tool's post-migration integrity
+	// check (D-A12): for every unique ContentHash referenced by any
+	// migrated FileAttr.Blocks, HEAD the corresponding cas/.../h key
+	// and assert (1) 200 and (2) HeadResult.Metadata["content-hash"]
+	// equals "blake3:" + hex(hash).
+	//
+	// Implementations MUST surface user metadata stamped at
+	// WriteBlockWithHash time (S3: x-amz-meta-* headers; memory:
+	// in-process map). Header keys MUST be lowercased.
+	HeadObject(ctx context.Context, key string) (HeadResult, error)
 
 	// CopyBlock copies a block from srcKey to dstKey using server-side copy
 	// when the backend supports it (e.g., S3 CopyObject). Falls back to

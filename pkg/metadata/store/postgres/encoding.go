@@ -3,10 +3,12 @@ package postgres
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
@@ -36,7 +38,7 @@ func encodeFileHandle(shareName string, idStr string) (metadata.FileHandle, erro
 
 // fileRowToFileWithNlink converts a database row to a File struct, including link count.
 // Expected columns: id, share_name, path, file_type, mode, uid, gid, size,
-// atime, mtime, ctime, creation_time, content_id, link_target, device_major, device_minor, hidden, acl, link_count
+// atime, mtime, ctime, creation_time, content_id, link_target, device_major, device_minor, hidden, acl, object_id, link_count
 func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 	var (
 		id           uuid.UUID
@@ -57,6 +59,7 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		deviceMinor  sql.NullInt32
 		hidden       bool
 		aclJSON      []byte
+		objectIDRaw  []byte
 		linkCount    sql.NullInt32
 	)
 
@@ -79,6 +82,7 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		&deviceMinor,
 		&hidden,
 		&aclJSON,
+		&objectIDRaw,
 		&linkCount,
 	)
 	if err != nil {
@@ -130,6 +134,18 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		if err := json.Unmarshal(aclJSON, &fileACL); err == nil {
 			file.ACL = &fileACL
 		}
+	}
+
+	// Phase 13 META-02 / BSCAS-04: object_id BYTEA -> FileAttr.ObjectID.
+	// NULL or empty -> ObjectID stays zero (D-03 sentinel: never quiesced).
+	if len(objectIDRaw) > 0 {
+		if len(objectIDRaw) != blockstore.HashSize {
+			return nil, fmt.Errorf(
+				"postgres fileRowToFileWithNlink: object_id has invalid length %d (want %d)",
+				len(objectIDRaw), blockstore.HashSize,
+			)
+		}
+		copy(file.ObjectID[:], objectIDRaw)
 	}
 
 	return file, nil

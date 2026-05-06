@@ -243,9 +243,66 @@ controlplane:
 
 ### 6. Block Store Configuration
 
-Per-share block storage is configured via `dfsctl store` / `dfsctl share` commands (not the server config file). Each share owns an isolated local storage directory plus a reference to a remote store (S3 or filesystem). The block store lives in `pkg/blockstore/engine/` and composes a local tier, a remote tier, an in-memory read cache, a syncer (async local-to-remote transfer), a prefetcher, and a garbage collector.
+Per-share block storage is configured via `dfsctl store` / `dfsctl share` commands (not the server config file). Each share owns an isolated local storage directory plus a reference to a remote store (S3 or filesystem). The block store lives in `pkg/blockstore/engine/` and composes a local tier, a remote tier, the unified in-memory `Cache` (CAS-keyed; absorbed the former read-buffer + standalone prefetcher per Phase 12 / CACHE-01), a syncer (async local-to-remote transfer), and a garbage collector.
 
-There is no top-level `cache:` section in the server config — cache sizing for a share follows the share's local storage limits, and the read cache is tuned internally by the engine. See `dfsctl share create --help` and `dfsctl store create --help` for the per-share knobs.
+#### Unified Cache (v0.15.0 Phase 12)
+
+v0.15.0 (Phase 12 / A3) introduces a single CAS-keyed `Cache` type that
+replaces the Phase 11 read-buffer + prefetcher pair. It is per-share,
+keyed by `ContentHash`, and shared across files inside a share so
+two files referencing the same chunk via dedup hit the same entry
+(CACHE-02 cross-file dedup).
+
+```yaml
+cache:
+  size_mib: 256             # Per-share cache budget (MiB). Default 256.
+                            # Smaller (e.g. 64) for memory-constrained
+                            # edge nodes; larger (e.g. 1024) for
+                            # VM-host workloads with deep cross-VM
+                            # dedup. With ~4 MiB FastCDC chunks the
+                            # default holds ~64 chunks per share.
+  prefetch_threshold: 3     # Consecutive sequential reads required
+                            # before prefetch triggers. Default 3
+                            # (raised from Phase 11's 2 to suppress
+                            # speculative prefetch on accidental
+                            # two-block runs in random-IO workloads).
+  prefetch_max_depth: 8     # Max chunks prefetched per trigger.
+                            # Default 8 (~32 MiB at 4 MiB avg chunk).
+  prefetch_workers: 4       # Bounded concurrency for background loads.
+                            # Default 4 worker goroutines per cache.
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `cache.size_mib` | int | `256` | Per-share cache budget in MiB (D-31). |
+| `cache.prefetch_threshold` | int | `3` | Consecutive sequential reads before prefetch (D-29 / CACHE-03). |
+| `cache.prefetch_max_depth` | int | `8` | Max chunks prefetched per trigger. |
+| `cache.prefetch_workers` | int | `4` | Bounded concurrency for background loads. |
+
+**Eviction policy:** LRU only. ARC/LFU were rejected for v0.15.0 as
+overkill (D-30); revisit if benchmark data shows LRU undersamples
+cross-VM dedup hits.
+
+**Single-copy reads (CACHE-06):** on linux/darwin the cache uses `mmap`
+to serve local CAS chunks — `copy(dest, mapped[offset:])` once, no
+intermediate heap allocation. Chunks below 64 KiB use `os.ReadFile`
+because mmap setup overhead dominates tiny reads. Windows uses
+`os.ReadFile` only.
+
+Env-var overrides follow the existing dot-path convention:
+
+```bash
+export DITTOFS_CACHE_SIZE_MIB=512
+export DITTOFS_CACHE_PREFETCH_THRESHOLD=3
+export DITTOFS_CACHE_PREFETCH_MAX_DEPTH=8
+export DITTOFS_CACHE_PREFETCH_WORKERS=4
+```
+
+Phase 12 introduced the unified Cache. See
+[ARCHITECTURE.md](ARCHITECTURE.md#phase-12-engine-api--blockref--cache-v0150-a3)
+for the design rationale and [FAQ.md](FAQ.md) for operator concerns
+("Why is the cache cold after a write?", "How do I run the INV-02
+audit?", "What's a BlockRef?").
 
 #### Hybrid append-log tier (Phase 10 / LSL-04/05, experimental)
 
@@ -1090,9 +1147,11 @@ export DITTOFS_DATABASE_POSTGRES_SSLMODE=require
 export DITTOFS_CONTROLPLANE_PORT=8080
 export DITTOFS_CONTROLPLANE_SECRET=your-secret-key-at-least-32-characters
 
-# Cache
-export DITTOFS_CACHE_PATH=/var/lib/dfs/cache
-export DITTOFS_CACHE_SIZE=2Gi
+# Cache (v0.15.0 Phase 12 unified Cache — see §6 Block Store Configuration)
+export DITTOFS_CACHE_SIZE_MIB=512
+export DITTOFS_CACHE_PREFETCH_THRESHOLD=3
+export DITTOFS_CACHE_PREFETCH_MAX_DEPTH=8
+export DITTOFS_CACHE_PREFETCH_WORKERS=4
 
 # Server-level configuration
 export DITTOFS_SERVER_SHUTDOWN_TIMEOUT=60s

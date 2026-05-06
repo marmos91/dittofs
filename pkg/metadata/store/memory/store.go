@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/oklog/ulid/v2"
 
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -244,6 +245,21 @@ type MemoryMetadataStore struct {
 	// rollupOffsets maps payloadID -> persisted rollup_offset. Lazily
 	// initialized on first Set; Get treats absence as zero.
 	rollupOffsets map[string]uint64
+
+	// objectIndex maps FileAttr.ObjectID -> handle key (the same string
+	// used as the key in `files`) for the BSCAS-05 dedup short-circuit
+	// lookup (Phase 13 D-12). Populated only for non-zero ObjectIDs
+	// (post-quiesce); zero entries skipped.
+	//
+	// Maintained inside PutFile/DeleteFile under the same store-level lock
+	// (mu) that guards `files`, mirroring the fileBlockData.hashIndex
+	// discipline (objects.go).
+	//
+	// NOTE: `fileData` carries no separate UUID field; the canonical
+	// identifier in this package is the handle string (`handleToKey`
+	// output). FindByObjectID resolves through this map -> files lookup
+	// chain (added in Plan 04).
+	objectIndex map[blockstore.ContentHash]string
 }
 
 // MemoryMetadataStoreConfig contains configuration for creating a memory metadata store.
@@ -312,6 +328,8 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		storeID: ulid.Make().String(),
 		// Phase 10 (LSL-05): rollup_offset persistence (see rollup.go).
 		rollupOffsets: make(map[string]uint64),
+		// Phase 13 (D-12): ObjectID -> handle-key secondary index.
+		objectIndex: make(map[blockstore.ContentHash]string),
 	}
 
 	// Initialize the sync.Pool for FileAttr allocations
@@ -465,6 +483,9 @@ func (store *MemoryMetadataStore) buildFileWithNlink(
 	// Copy attributes and set Nlink
 	attr := *fileData.Attr
 	attr.Nlink = nlink
+	// Deep-copy slice fields so a caller-side mutation of the returned
+	// slice cannot leak into the stored view (Phase 12 D-05, T-12-09).
+	attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
 
 	return &metadata.File{
 		ID:        id,

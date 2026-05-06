@@ -28,7 +28,7 @@ func TestStats_UsedSizeMatchesDiskUsed(t *testing.T) {
 	ctx := context.Background()
 
 	// Write data to the local store.
-	if err := bs.WriteAt(ctx, "stats-test", []byte("some data for stats"), 0); err != nil {
+	if _, err := bs.WriteAt(ctx, "stats-test", nil, []byte("some data for stats"), 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
@@ -55,7 +55,7 @@ func TestStats_AvailableSize(t *testing.T) {
 	ctx := context.Background()
 
 	// Write data.
-	if err := bs.WriteAt(ctx, "avail-test", []byte("data"), 0); err != nil {
+	if _, err := bs.WriteAt(ctx, "avail-test", nil, []byte("data"), 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
@@ -87,10 +87,10 @@ func TestStats_AverageSize(t *testing.T) {
 	ctx := context.Background()
 
 	// Write data to two files.
-	if err := bs.WriteAt(ctx, "avg-1", []byte("data1"), 0); err != nil {
+	if _, err := bs.WriteAt(ctx, "avg-1", nil, []byte("data1"), 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
-	if err := bs.WriteAt(ctx, "avg-2", []byte("data2data2"), 0); err != nil {
+	if _, err := bs.WriteAt(ctx, "avg-2", nil, []byte("data2data2"), 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 

@@ -138,6 +138,58 @@ dedup short-circuit that's expected to drive the primary VM-workload
 
 Track progress: [#419](https://github.com/marmos91/dittofs/issues/419).
 
+### What's an ObjectID and when does it get computed?
+
+An `ObjectID` is a BLAKE3 Merkle root over a file's content-defined
+chunk hashes, defined by Phase 13 (v0.15.0 A4):
+
+    ObjectID = BLAKE3("dittofs:objectid:v1\x00" || h0 || h1 || ... || hN-1)
+
+where `hi` is the i-th `BlockRef.Hash` when `FileAttr.Blocks` is sorted
+by `Offset`. Two files with byte-identical content always have the
+same ObjectID; two files differing in even one byte have different
+ObjectIDs (FastCDC + BLAKE3 are both deterministic, so identical
+chunks yield identical hashes).
+
+DittoFS computes ObjectID **lazily — at file quiesce**, when every
+chunk has finished uploading to remote storage. Mid-write the
+ObjectID is the all-zero sentinel meaning "not yet quiesced". The
+post-Flush coordinator hook
+(`Syncer.persistFileBlocksAfterFlush`) writes it in the same metadata
+transaction that updates `FileAttr.Blocks`/`Size`/`Mtime`. Partial
+flushes (some blocks still `Pending`) leave it at zero so the
+short-circuit lookup never returns a half-quiesced file.
+
+A non-zero ObjectID always reflects a fully-`Remote` consistent
+state. Empty files dedup to one canonical constant
+`BLAKE3("dittofs:objectid:v1\x00")`; legacy pre-Phase-13 files keep
+the all-zero sentinel until Phase 14 backfills.
+
+See
+[ARCHITECTURE.md — Phase 13 File-Level Dedup](ARCHITECTURE.md#phase-13-file-level-dedup-objectid--merkle-root-v0150-a4)
+for the full design.
+
+### Why doesn't my file dedup until I close it?
+
+DittoFS's file-level dedup short-circuit (BSCAS-05) fires at quiesce,
+not on every write. Mid-write, blocks dedup at the *chunk* level
+(Phase 11 `GetByHash`) — if your write produces a chunk that already
+exists remotely, no PUT is issued.
+
+But the savings of skipping every chunk's upload entirely (file-level
+dedup) only kick in once the full file fingerprint exists — the
+ObjectID — and that fingerprint is computed at the post-Flush
+coordinator hook on `Close`/`Flush`/`fsync`, when the BlockRef list
+stabilizes.
+
+This is intentional: file-level dedup targets the workflow of cloning
+a VM image or copying a large file (where the whole content arrives
+in one burst). Random in-place writes inside a running VM benefit
+from the chunk-level path and don't get penalized waiting for a
+quiesce-only fingerprint. The trigger condition (D-09) — "all blocks
+`Pending` AND no prior ObjectID" — explicitly excludes the running-VM
+hot path.
+
 ### How does garbage collection work in v0.15.0?
 
 v0.15.0 (Phase 11 / A2) replaces the previous path-prefix GC with a
@@ -191,6 +243,136 @@ S3 trial-and-error.
 Phase 14 (A5) ships `dfsctl blockstore migrate`, which re-chunks all
 legacy data to CAS. Phase 15 (A6) deletes the legacy code path
 entirely. The dual-read code is intentionally on a deletion clock.
+
+### Why is the cache cold after a write?
+
+It is **not**. v0.15.0 (Phase 12 / A3) makes cache invalidation
+**surgical** (CACHE-05): a write drops only the chunk-level entries
+that the write actually invalidated, not the entire file. Other chunks
+referenced by the file — and any chunks shared with other files via
+cross-VM dedup (CACHE-02) — stay warm.
+
+If you are seeing whole-file cold misses after a write, that is a bug.
+File a report with the `dfsctl blockstore audit-refcounts <share>`
+output (see below) — refcount drift between `FileBlock.RefCount` and
+`FileAttr.Blocks` is the most common root cause.
+
+The mechanism: `engine.WriteAt` returns the new `[]BlockRef`, the
+caller commits it in the same metadata transaction that updates
+`Mtime`/`Size`, then calls `Cache.InvalidateFile(payloadID,
+removedHashes)` with **only the hashes that disappeared from the
+file**. Hashes that survived (unchanged ranges) and hashes still
+referenced by other files via dedup remain in the cache.
+
+### How do I run the INV-02 audit?
+
+INV-02 is the invariant `∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks)`
+— every block reference in `FileAttr.Blocks` across all files MUST be
+matched by a refcount on the corresponding `FileBlock`. v0.15.0 (Phase
+12 / A3) ships an operator-facing audit:
+
+```bash
+# Aggregate counts to stdout (text by default)
+dfsctl blockstore audit-refcounts /archive
+
+# Structured JSON for log aggregation / alerting
+dfsctl blockstore audit-refcounts /archive --output json
+
+# YAML if your tooling prefers it
+dfsctl blockstore audit-refcounts /archive --output yaml
+```
+
+The output reports `share`, `started_at`, `duration_ms`,
+`total_files`, `total_refs`, `total_refcount`, and `delta`. **A non-zero
+`delta` indicates refcount drift** and SHOULD be triaged. The audit
+also persists its last-run summary at
+`<localStore>/audit-state/last-inv02.json` (mirrors Phase 11 GC's
+`last-run.json`).
+
+The audit is **operator-invoked**, not periodic. Schedule via cron at
+the cadence that matches your operational risk tolerance until a
+periodic-scheduler phase ships.
+
+For belt-and-braces protection, the property-based fuzzer at
+`pkg/metadata/storetest/inv02_fuzz_test.go` runs against all 3
+built-in backends in CI on every PR, asserting INV-02 at every
+quiescent point under concurrent create/delete/copy load.
+
+See [CLI.md](CLI.md#dfsctl-blockstore-audit-refcounts-share) for the
+full reference.
+
+### What's a BlockRef?
+
+A `BlockRef` is the 3-tuple of `(Hash ContentHash, Offset uint64, Size
+uint32)` defined in `pkg/blockstore/types.go`. `FileAttr.Blocks
+[]BlockRef` is the **authoritative content list** for every file in
+v0.15.0 Phase 12+: which chunks compose the file, where each chunk
+sits inside the file, and how big it is.
+
+The list is:
+
+- **Sorted by `Offset`** so the engine can binary-search it
+  (`findBlocksForRange` in `pkg/blockstore/engine/range.go`).
+- **Populated on every sync finalization** — the engine returns the
+  new `[]BlockRef` from `WriteAt`/`Truncate`/`Delete`/`CopyPayload`
+  and the caller persists it in the same metadata transaction.
+- **Empty/nil for legacy files** written before v0.15.0 Phase 12;
+  empty `[]BlockRef` triggers the Phase 11 dual-read shim (D-20),
+  which falls back to the metadata-driven legacy resolver until the
+  Phase 14 migration tool backfills the BlockRef list.
+
+`BlockRef.Hash` is the `ContentHash` (32-byte BLAKE3) under which
+the chunk is stored in the CAS keyspace `cas/{hh}/{hh}/{hex}`.
+Two files referencing the same chunk via dedup share one `Hash`,
+which is what makes cross-VM dedup work both for storage (CAS) and
+in the cache (CACHE-02 cross-file dedup hits the same entry).
+
+See [ARCHITECTURE.md](ARCHITECTURE.md#phase-12-engine-api--blockref--cache-v0150-a3)
+for the full Phase 12 design and
+[IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md#fileattrblocks-blockref-v0150-phase-12)
+for storage-encoding requirements.
+
+### How do I migrate from v0.13 / v0.14 to v0.15?
+
+Use `dfsctl blockstore migrate --share <name>` per share. The
+migration is offline (the daemon must be stopped for the share). See
+[BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md#phase-14-v015x-a5--dfsctl-blockstore-migrate-runbook)
+for the full operator runbook with worked transcripts (happy path,
+TB-scale tuning, crash + auto-resume, integrity-check failure +
+diagnosis).
+
+Quick version:
+
+1. Stop the daemon: `sudo systemctl stop dfs`
+2. Migrate: `dfsctl blockstore migrate --share myshare --parallel 4`
+3. Verify: `dfsctl blockstore migrate status --share myshare` shows
+   `BlockLayout: cas-only`.
+4. Restart: `sudo systemctl start dfs`
+
+The migration is resumable (per-file atomic via the
+`.migration-state.jsonl` journal), dry-run-able (`--dry-run` reports
+upload byte estimates without writing), and bandwidth-cappable
+(`--bandwidth-limit 50MB` honors SI / IEC suffixes; the limit is
+aggregate across `--parallel` workers, not per-worker).
+
+> **Known Limitation (v0.15.0):** The migration tool's production
+> composition root (`openOfflineRuntime`) is not yet wired —
+> end-to-end migration on a real daemon currently exits with
+> `ErrOfflineRuntimeNotWired`. The full re-chunk + integrity +
+> cutover pipeline is unit-tested via in-memory fixtures, and the
+> per-share `block_layout` flag, the engine fail-loud routing, and
+> the `dfsctl blockstore migrate status` CLI + REST surfaces all
+> ship today. Track the production wire-up under
+> [#425](https://github.com/marmos91/dittofs/issues/425); do not
+> schedule a production migration window until it closes. See
+> [BLOCKSTORE_MIGRATION.md — Known Limitation](BLOCKSTORE_MIGRATION.md#known-limitation-openofflineruntime-production-wiring)
+> for the full operator-facing context.
+
+Phase 15 (A6) is intentionally deferred until Phase 14's migration
+tool has been rolled out across production workloads. Once every
+production share reports `BlockLayout: cas-only`, Phase 15 deletes
+the dual-read shim and every legacy `{payloadID}/block-{idx}`
+code path.
 
 ### Why are residual `{payloadID}/block-{N}` keys present after upgrading to v0.15.0?
 

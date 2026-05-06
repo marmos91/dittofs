@@ -49,31 +49,34 @@ func (c *crashingRemoteStore) WriteBlockWithHash(ctx context.Context, key string
 	return c.RemoteStore.WriteBlockWithHash(ctx, key, hash, data)
 }
 
-// crashingFileBlockStore wraps a real FileBlockStore and can be told to
-// fail PutFileBlock on a specific call number. failOnNthPut == 0 disables;
+// crashingFileBlockStore wraps a real EngineFileBlockStore and can be told
+// to fail Put on a specific call number. failOnNthPut == 0 disables;
 // failOnNthPut == 1 fails the very first put; etc. The test seeds the
-// fixture with PutFileBlock to flip the row to Syncing (counted as the
-// first put), then drives uploadOne which performs the second put — the
+// fixture with Put to flip the row to Syncing (counted as the first put),
+// then drives uploadOne which performs the second put — the
 // "between-PUT-and-meta" scenario sets failOnNthPut == 2.
+//
+// Phase 12 (META-03 / D-09): wraps the wider engine-internal interface so
+// the engine's GetFileBlock + ListFileBlocks lookups continue to work.
 type crashingFileBlockStore struct {
-	blockstore.FileBlockStore
+	blockstore.EngineFileBlockStore
 	failOnNthPut int64
 	putCount     atomic.Int64
 }
 
-func (c *crashingFileBlockStore) PutFileBlock(ctx context.Context, b *blockstore.FileBlock) error {
+func (c *crashingFileBlockStore) Put(ctx context.Context, b *blockstore.FileBlock) error {
 	n := c.putCount.Add(1)
 	if c.failOnNthPut > 0 && n == c.failOnNthPut {
 		return errKillPoint
 	}
-	return c.FileBlockStore.PutFileBlock(ctx, b)
+	return c.EngineFileBlockStore.Put(ctx, b)
 }
 
 // EnumerateSyncingBlocks forwards to the embedded store when it implements
 // the syncingEnumerator capability — required for the recovery janitor
 // test to surface the stale row through the wrapper.
 func (c *crashingFileBlockStore) EnumerateSyncingBlocks(ctx context.Context) ([]*blockstore.FileBlock, error) {
-	if e, ok := c.FileBlockStore.(interface {
+	if e, ok := c.EngineFileBlockStore.(interface {
 		EnumerateSyncingBlocks(context.Context) ([]*blockstore.FileBlock, error)
 	}); ok {
 		return e.EnumerateSyncingBlocks(ctx)
@@ -106,7 +109,7 @@ func setupCrashFixture(t *testing.T) *crashFixture {
 	memRemote := remotememory.New()
 	t.Cleanup(func() { _ = memRemote.Close() })
 
-	ms := &crashingFileBlockStore{FileBlockStore: memMeta}
+	ms := &crashingFileBlockStore{EngineFileBlockStore: memMeta}
 	rs := &crashingRemoteStore{RemoteStore: memRemote}
 
 	cfg := DefaultConfig()
@@ -137,7 +140,7 @@ func setupCrashFixture(t *testing.T) *crashFixture {
 	// write will be the first counted put.
 	fb.State = blockstore.BlockStateSyncing
 	fb.LastSyncAttemptAt = time.Now()
-	if err := memMeta.PutFileBlock(context.Background(), fb); err != nil {
+	if err := memMeta.Put(context.Background(), fb); err != nil {
 		t.Fatalf("PutFileBlock(syncing): %v", err)
 	}
 

@@ -160,6 +160,13 @@ var (
 	// ErrCASKeyMalformed is returned by ParseCASKey for any input that does
 	// not match the cas/{hh}/{hh}/{hex} shape. See BSCAS-01.
 	ErrCASKeyMalformed = errors.New("blockstore: malformed CAS key")
+
+	// ErrBlockRefMissing is returned by engine.ReadAt when a BlockRef.Hash
+	// refers to a FileBlock that has been GC'd or never existed. The
+	// adapter layer (internal/adapter/common/errmap.go) maps this to
+	// NFS3ERR_IO / STATUS_DATA_ERROR consistently across protocols.
+	// See Phase 12 D-23.
+	ErrBlockRefMissing = errors.New("blockstore: block ref hash missing in store")
 )
 
 // BlockStoreError wraps sentinel block store errors with structured debugging context.

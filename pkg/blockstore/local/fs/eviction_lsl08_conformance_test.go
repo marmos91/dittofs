@@ -36,12 +36,16 @@ func TestFSStore_EvictionLSL08Conformance(t *testing.T) {
 }
 
 // countingFBSWrapper is a thin call-counting wrapper around a
-// FileBlockStore. Mirrors the package-internal countingFileBlockStore but
-// lives in this external _test.go so it can be wired into the
-// localtest-side conformance factory. Satisfies fs.FBSCounter via the
-// exported ResetCount/TotalCount methods.
+// blockstore.EngineFileBlockStore. Mirrors the package-internal
+// countingFileBlockStore but lives in this external _test.go so it can
+// be wired into the localtest-side conformance factory. Satisfies
+// fs.FBSCounter via the exported ResetCount/TotalCount methods.
+//
+// Phase 12 (META-03 / D-09): wraps the wider engine-internal interface
+// (the 6 narrowed FileBlockStore methods plus the engine-internal
+// GetFileBlock + ListFileBlocks).
 type countingFBSWrapper struct {
-	inner   blockstore.FileBlockStore
+	inner   blockstore.EngineFileBlockStore
 	counter int
 }
 
@@ -52,13 +56,13 @@ func (c *countingFBSWrapper) GetFileBlock(ctx context.Context, id string) (*bloc
 	c.counter++
 	return c.inner.GetFileBlock(ctx, id)
 }
-func (c *countingFBSWrapper) PutFileBlock(ctx context.Context, b *blockstore.FileBlock) error {
+func (c *countingFBSWrapper) Put(ctx context.Context, b *blockstore.FileBlock) error {
 	c.counter++
-	return c.inner.PutFileBlock(ctx, b)
+	return c.inner.Put(ctx, b)
 }
-func (c *countingFBSWrapper) DeleteFileBlock(ctx context.Context, id string) error {
+func (c *countingFBSWrapper) Delete(ctx context.Context, id string) error {
 	c.counter++
-	return c.inner.DeleteFileBlock(ctx, id)
+	return c.inner.Delete(ctx, id)
 }
 func (c *countingFBSWrapper) IncrementRefCount(ctx context.Context, id string) error {
 	c.counter++
@@ -68,27 +72,15 @@ func (c *countingFBSWrapper) DecrementRefCount(ctx context.Context, id string) (
 	c.counter++
 	return c.inner.DecrementRefCount(ctx, id)
 }
-func (c *countingFBSWrapper) FindFileBlockByHash(ctx context.Context, h blockstore.ContentHash) (*blockstore.FileBlock, error) {
+func (c *countingFBSWrapper) GetByHash(ctx context.Context, h blockstore.ContentHash) (*blockstore.FileBlock, error) {
 	c.counter++
-	return c.inner.FindFileBlockByHash(ctx, h)
+	return c.inner.GetByHash(ctx, h)
 }
-func (c *countingFBSWrapper) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*blockstore.FileBlock, error) {
+func (c *countingFBSWrapper) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*blockstore.FileBlock, error) {
 	c.counter++
-	return c.inner.ListLocalBlocks(ctx, olderThan, limit)
-}
-func (c *countingFBSWrapper) ListRemoteBlocks(ctx context.Context, limit int) ([]*blockstore.FileBlock, error) {
-	c.counter++
-	return c.inner.ListRemoteBlocks(ctx, limit)
-}
-func (c *countingFBSWrapper) ListUnreferenced(ctx context.Context, limit int) ([]*blockstore.FileBlock, error) {
-	c.counter++
-	return c.inner.ListUnreferenced(ctx, limit)
+	return c.inner.ListPending(ctx, olderThan, limit)
 }
 func (c *countingFBSWrapper) ListFileBlocks(ctx context.Context, payloadID string) ([]*blockstore.FileBlock, error) {
 	c.counter++
 	return c.inner.ListFileBlocks(ctx, payloadID)
-}
-func (c *countingFBSWrapper) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
-	c.counter++
-	return c.inner.EnumerateFileBlocks(ctx, fn)
 }
