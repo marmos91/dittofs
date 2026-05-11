@@ -83,6 +83,24 @@ const (
 	SpecialEveryone = "EVERYONE@"
 )
 
+// CREATOR placeholder principals per MS-DTYP §2.5.3.4.
+//
+// On the wire these correspond to S-1-3-0 (CREATOR_OWNER) and S-1-3-1
+// (CREATOR_GROUP). They are only meaningful as inheritable placeholders
+// in a parent directory's DACL: when an ACE bearing one of these
+// principals is inherited onto a child, the inherit-time logic
+// substitutes the placeholder with the creator's frozen identity (the
+// requester's UID/GID/SID at create time). Once substituted, the
+// resulting ACE no longer references the placeholder.
+//
+// These are deliberately distinct from SpecialOwner/SpecialGroup
+// (NFSv4 OWNER@/GROUP@) which resolve dynamically to the file's
+// CURRENT owner — CREATOR_* freezes the identity at creation time.
+const (
+	SpecialCreatorOwner = "CreatorOwner@"
+	SpecialCreatorGroup = "CreatorGroup@"
+)
+
 // Well-known SID special identifiers for Windows interop.
 // The SMB translator converts these to binary SIDs (S-1-5-18 and S-1-5-32-544).
 const (

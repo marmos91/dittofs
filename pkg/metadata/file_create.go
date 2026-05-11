@@ -281,10 +281,26 @@ func (s *MetadataService) createEntry(
 	}
 	newFile.Nlink = GetInitialLinkCount(fileType)
 
-	// Inherit ACL from parent if parent has one
+	// Inherit ACL from parent if parent has one. CREATOR_OWNER / CREATOR_GROUP
+	// placeholders are substituted with the requester's frozen identity per
+	// MS-DTYP §2.5.3.4. For anonymous creates (no UID/GID on the identity)
+	// we pass a zero Creator, which substitutes "0@localdomain" — acceptable
+	// for the rare anonymous-into-CREATOR_OWNER-DACL case.
 	if parent.ACL != nil {
 		isDir := fileType == FileTypeDirectory
-		inherited := acl.ComputeInheritedACL(parent.ACL, isDir)
+		var creator acl.Creator
+		if ctx != nil && ctx.Identity != nil {
+			if ctx.Identity.UID != nil {
+				creator.UID = *ctx.Identity.UID
+			}
+			if ctx.Identity.GID != nil {
+				creator.GID = *ctx.Identity.GID
+			}
+			if ctx.Identity.SID != nil {
+				creator.SID = *ctx.Identity.SID
+			}
+		}
+		inherited := acl.ComputeInheritedACL(parent.ACL, isDir, creator)
 		newFile.ACL = inherited
 	}
 

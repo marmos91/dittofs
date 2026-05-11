@@ -165,6 +165,10 @@ func (m *SIDMapper) IsDomainSID(s *SID) bool {
 //   - "GROUP@": GroupSID(fileOwnerGID)
 //   - "EVERYONE@": WellKnownEveryone (S-1-1-0)
 //   - "OwnerRights@": WellKnownOwnerRights (S-1-3-4)
+//   - "CreatorOwner@": WellKnownCreatorOwner (S-1-3-0) — inheritable
+//     placeholder per MS-DTYP §2.5.3.4
+//   - "CreatorGroup@": WellKnownCreatorGroup (S-1-3-1) — inheritable
+//     placeholder per MS-DTYP §2.5.3.4
 //   - "sid:<canonical SID>": preserved verbatim (round-trip from SIDToPrincipal
 //     for principals without a POSIX mapping)
 //   - "{uid}@domain": UserSID(uid) if uid is numeric
@@ -179,6 +183,10 @@ func (m *SIDMapper) PrincipalToSID(who string, fileOwnerUID, fileOwnerGID uint32
 		return WellKnownEveryone
 	case acl.SpecialOwnerRights:
 		return WellKnownOwnerRights
+	case acl.SpecialCreatorOwner:
+		return WellKnownCreatorOwner
+	case acl.SpecialCreatorGroup:
+		return WellKnownCreatorGroup
 	default:
 		// Honor "sid:<canonical SID>" round-trip form produced by SIDToPrincipal
 		// for principals with no POSIX mapping. Stripping and re-parsing the
@@ -216,7 +224,10 @@ func (m *SIDMapper) PrincipalToSID(who string, fileOwnerUID, fileOwnerGID uint32
 //
 // Mapping rules:
 //   - Well-known SIDs are mapped directly (S-1-1-0 -> "EVERYONE@",
-//     S-1-3-0 -> "OWNER@", S-1-3-1 -> "GROUP@", S-1-3-4 -> "OwnerRights@")
+//     S-1-3-0 -> "CreatorOwner@", S-1-3-1 -> "CreatorGroup@",
+//     S-1-3-4 -> "OwnerRights@"). CREATOR_OWNER / CREATOR_GROUP are
+//     inheritable placeholders per MS-DTYP §2.5.3.4 — distinct from
+//     NFSv4 OWNER@/GROUP@ which resolve to the file's current owner.
 //   - Domain user SIDs extract UID and format as "{uid}@localdomain"
 //   - Domain group SIDs extract GID and format as "{gid}@localdomain"
 //   - Otherwise the SID is preserved as "sid:<canonical SID>" so the ACL
@@ -228,9 +239,9 @@ func (m *SIDMapper) SIDToPrincipal(s *SID) string {
 	case "S-1-1-0":
 		return acl.SpecialEveryone
 	case "S-1-3-0":
-		return acl.SpecialOwner
+		return acl.SpecialCreatorOwner
 	case "S-1-3-1":
-		return acl.SpecialGroup
+		return acl.SpecialCreatorGroup
 	case "S-1-3-4":
 		return acl.SpecialOwnerRights
 	}

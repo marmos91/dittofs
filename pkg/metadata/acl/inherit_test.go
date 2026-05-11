@@ -12,7 +12,7 @@ func TestComputeInheritedACL_FileInheritOnChildFile(t *testing.T) {
 		},
 	}}
 
-	result := ComputeInheritedACL(parentACL, false)
+	result := ComputeInheritedACL(parentACL, false, Creator{})
 
 	if result == nil {
 		t.Fatal("expected non-nil result for file with FILE_INHERIT parent ACE")
@@ -46,7 +46,7 @@ func TestComputeInheritedACL_DirectoryInheritOnChildDir(t *testing.T) {
 		},
 	}}
 
-	result := ComputeInheritedACL(parentACL, true)
+	result := ComputeInheritedACL(parentACL, true, Creator{})
 
 	if result == nil {
 		t.Fatal("expected non-nil result for directory with DIRECTORY_INHERIT parent ACE")
@@ -75,7 +75,7 @@ func TestComputeInheritedACL_NoPropagateStopsInheritance(t *testing.T) {
 		},
 	}}
 
-	result := ComputeInheritedACL(parentACL, true)
+	result := ComputeInheritedACL(parentACL, true, Creator{})
 
 	if result == nil {
 		t.Fatal("expected non-nil result")
@@ -106,7 +106,7 @@ func TestComputeInheritedACL_InheritOnlyClearedOnChild(t *testing.T) {
 		},
 	}}
 
-	result := ComputeInheritedACL(parentACL, true)
+	result := ComputeInheritedACL(parentACL, true, Creator{})
 
 	if result == nil {
 		t.Fatal("expected non-nil result")
@@ -127,12 +127,12 @@ func TestComputeInheritedACL_InheritOnlyClearedOnChild(t *testing.T) {
 }
 
 func TestComputeInheritedACL_NilParent(t *testing.T) {
-	result := ComputeInheritedACL(nil, false)
+	result := ComputeInheritedACL(nil, false, Creator{})
 	if result != nil {
 		t.Error("expected nil result for nil parent ACL")
 	}
 
-	result = ComputeInheritedACL(nil, true)
+	result = ComputeInheritedACL(nil, true, Creator{})
 	if result != nil {
 		t.Error("expected nil result for nil parent ACL (directory)")
 	}
@@ -148,12 +148,12 @@ func TestComputeInheritedACL_NoInheritableACEs(t *testing.T) {
 		},
 	}}
 
-	result := ComputeInheritedACL(parentACL, false)
+	result := ComputeInheritedACL(parentACL, false, Creator{})
 	if result != nil {
 		t.Error("expected nil for file when no FILE_INHERIT flag")
 	}
 
-	result = ComputeInheritedACL(parentACL, true)
+	result = ComputeInheritedACL(parentACL, true, Creator{})
 	if result != nil {
 		t.Error("expected nil for directory when no DIRECTORY_INHERIT flag")
 	}
@@ -182,7 +182,7 @@ func TestComputeInheritedACL_MixedInheritFlags(t *testing.T) {
 	}}
 
 	// File child: should get ACE 0 (FILE_INHERIT) and ACE 2 (both).
-	fileResult := ComputeInheritedACL(parentACL, false)
+	fileResult := ComputeInheritedACL(parentACL, false, Creator{})
 	if fileResult == nil {
 		t.Fatal("expected non-nil result for file")
 	}
@@ -197,7 +197,7 @@ func TestComputeInheritedACL_MixedInheritFlags(t *testing.T) {
 	}
 
 	// Directory child: should get ACE 1 (DIRECTORY_INHERIT) and ACE 2 (both).
-	dirResult := ComputeInheritedACL(parentACL, true)
+	dirResult := ComputeInheritedACL(parentACL, true, Creator{})
 	if dirResult == nil {
 		t.Fatal("expected non-nil result for directory")
 	}
@@ -224,7 +224,7 @@ func TestComputeInheritedACL_FileInheritClearsAllFlags(t *testing.T) {
 		},
 	}}
 
-	result := ComputeInheritedACL(parentACL, false)
+	result := ComputeInheritedACL(parentACL, false, Creator{})
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -247,7 +247,7 @@ func TestComputeInheritedACL_PreservesDenyType(t *testing.T) {
 		},
 	}}
 
-	result := ComputeInheritedACL(parentACL, false)
+	result := ComputeInheritedACL(parentACL, false, Creator{})
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -278,7 +278,7 @@ func TestPropagateACL_ReplacesInheritedKeepsExplicit(t *testing.T) {
 		},
 	}}
 
-	result := PropagateACL(newParentACL, existingACL, false)
+	result := PropagateACL(newParentACL, existingACL, false, Creator{})
 
 	if result == nil {
 		t.Fatal("expected non-nil result")
@@ -314,7 +314,7 @@ func TestPropagateACL_NilExisting(t *testing.T) {
 		},
 	}}
 
-	result := PropagateACL(parentACL, nil, false)
+	result := PropagateACL(parentACL, nil, false, Creator{})
 	if result == nil {
 		t.Fatal("expected non-nil result when existing is nil")
 	}
@@ -329,7 +329,7 @@ func TestPropagateACL_NilParent(t *testing.T) {
 		{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, Flag: ACE4_INHERITED_ACE, AccessMask: ACE4_READ_DATA, Who: SpecialEveryone},
 	}}
 
-	result := PropagateACL(nil, existingACL, false)
+	result := PropagateACL(nil, existingACL, false, Creator{})
 
 	// Should keep only explicit ACEs (inherited removed since parent is nil).
 	if result == nil {
@@ -344,7 +344,7 @@ func TestPropagateACL_NilParent(t *testing.T) {
 }
 
 func TestPropagateACL_BothNil(t *testing.T) {
-	result := PropagateACL(nil, nil, false)
+	result := PropagateACL(nil, nil, false, Creator{})
 	if result != nil {
 		t.Error("expected nil result when both parent and existing are nil")
 	}
@@ -362,9 +362,123 @@ func TestPropagateACL_AllInheritedReplaced(t *testing.T) {
 	}}
 
 	// For a file, the DIRECTORY_INHERIT ACE is not inherited.
-	result := PropagateACL(newParentACL, existingACL, false)
+	result := PropagateACL(newParentACL, existingACL, false, Creator{})
 	if result != nil {
 		t.Error("expected nil result when all inherited ACEs removed and no new ones")
+	}
+}
+
+func TestComputeInheritedACL_CreatorOwnerSubstitution_POSIX(t *testing.T) {
+	// Parent has a CREATOR_OWNER inheritable placeholder ACE. When inherited
+	// onto a file with no Windows SID known, it should resolve to the POSIX
+	// form "<uid>@localdomain" frozen at create time.
+	parentACL := &ACL{ACEs: []ACE{
+		{
+			Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+			Flag:       ACE4_FILE_INHERIT_ACE | ACE4_INHERIT_ONLY_ACE,
+			AccessMask: ACE4_READ_DATA | ACE4_WRITE_DATA,
+			Who:        SpecialCreatorOwner,
+		},
+	}}
+
+	result := ComputeInheritedACL(parentACL, false, Creator{UID: 1001})
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.ACEs) != 1 {
+		t.Fatalf("expected 1 ACE, got %d", len(result.ACEs))
+	}
+
+	ace := result.ACEs[0]
+	if ace.Who != "1001@localdomain" {
+		t.Errorf("expected Who=1001@localdomain, got %q", ace.Who)
+	}
+	if !ace.IsInherited() {
+		t.Error("expected INHERITED_ACE flag set")
+	}
+	if ace.IsInheritOnly() {
+		t.Error("expected INHERIT_ONLY cleared on file child")
+	}
+}
+
+func TestComputeInheritedACL_CreatorOwnerSubstitution_SID(t *testing.T) {
+	// Same scenario but creator has a Windows SID — substitution uses sid:<SID>.
+	parentACL := &ACL{ACEs: []ACE{
+		{
+			Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+			Flag:       ACE4_FILE_INHERIT_ACE | ACE4_INHERIT_ONLY_ACE,
+			AccessMask: ACE4_READ_DATA,
+			Who:        SpecialCreatorOwner,
+		},
+	}}
+
+	result := ComputeInheritedACL(parentACL, false, Creator{UID: 1001, SID: "S-1-5-21-1-2-3-2001"})
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.ACEs) != 1 {
+		t.Fatalf("expected 1 ACE, got %d", len(result.ACEs))
+	}
+
+	ace := result.ACEs[0]
+	if ace.Who != "sid:S-1-5-21-1-2-3-2001" {
+		t.Errorf("expected Who=sid:S-1-5-21-1-2-3-2001, got %q", ace.Who)
+	}
+	if !ace.IsInherited() {
+		t.Error("expected INHERITED_ACE flag set")
+	}
+}
+
+func TestComputeInheritedACL_CreatorGroupSubstitution_POSIX(t *testing.T) {
+	parentACL := &ACL{ACEs: []ACE{
+		{
+			Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+			Flag:       ACE4_FILE_INHERIT_ACE,
+			AccessMask: ACE4_READ_DATA,
+			Who:        SpecialCreatorGroup,
+		},
+	}}
+
+	result := ComputeInheritedACL(parentACL, false, Creator{UID: 1001, GID: 2002})
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.ACEs) != 1 {
+		t.Fatalf("expected 1 ACE, got %d", len(result.ACEs))
+	}
+
+	ace := result.ACEs[0]
+	if ace.Who != "2002@localdomain" {
+		t.Errorf("expected Who=2002@localdomain (creator GID), got %q", ace.Who)
+	}
+}
+
+func TestComputeInheritedACL_CreatorGroupSubstitution_SID(t *testing.T) {
+	parentACL := &ACL{ACEs: []ACE{
+		{
+			Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+			Flag:       ACE4_FILE_INHERIT_ACE,
+			AccessMask: ACE4_READ_DATA,
+			Who:        SpecialCreatorGroup,
+		},
+	}}
+
+	result := ComputeInheritedACL(parentACL, false, Creator{UID: 1001, GID: 2002, SID: "S-1-5-21-1-2-3-2001"})
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	ace := result.ACEs[0]
+	// Group substitution uses creator.SID for Windows form when available.
+	// Per plan: "SpecialCreatorGroup → creator.GID/SID" — the SID branch
+	// embeds the creator's SID. The same SID is used because the SD only
+	// carries one identifier per creator (no separate group SID is plumbed).
+	if ace.Who != "sid:S-1-5-21-1-2-3-2001" {
+		t.Errorf("expected Who=sid:S-1-5-21-1-2-3-2001, got %q", ace.Who)
 	}
 }
 
@@ -383,7 +497,7 @@ func TestPropagateACL_Directory(t *testing.T) {
 		},
 	}}
 
-	result := PropagateACL(newParentACL, existingACL, true)
+	result := PropagateACL(newParentACL, existingACL, true, Creator{})
 
 	if result == nil {
 		t.Fatal("expected non-nil result")
