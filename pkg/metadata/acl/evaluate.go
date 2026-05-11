@@ -130,6 +130,14 @@ func aceMatchesWho(ace *ACE, evalCtx *EvaluateContext) bool {
 	case SpecialEveryone:
 		return true
 
+	case SpecialOwnerRights:
+		// OWNER_RIGHTS (S-1-3-4) per MS-DTYP §2.5.3: when present in a DACL it
+		// supersedes the implicit owner READ_CONTROL/WRITE_DAC/WRITE_OWNER grant
+		// Windows applies. DittoFS does not grant those implicit owner rights
+		// today, so for us this arm reduces to: matches when requester is the
+		// file owner — same condition as SpecialOwner.
+		return evalCtx.UID == evalCtx.FileOwnerUID
+
 	default:
 		// SID-form ACE (set by SD parse): "sid:<canonical SID>".
 		if strings.HasPrefix(ace.Who, "sid:") {

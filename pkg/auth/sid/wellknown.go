@@ -17,6 +17,10 @@ var (
 	// Maps to NFSv4 GROUP@ special identifier.
 	WellKnownCreatorGroup = ParseSIDMust("S-1-3-1")
 
+	// WellKnownOwnerRights is the OWNER_RIGHTS SID: S-1-3-4.
+	// Used by Windows DACLs to override the implicit owner rights grant.
+	WellKnownOwnerRights = ParseSIDMust("S-1-3-4")
+
 	// WellKnownAnonymous is the NT AUTHORITY\ANONYMOUS LOGON SID: S-1-5-7.
 	// Used for anonymous/guest connections.
 	WellKnownAnonymous = ParseSIDMust("S-1-5-7")
@@ -36,6 +40,7 @@ var wellKnownNames = map[string]string{
 	"S-1-1-0":      "Everyone",
 	"S-1-3-0":      "CREATOR OWNER",
 	"S-1-3-1":      "CREATOR GROUP",
+	"S-1-3-4":      "OWNER RIGHTS",
 	"S-1-5-7":      "NT AUTHORITY\\ANONYMOUS LOGON",
 	"S-1-5-11":     "NT AUTHORITY\\Authenticated Users",
 	"S-1-5-18":     "NT AUTHORITY\\SYSTEM",

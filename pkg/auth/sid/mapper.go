@@ -164,6 +164,7 @@ func (m *SIDMapper) IsDomainSID(s *SID) bool {
 //   - "OWNER@": UserSID(fileOwnerUID)
 //   - "GROUP@": GroupSID(fileOwnerGID)
 //   - "EVERYONE@": WellKnownEveryone (S-1-1-0)
+//   - "OwnerRights@": WellKnownOwnerRights (S-1-3-4)
 //   - "sid:<canonical SID>": preserved verbatim (round-trip from SIDToPrincipal
 //     for principals without a POSIX mapping)
 //   - "{uid}@domain": UserSID(uid) if uid is numeric
@@ -176,6 +177,8 @@ func (m *SIDMapper) PrincipalToSID(who string, fileOwnerUID, fileOwnerGID uint32
 		return m.GroupSID(fileOwnerGID)
 	case acl.SpecialEveryone:
 		return WellKnownEveryone
+	case acl.SpecialOwnerRights:
+		return WellKnownOwnerRights
 	default:
 		// Honor "sid:<canonical SID>" round-trip form produced by SIDToPrincipal
 		// for principals with no POSIX mapping. Stripping and re-parsing the
@@ -212,7 +215,8 @@ func (m *SIDMapper) PrincipalToSID(who string, fileOwnerUID, fileOwnerGID uint32
 // SIDToPrincipal converts a Windows SID to an NFSv4 principal string.
 //
 // Mapping rules:
-//   - Well-known SIDs are mapped directly (S-1-1-0 -> "EVERYONE@")
+//   - Well-known SIDs are mapped directly (S-1-1-0 -> "EVERYONE@",
+//     S-1-3-0 -> "OWNER@", S-1-3-1 -> "GROUP@", S-1-3-4 -> "OwnerRights@")
 //   - Domain user SIDs extract UID and format as "{uid}@localdomain"
 //   - Domain group SIDs extract GID and format as "{gid}@localdomain"
 //   - Otherwise the SID is preserved as "sid:<canonical SID>" so the ACL
@@ -227,6 +231,8 @@ func (m *SIDMapper) SIDToPrincipal(s *SID) string {
 		return acl.SpecialOwner
 	case "S-1-3-1":
 		return acl.SpecialGroup
+	case "S-1-3-4":
+		return acl.SpecialOwnerRights
 	}
 
 	// Check domain user SIDs

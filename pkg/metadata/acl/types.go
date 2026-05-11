@@ -88,6 +88,16 @@ const (
 const (
 	SpecialSystem         = "SYSTEM@"         // NT AUTHORITY\SYSTEM (S-1-5-18)
 	SpecialAdministrators = "ADMINISTRATORS@" // BUILTIN\Administrators (S-1-5-32-544)
+
+	// SpecialOwnerRights represents the OWNER_RIGHTS SID (S-1-3-4) — the
+	// Windows mechanism for overriding the implicit owner grant in a DACL.
+	// Matches the requester when their UID equals the file's owner UID; the
+	// access mask in the ACE then specifies the rights the owner actually
+	// gets, superseding the implicit READ_CONTROL/WRITE_DAC/WRITE_OWNER
+	// permissions Windows grants owners by default. DittoFS does not grant
+	// those implicit owner rights today, so the supersede semantics are a
+	// no-op until per-owner implicit rights are implemented.
+	SpecialOwnerRights = "OwnerRights@"
 )
 
 // MaxACECount is the maximum number of ACEs per file.
@@ -121,15 +131,16 @@ const (
 
 // ACL represents an NFSv4 Access Control List.
 type ACL struct {
-	ACEs      []ACE     `json:"aces"`
-	Source    ACLSource `json:"source,omitempty"`    // How this ACL was created
-	Protected bool      `json:"protected,omitempty"` // SE_DACL_PROTECTED - blocks inheritance
+	ACEs          []ACE     `json:"aces"`
+	Source        ACLSource `json:"source,omitempty"`         // How this ACL was created
+	Protected     bool      `json:"protected,omitempty"`      // SE_DACL_PROTECTED - blocks inheritance
+	AutoInherited bool      `json:"auto_inherited,omitempty"` // SE_DACL_AUTO_INHERITED — DACL was auto-inherited from parent
 }
 
-// IsSpecialWho reports whether who is one of the three special identifiers:
-// OWNER@, GROUP@, or EVERYONE@.
+// IsSpecialWho reports whether who is one of the special identifiers:
+// OWNER@, GROUP@, EVERYONE@, or OwnerRights@.
 func IsSpecialWho(who string) bool {
-	return who == SpecialOwner || who == SpecialGroup || who == SpecialEveryone
+	return who == SpecialOwner || who == SpecialGroup || who == SpecialEveryone || who == SpecialOwnerRights
 }
 
 // IsInheritOnly reports whether this ACE has the INHERIT_ONLY flag set.

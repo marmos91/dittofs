@@ -442,3 +442,30 @@ func TestHasExplicitDeny(t *testing.T) {
 		}
 	})
 }
+
+func TestAceMatchesWho_OwnerRights(t *testing.T) {
+	owner := uint32(1000)
+	other := uint32(2000)
+	cases := []struct {
+		name         string
+		requesterUID uint32
+		fileOwnerUID uint32
+		want         bool
+	}{
+		{"requester_is_owner", owner, owner, true},
+		{"requester_not_owner", other, owner, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ace := &ACE{Who: SpecialOwnerRights, Type: ACE4_ACCESS_ALLOWED_ACE_TYPE}
+			ctx := &EvaluateContext{
+				UID:          tc.requesterUID,
+				FileOwnerUID: tc.fileOwnerUID,
+			}
+			if got := aceMatchesWho(ace, ctx); got != tc.want {
+				t.Errorf("aceMatchesWho(OwnerRights@, requester=%d, owner=%d) = %v, want %v",
+					tc.requesterUID, tc.fileOwnerUID, got, tc.want)
+			}
+		})
+	}
+}
