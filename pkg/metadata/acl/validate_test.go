@@ -25,13 +25,17 @@ func TestValidateACL_ValidCanonicalOrder(t *testing.T) {
 	}
 }
 
-func TestValidateACL_OutOfOrder(t *testing.T) {
+func TestValidateACL_AcceptsNonCanonicalOrder(t *testing.T) {
+	// Per MS-DTYP §2.4.5 + smbtorture acls.DENY1: non-canonical orderings
+	// must be accepted. Canonical order is a Windows ACL-editor presentation
+	// convention, not a wire requirement. The evaluator walks ACEs in array
+	// order (RFC 7530 §6.2.1) so semantics remain deterministic.
 	tests := []struct {
 		name string
 		aces []ACE
 	}{
 		{
-			name: "explicit allow before explicit deny",
+			name: "explicit allow before explicit deny (acls.DENY1 shape)",
 			aces: []ACE{
 				{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialOwner},
 				{Type: ACE4_ACCESS_DENIED_ACE_TYPE, AccessMask: ACE4_WRITE_DATA, Who: "alice@example.com"},
@@ -45,7 +49,7 @@ func TestValidateACL_OutOfOrder(t *testing.T) {
 			},
 		},
 		{
-			name: "inherited allow before inherited deny",
+			name: "inherited allow before inherited deny (acls.INHERITFLAGS shape)",
 			aces: []ACE{
 				{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, Flag: ACE4_INHERITED_ACE, AccessMask: ACE4_READ_DATA, Who: SpecialOwner},
 				{Type: ACE4_ACCESS_DENIED_ACE_TYPE, Flag: ACE4_INHERITED_ACE, AccessMask: ACE4_WRITE_DATA, Who: "alice@example.com"},
@@ -56,12 +60,8 @@ func TestValidateACL_OutOfOrder(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a := &ACL{ACEs: tt.aces}
-			err := ValidateACL(a)
-			if err == nil {
-				t.Error("expected validation error for out-of-order ACL")
-			}
-			if !errors.Is(err, ErrACLNotCanonical) {
-				t.Errorf("expected ErrACLNotCanonical, got: %v", err)
+			if err := ValidateACL(a); err != nil {
+				t.Fatalf("ValidateACL non-canonical = %v, want nil", err)
 			}
 		})
 	}
