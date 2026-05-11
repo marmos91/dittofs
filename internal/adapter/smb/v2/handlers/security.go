@@ -272,6 +272,8 @@ func principalToSID(who string, fileUID, fileGID uint32) *sid.SID {
 		return defaultSIDMapper.GroupSID(fileGID)
 	case acl.SpecialEveryone:
 		return sid.WellKnownEveryone
+	case acl.SpecialOwnerRights:
+		return sid.WellKnownOwnerRights
 	case acl.SpecialSystem:
 		return sid.WellKnownSystem
 	case acl.SpecialAdministrators:

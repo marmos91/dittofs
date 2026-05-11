@@ -909,3 +909,39 @@ func TestParseSecurityDescriptor_NoControlFlagsLeavesACLDefault(t *testing.T) {
 		t.Error("AutoInherited = true, want false (no SE_DACL_AUTO_INHERITED bit in Control)")
 	}
 }
+
+// TestSecurityDescriptor_OwnerRightsRoundTrip asserts that an ACL keyed
+// to OWNER_RIGHTS (S-1-3-4) survives a BuildSecurityDescriptor →
+// ParseSecurityDescriptor cycle as ACE.Who = OwnerRights@.
+func TestSecurityDescriptor_OwnerRightsRoundTrip(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				ACEs: []acl.ACE{
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						AccessMask: acl.ACE4_READ_DATA | acl.ACE4_READ_ATTRIBUTES,
+						Who:        acl.SpecialOwnerRights,
+					},
+				},
+			},
+		},
+	}
+	data, err := BuildSecurityDescriptor(file, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+	_, _, parsed, err := ParseSecurityDescriptor(data)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor: %v", err)
+	}
+	if parsed == nil || len(parsed.ACEs) != 1 {
+		t.Fatalf("expected 1 ACE, got %#v", parsed)
+	}
+	if got := parsed.ACEs[0].Who; got != acl.SpecialOwnerRights {
+		t.Errorf("ACE.Who = %q, want %q", got, acl.SpecialOwnerRights)
+	}
+}
