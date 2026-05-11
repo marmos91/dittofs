@@ -366,10 +366,10 @@ func ParseSecurityDescriptor(data []byte) (ownerUID *uint32, ownerGID *uint32, f
 	// Parse header
 	r := smbenc.NewReader(data)
 	r.Skip(2) // Revision(1) + Sbz1(1)
-	r.Skip(2) // Control (not used)
+	control := r.ReadUint16()
 	offsetOwner := r.ReadUint32()
 	offsetGroup := r.ReadUint32()
-	r.Skip(4) // offsetSACL (not used)
+	r.Skip(4) // offsetSACL (SACL parsing not implemented; preserve-on-write is future work)
 	offsetDACL := r.ReadUint32()
 	if r.Err() != nil {
 		return nil, nil, nil, fmt.Errorf("failed to parse SD header: %w", r.Err())
@@ -403,6 +403,19 @@ func ParseSecurityDescriptor(data []byte) (ownerUID *uint32, ownerGID *uint32, f
 		fileACL, err = parseDACL(daclData)
 		if err != nil {
 			return ownerUID, ownerGID, nil, fmt.Errorf("failed to parse DACL: %w", err)
+		}
+	}
+
+	// Surface SD Control flags onto the ACL so SE_DACL_PROTECTED and
+	// SE_DACL_AUTO_INHERITED round-trip through SET_INFO Security. The build
+	// path already re-emits these symmetrically from ACL.Protected and the
+	// presence of any ACE4_INHERITED_ACE flag.
+	if fileACL != nil {
+		if control&seDACLProtected != 0 {
+			fileACL.Protected = true
+		}
+		if control&seDACLAutoInherited != 0 {
+			fileACL.AutoInherited = true
 		}
 	}
 

@@ -816,3 +816,96 @@ func TestSecurityDescriptor_SIDFormRoundTrip(t *testing.T) {
 		t.Errorf("round-trip Who = %q, want %q (PrincipalToSID likely missing sid: handling)", got, "sid:S-1-5-32-544")
 	}
 }
+
+// TestParseSecurityDescriptor_CapturesControlFlags asserts that an SD whose
+// Control field carries SE_DACL_PROTECTED + SE_DACL_AUTO_INHERITED yields an
+// ACL with both flags set after parse. The build path already emits these
+// flags; this locks down the symmetric parse direction so SET_INFO Security
+// can persist the client's intent for inheritance behavior.
+func TestParseSecurityDescriptor_CapturesControlFlags(t *testing.T) {
+	// Build an SD whose source ACL is Protected + AutoInherited. The build
+	// path emits seDACLProtected + seDACLAutoInherited; we then parse it
+	// back and assert both flags survive.
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				Protected:     true,
+				AutoInherited: true,
+				ACEs: []acl.ACE{
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						Flag:       acl.ACE4_INHERITED_ACE,
+						AccessMask: 0x001F01FF,
+						Who:        acl.SpecialEveryone,
+					},
+				},
+			},
+		},
+	}
+
+	data, err := BuildSecurityDescriptor(file, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	_, _, parsed, err := ParseSecurityDescriptor(data)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor: %v", err)
+	}
+	if parsed == nil {
+		t.Fatal("parsed ACL is nil")
+	}
+	if !parsed.Protected {
+		t.Error("Protected = false, want true")
+	}
+	if !parsed.AutoInherited {
+		t.Error("AutoInherited = false, want true")
+	}
+}
+
+// TestParseSecurityDescriptor_NoControlFlagsLeavesACLDefault asserts that an SD
+// whose Control field carries only seSelfRelative|seDACLPresent (no Protected
+// or AutoInherited bits) yields an ACL with both flags at their zero default.
+func TestParseSecurityDescriptor_NoControlFlagsLeavesACLDefault(t *testing.T) {
+	// Hand-craft a self-relative SD: header (20B) + empty DACL (8B, ACE count=0).
+	// Control = seSelfRelative | seDACLPresent only.
+	const (
+		hdrSize = 20
+		aclSize = 8
+	)
+	buf := make([]byte, hdrSize+aclSize)
+	// Revision=1, Sbz1=0
+	buf[0] = 1
+	buf[1] = 0
+	// Control (LE)
+	binary.LittleEndian.PutUint16(buf[2:4], uint16(seSelfRelative|seDACLPresent))
+	// offsetOwner, offsetGroup, offsetSACL = 0
+	binary.LittleEndian.PutUint32(buf[4:8], 0)
+	binary.LittleEndian.PutUint32(buf[8:12], 0)
+	binary.LittleEndian.PutUint32(buf[12:16], 0)
+	// offsetDACL = 20 (right after header)
+	binary.LittleEndian.PutUint32(buf[16:20], hdrSize)
+	// DACL: AclRevision=2, Sbz1=0, AclSize=8, AceCount=0, Sbz2=0
+	buf[20] = 2
+	buf[21] = 0
+	binary.LittleEndian.PutUint16(buf[22:24], aclSize)
+	binary.LittleEndian.PutUint16(buf[24:26], 0)
+	binary.LittleEndian.PutUint16(buf[26:28], 0)
+
+	_, _, parsed, err := ParseSecurityDescriptor(buf)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor: %v", err)
+	}
+	if parsed == nil {
+		t.Fatal("parsed ACL is nil")
+	}
+	if parsed.Protected {
+		t.Error("Protected = true, want false (no SE_DACL_PROTECTED bit in Control)")
+	}
+	if parsed.AutoInherited {
+		t.Error("AutoInherited = true, want false (no SE_DACL_AUTO_INHERITED bit in Control)")
+	}
+}

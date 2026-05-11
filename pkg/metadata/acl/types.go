@@ -121,9 +121,10 @@ const (
 
 // ACL represents an NFSv4 Access Control List.
 type ACL struct {
-	ACEs      []ACE     `json:"aces"`
-	Source    ACLSource `json:"source,omitempty"`    // How this ACL was created
-	Protected bool      `json:"protected,omitempty"` // SE_DACL_PROTECTED - blocks inheritance
+	ACEs          []ACE     `json:"aces"`
+	Source        ACLSource `json:"source,omitempty"`         // How this ACL was created
+	Protected     bool      `json:"protected,omitempty"`      // SE_DACL_PROTECTED - blocks inheritance
+	AutoInherited bool      `json:"auto_inherited,omitempty"` // SE_DACL_AUTO_INHERITED — DACL was auto-inherited from parent
 }
 
 // IsSpecialWho reports whether who is one of the three special identifiers:
