@@ -363,6 +363,8 @@ func TestPrincipalToSID(t *testing.T) {
 		{"GroupAt", "GROUP@", 1000, 1001, "S-1-5-21-100-200-300-3003", false},
 		{"EveryoneAt", "EVERYONE@", 0, 0, "S-1-1-0", false},
 		{"OwnerRightsAt", "OwnerRights@", 0, 0, "S-1-3-4", false},
+		{"CreatorOwnerAt", "CreatorOwner@", 0, 0, "S-1-3-0", false},
+		{"CreatorGroupAt", "CreatorGroup@", 0, 0, "S-1-3-1", false},
 		{"NumericUID", "501@localdomain", 0, 0, "S-1-5-21-100-200-300-2002", false},
 		{"NamedPrincipal", "alice@EXAMPLE.COM", 0, 0, "S-1-5-21-100-200-300-", true},
 		{"RootOwner", "OWNER@", 0, 0, "S-1-5-32-544", false},
@@ -393,8 +395,8 @@ func TestSIDToPrincipal(t *testing.T) {
 		wantPrinc string
 	}{
 		{"Everyone", "S-1-1-0", "EVERYONE@"},
-		{"CreatorOwner", "S-1-3-0", "OWNER@"},
-		{"CreatorGroup", "S-1-3-1", "GROUP@"},
+		{"CreatorOwner", "S-1-3-0", "CreatorOwner@"},
+		{"CreatorGroup", "S-1-3-1", "CreatorGroup@"},
 		{"OwnerRights", "S-1-3-4", "OwnerRights@"},
 		{"DomainUser1000", "S-1-5-21-100-200-300-3000", "1000@localdomain"},
 		{"DomainGroup1000", "S-1-5-21-100-200-300-3001", "1000@localdomain"},

@@ -274,6 +274,10 @@ func principalToSID(who string, fileUID, fileGID uint32) *sid.SID {
 		return sid.WellKnownEveryone
 	case acl.SpecialOwnerRights:
 		return sid.WellKnownOwnerRights
+	case acl.SpecialCreatorOwner:
+		return sid.WellKnownCreatorOwner
+	case acl.SpecialCreatorGroup:
+		return sid.WellKnownCreatorGroup
 	case acl.SpecialSystem:
 		return sid.WellKnownSystem
 	case acl.SpecialAdministrators:
