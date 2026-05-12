@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -678,6 +679,136 @@ func TestHandleCreate_MxAcContext(t *testing.T) {
 		maxAccess := binary.LittleEndian.Uint32(mxAcResp[4:8])
 		if maxAccess != 0x001F01FF {
 			t.Errorf("MaximalAccess = 0x%08x, expected 0x001F01FF", maxAccess)
+		}
+	})
+}
+
+// TestHandleCreate_MxAcContext_ACL verifies that computeMaximalAccess returns
+// SD-evaluated rights when the file carries an explicit DACL (MS-SMB2
+// §2.2.13.2). The POSIX path is preserved verbatim when file.ACL == nil and
+// is exercised by TestHandleCreate_MxAcContext above; here we cover the new
+// ACL-aware branch.
+func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
+	mkOwnerCtx := func() *metadata.AuthContext {
+		uid := uint32(1000)
+		gid := uint32(1000)
+		return &metadata.AuthContext{
+			Context: context.Background(),
+			Identity: &metadata.Identity{
+				UID: &uid,
+				GID: &gid,
+			},
+		}
+	}
+
+	t.Run("DenyACEClearsWriteBits", func(t *testing.T) {
+		// File owned by uid=1000, mode=0700 would yield GENERIC_ALL via the
+		// POSIX path. The DACL denies WRITE_DATA|APPEND_DATA to the owner
+		// before granting "all rights" — DENY-first ordering must clear those
+		// bits from the MxAc reply (no owner short-circuit on the ACL path).
+		authCtx := mkOwnerCtx()
+		file := &metadata.File{
+			FileAttr: metadata.FileAttr{
+				UID:  1000,
+				GID:  1000,
+				Mode: 0700,
+				ACL: &acl.ACL{
+					ACEs: []acl.ACE{
+						{
+							Type:       acl.ACE4_ACCESS_DENIED_ACE_TYPE,
+							Who:        acl.SpecialOwner,
+							AccessMask: acl.ACE4_WRITE_DATA | acl.ACE4_APPEND_DATA,
+						},
+						{
+							Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+							Who:        acl.SpecialOwner,
+							AccessMask: 0x001F01FF,
+						},
+					},
+				},
+			},
+		}
+
+		access := computeMaximalAccess(file, authCtx)
+		if access&acl.ACE4_WRITE_DATA != 0 {
+			t.Errorf("ACE4_WRITE_DATA must be cleared, got 0x%08x", access)
+		}
+		if access&acl.ACE4_APPEND_DATA != 0 {
+			t.Errorf("ACE4_APPEND_DATA must be cleared, got 0x%08x", access)
+		}
+		// At minimum, READ_DATA should still be granted by the ALLOW ACE.
+		if access&acl.ACE4_READ_DATA == 0 {
+			t.Errorf("ACE4_READ_DATA must be granted by allow-all ACE, got 0x%08x", access)
+		}
+		// And the owner short-circuit must NOT fire: GENERIC_ALL would have
+		// the write bits set, which we just verified are not.
+		if access == 0x001F01FF {
+			t.Errorf("MxAc returned GENERIC_ALL (0x001F01FF); owner short-circuit leaked onto ACL path")
+		}
+	})
+
+	t.Run("AllowOnlyACEGrantsExactlyListedBits", func(t *testing.T) {
+		// Single ALLOW ACE granting exactly READ_DATA|READ_ATTRIBUTES|
+		// READ_ACL|SYNCHRONIZE — no extra bits should leak in from POSIX mode.
+		authCtx := mkOwnerCtx()
+		want := uint32(acl.ACE4_READ_DATA | acl.ACE4_READ_ATTRIBUTES | acl.ACE4_READ_ACL | acl.ACE4_SYNCHRONIZE)
+		file := &metadata.File{
+			FileAttr: metadata.FileAttr{
+				UID:  1000,
+				GID:  1000,
+				Mode: 0700,
+				ACL: &acl.ACL{
+					ACEs: []acl.ACE{
+						{
+							Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+							Who:        acl.SpecialOwner,
+							AccessMask: want,
+						},
+					},
+				},
+			},
+		}
+
+		access := computeMaximalAccess(file, authCtx)
+		if access != want {
+			t.Errorf("MxAc = 0x%08x, expected exactly 0x%08x", access, want)
+		}
+	})
+
+	t.Run("EmptyACLDeniesAllProbedBits", func(t *testing.T) {
+		// An ACL with zero ACEs decides no bits — Evaluate returns false for
+		// every probe and the granted mask must be zero.
+		authCtx := mkOwnerCtx()
+		file := &metadata.File{
+			FileAttr: metadata.FileAttr{
+				UID:  1000,
+				GID:  1000,
+				Mode: 0755,
+				ACL:  &acl.ACL{},
+			},
+		}
+
+		access := computeMaximalAccess(file, authCtx)
+		if access != 0 {
+			t.Errorf("Empty ACL must deny all bits, got 0x%08x", access)
+		}
+	})
+
+	t.Run("NilACLFallsBackToPOSIX", func(t *testing.T) {
+		// Regression guard: file.ACL == nil must preserve the legacy owner
+		// short-circuit returning GENERIC_ALL.
+		authCtx := mkOwnerCtx()
+		file := &metadata.File{
+			FileAttr: metadata.FileAttr{
+				UID:  1000,
+				GID:  1000,
+				Mode: 0755,
+			},
+		}
+
+		access := computeMaximalAccess(file, authCtx)
+		if access != 0x001F01FF {
+			t.Errorf("POSIX fallback owner access = 0x%08x, expected 0x001F01FF", access)
 		}
 	})
 }
