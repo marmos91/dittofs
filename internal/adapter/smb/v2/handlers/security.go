@@ -421,8 +421,10 @@ func ParseSecurityDescriptor(data []byte) (ownerUID *uint32, ownerGID *uint32, f
 
 	// Surface SD Control flags onto the ACL so SE_DACL_PROTECTED and
 	// SE_DACL_AUTO_INHERITED round-trip through SET_INFO Security. The build
-	// path already re-emits these symmetrically from ACL.Protected and the
-	// presence of any ACE4_INHERITED_ACE flag.
+	// path re-emits SE_DACL_PROTECTED from ACL.Protected and
+	// SE_DACL_AUTO_INHERITED from ACL.AutoInherited (with a legacy fallback
+	// to the per-ACE INHERITED_ACE flag for ACLs persisted before this field
+	// was captured).
 	if fileACL != nil {
 		if control&seDACLProtected != 0 {
 			fileACL.Protected = true
