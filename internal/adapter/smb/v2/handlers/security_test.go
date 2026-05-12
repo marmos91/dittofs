@@ -945,3 +945,134 @@ func TestSecurityDescriptor_OwnerRightsRoundTrip(t *testing.T) {
 		t.Errorf("ACE.Who = %q, want %q", got, acl.SpecialOwnerRights)
 	}
 }
+
+// TestBuildSD_AutoInherited_FromACLField verifies that BuildSecurityDescriptor
+// emits SE_DACL_AUTO_INHERITED when acl.ACL.AutoInherited is true, even if no
+// ACE carries the per-ACE INHERITED_ACE flag. This locks down the symmetric
+// round-trip: parse captures the Control bit into the ACL field; build emits
+// the Control bit directly from that field (MS-DTYP §2.4.6).
+// Regression for the asymmetric build path P6 fixes.
+func TestBuildSD_AutoInherited_FromACLField(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				AutoInherited: true,
+				ACEs: []acl.ACE{
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						Flag:       0, // explicitly NOT INHERITED_ACE
+						AccessMask: 0x001F01FF,
+						Who:        acl.SpecialOwner,
+					},
+				},
+			},
+		},
+	}
+
+	data, err := BuildSecurityDescriptor(file, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	control := binary.LittleEndian.Uint16(data[2:4])
+	if control&seDACLAutoInherited == 0 {
+		t.Error("SE_DACL_AUTO_INHERITED not set when ACL.AutoInherited=true")
+	}
+}
+
+// TestBuildSD_AutoInherited_RoundTrip verifies the full parse+build round trip
+// for SE_DACL_AUTO_INHERITED. Build an SD from ACL{AutoInherited:true}, parse
+// it back (parse path captures the Control bit), then re-build. The re-built
+// SD must still carry SE_DACL_AUTO_INHERITED in its Control word.
+func TestBuildSD_AutoInherited_RoundTrip(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				AutoInherited: true,
+				ACEs: []acl.ACE{
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						Flag:       0, // no per-ACE inherited flag
+						AccessMask: 0x001F01FF,
+						Who:        acl.SpecialOwner,
+					},
+				},
+			},
+		},
+	}
+
+	data1, err := BuildSecurityDescriptor(file, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor (initial): %v", err)
+	}
+
+	_, _, parsed, err := ParseSecurityDescriptor(data1)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor: %v", err)
+	}
+	if parsed == nil {
+		t.Fatal("parsed ACL is nil")
+	}
+	if !parsed.AutoInherited {
+		t.Fatal("parsed.AutoInherited = false; parse path failed to capture flag")
+	}
+
+	// Re-build from the parsed ACL and assert the Control bit survives.
+	file2 := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL:  parsed,
+		},
+	}
+	data2, err := BuildSecurityDescriptor(file2, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor (rebuild): %v", err)
+	}
+
+	control := binary.LittleEndian.Uint16(data2[2:4])
+	if control&seDACLAutoInherited == 0 {
+		t.Error("SE_DACL_AUTO_INHERITED dropped on re-build from parsed ACL")
+	}
+}
+
+// TestBuildSD_AutoInherited_NotSet verifies that BuildSecurityDescriptor does
+// NOT emit SE_DACL_AUTO_INHERITED when neither acl.ACL.AutoInherited is true
+// nor any ACE carries the INHERITED_ACE flag (negative case for P6 fix).
+func TestBuildSD_AutoInherited_NotSet(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				AutoInherited: false,
+				ACEs: []acl.ACE{
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						Flag:       0,
+						AccessMask: 0x001F01FF,
+						Who:        acl.SpecialOwner,
+					},
+				},
+			},
+		},
+	}
+
+	data, err := BuildSecurityDescriptor(file, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	control := binary.LittleEndian.Uint16(data[2:4])
+	if control&seDACLAutoInherited != 0 {
+		t.Error("SE_DACL_AUTO_INHERITED set when ACL.AutoInherited=false and no ACE carries INHERITED_ACE")
+	}
+}

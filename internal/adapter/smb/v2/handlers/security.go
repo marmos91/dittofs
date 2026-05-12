@@ -177,12 +177,19 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 		control |= seSACLPresent
 	}
 
-	// Check for auto-inherited flag: if any ACE has INHERITED_ACE
+	// Round-trip SE_DACL_AUTO_INHERITED from the parsed ACL (MS-DTYP §2.4.6).
+	// Parse path captures the Control bit into fileACL.AutoInherited; emit it directly here.
 	if fileACL != nil {
-		for _, ace := range fileACL.ACEs {
-			if ace.Flag&acl.ACE4_INHERITED_ACE != 0 {
-				control |= seDACLAutoInherited
-				break
+		if fileACL.AutoInherited {
+			control |= seDACLAutoInherited
+		} else {
+			// Fallback for ACLs persisted before SE_DACL_AUTO_INHERITED was captured:
+			// infer the Control bit when any ACE carries INHERITED_ACE.
+			for _, ace := range fileACL.ACEs {
+				if ace.Flag&acl.ACE4_INHERITED_ACE != 0 {
+					control |= seDACLAutoInherited
+					break
+				}
 			}
 		}
 		if fileACL.Protected {
@@ -414,8 +421,10 @@ func ParseSecurityDescriptor(data []byte) (ownerUID *uint32, ownerGID *uint32, f
 
 	// Surface SD Control flags onto the ACL so SE_DACL_PROTECTED and
 	// SE_DACL_AUTO_INHERITED round-trip through SET_INFO Security. The build
-	// path already re-emits these symmetrically from ACL.Protected and the
-	// presence of any ACE4_INHERITED_ACE flag.
+	// path re-emits SE_DACL_PROTECTED from ACL.Protected and
+	// SE_DACL_AUTO_INHERITED from ACL.AutoInherited (with a legacy fallback
+	// to the per-ACE INHERITED_ACE flag for ACLs persisted before this field
+	// was captured).
 	if fileACL != nil {
 		if control&seDACLProtected != 0 {
 			fileACL.Protected = true
