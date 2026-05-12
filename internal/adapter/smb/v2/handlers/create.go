@@ -975,11 +975,13 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 // a file's DACL when computing the MxAc create-context response. Per
 // MS-SMB2 §2.2.13.2, MaximalAccess must reflect actual security descriptor
 // evaluation — each bit is OR'd into the result iff the ACL explicitly
-// grants it to the requester. The set covers every individual file/dir
-// right defined as an ACE4_* constant in pkg/metadata/acl/types.go
-// (NFSv4 mask bits share their bit positions with the equivalent
-// Windows access rights, so the resulting mask is directly usable on the
-// SMB2 wire).
+// grants it to the requester. The set covers every ACE4_* file/dir right
+// that has a Windows access-mask analog per MS-DTYP §2.4.3; NFSv4 mask
+// bits share their bit positions with the equivalent Windows rights, so
+// the resulting mask is directly usable on the SMB2 wire. The NFSv4-only
+// retention bits (ACE4_WRITE_RETENTION = 0x200, ACE4_WRITE_RETENTION_HOLD
+// = 0x400) are intentionally excluded because they have no representation
+// in SMB access masks.
 var maxAccessProbeBits = [...]uint32{
 	acl.ACE4_READ_DATA, // == ACE4_LIST_DIRECTORY
 	acl.ACE4_WRITE_DATA,
@@ -1025,11 +1027,13 @@ func computeMaximalAccess(file *metadata.File, authCtx *metadata.AuthContext) ui
 	// ACL-aware path: probe each defined access-right bit against the SD.
 	// No owner short-circuit — the DACL may legitimately restrict the owner.
 	if file.ACL != nil {
-		evalCtx := buildMaxAccessEvalContext(file, authCtx)
 		// Root bypass mirrors metadata.evaluateACLPermissions for consistency.
+		// Hoisted above evalCtx construction to avoid the allocation on the
+		// root-admin hot path.
 		if authCtx.Identity != nil && authCtx.Identity.UID != nil && *authCtx.Identity.UID == 0 {
 			return genericAll
 		}
+		evalCtx := buildMaxAccessEvalContext(file, authCtx)
 		var granted uint32
 		for _, bit := range maxAccessProbeBits {
 			if acl.Evaluate(file.ACL, evalCtx, bit) {
