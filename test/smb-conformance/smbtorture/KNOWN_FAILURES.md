@@ -63,7 +63,6 @@ descriptors, and owner rights are not implemented.
 | smb2.acls.OWNER-RIGHTS-DENY | ACLs | Owner rights deny not implemented | - |
 | smb2.acls.OWNER-RIGHTS-DENY1 | ACLs | Owner rights deny not implemented | - |
 | smb2.acls.SDFLAGSVSCHOWN | ACLs | SD flags vs chown not implemented | - |
-| smb2.acls_non_canonical.flags | ACLs | Non-canonical ACL ordering not implemented | - |
 | smb2.sdread | Security descriptors | Security descriptor read not implemented | - |
 | smb2.secleak | Security descriptors | Security descriptor leak test not implemented | - |
 
