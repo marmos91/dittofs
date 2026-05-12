@@ -1097,8 +1097,13 @@ func computeMaximalAccess(file *metadata.File, authCtx *metadata.AuthContext) ui
 // subsequent operations against the same handle.
 //
 // Anonymous (no Identity or no UID) sessions produce a context with only
-// the file's owner UID/GID populated, so DENY/ALLOW ACEs targeting
-// EVERYONE@ still match while OWNER@/GROUP@ comparisons fall through.
+// the file's owner UID/GID populated. EVERYONE@ ACEs still match. Note that
+// OWNER@/GROUP@ will spuriously match when the file is owned by uid/gid 0
+// (the zero-value default in the returned context); this matches the legacy
+// behavior of metadata.evaluateACLPermissions and is acceptable today because
+// anonymous SMB sessions are not granted access at the share level. Tracked
+// as a future hardening item: use a sentinel UID/GID that cannot collide
+// with a real owner.
 func buildMaxAccessEvalContext(file *metadata.File, authCtx *metadata.AuthContext) *acl.EvaluateContext {
 	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
 		return &acl.EvaluateContext{
