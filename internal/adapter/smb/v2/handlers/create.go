@@ -15,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -970,14 +971,51 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	return h.completeCreateAfterBreak(ctx, draft), nil
 }
 
-// computeMaximalAccess computes the maximal access mask for a file based on
-// POSIX permissions and the requesting user's identity.
+// maxAccessProbeBits is the set of MS-DTYP access-right bits probed against
+// a file's DACL when computing the MxAc create-context response. Per
+// MS-SMB2 §2.2.13.2, MaximalAccess must reflect actual security descriptor
+// evaluation — each bit is OR'd into the result iff the ACL explicitly
+// grants it to the requester. The set covers every ACE4_* file/dir right
+// that has a Windows access-mask analog per MS-DTYP §2.4.3; NFSv4 mask
+// bits share their bit positions with the equivalent Windows rights, so
+// the resulting mask is directly usable on the SMB2 wire. The NFSv4-only
+// retention bits (ACE4_WRITE_RETENTION = 0x200, ACE4_WRITE_RETENTION_HOLD
+// = 0x400) are intentionally excluded because they have no representation
+// in SMB access masks.
+var maxAccessProbeBits = [...]uint32{
+	acl.ACE4_READ_DATA, // == ACE4_LIST_DIRECTORY
+	acl.ACE4_WRITE_DATA,
+	acl.ACE4_APPEND_DATA,
+	acl.ACE4_READ_NAMED_ATTRS,
+	acl.ACE4_WRITE_NAMED_ATTRS,
+	acl.ACE4_EXECUTE,
+	acl.ACE4_DELETE_CHILD,
+	acl.ACE4_READ_ATTRIBUTES,
+	acl.ACE4_WRITE_ATTRIBUTES,
+	acl.ACE4_DELETE,
+	acl.ACE4_READ_ACL,
+	acl.ACE4_WRITE_ACL,
+	acl.ACE4_WRITE_OWNER,
+	acl.ACE4_SYNCHRONIZE,
+}
+
+// computeMaximalAccess computes the maximal access mask for a file used in
+// the MxAc create-context response.
 //
-// For the file owner, GENERIC_ALL (0x001F01FF) is granted.
-// For other users, access is computed from the file's mode bits:
-//   - Read permission:    0x00120089 (FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE)
-//   - Write permission:   0x00120116 (FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE)
-//   - Execute permission: 0x001200A0 (FILE_EXECUTE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE)
+// When the file carries an explicit DACL (file.ACL != nil), each individual
+// MS-DTYP access-right bit is probed against the ACL via acl.Evaluate using
+// an EvaluateContext built from authCtx.Identity (mirroring
+// metadata.evaluateACLPermissions). The owner short-circuit is intentionally
+// NOT applied on the ACL path: MS-SMB2 §2.2.13.2 requires the MxAc reply to
+// reflect SD evaluation, and an owner can legitimately be restricted by an
+// OWNER_RIGHTS ACE (MS-DTYP §2.5.3).
+//
+// When file.ACL is nil, the legacy POSIX path is preserved verbatim:
+//   - Owner: GENERIC_ALL (0x001F01FF).
+//   - Other users: mapped from mode bits.
+//     Read permission:    0x00120089 (FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE)
+//     Write permission:   0x00120116 (FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE)
+//     Execute permission: 0x001200A0 (FILE_EXECUTE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE)
 func computeMaximalAccess(file *metadata.File, authCtx *metadata.AuthContext) uint32 {
 	const (
 		genericAll    uint32 = 0x001F01FF
@@ -985,6 +1023,25 @@ func computeMaximalAccess(file *metadata.File, authCtx *metadata.AuthContext) ui
 		writeAccess   uint32 = 0x00120116
 		executeAccess uint32 = 0x001200A0
 	)
+
+	// ACL-aware path: probe each defined access-right bit against the SD.
+	// No owner short-circuit — the DACL may legitimately restrict the owner.
+	if file.ACL != nil {
+		// Root bypass mirrors metadata.evaluateACLPermissions for consistency.
+		// Hoisted above evalCtx construction to avoid the allocation on the
+		// root-admin hot path.
+		if authCtx.Identity != nil && authCtx.Identity.UID != nil && *authCtx.Identity.UID == 0 {
+			return genericAll
+		}
+		evalCtx := buildMaxAccessEvalContext(file, authCtx)
+		var granted uint32
+		for _, bit := range maxAccessProbeBits {
+			if acl.Evaluate(file.ACL, evalCtx, bit) {
+				granted |= bit
+			}
+		}
+		return granted
+	}
 
 	// Check if the requesting user is the file owner
 	if authCtx.Identity != nil && authCtx.Identity.UID != nil && *authCtx.Identity.UID == file.UID {
@@ -1032,6 +1089,53 @@ func computeMaximalAccess(file *metadata.File, authCtx *metadata.AuthContext) ui
 	}
 
 	return access
+}
+
+// buildMaxAccessEvalContext constructs an acl.EvaluateContext for the
+// requester from authCtx.Identity. Mirrors metadata.evaluateACLPermissions
+// so the MxAc reply stays consistent with permission checks performed on
+// subsequent operations against the same handle.
+//
+// Anonymous (no Identity or no UID) sessions produce a context with only
+// the file's owner UID/GID populated. EVERYONE@ ACEs still match. Note that
+// OWNER@/GROUP@ will spuriously match when the file is owned by uid/gid 0
+// (the zero-value default in the returned context); this matches the legacy
+// behavior of metadata.evaluateACLPermissions and is acceptable today because
+// anonymous SMB sessions are not granted access at the share level. Tracked
+// as a future hardening item: use a sentinel UID/GID that cannot collide
+// with a real owner.
+func buildMaxAccessEvalContext(file *metadata.File, authCtx *metadata.AuthContext) *acl.EvaluateContext {
+	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
+		return &acl.EvaluateContext{
+			FileOwnerUID: file.UID,
+			FileOwnerGID: file.GID,
+		}
+	}
+
+	identity := authCtx.Identity
+	evalCtx := &acl.EvaluateContext{
+		UID:          *identity.UID,
+		GIDs:         identity.GIDs,
+		FileOwnerUID: file.UID,
+		FileOwnerGID: file.GID,
+	}
+	if identity.GID != nil {
+		evalCtx.GID = *identity.GID
+	}
+
+	switch {
+	case identity.Username != "" && identity.Domain != "":
+		evalCtx.Who = identity.Username + "@" + identity.Domain
+	case identity.Username != "":
+		evalCtx.Who = identity.Username
+	}
+
+	if identity.SID != nil {
+		evalCtx.SID = *identity.SID
+	}
+	evalCtx.GroupSIDs = identity.GroupSIDs
+
+	return evalCtx
 }
 
 // ============================================================================
