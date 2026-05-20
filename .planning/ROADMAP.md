@@ -30,7 +30,33 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 - [x] **Phase 12: CDC read path + metadata schema + engine API (A3)** — `[]BlockRef` API, Cache by ContentHash, schema migration (GH issue: #423) (completed 2026-04-27)
 - [x] **Phase 13: Merkle root + file-level dedup (A4)** — `FileAttr.ObjectID` + short-circuit full-file dedup (GH issue: #424) (completed 2026-04-28)
 - [x] **Phase 14: Migration tool (A5)** — `dfsctl blockstore migrate` offline re-chunk + re-hash (GH issue: #425) (phases complete 2026-05-05; production wiring of `openOfflineRuntime` still gates production rollout)
-- [ ] **Phase 15: Legacy cleanup (A6)** — Remove dual-read shim, delete deprecated symbols (GH issue: #426)
+- [ ] **Phase 15: Legacy cleanup (A6)** — Remove dual-read shim, delete deprecated symbols (GH issue: #426) — **SUBSUMED BY v0.16.0 Phase 17** (legacy delete folded into unified BlockStore interface work; this issue can be closed once Phase 17 ships)
+
+---
+
+## v0.16.0 — CAS Convergence
+
+**Goal**: Converge DittoFS block storage on a single content-addressable layout. Collapse v0.15.0 dual-path complexity (legacy `.blk` + hybrid CAS, mmap + RAM cache, chunking-in-Syncer + chunking-at-rollup). Subsume v0.15.0 Phase 15 (A6) legacy cleanup. Ship one-shot migration command. No backward-compat shims — DittoFS has no production users.
+
+**Phases:** 4 (numbered 16–19, continuing from v0.15.0 which ends at Phase 15)
+
+16 (Cache RAM-only) ──► 17 (Unified BlockStore + legacy delete + migrate-to-cas) ──► 18 (Syncer mirror loop + ObjectID relocation) ──► 19 (Write-path RAM opts)
+
+- [ ] **Phase 16: Cache RAM-only (remove mmap read path)** — Delete `cache_mmap_*.go`, swap `readFromCAS` → `local.Get`, retire D-33 perf gate (GH issue: #516)
+- [ ] **Phase 17: Unified BlockStore interface + legacy delete + migration tool** — Single `BlockStore` interface (Put/Get/GetRange/Has/Delete/Walk/Head) for local + remote, `BlockStoreAppend` extends with random-write tier, delete legacy `.blk` writer + dual-read shim + flag, ship `dfsctl blockstore migrate-to-cas` one-shot (GH issue: #517)
+- [ ] **Phase 18: Syncer simplification + ObjectID relocation** — Syncer Flush → mirror loop `for hash := range local.ListUnsynced() { remote.Put(...) }`. Move `ComputeObjectID` to rollup CommitChunks. Local-only shares now get ObjectIDs. (GH issue: #518)
+- [ ] **Phase 19: Write-path RAM optimizations** — 4 opts: in-memory hash dedup LRU; group commit / batched fsync; direct-to-Cache on chunk completion; eager small-file dedup (GH issue: #519)
+
+**Parent tracking issue:** [#515](https://github.com/marmos91/dittofs/issues/515)
+
+**Design spec:** `~/.claude/plans/reactive-sprouting-moonbeam.md` (locked 2026-05-20)
+
+**Locked decisions (do not re-litigate in discuss-phase):**
+1. Cache is RAM-only (drop mmap)
+2. Local + remote block stores share one CAS-keyed `BlockStore` interface
+3. Syncer is a byte-identical local→remote mirror
+
+**Intended outcome:** ~30–40% LoC reduction in `pkg/blockstore/` (target under 4k from current ~6k); single-layout conformance suite (`blockstoretest/`); trivially auditable Syncer; measurable rand-write throughput wins. All v0.15.0 perf gates preserved (D-21, D-41, D-43); D-33 deleted with mmap.
 
 ## Phase Details
 
