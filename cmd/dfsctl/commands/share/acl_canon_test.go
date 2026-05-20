@@ -180,3 +180,71 @@ func TestEditCmd_AclCanonicalizeInherited_ExplicitFalse(t *testing.T) {
 		t.Errorf("edit wire body missing acl_flag_inherited_canonicalization:false; got %s", s.lastBody)
 	}
 }
+
+// TestEditCmd_AclCanonicalizeInherited_StrictParse verifies that the
+// edit handler rejects any value other than the literal "true"/"false"
+// (case-insensitive). Refs #514: a permissive `ToLower == "true"`
+// silently coerces typos and bool-ish synonyms (yes/1) to false, which
+// is undetectable from the operator's side. The strict parse turns
+// those into a hard error and accepts only the canonical forms.
+func TestEditCmd_AclCanonicalizeInherited_StrictParse(t *testing.T) {
+	tests := []struct {
+		name      string
+		flagValue string
+		wantErr   bool
+		// wantBoolInBody only checked when wantErr is false.
+		wantBoolInBody string
+	}{
+		{name: "yes is rejected", flagValue: "yes", wantErr: true},
+		{name: "1 is rejected", flagValue: "1", wantErr: true},
+		{name: "typo truee is rejected", flagValue: "truee", wantErr: true},
+		{name: "empty after trim is rejected", flagValue: "   ", wantErr: true},
+		{name: "canonical true accepted", flagValue: "true", wantErr: false, wantBoolInBody: `"acl_flag_inherited_canonicalization":true`},
+		{name: "canonical false accepted", flagValue: "false", wantErr: false, wantBoolInBody: `"acl_flag_inherited_canonicalization":false`},
+		{name: "uppercase FALSE accepted", flagValue: "FALSE", wantErr: false, wantBoolInBody: `"acl_flag_inherited_canonicalization":false`},
+		{name: "mixed-case True accepted", flagValue: "True", wantErr: false, wantBoolInBody: `"acl_flag_inherited_canonicalization":true`},
+		{name: "padded true accepted", flagValue: "  true  ", wantErr: false, wantBoolInBody: `"acl_flag_inherited_canonicalization":true`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newShareJSONBodyServer(t)
+			defer s.Close()
+			withTestServer(t, s.URL)
+
+			resetEditFlags()
+			editAclCanonicalize = tc.flagValue
+			if err := editCmd.Flags().Set("acl-canonicalize-inherited", tc.flagValue); err != nil {
+				t.Fatalf("Flags.Set: %v", err)
+			}
+
+			var runErr error
+			_ = captureStdout(t, func() {
+				runErr = runEdit(editCmd, []string{"x"})
+			})
+
+			if tc.wantErr {
+				if runErr == nil {
+					t.Fatalf("expected error for flag value %q, got nil; body=%s", tc.flagValue, s.lastBody)
+				}
+				if !strings.Contains(runErr.Error(), "--acl-canonicalize-inherited") {
+					t.Errorf("error %q should reference --acl-canonicalize-inherited", runErr.Error())
+				}
+				if s.lastVerb != "" {
+					t.Errorf("expected no HTTP request to fire on parse error; got %s %s", s.lastVerb, s.lastPath)
+				}
+				return
+			}
+
+			if runErr != nil {
+				t.Fatalf("unexpected error for flag value %q: %v", tc.flagValue, runErr)
+			}
+			if s.lastVerb != http.MethodPut {
+				t.Fatalf("verb = %q, want PUT", s.lastVerb)
+			}
+			if !strings.Contains(string(s.lastBody), tc.wantBoolInBody) {
+				t.Errorf("wire body missing %s; got %s", tc.wantBoolInBody, s.lastBody)
+			}
+		})
+	}
+}

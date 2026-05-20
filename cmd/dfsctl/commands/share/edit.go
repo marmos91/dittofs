@@ -176,7 +176,11 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	if editAclCanonicalize != "" {
-		aclCanon := strings.ToLower(editAclCanonicalize) == "true"
+		val := strings.ToLower(strings.TrimSpace(editAclCanonicalize))
+		if val != "true" && val != "false" {
+			return fmt.Errorf("--acl-canonicalize-inherited: invalid value %q, must be true or false", editAclCanonicalize)
+		}
+		aclCanon := val == "true"
 		req.AclFlagInheritedCanonicalization = &aclCanon
 		hasUpdate = true
 	}
