@@ -63,11 +63,17 @@ The dfs server MUST be stopped before running this command — the
 migration rewrites the on-disk layout in place and a concurrent server
 would race the rename and corrupt the store.
 
+Required flag: --storage-dir <root>. The storage root is expected to
+contain a shares/<name>/blocks/ subtree per share; the command refuses
+to start if the path is missing or empty.
+
 The command is idempotent: a per-share journal at
-<share>/.dittofs-migrate-to-cas.state lets you resume after a crash or
-Ctrl-C without re-uploading already-migrated chunks. Successful
-completion writes <share>/.cas-migrated-v1 via atomic rename; the boot
-guard refuses to start dfs until this sentinel exists (exit code 78).
+<storage-dir>/shares/<name>/.dittofs-migrate-to-cas.state lets you
+resume after a crash or Ctrl-C without re-uploading already-migrated
+chunks. Successful completion writes
+<storage-dir>/shares/<name>/blocks/.cas-migrated-v1 via atomic rename;
+the boot guard refuses to start dfs until this sentinel exists (exit
+code 78).
 
 Use --dry-run for a non-destructive preview (file count, estimated
 dedup ratio, sampled bytes-per-second).
@@ -81,7 +87,7 @@ See docs/CONFIGURATION.md §migration for the full operator runbook.`,
 
 func init() {
 	migrateToCASCmd.Flags().StringVar(&migrateStorageDir, "storage-dir", "",
-		"Storage root (default: derived from config fs local-store path; expects <root>/shares/<name>/blocks layout)")
+		"Storage root (REQUIRED; expects <root>/shares/<name>/blocks layout)")
 	migrateToCASCmd.Flags().StringVar(&migrateShare, "share", "",
 		"Scope migration to one share (default: all shares discovered under <storage-dir>/shares/)")
 	migrateToCASCmd.Flags().BoolVar(&migrateDryRun, "dry-run", false,

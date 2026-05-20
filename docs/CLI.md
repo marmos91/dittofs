@@ -562,7 +562,7 @@ dfs migrate-to-cas [flags]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--storage-dir` | path | (from config) | Storage root directory. Shares are discovered under `<storage-dir>/shares/`. Overrides the config-derived value. |
+| `--storage-dir` | path | **required** | Storage root directory. Shares are discovered under `<storage-dir>/shares/`. There is no config-derived default; pass the path explicitly. |
 | `--share` | string | (all shares) | Scope migration to one share. Default migrates every share under the storage root. |
 | `--dry-run` | bool | `false` | Walk the legacy `.blk` tree and report file count, total bytes, estimated dedup ratio, and ETA. Writes nothing. Does not touch the journal; does not write the sentinel. |
 | `--json` | bool | `false` | Emit one JSON object per line on stdout (machine-parseable progress). |
@@ -574,7 +574,7 @@ dfs migrate-to-cas [flags]
 |------|---------|
 | `0` | Success — all targeted shares migrated; per-share `.cas-migrated-v1` sentinels written. |
 | `1` | Generic error (PID guard tripped, config load failure, IO error, share discovery failure). |
-| `2` | Migration failed mid-flight. The per-share journal is preserved at `<storage_dir>/<share>/.dittofs-migrate-to-cas.state`; stderr describes the resume point. Rerun the same command to resume. |
+| `2` | Migration failed mid-flight. The per-share journal is preserved at `<storage_dir>/shares/<share>/.dittofs-migrate-to-cas.state`; stderr describes the resume point. Rerun the same command to resume. |
 
 **Progress reporting:**
 
@@ -586,7 +586,7 @@ dfs migrate-to-cas [flags]
   ```
 
 **Idempotent / journaled resume:** the per-share journal at
-`<storage_dir>/<share>/.dittofs-migrate-to-cas.state` records the
+`<storage_dir>/shares/<share>/.dittofs-migrate-to-cas.state` records the
 last-completed file path and byte offset. If interrupted, rerunning
 `dfs migrate-to-cas` resumes from the journaled position. The CAS Put
 surface is idempotent on hash collision, so re-processing an in-flight file
@@ -599,7 +599,7 @@ the per-share sentinel write succeeds.
 Dry-run a migration to see what would happen:
 
 ```bash
-dfs migrate-to-cas --dry-run
+dfs migrate-to-cas --storage-dir /var/lib/dittofs/storage --dry-run
 ```
 
 Migrate one large share off-hours and capture machine-parseable progress
@@ -607,20 +607,21 @@ for log aggregation:
 
 ```bash
 dfs stop
-dfs migrate-to-cas --share data --json | tee migration.log
+dfs migrate-to-cas --storage-dir /var/lib/dittofs/storage --share data --json | tee migration.log
 ```
 
-Migrate every share:
+Migrate every share under the storage root:
 
 ```bash
 dfs stop
-dfs migrate-to-cas
+dfs migrate-to-cas --storage-dir /var/lib/dittofs/storage
 ```
 
-Migrate using a non-default storage root:
+Migrate a single share off-hours:
 
 ```bash
-dfs migrate-to-cas --storage-dir /var/lib/dittofs/storage
+dfs stop
+dfs migrate-to-cas --storage-dir /var/lib/dittofs/storage --share data
 ```
 
 **See also:**

@@ -1110,9 +1110,10 @@ posture requires rollback.
 ### Boot-guard behavior
 
 On startup, `dfs start` opens each share's block store directory and checks
-for a `.cas-migrated-v1` sentinel file at the share root. If the sentinel is
-missing AND legacy `.blk` files are present, the server refuses to start
-(per-share fail-fast):
+for a `.cas-migrated-v1` sentinel file at the FSStore base directory
+(`<storage_dir>/shares/<name>/blocks/.cas-migrated-v1`). If the sentinel is
+missing AND legacy `.blk` files are present under the same directory, the
+server refuses to start (per-share fail-fast):
 
 - Exits with code **78** (`EX_CONFIG` per sysexits(3)).
 - Prints the following directive to stderr (showing the offending share
@@ -1144,7 +1145,7 @@ Flags:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--storage-dir <path>` | (from config) | Storage root. Overrides the config-derived value. The command discovers shares under `<storage-dir>/shares/`. |
+| `--storage-dir <path>` | **required** | Storage root. The command discovers shares under `<storage-dir>/shares/`. There is no config-derived default; pass the storage root explicitly. |
 | `--share <name>` | (all shares) | Scope migration to one share. Default migrates every share found under `<storage-dir>/shares/`. |
 | `--dry-run` | `false` | Walk the legacy `.blk` tree and report file count, total bytes, estimated dedup ratio, and ETA. Writes nothing — does not touch the journal, does not write the sentinel. |
 | `--json` | `false` | Emit one JSON object per line of progress on stdout for machine parsing. |
@@ -1162,7 +1163,7 @@ Plain text progress reads `[<share>] N files, X.X MiB/s, dedup_hits=K`.
 ### Crash safety
 
 The migration is idempotent. A per-share journal at
-`<storage_dir>/<share>/.dittofs-migrate-to-cas.state` records the
+`<storage_dir>/shares/<share>/.dittofs-migrate-to-cas.state` records the
 last-completed file path and byte offset. If interrupted (Ctrl-C, kill -9,
 power loss, panic, OOM), rerunning `dfs migrate-to-cas` resumes from the
 journaled position. The journal is removed on best-effort cleanup only AFTER
@@ -1176,7 +1177,7 @@ treated as dedup hits on the second pass).
 ### Verifying completion
 
 Success is recorded by a per-share sentinel file at
-`<share_dir>/.cas-migrated-v1` (one per share — `--share <name>` migrations
+`<storage_dir>/shares/<share>/blocks/.cas-migrated-v1` (one per share — `--share <name>` migrations
 produce just that share's sentinel; un-scoped migrations produce one sentinel
 per share at each share's completion, so partial-success states are
 operationally well-defined). Contents:
