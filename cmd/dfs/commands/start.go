@@ -364,7 +364,7 @@ func handleLoadSharesError(err error, stderr *os.File) bool {
 		return false
 	}
 	if errors.Is(err, blockstore.ErrLegacyLayoutDetected) {
-		fmt.Fprintln(stderr, formatLegacyLayoutDirective(err))
+		_, _ = fmt.Fprintln(stderr, formatLegacyLayoutDirective(err))
 		exitFn(EX_CONFIG)
 		// Unreachable in production (exitFn == os.Exit terminates).
 		// Defensive: in-process tests stub exitFn to NOT terminate.
