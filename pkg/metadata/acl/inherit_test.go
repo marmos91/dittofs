@@ -741,6 +741,12 @@ func TestComputeInheritedACL_InheritanceFlagsMatrix(t *testing.T) {
 					t.Errorf("i=%d %s: child INHERITED_ACE=%v, want %v (parent AI=%v ace.I=%v)",
 						i, tc.name, gotInherited, expectChildInherited, autoInherited, aceHasInheritedBit)
 				}
+				// Trustee assertion: parent uses non-CREATOR principal
+				// (EVERYONE@), so no substitution happens.
+				if result.ACEs[0].Who != SpecialEveryone {
+					t.Errorf("i=%d %s: child ACE Who=%q, want %q (no substitution for non-CREATOR principal)",
+						i, tc.name, result.ACEs[0].Who, SpecialEveryone)
+				}
 
 				// AutoInherited propagation (already correct under P6-2,
 				// asserted here as a non-skipped sanity check).
@@ -862,20 +868,115 @@ func assertInheritedFlags(t *testing.T, row int, kind string, result *ACL, want 
 		t.Errorf("row %d %s: child ACE flags=0x%x, want 0x%x",
 			row, kind, result.ACEs[0].Flag, want.flags)
 	}
+	// Non-CREATOR principal: must be preserved exactly. The matrix uses
+	// EVERYONE@ via buildParentACLWithFlags.
+	if result.ACEs[0].Who != SpecialEveryone {
+		t.Errorf("row %d %s: child ACE Who=%q, want %q (no substitution for non-CREATOR)",
+			row, kind, result.ACEs[0].Who, SpecialEveryone)
+	}
+}
+
+// TestComputeInheritedACL_CreatorMatrix_DirChild walks the CREATOR-specific
+// inheritance shapes on a directory child, checking BOTH per-ACE trustee
+// and flags. Bug H + Bug I from the post-PR #524 investigation:
+//   - OI-only on dir (applies=false): single preserved ACE with CREATOR
+//     trustee KEPT (no substitution), flag OI|IO+INHERITED.
+//   - CI on dir + CREATOR (applies=true): TWO ACEs. Resolved sibling has
+//     all inheritance flags CLEARED (flag = INHERITED only), trustee
+//     substituted. Preserved has CREATOR kept, flag = parent OI/CI
+//     bits + IO + INHERITED.
+func TestComputeInheritedACL_CreatorMatrix_DirChild(t *testing.T) {
+	const (
+		OI = ACE4_FILE_INHERIT_ACE
+		CI = ACE4_DIRECTORY_INHERIT_ACE
+		IO = ACE4_INHERIT_ONLY_ACE
+		I  = ACE4_INHERITED_ACE
+	)
+
+	type expectedACE struct {
+		who  string
+		flag uint32
+	}
+	cases := []struct {
+		name        string
+		parentFlags uint32
+		expect      []expectedACE
+	}{
+		{
+			name:        "OI-only / applies=false",
+			parentFlags: OI,
+			// Bug H: principal preserved, NOT substituted.
+			expect: []expectedACE{
+				{who: SpecialCreatorOwner, flag: OI | IO | I},
+			},
+		},
+		{
+			name:        "CI-only / applies=true",
+			parentFlags: CI,
+			// Bug I: resolved sibling flag = INHERITED only (all
+			// inheritance bits cleared); preserved keeps CREATOR.
+			expect: []expectedACE{
+				{who: "1001@localdomain", flag: I},
+				{who: SpecialCreatorOwner, flag: CI | IO | I},
+			},
+		},
+		{
+			name:        "OI|CI / applies=true",
+			parentFlags: OI | CI,
+			expect: []expectedACE{
+				{who: "1001@localdomain", flag: I},
+				{who: SpecialCreatorOwner, flag: OI | CI | IO | I},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			parent := &ACL{
+				AutoInherited: true,
+				ACEs: []ACE{
+					{
+						Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						Flag:       tc.parentFlags,
+						AccessMask: ACE4_WRITE_DATA,
+						Who:        SpecialCreatorOwner,
+					},
+				},
+			}
+			result := ComputeInheritedACL(parent, true, Creator{UID: 1001})
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if len(result.ACEs) != len(tc.expect) {
+				t.Fatalf("got %d ACEs, want %d (%v)", len(result.ACEs), len(tc.expect), result.ACEs)
+			}
+			for i, want := range tc.expect {
+				got := result.ACEs[i]
+				if got.Who != want.who {
+					t.Errorf("ACE[%d].Who=%q, want %q", i, got.Who, want.who)
+				}
+				if got.Flag != want.flag {
+					t.Errorf("ACE[%d].Flag=0x%x, want 0x%x", i, got.Flag, want.flag)
+				}
+			}
+		})
+	}
 }
 
 // TestComputeInheritedACL_CreatorOwnerCI_DualEmit_Dir asserts that a parent
 // ACE with CREATOR_OWNER + OI|CI emits TWO ACEs onto a directory child:
-//  1. The resolved owner ACE that applies at the new dir (inheritance
-//     flags adjusted per PR 3 — OI propagates to file grandchildren as
-//     OI|INHERIT_ONLY-equivalent here; the resolved ACE still carries
-//     OI|CI so grandchildren of either kind inherit from it as well).
+//  1. The resolved owner ACE that applies at the new dir ONLY. Per Samba
+//     desc_expand_generic (libcli/security/create_descriptor.c), the
+//     resolved sibling has ALL inheritance flags cleared — only the
+//     INHERITED_ACE bit may be present. It does NOT propagate further;
+//     propagation to grandchildren happens via the preserved CREATOR.
 //  2. The preserved CREATOR_OWNER ACE with CI|OI|INHERIT_ONLY so
 //     grandchild directories continue to substitute against THEIR own
 //     creator.
 //
 // Mirrors Samba calculate_inherited_from_parent (libcli/security/
-// create_descriptor.c). This is Bug G (#521 PR 4).
+// create_descriptor.c).
 func TestComputeInheritedACL_CreatorOwnerCI_DualEmit_Dir(t *testing.T) {
 	parentACL := &ACL{
 		AutoInherited: true,
@@ -897,15 +998,16 @@ func TestComputeInheritedACL_CreatorOwnerCI_DualEmit_Dir(t *testing.T) {
 		t.Fatalf("expected 2 ACEs (resolved + preserved CREATOR), got %d", len(result.ACEs))
 	}
 
-	// ACE 0: resolved owner — CI applies here so INHERIT_ONLY cleared.
-	// OI preserved on parent ACE => preserved on resolved child too.
+	// ACE 0: resolved owner — Samba clears ALL inheritance flags on the
+	// resolved sibling; only INHERITED_ACE may remain. The resolved ACE
+	// applies at this object only.
 	resolved := result.ACEs[0]
 	if resolved.Who != "1001@localdomain" {
 		t.Errorf("resolved ACE: expected Who=1001@localdomain, got %q", resolved.Who)
 	}
-	wantResolvedFlag := uint32(ACE4_FILE_INHERIT_ACE | ACE4_DIRECTORY_INHERIT_ACE | ACE4_INHERITED_ACE)
+	wantResolvedFlag := uint32(ACE4_INHERITED_ACE)
 	if resolved.Flag != wantResolvedFlag {
-		t.Errorf("resolved ACE: flag=0x%x, want 0x%x (OI|CI|INHERITED)", resolved.Flag, wantResolvedFlag)
+		t.Errorf("resolved ACE: flag=0x%x, want 0x%x (INHERITED only — Samba clears inheritance bits on resolved sibling)", resolved.Flag, wantResolvedFlag)
 	}
 
 	// ACE 1: preserved CREATOR_OWNER — CI|OI|IO + INHERITED.
@@ -953,10 +1055,11 @@ func TestComputeInheritedACL_CreatorGroupCI_DualEmit_Dir(t *testing.T) {
 	if resolved.Who != "2002@localdomain" {
 		t.Errorf("resolved ACE: expected Who=2002@localdomain, got %q", resolved.Who)
 	}
-	// CI applies at this dir; INHERIT_ONLY cleared; OI absent on parent.
-	wantResolvedFlag := uint32(ACE4_DIRECTORY_INHERIT_ACE | ACE4_INHERITED_ACE)
+	// Resolved sibling has ALL inheritance flags cleared (Samba
+	// desc_expand_generic); only INHERITED_ACE remains.
+	wantResolvedFlag := uint32(ACE4_INHERITED_ACE)
 	if resolved.Flag != wantResolvedFlag {
-		t.Errorf("resolved ACE: flag=0x%x, want 0x%x (CI|INHERITED)", resolved.Flag, wantResolvedFlag)
+		t.Errorf("resolved ACE: flag=0x%x, want 0x%x (INHERITED only)", resolved.Flag, wantResolvedFlag)
 	}
 
 	preserved := result.ACEs[1]
@@ -998,11 +1101,14 @@ func TestComputeInheritedACL_CreatorOwner_FileChild_NoDualEmit(t *testing.T) {
 }
 
 // TestComputeInheritedACL_CreatorOwner_OIOnly_NoDualEmit_Dir verifies that
-// when the parent ACE has OI only (no CI), the dir child receives the
-// resolved ACE as OI|INHERIT_ONLY (per PR 3) but NO preserved CREATOR ACE
-// — without CI on the source, there is no need to propagate to grandchild
-// directories.
-func TestComputeInheritedACL_CreatorOwner_OIOnly_NoDualEmit_Dir(t *testing.T) {
+// when the parent ACE has OI only (no CI), the dir child receives a SINGLE
+// preserved ACE as OI|INHERIT_ONLY with the principal kept as
+// CREATOR_OWNER. The ACE does not apply at this dir; it propagates to file
+// grandchildren and substitution happens at THAT grandchild's create time,
+// not now. This is Bug H from #521 PR 5 — previously we substituted the
+// principal here, which leaked the dir owner identity onto the
+// grandchild's "creator".
+func TestComputeInheritedACL_CreatorOwner_OIOnlyDir_PreservesPrincipal(t *testing.T) {
 	parentACL := &ACL{
 		AutoInherited: true,
 		ACEs: []ACE{
@@ -1023,14 +1129,14 @@ func TestComputeInheritedACL_CreatorOwner_OIOnly_NoDualEmit_Dir(t *testing.T) {
 		t.Fatalf("expected exactly 1 ACE (no dual emit without CI), got %d", len(result.ACEs))
 	}
 	ace := result.ACEs[0]
-	// Per PR 3: OI-only on parent => dir child gets OI|INHERIT_ONLY.
 	wantFlag := uint32(ACE4_FILE_INHERIT_ACE | ACE4_INHERIT_ONLY_ACE | ACE4_INHERITED_ACE)
 	if ace.Flag != wantFlag {
 		t.Errorf("expected flag 0x%x (OI|IO|INHERITED), got 0x%x", wantFlag, ace.Flag)
 	}
-	// And CREATOR was still substituted.
-	if ace.Who != "1001@localdomain" {
-		t.Errorf("expected resolved owner Who=1001@localdomain, got %q", ace.Who)
+	// Principal MUST stay CREATOR_OWNER (Bug H fix). Substitution is
+	// deferred to grandchild create time.
+	if ace.Who != SpecialCreatorOwner {
+		t.Errorf("expected preserved CreatorOwner@, got Who=%q (Bug H regression)", ace.Who)
 	}
 }
 

@@ -53,44 +53,49 @@ func substituteCreator(who string, creator Creator) string {
 // directory based on its parent's ACL per RFC 7530 Section 6.4.3 and
 // MS-DTYP §2.5.3.4 (CREATOR_OWNER / CREATOR_GROUP substitution).
 //
-// For files:
-//   - Include ACEs with FILE_INHERIT (OI) flag
-//   - Clear ALL inheritance flags (files don't propagate further)
+// The implementation mirrors Samba libcli/security/create_descriptor.c
+// (calculate_inherited_from_parent + desc_expand_generic). For each parent
+// ACE, we compute two booleans:
 //
-// For directories (matches Samba libcli/security/create_descriptor.c
-// calculate_inherited_from_parent and MS-DTYP §2.5.3.4.1):
-//   - Drop ACEs with no OI and no CI (not inheritable to anything).
-//   - With NO_PROPAGATE_INHERIT: clear all inheritance flags so the ACE
-//     applies at this dir but does not propagate further; if the parent
-//     ACE has OI only (no CI), the ACE does not apply at the directory
-//     itself and is dropped entirely.
-//   - With CI: ACE applies at the dir; clear INHERIT_ONLY.
-//   - With OI only: ACE does NOT apply at this dir but must propagate to
-//     file grandchildren — emit on the child as OI|INHERIT_ONLY.
+//	applies     := (isDir && hasCI) || (!isDir && hasOI)
+//	expand_ace  := principal is CREATOR_OWNER/CREATOR_GROUP (today we do
+//	               not expand generic-mask bits; that is a separate fix)
 //
-// The ACE4_INHERITED_ACE bit on the resulting child ACE is conditional, per
-// MS-DTYP §2.5.3.4.2 and Samba calculate_inherited_from_parent: the bit
-// is set iff the parent SD has SE_DACL_AUTO_INHERITED (i.e.
-// parentACL.AutoInherited) OR the source parent ACE itself already
-// carries ACE4_INHERITED_ACE (meaning it was inherited from upstream —
-// that fact survives propagation to the child).
+// Cases:
 //
-// In both cases, any ACE whose Who is SpecialCreatorOwner or
-// SpecialCreatorGroup is rewritten in place with the creator's frozen
-// identity (sid:<SID> when known, otherwise "<uid|gid>@localdomain").
+//  1. applies && expand_ace
+//     Emit two ACEs (only on dir children — files are leaves):
+//     a) Resolved sibling: principal substituted, ALL inheritance flags
+//     cleared, then INHERITED_ACE added per the conditional rule.
+//     The resolved sibling applies at THIS object only — it does not
+//     propagate further.
+//     b) Preserved CREATOR: principal kept (CREATOR_OWNER /
+//     CREATOR_GROUP stays), flags = parent's OI|CI bits + INHERIT_ONLY,
+//     then INHERITED_ACE per the conditional rule. This preserves the
+//     placeholder for substitution at grandchild create time.
+//     On file children: only the resolved sibling is emitted (no need
+//     to preserve for grandchildren).
 //
-// CREATOR dual-emission on directory children (mirrors Samba
-// libcli/security/create_descriptor.c::calculate_inherited_from_parent):
-// when the parent ACE has CONTAINER_INHERIT (CI) and a CREATOR_OWNER /
-// CREATOR_GROUP principal, two child ACEs are emitted to the directory:
-//  1. The resolved ACE (principal substituted to the new directory's
-//     owner/group, inheritance flags propagated per the rules above).
-//  2. A preserved CREATOR ACE with CI|INHERIT_ONLY (plus OI if the parent
-//     had it) so grandchild directories still substitute against their
-//     own owner/group rather than receiving an already-resolved ACE.
+//  2. applies && !expand_ace
+//     Emit a single ACE with the original principal. For files, all
+//     inheritance flags are cleared. For directories, OI/CI bits are
+//     preserved (so grandchildren still inherit), and INHERIT_ONLY is
+//     cleared so the ACE is effective at this dir. NO_PROPAGATE clears
+//     OI/CI to stop further propagation.
 //
-// File children are leaves: no dual-emission — the resolved ACE is the
-// only one emitted (any inheritance to deeper levels is moot).
+//  3. !applies, but parent has bits that propagate to grandchildren of
+//     THIS object's type (e.g. parent OI on a dir child): emit a single
+//     "preserved" ACE — original principal (CREATOR stays CREATOR), parent's
+//     OI/CI bits preserved, INHERIT_ONLY added so it does not apply here.
+//     This is the OI-only-on-dir-child case (smbtorture row 1).
+//
+// The ACE4_INHERITED_ACE bit on every emitted child ACE is conditional,
+// per MS-DTYP §2.5.3.4.2 and Samba calculate_inherited_from_parent:
+// set iff parentACL.AutoInherited OR the source parent ACE already
+// carried ACE4_INHERITED_ACE.
+//
+// NO_PROPAGATE on the parent strips OI/CI/NP from any emitted ACE so
+// further inheritance stops at this child.
 //
 // Per MS-DTYP §2.5.3.4.2, when the parent SD has SE_DACL_AUTO_INHERITED set,
 // the computed child SD also has SE_DACL_AUTO_INHERITED set (mirrors Samba
@@ -124,9 +129,8 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 
 		// Cap enforcement (FIFO truncation, mirrors Samba behavior under
 		// pressure): never produce a child ACL exceeding MaxACECount.
-		// Check BEFORE appending the resolved ACE because the prior
-		// iteration may have already dual-emitted, leaving the result at
-		// capacity. Earlier parent ACEs take precedence over later ones.
+		// Check BEFORE appending so prior dual-emission is honored.
+		// Earlier parent ACEs take precedence over later ones.
 		if len(inherited) >= MaxACECount {
 			slog.Debug("acl.ComputeInheritedACL: MaxACECount reached — truncating remaining parent ACEs",
 				"max", MaxACECount, "produced", len(inherited),
@@ -134,97 +138,96 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 			break
 		}
 
-		newACE := *ace
 		// MS-DTYP §2.5.3.4.2 / Samba calculate_inherited_from_parent: the
-		// INHERITED_ACE bit on the child is conditional. It is set when
-		// the parent ACE already carries it (already-inherited fact
-		// survives propagation) OR the parent SD has AUTO_INHERITED set
-		// (parent is configured to mark its inherited children). Strip
-		// any pre-existing bit first so we apply the rule cleanly.
-		preservedInheritedACE := newACE.Flag & ACE4_INHERITED_ACE
-		newACE.Flag &^= ACE4_INHERITED_ACE
+		// INHERITED_ACE bit on the child is conditional — set when the
+		// parent ACE already carries it OR the parent SD has
+		// AUTO_INHERITED set.
+		inheritedBit := uint32(0)
+		if (ace.Flag&ACE4_INHERITED_ACE) != 0 || parentACL.AutoInherited {
+			inheritedBit = ACE4_INHERITED_ACE
+		}
 
-		if !isDirectory {
-			// Files are leaves: clear ALL inheritance flags.
-			newACE.Flag &^= inheritanceMask
-		} else if hasNP {
-			// NO_PROPAGATE: stop propagation to grandchildren. ACE
-			// applies at this dir only when it carries CI; an
-			// OI-only-with-NP parent ACE has no effect on the dir
-			// child (per Samba calculate_inherited_from_parent /
-			// smbtorture test_inheritance row 5).
-			if !hasCI {
+		applies := (isDirectory && hasCI) || (!isDirectory && hasOI)
+		isCreator := ace.Who == SpecialCreatorOwner || ace.Who == SpecialCreatorGroup
+		expandACE := isCreator
+
+		if applies && expandACE {
+			// Case 1: emit resolved sibling, plus preserved CREATOR on dir
+			// children (file children are leaves; no preserved emission).
+			resolved := *ace
+			resolved.Who = substituteCreator(ace.Who, creator)
+			// Resolved sibling applies AT THIS object only; clear all
+			// inheritance flags then add INHERITED_ACE per the rule.
+			resolved.Flag = inheritedBit
+			inherited = append(inherited, resolved)
+
+			if !isDirectory {
 				continue
 			}
-			newACE.Flag &^= inheritanceMask
-		} else if hasCI {
-			// CI (with or without OI) applies at this dir; clear
-			// INHERIT_ONLY so the ACE is effective here. OI is
-			// preserved when present so file grandchildren still
-			// inherit.
-			newACE.Flag &^= ACE4_INHERIT_ONLY_ACE
-		} else {
-			// OI only (no CI, no NP): ACE does not apply at this dir
-			// but must propagate to file grandchildren. Emit with
-			// OI|INHERIT_ONLY; clear NP/CI noise.
-			newACE.Flag &^= inheritanceMask
-			newACE.Flag |= ACE4_FILE_INHERIT_ACE | ACE4_INHERIT_ONLY_ACE
-		}
-
-		if preservedInheritedACE != 0 || parentACL.AutoInherited {
-			newACE.Flag |= ACE4_INHERITED_ACE
-		}
-
-		// MS-DTYP §2.5.3.4: substitute CREATOR_OWNER / CREATOR_GROUP
-		// placeholders with the creator's frozen identity.
-		originalWho := ace.Who
-		isCreator := originalWho == SpecialCreatorOwner || originalWho == SpecialCreatorGroup
-		newACE.Who = substituteCreator(originalWho, creator)
-
-		inherited = append(inherited, newACE)
-
-		// Dual-emit on directory children when parent ACE carried a
-		// CREATOR principal AND CONTAINER_INHERIT. Mirrors Samba
-		// calculate_inherited_from_parent: keep the original CREATOR ACE
-		// with CI|INHERIT_ONLY (preserving OI when present) so grandchild
-		// directories continue to substitute against THEIR own creator
-		// instead of inheriting the already-resolved owner/group.
-		//
-		// Skipped on:
-		//   - files (leaves)
-		//   - parent ACE without CI (no need to reach grandchild dirs)
-		//   - NO_PROPAGATE (Samba stops propagation in that branch)
-		if isDirectory && isCreator && hasCI && !hasNP {
-			// Budget check: dual-emit needs one extra slot. The resolved
-			// ACE was already appended above; we now want to also add the
-			// preserved CREATOR. If there is no room left, drop the
-			// preserved one (resolved already inherits — losing the
-			// preserved version only weakens grandchild substitution, not
-			// the immediate child's effective permissions). FIFO
-			// truncation: prefer earlier parent ACEs over later ones.
+			// Cap check before preserved emission.
 			if len(inherited) >= MaxACECount {
 				slog.Debug("acl.ComputeInheritedACL: dropping preserved CREATOR ACE — MaxACECount reached",
 					"max", MaxACECount, "produced", len(inherited),
-					"principal", originalWho)
+					"principal", ace.Who)
 				continue
 			}
 			preserved := *ace
-			preserved.Who = originalWho
+			// Principal stays CREATOR_OWNER / CREATOR_GROUP — substitution
+			// happens at grandchild create time.
 			preserved.Flag &^= inheritanceMask
-			preserved.Flag |= ACE4_DIRECTORY_INHERIT_ACE | ACE4_INHERIT_ONLY_ACE
 			if hasOI {
 				preserved.Flag |= ACE4_FILE_INHERIT_ACE
 			}
-			// INHERITED_ACE conditional: same rule as the resolved ACE
-			// (Bug A — PR 2). The preserved ACE was produced by the
-			// inheritance computation; it must carry the bit whenever
-			// the resolved sibling does.
-			preserved.Flag &^= ACE4_INHERITED_ACE
-			if (ace.Flag&ACE4_INHERITED_ACE) != 0 || parentACL.AutoInherited {
-				preserved.Flag |= ACE4_INHERITED_ACE
+			if hasCI {
+				preserved.Flag |= ACE4_DIRECTORY_INHERIT_ACE
 			}
+			preserved.Flag |= ACE4_INHERIT_ONLY_ACE
+			// NO_PROPAGATE: stop further propagation by clearing OI/CI/NP.
+			// (NB: hasNP && hasCI is the only NP path that reaches here for
+			// dir children; resolved-only emission below handles
+			// NP|OI-only and other shapes.)
+			if hasNP {
+				preserved.Flag &^= inheritanceMask
+			}
+			preserved.Flag &^= ACE4_INHERITED_ACE
+			preserved.Flag |= inheritedBit
 			inherited = append(inherited, preserved)
+			continue
 		}
+
+		if applies && !expandACE {
+			// Case 2: single ACE with original principal, OI/CI preserved,
+			// INHERIT_ONLY cleared, NP clears propagation.
+			newACE := *ace
+			newACE.Flag &^= ACE4_INHERIT_ONLY_ACE
+			newACE.Flag &^= ACE4_INHERITED_ACE
+			if !isDirectory || hasNP {
+				newACE.Flag &^= inheritanceMask
+			}
+			newACE.Flag |= inheritedBit
+			inherited = append(inherited, newACE)
+			continue
+		}
+
+		// Case 3: !applies — parent ACE does not apply at this child, but
+		// must propagate to grandchildren. Emit a preserved ACE with
+		// original principal (CREATOR_OWNER stays CREATOR_OWNER for
+		// future grandchild substitution).
+		//
+		// Only reachable when isDirectory && hasOI && !hasCI (parent OI
+		// only on dir child), since other !applies shapes were filtered
+		// out at the top of the loop. NO_PROPAGATE drops this entirely
+		// (no grandchildren to propagate to).
+		if hasNP {
+			continue
+		}
+		preserved := *ace
+		// Principal stays as-is — including CREATOR placeholders (not
+		// reached by isCreator branch above because applies==false here).
+		preserved.Flag &^= inheritanceMask
+		preserved.Flag |= ACE4_FILE_INHERIT_ACE | ACE4_INHERIT_ONLY_ACE
+		preserved.Flag |= inheritedBit
+		inherited = append(inherited, preserved)
 	}
 
 	if len(inherited) == 0 {
