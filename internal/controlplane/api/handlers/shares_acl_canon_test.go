@@ -147,10 +147,10 @@ func TestShareHandler_Create_AclFlagInheritedCanonicalization_DefaultTrue(t *tes
 // TestShareHandler_Create_AclFlagInheritedCanonicalization_ExplicitFalse —
 // `false` in request → DB row persists with false.
 //
-// This test passes purely on the store-layer guarantee: CreateShare uses
-// GORM's Select("*") so explicit zero-value bools (here `false`) are
-// included in the INSERT and not coerced to the SQL `default:true`. No
-// follow-up UpdateShare workaround is needed in the handler.
+// Note: store-layer guarantee comes from CreateShare's transactional
+// override of GORM's default-coercion of zero-value bools (see
+// pkg/controlplane/store/shares.go). No follow-up UpdateShare workaround
+// is needed in the handler.
 func TestShareHandler_Create_AclFlagInheritedCanonicalization_ExplicitFalse(t *testing.T) {
 	cpStore, handler := shareACLCanonHandler(t)
 	metaName, bsName := seedMetaAndBlock(t, cpStore)

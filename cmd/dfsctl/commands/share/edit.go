@@ -89,7 +89,7 @@ func init() {
 	editCmd.Flags().StringVar(&editLocalStoreSize, "local-store-size", "", "Per-share disk cache size override (e.g., 10GiB, 500MiB)")
 	editCmd.Flags().StringVar(&editReadBufferSize, "read-buffer-size", "", "Per-share read buffer size override (e.g., 2GiB, 256MiB)")
 	editCmd.Flags().StringVar(&editQuotaBytes, "quota-bytes", "", "Per-share byte quota (e.g., '10GiB'). 0 = remove quota")
-	editCmd.Flags().StringVar(&editAclCanonicalize, "acl-canonicalize-inherited", "", "Canonicalize inherited DACL ACEs in SMB security descriptors (true|false). Takes effect on adapter restart")
+	editCmd.Flags().StringVar(&editAclCanonicalize, "acl-canonicalize-inherited", "", "When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba \"acl flag inherited canonicalization = no\"). Default true matches Windows. Takes effect on adapter restart.")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -186,7 +186,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	if !hasUpdate {
-		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, --description, --retention, --retention-ttl, --local-store-size, --read-buffer-size, or --quota-bytes")
+		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, --description, --retention, --retention-ttl, --local-store-size, --read-buffer-size, --quota-bytes, or --acl-canonicalize-inherited")
 	}
 
 	share, err := client.UpdateShare(name, req)

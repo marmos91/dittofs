@@ -33,7 +33,7 @@ func newShareJSONBodyServer(t *testing.T) *shareJSONBodyServer {
 		s.lastBody = b
 		w.Header().Set("Content-Type", "application/json")
 		// Decode a CreateShareRequest or UpdateShareRequest to echo the
-		// AclFlag back; default to false.
+		// AclFlag back; default true matches server behavior.
 		acl := true
 		// Try Create first.
 		var cr apiclient.CreateShareRequest
