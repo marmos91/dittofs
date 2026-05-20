@@ -1159,6 +1159,25 @@ func buildFrozenAttrs(openFile *OpenFile) *metadata.SetAttrs {
 	return attrs
 }
 
+// parseSDOptsForShare resolves the Security Descriptor parse options for the
+// share that owns openFile. Returns Windows-canonical defaults
+// (CanonicalizeAutoInherited=true) when the share lookup fails — the safe
+// fallback per MS-DTYP §2.5.3.4.2. Refs #514 T4.
+func (h *Handler) parseSDOptsForShare(shareName string) ParseSDOptions {
+	opts := ParseSDOptions{CanonicalizeAutoInherited: true}
+	if h.Registry == nil {
+		return opts
+	}
+	share, err := h.Registry.GetShare(shareName)
+	if err != nil {
+		logger.Debug("SET_INFO: share lookup failed, defaulting to canonicalize",
+			"share", shareName, "error", err)
+		return opts
+	}
+	opts.CanonicalizeAutoInherited = share.AclFlagInheritedCanonicalization
+	return opts
+}
+
 // setSecurityInfo handles SET_INFO for security descriptors.
 //
 // Parses the binary Security Descriptor from the client, extracts owner/group/ACL,
@@ -1173,7 +1192,12 @@ func (h *Handler) setSecurityInfo(
 		return setInfoStatus(types.StatusInvalidParameter), nil
 	}
 
-	ownerUID, ownerGID, fileACL, err := ParseSecurityDescriptor(buffer)
+	// Per-share opt-out of MS-DTYP §2.5.3.4.2 canonicalization. Default true
+	// matches Windows (and Samba's default). The toggle was populated onto
+	// the runtime Share at AddShare time (refs #514 T1).
+	opts := h.parseSDOptsForShare(openFile.ShareName)
+
+	ownerUID, ownerGID, fileACL, err := ParseSecurityDescriptorWithOptions(buffer, opts)
 	if err != nil {
 		logger.Debug("SET_INFO: failed to parse security descriptor", "path", openFile.Path, "error", err)
 		return setInfoStatus(types.StatusInvalidParameter), nil
