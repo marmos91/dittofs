@@ -697,20 +697,27 @@ func buildParentACLWithFlags(autoInherited, protected bool, aceFlags uint32, par
 //	i&4 → parent SD.Protected
 //	i&8 → parent ACE has ACE4_INHERITED_ACE pre-set
 //
-// Key invariant under test (MS-DTYP §2.5.3.4.2 / Samba `set_inherited_sd`):
-// the child ACE has ACE4_INHERITED_ACE iff parent.AutoInherited OR the
-// parent ACE already had ACE4_INHERITED_ACE.
+// Key invariant under test (MS-DTYP §2.5.3.4.2 / Samba `set_inherited_sd`
+// + tflags table in source4/torture/smb2/acls.c): the child ACE has
+// ACE4_INHERITED_ACE iff parent.AutoInherited (after canonicalization).
+// The parent ACE's pre-existing INHERITED_ACE bit is NOT propagated
+// independently — Samba's tflags shows it is set on the child ONLY when
+// the parent SD has both AUTO_INHERITED and AUTO_INHERIT_REQ set, which
+// canonicalize down to parent.AutoInherited.
 //
-// After #521 PR 2 (Bug A conditional INHERITED_ACE), the implementation
-// enforces this invariant directly: ComputeInheritedACL sets the bit only
-// when parent.AutoInherited OR the parent ACE itself already had the bit.
+// After #521 PR 7 (Bug J), the implementation enforces this directly:
+// ComputeInheritedACL sets the bit only when parent.AutoInherited.
 func TestComputeInheritedACL_InheritanceFlagsMatrix(t *testing.T) {
 	for i := 0; i < 16; i++ {
 		i := i
 		autoInherited := (i & 1) != 0
 		protected := (i & 4) != 0
 		aceHasInheritedBit := (i & 8) != 0
-		expectChildInherited := autoInherited || aceHasInheritedBit
+		// Bug J: child gets INHERITED_ACE iff parent.AutoInherited.
+		// Independent of whether the parent ACE pre-carried the bit
+		// (aceHasInheritedBit only feeds the parent shape for building
+		// the input; it does not influence the expected child outcome).
+		expectChildInherited := autoInherited
 
 		for _, tc := range []struct {
 			name        string

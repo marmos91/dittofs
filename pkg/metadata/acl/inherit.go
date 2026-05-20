@@ -90,9 +90,11 @@ func substituteCreator(who string, creator Creator) string {
 //     This is the OI-only-on-dir-child case (smbtorture row 1).
 //
 // The ACE4_INHERITED_ACE bit on every emitted child ACE is conditional,
-// per MS-DTYP §2.5.3.4.2 and Samba calculate_inherited_from_parent:
-// set iff parentACL.AutoInherited OR the source parent ACE already
-// carried ACE4_INHERITED_ACE.
+// per MS-DTYP §2.5.3.4.2 and Samba calculate_inherited_from_parent: set
+// iff parentACL.AutoInherited (after canonicalization). The parent ACE's
+// own pre-existing INHERITED_ACE bit is NOT propagated independently —
+// that was over-broad and broke smbtorture INHERITFLAGS rows where
+// parent.AutoInherited is false but the parent ACE pre-carried the bit.
 //
 // NO_PROPAGATE on the parent strips OI/CI/NP from any emitted ACE so
 // further inheritance stops at this child.
@@ -138,12 +140,18 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 			break
 		}
 
-		// MS-DTYP §2.5.3.4.2 / Samba calculate_inherited_from_parent: the
-		// INHERITED_ACE bit on the child is conditional — set when the
-		// parent ACE already carries it OR the parent SD has
-		// AUTO_INHERITED set.
+		// MS-DTYP §2.5.3.4.2 / Samba calculate_inherited_from_parent
+		// (libcli/security/create_descriptor.c): the INHERITED_ACE bit on
+		// the child is set ONLY when the parent SD has AUTO_INHERITED set
+		// (after canonicalization). Samba's torture tflags table makes
+		// this explicit — the child gets INHERITED_ACE iff both
+		// AUTO_INHERITED and AUTO_INHERIT_REQ were set on the parent SD,
+		// which canonicalize down to parent.AutoInherited. The parent
+		// ACE's pre-existing INHERITED_ACE bit is NOT propagated
+		// independently; that was over-broad and caused smbtorture
+		// INHERITFLAGS rows i ∈ {8,9,10,12,13,14} to fail.
 		inheritedBit := uint32(0)
-		if (ace.Flag&ACE4_INHERITED_ACE) != 0 || parentACL.AutoInherited {
+		if parentACL.AutoInherited {
 			inheritedBit = ACE4_INHERITED_ACE
 		}
 
@@ -196,14 +204,31 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 		}
 
 		if applies && !expandACE {
-			// Case 2: single ACE with original principal, OI/CI preserved,
-			// INHERIT_ONLY cleared, NP clears propagation.
+			// Case 2: single ACE with original principal.
+			//
+			// Samba `calculate_inherited_from_parent`:
+			//   - NO_PROPAGATE on parent ACE → child gets ALL inheritance
+			//     bits (OI/CI/NP/IO) stripped. NP says "do not propagate
+			//     further", which is enforced by removing every
+			//     inheritance flag from the child ACE. smbtorture
+			//     INHERITANCE rows 6/7/14/15 (NP+CI shapes on dir child)
+			//     require flag=0 (only INHERITED_ACE remains via
+			//     inheritedBit below).
+			//   - File child → no propagation possible; strip all
+			//     inheritance bits.
+			//   - Otherwise (dir child, NP unset) → preserve OI/CI/NP on
+			//     parent ACE so grandchildren still inherit; clear
+			//     INHERIT_ONLY because the ACE is effective at this dir.
 			newACE := *ace
-			newACE.Flag &^= ACE4_INHERIT_ONLY_ACE
-			newACE.Flag &^= ACE4_INHERITED_ACE
-			if !isDirectory || hasNP {
+			switch {
+			case hasNP:
 				newACE.Flag &^= inheritanceMask
+			case !isDirectory:
+				newACE.Flag &^= inheritanceMask
+			default:
+				newACE.Flag &^= ACE4_INHERIT_ONLY_ACE
 			}
+			newACE.Flag &^= ACE4_INHERITED_ACE
 			newACE.Flag |= inheritedBit
 			inherited = append(inherited, newACE)
 			continue
