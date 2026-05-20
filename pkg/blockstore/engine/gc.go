@@ -48,10 +48,6 @@ import (
 // BlockSize is the size of a single block (8MB), used for byte estimation.
 const BlockSize = blockstore.BlockSize
 
-// casPrefix is the top-level CAS prefix on the remote store. Objects
-// outside this prefix are not eligible for sweep.
-const casPrefix = "cas/"
-
 // gcRootLocks serializes CollectGarbage invocations that share a
 // GCStateRoot. Phase 11 WR-3-01: without this, two concurrent calls
 // against the same root race in CleanStaleGCStateDirs — Run B can sweep
@@ -295,8 +291,8 @@ func CollectGarbage(
 		return stats
 	}
 
-	// SWEEP: bounded worker pool over 256 cas/XX/ prefixes (D-04).
-	sweepPhase(ctx, remoteStore, gcs, stats, snapshotTime, gracePeriod, sweepConcurrency, dryRunSample, options)
+	// SWEEP: single Walk over the unified CAS namespace (D-04 + Phase 17).
+	sweepPhase(ctx, remoteStore, gcs, stats, snapshotTime, gracePeriod, dryRunSample, options)
 
 	// Mark complete + persist summary.
 	if err := gcs.MarkComplete(); err != nil {
@@ -381,10 +377,19 @@ func sharesForReconciler(r MetadataReconciler) []string {
 	return nil
 }
 
-// sweepPhase walks the 256 cas/XX/ prefixes via a bounded worker pool.
-// Per-prefix errors are captured in stats but do not abort the sweep
-// (D-07). Foreign keys (non-CAS) are silently skipped (T-11-C-07).
-// Objects within snapshot - GracePeriod are preserved (D-05).
+// sweepPhase walks the unified CAS namespace via a single
+// remoteStore.Walk call. Per-object errors are captured in stats but
+// do not abort the sweep (D-07). Foreign keys (non-CAS) are silently
+// skipped (T-11-C-07). Objects within snapshot - GracePeriod are
+// preserved (D-05).
+//
+// sweepConcurrency is accepted for backward-compatibility with the
+// Options surface and ignored — Phase 17 collapsed the 256-way prefix
+// sharding onto RemoteStore.Walk, which paginates internally at the
+// backend layer. A future re-sharding extension (per-prefix Walk
+// fan-out) is expected to re-wire concurrency at the backend, not
+// here. Callers wanting per-prefix parallelism should file against
+// the backend.
 func sweepPhase(
 	ctx context.Context,
 	remoteStore remote.RemoteStore,
@@ -392,13 +397,9 @@ func sweepPhase(
 	stats *GCStats,
 	snapshotTime time.Time,
 	gracePeriod time.Duration,
-	sweepConcurrency int,
 	dryRunSample int,
 	options *Options,
 ) {
-	type prefixJob struct{ xx string }
-	jobs := make(chan prefixJob, 256)
-	var sweepWG sync.WaitGroup
 	var statsMu sync.Mutex
 
 	// Phase 11 IN-3-03: keep FirstErrors heterogeneous. Without
@@ -426,13 +427,10 @@ func sweepPhase(
 
 	// Post-Phase-17: the renamed RemoteStore.Walk replaces the per-XX
 	// ListByPrefixWithMeta scan. Walk enumerates every CAS object in the
-	// store in one call; the prefix-job partitioning becomes a no-op (we
-	// dispatch a single Walk and ignore the per-XX work distribution).
-	// Concurrency budget is reserved for a future Walk-with-sharding
-	// extension; today's s3 backend Walk lists `cas/` cluster-wide.
-	_ = sweepConcurrency
-	sweepOne := func(j prefixJob) {
-		_ = j
+	// store in one call. The s3 backend Walk paginates internally; a
+	// future re-sharding extension belongs at the backend Walk layer
+	// (per-prefix fan-out), not here.
+	runSweep := func() {
 		walkErr := remoteStore.Walk(ctx, func(h blockstore.ContentHash, meta blockstore.Meta) error {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -490,15 +488,7 @@ func sweepPhase(
 		}
 	}
 
-	// Post-Phase-17: Walk enumerates every CAS object cluster-wide in a
-	// single call, replacing the 256-way prefix sharding. We dispatch a
-	// single sweepOne invocation; the worker-pool + jobs channel is
-	// retained as inert scaffolding so a future plan can re-shard Walk
-	// (e.g., per-prefix concurrency at the backend layer) without
-	// re-introducing the channel here.
-	_ = jobs
-	_ = &sweepWG // pointer-anchor avoids sync.WaitGroup copy (govet 'copylocks')
-	sweepOne(prefixJob{})
+	runSweep()
 }
 
 // finalizeStats fills the legacy aggregator fields from the mark-sweep
