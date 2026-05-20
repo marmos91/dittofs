@@ -1,6 +1,6 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.15.0
+milestone: v0.16.0
 milestone_name: milestone
 status: completed
 stopped_at: Phase 16 SHIPPED — all 4 plans complete, warm-cache D-06 PASS (ratio 0.890)

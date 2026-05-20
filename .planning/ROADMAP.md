@@ -383,7 +383,7 @@ Verification requirements VER-01 through VER-06 are phase-independent and gate t
 | 13. Merkle root + file-level dedup (A4) | 14/15 | Complete    | 2026-04-28 |
 | 14. Migration tool (A5) | 5/7 | In Progress|  |
 | 15. Legacy cleanup (A6) | 0/? | Not started | - |
-| 16. Cache RAM-only (remove mmap read path) | 3/4 | In Progress | - |
+| 16. Cache RAM-only (remove mmap read path) | 4/4 | Complete    | 2026-05-20 |
 
 ## Coverage Summary
 

@@ -357,7 +357,7 @@ func testIsBlockLocal(t *testing.T, factory Factory) {
 
 // RunGetSuite exercises LocalStore.Get. The scenario matrix is:
 //
-//   - missing-hash: Get(zero hash) → blockstore.ErrChunkNotFound.
+//   - missing-hash: Get(arbitrary unstored hash) → blockstore.ErrChunkNotFound.
 //   - CAS-capable backends only (chunkStorer): StoreChunk a known
 //     payload, Get it back, assert byte-identical via bytes.Equal.
 //   - Fresh-allocation contract: two Get calls on the same hash return
@@ -391,7 +391,10 @@ func RunGetSuite(t *testing.T, factory Factory) {
 		}
 		ctx := context.Background()
 
-		// Deterministic payload + matching ContentHash.
+		// Arbitrary (non-zero) ContentHash + deterministic payload.
+		// StoreChunk trusts inputs per its godoc — the hash is NOT required to
+		// be BLAKE3(payload); the test only asserts byte-identical round-trip
+		// through Get for whatever (hash, payload) pair StoreChunk accepts.
 		var h blockstore.ContentHash
 		for i := range h {
 			h[i] = byte(i + 1)
