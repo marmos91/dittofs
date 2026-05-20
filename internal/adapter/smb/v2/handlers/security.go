@@ -363,12 +363,37 @@ func buildEmptySACL(buf *bytes.Buffer) {
 // Security Descriptor Parsing
 // ============================================================================
 
-// ParseSecurityDescriptor parses a self-relative Security Descriptor and extracts
-// the owner UID, group GID, and NFSv4 ACL.
+// ParseSDOptions controls server-side handling of Security Descriptor parsing.
+type ParseSDOptions struct {
+	// CanonicalizeAutoInherited applies MS-DTYP §2.5.3.4.2 canonicalization:
+	// SE_DACL_AUTO_INHERITED is persisted only when SET_INFO Security also
+	// carries SE_DACL_AUTO_INHERIT_REQ. Mirrors Samba's
+	// `acl flag inherited canonicalization = yes` (default).
+	//
+	// When false, AUTO_INHERITED is preserved verbatim from the inbound
+	// Control word — Samba extension `acl flag inherited canonicalization = no`.
+	// smbtorture smb2.acls_non_canonical.flags exercises this opt-out.
+	CanonicalizeAutoInherited bool
+}
+
+// ParseSecurityDescriptor parses a self-relative SD with default (canonicalizing)
+// semantics. New callers should prefer ParseSecurityDescriptorWithOptions and
+// pass an explicit ParseSDOptions reflecting the target share's
+// AclFlagInheritedCanonicalization setting.
 //
 // Returns pointers to allow callers to detect which sections were present.
 // A nil pointer means that section was not present in the SD.
-func ParseSecurityDescriptor(data []byte) (ownerUID *uint32, ownerGID *uint32, fileACL *acl.ACL, err error) {
+func ParseSecurityDescriptor(data []byte) (*uint32, *uint32, *acl.ACL, error) {
+	return ParseSecurityDescriptorWithOptions(data, ParseSDOptions{CanonicalizeAutoInherited: true})
+}
+
+// ParseSecurityDescriptorWithOptions parses a self-relative Security Descriptor
+// and extracts the owner UID, group GID, and NFSv4 ACL, honoring the
+// canonicalization toggle in opts. See ParseSDOptions for semantics.
+//
+// Returns pointers to allow callers to detect which sections were present.
+// A nil pointer means that section was not present in the SD.
+func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (ownerUID *uint32, ownerGID *uint32, fileACL *acl.ACL, err error) {
 	if len(data) < sdHeaderSize {
 		return nil, nil, nil, fmt.Errorf("security descriptor too short: %d bytes", len(data))
 	}
@@ -419,21 +444,33 @@ func ParseSecurityDescriptor(data []byte) (ownerUID *uint32, ownerGID *uint32, f
 	// Surface SD Control flags onto the ACL so SE_DACL_PROTECTED and
 	// SE_DACL_AUTO_INHERITED round-trip through SET_INFO Security.
 	//
-	// Apply MS-DTYP §2.5.3.4.2 canonicalization mirroring Samba
-	// source3/smbd/smb2_nttrans.c::canonicalize_inheritance_bits. The
+	// When opts.CanonicalizeAutoInherited is true (default), apply MS-DTYP
+	// §2.5.3.4.2 canonicalization mirroring Samba
+	// source3/smbd/smb2_nttrans.c::canonicalize_inheritance_bits: the
 	// AUTO_INHERIT_REQ bit is a request flag — server processes it and never
 	// echoes it back. AUTO_INHERITED is persisted only when the client SETs
-	// BOTH AUTO_INHERITED and AUTO_INHERIT_REQ; otherwise it is cleared. A
-	// per-share toggle to disable this canonicalization (Samba's "acl flag
-	// inherited canonicalization = no") is tracked in #514.
+	// BOTH AUTO_INHERITED and AUTO_INHERIT_REQ; otherwise it is cleared.
+	//
+	// When opts.CanonicalizeAutoInherited is false, the Samba extension
+	// `acl flag inherited canonicalization = no` is in effect: AUTO_INHERITED
+	// is preserved verbatim from the inbound Control word with no
+	// AUTO_INHERIT_REQ gate. See ParseSDOptions and
+	// ParseSecurityDescriptorWithOptions.
 	if fileACL != nil {
 		if control&seDACLProtected != 0 {
 			fileACL.Protected = true
 		}
-		autoInheritReq := control&seDACLAutoInheritReq != 0
 		autoInherited := control&seDACLAutoInherited != 0
-		if autoInheritReq && autoInherited {
-			fileACL.AutoInherited = true
+		if opts.CanonicalizeAutoInherited {
+			autoInheritReq := control&seDACLAutoInheritReq != 0
+			if autoInheritReq && autoInherited {
+				fileACL.AutoInherited = true
+			}
+		} else {
+			// Samba extension: preserve AUTO_INHERITED verbatim, no AUTO_INHERIT_REQ gate.
+			if autoInherited {
+				fileACL.AutoInherited = true
+			}
 		}
 	}
 
