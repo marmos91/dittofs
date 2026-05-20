@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
 milestone: v0.15.0
-milestone_name: — CAS Convergence
-status: executing
-stopped_at: Completed 16-04-PLAN.md (Phase 16 SHIPPED)
-last_updated: "2026-05-20T14:28:00Z"
-last_activity: 2026-05-20
+milestone_name: milestone
+status: completed
+stopped_at: Phase 16 SHIPPED — all 4 plans complete, warm-cache D-06 PASS (ratio 0.890)
+last_updated: "2026-05-20T12:27:13.402Z"
+last_activity: 2026-05-20 -- Phase 16 marked complete
 progress:
   total_phases: 9
   completed_phases: 4
   total_plans: 33
   completed_plans: 33
-  percent: 100
+  percent: 44
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-23)
 ## Current Position
 
 Milestone: v0.16.0
-Phase: 16 (cache-mmap-removal) — SHIPPED
+Phase: 16 — COMPLETE
 Plan: 4 of 4 complete
 Branch: `gsd/phase-16-cache-mmap-removal`
-Status: All 4 plans shipped; warm-cache D-06 PASS (ratio 0.890 ≤1.02); ready for Phase 17 (unified BlockStore interface)
-Last activity: 2026-05-20
+Status: Phase 16 complete
+Last activity: 2026-05-20 -- Phase 16 marked complete
 
 ## Next Actionable
 
