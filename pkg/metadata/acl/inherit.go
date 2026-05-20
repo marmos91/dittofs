@@ -1,6 +1,9 @@
 package acl
 
-import "fmt"
+import (
+	"fmt"
+	"log/slog"
+)
 
 // inheritanceMask covers all inheritance-related ACE flags.
 const inheritanceMask = ACE4_FILE_INHERIT_ACE | ACE4_DIRECTORY_INHERIT_ACE |
@@ -76,6 +79,19 @@ func substituteCreator(who string, creator Creator) string {
 // SpecialCreatorGroup is rewritten in place with the creator's frozen
 // identity (sid:<SID> when known, otherwise "<uid|gid>@localdomain").
 //
+// CREATOR dual-emission on directory children (mirrors Samba
+// libcli/security/create_descriptor.c::calculate_inherited_from_parent):
+// when the parent ACE has CONTAINER_INHERIT (CI) and a CREATOR_OWNER /
+// CREATOR_GROUP principal, two child ACEs are emitted to the directory:
+//  1. The resolved ACE (principal substituted to the new directory's
+//     owner/group, inheritance flags propagated per the rules above).
+//  2. A preserved CREATOR ACE with CI|INHERIT_ONLY (plus OI if the parent
+//     had it) so grandchild directories still substitute against their
+//     own owner/group rather than receiving an already-resolved ACE.
+//
+// File children are leaves: no dual-emission — the resolved ACE is the
+// only one emitted (any inheritance to deeper levels is moot).
+//
 // Per MS-DTYP §2.5.3.4.2, when the parent SD has SE_DACL_AUTO_INHERITED set,
 // the computed child SD also has SE_DACL_AUTO_INHERITED set (mirrors Samba
 // source3/smbd/posix_acls.c::set_inherited_sd). SE_DACL_PROTECTED is a
@@ -149,9 +165,46 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 
 		// MS-DTYP §2.5.3.4: substitute CREATOR_OWNER / CREATOR_GROUP
 		// placeholders with the creator's frozen identity.
-		newACE.Who = substituteCreator(newACE.Who, creator)
+		originalWho := ace.Who
+		isCreator := originalWho == SpecialCreatorOwner || originalWho == SpecialCreatorGroup
+		newACE.Who = substituteCreator(originalWho, creator)
 
 		inherited = append(inherited, newACE)
+
+		// Dual-emit on directory children when parent ACE carried a
+		// CREATOR principal AND CONTAINER_INHERIT. Mirrors Samba
+		// calculate_inherited_from_parent: keep the original CREATOR ACE
+		// with CI|INHERIT_ONLY (preserving OI when present) so grandchild
+		// directories continue to substitute against THEIR own creator
+		// instead of inheriting the already-resolved owner/group.
+		//
+		// Skipped on:
+		//   - files (leaves)
+		//   - parent ACE without CI (no need to reach grandchild dirs)
+		//   - NO_PROPAGATE (Samba stops propagation in that branch)
+		if isDirectory && isCreator && hasCI && !hasNP {
+			if len(inherited) >= MaxACECount {
+				slog.Debug("acl.ComputeInheritedACL: skipping preserved CREATOR ACE — MaxACECount reached",
+					"max", MaxACECount, "principal", originalWho)
+				continue
+			}
+			preserved := *ace
+			preserved.Who = originalWho
+			preserved.Flag &^= inheritanceMask
+			preserved.Flag |= ACE4_DIRECTORY_INHERIT_ACE | ACE4_INHERIT_ONLY_ACE
+			if hasOI {
+				preserved.Flag |= ACE4_FILE_INHERIT_ACE
+			}
+			// INHERITED_ACE conditional: same rule as the resolved ACE
+			// (Bug A — PR 2). The preserved ACE was produced by the
+			// inheritance computation; it must carry the bit whenever
+			// the resolved sibling does.
+			preserved.Flag &^= ACE4_INHERITED_ACE
+			if (ace.Flag&ACE4_INHERITED_ACE) != 0 || parentACL.AutoInherited {
+				preserved.Flag |= ACE4_INHERITED_ACE
+			}
+			inherited = append(inherited, preserved)
+		}
 	}
 
 	if len(inherited) == 0 {
