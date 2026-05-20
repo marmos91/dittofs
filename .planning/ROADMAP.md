@@ -353,7 +353,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 **Plans**: 4 plans
   - [x] 16-01-PLAN.md — Add LocalStore.Get(ctx, hash) interface method + FSStore (delegate to ReadChunk) + MemoryStore stub + localtest conformance scenario
   - [x] 16-02-PLAN.md — Rewire engine.loadByHash → local.Get; update cache.go docstring; cherry-pick generic byte-correctness asserts from cache_mmap_test.go into cache_test.go (D-10)
-  - [ ] 16-03-PLAN.md — Delete cache_mmap_unix.go + cache_mmap_windows.go + cache_mmap_test.go; delete TestPerfGate_Phase12_MmapHotPath; fold perf_bench_unix_test.go if empty; cross-OS build clean (D-08, D-09)
+  - [x] 16-03-PLAN.md — Delete cache_mmap_unix.go + cache_mmap_windows.go + cache_mmap_test.go; delete TestPerfGate_Phase12_MmapHotPath; fold perf_bench_unix_test.go if empty; cross-OS build clean (D-08, D-09)
   - [ ] 16-04-PLAN.md — Warm-cache BenchmarkRandReadVerified ≤1.02 vs pre-Phase-16 baseline (D-06); cross-OS build + race verification; BENCHMARKS.md update; human checkpoint
 
 ## Milestone Gates
@@ -383,6 +383,7 @@ Verification requirements VER-01 through VER-06 are phase-independent and gate t
 | 13. Merkle root + file-level dedup (A4) | 14/15 | Complete    | 2026-04-28 |
 | 14. Migration tool (A5) | 5/7 | In Progress|  |
 | 15. Legacy cleanup (A6) | 0/? | Not started | - |
+| 16. Cache RAM-only (remove mmap read path) | 3/4 | In Progress | - |
 
 ## Coverage Summary
 
