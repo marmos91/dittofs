@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -348,4 +350,38 @@ func TestCache_Close(t *testing.T) {
 
 	// Idempotent Close.
 	require.NoError(t, c.Close())
+}
+
+// TestCache_LargeChunkRoundTrip — Phase 16 D-10 cherry-pick.
+//
+// Ported from cache_mmap_test.go::TestReadFromCAS_RoundTrip, reshaped
+// to exercise the Cache API rather than the deleted readFromCAS file
+// primitive. Pins generic byte-correctness of a multi-hundred-KiB
+// chunk round-trip through Put/Get — the existing
+// TestCache_GetPut_Basic uses an 11-byte string and does NOT cover
+// large-chunk equality.
+//
+// Mmap-specific assertions (partial offset, dest-smaller-than-file,
+// below-mmap-threshold branch selection, offset-at-EOF, Windows
+// fallback path) were dropped per D-10: they targeted a primitive
+// that no longer exists post-Phase-16.
+func TestCache_LargeChunkRoundTrip(t *testing.T) {
+	const sz = 256 * 1024 // 256 KiB — was the mmap-branch threshold size pre-Phase-16.
+	want := make([]byte, sz)
+	if _, err := rand.Read(want); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+
+	c := newCacheNoWorkers(int64(sz * 2))
+	require.NotNil(t, c)
+	defer func() { _ = c.Close() }()
+
+	h := hashN(0x77)
+	c.Put(h, want)
+
+	got, ok := c.Get(h)
+	require.True(t, ok, "expected hit after Put of large chunk")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("large-chunk round-trip mismatch: got len %d, want len %d", len(got), len(want))
+	}
 }
