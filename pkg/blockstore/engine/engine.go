@@ -189,52 +189,21 @@ func (bs *BlockStore) Start(ctx context.Context) error {
 }
 
 // loadByHash is the LoadByHashFn the Cache's prefetch workers call to
-// pull a block by ContentHash. Phase 12 Plan 09: replaces the legacy
-// loadBlock(payloadID, blockIdx) with a CAS-keyed loader. Looks up the
-// FileBlock by hash to recover its local path, then reads from local
-// store. Remote fallback is intentionally NOT wired here — prefetch
-// is best-effort and shouldn't block on a remote round-trip; if the
-// block isn't local, the next on-path read will pull it via the syncer.
+// pull a block by ContentHash. Phase 16 (D-02): a single content-
+// addressed local read. The mmap fast-path and the legacy FileBlock
+// → GetBlockData fallback are gone; local.Get is the only primitive.
 //
-// Plan 12-10 (CACHE-06): when fb.LocalPath is set, use readFromCAS
-// (build-tagged: mmap on linux/darwin, os.ReadFile on windows) for a
-// single-copy load (page cache -> dest). Falls back to the legacy
-// local.GetBlockData path when DataSize is unknown (legacy FileBlock
-// rows without the post-Plan-10 DataSize attribute).
+// Buffer ownership (D-03): local.Get returns a freshly allocated
+// []byte; the Cache copies those bytes into its LRU slot on miss.
+// Net allocation count is unchanged vs the pre-Phase-16 mmap-then-
+// copy semantics — the alloc just moves earlier in the pipeline.
+//
+// Remote fallback is intentionally NOT wired here — prefetch is
+// best-effort and shouldn't block on a remote round-trip; if the
+// block isn't local, the next on-path read will pull it via the
+// syncer.
 func (bs *BlockStore) loadByHash(ctx context.Context, hash blockstore.ContentHash) ([]byte, error) {
-	if bs.fileBlockStore == nil {
-		return nil, errors.New("loadByHash: fileBlockStore not wired")
-	}
-	fb, err := bs.fileBlockStore.GetByHash(ctx, hash)
-	if err != nil {
-		return nil, err
-	}
-	if fb == nil || fb.LocalPath == "" {
-		return nil, errors.New("loadByHash: block not local")
-	}
-
-	// CACHE-06 single-copy fast path: when DataSize is known, allocate
-	// the destination buffer and read directly via the platform-aware
-	// mmap/ReadFile primitive.
-	if fb.DataSize > 0 {
-		buf := make([]byte, fb.DataSize)
-		n, err := readFromCAS(fb.LocalPath, 0, buf)
-		if err == nil {
-			return buf[:n], nil
-		}
-		// Fall through to the legacy path on any readFromCAS error
-		// (e.g., the local file was rotated out from under us). The
-		// legacy path consults the in-memory FileBlock state which
-		// may still have the bytes in flight.
-	}
-
-	// Legacy fallback: read through the local store. Returns a heap
-	// buffer the local store owns; we hand it directly to the caller.
-	data, _, err := bs.local.GetBlockData(ctx, fb.ID, 0)
-	if err != nil {
-		return nil, err
-	}
-	return data, nil
+	return bs.local.Get(ctx, hash)
 }
 
 // Close releases resources held by the store. Closes the cache (stops

@@ -49,23 +49,11 @@ var _ CacheInterface = nullCache{}
 // bifurcation (Phase 11 D-22) and folds the standalone Prefetcher
 // worker pool into one type.
 //
-// Plan 12-10 (CACHE-06) introduces a sibling single-copy read path:
-// readFromCAS(path, offset, dest) — build-tagged in cache_mmap_unix.go
-// (linux/darwin, syscall.Mmap) and cache_mmap_windows.go (os.ReadFile
-// fallback). On a local-CAS hit the engine can copy bytes directly
-// from the page cache into the caller's dest buffer in one copy:
-// mmap pages -> dest. Compare to Phase 11's path on a warm-disk hit
-// (local ReadAt -> heap buf -> Cache.Put copies -> Cache.Get copies
-// -> dest = three copies), or two copies if Put avoids one. The new
-// readFromCAS seam is one copy.
-//
-// Plan 12-10 is intentionally additive: readFromCAS is provided as
-// the platform-aware single-copy primitive. Wiring engine.ReadAt to
-// invoke it on local hits requires the FileBlock -> CAS path lookup
-// already present in loadByHash; the actual hot-path swap happens in
-// Plan 12-11/12 alongside the perf microbench (D-43). For Plan 12-10
-// the function exists, is unit-tested (cache_mmap_test.go), and the
-// build is cross-platform clean.
+// Phase 16: bytes loaded on miss via local.Get(ctx, hash) — see
+// engine.loadByHash. The Cache copies the returned []byte into its
+// LRU slot (D-03 buffer ownership). No mmap/page-cache fast path
+// exists post-Phase-16; production workloads are warm-cache and the
+// per-miss alloc is uncontended.
 //
 // Thread safety: read path takes RLock for hits, promotes LRU under
 // WLock; mutations are WLock-only. The trackerMu is a separate lock so
