@@ -167,6 +167,47 @@ var (
 	// NFS3ERR_IO / STATUS_DATA_ERROR consistently across protocols.
 	// See Phase 12 D-23.
 	ErrBlockRefMissing = errors.New("blockstore: block ref hash missing in store")
+
+	// ErrStopWalk is the sentinel a Walk callback returns to request a
+	// clean early exit (e.g., GC found its target). Walk returns nil to
+	// the outer caller. Any non-ErrStopWalk error halts and propagates
+	// wrapped with file/offset context. Mirrors filepath.SkipDir /
+	// fs.SkipAll.
+	//
+	// Detection pattern (callback side, when wrapping is required):
+	//
+	//   return fmt.Errorf("gc target %s: %w", id, blockstore.ErrStopWalk)
+	//
+	// Walk implementations match via errors.Is(err, ErrStopWalk) and
+	// return nil to the outer caller. Any other non-nil callback error
+	// halts and is wrapped as fmt.Errorf("walk halted at %s: %w", hash, err).
+	//
+	// See BlockStore.Walk (Phase 17 D-07).
+	ErrStopWalk = errors.New("blockstore: stop walk")
+
+	// ErrLegacyLayoutDetected is returned by *fs.FSStore.NewFSStore when
+	// the share directory contains legacy `.blk` files but no
+	// `.cas-migrated-v1` sentinel marker file. The wrapped target
+	// carries the offending share path:
+	//
+	//   return nil, fmt.Errorf("%w: share path %s", ErrLegacyLayoutDetected, baseDir)
+	//
+	// Detection at boot is via errors.Is, not errors.As — the sentinel
+	// is an errors.New value (not a typed struct), so errors.Is is the
+	// idiomatic match:
+	//
+	//   if errors.Is(err, blockstore.ErrLegacyLayoutDetected) { ... }
+	//
+	// cmd/dfs/start.go unwraps via errors.Is, prints an operator
+	// directive ("Detected legacy `.blk` layout at <path>. v0.16+
+	// requires CAS migration. Run `dfs migrate-to-cas` before
+	// starting."), and exits 78 (EX_CONFIG from sysexits(3)). Per-share
+	// fail-fast: the first un-migrated share halts boot.
+	//
+	// Operator action: run `dfs migrate-to-cas --share <name>` (or
+	// `dfs migrate-to-cas` for all shares) and retry. See
+	// docs/CONFIGURATION.md §migration. Phase 17 D-10/D-11.
+	ErrLegacyLayoutDetected = errors.New("blockstore: legacy .blk layout detected (run `dfs migrate-to-cas`)")
 )
 
 // BlockStoreError wraps sentinel block store errors with structured debugging context.

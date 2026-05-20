@@ -402,7 +402,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - **Forward-compat with Phase 18** — `BlockStore.Get` signature must match Phase 16's `local.Get` verbatim AND remain compatible with Phase 18's Syncer mirror loop call sites (`for hash := range local.ListUnsynced() { remote.Put(...) }`); planner must read `~/.claude/plans/reactive-sprouting-moonbeam.md` Phase 18 section before locking signatures
   - **Boot-guard footgun** — sentinel must be operator-discoverable (clear stderr directive + `docs/CONFIGURATION.md` link); silent failure here strands operators on un-migrated shares
 **Plans**: 11 plans
-- [ ] 17-01-PLAN.md — BlockStore + BlockStoreAppend interfaces + Meta struct + ErrStopWalk/ErrLegacyLayoutDetected sentinels (Wave 1)
+- [x] 17-01-PLAN.md — BlockStore + BlockStoreAppend interfaces + Meta struct + ErrStopWalk/ErrLegacyLayoutDetected sentinels (Wave 1)
 - [ ] 17-02-PLAN.md — pkg/blockstore/blockstoretest unified conformance suite scaffolding (Wave 1)
 - [ ] 17-03-PLAN.md — RemoteStore method renames + s3/memory backend retargeting (Wave 2)
 - [ ] 17-04-PLAN.md — LocalStore interface narrowing + BlockStoreAppend embedding (Wave 2)

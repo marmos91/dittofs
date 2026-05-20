@@ -4,14 +4,14 @@ milestone: v0.16.0
 milestone_name: — CAS Convergence
 status: executing
 stopped_at: Phase 17 context gathered
-last_updated: "2026-05-20T16:39:40.103Z"
-last_activity: 2026-05-20 -- Phase 17 planning complete
+last_updated: "2026-05-20T16:53:19.031Z"
+last_activity: 2026-05-20
 progress:
   total_phases: 10
   completed_phases: 4
   total_plans: 44
-  completed_plans: 33
-  percent: 75
+  completed_plans: 34
+  percent: 77
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-23)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 16 — cache-mmap-removal
+**Current focus:** Phase 17 — unified-blockstore
 
 ## Current Position
 
 Milestone: v0.16.0
-Phase: 16 — COMPLETE
-Plan: 4 of 4 complete
+Phase: 17 (unified-blockstore) — EXECUTING
+Plan: 2 of 11
 Branch: `gsd/phase-16-cache-mmap-removal`
 Status: Ready to execute
-Last activity: 2026-05-20 -- Phase 17 planning complete
+Last activity: 2026-05-20
 
 ## Next Actionable
 
@@ -134,7 +134,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-20T13:57:54.080Z
+Last session: 2026-05-20T16:51:29.016Z
 Stopped at: Phase 17 context gathered
 Next action: Open PR for `gsd/phase-16-cache-mmap-removal` → `develop`; close GH issue #516 on merge; begin Phase 17 planning (unified BlockStore interface, GH issue #517). Plan 16-04 SUMMARY at `.planning/phases/16-cache-mmap-removal/16-04-SUMMARY.md`. Bench artifacts retained at `/tmp/p16-bench-{pre,post,benchstat}.txt`.
 
