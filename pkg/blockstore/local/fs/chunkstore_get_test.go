@@ -10,11 +10,10 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// TestFSStore_Get_DelegatesToReadChunk asserts that the new Get method
+// TestFSStore_Get_DelegatesToReadChunk asserts that the Get method
 // exists on *FSStore with the LocalStore.Get signature, returns the
 // stored bytes byte-identically, and reports blockstore.ErrChunkNotFound
-// for missing hashes. This is the Phase 16 Plan 01 RED for the FSStore
-// side of the new interface method.
+// for missing hashes.
 func TestFSStore_Get_DelegatesToReadChunk(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: true})
 	ctx := context.Background()

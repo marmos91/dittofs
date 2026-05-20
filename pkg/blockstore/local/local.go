@@ -70,19 +70,18 @@ type LocalStore interface {
 
 	// Get returns the chunk bytes addressed by the given content hash.
 	// The returned []byte is freshly allocated and owned by the caller
-	// (Phase 16 D-03 buffer-ownership contract; matches the prior
-	// mmap-then-copy semantics from the engine Cache's perspective —
-	// the Cache always copied bytes out of the mmapped region into its
-	// LRU slot, so the allocation simply moves earlier in the pipeline).
+	// — matches the prior mmap-then-copy semantics from the engine
+	// Cache's perspective (the Cache always copied bytes out of the
+	// mmapped region into its LRU slot, so the allocation simply moves
+	// earlier in the pipeline).
 	//
 	// Returns blockstore.ErrChunkNotFound if the chunk is absent from
 	// the local store. Implementations MUST NOT return a slice that
-	// aliases internal storage (Phase 16 D-05); no read-buffer pool is
-	// used (Phase 16 D-04).
+	// aliases internal storage; no read-buffer pool is used.
 	//
-	// Phase 17 promotes this method onto the unified BlockStore
-	// interface verbatim — the engine call site narrows the receiver
-	// type without renaming.
+	// Signature is forward-compatible with the unified BlockStore.Get
+	// interface — engine call sites can narrow the receiver type without
+	// renaming.
 	Get(ctx context.Context, hash blockstore.ContentHash) ([]byte, error)
 
 	// --- Write operations ---
@@ -128,10 +127,10 @@ type LocalStore interface {
 	DeleteAllBlockFiles(ctx context.Context, payloadID string) error
 
 	// DeleteAppendLog removes the per-file append log for a payload
-	// (Phase 10 LSL-05 / D-28). Phase 13 BSCAS-05 invokes this on a
-	// file-level dedup hit to discard speculative chunks the syncer was
-	// about to upload. Implementations MUST be safe to call when no log
-	// exists for the payload (no-op).
+	// (LSL-05). BSCAS-05 invokes this on a file-level dedup hit to
+	// discard speculative chunks the syncer was about to upload.
+	// Implementations MUST be safe to call when no log exists for the
+	// payload (no-op).
 	//
 	// Concrete impl: *fs.FSStore.DeleteAppendLog (appendwrite.go) is the
 	// canonical implementation; in-memory backends with no append log

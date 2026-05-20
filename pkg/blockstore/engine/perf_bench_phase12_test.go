@@ -1,7 +1,6 @@
-// Phase 12 perf gate (D-43) — bench / regression gate for the new
-// []BlockRef-threaded read path (binary search via findBlocksForRange,
-// Cache OnRead hint, RAM-cache-backed local.Get on miss; mmap path
-// removed in Phase 16).
+// Bench / regression gate for the []BlockRef-threaded read path
+// (binary search via findBlocksForRange, Cache OnRead hint,
+// RAM-cache-backed local.Get on miss).
 //
 // This file is the in-tree microbench canary. Real-S3 performance is
 // verified separately at milestone-gate VER-02 against the bench/infra
@@ -38,7 +37,7 @@ import (
 const phase12FixtureFileSize = 64 * 1024 * 1024
 
 // phase12FixtureBlockSize is the per-BlockRef chunk size — matches the
-// FastCDC average chunk target (Phase 10).
+// FastCDC average chunk target.
 const phase12FixtureBlockSize = 4 * 1024 * 1024
 
 // phase12ReadSize is the rand-read I/O size — matches the bench/infra
@@ -189,10 +188,11 @@ func BenchmarkRandRead_Phase12(b *testing.B) {
 	reportOpsPerSec(b, b.N)
 }
 
-// BenchmarkPerfGate_Phase12RandReadRegression enforces D-43: rand-read
-// IOPS must be within 5% of the per-machine in-tree microbench floor
-// recorded in test/e2e/BENCHMARKS.md. This is a TRUE benchmark
-// function (not a Test invoking testing.Benchmark()), invoked via:
+// BenchmarkPerfGate_Phase12RandReadRegression enforces a rand-read
+// regression bound: IOPS must be within 5% of the per-machine in-tree
+// microbench floor recorded in test/e2e/BENCHMARKS.md. This is a TRUE
+// benchmark function (not a Test invoking testing.Benchmark()), invoked
+// via:
 //
 //	go test -bench BenchmarkPerfGate_Phase12 -benchtime=10s -run=^$ \
 //	    ./pkg/blockstore/engine/...
@@ -200,17 +200,15 @@ func BenchmarkRandRead_Phase12(b *testing.B) {
 // Local runs: make bench-phase12.
 //
 // The microbench uses an in-tree fixture (memory metadata + memory
-// local store), NOT real S3. The Phase 11 figure of ~1,350 IOPS in
+// local store), NOT real S3. The ~1,350 IOPS rand-read figure in
 // BENCHMARKS.md refers to the bench/infra real-S3 lane on a different
 // machine class. The gate here uses the per-machine microbench floor
-// recorded by Plan 12-12 (or first-run capture) — see
-// test/e2e/BENCHMARKS.md "Phase 12" section for the disclaimer and
-// re-baseline procedure.
+// — see test/e2e/BENCHMARKS.md for the disclaimer and re-baseline
+// procedure.
 //
-// Phase 12 stacks risk surface (binary search + cache rewrite + mmap
-// path); the 5% bound is tighter than the global 6% to leave headroom
-// for Phase 13/14/15 stacking. PR-C merge is blocked until this gate
-// passes.
+// The 5% bound is tighter than the global 6% budget to leave headroom
+// for downstream changes stacking on this surface. PR merge is blocked
+// until this gate passes.
 func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 	fixture := setupPerfFixture(b)
 	defer fixture.Close()
@@ -241,15 +239,15 @@ func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 	// Linux amd64 CI it's a different absolute. The floor below is
 	// the conservative cross-platform anchor — re-baseline per
 	// BENCHMARKS.md after a confirmed regression-free run on a new
-	// machine class. See Plan 12-12 SUMMARY for first-run numbers.
+	// machine class.
 	const microbenchFloorIOPS = phase12MicrobenchFloorIOPS
 	const tolerance = 0.05
 
 	floor := microbenchFloorIOPS * (1.0 - tolerance)
-	b.Logf("Phase 12 rand-read: %.0f ops/sec (microbench floor %.0f, tolerance %.0f%%, allowed >= %.0f)",
+	b.Logf("rand-read: %.0f ops/sec (microbench floor %.0f, tolerance %.0f%%, allowed >= %.0f)",
 		opsPerSec, microbenchFloorIOPS, tolerance*100, floor)
 	if opsPerSec < floor {
-		b.Fatalf("D-43 perf gate FAILED: %.0f IOPS, floor %.0f (microbench baseline %.0f, tolerance %.0f%%). "+
+		b.Fatalf("rand-read perf gate FAILED: %.0f IOPS, floor %.0f (microbench baseline %.0f, tolerance %.0f%%). "+
 			"Likely culprits: findBlocksForRange linearisation, Cache.OnRead lock contention, "+
 			"loadByHash regression. Profile with: go test -bench BenchmarkPerfGate_Phase12 "+
 			"-cpuprofile=cpu.prof ./pkg/blockstore/engine/...",
@@ -258,27 +256,25 @@ func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 }
 
 // phase12MicrobenchFloorIOPS is the per-machine in-tree microbench
-// floor used by BenchmarkPerfGate_Phase12RandReadRegression. Captured
-// via Plan 12-12 first-run on the executor's machine; revise via
+// floor used by BenchmarkPerfGate_Phase12RandReadRegression. Revise via
 // BENCHMARKS.md when re-baselining.
 //
-// Conservative cross-platform anchor: 50 K ops/s. On the M1 Max where
-// Plan 12-12 was developed, the actual measurement was ~150 K ops/s
-// (in-memory local store + 4 KiB reads + binary search + OnRead).
-// On Linux amd64 CI we expect similar in-memory throughput; if a CI
-// runner is materially slower the floor must be re-anchored there
-// rather than tightened against this baseline.
+// Conservative cross-platform anchor: 50 K ops/s. On the M1 Max the
+// actual measurement was ~150 K ops/s (in-memory local store + 4 KiB
+// reads + binary search + OnRead). On Linux amd64 CI we expect similar
+// in-memory throughput; if a CI runner is materially slower the floor
+// must be re-anchored there rather than tightened against this
+// baseline.
 //
-// NOTE: this is NOT the real-S3 1,350 IOPS Phase 11 figure. The
+// NOTE: this is NOT the real-S3 1,350 IOPS rand-read figure. The
 // real-S3 lane is verified separately at milestone-gate VER-02.
 const phase12MicrobenchFloorIOPS = 50000.0
 
-// TestPerfGate_Phase12_BinarySearchOverhead enforces the D-43
-// supporting bound: findBlocksForRange over a 16 K BlockRef slice
-// (the VM-workload upper bound — 16 K × 4 MiB = 64 GiB file) MUST
-// average <1 µs per call. If the lookup grows linear (or worse) the
-// rand-read gate will trip; this test localises the regression to the
-// binary-search seam itself.
+// TestPerfGate_Phase12_BinarySearchOverhead is a supporting bound:
+// findBlocksForRange over a 16 K BlockRef slice (the VM-workload upper
+// bound — 16 K × 4 MiB = 64 GiB file) MUST average <1 µs per call. If
+// the lookup grows linear (or worse) the rand-read gate will trip;
+// this test localises the regression to the binary-search seam itself.
 func TestPerfGate_Phase12_BinarySearchOverhead(t *testing.T) {
 	const N = 16000
 	blocks := make([]blockstore.BlockRef, N)
@@ -307,6 +303,6 @@ func TestPerfGate_Phase12_BinarySearchOverhead(t *testing.T) {
 	// over 16K BlockRefs would be ~50µs, so this still catches O(N)
 	// regressions while tolerating CI hardware variance.
 	if perCall > 10*time.Microsecond {
-		t.Fatalf("D-43 supporting gate FAILED: findBlocksForRange %v per call > 10µs (likely linear scan)", perCall)
+		t.Fatalf("supporting gate FAILED: findBlocksForRange %v per call > 10µs (likely linear scan)", perCall)
 	}
 }

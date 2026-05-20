@@ -26,11 +26,10 @@ type Factory func(t *testing.T) local.LocalStore
 // RunSuite runs the full conformance test suite against a LocalStore
 // implementation.
 //
-// For the Phase 10 append-log / rollup / recovery scenarios (D-22), see
-// RunAppendLogSuite in appendlog_suite.go — it uses a separate factory
-// type (*fs.FSStore) because the new methods are not on the LocalStore
-// interface through Phase 10 (D-04). Callers that want both suites can
-// invoke them independently.
+// For the append-log / rollup / recovery scenarios, see RunAppendLogSuite
+// in appendlog_suite.go — it uses a separate factory type (*fs.FSStore)
+// because the append-log methods are not on the LocalStore interface.
+// Callers that want both suites can invoke them independently.
 func RunSuite(t *testing.T, factory Factory) {
 	t.Run("WriteAndRead", func(t *testing.T) { testWriteAndRead(t, factory) })
 	t.Run("ReadMiss", func(t *testing.T) { testReadMiss(t, factory) })
@@ -356,17 +355,15 @@ func testIsBlockLocal(t *testing.T, factory Factory) {
 	}
 }
 
-// RunGetSuite exercises LocalStore.Get (Phase 16 D-01). The scenario
-// matrix is:
+// RunGetSuite exercises LocalStore.Get. The scenario matrix is:
 //
 //   - missing-hash: Get(zero hash) → blockstore.ErrChunkNotFound.
 //   - CAS-capable backends only (chunkStorer): StoreChunk a known
 //     payload, Get it back, assert byte-identical via bytes.Equal.
-//   - Fresh-allocation contract (D-03, D-05): two Get calls on the
-//     same hash return independent backing arrays — mutating slice
-//     #1 must not be observable through slice #2. This defends the
-//     Phase 16 buffer-ownership contract by behavior, not by
-//     unsafe pointer comparison.
+//   - Fresh-allocation contract: two Get calls on the same hash return
+//     independent backing arrays — mutating slice #1 must not be
+//     observable through slice #2. This defends the buffer-ownership
+//     contract by behavior, not by unsafe pointer comparison.
 //
 // Backends that do not store CAS chunks (memory.MemoryStore) skip the
 // round-trip + aliasing assertions and exercise only the missing-hash
@@ -443,8 +440,8 @@ func RunGetSuite(t *testing.T, factory Factory) {
 		}
 
 		// Mutate the first slice; the second must remain unchanged.
-		// Defends D-03 (fresh alloc per call) + D-05 (no aliasing of
-		// internal storage) by behavior — `&out1[0] != &out2[0]` is
+		// Defends the fresh-allocation-per-call + no-aliasing contracts
+		// by behavior — `&out1[0] != &out2[0]` is
 		// fragile (compiler/runtime may legitimately reuse). Mutation
 		// is the load-bearing assertion the engine actually depends on:
 		// the Cache copies bytes into its LRU slot and a subsequent

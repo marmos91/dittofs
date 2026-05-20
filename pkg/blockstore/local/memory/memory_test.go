@@ -16,12 +16,12 @@ func TestMemoryStoreConformance(t *testing.T) {
 	localtest.RunSuite(t, factory)
 }
 
-// TestMemoryStore_GetConformance wires the Phase 16 Plan 01
-// LocalStore.Get conformance suite against memory.MemoryStore. The
-// memory backend does not implement StoreChunk, so RunGetSuite
-// auto-skips the round-trip + fresh-allocation subtests and exercises
-// only the missing-hash → ErrChunkNotFound assertion — matching the
-// documented stub behavior of MemoryStore.Get.
+// TestMemoryStore_GetConformance wires the LocalStore.Get conformance
+// suite against memory.MemoryStore. The memory backend does not
+// implement StoreChunk, so RunGetSuite auto-skips the round-trip +
+// fresh-allocation subtests and exercises only the missing-hash →
+// ErrChunkNotFound assertion — matching the documented stub behavior of
+// MemoryStore.Get.
 func TestMemoryStore_GetConformance(t *testing.T) {
 	factory := func(t *testing.T) local.LocalStore {
 		t.Helper()

@@ -10,10 +10,9 @@ import (
 )
 
 // TestMemoryStore_Get_ReturnsErrChunkNotFound asserts the documented stub
-// behavior of MemoryStore.Get (Phase 16 Plan 01): the memory backend has
-// no CAS chunk layer, so every Get returns blockstore.ErrChunkNotFound.
-// The method exists only to satisfy the LocalStore interface; Phase 17
-// may expand it when the unified BlockStore interface lands.
+// behavior of MemoryStore.Get: the memory backend has no CAS chunk
+// layer, so every Get returns blockstore.ErrChunkNotFound. The method
+// exists only to satisfy the LocalStore interface.
 func TestMemoryStore_Get_ReturnsErrChunkNotFound(t *testing.T) {
 	s := memory.New()
 	defer func() { _ = s.Close() }()

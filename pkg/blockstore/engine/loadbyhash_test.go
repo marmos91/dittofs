@@ -14,7 +14,7 @@ import (
 // newLoadByHashFixture builds an FS-backed engine.BlockStore plus the
 // underlying *fs.FSStore for tests that stage CAS chunks directly via
 // StoreChunk. The memory local store used by newTestEngine has no CAS
-// layer, so the Phase 16 D-02 pin tests need this FS-backed variant.
+// layer, so the loadByHash pin tests need this FS-backed variant.
 func newLoadByHashFixture(t *testing.T) (*BlockStore, *fs.FSStore) {
 	t.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
@@ -38,15 +38,12 @@ func newLoadByHashFixture(t *testing.T) (*BlockStore, *fs.FSStore) {
 	return bs, localStore
 }
 
-// TestLoadByHash_DelegatesToLocalGet pins Phase 16 D-02: loadByHash
-// must read content-addressed bytes via local.Get(ctx, hash) without
+// TestLoadByHash_DelegatesToLocalGet pins the contract that loadByHash
+// reads content-addressed bytes via local.Get(ctx, hash) without
 // consulting the FileBlock row. We stage a chunk directly via
 // FSStore.StoreChunk (which writes to the CAS layout) and call
-// loadByHash with that hash; no FileBlock exists for it.
-//
-// Pre-rewire (Phase 12 mmap path), loadByHash short-circuits with
-// "block not local" because GetByHash returns nil. Post-rewire it
-// returns the chunk bytes via local.Get → ReadChunk.
+// loadByHash with that hash; no FileBlock exists for it. loadByHash
+// must return the chunk bytes via local.Get → ReadChunk.
 func TestLoadByHash_DelegatesToLocalGet(t *testing.T) {
 	bs, localStore := newLoadByHashFixture(t)
 	ctx := context.Background()
@@ -70,7 +67,7 @@ func TestLoadByHash_DelegatesToLocalGet(t *testing.T) {
 	}
 }
 
-// TestLoadByHash_MissingChunkReturnsErrChunkNotFound pins Phase 16 D-02
+// TestLoadByHash_MissingChunkReturnsErrChunkNotFound pins the
 // error contract: when the chunk is absent from the CAS layer the
 // caller sees blockstore.ErrChunkNotFound, surfaced verbatim from
 // local.Get. No FileBlock translation layer between caller and store.
@@ -82,7 +79,7 @@ func TestLoadByHash_MissingChunkReturnsErrChunkNotFound(t *testing.T) {
 		missing[i] = byte(0xEE)
 	}
 	_, err := bs.loadByHash(context.Background(), missing)
-	// Phase 16 D-02: the sentinel surfaces from local.Get verbatim.
+	// The sentinel surfaces from local.Get verbatim.
 	if !errors.Is(err, blockstore.ErrChunkNotFound) {
 		t.Fatalf("loadByHash on missing chunk: got %v, want blockstore.ErrChunkNotFound", err)
 	}

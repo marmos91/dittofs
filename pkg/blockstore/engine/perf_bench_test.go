@@ -1,4 +1,4 @@
-// Phase 11 performance gates (D-20).
+// Performance gates for the CAS read-verify and write-upload paths.
 //
 // This file authors three microbenchmarks plus an inline gate test for the
 // rand-read verifier overhead and the rand-write CAS upload path. They run
@@ -13,10 +13,10 @@
 //	                           / BenchmarkRandReadUnverified ops/s)
 //	MUST be <= 0.05 (5%).
 //
-// Phase 11 write-path gate (STATE.md ≤6% global budget):
+// Write-path gate (global ≤6% budget):
 //
-//	BenchmarkRandWriteCAS MUST be within 6% of the Phase 10 rand-write
-//	baseline recorded in test/e2e/BENCHMARKS.md. Hard CI enforcement is a
+//	BenchmarkRandWriteCAS MUST be within 6% of the recorded rand-write
+//	baseline in test/e2e/BENCHMARKS.md. Hard CI enforcement is a
 //	follow-up; this file ships the bench code + the inline 5% verifier
 //	gate so regressions are caught fail-closed under `go test ./...`.
 //
@@ -58,15 +58,15 @@ func silenceLoggerForBench(tb testing.TB) {
 }
 
 // perfBlockSize is the per-CAS-object size used by the rand-read benches.
-// 4 MiB matches the FastCDC average chunk size (Phase 10) so the bench is
+// 4 MiB matches the FastCDC average chunk size so the bench is
 // representative of real CAS object sizes.
 const perfBlockSize = 4 * 1024 * 1024
 
 // perfFixtureSize is the count of distinct CAS objects prepopulated for the
 // rand-read benches. 1024 × 4 MiB = 4 GiB of unique payload — large enough
 // that uniform-random key picks defeat any CPU-side L3 caching and we
-// measure the true cold-path BLAKE3 cost on each iteration. Per the Phase
-// 11 threat register T-11-B-12.
+// measure the true cold-path BLAKE3 cost on each iteration. Per threat
+// register entry T-11-B-12.
 const perfFixtureSize = 1024
 
 // perfRandSeed makes both Verified and Unverified benches walk the same
@@ -133,14 +133,14 @@ func reportOpsPerSec(b *testing.B, ops int) {
 // uniformly-random CAS key per iteration so the working set is too large
 // to fit in L3, defeating CPU-side caching of the verifier hash state.
 //
-// Phase 16 warm-cache baseline (Plan 16-04 measurement, 2026-05-20,
-// Apple M1 Max, -benchtime=10s -count=3, median ns/op):
+// Warm-cache regression baseline (Apple M1 Max, -benchtime=10s -count=3,
+// median ns/op):
 //
 //	pre  (commit f8e2532d):  1,492,970 ns/op    669.8 ops/s
 //	post (commit 436a81ec):  1,328,307 ns/op    752.8 ops/s
-//	ratio post/pre        :  0.890  (gate ≤1.02 per D-06, PASS)
+//	ratio post/pre        :  0.890  (gate ≤1.02, PASS)
 //
-// The mmap loader removed by Phase 16 lived on the cold-miss path,
+// The mmap loader removed from the cache lived on the cold-miss path,
 // not the warm path exercised here — the post slightly outperforms
 // the pre because the loadByHash closure no longer dispatches through
 // the per-OS mmap thunk; allocations + B/op are bit-identical.
@@ -174,8 +174,7 @@ func BenchmarkRandReadVerified(b *testing.B) {
 
 // BenchmarkRandReadUnverified measures the same access pattern via the
 // legacy ReadBlock path (no BLAKE3 recompute). The delta between this and
-// BenchmarkRandReadVerified is the verifier overhead the D-20 5% gate
-// bounds.
+// BenchmarkRandReadVerified is the verifier overhead the 5% gate bounds.
 func BenchmarkRandReadUnverified(b *testing.B) {
 	silenceLoggerForBench(b)
 	f := buildReadFixture(b)
@@ -245,8 +244,8 @@ func buildWriteFixture(tb testing.TB) *writeFixture {
 	}
 }
 
-// BenchmarkRandWriteCAS measures the per-block cost of the Phase 11 CAS
-// upload path (BLAKE3 hash + WriteBlockWithHash + PutFileBlock). Each
+// BenchmarkRandWriteCAS measures the per-block cost of the CAS upload
+// path (BLAKE3 hash + WriteBlockWithHash + PutFileBlock). Each
 // iteration writes a fresh 4 MiB random buffer to a unique local file and
 // drives uploadOne end-to-end. Determinism is preserved via a seeded RNG
 // so re-runs produce comparable numbers.
@@ -311,7 +310,7 @@ func BenchmarkRandWriteCAS(b *testing.B) {
 }
 
 // TestPerfGate_VerifierWithinBudget records the verifier overhead inline
-// under `go test ./pkg/blockstore/engine/...`. The hard 5% D-20 gate is
+// under `go test ./pkg/blockstore/engine/...`. The hard 5% gate is
 // meaningful only when the unverified baseline reflects real S3 GET cost
 // (network + decompression + AWS SDK overhead) — at which point the BLAKE3
 // recompute is a small marginal addition. Against the in-memory remote
@@ -325,15 +324,15 @@ func BenchmarkRandWriteCAS(b *testing.B) {
 //   - Default (in-tree dev + standard CI): logs the measured regression for
 //     trend tracking; does not fail. Skipped under `-short`.
 //   - `D20_STRICT_GATE=1`: enforces the 5% hard fail. Intended for the
-//     dedicated CI perf lane (D-43 / Phase 11 prereq) where the rand-read
-//     baseline is captured against a real S3 backend (Localstack or a
-//     stable bench rig), not the in-memory shim.
+//     dedicated CI perf lane where the rand-read baseline is captured
+//     against a real S3 backend (Localstack or a stable bench rig), not
+//     the in-memory shim.
 //
 // Hard CI enforcement is a follow-up. See test/e2e/BENCHMARKS.md for the
 // reproduction steps and the recorded indicative numbers.
 func TestPerfGate_VerifierWithinBudget(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Phase 11 D-20 gate runs the rand-read benches; skip under -short")
+		t.Skip("verifier gate runs the rand-read benches; skip under -short")
 	}
 	if raceEnabled {
 		// Race instrumentation inflates benchmark ns/op by an order of
@@ -345,7 +344,7 @@ func TestPerfGate_VerifierWithinBudget(t *testing.T) {
 		// in the unit-tests workflow (which uses -race without -short).
 		// The strict gate already targets a dedicated perf lane; this
 		// path is only useful without race.
-		t.Skip("D-20 gate is meaningless under -race; run without race for trend tracking")
+		t.Skip("verifier gate is meaningless under -race; run without race for trend tracking")
 	}
 
 	verified := testing.Benchmark(BenchmarkRandReadVerified)
@@ -364,7 +363,7 @@ func TestPerfGate_VerifierWithinBudget(t *testing.T) {
 	const budget = 0.05
 	strict := os.Getenv("D20_STRICT_GATE") == "1"
 
-	t.Logf("D-20 gate [strict=%t budget=%.2f%%]: verified=%d ns/op (%.0f ops/s)  "+
+	t.Logf("verifier gate [strict=%t budget=%.2f%%]: verified=%d ns/op (%.0f ops/s)  "+
 		"unverified=%d ns/op (%.0f ops/s)  regression=%.2f%%",
 		strict, budget*100,
 		verified.NsPerOp(), opsPerSec(verified),
@@ -372,20 +371,20 @@ func TestPerfGate_VerifierWithinBudget(t *testing.T) {
 		regression*100)
 
 	if !strict {
-		t.Logf("D-20 gate (informational): in-memory remote makes the unverified " +
+		t.Logf("verifier gate (informational): in-memory remote makes the unverified " +
 			"baseline a memcpy; the recorded regression overstates real-S3 " +
 			"verifier overhead. Set D20_STRICT_GATE=1 on a real backend to enforce.")
 		return
 	}
 
 	if regression > budget {
-		t.Fatalf("D-20 gate FAILED: verifier regression = %.2f%% > %.2f%% budget. "+
+		t.Fatalf("verifier gate FAILED: verifier regression = %.2f%% > %.2f%% budget. "+
 			"Likely culprits: BLAKE3 throughput on this CPU, excess allocations in "+
 			"verifyingReader, or extra metadata round-trip in the syncer. "+
 			"Profile with: go test -bench=BenchmarkRandReadVerified -cpuprofile=cpu.prof",
 			regression*100, budget*100)
 	}
-	t.Logf("D-20 gate met: regression=%.2f%% <= %.2f%%", regression*100, budget*100)
+	t.Logf("verifier gate met: regression=%.2f%% <= %.2f%%", regression*100, budget*100)
 }
 
 // opsPerSec returns iterations-per-second from a testing.BenchmarkResult.
@@ -397,21 +396,19 @@ func opsPerSec(r testing.BenchmarkResult) float64 {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 13 D-21: rand-write regression gate (≤2% vs Phase 11 BenchmarkRandWriteCAS).
+// Rand-write regression gate (≤2% vs BenchmarkRandWriteCAS).
 //
-// Phase 13 adds two cost centres on the rand-write quiesce path:
+// The dedup-aware write path adds two cost centres on the quiesce path:
 //   1. ComputeObjectID — one BLAKE3 pass over 32×N bytes per quiesce.
 //   2. FindByObjectID — one indexed lookup per quiesce.
 // Both fire OFF the per-write hot path (writes hit the local log) and ONLY
-// at quiesce. The D-21 hard gate bounds the residual regression at ≤2% vs
-// the canonical pre-Phase-13 baseline, BenchmarkRandWriteCAS.
+// at quiesce. The hard gate bounds the residual regression at ≤2% vs the
+// canonical pre-coordinator baseline, BenchmarkRandWriteCAS.
 //
-// Why anchor on BenchmarkRandWriteCAS rather than a Phase-12 baseline:
-// Phase 12 only added BenchmarkRandRead_Phase12 (rand-read). There is NO
-// BenchmarkRandWrite_Phase12 in the repo — BenchmarkRandWriteCAS remains
-// the canonical no-coordinator rand-write reference.
+// Why anchor on BenchmarkRandWriteCAS: it remains the canonical
+// no-coordinator rand-write reference in the repo.
 //
-// Phase 12 D-43 framework reference: perf_bench_phase12_test.go
+// Read-side framework reference: perf_bench_phase12_test.go
 //   - BenchmarkRandRead_Phase12 (line ~168)
 //   - BenchmarkPerfGate_Phase12RandReadRegression (line ~214)
 // This file mirrors that paired-benchmark + ratio-gate-test pattern for
@@ -428,14 +425,14 @@ type writeFixturePhase13 struct {
 	coord *fakeCoordinator
 }
 
-// buildWriteFixturePhase13 constructs the Phase 13 write-path test rig:
+// buildWriteFixturePhase13 constructs the dedup-aware write-path test rig:
 // the same memory-backed local + remote + metadata stack as
 // buildWriteFixture, plus a MetadataCoordinator wired via SetCoordinator.
-// The coordinator is the Plan-04 fakeCoordinator (records every call,
+// The coordinator is the fakeCoordinator (records every call,
 // FindByObjectID returns nil unless seeded). The bench drives uploadOne
 // per block AND invokes persistFileBlocksAfterFlush per file so the
-// Phase 13 cost (ComputeObjectID + PersistFileBlocks-with-objectID) is
-// included in the measured ns/op.
+// dedup quiesce cost (ComputeObjectID + PersistFileBlocks-with-objectID)
+// is included in the measured ns/op.
 func buildWriteFixturePhase13(tb testing.TB) *writeFixturePhase13 {
 	tb.Helper()
 	base := buildWriteFixture(tb)
@@ -445,27 +442,26 @@ func buildWriteFixturePhase13(tb testing.TB) *writeFixturePhase13 {
 }
 
 // BenchmarkRandWrite_Phase13Baseline runs the same workload as
-// BenchmarkRandWriteCAS but with the Phase 13 coordinator wired:
-// post-Flush ObjectID compute and FindByObjectID lookup-on-quiesce
-// fire on every flush. D-21 hard gate: regression vs
-// BenchmarkRandWriteCAS must be <= 2%.
+// BenchmarkRandWriteCAS but with the dedup coordinator wired: post-Flush
+// ObjectID compute and FindByObjectID lookup-on-quiesce fire on every
+// flush. Hard gate: regression vs BenchmarkRandWriteCAS must be <= 2%.
 //
-// Mirrors the Phase 12 pattern (BenchmarkRandRead_Phase12 +
+// Mirrors the rand-read pattern (BenchmarkRandRead_Phase12 +
 // BenchmarkPerfGate_Phase12RandReadRegression) but for rand-write.
 //
 // Each iteration represents a single-block-file flush: one uploadOne
 // (the per-block CAS PUT — same as BenchmarkRandWriteCAS) PLUS one
-// persistFileBlocksAfterFlush (the Phase 13 quiesce hook —
-// ComputeObjectID(blocks) + coordinator.PersistFileBlocks(...,
-// objectID), with coordinator.FindByObjectID exercised separately by
-// the short-circuit path which is NOT the regression-gate workload).
+// persistFileBlocksAfterFlush (the quiesce hook — ComputeObjectID(blocks)
+// + coordinator.PersistFileBlocks(..., objectID), with
+// coordinator.FindByObjectID exercised separately by the short-circuit
+// path which is NOT the regression-gate workload).
 //
 // The measurement isolates the quiesce-cost addition:
 //
-//	Phase 13 ns/op = BenchmarkRandWriteCAS ns/op
-//	               + ComputeObjectID(1 BlockRef, ~32 bytes input)
-//	               + PersistFileBlocks(payloadID, blocks, objectID)
-//	               (both fire post-Flush, off the local-write hot path)
+//	dedup ns/op = BenchmarkRandWriteCAS ns/op
+//	            + ComputeObjectID(1 BlockRef, ~32 bytes input)
+//	            + PersistFileBlocks(payloadID, blocks, objectID)
+//	            (both fire post-Flush, off the local-write hot path)
 func BenchmarkRandWrite_Phase13Baseline(b *testing.B) {
 	silenceLoggerForBench(b)
 	f := buildWriteFixturePhase13(b)
@@ -474,8 +470,8 @@ func BenchmarkRandWrite_Phase13Baseline(b *testing.B) {
 
 	// Pre-stage all per-iteration files OUTSIDE the timed loop (mirrors
 	// BenchmarkRandWriteCAS structure). Each iteration owns a unique
-	// payload so the bench measures the cold PUT path + Phase 13
-	// quiesce hook, not dedup short-circuit cost.
+	// payload so the bench measures the cold PUT path + the quiesce
+	// hook, not dedup short-circuit cost.
 	type job struct {
 		fb     *blockstore.FileBlock
 		path   string
@@ -526,7 +522,7 @@ func BenchmarkRandWrite_Phase13Baseline(b *testing.B) {
 		if err := f.syncer.uploadOne(ctx, jobs[i].fb); err != nil {
 			b.Fatalf("uploadOne[%d]: %v", i, err)
 		}
-		// Phase 13 quiesce hook — the cost the D-21 gate measures.
+		// Quiesce hook — the cost the rand-write regression gate measures.
 		if err := f.syncer.persistFileBlocksAfterFlush(ctx, jobs[i].fb.ID, jobs[i].blocks); err != nil {
 			b.Fatalf("persistFileBlocksAfterFlush[%d]: %v", i, err)
 		}
@@ -536,23 +532,20 @@ func BenchmarkRandWrite_Phase13Baseline(b *testing.B) {
 	reportOpsPerSec(b, b.N)
 }
 
-// TestPhase13RandWriteRegression asserts the D-21 gate. Runs both
-// BenchmarkRandWriteCAS (Phase 11 baseline; no coordinator) and
+// TestPhase13RandWriteRegression asserts the rand-write regression gate.
+// Runs both BenchmarkRandWriteCAS (baseline; no coordinator) and
 // BenchmarkRandWrite_Phase13Baseline programmatically and computes
 //
-//	(Phase13 ns/op) / (Phase11(CAS) ns/op).
+//	(dedup ns/op) / (baseline(CAS) ns/op).
 //
 // Skipped under -short because the underlying benches each prestage 4
 // MiB × b.N buffers and run BLAKE3 over them.
 //
-// Why anchor on BenchmarkRandWriteCAS rather than a Phase 12 baseline:
-// Phase 12 added BenchmarkRandRead_Phase12 (rand-read) but NOT
-// BenchmarkRandWrite_Phase12. The pre-Phase-13 rand-write baseline IS
-// BenchmarkRandWriteCAS — it remains in perf_bench_test.go as the
-// no-coordinator path. Phase 13's regression is measured against it.
+// BenchmarkRandWriteCAS is the canonical no-coordinator path; the
+// dedup-aware regression is measured against it.
 func TestPhase13RandWriteRegression(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Phase 13 D-21 perf gate; skipped under -short")
+		t.Skip("rand-write regression gate; skipped under -short")
 	}
 	resBaseline := testing.Benchmark(BenchmarkRandWriteCAS)
 	resPhase13 := testing.Benchmark(BenchmarkRandWrite_Phase13Baseline)
@@ -563,25 +556,25 @@ func TestPhase13RandWriteRegression(t *testing.T) {
 		t.Fatalf("BenchmarkRandWrite_Phase13Baseline produced 0 ns/op (no work?): %+v", resPhase13)
 	}
 	ratio := float64(resPhase13.NsPerOp()) / float64(resBaseline.NsPerOp())
-	t.Logf("D-21 gate: Phase13 / Phase11(CAS) rand-write ratio = %.4f "+
-		"(baseline = %d ns/op, phase13 = %d ns/op)",
+	t.Logf("rand-write regression gate: dedup / baseline(CAS) ratio = %.4f "+
+		"(baseline = %d ns/op, dedup = %d ns/op)",
 		ratio, resBaseline.NsPerOp(), resPhase13.NsPerOp())
 
-	// D-21: ≤2% rand-write regression vs BenchmarkRandWriteCAS baseline.
+	// ≤2% rand-write regression vs BenchmarkRandWriteCAS baseline.
 	const maxRegression = 1.02
 	strict := os.Getenv("D21_STRICT_GATE") == "1"
 	if ratio > maxRegression {
 		if strict {
-			t.Fatalf("D-21 gate FAILED: rand-write regression %.4fx exceeds gate %.2fx. "+
+			t.Fatalf("rand-write regression gate FAILED: regression %.4fx exceeds gate %.2fx. "+
 				"Likely culprits: ComputeObjectID allocs, PersistFileBlocks coordinator "+
 				"overhead, or unintended hot-path coupling. Profile with: "+
 				"go test -bench=BenchmarkRandWrite_Phase13Baseline -cpuprofile=cpu.prof",
 				ratio, maxRegression)
 		}
-		t.Logf("D-21 gate (informational): regression %.4fx exceeds %.2fx. "+
+		t.Logf("rand-write regression gate (informational): regression %.4fx exceeds %.2fx. "+
 			"Set D21_STRICT_GATE=1 to enforce in this lane; CI perf lane "+
 			"runs the deterministic micro-bench fail-closed.", ratio, maxRegression)
 		return
 	}
-	t.Logf("D-21 gate met: ratio = %.4f <= %.2f", ratio, maxRegression)
+	t.Logf("rand-write regression gate met: ratio = %.4f <= %.2f", ratio, maxRegression)
 }

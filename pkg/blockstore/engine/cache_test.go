@@ -352,15 +352,12 @@ func TestCache_Close(t *testing.T) {
 	require.NoError(t, c.Close())
 }
 
-// TestCache_LargeChunkRoundTrip — Phase 16 D-10 generic byte-correctness pin.
-//
-// Pins byte-equality of a multi-hundred-KiB chunk round-trip through
-// Cache.Put / Cache.Get. The existing TestCache_GetPut_Basic uses an
-// 11-byte string and does NOT cover large-chunk equality, so this
-// covers the gap left after Phase 16 removed the platform-aware
-// file-read primitive.
+// TestCache_LargeChunkRoundTrip pins generic byte-correctness for a
+// multi-hundred-KiB chunk round-trip through Cache.Put / Cache.Get.
+// TestCache_GetPut_Basic uses an 11-byte string and does NOT cover
+// large-chunk equality; this covers that gap.
 func TestCache_LargeChunkRoundTrip(t *testing.T) {
-	const sz = 256 * 1024 // 256 KiB — was the mmap-branch threshold size pre-Phase-16.
+	const sz = 256 * 1024 // 256 KiB.
 	want := make([]byte, sz)
 	if _, err := rand.Read(want); err != nil {
 		t.Fatalf("rand: %v", err)

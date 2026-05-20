@@ -137,14 +137,11 @@ func (s *MemoryStore) GetBlockData(_ context.Context, payloadID string, blockIdx
 // content-addressed chunk layer (no blocks/<hh>/<hh>/<hex> tree), so
 // this method is a documented stub that always returns
 // blockstore.ErrChunkNotFound. The closed-store guard is still
-// enforced so that future Phase 17 expansion of MemoryStore (when the
-// unified BlockStore interface lands) can drop in CAS-aware behavior
-// without changing the surrounding locking discipline.
+// enforced so that future CAS-aware expansion of MemoryStore can drop
+// in without changing the surrounding locking discipline.
 //
-// Introduced in Phase 16 (D-01) to satisfy the LocalStore interface
-// extension; engine.loadByHash only calls Get on shares whose backend
-// stores CAS chunks, so the memory backend never receives this call
-// in production.
+// engine.loadByHash only calls Get on shares whose backend stores CAS
+// chunks, so the memory backend never receives this call in production.
 func (s *MemoryStore) Get(_ context.Context, _ blockstore.ContentHash) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -352,10 +349,9 @@ func (s *MemoryStore) DeleteAllBlockFiles(_ context.Context, payloadID string) e
 
 // DeleteAppendLog is a no-op for the in-memory local store: there is no
 // per-file append log. Required to satisfy the local.LocalStore
-// interface widened in Phase 13 BSCAS-05 (Plan 07) so the engine syncer
-// can invoke DeleteAppendLog uniformly across backends. The concrete
-// FS-backed implementation does the real work; in-memory test fixtures
-// have nothing to truncate.
+// interface (BSCAS-05) so the engine syncer can invoke DeleteAppendLog
+// uniformly across backends. The concrete FS-backed implementation
+// does the real work; in-memory test fixtures have nothing to truncate.
 func (s *MemoryStore) DeleteAppendLog(_ context.Context, _ string) error {
 	return nil
 }

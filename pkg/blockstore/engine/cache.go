@@ -10,9 +10,9 @@ import (
 )
 
 // seqThreshold (CACHE-03) is the number of consecutive sequential reads
-// observed before the prefetcher fires. Raised from Phase 11's 2 to 3
-// to suppress speculative prefetch on accidental two-block runs in
-// random-IO workloads (VM rand-write was the regression).
+// observed before the prefetcher fires. Set to 3 to suppress speculative
+// prefetch on accidental two-block runs in random-IO workloads (VM
+// rand-write was the regression).
 const seqThreshold = 3
 
 // maxPrefetchDepth caps the number of hashes scheduled per prefetch
@@ -29,8 +29,7 @@ const reqQueueSize = 64
 
 // CacheInterface is the narrow surface engine code depends on. The
 // concrete *Cache and the nullCache{} Null Object both satisfy it,
-// eliminating defensive nil-checks across the engine package
-// (Plan 12-09 WARN-8).
+// eliminating defensive nil-checks across the engine package.
 type CacheInterface interface {
 	Get(hash blockstore.ContentHash) ([]byte, bool)
 	Put(hash blockstore.ContentHash, data []byte)
@@ -44,16 +43,14 @@ type CacheInterface interface {
 var _ CacheInterface = (*Cache)(nil)
 var _ CacheInterface = nullCache{}
 
-// Cache is the Phase 12 greenfield single-type, CAS-keyed in-memory
-// cache (CACHE-01..05). It replaces the legacy keyKindCoord/CAS/Legacy
-// bifurcation (Phase 11 D-22) and folds the standalone Prefetcher
-// worker pool into one type.
+// Cache is the single-type, CAS-keyed in-memory cache (CACHE-01..05). It
+// folds the prefetch worker pool into one type.
 //
-// Phase 16: bytes loaded on miss via local.Get(ctx, hash) — see
+// On miss, bytes are loaded via local.Get(ctx, hash) — see
 // engine.loadByHash. The Cache copies the returned []byte into its
-// LRU slot (D-03 buffer ownership). No mmap/page-cache fast path
-// exists post-Phase-16; production workloads are warm-cache and the
-// per-miss alloc is uncontended.
+// LRU slot (buffer ownership). No mmap/page-cache fast path exists;
+// production workloads are warm-cache and the per-miss alloc is
+// uncontended.
 //
 // Thread safety: read path takes RLock for hits, promotes LRU under
 // WLock; mutations are WLock-only. The trackerMu is a separate lock so
@@ -101,9 +98,8 @@ type cacheEntry struct {
 // (local FS or remote S3). Injected at NewCache time; called by the
 // prefetch worker pool when sequential detection triggers.
 //
-// Phase 12 contract: signature is CAS-keyed (replaces the legacy
-// (payloadID, blockIdx) form deleted with prefetch.go). The engine
-// bridges to the local/remote stores using FormatCASKey.
+// Signature is CAS-keyed. The engine bridges to the local/remote
+// stores using FormatCASKey.
 type LoadByHashFn func(ctx context.Context, hash blockstore.ContentHash) ([]byte, error)
 
 // seqTracker — per-payloadID sequential-read state machine. lastHashes
@@ -125,8 +121,7 @@ type prefetchReq struct {
 // CacheStats holds Cache statistics for observability/REST.
 //
 // JSON tags match the legacy ReadBuffer's CacheStats so external
-// consumers (dfsctl block stats output) keep working unchanged across
-// the Phase 12 read-path rewrite.
+// consumers (dfsctl block stats output) keep working unchanged.
 type CacheStats struct {
 	Entries  int   `json:"entries"`
 	CurBytes int64 `json:"cur_bytes"`
@@ -136,7 +131,7 @@ type CacheStats struct {
 // nullCache is a no-op CacheInterface implementation. The BlockStore
 // constructor substitutes nullCache{} when the cache budget is zero,
 // eliminating defensive nil-checks across the engine (Null Object
-// pattern; Plan 12-09 WARN-8).
+// pattern).
 type nullCache struct{}
 
 func (nullCache) Get(blockstore.ContentHash) ([]byte, bool)       { return nil, false }
@@ -203,7 +198,7 @@ func NewCache(maxBytes int64, workers int, loadFn LoadByHashFn) *Cache {
 //
 // Returns the cache's own slice — callers must not mutate it. The
 // only consumer is engine.ReadAt which copies into the destination
-// buffer (Phase 16: source is RAM-only; no mmap aliasing window).
+// buffer (source is RAM-only; no mmap aliasing window).
 func (c *Cache) Get(hash blockstore.ContentHash) ([]byte, bool) {
 	if c == nil || c.closed.Load() {
 		return nil, false
@@ -283,9 +278,9 @@ func (c *Cache) evictLocked() {
 // listed remain — including hashes shared by other files (CACHE-02
 // dedup is preserved).
 //
-// CACHE-05 surgical invalidation per Plan 12 D-34: callers compute
-// the removed-hash diff (via common.diffRemovedHashes — Plan 12-08)
-// from the old/new BlockRef lists and pass it here. Drop semantics
+// CACHE-05 surgical invalidation: callers compute the removed-hash diff
+// (via common.diffRemovedHashes) from the old/new BlockRef lists and
+// pass it here. Drop semantics
 // preserve duplicate-hash multiplicity expectations (callers may pass
 // the same hash multiple times; the cache just drops it on first
 // match).
