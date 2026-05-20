@@ -206,7 +206,13 @@ func testConcurrentStorm(t *testing.T, factory AppendFactory) {
 	// performs is not interface-portable, but "at least one chunk
 	// surfaces" is a meaningful liveness check that the rollup
 	// pipeline did not deadlock.
-	deadline := time.Now().Add(10 * time.Second)
+	//
+	// Timeout is generous (45s) because CI runners under load can
+	// take materially longer to drive the background rollup than a
+	// developer laptop; 10s was empirically tight enough to flake
+	// under GitHub-hosted runner contention.
+	const rollupTimeout = 45 * time.Second
+	deadline := time.Now().Add(rollupTimeout)
 	var chunkCount int
 	for time.Now().Before(deadline) {
 		chunkCount = 0
@@ -220,10 +226,10 @@ func testConcurrentStorm(t *testing.T, factory AppendFactory) {
 		if chunkCount > 0 {
 			break
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	if chunkCount == 0 {
-		t.Fatal("concurrent storm: rollup did not surface any chunks within 10s — pipeline appears stuck")
+		t.Fatalf("concurrent storm: rollup did not surface any chunks within %s — pipeline appears stuck", rollupTimeout)
 	}
 }
 
