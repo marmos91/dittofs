@@ -352,19 +352,13 @@ func TestCache_Close(t *testing.T) {
 	require.NoError(t, c.Close())
 }
 
-// TestCache_LargeChunkRoundTrip — Phase 16 D-10 cherry-pick.
+// TestCache_LargeChunkRoundTrip — Phase 16 D-10 generic byte-correctness pin.
 //
-// Ported from cache_mmap_test.go::TestReadFromCAS_RoundTrip, reshaped
-// to exercise the Cache API rather than the deleted readFromCAS file
-// primitive. Pins generic byte-correctness of a multi-hundred-KiB
-// chunk round-trip through Put/Get — the existing
-// TestCache_GetPut_Basic uses an 11-byte string and does NOT cover
-// large-chunk equality.
-//
-// Mmap-specific assertions (partial offset, dest-smaller-than-file,
-// below-mmap-threshold branch selection, offset-at-EOF, Windows
-// fallback path) were dropped per D-10: they targeted a primitive
-// that no longer exists post-Phase-16.
+// Pins byte-equality of a multi-hundred-KiB chunk round-trip through
+// Cache.Put / Cache.Get. The existing TestCache_GetPut_Basic uses an
+// 11-byte string and does NOT cover large-chunk equality, so this
+// covers the gap left after Phase 16 removed the platform-aware
+// file-read primitive.
 func TestCache_LargeChunkRoundTrip(t *testing.T) {
 	const sz = 256 * 1024 // 256 KiB — was the mmap-branch threshold size pre-Phase-16.
 	want := make([]byte, sz)
