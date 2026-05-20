@@ -213,19 +213,32 @@ func TestComputeInheritedACL_MixedInheritFlags(t *testing.T) {
 		t.Errorf("file ACE 1: expected GROUP@, got %s", fileResult.ACEs[1].Who)
 	}
 
-	// Directory child: should get ACE 1 (DIRECTORY_INHERIT) and ACE 2 (both).
+	// Directory child: should get all three ACEs.
+	//   ACE 0 (OI only on parent) → propagates to dir as OI|INHERIT_ONLY so
+	//     it does not apply here but reaches file grandchildren
+	//     (MS-DTYP §2.5.3.4.1 / Samba calculate_inherited_from_parent).
+	//   ACE 1 (CI only) → applies at this dir; CI preserved.
+	//   ACE 2 (OI|CI)   → applies and propagates; both bits preserved.
 	dirResult := ComputeInheritedACL(parentACL, true, Creator{})
 	if dirResult == nil {
 		t.Fatal("expected non-nil result for directory")
 	}
-	if len(dirResult.ACEs) != 2 {
-		t.Fatalf("expected 2 ACEs for directory, got %d", len(dirResult.ACEs))
+	if len(dirResult.ACEs) != 3 {
+		t.Fatalf("expected 3 ACEs for directory, got %d", len(dirResult.ACEs))
 	}
-	if dirResult.ACEs[0].Who != SpecialOwner {
-		t.Errorf("dir ACE 0: expected OWNER@, got %s", dirResult.ACEs[0].Who)
+	if dirResult.ACEs[0].Who != SpecialEveryone {
+		t.Errorf("dir ACE 0: expected EVERYONE@, got %s", dirResult.ACEs[0].Who)
 	}
-	if dirResult.ACEs[1].Who != SpecialGroup {
-		t.Errorf("dir ACE 1: expected GROUP@, got %s", dirResult.ACEs[1].Who)
+	wantACE0Flag := uint32(ACE4_FILE_INHERIT_ACE | ACE4_INHERIT_ONLY_ACE)
+	if dirResult.ACEs[0].Flag != wantACE0Flag {
+		t.Errorf("dir ACE 0 (OI-only on parent): flag=0x%x, want 0x%x (OI|INHERIT_ONLY)",
+			dirResult.ACEs[0].Flag, wantACE0Flag)
+	}
+	if dirResult.ACEs[1].Who != SpecialOwner {
+		t.Errorf("dir ACE 1: expected OWNER@, got %s", dirResult.ACEs[1].Who)
+	}
+	if dirResult.ACEs[2].Who != SpecialGroup {
+		t.Errorf("dir ACE 2: expected GROUP@, got %s", dirResult.ACEs[2].Who)
 	}
 }
 
@@ -760,12 +773,10 @@ func formatMatrixName(i int, kind string) string {
 // with AutoInherited=true throughout. The child ACE is therefore always
 // expected to carry ACE4_INHERITED_ACE when it exists.
 //
-// Currently-failing rows (per #521 research) are dir-child rows 1 and 9:
-// parent OI-only (and IO|OI) must produce a dir-child ACE with OI|IO so
-// the dir continues to propagate inheritance to file grandchildren even
-// though the dir itself does not gain the right. DittoFS today filters
-// dir-child inheritance strictly on DI, dropping OI-only parents. Those
-// two subtests are skipped under #521 PR 3 (Bug C).
+// Dir-child rows 1 and 9 (parent OI-only / IO|OI) produce a dir-child
+// ACE with OI|INHERIT_ONLY so the dir does not gain the right itself but
+// continues to propagate to file grandchildren. This was Bug C, fixed in
+// #521 PR 3.
 func TestComputeInheritedACL_InheritanceACEFlagMatrix(t *testing.T) {
 	const (
 		OI = ACE4_FILE_INHERIT_ACE
@@ -793,7 +804,7 @@ func TestComputeInheritedACL_InheritanceACEFlagMatrix(t *testing.T) {
 
 	rows := []row{
 		/* 0  none           */ {0, expected{}, expected{}, ""},
-		/* 1  OI             */ {OI, expected{true, I}, expected{true, OI | IO | I}, "tracked under #521 PR 3 — Bug C OI propagation to dir child"},
+		/* 1  OI             */ {OI, expected{true, I}, expected{true, OI | IO | I}, ""},
 		/* 2  CI             */ {CI, expected{}, expected{true, CI | I}, ""},
 		/* 3  OI|CI          */ {OI | CI, expected{true, I}, expected{true, OI | CI | I}, ""},
 		/* 4  NP             */ {NP, expected{}, expected{}, ""},
@@ -801,7 +812,7 @@ func TestComputeInheritedACL_InheritanceACEFlagMatrix(t *testing.T) {
 		/* 6  NP|CI          */ {NP | CI, expected{}, expected{true, I}, ""},
 		/* 7  NP|OI|CI       */ {NP | OI | CI, expected{true, I}, expected{true, I}, ""},
 		/* 8  IO             */ {IO, expected{}, expected{}, ""},
-		/* 9  IO|OI          */ {IO | OI, expected{true, I}, expected{true, OI | IO | I}, "tracked under #521 PR 3 — Bug C OI propagation to dir child"},
+		/* 9  IO|OI          */ {IO | OI, expected{true, I}, expected{true, OI | IO | I}, ""},
 		/* 10 IO|CI          */ {IO | CI, expected{}, expected{true, CI | I}, ""},
 		/* 11 IO|OI|CI       */ {IO | OI | CI, expected{true, I}, expected{true, OI | CI | I}, ""},
 		/* 12 IO|NP          */ {IO | NP, expected{}, expected{}, ""},

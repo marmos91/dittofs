@@ -51,20 +51,26 @@ func substituteCreator(who string, creator Creator) string {
 // MS-DTYP §2.5.3.4 (CREATOR_OWNER / CREATOR_GROUP substitution).
 //
 // For files:
-//   - Include ACEs with FILE_INHERIT flag
+//   - Include ACEs with FILE_INHERIT (OI) flag
 //   - Clear ALL inheritance flags (files don't propagate further)
 //
-// For directories:
-//   - Include ACEs with DIRECTORY_INHERIT flag
-//   - If NO_PROPAGATE_INHERIT: clear all inheritance flags (stop propagation)
-//   - If INHERIT_ONLY on parent: clear INHERIT_ONLY on child (ACE now applies)
+// For directories (matches Samba libcli/security/create_descriptor.c
+// calculate_inherited_from_parent and MS-DTYP §2.5.3.4.1):
+//   - Drop ACEs with no OI and no CI (not inheritable to anything).
+//   - With NO_PROPAGATE_INHERIT: clear all inheritance flags so the ACE
+//     applies at this dir but does not propagate further; if the parent
+//     ACE has OI only (no CI), the ACE does not apply at the directory
+//     itself and is dropped entirely.
+//   - With CI: ACE applies at the dir; clear INHERIT_ONLY.
+//   - With OI only: ACE does NOT apply at this dir but must propagate to
+//     file grandchildren — emit on the child as OI|INHERIT_ONLY.
 //
 // The ACE4_INHERITED_ACE bit on the resulting child ACE is conditional, per
-// MS-DTYP §2.5.3.4.2 and Samba libcli/security/create_descriptor.c
-// (calculate_inherited_from_parent): the bit is set iff the parent SD has
-// SE_DACL_AUTO_INHERITED (i.e. parentACL.AutoInherited) OR the source
-// parent ACE itself already carries ACE4_INHERITED_ACE (meaning it was
-// inherited from upstream — that fact survives propagation to the child).
+// MS-DTYP §2.5.3.4.2 and Samba calculate_inherited_from_parent: the bit
+// is set iff the parent SD has SE_DACL_AUTO_INHERITED (i.e.
+// parentACL.AutoInherited) OR the source parent ACE itself already
+// carries ACE4_INHERITED_ACE (meaning it was inherited from upstream —
+// that fact survives propagation to the child).
 //
 // In both cases, any ACE whose Who is SpecialCreatorOwner or
 // SpecialCreatorGroup is rewritten in place with the creator's frozen
@@ -82,17 +88,21 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 		return nil
 	}
 
-	inheritFlag := uint32(ACE4_FILE_INHERIT_ACE)
-	if isDirectory {
-		inheritFlag = ACE4_DIRECTORY_INHERIT_ACE
-	}
-
 	var inherited []ACE
 
 	for i := range parentACL.ACEs {
 		ace := &parentACL.ACEs[i]
 
-		if ace.Flag&inheritFlag == 0 {
+		hasOI := ace.Flag&ACE4_FILE_INHERIT_ACE != 0
+		hasCI := ace.Flag&ACE4_DIRECTORY_INHERIT_ACE != 0
+		hasNP := ace.Flag&ACE4_NO_PROPAGATE_INHERIT_ACE != 0
+
+		if !isDirectory && !hasOI {
+			// Files only inherit OI-bearing ACEs.
+			continue
+		}
+		if isDirectory && !hasOI && !hasCI {
+			// Dir children only inherit OI- or CI-bearing ACEs.
 			continue
 		}
 
@@ -107,14 +117,30 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 		newACE.Flag &^= ACE4_INHERITED_ACE
 
 		if !isDirectory {
-			// Files don't propagate further: clear all inheritance flags.
+			// Files are leaves: clear ALL inheritance flags.
 			newACE.Flag &^= inheritanceMask
-		} else if ace.Flag&ACE4_NO_PROPAGATE_INHERIT_ACE != 0 {
-			// NO_PROPAGATE: stop propagation to grandchildren.
+		} else if hasNP {
+			// NO_PROPAGATE: stop propagation to grandchildren. ACE
+			// applies at this dir only when it carries CI; an
+			// OI-only-with-NP parent ACE has no effect on the dir
+			// child (per Samba calculate_inherited_from_parent /
+			// smbtorture test_inheritance row 5).
+			if !hasCI {
+				continue
+			}
 			newACE.Flag &^= inheritanceMask
-		} else if ace.Flag&ACE4_INHERIT_ONLY_ACE != 0 {
-			// INHERIT_ONLY on parent: clear so ACE applies on this child.
+		} else if hasCI {
+			// CI (with or without OI) applies at this dir; clear
+			// INHERIT_ONLY so the ACE is effective here. OI is
+			// preserved when present so file grandchildren still
+			// inherit.
 			newACE.Flag &^= ACE4_INHERIT_ONLY_ACE
+		} else {
+			// OI only (no CI, no NP): ACE does not apply at this dir
+			// but must propagate to file grandchildren. Emit with
+			// OI|INHERIT_ONLY; clear NP/CI noise.
+			newACE.Flag &^= inheritanceMask
+			newACE.Flag |= ACE4_FILE_INHERIT_ACE | ACE4_INHERIT_ONLY_ACE
 		}
 
 		if preservedInheritedACE != 0 || parentACL.AutoInherited {
