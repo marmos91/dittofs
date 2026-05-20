@@ -65,6 +65,12 @@ func substituteCreator(who string, creator Creator) string {
 // SpecialCreatorGroup is rewritten in place with the creator's frozen
 // identity (sid:<SID> when known, otherwise "<uid|gid>@localdomain").
 //
+// Per MS-DTYP §2.5.3.4.2, when the parent SD has SE_DACL_AUTO_INHERITED set,
+// the computed child SD also has SE_DACL_AUTO_INHERITED set (mirrors Samba
+// source3/smbd/posix_acls.c::set_inherited_sd). SE_DACL_PROTECTED is a
+// per-SD property that BLOCKS inheritance from upstream and is never itself
+// inherited onto the child.
+//
 // Returns nil if parentACL is nil or no ACEs are inheritable.
 func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL {
 	if parentACL == nil {
@@ -110,7 +116,16 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 		return nil
 	}
 
-	return &ACL{ACEs: inherited}
+	result := &ACL{ACEs: inherited}
+	// Per MS-DTYP §2.5.3.4.2, when a parent has SE_DACL_AUTO_INHERITED set,
+	// children created under it inherit that bit on their own SD. Mirrors
+	// Samba source3/smbd/posix_acls.c::set_inherited_sd. Protected is a
+	// per-SD property that blocks inheritance from upstream; it is never
+	// itself inherited.
+	if parentACL.AutoInherited {
+		result.AutoInherited = true
+	}
+	return result
 }
 
 // PropagateACL replaces the inherited ACEs of an existing ACL with newly
@@ -121,6 +136,11 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 // (those without the INHERITED_ACE flag) are kept intact.
 //
 // The result maintains canonical ordering: explicit ACEs first, then inherited.
+// Per MS-DTYP §2.5.3.4.2 (matching ComputeInheritedACL), the parent's
+// SE_DACL_AUTO_INHERITED bit propagates onto the recomputed child SD;
+// SE_DACL_PROTECTED is never inherited. Mirrors Samba
+// source3/smbd/posix_acls.c::set_inherited_sd.
+//
 // Returns nil if both newly computed and existing explicit ACEs are empty.
 func PropagateACL(parentACL *ACL, existingACL *ACL, isDirectory bool, creator Creator) *ACL {
 	newInherited := ComputeInheritedACL(parentACL, isDirectory, creator)
@@ -150,5 +170,12 @@ func PropagateACL(parentACL *ACL, existingACL *ACL, isDirectory bool, creator Cr
 	combined = append(combined, explicit...)
 	combined = append(combined, inheritedACEs...)
 
-	return &ACL{ACEs: combined}
+	result := &ACL{ACEs: combined}
+	// MS-DTYP §2.5.3.4.2: SE_DACL_AUTO_INHERITED propagates from parent to
+	// child on the child's recomputed SD. Protected is per-SD and never
+	// inherited. See ComputeInheritedACL for spec/Samba references.
+	if parentACL != nil && parentACL.AutoInherited {
+		result.AutoInherited = true
+	}
+	return result
 }
