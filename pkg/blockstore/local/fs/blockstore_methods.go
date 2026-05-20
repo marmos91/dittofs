@@ -3,6 +3,7 @@ package fs
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -41,10 +42,10 @@ func (bc *FSStore) GetRange(ctx context.Context, hash blockstore.ContentHash, of
 		return nil, err
 	}
 	if offset < 0 {
-		return nil, fmt.Errorf("blockstore.fs: GetRange: negative offset %d", offset)
+		return nil, fmt.Errorf("blockstore.fs: GetRange: %w: offset %d", blockstore.ErrInvalidOffset, offset)
 	}
 	if length <= 0 {
-		return nil, fmt.Errorf("blockstore.fs: GetRange: non-positive length %d", length)
+		return nil, fmt.Errorf("blockstore.fs: GetRange: %w: length %d", blockstore.ErrInvalidSize, length)
 	}
 	path := bc.chunkPath(hash)
 	f, err := os.Open(path)
@@ -155,14 +156,21 @@ func (bc *FSStore) Walk(ctx context.Context, fn func(hash blockstore.ContentHash
 		copy(h[:], raw)
 		info, infoErr := d.Info()
 		if infoErr != nil {
-			return nil
+			// Race vs concurrent Delete: a file enumerated by WalkDir
+			// can disappear before d.Info() runs. Skip vanished
+			// entries silently; surface anything else (permission,
+			// transient I/O) so callers like GC don't miss objects.
+			if errors.Is(infoErr, os.ErrNotExist) {
+				return nil
+			}
+			return fmt.Errorf("walk: stat %s: %w", h, infoErr)
 		}
 		meta := blockstore.Meta{
 			Size:         info.Size(),
 			LastModified: info.ModTime(),
 		}
 		if cbErr := fn(h, meta); cbErr != nil {
-			if cbErr == blockstore.ErrStopWalk {
+			if errors.Is(cbErr, blockstore.ErrStopWalk) {
 				return io.EOF // sentinel for clean exit out of WalkDir
 			}
 			return fmt.Errorf("walk halted at %s: %w", h, cbErr)
