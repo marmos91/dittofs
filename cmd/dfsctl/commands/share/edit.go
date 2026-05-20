@@ -23,6 +23,7 @@ var (
 	editLocalStoreSize    string
 	editReadBufferSize    string
 	editQuotaBytes        string
+	editAclCanonicalize   string
 )
 
 var editCmd = &cobra.Command{
@@ -88,6 +89,7 @@ func init() {
 	editCmd.Flags().StringVar(&editLocalStoreSize, "local-store-size", "", "Per-share disk cache size override (e.g., 10GiB, 500MiB)")
 	editCmd.Flags().StringVar(&editReadBufferSize, "read-buffer-size", "", "Per-share read buffer size override (e.g., 2GiB, 256MiB)")
 	editCmd.Flags().StringVar(&editQuotaBytes, "quota-bytes", "", "Per-share byte quota (e.g., '10GiB'). 0 = remove quota")
+	editCmd.Flags().StringVar(&editAclCanonicalize, "acl-canonicalize-inherited", "", "When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba \"acl flag inherited canonicalization = no\"). Default true matches Windows. Takes effect on adapter restart.")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -104,7 +106,8 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		cmd.Flags().Changed("default-permission") ||
 		cmd.Flags().Changed("description") || cmd.Flags().Changed("retention") ||
 		cmd.Flags().Changed("retention-ttl") || cmd.Flags().Changed("local-store-size") ||
-		cmd.Flags().Changed("read-buffer-size") || cmd.Flags().Changed("quota-bytes")
+		cmd.Flags().Changed("read-buffer-size") || cmd.Flags().Changed("quota-bytes") ||
+		cmd.Flags().Changed("acl-canonicalize-inherited")
 
 	// If no flags provided, run interactive mode
 	if !hasFlags {
@@ -172,8 +175,18 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		hasUpdate = true
 	}
 
+	if editAclCanonicalize != "" {
+		val := strings.ToLower(strings.TrimSpace(editAclCanonicalize))
+		if val != "true" && val != "false" {
+			return fmt.Errorf("--acl-canonicalize-inherited: invalid value %q, must be true or false", editAclCanonicalize)
+		}
+		aclCanon := val == "true"
+		req.AclFlagInheritedCanonicalization = &aclCanon
+		hasUpdate = true
+	}
+
 	if !hasUpdate {
-		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, --description, --retention, --retention-ttl, --local-store-size, --read-buffer-size, or --quota-bytes")
+		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, --description, --retention, --retention-ttl, --local-store-size, --read-buffer-size, --quota-bytes, or --acl-canonicalize-inherited")
 	}
 
 	share, err := client.UpdateShare(name, req)

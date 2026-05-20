@@ -549,6 +549,53 @@ func TestShareOperations(t *testing.T) {
 		}
 	})
 
+	t.Run("create share persists acl_flag_inherited_canonicalization=true verbatim (#514)", func(t *testing.T) {
+		// Refs #514: after the CreateShare store-layer fix, operator
+		// intent for AclFlagInheritedCanonicalization is authoritative —
+		// the caller (API layer) is responsible for choosing the
+		// "default true" value when the request omits the field.
+		share := &models.Share{
+			Name:                             "/export-acl-canon-default",
+			MetadataStoreID:                  metaStoreID,
+			LocalBlockStoreID:                localBlockStoreID,
+			AclFlagInheritedCanonicalization: true,
+		}
+		if _, err := store.CreateShare(ctx, share); err != nil {
+			t.Fatalf("failed to create share: %v", err)
+		}
+		got, err := store.GetShare(ctx, "/export-acl-canon-default")
+		if err != nil {
+			t.Fatalf("failed to get share: %v", err)
+		}
+		if !got.AclFlagInheritedCanonicalization {
+			t.Error("expected CreateShare with AclFlagInheritedCanonicalization=true to persist true")
+		}
+	})
+
+	t.Run("create share persists acl_flag_inherited_canonicalization=false (#514 GORM default override)", func(t *testing.T) {
+		// Refs #514: GORM substitutes the SQL `default:true` for the
+		// Go zero-value `false`, silently coercing operator intent.
+		// CreateShare must override that substitution so `false`
+		// round-trips verbatim — otherwise the handler/CLI bool toggle
+		// is undetectably ignored.
+		share := &models.Share{
+			Name:                             "/export-acl-canon-false",
+			MetadataStoreID:                  metaStoreID,
+			LocalBlockStoreID:                localBlockStoreID,
+			AclFlagInheritedCanonicalization: false,
+		}
+		if _, err := store.CreateShare(ctx, share); err != nil {
+			t.Fatalf("failed to create share: %v", err)
+		}
+		got, err := store.GetShare(ctx, "/export-acl-canon-false")
+		if err != nil {
+			t.Fatalf("failed to get share: %v", err)
+		}
+		if got.AclFlagInheritedCanonicalization {
+			t.Error("expected CreateShare with AclFlagInheritedCanonicalization=false to persist false; got true (GORM default-coercion override missing?)")
+		}
+	})
+
 	t.Run("update share persists enabled=false (D-25 whitelist fix)", func(t *testing.T) {
 		share, err := store.GetShare(ctx, "/export")
 		if err != nil {
@@ -573,6 +620,39 @@ func TestShareOperations(t *testing.T) {
 		updated.Enabled = true
 		if err := store.UpdateShare(ctx, updated); err != nil {
 			t.Fatalf("failed to restore enabled=true: %v", err)
+		}
+	})
+
+	t.Run("update share persists AclFlagInheritedCanonicalization=false (#514 whitelist)", func(t *testing.T) {
+		share, err := store.GetShare(ctx, "/export")
+		if err != nil {
+			t.Fatalf("failed to get share: %v", err)
+		}
+		// Seed AclFlagInheritedCanonicalization=true so the flip-to-false
+		// below has a meaningful starting state. CreateShare in the
+		// first sub-test left the Go zero-value `false` (now authoritative
+		// at the store layer post-#514 fix).
+		share.AclFlagInheritedCanonicalization = true
+		if err := store.UpdateShare(ctx, share); err != nil {
+			t.Fatalf("failed to seed AclFlagInheritedCanonicalization=true: %v", err)
+		}
+
+		share.AclFlagInheritedCanonicalization = false
+		if err := store.UpdateShare(ctx, share); err != nil {
+			t.Fatalf("failed to update share: %v", err)
+		}
+		updated, err := store.GetShare(ctx, "/export")
+		if err != nil {
+			t.Fatalf("failed to re-read share: %v", err)
+		}
+		if updated.AclFlagInheritedCanonicalization {
+			t.Error("expected AclFlagInheritedCanonicalization=false to round-trip through UpdateShare; got true (whitelist entry missing?)")
+		}
+
+		// Restore default so downstream tests see a clean state.
+		updated.AclFlagInheritedCanonicalization = true
+		if err := store.UpdateShare(ctx, updated); err != nil {
+			t.Fatalf("failed to restore AclFlagInheritedCanonicalization=true: %v", err)
 		}
 	})
 }

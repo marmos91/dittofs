@@ -24,6 +24,7 @@ var (
 	createLocalStoreSize    string
 	createReadBufferSize    string
 	createQuotaBytes        string
+	createAclCanonicalize   bool
 )
 
 var createCmd = &cobra.Command{
@@ -78,6 +79,7 @@ func init() {
 	createCmd.Flags().StringVar(&createLocalStoreSize, "local-store-size", "", "Per-share disk cache size override (e.g., 10GiB, 500MiB)")
 	createCmd.Flags().StringVar(&createReadBufferSize, "read-buffer-size", "", "Per-share read buffer size override (e.g., 2GiB, 256MiB)")
 	createCmd.Flags().StringVar(&createQuotaBytes, "quota-bytes", "", "Per-share byte quota (e.g., '10GiB', '500MiB'). 0 = unlimited (default)")
+	createCmd.Flags().BoolVar(&createAclCanonicalize, "acl-canonicalize-inherited", true, "When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba \"acl flag inherited canonicalization = no\"). Default true matches Windows.")
 	_ = createCmd.MarkFlagRequired("local")
 }
 
@@ -157,6 +159,12 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 	if createQuotaBytes != "" {
 		req.QuotaBytes = createQuotaBytes
+	}
+	// Refs #514: only send when explicitly set so the server applies its
+	// own default (true) on unset.
+	if cmd.Flags().Changed("acl-canonicalize-inherited") {
+		v := createAclCanonicalize
+		req.AclFlagInheritedCanonicalization = &v
 	}
 
 	share, err := client.CreateShare(req)

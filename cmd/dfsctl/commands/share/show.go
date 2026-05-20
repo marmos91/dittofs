@@ -67,6 +67,7 @@ func (sd ShareDetail) Rows() [][]string {
 		{"Read Only", fmt.Sprintf("%v", s.ReadOnly)},
 		{"Enabled", shareEnabledString(s.Enabled)},
 		{"Default Permission", s.DefaultPermission},
+		{"ACL Canonicalize Inherited", fmt.Sprintf("%v", s.AclFlagInheritedCanonicalization)},
 		{"Retention", retPolicy},
 	}
 

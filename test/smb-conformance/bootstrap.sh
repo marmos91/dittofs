@@ -156,7 +156,7 @@ main() {
     if [[ "$PROFILE" == *-s3 ]]; then
         share_flags="$share_flags --remote default"
     fi
-    $DFSCTL share create --name /smbbasic $share_flags
+    $DFSCTL share create --name /smbbasic --acl-canonicalize-inherited=false $share_flags
     $DFSCTL share create --name /smbencrypted --encrypt-data $share_flags
     $DFSCTL share create --name /fileshare $share_flags
 

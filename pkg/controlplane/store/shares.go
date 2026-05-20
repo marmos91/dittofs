@@ -31,7 +31,46 @@ func (s *GORMStore) CreateShare(ctx context.Context, share *models.Share) (strin
 	now := time.Now()
 	share.CreatedAt = now
 	share.UpdatedAt = now
-	return createWithID(s.db, ctx, share, func(sh *models.Share, id string) { sh.ID = id }, share.ID, models.ErrDuplicateShare)
+
+	// Refs #514: GORM substitutes the SQL `default:` value for any Go
+	// zero-value field on INSERT. For bool columns declared
+	// `default:true` (e.g. `AclFlagInheritedCanonicalization`), an
+	// explicit Go `false` is otherwise coerced back to `true`. Capture
+	// the operator's intent BEFORE Create() (which mutates the in-memory
+	// struct to the substituted default), then if the desired value
+	// differs from the post-Create persisted value, reissue an explicit
+	// UPDATE inside the same transaction so client and DB never diverge.
+	desiredACLCanon := share.AclFlagInheritedCanonicalization
+
+	id := share.ID
+	if id == "" {
+		id = uuid.New().String()
+		share.ID = id
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(share).Error; err != nil {
+			if isUniqueConstraintError(err) {
+				return models.ErrDuplicateShare
+			}
+			return err
+		}
+		// GORM substituted the SQL default. If operator asked for the
+		// non-default value, force the column.
+		if share.AclFlagInheritedCanonicalization != desiredACLCanon {
+			share.AclFlagInheritedCanonicalization = desiredACLCanon
+			if err := tx.Model(&models.Share{}).
+				Where("id = ?", share.ID).
+				Update("acl_flag_inherited_canonicalization", desiredACLCanon).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error {
@@ -39,15 +78,16 @@ func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error 
 
 	// Protocol-specific fields (Squash, AllowAuthSys, etc.) are stored in share_adapter_configs.
 	updates := map[string]any{
-		"read_only":            share.ReadOnly,
-		"default_permission":   share.DefaultPermission,
-		"blocked_operations":   share.BlockedOperations,
-		"metadata_store_id":    share.MetadataStoreID,
-		"local_block_store_id": share.LocalBlockStoreID,
-		"retention_policy":     share.RetentionPolicy,
-		"retention_ttl":        share.RetentionTTL,
-		"enabled":              share.Enabled,
-		"updated_at":           share.UpdatedAt,
+		"read_only":                           share.ReadOnly,
+		"default_permission":                  share.DefaultPermission,
+		"blocked_operations":                  share.BlockedOperations,
+		"metadata_store_id":                   share.MetadataStoreID,
+		"local_block_store_id":                share.LocalBlockStoreID,
+		"retention_policy":                    share.RetentionPolicy,
+		"retention_ttl":                       share.RetentionTTL,
+		"enabled":                             share.Enabled,
+		"acl_flag_inherited_canonicalization": share.AclFlagInheritedCanonicalization,
+		"updated_at":                          share.UpdatedAt,
 	}
 	// Handle remote_block_store_id explicitly: GORM map-based Updates may skip
 	// typed nil (*string)(nil). Use gorm.Expr("NULL") to ensure the column is cleared.

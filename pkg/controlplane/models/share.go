@@ -18,24 +18,30 @@ const (
 // Protocol-specific settings (NFS squash, SMB guest access, etc.) are stored
 // in the share_adapter_configs table via ShareAdapterConfig.
 type Share struct {
-	ID                 string    `gorm:"primaryKey;size:36" json:"id"`
-	Name               string    `gorm:"uniqueIndex;not null;size:255" json:"name"` // e.g., "/export"
-	MetadataStoreID    string    `gorm:"not null;size:36" json:"metadata_store_id"`
-	LocalBlockStoreID  string    `gorm:"not null;size:36" json:"local_block_store_id"`
-	RemoteBlockStoreID *string   `gorm:"size:36" json:"remote_block_store_id"`
-	ReadOnly           bool      `gorm:"default:false" json:"read_only"`
-	Enabled            bool      `gorm:"default:true;not null" json:"enabled"`                      // D-01/D-25. REST-02 gate: restore refuses if any share on the target store is still enabled.
-	EncryptData        bool      `gorm:"default:false" json:"encrypt_data"`                         // SMB3: set SMB2_SHAREFLAG_ENCRYPT_DATA in TREE_CONNECT
-	DefaultPermission  string    `gorm:"default:read-write;size:50" json:"default_permission"`      // none, read, read-write, admin
-	Config             string    `gorm:"type:text" json:"-"`                                        // JSON blob for additional share config
-	BlockedOperations  string    `gorm:"type:text" json:"-"`                                        // JSON array of blocked operations
-	RetentionPolicy    string    `gorm:"size:10;default:''" json:"retention_policy"`                // pin, ttl, lru (empty = LRU default)
-	RetentionTTL       int64     `gorm:"default:0" json:"retention_ttl"`                            // TTL in seconds (0 = not set)
-	LocalStoreSize     int64     `gorm:"default:0" json:"local_store_size"`                         // Per-share disk size override in bytes (0 = system default)
-	ReadBufferSize     int64     `gorm:"default:0;column:read_buffer_size" json:"read_buffer_size"` // Read buffer override in bytes (0 = system default)
-	QuotaBytes         int64     `gorm:"default:0;column:quota_bytes" json:"quota_bytes"`           // Per-share byte quota (0 = unlimited)
-	CreatedAt          time.Time `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt          time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+	ID                 string  `gorm:"primaryKey;size:36" json:"id"`
+	Name               string  `gorm:"uniqueIndex;not null;size:255" json:"name"` // e.g., "/export"
+	MetadataStoreID    string  `gorm:"not null;size:36" json:"metadata_store_id"`
+	LocalBlockStoreID  string  `gorm:"not null;size:36" json:"local_block_store_id"`
+	RemoteBlockStoreID *string `gorm:"size:36" json:"remote_block_store_id"`
+	ReadOnly           bool    `gorm:"default:false" json:"read_only"`
+	Enabled            bool    `gorm:"default:true;not null" json:"enabled"` // D-01/D-25. REST-02 gate: restore refuses if any share on the target store is still enabled.
+	EncryptData        bool    `gorm:"default:false" json:"encrypt_data"`    // SMB3: set SMB2_SHAREFLAG_ENCRYPT_DATA in TREE_CONNECT
+	// AclFlagInheritedCanonicalization controls whether the SMB CREATE/SET_INFO
+	// Security path canonicalizes the SE_DACL_AUTO_INHERITED control bit per
+	// MS-DTYP §2.5.3.4.2 (clearing it when AUTO_INHERIT_REQ is unset). Default
+	// true matches Windows behavior; set to false to opt into the Samba
+	// extension where the bit survives without AUTO_INHERIT_REQ (refs #514).
+	AclFlagInheritedCanonicalization bool      `gorm:"default:true;not null" json:"acl_flag_inherited_canonicalization"`
+	DefaultPermission                string    `gorm:"default:read-write;size:50" json:"default_permission"`      // none, read, read-write, admin
+	Config                           string    `gorm:"type:text" json:"-"`                                        // JSON blob for additional share config
+	BlockedOperations                string    `gorm:"type:text" json:"-"`                                        // JSON array of blocked operations
+	RetentionPolicy                  string    `gorm:"size:10;default:''" json:"retention_policy"`                // pin, ttl, lru (empty = LRU default)
+	RetentionTTL                     int64     `gorm:"default:0" json:"retention_ttl"`                            // TTL in seconds (0 = not set)
+	LocalStoreSize                   int64     `gorm:"default:0" json:"local_store_size"`                         // Per-share disk size override in bytes (0 = system default)
+	ReadBufferSize                   int64     `gorm:"default:0;column:read_buffer_size" json:"read_buffer_size"` // Read buffer override in bytes (0 = system default)
+	QuotaBytes                       int64     `gorm:"default:0;column:quota_bytes" json:"quota_bytes"`           // Per-share byte quota (0 = unlimited)
+	CreatedAt                        time.Time `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt                        time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 
 	// Relationships
 	MetadataStore    MetadataStoreConfig    `gorm:"foreignKey:MetadataStoreID" json:"metadata_store,omitempty"`

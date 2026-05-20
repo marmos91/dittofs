@@ -1191,3 +1191,50 @@ func TestParseSD_AutoInheritedCanonicalization(t *testing.T) {
 		})
 	}
 }
+
+// TestParseSD_NoCanonicalization_PreservesAutoInherited covers the Samba
+// extension path (`acl flag inherited canonicalization = no`) where
+// SE_DACL_AUTO_INHERITED is preserved verbatim from the inbound Control word
+// with no AUTO_INHERIT_REQ gate. The distinguishing case is
+// `autoinherited_alone`: AUTO_INHERITED set, AUTO_INHERIT_REQ unset — the
+// canonicalizing default would drop it, this opt-out keeps it.
+func TestParseSD_NoCanonicalization_PreservesAutoInherited(t *testing.T) {
+	cases := []struct {
+		name               string
+		autoInherited      bool
+		autoInheritReq     bool
+		wantACLAutoInherit bool
+	}{
+		{"autoinherited_alone", true, false, true},
+		{"auto_and_req", true, true, true},
+		{"req_alone", false, true, false},
+		{"neither", false, false, false},
+	}
+
+	opts := ParseSDOptions{CanonicalizeAutoInherited: false}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ctrl uint16
+			if tc.autoInherited {
+				ctrl |= seDACLAutoInherited
+			}
+			if tc.autoInheritReq {
+				ctrl |= seDACLAutoInheritReq
+			}
+			sd := makeAutoInheritSD(t, ctrl, false)
+
+			_, _, parsed, err := ParseSecurityDescriptorWithOptions(sd, opts)
+			if err != nil {
+				t.Fatalf("ParseSecurityDescriptorWithOptions: %v", err)
+			}
+			if parsed == nil {
+				t.Fatal("parsed ACL is nil")
+			}
+			if parsed.AutoInherited != tc.wantACLAutoInherit {
+				t.Errorf("parsed.AutoInherited = %v, want %v (opts.CanonicalizeAutoInherited=false)",
+					parsed.AutoInherited, tc.wantACLAutoInherit)
+			}
+		})
+	}
+}

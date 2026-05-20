@@ -77,6 +77,9 @@ type CreateShareRequest struct {
 	LocalStoreSize    string    `json:"local_store_size,omitempty"`
 	ReadBufferSize    string    `json:"read_buffer_size,omitempty"`
 	QuotaBytes        string    `json:"quota_bytes,omitempty"` // Human-readable, e.g., "10GiB" (0 = unlimited)
+	// AclFlagInheritedCanonicalization — Refs #514. Pointer so the handler
+	// can distinguish "unset → use default true" from "explicit false".
+	AclFlagInheritedCanonicalization *bool `json:"acl_flag_inherited_canonicalization,omitempty"`
 }
 
 // UpdateShareRequest is the request body for PUT /api/v1/shares/{name}.
@@ -93,6 +96,11 @@ type UpdateShareRequest struct {
 	LocalStoreSize     *string   `json:"local_store_size,omitempty"`
 	ReadBufferSize     *string   `json:"read_buffer_size,omitempty"`
 	QuotaBytes         *string   `json:"quota_bytes,omitempty"` // Human-readable, nil = no change, "0" = remove quota
+	// AclFlagInheritedCanonicalization — Refs #514. nil = no change;
+	// non-nil = explicit set. Persisted on UpdateShare; runtime hot-reload
+	// is not required (takes effect on adapter restart, matching
+	// LocalStoreSize/ReadBufferSize semantics).
+	AclFlagInheritedCanonicalization *bool `json:"acl_flag_inherited_canonicalization,omitempty"`
 }
 
 // ShareResponse is the response body for share endpoints.
@@ -106,20 +114,24 @@ type ShareResponse struct {
 	// Enabled mirrors models.Share.Enabled. No omitempty — `false` is
 	// semantically meaningful (the share is disabled) and consumers must
 	// render that state explicitly (D-28).
-	Enabled           bool      `json:"enabled"`
-	EncryptData       bool      `json:"encrypt_data"`
-	DefaultPermission string    `json:"default_permission"`
-	BlockedOperations []string  `json:"blocked_operations,omitempty"`
-	RetentionPolicy   string    `json:"retention_policy"`
-	RetentionTTL      string    `json:"retention_ttl,omitempty"`    // Human-readable duration
-	LocalStoreSize    string    `json:"local_store_size,omitempty"` // Human-readable byte size
-	ReadBufferSize    string    `json:"read_buffer_size,omitempty"` // Human-readable byte size
-	QuotaBytes        string    `json:"quota_bytes,omitempty"`      // Human-readable, e.g., "10 GiB" or empty if unlimited
-	UsedBytes         int64     `json:"used_bytes"`                 // Logical used bytes (sum of file sizes)
-	PhysicalBytes     int64     `json:"physical_bytes"`             // Block store disk usage
-	UsagePercent      float64   `json:"usage_percent"`              // 0-100, 0 if no quota
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	Enabled           bool     `json:"enabled"`
+	EncryptData       bool     `json:"encrypt_data"`
+	DefaultPermission string   `json:"default_permission"`
+	BlockedOperations []string `json:"blocked_operations,omitempty"`
+	RetentionPolicy   string   `json:"retention_policy"`
+	RetentionTTL      string   `json:"retention_ttl,omitempty"`    // Human-readable duration
+	LocalStoreSize    string   `json:"local_store_size,omitempty"` // Human-readable byte size
+	ReadBufferSize    string   `json:"read_buffer_size,omitempty"` // Human-readable byte size
+	QuotaBytes        string   `json:"quota_bytes,omitempty"`      // Human-readable, e.g., "10 GiB" or empty if unlimited
+	UsedBytes         int64    `json:"used_bytes"`                 // Logical used bytes (sum of file sizes)
+	PhysicalBytes     int64    `json:"physical_bytes"`             // Block store disk usage
+	UsagePercent      float64  `json:"usage_percent"`              // 0-100, 0 if no quota
+	// AclFlagInheritedCanonicalization mirrors models.Share — Refs #514.
+	// No omitempty: `false` is operator-meaningful state, matching the
+	// `enabled` pattern.
+	AclFlagInheritedCanonicalization bool      `json:"acl_flag_inherited_canonicalization"`
+	CreatedAt                        time.Time `json:"created_at"`
+	UpdatedAt                        time.Time `json:"updated_at"`
 
 	// Status is the worst-of health report derived from the share's
 	// metadata store and block store engine. Non-omitempty so
@@ -251,24 +263,31 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		quotaBytes = bs.Int64()
 	}
 
+	// Refs #514: default true, but operators may opt out via the API.
+	aclCanon := true
+	if req.AclFlagInheritedCanonicalization != nil {
+		aclCanon = *req.AclFlagInheritedCanonicalization
+	}
+
 	now := time.Now()
 	share := &models.Share{
-		ID:                 uuid.New().String(),
-		Name:               req.Name,
-		MetadataStoreID:    metaStore.ID,       // Use actual store ID (UUID), not name
-		LocalBlockStoreID:  localBlockStore.ID, // Use actual store ID (UUID), not name
-		RemoteBlockStoreID: remoteBlockStoreID, // Nullable
-		ReadOnly:           req.ReadOnly,
-		EncryptData:        req.EncryptData,
-		DefaultPermission:  defaultPerm,
-		RetentionPolicy:    string(retPolicy),
-		RetentionTTL:       int64(retTTL.Seconds()),
-		LocalStoreSize:     localStoreSize,
-		ReadBufferSize:     readBufferSize,
-		QuotaBytes:         quotaBytes,
-		Enabled:            true, // REST-02: new shares are enabled by default.
-		CreatedAt:          now,
-		UpdatedAt:          now,
+		ID:                               uuid.New().String(),
+		Name:                             req.Name,
+		MetadataStoreID:                  metaStore.ID,       // Use actual store ID (UUID), not name
+		LocalBlockStoreID:                localBlockStore.ID, // Use actual store ID (UUID), not name
+		RemoteBlockStoreID:               remoteBlockStoreID, // Nullable
+		ReadOnly:                         req.ReadOnly,
+		EncryptData:                      req.EncryptData,
+		DefaultPermission:                defaultPerm,
+		RetentionPolicy:                  string(retPolicy),
+		RetentionTTL:                     int64(retTTL.Seconds()),
+		LocalStoreSize:                   localStoreSize,
+		ReadBufferSize:                   readBufferSize,
+		QuotaBytes:                       quotaBytes,
+		Enabled:                          true, // REST-02: new shares are enabled by default.
+		AclFlagInheritedCanonicalization: aclCanon,
+		CreatedAt:                        now,
+		UpdatedAt:                        now,
 	}
 
 	// Set blocked operations
@@ -301,26 +320,27 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Add share to runtime if runtime is available
 	if h.runtime != nil {
 		shareConfig := &runtime.ShareConfig{
-			Name:              req.Name,
-			MetadataStore:     metaStore.Name,
-			ReadOnly:          req.ReadOnly,
-			Enabled:           share.Enabled,
-			EncryptData:       req.EncryptData,
-			DefaultPermission: defaultPerm,
-			Squash:            nfsOpts.GetSquashMode(),
-			AnonymousUID:      nfsOpts.GetAnonymousUID(),
-			AnonymousGID:      nfsOpts.GetAnonymousGID(),
-			AllowAuthSys:      nfsOpts.AllowAuthSys,
-			AllowAuthSysSet:   true,
-			RequireKerberos:   nfsOpts.RequireKerberos,
-			MinKerberosLevel:  nfsOpts.MinKerberosLevel,
-			BlockedOperations: share.GetBlockedOps(),
-			LocalStoreSize:    localStoreSize,
-			ReadBufferSize:    readBufferSize,
-			QuotaBytes:        quotaBytes,
-			LocalBlockStoreID: localBlockStore.ID,
-			RetentionPolicy:   retPolicy,
-			RetentionTTL:      retTTL,
+			Name:                             req.Name,
+			MetadataStore:                    metaStore.Name,
+			ReadOnly:                         req.ReadOnly,
+			Enabled:                          share.Enabled,
+			EncryptData:                      req.EncryptData,
+			AclFlagInheritedCanonicalization: share.AclFlagInheritedCanonicalization,
+			DefaultPermission:                defaultPerm,
+			Squash:                           nfsOpts.GetSquashMode(),
+			AnonymousUID:                     nfsOpts.GetAnonymousUID(),
+			AnonymousGID:                     nfsOpts.GetAnonymousGID(),
+			AllowAuthSys:                     nfsOpts.AllowAuthSys,
+			AllowAuthSysSet:                  true,
+			RequireKerberos:                  nfsOpts.RequireKerberos,
+			MinKerberosLevel:                 nfsOpts.MinKerberosLevel,
+			BlockedOperations:                share.GetBlockedOps(),
+			LocalStoreSize:                   localStoreSize,
+			ReadBufferSize:                   readBufferSize,
+			QuotaBytes:                       quotaBytes,
+			LocalBlockStoreID:                localBlockStore.ID,
+			RetentionPolicy:                  retPolicy,
+			RetentionTTL:                     retTTL,
 		}
 		if remoteBlockStoreID != nil {
 			shareConfig.RemoteBlockStoreID = *remoteBlockStoreID
@@ -426,6 +446,12 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.EncryptData != nil {
 		share.EncryptData = *req.EncryptData
+	}
+	if req.AclFlagInheritedCanonicalization != nil {
+		// Refs #514. Persisted to DB; takes effect on adapter restart
+		// (matches LocalStoreSize/ReadBufferSize semantics — no runtime
+		// hot-reload).
+		share.AclFlagInheritedCanonicalization = *req.AclFlagInheritedCanonicalization
 	}
 	if req.DefaultPermission != nil {
 		share.DefaultPermission = *req.DefaultPermission
@@ -907,23 +933,24 @@ func shareToResponse(s *models.Share) ShareResponse {
 		quotaBytesStr = bytesize.ByteSize(s.QuotaBytes).String()
 	}
 	return ShareResponse{
-		ID:                 s.ID,
-		Name:               s.Name,
-		MetadataStoreID:    s.MetadataStoreID,
-		LocalBlockStoreID:  s.LocalBlockStoreID,
-		RemoteBlockStoreID: s.RemoteBlockStoreID,
-		ReadOnly:           s.ReadOnly,
-		Enabled:            s.Enabled,
-		EncryptData:        s.EncryptData,
-		DefaultPermission:  s.DefaultPermission,
-		BlockedOperations:  s.GetBlockedOps(),
-		RetentionPolicy:    string(s.GetRetentionPolicy()),
-		RetentionTTL:       retTTL,
-		LocalStoreSize:     localStoreSizeStr,
-		ReadBufferSize:     readBufferSizeStr,
-		QuotaBytes:         quotaBytesStr,
-		CreatedAt:          s.CreatedAt,
-		UpdatedAt:          s.UpdatedAt,
+		ID:                               s.ID,
+		Name:                             s.Name,
+		MetadataStoreID:                  s.MetadataStoreID,
+		LocalBlockStoreID:                s.LocalBlockStoreID,
+		RemoteBlockStoreID:               s.RemoteBlockStoreID,
+		ReadOnly:                         s.ReadOnly,
+		Enabled:                          s.Enabled,
+		EncryptData:                      s.EncryptData,
+		DefaultPermission:                s.DefaultPermission,
+		BlockedOperations:                s.GetBlockedOps(),
+		RetentionPolicy:                  string(s.GetRetentionPolicy()),
+		RetentionTTL:                     retTTL,
+		LocalStoreSize:                   localStoreSizeStr,
+		ReadBufferSize:                   readBufferSizeStr,
+		QuotaBytes:                       quotaBytesStr,
+		AclFlagInheritedCanonicalization: s.AclFlagInheritedCanonicalization,
+		CreatedAt:                        s.CreatedAt,
+		UpdatedAt:                        s.UpdatedAt,
 	}
 }
 
