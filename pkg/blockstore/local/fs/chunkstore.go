@@ -140,6 +140,14 @@ func (bc *FSStore) ReadChunk(ctx context.Context, h blockstore.ContentHash) ([]b
 	return data, nil
 }
 
+// Get implements local.LocalStore.Get by delegating to ReadChunk.
+// See ReadChunk for semantics, error contract, and LSL-08 LRU touch
+// behavior. Introduced in Phase 16 (D-01); the signature is byte-for-byte
+// forward-compatible with the unified BlockStore.Get adopted in Phase 17.
+func (bc *FSStore) Get(ctx context.Context, h blockstore.ContentHash) ([]byte, error) {
+	return bc.ReadChunk(ctx, h)
+}
+
 // HasChunk reports whether the chunk exists in the local chunk store.
 // Returns (true, nil) for an existing chunk, (false, nil) for a missing
 // chunk, or (false, err) for any I/O error other than ENOENT.

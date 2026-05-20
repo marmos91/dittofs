@@ -133,6 +133,28 @@ func (s *MemoryStore) GetBlockData(_ context.Context, payloadID string, blockIdx
 	return data, mb.dataSize, nil
 }
 
+// Get satisfies local.LocalStore.Get. The memory backend has no
+// content-addressed chunk layer (no blocks/<hh>/<hh>/<hex> tree), so
+// this method is a documented stub that always returns
+// blockstore.ErrChunkNotFound. The closed-store guard is still
+// enforced so that future Phase 17 expansion of MemoryStore (when the
+// unified BlockStore interface lands) can drop in CAS-aware behavior
+// without changing the surrounding locking discipline.
+//
+// Introduced in Phase 16 (D-01) to satisfy the LocalStore interface
+// extension; engine.loadByHash only calls Get on shares whose backend
+// stores CAS chunks, so the memory backend never receives this call
+// in production.
+func (s *MemoryStore) Get(_ context.Context, _ blockstore.ContentHash) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+	return nil, blockstore.ErrChunkNotFound
+}
+
 // WriteAt writes data to the in-memory store at the specified offset.
 func (s *MemoryStore) WriteAt(_ context.Context, payloadID string, data []byte, offset uint64) error {
 	s.mu.Lock()

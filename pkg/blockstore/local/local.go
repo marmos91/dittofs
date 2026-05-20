@@ -68,6 +68,23 @@ type LocalStore interface {
 	// then disk. Returns data, dataSize, and error.
 	GetBlockData(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error)
 
+	// Get returns the chunk bytes addressed by the given content hash.
+	// The returned []byte is freshly allocated and owned by the caller
+	// (Phase 16 D-03 buffer-ownership contract; matches the prior
+	// mmap-then-copy semantics from the engine Cache's perspective —
+	// the Cache always copied bytes out of the mmapped region into its
+	// LRU slot, so the allocation simply moves earlier in the pipeline).
+	//
+	// Returns blockstore.ErrChunkNotFound if the chunk is absent from
+	// the local store. Implementations MUST NOT return a slice that
+	// aliases internal storage (Phase 16 D-05); no read-buffer pool is
+	// used (Phase 16 D-04).
+	//
+	// Phase 17 promotes this method onto the unified BlockStore
+	// interface verbatim — the engine call site narrows the receiver
+	// type without renaming.
+	Get(ctx context.Context, hash blockstore.ContentHash) ([]byte, error)
+
 	// --- Write operations ---
 
 	// WriteAt writes data to the local store at the specified offset.
