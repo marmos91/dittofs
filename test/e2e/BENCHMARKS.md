@@ -210,7 +210,7 @@ verified separately at the v0.15.0 milestone gate VER-02.
 | ------- | -------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------- |
 | Phase 12 (A3) | rand-read in-tree microbench >= `phase12MicrobenchFloorIOPS` IOPS    | <= 5% regression vs per-machine floor | `BenchmarkPerfGate_Phase12RandReadRegression`     |
 | Phase 12 (A3) | findBlocksForRange average <1 µs/call across 16K BlockRefs           | hard ceiling                       | `TestPerfGate_Phase12_BinarySearchOverhead`       |
-| Phase 12 (A3) | readFromCAS mmap throughput >= 0.95 × os.ReadFile (linux/darwin)     | hard ratio floor                   | `TestPerfGate_Phase12_MmapHotPath`                |
+| ~~Phase 12 (A3)~~ | ~~readFromCAS mmap throughput >= 0.95 × os.ReadFile (linux/darwin)~~ — **removed in Phase 16** (mmap read path deleted; replaced by warm-cache `BenchmarkRandReadVerified` ≤1.02 — see Phase 16 section below) | — | ~~`TestPerfGate_Phase12_MmapHotPath`~~ |
 
 ### Reproduction commands
 
