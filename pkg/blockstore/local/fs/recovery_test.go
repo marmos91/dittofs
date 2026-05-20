@@ -69,7 +69,6 @@ func reopenFSStore(t *testing.T, bc *FSStore, rs *memmeta.MemoryMetadataStore) *
 	baseDir := bc.baseDir
 	_ = bc.Close()
 	bc2, err := NewWithOptions(baseDir, 1<<30, 1<<30, nopFBS{}, FSStoreOptions{
-		UseAppendLog:    true,
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 10,
@@ -89,7 +88,6 @@ func newFSStoreWithRS(t *testing.T, rs *memmeta.MemoryMetadataStore) *FSStore {
 	t.Helper()
 	dir := t.TempDir()
 	bc, err := NewWithOptions(dir, 1<<30, 1<<30, nopFBS{}, FSStoreOptions{
-		UseAppendLog:    true,
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 10,
@@ -264,7 +262,6 @@ func TestRecovery_OrphanSweep_UnlinksLog(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	dir := t.TempDir()
 	bc, err := NewWithOptions(dir, 1<<30, 1<<30, nopFBS{}, FSStoreOptions{
-		UseAppendLog:           true,
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
@@ -283,7 +280,6 @@ func TestRecovery_OrphanSweep_UnlinksLog(t *testing.T) {
 	time.Sleep(1100 * time.Millisecond)
 
 	bc2, err := NewWithOptions(dir, 1<<30, 1<<30, nopFBS{}, FSStoreOptions{
-		UseAppendLog:           true,
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
@@ -477,7 +473,6 @@ func TestRecovery_OrphanAgeFloor_WarnsOnNonPositive(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	dir := t.TempDir()
 	bc, err := NewWithOptions(dir, 1<<30, 1<<30, nopFBS{}, FSStoreOptions{
-		UseAppendLog:           true,
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
@@ -503,7 +498,6 @@ func TestRecovery_OrphanAgeFloor_WarnsOnNonPositive(t *testing.T) {
 	_ = bc.Close()
 
 	bc2, err := NewWithOptions(dir, 1<<30, 1<<30, nopFBS{}, FSStoreOptions{
-		UseAppendLog:           true,
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,

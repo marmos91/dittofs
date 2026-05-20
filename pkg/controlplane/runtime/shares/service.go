@@ -1346,18 +1346,13 @@ func CreateLocalStoreFromConfig(
 		}
 	}
 
-	// Phase 10 (LSL-04/05) append-log flag + budgets. All defaults are
-	// "off / New() defaults" per D-02/D-03 — Phase 10 ships the flag false
-	// and A2 (Phase 11) flips it. Values surface through FSStoreOptions to
-	// fs.NewWithOptions; invalid values are warned and ignored, matching the
-	// max_size idiom above (T-10-08-01 mitigation).
+	// Phase 17: append is mandatory on the local tier — the
+	// use_append_log opt-out flag was deleted with the legacy
+	// path-keyed writer. Budgets still surface through FSStoreOptions
+	// to fs.NewWithOptions; invalid values are warned and ignored.
 	var fsOpts fs.FSStoreOptions
-	if v, ok := config["use_append_log"]; ok {
-		if b, ok := v.(bool); ok {
-			fsOpts.UseAppendLog = b
-		} else {
-			logger.Warn("block store config has use_append_log but it is not a bool; ignoring", "value", v)
-		}
+	if _, ok := config["use_append_log"]; ok {
+		logger.Warn("block store config has use_append_log: append is mandatory in v0.16+, flag is ignored")
 	}
 	if v, ok := config["max_log_bytes"]; ok {
 		if n, ok := v.(float64); ok && n > 0 {
@@ -1423,31 +1418,26 @@ func CreateLocalStoreFromConfig(
 			return nil, fmt.Errorf("failed to create block store directory: %w", err)
 		}
 
-		// Append-log path: wire a RollupStore from the metadata backend and
-		// start the rollup worker pool. Nit 2 (plan objective): the type
+		// Phase 17: append is mandatory. Wire a RollupStore from the
+		// metadata backend and start the rollup worker pool. The type
 		// assertion couples the block-store factory to a metadata-layer
-		// interface via runtime type check. Accepted for Phase 10 because
-		// memory / badger / postgres all implement both FileBlockStore and
-		// RollupStore on the same Store type; revisit in Phase 11 LSL-07
-		// when the factory is refactored to take a metadata.Store explicitly.
-		if fsOpts.UseAppendLog {
-			rs, ok := fileBlockStore.(metadata.RollupStore)
-			if !ok {
-				// T-10-08-04: explicit error, not silent fallthrough.
-				return nil, fmt.Errorf("fs local store: use_append_log requires a metadata backend implementing metadata.RollupStore (Phase 10 LSL-05)")
-			}
-			fsOpts.RollupStore = rs
-			store, err := fs.NewWithOptions(blockDir, maxDisk, maxMemory, fileBlockStore, fsOpts)
-			if err != nil {
-				return nil, err
-			}
-			if err := store.StartRollup(ctx); err != nil {
-				_ = store.Close()
-				return nil, fmt.Errorf("fs local store: StartRollup: %w", err)
-			}
-			return store, nil
+		// interface via runtime type check — accepted because memory /
+		// badger / postgres all implement both FileBlockStore and
+		// RollupStore on the same Store type.
+		rs, ok := fileBlockStore.(metadata.RollupStore)
+		if !ok {
+			return nil, fmt.Errorf("fs local store: metadata backend must implement metadata.RollupStore for the mandatory append-log path")
 		}
-		return fs.New(blockDir, maxDisk, maxMemory, fileBlockStore)
+		fsOpts.RollupStore = rs
+		store, err := fs.NewWithOptions(blockDir, maxDisk, maxMemory, fileBlockStore, fsOpts)
+		if err != nil {
+			return nil, err
+		}
+		if err := store.StartRollup(ctx); err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("fs local store: StartRollup: %w", err)
+		}
+		return store, nil
 
 	case "memory":
 		return localmemory.New(), nil

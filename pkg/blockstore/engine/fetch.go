@@ -9,6 +9,13 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
+// inFlightKey returns the deterministic per-block dedup key used by the
+// engine's in-flight map. Internal to the engine after
+// blockstore.FormatStoreKey was deleted in Phase 17.
+func inFlightKey(payloadID string, blockIdx uint64) string {
+	return fmt.Sprintf("%s/%d", payloadID, blockIdx)
+}
+
 // resolveFileBlock returns the FileBlock for (payloadID, blockIdx) or
 // (nil, nil) if the row does not exist (sparse / not yet uploaded). Post-
 // Phase-17 the engine read path is CAS-only — fb.Hash MUST be non-zero
@@ -204,7 +211,7 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 // inlineFetchOrWait downloads a block inline or waits for an in-flight download.
 // Returns (data, true, nil) for inline download, (nil, false, nil) if piggybacked on existing.
 func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, bool, error) {
-	key := blockstore.FormatStoreKey(payloadID, blockIdx)
+	key := inFlightKey(payloadID, blockIdx)
 
 	m.inFlightMu.Lock()
 	if existing, ok := m.inFlight[key]; ok {
@@ -401,7 +408,7 @@ func (m *Syncer) enqueueDownload(payloadID string, blockIdx uint64) chan error {
 		return ch
 	}
 
-	key := blockstore.FormatStoreKey(payloadID, blockIdx)
+	key := inFlightKey(payloadID, blockIdx)
 
 	m.inFlightMu.Lock()
 	if existing, ok := m.inFlight[key]; ok {
@@ -461,7 +468,7 @@ func (m *Syncer) enqueuePrefetch(payloadID string, blockIdx uint64) {
 		return
 	}
 
-	key := blockstore.FormatStoreKey(payloadID, blockIdx)
+	key := inFlightKey(payloadID, blockIdx)
 	m.inFlightMu.Lock()
 	_, inFlight := m.inFlight[key]
 	m.inFlightMu.Unlock()

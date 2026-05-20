@@ -403,12 +403,12 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - **Boot-guard footgun** — sentinel must be operator-discoverable (clear stderr directive + `docs/CONFIGURATION.md` link); silent failure here strands operators on un-migrated shares
 **Plans**: 11 plans
 - [x] 17-01-PLAN.md — BlockStore + BlockStoreAppend interfaces + Meta struct + ErrStopWalk/ErrLegacyLayoutDetected sentinels (Wave 1)
-- [ ] 17-02-PLAN.md — pkg/blockstore/blockstoretest unified conformance suite scaffolding (Wave 1)
-- [ ] 17-03-PLAN.md — RemoteStore method renames + s3/memory backend retargeting (Wave 2)
+- [x] 17-02-PLAN.md — pkg/blockstore/blockstoretest unified conformance suite scaffolding (Wave 1)
+- [x] 17-03-PLAN.md — RemoteStore method renames + s3/memory backend retargeting (Wave 2)
 - [x] 17-04-PLAN.md — LocalStore interface narrowing + BlockStoreAppend embedding (Wave 2)
-- [ ] 17-05-PLAN.md — Engine retargeted onto renamed RemoteStore + dual-read shim deleted (Wave 3)
-- [ ] 17-06-PLAN.md — Wire fs/memory/s3/memory-remote backends to blockstoretest + delete localtest/remotetest (Wave 3)
-- [ ] 17-07-PLAN.md — Delete write.go + FormatStoreKey + UseAppendLog + legacy helpers; restore LocalStore assertion (Wave 4)
+- [x] 17-05-PLAN.md — Engine retargeted onto renamed RemoteStore + dual-read shim deleted (Wave 3)
+- [x] 17-06-PLAN.md — Wire fs/memory/s3/memory-remote backends to blockstoretest + delete localtest/remotetest (Wave 3)
+- [x] 17-07-PLAN.md — Delete write.go + FormatStoreKey + UseAppendLog + legacy helpers; restore LocalStore assertion (Wave 4)
 - [ ] 17-08-PLAN.md — pkg/blockstore/migrate/migrate_to_cas.go library + dfs migrate-to-cas cobra subcommand (Wave 5)
 - [ ] 17-09-PLAN.md — NewFSStore sentinel check + cmd/dfs/start.go boot-guard exit-78 (Wave 5)
 - [ ] 17-10-PLAN.md — pkg/blockstore/doc.go convention + docs/CONFIGURATION.md Migration section + docs/CLI.md entry (Wave 6)

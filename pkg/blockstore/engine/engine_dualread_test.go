@@ -262,7 +262,10 @@ func TestDualRead_LegacyRowRefusedPostMigration(t *testing.T) {
 	ctx := context.Background()
 
 	const payloadID = "share/legacy-row"
-	legacyKey := blockstore.FormatStoreKey(payloadID, 0)
+	// Synthesize the legacy "{payloadID}/block-{idx}" key shape directly;
+	// the helper was deleted in Phase 17 with the rest of the legacy
+	// path-keyed surface.
+	legacyKey := payloadID + "/block-0"
 
 	// Legacy-shaped FileBlock: Hash zero, BlockStoreKey set.
 	fb := &blockstore.FileBlock{

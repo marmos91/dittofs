@@ -142,10 +142,7 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 
 	bc.diskUsed.Store(totalSize)
 
-	var logsScanned, logsRecovered, recordsTruncated, intervalsRebuilt, orphanLogsSwept, headersReconciled int
-	if bc.useAppendLog {
-		logsScanned, logsRecovered, recordsTruncated, intervalsRebuilt, orphanLogsSwept, headersReconciled = bc.recoverAppendLogs(ctx)
-	}
+	logsScanned, logsRecovered, recordsTruncated, intervalsRebuilt, orphanLogsSwept, headersReconciled := bc.recoverAppendLogs(ctx)
 
 	logger.Info("local store: recovery complete",
 		"filesFound", filesFound,

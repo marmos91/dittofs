@@ -165,6 +165,19 @@ func (s *Store) GetRange(_ context.Context, hash blockstore.ContentHash, offset,
 	return result, nil
 }
 
+// Has reports whether the CAS object addressed by hash exists in the
+// store. Implements the blockstore.BlockStore contract (Phase 17 D-04).
+func (s *Store) Has(_ context.Context, hash blockstore.ContentHash) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return false, blockstore.ErrStoreClosed
+	}
+	_, ok := s.blocks[hash]
+	return ok, nil
+}
+
 // Head returns blockstore.Meta{Size, LastModified} for the CAS object
 // addressed by hash. Returns blockstore.ErrBlockNotFound on miss.
 func (s *Store) Head(_ context.Context, hash blockstore.ContentHash) (blockstore.Meta, error) {

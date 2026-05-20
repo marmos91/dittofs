@@ -46,7 +46,6 @@ func benchStoreAppend(b *testing.B) *FSStore {
 	dir := b.TempDir()
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	bc, err := NewWithOptions(dir, 1<<40, 1<<40, nopFBS{}, FSStoreOptions{
-		UseAppendLog:  true,
 		MaxLogBytes:   1 << 34, // 16 GiB — effectively unbounded for this bench
 		RollupWorkers: 2,
 		// StabilizationMS is very long so rollup stays out of the way for the

@@ -113,13 +113,15 @@ func TestDelete_OnMissingFile_NoError(t *testing.T) {
 	}
 }
 
-// TestDelete_DisabledFlag_NoOp: when useAppendLog is false, DeleteAppendLog
-// returns nil without touching any state — the legacy path owns delete in
-// that mode.
-func TestDelete_DisabledFlag_NoOp(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: false})
+// TestDelete_NoPriorLog_NoOp: DeleteAppendLog on a payload that never
+// had a log returns nil without touching any state. Post-Phase-17 the
+// append-log path is mandatory; this exercises the empty-state idempotency
+// case that the old TestDelete_DisabledFlag_NoOp was conflating with the
+// (now-deleted) flag-off semantic.
+func TestDelete_NoPriorLog_NoOp(t *testing.T) {
+	bc := newFSStoreForTest(t, FSStoreOptions{})
 	if err := bc.DeleteAppendLog(context.Background(), "any"); err != nil {
-		t.Fatalf("DeleteAppendLog flag-off: got %v want nil", err)
+		t.Fatalf("DeleteAppendLog no-prior-log: got %v want nil", err)
 	}
 }
 
@@ -225,7 +227,6 @@ func TestDelete_DuringActiveRollup_NoMetadataZombie(t *testing.T) {
 	// Tiny stabilization so records become eligible for rollup within
 	// a few ms.
 	bc := newFSStoreForTest(t, FSStoreOptions{
-		UseAppendLog:    true,
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 2,
@@ -296,7 +297,6 @@ func TestDelete_CrashBetweenMetadataAndUnlink_OrphanSwept(t *testing.T) {
 	// First, create an FSStore with append-log on, write one record so
 	// a log file exists, then close.
 	bc1, err := NewWithOptions(dir, 1<<30, 1<<30, nopFBS{}, FSStoreOptions{
-		UseAppendLog:           true,
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
@@ -325,7 +325,6 @@ func TestDelete_CrashBetweenMetadataAndUnlink_OrphanSwept(t *testing.T) {
 	// rs has no entry for "crashed" (metadata step never committed) and
 	// nopFBS has no block-0 entry — so it qualifies as orphan.
 	bc2, err := NewWithOptions(dir, 1<<30, 1<<30, nopFBS{}, FSStoreOptions{
-		UseAppendLog:           true,
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
@@ -421,12 +420,13 @@ func TestTruncate_ClipsStraddling(t *testing.T) {
 	}
 }
 
-// TestTruncate_DisabledFlag_NoOp: TruncateAppendLog is a no-op when
-// useAppendLog is false.
-func TestTruncate_DisabledFlag_NoOp(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: false})
+// TestTruncate_NoPriorLog_NoOp: TruncateAppendLog on a payload that
+// never had a log is a no-op. Post-Phase-17 the append-log path is
+// mandatory; this exercises the empty-state idempotency case.
+func TestTruncate_NoPriorLog_NoOp(t *testing.T) {
+	bc := newFSStoreForTest(t, FSStoreOptions{})
 	if err := bc.TruncateAppendLog(context.Background(), "any", 100); err != nil {
-		t.Fatalf("TruncateAppendLog flag-off: got %v want nil", err)
+		t.Fatalf("TruncateAppendLog no-prior-log: got %v want nil", err)
 	}
 }
 
@@ -448,7 +448,6 @@ func TestTruncate_ClosedStore_ReturnsErrStoreClosed(t *testing.T) {
 func TestTruncate_Rollup_SkipsBeyondBoundary(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	bc := newFSStoreForTest(t, FSStoreOptions{
-		UseAppendLog:    true,
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 2,

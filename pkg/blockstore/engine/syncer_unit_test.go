@@ -154,13 +154,12 @@ func TestUploadOne_PutsCASKeyAndFlipsRemote(t *testing.T) {
 		t.Fatalf("BlockStoreKey %q is not a CAS key: %v", fresh.BlockStoreKey, err)
 	}
 
-	// Object exists in remote with the matching content-hash metadata.
-	if _, err := rs.ReadBlock(ctx, fresh.BlockStoreKey); err != nil {
-		t.Fatalf("ReadBlock(%s) after uploadOne: %v", fresh.BlockStoreKey, err)
-	}
-	meta := rs.GetObjectMetadata(fresh.BlockStoreKey)
-	if meta["content-hash"] == "" {
-		t.Fatalf("WriteBlockWithHash did not record content-hash metadata: %v", meta)
+	// Object exists in remote. The memory backend no longer surfaces
+	// the legacy x-amz-meta-content-hash defense-in-depth header (it
+	// is internal to the s3 backend post-Phase-17); content integrity
+	// is covered by ReadBlockVerified instead.
+	if _, err := rs.Get(ctx, fresh.Hash); err != nil {
+		t.Fatalf("Get(%s) after uploadOne: %v", fresh.Hash, err)
 	}
 }
 
@@ -244,8 +243,8 @@ func TestSyncNow_DrainsAllPendingViaCAS(t *testing.T) {
 		if fresh.State != blockstore.BlockStateRemote {
 			t.Errorf("block %d: state=%v, want Remote", i, fresh.State)
 		}
-		if _, err := rs.ReadBlock(ctx, fresh.BlockStoreKey); err != nil {
-			t.Errorf("block %d not in remote at %q: %v", i, fresh.BlockStoreKey, err)
+		if _, err := rs.Get(ctx, fresh.Hash); err != nil {
+			t.Errorf("block %d not in remote at hash %s: %v", i, fresh.Hash, err)
 		}
 	}
 }

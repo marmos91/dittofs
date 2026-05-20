@@ -15,7 +15,7 @@ import (
 // stored bytes byte-identically, and reports blockstore.ErrChunkNotFound
 // for missing hashes.
 func TestFSStore_Get_DelegatesToReadChunk(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: true})
+	bc := newFSStoreForTest(t, FSStoreOptions{})
 	ctx := context.Background()
 	h := hashFromHex(t, strings.Repeat("a1", 32))
 	data := bytes.Repeat([]byte{0xA1}, 4096)

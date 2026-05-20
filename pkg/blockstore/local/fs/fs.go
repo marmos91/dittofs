@@ -40,8 +40,7 @@ var (
 )
 
 // Compile-time interface satisfaction check.
-// Plan 17-07 restores: assertion fails until FSStore gains BlockStoreAppend methods (Put/Has/Walk).
-// var _ local.LocalStore = (*FSStore)(nil)
+var _ local.LocalStore = (*FSStore)(nil)
 
 // FSStore is a two-tier (memory + disk) block store for file data.
 //
@@ -148,18 +147,11 @@ type FSStore struct {
 	closeOnce sync.Once
 	wg        sync.WaitGroup
 
-	// --- Append-log path (Phase 10, LSL-01/03, flag-gated per D-02/D-36). ---
+	// --- Append-log path (Phase 10, LSL-01/03). ---
 	//
-	// When useAppendLog=false (default through Phase 10 per D-03), every
-	// field in this block is its zero value and FSStore is byte-for-byte
-	// equivalent to the Phase 09 write path: no log file is created on disk,
-	// no rollup worker is started, and AppendWrite rejects with
-	// ErrAppendLogDisabled.
-	//
-	// maxLogBytes and stabilizationMS / rollupWorkers are kept populated with
-	// their defaults even when the flag is off so NewWithOptions can raise
-	// the flag without a second initialization pass.
-	useAppendLog    bool
+	// Append is mandatory on the local tier in Phase 17 — the flag-gated
+	// opt-out was deleted alongside the legacy path-keyed writer. All
+	// AppendWrite + rollup machinery runs unconditionally.
 	maxLogBytes     int64
 	stabilizationMS int
 	rollupWorkers   int
@@ -201,8 +193,6 @@ type FSStore struct {
 
 	// --- Phase 10-06 rollup pool (D-13/D-33). ---
 	//
-	// When useAppendLog=false, these fields remain their zero values and
-	// StartRollup rejects with ErrAppendLogDisabled. When the flag is on,
 	// StartRollup launches bc.rollupWorkers goroutines that consume
 	// payloadIDs from bc.rollupCh (AppendWrite non-blocking send) and also
 	// scan bc.dirtyIntervals on a stabilization-tuned ticker.
@@ -281,11 +271,9 @@ func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blocksto
 	bc.lruIndex = make(map[blockstore.ContentHash]*list.Element)
 	bc.lruList = list.New()
 
-	// Phase 10 append-log plumbing — maps + pressure channel always
-	// initialized so NewWithOptions can enable the flag atomically. When
-	// useAppendLog=false (the New() default), AppendWrite returns
-	// ErrAppendLogDisabled and nothing else in this block touches disk.
-	// D-36: zero behavior change when the flag is off.
+	// Phase 17: append-log plumbing — maps + pressure channel are
+	// always initialized; the opt-out flag was deleted with the legacy
+	// path-keyed writer.
 	bc.pressureCh = make(chan struct{}, 1)
 	bc.logFDs = make(map[string]*logFile)
 	bc.logLocks = make(map[string]*sync.Mutex)
@@ -411,20 +399,17 @@ func (bc *FSStore) seedLRUFromDisk() {
 	}
 }
 
-// FSStoreOptions configures the Phase 10 append-log path. Zero value means
-// the append log is disabled (D-03 default through Phase 10); setting
-// UseAppendLog=true opts into the new write path wired by
-// `AppendWrite`. MaxLogBytes, RollupWorkers, and StabilizationMS default
-// via New() when left zero here.
+// FSStoreOptions configures the append-log path. Append is mandatory in
+// Phase 17 — the UseAppendLog opt-out flag was deleted with the legacy
+// path-keyed writer. MaxLogBytes, RollupWorkers, and StabilizationMS
+// default via New() when left zero here.
 type FSStoreOptions struct {
-	UseAppendLog    bool
 	MaxLogBytes     int64
 	RollupWorkers   int
 	StabilizationMS int
-	// RollupStore persists per-file rollup_offset (LSL-05). Required when
-	// UseAppendLog=true AND StartRollup will be called. Nil is accepted when
-	// UseAppendLog is false (the flag path is fully bypassed) or when the
-	// caller will not start the rollup pool.
+	// RollupStore persists per-file rollup_offset (LSL-05). Required
+	// when StartRollup will be called. Nil is accepted when the caller
+	// will not start the rollup pool.
 	RollupStore metadata.RollupStore
 	// OrphanLogMinAgeSeconds is the minimum age (seconds) a log file must
 	// have before recovery will classify it as orphan and sweep it.
@@ -433,21 +418,14 @@ type FSStoreOptions struct {
 	OrphanLogMinAgeSeconds int
 }
 
-// NewWithOptions constructs an FSStore with the append-log path optionally
-// enabled. When opts.UseAppendLog is false (the default through Phase 10
-// per D-03), the returned store is byte-for-byte identical to one from
-// New() — no log file on disk, no rollup worker. Phase 11 (A2) flips the
-// default.
-//
-// Non-zero values in opts override the defaults set by New(); zero values
-// keep the New() defaults (1 GiB log, 250ms stabilization, 2 rollup
-// workers).
+// NewWithOptions constructs an FSStore. Non-zero values in opts override
+// the defaults set by New(); zero values keep the New() defaults (1 GiB
+// log, 250ms stabilization, 2 rollup workers).
 func NewWithOptions(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, opts FSStoreOptions) (*FSStore, error) {
 	bc, err := New(baseDir, maxDisk, maxMemory, fileBlockStore)
 	if err != nil {
 		return nil, err
 	}
-	bc.useAppendLog = opts.UseAppendLog
 	if opts.MaxLogBytes > 0 {
 		bc.maxLogBytes = opts.MaxLogBytes
 	}

@@ -378,6 +378,28 @@ func readResponseBody(body io.ReadCloser, contentLength *int64, fallbackSize int
 	return buf.Bytes(), nil
 }
 
+// Has reports whether the CAS object addressed by hash exists in the
+// bucket. Implements the blockstore.BlockStore contract (Phase 17 D-04).
+// Implemented via HEAD for cost and latency reasons (a Get with
+// Range: bytes=0-0 would still transfer one byte body).
+func (s *Store) Has(ctx context.Context, hash blockstore.ContentHash) (bool, error) {
+	if err := s.checkClosed(); err != nil {
+		return false, err
+	}
+	key := s.hashKey(hash)
+	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		if isNotFoundError(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("s3 head: %w", err)
+	}
+	return true, nil
+}
+
 // Head returns blockstore.Meta for the CAS object addressed by hash
 // without transferring the body. Returns blockstore.ErrBlockNotFound on
 // missing keys (same convention as Get).

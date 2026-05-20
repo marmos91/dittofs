@@ -20,8 +20,10 @@ func (bc *FSStore) SetEvictionEnabled(enabled bool) {
 	bc.evictionEnabled.Store(enabled)
 }
 
-// DeleteBlockFile removes a single block (identified by payloadID + blockIdx)
-// from memory, disk, and metadata.
+// deleteBlockFile removes a single block (identified by payloadID + blockIdx)
+// from memory, disk, and metadata. Internal helper for DeleteAllBlockFiles —
+// the public DeleteBlockFile method was deleted in Phase 17 (no remaining
+// external consumers after the path-keyed writer was removed).
 //
 // Order of operations:
 //  1. Close file descriptors (fdPool + readFDPool) to release OS handles
@@ -33,7 +35,7 @@ func (bc *FSStore) SetEvictionEnabled(enabled bool) {
 //  7. Clear any pending async update in pendingFBs to prevent zombie re-creation
 //
 // Returns nil if the block does not exist (idempotent).
-func (bc *FSStore) DeleteBlockFile(ctx context.Context, payloadID string, blockIdx uint64) error {
+func (bc *FSStore) deleteBlockFile(ctx context.Context, payloadID string, blockIdx uint64) error {
 	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
 	blockID := makeBlockID(key)
 
@@ -91,10 +93,11 @@ func (bc *FSStore) DeleteBlockFile(ctx context.Context, payloadID string, blockI
 // After deleting all blocks, it also:
 //   - Removes the file from the files tracking map
 //   - Attempts to remove the empty parent directory (ignores ENOTEMPTY)
-//   - When useAppendLog is enabled, runs DeleteAppendLog (D-28) to
-//     tombstone the log, wait for in-flight rollup, clear rollup_offset
-//     metadata, and unlink the log file. Phase 11 mark-sweep GC cleans
-//     up orphan content-addressed chunks in blocks/.
+//   - Runs DeleteAppendLog to tombstone the log, wait for in-flight rollup,
+//     clear rollup_offset metadata, and unlink the log file. Phase 11
+//     mark-sweep GC cleans up orphan content-addressed chunks in blocks/.
+//
+// Deprecated: removed in Phase 18 (Syncer simplification rewrites these consumers onto BlockStore.Put/Get/Walk).
 func (bc *FSStore) DeleteAllBlockFiles(ctx context.Context, payloadID string) error {
 	// List all blocks for this file from the store
 	blocks, err := bc.blockStore.ListFileBlocks(ctx, payloadID)
@@ -102,7 +105,7 @@ func (bc *FSStore) DeleteAllBlockFiles(ctx context.Context, payloadID string) er
 		return err
 	}
 
-	// Delete each block
+	// Delete each block via the internal helper
 	for _, fb := range blocks {
 		// Extract blockIdx from the block ID (format: "payloadID/blockIdx")
 		_, blockIdx, parseErr := blockstore.ParseBlockID(fb.ID)
@@ -110,7 +113,7 @@ func (bc *FSStore) DeleteAllBlockFiles(ctx context.Context, payloadID string) er
 			logger.Warn("local store: failed to parse blockID", "blockID", fb.ID, "error", parseErr)
 			continue
 		}
-		if delErr := bc.DeleteBlockFile(ctx, payloadID, blockIdx); delErr != nil {
+		if delErr := bc.deleteBlockFile(ctx, payloadID, blockIdx); delErr != nil {
 			logger.Warn("local store: failed to delete block", "blockID", fb.ID, "error", delErr)
 		}
 	}
@@ -131,40 +134,10 @@ func (bc *FSStore) DeleteAllBlockFiles(ctx context.Context, payloadID string) er
 		_ = os.Remove(payloadDir) // Ignore ENOTEMPTY or ENOENT
 	}
 
-	// Append-log tier cleanup (D-28 / plan 09). Safe to call
-	// unconditionally: DeleteAppendLog is a no-op when useAppendLog is
-	// false and idempotent when the payload has no log. This keeps the
-	// legacy delete path and the new log path observing the same
-	// "delete is a single caller-visible operation" invariant.
+	// Append-log tier cleanup (D-28 / plan 09). Idempotent when the
+	// payload has no log.
 	if delErr := bc.DeleteAppendLog(ctx, payloadID); delErr != nil {
 		logger.Warn("local store: DeleteAppendLog failed", "payloadID", payloadID, "error", delErr)
-	}
-
-	return nil
-}
-
-// TruncateBlockFiles removes all blocks whose start offset (blockIdx * BlockSize)
-// is at or beyond newSize. Blocks below newSize are kept intact.
-//
-// This handles the persistent storage side of truncation. The in-memory side
-// is handled by Truncate() in fs.go.
-func (bc *FSStore) TruncateBlockFiles(ctx context.Context, payloadID string, newSize uint64) error {
-	blocks, err := bc.blockStore.ListFileBlocks(ctx, payloadID)
-	if err != nil {
-		return err
-	}
-
-	for _, fb := range blocks {
-		_, blockIdx, parseErr := blockstore.ParseBlockID(fb.ID)
-		if parseErr != nil {
-			logger.Warn("local store: failed to parse blockID", "blockID", fb.ID, "error", parseErr)
-			continue
-		}
-		if blockIdx*blockstore.BlockSize >= newSize {
-			if delErr := bc.DeleteBlockFile(ctx, payloadID, blockIdx); delErr != nil {
-				logger.Warn("local store: failed to delete truncated block", "blockID", fb.ID, "error", delErr)
-			}
-		}
 	}
 
 	return nil
@@ -184,28 +157,4 @@ func (bc *FSStore) GetStoredFileSize(ctx context.Context, payloadID string) (uin
 		total += uint64(fb.DataSize)
 	}
 	return total, nil
-}
-
-// ExistsOnDisk checks if a specific block is present on disk by verifying both
-// the FileBlock metadata (LocalPath must be non-empty) and the actual file
-// existence via os.Stat.
-//
-// Returns false for stale metadata (LocalPath set but file deleted from disk).
-func (bc *FSStore) ExistsOnDisk(ctx context.Context, payloadID string, blockIdx uint64) (bool, error) {
-	blockID := makeBlockID(blockKey{payloadID: payloadID, blockIdx: blockIdx})
-
-	fb, err := bc.lookupFileBlock(ctx, blockID)
-	if err != nil {
-		if errors.Is(err, blockstore.ErrFileBlockNotFound) {
-			return false, nil
-		}
-		return false, err
-	}
-
-	if fb.LocalPath == "" {
-		return false, nil
-	}
-
-	_, statErr := os.Stat(fb.LocalPath)
-	return statErr == nil, nil
 }

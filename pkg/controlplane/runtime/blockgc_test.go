@@ -19,30 +19,32 @@ type fakeRemoteStore struct {
 	name string
 }
 
-func (f *fakeRemoteStore) WriteBlock(_ context.Context, _ string, _ []byte) error { return nil }
-func (f *fakeRemoteStore) WriteBlockWithHash(_ context.Context, _ string, _ blockstore.ContentHash, _ []byte) error {
+// All methods on remote.RemoteStore (Phase 17 unified surface). The
+// fake is identity-only — it never actually performs I/O; tests assert
+// on pointer identity and dedup wiring, not on byte-level behavior.
+func (f *fakeRemoteStore) Put(_ context.Context, _ blockstore.ContentHash, _ []byte) error {
 	return nil
 }
-func (f *fakeRemoteStore) ReadBlock(_ context.Context, _ string) ([]byte, error) { return nil, nil }
-func (f *fakeRemoteStore) ReadBlockVerified(_ context.Context, _ string, _ blockstore.ContentHash) ([]byte, error) {
+func (f *fakeRemoteStore) Get(_ context.Context, _ blockstore.ContentHash) ([]byte, error) {
 	return nil, nil
 }
-func (f *fakeRemoteStore) ReadBlockRange(_ context.Context, _ string, _, _ int64) ([]byte, error) {
+func (f *fakeRemoteStore) GetRange(_ context.Context, _ blockstore.ContentHash, _, _ int64) ([]byte, error) {
 	return nil, nil
 }
-func (f *fakeRemoteStore) DeleteBlock(_ context.Context, _ string) error    { return nil }
-func (f *fakeRemoteStore) DeleteByPrefix(_ context.Context, _ string) error { return nil }
-func (f *fakeRemoteStore) ListByPrefix(_ context.Context, _ string) ([]string, error) {
+func (f *fakeRemoteStore) Has(_ context.Context, _ blockstore.ContentHash) (bool, error) {
+	return false, nil
+}
+func (f *fakeRemoteStore) Delete(_ context.Context, _ blockstore.ContentHash) error { return nil }
+func (f *fakeRemoteStore) Head(_ context.Context, _ blockstore.ContentHash) (blockstore.Meta, error) {
+	return blockstore.Meta{}, nil
+}
+func (f *fakeRemoteStore) Walk(_ context.Context, _ func(blockstore.ContentHash, blockstore.Meta) error) error {
+	return nil
+}
+func (f *fakeRemoteStore) ReadBlockVerified(_ context.Context, _ blockstore.ContentHash, _ blockstore.ContentHash) ([]byte, error) {
 	return nil, nil
 }
-func (f *fakeRemoteStore) ListByPrefixWithMeta(_ context.Context, _ string) ([]remote.ObjectInfo, error) {
-	return nil, nil
-}
-func (f *fakeRemoteStore) HeadObject(_ context.Context, _ string) (remote.HeadResult, error) {
-	return remote.HeadResult{}, nil
-}
-func (f *fakeRemoteStore) CopyBlock(_ context.Context, _, _ string) error { return nil }
-func (f *fakeRemoteStore) HealthCheck(_ context.Context) error            { return nil }
+func (f *fakeRemoteStore) HealthCheck(_ context.Context) error { return nil }
 func (f *fakeRemoteStore) Healthcheck(_ context.Context) health.Report {
 	return health.Report{Status: health.StatusHealthy}
 }

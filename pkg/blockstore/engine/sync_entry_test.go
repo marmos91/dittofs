@@ -63,7 +63,10 @@ func TestTransferRequest_BlockKey(t *testing.T) {
 	req := NewDownloadRequest("export/file.txt", 5, nil)
 	key := req.BlockKey()
 
-	expected := "export/file.txt/block-5"
+	// Phase 17: BlockKey switched from the legacy "{payloadID}/block-{N}"
+	// shape (deleted with blockstore.FormatStoreKey) to "{payloadID}/{N}"
+	// for the engine in-flight dedup map.
+	expected := "export/file.txt/5"
 	if key != expected {
 		t.Errorf("BlockKey() = %s, want %s", key, expected)
 	}

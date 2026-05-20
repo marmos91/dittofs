@@ -21,7 +21,6 @@ func newFSStoreForConformance(t *testing.T) *fs.FSStore {
 	dir := t.TempDir()
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	bc, err := fs.NewWithOptions(dir, 1<<30, 1<<30, nil, fs.FSStoreOptions{
-		UseAppendLog:    true,
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 50,

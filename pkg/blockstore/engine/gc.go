@@ -497,7 +497,7 @@ func sweepPhase(
 	// (e.g., per-prefix concurrency at the backend layer) without
 	// re-introducing the channel here.
 	_ = jobs
-	_ = sweepWG
+	_ = &sweepWG // pointer-anchor avoids sync.WaitGroup copy (govet 'copylocks')
 	sweepOne(prefixJob{})
 }
 
