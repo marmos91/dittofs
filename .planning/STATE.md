@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
 milestone: v0.16.0
-milestone_name: milestone
-status: completed
-stopped_at: Phase 16 SHIPPED — all 4 plans complete, warm-cache D-06 PASS (ratio 0.890)
-last_updated: "2026-05-20T12:27:13.402Z"
-last_activity: 2026-05-20 -- Phase 16 marked complete
+milestone_name: — CAS Convergence
+status: executing
+stopped_at: Phase 17 context gathered
+last_updated: "2026-05-20T16:39:40.103Z"
+last_activity: 2026-05-20 -- Phase 17 planning complete
 progress:
-  total_phases: 9
+  total_phases: 10
   completed_phases: 4
-  total_plans: 33
+  total_plans: 44
   completed_plans: 33
-  percent: 44
+  percent: 75
 ---
 
 # Project State
@@ -29,8 +29,8 @@ Milestone: v0.16.0
 Phase: 16 — COMPLETE
 Plan: 4 of 4 complete
 Branch: `gsd/phase-16-cache-mmap-removal`
-Status: Phase 16 complete
-Last activity: 2026-05-20 -- Phase 16 marked complete
+Status: Ready to execute
+Last activity: 2026-05-20 -- Phase 17 planning complete
 
 ## Next Actionable
 
@@ -134,8 +134,8 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-20T14:28:00Z
-Stopped at: Phase 16 SHIPPED — all 4 plans complete, warm-cache D-06 PASS (ratio 0.890)
+Last session: 2026-05-20T13:57:54.080Z
+Stopped at: Phase 17 context gathered
 Next action: Open PR for `gsd/phase-16-cache-mmap-removal` → `develop`; close GH issue #516 on merge; begin Phase 17 planning (unified BlockStore interface, GH issue #517). Plan 16-04 SUMMARY at `.planning/phases/16-cache-mmap-removal/16-04-SUMMARY.md`. Bench artifacts retained at `/tmp/p16-bench-{pre,post,benchstat}.txt`.
 
 Previous next-action (preserved for context): **Phase 14 phase-execution complete.** Two outstanding follow-ups before production rollout: (1) `openOfflineRuntime` production wiring (controlplane DB read + per-share metadata/remote-store factory dispatch) — tracked under #425, interfaces stable, runbook documents this prominently as a Known Limitation; (2) per-payload-id streaming variant of `deleteLegacyKeys` only if real workloads surface S3 LIST cost (T-14-05-04). Status surface (CLI + REST) is fully usable today against a running daemon. Once #425 closes, no runbook changes needed — the four worked transcripts will then run literally rather than aspirationally. Phase 15 (A6 — legacy cleanup) remains intentionally deferred until #425 closes and migration is rolled out across production workloads.
