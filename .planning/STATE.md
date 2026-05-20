@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
 milestone: v0.15.0
-milestone_name: milestone
-status: executing
-stopped_at: Phase 14 Plan 07 shipped — operator docs runbook (MIG-01..MIG-04 closed; openOfflineRuntime production wire-up still gates production rollout, tracked under #425)
-last_updated: "2026-05-05T17:59:30.000Z"
+milestone_name: — CAS Convergence
+status: completed
+stopped_at: Phase 16 context gathered
+last_updated: "2026-05-20T10:48:25.192Z"
 last_activity: 2026-05-05
 progress:
   total_phases: 8
-  completed_phases: 6
-  total_plans: 66
-  completed_plans: 66
+  completed_phases: 3
+  total_plans: 29
+  completed_plans: 29
   percent: 100
 ---
 
@@ -125,8 +125,8 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-05T17:59:30.000Z
-Stopped at: Phase 14 Plan 07 shipped — operator docs runbook (MIG-01..MIG-04 closed)
+Last session: 2026-05-20T10:48:25.183Z
+Stopped at: Phase 16 context gathered
 Next action: **Phase 14 phase-execution complete.** Two outstanding follow-ups before production rollout: (1) `openOfflineRuntime` production wiring (controlplane DB read + per-share metadata/remote-store factory dispatch) — tracked under #425, interfaces stable, runbook documents this prominently as a Known Limitation; (2) per-payload-id streaming variant of `deleteLegacyKeys` only if real workloads surface S3 LIST cost (T-14-05-04). Status surface (CLI + REST) is fully usable today against a running daemon. Once #425 closes, no runbook changes needed — the four worked transcripts will then run literally rather than aspirationally. Phase 15 (A6 — legacy cleanup) remains intentionally deferred until #425 closes and migration is rolled out across production workloads.
 
 **Shipped Phase:** 11 (cas-write-path-gc-rewrite-a2) — 9 plans + ~30 review/fix commits — 2026-04-26T18:03:03Z (PR #453)
