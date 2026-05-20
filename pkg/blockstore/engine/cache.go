@@ -201,9 +201,9 @@ func NewCache(maxBytes int64, workers int, loadFn LoadByHashFn) *Cache {
 // Get returns the cached bytes for hash, promoting the entry to the
 // front of the LRU list. Returns (nil, false) on miss or after Close.
 //
-// Returns the cache's own slice — callers must not mutate it. (For
-// Phase 12 the only consumer is engine.ReadAt which copies into the
-// destination buffer; Plan 10 mmap removes this aliasing concern.)
+// Returns the cache's own slice — callers must not mutate it. The
+// only consumer is engine.ReadAt which copies into the destination
+// buffer (Phase 16: source is RAM-only; no mmap aliasing window).
 func (c *Cache) Get(hash blockstore.ContentHash) ([]byte, bool) {
 	if c == nil || c.closed.Load() {
 		return nil, false
