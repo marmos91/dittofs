@@ -1,6 +1,9 @@
 package acl
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestComputeInheritedACL_FileInheritOnChildFile(t *testing.T) {
 	parentACL := &ACL{ACEs: []ACE{
@@ -611,6 +614,221 @@ func TestComputeInheritedACL_ParentAutoInheritedButNoInheritableACEs_ReturnsNil(
 	result := ComputeInheritedACL(parentACL, false, Creator{})
 	if result != nil {
 		t.Errorf("expected nil when no inheritable ACEs even if parent has AutoInherited, got %+v", result)
+	}
+}
+
+// buildParentACLWithFlags constructs a parent ACL with a single inheritable
+// ACE for the inheritance conformance matrices below. It mirrors the
+// smbtorture parent SD shape used by `test_inheritance_flags` and
+// `test_inheritance`: one ALLOW ACE granting WRITE_DATA to EVERYONE@ with
+// the supplied ACE inheritance flags. controlFlags carries the bool pair
+// (autoInherited, protected) for the parent SD; parentACEHasInheritedBit
+// optionally pre-sets ACE4_INHERITED_ACE on the parent ACE itself (matching
+// smbtorture's "i&8" iteration bit).
+func buildParentACLWithFlags(autoInherited, protected bool, aceFlags uint32, parentACEHasInheritedBit bool) *ACL {
+	flag := aceFlags
+	if parentACEHasInheritedBit {
+		flag |= ACE4_INHERITED_ACE
+	}
+	return &ACL{
+		AutoInherited: autoInherited,
+		Protected:     protected,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       flag,
+				AccessMask: ACE4_WRITE_DATA,
+				Who:        SpecialEveryone,
+			},
+		},
+	}
+}
+
+// TestComputeInheritedACL_InheritanceFlagsMatrix mirrors smbtorture's
+// `test_inheritance_flags` from source4/torture/smb2/acls.c. It walks a
+// 16-case matrix over the parent SD-level control flag combinations
+// affecting inheritance: AutoInherited, AutoInheritReq (request-only, not
+// stored on the in-memory model — skipped), Protected, and whether the
+// parent ACE itself carries ACE4_INHERITED_ACE.
+//
+// Bit layout (matches smbtorture i ∈ 0..15):
+//
+//	i&1 → parent SD.AutoInherited
+//	i&2 → AutoInheritReq (request flag; not on our model — ignored)
+//	i&4 → parent SD.Protected
+//	i&8 → parent ACE has ACE4_INHERITED_ACE pre-set
+//
+// Key invariant under test (MS-DTYP §2.5.3.4.2 / Samba `set_inherited_sd`):
+// the child ACE has ACE4_INHERITED_ACE iff parent.AutoInherited OR the
+// parent ACE already had ACE4_INHERITED_ACE.
+//
+// DittoFS today unconditionally sets ACE4_INHERITED_ACE on every inherited
+// child ACE, which violates the invariant whenever (i&1)==0 AND (i&8)==0
+// — that is i ∈ {0, 2, 4, 6}. Those iterations are skipped here under
+// #521 PR 2 (Bug A: conditional INHERITED_ACE).
+func TestComputeInheritedACL_InheritanceFlagsMatrix(t *testing.T) {
+	for i := 0; i < 16; i++ {
+		i := i
+		autoInherited := (i & 1) != 0
+		protected := (i & 4) != 0
+		aceHasInheritedBit := (i & 8) != 0
+		expectChildInherited := autoInherited || aceHasInheritedBit
+
+		for _, tc := range []struct {
+			name        string
+			isDirectory bool
+		}{
+			{"file", false},
+			{"dir", true},
+		} {
+			tc := tc
+			t.Run(formatMatrixName(i, tc.name), func(t *testing.T) {
+				if !expectChildInherited {
+					t.Skip("tracked under #521 PR 2 — Bug A conditional INHERITED_ACE")
+				}
+
+				parent := buildParentACLWithFlags(
+					autoInherited,
+					protected,
+					ACE4_FILE_INHERIT_ACE|ACE4_DIRECTORY_INHERIT_ACE,
+					aceHasInheritedBit,
+				)
+
+				result := ComputeInheritedACL(parent, tc.isDirectory, Creator{})
+				if result == nil {
+					t.Fatalf("i=%d %s: expected non-nil result (parent OI|CI grants both file and dir inherit)", i, tc.name)
+				}
+				if len(result.ACEs) != 1 {
+					t.Fatalf("i=%d %s: expected 1 child ACE, got %d", i, tc.name, len(result.ACEs))
+				}
+
+				gotInherited := result.ACEs[0].IsInherited()
+				if gotInherited != expectChildInherited {
+					t.Errorf("i=%d %s: child INHERITED_ACE=%v, want %v (parent AI=%v ace.I=%v)",
+						i, tc.name, gotInherited, expectChildInherited, autoInherited, aceHasInheritedBit)
+				}
+
+				// AutoInherited propagation (already correct under P6-2,
+				// asserted here as a non-skipped sanity check).
+				if result.AutoInherited != autoInherited {
+					t.Errorf("i=%d %s: child SD.AutoInherited=%v, want %v",
+						i, tc.name, result.AutoInherited, autoInherited)
+				}
+				// Protected is per-SD; never inherited.
+				if result.Protected {
+					t.Errorf("i=%d %s: child SD.Protected must always be false, got true", i, tc.name)
+				}
+			})
+		}
+	}
+}
+
+func formatMatrixName(i int, kind string) string {
+	return fmt.Sprintf("i=%02d_%s", i, kind)
+}
+
+// TestComputeInheritedACL_InheritanceACEFlagMatrix mirrors smbtorture's
+// `test_inheritance` from source4/torture/smb2/acls.c. It walks the 16
+// combinations of inheritance-related ACE flags on a single parent ACE
+// (OI, CI, NP, IO) and asserts the resulting child ACE's flag layout
+// against the MS-DTYP §2.5.3.4 truth table (Samba reference:
+// source3/lib/util_sd.c::sec_ace_inherit).
+//
+// To isolate this matrix from the SD-control-flag bug exercised in
+// TestComputeInheritedACL_InheritanceFlagsMatrix, the parent SD is set
+// with AutoInherited=true throughout. The child ACE is therefore always
+// expected to carry ACE4_INHERITED_ACE when it exists.
+//
+// Currently-failing rows (per #521 research) are dir-child rows 1 and 9:
+// parent OI-only (and IO|OI) must produce a dir-child ACE with OI|IO so
+// the dir continues to propagate inheritance to file grandchildren even
+// though the dir itself does not gain the right. DittoFS today filters
+// dir-child inheritance strictly on DI, dropping OI-only parents. Those
+// two subtests are skipped under #521 PR 3 (Bug C).
+func TestComputeInheritedACL_InheritanceACEFlagMatrix(t *testing.T) {
+	const (
+		OI = ACE4_FILE_INHERIT_ACE
+		CI = ACE4_DIRECTORY_INHERIT_ACE
+		NP = ACE4_NO_PROPAGATE_INHERIT_ACE
+		IO = ACE4_INHERIT_ONLY_ACE
+		I  = ACE4_INHERITED_ACE
+	)
+
+	// hasACE encodes the expected child outcome:
+	//   present=false → no inherited ACE (ComputeInheritedACL returns nil)
+	//   present=true  → exactly one inherited ACE with `flags` (INHERITED_ACE
+	//                   bit included when AutoInherited propagates).
+	type expected struct {
+		present bool
+		flags   uint32
+	}
+
+	type row struct {
+		parentFlags uint32
+		file        expected
+		dir         expected
+		skipDirPR   string // non-empty → skip the dir subtest with this reason
+	}
+
+	rows := []row{
+		/* 0  none           */ {0, expected{}, expected{}, ""},
+		/* 1  OI             */ {OI, expected{true, I}, expected{true, OI | IO | I}, "tracked under #521 PR 3 — Bug C OI propagation to dir child"},
+		/* 2  CI             */ {CI, expected{}, expected{true, CI | I}, ""},
+		/* 3  OI|CI          */ {OI | CI, expected{true, I}, expected{true, OI | CI | I}, ""},
+		/* 4  NP             */ {NP, expected{}, expected{}, ""},
+		/* 5  NP|OI          */ {NP | OI, expected{true, I}, expected{}, ""},
+		/* 6  NP|CI          */ {NP | CI, expected{}, expected{true, I}, ""},
+		/* 7  NP|OI|CI       */ {NP | OI | CI, expected{true, I}, expected{true, I}, ""},
+		/* 8  IO             */ {IO, expected{}, expected{}, ""},
+		/* 9  IO|OI          */ {IO | OI, expected{true, I}, expected{true, OI | IO | I}, "tracked under #521 PR 3 — Bug C OI propagation to dir child"},
+		/* 10 IO|CI          */ {IO | CI, expected{}, expected{true, CI | I}, ""},
+		/* 11 IO|OI|CI       */ {IO | OI | CI, expected{true, I}, expected{true, OI | CI | I}, ""},
+		/* 12 IO|NP          */ {IO | NP, expected{}, expected{}, ""},
+		/* 13 IO|NP|OI       */ {IO | NP | OI, expected{true, I}, expected{}, ""},
+		/* 14 IO|NP|CI       */ {IO | NP | CI, expected{}, expected{true, I}, ""},
+		/* 15 IO|NP|OI|CI    */ {IO | NP | OI | CI, expected{true, I}, expected{true, I}, ""},
+	}
+
+	for n, r := range rows {
+		n, r := n, r
+		t.Run(fmt.Sprintf("row_%02d_file", n), func(t *testing.T) {
+			parent := buildParentACLWithFlags(true /*AutoInherited*/, false, r.parentFlags, false)
+			result := ComputeInheritedACL(parent, false /*isDir*/, Creator{})
+			assertInheritedFlags(t, n, "file", result, r.file)
+		})
+		t.Run(fmt.Sprintf("row_%02d_dir", n), func(t *testing.T) {
+			if r.skipDirPR != "" {
+				t.Skip(r.skipDirPR)
+			}
+			parent := buildParentACLWithFlags(true /*AutoInherited*/, false, r.parentFlags, false)
+			result := ComputeInheritedACL(parent, true /*isDir*/, Creator{})
+			assertInheritedFlags(t, n, "dir", result, r.dir)
+		})
+	}
+}
+
+func assertInheritedFlags(t *testing.T, row int, kind string, result *ACL, want struct {
+	present bool
+	flags   uint32
+},
+) {
+	t.Helper()
+	if !want.present {
+		if result != nil && len(result.ACEs) > 0 {
+			t.Errorf("row %d %s: expected no inherited ACE, got %d ACE(s), first flags=0x%x",
+				row, kind, len(result.ACEs), result.ACEs[0].Flag)
+		}
+		return
+	}
+	if result == nil {
+		t.Fatalf("row %d %s: expected 1 inherited ACE, got nil ACL", row, kind)
+	}
+	if len(result.ACEs) != 1 {
+		t.Fatalf("row %d %s: expected 1 inherited ACE, got %d", row, kind, len(result.ACEs))
+	}
+	if result.ACEs[0].Flag != want.flags {
+		t.Errorf("row %d %s: child ACE flags=0x%x, want 0x%x",
+			row, kind, result.ACEs[0].Flag, want.flags)
 	}
 }
 
