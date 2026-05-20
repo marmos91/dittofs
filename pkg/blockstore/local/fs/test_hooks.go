@@ -13,13 +13,18 @@ import (
 )
 
 // This file exposes a small set of test-only accessors and helpers on
-// *FSStore so the shared conformance suite in localtest/ can observe /
-// manipulate internal state without the localtest package needing access
-// to unexported fields. Every symbol here has a `_ForTest` suffix so
-// reviewers can catch production misuse (T-10-10-01 STRIDE mitigation).
+// *FSStore so the fs-internal conformance scenarios in
+// eviction_lsl08_conformance_test.go and appendlog_internals_test.go
+// can observe / manipulate internal state. Every symbol here has a
+// `_ForTest` suffix so reviewers can catch production misuse
+// (T-10-10-01 STRIDE mitigation).
 //
-// These helpers exist only to support the five D-22 conformance scenarios
-// (plan 10-10). They are not part of the production FSStore API.
+// These helpers exist only to support the D-22 conformance scenarios
+// (plan 10-10) and the LSL-08 eviction scenarios (plan 11). They are
+// not part of the production FSStore API. The Plan 17-06 mega-PR
+// retired the legacy pkg/blockstore/local/localtest/ package that
+// originally consumed these hooks; the scenarios now live inside the
+// fs package as external `_test.go` files.
 
 // BaseDirForTest returns the FSStore baseDir.
 func (bc *FSStore) BaseDirForTest() string { return bc.baseDir }
@@ -167,8 +172,8 @@ func (bc *FSStore) SeedLRUFromDiskForTest() bool {
 // otherwise these helpers are no-ops returning 0.
 //
 // FSStore implements them via the *countingFileBlockStore wrapper
-// installed by the LSL-08 factory in localtest. When the field is nil
-// (not-counted), both helpers are no-ops.
+// installed by the LSL-08 factory in eviction_lsl08_conformance_test.go.
+// When the field is nil (not-counted), both helpers are no-ops.
 
 // FBSCounter is implemented by counting wrappers around FileBlockStore.
 // Used by the LSL-08 conformance suite to assert ensureSpace makes zero
@@ -204,8 +209,8 @@ func (bc *FSStore) FBSCallCountForTest() int {
 // Recover walk over .blk files finds none in a test tempdir that only
 // holds logs/ + blocks/.
 //
-// This is defined here (not in an _test.go file) so external packages
-// like localtest can call ReopenForTest without exporting the
+// This is defined here (not in an _test.go file) so external test
+// packages can call ReopenForTest without exporting the
 // FileBlockStore type separately.
 type nopFBSForTest struct{}
 

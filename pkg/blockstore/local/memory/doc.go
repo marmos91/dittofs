@@ -6,7 +6,7 @@
 //
 // This store is useful for:
 //   - Unit tests that need a fast, isolated LocalStore
-//   - Running the conformance test suite (localtest)
+//   - Running the conformance test suite (blockstoretest)
 //   - Ephemeral configurations where data loss on restart is acceptable
 //
 // Thread-safe: all operations are protected by a sync.RWMutex.

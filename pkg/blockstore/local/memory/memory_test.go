@@ -3,29 +3,45 @@ package memory_test
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore/local"
-	"github.com/marmos91/dittofs/pkg/blockstore/local/localtest"
+	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/blockstore/blockstoretest"
 	"github.com/marmos91/dittofs/pkg/blockstore/local/memory"
 )
 
-func TestMemoryStoreConformance(t *testing.T) {
-	factory := func(t *testing.T) local.LocalStore {
+// TestMemoryStore_BlockStoreConformance runs the unified Phase 17 D-09
+// BlockStoreConformance suite against the local in-memory backend.
+//
+// Plan 17-07 lands the BlockStoreAppend-contributed methods
+// (Put/Has/Walk/Head/Delete/GetRange/AppendWrite/DeleteLog) on
+// *memory.MemoryStore; this wiring is checked in now so the conformance
+// contract is documented at the call site before the implementation
+// closes the gap (per D-01 mega-PR commit ordering — interfaces wired
+// first, implementations follow).
+func TestMemoryStore_BlockStoreConformance(t *testing.T) {
+	factory := func(t *testing.T) (blockstore.BlockStore, func()) {
 		t.Helper()
-		return memory.New()
+		s := memory.New()
+		cleanup := func() {}
+		return s, cleanup
 	}
-	localtest.RunSuite(t, factory)
+	blockstoretest.BlockStoreConformance(t, factory)
 }
 
-// TestMemoryStore_GetConformance wires the LocalStore.Get conformance
-// suite against memory.MemoryStore. The memory backend does not
-// implement StoreChunk, so RunGetSuite auto-skips the round-trip +
-// fresh-allocation subtests and exercises only the missing-hash →
-// ErrChunkNotFound assertion — matching the documented stub behavior of
-// MemoryStore.Get.
-func TestMemoryStore_GetConformance(t *testing.T) {
-	factory := func(t *testing.T) local.LocalStore {
+// TestMemoryStore_BlockStoreAppendConformance runs the random-write
+// absorber suite from pkg/blockstore/blockstoretest against the local
+// in-memory backend. Three scenarios `t.Skip` on the interface-only
+// surface (require fs-internal probes); the two portable scenarios
+// (AppendLogRoundTrip, ConcurrentStorm) exercise the public surface
+// via Walk-polling.
+//
+// Plan 17-07 lands AppendWrite + DeleteLog on *memory.MemoryStore so
+// this test can run.
+func TestMemoryStore_BlockStoreAppendConformance(t *testing.T) {
+	factory := func(t *testing.T) (blockstore.BlockStoreAppend, func()) {
 		t.Helper()
-		return memory.New()
+		s := memory.New()
+		cleanup := func() {}
+		return s, cleanup
 	}
-	localtest.RunGetSuite(t, factory)
+	blockstoretest.BlockStoreAppendConformance(t, factory)
 }

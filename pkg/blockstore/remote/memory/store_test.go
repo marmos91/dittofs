@@ -9,7 +9,30 @@ import (
 	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/blockstore/blockstoretest"
 )
+
+// TestStore_BlockStoreConformance runs the unified Phase 17 D-09
+// BlockStoreConformance suite against the in-memory remote backend.
+// Per D-09 the remote backends implement only BlockStore (no
+// BlockStoreAppend); only BlockStoreConformance runs here.
+//
+// The inline TestStore_* tests below remain in place as a fine-grained
+// per-method baseline (data-isolation defensive copies, closed-store
+// rejection paths, ReadBlockVerified mismatch case) — they exercise
+// backend-specific behaviors that are not part of the unified contract.
+//
+// Plan 17-07 lands the missing Has() method on the remote-memory
+// *Store; until then the factory return type does not type-check.
+func TestStore_BlockStoreConformance(t *testing.T) {
+	factory := func(t *testing.T) (blockstore.BlockStore, func()) {
+		t.Helper()
+		s := New()
+		cleanup := func() { _ = s.Close() }
+		return s, cleanup
+	}
+	blockstoretest.BlockStoreConformance(t, factory)
+}
 
 // hashOf returns the BLAKE3-256 hash of data as a blockstore.ContentHash.
 func hashOf(t *testing.T, data []byte) blockstore.ContentHash {

@@ -13,11 +13,13 @@
 //     this entrypoint.
 //
 // This package replaces pkg/blockstore/local/localtest and
-// pkg/blockstore/remote/remotetest, which are deleted in Plan 17-07
-// after the fs / s3 / memory backends are wired against the new
-// factories. Until then, the legacy suites continue to compile and
-// pass; this package contains the scenarios only — backend factories
-// land in Plan 17-06 / 17-07.
+// pkg/blockstore/remote/remotetest, which were deleted by Plan 17-03
+// (remotetest) and Plan 17-06 (localtest) after the fs / s3 / memory
+// backends were wired against the new factories. The three
+// fs-internal scenarios that cannot be expressed through the
+// interface surface (PressureChannel_INV05, TornWriteRecovery_LSL06,
+// RollupOffsetMonotone_INV03) live in
+// pkg/blockstore/local/fs/appendlog_internals_test.go.
 //
 // Each scenario uses a factory that returns a fresh (BlockStore,
 // cleanup) pair per subtest, so subtests do not share state and
