@@ -23,6 +23,7 @@ var (
 	editLocalStoreSize    string
 	editReadBufferSize    string
 	editQuotaBytes        string
+	editAclCanonicalize   string
 )
 
 var editCmd = &cobra.Command{
@@ -88,6 +89,7 @@ func init() {
 	editCmd.Flags().StringVar(&editLocalStoreSize, "local-store-size", "", "Per-share disk cache size override (e.g., 10GiB, 500MiB)")
 	editCmd.Flags().StringVar(&editReadBufferSize, "read-buffer-size", "", "Per-share read buffer size override (e.g., 2GiB, 256MiB)")
 	editCmd.Flags().StringVar(&editQuotaBytes, "quota-bytes", "", "Per-share byte quota (e.g., '10GiB'). 0 = remove quota")
+	editCmd.Flags().StringVar(&editAclCanonicalize, "acl-canonicalize-inherited", "", "Canonicalize inherited DACL ACEs in SMB security descriptors (true|false). Takes effect on adapter restart")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -104,7 +106,8 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		cmd.Flags().Changed("default-permission") ||
 		cmd.Flags().Changed("description") || cmd.Flags().Changed("retention") ||
 		cmd.Flags().Changed("retention-ttl") || cmd.Flags().Changed("local-store-size") ||
-		cmd.Flags().Changed("read-buffer-size") || cmd.Flags().Changed("quota-bytes")
+		cmd.Flags().Changed("read-buffer-size") || cmd.Flags().Changed("quota-bytes") ||
+		cmd.Flags().Changed("acl-canonicalize-inherited")
 
 	// If no flags provided, run interactive mode
 	if !hasFlags {
@@ -169,6 +172,12 @@ func runEdit(cmd *cobra.Command, args []string) error {
 
 	if editQuotaBytes != "" {
 		req.QuotaBytes = &editQuotaBytes
+		hasUpdate = true
+	}
+
+	if editAclCanonicalize != "" {
+		aclCanon := strings.ToLower(editAclCanonicalize) == "true"
+		req.AclFlagInheritedCanonicalization = &aclCanon
 		hasUpdate = true
 	}
 

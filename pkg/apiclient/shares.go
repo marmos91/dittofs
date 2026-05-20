@@ -25,21 +25,25 @@ type Share struct {
 	// Enabled mirrors models.Share.Enabled — Phase 6 D-28. The tag is
 	// deliberately NOT omitempty: `false` is semantically meaningful
 	// ("share is disabled") whereas read_only:false is the inert default.
-	Enabled           bool      `json:"enabled"`
-	EncryptData       bool      `json:"encrypt_data,omitempty"`
-	DefaultPermission string    `json:"default_permission,omitempty"`
-	Description       string    `json:"description,omitempty"`
-	BlockedOperations []string  `json:"blocked_operations,omitempty"`
-	RetentionPolicy   string    `json:"retention_policy,omitempty"`
-	RetentionTTL      string    `json:"retention_ttl,omitempty"`
-	LocalStoreSize    string    `json:"local_store_size,omitempty"`
-	ReadBufferSize    string    `json:"read_buffer_size,omitempty"`
-	QuotaBytes        string    `json:"quota_bytes,omitempty"`
-	UsedBytes         int64     `json:"used_bytes"`
-	PhysicalBytes     int64     `json:"physical_bytes"`
-	UsagePercent      float64   `json:"usage_percent"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	Enabled           bool     `json:"enabled"`
+	EncryptData       bool     `json:"encrypt_data,omitempty"`
+	DefaultPermission string   `json:"default_permission,omitempty"`
+	Description       string   `json:"description,omitempty"`
+	BlockedOperations []string `json:"blocked_operations,omitempty"`
+	RetentionPolicy   string   `json:"retention_policy,omitempty"`
+	RetentionTTL      string   `json:"retention_ttl,omitempty"`
+	LocalStoreSize    string   `json:"local_store_size,omitempty"`
+	ReadBufferSize    string   `json:"read_buffer_size,omitempty"`
+	QuotaBytes        string   `json:"quota_bytes,omitempty"`
+	UsedBytes         int64    `json:"used_bytes"`
+	PhysicalBytes     int64    `json:"physical_bytes"`
+	UsagePercent      float64  `json:"usage_percent"`
+	// AclFlagInheritedCanonicalization mirrors models.Share — Refs #514.
+	// No omitempty: `false` is operator-meaningful (canonicalization
+	// disabled) and consumers need to render the state explicitly.
+	AclFlagInheritedCanonicalization bool      `json:"acl_flag_inherited_canonicalization"`
+	CreatedAt                        time.Time `json:"created_at"`
+	UpdatedAt                        time.Time `json:"updated_at"`
 }
 
 // CreateShareRequest is the request to create a share.
@@ -58,6 +62,9 @@ type CreateShareRequest struct {
 	LocalStoreSize    string    `json:"local_store_size,omitempty"`
 	ReadBufferSize    string    `json:"read_buffer_size,omitempty"`
 	QuotaBytes        string    `json:"quota_bytes,omitempty"`
+	// AclFlagInheritedCanonicalization — Refs #514. Pointer so callers can
+	// distinguish "unset → server default (true)" from "explicit false".
+	AclFlagInheritedCanonicalization *bool `json:"acl_flag_inherited_canonicalization,omitempty"`
 }
 
 // UpdateShareRequest is the request to update a share.
@@ -74,6 +81,9 @@ type UpdateShareRequest struct {
 	LocalStoreSize     *string   `json:"local_store_size,omitempty"`
 	ReadBufferSize     *string   `json:"read_buffer_size,omitempty"`
 	QuotaBytes         *string   `json:"quota_bytes,omitempty"`
+	// AclFlagInheritedCanonicalization — Refs #514. nil = no change;
+	// non-nil = explicit set. Takes effect on adapter restart.
+	AclFlagInheritedCanonicalization *bool `json:"acl_flag_inherited_canonicalization,omitempty"`
 }
 
 // SharePermission represents a permission on a share.
