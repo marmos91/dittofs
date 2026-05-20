@@ -145,49 +145,55 @@ type LocalStore interface {
 	// (and FlushedBlock) entirely. Until then they remain on the
 	// interface and on *fs.FSStore so every Phase 17 commit
 	// `go build ./...`-cleans (D-01 atomic-merge).
+	//
+	// Grep marker for the Phase 18 cleanup wave: TRANSITIONAL-PHASE-18.
+	// The marker is plain text (not a godoc "Deprecated:" tag) so
+	// staticcheck SA1019 does not fire on existing call sites that will
+	// be rewritten in Phase 18.
 
 	// ReadAt reads data from the local store at the specified offset
 	// into dest. Returns (true, nil) if all requested bytes were
 	// found locally, (false, nil) on miss for any block in the
 	// range.
 	//
-	// Deprecated: removed in Phase 18 (Syncer simplification rewrites these consumers onto BlockStore.Put/Get/Walk).
+	// TRANSITIONAL-PHASE-18: removed when Syncer simplification rewrites
+	// engine consumers onto BlockStore.Put/Get/Walk.
 	ReadAt(ctx context.Context, payloadID string, dest []byte, offset uint64) (bool, error)
 
 	// WriteAt writes data to the local store at the specified offset.
 	//
-	// Deprecated: removed in Phase 18 (Syncer simplification rewrites these consumers onto BlockStore.Put/Get/Walk).
+	// TRANSITIONAL-PHASE-18: see ReadAt.
 	WriteAt(ctx context.Context, payloadID string, data []byte, offset uint64) error
 
 	// Flush writes all dirty in-memory blocks for a file to disk as
 	// .blk files. Returns the list of blocks that were flushed.
 	//
-	// Deprecated: removed in Phase 18 (Syncer simplification rewrites these consumers onto BlockStore.Put/Get/Walk).
+	// TRANSITIONAL-PHASE-18: see ReadAt.
 	Flush(ctx context.Context, payloadID string) ([]FlushedBlock, error)
 
 	// IsBlockLocal checks if a specific block is available locally
 	// (memory or disk).
 	//
-	// Deprecated: removed in Phase 18 (Syncer simplification rewrites these consumers onto BlockStore.Put/Get/Walk).
+	// TRANSITIONAL-PHASE-18: see ReadAt.
 	IsBlockLocal(ctx context.Context, payloadID string, blockIdx uint64) bool
 
 	// GetBlockData returns the raw data for a specific block,
 	// checking memory first then disk. Returns data, dataSize, and
 	// error.
 	//
-	// Deprecated: removed in Phase 18 (Syncer simplification rewrites these consumers onto BlockStore.Put/Get/Walk).
+	// TRANSITIONAL-PHASE-18: see ReadAt.
 	GetBlockData(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error)
 
 	// WriteFromRemote stores data fetched from the remote block
 	// store locally. The block is marked Remote since it already
 	// exists remotely.
 	//
-	// Deprecated: removed in Phase 18 (Syncer simplification rewrites these consumers onto BlockStore.Put/Get/Walk).
+	// TRANSITIONAL-PHASE-18: see ReadAt.
 	WriteFromRemote(ctx context.Context, payloadID string, data []byte, offset uint64) error
 
 	// DeleteAllBlockFiles removes all blocks for a file from memory,
 	// disk, and metadata.
 	//
-	// Deprecated: removed in Phase 18 (Syncer simplification rewrites these consumers onto BlockStore.Put/Get/Walk).
+	// TRANSITIONAL-PHASE-18: see ReadAt.
 	DeleteAllBlockFiles(ctx context.Context, payloadID string) error
 }

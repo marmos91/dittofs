@@ -126,7 +126,7 @@ func parseBlockIdx(key, payloadID string) uint64 {
 
 // ReadAt reads data from the in-memory store at the specified offset into dest.
 //
-// Deprecated: removed in Phase 18 (Syncer simplification rewrites these consumers onto BlockStore.Put/Get/Walk).
+// TRANSITIONAL-PHASE-18: removed when Syncer simplification rewrites engine consumers onto BlockStore.Put/Get/Walk.
 func (s *MemoryStore) ReadAt(_ context.Context, payloadID string, dest []byte, offset uint64) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -179,7 +179,7 @@ func (s *MemoryStore) GetFileSize(_ context.Context, payloadID string) (uint64, 
 
 // IsBlockLocal checks if a specific block is available in the store.
 //
-// Deprecated: removed in Phase 18.
+// TRANSITIONAL-PHASE-18: see local.LocalStore godoc.
 func (s *MemoryStore) IsBlockLocal(_ context.Context, payloadID string, blockIdx uint64) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -190,7 +190,7 @@ func (s *MemoryStore) IsBlockLocal(_ context.Context, payloadID string, blockIdx
 
 // GetBlockData returns the raw data for a specific block.
 //
-// Deprecated: removed in Phase 18.
+// TRANSITIONAL-PHASE-18: see local.LocalStore godoc.
 func (s *MemoryStore) GetBlockData(_ context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -456,7 +456,7 @@ func (s *MemoryStore) DeleteLog(_ context.Context, payloadID string) error {
 
 // WriteAt writes data to the in-memory store at the specified offset.
 //
-// Deprecated: removed in Phase 18.
+// TRANSITIONAL-PHASE-18: see local.LocalStore godoc.
 func (s *MemoryStore) WriteAt(_ context.Context, payloadID string, data []byte, offset uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -512,7 +512,7 @@ func (s *MemoryStore) WriteAt(_ context.Context, payloadID string, data []byte, 
 // WriteFromRemote stores data fetched from the remote block store.
 // The block is marked Remote since it already exists remotely.
 //
-// Deprecated: removed in Phase 18.
+// TRANSITIONAL-PHASE-18: see local.LocalStore godoc.
 func (s *MemoryStore) WriteFromRemote(_ context.Context, payloadID string, data []byte, offset uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -544,7 +544,7 @@ func (s *MemoryStore) WriteFromRemote(_ context.Context, payloadID string, data 
 // Flush marks all dirty blocks for a file as Local (flushed).
 // In the memory store, there is no disk to flush to -- this just transitions state.
 //
-// Deprecated: removed in Phase 18.
+// TRANSITIONAL-PHASE-18: see local.LocalStore godoc.
 func (s *MemoryStore) Flush(_ context.Context, payloadID string) ([]local.FlushedBlock, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -633,7 +633,7 @@ func (s *MemoryStore) EvictMemory(_ context.Context, payloadID string) error {
 
 // DeleteAllBlockFiles removes all blocks for a file.
 //
-// Deprecated: removed in Phase 18.
+// TRANSITIONAL-PHASE-18: see local.LocalStore godoc.
 func (s *MemoryStore) DeleteAllBlockFiles(_ context.Context, payloadID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

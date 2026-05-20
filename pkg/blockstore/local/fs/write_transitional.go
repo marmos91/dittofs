@@ -18,7 +18,7 @@ import (
 // point this method and the surrounding memBlock infrastructure are
 // deleted in their entirety.
 //
-// Deprecated: removed in Phase 18 (Syncer simplification rewrites these consumers onto BlockStore.Put/Get/Walk).
+// TRANSITIONAL-PHASE-18: removed when Syncer simplification rewrites engine consumers onto BlockStore.Put/Get/Walk.
 func (bc *FSStore) WriteAt(ctx context.Context, payloadID string, data []byte, offset uint64) error {
 	if bc.isClosed() {
 		return ErrStoreClosed

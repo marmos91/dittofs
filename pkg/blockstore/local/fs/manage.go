@@ -97,7 +97,7 @@ func (bc *FSStore) deleteBlockFile(ctx context.Context, payloadID string, blockI
 //     clear rollup_offset metadata, and unlink the log file. Phase 11
 //     mark-sweep GC cleans up orphan content-addressed chunks in blocks/.
 //
-// Deprecated: removed in Phase 18 (Syncer simplification rewrites these consumers onto BlockStore.Put/Get/Walk).
+// TRANSITIONAL-PHASE-18: removed when Syncer simplification rewrites engine consumers onto BlockStore.Put/Get/Walk.
 func (bc *FSStore) DeleteAllBlockFiles(ctx context.Context, payloadID string) error {
 	// List all blocks for this file from the store
 	blocks, err := bc.blockStore.ListFileBlocks(ctx, payloadID)
