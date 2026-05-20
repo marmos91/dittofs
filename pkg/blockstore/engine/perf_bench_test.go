@@ -132,6 +132,18 @@ func reportOpsPerSec(b *testing.B, ops int) {
 // BLAKE3-verified GET path (RemoteStore.ReadBlockVerified). Picks a
 // uniformly-random CAS key per iteration so the working set is too large
 // to fit in L3, defeating CPU-side caching of the verifier hash state.
+//
+// Phase 16 warm-cache baseline (Plan 16-04 measurement, 2026-05-20,
+// Apple M1 Max, -benchtime=10s -count=3, median ns/op):
+//
+//	pre  (commit f8e2532d):  1,492,970 ns/op    669.8 ops/s
+//	post (commit 436a81ec):  1,328,307 ns/op    752.8 ops/s
+//	ratio post/pre        :  0.890  (gate ≤1.02 per D-06, PASS)
+//
+// The mmap loader removed by Phase 16 lived on the cold-miss path,
+// not the warm path exercised here — the post slightly outperforms
+// the pre because the loadByHash closure no longer dispatches through
+// the per-OS mmap thunk; allocations + B/op are bit-identical.
 func BenchmarkRandReadVerified(b *testing.B) {
 	silenceLoggerForBench(b)
 	f := buildReadFixture(b)
