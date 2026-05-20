@@ -30,7 +30,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 - [x] **Phase 12: CDC read path + metadata schema + engine API (A3)** — `[]BlockRef` API, Cache by ContentHash, schema migration (GH issue: #423) (completed 2026-04-27)
 - [x] **Phase 13: Merkle root + file-level dedup (A4)** — `FileAttr.ObjectID` + short-circuit full-file dedup (GH issue: #424) (completed 2026-04-28)
 - [x] **Phase 14: Migration tool (A5)** — `dfsctl blockstore migrate` offline re-chunk + re-hash (GH issue: #425) (phases complete 2026-05-05; production wiring of `openOfflineRuntime` still gates production rollout)
-- [ ] **Phase 15: Legacy cleanup (A6)** — Remove dual-read shim, delete deprecated symbols (GH issue: #426) — **SUBSUMED BY v0.16.0 Phase 17** (legacy delete folded into unified BlockStore interface work; this issue can be closed once Phase 17 ships)
+- [x] **Phase 15: Legacy cleanup (A6)** — Remove dual-read shim, delete deprecated symbols (GH issue: #426) — **SUBSUMED BY v0.16.0 Phase 17** (legacy delete folded into unified BlockStore interface work; this issue can be closed once Phase 17 ships) (completed 2026-05-20)
 
 ---
 
@@ -412,7 +412,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 - [x] 17-08-PLAN.md — pkg/blockstore/migrate/migrate_to_cas.go library + dfs migrate-to-cas cobra subcommand (Wave 5) — shipped 2026-05-20 (`081f31c4`, `177c9c37`, `bd253756`, `6d3e0267`, `3e9ed645`)
 - [x] 17-09-PLAN.md — NewFSStore sentinel check + cmd/dfs/start.go boot-guard exit-78 (Wave 5) — shipped 2026-05-20 (`5961536c`, `6f3e0326`, `9fb382a7`, `b7f4d00d`)
 - [x] 17-10-PLAN.md — pkg/blockstore/doc.go convention + docs/CONFIGURATION.md Migration section + docs/CLI.md entry (Wave 6) — shipped 2026-05-20 (`bb97ec34`, `99b5ef58`, `9f604247`)
-- [ ] 17-11-PLAN.md — Phase 17 VERIFICATION.md: perf gate, LoC measurement, STRIDE consolidation, smoke test (Wave 6)
+- [x] 17-11-PLAN.md — Phase 17 VERIFICATION.md: perf gate, LoC measurement, STRIDE consolidation, smoke test (Wave 6)
 
 ## Milestone Gates
 

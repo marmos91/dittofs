@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v0.16.0
 milestone_name: — CAS Convergence
-status: executing
-stopped_at: Phase 17 context gathered
-last_updated: "2026-05-20T18:41:52.613Z"
+status: verifying
+stopped_at: Phase 17 Plan 10 (docs) shipped
+last_updated: "2026-05-20T18:56:52.425Z"
 last_activity: 2026-05-20
 progress:
   total_phases: 10
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 44
-  completed_plans: 43
-  percent: 98
+  completed_plans: 44
+  percent: 100
 ---
 
 # Project State
@@ -27,9 +27,9 @@ See: .planning/PROJECT.md (updated 2026-04-23)
 
 Milestone: v0.16.0
 Phase: 17 (unified-blockstore) — EXECUTING
-Plan: 6 of 11
+Plan: 11 of 11
 Branch: `gsd/phase-16-cache-mmap-removal`
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-05-20
 
 ## Next Actionable
@@ -136,7 +136,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-20T18:43:10.000Z
+Last session: 2026-05-20T18:56:29.878Z
 Stopped at: Phase 17 Plan 10 (docs) shipped
 Next action: Wait for the parallel sentinel-path-mismatch fix work stream (Plan 09 SUMMARY Deviations) to land; then Phase 17 is ready for develop merge. Plan 17-10 SUMMARY at `.planning/phases/17-unified-blockstore/17-10-SUMMARY.md`. Three doc surfaces (pkg/blockstore/doc.go, docs/CONFIGURATION.md §Migration, docs/CLI.md dfs migrate-to-cas) pinned by acceptance-criteria grep gates against future flag drift. Commits: `bb97ec34`, `99b5ef58`, `9f604247`.
 
