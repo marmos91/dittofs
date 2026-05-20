@@ -304,23 +304,6 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Refs #514: GORM skips Go-false on INSERT when the column has a
-	// non-zero SQL default (here `default:true`), so an explicit `false`
-	// request would otherwise be silently coerced back to true. Detect
-	// that and flip the row with UpdateShare (which DOES include the
-	// column in its whitelist).
-	if !aclCanon {
-		// GORM's Create reloads the row after INSERT, which overwrites the
-		// in-memory `false` with the SQL default (`true`). Reapply the
-		// caller's choice before UpdateShare so the whitelist actually
-		// flips the column.
-		share.AclFlagInheritedCanonicalization = aclCanon
-		if err := h.store.UpdateShare(r.Context(), share); err != nil {
-			logger.Warn("Failed to persist AclFlagInheritedCanonicalization=false on create",
-				"share", share.Name, "error", err)
-		}
-	}
-
 	// Create default adapter configs for the new share
 	nfsOpts := models.DefaultNFSExportOptions()
 	nfsCfg := &models.ShareAdapterConfig{ShareID: share.ID, AdapterType: "nfs"}
