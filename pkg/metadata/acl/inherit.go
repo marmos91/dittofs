@@ -122,6 +122,18 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 			continue
 		}
 
+		// Cap enforcement (FIFO truncation, mirrors Samba behavior under
+		// pressure): never produce a child ACL exceeding MaxACECount.
+		// Check BEFORE appending the resolved ACE because the prior
+		// iteration may have already dual-emitted, leaving the result at
+		// capacity. Earlier parent ACEs take precedence over later ones.
+		if len(inherited) >= MaxACECount {
+			slog.Debug("acl.ComputeInheritedACL: MaxACECount reached — truncating remaining parent ACEs",
+				"max", MaxACECount, "produced", len(inherited),
+				"remaining_parent_aces", len(parentACL.ACEs)-i)
+			break
+		}
+
 		newACE := *ace
 		// MS-DTYP §2.5.3.4.2 / Samba calculate_inherited_from_parent: the
 		// INHERITED_ACE bit on the child is conditional. It is set when
@@ -183,9 +195,17 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 		//   - parent ACE without CI (no need to reach grandchild dirs)
 		//   - NO_PROPAGATE (Samba stops propagation in that branch)
 		if isDirectory && isCreator && hasCI && !hasNP {
+			// Budget check: dual-emit needs one extra slot. The resolved
+			// ACE was already appended above; we now want to also add the
+			// preserved CREATOR. If there is no room left, drop the
+			// preserved one (resolved already inherits — losing the
+			// preserved version only weakens grandchild substitution, not
+			// the immediate child's effective permissions). FIFO
+			// truncation: prefer earlier parent ACEs over later ones.
 			if len(inherited) >= MaxACECount {
-				slog.Debug("acl.ComputeInheritedACL: skipping preserved CREATOR ACE — MaxACECount reached",
-					"max", MaxACECount, "principal", originalWho)
+				slog.Debug("acl.ComputeInheritedACL: dropping preserved CREATOR ACE — MaxACECount reached",
+					"max", MaxACECount, "produced", len(inherited),
+					"principal", originalWho)
 				continue
 			}
 			preserved := *ace

@@ -1034,6 +1034,91 @@ func TestComputeInheritedACL_CreatorOwner_OIOnly_NoDualEmit_Dir(t *testing.T) {
 	}
 }
 
+// TestComputeInheritedACL_MaxACECount_CapEnforced verifies that the
+// running result of ComputeInheritedACL never exceeds MaxACECount even
+// when the parent has many inheritable ACEs and a subset trigger
+// CREATOR dual-emission. FIFO truncation rule: earlier-in-parent ACEs
+// are preserved over later ones (matches Samba behavior under cap
+// pressure).
+func TestComputeInheritedACL_MaxACECount_CapEnforced(t *testing.T) {
+	// Build a parent ACL with MaxACECount+5 inheritable ACEs. Sprinkle
+	// CREATOR_OWNER + CI entries (which dual-emit on a dir child) so
+	// the cumulative resolved+preserved count would explode past
+	// MaxACECount if the cap were not enforced across both append
+	// paths. The first ACE is a uniquely-named "first@example.com"
+	// sentinel so we can assert FIFO preservation.
+	// Use a distinct per-index bit pattern in AccessMask so we can
+	// verify FIFO preservation regardless of CREATOR substitution
+	// rewriting the Who field. Bit 31 is set on each ACE; the low bits
+	// carry the parent index. This way:
+	//   - resolved CREATOR ACEs keep their (index-tagged) mask
+	//   - preserved CREATOR ACEs likewise keep the tagged mask
+	//   - we can detect leak of late-parent ACEs by mask alone
+	tag := func(i int) uint32 { return uint32(0x80000000) | uint32(i) }
+
+	aces := make([]ACE, 0, MaxACECount+5)
+	aces = append(aces, ACE{
+		Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+		Flag:       ACE4_FILE_INHERIT_ACE | ACE4_DIRECTORY_INHERIT_ACE,
+		AccessMask: tag(0),
+		Who:        "first@example.com",
+	})
+	for i := 1; i < MaxACECount+5; i++ {
+		if i%3 == 0 {
+			// CREATOR_OWNER + CI => dual-emit on dir child.
+			aces = append(aces, ACE{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_DIRECTORY_INHERIT_ACE,
+				AccessMask: tag(i),
+				Who:        SpecialCreatorOwner,
+			})
+		} else {
+			aces = append(aces, ACE{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_DIRECTORY_INHERIT_ACE,
+				AccessMask: tag(i),
+				Who:        fmt.Sprintf("user%d@example.com", i),
+			})
+		}
+	}
+	parentACL := &ACL{ACEs: aces}
+
+	result := ComputeInheritedACL(parentACL, true, Creator{UID: 1001})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.ACEs) > MaxACECount {
+		t.Fatalf("result ACE count %d exceeds MaxACECount %d", len(result.ACEs), MaxACECount)
+	}
+	// We expect the cap to be saturated given the input size.
+	if len(result.ACEs) != MaxACECount {
+		t.Errorf("expected result saturated at MaxACECount=%d, got %d", MaxACECount, len(result.ACEs))
+	}
+
+	// FIFO: the first parent ACE must be the first child ACE (tag 0).
+	if result.ACEs[0].AccessMask != tag(0) || result.ACEs[0].Who != "first@example.com" {
+		t.Errorf("FIFO preservation broken: expected first ACE tag=0x%x Who=first@example.com, got tag=0x%x Who=%q",
+			tag(0), result.ACEs[0].AccessMask, result.ACEs[0].Who)
+	}
+
+	// Compute the highest parent index whose tag appears in the result.
+	// Under FIFO truncation, no late-parent ACE should leak past the
+	// earlier ACEs we had room for.
+	resultTags := make(map[uint32]bool, len(result.ACEs))
+	for _, a := range result.ACEs {
+		resultTags[a.AccessMask] = true
+	}
+	// The last parent ACE's tag must NOT be present.
+	if resultTags[tag(len(aces)-1)] {
+		t.Errorf("FIFO violation: last parent ACE (tag=0x%x) leaked into truncated child",
+			tag(len(aces)-1))
+	}
+	// Sanity: tag(0) (the first parent ACE) MUST be present.
+	if !resultTags[tag(0)] {
+		t.Errorf("FIFO violation: first parent ACE (tag=0x%x) missing from truncated child", tag(0))
+	}
+}
+
 func TestPropagateACL_Directory(t *testing.T) {
 	existingACL := &ACL{ACEs: []ACE{
 		{Type: ACE4_ACCESS_DENIED_ACE_TYPE, AccessMask: ACE4_DELETE, Who: "bob@example.com"},
