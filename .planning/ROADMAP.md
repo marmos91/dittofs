@@ -42,7 +42,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 
 16 (Cache RAM-only) ──► 17 (Unified BlockStore + legacy delete + migrate-to-cas) ──► 18 (Syncer mirror loop + ObjectID relocation) ──► 19 (Write-path RAM opts)
 
-- [ ] **Phase 16: Cache RAM-only (remove mmap read path)** — Delete `cache_mmap_*.go`, swap `readFromCAS` → `local.Get`, retire D-33 perf gate (GH issue: #516)
+- [x] **Phase 16: Cache RAM-only (remove mmap read path)** — Delete `cache_mmap_*.go`, swap `readFromCAS` → `local.Get`, retire D-33 perf gate (GH issue: #516) — **SHIPPED 2026-05-20** on `gsd/phase-16-cache-mmap-removal` (16 commits); warm-cache D-06 PASS (ratio 0.890 ≤1.02)
 - [ ] **Phase 17: Unified BlockStore interface + legacy delete + migration tool** — Single `BlockStore` interface (Put/Get/GetRange/Has/Delete/Walk/Head) for local + remote, `BlockStoreAppend` extends with random-write tier, delete legacy `.blk` writer + dual-read shim + flag, ship `dfsctl blockstore migrate-to-cas` one-shot (GH issue: #517)
 - [ ] **Phase 18: Syncer simplification + ObjectID relocation** — Syncer Flush → mirror loop `for hash := range local.ListUnsynced() { remote.Put(...) }`. Move `ComputeObjectID` to rollup CommitChunks. Local-only shares now get ObjectIDs. (GH issue: #518)
 - [ ] **Phase 19: Write-path RAM optimizations** — 4 opts: in-memory hash dedup LRU; group commit / batched fsync; direct-to-Cache on chunk completion; eager small-file dedup (GH issue: #519)
@@ -354,7 +354,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - [x] 16-01-PLAN.md — Add LocalStore.Get(ctx, hash) interface method + FSStore (delegate to ReadChunk) + MemoryStore stub + localtest conformance scenario
   - [x] 16-02-PLAN.md — Rewire engine.loadByHash → local.Get; update cache.go docstring; cherry-pick generic byte-correctness asserts from cache_mmap_test.go into cache_test.go (D-10)
   - [x] 16-03-PLAN.md — Delete cache_mmap_unix.go + cache_mmap_windows.go + cache_mmap_test.go; delete TestPerfGate_Phase12_MmapHotPath; fold perf_bench_unix_test.go if empty; cross-OS build clean (D-08, D-09)
-  - [ ] 16-04-PLAN.md — Warm-cache BenchmarkRandReadVerified ≤1.02 vs pre-Phase-16 baseline (D-06); cross-OS build + race verification; BENCHMARKS.md update; human checkpoint
+  - [x] 16-04-PLAN.md — Warm-cache BenchmarkRandReadVerified ≤1.02 vs pre-Phase-16 baseline (D-06); cross-OS build + race verification; BENCHMARKS.md update; human checkpoint
 
 ## Milestone Gates
 
