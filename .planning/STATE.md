@@ -4,14 +4,14 @@ milestone: v0.15.0
 milestone_name: — CAS Convergence
 status: executing
 stopped_at: Phase 16 context gathered
-last_updated: "2026-05-20T11:12:41.483Z"
-last_activity: 2026-05-20 -- Phase 16 planning complete
+last_updated: "2026-05-20T11:22:05.102Z"
+last_activity: 2026-05-20
 progress:
   total_phases: 9
   completed_phases: 3
   total_plans: 33
-  completed_plans: 29
-  percent: 88
+  completed_plans: 30
+  percent: 91
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-23)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 13 — merkle-root-file-level-dedup-a4
+**Current focus:** Phase 16 — cache-mmap-removal
 
 ## Current Position
 
 Milestone: v0.15.0
-Phase: 14
-Plan: 7 of 07 complete (operator docs runbook — MIG-01..MIG-04 closed; openOfflineRuntime production wire-up still gates production rollout, tracked under #425)
+Phase: 16 (cache-mmap-removal) — EXECUTING
+Plan: 2 of 4
 Branch: `gsd/phase-12-cdc-read-path-metadata-engine-api`
 Status: Ready to execute
-Last activity: 2026-05-20 -- Phase 16 planning complete
+Last activity: 2026-05-20
 
 ## Next Actionable
 
@@ -94,6 +94,10 @@ Phase 12 (A3): CDC read path + metadata schema + engine API. 14 requirements acr
 - Phase 12 Plan 08 (CACHE-05 seam + CopyPayload): adds `common.CacheInvalidator` interface (defined in package common, not engine — Phase 09 narrow-interface pattern), `common.diffRemovedHashes` (BlockRef hash set-diff preserving multiplicity for refcount-aware callers), `common.CopyPayload` (atomic engine.CopyPayload + dst PutFile in one metadata txn — BLOCKER-2 resolution; mid-loop Increment failure rolls back ALL writes; cache.InvalidateFile fires only on commit success per D-35), and explicit `ErrBlockRefMissing` rows in content_errmap.go (D-23 — operators triage CAS-integrity failures via log inspection; wire surface is identical to ErrCASContentMismatch). `common.{Read,Write}ToBlockStore` signatures kept unchanged because the executor's strict critical_constraint forbids touching protocol handlers — the actual []BlockRef threading deferred to Plan 12-09 cache rewrite when an engine-side accessor pattern lands. Plan body's action-step-3 (which directs handler call-site updates) was reconciled in favor of the `<must_haves>` truth that handlers stay untouched (D-26).
 - Phase 12 Plan 09 (CACHE-01..05 + Null Object): greenfield CAS-keyed `engine.Cache` replaces Phase 11's `ReadBuffer` (keyKindCoord/CAS/Legacy bifurcation from D-22) and the standalone `engine.Prefetcher` worker pool. Single keyspace (ContentHash), single budget, single Get/Put/InvalidateFile API. CACHE-03 sequential threshold raised from 2 to 3. CACHE-04 OnRead is the sole prefetch hint API; engine.ReadAt invokes it post-read with BlockRef hashes. CACHE-05 InvalidateFile is surgical (drops only listed hashes; preserves cross-file dedup CACHE-02). `nullCache{}` Null Object eliminates defensive `if bs.cache == nil` guards — verified by grep. Cache is hint-only for Plan 09 (engine.ReadAt does NOT serve from cache.Get); Plan 10 mmap reintroduces byte-serving without heap-copy cost. Flush auto-promote removed (Phase 11 behavior didn't translate to hash-keyed cache; OS page cache covers the hot-path benefit until Plan 10). CacheStats JSON shape preserved (read_buffer_entries / read_buffer_used / read_buffer_max) so dfsctl block stats keeps working. Deviation: Task 1's literal "replace cache.go entirely" would have broken the Task 1 build (engine.go still references ReadBuffer/Prefetcher), so the new Cache was added alongside in Task 1 and the legacy code deleted in Task 3. Plan 12-08's deferred []BlockRef threading through common.{Read,Write}ToBlockStore was NOT addressed in this plan — the engine accessor pattern that would unblock it is still missing; flagged for a future cleanup plan or absorbed into Plan 13's file-level dedup integration.
 
+### v0.16.0 Decisions
+
+- Phase 16 Plan 01 (D-01..D-05): `LocalStore.Get(ctx, hash) ([]byte, error)` lands in `pkg/blockstore/local/local.go` as a hash-keyed read surface. `(*FSStore).Get` is a one-line delegate to `chunkstore.ReadChunk` — inherits closed-store guard, ENOENT→`ErrChunkNotFound` mapping, and LSL-08 LRU touch. `(*MemoryStore).Get` is the documented stub: `s.mu.RLock` + closed-store guard + `blockstore.ErrChunkNotFound` (memory backend has no CAS layer; Phase 17 may expand). No `sync.Pool` (D-04), no zero-copy aliasing (D-05). Signature is byte-for-byte forward-compatible with Phase 17's unified `BlockStore.Get` — engine call site (Plan 16-02) narrows the receiver type without renaming. New `RunGetSuite` in `pkg/blockstore/local/localtest` uses an unexported `chunkStorer` capability probe so CAS round-trip + fresh-allocation defense subtests auto-skip on non-CAS backends; missing-hash sentinel runs on all backends. Aliasing defense is mutation-based (mutate slice #1, assert slice #2 unchanged) — more robust than `&out1[0] != &out2[0]` pointer comparison. `Has(hash)` deliberately NOT added in Phase 16; deferred to Phase 17 unified interface. Commits: `a8426dc4` (Task 1 RED), `a2e608be` (Task 1 GREEN — feat), `e5f39b5f` (Task 2 conformance test).
+
 ### v0.13.0 Decisions (archived context)
 
 Historical v0.13.0 decisions preserved in `.planning/milestones/v0.13.0-archive/` for reference; the v0.15.0 refactor deletes `BackupHoldProvider` + `FinalizationCallback` (v0.13.0 scaffolding) in Phase 08.
@@ -125,7 +129,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-20T10:48:25.183Z
+Last session: 2026-05-20T11:21:36.675Z
 Stopped at: Phase 16 context gathered
 Next action: **Phase 14 phase-execution complete.** Two outstanding follow-ups before production rollout: (1) `openOfflineRuntime` production wiring (controlplane DB read + per-share metadata/remote-store factory dispatch) — tracked under #425, interfaces stable, runbook documents this prominently as a Known Limitation; (2) per-payload-id streaming variant of `deleteLegacyKeys` only if real workloads surface S3 LIST cost (T-14-05-04). Status surface (CLI + REST) is fully usable today against a running daemon. Once #425 closes, no runbook changes needed — the four worked transcripts will then run literally rather than aspirationally. Phase 15 (A6 — legacy cleanup) remains intentionally deferred until #425 closes and migration is rolled out across production workloads.
 
