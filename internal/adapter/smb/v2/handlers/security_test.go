@@ -1070,8 +1070,9 @@ func TestBuildSD_AutoInherited_NotSet(t *testing.T) {
 
 // makeAutoInheritSD hand-crafts a self-relative SD whose Control word has the
 // given high bits OR'd in (in addition to seSelfRelative|seDACLPresent), and
-// embeds an empty DACL plus a single non-inherited ALLOW-EVERYONE ACE so the
-// inheritance matrix can also assert independence from per-ACE flags.
+// embeds a single ALLOW-EVERYONE ACE optionally marked with the wire
+// INHERITED_ACE flag so the inheritance matrix can assert independence from
+// per-ACE flags.
 func makeAutoInheritSD(t *testing.T, extraControl uint16, perACEInherited bool) []byte {
 	t.Helper()
 	// Layout: header(20) + DACL header(8) + ACE(8 + everyone SID).
