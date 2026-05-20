@@ -163,6 +163,10 @@ func runMigrateToCAS(cmd *cobra.Command, args []string) error {
 		opts := migrate.MigrationOpts{
 			DryRun:   migrateDryRun,
 			Progress: makeProgressFn(name),
+			// Sentinel must live at the FSStore baseDir (Plan 09 boot
+			// guard probes `<baseDir>/.cas-migrated-v1`), which here is
+			// blockDir (a subdir of shareDir), not shareDir itself.
+			StoreDir: blockDir,
 		}
 
 		adapter := &cliMetadataAdapter{shareName: name}

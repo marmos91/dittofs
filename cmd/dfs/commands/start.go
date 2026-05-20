@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -21,6 +22,21 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/spf13/cobra"
 )
+
+// EX_CONFIG is the exit code per sysexits(3) — "configuration error".
+// Used by the legacy-layout boot guard when a share directory still
+// contains pre-v0.16 `.blk` files without a `.cas-migrated-v1` sentinel
+// (Phase 17 Plan 09 D-11). The operator runs `dfs migrate-to-cas`
+// before retrying.
+const EX_CONFIG = 78
+
+// exitFn is the production exit path for the legacy-layout boot guard.
+// Indirected through a package-level var so the in-process boot-guard
+// test (start_test.go::TestStart_LegacyLayoutExitCode) can stub it to
+// capture the exit code deterministically without spawning a subprocess.
+// Production code MUST NOT reassign exitFn — only the test does, and
+// only via a t.Cleanup-restored override (Phase 17 T-17-09-07).
+var exitFn = os.Exit
 
 var (
 	foreground bool
@@ -183,8 +199,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// Load shares (per-share BlockStores are created during AddShare).
-	if err := runtime.LoadSharesFromStore(ctx, rt, cpStore); err != nil {
-		logger.Warn("Failed to load some shares", "error", err)
+	// Phase 17 D-11: legacy-layout detection is a hard boot stop. Other
+	// share-loading failures stay best-effort (logged + ignored, the
+	// historical behavior).
+	if stop := handleLoadSharesError(runtime.LoadSharesFromStore(ctx, rt, cpStore), os.Stderr); stop {
+		return nil
 	}
 
 	logger.Info("Runtime initialized",
@@ -329,4 +348,44 @@ func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 	}
 
 	return smbAdapter, nil
+}
+
+// handleLoadSharesError centralizes the share-loading error policy so
+// the in-process boot-guard test can exercise the exit-78 path without
+// rebuilding the full daemon setup. Returns true when the caller should
+// stop runStart (legacy-layout branch hit; exitFn called); false
+// otherwise (no error, or a non-legacy warn-and-continue).
+//
+// Production code MUST go through this helper — direct termination
+// from runStart would bypass the exitFn indirection the test depends
+// on (Phase 17 T-17-09-07).
+func handleLoadSharesError(err error, stderr *os.File) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, blockstore.ErrLegacyLayoutDetected) {
+		fmt.Fprintln(stderr, formatLegacyLayoutDirective(err))
+		exitFn(EX_CONFIG)
+		// Unreachable in production (exitFn == os.Exit terminates).
+		// Defensive: in-process tests stub exitFn to NOT terminate.
+		return true
+	}
+	logger.Warn("Failed to load some shares", "error", err)
+	return false
+}
+
+// formatLegacyLayoutDirective renders the multi-line operator directive
+// printed when LoadSharesFromStore surfaces ErrLegacyLayoutDetected
+// (Phase 17 Plan 09 D-11). The full wrapped error message
+// (`share "<name>": share <path>: blockstore: legacy .blk layout
+// detected (run `dfs migrate-to-cas`)`) is embedded verbatim so the
+// operator sees BOTH the share name AND the offending path without
+// fragile substring extraction.
+func formatLegacyLayoutDirective(err error) string {
+	return fmt.Sprintf(`Detected legacy .blk layout: %s.
+v0.16+ requires CAS migration. Run:
+    dfs migrate-to-cas --share <name>
+or, to migrate every share at once:
+    dfs migrate-to-cas
+See docs/CONFIGURATION.md §migration.`, err)
 }

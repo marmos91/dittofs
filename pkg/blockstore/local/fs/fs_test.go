@@ -3,6 +3,7 @@ package fs
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -883,4 +884,160 @@ func TestLocalWritePath_NoFileBlockStoreCall(t *testing.T) {
 			t.Errorf("eviction called FileBlockStore: %+v", delta)
 		}
 	})
+}
+
+// writeSentinelForTest writes a minimal valid `.cas-migrated-v1` marker
+// at the share-dir root. Mirrors pkg/blockstore/migrate.writeSentinel's
+// contract (file content is opaque to the boot guard; presence is what
+// matters).
+func writeSentinelForTest(t *testing.T, shareDir string) {
+	t.Helper()
+	p := filepath.Join(shareDir, ".cas-migrated-v1")
+	if err := os.WriteFile(p, []byte(`{"version":"v1"}`), 0644); err != nil {
+		t.Fatalf("write sentinel %q: %v", p, err)
+	}
+}
+
+// writeLegacyBlkForTest creates a non-empty `.blk` file at the legacy
+// path-keyed layout depth that *fs.FSStore's flush path historically
+// produced: <baseDir>/<shard>/<payloadID>/<idx>.blk. Phase 17's gate
+// only cares that a `.blk` extension exists somewhere within the depth
+// cap; the exact tree shape is conventional, not enforced.
+func writeLegacyBlkForTest(t *testing.T, shareDir string) {
+	t.Helper()
+	payloadDir := filepath.Join(shareDir, "fi", "file-001")
+	if err := os.MkdirAll(payloadDir, 0755); err != nil {
+		t.Fatalf("mkdir %q: %v", payloadDir, err)
+	}
+	p := filepath.Join(payloadDir, "0.blk")
+	if err := os.WriteFile(p, []byte("legacy bytes"), 0644); err != nil {
+		t.Fatalf("write legacy blk %q: %v", p, err)
+	}
+}
+
+// TestNewFSStore_SentinelDetection exercises the Phase 17 Plan 09 D-10
+// four-state matrix:
+//
+//   - sentinel PRESENT, no .blk files     → success (post-migration steady state)
+//   - sentinel PRESENT, .blk files PRESENT → success (operator footgun trust)
+//   - sentinel MISSING, no .blk files     → success (fresh install)
+//   - sentinel MISSING, .blk files PRESENT → ErrLegacyLayoutDetected
+//
+// The assertion path for the legacy state uses errors.Is per Plan 01
+// D-11 contract (the sentinel is a `var = errors.New(...)`).
+func TestNewFSStore_SentinelDetection(t *testing.T) {
+	type matrixCase struct {
+		name        string
+		writeSentinel bool
+		writeBlk    bool
+		wantLegacy  bool // expect ErrLegacyLayoutDetected
+	}
+	cases := []matrixCase{
+		{name: "sentinel_present_no_blk_files", writeSentinel: true, writeBlk: false, wantLegacy: false},
+		{name: "sentinel_present_with_blk_files", writeSentinel: true, writeBlk: true, wantLegacy: false},
+		{name: "no_sentinel_no_blk_files", writeSentinel: false, writeBlk: false, wantLegacy: false},
+		{name: "no_sentinel_with_blk_files", writeSentinel: false, writeBlk: true, wantLegacy: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			shareDir := t.TempDir()
+			if tc.writeSentinel {
+				writeSentinelForTest(t, shareDir)
+			}
+			if tc.writeBlk {
+				writeLegacyBlkForTest(t, shareDir)
+			}
+			mds := memory.NewMemoryMetadataStoreWithDefaults()
+			bc, err := New(shareDir, 0, 256*1024*1024, mds)
+			if tc.wantLegacy {
+				if err == nil {
+					_ = bc.Close()
+					t.Fatalf("expected ErrLegacyLayoutDetected, got nil")
+				}
+				if !errors.Is(err, blockstore.ErrLegacyLayoutDetected) {
+					t.Fatalf("expected errors.Is(err, ErrLegacyLayoutDetected); got %v", err)
+				}
+				// Share path must appear in the wrapped message so the
+				// boot directive can echo it back to the operator.
+				if !bytes.Contains([]byte(err.Error()), []byte(shareDir)) {
+					t.Errorf("err %q missing share path %q", err, shareDir)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			t.Cleanup(func() { _ = bc.Close() })
+		})
+	}
+}
+
+// TestNewFSStore_DeepBlkFile asserts the gate's depth cap of 3 directories
+// under baseDir: legacy `.blk` at the canonical legacy depth (<= 3) is
+// detected; a `.blk` planted past depth 3 is intentionally NOT detected.
+// This is a perf optimization documented in the implementation — legacy
+// `.blk` files always lived at <share>/<shard>/<payloadID>/<idx>.blk which
+// is depth 3 under baseDir.
+func TestNewFSStore_DeepBlkFile(t *testing.T) {
+	t.Run("legacy_depth_detected", func(t *testing.T) {
+		shareDir := t.TempDir()
+		// depth-3 .blk file: shareDir/a/b/c/0.blk → 0.blk has depth 4? Let's
+		// match the cap (≤3). Use depth-3 placement matching the legacy
+		// writer: <share>/<shard=2chars>/<payloadID>/<idx>.blk.
+		dir := filepath.Join(shareDir, "ab", "payload-001")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "0.blk"), []byte("x"), 0644); err != nil {
+			t.Fatalf("write blk: %v", err)
+		}
+		mds := memory.NewMemoryMetadataStoreWithDefaults()
+		_, err := New(shareDir, 0, 256*1024*1024, mds)
+		if !errors.Is(err, blockstore.ErrLegacyLayoutDetected) {
+			t.Fatalf("expected ErrLegacyLayoutDetected at legacy depth; got %v", err)
+		}
+	})
+
+	t.Run("beyond_depth_cap_not_detected", func(t *testing.T) {
+		shareDir := t.TempDir()
+		// Plant a .blk file at depth 5 — past the legacy layout's depth=3.
+		// Plan 09 explicitly documents this as a perf optimization
+		// (legacy data was always at depth ≤3); this is a regression
+		// guard against future unbounded WalkDir on huge stores.
+		deep := filepath.Join(shareDir, "d1", "d2", "d3", "d4", "d5")
+		if err := os.MkdirAll(deep, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(deep, "stray.blk"), []byte("x"), 0644); err != nil {
+			t.Fatalf("write blk: %v", err)
+		}
+		mds := memory.NewMemoryMetadataStoreWithDefaults()
+		bc, err := New(shareDir, 0, 256*1024*1024, mds)
+		if err != nil {
+			t.Fatalf("expected success (depth>3 .blk not detected); got %v", err)
+		}
+		t.Cleanup(func() { _ = bc.Close() })
+	})
+}
+
+// TestNewFSStoreForMigration_BypassesSentinel asserts the bypass
+// constructor opens an FSStore against the very state Plan 09's gate
+// refuses (sentinel-missing, .blk-present). This is the entry point
+// the `dfs migrate-to-cas` subcommand uses to process legacy data.
+func TestNewFSStoreForMigration_BypassesSentinel(t *testing.T) {
+	shareDir := t.TempDir()
+	writeLegacyBlkForTest(t, shareDir)
+
+	// Confirm the production constructor refuses, so we know the bypass
+	// is actually being exercised by the next call.
+	if _, err := New(shareDir, 0, 256*1024*1024, memory.NewMemoryMetadataStoreWithDefaults()); !errors.Is(err, blockstore.ErrLegacyLayoutDetected) {
+		t.Fatalf("precondition: New should refuse legacy layout; got %v", err)
+	}
+
+	bc, err := NewFSStoreForMigration(shareDir, 0, 256*1024*1024,
+		memory.NewMemoryMetadataStoreWithDefaults(), FSStoreOptions{})
+	if err != nil {
+		t.Fatalf("NewFSStoreForMigration: expected success on legacy layout; got %v", err)
+	}
+	t.Cleanup(func() { _ = bc.Close() })
 }

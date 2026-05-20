@@ -54,6 +54,14 @@ type MigrationOpts struct {
 	// (filepath.Join(shareDir, MigrateJournalFile)).
 	JournalPath string
 
+	// StoreDir overrides where the `.cas-migrated-v1` sentinel is written.
+	// Empty defaults to shareDir. Production callers (cmd/dfs migrate-to-cas)
+	// pass the FSStore baseDir so the sentinel sits where Plan 09's boot
+	// guard looks (`<baseDir>/.cas-migrated-v1`). When the FSStore baseDir
+	// is a subdirectory of shareDir (e.g. `<shareDir>/blocks`), this MUST
+	// be set or the boot guard will never find the sentinel.
+	StoreDir string
+
 	// DryRunSampleBudgetBytes caps total bytes sampled across all files.
 	// Default 1 GiB.
 	DryRunSampleBudgetBytes int64
@@ -288,7 +296,11 @@ func MigrateShareToCAS(
 	emit(true)
 
 	// All files migrated — write sentinel, then drop the journal.
-	if err := writeSentinel(shareDir); err != nil {
+	storeDir := opts.StoreDir
+	if storeDir == "" {
+		storeDir = shareDir
+	}
+	if err := writeSentinel(storeDir); err != nil {
 		return MigrationResult{Stats: stats, Duration: time.Since(start)},
 			fmt.Errorf("migrate: write sentinel: %w", err)
 	}

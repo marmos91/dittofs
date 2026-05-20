@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -245,17 +247,29 @@ func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blocksto
 	return newFSStoreInternal(baseDir, maxDisk, maxMemory, fileBlockStore, false)
 }
 
-// newFSStoreInternal is the shared inner constructor. Phase 17 Plan 08
-// introduces the skipSentinelCheck plumbing in preparation for Plan 09's
-// sentinel-detection gate (.cas-migrated-v1 + legacy .blk probe). The
-// parameter is currently unconsulted — the gate lands in Plan 09 inside
-// this function, guarded on `if !skipSentinelCheck`. NewFSStoreForMigration
-// passes true; New / NewWithOptions pass false.
+// newFSStoreInternal is the shared inner constructor. Phase 17 Plan 09
+// adds the legacy-layout sentinel-detection gate guarded on
+// skipSentinelCheck: when false, the constructor stats
+// `<baseDir>/.cas-migrated-v1` and, on absence, runs a depth-limited
+// `.blk` probe — returning blockstore.ErrLegacyLayoutDetected when
+// legacy data is present without a migration sentinel. The four-state
+// matrix is:
+//
+//   - sentinel PRESENT, no .blk files     → success (post-migration steady state)
+//   - sentinel PRESENT, .blk files PRESENT → success (Phase 17 trusts the
+//     sentinel as ground truth; operator footgun per
+//     .planning/phases/17-unified-blockstore/17-CONTEXT.md D-10)
+//   - sentinel MISSING, no .blk files     → success (fresh install)
+//   - sentinel MISSING, .blk files PRESENT → ErrLegacyLayoutDetected
+//
+// NewFSStoreForMigration passes true; New / NewWithOptions pass false.
+// See 17-CONTEXT.md D-10 (per-share sentinel) + D-11 (errors.Is contract).
 func newFSStoreInternal(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, skipSentinelCheck bool) (*FSStore, error) {
-	// skipSentinelCheck is reserved for Plan 09. Reference it so the
-	// unused-parameter analyzer (and grep-sweep) does not flag it before
-	// the gate lands.
-	_ = skipSentinelCheck
+	if !skipSentinelCheck {
+		if err := checkLegacyLayoutSentinel(baseDir); err != nil {
+			return nil, err
+		}
+	}
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
 		return nil, fmt.Errorf("local store: create base dir: %w", err)
 	}
@@ -308,6 +322,78 @@ func newFSStoreInternal(baseDir string, maxDisk int64, maxMemory int64, fileBloc
 	bc.seedLRUFromDisk()
 
 	return bc, nil
+}
+
+// sentinelFileName is the per-share Plan 09 boot-guard marker written by
+// `dfs migrate-to-cas` at the successful completion of a share migration.
+// Kept in sync with pkg/blockstore/migrate.SentinelFileName.
+const sentinelFileName = ".cas-migrated-v1"
+
+// legacyLayoutWalkDepthCap bounds the depth-limited `.blk` probe so a
+// freshly-provisioned share with deeply nested non-legacy content does
+// not pay an unbounded WalkDir at every boot. Legacy `.blk` files live
+// at <baseDir>/<shard>/<payloadID>/<idx>.blk (depth 3 under baseDir);
+// any `.blk` past depth 3 is treated as non-legacy noise and skipped.
+const legacyLayoutWalkDepthCap = 3
+
+// checkLegacyLayoutSentinel implements Plan 09 D-10 / D-11. Returns
+// blockstore.ErrLegacyLayoutDetected (wrapped with the share path) when
+// the `.cas-migrated-v1` sentinel is absent from baseDir AND at least
+// one `.blk` file is detected by a depth-capped WalkDir under baseDir.
+// Returns nil for the other three states (sentinel present, or sentinel
+// absent + no legacy data).
+//
+// Boot-path performance: post-migration the first stat short-circuits;
+// no walk. Pre-migration on legacy stores, the walk terminates at the
+// first `.blk` via fs.SkipAll. Fresh installs with no baseDir yet hit
+// the iofs.ErrNotExist branch and fall through to construction.
+func checkLegacyLayoutSentinel(baseDir string) error {
+	sentinelPath := filepath.Join(baseDir, sentinelFileName)
+	if _, err := os.Stat(sentinelPath); err == nil {
+		// Sentinel present — Phase 17 trusts it as ground truth.
+		return nil
+	} else if !errors.Is(err, iofs.ErrNotExist) {
+		return fmt.Errorf("local store: stat sentinel %q: %w", sentinelPath, err)
+	}
+
+	// Sentinel missing — probe for `.blk` files. A baseDir that does
+	// not yet exist is a fresh install with no legacy data.
+	hasBlk := false
+	walkErr := filepath.WalkDir(baseDir, func(path string, d iofs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		// Depth from baseDir: 0 = baseDir itself, 1 = direct child, …
+		rel := strings.TrimPrefix(path, baseDir)
+		rel = strings.TrimPrefix(rel, string(os.PathSeparator))
+		var depth int
+		if rel != "" {
+			depth = strings.Count(rel, string(os.PathSeparator)) + 1
+		}
+		if d.IsDir() {
+			if depth > legacyLayoutWalkDepthCap {
+				return iofs.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), ".blk") {
+			hasBlk = true
+			return iofs.SkipAll
+		}
+		return nil
+	})
+	if walkErr != nil {
+		if errors.Is(walkErr, iofs.ErrNotExist) {
+			// baseDir does not exist yet — fresh install with no legacy
+			// data; MkdirAll downstream will create it.
+			return nil
+		}
+		return fmt.Errorf("local store: probe legacy layout %q: %w", baseDir, walkErr)
+	}
+	if !hasBlk {
+		return nil
+	}
+	return fmt.Errorf("share %s: %w", baseDir, blockstore.ErrLegacyLayoutDetected)
 }
 
 // lruEntry is a single LRU-tracked CAS chunk on disk.
@@ -440,17 +526,15 @@ func NewWithOptions(baseDir string, maxDisk, maxMemory int64, fileBlockStore blo
 }
 
 // NewFSStoreForMigration constructs an FSStore that skips the legacy-
-// layout sentinel check.
+// layout sentinel check (Phase 17 Plan 09 D-10/D-11).
 //
 // MIGRATION TOOL USE ONLY — production code paths must call New /
-// NewWithOptions. The `dfs migrate-to-cas` subcommand
-// (cmd/dfs/commands/migrate_to_cas.go) is the sole intended caller; it
-// must open the destination FSStore against a share directory that still
-// contains the legacy `.blk` layout (the very state the migration is
-// converting away from). Plan 09 will add the sentinel-detection branch
-// inside newFSStoreInternal guarded on the skipSentinelCheck argument so
-// this bypass remains the single supported entry point for the migration
-// tool.
+// NewWithOptions, which always run the sentinel gate. The `dfs
+// migrate-to-cas` subcommand (cmd/dfs/commands/migrate_to_cas.go) is
+// the sole intended caller; it must open the destination FSStore
+// against a share directory that still contains the legacy `.blk`
+// layout (the very state the migration is converting away from), so
+// the gate would otherwise refuse the open.
 //
 // Behavior is otherwise identical to NewWithOptions.
 func NewFSStoreForMigration(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, opts FSStoreOptions) (*FSStore, error) {
