@@ -593,6 +593,33 @@ func TestShareOperations(t *testing.T) {
 			t.Fatalf("failed to restore enabled=true: %v", err)
 		}
 	})
+
+	t.Run("update share persists AclFlagInheritedCanonicalization=false (#514 whitelist)", func(t *testing.T) {
+		share, err := store.GetShare(ctx, "/export")
+		if err != nil {
+			t.Fatalf("failed to get share: %v", err)
+		}
+		if !share.AclFlagInheritedCanonicalization {
+			t.Fatalf("precondition: share must default AclFlagInheritedCanonicalization=true; got %v", share.AclFlagInheritedCanonicalization)
+		}
+		share.AclFlagInheritedCanonicalization = false
+		if err := store.UpdateShare(ctx, share); err != nil {
+			t.Fatalf("failed to update share: %v", err)
+		}
+		updated, err := store.GetShare(ctx, "/export")
+		if err != nil {
+			t.Fatalf("failed to re-read share: %v", err)
+		}
+		if updated.AclFlagInheritedCanonicalization {
+			t.Error("expected AclFlagInheritedCanonicalization=false to round-trip through UpdateShare; got true (whitelist entry missing?)")
+		}
+
+		// Restore default so downstream tests see a clean state.
+		updated.AclFlagInheritedCanonicalization = true
+		if err := store.UpdateShare(ctx, updated); err != nil {
+			t.Fatalf("failed to restore AclFlagInheritedCanonicalization=true: %v", err)
+		}
+	})
 }
 
 func TestSharePermissions(t *testing.T) {

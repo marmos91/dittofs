@@ -39,15 +39,16 @@ func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error 
 
 	// Protocol-specific fields (Squash, AllowAuthSys, etc.) are stored in share_adapter_configs.
 	updates := map[string]any{
-		"read_only":            share.ReadOnly,
-		"default_permission":   share.DefaultPermission,
-		"blocked_operations":   share.BlockedOperations,
-		"metadata_store_id":    share.MetadataStoreID,
-		"local_block_store_id": share.LocalBlockStoreID,
-		"retention_policy":     share.RetentionPolicy,
-		"retention_ttl":        share.RetentionTTL,
-		"enabled":              share.Enabled,
-		"updated_at":           share.UpdatedAt,
+		"read_only":                           share.ReadOnly,
+		"default_permission":                  share.DefaultPermission,
+		"blocked_operations":                  share.BlockedOperations,
+		"metadata_store_id":                   share.MetadataStoreID,
+		"local_block_store_id":                share.LocalBlockStoreID,
+		"retention_policy":                    share.RetentionPolicy,
+		"retention_ttl":                       share.RetentionTTL,
+		"enabled":                             share.Enabled,
+		"acl_flag_inherited_canonicalization": share.AclFlagInheritedCanonicalization,
+		"updated_at":                          share.UpdatedAt,
 	}
 	// Handle remote_block_store_id explicitly: GORM map-based Updates may skip
 	// typed nil (*string)(nil). Use gorm.Expr("NULL") to ensure the column is cleared.
