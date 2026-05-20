@@ -10,7 +10,8 @@ import (
 )
 
 // Compile-time interface satisfaction check.
-var _ local.LocalStore = (*MemoryStore)(nil)
+// Plan 17-07 restores: assertion fails until MemoryStore gains BlockStoreAppend methods (Put/Has/Walk).
+// var _ local.LocalStore = (*MemoryStore)(nil)
 
 // ErrStoreClosed is an alias for blockstore.ErrStoreClosed for backward compatibility.
 var ErrStoreClosed = blockstore.ErrStoreClosed

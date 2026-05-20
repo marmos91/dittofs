@@ -405,7 +405,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 - [x] 17-01-PLAN.md — BlockStore + BlockStoreAppend interfaces + Meta struct + ErrStopWalk/ErrLegacyLayoutDetected sentinels (Wave 1)
 - [ ] 17-02-PLAN.md — pkg/blockstore/blockstoretest unified conformance suite scaffolding (Wave 1)
 - [ ] 17-03-PLAN.md — RemoteStore method renames + s3/memory backend retargeting (Wave 2)
-- [ ] 17-04-PLAN.md — LocalStore interface narrowing + BlockStoreAppend embedding (Wave 2)
+- [x] 17-04-PLAN.md — LocalStore interface narrowing + BlockStoreAppend embedding (Wave 2)
 - [ ] 17-05-PLAN.md — Engine retargeted onto renamed RemoteStore + dual-read shim deleted (Wave 3)
 - [ ] 17-06-PLAN.md — Wire fs/memory/s3/memory-remote backends to blockstoretest + delete localtest/remotetest (Wave 3)
 - [ ] 17-07-PLAN.md — Delete write.go + FormatStoreKey + UseAppendLog + legacy helpers; restore LocalStore assertion (Wave 4)

@@ -40,7 +40,8 @@ var (
 )
 
 // Compile-time interface satisfaction check.
-var _ local.LocalStore = (*FSStore)(nil)
+// Plan 17-07 restores: assertion fails until FSStore gains BlockStoreAppend methods (Put/Has/Walk).
+// var _ local.LocalStore = (*FSStore)(nil)
 
 // FSStore is a two-tier (memory + disk) block store for file data.
 //
