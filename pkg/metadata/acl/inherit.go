@@ -172,6 +172,16 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 			if !isDirectory {
 				continue
 			}
+			// NO_PROPAGATE on parent ACE stops further propagation entirely.
+			// Samba `calculate_inherited_from_parent` does not emit a
+			// preserved CREATOR ACE when NP is set — there is nothing to
+			// propagate to. Without this skip we would emit a CREATOR_OWNER
+			// ACE with all inheritance bits cleared, which Windows clients
+			// see as garbage. smbtorture INHERITANCE rows 6/7/14/15
+			// (NP|CI on CREATOR_OWNER) require single-ACE output.
+			if hasNP {
+				continue
+			}
 			// Cap check before preserved emission.
 			if len(inherited) >= MaxACECount {
 				slog.Debug("acl.ComputeInheritedACL: dropping preserved CREATOR ACE — MaxACECount reached",
@@ -190,13 +200,6 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 				preserved.Flag |= ACE4_DIRECTORY_INHERIT_ACE
 			}
 			preserved.Flag |= ACE4_INHERIT_ONLY_ACE
-			// NO_PROPAGATE: stop further propagation by clearing OI/CI/NP.
-			// (NB: hasNP && hasCI is the only NP path that reaches here for
-			// dir children; resolved-only emission below handles
-			// NP|OI-only and other shapes.)
-			if hasNP {
-				preserved.Flag &^= inheritanceMask
-			}
 			preserved.Flag &^= ACE4_INHERITED_ACE
 			preserved.Flag |= inheritedBit
 			inherited = append(inherited, preserved)
