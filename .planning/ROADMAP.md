@@ -409,9 +409,9 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 - [x] 17-05-PLAN.md — Engine retargeted onto renamed RemoteStore + dual-read shim deleted (Wave 3)
 - [x] 17-06-PLAN.md — Wire fs/memory/s3/memory-remote backends to blockstoretest + delete localtest/remotetest (Wave 3)
 - [x] 17-07-PLAN.md — Delete write.go + FormatStoreKey + UseAppendLog + legacy helpers; restore LocalStore assertion (Wave 4)
-- [ ] 17-08-PLAN.md — pkg/blockstore/migrate/migrate_to_cas.go library + dfs migrate-to-cas cobra subcommand (Wave 5)
-- [ ] 17-09-PLAN.md — NewFSStore sentinel check + cmd/dfs/start.go boot-guard exit-78 (Wave 5)
-- [ ] 17-10-PLAN.md — pkg/blockstore/doc.go convention + docs/CONFIGURATION.md Migration section + docs/CLI.md entry (Wave 6)
+- [x] 17-08-PLAN.md — pkg/blockstore/migrate/migrate_to_cas.go library + dfs migrate-to-cas cobra subcommand (Wave 5) — shipped 2026-05-20 (`081f31c4`, `177c9c37`, `bd253756`, `6d3e0267`, `3e9ed645`)
+- [x] 17-09-PLAN.md — NewFSStore sentinel check + cmd/dfs/start.go boot-guard exit-78 (Wave 5) — shipped 2026-05-20 (`5961536c`, `6f3e0326`, `9fb382a7`, `b7f4d00d`)
+- [x] 17-10-PLAN.md — pkg/blockstore/doc.go convention + docs/CONFIGURATION.md Migration section + docs/CLI.md entry (Wave 6) — shipped 2026-05-20 (`bb97ec34`, `99b5ef58`, `9f604247`)
 - [ ] 17-11-PLAN.md — Phase 17 VERIFICATION.md: perf gate, LoC measurement, STRIDE consolidation, smoke test (Wave 6)
 
 ## Milestone Gates

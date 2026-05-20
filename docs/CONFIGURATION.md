@@ -1096,6 +1096,138 @@ identity:
         local_gid: 1000
 ```
 
+## Migration
+
+### Required when upgrading from v0.15.x or earlier
+
+v0.16.0 replaces the legacy `<share>/<file>/<idx>.blk` block layout with a
+content-addressed store (CAS). Pre-v0.16 storage directories must be migrated
+before `dfs start` will succeed. The migration is **irreversible**: once a
+share has been flipped to the CAS layout there is no supported path back to
+the legacy `.blk` layout — keep an out-of-band backup if your operational
+posture requires rollback.
+
+### Boot-guard behavior
+
+On startup, `dfs start` opens each share's block store directory and checks
+for a `.cas-migrated-v1` sentinel file at the share root. If the sentinel is
+missing AND legacy `.blk` files are present, the server refuses to start
+(per-share fail-fast):
+
+- Exits with code **78** (`EX_CONFIG` per sysexits(3)).
+- Prints the following directive to stderr (showing the offending share
+  path):
+  ```
+  Detected legacy .blk layout: share "<name>": share <path>: blockstore: legacy .blk layout detected (run `dfs migrate-to-cas`)
+  v0.16+ requires CAS migration. Run:
+      dfs migrate-to-cas --share <name>
+  or, to migrate every share at once:
+      dfs migrate-to-cas
+  See docs/CONFIGURATION.md §migration.
+  ```
+- Halts on the FIRST share that surfaces the legacy layout. Healthy
+  already-migrated shares are not started in the same boot; fix the
+  offending share and retry.
+
+### Running the migration
+
+The migration is an offline operation — stop the server first. The
+`dfs migrate-to-cas` command refuses to run while a live `dfs` PID lockfile
+exists:
+
+```bash
+dfs stop
+dfs migrate-to-cas
+```
+
+Flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--storage-dir <path>` | (from config) | Storage root. Overrides the config-derived value. The command discovers shares under `<storage-dir>/shares/`. |
+| `--share <name>` | (all shares) | Scope migration to one share. Default migrates every share found under `<storage-dir>/shares/`. |
+| `--dry-run` | `false` | Walk the legacy `.blk` tree and report file count, total bytes, estimated dedup ratio, and ETA. Writes nothing — does not touch the journal, does not write the sentinel. |
+| `--json` | `false` | Emit one JSON object per line of progress on stdout for machine parsing. |
+| `--config <path>` | (default) | Override config file location. Inherited from the root `dfs` command. |
+
+Progress is reported to stdout approximately once per second. With `--json`,
+each line has the shape:
+
+```json
+{"ts":"<RFC3339>","share":"<name>","files_done":N,"bytes_done":N,"files_per_sec":F,"mib_per_sec":F,"dedup_hits":N,"eta_seconds":F}
+```
+
+Plain text progress reads `[<share>] N files, X.X MiB/s, dedup_hits=K`.
+
+### Crash safety
+
+The migration is idempotent. A per-share journal at
+`<storage_dir>/<share>/.dittofs-migrate-to-cas.state` records the
+last-completed file path and byte offset. If interrupted (Ctrl-C, kill -9,
+power loss, panic, OOM), rerunning `dfs migrate-to-cas` resumes from the
+journaled position. The journal is removed on best-effort cleanup only AFTER
+the per-share sentinel write succeeds — a failed sentinel write preserves the
+journal so a rerun can pick up exactly where the prior left off.
+
+The CAS Put surface is idempotent on hash collision, so re-processing an
+in-flight file at the resume point is safe (chunks already uploaded are
+treated as dedup hits on the second pass).
+
+### Verifying completion
+
+Success is recorded by a per-share sentinel file at
+`<share_dir>/.cas-migrated-v1` (one per share — `--share <name>` migrations
+produce just that share's sentinel; un-scoped migrations produce one sentinel
+per share at each share's completion, so partial-success states are
+operationally well-defined). Contents:
+
+```json
+{
+  "Version":     "v1",
+  "CompletedAt": "2026-05-20T14:30:00Z",
+  "ToolVersion": "v1.0.0",
+  "ShareDir":    "/path/to/share"
+}
+```
+
+The sentinel is written via atomic rename (`.cas-migrated-v1.tmp` → fsync →
+close → rename → syncDir) only after every chunk for the share has been
+committed and verified — partial migrations cannot leave a sentinel behind.
+**Do not hand-create or hand-edit this file.** It is intended as a one-way
+irreversibility marker; modifying it bypasses the boot guard but cannot fix
+a half-migrated store and will surface I/O errors on the first legacy
+FileBlock access.
+
+To confirm a share is fully migrated, inspect the sentinel directly:
+
+```bash
+cat <storage_dir>/shares/<name>/.cas-migrated-v1
+```
+
+A successful `dfs start` against the share is the final verification: the
+boot guard exits 78 on any share whose sentinel is missing.
+
+### Recovery from a failed migration
+
+1. Inspect stderr (or the JSON progress stream) for the file path + offset
+   at which the migration halted.
+2. Inspect the journal at
+   `<storage_dir>/<share>/.dittofs-migrate-to-cas.state` to confirm the
+   resume point.
+3. Rerun `dfs migrate-to-cas` (optionally with `--share <name>` to scope to
+   the affected share). Already-migrated shares are skipped on rerun (their
+   sentinels short-circuit the boot guard at the fs-layer constructor).
+4. If a chunk verification mismatch occurred (post-Put BLAKE3 disagreement —
+   `ErrChunkPutMismatch`), this indicates storage corruption between Put and
+   re-Get. Investigate the destination block store (disk health, S3
+   eventual-consistency on overwrite, filesystem corruption) before
+   retrying; the journal preserves the resume point for forensics.
+
+### See also
+
+- [docs/CLI.md — `dfs migrate-to-cas`](CLI.md#dfs-migrate-to-cas) for the
+  full command-line reference (synopsis, flag table, exit codes, examples).
+
 ## Environment Variables
 
 Override configuration using environment variables with the `DITTOFS_` prefix:
