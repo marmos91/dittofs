@@ -4,14 +4,14 @@ milestone: v0.15.0
 milestone_name: — CAS Convergence
 status: executing
 stopped_at: Phase 16 context gathered
-last_updated: "2026-05-20T11:22:05.102Z"
+last_updated: "2026-05-20T11:35:52.917Z"
 last_activity: 2026-05-20
 progress:
   total_phases: 9
   completed_phases: 3
   total_plans: 33
-  completed_plans: 30
-  percent: 91
+  completed_plans: 31
+  percent: 94
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-23)
 
 Milestone: v0.15.0
 Phase: 16 (cache-mmap-removal) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Branch: `gsd/phase-12-cdc-read-path-metadata-engine-api`
 Status: Ready to execute
 Last activity: 2026-05-20
@@ -129,7 +129,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-20T11:21:36.675Z
+Last session: 2026-05-20T11:35:48.348Z
 Stopped at: Phase 16 context gathered
 Next action: **Phase 14 phase-execution complete.** Two outstanding follow-ups before production rollout: (1) `openOfflineRuntime` production wiring (controlplane DB read + per-share metadata/remote-store factory dispatch) — tracked under #425, interfaces stable, runbook documents this prominently as a Known Limitation; (2) per-payload-id streaming variant of `deleteLegacyKeys` only if real workloads surface S3 LIST cost (T-14-05-04). Status surface (CLI + REST) is fully usable today against a running daemon. Once #425 closes, no runbook changes needed — the four worked transcripts will then run literally rather than aspirationally. Phase 15 (A6 — legacy cleanup) remains intentionally deferred until #425 closes and migration is rolled out across production workloads.
 
