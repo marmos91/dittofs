@@ -265,6 +265,87 @@ constant is not appropriate for that machine class:
 Re-baselining is a deliberate calibration event, not a fix — it MUST
 be reviewed in PR.
 
+## v0.16.0 Phase 16 warm-cache baseline (D-06)
+
+Phase 16 (`v0.16.0` Cache RAM-only) removed the platform-aware mmap
+fast-path from `pkg/blockstore/engine/cache.go`. The warm-cache path
+never touched mmap — the LRU stored `[]byte` copies regardless — so
+the regression is bounded by D-06 ≤1.02 vs the pre-Phase-16 baseline.
+Verified empirically rather than assumed.
+
+### Reproduction
+
+```bash
+# Pre-Phase-16 baseline (in a worktree at the pre-deletion commit):
+git worktree add /tmp/dittofs-pre-p16 f8e2532d
+cd /tmp/dittofs-pre-p16 && go test -bench=BenchmarkRandReadVerified \
+    -benchtime=10s -count=3 -run='^$' ./pkg/blockstore/engine/... \
+    > /tmp/p16-bench-pre.txt
+git worktree remove /tmp/dittofs-pre-p16 --force
+
+# Post-Phase-16 (current tree):
+go test -bench=BenchmarkRandReadVerified -benchtime=10s -count=3 \
+    -run='^$' ./pkg/blockstore/engine/... > /tmp/p16-bench-post.txt
+
+benchstat /tmp/p16-bench-pre.txt /tmp/p16-bench-post.txt
+```
+
+### Result (Apple M1 Max, 2026-05-20)
+
+- **Pre commit:**  `f8e2532d` (`docs(state): record phase 16 context session`)
+- **Post commit:** `436a81ec` (`docs(16-03): complete cache_mmap dead-code deletion plan`)
+- **Benchtime:**   `10s`, **count:** `3` per bench
+- **Hardware:**    Apple M1 Max, 10 cores (Darwin arm64)
+
+| Benchmark (single chunk size: 4 MiB) | Pre median ns/op | Post median ns/op | Ratio post/pre | D-06 (≤1.02) |
+| ------------------------------------ | ---------------: | ----------------: | -------------: | :----------: |
+| BenchmarkRandReadVerified            |        1,492,970 |         1,328,307 |          0.890 |     PASS     |
+
+| Metric    | Pre median | Post median |
+| --------- | ---------: | ----------: |
+| ops/s     |      669.8 |       752.8 |
+| MB/s      |   2,809.37 |    3,157.63 |
+| B/op      |  4,269,411 |   4,269,410 |
+| allocs/op |        569 |         569 |
+
+`benchstat` summary:
+
+```
+                    │ /tmp/p16-bench-pre.txt │     /tmp/p16-bench-post.txt     │
+                    │         sec/op         │    sec/op     vs base           │
+RandReadVerified-10             1.493m ± ∞ ¹   1.328m ± ∞ ¹  ~ (p=0.700 n=3) ²
+                    │          B/s           │      B/s       vs base           │
+RandReadVerified-10            2.616Gi ± ∞ ¹   2.941Gi ± ∞ ¹  ~ (p=0.700 n=3) ²
+                    │         ops/s          │    ops/s     vs base           │
+RandReadVerified-10              669.8 ± ∞ ¹   752.8 ± ∞ ¹  ~ (p=0.700 n=3) ²
+```
+
+Post is slightly faster than pre — the `loadByHash` closure no longer
+dispatches through the per-OS mmap thunk; `B/op` and `allocs/op` are
+bit-identical because the mmap path already copied bytes into the
+LRU slot in the pre version, so the alloc count was unchanged. D-06
+gate (≤1.02) is met with a wide margin.
+
+### What was deleted
+
+`pkg/blockstore/engine/cache_mmap_unix.go`,
+`pkg/blockstore/engine/cache_mmap_windows.go`,
+`pkg/blockstore/engine/cache_mmap_test.go`, and
+`pkg/blockstore/engine/perf_bench_unix_test.go` (which held the
+`TestPerfGate_Phase12_MmapHotPath` gate — **D-33 was removed in
+Phase 16** because it measured `mmap` vs `os.ReadFile`, both of
+which are meaningless post-removal of the mmap loader). See
+`.planning/phases/16-cache-mmap-removal/` for the full deletion log.
+
+### Cold-cache benchmark — deferred (D-07)
+
+Phase 16 intentionally does NOT introduce a cold-cache benchmark.
+Production workloads are warm; `BenchmarkRandReadVerified` is the
+canonical warm-cache regression anchor going forward. A dedicated
+`BenchmarkRandReadVerified_ColdCache` (clearing LRU before each
+read, gate ≤1.10) is deferred to v0.17+ and added only if cold-read
+complaints surface in production.
+
 ## End-to-end performance reports
 
 For NFSv3/NFSv4.1 + SMB end-to-end numbers against kernel NFS and
