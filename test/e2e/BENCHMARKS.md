@@ -4,9 +4,9 @@ This page is the single place contributors look for local perf gates wired
 into the Go test suite. Full end-to-end performance reports (DittoFS vs
 JuiceFS vs kernel NFS on real infrastructure) live in `docs/BENCHMARKS.md`.
 
-## v0.15.0 Phase 10 perf gates (D-40 / D-41 / D-42)
+## Local-store perf gates (D-40 / D-41 / D-42)
 
-The Phase 10 (`v0.15.0` A1) refactor adds three in-tree microbenchmark
+The hybrid append-log local store ships three in-tree microbenchmark
 gates. All three are skipped under `go test -short`. D-40 is additionally
 gated on the `D40_GATE` env var because it allocates several GiB of disk
 and runs for minutes.
@@ -54,20 +54,18 @@ the regression is immediately attributable.
 
 ### Why D-40 is not a CI gate yet
 
-D-43 (see `.planning/phases/10-fastcdc-chunker-hybrid-local-store-a1/10-CONTEXT.md`)
-originally speced a dedicated CI perf lane with stable hardware and
-baseline capture. Phase 10 fell back to "in-tree gate + local-run
-instructions" (this document) because standing up the lane required
-more infra work than the 3-week Phase 10 budget allowed.
+The original design speced a dedicated CI perf lane with stable
+hardware and baseline capture, but standing it up required more infra
+work than budget allowed — the fallback is "in-tree gate + local-run
+instructions" (this document).
 
-**The CI perf lane is a Phase 11 prerequisite.** Once the lane exists
-it can enable this gate (and D-41 / D-42) by setting `D40_GATE=1` and
-dropping `-short` in that job.
+**The CI perf lane is a prerequisite for fail-closed enforcement.**
+Once the lane exists it can enable this gate (and D-41 / D-42) by
+setting `D40_GATE=1` and dropping `-short` in that job.
 
-Phase-review note: D-40 was originally speced as a 5% gate; Warning 4
-of the Phase 10 review loosened it to 15% trend mode with a 5-run
-median after demonstrating that single-run benches without warmup
-flap on 5% tolerances on developer laptops.
+D-40 was originally speced as a 5% gate; it was later loosened to 15%
+trend mode with a 5-run median after demonstrating that single-run
+benches without warmup flap on 5% tolerances on developer laptops.
 
 ## Running the paired benchmarks directly
 
@@ -86,16 +84,15 @@ go test -run=^$ -bench=BenchmarkTryDirectDiskWrite_Sequential1GiB \
 time is predictable. Use `-cpuprofile=cpu.out` / `-memprofile=mem.out`
 to collect profiles.
 
-## v0.15.0 Phase 11 perf gate (D-20)
+## CAS read/write perf gates (D-20)
 
-Phase 11 (`v0.15.0` A2) ships the streaming BLAKE3 verifier on the CAS
-read path (INV-06) and the new CAS write path (BSCAS-01/03/06). Two
-gates protect both:
+The streaming BLAKE3 verifier protects the CAS read path (INV-06) and
+the CAS write path (BSCAS-01/03/06) ships with two gates:
 
 - **Verifier gate (D-20):** rand-read-with-verifier must be within 5%
   IOPS of rand-read-without-verifier on a real S3 backend.
 - **Write-path gate (≤6% global budget per STATE.md):** rand-write CAS
-  must be within 6% of the Phase 10 rand-write baseline.
+  must be within 6% of the recorded rand-write baseline.
 
 Both gates ship as in-tree microbenchmarks in
 `pkg/blockstore/engine/perf_bench_test.go`. The test
@@ -117,7 +114,7 @@ go test -run TestPerfGate_VerifierWithinBudget ./pkg/blockstore/engine/ \
 # Full bench output (run twice for variance signal).
 go test -bench='BenchmarkRandReadVerified|BenchmarkRandReadUnverified|BenchmarkRandWriteCAS' \
     -benchtime=10s ./pkg/blockstore/engine/ -run='^$' -benchmem -count=2 \
-    | tee /tmp/phase11-bench.txt
+    | tee /tmp/cas-bench.txt
 ```
 
 ### Indicative local numbers (Apple Silicon)
@@ -126,7 +123,7 @@ These numbers are **indicative** — they were captured against the
 in-memory remote (no network, no AWS SDK), so they represent the CPU
 floor of each path on this hardware. Hard CI gating against real S3
 or Localstack remains a follow-up that requires the dedicated bench
-lane (D-43, Phase 11 prereq).
+lane (D-43 prereq).
 
 - **Date:** 2026-04-25
 - **Git SHA:** `a3f05722` (worktree base `4219a61d`)
@@ -152,12 +149,11 @@ Computed regressions (lower is better):
   number — once network/AWS SDK cost dominates the unverified path, the
   marginal verifier cost shrinks accordingly.
 - **CAS write throughput:** ~275 ops/s (≈ 1.15 GB/s steady state). The
-  Phase 10 rand-write baseline is recorded against on-disk + S3 paths
-  in `docs/BENCHMARKS.md`; the in-memory CAS write number here is a
+  rand-write baseline is recorded against on-disk + S3 paths in
+  `docs/BENCHMARKS.md`; the in-memory CAS write number here is a
   CPU-floor reference for the upload-path implementation cost (BLAKE3
   hash + memcpy into the in-memory remote + metadata-txn). Real ≤6%
-  budget enforcement vs Phase 10 needs the bench lane against the same
-  S3 endpoint Phase 10 used.
+  budget enforcement needs the bench lane against a real S3 endpoint.
 
 ### How to enforce on the CI perf lane (follow-up)
 
@@ -167,7 +163,7 @@ When the CI perf lane lands:
    reused from `test/e2e/`, or a dedicated bucket on the bench rig).
 2. Set `D20_STRICT_GATE=1` so `TestPerfGate_VerifierWithinBudget` fails
    the build if the regression exceeds 5%.
-3. Compare `BenchmarkRandWriteCAS` against the Phase 10 baseline
+3. Compare `BenchmarkRandWriteCAS` against the rand-write baseline
    captured in `docs/BENCHMARKS.md` and fail the build at 6%.
 4. Record each run's date + git SHA + hardware + numbers in this
    document so trend hunting works across releases.
@@ -175,25 +171,23 @@ When the CI perf lane lands:
 Until then the inline gate test passes by design and the benchmarks
 are run on demand for trend visibility.
 
-## v0.15.0 Phase 12 perf gate (D-43)
+## Read-path perf gate (D-43)
 
-Phase 12 (`v0.15.0` A3) stacks new risk surface on the read path:
-binary-search lookup over `[]BlockRef` (Plan 07), CAS-keyed Cache
-rewrite (Plan 09), and the mmap single-copy seam on local hits
-(Plan 10). D-43 is the hard regression gate that blocks PR-C merge
-until rand-read latency stays within the per-machine microbench
-floor.
+The read-path stack carries new risk surface: binary-search lookup
+over `[]BlockRef`, CAS-keyed Cache, and the per-share metadata
+coordinator. D-43 is the hard regression gate that blocks merge until
+rand-read latency stays within the per-machine microbench floor.
 
 **Gate budget:** ≤5% rand-read regression vs the per-machine in-tree
-microbench floor. Tighter than the global ≤6% per STATE.md so that
-Phase 13 (file-level dedup) and Phase 14 (migration) have headroom
-before the global 6% budget is exhausted.
+microbench floor. Tighter than the global ≤6% per STATE.md so
+downstream changes have headroom before the global 6% budget is
+exhausted.
 
 ### Microbench vs real-S3 disclaimer
 
-The Phase 12 in-tree microbench (`BenchmarkPerfGate_Phase12RandReadRegression`)
+The in-tree microbench (`BenchmarkPerfGate_Phase12RandReadRegression`)
 runs against the in-process memory local store + nil remote, NOT
-real S3. The Phase 11 / ROADMAP figure of ≥1,350 IOPS rand-read is
+real S3. The ≥1,350 IOPS rand-read figure in the milestone notes is
 the **bench/infra real-S3 lane** number — Pulumi-deployed Scaleway
 nodes against an `s3.fr-par.scw.cloud` bucket. The two are NOT
 directly comparable: the microbench is a CPU-floor measurement of
@@ -204,13 +198,12 @@ hit-rate.
 The microbench gate uses a per-machine-calibrated floor (a numeric
 constant in `perf_bench_phase12_test.go::phase12MicrobenchFloorIOPS`)
 recorded by the first run on a new machine class. Real-S3 perf is
-verified separately at the v0.15.0 milestone gate VER-02.
+verified separately at the milestone gate VER-02.
 
-| Phase   | Gate                                                                       | Tolerance                          | Test                                              |
-| ------- | -------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------- |
-| Phase 12 (A3) | rand-read in-tree microbench >= `phase12MicrobenchFloorIOPS` IOPS    | <= 5% regression vs per-machine floor | `BenchmarkPerfGate_Phase12RandReadRegression`     |
-| Phase 12 (A3) | findBlocksForRange average <1 µs/call across 16K BlockRefs           | hard ceiling                       | `TestPerfGate_Phase12_BinarySearchOverhead`       |
-| ~~Phase 12 (A3)~~ | ~~readFromCAS mmap throughput >= 0.95 × os.ReadFile (linux/darwin)~~ — **removed in Phase 16** (mmap read path deleted; replaced by warm-cache `BenchmarkRandReadVerified` ≤1.02 — see Phase 16 section below) | — | ~~`TestPerfGate_Phase12_MmapHotPath`~~ |
+| Gate                                                                 | Tolerance                              | Test                                          |
+| -------------------------------------------------------------------- | -------------------------------------- | --------------------------------------------- |
+| rand-read in-tree microbench >= `phase12MicrobenchFloorIOPS` IOPS    | <= 5% regression vs per-machine floor  | `BenchmarkPerfGate_Phase12RandReadRegression` |
+| findBlocksForRange average <1 µs/call across 16K BlockRefs           | hard ceiling                           | `TestPerfGate_Phase12_BinarySearchOverhead`   |
 
 ### Reproduction commands
 
@@ -228,11 +221,10 @@ go test -bench BenchmarkPerfGate_Phase12 -benchtime=10s -run=^$ \
 go test -run 'TestPerfGate_Phase12' -count=1 -v ./pkg/blockstore/engine/...
 ```
 
-### Indicative microbench numbers (Apple Silicon, Plan 12-12 first run)
+### Indicative microbench numbers (Apple Silicon)
 
-These numbers were captured on the executor machine that landed
-Plan 12-12. Use them as a sanity check, not as the gate floor — the
-gate compares against the conservative `phase12MicrobenchFloorIOPS`
+Use these as a sanity check, not as the gate floor — the gate
+compares against the conservative `phase12MicrobenchFloorIOPS`
 constant (50,000 IOPS) which is anchored well below the M1 Max
 measurement to avoid CI flakes.
 
@@ -265,39 +257,39 @@ constant is not appropriate for that machine class:
 Re-baselining is a deliberate calibration event, not a fix — it MUST
 be reviewed in PR.
 
-## v0.16.0 Phase 16 warm-cache baseline (D-06)
+## BenchmarkRandReadVerified — warm-cache regression gate
 
-Phase 16 (`v0.16.0` Cache RAM-only) removed the platform-aware mmap
-fast-path from `pkg/blockstore/engine/cache.go`. The warm-cache path
-never touched mmap — the LRU stored `[]byte` copies regardless — so
-the regression is bounded by D-06 ≤1.02 vs the pre-Phase-16 baseline.
-Verified empirically rather than assumed.
+The cache's platform-aware mmap fast-path was removed from
+`pkg/blockstore/engine/cache.go`. The warm-cache path never touched
+mmap — the LRU stored `[]byte` copies regardless — so the regression
+is bounded by ≤1.02 vs the pre-removal baseline. Verified empirically
+rather than assumed.
 
 ### Reproduction
 
 ```bash
-# Pre-Phase-16 baseline (in a worktree at the pre-deletion commit):
-git worktree add /tmp/dittofs-pre-p16 f8e2532d
-cd /tmp/dittofs-pre-p16 && go test -bench=BenchmarkRandReadVerified \
+# Baseline (in a worktree at the pre-deletion commit):
+git worktree add /tmp/dittofs-baseline f8e2532d
+cd /tmp/dittofs-baseline && go test -bench=BenchmarkRandReadVerified \
     -benchtime=10s -count=3 -run='^$' ./pkg/blockstore/engine/... \
-    > /tmp/p16-bench-pre.txt
-git worktree remove /tmp/dittofs-pre-p16 --force
+    > /tmp/randread-pre.txt
+git worktree remove /tmp/dittofs-baseline --force
 
-# Post-Phase-16 (current tree):
+# Current tree:
 go test -bench=BenchmarkRandReadVerified -benchtime=10s -count=3 \
-    -run='^$' ./pkg/blockstore/engine/... > /tmp/p16-bench-post.txt
+    -run='^$' ./pkg/blockstore/engine/... > /tmp/randread-post.txt
 
-benchstat /tmp/p16-bench-pre.txt /tmp/p16-bench-post.txt
+benchstat /tmp/randread-pre.txt /tmp/randread-post.txt
 ```
 
-### Result (Apple M1 Max, 2026-05-20)
+### Result (Apple M1 Max)
 
-- **Pre commit:**  `f8e2532d` (`docs(state): record phase 16 context session`)
-- **Post commit:** `436a81ec` (`docs(16-03): complete cache_mmap dead-code deletion plan`)
+- **Pre commit:**  `f8e2532d`
+- **Post commit:** `436a81ec`
 - **Benchtime:**   `10s`, **count:** `3` per bench
 - **Hardware:**    Apple M1 Max, 10 cores (Darwin arm64)
 
-| Benchmark (single chunk size: 4 MiB) | Pre median ns/op | Post median ns/op | Ratio post/pre | D-06 (≤1.02) |
+| Benchmark (single chunk size: 4 MiB) | Pre median ns/op | Post median ns/op | Ratio post/pre | Gate (≤1.02) |
 | ------------------------------------ | ---------------: | ----------------: | -------------: | :----------: |
 | BenchmarkRandReadVerified            |        1,492,970 |         1,328,307 |          0.890 |     PASS     |
 
@@ -311,7 +303,7 @@ benchstat /tmp/p16-bench-pre.txt /tmp/p16-bench-post.txt
 `benchstat` summary:
 
 ```
-                    │ /tmp/p16-bench-pre.txt │     /tmp/p16-bench-post.txt     │
+                    │ /tmp/randread-pre.txt  │      /tmp/randread-post.txt     │
                     │         sec/op         │    sec/op     vs base           │
 RandReadVerified-10             1.493m ± ∞ ¹   1.328m ± ∞ ¹  ~ (p=0.700 n=3) ²
                     │          B/s           │      B/s       vs base           │
@@ -323,28 +315,27 @@ RandReadVerified-10              669.8 ± ∞ ¹   752.8 ± ∞ ¹  ~ (p=0.700 n
 Post is slightly faster than pre — the `loadByHash` closure no longer
 dispatches through the per-OS mmap thunk; `B/op` and `allocs/op` are
 bit-identical because the mmap path already copied bytes into the
-LRU slot in the pre version, so the alloc count was unchanged. D-06
-gate (≤1.02) is met with a wide margin.
+LRU slot, so the alloc count was unchanged. The ≤1.02 gate is met
+with a wide margin.
 
 ### What was deleted
 
+The per-OS cache mmap files were removed:
 `pkg/blockstore/engine/cache_mmap_unix.go`,
 `pkg/blockstore/engine/cache_mmap_windows.go`,
 `pkg/blockstore/engine/cache_mmap_test.go`, and
-`pkg/blockstore/engine/perf_bench_unix_test.go` (which held the
-`TestPerfGate_Phase12_MmapHotPath` gate — **D-33 was removed in
-Phase 16** because it measured `mmap` vs `os.ReadFile`, both of
-which are meaningless post-removal of the mmap loader). See
-`.planning/phases/16-cache-mmap-removal/` for the full deletion log.
+`pkg/blockstore/engine/perf_bench_unix_test.go` (which held a gate
+that measured `mmap` vs `os.ReadFile`, both meaningless without the
+mmap loader).
 
-### Cold-cache benchmark — deferred (D-07)
+### Cold-cache benchmark — intentionally omitted
 
-Phase 16 intentionally does NOT introduce a cold-cache benchmark.
+This gate suite intentionally does not include a cold-cache benchmark.
 Production workloads are warm; `BenchmarkRandReadVerified` is the
-canonical warm-cache regression anchor going forward. A dedicated
-`BenchmarkRandReadVerified_ColdCache` (clearing LRU before each
-read, gate ≤1.10) is deferred to v0.17+ and added only if cold-read
-complaints surface in production.
+canonical warm-cache regression anchor. A dedicated
+`BenchmarkRandReadVerified_ColdCache` (clearing LRU before each read,
+gate ≤1.10) will be added only if cold-read complaints surface in
+production.
 
 ## End-to-end performance reports
 
