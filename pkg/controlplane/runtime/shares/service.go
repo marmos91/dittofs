@@ -451,36 +451,6 @@ func (s *Service) createBlockStoreForShare(
 	localStoreDefaults *LocalStoreDefaults,
 	syncerDefaults *SyncerDefaults,
 ) error {
-	// Plan 14-02 (MIG-03 / D-A6): read the share's BlockLayout from the
-	// metadata store at AddShare time so the engine's dual-read shim
-	// gates the legacy fallback per-share. The metadata store is the
-	// source of truth (D-A6) — control-plane DB does NOT carry this
-	// flag. Empty / pre-Phase-14 rows coerce to BlockLayoutLegacy via
-	// ParseBlockLayout (already enforced in every backend), and the
-	// engine repeats the coercion as defense-in-depth in NewSyncer.
-	//
-	// The cast to metadata.MetadataStore mirrors the pattern used a few
-	// lines below for the metadata coordinator wiring: production
-	// fileBlockStore is the per-share metadata store, but the engine
-	// seam is narrowed to EngineFileBlockStore — not every test fake
-	// implements GetShareOptions, so a missing cast falls through to
-	// the legacy default rather than failing share creation.
-	blockLayout := metadata.BlockLayoutLegacy
-	if metadataStore, ok := fileBlockStore.(metadata.MetadataStore); ok {
-		opts, err := metadataStore.GetShareOptions(ctx, config.Name)
-		if err == nil && opts != nil {
-			if opts.BlockLayout == metadata.BlockLayoutCASOnly {
-				blockLayout = metadata.BlockLayoutCASOnly
-			}
-		} else if err != nil {
-			// Treat a missing-share-options read as legacy (the safer
-			// default; matches Plan 14-01's coerce-on-read semantics).
-			// Log at Warn so operators see drift between control-plane
-			// and metadata stores rather than silently misrouting.
-			logger.Warn("createBlockStoreForShare: GetShareOptions failed; defaulting to legacy BlockLayout",
-				"share", config.Name, "error", err)
-		}
-	}
 	// Resolve local block store config from DB.
 	localCfg, err := blockStoreProvider.GetBlockStoreByID(ctx, config.LocalBlockStoreID)
 	if err != nil {
@@ -516,11 +486,6 @@ func (s *Service) createBlockStoreForShare(
 	localStore.SetRetentionPolicy(config.RetentionPolicy, config.RetentionTTL)
 
 	syncerCfg := buildSyncerConfigFromDefaults(syncerDefaults)
-	// Plan 14-02 wiring: thread the per-share BlockLayout into the
-	// engine's SyncerConfig so dispatchRemoteFetch's gate sees the
-	// correct value at construction time. Engine reload (Plan 14-05's
-	// auto-cutover) recreates this Syncer when the flag flips.
-	syncerCfg.BlockLayout = blockLayout
 
 	// Wrap shared remote in nonClosingRemote so engine.Close() doesn't close it;
 	// releaseRemoteStore handles actual closing via ref counting.

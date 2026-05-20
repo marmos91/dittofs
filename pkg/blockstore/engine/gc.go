@@ -424,63 +424,63 @@ func sweepPhase(
 		stats.FirstErrors = append(stats.FirstErrors, msg)
 	}
 
+	// Post-Phase-17: the renamed RemoteStore.Walk replaces the per-XX
+	// ListByPrefixWithMeta scan. Walk enumerates every CAS object in the
+	// store in one call; the prefix-job partitioning becomes a no-op (we
+	// dispatch a single Walk and ignore the per-XX work distribution).
+	// Concurrency budget is reserved for a future Walk-with-sharding
+	// extension; today's s3 backend Walk lists `cas/` cluster-wide.
+	_ = sweepConcurrency
 	sweepOne := func(j prefixJob) {
-		listPrefix := casPrefix + j.xx + "/"
-		objects, err := remoteStore.ListByPrefixWithMeta(ctx, listPrefix)
-		if err != nil {
-			addError("list " + j.xx + ": " + err.Error())
-			return
-		}
-		for _, obj := range objects {
+		_ = j
+		walkErr := remoteStore.Walk(ctx, func(h blockstore.ContentHash, meta blockstore.Meta) error {
 			if err := ctx.Err(); err != nil {
-				return
+				return err
 			}
-			h, err := blockstore.ParseCASKey(obj.Key)
-			if err != nil {
-				// Non-CAS key — silently skip (T-11-C-07).
-				continue
-			}
+			casKey := blockstore.FormatCASKey(h)
 			// Phase 11 WR-4-02 — fail-closed on missing LastModified.
 			// A zero LastModified means the backend did not report
 			// per-object age; we cannot evaluate the snapshot - grace
 			// TTL filter (D-05) and we MUST NOT proceed to delete on
 			// the live-set check alone. Preserve the object and capture
-			// a diagnostic; the operator must fix the backend's
-			// ListByPrefixWithMeta to populate LastModified (see the
-			// remote.ObjectInfo contract).
-			if obj.LastModified.IsZero() {
-				addError("zero LastModified " + obj.Key + ": backend ListByPrefixWithMeta must populate LastModified for grace TTL evaluation")
-				continue
+			// a diagnostic.
+			if meta.LastModified.IsZero() {
+				addError("zero LastModified " + casKey + ": backend Walk must populate LastModified for grace TTL evaluation")
+				return nil
 			}
-			if obj.LastModified.After(snapshotTime.Add(-gracePeriod)) {
-				continue // within grace window (D-05)
+			if meta.LastModified.After(snapshotTime.Add(-gracePeriod)) {
+				return nil // within grace window (D-05)
 			}
 			present, err := gcs.Has(h)
 			if err != nil {
-				addError("gcstate has " + obj.Key + ": " + err.Error())
-				continue
+				addError("gcstate has " + casKey + ": " + err.Error())
+				return nil
 			}
 			if present {
-				continue // live — keep
+				return nil // live — keep
 			}
 			if options.DryRun {
 				statsMu.Lock()
 				if int64(len(stats.DryRunCandidates)) < int64(dryRunSample) {
-					stats.DryRunCandidates = append(stats.DryRunCandidates, obj.Key)
+					stats.DryRunCandidates = append(stats.DryRunCandidates, casKey)
 				}
 				stats.ObjectsSwept++ // count what would be deleted
 				statsMu.Unlock()
-				continue
+				return nil
 			}
-			if err := remoteStore.DeleteBlock(ctx, obj.Key); err != nil {
+			if err := remoteStore.Delete(ctx, h); err != nil {
 				// D-07: continue + capture
-				addError("delete " + obj.Key + ": " + err.Error())
-				continue
+				addError("delete " + casKey + ": " + err.Error())
+				return nil
 			}
 			statsMu.Lock()
 			stats.ObjectsSwept++
-			stats.BytesFreed += obj.Size
+			stats.BytesFreed += meta.Size
 			statsMu.Unlock()
+			return nil
+		})
+		if walkErr != nil {
+			addError("walk: " + walkErr.Error())
 		}
 		if options.ProgressCallback != nil {
 			statsMu.Lock()
@@ -490,20 +490,15 @@ func sweepPhase(
 		}
 	}
 
-	for w := 0; w < sweepConcurrency; w++ {
-		sweepWG.Add(1)
-		go func() {
-			defer sweepWG.Done()
-			for j := range jobs {
-				sweepOne(j)
-			}
-		}()
-	}
-	for xx := 0; xx < 256; xx++ {
-		jobs <- prefixJob{xx: fmt.Sprintf("%02x", xx)}
-	}
-	close(jobs)
-	sweepWG.Wait()
+	// Post-Phase-17: Walk enumerates every CAS object cluster-wide in a
+	// single call, replacing the 256-way prefix sharding. We dispatch a
+	// single sweepOne invocation; the worker-pool + jobs channel is
+	// retained as inert scaffolding so a future plan can re-shard Walk
+	// (e.g., per-prefix concurrency at the backend layer) without
+	// re-introducing the channel here.
+	_ = jobs
+	_ = sweepWG
+	sweepOne(prefixJob{})
 }
 
 // finalizeStats fills the legacy aggregator fields from the mark-sweep

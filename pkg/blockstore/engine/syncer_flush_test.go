@@ -97,42 +97,30 @@ type failingRemote struct {
 	writeCount       atomic.Int64
 }
 
-func (f *failingRemote) WriteBlock(ctx context.Context, key string, data []byte) error {
-	return f.inner.WriteBlock(ctx, key, data)
-}
-func (f *failingRemote) WriteBlockWithHash(ctx context.Context, key string, hash blockstore.ContentHash, data []byte) error {
+func (f *failingRemote) Put(ctx context.Context, hash blockstore.ContentHash, data []byte) error {
 	n := f.writeCount.Add(1)
 	if n == int64(f.failOnWriteCount) {
-		return errors.New("induced WriteBlockWithHash failure")
+		return errors.New("induced Put failure")
 	}
-	return f.inner.WriteBlockWithHash(ctx, key, hash, data)
+	return f.inner.Put(ctx, hash, data)
 }
-func (f *failingRemote) ReadBlock(ctx context.Context, key string) ([]byte, error) {
-	return f.inner.ReadBlock(ctx, key)
+func (f *failingRemote) Get(ctx context.Context, hash blockstore.ContentHash) ([]byte, error) {
+	return f.inner.Get(ctx, hash)
 }
-func (f *failingRemote) ReadBlockVerified(ctx context.Context, key string, expected blockstore.ContentHash) ([]byte, error) {
-	return f.inner.ReadBlockVerified(ctx, key, expected)
+func (f *failingRemote) GetRange(ctx context.Context, hash blockstore.ContentHash, offset, length int64) ([]byte, error) {
+	return f.inner.GetRange(ctx, hash, offset, length)
 }
-func (f *failingRemote) ReadBlockRange(ctx context.Context, key string, offset, length int64) ([]byte, error) {
-	return f.inner.ReadBlockRange(ctx, key, offset, length)
+func (f *failingRemote) Delete(ctx context.Context, hash blockstore.ContentHash) error {
+	return f.inner.Delete(ctx, hash)
 }
-func (f *failingRemote) DeleteBlock(ctx context.Context, key string) error {
-	return f.inner.DeleteBlock(ctx, key)
+func (f *failingRemote) Head(ctx context.Context, hash blockstore.ContentHash) (blockstore.Meta, error) {
+	return f.inner.Head(ctx, hash)
 }
-func (f *failingRemote) DeleteByPrefix(ctx context.Context, prefix string) error {
-	return f.inner.DeleteByPrefix(ctx, prefix)
+func (f *failingRemote) Walk(ctx context.Context, fn func(blockstore.ContentHash, blockstore.Meta) error) error {
+	return f.inner.Walk(ctx, fn)
 }
-func (f *failingRemote) ListByPrefix(ctx context.Context, prefix string) ([]string, error) {
-	return f.inner.ListByPrefix(ctx, prefix)
-}
-func (f *failingRemote) ListByPrefixWithMeta(ctx context.Context, prefix string) ([]remote.ObjectInfo, error) {
-	return f.inner.ListByPrefixWithMeta(ctx, prefix)
-}
-func (f *failingRemote) HeadObject(ctx context.Context, key string) (remote.HeadResult, error) {
-	return f.inner.HeadObject(ctx, key)
-}
-func (f *failingRemote) CopyBlock(ctx context.Context, src, dst string) error {
-	return f.inner.CopyBlock(ctx, src, dst)
+func (f *failingRemote) ReadBlockVerified(ctx context.Context, hash, expected blockstore.ContentHash) ([]byte, error) {
+	return f.inner.ReadBlockVerified(ctx, hash, expected)
 }
 func (f *failingRemote) Close() error                        { return f.inner.Close() }
 func (f *failingRemote) HealthCheck(_ context.Context) error { return nil }
@@ -288,9 +276,9 @@ func TestSyncer_Flush_NoBlocksForPayloadIsNoop(t *testing.T) {
 // Phase 13 Plan 13 (BSCAS-05): file-level dedup short-circuit before drain
 // ============================================================================
 
-// countingRemote wraps a remote.RemoteStore and counts WriteBlockWithHash
-// calls. The Phase 13 Plan 13 file-level dedup tests use this counter as
-// the headline assertion — a hit MUST produce zero CAS PUTs (the per-block
+// countingRemote wraps a remote.RemoteStore and counts Put calls. The
+// Phase 13 Plan 13 file-level dedup tests use this counter as the
+// headline assertion — a hit MUST produce zero CAS PUTs (the per-block
 // upload pump is bypassed entirely), and a miss MUST produce one PUT per
 // distinct block (the pump runs as before).
 type countingRemote struct {
@@ -298,39 +286,27 @@ type countingRemote struct {
 	writeCount atomic.Int64
 }
 
-func (c *countingRemote) WriteBlock(ctx context.Context, key string, data []byte) error {
-	return c.inner.WriteBlock(ctx, key, data)
-}
-func (c *countingRemote) WriteBlockWithHash(ctx context.Context, key string, hash blockstore.ContentHash, data []byte) error {
+func (c *countingRemote) Put(ctx context.Context, hash blockstore.ContentHash, data []byte) error {
 	c.writeCount.Add(1)
-	return c.inner.WriteBlockWithHash(ctx, key, hash, data)
+	return c.inner.Put(ctx, hash, data)
 }
-func (c *countingRemote) ReadBlock(ctx context.Context, key string) ([]byte, error) {
-	return c.inner.ReadBlock(ctx, key)
+func (c *countingRemote) Get(ctx context.Context, hash blockstore.ContentHash) ([]byte, error) {
+	return c.inner.Get(ctx, hash)
 }
-func (c *countingRemote) ReadBlockVerified(ctx context.Context, key string, expected blockstore.ContentHash) ([]byte, error) {
-	return c.inner.ReadBlockVerified(ctx, key, expected)
+func (c *countingRemote) GetRange(ctx context.Context, hash blockstore.ContentHash, offset, length int64) ([]byte, error) {
+	return c.inner.GetRange(ctx, hash, offset, length)
 }
-func (c *countingRemote) ReadBlockRange(ctx context.Context, key string, offset, length int64) ([]byte, error) {
-	return c.inner.ReadBlockRange(ctx, key, offset, length)
+func (c *countingRemote) Delete(ctx context.Context, hash blockstore.ContentHash) error {
+	return c.inner.Delete(ctx, hash)
 }
-func (c *countingRemote) DeleteBlock(ctx context.Context, key string) error {
-	return c.inner.DeleteBlock(ctx, key)
+func (c *countingRemote) Head(ctx context.Context, hash blockstore.ContentHash) (blockstore.Meta, error) {
+	return c.inner.Head(ctx, hash)
 }
-func (c *countingRemote) DeleteByPrefix(ctx context.Context, prefix string) error {
-	return c.inner.DeleteByPrefix(ctx, prefix)
+func (c *countingRemote) Walk(ctx context.Context, fn func(blockstore.ContentHash, blockstore.Meta) error) error {
+	return c.inner.Walk(ctx, fn)
 }
-func (c *countingRemote) ListByPrefix(ctx context.Context, prefix string) ([]string, error) {
-	return c.inner.ListByPrefix(ctx, prefix)
-}
-func (c *countingRemote) ListByPrefixWithMeta(ctx context.Context, prefix string) ([]remote.ObjectInfo, error) {
-	return c.inner.ListByPrefixWithMeta(ctx, prefix)
-}
-func (c *countingRemote) HeadObject(ctx context.Context, key string) (remote.HeadResult, error) {
-	return c.inner.HeadObject(ctx, key)
-}
-func (c *countingRemote) CopyBlock(ctx context.Context, src, dst string) error {
-	return c.inner.CopyBlock(ctx, src, dst)
+func (c *countingRemote) ReadBlockVerified(ctx context.Context, hash, expected blockstore.ContentHash) ([]byte, error) {
+	return c.inner.ReadBlockVerified(ctx, hash, expected)
 }
 func (c *countingRemote) Close() error                        { return c.inner.Close() }
 func (c *countingRemote) HealthCheck(_ context.Context) error { return nil }

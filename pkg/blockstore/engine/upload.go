@@ -126,10 +126,10 @@ func (m *Syncer) uploadOne(ctx context.Context, fb *blockstore.FileBlock) error 
 		return nil
 	}
 
-	// CAS PUT (BSCAS-01 + BSCAS-06). content-hash header is set inside
-	// WriteBlockWithHash by the s3 store implementation.
+	// CAS PUT (BSCAS-01 + BSCAS-06). content-hash header is stamped
+	// inside Put by the s3 store implementation; hash IS the key.
 	casKey := blockstore.FormatCASKey(hash)
-	if err := m.remoteStore.WriteBlockWithHash(ctx, casKey, hash, data); err != nil {
+	if err := m.remoteStore.Put(ctx, hash, data); err != nil {
 		return fmt.Errorf("upload block %s to %s: %w", fb.ID, casKey, err)
 	}
 
@@ -174,7 +174,7 @@ func (m *Syncer) uploadBlock(ctx context.Context, payloadID string, blockIdx uin
 	var hash blockstore.ContentHash
 	copy(hash[:], h[:])
 	casKey := blockstore.FormatCASKey(hash)
-	if err := m.remoteStore.WriteBlockWithHash(ctx, casKey, hash, data); err != nil {
+	if err := m.remoteStore.Put(ctx, hash, data); err != nil {
 		return fmt.Errorf("upload block %s: %w", casKey, err)
 	}
 	return nil
