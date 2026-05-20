@@ -1,6 +1,7 @@
 // Phase 12 perf gate (D-43) — bench / regression gate for the new
 // []BlockRef-threaded read path (binary search via findBlocksForRange,
-// Cache OnRead hint, mmap-via-readFromCAS on local hits).
+// Cache OnRead hint, RAM-cache-backed local.Get on miss; mmap path
+// removed in Phase 16).
 //
 // This file is the in-tree microbench canary. Real-S3 performance is
 // verified separately at milestone-gate VER-02 against the bench/infra
@@ -158,10 +159,9 @@ func newPerfTestEngine(tb testing.TB, readBufferBytes int64, prefetchWorkers int
 // BenchmarkRandRead_Phase12 exercises the new []BlockRef-threaded
 // ReadAt path: caller passes []BlockRef; engine binary-searches via
 // findBlocksForRange and fires Cache.OnRead with the BlockRef hashes
-// after a successful read. Mmap is exercised on linux/darwin via the
-// loadByHash → readFromCAS seam (cache prefetch path); the synchronous
-// rand-read goes through the in-memory local store, so the hot-path
-// cost here is binary search + Cache.OnRead bookkeeping + buffer copy.
+// after a successful read. The synchronous rand-read goes through the
+// in-memory local store, so the hot-path cost here is binary search +
+// Cache.OnRead bookkeeping + buffer copy.
 //
 // Use with `-benchtime=10s` for stable numbers (the bench warms after
 // the first iteration once the prefetch worker pool is idle).
