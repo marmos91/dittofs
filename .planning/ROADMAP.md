@@ -324,6 +324,38 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - Removing shim could surface latent bugs that were masked by dual-read fallback — run crash-injection suite + full WPTS + smbtorture baseline before merge
 **Plans**: TBD
 
+### Phase 16: Cache RAM-only (remove mmap read path)
+**Goal**: Replace the `syscall.Mmap` zero-copy read path in `pkg/blockstore/engine/cache.go` with a `[]byte` read from the local block store. The Cache becomes pure RAM — `map[ContentHash]*list.Element` + `list.List` LRU, with bytes copied into LRU slots on miss. All LRU sizing, prefetch workers, sequential tracker, `nullCache{}` fallback, and the public `CacheInterface` (`Get/Put/OnRead/InvalidateFile/Stats/Close`) stay unchanged. The mmap files + Unix/Windows build-tag fork + D-33 perf gate are deleted. First of four phases in v0.16.0 — validates the Cache contract before Phase 17 swaps the underlying source.
+**Depends on**: v0.15.0 complete (Phase 14 production-rollout window can lag)
+**GH issue**: [#516](https://github.com/marmos91/dittofs/issues/516)
+**Duration**: ~1 week
+**Requirements**: (no formal REQ-IDs; phase scope is governed by CONTEXT.md decisions D-01..D-11)
+**Success Criteria** (what must be TRUE):
+  1. `pkg/blockstore/engine/cache_mmap_unix.go`, `pkg/blockstore/engine/cache_mmap_windows.go`, and `pkg/blockstore/engine/cache_mmap_test.go` are deleted; no remaining references to `syscall.Mmap`, `readFromCAS`, or `mmap` in `pkg/blockstore/engine/`
+  2. `pkg/blockstore/local.LocalStore` exposes `Get(ctx context.Context, hash ContentHash) ([]byte, error)`; `*FSStore.Get` is a thin wrapper over existing `chunkstore.ReadChunk(h)`; returned `[]byte` is freshly allocated and owned by caller (D-03)
+  3. `engine.loadByHash` at `pkg/blockstore/engine/engine.go:221` calls `local.Get(hash)` (no type assertion, no `readFromCAS`); Cache `loadFn` signature unchanged
+  4. `TestPerfGate_Phase12_MmapHotPath` removed from `pkg/blockstore/engine/perf_bench_unix_test.go` (D-08); if file becomes empty, fold per Claude's Discretion
+  5. `BenchmarkRandReadVerified` (warm-cache) ratio ≤1.02 vs pre-Phase-16 baseline (D-06); cross-OS build passes on Linux + Darwin + Windows (no per-OS cache file remains)
+  6. Generic byte-correctness asserts from `cache_mmap_test.go` cherry-picked into `pkg/blockstore/engine/cache_test.go` (D-10); mmap-specific asserts (page-fault, 64 KiB threshold) deleted with no replacement
+**Files to touch**:
+  - `pkg/blockstore/engine/cache_mmap_unix.go` — **delete**
+  - `pkg/blockstore/engine/cache_mmap_windows.go` — **delete**
+  - `pkg/blockstore/engine/cache_mmap_test.go` — **delete** (cherry-pick generics into `cache_test.go`)
+  - `pkg/blockstore/engine/perf_bench_unix_test.go` — delete `TestPerfGate_Phase12_MmapHotPath`
+  - `pkg/blockstore/engine/engine.go:221` `loadByHash` — rewire `readFromCAS` → `local.Get`
+  - `pkg/blockstore/local/local.go` — add `Get(ctx, hash)` to `LocalStore` interface
+  - `pkg/blockstore/local/fs/fs.go` — implement `(*FSStore).Get` over `chunkstore.ReadChunk`
+  - `pkg/blockstore/engine/cache_test.go` — absorb generic byte-correctness asserts
+**Key risks**:
+  - Forward-compat naming: `local.Get` signature must match Phase 17's `BlockStore.Get` exactly so the call site narrows without rename churn (D-01) — coordinate with Phase 17 scope
+  - Generic asserts in `cache_mmap_test.go` must be preserved during delete (D-10) — review the test file before deletion, not after
+  - Cold-cache regression is unverified by Phase 16 gates — production workloads are mostly warm, but cold-read complaints post-ship trigger the deferred `BenchmarkRandReadVerified_ColdCache` work in Phase 19
+**Plans**: 4 plans
+  - [ ] 16-01-PLAN.md — Add LocalStore.Get(ctx, hash) interface method + FSStore (delegate to ReadChunk) + MemoryStore stub + localtest conformance scenario
+  - [ ] 16-02-PLAN.md — Rewire engine.loadByHash → local.Get; update cache.go docstring; cherry-pick generic byte-correctness asserts from cache_mmap_test.go into cache_test.go (D-10)
+  - [ ] 16-03-PLAN.md — Delete cache_mmap_unix.go + cache_mmap_windows.go + cache_mmap_test.go; delete TestPerfGate_Phase12_MmapHotPath; fold perf_bench_unix_test.go if empty; cross-OS build clean (D-08, D-09)
+  - [ ] 16-04-PLAN.md — Warm-cache BenchmarkRandReadVerified ≤1.02 vs pre-Phase-16 baseline (D-06); cross-OS build + race verification; BENCHMARKS.md update; human checkpoint
+
 ## Milestone Gates
 
 Verification requirements VER-01 through VER-06 are phase-independent and gate the overall milestone rather than any single phase. These must all pass before v0.15.0 ships.
