@@ -53,13 +53,18 @@ func substituteCreator(who string, creator Creator) string {
 // For files:
 //   - Include ACEs with FILE_INHERIT flag
 //   - Clear ALL inheritance flags (files don't propagate further)
-//   - Add INHERITED_ACE flag
 //
 // For directories:
 //   - Include ACEs with DIRECTORY_INHERIT flag
-//   - Add INHERITED_ACE flag
 //   - If NO_PROPAGATE_INHERIT: clear all inheritance flags (stop propagation)
 //   - If INHERIT_ONLY on parent: clear INHERIT_ONLY on child (ACE now applies)
+//
+// The ACE4_INHERITED_ACE bit on the resulting child ACE is conditional, per
+// MS-DTYP §2.5.3.4.2 and Samba libcli/security/create_descriptor.c
+// (calculate_inherited_from_parent): the bit is set iff the parent SD has
+// SE_DACL_AUTO_INHERITED (i.e. parentACL.AutoInherited) OR the source
+// parent ACE itself already carries ACE4_INHERITED_ACE (meaning it was
+// inherited from upstream — that fact survives propagation to the child).
 //
 // In both cases, any ACE whose Who is SpecialCreatorOwner or
 // SpecialCreatorGroup is rewritten in place with the creator's frozen
@@ -92,7 +97,14 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 		}
 
 		newACE := *ace
-		newACE.Flag |= ACE4_INHERITED_ACE
+		// MS-DTYP §2.5.3.4.2 / Samba calculate_inherited_from_parent: the
+		// INHERITED_ACE bit on the child is conditional. It is set when
+		// the parent ACE already carries it (already-inherited fact
+		// survives propagation) OR the parent SD has AUTO_INHERITED set
+		// (parent is configured to mark its inherited children). Strip
+		// any pre-existing bit first so we apply the rule cleanly.
+		preservedInheritedACE := newACE.Flag & ACE4_INHERITED_ACE
+		newACE.Flag &^= ACE4_INHERITED_ACE
 
 		if !isDirectory {
 			// Files don't propagate further: clear all inheritance flags.
@@ -103,6 +115,10 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 		} else if ace.Flag&ACE4_INHERIT_ONLY_ACE != 0 {
 			// INHERIT_ONLY on parent: clear so ACE applies on this child.
 			newACE.Flag &^= ACE4_INHERIT_ONLY_ACE
+		}
+
+		if preservedInheritedACE != 0 || parentACL.AutoInherited {
+			newACE.Flag |= ACE4_INHERITED_ACE
 		}
 
 		// MS-DTYP §2.5.3.4: substitute CREATOR_OWNER / CREATOR_GROUP

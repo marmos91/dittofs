@@ -6,14 +6,19 @@ import (
 )
 
 func TestComputeInheritedACL_FileInheritOnChildFile(t *testing.T) {
-	parentACL := &ACL{ACEs: []ACE{
-		{
-			Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
-			Flag:       ACE4_FILE_INHERIT_ACE,
-			AccessMask: ACE4_READ_DATA,
-			Who:        SpecialEveryone,
+	// AutoInherited=true on the parent so the child carries INHERITED_ACE
+	// per MS-DTYP §2.5.3.4.2 (Samba calculate_inherited_from_parent).
+	parentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_FILE_INHERIT_ACE,
+				AccessMask: ACE4_READ_DATA,
+				Who:        SpecialEveryone,
+			},
 		},
-	}}
+	}
 
 	result := ComputeInheritedACL(parentACL, false, Creator{})
 
@@ -40,14 +45,17 @@ func TestComputeInheritedACL_FileInheritOnChildFile(t *testing.T) {
 }
 
 func TestComputeInheritedACL_DirectoryInheritOnChildDir(t *testing.T) {
-	parentACL := &ACL{ACEs: []ACE{
-		{
-			Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
-			Flag:       ACE4_DIRECTORY_INHERIT_ACE,
-			AccessMask: ACE4_READ_DATA | ACE4_EXECUTE,
-			Who:        SpecialGroup,
+	parentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_DIRECTORY_INHERIT_ACE,
+				AccessMask: ACE4_READ_DATA | ACE4_EXECUTE,
+				Who:        SpecialGroup,
+			},
 		},
-	}}
+	}
 
 	result := ComputeInheritedACL(parentACL, true, Creator{})
 
@@ -69,14 +77,17 @@ func TestComputeInheritedACL_DirectoryInheritOnChildDir(t *testing.T) {
 }
 
 func TestComputeInheritedACL_NoPropagateStopsInheritance(t *testing.T) {
-	parentACL := &ACL{ACEs: []ACE{
-		{
-			Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
-			Flag:       ACE4_DIRECTORY_INHERIT_ACE | ACE4_NO_PROPAGATE_INHERIT_ACE,
-			AccessMask: ACE4_READ_DATA,
-			Who:        SpecialOwner,
+	parentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_DIRECTORY_INHERIT_ACE | ACE4_NO_PROPAGATE_INHERIT_ACE,
+				AccessMask: ACE4_READ_DATA,
+				Who:        SpecialOwner,
+			},
 		},
-	}}
+	}
 
 	result := ComputeInheritedACL(parentACL, true, Creator{})
 
@@ -100,14 +111,17 @@ func TestComputeInheritedACL_NoPropagateStopsInheritance(t *testing.T) {
 func TestComputeInheritedACL_InheritOnlyClearedOnChild(t *testing.T) {
 	// INHERIT_ONLY + DIRECTORY_INHERIT: ACE does NOT apply to parent,
 	// but DOES apply to child directory (INHERIT_ONLY should be cleared).
-	parentACL := &ACL{ACEs: []ACE{
-		{
-			Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
-			Flag:       ACE4_DIRECTORY_INHERIT_ACE | ACE4_INHERIT_ONLY_ACE,
-			AccessMask: ACE4_WRITE_DATA,
-			Who:        SpecialEveryone,
+	parentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_DIRECTORY_INHERIT_ACE | ACE4_INHERIT_ONLY_ACE,
+				AccessMask: ACE4_WRITE_DATA,
+				Who:        SpecialEveryone,
+			},
 		},
-	}}
+	}
 
 	result := ComputeInheritedACL(parentACL, true, Creator{})
 
@@ -218,14 +232,17 @@ func TestComputeInheritedACL_MixedInheritFlags(t *testing.T) {
 func TestComputeInheritedACL_FileInheritClearsAllFlags(t *testing.T) {
 	// FILE_INHERIT + DIRECTORY_INHERIT: when inherited by a file,
 	// ALL inheritance flags are cleared.
-	parentACL := &ACL{ACEs: []ACE{
-		{
-			Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
-			Flag:       ACE4_FILE_INHERIT_ACE | ACE4_DIRECTORY_INHERIT_ACE,
-			AccessMask: ACE4_READ_DATA,
-			Who:        SpecialEveryone,
+	parentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_FILE_INHERIT_ACE | ACE4_DIRECTORY_INHERIT_ACE,
+				AccessMask: ACE4_READ_DATA,
+				Who:        SpecialEveryone,
+			},
 		},
-	}}
+	}
 
 	result := ComputeInheritedACL(parentACL, false, Creator{})
 	if result == nil {
@@ -272,14 +289,17 @@ func TestPropagateACL_ReplacesInheritedKeepsExplicit(t *testing.T) {
 		{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, Flag: ACE4_INHERITED_ACE, AccessMask: ACE4_READ_DATA, Who: SpecialEveryone},
 	}}
 
-	newParentACL := &ACL{ACEs: []ACE{
-		{
-			Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
-			Flag:       ACE4_FILE_INHERIT_ACE,
-			AccessMask: ACE4_READ_DATA | ACE4_EXECUTE,
-			Who:        SpecialOwner,
+	newParentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_FILE_INHERIT_ACE,
+				AccessMask: ACE4_READ_DATA | ACE4_EXECUTE,
+				Who:        SpecialOwner,
+			},
 		},
-	}}
+	}
 
 	result := PropagateACL(newParentACL, existingACL, false, Creator{})
 
@@ -375,14 +395,17 @@ func TestComputeInheritedACL_CreatorOwnerSubstitution_POSIX(t *testing.T) {
 	// Parent has a CREATOR_OWNER inheritable placeholder ACE. When inherited
 	// onto a file with no Windows SID known, it should resolve to the POSIX
 	// form "<uid>@localdomain" frozen at create time.
-	parentACL := &ACL{ACEs: []ACE{
-		{
-			Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
-			Flag:       ACE4_FILE_INHERIT_ACE | ACE4_INHERIT_ONLY_ACE,
-			AccessMask: ACE4_READ_DATA | ACE4_WRITE_DATA,
-			Who:        SpecialCreatorOwner,
+	parentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_FILE_INHERIT_ACE | ACE4_INHERIT_ONLY_ACE,
+				AccessMask: ACE4_READ_DATA | ACE4_WRITE_DATA,
+				Who:        SpecialCreatorOwner,
+			},
 		},
-	}}
+	}
 
 	result := ComputeInheritedACL(parentACL, false, Creator{UID: 1001})
 
@@ -407,14 +430,17 @@ func TestComputeInheritedACL_CreatorOwnerSubstitution_POSIX(t *testing.T) {
 
 func TestComputeInheritedACL_CreatorOwnerSubstitution_SID(t *testing.T) {
 	// Same scenario but creator has a Windows SID — substitution uses sid:<SID>.
-	parentACL := &ACL{ACEs: []ACE{
-		{
-			Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
-			Flag:       ACE4_FILE_INHERIT_ACE | ACE4_INHERIT_ONLY_ACE,
-			AccessMask: ACE4_READ_DATA,
-			Who:        SpecialCreatorOwner,
+	parentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_FILE_INHERIT_ACE | ACE4_INHERIT_ONLY_ACE,
+				AccessMask: ACE4_READ_DATA,
+				Who:        SpecialCreatorOwner,
+			},
 		},
-	}}
+	}
 
 	result := ComputeInheritedACL(parentACL, false, Creator{UID: 1001, SID: "S-1-5-21-1-2-3-2001"})
 
@@ -662,10 +688,9 @@ func buildParentACLWithFlags(autoInherited, protected bool, aceFlags uint32, par
 // the child ACE has ACE4_INHERITED_ACE iff parent.AutoInherited OR the
 // parent ACE already had ACE4_INHERITED_ACE.
 //
-// DittoFS today unconditionally sets ACE4_INHERITED_ACE on every inherited
-// child ACE, which violates the invariant whenever (i&1)==0 AND (i&8)==0
-// — that is i ∈ {0, 2, 4, 6}. Those iterations are skipped here under
-// #521 PR 2 (Bug A: conditional INHERITED_ACE).
+// After #521 PR 2 (Bug A conditional INHERITED_ACE), the implementation
+// enforces this invariant directly: ComputeInheritedACL sets the bit only
+// when parent.AutoInherited OR the parent ACE itself already had the bit.
 func TestComputeInheritedACL_InheritanceFlagsMatrix(t *testing.T) {
 	for i := 0; i < 16; i++ {
 		i := i
@@ -683,10 +708,6 @@ func TestComputeInheritedACL_InheritanceFlagsMatrix(t *testing.T) {
 		} {
 			tc := tc
 			t.Run(formatMatrixName(i, tc.name), func(t *testing.T) {
-				if !expectChildInherited {
-					t.Skip("tracked under #521 PR 2 — Bug A conditional INHERITED_ACE")
-				}
-
 				parent := buildParentACLWithFlags(
 					autoInherited,
 					protected,
@@ -838,14 +859,17 @@ func TestPropagateACL_Directory(t *testing.T) {
 		{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, Flag: ACE4_INHERITED_ACE, AccessMask: ACE4_READ_DATA, Who: SpecialEveryone},
 	}}
 
-	newParentACL := &ACL{ACEs: []ACE{
-		{
-			Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
-			Flag:       ACE4_DIRECTORY_INHERIT_ACE,
-			AccessMask: ACE4_READ_DATA | ACE4_WRITE_DATA,
-			Who:        SpecialGroup,
+	newParentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_DIRECTORY_INHERIT_ACE,
+				AccessMask: ACE4_READ_DATA | ACE4_WRITE_DATA,
+				Who:        SpecialGroup,
+			},
 		},
-	}}
+	}
 
 	result := PropagateACL(newParentACL, existingACL, true, Creator{})
 
