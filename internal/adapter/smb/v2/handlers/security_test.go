@@ -1130,7 +1130,8 @@ func TestParseSD_AutoInheritedCanonicalization(t *testing.T) {
 		{"perACE_inherited_only", false, false, false, true, false, false, false},
 		{"perACE_with_protected", false, false, true, true, false, true, false},
 		{"auto_and_req_with_perACE", true, true, false, true, true, false, true},
-		{"perACE_inherited_no_sd_bits", false, false, false, true, false, false, false},
+		{"auto_and_protected_no_req", true, false, true, false, false, true, false},
+		{"all_four_bits", true, true, true, true, true, true, true},
 	}
 
 	for _, tc := range cases {
