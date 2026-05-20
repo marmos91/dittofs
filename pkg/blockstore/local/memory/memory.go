@@ -703,4 +703,3 @@ func (s *MemoryStore) GetStoredFileSize(_ context.Context, payloadID string) (ui
 	}
 	return total, nil
 }
-

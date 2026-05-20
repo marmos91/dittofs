@@ -304,4 +304,3 @@ func ParseBlockID(blockID string) (payloadID string, blockIdx uint64, err error)
 	}
 	return payloadID, blockIdx, nil
 }
-

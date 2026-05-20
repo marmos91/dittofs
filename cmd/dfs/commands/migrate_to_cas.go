@@ -45,12 +45,12 @@ import (
 // emission, and the FSStore-for-migration construction.
 
 var (
-	migrateStorageDir       string
-	migrateShare            string
-	migrateDryRun           bool
-	migrateJSON             bool
-	migrateMaxDisk          int64
-	migrateMaxMemory        int64
+	migrateStorageDir string
+	migrateShare      string
+	migrateDryRun     bool
+	migrateJSON       bool
+	migrateMaxDisk    int64
+	migrateMaxMemory  int64
 )
 
 var migrateToCASCmd = &cobra.Command{

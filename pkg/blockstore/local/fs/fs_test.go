@@ -927,10 +927,10 @@ func writeLegacyBlkForTest(t *testing.T, shareDir string) {
 // D-11 contract (the sentinel is a `var = errors.New(...)`).
 func TestNewFSStore_SentinelDetection(t *testing.T) {
 	type matrixCase struct {
-		name        string
+		name          string
 		writeSentinel bool
-		writeBlk    bool
-		wantLegacy  bool // expect ErrLegacyLayoutDetected
+		writeBlk      bool
+		wantLegacy    bool // expect ErrLegacyLayoutDetected
 	}
 	cases := []matrixCase{
 		{name: "sentinel_present_no_blk_files", writeSentinel: true, writeBlk: false, wantLegacy: false},

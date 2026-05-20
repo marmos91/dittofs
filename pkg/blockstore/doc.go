@@ -16,9 +16,9 @@
 //     same-bytes Put, no opaque "block key" strings, every method takes
 //     a context.Context first. Implemented by:
 //
-//       *pkg/blockstore/local/fs.FSStore          (local CAS chunks)
-//       *pkg/blockstore/remote/s3.Store           (S3-backed CAS)
-//       *pkg/blockstore/remote/memory.Store       (in-memory CAS for tests)
+//     *pkg/blockstore/local/fs.FSStore          (local CAS chunks)
+//     *pkg/blockstore/remote/s3.Store           (S3-backed CAS)
+//     *pkg/blockstore/remote/memory.Store       (in-memory CAS for tests)
 //
 //   - BlockStoreAppend — embeds BlockStore and adds AppendWrite +
 //     DeleteLog for the random-write absorber tier (the per-file
@@ -52,10 +52,11 @@
 //   - return blockstore.ErrStopWalk → Walk exits cleanly (returns nil
 //     to the outer caller). Idiomatic use case: GC has found its
 //     target and wants to short-circuit the remaining enumeration.
+//
 //   - return any other non-nil error → Walk halts and returns it
 //     wrapped:
 //
-//       fmt.Errorf("walk halted at %s: %w", hash, err)
+//     fmt.Errorf("walk halted at %s: %w", hash, err)
 //
 //   - ctx cancellation → Walk aborts immediately. The callback is NOT
 //     re-invoked after ctx.Err() != nil; Walk surfaces ctx.Err()

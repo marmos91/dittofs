@@ -706,4 +706,3 @@ func blake3ContentHash(data []byte) blockstore.ContentHash {
 	copy(h[:], sum[:])
 	return h
 }
-

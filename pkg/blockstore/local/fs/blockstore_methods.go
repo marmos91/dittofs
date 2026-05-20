@@ -194,4 +194,3 @@ func (bc *FSStore) Walk(ctx context.Context, fn func(hash blockstore.ContentHash
 func (bc *FSStore) DeleteLog(ctx context.Context, payloadID string) error {
 	return bc.DeleteAppendLog(ctx, payloadID)
 }
-
