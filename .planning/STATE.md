@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v0.16.0
 milestone_name: — CAS Convergence
-status: verifying
+status: "Phase 17 shipped — PR #527"
 stopped_at: Phase 17 Plan 10 (docs) shipped
-last_updated: "2026-05-20T18:56:52.425Z"
+last_updated: "2026-05-20T21:34:21.786Z"
 last_activity: 2026-05-20
 progress:
   total_phases: 10
@@ -29,7 +29,7 @@ Milestone: v0.16.0
 Phase: 17 (unified-blockstore) — EXECUTING
 Plan: 11 of 11
 Branch: `gsd/phase-16-cache-mmap-removal`
-Status: Phase complete — ready for verification
+Status: Phase 17 shipped — PR #527
 Last activity: 2026-05-20
 
 ## Next Actionable
