@@ -43,3 +43,38 @@ func TestShare_JSON_IncludesEnabled(t *testing.T) {
 		t.Errorf("Share.Enabled=false after unmarshal of {\"enabled\":true}")
 	}
 }
+
+// TestShare_JSON_AclFlagInheritedCanonicalization — T1 of #514.
+//
+// Locks in the JSON tag on Share.AclFlagInheritedCanonicalization so any
+// future edit that drops it or adds omitempty will fail. The boolean must
+// round-trip in both directions; omitempty would hide an explicit `false`
+// (Samba-extension opt-out) on disabled shares.
+func TestShare_JSON_AclFlagInheritedCanonicalization(t *testing.T) {
+	// Marshal: explicit true is emitted.
+	b, err := json.Marshal(Share{AclFlagInheritedCanonicalization: true})
+	if err != nil {
+		t.Fatalf("marshal true: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"acl_flag_inherited_canonicalization":true`)) {
+		t.Errorf("Share JSON missing \"acl_flag_inherited_canonicalization\":true — got %s", b)
+	}
+
+	// Marshal: explicit false is also emitted (no omitempty).
+	b2, err := json.Marshal(Share{AclFlagInheritedCanonicalization: false})
+	if err != nil {
+		t.Fatalf("marshal false: %v", err)
+	}
+	if !bytes.Contains(b2, []byte(`"acl_flag_inherited_canonicalization":false`)) {
+		t.Errorf("Share JSON must emit \"acl_flag_inherited_canonicalization\":false (no omitempty) — got %s", b2)
+	}
+
+	// Unmarshal: false round-trips.
+	var s Share
+	if err := json.Unmarshal([]byte(`{"acl_flag_inherited_canonicalization":false}`), &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if s.AclFlagInheritedCanonicalization {
+		t.Errorf("Share.AclFlagInheritedCanonicalization=true after unmarshal of false")
+	}
+}

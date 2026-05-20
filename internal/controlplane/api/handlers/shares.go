@@ -253,22 +253,23 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	share := &models.Share{
-		ID:                 uuid.New().String(),
-		Name:               req.Name,
-		MetadataStoreID:    metaStore.ID,       // Use actual store ID (UUID), not name
-		LocalBlockStoreID:  localBlockStore.ID, // Use actual store ID (UUID), not name
-		RemoteBlockStoreID: remoteBlockStoreID, // Nullable
-		ReadOnly:           req.ReadOnly,
-		EncryptData:        req.EncryptData,
-		DefaultPermission:  defaultPerm,
-		RetentionPolicy:    string(retPolicy),
-		RetentionTTL:       int64(retTTL.Seconds()),
-		LocalStoreSize:     localStoreSize,
-		ReadBufferSize:     readBufferSize,
-		QuotaBytes:         quotaBytes,
-		Enabled:            true, // REST-02: new shares are enabled by default.
-		CreatedAt:          now,
-		UpdatedAt:          now,
+		ID:                               uuid.New().String(),
+		Name:                             req.Name,
+		MetadataStoreID:                  metaStore.ID,       // Use actual store ID (UUID), not name
+		LocalBlockStoreID:                localBlockStore.ID, // Use actual store ID (UUID), not name
+		RemoteBlockStoreID:               remoteBlockStoreID, // Nullable
+		ReadOnly:                         req.ReadOnly,
+		EncryptData:                      req.EncryptData,
+		DefaultPermission:                defaultPerm,
+		RetentionPolicy:                  string(retPolicy),
+		RetentionTTL:                     int64(retTTL.Seconds()),
+		LocalStoreSize:                   localStoreSize,
+		ReadBufferSize:                   readBufferSize,
+		QuotaBytes:                       quotaBytes,
+		Enabled:                          true, // REST-02: new shares are enabled by default.
+		AclFlagInheritedCanonicalization: true, // Refs #514: explicit so runtime sees the value the DB persists.
+		CreatedAt:                        now,
+		UpdatedAt:                        now,
 	}
 
 	// Set blocked operations
@@ -301,26 +302,27 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Add share to runtime if runtime is available
 	if h.runtime != nil {
 		shareConfig := &runtime.ShareConfig{
-			Name:              req.Name,
-			MetadataStore:     metaStore.Name,
-			ReadOnly:          req.ReadOnly,
-			Enabled:           share.Enabled,
-			EncryptData:       req.EncryptData,
-			DefaultPermission: defaultPerm,
-			Squash:            nfsOpts.GetSquashMode(),
-			AnonymousUID:      nfsOpts.GetAnonymousUID(),
-			AnonymousGID:      nfsOpts.GetAnonymousGID(),
-			AllowAuthSys:      nfsOpts.AllowAuthSys,
-			AllowAuthSysSet:   true,
-			RequireKerberos:   nfsOpts.RequireKerberos,
-			MinKerberosLevel:  nfsOpts.MinKerberosLevel,
-			BlockedOperations: share.GetBlockedOps(),
-			LocalStoreSize:    localStoreSize,
-			ReadBufferSize:    readBufferSize,
-			QuotaBytes:        quotaBytes,
-			LocalBlockStoreID: localBlockStore.ID,
-			RetentionPolicy:   retPolicy,
-			RetentionTTL:      retTTL,
+			Name:                             req.Name,
+			MetadataStore:                    metaStore.Name,
+			ReadOnly:                         req.ReadOnly,
+			Enabled:                          share.Enabled,
+			EncryptData:                      req.EncryptData,
+			AclFlagInheritedCanonicalization: share.AclFlagInheritedCanonicalization,
+			DefaultPermission:                defaultPerm,
+			Squash:                           nfsOpts.GetSquashMode(),
+			AnonymousUID:                     nfsOpts.GetAnonymousUID(),
+			AnonymousGID:                     nfsOpts.GetAnonymousGID(),
+			AllowAuthSys:                     nfsOpts.AllowAuthSys,
+			AllowAuthSysSet:                  true,
+			RequireKerberos:                  nfsOpts.RequireKerberos,
+			MinKerberosLevel:                 nfsOpts.MinKerberosLevel,
+			BlockedOperations:                share.GetBlockedOps(),
+			LocalStoreSize:                   localStoreSize,
+			ReadBufferSize:                   readBufferSize,
+			QuotaBytes:                       quotaBytes,
+			LocalBlockStoreID:                localBlockStore.ID,
+			RetentionPolicy:                  retPolicy,
+			RetentionTTL:                     retTTL,
 		}
 		if remoteBlockStoreID != nil {
 			shareConfig.RemoteBlockStoreID = *remoteBlockStoreID

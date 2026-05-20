@@ -48,6 +48,13 @@ type Share struct {
 	// SMB3 encryption: when true, TREE_CONNECT returns SMB2_SHAREFLAG_ENCRYPT_DATA.
 	EncryptData bool
 
+	// AclFlagInheritedCanonicalization controls whether the SMB CREATE /
+	// SET_INFO Security path canonicalizes the SE_DACL_AUTO_INHERITED control
+	// bit per MS-DTYP §2.5.3.4.2 (clearing it when AUTO_INHERIT_REQ is unset).
+	// Default true matches Windows behavior; false opts into the Samba
+	// extension where the bit survives without AUTO_INHERIT_REQ (refs #514).
+	AclFlagInheritedCanonicalization bool
+
 	// NFS-specific options
 	DisableReaddirplus bool
 
@@ -106,6 +113,11 @@ type ShareConfig struct {
 	AnonymousGID uint32
 
 	EncryptData bool
+
+	// AclFlagInheritedCanonicalization mirrors models.Share's per-share toggle
+	// for MS-DTYP §2.5.3.4.2 canonicalization of SE_DACL_AUTO_INHERITED. See
+	// the runtime Share field for semantics (refs #514).
+	AclFlagInheritedCanonicalization bool
 
 	RootAttr *metadata.FileAttr
 
@@ -389,24 +401,25 @@ func (s *Service) prepareShare(
 	}
 
 	share := &Share{
-		Name:               config.Name,
-		MetadataStore:      config.MetadataStore,
-		RootHandle:         rootHandle,
-		ReadOnly:           config.ReadOnly,
-		Enabled:            config.Enabled,
-		EncryptData:        config.EncryptData,
-		DefaultPermission:  config.DefaultPermission,
-		Squash:             config.Squash,
-		AnonymousUID:       config.AnonymousUID,
-		AnonymousGID:       config.AnonymousGID,
-		DisableReaddirplus: config.DisableReaddirplus,
-		AllowAuthSys:       allowAuthSys,
-		RequireKerberos:    config.RequireKerberos,
-		MinKerberosLevel:   config.MinKerberosLevel,
-		NetgroupName:       config.NetgroupName,
-		BlockedOperations:  config.BlockedOperations,
-		RetentionPolicy:    config.RetentionPolicy,
-		RetentionTTL:       config.RetentionTTL,
+		Name:                             config.Name,
+		MetadataStore:                    config.MetadataStore,
+		RootHandle:                       rootHandle,
+		ReadOnly:                         config.ReadOnly,
+		Enabled:                          config.Enabled,
+		EncryptData:                      config.EncryptData,
+		AclFlagInheritedCanonicalization: config.AclFlagInheritedCanonicalization,
+		DefaultPermission:                config.DefaultPermission,
+		Squash:                           config.Squash,
+		AnonymousUID:                     config.AnonymousUID,
+		AnonymousGID:                     config.AnonymousGID,
+		DisableReaddirplus:               config.DisableReaddirplus,
+		AllowAuthSys:                     allowAuthSys,
+		RequireKerberos:                  config.RequireKerberos,
+		MinKerberosLevel:                 config.MinKerberosLevel,
+		NetgroupName:                     config.NetgroupName,
+		BlockedOperations:                config.BlockedOperations,
+		RetentionPolicy:                  config.RetentionPolicy,
+		RetentionTTL:                     config.RetentionTTL,
 	}
 
 	return share, metadataStore, nil

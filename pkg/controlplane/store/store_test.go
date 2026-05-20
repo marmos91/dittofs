@@ -549,6 +549,24 @@ func TestShareOperations(t *testing.T) {
 		}
 	})
 
+	t.Run("new share defaults acl_flag_inherited_canonicalization=true (#514)", func(t *testing.T) {
+		share := &models.Share{
+			Name:              "/export-acl-canon-default",
+			MetadataStoreID:   metaStoreID,
+			LocalBlockStoreID: localBlockStoreID,
+		}
+		if _, err := store.CreateShare(ctx, share); err != nil {
+			t.Fatalf("failed to create share: %v", err)
+		}
+		got, err := store.GetShare(ctx, "/export-acl-canon-default")
+		if err != nil {
+			t.Fatalf("failed to get share: %v", err)
+		}
+		if !got.AclFlagInheritedCanonicalization {
+			t.Error("expected newly created share to default AclFlagInheritedCanonicalization=true (#514)")
+		}
+	})
+
 	t.Run("update share persists enabled=false (D-25 whitelist fix)", func(t *testing.T) {
 		share, err := store.GetShare(ctx, "/export")
 		if err != nil {
