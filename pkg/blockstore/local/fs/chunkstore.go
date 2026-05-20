@@ -11,7 +11,7 @@ import (
 )
 
 // chunkPath returns the content-addressed chunk path under baseDir/blocks/.
-// Layout: <baseDir>/blocks/<hex[0:2]>/<hex[2:4]>/<hex> (D-11 two-level shard).
+// Layout: <baseDir>/blocks/<hex[0:2]>/<hex[2:4]>/<hex> (two-level shard).
 //
 // Path components are derived exclusively from hex.EncodeToString(h[:]) — the
 // characters are constrained to [0-9a-f], so path traversal via crafted hash
@@ -140,6 +140,14 @@ func (bc *FSStore) ReadChunk(ctx context.Context, h blockstore.ContentHash) ([]b
 	return data, nil
 }
 
+// Get implements local.LocalStore.Get by delegating to ReadChunk.
+// See ReadChunk for semantics, error contract, and LSL-08 LRU touch
+// behavior. Signature is forward-compatible with the unified
+// BlockStore.Get interface.
+func (bc *FSStore) Get(ctx context.Context, h blockstore.ContentHash) ([]byte, error) {
+	return bc.ReadChunk(ctx, h)
+}
+
 // HasChunk reports whether the chunk exists in the local chunk store.
 // Returns (true, nil) for an existing chunk, (false, nil) for a missing
 // chunk, or (false, err) for any I/O error other than ENOENT.
@@ -164,8 +172,8 @@ func (bc *FSStore) HasChunk(ctx context.Context, h blockstore.ContentHash) (bool
 // (matches DeleteBlockFile semantics in manage.go). Decrements diskUsed by
 // the deleted file's size.
 //
-// Phase 10 does not call DeleteChunk from a live code path; the method
-// exists for conformance tests and Phase 11's mark-sweep GC.
+// DeleteChunk is not called from any live code path; the method exists
+// for conformance tests and the mark-sweep GC.
 func (bc *FSStore) DeleteChunk(ctx context.Context, h blockstore.ContentHash) error {
 	if bc.isClosed() {
 		return ErrStoreClosed

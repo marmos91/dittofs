@@ -30,7 +30,33 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 - [x] **Phase 12: CDC read path + metadata schema + engine API (A3)** — `[]BlockRef` API, Cache by ContentHash, schema migration (GH issue: #423) (completed 2026-04-27)
 - [x] **Phase 13: Merkle root + file-level dedup (A4)** — `FileAttr.ObjectID` + short-circuit full-file dedup (GH issue: #424) (completed 2026-04-28)
 - [x] **Phase 14: Migration tool (A5)** — `dfsctl blockstore migrate` offline re-chunk + re-hash (GH issue: #425) (phases complete 2026-05-05; production wiring of `openOfflineRuntime` still gates production rollout)
-- [ ] **Phase 15: Legacy cleanup (A6)** — Remove dual-read shim, delete deprecated symbols (GH issue: #426)
+- [ ] **Phase 15: Legacy cleanup (A6)** — Remove dual-read shim, delete deprecated symbols (GH issue: #426) — **SUBSUMED BY v0.16.0 Phase 17** (legacy delete folded into unified BlockStore interface work; this issue can be closed once Phase 17 ships)
+
+---
+
+## v0.16.0 — CAS Convergence
+
+**Goal**: Converge DittoFS block storage on a single content-addressable layout. Collapse v0.15.0 dual-path complexity (legacy `.blk` + hybrid CAS, mmap + RAM cache, chunking-in-Syncer + chunking-at-rollup). Subsume v0.15.0 Phase 15 (A6) legacy cleanup. Ship one-shot migration command. No backward-compat shims — DittoFS has no production users.
+
+**Phases:** 4 (numbered 16–19, continuing from v0.15.0 which ends at Phase 15)
+
+16 (Cache RAM-only) ──► 17 (Unified BlockStore + legacy delete + migrate-to-cas) ──► 18 (Syncer mirror loop + ObjectID relocation) ──► 19 (Write-path RAM opts)
+
+- [x] **Phase 16: Cache RAM-only (remove mmap read path)** — Delete `cache_mmap_*.go`, swap `readFromCAS` → `local.Get`, retire D-33 perf gate (GH issue: #516) — **SHIPPED 2026-05-20** on `gsd/phase-16-cache-mmap-removal` (16 commits); warm-cache D-06 PASS (ratio 0.890 ≤1.02)
+- [ ] **Phase 17: Unified BlockStore interface + legacy delete + migration tool** — Single `BlockStore` interface (Put/Get/GetRange/Has/Delete/Walk/Head) for local + remote, `BlockStoreAppend` extends with random-write tier, delete legacy `.blk` writer + dual-read shim + flag, ship `dfsctl blockstore migrate-to-cas` one-shot (GH issue: #517)
+- [ ] **Phase 18: Syncer simplification + ObjectID relocation** — Syncer Flush → mirror loop `for hash := range local.ListUnsynced() { remote.Put(...) }`. Move `ComputeObjectID` to rollup CommitChunks. Local-only shares now get ObjectIDs. (GH issue: #518)
+- [ ] **Phase 19: Write-path RAM optimizations** — 4 opts: in-memory hash dedup LRU; group commit / batched fsync; direct-to-Cache on chunk completion; eager small-file dedup (GH issue: #519)
+
+**Parent tracking issue:** [#515](https://github.com/marmos91/dittofs/issues/515)
+
+**Design spec:** `~/.claude/plans/reactive-sprouting-moonbeam.md` (locked 2026-05-20)
+
+**Locked decisions (do not re-litigate in discuss-phase):**
+1. Cache is RAM-only (drop mmap)
+2. Local + remote block stores share one CAS-keyed `BlockStore` interface
+3. Syncer is a byte-identical local→remote mirror
+
+**Intended outcome:** ~30–40% LoC reduction in `pkg/blockstore/` (target under 4k from current ~6k); single-layout conformance suite (`blockstoretest/`); trivially auditable Syncer; measurable rand-write throughput wins. All v0.15.0 perf gates preserved (D-21, D-41, D-43); D-33 deleted with mmap.
 
 ## Phase Details
 
@@ -298,6 +324,38 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - Removing shim could surface latent bugs that were masked by dual-read fallback — run crash-injection suite + full WPTS + smbtorture baseline before merge
 **Plans**: TBD
 
+### Phase 16: Cache RAM-only (remove mmap read path)
+**Goal**: Replace the `syscall.Mmap` zero-copy read path in `pkg/blockstore/engine/cache.go` with a `[]byte` read from the local block store. The Cache becomes pure RAM — `map[ContentHash]*list.Element` + `list.List` LRU, with bytes copied into LRU slots on miss. All LRU sizing, prefetch workers, sequential tracker, `nullCache{}` fallback, and the public `CacheInterface` (`Get/Put/OnRead/InvalidateFile/Stats/Close`) stay unchanged. The mmap files + Unix/Windows build-tag fork + D-33 perf gate are deleted. First of four phases in v0.16.0 — validates the Cache contract before Phase 17 swaps the underlying source.
+**Depends on**: v0.15.0 complete (Phase 14 production-rollout window can lag)
+**GH issue**: [#516](https://github.com/marmos91/dittofs/issues/516)
+**Duration**: ~1 week
+**Requirements**: (no formal REQ-IDs; phase scope is governed by CONTEXT.md decisions D-01..D-11)
+**Success Criteria** (what must be TRUE):
+  1. `pkg/blockstore/engine/cache_mmap_unix.go`, `pkg/blockstore/engine/cache_mmap_windows.go`, and `pkg/blockstore/engine/cache_mmap_test.go` are deleted; no remaining references to `syscall.Mmap`, `readFromCAS`, or `mmap` in `pkg/blockstore/engine/`
+  2. `pkg/blockstore/local.LocalStore` exposes `Get(ctx context.Context, hash ContentHash) ([]byte, error)`; `*FSStore.Get` is a thin wrapper over existing `chunkstore.ReadChunk(h)`; returned `[]byte` is freshly allocated and owned by caller (D-03)
+  3. `engine.loadByHash` at `pkg/blockstore/engine/engine.go:221` calls `local.Get(hash)` (no type assertion, no `readFromCAS`); Cache `loadFn` signature unchanged
+  4. `TestPerfGate_Phase12_MmapHotPath` removed from `pkg/blockstore/engine/perf_bench_unix_test.go` (D-08); if file becomes empty, fold per Claude's Discretion
+  5. `BenchmarkRandReadVerified` (warm-cache) ratio ≤1.02 vs pre-Phase-16 baseline (D-06); cross-OS build passes on Linux + Darwin + Windows (no per-OS cache file remains)
+  6. Generic byte-correctness asserts from `cache_mmap_test.go` cherry-picked into `pkg/blockstore/engine/cache_test.go` (D-10); mmap-specific asserts (page-fault, 64 KiB threshold) deleted with no replacement
+**Files to touch**:
+  - `pkg/blockstore/engine/cache_mmap_unix.go` — **delete**
+  - `pkg/blockstore/engine/cache_mmap_windows.go` — **delete**
+  - `pkg/blockstore/engine/cache_mmap_test.go` — **delete** (cherry-pick generics into `cache_test.go`)
+  - `pkg/blockstore/engine/perf_bench_unix_test.go` — delete `TestPerfGate_Phase12_MmapHotPath`
+  - `pkg/blockstore/engine/engine.go:221` `loadByHash` — rewire `readFromCAS` → `local.Get`
+  - `pkg/blockstore/local/local.go` — add `Get(ctx, hash)` to `LocalStore` interface
+  - `pkg/blockstore/local/fs/fs.go` — implement `(*FSStore).Get` over `chunkstore.ReadChunk`
+  - `pkg/blockstore/engine/cache_test.go` — absorb generic byte-correctness asserts
+**Key risks**:
+  - Forward-compat naming: `local.Get` signature must match Phase 17's `BlockStore.Get` exactly so the call site narrows without rename churn (D-01) — coordinate with Phase 17 scope
+  - Generic asserts in `cache_mmap_test.go` must be preserved during delete (D-10) — review the test file before deletion, not after
+  - Cold-cache regression is unverified by Phase 16 gates — production workloads are mostly warm, but cold-read complaints post-ship trigger the deferred `BenchmarkRandReadVerified_ColdCache` work in Phase 19
+**Plans**: 4 plans
+  - [x] 16-01-PLAN.md — Add LocalStore.Get(ctx, hash) interface method + FSStore (delegate to ReadChunk) + MemoryStore stub + localtest conformance scenario
+  - [x] 16-02-PLAN.md — Rewire engine.loadByHash → local.Get; update cache.go docstring; cherry-pick generic byte-correctness asserts from cache_mmap_test.go into cache_test.go (D-10)
+  - [x] 16-03-PLAN.md — Delete cache_mmap_unix.go + cache_mmap_windows.go + cache_mmap_test.go; delete TestPerfGate_Phase12_MmapHotPath; fold perf_bench_unix_test.go if empty; cross-OS build clean (D-08, D-09)
+  - [x] 16-04-PLAN.md — Warm-cache BenchmarkRandReadVerified ≤1.02 vs pre-Phase-16 baseline (D-06); cross-OS build + race verification; BENCHMARKS.md update; human checkpoint
+
 ## Milestone Gates
 
 Verification requirements VER-01 through VER-06 are phase-independent and gate the overall milestone rather than any single phase. These must all pass before v0.15.0 ships.
@@ -325,6 +383,7 @@ Verification requirements VER-01 through VER-06 are phase-independent and gate t
 | 13. Merkle root + file-level dedup (A4) | 14/15 | Complete    | 2026-04-28 |
 | 14. Migration tool (A5) | 5/7 | In Progress|  |
 | 15. Legacy cleanup (A6) | 0/? | Not started | - |
+| 16. Cache RAM-only (remove mmap read path) | 4/4 | Complete    | 2026-05-20 |
 
 ## Coverage Summary
 

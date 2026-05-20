@@ -3,11 +3,21 @@ package localtest
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
 )
+
+// chunkStorer is the optional capability used by RunGetSuite to populate
+// a CAS-shaped chunk before exercising LocalStore.Get. Backends that
+// store CAS chunks (e.g. *fs.FSStore) satisfy this interface; backends
+// that do not (e.g. memory.MemoryStore) cause the round-trip assertions
+// to be skipped while the missing-hash sentinel assertion still runs.
+type chunkStorer interface {
+	StoreChunk(ctx context.Context, h blockstore.ContentHash, data []byte) error
+}
 
 // Factory creates a new LocalStore instance for testing.
 // Each test calls Factory to get a fresh, independent store.
@@ -16,11 +26,10 @@ type Factory func(t *testing.T) local.LocalStore
 // RunSuite runs the full conformance test suite against a LocalStore
 // implementation.
 //
-// For the Phase 10 append-log / rollup / recovery scenarios (D-22), see
-// RunAppendLogSuite in appendlog_suite.go — it uses a separate factory
-// type (*fs.FSStore) because the new methods are not on the LocalStore
-// interface through Phase 10 (D-04). Callers that want both suites can
-// invoke them independently.
+// For the append-log / rollup / recovery scenarios, see RunAppendLogSuite
+// in appendlog_suite.go — it uses a separate factory type (*fs.FSStore)
+// because the append-log methods are not on the LocalStore interface.
+// Callers that want both suites can invoke them independently.
 func RunSuite(t *testing.T, factory Factory) {
 	t.Run("WriteAndRead", func(t *testing.T) { testWriteAndRead(t, factory) })
 	t.Run("ReadMiss", func(t *testing.T) { testReadMiss(t, factory) })
@@ -344,6 +353,108 @@ func testIsBlockLocal(t *testing.T, factory Factory) {
 	if !store.IsBlockLocal(ctx, "file1", 0) {
 		t.Fatal("block should be in local store after write")
 	}
+}
+
+// RunGetSuite exercises LocalStore.Get. The scenario matrix is:
+//
+//   - missing-hash: Get(arbitrary unstored hash) → blockstore.ErrChunkNotFound.
+//   - CAS-capable backends only (chunkStorer): StoreChunk a known
+//     payload, Get it back, assert byte-identical via bytes.Equal.
+//   - Fresh-allocation contract: two Get calls on the same hash return
+//     independent backing arrays — mutating slice #1 must not be
+//     observable through slice #2. This defends the buffer-ownership
+//     contract by behavior, not by unsafe pointer comparison.
+//
+// Backends that do not store CAS chunks (memory.MemoryStore) skip the
+// round-trip + aliasing assertions and exercise only the missing-hash
+// sentinel — matching the documented stub behavior of MemoryStore.Get.
+func RunGetSuite(t *testing.T, factory Factory) {
+	t.Helper()
+	t.Run("Get_MissingHash_ReturnsErrChunkNotFound", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+		var missing blockstore.ContentHash
+		// One non-zero byte so this doesn't collide with any hypothetical
+		// future "all-zero hash" sentinel a backend might special-case.
+		missing[0] = 0xDE
+		missing[31] = 0xAD
+		if _, err := store.Get(ctx, missing); !errors.Is(err, blockstore.ErrChunkNotFound) {
+			t.Fatalf("Get(missing): want ErrChunkNotFound, got %v", err)
+		}
+	})
+
+	t.Run("Get_CASRoundTrip", func(t *testing.T) {
+		store := factory(t)
+		cs, ok := store.(chunkStorer)
+		if !ok {
+			t.Skip("backend does not implement StoreChunk; skipping CAS round-trip")
+		}
+		ctx := context.Background()
+
+		// Arbitrary (non-zero) ContentHash + deterministic payload.
+		// StoreChunk trusts inputs per its godoc — the hash is NOT required to
+		// be BLAKE3(payload); the test only asserts byte-identical round-trip
+		// through Get for whatever (hash, payload) pair StoreChunk accepts.
+		var h blockstore.ContentHash
+		for i := range h {
+			h[i] = byte(i + 1)
+		}
+		payload := bytes.Repeat([]byte{0x42}, 4096)
+		if err := cs.StoreChunk(ctx, h, payload); err != nil {
+			t.Fatalf("StoreChunk: %v", err)
+		}
+
+		got, err := store.Get(ctx, h)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if !bytes.Equal(got, payload) {
+			t.Fatal("Get returned bytes that differ from the stored payload")
+		}
+	})
+
+	t.Run("Get_FreshAllocationPerCall", func(t *testing.T) {
+		store := factory(t)
+		cs, ok := store.(chunkStorer)
+		if !ok {
+			t.Skip("backend does not implement StoreChunk; skipping fresh-allocation defense")
+		}
+		ctx := context.Background()
+
+		var h blockstore.ContentHash
+		for i := range h {
+			h[i] = byte(0xA0 ^ i)
+		}
+		payload := bytes.Repeat([]byte{0x77}, 1024)
+		if err := cs.StoreChunk(ctx, h, payload); err != nil {
+			t.Fatalf("StoreChunk: %v", err)
+		}
+
+		out1, err := store.Get(ctx, h)
+		if err != nil {
+			t.Fatalf("Get #1: %v", err)
+		}
+		out2, err := store.Get(ctx, h)
+		if err != nil {
+			t.Fatalf("Get #2: %v", err)
+		}
+		if len(out1) == 0 || len(out2) == 0 {
+			t.Fatalf("Get returned empty slice (len1=%d len2=%d)", len(out1), len(out2))
+		}
+
+		// Mutate the first slice; the second must remain unchanged.
+		// Defends the fresh-allocation-per-call + no-aliasing contracts
+		// by behavior — `&out1[0] != &out2[0]` is
+		// fragile (compiler/runtime may legitimately reuse). Mutation
+		// is the load-bearing assertion the engine actually depends on:
+		// the Cache copies bytes into its LRU slot and a subsequent
+		// loader pass must not observe a previous caller's writes.
+		original := out2[0]
+		out1[0] = ^out1[0]
+		if out2[0] != original {
+			t.Fatalf("Get is aliasing: mutating slice from first Get changed slice from second Get (out2[0] went %#x -> %#x)", original, out2[0])
+		}
+	})
 }
 
 func testCloseRejectsOps(t *testing.T, factory Factory) {

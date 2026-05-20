@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.15.0
+milestone: v0.16.0
 milestone_name: milestone
-status: executing
-stopped_at: Phase 14 Plan 07 shipped — operator docs runbook (MIG-01..MIG-04 closed; openOfflineRuntime production wire-up still gates production rollout, tracked under #425)
-last_updated: "2026-05-05T17:59:30.000Z"
-last_activity: 2026-05-05
+status: completed
+stopped_at: Phase 16 SHIPPED — all 4 plans complete, warm-cache D-06 PASS (ratio 0.890)
+last_updated: "2026-05-20T12:27:13.402Z"
+last_activity: 2026-05-20 -- Phase 16 marked complete
 progress:
-  total_phases: 8
-  completed_phases: 6
-  total_plans: 66
-  completed_plans: 66
-  percent: 100
+  total_phases: 9
+  completed_phases: 4
+  total_plans: 33
+  completed_plans: 33
+  percent: 44
 ---
 
 # Project State
@@ -21,25 +21,24 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-23)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 13 — merkle-root-file-level-dedup-a4
+**Current focus:** Phase 16 — cache-mmap-removal
 
 ## Current Position
 
-Milestone: v0.15.0
-Phase: 14
-Plan: 7 of 07 complete (operator docs runbook — MIG-01..MIG-04 closed; openOfflineRuntime production wire-up still gates production rollout, tracked under #425)
-Branch: `gsd/phase-12-cdc-read-path-metadata-engine-api`
-Status: Phase 14 complete (Plans 01–07 shipped)
-Last activity: 2026-05-05
+Milestone: v0.16.0
+Phase: 16 — COMPLETE
+Plan: 4 of 4 complete
+Branch: `gsd/phase-16-cache-mmap-removal`
+Status: Phase 16 complete
+Last activity: 2026-05-20 -- Phase 16 marked complete
 
 ## Next Actionable
 
-Phase 12 (A3): CDC read path + metadata schema + engine API. 14 requirements across META-01/03/04, API-01/02/03/04, CACHE-01..06, INV-02. Estimated ~2 weeks. Dependencies satisfied: Phase 11 (A2, #422, shipped PR #453) + Phase 09 (ADAPT, #427, shipped PR #438).
+Phase 16 complete. Open a PR for `gsd/phase-16-cache-mmap-removal` → `develop`, then begin Phase 17 (unified `BlockStore` interface + legacy `.blk` delete + `dfsctl blockstore migrate-to-cas` one-shot).
 
-- `/gsd-discuss-phase 12 --chain` — interactive discuss → auto plan + execute
-- `/gsd-discuss-phase 12 --auto` — fully autonomous (Claude picks defaults)
-- `/gsd-plan-phase 12` — skip discuss, go straight to planning
-- GH issue: #423
+- `/gsd-discuss-phase 17` (or directly `/gsd-plan-phase 17`) — kick off Phase 17 planning
+- GH issue: #517 (Phase 17 tracking)
+- GH issue: #516 (Phase 16 — close after PR merges)
 
 ## Completed Milestones
 
@@ -94,6 +93,16 @@ Phase 12 (A3): CDC read path + metadata schema + engine API. 14 requirements acr
 - Phase 12 Plan 08 (CACHE-05 seam + CopyPayload): adds `common.CacheInvalidator` interface (defined in package common, not engine — Phase 09 narrow-interface pattern), `common.diffRemovedHashes` (BlockRef hash set-diff preserving multiplicity for refcount-aware callers), `common.CopyPayload` (atomic engine.CopyPayload + dst PutFile in one metadata txn — BLOCKER-2 resolution; mid-loop Increment failure rolls back ALL writes; cache.InvalidateFile fires only on commit success per D-35), and explicit `ErrBlockRefMissing` rows in content_errmap.go (D-23 — operators triage CAS-integrity failures via log inspection; wire surface is identical to ErrCASContentMismatch). `common.{Read,Write}ToBlockStore` signatures kept unchanged because the executor's strict critical_constraint forbids touching protocol handlers — the actual []BlockRef threading deferred to Plan 12-09 cache rewrite when an engine-side accessor pattern lands. Plan body's action-step-3 (which directs handler call-site updates) was reconciled in favor of the `<must_haves>` truth that handlers stay untouched (D-26).
 - Phase 12 Plan 09 (CACHE-01..05 + Null Object): greenfield CAS-keyed `engine.Cache` replaces Phase 11's `ReadBuffer` (keyKindCoord/CAS/Legacy bifurcation from D-22) and the standalone `engine.Prefetcher` worker pool. Single keyspace (ContentHash), single budget, single Get/Put/InvalidateFile API. CACHE-03 sequential threshold raised from 2 to 3. CACHE-04 OnRead is the sole prefetch hint API; engine.ReadAt invokes it post-read with BlockRef hashes. CACHE-05 InvalidateFile is surgical (drops only listed hashes; preserves cross-file dedup CACHE-02). `nullCache{}` Null Object eliminates defensive `if bs.cache == nil` guards — verified by grep. Cache is hint-only for Plan 09 (engine.ReadAt does NOT serve from cache.Get); Plan 10 mmap reintroduces byte-serving without heap-copy cost. Flush auto-promote removed (Phase 11 behavior didn't translate to hash-keyed cache; OS page cache covers the hot-path benefit until Plan 10). CacheStats JSON shape preserved (read_buffer_entries / read_buffer_used / read_buffer_max) so dfsctl block stats keeps working. Deviation: Task 1's literal "replace cache.go entirely" would have broken the Task 1 build (engine.go still references ReadBuffer/Prefetcher), so the new Cache was added alongside in Task 1 and the legacy code deleted in Task 3. Plan 12-08's deferred []BlockRef threading through common.{Read,Write}ToBlockStore was NOT addressed in this plan — the engine accessor pattern that would unblock it is still missing; flagged for a future cleanup plan or absorbed into Plan 13's file-level dedup integration.
 
+### v0.16.0 Decisions
+
+- Phase 16 Plan 01 (D-01..D-05): `LocalStore.Get(ctx, hash) ([]byte, error)` lands in `pkg/blockstore/local/local.go` as a hash-keyed read surface. `(*FSStore).Get` is a one-line delegate to `chunkstore.ReadChunk` — inherits closed-store guard, ENOENT→`ErrChunkNotFound` mapping, and LSL-08 LRU touch. `(*MemoryStore).Get` is the documented stub: `s.mu.RLock` + closed-store guard + `blockstore.ErrChunkNotFound` (memory backend has no CAS layer; Phase 17 may expand). No `sync.Pool` (D-04), no zero-copy aliasing (D-05). Signature is byte-for-byte forward-compatible with Phase 17's unified `BlockStore.Get` — engine call site (Plan 16-02) narrows the receiver type without renaming. New `RunGetSuite` in `pkg/blockstore/local/localtest` uses an unexported `chunkStorer` capability probe so CAS round-trip + fresh-allocation defense subtests auto-skip on non-CAS backends; missing-hash sentinel runs on all backends. Aliasing defense is mutation-based (mutate slice #1, assert slice #2 unchanged) — more robust than `&out1[0] != &out2[0]` pointer comparison. `Has(hash)` deliberately NOT added in Phase 16; deferred to Phase 17 unified interface. Commits: `a8426dc4` (Task 1 RED), `a2e608be` (Task 1 GREEN — feat), `e5f39b5f` (Task 2 conformance test).
+
+- Phase 16 Plan 02 (D-02 + D-10 cherry-pick): `engine.loadByHash` reduced to a single `bs.local.Get(ctx, hash)` delegate — mmap fast-path branch (`fb.DataSize > 0` → `readFromCAS`), the FileBlock lookup (`GetByHash`), the `LocalPath` gate, and the `GetBlockData` legacy fallback all removed. Cache `loadFn` (LoadByHashFn) signature unchanged → `NewCache` wiring untouched. `cache.go` docstring rewritten: Plan 12-10 / CACHE-06 multi-paragraph mmap-vs-ReadFile block replaced with a one-paragraph Phase 16 RAM-only note. New `TestCache_LargeChunkRoundTrip` in `cache_test.go` ports the 256 KiB byte-equality from `cache_mmap_test.go::TestReadFromCAS_RoundTrip` reshaped onto `Cache.Put` / `Cache.Get` — existing 11-byte `TestCache_GetPut_Basic` does NOT subsume large-chunk equality (D-10). Mmap-specific assertions (PartialOffset, DestSmallerThanFile, BelowMmapThreshold_UsesReadFile, OffsetAtEOF, EmptyDest, MissingFile, Windows_FallbackPath) deliberately not ported per D-10. `ErrChunkNotFound` now surfaces verbatim from `local.Get` on miss (previously masked by bespoke `loadByHash: block not local` errors.New). Commits: `f744608b` (Task 1 RED), `5cb1bd40` (Task 1 GREEN — feat), `b0d65d56` (Task 2 large-chunk port).
+
+- Phase 16 Plan 04 (D-06 + D-07 + phase wrap): empirical pre/post `BenchmarkRandReadVerified` on Apple M1 Max — pre commit `f8e2532d` median 1,492,970 ns/op (669.8 ops/s); post commit `436a81ec` median 1,328,307 ns/op (752.8 ops/s); ratio post/pre = 0.890 ≪ D-06 ≤1.02 (PASS by wide margin). Post is faster because the per-OS mmap-thunk dispatch is gone; `B/op` + `allocs/op` bit-identical. Pre-worktree baseline ran inside `/tmp/dittofs-pre-p16` (plan's explicit cwd requirement — relative `./pkg/...` otherwise resolves to post-deletion tree and the "baseline" silently becomes the post-state). `benchstat` verdict `~ (p=0.700, n=3)` confirms no significant difference; the D-06 gate is a ratio gate not a significance gate. Single-config bench (`BenchmarkRandReadVerified` is parameterless, 4 MiB block) → single-ratio gate, NOT a per-chunk-size table (plan inherited the table wording from a multi-config Phase 12 baseline that doesn't exist for the verified-read path; documented in BENCHMARKS.md so future re-baselines don't search for a non-existent artifact). D-07 cold-cache benchmark deliberately NOT introduced — explicitly deferred to v0.17+ in the new BENCHMARKS.md section. `cache.go::Cache.Get` godoc rewritten to scrub the last stale "Plan 10 mmap removes this aliasing concern" reference (past-tense doc kept the symbol alive in source; replaced with live Phase-16 invariant "source is RAM-only; no mmap aliasing window"). Cross-OS build matrix (`CGO_ENABLED=0` × Linux/Darwin/Windows) + engine + local race suites all green. Task 4 human-verify checkpoint auto-approved per orchestrator AUTO-MODE directive. Commits: `1f78db3e` (Task 1 baseline godoc), `83c1f793` (Task 2 cache.go audit), `de059c96` (Task 3 BENCHMARKS.md v0.16.0 Phase 16 section).
+
+- Phase 16 Plan 03 (D-08, D-09, D-11): `pkg/blockstore/engine/cache_mmap_{unix,windows,test}.go` deleted; `perf_bench_unix_test.go` folded entirely (per PATTERNS.md inventory it held only `TestPerfGate_Phase12_MmapHotPath` + `formatChunkName` helper — Claude's Discretion YES ruling). `perf_bench_phase12_test.go` + `cache_test.go` docstrings scrubbed of past-tense `readFromCAS` / `cache_mmap_*` references so the symbol purge is total — all five `grep -rn '<symbol>' pkg/ --include='*.go'` gates return zero matches. No `cache_ram_test.go` created (D-11 honored). Cross-OS build matrix (`CGO_ENABLED=0 GOOS=linux/darwin/windows go build ./...`) all exit 0; engine race suite green (`go test -race -count=1` PASS 24.171s). Host-cgo `GOOS=linux go build ./...` from Darwin fails on `setresuid`/`setresgid` (clang-on-Darwin lacks Linux libc) — pre-existing host-tooling limitation, not a Phase 16 regression. One documented intermediate state: Task 1's commit leaves `perf_bench_unix_test.go` pointing at deleted `readFromCAS` (production `go build ./...` passes; test compile briefly fails until Task 2); plan is NOT `git bisect`-safe between its two commits, by design — alternative would merge the deletions and violate the plan's explicit two-task structure. Commits: `59ccdf26` (Task 1 — three mmap file deletes + cache_test.go docstring cleanup), `704f2f34` (Task 2 — perf_bench_unix_test.go delete + perf_bench_phase12_test.go docstring cleanup).
+
 ### v0.13.0 Decisions (archived context)
 
 Historical v0.13.0 decisions preserved in `.planning/milestones/v0.13.0-archive/` for reference; the v0.15.0 refactor deletes `BackupHoldProvider` + `FinalizationCallback` (v0.13.0 scaffolding) in Phase 08.
@@ -125,9 +134,11 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-05T17:59:30.000Z
-Stopped at: Phase 14 Plan 07 shipped — operator docs runbook (MIG-01..MIG-04 closed)
-Next action: **Phase 14 phase-execution complete.** Two outstanding follow-ups before production rollout: (1) `openOfflineRuntime` production wiring (controlplane DB read + per-share metadata/remote-store factory dispatch) — tracked under #425, interfaces stable, runbook documents this prominently as a Known Limitation; (2) per-payload-id streaming variant of `deleteLegacyKeys` only if real workloads surface S3 LIST cost (T-14-05-04). Status surface (CLI + REST) is fully usable today against a running daemon. Once #425 closes, no runbook changes needed — the four worked transcripts will then run literally rather than aspirationally. Phase 15 (A6 — legacy cleanup) remains intentionally deferred until #425 closes and migration is rolled out across production workloads.
+Last session: 2026-05-20T14:28:00Z
+Stopped at: Phase 16 SHIPPED — all 4 plans complete, warm-cache D-06 PASS (ratio 0.890)
+Next action: Open PR for `gsd/phase-16-cache-mmap-removal` → `develop`; close GH issue #516 on merge; begin Phase 17 planning (unified BlockStore interface, GH issue #517). Plan 16-04 SUMMARY at `.planning/phases/16-cache-mmap-removal/16-04-SUMMARY.md`. Bench artifacts retained at `/tmp/p16-bench-{pre,post,benchstat}.txt`.
+
+Previous next-action (preserved for context): **Phase 14 phase-execution complete.** Two outstanding follow-ups before production rollout: (1) `openOfflineRuntime` production wiring (controlplane DB read + per-share metadata/remote-store factory dispatch) — tracked under #425, interfaces stable, runbook documents this prominently as a Known Limitation; (2) per-payload-id streaming variant of `deleteLegacyKeys` only if real workloads surface S3 LIST cost (T-14-05-04). Status surface (CLI + REST) is fully usable today against a running daemon. Once #425 closes, no runbook changes needed — the four worked transcripts will then run literally rather than aspirationally. Phase 15 (A6 — legacy cleanup) remains intentionally deferred until #425 closes and migration is rolled out across production workloads.
 
 **Shipped Phase:** 11 (cas-write-path-gc-rewrite-a2) — 9 plans + ~30 review/fix commits — 2026-04-26T18:03:03Z (PR #453)
 
