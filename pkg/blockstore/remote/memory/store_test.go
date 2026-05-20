@@ -6,222 +6,279 @@ import (
 	"fmt"
 	"testing"
 
+	"lukechampine.com/blake3"
+
 	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/remote"
-	"github.com/marmos91/dittofs/pkg/blockstore/remote/remotetest"
 )
 
-func TestStore_WriteAndRead(t *testing.T) {
+// hashOf returns the BLAKE3-256 hash of data as a blockstore.ContentHash.
+func hashOf(t *testing.T, data []byte) blockstore.ContentHash {
+	t.Helper()
+	sum := blake3.Sum256(data)
+	var h blockstore.ContentHash
+	copy(h[:], sum[:])
+	return h
+}
+
+func TestStore_PutAndGet(t *testing.T) {
 	ctx := context.Background()
 	s := New()
 	defer func() { _ = s.Close() }()
 
-	blockKey := "share1/content123/block-0"
 	data := []byte("hello world")
+	hash := hashOf(t, data)
 
-	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
-		t.Fatalf("WriteBlock failed: %v", err)
+	if err := s.Put(ctx, hash, data); err != nil {
+		t.Fatalf("Put failed: %v", err)
 	}
 
-	read, err := s.ReadBlock(ctx, blockKey)
+	read, err := s.Get(ctx, hash)
 	if err != nil {
-		t.Fatalf("ReadBlock failed: %v", err)
+		t.Fatalf("Get failed: %v", err)
 	}
 
 	if string(read) != string(data) {
-		t.Errorf("ReadBlock returned %q, want %q", read, data)
+		t.Errorf("Get returned %q, want %q", read, data)
 	}
 }
 
-func TestStore_ReadBlockNotFound(t *testing.T) {
+func TestStore_GetNotFound(t *testing.T) {
 	ctx := context.Background()
 	s := New()
 	defer func() { _ = s.Close() }()
 
-	_, err := s.ReadBlock(ctx, "nonexistent")
+	hash := hashOf(t, []byte("nonexistent"))
+	_, err := s.Get(ctx, hash)
 	if !errors.Is(err, blockstore.ErrBlockNotFound) {
-		t.Errorf("ReadBlock returned error %v, want %v", err, blockstore.ErrBlockNotFound)
+		t.Errorf("Get returned error %v, want %v", err, blockstore.ErrBlockNotFound)
 	}
 }
 
-func TestStore_ReadBlockRange(t *testing.T) {
+func TestStore_GetRange(t *testing.T) {
 	ctx := context.Background()
 	s := New()
 	defer func() { _ = s.Close() }()
 
-	blockKey := "share1/content123/block-0"
 	data := []byte("hello world")
+	hash := hashOf(t, data)
 
-	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
-		t.Fatalf("WriteBlock failed: %v", err)
+	if err := s.Put(ctx, hash, data); err != nil {
+		t.Fatalf("Put failed: %v", err)
 	}
 
-	read, err := s.ReadBlockRange(ctx, blockKey, 0, 5)
+	read, err := s.GetRange(ctx, hash, 0, 5)
 	if err != nil {
-		t.Fatalf("ReadBlockRange failed: %v", err)
+		t.Fatalf("GetRange failed: %v", err)
 	}
 	if string(read) != "hello" {
-		t.Errorf("ReadBlockRange returned %q, want %q", read, "hello")
+		t.Errorf("GetRange returned %q, want %q", read, "hello")
 	}
 
-	read, err = s.ReadBlockRange(ctx, blockKey, 6, 5)
+	read, err = s.GetRange(ctx, hash, 6, 5)
 	if err != nil {
-		t.Fatalf("ReadBlockRange failed: %v", err)
+		t.Fatalf("GetRange failed: %v", err)
 	}
 	if string(read) != "world" {
-		t.Errorf("ReadBlockRange returned %q, want %q", read, "world")
+		t.Errorf("GetRange returned %q, want %q", read, "world")
 	}
 
 	// Read range that exceeds length (should truncate)
-	read, err = s.ReadBlockRange(ctx, blockKey, 6, 100)
+	read, err = s.GetRange(ctx, hash, 6, 100)
 	if err != nil {
-		t.Fatalf("ReadBlockRange failed: %v", err)
+		t.Fatalf("GetRange failed: %v", err)
 	}
 	if string(read) != "world" {
-		t.Errorf("ReadBlockRange returned %q, want %q", read, "world")
+		t.Errorf("GetRange returned %q, want %q", read, "world")
 	}
 }
 
-func TestStore_DeleteBlock(t *testing.T) {
+func TestStore_Delete(t *testing.T) {
 	ctx := context.Background()
 	s := New()
 	defer func() { _ = s.Close() }()
 
-	blockKey := "share1/content123/block-0"
 	data := []byte("hello world")
+	hash := hashOf(t, data)
 
-	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
-		t.Fatalf("WriteBlock failed: %v", err)
+	if err := s.Put(ctx, hash, data); err != nil {
+		t.Fatalf("Put failed: %v", err)
 	}
 
-	if err := s.DeleteBlock(ctx, blockKey); err != nil {
-		t.Fatalf("DeleteBlock failed: %v", err)
+	if err := s.Delete(ctx, hash); err != nil {
+		t.Fatalf("Delete failed: %v", err)
 	}
 
-	_, err := s.ReadBlock(ctx, blockKey)
-	if err != blockstore.ErrBlockNotFound {
-		t.Errorf("ReadBlock after delete returned error %v, want %v", err, blockstore.ErrBlockNotFound)
+	_, err := s.Get(ctx, hash)
+	if !errors.Is(err, blockstore.ErrBlockNotFound) {
+		t.Errorf("Get after delete returned %v, want %v", err, blockstore.ErrBlockNotFound)
+	}
+
+	// Delete on absent hash is idempotent.
+	if err := s.Delete(ctx, hash); err != nil {
+		t.Errorf("Delete on absent hash returned %v, want nil (idempotent)", err)
 	}
 }
 
-func TestStore_DeleteByPrefix(t *testing.T) {
+func TestStore_Head(t *testing.T) {
 	ctx := context.Background()
 	s := New()
 	defer func() { _ = s.Close() }()
 
-	blocks := map[string][]byte{
-		"share1/content123/block-0": []byte("data0"),
-		"share1/content123/block-1": []byte("data1"),
-		"share1/content123/block-2": []byte("data2"),
-		"share2/content456/block-0": []byte("data3"),
+	data := []byte("head fixture")
+	hash := hashOf(t, data)
+
+	if err := s.Put(ctx, hash, data); err != nil {
+		t.Fatalf("Put: %v", err)
 	}
 
-	for key, data := range blocks {
-		if err := s.WriteBlock(ctx, key, data); err != nil {
-			t.Fatalf("WriteBlock(%s) failed: %v", key, err)
-		}
+	meta, err := s.Head(ctx, hash)
+	if err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+	if meta.Size != int64(len(data)) {
+		t.Errorf("Head Size = %d, want %d", meta.Size, len(data))
+	}
+	if meta.LastModified.IsZero() {
+		t.Error("Head LastModified is zero — WR-4-02 contract violation")
 	}
 
-	if err := s.DeleteByPrefix(ctx, "share1/content123/"); err != nil {
-		t.Fatalf("DeleteByPrefix failed: %v", err)
-	}
-
-	for key := range blocks {
-		_, err := s.ReadBlock(ctx, key)
-		if key[:17] == "share1/content123" {
-			if !errors.Is(err, blockstore.ErrBlockNotFound) {
-				t.Errorf("ReadBlock(%s) after delete returned error %v, want %v", key, err, blockstore.ErrBlockNotFound)
-			}
-		} else {
-			if err != nil {
-				t.Errorf("ReadBlock(%s) after delete returned unexpected error: %v", key, err)
-			}
-		}
+	// Missing hash
+	missing := hashOf(t, []byte("does-not-exist"))
+	if _, err := s.Head(ctx, missing); !errors.Is(err, blockstore.ErrBlockNotFound) {
+		t.Errorf("Head on missing hash = %v, want %v", err, blockstore.ErrBlockNotFound)
 	}
 }
 
-func TestStore_ListByPrefix(t *testing.T) {
+// TestStore_Walk asserts the Phase 17 D-07 Walk contract: every stored
+// CAS object is visited; the callback receives a non-zero Meta; ordering
+// is unspecified so we collect into a set.
+func TestStore_Walk(t *testing.T) {
 	ctx := context.Background()
 	s := New()
 	defer func() { _ = s.Close() }()
 
-	blocks := map[string][]byte{
-		"share1/content123/block-0": []byte("data0"),
-		"share1/content123/block-1": []byte("data1"),
-		"share1/content123/block-2": []byte("data2"),
-		"share2/content456/block-0": []byte("data3"),
-	}
-
-	for key, data := range blocks {
-		if err := s.WriteBlock(ctx, key, data); err != nil {
-			t.Fatalf("WriteBlock(%s) failed: %v", key, err)
+	want := map[blockstore.ContentHash][]byte{}
+	for i := 0; i < 5; i++ {
+		data := []byte(fmt.Sprintf("walk fixture %d", i))
+		h := hashOf(t, data)
+		want[h] = data
+		if err := s.Put(ctx, h, data); err != nil {
+			t.Fatalf("Put: %v", err)
 		}
 	}
 
-	keys, err := s.ListByPrefix(ctx, "share1/content123/")
+	seen := map[blockstore.ContentHash]bool{}
+	err := s.Walk(ctx, func(hash blockstore.ContentHash, meta blockstore.Meta) error {
+		seen[hash] = true
+		exp, ok := want[hash]
+		if !ok {
+			return fmt.Errorf("Walk surfaced unknown hash %s", hash)
+		}
+		if meta.Size != int64(len(exp)) {
+			return fmt.Errorf("Walk meta.Size = %d, want %d", meta.Size, len(exp))
+		}
+		if meta.LastModified.IsZero() {
+			return fmt.Errorf("Walk meta.LastModified is zero")
+		}
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("ListByPrefix failed: %v", err)
+		t.Fatalf("Walk: %v", err)
 	}
-	if len(keys) != 3 {
-		t.Errorf("ListByPrefix returned %d keys, want 3", len(keys))
-	}
-
-	keys, err = s.ListByPrefix(ctx, "")
-	if err != nil {
-		t.Fatalf("ListByPrefix failed: %v", err)
-	}
-	if len(keys) != 4 {
-		t.Errorf("ListByPrefix returned %d keys, want 4", len(keys))
+	for h := range want {
+		if !seen[h] {
+			t.Errorf("Walk did not surface hash %s", h)
+		}
 	}
 }
 
-// TestStore_ListByPrefixWithMeta_LargePrefix exercises the >1000-key
-// path that the S3 backend's paginator handles: the in-memory backend
-// is single-page by construction, so this serves as a regression
-// guardrail — the GC sweep depends on ListByPrefixWithMeta returning
-// every object under a CAS prefix (D-05). If a future refactor caps
-// the response at the SDK page size (1000), this test catches the
-// silent under-counting that would otherwise let orphans persist past
-// the grace window.
-func TestStore_ListByPrefixWithMeta_LargePrefix(t *testing.T) {
+// TestStore_Walk_ErrStopWalk pins the D-07 early-exit contract:
+// returning blockstore.ErrStopWalk from the callback exits cleanly with
+// nil from Walk.
+func TestStore_Walk_ErrStopWalk(t *testing.T) {
 	ctx := context.Background()
 	s := New()
 	defer func() { _ = s.Close() }()
 
-	const total = 1500 // > 1000 (default S3 ListObjectsV2 page size)
-	for i := 0; i < total; i++ {
-		key := fmt.Sprintf("cas/aa/bb/%04x", i)
-		if err := s.WriteBlock(ctx, key, []byte{byte(i & 0xff)}); err != nil {
-			t.Fatalf("WriteBlock(%s): %v", key, err)
+	for i := 0; i < 3; i++ {
+		data := []byte(fmt.Sprintf("stopwalk %d", i))
+		if err := s.Put(ctx, hashOf(t, data), data); err != nil {
+			t.Fatalf("Put: %v", err)
 		}
 	}
 
-	objects, err := s.ListByPrefixWithMeta(ctx, "cas/aa/bb/")
+	seen := 0
+	err := s.Walk(ctx, func(_ blockstore.ContentHash, _ blockstore.Meta) error {
+		seen++
+		if seen == 1 {
+			return blockstore.ErrStopWalk
+		}
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("ListByPrefixWithMeta failed: %v", err)
+		t.Fatalf("Walk should return nil on ErrStopWalk, got %v", err)
 	}
-	if len(objects) != total {
-		t.Fatalf("ListByPrefixWithMeta returned %d objects, want %d", len(objects), total)
+	if seen != 1 {
+		t.Fatalf("Walk should stop after first ErrStopWalk, saw %d objects", seen)
+	}
+}
+
+// TestStore_Walk_CallbackErrorWrapped pins the D-07 contract that
+// non-ErrStopWalk callback errors are wrapped as "walk halted at %s: %w".
+func TestStore_Walk_CallbackErrorWrapped(t *testing.T) {
+	ctx := context.Background()
+	s := New()
+	defer func() { _ = s.Close() }()
+
+	data := []byte("wrap me")
+	if err := s.Put(ctx, hashOf(t, data), data); err != nil {
+		t.Fatalf("Put: %v", err)
 	}
 
-	// Spot-check a few keys to make sure the metadata wiring is intact
-	// (Key/Size populated; LastModified non-zero so the sweep grace-window
-	// filter has a real timestamp to compare against).
-	seen := make(map[string]bool, len(objects))
-	for _, o := range objects {
-		seen[o.Key] = true
-		if o.Size != 1 {
-			t.Errorf("object %s: size=%d, want 1", o.Key, o.Size)
-		}
-		if o.LastModified.IsZero() {
-			t.Errorf("object %s: LastModified is zero", o.Key)
-		}
+	sentinel := errors.New("callback boom")
+	err := s.Walk(ctx, func(_ blockstore.ContentHash, _ blockstore.Meta) error {
+		return sentinel
+	})
+	if err == nil {
+		t.Fatal("Walk should propagate callback error, got nil")
 	}
-	for i := 0; i < total; i++ {
-		key := fmt.Sprintf("cas/aa/bb/%04x", i)
-		if !seen[key] {
-			t.Fatalf("key %s missing from ListByPrefixWithMeta result", key)
-		}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Walk err = %v, want wrapped %v", err, sentinel)
+	}
+}
+
+// TestStore_ReadBlockVerified covers the BSCAS-06 happy path and the
+// body-mismatch failure mode.
+func TestStore_ReadBlockVerified(t *testing.T) {
+	ctx := context.Background()
+	s := New()
+	defer func() { _ = s.Close() }()
+
+	data := []byte("verified read")
+	hash := hashOf(t, data)
+	if err := s.Put(ctx, hash, data); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	got, err := s.ReadBlockVerified(ctx, hash, hash)
+	if err != nil {
+		t.Fatalf("ReadBlockVerified happy path: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("ReadBlockVerified bytes mismatch: got %q, want %q", got, data)
+	}
+
+	// Mismatched expected => ErrCASContentMismatch
+	wrong := hash
+	wrong[0] ^= 0xFF
+	if _, err := s.ReadBlockVerified(ctx, hash, wrong); !errors.Is(err, blockstore.ErrCASContentMismatch) {
+		t.Fatalf("ReadBlockVerified mismatch err = %v, want wrapped ErrCASContentMismatch", err)
+	}
+
+	// Not found
+	missing := hashOf(t, []byte("missing"))
+	if _, err := s.ReadBlockVerified(ctx, missing, missing); !errors.Is(err, blockstore.ErrBlockNotFound) {
+		t.Fatalf("ReadBlockVerified on missing hash = %v, want wrapped ErrBlockNotFound", err)
 	}
 }
 
@@ -233,20 +290,22 @@ func TestStore_ClosedOperations(t *testing.T) {
 		t.Fatalf("Close failed: %v", err)
 	}
 
-	if _, err := s.ReadBlock(ctx, "key"); !errors.Is(err, blockstore.ErrStoreClosed) {
-		t.Errorf("ReadBlock on closed store returned %v, want %v", err, blockstore.ErrStoreClosed)
+	hash := hashOf(t, []byte("data"))
+
+	if _, err := s.Get(ctx, hash); !errors.Is(err, blockstore.ErrStoreClosed) {
+		t.Errorf("Get on closed store returned %v, want %v", err, blockstore.ErrStoreClosed)
 	}
 
-	if err := s.WriteBlock(ctx, "key", []byte("data")); !errors.Is(err, blockstore.ErrStoreClosed) {
-		t.Errorf("WriteBlock on closed store returned %v, want %v", err, blockstore.ErrStoreClosed)
+	if err := s.Put(ctx, hash, []byte("data")); !errors.Is(err, blockstore.ErrStoreClosed) {
+		t.Errorf("Put on closed store returned %v, want %v", err, blockstore.ErrStoreClosed)
 	}
 
-	if err := s.DeleteBlock(ctx, "key"); !errors.Is(err, blockstore.ErrStoreClosed) {
-		t.Errorf("DeleteBlock on closed store returned %v, want %v", err, blockstore.ErrStoreClosed)
+	if err := s.Delete(ctx, hash); !errors.Is(err, blockstore.ErrStoreClosed) {
+		t.Errorf("Delete on closed store returned %v, want %v", err, blockstore.ErrStoreClosed)
 	}
 
-	if _, err := s.ListByPrefix(ctx, ""); !errors.Is(err, blockstore.ErrStoreClosed) {
-		t.Errorf("ListByPrefix on closed store returned %v, want %v", err, blockstore.ErrStoreClosed)
+	if err := s.Walk(ctx, func(_ blockstore.ContentHash, _ blockstore.Meta) error { return nil }); !errors.Is(err, blockstore.ErrStoreClosed) {
+		t.Errorf("Walk on closed store returned %v, want %v", err, blockstore.ErrStoreClosed)
 	}
 }
 
@@ -255,35 +314,35 @@ func TestStore_DataIsolation(t *testing.T) {
 	s := New()
 	defer func() { _ = s.Close() }()
 
-	blockKey := "share1/content123/block-0"
 	data := []byte("hello world")
+	hash := hashOf(t, data)
 
-	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
-		t.Fatalf("WriteBlock failed: %v", err)
+	if err := s.Put(ctx, hash, data); err != nil {
+		t.Fatalf("Put failed: %v", err)
 	}
 
 	// Modify original data
 	data[0] = 'X'
 
-	read, err := s.ReadBlock(ctx, blockKey)
+	read, err := s.Get(ctx, hash)
 	if err != nil {
-		t.Fatalf("ReadBlock failed: %v", err)
+		t.Fatalf("Get failed: %v", err)
 	}
 
 	if read[0] != 'h' {
-		t.Errorf("WriteBlock did not copy data: got %c, want 'h'", read[0])
+		t.Errorf("Put did not copy data: got %c, want 'h'", read[0])
 	}
 
 	// Modify read data
 	read[0] = 'Y'
 
-	read2, err := s.ReadBlock(ctx, blockKey)
+	read2, err := s.Get(ctx, hash)
 	if err != nil {
-		t.Fatalf("ReadBlock failed: %v", err)
+		t.Fatalf("Get failed: %v", err)
 	}
 
 	if read2[0] != 'h' {
-		t.Errorf("ReadBlock did not copy data: got %c, want 'h'", read2[0])
+		t.Errorf("Get did not copy data: got %c, want 'h'", read2[0])
 	}
 }
 
@@ -296,24 +355,16 @@ func TestStore_BlockCount(t *testing.T) {
 		t.Errorf("BlockCount on empty store returned %d, want 0", s.BlockCount())
 	}
 
-	if err := s.WriteBlock(ctx, "key1", []byte("data1")); err != nil {
-		t.Fatalf("WriteBlock failed: %v", err)
+	if err := s.Put(ctx, hashOf(t, []byte("data1")), []byte("data1")); err != nil {
+		t.Fatalf("Put failed: %v", err)
 	}
-	if err := s.WriteBlock(ctx, "key2", []byte("data2")); err != nil {
-		t.Fatalf("WriteBlock failed: %v", err)
+	if err := s.Put(ctx, hashOf(t, []byte("data2")), []byte("data2")); err != nil {
+		t.Fatalf("Put failed: %v", err)
 	}
 
 	if s.BlockCount() != 2 {
 		t.Errorf("BlockCount returned %d, want 2", s.BlockCount())
 	}
-}
-
-// TestConformanceSuite runs the full RemoteStore conformance suite against the
-// in-memory store. This ensures all interface methods are exercised on CI.
-func TestConformanceSuite(t *testing.T) {
-	remotetest.RunSuite(t, func(t *testing.T) remote.RemoteStore {
-		return New()
-	})
 }
 
 func TestStore_TotalSize(t *testing.T) {
@@ -325,11 +376,11 @@ func TestStore_TotalSize(t *testing.T) {
 		t.Errorf("TotalSize on empty store returned %d, want 0", s.TotalSize())
 	}
 
-	if err := s.WriteBlock(ctx, "key1", []byte("hello")); err != nil {
-		t.Fatalf("WriteBlock failed: %v", err)
+	if err := s.Put(ctx, hashOf(t, []byte("hello")), []byte("hello")); err != nil {
+		t.Fatalf("Put failed: %v", err)
 	}
-	if err := s.WriteBlock(ctx, "key2", []byte("world")); err != nil {
-		t.Fatalf("WriteBlock failed: %v", err)
+	if err := s.Put(ctx, hashOf(t, []byte("world")), []byte("world")); err != nil {
+		t.Fatalf("Put failed: %v", err)
 	}
 
 	if s.TotalSize() != 10 {
