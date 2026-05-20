@@ -207,11 +207,12 @@ func testConcurrentStorm(t *testing.T, factory AppendFactory) {
 	// surfaces" is a meaningful liveness check that the rollup
 	// pipeline did not deadlock.
 	//
-	// Timeout is generous (45s) because CI runners under load can
-	// take materially longer to drive the background rollup than a
-	// developer laptop; 10s was empirically tight enough to flake
-	// under GitHub-hosted runner contention.
-	const rollupTimeout = 45 * time.Second
+	// Timeout is generous (3 minutes) because GitHub-hosted runners
+	// under load are materially slower than a developer laptop for
+	// the disk-bound append-log -> chunk -> Put pipeline; both 10s
+	// and 45s flaked here under shared-runner contention. Local runs
+	// complete in well under 2 s.
+	const rollupTimeout = 3 * time.Minute
 	deadline := time.Now().Add(rollupTimeout)
 	var chunkCount int
 	for time.Now().Before(deadline) {
