@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v0.15.0
 milestone_name: — CAS Convergence
-status: completed
+status: executing
 stopped_at: Phase 16 context gathered
-last_updated: "2026-05-20T10:48:25.192Z"
-last_activity: 2026-05-05
+last_updated: "2026-05-20T11:12:41.483Z"
+last_activity: 2026-05-20 -- Phase 16 planning complete
 progress:
-  total_phases: 8
+  total_phases: 9
   completed_phases: 3
-  total_plans: 29
+  total_plans: 33
   completed_plans: 29
-  percent: 100
+  percent: 88
 ---
 
 # Project State
@@ -29,8 +29,8 @@ Milestone: v0.15.0
 Phase: 14
 Plan: 7 of 07 complete (operator docs runbook — MIG-01..MIG-04 closed; openOfflineRuntime production wire-up still gates production rollout, tracked under #425)
 Branch: `gsd/phase-12-cdc-read-path-metadata-engine-api`
-Status: Phase 14 complete (Plans 01–07 shipped)
-Last activity: 2026-05-05
+Status: Ready to execute
+Last activity: 2026-05-20 -- Phase 16 planning complete
 
 ## Next Actionable
 
