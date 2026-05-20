@@ -242,6 +242,20 @@ type FSStore struct {
 //   - maxMemory: memory budget for dirty write buffers in bytes. 0 defaults to 256MB.
 //   - fileBlockStore: persistent store for FileBlock metadata (local path, upload state, etc.)
 func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore) (*FSStore, error) {
+	return newFSStoreInternal(baseDir, maxDisk, maxMemory, fileBlockStore, false)
+}
+
+// newFSStoreInternal is the shared inner constructor. Phase 17 Plan 08
+// introduces the skipSentinelCheck plumbing in preparation for Plan 09's
+// sentinel-detection gate (.cas-migrated-v1 + legacy .blk probe). The
+// parameter is currently unconsulted — the gate lands in Plan 09 inside
+// this function, guarded on `if !skipSentinelCheck`. NewFSStoreForMigration
+// passes true; New / NewWithOptions pass false.
+func newFSStoreInternal(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, skipSentinelCheck bool) (*FSStore, error) {
+	// skipSentinelCheck is reserved for Plan 09. Reference it so the
+	// unused-parameter analyzer (and grep-sweep) does not flag it before
+	// the gate lands.
+	_ = skipSentinelCheck
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
 		return nil, fmt.Errorf("local store: create base dir: %w", err)
 	}
@@ -422,7 +436,33 @@ type FSStoreOptions struct {
 // the defaults set by New(); zero values keep the New() defaults (1 GiB
 // log, 250ms stabilization, 2 rollup workers).
 func NewWithOptions(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, opts FSStoreOptions) (*FSStore, error) {
-	bc, err := New(baseDir, maxDisk, maxMemory, fileBlockStore)
+	return newFSStoreWithOptionsInternal(baseDir, maxDisk, maxMemory, fileBlockStore, opts, false)
+}
+
+// NewFSStoreForMigration constructs an FSStore that skips the legacy-
+// layout sentinel check.
+//
+// MIGRATION TOOL USE ONLY — production code paths must call New /
+// NewWithOptions. The `dfs migrate-to-cas` subcommand
+// (cmd/dfs/commands/migrate_to_cas.go) is the sole intended caller; it
+// must open the destination FSStore against a share directory that still
+// contains the legacy `.blk` layout (the very state the migration is
+// converting away from). Plan 09 will add the sentinel-detection branch
+// inside newFSStoreInternal guarded on the skipSentinelCheck argument so
+// this bypass remains the single supported entry point for the migration
+// tool.
+//
+// Behavior is otherwise identical to NewWithOptions.
+func NewFSStoreForMigration(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, opts FSStoreOptions) (*FSStore, error) {
+	return newFSStoreWithOptionsInternal(baseDir, maxDisk, maxMemory, fileBlockStore, opts, true)
+}
+
+// newFSStoreWithOptionsInternal is the shared body for NewWithOptions
+// and NewFSStoreForMigration. The skipSentinelCheck argument is threaded
+// through to newFSStoreInternal where Plan 09's legacy-layout gate will
+// consult it.
+func newFSStoreWithOptionsInternal(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, opts FSStoreOptions, skipSentinelCheck bool) (*FSStore, error) {
+	bc, err := newFSStoreInternal(baseDir, maxDisk, maxMemory, fileBlockStore, skipSentinelCheck)
 	if err != nil {
 		return nil, err
 	}
