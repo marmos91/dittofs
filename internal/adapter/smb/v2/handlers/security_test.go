@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/binary"
 	"os"
 	"testing"
@@ -276,15 +277,20 @@ func TestBuildSD_SACL_NotRequested(t *testing.T) {
 	}
 }
 
-// TestBuildSD_AutoInherited verifies SE_DACL_AUTO_INHERITED is set when
-// ACEs have INHERITED_ACE flag.
-func TestBuildSD_AutoInherited(t *testing.T) {
+// TestBuildSD_AutoInherited_PerACEFlagNotEnough verifies the P6-2 invariant:
+// per MS-DTYP §2.4.6 / §2.4.4.2 the SD-level SE_DACL_AUTO_INHERITED Control
+// bit and the per-ACE SEC_ACE_FLAG_INHERITED_ACE are independent fields, so
+// per-ACE INHERITED_ACE flags alone do NOT imply the Control bit. (Inverse of
+// the legacy fallback removed in P6-2; the bit must come from
+// acl.ACL.AutoInherited, which itself reflects parse-side canonicalization.)
+func TestBuildSD_AutoInherited_PerACEFlagNotEnough(t *testing.T) {
 	file := &metadata.File{
 		FileAttr: metadata.FileAttr{
 			UID:  1000,
 			GID:  1000,
 			Mode: 0o755,
 			ACL: &acl.ACL{
+				AutoInherited: false,
 				ACEs: []acl.ACE{
 					{
 						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
@@ -303,8 +309,8 @@ func TestBuildSD_AutoInherited(t *testing.T) {
 	}
 
 	control := binary.LittleEndian.Uint16(data[2:4])
-	if control&seDACLAutoInherited == 0 {
-		t.Error("SE_DACL_AUTO_INHERITED not set when ACEs have INHERITED_ACE flag")
+	if control&seDACLAutoInherited != 0 {
+		t.Error("SE_DACL_AUTO_INHERITED set from per-ACE INHERITED_ACE alone (legacy fallback should be removed)")
 	}
 }
 
@@ -818,40 +824,35 @@ func TestSecurityDescriptor_SIDFormRoundTrip(t *testing.T) {
 }
 
 // TestParseSecurityDescriptor_CapturesControlFlags asserts that an SD whose
-// Control field carries SE_DACL_PROTECTED + SE_DACL_AUTO_INHERITED yields an
-// ACL with both flags set after parse. The build path already emits these
-// flags; this locks down the symmetric parse direction so SET_INFO Security
-// can persist the client's intent for inheritance behavior.
+// Control field carries SE_DACL_PROTECTED + (SE_DACL_AUTO_INHERITED &
+// SE_DACL_AUTO_INHERIT_REQ) yields an ACL with both flags set after parse.
+// Per MS-DTYP §2.5.3.4.2 / Samba canonicalize_inheritance_bits, AutoInherited
+// is only captured when BOTH AUTO_INHERITED and AUTO_INHERIT_REQ are set by
+// the client.
 func TestParseSecurityDescriptor_CapturesControlFlags(t *testing.T) {
-	// Build an SD whose source ACL is Protected + AutoInherited. The build
-	// path emits seDACLProtected + seDACLAutoInherited; we then parse it
-	// back and assert both flags survive.
-	file := &metadata.File{
-		FileAttr: metadata.FileAttr{
-			UID:  1000,
-			GID:  1000,
-			Mode: 0o755,
-			ACL: &acl.ACL{
-				Protected:     true,
-				AutoInherited: true,
-				ACEs: []acl.ACE{
-					{
-						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
-						Flag:       acl.ACE4_INHERITED_ACE,
-						AccessMask: 0x001F01FF,
-						Who:        acl.SpecialEveryone,
-					},
-				},
-			},
-		},
-	}
+	// Hand-craft a self-relative SD with Control =
+	// seSelfRelative|seDACLPresent|seDACLProtected|seDACLAutoInherited|seDACLAutoInheritReq.
+	// Build path doesn't emit AUTO_INHERIT_REQ, so we cannot use it here.
+	const (
+		hdrSize = 20
+		aclSize = 8
+	)
+	buf := make([]byte, hdrSize+aclSize)
+	buf[0] = 1 // Revision
+	buf[1] = 0 // Sbz1
+	binary.LittleEndian.PutUint16(buf[2:4], uint16(seSelfRelative|seDACLPresent|seDACLProtected|seDACLAutoInherited|seDACLAutoInheritReq))
+	binary.LittleEndian.PutUint32(buf[4:8], 0)         // offsetOwner
+	binary.LittleEndian.PutUint32(buf[8:12], 0)        // offsetGroup
+	binary.LittleEndian.PutUint32(buf[12:16], 0)       // offsetSACL
+	binary.LittleEndian.PutUint32(buf[16:20], hdrSize) // offsetDACL
+	// Empty DACL
+	buf[20] = 2 // AclRevision
+	buf[21] = 0
+	binary.LittleEndian.PutUint16(buf[22:24], aclSize)
+	binary.LittleEndian.PutUint16(buf[24:26], 0)
+	binary.LittleEndian.PutUint16(buf[26:28], 0)
 
-	data, err := BuildSecurityDescriptor(file, 0)
-	if err != nil {
-		t.Fatalf("BuildSecurityDescriptor: %v", err)
-	}
-
-	_, _, parsed, err := ParseSecurityDescriptor(data)
+	_, _, parsed, err := ParseSecurityDescriptor(buf)
 	if err != nil {
 		t.Fatalf("ParseSecurityDescriptor: %v", err)
 	}
@@ -862,7 +863,7 @@ func TestParseSecurityDescriptor_CapturesControlFlags(t *testing.T) {
 		t.Error("Protected = false, want true")
 	}
 	if !parsed.AutoInherited {
-		t.Error("AutoInherited = false, want true")
+		t.Error("AutoInherited = false, want true (both AUTO_INHERITED and AUTO_INHERIT_REQ set)")
 	}
 }
 
@@ -983,36 +984,22 @@ func TestBuildSD_AutoInherited_FromACLField(t *testing.T) {
 	}
 }
 
-// TestBuildSD_AutoInherited_RoundTrip verifies the full parse+build round trip
-// for SE_DACL_AUTO_INHERITED. Build an SD from ACL{AutoInherited:true}, parse
-// it back (parse path captures the Control bit), then re-build. The re-built
-// SD must still carry SE_DACL_AUTO_INHERITED in its Control word.
+// TestBuildSD_AutoInherited_RoundTrip verifies the full client→parse→build
+// round trip for SE_DACL_AUTO_INHERITED. A client SET_INFO carrying both
+// AUTO_INHERITED and AUTO_INHERIT_REQ is parsed (canonicalization captures the
+// bit), the ACL is then re-built via BuildSecurityDescriptor, and the re-built
+// SD must still carry SE_DACL_AUTO_INHERITED. AUTO_INHERIT_REQ is a one-way
+// client request — server never echoes it back, mirroring Samba
+// canonicalize_inheritance_bits.
 func TestBuildSD_AutoInherited_RoundTrip(t *testing.T) {
-	file := &metadata.File{
-		FileAttr: metadata.FileAttr{
-			UID:  1000,
-			GID:  1000,
-			Mode: 0o755,
-			ACL: &acl.ACL{
-				AutoInherited: true,
-				ACEs: []acl.ACE{
-					{
-						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
-						Flag:       0, // no per-ACE inherited flag
-						AccessMask: 0x001F01FF,
-						Who:        acl.SpecialOwner,
-					},
-				},
-			},
-		},
-	}
+	// Hand-craft the inbound client SD with both AUTO_INHERITED and
+	// AUTO_INHERIT_REQ in the Control word. Build path won't emit
+	// AUTO_INHERIT_REQ on its own. Include a non-inherited ACE so the
+	// build-side `len(ACEs) > 0` guard preserves the parsed ACL (zero-ACE
+	// DACLs are intentionally replaced by mode synthesis).
+	clientSD := makeAutoInheritSD(t, seDACLAutoInherited|seDACLAutoInheritReq, false)
 
-	data1, err := BuildSecurityDescriptor(file, 0)
-	if err != nil {
-		t.Fatalf("BuildSecurityDescriptor (initial): %v", err)
-	}
-
-	_, _, parsed, err := ParseSecurityDescriptor(data1)
+	_, _, parsed, err := ParseSecurityDescriptor(clientSD)
 	if err != nil {
 		t.Fatalf("ParseSecurityDescriptor: %v", err)
 	}
@@ -1020,7 +1007,7 @@ func TestBuildSD_AutoInherited_RoundTrip(t *testing.T) {
 		t.Fatal("parsed ACL is nil")
 	}
 	if !parsed.AutoInherited {
-		t.Fatal("parsed.AutoInherited = false; parse path failed to capture flag")
+		t.Fatal("parsed.AutoInherited = false; canonicalization failed to capture flag")
 	}
 
 	// Re-build from the parsed ACL and assert the Control bit survives.
@@ -1040,6 +1027,10 @@ func TestBuildSD_AutoInherited_RoundTrip(t *testing.T) {
 	control := binary.LittleEndian.Uint16(data2[2:4])
 	if control&seDACLAutoInherited == 0 {
 		t.Error("SE_DACL_AUTO_INHERITED dropped on re-build from parsed ACL")
+	}
+	// Per Samba canonicalize_inheritance_bits, AUTO_INHERIT_REQ is never echoed back.
+	if control&seDACLAutoInheritReq != 0 {
+		t.Error("SE_DACL_AUTO_INHERIT_REQ was echoed back in build output (must not be)")
 	}
 }
 
@@ -1074,5 +1065,129 @@ func TestBuildSD_AutoInherited_NotSet(t *testing.T) {
 	control := binary.LittleEndian.Uint16(data[2:4])
 	if control&seDACLAutoInherited != 0 {
 		t.Error("SE_DACL_AUTO_INHERITED set when ACL.AutoInherited=false and no ACE carries INHERITED_ACE")
+	}
+}
+
+// makeAutoInheritSD hand-crafts a self-relative SD whose Control word has the
+// given high bits OR'd in (in addition to seSelfRelative|seDACLPresent), and
+// embeds a single ALLOW-EVERYONE ACE optionally marked with the wire
+// INHERITED_ACE flag so the inheritance matrix can assert independence from
+// per-ACE flags.
+func makeAutoInheritSD(t *testing.T, extraControl uint16, perACEInherited bool) []byte {
+	t.Helper()
+	// Layout: header(20) + DACL header(8) + ACE(8 + everyone SID).
+	everyoneSID := sid.WellKnownEveryone
+	sidLen := sid.SIDSize(everyoneSID)
+	aceLen := aceHeaderSize + sidLen
+	daclLen := aclHeaderSize + aceLen
+	totalLen := sdHeaderSize + daclLen
+	buf := make([]byte, totalLen)
+	// SD header
+	buf[0] = 1 // Revision
+	binary.LittleEndian.PutUint16(buf[2:4], uint16(seSelfRelative|seDACLPresent)|extraControl)
+	binary.LittleEndian.PutUint32(buf[16:20], sdHeaderSize)
+	// DACL header
+	buf[20] = 2
+	binary.LittleEndian.PutUint16(buf[22:24], uint16(daclLen))
+	binary.LittleEndian.PutUint16(buf[24:26], 1) // AceCount=1
+	// ACE
+	aceOff := sdHeaderSize + aclHeaderSize
+	buf[aceOff] = accessAllowedACEType
+	if perACEInherited {
+		buf[aceOff+1] = 0x10 // Windows INHERITED_ACE wire bit
+	}
+	binary.LittleEndian.PutUint16(buf[aceOff+2:aceOff+4], uint16(aceLen))
+	binary.LittleEndian.PutUint32(buf[aceOff+4:aceOff+8], 0x001F01FF)
+	var sidBuf bytes.Buffer
+	sid.EncodeSID(&sidBuf, everyoneSID)
+	copy(buf[aceOff+aceHeaderSize:], sidBuf.Bytes())
+	return buf
+}
+
+// TestParseSD_AutoInheritedCanonicalization is the 4-bit matrix mirroring
+// smbtorture's acls.INHERITFLAGS / acls_non_canonical.flags expectations.
+// Per Samba canonicalize_inheritance_bits (MS-DTYP §2.5.3.4.2), the
+// server captures SE_DACL_AUTO_INHERITED on the persisted ACL ONLY when the
+// client sets both AUTO_INHERITED and AUTO_INHERIT_REQ. The per-ACE
+// SEC_ACE_FLAG_INHERITED_ACE is independent and never escalates the SD bit.
+func TestParseSD_AutoInheritedCanonicalization(t *testing.T) {
+	cases := []struct {
+		name                 string
+		autoInherited        bool
+		autoInheritReq       bool
+		protected            bool
+		perACEInherited      bool
+		wantACLAutoInherit   bool
+		wantACLProtected     bool
+		wantBuildAutoInherit bool
+	}{
+		{"none", false, false, false, false, false, false, false},
+		{"auto_only", true, false, false, false, false, false, false},
+		{"req_only", false, true, false, false, false, false, false},
+		{"auto_and_req", true, true, false, false, true, false, true},
+		{"protected_only", false, false, true, false, false, true, false},
+		{"all_no_perace", true, true, true, false, true, true, true},
+		{"perACE_inherited_only", false, false, false, true, false, false, false},
+		{"perACE_with_protected", false, false, true, true, false, true, false},
+		{"auto_and_req_with_perACE", true, true, false, true, true, false, true},
+		{"auto_and_protected_no_req", true, false, true, false, false, true, false},
+		{"all_four_bits", true, true, true, true, true, true, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ctrl uint16
+			if tc.autoInherited {
+				ctrl |= seDACLAutoInherited
+			}
+			if tc.autoInheritReq {
+				ctrl |= seDACLAutoInheritReq
+			}
+			if tc.protected {
+				ctrl |= seDACLProtected
+			}
+			sd := makeAutoInheritSD(t, ctrl, tc.perACEInherited)
+
+			_, _, parsed, err := ParseSecurityDescriptor(sd)
+			if err != nil {
+				t.Fatalf("ParseSecurityDescriptor: %v", err)
+			}
+			if parsed == nil {
+				t.Fatal("parsed ACL is nil")
+			}
+			if parsed.AutoInherited != tc.wantACLAutoInherit {
+				t.Errorf("parsed.AutoInherited = %v, want %v", parsed.AutoInherited, tc.wantACLAutoInherit)
+			}
+			if parsed.Protected != tc.wantACLProtected {
+				t.Errorf("parsed.Protected = %v, want %v", parsed.Protected, tc.wantACLProtected)
+			}
+
+			// Re-build and verify Control bits round-trip correctly.
+			file := &metadata.File{
+				FileAttr: metadata.FileAttr{
+					UID:  1000,
+					GID:  1000,
+					Mode: 0o755,
+					ACL:  parsed,
+				},
+			}
+			rebuilt, err := BuildSecurityDescriptor(file, 0)
+			if err != nil {
+				t.Fatalf("BuildSecurityDescriptor: %v", err)
+			}
+			rebuiltCtrl := binary.LittleEndian.Uint16(rebuilt[2:4])
+			gotAuto := rebuiltCtrl&seDACLAutoInherited != 0
+			if gotAuto != tc.wantBuildAutoInherit {
+				t.Errorf("re-build SE_DACL_AUTO_INHERITED = %v, want %v", gotAuto, tc.wantBuildAutoInherit)
+			}
+			gotProtected := rebuiltCtrl&seDACLProtected != 0
+			if gotProtected != tc.wantACLProtected {
+				t.Errorf("re-build SE_DACL_PROTECTED = %v, want %v", gotProtected, tc.wantACLProtected)
+			}
+			// AUTO_INHERIT_REQ must never be echoed back on build.
+			if rebuiltCtrl&seDACLAutoInheritReq != 0 {
+				t.Error("re-build echoed SE_DACL_AUTO_INHERIT_REQ (must not)")
+			}
+		})
 	}
 }

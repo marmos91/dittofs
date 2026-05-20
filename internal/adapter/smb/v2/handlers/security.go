@@ -36,11 +36,12 @@ const (
 
 // Security Descriptor control flags per MS-DTYP Section 2.4.6.
 const (
-	seSelfRelative      = 0x8000
-	seDACLPresent       = 0x0004
-	seSACLPresent       = 0x0010
-	seDACLAutoInherited = 0x0400
-	seDACLProtected     = 0x1000
+	seSelfRelative       = 0x8000
+	seDACLPresent        = 0x0004
+	seSACLPresent        = 0x0010
+	seDACLAutoInheritReq = 0x0100 // SE_DACL_AUTO_INHERIT_REQ — client requests inheritance computation
+	seDACLAutoInherited  = 0x0400
+	seDACLProtected      = 0x1000
 )
 
 // ACE type constants for Windows ACEs per MS-DTYP Section 2.4.4.1.
@@ -177,20 +178,16 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 		control |= seSACLPresent
 	}
 
-	// Round-trip SE_DACL_AUTO_INHERITED from the parsed ACL (MS-DTYP §2.4.6).
-	// Parse path captures the Control bit into fileACL.AutoInherited; emit it directly here.
+	// Round-trip SE_DACL_AUTO_INHERITED from the parsed ACL (MS-DTYP §2.4.6,
+	// §2.5.3.4.2). The SD-level Control bit and per-ACE
+	// SEC_ACE_FLAG_INHERITED_ACE are independent fields per MS-DTYP §2.4.4.2,
+	// so AutoInherited is the sole driver here. Parse-side canonicalization
+	// (mirroring Samba source3/smbd/smb2_nttrans.c::canonicalize_inheritance_bits)
+	// ensures AutoInherited reflects only client SETs of (AUTO_INHERITED &&
+	// AUTO_INHERIT_REQ).
 	if fileACL != nil {
 		if fileACL.AutoInherited {
 			control |= seDACLAutoInherited
-		} else {
-			// Fallback for ACLs persisted before SE_DACL_AUTO_INHERITED was captured:
-			// infer the Control bit when any ACE carries INHERITED_ACE.
-			for _, ace := range fileACL.ACEs {
-				if ace.Flag&acl.ACE4_INHERITED_ACE != 0 {
-					control |= seDACLAutoInherited
-					break
-				}
-			}
 		}
 		if fileACL.Protected {
 			control |= seDACLProtected
@@ -420,16 +417,22 @@ func ParseSecurityDescriptor(data []byte) (ownerUID *uint32, ownerGID *uint32, f
 	}
 
 	// Surface SD Control flags onto the ACL so SE_DACL_PROTECTED and
-	// SE_DACL_AUTO_INHERITED round-trip through SET_INFO Security. The build
-	// path re-emits SE_DACL_PROTECTED from ACL.Protected and
-	// SE_DACL_AUTO_INHERITED from ACL.AutoInherited (with a legacy fallback
-	// to the per-ACE INHERITED_ACE flag for ACLs persisted before this field
-	// was captured).
+	// SE_DACL_AUTO_INHERITED round-trip through SET_INFO Security.
+	//
+	// Apply MS-DTYP §2.5.3.4.2 canonicalization mirroring Samba
+	// source3/smbd/smb2_nttrans.c::canonicalize_inheritance_bits. The
+	// AUTO_INHERIT_REQ bit is a request flag — server processes it and never
+	// echoes it back. AUTO_INHERITED is persisted only when the client SETs
+	// BOTH AUTO_INHERITED and AUTO_INHERIT_REQ; otherwise it is cleared. A
+	// per-share toggle to disable this canonicalization (Samba's "acl flag
+	// inherited canonicalization = no") is tracked in #514.
 	if fileACL != nil {
 		if control&seDACLProtected != 0 {
 			fileACL.Protected = true
 		}
-		if control&seDACLAutoInherited != 0 {
+		autoInheritReq := control&seDACLAutoInheritReq != 0
+		autoInherited := control&seDACLAutoInherited != 0
+		if autoInheritReq && autoInherited {
 			fileACL.AutoInherited = true
 		}
 	}

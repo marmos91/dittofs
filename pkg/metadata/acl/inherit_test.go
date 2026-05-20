@@ -482,6 +482,138 @@ func TestComputeInheritedACL_CreatorGroupSubstitution_SID(t *testing.T) {
 	}
 }
 
+func TestComputeInheritedACL_AutoInheritedPropagation(t *testing.T) {
+	// Parent SD has SE_DACL_AUTO_INHERITED set + an inheritable ACE.
+	// Per MS-DTYP §2.5.3.4.2, the computed child SD must also have
+	// SE_DACL_AUTO_INHERITED set (Samba parity: set_inherited_sd).
+	parentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_FILE_INHERIT_ACE,
+				AccessMask: 0xFF,
+				Who:        SpecialEveryone,
+			},
+		},
+	}
+
+	result := ComputeInheritedACL(parentACL, false, Creator{})
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.AutoInherited {
+		t.Error("expected AutoInherited=true propagated from parent")
+	}
+}
+
+func TestComputeInheritedACL_ParentNotAutoInherited_ChildNotAutoInherited(t *testing.T) {
+	parentACL := &ACL{
+		AutoInherited: false,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_FILE_INHERIT_ACE,
+				AccessMask: 0xFF,
+				Who:        SpecialEveryone,
+			},
+		},
+	}
+
+	result := ComputeInheritedACL(parentACL, false, Creator{})
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.AutoInherited {
+		t.Error("expected AutoInherited=false when parent has it cleared")
+	}
+}
+
+func TestComputeInheritedACL_ProtectedNotPropagated(t *testing.T) {
+	// Parent has Protected + AutoInherited set. Only AutoInherited
+	// propagates; Protected is per-SD and blocks inheritance, never
+	// itself inherited onto the child.
+	parentACL := &ACL{
+		Protected:     true,
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_FILE_INHERIT_ACE,
+				AccessMask: 0xFF,
+				Who:        SpecialEveryone,
+			},
+		},
+	}
+
+	result := ComputeInheritedACL(parentACL, false, Creator{})
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Protected {
+		t.Error("expected Protected=false on child (Protected is per-SD, never inherited)")
+	}
+	if !result.AutoInherited {
+		t.Error("expected AutoInherited=true on child")
+	}
+}
+
+func TestPropagateACL_AutoInheritedPropagation(t *testing.T) {
+	// PropagateACL must also propagate AutoInherited from parent onto
+	// the recomputed combined child SD.
+	parentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_FILE_INHERIT_ACE,
+				AccessMask: 0xFF,
+				Who:        SpecialEveryone,
+			},
+		},
+	}
+	existingACL := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_ACCESS_DENIED_ACE_TYPE, AccessMask: ACE4_WRITE_DATA, Who: "alice@example.com"},
+		},
+	}
+
+	result := PropagateACL(parentACL, existingACL, false, Creator{})
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.AutoInherited {
+		t.Error("expected AutoInherited=true propagated through PropagateACL")
+	}
+}
+
+func TestComputeInheritedACL_ParentAutoInheritedButNoInheritableACEs_ReturnsNil(t *testing.T) {
+	// Parent has AutoInherited set but no inheritable ACEs. Existing
+	// semantics: return nil ("no ACL to set on child" — child gets a
+	// synthesized SD per existing creation path). The AutoInherited bit
+	// does not synthesize an empty ACL.
+	parentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       0, // no inherit flags
+				AccessMask: ACE4_READ_DATA,
+				Who:        SpecialEveryone,
+			},
+		},
+	}
+
+	result := ComputeInheritedACL(parentACL, false, Creator{})
+	if result != nil {
+		t.Errorf("expected nil when no inheritable ACEs even if parent has AutoInherited, got %+v", result)
+	}
+}
+
 func TestPropagateACL_Directory(t *testing.T) {
 	existingACL := &ACL{ACEs: []ACE{
 		{Type: ACE4_ACCESS_DENIED_ACE_TYPE, AccessMask: ACE4_DELETE, Who: "bob@example.com"},

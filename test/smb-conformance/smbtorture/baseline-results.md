@@ -24,7 +24,7 @@
 | Sub-Suite | Pass | Fail | Skip | Total | Pass Rate |
 |-----------|------|------|------|-------|-----------|
 | smb2.acls | 0 | 14 | 0 | 14 | 0% |
-| smb2.acls_non_canonical | 1 | 0 | 0 | 1 | 100% |
+| smb2.acls_non_canonical | 0 | 1 | 0 | 1 | 0% |
 | smb2.async_dosmode | 0 | 1 | 0 | 1 | 0% |
 | smb2.bench | 0 | 5 | 0 | 5 | 0% |
 | smb2.change_notify_disabled | 0 | 1 | 0 | 1 | 0% |
@@ -270,6 +270,9 @@ Complete list of all 372 failing tests for reference.
 - smb2.acls.OWNER-RIGHTS-DENY
 - smb2.acls.OWNER-RIGHTS-DENY1
 - smb2.acls.SDFLAGSVSCHOWN
+
+### smb2.acls_non_canonical (1 failure)
+- smb2.acls_non_canonical.flags
 
 ### smb2.async_dosmode (1 failure)
 - smb2.async_dosmode
