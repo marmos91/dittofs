@@ -254,11 +254,18 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		// close + drop the fd so the next call reopens fresh and an
 		// already-written prefix does not poison subsequent appends.
 		//
-		// LOCK ORDERING (FIX-2): release the per-file mutex BEFORE
-		// acquiring bc.logsMu.Lock(). Any path that holds logsMu and
+		// LOCK ORDERING (FIX-2 / FIX-20 extension, Phase 19 D-09):
+		//   per-file `mu` (held by caller across this region)
+		//     → groupCommit.mu (acquired inside lf.groupCommit.Sync below)
+		//       → bc.logsMu (NEVER held while waiting on groupCommit.mu;
+		//                    the coordinator NEVER references logsMu
+		//                    directly — enforced by the
+		//                    TestGroupCommit_NoLogsMuTouch grep gate).
+		// The pre-Phase-19 rule still holds: release per-file mu BEFORE
+		// acquiring bc.logsMu.Lock() (any path that holds logsMu and
 		// waits on mu would otherwise deadlock against us; the global
 		// rule is "always acquire mu before logsMu" — here we guarantee
-		// it by releasing mu first.
+		// it by releasing mu first).
 		//
 		// FIX-20: remove the lf entry from bc.logFDs BEFORE closing the
 		// fd. The previous order (close, then unlock-and-delete) opened
@@ -280,7 +287,19 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		_ = lf.f.Close()
 		return fmt.Errorf("append log: %w", err)
 	}
-	if err := lf.f.Sync(); err != nil {
+	// Phase 19 Opt 2 (D-06/D-07/D-08): fsync coalesced through the
+	// per-logFile groupCommit coordinator. Synchronous durability
+	// preserved — caller blocks until fsync completes; NFS COMMIT /
+	// SMB Flush callers see no async ack. The per-file `mu` is still
+	// held across this call; coordinator's internal mu is a different
+	// lock (D-09 lock-order rule in the godoc block above).
+	//
+	// TRANSITIONAL-NEXT-MILESTONE: O_DIRECT for log writes (see #519
+	// "Deferred to v0.17+"). When O_DIRECT lands, the groupCommit
+	// coordinator may need to switch from fsync to fdatasync or
+	// fsync(O_SYNC) — revisit the fsyncFn closure at construction
+	// (logFile creation in getOrCreateLog / recovery.go).
+	if err := lf.groupCommit.Sync(ctx); err != nil {
 		return fmt.Errorf("log fsync: %w", err)
 	}
 	bc.logBytesTotal.Add(int64(n))
