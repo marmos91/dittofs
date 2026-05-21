@@ -44,7 +44,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 
 - [x] **Phase 16: Cache RAM-only (remove mmap read path)** — Delete `cache_mmap_*.go`, swap `readFromCAS` → `local.Get`, retire D-33 perf gate (GH issue: #516) — **SHIPPED 2026-05-20** on `gsd/phase-16-cache-mmap-removal` (16 commits); warm-cache D-06 PASS (ratio 0.890 ≤1.02)
 - [ ] **Phase 17: Unified BlockStore interface + legacy delete + migration tool** — Single `BlockStore` interface (Put/Get/GetRange/Has/Delete/Walk/Head) for local + remote, `BlockStoreAppend` extends with random-write tier, delete legacy `.blk` writer + dual-read shim + flag, ship `dfsctl blockstore migrate-to-cas` one-shot (GH issue: #517)
-- [ ] **Phase 18: Syncer simplification + ObjectID relocation** — Syncer Flush → mirror loop `for hash := range local.ListUnsynced() { remote.Put(...) }`. Move `ComputeObjectID` to rollup CommitChunks. Local-only shares now get ObjectIDs. (GH issue: #518)
+- [x] **Phase 18: Syncer simplification + ObjectID relocation** — Syncer Flush → mirror loop `for hash := range local.ListUnsynced() { remote.Put(...) }`. Move `ComputeObjectID` to rollup CommitChunks. Local-only shares now get ObjectIDs. (GH issue: #518) (completed 2026-05-21)
 - [ ] **Phase 19: Write-path RAM optimizations** — 4 opts: in-memory hash dedup LRU; group commit / batched fsync; direct-to-Cache on chunk completion; eager small-file dedup (GH issue: #519)
 
 **Parent tracking issue:** [#515](https://github.com/marmos91/dittofs/issues/515)
@@ -462,15 +462,15 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - **Refcount cascade race** (D-09) — `engine.Delete` must call `DeleteSynced` in the same critical section as `DeleteChunk`; otherwise a parallel Syncer pass could re-Mark a hash that was just deleted locally
   - **Phase 13 test sweep coverage** (D-14) — partial sweep leaves neighbor tests red on CI; planner must enumerate every test touching the deleted seams before the deletion commit
 **Plans** (9 plans):
-- [ ] 18-01-PLAN.md — SyncedHashStore interface + conformance suite + memory backend (Wave 1)
-- [ ] 18-02-PLAN.md — Badger backend SyncedHashStore (Wave 2)
-- [ ] 18-03-PLAN.md — Postgres backend SyncedHashStore + migration 000015 (Wave 2)
-- [ ] 18-04-PLAN.md — LocalStore.ListUnsynced + FSStoreOptions.SyncedHashStore injection (Wave 2)
-- [ ] 18-05-PLAN.md — ComputeObjectID relocation to rollup.go post-SetRollupOffset hook (Wave 3)
-- [ ] 18-06-PLAN.md — Syncer.Flush mirror-loop rewrite + BLAKE3 recompute deletion (Wave 4)
-- [ ] 18-07-PLAN.md — engine.Flush dedup pre-hook + engine.Delete cascade + public TrySpec deletion (Wave 5)
-- [ ] 18-08-PLAN.md — TRANSITIONAL-PHASE-18 methods deletion + Phase 13 test sweep (Wave 6)
-- [ ] 18-09-PLAN.md — Integration syncer_test.go + TRANSITIONAL-NEXT-MILESTONE doc.go convention (Wave 7)
+- [x] 18-01-PLAN.md — SyncedHashStore interface + conformance suite + memory backend (Wave 1)
+- [x] 18-02-PLAN.md — Badger backend SyncedHashStore (Wave 2)
+- [x] 18-03-PLAN.md — Postgres backend SyncedHashStore + migration 000015 (Wave 2)
+- [x] 18-04-PLAN.md — LocalStore.ListUnsynced + FSStoreOptions.SyncedHashStore injection (Wave 2)
+- [x] 18-05-PLAN.md — ComputeObjectID relocation to rollup.go post-SetRollupOffset hook (Wave 3)
+- [x] 18-06-PLAN.md — Syncer.Flush mirror-loop rewrite + BLAKE3 recompute deletion (Wave 4)
+- [x] 18-07-PLAN.md — engine.Flush dedup pre-hook + engine.Delete cascade + public TrySpec deletion (Wave 5)
+- [x] 18-08-PLAN.md — TRANSITIONAL-PHASE-18 methods deletion + Phase 13 test sweep (Wave 6)
+- [x] 18-09-PLAN.md — Integration syncer_test.go + TRANSITIONAL-NEXT-MILESTONE doc.go convention (Wave 7)
 
 ## Milestone Gates
 

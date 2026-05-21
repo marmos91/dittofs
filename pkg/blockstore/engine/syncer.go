@@ -633,8 +633,7 @@ func (m *Syncer) SyncNow(ctx context.Context) error {
 // writes target byte-identical bytes at byte-identical keys.
 //
 // Backends that opt in to syncingEnumerator return precise candidates;
-// others degrade to a no-op (safe — claimBatch will not double-claim a
-// Syncing row).
+// others degrade to a no-op.
 func (m *Syncer) recoverStaleSyncing(ctx context.Context) error {
 	if m.fileBlockStore == nil {
 		return nil

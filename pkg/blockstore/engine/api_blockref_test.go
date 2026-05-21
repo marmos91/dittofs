@@ -210,11 +210,11 @@ func TestWriteAt_ReturnsCurrentBlocks(t *testing.T) {
 	}
 }
 
-// The Direct post-Flush hook unit test was removed in the Phase 18-08
-// sweep: the seam now lives inside the local store's rollup commit
-// (rollup.go installs an ObjectIDPersister callback at engine.New
-// time), and the equivalent ObjectID-population assertion is exercised
-// by the rollup commit-side tests rather than via a syncer-receiver
-// helper. End-to-end coverage of the rolled-up FileAttr.Blocks +
-// FileAttr.ObjectID transaction is provided by the integration test
-// re-created in Plan 18-09.
+// The direct post-Flush hook unit test is intentionally absent: the
+// seam now lives inside the local store's rollup commit (rollup.go
+// installs an ObjectIDPersister callback at engine.New time), and the
+// equivalent ObjectID-population assertion is exercised by the rollup
+// commit-side tests rather than via a syncer-receiver helper.
+// End-to-end coverage of the rolled-up FileAttr.Blocks +
+// FileAttr.ObjectID transaction is provided by the integration suite
+// in syncer_test.go.

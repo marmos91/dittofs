@@ -4,8 +4,8 @@ milestone: v0.16.0
 milestone_name: — CAS Convergence
 status: executing
 stopped_at: Phase 17 Plan 10 (docs) shipped
-last_updated: "2026-05-21T08:30:43.899Z"
-last_activity: 2026-05-21 -- Phase 18 planning complete
+last_updated: "2026-05-21T08:58:39.457Z"
+last_activity: 2026-05-21 -- Phase 18 execution started
 progress:
   total_phases: 11
   completed_phases: 5
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-23)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 17 — unified-blockstore
+**Current focus:** Phase 18 — syncer-simplification
 
 ## Current Position
 
 Milestone: v0.16.0
-Phase: 17 (unified-blockstore) — EXECUTING
-Plan: 11 of 11
+Phase: 18 (syncer-simplification) — EXECUTING
+Plan: 1 of 9
 Branch: `gsd/phase-16-cache-mmap-removal`
-Status: Ready to execute
-Last activity: 2026-05-21 -- Phase 18 planning complete
+Status: Executing Phase 18
+Last activity: 2026-05-21 -- Phase 18 execution started
 
 ## Next Actionable
 

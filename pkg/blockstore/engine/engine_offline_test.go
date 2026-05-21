@@ -98,15 +98,14 @@ func TestOfflineReadCachedBlockSucceeds(t *testing.T) {
 	}
 }
 
-// TestOfflineReadRemoteOnlyBlockFails (RESIL-02) was removed in the
-// Phase 18-08 sweep. Under the unified CAS surface, engine.EvictLocal
-// no longer eagerly deletes content-addressed chunks (they may be
-// shared across files via file-level dedup); chunk eviction now flows
-// through the refcount → GC path. The legacy "remote-only block"
-// state the test depended on is therefore not reachable via
-// EvictLocal alone, and reproducing it would require seeding the
-// metadata in a way that bypasses the production write path
-// entirely. End-to-end "remote unhealthy + only-on-remote" coverage
+// No "offline read remote-only block" unit test lives here. Under the
+// unified CAS surface, engine.EvictLocal does not eagerly delete
+// content-addressed chunks (they may be shared across files via
+// file-level dedup); chunk eviction flows through the refcount → GC
+// path. The legacy "remote-only block" state would require seeding
+// metadata in a way that bypasses the production write path entirely,
+// so reproducing it at the unit level is infeasible.
+// End-to-end "remote unhealthy + only-on-remote" coverage
 // moves to Plan 18-09's integration suite where a real GC pass can
 // drain orphan chunks.
 
@@ -151,12 +150,10 @@ func TestOfflineWriteSucceeds(t *testing.T) {
 	}
 }
 
-// TestOfflineReadsBlockedCounter (companion to TestOfflineReadRemoteOnlyBlockFails)
-// was removed in the Phase 18-08 sweep for the same reason: it
-// depended on engine.EvictLocal driving a local CAS chunk gone, which
-// is no longer the contract — chunks live until refcount → GC reaps
-// them. Equivalent coverage of the OfflineReadsBlocked counter moves
-// to Plan 18-09's integration suite.
+// No unit-level assertion for the OfflineReadsBlocked counter lives
+// here: it required engine.EvictLocal to drive a local CAS chunk gone,
+// which is no longer the contract — chunks live until refcount → GC
+// reaps them. Equivalent coverage lives in the integration suite.
 
 // TestPrefetchSuppressedWhenUnhealthy verifies prefetch is skipped during outage.
 func TestPrefetchSuppressedWhenUnhealthy(t *testing.T) {

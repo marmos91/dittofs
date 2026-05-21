@@ -502,10 +502,10 @@ func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, currentBlo
 //     the refcount decrements below operate on the authoritative manifest
 //     for the file (see "blocks" arg).
 //  2. EvictMemory drops the per-file in-memory tracking (memBlocks, files
-//     map, accessTracker entry). After Phase 18 there are no remaining
-//     legacy .blk files to remove — the CAS chunk store under blocks/<hh>/
-//     is the only on-disk layout, and individual chunks are reclaimed via
-//     refcount → GC, not per-file enumeration.
+//     map, accessTracker entry). There are no legacy per-file block files
+//     to remove — the CAS chunk store under blocks/<hh>/ is the only
+//     on-disk layout, and individual chunks are reclaimed via refcount →
+//     GC, not per-file enumeration.
 //  3. DeleteLog tombstones and removes the per-file append log so any
 //     pre-rollup bytes are discarded.
 //

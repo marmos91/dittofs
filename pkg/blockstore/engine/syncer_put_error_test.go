@@ -68,10 +68,10 @@ func (o *oneHashLocalStore) ListUnsynced(_ context.Context) iter.Seq2[blockstore
 
 // TestMirrorLoop_PropagatesPutError asserts that Syncer.mirrorOnce
 // surfaces a Put failure verbatim, wrapped as
-// "remote put <hash>: %w". This pins the crash-safety contract in
-// D-07: a failed Put leaves the hash unmarked-synced so the next pass
-// retries it; a swallowed Put would leave the hash silently missing
-// from the remote.
+// "remote put <hash>: %w". This pins the crash-safety contract: a
+// failed Put leaves the hash unmarked-synced so the next pass retries
+// it; a swallowed Put would leave the hash silently missing from the
+// remote.
 func TestMirrorLoop_PropagatesPutError(t *testing.T) {
 	ctx := context.Background()
 	hash := blockstore.ContentHash{0xDE, 0xAD, 0xBE, 0xEF}

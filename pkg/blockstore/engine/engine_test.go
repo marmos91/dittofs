@@ -65,8 +65,7 @@ func (s *stubFileBlockStore) ListPending(_ context.Context, _ time.Duration, _ i
 	return nil, nil
 }
 
-// Engine-internal surface (kept off the public FileBlockStore per
-// META-03 / D-09).
+// Engine-internal surface (kept off the public FileBlockStore).
 func (s *stubFileBlockStore) GetFileBlock(_ context.Context, id string) (*blockstore.FileBlock, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -381,12 +380,10 @@ func TestCopyPayload_EmptySource(t *testing.T) {
 	}
 }
 
-// TestEngineDelete_RemovesBlockFiles was a TD-02c regression test
-// asserting that legacy .blk files were cleaned up on engine.Delete.
-// Removed in the Phase 18-08 sweep: the local store no longer writes
-// .blk files (the unified CAS chunk store under blocks/<hh>/ is the
-// only on-disk layout), so the assertion no longer has anything to
-// observe. End-to-end coverage of the engine.Delete refcount → GC
-// path is provided by TestEngine_Delete_CascadesDeleteSynced in
-// engine_delete_test.go and by the integration tests re-created in
-// Plan 18-09.
+// No per-file block-file cleanup assertion lives here: the local store
+// does not write legacy per-file block files (the unified CAS chunk
+// store under blocks/<hh>/ is the only on-disk layout), so there is
+// nothing to observe at this seam. End-to-end coverage of the
+// engine.Delete refcount → GC path is provided by
+// TestEngine_Delete_CascadesDeleteSynced in engine_delete_test.go and
+// by the integration tests in syncer_test.go.
