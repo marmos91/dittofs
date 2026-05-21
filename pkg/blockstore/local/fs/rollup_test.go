@@ -3,11 +3,15 @@ package fs
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"sort"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -387,4 +391,180 @@ func TestRollup_TruncateMidWindow_DoesNotAdvancePastUncommittedTail(t *testing.T
 		t.Fatalf("FIX-19 regression: rollup_offset advanced past the truncated record (got %d, max-allowed %d) — bytes between [%d,%d) would be lost on next boot",
 			got, wantMax, wantMax, got)
 	}
+}
+
+// capturedPersist is a minimal struct used by TestRollup_CommitChunks_
+// PersistsObjectID subtests to record arguments passed to an
+// ObjectIDPersister closure.
+type capturedPersist struct {
+	payloadID string
+	blocks    []blockstore.BlockRef
+	objectID  blockstore.ObjectID
+}
+
+// runRollupOnce triggers exactly one rollupFile pass for payloadID after
+// AppendWrite-ing the supplied payload and giving the dirty interval time
+// to stabilize. Mirrors the test pattern used by TestRollup_CommitChunks_
+// MonotoneEnforced.
+func runRollupOnce(t *testing.T, bc *FSStore, payloadID string, payload []byte) {
+	t.Helper()
+	ctx := context.Background()
+	if err := bc.AppendWrite(ctx, payloadID, payload, 0); err != nil {
+		t.Fatalf("AppendWrite: %v", err)
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if bc.EarliestStableForTest(payloadID) {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !bc.EarliestStableForTest(payloadID) {
+		t.Fatal("dirty interval did not stabilize within 500 ms")
+	}
+	if err := bc.rollupFile(ctx, payloadID); err != nil {
+		t.Fatalf("rollupFile: %v", err)
+	}
+}
+
+// TestRollup_CommitChunks_PersistsObjectID covers the rollup-time
+// ObjectID compute path:
+//
+//  1. PersistsObjectIDOnCommit — happy path: persister invoked exactly
+//     once with a non-empty BlockRef manifest, BlockRefs sorted-by-Offset,
+//     and an ObjectID equal to ComputeObjectID(blocks).
+//  2. NilPersisterIsBenign — rollup proceeds without panic or error when
+//     FSStoreOptions.ObjectIDPersister is left nil (local-only fixture).
+//  3. PersisterErrorPropagates — persister error surfaces wrapped through
+//     errors.Is so callers can distinguish it from neighbour errors.
+func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
+	t.Run("PersistsObjectIDOnCommit", func(t *testing.T) {
+		rs := memmeta.NewMemoryMetadataStoreWithDefaults()
+
+		var mu sync.Mutex
+		var captures []capturedPersist
+		persister := func(_ context.Context, pid string, blocks []blockstore.BlockRef, oid blockstore.ObjectID) error {
+			mu.Lock()
+			defer mu.Unlock()
+			// Defensive copy so subsequent rollup passes (none expected
+			// in this subtest) cannot mutate the captured slice.
+			cp := make([]blockstore.BlockRef, len(blocks))
+			copy(cp, blocks)
+			captures = append(captures, capturedPersist{
+				payloadID: pid,
+				blocks:    cp,
+				objectID:  oid,
+			})
+			return nil
+		}
+
+		bc := newFSStoreForTest(t, FSStoreOptions{
+			MaxLogBytes:       1 << 30,
+			RollupWorkers:     2,
+			StabilizationMS:   1,
+			RollupStore:       rs,
+			ObjectIDPersister: persister,
+		})
+
+		// 8 MiB payload is large enough that the chunker emits at least one
+		// chunk; FastCDC may emit several. Either way the BlockRef
+		// manifest is non-empty.
+		payload := bytes.Repeat([]byte{0xCD}, 8*1024*1024)
+		runRollupOnce(t, bc, "happyfile", payload)
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		if got := len(captures); got != 1 {
+			t.Fatalf("persister invocation count: got %d want 1", got)
+		}
+		cap := captures[0]
+		if cap.payloadID != "happyfile" {
+			t.Fatalf("captured payloadID: got %q want %q", cap.payloadID, "happyfile")
+		}
+		if len(cap.blocks) == 0 {
+			t.Fatal("captured BlockRefs: got empty slice; chunker should have emitted ≥1 chunk")
+		}
+		if !sort.SliceIsSorted(cap.blocks, func(i, j int) bool {
+			return cap.blocks[i].Offset < cap.blocks[j].Offset
+		}) {
+			t.Fatalf("captured BlockRefs not sorted by Offset: %+v", cap.blocks)
+		}
+		expectedOID := blockstore.ComputeObjectID(cap.blocks)
+		if cap.objectID != expectedOID {
+			t.Fatalf("captured ObjectID mismatch: got %s want %s",
+				cap.objectID.String(), expectedOID.String())
+		}
+		// Sanity: local-only path materialized a non-zero ObjectID without
+		// any remote upload.
+		var zero blockstore.ObjectID
+		if cap.objectID == zero {
+			t.Fatal("captured ObjectID is all-zero; local-only rollup should produce a real identity")
+		}
+	})
+
+	t.Run("NilPersisterIsBenign", func(t *testing.T) {
+		rs := memmeta.NewMemoryMetadataStoreWithDefaults()
+		bc := newFSStoreForTest(t, FSStoreOptions{
+			MaxLogBytes:     1 << 30,
+			RollupWorkers:   2,
+			StabilizationMS: 1,
+			RollupStore:     rs,
+			// ObjectIDPersister left nil — local-only fixture.
+		})
+
+		payload := bytes.Repeat([]byte{0xEF}, 8*1024*1024)
+		runRollupOnce(t, bc, "nilfile", payload)
+
+		// rollup_offset should still have advanced — the persister being
+		// nil must not block the rollup from quiescing.
+		off, err := rs.GetRollupOffset(context.Background(), "nilfile")
+		if err != nil {
+			t.Fatalf("GetRollupOffset: %v", err)
+		}
+		if off <= uint64(logHeaderSize) {
+			t.Fatalf("rollup_offset did not advance past header: got %d", off)
+		}
+	})
+
+	t.Run("PersisterErrorPropagates", func(t *testing.T) {
+		rs := memmeta.NewMemoryMetadataStoreWithDefaults()
+
+		simulated := errors.New("simulated persister failure")
+		persister := func(_ context.Context, _ string, _ []blockstore.BlockRef, _ blockstore.ObjectID) error {
+			return simulated
+		}
+
+		bc := newFSStoreForTest(t, FSStoreOptions{
+			MaxLogBytes:       1 << 30,
+			RollupWorkers:     2,
+			StabilizationMS:   1,
+			RollupStore:       rs,
+			ObjectIDPersister: persister,
+		})
+
+		ctx := context.Background()
+		payload := bytes.Repeat([]byte{0x99}, 1*1024*1024)
+		if err := bc.AppendWrite(ctx, "errfile", payload, 0); err != nil {
+			t.Fatalf("AppendWrite: %v", err)
+		}
+		deadline := time.Now().Add(500 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			if bc.EarliestStableForTest("errfile") {
+				break
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		if !bc.EarliestStableForTest("errfile") {
+			t.Fatal("dirty interval did not stabilize within 500 ms")
+		}
+
+		err := bc.rollupFile(ctx, "errfile")
+		if err == nil {
+			t.Fatal("rollupFile: want persister error, got nil")
+		}
+		if !errors.Is(err, simulated) {
+			t.Fatalf("rollupFile error: want errors.Is(simulated)=true, got %v", err)
+		}
+	})
 }
