@@ -47,6 +47,7 @@ type AppendFactory func(t *testing.T) (blockstore.BlockStoreAppend, func())
 func BlockStoreAppendConformance(t *testing.T, factory AppendFactory) {
 	t.Helper()
 	t.Run("AppendLogRoundTrip", func(t *testing.T) { testAppendLogRoundTrip(t, factory) })
+	t.Run("RecreateAfterDeleteLog", func(t *testing.T) { testRecreateAfterDeleteLog(t, factory) })
 	t.Run("PressureChannel_INV05", func(t *testing.T) { testPressureChannelINV05(t, factory) })
 	t.Run("TornWriteRecovery_LSL06", func(t *testing.T) { testTornWriteRecoveryLSL06(t, factory) })
 	t.Run("ConcurrentStorm", func(t *testing.T) { testConcurrentStorm(t, factory) })
@@ -98,13 +99,12 @@ func testAppendLogRoundTrip(t *testing.T, factory AppendFactory) {
 		t.Fatal("rollup did not emit any chunks within 10s — Walk surfaced 0 objects")
 	}
 
-	// DeleteLog tombstones the per-file append log. After it
-	// returns, subsequent AppendWrites for the same payloadID are
-	// expected to fail (per BlockStoreAppend.DeleteLog godoc). The
-	// suite does not pin which error code surfaces — only that the
-	// call itself succeeds and that the already-rolled-up chunks
-	// remain in the store (orphan-chunk sweep is GC's job, not
-	// DeleteLog's).
+	// DeleteLog resets the per-file append log. After it returns, a
+	// subsequent AppendWrite for the same payloadID must succeed
+	// (per BlockStoreAppend.DeleteLog godoc — recreate semantics
+	// required by DittoFS's path-based PayloadID lifecycle). The
+	// already-rolled-up chunks remain in the store (orphan-chunk
+	// sweep is GC's job, not DeleteLog's).
 	if err := bs.DeleteLog(ctx, payloadID); err != nil {
 		t.Fatalf("DeleteLog: %v", err)
 	}
@@ -119,6 +119,35 @@ func testAppendLogRoundTrip(t *testing.T, factory AppendFactory) {
 	}
 	if postCount == 0 {
 		t.Fatal("DeleteLog removed previously rolled-up chunks; GC sweep is responsible for those, not DeleteLog")
+	}
+}
+
+// testRecreateAfterDeleteLog asserts that DeleteLog does NOT
+// permanently tombstone a payloadID: a subsequent AppendWrite for the
+// same payloadID must succeed and start a fresh log. This is required
+// by DittoFS's path-based PayloadID lifecycle (an unlink-then-create
+// at the same path reuses the same PayloadID and must work — POSIX
+// recreate semantics surfaced via NFSv3 / pjdfstest chmod/12.t,
+// unlink/14.t, open/00.t).
+//
+// The scenario writes once, deletes the log, then writes again at the
+// same payloadID and asserts the second write returns nil.
+func testRecreateAfterDeleteLog(t *testing.T, factory AppendFactory) {
+	bs, cleanup := factory(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	const payloadID = "recreate-after-delete"
+	payload := bytes.Repeat([]byte{0xCD}, 64)
+
+	if err := bs.AppendWrite(ctx, payloadID, payload, 0); err != nil {
+		t.Fatalf("first AppendWrite: %v", err)
+	}
+	if err := bs.DeleteLog(ctx, payloadID); err != nil {
+		t.Fatalf("DeleteLog: %v", err)
+	}
+	if err := bs.AppendWrite(ctx, payloadID, payload, 0); err != nil {
+		t.Fatalf("AppendWrite after DeleteLog (recreate semantics required by path-based PayloadID lifecycle): %v", err)
 	}
 }
 

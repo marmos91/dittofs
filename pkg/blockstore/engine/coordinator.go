@@ -41,15 +41,15 @@ type MetadataCoordinator interface {
 
 	// PersistFileBlocks updates FileAttr.Blocks AND FileAttr.ObjectID
 	// for a given file in a single metadata txn. Engine invokes this
-	// from the syncer's post-Flush path (where new BlockRefs are
-	// produced from a chunk upload). The runtime wrapper resolves
-	// payloadID → fileHandle and runs PutFile in one txn.
+	// from the local store's rollup-completion callback (the
+	// ObjectIDPersister wired in engine.New). The runtime wrapper
+	// resolves payloadID → fileHandle and runs PutFile in one txn.
 	//
-	// Phase 13 D-05/D-06: ObjectID is the BLAKE3 Merkle root over
-	// blocks (computed by syncer.persistFileBlocksAfterFlush via
-	// blockstore.ComputeObjectID). Pass an all-zero ObjectID to mean
-	// "do not update ObjectID" (e.g., partial flushes — but those
-	// currently never reach this hook per Flush semantics).
+	// ObjectID is the BLAKE3 Merkle root over blocks (computed by
+	// blockstore.ComputeObjectID at rollup commit time). Pass an
+	// all-zero ObjectID to mean "do not update ObjectID" (e.g.,
+	// partial flushes — but those currently never reach this hook per
+	// Flush semantics).
 	PersistFileBlocks(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error
 
 	// FindByObjectID looks up a previously-quiesced file in the

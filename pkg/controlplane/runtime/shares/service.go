@@ -536,6 +536,14 @@ func (s *Service) createBlockStoreForShare(
 		FileBlockStore: fileBlockStore,
 		Coordinator:    coordinator,
 	}
+	// Thread the SyncedHashStore from the same per-share metadata
+	// backend the coordinator wraps so the engine's mirror-loop Flush
+	// can MarkSynced after each successful remote.Put. The interface
+	// check is the standard runtime-type narrowing used elsewhere in
+	// this factory (RollupStore, MetadataStore).
+	if shs, ok := fileBlockStore.(metadata.SyncedHashStore); ok {
+		engineCfg.SyncedHashStore = shs
+	}
 	if effectiveDefaults != nil {
 		engineCfg.ReadBufferBytes = effectiveDefaults.ReadBufferBytes
 	}
@@ -1443,6 +1451,14 @@ func CreateLocalStoreFromConfig(
 			return nil, fmt.Errorf("fs local store: metadata backend must implement metadata.RollupStore for the mandatory append-log path")
 		}
 		fsOpts.RollupStore = rs
+		// Wire the SyncedHashStore from the same metadata backend so
+		// the local store's ListUnsynced surface can filter the Walk-
+		// collected CAS hash set down to the still-unmirrored subset.
+		// Required when a remote store is configured; harmless when no
+		// remote is wired (mirror loop early-exits in that case).
+		if shs, ok := fileBlockStore.(metadata.SyncedHashStore); ok {
+			fsOpts.SyncedHashStore = shs
+		}
 		store, err := fs.NewWithOptions(blockDir, maxDisk, maxMemory, fileBlockStore, fsOpts)
 		if err != nil {
 			return nil, err

@@ -229,8 +229,9 @@ func (m *Syncer) applyFileLevelDedupHit(
 	// (preserves multiplicity expectations of the surgical-invalidate
 	// contract). Read through the BlockStore back-reference so that
 	// post-construction `bs.cache = rec` swaps (TestClose_ClosesCache
-	// pattern) are observed.
-	if m.bs != nil && m.bs.cache != nil {
+	// pattern) are observed; bs.cache is never nil thanks to the Null
+	// Object pattern installed by engine.New.
+	if m.bs != nil {
 		removed := make([]blockstore.ContentHash, 0, len(speculativeBlocks))
 		for _, br := range speculativeBlocks {
 			if _, ok := targetSet[br.Hash]; !ok {
@@ -259,9 +260,9 @@ func (m *Syncer) applyFileLevelDedupHit(
 	// rows under "{payloadID}/{idx}" are now orphans:
 	//
 	//   - They are still Pending (the upload pump was bypassed) so the
-	//     periodic uploader's claimBatch (ListPending scan) would
-	//     resurface them on the next tick and call uploadOne — wasted
-	//     work even with CAS idempotency, and a NEW PUT on first hit.
+	//     periodic mirror loop would surface them via ListUnsynced and
+	//     re-Put them on the next tick — wasted bandwidth even with
+	//     CAS idempotency, and a NEW PUT on first hit.
 	//   - A subsequent Flush(payloadID) per-block drain path would feed
 	//     them into snapshotBlockRefs after the periodic uploader marked
 	//     them Remote, computing a Merkle root from speculative content

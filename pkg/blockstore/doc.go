@@ -1,5 +1,5 @@
 // Package blockstore defines the unified content-addressed block storage
-// contract that DittoFS v0.16+ uses across every storage tier. It is the
+// contract DittoFS uses across every storage tier. It is the
 // single source of truth for FileBlock, BlockState, ContentHash, BlockSize,
 // the BlockStore + BlockStoreAppend interfaces, the minimal Meta struct,
 // the error sentinels (ErrStopWalk, ErrLegacyLayoutDetected,
@@ -82,7 +82,7 @@
 //   - Read by backend constructors at open time. *fs.FSStore (via
 //     NewFSStore → newFSStoreInternal) stats <baseDir>/.cas-migrated-v1
 //     before any other I/O. Presence is the ground-truth proof of
-//     completion (Phase 17 D-10). Cost is O(1).
+//     completion. Cost is O(1).
 //
 //   - On absence, the constructor runs a depth-capped probe for
 //     legacy `.blk` files in baseDir; if any are found and no
@@ -176,4 +176,29 @@
 //     against the union of live ContentHashes).
 //   - storetest: Legacy conformance test suites for higher-level
 //     FileBlockStore implementations.
+//
+// # Transitional-marker convention
+//
+// Code that must compile today but is slated for deletion at a known
+// future milestone carries a plain-text grep marker on its godoc:
+//
+//	TRANSITIONAL-PHASE-N:         scheduled deletion in milestone N
+//	                              (substitute N with the concrete
+//	                              milestone number owning the cleanup
+//	                              wave)
+//	TRANSITIONAL-NEXT-MILESTONE:  deletion scheduled for the next
+//	                              major milestone planning sweep
+//	                              (generic; use when no specific
+//	                              milestone number applies yet)
+//
+// Markers are plain text — not godoc "Deprecated:" tags — so
+// staticcheck SA1019 does not fire on existing call sites that the
+// cleanup wave will rewrite. The next milestone's planning pass greps
+// for both markers and either retires them (deletion) or re-targets
+// them to a specific milestone tag.
+//
+// Apply the markers on the symbol's godoc, not on internal callers;
+// the goal is for `grep -rn 'TRANSITIONAL-' ./pkg/blockstore` to
+// enumerate every deferral surface in one pass and for new contributors
+// to recognize the convention without consulting a roadmap.
 package blockstore

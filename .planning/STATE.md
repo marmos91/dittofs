@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v0.16.0
 milestone_name: — CAS Convergence
-status: "Phase 17 shipped — PR #527"
+status: completed
 stopped_at: Phase 17 Plan 10 (docs) shipped
-last_updated: "2026-05-20T21:34:21.786Z"
-last_activity: 2026-05-20
+last_updated: "2026-05-21T11:23:30.132Z"
+last_activity: 2026-05-21 -- Phase 18 marked complete
 progress:
-  total_phases: 10
-  completed_phases: 5
-  total_plans: 44
-  completed_plans: 44
-  percent: 100
+  total_phases: 11
+  completed_phases: 6
+  total_plans: 53
+  completed_plans: 53
+  percent: 55
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-23)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 17 — unified-blockstore
+**Current focus:** Phase 18 — syncer-simplification
 
 ## Current Position
 
 Milestone: v0.16.0
-Phase: 17 (unified-blockstore) — EXECUTING
-Plan: 11 of 11
+Phase: 18 — COMPLETE
+Plan: 1 of 9
 Branch: `gsd/phase-16-cache-mmap-removal`
-Status: Phase 17 shipped — PR #527
-Last activity: 2026-05-20
+Status: Phase 18 complete
+Last activity: 2026-05-21 -- Phase 18 marked complete
 
 ## Next Actionable
 

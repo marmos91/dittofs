@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // Compile-time interface satisfaction check.
@@ -41,6 +42,14 @@ type Config struct {
 	// service.go) MUST inject a real impl. See coordinator.go for the
 	// contract.
 	Coordinator MetadataCoordinator
+
+	// SyncedHashStore persists per-CAS-hash local→remote mirror state.
+	// Sourced from the same per-share metadata-store handle the
+	// Coordinator wraps. Threaded through to the Syncer so the mirror
+	// loop in Flush can call MarkSynced after each successful
+	// remote.Put. Nil is accepted (local-only / no-remote fixtures);
+	// the Syncer's mirror loop early-exits in that mode.
+	SyncedHashStore metadata.SyncedHashStore
 
 	// ReadBufferBytes is the memory budget for the read buffer per share.
 	// 0 disables the read buffer. Passed directly to NewReadBuffer as byte budget.
@@ -76,6 +85,13 @@ type BlockStore struct {
 	// contract.
 	coordinator MetadataCoordinator
 
+	// syncedHashStore persists per-CAS-hash local→remote mirror state.
+	// Held alongside the coordinator so the engine constructor can
+	// thread it into both the Syncer (via SetSyncedHashStore) and the
+	// FSStore (via the ObjectIDPersister callback target's sibling
+	// SetSyncedHashStore on the local store). May be nil in tests.
+	syncedHashStore metadata.SyncedHashStore
+
 	// cache is the CAS-keyed cache (CACHE-01..05). The block-coord
 	// ReadBuffer + standalone Prefetcher are folded into this single
 	// Cache type. Never nil — the constructor substitutes nullCache{}
@@ -103,6 +119,7 @@ func New(cfg Config) (*BlockStore, error) {
 		syncer:          cfg.Syncer,
 		fileBlockStore:  cfg.FileBlockStore,
 		coordinator:     cfg.Coordinator,
+		syncedHashStore: cfg.SyncedHashStore,
 		readBufferBytes: cfg.ReadBufferBytes,
 		prefetchWorkers: cfg.PrefetchWorkers,
 	}
@@ -111,11 +128,88 @@ func New(cfg Config) (*BlockStore, error) {
 	// so engine code can call bs.cache.* without nil-checks even before
 	// Start runs.
 	bs.cache = nullCache{}
-	// Thread the coordinator into the syncer so the post-Flush hook
-	// (persistFileBlocksAfterFlush) can invoke PersistFileBlocks under
-	// the caller's metadata txn.
-	if cfg.Syncer != nil && cfg.Coordinator != nil {
+	// Thread the coordinator into the syncer so the file-level dedup
+	// short-circuit (engine.Flush's pre-rollup hook) can call into
+	// trySpeculativeFileLevelDedup with a real coordinator. cfg.Syncer
+	// is guaranteed non-nil by the required-field check above.
+	if cfg.Coordinator != nil {
 		cfg.Syncer.SetCoordinator(cfg.Coordinator)
+	}
+	// Thread the SyncedHashStore into the Syncer so the mirror loop in
+	// Flush can call MarkSynced after each remote.Put. Nil is accepted
+	// (local-only / no-remote fixtures); the mirror loop early-exits in
+	// that mode.
+	if cfg.SyncedHashStore != nil {
+		cfg.Syncer.SetSyncedHashStore(cfg.SyncedHashStore)
+	}
+	// Install the rollup-completion ObjectIDPersister callback on the
+	// local store if it supports the setter. The callback (1) writes
+	// per-block FileBlock rows so the engine's CAS read path
+	// (readLocalByHash → resolveFileBlock) can resolve
+	// (payloadID, blockIdx) → hash and (2) delegates to the
+	// coordinator's PersistFileBlocks so FileAttr.Blocks and
+	// FileAttr.ObjectID land in a single metadata txn at rollup time.
+	// Local stores that don't implement the setter (in-memory /
+	// fixtures use the parallel ChunkEmitter hook below) silently skip
+	// the install — ObjectID compute still runs inside rollup but the
+	// persist step is no-op.
+	if setter, ok := cfg.Local.(interface {
+		SetObjectIDPersister(p func(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error)
+	}); ok {
+		fbs := cfg.FileBlockStore
+		setter.SetObjectIDPersister(func(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error {
+			// (1) Per-chunk FileBlock rows. The row ID encodes the
+			//     chunk's absolute byte Offset directly (rather than
+			//     a synthetic blockIdx = Offset / BlockSize); the
+			//     engine's CAS read path uses the parsed Offset to
+			//     locate which chunk covers a given byte range under
+			//     FastCDC's variable chunk geometry. The trailing
+			//     numeric component is the chunk Offset in bytes.
+			if fbs != nil {
+				for _, b := range blocks {
+					if b.Hash.IsZero() {
+						continue
+					}
+					fb := &blockstore.FileBlock{
+						ID:       fmt.Sprintf("%s/%d", payloadID, b.Offset),
+						Hash:     b.Hash,
+						DataSize: b.Size,
+						State:    blockstore.BlockStatePending,
+					}
+					_ = fbs.Put(ctx, fb)
+				}
+			}
+			// (2) Manifest + ObjectID coordinator txn.
+			if bs.coordinator == nil {
+				return nil
+			}
+			return bs.coordinator.PersistFileBlocks(ctx, payloadID, blocks, objectID)
+		})
+	}
+	// Install a per-chunk emitter on local stores that expose one (the
+	// in-memory backend uses this; *fs.FSStore drives the equivalent
+	// rollup-side path through the ObjectIDPersister callback above).
+	// The emitter mirrors each freshly-emitted CAS chunk into a
+	// FileBlock row keyed by {payloadID}/{blockIdx} so the engine's
+	// CAS read path (readLocalByHash) can resolve (payloadID, offset)
+	// → hash without a separate manifest. blockIdx is derived from
+	// chunkStart / blockstore.BlockSize — works correctly for the
+	// in-memory backend's small / aligned test workloads. Production
+	// FSStore writes its own FileBlock rows through the
+	// rollup.PersistFileBlocks path and never installs the emitter.
+	if emitter, ok := cfg.Local.(interface {
+		SetChunkEmitter(emit func(payloadID string, chunkStart uint64, size uint32, hash blockstore.ContentHash))
+	}); ok && cfg.FileBlockStore != nil {
+		fbs := cfg.FileBlockStore
+		emitter.SetChunkEmitter(func(payloadID string, chunkStart uint64, size uint32, hash blockstore.ContentHash) {
+			fb := &blockstore.FileBlock{
+				ID:       fmt.Sprintf("%s/%d", payloadID, chunkStart),
+				Hash:     hash,
+				DataSize: size,
+				State:    blockstore.BlockStatePending,
+			}
+			_ = fbs.Put(context.Background(), fb)
+		})
 	}
 	// BSCAS-05: wire the BlockStore back-reference onto the Syncer so
 	// the file-level dedup short-circuit can reach BlockStore.cache for
@@ -124,9 +218,7 @@ func New(cfg Config) (*BlockStore, error) {
 	// field on the Syncer at construction time) lets test code swap
 	// `bs.cache = rec` post-construction and still observe the
 	// invalidation — mirrors the TestClose_ClosesCache pattern.
-	if cfg.Syncer != nil {
-		cfg.Syncer.bs = bs
-	}
+	cfg.Syncer.bs = bs
 	return bs, nil
 }
 
@@ -312,7 +404,7 @@ func (bs *BlockStore) WriteAt(ctx context.Context, payloadID string, currentBloc
 	if len(data) == 0 {
 		return currentBlocks, nil
 	}
-	if err := bs.local.WriteAt(ctx, payloadID, data, offset); err != nil {
+	if err := bs.local.AppendWrite(ctx, payloadID, data, offset); err != nil {
 		return currentBlocks, err
 	}
 	// Cache invalidation lives in common.WriteToBlockStore (post-txn),
@@ -404,19 +496,27 @@ func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, currentBlo
 // Delete removes all data for a payload from local store and remote store.
 // Invalidates all read buffer entries for the file and resets prefetcher state.
 //
-// Local cleanup uses DeleteAllBlockFiles (not EvictMemory) so on-disk .blk
-// files are removed alongside in-memory state. Previously only memory was
-// evicted, which left orphan .blk files growing unbounded across
-// delete-and-recreate workloads.
+// Local cleanup runs in this order under the unified CAS surface:
+//  1. SyncFileBlocksForFile persists any in-flight FileBlock metadata so
+//     the refcount decrements below operate on the authoritative manifest
+//     for the file (see "blocks" arg).
+//  2. EvictMemory drops the per-file in-memory tracking (memBlocks, files
+//     map, accessTracker entry). There are no legacy per-file block files
+//     to remove — the CAS chunk store under blocks/<hh>/ is the only
+//     on-disk layout, and individual chunks are reclaimed via refcount →
+//     GC, not per-file enumeration.
+//  3. DeleteLog tombstones and removes the per-file append log so any
+//     pre-rollup bytes are discarded.
 //
-// SyncFileBlocksForFile runs first so any FileBlock metadata that is still
-// queued (queueFileBlockUpdate after flushBlock) is persisted before
-// DeleteAllBlockFiles enumerates the store — otherwise freshly-flushed .blk
-// files would be missed and leaked.
+// Subsequent steps (cache invalidate, coordinator refcount decrements,
+// optional remote sweep) are unchanged.
 func (bs *BlockStore) Delete(ctx context.Context, payloadID string, blocks []blockstore.BlockRef) error {
 	bs.local.SyncFileBlocksForFile(ctx, payloadID)
-	if err := bs.local.DeleteAllBlockFiles(ctx, payloadID); err != nil {
-		return fmt.Errorf("local delete all block files failed: %w", err)
+	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
+		return fmt.Errorf("local evict memory failed: %w", err)
+	}
+	if err := bs.local.DeleteLog(ctx, payloadID); err != nil {
+		return fmt.Errorf("local delete append log failed: %w", err)
 	}
 	// Surgical invalidation: drop ALL hashes belonging to this file
 	// (even though dedup-shared hashes might survive elsewhere — Delete
@@ -446,9 +546,26 @@ func (bs *BlockStore) Delete(ctx context.Context, payloadID string, blocks []blo
 	var coordErr error
 	if len(blocks) > 0 && bs.coordinator != nil {
 		for _, b := range blocks {
-			if _, err := bs.coordinator.DecrementRefCount(ctx, b.Hash); err != nil {
+			newCount, err := bs.coordinator.DecrementRefCount(ctx, b.Hash)
+			if err != nil {
 				if coordErr == nil {
 					coordErr = fmt.Errorf("decrement refcount on delete %s: %w", b.Hash.String(), err)
+				}
+				continue
+			}
+			// Refcount hit zero: the local CAS chunk is being reclaimed,
+			// so drop the synced marker too. Without this cascade the
+			// synced set would drift out of strict-subset relationship
+			// with local CAS contents — a future re-Put of the same hash
+			// would skip remote upload because the marker is stale.
+			// Failure here is benign (the marker becomes an orphan, but
+			// a stale marker only causes a single skipped upload on a
+			// re-Put; the bytes are already remote-resident from the
+			// original Mark). Logged at Warn for operator visibility.
+			if newCount == 0 && bs.syncedHashStore != nil {
+				if derr := bs.syncedHashStore.DeleteSynced(ctx, b.Hash); derr != nil {
+					logger.Warn("delete synced marker (orphan; benign)",
+						"hash", b.Hash.String(), "err", derr)
 				}
 			}
 		}
@@ -524,10 +641,41 @@ func (bs *BlockStore) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadI
 
 // Flush ensures all dirty data for a payload is persisted.
 //
+// Pre-rollup file-level dedup hook: when a coordinator is wired and the
+// file's speculative BlockRef manifest is non-empty, the engine asks the
+// coordinator whether a previously-quiesced file with the same Merkle
+// root already exists. On hit the upload pump is bypassed entirely —
+// FileAttr.Blocks is swapped to the target's BlockRef list, refcounts
+// are reconciled, and Flush returns Finalized=true without delegating
+// to the syncer. On miss / nil-coordinator the syncer's mirror loop
+// runs as usual.
+//
 // Auto-promote into the read buffer is intentionally NOT done here:
 // the Cache is CAS-keyed and Flush has no BlockRef snapshot at this
 // layer to translate flushed bytes into hash-keyed cache entries.
 func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
+	// File-level dedup pre-hook: if a fully-quiesced manifest matches
+	// an already-stored ObjectID, skip the upload pump entirely.
+	if bs.coordinator != nil {
+		specBlocks, blockStates, err := bs.syncer.snapshotPendingBlockRefs(ctx, payloadID)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot pending blockrefs: %w", err)
+		}
+		if len(specBlocks) > 0 {
+			fileObjectID, err := bs.coordinator.GetFileObjectID(ctx, payloadID)
+			if err != nil {
+				return nil, fmt.Errorf("get file objectID: %w", err)
+			}
+			hit, err := bs.syncer.trySpeculativeFileLevelDedup(ctx, payloadID, specBlocks, fileObjectID, blockStates)
+			if err != nil {
+				return nil, fmt.Errorf("file-level dedup: %w", err)
+			}
+			if hit {
+				return &blockstore.FlushResult{Finalized: true}, nil
+			}
+		}
+	}
+	// Delegate to syncer's mirror loop.
 	return bs.syncer.Flush(ctx, payloadID)
 }
 
@@ -615,6 +763,17 @@ func (bs *BlockStore) Healthcheck(ctx context.Context) health.Report {
 	return health.NewHealthyReport(time.Since(start))
 }
 
+// LocalForTest returns the engine's underlying local store as the
+// local.LocalStore interface. Used by cross-package test fixtures
+// (e.g. internal/adapter/common) that need to drive rollup or other
+// admin paths against the concrete *fs.FSStore via a type assertion.
+// Do not use in production code.
+func (bs *BlockStore) LocalForTest() local.LocalStore { return bs.local }
+
+// LocalForTest is the package-level counterpart used when the bs
+// receiver is shadowed; mirrors RemoteForTesting on the same wire.
+func LocalForTest(bs *BlockStore) local.LocalStore { return bs.local }
+
 // RemoteForTesting returns the remote store for cross-package test verification
 // (e.g., shared remote store identity). Do not use in production code.
 func (bs *BlockStore) RemoteForTesting() remote.RemoteStore { return bs.remote }
@@ -622,12 +781,16 @@ func (bs *BlockStore) RemoteForTesting() remote.RemoteStore { return bs.remote }
 // ListFiles returns the payloadIDs of all files tracked in the local store.
 func (bs *BlockStore) ListFiles() []string { return bs.local.ListFiles() }
 
-// EvictLocal removes all local data (memory and disk) for a file.
+// EvictLocal removes all local per-file state (memory tracking, files
+// map, accessTracker, append log) for a file. CAS chunks are NOT
+// removed here — they may be shared with other files via file-level
+// dedup and are reclaimed via the refcount → GC path (engine.Delete
+// decrements per dropped hash and the mark-sweep GC reaps orphans).
 func (bs *BlockStore) EvictLocal(ctx context.Context, payloadID string) error {
 	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
 		return err
 	}
-	return bs.local.DeleteAllBlockFiles(ctx, payloadID)
+	return bs.local.DeleteLog(ctx, payloadID)
 }
 
 // LocalStats returns a snapshot of local store statistics.
@@ -767,16 +930,39 @@ func (bs *BlockStore) SetEvictionEnabled(enabled bool) {
 }
 
 // readAtInternal reads from the primary payloadID. Always goes through
-// the local store (with remote-fallback on miss); the Plan 12-09 Cache
-// is hint-only and does not serve bytes here. The CAS-keyed byte-serve
-// path is a Plan 12-10 (mmap) deliverable.
+// the local store (with remote-fallback on miss); the cache is hint-only
+// and does not serve bytes here.
+//
+// The primary entry is LocalStore.ReadPayloadAt — a payload-keyed read
+// that consults BOTH the in-flight append log (pre-rollup bytes) AND
+// the rolled-up CAS chunks via the FileBlock manifest. This closes the
+// pre-rollup read-after-write window where freshly-appended bytes would
+// otherwise return zeros until the async rollup commits FileBlock rows.
+//
+// On a local miss (ErrFileBlockNotFound), fall back to the CAS-hash
+// walk (readLocalByHash, used for chunks that the manifest knows about
+// but the LocalStore did not surface — e.g., post-eviction reads where
+// only the metadata row survived) and finally to remote-fetch via the
+// syncer.
 func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
 	if len(data) == 0 {
 		return 0, nil
 	}
 
-	// Try primary local store.
-	found, err := bs.local.ReadAt(ctx, payloadID, data, offset)
+	// Primary: payload-keyed local read. Covers both the pre-rollup
+	// append-log window and the post-rollup CAS path.
+	n, err := bs.local.ReadPayloadAt(ctx, payloadID, data, offset)
+	if err == nil {
+		return n, nil
+	}
+	if !errors.Is(err, blockstore.ErrFileBlockNotFound) {
+		return 0, fmt.Errorf("local read failed: %w", err)
+	}
+
+	// Local miss — try the CAS-hash walk (handles edge cases where the
+	// FileBlockStore manifest is reachable via the engine's
+	// fileBlockStore field but not the LocalStore-internal one).
+	found, err := bs.readLocalByHash(ctx, payloadID, data, offset)
 	if err != nil {
 		return 0, fmt.Errorf("local read failed: %w", err)
 	}
@@ -795,7 +981,7 @@ func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID string, data
 func (bs *BlockStore) ensureAndReadFromLocal(ctx context.Context, payloadID string, dest []byte, offset uint64) error {
 	length := uint32(len(dest))
 
-	// Fast path: direct-serve copies S3 data directly to dest, skipping a second ReadAt.
+	// Fast path: direct-serve copies S3 data directly to dest, skipping a second read.
 	filled, err := bs.syncer.EnsureAvailableAndRead(ctx, payloadID, offset, length, dest)
 	if err != nil {
 		return fmt.Errorf("direct download failed: %w", err)
@@ -804,7 +990,7 @@ func (bs *BlockStore) ensureAndReadFromLocal(ctx context.Context, payloadID stri
 		return nil
 	}
 
-	found, err := bs.local.ReadAt(ctx, payloadID, dest, offset)
+	found, err := bs.readLocalByHash(ctx, payloadID, dest, offset)
 	if err != nil {
 		return fmt.Errorf("read after download failed: %w", err)
 	}
@@ -815,4 +1001,145 @@ func (bs *BlockStore) ensureAndReadFromLocal(ctx context.Context, payloadID stri
 	}
 
 	return nil
+}
+
+// readLocalByHash serves [offset, offset+len(dest)) by walking the
+// payload's CAS chunk manifest (via FileBlockStore.ListFileBlocks),
+// finding each chunk whose absolute byte range intersects the
+// requested window, and copying the matching slice of the local CAS
+// chunk into dest. Returns (true, nil) when every requested byte was
+// satisfied locally and (false, nil) when any portion of the window
+// could not be served from local CAS — the caller treats the false
+// outcome as "must fall back to remote-fetch".
+//
+// On any unexpected error (FileBlock store failure, local chunk store
+// I/O error other than ErrChunkNotFound) the function returns
+// (false, err) so the engine can surface it to the protocol layer.
+//
+// Chunk geometry: under the unified CAS surface chunk boundaries are
+// FastCDC-derived (variable size, absolute Offset stored on the
+// FileBlock row's ID-derived blockIdx slot). The walk is O(N) over
+// the per-payload row list — acceptable for the test fixtures (small
+// N) and for the steady-state production stream where N is bounded
+// by the payload's total size divided by the average chunk size
+// (~4 MiB).
+func (bs *BlockStore) readLocalByHash(ctx context.Context, payloadID string, dest []byte, offset uint64) (bool, error) {
+	if len(dest) == 0 {
+		return true, nil
+	}
+	// The engine consults the same EngineFileBlockStore the syncer
+	// uses; ListFileBlocks returns the per-payload row list in
+	// blockIdx order, which is offset order under the persister's
+	// blockIdx := chunkOffset / BlockSize derivation. Rows missing
+	// from the list are sparse: the caller falls back to the
+	// remote-fetch + zero-fill path.
+	if bs.fileBlockStore == nil {
+		return false, nil
+	}
+	rows, err := bs.fileBlockStore.ListFileBlocks(ctx, payloadID)
+	if err != nil {
+		return false, err
+	}
+	if len(rows) == 0 {
+		return false, nil
+	}
+	endOff := offset + uint64(len(dest))
+	for currentOffset := offset; currentOffset < endOff; {
+		// Find the row whose chunk covers currentOffset. blockIdx is
+		// chunkOffset / BlockSize so the chunk's absolute Offset is
+		// not directly stored on the row, but we can reconstruct
+		// the chunk start by walking rows in order and tracking a
+		// running expected offset. For the test fixtures + steady-
+		// state production stream chunks land in offset-ascending
+		// order, and the row ID's blockIdx component is monotone.
+		row := findRowCoveringOffset(rows, currentOffset)
+		if row == nil || row.fb.Hash.IsZero() {
+			return false, nil
+		}
+		data, err := bs.local.Get(ctx, row.fb.Hash)
+		if err != nil {
+			if errors.Is(err, blockstore.ErrChunkNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		// Clamp the visible data to FileBlock.DataSize so a padded
+		// on-disk chunk surface doesn't leak garbage past the
+		// rollup-emitted byte count.
+		dataLen := uint64(len(data))
+		if uint64(row.fb.DataSize) > 0 && uint64(row.fb.DataSize) < dataLen {
+			dataLen = uint64(row.fb.DataSize)
+		}
+		chunkAbsEnd := row.absOffset + dataLen
+		if currentOffset >= chunkAbsEnd {
+			// Should not happen if findRowCoveringOffset returned
+			// a row covering currentOffset — surface as sparse and
+			// let the caller fall back.
+			return false, nil
+		}
+		srcOff := currentOffset - row.absOffset
+		copyLen := chunkAbsEnd - currentOffset
+		if copyLen > endOff-currentOffset {
+			copyLen = endOff - currentOffset
+		}
+		copy(dest[currentOffset-offset:currentOffset-offset+copyLen], data[srcOff:srcOff+copyLen])
+		currentOffset += copyLen
+	}
+	return true, nil
+}
+
+// rowWithOffset bundles a FileBlock row with the absolute payload
+// offset of its first byte. The persister encodes the chunk's
+// absolute offset directly as the numeric component of the row ID
+// ("<payloadID>/<chunkOffset>"), so absOffset is the parsed
+// component verbatim.
+type rowWithOffset struct {
+	fb        *blockstore.FileBlock
+	absOffset uint64
+}
+
+// findRowCoveringOffset returns the row whose absolute byte range
+// [absOffset, absOffset+DataSize) contains target, or nil if no row
+// in rows covers it. The walk is O(N) over the per-payload row
+// list — acceptable for the FastCDC steady-state (chunks average ~4 MiB
+// so even a 4 GiB file produces ~1000 rows).
+func findRowCoveringOffset(rows []*blockstore.FileBlock, target uint64) *rowWithOffset {
+	for _, fb := range rows {
+		if fb == nil {
+			continue
+		}
+		abs, ok := parseChunkOffsetFromID(fb.ID)
+		if !ok {
+			continue
+		}
+		if target >= abs && target < abs+uint64(fb.DataSize) {
+			return &rowWithOffset{fb: fb, absOffset: abs}
+		}
+	}
+	return nil
+}
+
+// parseChunkOffsetFromID extracts the trailing numeric component of a
+// FileBlock ID of the form "<payloadID>/<chunkOffset>" and returns
+// (chunkOffset, true) on success. Returns (0, false) for malformed
+// IDs.
+func parseChunkOffsetFromID(id string) (uint64, bool) {
+	slash := -1
+	for i := len(id) - 1; i >= 0; i-- {
+		if id[i] == '/' {
+			slash = i
+			break
+		}
+	}
+	if slash < 0 || slash == len(id)-1 {
+		return 0, false
+	}
+	var v uint64
+	for _, c := range id[slash+1:] {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		v = v*10 + uint64(c-'0')
+	}
+	return v, true
 }

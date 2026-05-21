@@ -16,20 +16,71 @@ func inFlightKey(payloadID string, blockIdx uint64) string {
 	return fmt.Sprintf("%s/%d", payloadID, blockIdx)
 }
 
-// resolveFileBlock returns the FileBlock for (payloadID, blockIdx) or
-// (nil, nil) if the row does not exist (sparse / not yet uploaded). Post-
-// Phase-17 the engine read path is CAS-only — fb.Hash MUST be non-zero
-// for any reachable block; the dispatchRemoteFetch helper enforces this.
+// resolveFileBlock returns the FileBlock whose chunk range covers the
+// byte window [blockIdx*BlockSize, (blockIdx+1)*BlockSize) for payloadID,
+// or (nil, nil) if no row covers that window (sparse / not yet uploaded).
+//
+// Post-Phase-18 the engine writers (ObjectIDPersister, ChunkEmitter)
+// encode the chunk's absolute byte Offset in the trailing component of
+// the FileBlock ID — not a synthetic blockIdx — because FastCDC chunk
+// boundaries do not align to BlockSize. Looking up by
+// "{payloadID}/{blockIdx*BlockSize}" therefore misses every non-first
+// chunk in a multi-chunk file. We instead enumerate the per-payload row
+// list and find the row whose [absOffset, absOffset+DataSize) interval
+// covers blockIdx*BlockSize, mirroring readLocalByHash's
+// findRowCoveringOffset walk.
+//
+// Post-Phase-17 the engine read path is CAS-only — fb.Hash MUST be non-
+// zero for any reachable block; the dispatchRemoteFetch helper enforces
+// this.
 func (m *Syncer) resolveFileBlock(ctx context.Context, payloadID string, blockIdx uint64) (*blockstore.FileBlock, error) {
-	blockID := fmt.Sprintf("%s/%d", payloadID, blockIdx)
-	fb, err := m.fileBlockStore.GetFileBlock(ctx, blockID)
+	rows, err := m.fileBlockStore.ListFileBlocks(ctx, payloadID)
 	if err != nil {
 		if errors.Is(err, blockstore.ErrFileBlockNotFound) {
 			return nil, nil // Sparse — not an error
 		}
-		return nil, fmt.Errorf("resolve file block %s: %w", blockID, err)
+		return nil, fmt.Errorf("list file blocks for %s: %w", payloadID, err)
 	}
-	return fb, nil
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	target := blockIdx * uint64(BlockSize)
+	for _, fb := range rows {
+		if fb == nil {
+			continue
+		}
+		abs, ok := parseChunkOffsetFromID(fb.ID)
+		if !ok {
+			continue
+		}
+		if target >= abs && target < abs+uint64(fb.DataSize) {
+			return fb, nil
+		}
+	}
+	return nil, nil
+}
+
+// blockIsLocal reports whether the bytes for (payloadID, blockIdx) are
+// currently held in the unified local CAS chunk store. It resolves the
+// FileBlock row (which carries the BLAKE3 content hash populated by
+// rollup) and asks the local store whether the chunk is present under
+// that hash. Returns false when the FileBlock row is sparse / not yet
+// produced by rollup, when the hash is unknown (pre-CAS migration
+// drift), or when local.Has surfaces an error — the caller treats any
+// non-true outcome as "must round-trip to remote".
+func (m *Syncer) blockIsLocal(ctx context.Context, payloadID string, blockIdx uint64) bool {
+	fb, err := m.resolveFileBlock(ctx, payloadID, blockIdx)
+	if err != nil || fb == nil {
+		return false
+	}
+	if fb.Hash.IsZero() {
+		return false
+	}
+	has, err := m.local.Has(ctx, fb.Hash)
+	if err != nil {
+		return false
+	}
+	return has
 }
 
 // dispatchRemoteFetch routes a per-block S3 GET through the CAS verified-
@@ -119,8 +170,13 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 		return nil, nil
 	}
 
-	offset := blockIdx * uint64(BlockSize)
-	if err := m.local.WriteFromRemote(ctx, payloadID, data, offset); err != nil {
+	// CAS rewire: persist the downloaded bytes to the local CAS chunk
+	// store under fb.Hash (verified by ReadBlockVerified above). The
+	// previous WriteFromRemote method buffered into the legacy memBlock
+	// + .blk file layout; the unified post-Phase-17 read path resolves
+	// (payloadID, blockIdx) → FileBlock.Hash → local.Get(hash), so the
+	// downloaded bytes only need to land in the CAS chunk store.
+	if err := m.local.Put(ctx, fb.Hash, data); err != nil {
 		return nil, fmt.Errorf("store downloaded block %s locally: %w", storeKey, err)
 	}
 
@@ -135,7 +191,7 @@ func blockRange(offset uint64, length uint32) (start, end uint64) {
 // allBlocksLocal returns true if every block in the range is already in the local store.
 func (m *Syncer) allBlocksLocal(ctx context.Context, payloadID string, startIdx, endIdx uint64) bool {
 	for blockIdx := startIdx; blockIdx <= endIdx; blockIdx++ {
-		if !m.local.IsBlockLocal(ctx, payloadID, blockIdx) {
+		if !m.blockIsLocal(ctx, payloadID, blockIdx) {
 			return false
 		}
 	}
@@ -172,7 +228,7 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 	needLocalReadAt := false
 
 	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
-		if m.local.IsBlockLocal(ctx, payloadID, blockIdx) {
+		if m.blockIsLocal(ctx, payloadID, blockIdx) {
 			needLocalReadAt = true
 			continue
 		}
@@ -268,8 +324,14 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 			completionErr = wrapped
 			return nil, false, wrapped
 		}
-		completionErr = err
-		return nil, false, fmt.Errorf("download block %s: %w", storeKey, err)
+		// Mirror the ErrBlockNotFound branch above: piggyback waiters
+		// read completionErr after result.done closes (via the deferred
+		// completeInFlight), so we MUST set completionErr to the same
+		// wrapped error the direct caller sees — otherwise the waiter
+		// receives the raw err and the error chain is inconsistent
+		// between the two return paths.
+		completionErr = fmt.Errorf("download block %s: %w", storeKey, err)
+		return nil, false, completionErr
 	}
 	if storeKey == "" || data == nil {
 		return nil, true, nil
@@ -278,8 +340,12 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 	// Store locally synchronously; data is already downloaded so there's no
 	// reason to hold it in a background goroutine. Under high concurrency,
 	// background goroutines each holding 8MB data caused OOM.
-	blockOffset := blockIdx * uint64(BlockSize)
-	if writeErr := m.local.WriteFromRemote(ctx, payloadID, data, blockOffset); writeErr != nil {
+	//
+	// CAS rewire: write under fb.Hash (verified by ReadBlockVerified). The
+	// unified post-Phase-17 read path resolves (payloadID, blockIdx) →
+	// FileBlock.Hash → local.Get(hash), so the downloaded bytes only need
+	// to land in the CAS chunk store.
+	if writeErr := m.local.Put(ctx, fb.Hash, data); writeErr != nil {
 		logger.Warn("inline download: local write failed",
 			"block", key, "error", writeErr)
 	}
@@ -397,7 +463,7 @@ func (m *Syncer) EnsureAvailable(ctx context.Context, payloadID string, offset u
 // enqueueDownload enqueues a download with in-flight dedup (broadcast pattern).
 // Returns a channel to wait on, or nil if already available locally.
 func (m *Syncer) enqueueDownload(payloadID string, blockIdx uint64) chan error {
-	if m.local.IsBlockLocal(context.Background(), payloadID, blockIdx) {
+	if m.blockIsLocal(context.Background(), payloadID, blockIdx) {
 		return nil
 	}
 
@@ -459,7 +525,7 @@ func (m *Syncer) enqueueDownload(payloadID string, blockIdx uint64) chan error {
 
 // enqueuePrefetch enqueues a prefetch request (non-blocking, best effort).
 func (m *Syncer) enqueuePrefetch(payloadID string, blockIdx uint64) {
-	if m.local.IsBlockLocal(context.Background(), payloadID, blockIdx) {
+	if m.blockIsLocal(context.Background(), payloadID, blockIdx) {
 		return
 	}
 

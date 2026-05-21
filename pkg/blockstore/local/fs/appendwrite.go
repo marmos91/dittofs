@@ -200,10 +200,27 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 	// waiting on the mutex above must be surfaced here rather than after
 	// a wasted log append; DeleteAppendLog itself acquires the same mutex
 	// immediately after tombstoning so this check is race-free.
+	//
+	// Also re-validate `lf` against the current bc.logFDs entry: if
+	// DeleteAppendLog ran fully (including step 5's logFDs+tombstones
+	// clear) BETWEEN the writer's pre-mutex tombstone check and the
+	// mutex hand-off, our snapshotted `lf` references a closed/unlinked
+	// fd while the tombstone has already been cleared (post-Phase-18
+	// recreate semantics). Mirrors the rollup-side curLf != lf bail in
+	// rollup.go. We surface ErrDeleted for the original writer because
+	// its target log was unambiguously deleted; the caller (typically
+	// the NFS WRITE handler) will return EIO/STATUS_DELETE_PENDING to
+	// the client. The recreate path is intentionally NOT followed by
+	// the same in-flight writer — it belongs to a different file
+	// lifecycle.
 	bc.logsMu.RLock()
 	_, isDeleted = bc.tombstones[payloadID]
+	curLf, curLfOk := bc.logFDs[payloadID]
 	bc.logsMu.RUnlock()
 	if isDeleted {
+		return ErrDeleted
+	}
+	if !curLfOk || curLf != lf {
 		return ErrDeleted
 	}
 
@@ -271,19 +288,34 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 // ENOENT is treated as benign (idempotent re-delete) and does NOT
 // surface as an error.
 //
-// IMPORTANT (FIX-8): the tombstone set here is PERMANENT for the lifetime
-// of this FSStore process. After DeleteAppendLog returns, ANY subsequent
-// AppendWrite or DeleteAppendLog on the same payloadID returns ErrDeleted
-// (or short-circuits as no-op). This eliminates a re-creation race: under
-// the previous "clear-on-success" semantics, a writer that observed the
-// tombstone after we cleared it could resurrect a deleted payloadID with a
-// fresh log file — causing dedup, refcount, and orphan-sweep state to
-// diverge from the metadata layer's view of the payload as deleted.
+// Tombstone lifecycle: the tombstone set in step 1 is CLEARED in step 5
+// after the in-flight drain (step 2) has serialized us against all
+// pre-delete AppendWrites and rollups. Clearing on success is safe
+// because:
 //
-// Callers that need to "delete and recreate" must use a fresh payloadID
-// (e.g., add a generation suffix). The metadata-layer file-handle abstraction
-// already does this — file handles are opaque and a new file gets a new
-// payloadID, so this constraint is invisible to higher layers.
+//   - Step 2's Lock/Unlock barrier waits for any goroutine that
+//     snapshotted bc.logFDs / bc.logLocks BEFORE step 1's
+//     bc.tombstones[payloadID] = struct{}{} to complete. By the time
+//     step 5 runs, no in-flight AppendWrite or rollup can still be
+//     racing against the tombstone clear.
+//   - Steps 4 and 5 happen AFTER the drain — when we clear the
+//     tombstone, on-disk state and in-memory state for this payloadID
+//     are fully reset. Any AppendWrite that arrives AFTER step 5
+//     fresh-creates state via getOrCreateLog as if the payload never
+//     existed, which is exactly the desired semantics for the
+//     "unlink + create at same path" workflow DittoFS's path-based
+//     PayloadID strategy requires (see
+//     metadata/file_helpers.go::buildPayloadID — PayloadID is derived
+//     from shareName + path, so recreating a file at the same path
+//     reuses the same PayloadID).
+//
+// This reverses the FIX-8 invariant (which kept the tombstone for the
+// FSStore lifetime to eliminate a clear-on-success resurrection race).
+// FIX-8 assumed callers would allocate a fresh PayloadID on recreate;
+// DittoFS's path-based PayloadID strategy violates that assumption,
+// breaking POSIX recreate-at-same-name workflows over NFSv3 (which
+// has no silly-rename masking — see pjdfstest chmod/12.t, unlink/14.t,
+// open/00.t).
 //
 // Ordering (D-28, Blocker 3 fix):
 //  1. Set tombstone under bc.logsMu so new AppendWrites and new rollupFile
@@ -302,9 +334,10 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 //     residual positive offset is harmless once the log and dirty state
 //     are gone).
 //  4. Close + unlink the log file.
-//  5. Clear per-file in-memory state (fd, lock, interval tree, truncation
-//     boundary). The TOMBSTONE entry is preserved (FIX-8) so future
-//     operations on payloadID stay rejected.
+//  5. Clear per-file in-memory state (fd, lock, interval tree,
+//     truncation boundary) AND clear the tombstone — the drain in
+//     step 2 has serialized us against all pre-delete writers/rollups
+//     so it is safe to allow fresh recreates here.
 //
 // Orphan content-addressed chunks under blocks/{hh}/{hh}/{hex} are NOT
 // removed here; they are swept by Phase 11's mark-sweep GC. This is a
@@ -381,19 +414,22 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 		}
 	}
 
-	// Step 5: remove per-file FSStore state for payloadID. The TOMBSTONE
-	// entry is intentionally NOT cleared (FIX-8) — clearing it allowed a
-	// re-creation race where a writer that lost a wakeup race could
-	// resurrect a deleted payloadID with a fresh log, diverging on-disk
-	// state from the metadata layer's view of the payload as deleted.
-	// Tombstones live for the lifetime of the FSStore process; callers
-	// that need a fresh payload must allocate a fresh payloadID.
+	// Step 5: remove per-file FSStore state for payloadID AND clear the
+	// tombstone. The drain in step 2 has already serialized us against
+	// any in-flight AppendWrite or rollupFile that snapshotted state
+	// before step 1, so it is safe to allow fresh recreates from this
+	// point on. This reverses the original FIX-8 invariant (which kept
+	// the tombstone for the FSStore lifetime to eliminate a
+	// clear-on-success resurrection race) — DittoFS's PayloadID is
+	// derived from the file's path (metadata/file_helpers.go
+	// buildPayloadID), so 'unlink + create at same path' must reuse
+	// the PayloadID and must therefore succeed.
 	bc.logsMu.Lock()
 	delete(bc.logFDs, payloadID)
 	delete(bc.logLocks, payloadID)
 	delete(bc.dirtyIntervals, payloadID)
 	delete(bc.truncations, payloadID)
-	// NOTE: bc.tombstones[payloadID] is preserved by design.
+	delete(bc.tombstones, payloadID)
 	bc.logsMu.Unlock()
 
 	// FIX-17: surface any step-4 unlink error after step 5 cleanup so the

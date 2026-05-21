@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	iofs "io/fs"
 	"os"
 	"path/filepath"
@@ -43,6 +42,14 @@ var (
 
 // Compile-time interface satisfaction check.
 var _ local.LocalStore = (*FSStore)(nil)
+
+// ObjectIDPersister is invoked after a rollup quiesces successfully.
+// It receives the payloadID, the BlockRef manifest collected during
+// chunking, and the computed ObjectID. Implementations typically
+// delegate to a metadata coordinator's PersistFileBlocks. The
+// callback is optional; when nil, ObjectID compute still runs but
+// the persist step is skipped (local-only / no-engine fixtures).
+type ObjectIDPersister func(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error
 
 // FSStore is a two-tier (memory + disk) block store for file data.
 //
@@ -181,7 +188,11 @@ type FSStore struct {
 	// deleted by DeleteAppendLog (plan 09). rollupFile (plan 06) consults
 	// this BEFORE and AFTER the per-file mutex hand-off to ensure no
 	// rollup_offset gets persisted for a dead payload. Initialized in New
-	// alongside the other logs-* maps.
+	// alongside the other logs-* maps. Cleared at the end of
+	// DeleteAppendLog so subsequent AppendWrites can resurrect the
+	// payloadID (DittoFS's metadata layer derives PayloadID from
+	// shareName + path, so 'unlink + create at same path' reuses the
+	// PayloadID and must succeed).
 	tombstones map[string]struct{}
 
 	// truncations records per-payload truncation boundaries set by
@@ -202,6 +213,26 @@ type FSStore struct {
 	rollupCh      chan string
 	rollupStarted atomic.Bool
 	rollupWg      sync.WaitGroup
+
+	// syncedHashStore persists per-CAS-hash local→remote sync state.
+	// Consumed by ListUnsynced to filter the Walk-collected hash set
+	// down to the still-unmirrored subset. Nil-valued on local-only
+	// stores (no remote configured); in that case ListUnsynced yields
+	// nothing.
+	syncedHashStore metadata.SyncedHashStore
+
+	// objectIDPersister is invoked after a rollup quiesces successfully.
+	// rollupFile passes the chunker's accumulated BlockRef manifest and
+	// the BLAKE3 Merkle-root ObjectID derived from it. Nil-valued on
+	// local-only / no-engine fixtures; in that case ObjectID compute
+	// still runs but the persist step is skipped harmlessly.
+	//
+	// Read under persisterMu so SetObjectIDPersister can install a
+	// coordinator-backed closure after the rollup workers have already
+	// been launched (engine.New runs after StartRollup in the share-
+	// service wiring path).
+	persisterMu       sync.RWMutex
+	objectIDPersister ObjectIDPersister
 
 	// --- Phase 11 LSL-08: in-process LRU for CAS chunks. ---
 	//
@@ -511,6 +542,19 @@ type FSStoreOptions struct {
 	// when StartRollup will be called. Nil is accepted when the caller
 	// will not start the rollup pool.
 	RollupStore metadata.RollupStore
+	// SyncedHashStore persists per-CAS-hash local→remote sync state.
+	// Required when a remote store is configured (the engine's Syncer
+	// consumes it via ListUnsynced + MarkSynced). Nil is accepted for
+	// local-only stores; in that case ListUnsynced yields nothing.
+	SyncedHashStore metadata.SyncedHashStore
+	// ObjectIDPersister is the rollup-completion hook that receives the
+	// BlockRef manifest + computed ObjectID after SetRollupOffset
+	// succeeds. Wire this to the engine coordinator's PersistFileBlocks
+	// so local-only and remote-backed shares both materialize ObjectIDs
+	// at rollup time. Nil is accepted: ObjectID is still computed, but
+	// the persist call is skipped (local-only fixtures / no-engine
+	// fixtures).
+	ObjectIDPersister ObjectIDPersister
 	// OrphanLogMinAgeSeconds is the minimum age (seconds) a log file must
 	// have before recovery will classify it as orphan and sweep it.
 	// Defaults to 3600 (1h) when zero. See FSStore.orphanLogMinAgeSeconds
@@ -563,12 +607,39 @@ func newFSStoreWithOptionsInternal(baseDir string, maxDisk, maxMemory int64, fil
 		bc.stabilizationMS = opts.StabilizationMS
 	}
 	bc.rollupStore = opts.RollupStore
+	bc.syncedHashStore = opts.SyncedHashStore
+	bc.objectIDPersister = opts.ObjectIDPersister
 	if opts.OrphanLogMinAgeSeconds > 0 {
 		bc.orphanLogMinAgeSeconds = opts.OrphanLogMinAgeSeconds
 	} else {
 		bc.orphanLogMinAgeSeconds = 3600
 	}
 	return bc, nil
+}
+
+// SetObjectIDPersister installs the rollup-completion callback. Safe to
+// call after StartRollup has launched the rollup worker pool: read sites
+// inside rollupFile take the matching RLock so the install observes a
+// consistent value. The setter is idempotent — re-applying the same
+// callback (or replacing it with a different one) is permitted; the
+// next rollup pass uses the latest value.
+//
+// The typical caller is the engine's BlockStore constructor, which
+// wires a closure that delegates to the metadata coordinator's
+// PersistFileBlocks. Local-only fixtures may leave the persister at its
+// constructor-supplied value (or nil) without invoking the setter.
+// The parameter type is spelled out as a raw func value (rather than
+// the local ObjectIDPersister named type) so callers that reach the
+// setter through a structural interface assertion — engine.New uses an
+// inline `interface { SetObjectIDPersister(func(...) error) }` to avoid
+// importing fs from engine — can satisfy the interface without a
+// cross-package type ceremony. The FSStoreOptions.ObjectIDPersister
+// constructor slot continues to accept the named type for in-package
+// callers.
+func (bc *FSStore) SetObjectIDPersister(p func(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error) {
+	bc.persisterMu.Lock()
+	defer bc.persisterMu.Unlock()
+	bc.objectIDPersister = p
 }
 
 // SetRetentionPolicy updates the retention policy and TTL for eviction decisions.
@@ -688,53 +759,11 @@ func (bc *FSStore) SyncFileBlocksForFile(ctx context.Context, payloadID string) 
 	})
 }
 
-// queueFileBlockUpdate queues a FileBlock metadata update for async persistence
-// AND registers the block in the in-process diskIndex so the write hot path and
-// eviction can see it without a FileBlockStore round-trip (TD-02d / D-19).
-//
-// pendingFBs and diskIndex share the same *FileBlock pointer, so mutations
-// applied by the hot path (e.g., fb.LastAccess = now) are visible to both the
-// drain goroutine and subsequent hot-path lookups.
-func (bc *FSStore) queueFileBlockUpdate(fb *blockstore.FileBlock) {
-	bc.pendingFBs.Store(fb.ID, fb)
-	bc.diskIndex.Store(fb.ID, fb)
-}
-
 // diskIndexStore registers a FileBlock in the in-process diskIndex without
 // queuing an async persistence. Used by Recover to seed the index from disk
 // state without triggering redundant PutFileBlock writes.
 func (bc *FSStore) diskIndexStore(fb *blockstore.FileBlock) {
 	bc.diskIndex.Store(fb.ID, fb)
-}
-
-// diskIndexLookup returns the FileBlock metadata for a block currently on
-// disk, or (nil, false) if no entry exists. This is the hot-path replacement
-// for the FileBlockStore.GetFileBlock + pendingFBs fallback: all callers on
-// the write hot path and eviction must use this instead of lookupFileBlock.
-func (bc *FSStore) diskIndexLookup(blockID string) (*blockstore.FileBlock, bool) {
-	v, ok := bc.diskIndex.Load(blockID)
-	if !ok {
-		return nil, false
-	}
-	return v.(*blockstore.FileBlock), true
-}
-
-// diskIndexDelete removes a block from the in-process diskIndex. Called when
-// a block is deleted (DeleteBlockFile) or evicted.
-func (bc *FSStore) diskIndexDelete(blockID string) {
-	bc.diskIndex.Delete(blockID)
-}
-
-// lookupFileBlock retrieves a FileBlock, checking the pending queue first
-// (for recently-written metadata not yet persisted) then falling back to the
-// store. NOTE: this helper hits the FileBlockStore and MUST NOT be called
-// from the local write hot path or from eviction (TD-02d / D-19). Non-hot-
-// path callers (recovery, manage, state transitions) may use it.
-func (bc *FSStore) lookupFileBlock(ctx context.Context, blockID string) (*blockstore.FileBlock, error) {
-	if v, ok := bc.pendingFBs.Load(blockID); ok {
-		return v.(*blockstore.FileBlock), nil
-	}
-	return bc.blockStore.GetFileBlock(ctx, blockID)
 }
 
 // Stats returns a snapshot of current local store statistics.
@@ -762,47 +791,6 @@ func (bc *FSStore) Stats() local.Stats {
 		FileCount:     fileCount,
 		MemBlockCount: memBlockCount,
 	}
-}
-
-// getOrCreateMemBlock returns the memBlock for the given key, creating one with
-// a pre-allocated 8MB buffer if it doesn't exist. The pre-allocation avoids
-// allocation jitter on the write hot path.
-//
-// Uses double-checked locking: RLock fast path for existing blocks, Lock for creation.
-func (bc *FSStore) getOrCreateMemBlock(key blockKey) *memBlock {
-	bc.blocksMu.RLock()
-	mb, exists := bc.memBlocks[key]
-	bc.blocksMu.RUnlock()
-	if exists {
-		return mb
-	}
-
-	bc.blocksMu.Lock()
-	mb, exists = bc.memBlocks[key]
-	if !exists {
-		mb = &memBlock{
-			data: getBlockBuf(),
-		}
-		bc.memBlocks[key] = mb
-		// Maintain per-file secondary index
-		fm := bc.fileBlocks[key.payloadID]
-		if fm == nil {
-			fm = make(map[uint64]*memBlock)
-			bc.fileBlocks[key.payloadID] = fm
-		}
-		fm[key.blockIdx] = mb
-		bc.memUsed.Add(int64(blockstore.BlockSize))
-	}
-	bc.blocksMu.Unlock()
-	return mb
-}
-
-// getMemBlock returns the memBlock for the given key, or nil if not in memory.
-func (bc *FSStore) getMemBlock(key blockKey) *memBlock {
-	bc.blocksMu.RLock()
-	mb := bc.memBlocks[key]
-	bc.blocksMu.RUnlock()
-	return mb
 }
 
 // updateFileSize updates the tracked file size if the new end offset is larger.
@@ -845,12 +833,6 @@ func (bc *FSStore) GetFileSize(_ context.Context, payloadID string) (uint64, boo
 	fi.mu.RUnlock()
 
 	return size, true
-}
-
-// makeBlockID creates a deterministic block ID string from a blockKey.
-// Format: "{payloadID}/{blockIdx}" -- used as the primary key in FileBlockStore.
-func makeBlockID(key blockKey) string {
-	return fmt.Sprintf("%s/%d", key.payloadID, key.blockIdx)
 }
 
 // purgeMemBlocks removes all in-memory blocks for payloadID where shouldRemove returns true.
@@ -926,119 +908,6 @@ func (bc *FSStore) ListFiles() []string {
 	return result
 }
 
-// WriteFromRemote stores data that was fetched from the remote block store locally.
-// Unlike WriteAt (which creates Dirty blocks), the block is marked Remote
-// since it already exists remotely -- making it immediately evictable by the
-// disk space manager without needing a re-sync.
-//
-// Metadata lookup uses the in-process diskIndex first (TD-02d / D-19) so
-// repopulation after an evict-then-refetch cycle does not round-trip through
-// the FileBlockStore. On a diskIndex miss (the steady-state case after a
-// server restart, or when this node never produced the block locally), the
-// canonical FileBlock row is fetched from the FileBlockStore so the existing
-// CAS Hash + BlockStoreKey are preserved. Without this fallback the local
-// store would clobber the CAS row with a zero-hash legacy-key row, after
-// which subsequent reads would silently return zero data and GC would reap
-// the still-live CAS object as an orphan (Pass-2 CR-2-01).
-func (bc *FSStore) WriteFromRemote(ctx context.Context, payloadID string, data []byte, offset uint64) error {
-	blockIdx := offset / blockstore.BlockSize
-	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
-	blockID := makeBlockID(key)
-
-	fb, ok := bc.diskIndexLookup(blockID)
-	if !ok {
-		// diskIndex miss: prefer the FileBlockStore row (which carries the
-		// CAS Hash + BlockStoreKey populated by the syncer at upload time).
-		// Only fall back to a brand-new FileBlock when the row is absent —
-		// this is the genuine first-registration path for a never-seen
-		// block (e.g. local-only stores with no remote upload trail).
-		if existing, err := bc.lookupFileBlock(ctx, blockID); err == nil && existing != nil {
-			fb = existing
-		} else {
-			fb = blockstore.NewFileBlock(blockID, "")
-		}
-	}
-	// Treat the block as evictable now that bytes are landing in the local
-	// cache. DO NOT touch fb.Hash or fb.BlockStoreKey here — the canonical
-	// CAS metadata is owned by the syncer/uploader and re-stamping would
-	// clobber it (CR-2-01).
-	fb.State = blockstore.BlockStateRemote
-
-	path := bc.blockPath(blockID)
-	if err := bc.ensureSpace(ctx, int64(len(data))); err != nil {
-		return err
-	}
-
-	if err := writeFile(path, data); err != nil {
-		return err
-	}
-
-	bc.diskUsed.Add(int64(len(data)))
-
-	fb.LocalPath = path
-	fb.DataSize = uint32(len(data))
-	fb.LastAccess = time.Now()
-	bc.queueFileBlockUpdate(fb)
-
-	end := offset + uint64(len(data))
-	bc.updateFileSize(payloadID, end)
-
-	bc.accessTracker.Touch(payloadID)
-
-	return nil
-}
-
-// GetBlockData returns the raw data for a specific block, checking memory first
-// (for unflushed writes) then disk. Returns ErrBlockNotFound if the block is
-// not in either tier.
-func (bc *FSStore) GetBlockData(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error) {
-	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
-	blockID := makeBlockID(key)
-
-	if mb := bc.getMemBlock(key); mb != nil {
-		mb.mu.RLock()
-		if mb.data != nil && mb.dataSize > 0 {
-			data := make([]byte, mb.dataSize)
-			copy(data, mb.data[:mb.dataSize])
-			dataSize := mb.dataSize
-			mb.mu.RUnlock()
-			return data, dataSize, nil
-		}
-		mb.mu.RUnlock()
-	}
-
-	fb, err := bc.lookupFileBlock(ctx, blockID)
-	if err != nil || fb.LocalPath == "" || fb.DataSize == 0 {
-		return nil, 0, ErrBlockNotFound
-	}
-
-	data, err := readFile(fb.LocalPath, fb.DataSize)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	return data, fb.DataSize, nil
-}
-
-// IsBlockLocal checks if a specific block is available locally (memory or disk).
-// Used by the syncer to decide whether to download a block before reading.
-func (bc *FSStore) IsBlockLocal(ctx context.Context, payloadID string, blockIdx uint64) bool {
-	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
-	// Check memory first (dirty/unflushed blocks)
-	if mb := bc.getMemBlock(key); mb != nil {
-		mb.mu.RLock()
-		hasData := mb.data != nil
-		mb.mu.RUnlock()
-		if hasData {
-			return true
-		}
-	}
-	// Check disk via FileBlockStore metadata
-	blockID := makeBlockID(key)
-	fb, err := bc.lookupFileBlock(ctx, blockID)
-	return err == nil && fb.LocalPath != ""
-}
-
 // belongsToFile checks if a blockID (format: "payloadID/blockIdx") belongs to
 // the given payloadID by checking the prefix.
 func belongsToFile(blockID, payloadID string) bool {
@@ -1046,38 +915,4 @@ func belongsToFile(blockID, payloadID string) bool {
 		return false
 	}
 	return blockID[:len(payloadID)] == payloadID && blockID[len(payloadID)] == '/'
-}
-
-// writeFile atomically writes data to path, creating parent directories as needed.
-// Calls FADV_DONTNEED after writing to avoid polluting the OS page cache.
-func writeFile(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("create parent dir: %w", err)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return fmt.Errorf("create block file: %w", err)
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("write block file: %w", err)
-	}
-	dropPageCache(f)
-	return f.Close()
-}
-
-// readFile reads exactly size bytes from path.
-// Calls FADV_DONTNEED after reading to avoid polluting the OS page cache.
-func readFile(path string, size uint32) ([]byte, error) {
-	data := make([]byte, size)
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	if _, err := io.ReadFull(f, data); err != nil {
-		return nil, err
-	}
-	dropPageCache(f)
-	return data, nil
 }

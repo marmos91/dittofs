@@ -5,6 +5,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/google/uuid"
@@ -245,6 +246,17 @@ type MemoryMetadataStore struct {
 	// rollupOffsets maps payloadID -> persisted rollup_offset. Lazily
 	// initialized on first Set; Get treats absence as zero.
 	rollupOffsets map[string]uint64
+
+	// syncedMu guards `synced` for SyncedHashStore. Kept separate from
+	// s.mu so per-hash sync markers do not contend with unrelated
+	// metadata operations. All three SyncedHashStore methods serialize
+	// here (write-lock for Mark/Delete, read-lock for IsSynced).
+	syncedMu sync.RWMutex
+	// synced records "has this CAS hash been mirrored to remote?".
+	// Presence-of-key == synced; the time.Time value reserves capacity
+	// for future observability without a schema change. Lazily
+	// initialized on first Mark; reads treat absence as not-synced.
+	synced map[blockstore.ContentHash]time.Time
 
 	// objectIndex maps FileAttr.ObjectID -> handle key (the same string
 	// used as the key in `files`) for the BSCAS-05 dedup short-circuit

@@ -44,7 +44,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 
 - [x] **Phase 16: Cache RAM-only (remove mmap read path)** — Delete `cache_mmap_*.go`, swap `readFromCAS` → `local.Get`, retire D-33 perf gate (GH issue: #516) — **SHIPPED 2026-05-20** on `gsd/phase-16-cache-mmap-removal` (16 commits); warm-cache D-06 PASS (ratio 0.890 ≤1.02)
 - [ ] **Phase 17: Unified BlockStore interface + legacy delete + migration tool** — Single `BlockStore` interface (Put/Get/GetRange/Has/Delete/Walk/Head) for local + remote, `BlockStoreAppend` extends with random-write tier, delete legacy `.blk` writer + dual-read shim + flag, ship `dfsctl blockstore migrate-to-cas` one-shot (GH issue: #517)
-- [ ] **Phase 18: Syncer simplification + ObjectID relocation** — Syncer Flush → mirror loop `for hash := range local.ListUnsynced() { remote.Put(...) }`. Move `ComputeObjectID` to rollup CommitChunks. Local-only shares now get ObjectIDs. (GH issue: #518)
+- [x] **Phase 18: Syncer simplification + ObjectID relocation** — Syncer Flush → mirror loop `for hash := range local.ListUnsynced() { remote.Put(...) }`. Move `ComputeObjectID` to rollup CommitChunks. Local-only shares now get ObjectIDs. (GH issue: #518) (completed 2026-05-21)
 - [ ] **Phase 19: Write-path RAM optimizations** — 4 opts: in-memory hash dedup LRU; group commit / batched fsync; direct-to-Cache on chunk completion; eager small-file dedup (GH issue: #519)
 
 **Parent tracking issue:** [#515](https://github.com/marmos91/dittofs/issues/515)
@@ -413,6 +413,64 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 - [x] 17-09-PLAN.md — NewFSStore sentinel check + cmd/dfs/start.go boot-guard exit-78 (Wave 5) — shipped 2026-05-20 (`5961536c`, `6f3e0326`, `9fb382a7`, `b7f4d00d`)
 - [x] 17-10-PLAN.md — pkg/blockstore/doc.go convention + docs/CONFIGURATION.md Migration section + docs/CLI.md entry (Wave 6) — shipped 2026-05-20 (`bb97ec34`, `99b5ef58`, `9f604247`)
 - [x] 17-11-PLAN.md — Phase 17 VERIFICATION.md: perf gate, LoC measurement, STRIDE consolidation, smoke test (Wave 6)
+
+### Phase 18: Syncer simplification + ObjectID relocation
+**Goal**: Rewrite `pkg/blockstore/engine/syncer.go` from a per-block chunk-and-upload orchestrator (~600 LoC) into a byte-identical `local → remote` mirror loop (~50 LoC body): `for hash := range local.ListUnsynced(ctx) { data,_ := local.Get(ctx, hash); remote.Put(ctx, hash, data); syncedStore.MarkSynced(ctx, hash) }`. Move `ComputeObjectID` out of Syncer and into `pkg/blockstore/local/fs/rollup.go`'s `CommitChunks` post-hook so local-only shares get ObjectIDs (real surprise in Phase 13 UAT). Relocate `TrySpeculativeFileLevelDedup` to `engine.Flush()` as a pre-rollup hook (private call into existing `engine/dedup.go`). Delete the 7 `TRANSITIONAL-PHASE-18` admin methods on `LocalStore` (`ReadAt`, `WriteAt`, `Flush`, `IsBlockLocal`, `GetBlockData`, `WriteFromRemote`, `DeleteAllBlockFiles`) plus `Flush` return type + `FlushedBlock` + public `Syncer.TrySpeculativeFileLevelDedup` seam. Introduce new `metadata.SyncedHashStore` interface (3 methods: `IsSynced`, `MarkSynced`, `DeleteSynced`) mirroring the existing `metadata.RollupStore` pattern; implement on `badger`, `postgres`, `memory` backends; inject into `*fs.FSStore` via `FSStoreOptions.SyncedHashStore`. Third of four phases in v0.16.0 (CAS Convergence). Depends on Phase 17 (Unified BlockStore, shipped commit `d225926f`). Unblocks Phase 19 (Write-path RAM optimizations).
+**Depends on**: Phase 17 (shipped 2026-05-20, commit `d225926f`)
+**GH issue**: [#518](https://github.com/marmos91/dittofs/issues/518)
+**Duration**: ~1.5 weeks
+**Requirements**: (no formal REQ-IDs; phase scope governed by CONTEXT.md decisions D-01..D-19)
+**Success Criteria** (what must be TRUE):
+  1. `pkg/metadata/synced_hash_store.go` defines `SyncedHashStore` interface (`IsSynced(ctx, hash) (bool, error)`, `MarkSynced(ctx, hash) error`, `DeleteSynced(ctx, hash) error`) mirroring `RollupStore` shape (D-02)
+  2. `SyncedHashStore` implemented on `pkg/metadata/badger` (key prefix `synced/<hex-hash>`), `pkg/metadata/postgres` (table `synced_hashes (hash bytea PRIMARY KEY, synced_at timestamptz)`), `pkg/metadata/memory` (`map[ContentHash]time.Time`); all three pass shared conformance suite (D-02)
+  3. `*fs.FSStoreOptions.SyncedHashStore` injection slot added; `*fs.FSStore` plumbs it through to engine Syncer construction (D-02)
+  4. `local.LocalStore.ListUnsynced(ctx) iter.Seq2[blockstore.ContentHash, error]` (Go 1.23 push iterator) walks local CAS chunks and filters via `SyncedHashStore.IsSynced`; snapshot-at-start semantics (D-04, D-05)
+  5. `pkg/blockstore/engine/syncer.go::Flush` body collapses to ~50 LoC mirror loop: iterate `local.ListUnsynced`, call `remote.Put(hash, data)`, then `syncedStore.MarkSynced(hash)`; ordering is Put-then-Mark with idempotent-replay crash semantics (D-07, D-16)
+  6. `ComputeObjectID` relocated out of Syncer; called from `pkg/blockstore/local/fs/rollup.go` after `rollupStore.SetRollupOffset` returns nil: `coordinator.PersistFileBlocks(payloadID, blocks, ComputeObjectID(blocks))`. Local-only shares get ObjectIDs (D-10)
+  7. `engine.Delete` cascades `syncedStore.DeleteSynced(hash)` in the same critical section that fires `DeleteChunk` when refcount reaches 0 — synced set is a strict subset of local CAS contents (D-09)
+  8. Public `Syncer.TrySpeculativeFileLevelDedup` seam (engine/syncer.go:176) DELETED; `engine.Flush()` calls the private `trySpeculativeFileLevelDedup` in `engine/dedup.go` as a pre-rollup hook (D-12, D-17)
+  9. `pkg/blockstore/engine/syncer.go` deletions: `uploadOne`, `drainPayloadToRemote`, `persistFileBlocksAfterFlush`, in-Syncer BLAKE3 recompute at `upload.go:86`, ObjectID compute call site (D-11)
+  10. `pkg/blockstore/local/local.go` deletions: the 7 `TRANSITIONAL-PHASE-18` methods (`ReadAt`, `WriteAt`, `Flush`, `IsBlockLocal`, `GetBlockData`, `WriteFromRemote`, `DeleteAllBlockFiles`) + `FlushedBlock` type + bridge `Flush` return type (D-18). Admin/lifecycle methods (Truncate, EvictMemory, SetRetentionPolicy, SetEvictionEnabled, Stats, ListFiles, GetStoredFileSize, Healthcheck, SyncFileBlocks, SyncFileBlocksForFile, Start, Close, DeleteAppendLog) STAY
+  11. Phase 13 dedup conformance tests retargeted onto new `engine.Flush` entrypoint; spec-named `Syncer.Flush_InvokesPostFlushHook` rewritten to `TestRollup_CommitChunks_PersistsObjectID`; all neighbor tests touching `TrySpeculativeFileLevelDedup`, `persistFileBlocksAfterFlush`, or in-Syncer ObjectID compute ported in one pass (D-11, D-13, D-14)
+  12. `pkg/blockstore/engine/syncer_test.go` re-created with `//go:build integration` tag; covers mirror-loop happy path, Put-then-Mark crash-replay window, ListUnsynced snapshot semantics, refcount cascade DeleteSynced; exercises s3 + memory remote backends (D-15)
+  13. `pkg/blockstore/doc.go` documents `TRANSITIONAL-NEXT-MILESTONE:` deprecation marker convention (D-19)
+  14. Syncer keeps its filename + struct name + auxiliary state (periodic uploader, claimBatch worker pool, `uploading` atomic gate, health monitor, backpressure-on-remote-outages) — git blame preserved (D-16)
+  15. PR ships atomically (D-01): SyncedHashStore additions + Syncer rewrite + ObjectID relocation + TrySpeculativeFileLevelDedup relocation + 7 transitional deletions + Flush/FlushedBlock deletions + Phase 13 + Phase 17 test reshape in one PR against `develop`; internal commit ordering staged (additive interfaces → consumers migrated → deletions), each commit independently buildable; no flag-gated half-states
+  16. `go vet ./...` + `go test -race ./...` + `go test -tags=integration ./pkg/blockstore/engine/...` clean; cross-OS build clean (Linux + Darwin); Phase 16 D-06 warm-cache gate held
+**Files to touch**:
+  - `pkg/metadata/synced_hash_store.go` — **new** — `SyncedHashStore` interface (mirrors `rollup_store.go`)
+  - `pkg/metadata/storetest/synced_hash_store_conformance.go` — **new** — shared conformance suite (3 backends)
+  - `pkg/metadata/badger/synced_hash_store.go` — **new** — key prefix `synced/<hex-hash>`
+  - `pkg/metadata/postgres/synced_hash_store.go` — **new** — `synced_hashes` table + migration
+  - `pkg/metadata/postgres/migrations/` — **new** migration file for `synced_hashes`
+  - `pkg/metadata/memory/synced_hash_store.go` — **new** — `map[ContentHash]time.Time`
+  - `pkg/blockstore/local/local.go` — delete the 7 `TRANSITIONAL-PHASE-18` methods + `FlushedBlock` + bridge `Flush` return; add `ListUnsynced(ctx) iter.Seq2[ContentHash, error]`
+  - `pkg/blockstore/local/fs/fs.go` — add `FSStoreOptions.SyncedHashStore` slot; plumb through `NewFSStore`; implement `ListUnsynced` (Walk + IsSynced filter)
+  - `pkg/blockstore/local/fs/rollup.go` — relocate `ComputeObjectID` call into post-`SetRollupOffset` hook; invoke `coordinator.PersistFileBlocks` with ObjectID
+  - `pkg/blockstore/engine/syncer.go` — collapse `Flush` body to mirror loop (~50 LoC); delete `uploadOne`, `drainPayloadToRemote`, `persistFileBlocksAfterFlush`, public `TrySpeculativeFileLevelDedup`, in-Syncer ObjectID compute; keep auxiliary state (periodic uploader, claimBatch, gates, health monitor)
+  - `pkg/blockstore/engine/upload.go` — delete BLAKE3 recompute at line 86; collapse what remains into Syncer.Flush or delete
+  - `pkg/blockstore/engine/engine.go` — `Flush()` calls private `trySpeculativeFileLevelDedup` (dedup.go) pre-rollup; `Delete()` cascades `syncedStore.DeleteSynced(hash)` when refcount=0
+  - `pkg/blockstore/engine/dedup.go` — private `trySpeculativeFileLevelDedup` stays; remove public export wrapper
+  - `pkg/blockstore/engine/syncer_test.go` — **re-create** with `//go:build integration` (mirror-loop, crash-replay, snapshot, refcount cascade)
+  - `pkg/blockstore/engine/dedup_test.go` (or wherever Phase 13 dedup conformance lives) — port all touched tests onto new `engine.Flush` entrypoint
+  - `pkg/blockstore/doc.go` — document `TRANSITIONAL-NEXT-MILESTONE:` convention
+**Key risks**:
+  - **Mega-PR review burden** (SyncedHashStore × 3 backends + Syncer rewrite + ObjectID relocation + deletions + test reshape) — staged commit ordering (additive → migrate → delete) is the only mitigation; `git log -p` reviewability mandatory
+  - **Atomic-merge constraint** (D-01) — each commit must keep `go build ./... + go vet ./... + go test ./...` green; no flag-gated half-state
+  - **Crash-replay correctness** (D-07) — Put-then-Mark window: crash after Put-success/pre-Mark must re-Put on next pass without corruption. Requires `remote.Put` idempotent-on-identical-bytes (Phase 17 contract) + integration test exercising kill-9 mid-Flush
+  - **ListUnsynced snapshot vs hot-write workloads** (D-05) — iterator captures hash set at iteration start; new chunks rolled up mid-pass picked up on NEXT pass. Must not hold a read-lock for the iteration lifetime
+  - **Refcount cascade race** (D-09) — `engine.Delete` must call `DeleteSynced` in the same critical section as `DeleteChunk`; otherwise a parallel Syncer pass could re-Mark a hash that was just deleted locally
+  - **Phase 13 test sweep coverage** (D-14) — partial sweep leaves neighbor tests red on CI; planner must enumerate every test touching the deleted seams before the deletion commit
+**Plans** (9 plans):
+- [x] 18-01-PLAN.md — SyncedHashStore interface + conformance suite + memory backend (Wave 1)
+- [x] 18-02-PLAN.md — Badger backend SyncedHashStore (Wave 2)
+- [x] 18-03-PLAN.md — Postgres backend SyncedHashStore + migration 000015 (Wave 2)
+- [x] 18-04-PLAN.md — LocalStore.ListUnsynced + FSStoreOptions.SyncedHashStore injection (Wave 2)
+- [x] 18-05-PLAN.md — ComputeObjectID relocation to rollup.go post-SetRollupOffset hook (Wave 3)
+- [x] 18-06-PLAN.md — Syncer.Flush mirror-loop rewrite + BLAKE3 recompute deletion (Wave 4)
+- [x] 18-07-PLAN.md — engine.Flush dedup pre-hook + engine.Delete cascade + public TrySpec deletion (Wave 5)
+- [x] 18-08-PLAN.md — TRANSITIONAL-PHASE-18 methods deletion + Phase 13 test sweep (Wave 6)
+- [x] 18-09-PLAN.md — Integration syncer_test.go + TRANSITIONAL-NEXT-MILESTONE doc.go convention (Wave 7)
 
 ## Milestone Gates
 
