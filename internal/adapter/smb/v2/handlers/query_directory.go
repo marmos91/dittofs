@@ -349,7 +349,24 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	// entries are added later from `specialCount` and always remain visible —
 	// the caller already opened the directory.
 	if h.treeHasAccessBasedEnumeration(ctx.TreeID) {
-		filteredEntries = filterByAccess(filteredEntries, authCtx)
+		// Per-entry hydrator: ABE needs FileAttr+ACL to decide visibility,
+		// but DirEntry.Attr is optional on the metadata layer (see
+		// pkg/metadata/validation.go). When a backend omits it, fall back
+		// to a single GetFile so we don't leak entries on the fail-open
+		// branch. This is a per-missing-entry cost, not per-entry —
+		// Postgres now hydrates ACL inline (#532 review), Memory/Badger
+		// have always carried Attr.
+		hydrate := func(entry *metadata.DirEntry) *metadata.FileAttr {
+			if entry.Handle == nil {
+				return nil
+			}
+			file, ferr := metaSvc.GetFile(authCtx.Context, entry.Handle)
+			if ferr != nil || file == nil {
+				return nil
+			}
+			return &file.FileAttr
+		}
+		filteredEntries = filterByAccess(filteredEntries, authCtx, hydrate)
 	}
 
 	// Sort entries by name (case-insensitive) for consistent enumeration order.
@@ -970,16 +987,29 @@ func (h *Handler) treeHasAccessBasedEnumeration(treeID uint32) bool {
 	return tree.AccessBasedEnumeration
 }
 
+// attrHydrator looks up missing FileAttr for a directory entry. Used by
+// filterByAccess when DirEntry.Attr is nil (documented as optional on the
+// metadata layer — see pkg/metadata/validation.go). Returning nil signals
+// the entry has no resolvable attributes; the filter then treats it as
+// inaccessible under ABE rather than leaking it.
+type attrHydrator func(entry *metadata.DirEntry) *metadata.FileAttr
+
 // filterByAccess returns the subset of entries the requester may read,
 // implementing MS-SRVS SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM semantics.
 // Files require ACE4_READ_DATA, directories require ACE4_LIST_DIRECTORY
 // (which share the same bit, 0x00000001). When the entry has an ACL attached,
 // the decision is made by acl.Evaluate using the requester's identity. When
-// the entry has no ACL or no attributes (legacy / partial directory pages),
-// we fall back to Unix mode-bit checks — same convention as security.go's
-// buildDACL (#525): the SD that goes on the wire synthesizes a Windows default,
-// but server-side decisions stay POSIX so mode bits remain authoritative.
-func filterByAccess(entries []metadata.DirEntry, authCtx *metadata.AuthContext) []metadata.DirEntry {
+// the entry has no ACL but has attributes, we fall back to Unix mode-bit
+// checks — same convention as security.go's buildDACL (#525): the SD that
+// goes on the wire synthesizes a Windows default, but server-side decisions
+// stay POSIX so mode bits remain authoritative.
+//
+// When DirEntry.Attr is nil (documented optional, refs #532 review):
+//   - If hydrate is non-nil it is called to look up the attributes; if it
+//     still returns nil the entry is hidden (fail-closed).
+//   - If hydrate is nil the entry is hidden directly. Returning true here
+//     would leak entries that ABE is supposed to suppress.
+func filterByAccess(entries []metadata.DirEntry, authCtx *metadata.AuthContext, hydrate attrHydrator) []metadata.DirEntry {
 	if len(entries) == 0 {
 		return entries
 	}
@@ -993,7 +1023,7 @@ func filterByAccess(entries []metadata.DirEntry, authCtx *metadata.AuthContext) 
 
 	out := entries[:0]
 	for i := range entries {
-		if canEnumerateEntry(&entries[i], authCtx) {
+		if canEnumerateEntry(&entries[i], authCtx, hydrate) {
 			out = append(out, entries[i])
 		}
 	}
@@ -1002,16 +1032,21 @@ func filterByAccess(entries []metadata.DirEntry, authCtx *metadata.AuthContext) 
 
 // canEnumerateEntry reports whether the requester may see this entry in an
 // access-based enumeration. See filterByAccess for the policy contract.
-func canEnumerateEntry(entry *metadata.DirEntry, authCtx *metadata.AuthContext) bool {
+func canEnumerateEntry(entry *metadata.DirEntry, authCtx *metadata.AuthContext, hydrate attrHydrator) bool {
 	attr := entry.Attr
 	if attr == nil {
-		// Without attributes we cannot evaluate either ACL or mode bits.
-		// Be conservative and show the entry — hiding it would make
-		// directory listing flap based on whether READDIRPLUS-style
-		// attribute prefetch happened to populate Attr. This path should
-		// not be reachable in SMB QUERY_DIRECTORY in practice since the
-		// metadata layer always returns DirEntry.Attr.
-		return true
+		// Attr is documented optional on DirEntry (pkg/metadata/validation.go).
+		// Backends like Badger explicitly treat hydration as best-effort, so
+		// this branch IS reachable. Try to hydrate; if that fails, hide the
+		// entry rather than leaking it — ABE's contract is "hide what the
+		// caller cannot read", and we cannot prove the caller can read what
+		// we cannot look up.
+		if hydrate != nil {
+			attr = hydrate(entry)
+		}
+		if attr == nil {
+			return false
+		}
 	}
 
 	// ACE4_READ_DATA == ACE4_LIST_DIRECTORY == 0x00000001 — same bit, so

@@ -71,13 +71,13 @@ func TestFilterByAccess_OwnerOnlyACL(t *testing.T) {
 
 	owner := authForUID(1000, 1000)
 	// Make a fresh copy each call since filterByAccess mutates in place.
-	got := filterByAccess(append([]metadata.DirEntry(nil), entries...), owner)
+	got := filterByAccess(append([]metadata.DirEntry(nil), entries...), owner, nil)
 	if len(got) != 2 {
 		t.Fatalf("owner: want 2 entries, got %d (%v)", len(got), got)
 	}
 
 	other := authForUID(2000, 2000)
-	got = filterByAccess(append([]metadata.DirEntry(nil), entries...), other)
+	got = filterByAccess(append([]metadata.DirEntry(nil), entries...), other, nil)
 	if len(got) != 1 || got[0].Name != "public.txt" {
 		t.Fatalf("non-owner: want only public.txt, got %v", got)
 	}
@@ -96,13 +96,13 @@ func TestFilterByAccess_DirectoryListBit(t *testing.T) {
 	}
 
 	other := authForUID(2000, 2000)
-	got := filterByAccess(append([]metadata.DirEntry(nil), entries...), other)
+	got := filterByAccess(append([]metadata.DirEntry(nil), entries...), other, nil)
 	if len(got) != 0 {
 		t.Fatalf("non-owner directory: want hidden, got %v", got)
 	}
 
 	owner := authForUID(1000, 1000)
-	got = filterByAccess(append([]metadata.DirEntry(nil), entries...), owner)
+	got = filterByAccess(append([]metadata.DirEntry(nil), entries...), owner, nil)
 	if len(got) != 1 {
 		t.Fatalf("owner directory: want 1 entry, got %d", len(got))
 	}
@@ -120,19 +120,19 @@ func TestFilterByAccess_POSIXFallback(t *testing.T) {
 	}
 
 	owner := authForUID(1000, 1000)
-	got := filterByAccess(append([]metadata.DirEntry(nil), entries...), owner)
+	got := filterByAccess(append([]metadata.DirEntry(nil), entries...), owner, nil)
 	if len(got) != 3 {
 		t.Fatalf("owner: want all 3 entries, got %d (%v)", len(got), got)
 	}
 
 	groupMember := authForUID(2000, 1000) // not owner, in group
-	got = filterByAccess(append([]metadata.DirEntry(nil), entries...), groupMember)
+	got = filterByAccess(append([]metadata.DirEntry(nil), entries...), groupMember, nil)
 	if len(got) != 2 {
 		t.Fatalf("group member: want 2 entries (world.txt + group.txt), got %d (%v)", len(got), got)
 	}
 
 	stranger := authForUID(3000, 3000) // neither owner nor in group
-	got = filterByAccess(append([]metadata.DirEntry(nil), entries...), stranger)
+	got = filterByAccess(append([]metadata.DirEntry(nil), entries...), stranger, nil)
 	if len(got) != 1 || got[0].Name != "world.txt" {
 		t.Fatalf("stranger: want only world.txt, got %v", got)
 	}
@@ -152,7 +152,7 @@ func TestFilterByAccess_RootBypass(t *testing.T) {
 	}
 
 	root := authForUID(0, 0)
-	got := filterByAccess(append([]metadata.DirEntry(nil), entries...), root)
+	got := filterByAccess(append([]metadata.DirEntry(nil), entries...), root, nil)
 	if len(got) != 2 {
 		t.Fatalf("root: want all 2 entries, got %d (%v)", len(got), got)
 	}
@@ -184,8 +184,99 @@ func TestFilterByAccess_FlagOffSemantics(t *testing.T) {
 	}
 
 	// Flag-on path: filtering hides the entry.
-	got := filterByAccess(append([]metadata.DirEntry(nil), entries...), other)
+	got := filterByAccess(append([]metadata.DirEntry(nil), entries...), other, nil)
 	if len(got) != 0 {
 		t.Fatalf("flag-on: want 0 entries, got %d", len(got))
+	}
+}
+
+// TestFilterByAccess_NilAttrFailsClosed verifies that an entry with no
+// hydrated attributes is hidden under ABE when no hydrator is supplied.
+// DirEntry.Attr is documented optional on the metadata layer
+// (pkg/metadata/validation.go) and some backends (e.g. Badger) treat the
+// hydration as best-effort, so this branch IS reachable. Returning the
+// entry would leak files ABE is meant to suppress (refs #532 review).
+func TestFilterByAccess_NilAttrFailsClosed(t *testing.T) {
+	entries := []metadata.DirEntry{
+		{Name: "noattr.txt", Attr: nil},
+	}
+
+	got := filterByAccess(append([]metadata.DirEntry(nil), entries...), authForUID(2000, 2000), nil)
+	if len(got) != 0 {
+		t.Fatalf("nil-attr no-hydrator: want 0 entries (hidden), got %d (%v)", len(got), got)
+	}
+}
+
+// TestFilterByAccess_NilAttrHydratorMisses verifies that a hydrator that
+// returns nil keeps the fail-closed behaviour. Mirrors the case where
+// GetFile races with a concurrent delete.
+func TestFilterByAccess_NilAttrHydratorMisses(t *testing.T) {
+	entries := []metadata.DirEntry{
+		{Name: "noattr.txt", Attr: nil},
+	}
+
+	miss := func(_ *metadata.DirEntry) *metadata.FileAttr { return nil }
+	got := filterByAccess(append([]metadata.DirEntry(nil), entries...), authForUID(2000, 2000), miss)
+	if len(got) != 0 {
+		t.Fatalf("nil-attr hydrator miss: want 0 entries, got %d", len(got))
+	}
+}
+
+// TestFilterByAccess_NilAttrHydratorHits verifies that a hydrator that
+// returns FileAttr restores the normal ACL/POSIX decision path. Without
+// the hydrator the entry would have been hidden; with it the caller sees
+// the file iff they can read it.
+func TestFilterByAccess_NilAttrHydratorHits(t *testing.T) {
+	ownerOnly := &acl.ACL{
+		ACEs: []acl.ACE{
+			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: acl.ACE4_READ_DATA, Who: acl.SpecialOwner},
+		},
+	}
+	entries := []metadata.DirEntry{
+		{Name: "lazy.txt", Attr: nil},
+	}
+
+	hydrate := func(_ *metadata.DirEntry) *metadata.FileAttr {
+		return &metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o600,
+			UID:  1000,
+			GID:  1000,
+			ACL:  ownerOnly,
+		}
+	}
+
+	// Owner with hydration: visible.
+	got := filterByAccess(append([]metadata.DirEntry(nil), entries...), authForUID(1000, 1000), hydrate)
+	if len(got) != 1 {
+		t.Fatalf("owner via hydrate: want 1 entry, got %d (%v)", len(got), got)
+	}
+
+	// Non-owner with hydration: hidden by ACL.
+	got = filterByAccess(append([]metadata.DirEntry(nil), entries...), authForUID(2000, 2000), hydrate)
+	if len(got) != 0 {
+		t.Fatalf("non-owner via hydrate: want 0 entries, got %d (%v)", len(got), got)
+	}
+}
+
+// TestFilterByAccess_NilAttrRootBypass verifies that the UID 0 fast-path
+// bypasses the hydrator entirely — root sees orphaned entries as well.
+func TestFilterByAccess_NilAttrRootBypass(t *testing.T) {
+	entries := []metadata.DirEntry{
+		{Name: "noattr.txt", Attr: nil},
+	}
+
+	hydratorCalled := false
+	hydrate := func(_ *metadata.DirEntry) *metadata.FileAttr {
+		hydratorCalled = true
+		return nil
+	}
+
+	got := filterByAccess(append([]metadata.DirEntry(nil), entries...), authForUID(0, 0), hydrate)
+	if len(got) != 1 {
+		t.Fatalf("root: want 1 entry (bypass), got %d", len(got))
+	}
+	if hydratorCalled {
+		t.Fatalf("root bypass should skip hydrator")
 	}
 }
