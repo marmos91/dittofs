@@ -97,6 +97,39 @@ func SynthesizeFromMode(mode uint32, ownerUID, ownerGID uint32, isDirectory bool
 	}
 }
 
+// SynthesizeWindowsDefault returns the Windows default Security Descriptor
+// DACL used when a file has no stored ACL and no inheritable ACEs were
+// available from the parent at creation time.
+//
+// Shape (mirrors Samba's sd_def1 in source4/torture/smb2/acls.c):
+//   - ACE 1: ALLOW OWNER@ FullAccessMask, Flag=0
+//   - ACE 2: ALLOW SYSTEM@ FullAccessMask, Flag=0
+//
+// Flags are 0 (no inheritance) because this default is itself non-inheritable:
+// it represents "what a file should show when nothing else applies."
+//
+// This is the SMB read-side default. NFS callers should not use this — NFS
+// surfaces file.ACL as-is and synthesizes nothing.
+func SynthesizeWindowsDefault() *ACL {
+	return &ACL{
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       0,
+				AccessMask: FullAccessMask,
+				Who:        SpecialOwner,
+			},
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       0,
+				AccessMask: FullAccessMask,
+				Who:        SpecialSystem,
+			},
+		},
+		Source: ACLSourceWindowsDefault,
+	}
+}
+
 // rwxToFullMask maps a 3-bit rwx value to the full set of Windows access
 // rights associated with each permission. This provides fine-grained rights
 // mapping that Windows Explorer and icacls can display meaningfully.

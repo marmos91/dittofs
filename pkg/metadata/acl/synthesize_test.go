@@ -475,3 +475,39 @@ func TestSynthesizeWellKnownSIDs(t *testing.T) {
 		}
 	}
 }
+
+// TestSynthesizeWindowsDefault verifies the SMB read-side default DACL
+// matches Samba sd_def1 in source4/torture/smb2/acls.c: 2 ALLOW ACEs
+// (OWNER@ then SYSTEM@) with FullAccessMask and Flag=0.
+func TestSynthesizeWindowsDefault(t *testing.T) {
+	acl := SynthesizeWindowsDefault()
+	if acl == nil {
+		t.Fatal("SynthesizeWindowsDefault returned nil")
+	}
+	if acl.Source != ACLSourceWindowsDefault {
+		t.Errorf("Source = %q, want %q", acl.Source, ACLSourceWindowsDefault)
+	}
+	if len(acl.ACEs) != 2 {
+		t.Fatalf("len(ACEs) = %d, want 2", len(acl.ACEs))
+	}
+
+	want := []ACE{
+		{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, Flag: 0, AccessMask: FullAccessMask, Who: SpecialOwner},
+		{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, Flag: 0, AccessMask: FullAccessMask, Who: SpecialSystem},
+	}
+	for i := range want {
+		if acl.ACEs[i] != want[i] {
+			t.Errorf("ACE[%d] = %+v, want %+v", i, acl.ACEs[i], want[i])
+		}
+	}
+
+	// No DENY, no inherit flags — the default is flat and non-inheritable.
+	for i, ace := range acl.ACEs {
+		if ace.Type == ACE4_ACCESS_DENIED_ACE_TYPE {
+			t.Errorf("ACE[%d] is DENY; Windows default is ALLOW-only", i)
+		}
+		if ace.Flag&inheritanceMask != 0 {
+			t.Errorf("ACE[%d].Flag = 0x%x carries inheritance bits; Windows default is flat", i, ace.Flag)
+		}
+	}
+}

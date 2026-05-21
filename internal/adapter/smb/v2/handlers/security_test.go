@@ -103,9 +103,12 @@ func TestBuildSecurityDescriptorWithACL(t *testing.T) {
 	}
 }
 
-// TestBuildSD_NilACL_SynthesizesDACL verifies that BuildSecurityDescriptor
-// synthesizes a proper POSIX-derived DACL when the file has no explicit ACL.
-func TestBuildSD_NilACL_SynthesizesDACL(t *testing.T) {
+// TestBuildSD_NilACL_SynthesizesWindowsDefault verifies that
+// BuildSecurityDescriptor emits the Windows default DACL when the file
+// has no explicit ACL — owner + SYSTEM FULL_CONTROL, flags=0. Matches
+// Samba's sd_def1 (source4/torture/smb2/acls.c) and unblocks the
+// non-inheritable rows of smb2.acls.INHERITANCE.
+func TestBuildSD_NilACL_SynthesizesWindowsDefault(t *testing.T) {
 	file := &metadata.File{
 		FileAttr: metadata.FileAttr{
 			UID:  1000,
@@ -127,28 +130,63 @@ func TestBuildSD_NilACL_SynthesizesDACL(t *testing.T) {
 		t.Fatal("Expected DACL, got nil")
 	}
 
-	// Mode 0755 should produce Allow-only ACEs (Samba-style, no Deny ACEs).
-	// SynthesizeFromMode produces:
-	// 1. ALLOW OWNER@ (rwx + admin)
-	// 2. ALLOW GROUP@ (r-x)
-	// 3. ALLOW EVERYONE@ (r-x)
-	// 4. ALLOW SYSTEM@ (full)
-	// 5. ALLOW ADMINISTRATORS@ (full)
-	// Total: 5 Allow ACEs, 0 Deny ACEs.
-	if len(parsedACL.ACEs) != 5 {
-		t.Fatalf("Expected 5 ACEs from synthesis, got %d", len(parsedACL.ACEs))
+	// Windows default = 2 ACEs (owner FULL + SYSTEM FULL), no inherit flags.
+	if len(parsedACL.ACEs) != 2 {
+		t.Fatalf("Expected 2 ACEs (Windows default), got %d", len(parsedACL.ACEs))
 	}
 
-	// Samba-style: NO Deny ACEs should be present
-	for _, ace := range parsedACL.ACEs {
-		if ace.Type == acl.ACE4_ACCESS_DENIED_ACE_TYPE {
-			t.Errorf("Unexpected DENY ACE in synthesized DACL (Samba-style should be Allow-only): %s", ace.Who)
+	for i, ace := range parsedACL.ACEs {
+		if ace.Type != acl.ACE4_ACCESS_ALLOWED_ACE_TYPE {
+			t.Errorf("ACE[%d].Type = %d, want ALLOW(%d)", i, ace.Type, acl.ACE4_ACCESS_ALLOWED_ACE_TYPE)
+		}
+		if ace.Flag != 0 {
+			t.Errorf("ACE[%d].Flag = 0x%x, want 0 (Windows default is non-inheritable)", i, ace.Flag)
+		}
+		if ace.AccessMask != acl.FullAccessMask {
+			t.Errorf("ACE[%d].AccessMask = 0x%x, want FullAccessMask 0x%x", i, ace.AccessMask, acl.FullAccessMask)
 		}
 	}
 
-	// Should NOT be a simple "Everyone: Full Access" single ACE
-	if len(parsedACL.ACEs) == 1 && parsedACL.ACEs[0].AccessMask == 0x001F01FF {
-		t.Error("Got Everyone:Full single ACE -- expected POSIX-derived DACL with per-principal Allow ACEs")
+	// ACE order is fixed by SynthesizeWindowsDefault: owner first, SYSTEM second.
+	// After SD round-trip, owner@ resolves through the SIDMapper to
+	// "<uid>@localdomain"; SYSTEM (S-1-5-18) is not a domain SID so it
+	// surfaces as "sid:S-1-5-18".
+	if got, want := parsedACL.ACEs[0].Who, "1000@localdomain"; got != want {
+		t.Errorf("ACE[0].Who = %q, want %q (owner round-trip)", got, want)
+	}
+	if got, want := parsedACL.ACEs[1].Who, "sid:S-1-5-18"; got != want {
+		t.Errorf("ACE[1].Who = %q, want %q (SYSTEM SID round-trip)", got, want)
+	}
+}
+
+// TestBuildSD_EmptyACL_EmitsZeroACEDACL verifies the FileAttr.ACL contract
+// (pkg/metadata/file_types.go): file.ACL non-nil with len(ACEs)==0 is an
+// explicit empty DACL (deny-all) and MUST NOT fall through to Windows-default
+// synthesis. Round-trip emits a 0-ACE DACL.
+func TestBuildSD_EmptyACL_EmitsZeroACEDACL(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL:  &acl.ACL{ACEs: nil},
+		},
+	}
+
+	data, err := BuildSecurityDescriptor(file, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	_, _, parsedACL, err := ParseSecurityDescriptor(data)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor: %v", err)
+	}
+	if parsedACL == nil {
+		t.Fatal("Expected DACL, got nil")
+	}
+	if len(parsedACL.ACEs) != 0 {
+		t.Errorf("Expected 0-ACE DACL (deny-all), got %d ACEs — synthesis must not run for non-nil empty ACL", len(parsedACL.ACEs))
 	}
 }
 
