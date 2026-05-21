@@ -292,16 +292,27 @@ func principalToSID(who string, fileUID, fileGID uint32) *sid.SID {
 }
 
 // buildDACL constructs a DACL (Discretionary Access Control List) from the file's ACL.
-// If the file has no ACL, the Windows default DACL is synthesized
-// (owner + SYSTEM FullControl, no inherit flags) per acl.SynthesizeWindowsDefault.
-// This matches Samba's sd_def1 (source4/torture/smb2/acls.c) and is what
-// Windows clients expect when no inheritable ACEs were available at create
-// time. Returns the source ACL used for SD control flag computation.
+//
+// Per pkg/metadata/file_types.go FileAttr.ACL contract:
+//   - file.ACL == nil          → no ACL stored; synthesize Windows-default
+//     (owner + SYSTEM FullControl, no inherit flags) via
+//     acl.SynthesizeWindowsDefault. Matches Samba's sd_def1
+//     (source4/torture/smb2/acls.c).
+//   - file.ACL != nil, len==0  → explicit empty DACL (deny-all). Emit a
+//     0-ACE DACL on the wire; do NOT synthesize a default.
+//   - file.ACL != nil, len>0   → emit stored ACEs as-is.
+//
+// Note: server-side access checks and computeMaximalAccess (create.go) still
+// fall back to POSIX mode bits for nil ACL — this is intentional. The SD shape
+// here is what the client sees; actual access enforcement keeps the legacy
+// POSIX semantics so Unix mode bits stay authoritative on the server.
+//
+// Returns the source ACL used for SD control flag computation.
 func buildDACL(buf *bytes.Buffer, file *metadata.File) *acl.ACL {
 	var aces []windowsACE
 	var fileACL *acl.ACL
 
-	if file.ACL != nil && len(file.ACL.ACEs) > 0 {
+	if file.ACL != nil {
 		fileACL = file.ACL
 	} else {
 		fileACL = acl.SynthesizeWindowsDefault()

@@ -159,6 +159,37 @@ func TestBuildSD_NilACL_SynthesizesWindowsDefault(t *testing.T) {
 	}
 }
 
+// TestBuildSD_EmptyACL_EmitsZeroACEDACL verifies the FileAttr.ACL contract
+// (pkg/metadata/file_types.go): file.ACL non-nil with len(ACEs)==0 is an
+// explicit empty DACL (deny-all) and MUST NOT fall through to Windows-default
+// synthesis. Round-trip emits a 0-ACE DACL.
+func TestBuildSD_EmptyACL_EmitsZeroACEDACL(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL:  &acl.ACL{ACEs: nil},
+		},
+	}
+
+	data, err := BuildSecurityDescriptor(file, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	_, _, parsedACL, err := ParseSecurityDescriptor(data)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor: %v", err)
+	}
+	if parsedACL == nil {
+		t.Fatal("Expected DACL, got nil")
+	}
+	if len(parsedACL.ACEs) != 0 {
+		t.Errorf("Expected 0-ACE DACL (deny-all), got %d ACEs — synthesis must not run for non-nil empty ACL", len(parsedACL.ACEs))
+	}
+}
+
 // TestBuildSD_ExplicitACL_UsesExisting verifies that an explicit ACL is encoded directly.
 func TestBuildSD_ExplicitACL_UsesExisting(t *testing.T) {
 	explicitACL := &acl.ACL{
