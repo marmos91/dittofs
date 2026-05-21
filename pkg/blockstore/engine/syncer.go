@@ -154,41 +154,6 @@ func (m *Syncer) SetSyncedHashStore(s metadata.SyncedHashStore) {
 	m.syncedHashStore = s
 }
 
-// TrySpeculativeFileLevelDedup is the public seam for the Phase 13
-// BSCAS-05 file-level dedup short-circuit. Higher layers (the per-share
-// adapter-common Flush path that owns the chunker output) MUST invoke
-// this BEFORE any per-block GetByHash + WriteBlockWithHash loop:
-//
-//	hit, err := bs.Syncer().TrySpeculativeFileLevelDedup(
-//	    ctx, payloadID, speculativeBlocks, currentObjectID, blockStates,
-//	)
-//	if err != nil { return err }
-//	if hit { return nil }       // upload bypassed — target re-used
-//	// fall through to per-block upload path
-//
-// On hit the file's BlockRef list is replaced with the target's,
-// refcounts are swapped under the caller's metadata txn, the per-file
-// append log is truncated, and the cache is invalidated for orphaned
-// speculative chunks. On miss, the post-Flush coordinator hook
-// (persistFileBlocksAfterFlush) finalizes the ObjectID after the
-// per-block path completes.
-//
-// The current per-FileBlock claimBatch + uploadOne loop is not the
-// natural call site (it has no per-file BlockRef context); the
-// integration point lives in the adapter-common write path that already
-// owns the FastCDC chunker output. This public method exposes the
-// engine seam so that path can drive the short-circuit without reaching
-// into private symbols.
-func (m *Syncer) TrySpeculativeFileLevelDedup(
-	ctx context.Context,
-	payloadID string,
-	speculativeBlocks []blockstore.BlockRef,
-	fileObjectID blockstore.ObjectID,
-	blockStates []blockstore.BlockState,
-) (bool, error) {
-	return m.trySpeculativeFileLevelDedup(ctx, payloadID, speculativeBlocks, fileObjectID, blockStates)
-}
-
 // SetHealthCallback sets the callback invoked when the remote store health state changes.
 // If the HealthMonitor is already running, the callback is forwarded to it immediately.
 func (m *Syncer) SetHealthCallback(fn HealthTransitionCallback) {
