@@ -1276,3 +1276,94 @@ func TestParseSD_NoCanonicalization_PreservesAutoInherited(t *testing.T) {
 		})
 	}
 }
+
+// makeSDWithACEMask hand-crafts a self-relative SD containing a single
+// ALLOW-EVERYONE ACE with the given raw AccessMask on the wire. Used to
+// exercise the GENERIC_* expansion path through parseDACL.
+func makeSDWithACEMask(t *testing.T, accessMask uint32) []byte {
+	t.Helper()
+	everyoneSID := sid.WellKnownEveryone
+	sidLen := sid.SIDSize(everyoneSID)
+	aceLen := aceHeaderSize + sidLen
+	daclLen := aclHeaderSize + aceLen
+	totalLen := sdHeaderSize + daclLen
+	buf := make([]byte, totalLen)
+	buf[0] = 1
+	binary.LittleEndian.PutUint16(buf[2:4], uint16(seSelfRelative|seDACLPresent))
+	binary.LittleEndian.PutUint32(buf[16:20], sdHeaderSize)
+	buf[20] = 2
+	binary.LittleEndian.PutUint16(buf[22:24], uint16(daclLen))
+	binary.LittleEndian.PutUint16(buf[24:26], 1)
+	aceOff := sdHeaderSize + aclHeaderSize
+	buf[aceOff] = accessAllowedACEType
+	binary.LittleEndian.PutUint16(buf[aceOff+2:aceOff+4], uint16(aceLen))
+	binary.LittleEndian.PutUint32(buf[aceOff+4:aceOff+8], accessMask)
+	var sidBuf bytes.Buffer
+	sid.EncodeSID(&sidBuf, everyoneSID)
+	copy(buf[aceOff+aceHeaderSize:], sidBuf.Bytes())
+	return buf
+}
+
+// TestParseSD_ExpandsGenericMaskInACE verifies that SET_INFO Security
+// parsing (via parseDACL) expands GENERIC_* access bits to file-object
+// specific rights per MS-DTYP §2.4.3 / §2.5.3 before storage. Generic bits
+// must not survive past the SD boundary — every downstream ACL evaluation
+// (MS-FSA §2.1.5.1.2.1) operates on resolved masks.
+//
+// Failing test driver: smb2.acls.GENERIC (source4/torture/smb2/acls.c:440).
+func TestParseSD_ExpandsGenericMaskInACE(t *testing.T) {
+	const (
+		genericRead    = uint32(0x80000000)
+		genericWrite   = uint32(0x40000000)
+		genericExecute = uint32(0x20000000)
+		genericAll     = uint32(0x10000000)
+
+		readExpanded    = uint32(0x00120089)
+		writeExpanded   = uint32(0x00120116)
+		executeExpanded = uint32(0x001200A0)
+		allExpanded     = uint32(0x001F01FF)
+	)
+
+	cases := []struct {
+		name string
+		wire uint32
+		want uint32
+	}{
+		{"GENERIC_READ", genericRead, readExpanded},
+		{"GENERIC_WRITE", genericWrite, writeExpanded},
+		{"GENERIC_EXECUTE", genericExecute, executeExpanded},
+		{"GENERIC_ALL", genericAll, allExpanded},
+		{
+			"GENERIC_READ | DELETE preserves DELETE",
+			genericRead | 0x00010000,
+			readExpanded | 0x00010000,
+		},
+		{
+			"specific-rights-only passes through unchanged",
+			0x00000001 | 0x00000080, // FILE_READ_DATA | FILE_READ_ATTRIBUTES
+			0x00000001 | 0x00000080,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sd := makeSDWithACEMask(t, tc.wire)
+			_, _, parsed, err := ParseSecurityDescriptor(sd)
+			if err != nil {
+				t.Fatalf("ParseSecurityDescriptor: %v", err)
+			}
+			if parsed == nil || len(parsed.ACEs) != 1 {
+				t.Fatalf("expected 1 ACE, got %v", parsed)
+			}
+			got := parsed.ACEs[0].AccessMask
+			if got != tc.want {
+				t.Errorf("stored AccessMask = 0x%08x; want 0x%08x (wire=0x%08x)",
+					got, tc.want, tc.wire)
+			}
+			// Hard invariant: no generic bits survive past parse.
+			if got&0xF0000000 != 0 {
+				t.Errorf("GENERIC bits leaked into stored ACE: 0x%08x", got&0xF0000000)
+			}
+		})
+	}
+}

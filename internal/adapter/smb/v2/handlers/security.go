@@ -544,10 +544,14 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 		// Convert SID to NFSv4 principal
 		who := defaultSIDMapper.SIDToPrincipal(s)
 
+		// Expand GENERIC_* bits to file-object-specific rights per
+		// MS-DTYP §2.4.3 / §2.5.3 before storing. Generic rights MUST
+		// be mapped at the SD-update boundary so subsequent access checks
+		// (MS-FSA §2.1.5.1.2.1) operate on resolved masks.
 		aces = append(aces, acl.ACE{
 			Type:       nfsACEType,
 			Flag:       acl.WindowsFlagsToNFSv4Flags(aceFlags),
-			AccessMask: accessMask,
+			AccessMask: acl.ExpandGenericMask(accessMask),
 			Who:        who,
 		})
 
