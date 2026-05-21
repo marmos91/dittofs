@@ -933,17 +933,35 @@ func (bs *BlockStore) SetEvictionEnabled(enabled bool) {
 // the local store (with remote-fallback on miss); the cache is hint-only
 // and does not serve bytes here.
 //
-// CAS rewire: the per-block read path resolves (payloadID, blockIdx) →
-// FileBlock.Hash and serves bytes via local.Get(hash). The legacy
-// LocalStore.ReadAt admin method (which surveyed memBlocks + .blk files
-// keyed by payloadID+offset) is gone in this plan; reads now ride the
-// unified CAS chunk store directly.
+// The primary entry is LocalStore.ReadPayloadAt — a payload-keyed read
+// that consults BOTH the in-flight append log (pre-rollup bytes) AND
+// the rolled-up CAS chunks via the FileBlock manifest. This closes the
+// pre-rollup read-after-write window where freshly-appended bytes would
+// otherwise return zeros until the async rollup commits FileBlock rows.
+//
+// On a local miss (ErrFileBlockNotFound), fall back to the CAS-hash
+// walk (readLocalByHash, used for chunks that the manifest knows about
+// but the LocalStore did not surface — e.g., post-eviction reads where
+// only the metadata row survived) and finally to remote-fetch via the
+// syncer.
 func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
 	if len(data) == 0 {
 		return 0, nil
 	}
 
-	// Try primary local store.
+	// Primary: payload-keyed local read. Covers both the pre-rollup
+	// append-log window and the post-rollup CAS path.
+	n, err := bs.local.ReadPayloadAt(ctx, payloadID, data, offset)
+	if err == nil {
+		return n, nil
+	}
+	if !errors.Is(err, blockstore.ErrFileBlockNotFound) {
+		return 0, fmt.Errorf("local read failed: %w", err)
+	}
+
+	// Local miss — try the CAS-hash walk (handles edge cases where the
+	// FileBlockStore manifest is reachable via the engine's
+	// fileBlockStore field but not the LocalStore-internal one).
 	found, err := bs.readLocalByHash(ctx, payloadID, data, offset)
 	if err != nil {
 		return 0, fmt.Errorf("local read failed: %w", err)

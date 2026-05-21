@@ -368,6 +368,46 @@ func (s *MemoryStore) rollupLocked(payloadID string, buf []byte) {
 	}
 }
 
+// ReadPayloadAt serves bytes for [offset, offset+len(dest)) from the
+// per-payload append-log buffer. The memory backend's append log is the
+// authoritative byte source post-Phase-18 — rollup runs inline on every
+// AppendWrite, so the buf field always reflects the most recent
+// AppendWrite, including pre-rollup bytes (synchronous rollup means
+// there is no real pre-rollup window in the in-memory backend, but
+// AppendWrite still extends buf before invoking rollupLocked so a
+// concurrent ReadPayloadAt observes the new bytes immediately).
+//
+// Returns (len(dest), nil) when the requested window lies entirely
+// inside the buffer. Returns (0, blockstore.ErrFileBlockNotFound) when
+// the payload is unknown OR the offset is past the buffer end.
+// Partial-coverage requests (offset inside, offset+len past end) are
+// treated as a miss so the engine falls back to remote — the local
+// store's contract is "all-or-nothing for the requested window".
+//
+// Implements local.LocalStore.
+func (s *MemoryStore) ReadPayloadAt(_ context.Context, payloadID string, dest []byte, offset uint64) (int, error) {
+	if len(dest) == 0 {
+		return 0, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return 0, ErrStoreClosed
+	}
+	log, ok := s.appendLogs[payloadID]
+	if !ok || log == nil {
+		return 0, blockstore.ErrFileBlockNotFound
+	}
+	end := offset + uint64(len(dest))
+	if end > uint64(len(log.buf)) {
+		// Requested window extends past what we have locally — surface as
+		// a miss so the caller can fall back to remote.
+		return 0, blockstore.ErrFileBlockNotFound
+	}
+	copy(dest, log.buf[offset:end])
+	return len(dest), nil
+}
+
 // DeleteLog removes the per-payload append-log buffer and tombstones
 // the payloadID. Already-rolled-up CAS chunks remain in the store —
 // orphan-chunk cleanup is GC's responsibility per the contract.

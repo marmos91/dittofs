@@ -51,6 +51,27 @@ type LocalStore interface {
 	// the "nothing to mirror anywhere" invariant.
 	ListUnsynced(ctx context.Context) iter.Seq2[blockstore.ContentHash, error]
 
+	// ReadPayloadAt serves bytes for [offset, offset+len(dest)) from the
+	// local store, consulting BOTH the in-flight append log (pre-rollup
+	// bytes that have not yet been chunked into CAS) AND the rolled-up
+	// CAS chunks via the FileBlock manifest. This is the primary
+	// payload-keyed read entry on the local store interface; the engine
+	// calls this BEFORE falling back to a CAS-hash-keyed walk on miss.
+	//
+	// Returns (len(dest), nil) when every requested byte was satisfied
+	// from local storage. Returns (0, blockstore.ErrFileBlockNotFound)
+	// when no part of the requested range exists in either the append
+	// log or the FileBlock manifest — the caller treats this as "must
+	// fall back to remote-fetch + zero-fill". Returns (n, err) for
+	// genuine I/O errors.
+	//
+	// The semantics are payload-keyed (payloadID + offset), NOT
+	// CAS-hash-keyed: callers do not need to know which chunk covers
+	// which byte. This is the critical entry that closes the pre-rollup
+	// read-after-write gap; without it, freshly-appended bytes return
+	// zeros until the async rollup commits FileBlock rows.
+	ReadPayloadAt(ctx context.Context, payloadID string, dest []byte, offset uint64) (int, error)
+
 	// --- Lifecycle ---
 
 	// Start launches background goroutines (e.g., periodic metadata
@@ -121,5 +142,4 @@ type LocalStore interface {
 	// something on the order of a stat() and possibly a write probe —
 	// see fs.FSStore.Healthcheck for the canonical pattern.
 	Healthcheck(ctx context.Context) health.Report
-
 }
