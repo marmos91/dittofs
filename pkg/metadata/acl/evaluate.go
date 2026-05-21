@@ -2,8 +2,16 @@ package acl
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 )
+
+// localDomainSuffix is the synthetic domain string SIDMapper.SIDToPrincipal
+// produces for machine-domain user/group SIDs ("{uid}@localdomain"). When an
+// SD round-trips through parse → store → evaluate, ACE.Who is in this form
+// for any SID that maps to a Unix UID/GID. Matching it against the requester
+// is by numeric UID/GID, not the username-form evalCtx.Who.
+const localDomainSuffix = "@localdomain"
 
 // EvaluateContext carries the requestor's identity and the file's
 // owner/group for dynamic OWNER@/GROUP@/EVERYONE@ resolution.
@@ -233,7 +241,35 @@ func aceMatchesWhoWithOwnerRights(ace *ACE, evalCtx *EvaluateContext, ownerRight
 			}
 			return slices.Contains(evalCtx.GroupSIDs, target)
 		}
-		// Legacy/string match (numeric uid, named principal).
+		// Machine-domain SIDs round-trip through SIDMapper.SIDToPrincipal as
+		// "{uid}@localdomain" (users) or "{gid}@localdomain" (groups). Match
+		// numerically against the requester's UID/GIDs so an ACE written with
+		// a raw machine-domain SID resolves the same as an OWNER@/GROUP@ ACE.
+		if id, ok := parseLocalDomainID(ace.Who); ok {
+			if id == evalCtx.UID {
+				return true
+			}
+			if id == evalCtx.GID {
+				return true
+			}
+			return slices.Contains(evalCtx.GIDs, id)
+		}
+		// Legacy/string match (named principal).
 		return ace.Who == evalCtx.Who
 	}
+}
+
+// parseLocalDomainID extracts the numeric prefix from a "{N}@localdomain"
+// ACE Who string. Returns (id, true) for valid forms only — non-numeric
+// prefixes and any other suffix yield (0, false).
+func parseLocalDomainID(who string) (uint32, bool) {
+	prefix, ok := strings.CutSuffix(who, localDomainSuffix)
+	if !ok {
+		return 0, false
+	}
+	id, err := strconv.ParseUint(prefix, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(id), true
 }
