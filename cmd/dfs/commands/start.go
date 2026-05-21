@@ -173,6 +173,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		MaxSize:         deduced.LocalStoreSize,
 		MaxMemory:       blockstore.ClampToInt64(deduced.MaxPendingSize),
 		ReadBufferBytes: deduced.ReadBufferSize,
+		DedupLRUSize:    cfg.Blockstore.Local.DedupLRUSize,
 	})
 	rt.SetSyncerDefaults(&shares.SyncerDefaults{
 		ParallelUploads:   deduced.ParallelSyncs,
