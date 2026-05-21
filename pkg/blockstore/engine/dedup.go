@@ -61,9 +61,9 @@ func (m *Syncer) tryEagerSmallFileDedup(
 	}
 
 	// Compute the single-block content hash + provisional ObjectID.
-	var h blockstore.ContentHash
-	sum := blake3.Sum256(data)
-	copy(h[:], sum[:])
+	// ContentHash is [32]byte (same shape as blake3.Sum256's return),
+	// so a direct conversion avoids the temp + copy.
+	h := blockstore.ContentHash(blake3.Sum256(data))
 	blockRef := blockstore.BlockRef{Hash: h, Offset: 0, Size: uint32(len(data))}
 	provisional := blockstore.ComputeObjectID([]blockstore.BlockRef{blockRef})
 
