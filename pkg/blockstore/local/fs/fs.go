@@ -44,6 +44,14 @@ var (
 // Compile-time interface satisfaction check.
 var _ local.LocalStore = (*FSStore)(nil)
 
+// ObjectIDPersister is invoked after a rollup quiesces successfully.
+// It receives the payloadID, the BlockRef manifest collected during
+// chunking, and the computed ObjectID. Implementations typically
+// delegate to a metadata coordinator's PersistFileBlocks. The
+// callback is optional; when nil, ObjectID compute still runs but
+// the persist step is skipped (local-only / no-engine fixtures).
+type ObjectIDPersister func(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error
+
 // FSStore is a two-tier (memory + disk) block store for file data.
 //
 // NFS WRITE operations (typically 4KB) are buffered in 8MB in-memory blocks.
@@ -209,6 +217,13 @@ type FSStore struct {
 	// stores (no remote configured); in that case ListUnsynced yields
 	// nothing.
 	syncedHashStore metadata.SyncedHashStore
+
+	// objectIDPersister is invoked after a rollup quiesces successfully.
+	// rollupFile passes the chunker's accumulated BlockRef manifest and
+	// the BLAKE3 Merkle-root ObjectID derived from it. Nil-valued on
+	// local-only / no-engine fixtures; in that case ObjectID compute
+	// still runs but the persist step is skipped harmlessly.
+	objectIDPersister ObjectIDPersister
 
 	// --- Phase 11 LSL-08: in-process LRU for CAS chunks. ---
 	//
@@ -523,6 +538,14 @@ type FSStoreOptions struct {
 	// consumes it via ListUnsynced + MarkSynced). Nil is accepted for
 	// local-only stores; in that case ListUnsynced yields nothing.
 	SyncedHashStore metadata.SyncedHashStore
+	// ObjectIDPersister is the rollup-completion hook that receives the
+	// BlockRef manifest + computed ObjectID after SetRollupOffset
+	// succeeds. Wire this to the engine coordinator's PersistFileBlocks
+	// so local-only and remote-backed shares both materialize ObjectIDs
+	// at rollup time. Nil is accepted: ObjectID is still computed, but
+	// the persist call is skipped (local-only fixtures / no-engine
+	// fixtures).
+	ObjectIDPersister ObjectIDPersister
 	// OrphanLogMinAgeSeconds is the minimum age (seconds) a log file must
 	// have before recovery will classify it as orphan and sweep it.
 	// Defaults to 3600 (1h) when zero. See FSStore.orphanLogMinAgeSeconds
@@ -576,6 +599,7 @@ func newFSStoreWithOptionsInternal(baseDir string, maxDisk, maxMemory int64, fil
 	}
 	bc.rollupStore = opts.RollupStore
 	bc.syncedHashStore = opts.SyncedHashStore
+	bc.objectIDPersister = opts.ObjectIDPersister
 	if opts.OrphanLogMinAgeSeconds > 0 {
 		bc.orphanLogMinAgeSeconds = opts.OrphanLogMinAgeSeconds
 	} else {
