@@ -5,11 +5,11 @@
 // NFSv3 write quiesces through the runtime, FileAttr.ObjectID for that file
 // MUST be a non-zero BLAKE3 Merkle root equal to ComputeObjectID(Blocks).
 //
-// Today (Plan 13-11 ship time) this test FAILS at the IsZero assert — that is
-// the RED gate. The failure proves the gap: Syncer.persistFileBlocksAfterFlush
-// has zero production callers (Plan 04 SUMMARY:49, 13-09 SUMMARY:13), so no
-// live write path populates FileAttr.ObjectID. Plan 13-12 wires the post-Flush
-// hook into Syncer.Flush; the test then flips to GREEN.
+// The ObjectID-population path now lives inside the local store's
+// rollup-completion callback (the ObjectIDPersister installed by
+// engine.New). The test asserts that a real NFSv3 write quiesces
+// through the runtime and lands a non-zero BLAKE3 Merkle root in
+// FileAttr.ObjectID equal to ComputeObjectID(Blocks).
 //
 // Tier: nightly only. Mirrors dedup_cross_share_test.go and dedup_vmfleet_test.go
 // — requires sudo + kernel NFS client + Localstack (S3) + Postgres testcontainer.
@@ -191,10 +191,10 @@ func TestObjectIDPopulation_NFSWriteQuiesce(t *testing.T) {
 
 	// ---- REQUIRED RED ASSERT (must-have #1, 13-VERIFICATION.md:257-266) ----
 	require.Falsef(t, file.FileAttr.ObjectID.IsZero(),
-		"DEDUP-04 GAP: FileAttr.ObjectID is the all-zero sentinel after a "+
-			"%d-byte NFS write + drain. Plan 13-11 (this test) is RED until "+
-			"Plan 13-12 wires Syncer.Flush -> persistFileBlocksAfterFlush. "+
-			"See 13-VERIFICATION.md must-have #1 + 13-09 SUMMARY:49.",
+		"FileAttr.ObjectID is the all-zero sentinel after a %d-byte "+
+			"NFS write + drain. The rollup-completion ObjectIDPersister "+
+			"should have computed the Merkle root on rollup commit and "+
+			"the coordinator should have persisted it to FileAttr.ObjectID.",
 		objectIDPopulationPayloadSize)
 
 	// ---- REQUIRED CORRECTNESS ASSERT (regression catcher post-Plan-13-12) ----

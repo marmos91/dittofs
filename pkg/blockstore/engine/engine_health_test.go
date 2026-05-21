@@ -52,16 +52,31 @@ func (f *fakeRemoteStore) Healthcheck(ctx context.Context) health.Report {
 
 func (f *fakeRemoteStore) SetHealthy(h bool) { f.healthy.Store(h) }
 
-// newHealthTestEngine creates an engine.BlockStore with an FSStore local store,
-// a controllable fake remote store, and a syncer with short health intervals.
+// newHealthTestEngine creates an engine.BlockStore with an FSStore
+// local store, a controllable fake remote store, and a syncer with
+// short health intervals. The FSStore is constructed with an inline
+// RollupStore + a tight stabilization window so the
+// AppendWrite → rollup → CAS chunk → FileBlock-row pipeline runs
+// promptly inside the test.
 func newHealthTestEngine(t *testing.T) (*BlockStore, *fakeRemoteStore) {
 	t.Helper()
 
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	localStore, err := fs.New(tmpDir, 100*1024*1024, 16*1024*1024, ms)
+	localStore, err := fs.NewWithOptions(tmpDir, 100*1024*1024, 16*1024*1024, ms, fs.FSStoreOptions{
+		MaxLogBytes:     128 * 1024 * 1024,
+		RollupWorkers:   2,
+		StabilizationMS: 50,
+		RollupStore:     ms,
+		SyncedHashStore: ms,
+	})
 	if err != nil {
-		t.Fatalf("fs.New() error = %v", err)
+		t.Fatalf("fs.NewWithOptions() error = %v", err)
+	}
+	// Bring up the rollup worker pool so AppendWrite-staged bytes get
+	// chunked into CAS objects deterministically inside the test.
+	if err := localStore.StartRollup(context.Background()); err != nil {
+		t.Fatalf("StartRollup: %v", err)
 	}
 
 	fakeRemote := newFakeRemoteStore()
@@ -80,9 +95,11 @@ func newHealthTestEngine(t *testing.T) (*BlockStore, *fakeRemoteStore) {
 	syncer := NewSyncer(localStore, fakeRemote, ms, syncCfg)
 
 	bs, err := New(Config{
-		Local:  localStore,
-		Remote: fakeRemote,
-		Syncer: syncer,
+		Local:           localStore,
+		Remote:          fakeRemote,
+		Syncer:          syncer,
+		FileBlockStore:  ms,
+		SyncedHashStore: ms,
 	})
 	if err != nil {
 		t.Fatalf("engine.New() error = %v", err)

@@ -133,10 +133,10 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 // Queue returns the transfer queue for stats inspection.
 func (m *Syncer) Queue() *SyncQueue { return m.queue }
 
-// SetCoordinator wires the MetadataCoordinator the post-Flush path
-// invokes (Phase 12 D-37 / D-20). engine.New plumbs the BlockStore's
-// coordinator into the syncer so PersistFileBlocks runs in the
-// caller's metadata txn after each successful uploadOne batch. Idempotent.
+// SetCoordinator wires the MetadataCoordinator the file-level dedup
+// short-circuit reaches into (FindByObjectID, GetFileObjectID,
+// IncrementRefCount). engine.New plumbs the BlockStore's coordinator
+// into the syncer at construction. Idempotent.
 func (m *Syncer) SetCoordinator(c MetadataCoordinator) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -250,15 +250,14 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*blockstore.Flush
 		return nil, err
 	}
 
-	// 1. Local-side flush: drives any in-flight in-memory state down to
-	//    .blk files and triggers a rollup pass if one is pending. The
-	//    rollup pass, on completion, calls the engine-installed
-	//    ObjectIDPersister so FileAttr.Blocks + FileAttr.ObjectID land
-	//    in a single metadata txn for the payloadID. The mirror loop
-	//    below then handles the byte-side mirror to remote.
-	if _, err := m.local.Flush(ctx, payloadID); err != nil {
-		return nil, fmt.Errorf("local store flush failed: %w", err)
-	}
+	// 1. Per-payload metadata quiesce: persist any FileBlock metadata
+	//    that the local store has queued (queueFileBlockUpdate during
+	//    rollup commit) so the mirror loop below sees the
+	//    authoritative manifest for this payloadID. This call carries
+	//    only metadata-level semantics — the data-side rollup runs on
+	//    its own worker pool and is observed transitively when
+	//    ListUnsynced walks the CAS chunk store.
+	m.local.SyncFileBlocksForFile(ctx, payloadID)
 
 	// 2. Mirror loop: enumerate every CAS hash present locally but not
 	//    yet marked synced and copy it to remote, then MarkSynced.
@@ -386,13 +385,12 @@ func (m *Syncer) DrainAllUploads(ctx context.Context) error {
 
 // GetFileSize returns the total size of a file from the remote store.
 //
-// Phase 11 (CAS): blocks are stored under content-addressed keys
-// (cas/XX/YY/<hash>), so the legacy {payloadID}/block-{N} prefix scan no
-// longer finds them. We resolve via FileBlock metadata: enumerate every
-// block belonging to payloadID, find the highest-indexed Remote block,
-// and compute size = maxIdx*BlockSize + lastBlock.DataSize. DataSize is
-// stamped by uploadOne before flipping State to Remote, so no extra S3
-// round-trip is needed.
+// Blocks are stored under content-addressed keys (cas/XX/YY/<hash>),
+// so we resolve via FileBlock metadata: enumerate every block belonging
+// to payloadID, find the highest-indexed Remote block, and compute
+// size = maxIdx*BlockSize + lastBlock.DataSize. DataSize is stamped by
+// the mirror loop's Put-then-Mark sequence before flipping State to
+// Remote, so no extra S3 round-trip is needed.
 func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return 0, err

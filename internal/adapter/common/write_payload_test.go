@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
@@ -10,19 +11,33 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// newTestEngine constructs an engine.BlockStore backed by an on-disk FSStore
-// rooted at a temp dir, mirroring the engine package's test helper. Used here
-// instead of a mock because *engine.BlockStore is a concrete struct and the
-// helper under test takes it directly (the Phase-12 seam keeps the concrete
-// type until API-01 introduces a narrower engine interface).
+// newTestEngine constructs an engine.BlockStore backed by an on-disk
+// FSStore rooted at a temp dir, mirroring the engine package's test
+// helper. Used here instead of a mock because *engine.BlockStore is a
+// concrete struct and the helper under test takes it directly.
+//
+// The FSStore is constructed with an inline RollupStore +
+// SyncedHashStore + a tight stabilization window, and StartRollup is
+// invoked so AppendWrite-staged bytes flow through the
+// rollup → CAS chunk → FileBlock-row pipeline that the engine's CAS
+// read path consumes.
 func newTestEngine(t *testing.T) *engine.BlockStore {
 	t.Helper()
 
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	localStore, err := fs.New(tmpDir, 100*1024*1024, 16*1024*1024, ms)
+	localStore, err := fs.NewWithOptions(tmpDir, 100*1024*1024, 16*1024*1024, ms, fs.FSStoreOptions{
+		MaxLogBytes:     128 * 1024 * 1024,
+		RollupWorkers:   2,
+		StabilizationMS: 50,
+		RollupStore:     ms,
+		SyncedHashStore: ms,
+	})
 	if err != nil {
-		t.Fatalf("fs.New failed: %v", err)
+		t.Fatalf("fs.NewWithOptions failed: %v", err)
+	}
+	if err := localStore.StartRollup(context.Background()); err != nil {
+		t.Fatalf("StartRollup: %v", err)
 	}
 
 	syncer := engine.NewSyncer(localStore, nil, ms, engine.DefaultConfig())
@@ -46,6 +61,28 @@ func newTestEngine(t *testing.T) *engine.BlockStore {
 	return bs
 }
 
+// forceRollup drives a synchronous rollup pass on the FSStore inside
+// the engine so AppendWrite-staged bytes land in the CAS chunk store +
+// FileBlock rows before the test reads them back. Mirrors the helper
+// used by the engine-package offline tests.
+func forceRollup(t *testing.T, bs *engine.BlockStore, payloadID string) {
+	t.Helper()
+	fsLocal, ok := bs.LocalForTest().(*fs.FSStore)
+	if !ok {
+		return
+	}
+	time.Sleep(80 * time.Millisecond)
+	for i := 0; i < 16; i++ {
+		if err := fsLocal.ForceRollupForTest(context.Background(), payloadID); err != nil {
+			t.Fatalf("ForceRollupForTest: %v", err)
+		}
+		if fsLocal.IntervalsLenForTest(payloadID) == 0 {
+			break
+		}
+	}
+	fsLocal.SyncFileBlocksForFile(context.Background(), payloadID)
+}
+
 // TestWriteToBlockStore_Passthrough asserts the Phase-09 passthrough contract:
 // WriteToBlockStore writes identical bytes at identical offsets to the
 // underlying engine. Verifies by round-tripping through engine.ReadAt.
@@ -62,6 +99,7 @@ func TestWriteToBlockStore_Passthrough(t *testing.T) {
 	if err := WriteToBlockStore(ctx, bs, metadata.PayloadID(payloadID), data, 0); err != nil {
 		t.Fatalf("WriteToBlockStore returned error: %v", err)
 	}
+	forceRollup(t, bs, payloadID)
 
 	// Round-trip: read back via engine.ReadAt and compare bytes.
 	readBack := make([]byte, len(data))
@@ -92,6 +130,7 @@ func TestWriteToBlockStore_OffsetRespected(t *testing.T) {
 	if err := WriteToBlockStore(ctx, bs, metadata.PayloadID(payloadID), data, offset); err != nil {
 		t.Fatalf("WriteToBlockStore returned error: %v", err)
 	}
+	forceRollup(t, bs, payloadID)
 
 	readBack := make([]byte, len(data))
 	n, readErr := bs.ReadAt(ctx, payloadID, nil, readBack, offset)

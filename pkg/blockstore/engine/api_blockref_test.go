@@ -210,39 +210,11 @@ func TestWriteAt_ReturnsCurrentBlocks(t *testing.T) {
 	}
 }
 
-// TestSyncer_PostFlushHook_Direct asserts the syncer post-Flush wiring
-// point (Plan 07 lays the seam; Plan 13-12 wires Flush -> hook). Engine.New
-// plumbs the coordinator into the syncer; persistFileBlocksAfterFlush
-// invokes PersistFileBlocks when called directly. Fine-grained unit
-// coverage of the seam — the end-to-end Flush()-driven assertion lives in
-// pkg/blockstore/engine/syncer_flush_test.go::TestSyncer_Flush_InvokesPostFlushHook
-// (it requires a real FileBlockStore + LocalStore + RemoteStore which the
-// lightweight stubFileBlockStore harness here cannot provide).
-func TestSyncer_PostFlushHook_Direct(t *testing.T) {
-	fc := &fakeCoordinator{}
-	bs := newTestEngineWithCoordinator(t, fc)
-
-	if bs.syncer.coordinator == nil {
-		t.Fatal("engine.New did not wire syncer.coordinator from cfg.Coordinator")
-	}
-
-	// persistFileBlocksAfterFlush is the seam — invoke directly to pin
-	// the post-Flush contract.
-	ctx := context.Background()
-	blocks := []blockstore.BlockRef{{Hash: blockstore.ContentHash{0xCD}, Offset: 0, Size: 1024}}
-	if err := bs.syncer.persistFileBlocksAfterFlush(ctx, "post-flush-test", blocks); err != nil {
-		t.Fatalf("persistFileBlocksAfterFlush: %v", err)
-	}
-	if len(fc.persistCalls) != 1 {
-		t.Errorf("persistCalls = %d, want 1", len(fc.persistCalls))
-	}
-	if fc.persistCalls[0].payloadID != "post-flush-test" {
-		t.Errorf("payloadID = %q, want post-flush-test", fc.persistCalls[0].payloadID)
-	}
-	// Plan 13-12 invariant: the direct-hook path also computes and
-	// passes the BLAKE3 Merkle root ObjectID.
-	if got, want := fc.persistCalls[0].objectID, blockstore.ComputeObjectID(blocks); got != want {
-		t.Errorf("objectID = %s, want ComputeObjectID(blocks) = %s",
-			got.String(), want.String())
-	}
-}
+// The Direct post-Flush hook unit test was removed in the Phase 18-08
+// sweep: the seam now lives inside the local store's rollup commit
+// (rollup.go installs an ObjectIDPersister callback at engine.New
+// time), and the equivalent ObjectID-population assertion is exercised
+// by the rollup commit-side tests rather than via a syncer-receiver
+// helper. End-to-end coverage of the rolled-up FileAttr.Blocks +
+// FileAttr.ObjectID transaction is provided by the integration test
+// re-created in Plan 18-09.

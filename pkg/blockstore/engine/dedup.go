@@ -259,9 +259,9 @@ func (m *Syncer) applyFileLevelDedupHit(
 	// rows under "{payloadID}/{idx}" are now orphans:
 	//
 	//   - They are still Pending (the upload pump was bypassed) so the
-	//     periodic uploader's claimBatch (ListPending scan) would
-	//     resurface them on the next tick and call uploadOne — wasted
-	//     work even with CAS idempotency, and a NEW PUT on first hit.
+	//     periodic mirror loop would surface them via ListUnsynced and
+	//     re-Put them on the next tick — wasted bandwidth even with
+	//     CAS idempotency, and a NEW PUT on first hit.
 	//   - A subsequent Flush(payloadID) per-block drain path would feed
 	//     them into snapshotBlockRefs after the periodic uploader marked
 	//     them Remote, computing a Merkle root from speculative content

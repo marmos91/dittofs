@@ -32,6 +32,29 @@ func (m *Syncer) resolveFileBlock(ctx context.Context, payloadID string, blockId
 	return fb, nil
 }
 
+// blockIsLocal reports whether the bytes for (payloadID, blockIdx) are
+// currently held in the unified local CAS chunk store. It resolves the
+// FileBlock row (which carries the BLAKE3 content hash populated by
+// rollup) and asks the local store whether the chunk is present under
+// that hash. Returns false when the FileBlock row is sparse / not yet
+// produced by rollup, when the hash is unknown (pre-CAS migration
+// drift), or when local.Has surfaces an error — the caller treats any
+// non-true outcome as "must round-trip to remote".
+func (m *Syncer) blockIsLocal(ctx context.Context, payloadID string, blockIdx uint64) bool {
+	fb, err := m.resolveFileBlock(ctx, payloadID, blockIdx)
+	if err != nil || fb == nil {
+		return false
+	}
+	if fb.Hash.IsZero() {
+		return false
+	}
+	has, err := m.local.Has(ctx, fb.Hash)
+	if err != nil {
+		return false
+	}
+	return has
+}
+
 // dispatchRemoteFetch routes a per-block S3 GET through the CAS verified-
 // read path. Post-Phase-17 there is no legacy fallback: any FileBlock
 // surfacing here with a zero Hash is migration drift and the boot guard
@@ -119,8 +142,13 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 		return nil, nil
 	}
 
-	offset := blockIdx * uint64(BlockSize)
-	if err := m.local.WriteFromRemote(ctx, payloadID, data, offset); err != nil {
+	// CAS rewire: persist the downloaded bytes to the local CAS chunk
+	// store under fb.Hash (verified by ReadBlockVerified above). The
+	// previous WriteFromRemote method buffered into the legacy memBlock
+	// + .blk file layout; the unified post-Phase-17 read path resolves
+	// (payloadID, blockIdx) → FileBlock.Hash → local.Get(hash), so the
+	// downloaded bytes only need to land in the CAS chunk store.
+	if err := m.local.Put(ctx, fb.Hash, data); err != nil {
 		return nil, fmt.Errorf("store downloaded block %s locally: %w", storeKey, err)
 	}
 
@@ -135,7 +163,7 @@ func blockRange(offset uint64, length uint32) (start, end uint64) {
 // allBlocksLocal returns true if every block in the range is already in the local store.
 func (m *Syncer) allBlocksLocal(ctx context.Context, payloadID string, startIdx, endIdx uint64) bool {
 	for blockIdx := startIdx; blockIdx <= endIdx; blockIdx++ {
-		if !m.local.IsBlockLocal(ctx, payloadID, blockIdx) {
+		if !m.blockIsLocal(ctx, payloadID, blockIdx) {
 			return false
 		}
 	}
@@ -172,7 +200,7 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 	needLocalReadAt := false
 
 	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
-		if m.local.IsBlockLocal(ctx, payloadID, blockIdx) {
+		if m.blockIsLocal(ctx, payloadID, blockIdx) {
 			needLocalReadAt = true
 			continue
 		}
@@ -278,8 +306,12 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 	// Store locally synchronously; data is already downloaded so there's no
 	// reason to hold it in a background goroutine. Under high concurrency,
 	// background goroutines each holding 8MB data caused OOM.
-	blockOffset := blockIdx * uint64(BlockSize)
-	if writeErr := m.local.WriteFromRemote(ctx, payloadID, data, blockOffset); writeErr != nil {
+	//
+	// CAS rewire: write under fb.Hash (verified by ReadBlockVerified). The
+	// unified post-Phase-17 read path resolves (payloadID, blockIdx) →
+	// FileBlock.Hash → local.Get(hash), so the downloaded bytes only need
+	// to land in the CAS chunk store.
+	if writeErr := m.local.Put(ctx, fb.Hash, data); writeErr != nil {
 		logger.Warn("inline download: local write failed",
 			"block", key, "error", writeErr)
 	}
@@ -397,7 +429,7 @@ func (m *Syncer) EnsureAvailable(ctx context.Context, payloadID string, offset u
 // enqueueDownload enqueues a download with in-flight dedup (broadcast pattern).
 // Returns a channel to wait on, or nil if already available locally.
 func (m *Syncer) enqueueDownload(payloadID string, blockIdx uint64) chan error {
-	if m.local.IsBlockLocal(context.Background(), payloadID, blockIdx) {
+	if m.blockIsLocal(context.Background(), payloadID, blockIdx) {
 		return nil
 	}
 
@@ -459,7 +491,7 @@ func (m *Syncer) enqueueDownload(payloadID string, blockIdx uint64) chan error {
 
 // enqueuePrefetch enqueues a prefetch request (non-blocking, best effort).
 func (m *Syncer) enqueuePrefetch(payloadID string, blockIdx uint64) {
-	if m.local.IsBlockLocal(context.Background(), payloadID, blockIdx) {
+	if m.blockIsLocal(context.Background(), payloadID, blockIdx) {
 		return
 	}
 

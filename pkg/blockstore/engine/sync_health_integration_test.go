@@ -79,13 +79,26 @@ func newHealthTestEnv(t *testing.T) *healthTestEnv {
 	t.Helper()
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := fs.New(tmpDir, 0, 0, ms)
+	bc, err := fs.NewWithOptions(tmpDir, 0, 0, ms, fs.FSStoreOptions{
+		MaxLogBytes:     128 * 1024 * 1024,
+		RollupWorkers:   2,
+		StabilizationMS: 50,
+		RollupStore:     ms,
+		SyncedHashStore: ms,
+	})
 	if err != nil {
-		t.Fatalf("fs.New() error = %v", err)
+		t.Fatalf("fs.NewWithOptions() error = %v", err)
+	}
+	if err := bc.StartRollup(context.Background()); err != nil {
+		t.Fatalf("StartRollup: %v", err)
 	}
 
 	rs := newControllableRemoteStore()
 	m := NewSyncer(bc, rs, ms, healthTestConfig())
+	// Wire the SyncedHashStore on the syncer so the mirror loop's
+	// MarkSynced step actually fires (mirror loop short-circuits to a
+	// no-op when the SyncedHashStore is nil).
+	m.SetSyncedHashStore(ms)
 	t.Cleanup(func() { _ = m.Close() })
 
 	return &healthTestEnv{
@@ -121,13 +134,24 @@ func TestHealthMonitorCircuitBreaker(t *testing.T) {
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
-	if err := env.local.WriteAt(ctx, payloadID, data, 0); err != nil {
-		t.Fatalf("WriteAt failed: %v", err)
+	if err := env.local.AppendWrite(ctx, payloadID, data, 0); err != nil {
+		t.Fatalf("AppendWrite failed: %v", err)
 	}
 
 	// Flush to disk (block becomes Local state).
 	if _, err := env.syncer.Flush(ctx, payloadID); err != nil {
 		t.Fatalf("Flush failed: %v", err)
+	}
+	// Drive rollup so the AppendWrite-staged bytes land in the CAS
+	// chunk store and become eligible for the mirror loop.
+	time.Sleep(80 * time.Millisecond)
+	for i := 0; i < 16; i++ {
+		if err := env.local.ForceRollupForTest(ctx, payloadID); err != nil {
+			t.Fatalf("ForceRollupForTest: %v", err)
+		}
+		if env.local.IntervalsLenForTest(payloadID) == 0 {
+			break
+		}
 	}
 	env.local.SyncFileBlocks(ctx)
 
@@ -181,13 +205,23 @@ func TestHealthMonitorRecoveryDrain(t *testing.T) {
 			data[j] = byte((i + j) % 256)
 		}
 		offset := uint64(i) * BlockSize // Each write goes to a different block
-		if err := env.local.WriteAt(ctx, payloadID, data, offset); err != nil {
-			t.Fatalf("WriteAt block %d failed: %v", i, err)
+		if err := env.local.AppendWrite(ctx, payloadID, data, offset); err != nil {
+			t.Fatalf("AppendWrite block %d failed: %v", i, err)
 		}
 	}
 
 	if _, err := env.syncer.Flush(ctx, payloadID); err != nil {
 		t.Fatalf("Flush failed: %v", err)
+	}
+	// Drive rollup synchronously to land bytes in the CAS chunk store.
+	time.Sleep(80 * time.Millisecond)
+	for i := 0; i < 16; i++ {
+		if err := env.local.ForceRollupForTest(ctx, payloadID); err != nil {
+			t.Fatalf("ForceRollupForTest: %v", err)
+		}
+		if env.local.IntervalsLenForTest(payloadID) == 0 {
+			break
+		}
 	}
 	env.local.SyncFileBlocks(ctx)
 
