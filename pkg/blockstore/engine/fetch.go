@@ -324,8 +324,14 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 			completionErr = wrapped
 			return nil, false, wrapped
 		}
-		completionErr = err
-		return nil, false, fmt.Errorf("download block %s: %w", storeKey, err)
+		// Mirror the ErrBlockNotFound branch above: piggyback waiters
+		// read completionErr after result.done closes (via the deferred
+		// completeInFlight), so we MUST set completionErr to the same
+		// wrapped error the direct caller sees — otherwise the waiter
+		// receives the raw err and the error chain is inconsistent
+		// between the two return paths.
+		completionErr = fmt.Errorf("download block %s: %w", storeKey, err)
+		return nil, false, completionErr
 	}
 	if storeKey == "" || data == nil {
 		return nil, true, nil
