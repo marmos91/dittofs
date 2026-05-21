@@ -276,6 +276,50 @@ func TestBuildFileInfoFromStore_FileStreamInformation(t *testing.T) {
 	})
 }
 
+func TestFileInfoClassRequiredAccess(t *testing.T) {
+	tests := []struct {
+		name     string
+		class    types.FileInfoClass
+		want     uint32
+		wantGate bool
+	}{
+		// MS-SMB2 §3.3.5.20.1: gated on FILE_READ_ATTRIBUTES.
+		{"basic", types.FileBasicInformation, uint32(types.FileReadAttributes), true},
+		{"all", types.FileAllInformation, uint32(types.FileReadAttributes), true},
+		{"network_open", types.FileNetworkOpenInformation, uint32(types.FileReadAttributes), true},
+		{"attribute_tag", types.FileAttributeTagInformation, uint32(types.FileReadAttributes), true},
+		// MS-SMB2 §3.3.5.20.1: gated on FILE_READ_EA.
+		{"full_ea", 15, uint32(types.FileReadEA), true},
+		// Not gated by the spec — must succeed on any open. This is the
+		// acls.CREATOR / CHECK_ACCESS_FLAGS case that was previously broken
+		// by the blanket FILE_READ_ATTRIBUTES gate.
+		{"access_information", types.FileAccessInformation, 0, false},
+		{"standard_information", types.FileStandardInformation, 0, false},
+		{"internal_information", types.FileInternalInformation, 0, false},
+		{"name_information", types.FileNameInformation, 0, false},
+		{"position_information", types.FilePositionInformation, 0, false},
+		{"mode_information", types.FileModeInformation, 0, false},
+		{"alignment_information", types.FileAlignmentInformation, 0, false},
+		{"stream_information", types.FileStreamInformation, 0, false},
+		{"alternate_name_information", types.FileAlternateNameInformation, 0, false},
+		{"normalized_name_information", types.FileNormalizedNameInformation, 0, false},
+		{"id_information", types.FileIdInformation, 0, false},
+		{"ea_information", types.FileEaInformation, 0, false},
+		{"compression_information", types.FileCompressionInformation, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotRight, gotGate := fileInfoClassRequiredAccess(tt.class)
+			if gotGate != tt.wantGate {
+				t.Errorf("fileInfoClassRequiredAccess(%d) gated=%v, want %v", tt.class, gotGate, tt.wantGate)
+			}
+			if gotRight != tt.want {
+				t.Errorf("fileInfoClassRequiredAccess(%d) right=0x%x, want 0x%x", tt.class, gotRight, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveAccessFlags(t *testing.T) {
 	tests := []struct {
 		name     string

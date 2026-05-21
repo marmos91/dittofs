@@ -272,12 +272,24 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	// ========================================================================
 	// Step 2b: Validate DesiredAccess for QUERY_INFO
 	// ========================================================================
-	// Per MS-SMB2 3.3.5.20.1: For file and filesystem info, the open must
-	// include FILE_READ_ATTRIBUTES. GENERIC_ALL, MAXIMUM_ALLOWED, GENERIC_READ,
-	// and GENERIC_EXECUTE implicitly include FILE_READ_ATTRIBUTES.
-	if req.InfoType == types.SMB2InfoTypeFile || req.InfoType == types.SMB2InfoTypeFilesystem {
-		if !hasAccessRight(openFile.DesiredAccess, uint32(types.FileReadAttributes)) {
-			return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+	// Per MS-SMB2 §3.3.5.20.1: only a closed list of FileInformationClass
+	// values are gated on Open.GrantedAccess. FILE_READ_ATTRIBUTES is
+	// required for FileBasicInformation, FileAllInformation, FilePipe*
+	// (FILE_PIPE_INFORMATION / FILE_PIPE_LOCAL_INFORMATION /
+	// FILE_PIPE_REMOTE_INFORMATION), FileNetworkOpenInformation, and
+	// FileAttributeTagInformation; FILE_READ_EA is required for
+	// FileFullEaInformation. All other classes (FileAccessInformation,
+	// FileStandardInformation, FileInternalInformation, FileNameInformation,
+	// …) are NOT gated and must succeed on opens that lack those rights —
+	// otherwise Samba's `CHECK_ACCESS_FLAGS` macro (smbtorture acls.CREATOR
+	// at acls.c:209, smb2_getinfo of FileAccessInformation on a
+	// FILE_READ_DATA-only handle) fails. Filesystem-class queries are gated
+	// at TreeConnect, not at Open, so no Open-level gate applies here.
+	if req.InfoType == types.SMB2InfoTypeFile {
+		if right, gated := fileInfoClassRequiredAccess(types.FileInfoClass(req.FileInfoClass)); gated {
+			if !hasAccessRight(openFile.DesiredAccess, right) {
+				return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+			}
 		}
 	}
 
@@ -1065,6 +1077,30 @@ func resolveAccessFlags(desiredAccess uint32) uint32 {
 		uint32(types.GenericRead) | uint32(types.GenericWrite) | uint32(types.GenericExecute)
 
 	return resolved
+}
+
+// fileInfoClassRequiredAccess returns the access right Open.GrantedAccess
+// must include for a given SMB2_0_INFO_FILE FileInformationClass, per
+// MS-SMB2 §3.3.5.20.1. The second return value reports whether the class
+// is gated at all — classes not listed in the spec (FileAccessInformation,
+// FileStandardInformation, FileInternalInformation, FileNameInformation,
+// FilePositionInformation, FileModeInformation, FileAlignmentInformation,
+// FileStreamInformation, FileAlternateNameInformation,
+// FileNormalizedNameInformation, FileIdInformation, FileCompressionInformation,
+// FileEaInformation) succeed regardless of GrantedAccess. Pipe-only
+// classes (FILE_PIPE_*, MS-FSCC §2.4) are handled in handlePipeQueryInfo
+// before this gate runs, so we don't need to list them here.
+func fileInfoClassRequiredAccess(class types.FileInfoClass) (uint32, bool) {
+	switch class {
+	case types.FileBasicInformation,
+		types.FileAllInformation,
+		types.FileNetworkOpenInformation,
+		types.FileAttributeTagInformation:
+		return uint32(types.FileReadAttributes), true
+	case 15: // FileFullEaInformation [MS-FSCC §2.4.15]; constant not defined in types pkg
+		return uint32(types.FileReadEA), true
+	}
+	return 0, false
 }
 
 // hasAccessRight checks if the granted access mask includes the required right.
