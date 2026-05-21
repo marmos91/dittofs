@@ -195,9 +195,15 @@ type BlockStoreAppend interface {
 	// upload.
 	//
 	// Implementations MUST be safe to call when no log exists for the
-	// payload (no-op return nil). After DeleteLog returns, the payload
-	// is tombstoned: subsequent AppendWrite for the same payloadID
-	// returns ErrDeleted (or the backend-specific equivalent).
+	// payload (no-op return nil). After DeleteLog returns, the
+	// payload's append-log state is fully reset; a subsequent
+	// AppendWrite for the same payloadID MUST succeed and start a
+	// fresh log (recreate semantics). This is required by DittoFS's
+	// path-based PayloadID lifecycle (metadata/file_helpers.go
+	// buildPayloadID derives PayloadID from shareName + path, so
+	// 'unlink + create at same path' reuses the same PayloadID).
+	// Backends that maintain a tombstone for race-safety reasons MUST
+	// clear it before DeleteLog returns.
 	//
 	// Orphan content-addressed chunks already emitted by a prior
 	// rollup are NOT removed here — they are swept by the mark-sweep

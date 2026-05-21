@@ -39,9 +39,11 @@ func TestDelete_FreshPayload_UnlinksLog(t *testing.T) {
 		t.Fatalf("log file not unlinked after DeleteAppendLog: stat err=%v", err)
 	}
 
-	// Per-file state cleared. FIX-8: the tombstone is intentionally
-	// PRESERVED (lifetime of the FSStore) so a deleted payloadID can
-	// never be silently resurrected; assert it is set, not cleared.
+	// Per-file state cleared. The tombstone is also cleared on success
+	// so subsequent AppendWrites at the same PayloadID resurrect a
+	// fresh log (DittoFS's path-based PayloadID lifecycle — see the
+	// BlockStoreAppend.DeleteLog godoc and FSStore.DeleteAppendLog
+	// tombstone-lifecycle comment for why FIX-8 was reverted).
 	bc.logsMu.RLock()
 	_, hasFD := bc.logFDs["file1"]
 	_, hasLock := bc.logLocks["file1"]
@@ -53,8 +55,8 @@ func TestDelete_FreshPayload_UnlinksLog(t *testing.T) {
 		t.Fatalf("per-file state not cleared: fd=%v lock=%v tree=%v trunc=%v",
 			hasFD, hasLock, hasTree, hasTrunc)
 	}
-	if !hasTomb {
-		t.Fatalf("tombstone unexpectedly cleared after DeleteAppendLog (FIX-8 requires permanence)")
+	if hasTomb {
+		t.Fatalf("tombstone unexpectedly retained after DeleteAppendLog — recreate semantics require it to be cleared")
 	}
 }
 
@@ -136,17 +138,20 @@ func TestDelete_ClosedStore_ReturnsErrStoreClosed(t *testing.T) {
 	}
 }
 
-// TestDelete_DuringActiveWriters_SomeReturnErrDeleted kicks off a burst
-// of AppendWrites while DeleteAppendLog runs mid-stream. At least one
-// write that observes the tombstone must surface ErrDeleted; no panic
-// or data race.
+// TestDelete_DuringActiveWriters_NoDataRace kicks off a burst of
+// AppendWrites while DeleteAppendLog runs mid-stream. The contract
+// is: no panic, no data race, and any error surfaced by AppendWrite
+// is either ErrDeleted (writer raced the in-delete tombstone window)
+// or nil (writer completed before delete OR after the tombstone was
+// cleared at end-of-delete).
 //
-// FIX-8 update: the tombstone is now PERMANENT (see
-// TestDelete_Then_Write_RejectsReuse). Writers that start AFTER
-// DeleteAppendLog returns get ErrDeleted too. This test still asserts
-// the original "at least one mid-stream writer sees ErrDeleted" property
-// — the post-delete writers reinforce it rather than violate it.
-func TestDelete_DuringActiveWriters_SomeReturnErrDeleted(t *testing.T) {
+// Post-Phase-18: the tombstone is cleared at the end of DeleteAppendLog
+// (see TestDelete_Then_Write_ResurrectsLog) so the original "at least
+// one writer observes ErrDeleted" assertion is timing-dependent and
+// flaky — the tombstone window is the duration of one mutex hand-off.
+// This test now only asserts the negative property: no
+// non-ErrDeleted / non-nil errors leak.
+func TestDelete_DuringActiveWriters_NoDataRace(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	bc := newFSStoreWithRS(t, rs)
 	ctx := context.Background()
@@ -202,9 +207,13 @@ func TestDelete_DuringActiveWriters_SomeReturnErrDeleted(t *testing.T) {
 	if otherErrs.Load() > 0 {
 		t.Fatalf("unexpected non-ErrDeleted errors: %d", otherErrs.Load())
 	}
-	if deletedCount.Load() == 0 {
-		t.Fatalf("expected at least one AppendWrite to observe ErrDeleted; got 0")
-	}
+	// Post-Phase-18: no minimum-deletedCount assertion. The tombstone
+	// is cleared at the end of DeleteAppendLog so writers arriving
+	// after the delete returns succeed (deletedCount may be 0). The
+	// remaining invariant is that no unexpected error class leaks.
+	// Read deletedCount via Load() to avoid copying the atomic struct
+	// (sync/atomic.noCopy guard surfaced by `go vet`).
+	_ = deletedCount.Load()
 }
 
 // TestDelete_DuringActiveRollup_NoMetadataZombie — plan-checker Blocker 3
@@ -507,18 +516,19 @@ func TestTruncate_Rollup_SkipsBeyondBoundary(t *testing.T) {
 	}
 }
 
-// TestDelete_Then_Write_RejectsReuse verifies the FIX-8 invariant:
-// tombstones are PERMANENT for the lifetime of the FSStore. After
-// DeleteAppendLog returns, any subsequent AppendWrite on the same
-// payloadID returns ErrDeleted. Callers that need a "delete + recreate"
-// flow must allocate a fresh payloadID — the metadata layer's opaque
-// file-handle abstraction already does this transparently.
+// TestDelete_Then_Write_ResurrectsLog verifies the post-Phase-18
+// invariant: a DeleteAppendLog followed by an AppendWrite on the SAME
+// payloadID must succeed and create a fresh log. This is required by
+// DittoFS's path-based PayloadID lifecycle — metadata.buildPayloadID
+// derives PayloadID from shareName + path, so 'unlink + create at
+// same path' reuses the PayloadID. Exposed by pjdfstest chmod/12.t,
+// unlink/14.t, open/00.t on NFSv3 (NFSv4 silly-rename masks it).
 //
-// Previously this test asserted the opposite (that re-use succeeded);
-// the change reflects the FIX-8 semantic shift, which closes a
-// re-creation race where a stale wakeup could resurrect a deleted
-// payloadID with on-disk state divergent from metadata's view.
-func TestDelete_Then_Write_RejectsReuse(t *testing.T) {
+// Reverses the prior FIX-8 invariant (tombstone permanent for the
+// process lifetime) — the drain barrier in DeleteAppendLog step 2
+// closes the clear-on-success resurrection race FIX-8 was guarding
+// against.
+func TestDelete_Then_Write_ResurrectsLog(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	bc := newFSStoreWithRS(t, rs)
 	ctx := context.Background()
@@ -530,17 +540,16 @@ func TestDelete_Then_Write_RejectsReuse(t *testing.T) {
 		t.Fatalf("DeleteAppendLog: %v", err)
 	}
 
-	// Re-append on the SAME payloadID after delete — must be rejected.
-	if err := bc.AppendWrite(ctx, "f1", []byte("v2"), 0); !errors.Is(err, ErrDeleted) {
-		t.Fatalf("AppendWrite post-delete on reused payloadID: got %v want ErrDeleted", err)
+	// Re-append on the SAME payloadID after delete — must succeed.
+	if err := bc.AppendWrite(ctx, "f1", []byte("v2"), 0); err != nil {
+		t.Fatalf("AppendWrite post-delete on reused payloadID: got %v want nil (recreate semantics)", err)
 	}
 	logPath := filepath.Join(bc.baseDir, "logs", "f1.log")
-	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
-		t.Fatalf("log unexpectedly re-created after rejected reuse: stat err=%v", err)
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("log not re-created after recreate: %v", err)
 	}
 
-	// A FRESH payloadID after delete — must succeed (the abstraction the
-	// metadata layer relies on for file recreation).
+	// A FRESH payloadID after delete — also still works.
 	if err := bc.AppendWrite(ctx, "f1-gen2", []byte("v2"), 0); err != nil {
 		t.Fatalf("AppendWrite on fresh payloadID after delete: got %v want nil", err)
 	}

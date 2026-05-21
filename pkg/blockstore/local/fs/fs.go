@@ -188,7 +188,11 @@ type FSStore struct {
 	// deleted by DeleteAppendLog (plan 09). rollupFile (plan 06) consults
 	// this BEFORE and AFTER the per-file mutex hand-off to ensure no
 	// rollup_offset gets persisted for a dead payload. Initialized in New
-	// alongside the other logs-* maps.
+	// alongside the other logs-* maps. Cleared at the end of
+	// DeleteAppendLog so subsequent AppendWrites can resurrect the
+	// payloadID (DittoFS's metadata layer derives PayloadID from
+	// shareName + path, so 'unlink + create at same path' reuses the
+	// PayloadID and must succeed).
 	tombstones map[string]struct{}
 
 	// truncations records per-payload truncation boundaries set by

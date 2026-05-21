@@ -64,9 +64,6 @@ type MemoryStore struct {
 	// AppendWrite (cheap for an in-memory test fixture).
 	appendLogs map[string]*appendLog
 
-	// tombstones marks payloadIDs whose append log was deleted.
-	tombstones map[string]struct{}
-
 	// chunkEmitter, if non-nil, is invoked once per CAS chunk freshly
 	// emitted by rollup. Installed by engine.New (and by test
 	// harnesses) so downstream FileBlock metadata can mirror the
@@ -101,7 +98,6 @@ func New() *MemoryStore {
 		files:      make(map[string]uint64),
 		cas:        make(map[blockstore.ContentHash]casEntry),
 		appendLogs: make(map[string]*appendLog),
-		tombstones: make(map[string]struct{}),
 	}
 }
 
@@ -299,6 +295,14 @@ func (s *MemoryStore) ListUnsynced(ctx context.Context) iter.Seq2[blockstore.Con
 // rollup goroutine; the in-memory backend runs it inline because the
 // test surface needs deterministic post-AppendWrite Walk visibility.
 //
+// A prior DeleteLog on the same payloadID does NOT permanently block
+// subsequent AppendWrites: the memory store's rollup is synchronous
+// under the same write lock as DeleteLog, so there is no
+// async-rollup-completion race to guard against. Recreate-at-same-id
+// is supported (DittoFS's metadata layer derives PayloadID from
+// shareName + path, so 'unlink + create at same path' reuses the
+// same payloadID — see metadata/file_helpers.go buildPayloadID).
+//
 // Implements blockstore.BlockStoreAppend.
 func (s *MemoryStore) AppendWrite(_ context.Context, payloadID string, data []byte, offset uint64) error {
 	if len(data) == 0 {
@@ -308,9 +312,6 @@ func (s *MemoryStore) AppendWrite(_ context.Context, payloadID string, data []by
 	defer s.mu.Unlock()
 	if s.closed {
 		return ErrStoreClosed
-	}
-	if _, tombstoned := s.tombstones[payloadID]; tombstoned {
-		return fmt.Errorf("blockstore.memory: AppendWrite on tombstoned payload %q", payloadID)
 	}
 	log, ok := s.appendLogs[payloadID]
 	if !ok {
@@ -408,9 +409,12 @@ func (s *MemoryStore) ReadPayloadAt(_ context.Context, payloadID string, dest []
 	return len(dest), nil
 }
 
-// DeleteLog removes the per-payload append-log buffer and tombstones
-// the payloadID. Already-rolled-up CAS chunks remain in the store —
-// orphan-chunk cleanup is GC's responsibility per the contract.
+// DeleteLog removes the per-payload append-log buffer and clears the
+// tracked file-size entry. Already-rolled-up CAS chunks remain in
+// the store — orphan-chunk cleanup is GC's responsibility per the
+// contract. Subsequent AppendWrites for the same payloadID resurrect
+// a fresh log (required by DittoFS's path-based PayloadID lifecycle:
+// unlink + create at the same path reuses the same PayloadID).
 //
 // Implements blockstore.BlockStoreAppend.
 func (s *MemoryStore) DeleteLog(_ context.Context, payloadID string) error {
@@ -420,7 +424,7 @@ func (s *MemoryStore) DeleteLog(_ context.Context, payloadID string) error {
 		return ErrStoreClosed
 	}
 	delete(s.appendLogs, payloadID)
-	s.tombstones[payloadID] = struct{}{}
+	delete(s.files, payloadID)
 	return nil
 }
 
