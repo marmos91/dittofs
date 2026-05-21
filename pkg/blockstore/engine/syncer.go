@@ -40,27 +40,13 @@ type Syncer struct {
 	// FileAttr.Blocks and lets us drop the wider interface.
 	fileBlockStore blockstore.EngineFileBlockStore // Required: enables content-addressed deduplication
 
-	// coordinator is the post-Flush + file-level-dedup seam (Phase 12
-	// D-37 / D-20; Phase 13 BSCAS-04 / BSCAS-05 / Plans 13-12 + 13-13).
-	//
-	// Wiring (production state, post-Plans 13-12 + 13-13):
-	//   - Syncer.Flush invokes coordinator.GetFileObjectID + Syncer.
-	//     TrySpeculativeFileLevelDedup BEFORE the per-block drain.
-	//     On hit, applyFileLevelDedupHit performs RefCount swap +
-	//     PersistFileBlocks + cache invalidate + log truncate (one
-	//     metadata txn) and returns Finalized:true. Per-block pump is
-	//     skipped — zero new CAS PUTs.
-	//   - On miss, Syncer.Flush runs drainPayloadToRemote (per-block
-	//     uploadOne pump) and finalizes with persistFileBlocksAfterFlush
-	//     so FileAttr.Blocks AND FileAttr.ObjectID are written in one
-	//     metadata txn via the runtime coordinator's PersistFileBlocks.
-	//
-	// uploadOne and SyncNow remain block-scoped — they do NOT invoke
-	// the post-Flush hook. The hook is the responsibility of Syncer.
-	// Flush, which has the per-payloadID context the hook needs.
-	//
-	// May be nil in unit tests; production callers always wire a real
-	// coordinator via SetCoordinator.
+	// coordinator is the metadata-side seam the file-level dedup short-
+	// circuit and (post-rollup) PersistFileBlocks hook consult. The
+	// rollup-time persist call now fires from the local store's
+	// ObjectIDPersister callback (engine.New installs a closure that
+	// delegates here); the Syncer's mirror-loop Flush no longer drives
+	// PersistFileBlocks directly. May be nil in unit tests; production
+	// callers wire a real coordinator via SetCoordinator.
 	coordinator MetadataCoordinator
 
 	// syncedHashStore persists per-CAS-hash local→remote mirror state.
@@ -646,27 +632,16 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 	go m.periodicUploader(ctx, interval)
 }
 
-// SyncNow triggers an immediate upload cycle for all local blocks,
-// bypassing any age filter. Blocks until all eligible blocks are uploaded
-// or the context is cancelled. Returns nil on full success, ctx.Err() on
-// cancellation, or a joined error listing every block that failed to upload —
-// callers such as the REST /drain-uploads endpoint and Close() rely on this
-// signal.
+// SyncNow triggers an immediate mirror-loop pass for every locally
+// stored CAS chunk that has not yet been marked synced. Blocks until
+// the pass completes or the context is cancelled. Returns nil on full
+// success, ctx.Err() on cancellation, or a wrapped error from the
+// mirror loop. Callers such as the REST /drain-uploads endpoint and
+// Close() rely on this signal.
 //
-// Phase 11 Plan 02 (D-13/D-15/D-25): each cycle calls claimBatch to flip up
-// to ClaimBatchSize Pending rows to Syncing via per-row PutFileBlock writes
-// (no batched/transactional FileBlockStore API exists today — Phase 12+).
-// Each row's CAS Pending→Syncing flip is atomic on its own, but the batch
-// is NOT collectively atomic; a syncer crash mid-batch leaves a mix of
-// Syncing and Pending rows. CAS idempotency tolerates that: on restart,
-// reconciler reclaims orphaned Syncing rows back to Pending, and a second
-// uploadOne over the same hash is a no-op against the immutable CAS object.
-// A bounded pool of UploadConcurrency goroutines then drives uploadOne for
-// every claimed block. The cycle repeats until claimBatch returns an empty
-// batch (no more Pending work).
-//
-// SyncNow also serializes against the periodic uploader via the m.uploading
-// gate so concurrent callers do not double-claim the same row.
+// Serializes against the periodic uploader via the m.uploading atomic
+// gate so the explicit drain and the periodic tick never both run the
+// mirror loop concurrently.
 func (m *Syncer) SyncNow(ctx context.Context) error {
 	if m.remoteStore == nil {
 		return nil
@@ -680,106 +655,11 @@ func (m *Syncer) SyncNow(ctx context.Context) error {
 	}
 	defer m.uploading.Store(false)
 
-	// Flush queued FileBlock metadata to the store so ListLocalBlocks can find them.
+	// Flush queued FileBlock metadata to the store so the mirror loop
+	// picks up recently rolled-up chunks.
 	m.local.SyncFileBlocks(ctx)
 
-	var uploadErrs []error
-	for {
-		if err := ctx.Err(); err != nil {
-			if len(uploadErrs) > 0 {
-				return errors.Join(append(uploadErrs, err)...)
-			}
-			return err
-		}
-		batch, err := m.claimBatch(ctx, m.config.ClaimBatchSize)
-		if err != nil {
-			return fmt.Errorf("claim batch: %w", err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-
-		// Bounded share-wide upload pool (D-25).
-		sem := make(chan struct{}, m.config.UploadConcurrency)
-		var wg gosync.WaitGroup
-		var errMu gosync.Mutex
-		for _, fb := range batch {
-			fb := fb
-			if fb.LocalPath == "" {
-				continue
-			}
-			wg.Add(1)
-			sem <- struct{}{}
-			go func() {
-				defer wg.Done()
-				defer func() { <-sem }()
-				if err := m.uploadOne(ctx, fb); err != nil {
-					// Per D-14, the row is left in Syncing on failure —
-					// the janitor (or the next SyncNow after ClaimTimeout)
-					// will requeue it. Logged at DEBUG.
-					logger.Debug("uploadOne failed; row remains Syncing",
-						"blockID", fb.ID, "error", err)
-					errMu.Lock()
-					uploadErrs = append(uploadErrs, err)
-					errMu.Unlock()
-				}
-			}()
-		}
-		wg.Wait()
-	}
-	return errors.Join(uploadErrs...)
-}
-
-// claimBatch flips up to max Pending blocks to Syncing via per-row
-// PutFileBlock writes (FileBlockStore exposes no batched/transactional
-// claim API today; Phase 12+). Each row's transition is atomic on its own
-// but the batch is NOT collectively atomic — a syncer crash mid-batch
-// leaves a mix of Syncing and Pending rows. CAS idempotency tolerates the
-// resulting partial state: recoverStaleSyncing returns the abandoned
-// Syncing rows to Pending, and any duplicate uploadOne over the same hash
-// is a no-op against the immutable CAS object. Stamps
-// LastSyncAttemptAt = now on every claimed row.
-//
-// Serialization scope (D-13): WITHIN ONE syncer instance, PutFileBlock is
-// applied per row before the next iteration sees it, so two concurrent
-// claimBatch callers in the same process cannot both observe + claim the
-// same row (the m.uploading gate also serializes SyncNow against the
-// periodic uploader at a coarser layer).
-//
-// ACROSS syncer instances (multi-process / multi-node) this method does
-// NOT serialize: two syncers can each ListLocalBlocks the same Pending
-// row before either calls PutFileBlock, both flip it to Syncing, and
-// both upload. This is TOLERATED because CAS keys are content-defined
-// (D-11 / INV-03) — the duplicate PUT is byte-identical to the same
-// key and the second PutFileBlock simply overwrites the first with the
-// same payload. A future ChangeStream / SELECT FOR UPDATE / WHERE-state
-// guard could close the cross-process window without coordination, but
-// the CAS idempotency makes the current contract correct.
-func (m *Syncer) claimBatch(ctx context.Context, max int) ([]*blockstore.FileBlock, error) {
-	if max <= 0 {
-		max = m.config.ClaimBatchSize
-	}
-	pending, err := m.fileBlockStore.ListPending(ctx, 0, max)
-	if err != nil {
-		return nil, fmt.Errorf("list local blocks: %w", err)
-	}
-	if len(pending) == 0 {
-		return nil, nil
-	}
-	now := time.Now()
-	claimed := make([]*blockstore.FileBlock, 0, len(pending))
-	for _, fb := range pending {
-		if fb == nil || fb.State != blockstore.BlockStatePending {
-			continue
-		}
-		fb.State = blockstore.BlockStateSyncing
-		fb.LastSyncAttemptAt = now
-		if err := m.fileBlockStore.Put(ctx, fb); err != nil {
-			return nil, fmt.Errorf("claim block %s: %w", fb.ID, err)
-		}
-		claimed = append(claimed, fb)
-	}
-	return claimed, nil
+	return m.mirrorOnce(ctx)
 }
 
 // recoverStaleSyncing requeues blocks left in Syncing by a previous run
