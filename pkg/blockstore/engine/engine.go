@@ -354,7 +354,7 @@ func (bs *BlockStore) WriteAt(ctx context.Context, payloadID string, currentBloc
 	if len(data) == 0 {
 		return currentBlocks, nil
 	}
-	if err := bs.local.WriteAt(ctx, payloadID, data, offset); err != nil {
+	if err := bs.local.AppendWrite(ctx, payloadID, data, offset); err != nil {
 		return currentBlocks, err
 	}
 	// Cache invalidation lives in common.WriteToBlockStore (post-txn),

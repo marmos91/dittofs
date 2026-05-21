@@ -119,8 +119,13 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 		return nil, nil
 	}
 
-	offset := blockIdx * uint64(BlockSize)
-	if err := m.local.WriteFromRemote(ctx, payloadID, data, offset); err != nil {
+	// CAS rewire: persist the downloaded bytes to the local CAS chunk
+	// store under fb.Hash (verified by ReadBlockVerified above). The
+	// previous WriteFromRemote method buffered into the legacy memBlock
+	// + .blk file layout; the unified post-Phase-17 read path resolves
+	// (payloadID, blockIdx) → FileBlock.Hash → local.Get(hash), so the
+	// downloaded bytes only need to land in the CAS chunk store.
+	if err := m.local.Put(ctx, fb.Hash, data); err != nil {
 		return nil, fmt.Errorf("store downloaded block %s locally: %w", storeKey, err)
 	}
 
@@ -278,8 +283,12 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 	// Store locally synchronously; data is already downloaded so there's no
 	// reason to hold it in a background goroutine. Under high concurrency,
 	// background goroutines each holding 8MB data caused OOM.
-	blockOffset := blockIdx * uint64(BlockSize)
-	if writeErr := m.local.WriteFromRemote(ctx, payloadID, data, blockOffset); writeErr != nil {
+	//
+	// CAS rewire: write under fb.Hash (verified by ReadBlockVerified). The
+	// unified post-Phase-17 read path resolves (payloadID, blockIdx) →
+	// FileBlock.Hash → local.Get(hash), so the downloaded bytes only need
+	// to land in the CAS chunk store.
+	if writeErr := m.local.Put(ctx, fb.Hash, data); writeErr != nil {
 		logger.Warn("inline download: local write failed",
 			"block", key, "error", writeErr)
 	}
