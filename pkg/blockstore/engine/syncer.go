@@ -398,10 +398,19 @@ func (m *Syncer) DrainAllUploads(ctx context.Context) error {
 //
 // Blocks are stored under content-addressed keys (cas/XX/YY/<hash>),
 // so we resolve via FileBlock metadata: enumerate every block belonging
-// to payloadID, find the highest-indexed Remote block, and compute
-// size = maxIdx*BlockSize + lastBlock.DataSize. DataSize is stamped by
-// the mirror loop's Put-then-Mark sequence before flipping State to
-// Remote, so no extra S3 round-trip is needed.
+// to payloadID, find the highest-offset remote-mirrored chunk, and
+// compute size = chunkOffset + chunk.DataSize. DataSize is stamped at
+// rollup time, so no extra S3 round-trip is needed.
+//
+// Phase 18 (mirror loop): mirrorOnce writes to remote.Put + MarkSynced
+// but never transitions FileBlock.State to BlockStateRemote (the row
+// state remains Pending/Syncing for the life of the payload). The
+// authoritative per-hash mirror signal is therefore SyncedHashStore —
+// not FileBlock.State. Each candidate row is included only if
+// syncedHashStore.IsSynced(fb.Hash) returns true. If the SyncedHashStore
+// is not wired (test fixtures), no chunks count as remote-mirrored and
+// the function returns 0 — matching the pre-Phase-18 semantics where
+// State==Remote was never set in that configuration either.
 func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return 0, err
@@ -425,20 +434,35 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 		return 0, nil
 	}
 
+	m.mu.RLock()
+	hashStore := m.syncedHashStore
+	m.mu.RUnlock()
+	if hashStore == nil {
+		// No mirror-state oracle wired — cannot prove any chunk is
+		// remote-resident. Match the pre-fix behavior where State==Remote
+		// was never observed without a SyncedHashStore.
+		return 0, nil
+	}
+
 	// ListFileBlocks returns blocks ordered by absolute chunk offset.
-	// Walk from the end to find the highest-offset Remote block (skip
-	// any trailing Pending/Syncing rows that haven't been confirmed in
-	// the remote store yet — they MUST NOT contribute to the remote-side
-	// size). Phase 18: the trailing ID component is the chunk's absolute
-	// byte Offset (FastCDC), not a synthetic blockIdx — do NOT multiply
-	// by BlockSize.
+	// Walk from the end to find the highest-offset remote-mirrored chunk.
+	// Phase 18: the trailing ID component is the chunk's absolute byte
+	// Offset (FastCDC), not a synthetic blockIdx — do NOT multiply by
+	// BlockSize.
 	prefix := payloadID + "/"
 	for i := len(blocks) - 1; i >= 0; i-- {
 		fb := blocks[i]
-		if fb.State != blockstore.BlockStateRemote {
+		if fb == nil || fb.Hash.IsZero() {
 			continue
 		}
 		if len(fb.ID) <= len(prefix) || fb.ID[:len(prefix)] != prefix {
+			continue
+		}
+		synced, err := hashStore.IsSynced(ctx, fb.Hash)
+		if err != nil {
+			return 0, fmt.Errorf("is synced %s: %w", fb.Hash, err)
+		}
+		if !synced {
 			continue
 		}
 		chunkOffset, ok := parseChunkOffsetFromID(fb.ID)
@@ -452,10 +476,13 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 
 // Exists checks if any blocks exist for a file in the remote store.
 //
-// Phase 11 (CAS): metadata-driven existence check. Returns true iff at
-// least one FileBlock for payloadID has reached BlockStateRemote (i.e.
-// the engine has confirmed at least one PUT into CAS storage). Pending
-// and Syncing rows do NOT count — those are still local-only.
+// Phase 18: file existence is gated on SyncedHashStore — a chunk is
+// considered remote-resident iff syncedHashStore.IsSynced(fb.Hash)
+// returns true. The mirror loop (mirrorOnce) does not transition
+// FileBlock.State to BlockStateRemote, so the legacy State filter is no
+// longer authoritative. If no SyncedHashStore is wired (test fixtures),
+// Exists returns false — matching the pre-fix behavior under the same
+// configuration.
 func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return false, err
@@ -474,8 +501,23 @@ func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("list file blocks for %s: %w", payloadID, err)
 	}
+
+	m.mu.RLock()
+	hashStore := m.syncedHashStore
+	m.mu.RUnlock()
+	if hashStore == nil {
+		return false, nil
+	}
+
 	for _, fb := range blocks {
-		if fb.State == blockstore.BlockStateRemote {
+		if fb == nil || fb.Hash.IsZero() {
+			continue
+		}
+		synced, err := hashStore.IsSynced(ctx, fb.Hash)
+		if err != nil {
+			return false, fmt.Errorf("is synced %s: %w", fb.Hash, err)
+		}
+		if synced {
 			return true, nil
 		}
 	}
