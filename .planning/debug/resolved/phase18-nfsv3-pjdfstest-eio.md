@@ -88,16 +88,31 @@ fix: |
   that exercises the cycle on every backend.
 
 verification: |
-  Local: go build, go vet, gofmt -s -l, go test -race for
-  pkg/blockstore/..., pkg/metadata/..., pkg/controlplane/...,
-  internal/adapter/nfs/... — all PASS.
-  CI: pushed to gsd/phase-18-syncer-simplification; PR #537 NFS v3 / Memory
-  job should now report only the documented utimensat/09.t known failure.
+  Local: go build, go vet, gofmt -s -l, go test -race -count=20 for
+  pkg/blockstore/local/fs (the stress-prone TestDelete_DuringActiveWriters),
+  go test -race -count=1 for pkg/blockstore/..., pkg/metadata/...,
+  pkg/controlplane/..., internal/adapter/nfs/... — all PASS.
+
+  CI on gsd/phase-18-syncer-simplification (run 26228952920 Unit Tests,
+  run 26228953018 POSIX Compliance Tests):
+    - Unit Tests (1.25.x): SUCCESS
+    - NFS v3 / Memory: SUCCESS (was failing before fix)
+    - NFS v4 / Memory: SUCCESS
+    - NFS v4.1 / Memory: SUCCESS
+    - E2E Tests: SUCCESS
+    - Integration Tests (1.25.x): SUCCESS
+    - Format & Vet: SUCCESS
+    - golangci-lint: SUCCESS
+
+  Follow-up fix e2ee8458 addresses a use-after-close race exposed by the
+  initial 43690b2e: the in-flight writer that snapshotted lf before
+  DeleteAppendLog runs must surface ErrDeleted (mirrors the rollup-side
+  curLf != lf bail in rollup.go) rather than write to the closed fd.
 
 files_changed:
-  - pkg/blockstore/blockstore.go              # DeleteLog godoc: recreate semantics
-  - pkg/blockstore/blockstoretest/appendlog.go  # add RecreateAfterDeleteLog scenario
-  - pkg/blockstore/local/memory/memory.go     # drop tombstones map; clear files map in DeleteLog
-  - pkg/blockstore/local/fs/appendwrite.go    # clear tombstone at end of DeleteAppendLog
-  - pkg/blockstore/local/fs/fs.go             # update tombstones field godoc
-  - pkg/blockstore/local/fs/delete_truncate_test.go  # flip FIX-8 assertions to recreate semantics
+  - pkg/blockstore/blockstore.go              # DeleteLog godoc: recreate semantics (43690b2e)
+  - pkg/blockstore/blockstoretest/appendlog.go  # add RecreateAfterDeleteLog scenario (43690b2e)
+  - pkg/blockstore/local/memory/memory.go     # drop tombstones map; clear files map in DeleteLog (43690b2e)
+  - pkg/blockstore/local/fs/appendwrite.go    # clear tombstone at end of DeleteAppendLog (43690b2e) + stale-lf bail in AppendWrite (e2ee8458)
+  - pkg/blockstore/local/fs/fs.go             # update tombstones field godoc (43690b2e)
+  - pkg/blockstore/local/fs/delete_truncate_test.go  # flip FIX-8 assertions to recreate semantics (43690b2e)
