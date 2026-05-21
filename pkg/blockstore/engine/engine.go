@@ -8,6 +8,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/blockstore/chunker"
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	"github.com/marmos91/dittofs/pkg/health"
@@ -680,6 +681,48 @@ func (bs *BlockStore) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadI
 // the Cache is CAS-keyed and Flush has no BlockRef snapshot at this
 // layer to translate flushed bytes into hash-keyed cache entries.
 func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
+	// Phase 19 Opt 4 (D-13/D-14/D-16): eager small-file dedup BEFORE
+	// the speculative path. Files at or below chunker.MinChunkSize
+	// (1 MiB) emit a single chunk under FastCDC anyway; hashing the
+	// whole content in RAM and consulting metadata.FindByObjectID
+	// skips chunker + log + CAS write entirely on hit. Sibling fast-
+	// path; shares applyFileLevelDedupHit's finalize machinery so
+	// STATE-01..03 + cache invalidation + D-11 appendlog cleanup
+	// invariants remain identical to the speculative path.
+	//
+	// Source-of-truth for the in-RAM bytes: bs.local.ReadPayloadAt
+	// consults the per-payload appendlog (pre-rollup bytes) before
+	// the FileBlock manifest, which is the right surface — eager runs
+	// BEFORE the rollup commits anything to CAS. For local stores that
+	// have already rolled up (the in-memory backend's synchronous
+	// rollup, FSStore steady state), ReadPayloadAt walks the manifest
+	// and serves the same bytes from the now-stored chunks; the eager
+	// path's hash + lookup are identical either way.
+	//
+	// Outer size gate at the call site is intentionally defensive
+	// (tryEagerSmallFileDedup re-checks internally — that gate is the
+	// real authority) but lets us skip the ReadPayloadAt alloc + I/O
+	// entirely for large files.
+	if bs.coordinator != nil {
+		if size, found := bs.local.GetFileSize(ctx, payloadID); found && size > 0 && size <= chunker.MinChunkSize {
+			data := make([]byte, size)
+			n, err := bs.local.ReadPayloadAt(ctx, payloadID, data, 0)
+			// On a clean read we have the full payload in RAM; consult
+			// eager dedup. A short / errored read is treated as "skip
+			// eager and fall through to speculative" — the eager
+			// optimisation is opportunistic and never blocks Flush.
+			if err == nil && n == int(size) {
+				hit, derr := bs.syncer.tryEagerSmallFileDedup(ctx, payloadID, data)
+				if derr != nil {
+					return nil, fmt.Errorf("eager small-file dedup: %w", derr)
+				}
+				if hit {
+					return &blockstore.FlushResult{Finalized: true}, nil
+				}
+			}
+		}
+	}
+
 	// File-level dedup pre-hook: if a fully-quiesced manifest matches
 	// an already-stored ObjectID, skip the upload pump entirely.
 	if bs.coordinator != nil {
