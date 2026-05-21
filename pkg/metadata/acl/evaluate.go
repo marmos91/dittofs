@@ -76,22 +76,22 @@ const ownerImplicitRights = ACE4_READ_ACL | ACE4_WRITE_ACL | ACE4_WRITE_OWNER
 //     - AUDIT/ALARM: skip (store-only per project decision)
 //  5. Once all requested bits are decided, stop early.
 //  6. Owner-implicit pass (MS-DTYP §2.5.3.2): if the requester is the file
-//     owner AND no OWNER_RIGHTS ACE is present, OR `ownerImplicitRights`
-//     into `allowedBits` for any of those bits not already denied. Explicit
+//     owner AND no OWNER_RIGHTS ACE is present, add `ownerImplicitRights`
+//     to `allowedBits`, masked by the bits not already denied. Explicit
 //     DENY in the DACL still wins per-bit.
 //  7. Return true if and only if ALL requested bits are in allowedBits.
 func Evaluate(a *ACL, evalCtx *EvaluateContext, requestedMask uint32) bool {
 	if requestedMask == 0 {
 		return true
 	}
+	// A nil ACL means "no DACL at all" — distinct from an empty DACL.
+	// An empty DACL (len(a.ACEs) == 0) is the MS-DTYP §2.5.3 "deny all"
+	// case but §2.5.3.2 still grants the file owner READ_CONTROL|
+	// WRITE_DAC|WRITE_OWNER, so we must fall through to the owner-implicit
+	// pass below rather than short-circuiting here.
 	if a == nil {
 		return false
 	}
-	// Empty DACL: per MS-DTYP §2.5.3 the explicit grant set is empty
-	// ("deny all"). MS-DTYP §2.5.3.2 still applies — the file owner
-	// receives the implicit READ_CONTROL|WRITE_DAC|WRITE_OWNER grants
-	// even when no ACE is present. Fall through to the owner-implicit
-	// pass below; non-owners terminate with an empty allowedBits.
 
 	// First pass: does this DACL contain any effective OWNER_RIGHTS ACE
 	// that affects access decisions? The override only matters when the
@@ -99,8 +99,9 @@ func Evaluate(a *ACL, evalCtx *EvaluateContext, requestedMask uint32) bool {
 	// AUDIT/ALARM ACEs are evaluation no-ops and must not trigger the
 	// override — only ACCESS_ALLOWED/ACCESS_DENIED count. Inherit-only
 	// entries don't apply to access checks, so they don't count either.
+	requesterIsOwner := evalCtx.UID == evalCtx.FileOwnerUID
 	var ownerRightsPresent bool
-	if evalCtx.UID == evalCtx.FileOwnerUID {
+	if requesterIsOwner {
 		for i := range a.ACEs {
 			ace := &a.ACEs[i]
 			if ace.IsInheritOnly() {
@@ -159,7 +160,7 @@ func Evaluate(a *ACL, evalCtx *EvaluateContext, requestedMask uint32) bool {
 	// MS-DTYP §2.5.3.2 owner implicit grants: layered after the DACL walk
 	// so explicit DENY ACEs still win per-bit. Suppressed when OWNER_RIGHTS
 	// is present (§2.5.3 — OWNER_RIGHTS is the sole authority for the owner).
-	if evalCtx.UID == evalCtx.FileOwnerUID && !ownerRightsPresent {
+	if requesterIsOwner && !ownerRightsPresent {
 		allowedBits |= ownerImplicitRights &^ deniedBits
 	}
 
