@@ -539,10 +539,10 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - [x] 19-02-PLAN.md — AddRef implementations across memory + badger + postgres backends (wave 1)
   - [x] 19-03-PLAN.md — dedup_lru.go + groupcommit.go standalone units + pkg/config/blockstore.go DedupLRUSize knob (wave 1)
   - [x] 19-04-PLAN.md — FSStoreOptions.OnChunkComplete + DedupLRUSize slots + FSStore field instantiation (wave 1)
-  - [ ] 19-05-PLAN.md — Opt 1 wire-in: rollup.go LRU consult + AddRef fast-path (wave 2)
+  - [x] 19-05-PLAN.md — Opt 1 wire-in: rollup.go LRU consult + AddRef fast-path (wave 2)
   - [x] 19-06-PLAN.md — Opt 2 wire-in: appendwrite.go:259 fsync coalesce via per-logFile groupCommit (wave 2)
-  - [ ] 19-07-PLAN.md — Opt 3 wire-in: chunkstore.lruTouch fires OnChunkComplete; engine wires to Cache.Put (wave 2)
-  - [ ] 19-08-PLAN.md — Opt 4 wire-in: eager small-file dedup in engine.Flush before trySpeculativeFileLevelDedup (wave 2)
+  - [x] 19-07-PLAN.md — Opt 3 wire-in: chunkstore.lruTouch fires OnChunkComplete; engine wires to Cache.Put (wave 2)
+  - [x] 19-08-PLAN.md — Opt 4 wire-in: eager small-file dedup in engine.Flush before trySpeculativeFileLevelDedup (wave 2)
   - [ ] 19-09-PLAN.md — Correctness + perf benches + D-21 aggregate gate tightening to ≤1.00 (wave 3)
   - [ ] 19-10-PLAN.md — D-23 ClaimBatchSize deletion + D-24 admin-method audit + D-25 marker audit + D-26 tmpfs spill anchor + doc.go (wave 4)
 
