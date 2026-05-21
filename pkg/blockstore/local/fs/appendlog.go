@@ -102,6 +102,15 @@ func unmarshalHeader(buf []byte) (logHeader, error) {
 //
 // Returns the number of bytes written (including both the 16-byte frame
 // header and the payload).
+//
+// TRANSITIONAL-NEXT-MILESTONE: tmpfs spill (see #519 "Deferred to v0.17+").
+// When tmpfs spill lands, the in-RAM appendlog buffer will spill to a
+// memory-backed temp tier (typically /dev/shm) before disk, eliminating
+// the SSD wear cost for log churn under burst write workloads. The
+// current implementation spills directly to the on-disk log fd; tmpfs
+// spill inserts an intermediate tier — writeRecord's signature stays
+// (w io.Writer accepts either fd), only the caller's choice of `w`
+// changes.
 func writeRecord(w io.Writer, fileOffset uint64, payload []byte) (int, error) {
 	if len(payload) > int(^uint32(0)) {
 		return 0, fmt.Errorf("append log: payload too large (%d)", len(payload))

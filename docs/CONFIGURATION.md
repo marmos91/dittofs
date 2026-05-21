@@ -346,15 +346,9 @@ local block store's `config` JSON under the `syncer` and `gc` sub-maps:
 blockstore:
   syncer:
     tick: 30s                   # Periodic sync interval. Default 30s.
-    claim_batch_size: 32        # Pending blocks claimed per syncer cycle.
-                                # Default 32. Bounds metadata write rate
-                                # to 1 batched txn per tick rather than
-                                # one per block.
     upload_concurrency: 8       # Parallel uploads per share.
-                                # Default 8; MUST be <= claim_batch_size
-                                # (a goroutine cannot upload a block that
-                                # was not claimed). Caps S3 connections
-                                # per share.
+                                # Default 8. Caps S3 connections per
+                                # share; predictable throughput.
     claim_timeout: 10m          # Janitor at syncer Start requeues any
                                 # Syncing row whose last_sync_attempt_at
                                 # is older than this back to Pending.
@@ -397,8 +391,7 @@ blockstore:
   non-zero value emits a startup WARN and is otherwise ignored today.
 - `syncer.upload_concurrency` × `syncer.tick` × average chunk size
   (~4 MiB with the default FastCDC) bounds steady-state upload
-  throughput per share. Keep `syncer.upload_concurrency <=
-  syncer.claim_batch_size`.
+  throughput per share.
 - `syncer.claim_timeout` controls how aggressively the restart-recovery
   janitor requeues stuck `Syncing` rows: shorter values surface stalls
   faster, longer values tolerate slow remotes. The default 10m fits

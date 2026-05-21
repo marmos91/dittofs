@@ -102,10 +102,8 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 	if config.PrefetchBlocks <= 0 {
 		config.PrefetchBlocks = DefaultPrefetchBlocks
 	}
-	// Phase 11 Plan 02 (D-13/D-14/D-25) — apply CAS-path defaults.
-	if config.ClaimBatchSize <= 0 {
-		config.ClaimBatchSize = 32
-	}
+	// Phase 11 Plan 02 (D-14/D-25) — apply CAS-path defaults.
+	// Phase 19 D-23: ClaimBatchSize default removed (field deleted).
 	if config.UploadConcurrency <= 0 {
 		config.UploadConcurrency = 8
 	}

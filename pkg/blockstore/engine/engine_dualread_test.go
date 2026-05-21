@@ -71,7 +71,6 @@ func newDualReadEnv(t *testing.T) *dualReadEnv {
 	rs := newSpyingRemoteStore(inner)
 
 	cfg := DefaultConfig()
-	cfg.ClaimBatchSize = 4
 	cfg.UploadConcurrency = 2
 	cfg.ClaimTimeout = 100 * time.Millisecond
 
