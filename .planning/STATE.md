@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v0.16.0
 milestone_name: — CAS Convergence
-status: executing
+status: completed
 stopped_at: Phase 17 Plan 10 (docs) shipped
-last_updated: "2026-05-21T08:58:39.457Z"
-last_activity: 2026-05-21 -- Phase 18 execution started
+last_updated: "2026-05-21T11:23:30.132Z"
+last_activity: 2026-05-21 -- Phase 18 marked complete
 progress:
   total_phases: 11
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 53
-  completed_plans: 44
-  percent: 83
+  completed_plans: 53
+  percent: 55
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-04-23)
 ## Current Position
 
 Milestone: v0.16.0
-Phase: 18 (syncer-simplification) — EXECUTING
+Phase: 18 — COMPLETE
 Plan: 1 of 9
 Branch: `gsd/phase-16-cache-mmap-removal`
-Status: Executing Phase 18
-Last activity: 2026-05-21 -- Phase 18 execution started
+Status: Phase 18 complete
+Last activity: 2026-05-21 -- Phase 18 marked complete
 
 ## Next Actionable
 
