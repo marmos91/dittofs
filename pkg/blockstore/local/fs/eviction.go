@@ -81,4 +81,3 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 
 	return nil
 }
-

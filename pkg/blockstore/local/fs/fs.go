@@ -912,4 +912,3 @@ func belongsToFile(blockID, payloadID string) bool {
 	}
 	return blockID[:len(payloadID)] == payloadID && blockID[len(payloadID)] == '/'
 }
-
