@@ -2,6 +2,7 @@ package local
 
 import (
 	"context"
+	"iter"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
@@ -64,6 +65,22 @@ type LocalStore interface {
 	// to compile when narrowed to local.LocalStore (or further to
 	// blockstore.BlockStore).
 	blockstore.BlockStoreAppend
+
+	// ListUnsynced returns a push iterator over every CAS hash present
+	// in the local store that has not yet been marked synced in the
+	// injected SyncedHashStore. The iterator uses snapshot-at-start
+	// semantics: the hash set existing at iteration begin is captured
+	// up front; chunks that land after iteration begins are picked up
+	// on the NEXT pass — no live-tail catch-up. Iteration stops on the
+	// first non-nil error yielded; the yielded error position surfaces
+	// any per-hash backend error.
+	//
+	// When no SyncedHashStore is wired (local-only configurations where
+	// no remote mirror is configured), the iterator yields nothing —
+	// the synced set is empty by definition and the unsynced set is its
+	// strict-subset complement, which collapses to the empty set under
+	// the "nothing to mirror anywhere" invariant.
+	ListUnsynced(ctx context.Context) iter.Seq2[blockstore.ContentHash, error]
 
 	// --- Lifecycle ---
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"iter"
 	"sort"
 	"strconv"
 	"strings"
@@ -371,6 +372,22 @@ func (s *MemoryStore) Walk(ctx context.Context, fn func(hash blockstore.ContentH
 		}
 	}
 	return nil
+}
+
+// ListUnsynced satisfies the local.LocalStore interface with an
+// empty-yield implementation. MemoryStore is used only for tests and
+// ephemeral configurations (see package godoc); it has no CAS
+// persistence model that a Syncer would mirror to a remote store, so
+// there is nothing to enumerate as "unsynced". Returning an empty
+// iterator keeps the interface satisfied without inventing a
+// hash-walk-plus-IsSynced loop that no production caller exercises.
+//
+// Implements local.LocalStore.
+func (s *MemoryStore) ListUnsynced(ctx context.Context) iter.Seq2[blockstore.ContentHash, error] {
+	return func(yield func(blockstore.ContentHash, error) bool) {
+		_ = ctx
+		_ = yield
+	}
 }
 
 // AppendWrite stages random-offset bytes for payloadID into a
