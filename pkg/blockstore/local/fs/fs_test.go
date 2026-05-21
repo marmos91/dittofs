@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -328,4 +329,119 @@ func TestNewFSStoreForMigration_BypassesSentinel(t *testing.T) {
 		t.Fatalf("NewFSStoreForMigration: expected success on legacy layout; got %v", err)
 	}
 	t.Cleanup(func() { _ = bc.Close() })
+}
+
+// --- Phase 19 Plan 04: FSStoreOptions OnChunkComplete + DedupLRUSize. ---
+//
+// These tests assert the additive Wave-1 surfaces land correctly: the
+// per-FSStore dedupLRU is instantiated with the default-on-zero idiom,
+// the explicit size is honored, and the OnChunkComplete callback is
+// stored on the FSStore struct without altering pre-Phase-19 lruTouch
+// behavior (D-12 nil-safety contract — see 19-CONTEXT.md).
+
+// TestFSStore_DefaultDedupLRUSize_AppliedWhenZero asserts the
+// default-on-zero idiom: when FSStoreOptions.DedupLRUSize is unset, the
+// constructor populates bc.dedupLRU with maxSize == 4096.
+func TestFSStore_DefaultDedupLRUSize_AppliedWhenZero(t *testing.T) {
+	bc := newFSStoreForTest(t, FSStoreOptions{})
+	if bc.dedupLRU == nil {
+		t.Fatal("bc.dedupLRU is nil; constructor must instantiate it")
+	}
+	if got := bc.dedupLRU.maxSize; got != 4096 {
+		t.Fatalf("dedupLRU.maxSize = %d; want 4096 default", got)
+	}
+}
+
+// TestFSStore_ExplicitDedupLRUSize_Honored asserts a non-zero option
+// value overrides the default.
+func TestFSStore_ExplicitDedupLRUSize_Honored(t *testing.T) {
+	bc := newFSStoreForTest(t, FSStoreOptions{DedupLRUSize: 8192})
+	if bc.dedupLRU == nil {
+		t.Fatal("bc.dedupLRU is nil; constructor must instantiate it")
+	}
+	if got := bc.dedupLRU.maxSize; got != 8192 {
+		t.Fatalf("dedupLRU.maxSize = %d; want 8192 (explicit override)", got)
+	}
+}
+
+// TestFSStore_NilOnChunkComplete_LruTouchUnchanged is the D-12
+// nil-safety gate: with no OnChunkComplete configured, StoreChunk must
+// still succeed and lruTouch must behave identically to pre-Phase-19
+// (no panic; the absent callback is unreferenced). chunkstore.go is
+// unmodified in Plan 04 — this is a regression guard, not an active
+// wire-in test.
+func TestFSStore_NilOnChunkComplete_LruTouchUnchanged(t *testing.T) {
+	bc := newFSStoreForTest(t, FSStoreOptions{})
+	if bc.onChunkComplete != nil {
+		t.Fatalf("bc.onChunkComplete must be nil when option is unset; got %T", bc.onChunkComplete)
+	}
+	h := hashFromHex(t, strings.Repeat("19", 32))
+	data := bytes.Repeat([]byte{0x19}, 256)
+	if err := bc.StoreChunk(context.Background(), h, data); err != nil {
+		t.Fatalf("StoreChunk with nil OnChunkComplete: %v", err)
+	}
+	// Confirm the canonical on-disk path resolves and the LRU was
+	// touched (lruTouch is the post-store hook that an Opt-3 wire-in
+	// will later fire OnChunkComplete from).
+	if _, err := os.Stat(bc.chunkPath(h)); err != nil {
+		t.Fatalf("chunk on disk missing after StoreChunk: %v", err)
+	}
+}
+
+// TestFSStore_OnChunkComplete_StoredOnConstruction asserts a non-nil
+// callback passed via FSStoreOptions lands on the FSStore struct.
+// Plan 07 will fire it from chunkstore.lruTouch; Plan 04 only stores.
+func TestFSStore_OnChunkComplete_StoredOnConstruction(t *testing.T) {
+	var calls atomic.Int64
+	cb := func(_ blockstore.ContentHash, _ []byte, _ string) {
+		calls.Add(1)
+	}
+	bc := newFSStoreForTest(t, FSStoreOptions{OnChunkComplete: cb})
+	if bc.onChunkComplete == nil {
+		t.Fatal("bc.onChunkComplete must be non-nil after construction with explicit callback")
+	}
+	// Fire the stored callback directly to confirm it is the value we
+	// passed in (function identity check — Go does not permit ==
+	// comparison of func values, so invoke and observe the counter).
+	bc.onChunkComplete(blockstore.ContentHash{}, nil, "")
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("stored callback fired %d times; want 1", got)
+	}
+}
+
+// TestFSStore_DedupLRU_FieldExists is a regression guard: future
+// refactors must keep bc.dedupLRU populated. Plan 05 + 07 depend on it.
+func TestFSStore_DedupLRU_FieldExists(t *testing.T) {
+	bc := newFSStoreForTest(t, FSStoreOptions{})
+	if bc.dedupLRU == nil {
+		t.Fatal("bc.dedupLRU must be non-nil after construction")
+	}
+	// Sanity: the LRU is functional. Probe an unset hash.
+	if _, ok := bc.dedupLRU.Get(blockstore.ContentHash{}); ok {
+		t.Fatal("freshly-constructed dedupLRU must miss on Get(zero hash)")
+	}
+}
+
+// TestFSStore_SetOnChunkComplete_PostHocInstall asserts the setter
+// installs the callback after construction. Engine wiring order
+// (Cache materializes in BlockStore.Start, AFTER cfg.Local was
+// already constructed) requires post-hoc install through this setter
+// — see PATTERNS.md "Lifecycle: callback installed via ... settable
+// via setter (mirror SetObjectIDPersister)".
+func TestFSStore_SetOnChunkComplete_PostHocInstall(t *testing.T) {
+	bc := newFSStoreForTest(t, FSStoreOptions{})
+	if bc.onChunkComplete != nil {
+		t.Fatal("precondition: onChunkComplete must start nil")
+	}
+	var calls atomic.Int64
+	bc.SetOnChunkComplete(func(_ blockstore.ContentHash, _ []byte, _ string) {
+		calls.Add(1)
+	})
+	if bc.onChunkComplete == nil {
+		t.Fatal("SetOnChunkComplete must populate bc.onChunkComplete")
+	}
+	bc.onChunkComplete(blockstore.ContentHash{}, nil, "")
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("installed callback fired %d times; want 1", got)
+	}
 }
