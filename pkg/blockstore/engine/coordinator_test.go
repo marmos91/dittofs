@@ -57,6 +57,15 @@ type fakeCoordinator struct {
 	// quiesced" (zero ObjectID), which lets the trigger condition fire
 	// when speculativeBlocks are present and all-Pending.
 	fileObjectIDs map[string]blockstore.ObjectID
+
+	// getFileObjectIDCalls counts GetFileObjectID invocations. Phase 19
+	// Plan 08 (Opt 4): the eager small-file dedup fast-path runs BEFORE
+	// the speculative-dedup hook in engine.Flush and does NOT consult
+	// GetFileObjectID; the speculative hook DOES. A zero count after a
+	// Flush therefore proves the eager path short-circuited (the
+	// speculative branch was skipped); a count of 1 proves the eager
+	// path missed/bypassed and the speculative hook ran.
+	getFileObjectIDCalls int
 }
 
 // newFakeCoordinator returns a *fakeCoordinator with all maps initialized
@@ -136,6 +145,7 @@ func (f *fakeCoordinator) FindByObjectID(_ context.Context, oid blockstore.Objec
 func (f *fakeCoordinator) GetFileObjectID(_ context.Context, payloadID string) (blockstore.ObjectID, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.getFileObjectIDCalls++
 	if oid, ok := f.fileObjectIDs[payloadID]; ok {
 		return oid, nil
 	}
