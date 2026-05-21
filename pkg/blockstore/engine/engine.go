@@ -707,13 +707,18 @@ func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.
 		// real authority) but lets us skip the ReadPayloadAt alloc + I/O
 		// entirely for large files.
 		if size, found := bs.local.GetFileSize(ctx, payloadID); found && size > 0 && size <= chunker.MinChunkSize {
-			data := make([]byte, size)
+			// Outer gate already bounds size to chunker.MinChunkSize (1 MiB),
+			// well below math.MaxInt on every supported platform. The cast
+			// here is therefore safe; the explicit form documents the
+			// bounded-uint64->int conversion for readers and linters.
+			isize := int(size)
+			data := make([]byte, isize)
 			n, err := bs.local.ReadPayloadAt(ctx, payloadID, data, 0)
 			// On a clean read we have the full payload in RAM; consult
 			// eager dedup. A short / errored read is treated as "skip
 			// eager and fall through to speculative" — the eager
 			// optimisation is opportunistic and never blocks Flush.
-			if err == nil && n == int(size) {
+			if err == nil && n == isize {
 				hit, derr := bs.syncer.tryEagerSmallFileDedup(ctx, payloadID, data)
 				if derr != nil {
 					return nil, fmt.Errorf("eager small-file dedup: %w", derr)

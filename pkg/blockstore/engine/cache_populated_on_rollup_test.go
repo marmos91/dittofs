@@ -227,4 +227,3 @@ func TestCache_PopulatedOnRollupComplete_LargeChunkRespectsCacheCap(t *testing.T
 		t.Fatalf("expected >= 1 chunk; got %d", len(blocks))
 	}
 }
-

@@ -32,6 +32,7 @@ package bench
 import (
 	"context"
 	"math/rand"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -89,6 +90,14 @@ const phase19RandSeed = 17
 func TestPhase19_AggregateRandWriteGate_LeqOne(t *testing.T) {
 	if testing.Short() {
 		t.Skip("D-21 aggregate gate skipped under -short")
+	}
+	// Only run on the canonical bench-infra lane. Dev-laptop / CI variance
+	// trips this gate per CONTEXT.md "bench infra vs dev-laptop" discipline.
+	// CI runs default to short timeouts; the seeded 64 MiB warm-cache pass
+	// can exceed 10 min on shared runners. Gated behind DITTOFS_BENCH_LANE=1
+	// so the canonical lane can opt in.
+	if os.Getenv("DITTOFS_BENCH_LANE") != "1" {
+		t.Skip("D-21 aggregate gate requires DITTOFS_BENCH_LANE=1 (canonical bench-infra lane only)")
 	}
 
 	// Run the same benchmark fixture as Phase 12 / Phase 16's D-06

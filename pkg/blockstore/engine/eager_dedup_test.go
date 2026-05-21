@@ -61,10 +61,10 @@ func (r *recordingPutCache) Put(h blockstore.ContentHash, data []byte) {
 	r.putHashes = append(r.putHashes, h)
 	r.putData[h] = append([]byte(nil), data...)
 }
-func (r *recordingPutCache) OnRead(string, []blockstore.ContentHash, uint64)       {}
-func (r *recordingPutCache) InvalidateFile(string, []blockstore.ContentHash)        {}
-func (r *recordingPutCache) Stats() CacheStats                                      { return CacheStats{} }
-func (r *recordingPutCache) Close() error                                           { return nil }
+func (r *recordingPutCache) OnRead(string, []blockstore.ContentHash, uint64) {}
+func (r *recordingPutCache) InvalidateFile(string, []blockstore.ContentHash) {}
+func (r *recordingPutCache) Stats() CacheStats                               { return CacheStats{} }
+func (r *recordingPutCache) Close() error                                    { return nil }
 
 // hashContent mirrors blake3ContentHash from pkg/blockstore/local/fs/rollup.go
 // (private to that package). Tests need the same content-address hash

@@ -437,9 +437,12 @@ func TestAppendWrite_LockOrder_PerFileMuStillHeldAcrossSync(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
+	// 640 serialized writes through the per-file mu + groupCommit.Sync; on
+	// Windows GHA runners fsync latency dominates and a 10s budget false-fails.
+	// 60s gives headroom; a real deadlock will trip the same channel select.
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(60 * time.Second):
 		t.Fatal("concurrent AppendWrite stalled — possible deadlock")
 	}
 	// Total bytes accounting validates that no torn writes happened.

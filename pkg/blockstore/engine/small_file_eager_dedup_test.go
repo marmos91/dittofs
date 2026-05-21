@@ -53,10 +53,10 @@ import (
 //  2. Write file-B with IDENTICAL 64 KiB content; Flush; observe:
 //     a. Flush returns Finalized=true (eager hit short-circuit).
 //     b. fc.getFileObjectIDCalls remains 0 for file-B's Flush —
-//        speculative branch was skipped.
+//     speculative branch was skipped.
 //     c. Cache.Put fingerprint observed for file-B's content hash.
 //     d. Post-Flush ReadPayloadAt for file-B returns
-//        ErrFileBlockNotFound — D-11 appendlog cleanup verified.
+//     ErrFileBlockNotFound — D-11 appendlog cleanup verified.
 func TestSmallFileEagerDedup_BSCAS06(t *testing.T) {
 	ctx := context.Background()
 	fc := newFakeCoordinator()

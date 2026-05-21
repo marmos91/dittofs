@@ -1431,7 +1431,15 @@ func CreateLocalStoreFromConfig(
 	}
 	if v, ok := config["dedup_lru_size"]; ok {
 		if n, ok := v.(float64); ok && n > 0 {
-			fsOpts.DedupLRUSize = int(n)
+			// JSON-decoded numbers land as float64; reject out-of-range
+			// and non-integer values rather than perform an
+			// implementation-defined float64->int cast (mirrors the
+			// max_log_bytes pattern above).
+			if n > float64(math.MaxInt) || n != math.Trunc(n) {
+				logger.Warn("config: dedup_lru_size is out of range or non-integer; keeping default", "value", n)
+			} else {
+				fsOpts.DedupLRUSize = int(n)
+			}
 		} else {
 			logger.Warn("block store config has dedup_lru_size but it is invalid or non-positive; ignoring", "value", v)
 		}
