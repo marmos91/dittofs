@@ -12,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // defaultShutdownTimeout is the maximum time to wait for the transfer queue
@@ -61,6 +62,14 @@ type Syncer struct {
 	// May be nil in unit tests; production callers always wire a real
 	// coordinator via SetCoordinator.
 	coordinator MetadataCoordinator
+
+	// syncedHashStore persists per-CAS-hash local→remote mirror state.
+	// The mirror loop in Flush consumes ListUnsynced (which itself
+	// filters via SyncedHashStore.IsSynced) and calls MarkSynced after
+	// each successful remote.Put. May be nil in unit tests / local-only
+	// fixtures; production callers wire a real store via
+	// SetSyncedHashStore.
+	syncedHashStore metadata.SyncedHashStore
 
 	// bs is a back-reference to the owning BlockStore. Phase 13 BSCAS-05
 	// (Plan 07): the file-level dedup short-circuit needs to reach
@@ -146,6 +155,17 @@ func (m *Syncer) SetCoordinator(c MetadataCoordinator) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.coordinator = c
+}
+
+// SetSyncedHashStore wires the per-hash mirror-state store the mirror
+// loop in Flush consults via local.ListUnsynced and updates via
+// MarkSynced after each remote.Put. Idempotent. May be invoked after
+// NewSyncer so the construction sequence does not need to thread a
+// SyncedHashStore through the engine.NewSyncer signature.
+func (m *Syncer) SetSyncedHashStore(s metadata.SyncedHashStore) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.syncedHashStore = s
 }
 
 // TrySpeculativeFileLevelDedup is the public seam for the Phase 13

@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // Compile-time interface satisfaction check.
@@ -41,6 +42,14 @@ type Config struct {
 	// service.go) MUST inject a real impl. See coordinator.go for the
 	// contract.
 	Coordinator MetadataCoordinator
+
+	// SyncedHashStore persists per-CAS-hash local→remote mirror state.
+	// Sourced from the same per-share metadata-store handle the
+	// Coordinator wraps. Threaded through to the Syncer so the mirror
+	// loop in Flush can call MarkSynced after each successful
+	// remote.Put. Nil is accepted (local-only / no-remote fixtures);
+	// the Syncer's mirror loop early-exits in that mode.
+	SyncedHashStore metadata.SyncedHashStore
 
 	// ReadBufferBytes is the memory budget for the read buffer per share.
 	// 0 disables the read buffer. Passed directly to NewReadBuffer as byte budget.
@@ -76,6 +85,13 @@ type BlockStore struct {
 	// contract.
 	coordinator MetadataCoordinator
 
+	// syncedHashStore persists per-CAS-hash local→remote mirror state.
+	// Held alongside the coordinator so the engine constructor can
+	// thread it into both the Syncer (via SetSyncedHashStore) and the
+	// FSStore (via the ObjectIDPersister callback target's sibling
+	// SetSyncedHashStore on the local store). May be nil in tests.
+	syncedHashStore metadata.SyncedHashStore
+
 	// cache is the CAS-keyed cache (CACHE-01..05). The block-coord
 	// ReadBuffer + standalone Prefetcher are folded into this single
 	// Cache type. Never nil — the constructor substitutes nullCache{}
@@ -103,6 +119,7 @@ func New(cfg Config) (*BlockStore, error) {
 		syncer:          cfg.Syncer,
 		fileBlockStore:  cfg.FileBlockStore,
 		coordinator:     cfg.Coordinator,
+		syncedHashStore: cfg.SyncedHashStore,
 		readBufferBytes: cfg.ReadBufferBytes,
 		prefetchWorkers: cfg.PrefetchWorkers,
 	}
@@ -116,6 +133,31 @@ func New(cfg Config) (*BlockStore, error) {
 	// the caller's metadata txn.
 	if cfg.Syncer != nil && cfg.Coordinator != nil {
 		cfg.Syncer.SetCoordinator(cfg.Coordinator)
+	}
+	// Thread the SyncedHashStore into the Syncer so the mirror loop in
+	// Flush can call MarkSynced after each remote.Put. Nil is accepted
+	// (local-only / no-remote fixtures); the mirror loop early-exits in
+	// that mode.
+	if cfg.Syncer != nil && cfg.SyncedHashStore != nil {
+		cfg.Syncer.SetSyncedHashStore(cfg.SyncedHashStore)
+	}
+	// Install the rollup-completion ObjectIDPersister callback on the
+	// local store if it supports the setter. The callback delegates to
+	// the coordinator's PersistFileBlocks so FileAttr.Blocks and
+	// FileAttr.ObjectID land in a single metadata txn at rollup time
+	// for both local-only and remote-backed shares. Local stores that
+	// don't implement the setter (in-memory / fixtures) silently skip
+	// the install — ObjectID compute still runs inside rollup but the
+	// persist step is no-op.
+	if setter, ok := cfg.Local.(interface {
+		SetObjectIDPersister(p func(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error)
+	}); ok {
+		setter.SetObjectIDPersister(func(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error {
+			if bs.coordinator == nil {
+				return nil
+			}
+			return bs.coordinator.PersistFileBlocks(ctx, payloadID, blocks, objectID)
+		})
 	}
 	// BSCAS-05: wire the BlockStore back-reference onto the Syncer so
 	// the file-level dedup short-circuit can reach BlockStore.cache for
