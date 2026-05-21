@@ -72,6 +72,10 @@ type Config struct {
 	// These knobs apply globally to every share's *engine.BlockStore syncer.
 	Syncer SyncerConfig `mapstructure:"syncer" yaml:"syncer"`
 
+	// Blockstore configures local/remote blockstore tunables (Phase 19+).
+	// Phase 19 introduces the first knob: blockstore.local.dedup_lru_size.
+	Blockstore BlockstoreConfig `mapstructure:"blockstore" yaml:"blockstore"`
+
 	// GC configures the engine.CollectGarbage mark-sweep run (Phase 11 D-04..D-08).
 	// These knobs apply globally to every block-store GC invocation.
 	GC GCConfig `mapstructure:"gc" yaml:"gc"`
