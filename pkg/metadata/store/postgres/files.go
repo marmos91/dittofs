@@ -13,6 +13,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
 // ============================================================================
@@ -216,9 +217,16 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 		limit = 1000
 	}
 
+	// Refs #532 (PR #536 review): hydrate f.acl so DirEntry.Attr.ACL is
+	// populated, matching the Memory/Badger backends. Without this column,
+	// access-based enumeration (and any other ACL-aware caller iterating
+	// DirEntry.Attr) silently degrades to POSIX mode bits even on files that
+	// have a DACL set. ACL JSONB rows are typically small relative to the
+	// listing row itself, so the extra column adds negligible per-row cost
+	// versus the per-entry GetFile() round trip it avoids.
 	query := `
 		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
-		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.object_id, lc.link_count
+		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.object_id, lc.link_count
 		FROM parent_child_map dc
 		LEFT JOIN files f ON dc.child_id = f.id
 		LEFT JOIN link_counts lc ON dc.child_id = lc.file_id
@@ -241,11 +249,12 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 		var size int64
 		var atime, mtime, ctime, creationTime time.Time
 		var hidden bool
+		var aclJSON []byte
 		var objectIDRaw []byte
 		var linkCount sql.NullInt32
 
 		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size,
-			&atime, &mtime, &ctime, &creationTime, &hidden, &objectIDRaw, &linkCount)
+			&atime, &mtime, &ctime, &creationTime, &hidden, &aclJSON, &objectIDRaw, &linkCount)
 		if err != nil {
 			return nil, "", err
 		}
@@ -306,6 +315,17 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 				)
 			}
 			copy(attr.ObjectID[:], objectIDRaw)
+		}
+
+		// Refs #532 (PR #536 review): mirror fileRowToFileWithNlink. A
+		// malformed ACL row is treated as "no ACL" rather than failing the
+		// whole listing — same lenient behaviour the GetFile path has had
+		// since the column was introduced.
+		if len(aclJSON) > 0 {
+			var fileACL acl.ACL
+			if err := json.Unmarshal(aclJSON, &fileACL); err == nil {
+				attr.ACL = &fileACL
+			}
 		}
 
 		entry := metadata.DirEntry{

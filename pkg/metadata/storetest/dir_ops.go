@@ -5,12 +5,14 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
 // runDirOpsTests runs all directory operation conformance tests.
 func runDirOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("CreateDirectory", func(t *testing.T) { testCreateDirectory(t, factory) })
 	t.Run("ListDirectory", func(t *testing.T) { testListDirectory(t, factory) })
+	t.Run("ListDirectoryHydratesACL", func(t *testing.T) { testListDirectoryHydratesACL(t, factory) })
 	t.Run("RemoveEmptyDirectory", func(t *testing.T) { testRemoveEmptyDirectory(t, factory) })
 	t.Run("NestedDirectories", func(t *testing.T) { testNestedDirectories(t, factory) })
 	t.Run("RootDirectoryIdempotent", func(t *testing.T) { testRootDirectoryIdempotent(t, factory) })
@@ -97,6 +99,67 @@ func testListDirectory(t *testing.T, factory StoreFactory) {
 		if names[i] != want {
 			t.Errorf("names[%d] = %q, want %q", i, names[i], want)
 		}
+	}
+}
+
+// testListDirectoryHydratesACL verifies that ListChildren populates
+// DirEntry.Attr.ACL so callers (notably SMB access-based enumeration, refs
+// PR #536) can make ACL-aware decisions without a follow-up GetFile per
+// entry. All non-trivial backends (Memory, Badger, Postgres) must satisfy
+// this contract.
+func testListDirectoryHydratesACL(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	rootHandle := createTestShare(t, store, "/test")
+
+	handle := createTestFile(t, store, "/test", rootHandle, "with-acl.txt", 0o600)
+
+	ctx := t.Context()
+
+	// Attach an ACL by reading + putting back the file with ACL set.
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	file.ACL = &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				AccessMask: acl.ACE4_READ_DATA,
+				Who:        acl.SpecialOwner,
+			},
+		},
+	}
+	if err := store.PutFile(ctx, file); err != nil {
+		t.Fatalf("PutFile with ACL: %v", err)
+	}
+
+	entries, _, err := store.ListChildren(ctx, rootHandle, "", 100)
+	if err != nil {
+		t.Fatalf("ListChildren: %v", err)
+	}
+
+	var found *metadata.DirEntry
+	for i := range entries {
+		if entries[i].Name == "with-acl.txt" {
+			found = &entries[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("with-acl.txt missing from listing")
+	}
+	if found.Attr == nil {
+		t.Fatalf("DirEntry.Attr nil — backend must hydrate attributes on ListChildren")
+	}
+	if found.Attr.ACL == nil {
+		t.Fatalf("DirEntry.Attr.ACL nil — backend must hydrate ACL on ListChildren so ABE can evaluate without per-entry GetFile")
+	}
+	if len(found.Attr.ACL.ACEs) != 1 {
+		t.Fatalf("expected 1 ACE on hydrated ACL, got %d", len(found.Attr.ACL.ACEs))
+	}
+	got := found.Attr.ACL.ACEs[0]
+	if got.Type != acl.ACE4_ACCESS_ALLOWED_ACE_TYPE || got.AccessMask != acl.ACE4_READ_DATA || got.Who != acl.SpecialOwner {
+		t.Fatalf("hydrated ACE differs from stored: %+v", got)
 	}
 }
 

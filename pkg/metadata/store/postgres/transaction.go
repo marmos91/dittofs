@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
 // Maximum number of retries for retryable errors (deadlock, serialization failure)
@@ -489,9 +490,11 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 		limit = 1000
 	}
 
+	// Refs #532 (PR #536 review): hydrate f.acl — keep parity with the
+	// pool-query ListChildren above. See files.go for rationale.
 	query := `
 		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
-		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.object_id, lc.link_count
+		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.object_id, lc.link_count
 		FROM parent_child_map dc
 		LEFT JOIN files f ON dc.child_id = f.id
 		LEFT JOIN link_counts lc ON dc.child_id = lc.file_id
@@ -514,11 +517,12 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 		var size int64
 		var atime, mtime, ctime, creationTime time.Time
 		var hidden bool
+		var aclJSON []byte
 		var objectIDRaw []byte
 		var linkCount sql.NullInt32
 
 		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size,
-			&atime, &mtime, &ctime, &creationTime, &hidden, &objectIDRaw, &linkCount)
+			&atime, &mtime, &ctime, &creationTime, &hidden, &aclJSON, &objectIDRaw, &linkCount)
 		if err != nil {
 			return nil, "", err
 		}
@@ -564,6 +568,15 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 				)
 			}
 			copy(attr.ObjectID[:], objectIDRaw)
+		}
+
+		// Refs #532 (PR #536 review): mirror fileRowToFileWithNlink — soft
+		// failure on malformed ACL JSON, same as the pool-query path.
+		if len(aclJSON) > 0 {
+			var fileACL acl.ACL
+			if err := json.Unmarshal(aclJSON, &fileACL); err == nil {
+				attr.ACL = &fileACL
+			}
 		}
 
 		entry := metadata.DirEntry{
