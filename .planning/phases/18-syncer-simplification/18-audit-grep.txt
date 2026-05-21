@@ -1,153 +1,15 @@
-=== AUDIT TIMESTAMP: 2026-05-21T10:08:01Z ===
-=== Base commit: 85f869a12b2ecd7c3ea6f1c81a81152e5fe6806f ===
+=== AUDIT TIMESTAMP: 2026-05-21T10:53:57Z (post-sweep, final) ===
+=== Base commit: 85f869a1 → tip: f9faa9d4 ===
 
-=== Deleted-symbol sweep (production + tests) ===
+=== Production (non-test) references to deleted symbols — MUST be empty ===
+(empty — clean)
+
+=== TRANSITIONAL-PHASE-18 marker references — MUST be empty (deletion complete) ===
+(empty — marker fully removed)
+
+=== uploadOne / persistFileBlocksAfterFlush residuals (historical comments only) ===
 pkg/blockstore/store.go:44:	// short-circuit (engine.uploadOne) WILL produce two distinct
 pkg/blockstore/store.go:62:	// circuit in engine.uploadOne) treat the lookup as best-effort —
-pkg/blockstore/local/local.go:12:// FlushedBlock records info about a block that was just flushed from
-pkg/blockstore/local/local.go:19:type FlushedBlock struct {
-pkg/blockstore/local/local.go:48:// IsBlockLocal / GetBlockData / WriteFromRemote / DeleteAllBlockFiles)
-pkg/blockstore/local/local.go:162:	// (and FlushedBlock) entirely. Until then they remain on the
-pkg/blockstore/local/local.go:189:	Flush(ctx context.Context, payloadID string) ([]FlushedBlock, error)
-pkg/blockstore/local/local.go:191:	// IsBlockLocal checks if a specific block is available locally
-pkg/blockstore/local/local.go:195:	IsBlockLocal(ctx context.Context, payloadID string, blockIdx uint64) bool
-pkg/blockstore/local/local.go:197:	// GetBlockData returns the raw data for a specific block,
-pkg/blockstore/local/local.go:202:	GetBlockData(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error)
-pkg/blockstore/local/local.go:204:	// WriteFromRemote stores data fetched from the remote block
-pkg/blockstore/local/local.go:209:	WriteFromRemote(ctx context.Context, payloadID string, data []byte, offset uint64) error
-pkg/blockstore/local/local.go:211:	// DeleteAllBlockFiles removes all blocks for a file from memory,
-pkg/blockstore/local/local.go:215:	DeleteAllBlockFiles(ctx context.Context, payloadID string) error
-pkg/blockstore/local/memory/memory.go:31:// methods ReadAt / WriteAt / Flush / GetBlockData / IsBlockLocal /
-pkg/blockstore/local/memory/memory.go:32:// WriteFromRemote / DeleteAllBlockFiles slated for deletion in Phase
-pkg/blockstore/local/memory/memory.go:181:// IsBlockLocal checks if a specific block is available in the store.
-pkg/blockstore/local/memory/memory.go:184:func (s *MemoryStore) IsBlockLocal(_ context.Context, payloadID string, blockIdx uint64) bool {
-pkg/blockstore/local/memory/memory.go:192:// GetBlockData returns the raw data for a specific block.
-pkg/blockstore/local/memory/memory.go:195:func (s *MemoryStore) GetBlockData(_ context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error) {
-pkg/blockstore/local/memory/memory.go:529:// WriteFromRemote stores data fetched from the remote block store.
-pkg/blockstore/local/memory/memory.go:533:func (s *MemoryStore) WriteFromRemote(_ context.Context, payloadID string, data []byte, offset uint64) error {
-pkg/blockstore/local/memory/memory.go:565:func (s *MemoryStore) Flush(_ context.Context, payloadID string) ([]local.FlushedBlock, error) {
-pkg/blockstore/local/memory/memory.go:573:	var flushed []local.FlushedBlock
-pkg/blockstore/local/memory/memory.go:585:			flushed = append(flushed, local.FlushedBlock{
-pkg/blockstore/local/memory/memory.go:651:// DeleteAllBlockFiles removes all blocks for a file.
-pkg/blockstore/local/memory/memory.go:654:func (s *MemoryStore) DeleteAllBlockFiles(_ context.Context, payloadID string) error {
-pkg/blockstore/local/fs/fs_test.go:635:func TestWriteFromRemote(t *testing.T) {
-pkg/blockstore/local/fs/fs_test.go:640:	if err := bc.WriteFromRemote(ctx, "file1", data, 0); err != nil {
-pkg/blockstore/local/fs/fs_test.go:641:		t.Fatalf("WriteFromRemote failed: %v", err)
-pkg/blockstore/local/fs/fs_test.go:657:// TestWriteFromRemote_PreservesCASMetadata is the regression test for
-pkg/blockstore/local/fs/fs_test.go:658:// Pass-2 CR-2-01. WriteFromRemote MUST NOT clobber the canonical CAS
-pkg/blockstore/local/fs/fs_test.go:669:func TestWriteFromRemote_PreservesCASMetadata(t *testing.T) {
-pkg/blockstore/local/fs/fs_test.go:693:	// .blk file ever materialized for this block). WriteFromRemote MUST
-pkg/blockstore/local/fs/fs_test.go:700:	if err := bc.WriteFromRemote(ctx, payloadID, data, 0); err != nil {
-pkg/blockstore/local/fs/fs_test.go:701:		t.Fatalf("WriteFromRemote failed: %v", err)
-pkg/blockstore/local/fs/fs_test.go:705:	// post-WriteFromRemote row, not the seeded one.
-pkg/blockstore/local/fs/fs_test.go:710:		t.Fatalf("GetFileBlock after WriteFromRemote: %v", err)
-pkg/blockstore/local/fs/fs_test.go:721:		t.Errorf("State not Remote after WriteFromRemote: got %v", got.State)
-pkg/blockstore/local/fs/fs_test.go:724:		t.Errorf("LocalPath empty after WriteFromRemote (cache file should be tracked)")
-pkg/blockstore/local/fs/fs_test.go:734:		t.Fatal("ReadAt local store miss after WriteFromRemote")
-pkg/blockstore/local/fs/fs_test.go:737:		t.Fatal("ReadAt wrong data after WriteFromRemote")
-pkg/blockstore/local/fs/manage_test.go:142:func TestManageDeleteAllBlockFiles(t *testing.T) {
-pkg/blockstore/local/fs/manage_test.go:170:	if err := bc.DeleteAllBlockFiles(ctx, "file1"); err != nil {
-pkg/blockstore/local/fs/manage_test.go:171:		t.Fatalf("DeleteAllBlockFiles failed: %v", err)
-pkg/blockstore/local/fs/fs.go:115:	// create, WriteFromRemote, Recover) and pruned on delete/evict. The
-pkg/blockstore/local/fs/fs.go:954:// explicit deletion via DeleteAllBlockFiles.
-pkg/blockstore/local/fs/fs.go:997:// WriteFromRemote stores data that was fetched from the remote block store locally.
-pkg/blockstore/local/fs/fs.go:1011:func (bc *FSStore) WriteFromRemote(ctx context.Context, payloadID string, data []byte, offset uint64) error {
-pkg/blockstore/local/fs/fs.go:1059:// GetBlockData returns the raw data for a specific block, checking memory first
-pkg/blockstore/local/fs/fs.go:1062:func (bc *FSStore) GetBlockData(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error) {
-pkg/blockstore/local/fs/fs.go:1091:// IsBlockLocal checks if a specific block is available locally (memory or disk).
-pkg/blockstore/local/fs/fs.go:1093:func (bc *FSStore) IsBlockLocal(ctx context.Context, payloadID string, blockIdx uint64) bool {
-pkg/blockstore/local/fs/flush.go:27:func (bc *FSStore) Flush(ctx context.Context, payloadID string) ([]local.FlushedBlock, error) {
-pkg/blockstore/local/fs/flush.go:43:	var flushed []local.FlushedBlock
-pkg/blockstore/local/fs/flush.go:59:				flushed = append(flushed, local.FlushedBlock{
-pkg/blockstore/local/fs/manage.go:24:// from memory, disk, and metadata. Internal helper for DeleteAllBlockFiles —
-pkg/blockstore/local/fs/manage.go:90:// DeleteAllBlockFiles removes all blocks for a file (identified by payloadID)
-pkg/blockstore/local/fs/manage.go:101:func (bc *FSStore) DeleteAllBlockFiles(ctx context.Context, payloadID string) error {
-pkg/blockstore/engine/coordinator.go:49:	// blocks (computed by syncer.persistFileBlocksAfterFlush via
-pkg/blockstore/engine/syncer.go:139:// caller's metadata txn after each successful uploadOne batch. Idempotent.
-pkg/blockstore/engine/syncer.go:394:// stamped by uploadOne before flipping State to Remote, so no extra S3
-pkg/blockstore/engine/perf_bench_test.go:51:// benchmark / gate test so per-iteration uploadOne INFO lines don't
-pkg/blockstore/engine/perf_bench_test.go:207:// a real fs.LocalStore on a tempdir (so uploadOne's os.ReadFile path is
-pkg/blockstore/engine/perf_bench_test.go:219:// flips the FileBlock to Syncing, then drives uploadOne — exercising the
-pkg/blockstore/engine/perf_bench_test.go:250:// drives uploadOne end-to-end. Determinism is preserved via a seeded RNG
-pkg/blockstore/engine/perf_bench_test.go:302:		if err := f.syncer.uploadOne(ctx, jobs[i].fb); err != nil {
-pkg/blockstore/engine/perf_bench_test.go:303:			b.Fatalf("uploadOne[%d]: %v", i, err)
-pkg/blockstore/engine/perf_bench_test.go:419:// hook (persistFileBlocksAfterFlush) actually invokes ComputeObjectID +
-pkg/blockstore/engine/perf_bench_test.go:432:// FindByObjectID returns nil unless seeded). The bench drives uploadOne
-pkg/blockstore/engine/perf_bench_test.go:433:// per block AND invokes persistFileBlocksAfterFlush per file so the
-pkg/blockstore/engine/perf_bench_test.go:452:// Each iteration represents a single-block-file flush: one uploadOne
-pkg/blockstore/engine/perf_bench_test.go:454:// persistFileBlocksAfterFlush (the quiesce hook — ComputeObjectID(blocks)
-pkg/blockstore/engine/perf_bench_test.go:492:		// the time persistFileBlocksAfterFlush fires (after uploadOne).
-pkg/blockstore/engine/perf_bench_test.go:522:		if err := f.syncer.uploadOne(ctx, jobs[i].fb); err != nil {
-pkg/blockstore/engine/perf_bench_test.go:523:			b.Fatalf("uploadOne[%d]: %v", i, err)
-pkg/blockstore/engine/perf_bench_test.go:526:		if err := f.syncer.persistFileBlocksAfterFlush(ctx, jobs[i].fb.ID, jobs[i].blocks); err != nil {
-pkg/blockstore/engine/perf_bench_test.go:527:			b.Fatalf("persistFileBlocksAfterFlush[%d]: %v", i, err)
-pkg/blockstore/engine/fetch.go:123:	if err := m.local.WriteFromRemote(ctx, payloadID, data, offset); err != nil {
-pkg/blockstore/engine/fetch.go:138:		if !m.local.IsBlockLocal(ctx, payloadID, blockIdx) {
-pkg/blockstore/engine/fetch.go:175:		if m.local.IsBlockLocal(ctx, payloadID, blockIdx) {
-pkg/blockstore/engine/fetch.go:282:	if writeErr := m.local.WriteFromRemote(ctx, payloadID, data, blockOffset); writeErr != nil {
-pkg/blockstore/engine/fetch.go:400:	if m.local.IsBlockLocal(context.Background(), payloadID, blockIdx) {
-pkg/blockstore/engine/fetch.go:462:	if m.local.IsBlockLocal(context.Background(), payloadID, blockIdx) {
-pkg/blockstore/engine/api_blockref_test.go:215:// plumbs the coordinator into the syncer; persistFileBlocksAfterFlush
-pkg/blockstore/engine/api_blockref_test.go:229:	// persistFileBlocksAfterFlush is the seam — invoke directly to pin
-pkg/blockstore/engine/api_blockref_test.go:233:	if err := bs.syncer.persistFileBlocksAfterFlush(ctx, "post-flush-test", blocks); err != nil {
-pkg/blockstore/engine/api_blockref_test.go:234:		t.Fatalf("persistFileBlocksAfterFlush: %v", err)
-pkg/blockstore/engine/syncer_crash_test.go:30:// All tests drive uploadOne directly (no periodic loop) for determinism.
-pkg/blockstore/engine/syncer_crash_test.go:56:// then drives uploadOne which performs the second put — the
-pkg/blockstore/engine/syncer_crash_test.go:89:// performs the Pending → Syncing transition itself so uploadOne can run
-pkg/blockstore/engine/syncer_crash_test.go:139:	// the put-counter on the wrapper starts at 0 — uploadOne's metadata
-pkg/blockstore/engine/syncer_crash_test.go:148:	// (We don't have to match exactly — uploadOne will compute it from the
-pkg/blockstore/engine/syncer_crash_test.go:169:	err := f.syncer.uploadOne(context.Background(), f.fb)
-pkg/blockstore/engine/syncer_crash_test.go:171:		t.Fatalf("uploadOne err = %v, want wrap of errKillPoint", err)
-pkg/blockstore/engine/syncer_crash_test.go:202:	// Fail on the FIRST put issued by uploadOne (the Syncing→Remote one);
-pkg/blockstore/engine/syncer_crash_test.go:207:	err := f.syncer.uploadOne(context.Background(), f.fb)
-pkg/blockstore/engine/syncer_crash_test.go:209:		t.Fatalf("uploadOne err = %v, want wrap of errKillPoint", err)
-pkg/blockstore/engine/syncer_crash_test.go:245:	if err := f.syncer.uploadOne(context.Background(), f.fb); err != nil {
-pkg/blockstore/engine/syncer_crash_test.go:246:		t.Fatalf("uploadOne: %v", err)
-pkg/blockstore/engine/syncer_crash_test.go:260:		t.Fatal("persisted.BlockStoreKey is empty after happy-path uploadOne")
-pkg/blockstore/engine/syncer_crash_test.go:267:		t.Errorf("Get(%s) after happy uploadOne: %v", persisted.Hash, err)
-pkg/blockstore/engine/syncer_crash_test.go:280:	if err := f.syncer.uploadOne(context.Background(), f.fb); err == nil {
-pkg/blockstore/engine/syncer_crash_test.go:281:		t.Fatal("uploadOne returned nil under between-PUT-and-meta crash")
-pkg/blockstore/engine/dedup.go:263:	//     resurface them on the next tick and call uploadOne — wasted
-pkg/blockstore/engine/upload_test.go:16:// in engine.uploadOne. The donor row is canonical post-fix; the duplicate
-pkg/blockstore/engine/upload_test.go:17:// fb row that triggered uploadOne is deleted instead of being persisted as
-pkg/blockstore/engine/upload_test.go:23:// uploadOne hits the dedup short-circuit, exactly one FileBlock row
-pkg/blockstore/engine/upload_test.go:25:// uploadOne was invoked on is deleted; the donor's RefCount is 2.
-pkg/blockstore/engine/upload_test.go:52:	// is in BlockStatePending → flipped to Syncing for uploadOne.
-pkg/blockstore/engine/upload_test.go:60:	if err := m.uploadOne(ctx, dup); err != nil {
-pkg/blockstore/engine/upload_test.go:61:		t.Fatalf("uploadOne: %v", err)
-pkg/blockstore/engine/upload_test.go:97:// uploadOne (in particular, no second bump from a follow-up Put).
-pkg/blockstore/engine/upload_test.go:128:	if err := m.uploadOne(ctx, dup); err != nil {
-pkg/blockstore/engine/upload_test.go:129:		t.Fatalf("uploadOne: %v", err)
-pkg/blockstore/engine/upload_test.go:144:// injection) has already deleted the duplicate fb.ID before uploadOne's
-pkg/blockstore/engine/upload_test.go:146:// tolerated and uploadOne returns nil.
-pkg/blockstore/engine/upload_test.go:177:	// Simulate a concurrent worker by deleting the row before uploadOne
-pkg/blockstore/engine/upload_test.go:184:	if err := m.uploadOne(ctx, dup); err != nil {
-pkg/blockstore/engine/upload_test.go:185:		t.Fatalf("uploadOne with already-deleted dup: %v", err)
-pkg/blockstore/engine/engine.go:132:	// (persistFileBlocksAfterFlush) can invoke PersistFileBlocks under
-pkg/blockstore/engine/engine.go:229:// legacy FileBlock → GetBlockData fallback).
-pkg/blockstore/engine/engine.go:449:// Local cleanup uses DeleteAllBlockFiles (not EvictMemory) so on-disk .blk
-pkg/blockstore/engine/engine.go:456:// DeleteAllBlockFiles enumerates the store — otherwise freshly-flushed .blk
-pkg/blockstore/engine/engine.go:460:	if err := bs.local.DeleteAllBlockFiles(ctx, payloadID); err != nil {
-pkg/blockstore/engine/engine.go:720:	return bs.local.DeleteAllBlockFiles(ctx, payloadID)
-pkg/blockstore/engine/syncer_unit_test.go:22:// claimBatch / uploadOne / recoverStaleSyncing directly so the periodic
-pkg/blockstore/engine/syncer_unit_test.go:122:// uploadOne writes the bytes under the CAS key (BSCAS-01), records the
-pkg/blockstore/engine/syncer_unit_test.go:128:	payload := []byte("uploadOne-payload-bytes")
-pkg/blockstore/engine/syncer_unit_test.go:131:	// uploadOne expects the block to be in Syncing; emulate the claim batch.
-pkg/blockstore/engine/syncer_unit_test.go:138:	if err := m.uploadOne(ctx, fb); err != nil {
-pkg/blockstore/engine/syncer_unit_test.go:139:		t.Fatalf("uploadOne: %v", err)
-pkg/blockstore/engine/syncer_unit_test.go:151:		t.Fatal("BlockStoreKey is empty after uploadOne")
-pkg/blockstore/engine/syncer_unit_test.go:162:		t.Fatalf("Get(%s) after uploadOne: %v", fresh.Hash, err)
-pkg/blockstore/engine/syncer_unit_test.go:166:// TestUploadOne_RejectsNonSyncing protects D-15 single-owner: uploadOne
-pkg/blockstore/engine/syncer_unit_test.go:173:	if err := m.uploadOne(ctx, fb); err == nil {
-pkg/blockstore/engine/syncer_unit_test.go:174:		t.Fatal("uploadOne returned nil for Pending block, want error")
-pkg/blockstore/engine/syncer_flush_test.go:24:// invokes persistFileBlocksAfterFlush exactly once on full quiesce. These
-pkg/blockstore/engine/syncer_flush_test.go:30:// a fakeCoordinator (so persistFileBlocksAfterFlush is exercised), and
-pkg/blockstore/engine/syncer_flush_test.go:144:	// uploadOne does not collapse them and we get 3 BlockRefs in the
-pkg/blockstore/engine/syncer_flush_test.go:191:// TestSyncer_Flush_PartialQuiesceSkipsHook asserts D-06: when uploadOne
-pkg/blockstore/engine/syncer_flush_test.go:368:// quiesced file, Syncer.Flush must invoke TrySpeculativeFileLevelDedup,
-pkg/blockstore/engine/syncer_flush_test.go:468:	// Distinct payloads → distinct hashes once uploadOne computes them.
-pkg/blockstore/engine/syncer_flush_test.go:528:	// Distinct payloads → distinct content hashes once uploadOne computes
-pkg/blockstore/engine/syncer_flush_test.go:529:	// them (avoids the uploadOne pre-PUT dedup short-circuit collapsing
 pkg/metadata/storetest/file_block_ops.go:87:	// Phase 11 WR-4-01: the dedup short-circuit (engine.uploadOne) writes a
 pkg/metadata/storetest/file_block_ops.go:505:// error. Phase 11 WR-4-01: the dedup short-circuit (engine.uploadOne) emits
 pkg/metadata/store/postgres/migrations/000011_file_blocks_hash_nonunique.down.sql:4:-- bug — engine.uploadOne dedup short-circuits will start failing on
@@ -157,105 +19,16 @@ pkg/metadata/store/postgres/migrations/000011_file_blocks_hash_nonunique.up.sql:
 test/e2e/dedup_objectid_population_test.go:9:// the RED gate. The failure proves the gap: Syncer.persistFileBlocksAfterFlush
 test/e2e/dedup_objectid_population_test.go:196:			"Plan 13-12 wires Syncer.Flush -> persistFileBlocksAfterFlush. "+
 
-=== ReadAt/WriteAt receiver-bound scope check (LocalStore methods only) ===
-pkg/blockstore/engine/sync_health_integration_test.go:124:	if err := env.local.WriteAt(ctx, payloadID, data, 0); err != nil {
-pkg/blockstore/engine/sync_health_integration_test.go:184:		if err := env.local.WriteAt(ctx, payloadID, data, offset); err != nil {
-pkg/blockstore/engine/engine.go:357:	if err := bs.local.WriteAt(ctx, payloadID, data, offset); err != nil {
-pkg/blockstore/engine/engine.go:869:	found, err := bs.local.ReadAt(ctx, payloadID, data, offset)
-pkg/blockstore/engine/engine.go:897:	found, err := bs.local.ReadAt(ctx, payloadID, dest, offset)
+=== m.local.Flush call sites — must be 0 (swapped to SyncFileBlocksForFile) ===
+(empty — swap complete)
 
-=== m.local.Flush call sites (the Syncer call to swap) ===
-pkg/blockstore/engine/syncer.go:259:	if _, err := m.local.Flush(ctx, payloadID); err != nil {
+=== m.local.SyncFileBlocksForFile call sites — must be >= 1 ===
+pkg/blockstore/engine/syncer.go:260:	m.local.SyncFileBlocksForFile(ctx, payloadID)
+pkg/blockstore/engine/engine.go:515:	bs.local.SyncFileBlocksForFile(ctx, payloadID)
 
 === LocalStore implementer enumeration ===
-pkg/blockstore/local/memory/memory.go:24:var _ local.LocalStore = (*MemoryStore)(nil)
+pkg/blockstore/local/memory/memory.go:22:var _ local.LocalStore = (*MemoryStore)(nil)
 pkg/blockstore/local/fs/fs.go:45:var _ local.LocalStore = (*FSStore)(nil)
 
-=== .blk file creators (will become orphaned once WriteAt + WriteFromRemote + Flush+flushBlock are removed) ===
-pkg/blockstore/local/fs/recovery.go:39:// Recover scans the block store directory for .blk files and reconciles them with
-pkg/blockstore/local/fs/recovery.go:43://   - Deletes orphan .blk files that have no FileBlock metadata
-pkg/blockstore/local/fs/recovery.go:56:		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".blk") {
-pkg/blockstore/local/fs/recovery.go:62:		// Extract blockID from the full path, reversing blockPath's sharding.
-pkg/blockstore/local/fs/recovery.go:63:		// blockPath creates: <baseDir>/<shard>/<blockID>.blk where shard = blockID[:2].
-pkg/blockstore/local/fs/recovery.go:69:		rel = strings.TrimSuffix(rel, ".blk")
-pkg/blockstore/local/fs/eviction.go:88:// callers in manage.go that delete legacy .blk files outside the LRU.
-pkg/blockstore/local/fs/appendwrite.go:34:// getOrCreateMemBlock in fs.go).
-pkg/blockstore/local/fs/appendwrite.go:43:// payload, so the pool (optimized for random-access .blk files) would be
-pkg/blockstore/local/fs/doc.go:9://   - Atomic flush: complete blocks written to .blk files with FADV_DONTNEED
-pkg/blockstore/local/fs/fdpool.go:9:// fdPool is an LRU pool of open file descriptors for .blk block files.
-pkg/blockstore/local/fs/flush.go:16:// Flush writes all dirty in-memory blocks for a file to disk as .blk files.
-pkg/blockstore/local/fs/flush.go:23:// (the COMMIT durability point) and propagated to flushBlock via the
-pkg/blockstore/local/fs/flush.go:54:			path, dataSize, err := bc.flushBlock(ctx, key.payloadID, key.blockIdx, mb, true)
-pkg/blockstore/local/fs/flush.go:71:// flushBlock writes a single memBlock to disk as a .blk file using the TD-09
-pkg/blockstore/local/fs/flush.go:78://     memBlock are unblocked during this phase.
-pkg/blockstore/local/fs/flush.go:95:func (bc *FSStore) flushBlock(ctx context.Context, payloadID string, blockIdx uint64, mb *memBlock, withFsync bool) (string, uint32, error) {
-pkg/blockstore/local/fs/flush.go:111:	path := bc.blockPath(blockID)
-pkg/blockstore/local/fs/flush.go:129:	// readers of the same memBlock proceed unimpeded.
-pkg/blockstore/local/fs/flush.go:201:	var oldestMB *memBlock
-pkg/blockstore/local/fs/flush.go:221:		if _, _, err := bc.flushBlock(ctx, oldestKey.payloadID, oldestKey.blockIdx, oldestMB, false); err != nil {
-pkg/blockstore/local/fs/flush.go:230:// blockPath returns the block file path for a block ID.
-pkg/blockstore/local/fs/flush.go:231:// Sharded: <baseDir>/<first-2-chars>/<blockID>.blk
-pkg/blockstore/local/fs/flush.go:232:func (bc *FSStore) blockPath(blockID string) string {
-pkg/blockstore/local/fs/flush.go:234:		return filepath.Join(bc.baseDir, blockID+".blk")
-pkg/blockstore/local/fs/flush.go:236:	return filepath.Join(bc.baseDir, blockID[:2], blockID+".blk")
-pkg/blockstore/local/fs/test_hooks.go:33:// flushBlock since FSStore startup. Used by tests that assert the
-pkg/blockstore/local/fs/test_hooks.go:208:// Recover walk over .blk files finds none in a test tempdir that only
-pkg/blockstore/local/fs/read.go:16://  1. Memory -- checks for an unflushed memBlock (dirty write data)
-pkg/blockstore/local/fs/read.go:17://  2. Disk -- reads from .blk file via FileBlockStore metadata lookup
-pkg/blockstore/local/fs/read.go:59:		// 2. Check disk (.blk file via FileBlockStore)
-pkg/blockstore/local/fs/read.go:78:// readFromDisk reads block data from a .blk file on disk.
-pkg/blockstore/local/fs/fs.go:59:// to a .blk file on disk. This design avoids per-4KB disk I/O and prevents OS
-pkg/blockstore/local/fs/fs.go:68:// for reads (RLock). Operations on the same block are serialized via memBlock.mu.
-pkg/blockstore/local/fs/fs.go:71:// In flushBlock, the map entry is deleted while holding mb.mu to prevent a race
-pkg/blockstore/local/fs/fs.go:72:// where a concurrent writer gets a stale memBlock with nil data.
-pkg/blockstore/local/fs/fs.go:89:	memBlocks  map[blockKey]*memBlock
-pkg/blockstore/local/fs/fs.go:90:	fileBlocks map[string]map[uint64]*memBlock // payloadID -> blockIdx -> mb
-pkg/blockstore/local/fs/fs.go:101:	// flushFsyncCount counts how many times flushBlock has invoked fsync.
-pkg/blockstore/local/fs/fs.go:114:	// whenever a block lands on disk (flushBlock, tryDirectDiskWrite eager-
-pkg/blockstore/local/fs/fs.go:129:	// fdPool pools open file descriptors for .blk files to avoid
-pkg/blockstore/local/fs/fs.go:133:	// readFDPool pools open file descriptors (O_RDONLY) for .blk files
-pkg/blockstore/local/fs/fs.go:183:	// getOrCreateMemBlock.
-pkg/blockstore/local/fs/fs.go:270://   - baseDir: directory for .blk block files, created if absent.
-pkg/blockstore/local/fs/fs.go:271://   - maxDisk: maximum total size of on-disk .blk files in bytes. 0 = unlimited.
-pkg/blockstore/local/fs/fs.go:282:// `.blk` probe — returning blockstore.ErrLegacyLayoutDetected when
-pkg/blockstore/local/fs/fs.go:286://   - sentinel PRESENT, no .blk files     → success (post-migration steady state)
-pkg/blockstore/local/fs/fs.go:287://   - sentinel PRESENT, .blk files PRESENT → success (Phase 17 trusts the
-pkg/blockstore/local/fs/fs.go:290://   - sentinel MISSING, no .blk files     → success (fresh install)
-pkg/blockstore/local/fs/fs.go:291://   - sentinel MISSING, .blk files PRESENT → ErrLegacyLayoutDetected
-pkg/blockstore/local/fs/fs.go:315:		memBlocks:     make(map[blockKey]*memBlock),
-pkg/blockstore/local/fs/fs.go:316:		fileBlocks:    make(map[string]map[uint64]*memBlock),
-pkg/blockstore/local/fs/fs.go:360:// legacyLayoutWalkDepthCap bounds the depth-limited `.blk` probe so a
-pkg/blockstore/local/fs/fs.go:362:// not pay an unbounded WalkDir at every boot. Legacy `.blk` files live
-pkg/blockstore/local/fs/fs.go:363:// at <baseDir>/<shard>/<payloadID>/<idx>.blk (depth 3 under baseDir);
-pkg/blockstore/local/fs/fs.go:364:// any `.blk` past depth 3 is treated as non-legacy noise and skipped.
-pkg/blockstore/local/fs/fs.go:370:// one `.blk` file is detected by a depth-capped WalkDir under baseDir.
-pkg/blockstore/local/fs/fs.go:376:// first `.blk` via fs.SkipAll. Fresh installs with no baseDir yet hit
-pkg/blockstore/local/fs/fs.go:387:	// Sentinel missing — probe for `.blk` files. A baseDir that does
-pkg/blockstore/local/fs/fs.go:407:		if strings.HasSuffix(d.Name(), ".blk") {
-pkg/blockstore/local/fs/fs.go:576:// against a share directory that still contains the legacy `.blk`
-pkg/blockstore/local/fs/fs.go:835:// getOrCreateMemBlock returns the memBlock for the given key, creating one with
-pkg/blockstore/local/fs/fs.go:840:func (bc *FSStore) getOrCreateMemBlock(key blockKey) *memBlock {
-pkg/blockstore/local/fs/fs.go:851:		mb = &memBlock{
-pkg/blockstore/local/fs/fs.go:858:			fm = make(map[uint64]*memBlock)
-pkg/blockstore/local/fs/fs.go:868:// getMemBlock returns the memBlock for the given key, or nil if not in memory.
-pkg/blockstore/local/fs/fs.go:869:func (bc *FSStore) getMemBlock(key blockKey) *memBlock {
-pkg/blockstore/local/fs/fs.go:953:// Does not delete .blk files from disk -- that is handled by eviction or
-pkg/blockstore/local/fs/fs.go:1035:	path := bc.blockPath(blockID)
-pkg/blockstore/local/fs/manage.go:32://  4. Delete the .blk block file from disk
-pkg/blockstore/local/fs/manage.go:63:	// 4-5. Delete .blk file from disk and decrement diskUsed
-pkg/blockstore/local/fs/fadvise_linux.go:10:// This prevents .blk files from consuming RAM in the OS page cache.
-pkg/blockstore/local/fs/write_transitional.go:11:// buffers data into the 8 MiB in-memory memBlock and flushes filled
-pkg/blockstore/local/fs/write_transitional.go:13:// Phase 17 alongside the legacy <share>/<file>/<idx>.blk writer (the
-pkg/blockstore/local/fs/write_transitional.go:18:// point this method and the surrounding memBlock infrastructure are
-pkg/blockstore/local/fs/write_transitional.go:51:		mb := bc.getOrCreateMemBlock(key)
-pkg/blockstore/local/fs/write_transitional.go:54:		// Re-allocate buffer if this memBlock was previously flushed
-pkg/blockstore/local/fs/write_transitional.go:69:		// Bump writeGen so a concurrent flushBlock (stage-and-release,
-pkg/blockstore/local/fs/write_transitional.go:82:			if _, _, err := bc.flushBlock(ctx, payloadID, blockIdx, mb, false); err != nil {
-pkg/blockstore/local/fs/block.go:10:// blockBufPool reuses 8MB buffers across memBlock lifecycles.
-pkg/blockstore/local/fs/block.go:53:// memBlock is an in-memory write buffer for a single 8MB block.
-pkg/blockstore/local/fs/block.go:57:// buffer is flushed atomically to a .blk file on disk (see flushBlock).
-pkg/blockstore/local/fs/block.go:60:// The 8MB buffer is pre-allocated when the memBlock is created (see
-pkg/blockstore/local/fs/block.go:61:// getOrCreateMemBlock) to avoid allocation jitter on the write hot path.
-pkg/blockstore/local/fs/block.go:62:type memBlock struct {
-pkg/blockstore/local/fs/block.go:70:	// flushBlock (TD-09 stage-and-release) snapshots writeGen at stage time;
-pkg/blockstore/local/fs/block.go:71:	// if writeGen is unchanged when flushBlock re-acquires the lock for the
+=== Method count on LocalStore interface (sanity) ===
+14

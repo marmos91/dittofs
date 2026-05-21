@@ -133,10 +133,10 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 // Queue returns the transfer queue for stats inspection.
 func (m *Syncer) Queue() *SyncQueue { return m.queue }
 
-// SetCoordinator wires the MetadataCoordinator the post-Flush path
-// invokes (Phase 12 D-37 / D-20). engine.New plumbs the BlockStore's
-// coordinator into the syncer so PersistFileBlocks runs in the
-// caller's metadata txn after each successful uploadOne batch. Idempotent.
+// SetCoordinator wires the MetadataCoordinator the file-level dedup
+// short-circuit reaches into (FindByObjectID, GetFileObjectID,
+// IncrementRefCount). engine.New plumbs the BlockStore's coordinator
+// into the syncer at construction. Idempotent.
 func (m *Syncer) SetCoordinator(c MetadataCoordinator) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -385,13 +385,12 @@ func (m *Syncer) DrainAllUploads(ctx context.Context) error {
 
 // GetFileSize returns the total size of a file from the remote store.
 //
-// Phase 11 (CAS): blocks are stored under content-addressed keys
-// (cas/XX/YY/<hash>), so the legacy {payloadID}/block-{N} prefix scan no
-// longer finds them. We resolve via FileBlock metadata: enumerate every
-// block belonging to payloadID, find the highest-indexed Remote block,
-// and compute size = maxIdx*BlockSize + lastBlock.DataSize. DataSize is
-// stamped by uploadOne before flipping State to Remote, so no extra S3
-// round-trip is needed.
+// Blocks are stored under content-addressed keys (cas/XX/YY/<hash>),
+// so we resolve via FileBlock metadata: enumerate every block belonging
+// to payloadID, find the highest-indexed Remote block, and compute
+// size = maxIdx*BlockSize + lastBlock.DataSize. DataSize is stamped by
+// the mirror loop's Put-then-Mark sequence before flipping State to
+// Remote, so no extra S3 round-trip is needed.
 func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return 0, err

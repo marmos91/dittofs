@@ -128,9 +128,9 @@ func New(cfg Config) (*BlockStore, error) {
 	// so engine code can call bs.cache.* without nil-checks even before
 	// Start runs.
 	bs.cache = nullCache{}
-	// Thread the coordinator into the syncer so the post-Flush hook
-	// (persistFileBlocksAfterFlush) can invoke PersistFileBlocks under
-	// the caller's metadata txn.
+	// Thread the coordinator into the syncer so the file-level dedup
+	// short-circuit (engine.Flush's pre-rollup hook) can call into
+	// trySpeculativeFileLevelDedup with a real coordinator.
 	if cfg.Syncer != nil && cfg.Coordinator != nil {
 		cfg.Syncer.SetCoordinator(cfg.Coordinator)
 	}
