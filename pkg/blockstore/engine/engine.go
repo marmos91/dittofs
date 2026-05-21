@@ -488,9 +488,26 @@ func (bs *BlockStore) Delete(ctx context.Context, payloadID string, blocks []blo
 	var coordErr error
 	if len(blocks) > 0 && bs.coordinator != nil {
 		for _, b := range blocks {
-			if _, err := bs.coordinator.DecrementRefCount(ctx, b.Hash); err != nil {
+			newCount, err := bs.coordinator.DecrementRefCount(ctx, b.Hash)
+			if err != nil {
 				if coordErr == nil {
 					coordErr = fmt.Errorf("decrement refcount on delete %s: %w", b.Hash.String(), err)
+				}
+				continue
+			}
+			// Refcount hit zero: the local CAS chunk is being reclaimed,
+			// so drop the synced marker too. Without this cascade the
+			// synced set would drift out of strict-subset relationship
+			// with local CAS contents — a future re-Put of the same hash
+			// would skip remote upload because the marker is stale.
+			// Failure here is benign (the marker becomes an orphan, but
+			// a stale marker only causes a single skipped upload on a
+			// re-Put; the bytes are already remote-resident from the
+			// original Mark). Logged at Warn for operator visibility.
+			if newCount == 0 && bs.syncedHashStore != nil {
+				if derr := bs.syncedHashStore.DeleteSynced(ctx, b.Hash); derr != nil {
+					logger.Warn("delete synced marker (orphan; benign)",
+						"hash", b.Hash.String(), "err", derr)
 				}
 			}
 		}
