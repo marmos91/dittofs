@@ -41,24 +41,45 @@ func HasExplicitDeny(a *ACL) bool {
 }
 
 // Evaluate implements the NFSv4 ACL evaluation algorithm per RFC 7530
-// Section 6.2.1. It processes ACEs sequentially and returns true only
-// if ALL requested permission bits are explicitly allowed.
+// Section 6.2.1, with the OWNER_RIGHTS (S-1-3-4) override from
+// MS-DTYP §2.5.3 / §2.4.10. It processes ACEs sequentially and returns
+// true only if ALL requested permission bits are explicitly allowed.
 //
 // The algorithm:
-//  1. Process ACEs in order
-//  2. Skip ACEs with INHERIT_ONLY flag (they only apply to children)
-//  3. For each matching ACE, record newly decided bits:
+//  1. Pre-scan: detect whether any non-inherit-only OWNER_RIGHTS ACE is
+//     present. When present AND the requester is the file owner, the
+//     OWNER_RIGHTS ACEs become the sole authority for the owner: OWNER@
+//     ACEs are ignored for matching purposes (they would otherwise
+//     supersede the OWNER_RIGHTS decision under first-match-wins). This
+//     mirrors Samba `libcli/security/access_check.c::se_access_check`.
+//  2. Process ACEs in order.
+//  3. Skip ACEs with INHERIT_ONLY flag (they only apply to children).
+//  4. For each matching ACE, record newly decided bits:
 //     - ALLOW: mark undecided bits as allowed
 //     - DENY: mark undecided bits as denied
 //     - AUDIT/ALARM: skip (store-only per project decision)
-//  4. Once all requested bits are decided, stop early
-//  5. Return true if and only if ALL requested bits are in allowedBits
+//  5. Once all requested bits are decided, stop early.
+//  6. Return true if and only if ALL requested bits are in allowedBits.
 func Evaluate(a *ACL, evalCtx *EvaluateContext, requestedMask uint32) bool {
 	if requestedMask == 0 {
 		return true
 	}
 	if a == nil || len(a.ACEs) == 0 {
 		return false
+	}
+
+	// First pass: does this DACL contain any effective OWNER_RIGHTS ACE?
+	// Inherit-only entries don't apply to access checks, so they don't count.
+	var ownerRightsPresent bool
+	for i := range a.ACEs {
+		ace := &a.ACEs[i]
+		if ace.IsInheritOnly() {
+			continue
+		}
+		if ace.Who == SpecialOwnerRights {
+			ownerRightsPresent = true
+			break
+		}
 	}
 
 	var allowedBits uint32
@@ -73,7 +94,7 @@ func Evaluate(a *ACL, evalCtx *EvaluateContext, requestedMask uint32) bool {
 		}
 
 		// Check if this ACE applies to the requestor.
-		if !aceMatchesWho(ace, evalCtx) {
+		if !aceMatchesWhoWithOwnerRights(ace, evalCtx, ownerRightsPresent) {
 			continue
 		}
 
@@ -103,7 +124,10 @@ func Evaluate(a *ACL, evalCtx *EvaluateContext, requestedMask uint32) bool {
 	return (allowedBits & requestedMask) == requestedMask
 }
 
-// aceMatchesWho checks if an ACE applies to the given evaluation context.
+// aceMatchesWho checks if an ACE applies to the given evaluation context,
+// with OWNER_RIGHTS treated as an ordinary owner-matching arm. Callers that
+// need MS-DTYP §2.5.3 OWNER_RIGHTS-vs-OWNER@ arbitration should use
+// aceMatchesWhoWithOwnerRights instead.
 //
 // Resolution rules for special identifiers (Pitfall 3 - dynamic resolution):
 //   - "OWNER@": matches when requestor UID == file owner UID
@@ -112,9 +136,30 @@ func Evaluate(a *ACL, evalCtx *EvaluateContext, requestedMask uint32) bool {
 //   - "EVERYONE@": always matches
 //   - Otherwise: exact string match on named principal
 func aceMatchesWho(ace *ACE, evalCtx *EvaluateContext) bool {
+	return aceMatchesWhoWithOwnerRights(ace, evalCtx, false)
+}
+
+// aceMatchesWhoWithOwnerRights is the OWNER_RIGHTS-aware variant of
+// aceMatchesWho. When ownerRightsPresent is true AND the requester is the
+// file owner, OWNER@ ACEs are made to not-match and OWNER_RIGHTS ACEs are
+// made to match — implementing MS-DTYP §2.5.3 / §2.4.10 (S-1-3-4): an
+// explicit OWNER_RIGHTS entry supersedes the implicit owner grants and
+// becomes the sole authority for the owner's effective rights.
+//
+// Mirrors Samba `libcli/security/access_check.c::se_access_check` handling
+// of `SID_OWNER_RIGHTS` / `SEC_RIGHTS_OWNER_RIGHTS`.
+func aceMatchesWhoWithOwnerRights(ace *ACE, evalCtx *EvaluateContext, ownerRightsPresent bool) bool {
+	requesterIsOwner := evalCtx.UID == evalCtx.FileOwnerUID
+
 	switch ace.Who {
 	case SpecialOwner:
-		return evalCtx.UID == evalCtx.FileOwnerUID
+		// OWNER_RIGHTS, when present, strips the file owner of the
+		// implicit OWNER@ identity for the purposes of this DACL walk.
+		// Non-owners are unaffected.
+		if ownerRightsPresent && requesterIsOwner {
+			return false
+		}
+		return requesterIsOwner
 
 	case SpecialGroup:
 		if evalCtx.GID == evalCtx.FileOwnerGID {
@@ -131,12 +176,9 @@ func aceMatchesWho(ace *ACE, evalCtx *EvaluateContext) bool {
 		return true
 
 	case SpecialOwnerRights:
-		// OWNER_RIGHTS (S-1-3-4) per MS-DTYP §2.5.3: when present in a DACL it
-		// supersedes the implicit owner READ_CONTROL/WRITE_DAC/WRITE_OWNER grant
-		// Windows applies. DittoFS does not grant those implicit owner rights
-		// today, so for us this arm reduces to: matches when requester is the
-		// file owner — same condition as SpecialOwner.
-		return evalCtx.UID == evalCtx.FileOwnerUID
+		// MS-DTYP §2.5.3 / §2.4.10: OWNER_RIGHTS (S-1-3-4) ACEs match the
+		// file owner only. They have no meaning for non-owner requesters.
+		return requesterIsOwner
 
 	default:
 		// SID-form ACE (set by SD parse): "sid:<canonical SID>".
