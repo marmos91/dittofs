@@ -469,3 +469,144 @@ func TestAceMatchesWho_OwnerRights(t *testing.T) {
 		})
 	}
 }
+
+// TestEvaluate_OwnerRights_SuppressesOwnerAce covers MS-DTYP §2.5.3 OWNER_RIGHTS
+// (S-1-3-4) semantics: when an OWNER_RIGHTS ACE is present in the DACL, the
+// OWNER@ ACEs are no longer authoritative for the file owner. Only the
+// OWNER_RIGHTS ACEs (Allow and Deny) decide what the owner is granted.
+func TestEvaluate_OwnerRights_SuppressesOwnerAce(t *testing.T) {
+	// OWNER_RIGHTS Allow READ + OWNER@ Allow WRITE → owner gets READ only.
+	// Without the override, OWNER@ would grant WRITE first; with it, OWNER@
+	// is ignored for owner identity and only OWNER_RIGHTS speaks.
+	a := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialOwnerRights},
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_WRITE_DATA, Who: SpecialOwner},
+		},
+	}
+	ctx := ownerCtx()
+
+	if !Evaluate(a, ctx, ACE4_READ_DATA) {
+		t.Error("expected owner to be allowed READ_DATA via OWNER_RIGHTS")
+	}
+	if Evaluate(a, ctx, ACE4_WRITE_DATA) {
+		t.Error("expected owner to be denied WRITE_DATA (OWNER@ must be ignored when OWNER_RIGHTS is present)")
+	}
+	if Evaluate(a, ctx, ACE4_READ_DATA|ACE4_WRITE_DATA) {
+		t.Error("expected owner to be denied combined READ_DATA|WRITE_DATA")
+	}
+}
+
+// TestEvaluate_OwnerRights_DenyOverridesOwnerAllow covers the DENY case from
+// MS-DTYP §2.5.3 and the smb2.acls.OWNER-RIGHTS-DENY family of tests: an
+// OWNER_RIGHTS DENY ACE must take effect even when an OWNER@ ACE earlier in
+// (or simply elsewhere in) the DACL would grant the same bits.
+func TestEvaluate_OwnerRights_DenyOverridesOwnerAllow(t *testing.T) {
+	// Order matters under first-match-wins: place OWNER_RIGHTS Allow READ
+	// before the OWNER_RIGHTS Deny WRITE so that READ is granted via the
+	// OWNER_RIGHTS authority. OWNER@ Allow FULL must be ignored entirely.
+	a := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialOwnerRights},
+			{Type: ACE4_ACCESS_DENIED_ACE_TYPE, AccessMask: ACE4_WRITE_DATA, Who: SpecialOwnerRights},
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: 0xFFFFFFFF, Who: SpecialOwner},
+		},
+	}
+	ctx := ownerCtx()
+
+	if !Evaluate(a, ctx, ACE4_READ_DATA) {
+		t.Error("expected owner to be allowed READ_DATA via OWNER_RIGHTS Allow")
+	}
+	if Evaluate(a, ctx, ACE4_WRITE_DATA) {
+		t.Error("expected owner to be denied WRITE_DATA via OWNER_RIGHTS Deny")
+	}
+}
+
+// TestEvaluate_NoOwnerRights_OwnerAceStillAuthoritative is the regression
+// check: when no OWNER_RIGHTS ACE is in the DACL, OWNER@ continues to handle
+// the file owner exactly as before. This guards against accidentally
+// breaking the common case.
+func TestEvaluate_NoOwnerRights_OwnerAceStillAuthoritative(t *testing.T) {
+	a := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: 0xFFFFFFFF, Who: SpecialOwner},
+		},
+	}
+	ctx := ownerCtx()
+
+	if !Evaluate(a, ctx, ACE4_READ_DATA|ACE4_WRITE_DATA) {
+		t.Error("expected owner to retain OWNER@ Allow FULL when no OWNER_RIGHTS present")
+	}
+}
+
+// TestEvaluate_OwnerRights_NonOwnerUnaffected verifies that the OWNER_RIGHTS
+// override only suppresses OWNER@ matching for the file owner. A non-owner
+// requester observes normal OWNER@ semantics — i.e. OWNER@ never matched
+// them anyway, and OWNER_RIGHTS also never matches them — so other ACEs
+// (e.g. EVERYONE@) decide their effective access.
+func TestEvaluate_OwnerRights_NonOwnerUnaffected(t *testing.T) {
+	a := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialOwnerRights},
+			{Type: ACE4_ACCESS_DENIED_ACE_TYPE, AccessMask: ACE4_WRITE_DATA, Who: SpecialOwnerRights},
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA | ACE4_WRITE_DATA, Who: SpecialEveryone},
+		},
+	}
+
+	// Non-owner: OWNER_RIGHTS ACEs don't match them, so EVERYONE@ grants
+	// both READ_DATA and WRITE_DATA.
+	nonOwner := nonOwnerCtx()
+	if !Evaluate(a, nonOwner, ACE4_READ_DATA|ACE4_WRITE_DATA) {
+		t.Error("expected non-owner to be allowed READ_DATA|WRITE_DATA via EVERYONE@")
+	}
+
+	// Owner: OWNER_RIGHTS speaks for them — READ allowed, WRITE denied —
+	// and EVERYONE@'s WRITE grant is shadowed by OWNER_RIGHTS Deny WRITE.
+	owner := ownerCtx()
+	if !Evaluate(a, owner, ACE4_READ_DATA) {
+		t.Error("expected owner to be allowed READ_DATA via OWNER_RIGHTS Allow")
+	}
+	if Evaluate(a, owner, ACE4_WRITE_DATA) {
+		t.Error("expected owner to be denied WRITE_DATA via OWNER_RIGHTS Deny (first-match-wins)")
+	}
+}
+
+// TestEvaluate_OwnerRights_AuditAceDoesNotSuppressOwner verifies that an
+// AUDIT (or ALARM) ACE for OwnerRights@ does NOT trigger the OWNER_RIGHTS
+// override. AUDIT/ALARM ACEs are evaluation no-ops per RFC 7530 / MS-DTYP;
+// only ACCESS_ALLOWED / ACCESS_DENIED ACEs for OwnerRights@ are authoritative.
+// Without this guard, an audit-only OwnerRights@ entry would incorrectly
+// strip OWNER@ identity from the file owner and silently deny owner access.
+func TestEvaluate_OwnerRights_AuditAceDoesNotSuppressOwner(t *testing.T) {
+	a := &ACL{
+		ACEs: []ACE{
+			// AUDIT ACE for OwnerRights@ — must NOT be treated as an
+			// OWNER_RIGHTS authority signal.
+			{Type: ACE4_SYSTEM_AUDIT_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialOwnerRights},
+			// OWNER@ Allow READ — must remain authoritative for the owner.
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialOwner},
+		},
+	}
+
+	owner := ownerCtx()
+	if !Evaluate(a, owner, ACE4_READ_DATA) {
+		t.Error("expected owner to retain OWNER@ READ_DATA when only an AUDIT OwnerRights@ ACE is present")
+	}
+}
+
+// TestEvaluate_OwnerRights_AlarmAceDoesNotSuppressOwner mirrors the AUDIT
+// case for ALARM ACEs — both are non-access ACE types and must not engage
+// the OWNER_RIGHTS override.
+func TestEvaluate_OwnerRights_AlarmAceDoesNotSuppressOwner(t *testing.T) {
+	a := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_SYSTEM_ALARM_ACE_TYPE, AccessMask: ACE4_WRITE_DATA, Who: SpecialOwnerRights},
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA | ACE4_WRITE_DATA, Who: SpecialOwner},
+		},
+	}
+
+	owner := ownerCtx()
+	if !Evaluate(a, owner, ACE4_READ_DATA|ACE4_WRITE_DATA) {
+		t.Error("expected owner to retain OWNER@ rights when only an ALARM OwnerRights@ ACE is present")
+	}
+}
