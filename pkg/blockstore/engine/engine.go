@@ -130,15 +130,16 @@ func New(cfg Config) (*BlockStore, error) {
 	bs.cache = nullCache{}
 	// Thread the coordinator into the syncer so the file-level dedup
 	// short-circuit (engine.Flush's pre-rollup hook) can call into
-	// trySpeculativeFileLevelDedup with a real coordinator.
-	if cfg.Syncer != nil && cfg.Coordinator != nil {
+	// trySpeculativeFileLevelDedup with a real coordinator. cfg.Syncer
+	// is guaranteed non-nil by the required-field check above.
+	if cfg.Coordinator != nil {
 		cfg.Syncer.SetCoordinator(cfg.Coordinator)
 	}
 	// Thread the SyncedHashStore into the Syncer so the mirror loop in
 	// Flush can call MarkSynced after each remote.Put. Nil is accepted
 	// (local-only / no-remote fixtures); the mirror loop early-exits in
 	// that mode.
-	if cfg.Syncer != nil && cfg.SyncedHashStore != nil {
+	if cfg.SyncedHashStore != nil {
 		cfg.Syncer.SetSyncedHashStore(cfg.SyncedHashStore)
 	}
 	// Install the rollup-completion ObjectIDPersister callback on the
@@ -217,9 +218,7 @@ func New(cfg Config) (*BlockStore, error) {
 	// field on the Syncer at construction time) lets test code swap
 	// `bs.cache = rec` post-construction and still observe the
 	// invalidation — mirrors the TestClose_ClosesCache pattern.
-	if cfg.Syncer != nil {
-		cfg.Syncer.bs = bs
-	}
+	cfg.Syncer.bs = bs
 	return bs, nil
 }
 

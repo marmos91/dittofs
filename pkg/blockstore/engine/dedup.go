@@ -229,8 +229,9 @@ func (m *Syncer) applyFileLevelDedupHit(
 	// (preserves multiplicity expectations of the surgical-invalidate
 	// contract). Read through the BlockStore back-reference so that
 	// post-construction `bs.cache = rec` swaps (TestClose_ClosesCache
-	// pattern) are observed.
-	if m.bs != nil && m.bs.cache != nil {
+	// pattern) are observed; bs.cache is never nil thanks to the Null
+	// Object pattern installed by engine.New.
+	if m.bs != nil {
 		removed := make([]blockstore.ContentHash, 0, len(speculativeBlocks))
 		for _, br := range speculativeBlocks {
 			if _, ok := targetSet[br.Hash]; !ok {
