@@ -35,10 +35,10 @@ Last activity: 2026-05-21 -- Phase 18 shipped; phase 19 branch prepared
 
 Phase 18 shipped (PR #537 merged into develop at `b31b01f7`). Phase 19 (write-path RAM optimizations — last of four v0.16.0 phases per Phase 18 ROADMAP entry) is not yet planned.
 
+- GH issue: #543 (Phase 19 tracking, milestone v0.16.0)
 - `/gsd-phase add 19` — add phase 19 entry to ROADMAP first
 - `/gsd-discuss-phase 19` — gather context for write-path RAM work
 - `/gsd-plan-phase 19` — produce PLAN.md once scope is clear
-- Open GH issue for phase 19 tracking before kickoff
 
 ## Completed Milestones
 
