@@ -175,13 +175,13 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 	}
 
 	r := smbenc.NewReader(body)
-	r.Skip(2)                                                    // StructureSize (2)
-	r.Skip(1)                                                    // SecurityFlags (1)
-	oplockLevel := r.ReadUint8()                                 // OplockLevel (1)
-	impersonationLevel := r.ReadUint32()                         // ImpersonationLevel (4)
-	r.Skip(8)                                                    // SmbCreateFlags (8)
-	r.Skip(8)                                                    // Reserved (8)
-	desiredAccess := r.ReadUint32() // DesiredAccess (4)
+	r.Skip(2)                            // StructureSize (2)
+	r.Skip(1)                            // SecurityFlags (1)
+	oplockLevel := r.ReadUint8()         // OplockLevel (1)
+	impersonationLevel := r.ReadUint32() // ImpersonationLevel (4)
+	r.Skip(8)                            // SmbCreateFlags (8)
+	r.Skip(8)                            // Reserved (8)
+	desiredAccess := r.ReadUint32()      // DesiredAccess (4)
 	// Per MS-DTYP §2.4.3 / §2.5.3, GENERIC_* bits in DesiredAccess MUST be
 	// expanded to file-object-specific rights before access-check
 	// evaluation. Do it at decode time so every downstream consumer
