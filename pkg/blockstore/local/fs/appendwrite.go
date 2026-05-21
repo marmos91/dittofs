@@ -200,10 +200,27 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 	// waiting on the mutex above must be surfaced here rather than after
 	// a wasted log append; DeleteAppendLog itself acquires the same mutex
 	// immediately after tombstoning so this check is race-free.
+	//
+	// Also re-validate `lf` against the current bc.logFDs entry: if
+	// DeleteAppendLog ran fully (including step 5's logFDs+tombstones
+	// clear) BETWEEN the writer's pre-mutex tombstone check and the
+	// mutex hand-off, our snapshotted `lf` references a closed/unlinked
+	// fd while the tombstone has already been cleared (post-Phase-18
+	// recreate semantics). Mirrors the rollup-side curLf != lf bail in
+	// rollup.go. We surface ErrDeleted for the original writer because
+	// its target log was unambiguously deleted; the caller (typically
+	// the NFS WRITE handler) will return EIO/STATUS_DELETE_PENDING to
+	// the client. The recreate path is intentionally NOT followed by
+	// the same in-flight writer — it belongs to a different file
+	// lifecycle.
 	bc.logsMu.RLock()
 	_, isDeleted = bc.tombstones[payloadID]
+	curLf, curLfOk := bc.logFDs[payloadID]
 	bc.logsMu.RUnlock()
 	if isDeleted {
+		return ErrDeleted
+	}
+	if !curLfOk || curLf != lf {
 		return ErrDeleted
 	}
 
