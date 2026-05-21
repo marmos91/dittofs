@@ -566,10 +566,41 @@ func (bs *BlockStore) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadI
 
 // Flush ensures all dirty data for a payload is persisted.
 //
+// Pre-rollup file-level dedup hook: when a coordinator is wired and the
+// file's speculative BlockRef manifest is non-empty, the engine asks the
+// coordinator whether a previously-quiesced file with the same Merkle
+// root already exists. On hit the upload pump is bypassed entirely —
+// FileAttr.Blocks is swapped to the target's BlockRef list, refcounts
+// are reconciled, and Flush returns Finalized=true without delegating
+// to the syncer. On miss / nil-coordinator the syncer's mirror loop
+// runs as usual.
+//
 // Auto-promote into the read buffer is intentionally NOT done here:
 // the Cache is CAS-keyed and Flush has no BlockRef snapshot at this
 // layer to translate flushed bytes into hash-keyed cache entries.
 func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
+	// File-level dedup pre-hook: if a fully-quiesced manifest matches
+	// an already-stored ObjectID, skip the upload pump entirely.
+	if bs.coordinator != nil {
+		specBlocks, blockStates, err := bs.syncer.snapshotPendingBlockRefs(ctx, payloadID)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot pending blockrefs: %w", err)
+		}
+		if len(specBlocks) > 0 {
+			fileObjectID, err := bs.coordinator.GetFileObjectID(ctx, payloadID)
+			if err != nil {
+				return nil, fmt.Errorf("get file objectID: %w", err)
+			}
+			hit, err := bs.syncer.trySpeculativeFileLevelDedup(ctx, payloadID, specBlocks, fileObjectID, blockStates)
+			if err != nil {
+				return nil, fmt.Errorf("file-level dedup: %w", err)
+			}
+			if hit {
+				return &blockstore.FlushResult{Finalized: true}, nil
+			}
+		}
+	}
+	// Delegate to syncer's mirror loop.
 	return bs.syncer.Flush(ctx, payloadID)
 }
 
