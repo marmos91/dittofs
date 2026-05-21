@@ -12,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
 // maxDirectoryReadBytes is the maximum number of bytes to request from the
@@ -341,6 +342,15 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 
 	// Filter entries and build response
 	filteredEntries := filterDirEntries(page.Entries, req.FileName)
+
+	// Refs #532: when the share advertises SMB2_SHARE_CAP_ACCESS_BASED_DIRECTORY_ENUM
+	// (per MS-SMB2 §2.2.10), hide entries the caller cannot read. Mirrors
+	// Samba's source3/smbd/dir.c::can_access_file_acl. The special "." and ".."
+	// entries are added later from `specialCount` and always remain visible —
+	// the caller already opened the directory.
+	if h.treeHasAccessBasedEnumeration(ctx.TreeID) {
+		filteredEntries = filterByAccess(filteredEntries, authCtx)
+	}
 
 	// Sort entries by name (case-insensitive) for consistent enumeration order.
 	// SMB clients (including smbtorture) expect directory entries in sorted order.
@@ -939,4 +949,133 @@ func generate83ShortName(name string) []byte {
 	}
 
 	return encodeUTF16LE(shortName)
+}
+
+// ============================================================================
+// Access-Based Enumeration (refs #532)
+// ============================================================================
+
+// treeHasAccessBasedEnumeration reports whether the tree connection identified
+// by treeID was opened against a share with AccessBasedEnumeration=true.
+// Returns false when the tree is not registered (no enumeration filtering for
+// orphaned handles — the request will fail elsewhere).
+func (h *Handler) treeHasAccessBasedEnumeration(treeID uint32) bool {
+	if treeID == 0 {
+		return false
+	}
+	tree, ok := h.GetTree(treeID)
+	if !ok || tree == nil {
+		return false
+	}
+	return tree.AccessBasedEnumeration
+}
+
+// filterByAccess returns the subset of entries the requester may read,
+// implementing MS-SRVS SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM semantics.
+// Files require ACE4_READ_DATA, directories require ACE4_LIST_DIRECTORY
+// (which share the same bit, 0x00000001). When the entry has an ACL attached,
+// the decision is made by acl.Evaluate using the requester's identity. When
+// the entry has no ACL or no attributes (legacy / partial directory pages),
+// we fall back to Unix mode-bit checks — same convention as security.go's
+// buildDACL (#525): the SD that goes on the wire synthesizes a Windows default,
+// but server-side decisions stay POSIX so mode bits remain authoritative.
+func filterByAccess(entries []metadata.DirEntry, authCtx *metadata.AuthContext) []metadata.DirEntry {
+	if len(entries) == 0 {
+		return entries
+	}
+
+	// Root bypass mirrors the rest of the metadata layer: UID 0 sees
+	// everything regardless of per-file DACL / mode. Avoids hiding entries
+	// from admin tools that legitimately need a full listing.
+	if authCtx != nil && authCtx.Identity != nil && authCtx.Identity.UID != nil && *authCtx.Identity.UID == 0 {
+		return entries
+	}
+
+	out := entries[:0]
+	for i := range entries {
+		if canEnumerateEntry(&entries[i], authCtx) {
+			out = append(out, entries[i])
+		}
+	}
+	return out
+}
+
+// canEnumerateEntry reports whether the requester may see this entry in an
+// access-based enumeration. See filterByAccess for the policy contract.
+func canEnumerateEntry(entry *metadata.DirEntry, authCtx *metadata.AuthContext) bool {
+	attr := entry.Attr
+	if attr == nil {
+		// Without attributes we cannot evaluate either ACL or mode bits.
+		// Be conservative and show the entry — hiding it would make
+		// directory listing flap based on whether READDIRPLUS-style
+		// attribute prefetch happened to populate Attr. This path should
+		// not be reachable in SMB QUERY_DIRECTORY in practice since the
+		// metadata layer always returns DirEntry.Attr.
+		return true
+	}
+
+	// ACE4_READ_DATA == ACE4_LIST_DIRECTORY == 0x00000001 — same bit, so
+	// either mask works against both files and directories.
+	const readMask = acl.ACE4_READ_DATA
+
+	if attr.ACL != nil {
+		evalCtx := buildEnumEvalContext(attr, authCtx)
+		return acl.Evaluate(attr.ACL, evalCtx, readMask)
+	}
+
+	// POSIX fallback — same semantics as
+	// pkg/metadata/auth_permissions.go::calculatePermissions for read.
+	return posixCanRead(attr, authCtx)
+}
+
+// buildEnumEvalContext constructs an acl.EvaluateContext from an attr +
+// AuthContext pair for access-based enumeration decisions.
+func buildEnumEvalContext(attr *metadata.FileAttr, authCtx *metadata.AuthContext) *acl.EvaluateContext {
+	evalCtx := &acl.EvaluateContext{
+		FileOwnerUID: attr.UID,
+		FileOwnerGID: attr.GID,
+	}
+	if authCtx == nil || authCtx.Identity == nil {
+		return evalCtx
+	}
+	id := authCtx.Identity
+	if id.UID != nil {
+		evalCtx.UID = *id.UID
+	}
+	if id.GID != nil {
+		evalCtx.GID = *id.GID
+	}
+	evalCtx.GIDs = id.GIDs
+	switch {
+	case id.Username != "" && id.Domain != "":
+		evalCtx.Who = id.Username + "@" + id.Domain
+	case id.Username != "":
+		evalCtx.Who = id.Username
+	}
+	if id.SID != nil {
+		evalCtx.SID = *id.SID
+	}
+	evalCtx.GroupSIDs = id.GroupSIDs
+	return evalCtx
+}
+
+// posixCanRead implements the read-bit selection used for access-based
+// enumeration on files / directories without an ACL.
+func posixCanRead(attr *metadata.FileAttr, authCtx *metadata.AuthContext) bool {
+	if attr == nil {
+		return true
+	}
+	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
+		// Anonymous → only the "other" read bit applies.
+		return attr.Mode&0o004 != 0
+	}
+	uid := *authCtx.Identity.UID
+	switch {
+	case uid == attr.UID:
+		return attr.Mode&0o400 != 0
+	case authCtx.Identity.HasGID(attr.GID):
+		return attr.Mode&0o040 != 0
+	default:
+		return attr.Mode&0o004 != 0
+	}
 }

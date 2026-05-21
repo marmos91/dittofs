@@ -87,6 +87,7 @@ func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error 
 		"retention_ttl":                       share.RetentionTTL,
 		"enabled":                             share.Enabled,
 		"acl_flag_inherited_canonicalization": share.AclFlagInheritedCanonicalization,
+		"access_based_enumeration":            share.AccessBasedEnumeration,
 		"updated_at":                          share.UpdatedAt,
 	}
 	// Handle remote_block_store_id explicitly: GORM map-based Updates may skip

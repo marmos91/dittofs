@@ -41,9 +41,12 @@ type Share struct {
 	// AclFlagInheritedCanonicalization mirrors models.Share — Refs #514.
 	// No omitempty: `false` is operator-meaningful (canonicalization
 	// disabled) and consumers need to render the state explicitly.
-	AclFlagInheritedCanonicalization bool      `json:"acl_flag_inherited_canonicalization"`
-	CreatedAt                        time.Time `json:"created_at"`
-	UpdatedAt                        time.Time `json:"updated_at"`
+	AclFlagInheritedCanonicalization bool `json:"acl_flag_inherited_canonicalization"`
+	// AccessBasedEnumeration mirrors models.Share — Refs #532. No omitempty
+	// for the same reason.
+	AccessBasedEnumeration bool      `json:"access_based_enumeration"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 // CreateShareRequest is the request to create a share.
@@ -65,6 +68,9 @@ type CreateShareRequest struct {
 	// AclFlagInheritedCanonicalization — Refs #514. Pointer so callers can
 	// distinguish "unset → server default (true)" from "explicit false".
 	AclFlagInheritedCanonicalization *bool `json:"acl_flag_inherited_canonicalization,omitempty"`
+	// AccessBasedEnumeration — Refs #532. Pointer so callers can distinguish
+	// "unset → server default (false)" from "explicit true".
+	AccessBasedEnumeration *bool `json:"access_based_enumeration,omitempty"`
 }
 
 // UpdateShareRequest is the request to update a share.
@@ -84,6 +90,9 @@ type UpdateShareRequest struct {
 	// AclFlagInheritedCanonicalization — Refs #514. nil = no change;
 	// non-nil = explicit set. Takes effect on adapter restart.
 	AclFlagInheritedCanonicalization *bool `json:"acl_flag_inherited_canonicalization,omitempty"`
+	// AccessBasedEnumeration — Refs #532. nil = no change; non-nil =
+	// explicit set. Takes effect on adapter restart.
+	AccessBasedEnumeration *bool `json:"access_based_enumeration,omitempty"`
 }
 
 // SharePermission represents a permission on a share.
