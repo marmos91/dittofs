@@ -311,6 +311,11 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	minOff := minRecOffset(recs)
 	ck := chunker.NewChunker()
 	pos := minOff
+	// Accumulate the BlockRef manifest as chunks are emitted. Sorted-by-
+	// Offset is automatic because pos advances monotonically — that
+	// matches the canonical FileAttr.Blocks invariant the downstream
+	// ObjectID compute relies on.
+	var blocks []blockstore.BlockRef
 	for pos < uint64(len(stream)) {
 		b, _ := ck.Next(stream[pos:], true)
 		if b <= 0 {
@@ -323,6 +328,11 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 		if err := bc.StoreChunk(ctx, h, chunkBytes); err != nil {
 			return fmt.Errorf("rollup: StoreChunk: %w", err)
 		}
+		blocks = append(blocks, blockstore.BlockRef{
+			Hash:   h,
+			Offset: pos,
+			Size:   uint32(b),
+		})
 		pos += uint64(b)
 	}
 
@@ -346,6 +356,25 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	}
 	if err != nil {
 		return fmt.Errorf("rollup: SetRollupOffset: %w", err)
+	}
+
+	// Compute the BLAKE3 Merkle-root ObjectID over the BlockRef manifest
+	// the chunker just produced, and invoke the persister so the
+	// coordinator can stamp it onto FileAttr alongside the BlockRef list.
+	// Local-only / no-engine fixtures leave objectIDPersister nil: the
+	// ObjectID is still computed (cheap, deterministic, harmless) but the
+	// persist call is skipped.
+	//
+	// Crash-window note: ObjectIDPersister failure is surfaced; the rollup
+	// offset is already persisted, so a future pass for the same payloadID
+	// will fast-skip at SetRollupOffset and may leave ObjectID unset —
+	// operator must re-trigger by writing a new chunk to seed another
+	// rollup pass.
+	objectID := blockstore.ComputeObjectID(blocks)
+	if bc.objectIDPersister != nil {
+		if err := bc.objectIDPersister(ctx, payloadID, blocks, objectID); err != nil {
+			return fmt.Errorf("rollup: ObjectIDPersister: %w", err)
+		}
 	}
 
 	// Derived-state: advance the log header. If this fails, metadata is
