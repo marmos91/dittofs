@@ -46,12 +46,15 @@ func HasExplicitDeny(a *ACL) bool {
 // true only if ALL requested permission bits are explicitly allowed.
 //
 // The algorithm:
-//  1. Pre-scan: detect whether any non-inherit-only OWNER_RIGHTS ACE is
-//     present. When present AND the requester is the file owner, the
-//     OWNER_RIGHTS ACEs become the sole authority for the owner: OWNER@
-//     ACEs are ignored for matching purposes (they would otherwise
-//     supersede the OWNER_RIGHTS decision under first-match-wins). This
-//     mirrors Samba `libcli/security/access_check.c::se_access_check`.
+//  1. Pre-scan (owner only): detect whether any effective OWNER_RIGHTS
+//     ACCESS_ALLOWED/ACCESS_DENIED ACE is present. When present AND the
+//     requester is the file owner, the OWNER_RIGHTS ACEs become the sole
+//     authority for the owner: OWNER@ ACEs are ignored for matching
+//     purposes (they would otherwise supersede the OWNER_RIGHTS decision
+//     under first-match-wins). This mirrors Samba
+//     `libcli/security/access_check.c::se_access_check`. AUDIT/ALARM
+//     ACEs do not affect access decisions and therefore do not trigger
+//     the override; non-owner requesters skip the pre-scan entirely.
 //  2. Process ACEs in order.
 //  3. Skip ACEs with INHERIT_ONLY flag (they only apply to children).
 //  4. For each matching ACE, record newly decided bits:
@@ -68,15 +71,26 @@ func Evaluate(a *ACL, evalCtx *EvaluateContext, requestedMask uint32) bool {
 		return false
 	}
 
-	// First pass: does this DACL contain any effective OWNER_RIGHTS ACE?
-	// Inherit-only entries don't apply to access checks, so they don't count.
+	// First pass: does this DACL contain any effective OWNER_RIGHTS ACE
+	// that affects access decisions? The override only matters when the
+	// requester is the file owner, so non-owners skip the scan entirely.
+	// AUDIT/ALARM ACEs are evaluation no-ops and must not trigger the
+	// override — only ACCESS_ALLOWED/ACCESS_DENIED count. Inherit-only
+	// entries don't apply to access checks, so they don't count either.
 	var ownerRightsPresent bool
-	for i := range a.ACEs {
-		ace := &a.ACEs[i]
-		if ace.IsInheritOnly() {
-			continue
-		}
-		if ace.Who == SpecialOwnerRights {
+	if evalCtx.UID == evalCtx.FileOwnerUID {
+		for i := range a.ACEs {
+			ace := &a.ACEs[i]
+			if ace.IsInheritOnly() {
+				continue
+			}
+			if ace.Who != SpecialOwnerRights {
+				continue
+			}
+			if ace.Type != ACE4_ACCESS_ALLOWED_ACE_TYPE &&
+				ace.Type != ACE4_ACCESS_DENIED_ACE_TYPE {
+				continue
+			}
 			ownerRightsPresent = true
 			break
 		}
