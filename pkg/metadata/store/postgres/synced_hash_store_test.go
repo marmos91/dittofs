@@ -12,10 +12,16 @@ import (
 )
 
 // TestPostgresSyncedHashStore_Suite exercises the shared SyncedHashStore
-// conformance suite against the Postgres backend. Requires a live
-// PostgreSQL at DITTOFS_TEST_POSTGRES_DSN (same env-var gate as the
-// other Postgres integration tests). Idempotency is enforced by
-// ON CONFLICT DO NOTHING — see pkg/metadata/store/postgres/synced_hash_store.go.
+// conformance suite against the Postgres backend. DITTOFS_TEST_POSTGRES_DSN
+// is a BOOLEAN GATE — any non-empty value opts in; the value itself is
+// NOT parsed as a DSN. The connection parameters are the hardcoded
+// localhost:5432 / dittofs_test / postgres:postgres set below, matching
+// the CI Postgres service container the other postgres_test.go files
+// connect to. If the project ever needs to honor a real DSN here,
+// parse os.Getenv("DITTOFS_TEST_POSTGRES_DSN") into the config struct
+// (lib/pq's pq.ParseURL is the standard tool). Idempotency is enforced
+// by ON CONFLICT DO NOTHING — see
+// pkg/metadata/store/postgres/synced_hash_store.go.
 //
 // State isolation across runs: the conformance suite picks distinct
 // hash seeds per subtest (via mustHash), and every subtest's

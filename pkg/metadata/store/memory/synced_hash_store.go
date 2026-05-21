@@ -27,7 +27,13 @@ func (s *MemoryMetadataStore) IsSynced(ctx context.Context, hash blockstore.Cont
 }
 
 // MarkSynced records that hash has been mirrored to remote. Idempotent:
-// re-applying the same hash overwrites the timestamp and returns nil.
+// the first MarkSynced for a given hash stamps the current time;
+// subsequent calls are no-ops that preserve the original timestamp.
+// The first-write-wins semantics matter for operators reasoning about
+// "when was this hash first mirrored" — overwriting on every re-apply
+// would surface the most-recent re-Put time instead, which is
+// misleading when a periodic mirror loop re-checks already-synced
+// hashes.
 func (s *MemoryMetadataStore) MarkSynced(ctx context.Context, hash blockstore.ContentHash) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -36,6 +42,9 @@ func (s *MemoryMetadataStore) MarkSynced(ctx context.Context, hash blockstore.Co
 	defer s.syncedMu.Unlock()
 	if s.synced == nil {
 		s.synced = make(map[blockstore.ContentHash]time.Time)
+	}
+	if _, ok := s.synced[hash]; ok {
+		return nil
 	}
 	s.synced[hash] = time.Now()
 	return nil
