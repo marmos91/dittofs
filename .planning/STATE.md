@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v0.16.0
 milestone_name: — CAS Convergence
-status: completed
-stopped_at: Phase 17 Plan 10 (docs) shipped
-last_updated: "2026-05-21T11:23:30.132Z"
-last_activity: 2026-05-21 -- Phase 18 marked complete
+status: ready
+stopped_at: Phase 18 PR #537 merged
+last_updated: "2026-05-21T16:20:00.000Z"
+last_activity: 2026-05-21 -- Phase 18 shipped; phase 19 branch prepared
 progress:
   total_phases: 11
   completed_phases: 6
@@ -21,24 +21,24 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-23)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 18 — syncer-simplification
+**Current focus:** Phase 19 — write-path RAM optimizations (planning)
 
 ## Current Position
 
 Milestone: v0.16.0
-Phase: 18 — COMPLETE
-Plan: 1 of 9
-Branch: `gsd/phase-16-cache-mmap-removal`
-Status: Phase 18 complete
-Last activity: 2026-05-21 -- Phase 18 marked complete
+Phase: 19 — NOT YET PLANNED
+Branch: `gsd/phase-19-write-path-ram-optimizations` (off develop @ `b31b01f7`)
+Status: Phase 18 shipped via PR #537; phase 19 branch created, no plan yet
+Last activity: 2026-05-21 -- Phase 18 shipped; phase 19 branch prepared
 
 ## Next Actionable
 
-Phase 16 complete. Open a PR for `gsd/phase-16-cache-mmap-removal` → `develop`, then begin Phase 17 (unified `BlockStore` interface + legacy `.blk` delete + `dfsctl blockstore migrate-to-cas` one-shot).
+Phase 18 shipped (PR #537 merged into develop at `b31b01f7`). Phase 19 (write-path RAM optimizations — last of four v0.16.0 phases per Phase 18 ROADMAP entry) is not yet planned.
 
-- `/gsd-discuss-phase 17` (or directly `/gsd-plan-phase 17`) — kick off Phase 17 planning
-- GH issue: #517 (Phase 17 tracking)
-- GH issue: #516 (Phase 16 — close after PR merges)
+- `/gsd-phase add 19` — add phase 19 entry to ROADMAP first
+- `/gsd-discuss-phase 19` — gather context for write-path RAM work
+- `/gsd-plan-phase 19` — produce PLAN.md once scope is clear
+- Open GH issue for phase 19 tracking before kickoff
 
 ## Completed Milestones
 
