@@ -977,34 +977,6 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	return h.completeCreateAfterBreak(ctx, draft), nil
 }
 
-// maxAccessProbeBits is the set of MS-DTYP access-right bits probed against
-// a file's DACL when computing the MxAc create-context response. Per
-// MS-SMB2 §2.2.13.2, MaximalAccess must reflect actual security descriptor
-// evaluation — each bit is OR'd into the result iff the ACL explicitly
-// grants it to the requester. The set covers every ACE4_* file/dir right
-// that has a Windows access-mask analog per MS-DTYP §2.4.3; NFSv4 mask
-// bits share their bit positions with the equivalent Windows rights, so
-// the resulting mask is directly usable on the SMB2 wire. The NFSv4-only
-// retention bits (ACE4_WRITE_RETENTION = 0x200, ACE4_WRITE_RETENTION_HOLD
-// = 0x400) are intentionally excluded because they have no representation
-// in SMB access masks.
-var maxAccessProbeBits = [...]uint32{
-	acl.ACE4_READ_DATA, // == ACE4_LIST_DIRECTORY
-	acl.ACE4_WRITE_DATA,
-	acl.ACE4_APPEND_DATA,
-	acl.ACE4_READ_NAMED_ATTRS,
-	acl.ACE4_WRITE_NAMED_ATTRS,
-	acl.ACE4_EXECUTE,
-	acl.ACE4_DELETE_CHILD,
-	acl.ACE4_READ_ATTRIBUTES,
-	acl.ACE4_WRITE_ATTRIBUTES,
-	acl.ACE4_DELETE,
-	acl.ACE4_READ_ACL,
-	acl.ACE4_WRITE_ACL,
-	acl.ACE4_WRITE_OWNER,
-	acl.ACE4_SYNCHRONIZE,
-}
-
 // computeMaximalAccess computes the maximal access mask for a file used in
 // the MxAc create-context response.
 //
@@ -1041,12 +1013,11 @@ func computeMaximalAccess(file *metadata.File, authCtx *metadata.AuthContext) ui
 		}
 		evalCtx := buildMaxAccessEvalContext(file, authCtx)
 		var granted uint32
-		// maxAccessProbeBits is already file-object-specific (NFSv4 ACE4_*
-		// shares bit positions with Windows file rights — see comment on
-		// maxAccessProbeBits). ExpandGenericMask is applied defensively so
-		// that any future additions to the probe set with GENERIC_* bits
-		// are normalized per MS-DTYP §2.5.3 before evaluation.
-		for _, bit := range maxAccessProbeBits {
+		// acl.ProbeBitsAll is the shared probe set (mirrors
+		// metadata.CheckFileAccess). ExpandGenericMask is applied defensively
+		// so any future additions with GENERIC_* bits are normalized per
+		// MS-DTYP §2.5.3 before evaluation.
+		for _, bit := range acl.ProbeBitsAll {
 			probe := acl.ExpandGenericMask(bit)
 			if acl.Evaluate(file.ACL, evalCtx, probe) {
 				granted |= probe

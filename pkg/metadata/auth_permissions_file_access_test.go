@@ -200,10 +200,12 @@ func TestCheckFileAccess_RootBypassGetsEverything(t *testing.T) {
 	require.Equal(t, rightReadData|rightWriteData|rightDelete, granted)
 }
 
-// TestCheckFileAccess_NilACLPosixFallbackOwner covers the documented divergence
-// from buildDACL: when file.ACL == nil, enforcement uses POSIX mode bits (not
-// the synthesized Windows-default SD). Owner gets GENERIC_ALL.
-func TestCheckFileAccess_NilACLPosixFallbackOwner(t *testing.T) {
+// TestCheckFileAccess_NilACLOwnerGrantsRequested covers the nil-ACL path:
+// when file.ACL == nil there is no DACL to enforce at the open gate, so the
+// requested access bits are granted as-is. Downstream metadata operations
+// still apply POSIX-mode enforcement; CheckFileAccess gates only the SMB2
+// open, not the per-op read/write/delete.
+func TestCheckFileAccess_NilACLOwnerGrantsRequested(t *testing.T) {
 	f := newTestFixture(t)
 
 	ownerUID := uint32(1001)
@@ -213,7 +215,7 @@ func TestCheckFileAccess_NilACLPosixFallbackOwner(t *testing.T) {
 			Mode: 0o600,
 			UID:  ownerUID,
 			GID:  1001,
-			// ACL: nil — POSIX fallback path.
+			// ACL: nil — no DACL to enforce.
 		})
 	require.NoError(t, err)
 
@@ -221,13 +223,17 @@ func TestCheckFileAccess_NilACLPosixFallbackOwner(t *testing.T) {
 
 	granted, err := f.service.CheckFileAccess(created, authCtx, rightReadData|rightWriteData)
 	require.NoError(t, err)
-	require.Equal(t, rightReadData|rightWriteData, granted&(rightReadData|rightWriteData))
+	require.Equal(t, rightReadData|rightWriteData, granted)
 }
 
-// TestCheckFileAccess_NilACLPosixFallbackOtherDeniesWrite covers the
-// non-owner POSIX path: a file with mode 0o600 (rw owner only) must deny a
-// WRITE_DATA request from a non-owner non-group user.
-func TestCheckFileAccess_NilACLPosixFallbackOtherDeniesWrite(t *testing.T) {
+// TestCheckFileAccess_NilACLNonOwnerGrantsRequested verifies the open-time
+// gate does NOT deny a non-owner's request when file.ACL == nil — even when
+// the POSIX mode would deny the same operation downstream. This is the WPTS
+// BVT load-bearing case (and smb2.create.multi): CREATE asks for DELETE,
+// WRITE_DAC, or higher-namespace rights that the rwx mapping cannot encode,
+// and the pre-#529 server granted those opens. We must keep granting them at
+// open time; per-op enforcement in read/write/delete catches abuse.
+func TestCheckFileAccess_NilACLNonOwnerGrantsRequested(t *testing.T) {
 	f := newTestFixture(t)
 
 	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "posix_owner_only.txt",
@@ -241,11 +247,44 @@ func TestCheckFileAccess_NilACLPosixFallbackOtherDeniesWrite(t *testing.T) {
 
 	authCtx := f.authContext(1001, 1001)
 
-	_, err = f.service.CheckFileAccess(created, authCtx, rightWriteData|rightAppendData)
-	require.Error(t, err)
-	var storeErr *metadata.StoreError
-	require.ErrorAs(t, err, &storeErr)
-	require.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+	// Non-owner requesting WRITE_DATA on a 0o600 file. Open succeeds
+	// (no DACL to enforce); the actual WRITE op denies via POSIX mode.
+	granted, err := f.service.CheckFileAccess(created, authCtx, rightWriteData|rightAppendData)
+	require.NoError(t, err)
+	require.Equal(t, rightWriteData|rightAppendData, granted)
+
+	// DELETE / WRITE_DAC / WRITE_OWNER — bits the POSIX rwx mapping cannot
+	// encode — must also pass the open gate when there is no DACL.
+	const rightWriteDac uint32 = 0x00040000
+	const rightWriteOwner uint32 = 0x00080000
+	probe := rightDelete | rightWriteDac | rightWriteOwner
+	granted, err = f.service.CheckFileAccess(created, authCtx, probe)
+	require.NoError(t, err)
+	require.Equal(t, probe, granted)
+}
+
+// TestCheckFileAccess_NilACLMaxAllowedReturnsGenericAll verifies that
+// MAXIMUM_ALLOWED on a no-DACL file returns the full GENERIC_ALL set, mirroring
+// the MxAc reply produced by computeMaximalAccess.
+func TestCheckFileAccess_NilACLMaxAllowedReturnsGenericAll(t *testing.T) {
+	f := newTestFixture(t)
+
+	ownerUID := uint32(1001)
+	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "max_nil_acl.txt",
+		&metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o600,
+			UID:  ownerUID,
+			GID:  1001,
+		})
+	require.NoError(t, err)
+
+	authCtx := f.authContext(ownerUID, 1001)
+
+	granted, err := f.service.CheckFileAccess(created, authCtx, rightMaxAllowed)
+	require.NoError(t, err)
+	// GENERIC_ALL = 0x001F01FF
+	require.Equal(t, uint32(0x001F01FF), granted)
 }
 
 // TestCheckFileAccess_ZeroDesiredAccessIsNoop guards against returning
