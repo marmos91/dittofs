@@ -747,11 +747,17 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 		}
 	})
 
-	t.Run("AllowOnlyACEGrantsExactlyListedBits", func(t *testing.T) {
+	t.Run("AllowACEPlusOwnerImplicitBits", func(t *testing.T) {
 		// Single ALLOW ACE granting exactly READ_DATA|READ_ATTRIBUTES|
-		// READ_ACL|SYNCHRONIZE — no extra bits should leak in from POSIX mode.
+		// SYNCHRONIZE for OWNER@. No POSIX-mode leakage is allowed, but
+		// MS-DTYP §2.5.3.2 layers READ_CONTROL|WRITE_DAC|WRITE_OWNER on top
+		// of the explicit grants when the requester is the file owner.
+		// `explicit` deliberately omits READ_CONTROL so the implicit-grant
+		// contribution is unambiguous in the assertion.
 		authCtx := mkOwnerCtx()
-		want := uint32(acl.ACE4_READ_DATA | acl.ACE4_READ_ATTRIBUTES | acl.ACE4_READ_ACL | acl.ACE4_SYNCHRONIZE)
+		explicit := uint32(acl.ACE4_READ_DATA | acl.ACE4_READ_ATTRIBUTES | acl.ACE4_SYNCHRONIZE)
+		ownerImplicit := uint32(acl.ACE4_READ_ACL | acl.ACE4_WRITE_ACL | acl.ACE4_WRITE_OWNER)
+		want := explicit | ownerImplicit
 		file := &metadata.File{
 			FileAttr: metadata.FileAttr{
 				UID:  1000,
@@ -762,7 +768,7 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 						{
 							Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
 							Who:        acl.SpecialOwner,
-							AccessMask: want,
+							AccessMask: explicit,
 						},
 					},
 				},
@@ -771,14 +777,17 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 
 		access := computeMaximalAccess(file, authCtx)
 		if access != want {
-			t.Errorf("MxAc = 0x%08x, expected exactly 0x%08x", access, want)
+			t.Errorf("MxAc = 0x%08x, expected 0x%08x (explicit 0x%08x + owner-implicit 0x%08x per MS-DTYP §2.5.3.2)",
+				access, want, explicit, ownerImplicit)
 		}
 	})
 
-	t.Run("EmptyACLDeniesAllProbedBits", func(t *testing.T) {
-		// An ACL with zero ACEs decides no bits — Evaluate returns false for
-		// every probe and the granted mask must be zero.
+	t.Run("EmptyACLGrantsOnlyOwnerImplicitBits", func(t *testing.T) {
+		// An ACL with zero ACEs has no explicit grants for anyone, but
+		// MS-DTYP §2.5.3.2 still grants the file owner READ_CONTROL|
+		// WRITE_DAC|WRITE_OWNER. Non-owners get nothing (covered elsewhere).
 		authCtx := mkOwnerCtx()
+		ownerImplicit := uint32(acl.ACE4_READ_ACL | acl.ACE4_WRITE_ACL | acl.ACE4_WRITE_OWNER)
 		file := &metadata.File{
 			FileAttr: metadata.FileAttr{
 				UID:  1000,
@@ -789,8 +798,8 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 		}
 
 		access := computeMaximalAccess(file, authCtx)
-		if access != 0 {
-			t.Errorf("Empty ACL must deny all bits, got 0x%08x", access)
+		if access != ownerImplicit {
+			t.Errorf("Empty ACL: owner must receive only implicit RC|WRITE_DAC|WRITE_OWNER, got 0x%08x want 0x%08x", access, ownerImplicit)
 		}
 	})
 
