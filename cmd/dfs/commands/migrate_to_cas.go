@@ -305,6 +305,12 @@ func (nopFileBlockStore) IncrementRefCount(_ context.Context, _ string) error { 
 func (nopFileBlockStore) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
+func (nopFileBlockStore) AddRef(_ context.Context, _ blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
+	// Phase 19 D-04: migration path doesn't exercise the LRU hit path,
+	// so always returning ErrUnknownHash is safe — production callers
+	// fall back to the full Put path on this sentinel.
+	return blockstore.ErrUnknownHash
+}
 func (nopFileBlockStore) ListPending(_ context.Context, _ time.Duration, _ int) ([]*blockstore.FileBlock, error) {
 	return nil, nil
 }
