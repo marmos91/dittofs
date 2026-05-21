@@ -112,7 +112,8 @@ func TestDedupLRU_ConcurrentAccess_NoRace(t *testing.T) {
 		keys[i] = makeHash(byte(i))
 	}
 	var wg sync.WaitGroup
-	stop := time.After(100 * time.Millisecond)
+	stop := make(chan struct{})
+	time.AfterFunc(100*time.Millisecond, func() { close(stop) })
 	for g := 0; g < 8; g++ {
 		wg.Add(1)
 		go func(g int) {
