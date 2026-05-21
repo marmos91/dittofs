@@ -203,46 +203,6 @@ func (m *Syncer) TrySpeculativeFileLevelDedup(
 	return m.trySpeculativeFileLevelDedup(ctx, payloadID, speculativeBlocks, fileObjectID, blockStates)
 }
 
-// persistFileBlocksAfterFlush is the post-Flush hook (Phase 13 D-05).
-// Invokes coordinator.PersistFileBlocks with the BlockRef list AND the
-// BLAKE3 Merkle-root ObjectID computed from those blocks.
-//
-// D-06 invariant: this hook fires ONLY when every block is Remote
-// (full quiesce). Partial flushes never reach here — Flush() returns
-// Finalized:false. The ObjectID written here therefore always reflects
-// a fully-Remote consistent state (no in-flight blocks).
-//
-// Empty blocks list: ComputeObjectID returns the canonical empty-file
-// constant (BLAKE3 of the domain-separation prefix alone — D-03). The
-// runtime coordinator writes whatever the syncer passed; the lookup
-// index treats only all-zero ObjectIDs as "never quiesced", so the
-// canonical empty-file fingerprint is a real, queryable identity.
-//
-// Phase 13 D-20: success path logs at DEBUG (matches Phase 11/12
-// cadence; no new Prometheus surface this phase).
-//
-// WR-04 (Phase 13 review iteration 1): the runtime coordinator's
-// PersistFileBlocks is now fully wired (CR-01) so
-// ErrPersistFileBlocksNotWired should never surface in production. We
-// keep the sentinel itself as a defensive type — but we no longer
-// swallow it: a wired coordinator returning NotWired indicates a real
-// regression (e.g., a future refactor reintroducing the stub) and the
-// caller MUST see it as a hard error rather than a per-Flush log line.
-func (m *Syncer) persistFileBlocksAfterFlush(ctx context.Context, payloadID string, blocks []blockstore.BlockRef) error {
-	if m.coordinator == nil {
-		return nil
-	}
-	objectID := blockstore.ComputeObjectID(blocks)
-	err := m.coordinator.PersistFileBlocks(ctx, payloadID, blocks, objectID)
-	if err == nil {
-		logger.Debug("post-flush ObjectID persisted",
-			"payloadID", payloadID,
-			"blocks", len(blocks),
-			"objectID", objectID.String())
-	}
-	return err
-}
-
 // SetHealthCallback sets the callback invoked when the remote store health state changes.
 // If the HealthMonitor is already running, the callback is forwarded to it immediately.
 func (m *Syncer) SetHealthCallback(fn HealthTransitionCallback) {
@@ -321,213 +281,96 @@ func (m *Syncer) canProcess(ctx context.Context) bool {
 	return m.checkReady(ctx) == nil
 }
 
-// Flush writes dirty in-memory blocks to local store, optionally
-// short-circuits the per-block upload pump via the file-level dedup
-// path (Phase 13 BSCAS-05) when the D-09 trigger condition holds, and
-// otherwise drains every Pending/Syncing block belonging to payloadID
-// to Remote and invokes the post-Flush coordinator hook so
-// FileAttr.Blocks AND FileAttr.ObjectID are persisted in a single
-// metadata txn (CR-01 wired the runtime coordinator; Plan 13-12 closed
-// the post-Flush hop; Plan 13-13 closes the file-level dedup hop —
-// see 13-VERIFICATION.md must-haves #1/#2 / Phase 13 D-05 / D-06 /
-// D-09 / D-10).
+// Flush quiesces a payload's local-side state and mirrors every locally
+// stored CAS chunk that has not yet been marked synced to the remote
+// store. Mirror loop ordering is Put-then-Mark: each hash's bytes are
+// written to remote.Put first, and only on success does the
+// SyncedHashStore.MarkSynced call fire. A crash between the two steps
+// is safe because remote.Put is idempotent on (hash, identical bytes)
+// per the unified BlockStore contract, so the next Flush pass re-Puts
+// the same hash and proceeds to MarkSynced.
 //
-// D-06 invariant: the post-Flush hook fires ONLY on full quiesce
-// (every block of payloadID is Remote). On any drain failure, the
-// method returns the error without invoking the hook —
-// FileAttr.ObjectID remains at its prior value (zero for fresh
-// files; the previous Merkle root for re-flushed files). The next
-// successful Flush recomputes.
-//
-// D-09 trigger (file-level dedup short-circuit): when
-// len(speculativeBlocks)>0 AND every block.State==Pending AND the
-// file's prior ObjectID is zero, the syncer computes a provisional
-// Merkle root over the Pending FileBlock projection and consults
-// FindByObjectID. On hit, the metadata-side swap (RefCount++ on
-// target hashes, FileAttr.Blocks/ObjectID write, log truncation)
-// commits inside applyFileLevelDedupHit and the per-block upload pump
-// is BYPASSED entirely (zero new CAS PUTs). On miss / partial state
-// the per-block path runs as before.
-//
-// The drain loop mirrors SyncNow's claim-and-upload shape but is
-// scoped to payloadID via ListFileBlocks (Phase 12 D-08). When there
-// are no blocks for payloadID the method short-circuits to a no-op
-// success (a pre-write Flush, e.g. CLOSE on an opened-but-untouched
-// file, must not error — the runtime coordinator's PersistFileBlocks
-// would reject the unknown payloadID).
+// Returns Finalized=true when the mirror loop ran to completion (or
+// there was nothing to mirror) and Finalized=false when the local
+// store is configured without a healthy remote, in which case the
+// caller treats the payload as still-local-only.
 func (m *Syncer) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return nil, err
 	}
 
-	// 1. Local-side flush (existing behavior — moves dirty in-memory
-	//    state to .blk files; rollup pump may run async). Unchanged.
+	// 1. Local-side flush: drives any in-flight in-memory state down to
+	//    .blk files and triggers a rollup pass if one is pending. The
+	//    rollup pass, on completion, calls the engine-installed
+	//    ObjectIDPersister so FileAttr.Blocks + FileAttr.ObjectID land
+	//    in a single metadata txn for the payloadID. The mirror loop
+	//    below then handles the byte-side mirror to remote.
 	if _, err := m.local.Flush(ctx, payloadID); err != nil {
 		return nil, fmt.Errorf("local store flush failed: %w", err)
 	}
 
-	// 2. Phase 13 BSCAS-05 (Plan 13-13): file-level dedup short-circuit
-	//    BEFORE the per-block upload pump. Trigger condition (D-09) is
-	//    enforced inside trySpeculativeFileLevelDedup:
-	//      - len(speculativeBlocks) > 0
-	//      - every block.State == Pending
-	//      - fileObjectID == zero (file never quiesced)
-	//    On hit, applyFileLevelDedupHit commits the metadata swap and
-	//    the per-block drain is bypassed entirely (zero CAS PUTs). On
-	//    miss the path falls through to the existing per-block drain +
-	//    post-Flush hook so FileAttr.Blocks/ObjectID are still
-	//    finalized at the end of Flush.
-	//
-	//    The lookup is gated on a non-nil coordinator: pre-wiring
-	//    test fixtures (e.g. TestSyncer_Flush_NilCoordinatorIsNoop)
-	//    must continue to behave as a no-op.
-	if m.coordinator != nil {
-		specBlocks, blockStates, err := m.snapshotPendingBlockRefs(ctx, payloadID)
-		if err != nil {
-			return nil, fmt.Errorf("snapshot pending block refs for %s: %w", payloadID, err)
-		}
-		if len(specBlocks) > 0 {
-			fileObjectID, err := m.coordinator.GetFileObjectID(ctx, payloadID)
-			if err != nil {
-				return nil, fmt.Errorf("get file ObjectID for %s: %w", payloadID, err)
-			}
-			hit, err := m.TrySpeculativeFileLevelDedup(ctx, payloadID, specBlocks, fileObjectID, blockStates)
-			if err != nil {
-				return nil, fmt.Errorf("file-level dedup attempt for %s: %w", payloadID, err)
-			}
-			if hit {
-				// applyFileLevelDedupHit has already committed the
-				// metadata swap (Blocks + ObjectID + RefCount++ on
-				// target hashes + best-effort decrement on
-				// speculative-only hashes + cache invalidation +
-				// append-log truncation). The per-block drain is
-				// bypassed; no CAS PUTs were issued.
-				return &blockstore.FlushResult{Finalized: true}, nil
-			}
-		}
-	}
-
-	// 3. Drain every Pending/Syncing block belonging to payloadID to
-	//    Remote. Bounded loop; re-queries each pass to absorb
-	//    concurrent appends from a periodic uploader tick.
-	if err := m.drainPayloadToRemote(ctx, payloadID); err != nil {
-		return nil, fmt.Errorf("drain payload %s to remote: %w", payloadID, err)
-	}
-	// Local-only or remote-unhealthy: drain was a no-op. Skip the
-	// post-flush snapshot (it would fail the Pending→Remote
-	// precondition). Periodic syncer drains + finalizes on recovery.
+	// 2. Mirror loop: enumerate every CAS hash present locally but not
+	//    yet marked synced and copy it to remote, then MarkSynced.
+	//    Local-only or remote-unhealthy: early-exit with Finalized=false.
 	if m.remoteStore == nil || !m.IsRemoteHealthy() {
 		return &blockstore.FlushResult{Finalized: false}, nil
 	}
-
-	// 4. Build canonical sorted-by-Offset BlockRef snapshot
-	//    (D-01 / Phase 12 META-01 D-10). ListFileBlocks already
-	//    returns blocks ordered by block index ascending — which is
-	//    Offset ascending given Offset = blockIdx*BlockSize.
-	blocks, err := m.snapshotBlockRefs(ctx, payloadID)
-	if err != nil {
-		return nil, fmt.Errorf("snapshot block refs for %s: %w", payloadID, err)
-	}
-	if len(blocks) == 0 {
-		// No blocks belong to this payload — nothing to quiesce.
-		// Silent skip preserves the no-op semantics for pre-write
-		// Flushes (the coordinator would error on an unknown
-		// payloadID).
+	// Serialize the explicit mirror against the periodic uploader's
+	// tick body. Both paths take the uploading atomic gate; whichever
+	// holds it runs and the other observes Finalized=false (explicit
+	// caller will retry on the next Flush; periodic caller will retry
+	// on the next tick).
+	if !m.uploading.CompareAndSwap(false, true) {
 		return &blockstore.FlushResult{Finalized: false}, nil
 	}
+	defer m.uploading.Store(false)
 
-	// 5. Post-Flush hook: persist FileAttr.Blocks AND
-	//    FileAttr.ObjectID in one metadata txn (the runtime
-	//    coordinator owns the txn).
-	if err := m.persistFileBlocksAfterFlush(ctx, payloadID, blocks); err != nil {
-		return nil, fmt.Errorf("post-flush metadata persist for %s: %w", payloadID, err)
+	if err := m.mirrorOnce(ctx); err != nil {
+		return nil, err
 	}
 	return &blockstore.FlushResult{Finalized: true}, nil
 }
 
-// MaxFlushPasses is the upper bound on drain-loop passes
-// drainPayloadToRemote performs before declaring non-convergence. Each
-// pass drains every Pending/Syncing block currently visible to
-// ListFileBlocks(payloadID); the loop re-queries to absorb concurrent
-// appends. 16 passes accommodates a periodic uploader tick interleaving
-// with bounded in-progress writers; if the set is still non-empty after
-// that, the periodic janitor will reconcile.
-const MaxFlushPasses = 16
-
-// drainPayloadToRemote synchronously walks every FileBlock belonging to
-// payloadID and ensures each reaches BlockStateRemote. Returns nil on
-// full quiesce; on any uploadOne error returns immediately so the
-// caller (Flush) propagates without firing the post-Flush hook. Per
-// D-14, idempotency of CAS keys makes any rolled-back row safe to
-// re-upload on the next Flush.
+// mirrorOnce performs a single mirror-loop pass: every CAS hash
+// present locally but not yet marked synced is read out of the local
+// store, written to remote, then MarkSynced'd. Caller MUST hold the
+// uploading atomic gate.
 //
-// WR-01 (Phase 13 review iteration 2 — deliberate non-serialization):
-// unlike SyncNow, this drain does NOT acquire the m.uploading
-// CompareAndSwap gate. A periodic uploader tick may race with this
-// drain on the same payloadID — both can observe a Pending row, claim
-// it (one via this drain's per-row Put, the other via claimBatch), and
-// both call uploadOne. This is TOLERATED by the same contract that
-// permits cross-syncer races on claimBatch (see claimBatch's
-// "Serialization scope (D-13)" doc): CAS keys are content-defined
-// (D-11 / INV-03), so the duplicate PUT is byte-identical at a
-// byte-identical key and the metadata Put is idempotent. Acquiring
-// m.uploading here would block the periodic uploader for the entire
-// drain (potentially many passes on a slow remote) for no correctness
-// gain — the cost of the rare duplicate PUT is bounded and well
-// understood.
+// Ordering is Put-then-Mark. A crash between remote.Put and MarkSynced
+// is safe because remote.Put is idempotent on (hash, identical bytes)
+// per the unified BlockStore contract; the next pass re-Puts the same
+// hash and proceeds to MarkSynced. MarkSynced fires only after Put
+// returns nil — Mark never precedes Put, so a marked-synced hash is
+// always actually present remotely.
 //
-// The per-row guard at line ~457 (`if fb.State == BlockStatePending`)
-// avoids re-claiming a row a concurrent uploader has just flipped to
-// Syncing; uploadOne is then invoked on that Syncing row, producing
-// the at-most-twice upload described above.
-func (m *Syncer) drainPayloadToRemote(ctx context.Context, payloadID string) error {
-	// Local-only mode: blocks stay in BlockStatePending. Flush reports
-	// not-finalized; the post-flush metadata persist hook still records
-	// the canonical BlockRef snapshot.
-	if m.remoteStore == nil {
+// snapshotHashStore is observed under the syncer's RWMutex (the field
+// is written via SetSyncedHashStore). With no SyncedHashStore wired
+// the mirror loop short-circuits to a no-op — there is no production
+// path that wires a remote store without also wiring a
+// SyncedHashStore, but the defensive guard keeps test fixtures simple.
+func (m *Syncer) mirrorOnce(ctx context.Context) error {
+	m.mu.RLock()
+	hashStore := m.syncedHashStore
+	m.mu.RUnlock()
+	if hashStore == nil {
 		return nil
 	}
-	// Remote-unhealthy: skip the synchronous upload pump. Blocks stay
-	// in Pending and the periodic syncer drains them once health
-	// recovers (matches the gating in SyncNow/uploadOne callers).
-	if !m.IsRemoteHealthy() {
-		return nil
-	}
-	for pass := 0; pass < MaxFlushPasses; pass++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		blocks, err := m.fileBlockStore.ListFileBlocks(ctx, payloadID)
+	for hash, err := range m.local.ListUnsynced(ctx) {
 		if err != nil {
-			return fmt.Errorf("list file blocks: %w", err)
+			return fmt.Errorf("list unsynced: %w", err)
 		}
-		allRemote := true
-		for _, fb := range blocks {
-			if fb.State == blockstore.BlockStateRemote {
-				continue
-			}
-			allRemote = false
-			// Flip Pending → Syncing in metadata so the row is
-			// owned by this drain pass (mirrors claimBatch).
-			// Idempotent for already-Syncing rows (uploadOne also
-			// rejects non-Syncing rows; the explicit transition
-			// keeps the contract local).
-			if fb.State == blockstore.BlockStatePending {
-				fb.State = blockstore.BlockStateSyncing
-				fb.LastSyncAttemptAt = time.Now()
-				if err := m.fileBlockStore.Put(ctx, fb); err != nil {
-					return fmt.Errorf("claim block %s: %w", fb.ID, err)
-				}
-			}
-			if err := m.uploadOne(ctx, fb); err != nil {
-				return fmt.Errorf("upload block %s: %w", fb.ID, err)
-			}
+		data, err := m.local.Get(ctx, hash)
+		if err != nil {
+			return fmt.Errorf("local get %s: %w", hash, err)
 		}
-		if allRemote {
-			return nil
+		if err := m.remoteStore.Put(ctx, hash, data); err != nil {
+			return fmt.Errorf("remote put %s: %w", hash, err)
+		}
+		if err := hashStore.MarkSynced(ctx, hash); err != nil {
+			return fmt.Errorf("mark synced %s: %w", hash, err)
 		}
 	}
-	return fmt.Errorf("drain did not converge after %d passes for payload %s", MaxFlushPasses, payloadID)
+	return nil
 }
 
 // snapshotPendingBlockRefs returns the speculativeBlocks list +
@@ -573,47 +416,6 @@ func (m *Syncer) snapshotPendingBlockRefs(ctx context.Context, payloadID string)
 		states = append(states, fb.State)
 	}
 	return refs, states, nil
-}
-
-// snapshotBlockRefs returns the canonical sorted-by-Offset BlockRef
-// list for payloadID at the moment of the call. Built from the current
-// ListFileBlocks() projection: Offset = blockIdx*BlockSize, Size =
-// DataSize. Caller MUST have ensured every block is Remote (the
-// drainPayloadToRemote precondition) — Pending blocks have an empty
-// Hash and would corrupt the Merkle root.
-//
-// ListFileBlocks already returns blocks ordered by block index
-// ascending → ascending Offset; no defensive sort is added here. If
-// the contract ever drifts the storetest BlockRef SortStability
-// scenario catches it before the engine sees the misordered slice.
-func (m *Syncer) snapshotBlockRefs(ctx context.Context, payloadID string) ([]blockstore.BlockRef, error) {
-	blocks, err := m.fileBlockStore.ListFileBlocks(ctx, payloadID)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]blockstore.BlockRef, 0, len(blocks))
-	for _, fb := range blocks {
-		// WR-03 (Phase 13 review iteration 2): parse the block ID FIRST
-		// so the precondition error below can only mention rows that
-		// genuinely belong to this payload. A foreign-payload row that
-		// somehow surfaced in ListFileBlocks(payloadID) is silently
-		// skipped here regardless of its State, mirroring the structure
-		// of snapshotPendingBlockRefs.
-		_, blockIdx, ok := parseBlockID(fb.ID, payloadID)
-		if !ok {
-			continue
-		}
-		if fb.State != blockstore.BlockStateRemote {
-			return nil, fmt.Errorf("snapshot precondition violated: block %s is %v, expected Remote",
-				fb.ID, fb.State)
-		}
-		out = append(out, blockstore.BlockRef{
-			Hash:   fb.Hash,
-			Offset: blockIdx * uint64(BlockSize),
-			Size:   fb.DataSize,
-		})
-	}
-	return out, nil
 }
 
 // DrainAllUploads performs an immediate synchronous upload of every local
