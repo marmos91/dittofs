@@ -73,8 +73,7 @@ type MemoryStore struct {
 	// rollup's chunk boundaries.
 	chunkEmitter ChunkEmitter
 
-	closed          bool
-	evictionEnabled bool
+	closed bool
 }
 
 // SetChunkEmitter wires the rollup-time per-chunk callback. Idempotent;
@@ -99,11 +98,10 @@ type appendLog struct {
 // New creates a new MemoryStore.
 func New() *MemoryStore {
 	return &MemoryStore{
-		files:           make(map[string]uint64),
-		cas:             make(map[blockstore.ContentHash]casEntry),
-		appendLogs:      make(map[string]*appendLog),
-		tombstones:      make(map[string]struct{}),
-		evictionEnabled: true,
+		files:      make(map[string]uint64),
+		cas:        make(map[blockstore.ContentHash]casEntry),
+		appendLogs: make(map[string]*appendLog),
+		tombstones: make(map[string]struct{}),
 	}
 }
 
@@ -434,12 +432,10 @@ func (s *MemoryStore) EvictMemory(_ context.Context, payloadID string) error {
 	return nil
 }
 
-// SetEvictionEnabled controls whether eviction is enabled (no-op effect in memory store).
-func (s *MemoryStore) SetEvictionEnabled(enabled bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.evictionEnabled = enabled
-}
+// SetEvictionEnabled satisfies the local.LocalStore interface. The
+// in-memory backend does not implement eviction (chunks live for the
+// process lifetime), so the toggle is a no-op.
+func (s *MemoryStore) SetEvictionEnabled(_ bool) {}
 
 // SetRetentionPolicy is a no-op in the memory store (memory store doesn't do eviction).
 func (s *MemoryStore) SetRetentionPolicy(_ blockstore.RetentionPolicy, _ time.Duration) {}
