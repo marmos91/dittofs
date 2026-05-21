@@ -149,7 +149,7 @@ var _ metadata.SyncedHashStore = (*recordingSyncedHashStore)(nil)
 func buildCascadeFixture(t *testing.T, coord MetadataCoordinator, syncedStore metadata.SyncedHashStore) *BlockStore {
 	t.Helper()
 	localStore := memory.New()
-	fbs := &stubFileBlockStore{}
+	fbs := newStubFileBlockStore()
 	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(Config{

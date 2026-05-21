@@ -3,97 +3,93 @@ package engine
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
-	"sync/atomic"
+	"iter"
 	"testing"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	memorylocal "github.com/marmos91/dittofs/pkg/blockstore/local/memory"
+	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 )
 
-// errBoomPut is the sentinel error returned by failingPutFileBlockStore
-// when its failAfter counter has been reached.
+// errBoomPut is the sentinel error returned by failingPutRemote.
 var errBoomPut = errors.New("boom put")
 
-// failingPutFileBlockStore wraps a real EngineFileBlockStore and can be
-// instructed to fail Put calls after the first `allowed` successful
-// calls, so the test can let the initial "mark block syncing" Put succeed
-// while failing the post-upload "mark block remote" Put — exercising the
-// previously-swallowed error path in syncFileBlock.
-//
-// Phase 12 (META-03 / D-09): wraps the wider engine-internal interface so
-// the engine's GetFileBlock + ListFileBlocks lookups continue to work.
-type failingPutFileBlockStore struct {
-	blockstore.EngineFileBlockStore
-	putCount atomic.Int64 // total Put calls observed
-	allowed  int64        // number of leading Puts that succeed; subsequent Puts return errBoomPut
+// failingPutRemote wraps a RemoteStore and surfaces errBoomPut on every
+// Put call. Used by TestMirrorLoop_PropagatesPutError to exercise the
+// "remote put <hash>: %w" error path in mirrorOnce.
+type failingPutRemote struct {
+	remote.RemoteStore
 }
 
-func (f *failingPutFileBlockStore) Put(ctx context.Context, block *blockstore.FileBlock) error {
-	n := f.putCount.Add(1)
-	if n > f.allowed {
-		return errBoomPut
+func (f *failingPutRemote) Put(_ context.Context, _ blockstore.ContentHash, _ []byte) error {
+	return errBoomPut
+}
+
+// noopSyncedHashStore satisfies metadata.SyncedHashStore with always-
+// unsynced answers and idempotent Mark/Delete. mirrorOnce only reaches
+// MarkSynced when remote.Put returns nil — the failing-put path bails
+// out before that, so MarkSynced never fires in this test.
+type noopSyncedHashStore struct{}
+
+func (noopSyncedHashStore) IsSynced(_ context.Context, _ blockstore.ContentHash) (bool, error) {
+	return false, nil
+}
+func (noopSyncedHashStore) MarkSynced(_ context.Context, _ blockstore.ContentHash) error {
+	return nil
+}
+func (noopSyncedHashStore) DeleteSynced(_ context.Context, _ blockstore.ContentHash) error {
+	return nil
+}
+
+// oneHashLocalStore wraps a MemoryStore and overrides ListUnsynced to
+// yield exactly one synthetic hash so the test does not depend on the
+// memory backend's append-log-driven rollup producing chunks
+// deterministically. The Put-followed-by-override sequence ensures Get
+// resolves the hash through the embedded MemoryStore CAS map.
+type oneHashLocalStore struct {
+	*memorylocal.MemoryStore
+	hash blockstore.ContentHash
+}
+
+func newOneHashLocalStore(t *testing.T, hash blockstore.ContentHash, data []byte) *oneHashLocalStore {
+	t.Helper()
+	ms := memorylocal.New()
+	if err := ms.Put(context.Background(), hash, data); err != nil {
+		t.Fatalf("seed local Put: %v", err)
 	}
-	return f.EngineFileBlockStore.Put(ctx, block)
+	return &oneHashLocalStore{MemoryStore: ms, hash: hash}
 }
 
-// TestSyncFileBlock_PropagatesPutError asserts that syncFileBlock returns an
-// error when the FileBlockStore.PutFileBlock call that persists the post-upload
-// BlockStateRemote transition fails. Before TD-02b, this Put was swallowed by
-// `_ = m.fileBlockStore.Put(...)` and the block would appear synced
-// upstream despite metadata drift.
-func TestSyncFileBlock_PropagatesPutError(t *testing.T) {
+func (o *oneHashLocalStore) ListUnsynced(_ context.Context) iter.Seq2[blockstore.ContentHash, error] {
+	return func(yield func(blockstore.ContentHash, error) bool) {
+		_ = yield(o.hash, nil)
+	}
+}
+
+// TestMirrorLoop_PropagatesPutError asserts that Syncer.mirrorOnce
+// surfaces a Put failure verbatim, wrapped as
+// "remote put <hash>: %w". This pins the crash-safety contract in
+// D-07: a failed Put leaves the hash unmarked-synced so the next pass
+// retries it; a swallowed Put would leave the hash silently missing
+// from the remote.
+func TestMirrorLoop_PropagatesPutError(t *testing.T) {
 	ctx := context.Background()
+	hash := blockstore.ContentHash{0xDE, 0xAD, 0xBE, 0xEF}
+	payload := []byte("mirror-loop-put-error")
 
-	tmpDir := t.TempDir()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := fs.New(tmpDir, 0, 0, ms)
-	if err != nil {
-		t.Fatalf("fs.New() error = %v", err)
+	local := newOneHashLocalStore(t, hash, payload)
+	rs := &failingPutRemote{}
+	m := &Syncer{
+		local:           local,
+		remoteStore:     rs,
+		syncedHashStore: noopSyncedHashStore{},
 	}
 
-	failingStore := &failingPutFileBlockStore{
-		EngineFileBlockStore: ms,
-		allowed:              1, // First Put (mark Syncing) succeeds; all later Puts fail.
-	}
-
-	rs := remotememory.New()
-	defer func() { _ = rs.Close() }()
-
-	m := NewSyncer(bc, rs, failingStore, DefaultConfig())
-	defer func() { _ = m.Close() }()
-
-	// Prepare a local block file on disk — syncFileBlock reads it directly.
-	payloadID := "export/put-error-test.bin"
-	blockFile := filepath.Join(tmpDir, "put-error-block.blk")
-	data := []byte("hello world")
-	if err := os.WriteFile(blockFile, data, 0o600); err != nil {
-		t.Fatalf("WriteFile(block) error = %v", err)
-	}
-
-	fb := &blockstore.FileBlock{
-		ID:         payloadID + "/0",
-		LocalPath:  blockFile,
-		DataSize:   uint32(len(data)),
-		State:      blockstore.BlockStatePending,
-		RefCount:   1,
-		LastAccess: time.Now(),
-		CreatedAt:  time.Now(),
-	}
-
-	// Drive the failing-Put path: after the first successful Put that flips
-	// the block to Syncing, the post-upload Put that records BlockStateRemote
-	// will fail with errBoomPut. On the pre-fix (`_ =`) code this error was
-	// swallowed and syncFileBlock returned nil.
-	err = m.syncFileBlock(ctx, fb)
+	err := m.mirrorOnce(ctx)
 	if err == nil {
-		t.Fatalf("syncFileBlock returned nil, want error wrapping %v (put error was swallowed)", errBoomPut)
+		t.Fatalf("mirrorOnce returned nil, want error wrapping %v", errBoomPut)
 	}
 	if !errors.Is(err, errBoomPut) {
-		t.Fatalf("syncFileBlock error = %v, want wrapping %v", err, errBoomPut)
+		t.Fatalf("mirrorOnce error = %v, want wrapping %v", err, errBoomPut)
 	}
 }

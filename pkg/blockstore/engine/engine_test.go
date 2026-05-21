@@ -2,33 +2,59 @@ package engine
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
 	"github.com/marmos91/dittofs/pkg/blockstore/local/memory"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// stubFileBlockStore is a minimal blockstore.EngineFileBlockStore for
-// testing that satisfies the interface but stores nothing. We only need
-// it to construct a Syncer. Phase 12 (META-03 / D-09): the public
-// FileBlockStore narrowed to 6 methods; the engine still consumes the
-// wider EngineFileBlockStore (adds GetFileBlock + ListFileBlocks).
-type stubFileBlockStore struct{}
+// stubFileBlockStore is an in-memory blockstore.EngineFileBlockStore
+// for the engine test harness. It carries the minimum read-path
+// surface the post-Phase-18 CAS engine consumes: GetFileBlock (used by
+// the syncer's resolveFileBlock) and Put (populated by the memory
+// local store's chunk emitter via engine.New's wiring). Mutating
+// methods (Delete, IncrementRefCount, DecrementRefCount) maintain
+// just enough state for the cascade tests; ListPending /
+// ListFileBlocks return empty / per-payload subsets.
+type stubFileBlockStore struct {
+	mu     sync.Mutex
+	blocks map[string]*blockstore.FileBlock
+}
 
-func (s *stubFileBlockStore) GetByHash(_ context.Context, _ blockstore.ContentHash) (*blockstore.FileBlock, error) {
+func newStubFileBlockStore() *stubFileBlockStore {
+	return &stubFileBlockStore{blocks: make(map[string]*blockstore.FileBlock)}
+}
+
+func (s *stubFileBlockStore) GetByHash(_ context.Context, h blockstore.ContentHash) (*blockstore.FileBlock, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, fb := range s.blocks {
+		if fb.Hash == h {
+			return fb, nil
+		}
+	}
 	return nil, nil
 }
-func (s *stubFileBlockStore) Put(_ context.Context, _ *blockstore.FileBlock) error {
+func (s *stubFileBlockStore) Put(_ context.Context, block *blockstore.FileBlock) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.blocks == nil {
+		s.blocks = make(map[string]*blockstore.FileBlock)
+	}
+	// Defensive copy to avoid aliasing into caller state.
+	cp := *block
+	s.blocks[block.ID] = &cp
 	return nil
 }
-func (s *stubFileBlockStore) Delete(_ context.Context, _ string) error { return nil }
+func (s *stubFileBlockStore) Delete(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.blocks, id)
+	return nil
+}
 func (s *stubFileBlockStore) IncrementRefCount(_ context.Context, _ string) error {
 	return nil
 }
@@ -41,11 +67,26 @@ func (s *stubFileBlockStore) ListPending(_ context.Context, _ time.Duration, _ i
 
 // Engine-internal surface (kept off the public FileBlockStore per
 // META-03 / D-09).
-func (s *stubFileBlockStore) GetFileBlock(_ context.Context, _ string) (*blockstore.FileBlock, error) {
-	return nil, blockstore.ErrFileBlockNotFound
+func (s *stubFileBlockStore) GetFileBlock(_ context.Context, id string) (*blockstore.FileBlock, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fb, ok := s.blocks[id]
+	if !ok {
+		return nil, blockstore.ErrFileBlockNotFound
+	}
+	return fb, nil
 }
-func (s *stubFileBlockStore) ListFileBlocks(_ context.Context, _ string) ([]*blockstore.FileBlock, error) {
-	return nil, nil
+func (s *stubFileBlockStore) ListFileBlocks(_ context.Context, payloadID string) ([]*blockstore.FileBlock, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prefix := payloadID + "/"
+	var out []*blockstore.FileBlock
+	for id, fb := range s.blocks {
+		if len(id) >= len(prefix) && id[:len(prefix)] == prefix {
+			out = append(out, fb)
+		}
+	}
+	return out, nil
 }
 
 // newTestEngine creates an engine.BlockStore with memory local store, nil remote,
@@ -55,13 +96,14 @@ func (s *stubFileBlockStore) ListFileBlocks(_ context.Context, _ string) ([]*blo
 func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *BlockStore {
 	t.Helper()
 	localStore := memory.New()
-	fbs := &stubFileBlockStore{}
+	fbs := newStubFileBlockStore()
 	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(Config{
 		Local:           localStore,
 		Remote:          nil,
 		Syncer:          syncer,
+		FileBlockStore:  fbs,
 		ReadBufferBytes: readBufferBytes,
 		PrefetchWorkers: prefetchWorkers,
 	})
@@ -82,14 +124,15 @@ func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *Bl
 func newTestEngineWithCoordinator(t *testing.T, c MetadataCoordinator) *BlockStore {
 	t.Helper()
 	localStore := memory.New()
-	fbs := &stubFileBlockStore{}
+	fbs := newStubFileBlockStore()
 	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(Config{
-		Local:       localStore,
-		Remote:      nil,
-		Syncer:      syncer,
-		Coordinator: c,
+		Local:          localStore,
+		Remote:         nil,
+		Syncer:         syncer,
+		FileBlockStore: fbs,
+		Coordinator:    c,
 	})
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
@@ -296,7 +339,7 @@ func (r *recordingCache) Close() error      { r.closed.Store(true); return nil }
 // Close. Uses a recording fake so we can observe it.
 func TestClose_ClosesCache(t *testing.T) {
 	localStore := memory.New()
-	fbs := &stubFileBlockStore{}
+	fbs := newStubFileBlockStore()
 	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(Config{
@@ -338,95 +381,12 @@ func TestCopyPayload_EmptySource(t *testing.T) {
 	}
 }
 
-// newFSTestEngine constructs an engine.BlockStore backed by an on-disk FSStore
-// rooted at a temp dir, so .blk files can be observed on the filesystem.
-// Returns the engine and the base directory holding the FSStore's .blk files.
-func newFSTestEngine(t *testing.T) (*BlockStore, string) {
-	t.Helper()
-
-	tmpDir := t.TempDir()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	localStore, err := fs.New(tmpDir, 100*1024*1024, 16*1024*1024, ms)
-	if err != nil {
-		t.Fatalf("fs.New failed: %v", err)
-	}
-
-	syncer := NewSyncer(localStore, nil, ms, DefaultConfig())
-
-	bs, err := New(Config{
-		Local:           localStore,
-		Remote:          nil,
-		Syncer:          syncer,
-		FileBlockStore:  ms,
-		ReadBufferBytes: 0,
-		PrefetchWorkers: 0,
-	})
-	if err != nil {
-		t.Fatalf("engine.New failed: %v", err)
-	}
-	if err := bs.Start(context.Background()); err != nil {
-		t.Fatalf("engine.Start failed: %v", err)
-	}
-	t.Cleanup(func() { _ = bs.Close() })
-
-	return bs, tmpDir
-}
-
-// countBlkFiles walks dir and returns the number of .blk files present.
-func countBlkFiles(t *testing.T, dir string) int {
-	t.Helper()
-
-	count := 0
-	err := filepath.Walk(dir, func(_ string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if !info.IsDir() && filepath.Ext(info.Name()) == ".blk" {
-			count++
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk %s failed: %v", dir, err)
-	}
-	return count
-}
-
-// TestEngineDelete_RemovesBlockFiles verifies engine.Delete removes on-disk
-// .blk files for the payloadID. Regression test for TD-02c: before the fix,
-// Delete only called EvictMemory + syncer.Delete, leaving .blk files orphaned
-// on local disk.
-func TestEngineDelete_RemovesBlockFiles(t *testing.T) {
-	bs, baseDir := newFSTestEngine(t)
-	ctx := context.Background()
-	payloadID := "export/td-02c/test.bin"
-
-	// Write data spanning 2 blocks so at least 2 .blk files land on disk.
-	data := make([]byte, int(blockstore.BlockSize)+4096)
-	for i := range data {
-		data[i] = byte(i % 256)
-	}
-	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
-		t.Fatalf("WriteAt failed: %v", err)
-	}
-
-	// Flush dirty in-memory blocks to disk as .blk files.
-	if _, err := bs.Flush(ctx, payloadID); err != nil {
-		t.Fatalf("Flush failed: %v", err)
-	}
-
-	// Sanity check: at least one .blk file must exist before Delete.
-	if got := countBlkFiles(t, baseDir); got < 1 {
-		t.Fatalf("expected >=1 .blk file before Delete, got %d", got)
-	}
-
-	// Delete the payload.
-	if err := bs.Delete(ctx, payloadID, nil); err != nil {
-		t.Fatalf("Delete failed: %v", err)
-	}
-
-	// After Delete, zero .blk files must remain for the deleted payload.
-	if got := countBlkFiles(t, baseDir); got != 0 {
-		t.Fatalf("expected 0 .blk files after Delete, got %d (TD-02c regression)", got)
-	}
-}
+// TestEngineDelete_RemovesBlockFiles was a TD-02c regression test
+// asserting that legacy .blk files were cleaned up on engine.Delete.
+// Removed in the Phase 18-08 sweep: the local store no longer writes
+// .blk files (the unified CAS chunk store under blocks/<hh>/ is the
+// only on-disk layout), so the assertion no longer has anything to
+// observe. End-to-end coverage of the engine.Delete refcount → GC
+// path is provided by TestEngine_Delete_CascadesDeleteSynced in
+// engine_delete_test.go and by the integration tests re-created in
+// Plan 18-09.

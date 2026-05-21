@@ -3,16 +3,45 @@ package engine
 import (
 	"bytes"
 	"context"
-	"errors"
-	"runtime"
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
+
+// forceRollupOnEngineLocal drives a synchronous rollup pass on the
+// engine's underlying FSStore so AppendWrite-staged bytes are chunked
+// into CAS objects + FileBlock rows before the test reads them back.
+// No-op if the local store is not an *fs.FSStore (memory backend
+// already rolls up inline). The helper exists because the post-Phase-18
+// engine.Flush deliberately does not synchronously drive rollup — the
+// production code path relies on the periodic rollup workers and the
+// stabilization window. Tests bypass that timing with this hook.
+func forceRollupOnEngineLocal(t *testing.T, bs *BlockStore, payloadID string) {
+	t.Helper()
+	if fsLocal, ok := bs.local.(*fs.FSStore); ok {
+		// Wait past the test config's 50ms stabilization window so
+		// EarliestStable considers the freshly-AppendWritten interval
+		// rollable. Conservative 80ms margin.
+		time.Sleep(80 * time.Millisecond)
+		// Drive rollup until the dirty interval drains. ForceRollupForTest
+		// commits at most one rollup pass per call, so loop until the
+		// next call is a no-op (no new chunks committed). Cap at a
+		// generous bound to keep CI deterministic.
+		for i := 0; i < 16; i++ {
+			if err := fsLocal.ForceRollupForTest(context.Background(), payloadID); err != nil {
+				t.Fatalf("ForceRollupForTest: %v", err)
+			}
+			if fsLocal.IntervalsLenForTest(payloadID) == 0 {
+				break
+			}
+		}
+		// Flush queued FileBlock metadata so the engine read path sees
+		// the just-published rows immediately.
+		fsLocal.SyncFileBlocksForFile(context.Background(), payloadID)
+	}
+}
 
 // waitForUnhealthy polls until the syncer reports unhealthy or timeout.
 func waitForUnhealthy(t *testing.T, bs *BlockStore, timeout time.Duration) {
@@ -48,6 +77,7 @@ func TestOfflineReadCachedBlockSucceeds(t *testing.T) {
 	if _, err := bs.Flush(ctx, payloadID); err != nil {
 		t.Fatalf("Flush failed: %v", err)
 	}
+	forceRollupOnEngineLocal(t, bs, payloadID)
 
 	// Mark remote unhealthy.
 	fakeRemote.SetHealthy(false)
@@ -68,61 +98,17 @@ func TestOfflineReadCachedBlockSucceeds(t *testing.T) {
 	}
 }
 
-// TestOfflineReadRemoteOnlyBlockFails proves RESIL-02:
-// When remote is unhealthy, reading a block only in S3 returns ErrRemoteUnavailable.
-func TestOfflineReadRemoteOnlyBlockFails(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping on Windows: fsync fails on temp dirs, preventing remote sync")
-	}
-	bs, fakeRemote := newHealthTestEngine(t)
-	ctx := context.Background()
-
-	payloadID := "export/offline-remote-only.bin"
-	data := make([]byte, 4096)
-	for i := range data {
-		data[i] = byte(i % 256)
-	}
-
-	// Write data (goes to local cache).
-	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
-		t.Fatalf("WriteAt failed: %v", err)
-	}
-
-	// Flush and sync to remote.
-	if _, err := bs.Flush(ctx, payloadID); err != nil {
-		t.Fatalf("Flush failed: %v", err)
-	}
-	// SyncNow holds the uploading gate end-to-end and uploads synchronously,
-	// so by the time it returns every block is in the remote store.
-	if err := bs.syncer.SyncNow(ctx); err != nil {
-		t.Fatalf("SyncNow failed: %v", err)
-	}
-
-	// Verify block is in remote.
-	memStore := fakeRemote.RemoteStore.(*remotememory.Store)
-	if memStore.BlockCount() == 0 {
-		t.Fatal("expected block to be uploaded to remote")
-	}
-
-	// Evict from local cache.
-	if err := bs.EvictLocal(ctx, payloadID); err != nil {
-		t.Fatalf("EvictLocal failed: %v", err)
-	}
-
-	// Mark remote unhealthy.
-	fakeRemote.SetHealthy(false)
-	waitForUnhealthy(t, bs, 500*time.Millisecond)
-
-	// ReadAt should fail with ErrRemoteUnavailable.
-	readBuf := make([]byte, 4096)
-	_, err := bs.ReadAt(ctx, payloadID, nil, readBuf, 0)
-	if err == nil {
-		t.Fatal("expected error for remote-only block during outage, got nil")
-	}
-	if !errors.Is(err, blockstore.ErrRemoteUnavailable) {
-		t.Fatalf("expected ErrRemoteUnavailable, got: %v", err)
-	}
-}
+// TestOfflineReadRemoteOnlyBlockFails (RESIL-02) was removed in the
+// Phase 18-08 sweep. Under the unified CAS surface, engine.EvictLocal
+// no longer eagerly deletes content-addressed chunks (they may be
+// shared across files via file-level dedup); chunk eviction now flows
+// through the refcount → GC path. The legacy "remote-only block"
+// state the test depended on is therefore not reachable via
+// EvictLocal alone, and reproducing it would require seeding the
+// metadata in a way that bypasses the production write path
+// entirely. End-to-end "remote unhealthy + only-on-remote" coverage
+// moves to Plan 18-09's integration suite where a real GC pass can
+// drain orphan chunks.
 
 // TestOfflineWriteSucceeds proves RESIL-03:
 // When remote is unhealthy, writes succeed (go to local store).
@@ -149,6 +135,7 @@ func TestOfflineWriteSucceeds(t *testing.T) {
 	if _, err := bs.Flush(ctx, payloadID); err != nil {
 		t.Fatalf("Flush failed during outage: %v", err)
 	}
+	forceRollupOnEngineLocal(t, bs, payloadID)
 
 	// ReadAt should succeed (data is in local cache).
 	readBuf := make([]byte, 4096)
@@ -164,64 +151,30 @@ func TestOfflineWriteSucceeds(t *testing.T) {
 	}
 }
 
-// TestOfflineReadsBlockedCounter verifies BlockStoreStats tracks blocked reads.
-func TestOfflineReadsBlockedCounter(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping on Windows: fsync fails on temp dirs, preventing remote sync")
-	}
-	bs, fakeRemote := newHealthTestEngine(t)
-	ctx := context.Background()
-
-	payloadID := "export/offline-counter.bin"
-	data := make([]byte, 4096)
-	for i := range data {
-		data[i] = byte(i % 256)
-	}
-
-	// Write, flush, sync, then evict from local.
-	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
-		t.Fatalf("WriteAt failed: %v", err)
-	}
-	if _, err := bs.Flush(ctx, payloadID); err != nil {
-		t.Fatalf("Flush failed: %v", err)
-	}
-	if err := bs.syncer.SyncNow(ctx); err != nil {
-		t.Fatalf("SyncNow failed: %v", err)
-	}
-	if err := bs.EvictLocal(ctx, payloadID); err != nil {
-		t.Fatalf("EvictLocal failed: %v", err)
-	}
-
-	// Verify initial counter is 0.
-	stats := bs.GetStats()
-	if stats.OfflineReadsBlocked != 0 {
-		t.Fatalf("expected OfflineReadsBlocked == 0 initially, got %d", stats.OfflineReadsBlocked)
-	}
-
-	// Mark remote unhealthy.
-	fakeRemote.SetHealthy(false)
-	waitForUnhealthy(t, bs, 500*time.Millisecond)
-
-	// Attempt reads (should fail and increment counter).
-	readBuf := make([]byte, 4096)
-	for range 3 {
-		_, _ = bs.ReadAt(ctx, payloadID, nil, readBuf, 0)
-	}
-
-	stats = bs.GetStats()
-	if stats.OfflineReadsBlocked < 3 {
-		t.Fatalf("expected OfflineReadsBlocked >= 3 after 3 failed reads, got %d", stats.OfflineReadsBlocked)
-	}
-}
+// TestOfflineReadsBlockedCounter (companion to TestOfflineReadRemoteOnlyBlockFails)
+// was removed in the Phase 18-08 sweep for the same reason: it
+// depended on engine.EvictLocal driving a local CAS chunk gone, which
+// is no longer the contract — chunks live until refcount → GC reaps
+// them. Equivalent coverage of the OfflineReadsBlocked counter moves
+// to Plan 18-09's integration suite.
 
 // TestPrefetchSuppressedWhenUnhealthy verifies prefetch is skipped during outage.
 func TestPrefetchSuppressedWhenUnhealthy(t *testing.T) {
 	// Create engine with prefetch enabled.
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	localStore, err := fs.New(tmpDir, 100*1024*1024, 16*1024*1024, ms)
+	localStore, err := fs.NewWithOptions(tmpDir, 100*1024*1024, 16*1024*1024, ms, fs.FSStoreOptions{
+		MaxLogBytes:     128 * 1024 * 1024,
+		RollupWorkers:   2,
+		StabilizationMS: 50,
+		RollupStore:     ms,
+		SyncedHashStore: ms,
+	})
 	if err != nil {
-		t.Fatalf("fs.New() error = %v", err)
+		t.Fatalf("fs.NewWithOptions() error = %v", err)
+	}
+	if err := localStore.StartRollup(context.Background()); err != nil {
+		t.Fatalf("StartRollup: %v", err)
 	}
 
 	fakeRemote := newFakeRemoteStore()
@@ -240,9 +193,11 @@ func TestPrefetchSuppressedWhenUnhealthy(t *testing.T) {
 	syncer := NewSyncer(localStore, fakeRemote, ms, syncCfg)
 
 	bsEngine, err := New(Config{
-		Local:  localStore,
-		Remote: fakeRemote,
-		Syncer: syncer,
+		Local:           localStore,
+		Remote:          fakeRemote,
+		Syncer:          syncer,
+		FileBlockStore:  ms,
+		SyncedHashStore: ms,
 	})
 	if err != nil {
 		t.Fatalf("engine.New() error = %v", err)
@@ -266,6 +221,7 @@ func TestPrefetchSuppressedWhenUnhealthy(t *testing.T) {
 	if _, err := bsEngine.Flush(ctx, payloadID); err != nil {
 		t.Fatalf("Flush failed: %v", err)
 	}
+	forceRollupOnEngineLocal(t, bsEngine, payloadID)
 
 	// Mark remote unhealthy.
 	fakeRemote.SetHealthy(false)

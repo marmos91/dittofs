@@ -45,8 +45,8 @@ func TestNilRemoteStoreFlush(t *testing.T) {
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
-	if err := bc.WriteAt(ctx, payloadID, data, 0); err != nil {
-		t.Fatalf("WriteAt failed: %v", err)
+	if err := bc.AppendWrite(ctx, payloadID, data, 0); err != nil {
+		t.Fatalf("AppendWrite failed: %v", err)
 	}
 
 	result, err := m.Flush(ctx, payloadID)
