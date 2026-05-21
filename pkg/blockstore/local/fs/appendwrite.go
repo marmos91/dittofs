@@ -20,6 +20,26 @@ import (
 type logFile struct {
 	f    *os.File
 	path string
+	// groupCommit coalesces concurrent fsyncs against this log's fd into
+	// a single underlying f.Sync() call (Phase 19 Opt 2, D-06/D-07/D-08).
+	// Per-file scope — different logFiles fsync independently. Synchronous
+	// durability preserved: Sync(ctx) blocks until fsync completes; NFS
+	// COMMIT / SMB Flush callers see no async ack.
+	//
+	// The coordinator is bound to lf.f.Sync at construction (bound method
+	// value). The fd is owned for the lifetime of the FSStore (D-34, not
+	// pooled, not rotated); there is no file-rotation path that would
+	// stale-capture lf.f. On error-recovery close (the writeRecord-error
+	// branch in AppendWrite), the entire *logFile is dropped from
+	// bc.logFDs and a fresh one is constructed on next touch — the
+	// coordinator goes with it.
+	//
+	// Teardown: no explicit Stop is required. The Plan 03 design has no
+	// goroutines outside the in-flight piggyback path; any in-flight
+	// fsync against a Close()d fd surfaces as an EBADF to its caller,
+	// which is the correct error posture (D-08 — caller observes the
+	// fsync result).
+	groupCommit *groupCommit
 }
 
 // logPath returns the on-disk path for a payload's append-log file:
@@ -93,6 +113,10 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 			return nil, nil, nil, fmt.Errorf("append log: stat: %w", statErr)
 		}
 		lf = &logFile{f: f, path: path}
+		// Phase 19 Opt 2 (D-06/D-07/D-08): per-file fsync coordinator.
+		// Bound method value captures lf.f at construction; lf.f is not
+		// rotated for the FSStore lifetime, so the binding stays valid.
+		lf.groupCommit = newGroupCommit(lf.f.Sync)
 		bc.logFDs[payloadID] = lf
 	}
 	if !muOk {
@@ -230,11 +254,18 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		// close + drop the fd so the next call reopens fresh and an
 		// already-written prefix does not poison subsequent appends.
 		//
-		// LOCK ORDERING (FIX-2): release the per-file mutex BEFORE
-		// acquiring bc.logsMu.Lock(). Any path that holds logsMu and
+		// LOCK ORDERING (FIX-2 / FIX-20 extension, Phase 19 D-09):
+		//   per-file `mu` (held by caller across this region)
+		//     → groupCommit.mu (acquired inside lf.groupCommit.Sync below)
+		//       → bc.logsMu (NEVER held while waiting on groupCommit.mu;
+		//                    the coordinator NEVER references logsMu
+		//                    directly — enforced by the
+		//                    TestGroupCommit_NoLogsMuTouch grep gate).
+		// The pre-Phase-19 rule still holds: release per-file mu BEFORE
+		// acquiring bc.logsMu.Lock() (any path that holds logsMu and
 		// waits on mu would otherwise deadlock against us; the global
 		// rule is "always acquire mu before logsMu" — here we guarantee
-		// it by releasing mu first.
+		// it by releasing mu first).
 		//
 		// FIX-20: remove the lf entry from bc.logFDs BEFORE closing the
 		// fd. The previous order (close, then unlock-and-delete) opened
@@ -256,7 +287,19 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		_ = lf.f.Close()
 		return fmt.Errorf("append log: %w", err)
 	}
-	if err := lf.f.Sync(); err != nil {
+	// Phase 19 Opt 2 (D-06/D-07/D-08): fsync coalesced through the
+	// per-logFile groupCommit coordinator. Synchronous durability
+	// preserved — caller blocks until fsync completes; NFS COMMIT /
+	// SMB Flush callers see no async ack. The per-file `mu` is still
+	// held across this call; coordinator's internal mu is a different
+	// lock (D-09 lock-order rule in the godoc block above).
+	//
+	// TRANSITIONAL-NEXT-MILESTONE: O_DIRECT for log writes (see #519
+	// "Deferred to v0.17+"). When O_DIRECT lands, the groupCommit
+	// coordinator may need to switch from fsync to fdatasync or
+	// fsync(O_SYNC) — revisit the fsyncFn closure at construction
+	// (logFile creation in getOrCreateLog / recovery.go).
+	if err := lf.groupCommit.Sync(ctx); err != nil {
 		return fmt.Errorf("log fsync: %w", err)
 	}
 	bc.logBytesTotal.Add(int64(n))
