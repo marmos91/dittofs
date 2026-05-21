@@ -181,7 +181,13 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 	impersonationLevel := r.ReadUint32()                         // ImpersonationLevel (4)
 	r.Skip(8)                                                    // SmbCreateFlags (8)
 	r.Skip(8)                                                    // Reserved (8)
-	desiredAccess := r.ReadUint32()                              // DesiredAccess (4)
+	desiredAccess := r.ReadUint32() // DesiredAccess (4)
+	// Per MS-DTYP §2.4.3 / §2.5.3, GENERIC_* bits in DesiredAccess MUST be
+	// expanded to file-object-specific rights before access-check
+	// evaluation. Do it at decode time so every downstream consumer
+	// (permission checks, share-mode conflict, MxAc, OpenFile bookkeeping)
+	// observes resolved bits.
+	desiredAccess = acl.ExpandGenericMask(desiredAccess)
 	fileAttributes := types.FileAttributes(r.ReadUint32())       // FileAttributes (4)
 	shareAccess := r.ReadUint32()                                // ShareAccess (4)
 	createDisposition := types.CreateDisposition(r.ReadUint32()) // CreateDisposition (4)
@@ -1035,12 +1041,20 @@ func computeMaximalAccess(file *metadata.File, authCtx *metadata.AuthContext) ui
 		}
 		evalCtx := buildMaxAccessEvalContext(file, authCtx)
 		var granted uint32
+		// maxAccessProbeBits is already file-object-specific (NFSv4 ACE4_*
+		// shares bit positions with Windows file rights — see comment on
+		// maxAccessProbeBits). ExpandGenericMask is applied defensively so
+		// that any future additions to the probe set with GENERIC_* bits
+		// are normalized per MS-DTYP §2.5.3 before evaluation.
 		for _, bit := range maxAccessProbeBits {
-			if acl.Evaluate(file.ACL, evalCtx, bit) {
-				granted |= bit
+			probe := acl.ExpandGenericMask(bit)
+			if acl.Evaluate(file.ACL, evalCtx, probe) {
+				granted |= probe
 			}
 		}
-		return granted
+		// Result also expanded for defense-in-depth: per MS-DTYP §2.5.3
+		// the MaximalAccess reply must contain only resolved rights.
+		return acl.ExpandGenericMask(granted)
 	}
 
 	// Check if the requesting user is the file owner
