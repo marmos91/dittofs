@@ -397,6 +397,86 @@ func TestAceMatchesWho_SIDForm(t *testing.T) {
 	}
 }
 
+func TestAceMatchesWho_LocalDomain(t *testing.T) {
+	cases := []struct {
+		name    string
+		aceWho  string
+		ctxUID  uint32
+		ctxGID  uint32
+		ctxGIDs []uint32
+		want    bool
+	}{
+		{
+			name:   "user_match_by_uid",
+			aceWho: "1000@localdomain",
+			ctxUID: 1000,
+			want:   true,
+		},
+		{
+			name:   "user_mismatch",
+			aceWho: "1000@localdomain",
+			ctxUID: 2000,
+			want:   false,
+		},
+		{
+			name:   "group_match_by_primary_gid",
+			aceWho: "500@localdomain",
+			ctxUID: 1000,
+			ctxGID: 500,
+			want:   true,
+		},
+		{
+			name:    "group_match_by_supplementary_gid",
+			aceWho:  "500@localdomain",
+			ctxUID:  1000,
+			ctxGID:  100,
+			ctxGIDs: []uint32{200, 500, 300},
+			want:    true,
+		},
+		{
+			name:   "non_numeric_prefix_falls_through",
+			aceWho: "alice@localdomain",
+			ctxUID: 1000,
+			want:   false,
+		},
+		{
+			name:   "wrong_suffix_falls_through",
+			aceWho: "1000@example.com",
+			ctxUID: 1000,
+			want:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ace := &ACE{Who: tc.aceWho, Type: ACE4_ACCESS_ALLOWED_ACE_TYPE}
+			ctx := &EvaluateContext{UID: tc.ctxUID, GID: tc.ctxGID, GIDs: tc.ctxGIDs}
+			got := aceMatchesWho(ace, ctx)
+			if got != tc.want {
+				t.Errorf("aceMatchesWho(%q, UID=%d, GID=%d, GIDs=%v) = %v, want %v",
+					tc.aceWho, tc.ctxUID, tc.ctxGID, tc.ctxGIDs, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEvaluate_LocalDomainOwnerMatch(t *testing.T) {
+	// Mirrors smbtorture acls.CREATOR: DACL contains an ALLOW ACE keyed by
+	// the file owner's raw machine-domain SID (round-tripped as
+	// "{uid}@localdomain" by SIDMapper.SIDToPrincipal). The owner must
+	// receive the granted access via the localdomain match, not the implicit
+	// owner pass — proving the parse → evaluate path works end-to-end.
+	a := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, Who: "1000@localdomain", AccessMask: ACE4_READ_DATA | ACE4_WRITE_DATA},
+		},
+	}
+	ctx := &EvaluateContext{UID: 1000, FileOwnerUID: 1000}
+	if !Evaluate(a, ctx, ACE4_READ_DATA|ACE4_WRITE_DATA) {
+		t.Error("expected READ|WRITE granted to owner via localdomain ACE")
+	}
+}
+
 func TestEvaluate_DenyDoesNotAffectAlreadyDecidedBits(t *testing.T) {
 	// ALLOW read first, then DENY read: the bit is already decided as allowed.
 	a := &ACL{
