@@ -514,3 +514,159 @@ func (s *MetadataService) checkReadPermission(ctx *AuthContext, handle FileHandl
 func (s *MetadataService) checkExecutePermission(ctx *AuthContext, handle FileHandle) error {
 	return s.checkPermission(ctx, handle, PermissionExecute, "execute permission denied")
 }
+
+// MS-DTYP access-right bits used by CheckFileAccess.
+//
+// Kept here (rather than importing the SMB types package) because permission
+// enforcement is protocol-agnostic and importing protocol packages from
+// metadata would invert the dependency. The numeric values are spec-fixed.
+const (
+	// accessMaskMaximumAllowed is MS-DTYP §2.4.3 MAXIMUM_ALLOWED.
+	// When set on a CREATE DesiredAccess request, the server MUST NOT deny
+	// the open — it computes and returns the bits the requester is actually
+	// allowed and uses those as the granted access.
+	accessMaskMaximumAllowed uint32 = 0x02000000
+
+	// accessMaskPosixGenericAll is the Windows GENERIC_ALL bundle used for
+	// MAXIMUM_ALLOWED on the no-DACL path (root bypass + nil-ACL case). The
+	// numeric value is the same one computeMaximalAccess emits for an owner
+	// on the POSIX fallback in internal/adapter/smb/v2/handlers/create.go.
+	accessMaskPosixGenericAll uint32 = 0x001F01FF
+)
+
+// CheckFileAccess validates a CREATE DesiredAccess request against an
+// existing file's stored DACL per MS-SMB2 §3.3.5.9 and MS-FSA §2.1.5.1.2.1.
+//
+// Returns the granted access mask. Behavior:
+//
+//   - Root bypass (UID 0): returns desiredAccess as granted; MAXIMUM_ALLOWED
+//     resolves to GENERIC_ALL.
+//   - file.ACL == nil: NO DACL-level enforcement. Per MS-DTYP §2.5.3 a NULL
+//     DACL grants every right to every principal; per MS-FSA the access check
+//     against the security descriptor is only meaningful when an SD exists.
+//     We mirror that: return the requested set (minus MAXIMUM_ALLOWED itself)
+//     as granted. POSIX semantics (mode-bit enforcement on read/write/delete)
+//     remain enforced by the metadata operation layer downstream of CREATE;
+//     this is the open-time gate only, and it must not deny opens that the
+//     pre-#529 server permitted (load-bearing for WPTS BVT, smb2.create.multi,
+//     and DELETE/WRITE_DAC/WRITE_OWNER requests that the POSIX rwx mapping
+//     cannot encode).
+//   - file.ACL != nil: per-requested-bit acl.Evaluate; only the bits the DACL
+//     explicitly allows are granted. EVERYONE@/OWNER@/GROUP@/SID-form ACEs
+//     resolve via the same EvaluateContext shape as evaluateACLPermissions.
+//   - MAXIMUM_ALLOWED (0x02000000) in desiredAccess: never deny. The returned
+//     granted mask reflects what the DACL actually allows; the caller is
+//     expected to use it as the handle's effective access rights
+//     (MS-SMB2 §2.2.13.1 / §3.3.5.9 paragraph 8).
+//
+// Returns ErrAccessDenied as a *StoreError when MAXIMUM_ALLOWED is NOT set
+// and any requested bit is denied. Granted is always populated (even on
+// error) so callers can log what was/wasn't granted.
+//
+// GENERIC_*, OWNER_RIGHTS, and ACCESSBASED enumeration are intentionally
+// out of scope here — those are tracked separately under #530/#531/#532.
+func (s *MetadataService) CheckFileAccess(file *File, authCtx *AuthContext, desiredAccess uint32) (uint32, error) {
+	maximumAllowed := desiredAccess&accessMaskMaximumAllowed != 0
+	explicit := desiredAccess &^ accessMaskMaximumAllowed
+
+	// Root bypass: identical semantics to computeMaximalAccess and
+	// evaluateACLPermissions. UID 0 gets everything; MAXIMUM_ALLOWED resolves
+	// to GENERIC_ALL.
+	if authCtx != nil && authCtx.Identity != nil && authCtx.Identity.UID != nil && *authCtx.Identity.UID == 0 {
+		if maximumAllowed {
+			return accessMaskPosixGenericAll | explicit, nil
+		}
+		return explicit, nil
+	}
+
+	// No DACL stored: nothing to enforce at the open gate. Grant the explicit
+	// set as-is; MAXIMUM_ALLOWED expands to GENERIC_ALL. Downstream metadata
+	// ops (read/write/delete/setattr) still apply their own POSIX-mode checks,
+	// so a per-op DENY for a non-owner with mode 0o600 still produces
+	// STATUS_ACCESS_DENIED at the operation level — just not at open.
+	if file.ACL == nil {
+		if maximumAllowed {
+			return accessMaskPosixGenericAll | explicit, nil
+		}
+		return explicit, nil
+	}
+
+	// DACL-present path: per-bit acl.Evaluate.
+	evalCtx := buildFileAccessEvalContext(file, authCtx)
+	var granted uint32
+	// Per-bit probe: acl.Evaluate(mask, …) returns true only when ALL bits in
+	// mask are allowed, so we must probe each requested bit individually —
+	// anything else conflates per-bit DENY semantics.
+	probe := explicit
+	for bit := uint32(1); bit != 0 && probe != 0; bit <<= 1 {
+		if probe&bit == 0 {
+			continue
+		}
+		if acl.Evaluate(file.ACL, evalCtx, bit) {
+			granted |= bit
+		}
+		probe &^= bit
+	}
+
+	if maximumAllowed {
+		// MAXIMUM_ALLOWED never denies. Compute the full set of bits the
+		// requester is allowed (independent of what they asked for, minus the
+		// MAXIMUM_ALLOWED bit itself) and return that as the granted mask.
+		// Mirrors computeMaximalAccess so the handle's effective access
+		// matches the MxAc reply.
+		var effective uint32
+		for _, bit := range acl.ProbeBitsAll {
+			if acl.Evaluate(file.ACL, evalCtx, bit) {
+				effective |= bit
+			}
+		}
+		return effective | granted, nil
+	}
+
+	// Strict mode: any requested non-MAXIMUM_ALLOWED bit not granted = deny.
+	if explicit != 0 && granted&explicit != explicit {
+		return granted, &StoreError{
+			Code:    ErrAccessDenied,
+			Message: "desired access denied by file DACL",
+		}
+	}
+	return granted, nil
+}
+
+// buildFileAccessEvalContext mirrors evaluateACLPermissions's EvaluateContext
+// construction so per-bit ACL evaluation in CheckFileAccess produces the same
+// allow/deny decisions a downstream read/write permission check would later
+// produce against the same file. Kept private to the metadata package.
+func buildFileAccessEvalContext(file *File, authCtx *AuthContext) *acl.EvaluateContext {
+	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
+		return &acl.EvaluateContext{
+			FileOwnerUID: file.UID,
+			FileOwnerGID: file.GID,
+		}
+	}
+
+	identity := authCtx.Identity
+	evalCtx := &acl.EvaluateContext{
+		UID:          *identity.UID,
+		GIDs:         identity.GIDs,
+		FileOwnerUID: file.UID,
+		FileOwnerGID: file.GID,
+	}
+	if identity.GID != nil {
+		evalCtx.GID = *identity.GID
+	}
+
+	switch {
+	case identity.Username != "" && identity.Domain != "":
+		evalCtx.Who = identity.Username + "@" + identity.Domain
+	case identity.Username != "":
+		evalCtx.Who = identity.Username
+	}
+
+	if identity.SID != nil {
+		evalCtx.SID = *identity.SID
+	}
+	evalCtx.GroupSIDs = identity.GroupSIDs
+
+	return evalCtx
+}

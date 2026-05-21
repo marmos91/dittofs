@@ -10,7 +10,10 @@ import (
 //
 // These tests verify store-level operations that support permission checking,
 // such as file attributes used for access control. Business-level permission
-// checks (CheckAccess) live in the MetadataService layer, not in individual stores.
+// checks (CheckAccess, CheckFileAccess, CheckParentWriteAccess) live in the
+// MetadataService layer, not in individual stores — see
+// pkg/metadata/auth_permissions_*_test.go for the service-level coverage,
+// including CheckFileAccess (issue #529: DesiredAccess vs file DACL on CREATE).
 func runPermissionsTests(t *testing.T, factory StoreFactory) {
 	t.Run("FilePermissionAttributes", func(t *testing.T) { testFilePermissionAttributes(t, factory) })
 	t.Run("DirectoryPermissionAttributes", func(t *testing.T) { testDirectoryPermissionAttributes(t, factory) })
