@@ -20,6 +20,26 @@ import (
 type logFile struct {
 	f    *os.File
 	path string
+	// groupCommit coalesces concurrent fsyncs against this log's fd into
+	// a single underlying f.Sync() call (Phase 19 Opt 2, D-06/D-07/D-08).
+	// Per-file scope — different logFiles fsync independently. Synchronous
+	// durability preserved: Sync(ctx) blocks until fsync completes; NFS
+	// COMMIT / SMB Flush callers see no async ack.
+	//
+	// The coordinator is bound to lf.f.Sync at construction (bound method
+	// value). The fd is owned for the lifetime of the FSStore (D-34, not
+	// pooled, not rotated); there is no file-rotation path that would
+	// stale-capture lf.f. On error-recovery close (the writeRecord-error
+	// branch in AppendWrite), the entire *logFile is dropped from
+	// bc.logFDs and a fresh one is constructed on next touch — the
+	// coordinator goes with it.
+	//
+	// Teardown: no explicit Stop is required. The Plan 03 design has no
+	// goroutines outside the in-flight piggyback path; any in-flight
+	// fsync against a Close()d fd surfaces as an EBADF to its caller,
+	// which is the correct error posture (D-08 — caller observes the
+	// fsync result).
+	groupCommit *groupCommit
 }
 
 // logPath returns the on-disk path for a payload's append-log file:
@@ -93,6 +113,10 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 			return nil, nil, nil, fmt.Errorf("append log: stat: %w", statErr)
 		}
 		lf = &logFile{f: f, path: path}
+		// Phase 19 Opt 2 (D-06/D-07/D-08): per-file fsync coordinator.
+		// Bound method value captures lf.f at construction; lf.f is not
+		// rotated for the FSStore lifetime, so the binding stays valid.
+		lf.groupCommit = newGroupCommit(lf.f.Sync)
 		bc.logFDs[payloadID] = lf
 	}
 	if !muOk {

@@ -395,7 +395,11 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 			return nil
 		}
 		bc.logsMu.Lock()
-		bc.logFDs[payloadID] = &logFile{f: f, path: path}
+		lf := &logFile{f: f, path: path}
+		// Phase 19 Opt 2 (D-06/D-07/D-08): per-file fsync coordinator,
+		// matching the getOrCreateLog construction site in appendwrite.go.
+		lf.groupCommit = newGroupCommit(lf.f.Sync)
+		bc.logFDs[payloadID] = lf
 		bc.logLocks[payloadID] = &sync.Mutex{}
 		bc.dirtyIntervals[payloadID] = tree
 		bc.logsMu.Unlock()
