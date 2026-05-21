@@ -81,9 +81,9 @@ var _ MetadataCoordinator = (*refcountCoordinator)(nil)
 // behavior. A seeded markErr is returned from the next DeleteSynced
 // call once (single-shot) to exercise the benign-orphan logging path.
 type recordingSyncedHashStore struct {
-	mu       sync.Mutex
-	synced   map[blockstore.ContentHash]struct{}
-	deleted  []blockstore.ContentHash
+	mu        sync.Mutex
+	synced    map[blockstore.ContentHash]struct{}
+	deleted   []blockstore.ContentHash
 	deleteErr error
 }
 
