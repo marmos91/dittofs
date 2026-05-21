@@ -151,6 +151,47 @@ func (s *PostgresMetadataStore) DecrementRefCount(ctx context.Context, id string
 	return newCount, nil
 }
 
+// AddRef atomically bumps RefCount on the FileBlock row(s) indexed by
+// the given content hash. Implements the FileBlockStore.AddRef contract
+// (Phase 19 D-04): used by the in-memory hash dedup LRU hit path to
+// reference an already-stored block without creating a new row.
+//
+// Atomicity: a single UPDATE statement performs the bump — PostgreSQL's
+// row-level locking serializes contended updates against the same row,
+// so AddRef is TOCTOU-free against concurrent DecrementRefCount cascade
+// (D-04 — matches the existing IncrementRefCount idiom).
+//
+// Returns metadata.ErrUnknownHash when RowsAffected == 0 (no row exists
+// for this hash). Callers (the LRU hit site) fall back to the full Put
+// path on this sentinel.
+//
+// Multi-row-per-hash tolerance (D-22b / Phase 11 IN-3-02 / WR-4-01):
+// the hash index on file_blocks is a NON-UNIQUE partial index (migration
+// 000011), so a single hash may match multiple rows in legacy data. The
+// UPDATE deliberately omits LIMIT — all matching rows are bumped
+// uniformly so refcount accounting stays correct regardless of which
+// row a later DecrementRefCount targets. The conformance test seeds a
+// single row, so RefCount goes from N to N+1 exactly.
+//
+// D-27: only ref_count is mutated. block_state is never touched —
+// AddRef references an existing block; the LRU hit path never creates
+// or transitions one (STATE-01..03 preservation).
+func (s *PostgresMetadataStore) AddRef(ctx context.Context, hash blockstore.ContentHash, payloadID string, blockRef blockstore.BlockRef) error {
+	// payloadID + blockRef accepted for future GC traceability (D-04);
+	// postgres backend records ref count only.
+	_, _ = payloadID, blockRef
+	result, err := s.exec(ctx,
+		`UPDATE file_blocks SET ref_count = ref_count + 1 WHERE hash = $1`,
+		hash.String())
+	if err != nil {
+		return fmt.Errorf("add ref: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return metadata.ErrUnknownHash
+	}
+	return nil
+}
+
 // GetByHash looks up a finalized block by its content hash.
 // Returns nil without error if not found. Renamed from FindFileBlockByHash
 // in Phase 12 (META-03 / D-09).
@@ -470,6 +511,28 @@ func (tx *postgresTransaction) DecrementRefCount(ctx context.Context, id string)
 		return 0, fmt.Errorf("decrement ref count: %w", err)
 	}
 	return newCount, nil
+}
+
+// AddRef runs the +1 UPDATE keyed by hash on the active pgx.Tx so a
+// subsequent rollback undoes the bump (CR-01 parity for the Phase 19
+// LRU hit path). Returns metadata.ErrUnknownHash when no row matches.
+func (tx *postgresTransaction) AddRef(ctx context.Context, hash blockstore.ContentHash, payloadID string, blockRef blockstore.BlockRef) error {
+	// payloadID + blockRef accepted for future GC traceability (D-04);
+	// postgres backend records ref count only.
+	_, _ = payloadID, blockRef
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	result, err := tx.tx.Exec(ctx,
+		`UPDATE file_blocks SET ref_count = ref_count + 1 WHERE hash = $1`,
+		hash.String())
+	if err != nil {
+		return fmt.Errorf("add ref: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return metadata.ErrUnknownHash
+	}
+	return nil
 }
 
 func (tx *postgresTransaction) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {

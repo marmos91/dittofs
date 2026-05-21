@@ -228,6 +228,13 @@ func (nopFBSForTest) IncrementRefCount(_ context.Context, _ string) error { retu
 func (nopFBSForTest) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
+func (nopFBSForTest) AddRef(_ context.Context, _ blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
+	// Phase 19 D-04: no-op test stub. Every hash is "unknown" so the
+	// LRU hit path in production would always fall back to the full
+	// Put path — but this stub is only used by ReopenForTest scenarios
+	// that don't exercise AddRef at all.
+	return blockstore.ErrUnknownHash
+}
 func (nopFBSForTest) ListPending(_ context.Context, _ time.Duration, _ int) ([]*blockstore.FileBlock, error) {
 	return nil, nil
 }

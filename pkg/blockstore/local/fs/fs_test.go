@@ -31,6 +31,7 @@ type countingFileBlockStore struct {
 	del               atomic.Int64 // Delete (was DeleteFileBlock)
 	incrementRefCount atomic.Int64
 	decrementRefCount atomic.Int64
+	addRef            atomic.Int64 // Phase 19 D-04 LRU hit path
 	getByHash         atomic.Int64 // GetByHash (was FindFileBlockByHash)
 	listPending       atomic.Int64 // ListPending (was ListLocalBlocks)
 	listFileBlocks    atomic.Int64 // engine-internal
@@ -65,6 +66,11 @@ func (c *countingFileBlockStore) DecrementRefCount(ctx context.Context, id strin
 	return c.inner.DecrementRefCount(ctx, id)
 }
 
+func (c *countingFileBlockStore) AddRef(ctx context.Context, hash blockstore.ContentHash, payloadID string, blockRef blockstore.BlockRef) error {
+	c.addRef.Add(1)
+	return c.inner.AddRef(ctx, hash, payloadID, blockRef)
+}
+
 func (c *countingFileBlockStore) GetByHash(ctx context.Context, hash blockstore.ContentHash) (*blockstore.FileBlock, error) {
 	c.getByHash.Add(1)
 	return c.inner.GetByHash(ctx, hash)
@@ -82,7 +88,7 @@ func (c *countingFileBlockStore) ListFileBlocks(ctx context.Context, payloadID s
 
 // snapshot captures the current call counts for comparison.
 type fbsCallSnapshot struct {
-	get, put, del, inc, dec, find, listPending, listFile int64
+	get, put, del, inc, dec, addref, find, listPending, listFile int64
 }
 
 func (c *countingFileBlockStore) snapshot() fbsCallSnapshot {
@@ -92,6 +98,7 @@ func (c *countingFileBlockStore) snapshot() fbsCallSnapshot {
 		del:         c.del.Load(),
 		inc:         c.incrementRefCount.Load(),
 		dec:         c.decrementRefCount.Load(),
+		addref:      c.addRef.Load(),
 		find:        c.getByHash.Load(),
 		listPending: c.listPending.Load(),
 		listFile:    c.listFileBlocks.Load(),
@@ -105,6 +112,7 @@ func diffSnapshot(before, after fbsCallSnapshot) fbsCallSnapshot {
 		del:         after.del - before.del,
 		inc:         after.inc - before.inc,
 		dec:         after.dec - before.dec,
+		addref:      after.addref - before.addref,
 		find:        after.find - before.find,
 		listPending: after.listPending - before.listPending,
 		listFile:    after.listFile - before.listFile,
@@ -120,6 +128,7 @@ func (c *countingFileBlockStore) ResetCount() {
 	c.del.Store(0)
 	c.incrementRefCount.Store(0)
 	c.decrementRefCount.Store(0)
+	c.addRef.Store(0)
 	c.getByHash.Store(0)
 	c.listPending.Store(0)
 	c.listFileBlocks.Store(0)
@@ -131,6 +140,7 @@ func (c *countingFileBlockStore) TotalCount() int {
 		c.del.Load() +
 		c.incrementRefCount.Load() +
 		c.decrementRefCount.Load() +
+		c.addRef.Load() +
 		c.getByHash.Load() +
 		c.listPending.Load() +
 		c.listFileBlocks.Load())
