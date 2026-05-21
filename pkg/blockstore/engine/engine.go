@@ -446,19 +446,27 @@ func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, currentBlo
 // Delete removes all data for a payload from local store and remote store.
 // Invalidates all read buffer entries for the file and resets prefetcher state.
 //
-// Local cleanup uses DeleteAllBlockFiles (not EvictMemory) so on-disk .blk
-// files are removed alongside in-memory state. Previously only memory was
-// evicted, which left orphan .blk files growing unbounded across
-// delete-and-recreate workloads.
+// Local cleanup runs in this order under the unified CAS surface:
+//  1. SyncFileBlocksForFile persists any in-flight FileBlock metadata so
+//     the refcount decrements below operate on the authoritative manifest
+//     for the file (see "blocks" arg).
+//  2. EvictMemory drops the per-file in-memory tracking (memBlocks, files
+//     map, accessTracker entry). After Phase 18 there are no remaining
+//     legacy .blk files to remove — the CAS chunk store under blocks/<hh>/
+//     is the only on-disk layout, and individual chunks are reclaimed via
+//     refcount → GC, not per-file enumeration.
+//  3. DeleteLog tombstones and removes the per-file append log so any
+//     pre-rollup bytes are discarded.
 //
-// SyncFileBlocksForFile runs first so any FileBlock metadata that is still
-// queued (queueFileBlockUpdate after flushBlock) is persisted before
-// DeleteAllBlockFiles enumerates the store — otherwise freshly-flushed .blk
-// files would be missed and leaked.
+// Subsequent steps (cache invalidate, coordinator refcount decrements,
+// optional remote sweep) are unchanged.
 func (bs *BlockStore) Delete(ctx context.Context, payloadID string, blocks []blockstore.BlockRef) error {
 	bs.local.SyncFileBlocksForFile(ctx, payloadID)
-	if err := bs.local.DeleteAllBlockFiles(ctx, payloadID); err != nil {
-		return fmt.Errorf("local delete all block files failed: %w", err)
+	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
+		return fmt.Errorf("local evict memory failed: %w", err)
+	}
+	if err := bs.local.DeleteLog(ctx, payloadID); err != nil {
+		return fmt.Errorf("local delete append log failed: %w", err)
 	}
 	// Surgical invalidation: drop ALL hashes belonging to this file
 	// (even though dedup-shared hashes might survive elsewhere — Delete
@@ -712,12 +720,16 @@ func (bs *BlockStore) RemoteForTesting() remote.RemoteStore { return bs.remote }
 // ListFiles returns the payloadIDs of all files tracked in the local store.
 func (bs *BlockStore) ListFiles() []string { return bs.local.ListFiles() }
 
-// EvictLocal removes all local data (memory and disk) for a file.
+// EvictLocal removes all local per-file state (memory tracking, files
+// map, accessTracker, append log) for a file. CAS chunks are NOT
+// removed here — they may be shared with other files via file-level
+// dedup and are reclaimed via the refcount → GC path (engine.Delete
+// decrements per dropped hash and the mark-sweep GC reaps orphans).
 func (bs *BlockStore) EvictLocal(ctx context.Context, payloadID string) error {
 	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
 		return err
 	}
-	return bs.local.DeleteAllBlockFiles(ctx, payloadID)
+	return bs.local.DeleteLog(ctx, payloadID)
 }
 
 // LocalStats returns a snapshot of local store statistics.

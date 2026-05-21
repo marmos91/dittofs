@@ -250,15 +250,14 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*blockstore.Flush
 		return nil, err
 	}
 
-	// 1. Local-side flush: drives any in-flight in-memory state down to
-	//    .blk files and triggers a rollup pass if one is pending. The
-	//    rollup pass, on completion, calls the engine-installed
-	//    ObjectIDPersister so FileAttr.Blocks + FileAttr.ObjectID land
-	//    in a single metadata txn for the payloadID. The mirror loop
-	//    below then handles the byte-side mirror to remote.
-	if _, err := m.local.Flush(ctx, payloadID); err != nil {
-		return nil, fmt.Errorf("local store flush failed: %w", err)
-	}
+	// 1. Per-payload metadata quiesce: persist any FileBlock metadata
+	//    that the local store has queued (queueFileBlockUpdate during
+	//    rollup commit) so the mirror loop below sees the
+	//    authoritative manifest for this payloadID. This call carries
+	//    only metadata-level semantics — the data-side rollup runs on
+	//    its own worker pool and is observed transitively when
+	//    ListUnsynced walks the CAS chunk store.
+	m.local.SyncFileBlocksForFile(ctx, payloadID)
 
 	// 2. Mirror loop: enumerate every CAS hash present locally but not
 	//    yet marked synced and copy it to remote, then MarkSynced.
