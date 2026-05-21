@@ -371,8 +371,11 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	// operator must re-trigger by writing a new chunk to seed another
 	// rollup pass.
 	objectID := blockstore.ComputeObjectID(blocks)
-	if bc.objectIDPersister != nil {
-		if err := bc.objectIDPersister(ctx, payloadID, blocks, objectID); err != nil {
+	bc.persisterMu.RLock()
+	persister := bc.objectIDPersister
+	bc.persisterMu.RUnlock()
+	if persister != nil {
+		if err := persister(ctx, payloadID, blocks, objectID); err != nil {
 			return fmt.Errorf("rollup: ObjectIDPersister: %w", err)
 		}
 	}

@@ -223,6 +223,12 @@ type FSStore struct {
 	// the BLAKE3 Merkle-root ObjectID derived from it. Nil-valued on
 	// local-only / no-engine fixtures; in that case ObjectID compute
 	// still runs but the persist step is skipped harmlessly.
+	//
+	// Read under persisterMu so SetObjectIDPersister can install a
+	// coordinator-backed closure after the rollup workers have already
+	// been launched (engine.New runs after StartRollup in the share-
+	// service wiring path).
+	persisterMu       sync.RWMutex
 	objectIDPersister ObjectIDPersister
 
 	// --- Phase 11 LSL-08: in-process LRU for CAS chunks. ---
@@ -606,6 +612,31 @@ func newFSStoreWithOptionsInternal(baseDir string, maxDisk, maxMemory int64, fil
 		bc.orphanLogMinAgeSeconds = 3600
 	}
 	return bc, nil
+}
+
+// SetObjectIDPersister installs the rollup-completion callback. Safe to
+// call after StartRollup has launched the rollup worker pool: read sites
+// inside rollupFile take the matching RLock so the install observes a
+// consistent value. The setter is idempotent — re-applying the same
+// callback (or replacing it with a different one) is permitted; the
+// next rollup pass uses the latest value.
+//
+// The typical caller is the engine's BlockStore constructor, which
+// wires a closure that delegates to the metadata coordinator's
+// PersistFileBlocks. Local-only fixtures may leave the persister at its
+// constructor-supplied value (or nil) without invoking the setter.
+// The parameter type is spelled out as a raw func value (rather than
+// the local ObjectIDPersister named type) so callers that reach the
+// setter through a structural interface assertion — engine.New uses an
+// inline `interface { SetObjectIDPersister(func(...) error) }` to avoid
+// importing fs from engine — can satisfy the interface without a
+// cross-package type ceremony. The FSStoreOptions.ObjectIDPersister
+// constructor slot continues to accept the named type for in-package
+// callers.
+func (bc *FSStore) SetObjectIDPersister(p func(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error) {
+	bc.persisterMu.Lock()
+	defer bc.persisterMu.Unlock()
+	bc.objectIDPersister = p
 }
 
 // SetRetentionPolicy updates the retention policy and TTL for eviction decisions.
