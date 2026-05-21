@@ -703,3 +703,44 @@ func TestEvaluate_OwnerImplicitGrants_NonOwnerUnaffected(t *testing.T) {
 		t.Error("expected non-owner to be denied READ_CONTROL (no implicit grant)")
 	}
 }
+
+// TestEvaluate_OwnerImplicitGrants_EmptyACL verifies the narrowed early-return:
+// an explicitly empty DACL (len(ACEs) == 0) is the MS-DTYP §2.5.3 "deny all"
+// case but §2.5.3.2 still grants the file owner READ_CONTROL|WRITE_DAC|
+// WRITE_OWNER. Non-owners get nothing.
+func TestEvaluate_OwnerImplicitGrants_EmptyACL(t *testing.T) {
+	a := &ACL{ACEs: nil}
+
+	if !Evaluate(a, ownerCtx(), ACE4_READ_ACL|ACE4_WRITE_ACL|ACE4_WRITE_OWNER) {
+		t.Error("empty ACL: expected owner to receive implicit READ_CONTROL|WRITE_DAC|WRITE_OWNER")
+	}
+	if Evaluate(a, ownerCtx(), ACE4_READ_DATA) {
+		t.Error("empty ACL: owner must NOT receive READ_DATA (not in implicit grant set)")
+	}
+	if Evaluate(a, nonOwnerCtx(), ACE4_READ_ACL) {
+		t.Error("empty ACL: non-owner must NOT receive any access")
+	}
+}
+
+// TestEvaluate_OwnerImplicitGrants_InheritOnlyOwnerRightsDoesNotSuppress
+// locks in that an INHERIT_ONLY OWNER_RIGHTS ACE applies only to children and
+// does NOT suppress the §2.5.3.2 implicit owner grants on the current object.
+func TestEvaluate_OwnerImplicitGrants_InheritOnlyOwnerRightsDoesNotSuppress(t *testing.T) {
+	a := &ACL{
+		ACEs: []ACE{
+			// INHERIT_ONLY: applies only to children created under this dir.
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_INHERIT_ONLY_ACE | ACE4_FILE_INHERIT_ACE,
+				AccessMask: ACE4_READ_DATA,
+				Who:        SpecialOwnerRights,
+			},
+		},
+	}
+
+	// Owner still gets the implicit standard rights — the INHERIT_ONLY
+	// OWNER_RIGHTS ACE doesn't apply to this object's access check.
+	if !Evaluate(a, ownerCtx(), ACE4_READ_ACL|ACE4_WRITE_ACL|ACE4_WRITE_OWNER) {
+		t.Error("INHERIT_ONLY OwnerRights@ must not suppress the implicit owner grants on this object")
+	}
+}

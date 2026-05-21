@@ -747,13 +747,15 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 		}
 	})
 
-	t.Run("AllowOnlyACEGrantsExactlyListedBitsPlusOwnerImplicit", func(t *testing.T) {
+	t.Run("AllowACEPlusOwnerImplicitBits", func(t *testing.T) {
 		// Single ALLOW ACE granting exactly READ_DATA|READ_ATTRIBUTES|
-		// READ_ACL|SYNCHRONIZE for OWNER@. No POSIX-mode leakage is allowed,
-		// but MS-DTYP §2.5.3.2 layers READ_CONTROL|WRITE_DAC|WRITE_OWNER on
-		// top of the explicit grants when the requester is the file owner.
+		// SYNCHRONIZE for OWNER@. No POSIX-mode leakage is allowed, but
+		// MS-DTYP §2.5.3.2 layers READ_CONTROL|WRITE_DAC|WRITE_OWNER on top
+		// of the explicit grants when the requester is the file owner.
+		// `explicit` deliberately omits READ_CONTROL so the implicit-grant
+		// contribution is unambiguous in the assertion.
 		authCtx := mkOwnerCtx()
-		explicit := uint32(acl.ACE4_READ_DATA | acl.ACE4_READ_ATTRIBUTES | acl.ACE4_READ_ACL | acl.ACE4_SYNCHRONIZE)
+		explicit := uint32(acl.ACE4_READ_DATA | acl.ACE4_READ_ATTRIBUTES | acl.ACE4_SYNCHRONIZE)
 		ownerImplicit := uint32(acl.ACE4_READ_ACL | acl.ACE4_WRITE_ACL | acl.ACE4_WRITE_OWNER)
 		want := explicit | ownerImplicit
 		file := &metadata.File{
