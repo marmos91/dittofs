@@ -145,6 +145,13 @@ const (
 
 	// ACLSourceNFSExplicit indicates the ACL was set explicitly via NFSv4.
 	ACLSourceNFSExplicit ACLSource = "nfs-explicit"
+
+	// ACLSourceWindowsDefault indicates the ACL was synthesized as the
+	// Windows default (owner + SYSTEM FullControl, no inherit flags). Used
+	// by SMB read-side when a file has no stored ACL and no inheritable
+	// ACEs were available at creation time. Mirrors Samba's sd_def1
+	// (source4/torture/smb2/acls.c).
+	ACLSourceWindowsDefault ACLSource = "windows-default"
 )
 
 // ACL represents an NFSv4 Access Control List.

@@ -292,8 +292,11 @@ func principalToSID(who string, fileUID, fileGID uint32) *sid.SID {
 }
 
 // buildDACL constructs a DACL (Discretionary Access Control List) from the file's ACL.
-// If the file has no ACL, a DACL is synthesized from POSIX mode bits using
-// acl.SynthesizeFromMode. Returns the source ACL used for SD control flag computation.
+// If the file has no ACL, the Windows default DACL is synthesized
+// (owner + SYSTEM FullControl, no inherit flags) per acl.SynthesizeWindowsDefault.
+// This matches Samba's sd_def1 (source4/torture/smb2/acls.c) and is what
+// Windows clients expect when no inheritable ACEs were available at create
+// time. Returns the source ACL used for SD control flag computation.
 func buildDACL(buf *bytes.Buffer, file *metadata.File) *acl.ACL {
 	var aces []windowsACE
 	var fileACL *acl.ACL
@@ -301,9 +304,7 @@ func buildDACL(buf *bytes.Buffer, file *metadata.File) *acl.ACL {
 	if file.ACL != nil && len(file.ACL.ACEs) > 0 {
 		fileACL = file.ACL
 	} else {
-		// No ACL: synthesize DACL from POSIX mode bits
-		isDir := file.Type == metadata.FileTypeDirectory
-		fileACL = acl.SynthesizeFromMode(file.Mode, file.UID, file.GID, isDir)
+		fileACL = acl.SynthesizeWindowsDefault()
 	}
 
 	aces = make([]windowsACE, 0, len(fileACL.ACEs))
