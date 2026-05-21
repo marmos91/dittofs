@@ -11,58 +11,65 @@ const (
 	genericAll     uint32 = 0x10000000
 )
 
-// File-object specific rights and standard rights used by the expansion
-// table. Values match the NFSv4 ACE4_* and Windows file-object masks (which
-// share bit positions for the rights covered here).
-const (
-	fileReadData        uint32 = 0x00000001
-	fileWriteData       uint32 = 0x00000002
-	fileAppendData      uint32 = 0x00000004
-	fileReadEA          uint32 = 0x00000008
-	fileWriteEA         uint32 = 0x00000010
-	fileExecute         uint32 = 0x00000020
-	fileReadAttributes  uint32 = 0x00000080
-	fileWriteAttributes uint32 = 0x00000100
-
-	// Standard rights (MS-DTYP §2.4.3). For file objects:
-	//   STANDARD_RIGHTS_READ    = READ_CONTROL
-	//   STANDARD_RIGHTS_WRITE   = READ_CONTROL
-	//   STANDARD_RIGHTS_EXECUTE = READ_CONTROL
-	standardRightsRead    uint32 = 0x00020000 // READ_CONTROL
-	standardRightsWrite   uint32 = 0x00020000 // READ_CONTROL
-	standardRightsExecute uint32 = 0x00020000 // READ_CONTROL
-
-	synchronize uint32 = 0x00100000
-
-	// FILE_ALL_ACCESS = STANDARD_RIGHTS_REQUIRED (0x000F0000) |
-	//                   SYNCHRONIZE (0x00100000) |
-	//                   all file-specific rights (0x000001FF)
-	fileAllAccess uint32 = 0x001F01FF
-)
-
 // Expanded file-object masks per MS-DTYP §2.4.3 GenericMapping (the table
 // used by NTFS / SMB for file objects; matches the smbtorture
 // smb2.acls.GENERIC expectation and Samba's mapping).
+//
+// File-object specific rights and standard rights share bit positions with
+// the NFSv4 ACE4_* constants from types.go (MS-DTYP and NFSv4 deliberately
+// align here), so the mapping is expressed directly in ACE4_* terms.
+//
+// For file objects the three standard-rights aliases collapse to READ_CONTROL
+// (= ACE4_READ_ACL, 0x00020000), which is why GENERIC_READ/WRITE/EXECUTE all
+// contribute the same READ_CONTROL bit.
 const (
-	genericReadFile = fileReadData |
-		fileReadAttributes |
-		fileReadEA |
-		standardRightsRead |
-		synchronize
+	// GENERIC_READ -> FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES |
+	//                 READ_CONTROL  | SYNCHRONIZE                 (0x00120089)
+	genericReadFile = ACE4_READ_DATA |
+		ACE4_READ_NAMED_ATTRS |
+		ACE4_READ_ATTRIBUTES |
+		ACE4_READ_ACL | // STANDARD_RIGHTS_READ == READ_CONTROL
+		ACE4_SYNCHRONIZE
 
-	genericWriteFile = fileWriteData |
-		fileWriteAttributes |
-		fileWriteEA |
-		fileAppendData |
-		standardRightsWrite |
-		synchronize
+	// GENERIC_WRITE -> FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA |
+	//                  FILE_WRITE_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE
+	//                                                                (0x00120116)
+	genericWriteFile = ACE4_WRITE_DATA |
+		ACE4_APPEND_DATA |
+		ACE4_WRITE_NAMED_ATTRS |
+		ACE4_WRITE_ATTRIBUTES |
+		ACE4_READ_ACL | // STANDARD_RIGHTS_WRITE == READ_CONTROL
+		ACE4_SYNCHRONIZE
 
-	genericExecuteFile = fileReadAttributes |
-		fileExecute |
-		standardRightsExecute |
-		synchronize
+	// GENERIC_EXECUTE -> FILE_READ_ATTRIBUTES | FILE_EXECUTE |
+	//                    READ_CONTROL | SYNCHRONIZE              (0x001200A0)
+	genericExecuteFile = ACE4_READ_ATTRIBUTES |
+		ACE4_EXECUTE |
+		ACE4_READ_ACL | // STANDARD_RIGHTS_EXECUTE == READ_CONTROL
+		ACE4_SYNCHRONIZE
 
-	genericAllFile = fileAllAccess
+	// GENERIC_ALL -> FILE_ALL_ACCESS = STANDARD_RIGHTS_REQUIRED (0x000F0000) |
+	//                SYNCHRONIZE (0x00100000) |
+	//                all file-specific rights (0x000001FF)         (0x001F01FF)
+	//
+	// STANDARD_RIGHTS_REQUIRED = DELETE | READ_CONTROL | WRITE_DAC | WRITE_OWNER.
+	// File-specific bits 0x000001FF cover READ_DATA, WRITE_DATA, APPEND_DATA,
+	// READ_NAMED_ATTRS, WRITE_NAMED_ATTRS, EXECUTE, DELETE_CHILD,
+	// READ_ATTRIBUTES, WRITE_ATTRIBUTES.
+	genericAllFile = ACE4_DELETE |
+		ACE4_READ_ACL |
+		ACE4_WRITE_ACL |
+		ACE4_WRITE_OWNER |
+		ACE4_SYNCHRONIZE |
+		ACE4_READ_DATA |
+		ACE4_WRITE_DATA |
+		ACE4_APPEND_DATA |
+		ACE4_READ_NAMED_ATTRS |
+		ACE4_WRITE_NAMED_ATTRS |
+		ACE4_EXECUTE |
+		ACE4_DELETE_CHILD |
+		ACE4_READ_ATTRIBUTES |
+		ACE4_WRITE_ATTRIBUTES
 )
 
 // ExpandGenericMask expands MS-DTYP GENERIC_* access bits to their
