@@ -1,137 +1,133 @@
+// Package remote declares the unified CAS-keyed remote-store contract.
+//
+// RemoteStore is the unified remote-store interface for CAS-keyed block
+// storage. All operations are keyed by blockstore.ContentHash. The CAS
+// object key shape (cas/{hh}/{hh}/{hex}) is derived from the hash via
+// blockstore.FormatCASKey and is an implementation detail backends may
+// not expose. The interface is structurally compatible with
+// blockstore.BlockStore (Phase 17 Plan 01) — Plan 05 retargets engine
+// consumers onto that unified type and this package becomes the s3 /
+// memory backend home; the methods on this interface match the unified
+// BlockStore method set verbatim, with two backend-specific additions
+// (ReadBlockVerified for production CAS reads, Close + HealthCheck +
+// Healthcheck for backend lifecycle / health).
 package remote
 
 import (
 	"context"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/health"
 )
 
-// HeadResult exposes object metadata returned by [RemoteStore.HeadObject].
-// The Metadata map is keyed in lowercase (S3 SDK normalizes; the memory
-// backend mirrors that convention) so callers can read user-metadata
-// headers like "content-hash" without case juggling.
+// RemoteStore is the unified content-addressed remote block storage
+// interface. Implemented by:
 //
-// Used by the Phase 14 migration tool's post-migration integrity check
-// (D-A12): for every unique ContentHash referenced by any migrated
-// FileAttr.Blocks, HEAD the corresponding cas/.../h key and assert
-// (1) 200 + (2) Metadata["content-hash"] equals "blake3:" + hex(hash).
-type HeadResult struct {
-	// ContentLength is the object's body length in bytes (S3:
-	// Content-Length response header; memory: len(stored data)).
-	ContentLength int64
-	// Metadata mirrors the per-object user metadata stamped at write
-	// time (S3: x-amz-meta-* response headers, with the prefix
-	// stripped and the key lowercased; memory: in-process map). Keys
-	// MUST be lowercased; unset metadata maps to a nil/empty map.
-	Metadata map[string]string
-}
-
-// ObjectInfo describes a single remote object listed by
-// [RemoteStore.ListByPrefixWithMeta]. Used by the GC sweep phase to apply
-// the LastModified > snapshot - GracePeriod TTL filter (D-05) before a
-// candidate object is considered for deletion.
-type ObjectInfo struct {
-	// Key is the object key as the backend reports it (the same value
-	// passed to ReadBlock / DeleteBlock). For S3 callers, this includes
-	// any keyPrefix the store is configured with stripped — symmetric to
-	// ListByPrefix.
-	Key string
-	// Size is the object size in bytes.
-	Size int64
-	// LastModified is the backend's last-modified timestamp. Required
-	// for the GC sweep grace TTL check (D-05).
-	//
-	// MUST be non-zero for every object the backend lists. The GC sweep
-	// fails closed on a zero LastModified — Phase 11 WR-4-02 — to
-	// guarantee INV-04 (orphan-not-deleted is preferred over
-	// live-data-deleted). Backends that cannot natively report a
-	// timestamp MUST stamp time.Now() at WriteBlock /
-	// WriteBlockWithHash time and surface that value here. The
-	// remotetest conformance suite asserts a non-zero LastModified after
-	// WriteBlockWithHash.
-	LastModified time.Time
-}
-
-// RemoteStore defines the interface for remote block storage backends.
-// Blocks are immutable chunks of data stored with a string key.
+//   - pkg/blockstore/remote/s3.Store
+//   - pkg/blockstore/remote/memory.Store
 //
-// Key format (legacy): "{payloadID}/block-{blockIdx}"
-// Key format (CAS, Phase 11+): "cas/{hh}/{hh}/{hex}" — see blockstore.FormatCASKey.
-// Example: "export/file.txt/block-0" or "cas/af/13/af1349b9..."
+// Every method is keyed by blockstore.ContentHash; no opaque "block key"
+// strings appear on this surface. Backends derive their on-disk / on-wire
+// key shape via blockstore.FormatCASKey internally.
+//
+// The Put/Get/GetRange/Delete/Head/Walk method set matches the unified
+// blockstore.BlockStore contract from Plan 01 byte-for-byte; ReadBlockVerified
+// is a backend-specific extension (NOT part of BlockStore) used by the
+// engine's verified-read path (BSCAS-06). Plan 05 type-asserts to access
+// it on the s3 backend; the memory backend implements it as the trivial
+// body-recompute case so test fixtures can exercise the same code path.
 type RemoteStore interface {
-	// WriteBlock writes a single block to storage.
-	WriteBlock(ctx context.Context, blockKey string, data []byte) error
-
-	// WriteBlockWithHash uploads block data and stamps the content hash in
-	// backend-native object metadata (S3: x-amz-meta-content-hash). The
-	// header value is "blake3:" + hex(h). Used by the CAS write path so
-	// external tooling can verify object integrity without DittoFS metadata.
-	// See BSCAS-06.
+	// Put writes data under the CAS-shaped key derived from hash. Backends
+	// MUST stamp the content hash atomically with the PUT (S3:
+	// x-amz-meta-content-hash header) — BSCAS-06 defense-in-depth.
+	// Idempotent on the same (hash, data) pair; a Put with the same hash
+	// but different bytes is undefined behavior — callers MUST NOT rely
+	// on either outcome.
 	//
-	// Implementations MUST set the metadata atomically with the PUT (no
-	// follow-up call). For legacy non-CAS keys, callers continue to use
-	// WriteBlock.
-	WriteBlockWithHash(ctx context.Context, blockKey string, hash blockstore.ContentHash, data []byte) error
+	// Returns an error if the backend is closed, the I/O fails, or the
+	// hash is zero (callers must compute the hash before calling).
+	Put(ctx context.Context, hash blockstore.ContentHash, data []byte) error
 
-	// ReadBlock reads a complete block. Returns error if missing.
-	ReadBlock(ctx context.Context, blockKey string) ([]byte, error)
-
-	// ReadBlockVerified GETs the object at key and verifies that the body's
-	// BLAKE3 hash matches expected before returning bytes. Implementations
-	// SHOULD also pre-check any backend-native content-hash metadata
-	// (e.g., S3 x-amz-meta-content-hash) and fail fast on mismatch.
-	// Returns blockstore.ErrCASContentMismatch wrapped with diagnostic
-	// context on any verification failure. Per INV-06, the buffer is
-	// discarded on mismatch — bad bytes never reach the caller.
+	// Get returns the chunk bytes addressed by the given content hash.
+	// The returned []byte is freshly allocated and owned by the caller —
+	// implementations MUST NOT return a slice that aliases internal
+	// storage.
 	//
-	// Used by the CAS dual-read engine resolver (D-21) for blocks whose
-	// FileBlock metadata carries a non-zero ContentHash. Legacy
-	// (zero-hash) blocks continue to use ReadBlock for the dual-read
-	// window.
-	ReadBlockVerified(ctx context.Context, blockKey string, expected blockstore.ContentHash) ([]byte, error)
-
-	// ReadBlockRange reads a byte range from a block. Returns error if missing.
-	ReadBlockRange(ctx context.Context, blockKey string, offset, length int64) ([]byte, error)
-
-	// DeleteBlock removes a single block. Returns nil if missing.
-	DeleteBlock(ctx context.Context, blockKey string) error
-
-	// DeleteByPrefix removes all blocks matching the prefix.
-	DeleteByPrefix(ctx context.Context, prefix string) error
-
-	// ListByPrefix lists all block keys matching the prefix.
-	ListByPrefix(ctx context.Context, prefix string) ([]string, error)
-
-	// ListByPrefixWithMeta lists all objects under prefix and returns the
-	// per-object metadata (Key, Size, LastModified) needed by the GC sweep
-	// phase to apply the snapshot - GracePeriod TTL filter (D-05). The
-	// returned Key is symmetric to ListByPrefix (any keyPrefix the store is
-	// configured with is stripped). Order is unspecified.
-	ListByPrefixWithMeta(ctx context.Context, prefix string) ([]ObjectInfo, error)
-
-	// HeadObject returns object metadata (ContentLength + lowercased
-	// user-metadata headers) without transferring the body. Returns
-	// blockstore.ErrBlockNotFound (or a wrapping error) when the key is
-	// missing.
+	// Returns blockstore.ErrBlockNotFound (or blockstore.ErrChunkNotFound
+	// for fs-style backends — callers match via errors.Is on either) when
+	// the chunk is absent.
 	//
-	// Used by the Phase 14 migration tool's post-migration integrity
-	// check (D-A12): for every unique ContentHash referenced by any
-	// migrated FileAttr.Blocks, HEAD the corresponding cas/.../h key
-	// and assert (1) 200 and (2) HeadResult.Metadata["content-hash"]
-	// equals "blake3:" + hex(hash).
-	//
-	// Implementations MUST surface user metadata stamped at
-	// WriteBlockWithHash time (S3: x-amz-meta-* headers; memory:
-	// in-process map). Header keys MUST be lowercased.
-	HeadObject(ctx context.Context, key string) (HeadResult, error)
+	// For S3, prefer ReadBlockVerified on the production read path — Get
+	// returns raw bytes WITHOUT BLAKE3 verification.
+	Get(ctx context.Context, hash blockstore.ContentHash) ([]byte, error)
 
-	// CopyBlock copies a block from srcKey to dstKey using server-side copy
-	// when the backend supports it (e.g., S3 CopyObject). Falls back to
-	// read-then-write for backends without native copy.
-	// Returns blockstore.ErrBlockNotFound if the source block does not exist.
-	CopyBlock(ctx context.Context, srcKey, dstKey string) error
+	// GetRange returns a byte sub-range [offset, offset+length) of the
+	// chunk addressed by hash. The returned slice is freshly allocated
+	// (same no-aliasing rule as Get). Returns blockstore.ErrBlockNotFound
+	// if the chunk is absent.
+	GetRange(ctx context.Context, hash blockstore.ContentHash, offset, length int64) ([]byte, error)
+
+	// Delete removes the object addressed by hash. Returns nil if the
+	// object does not exist (Delete is idempotent).
+	Delete(ctx context.Context, hash blockstore.ContentHash) error
+
+	// Head returns blockstore.Meta for the object addressed by hash
+	// without transferring the body. Returns blockstore.ErrBlockNotFound
+	// when the object is absent.
+	//
+	// The backend's defense-in-depth content-hash header (S3:
+	// x-amz-meta-content-hash) is verified internally during
+	// ReadBlockVerified but is NOT echoed via Meta — per Phase 17 D-08,
+	// the lookup key (ContentHash) is the input, not output, and Meta
+	// stays minimal {Size, LastModified}.
+	//
+	// Meta.LastModified MUST be non-zero (Phase 11 WR-4-02 / INV-04: GC
+	// sweep fails closed otherwise). Backends that cannot natively report
+	// a timestamp MUST stamp time.Now() at Put time and surface that
+	// value here.
+	Head(ctx context.Context, hash blockstore.ContentHash) (blockstore.Meta, error)
+
+	// Walk enumerates every CAS object in the store. The callback
+	// receives the content hash and Meta for each object; ordering is
+	// unspecified (backends MAY parallelize internally; the conformance
+	// suite does not pin a traversal order).
+	//
+	// Returning blockstore.ErrStopWalk from the callback exits cleanly
+	// — Walk returns nil to the outer caller. Any other non-nil
+	// callback error halts the walk and Walk returns it wrapped with
+	//
+	//   fmt.Errorf("walk halted at %s: %w", hash, err)
+	//
+	// Context cancellation aborts immediately; the callback is NOT
+	// re-invoked after ctx.Err() != nil (Walk MUST surface ctx.Err()
+	// without one final spurious callback). Contract mirrors
+	// filepath.SkipDir / fs.SkipAll.
+	//
+	// See blockstore.ErrStopWalk for the sentinel doc.
+	Walk(ctx context.Context, fn func(hash blockstore.ContentHash, meta blockstore.Meta) error) error
+
+	// ReadBlockVerified GETs the object addressed by hash and verifies
+	// that the body's BLAKE3 hash matches expected before returning
+	// bytes. Implementations SHOULD also pre-check any backend-native
+	// content-hash metadata (S3: x-amz-meta-content-hash) and fail fast
+	// on header mismatch. Returns blockstore.ErrCASContentMismatch
+	// wrapped with diagnostic context on any verification failure. Per
+	// INV-06, the buffer is discarded on mismatch — bad bytes never
+	// reach the caller.
+	//
+	// Both hash arguments are intentional: hash derives the canonical
+	// CAS key, while expected is the body BLAKE3 the caller is
+	// asserting. Verification proves byte-on-disk == hash-in-key ==
+	// expected; the redundancy is BSCAS-06 defense-in-depth and guards
+	// against key-vs-content mismatch on backends where the two might
+	// drift (e.g., during external mutation).
+	//
+	// ReadBlockVerified is NOT part of the unified blockstore.BlockStore
+	// contract — it is a backend-specific extension on RemoteStore. The
+	// engine accesses it via type-assertion on the unified BlockStore in
+	// Plan 05; backends that do not need verification (in-memory test
+	// fixtures) implement it as a trivial body-recompute wrapper.
+	ReadBlockVerified(ctx context.Context, hash blockstore.ContentHash, expected blockstore.ContentHash) ([]byte, error)
 
 	// Close releases resources held by the store.
 	Close() error

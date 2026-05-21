@@ -26,7 +26,7 @@ func hashFromHex(t *testing.T, s string) blockstore.ContentHash {
 }
 
 func TestChunkStore_RoundTrip(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: true})
+	bc := newFSStoreForTest(t, FSStoreOptions{})
 	h := hashFromHex(t, strings.Repeat("ab", 32))
 	data := bytes.Repeat([]byte{0xAB}, 4096)
 	ctx := context.Background()
@@ -48,7 +48,7 @@ func TestChunkStore_RoundTrip(t *testing.T) {
 }
 
 func TestChunkStore_Idempotent(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: true})
+	bc := newFSStoreForTest(t, FSStoreOptions{})
 	h := hashFromHex(t, strings.Repeat("cd", 32))
 	data := bytes.Repeat([]byte{0xCD}, 256)
 	ctx := context.Background()
@@ -81,7 +81,7 @@ func TestChunkStore_Idempotent(t *testing.T) {
 }
 
 func TestChunkStore_ReadMissing_ErrChunkNotFound(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: true})
+	bc := newFSStoreForTest(t, FSStoreOptions{})
 	h := hashFromHex(t, strings.Repeat("ef", 32))
 	_, err := bc.ReadChunk(context.Background(), h)
 	if !errors.Is(err, blockstore.ErrChunkNotFound) {
@@ -90,7 +90,7 @@ func TestChunkStore_ReadMissing_ErrChunkNotFound(t *testing.T) {
 }
 
 func TestChunkStore_DeleteMissing_NoError(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: true})
+	bc := newFSStoreForTest(t, FSStoreOptions{})
 	h := hashFromHex(t, strings.Repeat("12", 32))
 	if err := bc.DeleteChunk(context.Background(), h); err != nil {
 		t.Fatalf("DeleteChunk on missing: want nil, got %v", err)
@@ -98,7 +98,7 @@ func TestChunkStore_DeleteMissing_NoError(t *testing.T) {
 }
 
 func TestChunkStore_TornTmp_NotVisible(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: true})
+	bc := newFSStoreForTest(t, FSStoreOptions{})
 	h := hashFromHex(t, strings.Repeat("34", 32))
 	path := bc.chunkPath(h)
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -119,7 +119,7 @@ func TestChunkStore_TornTmp_NotVisible(t *testing.T) {
 }
 
 func TestChunkStore_ShardPath_TwoLevel(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: true})
+	bc := newFSStoreForTest(t, FSStoreOptions{})
 	full := "deadbeef" + strings.Repeat("00", 28)
 	h := hashFromHex(t, full)
 	got := bc.chunkPath(h)
@@ -138,7 +138,7 @@ func TestChunkStore_ShardPath_TwoLevel(t *testing.T) {
 // (recovery's sharding inverse + Phase 11 GC mark-sweep both rely on this
 // shape).
 func TestChunkPathFormat(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: true})
+	bc := newFSStoreForTest(t, FSStoreOptions{})
 	full := "5a5a" + strings.Repeat("00", 30) // 64-char hex
 	h := hashFromHex(t, full)
 	data := bytes.Repeat([]byte{0x5A}, 64)

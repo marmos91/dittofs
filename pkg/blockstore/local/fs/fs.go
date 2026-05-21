@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -147,18 +149,11 @@ type FSStore struct {
 	closeOnce sync.Once
 	wg        sync.WaitGroup
 
-	// --- Append-log path (Phase 10, LSL-01/03, flag-gated per D-02/D-36). ---
+	// --- Append-log path (Phase 10, LSL-01/03). ---
 	//
-	// When useAppendLog=false (default through Phase 10 per D-03), every
-	// field in this block is its zero value and FSStore is byte-for-byte
-	// equivalent to the Phase 09 write path: no log file is created on disk,
-	// no rollup worker is started, and AppendWrite rejects with
-	// ErrAppendLogDisabled.
-	//
-	// maxLogBytes and stabilizationMS / rollupWorkers are kept populated with
-	// their defaults even when the flag is off so NewWithOptions can raise
-	// the flag without a second initialization pass.
-	useAppendLog    bool
+	// Append is mandatory on the local tier in Phase 17 — the flag-gated
+	// opt-out was deleted alongside the legacy path-keyed writer. All
+	// AppendWrite + rollup machinery runs unconditionally.
 	maxLogBytes     int64
 	stabilizationMS int
 	rollupWorkers   int
@@ -200,8 +195,6 @@ type FSStore struct {
 
 	// --- Phase 10-06 rollup pool (D-13/D-33). ---
 	//
-	// When useAppendLog=false, these fields remain their zero values and
-	// StartRollup rejects with ErrAppendLogDisabled. When the flag is on,
 	// StartRollup launches bc.rollupWorkers goroutines that consume
 	// payloadIDs from bc.rollupCh (AppendWrite non-blocking send) and also
 	// scan bc.dirtyIntervals on a stabilization-tuned ticker.
@@ -251,6 +244,32 @@ type FSStore struct {
 //   - maxMemory: memory budget for dirty write buffers in bytes. 0 defaults to 256MB.
 //   - fileBlockStore: persistent store for FileBlock metadata (local path, upload state, etc.)
 func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore) (*FSStore, error) {
+	return newFSStoreInternal(baseDir, maxDisk, maxMemory, fileBlockStore, false)
+}
+
+// newFSStoreInternal is the shared inner constructor. Phase 17 Plan 09
+// adds the legacy-layout sentinel-detection gate guarded on
+// skipSentinelCheck: when false, the constructor stats
+// `<baseDir>/.cas-migrated-v1` and, on absence, runs a depth-limited
+// `.blk` probe — returning blockstore.ErrLegacyLayoutDetected when
+// legacy data is present without a migration sentinel. The four-state
+// matrix is:
+//
+//   - sentinel PRESENT, no .blk files     → success (post-migration steady state)
+//   - sentinel PRESENT, .blk files PRESENT → success (Phase 17 trusts the
+//     sentinel as ground truth; operator footgun per
+//     .planning/phases/17-unified-blockstore/17-CONTEXT.md D-10)
+//   - sentinel MISSING, no .blk files     → success (fresh install)
+//   - sentinel MISSING, .blk files PRESENT → ErrLegacyLayoutDetected
+//
+// NewFSStoreForMigration passes true; New / NewWithOptions pass false.
+// See 17-CONTEXT.md D-10 (per-share sentinel) + D-11 (errors.Is contract).
+func newFSStoreInternal(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, skipSentinelCheck bool) (*FSStore, error) {
+	if !skipSentinelCheck {
+		if err := checkLegacyLayoutSentinel(baseDir); err != nil {
+			return nil, err
+		}
+	}
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
 		return nil, fmt.Errorf("local store: create base dir: %w", err)
 	}
@@ -280,11 +299,9 @@ func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blocksto
 	bc.lruIndex = make(map[blockstore.ContentHash]*list.Element)
 	bc.lruList = list.New()
 
-	// Phase 10 append-log plumbing — maps + pressure channel always
-	// initialized so NewWithOptions can enable the flag atomically. When
-	// useAppendLog=false (the New() default), AppendWrite returns
-	// ErrAppendLogDisabled and nothing else in this block touches disk.
-	// D-36: zero behavior change when the flag is off.
+	// Phase 17: append-log plumbing — maps + pressure channel are
+	// always initialized; the opt-out flag was deleted with the legacy
+	// path-keyed writer.
 	bc.pressureCh = make(chan struct{}, 1)
 	bc.logFDs = make(map[string]*logFile)
 	bc.logLocks = make(map[string]*sync.Mutex)
@@ -305,6 +322,78 @@ func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blocksto
 	bc.seedLRUFromDisk()
 
 	return bc, nil
+}
+
+// sentinelFileName is the per-share Plan 09 boot-guard marker written by
+// `dfs migrate-to-cas` at the successful completion of a share migration.
+// Kept in sync with pkg/blockstore/migrate.SentinelFileName.
+const sentinelFileName = ".cas-migrated-v1"
+
+// legacyLayoutWalkDepthCap bounds the depth-limited `.blk` probe so a
+// freshly-provisioned share with deeply nested non-legacy content does
+// not pay an unbounded WalkDir at every boot. Legacy `.blk` files live
+// at <baseDir>/<shard>/<payloadID>/<idx>.blk (depth 3 under baseDir);
+// any `.blk` past depth 3 is treated as non-legacy noise and skipped.
+const legacyLayoutWalkDepthCap = 3
+
+// checkLegacyLayoutSentinel implements Plan 09 D-10 / D-11. Returns
+// blockstore.ErrLegacyLayoutDetected (wrapped with the share path) when
+// the `.cas-migrated-v1` sentinel is absent from baseDir AND at least
+// one `.blk` file is detected by a depth-capped WalkDir under baseDir.
+// Returns nil for the other three states (sentinel present, or sentinel
+// absent + no legacy data).
+//
+// Boot-path performance: post-migration the first stat short-circuits;
+// no walk. Pre-migration on legacy stores, the walk terminates at the
+// first `.blk` via fs.SkipAll. Fresh installs with no baseDir yet hit
+// the iofs.ErrNotExist branch and fall through to construction.
+func checkLegacyLayoutSentinel(baseDir string) error {
+	sentinelPath := filepath.Join(baseDir, sentinelFileName)
+	if _, err := os.Stat(sentinelPath); err == nil {
+		// Sentinel present — Phase 17 trusts it as ground truth.
+		return nil
+	} else if !errors.Is(err, iofs.ErrNotExist) {
+		return fmt.Errorf("local store: stat sentinel %q: %w", sentinelPath, err)
+	}
+
+	// Sentinel missing — probe for `.blk` files. A baseDir that does
+	// not yet exist is a fresh install with no legacy data.
+	hasBlk := false
+	walkErr := filepath.WalkDir(baseDir, func(path string, d iofs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		// Depth from baseDir: 0 = baseDir itself, 1 = direct child, …
+		rel := strings.TrimPrefix(path, baseDir)
+		rel = strings.TrimPrefix(rel, string(os.PathSeparator))
+		var depth int
+		if rel != "" {
+			depth = strings.Count(rel, string(os.PathSeparator)) + 1
+		}
+		if d.IsDir() {
+			if depth > legacyLayoutWalkDepthCap {
+				return iofs.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), ".blk") {
+			hasBlk = true
+			return iofs.SkipAll
+		}
+		return nil
+	})
+	if walkErr != nil {
+		if errors.Is(walkErr, iofs.ErrNotExist) {
+			// baseDir does not exist yet — fresh install with no legacy
+			// data; MkdirAll downstream will create it.
+			return nil
+		}
+		return fmt.Errorf("local store: probe legacy layout %q: %w", baseDir, walkErr)
+	}
+	if !hasBlk {
+		return nil
+	}
+	return fmt.Errorf("share %s: %w", baseDir, blockstore.ErrLegacyLayoutDetected)
 }
 
 // lruEntry is a single LRU-tracked CAS chunk on disk.
@@ -410,20 +499,17 @@ func (bc *FSStore) seedLRUFromDisk() {
 	}
 }
 
-// FSStoreOptions configures the Phase 10 append-log path. Zero value means
-// the append log is disabled (D-03 default through Phase 10); setting
-// UseAppendLog=true opts into the new write path wired by
-// `AppendWrite`. MaxLogBytes, RollupWorkers, and StabilizationMS default
-// via New() when left zero here.
+// FSStoreOptions configures the append-log path. Append is mandatory in
+// Phase 17 — the UseAppendLog opt-out flag was deleted with the legacy
+// path-keyed writer. MaxLogBytes, RollupWorkers, and StabilizationMS
+// default via New() when left zero here.
 type FSStoreOptions struct {
-	UseAppendLog    bool
 	MaxLogBytes     int64
 	RollupWorkers   int
 	StabilizationMS int
-	// RollupStore persists per-file rollup_offset (LSL-05). Required when
-	// UseAppendLog=true AND StartRollup will be called. Nil is accepted when
-	// UseAppendLog is false (the flag path is fully bypassed) or when the
-	// caller will not start the rollup pool.
+	// RollupStore persists per-file rollup_offset (LSL-05). Required
+	// when StartRollup will be called. Nil is accepted when the caller
+	// will not start the rollup pool.
 	RollupStore metadata.RollupStore
 	// OrphanLogMinAgeSeconds is the minimum age (seconds) a log file must
 	// have before recovery will classify it as orphan and sweep it.
@@ -432,21 +518,38 @@ type FSStoreOptions struct {
 	OrphanLogMinAgeSeconds int
 }
 
-// NewWithOptions constructs an FSStore with the append-log path optionally
-// enabled. When opts.UseAppendLog is false (the default through Phase 10
-// per D-03), the returned store is byte-for-byte identical to one from
-// New() — no log file on disk, no rollup worker. Phase 11 (A2) flips the
-// default.
-//
-// Non-zero values in opts override the defaults set by New(); zero values
-// keep the New() defaults (1 GiB log, 250ms stabilization, 2 rollup
-// workers).
+// NewWithOptions constructs an FSStore. Non-zero values in opts override
+// the defaults set by New(); zero values keep the New() defaults (1 GiB
+// log, 250ms stabilization, 2 rollup workers).
 func NewWithOptions(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, opts FSStoreOptions) (*FSStore, error) {
-	bc, err := New(baseDir, maxDisk, maxMemory, fileBlockStore)
+	return newFSStoreWithOptionsInternal(baseDir, maxDisk, maxMemory, fileBlockStore, opts, false)
+}
+
+// NewFSStoreForMigration constructs an FSStore that skips the legacy-
+// layout sentinel check (Phase 17 Plan 09 D-10/D-11).
+//
+// MIGRATION TOOL USE ONLY — production code paths must call New /
+// NewWithOptions, which always run the sentinel gate. The `dfs
+// migrate-to-cas` subcommand (cmd/dfs/commands/migrate_to_cas.go) is
+// the sole intended caller; it must open the destination FSStore
+// against a share directory that still contains the legacy `.blk`
+// layout (the very state the migration is converting away from), so
+// the gate would otherwise refuse the open.
+//
+// Behavior is otherwise identical to NewWithOptions.
+func NewFSStoreForMigration(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, opts FSStoreOptions) (*FSStore, error) {
+	return newFSStoreWithOptionsInternal(baseDir, maxDisk, maxMemory, fileBlockStore, opts, true)
+}
+
+// newFSStoreWithOptionsInternal is the shared body for NewWithOptions
+// and NewFSStoreForMigration. The skipSentinelCheck argument is threaded
+// through to newFSStoreInternal where Plan 09's legacy-layout gate will
+// consult it.
+func newFSStoreWithOptionsInternal(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, opts FSStoreOptions, skipSentinelCheck bool) (*FSStore, error) {
+	bc, err := newFSStoreInternal(baseDir, maxDisk, maxMemory, fileBlockStore, skipSentinelCheck)
 	if err != nil {
 		return nil, err
 	}
-	bc.useAppendLog = opts.UseAppendLog
 	if opts.MaxLogBytes > 0 {
 		bc.maxLogBytes = opts.MaxLogBytes
 	}

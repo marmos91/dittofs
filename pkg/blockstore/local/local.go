@@ -8,23 +8,13 @@ import (
 	"github.com/marmos91/dittofs/pkg/health"
 )
 
-// PendingBlock represents a block ready for upload to the remote block store.
-type PendingBlock struct {
-	// BlockIndex is the flat block index (fileOffset / BlockSize).
-	BlockIndex uint64
-
-	// Data is the block content.
-	Data []byte
-
-	// DataSize is the actual size of valid data in the block.
-	DataSize uint32
-
-	// Hash is the SHA-256 content hash; zero means not yet computed.
-	Hash blockstore.ContentHash
-}
-
-// FlushedBlock records info about a block that was just flushed from memory to disk.
-// Used by GetDirtyBlocks to avoid a round-trip (write then read back).
+// FlushedBlock records info about a block that was just flushed from
+// memory to disk. Used by GetDirtyBlocks to avoid a round-trip (write
+// then read back).
+//
+// Phase 17: preserved as the return type of the transitional Flush
+// method below. Slated for deletion in Phase 18 when the Syncer
+// rewrite eliminates the only consumer (engine/syncer.go).
 type FlushedBlock struct {
 	// BlockIndex is the flat block index.
 	BlockIndex uint64
@@ -46,130 +36,164 @@ type Stats struct {
 	MemBlockCount int   // Number of in-memory dirty blocks
 }
 
-// LocalStore is the interface for on-node block storage.
-// It manages the two-tier (memory + disk) store that sits between
-// protocol adapters and the remote block store.
+// LocalStore is the host-side admin interface for the on-node block
+// store. It EMBEDS [blockstore.BlockStoreAppend] (the byte-access +
+// append-log surface tested by
+// [blockstoretest.BlockStoreAppendConformance]) and adds lifecycle,
+// eviction, retention, and observability methods that are caller-
+// visible only from within the daemon process.
+//
+// A small transitional admin-superset (ReadAt / WriteAt / Flush /
+// IsBlockLocal / GetBlockData / WriteFromRemote / DeleteAllBlockFiles)
+// is retained through Phase 17 and slated for deletion in Phase 18
+// (Syncer rewrite). Each transitional method carries a
+// "Deprecated: removed in Phase 18" godoc tag so the cleanup wave can
+// find every site via grep. Their consumers live in the engine
+// (engine.go, fetch.go, syncer.go, upload.go, dedup.go); Phase 17
+// could not rewrite those sites within D-01's atomic-merge
+// constraint (every commit must `go build ./...`-clean) — Phase
+// 18's Syncer simplification rewrites them onto BlockStore.Put / Get
+// / Walk and deletes the transitional methods in a single coherent
+// change.
 type LocalStore interface {
-	// --- Read operations ---
+	// Embedding contributes Put, Get, GetRange, Has, Delete, Head,
+	// Walk from BlockStore plus AppendWrite and DeleteLog from
+	// BlockStoreAppend. The Get signature is byte-identical to the
+	// Phase 16 LocalStore.Get this interface supersedes — engine
+	// call sites that currently type-assert a *fs.FSStore continue
+	// to compile when narrowed to local.LocalStore (or further to
+	// blockstore.BlockStore).
+	blockstore.BlockStoreAppend
 
-	// ReadAt reads data from the local store at the specified offset into dest.
-	// Returns (true, nil) if all requested bytes were found locally,
-	// (false, nil) on miss for any block in the range.
-	ReadAt(ctx context.Context, payloadID string, dest []byte, offset uint64) (bool, error)
+	// --- Lifecycle ---
 
-	// GetFileSize returns the tracked file size and whether the file is tracked.
-	// This is a fast in-memory lookup -- no disk or store access.
-	GetFileSize(ctx context.Context, payloadID string) (uint64, bool)
-
-	// IsBlockLocal checks if a specific block is available locally (memory or disk).
-	IsBlockLocal(ctx context.Context, payloadID string, blockIdx uint64) bool
-
-	// GetBlockData returns the raw data for a specific block, checking memory first
-	// then disk. Returns data, dataSize, and error.
-	GetBlockData(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error)
-
-	// Get returns the chunk bytes addressed by the given content hash.
-	// The returned []byte is freshly allocated and owned by the caller
-	// — matches the prior mmap-then-copy semantics from the engine
-	// Cache's perspective (the Cache always copied bytes out of the
-	// mmapped region into its LRU slot, so the allocation simply moves
-	// earlier in the pipeline).
-	//
-	// Returns blockstore.ErrChunkNotFound if the chunk is absent from
-	// the local store. Implementations MUST NOT return a slice that
-	// aliases internal storage; no read-buffer pool is used.
-	//
-	// Signature is forward-compatible with the unified BlockStore.Get
-	// interface — engine call sites can narrow the receiver type without
-	// renaming.
-	Get(ctx context.Context, hash blockstore.ContentHash) ([]byte, error)
-
-	// --- Write operations ---
-
-	// WriteAt writes data to the local store at the specified offset.
-	WriteAt(ctx context.Context, payloadID string, data []byte, offset uint64) error
-
-	// WriteFromRemote stores data fetched from the remote block store locally.
-	// The block is marked Remote since it already exists remotely.
-	WriteFromRemote(ctx context.Context, payloadID string, data []byte, offset uint64) error
-
-	// --- Flush operations ---
-
-	// Flush writes all dirty in-memory blocks for a file to disk as .blk files.
-	// Returns the list of blocks that were flushed.
-	Flush(ctx context.Context, payloadID string) ([]FlushedBlock, error)
-
-	// SyncFileBlocks persists all queued FileBlock metadata updates to the store.
-	SyncFileBlocks(ctx context.Context)
-
-	// SyncFileBlocksForFile persists queued FileBlock metadata only for blocks
-	// belonging to the given payloadID.
-	SyncFileBlocksForFile(ctx context.Context, payloadID string)
-
-	// --- Lifecycle and management ---
-
-	// Start launches background goroutines (e.g., periodic metadata persistence).
+	// Start launches background goroutines (e.g., periodic metadata
+	// persistence).
 	Start(ctx context.Context)
 
 	// Close flushes pending metadata and marks the store as closed.
 	Close() error
 
+	// --- Per-file admin ---
+
+	// GetFileSize returns the tracked file size and whether the file
+	// is tracked. This is a fast in-memory lookup — no disk or store
+	// access.
+	GetFileSize(ctx context.Context, payloadID string) (uint64, bool)
+
 	// Truncate discards local blocks beyond newSize.
 	Truncate(ctx context.Context, payloadID string, newSize uint64) error
 
-	// EvictMemory removes all in-memory data and disk tracking for a file.
+	// EvictMemory removes all in-memory data and disk tracking for a
+	// file.
 	EvictMemory(ctx context.Context, payloadID string) error
 
-	// DeleteBlockFile removes a single block from memory, disk, and metadata.
-	DeleteBlockFile(ctx context.Context, payloadID string, blockIdx uint64) error
+	// ListFiles returns the payloadIDs of all files currently tracked
+	// in the local store.
+	ListFiles() []string
 
-	// DeleteAllBlockFiles removes all blocks for a file from memory, disk, and metadata.
-	DeleteAllBlockFiles(ctx context.Context, payloadID string) error
+	// GetStoredFileSize returns the total stored data size for a file
+	// by summing the DataSize of all FileBlock records in the metadata
+	// store.
+	GetStoredFileSize(ctx context.Context, payloadID string) (uint64, error)
 
-	// DeleteAppendLog removes the per-file append log for a payload
-	// (LSL-05). BSCAS-05 invokes this on a file-level dedup hit to
-	// discard speculative chunks the syncer was about to upload.
-	// Implementations MUST be safe to call when no log exists for the
-	// payload (no-op).
-	//
-	// Concrete impl: *fs.FSStore.DeleteAppendLog (appendwrite.go) is the
-	// canonical implementation; in-memory backends with no append log
-	// return nil (the per-file log is a no-op concept on those).
-	DeleteAppendLog(ctx context.Context, payloadID string) error
+	// --- Metadata sync ---
 
-	// TruncateBlockFiles removes all blocks whose start offset >= newSize.
-	TruncateBlockFiles(ctx context.Context, payloadID string, newBlockCount uint64) error
+	// SyncFileBlocks persists all queued FileBlock metadata updates to
+	// the store.
+	SyncFileBlocks(ctx context.Context)
 
-	// SetEvictionEnabled controls whether the local store can evict blocks to make room.
+	// SyncFileBlocksForFile persists queued FileBlock metadata only for
+	// blocks belonging to the given payloadID.
+	SyncFileBlocksForFile(ctx context.Context, payloadID string)
+
+	// --- Retention / eviction policy ---
+
+	// SetEvictionEnabled controls whether the local store can evict
+	// blocks to make room.
 	SetEvictionEnabled(enabled bool)
 
-	// SetRetentionPolicy updates the retention policy for eviction decisions.
+	// SetRetentionPolicy updates the retention policy for eviction
+	// decisions.
 	//   - pin: never evict local blocks
 	//   - ttl: evict only after file last-access exceeds ttl duration
 	//   - lru: evict least-recently-accessed blocks first (default)
 	SetRetentionPolicy(policy blockstore.RetentionPolicy, ttl time.Duration)
 
+	// --- Observability ---
+
 	// Stats returns a snapshot of current local store statistics.
 	Stats() Stats
-
-	// ListFiles returns the payloadIDs of all files currently tracked in the local store.
-	ListFiles() []string
-
-	// GetStoredFileSize returns the total stored data size for a file by summing
-	// the DataSize of all FileBlock records in the metadata store.
-	GetStoredFileSize(ctx context.Context, payloadID string) (uint64, error)
-
-	// ExistsOnDisk checks if a specific block is present on disk.
-	ExistsOnDisk(ctx context.Context, payloadID string, blockIdx uint64) (bool, error)
 
 	// Healthcheck returns the current health of the local store as a
 	// structured [health.Report]. Implementations must satisfy
 	// [health.Checker] so the upstream API layer can wrap them with a
 	// [health.CachedChecker] and serve /status routes.
 	//
-	// Implementations should be cheap to call (no full directory scans,
-	// no large I/O) and idempotent. The expectation is something on the
-	// order of a stat() and possibly a write probe — see
-	// fs.FSStore.Healthcheck for the canonical pattern.
+	// Implementations should be cheap to call (no full directory
+	// scans, no large I/O) and idempotent. The expectation is
+	// something on the order of a stat() and possibly a write probe —
+	// see fs.FSStore.Healthcheck for the canonical pattern.
 	Healthcheck(ctx context.Context) health.Report
+
+	// --- Transitional admin-superset methods ---
+	//
+	// Engine consumers at engine/{engine.go:147,320,423,635,800,828,
+	// fetch.go:140,155,192,302,420,482, syncer.go:381, upload.go:168,
+	// dedup.go:248}. Phase 18's Syncer simplification rewrites these
+	// sites onto BlockStore.Put / Get / Walk and deletes the methods
+	// (and FlushedBlock) entirely. Until then they remain on the
+	// interface and on *fs.FSStore so every Phase 17 commit
+	// `go build ./...`-cleans (D-01 atomic-merge).
+	//
+	// Grep marker for the Phase 18 cleanup wave: TRANSITIONAL-PHASE-18.
+	// The marker is plain text (not a godoc "Deprecated:" tag) so
+	// staticcheck SA1019 does not fire on existing call sites that will
+	// be rewritten in Phase 18.
+
+	// ReadAt reads data from the local store at the specified offset
+	// into dest. Returns (true, nil) if all requested bytes were
+	// found locally, (false, nil) on miss for any block in the
+	// range.
+	//
+	// TRANSITIONAL-PHASE-18: removed when Syncer simplification rewrites
+	// engine consumers onto BlockStore.Put/Get/Walk.
+	ReadAt(ctx context.Context, payloadID string, dest []byte, offset uint64) (bool, error)
+
+	// WriteAt writes data to the local store at the specified offset.
+	//
+	// TRANSITIONAL-PHASE-18: see ReadAt.
+	WriteAt(ctx context.Context, payloadID string, data []byte, offset uint64) error
+
+	// Flush writes all dirty in-memory blocks for a file to disk as
+	// .blk files. Returns the list of blocks that were flushed.
+	//
+	// TRANSITIONAL-PHASE-18: see ReadAt.
+	Flush(ctx context.Context, payloadID string) ([]FlushedBlock, error)
+
+	// IsBlockLocal checks if a specific block is available locally
+	// (memory or disk).
+	//
+	// TRANSITIONAL-PHASE-18: see ReadAt.
+	IsBlockLocal(ctx context.Context, payloadID string, blockIdx uint64) bool
+
+	// GetBlockData returns the raw data for a specific block,
+	// checking memory first then disk. Returns data, dataSize, and
+	// error.
+	//
+	// TRANSITIONAL-PHASE-18: see ReadAt.
+	GetBlockData(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error)
+
+	// WriteFromRemote stores data fetched from the remote block
+	// store locally. The block is marked Remote since it already
+	// exists remotely.
+	//
+	// TRANSITIONAL-PHASE-18: see ReadAt.
+	WriteFromRemote(ctx context.Context, payloadID string, data []byte, offset uint64) error
+
+	// DeleteAllBlockFiles removes all blocks for a file from memory,
+	// disk, and metadata.
+	//
+	// TRANSITIONAL-PHASE-18: see ReadAt.
+	DeleteAllBlockFiles(ctx context.Context, payloadID string) error
 }

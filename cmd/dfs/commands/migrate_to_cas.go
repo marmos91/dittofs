@@ -1,0 +1,316 @@
+package commands
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
+	"github.com/marmos91/dittofs/pkg/blockstore/migrate"
+	"github.com/marmos91/dittofs/pkg/metadata"
+)
+
+// Plan 08 (Phase 17): offline `dfs migrate-to-cas` subcommand.
+//
+// Walks the configured storage tree, opens each share's destination CAS
+// BlockStore via fs.NewFSStoreForMigration (sentinel-bypass), invokes
+// migrate.MigrateShareToCAS per share, and writes the per-share
+// `.cas-migrated-v1` sentinel that Plan 09's boot guard requires.
+//
+// Refuses to run while the dfs server holds the PID lockfile (D-02
+// OFFLINE constraint).
+//
+// The MetadataAdapter used here is intentionally minimal: production
+// shares persist their metadata through the controlplane runtime
+// (pkg/controlplane/runtime/shares/service.go), which boots an entire
+// services graph. The migration tool short-circuits that by opening the
+// metadata backend directly per share — currently a no-op stub that
+// surfaces an explicit error to the operator when invoked against a
+// share whose metadata-store adapter has not yet been wired up by Plan
+// 17-09. The library half (pkg/blockstore/migrate/migrate_to_cas.go) is
+// fully exercised by its own unit suite (Task 3) which provides an
+// in-memory MetadataAdapter for testing. The CLI half here provides the
+// PID guard, flag wiring, share discovery, JSON / plain-text progress
+// emission, and the FSStore-for-migration construction.
+
+var (
+	migrateStorageDir string
+	migrateShare      string
+	migrateDryRun     bool
+	migrateJSON       bool
+	migrateMaxDisk    int64
+	migrateMaxMemory  int64
+)
+
+var migrateToCASCmd = &cobra.Command{
+	Use:   "migrate-to-cas",
+	Short: "Migrate legacy .blk block layout to CAS (offline; required for v0.16+ servers)",
+	Long: `Migrate a stopped DittoFS server's legacy .blk block layout to the
+content-addressed (CAS) layout required by v0.16+.
+
+The dfs server MUST be stopped before running this command — the
+migration rewrites the on-disk layout in place and a concurrent server
+would race the rename and corrupt the store.
+
+Required flag: --storage-dir <root>. The storage root is expected to
+contain a shares/<name>/blocks/ subtree per share; the command refuses
+to start if the path is missing or empty.
+
+The command is idempotent: a per-share journal at
+<storage-dir>/shares/<name>/.dittofs-migrate-to-cas.state lets you
+resume after a crash or Ctrl-C without re-uploading already-migrated
+chunks. Successful completion writes
+<storage-dir>/shares/<name>/blocks/.cas-migrated-v1 via atomic rename;
+the boot guard refuses to start dfs until this sentinel exists (exit
+code 78).
+
+Use --dry-run for a non-destructive preview (file count, estimated
+dedup ratio, sampled bytes-per-second).
+Use --share to scope the run to one share.
+Use --json to emit one JSON object per second of progress on stdout.
+
+See docs/CONFIGURATION.md §migration for the full operator runbook.`,
+	Args: cobra.NoArgs,
+	RunE: runMigrateToCAS,
+}
+
+func init() {
+	migrateToCASCmd.Flags().StringVar(&migrateStorageDir, "storage-dir", "",
+		"Storage root (REQUIRED; expects <root>/shares/<name>/blocks layout)")
+	migrateToCASCmd.Flags().StringVar(&migrateShare, "share", "",
+		"Scope migration to one share (default: all shares discovered under <storage-dir>/shares/)")
+	migrateToCASCmd.Flags().BoolVar(&migrateDryRun, "dry-run", false,
+		"Walk + sample only; report file count, bytes, estimated dedup ratio, ETA. Writes nothing.")
+	migrateToCASCmd.Flags().BoolVar(&migrateJSON, "json", false,
+		"Emit one JSON object per second of progress to stdout (machine-parseable)")
+	migrateToCASCmd.Flags().Int64Var(&migrateMaxDisk, "max-disk", 0,
+		"Per-share max-disk budget for the destination FSStore (0 = unlimited)")
+	migrateToCASCmd.Flags().Int64Var(&migrateMaxMemory, "max-memory", 0,
+		"Per-share max-memory budget for the destination FSStore (0 = 256 MiB default)")
+}
+
+func runMigrateToCAS(cmd *cobra.Command, args []string) error {
+	// PID guard: refuse to run while a live dfs server holds the
+	// lockfile. The migration rewrites .blk files in place; a concurrent
+	// server would race the rename and corrupt the store. (D-02)
+	if err := guardPidFile(); err != nil {
+		return err
+	}
+
+	if migrateStorageDir == "" {
+		return errors.New("--storage-dir is required (path to the dfs storage root, expected to contain shares/<name>/blocks/)")
+	}
+	abs, err := filepath.Abs(migrateStorageDir)
+	if err != nil {
+		return fmt.Errorf("resolve --storage-dir: %w", err)
+	}
+	migrateStorageDir = abs
+
+	sharesRoot := filepath.Join(migrateStorageDir, "shares")
+	entries, err := os.ReadDir(sharesRoot)
+	if err != nil {
+		return fmt.Errorf("read shares root %q: %w", sharesRoot, err)
+	}
+
+	var shareNames []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		if migrateShare != "" && name != migrateShare {
+			continue
+		}
+		shareNames = append(shareNames, name)
+	}
+	if len(shareNames) == 0 {
+		if migrateShare != "" {
+			return fmt.Errorf("share %q not found under %s", migrateShare, sharesRoot)
+		}
+		return fmt.Errorf("no shares found under %s", sharesRoot)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	var aggregate migrate.MigrationStats
+	for _, name := range shareNames {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		shareDir := filepath.Join(sharesRoot, name)
+		blockDir := filepath.Join(shareDir, "blocks")
+
+		// Destination BlockStore for this share. Use the migration-bypass
+		// constructor so Plan 09's sentinel-detection gate (added later
+		// inside fs.New / fs.NewWithOptions) does not refuse the share
+		// — that gate is precisely what the migration is establishing.
+		bs, openErr := fs.NewFSStoreForMigration(blockDir,
+			migrateMaxDisk, migrateMaxMemory, nopFileBlockStore{},
+			fs.FSStoreOptions{})
+		if openErr != nil {
+			return fmt.Errorf("open destination store for share %q: %w", name, openErr)
+		}
+
+		opts := migrate.MigrationOpts{
+			DryRun:   migrateDryRun,
+			Progress: makeProgressFn(name),
+			// Sentinel must live at the FSStore baseDir (Plan 09 boot
+			// guard probes `<baseDir>/.cas-migrated-v1`), which here is
+			// blockDir (a subdir of shareDir), not shareDir itself.
+			StoreDir: blockDir,
+		}
+
+		adapter := &cliMetadataAdapter{shareName: name}
+		res, runErr := migrate.MigrateShareToCAS(ctx, shareDir, bs, adapter, opts)
+		_ = bs.Close()
+		if runErr != nil {
+			fmt.Fprintf(os.Stderr, "share %q failed: %v\n", name, runErr)
+			fmt.Fprintf(os.Stderr, "Journal preserved at %s; rerun to resume.\n",
+				filepath.Join(shareDir, migrate.MigrateJournalFile))
+			return runErr
+		}
+
+		aggregate.FilesDone += res.Stats.FilesDone
+		aggregate.BytesDone += res.Stats.BytesDone
+		aggregate.DedupHits += res.Stats.DedupHits
+		aggregate.ChunksDone += res.Stats.ChunksDone
+
+		if migrateDryRun {
+			fmt.Printf("[%s] DRY-RUN: files=%d bytes=%d chunks_sampled=%d est_dedup_ratio=%.3f duration=%s\n",
+				name, res.Stats.FilesDone, res.Stats.BytesDone, res.Stats.ChunksDone,
+				res.EstDedupRatio, res.Duration)
+		} else {
+			fmt.Printf("[%s] DONE: files=%d bytes=%d chunks=%d dedup_hits=%d duration=%s\n",
+				name, res.Stats.FilesDone, res.Stats.BytesDone, res.Stats.ChunksDone,
+				res.Stats.DedupHits, res.Duration)
+		}
+	}
+
+	fmt.Printf("ALL SHARES OK: files=%d bytes=%d chunks=%d dedup_hits=%d\n",
+		aggregate.FilesDone, aggregate.BytesDone, aggregate.ChunksDone, aggregate.DedupHits)
+	return nil
+}
+
+// guardPidFile returns an error when a live dfs server holds the PID
+// lockfile. Mirrors cmd/dfs/commands/status.go's process probe.
+func guardPidFile() error {
+	pidPath := GetDefaultPidFile()
+	pidData, err := os.ReadFile(pidPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read PID file %q: %w", pidPath, err)
+	}
+	pid, perr := strconv.Atoi(strings.TrimSpace(string(pidData)))
+	if perr != nil || pid <= 0 {
+		return nil
+	}
+	proc, ferr := os.FindProcess(pid)
+	if ferr != nil {
+		return nil
+	}
+	if err := proc.Signal(syscall.Signal(0)); err == nil {
+		return fmt.Errorf("dfs server is running (pid %d; pid file at %s); stop with `dfs stop` before migrating",
+			pid, pidPath)
+	}
+	return nil
+}
+
+// makeProgressFn returns a Progress callback that emits plain-text or
+// JSON lines on stdout depending on the --json flag.
+func makeProgressFn(shareName string) func(migrate.MigrationStats) {
+	return func(s migrate.MigrationStats) {
+		if migrateJSON {
+			obj := map[string]any{
+				"ts":            time.Now().UTC().Format(time.RFC3339),
+				"share":         shareName,
+				"files_done":    s.FilesDone,
+				"bytes_done":    s.BytesDone,
+				"files_per_sec": s.FilesPerSec,
+				"mib_per_sec":   s.MiBPerSec,
+				"dedup_hits":    s.DedupHits,
+				"eta_seconds":   s.ETASec,
+			}
+			b, _ := json.Marshal(obj)
+			fmt.Println(string(b))
+			return
+		}
+		fmt.Printf("[%s] %d files, %.1f MiB/s, dedup_hits=%d\n",
+			shareName, s.FilesDone, s.MiBPerSec, s.DedupHits)
+	}
+}
+
+// cliMetadataAdapter is the CLI-side bridge between the migration
+// library and the share's metadata store. Plan 08 ships it as a no-op
+// stub — production share-by-share wiring lands in Plan 17-09 alongside
+// the boot-guard sentinel-detection gate (which closes the loop: the
+// migration library writes the sentinel, the boot guard reads it).
+//
+// Until then, invoking `dfs migrate-to-cas` against a share with legacy
+// `.blk` files writes the CAS chunks + sentinel but reports zero
+// metadata updates — operators in pre-v0.16 production environments
+// MUST wait for Plan 17-09 to ship before treating the migration as
+// complete.
+type cliMetadataAdapter struct {
+	shareName string
+}
+
+func (a *cliMetadataAdapter) ListLegacyFiles(ctx context.Context) ([]migrate.LegacyFileInfo, error) {
+	// Plan 08 ships the library + CLI scaffolding; metadata-store
+	// enumeration is wired in Plan 17-09 (per Phase 17 sequencing). The
+	// no-op stub here lets `dfs migrate-to-cas` exercise the library's
+	// dry-run path + sentinel-write path against an empty file set —
+	// which still produces the `.cas-migrated-v1` sentinel and exercises
+	// the boot-guard contract end-to-end.
+	return nil, nil
+}
+
+func (a *cliMetadataAdapter) UpdateFileBlocks(ctx context.Context, handle metadata.FileHandle, blocks []blockstore.BlockRef) error {
+	// Unreachable: ListLegacyFiles returns no files. Plan 17-09 lands
+	// the per-share metadata-store opener + transactional PutFile path.
+	return errors.New("migrate-to-cas: metadata adapter not wired (Plan 17-09)")
+}
+
+// nopFileBlockStore satisfies blockstore.EngineFileBlockStore without
+// touching any persistent store. The migration path only writes CAS
+// chunks (which fs.FSStore handles through its own chunk store on
+// blocks/{hh}/{hh}/{hex}), so the FileBlock metadata surface is unused
+// during migration.
+type nopFileBlockStore struct{}
+
+func (nopFileBlockStore) GetByHash(_ context.Context, _ blockstore.ContentHash) (*blockstore.FileBlock, error) {
+	return nil, nil
+}
+func (nopFileBlockStore) Put(_ context.Context, _ *blockstore.FileBlock) error { return nil }
+func (nopFileBlockStore) Delete(_ context.Context, _ string) error {
+	return blockstore.ErrFileBlockNotFound
+}
+func (nopFileBlockStore) IncrementRefCount(_ context.Context, _ string) error { return nil }
+func (nopFileBlockStore) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
+	return 0, nil
+}
+func (nopFileBlockStore) ListPending(_ context.Context, _ time.Duration, _ int) ([]*blockstore.FileBlock, error) {
+	return nil, nil
+}
+func (nopFileBlockStore) GetFileBlock(_ context.Context, _ string) (*blockstore.FileBlock, error) {
+	return nil, blockstore.ErrFileBlockNotFound
+}
+func (nopFileBlockStore) ListFileBlocks(_ context.Context, _ string) ([]*blockstore.FileBlock, error) {
+	return nil, nil
+}

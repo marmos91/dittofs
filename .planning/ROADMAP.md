@@ -30,7 +30,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 - [x] **Phase 12: CDC read path + metadata schema + engine API (A3)** — `[]BlockRef` API, Cache by ContentHash, schema migration (GH issue: #423) (completed 2026-04-27)
 - [x] **Phase 13: Merkle root + file-level dedup (A4)** — `FileAttr.ObjectID` + short-circuit full-file dedup (GH issue: #424) (completed 2026-04-28)
 - [x] **Phase 14: Migration tool (A5)** — `dfsctl blockstore migrate` offline re-chunk + re-hash (GH issue: #425) (phases complete 2026-05-05; production wiring of `openOfflineRuntime` still gates production rollout)
-- [ ] **Phase 15: Legacy cleanup (A6)** — Remove dual-read shim, delete deprecated symbols (GH issue: #426) — **SUBSUMED BY v0.16.0 Phase 17** (legacy delete folded into unified BlockStore interface work; this issue can be closed once Phase 17 ships)
+- [x] **Phase 15: Legacy cleanup (A6)** — Remove dual-read shim, delete deprecated symbols (GH issue: #426) — **SUBSUMED BY v0.16.0 Phase 17** (legacy delete folded into unified BlockStore interface work; this issue can be closed once Phase 17 ships) (completed 2026-05-20)
 
 ---
 
@@ -355,6 +355,64 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - [x] 16-02-PLAN.md — Rewire engine.loadByHash → local.Get; update cache.go docstring; cherry-pick generic byte-correctness asserts from cache_mmap_test.go into cache_test.go (D-10)
   - [x] 16-03-PLAN.md — Delete cache_mmap_unix.go + cache_mmap_windows.go + cache_mmap_test.go; delete TestPerfGate_Phase12_MmapHotPath; fold perf_bench_unix_test.go if empty; cross-OS build clean (D-08, D-09)
   - [x] 16-04-PLAN.md — Warm-cache BenchmarkRandReadVerified ≤1.02 vs pre-Phase-16 baseline (D-06); cross-OS build + race verification; BENCHMARKS.md update; human checkpoint
+
+### Phase 17: Unified BlockStore interface + legacy delete + migration tool
+**Goal**: Collapse `LocalStore` (22 methods) and `RemoteStore` (12 methods) onto a single `BlockStore` interface keyed by `ContentHash` (Put/Get/GetRange/Has/Delete/Walk/Head + minimal `Meta{Size,LastModified}`). Local additionally implements `BlockStoreAppend` (random-write absorber tier). Delete the legacy path-keyed `.blk` writer, the engine dual-read shim, every legacy-tier helper (`IsBlockLocal`, `GetBlockData`, `ExistsOnDisk`, `DeleteBlockFile`, `DeleteAllBlockFiles`, `TruncateBlockFiles`, `WriteFromRemote`, `CopyBlock`, `FormatStoreKey`, `UseAppendLog`, `ErrAppendLogDisabled`). Collapse `localtest/` + `remotetest/` into a single `blockstoretest/` conformance suite (fs + s3 + memory). Ship `dfs migrate-to-cas` offline cobra subcommand (idempotent, journaled, `--dry-run`, `--share`, `--json`). Boot fails hard (`ErrLegacyLayoutDetected`, exit 78) on un-migrated stores via `.cas-migrated-v1` sentinel. Second of four phases in v0.16.0 — depends on Phase 16 (shipped). Subsumes v0.15.0 Phase 15 (A6) legacy cleanup.
+**Depends on**: Phase 16 (shipped 2026-05-20)
+**GH issue**: [#517](https://github.com/marmos91/dittofs/issues/517)
+**Duration**: ~2 weeks
+**Requirements**: (no formal REQ-IDs; phase scope governed by CONTEXT.md decisions D-01..D-11; subsumes TD-05..TD-08, TD-10 from Phase 15)
+**Success Criteria** (what must be TRUE):
+  1. `pkg/blockstore/blockstore.go` defines `BlockStore` + `BlockStoreAppend` interfaces + `Meta{Size int64, LastModified time.Time}`; `BlockStoreAppend` embeds `BlockStore`
+  2. `RemoteStore` methods renamed (`WriteBlock`→`Put`, `ReadBlock`→`Get`, `ReadBlockRange`→`GetRange`, `DeleteBlock`→`Delete`, `HeadObject`→`Head`); `ListByPrefix*`/`DeleteByPrefix` collapsed into `Walk`; `CopyBlock` + `WriteBlockWithHash` deleted
+  3. `LocalStore` narrowed from 22 to ~12 methods; embeds `BlockStoreAppend`; legacy helpers (`IsBlockLocal`, `GetBlockData`, `ExistsOnDisk`, `DeleteBlockFile`, `DeleteAllBlockFiles`, `TruncateBlockFiles`, `WriteFromRemote`, `FormatStoreKey`, `UseAppendLog`, `ErrAppendLogDisabled`) deleted
+  4. `pkg/blockstore/local/fs/write.go` deleted (legacy path-keyed writer, `WriteAt`, `tryDirectDiskWrite`, `ensureBlockFile`, `directDiskWriteThreshold`, `<share>/<file>/<idx>.blk` layout, `memBlock` map)
+  5. `pkg/blockstore/engine/store.go` dual-read shim deleted; engine reads only via `BlockStore.Get(ctx, hash)`
+  6. `pkg/blockstore/blockstoretest/` exposes `BlockStoreConformance(t, factory)` + `BlockStoreAppendConformance(t, factory)`; fs/s3/memory backends pass applicable suite; `localtest/` + `remotetest/` deleted
+  7. `pkg/blockstore/errors.go` adds `ErrStopWalk` + `ErrLegacyLayoutDetected`; Walk-callback returning `ErrStopWalk` exits cleanly, any other error halts and wraps with file/offset context (D-07)
+  8. `dfs migrate-to-cas` offline cobra subcommand exists at `cmd/dfs/commands/migrate_to_cas.go`; refuses to run if server PID/lock file present; supports `--dry-run` (reports file count, bytes, est dedup ratio, ETA), `--share <name>` (default = all), `--json` (one JSON object per line), progress to stdout (`files/sec`, `MiB/sec`, `ETA`, `dedup hits`)
+  9. Migration is idempotent: per-share journal at `<storage_dir>/<share>/.dittofs-migrate-to-cas.state`; crash-recovery resumes from last journaled offset
+  10. `.cas-migrated-v1` sentinel written via atomic rename only at successful completion (records timestamp + tool version); `*fs.FSStore.NewFSStore` stats the sentinel at open time, returns `ErrLegacyLayoutDetected` (wrapping share path) when missing + `.blk` files present
+  11. `cmd/dfs/start.go` unwraps `ErrLegacyLayoutDetected` via `errors.As`, prints multi-line stderr directive ("Detected legacy `.blk` layout at <path>. v0.16+ requires CAS migration. Run `dfs migrate-to-cas --share <name>`. See docs/CONFIGURATION.md §migration."), exits 78 (`EX_CONFIG`)
+  12. Phase 16 warm-cache D-06 gate held (`BenchmarkRandReadVerified` ratio ≤1.02 vs pre-Phase-16 baseline); cross-OS build clean (Linux + Darwin + Windows); `go vet ./...` + `go test -race ./...` clean
+  13. PR ships atomically (D-01): all interfaces + consumers + deletions + migration tool + boot guard in one PR against `develop`; ~30–40% LoC reduction in `pkg/blockstore/` (target under 4k from current ~6k); no flag-gated half-states, no transient compat shims
+**Files to touch**:
+  - `pkg/blockstore/blockstore.go` — **new or extended** — `BlockStore` + `BlockStoreAppend` interfaces, `Meta` struct
+  - `pkg/blockstore/types.go` — delete `FormatStoreKey` + legacy `BlockStoreKey` parsing
+  - `pkg/blockstore/errors.go` — add `ErrStopWalk`, `ErrLegacyLayoutDetected`
+  - `pkg/blockstore/local/local.go` — narrow `LocalStore` to ~12 methods, embed `BlockStoreAppend`
+  - `pkg/blockstore/local/fs/fs.go` — sentinel-file check in `NewFSStore`
+  - `pkg/blockstore/local/fs/write.go` — **delete entirely**
+  - `pkg/blockstore/remote/remote.go` — rename methods, collapse list/delete-by-prefix into `Walk`
+  - `pkg/blockstore/remote/s3/store.go` — apply renames; preserve `x-amz-meta-content-hash` for BSCAS-06 defense-in-depth
+  - `pkg/blockstore/engine/store.go` — delete dual-read shim
+  - `pkg/blockstore/engine/syncer.go` + `upload.go` — rename `RemoteStore` call sites (`WriteBlock`→`Put`, `ReadBlock`→`Get`, `WriteBlockWithHash` collapsed into `Put`); Syncer logic simplification deferred to Phase 18
+  - `pkg/blockstore/blockstoretest/` — **new directory** — unified conformance suite (Put-Get roundtrip, Get-not-found, range read, delete, walk, head, idempotent Put, concurrent Put-same-hash; AppendLog: AppendWrite-then-rollup → chunks via Walk, log deleted via DeleteLog)
+  - `pkg/blockstore/local/localtest/` — **delete** (collapsed into `blockstoretest/`)
+  - `pkg/blockstore/remote/remotetest/` — **delete** (collapsed into `blockstoretest/`)
+  - `cmd/dfs/commands/migrate_to_cas.go` — **new** offline cobra subcommand
+  - `pkg/blockstore/migrate/migrate_to_cas.go` — **new** shared library (FastCDC over `.blk` content, `Put(hash, data)`, rebuild `FileAttr.Blocks`, delete `.blk` files, write sentinel)
+  - `cmd/dfs/start.go` — unwrap `ErrLegacyLayoutDetected`, print directive, exit 78
+  - `pkg/blockstore/doc.go` — document sentinel-file convention + interface roles
+  - `docs/CONFIGURATION.md` — add migration section with directive wording + exit code reference
+**Key risks**:
+  - **Mega-PR review burden** (~6k LoC delta, ~30–40% net reduction) — internal commit ordering (interfaces → consumers → deletions) is the only mitigation; `git log -p` reviewability is mandatory
+  - **Atomic-merge constraint** (D-01) collides with bisectability if mid-PR commits leave develop unbuildable — order commits so each is independently buildable (additive first, then consumers, then deletions)
+  - **Migration crash recovery** — journal-resume must be byte-exact across crashes; corruption test = kill -9 mid-FastCDC, restart, assert no duplicate hashes / no missing blocks
+  - **Forward-compat with Phase 18** — `BlockStore.Get` signature must match Phase 16's `local.Get` verbatim AND remain compatible with Phase 18's Syncer mirror loop call sites (`for hash := range local.ListUnsynced() { remote.Put(...) }`); planner must read `~/.claude/plans/reactive-sprouting-moonbeam.md` Phase 18 section before locking signatures
+  - **Boot-guard footgun** — sentinel must be operator-discoverable (clear stderr directive + `docs/CONFIGURATION.md` link); silent failure here strands operators on un-migrated shares
+**Plans**: 11 plans
+- [x] 17-01-PLAN.md — BlockStore + BlockStoreAppend interfaces + Meta struct + ErrStopWalk/ErrLegacyLayoutDetected sentinels (Wave 1)
+- [x] 17-02-PLAN.md — pkg/blockstore/blockstoretest unified conformance suite scaffolding (Wave 1)
+- [x] 17-03-PLAN.md — RemoteStore method renames + s3/memory backend retargeting (Wave 2)
+- [x] 17-04-PLAN.md — LocalStore interface narrowing + BlockStoreAppend embedding (Wave 2)
+- [x] 17-05-PLAN.md — Engine retargeted onto renamed RemoteStore + dual-read shim deleted (Wave 3)
+- [x] 17-06-PLAN.md — Wire fs/memory/s3/memory-remote backends to blockstoretest + delete localtest/remotetest (Wave 3)
+- [x] 17-07-PLAN.md — Delete write.go + FormatStoreKey + UseAppendLog + legacy helpers; restore LocalStore assertion (Wave 4)
+- [x] 17-08-PLAN.md — pkg/blockstore/migrate/migrate_to_cas.go library + dfs migrate-to-cas cobra subcommand (Wave 5) — shipped 2026-05-20 (`081f31c4`, `177c9c37`, `bd253756`, `6d3e0267`, `3e9ed645`)
+- [x] 17-09-PLAN.md — NewFSStore sentinel check + cmd/dfs/start.go boot-guard exit-78 (Wave 5) — shipped 2026-05-20 (`5961536c`, `6f3e0326`, `9fb382a7`, `b7f4d00d`)
+- [x] 17-10-PLAN.md — pkg/blockstore/doc.go convention + docs/CONFIGURATION.md Migration section + docs/CLI.md entry (Wave 6) — shipped 2026-05-20 (`bb97ec34`, `99b5ef58`, `9f604247`)
+- [x] 17-11-PLAN.md — Phase 17 VERIFICATION.md: perf gate, LoC measurement, STRIDE consolidation, smoke test (Wave 6)
 
 ## Milestone Gates
 

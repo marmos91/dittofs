@@ -33,14 +33,11 @@ type rec struct {
 }
 
 // StartRollup launches the chunkRollup worker pool (D-13). Idempotent;
-// subsequent calls after the first are no-ops. Requires useAppendLog=true
-// and a non-nil RollupStore.
+// subsequent calls after the first are no-ops. Requires a non-nil
+// RollupStore.
 //
 // Workers join on Close() via bc.rollupWg; see Close in fs.go.
 func (bc *FSStore) StartRollup(ctx context.Context) error {
-	if !bc.useAppendLog {
-		return ErrAppendLogDisabled
-	}
 	if bc.rollupStore == nil {
 		return fmt.Errorf("rollup: nil RollupStore (set opts.RollupStore in NewWithOptions)")
 	}

@@ -25,9 +25,13 @@ import (
 	"github.com/marmos91/dittofs/pkg/health"
 )
 
-// maxBlockReadSize is the fallback pre-allocation size for ReadBlock when
+// maxBlockReadSize is the fallback pre-allocation size for Get when
 // ContentLength is absent (e.g., chunked transfer). Matches block.Size (8 MB).
 const maxBlockReadSize = 8 * 1024 * 1024
+
+// casPrefix is the CAS object-key prefix walked by Walk. Mirrors the
+// blockstore.FormatCASKey output ("cas/{hh}/{hh}/{hex}").
+const casPrefix = "cas/"
 
 // Compile-time interface satisfaction check.
 var _ remote.RemoteStore = (*Store)(nil)
@@ -214,41 +218,28 @@ func (s *Store) checkClosed() error {
 	return nil
 }
 
-// fullKey returns the full S3 key for a block key.
+// fullKey returns the full S3 key for a given (already-formatted) object key.
 func (s *Store) fullKey(blockKey string) string {
 	return s.keyPrefix + blockKey
 }
 
-// WriteBlock writes a single block to S3.
-func (s *Store) WriteBlock(ctx context.Context, blockKey string, data []byte) error {
-	if err := s.checkClosed(); err != nil {
-		return err
-	}
-
-	key := s.fullKey(blockKey)
-	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
-		Body:   bytes.NewReader(data),
-	})
-	if err != nil {
-		return fmt.Errorf("s3 put object: %w", err)
-	}
-
-	return nil
+// hashKey returns the full S3 key for a CAS content hash.
+func (s *Store) hashKey(hash blockstore.ContentHash) string {
+	return s.fullKey(blockstore.FormatCASKey(hash))
 }
 
-// WriteBlockWithHash implements RemoteStore (BSCAS-06). Sets
-// x-amz-meta-content-hash on the PutObject. The AWS SDK normalizes the
-// metadata key to lowercase and prepends "x-amz-meta-" on the wire, so we
-// pass the bare key "content-hash". The header value is the canonical
-// "blake3:{hex}" form via ContentHash.CASKey().
-func (s *Store) WriteBlockWithHash(ctx context.Context, blockKey string, hash blockstore.ContentHash, data []byte) error {
+// Put writes data under the CAS-shaped key derived from hash. The
+// x-amz-meta-content-hash header is stamped atomically with the PUT
+// (BSCAS-06): the AWS SDK normalizes the metadata key to lowercase and
+// prepends "x-amz-meta-" on the wire, so we pass the bare key
+// "content-hash". The header value is the canonical "blake3:{hex}" form
+// via ContentHash.CASKey().
+func (s *Store) Put(ctx context.Context, hash blockstore.ContentHash, data []byte) error {
 	if err := s.checkClosed(); err != nil {
 		return err
 	}
 
-	key := s.fullKey(blockKey)
+	key := s.hashKey(hash)
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
@@ -258,19 +249,21 @@ func (s *Store) WriteBlockWithHash(ctx context.Context, blockKey string, hash bl
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("s3 put object with hash: %w", err)
+		return fmt.Errorf("s3 put: %w", err)
 	}
 
 	return nil
 }
 
-// ReadBlock reads a complete block from S3.
-func (s *Store) ReadBlock(ctx context.Context, blockKey string) ([]byte, error) {
+// Get reads a complete object from S3 by content hash. Returns raw bytes
+// WITHOUT BLAKE3 verification — production CAS reads should use
+// ReadBlockVerified (BSCAS-06).
+func (s *Store) Get(ctx context.Context, hash blockstore.ContentHash) ([]byte, error) {
 	if err := s.checkClosed(); err != nil {
 		return nil, err
 	}
 
-	key := s.fullKey(blockKey)
+	key := s.hashKey(hash)
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
@@ -279,15 +272,16 @@ func (s *Store) ReadBlock(ctx context.Context, blockKey string) ([]byte, error) 
 		if isNotFoundError(err) {
 			return nil, blockstore.ErrBlockNotFound
 		}
-		return nil, fmt.Errorf("s3 get object: %w", err)
+		return nil, fmt.Errorf("s3 get: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	return readResponseBody(resp.Body, resp.ContentLength, maxBlockReadSize)
 }
 
-// ReadBlockVerified GETs the object at blockKey and verifies the body's
-// BLAKE3 hash matches expected before returning bytes (INV-06).
+// ReadBlockVerified GETs the object at the CAS-derived key and verifies
+// the body's BLAKE3 hash matches expected before returning bytes
+// (INV-06).
 //
 // Two-stage verification (D-19 + D-18, fail-closed twice):
 //  1. Header pre-check: if the response carries x-amz-meta-content-hash
@@ -296,12 +290,15 @@ func (s *Store) ReadBlock(ctx context.Context, blockKey string) ([]byte, error) 
 //  2. Streaming recompute: every body byte feeds a BLAKE3 hasher; on
 //     EOF the accumulated digest is compared to expected. Mismatch
 //     returns ErrCASContentMismatch and the buffer is discarded.
-func (s *Store) ReadBlockVerified(ctx context.Context, blockKey string, expected blockstore.ContentHash) ([]byte, error) {
+//
+// Both hash arguments are intentional: hash derives the canonical CAS
+// key, while expected is the body BLAKE3 the caller is asserting.
+func (s *Store) ReadBlockVerified(ctx context.Context, hash blockstore.ContentHash, expected blockstore.ContentHash) ([]byte, error) {
 	if err := s.checkClosed(); err != nil {
 		return nil, err
 	}
 
-	key := s.fullKey(blockKey)
+	key := s.hashKey(hash)
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
@@ -310,7 +307,7 @@ func (s *Store) ReadBlockVerified(ctx context.Context, blockKey string, expected
 		if isNotFoundError(err) {
 			return nil, blockstore.ErrBlockNotFound
 		}
-		return nil, fmt.Errorf("s3 get object: %w", err)
+		return nil, fmt.Errorf("s3 get: %w", err)
 	}
 
 	// D-19 header pre-check. AWS SDK lower-cases user metadata keys and
@@ -336,13 +333,13 @@ func (s *Store) ReadBlockVerified(ctx context.Context, blockKey string, expected
 	return data, nil
 }
 
-// ReadBlockRange reads a byte range from a block using S3 range requests.
-func (s *Store) ReadBlockRange(ctx context.Context, blockKey string, offset, length int64) ([]byte, error) {
+// GetRange reads a byte range from a CAS object using S3 range requests.
+func (s *Store) GetRange(ctx context.Context, hash blockstore.ContentHash, offset, length int64) ([]byte, error) {
 	if err := s.checkClosed(); err != nil {
 		return nil, err
 	}
 
-	key := s.fullKey(blockKey)
+	key := s.hashKey(hash)
 	rangeHeader := fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)
 
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
@@ -354,7 +351,7 @@ func (s *Store) ReadBlockRange(ctx context.Context, blockKey string, offset, len
 		if isNotFoundError(err) {
 			return nil, blockstore.ErrBlockNotFound
 		}
-		return nil, fmt.Errorf("s3 get object range: %w", err)
+		return nil, fmt.Errorf("s3 get range: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -381,97 +378,95 @@ func readResponseBody(body io.ReadCloser, contentLength *int64, fallbackSize int
 	return buf.Bytes(), nil
 }
 
-// HeadObject returns object metadata without fetching the body. The
-// AWS SDK normalizes user-metadata keys to lowercase and strips the
-// x-amz-meta- prefix on the wire, so the SDK's output.Metadata map
-// already satisfies the lowercased-keys contract on the [remote.HeadResult].
-// Missing objects (S3 NotFound / NoSuchKey) map to
-// [blockstore.ErrBlockNotFound] — same convention as [Store.ReadBlock].
-func (s *Store) HeadObject(ctx context.Context, blockKey string) (remote.HeadResult, error) {
+// Has reports whether the CAS object addressed by hash exists in the
+// bucket. Implements the blockstore.BlockStore contract (Phase 17 D-04).
+// Implemented via HEAD for cost and latency reasons (a Get with
+// Range: bytes=0-0 would still transfer one byte body).
+func (s *Store) Has(ctx context.Context, hash blockstore.ContentHash) (bool, error) {
 	if err := s.checkClosed(); err != nil {
-		return remote.HeadResult{}, err
+		return false, err
+	}
+	key := s.hashKey(hash)
+	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		if isNotFoundError(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("s3 head: %w", err)
+	}
+	return true, nil
+}
+
+// Head returns blockstore.Meta for the CAS object addressed by hash
+// without transferring the body. Returns blockstore.ErrBlockNotFound on
+// missing keys (same convention as Get).
+//
+// Per Phase 17 D-08, the x-amz-meta-content-hash header is NOT echoed in
+// the returned Meta — the lookup key (ContentHash) is the input, not
+// output. The header is still consulted internally by ReadBlockVerified
+// for BSCAS-06 defense-in-depth.
+func (s *Store) Head(ctx context.Context, hash blockstore.ContentHash) (blockstore.Meta, error) {
+	if err := s.checkClosed(); err != nil {
+		return blockstore.Meta{}, err
 	}
 
-	key := s.fullKey(blockKey)
+	key := s.hashKey(hash)
 	resp, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
 	if err != nil {
 		if isNotFoundError(err) {
-			return remote.HeadResult{}, blockstore.ErrBlockNotFound
+			return blockstore.Meta{}, blockstore.ErrBlockNotFound
 		}
-		return remote.HeadResult{}, fmt.Errorf("s3 head object: %w", err)
+		return blockstore.Meta{}, fmt.Errorf("s3 head: %w", err)
 	}
 
-	out := remote.HeadResult{}
+	out := blockstore.Meta{}
 	if resp.ContentLength != nil {
-		out.ContentLength = *resp.ContentLength
+		out.Size = *resp.ContentLength
 	}
-	if len(resp.Metadata) > 0 {
-		out.Metadata = make(map[string]string, len(resp.Metadata))
-		for k, v := range resp.Metadata {
-			// Defensively lowercase; the SDK already does this on the
-			// happy path, but some non-AWS-SDK S3-compatible servers
-			// (Localstack/MinIO via the SDK's response decoder still
-			// lowercases) preserve the contract.
-			out.Metadata[strings.ToLower(k)] = v
-		}
+	if resp.LastModified != nil {
+		out.LastModified = *resp.LastModified
 	}
 	return out, nil
 }
 
-// CopyBlock copies a block from source to destination key using S3 server-side copy.
-func (s *Store) CopyBlock(ctx context.Context, srcKey, dstKey string) error {
+// Delete removes the CAS object addressed by hash. Delete is idempotent:
+// S3's DeleteObject succeeds with 204 even when the key is absent.
+func (s *Store) Delete(ctx context.Context, hash blockstore.ContentHash) error {
 	if err := s.checkClosed(); err != nil {
 		return err
 	}
 
-	fullSrcKey := s.fullKey(srcKey)
-	fullDstKey := s.fullKey(dstKey)
-
-	copySource := s.bucket + "/" + fullSrcKey
-
-	_, err := s.client.CopyObject(ctx, &s3.CopyObjectInput{
-		Bucket:     aws.String(s.bucket),
-		CopySource: aws.String(copySource),
-		Key:        aws.String(fullDstKey),
-	})
-	if err != nil {
-		if isNotFoundError(err) {
-			return blockstore.ErrBlockNotFound
-		}
-		return fmt.Errorf("s3 copy object: %w", err)
-	}
-
-	return nil
-}
-
-// DeleteBlock removes a single block from S3.
-func (s *Store) DeleteBlock(ctx context.Context, blockKey string) error {
-	if err := s.checkClosed(); err != nil {
-		return err
-	}
-
-	key := s.fullKey(blockKey)
+	key := s.hashKey(hash)
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		return fmt.Errorf("s3 delete object: %w", err)
+		return fmt.Errorf("s3 delete: %w", err)
 	}
 
 	return nil
 }
 
-// DeleteByPrefix removes all blocks with a given prefix using batch delete.
-func (s *Store) DeleteByPrefix(ctx context.Context, prefix string) error {
+// Walk enumerates every CAS object in the store. Iterates S3 listing
+// pages under the cas/ prefix, parses each key via blockstore.ParseCASKey
+// (skipping non-CAS keys), and dispatches the callback with the parsed
+// ContentHash and the per-object blockstore.Meta. Honors
+// blockstore.ErrStopWalk for clean early exit; any other callback error
+// halts and is wrapped as "walk halted at %s: %w" (Phase 17 D-07).
+// Context cancellation aborts immediately.
+func (s *Store) Walk(ctx context.Context, fn func(hash blockstore.ContentHash, meta blockstore.Meta) error) error {
 	if err := s.checkClosed(); err != nil {
 		return err
 	}
 
-	fullPrefix := s.fullKey(prefix)
+	fullPrefix := s.fullKey(casPrefix)
 
 	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket),
@@ -479,108 +474,48 @@ func (s *Store) DeleteByPrefix(ctx context.Context, prefix string) error {
 	})
 
 	for paginator.HasMorePages() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return fmt.Errorf("s3 list objects: %w", err)
+			return fmt.Errorf("s3 walk: %w", err)
 		}
-
-		if len(page.Contents) == 0 {
-			continue
-		}
-
-		objects := make([]types.ObjectIdentifier, len(page.Contents))
-		for i, obj := range page.Contents {
-			objects[i] = types.ObjectIdentifier{Key: obj.Key}
-		}
-
-		_, err = s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
-			Bucket: aws.String(s.bucket),
-			Delete: &types.Delete{Objects: objects},
-		})
-		if err != nil {
-			return fmt.Errorf("s3 delete objects: %w", err)
+		for _, obj := range page.Contents {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			rawKey := ""
+			if obj.Key != nil {
+				rawKey = *obj.Key
+			}
+			// Strip the configured keyPrefix so ParseCASKey sees the
+			// canonical "cas/..." shape.
+			parseKey := rawKey
+			if s.keyPrefix != "" && strings.HasPrefix(parseKey, s.keyPrefix) {
+				parseKey = parseKey[len(s.keyPrefix):]
+			}
+			hash, perr := blockstore.ParseCASKey(parseKey)
+			if perr != nil {
+				continue // non-CAS keys (legacy / sentinel) are skipped
+			}
+			meta := blockstore.Meta{}
+			if obj.Size != nil {
+				meta.Size = *obj.Size
+			}
+			if obj.LastModified != nil {
+				meta.LastModified = *obj.LastModified
+			}
+			if cberr := fn(hash, meta); cberr != nil {
+				if errors.Is(cberr, blockstore.ErrStopWalk) {
+					return nil
+				}
+				return fmt.Errorf("walk halted at %s: %w", hash, cberr)
+			}
 		}
 	}
 
 	return nil
-}
-
-// ListByPrefix lists all block keys with a given prefix.
-func (s *Store) ListByPrefix(ctx context.Context, prefix string) ([]string, error) {
-	if err := s.checkClosed(); err != nil {
-		return nil, err
-	}
-
-	fullPrefix := s.fullKey(prefix)
-	var keys []string
-
-	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(s.bucket),
-		Prefix: aws.String(fullPrefix),
-	})
-
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("s3 list objects: %w", err)
-		}
-
-		for _, obj := range page.Contents {
-			key := *obj.Key
-			if s.keyPrefix != "" && strings.HasPrefix(key, s.keyPrefix) {
-				key = key[len(s.keyPrefix):]
-			}
-			keys = append(keys, key)
-		}
-	}
-
-	return keys, nil
-}
-
-// ListByPrefixWithMeta lists all objects under prefix and surfaces the
-// per-object metadata (Key, Size, LastModified). Used by the GC sweep
-// phase to apply the snapshot - GracePeriod TTL filter (D-05). The
-// returned Key has the configured keyPrefix stripped so it matches
-// ListByPrefix and the keys passed to DeleteBlock.
-func (s *Store) ListByPrefixWithMeta(ctx context.Context, prefix string) ([]remote.ObjectInfo, error) {
-	if err := s.checkClosed(); err != nil {
-		return nil, err
-	}
-
-	fullPrefix := s.fullKey(prefix)
-	out := make([]remote.ObjectInfo, 0)
-
-	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(s.bucket),
-		Prefix: aws.String(fullPrefix),
-	})
-
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("s3 list objects with meta: %w", err)
-		}
-
-		for _, obj := range page.Contents {
-			key := ""
-			if obj.Key != nil {
-				key = *obj.Key
-			}
-			if s.keyPrefix != "" && strings.HasPrefix(key, s.keyPrefix) {
-				key = key[len(s.keyPrefix):]
-			}
-			info := remote.ObjectInfo{Key: key}
-			if obj.Size != nil {
-				info.Size = *obj.Size
-			}
-			if obj.LastModified != nil {
-				info.LastModified = *obj.LastModified
-			}
-			out = append(out, info)
-		}
-	}
-
-	return out, nil
 }
 
 // Close marks the store as closed.

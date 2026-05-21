@@ -237,28 +237,6 @@ func (b *FileBlock) IsLocal() bool {
 	return b.State == BlockStatePending && b.LocalPath != ""
 }
 
-// FormatStoreKey returns the block store key (S3 object key) for a block.
-// Format: "{payloadID}/block-{blockIdx}".
-func FormatStoreKey(payloadID string, blockIdx uint64) string {
-	return fmt.Sprintf("%s/block-%d", payloadID, blockIdx)
-}
-
-// ParseStoreKey extracts the payloadID and block index from a store key.
-// Store key format: "{payloadID}/block-{blockIdx}".
-// Returns ("", 0, false) if the key format is invalid.
-func ParseStoreKey(storeKey string) (payloadID string, blockIdx uint64, ok bool) {
-	idx := strings.LastIndex(storeKey, "/block-")
-	if idx < 0 || idx == 0 {
-		return "", 0, false
-	}
-	payloadID = storeKey[:idx]
-	blockIdx, err := strconv.ParseUint(storeKey[idx+len("/block-"):], 10, 64)
-	if err != nil {
-		return "", 0, false
-	}
-	return payloadID, blockIdx, true
-}
-
 // FormatCASKey returns the flat S3 object key for a content-addressed block.
 // Format: "cas/{hex[0:2]}/{hex[2:4]}/{hex}". Two-level fanout caps the
 // top-level prefix count at 256 and bounds per-prefix file count predictably.
@@ -325,25 +303,4 @@ func ParseBlockID(blockID string) (payloadID string, blockIdx uint64, err error)
 		return "", 0, fmt.Errorf("parse blockID %q: invalid block index: %w", blockID, parseErr)
 	}
 	return payloadID, blockIdx, nil
-}
-
-// KeyBelongsToFile checks if a store key belongs to the given payloadID.
-// Store key format: "{payloadID}/block-{blockIdx}".
-func KeyBelongsToFile(key, payloadID string) bool {
-	prefix := payloadID + "/block-"
-	return len(key) > len(prefix) && key[:len(prefix)] == prefix
-}
-
-// ParseBlockIdx extracts the block index from a store key for a known payloadID.
-// Returns 0 if the key format is invalid.
-func ParseBlockIdx(key, payloadID string) uint64 {
-	prefix := payloadID + "/block-"
-	if len(key) <= len(prefix) || key[:len(prefix)] != prefix {
-		return 0
-	}
-	idx, err := strconv.ParseUint(key[len(prefix):], 10, 64)
-	if err != nil {
-		return 0
-	}
-	return idx
 }

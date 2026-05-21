@@ -3,10 +3,8 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"maps"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -20,21 +18,19 @@ import (
 // Compile-time interface satisfaction check.
 var _ remote.RemoteStore = (*Store)(nil)
 
+// memBlock holds the per-object body plus metadata captured at Put time.
+type memBlock struct {
+	data         []byte
+	lastModified time.Time
+}
+
 // Store is an in-memory implementation of remote.RemoteStore for testing.
+// The map is keyed by blockstore.ContentHash (the unified CAS key from
+// Phase 17 Plan 01); previous versions of this package used opaque string
+// blockKeys and stamped x-amz-meta-content-hash separately.
 type Store struct {
 	mu     sync.RWMutex
-	blocks map[string][]byte
-	// metadata mirrors the per-object user metadata that S3 stores in
-	// `x-amz-meta-*` headers (BSCAS-06). Populated by WriteBlockWithHash;
-	// remains nil/absent for legacy WriteBlock entries so the conformance
-	// suite can assert the negative case.
-	metadata map[string]map[string]string
-	// lastModified tracks the per-object write timestamp surfaced by
-	// ListByPrefixWithMeta (D-05). Real S3 backends report this from
-	// the object's LastModified header; the in-memory backend captures
-	// time.Now() at every write so GC sweep tests can apply the same
-	// grace TTL filter.
-	lastModified map[string]time.Time
+	blocks map[blockstore.ContentHash]*memBlock
 	// nowFn returns the current time for the store. Tests can override
 	// this to manipulate LastModified deterministically.
 	nowFn  func() time.Time
@@ -44,15 +40,13 @@ type Store struct {
 // New creates a new in-memory remote block store.
 func New() *Store {
 	return &Store{
-		blocks:       make(map[string][]byte),
-		metadata:     make(map[string]map[string]string),
-		lastModified: make(map[string]time.Time),
-		nowFn:        time.Now,
+		blocks: make(map[blockstore.ContentHash]*memBlock),
+		nowFn:  time.Now,
 	}
 }
 
-// SetNowFnForTest overrides the time source used by Write/WriteBlockWithHash
-// to stamp LastModified. Test-only helper for the GC sweep grace TTL test.
+// SetNowFnForTest overrides the time source used by Put to stamp
+// LastModified. Test-only helper for the GC sweep grace TTL test.
 func (s *Store) SetNowFnForTest(fn func() time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -63,8 +57,11 @@ func (s *Store) SetNowFnForTest(fn func() time.Time) {
 	s.nowFn = fn
 }
 
-// WriteBlock writes a single block to memory.
-func (s *Store) WriteBlock(_ context.Context, blockKey string, data []byte) error {
+// Put writes data under the CAS-shaped key derived from hash. The
+// in-memory backend stamps time.Now() (via nowFn) into LastModified at
+// Put time — every Meta.LastModified surfaced by Head / Walk is non-zero
+// (Phase 11 WR-4-02 / INV-04).
+func (s *Store) Put(_ context.Context, hash blockstore.ContentHash, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -72,44 +69,21 @@ func (s *Store) WriteBlock(_ context.Context, blockKey string, data []byte) erro
 		return blockstore.ErrStoreClosed
 	}
 
-	// Make a copy of the data to prevent mutation
+	// Defensive copy to prevent caller mutation.
 	copied := make([]byte, len(data))
 	copy(copied, data)
-	s.blocks[blockKey] = copied
-	// Legacy WriteBlock writes no per-object metadata. Drop any prior
-	// entry so the conformance assertion ("WriteBlock_NoHeader") sees a
-	// clean slate even when the caller previously populated the key via
-	// WriteBlockWithHash.
-	delete(s.metadata, blockKey)
-	s.lastModified[blockKey] = s.nowFn()
+	s.blocks[hash] = &memBlock{
+		data:         copied,
+		lastModified: s.nowFn(),
+	}
 
 	return nil
 }
 
-// WriteBlockWithHash implements RemoteStore (BSCAS-06). Records the
-// content-hash header alongside the data so the remotetest conformance
-// suite (and any in-process consumer) can assert it via GetObjectMetadata.
-func (s *Store) WriteBlockWithHash(_ context.Context, blockKey string, hash blockstore.ContentHash, data []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return blockstore.ErrStoreClosed
-	}
-
-	copied := make([]byte, len(data))
-	copy(copied, data)
-	s.blocks[blockKey] = copied
-	s.metadata[blockKey] = map[string]string{
-		"content-hash": hash.CASKey(),
-	}
-	s.lastModified[blockKey] = s.nowFn()
-
-	return nil
-}
-
-// ReadBlock reads a complete block from memory.
-func (s *Store) ReadBlock(_ context.Context, blockKey string) ([]byte, error) {
+// Get returns the bytes addressed by hash. Returns
+// blockstore.ErrBlockNotFound on miss. The returned slice is a defensive
+// copy.
+func (s *Store) Get(_ context.Context, hash blockstore.ContentHash) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -117,24 +91,25 @@ func (s *Store) ReadBlock(_ context.Context, blockKey string) ([]byte, error) {
 		return nil, blockstore.ErrStoreClosed
 	}
 
-	data, ok := s.blocks[blockKey]
+	mb, ok := s.blocks[hash]
 	if !ok {
 		return nil, blockstore.ErrBlockNotFound
 	}
 
-	// Return a copy to prevent mutation
-	copied := make([]byte, len(data))
-	copy(copied, data)
+	copied := make([]byte, len(mb.data))
+	copy(copied, mb.data)
 	return copied, nil
 }
 
 // ReadBlockVerified mirrors s3.Store.ReadBlockVerified for in-memory
-// testing (INV-06). The header pre-check uses the recorded
-// "content-hash" entry (set by WriteBlockWithHash); the body-recompute
-// always re-hashes the stored bytes so a Test that mutates the in-memory
-// blob (cosmically rare but possible in fault-injection setups) still
-// surfaces ErrCASContentMismatch.
-func (s *Store) ReadBlockVerified(_ context.Context, blockKey string, expected blockstore.ContentHash) ([]byte, error) {
+// testing (INV-06). The in-memory backend has no header to pre-check —
+// it always re-hashes the stored bytes so a test that mutates the
+// in-memory blob still surfaces ErrCASContentMismatch.
+//
+// Both hash arguments are intentional and match the RemoteStore
+// signature: hash derives the lookup key; expected is the body BLAKE3 to
+// assert.
+func (s *Store) ReadBlockVerified(_ context.Context, hash blockstore.ContentHash, expected blockstore.ContentHash) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -142,23 +117,13 @@ func (s *Store) ReadBlockVerified(_ context.Context, blockKey string, expected b
 		return nil, blockstore.ErrStoreClosed
 	}
 
-	data, ok := s.blocks[blockKey]
+	mb, ok := s.blocks[hash]
 	if !ok {
 		return nil, blockstore.ErrBlockNotFound
 	}
 
-	// Header pre-check (D-19): if metadata records a content hash that
-	// does not match expected, fail fast before recomputing the body.
-	if md, ok := s.metadata[blockKey]; ok {
-		if hdr, ok := md["content-hash"]; ok && hdr != expected.CASKey() {
-			return nil, fmt.Errorf("%w: header %q != expected %q",
-				blockstore.ErrCASContentMismatch, hdr, expected.CASKey())
-		}
-	}
-
-	// Body recompute (D-18). Note this hashes the stored bytes directly
-	// because there is no streaming response body in the memory backend.
-	got := blake3.Sum256(data)
+	// Body recompute (D-18). No streaming response body here.
+	got := blake3.Sum256(mb.data)
 	var gotHash blockstore.ContentHash
 	copy(gotHash[:], got[:])
 	if gotHash != expected {
@@ -166,14 +131,13 @@ func (s *Store) ReadBlockVerified(_ context.Context, blockKey string, expected b
 			blockstore.ErrCASContentMismatch, gotHash.CASKey(), expected.CASKey())
 	}
 
-	// Return a copy to prevent mutation
-	copied := make([]byte, len(data))
-	copy(copied, data)
+	copied := make([]byte, len(mb.data))
+	copy(copied, mb.data)
 	return copied, nil
 }
 
-// ReadBlockRange reads a byte range from a block.
-func (s *Store) ReadBlockRange(_ context.Context, blockKey string, offset, length int64) ([]byte, error) {
+// GetRange reads a byte range from a CAS object.
+func (s *Store) GetRange(_ context.Context, hash blockstore.ContentHash, offset, length int64) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -181,164 +145,119 @@ func (s *Store) ReadBlockRange(_ context.Context, blockKey string, offset, lengt
 		return nil, blockstore.ErrStoreClosed
 	}
 
-	data, ok := s.blocks[blockKey]
+	mb, ok := s.blocks[hash]
 	if !ok {
 		return nil, blockstore.ErrBlockNotFound
 	}
 
 	// Bounds checking
-	if offset < 0 || offset >= int64(len(data)) {
+	if offset < 0 || offset >= int64(len(mb.data)) {
 		return nil, blockstore.ErrBlockNotFound
 	}
 
-	end := min(offset+length, int64(len(data)))
+	end := offset + length
+	if end > int64(len(mb.data)) {
+		end = int64(len(mb.data))
+	}
 
-	// Return a copy of the requested range
 	result := make([]byte, end-offset)
-	copy(result, data[offset:end])
+	copy(result, mb.data[offset:end])
 	return result, nil
 }
 
-// HeadObject returns ContentLength + the recorded per-object metadata
-// (set by WriteBlockWithHash) without copying the underlying bytes.
-// Returns [blockstore.ErrBlockNotFound] for missing keys — same
-// convention as [Store.ReadBlock]. Used by the Phase 14 migration tool's
-// post-migration integrity check (D-A12).
-func (s *Store) HeadObject(_ context.Context, blockKey string) (remote.HeadResult, error) {
+// Has reports whether the CAS object addressed by hash exists in the
+// store. Implements the blockstore.BlockStore contract (Phase 17 D-04).
+func (s *Store) Has(_ context.Context, hash blockstore.ContentHash) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if s.closed {
-		return remote.HeadResult{}, blockstore.ErrStoreClosed
+		return false, blockstore.ErrStoreClosed
 	}
-
-	data, ok := s.blocks[blockKey]
-	if !ok {
-		return remote.HeadResult{}, blockstore.ErrBlockNotFound
-	}
-
-	out := remote.HeadResult{ContentLength: int64(len(data))}
-	if md, ok := s.metadata[blockKey]; ok && len(md) > 0 {
-		// Defensive copy — callers may stash the result and we don't
-		// want them mutating the in-memory record. Keys are already
-		// lowercased at WriteBlockWithHash time (the only writer).
-		out.Metadata = maps.Clone(md)
-	}
-	return out, nil
+	_, ok := s.blocks[hash]
+	return ok, nil
 }
 
-// CopyBlock copies a block from srcKey to dstKey in memory.
-func (s *Store) CopyBlock(_ context.Context, srcKey, dstKey string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return blockstore.ErrStoreClosed
-	}
-
-	data, ok := s.blocks[srcKey]
-	if !ok {
-		return blockstore.ErrBlockNotFound
-	}
-
-	copied := make([]byte, len(data))
-	copy(copied, data)
-	s.blocks[dstKey] = copied
-	// Mirror S3 CopyObject semantics: metadata is carried with the object
-	// by default unless MetadataDirective=REPLACE is requested.
-	if md, ok := s.metadata[srcKey]; ok {
-		mdCopy := make(map[string]string, len(md))
-		for k, v := range md {
-			mdCopy[k] = v
-		}
-		s.metadata[dstKey] = mdCopy
-	} else {
-		delete(s.metadata, dstKey)
-	}
-	s.lastModified[dstKey] = s.nowFn()
-	return nil
-}
-
-// DeleteBlock removes a single block from memory.
-func (s *Store) DeleteBlock(_ context.Context, blockKey string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return blockstore.ErrStoreClosed
-	}
-
-	delete(s.blocks, blockKey)
-	delete(s.metadata, blockKey)
-	delete(s.lastModified, blockKey)
-	return nil
-}
-
-// DeleteByPrefix removes all blocks with a given prefix.
-func (s *Store) DeleteByPrefix(_ context.Context, prefix string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return blockstore.ErrStoreClosed
-	}
-
-	for key := range s.blocks {
-		if strings.HasPrefix(key, prefix) {
-			delete(s.blocks, key)
-			delete(s.metadata, key)
-			delete(s.lastModified, key)
-		}
-	}
-
-	return nil
-}
-
-// ListByPrefixWithMeta lists all objects under prefix with per-object
-// metadata (Key, Size, LastModified). Used by the GC sweep phase to apply
-// the snapshot - GracePeriod TTL filter (D-05).
-func (s *Store) ListByPrefixWithMeta(_ context.Context, prefix string) ([]remote.ObjectInfo, error) {
+// Head returns blockstore.Meta{Size, LastModified} for the CAS object
+// addressed by hash. Returns blockstore.ErrBlockNotFound on miss.
+func (s *Store) Head(_ context.Context, hash blockstore.ContentHash) (blockstore.Meta, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if s.closed {
-		return nil, blockstore.ErrStoreClosed
+		return blockstore.Meta{}, blockstore.ErrStoreClosed
 	}
 
-	out := make([]remote.ObjectInfo, 0)
-	for key, data := range s.blocks {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		out = append(out, remote.ObjectInfo{
-			Key:          key,
-			Size:         int64(len(data)),
-			LastModified: s.lastModified[key],
+	mb, ok := s.blocks[hash]
+	if !ok {
+		return blockstore.Meta{}, blockstore.ErrBlockNotFound
+	}
+
+	return blockstore.Meta{
+		Size:         int64(len(mb.data)),
+		LastModified: mb.lastModified,
+	}, nil
+}
+
+// Delete removes the CAS object addressed by hash. Idempotent: deleting
+// an absent hash returns nil.
+func (s *Store) Delete(_ context.Context, hash blockstore.ContentHash) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return blockstore.ErrStoreClosed
+	}
+
+	delete(s.blocks, hash)
+	return nil
+}
+
+// Walk enumerates every CAS object in the store. Honors
+// blockstore.ErrStopWalk for clean early exit (Walk returns nil); any
+// other callback error is wrapped as "walk halted at %s: %w" (Phase 17
+// D-07). Context cancellation aborts immediately.
+func (s *Store) Walk(ctx context.Context, fn func(hash blockstore.ContentHash, meta blockstore.Meta) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// Snapshot under read lock so the callback can take its time without
+	// blocking writers; ordering is unspecified per the BlockStore.Walk
+	// contract.
+	s.mu.RLock()
+	if s.closed {
+		s.mu.RUnlock()
+		return blockstore.ErrStoreClosed
+	}
+	type entry struct {
+		hash blockstore.ContentHash
+		meta blockstore.Meta
+	}
+	snap := make([]entry, 0, len(s.blocks))
+	for h, mb := range s.blocks {
+		snap = append(snap, entry{
+			hash: h,
+			meta: blockstore.Meta{
+				Size:         int64(len(mb.data)),
+				LastModified: mb.lastModified,
+			},
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
-	return out, nil
-}
+	s.mu.RUnlock()
 
-// ListByPrefix lists all block keys with a given prefix.
-func (s *Store) ListByPrefix(_ context.Context, prefix string) ([]string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return nil, blockstore.ErrStoreClosed
-	}
-
-	var keys []string
-	for key := range s.blocks {
-		if strings.HasPrefix(key, prefix) {
-			keys = append(keys, key)
+	for _, e := range snap {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if cberr := fn(e.hash, e.meta); cberr != nil {
+			if errors.Is(cberr, blockstore.ErrStopWalk) {
+				return nil
+			}
+			return fmt.Errorf("walk halted at %s: %w", e.hash, cberr)
 		}
 	}
-
-	// Sort for deterministic output
-	sort.Strings(keys)
-	return keys, nil
+	return nil
 }
 
 // Close marks the store as closed.
@@ -348,7 +267,6 @@ func (s *Store) Close() error {
 
 	s.closed = true
 	s.blocks = nil
-	s.metadata = nil
 	return nil
 }
 
@@ -397,30 +315,8 @@ func (s *Store) TotalSize() int64 {
 	defer s.mu.RUnlock()
 
 	var total int64
-	for _, data := range s.blocks {
-		total += int64(len(data))
+	for _, mb := range s.blocks {
+		total += int64(len(mb.data))
 	}
 	return total
-}
-
-// GetObjectMetadata returns the per-object user metadata recorded for
-// blockKey, or nil if the object was written via legacy WriteBlock (no
-// header). Used by the remotetest conformance suite to assert
-// x-amz-meta-content-hash presence (BSCAS-06).
-//
-// The returned map is a defensive copy — mutations by callers do not
-// affect the in-memory store.
-func (s *Store) GetObjectMetadata(blockKey string) map[string]string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	md, ok := s.metadata[blockKey]
-	if !ok {
-		return nil
-	}
-	out := make(map[string]string, len(md))
-	for k, v := range md {
-		out[k] = v
-	}
-	return out
 }

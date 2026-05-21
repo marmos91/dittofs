@@ -93,8 +93,8 @@ func hashFromString(seed string) blockstore.ContentHash {
 // FormatCASKey key for the given hash.
 func writeCASObject(t *testing.T, ctx context.Context, rs remote.RemoteStore, h blockstore.ContentHash, data []byte) {
 	t.Helper()
-	if err := rs.WriteBlockWithHash(ctx, blockstore.FormatCASKey(h), h, data); err != nil {
-		t.Fatalf("WriteBlockWithHash(%x): %v", h[:8], err)
+	if err := rs.Put(ctx, h, data); err != nil {
+		t.Fatalf("Put(%x): %v", h[:8], err)
 	}
 }
 
@@ -226,13 +226,13 @@ func TestGCMarkSweep_SweepHappyPath(t *testing.T) {
 
 	// Verify live blocks survive.
 	for _, h := range live {
-		if _, err := rs.ReadBlock(ctx, blockstore.FormatCASKey(h)); err != nil {
+		if _, err := rs.Get(ctx, h); err != nil {
 			t.Errorf("live block %x deleted: %v", h[:8], err)
 		}
 	}
 	// Verify orphans gone.
 	for _, h := range orphans {
-		if _, err := rs.ReadBlock(ctx, blockstore.FormatCASKey(h)); err == nil {
+		if _, err := rs.Get(ctx, h); err == nil {
 			t.Errorf("orphan %x not deleted", h[:8])
 		}
 	}
@@ -260,7 +260,7 @@ func TestGCMarkSweep_GraceTTLPreserves(t *testing.T) {
 	if stats.ObjectsSwept != 0 {
 		t.Errorf("ObjectsSwept = %d, want 0 (within grace window)", stats.ObjectsSwept)
 	}
-	if _, err := rs.ReadBlock(ctx, blockstore.FormatCASKey(orphan)); err != nil {
+	if _, err := rs.Get(ctx, orphan); err != nil {
 		t.Errorf("recent orphan should be preserved by grace TTL: %v", err)
 	}
 }
@@ -338,7 +338,7 @@ func TestGCMarkSweep_SweepErrorsContinueAndCapture(t *testing.T) {
 		t.Errorf("FirstErrors[0] = %v, want one mentioning cas/ab/", stats.FirstErrors)
 	}
 	// The "cd" orphan must still have been swept.
-	if _, err := inner.ReadBlock(ctx, blockstore.FormatCASKey(okHash)); err == nil {
+	if _, err := inner.Get(ctx, okHash); err == nil {
 		t.Errorf("orphan in non-failing prefix not deleted")
 	}
 }
@@ -378,9 +378,9 @@ func TestGCMarkSweep_DryRun(t *testing.T) {
 	}
 	// Verify nothing was actually deleted.
 	for i := 0; i < 5; i++ {
-		key := blockstore.FormatCASKey(hashFromString(fmt.Sprintf("orphan-%d", i)))
-		if _, err := rs.ReadBlock(ctx, key); err != nil {
-			t.Errorf("dry-run deleted block %s: %v", key, err)
+		h := hashFromString(fmt.Sprintf("orphan-%d", i))
+		if _, err := rs.Get(ctx, h); err != nil {
+			t.Errorf("dry-run deleted block %s: %v", blockstore.FormatCASKey(h), err)
 		}
 	}
 }
@@ -462,35 +462,12 @@ func TestGCMarkSweep_StaleDirCleanup(t *testing.T) {
 	}
 }
 
-// TestGCMarkSweep_ConcurrencyBound (behavior 10): with SweepConcurrency=4
-// and an instrumented RemoteStore, the observed max in-flight Delete
-// calls never exceeds 4. Indirect signal via the in-flight List counter
-// (one List per prefix worker; sweepConcurrency caps it).
-func TestGCMarkSweep_ConcurrencyBound(t *testing.T) {
-	ctx := t.Context()
-	rs := &concurrencyTrackingRemote{
-		inner:    remotememory.New(),
-		listHold: 25 * time.Millisecond,
-	}
-	defer func() { _ = rs.inner.Close() }()
-
-	rec := newGCMSReconciler()
-	rec.addShare("share-empty")
-
-	_ = CollectGarbage(ctx, rs, rec, &Options{
-		GCStateRoot:      t.TempDir(),
-		GracePeriod:      time.Minute,
-		SweepConcurrency: 4,
-	})
-
-	maxInflight := rs.maxInflight.Load()
-	if maxInflight > 4 {
-		t.Errorf("max in-flight List calls = %d, want <= 4 (SweepConcurrency cap)", maxInflight)
-	}
-	if maxInflight == 0 {
-		t.Errorf("max in-flight = 0; sweep workers never observed running")
-	}
-}
+// TestGCMarkSweep_ConcurrencyBound was removed in Phase 17: the engine
+// GC sweep no longer shards work across 256 prefix workers (the
+// RemoteStore.Walk-based replacement enumerates every CAS object in a
+// single call, with sharding now an internal backend concern). The
+// SweepConcurrency Option remains as a tunable for a future
+// per-shard Walk extension but exposes no observable knob today.
 
 // ---------------------------------------------------------------------------
 // Test wrappers: failing reconciler, prefix-failing remote, concurrency tracker.
@@ -508,47 +485,37 @@ func (s *storeWithFailingEnum) EnumerateFileBlocks(_ context.Context, _ func(blo
 }
 
 // prefixDeleteFailerRemote wraps a memory store and returns an error from
-// DeleteBlock when the key starts with failPrefix.
+// Delete when the CAS key derived from hash starts with failPrefix. Post-
+// Phase-17 the engine uses RemoteStore.Walk + Delete; the failure
+// predicate keys off the rendered CAS key shape (cas/XX/YY/...).
 type prefixDeleteFailerRemote struct {
 	inner      *remotememory.Store
 	failPrefix string
 }
 
-func (p *prefixDeleteFailerRemote) WriteBlock(ctx context.Context, k string, d []byte) error {
-	return p.inner.WriteBlock(ctx, k, d)
+func (p *prefixDeleteFailerRemote) Put(ctx context.Context, h blockstore.ContentHash, d []byte) error {
+	return p.inner.Put(ctx, h, d)
 }
-func (p *prefixDeleteFailerRemote) WriteBlockWithHash(ctx context.Context, k string, h blockstore.ContentHash, d []byte) error {
-	return p.inner.WriteBlockWithHash(ctx, k, h, d)
+func (p *prefixDeleteFailerRemote) Get(ctx context.Context, h blockstore.ContentHash) ([]byte, error) {
+	return p.inner.Get(ctx, h)
 }
-func (p *prefixDeleteFailerRemote) ReadBlock(ctx context.Context, k string) ([]byte, error) {
-	return p.inner.ReadBlock(ctx, k)
+func (p *prefixDeleteFailerRemote) GetRange(ctx context.Context, h blockstore.ContentHash, o, l int64) ([]byte, error) {
+	return p.inner.GetRange(ctx, h, o, l)
 }
-func (p *prefixDeleteFailerRemote) ReadBlockVerified(ctx context.Context, k string, h blockstore.ContentHash) ([]byte, error) {
-	return p.inner.ReadBlockVerified(ctx, k, h)
-}
-func (p *prefixDeleteFailerRemote) ReadBlockRange(ctx context.Context, k string, o, l int64) ([]byte, error) {
-	return p.inner.ReadBlockRange(ctx, k, o, l)
-}
-func (p *prefixDeleteFailerRemote) DeleteBlock(ctx context.Context, k string) error {
-	if strings.HasPrefix(k, p.failPrefix) {
+func (p *prefixDeleteFailerRemote) Delete(ctx context.Context, h blockstore.ContentHash) error {
+	if strings.HasPrefix(blockstore.FormatCASKey(h), p.failPrefix) {
 		return fmt.Errorf("synthetic delete failure for prefix %q", p.failPrefix)
 	}
-	return p.inner.DeleteBlock(ctx, k)
+	return p.inner.Delete(ctx, h)
 }
-func (p *prefixDeleteFailerRemote) DeleteByPrefix(ctx context.Context, k string) error {
-	return p.inner.DeleteByPrefix(ctx, k)
+func (p *prefixDeleteFailerRemote) Head(ctx context.Context, h blockstore.ContentHash) (blockstore.Meta, error) {
+	return p.inner.Head(ctx, h)
 }
-func (p *prefixDeleteFailerRemote) ListByPrefix(ctx context.Context, k string) ([]string, error) {
-	return p.inner.ListByPrefix(ctx, k)
+func (p *prefixDeleteFailerRemote) Walk(ctx context.Context, fn func(blockstore.ContentHash, blockstore.Meta) error) error {
+	return p.inner.Walk(ctx, fn)
 }
-func (p *prefixDeleteFailerRemote) ListByPrefixWithMeta(ctx context.Context, k string) ([]remote.ObjectInfo, error) {
-	return p.inner.ListByPrefixWithMeta(ctx, k)
-}
-func (p *prefixDeleteFailerRemote) HeadObject(ctx context.Context, k string) (remote.HeadResult, error) {
-	return p.inner.HeadObject(ctx, k)
-}
-func (p *prefixDeleteFailerRemote) CopyBlock(ctx context.Context, src, dst string) error {
-	return p.inner.CopyBlock(ctx, src, dst)
+func (p *prefixDeleteFailerRemote) ReadBlockVerified(ctx context.Context, h, exp blockstore.ContentHash) ([]byte, error) {
+	return p.inner.ReadBlockVerified(ctx, h, exp)
 }
 func (p *prefixDeleteFailerRemote) HealthCheck(ctx context.Context) error {
 	return p.inner.HealthCheck(ctx)
@@ -558,46 +525,34 @@ func (p *prefixDeleteFailerRemote) Healthcheck(ctx context.Context) health.Repor
 }
 func (p *prefixDeleteFailerRemote) Close() error { return p.inner.Close() }
 
-// deleteCountingRemote wraps a memory store and counts DeleteBlock calls.
+// deleteCountingRemote wraps a memory store and counts Delete calls.
 // Used to assert that the sweep does NOT execute on mark failure.
 type deleteCountingRemote struct {
 	inner   *remotememory.Store
 	deletes atomic.Int64
 }
 
-func (d *deleteCountingRemote) WriteBlock(ctx context.Context, k string, b []byte) error {
-	return d.inner.WriteBlock(ctx, k, b)
+func (d *deleteCountingRemote) Put(ctx context.Context, h blockstore.ContentHash, b []byte) error {
+	return d.inner.Put(ctx, h, b)
 }
-func (d *deleteCountingRemote) WriteBlockWithHash(ctx context.Context, k string, h blockstore.ContentHash, b []byte) error {
-	return d.inner.WriteBlockWithHash(ctx, k, h, b)
+func (d *deleteCountingRemote) Get(ctx context.Context, h blockstore.ContentHash) ([]byte, error) {
+	return d.inner.Get(ctx, h)
 }
-func (d *deleteCountingRemote) ReadBlock(ctx context.Context, k string) ([]byte, error) {
-	return d.inner.ReadBlock(ctx, k)
+func (d *deleteCountingRemote) GetRange(ctx context.Context, h blockstore.ContentHash, o, l int64) ([]byte, error) {
+	return d.inner.GetRange(ctx, h, o, l)
 }
-func (d *deleteCountingRemote) ReadBlockVerified(ctx context.Context, k string, h blockstore.ContentHash) ([]byte, error) {
-	return d.inner.ReadBlockVerified(ctx, k, h)
-}
-func (d *deleteCountingRemote) ReadBlockRange(ctx context.Context, k string, o, l int64) ([]byte, error) {
-	return d.inner.ReadBlockRange(ctx, k, o, l)
-}
-func (d *deleteCountingRemote) DeleteBlock(ctx context.Context, k string) error {
+func (d *deleteCountingRemote) Delete(ctx context.Context, h blockstore.ContentHash) error {
 	d.deletes.Add(1)
-	return d.inner.DeleteBlock(ctx, k)
+	return d.inner.Delete(ctx, h)
 }
-func (d *deleteCountingRemote) DeleteByPrefix(ctx context.Context, k string) error {
-	return d.inner.DeleteByPrefix(ctx, k)
+func (d *deleteCountingRemote) Head(ctx context.Context, h blockstore.ContentHash) (blockstore.Meta, error) {
+	return d.inner.Head(ctx, h)
 }
-func (d *deleteCountingRemote) ListByPrefix(ctx context.Context, k string) ([]string, error) {
-	return d.inner.ListByPrefix(ctx, k)
+func (d *deleteCountingRemote) Walk(ctx context.Context, fn func(blockstore.ContentHash, blockstore.Meta) error) error {
+	return d.inner.Walk(ctx, fn)
 }
-func (d *deleteCountingRemote) ListByPrefixWithMeta(ctx context.Context, k string) ([]remote.ObjectInfo, error) {
-	return d.inner.ListByPrefixWithMeta(ctx, k)
-}
-func (d *deleteCountingRemote) HeadObject(ctx context.Context, k string) (remote.HeadResult, error) {
-	return d.inner.HeadObject(ctx, k)
-}
-func (d *deleteCountingRemote) CopyBlock(ctx context.Context, s, t string) error {
-	return d.inner.CopyBlock(ctx, s, t)
+func (d *deleteCountingRemote) ReadBlockVerified(ctx context.Context, h, exp blockstore.ContentHash) ([]byte, error) {
+	return d.inner.ReadBlockVerified(ctx, h, exp)
 }
 func (d *deleteCountingRemote) HealthCheck(ctx context.Context) error {
 	return d.inner.HealthCheck(ctx)
@@ -606,69 +561,6 @@ func (d *deleteCountingRemote) Healthcheck(ctx context.Context) health.Report {
 	return d.inner.Healthcheck(ctx)
 }
 func (d *deleteCountingRemote) Close() error { return d.inner.Close() }
-
-// concurrencyTrackingRemote wraps a memory store and records the maximum
-// number of concurrent ListByPrefixWithMeta calls in flight. Each call
-// holds for `listHold` to widen the contention window.
-type concurrencyTrackingRemote struct {
-	inner       *remotememory.Store
-	listHold    time.Duration
-	mu          sync.Mutex
-	inflight    int64
-	maxInflight atomic.Int64
-}
-
-func (c *concurrencyTrackingRemote) WriteBlock(ctx context.Context, k string, b []byte) error {
-	return c.inner.WriteBlock(ctx, k, b)
-}
-func (c *concurrencyTrackingRemote) WriteBlockWithHash(ctx context.Context, k string, h blockstore.ContentHash, b []byte) error {
-	return c.inner.WriteBlockWithHash(ctx, k, h, b)
-}
-func (c *concurrencyTrackingRemote) ReadBlock(ctx context.Context, k string) ([]byte, error) {
-	return c.inner.ReadBlock(ctx, k)
-}
-func (c *concurrencyTrackingRemote) ReadBlockVerified(ctx context.Context, k string, h blockstore.ContentHash) ([]byte, error) {
-	return c.inner.ReadBlockVerified(ctx, k, h)
-}
-func (c *concurrencyTrackingRemote) ReadBlockRange(ctx context.Context, k string, o, l int64) ([]byte, error) {
-	return c.inner.ReadBlockRange(ctx, k, o, l)
-}
-func (c *concurrencyTrackingRemote) DeleteBlock(ctx context.Context, k string) error {
-	return c.inner.DeleteBlock(ctx, k)
-}
-func (c *concurrencyTrackingRemote) DeleteByPrefix(ctx context.Context, k string) error {
-	return c.inner.DeleteByPrefix(ctx, k)
-}
-func (c *concurrencyTrackingRemote) ListByPrefix(ctx context.Context, k string) ([]string, error) {
-	return c.inner.ListByPrefix(ctx, k)
-}
-func (c *concurrencyTrackingRemote) ListByPrefixWithMeta(ctx context.Context, k string) ([]remote.ObjectInfo, error) {
-	c.mu.Lock()
-	c.inflight++
-	cur := c.inflight
-	if cur > c.maxInflight.Load() {
-		c.maxInflight.Store(cur)
-	}
-	c.mu.Unlock()
-	time.Sleep(c.listHold)
-	c.mu.Lock()
-	c.inflight--
-	c.mu.Unlock()
-	return c.inner.ListByPrefixWithMeta(ctx, k)
-}
-func (c *concurrencyTrackingRemote) HeadObject(ctx context.Context, k string) (remote.HeadResult, error) {
-	return c.inner.HeadObject(ctx, k)
-}
-func (c *concurrencyTrackingRemote) CopyBlock(ctx context.Context, s, t string) error {
-	return c.inner.CopyBlock(ctx, s, t)
-}
-func (c *concurrencyTrackingRemote) HealthCheck(ctx context.Context) error {
-	return c.inner.HealthCheck(ctx)
-}
-func (c *concurrencyTrackingRemote) Healthcheck(ctx context.Context) health.Report {
-	return c.inner.Healthcheck(ctx)
-}
-func (c *concurrencyTrackingRemote) Close() error { return c.inner.Close() }
 
 // TestClassifyGCError_DiversifiesByVerb (Phase 11 IN-3-03): the
 // classifier strips the high-cardinality path/key tail from the verb

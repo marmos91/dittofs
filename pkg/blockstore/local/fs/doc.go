@@ -10,15 +10,13 @@
 //   - Backpressure: memory budget limits dirty buffers, oldest flushed first
 //   - Flat addressing: blockIdx = fileOffset / 8MB
 //
-// # Hybrid append-log tier (Phase 10 A1, experimental, flag-gated)
+// # Append-log tier
 //
-// Package fs additionally hosts the v0.15.0 Phase 10 hybrid local tier,
-// gated by FSStoreOptions.UseAppendLog (config key `use_append_log`,
-// defaulting to false). See docs/ARCHITECTURE.md "Block Store -- Hybrid
-// Local Tier" for the pipeline overview. This tier is plumbing-only in
-// Phase 10; the existing WriteAt / tryDirectDiskWrite path continues to
-// serve the engine end-to-end until Phase 11 (A2) flips the default and
-// wires the syncer.
+// Package fs hosts the random-write absorber tier (per-payload append
+// log + FastCDC rollup) that satisfies blockstore.BlockStoreAppend.
+// Append is mandatory on the local tier post-v0.16 — the flag-gated
+// opt-out was deleted alongside the legacy path-keyed writer in Phase
+// 17.
 //
 // # Hybrid tier layout
 //

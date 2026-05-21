@@ -10,28 +10,12 @@ import (
 	"time"
 )
 
-// TestAppendWrite_DisabledByDefault verifies D-03 / D-36: when the flag is
-// false (New() / NewWithOptions zero-value), AppendWrite returns
-// ErrAppendLogDisabled and — as a side-observation — no log file is
-// created on disk.
-func TestAppendWrite_DisabledByDefault(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{})
-	err := bc.AppendWrite(context.Background(), "file1", []byte("hi"), 0)
-	if err != ErrAppendLogDisabled {
-		t.Fatalf("want ErrAppendLogDisabled, got %v", err)
-	}
-	// D-36 side-check: no log file materialized on disk.
-	if _, statErr := os.Stat(filepath.Join(bc.baseDir, "logs", "file1.log")); statErr == nil {
-		t.Fatal("flag=false created a log file on disk; D-36 violated")
-	}
-}
-
 // TestAppendWrite_Enabled_HappyPath writes three records and verifies:
 //   - the on-disk log has header + 3 records of the expected total size,
 //   - logBytesTotal counts the framed-record overhead (not just payload),
 //   - the interval tree gains exactly 3 entries.
 func TestAppendWrite_Enabled_HappyPath(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: true, MaxLogBytes: 1 << 30})
+	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
 	payload := bytes.Repeat([]byte{0xAB}, 100)
 	for _, off := range []uint64{0, 4096, 8192} {
 		if err := bc.AppendWrite(context.Background(), "file1", payload, off); err != nil {
@@ -62,7 +46,7 @@ func TestAppendWrite_Enabled_HappyPath(t *testing.T) {
 // TestAppendWrite_ClosedStoreReturnsErr verifies the ErrStoreClosed guard
 // at the top of AppendWrite.
 func TestAppendWrite_ClosedStoreReturnsErr(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: true})
+	bc := newFSStoreForTest(t, FSStoreOptions{})
 	_ = bc.Close()
 	err := bc.AppendWrite(context.Background(), "file1", []byte("hi"), 0)
 	if err != ErrStoreClosed {
@@ -72,7 +56,7 @@ func TestAppendWrite_ClosedStoreReturnsErr(t *testing.T) {
 
 // TestAppendWrite_CtxCanceled verifies the pre-work ctx.Err() guard.
 func TestAppendWrite_CtxCanceled(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: true})
+	bc := newFSStoreForTest(t, FSStoreOptions{})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	err := bc.AppendWrite(ctx, "file1", []byte("hi"), 0)
@@ -87,7 +71,7 @@ func TestAppendWrite_CtxCanceled(t *testing.T) {
 // the deterministic sum of framed-record sizes (no partial writes, no
 // torn fsyncs).
 func TestAppendWrite_PerFileSerial(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: true, MaxLogBytes: 1 << 30})
+	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
 	const goroutines = 50
 	const payloadLen = 64
 	payload := bytes.Repeat([]byte{0xCC}, payloadLen)
@@ -122,7 +106,7 @@ func TestAppendWrite_PerFileSerial(t *testing.T) {
 // pulses the channel. No real rollup worker runs in Phase 10-04 — the
 // test drives the signal directly.
 func TestAppendWrite_PressureBlocks_UntilSignaled(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{UseAppendLog: true, MaxLogBytes: 1})
+	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1})
 	// Prime: first write already exceeds budget.
 	if err := bc.AppendWrite(context.Background(), "file1", []byte("x"), 0); err != nil {
 		t.Fatal(err)

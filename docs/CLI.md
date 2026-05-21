@@ -534,6 +534,102 @@ file-count walk on pathologically large shares.
 **Cross-reference:** [BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md#phase-14-v015x-a5--dfsctl-blockstore-migrate-runbook)
 for the full operator runbook with worked transcripts.
 
+### Block Store Migration (v0.16.0 Phase 17)
+
+v0.16.0 (Phase 17) replaces the legacy `.blk` block layout with the unified
+content-addressed (CAS) layout and ships the offline one-shot conversion as
+a server-side `dfs` subcommand (NOT a `dfsctl` REST round-trip — the daemon
+must be stopped because the migration rewrites blocks in place). The boot
+guard refuses to start on un-migrated shares; the recovery path is to run
+`dfs migrate-to-cas` and retry.
+
+#### `dfs migrate-to-cas`
+
+Migrate a v0.15.x storage directory's legacy `.blk` block layout to the
+v0.16+ content-addressed (CAS) layout. Required before `dfs start` will
+succeed on a pre-v0.16 install.
+
+**Offline operation** — stop the server first (`dfs stop`). The command
+refuses to run while a live `dfs` PID lockfile is detected.
+
+**Synopsis:**
+
+```
+dfs migrate-to-cas [flags]
+```
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--storage-dir` | path | **required** | Storage root directory. Shares are discovered under `<storage-dir>/shares/`. There is no config-derived default; pass the path explicitly. |
+| `--share` | string | (all shares) | Scope migration to one share. Default migrates every share under the storage root. |
+| `--dry-run` | bool | `false` | Walk the legacy `.blk` tree and report file count, total bytes, estimated dedup ratio, and ETA. Writes nothing. Does not touch the journal; does not write the sentinel. |
+| `--json` | bool | `false` | Emit one JSON object per line on stdout (machine-parseable progress). |
+| `--config` | path | (default) | Override config file location. Inherited from the root `dfs` command. |
+
+**Exit codes:**
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success — all targeted shares migrated; per-share `.cas-migrated-v1` sentinels written. |
+| `1` | Generic error (PID guard tripped, config load failure, IO error, share discovery failure). |
+| `2` | Migration failed mid-flight. The per-share journal is preserved at `<storage_dir>/shares/<share>/.dittofs-migrate-to-cas.state`; stderr describes the resume point. Rerun the same command to resume. |
+
+**Progress reporting:**
+
+- Plain text (default): `[<share>] N files, X.X MiB/s, dedup_hits=K`,
+  emitted approximately once per second per share.
+- JSON (`--json`): one object per line per share per second:
+  ```json
+  {"ts":"<RFC3339>","share":"<name>","files_done":N,"bytes_done":N,"files_per_sec":F,"mib_per_sec":F,"dedup_hits":N,"eta_seconds":F}
+  ```
+
+**Idempotent / journaled resume:** the per-share journal at
+`<storage_dir>/shares/<share>/.dittofs-migrate-to-cas.state` records the
+last-completed file path and byte offset. If interrupted, rerunning
+`dfs migrate-to-cas` resumes from the journaled position. The CAS Put
+surface is idempotent on hash collision, so re-processing an in-flight file
+at the resume point is safe (chunks already uploaded are treated as dedup
+hits on the second pass). The journal is removed (best-effort) only AFTER
+the per-share sentinel write succeeds.
+
+**Examples:**
+
+Dry-run a migration to see what would happen:
+
+```bash
+dfs migrate-to-cas --storage-dir /var/lib/dittofs/storage --dry-run
+```
+
+Migrate one large share off-hours and capture machine-parseable progress
+for log aggregation:
+
+```bash
+dfs stop
+dfs migrate-to-cas --storage-dir /var/lib/dittofs/storage --share data --json | tee migration.log
+```
+
+Migrate every share under the storage root:
+
+```bash
+dfs stop
+dfs migrate-to-cas --storage-dir /var/lib/dittofs/storage
+```
+
+Migrate a single share off-hours:
+
+```bash
+dfs stop
+dfs migrate-to-cas --storage-dir /var/lib/dittofs/storage --share data
+```
+
+**See also:**
+
+- [docs/CONFIGURATION.md §Migration](CONFIGURATION.md#migration) for the
+  full upgrade procedure, boot-guard exit code 78, sentinel file format,
+  crash-safety guarantees, and recovery from a failed migration.
+
 ## Global Flags
 
 ### dfs

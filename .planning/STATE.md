@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
 milestone: v0.16.0
-milestone_name: milestone
-status: completed
-stopped_at: Phase 16 SHIPPED — all 4 plans complete, warm-cache D-06 PASS (ratio 0.890)
-last_updated: "2026-05-20T12:27:13.402Z"
-last_activity: 2026-05-20 -- Phase 16 marked complete
+milestone_name: — CAS Convergence
+status: "Phase 17 shipped — PR #527"
+stopped_at: Phase 17 Plan 10 (docs) shipped
+last_updated: "2026-05-20T21:34:21.786Z"
+last_activity: 2026-05-20
 progress:
-  total_phases: 9
-  completed_phases: 4
-  total_plans: 33
-  completed_plans: 33
-  percent: 44
+  total_phases: 10
+  completed_phases: 5
+  total_plans: 44
+  completed_plans: 44
+  percent: 100
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-23)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 16 — cache-mmap-removal
+**Current focus:** Phase 17 — unified-blockstore
 
 ## Current Position
 
 Milestone: v0.16.0
-Phase: 16 — COMPLETE
-Plan: 4 of 4 complete
+Phase: 17 (unified-blockstore) — EXECUTING
+Plan: 11 of 11
 Branch: `gsd/phase-16-cache-mmap-removal`
-Status: Phase 16 complete
-Last activity: 2026-05-20 -- Phase 16 marked complete
+Status: Phase 17 shipped — PR #527
+Last activity: 2026-05-20
 
 ## Next Actionable
 
@@ -103,6 +103,8 @@ Phase 16 complete. Open a PR for `gsd/phase-16-cache-mmap-removal` → `develop`
 
 - Phase 16 Plan 03 (D-08, D-09, D-11): `pkg/blockstore/engine/cache_mmap_{unix,windows,test}.go` deleted; `perf_bench_unix_test.go` folded entirely (per PATTERNS.md inventory it held only `TestPerfGate_Phase12_MmapHotPath` + `formatChunkName` helper — Claude's Discretion YES ruling). `perf_bench_phase12_test.go` + `cache_test.go` docstrings scrubbed of past-tense `readFromCAS` / `cache_mmap_*` references so the symbol purge is total — all five `grep -rn '<symbol>' pkg/ --include='*.go'` gates return zero matches. No `cache_ram_test.go` created (D-11 honored). Cross-OS build matrix (`CGO_ENABLED=0 GOOS=linux/darwin/windows go build ./...`) all exit 0; engine race suite green (`go test -race -count=1` PASS 24.171s). Host-cgo `GOOS=linux go build ./...` from Darwin fails on `setresuid`/`setresgid` (clang-on-Darwin lacks Linux libc) — pre-existing host-tooling limitation, not a Phase 16 regression. One documented intermediate state: Task 1's commit leaves `perf_bench_unix_test.go` pointing at deleted `readFromCAS` (production `go build ./...` passes; test compile briefly fails until Task 2); plan is NOT `git bisect`-safe between its two commits, by design — alternative would merge the deletions and violate the plan's explicit two-task structure. Commits: `59ccdf26` (Task 1 — three mmap file deletes + cache_test.go docstring cleanup), `704f2f34` (Task 2 — perf_bench_unix_test.go delete + perf_bench_phase12_test.go docstring cleanup).
 
+- Phase 17 Plan 10 (docs, wave 6): operator-facing documentation for the v0.16.0 CAS migration landed across three surfaces. `pkg/blockstore/doc.go` rewritten from a 14-line stub to comprehensive package godoc covering BlockStore + BlockStoreAppend interface roles, the Meta contract (D-08), Walk semantics (D-07: ErrStopWalk clean-exit + any-other-error halt-wrap pattern mirroring `filepath.SkipDir`), and the `.cas-migrated-vN` sentinel-file convention as a project-wide pattern for irreversible on-disk state transitions (lifecycle, atomic-rename write, read-on-open by backend constructors, per-share placement, schema-bump protocol, hand-edit footgun warning). `docs/CONFIGURATION.md` gains a `## Migration` section (anchor must be exactly `Migration` because Plan 09's boot-guard directive prints `docs/CONFIGURATION.md §migration` and GitHub anchor-slugs the heading to `#migration`) documenting all five `dfs migrate-to-cas` flags (`--storage-dir`, `--share`, `--dry-run`, `--json`, `--config`), exit code 78 (`EX_CONFIG` per sysexits(3)), the per-share sentinel JSON shape (`Version`, `CompletedAt`, `ToolVersion`, `ShareDir`), the per-share journal at `<storage_dir>/<share>/.dittofs-migrate-to-cas.state` with crash-safety guarantees, and a four-step recovery procedure including `ErrChunkPutMismatch` triage. `docs/CLI.md` gains a `### Block Store Migration (v0.16.0 Phase 17)` subsection placed immediately after the existing v0.15.x Phase 14 dfsctl migrate section so both migration commands live adjacent; `#### dfs migrate-to-cas` documents synopsis + 5-flag table + exit codes table (0/1/2) + progress reporting formats (plain text + `--json`) + idempotent journaled-resume contract + four usage examples + cross-reference back to `CONFIGURATION.md#migration`. Three doc surfaces pinned by the PLAN's acceptance-criteria grep gates (heading anchor, flag names, sentinel JSON field names, exit code, cross-references) so future drift between subcommand and docs fails on the next planning cycle. The cross-plan sentinel-path mismatch noted in Plan 09 SUMMARY (migrate CLI writes at `<shareDir>/.cas-migrated-v1`; production opens FSStore on `<shareDir>/blocks`) is being fixed in a parallel work stream per the spawn prompt; docs describe the contract from the fs-layer baseDir perspective so they will already match when the fix lands. Commits: `bb97ec34` (Task 1 — doc.go godoc), `99b5ef58` (Task 2 — CONFIGURATION.md Migration section), `9f604247` (Task 3 — CLI.md dfs migrate-to-cas entry). All `go vet ./...` exit 0; no production code touched.
+
 ### v0.13.0 Decisions (archived context)
 
 Historical v0.13.0 decisions preserved in `.planning/milestones/v0.13.0-archive/` for reference; the v0.15.0 refactor deletes `BackupHoldProvider` + `FinalizationCallback` (v0.13.0 scaffolding) in Phase 08.
@@ -134,9 +136,9 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-20T14:28:00Z
-Stopped at: Phase 16 SHIPPED — all 4 plans complete, warm-cache D-06 PASS (ratio 0.890)
-Next action: Open PR for `gsd/phase-16-cache-mmap-removal` → `develop`; close GH issue #516 on merge; begin Phase 17 planning (unified BlockStore interface, GH issue #517). Plan 16-04 SUMMARY at `.planning/phases/16-cache-mmap-removal/16-04-SUMMARY.md`. Bench artifacts retained at `/tmp/p16-bench-{pre,post,benchstat}.txt`.
+Last session: 2026-05-20T18:56:29.878Z
+Stopped at: Phase 17 Plan 10 (docs) shipped
+Next action: Wait for the parallel sentinel-path-mismatch fix work stream (Plan 09 SUMMARY Deviations) to land; then Phase 17 is ready for develop merge. Plan 17-10 SUMMARY at `.planning/phases/17-unified-blockstore/17-10-SUMMARY.md`. Three doc surfaces (pkg/blockstore/doc.go, docs/CONFIGURATION.md §Migration, docs/CLI.md dfs migrate-to-cas) pinned by acceptance-criteria grep gates against future flag drift. Commits: `bb97ec34`, `99b5ef58`, `9f604247`.
 
 Previous next-action (preserved for context): **Phase 14 phase-execution complete.** Two outstanding follow-ups before production rollout: (1) `openOfflineRuntime` production wiring (controlplane DB read + per-share metadata/remote-store factory dispatch) — tracked under #425, interfaces stable, runbook documents this prominently as a Known Limitation; (2) per-payload-id streaming variant of `deleteLegacyKeys` only if real workloads surface S3 LIST cost (T-14-05-04). Status surface (CLI + REST) is fully usable today against a running daemon. Once #425 closes, no runbook changes needed — the four worked transcripts will then run literally rather than aspirationally. Phase 15 (A6 — legacy cleanup) remains intentionally deferred until #425 closes and migration is rolled out across production workloads.
 

@@ -7,18 +7,19 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
-	// API-02 justification: Plan 14-02 (MIG-03 / D-A8) gates the
-	// dual-read shim's legacy fallback on the per-share BlockLayout
-	// stamped on the Syncer at construction time. The engine reads
-	// the enum, never opens a metadata txn against it. Plan 15 (A6)
-	// removes the shim and this import.
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
+// inFlightKey returns the deterministic per-block dedup key used by the
+// engine's in-flight map. Internal to the engine after
+// blockstore.FormatStoreKey was deleted in Phase 17.
+func inFlightKey(payloadID string, blockIdx uint64) string {
+	return fmt.Sprintf("%s/%d", payloadID, blockIdx)
+}
+
 // resolveFileBlock returns the FileBlock for (payloadID, blockIdx) or
-// (nil, nil) if the row does not exist (sparse / not yet uploaded). The
-// dual-read engine resolver consults fb.Hash and fb.BlockStoreKey to
-// route the per-block S3 fetch (D-21).
+// (nil, nil) if the row does not exist (sparse / not yet uploaded). Post-
+// Phase-17 the engine read path is CAS-only — fb.Hash MUST be non-zero
+// for any reachable block; the dispatchRemoteFetch helper enforces this.
 func (m *Syncer) resolveFileBlock(ctx context.Context, payloadID string, blockIdx uint64) (*blockstore.FileBlock, error) {
 	blockID := fmt.Sprintf("%s/%d", payloadID, blockIdx)
 	fb, err := m.fileBlockStore.GetFileBlock(ctx, blockID)
@@ -31,11 +32,12 @@ func (m *Syncer) resolveFileBlock(ctx context.Context, payloadID string, blockId
 	return fb, nil
 }
 
-// dispatchRemoteFetch routes a per-block S3 GET between the new CAS path
-// (with BLAKE3 verification) and the legacy {payloadID}/block-{N} path
-// (no verification possible — legacy bytes were never hashed). Per D-21
-// the routing is metadata-driven (FileBlock.Hash.IsZero()), NOT S3
-// trial-and-error. One DB lookup per block; no doubled GET cost.
+// dispatchRemoteFetch routes a per-block S3 GET through the CAS verified-
+// read path. Post-Phase-17 there is no legacy fallback: any FileBlock
+// surfacing here with a zero Hash is migration drift and the boot guard
+// (cmd/dfs/start, Plan 09) should have refused to start. If a stray row
+// reaches this code path at runtime, refuse the read instead of returning
+// silent zeros.
 //
 // Returns ("", nil, nil) if the FileBlock has no actionable key (sparse
 // or never-uploaded). Errors from the remote store flow through unchanged.
@@ -43,43 +45,25 @@ func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *blockstore.FileBlo
 	if fb == nil {
 		return "", nil, nil
 	}
-	if !fb.Hash.IsZero() {
-		// CAS path: verified read. Prefer the row's BlockStoreKey when
-		// set (post-Phase-11 syncer writes the CAS key here) and fall
-		// back to FormatCASKey(hash) for resilience against future
-		// schema variants.
-		key := fb.BlockStoreKey
-		if key == "" {
-			key = blockstore.FormatCASKey(fb.Hash)
-		}
-		data, err := m.remoteStore.ReadBlockVerified(ctx, key, fb.Hash)
-		return key, data, err
-	}
-	// Legacy path: pre-Phase-11 row, no hash, unverifiable. The legacy
-	// key was persisted at upload time. Removed in Phase 15 (A6).
-	//
-	// Plan 14-02 (MIG-03 / D-A8): per-share gate. If this share's
-	// BlockLayout has been flipped to cas-only, the legacy fallback is
-	// disabled — encountering a legacy-shaped FileBlock here means
-	// either the migration left stale rows behind or a write is racing
-	// the cutover. Either way, refuse the read and surface
-	// ErrLegacyReadOnCASOnly so operators see the live-data-loss
-	// signal instead of stale bytes. This complements the silent-zero
-	// fail-loud change in Phase 11 (IN-3-05) for the CAS path.
-	if m.blockLayout == metadata.BlockLayoutCASOnly {
-		// fb.ID encodes "{payloadID}/{blockIdx}" — keep both the raw ID
-		// and the legacy store key in the log line so operators can
-		// triage which row the migration tool missed.
-		logger.Error("legacy FileBlock encountered on cas-only share — possible migration drift",
+	if fb.Hash.IsZero() {
+		// Legacy path deleted Phase 17 (subsumes Phase 15 A6). Any
+		// FileBlock surfacing here without a CAS hash is migration
+		// drift — refuse the read instead of returning silent zeros.
+		// Boot guard (cmd/dfs/start) refuses to start against an un-
+		// migrated store; if this triggers at runtime, the sentinel
+		// file was lost or hand-removed.
+		logger.Error("legacy zero-hash FileBlock encountered post-migration — refusing read",
 			"block_id", fb.ID,
 			"store_key", fb.BlockStoreKey)
-		return "", nil, fmt.Errorf("%w: block_id=%s", ErrLegacyReadOnCASOnly, fb.ID)
+		return "", nil, fmt.Errorf("blockstore: legacy zero-hash FileBlock encountered post-migration: block_id=%s", fb.ID)
 	}
-	if fb.BlockStoreKey == "" {
-		return "", nil, nil
-	}
-	data, err := m.remoteStore.ReadBlock(ctx, fb.BlockStoreKey)
-	return fb.BlockStoreKey, data, err
+	// CAS path: verified read via BLAKE3 recompute. Canonical key is
+	// derived from the hash; both arguments to ReadBlockVerified are
+	// the same hash per the Plan 03 signature (canonical-key hash +
+	// expected-body hash collapse onto one value when hash IS the key).
+	key := blockstore.FormatCASKey(fb.Hash)
+	data, err := m.remoteStore.ReadBlockVerified(ctx, fb.Hash, fb.Hash)
+	return key, data, err
 }
 
 // fetchBlock downloads a single block from the remote store and writes it to the local store.
@@ -120,15 +104,14 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 			// should make this impossible). Returning silent zeros
 			// here would corrupt the caller's read with no log trace.
 			// Surface ErrBlockNotFound so the caller sees the data
-			// loss explicitly. Legacy rows (zero hash) preserve the
-			// historical sparse-block semantics.
-			if !fb.Hash.IsZero() {
-				logger.Error("CAS object missing for live FileBlock — possible GC race or live-data-loss",
-					"block_id", fb.ID, "store_key", storeKey, "hash", fb.Hash.String())
-				return nil, fmt.Errorf("CAS object missing for live row %s (key %s): %w",
-					fb.ID, storeKey, blockstore.ErrBlockNotFound)
-			}
-			return nil, nil // legacy sparse — preserve historical behavior
+			// loss explicitly. Post-Phase-17 the legacy zero-hash
+			// branch is gone, so the !IsZero guard is implicit —
+			// any successful dispatchRemoteFetch return implies a
+			// CAS row.
+			logger.Error("CAS object missing for live FileBlock — possible GC race or live-data-loss",
+				"block_id", fb.ID, "store_key", storeKey, "hash", fb.Hash.String())
+			return nil, fmt.Errorf("CAS object missing for live row %s (key %s): %w",
+				fb.ID, storeKey, blockstore.ErrBlockNotFound)
 		}
 		return nil, fmt.Errorf("download block %s: %w", storeKey, err)
 	}
@@ -228,7 +211,7 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 // inlineFetchOrWait downloads a block inline or waits for an in-flight download.
 // Returns (data, true, nil) for inline download, (nil, false, nil) if piggybacked on existing.
 func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, bool, error) {
-	key := blockstore.FormatStoreKey(payloadID, blockIdx)
+	key := inFlightKey(payloadID, blockIdx)
 
 	m.inFlightMu.Lock()
 	if existing, ok := m.inFlight[key]; ok {
@@ -269,24 +252,21 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 	}
 
 	// Caller (EnsureAvailableAndRead) already verified remoteStore != nil.
-	// Dual-read dispatch (D-21): CAS path with verification when fb.Hash
-	// is set; legacy ReadBlock otherwise.
+	// CAS verified-read dispatch — legacy branch deleted in Phase 17.
 	storeKey, data, err := m.dispatchRemoteFetch(ctx, fb)
 	if err != nil {
 		if errors.Is(err, blockstore.ErrBlockNotFound) {
 			// Phase 11 IN-3-05: fail-closed on the CAS path. See
 			// fetchBlock for the rationale — a non-zero-hash row that
 			// resolves to a missing CAS object is a live-data-loss
-			// signal that must NOT silently return zeros.
-			if !fb.Hash.IsZero() {
-				logger.Error("CAS object missing for live FileBlock — possible GC race or live-data-loss",
-					"block_id", fb.ID, "store_key", storeKey, "hash", fb.Hash.String())
-				wrapped := fmt.Errorf("CAS object missing for live row %s (key %s): %w",
-					fb.ID, storeKey, blockstore.ErrBlockNotFound)
-				completionErr = wrapped
-				return nil, false, wrapped
-			}
-			return nil, true, nil
+			// signal that must NOT silently return zeros. Post-Phase-17
+			// every reachable row is CAS-shaped.
+			logger.Error("CAS object missing for live FileBlock — possible GC race or live-data-loss",
+				"block_id", fb.ID, "store_key", storeKey, "hash", fb.Hash.String())
+			wrapped := fmt.Errorf("CAS object missing for live row %s (key %s): %w",
+				fb.ID, storeKey, blockstore.ErrBlockNotFound)
+			completionErr = wrapped
+			return nil, false, wrapped
 		}
 		completionErr = err
 		return nil, false, fmt.Errorf("download block %s: %w", storeKey, err)
@@ -428,7 +408,7 @@ func (m *Syncer) enqueueDownload(payloadID string, blockIdx uint64) chan error {
 		return ch
 	}
 
-	key := blockstore.FormatStoreKey(payloadID, blockIdx)
+	key := inFlightKey(payloadID, blockIdx)
 
 	m.inFlightMu.Lock()
 	if existing, ok := m.inFlight[key]; ok {
@@ -488,7 +468,7 @@ func (m *Syncer) enqueuePrefetch(payloadID string, blockIdx uint64) {
 		return
 	}
 
-	key := blockstore.FormatStoreKey(payloadID, blockIdx)
+	key := inFlightKey(payloadID, blockIdx)
 	m.inFlightMu.Lock()
 	_, inFlight := m.inFlight[key]
 	m.inFlightMu.Unlock()

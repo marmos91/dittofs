@@ -3,7 +3,6 @@ package fs
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,7 +19,6 @@ func newRollupFSStore(t *testing.T, maxLogBytes int64, stabilizationMS int) (*FS
 	t.Helper()
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	opts := FSStoreOptions{
-		UseAppendLog:    true,
 		MaxLogBytes:     maxLogBytes,
 		RollupWorkers:   2,
 		StabilizationMS: stabilizationMS,
@@ -152,7 +150,6 @@ func TestRollup_PressureReleasesAppendWrite(t *testing.T) {
 func TestRollup_CommitChunks_MonotoneEnforced(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	bc := newFSStoreForTest(t, FSStoreOptions{
-		UseAppendLog:    true,
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 1, // 1 ms — record stabilizes almost immediately
@@ -199,23 +196,10 @@ func TestRollup_CommitChunks_MonotoneEnforced(t *testing.T) {
 	}
 }
 
-// TestRollup_StartRollup_DisabledFlag: StartRollup with use_append_log=false
-// must return ErrAppendLogDisabled without launching workers.
-func TestRollup_StartRollup_DisabledFlag(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{
-		UseAppendLog: false,
-		RollupStore:  memmeta.NewMemoryMetadataStoreWithDefaults(),
-	})
-	if err := bc.StartRollup(context.Background()); !errors.Is(err, ErrAppendLogDisabled) {
-		t.Fatalf("StartRollup with flag off: got %v want ErrAppendLogDisabled", err)
-	}
-}
-
 // TestRollup_StartRollup_NilStore: StartRollup with a nil RollupStore must
 // return a descriptive error so misconfiguration fails loudly.
 func TestRollup_StartRollup_NilStore(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{
-		UseAppendLog: true,
 		// RollupStore intentionally nil.
 	})
 	if err := bc.StartRollup(context.Background()); err == nil {
@@ -361,7 +345,6 @@ func TestRollup_ReconstructStream_DoSCeiling_FIX5(t *testing.T) {
 func TestRollup_TruncateMidWindow_DoesNotAdvancePastUncommittedTail(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	bc := newFSStoreForTest(t, FSStoreOptions{
-		UseAppendLog:    true,
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 1,

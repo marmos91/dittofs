@@ -48,10 +48,6 @@ import (
 // BlockSize is the size of a single block (8MB), used for byte estimation.
 const BlockSize = blockstore.BlockSize
 
-// casPrefix is the top-level CAS prefix on the remote store. Objects
-// outside this prefix are not eligible for sweep.
-const casPrefix = "cas/"
-
 // gcRootLocks serializes CollectGarbage invocations that share a
 // GCStateRoot. Phase 11 WR-3-01: without this, two concurrent calls
 // against the same root race in CleanStaleGCStateDirs — Run B can sweep
@@ -295,8 +291,8 @@ func CollectGarbage(
 		return stats
 	}
 
-	// SWEEP: bounded worker pool over 256 cas/XX/ prefixes (D-04).
-	sweepPhase(ctx, remoteStore, gcs, stats, snapshotTime, gracePeriod, sweepConcurrency, dryRunSample, options)
+	// SWEEP: single Walk over the unified CAS namespace (D-04 + Phase 17).
+	sweepPhase(ctx, remoteStore, gcs, stats, snapshotTime, gracePeriod, dryRunSample, options)
 
 	// Mark complete + persist summary.
 	if err := gcs.MarkComplete(); err != nil {
@@ -381,10 +377,19 @@ func sharesForReconciler(r MetadataReconciler) []string {
 	return nil
 }
 
-// sweepPhase walks the 256 cas/XX/ prefixes via a bounded worker pool.
-// Per-prefix errors are captured in stats but do not abort the sweep
-// (D-07). Foreign keys (non-CAS) are silently skipped (T-11-C-07).
-// Objects within snapshot - GracePeriod are preserved (D-05).
+// sweepPhase walks the unified CAS namespace via a single
+// remoteStore.Walk call. Per-object errors are captured in stats but
+// do not abort the sweep (D-07). Foreign keys (non-CAS) are silently
+// skipped (T-11-C-07). Objects within snapshot - GracePeriod are
+// preserved (D-05).
+//
+// sweepConcurrency is accepted for backward-compatibility with the
+// Options surface and ignored — Phase 17 collapsed the 256-way prefix
+// sharding onto RemoteStore.Walk, which paginates internally at the
+// backend layer. A future re-sharding extension (per-prefix Walk
+// fan-out) is expected to re-wire concurrency at the backend, not
+// here. Callers wanting per-prefix parallelism should file against
+// the backend.
 func sweepPhase(
 	ctx context.Context,
 	remoteStore remote.RemoteStore,
@@ -392,13 +397,9 @@ func sweepPhase(
 	stats *GCStats,
 	snapshotTime time.Time,
 	gracePeriod time.Duration,
-	sweepConcurrency int,
 	dryRunSample int,
 	options *Options,
 ) {
-	type prefixJob struct{ xx string }
-	jobs := make(chan prefixJob, 256)
-	var sweepWG sync.WaitGroup
 	var statsMu sync.Mutex
 
 	// Phase 11 IN-3-03: keep FirstErrors heterogeneous. Without
@@ -424,63 +425,60 @@ func sweepPhase(
 		stats.FirstErrors = append(stats.FirstErrors, msg)
 	}
 
-	sweepOne := func(j prefixJob) {
-		listPrefix := casPrefix + j.xx + "/"
-		objects, err := remoteStore.ListByPrefixWithMeta(ctx, listPrefix)
-		if err != nil {
-			addError("list " + j.xx + ": " + err.Error())
-			return
-		}
-		for _, obj := range objects {
+	// Post-Phase-17: the renamed RemoteStore.Walk replaces the per-XX
+	// ListByPrefixWithMeta scan. Walk enumerates every CAS object in the
+	// store in one call. The s3 backend Walk paginates internally; a
+	// future re-sharding extension belongs at the backend Walk layer
+	// (per-prefix fan-out), not here.
+	runSweep := func() {
+		walkErr := remoteStore.Walk(ctx, func(h blockstore.ContentHash, meta blockstore.Meta) error {
 			if err := ctx.Err(); err != nil {
-				return
+				return err
 			}
-			h, err := blockstore.ParseCASKey(obj.Key)
-			if err != nil {
-				// Non-CAS key — silently skip (T-11-C-07).
-				continue
-			}
+			casKey := blockstore.FormatCASKey(h)
 			// Phase 11 WR-4-02 — fail-closed on missing LastModified.
 			// A zero LastModified means the backend did not report
 			// per-object age; we cannot evaluate the snapshot - grace
 			// TTL filter (D-05) and we MUST NOT proceed to delete on
 			// the live-set check alone. Preserve the object and capture
-			// a diagnostic; the operator must fix the backend's
-			// ListByPrefixWithMeta to populate LastModified (see the
-			// remote.ObjectInfo contract).
-			if obj.LastModified.IsZero() {
-				addError("zero LastModified " + obj.Key + ": backend ListByPrefixWithMeta must populate LastModified for grace TTL evaluation")
-				continue
+			// a diagnostic.
+			if meta.LastModified.IsZero() {
+				addError("zero LastModified " + casKey + ": backend Walk must populate LastModified for grace TTL evaluation")
+				return nil
 			}
-			if obj.LastModified.After(snapshotTime.Add(-gracePeriod)) {
-				continue // within grace window (D-05)
+			if meta.LastModified.After(snapshotTime.Add(-gracePeriod)) {
+				return nil // within grace window (D-05)
 			}
 			present, err := gcs.Has(h)
 			if err != nil {
-				addError("gcstate has " + obj.Key + ": " + err.Error())
-				continue
+				addError("gcstate has " + casKey + ": " + err.Error())
+				return nil
 			}
 			if present {
-				continue // live — keep
+				return nil // live — keep
 			}
 			if options.DryRun {
 				statsMu.Lock()
 				if int64(len(stats.DryRunCandidates)) < int64(dryRunSample) {
-					stats.DryRunCandidates = append(stats.DryRunCandidates, obj.Key)
+					stats.DryRunCandidates = append(stats.DryRunCandidates, casKey)
 				}
 				stats.ObjectsSwept++ // count what would be deleted
 				statsMu.Unlock()
-				continue
+				return nil
 			}
-			if err := remoteStore.DeleteBlock(ctx, obj.Key); err != nil {
+			if err := remoteStore.Delete(ctx, h); err != nil {
 				// D-07: continue + capture
-				addError("delete " + obj.Key + ": " + err.Error())
-				continue
+				addError("delete " + casKey + ": " + err.Error())
+				return nil
 			}
 			statsMu.Lock()
 			stats.ObjectsSwept++
-			stats.BytesFreed += obj.Size
+			stats.BytesFreed += meta.Size
 			statsMu.Unlock()
+			return nil
+		})
+		if walkErr != nil {
+			addError("walk: " + walkErr.Error())
 		}
 		if options.ProgressCallback != nil {
 			statsMu.Lock()
@@ -490,20 +488,7 @@ func sweepPhase(
 		}
 	}
 
-	for w := 0; w < sweepConcurrency; w++ {
-		sweepWG.Add(1)
-		go func() {
-			defer sweepWG.Done()
-			for j := range jobs {
-				sweepOne(j)
-			}
-		}()
-	}
-	for xx := 0; xx < 256; xx++ {
-		jobs <- prefixJob{xx: fmt.Sprintf("%02x", xx)}
-	}
-	close(jobs)
-	sweepWG.Wait()
+	runSweep()
 }
 
 // finalizeStats fills the legacy aggregator fields from the mark-sweep

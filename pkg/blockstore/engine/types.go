@@ -3,14 +3,6 @@ package engine
 import (
 	"errors"
 	"time"
-
-	// API-02 justification: SyncerConfig.BlockLayout is read from the
-	// per-share metadata.ShareOptions at AddShare time and gates the
-	// dual-read shim inside dispatchRemoteFetch (Plan 14-02 / MIG-03).
-	// The engine never opens a metadata txn here — the type is a
-	// configuration enum carried verbatim from the share record. Plan 15
-	// (A6) removes the dual-read shim entirely along with this field.
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ErrClosed is returned when an operation is attempted on a closed Syncer.
@@ -76,15 +68,6 @@ type SyncerConfig struct {
 	ClaimBatchSize    int           // Max blocks flipped Pending→Syncing per claim cycle (default: 32)
 	UploadConcurrency int           // Per-share upload goroutine pool size (default: 8)
 	ClaimTimeout      time.Duration // Max age of a Syncing row before the janitor requeues it (default: 10m)
-
-	// BlockLayout selects the per-share block-key scheme. Plan 14-02
-	// (MIG-03 / D-A6 / D-A8) wires this into the dual-read shim inside
-	// dispatchRemoteFetch: `cas-only` shares refuse the legacy
-	// `{payloadID}/block-{idx}` fallback (surfacing
-	// ErrLegacyReadOnCASOnly) so post-migration drift cannot silently
-	// serve stale bytes. Empty/zero values coerce to BlockLayoutLegacy
-	// at NewSyncer time — pre-Phase-14 shares behave identically.
-	BlockLayout metadata.BlockLayout
 }
 
 // DefaultConfig returns the default Syncer configuration tuned for S3 performance.

@@ -33,20 +33,20 @@ import (
 var errKillPoint = errors.New("kill point injected")
 
 // crashingRemoteStore wraps an in-memory RemoteStore and can be told to
-// fail WriteBlockWithHash before forwarding to the real store. Used to
-// simulate a kill before the S3 PUT lands.
+// fail Put before forwarding to the real store. Used to simulate a kill
+// before the S3 PUT lands.
 type crashingRemoteStore struct {
 	remote.RemoteStore
 	failBeforePut bool
 	puts          atomic.Int64
 }
 
-func (c *crashingRemoteStore) WriteBlockWithHash(ctx context.Context, key string, hash blockstore.ContentHash, data []byte) error {
+func (c *crashingRemoteStore) Put(ctx context.Context, hash blockstore.ContentHash, data []byte) error {
 	if c.failBeforePut {
 		return errKillPoint
 	}
 	c.puts.Add(1)
-	return c.RemoteStore.WriteBlockWithHash(ctx, key, hash, data)
+	return c.RemoteStore.Put(ctx, hash, data)
 }
 
 // crashingFileBlockStore wraps a real EngineFileBlockStore and can be told
@@ -262,9 +262,9 @@ func TestSyncerCrash_PostMeta(t *testing.T) {
 	if _, err := blockstore.ParseCASKey(persisted.BlockStoreKey); err != nil {
 		t.Errorf("BlockStoreKey %q is not a valid CAS key: %v", persisted.BlockStoreKey, err)
 	}
-	// And the bytes are actually retrievable from the remote.
-	if _, err := f.memRemote.ReadBlock(context.Background(), persisted.BlockStoreKey); err != nil {
-		t.Errorf("ReadBlock(%s) after happy uploadOne: %v", persisted.BlockStoreKey, err)
+	// And the bytes are actually retrievable from the remote (by hash).
+	if _, err := f.memRemote.Get(context.Background(), persisted.Hash); err != nil {
+		t.Errorf("Get(%s) after happy uploadOne: %v", persisted.Hash, err)
 	}
 }
 

@@ -1,6 +1,6 @@
 package engine
 
-import "github.com/marmos91/dittofs/pkg/blockstore"
+import "fmt"
 
 // TransferRequest holds data for a pending transfer operation (download, upload, or prefetch).
 type TransferRequest struct {
@@ -38,7 +38,8 @@ func NewBlockUploadRequest(payloadID string, blockIdx uint64) TransferRequest {
 	}
 }
 
-// BlockKey returns a unique string key for this block.
+// BlockKey returns a unique string key for this block. Internal to the
+// engine after blockstore.FormatStoreKey was deleted in Phase 17.
 func (r TransferRequest) BlockKey() string {
-	return blockstore.FormatStoreKey(r.PayloadID, r.BlockIndex)
+	return fmt.Sprintf("%s/%d", r.PayloadID, r.BlockIndex)
 }

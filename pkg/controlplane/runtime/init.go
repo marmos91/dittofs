@@ -8,6 +8,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/pathutil"
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -213,6 +214,14 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 		}
 
 		if err := rt.AddShare(ctx, shareConfig); err != nil {
+			// Phase 17 D-11: legacy-layout detection is a hard boot
+			// stop, not a per-share warn-and-skip. Surface it so
+			// cmd/dfs/commands/start.go can exit 78 with the
+			// operator directive. Every other AddShare failure stays
+			// a warn-and-skip (preserves existing behavior).
+			if errors.Is(err, blockstore.ErrLegacyLayoutDetected) {
+				return fmt.Errorf("share %q: %w", share.Name, err)
+			}
 			logger.Warn("Failed to add share to runtime",
 				"share", share.Name,
 				"error", err)

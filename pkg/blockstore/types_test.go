@@ -74,78 +74,10 @@ func TestContentHashString_Unchanged(t *testing.T) {
 	}
 }
 
-// TestParseStoreKey_RoundTrip covers the canonical external store-key parser
-// (format: "{payloadID}/block-{N}"). Added here for symmetry with ParseBlockID
-// tests as part of TD-04 (5 parsers -> 2).
-func TestParseStoreKey_RoundTrip(t *testing.T) {
-	tests := []struct {
-		name          string
-		storeKey      string
-		wantPayloadID string
-		wantBlockIdx  uint64
-		wantOK        bool
-	}{
-		{
-			name:          "simple key",
-			storeKey:      "export/file.txt/block-0",
-			wantPayloadID: "export/file.txt",
-			wantBlockIdx:  0,
-			wantOK:        true,
-		},
-		{
-			name:          "nested path",
-			storeKey:      "export/docs/report.pdf/block-7",
-			wantPayloadID: "export/docs/report.pdf",
-			wantBlockIdx:  7,
-			wantOK:        true,
-		},
-		{
-			name:          "high block index",
-			storeKey:      "export/large.bin/block-12345",
-			wantPayloadID: "export/large.bin",
-			wantBlockIdx:  12345,
-			wantOK:        true,
-		},
-		{
-			name:     "missing /block- marker",
-			storeKey: "export/file.txt",
-			wantOK:   false,
-		},
-		{
-			name:     "non-integer index",
-			storeKey: "export/file.txt/block-abc",
-			wantOK:   false,
-		},
-		{
-			name:     "empty string",
-			storeKey: "",
-			wantOK:   false,
-		},
-		{
-			name:     "marker at index 0",
-			storeKey: "/block-0",
-			wantOK:   false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			pid, idx, ok := ParseStoreKey(tt.storeKey)
-			if ok != tt.wantOK {
-				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
-			}
-			if !tt.wantOK {
-				return
-			}
-			if pid != tt.wantPayloadID {
-				t.Errorf("payloadID = %q, want %q", pid, tt.wantPayloadID)
-			}
-			if idx != tt.wantBlockIdx {
-				t.Errorf("blockIdx = %d, want %d", idx, tt.wantBlockIdx)
-			}
-		})
-	}
-}
+// TestParseStoreKey_RoundTrip was deleted in Phase 17 alongside the
+// blockstore.ParseStoreKey helper it covered. The legacy
+// "{payloadID}/block-{N}" key shape is gone post-CAS — content
+// addressing supersedes the path-keyed form.
 
 // TestParseBlockID_RoundTrip covers the canonical internal blockID parser
 // (format: "{payloadID}/{blockIdx}"). Part of TD-04 consolidation (5 -> 2).

@@ -29,7 +29,6 @@ import (
 func TestAppendWrite_DeleteRace_NoDeadlock(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	bc := newFSStoreForTest(t, FSStoreOptions{
-		UseAppendLog:    true,
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 10,

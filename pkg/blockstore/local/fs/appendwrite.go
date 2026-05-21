@@ -114,8 +114,6 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 //
 // Returns:
 //   - ErrStoreClosed if the store is closed.
-//   - ErrAppendLogDisabled if useAppendLog is false (D-36; no disk side
-//     effects, no log file created).
 //   - nil if len(data) == 0 (matches WriteAt short-circuit).
 //   - ctx.Err() if the context is canceled before or during the pressure
 //     wait.
@@ -135,9 +133,6 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byte, offset uint64) error {
 	if bc.isClosed() {
 		return ErrStoreClosed
-	}
-	if !bc.useAppendLog {
-		return ErrAppendLogDisabled
 	}
 	if len(data) == 0 {
 		return nil
@@ -318,9 +313,6 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 	if bc.isClosed() {
 		return ErrStoreClosed
 	}
-	if !bc.useAppendLog {
-		return nil
-	}
 
 	// Step 1: tombstone + snapshot mutex/fd under the shared lock. We
 	// release logsMu before acquiring the per-file mutex so a concurrent
@@ -432,9 +424,6 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 func (bc *FSStore) TruncateAppendLog(_ context.Context, payloadID string, newSize uint64) error {
 	if bc.isClosed() {
 		return ErrStoreClosed
-	}
-	if !bc.useAppendLog {
-		return nil
 	}
 
 	bc.logsMu.RLock()

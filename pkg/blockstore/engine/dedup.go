@@ -245,7 +245,7 @@ func (m *Syncer) applyFileLevelDedupHit(
 	// rewrite, but the metadata commit has already happened and reads
 	// will resolve via target's BlockRefs.
 	if m.local != nil {
-		if err := m.local.DeleteAppendLog(ctx, payloadID); err != nil {
+		if err := m.local.DeleteLog(ctx, payloadID); err != nil {
 			logger.Warn("file-level dedup: delete append log",
 				"payloadID", payloadID, "err", err)
 		}
@@ -315,9 +315,10 @@ func (m *Syncer) DeleteWithRefCount(ctx context.Context, payloadID string, block
 	}
 
 	if m.fileBlockStore == nil {
-		if m.remoteStore != nil {
-			return m.remoteStore.DeleteByPrefix(ctx, payloadID+"/")
-		}
+		// Post-Phase-17: no per-file prefix delete on the renamed
+		// RemoteStore. Without a FileBlockStore we have no BlockRef
+		// list to decrement RefCount against — the deletion is a no-op
+		// and GC reclaims any orphans.
 		return nil
 	}
 
@@ -335,12 +336,19 @@ func (m *Syncer) DeleteWithRefCount(ctx context.Context, payloadID string, block
 				continue
 			}
 
-			if fb.BlockStoreKey != "" && m.remoteStore != nil {
-				if err := m.remoteStore.DeleteBlock(ctx, fb.BlockStoreKey); err != nil {
+			// Defensive: post-Phase-17 every reachable FileBlock is
+			// CAS-shaped (non-zero Hash). A stale zero-hash row
+			// pre-dating migration would be a bug; skip the remote
+			// delete rather than panic on the empty hash.
+			if !fb.Hash.IsZero() && m.remoteStore != nil {
+				if err := m.remoteStore.Delete(ctx, fb.Hash); err != nil {
 					logger.Warn("Failed to delete block from store",
 						"blockID", blockID,
 						"error", err)
 				}
+			} else if fb.Hash.IsZero() {
+				logger.Error("DeleteWithRefCount: zero-hash FileBlock encountered post-migration; skipping remote delete",
+					"blockID", blockID)
 			}
 
 			if err := m.fileBlockStore.Delete(ctx, blockID); err != nil {

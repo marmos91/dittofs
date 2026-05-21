@@ -106,8 +106,8 @@ func buildReadFixture(tb testing.TB) *perfFixture {
 		var hash blockstore.ContentHash
 		copy(hash[:], h[:])
 		key := blockstore.FormatCASKey(hash)
-		if err := rs.WriteBlockWithHash(ctx, key, hash, buf); err != nil {
-			tb.Fatalf("seed WriteBlockWithHash: %v", err)
+		if err := rs.Put(ctx, hash, buf); err != nil {
+			tb.Fatalf("seed Put: %v", err)
 		}
 		keys[i] = key
 		hashes[i] = hash
@@ -157,7 +157,7 @@ func BenchmarkRandReadVerified(b *testing.B) {
 	ops := 0
 	for i := 0; i < b.N; i++ {
 		idx := rng.Intn(perfFixtureSize)
-		data, err := f.remote.ReadBlockVerified(ctx, f.keys[idx], f.hashes[idx])
+		data, err := f.remote.ReadBlockVerified(ctx, f.hashes[idx], f.hashes[idx])
 		if err != nil {
 			b.Fatalf("ReadBlockVerified[%d]: %v", idx, err)
 		}
@@ -188,12 +188,12 @@ func BenchmarkRandReadUnverified(b *testing.B) {
 	ops := 0
 	for i := 0; i < b.N; i++ {
 		idx := rng.Intn(perfFixtureSize)
-		data, err := f.remote.ReadBlock(ctx, f.keys[idx])
+		data, err := f.remote.Get(ctx, f.hashes[idx])
 		if err != nil {
-			b.Fatalf("ReadBlock[%d]: %v", idx, err)
+			b.Fatalf("Get[%d]: %v", idx, err)
 		}
 		if len(data) != perfBlockSize {
-			b.Fatalf("ReadBlock[%d]: got %d bytes, want %d",
+			b.Fatalf("Get[%d]: got %d bytes, want %d",
 				idx, len(data), perfBlockSize)
 		}
 		ops++

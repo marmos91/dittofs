@@ -58,7 +58,7 @@ func TestManageDeleteBlockFile(t *testing.T) {
 	diskBefore := bc.diskUsed.Load()
 
 	// Delete the block
-	if err := bc.DeleteBlockFile(ctx, "file1", 0); err != nil {
+	if err := bc.deleteBlockFile(ctx, "file1", 0); err != nil {
 		t.Fatalf("DeleteBlockFile failed: %v", err)
 	}
 
@@ -95,7 +95,7 @@ func TestManageDeleteBlockFileIdempotent(t *testing.T) {
 	ctx := context.Background()
 
 	// Delete a block that doesn't exist -- should return nil
-	if err := bc.DeleteBlockFile(ctx, "nonexistent", 0); err != nil {
+	if err := bc.deleteBlockFile(ctx, "nonexistent", 0); err != nil {
 		t.Fatalf("DeleteBlockFile on non-existent block should return nil, got: %v", err)
 	}
 }
@@ -129,7 +129,7 @@ func TestManageDeleteBlockFileClearsPendingFBs(t *testing.T) {
 	}
 
 	// Delete the block
-	if err := bc.DeleteBlockFile(ctx, "file1", 0); err != nil {
+	if err := bc.deleteBlockFile(ctx, "file1", 0); err != nil {
 		t.Fatalf("DeleteBlockFile failed: %v", err)
 	}
 
@@ -192,51 +192,6 @@ func TestManageDeleteAllBlockFiles(t *testing.T) {
 	_ = payloadDir // just checking cleanup happened without error
 }
 
-func TestManageTruncateBlockFiles(t *testing.T) {
-	bc := newTestCache(t, 256*1024*1024)
-	ctx := context.Background()
-
-	// Write 3 blocks worth of data
-	data := make([]byte, int(blockstore.BlockSize)*2+4096) // block 0, 1, 2
-	for i := range data {
-		data[i] = byte(i % 256)
-	}
-	if err := bc.WriteAt(ctx, "file1", data, 0); err != nil {
-		t.Fatalf("WriteAt failed: %v", err)
-	}
-	if _, err := bc.Flush(ctx, "file1"); err != nil {
-		t.Fatalf("Flush failed: %v", err)
-	}
-	bc.SyncFileBlocks(ctx)
-
-	// Truncate to 1 byte past block 0 -- should keep block 0, remove blocks 1 and 2
-	newSize := uint64(blockstore.BlockSize) // exactly the boundary of block 1
-	if err := bc.TruncateBlockFiles(ctx, "file1", newSize); err != nil {
-		t.Fatalf("TruncateBlockFiles failed: %v", err)
-	}
-
-	// Block 0 should still exist in metadata
-	block0ID := makeBlockID(blockKey{payloadID: "file1", blockIdx: 0})
-	_, err := bc.blockStore.GetFileBlock(ctx, block0ID)
-	if err != nil {
-		t.Error("block 0 should still exist after truncate")
-	}
-
-	// Block 1 should be deleted
-	block1ID := makeBlockID(blockKey{payloadID: "file1", blockIdx: 1})
-	_, err = bc.blockStore.GetFileBlock(ctx, block1ID)
-	if err == nil {
-		t.Error("block 1 should be deleted after truncate")
-	}
-
-	// Block 2 should be deleted
-	block2ID := makeBlockID(blockKey{payloadID: "file1", blockIdx: 2})
-	_, err = bc.blockStore.GetFileBlock(ctx, block2ID)
-	if err == nil {
-		t.Error("block 2 should be deleted after truncate")
-	}
-}
-
 func TestManageGetStoredFileSize(t *testing.T) {
 	bc := newTestCache(t, 256*1024*1024)
 	ctx := context.Background()
@@ -270,60 +225,6 @@ func TestManageGetStoredFileSizeUnknown(t *testing.T) {
 	}
 	if size != 0 {
 		t.Fatalf("expected size 0 for unknown file, got %d", size)
-	}
-}
-
-func TestManageExistsOnDisk(t *testing.T) {
-	bc := newTestCache(t, 256*1024*1024)
-	ctx := context.Background()
-
-	// Write and flush
-	data := make([]byte, 4096)
-	if err := bc.WriteAt(ctx, "file1", data, 0); err != nil {
-		t.Fatalf("WriteAt failed: %v", err)
-	}
-	if _, err := bc.Flush(ctx, "file1"); err != nil {
-		t.Fatalf("Flush failed: %v", err)
-	}
-	bc.SyncFileBlocks(ctx)
-
-	exists, err := bc.ExistsOnDisk(ctx, "file1", 0)
-	if err != nil {
-		t.Fatalf("ExistsOnDisk failed: %v", err)
-	}
-	if !exists {
-		t.Fatal("expected ExistsOnDisk to return true for flushed block")
-	}
-}
-
-func TestManageExistsOnDiskStaleMetadata(t *testing.T) {
-	bc := newTestCache(t, 256*1024*1024)
-	ctx := context.Background()
-
-	// Write and flush
-	data := make([]byte, 4096)
-	if err := bc.WriteAt(ctx, "file1", data, 0); err != nil {
-		t.Fatalf("WriteAt failed: %v", err)
-	}
-	if _, err := bc.Flush(ctx, "file1"); err != nil {
-		t.Fatalf("Flush failed: %v", err)
-	}
-	bc.SyncFileBlocks(ctx)
-
-	// Delete the .blk file manually to simulate stale metadata
-	key := blockKey{payloadID: "file1", blockIdx: 0}
-	blockID := makeBlockID(key)
-	path := bc.blockPath(blockID)
-	if err := os.Remove(path); err != nil {
-		t.Fatalf("failed to remove .blk file: %v", err)
-	}
-
-	exists, err := bc.ExistsOnDisk(ctx, "file1", 0)
-	if err != nil {
-		t.Fatalf("ExistsOnDisk failed: %v", err)
-	}
-	if exists {
-		t.Fatal("expected ExistsOnDisk to return false for stale metadata")
 	}
 }
 
