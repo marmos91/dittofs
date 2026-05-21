@@ -7,12 +7,13 @@ import (
 
 // FileBlockStore defines content-addressed block CRUD for the engine.
 //
-// Narrowed to 6 methods in Phase 12 (META-03 / D-09): GetByHash, Put,
-// Delete, IncrementRefCount, DecrementRefCount, ListPending. Block
-// identity is hash-keyed at the contract level; backends still use
-// `id VARCHAR PRIMARY KEY + hash non-unique index` internally to
-// preserve the Phase 11 IN-3-02 / WR-4-01 multi-row-per-hash
-// tolerance for legacy data.
+// 7 methods (Phase 19 — AddRef joined the original 6 from Phase 12
+// META-03 / D-09; see .planning/phases/19-write-path-ram-optimizations/
+// 19-CONTEXT.md D-22b): GetByHash, Put, Delete, IncrementRefCount,
+// DecrementRefCount, ListPending, AddRef. Block identity is hash-keyed
+// at the contract level; backends still use `id VARCHAR PRIMARY KEY +
+// hash non-unique index` internally to preserve the Phase 11
+// IN-3-02 / WR-4-01 multi-row-per-hash tolerance for legacy data.
 //
 // The Phase 11 contract: Put returned nil for any
 // hash-already-present-on-another-row case. Phase 12 D-37 fixes the
@@ -82,6 +83,46 @@ type FileBlockStore interface {
 	// DecrementRefCount atomically decrements; returns the new
 	// count. RefCount=0 marks the block as a GC candidate.
 	DecrementRefCount(ctx context.Context, id string) (uint32, error)
+
+	// AddRef atomically increments RefCount on the FileBlock row
+	// indexed by hash. Introduced in Phase 19 for the in-memory hash
+	// dedup LRU hit path (Opt 1 — see Phase 19 CONTEXT.md D-04).
+	//
+	// On success, RefCount is incremented; BlockState is UNCHANGED
+	// (no Pending→Syncing→Remote transition; no new row created).
+	// This is the load-bearing contract: the LRU hit path references
+	// an existing block — it never creates one.
+	//
+	// Returns ErrUnknownHash if no FileBlock row exists for the given
+	// hash. Callers (see pkg/blockstore/local/fs/rollup.go LRU hit
+	// path) MUST fall back to the full Put path on this sentinel —
+	// the LRU may be ahead of the metadata store after a crash, or
+	// the hash may simply not be present yet.
+	//
+	// Atomicity matches IncrementRefCount's contract: the increment
+	// is performed under the backend's native concurrency primitive
+	// (mutex / Badger txn / Postgres conditional UPDATE) so AddRef
+	// is TOCTOU-free against concurrent DecrementRefCount cascade
+	// (D-04 — the dedup hit path otherwise races engine.Delete).
+	//
+	// Multi-row-per-hash tolerance (Phase 11 IN-3-02 / WR-4-01):
+	// AddRef MAY operate on any one matching row when more than one
+	// row shares the hash (legacy data + dedup short-circuit). The
+	// caller's BlockRef contract is satisfied either way — RefCount
+	// is a per-row property, and any non-zero RefCount keeps the row
+	// alive past GC.
+	//
+	// STATE-01..03 invariant preserved (D-27): AddRef references an
+	// existing block; the LRU hit path never creates a new block, so
+	// the "every block must visit Pending" rule is not contradicted.
+	// No new block row is materialized on success or on the
+	// ErrUnknownHash failure path.
+	//
+	// payloadID and blockRef are passed for backend-side
+	// observability (logging, tracing) and to allow future
+	// multi-row-per-hash backends to choose which row to bump; they
+	// are NOT part of the persisted state.
+	AddRef(ctx context.Context, hash ContentHash, payloadID string, blockRef BlockRef) error
 
 	// ListPending returns up-to-limit Pending FileBlocks older than
 	// olderThan, for the syncer claim path. Replaces the legacy

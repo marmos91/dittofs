@@ -136,6 +136,14 @@ var (
 	// ErrFileBlockNotFound is returned when a file block is not found.
 	ErrFileBlockNotFound = errors.New("file block not found")
 
+	// ErrUnknownHash is returned by FileBlockStore.AddRef when no
+	// FileBlock row exists for the given hash. The LRU hit path
+	// (Phase 19 Opt 1 — see pkg/blockstore/local/fs/rollup.go) MUST
+	// fall back to the full Put path on this sentinel; the LRU may
+	// be ahead of the metadata store after a crash (RAM-only LRU,
+	// see Phase 19 D-05), or the hash may simply not be present yet.
+	ErrUnknownHash = errors.New("metadata: hash not yet present in FileBlockStore (AddRef called before Put)")
+
 	// ErrRemoteUnavailable is returned when a remote store operation is needed
 	// but the remote store is currently unreachable. Protocol handlers should
 	// map this to appropriate I/O error codes (NFS3ERR_IO, NFS4ERR_IO,

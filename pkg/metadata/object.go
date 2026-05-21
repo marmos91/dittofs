@@ -64,3 +64,9 @@ var ErrInvalidHash = blockstore.ErrInvalidHash
 
 // ErrFileBlockNotFound is returned when a file block is not found.
 var ErrFileBlockNotFound = blockstore.ErrFileBlockNotFound
+
+// ErrUnknownHash is returned by FileBlockStore.AddRef when the hash is
+// not yet present in the metadata store. Re-exported from blockstore
+// for backward compatibility — see blockstore.ErrUnknownHash for the
+// canonical declaration and full contract. Phase 19 (D-04 / D-22b).
+var ErrUnknownHash = blockstore.ErrUnknownHash
