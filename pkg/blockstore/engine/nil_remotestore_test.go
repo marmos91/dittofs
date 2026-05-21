@@ -24,6 +24,7 @@ func newNilRemoteStoreEnv(t *testing.T) (*Syncer, local.LocalStore, func()) {
 	m := NewSyncer(bc, nil, ms, DefaultConfig())
 	return m, bc, func() {
 		_ = m.Close()
+		_ = bc.Close()
 	}
 }
 

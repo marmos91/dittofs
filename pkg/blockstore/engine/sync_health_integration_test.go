@@ -99,7 +99,10 @@ func newHealthTestEnv(t *testing.T) *healthTestEnv {
 	// MarkSynced step actually fires (mirror loop short-circuits to a
 	// no-op when the SyncedHashStore is nil).
 	m.SetSyncedHashStore(ms)
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() {
+		_ = m.Close()
+		_ = bc.Close()
+	})
 
 	return &healthTestEnv{
 		syncer: m,
