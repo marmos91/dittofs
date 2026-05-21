@@ -314,10 +314,10 @@ func (s *MemoryMetadataStore) incrementRefCountLocked(_ context.Context, id stri
 // RefCount on the resolved row. Caller MUST hold s.mu Write lock so
 // the entire resolve+mutate sequence is atomic (D-04 — TOCTOU-free
 // against concurrent DecrementRefCount cascade).
-func (s *MemoryMetadataStore) addRefLocked(_ context.Context, hash blockstore.ContentHash, payloadID string, blockRef blockstore.BlockRef) error {
+func (s *MemoryMetadataStore) addRefLocked(_ context.Context, hash blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
 	// payloadID + blockRef accepted for future GC traceability (D-04);
-	// memory backend records ref count only.
-	_, _ = payloadID, blockRef
+	// memory backend records ref count only — parameters intentionally
+	// blanked.
 	// No data → no rows → hash is unknown by definition.
 	if s.fileBlockData == nil {
 		return metadata.ErrUnknownHash

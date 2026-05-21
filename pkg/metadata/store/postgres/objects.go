@@ -176,10 +176,10 @@ func (s *PostgresMetadataStore) DecrementRefCount(ctx context.Context, id string
 // D-27: only ref_count is mutated. block_state is never touched —
 // AddRef references an existing block; the LRU hit path never creates
 // or transitions one (STATE-01..03 preservation).
-func (s *PostgresMetadataStore) AddRef(ctx context.Context, hash blockstore.ContentHash, payloadID string, blockRef blockstore.BlockRef) error {
+func (s *PostgresMetadataStore) AddRef(ctx context.Context, hash blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
 	// payloadID + blockRef accepted for future GC traceability (D-04);
-	// postgres backend records ref count only.
-	_, _ = payloadID, blockRef
+	// postgres backend records ref count only — parameters intentionally
+	// blanked.
 	result, err := s.exec(ctx,
 		`UPDATE file_blocks SET ref_count = ref_count + 1 WHERE hash = $1`,
 		hash.String())
@@ -516,10 +516,10 @@ func (tx *postgresTransaction) DecrementRefCount(ctx context.Context, id string)
 // AddRef runs the +1 UPDATE keyed by hash on the active pgx.Tx so a
 // subsequent rollback undoes the bump (CR-01 parity for the Phase 19
 // LRU hit path). Returns metadata.ErrUnknownHash when no row matches.
-func (tx *postgresTransaction) AddRef(ctx context.Context, hash blockstore.ContentHash, payloadID string, blockRef blockstore.BlockRef) error {
+func (tx *postgresTransaction) AddRef(ctx context.Context, hash blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
 	// payloadID + blockRef accepted for future GC traceability (D-04);
-	// postgres backend records ref count only.
-	_, _ = payloadID, blockRef
+	// postgres backend records ref count only — parameters intentionally
+	// blanked.
 	if err := ctx.Err(); err != nil {
 		return err
 	}

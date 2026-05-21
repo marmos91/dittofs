@@ -267,10 +267,10 @@ func (s *BadgerMetadataStore) DecrementRefCount(ctx context.Context, id string) 
 // D-27: RefCount is the ONLY field mutated. BlockState is preserved
 // across the read-modify-write (Pending stays Pending, Remote stays
 // Remote — no transition is fired by the hit path).
-func (s *BadgerMetadataStore) AddRef(ctx context.Context, hash blockstore.ContentHash, payloadID string, blockRef blockstore.BlockRef) error {
+func (s *BadgerMetadataStore) AddRef(ctx context.Context, hash blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
 	// payloadID + blockRef accepted for future GC traceability (D-04);
-	// badger backend records ref count only.
-	_, _ = payloadID, blockRef
+	// badger backend records ref count only — parameters intentionally
+	// blanked.
 	return s.updateWithConflictRetry(ctx, func(txn *badger.Txn) error {
 		// Resolve hash → id via the secondary index.
 		hashKey := []byte(fileBlockHashPrefix + hash.String())
@@ -690,10 +690,10 @@ func (tx *badgerTransaction) DecrementRefCount(ctx context.Context, id string) (
 // the active badger.Txn so a subsequent rollback discards the mutation
 // (mirrors the CR-01 fix applied to IncrementRefCount). Returns
 // metadata.ErrUnknownHash on index miss or value miss.
-func (tx *badgerTransaction) AddRef(ctx context.Context, hash metadata.ContentHash, payloadID string, blockRef blockstore.BlockRef) error {
+func (tx *badgerTransaction) AddRef(ctx context.Context, hash metadata.ContentHash, _ string, _ blockstore.BlockRef) error {
 	// payloadID + blockRef accepted for future GC traceability (D-04);
-	// badger backend records ref count only.
-	_, _ = payloadID, blockRef
+	// badger backend records ref count only — parameters intentionally
+	// blanked.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
