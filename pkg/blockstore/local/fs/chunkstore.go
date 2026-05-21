@@ -33,6 +33,11 @@ func (bc *FSStore) chunkPath(h blockstore.ContentHash) string {
 // Caller is responsible for asserting that BLAKE3(data) == h before calling;
 // this method trusts its inputs (threat T-10-05-03 accept). The rollup pool
 // is the only production caller.
+//
+// TRANSITIONAL-NEXT-MILESTONE: zstd compression (see #519 "Deferred to
+// v0.17+"). Compression would wrap the data slice before disk write;
+// OnChunkComplete still receives the UNCOMPRESSED data so the engine
+// Cache can serve reads without an extra decompress hop.
 func (bc *FSStore) StoreChunk(ctx context.Context, h blockstore.ContentHash, data []byte) error {
 	if bc.isClosed() {
 		return ErrStoreClosed
@@ -101,7 +106,24 @@ func (bc *FSStore) StoreChunk(ctx context.Context, h blockstore.ContentHash, dat
 	// LSL-08: register the chunk with the in-process LRU so eviction can
 	// reach it. This is the canonical post-write touch — readers use a
 	// separate ReadChunk wiring to promote on cache hits.
+	//
+	// TRANSITIONAL-NEXT-MILESTONE: pinned hot-tail RAM (see #519 "Deferred
+	// to v0.17+"). When pinned hot-tail RAM lands, StoreChunk may bypass
+	// the disk write entirely for recently-rolled-up chunks, requiring
+	// the OnChunkComplete callback to fire from the RAM-tier path instead.
 	bc.lruTouch(h, int64(len(data)), path)
+
+	// Phase 19 Opt 3 (D-10/D-12): fire the chunk-completion callback after
+	// disk store + LRU touch succeed. Exactly-once-per-successful-touch
+	// contract. Nil-safe (D-12) — pre-Phase-19 behavior preserved when no
+	// callback is installed. Fires OUTSIDE the lruMu lock (lruTouch
+	// released it on return) to avoid widening the hot lock window across
+	// an unrelated lock (the typical consumer is engine.Cache.Put, which
+	// takes its own lock). Error paths above already returned before this
+	// point — the callback is invariant on successful StoreChunk only.
+	if bc.onChunkComplete != nil {
+		bc.onChunkComplete(h, data, path)
+	}
 	return nil
 }
 

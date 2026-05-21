@@ -1416,6 +1416,17 @@ func CreateLocalStoreFromConfig(
 			logger.Warn("block store config has orphan_log_min_age_seconds but it is invalid or non-positive; ignoring", "value", v)
 		}
 	}
+	// Phase 19 Plan 03 + Plan 07: dedup LRU slot count. Zero falls back
+	// to FSStore's 4096 default (newFSStoreWithOptionsInternal's
+	// default-on-zero idiom), so passing the value through is safe even
+	// when the operator omits the knob from share config.
+	if v, ok := config["dedup_lru_size"]; ok {
+		if n, ok := v.(float64); ok && n > 0 {
+			fsOpts.DedupLRUSize = int(n)
+		} else {
+			logger.Warn("block store config has dedup_lru_size but it is invalid or non-positive; ignoring", "value", v)
+		}
+	}
 
 	switch storeType {
 	case "fs":
