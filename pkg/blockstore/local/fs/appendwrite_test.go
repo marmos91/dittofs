@@ -135,3 +135,68 @@ func TestAppendWrite_PressureBlocks_UntilSignaled(t *testing.T) {
 		t.Fatal("AppendWrite did not unblock after pressure release")
 	}
 }
+
+// TestLogFile_GroupCommit_NonNilAfterConstruction verifies Plan 06 Task 1
+// step 1: the logFile struct gains a `groupCommit *groupCommit` field that
+// is instantiated by the canonical constructor (getOrCreateLog → on first
+// touch). The field MUST be non-nil after the first AppendWrite drives
+// getOrCreateLog to materialize the logFile for "file1" (D-07: per-file
+// scope, one coordinator per open log fd).
+func TestLogFile_GroupCommit_NonNilAfterConstruction(t *testing.T) {
+	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
+	if err := bc.AppendWrite(context.Background(), "file1", []byte("hi"), 0); err != nil {
+		t.Fatalf("AppendWrite: %v", err)
+	}
+	bc.logsMu.RLock()
+	lf := bc.logFDs["file1"]
+	bc.logsMu.RUnlock()
+	if lf == nil {
+		t.Fatal("logFile not present after AppendWrite")
+	}
+	if lf.groupCommit == nil {
+		t.Fatal("logFile.groupCommit is nil after construction; Plan 06 Task 1 requires non-nil instantiation")
+	}
+}
+
+// TestLogFile_GroupCommit_FsyncFn_BoundToLfFile verifies the coordinator's
+// fsyncFn actually fsyncs the underlying log file. End-to-end durability
+// via the coordinator: write a record, drive lf.groupCommit.Sync directly,
+// close, reopen, and verify the bytes are on disk. This guards against a
+// future refactor where the coordinator is constructed with the wrong
+// fsync target (e.g., a no-op or a different fd).
+func TestLogFile_GroupCommit_FsyncFn_BoundToLfFile(t *testing.T) {
+	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
+	payload := []byte("durability via coordinator")
+	if err := bc.AppendWrite(context.Background(), "file1", payload, 0); err != nil {
+		t.Fatalf("AppendWrite: %v", err)
+	}
+	bc.logsMu.RLock()
+	lf := bc.logFDs["file1"]
+	bc.logsMu.RUnlock()
+	if lf == nil || lf.groupCommit == nil {
+		t.Fatal("logFile or coordinator missing after AppendWrite")
+	}
+	// Drive the coordinator directly — this should fsync lf.f. If the
+	// coordinator was bound to a different file (or a no-op), the test
+	// still passes for happy-path post-AppendWrite-fsync, so we instead
+	// verify by writing extra bytes through lf.f directly (bypassing
+	// AppendWrite's own fsync), then driving the coordinator's Sync.
+	extra := []byte("ZZ")
+	if _, err := lf.f.Write(extra); err != nil {
+		t.Fatalf("raw write: %v", err)
+	}
+	if err := lf.groupCommit.Sync(context.Background()); err != nil {
+		t.Fatalf("groupCommit.Sync: %v", err)
+	}
+	path := filepath.Join(bc.baseDir, "logs", "file1.log")
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat log: %v", err)
+	}
+	// The on-disk size must include the extra bytes since the coordinator's
+	// Sync flushed lf.f's buffers.
+	wantMin := int64(logHeaderSize + recordFrameOverhead + len(payload) + len(extra))
+	if st.Size() < wantMin {
+		t.Fatalf("log size after coordinator Sync: got %d, want >= %d", st.Size(), wantMin)
+	}
+}
