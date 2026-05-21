@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	iofs "io/fs"
 	"os"
 	"path/filepath"
@@ -756,53 +755,11 @@ func (bc *FSStore) SyncFileBlocksForFile(ctx context.Context, payloadID string) 
 	})
 }
 
-// queueFileBlockUpdate queues a FileBlock metadata update for async persistence
-// AND registers the block in the in-process diskIndex so the write hot path and
-// eviction can see it without a FileBlockStore round-trip (TD-02d / D-19).
-//
-// pendingFBs and diskIndex share the same *FileBlock pointer, so mutations
-// applied by the hot path (e.g., fb.LastAccess = now) are visible to both the
-// drain goroutine and subsequent hot-path lookups.
-func (bc *FSStore) queueFileBlockUpdate(fb *blockstore.FileBlock) {
-	bc.pendingFBs.Store(fb.ID, fb)
-	bc.diskIndex.Store(fb.ID, fb)
-}
-
 // diskIndexStore registers a FileBlock in the in-process diskIndex without
 // queuing an async persistence. Used by Recover to seed the index from disk
 // state without triggering redundant PutFileBlock writes.
 func (bc *FSStore) diskIndexStore(fb *blockstore.FileBlock) {
 	bc.diskIndex.Store(fb.ID, fb)
-}
-
-// diskIndexLookup returns the FileBlock metadata for a block currently on
-// disk, or (nil, false) if no entry exists. This is the hot-path replacement
-// for the FileBlockStore.GetFileBlock + pendingFBs fallback: all callers on
-// the write hot path and eviction must use this instead of lookupFileBlock.
-func (bc *FSStore) diskIndexLookup(blockID string) (*blockstore.FileBlock, bool) {
-	v, ok := bc.diskIndex.Load(blockID)
-	if !ok {
-		return nil, false
-	}
-	return v.(*blockstore.FileBlock), true
-}
-
-// diskIndexDelete removes a block from the in-process diskIndex. Called when
-// a block is deleted (DeleteBlockFile) or evicted.
-func (bc *FSStore) diskIndexDelete(blockID string) {
-	bc.diskIndex.Delete(blockID)
-}
-
-// lookupFileBlock retrieves a FileBlock, checking the pending queue first
-// (for recently-written metadata not yet persisted) then falling back to the
-// store. NOTE: this helper hits the FileBlockStore and MUST NOT be called
-// from the local write hot path or from eviction (TD-02d / D-19). Non-hot-
-// path callers (recovery, manage, state transitions) may use it.
-func (bc *FSStore) lookupFileBlock(ctx context.Context, blockID string) (*blockstore.FileBlock, error) {
-	if v, ok := bc.pendingFBs.Load(blockID); ok {
-		return v.(*blockstore.FileBlock), nil
-	}
-	return bc.blockStore.GetFileBlock(ctx, blockID)
 }
 
 // Stats returns a snapshot of current local store statistics.
@@ -830,47 +787,6 @@ func (bc *FSStore) Stats() local.Stats {
 		FileCount:     fileCount,
 		MemBlockCount: memBlockCount,
 	}
-}
-
-// getOrCreateMemBlock returns the memBlock for the given key, creating one with
-// a pre-allocated 8MB buffer if it doesn't exist. The pre-allocation avoids
-// allocation jitter on the write hot path.
-//
-// Uses double-checked locking: RLock fast path for existing blocks, Lock for creation.
-func (bc *FSStore) getOrCreateMemBlock(key blockKey) *memBlock {
-	bc.blocksMu.RLock()
-	mb, exists := bc.memBlocks[key]
-	bc.blocksMu.RUnlock()
-	if exists {
-		return mb
-	}
-
-	bc.blocksMu.Lock()
-	mb, exists = bc.memBlocks[key]
-	if !exists {
-		mb = &memBlock{
-			data: getBlockBuf(),
-		}
-		bc.memBlocks[key] = mb
-		// Maintain per-file secondary index
-		fm := bc.fileBlocks[key.payloadID]
-		if fm == nil {
-			fm = make(map[uint64]*memBlock)
-			bc.fileBlocks[key.payloadID] = fm
-		}
-		fm[key.blockIdx] = mb
-		bc.memUsed.Add(int64(blockstore.BlockSize))
-	}
-	bc.blocksMu.Unlock()
-	return mb
-}
-
-// getMemBlock returns the memBlock for the given key, or nil if not in memory.
-func (bc *FSStore) getMemBlock(key blockKey) *memBlock {
-	bc.blocksMu.RLock()
-	mb := bc.memBlocks[key]
-	bc.blocksMu.RUnlock()
-	return mb
 }
 
 // updateFileSize updates the tracked file size if the new end offset is larger.
@@ -913,12 +829,6 @@ func (bc *FSStore) GetFileSize(_ context.Context, payloadID string) (uint64, boo
 	fi.mu.RUnlock()
 
 	return size, true
-}
-
-// makeBlockID creates a deterministic block ID string from a blockKey.
-// Format: "{payloadID}/{blockIdx}" -- used as the primary key in FileBlockStore.
-func makeBlockID(key blockKey) string {
-	return fmt.Sprintf("%s/%d", key.payloadID, key.blockIdx)
 }
 
 // purgeMemBlocks removes all in-memory blocks for payloadID where shouldRemove returns true.
@@ -1003,36 +913,3 @@ func belongsToFile(blockID, payloadID string) bool {
 	return blockID[:len(payloadID)] == payloadID && blockID[len(payloadID)] == '/'
 }
 
-// writeFile atomically writes data to path, creating parent directories as needed.
-// Calls FADV_DONTNEED after writing to avoid polluting the OS page cache.
-func writeFile(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("create parent dir: %w", err)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return fmt.Errorf("create block file: %w", err)
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("write block file: %w", err)
-	}
-	dropPageCache(f)
-	return f.Close()
-}
-
-// readFile reads exactly size bytes from path.
-// Calls FADV_DONTNEED after reading to avoid polluting the OS page cache.
-func readFile(path string, size uint32) ([]byte, error) {
-	data := make([]byte, size)
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	if _, err := io.ReadFull(f, data); err != nil {
-		return nil, err
-	}
-	dropPageCache(f)
-	return data, nil
-}

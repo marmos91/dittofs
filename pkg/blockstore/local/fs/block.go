@@ -2,34 +2,18 @@ package fs
 
 import (
 	"sync"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// blockBufPool reuses 8MB buffers across memBlock lifecycles.
-// Uses a channel-based pool instead of sync.Pool to avoid GC scavenging
-// overhead. sync.Pool entries are cleared every GC cycle, causing the runtime
-// to madvise(MADV_DONTNEED) the 8MB pages back to the OS, then re-fault them
-// on the next allocation. This was measured at 55% of CPU time in pprof.
-//
-// The channel pool holds up to 32 buffers (256MB max). Buffers survive GC
-// because they're referenced by the channel. When the pool is empty, a new
-// buffer is allocated. When the pool is full, returned buffers are dropped
-// (GC will collect them naturally without madvise churn).
-//
-// Buffers may contain stale data but that's safe -- dataSize tracks the valid
-// extent and all writes overwrite the relevant range before reading it.
+// blockBufPool reuses BlockSize buffers across memBlock lifecycles.
+// Channel-based pool to avoid sync.Pool's GC-cycle MADV_DONTNEED churn on
+// large buffers. Buffers returned via putBlockBuf (from purgeMemBlocks)
+// land here; getBlockBuf historically allocated from this pool but the
+// allocator was deleted with the legacy block-flush write path. The pool
+// is retained as a recycle sink so purgeMemBlocks can hand buffers back
+// without the runtime immediately faulting them out.
 var blockBufPool = make(chan []byte, 32)
-
-func getBlockBuf() []byte {
-	select {
-	case buf := <-blockBufPool:
-		return buf
-	default:
-		return make([]byte, blockstore.BlockSize)
-	}
-}
 
 func putBlockBuf(buf []byte) {
 	if cap(buf) < blockstore.BlockSize {
@@ -50,30 +34,15 @@ type blockKey struct {
 	blockIdx  uint64 // Block position within the file (0-based)
 }
 
-// memBlock is an in-memory write buffer for a single 8MB block.
-//
-// NFS WRITE operations (typically 4KB each) accumulate into this buffer.
-// When the block is full (dataSize == BlockSize) or on NFS COMMIT, the
-// buffer is flushed atomically to a .blk file on disk (see flushBlock).
-// After flushing, data is set to nil to release the 8MB allocation.
-//
-// The 8MB buffer is pre-allocated when the memBlock is created (see
-// getOrCreateMemBlock) to avoid allocation jitter on the write hot path.
+// memBlock holds the residual per-block mutex + data pointer used by
+// purgeMemBlocks to release buffers back to blockBufPool on EvictMemory /
+// Truncate. The hot-path write buffer (dataSize / dirty / lastWrite /
+// writeGen) was retired alongside the legacy block-flush path; what
+// remains is the bookkeeping shell so the eviction surface still has
+// something to drain when the maps are repopulated by a future caller.
 type memBlock struct {
-	mu        sync.RWMutex
-	data      []byte    // Pre-allocated BlockSize buffer; nil after flush to disk
-	dataSize  uint32    // Highest byte offset written (valid data extent)
-	dirty     bool      // true if buffer has data not yet flushed to disk
-	lastWrite time.Time // Timestamp of last write; used for LRU flush ordering
-
-	// writeGen is bumped (under mu) on every WriteAt that mutates the buffer.
-	// flushBlock (TD-09 stage-and-release) snapshots writeGen at stage time;
-	// if writeGen is unchanged when flushBlock re-acquires the lock for the
-	// post-write flag flip, no concurrent writer interleaved during the disk
-	// I/O window — safe to clear data/dataSize/dirty. If writeGen advanced,
-	// new bytes arrived in mb.data and dirty stays true so the next flush
-	// picks them up.
-	writeGen uint64
+	mu   sync.RWMutex
+	data []byte // BlockSize buffer; nil after release
 }
 
 // fileInfo tracks per-file metadata in the local store.

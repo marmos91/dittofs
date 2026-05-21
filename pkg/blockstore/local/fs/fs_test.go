@@ -136,24 +136,6 @@ func (c *countingFileBlockStore) TotalCount() int {
 		c.listFileBlocks.Load())
 }
 
-// newTestCache creates an FSStore with a temporary directory and in-memory block store.
-func newTestCache(t *testing.T, maxMemory int64) *FSStore {
-	t.Helper()
-	dir := t.TempDir()
-	blockStore := memory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := New(dir, 0, maxMemory, blockStore)
-	if err != nil {
-		t.Fatalf("failed to create local store: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	bc.Start(ctx)
-	t.Cleanup(func() {
-		cancel()
-		_ = bc.Close()
-	})
-	return bc
-}
-
 // writeSentinelForTest writes a minimal valid `.cas-migrated-v1` marker
 // at the share-dir root. Mirrors pkg/blockstore/migrate.writeSentinel's
 // contract (file content is opaque to the boot guard; presence is what

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
@@ -83,12 +82,3 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 	return nil
 }
 
-// fileOrFallbackSize returns the file's actual size on disk, falling back
-// to fallback if os.Stat fails (e.g., file already deleted). Retained for
-// callers in manage.go that delete legacy .blk files outside the LRU.
-func fileOrFallbackSize(path string, fallback int64) int64 {
-	if info, err := os.Stat(path); err == nil {
-		return info.Size()
-	}
-	return fallback
-}
