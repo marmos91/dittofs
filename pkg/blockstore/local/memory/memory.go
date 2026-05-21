@@ -30,6 +30,19 @@ type casEntry struct {
 	lastModified time.Time
 }
 
+// ChunkEmitter is invoked once per CAS chunk freshly emitted by the
+// MemoryStore's synchronous rollup. Engine and test wiring use this
+// hook to populate downstream FileBlock metadata so the engine's CAS
+// read path can resolve (payloadID, offset) → hash. The callback runs
+// under MemoryStore's write lock; implementations must not call back
+// into the MemoryStore (deadlock).
+//
+// chunkStart is the absolute byte offset of the chunk's first byte in
+// the per-payload append-log stream. size is the chunk length in
+// bytes. hash is the BLAKE3-256 content hash already stored in the
+// MemoryStore's CAS map.
+type ChunkEmitter func(payloadID string, chunkStart uint64, size uint32, hash blockstore.ContentHash)
+
 // MemoryStore is a pure in-memory implementation of local.LocalStore.
 // All data lives in maps; nothing touches disk. Useful for testing and
 // ephemeral configurations. The on-the-wire surface is exclusively
@@ -54,8 +67,26 @@ type MemoryStore struct {
 	// tombstones marks payloadIDs whose append log was deleted.
 	tombstones map[string]struct{}
 
+	// chunkEmitter, if non-nil, is invoked once per CAS chunk freshly
+	// emitted by rollup. Installed by engine.New (and by test
+	// harnesses) so downstream FileBlock metadata can mirror the
+	// rollup's chunk boundaries.
+	chunkEmitter ChunkEmitter
+
 	closed          bool
 	evictionEnabled bool
+}
+
+// SetChunkEmitter wires the rollup-time per-chunk callback. Idempotent;
+// the most recent setter wins. Mirrors the *fs.FSStore's
+// SetObjectIDPersister plumbing pattern. The signature uses the raw
+// function type (rather than the ChunkEmitter alias) so the engine's
+// interface assertion (engine.New) matches structurally without
+// importing the alias.
+func (s *MemoryStore) SetChunkEmitter(emit func(payloadID string, chunkStart uint64, size uint32, hash blockstore.ContentHash)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.chunkEmitter = emit
 }
 
 // appendLog is the per-payload write-absorber buffer. AppendWrite
@@ -303,14 +334,16 @@ func (s *MemoryStore) AppendWrite(_ context.Context, payloadID string, data []by
 	}
 
 	// Synchronous FastCDC rollup over the entire log buffer.
-	s.rollupLocked(log.buf)
+	s.rollupLocked(payloadID, log.buf)
 	return nil
 }
 
-// rollupLocked runs FastCDC over the consolidated payload buffer and
-// stores the resulting chunks in the CAS map. Caller MUST hold s.mu
-// for write.
-func (s *MemoryStore) rollupLocked(buf []byte) {
+// rollupLocked runs FastCDC over the consolidated payload buffer,
+// stores the resulting chunks in the CAS map, and invokes the
+// chunkEmitter callback (if wired) once per chunk so downstream
+// FileBlock metadata can mirror the rollup's chunk boundaries.
+// Caller MUST hold s.mu for write.
+func (s *MemoryStore) rollupLocked(payloadID string, buf []byte) {
 	if len(buf) == 0 {
 		return
 	}
@@ -329,6 +362,9 @@ func (s *MemoryStore) rollupLocked(buf []byte) {
 			cp := make([]byte, len(chunk))
 			copy(cp, chunk)
 			s.cas[h] = casEntry{data: cp, lastModified: time.Now()}
+		}
+		if s.chunkEmitter != nil {
+			s.chunkEmitter(payloadID, uint64(pos), uint32(end), h)
 		}
 		pos += end
 	}
