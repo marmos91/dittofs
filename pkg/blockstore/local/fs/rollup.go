@@ -325,14 +325,55 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 		}
 		chunkBytes := stream[pos : pos+uint64(b)]
 		h := blake3ContentHash(chunkBytes)
-		if err := bc.StoreChunk(ctx, h, chunkBytes); err != nil {
-			return fmt.Errorf("rollup: StoreChunk: %w", err)
-		}
-		blocks = append(blocks, blockstore.BlockRef{
+		blockRef := blockstore.BlockRef{
 			Hash:   h,
 			Offset: pos,
 			Size:   uint32(b),
-		})
+		}
+
+		// Phase 19 Opt 1 (D-04): consult the per-FSStore dedup LRU between
+		// FastCDC.Next() and StoreChunk. On hit, FileBlockStore.AddRef
+		// atomically bumps RefCount on the existing row and we skip the
+		// local CAS write entirely. The BlockRef append below still happens
+		// — D-02 manifest invariant: ComputeObjectID later in this function
+		// sees the same BlockRef list with or without the LRU. D-27 STATE
+		// preservation: AddRef leaves BlockState unchanged; this hit path
+		// neither creates a row nor transitions one.
+		skipStoreChunk := false
+		if bc.dedupLRU != nil {
+			if _, ok := bc.dedupLRU.Get(h); ok {
+				addRefErr := bc.blockStore.AddRef(ctx, h, payloadID, blockRef)
+				switch {
+				case addRefErr == nil:
+					skipStoreChunk = true
+					slog.Debug("rollup: LRU dedup hit",
+						"hash", h, "payloadID", payloadID, "size", b)
+				case errors.Is(addRefErr, metadata.ErrUnknownHash):
+					// TOCTOU: hash was in LRU but the row got swept by a
+					// concurrent engine.Delete cascade (or never existed
+					// — a post-restart LRU re-seed without a backing
+					// metadata row would also land here). Fall through to
+					// StoreChunk + LRU repopulate below.
+					slog.Debug("rollup: LRU stale (ErrUnknownHash); falling back to StoreChunk",
+						"hash", h, "payloadID", payloadID)
+				default:
+					return fmt.Errorf("rollup: AddRef: %w", addRefErr)
+				}
+			}
+		}
+
+		if !skipStoreChunk {
+			if err := bc.StoreChunk(ctx, h, chunkBytes); err != nil {
+				return fmt.Errorf("rollup: StoreChunk: %w", err)
+			}
+			// Phase 19 Opt 1: first-write seeds the LRU for subsequent
+			// idempotent rewrites of the same content.
+			if bc.dedupLRU != nil {
+				bc.dedupLRU.Put(h, payloadID)
+			}
+		}
+
+		blocks = append(blocks, blockRef)
 		pos += uint64(b)
 	}
 
