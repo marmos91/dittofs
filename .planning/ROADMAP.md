@@ -45,7 +45,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 - [x] **Phase 16: Cache RAM-only (remove mmap read path)** — Delete `cache_mmap_*.go`, swap `readFromCAS` → `local.Get`, retire D-33 perf gate (GH issue: #516) — **SHIPPED 2026-05-20** on `gsd/phase-16-cache-mmap-removal` (16 commits); warm-cache D-06 PASS (ratio 0.890 ≤1.02)
 - [ ] **Phase 17: Unified BlockStore interface + legacy delete + migration tool** — Single `BlockStore` interface (Put/Get/GetRange/Has/Delete/Walk/Head) for local + remote, `BlockStoreAppend` extends with random-write tier, delete legacy `.blk` writer + dual-read shim + flag, ship `dfsctl blockstore migrate-to-cas` one-shot (GH issue: #517)
 - [x] **Phase 18: Syncer simplification + ObjectID relocation** — Syncer Flush → mirror loop `for hash := range local.ListUnsynced() { remote.Put(...) }`. Move `ComputeObjectID` to rollup CommitChunks. Local-only shares now get ObjectIDs. (GH issue: #518) (completed 2026-05-21)
-- [ ] **Phase 19: Write-path RAM optimizations** — 4 opts: in-memory hash dedup LRU; group commit / batched fsync; direct-to-Cache on chunk completion; eager small-file dedup (GH issue: #519)
+- [x] **Phase 19: Write-path RAM optimizations** — 4 opts: in-memory hash dedup LRU; group commit / batched fsync; direct-to-Cache on chunk completion; eager small-file dedup (GH issue: #519) (completed 2026-05-21)
 
 **Parent tracking issue:** [#515](https://github.com/marmos91/dittofs/issues/515)
 
@@ -543,8 +543,8 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
   - [x] 19-06-PLAN.md — Opt 2 wire-in: appendwrite.go:259 fsync coalesce via per-logFile groupCommit (wave 2)
   - [x] 19-07-PLAN.md — Opt 3 wire-in: chunkstore.lruTouch fires OnChunkComplete; engine wires to Cache.Put (wave 2)
   - [x] 19-08-PLAN.md — Opt 4 wire-in: eager small-file dedup in engine.Flush before trySpeculativeFileLevelDedup (wave 2)
-  - [ ] 19-09-PLAN.md — Correctness + perf benches + D-21 aggregate gate tightening to ≤1.00 (wave 3)
-  - [ ] 19-10-PLAN.md — D-23 ClaimBatchSize deletion + D-24 admin-method audit + D-25 marker audit + D-26 tmpfs spill anchor + doc.go (wave 4)
+  - [x] 19-09-PLAN.md — Correctness + perf benches + D-21 aggregate gate tightening to ≤1.00 (wave 3)
+  - [x] 19-10-PLAN.md — D-23 ClaimBatchSize deletion + D-24 admin-method audit + D-25 marker audit + D-26 tmpfs spill anchor + doc.go (wave 4)
 
 ## Milestone Gates
 
