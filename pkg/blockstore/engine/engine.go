@@ -857,16 +857,21 @@ func (bs *BlockStore) SetEvictionEnabled(enabled bool) {
 }
 
 // readAtInternal reads from the primary payloadID. Always goes through
-// the local store (with remote-fallback on miss); the Plan 12-09 Cache
-// is hint-only and does not serve bytes here. The CAS-keyed byte-serve
-// path is a Plan 12-10 (mmap) deliverable.
+// the local store (with remote-fallback on miss); the cache is hint-only
+// and does not serve bytes here.
+//
+// CAS rewire: the per-block read path resolves (payloadID, blockIdx) →
+// FileBlock.Hash and serves bytes via local.Get(hash). The legacy
+// LocalStore.ReadAt admin method (which surveyed memBlocks + .blk files
+// keyed by payloadID+offset) is gone in this plan; reads now ride the
+// unified CAS chunk store directly.
 func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
 	if len(data) == 0 {
 		return 0, nil
 	}
 
 	// Try primary local store.
-	found, err := bs.local.ReadAt(ctx, payloadID, data, offset)
+	found, err := bs.readLocalByHash(ctx, payloadID, data, offset)
 	if err != nil {
 		return 0, fmt.Errorf("local read failed: %w", err)
 	}
@@ -885,7 +890,7 @@ func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID string, data
 func (bs *BlockStore) ensureAndReadFromLocal(ctx context.Context, payloadID string, dest []byte, offset uint64) error {
 	length := uint32(len(dest))
 
-	// Fast path: direct-serve copies S3 data directly to dest, skipping a second ReadAt.
+	// Fast path: direct-serve copies S3 data directly to dest, skipping a second read.
 	filled, err := bs.syncer.EnsureAvailableAndRead(ctx, payloadID, offset, length, dest)
 	if err != nil {
 		return fmt.Errorf("direct download failed: %w", err)
@@ -894,7 +899,7 @@ func (bs *BlockStore) ensureAndReadFromLocal(ctx context.Context, payloadID stri
 		return nil
 	}
 
-	found, err := bs.local.ReadAt(ctx, payloadID, dest, offset)
+	found, err := bs.readLocalByHash(ctx, payloadID, dest, offset)
 	if err != nil {
 		return fmt.Errorf("read after download failed: %w", err)
 	}
@@ -905,4 +910,75 @@ func (bs *BlockStore) ensureAndReadFromLocal(ctx context.Context, payloadID stri
 	}
 
 	return nil
+}
+
+// readLocalByHash serves [offset, offset+len(dest)) by walking the
+// covered block-index range, resolving each block's FileBlock row to its
+// content hash, and copying the appropriate slice of the local CAS chunk
+// into dest. Returns (true, nil) when every covered block was satisfied
+// locally and (false, nil) when any block could not be resolved or is
+// not present in the local CAS chunk store — the caller treats the
+// false outcome as "must fall back to remote-fetch".
+//
+// On any unexpected error (FileBlock store failure, local chunk store
+// I/O error other than ErrChunkNotFound) the function returns
+// (false, err) so the engine can surface it to the protocol layer.
+//
+// Per-block region math is identical to the legacy fs.FSStore.ReadAt
+// loop (block 0 covers offsets [0, BlockSize), block 1 covers
+// [BlockSize, 2*BlockSize), …); a partial block at either end of the
+// range is sliced via the same blockOffset + readLen arithmetic.
+func (bs *BlockStore) readLocalByHash(ctx context.Context, payloadID string, dest []byte, offset uint64) (bool, error) {
+	if len(dest) == 0 {
+		return true, nil
+	}
+	remaining := dest
+	currentOffset := offset
+	for len(remaining) > 0 {
+		blockIdx := currentOffset / blockstore.BlockSize
+		blockOffset := uint32(currentOffset % blockstore.BlockSize)
+
+		readLen := uint32(len(remaining))
+		spaceInBlock := uint32(blockstore.BlockSize) - blockOffset
+		if readLen > spaceInBlock {
+			readLen = spaceInBlock
+		}
+
+		fb, err := bs.syncer.resolveFileBlock(ctx, payloadID, blockIdx)
+		if err != nil {
+			return false, err
+		}
+		if fb == nil || fb.Hash.IsZero() {
+			return false, nil
+		}
+
+		data, err := bs.local.Get(ctx, fb.Hash)
+		if err != nil {
+			if errors.Is(err, blockstore.ErrChunkNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+
+		// FileBlock.DataSize records the authoritative byte count
+		// inside this CAS chunk. The chunk file on disk may be
+		// padded (legacy 8 MiB block frames), so clamp via DataSize
+		// when present to keep partial-tail reads correct.
+		dataLen := uint32(len(data))
+		if fb.DataSize > 0 && fb.DataSize < dataLen {
+			dataLen = fb.DataSize
+		}
+		if blockOffset+readLen > dataLen {
+			// Tail of the read falls past the populated bytes for
+			// this block — surface as "must fall back" so the
+			// caller (post remote-fetch) zero-fills sparse holes
+			// consistently with the pre-rewire semantics.
+			return false, nil
+		}
+
+		copy(remaining[:readLen], data[blockOffset:blockOffset+readLen])
+		remaining = remaining[readLen:]
+		currentOffset += uint64(readLen)
+	}
+	return true, nil
 }
