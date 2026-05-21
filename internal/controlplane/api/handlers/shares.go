@@ -80,6 +80,10 @@ type CreateShareRequest struct {
 	// AclFlagInheritedCanonicalization — Refs #514. Pointer so the handler
 	// can distinguish "unset → use default true" from "explicit false".
 	AclFlagInheritedCanonicalization *bool `json:"acl_flag_inherited_canonicalization,omitempty"`
+	// AccessBasedEnumeration — Refs #532. Pointer for the same reason: nil
+	// keeps the server default (false); a non-nil pointer is an explicit
+	// set.
+	AccessBasedEnumeration *bool `json:"access_based_enumeration,omitempty"`
 }
 
 // UpdateShareRequest is the request body for PUT /api/v1/shares/{name}.
@@ -101,6 +105,9 @@ type UpdateShareRequest struct {
 	// is not required (takes effect on adapter restart, matching
 	// LocalStoreSize/ReadBufferSize semantics).
 	AclFlagInheritedCanonicalization *bool `json:"acl_flag_inherited_canonicalization,omitempty"`
+	// AccessBasedEnumeration — Refs #532. nil = no change; non-nil = explicit
+	// set. Persisted on UpdateShare; takes effect on adapter restart.
+	AccessBasedEnumeration *bool `json:"access_based_enumeration,omitempty"`
 }
 
 // ShareResponse is the response body for share endpoints.
@@ -129,9 +136,12 @@ type ShareResponse struct {
 	// AclFlagInheritedCanonicalization mirrors models.Share — Refs #514.
 	// No omitempty: `false` is operator-meaningful state, matching the
 	// `enabled` pattern.
-	AclFlagInheritedCanonicalization bool      `json:"acl_flag_inherited_canonicalization"`
-	CreatedAt                        time.Time `json:"created_at"`
-	UpdatedAt                        time.Time `json:"updated_at"`
+	AclFlagInheritedCanonicalization bool `json:"acl_flag_inherited_canonicalization"`
+	// AccessBasedEnumeration mirrors models.Share — Refs #532. No omitempty
+	// for the same reason: operators need to render the explicit state.
+	AccessBasedEnumeration bool      `json:"access_based_enumeration"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 
 	// Status is the worst-of health report derived from the share's
 	// metadata store and block store engine. Non-omitempty so
@@ -269,6 +279,12 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		aclCanon = *req.AclFlagInheritedCanonicalization
 	}
 
+	// Refs #532: access-based enumeration defaults off.
+	abe := false
+	if req.AccessBasedEnumeration != nil {
+		abe = *req.AccessBasedEnumeration
+	}
+
 	now := time.Now()
 	share := &models.Share{
 		ID:                               uuid.New().String(),
@@ -286,6 +302,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		QuotaBytes:                       quotaBytes,
 		Enabled:                          true, // REST-02: new shares are enabled by default.
 		AclFlagInheritedCanonicalization: aclCanon,
+		AccessBasedEnumeration:           abe,
 		CreatedAt:                        now,
 		UpdatedAt:                        now,
 	}
@@ -326,6 +343,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			Enabled:                          share.Enabled,
 			EncryptData:                      req.EncryptData,
 			AclFlagInheritedCanonicalization: share.AclFlagInheritedCanonicalization,
+			AccessBasedEnumeration:           share.AccessBasedEnumeration,
 			DefaultPermission:                defaultPerm,
 			Squash:                           nfsOpts.GetSquashMode(),
 			AnonymousUID:                     nfsOpts.GetAnonymousUID(),
@@ -452,6 +470,10 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		// (matches LocalStoreSize/ReadBufferSize semantics — no runtime
 		// hot-reload).
 		share.AclFlagInheritedCanonicalization = *req.AclFlagInheritedCanonicalization
+	}
+	if req.AccessBasedEnumeration != nil {
+		// Refs #532. Persisted to DB; takes effect on adapter restart.
+		share.AccessBasedEnumeration = *req.AccessBasedEnumeration
 	}
 	if req.DefaultPermission != nil {
 		share.DefaultPermission = *req.DefaultPermission
@@ -949,6 +971,7 @@ func shareToResponse(s *models.Share) ShareResponse {
 		ReadBufferSize:                   readBufferSizeStr,
 		QuotaBytes:                       quotaBytesStr,
 		AclFlagInheritedCanonicalization: s.AclFlagInheritedCanonicalization,
+		AccessBasedEnumeration:           s.AccessBasedEnumeration,
 		CreatedAt:                        s.CreatedAt,
 		UpdatedAt:                        s.UpdatedAt,
 	}

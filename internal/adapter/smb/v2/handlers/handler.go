@@ -246,6 +246,10 @@ type TreeConnection struct {
 	CreatedAt   time.Time
 	Permission  models.SharePermission // User's permission level for this share
 	EncryptData bool                   // Share requires all requests to be encrypted
+	// AccessBasedEnumeration mirrors the share-level toggle. When true,
+	// QUERY_DIRECTORY filters entries the caller cannot read (refs #532,
+	// MS-SMB2 §2.2.10 SMB2_SHARE_CAP_ACCESS_BASED_DIRECTORY_ENUM).
+	AccessBasedEnumeration bool
 }
 
 // OpenFile represents an open file handle created by the CREATE command.

@@ -31,17 +31,23 @@ type Share struct {
 	// MS-DTYP §2.5.3.4.2 (clearing it when AUTO_INHERIT_REQ is unset). Default
 	// true matches Windows behavior; set to false to opt into the Samba
 	// extension where the bit survives without AUTO_INHERIT_REQ (refs #514).
-	AclFlagInheritedCanonicalization bool      `gorm:"default:true;not null" json:"acl_flag_inherited_canonicalization"`
-	DefaultPermission                string    `gorm:"default:read-write;size:50" json:"default_permission"`      // none, read, read-write, admin
-	Config                           string    `gorm:"type:text" json:"-"`                                        // JSON blob for additional share config
-	BlockedOperations                string    `gorm:"type:text" json:"-"`                                        // JSON array of blocked operations
-	RetentionPolicy                  string    `gorm:"size:10;default:''" json:"retention_policy"`                // pin, ttl, lru (empty = LRU default)
-	RetentionTTL                     int64     `gorm:"default:0" json:"retention_ttl"`                            // TTL in seconds (0 = not set)
-	LocalStoreSize                   int64     `gorm:"default:0" json:"local_store_size"`                         // Per-share disk size override in bytes (0 = system default)
-	ReadBufferSize                   int64     `gorm:"default:0;column:read_buffer_size" json:"read_buffer_size"` // Read buffer override in bytes (0 = system default)
-	QuotaBytes                       int64     `gorm:"default:0;column:quota_bytes" json:"quota_bytes"`           // Per-share byte quota (0 = unlimited)
-	CreatedAt                        time.Time `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt                        time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+	AclFlagInheritedCanonicalization bool `gorm:"default:true;not null" json:"acl_flag_inherited_canonicalization"`
+	// AccessBasedEnumeration enables Windows access-based enumeration on the
+	// share (SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM per MS-SRVS). When
+	// true, TREE_CONNECT advertises SMB2_SHARE_CAP_ACCESS_BASED_DIRECTORY_ENUM
+	// (MS-SMB2 §2.2.10) and QUERY_DIRECTORY hides entries the caller cannot
+	// read. Default false matches the historical behaviour (refs #532).
+	AccessBasedEnumeration bool      `gorm:"default:false;not null" json:"access_based_enumeration"`
+	DefaultPermission      string    `gorm:"default:read-write;size:50" json:"default_permission"`      // none, read, read-write, admin
+	Config                 string    `gorm:"type:text" json:"-"`                                        // JSON blob for additional share config
+	BlockedOperations      string    `gorm:"type:text" json:"-"`                                        // JSON array of blocked operations
+	RetentionPolicy        string    `gorm:"size:10;default:''" json:"retention_policy"`                // pin, ttl, lru (empty = LRU default)
+	RetentionTTL           int64     `gorm:"default:0" json:"retention_ttl"`                            // TTL in seconds (0 = not set)
+	LocalStoreSize         int64     `gorm:"default:0" json:"local_store_size"`                         // Per-share disk size override in bytes (0 = system default)
+	ReadBufferSize         int64     `gorm:"default:0;column:read_buffer_size" json:"read_buffer_size"` // Read buffer override in bytes (0 = system default)
+	QuotaBytes             int64     `gorm:"default:0;column:quota_bytes" json:"quota_bytes"`           // Per-share byte quota (0 = unlimited)
+	CreatedAt              time.Time `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt              time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 
 	// Relationships
 	MetadataStore    MetadataStoreConfig    `gorm:"foreignKey:MetadataStoreID" json:"metadata_store,omitempty"`

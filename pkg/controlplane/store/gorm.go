@@ -266,6 +266,17 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, fmt.Errorf("failed to backfill shares.enabled: %w", err)
 	}
 
+	// Refs #532: backfill shares.access_based_enumeration for rows that predate
+	// the column. SQLite ALTER TABLE ADD COLUMN can leave NULL despite DEFAULT,
+	// which would surface as a Scan failure when the GORM tag declares the
+	// field non-nullable. Mirrors the shares.enabled backfill immediately above.
+	if err := db.Exec(
+		"UPDATE shares SET access_based_enumeration = ? WHERE access_based_enumeration IS NULL",
+		false,
+	).Error; err != nil {
+		return nil, fmt.Errorf("failed to backfill shares.access_based_enumeration: %w", err)
+	}
+
 	// --- Post-AutoMigrate migrations ---
 	// Step 2: Migrate legacy Share payload_store_id column to local/remote block store IDs.
 	postMigrator := db.Migrator()

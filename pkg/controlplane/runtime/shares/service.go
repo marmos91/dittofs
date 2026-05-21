@@ -55,6 +55,14 @@ type Share struct {
 	// extension where the bit survives without AUTO_INHERIT_REQ (refs #514).
 	AclFlagInheritedCanonicalization bool
 
+	// AccessBasedEnumeration enables Windows access-based enumeration on the
+	// share (SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM per MS-SRVS). When
+	// true, TREE_CONNECT advertises
+	// SMB2_SHARE_CAP_ACCESS_BASED_DIRECTORY_ENUM (MS-SMB2 §2.2.10) and the
+	// SMB QUERY_DIRECTORY handler filters out entries the caller cannot
+	// read. Default false (refs #532).
+	AccessBasedEnumeration bool
+
 	// NFS-specific options
 	DisableReaddirplus bool
 
@@ -118,6 +126,11 @@ type ShareConfig struct {
 	// for MS-DTYP §2.5.3.4.2 canonicalization of SE_DACL_AUTO_INHERITED. See
 	// the runtime Share field for semantics (refs #514).
 	AclFlagInheritedCanonicalization bool
+
+	// AccessBasedEnumeration mirrors models.Share's per-share toggle for
+	// Windows access-based enumeration. See the runtime Share field for
+	// semantics (refs #532).
+	AccessBasedEnumeration bool
 
 	RootAttr *metadata.FileAttr
 
@@ -408,6 +421,7 @@ func (s *Service) prepareShare(
 		Enabled:                          config.Enabled,
 		EncryptData:                      config.EncryptData,
 		AclFlagInheritedCanonicalization: config.AclFlagInheritedCanonicalization,
+		AccessBasedEnumeration:           config.AccessBasedEnumeration,
 		DefaultPermission:                config.DefaultPermission,
 		Squash:                           config.Squash,
 		AnonymousUID:                     config.AnonymousUID,

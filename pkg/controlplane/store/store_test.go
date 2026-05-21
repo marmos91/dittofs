@@ -1216,3 +1216,91 @@ func TestPostgresDSN(t *testing.T) {
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
+
+// TestAccessBasedEnumerationBackfill verifies that the post-AutoMigrate
+// backfill replaces NULL access_based_enumeration values with false. SQLite
+// ALTER TABLE ADD COLUMN can leave NULL despite the DEFAULT clause when the
+// column was added before the NOT NULL tag landed, which would surface as a
+// Scan failure on the non-nullable bool. Mirrors the shares.enabled backfill
+// contract (refs PR #536 review).
+//
+// The test simulates a legacy row by recreating the table without the NOT
+// NULL constraint, inserting NULL, then running the backfill statement and
+// asserting the value was replaced with false.
+func TestAccessBasedEnumerationBackfill(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+
+	db := store.DB()
+
+	// Recreate the table without NOT NULL on access_based_enumeration so we
+	// can simulate a row that predates the constraint. AutoMigrate adds the
+	// constraint at first run; legacy SQLite DBs that started life without
+	// it (i.e. created before the model tag was added) are exactly what
+	// the backfill targets.
+	if err := db.Exec(`DROP TABLE shares`).Error; err != nil {
+		t.Fatalf("drop shares: %v", err)
+	}
+	if err := db.Exec(`
+		CREATE TABLE shares (
+			id TEXT PRIMARY KEY,
+			name TEXT UNIQUE NOT NULL,
+			metadata_store_id TEXT NOT NULL,
+			local_block_store_id TEXT NOT NULL,
+			remote_block_store_id TEXT,
+			read_only BOOLEAN DEFAULT FALSE,
+			enabled BOOLEAN DEFAULT TRUE NOT NULL,
+			encrypt_data BOOLEAN DEFAULT FALSE,
+			acl_flag_inherited_canonicalization BOOLEAN DEFAULT TRUE NOT NULL,
+			access_based_enumeration BOOLEAN DEFAULT FALSE,
+			default_permission TEXT DEFAULT 'read-write',
+			config TEXT,
+			blocked_operations TEXT,
+			retention_policy TEXT DEFAULT '',
+			retention_ttl INTEGER DEFAULT 0,
+			local_store_size INTEGER DEFAULT 0,
+			read_buffer_size INTEGER DEFAULT 0,
+			quota_bytes INTEGER DEFAULT 0,
+			created_at DATETIME,
+			updated_at DATETIME
+		)
+	`).Error; err != nil {
+		t.Fatalf("recreate shares: %v", err)
+	}
+
+	// Insert a legacy row with NULL access_based_enumeration.
+	if err := db.Exec(`
+		INSERT INTO shares (id, name, metadata_store_id, local_block_store_id, access_based_enumeration)
+		VALUES (?, ?, ?, ?, NULL)
+	`, "legacy-id", "/legacy", "meta-id", "local-id").Error; err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+
+	// Verify the row is NULL before backfill (sanity check).
+	var pre *bool
+	if err := db.Raw("SELECT access_based_enumeration FROM shares WHERE name = ?", "/legacy").Scan(&pre).Error; err != nil {
+		t.Fatalf("pre-backfill scan: %v", err)
+	}
+	if pre != nil {
+		t.Fatalf("setup: expected NULL, got %v", *pre)
+	}
+
+	// Run the backfill (mirrors gorm.go).
+	if err := db.Exec(
+		"UPDATE shares SET access_based_enumeration = ? WHERE access_based_enumeration IS NULL",
+		false,
+	).Error; err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	var post *bool
+	if err := db.Raw("SELECT access_based_enumeration FROM shares WHERE name = ?", "/legacy").Scan(&post).Error; err != nil {
+		t.Fatalf("post-backfill scan: %v", err)
+	}
+	if post == nil {
+		t.Fatalf("backfill left value NULL")
+	}
+	if *post {
+		t.Fatalf("backfill set true, want false")
+	}
+}

@@ -23,6 +23,12 @@ const treeConnectFixedSize = 8
 // [MS-SMB2] Section 2.2.10
 const SMB2ShareFlagEncryptData uint32 = 0x00008000
 
+// SMB2ShareCapAccessBasedDirectoryEnum advertises Windows access-based
+// enumeration on the share. When set in the Capabilities field of the
+// TREE_CONNECT response, clients learn that QUERY_DIRECTORY hides entries
+// the caller cannot read. [MS-SMB2] Section 2.2.10.
+const SMB2ShareCapAccessBasedDirectoryEnum uint32 = 0x00000080
+
 // ipcMaximalAccess defines the access rights for the IPC$ virtual share.
 // [MS-SMB2] Section 2.2.10 - MaximalAccess is a bitmask of allowed operations.
 // Value 0x1F grants the following SMB2 access rights for named pipe operations:
@@ -144,13 +150,14 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	// Create tree connection with permission
 	treeID := h.GenerateTreeID()
 	tree := &TreeConnection{
-		TreeID:      treeID,
-		SessionID:   ctx.SessionID,
-		ShareName:   shareName,
-		ShareType:   types.SMB2ShareTypeDisk,
-		CreatedAt:   time.Now(),
-		Permission:  permission,
-		EncryptData: share.EncryptData,
+		TreeID:                 treeID,
+		SessionID:              ctx.SessionID,
+		ShareName:              shareName,
+		ShareType:              types.SMB2ShareTypeDisk,
+		CreatedAt:              time.Now(),
+		Permission:             permission,
+		EncryptData:            share.EncryptData,
+		AccessBasedEnumeration: share.AccessBasedEnumeration,
 	}
 	h.StoreTree(tree)
 
@@ -166,13 +173,21 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		shareFlags |= SMB2ShareFlagEncryptData
 	}
 
+	// Capabilities — advertise per-share features. Refs #532: MS-SMB2 §2.2.10
+	// SMB2_SHARE_CAP_ACCESS_BASED_DIRECTORY_ENUM tells the client we hide
+	// unreadable entries on enumeration.
+	var capabilities uint32
+	if share.AccessBasedEnumeration {
+		capabilities |= SMB2ShareCapAccessBasedDirectoryEnum
+	}
+
 	// Build response (16 bytes)
 	w := smbenc.NewWriter(16)
 	w.WriteUint16(16)                     // StructureSize
 	w.WriteUint8(types.SMB2ShareTypeDisk) // ShareType
 	w.WriteUint8(0)                       // Reserved
 	w.WriteUint32(shareFlags)             // ShareFlags
-	w.WriteUint32(0)                      // Capabilities
+	w.WriteUint32(capabilities)           // Capabilities
 	w.WriteUint32(maximalAccess)          // MaximalAccess
 
 	return NewResult(types.StatusSuccess, w.Bytes()), nil

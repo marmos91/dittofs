@@ -193,6 +193,7 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			Enabled:                          share.Enabled, // Plan 05-09 D-02: propagate DB Enabled flag so adapter gates read the correct runtime value.
 			EncryptData:                      share.EncryptData,
 			AclFlagInheritedCanonicalization: share.AclFlagInheritedCanonicalization,
+			AccessBasedEnumeration:           share.AccessBasedEnumeration,
 			DefaultPermission:                share.DefaultPermission,
 			Squash:                           nfsOpts.GetSquashMode(),
 			AnonymousUID:                     nfsOpts.GetAnonymousUID(),

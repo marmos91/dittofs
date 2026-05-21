@@ -159,6 +159,10 @@ main() {
     $DFSCTL share create --name /smbbasic --acl-canonicalize-inherited=false $share_flags
     $DFSCTL share create --name /smbencrypted --encrypt-data $share_flags
     $DFSCTL share create --name /fileshare $share_flags
+    # Refs #532: smbtorture smb2.acls.ACCESSBASED connects to a share with the
+    # MS-SRVS SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM flag set so
+    # QUERY_DIRECTORY hides entries the caller cannot read.
+    $DFSCTL share create --name /hideunread --access-based-enumeration $share_flags
 
     # Create test users
     log_info "Creating test users..."
@@ -193,7 +197,7 @@ main() {
     # Wait for SMB adapter to start
     wait_for_smb localhost
 
-    log_info "Bootstrap complete: shares=smbbasic,smbencrypted,fileshare users=wpts-admin,nonadmin adapter=smb:${SMB_PORT}"
+    log_info "Bootstrap complete: shares=smbbasic,smbencrypted,fileshare,hideunread users=wpts-admin,nonadmin adapter=smb:${SMB_PORT}"
 }
 
 main "$@"
