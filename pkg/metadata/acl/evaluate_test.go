@@ -610,3 +610,96 @@ func TestEvaluate_OwnerRights_AlarmAceDoesNotSuppressOwner(t *testing.T) {
 		t.Error("expected owner to retain OWNER@ rights when only an ALARM OwnerRights@ ACE is present")
 	}
 }
+
+// TestEvaluate_OwnerImplicitGrants_DataPlusImplicit verifies MS-DTYP §2.5.3.2:
+// owner gets READ_CONTROL / WRITE_DAC / WRITE_OWNER on top of explicit DACL
+// grants when no OWNER_RIGHTS ACE is present. The DACL here grants OWNER@
+// only READ_DATA; the owner must still be able to open for READ_DATA + the
+// three implicit standard rights together.
+func TestEvaluate_OwnerImplicitGrants_DataPlusImplicit(t *testing.T) {
+	a := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialOwner},
+		},
+	}
+
+	requested := uint32(ACE4_READ_DATA | ACE4_READ_ACL | ACE4_WRITE_ACL | ACE4_WRITE_OWNER)
+	if !Evaluate(a, ownerCtx(), requested) {
+		t.Error("expected owner to receive READ_DATA + implicit READ_CONTROL|WRITE_DAC|WRITE_OWNER")
+	}
+}
+
+// TestEvaluate_OwnerImplicitGrants_NoOwnerAceAtAll verifies that the owner
+// gets the §2.5.3.2 implicit grants even when the DACL has no OWNER@ ACE at
+// all — implicit grants are not gated on the owner being mentioned.
+func TestEvaluate_OwnerImplicitGrants_NoOwnerAceAtAll(t *testing.T) {
+	a := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialEveryone},
+		},
+	}
+
+	requested := uint32(ACE4_READ_ACL | ACE4_WRITE_ACL | ACE4_WRITE_OWNER)
+	if !Evaluate(a, ownerCtx(), requested) {
+		t.Error("expected owner to receive implicit READ_CONTROL|WRITE_DAC|WRITE_OWNER even with no OWNER@ ACE")
+	}
+}
+
+// TestEvaluate_OwnerImplicitGrants_OwnerRightsSuppresses verifies §2.5.3:
+// when OWNER_RIGHTS ACE is present, the §2.5.3.2 implicit owner grants are
+// suppressed — OWNER_RIGHTS is the sole authority for the owner's rights.
+func TestEvaluate_OwnerImplicitGrants_OwnerRightsSuppresses(t *testing.T) {
+	a := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialOwnerRights},
+		},
+	}
+
+	// Owner requests READ_DATA — granted via OWNER_RIGHTS Allow.
+	if !Evaluate(a, ownerCtx(), ACE4_READ_DATA) {
+		t.Error("expected owner to receive READ_DATA from OWNER_RIGHTS Allow")
+	}
+	// Owner requests READ_CONTROL — should be DENIED because OWNER_RIGHTS
+	// suppresses the implicit grant and only Allows READ_DATA.
+	if Evaluate(a, ownerCtx(), ACE4_READ_ACL) {
+		t.Error("expected owner to be denied implicit READ_CONTROL when OWNER_RIGHTS is present")
+	}
+}
+
+// TestEvaluate_OwnerImplicitGrants_ExplicitDenyWins verifies that an
+// explicit DENY ACE on a standard right (e.g., WRITE_DAC) overrides the
+// §2.5.3.2 implicit grant for that bit. Explicit DENY always wins.
+func TestEvaluate_OwnerImplicitGrants_ExplicitDenyWins(t *testing.T) {
+	a := &ACL{
+		ACEs: []ACE{
+			// DENY WRITE_DAC for owner — first-match-wins.
+			{Type: ACE4_ACCESS_DENIED_ACE_TYPE, AccessMask: ACE4_WRITE_ACL, Who: SpecialOwner},
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialOwner},
+		},
+	}
+
+	// READ_CONTROL + WRITE_OWNER (implicit) should still work.
+	if !Evaluate(a, ownerCtx(), ACE4_READ_ACL|ACE4_WRITE_OWNER) {
+		t.Error("expected owner to receive implicit READ_CONTROL|WRITE_OWNER")
+	}
+	// WRITE_DAC must be denied by explicit DENY.
+	if Evaluate(a, ownerCtx(), ACE4_WRITE_ACL) {
+		t.Error("expected owner WRITE_DAC denied by explicit DENY ACE")
+	}
+}
+
+// TestEvaluate_OwnerImplicitGrants_NonOwnerUnaffected verifies non-owner
+// requesters do NOT receive the implicit standard rights — those are
+// owner-only per §2.5.3.2.
+func TestEvaluate_OwnerImplicitGrants_NonOwnerUnaffected(t *testing.T) {
+	a := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialEveryone},
+		},
+	}
+
+	// Non-owner requesting READ_CONTROL — must be denied (no implicit grant).
+	if Evaluate(a, nonOwnerCtx(), ACE4_READ_ACL) {
+		t.Error("expected non-owner to be denied READ_CONTROL (no implicit grant)")
+	}
+}

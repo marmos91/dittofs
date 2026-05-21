@@ -40,10 +40,22 @@ func HasExplicitDeny(a *ACL) bool {
 	return false
 }
 
+// ownerImplicitRights is the set of access rights MS-DTYP §2.5.3.2 grants
+// implicitly to the file owner: READ_CONTROL, WRITE_DAC, and WRITE_OWNER.
+// These are layered on top of the explicit DACL grants unless suppressed by
+// an effective OWNER_RIGHTS (S-1-3-4) ACE in the DACL. Explicit DENY ACEs
+// in the DACL still win over the implicit grant for any specific bit.
+//
+// NFSv4 mask bits intentionally share positions with Windows MS-DTYP rights
+// (RFC 7530 §6.2.1), so the same constants describe both layers.
+const ownerImplicitRights = ACE4_READ_ACL | ACE4_WRITE_ACL | ACE4_WRITE_OWNER
+
 // Evaluate implements the NFSv4 ACL evaluation algorithm per RFC 7530
-// Section 6.2.1, with the OWNER_RIGHTS (S-1-3-4) override from
-// MS-DTYP §2.5.3 / §2.4.10. It processes ACEs sequentially and returns
-// true only if ALL requested permission bits are explicitly allowed.
+// Section 6.2.1, with the OWNER_RIGHTS (S-1-3-4) override and the owner
+// implicit-grant rule from MS-DTYP §2.5.3 / §2.4.10 / §2.5.3.2. It
+// processes ACEs sequentially and returns true only if ALL requested
+// permission bits are explicitly allowed (or implicitly granted to the
+// owner per §2.5.3.2).
 //
 // The algorithm:
 //  1. Pre-scan (owner only): detect whether any effective OWNER_RIGHTS
@@ -51,7 +63,8 @@ func HasExplicitDeny(a *ACL) bool {
 //     requester is the file owner, the OWNER_RIGHTS ACEs become the sole
 //     authority for the owner: OWNER@ ACEs are ignored for matching
 //     purposes (they would otherwise supersede the OWNER_RIGHTS decision
-//     under first-match-wins). This mirrors Samba
+//     under first-match-wins) AND the §2.5.3.2 implicit owner grants are
+//     suppressed. This mirrors Samba
 //     `libcli/security/access_check.c::se_access_check`. AUDIT/ALARM
 //     ACEs do not affect access decisions and therefore do not trigger
 //     the override; non-owner requesters skip the pre-scan entirely.
@@ -62,14 +75,23 @@ func HasExplicitDeny(a *ACL) bool {
 //     - DENY: mark undecided bits as denied
 //     - AUDIT/ALARM: skip (store-only per project decision)
 //  5. Once all requested bits are decided, stop early.
-//  6. Return true if and only if ALL requested bits are in allowedBits.
+//  6. Owner-implicit pass (MS-DTYP §2.5.3.2): if the requester is the file
+//     owner AND no OWNER_RIGHTS ACE is present, OR `ownerImplicitRights`
+//     into `allowedBits` for any of those bits not already denied. Explicit
+//     DENY in the DACL still wins per-bit.
+//  7. Return true if and only if ALL requested bits are in allowedBits.
 func Evaluate(a *ACL, evalCtx *EvaluateContext, requestedMask uint32) bool {
 	if requestedMask == 0 {
 		return true
 	}
-	if a == nil || len(a.ACEs) == 0 {
+	if a == nil {
 		return false
 	}
+	// Empty DACL: per MS-DTYP §2.5.3 the explicit grant set is empty
+	// ("deny all"). MS-DTYP §2.5.3.2 still applies — the file owner
+	// receives the implicit READ_CONTROL|WRITE_DAC|WRITE_OWNER grants
+	// even when no ACE is present. Fall through to the owner-implicit
+	// pass below; non-owners terminate with an empty allowedBits.
 
 	// First pass: does this DACL contain any effective OWNER_RIGHTS ACE
 	// that affects access decisions? The override only matters when the
@@ -132,6 +154,13 @@ func Evaluate(a *ACL, evalCtx *EvaluateContext, requestedMask uint32) bool {
 		if (allowedBits|deniedBits)&requestedMask == requestedMask {
 			break
 		}
+	}
+
+	// MS-DTYP §2.5.3.2 owner implicit grants: layered after the DACL walk
+	// so explicit DENY ACEs still win per-bit. Suppressed when OWNER_RIGHTS
+	// is present (§2.5.3 — OWNER_RIGHTS is the sole authority for the owner).
+	if evalCtx.UID == evalCtx.FileOwnerUID && !ownerRightsPresent {
+		allowedBits |= ownerImplicitRights &^ deniedBits
 	}
 
 	// Access is granted only if ALL requested bits are in allowedBits.
