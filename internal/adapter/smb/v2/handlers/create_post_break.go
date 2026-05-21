@@ -199,6 +199,27 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		}
 	}
 
+	// Step 6c-bis: Enforce DesiredAccess against the existing file's DACL.
+	//
+	// Per MS-SMB2 §3.3.5.9 and MS-FSA §2.1.5.1.2.1, the server MUST evaluate
+	// the requested access bits against the object's security descriptor and
+	// fail the open with STATUS_ACCESS_DENIED when any non-MAXIMUM_ALLOWED bit
+	// is denied. New files (createAction == FileCreated) inherit their ACL from
+	// the parent at create time and don't need this check — parent write was
+	// already gated via CheckParentWriteAccess in Create(). Tracking #529.
+	metaSvc := h.Registry.GetMetadataService()
+	if fileExists && existingFile != nil {
+		granted, err := metaSvc.CheckFileAccess(existingFile, authCtx, req.DesiredAccess)
+		if err != nil {
+			logger.Debug("CREATE: DesiredAccess denied by DACL",
+				"path", filename,
+				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
+				"granted", fmt.Sprintf("0x%x", granted),
+				"error", err)
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}
+		}
+	}
+
 	// Step 6d: Validate delete-on-close requirements per MS-FSA 2.1.5.1.2.1.
 	if req.CreateOptions&types.FileDeleteOnClose != 0 {
 		if !hasDeleteAccess(req.DesiredAccess) {
@@ -236,7 +257,6 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	// Step 7: Perform create/open.
 	var file *metadata.File
 	var fileHandle metadata.FileHandle
-	metaSvc := h.Registry.GetMetadataService()
 	switch createAction {
 	case types.FileOpened:
 		file = existingFile

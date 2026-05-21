@@ -514,3 +514,232 @@ func (s *MetadataService) checkReadPermission(ctx *AuthContext, handle FileHandl
 func (s *MetadataService) checkExecutePermission(ctx *AuthContext, handle FileHandle) error {
 	return s.checkPermission(ctx, handle, PermissionExecute, "execute permission denied")
 }
+
+// MS-DTYP access-right bits used by CheckFileAccess.
+//
+// Kept here (rather than importing the SMB types package) because permission
+// enforcement is protocol-agnostic and importing protocol packages from
+// metadata would invert the dependency. The numeric values are spec-fixed.
+const (
+	// accessMaskMaximumAllowed is MS-DTYP §2.4.3 MAXIMUM_ALLOWED.
+	// When set on a CREATE DesiredAccess request, the server MUST NOT deny
+	// the open — it computes and returns the bits the requester is actually
+	// allowed and uses those as the granted access.
+	accessMaskMaximumAllowed uint32 = 0x02000000
+
+	// POSIX-fallback access masks, mirroring computeMaximalAccess in
+	// internal/adapter/smb/v2/handlers/create.go. Kept consistent so DACL
+	// nil → enforcement and MxAc reply agree. See PR #528 + issue #525 for
+	// the rationale on POSIX fallback over Windows-default synthesis at
+	// the enforcement layer.
+	accessMaskPosixGenericAll uint32 = 0x001F01FF
+	accessMaskPosixRead       uint32 = 0x00120089
+	accessMaskPosixWrite      uint32 = 0x00120116
+	accessMaskPosixExecute    uint32 = 0x001200A0
+
+	// accessMaskMinAuthenticated is READ_CONTROL | SYNCHRONIZE — the floor
+	// granted to any authenticated requester even when POSIX mode bits would
+	// otherwise grant nothing. Mirrors computeMaximalAccess.
+	accessMaskMinAuthenticated uint32 = 0x00100000 | 0x00020000
+)
+
+// CheckFileAccess validates a CREATE DesiredAccess request against an
+// existing file's stored DACL (or POSIX mode bits when ACL == nil) per
+// MS-SMB2 §3.3.5.9 and MS-FSA §2.1.5.1.2.1.
+//
+// Returns the granted access mask. Behavior:
+//
+//   - Root bypass (UID 0): returns desiredAccess as granted.
+//   - file.ACL == nil: POSIX fallback (owner=ALL, group/other from mode bits),
+//     identical to computeMaximalAccess in create.go so the MxAc reply and the
+//     enforcement gate agree. AND'd with desiredAccess.
+//   - file.ACL != nil: per-requested-bit acl.Evaluate; only the bits the DACL
+//     explicitly allows are granted. EVERYONE@/OWNER@/GROUP@/SID-form ACEs
+//     resolve via the same EvaluateContext shape as evaluateACLPermissions.
+//   - MAXIMUM_ALLOWED (0x02000000) in desiredAccess: never deny. The returned
+//     granted mask reflects what the DACL actually allows; the caller is
+//     expected to use it as the handle's effective access rights
+//     (MS-SMB2 §2.2.13.1 / §3.3.5.9 paragraph 8).
+//
+// Returns ErrAccessDenied as a *StoreError when MAXIMUM_ALLOWED is NOT set
+// and any requested bit is denied. Granted is always populated (even on
+// error) so callers can log what was/wasn't granted.
+//
+// GENERIC_*, OWNER_RIGHTS, and ACCESSBASED enumeration are intentionally
+// out of scope here — those are tracked separately under #530/#531/#532.
+func (s *MetadataService) CheckFileAccess(file *File, authCtx *AuthContext, desiredAccess uint32) (uint32, error) {
+	maximumAllowed := desiredAccess&accessMaskMaximumAllowed != 0
+
+	// Root bypass: identical semantics to computeMaximalAccess and
+	// evaluateACLPermissions. UID 0 gets everything; MAXIMUM_ALLOWED resolves
+	// to GENERIC_ALL.
+	if authCtx != nil && authCtx.Identity != nil && authCtx.Identity.UID != nil && *authCtx.Identity.UID == 0 {
+		if maximumAllowed {
+			return accessMaskPosixGenericAll, nil
+		}
+		return desiredAccess, nil
+	}
+
+	var granted uint32
+	if file.ACL != nil {
+		evalCtx := buildFileAccessEvalContext(file, authCtx)
+		// Per-bit probe: acl.Evaluate(mask, …) returns true only when ALL bits
+		// in mask are allowed, so we must probe each requested bit
+		// individually — anything else conflates per-bit DENY semantics.
+		probe := desiredAccess &^ accessMaskMaximumAllowed
+		for bit := uint32(1); bit != 0 && probe != 0; bit <<= 1 {
+			if probe&bit == 0 {
+				continue
+			}
+			if acl.Evaluate(file.ACL, evalCtx, bit) {
+				granted |= bit
+			}
+			probe &^= bit
+		}
+	} else {
+		granted = posixFallbackAccessMask(file, authCtx) & (desiredAccess &^ accessMaskMaximumAllowed)
+	}
+
+	if maximumAllowed {
+		// MAXIMUM_ALLOWED never denies. Compute the full set of bits the
+		// requester is allowed (independent of what they asked for, minus the
+		// MAXIMUM_ALLOWED bit itself) and return that as the granted mask.
+		// Mirrors computeMaximalAccess on the ACL path and the POSIX-fallback
+		// path so the handle's effective access matches the MxAc reply.
+		var effective uint32
+		if file.ACL != nil {
+			evalCtx := buildFileAccessEvalContext(file, authCtx)
+			for _, bit := range maxAccessProbeBits {
+				if acl.Evaluate(file.ACL, evalCtx, bit) {
+					effective |= bit
+				}
+			}
+		} else {
+			effective = posixFallbackAccessMask(file, authCtx)
+		}
+		return effective | granted, nil
+	}
+
+	// Strict mode: any requested non-MAXIMUM_ALLOWED bit not granted = deny.
+	requestedExplicit := desiredAccess &^ accessMaskMaximumAllowed
+	if requestedExplicit != 0 && granted&requestedExplicit != requestedExplicit {
+		return granted, &StoreError{
+			Code:    ErrAccessDenied,
+			Message: "desired access denied by file DACL",
+		}
+	}
+	return granted, nil
+}
+
+// maxAccessProbeBits is the set of MS-DTYP access-right bits probed against a
+// file's DACL when MAXIMUM_ALLOWED is requested. Mirrors create.go's identical
+// constant — kept in sync so CheckFileAccess and computeMaximalAccess agree on
+// the effective access reported for a handle.
+var maxAccessProbeBits = [...]uint32{
+	acl.ACE4_READ_DATA, // == ACE4_LIST_DIRECTORY
+	acl.ACE4_WRITE_DATA,
+	acl.ACE4_APPEND_DATA,
+	acl.ACE4_READ_NAMED_ATTRS,
+	acl.ACE4_WRITE_NAMED_ATTRS,
+	acl.ACE4_EXECUTE,
+	acl.ACE4_DELETE_CHILD,
+	acl.ACE4_READ_ATTRIBUTES,
+	acl.ACE4_WRITE_ATTRIBUTES,
+	acl.ACE4_DELETE,
+	acl.ACE4_READ_ACL,
+	acl.ACE4_WRITE_ACL,
+	acl.ACE4_WRITE_OWNER,
+	acl.ACE4_SYNCHRONIZE,
+}
+
+// buildFileAccessEvalContext mirrors evaluateACLPermissions's EvaluateContext
+// construction so per-bit ACL evaluation in CheckFileAccess produces the same
+// allow/deny decisions a downstream read/write permission check would later
+// produce against the same file. Kept private to the metadata package.
+func buildFileAccessEvalContext(file *File, authCtx *AuthContext) *acl.EvaluateContext {
+	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
+		return &acl.EvaluateContext{
+			FileOwnerUID: file.UID,
+			FileOwnerGID: file.GID,
+		}
+	}
+
+	identity := authCtx.Identity
+	evalCtx := &acl.EvaluateContext{
+		UID:          *identity.UID,
+		GIDs:         identity.GIDs,
+		FileOwnerUID: file.UID,
+		FileOwnerGID: file.GID,
+	}
+	if identity.GID != nil {
+		evalCtx.GID = *identity.GID
+	}
+
+	switch {
+	case identity.Username != "" && identity.Domain != "":
+		evalCtx.Who = identity.Username + "@" + identity.Domain
+	case identity.Username != "":
+		evalCtx.Who = identity.Username
+	}
+
+	if identity.SID != nil {
+		evalCtx.SID = *identity.SID
+	}
+	evalCtx.GroupSIDs = identity.GroupSIDs
+
+	return evalCtx
+}
+
+// posixFallbackAccessMask computes the granted MS-DTYP access mask for a file
+// whose ACL is nil, using POSIX mode bits. Mirrors the POSIX branch of
+// computeMaximalAccess in internal/adapter/smb/v2/handlers/create.go so the
+// enforcement gate and the MxAc reply stay consistent.
+//
+// Owner gets GENERIC_ALL. Non-owners get a mask built from their applicable
+// permission bits (group or other), with a floor of READ_CONTROL | SYNCHRONIZE
+// for any authenticated user.
+func posixFallbackAccessMask(file *File, authCtx *AuthContext) uint32 {
+	if authCtx != nil && authCtx.Identity != nil && authCtx.Identity.UID != nil && *authCtx.Identity.UID == file.UID {
+		return accessMaskPosixGenericAll
+	}
+
+	isGroupMember := false
+	if authCtx != nil && authCtx.Identity != nil {
+		if authCtx.Identity.GID != nil && *authCtx.Identity.GID == file.GID {
+			isGroupMember = true
+		}
+		if !isGroupMember {
+			for _, gid := range authCtx.Identity.GIDs {
+				if gid == file.GID {
+					isGroupMember = true
+					break
+				}
+			}
+		}
+	}
+
+	var permBits uint32
+	if isGroupMember {
+		permBits = (file.Mode >> 3) & 0x7
+	} else {
+		permBits = file.Mode & 0x7
+	}
+
+	var access uint32
+	if permBits&0x4 != 0 {
+		access |= accessMaskPosixRead
+	}
+	if permBits&0x2 != 0 {
+		access |= accessMaskPosixWrite
+	}
+	if permBits&0x1 != 0 {
+		access |= accessMaskPosixExecute
+	}
+
+	if access == 0 && authCtx != nil && authCtx.Identity != nil && authCtx.Identity.UID != nil {
+		// Authenticated requester: floor at READ_CONTROL | SYNCHRONIZE.
+		access = accessMaskMinAuthenticated
+	}
+
+	return access
+}
