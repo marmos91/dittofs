@@ -203,6 +203,13 @@ type FSStore struct {
 	rollupStarted atomic.Bool
 	rollupWg      sync.WaitGroup
 
+	// syncedHashStore persists per-CAS-hash local→remote sync state.
+	// Consumed by ListUnsynced to filter the Walk-collected hash set
+	// down to the still-unmirrored subset. Nil-valued on local-only
+	// stores (no remote configured); in that case ListUnsynced yields
+	// nothing.
+	syncedHashStore metadata.SyncedHashStore
+
 	// --- Phase 11 LSL-08: in-process LRU for CAS chunks. ---
 	//
 	// Eviction is driven entirely from on-disk presence under
@@ -511,6 +518,11 @@ type FSStoreOptions struct {
 	// when StartRollup will be called. Nil is accepted when the caller
 	// will not start the rollup pool.
 	RollupStore metadata.RollupStore
+	// SyncedHashStore persists per-CAS-hash local→remote sync state.
+	// Required when a remote store is configured (the engine's Syncer
+	// consumes it via ListUnsynced + MarkSynced). Nil is accepted for
+	// local-only stores; in that case ListUnsynced yields nothing.
+	SyncedHashStore metadata.SyncedHashStore
 	// OrphanLogMinAgeSeconds is the minimum age (seconds) a log file must
 	// have before recovery will classify it as orphan and sweep it.
 	// Defaults to 3600 (1h) when zero. See FSStore.orphanLogMinAgeSeconds
@@ -563,6 +575,7 @@ func newFSStoreWithOptionsInternal(baseDir string, maxDisk, maxMemory int64, fil
 		bc.stabilizationMS = opts.StabilizationMS
 	}
 	bc.rollupStore = opts.RollupStore
+	bc.syncedHashStore = opts.SyncedHashStore
 	if opts.OrphanLogMinAgeSeconds > 0 {
 		bc.orphanLogMinAgeSeconds = opts.OrphanLogMinAgeSeconds
 	} else {

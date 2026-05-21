@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"path/filepath"
 
@@ -184,6 +185,72 @@ func (bc *FSStore) Walk(ctx context.Context, fn func(hash blockstore.ContentHash
 		return ctxErr
 	}
 	return walkErr
+}
+
+// ListUnsynced returns a push iterator over every CAS hash present in
+// the local store that has not yet been marked synced. The iterator
+// materializes the hash set up front by running Walk to completion,
+// then filters that snapshot against the injected SyncedHashStore one
+// hash at a time. Snapshot-at-start semantics keep iteration bounded
+// even under hot-write workloads: chunks rolled up after Walk returns
+// are picked up on the NEXT pass, not chased mid-iteration.
+//
+// When no SyncedHashStore is wired (local-only configurations), the
+// iterator yields nothing — the synced set is empty, so the unsynced
+// "everything not in synced" set collapses to the empty set under the
+// no-remote-mirror invariant.
+//
+// The iterator is ctx-cancel-aware: a Done ctx between hashes yields
+// (zero, ctx.Err()) and returns. Per-hash IsSynced backend errors
+// surface as (hash, wrapped error) at the yield site; the consumer
+// decides whether to continue or stop.
+//
+// Implements local.LocalStore.
+func (bc *FSStore) ListUnsynced(ctx context.Context) iter.Seq2[blockstore.ContentHash, error] {
+	return func(yield func(blockstore.ContentHash, error) bool) {
+		// Local-only configurations: no remote means no synced markers
+		// means nothing to mirror — empty iterator is the strict-subset
+		// invariant collapse.
+		if bc.syncedHashStore == nil {
+			return
+		}
+
+		// Snapshot phase: collect every CAS hash currently on disk
+		// before any IsSynced lookups, so the dir-walk file handles are
+		// released before the per-hash filter loop runs.
+		var snapshot []blockstore.ContentHash
+		walkErr := bc.Walk(ctx, func(hash blockstore.ContentHash, _ blockstore.Meta) error {
+			snapshot = append(snapshot, hash)
+			return nil
+		})
+		if walkErr != nil {
+			var zero blockstore.ContentHash
+			yield(zero, fmt.Errorf("blockstore.fs: ListUnsynced: snapshot: %w", walkErr))
+			return
+		}
+
+		// Filter phase: O(1) IsSynced lookup per hash.
+		for _, h := range snapshot {
+			if err := ctx.Err(); err != nil {
+				var zero blockstore.ContentHash
+				yield(zero, err)
+				return
+			}
+			synced, err := bc.syncedHashStore.IsSynced(ctx, h)
+			if err != nil {
+				if !yield(h, fmt.Errorf("blockstore.fs: ListUnsynced: synced lookup %s: %w", h, err)) {
+					return
+				}
+				continue
+			}
+			if synced {
+				continue
+			}
+			if !yield(h, nil) {
+				return
+			}
+		}
+	}
 }
 
 // DeleteLog removes the per-file append log and tracked intervals for
