@@ -16,20 +16,48 @@ func inFlightKey(payloadID string, blockIdx uint64) string {
 	return fmt.Sprintf("%s/%d", payloadID, blockIdx)
 }
 
-// resolveFileBlock returns the FileBlock for (payloadID, blockIdx) or
-// (nil, nil) if the row does not exist (sparse / not yet uploaded). Post-
-// Phase-17 the engine read path is CAS-only — fb.Hash MUST be non-zero
-// for any reachable block; the dispatchRemoteFetch helper enforces this.
+// resolveFileBlock returns the FileBlock whose chunk range covers the
+// byte window [blockIdx*BlockSize, (blockIdx+1)*BlockSize) for payloadID,
+// or (nil, nil) if no row covers that window (sparse / not yet uploaded).
+//
+// Post-Phase-18 the engine writers (ObjectIDPersister, ChunkEmitter)
+// encode the chunk's absolute byte Offset in the trailing component of
+// the FileBlock ID — not a synthetic blockIdx — because FastCDC chunk
+// boundaries do not align to BlockSize. Looking up by
+// "{payloadID}/{blockIdx*BlockSize}" therefore misses every non-first
+// chunk in a multi-chunk file. We instead enumerate the per-payload row
+// list and find the row whose [absOffset, absOffset+DataSize) interval
+// covers blockIdx*BlockSize, mirroring readLocalByHash's
+// findRowCoveringOffset walk.
+//
+// Post-Phase-17 the engine read path is CAS-only — fb.Hash MUST be non-
+// zero for any reachable block; the dispatchRemoteFetch helper enforces
+// this.
 func (m *Syncer) resolveFileBlock(ctx context.Context, payloadID string, blockIdx uint64) (*blockstore.FileBlock, error) {
-	blockID := fmt.Sprintf("%s/%d", payloadID, blockIdx)
-	fb, err := m.fileBlockStore.GetFileBlock(ctx, blockID)
+	rows, err := m.fileBlockStore.ListFileBlocks(ctx, payloadID)
 	if err != nil {
 		if errors.Is(err, blockstore.ErrFileBlockNotFound) {
 			return nil, nil // Sparse — not an error
 		}
-		return nil, fmt.Errorf("resolve file block %s: %w", blockID, err)
+		return nil, fmt.Errorf("list file blocks for %s: %w", payloadID, err)
 	}
-	return fb, nil
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	target := blockIdx * uint64(BlockSize)
+	for _, fb := range rows {
+		if fb == nil {
+			continue
+		}
+		abs, ok := parseChunkOffsetFromID(fb.ID)
+		if !ok {
+			continue
+		}
+		if target >= abs && target < abs+uint64(fb.DataSize) {
+			return fb, nil
+		}
+	}
+	return nil, nil
 }
 
 // blockIsLocal reports whether the bytes for (payloadID, blockIdx) are
