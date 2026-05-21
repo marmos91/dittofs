@@ -186,6 +186,32 @@ func New(cfg Config) (*BlockStore, error) {
 			return bs.coordinator.PersistFileBlocks(ctx, payloadID, blocks, objectID)
 		})
 	}
+	// Phase 19 Opt 3 (D-10/D-11/D-16): install the chunk-completion
+	// callback on local stores that expose the setter (production
+	// *fs.FSStore does; the in-memory backend does not — its writes go
+	// through SetChunkEmitter below and don't materialize through the
+	// CAS chunkstore.StoreChunk + lruTouch path Plan 07 hooks). The
+	// closure delegates every successful chunkstore write to
+	// bs.cache.Put: the engine Cache becomes warm on the write side, so
+	// the NFS COMMIT-then-READ pattern never goes back to disk for the
+	// just-written chunk. The closure captures bs (not bs.cache) so the
+	// Null-Object→real-Cache swap performed by BlockStore.Start at
+	// engine.go:267-270 is observed transparently. The path arg is
+	// intentionally discarded (`_ string`) — Cache.Put doesn't consume it;
+	// the firing-site contract still passes it to enable future mmap-or-
+	// copy strategies (cache.go docstring). Cache.Put is nil-safe + closed-
+	// safe + max-bytes-safe (cache.go:229-235), so this binding is the
+	// canonical safe wiring (RAM ceiling bounded by Cache's existing LRU,
+	// D-11). Same lifecycle precedent as SetObjectIDPersister above —
+	// install once at construction; FSStore guarantees no chunk activity
+	// fires before Start completes.
+	if setter, ok := cfg.Local.(interface {
+		SetOnChunkComplete(fn func(hash blockstore.ContentHash, data []byte, path string))
+	}); ok {
+		setter.SetOnChunkComplete(func(hash blockstore.ContentHash, data []byte, _ string) {
+			bs.cache.Put(hash, data)
+		})
+	}
 	// Install a per-chunk emitter on local stores that expose one (the
 	// in-memory backend uses this; *fs.FSStore drives the equivalent
 	// rollup-side path through the ObjectIDPersister callback above).
