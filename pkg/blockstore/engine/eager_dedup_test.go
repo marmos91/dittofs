@@ -237,14 +237,19 @@ func TestTryEagerSmallFileDedup_Hit_PopulatesCache(t *testing.T) {
 		t.Fatalf("hit=false; want true (seeded ObjectID)")
 	}
 
+	// Capture state under lock, then assert outside to avoid deadlocking
+	// against Get (which also acquires rec.mu).
 	rec.mu.Lock()
-	defer rec.mu.Unlock()
-	if rec.putCalls != 1 {
-		t.Fatalf("Cache.Put calls=%d; want 1 (D-16: warm cache on eager hit)", rec.putCalls)
+	calls := rec.putCalls
+	hashes := append([]blockstore.ContentHash(nil), rec.putHashes...)
+	rec.mu.Unlock()
+
+	if calls != 1 {
+		t.Fatalf("Cache.Put calls=%d; want 1 (D-16: warm cache on eager hit)", calls)
 	}
-	if rec.putHashes[0] != contentHash {
+	if hashes[0] != contentHash {
 		t.Errorf("Cache.Put hash=%s; want content hash %s",
-			rec.putHashes[0].String(), contentHash.String())
+			hashes[0].String(), contentHash.String())
 	}
 	got, ok := rec.Get(contentHash)
 	if !ok {
