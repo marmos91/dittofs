@@ -353,14 +353,25 @@ func (m *Syncer) snapshotPendingBlockRefs(ctx context.Context, payloadID string)
 	}
 	refs := make([]blockstore.BlockRef, 0, len(blocks))
 	states := make([]blockstore.BlockState, 0, len(blocks))
+	prefix := payloadID + "/"
 	for _, fb := range blocks {
-		_, blockIdx, ok := parseBlockID(fb.ID, payloadID)
+		// Defense-in-depth: skip rows that don't belong to this payload.
+		// ListFileBlocks(payloadID) is per-payload, but the prefix check
+		// guarantees correctness if a future change widens the scan.
+		if len(fb.ID) <= len(prefix) || fb.ID[:len(prefix)] != prefix {
+			continue
+		}
+		// Phase 18: writers encode the chunk's absolute byte Offset
+		// directly in the trailing ID component (FastCDC chunk
+		// boundaries do not align to BlockSize). Use the parsed value
+		// as-is — do NOT multiply by BlockSize.
+		chunkOffset, ok := parseChunkOffsetFromID(fb.ID)
 		if !ok {
 			continue
 		}
 		refs = append(refs, blockstore.BlockRef{
 			Hash:   fb.Hash,
-			Offset: blockIdx * uint64(BlockSize),
+			Offset: chunkOffset,
 			Size:   fb.DataSize,
 		})
 		states = append(states, fb.State)
@@ -414,20 +425,27 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 		return 0, nil
 	}
 
-	// ListFileBlocks returns blocks ordered by block index. Walk from the
-	// end to find the highest-indexed Remote block (skip any trailing
-	// Pending/Syncing rows that haven't been confirmed in the remote
-	// store yet — they MUST NOT contribute to the remote-side size).
+	// ListFileBlocks returns blocks ordered by absolute chunk offset.
+	// Walk from the end to find the highest-offset Remote block (skip
+	// any trailing Pending/Syncing rows that haven't been confirmed in
+	// the remote store yet — they MUST NOT contribute to the remote-side
+	// size). Phase 18: the trailing ID component is the chunk's absolute
+	// byte Offset (FastCDC), not a synthetic blockIdx — do NOT multiply
+	// by BlockSize.
+	prefix := payloadID + "/"
 	for i := len(blocks) - 1; i >= 0; i-- {
 		fb := blocks[i]
 		if fb.State != blockstore.BlockStateRemote {
 			continue
 		}
-		_, blockIdx, ok := parseBlockID(fb.ID, payloadID)
+		if len(fb.ID) <= len(prefix) || fb.ID[:len(prefix)] != prefix {
+			continue
+		}
+		chunkOffset, ok := parseChunkOffsetFromID(fb.ID)
 		if !ok {
 			continue
 		}
-		return blockIdx*uint64(BlockSize) + uint64(fb.DataSize), nil
+		return chunkOffset + uint64(fb.DataSize), nil
 	}
 	return 0, nil
 }
@@ -462,24 +480,6 @@ func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
 		}
 	}
 	return false, nil
-}
-
-// parseBlockID extracts the block index from a FileBlock.ID of the form
-// "{payloadID}/{blockIdx}". Returns (payloadID, blockIdx, true) on a
-// well-formed match for the expected payloadID; (_, 0, false) otherwise.
-func parseBlockID(blockID, expectedPayloadID string) (string, uint64, bool) {
-	prefix := expectedPayloadID + "/"
-	if len(blockID) <= len(prefix) || blockID[:len(prefix)] != prefix {
-		return "", 0, false
-	}
-	var idx uint64
-	for _, c := range blockID[len(prefix):] {
-		if c < '0' || c > '9' {
-			return "", 0, false
-		}
-		idx = idx*10 + uint64(c-'0')
-	}
-	return expectedPayloadID, idx, true
 }
 
 // Truncate removes blocks beyond the new size from the remote store.
