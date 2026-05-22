@@ -34,10 +34,11 @@ func BuildAuthContext(ctx *SMBHandlerContext) (*metadata.AuthContext, error) {
 	}
 
 	authCtx := &metadata.AuthContext{
-		Context:      ctx.Context,
-		ClientAddr:   ctx.ClientAddr,
-		LockClientID: fmt.Sprintf("smb:%d", ctx.SessionID),
-		Identity:     &metadata.Identity{},
+		Context:                ctx.Context,
+		ClientAddr:             ctx.ClientAddr,
+		LockClientID:           fmt.Sprintf("smb:%d", ctx.SessionID),
+		Identity:               &metadata.Identity{},
+		BypassTraverseChecking: true,
 	}
 
 	if ctx.IsGuest {
@@ -114,10 +115,11 @@ func getUserIdentity(user *models.User) (uid, gid uint32) {
 // Unix permission checks.
 func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
-		Context:      ctx.Context,
-		ClientAddr:   ctx.ClientAddr,
-		LockClientID: fmt.Sprintf("smb:%d", ctx.SessionID),
-		Identity:     &metadata.Identity{},
+		Context:                ctx.Context,
+		ClientAddr:             ctx.ClientAddr,
+		LockClientID:           fmt.Sprintf("smb:%d", ctx.SessionID),
+		Identity:               &metadata.Identity{},
+		BypassTraverseChecking: true,
 	}
 
 	if user != nil {

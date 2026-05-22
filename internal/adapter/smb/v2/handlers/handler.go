@@ -909,8 +909,9 @@ func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
 // Otherwise, it falls back to root credentials for cleanup operations.
 func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Session) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
-		Context:  ctx,
-		Identity: &metadata.Identity{},
+		Context:                ctx,
+		Identity:               &metadata.Identity{},
+		BypassTraverseChecking: true,
 	}
 
 	if sess != nil && sess.User != nil {

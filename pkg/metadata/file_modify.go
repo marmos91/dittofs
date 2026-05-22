@@ -38,9 +38,19 @@ func (s *MetadataService) Lookup(ctx *AuthContext, dirHandle FileHandle, name st
 		}
 	}
 
-	// Check execute/search permission on directory
-	if err := s.checkExecutePermission(ctx, dirHandle); err != nil {
-		return nil, err
+	// Check execute/search permission on directory.
+	//
+	// Skipped when the caller holds "Bypass traverse checking"
+	// (Windows SeChangeNotifyPrivilege, MS-DTYP §2.5.3.2 + MS-FSA
+	// §2.1.5.1.1). Every SMB session sets ctx.BypassTraverseChecking so
+	// that a parent directory whose DACL omits FILE_TRAVERSE does not
+	// block resolution of a child whose own DACL grants the request. NFS
+	// callers leave the flag false and continue to enforce POSIX execute
+	// semantics on each path component.
+	if !ctx.BypassTraverseChecking {
+		if err := s.checkExecutePermission(ctx, dirHandle); err != nil {
+			return nil, err
+		}
 	}
 
 	// Handle special names
