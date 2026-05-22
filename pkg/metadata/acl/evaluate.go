@@ -1,10 +1,52 @@
 package acl
 
 import (
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 )
+
+// builtinAdministratorsSID is BUILTIN\Administrators — the SID Windows
+// uses to denote the local administrators group. Members of this group
+// hold SeTakeOwnershipPrivilege by default per MS-DTYP §2.5.3.2.
+const builtinAdministratorsSID = "S-1-5-32-544"
+
+// domainAdminSIDPattern matches the local/domain Administrator account SID
+// (S-1-5-21-{auth1}-{auth2}-{auth3}-500). Mirrors the pattern in
+// pkg/metadata/auth_identity.go::IsAdministratorSID. Kept local to the
+// acl package to avoid a cyclic import from pkg/metadata.
+var domainAdminSIDPattern = regexp.MustCompile(`^S-1-5-21-\d+-\d+-\d+-500$`)
+
+// HasTakeOwnershipPrivilege reports whether the given requester SID +
+// group SIDs imply SeTakeOwnershipPrivilege. By default this is granted
+// only to BUILTIN\Administrators (S-1-5-32-544) members and the
+// local/domain Administrator (RID 500) account.
+//
+// Used by callers building EvaluateContext.RequesterHasTakeOwnership so
+// the MS-DTYP §2.5.3.2 owner-implicit WRITE_OWNER grant is restricted
+// to admins, matching Samba access_check.c::se_access_check_implicit_owner.
+func HasTakeOwnershipPrivilege(requesterSID string, groupSIDs []string) bool {
+	if isAdminSID(requesterSID) {
+		return true
+	}
+	for _, g := range groupSIDs {
+		if isAdminSID(g) {
+			return true
+		}
+	}
+	return false
+}
+
+func isAdminSID(sid string) bool {
+	if sid == "" {
+		return false
+	}
+	if sid == builtinAdministratorsSID {
+		return true
+	}
+	return domainAdminSIDPattern.MatchString(sid)
+}
 
 // localDomainSuffix is the synthetic domain string SIDMapper.SIDToPrincipal
 // produces for machine-domain user/group SIDs ("{uid}@localdomain"). When an
@@ -30,6 +72,15 @@ type EvaluateContext struct {
 	// GroupSIDs is the requester's group SIDs.
 	// Empty when the session is POSIX-only.
 	GroupSIDs []string
+
+	// RequesterHasTakeOwnership indicates whether the requester holds the
+	// SeTakeOwnershipPrivilege (MS-DTYP §2.5.3.2). Only privilege holders
+	// receive WRITE_OWNER implicitly when they own the file. On Windows
+	// this privilege is granted to BUILTIN\Administrators by default.
+	// Callers should set this from IsAdministratorSID(SID) or equivalent
+	// admin-group membership detection. POSIX-only sessions default to
+	// false; UID==0 callers are usually short-circuited above acl.Evaluate.
+	RequesterHasTakeOwnership bool
 }
 
 // HasExplicitDeny reports whether the ACL contains any explicit DENY ACE.
@@ -49,14 +100,26 @@ func HasExplicitDeny(a *ACL) bool {
 }
 
 // ownerImplicitRights is the set of access rights MS-DTYP §2.5.3.2 grants
-// implicitly to the file owner: READ_CONTROL, WRITE_DAC, and WRITE_OWNER.
-// These are layered on top of the explicit DACL grants unless suppressed by
-// an effective OWNER_RIGHTS (S-1-3-4) ACE in the DACL. Explicit DENY ACEs
-// in the DACL still win over the implicit grant for any specific bit.
+// implicitly to the file owner: READ_CONTROL and WRITE_DAC. These are
+// layered on top of the explicit DACL grants unless suppressed by an
+// effective OWNER_RIGHTS (S-1-3-4) ACE in the DACL. Explicit DENY ACEs in
+// the DACL still win over the implicit grant for any specific bit.
+//
+// WRITE_OWNER is NOT in this base set per MS-DTYP §2.5.3.2: it requires
+// SeTakeOwnershipPrivilege (only Administrators by default). Callers grant
+// it by setting EvaluateContext.RequesterHasTakeOwnership; see the
+// owner-implicit pass in Evaluate. This mirrors Samba
+// libcli/security/access_check.c::se_access_check_implicit_owner.
 //
 // NFSv4 mask bits intentionally share positions with Windows MS-DTYP rights
 // (RFC 7530 §6.2.1), so the same constants describe both layers.
-const ownerImplicitRights = ACE4_READ_ACL | ACE4_WRITE_ACL | ACE4_WRITE_OWNER
+const ownerImplicitRights = ACE4_READ_ACL | ACE4_WRITE_ACL
+
+// takeOwnershipImplicitRight is the additional implicit grant a requester
+// receives when they own the file AND hold SeTakeOwnershipPrivilege per
+// MS-DTYP §2.5.3.2. Layered on top of ownerImplicitRights, masked by
+// deniedBits like the base owner-implicit grants.
+const takeOwnershipImplicitRight = ACE4_WRITE_OWNER
 
 // Evaluate implements the NFSv4 ACL evaluation algorithm per RFC 7530
 // Section 6.2.1, with the OWNER_RIGHTS (S-1-3-4) override and the owner
@@ -85,8 +148,10 @@ const ownerImplicitRights = ACE4_READ_ACL | ACE4_WRITE_ACL | ACE4_WRITE_OWNER
 //  5. Once all requested bits are decided, stop early.
 //  6. Owner-implicit pass (MS-DTYP §2.5.3.2): if the requester is the file
 //     owner AND no OWNER_RIGHTS ACE is present, add `ownerImplicitRights`
-//     to `allowedBits`, masked by the bits not already denied. Explicit
-//     DENY in the DACL still wins per-bit.
+//     (READ_CONTROL|WRITE_DAC) to `allowedBits`, masked by the bits not
+//     already denied. WRITE_OWNER is added on top ONLY when the requester
+//     holds SeTakeOwnershipPrivilege (evalCtx.RequesterHasTakeOwnership).
+//     Explicit DENY in the DACL still wins per-bit.
 //  7. Return true if and only if ALL requested bits are in allowedBits.
 func Evaluate(a *ACL, evalCtx *EvaluateContext, requestedMask uint32) bool {
 	if requestedMask == 0 {
@@ -168,8 +233,19 @@ func Evaluate(a *ACL, evalCtx *EvaluateContext, requestedMask uint32) bool {
 	// MS-DTYP §2.5.3.2 owner implicit grants: layered after the DACL walk
 	// so explicit DENY ACEs still win per-bit. Suppressed when OWNER_RIGHTS
 	// is present (§2.5.3 — OWNER_RIGHTS is the sole authority for the owner).
+	//
+	// The base set is READ_CONTROL|WRITE_DAC; WRITE_OWNER is layered in
+	// only when the requester holds SeTakeOwnershipPrivilege (admins).
+	// This mirrors Samba access_check.c::se_access_check_implicit_owner:
+	// non-privileged owners cannot reassign ownership via the implicit
+	// grant — they need either an explicit WRITE_OWNER ACE or the
+	// privilege. Tests under smb2.acls (DENY1, MXAC-NOT-GRANTED, OWNER)
+	// rely on this split for the MxAc reply.
 	if requesterIsOwner && !ownerRightsPresent {
 		allowedBits |= ownerImplicitRights &^ deniedBits
+		if evalCtx.RequesterHasTakeOwnership {
+			allowedBits |= takeOwnershipImplicitRight &^ deniedBits
+		}
 	}
 
 	// Access is granted only if ALL requested bits are in allowedBits.
