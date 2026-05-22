@@ -43,6 +43,13 @@ type CacheInterface interface {
 var _ CacheInterface = (*Cache)(nil)
 var _ CacheInterface = nullCache{}
 
+// TRANSITIONAL-NEXT-MILESTONE: cold-cache prefetch (see #519 "Deferred
+// to v0.17+"). When cold-cache prefetch lands, the Cache will be
+// proactively warmed on share-open via an offline LRU snapshot, not
+// just on first-read. The current write-side OnChunkComplete wiring
+// (engine.go Plan 07) already covers the warm-after-write case; cold-
+// cache covers the restart-then-read case.
+
 // Cache is the single-type, CAS-keyed in-memory cache (CACHE-01..05). It
 // folds the prefetch worker pool into one type.
 //

@@ -93,6 +93,28 @@ func (s *MemoryMetadataStore) DecrementRefCount(ctx context.Context, id string) 
 	return s.decrementRefCountLocked(ctx, id)
 }
 
+// AddRef atomically increments RefCount on the FileBlock row indexed by
+// the given content hash. Implements the FileBlockStore.AddRef contract
+// (Phase 19 D-04): used by the in-memory hash dedup LRU hit path to
+// bump RefCount on an already-stored block without creating a new row.
+//
+// Atomicity: the entire hash→id resolve + RefCount mutation runs under
+// a single s.mu Write lock so AddRef is TOCTOU-free against concurrent
+// DecrementRefCount cascade (D-04).
+//
+// Returns metadata.ErrUnknownHash when no row exists for the hash;
+// caller (LRU hit site) falls back to the full Put path.
+//
+// D-27: RefCount is the ONLY field mutated. BlockState is left
+// unchanged — no Pending→Syncing→Remote transition; no new row is
+// materialized on either the success or the ErrUnknownHash branch
+// (STATE-01..03 preservation).
+func (s *MemoryMetadataStore) AddRef(ctx context.Context, hash blockstore.ContentHash, payloadID string, blockRef blockstore.BlockRef) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.addRefLocked(ctx, hash, payloadID, blockRef)
+}
+
 // GetByHash looks up a finalized block by its content hash.
 // Returns nil without error if not found. Renamed from FindFileBlockByHash
 // in Phase 12 (META-03 / D-09).
@@ -208,6 +230,10 @@ func (tx *memoryTransaction) DecrementRefCount(ctx context.Context, id string) (
 	return tx.store.decrementRefCountLocked(ctx, id)
 }
 
+func (tx *memoryTransaction) AddRef(ctx context.Context, hash metadata.ContentHash, payloadID string, blockRef blockstore.BlockRef) error {
+	return tx.store.addRefLocked(ctx, hash, payloadID, blockRef)
+}
+
 func (tx *memoryTransaction) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
 	return tx.store.findFileBlockByHashLocked(ctx, hash)
 }
@@ -279,6 +305,31 @@ func (s *MemoryMetadataStore) incrementRefCountLocked(_ context.Context, id stri
 	block, ok := s.fileBlockData.blocks[id]
 	if !ok {
 		return metadata.ErrFileBlockNotFound
+	}
+	block.RefCount++
+	return nil
+}
+
+// addRefLocked resolves hash→id via the secondary index and bumps
+// RefCount on the resolved row. Caller MUST hold s.mu Write lock so
+// the entire resolve+mutate sequence is atomic (D-04 — TOCTOU-free
+// against concurrent DecrementRefCount cascade).
+func (s *MemoryMetadataStore) addRefLocked(_ context.Context, hash blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
+	// payloadID + blockRef accepted for future GC traceability (D-04);
+	// memory backend records ref count only — parameters intentionally
+	// blanked.
+	// No data → no rows → hash is unknown by definition.
+	if s.fileBlockData == nil {
+		return metadata.ErrUnknownHash
+	}
+	id, ok := s.fileBlockData.hashIndex[hash]
+	if !ok || id == "" {
+		return metadata.ErrUnknownHash
+	}
+	block, ok := s.fileBlockData.blocks[id]
+	if !ok {
+		// Index/blocks desync — defend by treating the hash as unknown.
+		return metadata.ErrUnknownHash
 	}
 	block.RefCount++
 	return nil

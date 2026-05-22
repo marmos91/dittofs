@@ -45,7 +45,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 - [x] **Phase 16: Cache RAM-only (remove mmap read path)** — Delete `cache_mmap_*.go`, swap `readFromCAS` → `local.Get`, retire D-33 perf gate (GH issue: #516) — **SHIPPED 2026-05-20** on `gsd/phase-16-cache-mmap-removal` (16 commits); warm-cache D-06 PASS (ratio 0.890 ≤1.02)
 - [ ] **Phase 17: Unified BlockStore interface + legacy delete + migration tool** — Single `BlockStore` interface (Put/Get/GetRange/Has/Delete/Walk/Head) for local + remote, `BlockStoreAppend` extends with random-write tier, delete legacy `.blk` writer + dual-read shim + flag, ship `dfsctl blockstore migrate-to-cas` one-shot (GH issue: #517)
 - [x] **Phase 18: Syncer simplification + ObjectID relocation** — Syncer Flush → mirror loop `for hash := range local.ListUnsynced() { remote.Put(...) }`. Move `ComputeObjectID` to rollup CommitChunks. Local-only shares now get ObjectIDs. (GH issue: #518) (completed 2026-05-21)
-- [ ] **Phase 19: Write-path RAM optimizations** — 4 opts: in-memory hash dedup LRU; group commit / batched fsync; direct-to-Cache on chunk completion; eager small-file dedup (GH issue: #519)
+- [x] **Phase 19: Write-path RAM optimizations** — 4 opts: in-memory hash dedup LRU; group commit / batched fsync; direct-to-Cache on chunk completion; eager small-file dedup (GH issue: #519) (completed 2026-05-21)
 
 **Parent tracking issue:** [#515](https://github.com/marmos91/dittofs/issues/515)
 
@@ -471,6 +471,80 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 - [x] 18-07-PLAN.md — engine.Flush dedup pre-hook + engine.Delete cascade + public TrySpec deletion (Wave 5)
 - [x] 18-08-PLAN.md — TRANSITIONAL-PHASE-18 methods deletion + Phase 13 test sweep (Wave 6)
 - [x] 18-09-PLAN.md — Integration syncer_test.go + TRANSITIONAL-NEXT-MILESTONE doc.go convention (Wave 7)
+
+### Phase 19: Write-path RAM optimizations
+**Goal**: Land four independent write-path RAM/temp-store throughput optimizations on the unified CAS BlockStore: (1) in-memory hash dedup LRU between FastCDC `Next()` and `Put(hash, data)` in `pkg/blockstore/local/fs/rollup.go` — on LRU hit skip CAS Put + StoreChunk and bump refcount via new `FileBlockStore.AddRef`; (2) group commit / batched fsync — replace per-record fsync at `pkg/blockstore/local/fs/appendwrite.go:259` with a per-file 1ms commit pipeline window + adaptive depth=1 bypass; (3) direct-to-Cache on chunk completion — extend `chunkstore.lruTouch` at `pkg/blockstore/local/fs/chunkstore.go:104` to invoke an engine Cache callback injected via `FSStoreOptions.OnChunkComplete`, eliminating the wrote-then-read disk hop on NFS COMMIT-then-READ; (4) eager small-file dedup — files ≤ FastCDC `MinChunk` (1 MiB) hash whole content in RAM and short-circuit via `metadata.FindByObjectID` BEFORE rollup runs, hooking into `engine.Flush`'s existing pre-rollup site alongside `trySpeculativeFileLevelDedup`. New surfaces: `FileBlockStore.AddRef(ctx, hash, payloadID, blockRef) error` on all 3 metadata backends (badger/postgres/memory); `FSStoreOptions.OnChunkComplete func(hash ContentHash, data []byte, path string)`. New config knob: `blockstore.local.dedup_lru_size` (default 4096). D-21 aggregate gate tightened from ≤1.02 to **≤1.00 vs Phase 11 baseline**. Closes Phase 18 D-16 deprecation cycle: delete `SyncerConfig.ClaimBatchSize` field + `pkg/config` schema entry. Fourth (final) phase of v0.16.0 (CAS Convergence). Depends on Phase 18 (shipped 2026-05-21, PR #537 @ `b31b01f7`).
+**Depends on**: Phase 18 (shipped 2026-05-21, PR #537 @ `b31b01f7`)
+**GH issue**: [#519](https://github.com/marmos91/dittofs/issues/519); sub-tracker [#543](https://github.com/marmos91/dittofs/issues/543)
+**Duration**: ~1.5 weeks
+**Requirements**: (no formal REQ-IDs; phase scope governed by CONTEXT.md decisions D-01..D-27, preserves BSCAS-01..06, LSL-01..08, CACHE-01..06, META-01..04, DEDUP-01..03, STATE-01..03)
+**Success Criteria** (what must be TRUE):
+  1. `pkg/blockstore/local/fs/dedup_lru.go` defines a per-FSStore stripe-locked hash LRU (`Get/Put/Has`) sized by config; `rollup.go` consults it between FastCDC `Next()` and `Put` (D-02, D-05, D-22a)
+  2. `pkg/metadata/file_block_store.go` extends `FileBlockStore` with `AddRef(ctx, hash, payloadID, blockRef) error`; returns `ErrUnknownHash` sentinel when the hash row is absent (D-04, D-22b)
+  3. `AddRef` implemented on `pkg/metadata/badger`, `pkg/metadata/postgres`, `pkg/metadata/memory`; all three pass new `pkg/metadata/storetest/` conformance scenarios — existing-hash (RefCount +1, state preserved), missing-hash (returns sentinel, no row created), concurrent AddRef vs DecrementRefCount cascade (no negative RefCount, no orphan) (D-04, D-21, D-27)
+  4. `blockstore.local.dedup_lru_size` config knob (default 4096) wired through `pkg/config/blockstore.go` and consumed by `FSStore` construction; nested under existing `blockstore.local.*` shape (D-03, D-22c)
+  5. `pkg/blockstore/local/fs/groupcommit.go` defines per-`logFile` group-commit coordinator (`pending []chan error`, `*time.Timer`, `sync.Mutex`); `appendwrite.go:259` calls coordinator instead of raw `lf.f.Sync()`; fixed 1ms commit window + adaptive bypass when queue depth = 1 (D-06, D-07, D-09, D-22a)
+  6. Group-commit preserves synchronous durability contract: caller blocks until its batch fsyncs; NFS COMMIT / SMB Flush callers see no async ack (D-08)
+  7. Group-commit honors existing lock ordering rule from `appendwrite.go`: per-file `mu` before `bc.logsMu`; coordinator never touches `logsMu` (D-09)
+  8. `FSStoreOptions.OnChunkComplete func(hash ContentHash, data []byte, path string)` field added; nil-safe (chunkstore behaves identically to today on nil); engine constructs `FSStore` with the callback; `chunkstore.lruTouch` at `chunkstore.go:104` invokes it exactly once per successful touch, post-disk-store, lock-held (D-10, D-12)
+  9. Engine wires `OnChunkComplete` to `Cache.Put`; RAM ceiling bounded by engine Cache's existing size-bounded LRU — no extra cap (D-11, D-16)
+  10. `engine.Flush` pre-rollup hook at `engine.go:669` runs eager small-file dedup BEFORE `trySpeculativeFileLevelDedup`: files ≤ `FastCDC.MinChunk` (1 MiB) → hash whole content → compute single-block `ObjectID` (= the hash) → `metadata.FindByObjectID` → hit short-circuits chunker + log + CAS write; miss falls through to existing speculative dedup → rollup (D-13, D-14)
+  11. Eager-dedup HIT populates engine Cache for the matched hash using the RAM-resident bytes; MISS lets data flow into rollup path which also populates Cache via D-10. Every small-file write leaves a warm Cache entry (D-16)
+  12. STATE-01..03 invariant preserved: LRU hit path increments `RefCount` only via `AddRef`; no new block row, no state transition, no skip-Pending optimization (D-27)
+  13. Bench gating policy honored: hard-gate correctness tests `TestCache_PopulatedOnRollupComplete` (Opt 3) + `TestSmallFileEagerDedup_BSCAS06` (Opt 4) PASS; yellow-flag perf benches `BenchmarkRandWriteCAS_IdempotentBytes` + `BenchmarkAppendWrite_GroupCommit` report ratios without blocking (D-17)
+  14. **D-21 aggregate gate ≤1.00 vs Phase 11 baseline** PASS (tightened from ≤1.02, D-19); D-41 (cross-VM dedup ≥40%), D-43 (RandRead warm-cache ≤1.02), D-06 (RandReadVerified warm ≤1.02) gates held unchanged
+  15. New bench/test files exist: `pkg/blockstore/local/fs/appendwrite_group_commit_bench_test.go`, `pkg/blockstore/local/fs/rollup_idempotent_dedup_bench_test.go`, `pkg/blockstore/engine/cache_populated_on_rollup_test.go`, `pkg/blockstore/engine/small_file_eager_dedup_test.go`; `internal/bench/phase19_test.go` aggregate runner emits D-21 ratio (D-20)
+  16. Phase 18 D-16 deprecation cycle CLOSED: `SyncerConfig.ClaimBatchSize` field + `pkg/config` schema entry + the no-op test that asserts it parses are deleted; TRANSITIONAL-NEXT-MILESTONE marker in `pkg/blockstore/doc.go` updated (D-23)
+  17. Dead `LocalStore` admin-method sweep complete: methods whose only callers were Phase 18 transitional code are removed (D-18 admin-superset — Truncate, EvictMemory, SetRetentionPolicy, Stats, ListFiles, etc. — STAYS); audit-finds-nothing is acceptable (D-24)
+  18. Every `TRANSITIONAL-NEXT-MILESTONE:` marker across `pkg/blockstore/` resolved: addressed-by-19 markers deleted alongside the change; still-deferred markers updated with concrete target milestone where known (D-25)
+  19. New `TRANSITIONAL-NEXT-MILESTONE:` anchors added at v0.17+ hook sites listed in #519's "Deferred" section: pinned hot-tail RAM (`chunkstore.go` on-disk store path), tmpfs spill (`appendlog.go` log overflow site), O_DIRECT (`appendwrite.go` near `f.Sync()`), zstd compression (`chunkstore.go::StoreChunk`), cold-cache prefetch (`engine/cache.go`); each marker references #519 "Deferred to v0.17+" (D-26)
+  20. PR ships atomically as a single mega-PR (D-01): all 4 opts + new surfaces + benches + config knob + D-21 tightening + D-23..D-26 cleanups together; internal commit ordering staged (additive interfaces → integration → tests/benches → cleanup sweeps), each commit independently buildable; no flag-gated half-states
+  21. `go vet ./...` + `go test -race ./...` + cross-OS build (Linux + Darwin) clean; D-21 ratio ≤1.00 confirmed on bench infra
+**Files to touch**:
+  - `pkg/blockstore/local/fs/dedup_lru.go` — **new** — stripe-locked hash LRU (Opt 1)
+  - `pkg/blockstore/local/fs/groupcommit.go` — **new** — per-file group-commit coordinator (Opt 2)
+  - `pkg/blockstore/local/fs/rollup.go` — Opt 1 hook between FastCDC `Next()` and `Put(hash, data)`; invoke `FileBlockStore.AddRef` on LRU hit
+  - `pkg/blockstore/local/fs/appendwrite.go` — Opt 2 hook at line 259; replace raw `lf.f.Sync()` with coordinator call
+  - `pkg/blockstore/local/fs/chunkstore.go` — Opt 3 hook at line 104 (`lruTouch`); invoke `FSStoreOptions.OnChunkComplete` callback exactly once per successful touch; add TRANSITIONAL-NEXT-MILESTONE markers (pinned hot-tail RAM, zstd compression anchors — D-26)
+  - `pkg/blockstore/local/fs/fs.go` — add `FSStoreOptions.OnChunkComplete` slot; plumb through `NewFSStore`
+  - `pkg/blockstore/engine/engine.go` — Opt 4 hook at line 669 in `engine.Flush` pre-rollup hook; wire `OnChunkComplete` → `Cache.Put`
+  - `pkg/blockstore/engine/dedup.go` — Opt 4 eager small-file fast-track (≤ `FastCDC.MinChunk`) calling `FindByObjectID` before falling through to `trySpeculativeFileLevelDedup`
+  - `pkg/blockstore/engine/cache.go` — add TRANSITIONAL-NEXT-MILESTONE marker (cold-cache prefetch anchor — D-26)
+  - `pkg/blockstore/local/fs/appendlog.go` — add TRANSITIONAL-NEXT-MILESTONE marker (tmpfs spill anchor — D-26)
+  - `pkg/metadata/file_block_store.go` — extend `FileBlockStore` interface with `AddRef`
+  - `pkg/metadata/errors.go` (or backend-local) — `ErrUnknownHash` sentinel
+  - `pkg/metadata/badger/file_block_store.go` — implement `AddRef`
+  - `pkg/metadata/postgres/file_block_store.go` — implement `AddRef`
+  - `pkg/metadata/memory/file_block_store.go` — implement `AddRef`
+  - `pkg/metadata/storetest/file_block_store_conformance.go` — add `AddRef` conformance scenarios (3 cases)
+  - `pkg/config/blockstore.go` — add `blockstore.local.dedup_lru_size` knob (default 4096)
+  - `pkg/config/syncer.go` + `pkg/blockstore/engine/syncer.go` — D-23 delete `SyncerConfig.ClaimBatchSize` field + schema entry + no-op test
+  - `pkg/blockstore/doc.go` — update TRANSITIONAL-NEXT-MILESTONE marker (D-23) + record convention notes
+  - `pkg/blockstore/local/fs/appendwrite_group_commit_bench_test.go` — **new** — Opt 2 perf bench (yellow-flag)
+  - `pkg/blockstore/local/fs/rollup_idempotent_dedup_bench_test.go` — **new** — Opt 1 perf bench (yellow-flag)
+  - `pkg/blockstore/engine/cache_populated_on_rollup_test.go` — **new** — Opt 3 correctness gate (hard-gate)
+  - `pkg/blockstore/engine/small_file_eager_dedup_test.go` — **new** — Opt 4 correctness gate (hard-gate)
+  - `internal/bench/phase19_test.go` — D-21 aggregate runner (tighten to ≤1.00)
+**Key risks**:
+  - **Mega-PR review burden** (4 opts + `AddRef` × 3 backends + benches + cleanups) — staged commit ordering (additive surface → consumers wired → benches → cleanup sweeps) is the only mitigation; `git log -p` reviewability mandatory
+  - **Atomic-merge constraint** (D-01) — each commit must keep `go build ./... + go vet ./... + go test ./...` green; no flag-gated half-state
+  - **D-21 ≤1.00 tightening** (D-19) — bench variance can mask wins; aggregate runner + warm-cache invariant + bench infra cold-start hygiene required to reproduce
+  - **STATE-01..03 invariant on LRU hit** (D-27) — temptation to skip-Pending or invent a "DedupReference" state is exactly the kind of optimization Phase 19 must NOT make; `AddRef` is refcount-only, no state transition
+  - **Lock ordering in groupcommit** (D-09) — coordinator must NOT touch `bc.logsMu`; per-file `mu` first invariant from FIX-2/FIX-20 holds
+  - **Idempotency contract on `OnChunkComplete`** (D-12) — "exactly once per successful touch" — fire-on-error or fire-twice both leave Cache in wrong state
+  - **TOCTOU race on `AddRef` vs `engine.Delete` cascade** (D-04) — `AddRef` and `DecrementRefCount` cascade must serialize on the same row lock; conformance scenario explicitly covers this
+  - **Cache thrash on Opt 3 push under burst** (D-11) — bounded by engine Cache LRU; if bench shows thrash, deferred skip-on-pressure signal moves into v0.17+ (already noted in CONTEXT.md `<deferred>`)
+**Plans**: 10 plans
+  - [x] 19-01-PLAN.md — FileBlockStore.AddRef interface + ErrUnknownHash sentinel + storetest conformance scenarios (wave 1)
+  - [x] 19-02-PLAN.md — AddRef implementations across memory + badger + postgres backends (wave 1)
+  - [x] 19-03-PLAN.md — dedup_lru.go + groupcommit.go standalone units + pkg/config/blockstore.go DedupLRUSize knob (wave 1)
+  - [x] 19-04-PLAN.md — FSStoreOptions.OnChunkComplete + DedupLRUSize slots + FSStore field instantiation (wave 1)
+  - [x] 19-05-PLAN.md — Opt 1 wire-in: rollup.go LRU consult + AddRef fast-path (wave 2)
+  - [x] 19-06-PLAN.md — Opt 2 wire-in: appendwrite.go:259 fsync coalesce via per-logFile groupCommit (wave 2)
+  - [x] 19-07-PLAN.md — Opt 3 wire-in: chunkstore.lruTouch fires OnChunkComplete; engine wires to Cache.Put (wave 2)
+  - [x] 19-08-PLAN.md — Opt 4 wire-in: eager small-file dedup in engine.Flush before trySpeculativeFileLevelDedup (wave 2)
+  - [x] 19-09-PLAN.md — Correctness + perf benches + D-21 aggregate gate tightening to ≤1.00 (wave 3)
+  - [x] 19-10-PLAN.md — D-23 ClaimBatchSize deletion + D-24 admin-method audit + D-25 marker audit + D-26 tmpfs spill anchor + doc.go (wave 4)
 
 ## Milestone Gates
 

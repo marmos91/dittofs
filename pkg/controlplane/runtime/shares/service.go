@@ -197,6 +197,12 @@ type LocalStoreDefaults struct {
 
 	// ReadBufferBytes is the per-share read buffer budget in bytes (0 = disabled).
 	ReadBufferBytes int64
+
+	// DedupLRUSize is the slot count for the in-memory hash dedup LRU; the
+	// per-share block-store JSON config `dedup_lru_size` takes precedence
+	// when set, otherwise this global YAML default (blockstore.local.dedup_lru_size)
+	// is applied, otherwise FSStore falls back to its own internal default.
+	DedupLRUSize int
 }
 
 // SyncerDefaults holds default syncer configuration applied to all shares.
@@ -1414,6 +1420,28 @@ func CreateLocalStoreFromConfig(
 			fsOpts.OrphanLogMinAgeSeconds = int(n)
 		} else {
 			logger.Warn("block store config has orphan_log_min_age_seconds but it is invalid or non-positive; ignoring", "value", v)
+		}
+	}
+	// Phase 19 Plan 03 + Plan 07: dedup LRU slot count. Per-share JSON config
+	// `dedup_lru_size` takes precedence; falls back to the global YAML default
+	// (blockstore.local.dedup_lru_size) plumbed via LocalStoreDefaults; falls
+	// back to FSStore's internal default (4096) when both are zero.
+	if defaults != nil && defaults.DedupLRUSize > 0 {
+		fsOpts.DedupLRUSize = defaults.DedupLRUSize
+	}
+	if v, ok := config["dedup_lru_size"]; ok {
+		if n, ok := v.(float64); ok && n > 0 {
+			// JSON-decoded numbers land as float64; reject out-of-range
+			// and non-integer values rather than perform an
+			// implementation-defined float64->int cast (mirrors the
+			// max_log_bytes pattern above).
+			if n > float64(math.MaxInt) || n != math.Trunc(n) {
+				logger.Warn("config: dedup_lru_size is out of range or non-integer; keeping default", "value", n)
+			} else {
+				fsOpts.DedupLRUSize = int(n)
+			}
+		} else {
+			logger.Warn("block store config has dedup_lru_size but it is invalid or non-positive; ignoring", "value", v)
 		}
 	}
 

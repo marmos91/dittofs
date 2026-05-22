@@ -61,6 +61,20 @@ func (s *stubFileBlockStore) IncrementRefCount(_ context.Context, _ string) erro
 func (s *stubFileBlockStore) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
+func (s *stubFileBlockStore) AddRef(_ context.Context, h blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
+	// Phase 19 D-04: bump RefCount on any row indexed by hash. The stub
+	// holds blocks keyed by id but each row carries a Hash field, so
+	// resolve linearly. ErrUnknownHash when no row matches.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, fb := range s.blocks {
+		if fb.Hash == h {
+			fb.RefCount++
+			return nil
+		}
+	}
+	return blockstore.ErrUnknownHash
+}
 func (s *stubFileBlockStore) ListPending(_ context.Context, _ time.Duration, _ int) ([]*blockstore.FileBlock, error) {
 	return nil, nil
 }

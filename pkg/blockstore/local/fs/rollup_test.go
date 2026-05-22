@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -567,4 +568,363 @@ func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
 			t.Fatalf("rollupFile error: want errors.Is(simulated)=true, got %v", err)
 		}
 	})
+}
+
+// --- Phase 19 Plan 05: rollup LRU-hit fast-path tests ---
+//
+// These tests cover the dedupLRU consult inserted between FastCDC.Next()
+// and StoreChunk in rollup.go's chunker emit loop (D-04 hit-path / fallback
+// flow; D-02 manifest invariant; D-27 STATE preservation).
+//
+// Test payload sizing: 256 KiB is well under MinChunkSize (1 MiB), so
+// FastCDC.Next emits exactly ONE chunk per rollup pass with final=true.
+// This gives the tests a deterministic single hash to reason about.
+
+// programmableFBS wraps a real EngineFileBlockStore and lets a test
+// override AddRef's behavior. Used by the LRU-fallback (Test 3) and
+// other-error-propagates (Test 4) cases where the inner memory store
+// alone cannot synthesize the required failure modes.
+type programmableFBS struct {
+	inner blockstore.EngineFileBlockStore
+
+	addRefCalls atomic.Int64
+	// addRefOverride, if non-nil, returns its value instead of delegating
+	// to the inner store. Set by the test for ErrUnknownHash / arbitrary-
+	// error scenarios.
+	addRefOverride func(ctx context.Context, h blockstore.ContentHash, payloadID string, ref blockstore.BlockRef) error
+}
+
+func newProgrammableFBS(inner blockstore.EngineFileBlockStore) *programmableFBS {
+	return &programmableFBS{inner: inner}
+}
+
+func (p *programmableFBS) GetByHash(ctx context.Context, h blockstore.ContentHash) (*blockstore.FileBlock, error) {
+	return p.inner.GetByHash(ctx, h)
+}
+func (p *programmableFBS) Put(ctx context.Context, b *blockstore.FileBlock) error {
+	return p.inner.Put(ctx, b)
+}
+func (p *programmableFBS) Delete(ctx context.Context, id string) error {
+	return p.inner.Delete(ctx, id)
+}
+func (p *programmableFBS) IncrementRefCount(ctx context.Context, id string) error {
+	return p.inner.IncrementRefCount(ctx, id)
+}
+func (p *programmableFBS) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
+	return p.inner.DecrementRefCount(ctx, id)
+}
+func (p *programmableFBS) AddRef(ctx context.Context, h blockstore.ContentHash, payloadID string, ref blockstore.BlockRef) error {
+	p.addRefCalls.Add(1)
+	if p.addRefOverride != nil {
+		return p.addRefOverride(ctx, h, payloadID, ref)
+	}
+	return p.inner.AddRef(ctx, h, payloadID, ref)
+}
+func (p *programmableFBS) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*blockstore.FileBlock, error) {
+	return p.inner.ListPending(ctx, olderThan, limit)
+}
+func (p *programmableFBS) GetFileBlock(ctx context.Context, id string) (*blockstore.FileBlock, error) {
+	return p.inner.GetFileBlock(ctx, id)
+}
+func (p *programmableFBS) ListFileBlocks(ctx context.Context, payloadID string) ([]*blockstore.FileBlock, error) {
+	return p.inner.ListFileBlocks(ctx, payloadID)
+}
+
+// newFSStoreForRollupLRUTest constructs an FSStore backed by a
+// programmableFBS wrapping a memory metadata store. The same store
+// instance is used for both the EngineFileBlockStore and the RollupStore
+// surfaces so seeded FileBlocks are visible to both. Returns the store,
+// the FBS wrapper (for AddRef assertions), and the raw memory store (for
+// seeding FileBlock rows and reading them back post-rollup).
+func newFSStoreForRollupLRUTest(t *testing.T) (*FSStore, *programmableFBS, *memmeta.MemoryMetadataStore) {
+	t.Helper()
+	mem := memmeta.NewMemoryMetadataStoreWithDefaults()
+	wrapped := newProgrammableFBS(mem)
+	dir := t.TempDir()
+	bc, err := NewWithOptions(dir, 1<<30, 1<<30, wrapped, FSStoreOptions{
+		MaxLogBytes:     1 << 30,
+		RollupWorkers:   2,
+		StabilizationMS: 1,
+		RollupStore:     mem,
+	})
+	if err != nil {
+		t.Fatalf("NewWithOptions: %v", err)
+	}
+	t.Cleanup(func() { _ = bc.Close() })
+	return bc, wrapped, mem
+}
+
+// hashOfSingleChunk returns the BLAKE3 ContentHash of payload after a
+// rollup pass — i.e. the hash that FastCDC emits when reconstructStream
+// produces a buffer starting at byte 0 (zero-padded gap) with payload at
+// the AppendWrite offset. For payload sized <= MinChunkSize (1 MiB) and
+// off=0 the reconstructed buffer is exactly the payload bytes, so the
+// chunk hash matches BLAKE3(payload).
+func hashOfSingleChunk(payload []byte) blockstore.ContentHash {
+	return blake3ContentHash(payload)
+}
+
+// TestRollup_FirstChunk_PopulatesLRU: empty LRU; rollup a payload that
+// produces hash H; afterwards bc.dedupLRU.Has(H) is true (D-04 first-
+// write seeding).
+func TestRollup_FirstChunk_PopulatesLRU(t *testing.T) {
+	bc, _, _ := newFSStoreForRollupLRUTest(t)
+
+	payload := bytes.Repeat([]byte{0xAA}, 256*1024)
+	expectedHash := hashOfSingleChunk(payload)
+
+	if bc.dedupLRU.Has(expectedHash) {
+		t.Fatal("precondition: dedupLRU should not contain hash before rollup")
+	}
+
+	runRollupOnce(t, bc, "first-pop", payload)
+
+	if !bc.dedupLRU.Has(expectedHash) {
+		t.Fatal("post-rollup: dedupLRU.Has(H) is false — first-write LRU seeding did not run")
+	}
+}
+
+// TestRollup_LRUHit_SkipsStoreChunk: seed dedupLRU with hash H mapped to
+// "payload-prev"; pre-populate FBS with a FileBlock row for H so AddRef
+// succeeds; rollup a second payload with the same content. Assert:
+//   - AddRef invoked exactly once with hash=H (counter +1)
+//   - StoreChunk skipped: pre-deleted CAS file is NOT recreated on disk
+//   - blocks slice still contains a BlockRef{Hash:H,Offset:..,Size:..}
+//     (verified via the ObjectIDPersister capture)
+func TestRollup_LRUHit_SkipsStoreChunk(t *testing.T) {
+	bc, wrapped, mem := newFSStoreForRollupLRUTest(t)
+	ctx := context.Background()
+
+	payload := bytes.Repeat([]byte{0xBE}, 256*1024)
+	h := hashOfSingleChunk(payload)
+
+	// Seed a FileBlock row in the memory store so AddRef can find it.
+	// State=Remote, RefCount=1 — represents a previously rolled-up block.
+	if err := mem.Put(ctx, &blockstore.FileBlock{
+		ID:       "seed-payload/block-0",
+		Hash:     h,
+		State:    blockstore.BlockStateRemote,
+		RefCount: 1,
+		DataSize: uint32(len(payload)),
+	}); err != nil {
+		t.Fatalf("seed Put: %v", err)
+	}
+
+	// Seed the LRU with the hash mapped to a different payloadID — the
+	// PRECONDITION the hit path consults.
+	bc.dedupLRU.Put(h, "payload-prev")
+	if !bc.dedupLRU.Has(h) {
+		t.Fatal("precondition: LRU.Has(h) is false after Put")
+	}
+
+	// Install a persister to capture the BlockRef manifest — proves the
+	// blocks slice still received the BlockRef append unconditionally
+	// (D-02 manifest invariant).
+	var mu sync.Mutex
+	var captured []capturedPersist
+	bc.SetObjectIDPersister(func(_ context.Context, pid string, blocks []blockstore.BlockRef, oid blockstore.ObjectID) error {
+		mu.Lock()
+		defer mu.Unlock()
+		cp := make([]blockstore.BlockRef, len(blocks))
+		copy(cp, blocks)
+		captured = append(captured, capturedPersist{payloadID: pid, blocks: cp, objectID: oid})
+		return nil
+	})
+
+	// Pre-delete any CAS file for h so we can detect a re-create
+	// (would indicate StoreChunk was NOT skipped).
+	casPath := bc.chunkPath(h)
+	_ = os.Remove(casPath)
+
+	baseAddRef := wrapped.addRefCalls.Load()
+
+	runRollupOnce(t, bc, "hitfile", payload)
+
+	gotAddRef := wrapped.addRefCalls.Load() - baseAddRef
+	if gotAddRef != 1 {
+		t.Fatalf("AddRef call count delta: got %d want 1", gotAddRef)
+	}
+
+	// CAS file must NOT exist — StoreChunk skipped.
+	if _, err := os.Stat(casPath); err == nil {
+		t.Fatalf("CAS chunk %s exists post-rollup; StoreChunk was NOT skipped on LRU hit", casPath)
+	}
+
+	// Manifest must contain a BlockRef with hash h.
+	mu.Lock()
+	defer mu.Unlock()
+	if len(captured) != 1 {
+		t.Fatalf("persister captures: got %d want 1", len(captured))
+	}
+	foundH := false
+	for _, br := range captured[0].blocks {
+		if br.Hash == h {
+			foundH = true
+		}
+	}
+	if !foundH {
+		t.Fatalf("D-02 manifest invariant violated: BlockRef for hash %s missing from manifest", h)
+	}
+}
+
+// TestRollup_AddRefReturnsErrUnknownHash_FallsBackToStoreChunk: LRU has h;
+// programmable FBS returns ErrUnknownHash on every AddRef (simulating
+// TOCTOU eviction); rollup must proceed to StoreChunk normally.
+func TestRollup_AddRefReturnsErrUnknownHash_FallsBackToStoreChunk(t *testing.T) {
+	bc, wrapped, _ := newFSStoreForRollupLRUTest(t)
+
+	payload := bytes.Repeat([]byte{0xCA}, 256*1024)
+	h := hashOfSingleChunk(payload)
+
+	bc.dedupLRU.Put(h, "stale-payload")
+	wrapped.addRefOverride = func(_ context.Context, _ blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
+		return blockstore.ErrUnknownHash
+	}
+
+	casPath := bc.chunkPath(h)
+	if _, err := os.Stat(casPath); err == nil {
+		_ = os.Remove(casPath)
+	}
+
+	runRollupOnce(t, bc, "fallback", payload)
+
+	if wrapped.addRefCalls.Load() != 1 {
+		t.Fatalf("AddRef calls: got %d want 1 (LRU hit triggered AddRef)", wrapped.addRefCalls.Load())
+	}
+	if _, err := os.Stat(casPath); err != nil {
+		t.Fatalf("CAS chunk %s missing post-rollup; ErrUnknownHash fallback did NOT call StoreChunk: %v", casPath, err)
+	}
+	if !bc.dedupLRU.Has(h) {
+		t.Fatal("LRU not (re-)populated after StoreChunk fallback path — Put step missing")
+	}
+}
+
+// TestRollup_AddRefError_OtherThan_ErrUnknownHash_Propagates: AddRef
+// returns errors.New(...); rollupFile must return the wrapped error —
+// NO silent fallback (D-04 error-surfacing contract).
+func TestRollup_AddRefError_OtherThan_ErrUnknownHash_Propagates(t *testing.T) {
+	bc, wrapped, _ := newFSStoreForRollupLRUTest(t)
+	ctx := context.Background()
+
+	payload := bytes.Repeat([]byte{0xDE}, 256*1024)
+	h := hashOfSingleChunk(payload)
+	bc.dedupLRU.Put(h, "any-payload")
+
+	simulated := errors.New("metadata: postgres down")
+	wrapped.addRefOverride = func(_ context.Context, _ blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
+		return simulated
+	}
+
+	if err := bc.AppendWrite(ctx, "errpath", payload, 0); err != nil {
+		t.Fatalf("AppendWrite: %v", err)
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if bc.EarliestStableForTest("errpath") {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !bc.EarliestStableForTest("errpath") {
+		t.Fatal("dirty interval did not stabilize")
+	}
+
+	err := bc.rollupFile(ctx, "errpath")
+	if err == nil {
+		t.Fatal("rollupFile: want wrapped AddRef error, got nil")
+	}
+	if !errors.Is(err, simulated) {
+		t.Fatalf("rollupFile error: want errors.Is(simulated)=true, got %v", err)
+	}
+}
+
+// TestRollup_ComputeObjectID_UnaffectedByLRUHit: write two payloads with
+// identical content; ObjectID and BlockRefs of each match. Verifies the
+// D-02 manifest invariant: LRU hit does NOT mutate the manifest seen
+// by ComputeObjectID.
+func TestRollup_ComputeObjectID_UnaffectedByLRUHit(t *testing.T) {
+	bc, _, _ := newFSStoreForRollupLRUTest(t)
+
+	payload := bytes.Repeat([]byte{0xF1}, 256*1024)
+
+	var mu sync.Mutex
+	var captured []capturedPersist
+	bc.SetObjectIDPersister(func(_ context.Context, pid string, blocks []blockstore.BlockRef, oid blockstore.ObjectID) error {
+		mu.Lock()
+		defer mu.Unlock()
+		cp := make([]blockstore.BlockRef, len(blocks))
+		copy(cp, blocks)
+		captured = append(captured, capturedPersist{payloadID: pid, blocks: cp, objectID: oid})
+		return nil
+	})
+
+	// First payload — LRU miss → StoreChunk + LRU seeding.
+	runRollupOnce(t, bc, "oid-A", payload)
+	// Second payload — same content → LRU hit → AddRef. Manifest must
+	// still be identical.
+	runRollupOnce(t, bc, "oid-B", payload)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(captured) != 2 {
+		t.Fatalf("persister captures: got %d want 2", len(captured))
+	}
+	if captured[0].objectID != captured[1].objectID {
+		t.Fatalf("ObjectID drift across LRU miss vs hit: %s vs %s",
+			captured[0].objectID.String(), captured[1].objectID.String())
+	}
+	if len(captured[0].blocks) != len(captured[1].blocks) {
+		t.Fatalf("BlockRef manifest length drift: A=%d B=%d", len(captured[0].blocks), len(captured[1].blocks))
+	}
+	for i := range captured[0].blocks {
+		a, b := captured[0].blocks[i], captured[1].blocks[i]
+		if a.Hash != b.Hash || a.Offset != b.Offset || a.Size != b.Size {
+			t.Fatalf("BlockRef[%d] drift between miss and hit passes: A=%+v B=%+v", i, a, b)
+		}
+	}
+}
+
+// TestRollup_LRUHit_NoBlockStateMutation: pre-seed a FileBlock row at
+// State=Remote, RefCount=5; run a rollup that triggers the LRU hit
+// AddRef path; assert post-rollup the row still has State=Remote and
+// RefCount=6 (D-27 STATE-01..03 preservation).
+func TestRollup_LRUHit_NoBlockStateMutation(t *testing.T) {
+	bc, _, mem := newFSStoreForRollupLRUTest(t)
+	ctx := context.Background()
+
+	payload := bytes.Repeat([]byte{0x07}, 256*1024)
+	h := hashOfSingleChunk(payload)
+
+	const seedID = "seedfile/block-0"
+	const seedRefCount uint32 = 5
+	const seedState = blockstore.BlockStateRemote
+	if err := mem.Put(ctx, &blockstore.FileBlock{
+		ID:       seedID,
+		Hash:     h,
+		State:    seedState,
+		RefCount: seedRefCount,
+		DataSize: uint32(len(payload)),
+	}); err != nil {
+		t.Fatalf("seed Put: %v", err)
+	}
+
+	bc.dedupLRU.Put(h, "prev-payload")
+
+	runRollupOnce(t, bc, "no-state-mutation", payload)
+
+	// Read the row back via GetByHash (the row might be looked up via
+	// any matching ID; GetByHash is the public path).
+	fb, err := mem.GetByHash(ctx, h)
+	if err != nil {
+		t.Fatalf("GetByHash: %v", err)
+	}
+	if fb == nil {
+		t.Fatal("post-rollup: FileBlock for h missing — AddRef somehow dropped the row")
+	}
+	if fb.State != seedState {
+		t.Fatalf("BlockState mutated by AddRef: got %v want %v (D-27 STATE invariant violated)", fb.State, seedState)
+	}
+	if fb.RefCount != seedRefCount+1 {
+		t.Fatalf("RefCount: got %d want %d (seed=%d + 1 AddRef)", fb.RefCount, seedRefCount+1, seedRefCount)
+	}
 }

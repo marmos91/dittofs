@@ -72,27 +72,26 @@ type Config struct {
 	// These knobs apply globally to every share's *engine.BlockStore syncer.
 	Syncer SyncerConfig `mapstructure:"syncer" yaml:"syncer"`
 
+	// Blockstore configures local/remote blockstore tunables (Phase 19+).
+	// Phase 19 introduces the first knob: blockstore.local.dedup_lru_size.
+	Blockstore BlockstoreConfig `mapstructure:"blockstore" yaml:"blockstore"`
+
 	// GC configures the engine.CollectGarbage mark-sweep run (Phase 11 D-04..D-08).
 	// These knobs apply globally to every block-store GC invocation.
 	GC GCConfig `mapstructure:"gc" yaml:"gc"`
 }
 
 // SyncerConfig configures the engine.Syncer claim/upload cycle. See Phase 11
-// CONTEXT.md decisions D-13 (batched claim), D-14 (restart-recovery janitor),
-// D-24 (periodic-only sync trigger), D-25 (bounded share-wide upload pool).
+// CONTEXT.md decisions D-14 (restart-recovery janitor), D-24 (periodic-only
+// sync trigger), D-25 (bounded share-wide upload pool).
 //
-// All four fields have non-zero defaults applied via ApplyDefaults; Validate
-// enforces the only constraint that defaults cannot guarantee:
-// UploadConcurrency <= ClaimBatchSize (otherwise the upload pool would block
-// on an empty queue).
+// Phase 19 D-23 closed the Phase 18 D-16 `claim_batch_size` deprecation cycle:
+// the field was set/defaulted in Phase 11 but never read by the syncer claim
+// path. The mapstructure/yaml tag `claim_batch_size` is gone; viper silently
+// ignores it on existing config files (unknown keys do not error).
 type SyncerConfig struct {
-	// ClaimBatchSize is the maximum number of Pending blocks the syncer
-	// flips to Syncing in a single metadata transaction per claim cycle (D-13).
-	// Default: 32.
-	ClaimBatchSize int `mapstructure:"claim_batch_size" yaml:"claim_batch_size"`
-
 	// UploadConcurrency is the per-share upload goroutine pool size (D-25).
-	// Caps S3 connections per share; predictable throughput. Must be <= ClaimBatchSize.
+	// Caps S3 connections per share; predictable throughput.
 	// Default: 8.
 	UploadConcurrency int `mapstructure:"upload_concurrency" yaml:"upload_concurrency"`
 
@@ -110,9 +109,6 @@ type SyncerConfig struct {
 
 // ApplyDefaults fills any zero-valued field with the Phase 11 defaults.
 func (c *SyncerConfig) ApplyDefaults() {
-	if c.ClaimBatchSize <= 0 {
-		c.ClaimBatchSize = 32
-	}
 	if c.UploadConcurrency <= 0 {
 		c.UploadConcurrency = 8
 	}
@@ -125,18 +121,10 @@ func (c *SyncerConfig) ApplyDefaults() {
 }
 
 // Validate returns an error if the SyncerConfig has invalid values. Negative
-// or zero batch / concurrency are nonsensical; concurrency above batch would
-// leave goroutines parked on an exhausted batch every cycle.
+// or zero concurrency is nonsensical.
 func (c *SyncerConfig) Validate() error {
-	if c.ClaimBatchSize <= 0 {
-		return fmt.Errorf("syncer.claim_batch_size must be > 0 (got %d)", c.ClaimBatchSize)
-	}
 	if c.UploadConcurrency <= 0 {
 		return fmt.Errorf("syncer.upload_concurrency must be > 0 (got %d)", c.UploadConcurrency)
-	}
-	if c.UploadConcurrency > c.ClaimBatchSize {
-		return fmt.Errorf("syncer.upload_concurrency (%d) must be <= claim_batch_size (%d)",
-			c.UploadConcurrency, c.ClaimBatchSize)
 	}
 	return nil
 }

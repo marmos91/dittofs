@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -142,6 +143,24 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 	// honor durable rollback.
 	t.Run("Tx_IncrementRefCount_RollsBack", func(t *testing.T) {
 		testTx_IncrementRefCount_RollsBack(t, factory)
+	})
+
+	// Phase 19 D-04 / D-21: AddRef is the LRU-hit refcount path for the
+	// in-memory hash dedup LRU (Opt 1). Three scenarios pin the contract
+	// across all backends: existing-hash RefCount bumps (state preserved
+	// per D-27), missing-hash returns the ErrUnknownHash sentinel and
+	// creates no row, and concurrent AddRef vs DecrementRefCount cascade
+	// preserves the TOCTOU-free serialization invariant.
+	t.Run("AddRef_ExistingHash_BumpsRefCount", func(t *testing.T) {
+		testAddRef_ExistingHash_BumpsRefCount(t, factory)
+	})
+
+	t.Run("AddRef_MissingHash_ReturnsErrUnknownHash", func(t *testing.T) {
+		testAddRef_MissingHash_ReturnsErrUnknownHash(t, factory)
+	})
+
+	t.Run("AddRef_Concurrent_With_DecrementRefCountCascade", func(t *testing.T) {
+		testAddRef_Concurrent_With_DecrementRefCountCascade(t, factory)
 	})
 }
 
@@ -1021,5 +1040,178 @@ func testTx_IncrementRefCount_RollsBack(t *testing.T, factory StoreFactory) {
 		if got.RefCount != 1 {
 			t.Errorf("RefCount(%s)=%d after rollback; want 1 (txn must undo IncrementRefCount)", s.id, got.RefCount)
 		}
+	}
+}
+
+// ============================================================================
+// AddRef Tests (Phase 19 D-04 / D-21)
+//
+// AddRef is the LRU-hit refcount path for the in-memory hash dedup LRU
+// (Opt 1). It atomically bumps RefCount on the FileBlock row indexed by
+// hash; BlockState is UNCHANGED (D-27 STATE-01..03 preservation). The
+// LRU never creates blocks — it only references already-stored ones —
+// so AddRef returns ErrUnknownHash when the hash is not yet in the
+// store (caller falls back to the full Put path).
+// ============================================================================
+
+// testAddRef_ExistingHash_BumpsRefCount: seed a single FileBlock with a
+// known hash at RefCount=1 and BlockState=Remote, AddRef once, assert
+// RefCount becomes 2 AND BlockState stays Remote (D-27 — state
+// preservation is the load-bearing contract).
+func testAddRef_ExistingHash_BumpsRefCount(t *testing.T, factory StoreFactory) {
+	t.Helper()
+	store := factory(t)
+	ctx := t.Context()
+
+	hash := hashOfSeed("addref-existing-hash")
+	casKey := "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String()
+	seed := &blockstore.FileBlock{
+		ID:            "file-addref/0",
+		Hash:          hash,
+		State:         blockstore.BlockStateRemote,
+		LocalPath:     "/cache/addref0",
+		BlockStoreKey: casKey,
+		DataSize:      4096,
+		RefCount:      1,
+		LastAccess:    time.Now(),
+		CreatedAt:     time.Now(),
+	}
+	if err := store.Put(ctx, seed); err != nil {
+		t.Fatalf("seed Put: %v", err)
+	}
+
+	blockRef := blockstore.BlockRef{Hash: hash, Offset: 0, Size: 4096}
+	if err := store.AddRef(ctx, hash, "file-addref", blockRef); err != nil {
+		t.Fatalf("AddRef(existing hash): %v", err)
+	}
+
+	got, err := store.GetByHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("GetByHash post-AddRef: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetByHash returned nil after AddRef on existing hash")
+	}
+	if got.RefCount != 2 {
+		t.Errorf("RefCount = %d after AddRef on RefCount=1 seed; want 2", got.RefCount)
+	}
+	// D-27: BlockState UNCHANGED. AddRef MUST NOT fire any
+	// Pending→Syncing→Remote transition; the hit path references an
+	// existing block, it never creates one.
+	if got.State != blockstore.BlockStateRemote {
+		t.Errorf("BlockState = %v after AddRef; want Remote (D-27: state preserved across AddRef)", got.State)
+	}
+}
+
+// testAddRef_MissingHash_ReturnsErrUnknownHash: AddRef on a hash that
+// has never been Put must return blockstore.ErrUnknownHash (also
+// re-exported as metadata.ErrUnknownHash) AND must NOT materialize a
+// row for that hash. D-04: caller falls back to the full Put path on
+// this sentinel.
+func testAddRef_MissingHash_ReturnsErrUnknownHash(t *testing.T, factory StoreFactory) {
+	t.Helper()
+	store := factory(t)
+	ctx := t.Context()
+
+	hash := hashOfSeed("addref-missing-hash-never-put")
+	blockRef := blockstore.BlockRef{Hash: hash, Offset: 0, Size: 1024}
+
+	err := store.AddRef(ctx, hash, "file-missing", blockRef)
+	if err == nil {
+		t.Fatal("AddRef(missing hash) returned nil; want metadata.ErrUnknownHash")
+	}
+	if !errors.Is(err, metadata.ErrUnknownHash) {
+		t.Errorf("AddRef(missing hash) returned %v; want errors.Is(...,metadata.ErrUnknownHash)", err)
+	}
+
+	// D-04 / D-27: AddRef MUST NOT create a row on the missing-hash
+	// path. GetByHash returns (nil, nil) for an absent hash by contract.
+	got, err := store.GetByHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("GetByHash(missing) errored: %v", err)
+	}
+	if got != nil {
+		t.Errorf("GetByHash(missing) returned a row %+v after AddRef-ErrUnknownHash; want nil (no row created)", got)
+	}
+}
+
+// testAddRef_Concurrent_With_DecrementRefCountCascade: seed a single
+// FileBlock at RefCount=10 (high enough that 8 concurrent decrements
+// cannot underflow), spawn 8 AddRef goroutines + 8 DecrementRefCount
+// goroutines all targeting the same row, assert final RefCount is
+// exactly 10 (TOCTOU-free serialization invariant from D-04 — AddRef
+// matches IncrementRefCount's atomicity contract). Mirrors the
+// ConcurrentMonotone subtest shape from rollup_store_suite.go.
+func testAddRef_Concurrent_With_DecrementRefCountCascade(t *testing.T, factory StoreFactory) {
+	t.Helper()
+	store := factory(t)
+	ctx := t.Context()
+
+	hash := hashOfSeed("addref-concurrent-cascade")
+	casKey := "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String()
+	seed := &blockstore.FileBlock{
+		ID:            "file-addref-conc/0",
+		Hash:          hash,
+		State:         blockstore.BlockStateRemote,
+		LocalPath:     "/cache/addref-conc0",
+		BlockStoreKey: casKey,
+		DataSize:      4096,
+		RefCount:      10,
+		LastAccess:    time.Now(),
+		CreatedAt:     time.Now(),
+	}
+	if err := store.Put(ctx, seed); err != nil {
+		t.Fatalf("seed Put: %v", err)
+	}
+
+	// Resolve the row ID (DecrementRefCount is id-keyed, not hash-keyed)
+	// via the setup goroutine — backends that hash-collide will return
+	// any one matching row, which is the row we just Put.
+	resolved, err := store.GetByHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("GetByHash for id resolution: %v", err)
+	}
+	if resolved == nil {
+		t.Fatal("GetByHash returned nil for freshly-Put row")
+	}
+	rowID := resolved.ID
+
+	const halfN = 8
+	blockRef := blockstore.BlockRef{Hash: hash, Offset: 0, Size: 4096}
+
+	var wg sync.WaitGroup
+	wg.Add(2 * halfN)
+	// 8 AddRef goroutines.
+	for i := 0; i < halfN; i++ {
+		go func() {
+			defer wg.Done()
+			if err := store.AddRef(ctx, hash, "file-addref-conc", blockRef); err != nil {
+				t.Errorf("concurrent AddRef: %v", err)
+			}
+		}()
+	}
+	// 8 DecrementRefCount goroutines on the same id.
+	for i := 0; i < halfN; i++ {
+		go func() {
+			defer wg.Done()
+			if _, err := store.DecrementRefCount(ctx, rowID); err != nil {
+				t.Errorf("concurrent DecrementRefCount: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// D-04 TOCTOU-free serialization invariant: 10 + 8 (AddRef) - 8
+	// (Decrement) = 10. Any backend that races read+compare+write
+	// outside the native concurrency primitive will land off-by-N.
+	got, err := store.GetByHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("GetByHash post-cascade: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetByHash post-cascade returned nil; row was orphan-deleted (D-04 violation — RefCount never reached 0)")
+	}
+	if got.RefCount != 10 {
+		t.Errorf("RefCount post-cascade = %d; want 10 (8 AddRef + 8 Decrement on RefCount=10 seed; TOCTOU-free)", got.RefCount)
 	}
 }

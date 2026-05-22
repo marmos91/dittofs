@@ -7,7 +7,113 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/blockstore/chunker"
+	"lukechampine.com/blake3"
 )
+
+// tryEagerSmallFileDedup is the Phase 19 Plan 08 (Opt 4) file-level
+// dedup fast-path for files at or below chunker.MinChunkSize (D-13 — 1
+// MiB). Such files emit a single chunk under FastCDC, so the eager
+// path is pure work elimination: hash the whole content in RAM,
+// compute the trivial single-block ObjectID, consult
+// metadata.FindByObjectID, and on hit short-circuit chunker + log +
+// CAS write entirely.
+//
+// Sits BEFORE trySpeculativeFileLevelDedup in engine.Flush's pre-rollup
+// hook (D-14). Sibling fast-path — shares applyFileLevelDedupHit's
+// finalize machinery so STATE-01..03 + cache invalidation invariants
+// remain identical to the speculative path's hit.
+//
+// ObjectID semantics (D-14, verified against pkg/blockstore/objectid.go):
+// ComputeObjectID returns BLAKE3(prefix || h0 || ... || hN-1), so the
+// single-block ObjectID is BLAKE3(prefix || hash(data)) — NOT a bare
+// leaf hash. A previously-quiesced file dedups to this ObjectID only
+// when its BlockRef list reduces to exactly one block with the same
+// content hash (the only single-block input that produces the same
+// Merkle root).
+//
+// Cache warming (D-16): on HIT, bs.cache.Put(hash, data) is called
+// AFTER applyFileLevelDedupHit succeeds (don't poison the cache on a
+// failed finalize). On MISS the rollup path's OnChunkComplete wiring
+// (Plan 07) handles warm-after-write.
+//
+// RAM guard (D-15): bounded naturally by per-share concurrent Flush
+// count × MinChunkSize. Thousand-file-burst is a v0.17+ concern per
+// CONTEXT.md <deferred>.
+//
+// Returns (true, nil) on hit, (false, nil) on miss / threshold-bypass /
+// nil-coordinator / empty input, (false, err) on a backend error that
+// should propagate (e.g. FindByObjectID I/O).
+func (m *Syncer) tryEagerSmallFileDedup(
+	ctx context.Context,
+	payloadID string,
+	data []byte,
+) (hit bool, err error) {
+	if m.coordinator == nil {
+		return false, nil
+	}
+	// D-13 threshold gate: files above MinChunkSize bypass eager (the
+	// rollup will run as usual and the speculative path handles them).
+	// Empty data is defensive — speculative path has its own empty-blocks
+	// gate; eager opts out to keep the contract simple.
+	if len(data) == 0 || len(data) > chunker.MinChunkSize {
+		return false, nil
+	}
+
+	// Compute the single-block content hash + provisional ObjectID.
+	// ContentHash is [32]byte (same shape as blake3.Sum256's return),
+	// so a direct conversion avoids the temp + copy.
+	h := blockstore.ContentHash(blake3.Sum256(data))
+	blockRef := blockstore.BlockRef{Hash: h, Offset: 0, Size: uint32(len(data))}
+	provisional := blockstore.ComputeObjectID([]blockstore.BlockRef{blockRef})
+
+	targetBlocks, err := m.coordinator.FindByObjectID(ctx, provisional)
+	if err != nil {
+		return false, fmt.Errorf("eager small-file dedup: FindByObjectID: %w", err)
+	}
+	if targetBlocks == nil {
+		// Miss — caller falls through to speculative dedup → rollup.
+		return false, nil
+	}
+
+	// Delegate to the shared finalize machinery — STATE-01..03 + cache
+	// invalidation invariants identical to the speculative path's hit.
+	// Passing the speculative single-block ref keeps the set-difference
+	// math correct (target's ObjectID == provisional ⇒ target has the
+	// same single hash ⇒ speculative-only set is empty ⇒ no spurious
+	// decrement / invalidate). Coordinator.DecrementRefCount tolerates
+	// "row not found" (returns 0, nil) so even an aliasing collision is
+	// safe; in practice the equality above prevents one entirely.
+	hit, err = m.applyFileLevelDedupHit(
+		ctx,
+		payloadID,
+		[]blockstore.BlockRef{blockRef},
+		targetBlocks,
+		provisional,
+		false, /*isRetry*/
+	)
+	if err != nil || !hit {
+		return hit, err
+	}
+
+	// D-16 cache warming: populate engine Cache with the bytes we just
+	// hashed (we already have them in RAM). MISS case is handled by the
+	// regular rollup path's OnChunkComplete wiring (Plan 07). Reading
+	// through the BlockStore back-reference so post-construction
+	// `bs.cache = rec` swaps (TestClose_ClosesCache pattern) are
+	// observed; bs.cache is never nil thanks to the Null Object pattern
+	// installed by engine.New.
+	if m.bs != nil {
+		m.bs.cache.Put(h, data)
+	}
+
+	logger.Debug("eager small-file dedup short-circuit hit",
+		"payloadID", payloadID,
+		"objectID", provisional.String(),
+		"size", len(data))
+
+	return true, nil
+}
 
 // trySpeculativeFileLevelDedup is the BSCAS-05 file-level dedup
 // short-circuit entry point (Phase 13 D-08 / D-09 / D-10 / D-11 / D-14).

@@ -342,8 +342,8 @@ state transitions (D-15).
 ```
 
 - **Pending**: `RefCount ≥ 1`; bytes are local; not yet uploaded.
-- **Syncing**: a syncer goroutine has claimed the block (batched per
-  `syncer.claim_batch_size`, default 32); the upload is in flight.
+- **Syncing**: a syncer goroutine has claimed the block; the upload is in
+  flight.
 - **Remote**: PUT to the remote CAS keyspace returned 200 AND the
   metadata transaction setting `State=Remote` committed (INV-03 — no
   orphan flag without metadata-txn success).
@@ -356,10 +356,9 @@ same key — idempotent by construction.
 
 **Why a metadata write for every claim?** The Pending → Syncing
 transition is the serialization point against duplicate uploads across
-syncer instances. With `claim_batch_size=32` the cost is a single
-batched txn per tick, in exchange for exact restart recovery and a
-single-query introspection of stuck blocks (`State=Syncing AND
-last_sync_attempt_at < now − 1h`).
+syncer instances. The batched-claim cost is one txn per tick, in exchange
+for exact restart recovery and a single-query introspection of stuck
+blocks (`State=Syncing AND last_sync_attempt_at < now − 1h`).
 
 ## Garbage Collection (mark-sweep, v0.15.0 Phase 11)
 

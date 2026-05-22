@@ -30,6 +30,12 @@ func (nopFBS) IncrementRefCount(_ context.Context, _ string) error { return nil 
 func (nopFBS) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
+func (nopFBS) AddRef(_ context.Context, _ blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
+	// Phase 19 D-04: tests don't exercise the LRU hit path, so always
+	// returning ErrUnknownHash matches "hash never Put" — production
+	// callers fall back to the full Put path.
+	return blockstore.ErrUnknownHash
+}
 func (nopFBS) ListPending(_ context.Context, _ time.Duration, _ int) ([]*blockstore.FileBlock, error) {
 	return nil, nil
 }

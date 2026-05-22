@@ -254,6 +254,22 @@ type FSStore struct {
 	lruIndex map[blockstore.ContentHash]*list.Element // *lruEntry
 	lruList  *list.List                               // most-recent at front
 
+	// --- Phase 19 Plan 04: hash dedup LRU + chunk-complete hook. ---
+	//
+	// dedupLRU is the per-FSStore hash dedup LRU (Phase 19 Opt 1).
+	// Consulted by rollup.go (Plan 05) between FastCDC.Next() and
+	// StoreChunk to skip a metadata round-trip on hot hashes. RAM-only
+	// (D-05); instantiated unconditionally in newFSStoreWithOptionsInternal.
+	dedupLRU *dedupLRU
+
+	// onChunkComplete fires after every successful chunkstore.lruTouch
+	// (Phase 19 Opt 3, D-10). Nil-safe: chunkstore.lruTouch (Plan 07)
+	// checks for nil before invocation. Install via FSStoreOptions at
+	// construction or post-hoc via SetOnChunkComplete — the engine's
+	// Cache materializes in BlockStore.Start, AFTER cfg.Local is
+	// constructed, so the setter path is the production wire-in site.
+	onChunkComplete func(hash blockstore.ContentHash, data []byte, path string)
+
 	// orphanLogMinAgeSeconds gates the append-log orphan sweep during
 	// recovery (D-28 / Warning 3). A log is considered orphan only when
 	// (a) its rollup_offset in metadata is 0, (b) no FileBlock exists for
@@ -560,6 +576,20 @@ type FSStoreOptions struct {
 	// Defaults to 3600 (1h) when zero. See FSStore.orphanLogMinAgeSeconds
 	// and D-28 / Warning 3 in 10-CONTEXT.md for the rationale.
 	OrphanLogMinAgeSeconds int
+
+	// OnChunkComplete is invoked once per successful chunkstore.lruTouch
+	// (post-disk-store), with the chunk's content hash, bytes, and on-disk
+	// path. Wire to engine.Cache.Put to populate the read cache at write
+	// time (Phase 19 Opt 3, D-10). Nil is accepted: chunkstore behaves
+	// identically to pre-Phase-19 if the callback is absent (D-12
+	// nil-safety contract). Callback MUST be non-blocking on hot paths.
+	OnChunkComplete func(hash blockstore.ContentHash, data []byte, path string)
+
+	// DedupLRUSize is the slot count for the in-memory hash dedup LRU
+	// (Phase 19 Opt 1). Default 4096 when zero. Per-FSStore scope (D-02);
+	// RAM-only (D-05). Surfaced via pkg/config as
+	// blockstore.local.dedup_lru_size.
+	DedupLRUSize int
 }
 
 // NewWithOptions constructs an FSStore. Non-zero values in opts override
@@ -614,6 +644,17 @@ func newFSStoreWithOptionsInternal(baseDir string, maxDisk, maxMemory int64, fil
 	} else {
 		bc.orphanLogMinAgeSeconds = 3600
 	}
+
+	// Phase 19 Plan 04: per-FSStore hash dedup LRU + chunk-complete
+	// hook. Default-on-zero idiom matches existing FSStoreOptions
+	// tunables. Wave-1 additive — Plan 05 consumes the LRU from
+	// rollup.go; Plan 07 fires onChunkComplete from chunkstore.lruTouch.
+	size := opts.DedupLRUSize
+	if size <= 0 {
+		size = 4096
+	}
+	bc.dedupLRU = newDedupLRU(size)
+	bc.onChunkComplete = opts.OnChunkComplete
 	return bc, nil
 }
 
@@ -640,6 +681,23 @@ func (bc *FSStore) SetObjectIDPersister(p func(ctx context.Context, payloadID st
 	bc.persisterMu.Lock()
 	defer bc.persisterMu.Unlock()
 	bc.objectIDPersister = p
+}
+
+// SetOnChunkComplete installs the chunk-completion callback after
+// construction. Mirrors the SetObjectIDPersister lifecycle: callers
+// (typically engine.NewBlockStore / BlockStore.Start, where the read
+// Cache materializes AFTER cfg.Local was already constructed) install
+// once before serving traffic. Concurrent installs are not supported —
+// the field is read by chunkstore.lruTouch (Plan 07) on the hot path
+// without locking. Nil is accepted: chunkstore.lruTouch reverts to the
+// pre-Phase-19 codepath (D-12).
+//
+// The parameter type is spelled out as a raw func value (rather than
+// referring to FSStoreOptions.OnChunkComplete) so engine.go can call
+// the setter through a structural interface assertion without
+// importing this package's named-type spelling.
+func (bc *FSStore) SetOnChunkComplete(fn func(hash blockstore.ContentHash, data []byte, path string)) {
+	bc.onChunkComplete = fn
 }
 
 // SetRetentionPolicy updates the retention policy and TTL for eviction decisions.

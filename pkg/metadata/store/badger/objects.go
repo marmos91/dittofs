@@ -159,9 +159,40 @@ func (s *BadgerMetadataStore) Delete(ctx context.Context, id string) error {
 	})
 }
 
-// IncrementRefCount atomically increments a block's RefCount.
+// updateWithConflictRetry wraps s.db.Update with the same retry-on-
+// ErrConflict loop used by WithTransaction (transaction.go). BadgerDB's
+// optimistic concurrency control surfaces ErrConflict when two
+// in-flight Updates touch the same key — the retry converts that into
+// the "atomic, TOCTOU-free" contract D-04 mandates for the refcount
+// mutators (IncrementRefCount, DecrementRefCount, AddRef). Returns the
+// last conflict error if all retries are exhausted; non-conflict
+// errors short-circuit.
+func (s *BadgerMetadataStore) updateWithConflictRetry(ctx context.Context, fn func(*badger.Txn) error) error {
+	var lastErr error
+	for attempt := 0; attempt < maxTransactionRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := s.db.Update(fn)
+		if err == nil {
+			return nil
+		}
+		if err == badger.ErrConflict {
+			lastErr = err
+			baseDelay := time.Duration(1+attempt) * time.Millisecond
+			jitter := time.Duration(attempt) * time.Millisecond
+			time.Sleep(baseDelay + jitter)
+			continue
+		}
+		return err
+	}
+	return lastErr
+}
+
+// IncrementRefCount atomically increments a block's RefCount. Retries
+// on badger.ErrConflict so contended +1/-1/AddRef workloads converge.
 func (s *BadgerMetadataStore) IncrementRefCount(ctx context.Context, id string) error {
-	return s.db.Update(func(txn *badger.Txn) error {
+	return s.updateWithConflictRetry(ctx, func(txn *badger.Txn) error {
 		key := []byte(fileBlockPrefix + id)
 		item, err := txn.Get(key)
 		if err == badger.ErrKeyNotFound {
@@ -185,10 +216,11 @@ func (s *BadgerMetadataStore) IncrementRefCount(ctx context.Context, id string) 
 	})
 }
 
-// DecrementRefCount atomically decrements a block's RefCount.
+// DecrementRefCount atomically decrements a block's RefCount. Retries
+// on badger.ErrConflict so contended +1/-1/AddRef workloads converge.
 func (s *BadgerMetadataStore) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
 	var newCount uint32
-	err := s.db.Update(func(txn *badger.Txn) error {
+	err := s.updateWithConflictRetry(ctx, func(txn *badger.Txn) error {
 		key := []byte(fileBlockPrefix + id)
 		item, err := txn.Get(key)
 		if err == badger.ErrKeyNotFound {
@@ -214,6 +246,73 @@ func (s *BadgerMetadataStore) DecrementRefCount(ctx context.Context, id string) 
 		return txn.Set(key, val)
 	})
 	return newCount, err
+}
+
+// AddRef atomically bumps RefCount on the FileBlock row indexed by the
+// given content hash. Implements the FileBlockStore.AddRef contract
+// (Phase 19 D-04): used by the in-memory hash dedup LRU hit path to
+// reference an already-stored block without creating a new row.
+//
+// Atomicity: the entire hash→id secondary-index lookup, fb:{id} fetch,
+// RefCount++, and Set run inside a single s.db.Update transaction so
+// AddRef is TOCTOU-free against concurrent DecrementRefCount cascade
+// (D-04 — matches the existing IncrementRefCount idiom).
+//
+// Returns metadata.ErrUnknownHash on:
+//   - fb-hash:{hash} secondary-index miss (the hash has never been Put), AND
+//   - fb:{id} value miss after a successful index hit (index/value desync
+//     — defends against orphan-index scenarios; should not normally
+//     happen but maps to the same caller behavior: fall back to full Put).
+//
+// D-27: RefCount is the ONLY field mutated. BlockState is preserved
+// across the read-modify-write (Pending stays Pending, Remote stays
+// Remote — no transition is fired by the hit path).
+func (s *BadgerMetadataStore) AddRef(ctx context.Context, hash blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
+	// payloadID + blockRef accepted for future GC traceability (D-04);
+	// badger backend records ref count only — parameters intentionally
+	// blanked.
+	return s.updateWithConflictRetry(ctx, func(txn *badger.Txn) error {
+		// Resolve hash → id via the secondary index.
+		hashKey := []byte(fileBlockHashPrefix + hash.String())
+		hashItem, err := txn.Get(hashKey)
+		if err == badger.ErrKeyNotFound {
+			return metadata.ErrUnknownHash
+		}
+		if err != nil {
+			return err
+		}
+		var id string
+		if err := hashItem.Value(func(val []byte) error {
+			id = string(val)
+			return nil
+		}); err != nil {
+			return err
+		}
+
+		// Fetch the FileBlock value.
+		key := []byte(fileBlockPrefix + id)
+		item, err := txn.Get(key)
+		if err == badger.ErrKeyNotFound {
+			// Index/value desync — treat as unknown so the LRU
+			// caller falls back to the full Put path.
+			return metadata.ErrUnknownHash
+		}
+		if err != nil {
+			return err
+		}
+		var block metadata.FileBlock
+		if err := item.Value(func(val []byte) error {
+			return json.Unmarshal(val, &block)
+		}); err != nil {
+			return err
+		}
+		block.RefCount++
+		val, err := json.Marshal(&block)
+		if err != nil {
+			return err
+		}
+		return txn.Set(key, val)
+	})
 }
 
 // GetByHash looks up a finalized block by its content hash.
@@ -585,6 +684,54 @@ func (tx *badgerTransaction) DecrementRefCount(ctx context.Context, id string) (
 		return 0, err
 	}
 	return newCount, nil
+}
+
+// AddRef runs the hash→id resolve + RefCount++ read-modify-write under
+// the active badger.Txn so a subsequent rollback discards the mutation
+// (mirrors the CR-01 fix applied to IncrementRefCount). Returns
+// metadata.ErrUnknownHash on index miss or value miss.
+func (tx *badgerTransaction) AddRef(ctx context.Context, hash metadata.ContentHash, _ string, _ blockstore.BlockRef) error {
+	// payloadID + blockRef accepted for future GC traceability (D-04);
+	// badger backend records ref count only — parameters intentionally
+	// blanked.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	hashKey := []byte(fileBlockHashPrefix + hash.String())
+	hashItem, err := tx.txn.Get(hashKey)
+	if err == badger.ErrKeyNotFound {
+		return metadata.ErrUnknownHash
+	}
+	if err != nil {
+		return err
+	}
+	var id string
+	if err := hashItem.Value(func(val []byte) error {
+		id = string(val)
+		return nil
+	}); err != nil {
+		return err
+	}
+	key := []byte(fileBlockPrefix + id)
+	item, err := tx.txn.Get(key)
+	if err == badger.ErrKeyNotFound {
+		return metadata.ErrUnknownHash
+	}
+	if err != nil {
+		return err
+	}
+	var block metadata.FileBlock
+	if err := item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &block)
+	}); err != nil {
+		return err
+	}
+	block.RefCount++
+	val, err := json.Marshal(&block)
+	if err != nil {
+		return err
+	}
+	return tx.txn.Set(key, val)
 }
 
 // GetByHash runs against the active badger.Txn (BadgerDB transactions

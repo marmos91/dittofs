@@ -8,6 +8,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/blockstore/chunker"
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	"github.com/marmos91/dittofs/pkg/health"
@@ -184,6 +185,32 @@ func New(cfg Config) (*BlockStore, error) {
 				return nil
 			}
 			return bs.coordinator.PersistFileBlocks(ctx, payloadID, blocks, objectID)
+		})
+	}
+	// Phase 19 Opt 3 (D-10/D-11/D-16): install the chunk-completion
+	// callback on local stores that expose the setter (production
+	// *fs.FSStore does; the in-memory backend does not — its writes go
+	// through SetChunkEmitter below and don't materialize through the
+	// CAS chunkstore.StoreChunk + lruTouch path Plan 07 hooks). The
+	// closure delegates every successful chunkstore write to
+	// bs.cache.Put: the engine Cache becomes warm on the write side, so
+	// the NFS COMMIT-then-READ pattern never goes back to disk for the
+	// just-written chunk. The closure captures bs (not bs.cache) so the
+	// Null-Object→real-Cache swap performed by BlockStore.Start at
+	// engine.go:267-270 is observed transparently. The path arg is
+	// intentionally discarded (`_ string`) — Cache.Put doesn't consume it;
+	// the firing-site contract still passes it to enable future mmap-or-
+	// copy strategies (cache.go docstring). Cache.Put is nil-safe + closed-
+	// safe + max-bytes-safe (cache.go:229-235), so this binding is the
+	// canonical safe wiring (RAM ceiling bounded by Cache's existing LRU,
+	// D-11). Same lifecycle precedent as SetObjectIDPersister above —
+	// install once at construction; FSStore guarantees no chunk activity
+	// fires before Start completes.
+	if setter, ok := cfg.Local.(interface {
+		SetOnChunkComplete(fn func(hash blockstore.ContentHash, data []byte, path string))
+	}); ok {
+		setter.SetOnChunkComplete(func(hash blockstore.ContentHash, data []byte, _ string) {
+			bs.cache.Put(hash, data)
 		})
 	}
 	// Install a per-chunk emitter on local stores that expose one (the
@@ -654,9 +681,56 @@ func (bs *BlockStore) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadI
 // the Cache is CAS-keyed and Flush has no BlockRef snapshot at this
 // layer to translate flushed bytes into hash-keyed cache entries.
 func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
-	// File-level dedup pre-hook: if a fully-quiesced manifest matches
-	// an already-stored ObjectID, skip the upload pump entirely.
+	// Both pre-rollup dedup hooks require a coordinator; gate them
+	// jointly so the nil-check isn't repeated.
 	if bs.coordinator != nil {
+		// Phase 19 Opt 4 (D-13/D-14/D-16): eager small-file dedup BEFORE
+		// the speculative path. Files at or below chunker.MinChunkSize
+		// (1 MiB) emit a single chunk under FastCDC anyway; hashing the
+		// whole content in RAM and consulting metadata.FindByObjectID
+		// skips chunker + log + CAS write entirely on hit. Sibling fast-
+		// path; shares applyFileLevelDedupHit's finalize machinery so
+		// STATE-01..03 + cache invalidation + D-11 appendlog cleanup
+		// invariants remain identical to the speculative path.
+		//
+		// Source-of-truth for the in-RAM bytes: bs.local.ReadPayloadAt
+		// consults the per-payload appendlog (pre-rollup bytes) before
+		// the FileBlock manifest, which is the right surface — eager runs
+		// BEFORE the rollup commits anything to CAS. For local stores that
+		// have already rolled up (the in-memory backend's synchronous
+		// rollup, FSStore steady state), ReadPayloadAt walks the manifest
+		// and serves the same bytes from the now-stored chunks; the eager
+		// path's hash + lookup are identical either way.
+		//
+		// Outer size gate at the call site is intentionally defensive
+		// (tryEagerSmallFileDedup re-checks internally — that gate is the
+		// real authority) but lets us skip the ReadPayloadAt alloc + I/O
+		// entirely for large files.
+		if size, found := bs.local.GetFileSize(ctx, payloadID); found && size > 0 && size <= chunker.MinChunkSize {
+			// Outer gate already bounds size to chunker.MinChunkSize (1 MiB),
+			// well below math.MaxInt on every supported platform. The cast
+			// here is therefore safe; the explicit form documents the
+			// bounded-uint64->int conversion for readers and linters.
+			isize := int(size)
+			data := make([]byte, isize)
+			n, err := bs.local.ReadPayloadAt(ctx, payloadID, data, 0)
+			// On a clean read we have the full payload in RAM; consult
+			// eager dedup. A short / errored read is treated as "skip
+			// eager and fall through to speculative" — the eager
+			// optimisation is opportunistic and never blocks Flush.
+			if err == nil && n == isize {
+				hit, derr := bs.syncer.tryEagerSmallFileDedup(ctx, payloadID, data)
+				if derr != nil {
+					return nil, fmt.Errorf("eager small-file dedup: %w", derr)
+				}
+				if hit {
+					return &blockstore.FlushResult{Finalized: true}, nil
+				}
+			}
+		}
+
+		// File-level dedup pre-hook: if a fully-quiesced manifest matches
+		// an already-stored ObjectID, skip the upload pump entirely.
 		specBlocks, blockStates, err := bs.syncer.snapshotPendingBlockRefs(ctx, payloadID)
 		if err != nil {
 			return nil, fmt.Errorf("snapshot pending blockrefs: %w", err)

@@ -335,6 +335,19 @@ func (s *stubFBS) DecrementRefCount(_ context.Context, _ string) (uint32, error)
 	return 0, nil
 }
 
+func (s *stubFBS) AddRef(_ context.Context, h blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
+	// Phase 19 D-04: bump RefCount on any row indexed by hash.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, fb := range s.blocks {
+		if fb.Hash == h {
+			fb.RefCount++
+			return nil
+		}
+	}
+	return blockstore.ErrUnknownHash
+}
+
 func (s *stubFBS) ListPending(_ context.Context, _ time.Duration, _ int) ([]*blockstore.FileBlock, error) {
 	return nil, nil
 }
