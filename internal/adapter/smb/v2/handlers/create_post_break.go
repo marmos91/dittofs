@@ -303,28 +303,30 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	}
 
 	// Compute GrantedAccess for new/overwritten files. The fileExists branch
-	// above already populated grantedAccess from CheckFileAccess. For
-	// FileCreated the ACL was inherited from the parent at create time; for
-	// FileOverwritten/Superseded the existing DACL is preserved. Both need
-	// the intersection of req.DesiredAccess with the resulting file's DACL —
-	// CheckFileAccess returns the per-bit granted mask in both arms (allow
-	// AND deny), so always take the returned mask. Upstream gates
-	// (CheckParentWriteAccess for FileCreated; DACL check at step 6c-bis for
-	// the existing-file path that flows into Overwrite/Supersede) have
-	// already approved the open — an unexpected ErrAccessDenied here would
-	// indicate the post-create DACL diverged from the parent's inherited
-	// set, so we log and continue with the (possibly narrowed) granted mask
-	// rather than overstate rights by re-resolving DesiredAccess.
-	if !grantedComputed && file != nil {
-		g, err := metaSvc.CheckFileAccess(file, authCtx, req.DesiredAccess)
-		if err != nil {
-			logger.Debug("CREATE: post-create CheckFileAccess returned narrowed mask",
-				"path", filename,
-				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
-				"granted", fmt.Sprintf("0x%x", g),
-				"error", err)
-		}
-		grantedAccess = g
+	// above already populated grantedAccess from CheckFileAccess on the
+	// existing file's DACL (the open-time gate).
+	//
+	// For FileCreated the file is brand-new: Windows/Samba grant the creator
+	// the resolved DesiredAccess as-is and never re-check it against the
+	// inherited DACL. The inherited DACL governs subsequent opens by other
+	// principals — it does not narrow the creator's handle. This matches
+	// Samba `source3/smbd/open.c::open_file_ntcreate`, which only runs the
+	// DACL check on existing-file paths, and MS-FSA §2.1.5.1.2 CreateFile
+	// (the DesiredAccess check is gated by the parent DACL, not the new
+	// child's inherited DACL). Re-checking would surface the smbtorture
+	// failure in smb2.acls.INHERITANCE/INHERITFLAGS/SDFLAGSVSCHOWN, where
+	// a parent DACL grants the creator only WRITE_DATA|WRITE_DAC
+	// inheritably but the test still expects the new handle to carry
+	// SEC_RIGHTS_FILE_ALL (per Samba behavior).
+	//
+	// For FileOverwritten/Superseded the prior DACL is preserved and the
+	// open-time gate at step 6c-bis already validated DesiredAccess against
+	// it; grantedAccess was set there. If grantedComputed is false in that
+	// branch (defensive — should not happen in practice because
+	// fileExists==true for overwrite/supersede) we fall back to the
+	// resolved DesiredAccess to avoid under-granting.
+	if !grantedComputed {
+		grantedAccess = resolveAccessFlags(req.DesiredAccess)
 	}
 
 	// Step 7a: Restore frozen timestamps on parent directory (MS-FSA 2.1.5.14.2).
