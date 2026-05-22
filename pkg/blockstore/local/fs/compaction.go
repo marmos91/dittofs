@@ -344,27 +344,11 @@ func (bc *FSStore) compactLogLocked(payloadID string, lf *logFile, idx *logIndex
 // before the per-log scan installs fds. Best-effort: per-file removal
 // errors are logged at Warn and otherwise ignored — a stale temp does
 // not affect correctness, only wastes disk.
+//
+// Walks the full tree under logsDir so both the flat layout
+// (logs/<payload>.log.compact) and the share-prefixed nested layout
+// (logs/<share>/<file>.log.compact) are covered in a single pass.
 func (bc *FSStore) cleanupCompactTemps(logsDir string) {
-	entries, err := os.ReadDir(logsDir)
-	if err != nil {
-		return
-	}
-	for _, d := range entries {
-		if d.IsDir() {
-			continue
-		}
-		name := d.Name()
-		if filepath.Ext(name) != ".compact" {
-			continue
-		}
-		path := filepath.Join(logsDir, name)
-		if rmErr := os.Remove(path); rmErr != nil {
-			slog.Warn("compaction: cleanup stale temp failed",
-				"path", path, "error", rmErr)
-		}
-	}
-	// Walk one level deeper to catch share-prefixed payload IDs (the
-	// log layout supports nested directories under logs/).
 	_ = filepath.WalkDir(logsDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
