@@ -273,6 +273,21 @@ func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *l
 		}
 	}
 
+	// Windows: close the open fd against lf.path BEFORE the rename.
+	// `MoveFileEx` / `os.Rename` refuses to replace a file with an open
+	// handle (returns ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION).
+	// POSIX rename works against an open target, so on Linux/macOS we
+	// keep the close after the rename — the order matters there because
+	// holding the old fd across rename preserves the in-flight reader
+	// semantics if anything inside this same goroutine still needed it
+	// (nothing does, but the discipline costs nothing).
+	if runtime.GOOS == "windows" {
+		if cerr := lf.f.Close(); cerr != nil {
+			return fmt.Errorf("compaction: close old fd before rename (windows): %w", cerr)
+		}
+		lf.f = nil
+	}
+
 	// Atomic rename. Per POSIX, rename(2) is atomic with respect to a
 	// crash on the same filesystem: the dentry transition is all-or-
 	// nothing. After this point the on-disk log is the compacted file;
@@ -317,8 +332,9 @@ func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *l
 	idx.fenceCursor = 0
 
 	// The rename replaced the inode underneath lf.f. Close the stale fd
-	// and open a fresh one against the new file, seeked to EOF for
-	// subsequent appends.
+	// (POSIX path; Windows already closed it pre-rename) and open a
+	// fresh one against the new file, seeked to EOF for subsequent
+	// appends.
 	oldFd := lf.f
 	newFd, err := os.OpenFile(lf.path, os.O_RDWR, 0644)
 	if err != nil {
@@ -326,7 +342,9 @@ func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *l
 		// Close the stale fd, evict the logFDs entry — next touch via
 		// getOrCreateLog opens the new file. idx is already rebased
 		// (above) so it stays consistent with the on-disk layout.
-		_ = oldFd.Close()
+		if oldFd != nil {
+			_ = oldFd.Close()
+		}
 		bc.logsMu.Lock()
 		delete(bc.logFDs, payloadID)
 		bc.logsMu.Unlock()
@@ -335,7 +353,9 @@ func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *l
 	eof, err := newFd.Seek(0, io.SeekEnd)
 	if err != nil {
 		_ = newFd.Close()
-		_ = oldFd.Close()
+		if oldFd != nil {
+			_ = oldFd.Close()
+		}
 		bc.logsMu.Lock()
 		delete(bc.logFDs, payloadID)
 		bc.logsMu.Unlock()
@@ -348,10 +368,14 @@ func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *l
 	// is observed atomically by any caller that subsequently acquires
 	// mu. The old groupCommit is quiescent (no in-flight Sync — Sync
 	// is only called under mu) so dropping the reference is safe.
+	// oldFd is nil on Windows (closed before the rename); only close
+	// it on POSIX where we kept it open across the rename.
 	lf.f = newFd
 	lf.eofPos = uint64(eof)
 	lf.groupCommit = newGroupCommit(newFd.Sync)
-	_ = oldFd.Close()
+	if oldFd != nil {
+		_ = oldFd.Close()
+	}
 
 	slog.Debug("compaction: rewrote log",
 		"payloadID", payloadID,
