@@ -21,6 +21,14 @@ package fs
 // the per-file `mu` (see appendwrite.go::AppendWrite and rollup.go::
 // rollupFile). The invariant matches the rest of the per-payload state
 // (interval tree, truncation boundary).
+//
+// TRANSITIONAL-V0.17+: physical log compaction (truncating the log file
+// at compactionFence) is out of scope. Consumed entries linger in
+// idx.entries until DeleteAppendLog wipes the payload; memory grows
+// roughly with arrival count between payload-lifetime endpoints. R-7 in
+// .planning/proposals/2026-05-22-logindex-rollup-redesign.md is the
+// follow-up to replace logPos-keyed consumption with file-offset-keyed
+// consumption, eliminating the stalled-fence pathology entirely.
 
 // logEntry is one record's position in the log + the file-offset extent it
 // covers. The entry is immutable once appended; consumption is tracked
