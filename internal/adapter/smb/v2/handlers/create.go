@@ -458,6 +458,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		"disposition", req.CreateDisposition,
 		"options", req.CreateOptions,
 		"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
+		"fileAttributes", fmt.Sprintf("0x%x", req.FileAttributes),
 		"oplockLevel", fmt.Sprintf("0x%02x", req.OplockLevel),
 		"createContexts", len(req.CreateContexts))
 
