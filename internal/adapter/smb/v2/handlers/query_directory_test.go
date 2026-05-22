@@ -506,10 +506,12 @@ func TestQueryDirectory_ConcurrentModify_NoPanic(t *testing.T) {
 	}
 
 	// Continue without restart — must not panic or wedge. Drain to NO_MORE_FILES.
+	drained := false
 	for steps := 0; steps < 100; steps++ {
 		r := callQuery(t, h, smbCtx, open.FileID, "*",
 			uint8(types.SMB2ReturnSingleEntry))
 		if r.Status == types.StatusNoMoreFiles {
+			drained = true
 			break
 		}
 		if r.Status != types.StatusSuccess {
@@ -519,6 +521,9 @@ func TestQueryDirectory_ConcurrentModify_NoPanic(t *testing.T) {
 		if got := countEntries(r.Data); got != 1 {
 			t.Fatalf("step %d: entries = %d, want 1", steps, got)
 		}
+	}
+	if !drained {
+		t.Fatal("drain loop exited without observing StatusNoMoreFiles after 100 iterations — cursor likely wedged")
 	}
 
 	// Now restart — must see the post-modification listing. Starting with

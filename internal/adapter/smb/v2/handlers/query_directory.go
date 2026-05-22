@@ -296,7 +296,12 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	// empty FileName MUST be treated as "*". Normalize both sides so that
 	// spec-equivalent "match all" transitions ("" ↔ "*" ↔ "*.*") are not
 	// flagged as a change.
-	patternChanged := openFile.EnumerationIndex > 0 &&
+	// Gate on EnumerationIndex>0 OR EnumerationComplete to also catch the
+	// "previous query had zero matches" case (STATUS_NO_SUCH_FILE leaves
+	// Index=0 but flips Complete=true). Without the Complete check a
+	// follow-up query with a different pattern would skip the restart
+	// path and incorrectly inherit the drained-cursor state.
+	patternChanged := (openFile.EnumerationIndex > 0 || openFile.EnumerationComplete) &&
 		normalizeSearchPattern(req.FileName) != normalizeSearchPattern(openFile.EnumerationPattern)
 	if patternChanged {
 		logger.Debug("QUERY_DIRECTORY: search pattern changed, restarting enumeration",
