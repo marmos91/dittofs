@@ -183,10 +183,11 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 		return nil
 	}
 
-	// Read the log header to learn the current rollup_offset (used below
-	// only as the prior fence the new advance is compared against).
-	hdr, err := readLogHeader(lf.f)
-	if err != nil {
+	// Read + validate the log header. Direction-1 no longer uses
+	// hdr.RollupOffset for any computation (the in-memory idx.Fence is
+	// the truth), but the read still serves as a corruption sanity
+	// check before we issue preads against the same fd.
+	if _, err := readLogHeader(lf.f); err != nil {
 		slog.Warn("rollup: read header", "payloadID", payloadID, "error", err)
 		return err
 	}
@@ -201,7 +202,16 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	stableEnd := stable.Offset + uint64(stable.Length)
 	entries := idx.EntriesForInterval(stable.Offset, uint64(stable.Length))
 	if len(entries) == 0 {
-		return nil
+		// The tree reported a stable interval the logIndex cannot back —
+		// only possible under a tree/logIndex divergence (e.g. AppendWrite
+		// inserted into the tree but skipped the logIndex append, or
+		// recovery rebuilt the tree from records the index missed).
+		// Returning nil here would silently re-queue the same dirty
+		// interval indefinitely; surface a hard error so the worker pool
+		// logs it and a future pass after recovery / restart can retry
+		// from a known-good state.
+		return fmt.Errorf("rollup: tree/logIndex divergence — stable interval [%d,%d) has no logIndex entries",
+			stable.Offset, stableEnd)
 	}
 
 	rf, err := os.Open(lf.path)
@@ -217,17 +227,15 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 		if rerr != nil {
 			// A CRC mismatch or pread failure at a record the logIndex
 			// claims is valid implies log-fd corruption or a logIndex/
-			// log divergence bug. Treat as a hard fail for this pass —
-			// metadata stays unchanged, the tree keeps the interval
-			// dirty, a future pass (possibly after recovery) can retry.
-			slog.Warn("rollup: readRecordAt", "payloadID", payloadID,
-				"logPos", e.logPos, "error", rerr)
-			return nil
+			// log divergence bug. Returning nil here would re-queue the
+			// interval forever — surface a hard error instead so the
+			// worker pool's error log captures the divergence and
+			// operators can inspect the log fd.
+			return fmt.Errorf("rollup: readRecordAt(logPos=%d): %w", e.logPos, rerr)
 		}
 		if off != e.fileOff {
-			slog.Warn("rollup: logIndex fileOff mismatch", "payloadID", payloadID,
-				"logPos", e.logPos, "indexed", e.fileOff, "frame", off)
-			return nil
+			return fmt.Errorf("rollup: logIndex fileOff divergence at logPos=%d (indexed=%d frame=%d)",
+				e.logPos, e.fileOff, off)
 		}
 		recs = append(recs, rec{
 			off:     off,
@@ -382,6 +390,14 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	// entry preceded by an unconsumed predecessor does NOT advance the
 	// fence; the chunks are committed but the on-disk log byte prefix
 	// stays anchored until the predecessor is consumed too (R-7).
+	//
+	// priorFence is captured BEFORE MarkConsumed/AdvanceFence so the
+	// budget-release math at the bottom uses the in-memory fence delta
+	// (truth) rather than (targetPos - hdr.RollupOffset). The log header
+	// is derived state that can lag if a prior advanceRollupOffset
+	// failed — using it to compute reclaimed would double-decrement
+	// logBytesTotal on the recovery-from-stale-header path.
+	priorFence := idx.Fence()
 	for _, lp := range consumedPositions {
 		idx.MarkConsumed(lp)
 	}
@@ -438,11 +454,14 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	}
 
 	// Consume the dirty interval(s) this rollup just covered and release
-	// the corresponding log budget.
-	reclaimed := int64(targetPos - hdr.RollupOffset)
+	// the corresponding log budget. Reclaimed bytes are measured against
+	// the in-memory priorFence, NOT hdr.RollupOffset — the log header is
+	// derived state that may lag the metadata-authoritative fence after
+	// a prior advanceRollupOffset failure, and basing reclaimed on the
+	// stale header would double-decrement budget on the next pass.
 	tree.ConsumeUpTo(stableEnd)
-	if reclaimed > 0 {
-		bc.logBytesTotal.Add(-reclaimed)
+	if targetPos > priorFence {
+		bc.logBytesTotal.Add(-int64(targetPos - priorFence))
 	}
 
 	// Non-blocking signal to unblock any AppendWrite waiting on pressure.
