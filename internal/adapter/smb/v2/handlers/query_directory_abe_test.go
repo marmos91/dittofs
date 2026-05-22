@@ -56,19 +56,29 @@ func directoryWithACL(name string, uid, gid uint32, mode uint32, a *acl.ACL) met
 	}
 }
 
-// TestFilterByAccess_OwnerOnlyACL verifies that an ACL granting READ_DATA only
-// to OWNER@ keeps the file visible to the owner and hides it from a non-owner.
+// fullReadMask is the access-mask Samba (source3/smbd/dir.c::user_can_read_fsp)
+// requires for ABE visibility: READ_DATA | READ_EA | READ_ATTRIBUTES |
+// READ_CONTROL. Tests grant this exact mask whenever they want the entry to
+// stay visible under the filter.
+const fullReadMask = acl.ACE4_READ_DATA |
+	acl.ACE4_READ_NAMED_ATTRS |
+	acl.ACE4_READ_ATTRIBUTES |
+	acl.ACE4_READ_ACL
+
+// TestFilterByAccess_OwnerOnlyACL verifies that an ACL granting the full ABE
+// read mask only to OWNER@ keeps the file visible to the owner and hides it
+// from a non-owner.
 func TestFilterByAccess_OwnerOnlyACL(t *testing.T) {
 	ownerOnly := &acl.ACL{
 		ACEs: []acl.ACE{
-			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: acl.ACE4_READ_DATA, Who: acl.SpecialOwner},
+			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: fullReadMask, Who: acl.SpecialOwner},
 		},
 	}
 	entries := []metadata.DirEntry{
 		regularFileWithACL("secret.txt", 1000, 1000, 0o000, ownerOnly),
 		regularFileWithACL("public.txt", 1000, 1000, 0o000, &acl.ACL{
 			ACEs: []acl.ACE{
-				{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: acl.ACE4_READ_DATA, Who: acl.SpecialEveryone},
+				{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: fullReadMask, Who: acl.SpecialEveryone},
 			},
 		}),
 	}
@@ -87,12 +97,45 @@ func TestFilterByAccess_OwnerOnlyACL(t *testing.T) {
 	}
 }
 
+// TestFilterByAccess_PartialReadMaskHidesFromOwner exercises the
+// smb2.acls.ACCESSBASED iterations 2-4: an ACL granting the file owner some
+// but not all of {READ_DATA, READ_EA, READ_ATTRIBUTES, READ_CONTROL} must hide
+// the file from a directory listing — even though the requester IS the owner
+// (the test enumerates as the same user that set the SD). Mirrors Samba
+// source3/smbd/dir.c::user_can_read_fsp which requires the full mask.
+func TestFilterByAccess_PartialReadMaskHidesFromOwner(t *testing.T) {
+	cases := []struct {
+		name string
+		mask uint32
+	}{
+		{"missing_read_ea", acl.ACE4_READ_DATA | acl.ACE4_READ_ATTRIBUTES | acl.ACE4_READ_ACL},
+		{"missing_read_attributes", acl.ACE4_READ_DATA | acl.ACE4_READ_NAMED_ATTRS | acl.ACE4_READ_ACL},
+		{"missing_read_data", acl.ACE4_READ_NAMED_ATTRS | acl.ACE4_READ_ATTRIBUTES | acl.ACE4_READ_ACL},
+	}
+	owner := authForUID(1000, 1000)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &acl.ACL{
+				ACEs: []acl.ACE{
+					{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: tc.mask, Who: acl.SpecialOwner},
+				},
+			}
+			entries := []metadata.DirEntry{regularFileWithACL("smb2-testsd", 1000, 1000, 0o000, a)}
+			got := filterByAccess(append([]metadata.DirEntry(nil), entries...), owner, nil)
+			if len(got) != 0 {
+				t.Fatalf("owner with partial mask %#x: want hidden, got %d entries", tc.mask, len(got))
+			}
+		})
+	}
+}
+
 // TestFilterByAccess_DirectoryListBit verifies that directories use the same
-// 0x1 bit (ACE4_LIST_DIRECTORY) as files (ACE4_READ_DATA).
+// 0x1 bit (ACE4_LIST_DIRECTORY) as files (ACE4_READ_DATA). The owner ACE
+// carries the full ABE read mask so the owner remains visible.
 func TestFilterByAccess_DirectoryListBit(t *testing.T) {
 	denyOther := &acl.ACL{
 		ACEs: []acl.ACE{
-			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: acl.ACE4_LIST_DIRECTORY, Who: acl.SpecialOwner},
+			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: fullReadMask, Who: acl.SpecialOwner},
 		},
 	}
 	entries := []metadata.DirEntry{
@@ -169,7 +212,7 @@ func TestFilterByAccess_RootBypass(t *testing.T) {
 func TestFilterByAccess_HidesNonReadable(t *testing.T) {
 	ownerOnly := &acl.ACL{
 		ACEs: []acl.ACE{
-			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: acl.ACE4_READ_DATA, Who: acl.SpecialOwner},
+			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: fullReadMask, Who: acl.SpecialOwner},
 		},
 	}
 	entries := []metadata.DirEntry{
@@ -220,7 +263,7 @@ func TestFilterByAccess_NilAttrHydratorMisses(t *testing.T) {
 func TestFilterByAccess_NilAttrHydratorHits(t *testing.T) {
 	ownerOnly := &acl.ACL{
 		ACEs: []acl.ACE{
-			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: acl.ACE4_READ_DATA, Who: acl.SpecialOwner},
+			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: fullReadMask, Who: acl.SpecialOwner},
 		},
 	}
 	entries := []metadata.DirEntry{

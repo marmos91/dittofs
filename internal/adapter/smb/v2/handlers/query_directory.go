@@ -1066,13 +1066,21 @@ func canEnumerateEntry(entry *metadata.DirEntry, authCtx *metadata.AuthContext, 
 		}
 	}
 
-	// ACE4_READ_DATA == ACE4_LIST_DIRECTORY == 0x00000001 — same bit, so
-	// either mask works against both files and directories.
-	const readMask = acl.ACE4_READ_DATA
+	// Mirror Samba source3/smbd/dir.c::user_can_read_fsp: ABE requires the
+	// caller to hold FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES |
+	// READ_CONTROL on the entry. NFSv4 bits intentionally share positions with
+	// Windows MS-DTYP rights (RFC 7530 §6.2.1) — READ_DATA == LIST_DIRECTORY
+	// (0x1), READ_NAMED_ATTRS == READ_EA (0x8), so the same mask applies to
+	// both files and directories. The smbtorture smb2.acls.ACCESSBASED test
+	// asserts a file granting only a strict subset of these bits is hidden.
+	const enumMask = acl.ACE4_READ_DATA |
+		acl.ACE4_READ_NAMED_ATTRS |
+		acl.ACE4_READ_ATTRIBUTES |
+		acl.ACE4_READ_ACL
 
 	if attr.ACL != nil {
 		evalCtx := buildEnumEvalContext(attr, authCtx)
-		return acl.Evaluate(attr.ACL, evalCtx, readMask)
+		return acl.Evaluate(attr.ACL, evalCtx, enumMask)
 	}
 
 	// POSIX fallback — same semantics as
