@@ -1119,6 +1119,10 @@ func buildMaxAccessEvalContext(file *metadata.File, authCtx *metadata.AuthContex
 		evalCtx.SID = *identity.SID
 	}
 	evalCtx.GroupSIDs = identity.GroupSIDs
+	// MS-DTYP §2.5.3.2: WRITE_OWNER is implicitly granted to file owners
+	// only when the requester holds SeTakeOwnershipPrivilege. Without this,
+	// the MxAc reply for a plain owner over-grants WRITE_OWNER (#563).
+	evalCtx.RequesterHasTakeOwnership = acl.HasTakeOwnershipPrivilege(evalCtx.SID, evalCtx.GroupSIDs)
 
 	return evalCtx
 }

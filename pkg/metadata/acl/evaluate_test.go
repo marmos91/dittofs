@@ -692,10 +692,11 @@ func TestEvaluate_OwnerRights_AlarmAceDoesNotSuppressOwner(t *testing.T) {
 }
 
 // TestEvaluate_OwnerImplicitGrants_DataPlusImplicit verifies MS-DTYP §2.5.3.2:
-// owner gets READ_CONTROL / WRITE_DAC / WRITE_OWNER on top of explicit DACL
-// grants when no OWNER_RIGHTS ACE is present. The DACL here grants OWNER@
-// only READ_DATA; the owner must still be able to open for READ_DATA + the
-// three implicit standard rights together.
+// owner gets READ_CONTROL / WRITE_DAC on top of explicit DACL grants when no
+// OWNER_RIGHTS ACE is present. The DACL here grants OWNER@ only READ_DATA;
+// the owner must still be able to open for READ_DATA + the two base implicit
+// standard rights together. WRITE_OWNER is excluded — only admins receive it
+// implicitly (see TestEvaluate_OwnerImplicitGrants_WriteOwnerRequiresAdmin).
 func TestEvaluate_OwnerImplicitGrants_DataPlusImplicit(t *testing.T) {
 	a := &ACL{
 		ACEs: []ACE{
@@ -703,9 +704,13 @@ func TestEvaluate_OwnerImplicitGrants_DataPlusImplicit(t *testing.T) {
 		},
 	}
 
-	requested := uint32(ACE4_READ_DATA | ACE4_READ_ACL | ACE4_WRITE_ACL | ACE4_WRITE_OWNER)
+	requested := uint32(ACE4_READ_DATA | ACE4_READ_ACL | ACE4_WRITE_ACL)
 	if !Evaluate(a, ownerCtx(), requested) {
-		t.Error("expected owner to receive READ_DATA + implicit READ_CONTROL|WRITE_DAC|WRITE_OWNER")
+		t.Error("expected owner to receive READ_DATA + implicit READ_CONTROL|WRITE_DAC")
+	}
+	// Non-admin owner must NOT receive WRITE_OWNER implicitly.
+	if Evaluate(a, ownerCtx(), ACE4_WRITE_OWNER) {
+		t.Error("expected non-admin owner to be denied implicit WRITE_OWNER (#563)")
 	}
 }
 
@@ -719,9 +724,9 @@ func TestEvaluate_OwnerImplicitGrants_NoOwnerAceAtAll(t *testing.T) {
 		},
 	}
 
-	requested := uint32(ACE4_READ_ACL | ACE4_WRITE_ACL | ACE4_WRITE_OWNER)
+	requested := uint32(ACE4_READ_ACL | ACE4_WRITE_ACL)
 	if !Evaluate(a, ownerCtx(), requested) {
-		t.Error("expected owner to receive implicit READ_CONTROL|WRITE_DAC|WRITE_OWNER even with no OWNER@ ACE")
+		t.Error("expected owner to receive implicit READ_CONTROL|WRITE_DAC even with no OWNER@ ACE")
 	}
 }
 
@@ -758,9 +763,13 @@ func TestEvaluate_OwnerImplicitGrants_ExplicitDenyWins(t *testing.T) {
 		},
 	}
 
-	// READ_CONTROL + WRITE_OWNER (implicit) should still work.
-	if !Evaluate(a, ownerCtx(), ACE4_READ_ACL|ACE4_WRITE_OWNER) {
-		t.Error("expected owner to receive implicit READ_CONTROL|WRITE_OWNER")
+	// READ_CONTROL (implicit) should still work for a plain owner.
+	if !Evaluate(a, ownerCtx(), ACE4_READ_ACL) {
+		t.Error("expected owner to receive implicit READ_CONTROL")
+	}
+	// WRITE_OWNER is admin-only — non-admin owner must be denied.
+	if Evaluate(a, ownerCtx(), ACE4_WRITE_OWNER) {
+		t.Error("expected non-admin owner to be denied implicit WRITE_OWNER (#563)")
 	}
 	// WRITE_DAC must be denied by explicit DENY.
 	if Evaluate(a, ownerCtx(), ACE4_WRITE_ACL) {
@@ -786,13 +795,17 @@ func TestEvaluate_OwnerImplicitGrants_NonOwnerUnaffected(t *testing.T) {
 
 // TestEvaluate_OwnerImplicitGrants_EmptyACL verifies the narrowed early-return:
 // an explicitly empty DACL (len(ACEs) == 0) is the MS-DTYP §2.5.3 "deny all"
-// case but §2.5.3.2 still grants the file owner READ_CONTROL|WRITE_DAC|
-// WRITE_OWNER. Non-owners get nothing.
+// case but §2.5.3.2 still grants the file owner READ_CONTROL|WRITE_DAC. The
+// non-admin owner does NOT receive WRITE_OWNER implicitly. Non-owners get
+// nothing.
 func TestEvaluate_OwnerImplicitGrants_EmptyACL(t *testing.T) {
 	a := &ACL{ACEs: nil}
 
-	if !Evaluate(a, ownerCtx(), ACE4_READ_ACL|ACE4_WRITE_ACL|ACE4_WRITE_OWNER) {
-		t.Error("empty ACL: expected owner to receive implicit READ_CONTROL|WRITE_DAC|WRITE_OWNER")
+	if !Evaluate(a, ownerCtx(), ACE4_READ_ACL|ACE4_WRITE_ACL) {
+		t.Error("empty ACL: expected owner to receive implicit READ_CONTROL|WRITE_DAC")
+	}
+	if Evaluate(a, ownerCtx(), ACE4_WRITE_OWNER) {
+		t.Error("empty ACL: non-admin owner must NOT receive implicit WRITE_OWNER (#563)")
 	}
 	if Evaluate(a, ownerCtx(), ACE4_READ_DATA) {
 		t.Error("empty ACL: owner must NOT receive READ_DATA (not in implicit grant set)")
@@ -820,7 +833,108 @@ func TestEvaluate_OwnerImplicitGrants_InheritOnlyOwnerRightsDoesNotSuppress(t *t
 
 	// Owner still gets the implicit standard rights — the INHERIT_ONLY
 	// OWNER_RIGHTS ACE doesn't apply to this object's access check.
-	if !Evaluate(a, ownerCtx(), ACE4_READ_ACL|ACE4_WRITE_ACL|ACE4_WRITE_OWNER) {
+	if !Evaluate(a, ownerCtx(), ACE4_READ_ACL|ACE4_WRITE_ACL) {
 		t.Error("INHERIT_ONLY OwnerRights@ must not suppress the implicit owner grants on this object")
+	}
+}
+
+// adminOwnerCtx returns an EvaluateContext where the requester IS the file
+// owner AND holds SeTakeOwnershipPrivilege (admin). Used to lock in that
+// admin owners receive the MS-DTYP §2.5.3.2 implicit WRITE_OWNER grant on
+// top of the base READ_CONTROL|WRITE_DAC. Mirrors ownerCtx() with the
+// privilege flag flipped on.
+func adminOwnerCtx() *EvaluateContext {
+	return &EvaluateContext{
+		Who:                       "admin@example.com",
+		UID:                       1000,
+		GID:                       1000,
+		GIDs:                      nil,
+		FileOwnerUID:              1000,
+		FileOwnerGID:              1000,
+		RequesterHasTakeOwnership: true,
+	}
+}
+
+// TestEvaluate_OwnerImplicitGrants_WriteOwnerRequiresAdmin locks in the
+// MS-DTYP §2.5.3.2 split: WRITE_OWNER is granted implicitly only when the
+// requester holds SeTakeOwnershipPrivilege (admin). A plain owner receives
+// READ_CONTROL|WRITE_DAC only — exactly what Samba
+// access_check.c::se_access_check_implicit_owner enforces. This is the
+// regression-prevention test for #563 (smb2.acls.DENY1 over-granted
+// WRITE_OWNER in the MxAc reply).
+func TestEvaluate_OwnerImplicitGrants_WriteOwnerRequiresAdmin(t *testing.T) {
+	// Empty DACL exposes only the implicit owner grants.
+	a := &ACL{ACEs: nil}
+
+	t.Run("non-admin owner denied WRITE_OWNER", func(t *testing.T) {
+		if Evaluate(a, ownerCtx(), ACE4_WRITE_OWNER) {
+			t.Error("plain owner must NOT receive implicit WRITE_OWNER (#563)")
+		}
+		// Base implicit grants still hold.
+		if !Evaluate(a, ownerCtx(), ACE4_READ_ACL|ACE4_WRITE_ACL) {
+			t.Error("plain owner must still receive READ_CONTROL|WRITE_DAC implicitly")
+		}
+	})
+
+	t.Run("admin owner receives WRITE_OWNER", func(t *testing.T) {
+		if !Evaluate(a, adminOwnerCtx(), ACE4_WRITE_OWNER) {
+			t.Error("admin owner must receive implicit WRITE_OWNER via SeTakeOwnershipPrivilege")
+		}
+		// And still gets the base set.
+		if !Evaluate(a, adminOwnerCtx(), ACE4_READ_ACL|ACE4_WRITE_ACL|ACE4_WRITE_OWNER) {
+			t.Error("admin owner must receive READ_CONTROL|WRITE_DAC|WRITE_OWNER")
+		}
+	})
+
+	t.Run("non-owner with admin privilege gets nothing implicit", func(t *testing.T) {
+		// Non-owner, admin-privileged caller: privilege only matters for
+		// owners under §2.5.3.2. Without ownership, no implicit grant.
+		ctx := nonOwnerCtx()
+		ctx.RequesterHasTakeOwnership = true
+		if Evaluate(a, ctx, ACE4_WRITE_OWNER) {
+			t.Error("admin non-owner must not receive implicit WRITE_OWNER (privilege is owner-gated)")
+		}
+		if Evaluate(a, ctx, ACE4_READ_ACL) {
+			t.Error("admin non-owner must not receive implicit READ_CONTROL")
+		}
+	})
+
+	t.Run("explicit DENY WRITE_OWNER beats admin implicit grant", func(t *testing.T) {
+		denyOwner := &ACL{
+			ACEs: []ACE{
+				{Type: ACE4_ACCESS_DENIED_ACE_TYPE, AccessMask: ACE4_WRITE_OWNER, Who: SpecialOwner},
+			},
+		}
+		if Evaluate(denyOwner, adminOwnerCtx(), ACE4_WRITE_OWNER) {
+			t.Error("explicit DENY WRITE_OWNER must override admin implicit grant")
+		}
+	})
+}
+
+// TestHasTakeOwnershipPrivilege locks in the admin-SID detection used by
+// callers to populate EvaluateContext.RequesterHasTakeOwnership. Mirrors
+// pkg/metadata.IsAdministratorSID coverage but lives here so the acl
+// package can stay self-contained.
+func TestHasTakeOwnershipPrivilege(t *testing.T) {
+	cases := []struct {
+		name      string
+		sid       string
+		groupSIDs []string
+		want      bool
+	}{
+		{"empty", "", nil, false},
+		{"plain user SID", "S-1-5-21-1-2-3-1001", nil, false},
+		{"BUILTIN Administrators as user SID", "S-1-5-32-544", nil, true},
+		{"BUILTIN Administrators in groups", "S-1-5-21-1-2-3-1001", []string{"S-1-5-32-544"}, true},
+		{"Administrator RID 500 as user SID", "S-1-5-21-1-2-3-500", nil, true},
+		{"plain SID + plain groups", "S-1-5-21-1-2-3-1001", []string{"S-1-5-32-545"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := HasTakeOwnershipPrivilege(tc.sid, tc.groupSIDs); got != tc.want {
+				t.Errorf("HasTakeOwnershipPrivilege(%q, %v) = %v, want %v",
+					tc.sid, tc.groupSIDs, got, tc.want)
+			}
+		})
 	}
 }

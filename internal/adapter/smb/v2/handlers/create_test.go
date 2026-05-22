@@ -750,13 +750,15 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 	t.Run("AllowACEPlusOwnerImplicitBits", func(t *testing.T) {
 		// Single ALLOW ACE granting exactly READ_DATA|READ_ATTRIBUTES|
 		// SYNCHRONIZE for OWNER@. No POSIX-mode leakage is allowed, but
-		// MS-DTYP §2.5.3.2 layers READ_CONTROL|WRITE_DAC|WRITE_OWNER on top
-		// of the explicit grants when the requester is the file owner.
+		// MS-DTYP §2.5.3.2 layers READ_CONTROL|WRITE_DAC on top of the
+		// explicit grants when the requester is the file owner. WRITE_OWNER
+		// is admin-only (SeTakeOwnershipPrivilege) and is excluded here
+		// because mkOwnerCtx returns a non-admin identity (#563).
 		// `explicit` deliberately omits READ_CONTROL so the implicit-grant
 		// contribution is unambiguous in the assertion.
 		authCtx := mkOwnerCtx()
 		explicit := uint32(acl.ACE4_READ_DATA | acl.ACE4_READ_ATTRIBUTES | acl.ACE4_SYNCHRONIZE)
-		ownerImplicit := uint32(acl.ACE4_READ_ACL | acl.ACE4_WRITE_ACL | acl.ACE4_WRITE_OWNER)
+		ownerImplicit := uint32(acl.ACE4_READ_ACL | acl.ACE4_WRITE_ACL)
 		want := explicit | ownerImplicit
 		file := &metadata.File{
 			FileAttr: metadata.FileAttr{
@@ -780,14 +782,20 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 			t.Errorf("MxAc = 0x%08x, expected 0x%08x (explicit 0x%08x + owner-implicit 0x%08x per MS-DTYP §2.5.3.2)",
 				access, want, explicit, ownerImplicit)
 		}
+		// #563 regression guard: WRITE_OWNER must NOT be in the reply for a
+		// non-admin owner. Mirrors smbtorture smb2.acls.DENY1.
+		if access&acl.ACE4_WRITE_OWNER != 0 {
+			t.Errorf("MxAc includes WRITE_OWNER (0x%08x) for non-admin owner — over-grants per #563", access)
+		}
 	})
 
 	t.Run("EmptyACLGrantsOnlyOwnerImplicitBits", func(t *testing.T) {
 		// An ACL with zero ACEs has no explicit grants for anyone, but
 		// MS-DTYP §2.5.3.2 still grants the file owner READ_CONTROL|
-		// WRITE_DAC|WRITE_OWNER. Non-owners get nothing (covered elsewhere).
+		// WRITE_DAC. WRITE_OWNER is admin-only (SeTakeOwnershipPrivilege).
+		// Non-owners get nothing (covered elsewhere).
 		authCtx := mkOwnerCtx()
-		ownerImplicit := uint32(acl.ACE4_READ_ACL | acl.ACE4_WRITE_ACL | acl.ACE4_WRITE_OWNER)
+		ownerImplicit := uint32(acl.ACE4_READ_ACL | acl.ACE4_WRITE_ACL)
 		file := &metadata.File{
 			FileAttr: metadata.FileAttr{
 				UID:  1000,
@@ -799,7 +807,40 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 
 		access := computeMaximalAccess(file, authCtx)
 		if access != ownerImplicit {
-			t.Errorf("Empty ACL: owner must receive only implicit RC|WRITE_DAC|WRITE_OWNER, got 0x%08x want 0x%08x", access, ownerImplicit)
+			t.Errorf("Empty ACL: owner must receive only implicit RC|WRITE_DAC, got 0x%08x want 0x%08x", access, ownerImplicit)
+		}
+	})
+
+	t.Run("AdminOwnerGetsWriteOwnerImplicit", func(t *testing.T) {
+		// MS-DTYP §2.5.3.2: a file owner who holds SeTakeOwnershipPrivilege
+		// (i.e. is a member of BUILTIN\Administrators by default) receives
+		// the additional implicit WRITE_OWNER grant on top of READ_CONTROL|
+		// WRITE_DAC. Mirrors Samba access_check.c::se_access_check_implicit_owner.
+		// Regression guard for #563: ensure the privilege-gated path
+		// remains intact.
+		uid := uint32(1000)
+		gid := uint32(1000)
+		adminSID := "S-1-5-32-544" // BUILTIN\Administrators
+		authCtx := &metadata.AuthContext{
+			Context: context.Background(),
+			Identity: &metadata.Identity{
+				UID: &uid,
+				GID: &gid,
+				SID: &adminSID,
+			},
+		}
+		file := &metadata.File{
+			FileAttr: metadata.FileAttr{
+				UID:  1000,
+				GID:  1000,
+				Mode: 0755,
+				ACL:  &acl.ACL{},
+			},
+		}
+		access := computeMaximalAccess(file, authCtx)
+		want := uint32(acl.ACE4_READ_ACL | acl.ACE4_WRITE_ACL | acl.ACE4_WRITE_OWNER)
+		if access != want {
+			t.Errorf("Admin owner MxAc = 0x%08x, want 0x%08x (RC|WRITE_DAC|WRITE_OWNER)", access, want)
 		}
 	})
 

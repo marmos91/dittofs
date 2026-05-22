@@ -393,6 +393,9 @@ func evaluateACLPermissions(
 		evalCtx.SID = *identity.SID
 	}
 	evalCtx.GroupSIDs = identity.GroupSIDs
+	// MS-DTYP §2.5.3.2: owner-implicit WRITE_OWNER requires
+	// SeTakeOwnershipPrivilege (admins only). See acl.Evaluate.
+	evalCtx.RequesterHasTakeOwnership = acl.HasTakeOwnershipPrivilege(evalCtx.SID, evalCtx.GroupSIDs)
 
 	return evaluateWithACL(file.ACL, evalCtx, requested, shareOpts)
 }
@@ -743,6 +746,9 @@ func buildFileAccessEvalContext(file *File, authCtx *AuthContext) *acl.EvaluateC
 		evalCtx.SID = *identity.SID
 	}
 	evalCtx.GroupSIDs = identity.GroupSIDs
+	// MS-DTYP §2.5.3.2: owner-implicit WRITE_OWNER requires
+	// SeTakeOwnershipPrivilege (admins only). See acl.Evaluate.
+	evalCtx.RequesterHasTakeOwnership = acl.HasTakeOwnershipPrivilege(evalCtx.SID, evalCtx.GroupSIDs)
 
 	return evalCtx
 }
