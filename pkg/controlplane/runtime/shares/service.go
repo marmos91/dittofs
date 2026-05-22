@@ -1469,9 +1469,9 @@ func CreateLocalStoreFromConfig(
 		// `shares/{name}/blocks/blocks/...` path. Existing pre-v0.16 installs
 		// migrate via `dfs migrate-to-cas` (which uses share-root as its
 		// state-dir, already aligned with deriveLocalStoreDir).
-		blockDir := filepath.Join(expanded, "shares", sanitized)
-		if err := os.MkdirAll(blockDir, 0755); err != nil {
-			return nil, fmt.Errorf("failed to create block store directory: %w", err)
+		shareDir := filepath.Join(expanded, "shares", sanitized)
+		if err := os.MkdirAll(shareDir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create share directory: %w", err)
 		}
 
 		// Phase 17: append is mandatory. Wire a RollupStore from the
@@ -1493,7 +1493,7 @@ func CreateLocalStoreFromConfig(
 		if shs, ok := fileBlockStore.(metadata.SyncedHashStore); ok {
 			fsOpts.SyncedHashStore = shs
 		}
-		store, err := fs.NewWithOptions(blockDir, maxDisk, maxMemory, fileBlockStore, fsOpts)
+		store, err := fs.NewWithOptions(shareDir, maxDisk, maxMemory, fileBlockStore, fsOpts)
 		if err != nil {
 			return nil, err
 		}
