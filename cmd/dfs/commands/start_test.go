@@ -59,7 +59,7 @@ func TestStart_LegacyLayoutExitCode(t *testing.T) {
 	// Synthesize the exact wrap shape runtime.LoadSharesFromStore
 	// produces: `share %q: %w` around the fs.NewFSStore output, which
 	// is itself `share %s: %w` around blockstore.ErrLegacyLayoutDetected.
-	sharePath := filepath.Join(t.TempDir(), "share-A", "blocks")
+	sharePath := filepath.Join(t.TempDir(), "share-A")
 	innerErr := fmt.Errorf("share %s: %w", sharePath, blockstore.ErrLegacyLayoutDetected)
 	loadErr := fmt.Errorf("share %q: %w", "share-A", innerErr)
 
