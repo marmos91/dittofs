@@ -73,7 +73,7 @@ func (bc *FSStore) maybeCompactLog(ctx context.Context, payloadID string, lf *lo
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return bc.compactLogLocked(payloadID, lf, idx)
+	return bc.compactLogLocked(ctx, payloadID, lf, idx)
 }
 
 // compactLogLocked rewrites the on-disk log for payloadID, dropping all
@@ -103,7 +103,7 @@ func (bc *FSStore) maybeCompactLog(ctx context.Context, payloadID string, lf *lo
 // BLAKE3 / CAS: no chunk is re-emitted. Compaction touches only the
 // on-disk log bytes; CAS chunks in blocks/{hh}/{hh}/{hex} are produced
 // solely by the rollup path and are unaffected here.
-func (bc *FSStore) compactLogLocked(payloadID string, lf *logFile, idx *logIndex) error {
+func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *logFile, idx *logIndex) error {
 	fence := idx.Fence()
 	if fence <= logHeaderSize {
 		return nil
@@ -179,7 +179,21 @@ func (bc *FSStore) compactLogLocked(payloadID string, lf *logFile, idx *logIndex
 	// payloadLen are copied verbatim from the survivor entries.
 	rebased := make([]logEntry, 0, len(survivors))
 	frameBuf := make([]byte, 0, recordFrameOverhead+64*1024)
-	for _, e := range survivors {
+	for i, e := range survivors {
+		// Mirror readRecord's payloadLen DoS cap (FIX-4) so a corrupted
+		// idx entry cannot OOM the process via a multi-GiB allocation.
+		if e.payloadLen > maxRecordPayload {
+			return fmt.Errorf("compaction: payloadLen %d exceeds cap %d at logPos=%d",
+				e.payloadLen, maxRecordPayload, e.logPos)
+		}
+		// Periodically observe ctx so a Close / cancellation mid-pass
+		// breaks out of a long survivor copy instead of pinning a
+		// rollup worker until the I/O finishes.
+		if i&0x3F == 0 {
+			if cerr := ctx.Err(); cerr != nil {
+				return cerr
+			}
+		}
 		frameSize := uint64(recordFrameOverhead) + uint64(e.payloadLen)
 		if cap(frameBuf) < int(frameSize) {
 			frameBuf = make([]byte, frameSize)
@@ -276,18 +290,31 @@ func (bc *FSStore) compactLogLocked(payloadID string, lf *logFile, idx *logIndex
 			"payloadID", payloadID, "path", lf.path, "error", derr)
 	}
 
+	// Rebase the logIndex FIRST — before attempting the reopen — so a
+	// reopen failure still leaves idx consistent with the on-disk
+	// truth (the new compacted layout). The next getOrCreateLog after
+	// the failure deletes logFDs[payloadID] below; on the next touch
+	// it will re-open the compacted file from disk and reuse this
+	// rebased idx, whose entries match the new physical layout.
+	//
+	// consumedCoverage is reset wholesale: every byte below the old
+	// fence has been physically dropped; surviving entries' coverage
+	// will be re-added by their own MarkConsumed calls as they chunk.
+	idx.entries = rebased
+	idx.consumedCoverage = coverageSet{}
+	idx.compactionFence = logHeaderSize
+	idx.fenceCursor = 0
+
 	// The rename replaced the inode underneath lf.f. Close the stale fd
 	// and open a fresh one against the new file, seeked to EOF for
 	// subsequent appends.
 	oldFd := lf.f
 	newFd, err := os.OpenFile(lf.path, os.O_RDWR, 0644)
 	if err != nil {
-		// We are in an awkward state: the compacted file is on disk
-		// (correct) but we cannot reopen it. Close the stale fd anyway
-		// to avoid leaking the descriptor; the next AppendWrite or
-		// rollupFile call will hit the curLf re-validation, observe
-		// the missing entry in bc.logFDs (we delete below), and
-		// fresh-create from disk on next touch via getOrCreateLog.
+		// Compacted file is on disk (correct) but we cannot reopen.
+		// Close the stale fd, evict the logFDs entry — next touch via
+		// getOrCreateLog opens the new file. idx is already rebased
+		// (above) so it stays consistent with the on-disk layout.
 		_ = oldFd.Close()
 		bc.logsMu.Lock()
 		delete(bc.logFDs, payloadID)
@@ -314,20 +341,6 @@ func (bc *FSStore) compactLogLocked(payloadID string, lf *logFile, idx *logIndex
 	lf.eofPos = uint64(eof)
 	lf.groupCommit = newGroupCommit(newFd.Sync)
 	_ = oldFd.Close()
-
-	// Rebase the logIndex. The new physical layout has surviving
-	// entries at the positions recorded in `rebased`. consumedCoverage
-	// is reset wholesale: every byte below the old fence has either
-	// been physically dropped or belongs to a survivor whose file
-	// extent is by definition not yet fully covered (AdvanceFence only
-	// walks past entries whose extent is covered). Keeping the old
-	// coverage would only re-prove what the surviving entries already
-	// imply once their own MarkConsumed calls land. Fence resets to
-	// logHeaderSize and the cursor rewinds.
-	idx.entries = rebased
-	idx.consumedCoverage = coverageSet{}
-	idx.compactionFence = logHeaderSize
-	idx.fenceCursor = 0
 
 	slog.Debug("compaction: rewrote log",
 		"payloadID", payloadID,
