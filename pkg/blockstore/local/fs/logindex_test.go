@@ -509,7 +509,6 @@ func TestLogIndex_AdvanceFence_OverwriteUnsticksHead(t *testing.T) {
 	// Overwrite at the same file extent [0, 4K).
 	overwriteLogPos := pos
 	idx.Append(overwriteLogPos, 0, payload)
-	pos += step
 
 	// Mark ONLY the overwrite's extent consumed. The head was never
 	// processed (analog of: still in the dirty interval tree, awaiting
