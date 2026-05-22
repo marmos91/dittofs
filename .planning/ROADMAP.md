@@ -43,7 +43,7 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 16 (Cache RAM-only) ──► 17 (Unified BlockStore + legacy delete + migrate-to-cas) ──► 18 (Syncer mirror loop + ObjectID relocation) ──► 19 (Write-path RAM opts)
 
 - [x] **Phase 16: Cache RAM-only (remove mmap read path)** — Delete `cache_mmap_*.go`, swap `readFromCAS` → `local.Get`, retire D-33 perf gate (GH issue: #516) — **SHIPPED 2026-05-20** on `gsd/phase-16-cache-mmap-removal` (16 commits); warm-cache D-06 PASS (ratio 0.890 ≤1.02)
-- [x] **Phase 17: Unified BlockStore interface + legacy delete + migration tool** — Single `BlockStore` interface (Put/Get/GetRange/Has/Delete/Walk/Head) for local + remote, `BlockStoreAppend` extends with random-write tier, delete legacy `.blk` writer + dual-read shim + flag, ship `dfsctl blockstore migrate-to-cas` one-shot (GH issue: #517) (completed 2026-05-20 PR #527)
+- [x] **Phase 17: Unified BlockStore interface + legacy delete + migration tool** — Single `BlockStore` interface (Put/Get/GetRange/Has/Delete/Walk/Head) for local + remote, `BlockStoreAppend` extends with random-write tier, delete legacy `.blk` writer + dual-read shim + flag, ship `dfs migrate-to-cas` one-shot (GH issue: #517) (completed 2026-05-20 PR #527)
 - [x] **Phase 18: Syncer simplification + ObjectID relocation** — Syncer Flush → mirror loop `for hash := range local.ListUnsynced() { remote.Put(...) }`. Move `ComputeObjectID` to rollup CommitChunks. Local-only shares now get ObjectIDs. (GH issue: #518) (completed 2026-05-21)
 - [x] **Phase 19: Write-path RAM optimizations** — 4 opts: in-memory hash dedup LRU; group commit / batched fsync; direct-to-Cache on chunk completion; eager small-file dedup (GH issue: #519) (completed 2026-05-21)
 
@@ -574,8 +574,8 @@ Verification requirements VER-01 through VER-06 are phase-independent and gate t
 | 14. Migration tool (A5) | 5/7 | In Progress|  |
 | 15. Legacy cleanup (A6) | 0/? | Not started | - |
 | 16. Cache RAM-only (remove mmap read path) | 4/4 | Complete    | 2026-05-20 |
-| 17. Unified BlockStore interface + migration tool | 10/10 | Complete    | 2026-05-20 |
-| 18. Syncer simplification + ObjectID relocation | -   | Complete    | 2026-05-21 |
+| 17. Unified BlockStore interface + migration tool | 11/11 | Complete    | 2026-05-20 |
+| 18. Syncer simplification + ObjectID relocation | 9/9 | Complete    | 2026-05-21 |
 | 19. Write-path RAM optimizations (4 opts) | 10/10 | Complete    | 2026-05-21 |
 
 ## Coverage Summary
