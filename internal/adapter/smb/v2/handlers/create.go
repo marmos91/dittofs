@@ -1166,6 +1166,8 @@ func (h *Handler) handlePipeCreate(ctx *SMBHandlerContext, req *CreateRequest, t
 		ShareName:     tree.ShareName,
 		OpenTime:      time.Now(),
 		DesiredAccess: req.DesiredAccess,
+		// Pipes have no DACL; the granted set is the resolved request.
+		GrantedAccess: resolveAccessFlags(req.DesiredAccess),
 		IsDirectory:   false,
 		IsPipe:        true,
 		PipeName:      pipeName,
@@ -1220,6 +1222,15 @@ func (h *Handler) handleOpenRootCreate(
 
 	// Store open file
 	smbFileID := h.GenerateFileID()
+	// Share-root opens have no per-file DACL gate; the granted set is the
+	// resolved request mask. Honors MS-SMB2 §3.3.5.9 paragraph 8 for the
+	// share-root pseudo-object.
+	grantedAccess := resolveAccessFlags(req.DesiredAccess)
+	if metaSvc := h.Registry.GetMetadataService(); metaSvc != nil {
+		if g, err := metaSvc.CheckFileAccess(rootFile, authCtx, req.DesiredAccess); err == nil {
+			grantedAccess = g
+		}
+	}
 	openFile := &OpenFile{
 		FileID:         smbFileID,
 		TreeID:         ctx.TreeID,
@@ -1228,6 +1239,7 @@ func (h *Handler) handleOpenRootCreate(
 		ShareName:      tree.ShareName,
 		OpenTime:       time.Now(),
 		DesiredAccess:  req.DesiredAccess,
+		GrantedAccess:  grantedAccess,
 		IsDirectory:    true,
 		MetadataHandle: rootHandle,
 	}

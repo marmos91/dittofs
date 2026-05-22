@@ -207,7 +207,15 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	// is denied. New files (createAction == FileCreated) inherit their ACL from
 	// the parent at create time and don't need this check — parent write was
 	// already gated via CheckParentWriteAccess in Create(). Tracking #529.
+	//
+	// grantedAccess captures the effective rights for the open per
+	// MS-SMB2 §3.3.5.9 paragraph 8: the per-bit intersection of the
+	// requested mask with the file's DACL. Carried onto OpenFile.GrantedAccess
+	// below and consumed by FileAccessInformation (#548, MS-FSCC §2.4.1) and
+	// the QUERY_INFO open-level access gate (MS-SMB2 §3.3.5.20.1).
 	metaSvc := h.Registry.GetMetadataService()
+	var grantedAccess uint32
+	var grantedComputed bool
 	if fileExists && existingFile != nil {
 		granted, err := metaSvc.CheckFileAccess(existingFile, authCtx, req.DesiredAccess)
 		if err != nil {
@@ -218,6 +226,8 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 				"error", err)
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}
 		}
+		grantedAccess = granted
+		grantedComputed = true
 	}
 
 	// Step 6d: Validate delete-on-close requirements per MS-FSA 2.1.5.1.2.1.
@@ -279,6 +289,25 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		if err != nil {
 			logger.Warn("CREATE: failed to overwrite file", "name", baseName, "error", err)
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}
+		}
+	}
+
+	// Compute GrantedAccess for new/overwritten files. The fileExists branch
+	// above already populated grantedAccess from CheckFileAccess. For
+	// FileCreated the ACL was inherited from the parent at create time; for
+	// FileOverwritten/Superseded the existing DACL is preserved. Both need
+	// the intersection of req.DesiredAccess with the resulting file's DACL —
+	// CheckFileAccess returns it without ever denying (we already passed all
+	// upstream gates including CheckParentWriteAccess for FileCreated).
+	// Errors from CheckFileAccess here are non-fatal: fall back to the
+	// resolved DesiredAccess so the open still succeeds.
+	if !grantedComputed && file != nil {
+		if g, err := metaSvc.CheckFileAccess(file, authCtx, req.DesiredAccess); err == nil {
+			grantedAccess = g
+		} else {
+			logger.Debug("CREATE: post-create CheckFileAccess fallback",
+				"path", filename, "error", err)
+			grantedAccess = resolveAccessFlags(req.DesiredAccess)
 		}
 	}
 
@@ -450,6 +479,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		ShareName:      tree.ShareName,
 		OpenTime:       time.Now(),
 		DesiredAccess:  req.DesiredAccess,
+		GrantedAccess:  grantedAccess,
 		IsDirectory:    file.Type == metadata.FileTypeDirectory,
 		MetadataHandle: fileHandle,
 		PayloadID:      file.PayloadID,

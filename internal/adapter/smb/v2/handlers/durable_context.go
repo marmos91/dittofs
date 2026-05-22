@@ -460,11 +460,19 @@ func validateAndRestore(
 		"shareName", handle.ShareName)
 
 	restored := &OpenFile{
-		FileID:         handle.FileID,
-		SessionID:      sessionID,
-		Path:           handle.Path,
-		ShareName:      handle.ShareName,
-		DesiredAccess:  handle.DesiredAccess,
+		FileID:        handle.FileID,
+		SessionID:     sessionID,
+		Path:          handle.Path,
+		ShareName:     handle.ShareName,
+		DesiredAccess: handle.DesiredAccess,
+		// Durable reconnect: GrantedAccess is not currently persisted
+		// (PersistedDurableHandle predates #548). Fall back to the resolved
+		// DesiredAccess — the same value FileAccessInformation returned
+		// before #548. Persisting GrantedAccess across reconnect is tracked
+		// as a follow-up; today's clients reconnecting with the same
+		// DesiredAccess (per MS-SMB2 §3.3.5.9.9 mismatch check) see identical
+		// behavior to the pre-fix code path.
+		GrantedAccess:  resolveAccessFlags(handle.DesiredAccess),
 		MetadataHandle: handle.MetadataHandle,
 		PayloadID:      metadata.PayloadID(handle.PayloadID),
 		ShareAccess:    handle.ShareAccess,

@@ -257,14 +257,25 @@ type TreeConnection struct {
 // tracks directory enumeration state, delete-on-close flags, and oplock level.
 // Stored in a sync.Map keyed by the 16-byte FileID.
 type OpenFile struct {
-	FileID              [16]byte
-	TreeID              uint32
-	SessionID           uint64
-	Path                string
-	ShareName           string
-	cachedOpenID        string // cached hex(FileID) for hot-path lock operations
-	OpenTime            time.Time
-	DesiredAccess       uint32
+	FileID        [16]byte
+	TreeID        uint32
+	SessionID     uint64
+	Path          string
+	ShareName     string
+	cachedOpenID  string // cached hex(FileID) for hot-path lock operations
+	OpenTime      time.Time
+	DesiredAccess uint32
+	// GrantedAccess is the effective access mask the open actually holds,
+	// computed at CREATE as the per-bit intersection of the requested mask
+	// with the file's DACL (via metadata.CheckFileAccess). Per MS-SMB2
+	// §3.3.5.9 paragraph 8 / §2.2.13.1, when MAXIMUM_ALLOWED is requested
+	// this is the set of rights the requester is allowed; for explicit
+	// requests it is the requested set (the open would have been rejected
+	// if any non-MAXIMUM_ALLOWED bit was denied). Per MS-SMB2 §3.3.5.20.1
+	// and MS-FSCC §2.4.1, FileAccessInformation and QUERY_INFO open-level
+	// access gates consult this field, not DesiredAccess (smb2.acls.GENERIC
+	// at acls.c:440).
+	GrantedAccess       uint32
 	IsDirectory         bool
 	IsPipe              bool   // True if this is a named pipe (IPC$)
 	PipeName            string // Named pipe name (e.g., "srvsvc")

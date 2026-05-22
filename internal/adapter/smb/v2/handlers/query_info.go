@@ -287,7 +287,11 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	// at TreeConnect, not at Open, so no Open-level gate applies here.
 	if req.InfoType == types.SMB2InfoTypeFile {
 		if right, gated := fileInfoClassRequiredAccess(types.FileInfoClass(req.FileInfoClass)); gated {
-			if !hasAccessRight(openFile.DesiredAccess, right) {
+			// MS-SMB2 §3.3.5.20.1: "If the FileInformationClass is
+			// FileBasicInformation [...] and Open.GrantedAccess does not
+			// include FILE_READ_ATTRIBUTES, return STATUS_ACCESS_DENIED."
+			// GrantedAccess is set at CREATE via CheckFileAccess.
+			if !hasAccessRight(openFile.GrantedAccess, right) {
 				return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 			}
 		}
@@ -560,9 +564,13 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 
 	case types.FileAccessInformation:
 		// FILE_ACCESS_INFORMATION [MS-FSCC] 2.4.1 (4 bytes)
-		// Per MS-FSCC 2.4.1: AccessFlags reflects the access granted to the caller.
+		// Per MS-FSCC 2.4.1 the AccessFlags field reports the access
+		// granted to the caller — not the requested DesiredAccess. Per
+		// MS-SMB2 §3.3.5.9 paragraph 8 the server computes this at CREATE
+		// as DesiredAccess intersected with the file's DACL and stores it
+		// on Open.GrantedAccess (#548, smb2.acls.GENERIC at acls.c:440).
 		w := smbenc.NewWriter(4)
-		w.WriteUint32(resolveAccessFlags(openFile.DesiredAccess))
+		w.WriteUint32(openFile.GrantedAccess)
 		return w.Bytes(), nil
 
 	case types.FileStreamInformation:
@@ -710,13 +718,13 @@ func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext
 	fileIndex := binary.LittleEndian.Uint64(internalFileID[:8])
 
 	w := smbenc.NewWriter(36)
-	w.WriteUint64(fileIndex)                                  // InternalInformation (8 bytes) at offset 64
-	w.WriteUint32(0)                                          // EaInformation (4 bytes) at offset 72
-	w.WriteUint32(resolveAccessFlags(openFile.DesiredAccess)) // AccessInformation (4 bytes) at offset 76
-	w.WriteUint64(0)                                          // PositionInformation (8 bytes) at offset 80
-	w.WriteUint32(0)                                          // ModeInformation (4 bytes) at offset 88
-	w.WriteUint32(0)                                          // AlignmentInformation (4 bytes) at offset 92
-	w.WriteUint32(uint32(len(nameBytes)))                     // NameInformation length at offset 96
+	w.WriteUint64(fileIndex)              // InternalInformation (8 bytes) at offset 64
+	w.WriteUint32(0)                      // EaInformation (4 bytes) at offset 72
+	w.WriteUint32(openFile.GrantedAccess) // AccessInformation (4 bytes) at offset 76 — see FileAccessInformation
+	w.WriteUint64(0)                      // PositionInformation (8 bytes) at offset 80
+	w.WriteUint32(0)                      // ModeInformation (4 bytes) at offset 88
+	w.WriteUint32(0)                      // AlignmentInformation (4 bytes) at offset 92
+	w.WriteUint32(uint32(len(nameBytes))) // NameInformation length at offset 96
 	copy(info[64:100], w.Bytes())
 
 	copy(info[100:], nameBytes)
