@@ -1162,12 +1162,14 @@ func TestComputeInheritedACL_MaxACECount_CapEnforced(t *testing.T) {
 	// sentinel so we can assert FIFO preservation.
 	// Use a distinct per-index bit pattern in AccessMask so we can
 	// verify FIFO preservation regardless of CREATOR substitution
-	// rewriting the Who field. Bit 31 is set on each ACE; the low bits
-	// carry the parent index. This way:
+	// rewriting the Who field. Bit 26 (0x04000000) is a reserved bit
+	// outside the GENERIC_* and MAXIMUM_ALLOWED / ACCESS_SYSTEM_SECURITY
+	// ranges, so it passes through ExpandGenericMask unchanged. The low
+	// bits carry the parent index. This way:
 	//   - resolved CREATOR ACEs keep their (index-tagged) mask
 	//   - preserved CREATOR ACEs likewise keep the tagged mask
 	//   - we can detect leak of late-parent ACEs by mask alone
-	tag := func(i int) uint32 { return uint32(0x80000000) | uint32(i) }
+	tag := func(i int) uint32 { return uint32(0x04000000) | uint32(i) }
 
 	aces := make([]ACE, 0, MaxACECount+5)
 	aces = append(aces, ACE{
@@ -1229,6 +1231,113 @@ func TestComputeInheritedACL_MaxACECount_CapEnforced(t *testing.T) {
 	// Sanity: tag(0) (the first parent ACE) MUST be present.
 	if !resultTags[tag(0)] {
 		t.Errorf("FIFO violation: first parent ACE (tag=0x%x) missing from truncated child", tag(0))
+	}
+}
+
+// TestComputeInheritedACL_GenericExpansion_File asserts that a parent ACE
+// carrying GENERIC_ALL inherits onto a file child with the generic bit
+// expanded to FILE_ALL_ACCESS (0x001f01ff) — mirroring Samba
+// desc_expand_generic (libcli/security/create_descriptor.c). Regression
+// guard for smbtorture acls INHERITANCE / INHERITFLAGS / SDFLAGSVSCHOWN,
+// which previously observed 0x000e0002 because the generic bit leaked
+// onto the child's effective DACL.
+func TestComputeInheritedACL_GenericExpansion_File(t *testing.T) {
+	parentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_FILE_INHERIT_ACE,
+				AccessMask: 0x10000000, // GENERIC_ALL
+				Who:        SpecialEveryone,
+			},
+		},
+	}
+
+	result := ComputeInheritedACL(parentACL, false, Creator{})
+	if result == nil {
+		t.Fatal("expected non-nil result for file child")
+	}
+	if len(result.ACEs) != 1 {
+		t.Fatalf("expected 1 ACE, got %d", len(result.ACEs))
+	}
+	const wantMask uint32 = 0x001f01ff // FILE_ALL_ACCESS
+	if got := result.ACEs[0].AccessMask; got != wantMask {
+		t.Errorf("AccessMask=0x%08x, want 0x%08x (FILE_ALL_ACCESS)", got, wantMask)
+	}
+	if result.ACEs[0].AccessMask&0xf0000000 != 0 {
+		t.Errorf("generic bits leaked into effective ACE: 0x%08x", result.ACEs[0].AccessMask)
+	}
+}
+
+// TestComputeInheritedACL_GenericExpansion_DirPreservesInheritOnly verifies
+// that on a directory child, the resolved sibling (effective) gets generic
+// bits expanded, while the preserved CREATOR ACE (INHERIT_ONLY) retains its
+// raw generic mask so expansion fires later against the eventual leaf's
+// GenericMapping.
+func TestComputeInheritedACL_GenericExpansion_DirPreservesInheritOnly(t *testing.T) {
+	parentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_FILE_INHERIT_ACE | ACE4_DIRECTORY_INHERIT_ACE,
+				AccessMask: 0x10000000, // GENERIC_ALL
+				Who:        SpecialCreatorOwner,
+			},
+		},
+	}
+
+	result := ComputeInheritedACL(parentACL, true, Creator{UID: 1001})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.ACEs) != 2 {
+		t.Fatalf("expected 2 ACEs (resolved + preserved CREATOR), got %d", len(result.ACEs))
+	}
+
+	resolved := result.ACEs[0]
+	if resolved.Flag&ACE4_INHERIT_ONLY_ACE != 0 {
+		t.Errorf("resolved sibling unexpectedly INHERIT_ONLY (flag=0x%x)", resolved.Flag)
+	}
+	const wantResolved uint32 = 0x001f01ff // FILE_ALL_ACCESS
+	if resolved.AccessMask != wantResolved {
+		t.Errorf("resolved AccessMask=0x%08x, want 0x%08x", resolved.AccessMask, wantResolved)
+	}
+
+	preserved := result.ACEs[1]
+	if preserved.Flag&ACE4_INHERIT_ONLY_ACE == 0 {
+		t.Errorf("preserved ACE missing INHERIT_ONLY (flag=0x%x)", preserved.Flag)
+	}
+	if preserved.AccessMask != 0x10000000 {
+		t.Errorf("preserved AccessMask=0x%08x, want raw GENERIC_ALL preserved for grandchild expansion", preserved.AccessMask)
+	}
+}
+
+// TestComputeInheritedACL_GenericExpansion_NonGenericPassesThrough asserts
+// that ACEs without generic bits are unchanged by the post-loop expansion
+// pass.
+func TestComputeInheritedACL_GenericExpansion_NonGenericPassesThrough(t *testing.T) {
+	const explicitMask = ACE4_READ_DATA | ACE4_WRITE_DATA | ACE4_READ_ATTRIBUTES
+	parentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_FILE_INHERIT_ACE,
+				AccessMask: explicitMask,
+				Who:        SpecialEveryone,
+			},
+		},
+	}
+
+	result := ComputeInheritedACL(parentACL, false, Creator{})
+	if result == nil || len(result.ACEs) != 1 {
+		t.Fatalf("expected 1 ACE, got %+v", result)
+	}
+	if result.ACEs[0].AccessMask != explicitMask {
+		t.Errorf("non-generic AccessMask mutated: got 0x%08x, want 0x%08x",
+			result.ACEs[0].AccessMask, explicitMask)
 	}
 }
 
