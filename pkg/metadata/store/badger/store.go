@@ -185,7 +185,8 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 
 	// Prepare BadgerDB options
 	var opts badger.Options
-	if config.BadgerOptions != nil {
+	customOpts := config.BadgerOptions != nil
+	if customOpts {
 		opts = *config.BadgerOptions
 	} else {
 		// Use sensible defaults for DittoFS metadata workload
@@ -234,6 +235,18 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 
 		opts = opts.WithBlockCacheSize(blockCacheMB << 20) // Convert MB to bytes
 		opts = opts.WithIndexCacheSize(indexCacheMB << 20) // Convert MB to bytes
+	}
+
+	// Crash-consistency (#583): enforce SyncWrites=true on every code
+	// path. The custom-options branch above takes the caller's value as-is,
+	// so a config passed in by an operator wishing to tweak (say) cache
+	// sizes could accidentally re-disable crash durability by inheriting
+	// the badger default SyncWrites=false. Override here unconditionally.
+	// If a future workload needs to opt out (e.g. dev/test harnesses
+	// favoring perf over durability) a dedicated config flag should be
+	// introduced rather than relying on badger's permissive default.
+	if !opts.SyncWrites {
+		opts = opts.WithSyncWrites(true)
 	}
 
 	// Open BadgerDB

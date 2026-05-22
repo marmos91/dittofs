@@ -409,51 +409,15 @@ func TestRecovery_RejectsLongPayloadIDFromDisk(t *testing.T) {
 	}
 }
 
-// TestRecovery_RejectsInvalidPayloadIDFromDisk asserts FIX-18: a file
-// dropped into the logs directory with a path-traversing or otherwise
-// non-conformant name MUST be skipped by recovery — never opened, never
-// truncated, never unlinked. The file remains on disk after recovery
-// runs and no FSStore state is created for it.
-func TestRecovery_RejectsInvalidPayloadIDFromDisk(t *testing.T) {
-	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
-	bc := newFSStoreWithRS(t, rs)
-
-	// Seed at least one valid log so recovery actually walks the dir.
-	if err := bc.AppendWrite(context.Background(), "valid", []byte("x"), 0); err != nil {
-		t.Fatalf("AppendWrite valid: %v", err)
-	}
-
-	// Drop a file with a malicious-looking payloadID directly into the
-	// logs dir. Use only filename-safe chars so os.WriteFile succeeds; the
-	// validation rule rejects characters outside [a-zA-Z0-9_-].
-	logsDir := filepath.Join(bc.baseDir, "logs")
-	badName := "..bad..payload.id.log"
-	badPath := filepath.Join(logsDir, badName)
-	if err := os.WriteFile(badPath, []byte("garbage"), 0644); err != nil {
-		t.Fatalf("seed bad file: %v", err)
-	}
-
-	bc2 := reopenFSStore(t, bc, rs)
-
-	// The bad file must still exist (recovery never touched it).
-	if _, err := os.Stat(badPath); err != nil {
-		t.Fatalf("bad-payloadID file was unexpectedly removed by recovery: %v", err)
-	}
-
-	// No FSStore state must have been created under the bad payloadID.
-	bc2.logsMu.RLock()
-	defer bc2.logsMu.RUnlock()
-	for k := range bc2.logFDs {
-		if strings.Contains(k, "..") {
-			t.Fatalf("FSStore created state for invalid payloadID %q", k)
-		}
-	}
-	for k := range bc2.dirtyIntervals {
-		if strings.Contains(k, "..") {
-			t.Fatalf("FSStore created interval-tree for invalid payloadID %q", k)
-		}
-	}
-}
+// (Removed) TestRecovery_RejectsInvalidPayloadIDFromDisk — superseded by
+// TestRecovery_PathTraversal_Rejected which exercises every reject path
+// of isValidPayloadID at the validator boundary. The original test seeded
+// the filename `..bad..payload.id.log`, which the broadened #588 validator
+// correctly accepts (it's a weird-but-legal filename, not a path-traversal
+// segment). filepath.Rel(logsDir, path) is now used by the walker, so a
+// malicious directory entry cannot escape logsDir's namespace in the
+// first place — the `..` segment guard in isValidPayloadID is
+// defense-in-depth, not the primary mitigation.
 
 // TestRecovery_PathKeyedPayloadID_RoundTrip asserts the #584 fix: a log
 // file stored under a path-keyed name (e.g. `<share>/<file>.txt`) is
@@ -499,18 +463,25 @@ func TestRecovery_PathKeyedPayloadID_RoundTrip(t *testing.T) {
 // (e.g. `share/../etc/passwd`) and leading-dot forms.
 func TestRecovery_PathTraversal_Rejected(t *testing.T) {
 	cases := []struct {
-		name     string
-		valid    bool
-		payload  string
+		name    string
+		valid   bool
+		payload string
 	}{
 		{"plain-alphanum", true, "valid"},
 		{"path-keyed", true, "share/file.txt"},
 		{"deep-path", true, "share/sub1/sub2/file.bin"},
+		{"spaces-in-name", true, "share/file with spaces.txt"},
+		{"unicode-name", true, "share/日本語.txt"},
+		{"leading-dot-filename", true, "..bad..payload.id"},
+		{"trailing-dot-filename", true, "share/file."},
 		{"interior-dotdot", false, "share/../etc/passwd"},
 		{"leading-dotdot", false, "../etc/passwd"},
-		{"leading-dot", false, "..bad..payload.id"},
+		{"single-dotdot", false, ".."},
+		{"single-dot-segment", false, "share/./file"},
 		{"leading-slash", false, "/absolute/path"},
 		{"empty", false, ""},
+		{"double-slash", false, "share//file"},
+		{"nul-byte", false, "share/file\x00name"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

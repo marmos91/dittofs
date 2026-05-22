@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -16,39 +15,39 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// payloadIDPattern is the permissive validation rule for payloadIDs derived
-// from on-disk log paths during recovery. FIX-18: a malicious or corrupted
-// directory listing could surface a name like `../etc/passwd` (after
-// stripping `.log`) which would re-enter recovery's per-payload state map
-// under a path-traversing key. Anything outside this regex is skipped at
-// the WalkDir boundary so the file is never opened or touched.
-//
-// Path-keyed payloadIDs (e.g. `<share>/<file>.txt`) are the canonical form
-// emitted by the metadata layer for user-facing files; `/` and `.` are
-// therefore permitted. The leading-char class forbids `.` and `/` so a
-// payloadID can never start with a dot-segment or be an absolute path; the
-// `..` path-traversal guard in isValidPayloadID covers the interior case.
-//
-// Bound raised from 128 to maxPayloadIDLen to accommodate deep path-keyed
-// names. RE2 caps repeat counts at ~1000, so the length bound is enforced
-// outside the regex by isValidPayloadID.
-const maxPayloadIDLen = 1024
+// maxPayloadIDLen mirrors metadata.MaxPathLen + slack for the leading
+// share-name prefix. Recovery skips any log file whose derived payloadID
+// exceeds this length — well above any legitimate POSIX path.
+const maxPayloadIDLen = 4352 // metadata.MaxPathLen (4096) + 256 share-prefix slack
 
-var payloadIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-][a-zA-Z0-9_./-]*$`)
-
-// isValidPayloadID returns true iff s matches the permissive pattern,
-// fits within maxPayloadIDLen, AND contains no `..` path-traversal
-// component. The two-stage check keeps the regex itself simple (no
-// negative lookahead) while still rejecting the FIX-18 attack surface.
+// isValidPayloadID accepts the structural shape of a path-keyed payloadID
+// while preserving the FIX-18 path-traversal mitigation. Structural rules:
+//
+//   - Non-empty.
+//   - Length <= maxPayloadIDLen.
+//   - No NUL bytes (filesystem-illegal, defense-in-depth against
+//     directory-listing surfaces that accept them).
+//   - No leading '/' (would alias an absolute on-disk path).
+//   - No '..' segment (the FIX-18 path-traversal mitigation).
+//   - No '.' segment (no self-referential noise; the metadata layer never
+//     produces these).
+//
+// Charset is intentionally NOT restricted: metadata.ValidateName allows
+// any character (including spaces and Unicode) in filenames, so the
+// recovery walker must follow suit or it will silently orphan logs
+// for legitimate user-facing files (#588 follow-up).
 func isValidPayloadID(s string) bool {
 	if len(s) == 0 || len(s) > maxPayloadIDLen {
 		return false
 	}
-	if !payloadIDPattern.MatchString(s) {
+	if s[0] == '/' {
+		return false
+	}
+	if strings.ContainsRune(s, 0) {
 		return false
 	}
 	for _, part := range strings.Split(s, "/") {
-		if part == ".." {
+		if part == "" || part == "." || part == ".." {
 			return false
 		}
 	}
