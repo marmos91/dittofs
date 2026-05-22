@@ -58,8 +58,13 @@ func substituteCreator(who string, creator Creator) string {
 // ACE, we compute two booleans:
 //
 //	applies     := (isDir && hasCI) || (!isDir && hasOI)
-//	expand_ace  := principal is CREATOR_OWNER/CREATOR_GROUP (today we do
-//	               not expand generic-mask bits; that is a separate fix)
+//	expand_ace  := principal is CREATOR_OWNER/CREATOR_GROUP
+//
+// After the per-ACE loop, generic access bits (GENERIC_READ/WRITE/EXECUTE/ALL)
+// are expanded on every emitted ACE that does NOT carry INHERIT_ONLY — mirroring
+// Samba desc_expand_generic. INHERIT_ONLY ACEs (preserved placeholders for
+// grandchildren) retain their generic bits so the expansion happens against
+// the eventual leaf object's type at that later inherit step.
 //
 // Cases:
 //
@@ -260,6 +265,22 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool, creator Creator) *ACL
 
 	if len(inherited) == 0 {
 		return nil
+	}
+
+	// Samba desc_expand_generic (libcli/security/create_descriptor.c): after
+	// inheritance computation, expand GENERIC_* bits on every effective ACE
+	// against the child object's GenericMapping. ACEs marked INHERIT_ONLY are
+	// placeholders for grandchildren — they keep their generic bits so the
+	// expansion fires against the eventual leaf object type at the next
+	// inherit step. Without this, inherited ACEs that name GENERIC_ALL leak
+	// 0x10000000 onto the child's effective DACL, and smbtorture acls
+	// INHERITANCE/INHERITFLAGS/SDFLAGSVSCHOWN see 0x000e0002 instead of the
+	// expected 0x001f01ff (FILE_ALL_ACCESS).
+	for i := range inherited {
+		if inherited[i].Flag&ACE4_INHERIT_ONLY_ACE != 0 {
+			continue
+		}
+		inherited[i].AccessMask = ExpandGenericMask(inherited[i].AccessMask)
 	}
 
 	result := &ACL{ACEs: inherited}
