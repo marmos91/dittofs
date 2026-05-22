@@ -291,12 +291,19 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		openFile.EnumerationPattern = ""
 	}
 
-	// Per MS-SMB2 3.3.5.17: If the search pattern has changed since the
+	// Per MS-SMB2 §3.3.5.18: If the search pattern has changed since the
 	// last query, the server MUST restart the enumeration from the beginning.
 	// This allows a client to first enumerate with "*" and then query for a
 	// specific file by name without getting NO_MORE_FILES.
-	patternChanged := req.FileName != "" && openFile.EnumerationPattern != "" &&
-		req.FileName != openFile.EnumerationPattern
+	//
+	// MS-SMB2 §3.3.5.18 also says that an empty FileName MUST be treated as
+	// the literal "*" pattern. Normalize both sides before comparing so a
+	// "" → "*" or "*" → "" transition is not treated as a change, but any
+	// other transition (including the first non-empty pattern after one
+	// previously stored) does restart the cursor.
+	currentPattern := normalizeSearchPattern(req.FileName)
+	previousPattern := normalizeSearchPattern(openFile.EnumerationPattern)
+	patternChanged := openFile.EnumerationIndex > 0 && currentPattern != previousPattern
 	if patternChanged {
 		logger.Debug("QUERY_DIRECTORY: search pattern changed, restarting enumeration",
 			"old", openFile.EnumerationPattern, "new", req.FileName)
@@ -318,10 +325,11 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		startingFresh = true
 	}
 
-	// Store the current search pattern for change detection on subsequent calls
-	if req.FileName != "" {
-		openFile.EnumerationPattern = req.FileName
-	}
+	// Store the current search pattern for change detection on subsequent calls.
+	// Empty FileName means "match all" (treated as "*" per MS-SMB2 §3.3.5.18);
+	// we still record it so the next request can detect any transition relative
+	// to what this Open last enumerated.
+	openFile.EnumerationPattern = req.FileName
 
 	// Read directory entries from metadata store
 	metaSvc := h.Registry.GetMetadataService()
@@ -619,6 +627,19 @@ func encodeSingleDirEntry(infoClass types.FileInfoClass, name string, attr *meta
 	default:
 		return encodeBothDirEntry(name, attr, fileIndex)
 	}
+}
+
+// normalizeSearchPattern collapses the spec-equivalent forms of "match all"
+// (empty, "*", "*.*") down to a single canonical form so that transitions
+// between them are not treated as pattern changes per MS-SMB2 §3.3.5.18.
+// Other patterns are returned unchanged (case-sensitive — pattern matching
+// is case-insensitive but storing the original form keeps logs faithful).
+func normalizeSearchPattern(p string) string {
+	switch p {
+	case "", "*", "*.*":
+		return "*"
+	}
+	return p
 }
 
 // isSupportedDirInfoClass reports whether the given FileInformationClass is one
