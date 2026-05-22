@@ -65,11 +65,12 @@ func TestCreateLocalStoreFromConfig_AppendLogMandatory(t *testing.T) {
 		t.Fatalf("AppendWrite: %v", err)
 	}
 
-	// Sanity check: the block dir was created at the expected location
-	// under the sanitized share name.
-	expectedBlockDir := filepath.Join(tmp, "shares", "test-share", "blocks")
-	if _, statErr := statDir(expectedBlockDir); statErr != nil {
-		t.Errorf("block dir %q not created: %v", expectedBlockDir, statErr)
+	// Sanity check: the share root was created at the expected location.
+	// Phase 19 follow-up: baseDir is shareDir, not shareDir/blocks; the
+	// FSStore creates `blocks/` (CAS) + `logs/` (append log) inside.
+	expectedShareDir := filepath.Join(tmp, "shares", "test-share")
+	if _, statErr := statDir(expectedShareDir); statErr != nil {
+		t.Errorf("share dir %q not created: %v", expectedShareDir, statErr)
 	}
 }
 

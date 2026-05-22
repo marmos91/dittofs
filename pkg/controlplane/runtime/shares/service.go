@@ -1463,7 +1463,13 @@ func CreateLocalStoreFromConfig(
 			return nil, fmt.Errorf("fs local store path must be absolute, got %q", basePath)
 		}
 		sanitized := sanitizeShareName(shareName)
-		blockDir := filepath.Join(expanded, "shares", sanitized, "blocks")
+		// Phase 19 follow-up: drop the redundant `blocks/` parent dir; the
+		// FSStore already creates `blocks/` (CAS) and `logs/` (append log) as
+		// siblings under its baseDir. The previous layout produced a doubled
+		// `shares/{name}/blocks/blocks/...` path. Existing pre-v0.16 installs
+		// migrate via `dfs migrate-to-cas` (which uses share-root as its
+		// state-dir, already aligned with deriveLocalStoreDir).
+		blockDir := filepath.Join(expanded, "shares", sanitized)
 		if err := os.MkdirAll(blockDir, 0755); err != nil {
 			return nil, fmt.Errorf("failed to create block store directory: %w", err)
 		}

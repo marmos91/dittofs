@@ -64,14 +64,14 @@ migration rewrites the on-disk layout in place and a concurrent server
 would race the rename and corrupt the store.
 
 Required flag: --storage-dir <root>. The storage root is expected to
-contain a shares/<name>/blocks/ subtree per share; the command refuses
-to start if the path is missing or empty.
+contain a shares/<name>/blocks/ subtree per share (legacy v0.13 layout);
+the command refuses to start if the path is missing or empty.
 
 The command is idempotent: a per-share journal at
 <storage-dir>/shares/<name>/.dittofs-migrate-to-cas.state lets you
 resume after a crash or Ctrl-C without re-uploading already-migrated
 chunks. Successful completion writes
-<storage-dir>/shares/<name>/blocks/.cas-migrated-v1 via atomic rename;
+<storage-dir>/shares/<name>/.cas-migrated-v1 via atomic rename;
 the boot guard refuses to start dfs until this sentinel exists (exit
 code 78).
 
@@ -153,13 +153,16 @@ func runMigrateToCAS(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		shareDir := filepath.Join(sharesRoot, name)
-		blockDir := filepath.Join(shareDir, "blocks")
 
 		// Destination BlockStore for this share. Use the migration-bypass
 		// constructor so Plan 09's sentinel-detection gate (added later
 		// inside fs.New / fs.NewWithOptions) does not refuse the share
 		// — that gate is precisely what the migration is establishing.
-		bs, openErr := fs.NewFSStoreForMigration(blockDir,
+		//
+		// Phase 19 follow-up: baseDir is the share root (not the redundant
+		// `<shareDir>/blocks/` sub-path). FSStore internally creates
+		// `blocks/` (CAS) + `logs/` (append log) as siblings under baseDir.
+		bs, openErr := fs.NewFSStoreForMigration(shareDir,
 			migrateMaxDisk, migrateMaxMemory, nopFileBlockStore{},
 			fs.FSStoreOptions{})
 		if openErr != nil {
@@ -169,10 +172,10 @@ func runMigrateToCAS(cmd *cobra.Command, args []string) error {
 		opts := migrate.MigrationOpts{
 			DryRun:   migrateDryRun,
 			Progress: makeProgressFn(name),
-			// Sentinel must live at the FSStore baseDir (Plan 09 boot
-			// guard probes `<baseDir>/.cas-migrated-v1`), which here is
-			// blockDir (a subdir of shareDir), not shareDir itself.
-			StoreDir: blockDir,
+			// Sentinel lives at the FSStore baseDir (Plan 09 boot guard
+			// probes `<baseDir>/.cas-migrated-v1`), which post-follow-up
+			// is shareDir.
+			StoreDir: shareDir,
 		}
 
 		adapter := &cliMetadataAdapter{shareName: name}

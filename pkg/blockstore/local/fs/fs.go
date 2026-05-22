@@ -379,9 +379,11 @@ const sentinelFileName = ".cas-migrated-v1"
 // legacyLayoutWalkDepthCap bounds the depth-limited `.blk` probe so a
 // freshly-provisioned share with deeply nested non-legacy content does
 // not pay an unbounded WalkDir at every boot. Legacy `.blk` files live
-// at <baseDir>/<shard>/<payloadID>/<idx>.blk (depth 3 under baseDir);
-// any `.blk` past depth 3 is treated as non-legacy noise and skipped.
-const legacyLayoutWalkDepthCap = 3
+// at <baseDir>/blocks/<shard>/<payloadID>/<idx>.blk (depth 4 under
+// baseDir after the v0.16 follow-up that dropped the redundant outer
+// `blocks/` parent — pre-follow-up was depth 3 under <baseDir>/blocks).
+// Any `.blk` past depth 4 is treated as non-legacy noise and skipped.
+const legacyLayoutWalkDepthCap = 4
 
 // checkLegacyLayoutSentinel implements Plan 09 D-10 / D-11. Returns
 // blockstore.ErrLegacyLayoutDetected (wrapped with the share path) when
