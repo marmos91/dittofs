@@ -64,6 +64,43 @@ func isDestructiveDisposition(d types.CreateDisposition) bool {
 	return false
 }
 
+// effectiveAccessForOpen folds disposition-implied access bits into the
+// client-requested DesiredAccess, mirroring Samba's `open_access_mask`
+// computation in source3/smbd/open.c::open_file_ntcreate:
+//
+//	open_access_mask = access_mask;
+//	if (flags & O_TRUNC) {
+//	    open_access_mask |= FILE_WRITE_DATA; /* This will cause oplock breaks. */
+//	}
+//
+// Per MS-FSA §2.1.5.1.2.1, OVERWRITE / OVERWRITE_IF / SUPERSEDE on an existing
+// file inherently truncate it and so require FILE_WRITE_DATA regardless of
+// what the client put in DesiredAccess. Samba uses `open_access_mask` for
+// BOTH the DACL access-rights check (smbd_check_access_rights_fsp) AND the
+// share-mode conflict check (open_mode_check). We mirror that here so:
+//   - a DACL granting only READ_DATA fails OVERWRITE/SUPERSEDE with
+//     STATUS_ACCESS_DENIED (smb2.acls.OVERWRITE_READ_ONLY_FILE fs_tcases arm,
+//     #565)
+//   - an existing handle with SHARE_READ but no SHARE_WRITE causes a second
+//     destructive open to fail with STATUS_SHARING_VIOLATION (smb2.acls.
+//     OVERWRITE_READ_ONLY_FILE sharing_tcases arm, #575)
+//
+// MAXIMUM_ALLOWED skips the augmentation: MAX expansion already reflects the
+// requester's full effective rights without exposing the implied write as an
+// explicit-bit denial, and the share-mode `hasWrite` helper already keys off
+// MAX as implying write. Matches Samba — the FILE_WRITE_DATA fold only fires
+// for the non-MAX disposition path.
+func effectiveAccessForOpen(desiredAccess uint32, disposition types.CreateDisposition) uint32 {
+	const maxAllowedBit uint32 = 0x02000000
+	if desiredAccess&maxAllowedBit != 0 {
+		return desiredAccess
+	}
+	if !isDestructiveDisposition(disposition) {
+		return desiredAccess
+	}
+	return desiredAccess | uint32(types.FileWriteData)
+}
+
 // breakAndMaybeParkCreate dispatches the handle-lease break required before
 // the post-break share-mode check, then decides between parking the CREATE on
 // an interim STATUS_PENDING (returning a non-zero AsyncId) or waiting
@@ -185,16 +222,31 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	createAction := d.createAction
 	excludeOwner := d.excludeOwner
 
+	// Compute the effective access mask once for both the share-mode conflict
+	// check below and the DACL access-rights check downstream. Mirrors Samba's
+	// `open_access_mask` (source3/smbd/open.c::open_file_ntcreate) which folds
+	// FILE_WRITE_DATA into the mask for O_TRUNC dispositions and then uses the
+	// augmented mask for BOTH checks. See effectiveAccessForOpen for spec refs.
+	effectiveAccess := effectiveAccessForOpen(req.DesiredAccess, req.CreateDisposition)
+
 	// Share-mode recheck (fileExists path) after any lease breaks have drained.
 	// A pre-break violation selected the Handle-strip break mask so the holder
 	// could close cached handles on ack; the recheck runs against the post-break
 	// open table to decide the final CREATE outcome.
+	//
+	// Uses effectiveAccess (not raw req.DesiredAccess) so a destructive
+	// disposition with a read-only DesiredAccess (e.g. SUPERSEDE+READ_DATA)
+	// still trips the SHARE_WRITE deny check against an existing SHARE_READ-only
+	// holder, returning STATUS_SHARING_VIOLATION. Covers
+	// smb2.acls.OVERWRITE_READ_ONLY_FILE sharing_tcases arm (#575).
 	if fileExists && d.existingHandle != nil {
-		if shareConflict := h.checkShareModeConflict(d.existingHandle, req.DesiredAccess, req.ShareAccess, filename); shareConflict {
+		if shareConflict := h.checkShareModeConflict(d.existingHandle, effectiveAccess, req.ShareAccess, filename); shareConflict {
 			logger.Debug("CREATE: sharing violation",
 				"path", filename,
 				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
-				"shareAccess", fmt.Sprintf("0x%x", req.ShareAccess))
+				"effectiveAccess", fmt.Sprintf("0x%x", effectiveAccess),
+				"shareAccess", fmt.Sprintf("0x%x", req.ShareAccess),
+				"disposition", req.CreateDisposition)
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSharingViolation}}
 		}
 	}
@@ -228,30 +280,12 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			}
 		}
 
-		// Fold in disposition-implied access bits before the DACL check.
-		// Per MS-FSA §2.1.5.1.2.1 and Samba open_file_ntcreate (which sets
-		// `open_access_mask |= FILE_WRITE_DATA` when O_TRUNC is implied by
-		// the disposition), OVERWRITE / OVERWRITE_IF / SUPERSEDE on an
-		// existing file inherently truncate it and so REQUIRE FILE_WRITE_DATA
-		// to be granted by the DACL — independent of whether the client put
-		// WRITE_DATA in DesiredAccess. The Samba check runs against
-		// open_access_mask in smbd_check_access_rights_fsp; we mirror that
-		// by extending the mask passed to CheckFileAccessWithParent so a
-		// DACL that grants only READ_DATA fails OVERWRITE/SUPERSEDE with
-		// STATUS_ACCESS_DENIED. Covers smb2.acls.OVERWRITE_READ_ONLY_FILE
-		// (issue #565).
-		//
-		// Skipped when MAXIMUM_ALLOWED is set: MAX expansion lets the
-		// MaxAllowed branch report the granted mask without exposing the
-		// implied write requirement as an explicit-bit denial. Samba does
-		// the same — the FILE_WRITE_DATA augmentation only fires for the
-		// non-MAX disposition path.
-		effectiveAccess := req.DesiredAccess
-		const maxAllowedBit uint32 = 0x02000000
-		if effectiveAccess&maxAllowedBit == 0 && isDestructiveDisposition(req.CreateDisposition) {
-			effectiveAccess |= uint32(types.FileWriteData)
-		}
-
+		// effectiveAccess (computed above the share-mode check) folds the
+		// disposition-implied FILE_WRITE_DATA into the mask. The DACL check
+		// uses the same augmented mask Samba's smbd_check_access_rights_fsp
+		// receives, so a DACL that grants only READ_DATA fails OVERWRITE /
+		// OVERWRITE_IF / SUPERSEDE with STATUS_ACCESS_DENIED. Covers
+		// smb2.acls.OVERWRITE_READ_ONLY_FILE fs_tcases arm (#565).
 		granted, err := metaSvc.CheckFileAccessWithParent(existingFile, parentFile, authCtx, effectiveAccess)
 		if err != nil {
 			logger.Debug("CREATE: DesiredAccess denied by DACL",
