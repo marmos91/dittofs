@@ -30,12 +30,21 @@ import "sync"
 // ops; the slow path only trips under genuine contention.
 //
 // TRANSITIONAL-V0.17+: physical log compaction (truncating the log file
-// at compactionFence) is out of scope. Consumed entries linger in
-// idx.entries until DeleteAppendLog wipes the payload; memory grows
-// roughly with arrival count between payload-lifetime endpoints. R-7 in
+// at compactionFence) is out of scope. The on-disk log keeps growing
+// until DeleteAppendLog wipes the payload; pressure machinery caps the
+// worst case via maxLogBytes. R-7 in
 // .planning/proposals/2026-05-22-logindex-rollup-redesign.md is the
 // follow-up to replace logPos-keyed consumption with file-offset-keyed
 // consumption, eliminating the stalled-fence pathology entirely.
+//
+// Memory bookkeeping (R-2, issue #581): in-memory `idx.entries` and
+// `idx.consumed` are TRIMMED in lockstep with AdvanceFence — every
+// fence advance drops the prefix of entries that now sit at or below
+// compactionFence and removes the matching keys from the consumed map.
+// Steady-state RSS therefore tracks the unconsumed-record set, not the
+// full payload history. The trim invariant after every AdvanceFence
+// call is: for all i, idx.entries[i].logPos >= idx.compactionFence
+// (the surviving prefix is the unconsumed-and-after-fence suffix).
 
 // logEntry is one record's position in the log + the file-offset extent it
 // covers. The entry is immutable once appended; consumption is tracked
@@ -157,6 +166,26 @@ func (idx *logIndex) MarkConsumed(logPos uint64) {
 // O(total-entries), avoiding quadratic walks across long-lived
 // payloads.
 //
+// R-2 (#581) trim: any prefix that the fence walks past in this call
+// is then DROPPED from `idx.entries` and the matching keys are removed
+// from `idx.consumed`. This bounds steady-state memory at the
+// unconsumed-record set, not the full payload history. Trimming is
+// safe because:
+//
+//   - Fenced entries' chunks are already durable in CAS (the rollup
+//     called MarkConsumed only after a successful StoreChunk pass).
+//   - rollupFile invokes tree.ConsumeUpTo immediately after
+//     AdvanceFence, so the matching file-offset intervals leave the
+//     dirty tree at the same point and no future EntriesForInterval
+//     query will look for them.
+//   - Recovery's lastPos walk rebuilds the index from scratch from the
+//     persisted rollup_offset forward — it never consults pre-fence
+//     in-memory entries.
+//
+// After trim, the post-condition holds: for all i,
+// idx.entries[i].logPos >= idx.compactionFence; fenceCursor is reset
+// to 0 so the next AdvanceFence call starts from the new head.
+//
 // This is the operation the rollup invokes after persisting a CAS
 // commit; the returned fence is what advanceRollupOffset eventually
 // writes to disk.
@@ -172,7 +201,48 @@ func (idx *logIndex) AdvanceFence() uint64 {
 		idx.compactionFence = e.logPos + uint64(recordFrameOverhead) + uint64(e.payloadLen)
 		idx.fenceCursor++
 	}
+	idx.trimBelowFenceLocked()
 	return idx.compactionFence
+}
+
+// trimBelowFenceLocked drops the [0:fenceCursor) prefix of `entries`
+// and removes the matching keys from `consumed`. Caller MUST hold
+// idx.mu. fenceCursor is reset to 0 so subsequent AdvanceFence calls
+// resume from the new head.
+//
+// To bound RSS at ~steady-state (not at the historical high-water mark),
+// the backing array is REALLOCATED whenever its capacity exceeds 4x the
+// surviving length. A plain reslice (`entries[fenceCursor:]`) would pin
+// the original backing array forever — defeating the point of #581 on
+// long-lived payloads whose log shrinks after a burst.
+func (idx *logIndex) trimBelowFenceLocked() {
+	if idx.fenceCursor == 0 {
+		return
+	}
+	for _, e := range idx.entries[:idx.fenceCursor] {
+		delete(idx.consumed, e.logPos)
+	}
+	remaining := len(idx.entries) - idx.fenceCursor
+	switch {
+	case remaining == 0:
+		// Full drain — release backing array to GC.
+		idx.entries = nil
+	case cap(idx.entries) > 4*remaining:
+		// Bloated backing array — copy into a right-sized one so the old
+		// allocation can be reclaimed by the GC. The 4x threshold keeps
+		// reallocations rare in steady state while bounding cap at O(N).
+		shrunk := make([]logEntry, remaining)
+		copy(shrunk, idx.entries[idx.fenceCursor:])
+		idx.entries = shrunk
+	default:
+		// Cap already proportional to remaining — in-place shift avoids
+		// the allocation. Zero the freed tail so logEntry pointer fields
+		// (none today — value type — but future-proofed) aren't pinned.
+		copy(idx.entries, idx.entries[idx.fenceCursor:])
+		clear(idx.entries[remaining:])
+		idx.entries = idx.entries[:remaining]
+	}
+	idx.fenceCursor = 0
 }
 
 // Fence returns the current compactionFence without mutation.

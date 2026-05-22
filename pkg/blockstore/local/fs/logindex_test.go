@@ -254,6 +254,196 @@ func TestLogIndex_AdvanceFence_CursorSkipsConsumed(t *testing.T) {
 	}
 }
 
+// TestLogIndex_AdvanceFence_TrimsConsumedPrefix verifies the R-2 (#581)
+// invariant: after AdvanceFence walks past a prefix of consumed entries,
+// those entries are dropped from idx.entries and their logPos keys are
+// removed from idx.consumed. The fence value itself is preserved.
+func TestLogIndex_AdvanceFence_TrimsConsumedPrefix(t *testing.T) {
+	idx := newLogIndex()
+	const payload = uint32(128)
+	step := uint64(recordFrameOverhead) + uint64(payload)
+	pos := uint64(logHeaderSize)
+	positions := make([]uint64, 0, 4)
+	for i := 0; i < 4; i++ {
+		idx.Append(pos, uint64(i*4096), payload)
+		positions = append(positions, pos)
+		pos += step
+	}
+	if idx.Len() != 4 {
+		t.Fatalf("pre-advance Len: got %d want 4", idx.Len())
+	}
+
+	// Consume the first two entries. Fence walks past 0,1; trim drops
+	// entries[0:2] and shifts entries[2:] to the head.
+	idx.MarkConsumed(positions[0])
+	idx.MarkConsumed(positions[1])
+	wantFence := positions[1] + step
+	if got := idx.AdvanceFence(); got != wantFence {
+		t.Fatalf("fence after consume 0,1: got %d want %d", got, wantFence)
+	}
+	if got := idx.Len(); got != 2 {
+		t.Fatalf("Len after trim: got %d want 2", got)
+	}
+
+	// Surviving entries must be the original positions[2] and positions[3]
+	// — verifiable via EntriesForInterval over the file-offset window
+	// they cover.
+	hits := idx.EntriesForInterval(0, 4*4096)
+	if len(hits) != 2 {
+		t.Fatalf("EntriesForInterval after trim: got %d want 2", len(hits))
+	}
+	if hits[0].logPos != positions[2] || hits[1].logPos != positions[3] {
+		t.Fatalf("entries after trim: got logPos %d,%d want %d,%d",
+			hits[0].logPos, hits[1].logPos, positions[2], positions[3])
+	}
+
+	// Trim invariant: every surviving entry has logPos >= compactionFence.
+	for _, e := range hits {
+		if e.logPos < wantFence {
+			t.Fatalf("trim invariant violated: entry logPos=%d < fence=%d", e.logPos, wantFence)
+		}
+	}
+
+	// `consumed` map keys for the trimmed entries are gone. Re-consuming
+	// the now-trailing entry (entries[1] in the trimmed slice) must work
+	// from the new head without help from the stale keys.
+	idx.MarkConsumed(positions[2])
+	wantFence = positions[2] + step
+	if got := idx.AdvanceFence(); got != wantFence {
+		t.Fatalf("fence after consume positions[2]: got %d want %d", got, wantFence)
+	}
+	if got := idx.Len(); got != 1 {
+		t.Fatalf("Len after second trim: got %d want 1", got)
+	}
+}
+
+// TestLogIndex_AdvanceFence_TrimDoesNotCrossHole pins the load-bearing
+// safety property: a "hole" entry (unconsumed) at the head of the slice
+// blocks both the fence advance AND the trim, even when later entries
+// are already consumed. Otherwise we'd lose the trailing consumed
+// entries from the consumed map and AdvanceFence would never finish
+// the walk.
+func TestLogIndex_AdvanceFence_TrimDoesNotCrossHole(t *testing.T) {
+	idx := newLogIndex()
+	const payload = uint32(128)
+	step := uint64(recordFrameOverhead) + uint64(payload)
+	pos := uint64(logHeaderSize)
+	positions := make([]uint64, 0, 4)
+	for i := 0; i < 4; i++ {
+		idx.Append(pos, uint64(i*4096), payload)
+		positions = append(positions, pos)
+		pos += step
+	}
+
+	// Consume positions 1, 2, 3 but NOT 0. Fence cannot advance; trim
+	// must not run.
+	idx.MarkConsumed(positions[1])
+	idx.MarkConsumed(positions[2])
+	idx.MarkConsumed(positions[3])
+	if got := idx.AdvanceFence(); got != logHeaderSize {
+		t.Fatalf("fence with hole at head: got %d want %d", got, logHeaderSize)
+	}
+	if got := idx.Len(); got != 4 {
+		t.Fatalf("Len with hole at head: got %d want 4 (trim must not run with unconsumed head)", got)
+	}
+
+	// Filling the hole should now cascade — all four entries advance and
+	// then the entire slice is trimmed.
+	idx.MarkConsumed(positions[0])
+	wantFence := positions[3] + step
+	if got := idx.AdvanceFence(); got != wantFence {
+		t.Fatalf("fence after head-fill: got %d want %d", got, wantFence)
+	}
+	if got := idx.Len(); got != 0 {
+		t.Fatalf("Len after full drain: got %d want 0", got)
+	}
+}
+
+// TestLogIndex_AdvanceFence_TrimFullDrainReleasesBackingArray verifies
+// the R-2 acceptance criterion: a payload that takes many AppendWrite +
+// rollup cycles must not retain unbounded entries. Drives K cycles, then
+// asserts that (a) Len()==0 after each fully-consumed cycle and (b) the
+// backing array itself is released to the GC at the end of the run by
+// inspecting `idx.entries == nil` directly (internal-package test).
+func TestLogIndex_AdvanceFence_TrimFullDrainReleasesBackingArray(t *testing.T) {
+	idx := newLogIndex()
+	const payload = uint32(64)
+	const cycles = 1024 // enough that pre-trim behavior would clearly diverge
+	step := uint64(recordFrameOverhead) + uint64(payload)
+	pos := uint64(logHeaderSize)
+
+	for c := 0; c < cycles; c++ {
+		// One AppendWrite per cycle, fully consumed immediately.
+		idx.Append(pos, uint64(c*4096), payload)
+		idx.MarkConsumed(pos)
+		idx.AdvanceFence()
+		pos += step
+		// After every cycle the slice should be empty — there are no
+		// in-flight unconsumed records.
+		if got := idx.Len(); got != 0 {
+			t.Fatalf("cycle %d: Len got %d want 0 — trim is not running", c, got)
+		}
+	}
+	// Fence must reflect the total bytes consumed across all cycles.
+	wantFence := uint64(logHeaderSize) + uint64(cycles)*step
+	if got := idx.Fence(); got != wantFence {
+		t.Fatalf("post-drain fence: got %d want %d", got, wantFence)
+	}
+	// Backing array MUST be released on full drain — internal access.
+	idx.mu.Lock()
+	entriesNil := idx.entries == nil
+	consumedLen := len(idx.consumed)
+	idx.mu.Unlock()
+	if !entriesNil {
+		t.Fatalf("full drain did not release entries backing array (still non-nil)")
+	}
+	if consumedLen != 0 {
+		t.Fatalf("consumed map not drained: len=%d", consumedLen)
+	}
+}
+
+// TestLogIndex_AdvanceFence_TrimBoundedBySteadyState exercises the
+// realistic shape: a payload with a small unconsumed working set but
+// many lifetime arrivals. After K AppendWrite+rollup cycles, Len() must
+// stay proportional to the working-set size, not to K.
+func TestLogIndex_AdvanceFence_TrimBoundedBySteadyState(t *testing.T) {
+	idx := newLogIndex()
+	const payload = uint32(64)
+	const cycles = 2048
+	const inflightAhead = 4 // every batch leaves 4 newest entries unconsumed
+	step := uint64(recordFrameOverhead) + uint64(payload)
+	pos := uint64(logHeaderSize)
+
+	// Pre-fill the in-flight window so each cycle below stays in steady
+	// state.
+	inflight := make([]uint64, 0, inflightAhead)
+	for i := 0; i < inflightAhead; i++ {
+		idx.Append(pos, uint64(i*4096), payload)
+		inflight = append(inflight, pos)
+		pos += step
+	}
+
+	for c := 0; c < cycles; c++ {
+		// Add a new arrival.
+		idx.Append(pos, uint64((inflightAhead+c)*4096), payload)
+		// Consume the OLDEST in-flight entry.
+		oldest := inflight[0]
+		inflight = append(inflight[1:], pos)
+		idx.MarkConsumed(oldest)
+		idx.AdvanceFence()
+		pos += step
+
+		// Len must stay bounded by the in-flight window — never grow
+		// linearly with c. Allow a small slack (1) for the just-appended
+		// entry; the working-set guard is 2*inflightAhead which is
+		// generous but still O(1) in c.
+		if got := idx.Len(); got > 2*inflightAhead {
+			t.Fatalf("cycle %d: Len got %d, exceeds steady-state bound %d — trim is leaking",
+				c, got, 2*inflightAhead)
+		}
+	}
+}
+
 // TestLogIndex_EntriesForInterval_OverflowGuard verifies that a query
 // whose fileOff + length sum wraps past MaxUint64 still returns the
 // expected records — the saturating end calculation prevents the
