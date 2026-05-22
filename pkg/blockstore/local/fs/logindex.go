@@ -1,5 +1,7 @@
 package fs
 
+import "sync"
+
 // Per-file logIndex (Direction 1 redesign — see
 // .planning/proposals/2026-05-22-logindex-rollup-redesign.md).
 //
@@ -17,10 +19,14 @@ package fs
 // short-circuited on the first in-range frame and silently produced
 // recs=0 rollups for parallel-write workloads.
 //
-// Concurrency: logIndex is NOT internally synchronized. All callers hold
-// the per-file `mu` (see appendwrite.go::AppendWrite and rollup.go::
-// rollupFile). The invariant matches the rest of the per-payload state
-// (interval tree, truncation boundary).
+// Concurrency: every public method takes `idx.mu` internally. Higher-level
+// callers (AppendWrite, rollupFile) still hold the per-file `mu` for log
+// ordering — the internal mutex is a defensive belt-and-braces guard
+// against lifecycle drift where a stale snapshot of `idx` could otherwise
+// be appended to concurrently with a fresh snapshot from a recreated
+// payload. The internal lock is uncontended on the steady-state hot path
+// (per-file mu already serialises same-payload writers) so the cost is
+// one atomic CAS per call.
 //
 // TRANSITIONAL-V0.17+: physical log compaction (truncating the log file
 // at compactionFence) is out of scope. Consumed entries linger in
@@ -56,6 +62,10 @@ func (e logEntry) fileEnd() uint64 {
 // offset"; conceptually it now records compactionFence rather than a
 // running scan cursor.
 type logIndex struct {
+	// mu guards every field below. See package doc on logIndex above for
+	// rationale (defensive guard against lifecycle drift; uncontended on
+	// the steady-state hot path).
+	mu              sync.Mutex
 	entries         []logEntry
 	consumed        map[uint64]struct{} // key = logEntry.logPos
 	compactionFence uint64
@@ -78,11 +88,13 @@ func newLogIndex() *logIndex {
 	}
 }
 
-// Append records a new entry. Caller MUST hold the per-file mu and MUST
-// pass a logPos strictly greater than the most recent entry's logPos
-// (eofPos advances monotonically). Append does not validate ordering —
-// the contract is on the caller.
+// Append records a new entry. Caller MUST pass a logPos strictly greater
+// than the most recent entry's logPos (eofPos advances monotonically).
+// Append does not validate ordering — the contract is on the caller.
+// Internal mu guards the slice mutation.
 func (idx *logIndex) Append(logPos uint64, fileOff uint64, payloadLen uint32) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 	idx.entries = append(idx.entries, logEntry{
 		logPos:     logPos,
 		fileOff:    fileOff,
@@ -110,6 +122,8 @@ func (idx *logIndex) EntriesForInterval(fileOff uint64, length uint64) []logEntr
 	if end < fileOff {
 		end = ^uint64(0)
 	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 	out := make([]logEntry, 0, 4)
 	for _, e := range idx.entries {
 		if e.fileEnd() <= fileOff {
@@ -126,6 +140,8 @@ func (idx *logIndex) EntriesForInterval(fileOff uint64, length uint64) []logEntr
 // MarkConsumed records that the entry at logPos has been rolled into
 // CAS. Idempotent — repeat calls for the same logPos are a no-op.
 func (idx *logIndex) MarkConsumed(logPos uint64) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 	idx.consumed[logPos] = struct{}{}
 }
 
@@ -145,6 +161,8 @@ func (idx *logIndex) MarkConsumed(logPos uint64) {
 // commit; the returned fence is what advanceRollupOffset eventually
 // writes to disk.
 func (idx *logIndex) AdvanceFence() uint64 {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 	for idx.fenceCursor < len(idx.entries) {
 		e := idx.entries[idx.fenceCursor]
 		if _, ok := idx.consumed[e.logPos]; !ok {
@@ -159,6 +177,8 @@ func (idx *logIndex) AdvanceFence() uint64 {
 
 // Fence returns the current compactionFence without mutation.
 func (idx *logIndex) Fence() uint64 {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 	return idx.compactionFence
 }
 
@@ -175,6 +195,8 @@ func (idx *logIndex) Fence() uint64 {
 // AdvanceFence calls will skip past any pre-fence entries on the first
 // invocation only.
 func (idx *logIndex) SetFence(fence uint64) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 	idx.compactionFence = fence
 	idx.fenceCursor = 0
 }
@@ -182,5 +204,7 @@ func (idx *logIndex) SetFence(fence uint64) {
 // Len returns the total number of indexed entries (consumed + unconsumed).
 // Test/debug surface.
 func (idx *logIndex) Len() int {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 	return len(idx.entries)
 }
