@@ -51,8 +51,8 @@ func readOnlyACL(who string) *acl.ACL {
 //
 // The returned SMBHandlerContext is pre-populated with TreeID + User so
 // QueryDirectory's ABE branch (gated on h.GetTree(TreeID).AccessBasedEnumeration
-// + BuildAuthContext(ctx.User)) finds both the share toggle and the
-// caller's UID/GID.
+// + BuildAuthContext(ctx), which itself reads ctx.User) finds both the
+// share toggle and the caller's UID/GID.
 func setupABEQueryDirTest(t *testing.T, abe bool, callerUID, callerGID uint32, children []abeChild) (*Handler, *OpenFile, *SMBHandlerContext) {
 	t.Helper()
 
