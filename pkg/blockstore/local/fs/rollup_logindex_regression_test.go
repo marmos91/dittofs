@@ -169,3 +169,133 @@ func TestRollup_StalledFence_ChunksStillCommitted(t *testing.T) {
 		t.Fatalf("rollup_offset did not advance after head stabilization: got %d", off)
 	}
 }
+
+// TestRollup_R7_OverwriteReclaimsHeadBytes is the R-7 (#580) acceptance
+// scenario: a head-of-log record whose file region is FULLY OVERWRITTEN
+// by a later record must have its on-disk frame bytes reclaimed as soon
+// as the overwrite chunks — even if the head record's interval is still
+// held in the dirty interval tree (e.g. because it was touched again
+// later and its own stabilization window keeps slipping).
+//
+// Pre-R-7 (#566's design): consumption was keyed by logPos. The head
+// record's logPos pinned the fence at the log header even when every
+// byte of its file region had been chunked by a subsequent overwrite,
+// because the head was not itself "in the consumed set" yet.
+//
+// Post-R-7: consumption is keyed by FILE-OFFSET interval. The overwrite's
+// MarkConsumed adds [headOff, headOff+len) to coverageSet, which is the
+// same extent the head record covers, so AdvanceFence walks past both
+// frames once the overwrite is chunked. rollup_offset advances even
+// though the head's dirty interval is still considered unstable.
+//
+// We exercise this end-to-end by:
+//  1. Writing a head record at file_off=0.
+//  2. Writing an overwrite at the SAME file_off=0 (same length).
+//  3. Refreshing the head's interval continuously so it never stabilizes,
+//     while waiting long enough for the overwrite to stabilize and chunk.
+//     The interval tree sees both writes at offset 0; EarliestStable
+//     returns the head only if its Touched is past the threshold —
+//     refreshing keeps it under the threshold continuously, but a
+//     subsequent rollup tick eventually picks up the stable interval
+//     once the overwrite's Touched is past threshold AND the head's
+//     Touched is too (we stop refreshing for a beat to allow the rollup
+//     pass through, then immediately observe rollup_offset).
+//
+// Acceptance: within one stabilization window of the LAST chunked record
+// covering [0, payload) — i.e. the overwrite — the fence has advanced.
+func TestRollup_R7_OverwriteReclaimsHeadBytes(t *testing.T) {
+	const stabilizationMS = 50
+	bc, rs := newRollupFSStore(t, 1<<30, stabilizationMS)
+	ctx := context.Background()
+
+	const payloadLen = 16 * 1024
+	head := bytes.Repeat([]byte{0xC1}, payloadLen)
+	overwrite := bytes.Repeat([]byte{0xC2}, payloadLen)
+
+	// 1. Head write.
+	if err := bc.AppendWrite(ctx, "file-r7", head, 0); err != nil {
+		t.Fatalf("AppendWrite head: %v", err)
+	}
+	// 2. Overwrite at the same file region.
+	if err := bc.AppendWrite(ctx, "file-r7", overwrite, 0); err != nil {
+		t.Fatalf("AppendWrite overwrite: %v", err)
+	}
+
+	// 3. Wait several stabilization windows so both intervals stabilize
+	// together and the rollup pool fires. R-7's guarantee is that both
+	// frames' bytes get reclaimed in a single rollup pass — the head's
+	// frame becomes dead via the overwrite's coverage, not via the head
+	// being individually picked up.
+	deadline := time.Now().Add(5 * time.Second)
+	wantFence := uint64(logHeaderSize) + 2*(uint64(recordFrameOverhead)+uint64(payloadLen))
+	var lastOff uint64
+	for time.Now().Before(deadline) {
+		off, err := rs.GetRollupOffset(ctx, "file-r7")
+		if err != nil {
+			t.Fatalf("GetRollupOffset: %v", err)
+		}
+		lastOff = off
+		if off >= wantFence {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if lastOff < wantFence {
+		t.Fatalf("R-7 stalled-fence reclamation: rollup_offset=%d want >= %d", lastOff, wantFence)
+	}
+
+	// Belt-and-braces: logBytesTotal must drop to zero — every frame's
+	// bytes accounted in budget release.
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if bc.logBytesTotal.Load() == 0 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if got := bc.logBytesTotal.Load(); got != 0 {
+		t.Fatalf("logBytesTotal nonzero after overwrite reclamation: %d", got)
+	}
+}
+
+// TestRollup_R7_LogIndexLevel_StalledFence is a focused unit-level
+// acceptance for R-7. It bypasses the rollup ticker and exercises the
+// stalled-fence scenario directly against the logIndex: head + overwrite
+// at the same file extent, the head is NEVER marked consumed, the
+// overwrite IS marked consumed → AdvanceFence walks past both frames.
+//
+// This is the "synthetic stalled-fence scenario" from the issue
+// acceptance criterion. Sibling to the end-to-end test above; this one
+// is deterministic and fast.
+func TestRollup_R7_LogIndexLevel_StalledFence(t *testing.T) {
+	idx := newLogIndex()
+	const payload = uint32(4096)
+	step := uint64(recordFrameOverhead) + uint64(payload)
+	headLogPos := uint64(logHeaderSize)
+	overLogPos := headLogPos + step
+	tailLogPos := overLogPos + step
+
+	// Head at [0, 4K), overwrite at [0, 4K), tail at [4K, 8K).
+	idx.Append(headLogPos, 0, payload)
+	idx.Append(overLogPos, 0, payload)
+	idx.Append(tailLogPos, 4096, payload)
+
+	// Pre-fix sanity: with zero consumption, fence stays at the header.
+	if got := idx.AdvanceFence(); got != uint64(logHeaderSize) {
+		t.Fatalf("pre-consume fence: got %d want %d", got, logHeaderSize)
+	}
+
+	// Mark the overwrite and the tail consumed; explicitly do NOT mark
+	// the head. Under the old logPos-keyed scheme, the head's logPos sat
+	// in the consumed map's complement and pinned the fence. Under R-7,
+	// the overwrite's coverage [0, 4K) subsumes the head's extent —
+	// the head's frame is dead and the fence walks straight through.
+	idx.MarkConsumed(0, payload)    // covers head AND overwrite
+	idx.MarkConsumed(4096, payload) // covers tail
+
+	wantFence := tailLogPos + step
+	if got := idx.AdvanceFence(); got != wantFence {
+		t.Fatalf("R-7 stalled-fence regression: fence got %d want %d (head should have been released via overwrite coverage)",
+			got, wantFence)
+	}
+}

@@ -122,17 +122,23 @@ func TestLogIndex_EntriesForInterval_Boundaries(t *testing.T) {
 	}
 }
 
-// TestLogIndex_AdvanceFence_Contiguous verifies that consuming records in
-// arrival order advances the fence past each full record extent.
+// TestLogIndex_AdvanceFence_Contiguous verifies that marking each entry's
+// file extent consumed advances the fence past each full record extent
+// when entries are non-overlapping.
 func TestLogIndex_AdvanceFence_Contiguous(t *testing.T) {
 	idx := newLogIndex()
 	const payload = uint32(256)
 	step := uint64(recordFrameOverhead) + uint64(payload)
 	pos := uint64(logHeaderSize)
-	positions := make([]uint64, 0, 3)
+	type entExt struct {
+		logPos  uint64
+		fileOff uint64
+	}
+	ents := make([]entExt, 0, 3)
 	for i := 0; i < 3; i++ {
-		idx.Append(pos, uint64(i*4096), payload)
-		positions = append(positions, pos)
+		fileOff := uint64(i * 4096)
+		idx.Append(pos, fileOff, payload)
+		ents = append(ents, entExt{logPos: pos, fileOff: fileOff})
 		pos += step
 	}
 
@@ -141,69 +147,80 @@ func TestLogIndex_AdvanceFence_Contiguous(t *testing.T) {
 		t.Fatalf("fence with no consumption: got %d want %d", got, logHeaderSize)
 	}
 
-	// Consume the first entry. Fence advances to end of record 0.
-	idx.MarkConsumed(positions[0])
-	want := positions[0] + step
+	// Consume the first entry's file extent. Fence advances past record 0.
+	idx.MarkConsumed(ents[0].fileOff, payload)
+	want := ents[0].logPos + step
 	if got := idx.AdvanceFence(); got != want {
 		t.Fatalf("fence after consume[0]: got %d want %d", got, want)
 	}
 
-	// Consume the second entry. Fence advances to end of record 1.
-	idx.MarkConsumed(positions[1])
-	want = positions[1] + step
+	// Consume the second entry's file extent.
+	idx.MarkConsumed(ents[1].fileOff, payload)
+	want = ents[1].logPos + step
 	if got := idx.AdvanceFence(); got != want {
 		t.Fatalf("fence after consume[1]: got %d want %d", got, want)
 	}
 
-	// Consume the third entry. Fence advances to end of record 2 (== pos).
-	idx.MarkConsumed(positions[2])
-	want = positions[2] + step
+	// Consume the third entry's file extent.
+	idx.MarkConsumed(ents[2].fileOff, payload)
+	want = ents[2].logPos + step
 	if got := idx.AdvanceFence(); got != want {
 		t.Fatalf("fence after consume[2]: got %d want %d", got, want)
 	}
 }
 
-// TestLogIndex_AdvanceFence_HoleBlocks verifies the load-bearing
-// invariant for R-7: a consumed entry preceded by an unconsumed
-// predecessor must NOT advance the fence.
+// TestLogIndex_AdvanceFence_HoleBlocks verifies that a consumed entry
+// preceded by a head entry whose file region is NOT yet covered must NOT
+// advance the fence. With non-overlapping file regions (records at
+// distinct extents), consuming the trailing entries' extents does not
+// cover the head entry's extent, so the fence stays anchored at the head
+// until the head's own extent is consumed.
 func TestLogIndex_AdvanceFence_HoleBlocks(t *testing.T) {
 	idx := newLogIndex()
 	const payload = uint32(256)
 	step := uint64(recordFrameOverhead) + uint64(payload)
 	pos := uint64(logHeaderSize)
-	positions := []uint64{}
+	type entExt struct {
+		logPos  uint64
+		fileOff uint64
+	}
+	ents := []entExt{}
 	for i := 0; i < 3; i++ {
-		idx.Append(pos, uint64(i*4096), payload)
-		positions = append(positions, pos)
+		fileOff := uint64(i * 4096)
+		idx.Append(pos, fileOff, payload)
+		ents = append(ents, entExt{logPos: pos, fileOff: fileOff})
 		pos += step
 	}
 
-	// Consume entries 1 and 2 (skipping 0). Fence MUST stay at the
-	// header boundary because record 0 is still in-flight.
-	idx.MarkConsumed(positions[1])
-	idx.MarkConsumed(positions[2])
+	// Consume entries 1 and 2 (skipping head). Fence MUST stay at the
+	// header boundary because record 0's file region [0, 256) is not
+	// covered by either trailing record's extent.
+	idx.MarkConsumed(ents[1].fileOff, payload)
+	idx.MarkConsumed(ents[2].fileOff, payload)
 	if got := idx.AdvanceFence(); got != logHeaderSize {
 		t.Fatalf("hole at head: fence got %d want %d", got, logHeaderSize)
 	}
 
-	// Now consume record 0. The fence walks through all three because
-	// 1 and 2 are already marked.
-	idx.MarkConsumed(positions[0])
-	want := positions[2] + step
+	// Now consume record 0's extent. The fence walks through all three
+	// because the head is now covered and the trailing extents were
+	// already covered by their own MarkConsumed calls above.
+	idx.MarkConsumed(ents[0].fileOff, payload)
+	want := ents[2].logPos + step
 	if got := idx.AdvanceFence(); got != want {
 		t.Fatalf("fence after head-consume: got %d want %d", got, want)
 	}
 }
 
 // TestLogIndex_MarkConsumed_Idempotent guards against repeated rollup
-// calls for the same entry inflating any internal accounting. (None
-// today, but cheap to enforce.)
+// calls for the same file extent inflating any internal accounting. The
+// coverageSet add operation is set-union, so repeated identical calls
+// are no-ops.
 func TestLogIndex_MarkConsumed_Idempotent(t *testing.T) {
 	idx := newLogIndex()
 	idx.Append(logHeaderSize, 0, 100)
-	idx.MarkConsumed(logHeaderSize)
-	idx.MarkConsumed(logHeaderSize)
-	idx.MarkConsumed(logHeaderSize)
+	idx.MarkConsumed(0, 100)
+	idx.MarkConsumed(0, 100)
+	idx.MarkConsumed(0, 100)
 	want := uint64(logHeaderSize) + uint64(recordFrameOverhead) + 100
 	if got := idx.AdvanceFence(); got != want {
 		t.Fatalf("fence: got %d want %d", got, want)
@@ -234,8 +251,9 @@ func TestLogIndex_AdvanceFence_CursorSkipsConsumed(t *testing.T) {
 	step := uint64(recordFrameOverhead) + uint64(payload)
 	pos := uint64(logHeaderSize)
 	for i := 0; i < 3; i++ {
-		idx.Append(pos, uint64(i*4096), payload)
-		idx.MarkConsumed(pos)
+		fileOff := uint64(i * 4096)
+		idx.Append(pos, fileOff, payload)
+		idx.MarkConsumed(fileOff, payload)
 		pos += step
 	}
 	wantAfterThree := uint64(logHeaderSize) + 3*step
@@ -244,8 +262,9 @@ func TestLogIndex_AdvanceFence_CursorSkipsConsumed(t *testing.T) {
 	}
 	// Append two more entries, mark both consumed, AdvanceFence again.
 	for i := 3; i < 5; i++ {
-		idx.Append(pos, uint64(i*4096), payload)
-		idx.MarkConsumed(pos)
+		fileOff := uint64(i * 4096)
+		idx.Append(pos, fileOff, payload)
+		idx.MarkConsumed(fileOff, payload)
 		pos += step
 	}
 	wantAfterFive := uint64(logHeaderSize) + 5*step
@@ -273,10 +292,11 @@ func TestLogIndex_AdvanceFence_TrimsConsumedPrefix(t *testing.T) {
 		t.Fatalf("pre-advance Len: got %d want 4", idx.Len())
 	}
 
-	// Consume the first two entries. Fence walks past 0,1; trim drops
-	// entries[0:2] and shifts entries[2:] to the head.
-	idx.MarkConsumed(positions[0])
-	idx.MarkConsumed(positions[1])
+	// Consume the first two entries (by file extent — R-7 semantics).
+	// Fence walks past 0,1; trim drops entries[0:2] and shifts
+	// entries[2:] to the head.
+	idx.MarkConsumed(0, payload)
+	idx.MarkConsumed(4096, payload)
 	wantFence := positions[1] + step
 	if got := idx.AdvanceFence(); got != wantFence {
 		t.Fatalf("fence after consume 0,1: got %d want %d", got, wantFence)
@@ -304,10 +324,9 @@ func TestLogIndex_AdvanceFence_TrimsConsumedPrefix(t *testing.T) {
 		}
 	}
 
-	// `consumed` map keys for the trimmed entries are gone. Re-consuming
-	// the now-trailing entry (entries[1] in the trimmed slice) must work
-	// from the new head without help from the stale keys.
-	idx.MarkConsumed(positions[2])
+	// Re-consuming the now-trailing entry (entries[1] in the trimmed
+	// slice) must work from the new head.
+	idx.MarkConsumed(2*4096, payload)
 	wantFence = positions[2] + step
 	if got := idx.AdvanceFence(); got != wantFence {
 		t.Fatalf("fence after consume positions[2]: got %d want %d", got, wantFence)
@@ -335,11 +354,11 @@ func TestLogIndex_AdvanceFence_TrimDoesNotCrossHole(t *testing.T) {
 		pos += step
 	}
 
-	// Consume positions 1, 2, 3 but NOT 0. Fence cannot advance; trim
-	// must not run.
-	idx.MarkConsumed(positions[1])
-	idx.MarkConsumed(positions[2])
-	idx.MarkConsumed(positions[3])
+	// Mark file regions 1,2,3 consumed but NOT region 0. Fence cannot
+	// advance past entry 0; trim must not run.
+	idx.MarkConsumed(4096, payload)
+	idx.MarkConsumed(8192, payload)
+	idx.MarkConsumed(12288, payload)
 	if got := idx.AdvanceFence(); got != logHeaderSize {
 		t.Fatalf("fence with hole at head: got %d want %d", got, logHeaderSize)
 	}
@@ -347,9 +366,9 @@ func TestLogIndex_AdvanceFence_TrimDoesNotCrossHole(t *testing.T) {
 		t.Fatalf("Len with hole at head: got %d want 4 (trim must not run with unconsumed head)", got)
 	}
 
-	// Filling the hole should now cascade — all four entries advance and
-	// then the entire slice is trimmed.
-	idx.MarkConsumed(positions[0])
+	// Marking region 0 consumed should cascade — all four entries advance
+	// and the entire slice is trimmed.
+	idx.MarkConsumed(0, payload)
 	wantFence := positions[3] + step
 	if got := idx.AdvanceFence(); got != wantFence {
 		t.Fatalf("fence after head-fill: got %d want %d", got, wantFence)
@@ -374,8 +393,9 @@ func TestLogIndex_AdvanceFence_TrimFullDrainReleasesBackingArray(t *testing.T) {
 
 	for c := 0; c < cycles; c++ {
 		// One AppendWrite per cycle, fully consumed immediately.
-		idx.Append(pos, uint64(c*4096), payload)
-		idx.MarkConsumed(pos)
+		fileOff := uint64(c * 4096)
+		idx.Append(pos, fileOff, payload)
+		idx.MarkConsumed(fileOff, payload)
 		idx.AdvanceFence()
 		pos += step
 		// After every cycle the slice should be empty — there are no
@@ -392,13 +412,9 @@ func TestLogIndex_AdvanceFence_TrimFullDrainReleasesBackingArray(t *testing.T) {
 	// Backing array MUST be released on full drain — internal access.
 	idx.mu.Lock()
 	entriesNil := idx.entries == nil
-	consumedLen := len(idx.consumed)
 	idx.mu.Unlock()
 	if !entriesNil {
 		t.Fatalf("full drain did not release entries backing array (still non-nil)")
-	}
-	if consumedLen != 0 {
-		t.Fatalf("consumed map not drained: len=%d", consumedLen)
 	}
 }
 
@@ -415,21 +431,24 @@ func TestLogIndex_AdvanceFence_TrimBoundedBySteadyState(t *testing.T) {
 	pos := uint64(logHeaderSize)
 
 	// Pre-fill the in-flight window so each cycle below stays in steady
-	// state.
+	// state. Track the file-offset of each in-flight entry — R-7
+	// MarkConsumed is file-offset-keyed.
 	inflight := make([]uint64, 0, inflightAhead)
 	for i := 0; i < inflightAhead; i++ {
-		idx.Append(pos, uint64(i*4096), payload)
-		inflight = append(inflight, pos)
+		fileOff := uint64(i * 4096)
+		idx.Append(pos, fileOff, payload)
+		inflight = append(inflight, fileOff)
 		pos += step
 	}
 
 	for c := 0; c < cycles; c++ {
 		// Add a new arrival.
-		idx.Append(pos, uint64((inflightAhead+c)*4096), payload)
-		// Consume the OLDEST in-flight entry.
+		newFileOff := uint64((inflightAhead + c) * 4096)
+		idx.Append(pos, newFileOff, payload)
+		// Consume the OLDEST in-flight entry's file extent.
 		oldest := inflight[0]
-		inflight = append(inflight[1:], pos)
-		idx.MarkConsumed(oldest)
+		inflight = append(inflight[1:], newFileOff)
+		idx.MarkConsumed(oldest, payload)
 		idx.AdvanceFence()
 		pos += step
 
@@ -468,5 +487,251 @@ func TestLogIndex_EntriesForInterval_OverflowGuard(t *testing.T) {
 	hits = idx.EntriesForInterval(^uint64(0)-50, 100)
 	if len(hits) != 0 {
 		t.Fatalf("post-extent query: got %+v want []", hits)
+	}
+}
+
+// TestLogIndex_AdvanceFence_OverwriteUnsticksHead is the load-bearing
+// R-7 (#580) acceptance: a head record whose file region is fully
+// covered by a LATER consumed overwrite becomes dead immediately, even
+// though the head record itself was never marked consumed. The fence
+// walks straight through it. Pre-R-7 this would have stalled at the
+// head record's frame.
+func TestLogIndex_AdvanceFence_OverwriteUnsticksHead(t *testing.T) {
+	idx := newLogIndex()
+	const payload = uint32(4096)
+	step := uint64(recordFrameOverhead) + uint64(payload)
+	pos := uint64(logHeaderSize)
+
+	// Head: write at [0, 4K). Logically alive until something covers it.
+	headLogPos := pos
+	idx.Append(headLogPos, 0, payload)
+	pos += step
+	// Overwrite at the same file extent [0, 4K).
+	overwriteLogPos := pos
+	idx.Append(overwriteLogPos, 0, payload)
+	pos += step
+
+	// Mark ONLY the overwrite's extent consumed. The head was never
+	// processed (analog of: still in the dirty interval tree, awaiting
+	// stabilization, or held by a long-lived stable interval pass).
+	idx.MarkConsumed(0, payload)
+
+	// Fence MUST advance past BOTH frames — the head's [0, 4K) is
+	// covered by the overwrite's coverage even without the head being
+	// individually marked.
+	wantFence := overwriteLogPos + step
+	if got := idx.AdvanceFence(); got != wantFence {
+		t.Fatalf("R-7 overwrite-unsticks-head: fence got %d want %d", got, wantFence)
+	}
+}
+
+// TestLogIndex_AdvanceFence_PartialOverlapBlocks asserts that a partial
+// overlap does NOT release the head record's bytes. The fence may only
+// walk past an entry whose FULL extent is covered — partial coverage
+// keeps the entry alive (the uncovered tail bytes are still authoritative
+// chunked-data input).
+func TestLogIndex_AdvanceFence_PartialOverlapBlocks(t *testing.T) {
+	idx := newLogIndex()
+	const payload = uint32(4096)
+	headLogPos := uint64(logHeaderSize)
+	idx.Append(headLogPos, 0, payload) // head: [0, 4096)
+	idx.Append(headLogPos+uint64(recordFrameOverhead)+uint64(payload), 2048, payload)
+
+	// Mark consumed only [2048, 6144). Head's [0, 4096) is only partially
+	// covered (the [2048, 4096) tail). Head must stay alive.
+	idx.MarkConsumed(2048, payload)
+	if got := idx.AdvanceFence(); got != uint64(logHeaderSize) {
+		t.Fatalf("partial overlap should not unstick head: got %d want %d", got, logHeaderSize)
+	}
+
+	// Now cover [0, 2048) too. Head's extent is now fully covered.
+	idx.MarkConsumed(0, 2048)
+	wantFence := headLogPos + 2*(uint64(recordFrameOverhead)+uint64(payload))
+	if got := idx.AdvanceFence(); got != wantFence {
+		t.Fatalf("after full coverage: got %d want %d", got, wantFence)
+	}
+}
+
+// TestLogIndex_AdvanceFence_CoverageMerge verifies that two MarkConsumed
+// calls at adjacent file extents merge so a record straddling the
+// boundary still reads as fully covered. This exercises coverageSet's
+// adjacency-merge behavior: [0, 1024) + [1024, 2048) must cover an entry
+// at [0, 2048).
+func TestLogIndex_AdvanceFence_CoverageMerge(t *testing.T) {
+	idx := newLogIndex()
+	const payload = uint32(2048)
+	headLogPos := uint64(logHeaderSize)
+	idx.Append(headLogPos, 0, payload)
+
+	idx.MarkConsumed(0, 1024)
+	idx.MarkConsumed(1024, 1024)
+
+	wantFence := headLogPos + uint64(recordFrameOverhead) + uint64(payload)
+	if got := idx.AdvanceFence(); got != wantFence {
+		t.Fatalf("adjacency merge failed: got %d want %d", got, wantFence)
+	}
+}
+
+// TestCoverageSet exercises the coverage-set primitive in isolation —
+// add merges adjacent and overlapping intervals; covers returns the
+// strict containment predicate.
+func TestCoverageSet(t *testing.T) {
+	cases := []struct {
+		name string
+		ops  func(*coverageSet)
+		// (query start, end) → expected covers result
+		queries []struct {
+			start, end uint64
+			want       bool
+		}
+	}{
+		{
+			name: "single-interval",
+			ops:  func(c *coverageSet) { c.add(10, 20) },
+			queries: []struct {
+				start, end uint64
+				want       bool
+			}{
+				{10, 20, true},
+				{11, 19, true},
+				{10, 21, false},
+				{9, 20, false},
+				{20, 30, false},
+				{0, 5, false},
+			},
+		},
+		{
+			name: "adjacency-merge",
+			ops: func(c *coverageSet) {
+				c.add(0, 10)
+				c.add(10, 20)
+				c.add(20, 30)
+			},
+			queries: []struct {
+				start, end uint64
+				want       bool
+			}{
+				{0, 30, true},
+				{5, 25, true},
+				{29, 31, false},
+			},
+		},
+		{
+			name: "overlap-merge",
+			ops: func(c *coverageSet) {
+				c.add(0, 10)
+				c.add(5, 15)
+				c.add(12, 25)
+			},
+			queries: []struct {
+				start, end uint64
+				want       bool
+			}{
+				{0, 25, true},
+				{0, 26, false},
+			},
+		},
+		{
+			name: "gap-stays-gap",
+			ops: func(c *coverageSet) {
+				c.add(0, 10)
+				c.add(20, 30)
+			},
+			queries: []struct {
+				start, end uint64
+				want       bool
+			}{
+				{0, 10, true},
+				{20, 30, true},
+				{0, 30, false},
+				{9, 21, false},
+			},
+		},
+		{
+			name: "subsume-existing",
+			ops: func(c *coverageSet) {
+				c.add(10, 20)
+				c.add(30, 40)
+				c.add(50, 60)
+				// One big add subsumes all three.
+				c.add(0, 100)
+			},
+			queries: []struct {
+				start, end uint64
+				want       bool
+			}{
+				{0, 100, true},
+				{50, 99, true},
+			},
+		},
+		{
+			name: "empty-query-vacuously-true",
+			ops:  func(_ *coverageSet) {},
+			queries: []struct {
+				start, end uint64
+				want       bool
+			}{
+				{0, 0, true},
+				{100, 100, true},
+			},
+		},
+		{
+			name: "empty-add-ignored",
+			ops: func(c *coverageSet) {
+				c.add(5, 5)
+				c.add(10, 5)
+			},
+			queries: []struct {
+				start, end uint64
+				want       bool
+			}{
+				{5, 6, false},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cs coverageSet
+			tc.ops(&cs)
+			for _, q := range tc.queries {
+				if got := cs.covers(q.start, q.end); got != q.want {
+					t.Errorf("covers(%d,%d): got %v want %v (intervals=%+v)",
+						q.start, q.end, got, q.want, cs.intervals)
+				}
+			}
+		})
+	}
+}
+
+// TestCoverageSet_MergeKeepsSortedInvariant adds intervals in mixed
+// order and asserts that the underlying slice stays sorted and
+// non-overlapping — the precondition for covers's binary search.
+func TestCoverageSet_MergeKeepsSortedInvariant(t *testing.T) {
+	var cs coverageSet
+	cs.add(100, 200)
+	cs.add(0, 50)
+	cs.add(300, 400)
+	cs.add(150, 350) // bridges 100-200 and 300-400 via 150-350.
+	cs.add(60, 90)
+	cs.add(50, 60) // adjacency-bridge 0-50, 50-60, 60-90 → 0-90.
+
+	for i := 1; i < len(cs.intervals); i++ {
+		prev := cs.intervals[i-1]
+		cur := cs.intervals[i]
+		if prev.end > cur.start {
+			t.Fatalf("invariant broken: %+v then %+v", prev, cur)
+		}
+		if prev.start >= prev.end {
+			t.Fatalf("empty interval at %d: %+v", i-1, prev)
+		}
+	}
+	if len(cs.intervals) != 2 {
+		t.Fatalf("expected 2 merged intervals (0-90, 100-400), got %d: %+v", len(cs.intervals), cs.intervals)
+	}
+	if cs.intervals[0] != (coverageInterval{start: 0, end: 90}) {
+		t.Errorf("intervals[0]: got %+v want {0,90}", cs.intervals[0])
+	}
+	if cs.intervals[1] != (coverageInterval{start: 100, end: 400}) {
+		t.Errorf("intervals[1]: got %+v want {100,400}", cs.intervals[1])
 	}
 }
