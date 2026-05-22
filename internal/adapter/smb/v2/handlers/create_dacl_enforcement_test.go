@@ -556,6 +556,225 @@ func TestCreate_OverwriteIfRestrictedFile_ReturnsAccessDenied(t *testing.T) {
 	}
 }
 
+// makeDraftWithShareAccess assembles a createDraft with explicit
+// DesiredAccess, ShareAccess, and CreateDisposition. Used by the share-mode
+// conflict tests that need to exercise the per-bit deny semantics against a
+// pre-seeded OpenFile.
+func makeDraftWithShareAccess(
+	t *testing.T,
+	tree *TreeConnection,
+	authCtx *metadata.AuthContext,
+	parentHandle metadata.FileHandle,
+	existingFile *metadata.File,
+	baseName string,
+	desiredAccess uint32,
+	shareAccess uint32,
+	disposition types.CreateDisposition,
+	action types.CreateAction,
+) *createDraft {
+	t.Helper()
+	encHandle, err := metadata.EncodeFileHandle(existingFile)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+	return &createDraft{
+		req: &CreateRequest{
+			FileName:          baseName,
+			DesiredAccess:     desiredAccess,
+			ShareAccess:       shareAccess,
+			CreateDisposition: disposition,
+			CreateOptions:     0,
+		},
+		tree:           tree,
+		authCtx:        authCtx,
+		filename:       baseName,
+		baseName:       baseName,
+		parentHandle:   parentHandle,
+		existingFile:   existingFile,
+		existingHandle: encHandle,
+		fileExists:     true,
+		createAction:   action,
+	}
+}
+
+// runDestructiveShareViolationCase exercises the smbtorture
+// smb2.acls.OVERWRITE_READ_ONLY_FILE sharing_tcases shape (#575):
+//
+//  1. First handle: CREATE(desired=READ_DATA, share=SHARE_READ, disp=OPEN_IF).
+//     Recorded as an OpenFile in the handler's open table.
+//  2. Second handle: CREATE(desired=READ_DATA, share=SHARE_READ, disp=DESTRUCTIVE).
+//     Must return STATUS_SHARING_VIOLATION because the destructive disposition
+//     implicitly requires FILE_WRITE_DATA, which the existing handle's
+//     SHARE_READ-only share mode does not allow.
+//
+// Mirrors Samba `open_file_ntcreate`'s `open_access_mask |= FILE_WRITE_DATA`
+// for O_TRUNC dispositions, which is then used for the share-mode conflict
+// check in `open_mode_check`.
+func runDestructiveShareViolationCase(t *testing.T, fname string, disposition types.CreateDisposition, action types.CreateAction) {
+	t.Helper()
+	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
+	tree := &TreeConnection{TreeID: smbCtx.TreeID, SessionID: smbCtx.SessionID, ShareName: smbCtx.ShareName}
+	h.StoreTree(tree)
+
+	// File owned by the test user with a permissive DACL (the sharing_tcases
+	// arm runs AFTER the test restores the original SD, so the DACL is not
+	// the restriction under test here — the share mode is).
+	requesterUID := uint32(2001)
+	requesterSID := "S-1-5-21-1-2-3-2001"
+	requesterGID := uint32(2001)
+	sidStr := requesterSID
+	requesterAuth := &metadata.AuthContext{
+		Context: context.Background(),
+		Identity: &metadata.Identity{
+			UID: &requesterUID,
+			GID: &requesterGID,
+			SID: &sidStr,
+		},
+	}
+	fullAccessACL := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        "sid:" + requesterSID,
+				AccessMask: acl.ACE4_READ_DATA | acl.ACE4_WRITE_DATA | acl.ACE4_APPEND_DATA | acl.ACE4_READ_ATTRIBUTES | acl.ACE4_WRITE_ATTRIBUTES | acl.ACE4_DELETE | acl.ACE4_READ_ACL | acl.ACE4_WRITE_ACL | acl.ACE4_SYNCHRONIZE,
+			},
+		},
+	}
+	existingFile, err := rt.GetMetadataService().CreateFile(rootAuth, rootHandle, fname,
+		&metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o777,
+			UID:  requesterUID,
+			GID:  requesterGID,
+			ACL:  fullAccessACL,
+		})
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+
+	// Seed the handler open table with the first handle (SHARE_READ only).
+	const (
+		fileReadData  uint32 = 0x00000001
+		fileShareRead uint32 = 0x01
+	)
+	encHandle, err := metadata.EncodeFileHandle(existingFile)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+	firstFileID := h.GenerateFileID()
+	h.StoreOpenFile(&OpenFile{
+		FileID:         firstFileID,
+		TreeID:         smbCtx.TreeID,
+		SessionID:      smbCtx.SessionID,
+		Path:           fname,
+		ShareName:      smbCtx.ShareName,
+		DesiredAccess:  fileReadData,
+		ShareAccess:    fileShareRead,
+		MetadataHandle: encHandle,
+	})
+
+	// Second handle: destructive disposition, READ_DATA, SHARE_READ.
+	draft := makeDraftWithShareAccess(t, tree, requesterAuth, rootHandle, existingFile, fname,
+		fileReadData, fileShareRead, disposition, action)
+	resp := h.completeCreateAfterBreak(smbCtx, draft)
+	if resp.Status != types.StatusSharingViolation {
+		t.Fatalf("disp=%d with SHARE_READ vs existing SHARE_READ-only holder: status = 0x%08x, expected STATUS_SHARING_VIOLATION (0x%08x)",
+			disposition, uint32(resp.Status), uint32(types.StatusSharingViolation))
+	}
+}
+
+// TestCreate_SupersedeWithReadShareConflictsExistingHolder covers
+// smb2.acls.OVERWRITE_READ_ONLY_FILE sharing_tcases SUPERSEDE arm (#575) at
+// samba 4.22.6 source4/torture/smb2/acls.c:3175. The destructive disposition
+// implicitly requires FILE_WRITE_DATA, which conflicts with an existing
+// SHARE_READ-only handle.
+func TestCreate_SupersedeWithReadShareConflictsExistingHolder(t *testing.T) {
+	runDestructiveShareViolationCase(t, "supersede_share.txt", types.FileSupersede, types.FileSuperseded)
+}
+
+// TestCreate_OverwriteWithReadShareConflictsExistingHolder covers the
+// OVERWRITE arm of the same sharing_tcases loop (#575).
+func TestCreate_OverwriteWithReadShareConflictsExistingHolder(t *testing.T) {
+	runDestructiveShareViolationCase(t, "overwrite_share.txt", types.FileOverwrite, types.FileOverwritten)
+}
+
+// TestCreate_OverwriteIfWithReadShareConflictsExistingHolder covers the
+// OVERWRITE_IF arm of the same sharing_tcases loop (#575).
+func TestCreate_OverwriteIfWithReadShareConflictsExistingHolder(t *testing.T) {
+	runDestructiveShareViolationCase(t, "overwriteif_share.txt", types.FileOverwriteIf, types.FileOverwritten)
+}
+
+// TestCreate_OpenWithReadShareDoesNotConflictExistingHolder is the negative
+// control for #575: a non-destructive disposition (FILE_OPEN) with the same
+// READ_DATA + SHARE_READ shape against a SHARE_READ-only holder must succeed,
+// because the disposition-implied FILE_WRITE_DATA fold does not fire and the
+// raw DesiredAccess carries no write requirement.
+func TestCreate_OpenWithReadShareDoesNotConflictExistingHolder(t *testing.T) {
+	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
+	tree := &TreeConnection{TreeID: smbCtx.TreeID, SessionID: smbCtx.SessionID, ShareName: smbCtx.ShareName}
+	h.StoreTree(tree)
+
+	requesterUID := uint32(2001)
+	requesterSID := "S-1-5-21-1-2-3-2001"
+	requesterGID := uint32(2001)
+	sidStr := requesterSID
+	requesterAuth := &metadata.AuthContext{
+		Context: context.Background(),
+		Identity: &metadata.Identity{
+			UID: &requesterUID,
+			GID: &requesterGID,
+			SID: &sidStr,
+		},
+	}
+	fullAccessACL := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        "sid:" + requesterSID,
+				AccessMask: acl.ACE4_READ_DATA | acl.ACE4_WRITE_DATA | acl.ACE4_READ_ATTRIBUTES | acl.ACE4_SYNCHRONIZE,
+			},
+		},
+	}
+	existingFile, err := rt.GetMetadataService().CreateFile(rootAuth, rootHandle, "open_share.txt",
+		&metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o777,
+			UID:  requesterUID,
+			GID:  requesterGID,
+			ACL:  fullAccessACL,
+		})
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+
+	const (
+		fileReadData  uint32 = 0x00000001
+		fileShareRead uint32 = 0x01
+	)
+	encHandle, err := metadata.EncodeFileHandle(existingFile)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+	h.StoreOpenFile(&OpenFile{
+		FileID:         h.GenerateFileID(),
+		TreeID:         smbCtx.TreeID,
+		SessionID:      smbCtx.SessionID,
+		Path:           "open_share.txt",
+		ShareName:      smbCtx.ShareName,
+		DesiredAccess:  fileReadData,
+		ShareAccess:    fileShareRead,
+		MetadataHandle: encHandle,
+	})
+
+	draft := makeDraftWithShareAccess(t, tree, requesterAuth, rootHandle, existingFile, "open_share.txt",
+		fileReadData, fileShareRead, types.FileOpen, types.FileOpened)
+	resp := h.completeCreateAfterBreak(smbCtx, draft)
+	if resp.Status != types.StatusSuccess {
+		t.Fatalf("FILE_OPEN READ_DATA + SHARE_READ vs SHARE_READ holder: status = 0x%08x, expected STATUS_SUCCESS",
+			uint32(resp.Status))
+	}
+}
+
 // TestCreate_OpenRestrictedFileForRead_Succeeds is the positive control for
 // #565: the same READ-only DACL allows FILE_OPEN with DesiredAccess=READ_DATA
 // (the spec test's first row at acls.c:3088). Guards against the
