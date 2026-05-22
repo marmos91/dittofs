@@ -340,3 +340,250 @@ func TestCheckFileAccess_DenyErrorIsStoreError(t *testing.T) {
 	}
 	require.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
 }
+
+// TestCheckFileAccessWithParent_DeleteOverrideViaParentDeleteChild covers
+// issue #547: when a file's own DACL denies DELETE but the parent directory
+// grants FILE_DELETE_CHILD to the caller, DELETE on the open must be
+// granted (MS-FSA §2.1.4.13, mirrors Samba parent_override_delete in
+// source3/smbd/open.c).
+//
+// Without this override, smbtorture's smb2_deltree algorithm cannot recover
+// from a prior subtest that left a restrictive DACL on a child file, and
+// the entire acls.* cluster errors at setup_dir with "Unable to deltree".
+func TestCheckFileAccessWithParent_DeleteOverrideViaParentDeleteChild(t *testing.T) {
+	f := newTestFixture(t)
+
+	requesterUID := uint32(1001)
+	requesterSID := "S-1-5-21-1-2-3-2001"
+
+	// Parent dir DACL grants FILE_DELETE_CHILD (and basic read) to the
+	// requester. This is what synthesize.go::rwxToFullMask produces for the
+	// owner of a dir with mode-bit `w`.
+	parentACL := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        "sid:" + requesterSID,
+				AccessMask: acl.ACE4_READ_DATA | acl.ACE4_DELETE_CHILD | acl.ACE4_SYNCHRONIZE,
+			},
+		},
+	}
+	parentCreated, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "deldir",
+		&metadata.FileAttr{
+			Type: metadata.FileTypeDirectory,
+			Mode: 0o755,
+			UID:  requesterUID,
+			GID:  1001,
+			ACL:  parentACL,
+		})
+	require.NoError(t, err)
+
+	// Build the child File directly (avoiding CreateFile which would apply
+	// parent ACL inheritance and replace the child's DACL). CheckFileAccess
+	// only reads File fields, so an in-memory File suffices.
+	childACL := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        "sid:" + requesterSID,
+				AccessMask: acl.ACE4_READ_DATA | acl.ACE4_READ_ATTRIBUTES | acl.ACE4_SYNCHRONIZE,
+			},
+		},
+	}
+	childCreated := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o644,
+			UID:  requesterUID,
+			GID:  1001,
+			ACL:  childACL,
+		},
+	}
+
+	authCtx := f.authContext(requesterUID, 1001)
+	authCtx.Identity.SID = strPtr(requesterSID)
+
+	// Without parent: file's own DACL denies DELETE.
+	_, err = f.service.CheckFileAccess(childCreated, authCtx, rightDelete)
+	require.Error(t, err)
+	var storeErr *metadata.StoreError
+	require.ErrorAs(t, err, &storeErr)
+	require.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+
+	// With parent: FILE_DELETE_CHILD on parent grants DELETE on the open.
+	granted, err := f.service.CheckFileAccessWithParent(childCreated, parentCreated, authCtx, rightDelete)
+	require.NoError(t, err)
+	require.Equal(t, rightDelete, granted)
+}
+
+// TestCheckFileAccessWithParent_OverrideDoesNotApplyToNonDeleteBits ensures
+// the parent FILE_DELETE_CHILD override is scoped to DELETE only. Other
+// rights denied by the file's DACL must remain denied even when the parent
+// would otherwise grant broad access.
+func TestCheckFileAccessWithParent_OverrideDoesNotApplyToNonDeleteBits(t *testing.T) {
+	f := newTestFixture(t)
+
+	requesterUID := uint32(1001)
+	requesterSID := "S-1-5-21-1-2-3-2001"
+
+	// Parent dir grants FULL access including FILE_DELETE_CHILD.
+	parentACL := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        "sid:" + requesterSID,
+				AccessMask: 0xFFFFFFFF,
+			},
+		},
+	}
+	parentCreated, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "broadparent",
+		&metadata.FileAttr{
+			Type: metadata.FileTypeDirectory,
+			Mode: 0o755,
+			UID:  requesterUID,
+			GID:  1001,
+			ACL:  parentACL,
+		})
+	require.NoError(t, err)
+
+	// Child file denies WRITE.
+	childACL := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        "sid:" + requesterSID,
+				AccessMask: acl.ACE4_READ_DATA | acl.ACE4_SYNCHRONIZE,
+			},
+		},
+	}
+	childCreated := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o644,
+			UID:  requesterUID,
+			GID:  1001,
+			ACL:  childACL,
+		},
+	}
+
+	authCtx := f.authContext(requesterUID, 1001)
+	authCtx.Identity.SID = strPtr(requesterSID)
+
+	// WRITE alone — parent override is delete-only; must still deny.
+	_, err = f.service.CheckFileAccessWithParent(childCreated, parentCreated, authCtx, rightWriteData)
+	require.Error(t, err)
+
+	// DELETE + WRITE — DELETE is granted via parent, WRITE is not → still deny.
+	_, err = f.service.CheckFileAccessWithParent(childCreated, parentCreated, authCtx, rightDelete|rightWriteData)
+	require.Error(t, err)
+}
+
+// TestCheckFileAccessWithParent_NullParentDACLGrantsDelete pins MS-DTYP
+// §2.5.3: a NULL DACL on the parent grants every right to every principal,
+// including FILE_DELETE_CHILD, so the parent override grants DELETE on the
+// child. This is the load-bearing case for smbtorture deltree recovery —
+// new dirs in DittoFS are created without an explicit ACL, so parent.ACL
+// is nil for most filesystem state.
+func TestCheckFileAccessWithParent_NullParentDACLGrantsDelete(t *testing.T) {
+	f := newTestFixture(t)
+
+	requesterUID := uint32(1001)
+	requesterSID := "S-1-5-21-1-2-3-2001"
+
+	// Parent: created with no explicit ACL → parent.ACL is nil.
+	parentCreated, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "nullacldir",
+		&metadata.FileAttr{
+			Type: metadata.FileTypeDirectory,
+			Mode: 0o755,
+			UID:  requesterUID,
+			GID:  1001,
+		})
+	require.NoError(t, err)
+	require.Nil(t, parentCreated.ACL, "parent ACL must be nil for this scenario")
+
+	// Child: restrictive DACL denying DELETE.
+	childACL := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        "sid:" + requesterSID,
+				AccessMask: acl.ACE4_READ_DATA | acl.ACE4_SYNCHRONIZE,
+			},
+		},
+	}
+	childCreated := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o644,
+			UID:  requesterUID,
+			GID:  1001,
+			ACL:  childACL,
+		},
+	}
+
+	authCtx := f.authContext(requesterUID, 1001)
+	authCtx.Identity.SID = strPtr(requesterSID)
+
+	granted, err := f.service.CheckFileAccessWithParent(childCreated, parentCreated, authCtx, rightDelete)
+	require.NoError(t, err)
+	require.Equal(t, rightDelete, granted)
+}
+
+// TestCheckFileAccessWithParent_NoOverrideWhenParentLacksDeleteChild verifies
+// that when the parent's own DACL also lacks FILE_DELETE_CHILD for the
+// caller, the override does NOT grant DELETE — the file remains undeletable.
+// This pins the Windows "delete via parent" rule: parent permission, not just
+// parent presence, is what overrides.
+func TestCheckFileAccessWithParent_NoOverrideWhenParentLacksDeleteChild(t *testing.T) {
+	f := newTestFixture(t)
+
+	requesterUID := uint32(1001)
+	requesterSID := "S-1-5-21-1-2-3-2001"
+
+	parentACL := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        "sid:" + requesterSID,
+				AccessMask: acl.ACE4_READ_DATA | acl.ACE4_SYNCHRONIZE,
+			},
+		},
+	}
+	parentCreated, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "lockedparent",
+		&metadata.FileAttr{
+			Type: metadata.FileTypeDirectory,
+			Mode: 0o755,
+			UID:  requesterUID,
+			GID:  1001,
+			ACL:  parentACL,
+		})
+	require.NoError(t, err)
+
+	childACL := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        "sid:" + requesterSID,
+				AccessMask: acl.ACE4_READ_DATA | acl.ACE4_SYNCHRONIZE,
+			},
+		},
+	}
+	childCreated := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o644,
+			UID:  requesterUID,
+			GID:  1001,
+			ACL:  childACL,
+		},
+	}
+
+	authCtx := f.authContext(requesterUID, 1001)
+	authCtx.Identity.SID = strPtr(requesterSID)
+
+	_, err = f.service.CheckFileAccessWithParent(childCreated, parentCreated, authCtx, rightDelete)
+	require.Error(t, err)
+	var storeErr *metadata.StoreError
+	require.ErrorAs(t, err, &storeErr)
+	require.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+}

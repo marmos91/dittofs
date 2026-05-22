@@ -563,9 +563,41 @@ const (
 // and any requested bit is denied. Granted is always populated (even on
 // error) so callers can log what was/wasn't granted.
 //
+// This wrapper preserves the legacy "no parent" signature for call sites that
+// don't have a parent handle in scope (root-handle access checks). CREATE-path
+// callers with a parent in scope should use CheckFileAccessWithParent so the
+// parent's FILE_DELETE_CHILD can override a DELETE denial on the file's own
+// DACL — see that function's documentation for the spec citation.
+//
 // GENERIC_*, OWNER_RIGHTS, and ACCESSBASED enumeration are intentionally
 // out of scope here — those are tracked separately under #530/#531/#532.
 func (s *MetadataService) CheckFileAccess(file *File, authCtx *AuthContext, desiredAccess uint32) (uint32, error) {
+	return s.CheckFileAccessWithParent(file, nil, authCtx, desiredAccess)
+}
+
+// CheckFileAccessWithParent extends CheckFileAccess with the standard
+// Windows "delete via parent" override per MS-FSA §2.1.4.13 / §2.1.5.1.2.4:
+// when the file's own DACL denies DELETE but the parent directory grants
+// FILE_DELETE_CHILD (ACE4_DELETE_CHILD, 0x40) to the caller, DELETE is
+// granted on the open. This mirrors Samba's parent_override_delete() in
+// source3/smbd/open.c, which cites
+// https://blogs.msdn.com/oldnewthing/archive/2004/06/04/148426.aspx —
+// "Why does this user with administrative rights get an access-denied
+// error when trying to delete a file?"
+//
+// Without this override, smbtorture's smb2_deltree algorithm cannot remove
+// test files whose own DACL was set restrictively by a prior subtest,
+// because deltree's recursive unlink opens each child with
+// SEC_STD_DELETE | FILE_DELETE_ON_CLOSE | FILE_NON_DIRECTORY_FILE. The
+// owner of the parent dir always has DELETE_CHILD via the synthesized
+// owner-rwx mask (acl/synthesize.go::rwxToFullMask), so the override
+// reliably succeeds for setup_dir's intended cleanup.
+//
+// The override only applies to the DELETE bit. All other bits remain
+// gated by the file's own DACL.
+//
+// When parent is nil, behavior is identical to CheckFileAccess.
+func (s *MetadataService) CheckFileAccessWithParent(file *File, parent *File, authCtx *AuthContext, desiredAccess uint32) (uint32, error) {
 	maximumAllowed := desiredAccess&accessMaskMaximumAllowed != 0
 	explicit := desiredAccess &^ accessMaskMaximumAllowed
 
@@ -608,6 +640,22 @@ func (s *MetadataService) CheckFileAccess(file *File, authCtx *AuthContext, desi
 		probe &^= bit
 	}
 
+	// Parent override for DELETE: when the file's own DACL denied DELETE but
+	// the parent directory grants FILE_DELETE_CHILD to the caller, grant
+	// DELETE here (MS-FSA §2.1.4.13 / Samba parent_override_delete). The
+	// override fires only when DELETE was actually requested and not yet
+	// granted, and only when a parent file is in scope. This is the same
+	// Windows semantics that lets administrators delete files with no DELETE
+	// in their own DACL via the containing folder's permissions.
+	//
+	// Null parent DACL (parent.ACL == nil) follows MS-DTYP §2.5.3: a NULL DACL
+	// grants every right to every principal, so the override applies.
+	if explicit&acl.ACE4_DELETE != 0 && granted&acl.ACE4_DELETE == 0 && parent != nil {
+		if parentGrantsDeleteChild(parent, authCtx) {
+			granted |= acl.ACE4_DELETE
+		}
+	}
+
 	if maximumAllowed {
 		// MAXIMUM_ALLOWED never denies. Compute the full set of bits the
 		// requester is allowed (independent of what they asked for, minus the
@@ -620,6 +668,13 @@ func (s *MetadataService) CheckFileAccess(file *File, authCtx *AuthContext, desi
 				effective |= bit
 			}
 		}
+		// Apply parent FILE_DELETE_CHILD override to the MAXIMUM_ALLOWED
+		// effective-rights set too so the open's GrantedAccess (which the
+		// caller propagates into Open.GrantedAccess and surfaces via MxAc)
+		// reflects the same Windows semantics on MaxAccess queries.
+		if parent != nil && parentGrantsDeleteChild(parent, authCtx) {
+			effective |= acl.ACE4_DELETE
+		}
 		return effective | granted, nil
 	}
 
@@ -631,6 +686,27 @@ func (s *MetadataService) CheckFileAccess(file *File, authCtx *AuthContext, desi
 		}
 	}
 	return granted, nil
+}
+
+// parentGrantsDeleteChild decides whether a parent directory grants
+// FILE_DELETE_CHILD (ACE4_DELETE_CHILD) to the requester for the purposes
+// of the MS-FSA §2.1.4.13 delete-via-parent override. Null DACL on the
+// parent grants everything (MS-DTYP §2.5.3). Root and nil-identity callers
+// also bypass — consistent with the rest of CheckFileAccessWithParent.
+func parentGrantsDeleteChild(parent *File, authCtx *AuthContext) bool {
+	if parent == nil {
+		return false
+	}
+	// Null DACL: grant per MS-DTYP §2.5.3.
+	if parent.ACL == nil {
+		return true
+	}
+	// Root bypass: identical to the file-side root short-circuit.
+	if authCtx != nil && authCtx.Identity != nil && authCtx.Identity.UID != nil && *authCtx.Identity.UID == 0 {
+		return true
+	}
+	parentEvalCtx := buildFileAccessEvalContext(parent, authCtx)
+	return acl.Evaluate(parent.ACL, parentEvalCtx, acl.ACE4_DELETE_CHILD)
 }
 
 // buildFileAccessEvalContext mirrors evaluateACLPermissions's EvaluateContext
