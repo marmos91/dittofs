@@ -362,9 +362,13 @@ func evaluateACLPermissions(
 ) Permission {
 	// Handle anonymous/no identity
 	if identity == nil || identity.UID == nil {
-		// Evaluate as EVERYONE@ only
+		// Evaluate as EVERYONE@ only. FileOwnerUID is forced to the
+		// AnonymousFileOwnerUID sentinel so the anonymous requester's
+		// zero-valued UID cannot collapse onto a root-owned file's owner
+		// and pick up OWNER@ ACEs plus the MS-DTYP §2.5.3.2 owner-implicit
+		// RC|WRITE_DAC grant. See #540.
 		evalCtx := &acl.EvaluateContext{
-			FileOwnerUID: file.UID,
+			FileOwnerUID: acl.AnonymousFileOwnerUID,
 			FileOwnerGID: file.GID,
 		}
 		return evaluateWithACL(file.ACL, evalCtx, requested, shareOpts)
@@ -762,8 +766,12 @@ func parentGrantsDeleteChild(parent *File, authCtx *AuthContext) bool {
 // produce against the same file. Kept private to the metadata package.
 func buildFileAccessEvalContext(file *File, authCtx *AuthContext) *acl.EvaluateContext {
 	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
+		// FileOwnerUID is forced to the AnonymousFileOwnerUID sentinel so
+		// the anonymous requester's zero-valued UID cannot collapse onto a
+		// root-owned file's owner and pick up OWNER@ ACEs plus the
+		// MS-DTYP §2.5.3.2 owner-implicit RC|WRITE_DAC grant. See #540.
 		return &acl.EvaluateContext{
-			FileOwnerUID: file.UID,
+			FileOwnerUID: acl.AnonymousFileOwnerUID,
 			FileOwnerGID: file.GID,
 		}
 	}

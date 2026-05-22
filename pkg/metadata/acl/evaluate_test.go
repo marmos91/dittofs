@@ -938,3 +938,84 @@ func TestHasTakeOwnershipPrivilege(t *testing.T) {
 		})
 	}
 }
+
+// anonRootOwnedCtx returns the EvaluateContext shape callers MUST produce
+// for an anonymous (unauthenticated) requester probing a root-owned (UID 0)
+// file: requester UID == 0 (Go zero value) and FileOwnerUID ==
+// AnonymousFileOwnerUID. The sentinel breaks the UID == FileOwnerUID arm
+// so OWNER@ matching and the MS-DTYP §2.5.3.2 owner-implicit pass both
+// miss. See #540.
+func anonRootOwnedCtx() *EvaluateContext {
+	return &EvaluateContext{
+		UID:          0,
+		FileOwnerUID: AnonymousFileOwnerUID,
+		FileOwnerGID: 0,
+	}
+}
+
+// TestEvaluate_Anonymous_NoOwnerMatchOnRootOwnedFile is the regression test
+// for #540: an anonymous requester (Go zero-value UID == 0) probing a
+// root-owned file (FileOwnerUID == 0 in the raw file record) MUST NOT match
+// OWNER@ ACEs. The AnonymousFileOwnerUID sentinel makes this hold.
+func TestEvaluate_Anonymous_NoOwnerMatchOnRootOwnedFile(t *testing.T) {
+	a := &ACL{
+		ACEs: []ACE{
+			// Grant the file owner full control. Without the sentinel,
+			// anonymous would collapse onto OWNER@ and receive this mask.
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: 0xFFFFFFFF, Who: SpecialOwner},
+		},
+	}
+
+	ctx := anonRootOwnedCtx()
+	if Evaluate(a, ctx, ACE4_READ_DATA) {
+		t.Error("#540: anonymous must not match OWNER@ on root-owned file (READ_DATA)")
+	}
+	if Evaluate(a, ctx, ACE4_WRITE_DATA) {
+		t.Error("#540: anonymous must not match OWNER@ on root-owned file (WRITE_DATA)")
+	}
+	if Evaluate(a, ctx, ACE4_WRITE_ACL) {
+		t.Error("#540: anonymous must not match OWNER@ on root-owned file (WRITE_DAC)")
+	}
+}
+
+// TestEvaluate_Anonymous_NoOwnerImplicitGrantOnRootOwnedFile is the second
+// half of the #540 regression: even with no OWNER@ ACE at all, the MS-DTYP
+// §2.5.3.2 owner-implicit pass would silently hand RC|WRITE_DAC to anonymous
+// on every root-owned object. The AnonymousFileOwnerUID sentinel blocks the
+// implicit pass via the requesterIsOwner predicate.
+func TestEvaluate_Anonymous_NoOwnerImplicitGrantOnRootOwnedFile(t *testing.T) {
+	// Empty DACL — MS-DTYP §2.5.3 "deny all" except for the §2.5.3.2
+	// owner-implicit grants. Anonymous must receive nothing.
+	a := &ACL{ACEs: nil}
+
+	ctx := anonRootOwnedCtx()
+	if Evaluate(a, ctx, ACE4_READ_ACL) {
+		t.Error("#540: anonymous must not receive implicit READ_CONTROL on root-owned file")
+	}
+	if Evaluate(a, ctx, ACE4_WRITE_ACL) {
+		t.Error("#540: anonymous must not receive implicit WRITE_DAC on root-owned file")
+	}
+	if Evaluate(a, ctx, ACE4_WRITE_OWNER) {
+		t.Error("#540: anonymous must not receive implicit WRITE_OWNER on root-owned file")
+	}
+}
+
+// TestEvaluate_Anonymous_EveryoneStillMatches confirms the sentinel only
+// suppresses owner-arm matching; EVERYONE@ ACEs still grant access to the
+// anonymous requester, which is the intended behavior.
+func TestEvaluate_Anonymous_EveryoneStillMatches(t *testing.T) {
+	a := &ACL{
+		ACEs: []ACE{
+			{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialEveryone},
+		},
+	}
+
+	ctx := anonRootOwnedCtx()
+	if !Evaluate(a, ctx, ACE4_READ_DATA) {
+		t.Error("#540: EVERYONE@ allow must still match an anonymous requester")
+	}
+	// But nothing beyond what EVERYONE@ grants.
+	if Evaluate(a, ctx, ACE4_WRITE_DATA) {
+		t.Error("#540: anonymous must not receive bits outside the EVERYONE@ grant")
+	}
+}

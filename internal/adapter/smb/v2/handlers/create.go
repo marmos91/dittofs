@@ -1083,17 +1083,15 @@ func computeMaximalAccess(file *metadata.File, authCtx *metadata.AuthContext) ui
 // subsequent operations against the same handle.
 //
 // Anonymous (no Identity or no UID) sessions produce a context with only
-// the file's owner UID/GID populated. EVERYONE@ ACEs still match. Note that
-// OWNER@/GROUP@ will spuriously match when the file is owned by uid/gid 0
-// (the zero-value default in the returned context); this matches the legacy
-// behavior of metadata.evaluateACLPermissions and is acceptable today because
-// anonymous SMB sessions are not granted access at the share level. Tracked
-// as a future hardening item: use a sentinel UID/GID that cannot collide
-// with a real owner.
+// the file's owner GID populated and FileOwnerUID forced to
+// acl.AnonymousFileOwnerUID. The sentinel prevents the requester's
+// zero-valued UID from collapsing onto a root-owned file's owner — without
+// it, anonymous OWNER@ matches and pulls in the MS-DTYP §2.5.3.2 implicit
+// RC|WRITE_DAC grant on every root-owned object. See #540.
 func buildMaxAccessEvalContext(file *metadata.File, authCtx *metadata.AuthContext) *acl.EvaluateContext {
 	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
 		return &acl.EvaluateContext{
-			FileOwnerUID: file.UID,
+			FileOwnerUID: acl.AnonymousFileOwnerUID,
 			FileOwnerGID: file.GID,
 		}
 	}

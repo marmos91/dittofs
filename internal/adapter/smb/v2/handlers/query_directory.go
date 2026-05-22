@@ -1087,7 +1087,13 @@ func buildEnumEvalContext(attr *metadata.FileAttr, authCtx *metadata.AuthContext
 		FileOwnerUID: attr.UID,
 		FileOwnerGID: attr.GID,
 	}
-	if authCtx == nil || authCtx.Identity == nil {
+	// Anonymous (no Identity or no UID): force FileOwnerUID to the
+	// AnonymousFileOwnerUID sentinel so the requester's zero-valued UID
+	// cannot collapse onto a root-owned entry's owner and pick up OWNER@
+	// ACEs plus the MS-DTYP §2.5.3.2 owner-implicit grant during ABE
+	// visibility checks. See #540.
+	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
+		evalCtx.FileOwnerUID = acl.AnonymousFileOwnerUID
 		return evalCtx
 	}
 	id := authCtx.Identity

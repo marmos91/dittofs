@@ -55,6 +55,20 @@ func isAdminSID(sid string) bool {
 // is by numeric UID/GID, not the username-form evalCtx.Who.
 const localDomainSuffix = "@localdomain"
 
+// AnonymousFileOwnerUID is the sentinel callers must use for
+// EvaluateContext.FileOwnerUID when building a context for an anonymous /
+// unauthenticated requester. It guarantees the OWNER@ identity arm
+// (UID == FileOwnerUID) and the MS-DTYP §2.5.3.2 owner-implicit RC|WRITE_DAC
+// pass both miss, regardless of the file's real owner.
+//
+// Without this sentinel, an anonymous requester (Go zero-value UID == 0)
+// matches OWNER@ on every root-owned file and receives the implicit
+// READ_CONTROL|WRITE_DAC grant on top — handing privileged DACL-edit rights
+// to unauthenticated sessions. 0xFFFFFFFF mirrors the "nobody"/invalid-UID
+// convention already used in file_modify.go and validation.go and is outside
+// any realistic POSIX UID range. See #540.
+const AnonymousFileOwnerUID uint32 = ^uint32(0)
+
 // EvaluateContext carries the requestor's identity and the file's
 // owner/group for dynamic OWNER@/GROUP@/EVERYONE@ resolution.
 type EvaluateContext struct {
