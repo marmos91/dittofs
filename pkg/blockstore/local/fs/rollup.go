@@ -133,14 +133,20 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 // one file's rollup never stalls another, and (d) pressure-channel
 // blocking only trips when the log budget is exceeded.
 //
-// CommitChunks atomic ordering (D-12):
+// CommitChunks atomic ordering (D-12, reordered #588):
 //  1. For each emitted chunk: StoreChunk(hash, data) — idempotent, fsynced.
-//  2. rollupStore.SetRollupOffset(payloadID, targetPos) — atomic-monotone;
+//  2. ObjectIDPersister(payloadID, blocks, objectID) — writes per-chunk
+//     FileBlock manifest rows + FileAttr.Blocks. MUST land before
+//     SetRollupOffset so a manifest-persist failure leaves rollup_offset
+//     UNCHANGED and the next pass retries; the alternative (persister
+//     after SetRollupOffset) silently lost the manifest while
+//     rollup_offset already advanced past the records.
+//  3. rollupStore.SetRollupOffset(payloadID, targetPos) — atomic-monotone;
 //     on ErrRollupOffsetRegression, log at Debug and return nil (benign).
-//  3. advanceRollupOffset(logFile, targetPos) — idempotent derived-state.
+//  4. advanceRollupOffset(logFile, targetPos) — idempotent derived-state.
 //     If it fails, metadata is already the source of truth and recovery
 //     (plan 07) will reconcile the header on next boot.
-//  4. tree.ConsumeUpTo + logBytesTotal.Add(-reclaimed) + pressureCh signal.
+//  5. tree.ConsumeUpTo + logBytesTotal.Add(-reclaimed) + pressureCh signal.
 func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	if bc.isClosed() {
 		return nil

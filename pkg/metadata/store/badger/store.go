@@ -201,25 +201,6 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		opts = opts.WithLoggingLevel(badger.WARNING) // Reduce log noise
 		opts = opts.WithCompression(options.None)    // Metadata is small, compression overhead not worth it
 
-		// Crash-consistency (#583): fsync every committed transaction.
-		// Default badger.DefaultOptions has SyncWrites=false, which means
-		// committed Updates return as soon as the value lands in the
-		// memtable + WAL buffer — NOT after the WAL is fsynced. A `kill
-		// -9` (or power loss) between flush boundaries loses every
-		// metadata write since the last sync, including rolled-up
-		// FileBlock rows and FileAttr.Blocks manifests. Without those
-		// rows the engine's read path falls through to the sparse-block
-		// zero-fill branch (engine.go:1072 `clear(dest)`), returning
-		// silent zeros for files whose CAS chunks are still on disk.
-		//
-		// Performance cost: every metadata Update transaction now fsyncs.
-		// In our deployment profile (NFSv3/SMB workloads with high write
-		// concurrency) this is acceptable because (a) badger amortizes
-		// fsyncs across the transactions in a single commit batch and
-		// (b) DittoFS already requires durability at every COMMIT /
-		// FILE_FLUSH so the cost was paid elsewhere previously.
-		opts = opts.WithSyncWrites(true)
-
 		// Configure cache sizes (with production-ready defaults if not specified)
 		// Production NFS workloads require larger caches to maintain high hit ratios:
 		// - With 256MB caches: ~8% hit ratio (cache thrashing, poor performance)
@@ -237,17 +218,32 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		opts = opts.WithIndexCacheSize(indexCacheMB << 20) // Convert MB to bytes
 	}
 
-	// Crash-consistency (#583): enforce SyncWrites=true on every code
-	// path. The custom-options branch above takes the caller's value as-is,
-	// so a config passed in by an operator wishing to tweak (say) cache
-	// sizes could accidentally re-disable crash durability by inheriting
-	// the badger default SyncWrites=false. Override here unconditionally.
-	// If a future workload needs to opt out (e.g. dev/test harnesses
-	// favoring perf over durability) a dedicated config flag should be
-	// introduced rather than relying on badger's permissive default.
-	if !opts.SyncWrites {
-		opts = opts.WithSyncWrites(true)
-	}
+	// Crash-consistency (#583, enforced #588): force SyncWrites=true on
+	// every code path — default-options AND custom-options. Default
+	// badger.DefaultOptions has SyncWrites=false, which means each
+	// committed Update returns as soon as the value lands in the
+	// memtable + WAL buffer — NOT after the WAL is fsynced. A `kill -9`
+	// (or power loss) between flush boundaries loses every metadata
+	// write since the last sync, including rolled-up FileBlock rows
+	// and FileAttr.Blocks manifests. Without those rows the engine's
+	// read path falls through to the sparse-block zero-fill branch
+	// (engine.go:1072 `clear(dest)`), returning silent zeros for files
+	// whose CAS chunks are still on disk.
+	//
+	// Override here UNCONDITIONALLY so an operator tuning unrelated
+	// knobs via BadgerOptions cannot accidentally re-disable crash
+	// durability by inheriting badger's default SyncWrites=false. If a
+	// future workload needs to opt out (e.g. dev/test harnesses
+	// favoring perf over durability) a dedicated config flag should
+	// be introduced rather than relying on badger's permissive default.
+	//
+	// Performance cost: every metadata Update transaction now fsyncs.
+	// In our deployment profile (NFSv3/SMB workloads with high write
+	// concurrency) this is acceptable because (a) badger amortizes
+	// fsyncs across the transactions in a single commit batch and
+	// (b) DittoFS already requires durability at every COMMIT /
+	// FILE_FLUSH so the cost was paid elsewhere previously.
+	opts = opts.WithSyncWrites(true)
 
 	// Open BadgerDB
 	db, err := badger.Open(opts)
