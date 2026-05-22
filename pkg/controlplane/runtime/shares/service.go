@@ -57,10 +57,10 @@ type Share struct {
 
 	// AccessBasedEnumeration enables Windows access-based enumeration on the
 	// share (SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM per MS-SRVS). When
-	// true, TREE_CONNECT advertises
-	// SMB2_SHARE_CAP_ACCESS_BASED_DIRECTORY_ENUM (MS-SMB2 §2.2.10) and the
-	// SMB QUERY_DIRECTORY handler filters out entries the caller cannot
-	// read. Default false (refs #532).
+	// true, TREE_CONNECT sets SMB2_SHAREFLAG_ACCESS_BASED_DIRECTORY_ENUM in
+	// ShareFlags (MS-SMB2 §2.2.10) and the SMB QUERY_DIRECTORY handler
+	// filters out entries the caller cannot read. Default false (refs #532,
+	// #549).
 	AccessBasedEnumeration bool
 
 	// NFS-specific options

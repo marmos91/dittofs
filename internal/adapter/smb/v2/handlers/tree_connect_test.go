@@ -443,6 +443,16 @@ func TestTreeConnect_ShareEncryptDataConstant(t *testing.T) {
 	}
 }
 
+// Refs #549: SMB2_SHAREFLAG_ACCESS_BASED_DIRECTORY_ENUM must be 0x00000800 in
+// the ShareFlags field per MS-SMB2 §2.2.10. PR #536 previously emitted 0x80 in
+// the Capabilities field, which is SMB2_SHARE_CAP_ASYMMETRIC and unrelated;
+// smbtorture smb2.acls.ACCESSBASED reads ShareFlags via smb2cli_tcon_flags.
+func TestTreeConnect_ShareFlagAccessBasedEnumConstant(t *testing.T) {
+	if SMB2ShareFlagAccessBasedDirectoryEnum != 0x00000800 {
+		t.Errorf("SMB2ShareFlagAccessBasedDirectoryEnum = 0x%08x, expected 0x00000800", SMB2ShareFlagAccessBasedDirectoryEnum)
+	}
+}
+
 func TestTreeConnect_EncryptedShareFlagsInResponse(t *testing.T) {
 	// Test that building a tree connect response with share flags at offset 4
 	// correctly encodes the ENCRYPT_DATA flag.
