@@ -606,8 +606,8 @@ func TestQueryDirectory_SingleEntry_PaginatesLargeDirectory(t *testing.T) {
 }
 
 // TestNormalizeSearchPattern documents the "match all" normalization that
-// keeps spec-equivalent patterns ("", "*", "*.*") indistinguishable for the
-// purposes of the MS-SMB2 §3.3.5.18 pattern-change check.
+// keeps spec-equivalent patterns ("", "*", "*.*", "<") indistinguishable
+// for the purposes of the MS-SMB2 §3.3.5.18 pattern-change check.
 func TestNormalizeSearchPattern(t *testing.T) {
 	cases := []struct {
 		in, want string
@@ -615,6 +615,7 @@ func TestNormalizeSearchPattern(t *testing.T) {
 		{"", "*"},
 		{"*", "*"},
 		{"*.*", "*"},
+		{"<", "*"},
 		{"foo.txt", "foo.txt"},
 		{"*.txt", "*.txt"},
 	}

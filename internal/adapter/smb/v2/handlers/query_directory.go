@@ -375,7 +375,7 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		return strings.ToLower(filteredEntries[i].Name) < strings.ToLower(filteredEntries[j].Name)
 	})
 
-	isWildcardSearch := req.FileName == "" || req.FileName == "*" || req.FileName == "*.*"
+	isWildcardSearch := req.FileName == "" || req.FileName == "*" || req.FileName == "*.*" || req.FileName == "<"
 
 	// Compute special entries count ("." and "..")
 	specialCount := 0
@@ -627,7 +627,7 @@ func encodeSingleDirEntry(infoClass types.FileInfoClass, name string, attr *meta
 // are returned unchanged.
 func normalizeSearchPattern(p string) string {
 	switch p {
-	case "", "*", "*.*":
+	case "", "*", "*.*", "<":
 		return "*"
 	}
 	return p
