@@ -217,7 +217,17 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	var grantedAccess uint32
 	var grantedComputed bool
 	if fileExists && existingFile != nil {
-		granted, err := metaSvc.CheckFileAccess(existingFile, authCtx, req.DesiredAccess)
+		// Fetch parent so CheckFileAccessWithParent can apply the
+		// FILE_DELETE_CHILD override per MS-FSA §2.1.4.13 (Samba
+		// parent_override_delete). Best-effort: a parent-lookup failure
+		// falls back to file-only DACL evaluation (nil parent is safe).
+		var parentFile *metadata.File
+		if parentHandle != nil {
+			if pf, err := metaSvc.GetFile(authCtx.Context, parentHandle); err == nil {
+				parentFile = pf
+			}
+		}
+		granted, err := metaSvc.CheckFileAccessWithParent(existingFile, parentFile, authCtx, req.DesiredAccess)
 		if err != nil {
 			logger.Debug("CREATE: DesiredAccess denied by DACL",
 				"path", filename,
