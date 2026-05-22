@@ -325,6 +325,16 @@ func calculatePermissions(
 		permBits = attr.Mode & 0x7
 	}
 
+	// DOS READONLY enforcement across protocols (NFS + SMB). modeDOSReadonly
+	// (0x100000) is the persistent SMB-set READONLY bit (preserved by
+	// modeMask in ApplyModeDefault). Gating on this bit alone is correct;
+	// modeDOSExplicit is masked off by ApplyModeDefault so cannot be relied
+	// upon at enforcement time. Without this, NFS clients bypass the
+	// READONLY semantics that SMB clients see via the DACL path.
+	if attr.Mode&0x100000 != 0 {
+		permBits &^= 0x2
+	}
+
 	// Map Unix permission bits to Permission flags
 	granted := CalculatePermissionsFromBits(permBits)
 

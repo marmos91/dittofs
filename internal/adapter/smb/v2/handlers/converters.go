@@ -46,6 +46,16 @@ const (
 	// handle close/reopen cycles.
 	modeDOSCompressed = uint32(0x40000)
 
+	// modeDOSReadonly tracks the DOS READONLY bit when DOS attributes have been
+	// explicitly set via SET_INFO FileBasicInformation. Storing READONLY in a
+	// high mode bit (rather than stripping owner-write from POSIX permissions)
+	// keeps the POSIX-derived DACL stable across attribute toggles — required
+	// by smbtorture smb2.winattr which captures the synthesized SD before any
+	// SET_INFO and asserts the ACEs are unchanged after each attribute round-trip
+	// (source4/torture/smb2/attr.c:365). Mirrors Samba's xattr-stored DOSMODE in
+	// source3/smbd/dosmode.c, which decouples DOS bits from POSIX mode.
+	modeDOSReadonly = uint32(0x100000)
+
 	// filetimeFreeze is the FILETIME sentinel value -1 (0xFFFFFFFFFFFFFFFF).
 	// Per MS-FSA 2.1.5.14.2: The object store MUST NOT change this attribute
 	// for this or subsequent operations on this handle.
@@ -116,6 +126,14 @@ func fileAttrToSMBAttributesInternal(attr *metadata.FileAttr, hidden bool) types
 	switch attr.Type {
 	case metadata.FileTypeDirectory:
 		attrs |= types.FileAttributeDirectory
+		// Per smbtorture smb2.winattr (source4/torture/smb2/attr.c:439):
+		// directories honour explicit DOS ARCHIVE round-trip when set via
+		// SET_INFO. When modeDOSExplicit is unset, directories report no
+		// ARCHIVE (matching MS-FSCC §2.6 — ARCHIVE on a directory is a
+		// client-managed bit, not server-default).
+		if attr.Mode&modeDOSExplicit != 0 && attr.Mode&modeDOSArchive != 0 {
+			attrs |= types.FileAttributeArchive
+		}
 	case metadata.FileTypeRegular:
 		// Per MS-FSCC, ARCHIVE is set by default for regular files. However,
 		// when DOS attributes have been explicitly set via SET_INFO, honour the
@@ -134,10 +152,24 @@ func fileAttrToSMBAttributesInternal(attr *metadata.FileAttr, hidden bool) types
 		// Special files appear as regular files (though they should be filtered out)
 	}
 
-	// Per MS-FSCC 2.6: FILE_ATTRIBUTE_READONLY is set when the file's
-	// Unix mode has no owner-write bit (mode & 0200 == 0).
-	// This reflects SET_INFO operations that applied READONLY.
-	if attr.Type == metadata.FileTypeRegular && (attr.Mode&0200) == 0 {
+	// Per MS-FSCC §2.6: FILE_ATTRIBUTE_READONLY round-trip via SET_INFO
+	// FileBasicInformation. We store the bit in modeDOSReadonly rather than
+	// stripping POSIX owner-write so the mode-synthesized DACL is stable —
+	// smb2.winattr (source4/torture/smb2/attr.c:365) verifies the DACL ACEs
+	// don't change across READONLY toggles. The legacy fallback (owner-write
+	// missing) is retained for files whose POSIX permissions were set out-of-band
+	// via NFS chmod or shell chmod — those must still report READONLY to SMB
+	// clients (matching Samba dosmode.c::dos_mode_from_sbuf).
+	if attr.Mode&modeDOSReadonly != 0 {
+		// SMB SET_INFO explicitly set READONLY (modeDOSReadonly persists
+		// across ApplyModeDefault per pkg/metadata.modeMask). modeDOSExplicit
+		// itself is masked off by ApplyModeDefault, so gating on it would
+		// silently lose READONLY after a CREATE-defaults round-trip.
+		attrs |= types.FileAttributeReadonly
+	} else if attr.Mode&modeDOSExplicit == 0 && attr.Type == metadata.FileTypeRegular && (attr.Mode&0200) == 0 {
+		// Legacy POSIX fallback for files whose owner-write bit was cleared
+		// out-of-band (NFS chmod, shell chmod). Skipped when modeDOSExplicit
+		// is set so SMB-managed attributes are not double-counted.
 		attrs |= types.FileAttributeReadonly
 	}
 
@@ -188,7 +220,19 @@ func FileAttrToSMBTimes(attr *metadata.FileAttr) (creation, access, write, chang
 // [MS-FSCC] 2.4.7. Populates creation, access, write, and change timestamps,
 // plus the SMB file attributes bitmask. Used by QUERY_INFO to respond to
 // FileBasicInformation queries from clients.
+//
+// Note: callers that have the filename available should prefer
+// FileAttrToFileBasicInfoWithName so the dot-prefix IsHiddenFile check applies.
 func FileAttrToFileBasicInfo(attr *metadata.FileAttr) *FileBasicInfo {
+	return FileAttrToFileBasicInfoWithName(attr, "")
+}
+
+// FileAttrToFileBasicInfoWithName is the name-aware variant of
+// FileAttrToFileBasicInfo: it applies IsHiddenFile so dot-prefixed entries
+// surface FILE_ATTRIBUTE_HIDDEN even when attr.Hidden was not explicitly set.
+// Required by smbtorture smb2.dosmode which creates ".dotfile" and asserts the
+// HIDDEN bit via FileBasicInformation (source4/torture/smb2/dosmode.c:158).
+func FileAttrToFileBasicInfoWithName(attr *metadata.FileAttr, name string) *FileBasicInfo {
 	creation, access, write, change := FileAttrToSMBTimes(attr)
 
 	return &FileBasicInfo{
@@ -196,7 +240,7 @@ func FileAttrToFileBasicInfo(attr *metadata.FileAttr) *FileBasicInfo {
 		LastAccessTime: access,
 		LastWriteTime:  write,
 		ChangeTime:     change,
-		FileAttributes: FileAttrToSMBAttributes(attr),
+		FileAttributes: FileAttrToSMBAttributesWithName(attr, name),
 	}
 }
 
@@ -223,7 +267,17 @@ func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *
 // [MS-FSCC] 2.4.27. Combines timestamps, allocation size, end of file, and attributes
 // into a single structure. This is a performance optimization for SMB2 CREATE since
 // clients can retrieve all open information in a single query instead of multiple calls.
+//
+// Note: callers that have the filename available should prefer
+// FileAttrToFileNetworkOpenInfoWithName so the dot-prefix IsHiddenFile check applies.
 func FileAttrToFileNetworkOpenInfo(attr *metadata.FileAttr) *FileNetworkOpenInfo {
+	return FileAttrToFileNetworkOpenInfoWithName(attr, "")
+}
+
+// FileAttrToFileNetworkOpenInfoWithName is the name-aware variant of
+// FileAttrToFileNetworkOpenInfo: it applies IsHiddenFile so dot-prefixed entries
+// surface FILE_ATTRIBUTE_HIDDEN.
+func FileAttrToFileNetworkOpenInfoWithName(attr *metadata.FileAttr, name string) *FileNetworkOpenInfo {
 	creation, access, write, change := FileAttrToSMBTimes(attr)
 	// Get appropriate size (MFsymlink size for symlinks)
 	size := getSMBSize(attr)
@@ -236,7 +290,7 @@ func FileAttrToFileNetworkOpenInfo(attr *metadata.FileAttr) *FileNetworkOpenInfo
 		ChangeTime:     change,
 		AllocationSize: allocationSize,
 		EndOfFile:      size,
-		FileAttributes: FileAttrToSMBAttributes(attr),
+		FileAttributes: FileAttrToSMBAttributesWithName(attr, name),
 	}
 }
 
@@ -452,8 +506,14 @@ func CreateOptionsToMetadataType(options types.CreateOptions, attrs types.FileAt
 
 // SMBModeFromAttrs converts SMB file attributes to a Unix permission mode for file
 // creation. Directories default to 0755 (rwxr-xr-x) and files to 0644 (rw-r--r--).
-// If the FileAttributeReadonly flag is set, write bits are removed. This provides
-// a reasonable default since SMB does not carry full Unix permission information.
+//
+// DOS attributes (READONLY, ARCHIVE, SYSTEM) are stored in high mode bits
+// (modeDOSReadonly, modeDOSArchive, modeDOSSystem) rather than in POSIX
+// permission bits. This decouples DOS attribute toggles from the
+// mode-synthesized DACL — smbtorture smb2.winattr
+// (source4/torture/smb2/attr.c:365) asserts that the SD ACEs do not change
+// after a SET_INFO that flips READONLY. Mirrors Samba's xattr-stored
+// `user.DOSATTRIB` semantics in source3/smbd/dosmode.c.
 func SMBModeFromAttrs(attrs types.FileAttributes, isDirectory bool) uint32 {
 	var mode uint32
 
@@ -461,11 +521,6 @@ func SMBModeFromAttrs(attrs types.FileAttributes, isDirectory bool) uint32 {
 		mode = 0755 // rwxr-xr-x for directories
 	} else {
 		mode = 0644 // rw-r--r-- for files
-	}
-
-	// If read-only attribute is set, remove write permission
-	if attrs&types.FileAttributeReadonly != 0 {
-		mode &= ^uint32(0222) // Remove write bits
 	}
 
 	// Track that DOS attributes were explicitly set, and which optional bits are set.
@@ -477,6 +532,9 @@ func SMBModeFromAttrs(attrs types.FileAttributes, isDirectory bool) uint32 {
 	}
 	if attrs&types.FileAttributeSystem != 0 {
 		mode |= modeDOSSystem
+	}
+	if attrs&types.FileAttributeReadonly != 0 {
+		mode |= modeDOSReadonly
 	}
 
 	return mode

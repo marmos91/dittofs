@@ -168,3 +168,114 @@ func TestSMBModeFromAttrs_OverwriteForcesArchive(t *testing.T) {
 		})
 	}
 }
+
+// TestSMBModeFromAttrs_ReadonlyDoesNotStripWriteBit pins the contract that
+// applying READONLY via SET_INFO does NOT mutate POSIX owner-write — the
+// READONLY bit is tracked in modeDOSReadonly instead. Stripping owner-write
+// would change the mode-synthesized DACL, breaking smb2.winattr
+// (source4/torture/smb2/attr.c:365) which captures the DACL before any
+// SET_INFO and asserts ACEs are unchanged across attribute round-trips.
+func TestSMBModeFromAttrs_ReadonlyDoesNotStripWriteBit(t *testing.T) {
+	mode := SMBModeFromAttrs(types.FileAttributeReadonly, false)
+	if mode&0o200 == 0 {
+		t.Errorf("SMBModeFromAttrs(READONLY) stripped owner-write: mode=0o%o (want 0o200 preserved)", mode)
+	}
+	if mode&modeDOSReadonly == 0 {
+		t.Errorf("SMBModeFromAttrs(READONLY) did not set modeDOSReadonly: mode=0x%x", mode)
+	}
+}
+
+// TestFileAttrToSMBAttributes_ReadonlyRoundTrip verifies SET_INFO -> QUERY_INFO
+// round-trip via the high-bit storage path.
+func TestFileAttrToSMBAttributes_ReadonlyRoundTrip(t *testing.T) {
+	mode := SMBModeFromAttrs(types.FileAttributeReadonly, false)
+	attr := &metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: mode}
+	got := FileAttrToSMBAttributes(attr)
+	if got&types.FileAttributeReadonly == 0 {
+		t.Errorf("READONLY missing after round-trip: attrs=0x%x mode=0x%x", got, mode)
+	}
+	if got&types.FileAttributeArchive != 0 {
+		t.Errorf("ARCHIVE leaked into READONLY-only round-trip: attrs=0x%x", got)
+	}
+}
+
+// TestFileAttrToSMBAttributes_ReadonlyLegacyMode covers files whose POSIX
+// owner-write was stripped out-of-band (e.g., NFS chmod or shell chmod with no
+// DOS bits set). They must still report READONLY to SMB clients per MS-FSCC
+// §2.6, matching Samba dosmode.c::dos_mode_from_sbuf.
+func TestFileAttrToSMBAttributes_ReadonlyLegacyMode(t *testing.T) {
+	attr := &metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o444}
+	got := FileAttrToSMBAttributes(attr)
+	if got&types.FileAttributeReadonly == 0 {
+		t.Errorf("READONLY missing for owner-write-stripped legacy mode 0o444: attrs=0x%x", got)
+	}
+}
+
+// TestFileAttrToSMBAttributes_DirectoryArchiveRoundTrip verifies the
+// smb2.winattr directory loop (source4/torture/smb2/attr.c:439): SET_INFO of
+// ARCHIVE on a directory must round-trip as DIRECTORY|ARCHIVE.
+func TestFileAttrToSMBAttributes_DirectoryArchiveRoundTrip(t *testing.T) {
+	mode := SMBModeFromAttrs(types.FileAttributeArchive, true)
+	attr := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: mode}
+	got := FileAttrToSMBAttributes(attr)
+	want := types.FileAttributeDirectory | types.FileAttributeArchive
+	if got != want {
+		t.Errorf("DIR+ARCHIVE round-trip: got 0x%x, want 0x%x (mode 0x%x)", got, want, mode)
+	}
+}
+
+// TestFileAttrToSMBAttributes_DirectoryReadonlyRoundTrip verifies READONLY
+// round-trip on directories — same winattr loop, j=2.
+func TestFileAttrToSMBAttributes_DirectoryReadonlyRoundTrip(t *testing.T) {
+	mode := SMBModeFromAttrs(types.FileAttributeReadonly, true)
+	attr := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: mode}
+	got := FileAttrToSMBAttributes(attr)
+	want := types.FileAttributeDirectory | types.FileAttributeReadonly
+	if got != want {
+		t.Errorf("DIR+READONLY round-trip: got 0x%x, want 0x%x (mode 0x%x)", got, want, mode)
+	}
+}
+
+// TestFileAttrToSMBAttributes_AllDOSBitsRoundTrip covers the winattr open_attrs
+// combinations (ARCHIVE | READONLY | HIDDEN | SYSTEM) — every combination must
+// round-trip exactly when stored via SMBModeFromAttrs.
+func TestFileAttrToSMBAttributes_AllDOSBitsRoundTrip(t *testing.T) {
+	cases := []types.FileAttributes{
+		types.FileAttributeArchive,
+		types.FileAttributeReadonly,
+		types.FileAttributeHidden,
+		types.FileAttributeSystem,
+		types.FileAttributeArchive | types.FileAttributeReadonly,
+		types.FileAttributeArchive | types.FileAttributeHidden,
+		types.FileAttributeArchive | types.FileAttributeSystem,
+		types.FileAttributeArchive | types.FileAttributeReadonly | types.FileAttributeHidden,
+		types.FileAttributeArchive | types.FileAttributeReadonly | types.FileAttributeSystem,
+		types.FileAttributeArchive | types.FileAttributeHidden | types.FileAttributeSystem,
+		types.FileAttributeReadonly | types.FileAttributeHidden,
+		types.FileAttributeReadonly | types.FileAttributeSystem,
+		types.FileAttributeReadonly | types.FileAttributeHidden | types.FileAttributeSystem,
+	}
+	for _, in := range cases {
+		mode := SMBModeFromAttrs(in, false)
+		attr := &metadata.FileAttr{
+			Type:   metadata.FileTypeRegular,
+			Mode:   mode,
+			Hidden: in&types.FileAttributeHidden != 0,
+		}
+		got := FileAttrToSMBAttributes(attr)
+		if got != in {
+			t.Errorf("attrs round-trip: in=0x%x got=0x%x (mode=0x%x)", in, got, mode)
+		}
+	}
+}
+
+// TestFileAttrToFileBasicInfoWithName_DotPrefixHidden ensures the name-aware
+// variant marks dot-prefixed files HIDDEN even when attr.Hidden is false.
+// Required by smbtorture smb2.dosmode (dosmode.c:158).
+func TestFileAttrToFileBasicInfoWithName_DotPrefixHidden(t *testing.T) {
+	attr := &metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644}
+	info := FileAttrToFileBasicInfoWithName(attr, ".dotfile")
+	if info.FileAttributes&types.FileAttributeHidden == 0 {
+		t.Errorf("dot-prefix file missing HIDDEN: attrs=0x%x", info.FileAttributes)
+	}
+}
