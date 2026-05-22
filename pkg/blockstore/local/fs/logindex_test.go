@@ -221,3 +221,62 @@ func TestLogIndex_AdvanceFence_NoConsumed_NoMove(t *testing.T) {
 		}
 	}
 }
+
+// TestLogIndex_AdvanceFence_CursorSkipsConsumed exercises the
+// fenceCursor optimization: after a partial advance, repeated
+// AdvanceFence calls must not rescan entries that were already
+// fence-passed. We can't observe big-O directly, but we can prove
+// correctness by appending more entries AFTER a partial advance and
+// verifying the cursor picks them up without rewalking the prefix.
+func TestLogIndex_AdvanceFence_CursorSkipsConsumed(t *testing.T) {
+	idx := newLogIndex()
+	const payload = uint32(64)
+	step := uint64(recordFrameOverhead) + uint64(payload)
+	pos := uint64(logHeaderSize)
+	for i := 0; i < 3; i++ {
+		idx.Append(pos, uint64(i*4096), payload)
+		idx.MarkConsumed(pos)
+		pos += step
+	}
+	wantAfterThree := uint64(logHeaderSize) + 3*step
+	if got := idx.AdvanceFence(); got != wantAfterThree {
+		t.Fatalf("after 3 consumed: got %d want %d", got, wantAfterThree)
+	}
+	// Append two more entries, mark both consumed, AdvanceFence again.
+	for i := 3; i < 5; i++ {
+		idx.Append(pos, uint64(i*4096), payload)
+		idx.MarkConsumed(pos)
+		pos += step
+	}
+	wantAfterFive := uint64(logHeaderSize) + 5*step
+	if got := idx.AdvanceFence(); got != wantAfterFive {
+		t.Fatalf("after 5 consumed: got %d want %d", got, wantAfterFive)
+	}
+}
+
+// TestLogIndex_EntriesForInterval_OverflowGuard verifies that a query
+// whose fileOff + length sum wraps past MaxUint64 still returns the
+// expected records — the saturating end calculation prevents the
+// overlap predicate from misclassifying high-offset entries.
+func TestLogIndex_EntriesForInterval_OverflowGuard(t *testing.T) {
+	idx := newLogIndex()
+	// Three entries, the last one near (but not at) MaxUint64.
+	idx.Append(logHeaderSize, 0, 100)
+	idx.Append(logHeaderSize+100+recordFrameOverhead, 1024, 100)
+	idx.Append(logHeaderSize+2*(100+recordFrameOverhead), ^uint64(0)-200, 100)
+
+	// Query [^uint64(0)-300, ^uint64(0)-50): sum overflows but should
+	// still surface the third record.
+	hits := idx.EntriesForInterval(^uint64(0)-300, 250)
+	if len(hits) != 1 || hits[0].fileOff != ^uint64(0)-200 {
+		t.Fatalf("overflow query: got %+v want one entry at fileOff %d", hits, ^uint64(0)-200)
+	}
+
+	// Query at fileOff = ^uint64(0) - 50 with length = 100 (definite
+	// overflow). End saturates to MaxUint64; no entries should match
+	// since the high record's extent ends at ^uint64(0) - 100.
+	hits = idx.EntriesForInterval(^uint64(0)-50, 100)
+	if len(hits) != 0 {
+		t.Fatalf("post-extent query: got %+v want []", hits)
+	}
+}

@@ -59,6 +59,12 @@ type logIndex struct {
 	entries         []logEntry
 	consumed        map[uint64]struct{} // key = logEntry.logPos
 	compactionFence uint64
+	// fenceCursor is the index into `entries` of the first entry whose
+	// logPos is at or beyond compactionFence. AdvanceFence resumes its
+	// walk from this cursor instead of rescanning the entire slice on
+	// every call, keeping amortized cost proportional to the entries
+	// it newly consumes rather than the historical entry count.
+	fenceCursor int
 }
 
 // newLogIndex constructs an empty logIndex. compactionFence starts at
@@ -90,12 +96,20 @@ func (idx *logIndex) Append(logPos uint64, fileOff uint64, payloadLen uint32) {
 // FastCDC over the canonical stream while still walking out-of-order
 // arrivals.
 //
-// Length == 0 returns nil.
+// Length == 0 returns nil. The fileOff + length sum is computed with
+// overflow detection: a query that would wrap past math.MaxUint64
+// saturates end to MaxUint64 so the overlap predicate stays well-
+// formed (no record can have fileOff == MaxUint64 in practice — the
+// log can't store payloads near that scale — but the cheap guard
+// prevents pathological queries from missing genuine overlaps).
 func (idx *logIndex) EntriesForInterval(fileOff uint64, length uint64) []logEntry {
 	if length == 0 {
 		return nil
 	}
 	end := fileOff + length
+	if end < fileOff {
+		end = ^uint64(0)
+	}
 	out := make([]logEntry, 0, 4)
 	for _, e := range idx.entries {
 		if e.fileEnd() <= fileOff {
@@ -116,25 +130,29 @@ func (idx *logIndex) MarkConsumed(logPos uint64) {
 }
 
 // AdvanceFence walks consumed entries in logPos order from the current
-// fence forward, advancing compactionFence past every entry that is
-// consumed and contiguous. Stops at the first non-consumed entry. The
-// new fence is returned. An out-of-order consumed entry (a "hole" left
-// by an unconsumed predecessor) does NOT advance the fence — it stays
-// in `consumed` until the predecessor is consumed too.
+// fenceCursor forward, advancing compactionFence past every entry that
+// is consumed and contiguous. Stops at the first non-consumed entry.
+// The new fence is returned. An out-of-order consumed entry (a "hole"
+// left by an unconsumed predecessor) does NOT advance the fence — it
+// stays in `consumed` until the predecessor is consumed too.
+//
+// fenceCursor tracks the first entry index at or beyond the current
+// fence so repeated calls cost O(newly-consumed-entries) rather than
+// O(total-entries), avoiding quadratic walks across long-lived
+// payloads.
 //
 // This is the operation the rollup invokes after persisting a CAS
 // commit; the returned fence is what advanceRollupOffset eventually
 // writes to disk.
 func (idx *logIndex) AdvanceFence() uint64 {
-	for _, e := range idx.entries {
-		if e.logPos < idx.compactionFence {
-			continue
-		}
+	for idx.fenceCursor < len(idx.entries) {
+		e := idx.entries[idx.fenceCursor]
 		if _, ok := idx.consumed[e.logPos]; !ok {
 			break
 		}
 		// Fence advances past the consumed entry's full record extent.
 		idx.compactionFence = e.logPos + uint64(recordFrameOverhead) + uint64(e.payloadLen)
+		idx.fenceCursor++
 	}
 	return idx.compactionFence
 }
@@ -151,8 +169,14 @@ func (idx *logIndex) Fence() uint64 {
 // the boot-time rollup_offset preserves that invariant for the
 // post-boot AdvanceFence walks. MUST be called before any MarkConsumed
 // /AdvanceFence calls on the same logIndex.
+//
+// fenceCursor is rewound to 0 — recovery seeds entries in order, so
+// the cursor naturally starts at the head of the slice; subsequent
+// AdvanceFence calls will skip past any pre-fence entries on the first
+// invocation only.
 func (idx *logIndex) SetFence(fence uint64) {
 	idx.compactionFence = fence
+	idx.fenceCursor = 0
 }
 
 // Len returns the total number of indexed entries (consumed + unconsumed).

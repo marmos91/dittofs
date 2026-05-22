@@ -29,6 +29,14 @@ const (
 	logHeaderSize       = 64
 	recordFrameOverhead = 16 // payload_len(4) + file_offset(8) + crc(4)
 	logVersion          = uint32(1)
+	// maxRecordPayload (FIX-4) clamps the per-record payload allocation.
+	// A torn-tail or hostile log frame can present an arbitrary 32-bit
+	// payload_len; without a cap, recovery / rollup replay would attempt
+	// a 4 GiB-1 allocation per bad frame → OOM / DoS. Set just above the
+	// chunker's hard maximum (16 MiB) plus slack so legitimate records
+	// always pass; anything larger is treated as corruption and the
+	// caller (LSL-06) truncates the log at the previous valid position.
+	maxRecordPayload = 17 * 1024 * 1024
 )
 
 // logMagic is the fixed 4-byte prefix of every DittoFS append log: 'DFLG'.
@@ -156,15 +164,8 @@ func readRecord(r io.Reader) (uint64, []byte, bool, error) {
 	payloadLen := binary.LittleEndian.Uint32(frame[0:4])
 	fileOffset := binary.LittleEndian.Uint64(frame[4:12])
 	wantCRC := binary.LittleEndian.Uint32(frame[12:16])
-	// FIX-4: clamp the per-record payload allocation. A torn-tail or
-	// hostile log frame can present an arbitrary 32-bit payload_len;
-	// without a cap, recovery (or any rollup replay) would attempt a
-	// 4 GiB-1 allocation per bad frame → OOM / DoS. The cap is set just
-	// above the chunker's hard maximum (16 MiB) plus slack so legitimate
-	// records always pass; anything larger is treated as corruption and
-	// the caller (LSL-06) truncates the log at the previous valid
-	// position.
-	const maxRecordPayload = 17 * 1024 * 1024
+	// FIX-4: clamp via the file-scope maxRecordPayload cap (defined
+	// alongside the framing constants).
 	if payloadLen > maxRecordPayload {
 		return 0, nil, false, nil
 	}
@@ -191,14 +192,21 @@ func readRecord(r io.Reader) (uint64, []byte, bool, error) {
 // record (frame header + payload) instead of two sequential reads.
 //
 // Returns the decoded file_offset and the payload bytes. Errors:
+//   - payloadLen exceeds the maxRecordPayload DoS cap (also enforced
+//     by readRecord; mirrored here so a pathological logIndex entry
+//     cannot drive a multi-GB allocation if memory corruption ever
+//     forged one)
 //   - the pread returned an I/O error / short read
 //   - the frame's declared payload_len disagrees with the index
 //   - CRC over (file_offset || payload) mismatches the stored CRC
 //
-// All three indicate either log-fd corruption or a logIndex/log
-// divergence bug — the caller (rollup) treats them as a hard failure
-// and skips the rollup pass so a future attempt can reseed.
+// All cases indicate either log-fd corruption or a logIndex/log
+// divergence bug — the caller (rollup) surfaces them as a hard error.
 func readRecordAt(rf io.ReaderAt, logPos uint64, payloadLen uint32) (uint64, []byte, error) {
+	if payloadLen > maxRecordPayload {
+		return 0, nil, fmt.Errorf("append log: payloadLen %d exceeds %d cap at logPos=%d",
+			payloadLen, maxRecordPayload, logPos)
+	}
 	total := uint64(recordFrameOverhead) + uint64(payloadLen)
 	buf := make([]byte, total)
 	if _, err := rf.ReadAt(buf, int64(logPos)); err != nil {
