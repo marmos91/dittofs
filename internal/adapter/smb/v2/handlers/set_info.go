@@ -1182,6 +1182,23 @@ func (h *Handler) parseSDOptsForShare(shareName string) ParseSDOptions {
 //
 // Parses the binary Security Descriptor from the client, extracts owner/group/ACL,
 // and applies the changes to the file via MetadataService.SetFileAttributes.
+//
+// Per MS-SMB2 §3.3.5.21.3 and MS-FSA §2.1.5.14, the access authorization for
+// SET_INFO Security is performed against the OPEN'S granted access mask
+// (captured at CREATE time), NOT against the file's current DACL. The new
+// SD being installed is irrelevant to the authorization decision — installing
+// a DACL that strips WRITE_DAC must still succeed if the handle was opened
+// with WRITE_DAC. Section→bit mapping (mirrors Samba
+// source3/smbd/smb2_setinfo.c::smbd_smb2_setinfo_security):
+//
+//	SECINFO_DACL  → SEC_STD_WRITE_DAC
+//	SECINFO_OWNER → SEC_STD_WRITE_OWNER
+//	SECINFO_GROUP → SEC_STD_WRITE_OWNER
+//	SECINFO_SACL  → ACCESS_SYSTEM_SECURITY
+//
+// Each requested section is gated independently; the request is denied as a
+// whole if any requested section lacks the corresponding bit on the handle.
+// Refs #559.
 func (h *Handler) setSecurityInfo(
 	authCtx *metadata.AuthContext,
 	openFile *OpenFile,
@@ -1190,6 +1207,17 @@ func (h *Handler) setSecurityInfo(
 ) (*SetInfoResponse, error) {
 	if len(buffer) == 0 {
 		return setInfoStatus(types.StatusInvalidParameter), nil
+	}
+
+	// MS-SMB2 §3.3.5.21.3: authorize each requested SD section against the
+	// open's GrantedAccess. The new SD is not consulted — the handle's mask
+	// already captured the DACL-evaluated rights at CREATE time.
+	if status, ok := checkSetInfoSecurityAccess(openFile.GrantedAccess, additionalInfo); !ok {
+		logger.Debug("SET_INFO Security: handle lacks required access",
+			"path", openFile.Path,
+			"additionalInfo", fmt.Sprintf("0x%x", additionalInfo),
+			"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess))
+		return setInfoStatus(status), nil
 	}
 
 	// Per-share opt-out of MS-DTYP §2.5.3.4.2 canonicalization. Default true
@@ -1246,6 +1274,39 @@ func (h *Handler) setSecurityInfo(
 	}
 
 	return setInfoStatus(types.StatusSuccess), nil
+}
+
+// checkSetInfoSecurityAccess maps requested SECURITY_INFORMATION sections to
+// the access mask bits MS-SMB2 §3.3.5.21.3 / MS-FSA §2.1.5.14 require on the
+// open's GrantedAccess, and verifies each requested section against the mask.
+//
+// Returns (StatusSuccess, true) when every requested section has the matching
+// bit on the open; (StatusAccessDenied, false) otherwise. An additionalInfo
+// of zero authorizes (no sections to gate).
+//
+// Mirrors Samba source3/smbd/smb2_setinfo.c::smbd_smb2_setinfo_security and
+// source3/smbd/posix_acls.c::set_nt_acl — both consult `fsp->access_mask`
+// (the equivalent of OpenFile.GrantedAccess), never re-evaluate against the
+// file's current DACL. Refs #559.
+func checkSetInfoSecurityAccess(grantedAccess, additionalInfo uint32) (types.Status, bool) {
+	if additionalInfo&DACLSecurityInformation != 0 {
+		if !hasAccessRight(grantedAccess, uint32(types.WriteDac)) {
+			return types.StatusAccessDenied, false
+		}
+	}
+	// SECINFO_OWNER and SECINFO_GROUP both require WRITE_OWNER per MS-DTYP
+	// §2.5.3.3 (the algorithm folds owner+group under one privilege gate).
+	if additionalInfo&(OwnerSecurityInformation|GroupSecurityInformation) != 0 {
+		if !hasAccessRight(grantedAccess, uint32(types.WriteOwner)) {
+			return types.StatusAccessDenied, false
+		}
+	}
+	if additionalInfo&SACLSecurityInformation != 0 {
+		if !hasAccessRight(grantedAccess, uint32(types.AccessSystemSecurity)) {
+			return types.StatusAccessDenied, false
+		}
+	}
+	return types.StatusSuccess, true
 }
 
 // breakParentDirLeases breaks leases on the parent directory when a child

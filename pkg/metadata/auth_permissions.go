@@ -643,6 +643,20 @@ func (s *MetadataService) CheckFileAccessWithParent(file *File, parent *File, au
 		probe &^= bit
 	}
 
+	// MS-FSA §2.1.4.13 "Algorithm to Check Access to an Existing File":
+	// FILE_READ_ATTRIBUTES is always granted from the containing directory
+	// once traverse access to the file's path succeeds. The bit is unmasked
+	// from the file's DACL evaluation — even a DACL that explicitly omits
+	// READ_ATTRIBUTES still yields a successful open requesting it.
+	//
+	// Mirrors Samba source3/smbd/open.c::smbd_check_access_rights_fsp which
+	// sets `do_not_check_mask = FILE_READ_ATTRIBUTES` before invoking the
+	// DACL check. Covers smb2.acls.OWNER (acls.c:765 loop iteration with
+	// bit=0x80 expecting OK on a DACL that only grants WRITE_DATA). Refs #559.
+	if explicit&acl.ACE4_READ_ATTRIBUTES != 0 && granted&acl.ACE4_READ_ATTRIBUTES == 0 {
+		granted |= acl.ACE4_READ_ATTRIBUTES
+	}
+
 	// Parent override for DELETE: when the file's own DACL denied DELETE but
 	// the parent directory grants FILE_DELETE_CHILD to the caller, grant
 	// DELETE here (MS-FSA §2.1.4.13 / Samba parent_override_delete). The
@@ -677,6 +691,11 @@ func (s *MetadataService) CheckFileAccessWithParent(file *File, parent *File, au
 		if parent != nil && parentGrantsDeleteChild(parent, authCtx) {
 			effective |= acl.ACE4_DELETE
 		}
+		// MS-FSA §2.1.4.13: FILE_READ_ATTRIBUTES is always granted from the
+		// containing directory (see explicit-branch comment above). Surface it
+		// in the MaxAccess set so MxAc replies and MAXIMUM_ALLOWED opens carry
+		// the bit. Refs #559.
+		effective |= acl.ACE4_READ_ATTRIBUTES
 		effective |= granted
 
 		// Per MS-SMB2 §3.3.5.9 paragraph 8 and Samba

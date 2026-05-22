@@ -633,3 +633,68 @@ func TestCheckFileAccessWithParent_NoOverrideWhenParentLacksDeleteChild(t *testi
 	require.ErrorAs(t, err, &storeErr)
 	require.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
 }
+
+// TestCheckFileAccess_ReadAttributesAlwaysGrantedFromParent covers MS-FSA
+// §2.1.4.13 "Algorithm to Check Access to an Existing File": FILE_READ_ATTRIBUTES
+// is unconditionally granted from the containing directory once traverse access
+// to the path succeeds. Even a DACL that explicitly omits READ_ATTRIBUTES must
+// not block an open that asks for it.
+//
+// Covers smb2.acls.OWNER (acls.c::test_owner_bits, line 765 loop) where the
+// test installs a DACL granting only FILE_WRITE_DATA to the owner and then
+// expects an open with desired_access=0x80 (READ_ATTRIBUTES) to succeed.
+// Mirrors Samba source3/smbd/open.c::smbd_check_access_rights_fsp setting
+// `do_not_check_mask = FILE_READ_ATTRIBUTES`. Refs #559.
+func TestCheckFileAccess_ReadAttributesAlwaysGrantedFromParent(t *testing.T) {
+	f := newTestFixture(t)
+
+	const rightReadAttributes uint32 = 0x00000080
+
+	ownerUID := uint32(1001)
+	ownerSID := "S-1-5-21-1-2-3-2001"
+
+	// DACL grants the owner ONLY FILE_WRITE_DATA — no READ_ATTRIBUTES.
+	writeOnlyACL := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        "sid:" + ownerSID,
+				AccessMask: acl.ACE4_WRITE_DATA,
+			},
+		},
+	}
+	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "raa.txt",
+		&metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o644,
+			UID:  ownerUID,
+			GID:  1001,
+			ACL:  writeOnlyACL,
+		})
+	require.NoError(t, err)
+
+	authCtx := f.authContext(ownerUID, 1001)
+	authCtx.Identity.SID = strPtr(ownerSID)
+
+	// Bit 0x80 alone — DACL omits it but MS-FSA always-grants it from parent.
+	granted, err := f.service.CheckFileAccess(created, authCtx, rightReadAttributes)
+	require.NoError(t, err, "READ_ATTRIBUTES must be granted even when DACL omits it")
+	require.Equal(t, rightReadAttributes, granted&rightReadAttributes,
+		"expected READ_ATTRIBUTES in granted mask, got 0x%x", granted)
+
+	// READ_ATTRIBUTES combined with the DACL-granted WRITE_DATA — both must
+	// be present. Mirrors smb2.acls.OWNER's expected_bits = WRITE_DATA|READ_ATTRIBUTE.
+	probe := rightReadAttributes | rightWriteData
+	granted, err = f.service.CheckFileAccess(created, authCtx, probe)
+	require.NoError(t, err)
+	require.Equal(t, probe, granted&probe,
+		"expected WRITE_DATA|READ_ATTRIBUTES granted, got 0x%x", granted)
+
+	// READ_DATA must still be denied — the always-grant rule covers only
+	// READ_ATTRIBUTES, not the rest of the read namespace.
+	_, err = f.service.CheckFileAccess(created, authCtx, rightReadData)
+	require.Error(t, err)
+	var storeErr *metadata.StoreError
+	require.ErrorAs(t, err, &storeErr)
+	require.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+}
