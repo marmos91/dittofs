@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // LogFlagCompacted is set in the on-disk header's Flags field after a
@@ -251,17 +252,25 @@ func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *l
 	// (new dentry + remove old dentry — atomic in rename(2)) is durable.
 	// This guards against the "rename completes in cache but is lost on
 	// crash" pathology on filesystems that defer dentry persistence.
+	//
+	// Skipped on Windows: NTFS handles dentry durability via the rename
+	// itself; opening a directory for read and calling fsync returns
+	// "Access is denied" because the read-mode handle lacks write rights.
+	// MoveFileEx (which os.Rename uses under the hood) provides crash-
+	// consistency without an explicit dir flush on supported filesystems.
 	dir := filepath.Dir(lf.path)
-	dfd, derr := os.Open(dir)
-	if derr != nil {
-		return fmt.Errorf("compaction: open parent dir for fsync: %w", derr)
-	}
-	if err := dfd.Sync(); err != nil {
-		_ = dfd.Close()
-		return fmt.Errorf("compaction: fsync parent dir (pre-rename): %w", err)
-	}
-	if err := dfd.Close(); err != nil {
-		return fmt.Errorf("compaction: close parent dir (pre-rename): %w", err)
+	if runtime.GOOS != "windows" {
+		dfd, derr := os.Open(dir)
+		if derr != nil {
+			return fmt.Errorf("compaction: open parent dir for fsync: %w", derr)
+		}
+		if err := dfd.Sync(); err != nil {
+			_ = dfd.Close()
+			return fmt.Errorf("compaction: fsync parent dir (pre-rename): %w", err)
+		}
+		if err := dfd.Close(); err != nil {
+			return fmt.Errorf("compaction: close parent dir (pre-rename): %w", err)
+		}
 	}
 
 	// Atomic rename. Per POSIX, rename(2) is atomic with respect to a
@@ -279,7 +288,9 @@ func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *l
 	// directory entry creation; the rename creates/removes dentries
 	// that must also be flushed). Cheap on most filesystems — the
 	// directory is already in cache.
-	if dfd, derr := os.Open(dir); derr == nil {
+	if runtime.GOOS == "windows" {
+		// no-op: see pre-rename block above.
+	} else if dfd, derr := os.Open(dir); derr == nil {
 		if syncErr := dfd.Sync(); syncErr != nil {
 			slog.Warn("compaction: fsync parent dir (post-rename) failed",
 				"payloadID", payloadID, "path", lf.path, "error", syncErr)
