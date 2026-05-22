@@ -122,11 +122,14 @@ func TestCheckFileAccess_AllowOnlyReadGrantsReadDeniesWrite(t *testing.T) {
 	require.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
 }
 
-// TestCheckFileAccess_MaximumAllowedNeverDenies covers acls.MXAC-NOT-GRANTED:
-// when the client requests MAXIMUM_ALLOWED, the server must return whatever
-// the DACL allows as the granted mask (no STATUS_ACCESS_DENIED), regardless
-// of how restrictive the DACL is.
-func TestCheckFileAccess_MaximumAllowedNeverDenies(t *testing.T) {
+// TestCheckFileAccess_MaximumAllowedAloneNeverDenies covers the baseline
+// MAXIMUM_ALLOWED contract: when the client requests MAXIMUM_ALLOWED with NO
+// explicit bits, the server must return whatever the DACL allows as the
+// granted mask (no STATUS_ACCESS_DENIED), regardless of how restrictive the
+// DACL is. Per MS-SMB2 §3.3.5.9 paragraph 8, this never-deny guarantee only
+// applies to MAX-alone; explicit non-MAX bits are validated separately (see
+// TestCheckFileAccess_MaximumAllowedPlusExplicitDeniedBitDenies).
+func TestCheckFileAccess_MaximumAllowedAloneNeverDenies(t *testing.T) {
 	f := newTestFixture(t)
 
 	requesterUID := uint32(1001)
@@ -161,12 +164,55 @@ func TestCheckFileAccess_MaximumAllowedNeverDenies(t *testing.T) {
 	require.NoError(t, err)
 	require.NotZero(t, granted&acl.ACE4_READ_DATA, "expected READ_DATA in granted mask, got 0x%x", granted)
 	require.Zero(t, granted&acl.ACE4_WRITE_DATA, "WRITE_DATA must not be granted, got 0x%x", granted)
+}
 
-	// MAXIMUM_ALLOWED | WRITE_DATA must also not deny: the MAXIMUM_ALLOWED bit
-	// suppresses denial. The handle's effective access reflects the DACL.
-	granted, err = f.service.CheckFileAccess(created, authCtx, rightMaxAllowed|rightWriteData)
+// TestCheckFileAccess_MaximumAllowedPlusExplicitDeniedBitDenies covers
+// smbtorture acls.MXAC-NOT-GRANTED (issue #564). When the requester combines
+// MAXIMUM_ALLOWED with an EXPLICIT non-MAX access bit that the DACL does not
+// grant, the open must fail with STATUS_ACCESS_DENIED. MAXIMUM_ALLOWED only
+// suppresses denial for bits the caller did not name outright — it cannot
+// rescue an explicitly requested bit that the DACL rejects.
+//
+// Per MS-SMB2 §3.3.5.9 paragraph 8 and Samba
+// source3/smbd/open.c::smbd_calculate_maximum_allowed_access_fsp, which
+// passes the requested mask (minus MAX) through se_file_access_check and
+// returns NT_STATUS_ACCESS_DENIED when any explicit bit is rejected.
+func TestCheckFileAccess_MaximumAllowedPlusExplicitDeniedBitDenies(t *testing.T) {
+	f := newTestFixture(t)
+
+	requesterUID := uint32(1001)
+	requesterSID := "S-1-5-21-1-2-3-2001"
+
+	// DACL: ALLOW READ_DATA only. WRITE_DATA is not granted to anyone.
+	readOnlyACL := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        "sid:" + requesterSID,
+				AccessMask: acl.ACE4_READ_DATA,
+			},
+		},
+	}
+	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "mxac.txt",
+		&metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o777,
+			UID:  9999,
+			GID:  9999,
+			ACL:  readOnlyACL,
+		})
 	require.NoError(t, err)
-	require.Zero(t, granted&acl.ACE4_WRITE_DATA, "WRITE_DATA must not be granted even when requested with MAXIMUM_ALLOWED, got 0x%x", granted)
+
+	authCtx := f.authContext(requesterUID, 1001)
+	authCtx.Identity.SID = strPtr(requesterSID)
+
+	// MAXIMUM_ALLOWED | WRITE_DATA — WRITE_DATA is the explicit bit, the
+	// DACL does not grant it, so the open MUST deny.
+	_, err = f.service.CheckFileAccess(created, authCtx, rightMaxAllowed|rightWriteData)
+	require.Error(t, err, "MAX|WRITE_DATA against READ-only DACL must deny")
+	var storeErr *metadata.StoreError
+	require.ErrorAs(t, err, &storeErr)
+	require.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
 }
 
 // TestCheckFileAccess_RootBypassGetsEverything documents the root bypass:

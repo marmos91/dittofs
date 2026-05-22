@@ -660,11 +660,10 @@ func (s *MetadataService) CheckFileAccessWithParent(file *File, parent *File, au
 	}
 
 	if maximumAllowed {
-		// MAXIMUM_ALLOWED never denies. Compute the full set of bits the
-		// requester is allowed (independent of what they asked for, minus the
-		// MAXIMUM_ALLOWED bit itself) and return that as the granted mask.
-		// Mirrors computeMaximalAccess so the handle's effective access
-		// matches the MxAc reply.
+		// MAXIMUM_ALLOWED on its own never denies. Compute the full set of
+		// bits the requester is allowed (independent of what they asked for,
+		// minus the MAXIMUM_ALLOWED bit itself). Mirrors computeMaximalAccess
+		// so the handle's effective access matches the MxAc reply.
 		var effective uint32
 		for _, bit := range acl.ProbeBitsAll {
 			if acl.Evaluate(file.ACL, evalCtx, bit) {
@@ -678,7 +677,23 @@ func (s *MetadataService) CheckFileAccessWithParent(file *File, parent *File, au
 		if parent != nil && parentGrantsDeleteChild(parent, authCtx) {
 			effective |= acl.ACE4_DELETE
 		}
-		return effective | granted, nil
+		effective |= granted
+
+		// Per MS-SMB2 §3.3.5.9 paragraph 8 and Samba
+		// smbd_calculate_maximum_allowed_access_fsp: even when
+		// MAXIMUM_ALLOWED is set, every EXPLICIT non-MAX bit in DesiredAccess
+		// MUST be granted by the DACL. If any explicit bit is missing from
+		// the resolved effective set, the open MUST fail STATUS_ACCESS_DENIED.
+		// MAXIMUM_ALLOWED suppresses denial only for the bits IMPLICITLY
+		// requested via the MAX flag itself, not for bits the caller named
+		// outright. Covers smb2.acls.MXAC-NOT-GRANTED.
+		if explicit != 0 && effective&explicit != explicit {
+			return effective, &StoreError{
+				Code:    ErrAccessDenied,
+				Message: "explicit non-MAXIMUM_ALLOWED bit denied by file DACL",
+			}
+		}
+		return effective, nil
 	}
 
 	// Strict mode: any requested non-MAXIMUM_ALLOWED bit not granted = deny.
