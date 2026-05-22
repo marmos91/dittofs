@@ -333,3 +333,260 @@ func TestCreate_DaclEnforcement_NilACLPermissive(t *testing.T) {
 			uint32(resp.Status))
 	}
 }
+
+// makeDraftWithDisposition builds a createDraft whose disposition + createAction
+// match a destructive open (OVERWRITE / OVERWRITE_IF / SUPERSEDE). Used by the
+// #565 tests below to exercise the disposition-implied FILE_WRITE_DATA check.
+func makeDraftWithDisposition(
+	t *testing.T,
+	tree *TreeConnection,
+	authCtx *metadata.AuthContext,
+	parentHandle metadata.FileHandle,
+	existingFile *metadata.File,
+	baseName string,
+	desiredAccess uint32,
+	disposition types.CreateDisposition,
+	action types.CreateAction,
+) *createDraft {
+	t.Helper()
+	encHandle, err := metadata.EncodeFileHandle(existingFile)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+	return &createDraft{
+		req: &CreateRequest{
+			FileName:          baseName,
+			DesiredAccess:     desiredAccess,
+			ShareAccess:       0x07,
+			CreateDisposition: disposition,
+			CreateOptions:     0,
+		},
+		tree:           tree,
+		authCtx:        authCtx,
+		filename:       baseName,
+		baseName:       baseName,
+		parentHandle:   parentHandle,
+		existingFile:   existingFile,
+		existingHandle: encHandle,
+		fileExists:     true,
+		createAction:   action,
+	}
+}
+
+// restrictedDACLFile creates an existing file whose DACL grants the requester
+// only READ_DATA (no WRITE / DELETE). Used by both the #564 MAX-plus-explicit
+// and #565 disposition-implied tests.
+func restrictedDACLFile(
+	t *testing.T,
+	metaSvc *metadata.MetadataService,
+	rootAuth *metadata.AuthContext,
+	rootHandle metadata.FileHandle,
+	name string,
+	requesterSID string,
+) *metadata.File {
+	t.Helper()
+	readOnlyACL := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        "sid:" + requesterSID,
+				AccessMask: acl.ACE4_READ_DATA | acl.ACE4_READ_ATTRIBUTES | acl.ACE4_READ_ACL | acl.ACE4_SYNCHRONIZE,
+			},
+		},
+	}
+	f, err := metaSvc.CreateFile(rootAuth, rootHandle, name,
+		&metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o777,
+			UID:  9999,
+			GID:  9999,
+			ACL:  readOnlyACL,
+		})
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	return f
+}
+
+// TestCreate_MaxAllowedPlusExplicitDeniedBit_ReturnsAccessDenied covers
+// smbtorture smb2.acls.MXAC-NOT-GRANTED (issue #564) at the SMB handler layer.
+// CREATE with DesiredAccess = MAXIMUM_ALLOWED | FILE_WRITE_DATA against a file
+// whose DACL only grants READ_DATA must fail STATUS_ACCESS_DENIED. The explicit
+// WRITE_DATA bit is verified against the granted set independently of MAX.
+//
+// Per MS-SMB2 §3.3.5.9 paragraph 8 and Samba
+// smbd_calculate_maximum_allowed_access_fsp.
+func TestCreate_MaxAllowedPlusExplicitDeniedBit_ReturnsAccessDenied(t *testing.T) {
+	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
+	tree := &TreeConnection{TreeID: smbCtx.TreeID, SessionID: smbCtx.SessionID, ShareName: smbCtx.ShareName}
+	h.StoreTree(tree)
+
+	requesterUID := uint32(2001)
+	requesterSID := "S-1-5-21-1-2-3-2001"
+	existingFile := restrictedDACLFile(t, rt.GetMetadataService(), rootAuth, rootHandle, "mxac.txt", requesterSID)
+
+	requesterGID := uint32(2001)
+	sidStr := requesterSID
+	requesterAuth := &metadata.AuthContext{
+		Context: context.Background(),
+		Identity: &metadata.Identity{
+			UID: &requesterUID,
+			GID: &requesterGID,
+			SID: &sidStr,
+		},
+	}
+
+	const (
+		rightMaxAllowed uint32 = 0x02000000
+		rightWriteData  uint32 = 0x00000002
+	)
+	draft := makeDraft(t, tree, requesterAuth, rootHandle, existingFile, "mxac.txt", rightMaxAllowed|rightWriteData)
+	resp := h.completeCreateAfterBreak(smbCtx, draft)
+	if resp.Status != types.StatusAccessDenied {
+		t.Fatalf("MAX|WRITE_DATA on READ-only DACL: status = 0x%08x, expected STATUS_ACCESS_DENIED (0x%08x)",
+			uint32(resp.Status), uint32(types.StatusAccessDenied))
+	}
+}
+
+// TestCreate_OverwriteRestrictedFile_ReturnsAccessDenied covers smbtorture
+// smb2.acls.OVERWRITE_READ_ONLY_FILE (issue #565) — OVERWRITE arm at
+// source4/torture/smb2/acls.c:3150. CREATE with disposition FILE_OVERWRITE and
+// DesiredAccess = FILE_READ_DATA against a DACL-restricted file must fail
+// STATUS_ACCESS_DENIED because OVERWRITE implicitly requires FILE_WRITE_DATA
+// to truncate the existing file, which the DACL does not grant.
+//
+// Per MS-FSA §2.1.5.1.2.1 and Samba open_file_ntcreate
+// (`open_access_mask |= FILE_WRITE_DATA` when O_TRUNC).
+func TestCreate_OverwriteRestrictedFile_ReturnsAccessDenied(t *testing.T) {
+	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
+	tree := &TreeConnection{TreeID: smbCtx.TreeID, SessionID: smbCtx.SessionID, ShareName: smbCtx.ShareName}
+	h.StoreTree(tree)
+
+	requesterUID := uint32(2001)
+	requesterSID := "S-1-5-21-1-2-3-2001"
+	existingFile := restrictedDACLFile(t, rt.GetMetadataService(), rootAuth, rootHandle, "overwrite.txt", requesterSID)
+
+	requesterGID := uint32(2001)
+	sidStr := requesterSID
+	requesterAuth := &metadata.AuthContext{
+		Context: context.Background(),
+		Identity: &metadata.Identity{
+			UID: &requesterUID,
+			GID: &requesterGID,
+			SID: &sidStr,
+		},
+	}
+
+	const rightReadData uint32 = 0x00000001
+	draft := makeDraftWithDisposition(t, tree, requesterAuth, rootHandle, existingFile, "overwrite.txt",
+		rightReadData, types.FileOverwrite, types.FileOverwritten)
+	resp := h.completeCreateAfterBreak(smbCtx, draft)
+	if resp.Status != types.StatusAccessDenied {
+		t.Fatalf("OVERWRITE on READ-only DACL: status = 0x%08x, expected STATUS_ACCESS_DENIED (0x%08x)",
+			uint32(resp.Status), uint32(types.StatusAccessDenied))
+	}
+}
+
+// TestCreate_SupersedeRestrictedFile_ReturnsAccessDenied covers smbtorture
+// smb2.acls.OVERWRITE_READ_ONLY_FILE (issue #565) — SUPERSEDE arm at
+// source4/torture/smb2/acls.c:3104. Mirrors the OVERWRITE test above but with
+// FILE_SUPERSEDE disposition: SUPERSEDE replaces the existing file content,
+// which inherently requires FILE_WRITE_DATA per MS-FSA §2.1.5.1.2.1 and must
+// be denied when the DACL grants only READ_DATA.
+func TestCreate_SupersedeRestrictedFile_ReturnsAccessDenied(t *testing.T) {
+	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
+	tree := &TreeConnection{TreeID: smbCtx.TreeID, SessionID: smbCtx.SessionID, ShareName: smbCtx.ShareName}
+	h.StoreTree(tree)
+
+	requesterUID := uint32(2001)
+	requesterSID := "S-1-5-21-1-2-3-2001"
+	existingFile := restrictedDACLFile(t, rt.GetMetadataService(), rootAuth, rootHandle, "supersede.txt", requesterSID)
+
+	requesterGID := uint32(2001)
+	sidStr := requesterSID
+	requesterAuth := &metadata.AuthContext{
+		Context: context.Background(),
+		Identity: &metadata.Identity{
+			UID: &requesterUID,
+			GID: &requesterGID,
+			SID: &sidStr,
+		},
+	}
+
+	const rightReadData uint32 = 0x00000001
+	draft := makeDraftWithDisposition(t, tree, requesterAuth, rootHandle, existingFile, "supersede.txt",
+		rightReadData, types.FileSupersede, types.FileSuperseded)
+	resp := h.completeCreateAfterBreak(smbCtx, draft)
+	if resp.Status != types.StatusAccessDenied {
+		t.Fatalf("SUPERSEDE on READ-only DACL: status = 0x%08x, expected STATUS_ACCESS_DENIED (0x%08x)",
+			uint32(resp.Status), uint32(types.StatusAccessDenied))
+	}
+}
+
+// TestCreate_OverwriteIfRestrictedFile_ReturnsAccessDenied covers the
+// OVERWRITE_IF arm for #565 — same DACL-restricted truncate semantics as
+// OVERWRITE and SUPERSEDE.
+func TestCreate_OverwriteIfRestrictedFile_ReturnsAccessDenied(t *testing.T) {
+	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
+	tree := &TreeConnection{TreeID: smbCtx.TreeID, SessionID: smbCtx.SessionID, ShareName: smbCtx.ShareName}
+	h.StoreTree(tree)
+
+	requesterUID := uint32(2001)
+	requesterSID := "S-1-5-21-1-2-3-2001"
+	existingFile := restrictedDACLFile(t, rt.GetMetadataService(), rootAuth, rootHandle, "overwriteif.txt", requesterSID)
+
+	requesterGID := uint32(2001)
+	sidStr := requesterSID
+	requesterAuth := &metadata.AuthContext{
+		Context: context.Background(),
+		Identity: &metadata.Identity{
+			UID: &requesterUID,
+			GID: &requesterGID,
+			SID: &sidStr,
+		},
+	}
+
+	const rightReadData uint32 = 0x00000001
+	draft := makeDraftWithDisposition(t, tree, requesterAuth, rootHandle, existingFile, "overwriteif.txt",
+		rightReadData, types.FileOverwriteIf, types.FileOverwritten)
+	resp := h.completeCreateAfterBreak(smbCtx, draft)
+	if resp.Status != types.StatusAccessDenied {
+		t.Fatalf("OVERWRITE_IF on READ-only DACL: status = 0x%08x, expected STATUS_ACCESS_DENIED (0x%08x)",
+			uint32(resp.Status), uint32(types.StatusAccessDenied))
+	}
+}
+
+// TestCreate_OpenRestrictedFileForRead_Succeeds is the positive control for
+// #565: the same READ-only DACL allows FILE_OPEN with DesiredAccess=READ_DATA
+// (the spec test's first row at acls.c:3088). Guards against the
+// disposition-implied augmentation accidentally firing for non-destructive
+// dispositions.
+func TestCreate_OpenRestrictedFileForRead_Succeeds(t *testing.T) {
+	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
+	tree := &TreeConnection{TreeID: smbCtx.TreeID, SessionID: smbCtx.SessionID, ShareName: smbCtx.ShareName}
+	h.StoreTree(tree)
+
+	requesterUID := uint32(2001)
+	requesterSID := "S-1-5-21-1-2-3-2001"
+	existingFile := restrictedDACLFile(t, rt.GetMetadataService(), rootAuth, rootHandle, "open.txt", requesterSID)
+
+	requesterGID := uint32(2001)
+	sidStr := requesterSID
+	requesterAuth := &metadata.AuthContext{
+		Context: context.Background(),
+		Identity: &metadata.Identity{
+			UID: &requesterUID,
+			GID: &requesterGID,
+			SID: &sidStr,
+		},
+	}
+
+	const rightReadData uint32 = 0x00000001
+	draft := makeDraftWithDisposition(t, tree, requesterAuth, rootHandle, existingFile, "open.txt",
+		rightReadData, types.FileOpen, types.FileOpened)
+	resp := h.completeCreateAfterBreak(smbCtx, draft)
+	if resp.Status != types.StatusSuccess {
+		t.Fatalf("FILE_OPEN READ on READ-only DACL: status = 0x%08x, expected STATUS_SUCCESS",
+			uint32(resp.Status))
+	}
+}

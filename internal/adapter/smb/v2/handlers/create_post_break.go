@@ -227,14 +227,49 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 				parentFile = pf
 			}
 		}
-		granted, err := metaSvc.CheckFileAccessWithParent(existingFile, parentFile, authCtx, req.DesiredAccess)
+
+		// Fold in disposition-implied access bits before the DACL check.
+		// Per MS-FSA §2.1.5.1.2.1 and Samba open_file_ntcreate (which sets
+		// `open_access_mask |= FILE_WRITE_DATA` when O_TRUNC is implied by
+		// the disposition), OVERWRITE / OVERWRITE_IF / SUPERSEDE on an
+		// existing file inherently truncate it and so REQUIRE FILE_WRITE_DATA
+		// to be granted by the DACL — independent of whether the client put
+		// WRITE_DATA in DesiredAccess. The Samba check runs against
+		// open_access_mask in smbd_check_access_rights_fsp; we mirror that
+		// by extending the mask passed to CheckFileAccessWithParent so a
+		// DACL that grants only READ_DATA fails OVERWRITE/SUPERSEDE with
+		// STATUS_ACCESS_DENIED. Covers smb2.acls.OVERWRITE_READ_ONLY_FILE
+		// (issue #565).
+		//
+		// Skipped when MAXIMUM_ALLOWED is set: MAX expansion lets the
+		// MaxAllowed branch report the granted mask without exposing the
+		// implied write requirement as an explicit-bit denial. Samba does
+		// the same — the FILE_WRITE_DATA augmentation only fires for the
+		// non-MAX disposition path.
+		effectiveAccess := req.DesiredAccess
+		const maxAllowedBit uint32 = 0x02000000
+		if effectiveAccess&maxAllowedBit == 0 && isDestructiveDisposition(req.CreateDisposition) {
+			effectiveAccess |= uint32(types.FileWriteData)
+		}
+
+		granted, err := metaSvc.CheckFileAccessWithParent(existingFile, parentFile, authCtx, effectiveAccess)
 		if err != nil {
 			logger.Debug("CREATE: DesiredAccess denied by DACL",
 				"path", filename,
 				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
+				"effectiveAccess", fmt.Sprintf("0x%x", effectiveAccess),
 				"granted", fmt.Sprintf("0x%x", granted),
+				"disposition", req.CreateDisposition,
 				"error", err)
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}
+		}
+		// Preserve the client-visible grant: clear the disposition-implied
+		// bit before propagating so QUERY_INFO / FileAccessInformation report
+		// only what was actually requested (Samba `fsp->access_mask` mirrors
+		// the original DesiredAccess after the open succeeds — see
+		// open_file_ntcreate line where access_mask is restored).
+		if effectiveAccess != req.DesiredAccess {
+			granted &^= (effectiveAccess &^ req.DesiredAccess)
 		}
 		grantedAccess = granted
 		grantedComputed = true
