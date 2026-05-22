@@ -465,14 +465,23 @@ func validateAndRestore(
 		Path:          handle.Path,
 		ShareName:     handle.ShareName,
 		DesiredAccess: handle.DesiredAccess,
-		// Durable reconnect: GrantedAccess is not currently persisted
-		// (PersistedDurableHandle predates #548). Fall back to the resolved
-		// DesiredAccess — the same value FileAccessInformation returned
-		// before #548. Persisting GrantedAccess across reconnect is tracked
-		// as a follow-up; today's clients reconnecting with the same
-		// DesiredAccess (per MS-SMB2 §3.3.5.9.9 mismatch check) see identical
-		// behavior to the pre-fix code path.
-		GrantedAccess:  resolveAccessFlags(handle.DesiredAccess),
+		// Restore the original DACL-evaluated GrantedAccess persisted at
+		// disconnect. Mirrors Samba: the access mask captured at open is
+		// preserved verbatim through reconnect so the re-established
+		// handle reports identical rights via FileAccessInformation /
+		// FileAllInformation, even when the open was made with
+		// MAXIMUM_ALLOWED or the file's DACL has changed in the interim.
+		// Pre-#548 persisted handles (written before this field existed)
+		// decode with GrantedAccess=0; fall back to the resolved
+		// DesiredAccess in that case for forward compatibility — the
+		// fallback matches the pre-#548 behaviour and only affects in-flight
+		// reconnects across the upgrade boundary.
+		GrantedAccess: func() uint32 {
+			if handle.GrantedAccess != 0 {
+				return handle.GrantedAccess
+			}
+			return resolveAccessFlags(handle.DesiredAccess)
+		}(),
 		MetadataHandle: handle.MetadataHandle,
 		PayloadID:      metadata.PayloadID(handle.PayloadID),
 		ShareAccess:    handle.ShareAccess,
@@ -612,6 +621,7 @@ func buildPersistedDurableHandle(
 		Path:            openFile.Path,
 		ShareName:       openFile.ShareName,
 		DesiredAccess:   openFile.DesiredAccess,
+		GrantedAccess:   openFile.GrantedAccess,
 		ShareAccess:     openFile.ShareAccess,
 		CreateOptions:   uint32(openFile.CreateOptions),
 		MetadataHandle:  metaHandle,

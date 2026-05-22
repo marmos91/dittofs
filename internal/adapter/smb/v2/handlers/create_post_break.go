@@ -297,18 +297,24 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	// FileCreated the ACL was inherited from the parent at create time; for
 	// FileOverwritten/Superseded the existing DACL is preserved. Both need
 	// the intersection of req.DesiredAccess with the resulting file's DACL —
-	// CheckFileAccess returns it without ever denying (we already passed all
-	// upstream gates including CheckParentWriteAccess for FileCreated).
-	// Errors from CheckFileAccess here are non-fatal: fall back to the
-	// resolved DesiredAccess so the open still succeeds.
+	// CheckFileAccess returns the per-bit granted mask in both arms (allow
+	// AND deny), so always take the returned mask. Upstream gates
+	// (CheckParentWriteAccess for FileCreated; DACL check at step 6c-bis for
+	// the existing-file path that flows into Overwrite/Supersede) have
+	// already approved the open — an unexpected ErrAccessDenied here would
+	// indicate the post-create DACL diverged from the parent's inherited
+	// set, so we log and continue with the (possibly narrowed) granted mask
+	// rather than overstate rights by re-resolving DesiredAccess.
 	if !grantedComputed && file != nil {
-		if g, err := metaSvc.CheckFileAccess(file, authCtx, req.DesiredAccess); err == nil {
-			grantedAccess = g
-		} else {
-			logger.Debug("CREATE: post-create CheckFileAccess fallback",
-				"path", filename, "error", err)
-			grantedAccess = resolveAccessFlags(req.DesiredAccess)
+		g, err := metaSvc.CheckFileAccess(file, authCtx, req.DesiredAccess)
+		if err != nil {
+			logger.Debug("CREATE: post-create CheckFileAccess returned narrowed mask",
+				"path", filename,
+				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
+				"granted", fmt.Sprintf("0x%x", g),
+				"error", err)
 		}
+		grantedAccess = g
 	}
 
 	// Step 7a: Restore frozen timestamps on parent directory (MS-FSA 2.1.5.14.2).
