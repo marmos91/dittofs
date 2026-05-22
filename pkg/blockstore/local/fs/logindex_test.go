@@ -428,8 +428,7 @@ func TestLogIndex_AdvanceFence_TrimBoundedBySteadyState(t *testing.T) {
 		idx.Append(pos, uint64((inflightAhead+c)*4096), payload)
 		// Consume the OLDEST in-flight entry.
 		oldest := inflight[0]
-		inflight = append(inflight[:0], inflight[1:]...)
-		inflight = append(inflight, pos)
+		inflight = append(inflight[1:], pos)
 		idx.MarkConsumed(oldest)
 		idx.AdvanceFence()
 		pos += step

@@ -219,8 +219,8 @@ func (idx *logIndex) trimBelowFenceLocked() {
 	if idx.fenceCursor == 0 {
 		return
 	}
-	for i := 0; i < idx.fenceCursor; i++ {
-		delete(idx.consumed, idx.entries[i].logPos)
+	for _, e := range idx.entries[:idx.fenceCursor] {
+		delete(idx.consumed, e.logPos)
 	}
 	remaining := len(idx.entries) - idx.fenceCursor
 	switch {
@@ -239,9 +239,7 @@ func (idx *logIndex) trimBelowFenceLocked() {
 		// the allocation. Zero the freed tail so logEntry pointer fields
 		// (none today — value type — but future-proofed) aren't pinned.
 		copy(idx.entries, idx.entries[idx.fenceCursor:])
-		for i := remaining; i < len(idx.entries); i++ {
-			idx.entries[i] = logEntry{}
-		}
+		clear(idx.entries[remaining:])
 		idx.entries = idx.entries[:remaining]
 	}
 	idx.fenceCursor = 0
