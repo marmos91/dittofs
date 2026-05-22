@@ -6,6 +6,8 @@ import (
 	"sort"
 	"sync"
 	"testing"
+
+	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // snapshotLogIndex returns a copy of the per-payload logIndex entries
@@ -199,5 +201,51 @@ func TestLogIndex_LogPosMatchesEofPosProgress(t *testing.T) {
 	wantLogPos := lf.eofPos - uint64(recordFrameOverhead) - uint64(len(payload))
 	if last.logPos != wantLogPos {
 		t.Fatalf("last entry logPos: got %d want %d (eofPos=%d)", last.logPos, wantLogPos, lf.eofPos)
+	}
+}
+
+// TestLogIndex_SeededByRecovery writes several records, closes the
+// FSStore, and reopens via Recover. The reconstructed logIndex must
+// carry one entry per on-disk record with logPos pointing at the frame
+// boundary and fence pinned at the persisted rollup_offset (no
+// pre-existing offset in this test => header boundary).
+func TestLogIndex_SeededByRecovery(t *testing.T) {
+	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
+	bc := newFSStoreWithRS(t, rs)
+	payload := bytes.Repeat([]byte{0x99}, 128)
+	offsets := []uint64{0, 4096, 8192}
+	for _, off := range offsets {
+		if err := bc.AppendWrite(context.Background(), "file-rec-idx", payload, off); err != nil {
+			t.Fatalf("AppendWrite: %v", err)
+		}
+	}
+
+	bc2 := reopenFSStore(t, bc, rs)
+	bc2.logsMu.RLock()
+	idx := bc2.logIndices["file-rec-idx"]
+	mu := bc2.logLocks["file-rec-idx"]
+	bc2.logsMu.RUnlock()
+	if idx == nil || mu == nil {
+		t.Fatalf("logIndex / mu missing after recovery")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(idx.entries) != len(offsets) {
+		t.Fatalf("entry count after recovery: got %d want %d", len(idx.entries), len(offsets))
+	}
+	step := uint64(recordFrameOverhead) + uint64(len(payload))
+	wantLogPos := uint64(logHeaderSize)
+	for i, e := range idx.entries {
+		if e.logPos != wantLogPos {
+			t.Fatalf("entry[%d].logPos: got %d want %d", i, e.logPos, wantLogPos)
+		}
+		if e.fileOff != offsets[i] {
+			t.Fatalf("entry[%d].fileOff: got %d want %d", i, e.fileOff, offsets[i])
+		}
+		wantLogPos += step
+	}
+	if idx.Fence() != logHeaderSize {
+		t.Fatalf("fence after recovery (no prior rollup): got %d want %d", idx.Fence(), logHeaderSize)
 	}
 }

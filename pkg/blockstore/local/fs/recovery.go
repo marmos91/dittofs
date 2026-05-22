@@ -298,6 +298,14 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 			return nil
 		}
 		tree := newIntervalTree()
+		// Direction-1 rollup redesign: build the per-payload logIndex in
+		// lockstep with the interval tree. Each successfully replayed
+		// record's frame start is captured as logPos so the post-boot
+		// rollup can run the same logIndex-driven path as a steady-state
+		// rollup. SetFence below pins the compactionFence at the persisted
+		// rollup_offset so AdvanceFence walks start from there.
+		idx := newLogIndex()
+		idx.SetFence(effectiveOff)
 		pos := effectiveOff
 		records := 0
 		for {
@@ -343,6 +351,7 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 				break
 			}
 			tree.Insert(off, uint32(len(payload)), time.Now())
+			idx.Append(lastPos, off, uint32(len(payload)))
 			pos += uint64(recordFrameOverhead) + uint64(len(payload))
 			records++
 		}
@@ -403,14 +412,11 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 		bc.logFDs[payloadID] = lf
 		bc.logLocks[payloadID] = &sync.Mutex{}
 		bc.dirtyIntervals[payloadID] = tree
-		// Direction-1 redesign: allocate an empty logIndex here so any
-		// AppendWrite that races recovery's tail finds a non-nil map
-		// entry. P4 seeds it from the scanned records before this
-		// publish; for now it stays empty (the rollup ignores logIndex
-		// until P5).
-		if _, ok := bc.logIndices[payloadID]; !ok {
-			bc.logIndices[payloadID] = newLogIndex()
-		}
+		// Direction-1 redesign: publish the recovery-built logIndex.
+		// The scan above populated one entry per unconsumed record and
+		// pinned the compaction fence at effectiveOff so post-boot
+		// AdvanceFence walks start from the persisted rollup_offset.
+		bc.logIndices[payloadID] = idx
 		bc.logsMu.Unlock()
 		// Reflect the resident (un-rolled-up) log bytes in logBytesTotal
 		// so the pressure loop sees accurate state after boot.

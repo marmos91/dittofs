@@ -136,6 +136,17 @@ func (idx *logIndex) Fence() uint64 {
 	return idx.compactionFence
 }
 
+// SetFence overrides the compaction fence. Intended for recovery, which
+// reconstructs the logIndex from records at and after the persisted
+// rollup_offset; any record below that offset was already consumed by a
+// pre-boot rollup pass and must not be replayed. Setting the fence to
+// the boot-time rollup_offset preserves that invariant for the
+// post-boot AdvanceFence walks. MUST be called before any MarkConsumed
+// /AdvanceFence calls on the same logIndex.
+func (idx *logIndex) SetFence(fence uint64) {
+	idx.compactionFence = fence
+}
+
 // Len returns the total number of indexed entries (consumed + unconsumed).
 // Test/debug surface.
 func (idx *logIndex) Len() int {
