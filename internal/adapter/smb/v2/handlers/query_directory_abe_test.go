@@ -4,6 +4,7 @@
 package handlers
 
 import (
+	"context"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -13,8 +14,11 @@ import (
 func uint32Ptr(v uint32) *uint32 { return &v }
 
 // authForUID builds an AuthContext for the given UID with a single primary GID.
+// Context is wired to context.Background() so future hydrators that dereference
+// authCtx.Context don't panic.
 func authForUID(uid, gid uint32) *metadata.AuthContext {
 	return &metadata.AuthContext{
+		Context: context.Background(),
 		Identity: &metadata.Identity{
 			UID:  uint32Ptr(uid),
 			GID:  uint32Ptr(gid),
@@ -158,13 +162,11 @@ func TestFilterByAccess_RootBypass(t *testing.T) {
 	}
 }
 
-// TestFilterByAccess_FlagOffReturnsAll documents the contract that filtering
-// only runs when the share toggle is set; with the flag off (i.e. the
-// handler skipping the filter call), the caller sees everything. This test
-// invokes the filter directly with a non-owner identity to verify it would
-// hide entries — the flag-off path is verified by NOT calling filterByAccess.
-func TestFilterByAccess_FlagOffSemantics(t *testing.T) {
-	// File hidden under ABE.
+// TestFilterByAccess_HidesNonReadable exercises the pure filter on a
+// non-owner identity against an owner-only ACL. The handler-side gate
+// (whether the filter is called at all) is covered end-to-end by
+// TestQueryDirectory_ABE in query_directory_test.go.
+func TestFilterByAccess_HidesNonReadable(t *testing.T) {
 	ownerOnly := &acl.ACL{
 		ACEs: []acl.ACE{
 			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: acl.ACE4_READ_DATA, Who: acl.SpecialOwner},
@@ -173,20 +175,9 @@ func TestFilterByAccess_FlagOffSemantics(t *testing.T) {
 	entries := []metadata.DirEntry{
 		regularFileWithACL("secret.txt", 1000, 1000, 0o000, ownerOnly),
 	}
-	other := authForUID(2000, 2000)
-
-	// Flag-off path: filterByAccess is simply not called — the caller gets
-	// the full list. (Mirrors the handler's `if h.treeHasAccessBasedEnumeration(...)`
-	// gate.) Asserting on `entries` itself validates that without filtering
-	// the visible set is unchanged.
-	if len(entries) != 1 {
-		t.Fatalf("flag-off: want 1 entry, got %d", len(entries))
-	}
-
-	// Flag-on path: filtering hides the entry.
-	got := filterByAccess(append([]metadata.DirEntry(nil), entries...), other, nil)
+	got := filterByAccess(entries, authForUID(2000, 2000), nil)
 	if len(got) != 0 {
-		t.Fatalf("flag-on: want 0 entries, got %d", len(got))
+		t.Fatalf("want 0 entries, got %d", len(got))
 	}
 }
 
