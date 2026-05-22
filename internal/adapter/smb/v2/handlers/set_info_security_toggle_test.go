@@ -76,6 +76,9 @@ func setupACLToggleTest(t *testing.T, shareName string, canonicalize bool) (*Han
 		Path:           "f.dat",
 		ShareName:      shareName,
 		DesiredAccess:  uint32(types.FileWriteAttributes) | uint32(types.WriteDac),
+		// Refs #559: setSecurityInfo gates on the open's GrantedAccess
+		// (Samba fsp->access_mask); SECINFO_DACL requires WRITE_DAC.
+		GrantedAccess: uint32(types.FileWriteAttributes) | uint32(types.WriteDac),
 	}
 	h.StoreOpenFile(openFile)
 
