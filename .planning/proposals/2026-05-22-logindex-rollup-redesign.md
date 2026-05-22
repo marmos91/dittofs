@@ -1,7 +1,7 @@
 ---
 title: Rollup redesign — per-file logIndex (Direction 1)
 date: 2026-05-22
-status: queued (waits for PR #556 to merge)
+status: "queued (waits for PR #556 to merge)"
 author: marmos91 + code-architect
 scope: pkg/blockstore/local/fs/
 target: develop (no milestone phase — surgical bugfix)
@@ -35,7 +35,7 @@ Full design review produced by `feature-dev:code-architect` on 2026-05-22. Verdi
 | `rollup.go:181` | Single stable interval consumed per rollup pass |
 | `interval_tree.go:80-99` | Unstable front interval blocks all later stable intervals |
 | `recovery.go:345` | All records re-inserted with `time.Now()`; arrival order lost |
-| `appendlog.go:48-52` | `rollup_offset` = "consumed up to this log byte offset" (not consumed record set) |
+| `appendlog.go:188-204` | `rollup_offset` = "consumed up to this log byte offset" (not consumed record set); see `advanceRollupOffset` |
 
 ### Architecture chosen — per-file `logIndex`
 
@@ -98,7 +98,7 @@ All four opts survive **unchanged**:
 | R-4 | Race between AppendWrite logPos assignment and rollup pread | Per-file `mu` serializes both; rollup pread uses read-only fd (existing pattern) |
 | R-5 | `rollup_offset` semantic shift breaks existing logs | None — on-disk format unchanged; semantic shift is in-process only |
 | R-6 | Targeted preads slower than sequential scan on rotational media | NVMe is primary target per CLAUDE.md memory; pread is effectively free for cache-warm pages |
-| R-7 | Compaction fence can stall if log_pos=0 record covers last-stabilized region | Same pathology as today's `rollup_offset` stall; existing pressure machinery handles it. v0.17+ improvement: track consumption by file-offset interval, not log position |
+| R-7 | Compaction fence can stall if record at the head of the log (lowest `logPos`) covers a not-yet-stabilized file region | Same pathology as today's `rollup_offset` stall; existing pressure machinery handles it. v0.17+ improvement: track consumption by file-offset interval, not log position |
 | R-8 | Hard to unit-test pread-based rollup | Existing temp-dir test infra works; new tests seed `logIndex` via real `AppendWrite` calls |
 
 ## Phased plan
