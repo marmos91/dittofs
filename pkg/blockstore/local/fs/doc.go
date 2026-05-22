@@ -52,6 +52,58 @@
 // between (1) and (2) leaves an orphan chunk under blocks/; Phase 11's
 // mark-sweep GC cleans it up (not in Phase 10).
 //
+// # Per-file logIndex (Direction 1)
+//
+// The append log stores records in arrival order (per-file mu serializes
+// AppendWrite), NOT in file_offset order. Parallel clients (e.g. macOS
+// NFSv3) routinely produce interleaved file_offsets across consecutive
+// records. The interval tree owns the file-offset domain — "which file
+// regions are dirty/stable" — and a per-payload logIndex owns the
+// log-position domain — "where in the log does each record's frame
+// start". The two are populated in lockstep:
+//
+//   - AppendWrite advances lf.eofPos under the per-file mu and appends
+//     (logPos, fileOff, payloadLen) to the logIndex.
+//   - Recovery's per-log scan does the same, then idx.SetFence(effectiveOff)
+//     pins the compactionFence at the persisted rollup_offset.
+//
+// Rollup runs against this pair:
+//
+//   - tree.EarliestStable picks the next file-offset interval to chunk.
+//   - idx.EntriesForInterval(off, length) returns the records whose
+//     fileOffsets intersect that window, in arrival (logPos) order — the
+//     order reconstructStream needs to honor D-35 "later-record-wins"
+//     overwrites at the same offset.
+//   - readRecordAt(rf, logPos, payloadLen) does a single pread per record
+//     (header + payload), CRC-validates, and returns the payload.
+//   - After StoreChunk succeeds for every emitted chunk, idx.MarkConsumed
+//     is called for each surviving logPos; idx.AdvanceFence walks the
+//     consumed set forward from the prior fence and returns the new one
+//     — that value is what gets persisted as rollup_offset.
+//
+// rollup_offset semantic shift: the on-disk format is unchanged, but
+// the value now records the compactionFence (largest logPos s.t. every
+// earlier entry has been consumed) rather than a sequential scan cursor.
+// A consumed entry preceded by an unconsumed predecessor does NOT advance
+// the fence — its chunks are durable, but the log byte prefix stays
+// anchored until the predecessor is consumed (the "stalled fence"
+// scenario). tree.ConsumeUpTo still runs every pass that emits chunks,
+// so the dirty interval clears and the workload makes forward progress
+// even when the fence cannot.
+//
+// TRANSITIONAL-V0.17+: physical log compaction (rewriting the log file
+// dropping consumed records up to compactionFence) is not implemented
+// here. The log grows until the payload is deleted; pressure machinery
+// caps the worst case via maxLogBytes. A future milestone will
+// add a compaction pass that truncates the on-disk log down to its
+// post-fence suffix.
+//
+// TRANSITIONAL-V0.17+: tracking consumption by file-offset interval
+// instead of log position would eliminate the stalled-fence pathology
+// entirely. Direction 1 keeps consumption keyed by logPos for minimal
+// surface change; the file-offset-keyed variant is a v0.17 follow-up
+// per R-7 in .planning/proposals/2026-05-22-logindex-rollup-redesign.md.
+//
 // # Pressure channel (LSL-04, INV-05)
 //
 // logBytesTotal <= max_log_bytes per FSStore. When budget is exceeded,
@@ -73,7 +125,9 @@
 //	          |    +-- readRecord ok=false (torn / CRC mismatch) ?
 //	          |         -> truncate log at this record boundary
 //	          |
-//	          +-- rebuild per-file interval tree from surviving records
+//	          +-- rebuild per-file interval tree AND logIndex from
+//	              surviving records (Direction 1); SetFence(effectiveOff)
+//	              pins compactionFence at the boot-time rollup_offset
 //	          |
 //	          +-- orphan sweep:
 //	               metadata.GetRollupOffset(payloadID) == 0

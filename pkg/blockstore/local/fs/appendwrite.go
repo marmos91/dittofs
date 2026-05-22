@@ -40,6 +40,15 @@ type logFile struct {
 	// which is the correct error posture (D-08 — caller observes the
 	// fsync result).
 	groupCommit *groupCommit
+
+	// eofPos tracks the on-disk EOF byte offset of this log. Initialized
+	// at construction (either logHeaderSize for a freshly initialized log
+	// or the seek-end offset for a reopened one) and advanced under the
+	// per-file `mu` after each successful writeRecord + groupCommit.Sync
+	// pair in AppendWrite. It is the canonical "log position" cursor used
+	// by the per-file logIndex (Direction 1 redesign) to record where in
+	// the log each AppendWrite's record landed without re-statting the fd.
+	eofPos uint64
 }
 
 // logPath returns the on-disk path for a payload's append-log file:
@@ -87,6 +96,7 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 		// Declare f at outer scope and use `=` (not `:=`) in the branches
 		// below to avoid the shadowing bug called out in plan 04.
 		var f *os.File
+		var eof int64
 		_, statErr := os.Stat(path)
 		if statErr == nil {
 			// Reopen existing log, seek to EOF for append.
@@ -95,7 +105,7 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 			if err != nil {
 				return nil, nil, nil, fmt.Errorf("append log: reopen: %w", err)
 			}
-			if _, err = f.Seek(0, io.SeekEnd); err != nil {
+			if eof, err = f.Seek(0, io.SeekEnd); err != nil {
 				_ = f.Close()
 				return nil, nil, nil, fmt.Errorf("append log: seek end: %w", err)
 			}
@@ -105,14 +115,14 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 			if err != nil {
 				return nil, nil, nil, err
 			}
-			if _, err = f.Seek(0, io.SeekEnd); err != nil {
+			if eof, err = f.Seek(0, io.SeekEnd); err != nil {
 				_ = f.Close()
 				return nil, nil, nil, fmt.Errorf("append log: seek end: %w", err)
 			}
 		} else {
 			return nil, nil, nil, fmt.Errorf("append log: stat: %w", statErr)
 		}
-		lf = &logFile{f: f, path: path}
+		lf = &logFile{f: f, path: path, eofPos: uint64(eof)}
 		// Phase 19 Opt 2 (D-06/D-07/D-08): per-file fsync coordinator.
 		// Bound method value captures lf.f at construction; lf.f is not
 		// rotated for the FSStore lifetime, so the binding stays valid.
@@ -126,6 +136,12 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 	if !treeOk {
 		tree = newIntervalTree()
 		bc.dirtyIntervals[payloadID] = tree
+	}
+	// Direction-1 rollup redesign: pair every payload's interval tree
+	// with a logIndex. The logIndex is allocated on first touch (here)
+	// and from recovery's install path. Both sites run under bc.logsMu.
+	if _, ok := bc.logIndices[payloadID]; !ok {
+		bc.logIndices[payloadID] = newLogIndex()
 	}
 	return lf, mu, tree, nil
 }
@@ -302,8 +318,30 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 	if err := lf.groupCommit.Sync(ctx); err != nil {
 		return fmt.Errorf("log fsync: %w", err)
 	}
+	// Advance the log-position cursor only after the writeRecord +
+	// groupCommit.Sync pair has succeeded. We are still under the per-
+	// file `mu`, so the increment is serialized against any other writer
+	// or rollup pread that consults lf.eofPos. Direction-1 redesign: the
+	// pre-advance value is the logPos at which this record's frame
+	// starts; capture it before the advance so the logIndex entry
+	// points at the correct frame boundary.
+	logPos := lf.eofPos
+	lf.eofPos += uint64(n)
 	bc.logBytesTotal.Add(int64(n))
 	tree.Insert(offset, uint32(len(data)), time.Now())
+	// Direction-1 redesign: record this AppendWrite in the per-payload
+	// logIndex. The interval tree above answers "which file regions are
+	// dirty"; logIndex answers "where in the log are the records for
+	// those regions" — decoupling the two domains so the rollup can
+	// translate a stable file-offset interval into a pread set even
+	// when records arrived out of file-offset order. Still no consumer
+	// in this commit; P5 switches the rollup to read it.
+	bc.logsMu.RLock()
+	idx := bc.logIndices[payloadID]
+	bc.logsMu.RUnlock()
+	if idx != nil {
+		idx.Append(logPos, offset, uint32(len(data)))
+	}
 
 	// Non-blocking nudge to the rollup pool (plan 06). If the channel is
 	// full, drop the signal — the rollup worker's ticker arm will pick up
@@ -471,6 +509,7 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 	delete(bc.logFDs, payloadID)
 	delete(bc.logLocks, payloadID)
 	delete(bc.dirtyIntervals, payloadID)
+	delete(bc.logIndices, payloadID)
 	delete(bc.truncations, payloadID)
 	delete(bc.tombstones, payloadID)
 	bc.logsMu.Unlock()

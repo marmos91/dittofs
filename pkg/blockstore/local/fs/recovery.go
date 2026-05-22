@@ -298,6 +298,14 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 			return nil
 		}
 		tree := newIntervalTree()
+		// Direction-1 rollup redesign: build the per-payload logIndex in
+		// lockstep with the interval tree. Each successfully replayed
+		// record's frame start is captured as logPos so the post-boot
+		// rollup can run the same logIndex-driven path as a steady-state
+		// rollup. SetFence below pins the compactionFence at the persisted
+		// rollup_offset so AdvanceFence walks start from there.
+		idx := newLogIndex()
+		idx.SetFence(effectiveOff)
 		pos := effectiveOff
 		records := 0
 		for {
@@ -343,6 +351,7 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 				break
 			}
 			tree.Insert(off, uint32(len(payload)), time.Now())
+			idx.Append(lastPos, off, uint32(len(payload)))
 			pos += uint64(recordFrameOverhead) + uint64(len(payload))
 			records++
 		}
@@ -389,19 +398,25 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 		}
 
 		// Install fd into FSStore, seeked to EOF for subsequent appends.
-		if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		eof, err := f.Seek(0, io.SeekEnd)
+		if err != nil {
 			logger.Warn("recovery: seek end failed", "path", path, "error", err)
 			_ = f.Close()
 			return nil
 		}
 		bc.logsMu.Lock()
-		lf := &logFile{f: f, path: path}
+		lf := &logFile{f: f, path: path, eofPos: uint64(eof)}
 		// Phase 19 Opt 2 (D-06/D-07/D-08): per-file fsync coordinator,
 		// matching the getOrCreateLog construction site in appendwrite.go.
 		lf.groupCommit = newGroupCommit(lf.f.Sync)
 		bc.logFDs[payloadID] = lf
 		bc.logLocks[payloadID] = &sync.Mutex{}
 		bc.dirtyIntervals[payloadID] = tree
+		// Direction-1 redesign: publish the recovery-built logIndex.
+		// The scan above populated one entry per unconsumed record and
+		// pinned the compaction fence at effectiveOff so post-boot
+		// AdvanceFence walks start from the persisted rollup_offset.
+		bc.logIndices[payloadID] = idx
 		bc.logsMu.Unlock()
 		// Reflect the resident (un-rolled-up) log bytes in logBytesTotal
 		// so the pressure loop sees accurate state after boot.

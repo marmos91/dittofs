@@ -177,13 +177,20 @@ type FSStore struct {
 	// along with ctx.Done() and bc.done.
 	pressureCh chan struct{}
 
-	// logsMu guards logFDs, logLocks, dirtyIntervals, and tombstones.
-	// Double-checked locking idiom matches blocksMu / memBlocks in
-	// getOrCreateMemBlock.
+	// logsMu guards logFDs, logLocks, dirtyIntervals, logIndices, and
+	// tombstones. Double-checked locking idiom matches blocksMu /
+	// memBlocks in getOrCreateMemBlock.
 	logsMu         sync.RWMutex
 	logFDs         map[string]*logFile      // payloadID -> open log fd wrapper (D-34: one fd per file, bypasses fdPool)
 	logLocks       map[string]*sync.Mutex   // payloadID -> per-file append mutex (D-32)
 	dirtyIntervals map[string]*intervalTree // payloadID -> dirty-region tree (D-16)
+	// logIndices is the per-payload log-position oracle (Direction-1
+	// rollup redesign). One entry per appended record carries the
+	// frame's log byte offset, its file_offset, and its payload length.
+	// Populated under the per-file `mu` from AppendWrite (P3) and from
+	// the recovery scan (P4). Consumed by the rollup (P5) to translate
+	// a stable file-offset interval into the set of records to pread.
+	logIndices map[string]*logIndex
 	// tombstones marks payloadIDs whose append log has been (or is being)
 	// deleted by DeleteAppendLog (plan 09). rollupFile (plan 06) consults
 	// this BEFORE and AFTER the per-file mutex hand-off to ensure no
@@ -353,6 +360,7 @@ func newFSStoreInternal(baseDir string, maxDisk int64, maxMemory int64, fileBloc
 	bc.logFDs = make(map[string]*logFile)
 	bc.logLocks = make(map[string]*sync.Mutex)
 	bc.dirtyIntervals = make(map[string]*intervalTree)
+	bc.logIndices = make(map[string]*logIndex)
 	bc.tombstones = make(map[string]struct{})
 	bc.truncations = make(map[string]uint64)
 	bc.maxLogBytes = 1 << 30 // 1 GiB default (D-14)

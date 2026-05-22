@@ -185,6 +185,42 @@ func readRecord(r io.Reader) (uint64, []byte, bool, error) {
 	return fileOffset, payload, true, nil
 }
 
+// readRecordAt reads the framed record whose first byte sits at logPos
+// in rf. payloadLen is the caller-known payload size (the logIndex
+// entry's payloadLen field), so we issue a single pread of the full
+// record (frame header + payload) instead of two sequential reads.
+//
+// Returns the decoded file_offset and the payload bytes. Errors:
+//   - the pread returned an I/O error / short read
+//   - the frame's declared payload_len disagrees with the index
+//   - CRC over (file_offset || payload) mismatches the stored CRC
+//
+// All three indicate either log-fd corruption or a logIndex/log
+// divergence bug — the caller (rollup) treats them as a hard failure
+// and skips the rollup pass so a future attempt can reseed.
+func readRecordAt(rf io.ReaderAt, logPos uint64, payloadLen uint32) (uint64, []byte, error) {
+	total := uint64(recordFrameOverhead) + uint64(payloadLen)
+	buf := make([]byte, total)
+	if _, err := rf.ReadAt(buf, int64(logPos)); err != nil {
+		return 0, nil, fmt.Errorf("append log: pread at %d (len=%d): %w", logPos, total, err)
+	}
+	declaredLen := binary.LittleEndian.Uint32(buf[0:4])
+	if declaredLen != payloadLen {
+		return 0, nil, fmt.Errorf("append log: frame payload_len %d != logIndex %d at logPos=%d", declaredLen, payloadLen, logPos)
+	}
+	fileOffset := binary.LittleEndian.Uint64(buf[4:12])
+	wantCRC := binary.LittleEndian.Uint32(buf[12:16])
+	payload := buf[recordFrameOverhead:]
+	var offBuf [8]byte
+	binary.LittleEndian.PutUint64(offBuf[:], fileOffset)
+	gotCRC := crc32.Update(0, crcTable, offBuf[:])
+	gotCRC = crc32.Update(gotCRC, crcTable, payload)
+	if gotCRC != wantCRC {
+		return 0, nil, fmt.Errorf("append log: CRC mismatch at logPos=%d", logPos)
+	}
+	return fileOffset, payload, nil
+}
+
 // advanceRollupOffset atomically updates the log header's rollup_offset
 // field and fsyncs. FIX-6: split into a two-phase pwrite+fsync sequence
 // so the on-disk state is always either fully old-valid, fully new-valid,
