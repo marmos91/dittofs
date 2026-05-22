@@ -32,13 +32,15 @@ type abeChild struct {
 	acl  *acl.ACL
 }
 
-// readOnlyACL grants ACE4_READ_DATA to a single principal. Under ABE,
-// only callers matching that principal see the entry in the listing.
+// readOnlyACL grants the full ABE read mask (fullReadMask) to a single
+// principal. Under ABE, only callers matching that principal see the entry in
+// the listing — see canEnumerateEntry, which mirrors Samba
+// dir.c::user_can_read_fsp.
 func readOnlyACL(who string) *acl.ACL {
 	return &acl.ACL{
 		ACEs: []acl.ACE{{
 			Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
-			AccessMask: acl.ACE4_READ_DATA,
+			AccessMask: fullReadMask,
 			Who:        who,
 		}},
 	}
