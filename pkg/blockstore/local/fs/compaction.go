@@ -172,7 +172,16 @@ func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *l
 	if err != nil {
 		return fmt.Errorf("compaction: open source: %w", err)
 	}
-	defer func() { _ = rf.Close() }()
+	// rfClosed tracks whether the explicit close below ran so the
+	// error-path defer never double-closes. We close rf BEFORE the
+	// rename (rather than via a function-return defer) because Windows
+	// refuses to rename over a file that has any open handle.
+	rfClosed := false
+	defer func() {
+		if !rfClosed {
+			_ = rf.Close()
+		}
+	}()
 
 	newPos := uint64(logHeaderSize)
 	// rebased holds the post-compaction entries in arrival order. We
@@ -273,14 +282,21 @@ func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *l
 		}
 	}
 
-	// Windows: close the open fd against lf.path BEFORE the rename.
-	// `MoveFileEx` / `os.Rename` refuses to replace a file with an open
-	// handle (returns ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION).
-	// POSIX rename works against an open target, so on Linux/macOS we
-	// keep the close after the rename — the order matters there because
-	// holding the old fd across rename preserves the in-flight reader
-	// semantics if anything inside this same goroutine still needed it
-	// (nothing does, but the discipline costs nothing).
+	// Close the read-only source handle before the rename. Windows
+	// refuses to rename over a file with ANY open handle; POSIX
+	// tolerates it, but closing here is harmless on POSIX too — the
+	// copy loop is done and rf is otherwise discarded at function return.
+	if cerr := rf.Close(); cerr != nil {
+		return fmt.Errorf("compaction: close source fd before rename: %w", cerr)
+	}
+	rfClosed = true
+
+	// Windows: also close the writable fd against lf.path BEFORE the
+	// rename for the same reason (`MoveFileEx` / `os.Rename` returns
+	// ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION otherwise). POSIX
+	// rename works against an open target, so on Linux/macOS we keep
+	// the close after the rename — preserves in-flight reader semantics
+	// for code inside this same goroutine if anything still needed it.
 	if runtime.GOOS == "windows" {
 		if cerr := lf.f.Close(); cerr != nil {
 			return fmt.Errorf("compaction: close old fd before rename (windows): %w", cerr)
