@@ -455,6 +455,73 @@ func TestRecovery_RejectsInvalidPayloadIDFromDisk(t *testing.T) {
 	}
 }
 
+// TestRecovery_PathKeyedPayloadID_RoundTrip asserts the #584 fix: a log
+// file stored under a path-keyed name (e.g. `<share>/<file>.txt`) is
+// correctly discovered by the recovery walker. Before the fix the walker
+// used d.Name() (basename only) and the regex rejected `.` and `/`, so
+// every user-facing log was silently orphaned on restart.
+func TestRecovery_PathKeyedPayloadID_RoundTrip(t *testing.T) {
+	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
+	bc := newFSStoreWithRS(t, rs)
+
+	payloadID := "share/file.txt"
+	if err := bc.AppendWrite(context.Background(), payloadID, []byte("hello"), 0); err != nil {
+		t.Fatalf("AppendWrite: %v", err)
+	}
+
+	// Sanity: log lives at logs/share/file.txt.log (subdir form).
+	expectedPath := filepath.Join(bc.baseDir, "logs", "share", "file.txt.log")
+	if _, err := os.Stat(expectedPath); err != nil {
+		t.Fatalf("expected log at %q, stat err: %v", expectedPath, err)
+	}
+
+	bc2 := reopenFSStore(t, bc, rs)
+	bc2.logsMu.RLock()
+	_, lfOk := bc2.logFDs[payloadID]
+	_, treeOk := bc2.dirtyIntervals[payloadID]
+	_, idxOk := bc2.logIndices[payloadID]
+	bc2.logsMu.RUnlock()
+	if !lfOk {
+		t.Fatalf("FSStore did not restore logFile for path-keyed payloadID %q", payloadID)
+	}
+	if !treeOk {
+		t.Fatalf("FSStore did not restore dirtyIntervals for path-keyed payloadID %q", payloadID)
+	}
+	if !idxOk {
+		t.Fatalf("FSStore did not restore logIndex for path-keyed payloadID %q", payloadID)
+	}
+}
+
+// TestRecovery_PathTraversal_Rejected asserts the FIX-18 mitigation
+// survives the #584 regex broadening: a log file dropped at a path that
+// would map to a `..` component in the derived payloadID MUST still be
+// rejected by isValidPayloadID. The check covers both interior `..`
+// (e.g. `share/../etc/passwd`) and leading-dot forms.
+func TestRecovery_PathTraversal_Rejected(t *testing.T) {
+	cases := []struct {
+		name     string
+		valid    bool
+		payload  string
+	}{
+		{"plain-alphanum", true, "valid"},
+		{"path-keyed", true, "share/file.txt"},
+		{"deep-path", true, "share/sub1/sub2/file.bin"},
+		{"interior-dotdot", false, "share/../etc/passwd"},
+		{"leading-dotdot", false, "../etc/passwd"},
+		{"leading-dot", false, "..bad..payload.id"},
+		{"leading-slash", false, "/absolute/path"},
+		{"empty", false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isValidPayloadID(tc.payload)
+			if got != tc.valid {
+				t.Fatalf("isValidPayloadID(%q): got %v want %v", tc.payload, got, tc.valid)
+			}
+		})
+	}
+}
+
 // TestRecovery_OrphanAgeFloor_WarnsOnNonPositive asserts FIX-16: when the
 // effective orphanLogMinAgeSeconds is non-positive (a misconfiguration
 // that bypasses NewWithOptions' default-injection — e.g., a future code
