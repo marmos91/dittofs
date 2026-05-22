@@ -61,6 +61,27 @@ type AuthContext struct {
 	// CREATE with FILE_DELETE_ON_CLOSE + desiredAccess=DELETE. Leave false for
 	// NFS and any operation that must enforce strict POSIX write-on-parent.
 	HasDeleteAccess bool
+
+	// BypassTraverseChecking signals that the caller holds the Windows
+	// SeChangeNotifyPrivilege ("Bypass traverse checking"). Per MS-DTYP
+	// §2.5.3.2 and MS-FSA §2.1.5.1.1, holders of this privilege are exempt
+	// from the per-directory FILE_TRAVERSE (FILE_EXECUTE) check during path
+	// resolution: a deny on an intermediate directory's DACL does not prevent
+	// resolving a child whose own DACL grants the requested access.
+	//
+	// On Windows this privilege is granted to BUILTIN\Users and Everyone by
+	// default, so virtually every interactive and SMB session holds it.
+	// Samba mirrors the behavior — its `unix extensions = no` / `acl
+	// allow execute always` default skips the parent traverse check during
+	// SMB path walks.
+	//
+	// SMB handlers MUST set this on every AuthContext they build so that
+	// CREATE/OPEN against a child of a parent whose DACL omits FILE_TRAVERSE
+	// (but grants the requested rights on the child) returns STATUS_OK
+	// instead of STATUS_OBJECT_NAME_NOT_FOUND / STATUS_ACCESS_DENIED.
+	// NFS handlers MUST leave this false — POSIX traverse semantics differ
+	// and there is no equivalent privilege model.
+	BypassTraverseChecking bool
 }
 
 // NewSystemAuthContext creates an AuthContext for internal/system operations
