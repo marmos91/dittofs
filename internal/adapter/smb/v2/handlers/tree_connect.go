@@ -23,11 +23,13 @@ const treeConnectFixedSize = 8
 // [MS-SMB2] Section 2.2.10
 const SMB2ShareFlagEncryptData uint32 = 0x00008000
 
-// SMB2ShareCapAccessBasedDirectoryEnum advertises Windows access-based
-// enumeration on the share. When set in the Capabilities field of the
+// SMB2ShareFlagAccessBasedDirectoryEnum advertises Windows access-based
+// enumeration on the share. When set in the ShareFlags field of the
 // TREE_CONNECT response, clients learn that QUERY_DIRECTORY hides entries
-// the caller cannot read. [MS-SMB2] Section 2.2.10.
-const SMB2ShareCapAccessBasedDirectoryEnum uint32 = 0x00000080
+// the caller cannot read. [MS-SMB2] Section 2.2.10. Note: this lives in
+// ShareFlags (0x0800), not Capabilities — the Capabilities value 0x80 is
+// SMB2_SHARE_CAP_ASYMMETRIC, an unrelated dialect-3.0.2 feature.
+const SMB2ShareFlagAccessBasedDirectoryEnum uint32 = 0x00000800
 
 // ipcMaximalAccess defines the access rights for the IPC$ virtual share.
 // [MS-SMB2] Section 2.2.10 - MaximalAccess is a bitmask of allowed operations.
@@ -172,14 +174,17 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	if share.EncryptData {
 		shareFlags |= SMB2ShareFlagEncryptData
 	}
-
-	// Capabilities — advertise per-share features. Refs #532: MS-SMB2 §2.2.10
-	// SMB2_SHARE_CAP_ACCESS_BASED_DIRECTORY_ENUM tells the client we hide
-	// unreadable entries on enumeration.
-	var capabilities uint32
+	// Refs #549: SMB2_SHAREFLAG_ACCESS_BASED_DIRECTORY_ENUM (MS-SMB2 §2.2.10)
+	// tells the client we hide unreadable entries on enumeration. The bit
+	// belongs in ShareFlags (0x0800), not Capabilities — matches Samba
+	// source3/smbd/smb2_tcon.c and the smbtorture acls.ACCESSBASED check
+	// at source4/torture/smb2/acls.c which reads smb2cli_tcon_flags().
 	if share.AccessBasedEnumeration {
-		capabilities |= SMB2ShareCapAccessBasedDirectoryEnum
+		shareFlags |= SMB2ShareFlagAccessBasedDirectoryEnum
 	}
+
+	// Capabilities — no per-share caps currently emitted.
+	var capabilities uint32
 
 	// Build response (16 bytes)
 	w := smbenc.NewWriter(16)

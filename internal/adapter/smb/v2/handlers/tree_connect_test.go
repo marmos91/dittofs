@@ -443,6 +443,121 @@ func TestTreeConnect_ShareEncryptDataConstant(t *testing.T) {
 	}
 }
 
+// Refs #549: SMB2_SHAREFLAG_ACCESS_BASED_DIRECTORY_ENUM must be 0x00000800 in
+// the ShareFlags field per MS-SMB2 §2.2.10. PR #536 previously emitted 0x80 in
+// the Capabilities field, which is SMB2_SHARE_CAP_ASYMMETRIC and unrelated;
+// smbtorture smb2.acls.ACCESSBASED reads ShareFlags via smb2cli_tcon_flags.
+func TestTreeConnect_ShareFlagAccessBasedEnumConstant(t *testing.T) {
+	if SMB2ShareFlagAccessBasedDirectoryEnum != 0x00000800 {
+		t.Errorf("SMB2ShareFlagAccessBasedDirectoryEnum = 0x%08x, expected 0x00000800", SMB2ShareFlagAccessBasedDirectoryEnum)
+	}
+}
+
+// newTreeConnectABEHandler builds an SMB handler with a single share whose
+// AccessBasedEnumeration flag is configurable. Returns the handler and the
+// session ID of an authenticated session, mirroring newTreeConnectGateHandler.
+func newTreeConnectABEHandler(t *testing.T, shareName string, abe bool) (*Handler, uint64) {
+	t.Helper()
+
+	rt := runtime.New(nil)
+	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
+	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
+		t.Fatalf("RegisterMetadataStore: %v", err)
+	}
+
+	cfg := &runtime.ShareConfig{
+		Name:                   shareName,
+		MetadataStore:          "test-meta",
+		Enabled:                true,
+		AccessBasedEnumeration: abe,
+		RootAttr: &metadata.FileAttr{
+			Type: metadata.FileTypeDirectory,
+			Mode: 0o755,
+		},
+	}
+	if err := rt.AddShare(context.Background(), cfg); err != nil {
+		t.Fatalf("AddShare: %v", err)
+	}
+
+	h := NewHandler()
+	h.Registry = rt
+
+	sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "")
+	return h, sess.SessionID
+}
+
+// TestTreeConnect_AccessBasedEnumerationShareFlag verifies the wire-level
+// TREE_CONNECT response when a share has AccessBasedEnumeration set. The ABE
+// bit (0x0800) must appear in ShareFlags (offset 4) and must NOT leak into
+// Capabilities (offset 8) — the latter holds SMB2_SHARE_CAP_ASYMMETRIC at 0x80
+// per MS-SMB2 §2.2.10 and is unrelated to ABE (refs #549).
+func TestTreeConnect_AccessBasedEnumerationShareFlag(t *testing.T) {
+	t.Run("EnabledShareSetsShareFlagBit", func(t *testing.T) {
+		h, sessionID := newTreeConnectABEHandler(t, "/abe", true)
+		ctx := newTreeConnectTestContext(sessionID)
+
+		body := buildTreeConnectRequestBody("\\\\server\\abe")
+		result, err := h.TreeConnect(ctx, body)
+		if err != nil {
+			t.Fatalf("TreeConnect returned unexpected error: %v", err)
+		}
+		if result.Status != types.StatusSuccess {
+			t.Fatalf("Status = 0x%x, want StatusSuccess (0x%x)",
+				result.Status, types.StatusSuccess)
+		}
+		if len(result.Data) != 16 {
+			t.Fatalf("Response should be 16 bytes, got %d", len(result.Data))
+		}
+
+		// ShareFlags at offset 4..8 must have ABE bit (0x0800) set.
+		shareFlags := binary.LittleEndian.Uint32(result.Data[4:8])
+		if shareFlags&SMB2ShareFlagAccessBasedDirectoryEnum == 0 {
+			t.Errorf("ShareFlags = 0x%08x, expected SMB2_SHAREFLAG_ACCESS_BASED_DIRECTORY_ENUM (0x0800) set",
+				shareFlags)
+		}
+
+		// Capabilities at offset 8..12 must NOT carry the previously-wrong
+		// 0x80 bit (that is SMB2_SHARE_CAP_ASYMMETRIC and unrelated to ABE).
+		capabilities := binary.LittleEndian.Uint32(result.Data[8:12])
+		if capabilities&0x80 != 0 {
+			t.Errorf("Capabilities = 0x%08x, should NOT have 0x80 set (refs #549 regression)",
+				capabilities)
+		}
+	})
+
+	t.Run("DisabledShareDoesNotSetShareFlagBit", func(t *testing.T) {
+		h, sessionID := newTreeConnectABEHandler(t, "/no-abe", false)
+		ctx := newTreeConnectTestContext(sessionID)
+
+		body := buildTreeConnectRequestBody("\\\\server\\no-abe")
+		result, err := h.TreeConnect(ctx, body)
+		if err != nil {
+			t.Fatalf("TreeConnect returned unexpected error: %v", err)
+		}
+		if result.Status != types.StatusSuccess {
+			t.Fatalf("Status = 0x%x, want StatusSuccess (0x%x)",
+				result.Status, types.StatusSuccess)
+		}
+		if len(result.Data) != 16 {
+			t.Fatalf("Response should be 16 bytes, got %d", len(result.Data))
+		}
+
+		// ShareFlags at offset 4..8 must NOT have the ABE bit (0x0800) set.
+		shareFlags := binary.LittleEndian.Uint32(result.Data[4:8])
+		if shareFlags&SMB2ShareFlagAccessBasedDirectoryEnum != 0 {
+			t.Errorf("ShareFlags = 0x%08x, should NOT have SMB2_SHAREFLAG_ACCESS_BASED_DIRECTORY_ENUM (0x0800) set when ABE is disabled",
+				shareFlags)
+		}
+
+		// And the wrong 0x80 bit must not leak into Capabilities either.
+		capabilities := binary.LittleEndian.Uint32(result.Data[8:12])
+		if capabilities&0x80 != 0 {
+			t.Errorf("Capabilities = 0x%08x, should NOT have 0x80 set",
+				capabilities)
+		}
+	})
+}
+
 func TestTreeConnect_EncryptedShareFlagsInResponse(t *testing.T) {
 	// Test that building a tree connect response with share flags at offset 4
 	// correctly encodes the ENCRYPT_DATA flag.

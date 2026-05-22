@@ -34,9 +34,10 @@ type Share struct {
 	AclFlagInheritedCanonicalization bool `gorm:"default:true;not null" json:"acl_flag_inherited_canonicalization"`
 	// AccessBasedEnumeration enables Windows access-based enumeration on the
 	// share (SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM per MS-SRVS). When
-	// true, TREE_CONNECT advertises SMB2_SHARE_CAP_ACCESS_BASED_DIRECTORY_ENUM
-	// (MS-SMB2 §2.2.10) and QUERY_DIRECTORY hides entries the caller cannot
-	// read. Default false matches the historical behaviour (refs #532).
+	// true, TREE_CONNECT sets SMB2_SHAREFLAG_ACCESS_BASED_DIRECTORY_ENUM in
+	// ShareFlags (MS-SMB2 §2.2.10) and QUERY_DIRECTORY hides entries the
+	// caller cannot read. Default false matches the historical behaviour
+	// (refs #532, #549).
 	AccessBasedEnumeration bool      `gorm:"default:false;not null" json:"access_based_enumeration"`
 	DefaultPermission      string    `gorm:"default:read-write;size:50" json:"default_permission"`      // none, read, read-write, admin
 	Config                 string    `gorm:"type:text" json:"-"`                                        // JSON blob for additional share config
