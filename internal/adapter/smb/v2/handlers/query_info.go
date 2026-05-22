@@ -544,7 +544,10 @@ func (h *Handler) handlePipeFileInfo(req *QueryInfoRequest, openFile *OpenFile) 
 func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *metadata.File, openFile *OpenFile, class types.FileInfoClass) ([]byte, error) {
 	switch class {
 	case types.FileBasicInformation:
-		basicInfo := FileAttrToFileBasicInfo(&file.FileAttr)
+		// Use name-aware variant so dot-prefixed files surface HIDDEN per
+		// MS-FSCC §2.6 (matches QUERY_DIRECTORY which always sees the name).
+		// Required by smb2.dosmode (source4/torture/smb2/dosmode.c).
+		basicInfo := FileAttrToFileBasicInfoWithName(&file.FileAttr, basenameForHidden(openFile))
 		return EncodeFileBasicInfo(basicInfo), nil
 
 	case types.FileStandardInformation:
@@ -580,7 +583,7 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		return h.buildFileStreamInformation(authCtx, file, openFile)
 
 	case types.FileNetworkOpenInformation:
-		networkInfo := FileAttrToFileNetworkOpenInfo(&file.FileAttr)
+		networkInfo := FileAttrToFileNetworkOpenInfoWithName(&file.FileAttr, basenameForHidden(openFile))
 		return EncodeFileNetworkOpenInfo(networkInfo), nil
 
 	case types.FilePositionInformation:
@@ -696,7 +699,7 @@ func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext
 	// FILE_ALL_INFORMATION [MS-FSCC] 2.4.2 (varies)
 	// Basic (40) + Standard (24) + Internal (8) + EA (4) + Access (4) + Position (8) + Mode (4) + Alignment (4) + Name (variable)
 
-	basicInfo := FileAttrToFileBasicInfo(&file.FileAttr)
+	basicInfo := FileAttrToFileBasicInfoWithName(&file.FileAttr, basenameForHidden(openFile))
 	standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, false)
 	nameBytes := encodeUTF16LE(toSMBPath(openFile.Path))
 
@@ -1116,6 +1119,26 @@ func fileInfoClassRequiredAccess(class types.FileInfoClass) (uint32, bool) {
 // and GENERIC_EXECUTE are mapped to specific access rights during CREATE.
 // GENERIC_READ includes FILE_READ_ATTRIBUTES; GENERIC_WRITE includes FILE_WRITE_ATTRIBUTES;
 // GENERIC_EXECUTE includes FILE_READ_ATTRIBUTES; GENERIC_ALL includes everything.
+// basenameForHidden returns the basename used for IsHiddenFile's dot-prefix
+// detection. OpenFile.FileName holds the basename in the parent directory (set
+// at CREATE), so prefer it. Fall back to the last path component when FileName
+// is empty (e.g., directory-root opens recorded before dot-prefix detection
+// became name-aware) — this keeps QUERY_INFO consistent with QUERY_DIRECTORY
+// where the emitted entries always carry the basename.
+func basenameForHidden(openFile *OpenFile) string {
+	if openFile == nil {
+		return ""
+	}
+	if openFile.FileName != "" {
+		return openFile.FileName
+	}
+	p := openFile.Path
+	if i := strings.LastIndexAny(p, "/\\"); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+
 func hasAccessRight(grantedAccess, requiredRight uint32) bool {
 	// Explicit right present
 	if grantedAccess&requiredRight != 0 {
