@@ -119,6 +119,7 @@ func makeDurableHandle(id string, shareName string) *lock.PersistedDurableHandle
 		Path:            "/test/" + id + ".txt",
 		ShareName:       shareName,
 		DesiredAccess:   0x12019F,
+		GrantedAccess:   0x100081,
 		ShareAccess:     0x07,
 		CreateOptions:   0x40,
 		MetadataHandle:  []byte("handle-" + id),
@@ -159,6 +160,9 @@ func assertDurableHandleEqual(t *testing.T, expected, actual *lock.PersistedDura
 	}
 	if expected.DesiredAccess != actual.DesiredAccess {
 		t.Errorf("DesiredAccess: got %d, want %d", actual.DesiredAccess, expected.DesiredAccess)
+	}
+	if expected.GrantedAccess != actual.GrantedAccess {
+		t.Errorf("GrantedAccess: got %d, want %d", actual.GrantedAccess, expected.GrantedAccess)
 	}
 	if expected.ShareAccess != actual.ShareAccess {
 		t.Errorf("ShareAccess: got %d, want %d", actual.ShareAccess, expected.ShareAccess)

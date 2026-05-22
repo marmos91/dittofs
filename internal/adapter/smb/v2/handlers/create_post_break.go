@@ -207,7 +207,15 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	// is denied. New files (createAction == FileCreated) inherit their ACL from
 	// the parent at create time and don't need this check — parent write was
 	// already gated via CheckParentWriteAccess in Create(). Tracking #529.
+	//
+	// grantedAccess captures the effective rights for the open per
+	// MS-SMB2 §3.3.5.9 paragraph 8: the per-bit intersection of the
+	// requested mask with the file's DACL. Carried onto OpenFile.GrantedAccess
+	// below and consumed by FileAccessInformation (#548, MS-FSCC §2.4.1) and
+	// the QUERY_INFO open-level access gate (MS-SMB2 §3.3.5.20.1).
 	metaSvc := h.Registry.GetMetadataService()
+	var grantedAccess uint32
+	var grantedComputed bool
 	if fileExists && existingFile != nil {
 		granted, err := metaSvc.CheckFileAccess(existingFile, authCtx, req.DesiredAccess)
 		if err != nil {
@@ -218,6 +226,8 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 				"error", err)
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}
 		}
+		grantedAccess = granted
+		grantedComputed = true
 	}
 
 	// Step 6d: Validate delete-on-close requirements per MS-FSA 2.1.5.1.2.1.
@@ -280,6 +290,31 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			logger.Warn("CREATE: failed to overwrite file", "name", baseName, "error", err)
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}
 		}
+	}
+
+	// Compute GrantedAccess for new/overwritten files. The fileExists branch
+	// above already populated grantedAccess from CheckFileAccess. For
+	// FileCreated the ACL was inherited from the parent at create time; for
+	// FileOverwritten/Superseded the existing DACL is preserved. Both need
+	// the intersection of req.DesiredAccess with the resulting file's DACL —
+	// CheckFileAccess returns the per-bit granted mask in both arms (allow
+	// AND deny), so always take the returned mask. Upstream gates
+	// (CheckParentWriteAccess for FileCreated; DACL check at step 6c-bis for
+	// the existing-file path that flows into Overwrite/Supersede) have
+	// already approved the open — an unexpected ErrAccessDenied here would
+	// indicate the post-create DACL diverged from the parent's inherited
+	// set, so we log and continue with the (possibly narrowed) granted mask
+	// rather than overstate rights by re-resolving DesiredAccess.
+	if !grantedComputed && file != nil {
+		g, err := metaSvc.CheckFileAccess(file, authCtx, req.DesiredAccess)
+		if err != nil {
+			logger.Debug("CREATE: post-create CheckFileAccess returned narrowed mask",
+				"path", filename,
+				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
+				"granted", fmt.Sprintf("0x%x", g),
+				"error", err)
+		}
+		grantedAccess = g
 	}
 
 	// Step 7a: Restore frozen timestamps on parent directory (MS-FSA 2.1.5.14.2).
@@ -450,6 +485,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		ShareName:      tree.ShareName,
 		OpenTime:       time.Now(),
 		DesiredAccess:  req.DesiredAccess,
+		GrantedAccess:  grantedAccess,
 		IsDirectory:    file.Type == metadata.FileTypeDirectory,
 		MetadataHandle: fileHandle,
 		PayloadID:      file.PayloadID,

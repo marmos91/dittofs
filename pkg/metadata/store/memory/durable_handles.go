@@ -214,6 +214,7 @@ func cloneDurableHandle(h *lock.PersistedDurableHandle) *lock.PersistedDurableHa
 		Path:            h.Path,
 		ShareName:       h.ShareName,
 		DesiredAccess:   h.DesiredAccess,
+		GrantedAccess:   h.GrantedAccess,
 		ShareAccess:     h.ShareAccess,
 		CreateOptions:   h.CreateOptions,
 		PayloadID:       h.PayloadID,

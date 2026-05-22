@@ -320,6 +320,89 @@ func TestFileInfoClassRequiredAccess(t *testing.T) {
 	}
 }
 
+// TestFileAccessInformation_ReturnsGrantedAccess locks the contract added
+// in #548: FileAccessInformation MUST report OpenFile.GrantedAccess (the
+// DACL-evaluated effective rights), NOT a re-resolved DesiredAccess.
+// smbtorture smb2.acls.GENERIC at acls.c:440 fails when this is wrong.
+func TestFileAccessInformation_ReturnsGrantedAccess(t *testing.T) {
+	h := NewHandler()
+	file := &metadata.File{
+		ID: uuid.New(),
+		FileAttr: metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Size: 0,
+		},
+	}
+	// Simulate an open made with MAXIMUM_ALLOWED whose DACL only granted
+	// the GENERIC_WRITE specific bits + the smbtorture "expected_mask"
+	// standard rights. This is the exact 0x00070080 the GENERIC test asks
+	// for; the pre-fix code would have returned 0x001F01FF (FILE_ALL_ACCESS).
+	const expected uint32 = 0x00070080
+	openFile := &OpenFile{
+		FileName:      "test.txt",
+		Path:          "test.txt",
+		DesiredAccess: uint32(types.MaximumAllowed),
+		GrantedAccess: expected,
+	}
+	info, err := h.buildFileInfoFromStore(
+		&metadata.AuthContext{Context: context.Background(), Identity: &metadata.Identity{}},
+		file, openFile, types.FileAccessInformation,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(info) != 4 {
+		t.Fatalf("info length = %d, want 4", len(info))
+	}
+	got := binary.LittleEndian.Uint32(info[0:4])
+	if got != expected {
+		t.Errorf("FileAccessInformation = 0x%08x, want 0x%08x (GrantedAccess)", got, expected)
+	}
+}
+
+// TestFileAllInformation_AccessInformationReturnsGrantedAccess locks the
+// contract added in #548 for the FileAllInformation embedded
+// AccessInformation field. Per MS-FSCC §2.4.2 the AccessInformation block
+// sits at fixed offset 76 (Basic 40 + Standard 24 + Internal 8 + EA 4 = 76)
+// and MUST report the DACL-evaluated effective rights — i.e. mirror what a
+// standalone FileAccessInformation query would return — NOT a re-resolved
+// DesiredAccess. Companion to TestFileAccessInformation_ReturnsGrantedAccess.
+func TestFileAllInformation_AccessInformationReturnsGrantedAccess(t *testing.T) {
+	h := NewHandler()
+	file := &metadata.File{
+		ID: uuid.New(),
+		FileAttr: metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Size: 0,
+		},
+	}
+	// Mirrors the FileAccessInformation test: open made with MAXIMUM_ALLOWED
+	// whose effective DACL grant is 0x00070080, not FILE_ALL_ACCESS.
+	const expected uint32 = 0x00070080
+	openFile := &OpenFile{
+		FileName:      "test.txt",
+		Path:          "test.txt",
+		DesiredAccess: uint32(types.MaximumAllowed),
+		GrantedAccess: expected,
+	}
+	info, err := h.buildFileInfoFromStore(
+		&metadata.AuthContext{Context: context.Background(), Identity: &metadata.Identity{}},
+		file, openFile, types.FileAllInformation,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// FileAllInformation fixed prefix is 100 bytes (40+24+8+4+4+8+4+4+4).
+	// AccessInformation is the 4-byte field at offset 76.
+	if len(info) < 80 {
+		t.Fatalf("info length = %d, want >= 80", len(info))
+	}
+	got := binary.LittleEndian.Uint32(info[76:80])
+	if got != expected {
+		t.Errorf("FileAllInformation AccessInformation @ offset 76 = 0x%08x, want 0x%08x (GrantedAccess)", got, expected)
+	}
+}
+
 func TestResolveAccessFlags(t *testing.T) {
 	tests := []struct {
 		name     string

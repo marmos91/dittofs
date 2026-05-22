@@ -1166,6 +1166,8 @@ func (h *Handler) handlePipeCreate(ctx *SMBHandlerContext, req *CreateRequest, t
 		ShareName:     tree.ShareName,
 		OpenTime:      time.Now(),
 		DesiredAccess: req.DesiredAccess,
+		// Pipes have no DACL; the granted set is the resolved request.
+		GrantedAccess: resolveAccessFlags(req.DesiredAccess),
 		IsDirectory:   false,
 		IsPipe:        true,
 		PipeName:      pipeName,
@@ -1220,6 +1222,29 @@ func (h *Handler) handleOpenRootCreate(
 
 	// Store open file
 	smbFileID := h.GenerateFileID()
+	// Share-root open: report the DACL-evaluated per-bit granted mask per
+	// MS-SMB2 §3.3.5.9 paragraph 8. CheckFileAccess returns the granted
+	// intersection on both arms (allow AND ErrAccessDenied). Share-root
+	// access has already been authorised upstream (CheckExportAccess at
+	// mount + Tree Connect ACL); a partial-deny here therefore reflects a
+	// narrower DACL than the share-level grant, not a fatal denial, so we
+	// log it and continue with the (possibly narrowed) mask rather than
+	// overstate rights by re-resolving DesiredAccess.
+	var grantedAccess uint32
+	if metaSvc := h.Registry.GetMetadataService(); metaSvc != nil {
+		g, err := metaSvc.CheckFileAccess(rootFile, authCtx, req.DesiredAccess)
+		if err != nil {
+			logger.Debug("CREATE: share-root CheckFileAccess returned narrowed mask",
+				"share", tree.ShareName,
+				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
+				"granted", fmt.Sprintf("0x%x", g),
+				"error", err)
+		}
+		grantedAccess = g
+	} else {
+		// No metadata service available: fall back to the resolved mask.
+		grantedAccess = resolveAccessFlags(req.DesiredAccess)
+	}
 	openFile := &OpenFile{
 		FileID:         smbFileID,
 		TreeID:         ctx.TreeID,
@@ -1228,6 +1253,7 @@ func (h *Handler) handleOpenRootCreate(
 		ShareName:      tree.ShareName,
 		OpenTime:       time.Now(),
 		DesiredAccess:  req.DesiredAccess,
+		GrantedAccess:  grantedAccess,
 		IsDirectory:    true,
 		MetadataHandle: rootHandle,
 	}

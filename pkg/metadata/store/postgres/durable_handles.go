@@ -21,7 +21,7 @@ func newPostgresDurableStore(pool *pgxpool.Pool) *postgresDurableStore {
 }
 
 const durableHandleColumns = `
-	id, file_id, path, share_name, desired_access, share_access,
+	id, file_id, path, share_name, desired_access, granted_access, share_access,
 	create_options, metadata_handle, payload_id, oplock_level,
 	lease_key, lease_state, create_guid, app_instance_id,
 	username, session_key_hash, is_v2, created_at, disconnected_at,
@@ -39,6 +39,7 @@ func scanDurableHandle(row pgx.Row) (*lock.PersistedDurableHandle, error) {
 		&h.Path,
 		&h.ShareName,
 		&h.DesiredAccess,
+		&h.GrantedAccess,
 		&h.ShareAccess,
 		&h.CreateOptions,
 		&h.MetadataHandle,
@@ -87,6 +88,7 @@ func scanDurableHandleRows(rows pgx.Rows) ([]*lock.PersistedDurableHandle, error
 			&h.Path,
 			&h.ShareName,
 			&h.DesiredAccess,
+			&h.GrantedAccess,
 			&h.ShareAccess,
 			&h.CreateOptions,
 			&h.MetadataHandle,
@@ -153,19 +155,20 @@ func nullableBytes16(b [16]byte) []byte {
 func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *lock.PersistedDurableHandle) error {
 	query := `
 		INSERT INTO durable_handles (
-			id, file_id, path, share_name, desired_access, share_access,
+			id, file_id, path, share_name, desired_access, granted_access, share_access,
 			create_options, metadata_handle, payload_id, oplock_level,
 			lease_key, lease_state, create_guid, app_instance_id,
 			username, session_key_hash, is_v2, created_at, disconnected_at,
 			timeout_ms, server_start_time,
 			delete_pending, parent_handle, file_name, is_directory
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
 		ON CONFLICT (id) DO UPDATE SET
 			file_id = EXCLUDED.file_id,
 			path = EXCLUDED.path,
 			share_name = EXCLUDED.share_name,
 			desired_access = EXCLUDED.desired_access,
+			granted_access = EXCLUDED.granted_access,
 			share_access = EXCLUDED.share_access,
 			create_options = EXCLUDED.create_options,
 			metadata_handle = EXCLUDED.metadata_handle,
@@ -194,6 +197,7 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 		handle.Path,
 		handle.ShareName,
 		handle.DesiredAccess,
+		handle.GrantedAccess,
 		handle.ShareAccess,
 		handle.CreateOptions,
 		handle.MetadataHandle,

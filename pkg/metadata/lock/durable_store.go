@@ -10,11 +10,21 @@ import (
 // and stored in the DurableHandleStore. If the client reconnects before the
 // timeout expires, the state is restored and the open is resumed without data loss.
 type PersistedDurableHandle struct {
-	ID              string
-	FileID          [16]byte
-	Path            string
-	ShareName       string
-	DesiredAccess   uint32
+	ID            string
+	FileID        [16]byte
+	Path          string
+	ShareName     string
+	DesiredAccess uint32
+	// GrantedAccess is the DACL-evaluated per-bit mask returned to the
+	// client at the original open time (MS-SMB2 §3.3.5.9 paragraph 8).
+	// Persisted across durable reconnect so re-establishment of the open
+	// (MS-SMB2 §3.3.5.9.7, §3.3.5.9.12) restores the exact granted set —
+	// not a freshly re-resolved DesiredAccess, which would silently
+	// inflate rights when the open was made with MAXIMUM_ALLOWED, or when
+	// the file's DACL has changed since open. Mirrors Samba's
+	// smbXsrv_open_global semantics where the access_mask field is
+	// preserved verbatim across reconnect.
+	GrantedAccess   uint32
 	ShareAccess     uint32
 	CreateOptions   uint32
 	MetadataHandle  []byte
