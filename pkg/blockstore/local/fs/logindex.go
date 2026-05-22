@@ -25,8 +25,9 @@ import "sync"
 // against lifecycle drift where a stale snapshot of `idx` could otherwise
 // be appended to concurrently with a fresh snapshot from a recreated
 // payload. The internal lock is uncontended on the steady-state hot path
-// (per-file mu already serialises same-payload writers) so the cost is
-// one atomic CAS per call.
+// (per-file mu already serialises same-payload writers) so the overhead
+// is minimal — sync.Mutex's uncontended fast path is a couple of atomic
+// ops; the slow path only trips under genuine contention.
 //
 // TRANSITIONAL-V0.17+: physical log compaction (truncating the log file
 // at compactionFence) is out of scope. Consumed entries linger in
