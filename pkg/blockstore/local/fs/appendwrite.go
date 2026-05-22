@@ -137,6 +137,12 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 		tree = newIntervalTree()
 		bc.dirtyIntervals[payloadID] = tree
 	}
+	// Direction-1 rollup redesign: pair every payload's interval tree
+	// with a logIndex. The logIndex is allocated on first touch (here)
+	// and from recovery's install path. Both sites run under bc.logsMu.
+	if _, ok := bc.logIndices[payloadID]; !ok {
+		bc.logIndices[payloadID] = newLogIndex()
+	}
 	return lf, mu, tree, nil
 }
 
@@ -317,11 +323,25 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 	// file `mu`, so the increment is serialized against any other writer
 	// or rollup pread that consults lf.eofPos. Direction-1 redesign: the
 	// pre-advance value is the logPos at which this record's frame
-	// starts; the logIndex (added in P2/P3) will capture that snapshot
-	// before this advance.
+	// starts; capture it before the advance so the logIndex entry
+	// points at the correct frame boundary.
+	logPos := lf.eofPos
 	lf.eofPos += uint64(n)
 	bc.logBytesTotal.Add(int64(n))
 	tree.Insert(offset, uint32(len(data)), time.Now())
+	// Direction-1 redesign: record this AppendWrite in the per-payload
+	// logIndex. The interval tree above answers "which file regions are
+	// dirty"; logIndex answers "where in the log are the records for
+	// those regions" — decoupling the two domains so the rollup can
+	// translate a stable file-offset interval into a pread set even
+	// when records arrived out of file-offset order. Still no consumer
+	// in this commit; P5 switches the rollup to read it.
+	bc.logsMu.RLock()
+	idx := bc.logIndices[payloadID]
+	bc.logsMu.RUnlock()
+	if idx != nil {
+		idx.Append(logPos, offset, uint32(len(data)))
+	}
 
 	// Non-blocking nudge to the rollup pool (plan 06). If the channel is
 	// full, drop the signal — the rollup worker's ticker arm will pick up
@@ -489,6 +509,7 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 	delete(bc.logFDs, payloadID)
 	delete(bc.logLocks, payloadID)
 	delete(bc.dirtyIntervals, payloadID)
+	delete(bc.logIndices, payloadID)
 	delete(bc.truncations, payloadID)
 	delete(bc.tombstones, payloadID)
 	bc.logsMu.Unlock()

@@ -403,6 +403,14 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 		bc.logFDs[payloadID] = lf
 		bc.logLocks[payloadID] = &sync.Mutex{}
 		bc.dirtyIntervals[payloadID] = tree
+		// Direction-1 redesign: allocate an empty logIndex here so any
+		// AppendWrite that races recovery's tail finds a non-nil map
+		// entry. P4 seeds it from the scanned records before this
+		// publish; for now it stays empty (the rollup ignores logIndex
+		// until P5).
+		if _, ok := bc.logIndices[payloadID]; !ok {
+			bc.logIndices[payloadID] = newLogIndex()
+		}
 		bc.logsMu.Unlock()
 		// Reflect the resident (un-rolled-up) log bytes in logBytesTotal
 		// so the pressure loop sees accurate state after boot.
