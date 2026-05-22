@@ -291,12 +291,18 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		openFile.EnumerationPattern = ""
 	}
 
-	// Per MS-SMB2 3.3.5.17: If the search pattern has changed since the
-	// last query, the server MUST restart the enumeration from the beginning.
-	// This allows a client to first enumerate with "*" and then query for a
-	// specific file by name without getting NO_MORE_FILES.
-	patternChanged := req.FileName != "" && openFile.EnumerationPattern != "" &&
-		req.FileName != openFile.EnumerationPattern
+	// Per MS-SMB2 §3.3.5.18: if the search pattern has changed since the last
+	// query, the server MUST restart enumeration from the beginning, and an
+	// empty FileName MUST be treated as "*". Normalize both sides so that
+	// spec-equivalent "match all" transitions ("" ↔ "*" ↔ "*.*") are not
+	// flagged as a change.
+	// Gate on EnumerationIndex>0 OR EnumerationComplete to also catch the
+	// "previous query had zero matches" case (STATUS_NO_SUCH_FILE leaves
+	// Index=0 but flips Complete=true). Without the Complete check a
+	// follow-up query with a different pattern would skip the restart
+	// path and incorrectly inherit the drained-cursor state.
+	patternChanged := (openFile.EnumerationIndex > 0 || openFile.EnumerationComplete) &&
+		normalizeSearchPattern(req.FileName) != normalizeSearchPattern(openFile.EnumerationPattern)
 	if patternChanged {
 		logger.Debug("QUERY_DIRECTORY: search pattern changed, restarting enumeration",
 			"old", openFile.EnumerationPattern, "new", req.FileName)
@@ -318,10 +324,9 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		startingFresh = true
 	}
 
-	// Store the current search pattern for change detection on subsequent calls
-	if req.FileName != "" {
-		openFile.EnumerationPattern = req.FileName
-	}
+	// Record the pattern for change detection on the next call. We store the
+	// raw FileName (including ""); normalization happens in the comparison.
+	openFile.EnumerationPattern = req.FileName
 
 	// Read directory entries from metadata store
 	metaSvc := h.Registry.GetMetadataService()
@@ -375,7 +380,7 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		return strings.ToLower(filteredEntries[i].Name) < strings.ToLower(filteredEntries[j].Name)
 	})
 
-	isWildcardSearch := req.FileName == "" || req.FileName == "*" || req.FileName == "*.*"
+	isWildcardSearch := req.FileName == "" || req.FileName == "*" || req.FileName == "*.*" || req.FileName == "<"
 
 	// Compute special entries count ("." and "..")
 	specialCount := 0
@@ -619,6 +624,18 @@ func encodeSingleDirEntry(infoClass types.FileInfoClass, name string, attr *meta
 	default:
 		return encodeBothDirEntry(name, attr, fileIndex)
 	}
+}
+
+// normalizeSearchPattern collapses the spec-equivalent "match all" forms
+// ("", "*", "*.*") to a single canonical form so transitions between them
+// are not treated as pattern changes per MS-SMB2 §3.3.5.18. Other patterns
+// are returned unchanged.
+func normalizeSearchPattern(p string) string {
+	switch p {
+	case "", "*", "*.*", "<":
+		return "*"
+	}
+	return p
 }
 
 // isSupportedDirInfoClass reports whether the given FileInformationClass is one
