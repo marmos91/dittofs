@@ -93,10 +93,17 @@
 //
 // TRANSITIONAL-V0.17+: physical log compaction (rewriting the log file
 // dropping consumed records up to compactionFence) is not implemented
-// here. The log grows until the payload is deleted; pressure machinery
-// caps the worst case via maxLogBytes. A future milestone will
-// add a compaction pass that truncates the on-disk log down to its
-// post-fence suffix.
+// here. The on-disk log grows until the payload is deleted; pressure
+// machinery caps the worst case via maxLogBytes. A future milestone
+// will add a compaction pass that truncates the on-disk log down to
+// its post-fence suffix.
+//
+// In-memory bookkeeping IS trimmed (R-2, #581): every AdvanceFence
+// call drops the prefix of logIndex.entries (and the matching consumed
+// map keys) that the fence walked past. Steady-state RSS for a
+// long-lived payload tracks the unconsumed-record set, not the full
+// arrival history — bounding the per-file index at the upper edge of
+// the dirty interval tree.
 //
 // TRANSITIONAL-V0.17+: tracking consumption by file-offset interval
 // instead of log position would eliminate the stalled-fence pathology
