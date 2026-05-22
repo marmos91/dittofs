@@ -160,11 +160,16 @@ func fileAttrToSMBAttributesInternal(attr *metadata.FileAttr, hidden bool) types
 	// missing) is retained for files whose POSIX permissions were set out-of-band
 	// via NFS chmod or shell chmod — those must still report READONLY to SMB
 	// clients (matching Samba dosmode.c::dos_mode_from_sbuf).
-	if attr.Mode&modeDOSExplicit != 0 {
-		if attr.Mode&modeDOSReadonly != 0 {
-			attrs |= types.FileAttributeReadonly
-		}
-	} else if attr.Type == metadata.FileTypeRegular && (attr.Mode&0200) == 0 {
+	if attr.Mode&modeDOSReadonly != 0 {
+		// SMB SET_INFO explicitly set READONLY (modeDOSReadonly persists
+		// across ApplyModeDefault per pkg/metadata.modeMask). modeDOSExplicit
+		// itself is masked off by ApplyModeDefault, so gating on it would
+		// silently lose READONLY after a CREATE-defaults round-trip.
+		attrs |= types.FileAttributeReadonly
+	} else if attr.Mode&modeDOSExplicit == 0 && attr.Type == metadata.FileTypeRegular && (attr.Mode&0200) == 0 {
+		// Legacy POSIX fallback for files whose owner-write bit was cleared
+		// out-of-band (NFS chmod, shell chmod). Skipped when modeDOSExplicit
+		// is set so SMB-managed attributes are not double-counted.
 		attrs |= types.FileAttributeReadonly
 	}
 
