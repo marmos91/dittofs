@@ -389,13 +389,14 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 		}
 
 		// Install fd into FSStore, seeked to EOF for subsequent appends.
-		if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		eof, err := f.Seek(0, io.SeekEnd)
+		if err != nil {
 			logger.Warn("recovery: seek end failed", "path", path, "error", err)
 			_ = f.Close()
 			return nil
 		}
 		bc.logsMu.Lock()
-		lf := &logFile{f: f, path: path}
+		lf := &logFile{f: f, path: path, eofPos: uint64(eof)}
 		// Phase 19 Opt 2 (D-06/D-07/D-08): per-file fsync coordinator,
 		// matching the getOrCreateLog construction site in appendwrite.go.
 		lf.groupCommit = newGroupCommit(lf.f.Sync)

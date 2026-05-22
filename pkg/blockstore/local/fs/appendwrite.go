@@ -40,6 +40,15 @@ type logFile struct {
 	// which is the correct error posture (D-08 — caller observes the
 	// fsync result).
 	groupCommit *groupCommit
+
+	// eofPos tracks the on-disk EOF byte offset of this log. Initialized
+	// at construction (either logHeaderSize for a freshly initialized log
+	// or the seek-end offset for a reopened one) and advanced under the
+	// per-file `mu` after each successful writeRecord + groupCommit.Sync
+	// pair in AppendWrite. It is the canonical "log position" cursor used
+	// by the per-file logIndex (Direction 1 redesign) to record where in
+	// the log each AppendWrite's record landed without re-statting the fd.
+	eofPos uint64
 }
 
 // logPath returns the on-disk path for a payload's append-log file:
@@ -87,6 +96,7 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 		// Declare f at outer scope and use `=` (not `:=`) in the branches
 		// below to avoid the shadowing bug called out in plan 04.
 		var f *os.File
+		var eof int64
 		_, statErr := os.Stat(path)
 		if statErr == nil {
 			// Reopen existing log, seek to EOF for append.
@@ -95,7 +105,7 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 			if err != nil {
 				return nil, nil, nil, fmt.Errorf("append log: reopen: %w", err)
 			}
-			if _, err = f.Seek(0, io.SeekEnd); err != nil {
+			if eof, err = f.Seek(0, io.SeekEnd); err != nil {
 				_ = f.Close()
 				return nil, nil, nil, fmt.Errorf("append log: seek end: %w", err)
 			}
@@ -105,14 +115,14 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 			if err != nil {
 				return nil, nil, nil, err
 			}
-			if _, err = f.Seek(0, io.SeekEnd); err != nil {
+			if eof, err = f.Seek(0, io.SeekEnd); err != nil {
 				_ = f.Close()
 				return nil, nil, nil, fmt.Errorf("append log: seek end: %w", err)
 			}
 		} else {
 			return nil, nil, nil, fmt.Errorf("append log: stat: %w", statErr)
 		}
-		lf = &logFile{f: f, path: path}
+		lf = &logFile{f: f, path: path, eofPos: uint64(eof)}
 		// Phase 19 Opt 2 (D-06/D-07/D-08): per-file fsync coordinator.
 		// Bound method value captures lf.f at construction; lf.f is not
 		// rotated for the FSStore lifetime, so the binding stays valid.
@@ -302,6 +312,14 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 	if err := lf.groupCommit.Sync(ctx); err != nil {
 		return fmt.Errorf("log fsync: %w", err)
 	}
+	// Advance the log-position cursor only after the writeRecord +
+	// groupCommit.Sync pair has succeeded. We are still under the per-
+	// file `mu`, so the increment is serialized against any other writer
+	// or rollup pread that consults lf.eofPos. Direction-1 redesign: the
+	// pre-advance value is the logPos at which this record's frame
+	// starts; the logIndex (added in P2/P3) will capture that snapshot
+	// before this advance.
+	lf.eofPos += uint64(n)
 	bc.logBytesTotal.Add(int64(n))
 	tree.Insert(offset, uint32(len(data)), time.Now())
 
