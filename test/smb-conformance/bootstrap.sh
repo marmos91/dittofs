@@ -156,13 +156,24 @@ main() {
     if [[ "$PROFILE" == *-s3 ]]; then
         share_flags="$share_flags --remote default"
     fi
-    $DFSCTL share create --name /smbbasic --acl-canonicalize-inherited=false $share_flags
+    # /smbbasic uses Windows-default ACL canonicalization (MS-DTYP §2.5.3.4.2):
+    # AUTO_INHERITED is persisted only when SET_INFO Security also carries
+    # AUTO_INHERIT_REQ. Required by smb2.acls.INHERITFLAGS and
+    # smb2.acls.SDFLAGSVSCHOWN. The Samba extension
+    # `acl flag inherited canonicalization = no` is exercised by
+    # smb2.acls_non_canonical against /smbnoncanon below.
+    $DFSCTL share create --name /smbbasic $share_flags
     $DFSCTL share create --name /smbencrypted --encrypt-data $share_flags
     $DFSCTL share create --name /fileshare $share_flags
     # Refs #532: smbtorture smb2.acls.ACCESSBASED connects to a share with the
     # MS-SRVS SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM flag set so
     # QUERY_DIRECTORY hides entries the caller cannot read.
     $DFSCTL share create --name /hideunread --access-based-enumeration $share_flags
+    # /smbnoncanon disables MS-DTYP §2.5.3.4.2 canonicalization (Samba
+    # `acl flag inherited canonicalization = no` extension). Target of
+    # smb2.acls_non_canonical.flags; verifies AUTO_INHERITED round-trips
+    # verbatim through SET_INFO Security without the AUTO_INHERIT_REQ gate.
+    $DFSCTL share create --name /smbnoncanon --acl-canonicalize-inherited=false $share_flags
 
     # Create test users
     log_info "Creating test users..."
@@ -197,7 +208,7 @@ main() {
     # Wait for SMB adapter to start
     wait_for_smb localhost
 
-    log_info "Bootstrap complete: shares=smbbasic,smbencrypted,fileshare,hideunread users=wpts-admin,nonadmin adapter=smb:${SMB_PORT}"
+    log_info "Bootstrap complete: shares=smbbasic,smbencrypted,fileshare,hideunread,smbnoncanon users=wpts-admin,nonadmin adapter=smb:${SMB_PORT}"
 }
 
 main "$@"
