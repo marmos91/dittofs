@@ -92,7 +92,6 @@ func newLogIndex() *logIndex {
 // Append records a new entry. Caller MUST pass a logPos strictly greater
 // than the most recent entry's logPos (eofPos advances monotonically).
 // Append does not validate ordering — the contract is on the caller.
-// Internal mu guards the slice mutation.
 func (idx *logIndex) Append(logPos uint64, fileOff uint64, payloadLen uint32) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
