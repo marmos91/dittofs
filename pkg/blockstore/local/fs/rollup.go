@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"time"
@@ -138,8 +137,9 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	lf := bc.logFDs[payloadID]
 	tree := bc.dirtyIntervals[payloadID]
 	mu := bc.logLocks[payloadID]
+	idx := bc.logIndices[payloadID]
 	bc.logsMu.RUnlock()
-	if lf == nil || tree == nil || mu == nil {
+	if lf == nil || tree == nil || mu == nil || idx == nil {
 		// Nothing to do — payload never had an AppendWrite (or was
 		// cleared by Close/DeleteAppendLog).
 		return nil
@@ -183,58 +183,62 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 		return nil
 	}
 
-	// Read the log header to learn the current rollup_offset.
+	// Read the log header to learn the current rollup_offset (used below
+	// only as the prior fence the new advance is compared against).
 	hdr, err := readLogHeader(lf.f)
 	if err != nil {
 		slog.Warn("rollup: read header", "payloadID", payloadID, "error", err)
 		return err
 	}
 
-	// Scan records from rollup_offset onward using a SEPARATE read-only fd
-	// so we don't disturb lf.f's append position (getOrCreateLog seeks it
-	// to EOF). The reader is closed before the method returns.
+	// Direction-1 rollup redesign: consult the per-payload logIndex to
+	// translate the stable file-offset interval into a set of records
+	// whose frames sit somewhere in the on-disk log (not necessarily
+	// contiguous at the head). Each entry carries logPos + payloadLen,
+	// so we pread each frame directly instead of scanning the log
+	// sequentially. A separate read-only fd is used so we don't disturb
+	// lf.f's append position.
+	stableEnd := stable.Offset + uint64(stable.Length)
+	entries := idx.EntriesForInterval(stable.Offset, uint64(stable.Length))
+	if len(entries) == 0 {
+		return nil
+	}
+
 	rf, err := os.Open(lf.path)
 	if err != nil {
 		return fmt.Errorf("rollup: open log for read: %w", err)
 	}
 	defer func() { _ = rf.Close() }()
-	if _, err := rf.Seek(int64(hdr.RollupOffset), io.SeekStart); err != nil {
-		return fmt.Errorf("rollup: seek: %w", err)
-	}
 
-	stableEnd := stable.Offset + uint64(stable.Length)
-
-	var recs []rec
-	currentPos := hdr.RollupOffset
-	targetPos := currentPos
-	for {
-		off, payload, rok, rerr := readRecord(rf)
+	recs := make([]rec, 0, len(entries))
+	consumedPositions := make([]uint64, 0, len(entries))
+	for _, e := range entries {
+		off, payload, rerr := readRecordAt(rf, e.logPos, e.payloadLen)
 		if rerr != nil {
-			return fmt.Errorf("rollup: readRecord: %w", rerr)
+			// A CRC mismatch or pread failure at a record the logIndex
+			// claims is valid implies log-fd corruption or a logIndex/
+			// log divergence bug. Treat as a hard fail for this pass —
+			// metadata stays unchanged, the tree keeps the interval
+			// dirty, a future pass (possibly after recovery) can retry.
+			slog.Warn("rollup: readRecordAt", "payloadID", payloadID,
+				"logPos", e.logPos, "error", rerr)
+			return nil
 		}
-		if !rok {
-			break // clean EOF / torn tail — recovery handles truncation
+		if off != e.fileOff {
+			slog.Warn("rollup: logIndex fileOff mismatch", "payloadID", payloadID,
+				"logPos", e.logPos, "indexed", e.fileOff, "frame", off)
+			return nil
 		}
-		recSize := uint64(recordFrameOverhead) + uint64(len(payload))
-		nextPos := currentPos + recSize
-
-		// Record entirely before the stable interval — already covered by
-		// an earlier rollup (shouldn't normally happen since we started at
-		// hdr.RollupOffset, but be defensive). Advance targetPos past it.
-		if off+uint64(len(payload)) <= stable.Offset {
-			targetPos = nextPos
-			currentPos = nextPos
-			continue
-		}
-		// Record entirely past the stable interval — stop; later records
-		// belong to a future pass.
-		if off >= stableEnd {
-			break
-		}
-		// Record intersects the stable interval — include it.
-		recs = append(recs, rec{off: off, payload: payload, endPos: nextPos})
-		targetPos = nextPos
-		currentPos = nextPos
+		recs = append(recs, rec{
+			off:     off,
+			payload: payload,
+			// endPos preserved for downstream consumers that still rely
+			// on it; with the logIndex-driven path it is no longer used
+			// to advance targetPos, but reconstructStream / dedup code
+			// reads it via the rec struct.
+			endPos: e.logPos + uint64(recordFrameOverhead) + uint64(e.payloadLen),
+		})
+		consumedPositions = append(consumedPositions, e.logPos)
 	}
 
 	// D-29 truncation filter: drop records entirely past the truncation
@@ -242,20 +246,18 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	// (plan 09); consulted here so emitted chunks never contain bytes
 	// beyond the client-observed size at truncate time.
 	//
-	// FIX-19: when truncation drops records, targetPos was already advanced
-	// past their on-disk frames during the scan above. Recompute targetPos
-	// from the filtered set so SetRollupOffset never claims to have
-	// committed bytes for records that produced no chunks. The cap is the
-	// pre-filter targetPos so we don't accidentally walk BACKWARDS past a
-	// previously-scanned "skipped" record (the early-pre-stable arm above
-	// also bumps targetPos but never appends to recs).
+	// Direction-1 redesign: consumedPositions is filtered in lockstep with
+	// recs so we only mark logIndex entries consumed for records that
+	// actually contributed payload bytes to a stored chunk. Entries that
+	// truncation dropped entirely stay unconsumed; the on-disk bytes
+	// belong to a truncated tail the operator already invalidated.
 	bc.logsMu.RLock()
 	trunc, hasTrunc := bc.truncations[payloadID]
 	bc.logsMu.RUnlock()
 	if hasTrunc {
-		preFilterTarget := targetPos
 		filtered := recs[:0]
-		for _, r := range recs {
+		filteredPos := consumedPositions[:0]
+		for i, r := range recs {
 			if r.off >= trunc {
 				continue
 			}
@@ -264,24 +266,10 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 				r.payload = r.payload[:trunc-r.off]
 			}
 			filtered = append(filtered, r)
+			filteredPos = append(filteredPos, consumedPositions[i])
 		}
 		recs = filtered
-		// Recompute targetPos based on the LAST RECORD ACTUALLY in recs.
-		// If everything was filtered out, fall through to the len(recs)==0
-		// short-circuit below; targetPos stays unchanged so we don't
-		// regress the offset (irrelevant since we won't call
-		// SetRollupOffset).
-		if len(recs) > 0 {
-			lastEnd := recs[0].endPos
-			for _, r := range recs[1:] {
-				if r.endPos > lastEnd {
-					lastEnd = r.endPos
-				}
-			}
-			if lastEnd < preFilterTarget {
-				targetPos = lastEnd
-			}
-		}
+		consumedPositions = filteredPos
 	}
 
 	if len(recs) == 0 {
@@ -385,13 +373,34 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 		return nil
 	}
 
+	// Direction-1 redesign: now that the chunks are stored, mark every
+	// surviving record's logPos consumed in the logIndex and ask the
+	// index for the new compaction fence. This is the value we persist
+	// as rollup_offset — semantically the same on-disk format, but
+	// computed from the consumed-record set instead of the pre-Direction-1
+	// "scan cursor advances past each record" arithmetic. A consumed
+	// entry preceded by an unconsumed predecessor does NOT advance the
+	// fence; the chunks are committed but the on-disk log byte prefix
+	// stays anchored until the predecessor is consumed too (R-7).
+	for _, lp := range consumedPositions {
+		idx.MarkConsumed(lp)
+	}
+	targetPos := idx.AdvanceFence()
+
 	// CommitChunks atomic sequence (D-12). SetRollupOffset is atomic-monotone
 	// at the RollupStore layer: on attempted regression it returns
-	// ErrRollupOffsetRegression and the stored value is unchanged. We treat
-	// that as benign (another worker raced ahead) and return nil.
+	// ErrRollupOffsetRegression and the stored value is unchanged. With
+	// Direction-1 the fence is monotonic by construction (newLogIndex /
+	// recovery seed + AdvanceFence forward-walk), and the per-file mu
+	// serializes rollup workers on the same payload, so regression
+	// should be unreachable in steady state. Keep the bail-out anyway —
+	// if some future change introduces a regression source, the
+	// conservative posture is the same as today: chunks are durable
+	// (content-addressed, idempotent on retry); a future pass will
+	// re-emit them.
 	_, err = bc.rollupStore.SetRollupOffset(ctx, payloadID, targetPos)
 	if errors.Is(err, metadata.ErrRollupOffsetRegression) {
-		slog.Debug("rollup: SetRollupOffset regression rejected (benign — another worker advanced past us)",
+		slog.Debug("rollup: SetRollupOffset regression rejected (benign)",
 			"payloadID", payloadID, "target", targetPos)
 		return nil
 	}
