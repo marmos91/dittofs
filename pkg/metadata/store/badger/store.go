@@ -200,6 +200,25 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		opts = opts.WithLoggingLevel(badger.WARNING) // Reduce log noise
 		opts = opts.WithCompression(options.None)    // Metadata is small, compression overhead not worth it
 
+		// Crash-consistency (#583): fsync every committed transaction.
+		// Default badger.DefaultOptions has SyncWrites=false, which means
+		// committed Updates return as soon as the value lands in the
+		// memtable + WAL buffer — NOT after the WAL is fsynced. A `kill
+		// -9` (or power loss) between flush boundaries loses every
+		// metadata write since the last sync, including rolled-up
+		// FileBlock rows and FileAttr.Blocks manifests. Without those
+		// rows the engine's read path falls through to the sparse-block
+		// zero-fill branch (engine.go:1072 `clear(dest)`), returning
+		// silent zeros for files whose CAS chunks are still on disk.
+		//
+		// Performance cost: every metadata Update transaction now fsyncs.
+		// In our deployment profile (NFSv3/SMB workloads with high write
+		// concurrency) this is acceptable because (a) badger amortizes
+		// fsyncs across the transactions in a single commit batch and
+		// (b) DittoFS already requires durability at every COMMIT /
+		// FILE_FLUSH so the cost was paid elsewhere previously.
+		opts = opts.WithSyncWrites(true)
+
 		// Configure cache sizes (with production-ready defaults if not specified)
 		// Production NFS workloads require larger caches to maintain high hit ratios:
 		// - With 256MB caches: ~8% hit ratio (cache thrashing, poor performance)
