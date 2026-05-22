@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -16,24 +15,43 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// payloadIDPattern is the permissive validation rule for payloadIDs derived
-// from on-disk log filenames during recovery. FIX-18: a malicious or
-// corrupted directory listing could surface a name like `../etc/passwd`
-// (after stripping `.log`) which would re-enter recovery's per-payload
-// state map under a path-traversing key. Anything outside this regex is
-// skipped at the WalkDir boundary so the file is never opened or touched.
-//
-// The set [a-zA-Z0-9_-]{1,128} is intentionally permissive — Phase 11's
-// store-spec pass may tighten it to the canonical ULID/UUID format the
-// metadata layer emits.
-var payloadIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
+// maxPayloadIDLen mirrors metadata.MaxPathLen + slack for the leading
+// share-name prefix. Recovery skips any log file whose derived payloadID
+// exceeds this length — well above any legitimate POSIX path.
+const maxPayloadIDLen = 4352 // metadata.MaxPathLen (4096) + 256 share-prefix slack
 
-// isValidPayloadID returns true iff s matches the permissive pattern
-// above. Callers using this helper at the recovery boundary skip
-// non-conformant filenames with a Warn log so an operator can spot
-// stray files in the logs directory without blowing up recovery.
+// isValidPayloadID accepts the structural shape of a path-keyed payloadID
+// while preserving the FIX-18 path-traversal mitigation. Structural rules:
+//
+//   - Non-empty.
+//   - Length <= maxPayloadIDLen.
+//   - No NUL bytes (filesystem-illegal, defense-in-depth against
+//     directory-listing surfaces that accept them).
+//   - No leading '/' (would alias an absolute on-disk path).
+//   - No '..' segment (the FIX-18 path-traversal mitigation).
+//   - No '.' segment (no self-referential noise; the metadata layer never
+//     produces these).
+//
+// Charset is intentionally NOT restricted: metadata.ValidateName allows
+// any character (including spaces and Unicode) in filenames, so the
+// recovery walker must follow suit or it will silently orphan logs
+// for legitimate user-facing files (#588 follow-up).
 func isValidPayloadID(s string) bool {
-	return payloadIDPattern.MatchString(s)
+	if len(s) == 0 || len(s) > maxPayloadIDLen {
+		return false
+	}
+	if s[0] == '/' {
+		return false
+	}
+	if strings.ContainsRune(s, 0) {
+		return false
+	}
+	for _, part := range strings.Split(s, "/") {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // Recover scans the block store directory for .blk files and reconciles them with
@@ -205,13 +223,29 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 			return nil
 		}
 		scanned++
-		payloadID := strings.TrimSuffix(d.Name(), ".log")
+		// Derive payloadID from the FULL relative path under logsDir, not
+		// just the basename. AppendWrite at write time uses payloadIDs
+		// like `<share>/<file>` (containing both `/` and `.`), which the
+		// FSStore stores at `<logsDir>/<share>/<file>.log`. Using
+		// `d.Name()` here would yield only `<file>.log`, losing the
+		// `<share>/` prefix and producing a payloadID that doesn't match
+		// the one AppendWrite uses — silently orphaning every log.
+		//
+		// filepath.ToSlash normalizes Windows backslashes; the payloadID
+		// is always slash-keyed at the metadata layer.
+		rel, relErr := filepath.Rel(logsDir, path)
+		if relErr != nil {
+			logger.Warn("recovery: filepath.Rel failed", "path", path, "logsDir", logsDir, "error", relErr)
+			return nil
+		}
+		payloadID := filepath.ToSlash(strings.TrimSuffix(rel, ".log"))
 		// FIX-18: defensive validation against path traversal / malformed
 		// filenames that arrive via on-disk corruption or out-of-band
 		// writes to the logs directory. Skip and warn — never open the
 		// file, never touch FSStore state.
 		if !isValidPayloadID(payloadID) {
-			logger.Warn("recovery: skipping log file with invalid payloadID", "filename", d.Name())
+			logger.Warn("recovery: skipping log file with invalid payloadID",
+				"path", rel, "payloadID", payloadID)
 			return nil
 		}
 

@@ -177,7 +177,17 @@ func New(cfg Config) (*BlockStore, error) {
 						DataSize: b.Size,
 						State:    blockstore.BlockStatePending,
 					}
-					_ = fbs.Put(ctx, fb)
+					// Crash-consistency (#583): surface the put error so
+					// a failed FileBlock row write fails the rollup pass
+					// rather than silently losing the manifest entry.
+					// Without this surfacing the engine continues into
+					// PersistFileBlocks below, the rollup_offset advances
+					// past records whose manifest row never landed, and
+					// subsequent reads hit the sparse-block zero-fill
+					// branch — silent data loss.
+					if err := fbs.Put(ctx, fb); err != nil {
+						return fmt.Errorf("ObjectIDPersister: FileBlock.Put(%s): %w", fb.ID, err)
+					}
 				}
 			}
 			// (2) Manifest + ObjectID coordinator txn.
@@ -235,7 +245,15 @@ func New(cfg Config) (*BlockStore, error) {
 				DataSize: size,
 				State:    blockstore.BlockStatePending,
 			}
-			_ = fbs.Put(context.Background(), fb)
+			// Crash-consistency (#583): emitter signature is void by
+			// contract; a put failure here means the manifest row never
+			// landed and reads will sparse-zero that range. Log at Error
+			// so operators see the loss instead of silently swallowing
+			// it. Follow-up: promote emitter to return an error so the
+			// caller can fail the rollup pass.
+			if err := fbs.Put(context.Background(), fb); err != nil {
+				logger.Error("ChunkEmitter: FileBlock.Put failed", "id", fb.ID, "error", err)
+			}
 		})
 	}
 	// BSCAS-05: wire the BlockStore back-reference onto the Syncer so

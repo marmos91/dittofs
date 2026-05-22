@@ -76,7 +76,17 @@ func (bc *FSStore) chunkRollupWorker(ctx context.Context, _ int) {
 	for {
 		select {
 		case pid := <-bc.rollupCh:
-			_ = bc.rollupFile(ctx, pid)
+			if err := bc.rollupFile(ctx, pid); err != nil {
+				// Surface (#588): a swallowed error here meant
+				// FileBlock manifest persistence failures and
+				// logIndex/tree divergence reports never reached
+				// operator logs. Log at Error so misconfigured or
+				// corrupted state is observable; the dirty
+				// interval stays in the tree and a future pass
+				// (or restart + recovery) retries.
+				slog.Error("rollupFile failed",
+					"payloadID", pid, "error", err)
+			}
 		case <-ticker.C:
 			bc.scanAllFiles(ctx)
 		case <-bc.done:
@@ -101,7 +111,10 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 		if err := ctx.Err(); err != nil {
 			return
 		}
-		_ = bc.rollupFile(ctx, pid)
+		if err := bc.rollupFile(ctx, pid); err != nil {
+			slog.Error("rollupFile failed",
+				"payloadID", pid, "error", err, "source", "ticker")
+		}
 	}
 }
 
@@ -120,14 +133,20 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 // one file's rollup never stalls another, and (d) pressure-channel
 // blocking only trips when the log budget is exceeded.
 //
-// CommitChunks atomic ordering (D-12):
+// CommitChunks atomic ordering (D-12, reordered #588):
 //  1. For each emitted chunk: StoreChunk(hash, data) — idempotent, fsynced.
-//  2. rollupStore.SetRollupOffset(payloadID, targetPos) — atomic-monotone;
+//  2. ObjectIDPersister(payloadID, blocks, objectID) — writes per-chunk
+//     FileBlock manifest rows + FileAttr.Blocks. MUST land before
+//     SetRollupOffset so a manifest-persist failure leaves rollup_offset
+//     UNCHANGED and the next pass retries; the alternative (persister
+//     after SetRollupOffset) silently lost the manifest while
+//     rollup_offset already advanced past the records.
+//  3. rollupStore.SetRollupOffset(payloadID, targetPos) — atomic-monotone;
 //     on ErrRollupOffsetRegression, log at Debug and return nil (benign).
-//  3. advanceRollupOffset(logFile, targetPos) — idempotent derived-state.
+//  4. advanceRollupOffset(logFile, targetPos) — idempotent derived-state.
 //     If it fails, metadata is already the source of truth and recovery
 //     (plan 07) will reconcile the header on next boot.
-//  4. tree.ConsumeUpTo + logBytesTotal.Add(-reclaimed) + pressureCh signal.
+//  5. tree.ConsumeUpTo + logBytesTotal.Add(-reclaimed) + pressureCh signal.
 func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	if bc.isClosed() {
 		return nil
@@ -403,39 +422,25 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	}
 	targetPos := idx.AdvanceFence()
 
-	// CommitChunks atomic sequence (D-12). SetRollupOffset is atomic-monotone
-	// at the RollupStore layer: on attempted regression it returns
-	// ErrRollupOffsetRegression and the stored value is unchanged. With
-	// Direction-1 the fence is monotonic by construction (newLogIndex /
-	// recovery seed + AdvanceFence forward-walk), and the per-file mu
-	// serializes rollup workers on the same payload, so regression
-	// should be unreachable in steady state. Keep the bail-out anyway —
-	// if some future change introduces a regression source, the
-	// conservative posture is the same as today: chunks are durable
-	// (content-addressed, idempotent on retry); a future pass will
-	// re-emit them.
-	_, err = bc.rollupStore.SetRollupOffset(ctx, payloadID, targetPos)
-	if errors.Is(err, metadata.ErrRollupOffsetRegression) {
-		slog.Debug("rollup: SetRollupOffset regression rejected (benign)",
-			"payloadID", payloadID, "target", targetPos)
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("rollup: SetRollupOffset: %w", err)
-	}
-
-	// Compute the BLAKE3 Merkle-root ObjectID over the BlockRef manifest
-	// the chunker just produced, and invoke the persister so the
-	// coordinator can stamp it onto FileAttr alongside the BlockRef list.
-	// Local-only / no-engine fixtures leave objectIDPersister nil: the
-	// ObjectID is still computed (cheap, deterministic, harmless) but the
-	// persist call is skipped.
+	// CommitChunks atomic sequence (D-12, reordered #588). The on-disk
+	// CAS chunks are already durable from StoreChunk above. The remaining
+	// commit steps must land in this order so a partial failure never
+	// advances rollup_offset past records whose FileBlock manifest rows
+	// haven't been persisted:
 	//
-	// Crash-window note: ObjectIDPersister failure is surfaced; the rollup
-	// offset is already persisted, so a future pass for the same payloadID
-	// will fast-skip at SetRollupOffset and may leave ObjectID unset —
-	// operator must re-trigger by writing a new chunk to seed another
-	// rollup pass.
+	//  1. ObjectIDPersister(payloadID, blocks, objectID) — writes the
+	//     per-chunk FileBlock rows AND the FileAttr.Blocks manifest +
+	//     ObjectID. If this fails, rollup_offset stays UNCHANGED and the
+	//     next rollup pass retries — chunks are content-addressed and
+	//     idempotent on re-store. (Prior to #588 the persister fired
+	//     AFTER SetRollupOffset, which meant a persister failure left
+	//     rollup_offset advanced past records whose manifest never
+	//     landed; the engine read path then fell into the sparse-zero
+	//     branch.)
+	//  2. rollupStore.SetRollupOffset(payloadID, targetPos) — atomic-
+	//     monotone metadata-authoritative fence advance.
+	//  3. advanceRollupOffset(logFile, targetPos) — idempotent derived
+	//     state.
 	objectID := blockstore.ComputeObjectID(blocks)
 	bc.persisterMu.RLock()
 	persister := bc.objectIDPersister
@@ -444,6 +449,26 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 		if err := persister(ctx, payloadID, blocks, objectID); err != nil {
 			return fmt.Errorf("rollup: ObjectIDPersister: %w", err)
 		}
+	}
+
+	// SetRollupOffset is atomic-monotone at the RollupStore layer: on
+	// attempted regression it returns ErrRollupOffsetRegression and the
+	// stored value is unchanged. With Direction-1 the fence is monotonic
+	// by construction (newLogIndex / recovery seed + AdvanceFence
+	// forward-walk), and the per-file mu serializes rollup workers on the
+	// same payload, so regression should be unreachable in steady state.
+	// Keep the bail-out anyway — if some future change introduces a
+	// regression source, the conservative posture is the same as today:
+	// chunks are durable (content-addressed, idempotent on retry); a
+	// future pass will re-emit them.
+	_, err = bc.rollupStore.SetRollupOffset(ctx, payloadID, targetPos)
+	if errors.Is(err, metadata.ErrRollupOffsetRegression) {
+		slog.Debug("rollup: SetRollupOffset regression rejected (benign)",
+			"payloadID", payloadID, "target", targetPos)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("rollup: SetRollupOffset: %w", err)
 	}
 
 	// Derived-state: advance the log header. If this fails, metadata is

@@ -185,7 +185,8 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 
 	// Prepare BadgerDB options
 	var opts badger.Options
-	if config.BadgerOptions != nil {
+	customOpts := config.BadgerOptions != nil
+	if customOpts {
 		opts = *config.BadgerOptions
 	} else {
 		// Use sensible defaults for DittoFS metadata workload
@@ -216,6 +217,33 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		opts = opts.WithBlockCacheSize(blockCacheMB << 20) // Convert MB to bytes
 		opts = opts.WithIndexCacheSize(indexCacheMB << 20) // Convert MB to bytes
 	}
+
+	// Crash-consistency (#583, enforced #588): force SyncWrites=true on
+	// every code path — default-options AND custom-options. Default
+	// badger.DefaultOptions has SyncWrites=false, which means each
+	// committed Update returns as soon as the value lands in the
+	// memtable + WAL buffer — NOT after the WAL is fsynced. A `kill -9`
+	// (or power loss) between flush boundaries loses every metadata
+	// write since the last sync, including rolled-up FileBlock rows
+	// and FileAttr.Blocks manifests. Without those rows the engine's
+	// read path falls through to the sparse-block zero-fill branch
+	// (engine.go:1072 `clear(dest)`), returning silent zeros for files
+	// whose CAS chunks are still on disk.
+	//
+	// Override here UNCONDITIONALLY so an operator tuning unrelated
+	// knobs via BadgerOptions cannot accidentally re-disable crash
+	// durability by inheriting badger's default SyncWrites=false. If a
+	// future workload needs to opt out (e.g. dev/test harnesses
+	// favoring perf over durability) a dedicated config flag should
+	// be introduced rather than relying on badger's permissive default.
+	//
+	// Performance cost: every metadata Update transaction now fsyncs.
+	// In our deployment profile (NFSv3/SMB workloads with high write
+	// concurrency) this is acceptable because (a) badger amortizes
+	// fsyncs across the transactions in a single commit batch and
+	// (b) DittoFS already requires durability at every COMMIT /
+	// FILE_FLUSH so the cost was paid elsewhere previously.
+	opts = opts.WithSyncWrites(true)
 
 	// Open BadgerDB
 	db, err := badger.Open(opts)
