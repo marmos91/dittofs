@@ -206,6 +206,13 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 		return 0, 0, 0, 0, 0, 0
 	}
 
+	// #579: sweep any `.compact` temp files left behind by a process
+	// that crashed mid-compaction. Stale temps are not load-bearing
+	// for correctness (the original log file is the live one until
+	// rename completes), but leaving them on disk would gradually
+	// accumulate wasted bytes across crash-restart cycles.
+	bc.cleanupCompactTemps(logsDir)
+
 	// FIX-16: compute the effective orphan-sweep floor once and warn if the
 	// configured value is non-positive — surfaces the silent default-3600
 	// substitution at boot rather than per-log-file. The legacy per-iteration
@@ -311,12 +318,22 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 		// crashed between step 2 (SetRollupOffset) and step 3
 		// (advanceRollupOffset). Rewrite the header to match metadata so
 		// replay does not re-emit chunks for bytes already persisted.
+		//
+		// #579: after a successful physical compaction pass the on-disk
+		// header has Flags & LogFlagCompacted set and RollupOffset is
+		// reset to logHeaderSize, while metadata.rollup_offset retains
+		// its pre-compaction monotonic high-water mark. In that state
+		// the metaOff > hdrOff comparison would always trip and seek
+		// past the compacted file's EOF, losing every surviving
+		// record. The LogFlagCompacted bit tells us "header is the
+		// truth; do not reconcile from metadata".
 		metaOff := uint64(0)
 		if bc.rollupStore != nil {
 			metaOff, _ = bc.rollupStore.GetRollupOffset(ctx, payloadID)
 		}
 		effectiveOff := hdr.RollupOffset
-		if metaOff > effectiveOff {
+		compacted := hdr.Flags&LogFlagCompacted != 0
+		if metaOff > effectiveOff && !compacted {
 			if aerr := advanceRollupOffset(f, metaOff); aerr != nil {
 				logger.Warn("recovery: advanceRollupOffset failed", "path", path, "error", aerr)
 			} else {

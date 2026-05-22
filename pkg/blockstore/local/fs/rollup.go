@@ -472,22 +472,39 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	// by construction (newLogIndex / recovery seed + AdvanceFence
 	// forward-walk), and the per-file mu serializes rollup workers on the
 	// same payload, so regression should be unreachable in steady state.
-	// Keep the bail-out anyway — if some future change introduces a
-	// regression source, the conservative posture is the same as today:
-	// chunks are durable (content-addressed, idempotent on retry); a
-	// future pass will re-emit them.
+	//
+	// Post-#579: after a physical compaction pass the in-memory fence
+	// resets to logHeaderSize while metadata.rollup_offset retains its
+	// pre-compaction high-water mark (monotonicity at the metadata
+	// layer cannot be regressed). Subsequent rollup passes therefore
+	// compute targetPos values BELOW the persisted metaOff and the
+	// SetRollupOffset call legitimately returns ErrRollupOffsetRegression.
+	// That is benign — we must NOT return early here, because the
+	// derived-state header advance below is the on-disk source of
+	// truth that recovery's seek() uses to position the readRecord
+	// loop. Falling through to advanceRollupOffset on the regression
+	// branch keeps the header in sync with the in-memory fence so a
+	// post-compaction reboot replays from the correct position. The
+	// LogFlagCompacted bit (set during compactLogLocked) tells recovery
+	// to trust the header over metadata.
 	_, err = bc.rollupStore.SetRollupOffset(ctx, payloadID, targetPos)
 	if errors.Is(err, metadata.ErrRollupOffsetRegression) {
 		slog.Debug("rollup: SetRollupOffset regression rejected (benign)",
 			"payloadID", payloadID, "target", targetPos)
-		return nil
-	}
-	if err != nil {
+		// Fall through — see comment block above. The header advance
+		// below MUST run so the on-disk position stays aligned with
+		// the in-memory fence even when metadata refuses to.
+	} else if err != nil {
 		return fmt.Errorf("rollup: SetRollupOffset: %w", err)
 	}
 
 	// Derived-state: advance the log header. If this fails, metadata is
-	// already the source of truth and recovery (plan 07) will reconcile.
+	// already the source of truth and recovery (plan 07) will reconcile
+	// — except when LogFlagCompacted is set (post-compaction state),
+	// in which case the header IS the truth and a failure here means
+	// the next boot may re-replay records that were already chunked.
+	// CAS is idempotent so that is benign correctness-wise (only a
+	// throughput hit).
 	if err := advanceRollupOffset(lf.f, targetPos); err != nil {
 		slog.Warn("rollup: advanceRollupOffset failed; recovery will reconcile",
 			"payloadID", payloadID, "error", err)
@@ -508,6 +525,18 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	select {
 	case bc.pressureCh <- struct{}{}:
 	default:
+	}
+
+	// #579: physical log compaction. Runs under the per-file mu we
+	// still hold (deferred Unlock above). The threshold check is
+	// internal to maybeCompactLog, so this call is cheap when the
+	// fence has not advanced enough to warrant a rewrite. Errors are
+	// logged at Warn and otherwise swallowed — a failed compaction
+	// pass leaves the original log untouched; the next rollup pass
+	// retries automatically.
+	if cerr := bc.maybeCompactLog(ctx, payloadID, lf, idx); cerr != nil {
+		slog.Warn("rollup: compaction failed; will retry next pass",
+			"payloadID", payloadID, "error", cerr)
 	}
 
 	return nil
