@@ -50,7 +50,6 @@ descriptors, and owner rights are not implemented.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.acls.ACCESSBASED | ACLs | Windows ACL semantics not implemented | - |
-| smb2.acls.CREATOR | ACLs | Creator SID semantics not implemented | - |
 | smb2.acls.DENY1 | ACLs | ACL deny semantics not implemented | - |
 | smb2.acls.DYNAMIC | ACLs | Dynamic access checks not implemented | - |
 | smb2.acls.GENERIC | ACLs | Generic ACL mapping not implemented | - |
