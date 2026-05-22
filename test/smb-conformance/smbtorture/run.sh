@@ -325,6 +325,10 @@ fi
 # NetBIOS name for secondary IPC$ connections. Without this, the default
 # name ("smbtorture" - the binary name) doesn't resolve in Docker and
 # secondary connections fail with NT_STATUS_OBJECT_NAME_NOT_FOUND.
+#
+# SMBTORTURE_HOST holds the bare host (no share), so run_smbtorture can swap
+# the share per suite (e.g. acls_non_canonical → /smbnoncanon while default
+# acls runs against /smbbasic).
 if $KERBEROS; then
     # Kerberos mode: target DittoFS by its docker service name "dittofs" so
     # the client requests a ticket for cifs/dittofs@DITTOFS.TEST (which is
@@ -332,8 +336,8 @@ if $KERBEROS; then
     # smbtorture-kerberos compose service mounts the shared keytab volume
     # and sets KRB5_CONFIG=/keytabs/krb5.conf so gssapi finds the KDC.
     SMBTORTURE_SERVICE="smbtorture-kerberos"
-    SMBTORTURE_ARGS=(
-        "//dittofs/smbbasic"
+    SMBTORTURE_HOST="//dittofs"
+    SMBTORTURE_AUTH_ARGS=(
         "-U" "wpts-admin@DITTOFS.TEST%TestPassword01!"
         "--use-kerberos=required"
         "--realm=DITTOFS.TEST"
@@ -341,11 +345,11 @@ if $KERBEROS; then
         "--option=client min protocol=SMB2_02"
         "--option=client max protocol=SMB3"
     )
-    log_info "Kerberos mode: targeting //dittofs/smbbasic with SPNEGO/Kerberos"
+    log_info "Kerberos mode: targeting ${SMBTORTURE_HOST}/<share> with SPNEGO/Kerberos"
 else
     SMBTORTURE_SERVICE="smbtorture"
-    SMBTORTURE_ARGS=(
-        "//localhost/smbbasic"
+    SMBTORTURE_HOST="//localhost"
+    SMBTORTURE_AUTH_ARGS=(
         "-U" "wpts-admin%TestPassword01!"
         "--option=netbios name=localhost"
         "--option=client min protocol=SMB2_02"
@@ -353,28 +357,38 @@ else
     )
 fi
 
-# run_smbtorture FILTER [PER_TEST_TIMEOUT] [SUITE_PREFIX]
+# Default share for most suites. smb2.acls_non_canonical overrides via the
+# 4th run_smbtorture argument because that suite requires
+# `acl flag inherited canonicalization = no` (Samba extension) on the share,
+# whereas the default smb2.acls suite requires Windows-default canonicalization.
+SMBTORTURE_DEFAULT_SHARE="smbbasic"
+
+# run_smbtorture FILTER [PER_TEST_TIMEOUT] [SUITE_PREFIX] [SHARE]
 # Runs smbtorture with the given filter, appending output to results file.
 # When SUITE_PREFIX is set, test/success/failure/error lines in the output
 # get the prefix prepended so that KNOWN_FAILURES.md wildcards match correctly.
 # (Running smb2.oplock reports "test: batch1" but known failures expect
 #  "oplock.batch1", so we fix up the output.)
+# When SHARE is set, that share replaces SMBTORTURE_DEFAULT_SHARE in the
+# target UNC. Used by smb2.acls_non_canonical to target /smbnoncanon.
 run_smbtorture() {
     local filter="$1"
     local per_timeout="${2:-$TIMEOUT}"
     local suite_prefix="${3:-}"
+    local share="${4:-$SMBTORTURE_DEFAULT_SHARE}"
+    local target="${SMBTORTURE_HOST}/${share}"
 
     local rc=0
     if [[ -n "$suite_prefix" ]]; then
         ${TIMEOUT_CMD:+$TIMEOUT_CMD --signal=TERM --kill-after=30 "$per_timeout"} \
             env PROFILE="$PROFILE" docker compose run --rm "$SMBTORTURE_SERVICE" \
-            "${SMBTORTURE_ARGS[@]}" "$filter" \
+            "$target" "${SMBTORTURE_AUTH_ARGS[@]}" "$filter" \
             2>&1 | sed -E "s/^(test|success|failure|error|skip): /\1: ${suite_prefix}./" \
             | tee -a "${RESULTS_DIR}/smbtorture-output.txt" || rc=${PIPESTATUS[0]}
     else
         ${TIMEOUT_CMD:+$TIMEOUT_CMD --signal=TERM --kill-after=30 "$per_timeout"} \
             env PROFILE="$PROFILE" docker compose run --rm "$SMBTORTURE_SERVICE" \
-            "${SMBTORTURE_ARGS[@]}" "$filter" \
+            "$target" "${SMBTORTURE_AUTH_ARGS[@]}" "$filter" \
             2>&1 | tee -a "${RESULTS_DIR}/smbtorture-output.txt" || rc=${PIPESTATUS[0]}
     fi
     # Exit code 124 = timeout, 125+ = docker/infrastructure failure
@@ -415,10 +429,13 @@ else
     # Sub-suites with prefix for test name fixup.
     # "smb2.oplock" runs tests like "batch1" which need "oplock." prefix
     # to become "oplock.batch1" matching "smb2.oplock.*" known failures.
-    # Format: "suite:prefix" pairs
+    # Format: "suite:prefix" or "suite:prefix:share" triples. The optional
+    # third field overrides SMBTORTURE_DEFAULT_SHARE for that suite — used
+    # by smb2.acls_non_canonical which needs the Samba extension
+    # `acl flag inherited canonicalization = no` enabled on the share.
     SUITES=(
         "smb2.acls:acls"
-        "smb2.acls_non_canonical:acls_non_canonical"
+        "smb2.acls_non_canonical:acls_non_canonical:smbnoncanon"
         "smb2.aio_delay:aio_delay"
         "smb2.bench:bench"
         "smb2.change_notify_disabled:change_notify_disabled"
@@ -466,10 +483,14 @@ else
         "smb2.twrp:twrp"
     )
     for entry in "${SUITES[@]}"; do
-        suite="${entry%%:*}"
-        prefix="${entry##*:}"
-        log_info "  Running: ${suite}"
-        run_smbtorture "$suite" 120 "$prefix" || _smbtorture_exit=$?
+        # Split "suite:prefix" or "suite:prefix:share" using IFS=:.
+        IFS=':' read -r suite prefix share <<< "$entry"
+        if [[ -n "${share:-}" ]]; then
+            log_info "  Running: ${suite} (share: ${share})"
+        else
+            log_info "  Running: ${suite}"
+        fi
+        run_smbtorture "$suite" 120 "$prefix" "${share:-}" || _smbtorture_exit=$?
     done
 
     # NOTE: Skipped interactive hold tests:
