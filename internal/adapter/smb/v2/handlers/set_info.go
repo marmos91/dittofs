@@ -293,7 +293,10 @@ func (h *Handler) setFileInfoFromStore(
 
 		// Per MS-FSCC 2.6: Map FILE_ATTRIBUTE_READONLY to Unix mode.
 		// When FileAttributes != 0, the client is explicitly setting attributes.
-		// READONLY removes owner write bits; its absence restores them.
+		// READONLY is stored in modeDOSReadonly (bit 0x100000); POSIX owner-write
+		// bits are preserved. calculatePermissions in pkg/metadata enforces the
+		// READONLY semantics for both NFS and SMB callers by clearing write when
+		// modeDOSExplicit + modeDOSReadonly are both set.
 		// Per MS-FSCC 2.4.7: FILE_ATTRIBUTE_COMPRESSED is NOT settable via
 		// FileBasicInformation; it is controlled only via FSCTL_SET_COMPRESSION.
 		// Preserve the existing modeDOSCompressed bit so SET_INFO doesn't

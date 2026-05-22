@@ -680,7 +680,7 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 	case types.FileAttributeTagInformation:
 		// FILE_ATTRIBUTE_TAG_INFORMATION [MS-FSCC] 2.4.6 (8 bytes)
 		// FileAttributes (4) + ReparseTag (4)
-		attrs := FileAttrToSMBAttributes(&file.FileAttr)
+		attrs := FileAttrToSMBAttributesWithName(&file.FileAttr, basenameForHidden(openFile))
 		w := smbenc.NewWriter(8)
 		w.WriteUint32(uint32(attrs))
 		w.WriteUint32(0) // ReparseTag = 0 for non-reparse points
