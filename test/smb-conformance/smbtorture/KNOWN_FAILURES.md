@@ -53,12 +53,9 @@ descriptors, and owner rights are not implemented.
 | smb2.acls.DENY1 | ACLs | Deeper failure at acls.c:2862 — maximal_access reports 0x1E008B but expected 0x16008B (extra `SEC_DIR_DELETE_CHILD` bit set); MaxAccess computation needs to drop dir-only rights on file objects | - |
 | smb2.acls.DYNAMIC | ACLs | Dynamic access checks not implemented (fails at acls.c:1863 with NT_STATUS_OBJECT_NAME_NOT_FOUND) | - |
 | smb2.acls.GENERIC | ACLs | Deeper failure at acls.c:440 after PR #552 (FileAccessInformation now DACL-evaluated) — granted access reports 0x000f0000 but expected 0x00070080; GENERIC_ALL→specific-rights mapping still drops STANDARD bits | - |
-| smb2.acls.INHERITANCE | ACLs | Deeper failure at acls.c:1168 after PR #553 (FILE_DELETE_CHILD override) — access_flags 0x000e0002 but expected 0x001f01ff; inherited DACL on child still missing GENERIC_ALL→specific-rights expansion | - |
-| smb2.acls.INHERITFLAGS | ACLs | Deeper failure at acls.c:1434 — access_flags 0x000e0002 but expected 0x001f01ff; same inherited-DACL specific-rights expansion gap as INHERITANCE | - |
 | smb2.acls.MXAC-NOT-GRANTED | ACLs | Deeper failure at acls.c:2979 — smb2_create returns NT_STATUS_OK but expected NT_STATUS_ACCESS_DENIED; MaxAccess should not implicitly grant when DACL denies the requested access | - |
 | smb2.acls.OVERWRITE_READ_ONLY_FILE | ACLs | Deeper failure at acls.c:3104 — smb2_create returns NT_STATUS_OK but expected NT_STATUS_ACCESS_DENIED on OVERWRITE of read-only file | - |
 | smb2.acls.OWNER | ACLs | Owner SID semantics not implemented (fails at acls.c:765 with NT_STATUS_ACCESS_DENIED instead of NT_STATUS_OK) | - |
-| smb2.acls.SDFLAGSVSCHOWN | ACLs | Deeper failure at acls.c:1680 — access_flags 0x000e0002 but expected 0x001f01ff; same inherited-DACL specific-rights expansion gap | - |
 | smb2.sdread | Security descriptors | Security descriptor read not implemented | - |
 | smb2.secleak | Security descriptors | Security descriptor leak test not implemented | - |
 
