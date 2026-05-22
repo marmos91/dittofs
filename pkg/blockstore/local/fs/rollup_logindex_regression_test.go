@@ -191,18 +191,15 @@ func TestRollup_StalledFence_ChunksStillCommitted(t *testing.T) {
 // We exercise this end-to-end by:
 //  1. Writing a head record at file_off=0.
 //  2. Writing an overwrite at the SAME file_off=0 (same length).
-//  3. Refreshing the head's interval continuously so it never stabilizes,
-//     while waiting long enough for the overwrite to stabilize and chunk.
-//     The interval tree sees both writes at offset 0; EarliestStable
-//     returns the head only if its Touched is past the threshold —
-//     refreshing keeps it under the threshold continuously, but a
-//     subsequent rollup tick eventually picks up the stable interval
-//     once the overwrite's Touched is past threshold AND the head's
-//     Touched is too (we stop refreshing for a beat to allow the rollup
-//     pass through, then immediately observe rollup_offset).
+//  3. Waiting several stabilization windows so the interval-tree entry
+//     for [0, payloadLen) becomes stable and the rollup pool drains it.
+//     R-7's guarantee is that both frames' bytes get reclaimed in a
+//     single rollup pass — the head's frame becomes dead via the
+//     overwrite's coverage, not via the head being individually picked
+//     up — so the on-disk rollup_offset must advance past both frames.
 //
-// Acceptance: within one stabilization window of the LAST chunked record
-// covering [0, payload) — i.e. the overwrite — the fence has advanced.
+// Acceptance: within a few stabilization windows the fence has advanced
+// past BOTH frames (head + overwrite), not just past the overwrite.
 func TestRollup_R7_OverwriteReclaimsHeadBytes(t *testing.T) {
 	const stabilizationMS = 50
 	bc, rs := newRollupFSStore(t, 1<<30, stabilizationMS)

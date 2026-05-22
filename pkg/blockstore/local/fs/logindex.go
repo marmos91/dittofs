@@ -1,6 +1,9 @@
 package fs
 
-import "sync"
+import (
+	"slices"
+	"sync"
+)
 
 // Per-file logIndex (Direction 1 redesign — see
 // .planning/proposals/2026-05-22-logindex-rollup-redesign.md).
@@ -59,8 +62,15 @@ type logEntry struct {
 }
 
 // fileEnd returns the exclusive file-offset upper bound for this record.
+// Saturates on overflow so a pathological fileOff near MaxUint64 produces
+// a well-formed (non-wrapping) interval — AdvanceFence's coverage test
+// and EntriesForInterval's overlap test then stay correct.
 func (e logEntry) fileEnd() uint64 {
-	return e.fileOff + uint64(e.payloadLen)
+	end := e.fileOff + uint64(e.payloadLen)
+	if end < e.fileOff {
+		return ^uint64(0)
+	}
+	return end
 }
 
 // logIndex maintains per-file log-position bookkeeping. Entries are
@@ -160,14 +170,21 @@ func (idx *logIndex) EntriesForInterval(fileOff uint64, length uint64) []logEntr
 // unconsumed earlier record whose file region has been fully superseded.
 //
 // payloadLen == 0 is a no-op (matches AppendWrite's len(data) == 0
-// short-circuit).
+// short-circuit). The end = fileOff + payloadLen sum is computed with
+// overflow saturation (consistent with EntriesForInterval) so a
+// pathological wrap can never produce an empty interval that would
+// silently fail to advance the fence.
 func (idx *logIndex) MarkConsumed(fileOff uint64, payloadLen uint32) {
 	if payloadLen == 0 {
 		return
 	}
+	end := fileOff + uint64(payloadLen)
+	if end < fileOff {
+		end = ^uint64(0)
+	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	idx.consumedCoverage.add(fileOff, fileOff+uint64(payloadLen))
+	idx.consumedCoverage.add(fileOff, end)
 }
 
 // AdvanceFence walks entries in logPos order from the current fenceCursor
@@ -364,34 +381,22 @@ func (cs *coverageSet) add(start, end uint64) {
 	}
 	insertAt := lo
 	// Sweep forward from insertAt, absorbing every interval whose `start`
-	// is <= new `end` (adjacent intervals are merged because their
-	// boundary touches).
-	mergeEnd := end
-	mergeStart := start
+	// is <= mergeEnd (adjacent intervals merge because their boundary
+	// touches). Stored intervals are sorted and non-overlapping, so only
+	// intervals[insertAt] can possibly lower mergeStart — every later
+	// interval starts at or beyond the previous one's end.
+	mergeStart, mergeEnd := start, end
 	j := insertAt
 	for j < len(cs.intervals) && cs.intervals[j].start <= mergeEnd {
-		if cs.intervals[j].start < mergeStart {
-			mergeStart = cs.intervals[j].start
-		}
-		if cs.intervals[j].end > mergeEnd {
-			mergeEnd = cs.intervals[j].end
-		}
+		mergeStart = min(mergeStart, cs.intervals[j].start)
+		mergeEnd = max(mergeEnd, cs.intervals[j].end)
 		j++
 	}
-	// Replace [insertAt, j) with the merged interval.
-	merged := coverageInterval{start: mergeStart, end: mergeEnd}
-	if j == insertAt {
-		// No overlap — insert in place.
-		cs.intervals = append(cs.intervals, coverageInterval{})
-		copy(cs.intervals[insertAt+1:], cs.intervals[insertAt:])
-		cs.intervals[insertAt] = merged
-		return
-	}
-	cs.intervals[insertAt] = merged
-	if j > insertAt+1 {
-		// Collapse subsumed intervals out of the slice.
-		cs.intervals = append(cs.intervals[:insertAt+1], cs.intervals[j:]...)
-	}
+	// Replace [insertAt, j) with the single merged interval. Handles
+	// insert (j == insertAt), in-place rewrite (j == insertAt+1) and
+	// subsumption (j > insertAt+1) uniformly.
+	cs.intervals = slices.Replace(cs.intervals, insertAt, j,
+		coverageInterval{start: mergeStart, end: mergeEnd})
 }
 
 // covers reports whether [start, end) is fully covered by the union of
