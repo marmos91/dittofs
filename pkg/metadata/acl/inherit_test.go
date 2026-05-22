@@ -1341,6 +1341,46 @@ func TestComputeInheritedACL_GenericExpansion_NonGenericPassesThrough(t *testing
 	}
 }
 
+// TestComputeInheritedACL_GenericExpansion_Case3PreservedSkipsExpand covers
+// the case where a parent OI-only ACE on a non-CREATOR principal lands on a
+// dir child: ComputeInheritedACL emits a single preserved INHERIT_ONLY ACE
+// (no resolved sibling) with the parent's raw AccessMask intact, so a future
+// grandchild file inherits the same generic bits and expands them against
+// the leaf's GenericMapping at that step.
+//
+// The post-loop expansion pass must skip this ACE because it is INHERIT_ONLY.
+// Regression guard against any refactor that clears INHERIT_ONLY on the
+// Case-3 preserved emission path.
+func TestComputeInheritedACL_GenericExpansion_Case3PreservedSkipsExpand(t *testing.T) {
+	parentACL := &ACL{
+		AutoInherited: true,
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_FILE_INHERIT_ACE, // OI only — does not apply at dir child
+				AccessMask: 0x10000000,            // GENERIC_ALL
+				Who:        "user@example.com",
+			},
+		},
+	}
+
+	result := ComputeInheritedACL(parentACL, true, Creator{})
+	if result == nil {
+		t.Fatal("expected non-nil result for dir child with OI-only parent ACE")
+	}
+	if len(result.ACEs) != 1 {
+		t.Fatalf("expected 1 preserved INHERIT_ONLY ACE, got %d", len(result.ACEs))
+	}
+	preserved := result.ACEs[0]
+	if preserved.Flag&ACE4_INHERIT_ONLY_ACE == 0 {
+		t.Errorf("Case-3 preserved ACE missing INHERIT_ONLY (flag=0x%x)", preserved.Flag)
+	}
+	if preserved.AccessMask != 0x10000000 {
+		t.Errorf("Case-3 AccessMask=0x%08x, want raw GENERIC_ALL retained for grandchild expansion",
+			preserved.AccessMask)
+	}
+}
+
 func TestPropagateACL_Directory(t *testing.T) {
 	existingACL := &ACL{ACEs: []ACE{
 		{Type: ACE4_ACCESS_DENIED_ACE_TYPE, AccessMask: ACE4_DELETE, Who: "bob@example.com"},
