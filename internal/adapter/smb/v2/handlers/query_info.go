@@ -1114,11 +1114,6 @@ func fileInfoClassRequiredAccess(class types.FileInfoClass) (uint32, bool) {
 	return 0, false
 }
 
-// hasAccessRight checks if the granted access mask includes the required right.
-// Per MS-SMB2 2.2.13.1: MAXIMUM_ALLOWED, GENERIC_ALL, GENERIC_READ, GENERIC_WRITE,
-// and GENERIC_EXECUTE are mapped to specific access rights during CREATE.
-// GENERIC_READ includes FILE_READ_ATTRIBUTES; GENERIC_WRITE includes FILE_WRITE_ATTRIBUTES;
-// GENERIC_EXECUTE includes FILE_READ_ATTRIBUTES; GENERIC_ALL includes everything.
 // basenameForHidden returns the basename used for IsHiddenFile's dot-prefix
 // detection. OpenFile.FileName holds the basename in the parent directory (set
 // at CREATE), so prefer it. Fall back to the last path component when FileName
@@ -1139,6 +1134,11 @@ func basenameForHidden(openFile *OpenFile) string {
 	return p
 }
 
+// hasAccessRight checks if the granted access mask includes the required right.
+// Per MS-SMB2 2.2.13.1: MAXIMUM_ALLOWED, GENERIC_ALL, GENERIC_READ, GENERIC_WRITE,
+// and GENERIC_EXECUTE are mapped to specific access rights during CREATE.
+// GENERIC_READ includes FILE_READ_ATTRIBUTES; GENERIC_WRITE includes FILE_WRITE_ATTRIBUTES;
+// GENERIC_EXECUTE includes FILE_READ_ATTRIBUTES; GENERIC_ALL includes everything.
 func hasAccessRight(grantedAccess, requiredRight uint32) bool {
 	// Explicit right present
 	if grantedAccess&requiredRight != 0 {

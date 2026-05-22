@@ -219,15 +219,7 @@ func FileAttrToSMBTimes(attr *metadata.FileAttr) (creation, access, write, chang
 // Note: callers that have the filename available should prefer
 // FileAttrToFileBasicInfoWithName so the dot-prefix IsHiddenFile check applies.
 func FileAttrToFileBasicInfo(attr *metadata.FileAttr) *FileBasicInfo {
-	creation, access, write, change := FileAttrToSMBTimes(attr)
-
-	return &FileBasicInfo{
-		CreationTime:   creation,
-		LastAccessTime: access,
-		LastWriteTime:  write,
-		ChangeTime:     change,
-		FileAttributes: FileAttrToSMBAttributes(attr),
-	}
+	return FileAttrToFileBasicInfoWithName(attr, "")
 }
 
 // FileAttrToFileBasicInfoWithName is the name-aware variant of
@@ -274,20 +266,7 @@ func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *
 // Note: callers that have the filename available should prefer
 // FileAttrToFileNetworkOpenInfoWithName so the dot-prefix IsHiddenFile check applies.
 func FileAttrToFileNetworkOpenInfo(attr *metadata.FileAttr) *FileNetworkOpenInfo {
-	creation, access, write, change := FileAttrToSMBTimes(attr)
-	// Get appropriate size (MFsymlink size for symlinks)
-	size := getSMBSize(attr)
-	allocationSize := calculateAllocationSize(size)
-
-	return &FileNetworkOpenInfo{
-		CreationTime:   creation,
-		LastAccessTime: access,
-		LastWriteTime:  write,
-		ChangeTime:     change,
-		AllocationSize: allocationSize,
-		EndOfFile:      size,
-		FileAttributes: FileAttrToSMBAttributes(attr),
-	}
+	return FileAttrToFileNetworkOpenInfoWithName(attr, "")
 }
 
 // FileAttrToFileNetworkOpenInfoWithName is the name-aware variant of
@@ -295,6 +274,7 @@ func FileAttrToFileNetworkOpenInfo(attr *metadata.FileAttr) *FileNetworkOpenInfo
 // surface FILE_ATTRIBUTE_HIDDEN.
 func FileAttrToFileNetworkOpenInfoWithName(attr *metadata.FileAttr, name string) *FileNetworkOpenInfo {
 	creation, access, write, change := FileAttrToSMBTimes(attr)
+	// Get appropriate size (MFsymlink size for symlinks)
 	size := getSMBSize(attr)
 	allocationSize := calculateAllocationSize(size)
 
