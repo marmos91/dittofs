@@ -572,7 +572,7 @@ func TestQueryDirectory_PatternChange_RestartsCursor(t *testing.T) {
 func TestQueryDirectory_SingleEntry_PaginatesLargeDirectory(t *testing.T) {
 	const N = 50
 	names := make([]string, N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		names[i] = fmt.Sprintf("t%03d.txt", i)
 	}
 	h, open, _, smbCtx := setupQueryDirTest(t, names)
