@@ -100,10 +100,11 @@
 //
 // In-memory bookkeeping IS trimmed (R-2, #581): every AdvanceFence
 // call drops the prefix of logIndex.entries (and the matching consumed
-// map keys) that the fence walked past. Steady-state RSS for a
-// long-lived payload tracks the unconsumed-record set, not the full
-// arrival history — bounding the per-file index at the upper edge of
-// the dirty interval tree.
+// map keys) that the fence walked past. The backing array is
+// reallocated whenever its capacity exceeds 4× the surviving length so
+// the old high-water allocation can be reclaimed by the GC. Steady-state
+// RSS for a long-lived payload is therefore bounded at O(unconsumed-
+// record set), not at the historical arrival count.
 //
 // TRANSITIONAL-V0.17+: tracking consumption by file-offset interval
 // instead of log position would eliminate the stalled-fence pathology

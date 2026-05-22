@@ -361,9 +361,10 @@ func TestLogIndex_AdvanceFence_TrimDoesNotCrossHole(t *testing.T) {
 
 // TestLogIndex_AdvanceFence_TrimFullDrainReleasesBackingArray verifies
 // the R-2 acceptance criterion: a payload that takes many AppendWrite +
-// rollup cycles must not retain unbounded entries. Drives K cycles and
-// asserts Len() stays at zero when the workload fully consumes each
-// batch, instead of growing linearly with arrival count.
+// rollup cycles must not retain unbounded entries. Drives K cycles, then
+// asserts that (a) Len()==0 after each fully-consumed cycle and (b) the
+// backing array itself is released to the GC at the end of the run by
+// inspecting `idx.entries == nil` directly (internal-package test).
 func TestLogIndex_AdvanceFence_TrimFullDrainReleasesBackingArray(t *testing.T) {
 	idx := newLogIndex()
 	const payload = uint32(64)
@@ -387,6 +388,17 @@ func TestLogIndex_AdvanceFence_TrimFullDrainReleasesBackingArray(t *testing.T) {
 	wantFence := uint64(logHeaderSize) + uint64(cycles)*step
 	if got := idx.Fence(); got != wantFence {
 		t.Fatalf("post-drain fence: got %d want %d", got, wantFence)
+	}
+	// Backing array MUST be released on full drain — internal access.
+	idx.mu.Lock()
+	entriesNil := idx.entries == nil
+	consumedLen := len(idx.consumed)
+	idx.mu.Unlock()
+	if !entriesNil {
+		t.Fatalf("full drain did not release entries backing array (still non-nil)")
+	}
+	if consumedLen != 0 {
+		t.Fatalf("consumed map not drained: len=%d", consumedLen)
 	}
 }
 

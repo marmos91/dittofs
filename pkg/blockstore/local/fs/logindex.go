@@ -210,11 +210,11 @@ func (idx *logIndex) AdvanceFence() uint64 {
 // idx.mu. fenceCursor is reset to 0 so subsequent AdvanceFence calls
 // resume from the new head.
 //
-// A copy-shift (append-to-truncated-zero-len-slice) is used rather
-// than `entries = entries[fenceCursor:]` so the underlying backing
-// array's head bytes are released to the GC instead of being pinned
-// forever by the slice header — the long-lived-payload pathology
-// (#581) was precisely about that backing array growing unbounded.
+// To bound RSS at ~steady-state (not at the historical high-water mark),
+// the backing array is REALLOCATED whenever its capacity exceeds 4x the
+// surviving length. A plain reslice (`entries[fenceCursor:]`) would pin
+// the original backing array forever — defeating the point of #581 on
+// long-lived payloads whose log shrinks after a burst.
 func (idx *logIndex) trimBelowFenceLocked() {
 	if idx.fenceCursor == 0 {
 		return
@@ -223,18 +223,21 @@ func (idx *logIndex) trimBelowFenceLocked() {
 		delete(idx.consumed, idx.entries[i].logPos)
 	}
 	remaining := len(idx.entries) - idx.fenceCursor
-	if remaining == 0 {
-		// Reset to nil so the backing array drops to GC; a long-idle
-		// payload that has just had its log fully consumed should not
-		// hold on to a megabyte-class slice.
+	switch {
+	case remaining == 0:
+		// Full drain — release backing array to GC.
 		idx.entries = nil
-	} else {
-		// Shift-and-truncate. copy + reslice keeps allocations at zero
-		// on the hot path; the freed tail elements are zeroed so any
-		// retained references to payload extents would be visible to
-		// the race detector (none exist today — logEntry is a value
-		// type — but the discipline keeps future logEntry additions
-		// safe by default).
+	case cap(idx.entries) > 4*remaining:
+		// Bloated backing array — copy into a right-sized one so the old
+		// allocation can be reclaimed by the GC. The 4x threshold keeps
+		// reallocations rare in steady state while bounding cap at O(N).
+		shrunk := make([]logEntry, remaining)
+		copy(shrunk, idx.entries[idx.fenceCursor:])
+		idx.entries = shrunk
+	default:
+		// Cap already proportional to remaining — in-place shift avoids
+		// the allocation. Zero the freed tail so logEntry pointer fields
+		// (none today — value type — but future-proofed) aren't pinned.
 		copy(idx.entries, idx.entries[idx.fenceCursor:])
 		for i := remaining; i < len(idx.entries); i++ {
 			idx.entries[i] = logEntry{}
