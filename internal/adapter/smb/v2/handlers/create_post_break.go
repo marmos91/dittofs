@@ -549,6 +549,22 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		}
 	}
 
+	// Step 8b-bis: Directory-CREATE oplock gate (MS-SMB2 §3.3.5.9; Samba
+	// smbd_smb2_create_oplock_check). See clampDirectoryOplockLevel for the
+	// rationale; covers smbtorture smb2.dirlease.oplocks.
+	if file.Type == metadata.FileTypeDirectory {
+		clamped, cleared := clampDirectoryOplockLevel(grantedOplock)
+		if clamped != grantedOplock {
+			logger.Debug("CREATE: clamping non-lease oplock to NONE on directory CREATE",
+				"requestedOplock", oplockLevelName(req.OplockLevel),
+				"grantedOplock", oplockLevelName(grantedOplock))
+			grantedOplock = clamped
+			if cleared {
+				syntheticLeaseKey = [16]byte{}
+			}
+		}
+	}
+
 	// Step 8c: Process App Instance ID and durable handle grant.
 	var durableResponseCtx *CreateContext
 	var appInstanceId [16]byte

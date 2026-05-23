@@ -186,6 +186,33 @@ func leaseStateToOplockLevel(state uint32) uint8 {
 	}
 }
 
+// clampDirectoryOplockLevel returns the wire OplockLevel a directory CREATE
+// response must carry, plus a flag indicating whether any synthetic-lease
+// bookkeeping (FileID tagging, synthetic key store) should be torn down.
+//
+// Per MS-SMB2 §3.3.5.9 (and Samba `smbd_smb2_create.c::smbd_smb2_create_oplock_check`)
+// traditional oplocks — LEVEL_II / EXCLUSIVE / BATCH — are NEVER granted on
+// directories. The server MUST coerce the response OplockLevel to NONE even when
+// the client requested a higher level. Directory LEASES (OplockLevelLease,
+// 0xFF) are unaffected: the lease state itself is independently coerced to a
+// valid directory state (None / R / RH) via downgradeCandidates +
+// IsValidDirectoryLeaseState in pkg/metadata/lock/leases.go.
+//
+// Returns the wire-final level and a `clearedSynthetic` flag set when the
+// caller previously installed a synthetic traditional-oplock lease record that
+// must now be considered ungranted.
+//
+// Covers smbtorture smb2.dirlease.oplocks (all four requested levels on
+// directory CREATE must respond with NONE).
+func clampDirectoryOplockLevel(granted uint8) (uint8, bool) {
+	switch granted {
+	case OplockLevelII, OplockLevelExclusive, OplockLevelBatch:
+		return OplockLevelNone, true
+	default:
+		return granted, false
+	}
+}
+
 // oplockLevelToLeaseState maps a traditional oplock level to equivalent
 // lease state flags for OPLOCK_BREAK acknowledgment handling.
 func oplockLevelToLeaseState(level uint8) uint32 {
