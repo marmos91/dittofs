@@ -1497,12 +1497,13 @@ func TestArmedBuffer_RecursiveWatcherChargesRelativePath(t *testing.T) {
 	fileID := [16]byte{0xF0}
 	var overflowFireCount int32
 
-	// Pick MaxOutputLength so the bare-name accounting (12 + 2*1 = 14, pad
-	// to 16) would fit but the relative-path accounting (12 + 2*20 = 52,
-	// pad to 52) overflows on the first event.
-	//   bare "x.txt"            -> 12 + 2*5 = 22 → 24 bytes
-	//   relative "a/b/c/d/x.txt" -> 12 + 2*13 = 38 → 40 bytes
-	// Set MaxOutputLength=32 so bare would NOT trip but relative WILL.
+	// Pick MaxOutputLength so the bare-name accounting fits but the
+	// relative-path accounting overflows on the first event:
+	//   bare     "x.txt"          -> 12 + 2*5  = 22, pad to 24 bytes
+	//   relative "a/b/c/d/x.txt"  -> 12 + 2*13 = 38, pad to 40 bytes
+	// MaxOutputLength=32 leaves room for the bare-name entry but not the
+	// relative-path entry, so charging bare would NOT trip overflow and
+	// charging relative WILL.
 	mustRegister(t, r, &PendingNotify{
 		FileID:           fileID,
 		SessionID:        1,
