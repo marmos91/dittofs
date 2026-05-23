@@ -169,6 +169,11 @@ main() {
     # MS-SRVS SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM flag set so
     # QUERY_DIRECTORY hides entries the caller cannot read.
     $DFSCTL share create --name /hideunread --access-based-enumeration $share_flags
+    # /change_notify_disabled rejects SMB2 CHANGE_NOTIFY with STATUS_NOT_IMPLEMENTED.
+    # Target of smb2.change_notify_disabled.notfiy_disabled which verifies the
+    # server signals "unsupported" rather than silently accepting notifies on a
+    # share where change notify is administratively disabled.
+    $DFSCTL share create --name /change_notify_disabled --change-notify-disabled $share_flags
     # /smbnoncanon disables MS-DTYP §2.5.3.4.2 canonicalization (Samba
     # `acl flag inherited canonicalization = no` extension). Target of
     # smb2.acls_non_canonical.flags; verifies AUTO_INHERITED round-trips
@@ -214,7 +219,7 @@ main() {
     # Wait for SMB adapter to start
     wait_for_smb localhost
 
-    log_info "Bootstrap complete: shares=smbbasic,smbencrypted,fileshare,hideunread,smbnoncanon users=wpts-admin,nonadmin adapter=smb:${SMB_PORT}"
+    log_info "Bootstrap complete: shares=smbbasic,smbencrypted,fileshare,hideunread,change_notify_disabled,smbnoncanon users=wpts-admin,nonadmin adapter=smb:${SMB_PORT}"
 }
 
 main "$@"

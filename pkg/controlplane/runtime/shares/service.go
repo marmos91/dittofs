@@ -63,6 +63,11 @@ type Share struct {
 	// #549).
 	AccessBasedEnumeration bool
 
+	// ChangeNotifyDisabled rejects SMB2 CHANGE_NOTIFY on this share with
+	// STATUS_NOT_IMPLEMENTED. Mirrors Samba `kernel change notify = no`
+	// and the smb2.change_notify_disabled torture test.
+	ChangeNotifyDisabled bool
+
 	// NFS-specific options
 	DisableReaddirplus bool
 
@@ -131,6 +136,10 @@ type ShareConfig struct {
 	// Windows access-based enumeration. See the runtime Share field for
 	// semantics (refs #532).
 	AccessBasedEnumeration bool
+
+	// ChangeNotifyDisabled mirrors models.Share's per-share toggle that
+	// rejects SMB2 CHANGE_NOTIFY with STATUS_NOT_IMPLEMENTED.
+	ChangeNotifyDisabled bool
 
 	RootAttr *metadata.FileAttr
 
@@ -428,6 +437,7 @@ func (s *Service) prepareShare(
 		EncryptData:                      config.EncryptData,
 		AclFlagInheritedCanonicalization: config.AclFlagInheritedCanonicalization,
 		AccessBasedEnumeration:           config.AccessBasedEnumeration,
+		ChangeNotifyDisabled:             config.ChangeNotifyDisabled,
 		DefaultPermission:                config.DefaultPermission,
 		Squash:                           config.Squash,
 		AnonymousUID:                     config.AnonymousUID,

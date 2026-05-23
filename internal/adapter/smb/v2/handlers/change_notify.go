@@ -130,6 +130,13 @@ type FileNotifyInformation struct {
 // Returns an error if the response could not be sent (e.g., connection closed).
 type AsyncResponseCallback func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error
 
+// OnOverflow is an optional hook fired when sendAndUnregister returns
+// STATUS_NOTIFY_ENUM_DIR. The directory handle's overflow flag must be set
+// so the next CHANGE_NOTIFY on the same handle also returns ENUM_DIR
+// (smb2.notify.valid-req: "if the first notify returns NOTIFY_ENUM_DIR,
+// all do"). Wired by the registering handler; nil for unit tests.
+type OnOverflow func(fileID [16]byte)
+
 // PendingNotify tracks a pending CHANGE_NOTIFY request waiting for filesystem events.
 // Each instance represents one client watch registered via the CHANGE_NOTIFY command.
 // It stores the watch path, completion filter, and the async callback for delivering
@@ -160,6 +167,11 @@ type PendingNotify struct {
 	// If nil, the change is logged but no response is sent.
 	// The callback is responsible for sending the async SMB2 response.
 	AsyncCallback AsyncResponseCallback
+
+	// OnOverflow is fired when sendAndUnregister returns
+	// STATUS_NOTIFY_ENUM_DIR so the open handle's sticky overflow flag can
+	// be set. Optional.
+	OnOverflow OnOverflow
 }
 
 // NotifyRegistry manages pending CHANGE_NOTIFY requests from SMB2 clients.
@@ -633,6 +645,11 @@ func (r *NotifyRegistry) sendAndUnregister(w *PendingNotify, changes []FileNotif
 			"encodedLength", len(buffer),
 			"maxOutputLength", removed.MaxOutputLength,
 			"messageID", removed.MessageID)
+		// Mark the handle as overflowed so the next CHANGE_NOTIFY on it
+		// also returns ENUM_DIR per Samba notify_buffer semantics.
+		if removed.OnOverflow != nil {
+			removed.OnOverflow(removed.FileID)
+		}
 		enumResp := &ChangeNotifyResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
 		}

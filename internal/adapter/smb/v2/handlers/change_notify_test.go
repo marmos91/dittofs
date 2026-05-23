@@ -1201,6 +1201,83 @@ func TestUnregisterAllForSession_PreservesOtherSessions(t *testing.T) {
 	}
 }
 
+// TestSendAndUnregister_OnOverflowFiresForUndersizedBuffer covers the
+// smb2.notify.valid-req "sticky" overflow contract: when the encoded
+// change list exceeds MaxOutputLength we must (a) return STATUS_NOTIFY_ENUM_DIR
+// to the client and (b) invoke OnOverflow so the directory handle's overflow
+// flag survives across notifies and the next notify also returns ENUM_DIR.
+func TestSendAndUnregister_OnOverflowFiresForUndersizedBuffer(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	var overflowFiredFor [16]byte
+	var deliveredStatus types.Status
+	fileID := [16]byte{0xAA}
+
+	mustRegister(t, r, &PendingNotify{
+		FileID:           fileID,
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  0, // any encoded notification exceeds this
+		AsyncCallback: func(_, _, _ uint64, response *ChangeNotifyResponse) error {
+			deliveredStatus = response.GetStatus()
+			return nil
+		},
+		OnOverflow: func(id [16]byte) { overflowFiredFor = id },
+	})
+
+	r.NotifyChange("share1", "/dir", "file.txt", FileActionAdded)
+
+	if deliveredStatus != types.StatusNotifyEnumDir {
+		t.Errorf("expected STATUS_NOTIFY_ENUM_DIR, got 0x%08X", uint32(deliveredStatus))
+	}
+	if overflowFiredFor != fileID {
+		t.Errorf("expected OnOverflow to fire with fileID %v, got %v", fileID, overflowFiredFor)
+	}
+}
+
+// TestUnregisterAllForSession_ReturnedNotifiesPreserveAsyncCallback verifies
+// that watchers removed by UnregisterAllForSession retain their AsyncCallback
+// so the caller can fire STATUS_NOTIFY_CLEANUP per MS-SMB2 3.3.5.5.2
+// (smb2.notify.invalid-reauth / session-reconnect / .tcon / .dir).
+func TestUnregisterAllForSession_ReturnedNotifiesPreserveAsyncCallback(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	var calledWithStatus types.Status
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        100,
+		MessageID:        10,
+		AsyncId:          1000,
+		WatchPath:        "/dir1",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		AsyncCallback: func(_, _, _ uint64, response *ChangeNotifyResponse) error {
+			calledWithStatus = response.GetStatus()
+			return nil
+		},
+	})
+
+	removed := r.UnregisterAllForSession(100)
+	if len(removed) != 1 {
+		t.Fatalf("expected 1 removed, got %d", len(removed))
+	}
+
+	// Caller invokes the callback to deliver STATUS_NOTIFY_CLEANUP.
+	resp := &ChangeNotifyResponse{
+		SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
+	}
+	if err := removed[0].AsyncCallback(removed[0].SessionID, removed[0].MessageID, removed[0].AsyncId, resp); err != nil {
+		t.Fatalf("AsyncCallback returned error: %v", err)
+	}
+	if calledWithStatus != types.StatusNotifyCleanup {
+		t.Errorf("expected callback to receive STATUS_NOTIFY_CLEANUP, got 0x%08X", uint32(calledWithStatus))
+	}
+}
+
 func TestUnregisterAllForTree_PreservesOtherTrees(t *testing.T) {
 	r := NewNotifyRegistry()
 

@@ -160,6 +160,7 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		Permission:             permission,
 		EncryptData:            share.EncryptData,
 		AccessBasedEnumeration: share.AccessBasedEnumeration,
+		ChangeNotifyDisabled:   share.ChangeNotifyDisabled,
 	}
 	h.StoreTree(tree)
 

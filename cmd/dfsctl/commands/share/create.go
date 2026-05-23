@@ -26,6 +26,7 @@ var (
 	createQuotaBytes        string
 	createAclCanonicalize   bool
 	createAccessBasedEnum   bool
+	createChangeNotifyOff   bool
 )
 
 var createCmd = &cobra.Command{
@@ -82,6 +83,7 @@ func init() {
 	createCmd.Flags().StringVar(&createQuotaBytes, "quota-bytes", "", "Per-share byte quota (e.g., '10GiB', '500MiB'). 0 = unlimited (default)")
 	createCmd.Flags().BoolVar(&createAclCanonicalize, "acl-canonicalize-inherited", true, "When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba \"acl flag inherited canonicalization = no\"). Default true matches Windows.")
 	createCmd.Flags().BoolVar(&createAccessBasedEnum, "access-based-enumeration", false, "Enable Windows access-based enumeration (SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM). When true, SMB clients only see directory entries they can read.")
+	createCmd.Flags().BoolVar(&createChangeNotifyOff, "change-notify-disabled", false, "Reject SMB2 CHANGE_NOTIFY with STATUS_NOT_IMPLEMENTED on this share (mirrors Samba 'kernel change notify = no').")
 	_ = createCmd.MarkFlagRequired("local")
 }
 
@@ -172,6 +174,10 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("access-based-enumeration") {
 		v := createAccessBasedEnum
 		req.AccessBasedEnumeration = &v
+	}
+	if cmd.Flags().Changed("change-notify-disabled") {
+		v := createChangeNotifyOff
+		req.ChangeNotifyDisabled = &v
 	}
 
 	share, err := client.CreateShare(req)

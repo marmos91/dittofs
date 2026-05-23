@@ -438,7 +438,7 @@ else
         "smb2.acls_non_canonical:acls_non_canonical:smbnoncanon"
         "smb2.aio_delay:aio_delay"
         "smb2.bench:bench"
-        "smb2.change_notify_disabled:change_notify_disabled"
+        "smb2.change_notify_disabled:change_notify_disabled:change_notify_disabled"
         "smb2.charset:charset"
         "smb2.compound:compound"
         "smb2.compound_async:compound_async"
