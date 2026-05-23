@@ -14,24 +14,14 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
-// encodeUTF16LEForTest encodes an ASCII string as UTF-16LE for embedding in
-// an NTLM AUTHENTICATE message.
-func encodeUTF16LEForTest(s string) []byte {
-	buf := make([]byte, len(s)*2)
-	for i, r := range s {
-		binary.LittleEndian.PutUint16(buf[i*2:], uint16(r))
-	}
-	return buf
-}
-
 // buildNTLMAuthenticateForTest builds an NTLM Type 3 (AUTHENTICATE) message
 // containing the given username and domain in UTF-16LE plus an optional
 // NtChallengeResponse blob. Use an empty ntResponse to skip NTLMv2 validation
 // (drives the "no NT response → user lookup only" path); pass a 24+ byte blob
 // to force ValidateNTLMv2Response to run (and, with garbage bytes, fail).
 func buildNTLMAuthenticateForTest(username, domain string, ntResponse []byte) []byte {
-	usernameBytes := encodeUTF16LEForTest(username)
-	domainBytes := encodeUTF16LEForTest(domain)
+	usernameBytes := encodeUTF16LE(username)
+	domainBytes := encodeUTF16LE(domain)
 
 	payloadOffset := 88
 	domainOffset := payloadOffset
