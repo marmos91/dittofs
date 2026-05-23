@@ -376,6 +376,18 @@ type OpenFile struct {
 	// returns NOTIFY_ENUM_DIR, all do"). Cleared after that next notify
 	// consumes it. Lifetime is the handle: closing/reopening resets it.
 	NotifyOverflowed atomic.Bool
+
+	// NotifyMaxBufferSize is the OutputBufferLength captured from the FIRST
+	// CHANGE_NOTIFY issued on this handle. Subsequent notifies cap their
+	// effective max with MIN(req.OutputBufferLength, NotifyMaxBufferSize),
+	// matching Samba `change_notify_create` / `change_notify_reply` semantics
+	// (max_buffer_size is stored on notify_buffer creation and applied to
+	// every reply via MIN). This is what gives the smb2.notify.valid-req
+	// "if the first notify returns NOTIFY_ENUM_DIR, all do" property: a
+	// tiny first buffer permanently caps later notifies on the same handle.
+	// Zero means no CHANGE_NOTIFY has been issued yet on this handle. Set
+	// once via CompareAndSwap and never updated after.
+	NotifyMaxBufferSize atomic.Uint32
 }
 
 // OpenID returns a unique identifier for this open file handle.

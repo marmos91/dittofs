@@ -1202,15 +1202,15 @@ func TestUnregisterAllForSession_PreservesOtherSessions(t *testing.T) {
 	}
 }
 
-// TestSendAndUnregister_OnOverflowFiresForUndersizedBuffer covers the
-// smb2.notify.valid-req "sticky" overflow contract: when the encoded
-// change list exceeds MaxOutputLength we must (a) return STATUS_NOTIFY_ENUM_DIR
-// to the client and (b) invoke OnOverflow so the directory handle's overflow
-// flag survives across notifies and the next notify also returns ENUM_DIR.
-func TestSendAndUnregister_OnOverflowFiresForUndersizedBuffer(t *testing.T) {
+// TestSendAndUnregister_UndersizedBufferYieldsEnumDir covers the
+// smb2.notify.valid-req contract for one notify cycle: when the encoded
+// change list exceeds MaxOutputLength, the registry MUST return
+// STATUS_NOTIFY_ENUM_DIR to the client. The "if the first notify returns
+// NOTIFY_ENUM_DIR, all do" sticky property is enforced one layer up at the
+// handler via OpenFile.NotifyMaxBufferSize, not by the registry.
+func TestSendAndUnregister_UndersizedBufferYieldsEnumDir(t *testing.T) {
 	r := NewNotifyRegistry()
 
-	var overflowFiredFor [16]byte
 	var deliveredStatus types.Status
 	fileID := [16]byte{0xAA}
 
@@ -1227,16 +1227,12 @@ func TestSendAndUnregister_OnOverflowFiresForUndersizedBuffer(t *testing.T) {
 			deliveredStatus = response.GetStatus()
 			return nil
 		},
-		OnOverflow: func(id [16]byte) { overflowFiredFor = id },
 	})
 
 	r.NotifyChange("share1", "/dir", "file.txt", FileActionAdded)
 
 	if deliveredStatus != types.StatusNotifyEnumDir {
 		t.Errorf("expected STATUS_NOTIFY_ENUM_DIR, got 0x%08X", uint32(deliveredStatus))
-	}
-	if overflowFiredFor != fileID {
-		t.Errorf("expected OnOverflow to fire with fileID %v, got %v", fileID, overflowFiredFor)
 	}
 }
 
@@ -1711,5 +1707,173 @@ func TestChangeNotify_HandlePermissions_GrantedAccessGate(t *testing.T) {
 				t.Errorf("expected one pending watcher after STATUS_PENDING, got %d", watchers)
 			}
 		})
+	}
+}
+
+// encodeChangeNotifyReq builds an SMB2 CHANGE_NOTIFY request body
+// per MS-SMB2 2.2.35.
+func encodeChangeNotifyReq(flags uint16, outBufLen uint32, fileID [16]byte, completionFilter uint32) []byte {
+	body := make([]byte, 32)
+	// StructureSize = 32
+	body[0] = 0x20
+	body[1] = 0x00
+	// Flags
+	body[2] = byte(flags)
+	body[3] = byte(flags >> 8)
+	// OutputBufferLength
+	body[4] = byte(outBufLen)
+	body[5] = byte(outBufLen >> 8)
+	body[6] = byte(outBufLen >> 16)
+	body[7] = byte(outBufLen >> 24)
+	// FileID
+	copy(body[8:24], fileID[:])
+	// CompletionFilter
+	body[24] = byte(completionFilter)
+	body[25] = byte(completionFilter >> 8)
+	body[26] = byte(completionFilter >> 16)
+	body[27] = byte(completionFilter >> 24)
+	return body
+}
+
+// TestChangeNotify_StickyMaxBufferSize_SubsumesValidReq is the unit-level
+// cover for smb2.notify.valid-req's "if the first notify returns
+// NOTIFY_ENUM_DIR, all do" property. Per Samba `change_notify_create` the
+// notify_buffer's max_buffer_size is captured from the FIRST notify on the
+// handle and MIN-capped into every subsequent reply. A small first call
+// therefore caps every later call on the same handle — even when the later
+// call requests max_trans_size.
+func TestChangeNotify_StickyMaxBufferSize_SubsumesValidReq(t *testing.T) {
+	h := NewHandler()
+	h.NotifyRegistry = NewNotifyRegistry()
+	h.MaxTransactSize = 1 << 20
+
+	var fileID [16]byte
+	copy(fileID[:], []byte{0x77, 0x88})
+
+	openFile := &OpenFile{
+		FileID:        fileID,
+		IsDirectory:   true,
+		ShareName:     "share1",
+		Path:          "/dir",
+		SessionID:     1,
+		TreeID:        1,
+		DesiredAccess: 0x00000001, // FILE_LIST_DIRECTORY
+	}
+	h.StoreOpenFile(openFile)
+
+	makeCtx := func() *SMBHandlerContext {
+		return &SMBHandlerContext{
+			SessionID:       1,
+			TreeID:          1,
+			MessageID:       1,
+			ConnID:          1,
+			TryReserveAsync: func() bool { return true },
+			ReleaseAsync:    func() {},
+			AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+				return nil
+			},
+		}
+	}
+
+	// First CHANGE_NOTIFY with a tiny buffer (1 byte). The handler must
+	// accept it and store NotifyMaxBufferSize = 1 on the OpenFile.
+	body1 := encodeChangeNotifyReq(0, 1, fileID, FileNotifyChangeFileName)
+	res1, err := h.ChangeNotify(makeCtx(), body1)
+	if err != nil {
+		t.Fatalf("first CHANGE_NOTIFY error: %v", err)
+	}
+	if res1 == nil || res1.Status != types.StatusPending {
+		t.Fatalf("first CHANGE_NOTIFY: want STATUS_PENDING, got %+v", res1)
+	}
+	if got := openFile.NotifyMaxBufferSize.Load(); got != 1 {
+		t.Fatalf("NotifyMaxBufferSize after first call = %d, want 1", got)
+	}
+
+	// Drain the registered watcher so the second CHANGE_NOTIFY can register
+	// a fresh one (Register replaces same-FileID entries).
+	h.NotifyRegistry.Unregister(fileID)
+
+	// Second CHANGE_NOTIFY with max_trans_size — must NOT be rejected as
+	// "previously-accepted requests" and must be MIN-capped down to 1 so
+	// any encoded change overflows and yields STATUS_NOTIFY_ENUM_DIR.
+	body2 := encodeChangeNotifyReq(0, h.MaxTransactSize, fileID, FileNotifyChangeFileName|FileNotifyChangeDirName)
+	res2, err := h.ChangeNotify(makeCtx(), body2)
+	if err != nil {
+		t.Fatalf("second CHANGE_NOTIFY error: %v", err)
+	}
+	if res2 == nil || res2.Status != types.StatusPending {
+		t.Fatalf("second CHANGE_NOTIFY: want STATUS_PENDING (not InvalidParameter), got %+v", res2)
+	}
+	if got := openFile.NotifyMaxBufferSize.Load(); got != 1 {
+		t.Fatalf("NotifyMaxBufferSize after second call = %d, want 1 (stuck)", got)
+	}
+
+	// The pending notify must carry the MIN-capped MaxOutputLength, not the
+	// request's max_trans_size — this is what guarantees overflow on
+	// delivery and matches Samba `change_notify_reply` MIN semantics.
+	var pendingMax uint32
+	h.NotifyRegistry.RangeWatchers(func(p *PendingNotify) bool {
+		if p.FileID == fileID {
+			pendingMax = p.MaxOutputLength
+		}
+		return true
+	})
+	if pendingMax != 1 {
+		t.Errorf("registered PendingNotify.MaxOutputLength = %d, want 1 (MIN-capped to first call's value)", pendingMax)
+	}
+}
+
+// TestChangeNotify_FirstLargeBuffer_ThenSmallUsesRequest verifies the
+// inverse: when the first notify uses a large buffer, a subsequent notify
+// with a smaller request honors the smaller value (no upward cap, the cap
+// is asymmetric — Samba `MIN(max_param, notify_buf->max_buffer_size)`).
+func TestChangeNotify_FirstLargeBuffer_ThenSmallUsesRequest(t *testing.T) {
+	h := NewHandler()
+	h.NotifyRegistry = NewNotifyRegistry()
+	h.MaxTransactSize = 1 << 20
+
+	fileID := [16]byte{0x11}
+	openFile := &OpenFile{
+		FileID: fileID, IsDirectory: true, ShareName: "share1",
+		Path: "/dir", SessionID: 1, TreeID: 1, DesiredAccess: 0x00000001,
+	}
+	h.StoreOpenFile(openFile)
+
+	makeCtx := func() *SMBHandlerContext {
+		return &SMBHandlerContext{
+			SessionID: 1, TreeID: 1, MessageID: 1, ConnID: 1,
+			TryReserveAsync: func() bool { return true },
+			ReleaseAsync:    func() {},
+			AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+				return nil
+			},
+		}
+	}
+
+	// First call: 65536 byte buffer.
+	body1 := encodeChangeNotifyReq(0, 65536, fileID, FileNotifyChangeFileName)
+	if _, err := h.ChangeNotify(makeCtx(), body1); err != nil {
+		t.Fatalf("first CHANGE_NOTIFY error: %v", err)
+	}
+	h.NotifyRegistry.Unregister(fileID)
+
+	// Second call: 256 byte buffer — smaller than stored, must be used as-is.
+	body2 := encodeChangeNotifyReq(0, 256, fileID, FileNotifyChangeFileName)
+	if _, err := h.ChangeNotify(makeCtx(), body2); err != nil {
+		t.Fatalf("second CHANGE_NOTIFY error: %v", err)
+	}
+
+	var pendingMax uint32
+	h.NotifyRegistry.RangeWatchers(func(p *PendingNotify) bool {
+		if p.FileID == fileID {
+			pendingMax = p.MaxOutputLength
+		}
+		return true
+	})
+	if pendingMax != 256 {
+		t.Errorf("PendingNotify.MaxOutputLength = %d, want 256 (request smaller than stored max)", pendingMax)
+	}
+	if got := openFile.NotifyMaxBufferSize.Load(); got != 65536 {
+		t.Errorf("NotifyMaxBufferSize must not be updated by later calls; got %d, want 65536", got)
 	}
 }

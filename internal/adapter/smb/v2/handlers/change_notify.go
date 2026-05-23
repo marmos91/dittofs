@@ -898,6 +898,11 @@ func (r *NotifyRegistry) sendAndUnregister(w *PendingNotify, changes []FileNotif
 	// Per MS-SMB2 3.3.4.4 / MS-FSCC 2.4.42: when the encoded notification
 	// exceeds MaxOutputLength, complete the request with STATUS_NOTIFY_ENUM_DIR
 	// to tell the client to re-enumerate the directory.
+	//
+	// The "if the first notify returns NOTIFY_ENUM_DIR, all do" property
+	// from smb2.notify.valid-req is satisfied at the handler layer: the
+	// handle's NotifyMaxBufferSize is fixed by the first CHANGE_NOTIFY and
+	// MIN-capped into MaxOutputLength here on every subsequent request.
 	if uint32(len(buffer)) > removed.MaxOutputLength {
 		logger.Warn("CHANGE_NOTIFY: notification exceeds MaxOutputLength; sending STATUS_NOTIFY_ENUM_DIR",
 			"watchPath", removed.WatchPath,
