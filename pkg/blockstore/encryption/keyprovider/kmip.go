@@ -98,7 +98,7 @@ func fetchKMIPSymmetricKey(ctx context.Context, endpoint string, tlsCfg *tls.Con
 	if err != nil {
 		return nil, fmt.Errorf("keyprovider: kmip dial %s: %w", endpoint, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		deadline = time.Now().Add(timeout)
@@ -195,4 +195,3 @@ func readKMIPMessage(r io.Reader) (ttlv.TTLV, error) {
 	}
 	return ttlv.TTLV(bytes.Clone(body)), nil
 }
-
