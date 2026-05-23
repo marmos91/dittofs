@@ -146,17 +146,27 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metada
 
 // primeAuthContextFromOpenFile hand-offs the open's recorded session/tree
 // identity onto ctx BEFORE BuildAuthContext is called (refs #603). Follow-up
-// operations such as READ/WRITE/QUERY_DIRECTORY/CLOSE arrive keyed only by
-// FileID — the SMB2 dispatcher has no user state to prefill ctx.User with.
-// Without this hand-off BuildAuthContext takes the ctx.User==nil arm and
-// synthesises a UID-0 "anonymous/root" identity, which then trips the
-// UID-0 root-bypass at the top of metadata permission checks (e.g. ABE
-// filterByAccess) and silently grants root.
+// operations CREATE / READ / WRITE / QUERY_DIRECTORY (the four current
+// callers of this helper) arrive keyed only by FileID — the SMB2 dispatcher
+// has no user state to prefill ctx.User with. Without this hand-off
+// BuildAuthContext takes the ctx.User==nil arm and synthesises a UID-0
+// "anonymous/root" identity, which then trips the UID-0 root-bypass at the
+// top of metadata permission checks (e.g. ABE filterByAccess) and silently
+// grants root.
 //
-// The sess.User nil-guard is load-bearing: GetSession(0) returns the
-// manager's seeded anonymous pre-auth session with User=nil, and test
-// fixtures often pre-populate ctx.User without registering a parallel
+// We also realign ctx.TreeID / ctx.SessionID onto the IDs the open was
+// created against. Downstream gates (notably treeHasAccessBasedEnumeration
+// in QueryDirectory) read ctx.TreeID directly; if the dispatcher left a
+// stale or zero TreeID on ctx, ABE would be decided against the wrong tree.
+//
+// The sess.User nil-guard on the User assignment is load-bearing: GetSession(0)
+// returns the manager's seeded anonymous pre-auth session with User=nil, and
+// test fixtures often pre-populate ctx.User without registering a parallel
 // session. In both cases clobbering with nil would re-introduce the bug.
+// IsGuest, by contrast, MUST be propagated even when sess.User==nil: guest
+// sessions are created with User=nil and IsGuest=true (see
+// session.NewSession), and the BuildAuthContext guest arm is what maps them
+// to UID/GID 65534 instead of root.
 func (h *Handler) primeAuthContextFromOpenFile(ctx *SMBHandlerContext, openFile *OpenFile) {
 	h.primeAuthContext(ctx, openFile.TreeID, openFile.SessionID)
 }
@@ -165,13 +175,20 @@ func (h *Handler) primeAuthContextFromOpenFile(ctx *SMBHandlerContext, openFile 
 // tree/session IDs. CREATE uses this with the dispatcher-provided ctx.TreeID /
 // ctx.SessionID because there is no OpenFile yet.
 func (h *Handler) primeAuthContext(ctx *SMBHandlerContext, treeID uint32, sessionID uint64) {
+	ctx.TreeID = treeID
+	ctx.SessionID = sessionID
 	if tree, ok := h.GetTree(treeID); ok {
 		ctx.ShareName = tree.ShareName
 		ctx.Permission = tree.Permission
 	}
-	if sess, ok := h.GetSession(sessionID); ok && sess != nil && sess.User != nil {
-		ctx.User = sess.User
+	if sess, ok := h.GetSession(sessionID); ok && sess != nil {
+		// Propagate guest-ness independent of User: guest sessions seed
+		// User=nil + IsGuest=true and BuildAuthContext relies on IsGuest
+		// to pick the nobody/nogroup (65534) arm instead of root.
 		ctx.IsGuest = sess.IsGuest
+		if sess.User != nil {
+			ctx.User = sess.User
+		}
 	}
 }
 

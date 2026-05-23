@@ -43,12 +43,13 @@ import (
 // CREATE and the SET_INFO Security step — wpts-admin owns the file and is
 // also the principal whose SID lands inside the DACL.
 //
-// The returned SMBHandlerContext intentionally registers wpts-admin both on
-// the session (h.SessionManager) AND on ctx.User. The session registration
-// is what production code paths recover from openFile.SessionID — the per-
-// request ctx.User is cleared before QUERY_DIRECTORY in the production
-// dispatcher, so the handler must look it back up from the session for
-// ABE to work (refs #603).
+// The returned SMBHandlerContext intentionally leaves smbCtx.User nil while
+// registering wpts-admin only on the session (via h.CreateSession). This
+// mirrors the production QUERY_DIRECTORY dispatch path: the SMB2 wire body
+// carries no user state, so the dispatcher cannot prefill ctx.User and the
+// handler must recover the identity from openFile.SessionID via the session
+// manager. If we pre-populated smbCtx.User here the test would silently
+// bypass the very hand-off it is meant to exercise (refs #603).
 func setupAccessBasedReproShare(t *testing.T) (*Handler, *runtime.Runtime, metadata.FileHandle, *SMBHandlerContext, *metadata.AuthContext) {
 	t.Helper()
 
