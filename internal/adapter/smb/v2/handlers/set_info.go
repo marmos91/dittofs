@@ -1344,10 +1344,16 @@ func (h *Handler) breakParentDirLeasesForContentChange(authCtx *metadata.AuthCon
 	parentLockHandle := lock.FileHandle(openFile.ParentHandle)
 	excludeClientID := fmt.Sprintf("smb:%d", openFile.SessionID)
 
-	if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, openFile.ShareName, excludeClientID); breakErr != nil {
+	// Apply parent-key suppression (MS-SMB2 §3.3.4.20, #470 C2): if the
+	// originating handle's CREATE carried an RqLs with ParentLeaseKey set,
+	// the matching parent dir lease MUST NOT be broken on this child mutation.
+	excludeParentKey := openFile.ParentLeaseKey
+	hasExcludeKey := openFile.HasParentLeaseKey
+
+	if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, openFile.ShareName, excludeClientID, excludeParentKey, hasExcludeKey); breakErr != nil {
 		logger.Debug("SET_INFO: parent directory Handle lease break failed", "path", openFile.Path, "error", breakErr)
 	}
-	if breakErr := h.LeaseManager.BreakParentReadLeasesOnModify(authCtx.Context, parentLockHandle, openFile.ShareName, excludeClientID); breakErr != nil {
+	if breakErr := h.LeaseManager.BreakParentReadLeasesOnModify(authCtx.Context, parentLockHandle, openFile.ShareName, excludeClientID, excludeParentKey, hasExcludeKey); breakErr != nil {
 		logger.Debug("SET_INFO: parent directory Read lease break failed", "path", openFile.Path, "error", breakErr)
 	}
 }

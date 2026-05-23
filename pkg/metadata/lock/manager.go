@@ -1714,6 +1714,16 @@ func (lm *Manager) breakOpLocks(
 				lock.Lease.LeaseKey == excludeOwner.ExcludeLeaseKey {
 				continue
 			}
+			// Per MS-SMB2 §3.3.4.20 / Samba dirlease_should_break: when a
+			// child CREATE or SET_INFO carries an RqLs whose ParentLeaseKey
+			// matches the parent dir lease's key, suppress that dir-lease
+			// break. Scoped to dir leases to avoid suppressing an unrelated
+			// file-lease break that happens to share the key value (#470 C2).
+			if excludeOwner.HasExcludeParentDirLeaseKey &&
+				lock.Lease.IsDirectory &&
+				lock.Lease.LeaseKey == excludeOwner.ExcludeParentDirLeaseKey {
+				continue
+			}
 		}
 		if !shouldBreak(lock.Lease) {
 			continue

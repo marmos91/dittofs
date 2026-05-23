@@ -61,7 +61,14 @@ type DirChangeNotifier interface {
 	//   - parentHandle: The file handle of the directory that changed
 	//   - changeType: The type of change (add, remove, rename)
 	//   - originClientID: The client that caused the change (excluded from breaks)
-	OnDirChange(parentHandle FileHandle, changeType DirChangeType, originClientID string)
+	//   - excludeParentLeaseKey: The parent lease key carried on the originating
+	//     handle's RqLs (V2). Per MS-SMB2 §3.3.4.20 the matching parent dir
+	//     lease (if any) MUST NOT be broken. Pass the zero key when not used.
+	//   - hasExcludeKey: True when excludeParentLeaseKey is meaningful (SMB
+	//     CREATE/SET_INFO carried LEASE_FLAG_PARENT_LEASE_KEY_SET). NFS
+	//     callers MUST pass false — POSIX has no parent-key concept (#470 C2).
+	OnDirChange(parentHandle FileHandle, changeType DirChangeType, originClientID string,
+		excludeParentLeaseKey [16]byte, hasExcludeKey bool)
 }
 
 // Verify Manager satisfies DirChangeNotifier at compile time.
@@ -126,10 +133,19 @@ func (c *recentlyBrokenCache) cleanupLocked() {
 
 // OnDirChange handles directory entry changes by breaking directory leases.
 //
-// For each directory lease on parentHandle (excluding those owned by originClientID),
+// For each directory lease on parentHandle (excluding those owned by originClientID
+// or whose LeaseKey matches excludeParentLeaseKey when hasExcludeKey is true),
 // a break to LeaseStateNone is dispatched via BreakCallbacks.OnOpLockBreak.
 // The directory is then marked in the recently-broken cache.
-func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType, originClientID string) {
+//
+// The parent-key suppression (excludeParentLeaseKey, hasExcludeKey) implements
+// MS-SMB2 §3.3.4.20 / Samba `dirlease_should_break`: when the originating
+// SMB CREATE or SET_INFO carries RqLs with ParentLeaseKey == a parent dir
+// lease's LeaseKey, that dir lease MUST NOT be broken. The matching dir lease
+// is also kept out of the recently-broken cache so it isn't penalized on
+// re-grant. NFS callers MUST pass hasExcludeKey=false (#470 C2).
+func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType, originClientID string,
+	excludeParentLeaseKey [16]byte, hasExcludeKey bool) {
 	handleKey := string(parentHandle)
 
 	// Collect directory leases AND directory delegations to break
@@ -142,6 +158,16 @@ func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType
 	for _, lock := range locks {
 		// Skip originator for the entire lock entry (covers both lease and delegation).
 		if lock.Owner.ClientID == originClientID {
+			continue
+		}
+
+		// Parent-key suppression: when the originating CREATE / SET_INFO
+		// carries an RqLs with ParentLeaseKey matching a parent dir lease's
+		// LeaseKey, that dir lease MUST NOT be broken (#470 C2). Applies to
+		// dir leases only — file lease / delegation paths below ignore the
+		// exclude key.
+		if hasExcludeKey && lock.Lease != nil && lock.Lease.IsDirectory &&
+			lock.Lease.LeaseKey == excludeParentLeaseKey {
 			continue
 		}
 

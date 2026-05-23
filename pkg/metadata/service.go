@@ -645,10 +645,20 @@ func (s *MetadataService) notifyDirChange(shareName string, parentHandle FileHan
 	}
 
 	originClient := ""
+	var excludeParentKey [16]byte
+	var hasExcludeKey bool
 	if ctx != nil {
 		originClient = ctx.LockClientID
 		if originClient == "" {
 			originClient = ctx.ClientAddr
+		}
+		// Thread the originating handle's RqLs ParentLeaseKey into the
+		// notifier so the dir-lease parent-key suppression rule (MS-SMB2
+		// §3.3.4.20, #470 C2) can skip the matching parent dir lease.
+		// NFS callers leave HasParentLeaseKey=false.
+		if ctx.HasParentLeaseKey {
+			excludeParentKey = ctx.ParentLeaseKey
+			hasExcludeKey = true
 		}
 	}
 
@@ -658,5 +668,5 @@ func (s *MetadataService) notifyDirChange(shareName string, parentHandle FileHan
 			logger.Error("notifyDirChange: panic in notifier", "share", shareName, "error", r)
 		}
 	}()
-	notifier.OnDirChange(lock.FileHandle(parentHandle), changeType, originClient)
+	notifier.OnDirChange(lock.FileHandle(parentHandle), changeType, originClient, excludeParentKey, hasExcludeKey)
 }

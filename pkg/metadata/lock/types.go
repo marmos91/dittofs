@@ -103,6 +103,21 @@ type LockOwner struct {
 	// leases with this key are skipped. Per MS-SMB2 3.3.5.9, opens with
 	// the same lease key must not break each other's leases.
 	ExcludeLeaseKey [16]byte
+
+	// ExcludeParentDirLeaseKey is an optional parent directory lease key
+	// used by the dir-lease parent-key suppression rule (#470 C2). When
+	// HasExcludeParentDirLeaseKey is true, breakOpLocks skips any DIRECTORY
+	// lease whose LeaseKey equals ExcludeParentDirLeaseKey. This implements
+	// the MS-SMB2 §3.3.4.20 / Samba `smbd_dirlease.c::dirlease_should_break`
+	// rule: when a child CREATE or SET_INFO carries a ParentLeaseKey
+	// matching a parent dir's lease key, the corresponding dir-lease break
+	// MUST be suppressed.
+	//
+	// The suppression applies to dir leases ONLY (gated on
+	// lock.Lease.IsDirectory) — a coincidental key collision with a file
+	// lease must not suppress an otherwise-required file-lease break.
+	ExcludeParentDirLeaseKey    [16]byte
+	HasExcludeParentDirLeaseKey bool
 }
 
 // UnifiedLock represents a byte-range lock or SMB lease with full protocol support.

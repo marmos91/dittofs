@@ -50,6 +50,20 @@ type AuthContext struct {
 	// If empty, ClientAddr is used as fallback.
 	LockClientID string
 
+	// ParentLeaseKey carries the originating SMB handle's RqLs ParentLeaseKey
+	// (when LEASE_FLAG_PARENT_LEASE_KEY_SET was set on the CREATE that opened
+	// the handle driving this operation). It is propagated into
+	// MetadataService.notifyDirChange so the directory-lease parent-key
+	// suppression rule (MS-SMB2 §3.3.4.20 / Samba `dirlease_should_break`,
+	// #470 C2) can skip the matching parent dir lease.
+	//
+	// HasParentLeaseKey distinguishes "linkage absent" (false, ParentLeaseKey
+	// ignored) from "linkage to zero-key dir lease" (true, ParentLeaseKey may
+	// legally be all zero). NFS callers MUST leave HasParentLeaseKey=false —
+	// POSIX has no parent-key concept.
+	ParentLeaseKey    [16]byte
+	HasParentLeaseKey bool
+
 	// HasDeleteAccess signals that the protocol handler already verified
 	// Windows-style DELETE access on the target of an unlink. Per MS-FSA
 	// 2.1.5.1.2.1, DELETE access on the file itself is sufficient to unlink,
