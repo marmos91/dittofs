@@ -1566,6 +1566,87 @@ func TestEncodedNotifyEntrySize_MatchesMarshaledSize(t *testing.T) {
 	}
 }
 
+// TestReleaseSessionLeasesAndNotifies_FiresCleanupSynchronously verifies that
+// pending CHANGE_NOTIFY watchers belonging to a session are completed with
+// STATUS_NOTIFY_CLEANUP SYNCHRONOUSLY — before releaseSessionLeasesAndNotifies
+// returns. This is critical for smb2.notify.session-reconnect (issue #473):
+// CleanupSession calls DeleteSession immediately after releasing notifies,
+// and SendMessage requires the session to still exist to sign the response.
+// An async (`go func`) delivery races with DeleteSession and emits an
+// unsigned response that the client rejects, hanging the test.
+func TestReleaseSessionLeasesAndNotifies_FiresCleanupSynchronously(t *testing.T) {
+	h := NewHandler()
+
+	const sessionID uint64 = 0xA1B2C3D4E5F60001
+
+	var firedCount atomic.Int32
+	var firedStatus atomic.Uint32
+	var firedSessionID atomic.Uint64
+	if err := h.NotifyRegistry.Register(&PendingNotify{
+		FileID:           [16]byte{1, 2, 3, 4},
+		SessionID:        sessionID,
+		ConnID:           1,
+		MessageID:        42,
+		AsyncId:          7,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		AsyncCallback: func(sid, _, _ uint64, response *ChangeNotifyResponse) error {
+			firedCount.Add(1)
+			firedStatus.Store(uint32(response.GetStatus()))
+			firedSessionID.Store(sid)
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	// A watcher belonging to a different session must NOT be fired.
+	const otherSessionID uint64 = 0xA1B2C3D4E5F60002
+	var otherFired atomic.Int32
+	if err := h.NotifyRegistry.Register(&PendingNotify{
+		FileID:           [16]byte{5, 6, 7, 8},
+		SessionID:        otherSessionID,
+		ConnID:           2,
+		MessageID:        99,
+		AsyncId:          17,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		AsyncCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+			otherFired.Add(1)
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("Register(other) failed: %v", err)
+	}
+
+	// LeaseManager is nil on a fresh handler — exercise the notify branch only.
+	h.releaseSessionLeasesAndNotifies(t.Context(), sessionID)
+
+	// The cleanup callback MUST have fired by the time the call returns —
+	// no `go func`, no sleep, no eventually loop. Sync delivery is the fix.
+	if got := firedCount.Load(); got != 1 {
+		t.Fatalf("AsyncCallback fired %d times, want 1 synchronous fire", got)
+	}
+	if got := types.Status(firedStatus.Load()); got != types.StatusNotifyCleanup {
+		t.Errorf("callback received status 0x%08X, want STATUS_NOTIFY_CLEANUP (0x%08X)",
+			uint32(got), uint32(types.StatusNotifyCleanup))
+	}
+	if got := firedSessionID.Load(); got != sessionID {
+		t.Errorf("callback received sessionID 0x%X, want 0x%X (must be OLD session for signing)",
+			got, sessionID)
+	}
+	if got := otherFired.Load(); got != 0 {
+		t.Errorf("other-session watcher fired %d times, want 0 (cleanup must be scoped to sessionID)", got)
+	}
+	// Watcher must be unregistered so a subsequent CHANGE_NOTIFY on a new
+	// session can re-register without colliding on FileID.
+	if got := h.NotifyRegistry.WatcherCount(); got != 1 {
+		t.Errorf("WatcherCount = %d, want 1 (only the other-session watcher should remain)", got)
+	}
+}
+
 func TestUnregisterAllForTree_PreservesOtherTrees(t *testing.T) {
 	r := NewNotifyRegistry()
 
