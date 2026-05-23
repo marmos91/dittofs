@@ -220,6 +220,7 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 	if req.InfoType == types.SMB2InfoTypeFile {
 		switch types.FileInfoClass(req.FileInfoClass) {
 		case types.FileRenameInformation,
+			types.FileLinkInformation,
 			types.FileDispositionInformation, types.FileDispositionInformationEx,
 			types.FileEndOfFileInformation, types.FileAllocationInformation,
 			15: // FileFullEaInformation
@@ -1045,8 +1046,11 @@ func (h *Handler) setFileInfoFromStore(
 		// Set allocation size - accept but treat as no-op (allocation handled automatically)
 		return setInfoStatus(types.StatusSuccess), nil
 
-	case 11: // FileLinkInformation - hard links not supported
-		return setInfoStatus(types.StatusNotSupported), nil
+	case types.FileLinkInformation:
+		// FILE_LINK_INFORMATION [MS-FSCC] 2.4.21.2 — hard link creation.
+		// Wire format mirrors FILE_RENAME_INFORMATION: ReplaceIfExists (1B),
+		// Reserved (7B), RootDirectory (8B), FileNameLength (4B), FileName (UTF-16LE).
+		return h.handleFileLinkInformation(authCtx, openFile, buffer)
 
 	case 15: // FileFullEaInformation [MS-FSCC] 2.4.15 - Extended attributes
 		// Accept EA writes as a no-op. DittoFS does not persist extended attributes
@@ -1428,4 +1432,200 @@ func (h *Handler) breakDstParentDirHandleLeasesForRename(authCtx *metadata.AuthC
 	if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, openFile.ShareName, excludeClientID, excludeParentKey, hasExcludeKey); breakErr != nil {
 		logger.Debug("SET_INFO: dst-parent dir Handle lease pre-break failed", "path", openFile.Path, "dstParent", fmt.Sprintf("%x", dstParent), "error", breakErr)
 	}
+}
+
+// FileLinkInfo represents FILE_LINK_INFORMATION [MS-FSCC] 2.4.21.2.
+// The wire format mirrors FILE_RENAME_INFORMATION (same byte layout).
+type FileLinkInfo struct {
+	// ReplaceIfExists indicates whether to replace an existing file at the
+	// destination. Hard-link creation rejects collisions when this is false.
+	ReplaceIfExists bool
+
+	// RootDirectory is the file handle of the destination directory, or all
+	// zeros to indicate FileName is a full path relative to the share root.
+	RootDirectory [8]byte
+
+	// FileName is the path to the new hard link (UTF-16LE on the wire).
+	FileName string
+}
+
+// DecodeFileLinkInfo parses FILE_LINK_INFORMATION [MS-FSCC] 2.4.21.2.
+// Returns an error if the buffer is less than 20 bytes (fixed header) or the
+// declared FileNameLength would read past buffer end.
+func DecodeFileLinkInfo(buffer []byte) (*FileLinkInfo, error) {
+	if len(buffer) < 20 {
+		return nil, fmt.Errorf("buffer too short for FILE_LINK_INFORMATION: %d bytes", len(buffer))
+	}
+
+	info := &FileLinkInfo{
+		ReplaceIfExists: buffer[0] != 0,
+	}
+	// Reserved (7 bytes at offset 1-7) - skip
+	copy(info.RootDirectory[:], buffer[8:16])
+
+	r := smbenc.NewReader(buffer[16:20])
+	fileNameLength := r.ReadUint32()
+
+	if len(buffer) < 20+int(fileNameLength) {
+		return nil, fmt.Errorf("buffer too short for filename: need %d, have %d", 20+fileNameLength, len(buffer))
+	}
+	if fileNameLength > 0 {
+		info.FileName = decodeUTF16LE(buffer[20 : 20+fileNameLength])
+	}
+	return info, nil
+}
+
+// handleFileLinkInformation implements SET_INFO FileLinkInformation [MS-FSCC]
+// 2.4.21.2: create a new hard link to the open file in the requested
+// destination directory.
+//
+// Per MS-FSA 2.1.5.14.5: the operation creates a NEW directory entry in the
+// destination directory that references the same file ID as the open file.
+// Returns STATUS_OBJECT_NAME_COLLISION if the destination already exists and
+// ReplaceIfExists is FALSE; STATUS_FILE_IS_A_DIRECTORY if the open file is a
+// directory (hard-linking directories is forbidden, MS-FSA 2.1.5.14.5).
+//
+// Directory-lease coordination (#470 C5 — smb2.dirlease.hardlink): a hardlink
+// is an add-entry in the destination parent. We thread the open file's RqLs
+// ParentLeaseKey into the auth context so:
+//   - MetadataService.notifyDirChange forwards it to OnDirChange, which
+//     suppresses the matching dst-parent dir lease (parent-key match).
+//   - LeaseManager.BreakParentHandleLeasesOnCreate / BreakParentReadLeasesOnModify
+//     called directly on the dst-parent honor the same suppression rule.
+//
+// This mirrors Samba `dlt_hardlinks` matrix (source4/torture/smb2/lease.c):
+// same-dir + same-parent-key suppresses; same-dir + different-parent-key
+// breaks; cross-dir always breaks the dst parent unless its key matches.
+func (h *Handler) handleFileLinkInformation(
+	authCtx *metadata.AuthContext,
+	openFile *OpenFile,
+	buffer []byte,
+) (*SetInfoResponse, error) {
+	linkInfo, err := DecodeFileLinkInfo(buffer)
+	if err != nil {
+		logger.Debug("SET_INFO: failed to decode link info", "error", err)
+		return setInfoStatus(types.StatusInvalidParameter), nil
+	}
+
+	// Hard-linking a directory is forbidden (MS-FSA 2.1.5.14.5).
+	if openFile.IsDirectory {
+		logger.Debug("SET_INFO: hardlink on directory rejected",
+			"path", openFile.Path)
+		return setInfoStatus(types.StatusFileIsADirectory), nil
+	}
+
+	// Normalize path separators (Windows uses backslash, we use forward slash).
+	newPath := strings.ReplaceAll(linkInfo.FileName, "\\", "/")
+	newPath = strings.TrimPrefix(newPath, "/")
+	if newPath == "" {
+		logger.Debug("SET_INFO: hardlink with empty destination name")
+		return setInfoStatus(types.StatusInvalidParameter), nil
+	}
+
+	// Resolve destination directory + link name.
+	var dstDir metadata.FileHandle
+	var linkName string
+
+	var zeroRootDir [8]byte
+	if !bytes.Equal(linkInfo.RootDirectory[:], zeroRootDir[:]) {
+		// Non-zero RootDirectory: FileName is relative to it. We don't yet
+		// resolve FileId handles to directory handles (parity with rename);
+		// fall back to same-directory link.
+		logger.Debug("SET_INFO: hardlink with non-zero RootDirectory (using same-dir fallback)",
+			"rootDirectory", fmt.Sprintf("%x", linkInfo.RootDirectory))
+		dstDir = openFile.ParentHandle
+		linkName = path.Base(newPath)
+	} else {
+		tree, ok := h.GetTree(openFile.TreeID)
+		if !ok {
+			logger.Debug("SET_INFO: invalid tree for hardlink", "treeID", openFile.TreeID)
+			return setInfoStatus(types.StatusInvalidHandle), nil
+		}
+		rootHandle, err := h.Registry.GetRootHandle(tree.ShareName)
+		if err != nil {
+			logger.Debug("SET_INFO: failed to get root handle for hardlink", "error", err)
+			return setInfoStatus(types.StatusObjectPathNotFound), nil
+		}
+
+		linkName = path.Base(newPath)
+		dirPath := path.Dir(newPath)
+		if dirPath == "." || dirPath == "" || dirPath == "/" {
+			dstDir = rootHandle
+		} else {
+			dstDir, err = h.walkPath(authCtx, rootHandle, dirPath)
+			if err != nil {
+				logger.Debug("SET_INFO: hardlink destination path not found",
+					"path", dirPath, "error", err)
+				return setInfoStatus(types.StatusObjectPathNotFound), nil
+			}
+		}
+	}
+
+	// Replace-if-exists for hardlink is rare (most clients pass FALSE). Honor
+	// it by attempting a delete of the existing destination before linking.
+	// If ReplaceIfExists=false and the target exists, CreateHardLink returns
+	// ErrAlreadyExists → STATUS_OBJECT_NAME_COLLISION via common.MapToSMB.
+	metaSvc := h.Registry.GetMetadataService()
+	if linkInfo.ReplaceIfExists {
+		if existing, lookupErr := metaSvc.Lookup(authCtx, dstDir, linkName); lookupErr == nil && existing != nil {
+			if _, rmErr := metaSvc.RemoveFile(authCtx, dstDir, linkName); rmErr != nil {
+				logger.Debug("SET_INFO: hardlink replace failed to remove existing",
+					"name", linkName, "error", rmErr)
+				return setInfoStatus(common.MapToSMB(rmErr)), nil
+			}
+		}
+	}
+
+	// #470 C5: thread the open file's ParentLeaseKey into the auth context so
+	// MetadataService.notifyDirChange forwards it to OnDirChange and the
+	// dir-lease parent-key suppression rule (MS-SMB2 §3.3.4.20) skips the
+	// matching parent dir lease (same-key holder does not get broken).
+	PropagateOpenFileParentLeaseKey(authCtx, openFile)
+
+	if err := metaSvc.CreateHardLink(authCtx, dstDir, linkName, openFile.MetadataHandle); err != nil {
+		logger.Debug("SET_INFO: CreateHardLink failed",
+			"src", openFile.Path, "dst", newPath, "error", err)
+		return setInfoStatus(common.MapToSMB(err)), nil
+	}
+
+	// Break Handle/Read leases on the destination parent (MS-FSA 2.1.5.14:
+	// directory contents changed). Parent-key suppression flows through the
+	// same exclude args used by the metadata-layer notifier.
+	if h.LeaseManager != nil {
+		dstParentLock := lock.FileHandle(dstDir)
+		excludeClientID := fmt.Sprintf("smb:%d", openFile.SessionID)
+		excludeParentKey := openFile.ParentLeaseKey
+		hasExcludeKey := openFile.HasParentLeaseKey
+		if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(
+			authCtx.Context, dstParentLock, openFile.ShareName,
+			excludeClientID, excludeParentKey, hasExcludeKey,
+		); breakErr != nil {
+			logger.Debug("SET_INFO: hardlink dst-parent Handle lease break failed",
+				"dst", newPath, "error", breakErr)
+		}
+		if breakErr := h.LeaseManager.BreakParentReadLeasesOnModify(
+			authCtx.Context, dstParentLock, openFile.ShareName,
+			excludeClientID, excludeParentKey, hasExcludeKey,
+		); breakErr != nil {
+			logger.Debug("SET_INFO: hardlink dst-parent Read lease break failed",
+				"dst", newPath, "error", breakErr)
+		}
+	}
+
+	// Notify change-notify watchers: an entry was added in the destination
+	// parent directory.
+	if h.NotifyRegistry != nil {
+		tree, ok := h.GetTree(openFile.TreeID)
+		if ok {
+			dstParentPath := GetParentPath(newPath)
+			if dstParentPath == "" || dstParentPath == "." {
+				dstParentPath = "/"
+			}
+			h.NotifyRegistry.NotifyChange(tree.ShareName, dstParentPath, linkName, FileActionAdded)
+		}
+	}
+
+	logger.Debug("SET_INFO: hardlink created",
+		"src", openFile.Path, "dst", newPath, "name", linkName)
+	return setInfoStatus(types.StatusSuccess), nil
 }
