@@ -79,6 +79,9 @@ func ValidateBlockStoreConfig(kind models.BlockStoreKind, storeType string, cfg 
 			if !ok || secretAccessKey == "" {
 				return errors.New("s3 remote block store requires secret_access_key in config")
 			}
+			if err := validateCompressionSubconfig(config); err != nil {
+				return err
+			}
 			return nil
 		default:
 			return fmt.Errorf("unsupported remote block store type: %s", storeType)
@@ -86,5 +89,34 @@ func ValidateBlockStoreConfig(kind models.BlockStoreKind, storeType string, cfg 
 
 	default:
 		return fmt.Errorf("unsupported block store kind: %s", kind)
+	}
+}
+
+// validateCompressionSubconfig accepts the parsed `compression` value
+// from a BlockStoreConfig and verifies its shape. An absent key is
+// allowed (compression is opt-in). When present, the value MUST be a
+// JSON object; an `algo` key, if set, MUST be either "zstd" or "lz4".
+func validateCompressionSubconfig(config map[string]any) error {
+	raw, ok := config["compression"]
+	if !ok {
+		return nil
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("compression: expected object, got %T", raw)
+	}
+	algoVal, present := obj["algo"]
+	if !present {
+		return nil // defaults to zstd
+	}
+	algoStr, ok := algoVal.(string)
+	if !ok {
+		return fmt.Errorf("compression.algo: expected string, got %T", algoVal)
+	}
+	switch algoStr {
+	case "zstd", "lz4":
+		return nil
+	default:
+		return fmt.Errorf("compression.algo: unsupported value %q (want zstd or lz4)", algoStr)
 	}
 }

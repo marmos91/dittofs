@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **Block-level compression on remote stores (opt-in).** A new
+  `pkg/blockstore/compression` decorator transparently compresses block
+  payloads before upload and decompresses on download. Configured per
+  remote via the `compression` key in the block-store config JSON
+  (`{ "compression": { "algo": "zstd" } }` or `{ "compression": { "algo": "lz4" } }`).
+  The plaintext BLAKE3 hash stays the CAS key — dedup, GC, and
+  `ReadBlockVerified` semantics are unchanged. Per-block adaptive:
+  incompressible bodies are stored raw with no header. See
+  `docs/CONFIGURATION.md` for the operator guide.
+
 ## [0.13.0] — YYYY-MM-DD
 
 ### Breaking Changes
