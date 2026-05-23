@@ -537,6 +537,7 @@ const (
 	FileAccessInformation          FileInfoClass = 8
 	FileNameInformation            FileInfoClass = 9
 	FileRenameInformation          FileInfoClass = 10
+	FileLinkInformation            FileInfoClass = 11
 	FileNamesInformation           FileInfoClass = 12
 	FileDispositionInformation     FileInfoClass = 13
 	FilePositionInformation        FileInfoClass = 14
