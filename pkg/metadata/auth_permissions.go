@@ -362,11 +362,13 @@ func evaluateACLPermissions(
 ) Permission {
 	// Handle anonymous/no identity
 	if identity == nil || identity.UID == nil {
-		// Evaluate as EVERYONE@ only. FileOwnerUID is forced to the
-		// AnonymousFileOwnerUID sentinel so the anonymous requester's
-		// zero-valued UID cannot collapse onto a root-owned file's owner
-		// and pick up OWNER@ ACEs plus the MS-DTYP §2.5.3.2 owner-implicit
-		// RC|WRITE_DAC grant. See #540.
+		// Anonymous: suppress OWNER@ matching and the MS-DTYP §2.5.3.2
+		// owner-implicit RC|WRITE_DAC pass by forcing FileOwnerUID to
+		// the AnonymousFileOwnerUID sentinel — without it the requester's
+		// zero-valued UID would collapse onto a root-owned file's owner.
+		// EVERYONE@ ACEs still match. GROUP@ and the "<n>@localdomain"
+		// form may still match on UID/GID-0 owned files (residuals
+		// tracked under #540).
 		evalCtx := &acl.EvaluateContext{
 			FileOwnerUID: acl.AnonymousFileOwnerUID,
 			FileOwnerGID: file.GID,
