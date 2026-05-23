@@ -59,13 +59,24 @@ func (bc *FSStore) RollupStoreForTest() metadata.RollupStore { return bc.rollupS
 
 // IntervalsLenForTest returns the number of dirty intervals currently
 // tracked for payloadID, or 0 when the payload has no interval tree.
+//
+// Acquires the per-file mutex to serialize against rollupFile's
+// ConsumeUpTo (which mutates the btree under mu). logsMu alone is
+// insufficient because rollupFile snapshots the tree pointer under
+// logsMu.RLock and then mutates the btree later under the per-file mu.
 func (bc *FSStore) IntervalsLenForTest(payloadID string) int {
 	bc.logsMu.RLock()
-	defer bc.logsMu.RUnlock()
-	if t := bc.dirtyIntervals[payloadID]; t != nil {
-		return t.Len()
+	t := bc.dirtyIntervals[payloadID]
+	mu := bc.logLocks[payloadID]
+	bc.logsMu.RUnlock()
+	if t == nil {
+		return 0
 	}
-	return 0
+	if mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	return t.Len()
 }
 
 // EarliestStableForTest reports whether the earliest dirty interval for
