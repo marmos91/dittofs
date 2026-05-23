@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -69,8 +70,8 @@ func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 		"bodyLen", len(body))
 
 	// Per MS-SMB2 3.3.5.15: validate that the FileID corresponds to an open
-	// file, unless this is a "no-handle" FSCTL that uses the special sentinel
-	// FileID 0xFFFFFFFFFFFFFFFF (e.g., VALIDATE_NEGOTIATE_INFO, PIPE_TRANSCEIVE).
+	// file, unless this is a "no-handle" FSCTL that uses the 16-byte all-0xFF
+	// sentinel FileID (e.g., VALIDATE_NEGOTIATE_INFO, PIPE_TRANSCEIVE).
 	if !ioctlNoHandleFSCTL(ctlCode) {
 		fileID, ok := parseIoctlFileID(body)
 		if ok {
@@ -120,8 +121,32 @@ func ioctlNoHandleFSCTL(ctlCode uint32) bool {
 // which then leak into multichannel.leases.test3 as a spurious break on
 // test3's `unlink fname1`.
 func (h *Handler) handleSmbtortureForceUnackedTimeout(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
+	// Validate the IOCTL request envelope per MS-SMB2 2.2.31: the fixed
+	// portion is 56 bytes (StructureSize..Reserved2) and StructureSize must
+	// be 57 (encodes "fixed body + 1 buffer byte" per SMB2 convention).
+	// Reject malformed requests rather than silently treating any ≥24-byte
+	// blob as success.
+	if len(body) < 56 {
+		logger.Debug("IOCTL FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT: body too small",
+			"len", len(body))
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+	r := smbenc.NewReader(body)
+	structureSize := r.ReadUint16()
+	if r.Err() != nil || structureSize != 57 {
+		logger.Debug("IOCTL FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT: bad StructureSize",
+			"got", structureSize, "want", 57)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
 	fileID, ok := parseIoctlFileID(body)
 	if !ok {
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+	// The FSCTL is buffer-less and targets the 16-byte all-0xFF sentinel
+	// FileID. Mirror handleValidateNegotiateInfo: reject any other FileID.
+	if !bytes.Equal(fileID[:], allFFFileID) {
+		logger.Debug("IOCTL FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT: non-sentinel FileID",
+			"fileID", fmt.Sprintf("%x", fileID))
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 	logger.Debug("IOCTL FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT: accepting as no-op (smbtorture-only)")

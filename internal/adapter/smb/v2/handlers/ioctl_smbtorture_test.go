@@ -9,17 +9,27 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
 
-// buildSmbtortureIoctlRequest builds the minimal 24-byte IOCTL request body
-// for an FSCTL_SMBTORTURE_* control code. The sentinel FileID (0xFF...) is
-// what smbtorture actually sends — these FSCTLs are not bound to an open
-// file handle (Samba's `smb2_ioctl_smbtorture` lists them under the
-// no-handle group).
+// buildSmbtortureIoctlRequest builds a spec-compliant 56-byte SMB2 IOCTL
+// request body for an FSCTL_SMBTORTURE_* control code (MS-SMB2 2.2.31).
+// StructureSize=57 implies the full 56-byte fixed envelope is present; the
+// input/output offsets and counts are zero because these FSCTLs are
+// buffer-less. The sentinel FileID (16×0xFF) is what smbtorture actually
+// sends — these FSCTLs are not bound to an open file handle (Samba's
+// `smb2_ioctl_smbtorture` lists them under the no-handle group).
 func buildSmbtortureIoctlRequest(ctlCode uint32) []byte {
-	w := smbenc.NewWriter(24)
-	w.WriteUint16(57)
-	w.WriteUint16(0)
-	w.WriteUint32(ctlCode)
-	w.WriteBytes(bytes.Repeat([]byte{0xFF}, 16))
+	w := smbenc.NewWriter(56)
+	w.WriteUint16(57)                            // StructureSize
+	w.WriteUint16(0)                             // Reserved
+	w.WriteUint32(ctlCode)                       // CtlCode
+	w.WriteBytes(bytes.Repeat([]byte{0xFF}, 16)) // FileId (sentinel)
+	w.WriteUint32(0)                             // InputOffset
+	w.WriteUint32(0)                             // InputCount
+	w.WriteUint32(0)                             // MaxInputResponse
+	w.WriteUint32(0)                             // OutputOffset
+	w.WriteUint32(0)                             // OutputCount
+	w.WriteUint32(0)                             // MaxOutputResponse
+	w.WriteUint32(0)                             // Flags
+	w.WriteUint32(0)                             // Reserved2
 	return w.Bytes()
 }
 

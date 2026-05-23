@@ -50,7 +50,8 @@ const (
 	// multichannel test fixtures to (a) prime per-connection server-side
 	// behaviour switches and (b) signal "the test framework is testing
 	// itself". The wire format is a buffer-less IOCTL targeted at the
-	// sentinel FileID 0xFFFFFFFFFFFFFFFF.
+	// 16-byte sentinel FileID consisting of all 0xFF bytes (i.e.
+	// {0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF}, per MS-SMB2 3.3.5.15).
 	//
 	// We accept FORCE_UNACKED_TIMEOUT as a no-op success: smbtorture only
 	// reads the NTSTATUS (`block_ok = (status == NT_STATUS_OK)`) to decide
