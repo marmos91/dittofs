@@ -175,10 +175,16 @@ main() {
     # verbatim through SET_INFO Security without the AUTO_INHERIT_REQ gate.
     $DFSCTL share create --name /smbnoncanon --acl-canonicalize-inherited=false $share_flags
 
-    # Create test users
+    # Create test users with DISTINCT UIDs. Without --uid each user falls back
+    # to defaultUID=1000 in internal/adapter/smb/v2/handlers/auth_helper.go,
+    # which collapses both identities onto the same POSIX UID. That collision
+    # makes the second user match OWNER@ on files created by the first via
+    # acl.Evaluate's UID == FileOwnerUID arm, leaking access to a "non-owner"
+    # that is actually the same UID at the POSIX layer. smbtorture
+    # smb2.acls.ACCESSBASED depends on these two principals being distinct.
     log_info "Creating test users..."
-    $DFSCTL user create --username wpts-admin --password "$TEST_PASSWORD"
-    $DFSCTL user create --username nonadmin --password "$TEST_PASSWORD"
+    $DFSCTL user create --username wpts-admin --password "$TEST_PASSWORD" --uid 1000
+    $DFSCTL user create --username nonadmin   --password "$TEST_PASSWORD" --uid 1001
 
     # Identity mapping for Kerberos: the principal "wpts-admin@${KERBEROS_REALM}"
     # must resolve to the "wpts-admin" control plane user. Strip-realm would
