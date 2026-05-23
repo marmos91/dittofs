@@ -720,11 +720,11 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 			// replace the existing session (including a guest downgrade).
 			return NewErrorResult(types.StatusLogonFailure), nil
 		}
+		// Re-auth with an unparseable TYPE_3 destroys the existing session
+		// per MS-SMB2 §3.3.5.5.3. Do not downgrade to guest — the original
+		// authenticated identity must not survive a failed re-auth.
 		if pending.IsReauth {
-			// Re-auth with an unparseable TYPE_3 destroys the existing session
-			// per MS-SMB2 §3.3.5.5.3. Do not downgrade to guest — the original
-			// authenticated identity must not survive a failed re-auth.
-			h.destroySessionOnReauthFailure(ctx.Context, pending.SessionID, "")
+			h.destroySessionOnReauthFailure(ctx.Context, pending, "")
 			return NewErrorResult(types.StatusLogonFailure), nil
 		}
 		return h.createGuestSessionWithID(ctx, pending)
@@ -816,9 +816,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 						"serverChallenge", fmt.Sprintf("%x", pending.ServerChallenge),
 						"ntHashPrefix", fmt.Sprintf("%x", ntHash[:4]),
 						"pendingSessionID", pending.SessionID)
-					if pending.IsReauth {
-						h.destroySessionOnReauthFailure(ctx.Context, pending.SessionID, authMsg.Username)
-					}
+					h.destroySessionOnReauthFailure(ctx.Context, pending, authMsg.Username)
 					return NewErrorResult(types.StatusLogonFailure), nil
 				}
 
@@ -920,9 +918,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 			logger.Debug("User not found in UserStore", "username", resolvedUsername, "error", err)
 		} else if user != nil && !user.Enabled {
 			logger.Debug("User account disabled", "username", resolvedUsername)
-			if pending.IsReauth {
-				h.destroySessionOnReauthFailure(ctx.Context, pending.SessionID, authMsg.Username)
-			}
+			h.destroySessionOnReauthFailure(ctx.Context, pending, authMsg.Username)
 			return NewErrorResult(types.StatusLogonFailure), nil
 		}
 
@@ -932,9 +928,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 		if mappingFound {
 			logger.Info("Identity mapping resolved but user not found, denying access",
 				"principal", principal, "resolvedUsername", resolvedUsername)
-			if pending.IsReauth {
-				h.destroySessionOnReauthFailure(ctx.Context, pending.SessionID, authMsg.Username)
-			}
+			h.destroySessionOnReauthFailure(ctx.Context, pending, authMsg.Username)
 			return NewErrorResult(types.StatusLogonFailure), nil
 		}
 	}
@@ -947,7 +941,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 	// the pending CHANGE_NOTIFY must complete with STATUS_NOTIFY_CLEANUP
 	// and subsequent ops must return STATUS_USER_SESSION_DELETED.
 	if pending.IsReauth {
-		h.destroySessionOnReauthFailure(ctx.Context, pending.SessionID, authMsg.Username)
+		h.destroySessionOnReauthFailure(ctx.Context, pending, authMsg.Username)
 		return NewErrorResult(types.StatusLogonFailure), nil
 	}
 
@@ -961,7 +955,8 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 }
 
 // destroySessionOnReauthFailure tears down an existing session after its
-// re-authentication attempt failed.
+// re-authentication attempt failed. No-op when pending is not a re-auth, so
+// callers can invoke it unconditionally on every auth-failure path.
 //
 // Per MS-SMB2 §3.3.5.5.3, a failed re-auth MUST destroy the session: the
 // original authenticated identity does not survive bad credentials, and
@@ -979,16 +974,19 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 //
 // Reference: Samba source3/smbd/smb2_sesssetup.c — smbXsrv_session_logoff()
 // equivalent path runs on reauth_session_setup_fail.
-func (h *Handler) destroySessionOnReauthFailure(ctx context.Context, sessionID uint64, attemptedUsername string) {
+func (h *Handler) destroySessionOnReauthFailure(ctx context.Context, pending *PendingAuth, attemptedUsername string) {
+	if pending == nil || !pending.IsReauth {
+		return
+	}
 	logger.Info("Re-authentication failed, destroying session",
-		"sessionID", sessionID,
+		"sessionID", pending.SessionID,
 		"attemptedUsername", attemptedUsername)
-	if sess, ok := h.GetSession(sessionID); ok {
+	if sess, ok := h.GetSession(pending.SessionID); ok {
 		sess.LoggedOff.Store(true)
 	}
-	h.CloseAllFilesForSession(ctx, sessionID, false)
-	h.releaseSessionLeasesAndNotifies(ctx, sessionID)
-	h.DeleteAllTreesForSession(sessionID)
+	h.CloseAllFilesForSession(ctx, pending.SessionID, false)
+	h.releaseSessionLeasesAndNotifies(ctx, pending.SessionID)
+	h.DeleteAllTreesForSession(pending.SessionID)
 }
 
 // createGuestSessionWithID creates a guest session with a specific session ID.
