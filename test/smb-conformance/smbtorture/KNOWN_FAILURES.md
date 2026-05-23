@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-05-22 (ACL OWNER-RIGHTS family flips after #547/#548/#549/#553)
+Last updated: 2026-05-23 (acls.ACCESSBASED flip after #618 ABE QUERY_DIRECTORY ctx.User recovery)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -49,7 +49,6 @@ descriptors, and owner rights are not implemented.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.acls.ACCESSBASED | ACLs | Deeper failure at acls.c:2308 after PR #551 (ABE bit moved to ShareFlags) — SD 0x20081 still leaks file `smb2-testsd` to non-readers; requires ABE filtering in directory enumeration | - |
 | smb2.sdread | Security descriptors | Security descriptor read not implemented | - |
 | smb2.secleak | Security descriptors | Security descriptor leak test not implemented | - |
 
