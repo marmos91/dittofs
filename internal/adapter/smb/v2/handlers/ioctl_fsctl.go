@@ -97,6 +97,12 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	}
 
 	if newMode != file.Mode {
+		// Prime ctx.User / IsGuest / TreeID from the OpenFile's recorded
+		// session BEFORE BuildAuthContext — otherwise ctx.User==nil falls
+		// into the anonymous arm and synthesises UID-0 (root), bypassing
+		// DACL checks on SetFileAttributes (#619, same class as #603).
+		h.primeAuthContextFromOpenFile(ctx, openFile)
+
 		authCtx, authErr := BuildAuthContext(ctx)
 		if authErr != nil {
 			logger.Warn("FSCTL_SET_COMPRESSION: failed to build auth context", "error", authErr)

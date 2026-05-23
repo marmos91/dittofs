@@ -90,6 +90,12 @@ func (h *Handler) handleGetReparsePoint(ctx *SMBHandlerContext, body []byte) (*H
 		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
+	// Prime ctx.User / IsGuest / TreeID from the OpenFile's recorded session
+	// BEFORE BuildAuthContext — otherwise ctx.User==nil falls into the
+	// anonymous arm and synthesises UID-0 (root), bypassing DACL checks on
+	// the downstream ReadSymlink (#619, same class as #603).
+	h.primeAuthContextFromOpenFile(ctx, openFile)
+
 	// Build auth context
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {

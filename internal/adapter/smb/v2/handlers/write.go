@@ -187,11 +187,16 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Per MS-SMB2 3.3.5.16: The server MUST verify that the open was created
 	// with write access (FILE_WRITE_DATA or FILE_APPEND_DATA). If the open
 	// lacks write access, return STATUS_ACCESS_DENIED.
+	//
+	// Gate consults Open.GrantedAccess (post-DACL intersection at CREATE),
+	// not the pre-DACL DesiredAccess — otherwise a MAXIMUM_ALLOWED open whose
+	// DACL stripped FILE_WRITE_DATA would still pass this check (same fix
+	// class as #616 ChangeNotify).
 
-	if !hasWriteAccess(openFile.DesiredAccess) {
+	if !hasWriteAccess(openFile.GrantedAccess) {
 		logger.Debug("WRITE: no write access on handle",
 			"path", openFile.Path,
-			"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
+			"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess))
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 	}
 

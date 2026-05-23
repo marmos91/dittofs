@@ -170,11 +170,16 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Per MS-SMB2 3.3.5.15: The server MUST verify that the open was created
 	// with read access (FILE_READ_DATA). If the open lacks read access,
 	// return STATUS_ACCESS_DENIED.
+	//
+	// Gate consults Open.GrantedAccess (post-DACL intersection at CREATE),
+	// not the pre-DACL DesiredAccess — otherwise a MAXIMUM_ALLOWED open whose
+	// DACL stripped FILE_READ_DATA would still pass this check (same fix
+	// class as #616 ChangeNotify).
 
-	if !hasReadAccess(openFile.DesiredAccess) {
+	if !hasReadAccess(openFile.GrantedAccess) {
 		logger.Debug("READ: no read access on handle",
 			"path", openFile.Path,
-			"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
+			"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess))
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 	}
 
