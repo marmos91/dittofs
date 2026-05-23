@@ -416,6 +416,15 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	// incoming request so the matching dir-lease is NOT broken. The
 	// LeaseResponseContext built at Step 8b carries the validated key, but
 	// runs AFTER the break calls below — peek directly at the RqLs context.
+	//
+	// Destructive disposition split (#470 C4, smb2.dirlease.overwrite): per
+	// Samba `delay_for_oplock_fn` `will_overwrite` arm, OVERWRITE/SUPERSEDE
+	// collapses the strip-H + strip-R steps into a single break-to-None
+	// notification on each affected dir lease. The test asserts exactly two
+	// break notifications (one on the file lease, one on the dir lease) —
+	// the legacy two-step path would emit three. CREATE (FileCreated) keeps
+	// the two-step pattern because the parent dir-lease only loses Handle
+	// caching there (Read is preserved per MS-FSA §2.1.5.14).
 	if (createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded) && h.LeaseManager != nil {
 		parentLockHandle := lock.FileHandle(parentHandle)
 		excludeClientID := fmt.Sprintf("smb:%d", ctx.SessionID)
@@ -428,11 +437,18 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 				hasExcludeKey = true
 			}
 		}
-		if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, tree.ShareName, excludeClientID, excludeParentKey, hasExcludeKey); breakErr != nil {
-			logger.Debug("CREATE: parent directory Handle lease break failed", "error", breakErr)
-		}
-		if breakErr := h.LeaseManager.BreakParentReadLeasesOnModify(authCtx.Context, parentLockHandle, tree.ShareName, excludeClientID, excludeParentKey, hasExcludeKey); breakErr != nil {
-			logger.Debug("CREATE: parent directory Read lease break failed", "error", breakErr)
+		isDestructive := createAction == types.FileOverwritten || createAction == types.FileSuperseded
+		if isDestructive {
+			if breakErr := h.LeaseManager.BreakParentDirLeasesOnDestructiveCreate(authCtx.Context, parentLockHandle, tree.ShareName, excludeClientID, excludeParentKey, hasExcludeKey); breakErr != nil {
+				logger.Debug("CREATE: parent directory destructive lease break failed", "error", breakErr)
+			}
+		} else {
+			if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, tree.ShareName, excludeClientID, excludeParentKey, hasExcludeKey); breakErr != nil {
+				logger.Debug("CREATE: parent directory Handle lease break failed", "error", breakErr)
+			}
+			if breakErr := h.LeaseManager.BreakParentReadLeasesOnModify(authCtx.Context, parentLockHandle, tree.ShareName, excludeClientID, excludeParentKey, hasExcludeKey); breakErr != nil {
+				logger.Debug("CREATE: parent directory Read lease break failed", "error", breakErr)
+			}
 		}
 	}
 
