@@ -209,23 +209,15 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 4: Get session and tree connection
 	// ========================================================================
 
-	tree, ok := h.GetTree(openFile.TreeID)
-	if !ok {
+	if _, ok := h.GetTree(openFile.TreeID); !ok {
 		logger.Debug("READ: invalid tree ID", "treeID", openFile.TreeID)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
 	}
-
-	sess, ok := h.GetSession(openFile.SessionID)
-	if !ok {
+	if _, ok := h.GetSession(openFile.SessionID); !ok {
 		logger.Debug("READ: invalid session ID", "sessionID", openFile.SessionID)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUserSessionDeleted}}, nil
 	}
-
-	// Update context
-	ctx.ShareName = tree.ShareName
-	ctx.User = sess.User
-	ctx.IsGuest = sess.IsGuest
-	ctx.Permission = tree.Permission
+	h.primeAuthContextFromOpenFile(ctx, openFile)
 
 	// ========================================================================
 	// Step 5: Get metadata service and block store
