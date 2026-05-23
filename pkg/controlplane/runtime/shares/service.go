@@ -17,6 +17,8 @@ import (
 	"github.com/marmos91/dittofs/internal/pathutil"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/compression"
+	"github.com/marmos91/dittofs/pkg/blockstore/encryption"
+	"github.com/marmos91/dittofs/pkg/blockstore/encryption/keyprovider"
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
 	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
@@ -630,9 +632,20 @@ func (s *Service) acquireRemoteStore(ctx context.Context, configID string, provi
 		return nil, "", fmt.Errorf("failed to create remote store: %w", err)
 	}
 
-	// Wrap with compression decorator when the remote's config carries a
-	// `compression` block. Policy is captured at acquire time and never
-	// re-read; operators must restart the share to change the algorithm.
+	// Decorator order matters: encryption sits BELOW compression on the
+	// data flow (caller → compression → encryption → inner). Compress
+	// plaintext first so the compressor sees redundancy; encrypted bytes
+	// are incompressible by design.
+	//
+	// Apply order in code is therefore encryption first (innermost),
+	// then compression (outermost).
+	encWrapped, err := maybeWrapEncryption(ctx, newStore, remoteCfg)
+	if err != nil {
+		_ = newStore.Close()
+		return nil, "", fmt.Errorf("failed to apply encryption policy: %w", err)
+	}
+	newStore = encWrapped
+
 	wrapped, err := maybeWrapCompression(newStore, remoteCfg)
 	if err != nil {
 		_ = newStore.Close()
@@ -658,6 +671,43 @@ func (s *Service) acquireRemoteStore(ctx context.Context, configID string, provi
 
 	logger.Info("Created shared remote store", "config_id", configID, "type", remoteCfg.Type)
 	return newStore, configID, nil
+}
+
+// maybeWrapEncryption inspects the remote config's "encryption" key and,
+// when present, wraps inner with an encryption.EncryptedRemote. Returns
+// inner unchanged when the key is absent.
+//
+// Key-provider lifetime is bound to the decorator: NewRemote captures
+// the provider, and EncryptedRemote.Close calls provider.Close. The
+// outer releaseRemoteStore path therefore closes the provider as part
+// of the normal decorator teardown.
+func maybeWrapEncryption(ctx context.Context, inner remote.RemoteStore, cfg *models.BlockStoreConfig) (remote.RemoteStore, error) {
+	parsed, err := cfg.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("parse block store config: %w", err)
+	}
+	raw, ok := parsed["encryption"]
+	if !ok {
+		return inner, nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("marshal encryption sub-config: %w", err)
+	}
+	policy, err := encryption.ParsePolicy(encoded)
+	if err != nil {
+		return nil, err
+	}
+	provider, err := keyprovider.NewProvider(ctx, policy.Key)
+	if err != nil {
+		return nil, fmt.Errorf("create key provider: %w", err)
+	}
+	wrapped, err := encryption.NewRemote(inner, policy, provider)
+	if err != nil {
+		_ = provider.Close()
+		return nil, err
+	}
+	return wrapped, nil
 }
 
 // maybeWrapCompression inspects the remote config's "compression" key

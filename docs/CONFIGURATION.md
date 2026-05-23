@@ -453,6 +453,35 @@ Notes:
   blocks coexist within one remote and the reader auto-detects via the
   5-byte `DFCMP` magic prefix.
 
+#### Remote block-level encryption (opt-in)
+
+A remote block store may also encrypt block payloads before upload using
+client-side envelope encryption. Compression (when enabled) runs
+**before** encryption — encrypted bytes are incompressible by design.
+See [ENCRYPTION.md](ENCRYPTION.md) for the full threat model and design.
+
+Add an `encryption` block to the remote store's `config` JSON:
+
+```yaml
+encryption:
+  aead: aes-256-gcm           # aes-256-gcm | chacha20-poly1305 | xchacha20-poly1305
+  key:
+    kind: local               # local | kmip
+    # kind=local
+    file: /etc/dittofs/keys/share.key
+    # kind=kmip
+    endpoint: kms.example.com:5696
+    server_ca: /etc/dittofs/kmip/ca.pem
+    client_cert: /etc/dittofs/kmip/client.pem
+    client_key:  /etc/dittofs/kmip/client.key
+    key_uid: 12345-abcde-...
+    timeout_ms: 5000
+```
+
+The passphrase that unlocks a local key file is read from the
+`DITTOFS_ENCRYPTION_PASSPHRASE` environment variable — never the config
+file or command line.
+
 ### 7. Metadata Configuration
 
 Metadata configuration has two parts: filesystem capabilities (server config file) and store instances (managed via CLI).

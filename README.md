@@ -49,6 +49,7 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 - ✅ **Extensible**: Clean adapter pattern for new protocols
 - ✅ **User Management**: Unified users/groups with share-level permissions (CLI + REST API)
 - ✅ **REST API**: Full management API with JWT authentication for users, groups, and shares
+- ✅ **Client-side encryption**: Per-remote envelope encryption (AES-256-GCM / ChaCha20-Poly1305 / XChaCha20-Poly1305) with local key file or KMIP-backed master keys — see [ENCRYPTION.md](docs/ENCRYPTION.md)
 
 ## Quick Start
 
