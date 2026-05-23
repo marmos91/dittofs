@@ -397,7 +397,7 @@ func TestBreakParentHandleLeasesOnCreate_WaitsForAck(t *testing.T) {
 	lm := NewLeaseManager(&fakeResolver{mgr: fake}, nil)
 
 	parentHandle := lock.FileHandle("parent-dir-handle")
-	if err := lm.BreakParentHandleLeasesOnCreate(context.Background(), parentHandle, "share1", "smb:A"); err != nil {
+	if err := lm.BreakParentHandleLeasesOnCreate(context.Background(), parentHandle, "share1", "smb:A", [16]byte{}, false); err != nil {
 		t.Fatalf("BreakParentHandleLeasesOnCreate returned error: %v", err)
 	}
 
@@ -444,7 +444,7 @@ func TestBreakParentReadLeasesOnModify_WaitsForAck(t *testing.T) {
 	lm := NewLeaseManager(&fakeResolver{mgr: fake}, nil)
 
 	parentHandle := lock.FileHandle("parent-dir-handle-2")
-	if err := lm.BreakParentReadLeasesOnModify(context.Background(), parentHandle, "share1", "smb:A"); err != nil {
+	if err := lm.BreakParentReadLeasesOnModify(context.Background(), parentHandle, "share1", "smb:A", [16]byte{}, false); err != nil {
 		t.Fatalf("BreakParentReadLeasesOnModify returned error: %v", err)
 	}
 
@@ -502,7 +502,7 @@ func TestBreakParentHandle_ExcludesTriggeringClient(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- lm.BreakParentHandleLeasesOnCreate(ctx, lock.FileHandle("parent"), "share1", "smb:A")
+		done <- lm.BreakParentHandleLeasesOnCreate(ctx, lock.FileHandle("parent"), "share1", "smb:A", [16]byte{}, false)
 	}()
 
 	select {
@@ -531,6 +531,105 @@ func TestBreakParentHandle_ExcludesTriggeringClient(t *testing.T) {
 	// is wired (rather than the test passing trivially against unmodified code).
 	if len(fake.waitForBreakCompletionKeys) != 1 {
 		t.Fatalf("WaitForBreakCompletion call count = %d, want 1", len(fake.waitForBreakCompletionKeys))
+	}
+}
+
+// TestBreakParentHandleLeasesOnCreate_ParentKeyPlumbed asserts the new
+// (#470 C2) parent-key suppression args are forwarded into the LockOwner
+// passed to BreakLeasesOnOpenConflict. The dir-lease parent-key suppression
+// rule (MS-SMB2 §3.3.4.20) is enforced INSIDE the lock manager — this test
+// pins that the LeaseManager does the plumbing, not the actual suppression.
+func TestBreakParentHandleLeasesOnCreate_ParentKeyPlumbed(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeLockManager{}
+	lm := NewLeaseManager(&fakeResolver{mgr: fake}, nil)
+
+	parentKey := [16]byte{0xCA, 0xFE, 0xBA, 0xBE}
+	if err := lm.BreakParentHandleLeasesOnCreate(
+		context.Background(), lock.FileHandle("parent"), "share1", "smb:A", parentKey, true,
+	); err != nil {
+		t.Fatalf("BreakParentHandleLeasesOnCreate returned error: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+
+	if len(fake.breakHandleCalls) != 1 {
+		t.Fatalf("BreakLeasesOnOpenConflict call count = %d, want 1", len(fake.breakHandleCalls))
+	}
+	excludeOwner := fake.breakHandleCalls[0].ExcludeOwner
+	if excludeOwner == nil {
+		t.Fatal("excludeOwner must be non-nil when a parent_key is provided")
+	}
+	if !excludeOwner.HasExcludeParentDirLeaseKey {
+		t.Errorf("HasExcludeParentDirLeaseKey = false, want true")
+	}
+	if excludeOwner.ExcludeParentDirLeaseKey != parentKey {
+		t.Errorf("ExcludeParentDirLeaseKey = %x, want %x", excludeOwner.ExcludeParentDirLeaseKey, parentKey)
+	}
+}
+
+// TestBreakParentReadLeasesOnModify_ParentKeyPlumbed: same plumbing assertion
+// for the Read-lease break helper (the SET_INFO path on a child file).
+func TestBreakParentReadLeasesOnModify_ParentKeyPlumbed(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeLockManager{}
+	lm := NewLeaseManager(&fakeResolver{mgr: fake}, nil)
+
+	parentKey := [16]byte{0xDE, 0xAD, 0xBE, 0xEF}
+	if err := lm.BreakParentReadLeasesOnModify(
+		context.Background(), lock.FileHandle("parent"), "share1", "smb:A", parentKey, true,
+	); err != nil {
+		t.Fatalf("BreakParentReadLeasesOnModify returned error: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+
+	if len(fake.breakReadCalls) != 1 {
+		t.Fatalf("BreakReadLeasesForParentDir call count = %d, want 1", len(fake.breakReadCalls))
+	}
+	excludeOwner := fake.breakReadCalls[0].ExcludeOwner
+	if excludeOwner == nil {
+		t.Fatal("excludeOwner must be non-nil when a parent_key is provided")
+	}
+	if !excludeOwner.HasExcludeParentDirLeaseKey {
+		t.Errorf("HasExcludeParentDirLeaseKey = false, want true")
+	}
+	if excludeOwner.ExcludeParentDirLeaseKey != parentKey {
+		t.Errorf("ExcludeParentDirLeaseKey = %x, want %x", excludeOwner.ExcludeParentDirLeaseKey, parentKey)
+	}
+}
+
+// TestBreakParentHandleLeasesOnCreate_NoParentKey_NoHasFlag: when hasExcludeKey
+// is false the LockOwner must not surface HasExcludeParentDirLeaseKey=true
+// (which would suppress every dir lease whose key happens to be all zeros).
+func TestBreakParentHandleLeasesOnCreate_NoParentKey_NoHasFlag(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeLockManager{}
+	lm := NewLeaseManager(&fakeResolver{mgr: fake}, nil)
+
+	if err := lm.BreakParentHandleLeasesOnCreate(
+		context.Background(), lock.FileHandle("parent"), "share1", "smb:A", [16]byte{}, false,
+	); err != nil {
+		t.Fatalf("BreakParentHandleLeasesOnCreate returned error: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+
+	if len(fake.breakHandleCalls) != 1 {
+		t.Fatalf("BreakLeasesOnOpenConflict call count = %d, want 1", len(fake.breakHandleCalls))
+	}
+	excludeOwner := fake.breakHandleCalls[0].ExcludeOwner
+	if excludeOwner == nil {
+		t.Fatal("excludeOwner is nil")
+	}
+	if excludeOwner.HasExcludeParentDirLeaseKey {
+		t.Error("HasExcludeParentDirLeaseKey = true, want false (no parent_key was provided)")
 	}
 }
 

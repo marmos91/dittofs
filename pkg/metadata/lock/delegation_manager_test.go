@@ -326,7 +326,7 @@ func TestManager_OnDirChange_BreaksDelegations(t *testing.T) {
 	require.NoError(t, lm.GrantDelegation("dir1", dirDeleg))
 
 	// Trigger directory change from a different client
-	lm.OnDirChange("dir1", DirChangeAddEntry, "client2")
+	lm.OnDirChange("dir1", DirChangeAddEntry, "client2", [16]byte{}, false)
 
 	// Delegation should be recalled
 	recalls := delegRecalls.getRecalls()
@@ -346,7 +346,7 @@ func TestManager_OnDirChange_SkipsOriginClient(t *testing.T) {
 	require.NoError(t, lm.GrantDelegation("dir1", dirDeleg))
 
 	// Change from same client should not break delegation
-	lm.OnDirChange("dir1", DirChangeAddEntry, "client1")
+	lm.OnDirChange("dir1", DirChangeAddEntry, "client1", [16]byte{}, false)
 
 	recalls := delegRecalls.getRecalls()
 	assert.Len(t, recalls, 0, "origin client delegation should not be recalled")

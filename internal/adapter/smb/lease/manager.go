@@ -814,18 +814,28 @@ func (lm *LeaseManager) BreakFileHandleLeasesOnDelete(
 // resolveParentBreakArgs resolves the lock manager, handle key, and exclude
 // owner for parent directory lease break operations. Returns nil lockMgr if
 // the share has no lock manager.
+//
+// excludeParentLeaseKey + hasExcludeKey carry the originating handle's
+// ParentLeaseKey (when set on its RqLs) so the dir-lease parent-key
+// suppression rule (MS-SMB2 §3.3.4.20, #470 C2) is applied in breakOpLocks.
 func (lm *LeaseManager) resolveParentBreakArgs(
 	parentHandle lock.FileHandle,
 	shareName string,
 	excludeClientID string,
+	excludeParentLeaseKey [16]byte,
+	hasExcludeKey bool,
 ) (lockMgr lock.LockManager, handleKey string, excludeOwner *lock.LockOwner) {
 	lockMgr = lm.resolveLockManager(shareName)
 	if lockMgr == nil {
 		return nil, "", nil
 	}
 	handleKey = string(parentHandle)
-	if excludeClientID != "" {
-		excludeOwner = &lock.LockOwner{ClientID: excludeClientID}
+	if excludeClientID != "" || hasExcludeKey {
+		excludeOwner = &lock.LockOwner{
+			ClientID:                    excludeClientID,
+			ExcludeParentDirLeaseKey:    excludeParentLeaseKey,
+			HasExcludeParentDirLeaseKey: hasExcludeKey,
+		}
 	}
 	return lockMgr, handleKey, excludeOwner
 }
@@ -845,13 +855,21 @@ func (lm *LeaseManager) resolveParentBreakArgs(
 // is never in the toBreak set, and the wait only blocks on OTHER clients' acks.
 //
 // Required by WPTS BVT BVT_DirectoryLeasing_LeaseBreakOnMultiClients.
+//
+// excludeParentLeaseKey + hasExcludeKey carry the originating handle's RqLs
+// ParentLeaseKey for the dir-lease parent-key suppression rule (MS-SMB2
+// §3.3.4.20, #470 C2). Pass the zero key + false when there is no parent-key
+// linkage to honor.
 func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
 	ctx context.Context,
 	parentHandle lock.FileHandle,
 	shareName string,
 	excludeClientID string,
+	excludeParentLeaseKey [16]byte,
+	hasExcludeKey bool,
 ) error {
-	lockMgr, handleKey, excludeOwner := lm.resolveParentBreakArgs(parentHandle, shareName, excludeClientID)
+	lockMgr, handleKey, excludeOwner := lm.resolveParentBreakArgs(
+		parentHandle, shareName, excludeClientID, excludeParentLeaseKey, hasExcludeKey)
 	if lockMgr == nil {
 		return nil
 	}
@@ -879,13 +897,17 @@ func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
 // the triggering operation; the wait is bounded by parentLeaseBreakWaitTimeout
 // and self-deadlock is prevented by excludeClientID (see
 // BreakParentHandleLeasesOnCreate for the full rationale).
+// excludeParentLeaseKey + hasExcludeKey: see BreakParentHandleLeasesOnCreate.
 func (lm *LeaseManager) BreakParentReadLeasesOnModify(
 	ctx context.Context,
 	parentHandle lock.FileHandle,
 	shareName string,
 	excludeClientID string,
+	excludeParentLeaseKey [16]byte,
+	hasExcludeKey bool,
 ) error {
-	lockMgr, handleKey, excludeOwner := lm.resolveParentBreakArgs(parentHandle, shareName, excludeClientID)
+	lockMgr, handleKey, excludeOwner := lm.resolveParentBreakArgs(
+		parentHandle, shareName, excludeClientID, excludeParentLeaseKey, hasExcludeKey)
 	if lockMgr == nil {
 		return nil
 	}

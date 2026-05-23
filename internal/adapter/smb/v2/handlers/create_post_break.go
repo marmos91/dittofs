@@ -409,13 +409,29 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	}
 
 	// Step 7c: Break parent directory Handle / Read leases on create/overwrite/supersede.
+	//
+	// Parent-key suppression (MS-SMB2 §3.3.4.20 / Samba dirlease_should_break,
+	// #470 C2): if this CREATE carried an RqLs with
+	// LEASE_FLAG_PARENT_LEASE_KEY_SET, extract the ParentLeaseKey from the
+	// incoming request so the matching dir-lease is NOT broken. The
+	// LeaseResponseContext built at Step 8b carries the validated key, but
+	// runs AFTER the break calls below — peek directly at the RqLs context.
 	if (createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded) && h.LeaseManager != nil {
 		parentLockHandle := lock.FileHandle(parentHandle)
 		excludeClientID := fmt.Sprintf("smb:%d", ctx.SessionID)
-		if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, tree.ShareName, excludeClientID); breakErr != nil {
+		var excludeParentKey [16]byte
+		var hasExcludeKey bool
+		if leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest); leaseCtx != nil {
+			if leaseReq, decodeErr := DecodeLeaseCreateContext(leaseCtx.Data); decodeErr == nil &&
+				leaseReq.Flags&smbenc.LeaseResponseFlagParentKeySet != 0 {
+				excludeParentKey = leaseReq.ParentLeaseKey
+				hasExcludeKey = true
+			}
+		}
+		if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, tree.ShareName, excludeClientID, excludeParentKey, hasExcludeKey); breakErr != nil {
 			logger.Debug("CREATE: parent directory Handle lease break failed", "error", breakErr)
 		}
-		if breakErr := h.LeaseManager.BreakParentReadLeasesOnModify(authCtx.Context, parentLockHandle, tree.ShareName, excludeClientID); breakErr != nil {
+		if breakErr := h.LeaseManager.BreakParentReadLeasesOnModify(authCtx.Context, parentLockHandle, tree.ShareName, excludeClientID, excludeParentKey, hasExcludeKey); breakErr != nil {
 			logger.Debug("CREATE: parent directory Read lease break failed", "error", breakErr)
 		}
 	}
@@ -598,6 +614,19 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		openFile.LeaseKey = leaseResponse.LeaseKey
 	} else if syntheticLeaseKey != ([16]byte{}) {
 		openFile.LeaseKey = syntheticLeaseKey
+	}
+
+	// Record the RqLs parent-lease-key linkage so downstream operations on
+	// this handle (SET_INFO, WRITE, CLOSE-on-delete) can apply the MS-SMB2
+	// §3.3.4.20 / Samba `dirlease_should_break` parent-key suppression rule
+	// against the parent directory's lease. Captured even when the file
+	// lease itself was denied (response leaseState=None) — the linkage
+	// applies regardless of the per-file grant outcome. Gated on HasParent
+	// so a zero-key request without LEASE_FLAG_PARENT_LEASE_KEY_SET is
+	// treated as "no linkage" (#470 C2).
+	if leaseResponse != nil && leaseResponse.HasParent {
+		openFile.ParentLeaseKey = leaseResponse.ParentLeaseKey
+		openFile.HasParentLeaseKey = true
 	}
 
 	if h.DurableStore != nil {

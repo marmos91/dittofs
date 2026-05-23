@@ -192,6 +192,28 @@ func (h *Handler) primeAuthContext(ctx *SMBHandlerContext, treeID uint32, sessio
 	}
 }
 
+// PropagateOpenFileParentLeaseKey copies the OpenFile's RqLs parent-lease-key
+// linkage (if any) onto an AuthContext. This is the hand-off that lets
+// MetadataService.notifyDirChange and the dir-lease parent-key suppression
+// rule (MS-SMB2 §3.3.4.20, #470 C2/C3/C5/C6/C7) skip the matching parent dir
+// lease when the originating handle's CREATE carried
+// LEASE_FLAG_PARENT_LEASE_KEY_SET. Safe to call with a nil OpenFile (no-op).
+//
+// For C2 (setinfo) the parent-dir-lease break runs through
+// `breakParentDirLeasesForContentChange`, which reads OpenFile directly and
+// does not depend on AuthContext — this helper is therefore not required on
+// that path. C3+ (rename, hardlink, overwrite, unlink) route through
+// MetadataService rename/remove/link/create, which calls notifyDirChange and
+// reads `ctx.ParentLeaseKey` / `ctx.HasParentLeaseKey`. Wave 3 PRs should
+// invoke this helper before issuing those metadata operations.
+func PropagateOpenFileParentLeaseKey(authCtx *metadata.AuthContext, openFile *OpenFile) {
+	if authCtx == nil || openFile == nil || !openFile.HasParentLeaseKey {
+		return
+	}
+	authCtx.ParentLeaseKey = openFile.ParentLeaseKey
+	authCtx.HasParentLeaseKey = true
+}
+
 // HasWritePermission checks if the SMB context has write permission for the share.
 func HasWritePermission(ctx *SMBHandlerContext) bool {
 	return ctx.Permission == models.PermissionReadWrite || ctx.Permission == models.PermissionAdmin

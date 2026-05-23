@@ -347,6 +347,15 @@ type OpenFile struct {
 	// Used to release the lease when the last handle sharing the key is closed.
 	LeaseKey [16]byte
 
+	// ParentLeaseKey is the 128-bit parent directory lease key carried in the
+	// CREATE RqLs (V2) when the client set SMB2_LEASE_FLAG_PARENT_LEASE_KEY_SET.
+	// Used by the dir-lease parent-key suppression rule (MS-SMB2 §3.3.4.20):
+	// SET_INFO / WRITE / CLOSE-on-delete on this handle MUST NOT break the
+	// parent dir lease whose LeaseKey matches this value. The field is
+	// meaningful only when HasParentLeaseKey is true (#470 C2).
+	ParentLeaseKey    [16]byte
+	HasParentLeaseKey bool
+
 	// Durable handle state (Phase 38: SMB3 durable handles)
 	// IsDurable indicates this handle has been granted durability.
 	// When true, the handle will be persisted to DurableHandleStore on disconnect
