@@ -61,11 +61,18 @@ func (s *spyRemote) wireLen() int {
 	return len(s.lastWire)
 }
 
-func putAndGet(t *testing.T, bs blockstore.BlockStore, payload []byte) blockstore.ContentHash {
-	t.Helper()
+// hashOf returns the BLAKE3 CAS key for payload — the same shape all
+// tests use to derive the plaintext hash before Put.
+func hashOf(payload []byte) blockstore.ContentHash {
 	sum := blake3.Sum256(payload)
 	var h blockstore.ContentHash
 	copy(h[:], sum[:])
+	return h
+}
+
+func putAndGet(t *testing.T, bs blockstore.BlockStore, payload []byte) blockstore.ContentHash {
+	t.Helper()
+	h := hashOf(payload)
 	if err := bs.Put(context.Background(), h, payload); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -161,9 +168,7 @@ func TestSavings_PairedRawZstdLZ4(t *testing.T) {
 
 func putThroughSpy(t *testing.T, spy *spyRemote, payload []byte) blockstore.ContentHash {
 	t.Helper()
-	sum := blake3.Sum256(payload)
-	var h blockstore.ContentHash
-	copy(h[:], sum[:])
+	h := hashOf(payload)
 	if err := spy.Put(context.Background(), h, payload); err != nil {
 		t.Fatalf("spy Put: %v", err)
 	}
@@ -186,9 +191,7 @@ func TestReadBlockVerified_RoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := bytes.Repeat([]byte("verify-me-please. "), 4096)
-	sum := blake3.Sum256(payload)
-	var h blockstore.ContentHash
-	copy(h[:], sum[:])
+	h := hashOf(payload)
 	if err := d.Put(context.Background(), h, payload); err != nil {
 		t.Fatal(err)
 	}
@@ -208,9 +211,7 @@ func TestReadBlockVerified_MismatchTrips(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := bytes.Repeat([]byte("trip-me. "), 4096)
-	sum := blake3.Sum256(payload)
-	var h blockstore.ContentHash
-	copy(h[:], sum[:])
+	h := hashOf(payload)
 	if err := d.Put(context.Background(), h, payload); err != nil {
 		t.Fatal(err)
 	}
@@ -231,9 +232,7 @@ func TestHead_ReportsPlaintextSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := bytes.Repeat([]byte("compressible-text. "), 4096)
-	sum := blake3.Sum256(payload)
-	var h blockstore.ContentHash
-	copy(h[:], sum[:])
+	h := hashOf(payload)
 	if err := d.Put(context.Background(), h, payload); err != nil {
 		t.Fatal(err)
 	}
@@ -253,9 +252,7 @@ func TestGetRange_InvalidLength(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := bytes.Repeat([]byte("range. "), 4096)
-	sum := blake3.Sum256(payload)
-	var h blockstore.ContentHash
-	copy(h[:], sum[:])
+	h := hashOf(payload)
 	if err := d.Put(context.Background(), h, payload); err != nil {
 		t.Fatal(err)
 	}
@@ -285,9 +282,7 @@ func TestHead_ProbeFailurePropagates(t *testing.T) {
 	// against actual framed bytes on the wire.
 	inner := remotememory.New()
 	payload := bytes.Repeat([]byte("compressible. "), 4096)
-	sum := blake3.Sum256(payload)
-	var h blockstore.ContentHash
-	copy(h[:], sum[:])
+	h := hashOf(payload)
 	staging, err := NewRemote(inner, CompressionPolicy{Algo: AlgoZstd})
 	if err != nil {
 		t.Fatal(err)
@@ -320,9 +315,7 @@ func TestPut_AllocBounded(t *testing.T) {
 	}
 	const size = 4 << 20
 	payload := bytes.Repeat([]byte("alloc-bound-text. "), size/18+1)[:size]
-	sum := blake3.Sum256(payload)
-	var h blockstore.ContentHash
-	copy(h[:], sum[:])
+	h := hashOf(payload)
 	// Warm pools.
 	for range 4 {
 		if err := d.Put(context.Background(), h, payload); err != nil {

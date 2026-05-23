@@ -49,8 +49,9 @@ func (d *Decorator) Algo() Algo { return d.algo }
 // --- write path ---------------------------------------------------------
 
 // Put compresses data; if the result is strictly smaller than the input
-// it stores the framed compressed body, else it stores the raw
-// plaintext with no header.
+// (header overhead included) it stores the framed compressed body, else
+// it stores the raw plaintext with no header — incompressible blocks
+// skip the allocate-and-copy frame build entirely.
 func (d *Decorator) Put(ctx context.Context, hash blockstore.ContentHash, data []byte) error {
 	var compressed bytes.Buffer
 	enc, err := d.codec.EncodeStream(&compressed)
@@ -65,20 +66,13 @@ func (d *Decorator) Put(ctx context.Context, hash blockstore.ContentHash, data [
 		return fmt.Errorf("compression: encoder close: %w", err)
 	}
 
-	wire := selectWireForm(d.algo, data, compressed.Bytes())
-	return d.inner.Put(ctx, hash, wire)
-}
-
-// selectWireForm picks raw plaintext or a framed compressed body based
-// on which is smaller. Computes the framed length up front so the
-// allocate-and-copy frame build is skipped entirely on the
-// incompressible path.
-func selectWireForm(algo Algo, plaintext, compressed []byte) []byte {
-	framedLen := frameOverhead(uint64(len(plaintext))) + len(compressed)
-	if framedLen >= len(plaintext) {
-		return plaintext
+	wire := data
+	body := compressed.Bytes()
+	origSize := uint64(len(data))
+	if frameOverhead(origSize)+len(body) < len(data) {
+		wire = encodeFrame(d.algo, origSize, body)
 	}
-	return encodeFrame(algo, uint64(len(plaintext)), compressed)
+	return d.inner.Put(ctx, hash, wire)
 }
 
 // --- read path ----------------------------------------------------------
@@ -91,12 +85,6 @@ func (d *Decorator) Get(ctx context.Context, hash blockstore.ContentHash) ([]byt
 	}
 	return d.decode(raw)
 }
-
-// MaxFramedPlaintextSize caps the declared plaintext size a frame
-// header is allowed to claim. Guards against decompression-bomb /
-// huge-preallocation attacks via a corrupt wire header. The bound is
-// generous vs FastCDC's ~16 MiB max chunk; tune if larger chunks land.
-const MaxFramedPlaintextSize = 64 * 1024 * 1024
 
 func (d *Decorator) decode(raw []byte) ([]byte, error) {
 	algo, origSize, body, framed, err := tryDecodeFrame(raw)

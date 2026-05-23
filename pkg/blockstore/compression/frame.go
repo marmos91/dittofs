@@ -17,6 +17,12 @@ const FrameHeaderFixedSize = len(FrameMagic) + 1
 // maxOrigSizeVarint is the worst-case byte count of an encoded uvarint.
 const maxOrigSizeVarint = binary.MaxVarintLen64
 
+// MaxFramedPlaintextSize caps the declared plaintext size a frame
+// header is allowed to claim. Guards against decompression-bomb /
+// huge-preallocation attacks via a corrupt wire header. The bound is
+// generous vs FastCDC's ~16 MiB max chunk; tune if larger chunks land.
+const MaxFramedPlaintextSize = 64 * 1024 * 1024
+
 // frameOverhead returns the header byte count for a frame declaring
 // the given plaintext size. Used by callers that need to know the
 // total wire size of a hypothetical frame without building it.
