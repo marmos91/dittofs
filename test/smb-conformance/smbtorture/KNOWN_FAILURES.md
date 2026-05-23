@@ -318,17 +318,6 @@ Advanced delete-on-close permission checks and edge cases. Basic DOC works
 | smb2.delete-on-close-perms.READONLY | Delete on close | DOC on read-only files not implemented | - |
 | smb2.delete-on-close-perms.FIND_and_set_DOC | Delete on close | Cascade from the CREATE/CREATE_IF/OVERWRITE_IF Existing DOC failures above: those subtests leak `test_dir/test_create.dat` that `smb2_deltree` can't recover from, so `torture_smb2_testdir` reopens a non-empty `test_dir` and the final CLOSE correctly returns DIRECTORY_NOT_EMPTY. Pre-#388 the unlink error was silently swallowed by CLOSE so the test "passed" by accident. Will self-resolve once the upstream DOC permission checks are implemented. | - |
 
-### File IDs (Different Handle Scheme)
-
-DittoFS uses a different file handle scheme than Windows NTFS file IDs.
-Stable file ID tracking across renames and uniqueness guarantees are not
-implemented.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.fileid.fileid | File IDs | Stable file ID not implemented | - |
-| smb2.fileid.fileid-dir | File IDs | Stable directory file ID not implemented | - |
-
 ### Maximum Allowed Access (Partial)
 
 Maximum allowed access computation is partially implemented. Read-only
@@ -664,19 +653,6 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 | smb2.replay.replay4 | Replay | Replay detection not implemented | - |
 | smb2.replay.replay5 | Replay | Replay detection not implemented | - |
 | smb2.replay.replay6 | Replay | Replay detection not implemented | - |
-
-### Timestamps (Fix Candidate)
-
-Timestamp update semantics partially implemented but tests fail due to
-incomplete delayed-write and timestamp freeze/unfreeze logic.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.timestamps.delayed-2write | Timestamps | Delayed write timestamp update not working | #434 |
-| smb2.timestamps.delayed-write-vs-flush | Timestamps | Delayed write vs flush timestamp not working | #434 |
-| smb2.timestamps.delayed-write-vs-setbasic | Timestamps | Delayed write vs setbasic timestamp not working | #434 |
-| smb2.timestamps.delayed-write-vs-seteof | Timestamps | Delayed write vs seteof timestamp not working | #434 |
-| smb2.timestamps.freeze-thaw | Timestamps | CreationTime freeze/unfreeze not fully working | #434 |
 
 ## Changelog
 
