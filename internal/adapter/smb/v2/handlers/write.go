@@ -343,6 +343,17 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Step 9: Prepare write operation
 	// ========================================================================
 
+	// Snapshot the pre-write Mtime so the SMB delayed-write window can
+	// keep returning that value via QUERY_INFO until the 2-second timer
+	// expires (Samba: trigger_write_time_update). Best-effort — only the
+	// first WRITE on the open consumes the snapshot.
+	var preWriteMtime time.Time
+	if !openFile.SmbWriteTriggered && openFile.SmbStickyWriteTime == nil {
+		if preFile, getErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); getErr == nil {
+			preWriteMtime = preFile.Mtime
+		}
+	}
+
 	newSize := req.Offset + uint64(len(req.Data))
 	writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
 	if err != nil {
@@ -384,6 +395,11 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Per MS-FSA 2.1.5.14.2: If timestamps are frozen via SET_INFO with -1,
 	// CommitWrite unconditionally updated Mtime/Ctime. Restore frozen values.
 	h.restoreFrozenTimestamps(authCtx, openFile)
+
+	// Arm the SMB delayed-write window so QUERY_INFO masks the just-bumped
+	// Mtime until the 2-second timer expires (Samba parity).
+	armSmbDelayedWrite(openFile, preWriteMtime, writeOp.NewMtime)
+	h.StoreOpenFile(openFile)
 
 	// Detect ADS writes once for timestamp propagation and change notification.
 	isADSWrite := false

@@ -460,6 +460,16 @@ func (h *Handler) setFileInfoFromStore(
 			h.StoreOpenFile(openFile)
 		}
 
+		// Samba parity (fileio.c): any SET_INFO BasicInfo — even with all
+		// zero timestamps — collapses the pending delayed-write window so
+		// the post-write Mtime becomes visible. An explicit, non-sentinel
+		// write_time also makes the value sticky until close.
+		flushSmbDelayedWrite(openFile)
+		if setAttrs.Mtime != nil && mtimeFT != 0 && !isFiletimeSentinel(mtimeFT) {
+			setSmbStickyWriteTime(openFile, *setAttrs.Mtime)
+		}
+		h.StoreOpenFile(openFile)
+
 		// Notify watchers about attribute/timestamp changes
 		if h.NotifyRegistry != nil {
 			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
@@ -971,6 +981,11 @@ func (h *Handler) setFileInfoFromStore(
 
 		// Restore frozen timestamps after truncation (which updates Mtime/Ctime)
 		h.restoreFrozenTimestamps(authCtx, openFile)
+
+		// Samba parity (fileio.c): SET_INFO EndOfFile also flushes the
+		// pending delayed-write window.
+		flushSmbDelayedWrite(openFile)
+		h.StoreOpenFile(openFile)
 
 		// Notify watchers about size changes
 		if h.NotifyRegistry != nil {
