@@ -78,9 +78,8 @@ func TestCreateHardLink_NotifyDirChangeMatrix(t *testing.T) {
 
 			// Destination directory: either same as src or distinct.
 			dstDirHandle := srcDirHandle
-			dstDirName := "srcdir"
 			if tc.differentDir {
-				dstDirName = "dstdir"
+				dstDirName := "dstdir"
 				_, err := fx.service.CreateDirectory(rootCtx, fx.rootHandle, dstDirName, &metadata.FileAttr{
 					Type: metadata.FileTypeDirectory, Mode: 0o777,
 				})
