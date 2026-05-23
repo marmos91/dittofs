@@ -309,6 +309,15 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// that to the metadata layer so the owner-of-target delete rule
 			// applies without loosening POSIX unlink(2) for NFS callers.
 			authCtx.HasDeleteAccess = true
+			// Thread the CLOSING handle's RqLs ParentLeaseKey through to
+			// notifyDirChange so the dir-lease parent-key suppression rule
+			// (MS-SMB2 §3.3.4.20, #470 C6/C7) can skip the parent dir lease
+			// whose key matches. The exclude key is the parent_key of the
+			// deleting CLOSE's handle, NOT of the handle that set DOC —
+			// covers both `*_set_and_close` and `*_initial_and_close` paths
+			// because OpenFile.ParentLeaseKey is captured at CREATE time
+			// regardless of when delete-on-close was set.
+			PropagateOpenFileParentLeaseKey(authCtx, openFile)
 			metaSvc := h.Registry.GetMetadataService()
 			var deleteErr error
 			if openFile.IsDirectory {
