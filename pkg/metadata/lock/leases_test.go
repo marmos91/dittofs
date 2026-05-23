@@ -311,6 +311,124 @@ func TestRequestLease_CrossKeyConflictOnAlreadyBreakingLease(t *testing.T) {
 		"cross-key conflict on already-breaking lease must NOT bump epoch")
 }
 
+// TestRequestLease_PostAckCrossKeyDoesNotRedispatch mirrors the production flow
+// exercised by smbtorture smb2.multichannel.leases.test3 (#436):
+//
+//  1. Client 2 grants RWH on file1 with LEASE2.
+//  2. Client 1's CREATE arrives. The SMB handler dispatches the pre-RqLs break
+//     via BreakLeasesOnOpenConflict(Default), which marks LEASE2 Breaking with
+//     BreakingToRequired=RH and emits notification #1.
+//  3. Client 2 ACKs the break (RWH→RH). LEASE2 transitions to LeaseState=RH,
+//     Breaking=false, BreakingToRequired=RH.
+//  4. The SMB handler then invokes RequestLease(LEASE1, RWH) to grant Client 1
+//     its lease. The cross-key conflict path MUST NOT emit a second break:
+//     LEASE2 is already downgraded to the state that satisfies the new opener,
+//     and bestGrantableState will return RH for LEASE1 directly.
+//
+// Pre-fix RequestLease only suppressed the duplicate break when the existing
+// lease was still Breaking (#465 partial fix). Once the ACK arrived, Breaking
+// flipped to false and the next opener landed on the dispatch path, sending a
+// spurious RH→RH (no-op) break — the test's CHECK_VAL(lease_break_info.count, 1)
+// then saw 2 and failed.
+func TestRequestLease_PostAckCrossKeyDoesNotRedispatch(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	key1 := [16]byte{1, 0, 0, 0} // LEASE1 — Client 1
+	key2 := [16]byte{2, 0, 0, 0} // LEASE2 — Client 2 (existing holder)
+	parentKey := [16]byte{}
+
+	var breakCount atomic.Int32
+	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(_ string, _ *UnifiedLock, _ uint32) {
+			breakCount.Add(1)
+		},
+	})
+
+	// Step 1: Client 2 grants RWH on file1.
+	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), key2, parentKey,
+		"owner2", "client2", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+	require.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state)
+
+	// Step 2: SMB handler's pre-RqLs break — dispatches notification #1.
+	require.NoError(t, mgr.BreakLeasesOnOpenConflict("file1", nil, BreakReasonDefault))
+	require.EqualValues(t, 1, breakCount.Load(), "pre-RqLs break must dispatch exactly once")
+
+	// Step 3: Client 2 ACKs RWH→RH.
+	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, key2, LeaseStateRead|LeaseStateHandle, 0))
+
+	// Verify LEASE2 is now at RH, not Breaking.
+	curState, _, ok := mgr.GetLeaseState(ctx, key2)
+	require.True(t, ok)
+	require.Equal(t, LeaseStateRead|LeaseStateHandle, curState)
+
+	// Step 4: SMB handler invokes RequestLease for Client 1's RWH on the same
+	// file. Cross-key conflict with LEASE2 (RH) — but LEASE2 has already been
+	// downgraded to the state the new opener would request a break to. No
+	// second break must fire.
+	state, _, err = mgr.RequestLease(ctx, FileHandle("file1"), key1, parentKey,
+		"owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state,
+		"LEASE1 must be granted RH (RWH downgraded by cross-key R-conflict with LEASE2)")
+
+	assert.EqualValues(t, 1, breakCount.Load(),
+		"post-ACK cross-key conflict must NOT dispatch a second break notification")
+}
+
+// TestRequestLease_CrossKeyConflictHolderMidBreakNoRedispatch pins the
+// breaking-mid-flight arm of the smbtorture multichannel.leases.test3 (#436)
+// fix: a cross-key conflict that arrives while the holder is still mid-break
+// (BreakingToRequired already at the target the new opener would request)
+// must NOT emit a second notification. The pre-existing AND-merge path
+// (#465) covered the explicit Breaking branch; this test additionally
+// verifies the upstream guard skips dispatch as soon as the holder's
+// effective state matches the break-to — even when the AND-merge would
+// otherwise be a no-op tightening.
+func TestRequestLease_CrossKeyConflictHolderMidBreakNoRedispatch(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	key1 := [16]byte{1, 0, 0, 0}
+	key2 := [16]byte{2, 0, 0, 0}
+	parentKey := [16]byte{}
+
+	var breakCount atomic.Int32
+	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(_ string, _ *UnifiedLock, _ uint32) {
+			breakCount.Add(1)
+		},
+	})
+
+	// Client 2 grants RWH.
+	_, _, err := mgr.RequestLease(ctx, FileHandle("file1"), key2, parentKey,
+		"owner2", "client2", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+
+	// Pre-RqLs break (dispatch #1). LEASE2 is now Breaking with
+	// BreakingToRequired=RH and LeaseState=RWH (no ACK yet).
+	require.NoError(t, mgr.BreakLeasesOnOpenConflict("file1", nil, BreakReasonDefault))
+	require.EqualValues(t, 1, breakCount.Load())
+
+	// Client 1's RWH cross-key conflict lands while LEASE2 is mid-break.
+	// The new effective-state guard skips dispatch (BreakingToRequired==RH
+	// equals breakTo for a Default-reason strip), and bestGrantableState
+	// downgrades LEASE1 to RH (since LEASE2 effectively holds R).
+	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), key1, parentKey,
+		"owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state)
+	assert.EqualValues(t, 1, breakCount.Load(),
+		"cross-key conflict against a mid-break holder must NOT add a second break notification")
+}
+
 func TestRequestLease_MultipleReadLeasesNoConflict(t *testing.T) {
 	t.Parallel()
 
