@@ -270,31 +270,10 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
 
-	// Propagate the open's recorded session/tree onto ctx BEFORE
-	// BuildAuthContext (refs #603). The SMB2 QUERY_DIRECTORY body carries
-	// only FileID — no user state — so the dispatcher cannot prefill
-	// ctx.User. Without this hand-off BuildAuthContext takes the
-	// `ctx.User == nil` arm and synthesises a UID-0 "anonymous/root"
-	// identity (auth_helper.go), which then trips the UID-0 root-bypass
-	// at the top of filterByAccess and skips ABE filtering entirely —
-	// every entry is returned regardless of DACL. create/read/write/close
-	// already perform the same hand-off (search the package for
-	// `ctx.User = sess.User`); QueryDirectory was missing it.
-	//
-	// Only overwrite ctx.User when the session lookup yields a non-nil
-	// User: GetSession(0) returns the manager's anonymous pre-auth session
-	// (NewManager seeds id=0 with User=nil), and test fixtures often
-	// pre-populate ctx.User without registering a parallel session. In
-	// both cases clobbering with nil would re-introduce the bug we just
-	// fixed.
-	if tree, ok := h.GetTree(openFile.TreeID); ok {
-		ctx.ShareName = tree.ShareName
-		ctx.Permission = tree.Permission
-	}
-	if sess, ok := h.GetSession(openFile.SessionID); ok && sess != nil && sess.User != nil {
-		ctx.User = sess.User
-		ctx.IsGuest = sess.IsGuest
-	}
+	// QUERY_DIRECTORY arrives keyed only by FileID, so the dispatcher
+	// cannot prefill ctx.User. See primeAuthContextFromOpenFile for the
+	// UID-0 root-bypass this prevents (refs #603 — ABE filterByAccess).
+	h.primeAuthContextFromOpenFile(ctx, openFile)
 
 	// Build AuthContext
 	authCtx, err := BuildAuthContext(ctx)

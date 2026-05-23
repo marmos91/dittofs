@@ -477,12 +477,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		logger.Debug("CREATE: invalid session ID", "sessionID", ctx.SessionID)
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUserSessionDeleted}}, nil
 	}
-
-	// Update context with session info
-	ctx.ShareName = tree.ShareName
-	ctx.User = sess.User
-	ctx.IsGuest = sess.IsGuest
-	ctx.Permission = tree.Permission
+	h.primeAuthContext(ctx, ctx.TreeID, ctx.SessionID)
 
 	// ========================================================================
 	// Step 2: Check for IPC$ named pipe operations

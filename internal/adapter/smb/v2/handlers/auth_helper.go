@@ -144,6 +144,37 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metada
 	return authCtx
 }
 
+// primeAuthContextFromOpenFile hand-offs the open's recorded session/tree
+// identity onto ctx BEFORE BuildAuthContext is called (refs #603). Follow-up
+// operations such as READ/WRITE/QUERY_DIRECTORY/CLOSE arrive keyed only by
+// FileID — the SMB2 dispatcher has no user state to prefill ctx.User with.
+// Without this hand-off BuildAuthContext takes the ctx.User==nil arm and
+// synthesises a UID-0 "anonymous/root" identity, which then trips the
+// UID-0 root-bypass at the top of metadata permission checks (e.g. ABE
+// filterByAccess) and silently grants root.
+//
+// The sess.User nil-guard is load-bearing: GetSession(0) returns the
+// manager's seeded anonymous pre-auth session with User=nil, and test
+// fixtures often pre-populate ctx.User without registering a parallel
+// session. In both cases clobbering with nil would re-introduce the bug.
+func (h *Handler) primeAuthContextFromOpenFile(ctx *SMBHandlerContext, openFile *OpenFile) {
+	h.primeAuthContext(ctx, openFile.TreeID, openFile.SessionID)
+}
+
+// primeAuthContext is the same as primeAuthContextFromOpenFile but takes raw
+// tree/session IDs. CREATE uses this with the dispatcher-provided ctx.TreeID /
+// ctx.SessionID because there is no OpenFile yet.
+func (h *Handler) primeAuthContext(ctx *SMBHandlerContext, treeID uint32, sessionID uint64) {
+	if tree, ok := h.GetTree(treeID); ok {
+		ctx.ShareName = tree.ShareName
+		ctx.Permission = tree.Permission
+	}
+	if sess, ok := h.GetSession(sessionID); ok && sess != nil && sess.User != nil {
+		ctx.User = sess.User
+		ctx.IsGuest = sess.IsGuest
+	}
+}
+
 // HasWritePermission checks if the SMB context has write permission for the share.
 func HasWritePermission(ctx *SMBHandlerContext) bool {
 	return ctx.Permission == models.PermissionReadWrite || ctx.Permission == models.PermissionAdmin

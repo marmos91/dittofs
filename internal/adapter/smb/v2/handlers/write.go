@@ -243,23 +243,15 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Step 4: Get session and tree connection
 	// ========================================================================
 
-	tree, ok := h.GetTree(openFile.TreeID)
-	if !ok {
+	if _, ok := h.GetTree(openFile.TreeID); !ok {
 		logger.Debug("WRITE: invalid tree ID", "treeID", openFile.TreeID)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
 	}
-
-	sess, ok := h.GetSession(openFile.SessionID)
-	if !ok {
+	if _, ok := h.GetSession(openFile.SessionID); !ok {
 		logger.Debug("WRITE: invalid session ID", "sessionID", openFile.SessionID)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUserSessionDeleted}}, nil
 	}
-
-	// Update context
-	ctx.ShareName = tree.ShareName
-	ctx.User = sess.User
-	ctx.IsGuest = sess.IsGuest
-	ctx.Permission = tree.Permission
+	h.primeAuthContextFromOpenFile(ctx, openFile)
 
 	// ========================================================================
 	// Step 5: Check write permission at share level
