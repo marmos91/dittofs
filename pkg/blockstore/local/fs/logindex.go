@@ -1,6 +1,9 @@
 package fs
 
-import "sync"
+import (
+	"slices"
+	"sync"
+)
 
 // Per-file logIndex (Direction 1 redesign — see
 // .planning/proposals/2026-05-22-logindex-rollup-redesign.md).
@@ -29,26 +32,29 @@ import "sync"
 // is minimal — sync.Mutex's uncontended fast path is a couple of atomic
 // ops; the slow path only trips under genuine contention.
 //
-// TRANSITIONAL-V0.17+: physical log compaction (truncating the log file
-// at compactionFence) is out of scope. The on-disk log keeps growing
-// until DeleteAppendLog wipes the payload; pressure machinery caps the
-// worst case via maxLogBytes. R-7 in
-// .planning/proposals/2026-05-22-logindex-rollup-redesign.md is the
-// follow-up to replace logPos-keyed consumption with file-offset-keyed
-// consumption, eliminating the stalled-fence pathology entirely.
+// R-7 (closes #580): consumption is keyed by FILE-OFFSET interval, not by
+// logPos. An entry's frame bytes become eligible for fence advance once
+// the file-offset extent it covers is fully chunked by SOME consumed
+// record (itself or any later overlapping one). This kills the
+// stalled-fence pathology where a head record stuck in the dirty tree
+// pinned the on-disk byte prefix even when every byte of its file region
+// had been superseded by a later, already-chunked overwrite.
 //
-// Memory bookkeeping (R-2, issue #581): in-memory `idx.entries` and
-// `idx.consumed` are TRIMMED in lockstep with AdvanceFence — every
-// fence advance drops the prefix of entries that now sit at or below
-// compactionFence and removes the matching keys from the consumed map.
-// Steady-state RSS therefore tracks the unconsumed-record set, not the
-// full payload history. The trim invariant after every AdvanceFence
-// call is: for all i, idx.entries[i].logPos >= idx.compactionFence
-// (the surviving prefix is the unconsumed-and-after-fence suffix).
+// Memory bookkeeping (R-2, #581): in-memory `idx.entries` is TRIMMED in
+// lockstep with AdvanceFence — every fence advance drops the prefix of
+// entries that now sit at or below compactionFence. Steady-state RSS
+// therefore tracks the unconsumed-record set, not the full payload
+// history. The trim invariant after every AdvanceFence call is: for all
+// i, idx.entries[i].logPos >= idx.compactionFence. (The consumedCoverage
+// interval set is NOT trimmed in lockstep — its merged-interval rep is
+// already proportional to distinct dirty file regions, not arrival count.)
+//
+// Physical log compaction (truncating the log file at compactionFence) is
+// still out of scope and remains tracked as v0.17+ work — see #579.
 
 // logEntry is one record's position in the log + the file-offset extent it
 // covers. The entry is immutable once appended; consumption is tracked
-// separately via the consumed map on logIndex.
+// separately via consumedCoverage on logIndex.
 type logEntry struct {
 	logPos     uint64 // byte offset of the frame's first byte in the log file
 	fileOff    uint64 // record's file_offset field (16-byte frame header)
@@ -56,17 +62,26 @@ type logEntry struct {
 }
 
 // fileEnd returns the exclusive file-offset upper bound for this record.
+// Saturates on overflow so a pathological fileOff near MaxUint64 produces
+// a well-formed (non-wrapping) interval — AdvanceFence's coverage test
+// and EntriesForInterval's overlap test then stay correct.
 func (e logEntry) fileEnd() uint64 {
-	return e.fileOff + uint64(e.payloadLen)
+	end := e.fileOff + uint64(e.payloadLen)
+	if end < e.fileOff {
+		return ^uint64(0)
+	}
+	return end
 }
 
 // logIndex maintains per-file log-position bookkeeping. Entries are
 // appended in arrival order (== logPos order, since AppendWrite advances
-// lf.eofPos monotonically under per-file mu). The consumed map records
-// which logPos values have been rolled up into CAS; compactionFence is
-// the largest logPos such that every entry with logPos <= fence has been
-// consumed — i.e. the on-disk byte prefix that is now eligible for
-// physical compaction (deferred to v0.17+).
+// lf.eofPos monotonically under per-file mu). consumedCoverage is the
+// union of FILE-OFFSET intervals that have been rolled up into CAS; an
+// entry's frame is eligible for fence advance once consumedCoverage fully
+// covers [entry.fileOff, entry.fileEnd()). compactionFence is the largest
+// logPos prefix such that every entry with logPos < fence has its file
+// extent fully covered — i.e. the on-disk byte prefix that is now
+// eligible for physical compaction (deferred to v0.17+, #579).
 //
 // rollup_offset on disk continues to mean "consumed up to this log byte
 // offset"; conceptually it now records compactionFence rather than a
@@ -75,10 +90,10 @@ type logIndex struct {
 	// mu guards every field below. See package doc on logIndex above for
 	// rationale (defensive guard against lifecycle drift; uncontended on
 	// the steady-state hot path).
-	mu              sync.Mutex
-	entries         []logEntry
-	consumed        map[uint64]struct{} // key = logEntry.logPos
-	compactionFence uint64
+	mu               sync.Mutex
+	entries          []logEntry
+	consumedCoverage coverageSet
+	compactionFence  uint64
 	// fenceCursor is the index into `entries` of the first entry whose
 	// logPos is at or beyond compactionFence. AdvanceFence resumes its
 	// walk from this cursor instead of rescanning the entire slice on
@@ -93,7 +108,6 @@ type logIndex struct {
 func newLogIndex() *logIndex {
 	return &logIndex{
 		entries:         nil,
-		consumed:        make(map[uint64]struct{}),
 		compactionFence: logHeaderSize,
 	}
 }
@@ -101,6 +115,7 @@ func newLogIndex() *logIndex {
 // Append records a new entry. Caller MUST pass a logPos strictly greater
 // than the most recent entry's logPos (eofPos advances monotonically).
 // Append does not validate ordering — the contract is on the caller.
+// Internal mu guards the slice mutation.
 func (idx *logIndex) Append(logPos uint64, fileOff uint64, payloadLen uint32) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
@@ -146,20 +161,43 @@ func (idx *logIndex) EntriesForInterval(fileOff uint64, length uint64) []logEntr
 	return out
 }
 
-// MarkConsumed records that the entry at logPos has been rolled into
-// CAS. Idempotent — repeat calls for the same logPos are a no-op.
-func (idx *logIndex) MarkConsumed(logPos uint64) {
+// MarkConsumed records that a record with the given file-offset extent
+// has been rolled into CAS. Idempotent — overlapping calls are merged
+// into the underlying interval set. The logPos that originated the chunk
+// is intentionally NOT tracked: deadness is a property of the FILE-OFFSET
+// region, not of the log position (R-7, #580). A later overlapping
+// MarkConsumed can therefore release the on-disk bytes of a still-
+// unconsumed earlier record whose file region has been fully superseded.
+//
+// payloadLen == 0 is a no-op (matches AppendWrite's len(data) == 0
+// short-circuit). The end = fileOff + payloadLen sum is computed with
+// overflow saturation (consistent with EntriesForInterval) so a
+// pathological wrap can never produce an empty interval that would
+// silently fail to advance the fence.
+func (idx *logIndex) MarkConsumed(fileOff uint64, payloadLen uint32) {
+	if payloadLen == 0 {
+		return
+	}
+	end := fileOff + uint64(payloadLen)
+	if end < fileOff {
+		end = ^uint64(0)
+	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	idx.consumed[logPos] = struct{}{}
+	idx.consumedCoverage.add(fileOff, end)
 }
 
-// AdvanceFence walks consumed entries in logPos order from the current
-// fenceCursor forward, advancing compactionFence past every entry that
-// is consumed and contiguous. Stops at the first non-consumed entry.
-// The new fence is returned. An out-of-order consumed entry (a "hole"
-// left by an unconsumed predecessor) does NOT advance the fence — it
-// stays in `consumed` until the predecessor is consumed too.
+// AdvanceFence walks entries in logPos order from the current fenceCursor
+// forward, advancing compactionFence past every entry whose file extent
+// is fully covered by consumedCoverage. Stops at the first entry whose
+// file extent is NOT fully covered. The new fence is returned.
+//
+// R-7 semantic: an entry's frame becomes dead on disk once EVERY byte of
+// [entry.fileOff, entry.fileEnd()) is covered by some chunked record
+// (itself or any other overlapping record). This is strictly weaker than
+// the old "consumed by logPos" predicate — an overwritten head record
+// can be released without ever being consumed itself, because the
+// overwrite covers its bytes.
 //
 // fenceCursor tracks the first entry index at or beyond the current
 // fence so repeated calls cost O(newly-consumed-entries) rather than
@@ -194,10 +232,10 @@ func (idx *logIndex) AdvanceFence() uint64 {
 	defer idx.mu.Unlock()
 	for idx.fenceCursor < len(idx.entries) {
 		e := idx.entries[idx.fenceCursor]
-		if _, ok := idx.consumed[e.logPos]; !ok {
+		if !idx.consumedCoverage.covers(e.fileOff, e.fileEnd()) {
 			break
 		}
-		// Fence advances past the consumed entry's full record extent.
+		// Fence advances past the dead entry's full record extent.
 		idx.compactionFence = e.logPos + uint64(recordFrameOverhead) + uint64(e.payloadLen)
 		idx.fenceCursor++
 	}
@@ -206,21 +244,23 @@ func (idx *logIndex) AdvanceFence() uint64 {
 }
 
 // trimBelowFenceLocked drops the [0:fenceCursor) prefix of `entries`
-// and removes the matching keys from `consumed`. Caller MUST hold
-// idx.mu. fenceCursor is reset to 0 so subsequent AdvanceFence calls
-// resume from the new head.
+// Caller MUST hold idx.mu. fenceCursor is reset to 0 so subsequent
+// AdvanceFence calls resume from the new head.
 //
 // To bound RSS at ~steady-state (not at the historical high-water mark),
 // the backing array is REALLOCATED whenever its capacity exceeds 4x the
 // surviving length. A plain reslice (`entries[fenceCursor:]`) would pin
 // the original backing array forever — defeating the point of #581 on
 // long-lived payloads whose log shrinks after a burst.
+//
+// consumedCoverage is intentionally NOT trimmed here: its merged-interval
+// representation is already bounded by the count of distinct dirty file
+// regions rather than by AppendWrite arrival count, so trimming would not
+// meaningfully shrink it and could break the AdvanceFence coverage test
+// for entries that span ranges still partially covered by old intervals.
 func (idx *logIndex) trimBelowFenceLocked() {
 	if idx.fenceCursor == 0 {
 		return
-	}
-	for _, e := range idx.entries[:idx.fenceCursor] {
-		delete(idx.consumed, e.logPos)
 	}
 	remaining := len(idx.entries) - idx.fenceCursor
 	switch {
@@ -264,6 +304,17 @@ func (idx *logIndex) Fence() uint64 {
 // the cursor naturally starts at the head of the slice; subsequent
 // AdvanceFence calls will skip past any pre-fence entries on the first
 // invocation only.
+//
+// R-7 (#580): recovery only replays records at logPos >= fence — those
+// below the persisted rollup_offset were already chunked and the bytes
+// already reclaimed at the on-disk level. They are NOT in `entries`, so
+// AdvanceFence never tries to walk past them and no pre-seeding of
+// consumedCoverage for pre-fence file regions is required. A post-boot
+// re-write that lands at the same file-offset as a pre-boot chunked
+// record will, in the steady state, be consumed by a future rollup pass
+// the normal way; its own MarkConsumed adds its extent to
+// consumedCoverage, allowing the fence to walk forward without needing
+// pre-fence coverage seeding.
 func (idx *logIndex) SetFence(fence uint64) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
@@ -277,4 +328,104 @@ func (idx *logIndex) Len() int {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	return len(idx.entries)
+}
+
+// coverageSet is a sorted, merged set of half-open [start, end) byte
+// intervals over the file-offset domain. It answers two questions in
+// log(N): "add this interval" and "is this interval fully covered". The
+// invariant is that stored intervals are non-empty, non-overlapping, and
+// non-adjacent (adjacent intervals are merged on insert) so coverage
+// tests reduce to a single binary search.
+//
+// Not goroutine-safe on its own — embedded in logIndex which guards all
+// access via idx.mu.
+//
+// The btree-backed intervalTree was considered and rejected: it carries
+// per-entry Touched timestamps and an offset-only ordering keyed for the
+// stabilization-window query (EarliestStable). The coverage problem here
+// is a pure interval-union problem with neither timestamps nor stable-
+// interval semantics — a flat sorted slice is faster, simpler, and has
+// the same big-O for both operations at the workload-realistic entry
+// counts (the per-payload coverage set tracks unique consumed regions,
+// which the rollup actively coalesces by chunking adjacent intervals).
+type coverageSet struct {
+	intervals []coverageInterval
+}
+
+type coverageInterval struct {
+	start, end uint64 // half-open [start, end)
+}
+
+// add merges [start, end) into the set, coalescing with adjacent and
+// overlapping intervals. O(log N) binary search + O(K) merge where K is
+// the number of intervals fully subsumed by the new range (typically 0
+// or 1 in steady state because the rollup chunks contiguous regions).
+//
+// Empty or inverted ranges (end <= start) are silently ignored.
+func (cs *coverageSet) add(start, end uint64) {
+	if end <= start {
+		return
+	}
+	// Binary search for the first existing interval whose `end` is >= new
+	// `start`. Any interval ending strictly before `start` cannot overlap
+	// or be adjacent (we treat [a,b) and [b,c) as adjacent → merge), so we
+	// keep it as-is to the left.
+	lo, hi := 0, len(cs.intervals)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if cs.intervals[mid].end < start {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	insertAt := lo
+	// Sweep forward from insertAt, absorbing every interval whose `start`
+	// is <= mergeEnd (adjacent intervals merge because their boundary
+	// touches). Stored intervals are sorted and non-overlapping, so only
+	// intervals[insertAt] can possibly lower mergeStart — every later
+	// interval starts at or beyond the previous one's end.
+	mergeStart, mergeEnd := start, end
+	j := insertAt
+	for j < len(cs.intervals) && cs.intervals[j].start <= mergeEnd {
+		mergeStart = min(mergeStart, cs.intervals[j].start)
+		mergeEnd = max(mergeEnd, cs.intervals[j].end)
+		j++
+	}
+	// Replace [insertAt, j) with the single merged interval. Handles
+	// insert (j == insertAt), in-place rewrite (j == insertAt+1) and
+	// subsumption (j > insertAt+1) uniformly.
+	cs.intervals = slices.Replace(cs.intervals, insertAt, j,
+		coverageInterval{start: mergeStart, end: mergeEnd})
+}
+
+// covers reports whether [start, end) is fully covered by the union of
+// stored intervals. Empty / inverted ranges (end <= start) return true
+// vacuously — a zero-length region has nothing to cover.
+//
+// O(log N) binary search to locate the candidate interval, plus a single
+// containment test. Because the set is merged-on-insert, at most one
+// stored interval can contain a given query range; if that one doesn't,
+// no other can.
+func (cs *coverageSet) covers(start, end uint64) bool {
+	if end <= start {
+		return true
+	}
+	// Binary search for the LAST interval whose `start` is <= query start.
+	// That candidate is the only interval that could possibly contain
+	// [start, end).
+	lo, hi := 0, len(cs.intervals)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if cs.intervals[mid].start <= start {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	if lo == 0 {
+		return false
+	}
+	cand := cs.intervals[lo-1]
+	return cand.start <= start && cand.end >= end
 }

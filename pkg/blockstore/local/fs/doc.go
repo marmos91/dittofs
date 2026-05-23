@@ -77,19 +77,22 @@
 //   - readRecordAt(rf, logPos, payloadLen) does a single pread per record
 //     (header + payload), CRC-validates, and returns the payload.
 //   - After StoreChunk succeeds for every emitted chunk, idx.MarkConsumed
-//     is called for each surviving logPos; idx.AdvanceFence walks the
-//     consumed set forward from the prior fence and returns the new one
-//     — that value is what gets persisted as rollup_offset.
+//     is called for each surviving record's FILE-OFFSET extent (R-7,
+//     #580); idx.AdvanceFence walks entries forward from the prior fence
+//     and returns the new one — that value is what gets persisted as
+//     rollup_offset.
 //
 // rollup_offset semantic shift: the on-disk format is unchanged, but
 // the value now records the compactionFence (largest logPos s.t. every
-// earlier entry has been consumed) rather than a sequential scan cursor.
-// A consumed entry preceded by an unconsumed predecessor does NOT advance
-// the fence — its chunks are durable, but the log byte prefix stays
-// anchored until the predecessor is consumed (the "stalled fence"
-// scenario). tree.ConsumeUpTo still runs every pass that emits chunks,
-// so the dirty interval clears and the workload makes forward progress
-// even when the fence cannot.
+// earlier entry's file extent has been chunked by SOME consumed record)
+// rather than a sequential scan cursor. An entry whose file extent is
+// fully covered by a LATER overlapping consumed record becomes dead even
+// if the entry itself was never picked up by a rollup pass — the head-
+// of-log overwrite stall is gone. An entry whose file extent has no
+// overlapping consumed coverage stays alive and pins the fence until
+// some record covering it is chunked. tree.ConsumeUpTo still runs every
+// pass that emits chunks, so the dirty interval clears and the workload
+// makes forward progress even when the fence cannot.
 //
 // TRANSITIONAL-V0.17+: physical log compaction (rewriting the log file
 // dropping consumed records up to compactionFence) is not implemented
@@ -106,11 +109,11 @@
 // RSS for a long-lived payload is therefore bounded at O(unconsumed-
 // record set), not at the historical arrival count.
 //
-// TRANSITIONAL-V0.17+: tracking consumption by file-offset interval
-// instead of log position would eliminate the stalled-fence pathology
-// entirely. Direction 1 keeps consumption keyed by logPos for minimal
-// surface change; the file-offset-keyed variant is a v0.17 follow-up
-// per R-7 in .planning/proposals/2026-05-22-logindex-rollup-redesign.md.
+// R-7 (#580): consumption is now keyed by FILE-OFFSET interval (see
+// logindex.go::coverageSet), so an overwritten head record's bytes are
+// reclaimed as soon as the overwrite chunks — no longer pinned by the
+// head record's own stabilization. The stalled-fence pathology from the
+// initial Direction-1 design is gone.
 //
 // # Pressure channel (LSL-04, INV-05)
 //

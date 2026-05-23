@@ -239,8 +239,16 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	}
 	defer func() { _ = rf.Close() }()
 
+	// consumedExtents tracks the FILE-OFFSET extent of every record that
+	// will be marked consumed in the logIndex below. R-7 (#580): consumption
+	// is keyed by file-offset interval, not logPos — so the rollup records
+	// (fileOff, payloadLen) per record instead of the logPos.
+	type consumedExt struct {
+		fileOff    uint64
+		payloadLen uint32
+	}
 	recs := make([]rec, 0, len(entries))
-	consumedPositions := make([]uint64, 0, len(entries))
+	consumedExtents := make([]consumedExt, 0, len(entries))
 	for _, e := range entries {
 		off, payload, rerr := readRecordAt(rf, e.logPos, e.payloadLen)
 		if rerr != nil {
@@ -265,7 +273,7 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 			// reads it via the rec struct.
 			endPos: e.logPos + uint64(recordFrameOverhead) + uint64(e.payloadLen),
 		})
-		consumedPositions = append(consumedPositions, e.logPos)
+		consumedExtents = append(consumedExtents, consumedExt{fileOff: e.fileOff, payloadLen: e.payloadLen})
 	}
 
 	// D-29 truncation filter: drop records entirely past the truncation
@@ -273,17 +281,20 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	// (plan 09); consulted here so emitted chunks never contain bytes
 	// beyond the client-observed size at truncate time.
 	//
-	// Direction-1 redesign: consumedPositions is filtered in lockstep with
-	// recs so we only mark logIndex entries consumed for records that
-	// actually contributed payload bytes to a stored chunk. Entries that
-	// truncation dropped entirely stay unconsumed; the on-disk bytes
-	// belong to a truncated tail the operator already invalidated.
+	// Direction-1 redesign: consumedExtents is filtered in lockstep with
+	// recs so we only mark logIndex coverage for records that actually
+	// contributed payload bytes to a stored chunk. Entries that truncation
+	// dropped entirely stay unconsumed; the on-disk bytes belong to a
+	// truncated tail the operator already invalidated. Clipped records
+	// have their consumedExtent.payloadLen shortened to match the bytes
+	// that actually made it into a chunk — coverage MUST match the bytes
+	// chunked, not the original record size.
 	bc.logsMu.RLock()
 	trunc, hasTrunc := bc.truncations[payloadID]
 	bc.logsMu.RUnlock()
 	if hasTrunc {
 		filtered := recs[:0]
-		filteredPos := consumedPositions[:0]
+		filteredExt := consumedExtents[:0]
 		for i, r := range recs {
 			if r.off >= trunc {
 				continue
@@ -293,10 +304,14 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 				r.payload = r.payload[:trunc-r.off]
 			}
 			filtered = append(filtered, r)
-			filteredPos = append(filteredPos, consumedPositions[i])
+			// Reflect any clipping into the consumed extent so coverage
+			// doesn't over-claim file bytes that never reached CAS.
+			ext := consumedExtents[i]
+			ext.payloadLen = uint32(len(r.payload))
+			filteredExt = append(filteredExt, ext)
 		}
 		recs = filtered
-		consumedPositions = filteredPos
+		consumedExtents = filteredExt
 	}
 
 	if len(recs) == 0 {
@@ -400,15 +415,15 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 		return nil
 	}
 
-	// Direction-1 redesign: now that the chunks are stored, mark every
-	// surviving record's logPos consumed in the logIndex and ask the
-	// index for the new compaction fence. This is the value we persist
-	// as rollup_offset — semantically the same on-disk format, but
-	// computed from the consumed-record set instead of the pre-Direction-1
-	// "scan cursor advances past each record" arithmetic. A consumed
-	// entry preceded by an unconsumed predecessor does NOT advance the
-	// fence; the chunks are committed but the on-disk log byte prefix
-	// stays anchored until the predecessor is consumed too (R-7).
+	// R-7 (#580): mark every surviving record's FILE-OFFSET extent consumed
+	// in the logIndex and ask the index for the new compaction fence. This
+	// is the value we persist as rollup_offset — semantically the same on-
+	// disk format, but computed from the consumed file-offset coverage
+	// instead of a logPos-keyed consumption set. An entry whose file extent
+	// is fully covered by some consumed record (itself OR a later
+	// overlapping one) is dead — the fence walks past it on the next
+	// AdvanceFence call even if the entry itself was never picked up by a
+	// rollup pass.
 	//
 	// priorFence is captured BEFORE MarkConsumed/AdvanceFence so the
 	// budget-release math at the bottom uses the in-memory fence delta
@@ -417,8 +432,8 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	// failed — using it to compute reclaimed would double-decrement
 	// logBytesTotal on the recovery-from-stale-header path.
 	priorFence := idx.Fence()
-	for _, lp := range consumedPositions {
-		idx.MarkConsumed(lp)
+	for _, ext := range consumedExtents {
+		idx.MarkConsumed(ext.fileOff, ext.payloadLen)
 	}
 	targetPos := idx.AdvanceFence()
 
