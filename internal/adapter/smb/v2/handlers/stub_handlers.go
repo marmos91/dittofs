@@ -43,6 +43,31 @@ const (
 	FsctlGetObjectID            uint32 = 0x0009009C // [MS-FSCC] 2.3.28 - Get object ID
 	FsctlMarkHandle             uint32 = 0x000900FC // [MS-FSCC] 2.3.36 - Mark handle
 	FsctlQueryFileRegions       uint32 = 0x00090284 // [MS-FSCC] 2.3.51 - Query file regions
+
+	// FSCTL_SMBTORTURE_* are Samba's private torture control codes (see
+	// libcli/smb/smb_constants.h in samba). They have no MS-FSCC analog; the
+	// Windows file system never sees them. They are used by smbtorture's
+	// multichannel test fixtures to (a) prime per-connection server-side
+	// behaviour switches and (b) signal "the test framework is testing
+	// itself". The wire format is a buffer-less IOCTL targeted at the
+	// sentinel FileID 0xFFFFFFFFFFFFFFFF.
+	//
+	// We accept FORCE_UNACKED_TIMEOUT as a no-op success: smbtorture only
+	// reads the NTSTATUS (`block_ok = (status == NT_STATUS_OK)`) to decide
+	// whether the transport-blocking primitive worked, and on success it
+	// proceeds with its `done:` cleanup. That cleanup is what test3 depends
+	// on — without it test2 leaves leases dangling on `multichanneltestdir/
+	// lease_break_test{1,2}.dat`, and test3's `smb2_util_unlink(tree1,
+	// fname1)` legitimately dispatches a Handle-lease break to the still-
+	// alive session 2 transports, bumping the global `lease_break_info.count`
+	// to 1 and failing test3's first `CHECK_VAL(count, 0)` assertion.
+	//
+	// We don't actually implement the unacked-timeout semantics — test2 will
+	// still fail at a later assertion that depends on the server holding off
+	// responses — but `done:` cleanup still runs once test2's `goto done`
+	// fires from any later assertion failure, leaving clean state for test3.
+	// See issue #436.
+	FsctlSmbtortureForceUnackedTimeout uint32 = 0x83848003
 )
 
 // Reparse point constants [MS-FSCC] 2.1.2.1

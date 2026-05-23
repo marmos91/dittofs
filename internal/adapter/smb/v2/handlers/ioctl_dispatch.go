@@ -38,6 +38,13 @@ func init() {
 		FsctlSrvCopyChunk:           (*Handler).handleSrvCopyChunk,
 		FsctlSrvCopyChunkWrite:      (*Handler).handleSrvCopyChunk,
 		FsctlQueryNetworkInterfInfo: (*Handler).handleQueryNetworkInterfaceInfo,
+
+		// Samba-private torture FSCTLs. Accepted as no-ops so that smbtorture
+		// fixtures (notably the multichannel.leases.test{2,3} pair) don't get
+		// stranded on the very first assertion when test2's
+		// `test_block_smb2_transport` falls through to a hard failure.
+		// See issue #436 and the constant comment in stub_handlers.go.
+		FsctlSmbtortureForceUnackedTimeout: (*Handler).handleSmbtortureForceUnackedTimeout,
 	}
 }
 
@@ -90,11 +97,36 @@ func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 // and do not require an open file handle.
 func ioctlNoHandleFSCTL(ctlCode uint32) bool {
 	switch ctlCode {
-	case FsctlValidateNegotiateInfo, FsctlPipeTransceive, FsctlQueryNetworkInterfInfo:
+	case FsctlValidateNegotiateInfo,
+		FsctlPipeTransceive,
+		FsctlQueryNetworkInterfInfo,
+		FsctlSmbtortureForceUnackedTimeout:
 		return true
 	default:
 		return false
 	}
+}
+
+// handleSmbtortureForceUnackedTimeout accepts FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT
+// (Samba's torture-only FSCTL 0x83848003) as a no-op success. The wire
+// contract is buffer-less and the response payload is just the IOCTL header
+// echoing the sentinel FileID.
+//
+// See the constant doc in stub_handlers.go for the rationale (issue #436):
+// smbtorture's multichannel.leases.test2 keys off the IOCTL's NTSTATUS to
+// decide `block_ok`. Returning STATUS_FILE_CLOSED (the default for an
+// unknown FSCTL using the 0xFF... sentinel handle) makes test2 fail before
+// its `done:` cleanup releases the leases on `lease_break_test{1,2}.dat`,
+// which then leak into multichannel.leases.test3 as a spurious break on
+// test3's `unlink fname1`.
+func (h *Handler) handleSmbtortureForceUnackedTimeout(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
+	fileID, ok := parseIoctlFileID(body)
+	if !ok {
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+	logger.Debug("IOCTL FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT: accepting as no-op (smbtorture-only)")
+	resp := buildIoctlResponse(FsctlSmbtortureForceUnackedTimeout, fileID, nil)
+	return NewResult(types.StatusSuccess, resp), nil
 }
 
 // parseIoctlFileID extracts the 16-byte FileID from an IOCTL request body.
