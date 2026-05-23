@@ -1940,7 +1940,7 @@ func TestChangeNotify_FirstZeroBuffer_StickyAtZero(t *testing.T) {
 		t.Fatalf("NotifyMaxBufferSize after second call = (%d, set=%v), want (0, true) — sticky-zero broken", got, set)
 	}
 
-	var pendingMax uint32 = ^uint32(0) // poison
+	pendingMax := ^uint32(0) // poison
 	found := false
 	h.NotifyRegistry.RangeWatchers(func(p *PendingNotify) bool {
 		if p.FileID == fileID {
