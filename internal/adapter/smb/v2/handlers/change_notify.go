@@ -190,6 +190,47 @@ type NotifyRegistry struct {
 	// evicts them on Register (issue #416).
 	byMsgKey  map[notifyMsgKey]*PendingNotify
 	byAsyncId map[uint64]*PendingNotify // asyncId -> pending request (for async CANCEL)
+
+	// armed tracks directory handles that have at some point issued a
+	// CHANGE_NOTIFY. Mirrors Samba `notify_buffer`: once a watcher has been
+	// "armed" on a handle, subsequent matching filesystem events MUST be
+	// counted (and their would-be encoded size accumulated) even when no
+	// live PendingNotify is currently waiting. When the accumulated size
+	// would exceed the watcher's last MaxOutputLength, OnOverflow fires so
+	// the open handle's sticky-overflow flag is set; the next CHANGE_NOTIFY
+	// on the handle then returns STATUS_NOTIFY_ENUM_DIR with zero output
+	// (MS-SMB2 §3.3.5.19 / smb2.notify.overflow).
+	//
+	// Keyed by FileID string. Lifetime = handle: an entry survives across
+	// CANCEL and one-shot completion of pending notifies, and is only torn
+	// down by Disarm (called from CLOSE and from session/tree teardown).
+	armed map[string]*armedHandle
+}
+
+// armedHandle records the buffered-events accounting for a single open
+// directory handle that has ever armed a CHANGE_NOTIFY. See NotifyRegistry.armed.
+type armedHandle struct {
+	FileID           [16]byte
+	SessionID        uint64
+	ShareName        string
+	WatchPath        string
+	CompletionFilter uint32
+	WatchTree        bool
+	// MaxOutputLength is the most recent OutputBufferLength advertised by a
+	// CHANGE_NOTIFY on this handle. The overflow threshold is recomputed
+	// against this value on every event so a client that re-arms with a
+	// larger buffer can keep buffering rather than overflow at the old cap.
+	MaxOutputLength uint32
+	// BufferedBytes is the running estimate of how many bytes a paired
+	// FILE_NOTIFY_INFORMATION list of the buffered events would occupy.
+	BufferedBytes uint32
+	// OnOverflow is invoked exactly once (per arming) when BufferedBytes
+	// exceeds MaxOutputLength. Wires the handle-level sticky NotifyOverflowed
+	// flag — see OpenFile.NotifyOverflowed.
+	OnOverflow OnOverflow
+	// Overflowed is set on first overflow trip and prevents further
+	// OnOverflow invocations until Disarm/ResetArmedOverflow.
+	Overflowed bool
 }
 
 // notifyMsgKey identifies a pending notify by the tuple that uniquely names
@@ -206,6 +247,76 @@ func NewNotifyRegistry() *NotifyRegistry {
 		byFileID:  make(map[string]*PendingNotify),
 		byMsgKey:  make(map[notifyMsgKey]*PendingNotify),
 		byAsyncId: make(map[uint64]*PendingNotify),
+		armed:     make(map[string]*armedHandle),
+	}
+}
+
+// minNotifyEntryBytes is a lower-bound estimate of one encoded
+// FILE_NOTIFY_INFORMATION entry: 12-byte fixed header + at least one UTF-16
+// code unit + 4-byte alignment padding. Used to charge bytes against an
+// armed handle's MaxOutputLength when an event arrives without a live
+// watcher to encode against.
+const minNotifyEntryBytes uint32 = 16
+
+// armLocked records or refreshes the armed-handle entry for a pending
+// notify. Must be called with r.mu held.
+func (r *NotifyRegistry) armLocked(n *PendingNotify) {
+	key := string(n.FileID[:])
+	if existing, ok := r.armed[key]; ok {
+		// Refresh routing fields (path/filter/recursive can change across
+		// re-arms on the same handle, e.g. after a cancel) but preserve
+		// BufferedBytes and Overflowed so events that arrived in the gap
+		// still count.
+		existing.SessionID = n.SessionID
+		existing.ShareName = n.ShareName
+		existing.WatchPath = n.WatchPath
+		existing.CompletionFilter = n.CompletionFilter
+		existing.WatchTree = n.WatchTree
+		existing.MaxOutputLength = n.MaxOutputLength
+		if n.OnOverflow != nil {
+			existing.OnOverflow = n.OnOverflow
+		}
+		return
+	}
+	r.armed[key] = &armedHandle{
+		FileID:           n.FileID,
+		SessionID:        n.SessionID,
+		ShareName:        n.ShareName,
+		WatchPath:        n.WatchPath,
+		CompletionFilter: n.CompletionFilter,
+		WatchTree:        n.WatchTree,
+		MaxOutputLength:  n.MaxOutputLength,
+		OnOverflow:       n.OnOverflow,
+	}
+}
+
+// Disarm tears down the buffered-event accounting for a directory handle.
+// Called from CLOSE and from session/tree teardown. After Disarm, no further
+// matching events will be counted against this handle until a new
+// CHANGE_NOTIFY re-arms it. Returns true if an entry was removed.
+func (r *NotifyRegistry) Disarm(fileID [16]byte) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := string(fileID[:])
+	if _, ok := r.armed[key]; !ok {
+		return false
+	}
+	delete(r.armed, key)
+	return true
+}
+
+// ResetArmedOverflow clears the buffered-byte counter and overflow flag for
+// a directory handle while keeping it armed. Called by the handler after
+// it has consumed the sticky overflow flag and responded with
+// STATUS_NOTIFY_ENUM_DIR — the next event must once again accumulate from
+// zero against the freshly advertised MaxOutputLength.
+func (r *NotifyRegistry) ResetArmedOverflow(fileID [16]byte, newMaxOutputLength uint32) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if a, ok := r.armed[string(fileID[:])]; ok {
+		a.BufferedBytes = 0
+		a.Overflowed = false
+		a.MaxOutputLength = newMaxOutputLength
 	}
 }
 
@@ -249,6 +360,15 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	r.byMsgKey[msgKey] = notify
 	r.byAsyncId[notify.AsyncId] = notify
 	r.pending[notify.WatchPath] = append(r.pending[notify.WatchPath], notify)
+
+	// Arm the handle for buffered-event accounting. The armed entry survives
+	// across CANCEL and one-shot completion of this pending notify; only
+	// CLOSE or session/tree teardown disarms it. If the handle was already
+	// armed (re-issued CHANGE_NOTIFY after a CANCEL or after a successful
+	// async completion), refresh the MaxOutputLength but preserve the
+	// running BufferedBytes / Overflowed state — events accumulated while
+	// the client wasn't waiting must continue to count.
+	r.armLocked(notify)
 
 	logger.Debug("NotifyRegistry: registered watch",
 		"path", notify.WatchPath,
@@ -506,6 +626,10 @@ func EncodeFileNotifyInformation(changes []FileNotifyInformation) []byte {
 func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, action uint32) {
 	r.mu.RLock()
 	watchers := r.findWatchersLocked(shareName, parentPath, action)
+	liveFileIDs := make(map[[16]byte]struct{}, len(watchers))
+	for _, w := range watchers {
+		liveFileIDs[w.notify.FileID] = struct{}{}
+	}
 	r.mu.RUnlock()
 
 	for _, w := range watchers {
@@ -515,6 +639,11 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 		}
 		r.sendAndUnregister(w.notify, changes, actionToString(action))
 	}
+
+	// Charge against armed-but-unsatisfied handles so subsequent events
+	// while the client isn't waiting still count toward overflow. Handles
+	// with a live watcher were already serviced above and are excluded.
+	r.chargeArmedBuffer(shareName, parentPath, action, []string{fileName}, liveFileIDs)
 }
 
 // NotifyRename records a rename event as a paired FILE_NOTIFY_INFORMATION response.
@@ -557,12 +686,17 @@ func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, new
 		}
 	}
 
+	combined := append(oldWatchers, newWatchers...)
+	liveFileIDs := make(map[[16]byte]struct{}, len(combined))
+	for _, w := range combined {
+		liveFileIDs[w.notify.FileID] = struct{}{}
+	}
 	r.mu.RUnlock()
 
 	// Send paired rename notifications for all matched watchers.
 	// Both old and new names are computed relative to each watcher's watch path,
 	// so recursive watchers at higher-level directories report correct paths.
-	for _, w := range append(oldWatchers, newWatchers...) {
+	for _, w := range combined {
 		oldRelativePath := relativePathFromWatch(w.watchPath, oldParentPath, oldFileName)
 		newRelativePath := relativePathFromWatch(w.watchPath, newParentPath, newFileName)
 		changes := []FileNotifyInformation{
@@ -571,6 +705,132 @@ func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, new
 		}
 		r.sendAndUnregister(w.notify, changes, "RENAME")
 	}
+
+	// Charge against any armed handles that did not have a live waiter.
+	// Both directories are checked so handles armed on either end of a
+	// cross-directory rename are accounted for.
+	r.chargeArmedBuffer(shareName, oldParentPath, FileActionRenamedOldName, []string{oldFileName, newFileName}, liveFileIDs)
+	if newParentPath != oldParentPath {
+		r.chargeArmedBuffer(shareName, newParentPath, FileActionRenamedNewName, []string{oldFileName, newFileName}, liveFileIDs)
+	}
+}
+
+// chargeArmedBuffer charges the byte cost of a not-yet-delivered set of
+// FILE_NOTIFY_INFORMATION entries against every armed handle whose
+// (share, path, filter, WatchTree) tuple would have matched. Handles that
+// already had a live waiter (passed via skipFileIDs) are excluded because
+// the live path already delivered the event one-shot. If the running
+// total crosses the handle's MaxOutputLength and the handle isn't already
+// flagged, OnOverflow fires once and the entry's Overflowed flag latches
+// until the next CHANGE_NOTIFY consumes the sticky bit (which calls
+// ResetArmedOverflow).
+//
+// The encoded size is computed PER-WATCHER: each armed handle's FileName
+// field carries a watcher-relative path (relativePathFromWatch), so a
+// recursive watcher rooted at "/" sees "subdir/file.txt" while an exact
+// watcher on "/subdir" sees "file.txt". Charging the bare fileName against
+// every handle would systematically undercount for ancestor / WatchTree
+// watchers (PR #613 Copilot review) and let the overflow latch later than
+// a real FILE_NOTIFY_INFORMATION marshal — Samba's notify_marshall_changes
+// (source3/smbd/notify.c) likewise marshals the stored per-watcher name,
+// with UTF-16 length doubling and a 4-byte alignment pad.
+func (r *NotifyRegistry) chargeArmedBuffer(
+	shareName, parentPath string, action uint32,
+	candidateNames []string,
+	skipFileIDs map[[16]byte]struct{},
+) {
+	type pendingFire struct {
+		fn OnOverflow
+		id [16]byte
+	}
+	var toFire []pendingFire
+	r.mu.Lock()
+	if len(r.armed) == 0 {
+		r.mu.Unlock()
+		return
+	}
+	for _, a := range r.armed {
+		if a.ShareName != shareName {
+			continue
+		}
+		if _, live := skipFileIDs[a.FileID]; live {
+			continue
+		}
+		// Match path scope: exact match always counts; ancestor paths only
+		// count when WatchTree is set.
+		if a.WatchPath != parentPath {
+			if !a.WatchTree {
+				continue
+			}
+			if !pathIsAncestor(a.WatchPath, parentPath) {
+				continue
+			}
+		}
+		if !MatchesFilter(action, a.CompletionFilter) {
+			continue
+		}
+		if a.Overflowed {
+			continue
+		}
+		// Size against THIS watcher's view: relativePathFromWatch is what
+		// the real marshal would put on the wire for this handle, so it's
+		// also what should accumulate toward MaxOutputLength.
+		var addBytes uint32
+		for _, name := range candidateNames {
+			relName := relativePathFromWatch(a.WatchPath, parentPath, name)
+			addBytes += encodedNotifyEntrySize(relName)
+		}
+		a.BufferedBytes += addBytes
+		if a.MaxOutputLength == 0 || a.BufferedBytes > a.MaxOutputLength {
+			a.Overflowed = true
+			if a.OnOverflow != nil {
+				toFire = append(toFire, pendingFire{fn: a.OnOverflow, id: a.FileID})
+			}
+		}
+	}
+	r.mu.Unlock()
+
+	// Fire OnOverflow outside the lock — it touches OpenFile state through
+	// the Handler and we don't want to nest those locks under r.mu.
+	for _, f := range toFire {
+		f.fn(f.id)
+	}
+}
+
+// encodedNotifyEntrySize returns the wire size of a single
+// FILE_NOTIFY_INFORMATION entry whose FileName is name (MS-FSCC §2.4.42):
+// 12-byte fixed header (NextEntryOffset | Action | FileNameLength) plus the
+// UTF-16LE filename bytes, aligned up to 4 bytes. Empty names are charged
+// the minNotifyEntryBytes floor to avoid undercounting a sentinel-encoded
+// entry on the wire.
+func encodedNotifyEntrySize(name string) uint32 {
+	nameBytes := 2 * uint32(len(utf16.Encode([]rune(name))))
+	if nameBytes == 0 {
+		nameBytes = 2
+	}
+	entry := 12 + nameBytes
+	if entry%4 != 0 {
+		entry += 4 - (entry % 4)
+	}
+	if entry < minNotifyEntryBytes {
+		entry = minNotifyEntryBytes
+	}
+	return entry
+}
+
+// pathIsAncestor reports whether ancestor is a path-prefix of descendant
+// at a directory boundary. "/" is treated as an ancestor of every path.
+func pathIsAncestor(ancestor, descendant string) bool {
+	if ancestor == "" || ancestor == "/" {
+		return descendant != "" && descendant != "/"
+	}
+	if !strings.HasPrefix(descendant, ancestor) {
+		return false
+	}
+	if len(descendant) == len(ancestor) {
+		return false
+	}
+	return descendant[len(ancestor)] == '/'
 }
 
 // watcherMatch pairs a matched watcher with the watch path that matched it.
@@ -736,6 +996,13 @@ func (r *NotifyRegistry) UnregisterAllForSession(sessionID uint64) []*PendingNot
 	for _, w := range toRemove {
 		r.unregisterLocked(w)
 	}
+	// Disarm any handles armed by this session so their buffered-event
+	// accounting doesn't outlive the session that opened them.
+	for key, a := range r.armed {
+		if a.SessionID == sessionID {
+			delete(r.armed, key)
+		}
+	}
 	r.mu.Unlock()
 	return toRemove
 }
@@ -755,6 +1022,11 @@ func (r *NotifyRegistry) UnregisterAllForTree(sessionID uint64, shareName string
 	}
 	for _, w := range toRemove {
 		r.unregisterLocked(w)
+	}
+	for key, a := range r.armed {
+		if a.SessionID == sessionID && a.ShareName == shareName {
+			delete(r.armed, key)
+		}
 	}
 	r.mu.Unlock()
 	return toRemove

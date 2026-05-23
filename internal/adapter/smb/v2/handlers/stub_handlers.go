@@ -413,15 +413,27 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
-	// Per MS-SMB2 3.3.5.15: The directory handle must have been opened
-	// with FILE_LIST_DIRECTORY (0x0001) access. Generic rights (GENERIC_READ,
-	// GENERIC_ALL, MAXIMUM_ALLOWED) implicitly include FILE_LIST_DIRECTORY
-	// for directories, so we check both specific and generic forms.
-	const listDirMask = 0x00000001 | 0x80000000 | 0x10000000 | 0x02000000 // FILE_LIST_DIRECTORY | GENERIC_READ | GENERIC_ALL | MAXIMUM_ALLOWED
-	hasListDir := openFile.DesiredAccess&listDirMask != 0
-	if !hasListDir {
+	// Per MS-SMB2 §3.3.5.19: the directory handle MUST have been opened with
+	// FILE_LIST_DIRECTORY (0x00000001) access; otherwise the server returns
+	// STATUS_ACCESS_DENIED. Mirrors Samba `source3/smbd/smb2_notify.c`
+	// (`smbd_smb2_notify_send` rejects when the open lacks
+	// SEC_DIR_LIST). Checked against Open.GrantedAccess — the per-bit
+	// intersection of the requested mask with the file's DACL resolved at
+	// CREATE (MS-SMB2 §3.3.5.9 paragraph 8). DesiredAccess is the pre-DACL
+	// request and can overstate what the handle actually holds, so the access
+	// gate MUST consult GrantedAccess to stay aligned with the spec and the
+	// open-level checks in §3.3.5.20.1 (QUERY_INFO) / §3.3.5.21 (SET_INFO).
+	// GENERIC_* bits and MAXIMUM_ALLOWED are already resolved to specific
+	// rights on GrantedAccess (acl.ExpandGenericMask at CREATE decode +
+	// resolveAccessFlags / CheckFileAccess at CREATE), so a single bit test
+	// against FILE_LIST_DIRECTORY is sufficient — smbtorture
+	// `smb2.notify.handle-permissions` opens with SEC_FILE_READ_ATTRIBUTE
+	// (0x80) only and expects STATUS_ACCESS_DENIED here.
+	const fileListDirectory uint32 = 0x00000001
+	if openFile.GrantedAccess&fileListDirectory == 0 {
 		logger.Debug("CHANGE_NOTIFY: missing FILE_LIST_DIRECTORY access",
 			"path", openFile.Path,
+			"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess),
 			"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
@@ -446,11 +458,16 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 	// Sticky overflow: a previous CHANGE_NOTIFY on this handle exceeded its
 	// buffer and completed with STATUS_NOTIFY_ENUM_DIR. Per Samba
-	// notify_buffer semantics and smb2.notify.valid-req, the next notify on
-	// the handle MUST also return ENUM_DIR (events were dropped, directory
-	// state is now inconsistent). Consume the flag and reply sync — the
-	// client's recv loop accepts either sync or async completion.
+	// notify_buffer semantics and smb2.notify.valid-req / .overflow, the
+	// next notify on the handle MUST also return ENUM_DIR (events were
+	// dropped, directory state is now inconsistent). Consume the flag and
+	// reply sync — the client's recv loop accepts either sync or async
+	// completion. Also reset the registry's buffered-event accounting so
+	// the buffer starts fresh with the newly advertised OutputBufferLength.
 	if openFile.NotifyOverflowed.CompareAndSwap(true, false) {
+		if h.NotifyRegistry != nil {
+			h.NotifyRegistry.ResetArmedOverflow(req.FileID, req.OutputBufferLength)
+		}
 		respBytes, err := (&ChangeNotifyResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
 		}).Encode()
