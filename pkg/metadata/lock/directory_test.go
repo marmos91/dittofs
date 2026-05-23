@@ -424,3 +424,230 @@ func TestRecentlyBrokenCache_Expiry(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	assert.False(t, cache.IsRecentlyBroken("dir1"), "should expire after TTL")
 }
+
+// ============================================================================
+// #470 C3 — Rename (dual-parent break + parent-key suppression)
+// ============================================================================
+//
+// These tests mirror the Samba `dlt_renames` matrix
+// (source4/torture/smb2/lease.c:7028) at the lock-manager layer. The C3 rename
+// branch in internal/adapter/smb/v2/handlers/set_info.go invokes
+// BreakLeasesOnOpenConflict + BreakReadLeasesForParentDir on BOTH src-parent
+// and dst-parent (RH → ""), each honoring the renamer's ClientID + parent-key
+// suppression. We verify the underlying break path produces the right per-key
+// break count for each matrix row.
+//
+// We exercise the dual call directly because the parent-key gating is the
+// load-bearing rule (smbtorture rows: correct vs wrong vs no parent_key, in
+// otherdir / samedir layout).
+
+// breakBothParentsAsRename simulates the C3 post-rename break invocation:
+// strip H then R on a parent handle, with parent-key suppression. Mirrors
+// internal/adapter/smb/v2/handlers/set_info.go::breakParentDirLeasesForContentChangeOn
+// composed twice (src and dst).
+func breakBothParentsAsRename(t *testing.T, mgr *Manager, srcParent, dstParent string, excludeClientID string, excludeKey [16]byte, hasKey bool) {
+	t.Helper()
+	owner := &LockOwner{
+		ClientID:                    excludeClientID,
+		ExcludeParentDirLeaseKey:    excludeKey,
+		HasExcludeParentDirLeaseKey: hasKey,
+	}
+	for _, parent := range []string{srcParent, dstParent} {
+		if parent == "" {
+			continue
+		}
+		require.NoError(t, mgr.BreakLeasesOnOpenConflict(parent, owner, BreakReasonSharingViolation))
+		require.NoError(t, mgr.BreakReadLeasesForParentDir(parent, owner))
+	}
+}
+
+// TestRenameC3_OtherDir_NoParentKey_BreaksBoth covers
+// dlt_renames "otherdir-no-parent-leaskey" (lease.c:7096): rename across two
+// directories by a renamer without a parent_key — both src and dst dir leases
+// must break.
+func TestRenameC3_OtherDir_NoParentKey_BreaksBoth(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	srcLeaseKey := [16]byte{0x01}
+	dstLeaseKey := [16]byte{0x02}
+
+	breakKeys := map[string]int{}
+	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(handleKey string, lk *UnifiedLock, bts uint32) {
+			breakKeys[handleKey]++
+		},
+	})
+
+	// Two dir leases held by a "second client" on separate parent handles.
+	_, _, err := mgr.RequestLease(ctx, FileHandle("srcdir"), srcLeaseKey, [16]byte{},
+		"owner-src", "clientA", "/share", LeaseStateRead|LeaseStateHandle, true)
+	require.NoError(t, err)
+	_, _, err = mgr.RequestLease(ctx, FileHandle("dstdir"), dstLeaseKey, [16]byte{},
+		"owner-dst", "clientA", "/share", LeaseStateRead|LeaseStateHandle, true)
+	require.NoError(t, err)
+
+	// Renamer is a third client with no parent_key.
+	breakBothParentsAsRename(t, mgr, "srcdir", "dstdir", "clientB", [16]byte{}, false)
+
+	assert.GreaterOrEqual(t, breakKeys["srcdir"], 1, "src dir lease must break when renamer carries no matching parent_key")
+	assert.GreaterOrEqual(t, breakKeys["dstdir"], 1, "dst dir lease must break when renamer carries no matching parent_key")
+}
+
+// TestRenameC3_OtherDir_CorrectSrcParentKey_SuppressesSrc covers
+// "otherdir-correct-srcparent-leaskey" (lease.c:7063): renamer's parent_key
+// matches src-parent's lease → src suppressed, dst breaks.
+func TestRenameC3_OtherDir_CorrectSrcParentKey_SuppressesSrc(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	srcLeaseKey := [16]byte{0x01}
+	dstLeaseKey := [16]byte{0x02}
+
+	breakKeys := map[string]int{}
+	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(handleKey string, lk *UnifiedLock, bts uint32) {
+			breakKeys[handleKey]++
+		},
+	})
+
+	_, _, err := mgr.RequestLease(ctx, FileHandle("srcdir"), srcLeaseKey, [16]byte{},
+		"owner-src", "clientA", "/share", LeaseStateRead|LeaseStateHandle, true)
+	require.NoError(t, err)
+	_, _, err = mgr.RequestLease(ctx, FileHandle("dstdir"), dstLeaseKey, [16]byte{},
+		"owner-dst", "clientA", "/share", LeaseStateRead|LeaseStateHandle, true)
+	require.NoError(t, err)
+
+	// Renamer carries src-parent's lease key as its own parent_key.
+	breakBothParentsAsRename(t, mgr, "srcdir", "dstdir", "clientB", srcLeaseKey, true)
+
+	assert.Equal(t, 0, breakKeys["srcdir"], "src dir lease must be suppressed by matching parent_key (#470 C3)")
+	assert.GreaterOrEqual(t, breakKeys["dstdir"], 1, "dst dir lease must still break when parent_key matches src only")
+}
+
+// TestRenameC3_OtherDir_CorrectDstParentKey_SuppressesDst covers
+// "otherdir-correct-dstparent-leaskey" (lease.c:7074): symmetric case where
+// renamer's parent_key matches dst-parent's lease → dst suppressed, src breaks.
+func TestRenameC3_OtherDir_CorrectDstParentKey_SuppressesDst(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	srcLeaseKey := [16]byte{0x01}
+	dstLeaseKey := [16]byte{0x02}
+
+	breakKeys := map[string]int{}
+	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(handleKey string, lk *UnifiedLock, bts uint32) {
+			breakKeys[handleKey]++
+		},
+	})
+
+	_, _, err := mgr.RequestLease(ctx, FileHandle("srcdir"), srcLeaseKey, [16]byte{},
+		"owner-src", "clientA", "/share", LeaseStateRead|LeaseStateHandle, true)
+	require.NoError(t, err)
+	_, _, err = mgr.RequestLease(ctx, FileHandle("dstdir"), dstLeaseKey, [16]byte{},
+		"owner-dst", "clientA", "/share", LeaseStateRead|LeaseStateHandle, true)
+	require.NoError(t, err)
+
+	breakBothParentsAsRename(t, mgr, "srcdir", "dstdir", "clientB", dstLeaseKey, true)
+
+	assert.GreaterOrEqual(t, breakKeys["srcdir"], 1, "src dir lease must still break when parent_key matches dst only")
+	assert.Equal(t, 0, breakKeys["dstdir"], "dst dir lease must be suppressed by matching parent_key (#470 C3)")
+}
+
+// TestRenameC3_SameDir_CorrectParentKey_NoBreak covers
+// "samedir-correct-parent-leaskey" (lease.c:7030): same-directory rename by a
+// renamer carrying the dir's parent_key → no break at all. The handler-level
+// code de-dupes the (src == dst) case so the helper fires exactly once on the
+// single dir lease, which is then suppressed by the parent-key match.
+func TestRenameC3_SameDir_CorrectParentKey_NoBreak(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	dirLeaseKey := [16]byte{0x01}
+
+	breakKeys := map[string]int{}
+	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(handleKey string, lk *UnifiedLock, bts uint32) {
+			breakKeys[handleKey]++
+		},
+	})
+
+	_, _, err := mgr.RequestLease(ctx, FileHandle("dir1"), dirLeaseKey, [16]byte{},
+		"owner-d", "clientA", "/share", LeaseStateRead|LeaseStateHandle, true)
+	require.NoError(t, err)
+
+	// Same-dir rename: handler passes srcParent == dstParent; the helper de-dupes
+	// to a single break invocation. Renamer's parent_key matches → suppressed.
+	breakBothParentsAsRename(t, mgr, "dir1", "", "clientB", dirLeaseKey, true)
+
+	assert.Equal(t, 0, breakKeys["dir1"], "same-dir rename with matching parent_key must not break (samedir-correct-parent-leaskey)")
+}
+
+// TestRenameC3_SameDir_WrongParentKey_Breaks covers
+// "samedir-wrong-parent-leaskey" (lease.c:7041): renamer carries a parent_key
+// that does NOT match the dir's lease key → break fires.
+func TestRenameC3_SameDir_WrongParentKey_Breaks(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	dirLeaseKey := [16]byte{0x01}
+	wrongKey := [16]byte{0x03}
+
+	breakKeys := map[string]int{}
+	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(handleKey string, lk *UnifiedLock, bts uint32) {
+			breakKeys[handleKey]++
+		},
+	})
+
+	_, _, err := mgr.RequestLease(ctx, FileHandle("dir1"), dirLeaseKey, [16]byte{},
+		"owner-d", "clientA", "/share", LeaseStateRead|LeaseStateHandle, true)
+	require.NoError(t, err)
+
+	breakBothParentsAsRename(t, mgr, "dir1", "", "clientB", wrongKey, true)
+
+	assert.GreaterOrEqual(t, breakKeys["dir1"], 1, "same-dir rename with wrong parent_key must break (samedir-wrong-parent-leaskey)")
+}
+
+// TestRenameC3_DstParent_PreConflictBreak_OnlyStripsHandle covers the
+// rename_dst_parent first-phase semantics (lease.c:7331). The dst-parent
+// dir-lease holder must receive an H-strip break (RH → R) before the
+// SHARING_VIOLATION return — this is the BreakReasonSharingViolation path the
+// new breakDstParentDirHandleLeasesForRename helper takes. Read caching is
+// preserved (no R-strip happens at this stage).
+func TestRenameC3_DstParent_PreConflictBreak_OnlyStripsHandle(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	dstLeaseKey := [16]byte{0x01}
+
+	var lastBreakTo uint32
+	var breakCount int
+	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(handleKey string, lk *UnifiedLock, bts uint32) {
+			breakCount++
+			lastBreakTo = bts
+		},
+	})
+
+	_, _, err := mgr.RequestLease(ctx, FileHandle("dstdir"), dstLeaseKey, [16]byte{},
+		"owner-d", "clientA", "/share", LeaseStateRead|LeaseStateHandle, true)
+	require.NoError(t, err)
+
+	// Renamer (clientB) carries no parent_key → break fires; reason
+	// SharingViolation strips H, preserves R (RH → R).
+	require.NoError(t, mgr.BreakLeasesOnOpenConflict("dstdir",
+		&LockOwner{ClientID: "clientB"},
+		BreakReasonSharingViolation,
+	))
+
+	assert.Equal(t, 1, breakCount, "dst-parent dir lease must break exactly once on the pre-conflict path")
+	assert.Equal(t, uint32(LeaseStateRead), lastBreakTo, "pre-conflict dst-parent break must strip H but preserve R (RH → R, rename_dst_parent Phase 1)")
+}

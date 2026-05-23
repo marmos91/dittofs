@@ -657,6 +657,18 @@ func (h *Handler) setFileInfoFromStore(
 		// that directory that lacks FILE_SHARE_DELETE or holds DELETE access
 		// conflicts. Stream renames don't traverse the directory layer and
 		// returned earlier above; we're past that branch here.
+		//
+		// Pre-conflict dst-parent dir-lease break (#470 C3 / smbtorture
+		// smb2.dirlease.rename_dst_parent, lease.c:7331). Even when the
+		// conflict surfaces SHARING_VIOLATION, the dst-parent's RH dir-lease
+		// holder must observe an RH→R break: the rename's implicit destructive
+		// open intent invalidates the holder's Handle caching regardless of
+		// whether the rename ultimately succeeds. Parent-key suppression
+		// applies (the renamer's RqLs ParentLeaseKey, if any, marks the holder
+		// as the renamer itself). On Phase-2 of the test, the holder's break
+		// handler closes its handle inside our wait, the post-break conflict
+		// recheck observes the close, and the rename proceeds.
+		h.breakDstParentDirHandleLeasesForRename(authCtx, toDir, openFile)
 		if conflict := h.checkParentDirRenameConflict(openFile.FileID, toDir); conflict {
 			logger.Debug("SET_INFO: rename blocked by destination-parent sharing violation",
 				"path", openFile.Path,
@@ -783,6 +795,10 @@ func (h *Handler) setFileInfoFromStore(
 		oldPath := openFile.Path
 		oldFileName := openFile.FileName
 		oldParentPath := GetParentPath(oldPath)
+		// Snapshot src-parent handle so the post-rename dir-lease break can
+		// fire on the source parent (line 862 update below overwrites
+		// openFile.ParentHandle to toDir).
+		srcParentHandle := openFile.ParentHandle
 
 		// Per MS-FSA 2.1.5.14.10: Save mtime/ctime before rename so we can
 		// restore them after. Rename should NOT update the file's timestamps.
@@ -857,9 +873,16 @@ func (h *Handler) setFileInfoFromStore(
 		openFile.ParentHandle = toDir
 		h.StoreOpenFile(openFile)
 
-		// Per MS-FSA 2.1.5.14.10: Rename changes directory contents.
-		// Break Handle + Read leases on parent directories.
-		h.breakParentDirLeasesForContentChange(authCtx, openFile)
+		// Per MS-FSA 2.1.5.14.10 + #470 C3 (smbtorture smb2.dirlease.rename):
+		// rename changes directory contents on BOTH source and destination
+		// parents. Break Handle + Read dir leases on each (RH → ""), honoring
+		// the renamer's ParentLeaseKey suppression from C2. Skip the dst
+		// break when src == dst (same-dir rename) to avoid a redundant
+		// double-break on a single dir-lease holder.
+		h.breakParentDirLeasesForContentChangeOn(authCtx, srcParentHandle, openFile)
+		if !bytes.Equal(toDir, srcParentHandle) {
+			h.breakParentDirLeasesForContentChangeOn(authCtx, toDir, openFile)
+		}
 
 		logger.Debug("SET_INFO: rename successful",
 			"oldPath", oldPath,
@@ -1350,11 +1373,22 @@ func checkSetInfoSecurityAccess(grantedAccess, additionalInfo uint32) (types.Sta
 // the parent directory when directory CONTENT changes (rename, delete). These
 // operations affect what READDIR returns, invalidating Read caching.
 func (h *Handler) breakParentDirLeasesForContentChange(authCtx *metadata.AuthContext, openFile *OpenFile) {
-	if h.LeaseManager == nil || len(openFile.ParentHandle) == 0 {
+	if len(openFile.ParentHandle) == 0 {
+		return
+	}
+	h.breakParentDirLeasesForContentChangeOn(authCtx, openFile.ParentHandle, openFile)
+}
+
+// breakParentDirLeasesForContentChangeOn is the multi-parent variant used by
+// the rename branch (#470 C3): break Handle + Read leases on an arbitrary
+// directory handle (src-parent or dst-parent), still honoring the originating
+// handle's ClientID + ParentLeaseKey suppression from C2.
+func (h *Handler) breakParentDirLeasesForContentChangeOn(authCtx *metadata.AuthContext, parentHandle metadata.FileHandle, openFile *OpenFile) {
+	if h.LeaseManager == nil || len(parentHandle) == 0 {
 		return
 	}
 
-	parentLockHandle := lock.FileHandle(openFile.ParentHandle)
+	parentLockHandle := lock.FileHandle(parentHandle)
 	excludeClientID := fmt.Sprintf("smb:%d", openFile.SessionID)
 
 	// Apply parent-key suppression (MS-SMB2 §3.3.4.20, #470 C2): if the
@@ -1364,9 +1398,34 @@ func (h *Handler) breakParentDirLeasesForContentChange(authCtx *metadata.AuthCon
 	hasExcludeKey := openFile.HasParentLeaseKey
 
 	if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, openFile.ShareName, excludeClientID, excludeParentKey, hasExcludeKey); breakErr != nil {
-		logger.Debug("SET_INFO: parent directory Handle lease break failed", "path", openFile.Path, "error", breakErr)
+		logger.Debug("SET_INFO: parent directory Handle lease break failed", "path", openFile.Path, "parent", fmt.Sprintf("%x", parentHandle), "error", breakErr)
 	}
 	if breakErr := h.LeaseManager.BreakParentReadLeasesOnModify(authCtx.Context, parentLockHandle, openFile.ShareName, excludeClientID, excludeParentKey, hasExcludeKey); breakErr != nil {
-		logger.Debug("SET_INFO: parent directory Read lease break failed", "path", openFile.Path, "error", breakErr)
+		logger.Debug("SET_INFO: parent directory Read lease break failed", "path", openFile.Path, "parent", fmt.Sprintf("%x", parentHandle), "error", breakErr)
+	}
+}
+
+// breakDstParentDirHandleLeasesForRename strips the Handle bit only (RH -> R)
+// on dst-parent dir leases held by holders that conflict with the rename's
+// implicit DELETE+FILE_ADD_FILE open. Called BEFORE the dst-parent share-mode
+// conflict check so the break notification is observed even when the conflict
+// surfaces STATUS_SHARING_VIOLATION (smbtorture smb2.dirlease.rename_dst_parent
+// Phase 1, lease.c:7331). Read caching is preserved (RH -> R) — the rename
+// hasn't mutated directory contents yet, only the dst-parent's Handle caching
+// is invalidated by the implicit destructive open intent.
+//
+// Honors the same ClientID + ParentLeaseKey suppression as C2: if the renamer
+// carries a ParentLeaseKey on its own RqLs that matches the dst-parent's
+// dir-lease key, suppress (Samba dirlease_for_rename behavior).
+func (h *Handler) breakDstParentDirHandleLeasesForRename(authCtx *metadata.AuthContext, dstParent metadata.FileHandle, openFile *OpenFile) {
+	if h.LeaseManager == nil || len(dstParent) == 0 {
+		return
+	}
+	parentLockHandle := lock.FileHandle(dstParent)
+	excludeClientID := fmt.Sprintf("smb:%d", openFile.SessionID)
+	excludeParentKey := openFile.ParentLeaseKey
+	hasExcludeKey := openFile.HasParentLeaseKey
+	if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, openFile.ShareName, excludeClientID, excludeParentKey, hasExcludeKey); breakErr != nil {
+		logger.Debug("SET_INFO: dst-parent dir Handle lease pre-break failed", "path", openFile.Path, "dstParent", fmt.Sprintf("%x", dstParent), "error", breakErr)
 	}
 }
