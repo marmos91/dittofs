@@ -162,12 +162,20 @@ main() {
     # smb2.acls.SDFLAGSVSCHOWN. The Samba extension
     # `acl flag inherited canonicalization = no` is exercised by
     # smb2.acls_non_canonical against /smbnoncanon below.
-    $DFSCTL share create --name /smbbasic $share_flags
+    #
+    # --access-based-enumeration: smbtorture smb2.acls.ACCESSBASED runs against
+    # the default share (/smbbasic) and asserts QUERY_DIRECTORY hides files the
+    # caller cannot read. Other tests in the smb2.acls suite enumerate as the
+    # file's owner with full rights, so ABE is a no-op for them — enabling the
+    # flag here is safe and avoids needing a separate ABE-only share or
+    # excluding ACCESSBASED from the suite filter. (Refs #532 / MS-SRVS
+    # SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM / MS-SMB2 §2.2.10
+    # SMB2_SHAREFLAG_ACCESS_BASED_DIRECTORY_ENUM.)
+    $DFSCTL share create --name /smbbasic --access-based-enumeration $share_flags
     $DFSCTL share create --name /smbencrypted --encrypt-data $share_flags
     $DFSCTL share create --name /fileshare $share_flags
-    # Refs #532: smbtorture smb2.acls.ACCESSBASED connects to a share with the
-    # MS-SRVS SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM flag set so
-    # QUERY_DIRECTORY hides entries the caller cannot read.
+    # Kept as the previous home of acls.ACCESSBASED (refs #532). Other test
+    # paths may still expect a share named /hideunread; harmless duplicate.
     $DFSCTL share create --name /hideunread --access-based-enumeration $share_flags
     # /smbnoncanon disables MS-DTYP §2.5.3.4.2 canonicalization (Samba
     # `acl flag inherited canonicalization = no` extension). Target of
