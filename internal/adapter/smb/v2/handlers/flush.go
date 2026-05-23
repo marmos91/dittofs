@@ -262,6 +262,12 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 		}
 	}
 
+	// Samba parity (fileio.c::trigger_write_time_update_immediate): FLUSH
+	// collapses the pending write-time window so the next QUERY_INFO sees
+	// the post-write Mtime.
+	flushSmbDelayedWrite(openFile)
+	h.StoreOpenFile(openFile)
+
 	logger.Debug("FLUSH successful", "path", openFile.Path)
 
 	// ========================================================================

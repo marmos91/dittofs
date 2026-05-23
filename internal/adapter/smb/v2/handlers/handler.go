@@ -319,6 +319,17 @@ type OpenFile struct {
 	FrozenCtime *time.Time // Saved Ctime value at freeze time
 	FrozenAtime *time.Time // Saved Atime value at freeze time
 
+	// SMB delayed-write timestamp semantics, mirroring Samba
+	// `source3/smbd/fileio.c::trigger_write_time_update` (2-second delay
+	// before a write becomes visible via QUERY_INFO, then sticky for the
+	// rest of the open) and `write_time_forced` (an explicit SetBasic
+	// write_time pins the value until close).
+	SmbWriteTriggered  bool       // first WRITE on this handle has occurred
+	SmbWritePreMtime   *time.Time // Mtime captured before first WRITE — visible during the 2s window
+	SmbWriteFlushMtime *time.Time // Mtime to surface once the 2s window expires or a flush trigger fires
+	SmbWriteFlushAt    time.Time  // wall-clock when the 2s window expires (zero ⇒ already flushed)
+	SmbStickyWriteTime *time.Time // explicit SetBasic write_time — wins over any pending update
+
 	// Oplock state
 	// OplockLevel is the current oplock level for this handle.
 	// Thread safety: This field is written during CREATE (before storing in sync.Map)

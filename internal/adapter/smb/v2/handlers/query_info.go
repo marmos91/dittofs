@@ -316,6 +316,12 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	// QUERY_INFO returns the timestamp as it was at freeze time.
 	applyFrozenTimestamps(openFile, file)
 
+	// Samba parity (fileio.c): present the delayed-write view of LastWriteTime
+	// — pre-write Mtime during the 2-second window, the first-write Mtime after.
+	// CLOSE intentionally bypasses this so it surfaces the persisted Mtime
+	// (which may include another handle's explicit SetBasic).
+	applySmbDelayedWriteOverride(openFile, file)
+
 	// ========================================================================
 	// Step 3: Validate OutputBufferLength for fixed-size info classes
 	// ========================================================================
