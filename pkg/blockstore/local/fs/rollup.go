@@ -237,7 +237,16 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	if err != nil {
 		return fmt.Errorf("rollup: open log for read: %w", err)
 	}
-	defer func() { _ = rf.Close() }()
+	// rfClosed lets the error-path defer skip the close once the
+	// explicit close below runs. We must close rf before maybeCompactLog
+	// fires at function tail — Windows refuses to rename over a path
+	// that has ANY open handle, including this read-only one.
+	rfClosed := false
+	defer func() {
+		if !rfClosed {
+			_ = rf.Close()
+		}
+	}()
 
 	// consumedExtents tracks the FILE-OFFSET extent of every record that
 	// will be marked consumed in the logIndex below. R-7 (#580): consumption
@@ -534,6 +543,13 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	// logged at Warn and otherwise swallowed — a failed compaction
 	// pass leaves the original log untouched; the next rollup pass
 	// retries automatically.
+	//
+	// Close rf first: Windows refuses to rename over a file with an
+	// open handle, and compaction's atomic rename would otherwise fail
+	// with ERROR_SHARING_VIOLATION. On POSIX the close is harmless;
+	// rf is otherwise unused past this point.
+	_ = rf.Close()
+	rfClosed = true
 	if cerr := bc.maybeCompactLog(ctx, payloadID, lf, idx); cerr != nil {
 		slog.Warn("rollup: compaction failed; will retry next pass",
 			"payloadID", payloadID, "error", cerr)
