@@ -16,12 +16,13 @@ var (
 	addType   string
 	addConfig string
 	// S3 specific
-	addBucket    string
-	addRegion    string
-	addEndpoint  string
-	addPrefix    string
-	addAccessKey string
-	addSecretKey string
+	addBucket      string
+	addRegion      string
+	addEndpoint    string
+	addPrefix      string
+	addAccessKey   string
+	addSecretKey   string
+	addCompression string
 )
 
 var addCmd = &cobra.Command{
@@ -52,6 +53,9 @@ Examples:
   # Add a MinIO store (S3-compatible)
   dfsctl store block remote add --name minio-store --type s3 --bucket data --endpoint http://localhost:9000
 
+  # Add an S3 store with zstd block compression
+  dfsctl store block remote add --name prod-s3 --type s3 --bucket my-bucket --compression zstd
+
   # Add a memory store (for testing)
   dfsctl store block remote add --name test-remote --type memory`,
 	RunE: runAdd,
@@ -68,6 +72,7 @@ func init() {
 	addCmd.Flags().StringVar(&addPrefix, "prefix", "", "Key prefix within the bucket (for s3)")
 	addCmd.Flags().StringVar(&addAccessKey, "access-key", "", "AWS access key ID (for s3)")
 	addCmd.Flags().StringVar(&addSecretKey, "secret-key", "", "AWS secret access key (for s3)")
+	addCmd.Flags().StringVar(&addCompression, "compression", "", "Enable per-block compression: zstd, lz4 (default: off)")
 	_ = addCmd.MarkFlagRequired("name")
 }
 
@@ -77,7 +82,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	config, err := buildRemoteConfig(addType, addConfig, addBucket, addRegion, addEndpoint, addPrefix, addAccessKey, addSecretKey)
+	config, err := buildRemoteConfig(addType, addConfig, addBucket, addRegion, addEndpoint, addPrefix, addAccessKey, addSecretKey, addCompression)
 	if err != nil {
 		return cmdutil.HandleAbort(err)
 	}
@@ -96,13 +101,18 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	return cmdutil.PrintResourceWithSuccess(os.Stdout, store, fmt.Sprintf("Remote block store '%s' (type: %s) created successfully", store.Name, store.Type))
 }
 
-func buildRemoteConfig(storeType, jsonConfig, bucket, region, endpoint, prefix, accessKey, secretKey string) (any, error) {
+func buildRemoteConfig(storeType, jsonConfig, bucket, region, endpoint, prefix, accessKey, secretKey, compression string) (any, error) {
 	if jsonConfig != "" {
 		var config any
 		if err := json.Unmarshal([]byte(jsonConfig), &config); err != nil {
 			return nil, fmt.Errorf("invalid JSON config: %w", err)
 		}
 		return config, nil
+	}
+
+	compressionBlock, err := buildCompressionBlock(compression)
+	if err != nil {
+		return nil, err
 	}
 
 	switch storeType {
@@ -167,9 +177,26 @@ func buildRemoteConfig(storeType, jsonConfig, bucket, region, endpoint, prefix, 
 		if s3Prefix != "" {
 			config["prefix"] = s3Prefix
 		}
+		if compressionBlock != nil {
+			config["compression"] = compressionBlock
+		}
 		return config, nil
 
 	default:
 		return nil, fmt.Errorf("unknown store type: %s (supported: s3, memory)", storeType)
+	}
+}
+
+// buildCompressionBlock validates the --compression flag and returns the
+// JSON sub-object to merge into the remote config map. Returns (nil, nil)
+// when the flag is empty (compression off).
+func buildCompressionBlock(algo string) (map[string]any, error) {
+	switch algo {
+	case "":
+		return nil, nil
+	case "zstd", "lz4":
+		return map[string]any{"algo": algo}, nil
+	default:
+		return nil, fmt.Errorf("invalid --compression value %q (want one of: zstd, lz4)", algo)
 	}
 }
