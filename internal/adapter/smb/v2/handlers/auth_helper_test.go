@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 func TestBuildAuthContextFromUser_PopulatesSID(t *testing.T) {
@@ -144,4 +145,54 @@ func TestPrimeAuthContext_PreservesFixtureUserWhenSessionUserNil(t *testing.T) {
 	if ctx.IsGuest {
 		t.Errorf("ctx.IsGuest = true; anonymous (non-guest) session should leave IsGuest=false")
 	}
+}
+
+// TestPropagateOpenFileParentLeaseKey_Set asserts that the helper copies
+// OpenFile.ParentLeaseKey / HasParentLeaseKey onto the AuthContext so the
+// metadata layer can route the value into notifyDirChange (#470 C6/C7).
+func TestPropagateOpenFileParentLeaseKey_Set(t *testing.T) {
+	openFile := &OpenFile{
+		ParentLeaseKey:    [16]byte{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04},
+		HasParentLeaseKey: true,
+	}
+	authCtx := &metadata.AuthContext{Context: context.Background()}
+
+	PropagateOpenFileParentLeaseKey(authCtx, openFile)
+
+	if !authCtx.HasParentLeaseKey {
+		t.Fatal("HasParentLeaseKey must be true after propagation from a flagged OpenFile")
+	}
+	if authCtx.ParentLeaseKey != openFile.ParentLeaseKey {
+		t.Errorf("ParentLeaseKey = %x, want %x", authCtx.ParentLeaseKey, openFile.ParentLeaseKey)
+	}
+}
+
+// TestPropagateOpenFileParentLeaseKey_Unset asserts no-op when the OpenFile
+// had no RqLs+parent-key linkage. This preserves the "no parent-key on the
+// closing handle" path (different_set_and_close, different_initial_and_close)
+// where all dir leases MUST break.
+func TestPropagateOpenFileParentLeaseKey_Unset(t *testing.T) {
+	openFile := &OpenFile{HasParentLeaseKey: false}
+	authCtx := &metadata.AuthContext{
+		Context:           context.Background(),
+		ParentLeaseKey:    [16]byte{}, // start clean
+		HasParentLeaseKey: false,
+	}
+	// Should leave the context unchanged.
+	PropagateOpenFileParentLeaseKey(authCtx, openFile)
+	if authCtx.HasParentLeaseKey {
+		t.Fatal("HasParentLeaseKey must stay false when OpenFile has no linkage")
+	}
+	if authCtx.ParentLeaseKey != ([16]byte{}) {
+		t.Errorf("ParentLeaseKey must stay zero when OpenFile has no linkage, got %x", authCtx.ParentLeaseKey)
+	}
+}
+
+// TestPropagateOpenFileParentLeaseKey_NilSafe pins the documented nil-safety
+// contract: callers in close.go / cleanup paths may receive nil OpenFile or
+// authCtx if state is partially torn down; the helper must not panic.
+func TestPropagateOpenFileParentLeaseKey_NilSafe(t *testing.T) {
+	PropagateOpenFileParentLeaseKey(nil, nil)
+	PropagateOpenFileParentLeaseKey(&metadata.AuthContext{Context: context.Background()}, nil)
+	PropagateOpenFileParentLeaseKey(nil, &OpenFile{HasParentLeaseKey: true})
 }

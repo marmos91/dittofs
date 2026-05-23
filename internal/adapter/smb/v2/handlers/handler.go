@@ -761,6 +761,10 @@ func (h *Handler) closeFilesWithFilter(
 // returns.
 func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session, openFile *OpenFile, caller string) {
 	authCtx := h.buildCleanupAuthContext(ctx, sess)
+	// Thread the closing handle's RqLs ParentLeaseKey so notifyDirChange can
+	// apply the MS-SMB2 §3.3.4.20 / Samba `dirlease_should_break` parent-key
+	// suppression rule on the parent dir lease (#470 C6/C7).
+	PropagateOpenFileParentLeaseKey(authCtx, openFile)
 	metaSvc := h.Registry.GetMetadataService()
 
 	if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
