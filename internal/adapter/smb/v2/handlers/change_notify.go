@@ -729,9 +729,6 @@ func (r *NotifyRegistry) chargeArmedBuffer(
 	candidateNames []string,
 	skipFileIDs map[[16]byte]struct{},
 ) {
-	if len(r.armed) == 0 {
-		return
-	}
 	// Estimate encoded size: each entry is at least minNotifyEntryBytes
 	// (12-byte header + ≥2-byte name + ≤2-byte padding). We don't UTF-16
 	// encode here because the goal is a conservative upper bound; under-
@@ -750,9 +747,16 @@ func (r *NotifyRegistry) chargeArmedBuffer(
 		addBytes += entry
 	}
 
-	var toFireOverflow []OnOverflow
-	var fireFileIDs [][16]byte
+	type pendingFire struct {
+		fn OnOverflow
+		id [16]byte
+	}
+	var toFire []pendingFire
 	r.mu.Lock()
+	if len(r.armed) == 0 {
+		r.mu.Unlock()
+		return
+	}
 	for _, a := range r.armed {
 		if a.ShareName != shareName {
 			continue
@@ -780,8 +784,7 @@ func (r *NotifyRegistry) chargeArmedBuffer(
 		if a.MaxOutputLength == 0 || a.BufferedBytes > a.MaxOutputLength {
 			a.Overflowed = true
 			if a.OnOverflow != nil {
-				toFireOverflow = append(toFireOverflow, a.OnOverflow)
-				fireFileIDs = append(fireFileIDs, a.FileID)
+				toFire = append(toFire, pendingFire{fn: a.OnOverflow, id: a.FileID})
 			}
 		}
 	}
@@ -789,8 +792,8 @@ func (r *NotifyRegistry) chargeArmedBuffer(
 
 	// Fire OnOverflow outside the lock — it touches OpenFile state through
 	// the Handler and we don't want to nest those locks under r.mu.
-	for i, fn := range toFireOverflow {
-		fn(fireFileIDs[i])
+	for _, f := range toFire {
+		f.fn(f.id)
 	}
 }
 
