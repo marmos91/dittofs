@@ -177,6 +177,16 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
+	// Step 2b: Prime auth context from OpenFile's recorded session
+	// ========================================================================
+	// CLOSE arrives keyed only by FileID — the SMB2 dispatcher has no user
+	// state to prefill ctx.User with. Without this hand-off BuildAuthContext
+	// would take the ctx.User==nil arm and synthesise UID-0 (root), bypassing
+	// DACL checks on the downstream metadata flush, delete-on-close unlink,
+	// and MFsymlink conversion (#619, same class as #603).
+	h.primeAuthContextFromOpenFile(ctx, openFile)
+
+	// ========================================================================
 	// Step 3: Flush cached data to block store (ensures durability)
 	// ========================================================================
 
@@ -563,6 +573,12 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 	if len(openFile.ParentHandle) == 0 || openFile.FileName == "" {
 		return fmt.Errorf("missing parent handle or filename for MFsymlink conversion")
 	}
+
+	// Prime ctx.User / IsGuest / TreeID from the OpenFile's recorded session
+	// BEFORE BuildAuthContext — otherwise ctx.User==nil falls into the
+	// anonymous arm and synthesises UID-0 (root), bypassing DACL checks on
+	// the RemoveFile + CreateSymlink (#619, same class as #603).
+	h.primeAuthContextFromOpenFile(ctx, openFile)
 
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {

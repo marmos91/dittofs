@@ -379,6 +379,14 @@ func (h *Handler) executeCopyChunks(
 		return NewErrorResult(types.StatusInternalError), nil
 	}
 
+	// Prime ctx.User / IsGuest / TreeID from the destination open's recorded
+	// session BEFORE BuildAuthContext — otherwise ctx.User==nil falls into
+	// the anonymous arm and synthesises UID-0 (root), bypassing DACL checks
+	// on the destination write (#619, same class as #603). srcOpen and
+	// dstOpen are required to share a SessionID by the upstream validator,
+	// so priming from dstOpen is equivalent to priming from srcOpen.
+	h.primeAuthContextFromOpenFile(ctx, dstOpen)
+
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		logger.Warn("COPYCHUNK: failed to build auth context", "error", err)

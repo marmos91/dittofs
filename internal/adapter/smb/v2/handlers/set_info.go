@@ -208,11 +208,15 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 	}
 
 	// ========================================================================
-	// Step 1b: Validate DesiredAccess for SET_INFO
+	// Step 1b: Validate GrantedAccess for SET_INFO
 	// ========================================================================
 	// Per MS-SMB2 3.3.5.21.1: For attribute-setting info classes, the open
 	// must include FILE_WRITE_ATTRIBUTES. Rename/delete disposition/EOF have
 	// their own access checks later (DELETE, FILE_WRITE_DATA, etc.).
+	// The gate consults Open.GrantedAccess (post-DACL intersection at CREATE),
+	// not the pre-DACL DesiredAccess — otherwise a request that named
+	// FILE_WRITE_ATTRIBUTES but had it stripped by the DACL would still be
+	// allowed to mutate attributes (parity with #616 ChangeNotify fix).
 	if req.InfoType == types.SMB2InfoTypeFile {
 		switch types.FileInfoClass(req.FileInfoClass) {
 		case types.FileRenameInformation,
@@ -222,7 +226,7 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 			// These have specific access checks in their handlers or
 			// are validated by the metadata layer
 		default:
-			if !hasAccessRight(openFile.DesiredAccess, uint32(types.FileWriteAttributes)) {
+			if !hasAccessRight(openFile.GrantedAccess, uint32(types.FileWriteAttributes)) {
 				return setInfoStatus(types.StatusAccessDenied), nil
 			}
 		}
@@ -231,6 +235,11 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 	// ========================================================================
 	// Step 2: Build AuthContext
 	// ========================================================================
+	// Prime ctx.User / IsGuest / TreeID from the OpenFile's recorded session
+	// BEFORE BuildAuthContext — otherwise ctx.User==nil falls into the
+	// anonymous arm and synthesises UID-0 (root), bypassing all DACL checks
+	// in the metadata layer (#619, same class as #603).
+	h.primeAuthContextFromOpenFile(ctx, openFile)
 
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
@@ -485,11 +494,13 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusInvalidParameter), nil
 		}
 
-		// Per MS-FSA 2.1.5.14.10: Rename requires DELETE access on the source file
-		if !hasDeleteAccess(openFile.DesiredAccess) {
+		// Per MS-FSA 2.1.5.14.10: Rename requires DELETE access on the source file.
+		// Gate consults Open.GrantedAccess (post-DACL intersection at CREATE), not
+		// the pre-DACL DesiredAccess — same fix class as #616 (ChangeNotify).
+		if !hasDeleteAccess(openFile.GrantedAccess) {
 			logger.Debug("SET_INFO: rename without DELETE access",
 				"path", openFile.Path,
-				"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
+				"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess))
 			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
@@ -887,12 +898,14 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
-		// Per MS-FSA 2.1.5.14.3: Setting delete disposition requires DELETE access
+		// Per MS-FSA 2.1.5.14.3: Setting delete disposition requires DELETE access.
+		// Gate consults Open.GrantedAccess (post-DACL intersection at CREATE), not
+		// the pre-DACL DesiredAccess — same fix class as #616 (ChangeNotify).
 		if deletePending {
-			if !hasDeleteAccess(openFile.DesiredAccess) {
+			if !hasDeleteAccess(openFile.GrantedAccess) {
 				logger.Debug("SET_INFO: delete disposition without DELETE access",
 					"path", openFile.Path,
-					"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
+					"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess))
 				return setInfoStatus(types.StatusAccessDenied), nil
 			}
 

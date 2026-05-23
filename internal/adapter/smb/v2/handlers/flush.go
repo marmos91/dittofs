@@ -249,6 +249,12 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	// We must call FlushPendingWriteForFile to persist the metadata changes.
 	// Without this, file size and other metadata changes are lost.
 
+	// Prime ctx.User / IsGuest / TreeID from the OpenFile's recorded session
+	// BEFORE BuildAuthContext — otherwise ctx.User==nil falls into the
+	// anonymous arm and synthesises UID-0 (root), bypassing DACL checks on
+	// the metadata flush (#619, same class as #603).
+	h.primeAuthContextFromOpenFile(ctx, openFile)
+
 	authCtx, authErr := BuildAuthContext(ctx)
 	if authErr != nil {
 		logger.Warn("FLUSH: failed to build auth context for metadata flush", "path", openFile.Path, "error", authErr)
