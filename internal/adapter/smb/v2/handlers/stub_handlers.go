@@ -477,6 +477,21 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		return NewResult(types.StatusNotifyEnumDir, respBytes), nil
 	}
 
+	// Per Samba `change_notify_create` (source3/smbd/notify.c): the
+	// notify_buffer's max_buffer_size is set from the FIRST CHANGE_NOTIFY
+	// on the handle and reused for every subsequent notify via
+	// MIN(request.OutputBufferLength, notify_buffer.max_buffer_size). This
+	// is the mechanism behind smb2.notify.valid-req's "if the first notify
+	// returns NOTIFY_ENUM_DIR, all do": a tiny first buffer caps every
+	// later notify on the same handle, so even a max-sized follow-up
+	// overflows. Capture on first call; cap thereafter. OutputBufferLength=0
+	// is a valid SMB2 request so we cannot encode "unset" as 0 — see the
+	// NotifyMaxBufferSize field comment / CaptureNotifyMaxBufferSize helper.
+	effectiveMax := req.OutputBufferLength
+	if stored, didCapture := openFile.CaptureNotifyMaxBufferSize(effectiveMax); !didCapture && stored < effectiveMax {
+		effectiveMax = stored
+	}
+
 	// Generate a unique AsyncId for this pending request.
 	// Per MS-SMB2 3.3.5.15, the server assigns an AsyncId and sends an
 	// interim response with STATUS_PENDING. The same AsyncId is used in
@@ -493,13 +508,9 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		ShareName:        openFile.ShareName,
 		CompletionFilter: req.CompletionFilter,
 		WatchTree:        req.Flags&SMB2WatchTree != 0,
-		MaxOutputLength:  req.OutputBufferLength,
-		AsyncCallback:    ctx.AsyncNotifyCallback,
-		OnOverflow: func(fileID [16]byte) {
-			if of, ok := h.GetOpenFile(fileID); ok {
-				of.NotifyOverflowed.Store(true)
-			}
-		},
+		// Use the per-handle MIN-capped max (Samba notify_buffer semantics).
+		MaxOutputLength: effectiveMax,
+		AsyncCallback:   ctx.AsyncNotifyCallback,
 	}
 
 	// Per MS-SMB2 §3.3.5.2.5: enforce max_async_credits before going async.
@@ -524,6 +535,8 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		"share", openFile.ShareName,
 		"filter", fmt.Sprintf("0x%08X", req.CompletionFilter),
 		"recursive", notify.WatchTree,
+		"reqBufLen", req.OutputBufferLength,
+		"effectiveBufLen", effectiveMax,
 		"messageID", ctx.MessageID,
 		"asyncId", asyncId,
 		"asyncEnabled", hasAsyncCallback)

@@ -376,6 +376,24 @@ type OpenFile struct {
 	// returns NOTIFY_ENUM_DIR, all do"). Cleared after that next notify
 	// consumes it. Lifetime is the handle: closing/reopening resets it.
 	NotifyOverflowed atomic.Bool
+
+	// NotifyMaxBufferSize is the OutputBufferLength captured from the FIRST
+	// CHANGE_NOTIFY issued on this handle. Subsequent notifies cap their
+	// effective max with MIN(req.OutputBufferLength, NotifyMaxBufferSize),
+	// matching Samba `change_notify_create` / `change_notify_reply` semantics
+	// (max_buffer_size is stored on notify_buffer creation and applied to
+	// every reply via MIN). This is what gives the smb2.notify.valid-req
+	// "if the first notify returns NOTIFY_ENUM_DIR, all do" property: a
+	// tiny first buffer permanently caps later notifies on the same handle.
+	//
+	// Encoding: SMB2 OutputBufferLength is uint32 and 0 is a valid request
+	// value (a peer may issue CHANGE_NOTIFY with OutputBufferLength=0), so
+	// we cannot use 0 as the "unset" sentinel. Instead we pack into a
+	// uint64: bit `notifyMaxBufferSizeSetBit` (1<<32) is set on the first
+	// capture, and the low 32 bits hold the captured OutputBufferLength.
+	// "Unset" is the all-zero value. Set once via CompareAndSwap(0, ...)
+	// and never updated after. Use `notifyMaxBufferSizeLoad` to decode.
+	NotifyMaxBufferSize atomic.Uint64
 }
 
 // OpenID returns a unique identifier for this open file handle.
@@ -386,6 +404,36 @@ func (f *OpenFile) OpenID() string {
 		f.cachedOpenID = fmt.Sprintf("%x", f.FileID)
 	}
 	return f.cachedOpenID
+}
+
+// notifyMaxBufferSizeSetBit marks the NotifyMaxBufferSize uint64 as having
+// been initialized by the first CHANGE_NOTIFY on the handle. The low 32 bits
+// of the same uint64 hold the captured OutputBufferLength (which may legally
+// be zero — see the field comment for the encoding rationale).
+const notifyMaxBufferSizeSetBit uint64 = 1 << 32
+
+// CaptureNotifyMaxBufferSize atomically records the OutputBufferLength of the
+// first CHANGE_NOTIFY on this handle. Returns the captured value (low 32 bits)
+// and true if this call performed the capture, or the previously-captured
+// value and false if a prior CHANGE_NOTIFY already set it. Safe for
+// concurrent callers; only the first wins.
+func (f *OpenFile) CaptureNotifyMaxBufferSize(outputBufferLength uint32) (captured uint32, didCapture bool) {
+	packed := notifyMaxBufferSizeSetBit | uint64(outputBufferLength)
+	if f.NotifyMaxBufferSize.CompareAndSwap(0, packed) {
+		return outputBufferLength, true
+	}
+	return uint32(f.NotifyMaxBufferSize.Load()), false
+}
+
+// NotifyMaxBufferSizeValue returns the captured first-CHANGE_NOTIFY
+// OutputBufferLength and whether it has been set yet. Returns (0, false)
+// before the first CHANGE_NOTIFY on this handle.
+func (f *OpenFile) NotifyMaxBufferSizeValue() (value uint32, set bool) {
+	raw := f.NotifyMaxBufferSize.Load()
+	if raw&notifyMaxBufferSizeSetBit == 0 {
+		return 0, false
+	}
+	return uint32(raw), true
 }
 
 // lastDeniedLock tracks the last denied lock request per open for
