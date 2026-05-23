@@ -5,6 +5,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf16"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -205,7 +206,32 @@ type NotifyRegistry struct {
 	// CANCEL and one-shot completion of pending notifies, and is only torn
 	// down by Disarm (called from CLOSE and from session/tree teardown).
 	armed map[string]*armedHandle
+
+	// cancelTombstones records an SMB2_CANCEL that arrived BEFORE the matching
+	// CHANGE_NOTIFY had a chance to Register. Each request is dispatched on its
+	// own goroutine (pkg/adapter/smb/connection.go), so a client that fires
+	// CHANGE_NOTIFY immediately followed by CANCEL (smb2.notify.dir's "notify
+	// cancel" subtest does exactly this) can race: the CANCEL handler runs
+	// first, finds nothing in the registry, and returns. The CHANGE_NOTIFY
+	// then registers a watcher that nobody will ever cancel — the test waits
+	// forever for STATUS_CANCELLED and the whole notify suite times out at
+	// 120s (issue #623).
+	//
+	// Tombstones are keyed by (ConnID, MessageID) — the only identifier the
+	// client can reference before it has seen the server-assigned AsyncId.
+	// They expire after cancelTombstoneTTL to bound memory; any later
+	// matching Register short-circuits to STATUS_CANCELLED. AsyncId-flagged
+	// CANCEL cannot race because the client only learns AsyncId from the
+	// interim response, which is sent strictly AFTER Register has run.
+	cancelTombstones map[notifyMsgKey]time.Time
 }
+
+// cancelTombstoneTTL bounds how long a pre-arrival SMB2_CANCEL is remembered
+// when no matching CHANGE_NOTIFY ever registers (e.g. client cancelled a
+// notify that the server rejected synchronously). Five seconds is generous
+// enough for any plausible per-request goroutine scheduling delay while still
+// expiring promptly if no Register ever happens.
+const cancelTombstoneTTL = 5 * time.Second
 
 // armedHandle records the buffered-events accounting for a single open
 // directory handle that has ever armed a CHANGE_NOTIFY. See NotifyRegistry.armed.
@@ -243,12 +269,64 @@ type notifyMsgKey struct {
 // NewNotifyRegistry creates a new notify registry.
 func NewNotifyRegistry() *NotifyRegistry {
 	return &NotifyRegistry{
-		pending:   make(map[string][]*PendingNotify),
-		byFileID:  make(map[string]*PendingNotify),
-		byMsgKey:  make(map[notifyMsgKey]*PendingNotify),
-		byAsyncId: make(map[uint64]*PendingNotify),
-		armed:     make(map[string]*armedHandle),
+		pending:          make(map[string][]*PendingNotify),
+		byFileID:         make(map[string]*PendingNotify),
+		byMsgKey:         make(map[notifyMsgKey]*PendingNotify),
+		byAsyncId:        make(map[uint64]*PendingNotify),
+		armed:            make(map[string]*armedHandle),
+		cancelTombstones: make(map[notifyMsgKey]time.Time),
 	}
+}
+
+// ErrAlreadyCancelled is returned from Register when a matching SMB2_CANCEL
+// arrived before this CHANGE_NOTIFY could register (issue #623). The handler
+// must respond with STATUS_CANCELLED synchronously instead of returning
+// STATUS_PENDING.
+var ErrAlreadyCancelled = fmt.Errorf("change_notify already cancelled before register")
+
+// MarkPendingCancel records a tombstone for a CHANGE_NOTIFY that may not yet
+// have registered. Called by the SMB2_CANCEL handler when its lookup by
+// (ConnID, MessageID) finds nothing — the matching CHANGE_NOTIFY is likely
+// being processed concurrently on another goroutine. If that NOTIFY then
+// reaches Register, the tombstone causes it to return ErrAlreadyCancelled
+// instead of registering and waiting forever (issue #623).
+//
+// Tombstones expire after cancelTombstoneTTL so a stray CANCEL for a notify
+// that was already rejected synchronously (e.g. invalid filter) doesn't
+// cancel a future unrelated CHANGE_NOTIFY that happens to reuse the same
+// (ConnID, MessageID) much later.
+func (r *NotifyRegistry) MarkPendingCancel(connID, messageID uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cancelTombstones[notifyMsgKey{ConnID: connID, MessageID: messageID}] = time.Now()
+	r.gcCancelTombstonesLocked()
+}
+
+// gcCancelTombstonesLocked evicts expired tombstones. Must be called with
+// r.mu held for write. Called opportunistically from MarkPendingCancel and
+// Register so we don't need a background ticker; tombstones are only created
+// in races and expire quickly even under high load.
+func (r *NotifyRegistry) gcCancelTombstonesLocked() {
+	now := time.Now()
+	for k, ts := range r.cancelTombstones {
+		if now.Sub(ts) > cancelTombstoneTTL {
+			delete(r.cancelTombstones, k)
+		}
+	}
+}
+
+// consumeCancelTombstoneLocked checks for and removes a tombstone matching
+// the given (ConnID, MessageID). Returns true if one was found (and the
+// caller should treat the operation as cancelled). Must be called with r.mu
+// held for write. Expired tombstones are treated as absent.
+func (r *NotifyRegistry) consumeCancelTombstoneLocked(connID, messageID uint64) bool {
+	key := notifyMsgKey{ConnID: connID, MessageID: messageID}
+	ts, ok := r.cancelTombstones[key]
+	if !ok {
+		return false
+	}
+	delete(r.cancelTombstones, key)
+	return time.Since(ts) <= cancelTombstoneTTL
 }
 
 // minNotifyEntryBytes is a lower-bound estimate of one encoded
@@ -331,9 +409,26 @@ var ErrTooManyWatches = fmt.Errorf("too many pending ChangeNotify watches (max %
 // Register adds a pending notification request.
 // If a request with the same FileID already exists, it is replaced.
 // Returns ErrTooManyWatches if the global limit would be exceeded.
+// Returns ErrAlreadyCancelled when an SMB2_CANCEL for the same
+// (ConnID, MessageID) arrived before this Register call (issue #623); the
+// caller MUST respond with STATUS_CANCELLED synchronously instead of
+// emitting STATUS_PENDING.
 func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check for a CANCEL that arrived before us. Tombstones are exact:
+	// a matching (ConnID, MessageID) means the client's CANCEL has already
+	// been dispatched but couldn't find us yet. Short-circuit instead of
+	// registering — the handler will emit STATUS_CANCELLED synchronously.
+	if r.consumeCancelTombstoneLocked(notify.ConnID, notify.MessageID) {
+		logger.Debug("NotifyRegistry: register short-circuited by pre-arrival CANCEL",
+			"connID", notify.ConnID,
+			"messageID", notify.MessageID,
+			"path", notify.WatchPath)
+		return ErrAlreadyCancelled
+	}
+	r.gcCancelTombstonesLocked()
 
 	// If there's already a registration for this FileID, remove the old entry
 	// to keep data structures consistent.

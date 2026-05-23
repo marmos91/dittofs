@@ -252,6 +252,21 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 						"error", err)
 				}
 			}
+		} else if ctx.RequestAsyncId == 0 {
+			// CANCEL arrived before the matching CHANGE_NOTIFY had a chance
+			// to register. Each request runs on its own goroutine, so a
+			// client that fires NOTIFY immediately followed by CANCEL (the
+			// "notify cancel" subtest in smb2.notify.dir does this) can
+			// reorder them on the server side. Drop a tombstone so the
+			// in-flight CHANGE_NOTIFY's Register returns ErrAlreadyCancelled
+			// and the handler answers STATUS_CANCELLED synchronously.
+			// AsyncId-flagged CANCEL cannot race this way (the client only
+			// learns AsyncId from the interim response, which is sent strictly
+			// after Register). See issue #623.
+			h.NotifyRegistry.MarkPendingCancel(ctx.ConnID, ctx.MessageID)
+			logger.Debug("CANCEL: no matching CHANGE_NOTIFY yet — tombstoned for race",
+				"connID", ctx.ConnID,
+				"messageID", ctx.MessageID)
 		}
 	}
 
@@ -529,6 +544,17 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 	if err := h.NotifyRegistry.Register(notify); err != nil {
 		ctx.ReleaseAsync()
+		// Pre-arrival CANCEL race (issue #623): SMB2_CANCEL for this
+		// (ConnID, MessageID) was dispatched before our Register could run.
+		// Answer STATUS_CANCELLED synchronously on this MessageID instead
+		// of emitting STATUS_PENDING and waiting forever.
+		if errors.Is(err, ErrAlreadyCancelled) {
+			logger.Debug("CHANGE_NOTIFY: pre-arrival CANCEL — replying STATUS_CANCELLED",
+				"path", watchPath,
+				"sessionID", ctx.SessionID,
+				"messageID", ctx.MessageID)
+			return NewErrorResult(types.StatusCancelled), nil
+		}
 		logger.Warn("CHANGE_NOTIFY: rejected — too many pending watches",
 			"path", watchPath,
 			"sessionID", ctx.SessionID)
