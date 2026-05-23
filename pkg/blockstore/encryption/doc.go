@@ -24,7 +24,8 @@
 //	offset 0..4    magic              5 bytes  "DFENC"
 //	offset 5       version            1 byte   0x01
 //	offset 6       aead algorithm     1 byte   1: AES-256-GCM, 2: ChaCha20-Poly1305, 3: XChaCha20-Poly1305
-//	offset 7..     master-key-id      uvarint length + bytes
+//	offset 7       wrap kind          1 byte   0x01 (keyprovider managed)
+//	offset 8..     master-key-id      uvarint length + bytes
 //	offset ..      wrapped block key  uvarint length + bytes
 //	offset ..      nonce              1-byte length + bytes (12 for GCM/Poly1305, 24 for XChaCha20)
 //	offset ..      ciphertext + tag   rest of the body

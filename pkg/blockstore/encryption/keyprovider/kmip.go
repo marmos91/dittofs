@@ -177,10 +177,21 @@ func extractSymmetricKeyMaterial(kv *kmip.KeyValue) ([]byte, error) {
 	}
 }
 
+// maxKMIPMessageSize bounds a single inbound KMIP response. KMIP servers
+// pack one RequestMessage / ResponseMessage per TLS write; production
+// responses are kilobytes (Get on a 32-byte symmetric key fits in ~512
+// bytes). 16 MiB is far above any legitimate response yet keeps a
+// malicious or misbehaving peer from forcing an unbounded allocation.
+const maxKMIPMessageSize = 16 * 1024 * 1024
+
 // readKMIPMessage reads exactly one KMIP TTLV-framed message off the
 // wire. KMIP frames begin with an 8-byte header (3-byte tag, 1-byte
-// type, 4-byte length); the body length is read from the header and the
-// full message returned as a single byte slice for ttlv.Unmarshal.
+// type, 4-byte length); per KMIP spec §9.1.1.4 the value field is then
+// zero-padded to an 8-byte boundary, so the total message length is
+// headerLen + length + padding.
+//
+// Bounds the inbound length to maxKMIPMessageSize so a malicious peer
+// cannot trigger a huge allocation via a forged length field.
 func readKMIPMessage(r io.Reader) (ttlv.TTLV, error) {
 	const headerLen = 8
 	header := make([]byte, headerLen)
@@ -188,7 +199,11 @@ func readKMIPMessage(r io.Reader) (ttlv.TTLV, error) {
 		return nil, err
 	}
 	bodyLen := binary.BigEndian.Uint32(header[4:8])
-	body := make([]byte, headerLen+int(bodyLen))
+	if int64(bodyLen) > maxKMIPMessageSize {
+		return nil, fmt.Errorf("keyprovider: kmip message length %d exceeds cap %d", bodyLen, maxKMIPMessageSize)
+	}
+	pad := (8 - int(bodyLen%8)) % 8
+	body := make([]byte, headerLen+int(bodyLen)+pad)
 	copy(body, header)
 	if _, err := io.ReadFull(r, body[headerLen:]); err != nil {
 		return nil, err

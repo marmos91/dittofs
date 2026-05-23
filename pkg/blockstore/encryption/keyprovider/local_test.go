@@ -16,12 +16,12 @@ const testPassphrase = "correct horse battery staple"
 // without coupling to the dfsctl CLI.
 func writeKeyFile(t *testing.T, passphrase string) string {
 	t.Helper()
-	bytes, err := GenerateKeyFile(passphrase)
+	keyFileBytes, err := GenerateKeyFile(passphrase)
 	if err != nil {
 		t.Fatalf("GenerateKeyFile: %v", err)
 	}
 	path := filepath.Join(t.TempDir(), "share.key")
-	if err := os.WriteFile(path, bytes, 0o600); err != nil {
+	if err := os.WriteFile(path, keyFileBytes, 0o600); err != nil {
 		t.Fatalf("write key file: %v", err)
 	}
 	return path

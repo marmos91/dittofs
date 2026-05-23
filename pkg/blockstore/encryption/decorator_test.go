@@ -59,17 +59,16 @@ func factoryFor(aead AEAD) blockstoretest.Factory {
 	return func(t *testing.T) (blockstore.BlockStore, func()) {
 		t.Helper()
 		inner := remotememory.New()
-		// Note: provider lifetime is tied to the test via t.Cleanup
-		// inside newProvider, so we do NOT close it via Decorator.Close
-		// to avoid double-Close on the local provider.
 		prov := newProvider(t)
 		d, err := NewRemote(inner, EncryptionPolicy{AEAD: aead}, prov)
 		if err != nil {
 			t.Fatalf("NewRemote: %v", err)
 		}
-		// Cleanup closes the inner store only; provider close runs via
-		// the t.Cleanup from newProvider above.
-		return d, func() { _ = inner.Close() }
+		// Conformance Factory contract: cleanup must close the
+		// BlockStore. d.Close() releases inner + provider; the
+		// provider's t.Cleanup in newProvider is a safe no-op second
+		// close (aesGCMKEK.Close is idempotent).
+		return d, func() { _ = d.Close() }
 	}
 }
 
