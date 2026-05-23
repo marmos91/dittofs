@@ -1481,6 +1481,90 @@ func TestArmedBuffer_NotChargedWhenLiveWatcherServesEvent(t *testing.T) {
 	}
 }
 
+// TestArmedBuffer_RecursiveWatcherChargesRelativePath asserts the buffered-
+// byte accounting uses the per-watcher relative path (what would actually
+// be encoded into FILE_NOTIFY_INFORMATION.FileName), not the bare
+// fileName. A WatchTree watcher rooted at "/" that sees an event in a deep
+// subdirectory must accumulate the longer "subdir/file.txt" — not the
+// truncated "file.txt" — toward MaxOutputLength.
+//
+// Regression test for PR #613 Copilot review: charging the bare fileName
+// systematically undercounted recursive watchers and let overflow latch
+// later than a real marshal (or Samba notify_marshall_changes) would.
+func TestArmedBuffer_RecursiveWatcherChargesRelativePath(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	fileID := [16]byte{0xF0}
+	var overflowFireCount int32
+
+	// Pick MaxOutputLength so the bare-name accounting (12 + 2*1 = 14, pad
+	// to 16) would fit but the relative-path accounting (12 + 2*20 = 52,
+	// pad to 52) overflows on the first event.
+	//   bare "x.txt"            -> 12 + 2*5 = 22 → 24 bytes
+	//   relative "a/b/c/d/x.txt" -> 12 + 2*13 = 38 → 40 bytes
+	// Set MaxOutputLength=32 so bare would NOT trip but relative WILL.
+	mustRegister(t, r, &PendingNotify{
+		FileID:           fileID,
+		SessionID:        1,
+		ConnID:           1,
+		MessageID:        50,
+		AsyncId:          500,
+		WatchPath:        "/",
+		ShareName:        "s",
+		CompletionFilter: FileNotifyChangeFileName,
+		WatchTree:        true,
+		MaxOutputLength:  32,
+		AsyncCallback:    func(_, _, _ uint64, _ *ChangeNotifyResponse) error { return nil },
+		OnOverflow:       func(_ [16]byte) { atomic.AddInt32(&overflowFireCount, 1) },
+	})
+	if r.UnregisterByAsyncId(500) == nil {
+		t.Fatalf("cancel pending watcher to leave handle armed-but-unwatched")
+	}
+
+	// Event in a deep subdir. Relative-from-root encoding is
+	// "a/b/c/d/x.txt" — 26 bytes UTF-16LE plus 12-byte header = 38, pad
+	// to 40. That single entry alone exceeds MaxOutputLength=32, so
+	// overflow must trip on this event.
+	r.NotifyChange("s", "/a/b/c/d", "x.txt", FileActionAdded)
+	if got := atomic.LoadInt32(&overflowFireCount); got != 1 {
+		t.Errorf("expected overflow to trip on first deep-path event (relative-path accounting), got count=%d — recursive watcher is undercounting", got)
+	}
+}
+
+// TestEncodedNotifyEntrySize_MatchesMarshaledSize asserts the byte estimate
+// used by chargeArmedBuffer agrees with the encoder for representative
+// names — guarding against drift between the accounting and the real wire
+// marshal (EncodeFileNotifyInformation).
+func TestEncodedNotifyEntrySize_MatchesMarshaledSize(t *testing.T) {
+	cases := []string{
+		"a",                 // 1 BMP rune → 12+2+pad(2) = 16
+		"file.txt",          // 8 BMP runes → 12+16 = 28 → pad to 28
+		"sub/deep/name.txt", // 17 BMP runes → 12+34 = 46 → pad to 48
+		"",                  // empty → floor = minNotifyEntryBytes
+		"é",                 // 1 BMP rune (precomposed) → 12+2+pad(2) = 16
+	}
+	for _, name := range cases {
+		got := encodedNotifyEntrySize(name)
+		marshaled := EncodeFileNotifyInformation([]FileNotifyInformation{
+			{Action: FileActionAdded, FileName: name},
+		})
+		want := uint32(len(marshaled))
+		// Single-entry marshal has NextEntryOffset=0 so the trailing pad
+		// is the only difference from a real "next entry follows" frame.
+		// For the empty-name floor case the estimator over-counts by
+		// design (sentinel-size); allow the estimator ≥ marshaled.
+		if name == "" {
+			if got < want {
+				t.Errorf("encodedNotifyEntrySize(%q) = %d < marshaled %d (must be ≥)", name, got, want)
+			}
+			continue
+		}
+		if got != want {
+			t.Errorf("encodedNotifyEntrySize(%q) = %d; marshaled = %d", name, got, want)
+		}
+	}
+}
+
 func TestUnregisterAllForTree_PreservesOtherTrees(t *testing.T) {
 	r := NewNotifyRegistry()
 

@@ -724,29 +724,21 @@ func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, new
 // flagged, OnOverflow fires once and the entry's Overflowed flag latches
 // until the next CHANGE_NOTIFY consumes the sticky bit (which calls
 // ResetArmedOverflow).
+//
+// The encoded size is computed PER-WATCHER: each armed handle's FileName
+// field carries a watcher-relative path (relativePathFromWatch), so a
+// recursive watcher rooted at "/" sees "subdir/file.txt" while an exact
+// watcher on "/subdir" sees "file.txt". Charging the bare fileName against
+// every handle would systematically undercount for ancestor / WatchTree
+// watchers (PR #613 Copilot review) and let the overflow latch later than
+// a real FILE_NOTIFY_INFORMATION marshal — Samba's notify_marshall_changes
+// (source3/smbd/notify.c) likewise marshals the stored per-watcher name,
+// with UTF-16 length doubling and a 4-byte alignment pad.
 func (r *NotifyRegistry) chargeArmedBuffer(
 	shareName, parentPath string, action uint32,
 	candidateNames []string,
 	skipFileIDs map[[16]byte]struct{},
 ) {
-	// Estimate encoded size: each entry is at least minNotifyEntryBytes
-	// (12-byte header + ≥2-byte name + ≤2-byte padding). We don't UTF-16
-	// encode here because the goal is a conservative upper bound; under-
-	// charging would let the test miss the overflow trip, overcharging
-	// would flip overflow on tiny event bursts that a real encoder would
-	// have fit.
-	var addBytes uint32
-	for _, name := range candidateNames {
-		entry := uint32(12 + 2*max(len(name), 1))
-		if entry%4 != 0 {
-			entry += 4 - (entry % 4)
-		}
-		if entry < minNotifyEntryBytes {
-			entry = minNotifyEntryBytes
-		}
-		addBytes += entry
-	}
-
 	type pendingFire struct {
 		fn OnOverflow
 		id [16]byte
@@ -780,6 +772,14 @@ func (r *NotifyRegistry) chargeArmedBuffer(
 		if a.Overflowed {
 			continue
 		}
+		// Size against THIS watcher's view: relativePathFromWatch is what
+		// the real marshal would put on the wire for this handle, so it's
+		// also what should accumulate toward MaxOutputLength.
+		var addBytes uint32
+		for _, name := range candidateNames {
+			relName := relativePathFromWatch(a.WatchPath, parentPath, name)
+			addBytes += encodedNotifyEntrySize(relName)
+		}
 		a.BufferedBytes += addBytes
 		if a.MaxOutputLength == 0 || a.BufferedBytes > a.MaxOutputLength {
 			a.Overflowed = true
@@ -795,6 +795,27 @@ func (r *NotifyRegistry) chargeArmedBuffer(
 	for _, f := range toFire {
 		f.fn(f.id)
 	}
+}
+
+// encodedNotifyEntrySize returns the wire size of a single
+// FILE_NOTIFY_INFORMATION entry whose FileName is name (MS-FSCC §2.4.42):
+// 12-byte fixed header (NextEntryOffset | Action | FileNameLength) plus the
+// UTF-16LE filename bytes, aligned up to 4 bytes. Empty names are charged
+// the minNotifyEntryBytes floor to avoid undercounting a sentinel-encoded
+// entry on the wire.
+func encodedNotifyEntrySize(name string) uint32 {
+	nameBytes := 2 * uint32(len(utf16.Encode([]rune(name))))
+	if nameBytes == 0 {
+		nameBytes = 2
+	}
+	entry := 12 + nameBytes
+	if entry%4 != 0 {
+		entry += 4 - (entry % 4)
+	}
+	if entry < minNotifyEntryBytes {
+		entry = minNotifyEntryBytes
+	}
+	return entry
 }
 
 // pathIsAncestor reports whether ancestor is a path-prefix of descendant
