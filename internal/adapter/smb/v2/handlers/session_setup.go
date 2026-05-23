@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -719,6 +720,13 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 			// replace the existing session (including a guest downgrade).
 			return NewErrorResult(types.StatusLogonFailure), nil
 		}
+		// Re-auth with an unparseable TYPE_3 destroys the existing session
+		// per MS-SMB2 §3.3.5.5.3. Do not downgrade to guest — the original
+		// authenticated identity must not survive a failed re-auth.
+		if pending.IsReauth {
+			h.destroySessionOnReauthFailure(ctx.Context, pending, "")
+			return NewErrorResult(types.StatusLogonFailure), nil
+		}
 		return h.createGuestSessionWithID(ctx, pending)
 	}
 
@@ -808,25 +816,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 						"serverChallenge", fmt.Sprintf("%x", pending.ServerChallenge),
 						"ntHashPrefix", fmt.Sprintf("%x", ntHash[:4]),
 						"pendingSessionID", pending.SessionID)
-					if pending.IsReauth {
-						// Per MS-SMB2 3.3.5.5.2: if re-authentication fails,
-						// the session MUST be deleted. Clean up resources and
-						// mark it as logged off so prepareDispatch rejects
-						// subsequent requests with STATUS_USER_SESSION_DELETED.
-						// The session itself is kept alive (not deleted from the
-						// session manager) so that in-flight goroutines can
-						// still sign their responses. Actual session deletion
-						// happens on connection close via cleanupSessions().
-						logger.Info("Re-authentication failed, destroying session",
-							"sessionID", pending.SessionID,
-							"username", authMsg.Username)
-						if sess, ok := h.GetSession(pending.SessionID); ok {
-							sess.LoggedOff.Store(true)
-						}
-						h.CloseAllFilesForSession(ctx.Context, pending.SessionID, false)
-						h.releaseSessionLeasesAndNotifies(ctx.Context, pending.SessionID)
-						h.DeleteAllTreesForSession(pending.SessionID)
-					}
+					h.destroySessionOnReauthFailure(ctx.Context, pending, authMsg.Username)
 					return NewErrorResult(types.StatusLogonFailure), nil
 				}
 
@@ -928,6 +918,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 			logger.Debug("User not found in UserStore", "username", resolvedUsername, "error", err)
 		} else if user != nil && !user.Enabled {
 			logger.Debug("User account disabled", "username", resolvedUsername)
+			h.destroySessionOnReauthFailure(ctx.Context, pending, authMsg.Username)
 			return NewErrorResult(types.StatusLogonFailure), nil
 		}
 
@@ -937,8 +928,21 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 		if mappingFound {
 			logger.Info("Identity mapping resolved but user not found, denying access",
 				"principal", principal, "resolvedUsername", resolvedUsername)
+			h.destroySessionOnReauthFailure(ctx.Context, pending, authMsg.Username)
 			return NewErrorResult(types.StatusLogonFailure), nil
 		}
+	}
+
+	// Re-auth with credentials that don't resolve to any user (no UserStore,
+	// unknown principal, etc.) MUST destroy the existing session per
+	// MS-SMB2 §3.3.5.5.3 — silently downgrading to guest would let an
+	// attacker who knows a SessionID strip its authenticated identity.
+	// smb2.notify.invalid-reauth depends on this: after the failed re-auth
+	// the pending CHANGE_NOTIFY must complete with STATUS_NOTIFY_CLEANUP
+	// and subsequent ops must return STATUS_USER_SESSION_DELETED.
+	if pending.IsReauth {
+		h.destroySessionOnReauthFailure(ctx.Context, pending, authMsg.Username)
+		return NewErrorResult(types.StatusLogonFailure), nil
 	}
 
 	// Fall back to guest session (never for binding — a bind must only succeed
@@ -948,6 +952,41 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 		return NewErrorResult(types.StatusLogonFailure), nil
 	}
 	return h.createGuestSessionWithID(ctx, pending)
+}
+
+// destroySessionOnReauthFailure tears down an existing session after its
+// re-authentication attempt failed. No-op when pending is not a re-auth, so
+// callers can invoke it unconditionally on every auth-failure path.
+//
+// Per MS-SMB2 §3.3.5.5.3, a failed re-auth MUST destroy the session: the
+// original authenticated identity does not survive bad credentials, and
+// silently downgrading to a guest session would let any client that knows
+// the SessionID strip authentication from another user's session.
+//
+// Resource cleanup mirrors transport-drop / explicit-LOGOFF (CleanupSession
+// and the LOGOFF handler): the session is marked LoggedOff so future
+// requests are rejected with STATUS_USER_SESSION_DELETED via prepareDispatch,
+// all open files are closed, leases are released, pending CHANGE_NOTIFY
+// requests complete with STATUS_NOTIFY_CLEANUP, tree connects are torn
+// down. The Session record itself is left in the session manager so any
+// in-flight handler goroutines can still sign their responses; the manager
+// entry is reaped on connection close via CleanupSession.
+//
+// Reference: Samba source3/smbd/smb2_sesssetup.c — smbXsrv_session_logoff()
+// equivalent path runs on reauth_session_setup_fail.
+func (h *Handler) destroySessionOnReauthFailure(ctx context.Context, pending *PendingAuth, attemptedUsername string) {
+	if pending == nil || !pending.IsReauth {
+		return
+	}
+	logger.Info("Re-authentication failed, destroying session",
+		"sessionID", pending.SessionID,
+		"attemptedUsername", attemptedUsername)
+	if sess, ok := h.GetSession(pending.SessionID); ok {
+		sess.LoggedOff.Store(true)
+	}
+	h.CloseAllFilesForSession(ctx, pending.SessionID, false)
+	h.releaseSessionLeasesAndNotifies(ctx, pending.SessionID)
+	h.DeleteAllTreesForSession(pending.SessionID)
 }
 
 // createGuestSessionWithID creates a guest session with a specific session ID.
