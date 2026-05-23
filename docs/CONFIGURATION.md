@@ -418,6 +418,41 @@ See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep-v0150-phase-
 for the full mark-sweep design and [CLI.md](CLI.md) for the on-demand
 `dfsctl store block gc` command.
 
+#### Remote block-level compression (opt-in)
+
+A remote block store may compress block payloads before upload and
+decompress on download. The plaintext BLAKE3 hash remains the CAS key,
+so dedup and GC are unaffected. The decorator is per-remote: every
+share that references the remote inherits its compression policy.
+
+Add a `compression` block to the remote store's `config` JSON when
+creating it:
+
+```bash
+./dfsctl store block add --kind remote --name prod-s3 --type s3 \
+  --config '{"region":"us-east-1","bucket":"dfs-production","compression":{"algo":"zstd"}}'
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `algo` | string | `"zstd"` | Algorithm: `"zstd"` or `"lz4"`. Defaults to zstd when the `compression` block is present but `algo` is omitted. |
+
+Notes:
+
+- Absence of the `compression` block means no wrapping — zero behavior
+  change for existing remotes.
+- Per-block adaptive: if the compressed body is not strictly smaller
+  than the plaintext, the decorator stores the raw plaintext with no
+  header. Incompressible payloads (random data, already-compressed
+  media) cost only the encoder pass, no on-wire expansion.
+- `GetRange` on a framed block decompresses the full block before
+  slicing — there is no random access into a compressed body. Read
+  paths that consume whole CDC chunks are unaffected.
+- The policy is captured at remote-store creation; restart the share
+  after editing the config to switch algorithms. Mixed framed and raw
+  blocks coexist within one remote and the reader auto-detects via the
+  5-byte `DFCMP` magic prefix.
+
 ### 7. Metadata Configuration
 
 Metadata configuration has two parts: filesystem capabilities (server config file) and store instances (managed via CLI).

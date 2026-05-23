@@ -2,6 +2,7 @@ package shares
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -15,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/pathutil"
 	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/blockstore/compression"
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
 	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
@@ -618,6 +620,16 @@ func (s *Service) acquireRemoteStore(ctx context.Context, configID string, provi
 		return nil, "", fmt.Errorf("failed to create remote store: %w", err)
 	}
 
+	// Wrap with compression decorator when the remote's config carries a
+	// `compression` block. Policy is captured at acquire time and never
+	// re-read; operators must restart the share to change the algorithm.
+	wrapped, err := maybeWrapCompression(newStore, remoteCfg)
+	if err != nil {
+		_ = newStore.Close()
+		return nil, "", fmt.Errorf("failed to apply compression policy: %w", err)
+	}
+	newStore = wrapped
+
 	// Double-check: another goroutine may have created the store concurrently.
 	s.mu.Lock()
 	if sr, ok := s.remoteStores[configID]; ok {
@@ -636,6 +648,29 @@ func (s *Service) acquireRemoteStore(ctx context.Context, configID string, provi
 
 	logger.Info("Created shared remote store", "config_id", configID, "type", remoteCfg.Type)
 	return newStore, configID, nil
+}
+
+// maybeWrapCompression inspects the remote config's "compression" key
+// and, when present, wraps inner with a compression.Decorator. Returns
+// inner unchanged when the key is absent.
+func maybeWrapCompression(inner remote.RemoteStore, cfg *models.BlockStoreConfig) (remote.RemoteStore, error) {
+	parsed, err := cfg.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("parse block store config: %w", err)
+	}
+	raw, ok := parsed["compression"]
+	if !ok {
+		return inner, nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("marshal compression sub-config: %w", err)
+	}
+	policy, err := compression.ParsePolicy(encoded)
+	if err != nil {
+		return nil, err
+	}
+	return compression.NewRemote(inner, policy)
 }
 
 // releaseRemoteStore decrements the reference count and closes the remote store if no longer used.
