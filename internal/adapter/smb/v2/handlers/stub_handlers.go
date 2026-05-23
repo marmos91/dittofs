@@ -348,6 +348,15 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
+	// Shares with change notify disabled reject every request with
+	// STATUS_NOT_IMPLEMENTED, matching Samba `kernel change notify = no`
+	// and smb2.change_notify_disabled.
+	if tree, ok := h.GetTree(ctx.TreeID); ok && tree.ChangeNotifyDisabled {
+		logger.Debug("CHANGE_NOTIFY: rejected — share has change notify disabled",
+			"shareName", tree.ShareName)
+		return NewErrorResult(types.StatusNotImplemented), nil
+	}
+
 	// Get the open file (must be a directory)
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
@@ -409,6 +418,22 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		return NewErrorResult(types.StatusNotSupported), nil
 	}
 
+	// Sticky overflow: a previous CHANGE_NOTIFY on this handle exceeded its
+	// buffer and completed with STATUS_NOTIFY_ENUM_DIR. Per Samba
+	// notify_buffer semantics and smb2.notify.valid-req, the next notify on
+	// the handle MUST also return ENUM_DIR (events were dropped, directory
+	// state is now inconsistent). Consume the flag and reply sync — the
+	// client's recv loop accepts either sync or async completion.
+	if openFile.NotifyOverflowed.CompareAndSwap(true, false) {
+		respBytes, err := (&ChangeNotifyResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
+		}).Encode()
+		if err != nil {
+			return NewErrorResult(types.StatusInternalError), nil
+		}
+		return NewResult(types.StatusNotifyEnumDir, respBytes), nil
+	}
+
 	// Generate a unique AsyncId for this pending request.
 	// Per MS-SMB2 3.3.5.15, the server assigns an AsyncId and sends an
 	// interim response with STATUS_PENDING. The same AsyncId is used in
@@ -427,6 +452,11 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		WatchTree:        req.Flags&SMB2WatchTree != 0,
 		MaxOutputLength:  req.OutputBufferLength,
 		AsyncCallback:    ctx.AsyncNotifyCallback,
+		OnOverflow: func(fileID [16]byte) {
+			if of, ok := h.GetOpenFile(fileID); ok {
+				of.NotifyOverflowed.Store(true)
+			}
+		},
 	}
 
 	// Per MS-SMB2 §3.3.5.2.5: enforce max_async_credits before going async.

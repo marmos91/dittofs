@@ -44,9 +44,12 @@ type Share struct {
 	AclFlagInheritedCanonicalization bool `json:"acl_flag_inherited_canonicalization"`
 	// AccessBasedEnumeration mirrors models.Share — Refs #532. No omitempty
 	// for the same reason.
-	AccessBasedEnumeration bool      `json:"access_based_enumeration"`
-	CreatedAt              time.Time `json:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	AccessBasedEnumeration bool `json:"access_based_enumeration"`
+	// ChangeNotifyDisabled mirrors models.Share. No omitempty: `false` is
+	// the operator-meaningful "change notify enabled" state.
+	ChangeNotifyDisabled bool      `json:"change_notify_disabled"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // CreateShareRequest is the request to create a share.
@@ -71,6 +74,9 @@ type CreateShareRequest struct {
 	// AccessBasedEnumeration — Refs #532. Pointer so callers can distinguish
 	// "unset → server default (false)" from "explicit true".
 	AccessBasedEnumeration *bool `json:"access_based_enumeration,omitempty"`
+	// ChangeNotifyDisabled — pointer so callers can distinguish "unset →
+	// server default (false)" from "explicit true".
+	ChangeNotifyDisabled *bool `json:"change_notify_disabled,omitempty"`
 }
 
 // UpdateShareRequest is the request to update a share.
@@ -93,6 +99,9 @@ type UpdateShareRequest struct {
 	// AccessBasedEnumeration — Refs #532. nil = no change; non-nil =
 	// explicit set. Takes effect on adapter restart.
 	AccessBasedEnumeration *bool `json:"access_based_enumeration,omitempty"`
+	// ChangeNotifyDisabled — nil = no change; non-nil = explicit set. Takes
+	// effect on adapter restart.
+	ChangeNotifyDisabled *bool `json:"change_notify_disabled,omitempty"`
 }
 
 // SharePermission represents a permission on a share.

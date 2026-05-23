@@ -84,6 +84,9 @@ type CreateShareRequest struct {
 	// keeps the server default (false); a non-nil pointer is an explicit
 	// set.
 	AccessBasedEnumeration *bool `json:"access_based_enumeration,omitempty"`
+	// ChangeNotifyDisabled — pointer so nil keeps default false (change
+	// notify enabled).
+	ChangeNotifyDisabled *bool `json:"change_notify_disabled,omitempty"`
 }
 
 // UpdateShareRequest is the request body for PUT /api/v1/shares/{name}.
@@ -108,6 +111,9 @@ type UpdateShareRequest struct {
 	// AccessBasedEnumeration — Refs #532. nil = no change; non-nil = explicit
 	// set. Persisted on UpdateShare; takes effect on adapter restart.
 	AccessBasedEnumeration *bool `json:"access_based_enumeration,omitempty"`
+	// ChangeNotifyDisabled — nil = no change; non-nil = explicit set.
+	// Persisted on UpdateShare; takes effect on adapter restart.
+	ChangeNotifyDisabled *bool `json:"change_notify_disabled,omitempty"`
 }
 
 // ShareResponse is the response body for share endpoints.
@@ -139,9 +145,12 @@ type ShareResponse struct {
 	AclFlagInheritedCanonicalization bool `json:"acl_flag_inherited_canonicalization"`
 	// AccessBasedEnumeration mirrors models.Share — Refs #532. No omitempty
 	// for the same reason: operators need to render the explicit state.
-	AccessBasedEnumeration bool      `json:"access_based_enumeration"`
-	CreatedAt              time.Time `json:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	AccessBasedEnumeration bool `json:"access_based_enumeration"`
+	// ChangeNotifyDisabled mirrors models.Share. No omitempty for the same
+	// reason.
+	ChangeNotifyDisabled bool      `json:"change_notify_disabled"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 
 	// Status is the worst-of health report derived from the share's
 	// metadata store and block store engine. Non-omitempty so
@@ -285,6 +294,13 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		abe = *req.AccessBasedEnumeration
 	}
 
+	// Change notify defaults enabled (false = enabled, mirrors Samba's
+	// `kernel change notify = yes` default).
+	cnDisabled := false
+	if req.ChangeNotifyDisabled != nil {
+		cnDisabled = *req.ChangeNotifyDisabled
+	}
+
 	now := time.Now()
 	share := &models.Share{
 		ID:                               uuid.New().String(),
@@ -303,6 +319,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Enabled:                          true, // REST-02: new shares are enabled by default.
 		AclFlagInheritedCanonicalization: aclCanon,
 		AccessBasedEnumeration:           abe,
+		ChangeNotifyDisabled:             cnDisabled,
 		CreatedAt:                        now,
 		UpdatedAt:                        now,
 	}
@@ -344,6 +361,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			EncryptData:                      req.EncryptData,
 			AclFlagInheritedCanonicalization: share.AclFlagInheritedCanonicalization,
 			AccessBasedEnumeration:           share.AccessBasedEnumeration,
+			ChangeNotifyDisabled:             share.ChangeNotifyDisabled,
 			DefaultPermission:                defaultPerm,
 			Squash:                           nfsOpts.GetSquashMode(),
 			AnonymousUID:                     nfsOpts.GetAnonymousUID(),
@@ -474,6 +492,10 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.AccessBasedEnumeration != nil {
 		// Refs #532. Persisted to DB; takes effect on adapter restart.
 		share.AccessBasedEnumeration = *req.AccessBasedEnumeration
+	}
+	if req.ChangeNotifyDisabled != nil {
+		// Persisted to DB; takes effect on adapter restart.
+		share.ChangeNotifyDisabled = *req.ChangeNotifyDisabled
 	}
 	if req.DefaultPermission != nil {
 		share.DefaultPermission = *req.DefaultPermission
@@ -972,6 +994,7 @@ func shareToResponse(s *models.Share) ShareResponse {
 		QuotaBytes:                       quotaBytesStr,
 		AclFlagInheritedCanonicalization: s.AclFlagInheritedCanonicalization,
 		AccessBasedEnumeration:           s.AccessBasedEnumeration,
+		ChangeNotifyDisabled:             s.ChangeNotifyDisabled,
 		CreatedAt:                        s.CreatedAt,
 		UpdatedAt:                        s.UpdatedAt,
 	}

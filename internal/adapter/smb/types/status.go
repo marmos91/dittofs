@@ -124,6 +124,11 @@ const (
 	// StatusNotSupported indicates the operation is not supported.
 	StatusNotSupported Status = 0xC00000BB
 
+	// StatusNotImplemented signals the requested command is not implemented
+	// by the server [MS-ERREF]. Used by the SMB2 CHANGE_NOTIFY path when
+	// the target share has change notify administratively disabled.
+	StatusNotImplemented Status = 0xC0000002
+
 	// StatusNetworkNameDeleted indicates the share was deleted.
 	StatusNetworkNameDeleted Status = 0xC00000C9
 
@@ -241,6 +246,8 @@ func (s Status) String() string {
 		return "STATUS_INVALID_HANDLE"
 	case StatusNotSupported:
 		return "STATUS_NOT_SUPPORTED"
+	case StatusNotImplemented:
+		return "STATUS_NOT_IMPLEMENTED"
 	case StatusDirectoryNotEmpty:
 		return "STATUS_DIRECTORY_NOT_EMPTY"
 	case StatusNotADirectory:

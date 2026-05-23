@@ -277,6 +277,15 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, fmt.Errorf("failed to backfill shares.access_based_enumeration: %w", err)
 	}
 
+	// Backfill shares.change_notify_disabled for rows that predate the
+	// column — same SQLite quirk as access_based_enumeration above.
+	if err := db.Exec(
+		"UPDATE shares SET change_notify_disabled = ? WHERE change_notify_disabled IS NULL",
+		false,
+	).Error; err != nil {
+		return nil, fmt.Errorf("failed to backfill shares.change_notify_disabled: %w", err)
+	}
+
 	// --- Post-AutoMigrate migrations ---
 	// Step 2: Migrate legacy Share payload_store_id column to local/remote block store IDs.
 	postMigrator := db.Migrator()

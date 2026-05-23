@@ -250,6 +250,11 @@ type TreeConnection struct {
 	// QUERY_DIRECTORY filters entries the caller cannot read (refs #532,
 	// MS-SMB2 §2.2.10 SMB2_SHAREFLAG_ACCESS_BASED_DIRECTORY_ENUM).
 	AccessBasedEnumeration bool
+	// ChangeNotifyDisabled mirrors the share-level toggle. When true,
+	// CHANGE_NOTIFY requests on this tree are rejected with
+	// STATUS_NOT_IMPLEMENTED — matches Samba `kernel change notify = no`
+	// and the smb2.change_notify_disabled torture test.
+	ChangeNotifyDisabled bool
 }
 
 // OpenFile represents an open file handle created by the CREATE command.
@@ -348,6 +353,18 @@ type OpenFile struct {
 	// DurableTimeoutMs is the granted durable handle timeout in milliseconds.
 	// The handle expires this many milliseconds after client disconnects.
 	DurableTimeoutMs uint32
+
+	// NotifyOverflowed is the sticky overflow flag for SMB2 CHANGE_NOTIFY on
+	// this directory handle. Set when a notify completes with
+	// STATUS_NOTIFY_ENUM_DIR because the encoded change list exceeds the
+	// requested OutputBufferLength. The next CHANGE_NOTIFY on this handle
+	// MUST also return STATUS_NOTIFY_ENUM_DIR regardless of the new buffer
+	// size — once events are lost the directory state is considered
+	// inconsistent and the client must re-enumerate (Samba notify_buffer
+	// is_overflow semantics; smb2.notify.valid-req "if the first notify
+	// returns NOTIFY_ENUM_DIR, all do"). Cleared after that next notify
+	// consumes it. Lifetime is the handle: closing/reopening resets it.
+	NotifyOverflowed atomic.Bool
 }
 
 // OpenID returns a unique identifier for this open file handle.
@@ -627,8 +644,23 @@ func (h *Handler) closeFilesWithFilter(
 		// stale watchers persist in the NotifyRegistry after connection
 		// cleanup and can fire during subsequent tests, sending async
 		// responses on dead connections with partially-destroyed sessions.
+		// Per MS-SMB2 3.3.4.1: when the watched handle goes away the
+		// pending request MUST complete with STATUS_NOTIFY_CLEANUP so the
+		// client's async recv unblocks (smb2.notify.tcon, .dir).
 		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.Unregister(fileID)
+			if notify := h.NotifyRegistry.Unregister(fileID); notify != nil && notify.AsyncCallback != nil {
+				go func(n *PendingNotify) {
+					cleanupResp := &ChangeNotifyResponse{
+						SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
+					}
+					if err := n.AsyncCallback(n.SessionID, n.MessageID, n.AsyncId, cleanupResp); err != nil {
+						logger.Debug("closeFilesWithFilter: failed to send STATUS_NOTIFY_CLEANUP",
+							"sessionID", n.SessionID,
+							"messageID", n.MessageID,
+							"error", err)
+					}
+				}(notify)
+			}
 		}
 		h.DeleteOpenFile(fileID)
 	}
@@ -782,7 +814,27 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 		}
 	}
 	if h.NotifyRegistry != nil {
-		h.NotifyRegistry.UnregisterAllForSession(sessionID)
+		// Per MS-SMB2 3.3.5.5.2 / 3.3.5.5.3: when a session is destroyed
+		// (LOGOFF, transport drop, re-auth failure, or PreviousSessionID
+		// supersession), pending CHANGE_NOTIFY requests MUST complete with
+		// STATUS_NOTIFY_CLEANUP so the client unblocks its async recv.
+		// Mirrors the per-file path in close.go.
+		for _, notify := range h.NotifyRegistry.UnregisterAllForSession(sessionID) {
+			if notify.AsyncCallback == nil {
+				continue
+			}
+			go func(n *PendingNotify) {
+				cleanupResp := &ChangeNotifyResponse{
+					SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
+				}
+				if err := n.AsyncCallback(n.SessionID, n.MessageID, n.AsyncId, cleanupResp); err != nil {
+					logger.Debug("session cleanup: failed to send STATUS_NOTIFY_CLEANUP",
+						"sessionID", n.SessionID,
+						"messageID", n.MessageID,
+						"error", err)
+				}
+			}(notify)
+		}
 	}
 	if h.PipeReadRegistry != nil {
 		for _, pending := range h.PipeReadRegistry.UnregisterAllForSession(sessionID) {
