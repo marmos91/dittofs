@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/binary"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -1678,24 +1679,11 @@ func TestUnregisterAllForTree_PreservesOtherTrees(t *testing.T) {
 // exercise Handler.ChangeNotify through its parser.
 func encodeChangeNotifyRequest(flags uint16, outputBufferLength uint32, fileID [16]byte, completionFilter uint32) []byte {
 	body := make([]byte, 32)
-	// StructureSize = 32 (LE u16)
-	body[0] = 32
-	body[1] = 0
-	// Flags (LE u16)
-	body[2] = byte(flags)
-	body[3] = byte(flags >> 8)
-	// OutputBufferLength (LE u32)
-	body[4] = byte(outputBufferLength)
-	body[5] = byte(outputBufferLength >> 8)
-	body[6] = byte(outputBufferLength >> 16)
-	body[7] = byte(outputBufferLength >> 24)
-	// FileID (16 bytes)
+	binary.LittleEndian.PutUint16(body[0:2], 32) // StructureSize
+	binary.LittleEndian.PutUint16(body[2:4], flags)
+	binary.LittleEndian.PutUint32(body[4:8], outputBufferLength)
 	copy(body[8:24], fileID[:])
-	// CompletionFilter (LE u32)
-	body[24] = byte(completionFilter)
-	body[25] = byte(completionFilter >> 8)
-	body[26] = byte(completionFilter >> 16)
-	body[27] = byte(completionFilter >> 24)
+	binary.LittleEndian.PutUint32(body[24:28], completionFilter)
 	return body
 }
 
