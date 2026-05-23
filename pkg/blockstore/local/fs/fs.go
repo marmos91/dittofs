@@ -277,6 +277,20 @@ type FSStore struct {
 	// constructed, so the setter path is the production wire-in site.
 	onChunkComplete func(hash blockstore.ContentHash, data []byte, path string)
 
+	// compactionThresholdBytes is the minimum number of pre-fence bytes
+	// that must accumulate in a per-payload log before the next rollup
+	// pass triggers physical compaction (rewrites the log file dropping
+	// records below idx.compactionFence). Default = maxLogBytes /
+	// defaultCompactionDivisor when FSStoreOptions.CompactionThresholdBytes
+	// is zero. Set to a negative value to disable compaction entirely
+	// (the log file then grows until DeleteAppendLog wipes the payload,
+	// matching pre-#579 behavior).
+	//
+	// Trade-off: a smaller threshold caps disk growth tighter at the
+	// cost of more I/O churn (per-pass we copy `survivors` bytes); a
+	// larger threshold lets the log grow further between passes.
+	compactionThresholdBytes int64
+
 	// orphanLogMinAgeSeconds gates the append-log orphan sweep during
 	// recovery (D-28 / Warning 3). A log is considered orphan only when
 	// (a) its rollup_offset in metadata is 0, (b) no FileBlock exists for
@@ -600,6 +614,15 @@ type FSStoreOptions struct {
 	// RAM-only (D-05). Surfaced via pkg/config as
 	// blockstore.local.dedup_lru_size.
 	DedupLRUSize int
+
+	// CompactionThresholdBytes controls when physical log compaction
+	// runs (#579). After a rollup pass advances idx.compactionFence,
+	// the rewrite is invoked if the fence sits more than this many
+	// bytes above logHeaderSize. Zero defers to the default
+	// (maxLogBytes / defaultCompactionDivisor). A negative value
+	// disables compaction entirely (pre-#579 behavior — the log grows
+	// until DeleteAppendLog).
+	CompactionThresholdBytes int64
 }
 
 // NewWithOptions constructs an FSStore. Non-zero values in opts override
@@ -653,6 +676,24 @@ func newFSStoreWithOptionsInternal(baseDir string, maxDisk, maxMemory int64, fil
 		bc.orphanLogMinAgeSeconds = opts.OrphanLogMinAgeSeconds
 	} else {
 		bc.orphanLogMinAgeSeconds = 3600
+	}
+
+	// Compaction threshold (#579). Zero → derive from maxLogBytes so a
+	// smaller log budget compacts proportionally more aggressively; a
+	// negative value disables compaction entirely (pre-#579 behavior,
+	// useful for tests pinned to the legacy growth pattern).
+	switch {
+	case opts.CompactionThresholdBytes > 0:
+		bc.compactionThresholdBytes = opts.CompactionThresholdBytes
+	case opts.CompactionThresholdBytes < 0:
+		bc.compactionThresholdBytes = -1
+	default:
+		bc.compactionThresholdBytes = bc.maxLogBytes / defaultCompactionDivisor
+		if bc.compactionThresholdBytes <= 0 {
+			// maxLogBytes < defaultCompactionDivisor — clamp so a tiny
+			// budget still gets a sensible threshold floor.
+			bc.compactionThresholdBytes = int64(logHeaderSize)
+		}
 	}
 
 	// Phase 19 Plan 04: per-FSStore hash dedup LRU + chunk-complete

@@ -94,12 +94,21 @@
 // pass that emits chunks, so the dirty interval clears and the workload
 // makes forward progress even when the fence cannot.
 //
-// TRANSITIONAL-V0.17+: physical log compaction (rewriting the log file
-// dropping consumed records up to compactionFence) is not implemented
-// here. The on-disk log grows until the payload is deleted; pressure
-// machinery caps the worst case via maxLogBytes. A future milestone
-// will add a compaction pass that truncates the on-disk log down to
-// its post-fence suffix.
+// Physical log compaction (#579): when the in-memory compactionFence
+// has advanced past logHeaderSize by more than
+// FSStoreOptions.CompactionThresholdBytes (default = maxLogBytes / 4),
+// the post-rollup pass rewrites the log file dropping every record
+// below the fence. The rewrite uses a temp file + fsync + parent-dir
+// fsync (skipped on Windows) + atomic rename, then swaps the in-memory
+// fd / groupCommit / logIndex under the per-file mu. The compacted
+// header carries a LogFlagCompacted bit so recovery skips the
+// metaOff > hdrOff reconcile (post-compaction metadata.rollup_offset
+// legitimately sits above the compacted file's header offset and is no
+// longer a physical position). Metadata.rollup_offset retains its
+// monotonic high-water mark after compaction — SetRollupOffset calls
+// from post-compaction rollup passes return ErrRollupOffsetRegression
+// and are swallowed; the on-disk header is the source of truth from
+// then on. See compaction.go for the full sequence.
 //
 // In-memory bookkeeping IS trimmed (R-2, #581): every AdvanceFence
 // call drops the prefix of logIndex.entries (and the matching consumed

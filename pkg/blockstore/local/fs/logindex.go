@@ -49,8 +49,12 @@ import (
 // interval set is NOT trimmed in lockstep — its merged-interval rep is
 // already proportional to distinct dirty file regions, not arrival count.)
 //
-// Physical log compaction (truncating the log file at compactionFence) is
-// still out of scope and remains tracked as v0.17+ work — see #579.
+// Physical log compaction (#579): the post-rollup pass invokes
+// compactLogLocked when (compactionFence - logHeaderSize) exceeds the
+// configured threshold. The rewrite drops consumed entries below the
+// fence, rebases the surviving entries' logPos values, and rewinds
+// fenceCursor to 0. After compaction the in-memory entries slice and
+// the on-disk log both track live records only.
 
 // logEntry is one record's position in the log + the file-offset extent it
 // covers. The entry is immutable once appended; consumption is tracked
