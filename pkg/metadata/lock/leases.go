@@ -497,16 +497,36 @@ func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle File
 			// RqLs processing, so the cross-key conflicts that reach this
 			// path are non-violating, non-destructive lease conflicts —
 			// strip Write, keep Read + Handle. RWH→RH, RW→R.
-			breakTo := ComputeLeaseBreakTo(lock.Lease.LeaseState, BreakReasonDefault)
+			//
+			// Effective state mirrors OpLocksConflict's view: a breaking
+			// holder's pending downgrade (BreakingToRequired) is what the
+			// new opener will actually contend with, so the break-to is
+			// computed against that rather than the pre-break LeaseState.
+			// Without this, a holder mid-break to RH still triggers a
+			// fresh "strip W" dispatch here because LeaseState is still
+			// RWH on paper — even though BreakingToRequired (RH) already
+			// equals breakTo and the AND-merge below would be the only
+			// useful action.
+			effectiveState := lock.Lease.LeaseState
+			if lock.Lease.Breaking {
+				effectiveState = lock.Lease.BreakingToRequired
+			}
+			breakTo := ComputeLeaseBreakTo(effectiveState, BreakReasonDefault)
 
-			// If existing lease has no Write bit, the break is a no-op
-			// (e.g., existing=R, breakTo=R). In this case, don't dispatch
-			// a break -- just proceed to downgrade the new request.
-			if breakTo == lock.Lease.LeaseState {
-				logger.Debug("RequestLease: cross-key conflict but existing has no Write, skipping break",
+			// If the existing lease's effective state already satisfies
+			// the break-to target, no further dispatch is needed: either
+			// the holder has no Write bit to strip (e.g. fresh RH), or
+			// the in-flight break is heading there already (cumulative
+			// target via prior pre-RqLs break). The new opener proceeds
+			// straight to bestGrantableState; the holder either stays put
+			// or completes its in-flight break on its own.
+			if breakTo == effectiveState {
+				logger.Debug("RequestLease: cross-key conflict already satisfied by holder effective state, skipping break",
 					"fileHandle", handleKey,
 					"existingKey", fmt.Sprintf("%x", lock.Lease.LeaseKey),
 					"existingState", LeaseStateToString(lock.Lease.LeaseState),
+					"effectiveState", LeaseStateToString(effectiveState),
+					"breaking", lock.Lease.Breaking,
 					"requestedState", LeaseStateToString(requestedState))
 				break
 			}
