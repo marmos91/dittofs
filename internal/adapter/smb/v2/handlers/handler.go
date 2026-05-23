@@ -659,6 +659,7 @@ func (h *Handler) closeFilesWithFilter(
 		// pending request MUST complete with STATUS_NOTIFY_CLEANUP so the
 		// client's async recv unblocks (smb2.notify.tcon, .dir).
 		if h.NotifyRegistry != nil {
+			h.NotifyRegistry.Disarm(fileID)
 			if notify := h.NotifyRegistry.Unregister(fileID); notify != nil && notify.AsyncCallback != nil {
 				go func(n *PendingNotify) {
 					cleanupResp := &ChangeNotifyResponse{

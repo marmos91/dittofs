@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"sync/atomic"
 	"testing"
 
@@ -1278,6 +1279,208 @@ func TestUnregisterAllForSession_ReturnedNotifiesPreserveAsyncCallback(t *testin
 	}
 }
 
+// TestArmedBuffer_OverflowsAfterCancelWithNoLiveWatcher reproduces the
+// smb2.notify.overflow torture flow: a CHANGE_NOTIFY arms the handle and is
+// then cancelled (no live watcher remains), 100 directory-create events
+// fire (each FILE_ACTION_ADDED), and the next CHANGE_NOTIFY on the handle
+// must observe the armed overflow trip via OnOverflow. The bug before the
+// fix was that NotifyChange short-circuited when no live watcher matched,
+// so events accumulated in the gap were never counted and the handle's
+// sticky overflow was never set.
+func TestArmedBuffer_OverflowsAfterCancelWithNoLiveWatcher(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	fileID := [16]byte{0xCC}
+	var overflowFireCount int32
+	var lastOverflowFileID [16]byte
+
+	// Match the torture test parameters: 1000-byte buffer, recursive,
+	// FILE_NOTIFY_CHANGE_NAME (covered by FileNotifyChangeFileName |
+	// FileNotifyChangeDirName).
+	first := &PendingNotify{
+		FileID:           fileID,
+		SessionID:        1,
+		ConnID:           1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/basedir_ovf",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName | FileNotifyChangeDirName,
+		WatchTree:        true,
+		MaxOutputLength:  1000,
+		AsyncCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+			return nil
+		},
+		OnOverflow: func(id [16]byte) {
+			atomic.AddInt32(&overflowFireCount, 1)
+			lastOverflowFileID = id
+		},
+	}
+	mustRegister(t, r, first)
+
+	// Client cancels the initial notify (smbtorture does this to "set up
+	// the buffer"). Pending entry is removed but the handle stays armed.
+	if got := r.UnregisterByAsyncId(100); got == nil {
+		t.Fatalf("expected to unregister live watcher on cancel")
+	}
+
+	// Fire 100 FILE_ACTION_ADDED events on subdirs (mirroring the torture
+	// loop that creates 100 directories inside the watched root).
+	for i := 0; i < 100; i++ {
+		r.NotifyChange("share1", "/basedir_ovf", fmt.Sprintf("test%d.txt", i), FileActionAdded)
+	}
+
+	// Sticky overflow must have tripped exactly once.
+	if atomic.LoadInt32(&overflowFireCount) != 1 {
+		t.Fatalf("expected OnOverflow to fire exactly 1× across 100 events, got %d", overflowFireCount)
+	}
+	if lastOverflowFileID != fileID {
+		t.Errorf("expected OnOverflow with fileID %v, got %v", fileID, lastOverflowFileID)
+	}
+
+	// Disarm clears the armed slot — events fired after this must NOT
+	// re-trip overflow (the handle has been closed).
+	if !r.Disarm(fileID) {
+		t.Errorf("expected Disarm to report removal")
+	}
+	r.NotifyChange("share1", "/basedir_ovf", "post-close.txt", FileActionAdded)
+	if atomic.LoadInt32(&overflowFireCount) != 1 {
+		t.Errorf("expected no additional OnOverflow after Disarm, got count=%d", overflowFireCount)
+	}
+}
+
+// TestArmedBuffer_ResetClearsOverflowForNextWindow exercises the
+// ResetArmedOverflow path: after the handler consumes the sticky overflow
+// (returning STATUS_NOTIFY_ENUM_DIR) it must reset the armed counter so
+// the next batch of events accumulates against the freshly advertised
+// MaxOutputLength rather than re-tripping immediately.
+func TestArmedBuffer_ResetClearsOverflowForNextWindow(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	fileID := [16]byte{0xDD}
+	var overflowFireCount int32
+
+	mustRegister(t, r, &PendingNotify{
+		FileID:           fileID,
+		SessionID:        1,
+		ConnID:           1,
+		MessageID:        20,
+		AsyncId:          200,
+		WatchPath:        "/d",
+		ShareName:        "s",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  16, // overflow on the first event
+		AsyncCallback:    func(_, _, _ uint64, _ *ChangeNotifyResponse) error { return nil },
+		OnOverflow:       func(_ [16]byte) { atomic.AddInt32(&overflowFireCount, 1) },
+	})
+	if got := r.UnregisterByAsyncId(200); got == nil {
+		t.Fatalf("cancel")
+	}
+
+	// First event trips overflow.
+	r.NotifyChange("s", "/d", "a.txt", FileActionAdded)
+	if atomic.LoadInt32(&overflowFireCount) != 1 {
+		t.Fatalf("expected first event to trip overflow, count=%d", overflowFireCount)
+	}
+
+	// More events while overflowed must not re-fire OnOverflow.
+	for i := 0; i < 5; i++ {
+		r.NotifyChange("s", "/d", "b.txt", FileActionAdded)
+	}
+	if atomic.LoadInt32(&overflowFireCount) != 1 {
+		t.Errorf("expected overflow to latch (no re-fire), got count=%d", overflowFireCount)
+	}
+
+	// Client issues a new CHANGE_NOTIFY with a generous buffer; the handler
+	// consumes the sticky flag and resets the armed accounting.
+	r.ResetArmedOverflow(fileID, 64*1024)
+
+	// Single small event must NOT trip overflow against the new 64KB buffer.
+	r.NotifyChange("s", "/d", "c.txt", FileActionAdded)
+	if atomic.LoadInt32(&overflowFireCount) != 1 {
+		t.Errorf("expected no overflow after reset+small event, got count=%d", overflowFireCount)
+	}
+}
+
+// TestArmedBuffer_ScopedByShareAndPath confirms armed-handle accounting
+// respects ShareName, WatchPath, WatchTree, and CompletionFilter — events
+// on unrelated shares/paths/filters must not charge against an armed
+// handle. Guards against false-positive overflows on unrelated buckets.
+func TestArmedBuffer_ScopedByShareAndPath(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	fileID := [16]byte{0xEE}
+	var overflowFireCount int32
+
+	mustRegister(t, r, &PendingNotify{
+		FileID:           fileID,
+		SessionID:        1,
+		ConnID:           1,
+		MessageID:        30,
+		AsyncId:          300,
+		WatchPath:        "/watched",
+		ShareName:        "share-a",
+		CompletionFilter: FileNotifyChangeFileName,
+		WatchTree:        false, // non-recursive
+		MaxOutputLength:  16,
+		AsyncCallback:    func(_, _, _ uint64, _ *ChangeNotifyResponse) error { return nil },
+		OnOverflow:       func(_ [16]byte) { atomic.AddInt32(&overflowFireCount, 1) },
+	})
+	if got := r.UnregisterByAsyncId(300); got == nil {
+		t.Fatalf("cancel")
+	}
+
+	// Different share — must not charge.
+	r.NotifyChange("share-b", "/watched", "x.txt", FileActionAdded)
+	// Subdirectory but non-recursive — must not charge.
+	r.NotifyChange("share-a", "/watched/sub", "x.txt", FileActionAdded)
+	// Wrong filter (Modified vs FileName) — must not charge.
+	r.NotifyChange("share-a", "/watched", "x.txt", FileActionModified)
+
+	if atomic.LoadInt32(&overflowFireCount) != 0 {
+		t.Errorf("expected no overflow on unrelated events, got count=%d", overflowFireCount)
+	}
+
+	// Matching event on the watched path — overflow must trip.
+	r.NotifyChange("share-a", "/watched", "x.txt", FileActionAdded)
+	if atomic.LoadInt32(&overflowFireCount) != 1 {
+		t.Errorf("expected overflow trip for matching event, got count=%d", overflowFireCount)
+	}
+}
+
+// TestArmedBuffer_NotChargedWhenLiveWatcherServesEvent guards against
+// double-counting: the live-watcher one-shot path already encodes and
+// delivers the event, so the armed accounting must skip handles that just
+// fired (the armed entry will be torn down/replaced on the next Register).
+func TestArmedBuffer_NotChargedWhenLiveWatcherServesEvent(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	fileID := [16]byte{0xEF}
+	var overflowFireCount int32
+
+	mustRegister(t, r, &PendingNotify{
+		FileID:           fileID,
+		SessionID:        1,
+		ConnID:           1,
+		MessageID:        40,
+		AsyncId:          400,
+		WatchPath:        "/d",
+		ShareName:        "s",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  16, // would overflow if double-counted
+		AsyncCallback:    func(_, _, _ uint64, _ *ChangeNotifyResponse) error { return nil },
+		OnOverflow:       func(_ [16]byte) { atomic.AddInt32(&overflowFireCount, 1) },
+	})
+
+	// Live watcher is present; one matching event fires through the live
+	// path (which itself overflows the 16-byte buffer → OnOverflow). The
+	// armed-accounting path must NOT also charge the event and double-fire.
+	r.NotifyChange("s", "/d", "a.txt", FileActionAdded)
+	if got := atomic.LoadInt32(&overflowFireCount); got != 1 {
+		t.Errorf("expected OnOverflow exactly 1× (live path only), got %d — armed path is double-counting", got)
+	}
+}
+
 func TestUnregisterAllForTree_PreservesOtherTrees(t *testing.T) {
 	r := NewNotifyRegistry()
 
@@ -1301,5 +1504,127 @@ func TestUnregisterAllForTree_PreservesOtherTrees(t *testing.T) {
 	watchers := r.GetWatchersForPath("/dir1")
 	if len(watchers) != 1 || watchers[0].ShareName != "share2" {
 		t.Errorf("expected share2 watcher to remain, got %d watchers", len(watchers))
+	}
+}
+
+// encodeChangeNotifyRequest builds a wire-format CHANGE_NOTIFY request body
+// per MS-SMB2 2.2.35 (fixed size 32 bytes). Used by handler-level tests that
+// exercise Handler.ChangeNotify through its parser.
+func encodeChangeNotifyRequest(flags uint16, outputBufferLength uint32, fileID [16]byte, completionFilter uint32) []byte {
+	body := make([]byte, 32)
+	// StructureSize = 32 (LE u16)
+	body[0] = 32
+	body[1] = 0
+	// Flags (LE u16)
+	body[2] = byte(flags)
+	body[3] = byte(flags >> 8)
+	// OutputBufferLength (LE u32)
+	body[4] = byte(outputBufferLength)
+	body[5] = byte(outputBufferLength >> 8)
+	body[6] = byte(outputBufferLength >> 16)
+	body[7] = byte(outputBufferLength >> 24)
+	// FileID (16 bytes)
+	copy(body[8:24], fileID[:])
+	// CompletionFilter (LE u32)
+	body[24] = byte(completionFilter)
+	body[25] = byte(completionFilter >> 8)
+	body[26] = byte(completionFilter >> 16)
+	body[27] = byte(completionFilter >> 24)
+	return body
+}
+
+// TestChangeNotify_HandlePermissions_GrantedAccessGate mirrors the smbtorture
+// smb2.notify.handle-permissions test (source4/torture/smb2/notify.c::
+// torture_smb2_notify_handle_permissions): a directory handle opened with only
+// FILE_READ_ATTRIBUTES (no FILE_LIST_DIRECTORY) MUST reject CHANGE_NOTIFY
+// with STATUS_ACCESS_DENIED per MS-SMB2 §3.3.5.19 / Samba
+// source3/smbd/notify.c::change_notify_create (check_any_access_fsp with
+// SEC_DIR_LIST). Refs #473.
+func TestChangeNotify_HandlePermissions_GrantedAccessGate(t *testing.T) {
+	const (
+		fileReadAttributes uint32 = 0x00000080 // SEC_FILE_READ_ATTRIBUTE
+		fileListDirectory  uint32 = 0x00000001 // SEC_DIR_LIST
+	)
+	fileID := [16]byte{0xAA, 0xBB, 0xCC, 0xDD}
+	const treeID uint32 = 1
+	const sessionID uint64 = 42
+
+	cases := []struct {
+		name          string
+		grantedAccess uint32
+		desiredAccess uint32
+		wantStatus    types.Status
+	}{
+		{
+			name:          "ReadAttributesOnly_Denied",
+			grantedAccess: fileReadAttributes,
+			desiredAccess: fileReadAttributes,
+			wantStatus:    types.StatusAccessDenied,
+		},
+		{
+			name:          "ListDirectory_Allowed",
+			grantedAccess: fileListDirectory | fileReadAttributes,
+			desiredAccess: fileListDirectory | fileReadAttributes,
+			wantStatus:    types.StatusPending,
+		},
+		{
+			// Regression: an open whose DesiredAccess carries
+			// FILE_LIST_DIRECTORY but whose DACL-resolved GrantedAccess
+			// stripped it (per-bit intersection at CREATE, MS-SMB2
+			// §3.3.5.9 paragraph 8) must still be rejected. The pre-fix
+			// gate consulted DesiredAccess and silently let this through.
+			name:          "DesiredHasListDir_GrantedDoesNot_Denied",
+			grantedAccess: fileReadAttributes,
+			desiredAccess: fileListDirectory | fileReadAttributes,
+			wantStatus:    types.StatusAccessDenied,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHandler()
+
+			h.StoreOpenFile(&OpenFile{
+				FileID:        fileID,
+				TreeID:        treeID,
+				SessionID:     sessionID,
+				Path:          "/HPERM",
+				ShareName:     "share1",
+				DesiredAccess: tc.desiredAccess,
+				GrantedAccess: tc.grantedAccess,
+				IsDirectory:   true,
+			})
+
+			ctx := &SMBHandlerContext{
+				SessionID:       sessionID,
+				TreeID:          treeID,
+				MessageID:       100,
+				TryReserveAsync: func() bool { return true },
+				ReleaseAsync:    func() {},
+			}
+
+			body := encodeChangeNotifyRequest(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName|FileNotifyChangeDirName)
+
+			result, err := h.ChangeNotify(ctx, body)
+			if err != nil {
+				t.Fatalf("ChangeNotify returned error: %v", err)
+			}
+			if result == nil {
+				t.Fatal("ChangeNotify returned nil result")
+			}
+			if result.Status != tc.wantStatus {
+				t.Errorf("status = 0x%08x, want 0x%08x", uint32(result.Status), uint32(tc.wantStatus))
+			}
+
+			// On ACCESS_DENIED no watcher must have been registered (also
+			// guarantees no async slot was reserved beyond the pre-check).
+			watchers := h.NotifyRegistry.WatcherCount()
+			if tc.wantStatus == types.StatusAccessDenied && watchers != 0 {
+				t.Errorf("expected zero pending watchers after ACCESS_DENIED, got %d", watchers)
+			}
+			if tc.wantStatus == types.StatusPending && watchers != 1 {
+				t.Errorf("expected one pending watcher after STATUS_PENDING, got %d", watchers)
+			}
+		})
 	}
 }
