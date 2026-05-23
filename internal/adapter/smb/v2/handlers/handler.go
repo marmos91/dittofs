@@ -831,21 +831,30 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 		// supersession), pending CHANGE_NOTIFY requests MUST complete with
 		// STATUS_NOTIFY_CLEANUP so the client unblocks its async recv.
 		// Mirrors the per-file path in close.go.
+		//
+		// Delivery is SYNCHRONOUS — the response carries the OLD session's
+		// SessionID and MUST be signed with that session's key. Our caller
+		// (CleanupSession on the PreviousSessionID path) deletes the session
+		// immediately after this returns; an async (`go func`) delivery would
+		// race with DeleteSession and send the response unsigned, which the
+		// client rejects. This is the missing piece behind
+		// smb2.notify.session-reconnect (issue #473): the client never sees
+		// the cleanup and hangs in smb2_notify_recv. The LOGOFF caller keeps
+		// the session alive for response signing anyway, so sync delivery is
+		// correct there as well.
 		for _, notify := range h.NotifyRegistry.UnregisterAllForSession(sessionID) {
 			if notify.AsyncCallback == nil {
 				continue
 			}
-			go func(n *PendingNotify) {
-				cleanupResp := &ChangeNotifyResponse{
-					SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
-				}
-				if err := n.AsyncCallback(n.SessionID, n.MessageID, n.AsyncId, cleanupResp); err != nil {
-					logger.Debug("session cleanup: failed to send STATUS_NOTIFY_CLEANUP",
-						"sessionID", n.SessionID,
-						"messageID", n.MessageID,
-						"error", err)
-				}
-			}(notify)
+			cleanupResp := &ChangeNotifyResponse{
+				SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
+			}
+			if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, cleanupResp); err != nil {
+				logger.Debug("session cleanup: failed to send STATUS_NOTIFY_CLEANUP",
+					"sessionID", notify.SessionID,
+					"messageID", notify.MessageID,
+					"error", err)
+			}
 		}
 	}
 	if h.PipeReadRegistry != nil {
