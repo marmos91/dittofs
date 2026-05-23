@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
 	"testing"
 
@@ -18,18 +17,18 @@ import (
 // `smb2_ioctl_smbtorture` lists them under the no-handle group).
 func buildSmbtortureIoctlRequest(ctlCode uint32) []byte {
 	w := smbenc.NewWriter(56)
-	w.WriteUint16(57)                            // StructureSize
-	w.WriteUint16(0)                             // Reserved
-	w.WriteUint32(ctlCode)                       // CtlCode
-	w.WriteBytes(bytes.Repeat([]byte{0xFF}, 16)) // FileId (sentinel)
-	w.WriteUint32(0)                             // InputOffset
-	w.WriteUint32(0)                             // InputCount
-	w.WriteUint32(0)                             // MaxInputResponse
-	w.WriteUint32(0)                             // OutputOffset
-	w.WriteUint32(0)                             // OutputCount
-	w.WriteUint32(0)                             // MaxOutputResponse
-	w.WriteUint32(0)                             // Flags
-	w.WriteUint32(0)                             // Reserved2
+	w.WriteUint16(57)         // StructureSize
+	w.WriteUint16(0)          // Reserved
+	w.WriteUint32(ctlCode)    // CtlCode
+	w.WriteBytes(allFFFileID) // FileId (sentinel)
+	w.WriteUint32(0)          // InputOffset
+	w.WriteUint32(0)          // InputCount
+	w.WriteUint32(0)          // MaxInputResponse
+	w.WriteUint32(0)          // OutputOffset
+	w.WriteUint32(0)          // OutputCount
+	w.WriteUint32(0)          // MaxOutputResponse
+	w.WriteUint32(0)          // Flags
+	w.WriteUint32(0)          // Reserved2
 	return w.Bytes()
 }
 
