@@ -828,3 +828,103 @@ func TestBreakFileHandleLeasesOnDelete_StripsHandleAndExcludesSetterKey(t *testi
 			len(fake.waitForBreakCompletionKeys))
 	}
 }
+
+// TestBreakParentDirLeasesOnDestructiveCreate_SingleBreakWithDestructiveReason
+// pins the #470 C4 contract: OVERWRITE/SUPERSEDE on a child must break the
+// parent dir lease via ONE BreakLeasesOnOpenConflict call with
+// BreakReasonDestructive (collapses strip-H + strip-R into break-to-None),
+// then wait for the ack. This is the bug fix path — the legacy two-step
+// (strip-H then strip-R) produced two notifications on a single RH dir lease
+// and failed smb2.dirlease.overwrite which asserts exactly two break
+// notifications across both the file and dir leases.
+func TestBreakParentDirLeasesOnDestructiveCreate_SingleBreakWithDestructiveReason(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeLockManager{}
+	lm := NewLeaseManager(&fakeResolver{mgr: fake}, nil)
+
+	parentHandle := lock.FileHandle("parent-dir-handle-destructive")
+	if err := lm.BreakParentDirLeasesOnDestructiveCreate(
+		context.Background(), parentHandle, "share1", "smb:A", [16]byte{}, false,
+	); err != nil {
+		t.Fatalf("BreakParentDirLeasesOnDestructiveCreate returned error: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+
+	if got := len(fake.breakHandleCalls); got != 1 {
+		t.Fatalf("BreakLeasesOnOpenConflict call count = %d, want 1 (a single destructive break collapses strip-H and strip-R)", got)
+	}
+	if got := fake.breakHandleCalls[0].Reason; got != lock.BreakReasonDestructive {
+		t.Errorf("Reason = %d, want BreakReasonDestructive (Samba `will_overwrite` arm strips H|R atomically)", got)
+	}
+	if fake.breakHandleCalls[0].HandleKey != string(parentHandle) {
+		t.Errorf("handleKey = %q, want %q", fake.breakHandleCalls[0].HandleKey, string(parentHandle))
+	}
+
+	// No second BreakReadLeasesForParentDir call — the test would otherwise
+	// produce three break notifications when a single RH parent lease is in
+	// play, breaking smb2.dirlease.overwrite (#470 C4).
+	if got := len(fake.breakReadCalls); got != 0 {
+		t.Errorf("BreakReadLeasesForParentDir call count = %d, want 0 (destructive path collapses both steps into one notification)", got)
+	}
+
+	if got := len(fake.waitForBreakCompletionKeys); got != 1 {
+		t.Fatalf("WaitForBreakCompletion call count = %d, want 1 (CREATE must wait for ack per MS-SMB2 §3.3.4.7)", got)
+	}
+	if fake.waitForBreakCompletionKeys[0] != string(parentHandle) {
+		t.Errorf("WaitForBreakCompletion handleKey = %q, want %q",
+			fake.waitForBreakCompletionKeys[0], string(parentHandle))
+	}
+
+	// Order: break must precede wait.
+	if len(fake.callOrder) < 2 {
+		t.Fatalf("expected at least 2 calls in order, got %v", fake.callOrder)
+	}
+	if fake.callOrder[0] != "BreakLeasesOnOpenConflict" {
+		t.Errorf("first call = %q, want BreakLeasesOnOpenConflict", fake.callOrder[0])
+	}
+	if fake.callOrder[1] != "WaitForBreakCompletion" {
+		t.Errorf("second call = %q, want WaitForBreakCompletion", fake.callOrder[1])
+	}
+}
+
+// TestBreakParentDirLeasesOnDestructiveCreate_PlumbsParentKeySuppression pins
+// that the C2 parent-key-suppression args (excludeClientID + parent_key +
+// hasExcludeKey) are forwarded into the LockOwner used for the break call,
+// so the dir-lease parent-key rule (MS-SMB2 §3.3.4.20) keeps applying on the
+// destructive path.
+func TestBreakParentDirLeasesOnDestructiveCreate_PlumbsParentKeySuppression(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeLockManager{}
+	lm := NewLeaseManager(&fakeResolver{mgr: fake}, nil)
+
+	parentKey := [16]byte{0xAB, 0xCD, 0xEF, 0x01}
+	if err := lm.BreakParentDirLeasesOnDestructiveCreate(
+		context.Background(), lock.FileHandle("parent"), "share1", "smb:client-B", parentKey, true,
+	); err != nil {
+		t.Fatalf("BreakParentDirLeasesOnDestructiveCreate returned error: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+
+	if len(fake.breakHandleCalls) != 1 {
+		t.Fatalf("BreakLeasesOnOpenConflict call count = %d, want 1", len(fake.breakHandleCalls))
+	}
+	excludeOwner := fake.breakHandleCalls[0].ExcludeOwner
+	if excludeOwner == nil {
+		t.Fatal("excludeOwner must be non-nil when clientID + parent_key are provided")
+	}
+	if excludeOwner.ClientID != "smb:client-B" {
+		t.Errorf("ClientID = %q, want %q", excludeOwner.ClientID, "smb:client-B")
+	}
+	if !excludeOwner.HasExcludeParentDirLeaseKey {
+		t.Errorf("HasExcludeParentDirLeaseKey = false, want true")
+	}
+	if excludeOwner.ExcludeParentDirLeaseKey != parentKey {
+		t.Errorf("ExcludeParentDirLeaseKey = %x, want %x", excludeOwner.ExcludeParentDirLeaseKey, parentKey)
+	}
+}

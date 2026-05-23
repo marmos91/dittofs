@@ -887,6 +887,50 @@ func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
 	return lockMgr.WaitForBreakCompletion(waitCtx, handleKey)
 }
 
+// BreakParentDirLeasesOnDestructiveCreate breaks every parent-directory lease
+// to None in a single notification when a child file is being OVERWRITTEN or
+// SUPERSEDED by a CREATE from another client. Per MS-SMB2 §3.3.5.9 and Samba
+// `delay_for_oplock_fn` (source3/smbd/open.c) the destructive `will_overwrite`
+// arm strips both SMB2_LEASE_HANDLE and SMB2_LEASE_READ from the break_to
+// mask atomically — i.e. an RH parent lease must transition RH → "" via ONE
+// LEASE_BREAK_NOTIFICATION, not via the two-step (strip-H then strip-R) pattern
+// used by the non-destructive CREATE path (BreakParentHandleLeasesOnCreate +
+// BreakParentReadLeasesOnModify). smb2.dirlease.overwrite (#470 C4) asserts
+// exactly two break notifications for the test scenario — one on the file
+// lease, one on the dir lease — so the two-step pattern produces three and
+// fails the test.
+//
+// Waits for LEASE_BREAK_ACK with parentLeaseBreakWaitTimeout (same ack-wait
+// guarantee as BreakParentHandleLeasesOnCreate). excludeClientID +
+// excludeParentLeaseKey + hasExcludeKey carry the suppression rules from
+// MS-SMB2 §3.3.4.20 (#470 C2) so a same-client or parent-key-linked dir
+// lease is not broken.
+func (lm *LeaseManager) BreakParentDirLeasesOnDestructiveCreate(
+	ctx context.Context,
+	parentHandle lock.FileHandle,
+	shareName string,
+	excludeClientID string,
+	excludeParentLeaseKey [16]byte,
+	hasExcludeKey bool,
+) error {
+	lockMgr, handleKey, excludeOwner := lm.resolveParentBreakArgs(
+		parentHandle, shareName, excludeClientID, excludeParentLeaseKey, hasExcludeKey)
+	if lockMgr == nil {
+		return nil
+	}
+	// BreakReasonDestructive collapses the strip-H + strip-R steps into a
+	// single break-to-None notification per ComputeLeaseBreakTo. The parent
+	// handle hosts only directory leases (we never request file leases on a
+	// directory handle key), so this does not over-break unrelated file
+	// leases.
+	if err := lockMgr.BreakLeasesOnOpenConflict(handleKey, excludeOwner, lock.BreakReasonDestructive); err != nil {
+		return err
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, parentLeaseBreakWaitTimeout)
+	defer cancel()
+	return lockMgr.WaitForBreakCompletion(waitCtx, handleKey)
+}
+
 // BreakParentReadLeasesOnModify breaks Read leases on a parent directory
 // when a child file's metadata is modified via SET_INFO, WRITE, or DELETE.
 // Per MS-FSA 2.1.5.14: changes to directory contents invalidate Read caching,
