@@ -1758,6 +1758,7 @@ func TestChangeNotify_StickyMaxBufferSize_SubsumesValidReq(t *testing.T) {
 		SessionID:     1,
 		TreeID:        1,
 		DesiredAccess: 0x00000001, // FILE_LIST_DIRECTORY
+		GrantedAccess: 0x00000001,
 	}
 	h.StoreOpenFile(openFile)
 
@@ -1785,8 +1786,8 @@ func TestChangeNotify_StickyMaxBufferSize_SubsumesValidReq(t *testing.T) {
 	if res1 == nil || res1.Status != types.StatusPending {
 		t.Fatalf("first CHANGE_NOTIFY: want STATUS_PENDING, got %+v", res1)
 	}
-	if got := openFile.NotifyMaxBufferSize.Load(); got != 1 {
-		t.Fatalf("NotifyMaxBufferSize after first call = %d, want 1", got)
+	if got, set := openFile.NotifyMaxBufferSizeValue(); !set || got != 1 {
+		t.Fatalf("NotifyMaxBufferSize after first call = (%d, set=%v), want (1, true)", got, set)
 	}
 
 	// Drain the registered watcher so the second CHANGE_NOTIFY can register
@@ -1804,8 +1805,8 @@ func TestChangeNotify_StickyMaxBufferSize_SubsumesValidReq(t *testing.T) {
 	if res2 == nil || res2.Status != types.StatusPending {
 		t.Fatalf("second CHANGE_NOTIFY: want STATUS_PENDING (not InvalidParameter), got %+v", res2)
 	}
-	if got := openFile.NotifyMaxBufferSize.Load(); got != 1 {
-		t.Fatalf("NotifyMaxBufferSize after second call = %d, want 1 (stuck)", got)
+	if got, set := openFile.NotifyMaxBufferSizeValue(); !set || got != 1 {
+		t.Fatalf("NotifyMaxBufferSize after second call = (%d, set=%v), want (1, true) (stuck)", got, set)
 	}
 
 	// The pending notify must carry the MIN-capped MaxOutputLength, not the
@@ -1835,7 +1836,7 @@ func TestChangeNotify_FirstLargeBuffer_ThenSmallUsesRequest(t *testing.T) {
 	fileID := [16]byte{0x11}
 	openFile := &OpenFile{
 		FileID: fileID, IsDirectory: true, ShareName: "share1",
-		Path: "/dir", SessionID: 1, TreeID: 1, DesiredAccess: 0x00000001,
+		Path: "/dir", SessionID: 1, TreeID: 1, DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
 	}
 	h.StoreOpenFile(openFile)
 
@@ -1873,7 +1874,85 @@ func TestChangeNotify_FirstLargeBuffer_ThenSmallUsesRequest(t *testing.T) {
 	if pendingMax != 256 {
 		t.Errorf("PendingNotify.MaxOutputLength = %d, want 256 (request smaller than stored max)", pendingMax)
 	}
-	if got := openFile.NotifyMaxBufferSize.Load(); got != 65536 {
-		t.Errorf("NotifyMaxBufferSize must not be updated by later calls; got %d, want 65536", got)
+	if got, set := openFile.NotifyMaxBufferSizeValue(); !set || got != 65536 {
+		t.Errorf("NotifyMaxBufferSize must not be updated by later calls; got (%d, set=%v), want (65536, true)", got, set)
+	}
+}
+
+// TestChangeNotify_FirstZeroBuffer_StickyAtZero pins the OutputBufferLength=0
+// edge case. SMB2 CHANGE_NOTIFY permits OutputBufferLength=0 as a valid
+// request; the per-handle "first wins" max_buffer_size must remember that
+// zero and cap every later notify at zero (so even a max_trans_size follow-up
+// overflows immediately, matching Samba `change_notify_create` semantics).
+//
+// The old encoding used 0 as the "unset" sentinel and would silently let a
+// later large request overwrite the captured cap — breaking the sticky
+// invariant. Guards against that regression.
+func TestChangeNotify_FirstZeroBuffer_StickyAtZero(t *testing.T) {
+	h := NewHandler()
+	h.NotifyRegistry = NewNotifyRegistry()
+	h.MaxTransactSize = 1 << 20
+
+	fileID := [16]byte{0x99}
+	openFile := &OpenFile{
+		FileID: fileID, IsDirectory: true, ShareName: "share1",
+		Path: "/dir", SessionID: 1, TreeID: 1, DesiredAccess: 0x00000001, GrantedAccess: 0x00000001,
+	}
+	h.StoreOpenFile(openFile)
+
+	makeCtx := func() *SMBHandlerContext {
+		return &SMBHandlerContext{
+			SessionID: 1, TreeID: 1, MessageID: 1, ConnID: 1,
+			TryReserveAsync: func() bool { return true },
+			ReleaseAsync:    func() {},
+			AsyncNotifyCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+				return nil
+			},
+		}
+	}
+
+	// First CHANGE_NOTIFY: OutputBufferLength = 0 — legal per MS-SMB2 §2.2.35.
+	body1 := encodeChangeNotifyReq(0, 0, fileID, FileNotifyChangeFileName)
+	if _, err := h.ChangeNotify(makeCtx(), body1); err != nil {
+		t.Fatalf("first CHANGE_NOTIFY (OutputBufferLength=0) error: %v", err)
+	}
+
+	// The capture MUST be recorded even though the value is zero.
+	got, set := openFile.NotifyMaxBufferSizeValue()
+	if !set {
+		t.Fatal("NotifyMaxBufferSize was not marked set after first CHANGE_NOTIFY with OutputBufferLength=0")
+	}
+	if got != 0 {
+		t.Fatalf("NotifyMaxBufferSize after first call = %d, want 0", got)
+	}
+
+	h.NotifyRegistry.Unregister(fileID)
+
+	// Second CHANGE_NOTIFY: max_trans_size buffer. The sticky cap MUST clamp
+	// it down to zero, NOT overwrite the captured zero with the new value.
+	body2 := encodeChangeNotifyReq(0, h.MaxTransactSize, fileID, FileNotifyChangeFileName)
+	if _, err := h.ChangeNotify(makeCtx(), body2); err != nil {
+		t.Fatalf("second CHANGE_NOTIFY error: %v", err)
+	}
+
+	got, set = openFile.NotifyMaxBufferSizeValue()
+	if !set || got != 0 {
+		t.Fatalf("NotifyMaxBufferSize after second call = (%d, set=%v), want (0, true) — sticky-zero broken", got, set)
+	}
+
+	var pendingMax uint32 = ^uint32(0) // poison
+	found := false
+	h.NotifyRegistry.RangeWatchers(func(p *PendingNotify) bool {
+		if p.FileID == fileID {
+			pendingMax = p.MaxOutputLength
+			found = true
+		}
+		return true
+	})
+	if !found {
+		t.Fatal("second CHANGE_NOTIFY did not register a PendingNotify")
+	}
+	if pendingMax != 0 {
+		t.Errorf("PendingNotify.MaxOutputLength = %d, want 0 (capped to first call's zero)", pendingMax)
 	}
 }

@@ -484,12 +484,12 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// is the mechanism behind smb2.notify.valid-req's "if the first notify
 	// returns NOTIFY_ENUM_DIR, all do": a tiny first buffer caps every
 	// later notify on the same handle, so even a max-sized follow-up
-	// overflows. Capture on first call via CompareAndSwap; cap thereafter.
+	// overflows. Capture on first call; cap thereafter. OutputBufferLength=0
+	// is a valid SMB2 request so we cannot encode "unset" as 0 — see the
+	// NotifyMaxBufferSize field comment / CaptureNotifyMaxBufferSize helper.
 	effectiveMax := req.OutputBufferLength
-	if !openFile.NotifyMaxBufferSize.CompareAndSwap(0, effectiveMax) {
-		if stored := openFile.NotifyMaxBufferSize.Load(); stored < effectiveMax {
-			effectiveMax = stored
-		}
+	if stored, didCapture := openFile.CaptureNotifyMaxBufferSize(effectiveMax); !didCapture && stored < effectiveMax {
+		effectiveMax = stored
 	}
 
 	// Generate a unique AsyncId for this pending request.
