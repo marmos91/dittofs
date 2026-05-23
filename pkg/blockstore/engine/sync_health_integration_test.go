@@ -52,6 +52,25 @@ func (c *controllableRemoteStore) Healthcheck(ctx context.Context) health.Report
 
 func (c *controllableRemoteStore) SetHealthy(h bool) { c.healthy.Store(h) }
 
+// waitFor polls cond until it returns true or the deadline elapses. It is the
+// standard alternative to a fixed-duration time.Sleep before asserting on
+// asynchronous state — the periodic uploader, health monitor, and callback
+// dispatch are all event-driven, so polling avoids flakes on slow CI runners
+// while keeping the happy path fast.
+func waitFor(t *testing.T, timeout time.Duration, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !cond() {
+		t.Fatalf("timed out after %v waiting for %s", timeout, what)
+	}
+}
+
 // healthTestConfig returns a syncer Config with short intervals for testing.
 func healthTestConfig() SyncerConfig {
 	return SyncerConfig{
@@ -125,11 +144,9 @@ func TestHealthMonitorCircuitBreaker(t *testing.T) {
 	env.remote.SetHealthy(false)
 
 	// Wait for health monitor to detect failure (threshold=2 failures at 20ms interval).
-	time.Sleep(150 * time.Millisecond)
-
-	if env.syncer.IsRemoteHealthy() {
-		t.Fatal("expected remote to be unhealthy after simulated outage")
-	}
+	waitFor(t, 5*time.Second, func() bool {
+		return !env.syncer.IsRemoteHealthy()
+	}, "remote to be detected unhealthy after simulated outage")
 
 	// Write a block to the local store while unhealthy.
 	payloadID := "export/circuit-breaker-test.bin"
@@ -170,8 +187,12 @@ func TestHealthMonitorCircuitBreaker(t *testing.T) {
 	// Restore health.
 	env.remote.SetHealthy(true)
 
-	// Wait for recovery detection + periodic upload.
-	time.Sleep(300 * time.Millisecond)
+	// Wait for recovery detection + periodic upload drain. Poll instead of a
+	// fixed sleep so we don't flake on slow CI runners (the deterministic
+	// failure mode is recovery + upload taking longer than the budget).
+	waitFor(t, 5*time.Second, func() bool {
+		return env.syncer.IsRemoteHealthy() && memStore.BlockCount() > 0
+	}, "remote to recover and block to be uploaded")
 
 	if !env.syncer.IsRemoteHealthy() {
 		t.Fatal("expected remote to be healthy after recovery")
@@ -194,11 +215,9 @@ func TestHealthMonitorRecoveryDrain(t *testing.T) {
 
 	// Immediately simulate outage.
 	env.remote.SetHealthy(false)
-	time.Sleep(100 * time.Millisecond) // Wait for health monitor to detect.
-
-	if env.syncer.IsRemoteHealthy() {
-		t.Fatal("expected remote to be unhealthy")
-	}
+	waitFor(t, 5*time.Second, func() bool {
+		return !env.syncer.IsRemoteHealthy()
+	}, "remote to be detected unhealthy after simulated outage")
 
 	// Write 3 blocks during outage.
 	payloadID := "export/drain-test.bin"
@@ -237,8 +256,12 @@ func TestHealthMonitorRecoveryDrain(t *testing.T) {
 	// Restore health.
 	env.remote.SetHealthy(true)
 
-	// Wait for recovery + periodic upload drain.
-	time.Sleep(500 * time.Millisecond)
+	// Wait for recovery + periodic upload drain. Poll instead of a fixed
+	// sleep so we don't flake on slow CI runners (Windows + Linux 1.25.x
+	// have been observed to need >500ms for the full drain).
+	waitFor(t, 5*time.Second, func() bool {
+		return env.syncer.IsRemoteHealthy() && memStore.BlockCount() == 3
+	}, "remote to recover and 3 blocks to drain")
 
 	if !env.syncer.IsRemoteHealthy() {
 		t.Fatal("expected remote to be healthy after recovery")
@@ -268,13 +291,21 @@ func TestHealthCallbackInvocation(t *testing.T) {
 	env.local.Start(ctx)
 	env.syncer.Start(ctx)
 
-	// Simulate outage.
+	// Simulate outage and wait for the unhealthy callback.
 	env.remote.SetHealthy(false)
-	time.Sleep(150 * time.Millisecond) // Wait for health monitor to detect.
+	waitFor(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(events) >= 1 && events[0] == false
+	}, "unhealthy callback to fire")
 
-	// Restore health.
+	// Restore health and wait for the recovery callback.
 	env.remote.SetHealthy(true)
-	time.Sleep(100 * time.Millisecond) // Wait for recovery detection.
+	waitFor(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(events) >= 2 && events[1] == true
+	}, "recovery callback to fire")
 
 	mu.Lock()
 	defer mu.Unlock()
