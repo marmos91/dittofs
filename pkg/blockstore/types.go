@@ -3,6 +3,7 @@ package blockstore
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -106,6 +107,17 @@ func (h ContentHash) MarshalJSON() ([]byte, error) {
 // fallback preserves backward compatibility for FileBlock rows persisted
 // by Phase 11 Badger before this MarshalJSON existed.
 func (h *ContentHash) UnmarshalJSON(data []byte) error {
+	// v0.14.x and earlier had no custom MarshalJSON — encoding/json
+	// serialized [32]byte as a JSON number array: [0,0,...,0]. Accept
+	// that form so develop can read legacy badger metadata.
+	if len(data) > 0 && data[0] == '[' {
+		var arr [HashSize]byte
+		if err := json.Unmarshal(data, &arr); err == nil {
+			*h = ContentHash(arr)
+			return nil
+		}
+		return fmt.Errorf("ContentHash.UnmarshalJSON: invalid JSON array: %q", data)
+	}
 	if len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {
 		return fmt.Errorf("ContentHash.UnmarshalJSON: not a JSON string: %q", data)
 	}

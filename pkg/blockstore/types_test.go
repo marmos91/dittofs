@@ -479,6 +479,37 @@ func TestContentHash_JSONBackwardCompat(t *testing.T) {
 	}
 }
 
+// TestContentHash_JSONBackwardCompat_V014Array asserts UnmarshalJSON accepts
+// the JSON number-array form that v0.14.x and earlier serialized for
+// ContentHash (encoding/json's default for [32]byte when no custom
+// MarshalJSON existed). Critical for reading badger metadata written by
+// v0.14.2 servers during upgrade migration.
+func TestContentHash_JSONBackwardCompat_V014Array(t *testing.T) {
+	// v0.14.x zero-value ContentHash serialized as [0,0,...,0]
+	zeroArr := "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]"
+	var got ContentHash
+	if err := got.UnmarshalJSON([]byte(zeroArr)); err != nil {
+		t.Fatalf("UnmarshalJSON v0.14 zero array: %v", err)
+	}
+	if !got.IsZero() {
+		t.Fatalf("expected zero hash, got %x", got[:])
+	}
+
+	// Non-zero array (simulates a v0.14.x row with actual content hash)
+	nonZeroArr := "[175,19,73,185,245,249,161,166,160,64,77,234,54,220,201,73,155,203,37,201,173,193,18,183,204,154,147,202,228,31,50,98]"
+	var got2 ContentHash
+	if err := got2.UnmarshalJSON([]byte(nonZeroArr)); err != nil {
+		t.Fatalf("UnmarshalJSON v0.14 non-zero array: %v", err)
+	}
+	want, err := ParseContentHash(blake3EmptyHex)
+	if err != nil {
+		t.Fatalf("ParseContentHash: %v", err)
+	}
+	if !bytes.Equal(got2[:], want[:]) {
+		t.Fatalf("v0.14 non-zero array decode mismatch:\n got: %x\nwant: %x", got2[:], want[:])
+	}
+}
+
 // TestErrBlockRefMissing asserts the new sentinel exists, is self-identical
 // via errors.Is, and has the expected message style ("blockstore:" prefix
 // + mentions "block ref"). Phase 12 D-23.
