@@ -617,14 +617,17 @@ func (lm *LeaseManager) BreakConflictingOplocksOnOpen(
 	return lockMgr.CheckAndBreakLeasesForSMBOpen(handleKey, exclude)
 }
 
-// BreakLeasesOnByteRangeLock breaks every lease (other than the locker's own
-// lease key) holding Read caching to None when an SMB byte-range LOCK is
-// acquired. Per MS-SMB2 3.3.5.14 and Samba
+// BreakLeasesOnByteRangeLock breaks every lease holding Read caching to None
+// when an SMB byte-range LOCK is acquired. Per MS-SMB2 3.3.5.14 and Samba
 // `source3/smbd/smb2_oplock.c::contend_level2_oplocks_begin_default`, a BRL
-// invalidates remote read caches: another client must now observe writes
-// from the locking client. Unlike CREATE breaks (strip W, preserve R+H),
-// this is full revocation to None. The locker's own lease is preserved via
-// excludeOwner.ExcludeLeaseKey ("nobreakself").
+// invalidates read caches: another client must now observe writes from the
+// locking client.
+//
+// The locker's own lease is excluded ONLY when it holds Write caching. A
+// client that was broken from Batch/Exclusive to Level II must self-break to
+// None on BRL acquisition — the Level II read cache is invalidated because
+// BRL grants imply the locking client will write within the locked range.
+// Required by smbtorture smb2.oplock.brl1 and brl3.
 func (lm *LeaseManager) BreakLeasesOnByteRangeLock(
 	fileHandle lock.FileHandle,
 	shareName string,
@@ -638,8 +641,19 @@ func (lm *LeaseManager) BreakLeasesOnByteRangeLock(
 	handleKey := string(fileHandle)
 
 	var exclude *lock.LockOwner
-	if len(excludeOwner) > 0 {
-		exclude = excludeOwner[0]
+	if len(excludeOwner) > 0 && excludeOwner[0] != nil {
+		eo := excludeOwner[0]
+		// Only exclude the locker's own lease when it has Write caching.
+		// A locker holding only Read (Level II) must self-break per Samba.
+		if eo.ExcludeLeaseKey != ([16]byte{}) {
+			ctx := context.Background()
+			state, _, found := lockMgr.GetLeaseState(ctx, eo.ExcludeLeaseKey)
+			if found && state&lock.LeaseStateWrite != 0 {
+				exclude = eo
+			}
+		} else {
+			exclude = eo
+		}
 	}
 
 	return lockMgr.BreakLeasesForByteRangeLock(handleKey, exclude)
@@ -985,8 +999,16 @@ func (lm *LeaseManager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) {
 // opens on a file when a WRITE is performed. Per MS-SMB2 3.3.5.16, writes must
 // break all Read caching on the file so that other clients see the updated data.
 //
-// The writer's own lease (identified by excludeLeaseKey) is NOT broken.
-// Read leases are broken to None (complete revocation).
+// For SMB2.1+ leases: the writer's own lease is excluded ONLY when it holds
+// Write caching (W bit set). A client with RW or RWH can write without self-
+// breaking because the Write lease already permits cached writes.
+//
+// For traditional oplocks (Level II / Read-only): the writer MUST self-break.
+// Per Samba `contend_level2_oplocks_begin_default` (source3/smbd/smb2_oplock.c),
+// ALL Level II holders — including the writer — are broken to None on any data
+// modification. Without this, a client that was broken from Batch/Exclusive to
+// Level II and then writes would retain stale Read caching permissions.
+// Required by smbtorture smb2.oplock.batch1, batch6, batch9, batch10, levelii500.
 func (lm *LeaseManager) BreakReadLeasesOnWrite(
 	fileHandle lock.FileHandle,
 	shareName string,
@@ -1001,12 +1023,19 @@ func (lm *LeaseManager) BreakReadLeasesOnWrite(
 
 	var exclude *lock.LockOwner
 	if excludeLeaseKey != ([16]byte{}) {
-		exclude = &lock.LockOwner{ExcludeLeaseKey: excludeLeaseKey}
+		// Only exclude the writer's own lease when it has Write caching.
+		// A writer holding only Read (Level II) must self-break per spec.
+		ctx := context.Background()
+		state, _, found := lockMgr.GetLeaseState(ctx, excludeLeaseKey)
+		if found && state&lock.LeaseStateWrite != 0 {
+			exclude = &lock.LockOwner{ExcludeLeaseKey: excludeLeaseKey}
+		}
 	}
 
-	// Break all Read/Write leases to None. The writer's own lease is excluded
-	// via ExcludeLeaseKey. This ensures Level II (Read-only) leases from other
-	// clients are broken when data changes.
+	// Break all Read/Write leases to None. When exclude is nil (writer
+	// has no Write caching), the writer's own Read-only oplock is also
+	// broken — producing the Level II → None self-break that smbtorture
+	// expects.
 	return lockMgr.CheckAndBreakOpLocksForWrite(handleKey, exclude)
 }
 
