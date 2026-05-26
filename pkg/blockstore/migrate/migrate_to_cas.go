@@ -392,8 +392,14 @@ func migrateOneFile(
 // variant is deferred to Phase 18 if large-VM operators report OOMs.
 func readLegacyFileStream(shareDir string, f LegacyFileInfo) ([]byte, error) {
 	pid := string(f.PayloadID)
+	if len(pid) < 2 {
+		return nil, fmt.Errorf("migrate: PayloadID %q too short for shard prefix", pid)
+	}
 	shard := pid[:2]
 	payloadDir := filepath.Join(shareDir, "blocks", shard, pid)
+	if !strings.HasPrefix(payloadDir, shareDir) {
+		return nil, fmt.Errorf("migrate: PayloadID %q escapes share directory", pid)
+	}
 	entries, err := os.ReadDir(payloadDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -461,6 +467,9 @@ func sortBlks(blks []legacyBlk) {
 // entries as success.
 func removeLegacyBlkFiles(shareDir string, f LegacyFileInfo) error {
 	pid := string(f.PayloadID)
+	if len(pid) < 2 {
+		return nil
+	}
 	shard := pid[:2]
 	payloadDir := filepath.Join(shareDir, "blocks", shard, pid)
 	entries, err := os.ReadDir(payloadDir)

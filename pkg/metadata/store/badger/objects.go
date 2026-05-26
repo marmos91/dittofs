@@ -149,9 +149,11 @@ func (s *BadgerMetadataStore) Delete(ctx context.Context, id string) error {
 		// Remove local index
 		_ = txn.Delete([]byte(fileBlockLocalPrefix + id))
 
-		// Remove file index
-		if parts := strings.SplitN(id, "/", 2); len(parts) == 2 {
-			_ = txn.Delete([]byte(fileBlockFilePrefix + parts[0] + ":" + parts[1]))
+		// Remove file index (split on LAST "/" for nested payloadIDs)
+		if lastSlash := strings.LastIndex(id, "/"); lastSlash > 0 {
+			pid := id[:lastSlash]
+			idx := id[lastSlash+1:]
+			_ = txn.Delete([]byte(fileBlockFilePrefix + pid + ":" + idx))
 		}
 
 		// Remove hash index
@@ -583,8 +585,10 @@ func (tx *badgerTransaction) Put(ctx context.Context, block *metadata.FileBlock)
 	} else {
 		_ = tx.txn.Delete(localKey)
 	}
-	if parts := strings.SplitN(block.ID, "/", 2); len(parts) == 2 {
-		fileKey := []byte(fileBlockFilePrefix + parts[0] + ":" + parts[1])
+	if lastSlash := strings.LastIndex(block.ID, "/"); lastSlash > 0 {
+		pid := block.ID[:lastSlash]
+		idx := block.ID[lastSlash+1:]
+		fileKey := []byte(fileBlockFilePrefix + pid + ":" + idx)
 		if err := tx.txn.Set(fileKey, []byte(block.ID)); err != nil {
 			return err
 		}
@@ -618,8 +622,10 @@ func (tx *badgerTransaction) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	_ = tx.txn.Delete([]byte(fileBlockLocalPrefix + id))
-	if parts := strings.SplitN(id, "/", 2); len(parts) == 2 {
-		_ = tx.txn.Delete([]byte(fileBlockFilePrefix + parts[0] + ":" + parts[1]))
+	if lastSlash := strings.LastIndex(id, "/"); lastSlash > 0 {
+		pid := id[:lastSlash]
+		idx := id[lastSlash+1:]
+		_ = tx.txn.Delete([]byte(fileBlockFilePrefix + pid + ":" + idx))
 	}
 	if block.IsFinalized() {
 		hashKey := []byte(fileBlockHashPrefix + block.Hash.String())
