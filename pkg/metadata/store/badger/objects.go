@@ -99,8 +99,8 @@ func (s *BadgerMetadataStore) Put(ctx context.Context, block *metadata.FileBlock
 
 		// Maintain file index: fb-file:{payloadID}:{blockIdx} -> block.ID
 		// This allows ListFileBlocks to iterate O(file_blocks) via prefix scan.
-		if parts := strings.SplitN(block.ID, "/", 2); len(parts) == 2 {
-			fileKey := []byte(fileBlockFilePrefix + parts[0] + ":" + parts[1])
+		if pid, idx, ok := splitBlockID(block.ID); ok {
+			fileKey := []byte(fileBlockFilePrefix + pid + ":" + idx)
 			if err := txn.Set(fileKey, []byte(block.ID)); err != nil {
 				return err
 			}
@@ -146,8 +146,8 @@ func (s *BadgerMetadataStore) Delete(ctx context.Context, id string) error {
 		_ = txn.Delete([]byte(fileBlockLocalPrefix + id))
 
 		// Remove file index
-		if parts := strings.SplitN(id, "/", 2); len(parts) == 2 {
-			_ = txn.Delete([]byte(fileBlockFilePrefix + parts[0] + ":" + parts[1]))
+		if pid, idx, ok := splitBlockID(id); ok {
+			_ = txn.Delete([]byte(fileBlockFilePrefix + pid + ":" + idx))
 		}
 
 		// Remove hash index
@@ -512,11 +512,23 @@ func (s *BadgerMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(b
 	})
 }
 
+// splitBlockID splits a block ID into (payloadID, blockIdx) on the LAST
+// "/" separator. Nested payloadIDs (e.g. "share/dir/file/0") produce the
+// correct payloadID prefix for the fb-file: secondary index. Returns
+// ("", "", false) when the ID contains no "/".
+func splitBlockID(id string) (pid, idx string, ok bool) {
+	lastSlash := strings.LastIndex(id, "/")
+	if lastSlash <= 0 {
+		return "", "", false
+	}
+	return id[:lastSlash], id[lastSlash+1:], true
+}
+
 // parseBlockIdx extracts the numeric block index from a block ID ("{payloadID}/{blockIdx}").
 func parseBlockIdx(id string) int {
-	if idx := strings.LastIndex(id, "/"); idx >= 0 {
+	if _, idx, ok := splitBlockID(id); ok {
 		var v int
-		if _, err := fmt.Sscanf(id[idx+1:], "%d", &v); err == nil {
+		if _, err := fmt.Sscanf(idx, "%d", &v); err == nil {
 			return v
 		}
 	}
@@ -579,8 +591,8 @@ func (tx *badgerTransaction) Put(ctx context.Context, block *metadata.FileBlock)
 	} else {
 		_ = tx.txn.Delete(localKey)
 	}
-	if parts := strings.SplitN(block.ID, "/", 2); len(parts) == 2 {
-		fileKey := []byte(fileBlockFilePrefix + parts[0] + ":" + parts[1])
+	if pid, idx, ok := splitBlockID(block.ID); ok {
+		fileKey := []byte(fileBlockFilePrefix + pid + ":" + idx)
 		if err := tx.txn.Set(fileKey, []byte(block.ID)); err != nil {
 			return err
 		}
@@ -614,8 +626,8 @@ func (tx *badgerTransaction) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	_ = tx.txn.Delete([]byte(fileBlockLocalPrefix + id))
-	if parts := strings.SplitN(id, "/", 2); len(parts) == 2 {
-		_ = tx.txn.Delete([]byte(fileBlockFilePrefix + parts[0] + ":" + parts[1]))
+	if pid, idx, ok := splitBlockID(id); ok {
+		_ = tx.txn.Delete([]byte(fileBlockFilePrefix + pid + ":" + idx))
 	}
 	if block.IsFinalized() {
 		hashKey := []byte(fileBlockHashPrefix + block.Hash.String())

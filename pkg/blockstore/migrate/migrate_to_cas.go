@@ -110,7 +110,7 @@ type LegacyFileInfo struct {
 	Handle metadata.FileHandle
 	// Path is the share-relative path (forensic display).
 	Path string
-	// PayloadID locates the `.blk` tree at `<shareDir>/<PayloadID>/<idx>.blk`.
+	// PayloadID locates the `.blk` tree at `<shareDir>/blocks/<shard>/<PayloadID>/<idx>.blk`.
 	PayloadID metadata.PayloadID
 	// Size is FileAttr.Size in bytes.
 	Size int64
@@ -386,12 +386,15 @@ func migrateOneFile(
 }
 
 // readLegacyFileStream concatenates every `<idx>.blk` file under
-// `<shareDir>/<PayloadID>/` in offset order into a single in-memory
-// stream. Last block may be short. In-memory concat acceptable for the
-// v0.16 migration window (offline, bounded by share quota); a streaming
-// variant is deferred to Phase 18 if large-VM operators report OOMs.
+// `<shareDir>/blocks/<shard>/<PayloadID>/` in offset order into a single
+// in-memory stream. Last block may be short. In-memory concat acceptable
+// for the v0.16 migration window (offline, bounded by share quota); a
+// streaming variant is deferred if large-VM operators report OOMs.
 func readLegacyFileStream(shareDir string, f LegacyFileInfo) ([]byte, error) {
-	payloadDir := filepath.Join(shareDir, string(f.PayloadID))
+	payloadDir, err := legacyPayloadDir(shareDir, string(f.PayloadID))
+	if err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(payloadDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -436,6 +439,22 @@ func readLegacyFileStream(shareDir string, f LegacyFileInfo) ([]byte, error) {
 	return out, nil
 }
 
+// legacyPayloadDir returns the on-disk directory for a legacy file's .blk
+// tree: <shareDir>/blocks/<shard>/<payloadID>. Returns ("", error) when
+// the PayloadID is too short for the 2-char shard prefix or the resolved
+// path escapes the share directory.
+func legacyPayloadDir(shareDir string, pid string) (string, error) {
+	if len(pid) < 2 {
+		return "", fmt.Errorf("migrate: PayloadID %q too short for shard prefix", pid)
+	}
+	shard := pid[:2]
+	dir := filepath.Join(shareDir, "blocks", shard, pid)
+	if !strings.HasPrefix(dir, filepath.Clean(shareDir)+string(os.PathSeparator)) {
+		return "", fmt.Errorf("migrate: PayloadID %q escapes share directory", pid)
+	}
+	return dir, nil
+}
+
 // legacyBlk is a single `<idx>.blk` file under a legacy payload tree.
 type legacyBlk struct {
 	idx  uint64
@@ -458,7 +477,10 @@ func sortBlks(blks []legacyBlk) {
 // metadata-store artifacts may live alongside) and treats missing
 // entries as success.
 func removeLegacyBlkFiles(shareDir string, f LegacyFileInfo) error {
-	payloadDir := filepath.Join(shareDir, string(f.PayloadID))
+	payloadDir, err := legacyPayloadDir(shareDir, string(f.PayloadID))
+	if err != nil {
+		return nil // Short/invalid PayloadID: nothing to remove.
+	}
 	entries, err := os.ReadDir(payloadDir)
 	if err != nil {
 		if os.IsNotExist(err) {

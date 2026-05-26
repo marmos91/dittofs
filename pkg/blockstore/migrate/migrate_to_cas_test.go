@@ -176,7 +176,7 @@ func (s *stubMetadataAdapter) UpdateFileBlocks(_ context.Context, handle metadat
 
 // buildLegacyShare materializes a fake share directory with `fileCount`
 // legacy files of `fileSize` bytes each. The on-disk layout mirrors the
-// pre-Phase-17 `<shareDir>/<PayloadID>/<idx>.blk` shape. Returns the
+// pre-Phase-17 `<shareDir>/blocks/<shard>/<PayloadID>/<idx>.blk` shape. Returns the
 // share directory + the LegacyFileInfo list ready to feed into the stub
 // MetadataAdapter.
 func buildLegacyShare(t *testing.T, fileCount int, fileSize int64) (string, []LegacyFileInfo) {
@@ -188,7 +188,9 @@ func buildLegacyShare(t *testing.T, fileCount int, fileSize int64) (string, []Le
 	var files []LegacyFileInfo
 	for i := 0; i < fileCount; i++ {
 		payloadID := metadata.PayloadID(fmt.Sprintf("file-%03d", i))
-		payloadDir := filepath.Join(shareDir, string(payloadID))
+		pid := string(payloadID)
+		shard := pid[:2]
+		payloadDir := filepath.Join(shareDir, "blocks", shard, pid)
 		if err := os.MkdirAll(payloadDir, 0o755); err != nil {
 			t.Fatalf("MkdirAll: %v", err)
 		}
@@ -278,7 +280,9 @@ func TestMigrateShareToCAS_HappyPath(t *testing.T) {
 
 	// Legacy .blk files removed.
 	for _, f := range files {
-		payloadDir := filepath.Join(shareDir, string(f.PayloadID))
+		pid := string(f.PayloadID)
+		shard := pid[:2]
+		payloadDir := filepath.Join(shareDir, "blocks", shard, pid)
 		entries, _ := os.ReadDir(payloadDir)
 		for _, e := range entries {
 			if filepath.Ext(e.Name()) == ".blk" {

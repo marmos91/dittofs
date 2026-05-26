@@ -19,38 +19,32 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
 	"github.com/marmos91/dittofs/pkg/blockstore/migrate"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	badgerstore "github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
 
-// Plan 08 (Phase 17): offline `dfs migrate-to-cas` subcommand.
+// Offline `dfs migrate-to-cas` subcommand.
 //
 // Walks the configured storage tree, opens each share's destination CAS
 // BlockStore via fs.NewFSStoreForMigration (sentinel-bypass), invokes
 // migrate.MigrateShareToCAS per share, and writes the per-share
-// `.cas-migrated-v1` sentinel that Plan 09's boot guard requires.
+// `.cas-migrated-v1` sentinel that the boot guard requires.
 //
 // Refuses to run while the dfs server holds the PID lockfile (D-02
 // OFFLINE constraint).
 //
-// The MetadataAdapter used here is intentionally minimal: production
-// shares persist their metadata through the controlplane runtime
-// (pkg/controlplane/runtime/shares/service.go), which boots an entire
-// services graph. The migration tool short-circuits that by opening the
-// metadata backend directly per share — currently a no-op stub that
-// surfaces an explicit error to the operator when invoked against a
-// share whose metadata-store adapter has not yet been wired up by Plan
-// 17-09. The library half (pkg/blockstore/migrate/migrate_to_cas.go) is
-// fully exercised by its own unit suite (Task 3) which provides an
-// in-memory MetadataAdapter for testing. The CLI half here provides the
-// PID guard, flag wiring, share discovery, JSON / plain-text progress
-// emission, and the FSStore-for-migration construction.
+// The MetadataAdapter opens the badger metadata store directly (offline
+// — the server must be stopped). Production shares normally go through
+// the controlplane runtime, but the migration tool short-circuits that
+// to avoid booting the full services graph.
 
 var (
-	migrateStorageDir string
-	migrateShare      string
-	migrateDryRun     bool
-	migrateJSON       bool
-	migrateMaxDisk    int64
-	migrateMaxMemory  int64
+	migrateStorageDir  string
+	migrateMetadataDir string
+	migrateShare       string
+	migrateDryRun      bool
+	migrateJSON        bool
+	migrateMaxDisk     int64
+	migrateMaxMemory   int64
 )
 
 var migrateToCASCmd = &cobra.Command{
@@ -98,6 +92,8 @@ func init() {
 		"Per-share max-disk budget for the destination FSStore (0 = unlimited)")
 	migrateToCASCmd.Flags().Int64Var(&migrateMaxMemory, "max-memory", 0,
 		"Per-share max-memory budget for the destination FSStore (0 = 256 MiB default)")
+	migrateToCASCmd.Flags().StringVar(&migrateMetadataDir, "metadata-dir", "",
+		"Path to the badger metadata database directory (REQUIRED; the directory passed to the metadata store's 'path' config)")
 }
 
 func runMigrateToCAS(cmd *cobra.Command, args []string) error {
@@ -116,6 +112,15 @@ func runMigrateToCAS(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve --storage-dir: %w", err)
 	}
 	migrateStorageDir = abs
+
+	if migrateMetadataDir == "" {
+		return errors.New("--metadata-dir is required (path to the badger metadata database directory)")
+	}
+	metaAbs, err := filepath.Abs(migrateMetadataDir)
+	if err != nil {
+		return fmt.Errorf("resolve --metadata-dir: %w", err)
+	}
+	migrateMetadataDir = metaAbs
 
 	sharesRoot := filepath.Join(migrateStorageDir, "shares")
 	entries, err := os.ReadDir(sharesRoot)
@@ -146,6 +151,12 @@ func runMigrateToCAS(cmd *cobra.Command, args []string) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	mds, err := badgerstore.NewBadgerMetadataStoreWithDefaults(ctx, migrateMetadataDir)
+	if err != nil {
+		return fmt.Errorf("open metadata store at %q: %w", migrateMetadataDir, err)
+	}
+	defer func() { _ = mds.Close() }()
 
 	var aggregate migrate.MigrationStats
 	for _, name := range shareNames {
@@ -178,7 +189,7 @@ func runMigrateToCAS(cmd *cobra.Command, args []string) error {
 			StoreDir: shareDir,
 		}
 
-		adapter := &cliMetadataAdapter{shareName: name}
+		adapter := &cliMetadataAdapter{shareName: "/" + name, store: mds}
 		res, runErr := migrate.MigrateShareToCAS(ctx, shareDir, bs, adapter, opts)
 		_ = bs.Close()
 		if runErr != nil {
@@ -259,35 +270,100 @@ func makeProgressFn(shareName string) func(migrate.MigrationStats) {
 	}
 }
 
-// cliMetadataAdapter is the CLI-side bridge between the migration
-// library and the share's metadata store. Plan 08 ships it as a no-op
-// stub — production share-by-share wiring lands in Plan 17-09 alongside
-// the boot-guard sentinel-detection gate (which closes the loop: the
-// migration library writes the sentinel, the boot guard reads it).
-//
-// Until then, invoking `dfs migrate-to-cas` against a share with legacy
-// `.blk` files writes the CAS chunks + sentinel but reports zero
-// metadata updates — operators in pre-v0.16 production environments
-// MUST wait for Plan 17-09 to ship before treating the migration as
-// complete.
+// cliMetadataAdapter bridges the migration library to a live badger
+// metadata store opened directly by the CLI (offline — server must be
+// stopped). ListLegacyFiles walks the share tree and returns every
+// regular file with Size > 0 and empty Blocks (unmigrated). UpdateFileBlocks
+// commits the new CAS BlockRef manifest transactionally via PutFile.
 type cliMetadataAdapter struct {
 	shareName string
+	store     *badgerstore.BadgerMetadataStore
 }
 
 func (a *cliMetadataAdapter) ListLegacyFiles(ctx context.Context) ([]migrate.LegacyFileInfo, error) {
-	// Plan 08 ships the library + CLI scaffolding; metadata-store
-	// enumeration is wired in Plan 17-09 (per Phase 17 sequencing). The
-	// no-op stub here lets `dfs migrate-to-cas` exercise the library's
-	// dry-run path + sentinel-write path against an empty file set —
-	// which still produces the `.cas-migrated-v1` sentinel and exercises
-	// the boot-guard contract end-to-end.
-	return nil, nil
+	rootHandle, err := a.store.GetRootHandle(ctx, a.shareName)
+	if err != nil {
+		return nil, fmt.Errorf("get root handle for %s: %w", a.shareName, err)
+	}
+	var files []migrate.LegacyFileInfo
+	if err := a.walkDir(ctx, rootHandle, "", &files); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+func (a *cliMetadataAdapter) walkDir(ctx context.Context, dirHandle metadata.FileHandle, prefix string, out *[]migrate.LegacyFileInfo) error {
+	cursor := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entries, nextCursor, err := a.store.ListChildren(ctx, dirHandle, cursor, 500)
+		if err != nil {
+			return fmt.Errorf("list children at %q: %w", prefix, err)
+		}
+		for _, e := range entries {
+			file, err := a.store.GetFile(ctx, e.Handle)
+			if err != nil {
+				return fmt.Errorf("get file %s%s: %w", prefix, e.Name, err)
+			}
+			if file.Type == metadata.FileTypeDirectory {
+				if err := a.walkDir(ctx, e.Handle, prefix+e.Name+"/", out); err != nil {
+					return err
+				}
+				continue
+			}
+			if file.Type != metadata.FileTypeRegular || file.Size == 0 {
+				continue
+			}
+			if len(file.Blocks) > 0 {
+				continue
+			}
+			handle, err := metadata.EncodeFileHandle(file)
+			if err != nil {
+				return fmt.Errorf("encode handle for %s%s: %w", prefix, e.Name, err)
+			}
+			*out = append(*out, migrate.LegacyFileInfo{
+				Handle:    handle,
+				Path:      prefix + e.Name,
+				PayloadID: file.PayloadID,
+				Size:      int64(file.Size),
+				BlockSize: blockstore.BlockSize,
+			})
+		}
+		if nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
+	}
+	return nil
 }
 
 func (a *cliMetadataAdapter) UpdateFileBlocks(ctx context.Context, handle metadata.FileHandle, blocks []blockstore.BlockRef) error {
-	// Unreachable: ListLegacyFiles returns no files. Plan 17-09 lands
-	// the per-share metadata-store opener + transactional PutFile path.
-	return errors.New("migrate-to-cas: metadata adapter not wired (Plan 17-09)")
+	file, err := a.store.GetFile(ctx, handle)
+	if err != nil {
+		return fmt.Errorf("get file for update: %w", err)
+	}
+	file.Blocks = blocks
+	pid := string(file.PayloadID)
+	return a.store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		if err := tx.PutFile(ctx, file); err != nil {
+			return err
+		}
+		for _, br := range blocks {
+			fb := &blockstore.FileBlock{
+				ID:       fmt.Sprintf("%s/%d", pid, br.Offset),
+				Hash:     br.Hash,
+				DataSize: br.Size,
+				State:    blockstore.BlockStateRemote,
+				RefCount: 1,
+			}
+			if err := tx.Put(ctx, fb); err != nil {
+				return fmt.Errorf("create FileBlock row %s: %w", fb.ID, err)
+			}
+		}
+		return nil
+	})
 }
 
 // nopFileBlockStore satisfies blockstore.EngineFileBlockStore without
