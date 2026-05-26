@@ -235,6 +235,45 @@ func TestMetadataService_CreateFile(t *testing.T) {
 		assert.Equal(t, metadata.ErrAlreadyExists, storeErr.Code)
 	})
 
+	t.Run("concurrent creates: exactly one succeeds (TOCTOU guard)", func(t *testing.T) {
+		t.Parallel()
+
+		for iter := 0; iter < 20; iter++ {
+			fx := newTestFixture(t)
+
+			const numWorkers = 5
+			type result struct {
+				err error
+			}
+			results := make(chan result, numWorkers)
+
+			for i := 0; i < numWorkers; i++ {
+				go func() {
+					_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "race.txt", &metadata.FileAttr{
+						Mode: 0644,
+					})
+					results <- result{err: err}
+				}()
+			}
+
+			var numOK, numCollision int
+			for i := 0; i < numWorkers; i++ {
+				r := <-results
+				if r.err == nil {
+					numOK++
+				} else {
+					var storeErr *metadata.StoreError
+					if assert.ErrorAs(t, r.err, &storeErr) && storeErr.Code == metadata.ErrAlreadyExists {
+						numCollision++
+					}
+				}
+			}
+
+			assert.Equal(t, 1, numOK, "iter %d: exactly one create should succeed", iter)
+			assert.Equal(t, numWorkers-1, numCollision, "iter %d: remaining creates should get ErrAlreadyExists", iter)
+		}
+	})
+
 	t.Run("permission denied for non-root on root-owned directory", func(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
