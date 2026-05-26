@@ -184,7 +184,7 @@ DittoFS implements file leases (Phase 37) but not directory leases.
 |-----------|----------|--------|-------|
 | smb2.dirlease.hardlink | Directory Leases | Directory leases not implemented | - |
 | smb2.dirlease.leases | Directory Leases | Directory leases not implemented | - |
-| smb2.dirlease.oplocks | Directory Leases | Directory leases not implemented | - |
+| smb2.dirlease.oplocks | Directory Leases | Skipped by runner — smbtorture 4.22.6 client SIGSEGVs in this subtest and aborts the rest of the dirlease suite (see run.sh) | #633 |
 | smb2.dirlease.overwrite | Directory Leases | Directory leases not implemented | - |
 | smb2.dirlease.rename | Directory Leases | Directory leases not implemented | - |
 | smb2.dirlease.rename_dst_parent | Directory Leases | Directory leases not implemented | - |

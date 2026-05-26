@@ -449,7 +449,28 @@ else
         "smb2.delete-on-close-perms:delete-on-close-perms"
         "smb2.deny:deny"
         "smb2.dir:dir"
-        "smb2.dirlease:dirlease"
+        # smb2.dirlease is run per-subtest with smb2.dirlease.oplocks
+        # skipped: smbtorture 4.22.6 client SIGSEGVs inside that subtest and
+        # aborts the rest of the dirlease suite, hiding pass/fail for the 17
+        # other subtests. Tracked in #633 — drop this workaround once the
+        # smbtorture client crash is fixed upstream (or we upgrade past it).
+        "smb2.dirlease.v2_request:dirlease"
+        "smb2.dirlease.v2_request_parent:dirlease"
+        "smb2.dirlease.leases:dirlease"
+        "smb2.dirlease.overwrite:dirlease"
+        "smb2.dirlease.rename:dirlease"
+        "smb2.dirlease.rename_dst_parent:dirlease"
+        "smb2.dirlease.hardlink:dirlease"
+        "smb2.dirlease.setatime:dirlease"
+        "smb2.dirlease.setbtime:dirlease"
+        "smb2.dirlease.setctime:dirlease"
+        "smb2.dirlease.setmtime:dirlease"
+        "smb2.dirlease.setdos:dirlease"
+        "smb2.dirlease.seteof:dirlease"
+        "smb2.dirlease.unlink_same_initial_and_close:dirlease"
+        "smb2.dirlease.unlink_same_set_and_close:dirlease"
+        "smb2.dirlease.unlink_different_initial_and_close:dirlease"
+        "smb2.dirlease.unlink_different_set_and_close:dirlease"
         "smb2.durable-open:durable-open"
         "smb2.durable-open-disconnect:durable-open-disconnect"
         "smb2.durable-v2-open:durable-v2-open"
