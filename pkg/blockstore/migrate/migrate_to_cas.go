@@ -391,7 +391,9 @@ func migrateOneFile(
 // v0.16 migration window (offline, bounded by share quota); a streaming
 // variant is deferred to Phase 18 if large-VM operators report OOMs.
 func readLegacyFileStream(shareDir string, f LegacyFileInfo) ([]byte, error) {
-	payloadDir := filepath.Join(shareDir, string(f.PayloadID))
+	pid := string(f.PayloadID)
+	shard := pid[:2]
+	payloadDir := filepath.Join(shareDir, "blocks", shard, pid)
 	entries, err := os.ReadDir(payloadDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -458,7 +460,9 @@ func sortBlks(blks []legacyBlk) {
 // metadata-store artifacts may live alongside) and treats missing
 // entries as success.
 func removeLegacyBlkFiles(shareDir string, f LegacyFileInfo) error {
-	payloadDir := filepath.Join(shareDir, string(f.PayloadID))
+	pid := string(f.PayloadID)
+	shard := pid[:2]
+	payloadDir := filepath.Join(shareDir, "blocks", shard, pid)
 	entries, err := os.ReadDir(payloadDir)
 	if err != nil {
 		if os.IsNotExist(err) {
