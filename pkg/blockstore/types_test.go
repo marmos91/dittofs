@@ -485,7 +485,7 @@ func TestContentHash_JSONBackwardCompat(t *testing.T) {
 // MarshalJSON existed). Critical for reading badger metadata written by
 // v0.14.2 servers during upgrade migration.
 func TestContentHash_JSONBackwardCompat_V014Array(t *testing.T) {
-	// v0.14.x zero-value ObjectID serialized as [0,0,...,0]
+	// v0.14.x zero-value ContentHash serialized as [0,0,...,0]
 	zeroArr := "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]"
 	var got ContentHash
 	if err := got.UnmarshalJSON([]byte(zeroArr)); err != nil {
@@ -501,7 +501,10 @@ func TestContentHash_JSONBackwardCompat_V014Array(t *testing.T) {
 	if err := got2.UnmarshalJSON([]byte(nonZeroArr)); err != nil {
 		t.Fatalf("UnmarshalJSON v0.14 non-zero array: %v", err)
 	}
-	want, _ := ParseContentHash(blake3EmptyHex)
+	want, err := ParseContentHash(blake3EmptyHex)
+	if err != nil {
+		t.Fatalf("ParseContentHash: %v", err)
+	}
 	if !bytes.Equal(got2[:], want[:]) {
 		t.Fatalf("v0.14 non-zero array decode mismatch:\n got: %x\nwant: %x", got2[:], want[:])
 	}
