@@ -318,13 +318,7 @@ func (s *MetadataService) createEntry(
 	// Execute all write operations in a single transaction for better performance.
 	// This reduces PostgreSQL round-trips from 6+ to 2 (BEGIN + COMMIT).
 	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
-		// Re-check existence inside the transaction to close the TOCTOU race
-		// between the outer GetChild (line 198) and this SetChild. Without
-		// this guard, concurrent FILE_CREATE requests that all pass the outer
-		// check can all succeed — the memory store's SetChild overwrites, and
-		// BadgerDB's MVCC may not conflict on separate keys. The outer check
-		// is kept as a fast-path to avoid unnecessary handle generation /
-		// attribute computation for the common non-concurrent case.
+		// TOCTOU guard: re-check inside transaction.
 		if _, innerErr := tx.GetChild(ctx.Context, parentHandle, name); innerErr == nil {
 			return &StoreError{
 				Code:    ErrAlreadyExists,
