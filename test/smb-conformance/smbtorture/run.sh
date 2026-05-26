@@ -344,7 +344,6 @@ if $KERBEROS; then
         "--option=netbios name=localhost"
         "--option=client min protocol=SMB2_02"
         "--option=client max protocol=SMB3"
-        "--option=smbd=false"
     )
     log_info "Kerberos mode: targeting ${SMBTORTURE_HOST}/<share> with SPNEGO/Kerberos"
 else
@@ -355,7 +354,6 @@ else
         "--option=netbios name=localhost"
         "--option=client min protocol=SMB2_02"
         "--option=client max protocol=SMB3"
-        "--option=smbd=false"
     )
 fi
 
