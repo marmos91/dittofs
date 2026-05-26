@@ -299,69 +299,133 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// ========================================================================
 
 	if openFile.DeletePending {
-		authCtx, err := BuildAuthContext(ctx)
-		if err != nil {
-			logger.Warn("CLOSE: failed to build auth context for delete", "error", err)
+		// Per MS-FSA 2.1.5.4: delete-on-close only removes the file when the
+		// LAST handle closes. If other handles on the same file exist, propagate
+		// the DOC flag + the original DOC-setter's parent key to remaining handles
+		// so the delete fires on their eventual close.
+		otherHandleExists := false
+		if len(openFile.MetadataHandle) > 0 {
+			h.files.Range(func(_, value any) bool {
+				other := value.(*OpenFile)
+				if other.FileID == openFile.FileID {
+					return true // skip self
+				}
+				if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
+					otherHandleExists = true
+					return false
+				}
+				return true
+			})
+		}
+
+		if otherHandleExists {
+			// Not the last handle: propagate DOC to remaining handles so the
+			// actual delete fires when they close. The DOC-setter's parent key
+			// is preserved so the closer can compare it for dir-lease
+			// suppression (test_unlink_different_* vs test_unlink_same_*).
+			h.files.Range(func(_, value any) bool {
+				other := value.(*OpenFile)
+				if other.FileID == openFile.FileID {
+					return true
+				}
+				if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
+					other.DeletePending = true
+					other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
+					other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
+					h.StoreOpenFile(other)
+				}
+				return true
+			})
+			logger.Debug("CLOSE: DOC propagated to other handles (not last)",
+				"path", openFile.Path)
 		} else {
-			// DELETE access was verified upstream before DeletePending was set:
-			// either by CREATE honoring FILE_DELETE_ON_CLOSE (create.go:913) or
-			// by SET_INFO FileDispositionInformation (set_info.go:752). Signal
-			// that to the metadata layer so the owner-of-target delete rule
-			// applies without loosening POSIX unlink(2) for NFS callers.
-			authCtx.HasDeleteAccess = true
-			// Thread the CLOSING handle's RqLs ParentLeaseKey through to
-			// notifyDirChange so the dir-lease parent-key suppression rule
-			// (MS-SMB2 §3.3.4.20, #470 C6/C7) can skip the parent dir lease
-			// whose key matches. The exclude key is the parent_key of the
-			// deleting CLOSE's handle, NOT of the handle that set DOC —
-			// covers both `*_set_and_close` and `*_initial_and_close` paths
-			// because OpenFile.ParentLeaseKey is captured at CREATE time
-			// regardless of when delete-on-close was set.
+			// Last handle: perform the actual delete.
+			authCtx, err := BuildAuthContext(ctx)
+			if err != nil {
+				logger.Warn("CLOSE: failed to build auth context for delete", "error", err)
+			} else {
+				authCtx.HasDeleteAccess = true
+
+				// Dir-lease parent-key suppression (#470 C6/C7): when the closer's
+				// parent key matches the DOC-setter's parent key, use the closer's
+				// key for suppression (test_unlink_same_*). When they differ, no
+				// suppression — ALL parent dir leases break (test_unlink_different_*).
+				docSetterKeysDiffer := openFile.HasDeleteOnCloseParentKey &&
+					openFile.HasParentLeaseKey &&
+					openFile.DeleteOnCloseParentKey != openFile.ParentLeaseKey
+				if !docSetterKeysDiffer {
+					// Same key (or no DOC key tracking): use closer's parent key
+					PropagateOpenFileParentLeaseKey(authCtx, openFile)
+				}
+				// else: different keys — don't propagate, all dir leases break
+
+				metaSvc := h.Registry.GetMetadataService()
+				var deleteErr error
+				if openFile.IsDirectory {
+					deleteErr = metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName)
+				} else {
+					_, deleteErr = metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName)
+				}
+
+				if deleteErr != nil {
+					resp.Status = common.MapToSMB(deleteErr)
+					logger.Debug("CLOSE: failed to delete",
+						"path", openFile.Path,
+						"isDir", openFile.IsDirectory,
+						"status", resp.Status,
+						"error", deleteErr)
+				} else {
+					logger.Debug("CLOSE: deleted", "path", openFile.Path, "isDir", openFile.IsDirectory)
+
+					if !openFile.IsDirectory && !strings.Contains(openFile.FileName, ":") {
+						h.cascadeDeleteADSStreams(authCtx, metaSvc, openFile)
+					}
+					h.restoreParentDirFrozenTimestamps(authCtx, openFile.ParentHandle)
+
+					// Break parent directory leases: deletion changes directory
+					// content. When docSetterKeysDiffer, clear the closer's
+					// parent key so no suppression applies — all dir leases break.
+					if docSetterKeysDiffer {
+						savedKey := openFile.ParentLeaseKey
+						savedHas := openFile.HasParentLeaseKey
+						openFile.HasParentLeaseKey = false
+						openFile.ParentLeaseKey = [16]byte{}
+						h.breakParentDirLeasesForContentChange(authCtx, openFile)
+						openFile.ParentLeaseKey = savedKey
+						openFile.HasParentLeaseKey = savedHas
+					} else {
+						h.breakParentDirLeasesForContentChange(authCtx, openFile)
+					}
+
+					if h.NotifyRegistry != nil {
+						parentPath := GetParentPath(openFile.Path)
+						h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved)
+					}
+				}
+			}
+		}
+	}
+
+	// ========================================================================
+	// Step 8b: Break parent dir leases on close of modified file
+	// ========================================================================
+	// Per MS-SMB2 3.3.4.7 / Samba open.c close_directory: closing a handle
+	// that modified the file (WRITE occurred) breaks parent-dir leases. The
+	// WRITE itself does NOT break — only the CLOSE triggers the break so
+	// directory caching is only invalidated once the mutation is committed.
+	// Parent-key suppression (MS-SMB2 §3.3.4.20, #470 C2) applies: if the
+	// closing handle carried a ParentLeaseKey matching the parent's dir lease,
+	// that lease is suppressed. Covers smb2.dirlease.v2_request: write without
+	// parent key -> close breaks dir lease; write with parent key -> close
+	// does NOT break (suppressed).
+
+	if !openFile.DeletePending && !openFile.IsDirectory && openFile.SmbWriteTriggered {
+		authCtx, authErr := BuildAuthContext(ctx)
+		if authErr != nil {
+			logger.Warn("CLOSE: failed to build auth context for modified-file dir-lease break", "path", openFile.Path, "error", authErr)
+		} else {
 			PropagateOpenFileParentLeaseKey(authCtx, openFile)
-			metaSvc := h.Registry.GetMetadataService()
-			var deleteErr error
-			if openFile.IsDirectory {
-				deleteErr = metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName)
-			} else {
-				_, deleteErr = metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName)
-			}
-
-			if deleteErr != nil {
-				// Per MS-SMB2 3.3.5.10 and MS-FSA 2.1.5.4, a CLOSE that cannot
-				// honor DELETE_ON_CLOSE must surface the failure to the client.
-				// Returning STATUS_SUCCESS while the underlying unlink failed
-				// causes the client to believe the file is gone and reissue
-				// CREATE/CLOSE in a tight loop (smbtorture smb2.session.reauth5,
-				// issue #388).
-				resp.Status = common.MapToSMB(deleteErr)
-				logger.Debug("CLOSE: failed to delete",
-					"path", openFile.Path,
-					"isDir", openFile.IsDirectory,
-					"status", resp.Status,
-					"error", deleteErr)
-			} else {
-				logger.Debug("CLOSE: deleted", "path", openFile.Path, "isDir", openFile.IsDirectory)
-
-				// Cascade delete ADS streams: when a base file is deleted,
-				// all its alternate data streams (stored as "baseFile:streamName"
-				// children in the same parent directory) must also be removed.
-				// Per MS-FSA 2.1.5.9.7: all streams of a file are deleted when
-				// the file itself is deleted.
-				if !openFile.IsDirectory && !strings.Contains(openFile.FileName, ":") {
-					h.cascadeDeleteADSStreams(authCtx, metaSvc, openFile)
-				}
-				// Per MS-FSA 2.1.5.14.2: Restore frozen timestamps on parent directory
-				// after delete updates parent Mtime/Ctime/Atime.
-				h.restoreParentDirFrozenTimestamps(authCtx, openFile.ParentHandle)
-
-				// Break parent directory leases: deletion changes directory content.
-				h.breakParentDirLeasesForContentChange(authCtx, openFile)
-
-				if h.NotifyRegistry != nil {
-					parentPath := GetParentPath(openFile.Path)
-					h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved)
-				}
-			}
+			h.breakParentDirLeasesForContentChange(authCtx, openFile)
 		}
 	}
 
