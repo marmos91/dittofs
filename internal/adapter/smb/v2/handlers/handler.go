@@ -356,6 +356,16 @@ type OpenFile struct {
 	ParentLeaseKey    [16]byte
 	HasParentLeaseKey bool
 
+	// DeleteOnCloseParentKey tracks the ParentLeaseKey of the handle that
+	// originally set delete-on-close (via SET_INFO or CREATE option).
+	// When the last handle closes and triggers the actual deletion, the
+	// closer's ParentLeaseKey is compared to this: if they match, parent-key
+	// suppression applies (test_unlink_same_*); if they differ, ALL parent
+	// dir leases are broken without suppression (test_unlink_different_*).
+	// HasDeleteOnCloseParentKey is true when the value is meaningful.
+	DeleteOnCloseParentKey    [16]byte
+	HasDeleteOnCloseParentKey bool
+
 	// Durable handle state (Phase 38: SMB3 durable handles)
 	// IsDurable indicates this handle has been granted durability.
 	// When true, the handle will be persisted to DurableHandleStore on disconnect
