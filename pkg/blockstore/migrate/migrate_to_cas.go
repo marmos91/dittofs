@@ -449,7 +449,7 @@ func legacyPayloadDir(shareDir string, pid string) (string, error) {
 	}
 	shard := pid[:2]
 	dir := filepath.Join(shareDir, "blocks", shard, pid)
-	if !strings.HasPrefix(dir, shareDir) {
+	if !strings.HasPrefix(dir, filepath.Clean(shareDir)+string(os.PathSeparator)) {
 		return "", fmt.Errorf("migrate: PayloadID %q escapes share directory", pid)
 	}
 	return dir, nil
