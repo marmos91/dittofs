@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-05-26 (walk back 24 confirmed PASS + add 2 new failures)
+Last updated: 2026-05-26 (walk back 25 confirmed PASS + add 2 new failures)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -625,25 +625,25 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 
 ## Changelog
 
-### 2026-05-26 — Walk back 24 confirmed PASS + add 2 new failures
+### 2026-05-26 — Walk back 25 confirmed PASS + add 2 new failures
 
-Confirmed 24 tests now PASS on all 3 CI stores (memory, memory-fs, badger-fs).
+Confirmed 25 tests now PASS on all 3 CI stores (memory, memory-fs, badger-fs).
 Removed from known failures:
 
-- **Benchmarks**: `bench.oplock1` (section removed — now empty)
-- **Compound**: `compound.related4`, `compound.related7`,
-  `compound_async.create_lease_break_async`, `compound_async.rename_last`,
-  `compound_async.rename_middle`, `compound_async.rename_non_compound_no_async`,
-  `compound_async.rename_same_srcdst_non_compound_no_async`
-- **Directory**: `dir.one`
-- **Directory Leases**: `dirlease.leases`, `dirlease.overwrite`
-- **File Attributes**: `winattr` (section reduced to `dosmode` only)
-- **IOCTL**: `ioctl.network_interface_info`
-- **Locks**: `lock.cancel-logoff`, `lock.cancel-tdis`
-- **Oplocks**: `oplock.batch3`, `oplock.batch7`, `oplock.batch19`,
-  `oplock.batch20`, `oplock.batch22b`, `oplock.batch24`, `oplock.batch26`,
-  `oplock.exclusive6`, `oplock.levelii502`
-- **Streams**: `streams.rename2`
+- **Benchmarks**: `smb2.bench.oplock1` (section removed — now empty)
+- **Compound**: `smb2.compound.related4`, `smb2.compound.related7`,
+  `smb2.compound_async.create_lease_break_async`, `smb2.compound_async.rename_last`,
+  `smb2.compound_async.rename_middle`, `smb2.compound_async.rename_non_compound_no_async`,
+  `smb2.compound_async.rename_same_srcdst_non_compound_no_async`
+- **Directory**: `smb2.dir.one`
+- **Directory Leases**: `smb2.dirlease.leases`, `smb2.dirlease.overwrite`
+- **File Attributes**: `smb2.winattr` (section reduced to `dosmode` only)
+- **IOCTL**: `smb2.ioctl.network_interface_info`
+- **Locks**: `smb2.lock.cancel-logoff`, `smb2.lock.cancel-tdis`
+- **Oplocks**: `smb2.oplock.batch3`, `smb2.oplock.batch7`, `smb2.oplock.batch19`,
+  `smb2.oplock.batch20`, `smb2.oplock.batch22b`, `smb2.oplock.batch24`, `smb2.oplock.batch26`,
+  `smb2.oplock.exclusive6`, `smb2.oplock.levelii502`
+- **Streams**: `smb2.streams.rename2`
 
 Added 2 new failures:
 
