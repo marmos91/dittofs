@@ -1242,18 +1242,18 @@ func TestIsStatOnlyOpen(t *testing.T) {
 		access uint32
 		want   bool
 	}{
-		// stat-open per Samba is_lease_stat_open: only FILE_READ_ATTRIBUTES,
-		// FILE_WRITE_ATTRIBUTES, SYNCHRONIZE are stat-open bits.
-		// Per smbtorture smb2.oplock.statopen1: READ_CONTROL is NOT stat-only.
+		// stat-open per Samba is_lease_stat_open: FILE_READ_ATTRIBUTES,
+		// FILE_WRITE_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE are stat-open bits.
 		{"ReadAttributes only", fileReadAttributes, true},
 		{"WriteAttributes only", fileWriteAttrs, true},
 		{"Synchronize only", synchronize, true},
 		{"All stat bits", fileReadAttributes | fileWriteAttrs | synchronize, true},
 		{"ReadAttrs+Sync", fileReadAttributes | synchronize, true},
 
-		// READ_CONTROL is NOT stat-only per smbtorture statopen1
-		{"ReadControl only", readControl, false},
-		{"ReadControl+stat", fileReadAttributes | readControl, false},
+		// READ_CONTROL IS stat-only per Samba is_lease_stat_open and
+		// smb2.lease.statopen4 test 8 (expect_stat_open: yes).
+		{"ReadControl only", readControl, true},
+		{"ReadControl+stat", fileReadAttributes | readControl, true},
 
 		// non-stat per statopen1 (expect_stat_open=false)
 		{"ReadData", fileReadData, false},
