@@ -535,7 +535,12 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// Step 11: Remove the open file handle
 	// ========================================================================
 
-	h.DeleteOpenFile(req.FileID)
+	// WaitAndDeleteOpenFile drains in-flight operations (e.g., a concurrent
+	// QueryDirectory on the same handle) before removing the handle from
+	// the map. This prevents a CLOSE goroutine from racing ahead of a FIND
+	// goroutine on the same connection and causing a spurious FILE_CLOSED
+	// (smbtorture compound_find.compound_find_close).
+	h.WaitAndDeleteOpenFile(req.FileID)
 
 	logger.Debug("CLOSE successful",
 		"fileID", fmt.Sprintf("%x", req.FileID),

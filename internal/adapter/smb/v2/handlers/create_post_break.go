@@ -186,11 +186,15 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		return 0
 	}
 
-	// Async park is only safe when this CREATE is the last op in its message
-	// (MS-SMB2 §3.3.4.4). NextCommand == 0 ⇒ standalone or last-in-compound;
-	// nonzero means a related follow-up wants a FileID we haven't allocated
-	// yet, so we must block inline instead.
-	if ctx.NextCommand == 0 && h.LeaseManager.HasOtherBreakingLeases(lockFileHandle, shareName, waitExceptKey) {
+	// Per MS-SMB2 §3.3.4.4 and smbtorture compound_async.getinfo_middle:
+	// When a compound CREATE needs to wait for a lease break, it MUST go async
+	// (STATUS_PENDING) even if it is not the last command in the compound.
+	// The compound processor handles non-last STATUS_PENDING by sending the
+	// interim response standalone and deferring remaining compound commands
+	// until the CREATE completes. Without this, the sync wait path deadlocks:
+	// the test (and real clients) cannot ACK the lease break until they
+	// receive the STATUS_PENDING interim response.
+	if h.LeaseManager.HasOtherBreakingLeases(lockFileHandle, shareName, waitExceptKey) {
 		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey); asyncId != 0 {
 			return asyncId
 		}

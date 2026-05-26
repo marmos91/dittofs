@@ -212,6 +212,23 @@ func (r *PendingCreateRegistry) removeLocked(asyncId uint64) *PendingCreate {
 	return p
 }
 
+// ReplaceCallback atomically replaces the Callback of a pending CREATE
+// identified by asyncId. Used by the compound processor to redirect the
+// CREATE's completion from sending a standalone response to continuing
+// compound processing (smbtorture compound_async.getinfo_middle). Returns
+// true if the entry was found and updated, false if it was already gone
+// (e.g. concurrently cancelled).
+func (r *PendingCreateRegistry) ReplaceCallback(asyncId uint64, cb AsyncCreateCompleteCallback) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.byAsyncId[asyncId]
+	if !ok {
+		return false
+	}
+	p.Callback = cb
+	return true
+}
+
 // Len returns the number of pending CREATEs.
 func (r *PendingCreateRegistry) Len() int {
 	r.mu.Lock()

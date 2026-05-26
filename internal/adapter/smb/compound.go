@@ -137,6 +137,48 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		"messageID", firstHeader.MessageID)
 
 	result, fileID, handlerCtx := ProcessRequestWithFileIDAndCallback(ctx, firstHeader, firstBody, firstRaw, connInfo, isEncrypted, asyncNotifyCallback)
+
+	// Per MS-SMB2 §3.3.4.4 and smbtorture compound_async.getinfo_middle:
+	// When a compound command returns STATUS_PENDING with an AsyncId AND
+	// there are remaining commands, send the interim response standalone and
+	// defer the remaining compound commands to the async completion callback.
+	// Without this, the compound processor would try to process subsequent
+	// related commands without a FileID (the CREATE hasn't completed yet),
+	// and the inline sync wait would deadlock because the test/client cannot
+	// ACK the lease break until it receives the STATUS_PENDING interim.
+	if result != nil && result.Status == types.StatusPending && result.AsyncId != 0 && len(compoundData) >= header.HeaderSize {
+		// Send interim STATUS_PENDING as a standalone async response.
+		interimCredits := grantConnectionCredits(connInfo, firstHeader.SessionID, firstHeader.Credits, firstHeader.CreditCharge)
+		interimHeader := header.NewResponseHeaderWithCredits(firstHeader, types.StatusPending, interimCredits)
+		interimHeader.Flags |= types.FlagAsync
+		interimHeader.AsyncId = result.AsyncId
+		if err := SendMessage(interimHeader, MakeErrorBody(), connInfo); err != nil {
+			logger.Debug("Error sending compound async interim response", "error", err)
+		}
+
+		// The parkCreateOnLeaseBreak goroutine will call
+		// AsyncCreateCompleteCallback when the CREATE completes. We
+		// overwrite that callback (it was set to send a standalone
+		// completion) with one that continues compound processing.
+		// The original callback was captured by the goroutine's closure
+		// via PendingCreate.Callback; we replace PendingCreate.Callback
+		// in the registry so the goroutine picks up our wrapper.
+		if connInfo.Handler.PendingCreateRegistry != nil {
+			connInfo.Handler.PendingCreateRegistry.ReplaceCallback(result.AsyncId, func(sessionID, messageID, asyncID uint64, status types.Status, createBody []byte) error {
+				connInfo.ReleaseAsync()
+				// Build a compound response starting with the CREATE's final result,
+				// followed by the remaining compound commands processed with the
+				// CREATE's FileID.
+				completeCompoundAfterAsyncCreate(
+					ctx, firstHeader, status, createBody, asyncID,
+					compoundData, connInfo, isEncrypted, asyncNotifyCallback,
+				)
+				return nil
+			})
+		}
+		return
+	}
+
 	if fileID != [16]byte{} {
 		lastFileID = fileID
 	} else {
@@ -764,4 +806,196 @@ func InjectFileID(command types.Command, body []byte, fileID [16]byte) []byte {
 		"offset", offset)
 
 	return newBody
+}
+
+// completeCompoundAfterAsyncCreate runs from the async CREATE resume goroutine
+// to finish a compound request whose first command (CREATE) went async with
+// STATUS_PENDING. It builds a compound response containing the CREATE's final
+// result and all subsequent commands, then sends it as a single compound frame.
+//
+// Per MS-SMB2 §3.3.4.4: the CREATE's interim STATUS_PENDING was already sent
+// standalone by ProcessCompoundRequest. This function delivers the remaining
+// responses (the CREATE completion + GETINFO + CLOSE etc.) as a compound.
+//
+// The asyncID is used to set FlagAsync on the CREATE's final response header
+// so the client correlates it with the earlier interim.
+func completeCompoundAfterAsyncCreate(
+	ctx context.Context,
+	firstHeader *header.SMB2Header,
+	createStatus types.Status,
+	createBody []byte,
+	asyncID uint64,
+	compoundData []byte,
+	connInfo *ConnInfo,
+	isEncrypted bool,
+	asyncNotifyCallback handlers.AsyncResponseCallback,
+) {
+	var responses []compoundResponse
+	var postSendHooks []func()
+
+	// Build CREATE completion response (async header format).
+	createCredits := grantConnectionCredits(connInfo, firstHeader.SessionID, firstHeader.Credits, firstHeader.CreditCharge)
+	createRespHeader := header.NewResponseHeaderWithCredits(firstHeader, createStatus, createCredits)
+	createRespHeader.Flags |= types.FlagAsync
+	createRespHeader.AsyncId = asyncID
+
+	createRespBody := createBody
+	if (createStatus.IsError() || createStatus.IsWarning()) &&
+		createStatus != types.StatusMoreProcessingRequired &&
+		createStatus != types.StatusBufferOverflow {
+		createRespBody = MakeErrorBody()
+	}
+	if createRespBody == nil {
+		createRespBody = MakeErrorBody()
+	}
+	responses = append(responses, compoundResponse{respHeader: createRespHeader, body: createRespBody})
+
+	// Extract the FileID from the CREATE response so related commands can inherit it.
+	var lastFileID [16]byte
+	if createStatus == types.StatusSuccess && len(createBody) >= 80 {
+		copy(lastFileID[:], createBody[64:80])
+	}
+	lastSessionID := firstHeader.SessionID
+	lastTreeID := firstHeader.TreeID
+
+	lastCmdFailed := createStatus.IsError()
+	lastCmdSessionFailed := isSessionLevelError(createStatus)
+	var lastCmdStatus types.Status
+	if lastCmdFailed {
+		lastCmdStatus = createStatus
+	}
+
+	// Process remaining compound commands (same logic as the main loop in
+	// ProcessCompoundRequest).
+	remaining := compoundData
+	for len(remaining) >= header.HeaderSize {
+		currentCommandData := remaining
+		hdr, cmdBody, nextRemaining, err := ParseCompoundCommand(remaining)
+		if err != nil {
+			logger.Debug("Error parsing compound command in async completion", "error", err)
+			errRh, errRb := buildCompoundParseErrorResponse(remaining, connInfo)
+			responses = append(responses, compoundResponse{respHeader: errRh, body: errRb})
+			break
+		}
+		remaining = nextRemaining
+
+		if !isEncrypted {
+			if err := VerifyCompoundCommandSignature(currentCommandData, hdr, connInfo); err != nil {
+				logger.Warn("Compound command signature verification failed (async)", "error", err)
+				errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, types.StatusAccessDenied, connInfo)
+				responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
+				break
+			}
+		}
+
+		if hdr.IsRelated() && lastCmdSessionFailed {
+			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, types.StatusInvalidParameter, connInfo)
+			errHeader.Flags |= types.FlagRelated
+			responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
+			lastCmdSessionFailed = true
+			lastCmdFailed = true
+			continue
+		}
+
+		if hdr.IsRelated() && lastCmdFailed && lastFileID == [16]byte{} {
+			propagatedStatus := lastCmdStatus
+			if propagatedStatus == 0 {
+				propagatedStatus = types.StatusInvalidParameter
+			}
+			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, propagatedStatus, connInfo)
+			errHeader.Flags |= types.FlagRelated
+			responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
+			lastCmdFailed = true
+			continue
+		}
+
+		if hdr.IsRelated() {
+			if hdr.SessionID == 0 || hdr.SessionID == 0xFFFFFFFFFFFFFFFF {
+				hdr.SessionID = lastSessionID
+			}
+			if hdr.TreeID == 0 || hdr.TreeID == 0xFFFFFFFF {
+				hdr.TreeID = lastTreeID
+			}
+		}
+
+		isLastCommand := len(remaining) < header.HeaderSize
+		if hdr.Command == types.SMB2ChangeNotify && !isLastCommand {
+			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, types.StatusInternalError, connInfo)
+			if hdr.IsRelated() {
+				errHeader.Flags |= types.FlagRelated
+			}
+			responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
+			lastCmdFailed = true
+			lastCmdStatus = types.StatusInternalError
+			lastCmdSessionFailed = false
+			continue
+		}
+
+		subRaw := currentCommandData[:header.HeaderSize+len(cmdBody)]
+		var cmdResult *HandlerResult
+		var cmdCtx *handlers.SMBHandlerContext
+		if hdr.IsRelated() && lastFileID != [16]byte{} {
+			var fid [16]byte
+			cmdResult, fid, cmdCtx = ProcessRequestWithInheritedFileID(ctx, hdr, cmdBody, subRaw, lastFileID, connInfo, isEncrypted, asyncNotifyCallback)
+			if fid != [16]byte{} {
+				lastFileID = fid
+			}
+		} else {
+			var fid [16]byte
+			cmdResult, fid, cmdCtx = ProcessRequestWithFileIDAndCallback(ctx, hdr, cmdBody, subRaw, connInfo, isEncrypted, asyncNotifyCallback)
+			if fid != [16]byte{} {
+				lastFileID = fid
+			} else if !hdr.IsRelated() {
+				if extracted := ExtractFileID(hdr.Command, cmdBody); extracted != [16]byte{} {
+					lastFileID = extracted
+				}
+			}
+		}
+
+		if cmdCtx != nil {
+			if cmdCtx.SessionID != 0 {
+				lastSessionID = cmdCtx.SessionID
+			}
+			if cmdCtx.TreeID != 0 {
+				lastTreeID = cmdCtx.TreeID
+			}
+		}
+
+		if cmdResult != nil {
+			lastCmdSessionFailed = isSessionLevelError(cmdResult.Status)
+			lastCmdFailed = cmdResult.Status.IsError()
+			if lastCmdFailed {
+				lastCmdStatus = cmdResult.Status
+			}
+		} else {
+			lastCmdSessionFailed = false
+			lastCmdFailed = false
+			lastCmdStatus = 0
+		}
+
+		rh, rb := buildResponseHeaderAndBody(hdr, cmdCtx, cmdResult, connInfo)
+		if hdr.IsRelated() {
+			rh.Flags |= types.FlagRelated
+		}
+		var subRelease func()
+		if cmdResult != nil {
+			subRelease = cmdResult.ReleaseData
+		}
+		responses = append(responses, compoundResponse{respHeader: rh, body: rb, releaseData: subRelease})
+
+		if cmdCtx != nil && cmdCtx.PostSend != nil {
+			postSendHooks = append(postSendHooks, cmdCtx.PostSend)
+		}
+	}
+
+	sendErr := sendCompoundResponses(responses, connInfo)
+	if sendErr != nil {
+		logger.Debug("Error sending compound async completion responses", "error", sendErr)
+	}
+
+	if sendErr == nil {
+		for _, hook := range postSendHooks {
+			hook()
+		}
+	}
 }
