@@ -99,8 +99,12 @@ func (s *BadgerMetadataStore) Put(ctx context.Context, block *metadata.FileBlock
 
 		// Maintain file index: fb-file:{payloadID}:{blockIdx} -> block.ID
 		// This allows ListFileBlocks to iterate O(file_blocks) via prefix scan.
-		if parts := strings.SplitN(block.ID, "/", 2); len(parts) == 2 {
-			fileKey := []byte(fileBlockFilePrefix + parts[0] + ":" + parts[1])
+		// Split on the LAST "/" so nested payloadIDs (e.g. "share/dir/file/0")
+		// produce the correct payloadID prefix for ListFileBlocks lookups.
+		if lastSlash := strings.LastIndex(block.ID, "/"); lastSlash > 0 {
+			pid := block.ID[:lastSlash]
+			idx := block.ID[lastSlash+1:]
+			fileKey := []byte(fileBlockFilePrefix + pid + ":" + idx)
 			if err := txn.Set(fileKey, []byte(block.ID)); err != nil {
 				return err
 			}

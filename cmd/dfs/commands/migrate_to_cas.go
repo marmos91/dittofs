@@ -353,7 +353,23 @@ func (a *cliMetadataAdapter) UpdateFileBlocks(ctx context.Context, handle metada
 		return fmt.Errorf("get file for update: %w", err)
 	}
 	file.Blocks = blocks
-	return a.store.PutFile(ctx, file)
+	if err := a.store.PutFile(ctx, file); err != nil {
+		return err
+	}
+	pid := string(file.PayloadID)
+	for _, br := range blocks {
+		fb := &blockstore.FileBlock{
+			ID:       fmt.Sprintf("%s/%d", pid, br.Offset),
+			Hash:     br.Hash,
+			DataSize: br.Size,
+			State:    blockstore.BlockStateRemote,
+			RefCount: 1,
+		}
+		if err := a.store.Put(ctx, fb); err != nil {
+			return fmt.Errorf("create FileBlock row %s: %w", fb.ID, err)
+		}
+	}
+	return nil
 }
 
 // nopFileBlockStore satisfies blockstore.EngineFileBlockStore without
