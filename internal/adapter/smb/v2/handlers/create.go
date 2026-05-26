@@ -947,6 +947,21 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
+	// Step 6c-pre: Check delete-pending state before oplock break dispatch.
+	//
+	// Per MS-FSA 2.1.5.1.2 and MS-SMB2 3.3.5.9: if an existing open on the
+	// file has set disposition delete-on-close, subsequent opens MUST fail
+	// with STATUS_DELETE_PENDING without triggering an oplock break. The
+	// check runs BEFORE breakAndMaybeParkCreate so the holder's oplock
+	// remains intact. Required by smbtorture smb2.oplock.doc.
+	if fileExists && existingFile != nil {
+		if existingHandle, encErr := metadata.EncodeFileHandle(existingFile); encErr == nil {
+			if h.isFileDeletePending(existingHandle) {
+				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDeletePending}}, nil
+			}
+		}
+	}
+
 	draft := (&createDraft{
 		req:                req,
 		tree:               tree,
@@ -1485,12 +1500,18 @@ func (h *Handler) updateBaseObjectTimestampsForADSWrite(
 }
 
 // isStatOnlyOpen returns true when DesiredAccess contains only stat-open bits:
-// FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE, READ_CONTROL — in
-// any combination, but with no other (data/delete/dac/owner) bits set. At
-// least one stat bit must be present.
+// FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE —
+// in any combination, but with no other (data/delete/dac/owner) bits set.
+// At least one stat bit must be present.
 //
-// Mirrors Samba `is_lease_stat_open` (source3/smbd/open.c). Stat-only opens
-// must NOT break existing leases and do not impose share-mode constraints.
+// Mirrors Samba `is_lease_stat_open` (source3/smbd/open.c):
+//
+//	SEC_STD_SYNCHRONIZE | SEC_STD_READ_CONTROL |
+//	FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES
+//
+// READ_CONTROL is included per smb2.lease.statopen4 test 8 which
+// requires READ_CONTROL-only opens to NOT break leases. Samba's
+// is_lease_stat_open includes SEC_STD_READ_CONTROL as well.
 func isStatOnlyOpen(desiredAccess uint32) bool {
 	const statOpenBits uint32 = 0x00000080 | // FILE_READ_ATTRIBUTES
 		0x00000100 | // FILE_WRITE_ATTRIBUTES

@@ -999,6 +999,17 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusInvalidParameter), nil
 		}
 
+		// Break Level II (Read) oplocks held by other clients.
+		// Per MS-SMB2 3.3.5.21.2 / MS-FSA 2.1.5.14.4: truncation is a
+		// data-modifying operation that invalidates read caches.
+		// Required by smbtorture smb2.oplock.batch11/batch12.
+		if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
+			lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
+			if breakErr := h.LeaseManager.BreakReadLeasesOnWrite(lockFileHandle, openFile.ShareName, openFile.LeaseKey); breakErr != nil {
+				logger.Debug("SET_INFO: oplock break on EOF set failed (non-fatal)", "path", openFile.Path, "error", breakErr)
+			}
+		}
+
 		metaSvc := h.Registry.GetMetadataService()
 
 		// Per MS-FSA 2.1.5.14.4: Check for conflicting byte-range locks.

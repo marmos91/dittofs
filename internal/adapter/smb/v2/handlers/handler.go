@@ -1297,6 +1297,34 @@ func (h *Handler) DeleteAllPendingAuthForSession(sessionID uint64) {
 //   - If an existing open has delete access AND the new open doesn't share delete -> conflict
 //   - Vice versa: if the new open requests access that the existing open doesn't share
 //
+// isFileDeletePending reports whether any existing open on the same file
+// (identified by its metadata handle) has DeletePending set. Per MS-FSA
+// 2.1.5.1.2 and MS-SMB2 3.3.5.9: a subsequent open on a delete-pending
+// file MUST fail with STATUS_DELETE_PENDING. The check runs BEFORE oplock
+// break dispatch so the holder's oplock remains intact.
+//
+// Required by smbtorture smb2.oplock.doc: tree1 opens with Batch oplock,
+// sets delete-on-close; tree2's open must return STATUS_DELETE_PENDING
+// without triggering a break.
+func (h *Handler) isFileDeletePending(fileHandle metadata.FileHandle) bool {
+	pending := false
+	h.files.Range(func(_, value any) bool {
+		existing := value.(*OpenFile)
+		if existing.IsPipe || len(existing.MetadataHandle) == 0 {
+			return true
+		}
+		if !bytes.Equal(existing.MetadataHandle, fileHandle) {
+			return true
+		}
+		if existing.DeletePending {
+			pending = true
+			return false
+		}
+		return true
+	})
+	return pending
+}
+
 // The filePath parameter is the share-relative path of the file being opened (e.g.,
 // "dir/file.txt" or "dir/file.txt:stream:$DATA"). When opening an ADS or the base
 // file, the check also considers opens on other streams of the same base file per

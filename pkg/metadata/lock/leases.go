@@ -1086,3 +1086,10 @@ func (lm *Manager) getLeaseStateImpl(_ context.Context, leaseKey [16]byte) (stat
 
 	return lock.Lease.LeaseState, lock.Lease.Epoch, true
 }
+
+func (lm *Manager) IsTraditionalOplockForKey(leaseKey [16]byte) bool {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	_, lock, _ := lm.findLeaseByKey(leaseKey)
+	return lock != nil && lock.Lease != nil && lock.Lease.IsTraditionalOplock
+}
