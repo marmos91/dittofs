@@ -643,12 +643,11 @@ func (lm *LeaseManager) BreakLeasesOnByteRangeLock(
 	var exclude *lock.LockOwner
 	if len(excludeOwner) > 0 && excludeOwner[0] != nil {
 		eo := excludeOwner[0]
-		// Only exclude the locker's own lease when it has Write caching.
-		// A locker holding only Read (Level II) must self-break per Samba.
 		if eo.ExcludeLeaseKey != ([16]byte{}) {
 			ctx := context.Background()
 			state, _, found := lockMgr.GetLeaseState(ctx, eo.ExcludeLeaseKey)
-			if found && state&lock.LeaseStateWrite != 0 {
+			isTraditional := lockMgr.IsTraditionalOplockForKey(eo.ExcludeLeaseKey)
+			if found && (!isTraditional || state&lock.LeaseStateWrite != 0) {
 				exclude = eo
 			}
 		} else {
@@ -1023,19 +1022,18 @@ func (lm *LeaseManager) BreakReadLeasesOnWrite(
 
 	var exclude *lock.LockOwner
 	if excludeLeaseKey != ([16]byte{}) {
-		// Only exclude the writer's own lease when it has Write caching.
-		// A writer holding only Read (Level II) must self-break per spec.
 		ctx := context.Background()
 		state, _, found := lockMgr.GetLeaseState(ctx, excludeLeaseKey)
-		if found && state&lock.LeaseStateWrite != 0 {
+		isTraditional := lockMgr.IsTraditionalOplockForKey(excludeLeaseKey)
+		// Leases: always exclude the writer's own key (nobreakself per MS-SMB2 §3.3.5.9).
+		// Traditional oplocks: exclude only when the writer has Write caching.
+		// A Level II oplock holder must self-break on write per Samba
+		// contend_level2_oplocks_begin_default.
+		if found && (!isTraditional || state&lock.LeaseStateWrite != 0) {
 			exclude = &lock.LockOwner{ExcludeLeaseKey: excludeLeaseKey}
 		}
 	}
 
-	// Break all Read/Write leases to None. When exclude is nil (writer
-	// has no Write caching), the writer's own Read-only oplock is also
-	// broken — producing the Level II → None self-break that smbtorture
-	// expects.
 	return lockMgr.CheckAndBreakOpLocksForWrite(handleKey, exclude)
 }
 
