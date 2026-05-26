@@ -127,6 +127,9 @@ tdis1, tcp, tcon now pass. Remaining tests require features not yet implemented.
 | smb2.notify.session-reconnect | Change Notify | Depends on session reconnect (not re-auth) | - |
 | smb2.notify.dir | Change Notify | Full-suite flaky (directory notify race) | - |
 | smb2.notify.tcon | Change Notify | Flaky, fails intermittently on memory and memory-fs | - |
+| smb2.notify.mask | Change Notify | Newly exposed after notify.dir hang fix (#635) | - |
+| smb2.notify.mask-change | Change Notify | Newly exposed after notify.dir hang fix (#635) | - |
+| smb2.notify.tree | Change Notify | Newly exposed after notify.dir hang fix (#635) | - |
 | smb2.notify.valid-req | Change Notify | CompletionFilter validation rejects previously-accepted requests | - |
 
 ### Oplocks (Multi-Client Coordination Not Implemented)
