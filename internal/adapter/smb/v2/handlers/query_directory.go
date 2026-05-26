@@ -258,12 +258,15 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidInfoClass}}, nil
 	}
 
-	// Get OpenFile by FileID
-	openFile, ok := h.GetOpenFile(req.FileID)
+	// Acquire OpenFile by FileID. AcquireOpenFile registers an in-flight
+	// operation so a concurrent CLOSE on the same connection waits for us
+	// to finish before deleting the handle (compound_find.compound_find_close).
+	openFile, ok := h.AcquireOpenFile(req.FileID)
 	if !ok {
 		logger.Debug("QUERY_DIRECTORY: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileClosed}}, nil
 	}
+	defer h.ReleaseOpenFile(req.FileID)
 
 	if !openFile.IsDirectory {
 		logger.Debug("QUERY_DIRECTORY: not a directory", "path", openFile.Path)

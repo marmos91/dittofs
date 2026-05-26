@@ -191,6 +191,16 @@ type Handler struct {
 	// resumeKeys maps opaque 24-byte resume keys to FileIDs for FSCTL_SRV_COPYCHUNK.
 	// Keys are issued via FSCTL_SRV_REQUEST_RESUME_KEY and revoked on file close.
 	resumeKeys *resumeKeyStore
+
+	// handleOps tracks in-flight operations per FileID so that CLOSE can wait
+	// for concurrent operations (e.g. QueryDirectory) to snapshot the OpenFile
+	// before deleting it. Without this, a CLOSE goroutine can race ahead of a
+	// concurrent QueryDirectory goroutine on the same connection and delete the
+	// OpenFile before QueryDirectory calls GetOpenFile, causing a spurious
+	// STATUS_FILE_CLOSED (smbtorture compound_find.compound_find_close). The
+	// value is *handleOpTracker; see AcquireOpenFile / ReleaseOpenFile /
+	// WaitAndDeleteOpenFile.
+	handleOps sync.Map // string(fileID) → *handleOpTracker
 }
 
 // EncryptionConfig holds encryption policy for the handler.
@@ -547,6 +557,59 @@ func (h *Handler) GetOpenFile(fileID [16]byte) (*OpenFile, bool) {
 		return nil, false
 	}
 	return v.(*OpenFile), true
+}
+
+// handleOpTracker tracks in-flight operations on a FileID via a WaitGroup.
+// Created lazily by AcquireOpenFile; AcquireOpenFile adds and ReleaseOpenFile
+// calls Done. WaitAndDeleteOpenFile waits for the WaitGroup to drain before
+// removing the OpenFile from the map.
+type handleOpTracker struct {
+	wg sync.WaitGroup
+}
+
+// AcquireOpenFile retrieves an open file by FileID and registers an in-flight
+// operation on it. The caller MUST call ReleaseOpenFile when done. Returns
+// nil,false when the handle is not found. This prevents a CLOSE on a concurrent
+// goroutine from deleting the OpenFile before the caller finishes using it
+// (smbtorture compound_find.compound_find_close).
+func (h *Handler) AcquireOpenFile(fileID [16]byte) (*OpenFile, bool) {
+	key := string(fileID[:])
+	// Load-or-store the tracker; add to the WaitGroup BEFORE checking the
+	// files map so that a concurrent WaitAndDeleteOpenFile sees our Add.
+	v, _ := h.handleOps.LoadOrStore(key, &handleOpTracker{})
+	tracker := v.(*handleOpTracker)
+	tracker.wg.Add(1)
+
+	f, ok := h.files.Load(key)
+	if !ok {
+		// File was already deleted; undo the Add.
+		tracker.wg.Done()
+		return nil, false
+	}
+	return f.(*OpenFile), true
+}
+
+// ReleaseOpenFile marks an in-flight operation on fileID as complete.
+// Must be called exactly once for each successful AcquireOpenFile.
+func (h *Handler) ReleaseOpenFile(fileID [16]byte) {
+	key := string(fileID[:])
+	if v, ok := h.handleOps.Load(key); ok {
+		v.(*handleOpTracker).wg.Done()
+	}
+}
+
+// WaitAndDeleteOpenFile waits for in-flight operations on fileID to drain,
+// then deletes the OpenFile from the map and revokes resume keys. This
+// replaces DeleteOpenFile for the CLOSE handler to prevent the race where
+// CLOSE deletes a handle that QueryDirectory is about to look up.
+func (h *Handler) WaitAndDeleteOpenFile(fileID [16]byte) {
+	key := string(fileID[:])
+	if v, ok := h.handleOps.Load(key); ok {
+		v.(*handleOpTracker).wg.Wait()
+		h.handleOps.Delete(key)
+	}
+	h.files.Delete(key)
+	h.resumeKeys.revoke(fileID)
 }
 
 // DeleteOpenFile removes an open file by FileID and revokes any
