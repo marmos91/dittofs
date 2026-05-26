@@ -113,9 +113,10 @@ func (h *ContentHash) UnmarshalJSON(data []byte) error {
 	if len(data) > 0 && data[0] == '[' {
 		var arr [HashSize]byte
 		if err := json.Unmarshal(data, &arr); err == nil {
-			*h = arr
+			*h = ContentHash(arr)
 			return nil
 		}
+		return fmt.Errorf("ContentHash.UnmarshalJSON: invalid JSON array: %q", data)
 	}
 	if len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {
 		return fmt.Errorf("ContentHash.UnmarshalJSON: not a JSON string: %q", data)
