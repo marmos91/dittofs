@@ -1500,22 +1500,22 @@ func (h *Handler) updateBaseObjectTimestampsForADSWrite(
 }
 
 // isStatOnlyOpen returns true when DesiredAccess contains only stat-open bits:
-// FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE — in any
-// combination, but with no other (data/delete/dac/owner) bits set. At least
-// one stat bit must be present.
+// FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE —
+// in any combination, but with no other (data/delete/dac/owner) bits set.
+// At least one stat bit must be present.
 //
 // Mirrors Samba `is_lease_stat_open` (source3/smbd/open.c):
 //
-//	const uint32_t dominated_by =
-//	    FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE;
-//	return (access_mask & ~dominated_by) == 0 && access_mask != 0;
+//	SEC_STD_SYNCHRONIZE | SEC_STD_READ_CONTROL |
+//	FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES
 //
-// Note: READ_CONTROL is deliberately excluded. Per smbtorture
-// smb2.oplock.statopen1, READ_CONTROL opens DO break oplocks. Samba's
-// definition omits it as well.
+// READ_CONTROL is included per smb2.lease.statopen4 test 8 which
+// requires READ_CONTROL-only opens to NOT break leases. Samba's
+// is_lease_stat_open includes SEC_STD_READ_CONTROL as well.
 func isStatOnlyOpen(desiredAccess uint32) bool {
 	const statOpenBits uint32 = 0x00000080 | // FILE_READ_ATTRIBUTES
 		0x00000100 | // FILE_WRITE_ATTRIBUTES
+		0x00020000 | // READ_CONTROL
 		0x00100000 //  SYNCHRONIZE
 	return desiredAccess&statOpenBits != 0 && desiredAccess&^statOpenBits == 0
 }
