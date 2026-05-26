@@ -22,28 +22,20 @@ import (
 	badgerstore "github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
 
-// Plan 08 (Phase 17): offline `dfs migrate-to-cas` subcommand.
+// Offline `dfs migrate-to-cas` subcommand.
 //
 // Walks the configured storage tree, opens each share's destination CAS
 // BlockStore via fs.NewFSStoreForMigration (sentinel-bypass), invokes
 // migrate.MigrateShareToCAS per share, and writes the per-share
-// `.cas-migrated-v1` sentinel that Plan 09's boot guard requires.
+// `.cas-migrated-v1` sentinel that the boot guard requires.
 //
 // Refuses to run while the dfs server holds the PID lockfile (D-02
 // OFFLINE constraint).
 //
-// The MetadataAdapter used here is intentionally minimal: production
-// shares persist their metadata through the controlplane runtime
-// (pkg/controlplane/runtime/shares/service.go), which boots an entire
-// services graph. The migration tool short-circuits that by opening the
-// metadata backend directly per share — currently a no-op stub that
-// surfaces an explicit error to the operator when invoked against a
-// share whose metadata-store adapter has not yet been wired up by Plan
-// 17-09. The library half (pkg/blockstore/migrate/migrate_to_cas.go) is
-// fully exercised by its own unit suite (Task 3) which provides an
-// in-memory MetadataAdapter for testing. The CLI half here provides the
-// PID guard, flag wiring, share discovery, JSON / plain-text progress
-// emission, and the FSStore-for-migration construction.
+// The MetadataAdapter opens the badger metadata store directly (offline
+// — the server must be stopped). Production shares normally go through
+// the controlplane runtime, but the migration tool short-circuits that
+// to avoid booting the full services graph.
 
 var (
 	migrateStorageDir  string
