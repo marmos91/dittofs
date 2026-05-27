@@ -703,25 +703,47 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 	// Per MS-FSA 2.1.5.1.2: share mode enforcement is per-stream.
 	// Opens on different streams of the same base file do NOT conflict.
 
-	t.Run("BaseFileAndADS_NoConflict_PerStream", func(t *testing.T) {
+	t.Run("BaseFileVsStream_Conflict", func(t *testing.T) {
 		h := NewHandler()
 
-		baseFile := &OpenFile{
+		h.StoreOpenFile(&OpenFile{
 			FileID:         h.GenerateFileID(),
-			Path:           "file.txt",
+			Path:           "file.txt:stream1",
 			DesiredAccess:  fileReadData,
 			ShareAccess:    fileShareRead,
 			MetadataHandle: []byte{0x01},
-		}
-		h.StoreOpenFile(baseFile)
+		})
 
 		conflict := h.checkShareModeConflict(
 			[]byte{0x02},
 			fileWriteData,
 			fileShareRead|fileShareWrite,
+			"file.txt",
 		)
-		if conflict {
-			t.Error("Expected no conflict: base file and ADS are different streams")
+		if !conflict {
+			t.Error("Expected conflict: stream open blocks base file write access")
+		}
+	})
+
+	t.Run("StreamVsBaseFile_Conflict", func(t *testing.T) {
+		h := NewHandler()
+
+		h.StoreOpenFile(&OpenFile{
+			FileID:         h.GenerateFileID(),
+			Path:           "file.txt",
+			DesiredAccess:  fileReadData,
+			ShareAccess:    fileShareRead,
+			MetadataHandle: []byte{0x01},
+		})
+
+		conflict := h.checkShareModeConflict(
+			[]byte{0x02},
+			fileWriteData,
+			fileShareRead|fileShareWrite,
+			"file.txt:stream1",
+		)
+		if !conflict {
+			t.Error("Expected conflict: base file open blocks stream write access")
 		}
 	})
 
@@ -740,6 +762,7 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 			[]byte{0x02},
 			fileWriteData,
 			fileShareRead|fileShareWrite,
+			"file.txt:stream2",
 		)
 		if conflict {
 			t.Error("Expected no conflict: different streams are independent")
@@ -761,6 +784,7 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 			[]byte{0x01},
 			fileWriteData,
 			fileShareRead|fileShareWrite,
+			"file.txt:stream1",
 		)
 		if !conflict {
 			t.Error("Expected conflict: same stream, incompatible share modes")
@@ -782,6 +806,7 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 			[]byte{0x02},
 			fileReadData|fileWriteData,
 			0,
+			"file2.txt:stream",
 		)
 		if conflict {
 			t.Error("Expected no conflict: different base files")
@@ -789,26 +814,22 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 	})
 
 	t.Run("StatOnlyExisting_NoConflict", func(t *testing.T) {
-		// Per Samba `share_conflict` (source3/smbd/open.c L1505): an existing
-		// stat-only open (FILE_READ_ATTRIBUTES with share=0) imposes no
-		// share-mode constraint on incoming opens. Regression for
-		// smb2.lease.statopen which expected NT_STATUS_OK at lease.c:776.
 		h := NewHandler()
 
 		const fileReadAttributes = uint32(0x00000080)
-		statOpen := &OpenFile{
+		h.StoreOpenFile(&OpenFile{
 			FileID:         h.GenerateFileID(),
 			Path:           "file.txt",
 			DesiredAccess:  fileReadAttributes,
 			ShareAccess:    0,
 			MetadataHandle: []byte{0x01},
-		}
-		h.StoreOpenFile(statOpen)
+		})
 
 		conflict := h.checkShareModeConflict(
 			[]byte{0x01},
 			fileReadData|fileWriteData,
 			fileShareRead|fileShareWrite,
+			"file.txt",
 		)
 		if conflict {
 			t.Error("Expected no conflict: existing stat-only open must not constrain incoming full-access open")
@@ -816,11 +837,6 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 	})
 
 	t.Run("NonConflictingExistingAccess_NoConstraint", func(t *testing.T) {
-		// Per Samba `share_conflict` (source3/smbd/open.c L1505): existing
-		// entries with none of FILE_READ_DATA|FILE_WRITE_DATA|FILE_APPEND_DATA|
-		// FILE_EXECUTE|DELETE_ACCESS impose no share-mode constraint —
-		// even when not strictly stat-only. Verifies WRITE_DAC-only existing
-		// open with share=0 doesn't block an incoming full-access open.
 		const writeDac = uint32(0x00040000)
 		h := NewHandler()
 		h.StoreOpenFile(&OpenFile{
@@ -830,7 +846,7 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 			ShareAccess:    0,
 			MetadataHandle: []byte{0x01},
 		})
-		if h.checkShareModeConflict([]byte{0x01}, fileReadData|fileWriteData, fileShareRead|fileShareWrite) {
+		if h.checkShareModeConflict([]byte{0x01}, fileReadData|fileWriteData, fileShareRead|fileShareWrite, "file.txt") {
 			t.Error("Expected no conflict: WRITE_DAC-only existing open must not impose share-mode constraint")
 		}
 	})
@@ -838,22 +854,19 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 	t.Run("PipesSkipped", func(t *testing.T) {
 		h := NewHandler()
 
-		// Open a pipe -- should not interfere with file opens
-		pipeFileID := h.GenerateFileID()
-		pipeFile := &OpenFile{
-			FileID:        pipeFileID,
+		h.StoreOpenFile(&OpenFile{
+			FileID:        h.GenerateFileID(),
 			Path:          "srvsvc",
 			DesiredAccess: fileReadData | fileWriteData,
 			ShareAccess:   0,
 			IsPipe:        true,
-		}
-		h.StoreOpenFile(pipeFile)
+		})
 
-		// Open a regular file -- pipe should be skipped
 		conflict := h.checkShareModeConflict(
 			[]byte{0x01},
 			fileReadData,
 			fileShareRead,
+			"srvsvc",
 		)
 		if conflict {
 			t.Error("Expected no conflict: pipes should be skipped")

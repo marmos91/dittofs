@@ -1363,18 +1363,14 @@ func (h *Handler) isFileDeletePending(fileHandle metadata.FileHandle) bool {
 }
 
 // checkShareModeConflict checks if opening a file with the given access and sharing
-// modes would conflict with any existing opens on the same metadata handle.
-// Per MS-FSA 2.1.5.1.2, share mode enforcement is per-stream: opens on
-// different streams of the same base file do NOT conflict.
-//
-// The deny table is:
-//   - If an existing open has read access AND the new open doesn't share read -> conflict
-//   - If an existing open has write access AND the new open doesn't share write -> conflict
-//   - If an existing open has delete access AND the new open doesn't share delete -> conflict
-//   - Vice versa: if the new open requests access that the existing open doesn't share
+// modes would conflict with any existing opens on the same file or related
+// streams. Per MS-FSA 2.1.5.1.2 + Samba semantics, share mode enforcement is:
+//   - Same stream (same metadata handle) → always checked
+//   - Base file vs its stream (or vice versa) → checked
+//   - Stream A vs Stream B (different streams, same base) → NOT checked
 //
 // Returns true if a conflict exists (CREATE should fail with STATUS_SHARING_VIOLATION).
-func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesiredAccess, newShareAccess uint32) bool {
+func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesiredAccess, newShareAccess uint32, filePath string) bool {
 	const (
 		fileShareRead   = uint32(0x01)
 		fileShareWrite  = uint32(0x02)
@@ -1405,9 +1401,8 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 		return access&(deleteAccess|genericAll) != 0
 	}
 
-	// Per MS-FSA 2.1.5.1.2: share mode enforcement applies per-stream.
-	// Opens on different streams of the same base file do NOT conflict.
-	// Match by exact metadata handle or same full path (including stream).
+	newBase := adsBasePath(filePath)
+
 	conflict := false
 	h.files.Range(func(key, value any) bool {
 		existing := value.(*OpenFile)
@@ -1418,9 +1413,21 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 			return true
 		}
 
+		// Same stream (same metadata handle) → always check.
 		sameFile := bytes.Equal(existing.MetadataHandle, fileHandle)
 		if !sameFile {
-			return true
+			// Base file vs its stream (or vice versa) → check.
+			// Stream A vs stream B (different streams) → skip.
+			existingBase := adsBasePath(existing.Path)
+			baseVsStream := false
+			if newBase == "" && existingBase != "" {
+				baseVsStream = existingBase == filePath
+			} else if newBase != "" && existingBase == "" {
+				baseVsStream = newBase == existing.Path
+			}
+			if !baseVsStream {
+				return true
+			}
 		}
 
 		// Skip non-conflicting existing opens. Per Samba `share_conflict`
@@ -1508,6 +1515,27 @@ func (h *Handler) lookupStreamCaseInsensitive(
 }
 
 // shareNameFromHandle extracts the share name from an encoded file handle.
+// adsBasePath extracts the base file path from a potentially ADS-qualified path.
+// For "dir/file.txt:stream" returns "dir/file.txt".
+// For "dir/file.txt" (no stream) returns "" (not an ADS).
+func adsBasePath(filePath string) string {
+	lastSep := strings.LastIndex(filePath, "/")
+	var fileName string
+	if lastSep >= 0 {
+		fileName = filePath[lastSep+1:]
+	} else {
+		fileName = filePath
+	}
+	colonIdx := strings.Index(fileName, ":")
+	if colonIdx <= 0 {
+		return ""
+	}
+	if lastSep >= 0 {
+		return filePath[:lastSep+1] + fileName[:colonIdx]
+	}
+	return fileName[:colonIdx]
+}
+
 func shareNameFromHandle(handle metadata.FileHandle) string {
 	if len(handle) > 0 {
 		if name, _, err := metadata.DecodeFileHandle(handle); err == nil && name != "" {

@@ -519,12 +519,14 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// After normalization, named ADS are stored as "file.txt:StreamName"
 	// (no type suffix). FileStreamInformation re-appends ":$DATA" on wire.
 	var streamSuffix string // e.g., ":StreamName" — empty for non-ADS
+	var explicitDefaultStream bool
 	if idx := strings.Index(filename, ":"); idx >= 0 {
 		colonPart := filename[idx:]
 		basePart := filename[:idx]
 		upper := strings.ToUpper(colonPart)
-		switch {
-		case upper == "::$DATA" || upper == "::$INDEX_ALLOCATION":
+		switch upper {
+		case "::$DATA", "::$INDEX_ALLOCATION":
+			explicitDefaultStream = true
 			filename = basePart
 		default:
 			// Named ADS: strip trailing :$DATA type indicator, isolate
@@ -556,8 +558,16 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBadNetworkName}}, nil
 	}
 
+	// Build the full normalized filename (including stream suffix) for
+	// durable reconnect and logging. The base `filename` has the stream
+	// suffix stripped for safe path.Dir/path.Base; `fullFilename` preserves it.
+	fullFilename := filename
+	if streamSuffix != "" {
+		fullFilename = filename + streamSuffix
+	}
+
 	// Handle root directory case
-	if filename == "" {
+	if filename == "" && streamSuffix == "" {
 		return h.handleOpenRootCreate(ctx, req, authCtx, rootHandle, tree)
 	}
 
@@ -582,7 +592,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			reconnResult, status, reconnErr := ProcessDurableReconnectContext(
 				authCtx.Context, h.DurableStore, metaSvc, req.CreateContexts,
 				ctx.SessionID, sess.Username, sessionKeyHash,
-				tree.ShareName, filename,
+				tree.ShareName, fullFilename,
 			)
 			if reconnErr != nil {
 				logger.Warn("CREATE: durable reconnect error", "error", reconnErr)
@@ -811,8 +821,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	var adsBaseFileName string // base file entry name (e.g., "file.txt")
 	if isADS {
 		adsBaseFileName = baseName
-		baseName = baseName + streamSuffix  // e.g., "file.txt:StreamName"
-		filename = filename + streamSuffix  // restore full filename for logging
+		baseName = baseName + streamSuffix // e.g., "file.txt:StreamName"
+		filename = filename + streamSuffix // restore full filename for logging
 	}
 
 	// Walk to parent directory
@@ -903,6 +913,17 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
+	// Per MS-FSA: directories do not have a default data stream. When the
+	// client explicitly requests "dir::$DATA", the open must fail even if
+	// the directory itself exists. FILE_DIRECTORY_FILE → NOT_A_DIRECTORY;
+	// otherwise → FILE_IS_A_DIRECTORY.
+	if explicitDefaultStream && fileExists && existingFile.Type == metadata.FileTypeDirectory {
+		if req.CreateOptions&types.FileDirectoryFile != 0 {
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotADirectory}}, nil
+		}
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileIsADirectory}}, nil
+	}
+
 	// Debug logging to trace file type issues in Lookup
 	if fileExists {
 		logger.Debug("CREATE Lookup result",
@@ -925,7 +946,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	if isADS {
 		if baseFile, baseErr := metaSvc.Lookup(authCtx, parentHandle, adsBaseFileName); baseErr == nil {
 			if baseHandle, encErr := metadata.EncodeFileHandle(baseFile); encErr == nil {
-				if h.checkShareModeConflict(baseHandle, req.DesiredAccess, req.ShareAccess) {
+				if h.checkShareModeConflict(baseHandle, req.DesiredAccess, req.ShareAccess, filename) {
 					return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSharingViolation}}, nil
 				}
 			}
@@ -1053,7 +1074,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	// Cross-stream share-mode check for new files (no lease break needed).
 	if !fileExists {
-		if shareConflict := h.checkShareModeConflict(nil, req.DesiredAccess, req.ShareAccess); shareConflict {
+		if shareConflict := h.checkShareModeConflict(nil, req.DesiredAccess, req.ShareAccess, filename); shareConflict {
 			logger.Debug("CREATE: sharing violation on new file",
 				"path", filename,
 				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),

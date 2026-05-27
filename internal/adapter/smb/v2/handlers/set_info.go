@@ -419,6 +419,16 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(common.MapToSMB(err)), nil
 		}
 
+		// Per NTFS: timestamps set on an ADS propagate to the base file.
+		if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 && len(openFile.ParentHandle) > 0 {
+			baseFileName := openFile.FileName[:colonIdx]
+			if baseFile, lookupErr := metaSvc.Lookup(authCtx, openFile.ParentHandle, baseFileName); lookupErr == nil {
+				if baseHandle, encErr := metadata.EncodeFileHandle(baseFile); encErr == nil {
+					_ = metaSvc.SetFileAttributes(authCtx, baseHandle, setAttrs)
+				}
+			}
+		}
+
 		// Apply freeze/unfreeze state to the open handle using pre-change values.
 		// The frozen value is the timestamp at the moment of the freeze request,
 		// before any auto-updates from other field changes in this operation.
