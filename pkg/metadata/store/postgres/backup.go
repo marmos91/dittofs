@@ -297,14 +297,17 @@ func (s *PostgresMetadataStore) Restore(ctx context.Context, r io.Reader) error 
 		}
 	}
 
-	// Commit the restore transaction.
-	if _, err := pgRaw.Exec(ctx, "COMMIT").ReadAll(); err != nil {
-		return fmt.Errorf("restore: commit: %w", err)
-	}
-
-	// Verify CRC from the original reader (not the tee reader).
+	// Verify CRC BEFORE committing. The tee reader has accumulated all
+	// payload bytes during the restoreTable loop; the original reader r
+	// still has the trailing 4 CRC bytes unread. If CRC fails, we return
+	// immediately and the deferred ROLLBACK cleans up the transaction.
 	if err := backup.VerifyCRC(r, acc); err != nil {
 		return fmt.Errorf("%w: %v", metadata.ErrRestoreCorrupt, err)
+	}
+
+	// CRC verified — commit the restore transaction.
+	if _, err := pgRaw.Exec(ctx, "COMMIT").ReadAll(); err != nil {
+		return fmt.Errorf("restore: commit: %w", err)
 	}
 
 	return nil
