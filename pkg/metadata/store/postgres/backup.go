@@ -225,7 +225,7 @@ func extractHashes(ctx context.Context, raw *pgconn.PgConn) (*blockstore.HashSet
 // empty (no shares); returns ErrRestoreDestinationNotEmpty otherwise.
 func (s *PostgresMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("%w: %v", metadata.ErrRestoreCorrupt, err)
+		return fmt.Errorf("restore cancelled: %w", err)
 	}
 
 	// Check destination is empty: any share existing means non-empty.

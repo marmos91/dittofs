@@ -207,7 +207,7 @@ func (s *BadgerMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 	var buf [4]byte
 	for {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("%w: %v", metadata.ErrRestoreCorrupt, err)
+			return fmt.Errorf("restore cancelled: %w", err)
 		}
 
 		// Read key_len.
@@ -269,6 +269,7 @@ func (s *BadgerMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 
 		if (i+1)%restoreBatchSize == 0 {
 			if err := wb.Flush(); err != nil {
+				wb.Cancel()
 				return fmt.Errorf("%w: flush batch: %v", metadata.ErrRestoreCorrupt, err)
 			}
 			wb = s.db.NewWriteBatch()
@@ -277,6 +278,7 @@ func (s *BadgerMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 
 	// Flush remaining entries.
 	if err := wb.Flush(); err != nil {
+		wb.Cancel()
 		return fmt.Errorf("%w: flush final batch: %v", metadata.ErrRestoreCorrupt, err)
 	}
 

@@ -238,7 +238,7 @@ func (s *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockst
 // ErrRestoreDestinationNotEmpty is returned.
 func (s *MemoryMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("%w: %v", metadata.ErrRestoreCorrupt, err)
+		return fmt.Errorf("restore cancelled: %w", err)
 	}
 
 	// Check destination is empty. Acquire read lock briefly.
@@ -325,8 +325,14 @@ func (s *MemoryMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 	s.serverConfig = snap.ServerConfig
 	s.capabilities = snap.Capabilities
 	s.storeID = snap.StoreID
+	s.rollupMu.Lock()
 	s.rollupOffsets = snap.RollupOffsets
+	s.rollupMu.Unlock()
+
+	s.syncedMu.Lock()
 	s.synced = snap.Synced
+	s.syncedMu.Unlock()
+
 	s.objectIndex = snap.ObjectIndex
 
 	// Ensure nil maps are initialized to empty (store invariant).
