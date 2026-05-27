@@ -7,13 +7,16 @@ import (
 // NewLockedError creates error for lock conflicts (legacy FileLock).
 func NewLockedError(path string, conflict *LockConflict) *errors.StoreError {
 	msg := "resource is locked"
+	var ownerID string
 	if conflict != nil {
 		msg = "resource is locked by another session"
+		ownerID = conflict.OwnerID
 	}
 	return &errors.StoreError{
-		Code:    errors.ErrLocked,
-		Message: msg,
-		Path:    path,
+		Code:            errors.ErrLocked,
+		Message:         msg,
+		Path:            path,
+		ConflictOwnerID: ownerID,
 	}
 }
 

@@ -380,7 +380,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			// LOCK_NOT_GRANTED / FILE_LOCK_CONFLICT distinction.
 			if failImmediately {
 				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
-				return NewErrorResult(h.mapLockConflictStatus(openID, lockElem, isExclusive)), nil
+				return NewErrorResult(h.mapLockConflictStatus(openID, lockElem, isExclusive, storeErr.ConflictOwnerID)), nil
 			}
 
 			// Blocking conflict. Try async parking first; if parking is
@@ -423,8 +423,13 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 					rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
 					return NewErrorResult(types.StatusCancelled), nil
 				}
+				var retryStoreErr *metadata.StoreError
+				var retryConflictOwner string
+				if goerrors.As(err, &retryStoreErr) {
+					retryConflictOwner = retryStoreErr.ConflictOwnerID
+				}
 				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
-				return NewErrorResult(h.mapLockConflictStatus(openID, lockElem, isExclusive)), nil
+				return NewErrorResult(h.mapLockConflictStatus(openID, lockElem, isExclusive, retryConflictOwner)), nil
 			}
 
 			h.lastDeniedLocks.Delete(openID)
@@ -574,9 +579,21 @@ func rollbackLocks(
 // STATUS_FILE_LOCK_CONFLICT instead. The handler tracks the last-denied
 // triple per OpenID; on success the entry is cleared.
 //
+// Self-conflicts (conflictOwnerID == openID, i.e. the requesting open already
+// holds the blocking lock) always return LOCK_NOT_GRANTED and never escalate
+// to FILE_LOCK_CONFLICT. Per Samba behaviour and smbtorture expectations
+// (smb2.lock.auto-unlock line 572, smb2.lock.errorcode line 1253), the
+// escalation only applies to cross-handle conflicts.
+//
 // Used by the synchronous fail-immediately path, the inline-retry fallback,
 // and the async-park resume goroutine.
-func (h *Handler) mapLockConflictStatus(openID string, lockElem LockElement, isExclusive bool) types.Status {
+func (h *Handler) mapLockConflictStatus(openID string, lockElem LockElement, isExclusive bool, conflictOwnerID string) types.Status {
+	// Self-conflict: the requesting open already holds the blocking lock.
+	// Always return LOCK_NOT_GRANTED without storing or escalating.
+	if conflictOwnerID != "" && conflictOwnerID == openID {
+		return types.StatusLockNotGranted
+	}
+
 	denied := lastDeniedLock{
 		Offset:    lockElem.Offset,
 		Length:    lockElem.Length,
