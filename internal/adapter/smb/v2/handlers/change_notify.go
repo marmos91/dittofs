@@ -145,7 +145,7 @@ type OnOverflow func(fileID [16]byte)
 // for an OVERWRITE/SUPERSEDE) append to the buffer. When the timer fires,
 // all accumulated events are encoded into a single FILE_NOTIFY_INFORMATION
 // response. Mirrors Samba's tevent-based deferred delivery.
-const notifyFlushDelay = 5 * time.Millisecond
+const notifyFlushDelay = 100 * time.Microsecond
 
 // PendingNotify tracks a pending CHANGE_NOTIFY request waiting for filesystem events.
 // Each instance represents one client watch registered via the CHANGE_NOTIFY command.
