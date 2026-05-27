@@ -268,11 +268,11 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 		f := &metadata.File{
 			ShareName: shareName,
 			FileAttr: metadata.FileAttr{
-				Type:   metadata.FileTypeRegular,
-				Mode:   0o644,
-				UID:    1000,
-				GID:    1000,
-				Size:   1 << 20,
+				Type: metadata.FileTypeRegular,
+				Mode: 0o644,
+				UID:  1000,
+				GID:  1000,
+				Size: 1 << 20,
 				Blocks: []blockstore.BlockRef{
 					{Hash: concurrentHash, Offset: 0, Size: 1 << 20},
 				},
