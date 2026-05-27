@@ -514,7 +514,7 @@ func (h *Handler) setFileInfoFromStore(
 				nf |= FileNotifyChangeLastWrite
 			}
 			if nf != 0 {
-				h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified, nf)
+				h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, nf)
 			}
 		}
 
@@ -615,7 +615,7 @@ func (h *Handler) setFileInfoFromStore(
 					if NameChangeFilterFor(oldFileName, openFile.IsDirectory) == FileNotifyChangeStreamName {
 						renameFilter = FileNotifyChangeStreamName
 					}
-					h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, oldFileName, newParentPath, toName, renameFilter)
+					h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, notifyStreamName(oldFileName), newParentPath, notifyStreamName(toName), renameFilter)
 				}
 			}
 
@@ -1093,7 +1093,7 @@ func (h *Handler) setFileInfoFromStore(
 		h.breakParentDirLeasesForContentChange(authCtx, openFile)
 
 		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified, FileNotifyChangeSize)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeSize)
 		}
 
 		return setInfoStatus(types.StatusSuccess), nil
@@ -1127,7 +1127,7 @@ func (h *Handler) setFileInfoFromStore(
 		// but returning SUCCESS allows ChangeNotify EA tests to proceed.
 		logger.Debug("SET_INFO: FileFullEaInformation (no-op)", "path", openFile.Path)
 		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified, FileNotifyChangeEa)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeEa)
 		}
 		return setInfoStatus(types.StatusSuccess), nil
 
@@ -1387,7 +1387,7 @@ func (h *Handler) setSecurityInfo(
 
 	if !changed {
 		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified, FileNotifyChangeSecurity)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeSecurity)
 		}
 		return setInfoStatus(types.StatusSuccess), nil
 	}
@@ -1400,7 +1400,7 @@ func (h *Handler) setSecurityInfo(
 	}
 
 	if h.NotifyRegistry != nil {
-		h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified, FileNotifyChangeSecurity)
+		h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeSecurity)
 	}
 
 	return setInfoStatus(types.StatusSuccess), nil
