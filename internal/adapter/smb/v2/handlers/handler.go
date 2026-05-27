@@ -1481,11 +1481,11 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 		}
 
 		// Same stream (same metadata handle) → full share mode check.
+		// Base file vs its stream (or vice versa) → DELETE-only check.
+		// Stream A vs stream B (different streams) → skip.
 		sameFile := bytes.Equal(existing.MetadataHandle, fileHandle)
 		crossStream := false
 		if !sameFile {
-			// Base file vs its stream (or vice versa) → DELETE-only check.
-			// Stream A vs stream B (different streams) → skip.
 			existingBase := adsBasePath(existing.Path)
 			baseVsStream := false
 			if newBase == "" && existingBase != "" {
@@ -1499,9 +1499,7 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 			crossStream = true
 		}
 
-		// Cross-stream (base file vs its stream): per Samba, only DELETE
-		// sharing is enforced — read/write access to the base file is
-		// independent of stream share modes.
+		// Cross-stream: only DELETE sharing enforced per Samba.
 		if crossStream {
 			if hasDelete(existing.DesiredAccess) && newShareAccess&fileShareDelete == 0 {
 				conflict = true
@@ -1514,7 +1512,7 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 			return true
 		}
 
-		// Same-stream: full share mode check per MS-FSA.
+		// Same-stream: full share mode check.
 		if !hasRead(existing.DesiredAccess) &&
 			!hasWrite(existing.DesiredAccess) &&
 			!hasDelete(existing.DesiredAccess) &&
