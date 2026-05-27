@@ -183,6 +183,23 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 	logger.Debug("Logoff: partial cleanup (session kept for response signing)",
 		"sessionID", ctx.SessionID)
 
+	// Drain pending blocking LOCKs for this session before closing files.
+	// Per MS-SMB2 §3.3.5.6: session teardown must unblock all parked
+	// operations (smb2.lock.cancel-logoff).
+	if h.PendingLockRegistry != nil {
+		for _, parked := range h.PendingLockRegistry.UnregisterAllForSession(ctx.SessionID) {
+			if parked.Callback != nil {
+				if err := parked.Callback(parked.SessionID, parked.MessageID, parked.AsyncId, types.StatusCancelled, nil); err != nil {
+					logger.Debug("Logoff: failed to send LOCK cancel response",
+						"asyncId", parked.AsyncId, "error", err)
+				}
+			}
+			if h.LockWaitGraph != nil && parked.OwnerID != "" {
+				h.LockWaitGraph.RemoveWaiter(parked.OwnerID)
+			}
+		}
+	}
+
 	filesClosed := h.CloseAllFilesForSession(ctx.Context, ctx.SessionID, false)
 
 	// Release leases and notify watchers that may not have been cleaned up
