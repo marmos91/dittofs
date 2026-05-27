@@ -838,8 +838,12 @@ func (h *Handler) buildFileStreamInformation(authCtx *metadata.AuthContext, file
 				}
 				for _, entry := range entries {
 					if strings.HasPrefix(entry.Name, prefix) {
-						// Extract stream name portion: "file:stream:$DATA" -> ":stream:$DATA"
+						// Extract stream name portion: "file:stream" → ":stream"
 						streamSuffix := entry.Name[len(baseName):]
+						// Always report with :$DATA type suffix per MS-FSCC 2.4.44.
+						if !strings.HasSuffix(strings.ToUpper(streamSuffix), ":$DATA") {
+							streamSuffix += ":$DATA"
+						}
 						var adsSize uint64
 						if entry.Attr != nil {
 							adsSize = entry.Attr.Size
