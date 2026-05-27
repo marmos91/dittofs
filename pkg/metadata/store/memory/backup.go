@@ -25,6 +25,11 @@ const (
 	// memory backup payload. Restore rejects streams with a different
 	// version to prevent silent data corruption across code changes.
 	memorySchemaVersion = uint32(1)
+
+	// maxRestorePayloadSize is the maximum single allocation size
+	// (256 MiB) permitted for the gob payload during restore. Prevents
+	// OOM from crafted streams with bogus payloadLen fields.
+	maxRestorePayloadSize = 256 << 20
 )
 
 // memoryBackupSnapshot is the gob-encoded payload written inside the
@@ -274,6 +279,11 @@ func (s *MemoryMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 		return fmt.Errorf("%w: read payload length: %v", metadata.ErrRestoreCorrupt, err)
 	}
 	payloadLen := binary.LittleEndian.Uint64(lenBuf[:])
+
+	// Reject oversized payload allocations from untrusted streams.
+	if payloadLen > uint64(maxRestorePayloadSize) {
+		return fmt.Errorf("%w: payload size %d exceeds maximum %d", metadata.ErrRestoreCorrupt, payloadLen, maxRestorePayloadSize)
+	}
 
 	// Read exactly payloadLen bytes into a buffer so the gob decoder's
 	// internal buffered reader cannot consume the trailing CRC.

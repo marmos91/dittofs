@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -354,6 +355,14 @@ func restoreTable(ctx context.Context, raw *pgconn.PgConn, payloadR io.Reader) e
 		return fmt.Errorf("read data len: %w", err)
 	}
 	dataLen := binary.LittleEndian.Uint64(dataLenBuf[:])
+
+	// Reject dataLen values that would overflow when cast to int64.
+	// A uint64 > math.MaxInt64 wraps to a negative int64, causing
+	// LimitReader to return EOF immediately and desynchronize the
+	// stream parser.
+	if dataLen > uint64(math.MaxInt64) {
+		return fmt.Errorf("data length %d exceeds int64 range: %w", dataLen, metadata.ErrRestoreCorrupt)
+	}
 
 	// Read exactly dataLen bytes of CSV data.
 	dataReader := io.LimitReader(payloadR, int64(dataLen))
