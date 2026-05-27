@@ -519,14 +519,16 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// After normalization, named ADS are stored as "file.txt:StreamName"
 	// (no type suffix). FileStreamInformation re-appends ":$DATA" on wire.
 	var streamSuffix string // e.g., ":StreamName" — empty for non-ADS
-	var explicitDefaultStream bool
+	var explicitDataStream bool
 	if idx := strings.Index(filename, ":"); idx >= 0 {
 		colonPart := filename[idx:]
 		basePart := filename[:idx]
 		upper := strings.ToUpper(colonPart)
 		switch upper {
-		case "::$DATA", "::$INDEX_ALLOCATION":
-			explicitDefaultStream = true
+		case "::$DATA":
+			explicitDataStream = true
+			filename = basePart
+		case "::$INDEX_ALLOCATION":
 			filename = basePart
 		default:
 			// Named ADS: strip trailing :$DATA type indicator, isolate
@@ -928,7 +930,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// client explicitly requests "dir::$DATA", the open must fail even if
 	// the directory itself exists. FILE_DIRECTORY_FILE → NOT_A_DIRECTORY;
 	// otherwise → FILE_IS_A_DIRECTORY.
-	if explicitDefaultStream && fileExists && existingFile.Type == metadata.FileTypeDirectory {
+	if explicitDataStream && fileExists && existingFile.Type == metadata.FileTypeDirectory {
 		if req.CreateOptions&types.FileDirectoryFile != 0 {
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotADirectory}}, nil
 		}

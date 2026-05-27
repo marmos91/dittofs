@@ -382,7 +382,7 @@ type OpenFile struct {
 	// stream handles) are closed. When the last such handle closes, the
 	// CLOSE handler uses BaseFileDeleteParentHandle / BaseFileDeleteFileName
 	// to perform the base file deletion.
-	BaseFileDeletePending     bool
+	BaseFileDeletePending      bool
 	BaseFileDeleteParentHandle metadata.FileHandle
 	BaseFileDeleteFileName     string
 
