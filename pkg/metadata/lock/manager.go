@@ -351,6 +351,12 @@ type FileLock struct {
 	// ClientAddr is the network address of the client holding the lock.
 	// Used for debugging and logging.
 	ClientAddr string
+
+	// IsZeroByte marks this as a zero-byte lock (SMB2 Length=0).
+	// Zero-byte locks never conflict with any other lock. They are stored
+	// and require explicit unlock, but do not block other lock acquisitions.
+	// NFS/NLM never sets this; NFS uses Length=0 for "to EOF" semantics.
+	IsZeroByte bool
 }
 
 // LockConflict describes a conflicting lock for error reporting.
@@ -397,32 +403,50 @@ func callerOwnerID(openID string, sessionID uint64) string {
 
 // IsLockConflicting checks if two locks conflict with each other.
 //
-// Conflict rules:
-//   - Shared locks don't conflict with other shared locks (multiple readers)
-//   - Exclusive locks conflict with all other locks
-//   - Locks from the same open (OpenID) don't conflict (allows re-locking same range)
-//   - Ranges must overlap for a conflict to occur
+// Mirrors Samba brl_conflict (source3/locking/brlock.c):
+//
+//  1. Zero-byte locks (IsZeroByte) never overlap anything.
+//  2. Read + Read → never conflict (multiple readers OK).
+//  3. Same owner (same OpenID), existing Write, new Read → no conflict
+//     ("a read lock can stack on top of a write lock", Samba comment).
+//  4. Everything else → conflict iff ranges overlap.
 //
 // Per MS-SMB2, lock ownership is per-open (per FileID), not per-session. Two
 // different opens from the same session are independent lock owners and MUST
 // conflict with each other when acquiring exclusive locks on overlapping ranges.
 func IsLockConflicting(existing, requested *FileLock) bool {
-	// Check range overlap first (common case: no overlap, avoids string allocation)
-	if !RangesOverlap(existing.Offset, existing.Length, requested.Offset, requested.Length) {
+	// Zero-byte locks never conflict with anything (SMB2 semantics).
+	// Samba brl_overlap: "zero length locks never overlap".
+	if existing.IsZeroByte || requested.IsZeroByte {
 		return false
 	}
 
-	// Same owner - no conflict (allows re-locking same range with different type)
-	if lockOwnerID(existing) == lockOwnerID(requested) {
-		return false
-	}
-
-	// Both shared (read) locks - no conflict
+	// Read locks never conflict with each other.
 	if !existing.Exclusive && !requested.Exclusive {
 		return false
 	}
 
-	// At least one is exclusive and ranges overlap - conflict
+	// Same owner handling. NFS/NLM (OpenID empty) uses session-level
+	// ownership where same-process re-locking always succeeds (POSIX).
+	// SMB (OpenID set) uses per-open ownership with restricted stacking
+	// per Samba brl_conflict: only shared-on-exclusive from same open is
+	// allowed; all other combos fall through to the overlap check.
+	if lockOwnerID(existing) == lockOwnerID(requested) {
+		if existing.OpenID == "" || requested.OpenID == "" {
+			return false // NFS/NLM: same session, no conflict
+		}
+		if existing.Exclusive && !requested.Exclusive {
+			return false // SMB: read stacks on write from same open
+		}
+		return RangesOverlap(existing.Offset, existing.Length, requested.Offset, requested.Length)
+	}
+
+	// Different owner: check range overlap.
+	if !RangesOverlap(existing.Offset, existing.Length, requested.Offset, requested.Length) {
+		return false
+	}
+
+	// At least one is exclusive and ranges overlap — conflict.
 	return true
 }
 

@@ -1134,3 +1134,141 @@ func TestSetLeaseEpoch_ReturnsFalseForUnknownKey(t *testing.T) {
 		t.Fatalf("SetLeaseEpoch returned true for unknown key")
 	}
 }
+
+// ============================================================================
+// SMB-style same-open conflict rules (per Samba brl_conflict)
+// ============================================================================
+
+func TestLock_SMB_SameOpen_ExclusiveRelock_Fails(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	first := FileLock{SessionID: 1, OpenID: "open1", Offset: 0, Length: 10, Exclusive: true}
+	if err := lm.Lock("file1", first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := FileLock{SessionID: 1, OpenID: "open1", Offset: 0, Length: 10, Exclusive: true}
+	if err := lm.Lock("file1", second); err == nil {
+		t.Fatal("Same-open exclusive re-lock on same range should fail")
+	}
+}
+
+func TestLock_SMB_SameOpen_SharedOnExclusive_OK(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	excl := FileLock{SessionID: 1, OpenID: "open1", Offset: 0, Length: 10, Exclusive: true}
+	if err := lm.Lock("file1", excl); err != nil {
+		t.Fatal(err)
+	}
+
+	shared := FileLock{SessionID: 1, OpenID: "open1", Offset: 0, Length: 10, Exclusive: false}
+	if err := lm.Lock("file1", shared); err != nil {
+		t.Fatal("Shared lock should stack on exclusive from same open")
+	}
+}
+
+func TestLock_SMB_SameOpen_ExclusiveOnShared_Fails(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	shared := FileLock{SessionID: 1, OpenID: "open1", Offset: 0, Length: 10, Exclusive: false}
+	if err := lm.Lock("file1", shared); err != nil {
+		t.Fatal(err)
+	}
+
+	excl := FileLock{SessionID: 1, OpenID: "open1", Offset: 0, Length: 10, Exclusive: true}
+	if err := lm.Lock("file1", excl); err == nil {
+		t.Fatal("Exclusive lock on shared from same open should fail")
+	}
+}
+
+func TestLock_SMB_SameOpen_SharedStacking_OK(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	s1 := FileLock{SessionID: 1, OpenID: "open1", Offset: 0, Length: 10, Exclusive: false}
+	if err := lm.Lock("file1", s1); err != nil {
+		t.Fatal(err)
+	}
+
+	s2 := FileLock{SessionID: 1, OpenID: "open1", Offset: 0, Length: 10, Exclusive: false}
+	if err := lm.Lock("file1", s2); err != nil {
+		t.Fatal("Shared re-lock from same open should succeed")
+	}
+}
+
+func TestLock_SMB_DifferentOpen_ExclusiveConflict(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	l1 := FileLock{SessionID: 1, OpenID: "open1", Offset: 0, Length: 10, Exclusive: true}
+	if err := lm.Lock("file1", l1); err != nil {
+		t.Fatal(err)
+	}
+
+	l2 := FileLock{SessionID: 1, OpenID: "open2", Offset: 0, Length: 10, Exclusive: true}
+	if err := lm.Lock("file1", l2); err == nil {
+		t.Fatal("Different open exclusive on same range should fail")
+	}
+}
+
+func TestLock_SMB_ZeroByte_NeverConflicts(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	normal := FileLock{SessionID: 1, OpenID: "open1", Offset: 0, Length: 10, Exclusive: true}
+	if err := lm.Lock("file1", normal); err != nil {
+		t.Fatal(err)
+	}
+
+	zb := FileLock{SessionID: 2, OpenID: "open2", Offset: 5, Length: 0, IsZeroByte: true, Exclusive: true}
+	if err := lm.Lock("file1", zb); err != nil {
+		t.Fatal("Zero-byte lock should never conflict")
+	}
+}
+
+func TestLock_SMB_TwoZeroByte_SameOffset_OK(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	zb1 := FileLock{SessionID: 1, OpenID: "open1", Offset: 10, Length: 0, IsZeroByte: true, Exclusive: true}
+	if err := lm.Lock("file1", zb1); err != nil {
+		t.Fatal(err)
+	}
+
+	zb2 := FileLock{SessionID: 2, OpenID: "open2", Offset: 10, Length: 0, IsZeroByte: true, Exclusive: true}
+	if err := lm.Lock("file1", zb2); err != nil {
+		t.Fatal("Two zero-byte locks at same offset should not conflict")
+	}
+}
+
+func TestUnlock_SMB_ZeroByte_ExactMatch(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	zb := FileLock{SessionID: 1, OpenID: "open1", Offset: 10, Length: 0, IsZeroByte: true, Exclusive: true}
+	if err := lm.Lock("file1", zb); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := lm.Unlock("file1", "open1", 1, 10, 0); err != nil {
+		t.Fatal("Should unlock zero-byte lock by exact offset+length match")
+	}
+}
+
+func TestLock_NFS_SameSession_ExclusiveRelock_OK(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	l1 := FileLock{SessionID: 100, Offset: 0, Length: 10, Exclusive: true}
+	if err := lm.Lock("file1", l1); err != nil {
+		t.Fatal(err)
+	}
+
+	l2 := FileLock{SessionID: 100, Offset: 0, Length: 10, Exclusive: true}
+	if err := lm.Lock("file1", l2); err != nil {
+		t.Fatal("NFS same-session exclusive re-lock should succeed (POSIX semantics)")
+	}
+}

@@ -292,17 +292,14 @@ func (ul *UnifiedLock) IsDelegation() bool {
 //  1. Access mode conflicts (SMB deny modes)
 //  2. OpLock vs OpLock (lease-to-lease conflicts)
 //  3. OpLock vs byte-range (cross-type conflicts)
-//  4. Byte-range vs byte-range (traditional range overlap + type check)
-//
-// Same owner never conflicts (allows re-locking and upgrading).
+//  4. Byte-range vs byte-range — mirrors Samba brl_conflict:
+//     - Zero-length byte-range locks never conflict with anything
+//     - Shared+Shared never conflict
+//     - Same owner: only shared-on-exclusive is allowed (stacking)
+//     - Everything else conflicts if ranges overlap
 //
 // Returns true if the locks conflict and one must be denied or broken.
 func (ul *UnifiedLock) ConflictsWith(other *UnifiedLock) bool {
-	// Same owner = no conflict
-	if ul.Owner.OwnerID == other.Owner.OwnerID {
-		return false
-	}
-
 	// Case 1: Access mode conflicts (SMB share modes)
 	if accessModesConflict(ul.AccessMode, other.AccessMode) {
 		return true
@@ -325,7 +322,21 @@ func (ul *UnifiedLock) ConflictsWith(other *UnifiedLock) bool {
 	if !RangesOverlap(ul.Offset, ul.Length, other.Offset, other.Length) {
 		return false
 	}
-	return ul.Type != LockTypeShared || other.Type != LockTypeShared
+
+	// Same owner = no conflict (POSIX semantics for unified locks).
+	// AddUnifiedLock handles exact-match updates separately.
+	// SMB-specific same-owner restrictions live in IsLockConflicting.
+	if ul.Owner.OwnerID == other.Owner.OwnerID {
+		return false
+	}
+
+	// Both shared = no conflict.
+	if ul.Type == LockTypeShared && other.Type == LockTypeShared {
+		return false
+	}
+
+	// Different owner, overlapping, at least one exclusive — conflict.
+	return true
 }
 
 // accessModesConflict checks if two access modes (SMB share reservations) conflict.

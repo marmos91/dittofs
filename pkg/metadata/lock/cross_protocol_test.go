@@ -10,17 +10,37 @@ import (
 // ConflictsWith - All 4 Conflict Cases
 // ============================================================================
 
-func TestConflictsWith_SameOwnerNeverConflicts(t *testing.T) {
+func TestConflictsWith_SameOwner_NoConflict_POSIX(t *testing.T) {
 	t.Parallel()
 
+	// UnifiedLock uses POSIX semantics: same owner never conflicts.
+	// SMB-specific restrictions are in IsLockConflicting (FileLock).
 	owner := LockOwner{OwnerID: "smb:client1"}
 
-	// Exclusive vs Exclusive from same owner - no conflict
 	a := &UnifiedLock{Owner: owner, Offset: 0, Length: 100, Type: LockTypeExclusive}
 	b := &UnifiedLock{Owner: owner, Offset: 0, Length: 100, Type: LockTypeExclusive}
 
 	if a.ConflictsWith(b) {
-		t.Error("Same owner should never conflict (exclusive vs exclusive)")
+		t.Error("Same owner should never conflict in UnifiedLock (POSIX semantics)")
+	}
+}
+
+func TestConflictsWith_UnifiedLock_LengthZero_MeansEOF(t *testing.T) {
+	t.Parallel()
+
+	// In UnifiedLock, Length=0 means "to EOF" (NFS semantics), NOT zero-byte.
+	// Zero-byte lock semantics are SMB-specific via FileLock.IsZeroByte.
+	a := &UnifiedLock{
+		Owner: LockOwner{OwnerID: "smb:client1"},
+		Offset: 0, Length: 0, Type: LockTypeExclusive,
+	}
+	b := &UnifiedLock{
+		Owner: LockOwner{OwnerID: "smb:client2"},
+		Offset: 50, Length: 100, Type: LockTypeExclusive,
+	}
+
+	if !a.ConflictsWith(b) {
+		t.Error("Length=0 in UnifiedLock means to-EOF; should conflict with any overlapping range")
 	}
 }
 

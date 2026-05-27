@@ -351,6 +351,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 				Offset:     lockElem.Offset,
 				Length:     lockElem.Length,
 				Exclusive:  isExclusive,
+				IsZeroByte: lockElem.Length == 0,
 				AcquiredAt: time.Now(),
 				ClientAddr: ctx.ClientAddr,
 			}
