@@ -160,6 +160,7 @@ type ACL struct {
 	Source        ACLSource `json:"source,omitempty"`         // How this ACL was created
 	Protected     bool      `json:"protected,omitempty"`      // SE_DACL_PROTECTED - blocks inheritance
 	AutoInherited bool      `json:"auto_inherited,omitempty"` // SE_DACL_AUTO_INHERITED — DACL was auto-inherited from parent
+	NullDACL      bool      `json:"null_dacl,omitempty"`      // Windows null DACL — no DACL present (everyone full access)
 }
 
 // IsSpecialWho reports whether who is one of the special identifiers:
