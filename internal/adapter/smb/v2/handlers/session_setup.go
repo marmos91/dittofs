@@ -207,7 +207,6 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 			h.releaseSessionLeasesAndNotifies(ctx.Context, req.PreviousSessionID)
 			h.DeleteAllTreesForSession(req.PreviousSessionID)
 			h.DeleteAllPendingAuthForSession(req.PreviousSessionID)
-			h.cancelAsyncOpsForSession(req.PreviousSessionID)
 		}
 	}
 
