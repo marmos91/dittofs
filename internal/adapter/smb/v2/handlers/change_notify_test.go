@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -292,7 +291,8 @@ func TestNotifyChange_ExactPath(t *testing.T) {
 	})
 
 	// Fire a matching change
-	r.NotifyChange("share1", "/dir", "test.txt", FileActionAdded)
+	r.NotifyChange("share1", "/dir", "test.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 
 	if !notified {
 		t.Fatal("expected watcher to be notified")
@@ -325,7 +325,8 @@ func TestNotifyChange_NoMatchDifferentShare(t *testing.T) {
 	})
 
 	// Fire change on different share
-	r.NotifyChange("share2", "/dir", "test.txt", FileActionAdded)
+	r.NotifyChange("share2", "/dir", "test.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 
 	if notified {
 		t.Error("should not notify watcher on different share")
@@ -353,7 +354,8 @@ func TestNotifyChange_RecursiveWatchTree(t *testing.T) {
 	})
 
 	// Fire change in subdirectory
-	r.NotifyChange("share1", "/subdir", "test.txt", FileActionAdded)
+	r.NotifyChange("share1", "/subdir", "test.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 
 	if !notified {
 		t.Error("recursive watcher should be notified for subdirectory changes")
@@ -381,7 +383,8 @@ func TestNotifyChange_NonRecursiveNoMatch(t *testing.T) {
 	})
 
 	// Fire change in subdirectory (should NOT match non-recursive watcher)
-	r.NotifyChange("share1", "/subdir", "test.txt", FileActionAdded)
+	r.NotifyChange("share1", "/subdir", "test.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 
 	if notified {
 		t.Error("non-recursive watcher should not be notified for subdirectory changes")
@@ -411,7 +414,8 @@ func TestNotifyRename_PairedNotification(t *testing.T) {
 		},
 	})
 
-	r.NotifyRename("share1", "/dir", "old.txt", "/dir", "new.txt")
+	r.NotifyRename("share1", "/dir", "old.txt", "/dir", "new.txt", FileNotifyChangeFileName)
+	r.FlushAll()
 
 	if !notified {
 		t.Error("watcher should be notified on rename")
@@ -448,7 +452,8 @@ func TestNotifyRename_CrossDirectory(t *testing.T) {
 	})
 
 	// Cross-directory rename: /src/old.txt -> /dst/new.txt
-	r.NotifyRename("share1", "/src", "old.txt", "/dst", "new.txt")
+	r.NotifyRename("share1", "/src", "old.txt", "/dst", "new.txt", FileNotifyChangeFileName)
+	r.FlushAll()
 
 	if !notified {
 		t.Error("recursive root watcher should be notified on cross-directory rename")
@@ -474,7 +479,8 @@ func TestNotifyChange_MaxOutputLengthExceeded_SendsEnumDir(t *testing.T) {
 		},
 	})
 
-	r.NotifyChange("share1", "/dir", "test.txt", FileActionAdded)
+	r.NotifyChange("share1", "/dir", "test.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 
 	if receivedStatus != types.StatusNotifyEnumDir {
 		t.Errorf("expected STATUS_NOTIFY_ENUM_DIR (0x%08X), got 0x%08X",
@@ -510,11 +516,13 @@ func TestNotifyChange_ConcurrentDoubleFire(t *testing.T) {
 	// Fire two concurrent events — only one should trigger the callback
 	done := make(chan struct{})
 	go func() {
-		r.NotifyChange("share1", "/dir", "a.txt", FileActionAdded)
+		r.NotifyChange("share1", "/dir", "a.txt", FileActionAdded, FileNotifyChangeFileName)
+		r.FlushAll()
 		done <- struct{}{}
 	}()
 	go func() {
-		r.NotifyChange("share1", "/dir", "b.txt", FileActionAdded)
+		r.NotifyChange("share1", "/dir", "b.txt", FileActionAdded, FileNotifyChangeFileName)
+		r.FlushAll()
 		done <- struct{}{}
 	}()
 	<-done
@@ -698,7 +706,8 @@ func TestNotifyChange_StreamNameOnADSCreate(t *testing.T) {
 	})
 
 	// Simulate ADS stream creation: file:stream:$DATA created in /dir
-	r.NotifyChange("share1", "/dir", "file:stream:$DATA", FileActionAdded)
+	r.NotifyChange("share1", "/dir", "file:stream:$DATA", FileActionAdded, FileNotifyChangeStreamName)
+	r.FlushAll()
 
 	if !notified {
 		t.Fatal("expected watcher with FileNotifyChangeStreamName to be notified on ADS create")
@@ -725,7 +734,8 @@ func TestNotifyChange_StreamWriteOnADSWrite(t *testing.T) {
 	})
 
 	// Simulate ADS stream write: file:stream:$DATA modified in /dir
-	r.NotifyChange("share1", "/dir", "file:stream:$DATA", FileActionModified)
+	r.NotifyChange("share1", "/dir", "file:stream:$DATA", FileActionModifiedStream, FileNotifyChangeStreamWrite)
+	r.FlushAll()
 
 	if !notified {
 		t.Fatal("expected watcher with FileNotifyChangeStreamWrite to be notified on ADS write")
@@ -752,7 +762,8 @@ func TestNotifyChange_StreamSizeOnADSWrite(t *testing.T) {
 	})
 
 	// Simulate ADS stream size change
-	r.NotifyChange("share1", "/dir", "file:stream:$DATA", FileActionModified)
+	r.NotifyChange("share1", "/dir", "file:stream:$DATA", FileActionModifiedStream, FileNotifyChangeStreamSize)
+	r.FlushAll()
 
 	if !notified {
 		t.Fatal("expected watcher with FileNotifyChangeStreamSize to be notified on ADS size change")
@@ -779,7 +790,8 @@ func TestNotifyChange_SecurityDescriptorChange(t *testing.T) {
 	})
 
 	// Simulate security descriptor change on a file in /dir
-	r.NotifyChange("share1", "/dir", "file.txt", FileActionModified)
+	r.NotifyChange("share1", "/dir", "file.txt", FileActionModified, FileNotifyChangeSecurity)
+	r.FlushAll()
 
 	if !notified {
 		t.Fatal("expected watcher with FileNotifyChangeSecurity to be notified on security change")
@@ -847,7 +859,8 @@ func TestNotifyChange_DoubleWatchers_BothNotified(t *testing.T) {
 	})
 
 	// Fire a change — both watchers should be notified
-	r.NotifyChange("share1", "/dir", "test.txt", FileActionAdded)
+	r.NotifyChange("share1", "/dir", "test.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 
 	if count1.Load() != 1 {
 		t.Errorf("watcher 1: expected 1 notification, got %d", count1.Load())
@@ -934,6 +947,7 @@ func TestNotifyRmdir_SendsCleanupToWatchersOnRemovedDir(t *testing.T) {
 
 	// Remove the directory being watched
 	r.NotifyRmdir("share1", "/parent", "target")
+	r.FlushAll()
 
 	if receivedStatus != types.StatusNotifyCleanup {
 		t.Errorf("expected STATUS_NOTIFY_CLEANUP (0x%08X), got 0x%08X",
@@ -961,6 +975,7 @@ func TestNotifyRmdir_NotifiesParentWatcher(t *testing.T) {
 	})
 
 	r.NotifyRmdir("share1", "/parent", "child")
+	r.FlushAll()
 
 	if !parentNotified {
 		t.Error("parent watcher should receive FileActionRemoved notification for rmdir")
@@ -1152,7 +1167,8 @@ func TestNotifyChange_OverflowWithMultipleChanges(t *testing.T) {
 	})
 
 	// Any file change will produce a FileNotifyInformation entry larger than 16 bytes
-	r.NotifyChange("share1", "/dir", "longfilename.txt", FileActionAdded)
+	r.NotifyChange("share1", "/dir", "longfilename.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 
 	if receivedStatus != types.StatusNotifyEnumDir {
 		t.Errorf("expected STATUS_NOTIFY_ENUM_DIR (0x%08X), got 0x%08X",
@@ -1232,7 +1248,8 @@ func TestSendAndUnregister_UndersizedBufferYieldsEnumDir(t *testing.T) {
 		},
 	})
 
-	r.NotifyChange("share1", "/dir", "file.txt", FileActionAdded)
+	r.NotifyChange("share1", "/dir", "file.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 
 	if deliveredStatus != types.StatusNotifyEnumDir {
 		t.Errorf("expected STATUS_NOTIFY_ENUM_DIR, got 0x%08X", uint32(deliveredStatus))
@@ -1326,7 +1343,8 @@ func TestArmedBuffer_OverflowsAfterCancelWithNoLiveWatcher(t *testing.T) {
 	// Fire 100 FILE_ACTION_ADDED events on subdirs (mirroring the torture
 	// loop that creates 100 directories inside the watched root).
 	for i := 0; i < 100; i++ {
-		r.NotifyChange("share1", "/basedir_ovf", fmt.Sprintf("test%d.txt", i), FileActionAdded)
+		r.NotifyChange("share1", "/basedir_ovf", fmt.Sprintf("test%d.txt", i), FileActionAdded, FileNotifyChangeFileName)
+		r.FlushAll()
 	}
 
 	// Sticky overflow must have tripped exactly once.
@@ -1342,7 +1360,8 @@ func TestArmedBuffer_OverflowsAfterCancelWithNoLiveWatcher(t *testing.T) {
 	if !r.Disarm(fileID) {
 		t.Errorf("expected Disarm to report removal")
 	}
-	r.NotifyChange("share1", "/basedir_ovf", "post-close.txt", FileActionAdded)
+	r.NotifyChange("share1", "/basedir_ovf", "post-close.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 	if atomic.LoadInt32(&overflowFireCount) != 1 {
 		t.Errorf("expected no additional OnOverflow after Disarm, got count=%d", overflowFireCount)
 	}
@@ -1377,14 +1396,16 @@ func TestArmedBuffer_ResetClearsOverflowForNextWindow(t *testing.T) {
 	}
 
 	// First event trips overflow.
-	r.NotifyChange("s", "/d", "a.txt", FileActionAdded)
+	r.NotifyChange("s", "/d", "a.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 	if atomic.LoadInt32(&overflowFireCount) != 1 {
 		t.Fatalf("expected first event to trip overflow, count=%d", overflowFireCount)
 	}
 
 	// More events while overflowed must not re-fire OnOverflow.
 	for i := 0; i < 5; i++ {
-		r.NotifyChange("s", "/d", "b.txt", FileActionAdded)
+		r.NotifyChange("s", "/d", "b.txt", FileActionAdded, FileNotifyChangeFileName)
+		r.FlushAll()
 	}
 	if atomic.LoadInt32(&overflowFireCount) != 1 {
 		t.Errorf("expected overflow to latch (no re-fire), got count=%d", overflowFireCount)
@@ -1395,7 +1416,8 @@ func TestArmedBuffer_ResetClearsOverflowForNextWindow(t *testing.T) {
 	r.ResetArmedOverflow(fileID, 64*1024)
 
 	// Single small event must NOT trip overflow against the new 64KB buffer.
-	r.NotifyChange("s", "/d", "c.txt", FileActionAdded)
+	r.NotifyChange("s", "/d", "c.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 	if atomic.LoadInt32(&overflowFireCount) != 1 {
 		t.Errorf("expected no overflow after reset+small event, got count=%d", overflowFireCount)
 	}
@@ -1430,18 +1452,22 @@ func TestArmedBuffer_ScopedByShareAndPath(t *testing.T) {
 	}
 
 	// Different share — must not charge.
-	r.NotifyChange("share-b", "/watched", "x.txt", FileActionAdded)
+	r.NotifyChange("share-b", "/watched", "x.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 	// Subdirectory but non-recursive — must not charge.
-	r.NotifyChange("share-a", "/watched/sub", "x.txt", FileActionAdded)
+	r.NotifyChange("share-a", "/watched/sub", "x.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 	// Wrong filter (Modified vs FileName) — must not charge.
-	r.NotifyChange("share-a", "/watched", "x.txt", FileActionModified)
+	r.NotifyChange("share-a", "/watched", "x.txt", FileActionModified, FileNotifyChangeAttributes)
+	r.FlushAll()
 
 	if atomic.LoadInt32(&overflowFireCount) != 0 {
 		t.Errorf("expected no overflow on unrelated events, got count=%d", overflowFireCount)
 	}
 
 	// Matching event on the watched path — overflow must trip.
-	r.NotifyChange("share-a", "/watched", "x.txt", FileActionAdded)
+	r.NotifyChange("share-a", "/watched", "x.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 	if atomic.LoadInt32(&overflowFireCount) != 1 {
 		t.Errorf("expected overflow trip for matching event, got count=%d", overflowFireCount)
 	}
@@ -1474,7 +1500,8 @@ func TestArmedBuffer_NotChargedWhenLiveWatcherServesEvent(t *testing.T) {
 	// Live watcher is present; one matching event fires through the live
 	// path (which itself overflows the 16-byte buffer → OnOverflow). The
 	// armed-accounting path must NOT also charge the event and double-fire.
-	r.NotifyChange("s", "/d", "a.txt", FileActionAdded)
+	r.NotifyChange("s", "/d", "a.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 	if got := atomic.LoadInt32(&overflowFireCount); got != 1 {
 		t.Errorf("expected OnOverflow exactly 1× (live path only), got %d — armed path is double-counting", got)
 	}
@@ -1525,7 +1552,8 @@ func TestArmedBuffer_RecursiveWatcherChargesRelativePath(t *testing.T) {
 	// "a/b/c/d/x.txt" — 26 bytes UTF-16LE plus 12-byte header = 38, pad
 	// to 40. That single entry alone exceeds MaxOutputLength=32, so
 	// overflow must trip on this event.
-	r.NotifyChange("s", "/a/b/c/d", "x.txt", FileActionAdded)
+	r.NotifyChange("s", "/a/b/c/d", "x.txt", FileActionAdded, FileNotifyChangeFileName)
+	r.FlushAll()
 	if got := atomic.LoadInt32(&overflowFireCount); got != 1 {
 		t.Errorf("expected overflow to trip on first deep-path event (relative-path accounting), got count=%d — recursive watcher is undercounting", got)
 	}
@@ -1672,19 +1700,6 @@ func TestUnregisterAllForTree_PreservesOtherTrees(t *testing.T) {
 	}
 }
 
-// encodeChangeNotifyRequest builds a wire-format CHANGE_NOTIFY request body
-// per MS-SMB2 2.2.35 (fixed size 32 bytes). Used by handler-level tests that
-// exercise Handler.ChangeNotify through its parser.
-func encodeChangeNotifyRequest(flags uint16, outputBufferLength uint32, fileID [16]byte, completionFilter uint32) []byte {
-	body := make([]byte, 32)
-	binary.LittleEndian.PutUint16(body[0:2], 32) // StructureSize
-	binary.LittleEndian.PutUint16(body[2:4], flags)
-	binary.LittleEndian.PutUint32(body[4:8], outputBufferLength)
-	copy(body[8:24], fileID[:])
-	binary.LittleEndian.PutUint32(body[24:28], completionFilter)
-	return body
-}
-
 // TestChangeNotify_HandlePermissions_GrantedAccessGate mirrors the smbtorture
 // smb2.notify.handle-permissions test (source4/torture/smb2/notify.c::
 // torture_smb2_notify_handle_permissions): a directory handle opened with only
@@ -1755,7 +1770,7 @@ func TestChangeNotify_HandlePermissions_GrantedAccessGate(t *testing.T) {
 				ReleaseAsync:    func() {},
 			}
 
-			body := encodeChangeNotifyRequest(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName|FileNotifyChangeDirName)
+			body := encodeChangeNotifyReq(SMB2WatchTree, 1000, fileID, FileNotifyChangeFileName|FileNotifyChangeDirName)
 
 			result, err := h.ChangeNotify(ctx, body)
 			if err != nil {
@@ -1982,10 +1997,15 @@ func TestChangeNotify_FirstZeroBuffer_StickyAtZero(t *testing.T) {
 		}
 	}
 
-	// First CHANGE_NOTIFY: OutputBufferLength = 0 — legal per MS-SMB2 §2.2.35.
+	// First CHANGE_NOTIFY: OutputBufferLength = 0 — returns ENUM_DIR
+	// synchronously without registering a watcher (buffer=0 fast path).
 	body1 := encodeChangeNotifyReq(0, 0, fileID, FileNotifyChangeFileName)
-	if _, err := h.ChangeNotify(makeCtx(), body1); err != nil {
+	res1, err := h.ChangeNotify(makeCtx(), body1)
+	if err != nil {
 		t.Fatalf("first CHANGE_NOTIFY (OutputBufferLength=0) error: %v", err)
+	}
+	if res1.Status != types.StatusNotifyEnumDir {
+		t.Fatalf("first CHANGE_NOTIFY status = 0x%08X, want STATUS_NOTIFY_ENUM_DIR", res1.Status)
 	}
 
 	// The capture MUST be recorded even though the value is zero.
@@ -1997,13 +2017,16 @@ func TestChangeNotify_FirstZeroBuffer_StickyAtZero(t *testing.T) {
 		t.Fatalf("NotifyMaxBufferSize after first call = %d, want 0", got)
 	}
 
-	h.NotifyRegistry.Unregister(fileID)
-
 	// Second CHANGE_NOTIFY: max_trans_size buffer. The sticky cap MUST clamp
-	// it down to zero, NOT overwrite the captured zero with the new value.
+	// effectiveMax to zero, causing another synchronous ENUM_DIR (no watcher
+	// registered). This matches Samba: buffer=0 is immediate ENUM_DIR.
 	body2 := encodeChangeNotifyReq(0, h.MaxTransactSize, fileID, FileNotifyChangeFileName)
-	if _, err := h.ChangeNotify(makeCtx(), body2); err != nil {
+	res2, err := h.ChangeNotify(makeCtx(), body2)
+	if err != nil {
 		t.Fatalf("second CHANGE_NOTIFY error: %v", err)
+	}
+	if res2.Status != types.StatusNotifyEnumDir {
+		t.Fatalf("second CHANGE_NOTIFY status = 0x%08X, want STATUS_NOTIFY_ENUM_DIR (sticky zero)", res2.Status)
 	}
 
 	got, set = openFile.NotifyMaxBufferSizeValue()
@@ -2011,20 +2034,8 @@ func TestChangeNotify_FirstZeroBuffer_StickyAtZero(t *testing.T) {
 		t.Fatalf("NotifyMaxBufferSize after second call = (%d, set=%v), want (0, true) — sticky-zero broken", got, set)
 	}
 
-	pendingMax := ^uint32(0) // poison
-	found := false
-	h.NotifyRegistry.RangeWatchers(func(p *PendingNotify) bool {
-		if p.FileID == fileID {
-			pendingMax = p.MaxOutputLength
-			found = true
-		}
-		return true
-	})
-	if !found {
-		t.Fatal("second CHANGE_NOTIFY did not register a PendingNotify")
-	}
-	if pendingMax != 0 {
-		t.Errorf("PendingNotify.MaxOutputLength = %d, want 0 (capped to first call's zero)", pendingMax)
+	if h.NotifyRegistry.WatcherCount() != 0 {
+		t.Fatal("buffer=0 fast path should NOT register a watcher")
 	}
 }
 

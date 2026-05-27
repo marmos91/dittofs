@@ -687,9 +687,17 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		parentPath := GetParentPath(filename)
 		switch createAction {
 		case types.FileCreated:
-			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionAdded)
+			nameFilter := uint32(FileNotifyChangeFileName)
+			if openFile.IsDirectory {
+				nameFilter = FileNotifyChangeDirName
+			} else if strings.Contains(baseName, ":") {
+				nameFilter = FileNotifyChangeStreamName
+			}
+			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionAdded, nameFilter)
 		case types.FileOverwritten, types.FileSuperseded:
-			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionModified)
+			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionRemoved, FileNotifyChangeFileName)
+			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionAdded, FileNotifyChangeFileName)
+			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionModified, FileNotifyChangeAttributes|FileNotifyChangeLastWrite|FileNotifyChangeSize)
 		}
 	}
 

@@ -488,9 +488,23 @@ func (h *Handler) setFileInfoFromStore(
 		// the same breakParentDirLeasesForContentChange plumbing.
 		h.breakParentDirLeasesForContentChange(authCtx, openFile)
 
-		// Notify watchers about attribute/timestamp changes
 		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
+			var nf uint32
+			if fileAttrs != 0 {
+				nf |= FileNotifyChangeAttributes
+			}
+			if creationFT != 0 && !isFiletimeSentinel(creationFT) {
+				nf |= FileNotifyChangeCreation
+			}
+			if atimeFT != 0 && !isFiletimeSentinel(atimeFT) {
+				nf |= FileNotifyChangeLastAccess
+			}
+			if mtimeFT != 0 && !isFiletimeSentinel(mtimeFT) {
+				nf |= FileNotifyChangeLastWrite
+			}
+			if nf != 0 {
+				h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified, nf)
+			}
 		}
 
 		return setInfoStatus(types.StatusSuccess), nil
@@ -581,7 +595,11 @@ func (h *Handler) setFileInfoFromStore(
 					if newParentPath == "" || newParentPath == "." {
 						newParentPath = "/"
 					}
-					h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, oldFileName, newParentPath, toName)
+					renameFilter := uint32(FileNotifyChangeFileName)
+					if openFile.IsDirectory {
+						renameFilter = FileNotifyChangeDirName
+					}
+					h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, oldFileName, newParentPath, toName, renameFilter)
 				}
 			}
 
@@ -855,7 +873,11 @@ func (h *Handler) setFileInfoFromStore(
 				if newParentPath == "" || newParentPath == "." {
 					newParentPath = "/"
 				}
-				h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, oldFileName, newParentPath, toName)
+				renameFilter := uint32(FileNotifyChangeFileName)
+				if openFile.IsDirectory {
+					renameFilter = FileNotifyChangeDirName
+				}
+				h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, oldFileName, newParentPath, toName, renameFilter)
 			} else {
 				logger.Debug("SET_INFO: rename notifications skipped, tree lookup failed",
 					"treeID", openFile.TreeID,
@@ -1054,9 +1076,8 @@ func (h *Handler) setFileInfoFromStore(
 		// Read + Handle caching. Parent-key suppression (C2) applies.
 		h.breakParentDirLeasesForContentChange(authCtx, openFile)
 
-		// Notify watchers about size changes
 		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified, FileNotifyChangeSize)
 		}
 
 		return setInfoStatus(types.StatusSuccess), nil
@@ -1087,7 +1108,7 @@ func (h *Handler) setFileInfoFromStore(
 		// but returning SUCCESS allows ChangeNotify EA tests to proceed.
 		logger.Debug("SET_INFO: FileFullEaInformation (no-op)", "path", openFile.Path)
 		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified, FileNotifyChangeEa)
 		}
 		return setInfoStatus(types.StatusSuccess), nil
 
@@ -1340,15 +1361,12 @@ func (h *Handler) setSecurityInfo(
 	}
 
 	if !changed {
-		// Nothing to change - accept as no-op but still notify watchers
-		// since the client considers the SET_INFO successful.
 		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified, FileNotifyChangeSecurity)
 		}
 		return setInfoStatus(types.StatusSuccess), nil
 	}
 
-	// Apply changes
 	metaSvc := h.Registry.GetMetadataService()
 	err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 	if err != nil {
@@ -1356,9 +1374,8 @@ func (h *Handler) setSecurityInfo(
 		return setInfoStatus(common.MapToSMB(err)), nil
 	}
 
-	// Notify watchers about security descriptor changes
 	if h.NotifyRegistry != nil {
-		h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
+		h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified, FileNotifyChangeSecurity)
 	}
 
 	return setInfoStatus(types.StatusSuccess), nil
@@ -1655,7 +1672,7 @@ func (h *Handler) handleFileLinkInformation(
 			if dstParentPath == "" || dstParentPath == "." {
 				dstParentPath = "/"
 			}
-			h.NotifyRegistry.NotifyChange(tree.ShareName, dstParentPath, linkName, FileActionAdded)
+			h.NotifyRegistry.NotifyChange(tree.ShareName, dstParentPath, linkName, FileActionAdded, FileNotifyChangeFileName)
 		}
 	}
 
