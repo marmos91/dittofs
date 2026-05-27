@@ -306,10 +306,11 @@ audit?", "What's a BlockRef?").
 
 #### Hybrid append-log tier (Phase 10 / LSL-04/05, experimental)
 
-> **Warning (D-24):** The append-log path is **experimental in v0.15.0**. Do NOT
-> enable in production before v0.15.0's Phase 11 (A2) ships the mark-sweep GC:
-> without it, the `blocks/{hh}/{hh}/` directory grows unbounded (see phase 10
-> context D-38). The flag defaults to `false` through Phase 10; A2 flips it.
+> The append-log path is the default write path in v0.15.0. Writes land in
+> per-file append-only logs, are compacted into CAS chunks (`blocks/{hh}/{hh}/{hex}`),
+> and garbage-collected by the mark-sweep GC (Phase 11). Upgrading from v0.14.x
+> requires running `dfs migrate-to-cas` to convert legacy `{payloadID}/block-{idx}`
+> blocks to the CAS layout before starting the v0.15.0 server.
 
 These keys live inside the per-share `local` block store's `config` JSON
 (passed via `dfsctl store local add --config '{...}'` or the REST API).
