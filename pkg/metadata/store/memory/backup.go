@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/gob"
@@ -177,10 +178,26 @@ func (s *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockst
 		return nil, fmt.Errorf("%w: schema version: %v", metadata.ErrBackupAborted, err)
 	}
 
-	// Gob-encode the snapshot into the envelope writer.
-	enc := gob.NewEncoder(envW)
+	// Gob-encode the snapshot into a temporary buffer so we can write
+	// a length prefix. The envelope format has no payload-length field,
+	// so the engine layer must frame the gob payload to prevent the gob
+	// decoder's internal buffered reader from consuming the trailing CRC.
+	var gobBuf bytes.Buffer
+	enc := gob.NewEncoder(&gobBuf)
 	if err := enc.Encode(&snap); err != nil {
 		return nil, fmt.Errorf("%w: gob encode: %v", metadata.ErrBackupAborted, err)
+	}
+
+	// Write gob payload length (8-byte LE uint64).
+	var lenBuf [8]byte
+	binary.LittleEndian.PutUint64(lenBuf[:], uint64(gobBuf.Len()))
+	if _, err := envW.Write(lenBuf[:]); err != nil {
+		return nil, fmt.Errorf("%w: payload length: %v", metadata.ErrBackupAborted, err)
+	}
+
+	// Write the gob payload.
+	if _, err := envW.Write(gobBuf.Bytes()); err != nil {
+		return nil, fmt.Errorf("%w: payload write: %v", metadata.ErrBackupAborted, err)
 	}
 
 	// Trailing CRC.
@@ -229,9 +246,23 @@ func (s *MemoryMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 		return fmt.Errorf("%w: got %d, want %d", metadata.ErrSchemaVersionMismatch, schemaVersion, memorySchemaVersion)
 	}
 
+	// Read gob payload length (8-byte LE uint64).
+	var lenBuf [8]byte
+	if _, err := io.ReadFull(payloadReader, lenBuf[:]); err != nil {
+		return fmt.Errorf("%w: read payload length: %v", metadata.ErrRestoreCorrupt, err)
+	}
+	payloadLen := binary.LittleEndian.Uint64(lenBuf[:])
+
+	// Read exactly payloadLen bytes into a buffer so the gob decoder's
+	// internal buffered reader cannot consume the trailing CRC.
+	gobData := make([]byte, payloadLen)
+	if _, err := io.ReadFull(payloadReader, gobData); err != nil {
+		return fmt.Errorf("%w: read payload: %v", metadata.ErrRestoreCorrupt, err)
+	}
+
 	// Gob-decode the snapshot.
 	var snap memoryBackupSnapshot
-	dec := gob.NewDecoder(payloadReader)
+	dec := gob.NewDecoder(bytes.NewReader(gobData))
 	if err := dec.Decode(&snap); err != nil {
 		return fmt.Errorf("%w: gob decode: %v", metadata.ErrRestoreCorrupt, err)
 	}
