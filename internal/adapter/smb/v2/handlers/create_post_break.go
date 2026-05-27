@@ -735,7 +735,19 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	}
 
 	// Step 10: Build success response.
-	creation, access, write, change := FileAttrToSMBTimes(&file.FileAttr)
+	//
+	// Per NTFS: alternate data streams share the base file's timestamps
+	// and attributes. When the open is for an ADS, resolve the base file
+	// and use its metadata for the CREATE response times and attributes.
+	// The stream's own size is used for EndOfFile / AllocationSize.
+	respAttr := &file.FileAttr
+	if colonIdx := strings.Index(baseName, ":"); colonIdx > 0 && len(parentHandle) > 0 {
+		baseFileName := baseName[:colonIdx]
+		if baseFile, baseErr := metaSvc.Lookup(authCtx, parentHandle, baseFileName); baseErr == nil {
+			respAttr = &baseFile.FileAttr
+		}
+	}
+	creation, access, write, change := FileAttrToSMBTimes(respAttr)
 	size := getSMBSize(&file.FileAttr)
 	allocationSize := calculateAllocationSize(size)
 
@@ -749,7 +761,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		ChangeTime:      change,
 		AllocationSize:  allocationSize,
 		EndOfFile:       size,
-		FileAttributes:  FileAttrToSMBAttributes(&file.FileAttr),
+		FileAttributes:  FileAttrToSMBAttributes(respAttr),
 		FileID:          smbFileID,
 	}
 
