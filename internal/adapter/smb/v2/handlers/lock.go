@@ -245,15 +245,15 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	// contend_level2_oplocks_begin is called from brl_lock only, not
 	// brl_unlock. Releasing a lock cannot invalidate any remote read cache.
 
-	hasLockElement := false
+	hasRangeLockElement := false
 	for _, e := range req.Locks {
-		if (e.Flags & SMB2LockFlagUnlock) == 0 {
-			hasLockElement = true
+		if (e.Flags&SMB2LockFlagUnlock) == 0 && e.Length > 0 {
+			hasRangeLockElement = true
 			break
 		}
 	}
 
-	if hasLockElement && h.LeaseManager != nil {
+	if hasRangeLockElement && h.LeaseManager != nil {
 		lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
 		if breakErr := h.LeaseManager.BreakLeasesOnByteRangeLock(lockFileHandle, openFile.ShareName, &lock.LockOwner{
 			ExcludeLeaseKey: openFile.LeaseKey,
