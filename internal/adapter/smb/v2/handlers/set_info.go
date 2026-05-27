@@ -553,10 +553,15 @@ func (h *Handler) setFileInfoFromStore(
 		// ================================================================
 		if strings.HasPrefix(newPath, ":") {
 			// Extract the base file name from the current open file name.
-			// The current file is an ADS: "basefile:streamname:$DATA"
+			// The current file is an ADS: "basefile:streamname"
 			baseName := openFile.FileName
 			if colonIdx := strings.Index(baseName, ":"); colonIdx > 0 {
 				baseName = baseName[:colonIdx]
+			}
+
+			// Strip :$DATA type suffix from rename target.
+			if strings.HasSuffix(strings.ToUpper(newPath), ":$DATA") {
+				newPath = newPath[:len(newPath)-len(":$DATA")]
 			}
 
 			// Build new child name: basefile + new stream suffix

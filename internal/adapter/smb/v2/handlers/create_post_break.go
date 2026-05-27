@@ -136,7 +136,7 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	case isDestructiveDisposition(d.req.CreateDisposition):
 		reason = lock.BreakReasonDestructive
 	case d.req.CreateOptions&types.FileDeleteOnClose != 0,
-		h.checkShareModeConflict(d.existingHandle, d.req.DesiredAccess, d.req.ShareAccess, d.filename):
+		h.checkShareModeConflict(d.existingHandle, d.req.DesiredAccess, d.req.ShareAccess):
 		reason = lock.BreakReasonSharingViolation
 	}
 
@@ -244,7 +244,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	// holder, returning STATUS_SHARING_VIOLATION. Covers
 	// smb2.acls.OVERWRITE_READ_ONLY_FILE sharing_tcases arm (#575).
 	if fileExists && d.existingHandle != nil {
-		if shareConflict := h.checkShareModeConflict(d.existingHandle, effectiveAccess, req.ShareAccess, filename); shareConflict {
+		if shareConflict := h.checkShareModeConflict(d.existingHandle, effectiveAccess, req.ShareAccess); shareConflict {
 			logger.Debug("CREATE: sharing violation",
 				"path", filename,
 				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
