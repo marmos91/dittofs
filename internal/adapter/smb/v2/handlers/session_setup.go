@@ -195,9 +195,25 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		}
 	}
 
-	// Tear down old session per MS-SMB2 3.3.5.5.3. Mark LoggedOff (not
-	// delete) so in-flight responses can still be signed — mirrors Logoff
-	// handler. Session is reaped on connection close via CleanupSession.
+	// Tear down old session per MS-SMB2 3.3.5.5.3.
+	//
+	// Two constraints must be satisfied simultaneously:
+	//
+	//  1. The old session's signing key must remain available briefly so that
+	//     error responses sent on the OLD connection (e.g. STATUS_USER_SESSION_DELETED
+	//     for in-flight requests) can be signed. Without the key the client
+	//     receives an unsigned error and reports STATUS_ACCESS_DENIED
+	//     (smb2.session.reconnect1 / reconnect2).
+	//
+	//  2. The old session must be fully deleted promptly so subsequent operations
+	//     do not observe a stale LoggedOff zombie. Leaving it indefinitely would
+	//     defer cleanup to connection close, which may not happen promptly.
+	//
+	// Strategy: mark LoggedOff and do full resource cleanup inline, then
+	// schedule a deferred DeleteSession via the cleanup barrier. The barrier
+	// ensures that the next SESSION_SETUP waits for the delete to complete.
+	// The 500ms grace period lets in-flight responses on the old connection
+	// be signed before the session record is removed from the manager.
 	if req.PreviousSessionID != 0 {
 		if prevSess, ok := h.GetSession(req.PreviousSessionID); ok {
 			logger.Info("SESSION_SETUP: tearing down previous session",
@@ -207,6 +223,18 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 			h.releaseSessionLeasesAndNotifies(ctx.Context, req.PreviousSessionID)
 			h.DeleteAllTreesForSession(req.PreviousSessionID)
 			h.DeleteAllPendingAuthForSession(req.PreviousSessionID)
+
+			// Deferred delete with barrier: the goroutine waits briefly for
+			// in-flight responses on the old connection to be signed, then
+			// removes the session from the manager. SignalPendingCleanup
+			// ensures WaitForCleanup in the next SESSION_SETUP blocks until
+			// this goroutine completes, preventing stale-session observation.
+			h.SignalPendingCleanup(1)
+			go func(sid uint64) {
+				defer h.SignalCleanupDone()
+				time.Sleep(500 * time.Millisecond)
+				h.DeleteSession(sid)
+			}(req.PreviousSessionID)
 		}
 	}
 
