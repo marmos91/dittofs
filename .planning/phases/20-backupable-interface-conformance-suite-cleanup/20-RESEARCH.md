@@ -506,17 +506,15 @@ type ContentHash [HashSize]byte
 
 **All claims above are low-risk.** A1 and A3 are well-documented Go stdlib behavior. A2 was verified by codebase grep.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Envelope header fixed size vs variable**
    - What we know: D-04 specifies variable-length engine tag string. This means the header is variable-length (unlike appendlog's fixed 64-byte header).
-   - What's unclear: Whether the engine tag length should have an upper bound.
-   - Recommendation: Cap engine tag at 255 bytes (uint8 length prefix would suffice, but D-04 is clear about variable-length). Use uint16 LE for the tag length to keep alignment simple and allow headroom. In practice, tags are "badger" (6), "memory" (6), "postgres" (8).
+   - RESOLVED: Cap engine tag at 255 bytes. Use uint16 LE for the tag length to keep alignment simple and allow headroom. In practice, tags are "badger" (6), "memory" (6), "postgres" (8).
 
 2. **Whether the conformance suite should include a "SkipIfNotBackupable" guard**
    - What we know: D-14 creates a separate `RunBackupConformanceSuite` with its own `BackupableStoreFactory`. The factory type guarantees the store is Backupable.
-   - What's unclear: Whether to additionally type-assert inside each subtest for defense-in-depth.
-   - Recommendation: Single type assertion at the top of `RunBackupConformanceSuite` is sufficient. The factory contract guarantees Backupable capability. If assertion fails, `t.Fatal` -- don't skip, because the caller explicitly opted in.
+   - RESOLVED: Single type assertion at the top of `RunBackupConformanceSuite` is sufficient. The factory contract guarantees Backupable capability. If assertion fails, `t.Fatal` — don't skip, because the caller explicitly opted in.
 
 ## Sources
 
