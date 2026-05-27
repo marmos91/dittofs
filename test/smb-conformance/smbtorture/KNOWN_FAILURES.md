@@ -292,6 +292,13 @@ Advanced connection and tree connect edge cases.
 | smb2.tcon | Tree connect | Advanced tree connect semantics not implemented | - |
 | smb2.maxfid | Connection | Connection drops under high FD pressure | - |
 
+### Intermittent / Flaky
+
+| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|
+| smb2.compound_find.compound_find_close | Compound | Flaky compound FIND+CLOSE race - passes intermittently | - |
+| smb2.lease.statopen4 | Leases | Flaky stat-open lease test - passes intermittently | - |
+
 ### Previous Versions / Time Warp (Not Implemented)
 
 Previous versions (shadow copies / TWRP) are a Windows Volume Shadow Copy
