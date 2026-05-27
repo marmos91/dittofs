@@ -658,8 +658,8 @@ Phase 20 unblocks both 21 and 22 (parallel). Phase 23 requires both 21+22. Phase
   - [x] 21-01-PLAN.md — DRV-01: Memory store backup.go (gob under mu.RLock + hash extraction) + conformance wiring
   - [x] 21-02-PLAN.md — DRV-02: Badger store backup.go (custom KV stream in db.View + hash extraction) + conformance wiring
   - [x] 21-03-PLAN.md — DRV-03/DRV-04: Postgres store backup.go (COPY TO/FROM in REPEATABLE READ + hash extraction) + conformance wiring
-  - [ ] 21-04-PLAN.md — Gap closure: CRC-before-commit fix for Badger and Postgres restore paths
-  - [ ] 21-05-PLAN.md — Gap closure: Memory race fix + Badger signal ordering + untrusted stream size bounds
+  - [x] 21-04-PLAN.md — Gap closure: CRC-before-commit fix for Badger and Postgres restore paths
+  - [x] 21-05-PLAN.md — Gap closure: Memory race fix + Badger signal ordering + untrusted stream size bounds
 
 ### Phase 22: Snapshot Records + Hash Manifest + GC Hold (parallel with 21)
 **Goal**: Build snapshot persistence, hash manifest I/O, and GC hold integration.
@@ -733,7 +733,7 @@ Phase 20 unblocks both 21 and 22 (parallel). Phase 23 requires both 21+22. Phase
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 20. Backupable Interface + Cleanup | 3/3 | Complete    | 2026-05-27 |
-| 21. Per-Engine Backup Drivers | 3/3 | Complete   | 2026-05-27 |
+| 21. Per-Engine Backup Drivers | 5/5 | Complete   | 2026-05-27 |
 | 22. Snapshot Records + GC Hold | 0/? | Not started | - |
 | 23. Snapshot Create Orchestration | 0/? | Not started | - |
 | 24. Restore Flow | 0/? | Not started | - |
