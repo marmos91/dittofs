@@ -316,12 +316,22 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// Step 8: Handle delete-on-close (FileDispositionInformation)
 	// ========================================================================
 
-	if openFile.DeletePending {
+	if openFile.DeletePending || openFile.BaseFileDeletePending {
 		// Per MS-FSA 2.1.5.4: delete-on-close only removes the file when the
 		// LAST handle closes. If other handles on the same file exist, propagate
 		// the DOC flag + the original DOC-setter's parent key to remaining handles
 		// so the delete fires on their eventual close.
+		//
+		// For base-file DOC on a non-stream handle, also check for open stream
+		// handles (ADS) on the same base file. Per MS-FSA 2.1.5.9.7 / MS-SMB2
+		// 3.3.5.10, the actual deletion is deferred until all handles — including
+		// stream handles — are closed. The stream handles are marked with
+		// BaseFileDeletePending so the CLOSE of the last stream triggers the
+		// base file removal (smbtorture smb2.streams.delete).
+		isBaseFile := !strings.Contains(openFile.FileName, ":")
 		otherHandleExists := false
+		streamHandleExists := false
+
 		if len(openFile.MetadataHandle) > 0 {
 			h.files.Range(func(_, value any) bool {
 				other := value.(*OpenFile)
@@ -329,6 +339,51 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 					return true // skip self
 				}
 				if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
+					otherHandleExists = true
+					return false
+				}
+				return true
+			})
+		}
+
+		// For base file DOC: also check for open stream handles.
+		if !otherHandleExists && isBaseFile && !openFile.BaseFileDeletePending {
+			basePrefix := openFile.FileName + ":"
+			h.files.Range(func(_, value any) bool {
+				other := value.(*OpenFile)
+				if other.FileID == openFile.FileID {
+					return true
+				}
+				if other.IsPipe {
+					return true
+				}
+				// Check if this is a stream of the same base file: same parent
+				// directory and filename starts with "baseFile:".
+				if bytes.Equal(other.ParentHandle, openFile.ParentHandle) &&
+					strings.HasPrefix(other.FileName, basePrefix) {
+					streamHandleExists = true
+					return false
+				}
+				return true
+			})
+		}
+
+		// For stream handle with BaseFileDeletePending: check if other stream
+		// handles with the same base file delete are still open. The actual
+		// base file removal must wait until ALL such handles close.
+		if !otherHandleExists && !streamHandleExists && openFile.BaseFileDeletePending {
+			basePrefix := openFile.BaseFileDeleteFileName + ":"
+			h.files.Range(func(_, value any) bool {
+				other := value.(*OpenFile)
+				if other.FileID == openFile.FileID {
+					return true
+				}
+				if other.IsPipe {
+					return true
+				}
+				if bytes.Equal(other.ParentHandle, openFile.BaseFileDeleteParentHandle) &&
+					strings.HasPrefix(other.FileName, basePrefix) &&
+					other.BaseFileDeletePending {
 					otherHandleExists = true
 					return false
 				}
@@ -356,8 +411,45 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			})
 			logger.Debug("CLOSE: DOC propagated to other handles (not last)",
 				"path", openFile.Path)
+		} else if streamHandleExists {
+			// Base file has DOC but open stream handles remain. Per MS-FSA
+			// 2.1.5.4 / 2.1.5.9.7, defer the actual deletion until all
+			// stream handles close. Mark them with BaseFileDeletePending so
+			// the last stream CLOSE triggers the base file removal.
+			basePrefix := openFile.FileName + ":"
+			h.files.Range(func(_, value any) bool {
+				other := value.(*OpenFile)
+				if other.FileID == openFile.FileID {
+					return true
+				}
+				if other.IsPipe {
+					return true
+				}
+				if bytes.Equal(other.ParentHandle, openFile.ParentHandle) &&
+					strings.HasPrefix(other.FileName, basePrefix) {
+					other.BaseFileDeletePending = true
+					other.BaseFileDeleteParentHandle = openFile.ParentHandle
+					other.BaseFileDeleteFileName = openFile.FileName
+					h.StoreOpenFile(other)
+				}
+				return true
+			})
+			logger.Debug("CLOSE: base file DOC deferred to stream handles",
+				"path", openFile.Path)
 		} else {
 			// Last handle: perform the actual delete.
+			//
+			// If this is a stream handle with BaseFileDeletePending, delete the
+			// base file (not the stream — the stream is a child of the base).
+			deleteParentHandle := openFile.ParentHandle
+			deleteFileName := openFile.FileName
+			isBaseFileDelete := false
+			if openFile.BaseFileDeletePending {
+				deleteParentHandle = openFile.BaseFileDeleteParentHandle
+				deleteFileName = openFile.BaseFileDeleteFileName
+				isBaseFileDelete = true
+			}
+
 			authCtx, err := BuildAuthContext(ctx)
 			if err != nil {
 				logger.Warn("CLOSE: failed to build auth context for delete", "error", err)
@@ -380,9 +472,9 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				metaSvc := h.Registry.GetMetadataService()
 				var deleteErr error
 				if openFile.IsDirectory {
-					deleteErr = metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName)
+					deleteErr = metaSvc.RemoveDirectory(authCtx, deleteParentHandle, deleteFileName)
 				} else {
-					_, deleteErr = metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName)
+					_, deleteErr = metaSvc.RemoveFile(authCtx, deleteParentHandle, deleteFileName)
 				}
 
 				if deleteErr != nil {
@@ -390,15 +482,30 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 					logger.Debug("CLOSE: failed to delete",
 						"path", openFile.Path,
 						"isDir", openFile.IsDirectory,
+						"deleteTarget", deleteFileName,
 						"status", resp.Status,
 						"error", deleteErr)
 				} else {
-					logger.Debug("CLOSE: deleted", "path", openFile.Path, "isDir", openFile.IsDirectory)
+					logger.Debug("CLOSE: deleted",
+						"path", openFile.Path,
+						"deleteTarget", deleteFileName,
+						"isDir", openFile.IsDirectory,
+						"isBaseFileDelete", isBaseFileDelete)
 
-					if !openFile.IsDirectory && !strings.Contains(openFile.FileName, ":") {
-						h.cascadeDeleteADSStreams(authCtx, metaSvc, openFile)
+					if !openFile.IsDirectory && !strings.Contains(deleteFileName, ":") {
+						// For base file deletes, cascade ADS streams.
+						// Use a synthetic OpenFile with the base file's info.
+						cascadeOF := openFile
+						if isBaseFileDelete {
+							cascadeOF = &OpenFile{
+								ParentHandle: deleteParentHandle,
+								FileName:     deleteFileName,
+								Path:         openFile.Path,
+							}
+						}
+						h.cascadeDeleteADSStreams(authCtx, metaSvc, cascadeOF)
 					}
-					h.restoreParentDirFrozenTimestamps(authCtx, openFile.ParentHandle)
+					h.restoreParentDirFrozenTimestamps(authCtx, deleteParentHandle)
 
 					// Break parent directory leases: deletion changes directory
 					// content. When docSetterKeysDiffer, clear the closer's
@@ -417,8 +524,14 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 					if h.NotifyRegistry != nil {
 						parentPath := GetParentPath(openFile.Path)
-						nameFilter := NameChangeFilterFor(openFile.FileName, openFile.IsDirectory)
-						h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved, nameFilter)
+						// For ADS deferred-base-delete, deleteFileName is the
+						// base file name (no colon, regular file) while openFile
+						// is the stream handle — feed deleteFileName + false to
+						// the filter helper so the watcher sees a base-file
+						// remove rather than a stream-name change.
+						isDir := openFile.IsDirectory && !isBaseFileDelete
+						nameFilter := NameChangeFilterFor(deleteFileName, isDir)
+						h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, deleteFileName, FileActionRemoved, nameFilter)
 					}
 				}
 			}
