@@ -92,7 +92,7 @@ var _ metadata.Backupable = (*MemoryMetadataStore)(nil)
 // Backup serializes the entire in-memory state under a read lock and
 // writes it into w using the shared envelope format. The returned
 // HashSet contains every unique content-addressed block hash referenced
-// by the snapshot (extracted inline during serialization per D-04).
+// by the snapshot (extracted inline during serialization).
 func (s *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockstore.HashSet, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("%w: %v", metadata.ErrBackupAborted, err)
@@ -142,8 +142,7 @@ func (s *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockst
 	}
 	s.syncedMu.RUnlock()
 
-	// Handle ServerConfig.CustomSettings gob limitation (D-01, Pitfall 1):
-	// gob cannot encode map[string]any; pre-encode to JSON bytes.
+	// gob cannot encode map[string]any; pre-encode CustomSettings to JSON.
 	snap.ServerConfig = s.serverConfig
 	if len(s.serverConfig.CustomSettings) > 0 {
 		csJSON, err := json.Marshal(s.serverConfig.CustomSettings)
@@ -180,8 +179,7 @@ func (s *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockst
 		}
 	}
 
-	// Extract hashes inline (D-04): iterate files, collect every unique
-	// block hash into a HashSet.
+	// Extract every unique block hash into a HashSet.
 	hs := blockstore.NewHashSet(len(s.files))
 	for _, fd := range s.files {
 		if fd.Attr == nil {
@@ -243,7 +241,7 @@ func (s *MemoryMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 		return fmt.Errorf("%w: %v", metadata.ErrRestoreCorrupt, err)
 	}
 
-	// Check destination empty (D-06). Acquire read lock briefly.
+	// Check destination is empty. Acquire read lock briefly.
 	s.mu.RLock()
 	hasShares := len(s.shares) > 0
 	s.mu.RUnlock()
@@ -360,7 +358,9 @@ func (s *MemoryMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 		s.objectIndex = make(map[blockstore.ContentHash]string)
 	}
 
-	// Restore lazy sub-stores (nil means lazy init on demand).
+	// Restore lazy sub-stores (nil snapshot = never initialized).
+	// Explicit nil assignment in the else branch is required because the
+	// destination store may have non-nil sub-stores from prior state.
 	if snap.FileBlockData != nil {
 		s.fileBlockData = &fileBlockStoreData{
 			blocks:    snap.FileBlockData.Blocks,

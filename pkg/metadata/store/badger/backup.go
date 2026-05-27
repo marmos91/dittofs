@@ -1,12 +1,12 @@
 package badger
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 
 	badgerdb "github.com/dgraph-io/badger/v4"
 
@@ -85,6 +85,7 @@ func (s *BadgerMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockst
 		defer it.Close()
 
 		var buf [4]byte
+		filePrefix := []byte(prefixFile)
 
 		for it.Rewind(); it.Valid(); it.Next() {
 			if err := ctx.Err(); err != nil {
@@ -117,7 +118,7 @@ func (s *BadgerMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockst
 			}
 
 			// Hash extraction: decode f: prefix entries for block hashes.
-			if strings.HasPrefix(string(key), prefixFile) {
+			if bytes.HasPrefix(key, filePrefix) {
 				var file metadata.File
 				if err := json.Unmarshal(val, &file); err != nil {
 					logger.Warn("backup: malformed f: entry, skipping hash extraction",

@@ -31,9 +31,6 @@ func TestConformance(t *testing.T) {
 	})
 }
 
-// TestBadgerStore_PutGetFile_BlocksRoundTrip verifies FileAttr.Blocks
-// (Phase 12 META-01) round-trips through the public Badger backend API
-// — i.e. through PutFile/GetFile end-to-end, not just the JSON encoder.
 func TestBackupConformance(t *testing.T) {
 	storetest.RunBackupConformanceSuite(t, func(t *testing.T) metadata.MetadataStore {
 		dbPath := filepath.Join(t.TempDir(), "metadata.db")

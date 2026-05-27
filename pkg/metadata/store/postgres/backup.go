@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -329,7 +330,7 @@ func truncateAllTables(ctx context.Context, raw *pgconn.PgConn) error {
 
 // restoreTable reads one table section from the payload reader and
 // COPY FROM STDIN into the database. Validates the table name against
-// the hardcoded backupTables list (T-21-10 mitigation).
+// the hardcoded backupTables list to prevent SQL injection.
 func restoreTable(ctx context.Context, raw *pgconn.PgConn, payloadR io.Reader) error {
 	// Read table name length + name.
 	var nameLenBuf [2]byte
@@ -343,8 +344,8 @@ func restoreTable(ctx context.Context, raw *pgconn.PgConn, payloadR io.Reader) e
 	}
 	tableName := string(nameBytes)
 
-	// Validate table name against hardcoded list (T-21-10: SQL injection
-	// mitigation -- never use a table name from an untrusted stream directly).
+	// Validate table name against hardcoded list to prevent SQL injection
+	// from crafted backup streams.
 	if !isKnownTable(tableName) {
 		return fmt.Errorf("unknown table %q in backup stream", tableName)
 	}
@@ -389,12 +390,7 @@ func restoreTable(ctx context.Context, raw *pgconn.PgConn, payloadR io.Reader) e
 
 // isKnownTable checks if the table name exists in the hardcoded
 // backupTables slice. Used during restore to prevent SQL injection
-// from crafted backup streams (T-21-10).
+// from crafted backup streams.
 func isKnownTable(name string) bool {
-	for _, t := range backupTables {
-		if t == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(backupTables, name)
 }

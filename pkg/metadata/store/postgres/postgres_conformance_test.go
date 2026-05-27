@@ -55,9 +55,7 @@ func newPostgresStoreFactory() func(t *testing.T) metadata.MetadataStore {
 }
 
 func TestConformance(t *testing.T) {
-	// Skip if no PostgreSQL connection string is provided
-	connStr := os.Getenv("DITTOFS_TEST_POSTGRES_DSN")
-	if connStr == "" {
+	if os.Getenv("DITTOFS_TEST_POSTGRES_DSN") == "" {
 		t.Skip("DITTOFS_TEST_POSTGRES_DSN not set, skipping PostgreSQL conformance tests")
 	}
 
@@ -65,9 +63,7 @@ func TestConformance(t *testing.T) {
 }
 
 func TestBackupConformance(t *testing.T) {
-	// Skip if no PostgreSQL connection string is provided
-	connStr := os.Getenv("DITTOFS_TEST_POSTGRES_DSN")
-	if connStr == "" {
+	if os.Getenv("DITTOFS_TEST_POSTGRES_DSN") == "" {
 		t.Skip("DITTOFS_TEST_POSTGRES_DSN not set, skipping PostgreSQL backup conformance tests")
 	}
 
