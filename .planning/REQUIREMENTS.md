@@ -13,10 +13,10 @@
 
 ### Backup interface (ENG)
 
-- [ ] **ENG-01**: `Backupable` interface in `pkg/metadata/` with `Backup(ctx, w) (HashSet, error)` and `Restore(ctx, r) error` signatures
-- [ ] **ENG-02**: `HashSet` type captures all unique `ContentHash` values from `FileAttr.Blocks` inside the same atomic snapshot transaction as the metadata dump
-- [ ] **ENG-03**: Four typed error sentinels: `ErrRestoreDestinationNotEmpty`, `ErrRestoreCorrupt`, `ErrSchemaVersionMismatch`, `ErrBackupAborted`
-- [ ] **ENG-04**: Shared conformance suite in `pkg/metadata/storetest/` with 5 subtests: RoundTrip, ConcurrentWriter, Corruption, NonEmptyDest, HashSetCorrectness
+- [x] **ENG-01**: `Backupable` interface in `pkg/metadata/` with `Backup(ctx, w) (HashSet, error)` and `Restore(ctx, r) error` signatures
+- [x] **ENG-02**: `HashSet` type captures all unique `ContentHash` values from `FileAttr.Blocks` inside the same atomic snapshot transaction as the metadata dump
+- [x] **ENG-03**: Four typed error sentinels: `ErrRestoreDestinationNotEmpty`, `ErrRestoreCorrupt`, `ErrSchemaVersionMismatch`, `ErrBackupAborted`
+- [x] **ENG-04**: Shared conformance suite in `pkg/metadata/storetest/` with 5 subtests: RoundTrip, ConcurrentWriter, Corruption, NonEmptyDest, HashSetCorrectness
 
 ### Per-engine backup drivers (DRV)
 
@@ -57,8 +57,8 @@
 
 ### Cleanup (CLN)
 
-- [ ] **CLN-01**: Delete orphaned `internal/cli/backupfmt/` package
-- [ ] **CLN-02**: Archive old backup planning phases (01-07) to milestones directory
+- [x] **CLN-01**: Delete orphaned `internal/cli/backupfmt/` package
+- [x] **CLN-02**: Archive old backup planning phases (01-07) to milestones directory
 
 ### Documentation (DOC)
 
@@ -97,10 +97,10 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| ENG-01 | Phase 20 | Pending |
-| ENG-02 | Phase 20 | Pending |
-| ENG-03 | Phase 20 | Pending |
-| ENG-04 | Phase 20 | Pending |
+| ENG-01 | Phase 20 | Complete |
+| ENG-02 | Phase 20 | Complete |
+| ENG-03 | Phase 20 | Complete |
+| ENG-04 | Phase 20 | Complete |
 | DRV-01 | Phase 21 | Pending |
 | DRV-02 | Phase 21 | Pending |
 | DRV-03 | Phase 21 | Pending |
@@ -123,8 +123,8 @@
 | API-05 | Phase 25 | Pending |
 | API-06 | Phase 25 | Pending |
 | API-07 | Phase 25 | Pending |
-| CLN-01 | Phase 20 | Pending |
-| CLN-02 | Phase 20 | Pending |
+| CLN-01 | Phase 20 | Complete |
+| CLN-02 | Phase 20 | Complete |
 | DOC-01 | Phase 25 | Pending |
 | DOC-02 | Phase 25 | Pending |
 | DOC-03 | Phase 25 | Pending |

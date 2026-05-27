@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v0.16.0
 milestone_name: Share Snapshots
-status: executing
+status: ready_to_plan
 stopped_at: Phase 20 context gathered
 last_updated: "2026-05-27T09:54:29.562Z"
 last_activity: 2026-05-27 -- Phase 20 execution started
 progress:
   total_phases: 18
-  completed_phases: 7
+  completed_phases: 8
   total_plans: 66
   completed_plans: 63
-  percent: 95
+  percent: 44
 ---
 
 # Project State
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-04-23)
 
 ## Current Position
 
-Phase: 20 (backupable-interface-conformance-suite-cleanup) — EXECUTING
-Plan: 1 of 3
-Status: Executing Phase 20
-Last activity: 2026-05-27 -- Phase 20 execution started
+Phase: 21
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-05-27
 
 ## Next Actionable
 
