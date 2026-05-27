@@ -118,6 +118,12 @@ overflow, rec, rmdir1-4, tcon, tdis, tdis1, tcp, tree.
 | smb2.notify.mask | Change Notify | Armed-handle event replay interacts with NOTIFY_MASK_TEST cancel-setup pattern | - |
 | smb2.notify.mask-change | Change Notify | SHARING_VIOLATION on directory open (pre-existing, never passed individually) | - |
 
+### Compound Requests (Intermittent)
+
+| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|
+| smb2.compound_find.compound_find_close | Compound | Intermittent race in compound FIND+CLOSE sequencing | - |
+
 ### Oplocks (Multi-Client Coordination Not Implemented)
 
 Oplock tests require multi-client coordination (oplock break notifications to
