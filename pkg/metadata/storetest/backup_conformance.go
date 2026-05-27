@@ -242,47 +242,61 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 		hashes, backupErr = b.Backup(ctx, &buf)
 	}()
 
-	// Concurrently write new files while backup is running.
-	// NOTE: cannot use createTestFile here — it calls t.Fatalf, which
-	// is forbidden from non-test goroutines. Use store API directly.
+	// Concurrently write a new file (with a unique block hash) while
+	// backup is running. NOTE: cannot use createTestFile here — it calls
+	// t.Fatalf, which is forbidden from non-test goroutines.
+	concurrentHash := hashOfSeed("cw-concurrent")
+	var concurrentErr error
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		rootHandle, err := store.GetRootHandle(ctx, shareName)
 		if err != nil {
+			concurrentErr = err
 			return
 		}
 		h, err := store.GenerateHandle(ctx, shareName, "/concurrent-new.bin")
 		if err != nil {
+			concurrentErr = err
 			return
 		}
 		_, id, err := metadata.DecodeFileHandle(h)
 		if err != nil {
+			concurrentErr = err
 			return
 		}
 		f := &metadata.File{
 			ShareName: shareName,
 			FileAttr: metadata.FileAttr{
-				Type: metadata.FileTypeRegular,
-				Mode: 0o644,
-				UID:  1000,
-				GID:  1000,
+				Type:   metadata.FileTypeRegular,
+				Mode:   0o644,
+				UID:    1000,
+				GID:    1000,
+				Size:   1 << 20,
+				Blocks: []blockstore.BlockRef{
+					{Hash: concurrentHash, Offset: 0, Size: 1 << 20},
+				},
 			},
 		}
 		f.ID = id
 		if err := store.PutFile(ctx, f); err != nil {
+			concurrentErr = err
 			return
 		}
 		if err := store.SetParent(ctx, h, rootHandle); err != nil {
+			concurrentErr = err
 			return
 		}
-		_ = store.SetChild(ctx, rootHandle, "concurrent-new.bin", h)
+		concurrentErr = store.SetChild(ctx, rootHandle, "concurrent-new.bin", h)
 	}()
 
 	wg.Wait()
 
 	if backupErr != nil {
 		t.Fatalf("Backup: %v", backupErr)
+	}
+	if concurrentErr != nil {
+		t.Logf("concurrent writer error (non-fatal): %v", concurrentErr)
 	}
 
 	// Restore into fresh store.
@@ -298,7 +312,6 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 		t.Fatalf("GetRootHandle: %v", err)
 	}
 
-	// At minimum, the two initial files must be present.
 	if _, err := dstStore.GetChild(ctx, rootHandle, "alpha.bin"); err != nil {
 		t.Error("alpha.bin missing from restored backup")
 	}
@@ -306,9 +319,17 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 		t.Error("beta.bin missing from restored backup")
 	}
 
-	// The hash set must contain only hashes from the initial files (3 unique).
+	// The concurrent file must NOT appear in the snapshot.
+	if _, err := dstStore.GetChild(ctx, rootHandle, "concurrent-new.bin"); err == nil {
+		t.Error("concurrent-new.bin found in restored backup — snapshot isolation violated")
+	}
+
+	// Hash set must contain only initial hashes, not the concurrent one.
 	if hashes == nil {
 		t.Fatal("Backup returned nil HashSet")
+	}
+	if hashes.Contains(concurrentHash) {
+		t.Error("HashSet contains concurrent hash — snapshot isolation violated")
 	}
 	if hashes.Len() != 3 {
 		t.Errorf("HashSet.Len() = %d, want 3 (initial files only)", hashes.Len())

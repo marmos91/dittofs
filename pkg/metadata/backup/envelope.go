@@ -74,6 +74,9 @@ type Writer struct {
 // and returns a Writer that accumulates CRC over all subsequent writes.
 // The engine tag is included in the CRC.
 func NewWriter(w io.Writer, engineTag string) (*Writer, error) {
+	if engineTag == "" {
+		return nil, errors.New("backup: engine tag must not be empty")
+	}
 	if len(engineTag) > 65535 {
 		return nil, fmt.Errorf("backup: engine tag too long (%d bytes, max 65535)", len(engineTag))
 	}
@@ -134,6 +137,12 @@ func (ew *Writer) Finish() error {
 // all subsequent reads (the payload). The caller must use the returned
 // reader for payload reads and then call VerifyCRC with the accumulated
 // hash when the payload is exhausted.
+//
+// The envelope wire format has no payload-length field. Callers must
+// know the payload size in advance (from the engine-specific format)
+// and read exactly that many bytes via io.ReadFull. Using io.ReadAll
+// on the returned reader will consume the trailing CRC bytes into the
+// accumulator, causing VerifyCRC to fail.
 //
 // The returned hash.Hash32 is the CRC accumulator initialized with the
 // header bytes. Pass it to VerifyCRC after draining the payload reader.

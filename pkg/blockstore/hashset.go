@@ -17,7 +17,7 @@ type HashSet struct {
 }
 
 // NewHashSet returns a new HashSet pre-allocated for sizeHint entries.
-// A sizeHint of 0 is valid and avoids any upfront allocation.
+// HashSet must be created via NewHashSet; the zero value is not usable.
 func NewHashSet(sizeHint int) *HashSet {
 	return &HashSet{m: make(map[ContentHash]struct{}, sizeHint)}
 }
