@@ -108,10 +108,11 @@ func NewWriter(w io.Writer, engineTag string) (*Writer, error) {
 
 // Write writes p to the underlying writer and accumulates CRC.
 func (ew *Writer) Write(p []byte) (int, error) {
-	// Write to CRC accumulator.
-	ew.crc.Write(p)
-	// Write to underlying writer.
-	return ew.w.Write(p)
+	n, err := ew.w.Write(p)
+	if n > 0 {
+		ew.crc.Write(p[:n])
+	}
+	return n, err
 }
 
 // Finish writes the trailing 4-byte CRC32 (Castagnoli) to the

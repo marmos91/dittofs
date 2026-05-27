@@ -23,10 +23,10 @@ func TestEnvelope_RoundTrip(t *testing.T) {
 		t.Fatalf("Finish: %v", err)
 	}
 
-	// Read
+	// Read — use ReadFull for exact payload length, then VerifyCRC on original reader.
 	raw := buf.Bytes()
 	r := bytes.NewReader(raw)
-	engineTag, payloadReader, crc, err := ReadHeader(r)
+	engineTag, pr, crc, err := ReadHeader(r)
 	if err != nil {
 		t.Fatalf("ReadHeader: %v", err)
 	}
@@ -34,54 +34,17 @@ func TestEnvelope_RoundTrip(t *testing.T) {
 		t.Fatalf("engine tag: got %q, want %q", engineTag, "badger")
 	}
 
-	got, err := io.ReadAll(payloadReader)
-	if err != nil {
-		t.Fatalf("ReadAll payload: %v", err)
-	}
-	// The payload reader includes the trailing CRC in its reads because
-	// it tees from the original reader. We need to separate them: the
-	// payload is len(payload) bytes, and the remaining 4 bytes are CRC.
-	// Actually, ReadAll on the tee reader reads everything remaining
-	// including the CRC bytes. We need to split.
-	if len(got) < len(payload) {
-		t.Fatalf("payload too short: got %d bytes, want >= %d", len(got), len(payload))
-	}
-	actualPayload := got[:len(payload)]
-	if !bytes.Equal(actualPayload, payload) {
-		t.Fatalf("payload mismatch: got %q, want %q", actualPayload, payload)
-	}
-
-	// The remaining bytes were fed into the CRC accumulator by the tee
-	// reader, but we need to verify CRC from the original reader.
-	// Since ReadAll consumed everything (including CRC bytes through the
-	// tee), the CRC accumulator has seen the CRC bytes too. We need a
-	// different approach: re-read from scratch with proper separation.
-
-	// --- re-do with proper payload-length-aware read ---
-	r2 := bytes.NewReader(raw)
-	engineTag2, pr2, crc2, err := ReadHeader(r2)
-	if err != nil {
-		t.Fatalf("ReadHeader (2): %v", err)
-	}
-	if engineTag2 != "badger" {
-		t.Fatalf("engine tag (2): got %q", engineTag2)
-	}
-
-	// Read exactly the payload bytes through the tee reader.
 	gotPayload := make([]byte, len(payload))
-	if _, err := io.ReadFull(pr2, gotPayload); err != nil {
-		t.Fatalf("ReadFull payload (2): %v", err)
+	if _, err := io.ReadFull(pr, gotPayload); err != nil {
+		t.Fatalf("ReadFull payload: %v", err)
 	}
 	if !bytes.Equal(gotPayload, payload) {
-		t.Fatalf("payload mismatch (2): got %q, want %q", gotPayload, payload)
+		t.Fatalf("payload mismatch: got %q, want %q", gotPayload, payload)
 	}
 
-	// Verify trailing CRC from the original reader (not the tee).
-	if err := VerifyCRC(r2, crc2); err != nil {
+	if err := VerifyCRC(r, crc); err != nil {
 		t.Fatalf("VerifyCRC: %v", err)
 	}
-
-	_ = crc // silence unused from first attempt
 }
 
 func TestEnvelope_BadMagic(t *testing.T) {
@@ -90,8 +53,12 @@ func TestEnvelope_BadMagic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	ew.Write([]byte("data"))
-	ew.Finish()
+	if _, err = ew.Write([]byte("data")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err = ew.Finish(); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
 
 	raw := buf.Bytes()
 	raw[0] = 0xFF // corrupt magic
@@ -108,8 +75,12 @@ func TestEnvelope_BadVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	ew.Write([]byte("data"))
-	ew.Finish()
+	if _, err = ew.Write([]byte("data")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err = ew.Finish(); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
 
 	raw := buf.Bytes()
 	// Version is at offset 4..8 (uint32 LE after 4-byte magic).
@@ -127,8 +98,12 @@ func TestEnvelope_Truncated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	ew.Write([]byte("data"))
-	ew.Finish()
+	if _, err = ew.Write([]byte("data")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err = ew.Finish(); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
 
 	// Truncate mid-header (only 3 bytes of magic).
 	raw := buf.Bytes()[:3]

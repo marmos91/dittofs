@@ -243,16 +243,40 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 	}()
 
 	// Concurrently write new files while backup is running.
+	// NOTE: cannot use createTestFile here — it calls t.Fatalf, which
+	// is forbidden from non-test goroutines. Use store API directly.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		// Get root handle for the share.
 		rootHandle, err := store.GetRootHandle(ctx, shareName)
 		if err != nil {
-			return // Best effort -- backup may hold a lock.
+			return
 		}
-		// Try to create a new file that should NOT be in the snapshot.
-		_ = createTestFile(t, store, shareName, rootHandle, "concurrent-new.bin", 0o644)
+		h, err := store.GenerateHandle(ctx, shareName, "/concurrent-new.bin")
+		if err != nil {
+			return
+		}
+		_, id, err := metadata.DecodeFileHandle(h)
+		if err != nil {
+			return
+		}
+		f := &metadata.File{
+			ShareName: shareName,
+			FileAttr: metadata.FileAttr{
+				Type: metadata.FileTypeRegular,
+				Mode: 0o644,
+				UID:  1000,
+				GID:  1000,
+			},
+		}
+		f.ID = id
+		if err := store.PutFile(ctx, f); err != nil {
+			return
+		}
+		if err := store.SetParent(ctx, h, rootHandle); err != nil {
+			return
+		}
+		_ = store.SetChild(ctx, rootHandle, "concurrent-new.bin", h)
 	}()
 
 	wg.Wait()
@@ -274,21 +298,20 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 		t.Fatalf("GetRootHandle: %v", err)
 	}
 
-	// The concurrent file must NOT appear in the backup. Depending on
-	// timing, the backup may or may not have captured it, but the
-	// contract requires snapshot isolation. We verify that if the backup
-	// captured initial state, it has at most the 2 initial files plus
-	// the concurrent one if the write happened before the snapshot point.
-	// The key assertion: the hash set from backup should NOT include
-	// hashes that weren't in the store at snapshot time.
-	_ = hashes
-
 	// At minimum, the two initial files must be present.
 	if _, err := dstStore.GetChild(ctx, rootHandle, "alpha.bin"); err != nil {
 		t.Error("alpha.bin missing from restored backup")
 	}
 	if _, err := dstStore.GetChild(ctx, rootHandle, "beta.bin"); err != nil {
 		t.Error("beta.bin missing from restored backup")
+	}
+
+	// The hash set must contain only hashes from the initial files.
+	if hashes == nil {
+		t.Fatal("Backup returned nil HashSet")
+	}
+	if hashes.Len() != 2 {
+		t.Errorf("HashSet.Len() = %d, want 2 (initial files only)", hashes.Len())
 	}
 }
 
