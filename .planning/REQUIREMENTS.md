@@ -20,10 +20,10 @@
 
 ### Per-engine backup drivers (DRV)
 
-- [ ] **DRV-01**: Memory store implements `Backupable` — gob round-trip under `mu.RLock()` with hash extraction from `files` map
-- [ ] **DRV-02**: Badger store implements `Backupable` — custom streaming inside single `db.View()` with hash extraction from file entries
-- [ ] **DRV-03**: Postgres store implements `Backupable` — `COPY TO/FROM` inside single `REPEATABLE READ` txn with hash extraction from `file_block_refs`
-- [ ] **DRV-04**: All three drivers pass the shared conformance suite
+- [x] **DRV-01**: Memory store implements `Backupable` — gob round-trip under `mu.RLock()` with hash extraction from `files` map
+- [x] **DRV-02**: Badger store implements `Backupable` — custom streaming inside single `db.View()` with hash extraction from file entries
+- [x] **DRV-03**: Postgres store implements `Backupable` — `COPY TO/FROM` inside single `REPEATABLE READ` txn with hash extraction from `file_block_refs`
+- [x] **DRV-04**: All three drivers pass the shared conformance suite
 
 ### Snapshot records and GC hold (SNAP)
 
@@ -101,10 +101,10 @@
 | ENG-02 | Phase 20 | Complete |
 | ENG-03 | Phase 20 | Complete |
 | ENG-04 | Phase 20 | Complete |
-| DRV-01 | Phase 21 | Pending |
-| DRV-02 | Phase 21 | Pending |
-| DRV-03 | Phase 21 | Pending |
-| DRV-04 | Phase 21 | Pending |
+| DRV-01 | Phase 21 | Complete |
+| DRV-02 | Phase 21 | Complete |
+| DRV-03 | Phase 21 | Complete |
+| DRV-04 | Phase 21 | Complete |
 | SNAP-01 | Phase 22 | Pending |
 | SNAP-02 | Phase 22 | Pending |
 | SNAP-03 | Phase 22 | Pending |
