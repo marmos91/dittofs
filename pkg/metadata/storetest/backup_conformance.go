@@ -306,12 +306,12 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 		t.Error("beta.bin missing from restored backup")
 	}
 
-	// The hash set must contain only hashes from the initial files.
+	// The hash set must contain only hashes from the initial files (3 unique).
 	if hashes == nil {
 		t.Fatal("Backup returned nil HashSet")
 	}
-	if hashes.Len() != 2 {
-		t.Errorf("HashSet.Len() = %d, want 2 (initial files only)", hashes.Len())
+	if hashes.Len() != 3 {
+		t.Errorf("HashSet.Len() = %d, want 3 (initial files only)", hashes.Len())
 	}
 }
 

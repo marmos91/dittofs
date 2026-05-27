@@ -8,31 +8,23 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-func TestErrRestoreDestinationNotEmpty_DetectsThroughWrap(t *testing.T) {
-	wrapped := fmt.Errorf("outer: %w", metadata.ErrRestoreDestinationNotEmpty)
-	if !errors.Is(wrapped, metadata.ErrRestoreDestinationNotEmpty) {
-		t.Fatalf("errors.Is failed to detect ErrRestoreDestinationNotEmpty through wrapping")
+func TestBackupSentinels_DetectThroughWrap(t *testing.T) {
+	sentinels := []struct {
+		name string
+		err  error
+	}{
+		{"ErrRestoreDestinationNotEmpty", metadata.ErrRestoreDestinationNotEmpty},
+		{"ErrRestoreCorrupt", metadata.ErrRestoreCorrupt},
+		{"ErrSchemaVersionMismatch", metadata.ErrSchemaVersionMismatch},
+		{"ErrBackupAborted", metadata.ErrBackupAborted},
 	}
-}
-
-func TestErrRestoreCorrupt_DetectsThroughWrap(t *testing.T) {
-	wrapped := fmt.Errorf("outer: %w", metadata.ErrRestoreCorrupt)
-	if !errors.Is(wrapped, metadata.ErrRestoreCorrupt) {
-		t.Fatalf("errors.Is failed to detect ErrRestoreCorrupt through wrapping")
-	}
-}
-
-func TestErrSchemaVersionMismatch_DetectsThroughWrap(t *testing.T) {
-	wrapped := fmt.Errorf("outer: %w", metadata.ErrSchemaVersionMismatch)
-	if !errors.Is(wrapped, metadata.ErrSchemaVersionMismatch) {
-		t.Fatalf("errors.Is failed to detect ErrSchemaVersionMismatch through wrapping")
-	}
-}
-
-func TestErrBackupAborted_DetectsThroughWrap(t *testing.T) {
-	wrapped := fmt.Errorf("outer: %w", metadata.ErrBackupAborted)
-	if !errors.Is(wrapped, metadata.ErrBackupAborted) {
-		t.Fatalf("errors.Is failed to detect ErrBackupAborted through wrapping")
+	for _, tc := range sentinels {
+		t.Run(tc.name, func(t *testing.T) {
+			wrapped := fmt.Errorf("outer: %w", tc.err)
+			if !errors.Is(wrapped, tc.err) {
+				t.Fatalf("errors.Is failed to detect %s through wrapping", tc.name)
+			}
+		})
 	}
 }
 

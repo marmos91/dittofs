@@ -8,23 +8,9 @@ import (
 )
 
 func TestEnvelope_RoundTrip(t *testing.T) {
-	var buf bytes.Buffer
 	payload := []byte("hello backup payload")
+	raw := writeValidEnvelope(t, "badger", payload)
 
-	// Write
-	ew, err := NewWriter(&buf, "badger")
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if _, err := ew.Write(payload); err != nil {
-		t.Fatalf("Write payload: %v", err)
-	}
-	if err := ew.Finish(); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	// Read — use ReadFull for exact payload length, then VerifyCRC on original reader.
-	raw := buf.Bytes()
 	r := bytes.NewReader(raw)
 	engineTag, pr, crc, err := ReadHeader(r)
 	if err != nil {
@@ -47,68 +33,51 @@ func TestEnvelope_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestEnvelope_BadMagic(t *testing.T) {
+// writeValidEnvelope produces a complete, valid envelope with the given
+// engine tag and payload into a buffer and returns the raw bytes.
+func writeValidEnvelope(t *testing.T, engineTag string, payload []byte) []byte {
+	t.Helper()
 	var buf bytes.Buffer
-	ew, err := NewWriter(&buf, "test")
+	ew, err := NewWriter(&buf, engineTag)
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if _, err = ew.Write([]byte("data")); err != nil {
+	if _, err = ew.Write(payload); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	if err = ew.Finish(); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
+	return buf.Bytes()
+}
 
-	raw := buf.Bytes()
+func TestEnvelope_BadMagic(t *testing.T) {
+	raw := writeValidEnvelope(t, "test", []byte("data"))
 	raw[0] = 0xFF // corrupt magic
 
-	_, _, _, err = ReadHeader(bytes.NewReader(raw))
+	_, _, _, err := ReadHeader(bytes.NewReader(raw))
 	if !errors.Is(err, ErrBadMagic) {
 		t.Fatalf("expected ErrBadMagic, got %v", err)
 	}
 }
 
 func TestEnvelope_BadVersion(t *testing.T) {
-	var buf bytes.Buffer
-	ew, err := NewWriter(&buf, "test")
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if _, err = ew.Write([]byte("data")); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if err = ew.Finish(); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	raw := buf.Bytes()
+	raw := writeValidEnvelope(t, "test", []byte("data"))
 	// Version is at offset 4..8 (uint32 LE after 4-byte magic).
 	raw[4] = 99 // corrupt version
 
-	_, _, _, err = ReadHeader(bytes.NewReader(raw))
+	_, _, _, err := ReadHeader(bytes.NewReader(raw))
 	if !errors.Is(err, ErrUnsupportedVersion) {
 		t.Fatalf("expected ErrUnsupportedVersion, got %v", err)
 	}
 }
 
 func TestEnvelope_Truncated(t *testing.T) {
-	var buf bytes.Buffer
-	ew, err := NewWriter(&buf, "test")
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if _, err = ew.Write([]byte("data")); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if err = ew.Finish(); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
+	raw := writeValidEnvelope(t, "test", []byte("data"))
 	// Truncate mid-header (only 3 bytes of magic).
-	raw := buf.Bytes()[:3]
+	raw = raw[:3]
 
-	_, _, _, err = ReadHeader(bytes.NewReader(raw))
+	_, _, _, err := ReadHeader(bytes.NewReader(raw))
 	if !errors.Is(err, ErrTruncated) {
 		t.Fatalf("expected ErrTruncated, got %v", err)
 	}
@@ -116,20 +85,8 @@ func TestEnvelope_Truncated(t *testing.T) {
 
 func TestEnvelope_BitFlip(t *testing.T) {
 	payload := []byte("important backup data here")
-	var buf bytes.Buffer
+	raw := writeValidEnvelope(t, "badger", payload)
 
-	ew, err := NewWriter(&buf, "badger")
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if _, err := ew.Write(payload); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if err := ew.Finish(); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	raw := buf.Bytes()
 	// Flip a bit in the payload region (after the header).
 	// Header is: 4 (magic) + 4 (version) + 2 (engine_len) + 6 ("badger") = 16 bytes.
 	payloadStart := 4 + 4 + 2 + len("badger")
