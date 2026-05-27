@@ -843,17 +843,15 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotADirectory}}, nil
 		}
 		adsStreamName := streamSuffix[1:] // strip leading ":"
-		// Per Samba: "/" and "\" are always OBJECT_NAME_INVALID in stream
-		// names (they are path separators, unambiguously illegal).
+		// Per Samba/Windows: "/", "\", and ":" are OBJECT_NAME_INVALID in
+		// stream names. "/" and "\" are path separators; ":" is the stream
+		// type delimiter — an extra colon means a malformed type suffix
+		// (e.g., trailing ":", ":$FOO", ":?D*a").
 		// An empty stream name (just ":") is also invalid.
-		if adsStreamName == "" || strings.ContainsAny(adsStreamName, "/\\") {
+		// Control characters (0x01-0x1F) are permitted — Samba allows them
+		// and smbtorture creates streams containing \x05, \n, etc.
+		if adsStreamName == "" || strings.ContainsAny(adsStreamName, "/\\:") {
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameInvalid}}, nil
-		}
-		// Control characters (0x01-0x1F) are invalid in stream names.
-		for _, c := range adsStreamName {
-			if c >= 0x01 && c <= 0x1F {
-				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameInvalid}}, nil
-			}
 		}
 	}
 
@@ -900,16 +898,21 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// For ADS opens, existence is based on the STREAM entry, and the base
 	// file is auto-created when the disposition would create.
 	//
-	// NTFS stream names are case-insensitive: "file:FOO" and "file:foo"
-	// refer to the same stream. If the exact-case Lookup fails for an ADS,
-	// fall back to a case-insensitive scan of the parent directory.
-	existingFile, lookupErr := metaSvc.Lookup(authCtx, parentHandle, baseName)
-	fileExists := (lookupErr == nil)
+	// NTFS/SMB names are case-preserving but case-insensitive.
+	// First try a general case-insensitive lookup for the baseName (covers
+	// both regular files and ADS entries whose exact case differs).
+	// For ADS, also fall back to the stream-specific scanner which matches
+	// on the stream suffix within the parent directory.
+	existingFile, foundName := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, baseName)
+	fileExists := (existingFile != nil)
+	if fileExists && foundName != baseName {
+		baseName = foundName // use the canonical stored name
+	}
 	if !fileExists && isADS {
-		if found, foundName := h.lookupStreamCaseInsensitive(authCtx, metaSvc, parentHandle, adsBaseFileName, baseName); found != nil {
+		if found, sFoundName := h.lookupStreamCaseInsensitive(authCtx, metaSvc, parentHandle, adsBaseFileName, baseName); found != nil {
 			existingFile = found
 			fileExists = true
-			baseName = foundName // use the canonical stored name
+			baseName = sFoundName // use the canonical stored name
 		}
 	}
 
@@ -944,7 +947,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// violation on the base file takes priority over OBJECT_NAME_NOT_FOUND
 	// on the stream itself.
 	if isADS {
-		if baseFile, baseErr := metaSvc.Lookup(authCtx, parentHandle, adsBaseFileName); baseErr == nil {
+		if baseFile, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, adsBaseFileName); baseFile != nil {
 			if baseHandle, encErr := metadata.EncodeFileHandle(baseFile); encErr == nil {
 				if h.checkShareModeConflict(baseHandle, req.DesiredAccess, req.ShareAccess, filename) {
 					return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSharingViolation}}, nil
@@ -970,7 +973,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// ensure the base file exists first. Per MS-FSA, creating a named
 	// stream implicitly creates the base file.
 	if isADS && (createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded) {
-		if _, baseErr := metaSvc.Lookup(authCtx, parentHandle, adsBaseFileName); baseErr != nil {
+		if f, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, adsBaseFileName); f == nil {
 			baseAttr := &metadata.FileAttr{
 				Mode: SMBModeFromAttrs(0, false),
 				Type: metadata.FileTypeRegular,
@@ -1453,9 +1456,12 @@ func (h *Handler) walkPath(
 			continue
 		}
 
-		file, err := metaSvc.Lookup(authCtx, currentHandle, part)
-		if err != nil {
-			return nil, err
+		file, _ := h.lookupCaseInsensitive(authCtx, metaSvc, currentHandle, part)
+		if file == nil {
+			return nil, &metadata.StoreError{
+				Code:    metadata.ErrNotFound,
+				Message: fmt.Sprintf("child not found: %s", part),
+			}
 		}
 
 		if file.Type != metadata.FileTypeDirectory {
@@ -1465,9 +1471,10 @@ func (h *Handler) walkPath(
 			}
 		}
 
-		currentHandle, err = metadata.EncodeFileHandle(file)
-		if err != nil {
-			return nil, err
+		var encErr error
+		currentHandle, encErr = metadata.EncodeFileHandle(file)
+		if encErr != nil {
+			return nil, encErr
 		}
 	}
 
@@ -1588,8 +1595,8 @@ func (h *Handler) updateBaseObjectCtime(
 	parentHandle metadata.FileHandle,
 	baseObjectName string,
 ) {
-	baseFile, err := metaSvc.Lookup(authCtx, parentHandle, baseObjectName)
-	if err != nil {
+	baseFile, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, baseObjectName)
+	if baseFile == nil {
 		return
 	}
 	baseHandle, err := metadata.EncodeFileHandle(baseFile)
@@ -1614,8 +1621,8 @@ func (h *Handler) updateBaseObjectTimestampsForADSWrite(
 	openFile *OpenFile,
 	baseObjectName string,
 ) {
-	baseFile, err := metaSvc.Lookup(authCtx, openFile.ParentHandle, baseObjectName)
-	if err != nil {
+	baseFile, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseObjectName)
+	if baseFile == nil {
 		return
 	}
 	baseHandle, err := metadata.EncodeFileHandle(baseFile)

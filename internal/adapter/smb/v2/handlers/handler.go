@@ -376,6 +376,16 @@ type OpenFile struct {
 	DeleteOnCloseParentKey    [16]byte
 	HasDeleteOnCloseParentKey bool
 
+	// BaseFileDeletePending is set on a stream handle when the base file was
+	// unlinked while this stream was still open. Per MS-FSA 2.1.5.4, the
+	// actual base-file removal is deferred until all handles (including
+	// stream handles) are closed. When the last such handle closes, the
+	// CLOSE handler uses BaseFileDeleteParentHandle / BaseFileDeleteFileName
+	// to perform the base file deletion.
+	BaseFileDeletePending     bool
+	BaseFileDeleteParentHandle metadata.FileHandle
+	BaseFileDeleteFileName     string
+
 	// Durable handle state (Phase 38: SMB3 durable handles)
 	// IsDurable indicates this handle has been granted durability.
 	// When true, the handle will be persisted to DurableHandleStore on disconnect
@@ -1484,6 +1494,48 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 		return true
 	})
 	return conflict
+}
+
+// lookupCaseInsensitive performs a case-insensitive child lookup in a
+// directory.  It first tries an exact-case Lookup; on failure it falls
+// back to scanning the parent's children with strings.EqualFold.
+// Returns the found file and its canonical (stored) name, or nil/"" if
+// no match exists.  This implements NTFS-style case-insensitive
+// semantics for the SMB adapter only; NFS remains case-sensitive.
+func (h *Handler) lookupCaseInsensitive(
+	authCtx *metadata.AuthContext,
+	metaSvc *metadata.MetadataService,
+	parentHandle metadata.FileHandle,
+	name string,
+) (*metadata.File, string) {
+	// Fast path: exact-case hit.
+	if f, err := metaSvc.Lookup(authCtx, parentHandle, name); err == nil {
+		return f, name
+	}
+
+	store, err := metaSvc.GetStoreForShare(shareNameFromHandle(parentHandle))
+	if err != nil {
+		return nil, ""
+	}
+	cursor := ""
+	for {
+		entries, nextCursor, listErr := store.ListChildren(authCtx.Context, parentHandle, cursor, 500)
+		if listErr != nil {
+			break
+		}
+		for _, entry := range entries {
+			if strings.EqualFold(entry.Name, name) {
+				if f, lookupErr := metaSvc.Lookup(authCtx, parentHandle, entry.Name); lookupErr == nil {
+					return f, entry.Name
+				}
+			}
+		}
+		if nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
+	}
+	return nil, ""
 }
 
 // lookupStreamCaseInsensitive searches the parent directory for a stream
