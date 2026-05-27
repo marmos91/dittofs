@@ -743,7 +743,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	respAttr := &file.FileAttr
 	if colonIdx := strings.Index(baseName, ":"); colonIdx > 0 && len(parentHandle) > 0 {
 		baseFileName := baseName[:colonIdx]
-		if baseFile, baseErr := metaSvc.Lookup(authCtx, parentHandle, baseFileName); baseErr == nil {
+		if baseFile, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, baseFileName); baseFile != nil {
 			respAttr = &baseFile.FileAttr
 		}
 	}

@@ -360,7 +360,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				// Check if this is a stream of the same base file: same parent
 				// directory and filename starts with "baseFile:".
 				if bytes.Equal(other.ParentHandle, openFile.ParentHandle) &&
-					strings.HasPrefix(other.FileName, basePrefix) {
+					len(other.FileName) > len(basePrefix) &&
+					strings.EqualFold(other.FileName[:len(basePrefix)], basePrefix) {
 					streamHandleExists = true
 					return false
 				}
@@ -426,7 +427,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 					return true
 				}
 				if bytes.Equal(other.ParentHandle, openFile.ParentHandle) &&
-					strings.HasPrefix(other.FileName, basePrefix) {
+					len(other.FileName) > len(basePrefix) &&
+					strings.EqualFold(other.FileName[:len(basePrefix)], basePrefix) {
 					other.BaseFileDeletePending = true
 					other.BaseFileDeleteParentHandle = openFile.ParentHandle
 					other.BaseFileDeleteFileName = openFile.FileName

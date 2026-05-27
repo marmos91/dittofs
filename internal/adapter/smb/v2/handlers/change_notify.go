@@ -885,7 +885,7 @@ func EncodeFileNotifyInformation(changes []FileNotifyInformation) []byte {
 // streams to carry the full "file:stream:$DATA" form, but internally we strip
 // the type suffix during normalization. This restores it for the wire.
 func notifyStreamName(name string) string {
-	if strings.Contains(name, ":") {
+	if strings.Contains(name, ":") && !strings.HasSuffix(strings.ToUpper(name), ":$DATA") {
 		return name + ":$DATA"
 	}
 	return name

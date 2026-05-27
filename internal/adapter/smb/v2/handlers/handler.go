@@ -1407,19 +1407,19 @@ func (h *Handler) isFileOrBaseDeletePending(fileHandle metadata.FileHandle, file
 			// BaseFileDeletePending set (base file delete was deferred to
 			// stream close).
 			existingBase := adsBasePath(existing.Path)
-			if existingBase == filePath && existing.BaseFileDeletePending {
+			if strings.EqualFold(existingBase, filePath) && existing.BaseFileDeletePending {
 				pending = true
 				return false
 			}
 		} else {
 			// Opening a stream: check if any handle on the base file or
 			// sibling stream has the base file delete-pending.
-			if existing.Path == openBase && existing.DeletePending {
+			if strings.EqualFold(existing.Path, openBase) && existing.DeletePending {
 				pending = true
 				return false
 			}
 			existingBase := adsBasePath(existing.Path)
-			if existingBase == openBase && existing.BaseFileDeletePending {
+			if strings.EqualFold(existingBase, openBase) && existing.BaseFileDeletePending {
 				pending = true
 				return false
 			}
@@ -1606,7 +1606,6 @@ func (h *Handler) lookupStreamCaseInsensitive(
 	if err != nil {
 		return nil, ""
 	}
-	prefix := baseFileName + ":"
 	upperTarget := strings.ToUpper(streamEntryName)
 	cursor := ""
 	for {
@@ -1615,7 +1614,7 @@ func (h *Handler) lookupStreamCaseInsensitive(
 			break
 		}
 		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name, prefix) && strings.ToUpper(entry.Name) == upperTarget {
+			if strings.ToUpper(entry.Name) == upperTarget {
 				if f, lookupErr := metaSvc.Lookup(authCtx, parentHandle, entry.Name); lookupErr == nil {
 					return f, entry.Name
 				}

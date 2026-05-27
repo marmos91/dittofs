@@ -372,7 +372,7 @@ func (h *Handler) setFileInfoFromStore(
 			if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 && len(openFile.ParentHandle) > 0 {
 				// ADS: capture base file timestamps.
 				baseFileName := openFile.FileName[:colonIdx]
-				if baseFile, lookupErr := metaSvc.Lookup(authCtx, openFile.ParentHandle, baseFileName); lookupErr == nil {
+				if baseFile, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName); baseFile != nil {
 					preFile = baseFile
 				}
 			}
@@ -439,7 +439,7 @@ func (h *Handler) setFileInfoFromStore(
 		// Per NTFS: timestamps set on an ADS propagate to the base file.
 		if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 && len(openFile.ParentHandle) > 0 {
 			baseFileName := openFile.FileName[:colonIdx]
-			if baseFile, lookupErr := metaSvc.Lookup(authCtx, openFile.ParentHandle, baseFileName); lookupErr == nil {
+			if baseFile, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName); baseFile != nil {
 				if baseHandle, encErr := metadata.EncodeFileHandle(baseFile); encErr == nil {
 					_ = metaSvc.SetFileAttributes(authCtx, baseHandle, setAttrs)
 				}

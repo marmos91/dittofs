@@ -588,8 +588,8 @@ func (h *Handler) resolveBaseFileAttrForADS(authCtx *metadata.AuthContext, openF
 	}
 	metaSvc := h.Registry.GetMetadataService()
 	baseFileName := openFile.FileName[:colonIdx]
-	baseFile, err := metaSvc.Lookup(authCtx, openFile.ParentHandle, baseFileName)
-	if err != nil {
+	baseFile, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName)
+	if baseFile == nil {
 		return nil
 	}
 	// Make a copy so frozen-timestamp overrides don't mutate the store.
