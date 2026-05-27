@@ -215,7 +215,10 @@ func (h *Handler) resumePendingLock(
 			// in case (a). On external cancel, the canceller owns delivery and
 			// the mutation would taint the next retry from the same OpenID.
 			if goerrors.Is(waitCtx.Err(), context.DeadlineExceeded) {
-				finalStatus = h.mapLockConflictStatus(pending.OwnerID, lockElem, fileLock.Exclusive)
+				// Async-parked locks are always cross-handle conflicts (self-
+				// conflicts are caught synchronously before parking), so pass
+				// empty conflictOwnerID to allow normal escalation logic.
+				finalStatus = h.mapLockConflictStatus(pending.OwnerID, lockElem, fileLock.Exclusive, "")
 			}
 			finalBody = nil
 			goto deliver

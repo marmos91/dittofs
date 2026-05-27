@@ -167,6 +167,13 @@ type StoreError struct {
 	Code    ErrorCode
 	Message string
 	Path    string
+
+	// ConflictOwnerID is the effective owner identifier of the lock that
+	// caused the conflict (populated only for ErrLocked). The SMB handler
+	// uses this to distinguish self-conflicts (same open re-locking its
+	// own range) from cross-handle conflicts for the LOCK_NOT_GRANTED vs
+	// FILE_LOCK_CONFLICT status mapping (MS-SMB2 3.3.5.14).
+	ConflictOwnerID string
 }
 
 // Error implements the error interface.

@@ -1229,18 +1229,32 @@ func TestLock_SMB_DifferentOpen_ExclusiveConflict(t *testing.T) {
 	}
 }
 
-func TestLock_SMB_ZeroByte_NeverConflicts(t *testing.T) {
+func TestLock_SMB_ZeroByte_ConflictsStrictlyInside(t *testing.T) {
 	t.Parallel()
 
 	lm := NewManager()
+	// Exclusive lock covering [0, 10) from open1.
 	normal := FileLock{SessionID: 1, OpenID: "open1", Offset: 0, Length: 10, Exclusive: true}
 	if err := lm.Lock("file1", normal); err != nil {
 		t.Fatal(err)
 	}
 
-	zb := FileLock{SessionID: 2, OpenID: "open2", Offset: 5, Length: 0, IsZeroByte: true, Exclusive: true}
-	if err := lm.Lock("file1", zb); err != nil {
-		t.Fatal("Zero-byte lock should never conflict")
+	// Zero-byte at offset 5 (strictly inside [0,10)) from different open — MUST conflict.
+	zbInside := FileLock{SessionID: 2, OpenID: "open2", Offset: 5, Length: 0, IsZeroByte: true, Exclusive: true}
+	if err := lm.Lock("file1", zbInside); err == nil {
+		t.Fatal("Zero-byte lock at offset strictly inside existing range should conflict")
+	}
+
+	// Zero-byte at offset 10 (at boundary, NOT inside [0,10)) — no conflict.
+	zbBoundary := FileLock{SessionID: 2, OpenID: "open2", Offset: 10, Length: 0, IsZeroByte: true, Exclusive: true}
+	if err := lm.Lock("file1", zbBoundary); err != nil {
+		t.Fatal("Zero-byte lock at range boundary should not conflict")
+	}
+
+	// Zero-byte at offset 0 — {0,0} never overlaps anything (MS-FSA).
+	zbZero := FileLock{SessionID: 2, OpenID: "open2", Offset: 0, Length: 0, IsZeroByte: true, Exclusive: true}
+	if err := lm.Lock("file1", zbZero); err != nil {
+		t.Fatal("Zero-byte lock at offset 0 should never conflict")
 	}
 }
 
