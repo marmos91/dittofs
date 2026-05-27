@@ -200,12 +200,23 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// PreviousSessionID to its old session. The server tears down the old
 	// session's resources (open files, locks, tree connections) so the new
 	// session starts clean. This prevents resource leaks and lock conflicts.
+	//
+	// The session is NOT deleted from the session manager — only marked
+	// LoggedOff. This mirrors LOGOFF handling (logoff.go) and ensures that
+	// error responses sent on the old connection for the invalidated session
+	// can still be signed with the session's key. Without this, the client
+	// receives an unsigned STATUS_USER_SESSION_DELETED and interprets it as
+	// STATUS_ACCESS_DENIED (smb2.session.reconnect1/reconnect2).
+	// The session is reaped on connection close via CleanupSession.
 	if req.PreviousSessionID != 0 {
-		if _, ok := h.GetSession(req.PreviousSessionID); ok {
+		if prevSess, ok := h.GetSession(req.PreviousSessionID); ok {
 			logger.Info("SESSION_SETUP: tearing down previous session",
 				"previousSessionID", req.PreviousSessionID)
-			h.SignalPendingCleanup(1)
-			h.CleanupSession(ctx.Context, req.PreviousSessionID, false)
+			prevSess.LoggedOff.Store(true)
+			h.CloseAllFilesForSession(ctx.Context, req.PreviousSessionID, false)
+			h.releaseSessionLeasesAndNotifies(ctx.Context, req.PreviousSessionID)
+			h.DeleteAllTreesForSession(req.PreviousSessionID)
+			h.DeleteAllPendingAuthForSession(req.PreviousSessionID)
 		}
 	}
 
