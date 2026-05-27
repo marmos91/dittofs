@@ -6,262 +6,261 @@ files_reviewed: 7
 files_reviewed_list:
   - pkg/metadata/store/memory/backup.go
   - pkg/metadata/store/memory/memory_conformance_test.go
+  - pkg/metadata/storetest/backup_conformance.go
   - pkg/metadata/store/badger/backup.go
   - pkg/metadata/store/badger/badger_conformance_test.go
   - pkg/metadata/store/postgres/backup.go
   - pkg/metadata/store/postgres/postgres_conformance_test.go
-  - pkg/metadata/storetest/backup_conformance.go
 findings:
-  critical: 4
-  warning: 4
-  info: 3
-  total: 11
+  critical: 3
+  warning: 3
+  info: 1
+  total: 7
 status: issues_found
 ---
 
 # Phase 21: Code Review Report
 
-**Reviewed:** 2026-05-27
+**Reviewed:** 2026-05-27T00:00:00Z
 **Depth:** standard
 **Files Reviewed:** 7
 **Status:** issues_found
 
 ## Summary
 
-Three backup driver implementations (memory, badger, postgres) were reviewed alongside the shared conformance suite. The envelope protocol (`pkg/metadata/backup`) is structurally sound: magic bytes, versioning, engine tag routing, and trailing CRC32 are all implemented correctly in isolation. The bugs are in how the drivers sequence CRC verification against persistent writes, in a data race in the memory driver, in OOM-inducing unbounded allocations on untrusted length fields, and in a snapshot-ordering problem that makes the badger `ConcurrentWriter` conformance test unreliable.
+Phase 21 introduces per-engine backup drivers for the memory, Badger, and Postgres metadata
+stores, plus a shared conformance suite in `pkg/metadata/storetest/backup_conformance.go`.
+The envelope format, hash extraction logic, and error sentinel usage are generally sound.
+Three correctness defects stand out: a check-then-act (TOCTOU) race in the memory Restore,
+a partial-commit window in the Badger batch-flush loop that contradicts the documented
+atomicity guarantee, and a fundamental test-isolation failure in the Postgres conformance
+wiring that makes the backup tests functionally untestable.
 
 ---
 
 ## Critical Issues
 
-### CR-01: Badger and Postgres restore commit data before verifying CRC
+### CR-01: TOCTOU race in `MemoryMetadataStore.Restore` — empty check and write are not atomic
 
-**Files:**
-- `pkg/metadata/store/badger/backup.go:232-240`
-- `pkg/metadata/store/postgres/backup.go:301-307`
+**File:** `pkg/metadata/store/memory/backup.go:247-317`
 
-**Issue:** Both drivers flush/commit all restored data to durable storage before calling `backup.VerifyCRC`. If the CRC check then fails, the store is left in a partially-restored or fully-restored-but-corrupt state. The next `Restore` call returns `ErrRestoreDestinationNotEmpty` because the non-empty-check sees the already-written data, making the store permanently unrecoverable without manual intervention. The `ROLLBACK` deferred in the postgres driver has no effect once `COMMIT` has succeeded (line 301).
+**Issue:** The emptiness check is performed under a brief read lock (lines 247-252), which is
+released before gob decoding begins. The write lock is not acquired until line 317, after all
+I/O and decoding has completed. In the window between the read-unlock (line 249) and the
+write-lock (line 317), another goroutine can legally call `CreateShare` or a second concurrent
+`Restore` and populate the store. When the write lock is finally acquired, the in-flight
+Restore overwrites that data silently, or a second concurrent Restore can both pass the empty
+check and then race to write, producing an indeterminate merged state.
 
-**Badger sequence:**
-```
-wb.Flush()       // line 232 — data durably written to Badger
-backup.VerifyCRC // line 238 — too late: can't undo the flush
-```
+The Badger and Postgres drivers do not have this problem because their empty checks and writes
+are either both within the same transaction or the storage engine enforces atomicity externally.
 
-**Postgres sequence:**
-```
-pgRaw.Exec("COMMIT") // line 301 — transaction committed
-backup.VerifyCRC     // line 306 — too late: ROLLBACK defer is a no-op after COMMIT
-```
+**Fix:** Acquire the write lock once and re-validate emptiness under it before populating:
 
-**Fix — Badger:** Buffer all KV entries into an in-memory slice, verify CRC before starting any Badger write, then replay the entries:
 ```go
-// After the read loop and before the final Flush:
-if err := backup.VerifyCRC(r, acc); err != nil {
-    wb.Cancel()
-    return fmt.Errorf("%w: %v", metadata.ErrRestoreCorrupt, err)
-}
-// Flush after CRC is verified.
-if err := wb.Flush(); err != nil {
-    return fmt.Errorf("%w: flush final batch: %v", metadata.ErrRestoreCorrupt, err)
-}
-```
-For large databases this requires reading the full stream into a staging area (e.g., a temporary Badger DB or an in-memory slice of KV pairs) before committing. Alternatively, read and verify CRC of the byte stream first, then replay from a seekable buffer.
+s.mu.Lock()
+defer s.mu.Unlock()
 
-**Fix — Postgres:** Verify CRC before issuing `COMMIT`. Since the payload reader is a `TeeReader` over the original reader, all payload bytes are already accumulated in `acc` by the time the table loop finishes. The 4-byte CRC trailer can be read before committing:
-```go
-// Verify CRC BEFORE committing.
-if err := backup.VerifyCRC(r, acc); err != nil {
-    return fmt.Errorf("%w: %v", metadata.ErrRestoreCorrupt, err)
+// Re-check emptiness now that the write lock is held.
+if len(s.shares) > 0 {
+    return metadata.ErrRestoreDestinationNotEmpty
 }
-// Safe to commit now.
-if _, err := pgRaw.Exec(ctx, "COMMIT").ReadAll(); err != nil {
-    return fmt.Errorf("restore: commit: %w", err)
-}
+// ... populate store fields ...
 ```
+
+For a non-blocking Restore (avoids holding the write lock during stream I/O), decode the
+stream with no lock held, then acquire the write lock, re-check empty, and atomically swap in
+the decoded snapshot.
 
 ---
 
-### CR-02: Memory backup races on `rollupOffsets` and `synced` maps
+### CR-02: Badger `Restore` partial-commit corrupts store on mid-batch `WriteBatch.Flush` failure
 
-**File:** `pkg/metadata/store/memory/backup.go:112-115`
+**File:** `pkg/metadata/store/badger/backup.go:261-280`
 
-**Issue:** `Backup` holds `s.mu.RLock()` but reads `s.rollupOffsets` (line 113) and `s.synced` (line 114) directly. Both fields are governed by *separate* mutexes (`rollupMu` and `syncedMu` respectively, as documented in `store.go:241-259`). A concurrent `SetRollupOffset` call acquires only `rollupMu` — not `s.mu` — so it can write to `s.rollupOffsets` while `Backup` is reading it under `s.mu.RLock()`. This is an unsynchronized concurrent map access; the Go race detector will flag it.
+**Issue:** The implementation collects all KV entries in memory and verifies the CRC before
+writing (correct). It then writes to Badger in batches of `restoreBatchSize` (10 000) entries
+using a `WriteBatch`. When the intermediate `wb.Flush()` at line 270 succeeds, those entries
+are durably committed to Badger. If a subsequent `wb.SetEntry()` call fails (e.g., disk full,
+Badger internal error), `wb.Cancel()` is called and the function returns an error — but the
+previously flushed batch is already committed. The store is left with partial data: non-empty
+(`isStoreEmpty()` returns false) but missing later entries.
 
-**Fix:** Acquire both secondary mutexes before reading those fields, while already holding `s.mu.RLock()`:
+The function-level comment at lines 163-168 explicitly promises:
+
+> "A corrupt stream leaves the store empty and retryable."
+
+This guarantee is violated the moment any intermediate `Flush()` succeeds and the next
+`SetEntry` or `Flush` fails.
+
+**Fix:** Use a single Badger read-write transaction (`db.Update`) instead of `WriteBatch`.
+`WriteBatch` documents that it does not provide transactional semantics. For metadata stores
+measured in megabytes, a single transaction is acceptable:
+
 ```go
-s.rollupMu.RLock()
-snap.RollupOffsets = s.rollupOffsets
-s.rollupMu.RUnlock()
-
-s.syncedMu.RLock()
-snap.Synced = s.synced
-s.syncedMu.RUnlock()
-```
-These reads must happen inside the `s.mu.RLock()` section (to keep the snapshot consistent with the rest of the store state) but with the secondary locks also held.
-
----
-
-### CR-03: Unbounded allocation from untrusted length fields
-
-**Files:**
-- `pkg/metadata/store/memory/backup.go:254-258` — `payloadLen` is `uint64`; `make([]byte, payloadLen)` will OOM for any crafted stream with `payloadLen > available RAM`.
-- `pkg/metadata/store/badger/backup.go:197,211` — `keyLen` and `valLen` are `uint32`; `make([]byte, keyLen)` and `make([]byte, valLen)` each allow up to 4 GiB per allocation per KV entry.
-
-**Issue:** A crafted or truncated backup stream can specify an arbitrarily large length field, causing the process to exhaust memory before any decoding error is detected. In the badger case a single key+value pair costs up to 8 GiB. In the memory case, `payloadLen = 2^63` (maximum `int64` value when cast) will pass the `make` call and the subsequent `io.ReadFull` will fail, but only after the kernel rejects the allocation or the OOM killer fires.
-
-**Fix:** Enforce sane upper bounds before allocation. For memory:
-```go
-const maxGobPayload = 1 << 30 // 1 GiB, adjust to real-world max
-if payloadLen > maxGobPayload {
-    return fmt.Errorf("%w: payload too large (%d bytes)", metadata.ErrRestoreCorrupt, payloadLen)
-}
-```
-For badger, Badger's own key size limit is 65,535 bytes; values are bounded by `options.ValueLogFileSize` (default 1 GiB). Reject anything beyond those bounds:
-```go
-const maxBadgerKeyLen = 65535
-const maxBadgerValLen = 1 << 30
-if keyLen > maxBadgerKeyLen {
-    wb.Cancel()
-    return fmt.Errorf("%w: key too large (%d)", metadata.ErrRestoreCorrupt, keyLen)
-}
-```
-
----
-
-### CR-04: Badger `ConcurrentWriter` conformance test has a non-deterministic snapshot window
-
-**File:** `pkg/metadata/store/badger/backup.go:51-66`
-
-**Issue:** The `ConcurrentWriter` test uses a `signalWriter` that fires (closes `started`) on the first `Write` call. For the memory driver, the first write happens inside `NewWriter` *after* `s.mu.RLock()` is already held, so the snapshot is guaranteed to be established before the concurrent goroutine runs. For the badger driver, `backup.NewWriter` (which triggers the `signalWriter` signal) is called at **line 51**, before `s.db.View()` (the actual MVCC snapshot) at **line 66**. There is a window between the signal and the snapshot where the concurrent goroutine may write and commit a new file, which then appears inside the `db.View()` snapshot — making the test an incorrect assertion that can both fail (if the concurrent file lands in the snapshot) and spuriously pass.
-
-The postgres driver correctly calls `BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ` before `NewWriter`, so it does not have this problem.
-
-**Fix:** In `badger/backup.go`, move `db.View` to begin *before* writing anything to the envelope writer, and call `NewWriter` only after the read transaction is open:
-```go
-hs := blockstore.NewHashSet(0)
-err = s.db.View(func(txn *badgerdb.Txn) error {
-    // Now the MVCC snapshot is established. Open the envelope writer.
-    envW, err := backup.NewWriter(w, badgerEngineTag)
-    if err != nil { ... }
-    // Write schema version, iterate keys, write sentinel ...
+err := s.db.Update(func(txn *badgerdb.Txn) error {
+    for _, e := range entries {
+        if err := txn.Set(e.Key, e.Value); err != nil {
+            return fmt.Errorf("set entry: %w", err)
+        }
+    }
     return nil
 })
+if err != nil {
+    return fmt.Errorf("%w: write entries: %v", metadata.ErrRestoreCorrupt, err)
+}
 ```
-The `envW` closure variable must be threaded into the View callback, or the envelope writer must be opened after the transaction is guaranteed to exist.
+
+If `WriteBatch` must be kept for large stores, remove the "retryable" claim from the comment
+and add explicit per-batch rollback/cleanup logic.
+
+---
+
+### CR-03: Postgres conformance test factory ignores `DITTOFS_TEST_POSTGRES_DSN`; `srcStore` and `dstStore` share the same database, making backup tests non-functional
+
+**File:** `pkg/metadata/store/postgres/postgres_conformance_test.go:18-55`
+
+**Issue:** Two separate bugs combine to make the Postgres backup conformance tests
+non-functional:
+
+**Bug A — Dead env var.** `TestConformance` and `TestBackupConformance` read
+`DITTOFS_TEST_POSTGRES_DSN` only to decide whether to skip. `newPostgresStoreFactory` never
+uses this value; it always connects to `localhost:5432 / dittofs_test / postgres / postgres`.
+If the env var points to a different host, the tests silently connect to the wrong server.
+
+**Bug B — Shared database breaks RoundTrip (and most other subtests).** Every `factory(t)`
+call opens a new connection pool to the same physical `dittofs_test` database. There is no
+per-store schema isolation. When `testBackup_RoundTrip` executes:
+
+```
+populateTestData(srcStore, ...)   // writes shares/files into dittofs_test
+dstStore.Restore(ctx, &buf)
+// Restore checks: SELECT EXISTS(SELECT 1 FROM shares) → TRUE
+//                 → returns ErrRestoreDestinationNotEmpty immediately
+```
+
+The Restore always fails because `srcStore` and `dstStore` share the underlying database.
+Consequently, `RoundTrip`, `ConcurrentWriter`, and `HashSetCorrectness` all fail. The
+`NonEmptyDest` subtest appears to pass but for the wrong reason: it finds the previous
+subtest's data rather than its own intentionally populated destination.
+
+**Fix for Bug A:** Use the DSN to construct the config:
+
+```go
+dsn := os.Getenv("DITTOFS_TEST_POSTGRES_DSN")
+if dsn == "" {
+    t.Skip("DITTOFS_TEST_POSTGRES_DSN not set")
+}
+cfg, err := postgres.ParseDSN(dsn) // or inline the parsing
+```
+
+**Fix for Bug B:** Isolate each `factory(t)` call with a unique Postgres schema:
+
+```go
+schemaName := "bkp_test_" + strings.ToLower(ulid.Make().String())
+// CREATE SCHEMA schemaName; SET search_path = schemaName
+t.Cleanup(func() { dropSchema(schemaName) })
+```
 
 ---
 
 ## Warnings
 
-### WR-01: Memory and badger restore TOCTOU on the empty-destination check
+### WR-01: `WriteBatch` not cancelled on intermediate `Flush` error — potential goroutine leak
 
-**Files:**
-- `pkg/metadata/store/memory/backup.go:219-227`
-- `pkg/metadata/store/badger/backup.go:143-149`
+**File:** `pkg/metadata/store/badger/backup.go:269-272`
 
-**Issue:** Both drivers check "is the store empty?" under a short-lived read lock (memory) or a separate `db.View` transaction (badger), then release it and proceed with the envelope read and write lock. A concurrent `CreateShare` call that succeeds between the empty check and the write lock will have its data **silently overwritten** by the restore without an `ErrRestoreDestinationNotEmpty` being returned. The postgres driver has the same problem (line 231: `QueryRow` outside the restore transaction).
+**Issue:** When the intermediate `wb.Flush()` call at line 270 returns an error, the function
+returns without calling `wb.Cancel()`. In Badger v4, `WriteBatch` has background goroutines
+that may be leaked if `Cancel()` is never called. This is a separate concern from CR-02
+(partial commit); even after CR-02 is resolved, callers should cancel on all error paths.
 
-**Fix (memory):** Hold `s.mu.Lock()` (write lock) for the entire Restore operation — check emptiness under the write lock so no concurrent mutation can sneak in:
+**Fix:**
 ```go
-s.mu.Lock()
-defer s.mu.Unlock()
-if len(s.shares) > 0 {
-    return metadata.ErrRestoreDestinationNotEmpty
-}
-// ... proceed to read envelope and restore state ...
-```
-Note: for the memory driver, holding the write lock for the full operation is consistent with the current Backup behavior (RLock held for full operation).
-
-**Fix (badger/postgres):** Perform the emptiness check inside the write/restore transaction rather than in a separate read.
-
----
-
-### WR-02: Postgres restore does not validate `tableCount` against expected schema
-
-**File:** `pkg/metadata/store/postgres/backup.go:263-299`
-
-**Issue:** `tableCount` (a `uint32` from the stream) is used as the loop bound without any cap or comparison against `len(backupTables)`. A stream with an enormous `tableCount` (e.g., `1 << 30`) and all-zero `dataLen` sections for known table names will loop `tableCount` times, successfully processing each known table name and then failing only on unknown names. Even ignoring malicious streams, a schema mismatch (e.g., a backup produced with 10 tables restored against a build expecting 15) silently restores only the 10 tables, leaving the other 5 empty — which the schema version check was supposed to prevent.
-
-**Fix:** Reject counts that don't match the expected value (same version = same count):
-```go
-if tableCount != uint32(len(backupTables)) {
-    return fmt.Errorf("%w: backup has %d tables, expected %d",
-        metadata.ErrSchemaVersionMismatch, tableCount, len(backupTables))
+if err := wb.Flush(); err != nil {
+    wb.Cancel()
+    return fmt.Errorf("%w: flush batch: %v", metadata.ErrRestoreCorrupt, err)
 }
 ```
 
 ---
 
-### WR-03: `uint64 dataLen` cast to `int64` for `io.LimitReader` silently truncates on overflow
+### WR-02: Memory `Backup` holds `s.mu.RLock` across entire gob encoding, blocking all mutations for the duration
 
-**File:** `pkg/metadata/store/postgres/backup.go:353-356`
+**File:** `pkg/metadata/store/memory/backup.go:101-236`
 
-**Issue:** `dataLen` is a `uint64` from the stream. The cast `int64(dataLen)` at line 356 wraps to a large negative number for values above `math.MaxInt64`. `io.LimitReader` with a negative `n` returns `EOF` immediately, so `CopyFrom` receives an empty reader. The `dataLen` bytes are not consumed from `payloadR`, silently desynchronizing all subsequent reads. The existing `isKnownTable` check will reject unknown table names found in the now-misaligned stream, but the error message ("unknown table") does not expose the real cause.
+**Issue:** `s.mu.RLock()` is acquired at line 101 and released via `defer` at line 102. It is
+held for the entire duration of gob encoding (lines 213-216). For a store with thousands of
+files, gob encoding can run for hundreds of milliseconds. During this window every write
+operation (`PutFile`, `SetChild`, `CreateShare`, etc.) that needs `s.mu.Lock()` is blocked.
+Backup effectively serialises with all writes.
 
-**Fix:** Validate before the cast:
+The `ConcurrentWriter` conformance test passes because of this blocking, not because the
+backup maintains a true snapshot: the concurrent write is simply prevented from running, not
+observed and excluded. If the locking strategy were ever changed, the test would no longer
+verify the stated isolation property.
+
+**Fix:** Shallow-copy all live maps into snapshot-owned maps while the lock is held, then
+release the lock before gob encoding:
+
 ```go
-const maxTableDataLen = 1 << 40 // 1 TiB; adjust to real-world max
-if dataLen > maxTableDataLen {
-    return fmt.Errorf("table data too large (%d bytes)", dataLen)
-}
-dataReader := io.LimitReader(payloadR, int64(dataLen))
+s.mu.RLock()
+snap := shallowCopySnapshot(s)  // copies all maps under the read lock
+s.mu.RUnlock()                  // release before any I/O
+
+var gobBuf bytes.Buffer
+if err := gob.NewEncoder(&gobBuf).Encode(&snap); err != nil { ... }
 ```
+
+The shallow copy is safe because map values in these stores are either immutable value types
+or pointer types where the pointed-to objects are not mutated in-place after insertion.
 
 ---
 
-### WR-04: Badger hash extraction silently produces an incomplete `HashSet` on malformed `f:` entries
+### WR-03: Badger `Restore` atomicity comment is factually incorrect
 
-**File:** `pkg/metadata/store/badger/backup.go:106-115`
+**File:** `pkg/metadata/store/badger/backup.go:163-168`
 
-**Issue:** When a `f:` (file) key fails JSON unmarshal, the backup logs a warning and continues iteration, excluding that file's block hashes from the returned `HashSet`. The backup stream itself is still written correctly with the raw KV bytes, so restoring from this backup will succeed — but the returned `HashSet` is incomplete. Any GC hold placed using that `HashSet` will miss blocks that belong to the malformed file, making those blocks eligible for garbage collection while the restored store still references them.
+**Issue:** The block comment states "A corrupt stream leaves the store empty and retryable."
+As described in CR-02, this is false after any intermediate `WriteBatch.Flush()` succeeds.
+Incorrect documentation misleads future maintainers about recovery semantics and makes it
+harder to diagnose partial-restore failures in production.
 
-Returning an error here rather than continuing is safer in the context of producing a GC hold:
+**Fix:** Until CR-02 is resolved, replace the comment with an accurate description:
 
-```go
-if err := json.Unmarshal(val, &file); err != nil {
-    return fmt.Errorf("%w: malformed f: entry %q: %v",
-        metadata.ErrBackupAborted, string(key), err)
-}
 ```
-
-If the intent is "best-effort hash collection with partial data", the contract must be documented in the `Backupable` interface and the GC caller must treat a non-nil error as "HashSet is incomplete, do not use for GC hold".
+// Note: phase-3 writes use WriteBatch which does not provide transactional
+// atomicity. If a mid-batch Flush succeeds and a later write fails, the store
+// will contain partial data. A full transactional write path is tracked in
+// the phase-21 follow-up issue.
+```
 
 ---
 
 ## Info
 
-### IN-01: Postgres test reads `DITTOFS_TEST_POSTGRES_DSN` but uses hardcoded connection config
+### IN-01: Misplaced godoc comment on `TestBackupConformance` in Badger conformance test
 
-**File:** `pkg/metadata/store/postgres/postgres_conformance_test.go:59-64,69-74`
+**File:** `pkg/metadata/store/badger/badger_conformance_test.go:34-37`
 
-**Issue:** Both test functions read `connStr := os.Getenv("DITTOFS_TEST_POSTGRES_DSN")` and use it as a presence gate to skip the test when not set. However, `connStr` is never passed to `newPostgresStoreFactory()` and the factory always connects to the hardcoded `localhost:5432/dittofs_test` with username `postgres` / password `postgres`. Setting `DITTOFS_TEST_POSTGRES_DSN` to a non-default DSN has no effect on the actual connection.
+**Issue:** Lines 34-36 read:
 
-**Fix:** Parse the DSN and inject it into the factory config, or at minimum document the skip-only semantics of the env var with a comment explaining that the actual target is always `localhost:5432/dittofs_test`.
+```go
+// TestBadgerStore_PutGetFile_BlocksRoundTrip verifies FileAttr.Blocks
+// (Phase 12 META-01) round-trips through the public Badger backend API
+// — i.e. through PutFile/GetFile end-to-end, not just the JSON encoder.
+func TestBackupConformance(t *testing.T) {
+```
 
----
+The comment describes `TestBadgerStore_PutGetFile_BlocksRoundTrip` (defined at line 51) but
+is attached as the godoc for `TestBackupConformance`. This appears to be a copy-paste from the
+wrong function.
 
-### IN-02: Postgres conformance tests share a single database — no per-test isolation
-
-**File:** `pkg/metadata/store/postgres/postgres_conformance_test.go:18-55`
-
-**Issue:** `newPostgresStoreFactory` creates a new `*PostgresMetadataStore` for each subtest, but all instances connect to the same database (`dittofs_test`). Share names created by one subtest (e.g., `rt-bkp` from `RoundTrip`) persist and are visible to subsequent subtests that use a different store instance. If subtests run in parallel or if a test fails without cleanup, later subtests may encounter unexpected state.
-
-**Fix:** Each factory call should create an isolated schema (e.g., `CREATE SCHEMA test_<ulid>; SET search_path TO test_<ulid>`) and drop it in `t.Cleanup`. Alternatively, use `t.TempDir()`-style unique database names created per test run.
-
----
-
-### IN-03: `ctx.Err()` in `Restore` is wrapped with `ErrRestoreCorrupt` rather than a dedicated abort sentinel
-
-**Files:**
-- `pkg/metadata/store/memory/backup.go:215-217`
-- `pkg/metadata/store/badger/backup.go:179-181` (ctx check in loop)
-- `pkg/metadata/store/postgres/backup.go:225-227`
-
-**Issue:** A context cancellation (operator timeout, shutdown signal) is wrapped as `ErrRestoreCorrupt`, which implies the backup stream is bad. Callers that log `ErrRestoreCorrupt` for investigation will receive false alarms. The `Backupable` contract document (`backupable.go`) defines `ErrBackupAborted` for cancelled backups but provides no equivalent for cancelled restores; the result is that context cancellation in `Restore` is indistinguishable from a genuinely corrupt stream. A new sentinel (e.g., `ErrRestoreAborted`) would clarify the distinction, or at minimum the context error should be surfaced in the wrapped message more clearly.
+**Fix:** Remove lines 34-36 (or relocate the comment to line 51 where
+`TestBadgerStore_PutGetFile_BlocksRoundTrip` is defined).
 
 ---
 
-_Reviewed: 2026-05-27_
+_Reviewed: 2026-05-27T00:00:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
