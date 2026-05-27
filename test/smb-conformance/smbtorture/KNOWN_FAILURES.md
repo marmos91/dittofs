@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-05-26 (walk back 25 confirmed PASS + add 2 new failures)
+Last updated: 2026-05-27 (walk back sdread, secleak, qsec_buffercheck, aclfile, acldir, nulldacl)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -41,16 +41,6 @@ async credit coordination.
 | smb2.multichannel.oplocks.test2 | Multi-channel | Requires FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT (Samba test-harness FSCTL) to simulate connection failure — not implementable | - |
 | smb2.multichannel.oplocks.test3_windows | Multi-channel | Requires FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT to block TCP transport — not implementable | - |
 | smb2.multichannel.oplocks.test3_specification | Multi-channel | Requires FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT + 32-channel coordination — not implementable | - |
-
-### ACLs and Security Descriptors (Not Implemented)
-
-DittoFS uses POSIX permission model. Windows ACL/DACL/SACL semantics, security
-descriptors, and owner rights are not implemented.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.sdread | Security descriptors | Security descriptor read not implemented | - |
-| smb2.secleak | Security descriptors | Security descriptor leak test not implemented | - |
 
 ### IOCTL/FSCTL Operations (Not Implemented)
 
@@ -230,15 +220,12 @@ files, create blobs) are not implemented. Basic create operations pass.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.create.acldir | Create | ACL-based directory create not implemented | - |
-| smb2.create.aclfile | Create | ACL-based file create not implemented | - |
 | smb2.create.blob | Create | Create context blobs not fully implemented | - |
 | smb2.create.gentest | Create | Generic create test (impersonation) not implemented | - |
 | smb2.create.impersonation | Create | Impersonation levels not implemented | - |
 | smb2.create.mkdir-dup | Create | Flaky in CI (parallel CREATE OPEN_IF race — passes intermittently on develop, perturbed by unrelated timing changes) | - |
 | smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | - |
 | smb2.create.multi | Create | Regression from recent changes, fails on all 3 stores | - |
-| smb2.create.nulldacl | Create | Null DACL create not implemented | - |
 | smb2.create.path-length | Create | Flaky in CI (path length validation race) | - |
 | smb2.create.quota-fake-file | Create | Quota fake file not implemented | - |
 
@@ -264,7 +251,6 @@ checks, and ACL-based access control.
 | smb2.getinfo.normalized | Query Info | Normalized name info not implemented | - |
 | smb2.getinfo.qfile_buffercheck | Query Info | Buffer check validation not implemented | - |
 | smb2.getinfo.qfs_buffercheck | Query Info | FS buffer check not implemented | - |
-| smb2.getinfo.qsec_buffercheck | Query Info | Security buffer check not implemented | - |
 | smb2.setinfo | Set Info | SET_INFO timestamp preservation not implemented | - |
 
 ### Compound Requests (Remaining)
