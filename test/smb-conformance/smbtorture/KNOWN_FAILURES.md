@@ -442,6 +442,8 @@ fail due to incomplete lock contention and async lock handling.
 | smb2.lock.replay_smb3_specification_durable | Locks | Lock replay with durable handles not fully working | #430 |
 | smb2.lock.replay_smb3_specification_multi | Locks | Lock replay with multi-channel not fully working | #430 |
 | smb2.lock.async | Locks | Blocking lock deadlocks dispatch goroutine (needs async LOCK with interim response) | #430 |
+| smb2.lock.cancel-logoff | Locks | Pending lock not re-acquired after logoff releases held lock — timing issue in async retry | #430 |
+| smb2.lock.cancel-tdis | Locks | Pending lock cancel on tree disconnect not fully working | #430 |
 | smb2.lock.open-brlock-deadlock | Locks | Open + byte-range lock deadlock detection not working | #430 |
 | smb2.lock.ctdb-delrec-deadlock | Locks | CTDB delete record deadlock not working | #430 |
 

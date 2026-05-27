@@ -432,7 +432,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			if ctx.NextCommand == 0 && req.LockCount == 1 && len(acquiredLocks) == 0 &&
 				h.PendingLockRegistry != nil && ctx.AsyncLockCompleteCallback != nil &&
 				ctx.TryReserveAsync != nil && ctx.ReleaseAsync != nil {
-				if asyncId, parked := h.parkLockOnConflict(ctx, openFile, fileLock, lockElem); parked {
+				if asyncId, parked := h.parkLockOnConflict(ctx, authCtx, openFile, fileLock, lockElem); parked {
 					return &HandlerResult{
 						Status:  types.StatusPending,
 						AsyncId: asyncId,
