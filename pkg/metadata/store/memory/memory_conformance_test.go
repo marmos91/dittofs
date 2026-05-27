@@ -13,3 +13,9 @@ func TestConformance(t *testing.T) {
 		return memory.NewMemoryMetadataStoreWithDefaults()
 	})
 }
+
+func TestBackupConformance(t *testing.T) {
+	storetest.RunBackupConformanceSuite(t, func(t *testing.T) metadata.MetadataStore {
+		return memory.NewMemoryMetadataStoreWithDefaults()
+	})
+}

@@ -218,6 +218,20 @@ func testBackup_RoundTrip(t *testing.T, factory BackupableStoreFactory) {
 // testBackup_ConcurrentWriter verifies that a backup snapshot is isolated
 // from concurrent writes: files created after the backup begins must NOT
 // appear in the restored state.
+// signalWriter wraps an io.Writer and closes a channel on the first
+// Write call. This allows callers to detect when the backup has started
+// writing (and therefore has acquired its snapshot lock).
+type signalWriter struct {
+	w       io.Writer
+	started chan struct{}
+	once    sync.Once
+}
+
+func (sw *signalWriter) Write(p []byte) (int, error) {
+	sw.once.Do(func() { close(sw.started) })
+	return sw.w.Write(p)
+}
+
 func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 	store := factory(t)
 	b := asBackupable(t, store)
@@ -226,10 +240,14 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 
 	ctx := t.Context()
 
-	// Use a buffer so backup writes stream while we can concurrently
-	// add files to the source store. The backup implementation must
-	// snapshot state at call time.
+	// Use a signalWriter so the concurrent writer waits until backup has
+	// started writing (which implies the backup has acquired its snapshot
+	// lock). Without this synchronization the goroutine scheduler may
+	// execute the concurrent writer to completion before the backup
+	// goroutine starts, making the snapshot include the concurrent file
+	// and the test non-deterministic.
 	var buf bytes.Buffer
+	sw := &signalWriter{w: &buf, started: make(chan struct{})}
 	var backupErr error
 	var hashes *blockstore.HashSet
 
@@ -239,8 +257,12 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		hashes, backupErr = b.Backup(ctx, &buf)
+		hashes, backupErr = b.Backup(ctx, sw)
 	}()
+
+	// Wait until backup has started writing (lock acquired) before the
+	// concurrent writer begins its write operations.
+	<-sw.started
 
 	// Concurrently write a new file (with a unique block hash) while
 	// backup is running. NOTE: cannot use createTestFile here — it calls
