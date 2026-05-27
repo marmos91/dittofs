@@ -956,8 +956,7 @@ func (r *NotifyRegistry) bufferEventLocked(notify *PendingNotify, change FileNot
 // timer after notifyFlushDelay.
 func (r *NotifyRegistry) flushWatcher(fileID [16]byte) {
 	r.mu.Lock()
-	key := string(fileID[:])
-	notify, ok := r.byFileID[key]
+	notify, ok := r.byFileID[string(fileID[:])]
 	if !ok {
 		r.mu.Unlock()
 		return

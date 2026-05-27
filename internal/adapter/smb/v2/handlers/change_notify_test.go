@@ -517,12 +517,12 @@ func TestNotifyChange_ConcurrentDoubleFire(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		r.NotifyChange("share1", "/dir", "a.txt", FileActionAdded, FileNotifyChangeFileName)
-	r.FlushAll()
+		r.FlushAll()
 		done <- struct{}{}
 	}()
 	go func() {
 		r.NotifyChange("share1", "/dir", "b.txt", FileActionAdded, FileNotifyChangeFileName)
-	r.FlushAll()
+		r.FlushAll()
 		done <- struct{}{}
 	}()
 	<-done
@@ -1405,7 +1405,7 @@ func TestArmedBuffer_ResetClearsOverflowForNextWindow(t *testing.T) {
 	// More events while overflowed must not re-fire OnOverflow.
 	for i := 0; i < 5; i++ {
 		r.NotifyChange("s", "/d", "b.txt", FileActionAdded, FileNotifyChangeFileName)
-	r.FlushAll()
+		r.FlushAll()
 	}
 	if atomic.LoadInt32(&overflowFireCount) != 1 {
 		t.Errorf("expected overflow to latch (no re-fire), got count=%d", overflowFireCount)

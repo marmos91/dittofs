@@ -513,6 +513,17 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		effectiveMax = stored
 	}
 
+	// Per Samba change_notify_create: the CompletionFilter is fixed by the
+	// FIRST CHANGE_NOTIFY on the handle. Subsequent requests use the stored
+	// filter regardless of what they request. The WatchTree (recursive)
+	// flag is NOT sticky — it comes fresh from each request. Captured before
+	// the buffer_size=0 fast-path so even a zero-buffer first request
+	// initializes the sticky filter state.
+	effectiveFilter := req.CompletionFilter
+	if stored, didCapture := openFile.CaptureNotifyCompletionFilter(effectiveFilter); !didCapture {
+		effectiveFilter = stored
+	}
+
 	// Per Samba: buffer_size=0 means the client cannot receive any events.
 	// Return NOTIFY_ENUM_DIR immediately without setting the sticky overflow
 	// flag and without registering a watcher. This is distinct from a real
@@ -525,15 +536,6 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 			return NewErrorResult(types.StatusInternalError), nil
 		}
 		return NewResult(types.StatusNotifyEnumDir, respBytes), nil
-	}
-
-	// Per Samba change_notify_create: the CompletionFilter is fixed by the
-	// FIRST CHANGE_NOTIFY on the handle. Subsequent requests use the stored
-	// filter regardless of what they request. The WatchTree (recursive)
-	// flag is NOT sticky — it comes fresh from each request.
-	effectiveFilter := req.CompletionFilter
-	if stored, didCapture := openFile.CaptureNotifyCompletionFilter(effectiveFilter); !didCapture {
-		effectiveFilter = stored
 	}
 
 	asyncId := h.generateAsyncId()
