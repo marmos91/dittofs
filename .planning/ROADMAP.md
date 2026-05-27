@@ -592,3 +592,155 @@ Verification requirements VER-01 through VER-06 are phase-independent and gate t
 - Milestone gates: 6 verification requirements (VER-01..VER-06)
 
 All 79 phase-mapped requirements are covered exactly once; no orphans, no duplicates. VER-01..VER-06 are cross-cutting gates handled at milestone level.
+
+---
+
+## v0.16.0 — Share Snapshots
+
+**Goal**: Ship reference-based share snapshots — fast, online, crash-consistent snapshots capturing both metadata and block state. CAS immutability enables O(metadata-size) snapshots via GC hold rather than data copying.
+
+**Parent issue:** [#643](https://github.com/marmos91/dittofs/issues/643)
+**Source plan:** `~/.claude/plans/we-have-a-new-memoized-meadow.md`
+**Created:** 2026-05-27
+**Phases:** 6 (numbered 20-25, continuing from v0.15.0/v0.16.0-CAS which ended at phase 19)
+**Coverage:** 31/31 requirements mapped
+
+## Dependency Graph
+
+```
+20 (Interface + Cleanup) ──► 21 (Per-engine drivers)  ──┐
+20 (Interface + Cleanup) ──► 22 (Snapshot + GC hold)   ──┼──► 23 (Orchestration) ──► 24 (Restore)
+                                                          └──► 25 (CLI/REST + Docs)
+```
+
+Phase 20 unblocks both 21 and 22 (parallel). Phase 23 requires both 21+22. Phases 24 and 25 run in parallel after 23.
+
+## v0.16.0 Phases
+
+### Phase 20: Backupable Interface + Conformance Suite + Cleanup
+**Goal**: Define the `Backupable` interface, error taxonomy, `HashSet` type, shared conformance suite, and clean up legacy backup artifacts.
+**Depends on**: Nothing
+**GH issue**: [#643](https://github.com/marmos91/dittofs/issues/643)
+**Requirements**: ENG-01, ENG-02, ENG-03, ENG-04, CLN-01, CLN-02
+**Success Criteria**:
+  1. `Backupable` interface exists in `pkg/metadata/backupable.go` with `Backup(ctx, w) (HashSet, error)` and `Restore(ctx, r) error`
+  2. `HashSet` type exists in `pkg/blockstore/hashset.go` with Add/Contains/Len/ForEach methods
+  3. Four error sentinels pass `errors.Is` round-trip tests
+  4. Shared conformance suite with 5 subtests compiles and is ready for engine drivers
+  5. `internal/cli/backupfmt/` deleted (orphaned, zero imports)
+  6. Old backup planning phases (01-07) archived to milestones directory
+**Files to touch**:
+  - `pkg/metadata/backupable.go` (new)
+  - `pkg/blockstore/hashset.go` (new)
+  - `pkg/metadata/storetest/backup_conformance.go` (new)
+  - `internal/cli/backupfmt/` (delete)
+  - `.planning/phases/01-*` through `07-*` (archive)
+**Plans**: 3 plans
+  - [x] 20-01-PLAN.md — ENG-01/02/03: HashSet type + Backupable interface + error sentinels + envelope package (Wave 1)
+  - [x] 20-02-PLAN.md — ENG-04: Backup conformance suite with 5 subtests (Wave 2)
+  - [x] 20-03-PLAN.md — CLN-01/02: Delete backupfmt + stale planning phases 01-07 (Wave 1)
+
+### Phase 21: Per-Engine Backup Drivers
+**Goal**: Implement `Backupable` for all three metadata stores, each passing the conformance suite.
+**Depends on**: Phase 20
+**GH issue**: [#643](https://github.com/marmos91/dittofs/issues/643)
+**Requirements**: DRV-01, DRV-02, DRV-03, DRV-04
+**Success Criteria**:
+  1. Memory store backup/restore round-trips via gob under `mu.RLock()` with correct HashSet
+  2. Badger store backup/restore via custom `db.View()` streaming with correct HashSet
+  3. Postgres store backup/restore via `COPY TO/FROM` in `REPEATABLE READ` txn with correct HashSet
+  4. All three pass the full conformance suite (RoundTrip, ConcurrentWriter, Corruption, NonEmptyDest, HashSetCorrectness)
+**Files to touch**:
+  - `pkg/metadata/store/memory/backup.go` (new)
+  - `pkg/metadata/store/badger/backup.go` (new)
+  - `pkg/metadata/store/postgres/backup.go` (new)
+
+### Phase 22: Snapshot Records + Hash Manifest + GC Hold (parallel with 21)
+**Goal**: Build snapshot persistence, hash manifest I/O, and GC hold integration.
+**Depends on**: Phase 20
+**GH issue**: [#643](https://github.com/marmos91/dittofs/issues/643)
+**Requirements**: SNAP-01, SNAP-02, SNAP-03, SNAP-04, SNAP-05
+**Success Criteria**:
+  1. Snapshot GORM model persists and queries correctly
+  2. Hash manifest writes sorted hex hashes and streams them back identically
+  3. GC mark phase includes snapshot-held hashes in live set (SnapshotHoldProvider)
+  4. Integration test: create snapshot → run GC → verify held blocks survive → delete snapshot → run GC → verify blocks collected
+  5. Control plane store CRUD works for snapshot lifecycle
+**Files to touch**:
+  - `pkg/controlplane/models/snapshot.go` (new)
+  - `pkg/controlplane/store/snapshots.go` (new)
+  - `pkg/snapshot/manifest.go` (new)
+  - `pkg/blockstore/engine/gc.go` (modify — add SnapshotHoldProvider)
+  - `pkg/controlplane/runtime/blockgc.go` (modify — implement SnapshotHoldProvider)
+
+### Phase 23: Snapshot Create Orchestration + Sync Gate
+**Goal**: Wire end-to-end snapshot creation: metadata dump → hash manifest → sync gate → record.
+**Depends on**: Phase 21, Phase 22
+**GH issue**: [#643](https://github.com/marmos91/dittofs/issues/643)
+**Requirements**: ORCH-01, ORCH-02, ORCH-03
+**Success Criteria**:
+  1. `VerifyRemoteDurability` correctly checks all manifest hashes against remote store
+  2. `Runtime.CreateSnapshot()` produces a "ready" snapshot with metadata dump + manifest on disk
+  3. `--no-sync-gate` skips verification while still applying GC hold
+  4. Integration test with real metadata store + remote store passes
+**Files to touch**:
+  - `pkg/snapshot/syncgate.go` (new)
+  - `pkg/controlplane/runtime/snapshot.go` (new)
+
+### Phase 24: Restore Flow
+**Goal**: Implement reference restore — server-side metadata swap with block verification.
+**Depends on**: Phase 23
+**GH issue**: [#643](https://github.com/marmos91/dittofs/issues/643)
+**Requirements**: REST-01, REST-02, REST-03
+**Success Criteria**:
+  1. Restore successfully swaps metadata store from snapshot while share is disabled
+  2. Interrupted restore leaves share disabled with original data intact
+  3. Post-restore block verification confirms all hashes accessible
+  4. E2E: write files → snapshot → delete files → restore → verify data intact
+**Files to touch**:
+  - `pkg/controlplane/runtime/snapshot.go` (extend)
+
+### Phase 25: CLI + REST API + Documentation (parallel with 24)
+**Goal**: Ship user-facing CLI commands, REST endpoints, API client, and documentation.
+**Depends on**: Phase 23
+**GH issue**: [#643](https://github.com/marmos91/dittofs/issues/643)
+**Requirements**: API-01 through API-07, DOC-01 through DOC-04
+**Success Criteria**:
+  1. All 5 CLI commands work end-to-end (`create`, `list`, `show`, `delete`, `restore`)
+  2. REST endpoints return correct status codes and bodies
+  3. API client methods used by CLI are functional
+  4. `docs/SNAPSHOTS.md` exists with operator guide
+  5. `docs/ARCHITECTURE.md`, `docs/CLI.md`, `README.md` updated
+**Files to touch**:
+  - `internal/controlplane/api/handlers/snapshot.go` (new)
+  - `pkg/controlplane/api/router.go` (modify)
+  - `pkg/apiclient/snapshots.go` (new)
+  - `cmd/dfsctl/commands/share/snapshot/*.go` (new)
+  - `cmd/dfsctl/commands/share/share.go` (modify)
+  - `docs/SNAPSHOTS.md` (new)
+  - `docs/ARCHITECTURE.md` (modify)
+  - `docs/CLI.md` (modify)
+  - `README.md` (modify)
+
+## v0.16.0 Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|----------------|--------|-----------|
+| 20. Backupable Interface + Cleanup | 3/3 | Complete    | 2026-05-27 |
+| 21. Per-Engine Backup Drivers | 0/? | Not started | - |
+| 22. Snapshot Records + GC Hold | 0/? | Not started | - |
+| 23. Snapshot Create Orchestration | 0/? | Not started | - |
+| 24. Restore Flow | 0/? | Not started | - |
+| 25. CLI + REST API + Docs | 0/? | Not started | - |
+
+## v0.16.0 Coverage Summary
+
+**Total v0.16.0 requirements:** 31
+- Phase 20 (Interface + Cleanup): 6 (ENG-01..04, CLN-01..02)
+- Phase 21 (Drivers): 4 (DRV-01..04)
+- Phase 22 (Snapshot + GC): 5 (SNAP-01..05)
+- Phase 23 (Orchestration): 3 (ORCH-01..03)
+- Phase 24 (Restore): 3 (REST-01..03)
+- Phase 25 (CLI/REST/Docs): 11 (API-01..07, DOC-01..04)
+
+All 31 requirements mapped exactly once; no orphans, no duplicates.

@@ -6,31 +6,26 @@ A comprehensive multi-protocol virtual filesystem with NFSv3/NFSv4.0/NFSv4.1 and
 
 Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Hammerspace, particularly in security (Kerberos + AES encryption), session reliability (EOS), cross-protocol consistency, Windows SMB3.1.1 compatibility, and edge/offline resilience.
 
-## Current Milestone: v0.15.0 Block Store + Core-Flow Refactor (issue #419)
+## Current Milestone: v0.16.0 Share Snapshots (issue #643)
 
-**Goal:** Refactor the block-storage subsystem to content-addressable storage (CAS) with FastCDC chunking and BLAKE3 hashing. Immutable block keys unblock future per-share atomic backups and deliver 40–80% cross-VM dedup for the primary VM-backed NAS workload. Bundle cleanup of the adapter → engine → metadata/block core flow accumulated across iterations.
+**Goal:** Ship reference-based share snapshots — fast, online, crash-consistent snapshots that capture both metadata and block state. CAS block keys (shipped in v0.15.0) make this possible: blocks are immutable + content-addressed, so metadata dumps capture all block references by construction.
 
 **Target features:**
-- Content-addressable block keys (`cas/{hash[0:2]}/{hash[2:4]}/{hash_hex}`) — immutable by construction
-- FastCDC content-defined chunking (1 MB / 4 MB / 16 MB min/avg/max) — byte-shift resistant
-- BLAKE3 hashing (3–5× SHA-256 throughput) via `github.com/zeebo/blake3`
-- Merkle-root `FileAttr.ObjectID` + file-level dedup short-circuit
-- Hybrid local store: per-file append log (Logs) + hash-keyed chunk directory (Blocks)
-- Unified in-memory Cache: LRU + sequential prefetch, keyed by ContentHash
-- Engine API: caller passes `[]BlockRef` to `ReadAt`/`WriteAt` (cleaner layering)
-- Mark-sweep GC (fail-closed) replacing path-prefix scan
-- NFS/SMB adapter layer cleanup: shared helpers, buffer-pool parity, error-mapping consolidation
-- Migration tooling: `dfsctl blockstore migrate` offline re-chunk + re-hash
-- Simplified block state machine: Pending → Syncing → Remote (was 4 states)
+- `Backupable` interface + per-engine metadata backup drivers (memory, badger, postgres)
+- Snapshot records (GORM model) + hash manifest (sorted ContentHash list on disk)
+- GC hold integration — `SnapshotHoldProvider` extends GC mark phase to protect snapshot-referenced blocks
+- Sync gate — verify all manifest hashes are durable on remote before marking snapshot "ready"
+- Restore flow — disable share → verify blocks → restore metadata → re-enable
+- CLI: `dfsctl share snapshot {create,list,show,delete,restore}`
+- REST API: CRUD + restore under `/api/v1/shares/{name}/snapshots`
+- Legacy cleanup: delete orphaned `backupfmt/`, archive old backup planning phases
+- Documentation: `docs/SNAPSHOTS.md` operator guide, update ARCHITECTURE.md/CLI.md/README.md
 
-**Prerequisite for:** v0.16.0 per-share atomic backup refactor. CAS key immutability makes backup manifests structurally race-free.
-
-**In flight in parallel (not in this milestone):**
-- **v0.10.0 / v0.11.x / v0.12.1** — SMB protocol improvements (continuation work)
+**Replaces:** deprecated v0.13.0 backup system (metadata-only, never released, removed in v0.15.0)
 
 ## Upcoming Milestones
 
-- **v0.16.0 Per-Share Atomic Backup** — depends on v0.15.0 CAS
+- **v0.17.0 Portable Exports** — full archive export (CAS blocks + metadata), destination drivers (local FS / S3), encryption, scheduler/retention
 - **BlockStore Security** — Block-level compression and encryption
 - **DX/UX Improvements** — Makefile, CI optimization, adapter config API
 - **NFSv4.2 Extensions** — Server-side copy, clone/reflinks, sparse files, xattrs
@@ -292,4 +287,4 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | NTLM sealing never implemented | SMB3 AES transport encryption is the only confidentiality path | ✓ Good — Phase 68 |
 
 ---
-*Last updated: 2026-04-23 at v0.15.0 milestone start*
+*Last updated: 2026-05-27 at v0.16.0 Share Snapshots milestone start*
