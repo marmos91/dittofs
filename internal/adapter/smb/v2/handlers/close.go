@@ -432,6 +432,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 					other.BaseFileDeletePending = true
 					other.BaseFileDeleteParentHandle = openFile.ParentHandle
 					other.BaseFileDeleteFileName = openFile.FileName
+					other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
+					other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
 					h.StoreOpenFile(other)
 				}
 				return true
@@ -472,8 +474,16 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				// else: different keys — don't propagate, all dir leases break
 
 				metaSvc := h.Registry.GetMetadataService()
+				// For deferred base-file delete (via stream handle), check the
+				// actual target type — stream handles always have IsDirectory=false.
+				isDeleteTargetDir := openFile.IsDirectory
+				if isBaseFileDelete {
+					if targetFile, lookupErr := metaSvc.Lookup(authCtx, deleteParentHandle, deleteFileName); lookupErr == nil {
+						isDeleteTargetDir = targetFile.Type == metadata.FileTypeDirectory
+					}
+				}
 				var deleteErr error
-				if openFile.IsDirectory {
+				if isDeleteTargetDir {
 					deleteErr = metaSvc.RemoveDirectory(authCtx, deleteParentHandle, deleteFileName)
 				} else {
 					_, deleteErr = metaSvc.RemoveFile(authCtx, deleteParentHandle, deleteFileName)
@@ -526,13 +536,11 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 					if h.NotifyRegistry != nil {
 						parentPath := GetParentPath(openFile.Path)
-						// For ADS deferred-base-delete, deleteFileName is the
-						// base file name (no colon, regular file) while openFile
-						// is the stream handle — feed deleteFileName + false to
-						// the filter helper so the watcher sees a base-file
-						// remove rather than a stream-name change.
-						isDir := openFile.IsDirectory && !isBaseFileDelete
-						nameFilter := NameChangeFilterFor(deleteFileName, isDir)
+						// Use the resolved delete-target type (base file's, not
+						// the stream open's) and the actual deleteFileName.
+						// NameChangeFilterFor routes ADS names via
+						// FILE_NOTIFY_CHANGE_STREAM_NAME automatically.
+						nameFilter := NameChangeFilterFor(deleteFileName, isDeleteTargetDir)
 						h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, deleteFileName, FileActionRemoved, nameFilter)
 					}
 				}
