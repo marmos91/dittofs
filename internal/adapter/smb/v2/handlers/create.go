@@ -949,21 +949,6 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	isDirectoryRequest := req.CreateOptions&types.FileDirectoryFile != 0
 	isNonDirectoryRequest := req.CreateOptions&types.FileNonDirectoryFile != 0
 
-	// ADS base-file share mode check: per MS-FSA, any open of a stream
-	// (even FILE_OPEN) must check the base file's sharing constraints
-	// first. This runs BEFORE disposition resolution so that a sharing
-	// violation on the base file takes priority over OBJECT_NAME_NOT_FOUND
-	// on the stream itself.
-	if isADS {
-		if baseFile, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, adsBaseFileName); baseFile != nil {
-			if baseHandle, encErr := metadata.EncodeFileHandle(baseFile); encErr == nil {
-				if h.checkShareModeConflict(baseHandle, req.DesiredAccess, req.ShareAccess, filename) {
-					return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSharingViolation}}, nil
-				}
-			}
-		}
-	}
-
 	// ========================================================================
 	// Step 6: Handle create disposition
 	// ========================================================================
@@ -971,6 +956,11 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// Per MS-FSA 2.1.5.1.1: Disposition check (e.g., FILE_CREATE failing with
 	// OBJECT_NAME_COLLISION when the name exists) takes priority over type
 	// constraint checks (NOT_A_DIRECTORY / FILE_IS_A_DIRECTORY).
+	// For ADS, this also takes priority over base-file share mode checks:
+	// if the stream doesn't exist and the disposition is FILE_OPEN, we must
+	// return OBJECT_NAME_NOT_FOUND, not SHARING_VIOLATION (per smbtorture
+	// smb2.streams.names2). The per-stream share mode check in
+	// checkShareModeConflict still runs later for existing streams.
 
 	createAction, dispErr := ResolveCreateDisposition(req.CreateDisposition, fileExists)
 	if dispErr != nil {
