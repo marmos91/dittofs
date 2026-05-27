@@ -125,7 +125,7 @@ func (s *BadgerMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockst
 						"key", string(key), "error", err)
 					continue
 				}
-				for _, br := range file.FileAttr.Blocks {
+				for _, br := range file.Blocks {
 					hs.Add(br.Hash)
 				}
 			}
