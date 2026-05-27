@@ -502,9 +502,16 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	key := string(notify.FileID[:])
 	if a, ok := r.armed[key]; ok && len(a.BufferedEvents) > 0 {
 		for _, ev := range a.BufferedEvents {
-			if MatchesFilter(ev.Action, notify.CompletionFilter) {
-				r.bufferEventLocked(notify, ev)
+			if !MatchesFilter(ev.Action, notify.CompletionFilter) {
+				continue
 			}
+			// WatchTree is non-sticky — respect the current request's flag.
+			// Events buffered while the armed handle was recursive may
+			// include subdirectory entries; skip them for non-recursive.
+			if !notify.WatchTree && strings.Contains(ev.FileName, "/") {
+				continue
+			}
+			r.bufferEventLocked(notify, ev)
 		}
 		a.BufferedEvents = nil
 	}
