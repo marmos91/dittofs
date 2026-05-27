@@ -430,12 +430,9 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Update cached PayloadID in OpenFile
 	openFile.PayloadID = writeOp.PayloadID
 
-	// Per MS-FSCC 2.6 / MS-SMB2 3.3.4.4: Writing to an Alternate Data Stream
-	// fires FILE_NOTIFY_CHANGE_STREAM_WRITE and FILE_NOTIFY_CHANGE_STREAM_SIZE
-	// on the parent directory so ChangeNotify watchers are notified.
 	if isADSWrite && h.NotifyRegistry != nil {
 		parentDirPath := GetParentPath(openFile.Path)
-		h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, openFile.FileName, FileActionModifiedStream)
+		h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, openFile.FileName, FileActionModifiedStream, FileNotifyChangeStreamWrite|FileNotifyChangeStreamSize)
 	}
 
 	logger.Debug("WRITE successful",

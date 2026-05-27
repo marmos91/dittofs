@@ -423,6 +423,15 @@ type OpenFile struct {
 	// "Unset" is the all-zero value. Set once via CompareAndSwap(0, ...)
 	// and never updated after. Use `notifyMaxBufferSizeLoad` to decode.
 	NotifyMaxBufferSize atomic.Uint64
+
+	// NotifyCompletionFilter is the CompletionFilter captured from the FIRST
+	// CHANGE_NOTIFY on this handle. Subsequent requests use this stored filter
+	// regardless of the filter in their request, matching Samba's
+	// change_notify_create behavior where the notify buffer's filter is fixed
+	// at creation. The recursive (WatchTree) flag is NOT sticky — it comes
+	// from each request. Encoding mirrors NotifyMaxBufferSize: bit 32 = set,
+	// low 32 bits = filter value. Zero means unset.
+	NotifyCompletionFilter atomic.Uint64
 }
 
 // OpenID returns a unique identifier for this open file handle.
@@ -463,6 +472,17 @@ func (f *OpenFile) NotifyMaxBufferSizeValue() (value uint32, set bool) {
 		return 0, false
 	}
 	return uint32(raw), true
+}
+
+// CaptureNotifyCompletionFilter atomically records the CompletionFilter of
+// the first CHANGE_NOTIFY on this handle. Subsequent calls return the stored
+// value. Thread-safe; only the first caller wins.
+func (f *OpenFile) CaptureNotifyCompletionFilter(filter uint32) (captured uint32, didCapture bool) {
+	packed := notifyMaxBufferSizeSetBit | uint64(filter)
+	if f.NotifyCompletionFilter.CompareAndSwap(0, packed) {
+		return filter, true
+	}
+	return uint32(f.NotifyCompletionFilter.Load()), false
 }
 
 // lastDeniedLock tracks the last denied lock request per open for

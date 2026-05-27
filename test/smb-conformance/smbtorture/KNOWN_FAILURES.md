@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-05-27 (walk back sdread, secleak, qsec_buffercheck, aclfile, acldir, nulldacl)
+Last updated: 2026-05-27 (walk back sdread, secleak, qsec_buffercheck, aclfile, acldir, nulldacl + 4 compound tests)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -252,19 +252,6 @@ checks, and ACL-based access control.
 | smb2.getinfo.qfile_buffercheck | Query Info | Buffer check validation not implemented | - |
 | smb2.getinfo.qfs_buffercheck | Query Info | FS buffer check not implemented | - |
 | smb2.setinfo | Set Info | SET_INFO timestamp preservation not implemented | - |
-
-### Compound Requests (Remaining)
-
-Phase 73.1 fixed compound related/unrelated chaining, error propagation,
-interim responses, padding, compound find, and async flush. Remaining
-failures require DACL enforcement or full async I/O support.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.compound_find.compound_find_close | Compound | Compound FIND + CLOSE ordering — directory enumeration state handoff across compound subcommands not implemented | - |
-| smb2.compound_async.getinfo_middle | Compound | Async getinfo in compound middle position | - |
-| smb2.compound_async.read_read | Compound | Async read+read compound not implemented | - |
-| smb2.compound_async.write_write | Compound | Async write+write compound not implemented | - |
 
 ### Share Modes and Deny (Advanced Scenarios)
 
@@ -614,6 +601,18 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 | smb2.replay.replay6 | Replay | Replay detection not implemented | - |
 
 ## Changelog
+
+### 2026-05-27 — Walk back 4 compound tests (section removed)
+
+Set `torture:smbd=false` in smbtorture args (DittoFS is not smbd — the
+`is_smbd` flag only affects `read_read` and `write_write` which expect
+Samba-specific async last-compound-element behavior). Combined with PR
+#640's fixes for `compound_find_close` and `getinfo_middle`, the entire
+Compound Requests section is now empty and removed.
+
+- **Compound** (section removed): `smb2.compound_find.compound_find_close`,
+  `smb2.compound_async.getinfo_middle`, `smb2.compound_async.read_read`,
+  `smb2.compound_async.write_write`
 
 ### 2026-05-26 — Walk back 25 confirmed PASS + add 2 new failures
 
