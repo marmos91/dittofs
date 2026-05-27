@@ -364,6 +364,23 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	case types.SMB2InfoTypeFilesystem:
 		info, err = h.buildFilesystemInfo(ctx.Context, types.FileInfoClass(req.FileInfoClass), metaSvc, openFile.MetadataHandle)
 	case types.SMB2InfoTypeSecurity:
+		// Per MS-SMB2 §3.3.5.20.3: querying OWNER, GROUP, or DACL requires
+		// READ_CONTROL on the open handle. SACL requires ACCESS_SYSTEM_SECURITY.
+		// When AdditionalInfo is 0, no sections are requested — return a minimal
+		// empty SD without any access check (Windows behavior per smbtorture
+		// smb2.sdread).
+		if req.AdditionalInfo != 0 {
+			if req.AdditionalInfo&(OwnerSecurityInformation|GroupSecurityInformation|DACLSecurityInformation) != 0 {
+				if !hasAccessRight(openFile.GrantedAccess, uint32(types.ReadControl)) {
+					return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+				}
+			}
+			if req.AdditionalInfo&SACLSecurityInformation != 0 {
+				if !hasAccessRight(openFile.GrantedAccess, uint32(types.AccessSystemSecurity)) {
+					return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+				}
+			}
+		}
 		info, err = BuildSecurityDescriptor(file, req.AdditionalInfo)
 	default:
 		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
