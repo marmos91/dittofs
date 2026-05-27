@@ -176,8 +176,20 @@ func TestCompaction_RecoveryRebuildsAfterCompact(t *testing.T) {
 	}
 	phase1Bytes := uint64(phase1Writes) * uint64(len(chunk))
 	waitForLogBytesBelow(t, bc, 32*1024, 10*time.Second)
-	time.Sleep(300 * time.Millisecond)
-	preReopenSize := logFileSize(t, bc, "fileR")
+
+	// Phase 2: close the store BEFORE measuring size. Close() joins rollup
+	// and compaction workers, guaranteeing no in-flight compaction can leave
+	// a partial tail that recovery would then truncate — which was the root
+	// cause of the pre-existing flake (pre/post size mismatch).
+	baseDir := bc.baseDir
+	logPath := bc.logPath("fileR")
+	_ = bc.Close()
+
+	st, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("stat log after close: %v", err)
+	}
+	preReopenSize := st.Size()
 	// Sanity: compaction should have trimmed the file far below the
 	// total cumulative AppendWrite bytes; if it didn't fire, the
 	// post-reopen invariant below would still hold trivially and we
@@ -186,10 +198,6 @@ func TestCompaction_RecoveryRebuildsAfterCompact(t *testing.T) {
 		t.Fatalf("compaction did not trim log: size=%d cumulative writes=%d",
 			preReopenSize, phase1Bytes)
 	}
-
-	// Phase 2: reopen the FSStore on the same baseDir and trigger recovery.
-	baseDir := bc.baseDir
-	_ = bc.Close()
 	bc2, err := NewWithOptions(baseDir, 1<<30, 1<<30, nopFBS{}, opts)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
