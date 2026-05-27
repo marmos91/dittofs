@@ -220,12 +220,37 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	// Per MS-SMB2 3.3.5.14: When there are multiple lock elements and the
 	// first element is a lock (not unlock), it MUST have FailImmediately set.
 	// This prevents blocking lock requests in batch operations.
+	//
+	// Additionally, per MS-SMB2 §3.3.5.14.1 and Samba smbd_smb2_lock_send,
+	// a multi-element request MUST NOT mix lock and unlock elements. When
+	// first is lock and a later element is unlock → INVALID_PARAMETER
+	// immediately. When first is unlock and a later element is lock → the
+	// unlocks are processed first, then INVALID_PARAMETER is returned
+	// (Samba deferred-invalid semantics: unlock side-effects persist).
+	hasMixedUnlockThenLock := false
 	if req.LockCount > 1 {
 		firstIsLock := (req.Locks[0].Flags & SMB2LockFlagUnlock) == 0
 		firstHasFailImm := (req.Locks[0].Flags & SMB2LockFlagFailImmediately) != 0
 		if firstIsLock && !firstHasFailImm {
 			logger.Debug("LOCK: multi-element request without FailImmediately on first lock")
 			return NewErrorResult(types.StatusInvalidParameter), nil
+		}
+
+		// Detect mixed lock/unlock elements.
+		firstIsUnlock := !firstIsLock
+		for i := 1; i < len(req.Locks); i++ {
+			elemIsUnlock := (req.Locks[i].Flags & SMB2LockFlagUnlock) != 0
+			if firstIsLock && elemIsUnlock {
+				// Lock-first, unlock later → reject immediately.
+				logger.Debug("LOCK: multi-element request mixes lock then unlock",
+					"elem", i)
+				return NewErrorResult(types.StatusInvalidParameter), nil
+			}
+			if firstIsUnlock && !elemIsUnlock {
+				// Unlock-first, lock later → process unlocks, then error.
+				hasMixedUnlockThenLock = true
+				break
+			}
 		}
 	}
 
@@ -306,6 +331,16 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			"flags", fmt.Sprintf("0x%08X", lockElem.Flags),
 			"unlock", isUnlock,
 			"exclusive", isExclusive)
+
+		// Mixed unlock-then-lock: process unlocks, reject on first lock element.
+		// Per Samba smbd_smb2_lock_send, unlocks persist but the overall request
+		// returns INVALID_PARAMETER when a lock element follows.
+		if hasMixedUnlockThenLock && !isUnlock {
+			logger.Debug("LOCK: mixed unlock-then-lock, rejecting lock element",
+				"index", i)
+			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
+			return NewErrorResult(types.StatusInvalidParameter), nil
+		}
 
 		if isUnlock {
 			// Unlock operation.
