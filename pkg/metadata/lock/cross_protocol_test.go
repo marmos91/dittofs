@@ -31,11 +31,11 @@ func TestConflictsWith_UnifiedLock_LengthZero_MeansEOF(t *testing.T) {
 	// In UnifiedLock, Length=0 means "to EOF" (NFS semantics), NOT zero-byte.
 	// Zero-byte lock semantics are SMB-specific via FileLock.IsZeroByte.
 	a := &UnifiedLock{
-		Owner: LockOwner{OwnerID: "smb:client1"},
+		Owner:  LockOwner{OwnerID: "smb:client1"},
 		Offset: 0, Length: 0, Type: LockTypeExclusive,
 	}
 	b := &UnifiedLock{
-		Owner: LockOwner{OwnerID: "smb:client2"},
+		Owner:  LockOwner{OwnerID: "smb:client2"},
 		Offset: 50, Length: 100, Type: LockTypeExclusive,
 	}
 
