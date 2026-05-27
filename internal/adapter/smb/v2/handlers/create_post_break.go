@@ -428,7 +428,9 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		if sdCtx := FindCreateContext(req.CreateContexts, SDBufferCreateContextTag); sdCtx != nil && len(sdCtx.Data) > 0 {
 			opts := h.parseSDOptsForShare(d.tree.ShareName)
 			ownerUID, ownerGID, fileACL, parseErr := ParseSecurityDescriptorWithOptions(sdCtx.Data, opts)
-			if parseErr == nil {
+			if parseErr != nil {
+				logger.Debug("CREATE: failed to parse SD_BUFFER", "path", baseName, "error", parseErr)
+			} else {
 				setAttrs := &metadata.SetAttrs{}
 				apply := false
 				if ownerUID != nil {
@@ -448,7 +450,6 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 					if setErr := metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs); setErr != nil {
 						logger.Debug("CREATE: failed to apply SD_BUFFER", "path", baseName, "error", setErr)
 					} else {
-						// Re-read file to pick up applied SD
 						if updated, getErr := metaSvc.GetFile(authCtx.Context, fileHandle); getErr == nil {
 							file = updated
 						}
