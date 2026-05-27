@@ -183,9 +183,16 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 	logger.Debug("Logoff: partial cleanup (session kept for response signing)",
 		"sessionID", ctx.SessionID)
 
-	// Drain pending blocking LOCKs for this session before closing files.
-	// Per MS-SMB2 §3.3.5.6: session teardown must unblock all parked
-	// operations (smb2.lock.cancel-logoff).
+	// Close files FIRST to release held byte-range locks. This lets
+	// pending blocking LOCKs from other handles retry and potentially
+	// succeed before we cancel them. Matches Samba's brl_close_fnum
+	// ordering where lock release precedes waiter cancellation.
+	filesClosed := h.CloseAllFilesForSession(ctx.Context, ctx.SessionID, false)
+
+	// Drain any remaining pending blocking LOCKs for this session.
+	// After file close, most pending locks on this session's handles are
+	// already resolved (Close handler sends RANGE_NOT_LOCKED). This
+	// catches any stragglers not tied to a specific open.
 	if h.PendingLockRegistry != nil {
 		for _, parked := range h.PendingLockRegistry.UnregisterAllForSession(ctx.SessionID) {
 			if parked.Callback != nil {
@@ -199,8 +206,6 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 			}
 		}
 	}
-
-	filesClosed := h.CloseAllFilesForSession(ctx.Context, ctx.SessionID, false)
 
 	// Release leases and notify watchers that may not have been cleaned up
 	// by per-file CLOSE (e.g. client skipped CLOSE before LOGOFF).
