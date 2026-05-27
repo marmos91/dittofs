@@ -110,10 +110,32 @@ func (s *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockst
 		PendingWrites: s.pendingWrites,
 		Capabilities:  s.capabilities,
 		StoreID:       s.storeID,
-		RollupOffsets: s.rollupOffsets,
-		Synced:        s.synced,
 		ObjectIndex:   s.objectIndex,
 	}
+
+	// Acquire rollupMu and syncedMu to read rollupOffsets and synced
+	// safely — these maps are governed by their own mutexes, not s.mu.
+	// Shallow-copy into fresh maps so the snapshot does not alias the
+	// live maps (rollupMu/syncedMu are released before gob encoding).
+	s.rollupMu.RLock()
+	if s.rollupOffsets != nil {
+		ro := make(map[string]uint64, len(s.rollupOffsets))
+		for k, v := range s.rollupOffsets {
+			ro[k] = v
+		}
+		snap.RollupOffsets = ro
+	}
+	s.rollupMu.RUnlock()
+
+	s.syncedMu.RLock()
+	if s.synced != nil {
+		sy := make(map[blockstore.ContentHash]time.Time, len(s.synced))
+		for k, v := range s.synced {
+			sy[k] = v
+		}
+		snap.Synced = sy
+	}
+	s.syncedMu.RUnlock()
 
 	// Handle ServerConfig.CustomSettings gob limitation (D-01, Pitfall 1):
 	// gob cannot encode map[string]any; pre-encode to JSON bytes.
