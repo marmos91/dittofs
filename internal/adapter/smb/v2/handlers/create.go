@@ -922,13 +922,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	if fileExists && foundName != baseName {
 		baseName = foundName // use the canonical stored name
 	}
-	if !fileExists && isADS {
-		if found, sFoundName := h.lookupStreamCaseInsensitive(authCtx, metaSvc, parentHandle, adsBaseFileName, baseName); found != nil {
-			existingFile = found
-			fileExists = true
-			baseName = sFoundName // use the canonical stored name
-		}
-	}
+	// lookupCaseInsensitive already does a full EqualFold scan of all
+	// children — no separate stream-specific fallback needed.
 
 	// Per MS-FSA: directories do not have a default data stream. When the
 	// client explicitly requests "dir::$DATA", the open must fail even if

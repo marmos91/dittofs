@@ -436,12 +436,21 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(common.MapToSMB(err)), nil
 		}
 
-		// Per NTFS: timestamps set on an ADS propagate to the base file.
+		// Per NTFS: only TIMESTAMPS set on an ADS propagate to the base
+		// file. FileAttributes/Mode do NOT propagate — they are per-file.
 		if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 && len(openFile.ParentHandle) > 0 {
-			baseFileName := openFile.FileName[:colonIdx]
-			if baseFile, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName); baseFile != nil {
-				if baseHandle, encErr := metadata.EncodeFileHandle(baseFile); encErr == nil {
-					_ = metaSvc.SetFileAttributes(authCtx, baseHandle, setAttrs)
+			tsAttrs := &metadata.SetAttrs{
+				Mtime:        setAttrs.Mtime,
+				Ctime:        setAttrs.Ctime,
+				Atime:        setAttrs.Atime,
+				CreationTime: setAttrs.CreationTime,
+			}
+			if tsAttrs.Mtime != nil || tsAttrs.Ctime != nil || tsAttrs.Atime != nil || tsAttrs.CreationTime != nil {
+				baseFileName := openFile.FileName[:colonIdx]
+				if baseFile, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName); baseFile != nil {
+					if baseHandle, encErr := metadata.EncodeFileHandle(baseFile); encErr == nil {
+						_ = metaSvc.SetFileAttributes(authCtx, baseHandle, tsAttrs)
+					}
 				}
 			}
 		}

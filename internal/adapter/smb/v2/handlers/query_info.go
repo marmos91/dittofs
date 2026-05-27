@@ -870,7 +870,7 @@ func (h *Handler) buildFileStreamInformation(authCtx *metadata.AuthContext, file
 	var defaultSize uint64
 	if !isBaseDirectory && strings.Contains(openFile.FileName, ":") && len(openFile.ParentHandle) > 0 {
 		metaSvc := h.Registry.GetMetadataService()
-		if baseFile, err := metaSvc.Lookup(authCtx, openFile.ParentHandle, baseName); err == nil {
+		if baseFile, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseName); baseFile != nil {
 			if baseFile.Type == metadata.FileTypeDirectory {
 				isBaseDirectory = true
 			}
@@ -902,7 +902,7 @@ func (h *Handler) buildFileStreamInformation(authCtx *metadata.AuthContext, file
 					break
 				}
 				for _, entry := range entries {
-					if strings.HasPrefix(entry.Name, prefix) {
+					if len(entry.Name) > len(prefix) && strings.EqualFold(entry.Name[:len(prefix)], prefix) {
 						// Extract stream name portion: "file:stream" → ":stream"
 						streamSuffix := entry.Name[len(baseName):]
 						// Always report with :$DATA type suffix per MS-FSCC 2.4.44.

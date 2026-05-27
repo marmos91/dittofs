@@ -850,7 +850,7 @@ func (h *Handler) cascadeDeleteADSStreams(authCtx *metadata.AuthContext, metaSvc
 	}
 
 	for _, entry := range page.Entries {
-		if strings.HasPrefix(entry.Name, prefix) {
+		if len(entry.Name) > len(prefix) && strings.EqualFold(entry.Name[:len(prefix)], prefix) {
 			_, deleteErr := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, entry.Name)
 			if deleteErr != nil {
 				logger.Debug("CLOSE: cascade ADS delete: failed to remove stream",

@@ -1489,9 +1489,9 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 			existingBase := adsBasePath(existing.Path)
 			baseVsStream := false
 			if newBase == "" && existingBase != "" {
-				baseVsStream = existingBase == filePath
+				baseVsStream = strings.EqualFold(existingBase, filePath)
 			} else if newBase != "" && existingBase == "" {
-				baseVsStream = newBase == existing.Path
+				baseVsStream = strings.EqualFold(newBase, existing.Path)
 			}
 			if !baseVsStream {
 				return true
@@ -1554,7 +1554,7 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 // paginatedChildScan iterates over a directory's children in pages and
 // returns the first entry whose name satisfies matchFn, confirmed by a
 // Lookup. This is the shared pagination/scan/confirm loop used by both
-// lookupCaseInsensitive and lookupStreamCaseInsensitive. Returns nil/""
+// lookupCaseInsensitive. Returns nil/""
 // when no match is found.
 func (h *Handler) paginatedChildScan(
 	authCtx *metadata.AuthContext,
@@ -1608,21 +1608,6 @@ func (h *Handler) lookupCaseInsensitive(
 	})
 }
 
-// lookupStreamCaseInsensitive searches the parent directory for a stream
-// entry matching the given name case-insensitively. NTFS stream names are
-// case-preserving but case-insensitive.
-func (h *Handler) lookupStreamCaseInsensitive(
-	authCtx *metadata.AuthContext,
-	metaSvc *metadata.MetadataService,
-	parentHandle metadata.FileHandle,
-	baseFileName, streamEntryName string,
-) (*metadata.File, string) {
-	return h.paginatedChildScan(authCtx, metaSvc, parentHandle, func(entryName string) bool {
-		return strings.EqualFold(entryName, streamEntryName)
-	})
-}
-
-// shareNameFromHandle extracts the share name from an encoded file handle.
 // adsBasePath extracts the base file path from a potentially ADS-qualified path.
 // For "dir/file.txt:stream" returns "dir/file.txt".
 // For "dir/file.txt" (no stream) returns "" (not an ADS).
@@ -1644,6 +1629,7 @@ func adsBasePath(filePath string) string {
 	return fileName[:colonIdx]
 }
 
+// shareNameFromHandle extracts the share name from an encoded file handle.
 func shareNameFromHandle(handle metadata.FileHandle) string {
 	if len(handle) > 0 {
 		if name, _, err := metadata.DecodeFileHandle(handle); err == nil && name != "" {
