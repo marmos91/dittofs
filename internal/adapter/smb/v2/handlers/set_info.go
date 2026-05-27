@@ -358,12 +358,29 @@ func (h *Handler) setFileInfoFromStore(
 		// handle. Pre-read the file to capture current timestamps, then pin
 		// sentinel timestamps to their current value in setAttrs to suppress
 		// auto-updates (e.g., Ctime auto-update when FileAttributes change).
+		//
+		// Per NTFS: ADS (alternate data streams) share the base file's timestamps.
+		// When the open is for a stream, capture the base file's timestamps so the
+		// frozen value reflects the base file, not the stream entry. Without this,
+		// the stream's own CreationTime (set at stream creation time) would be
+		// captured, which differs from the base file's CreationTime that QUERY_INFO
+		// returns (via resolveBaseFileAttrForADS). This caused the WPTS regression
+		// FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_CreationTime.
 		var preFile *metadata.File
 		if hasFreezeOrUnfreeze {
 			var err error
-			preFile, err = metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
-			if err != nil {
-				logger.Warn("SET_INFO: failed to read file for freeze/unfreeze", "path", openFile.Path, "error", err)
+			if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 && len(openFile.ParentHandle) > 0 {
+				// ADS: capture base file timestamps.
+				baseFileName := openFile.FileName[:colonIdx]
+				if baseFile, lookupErr := metaSvc.Lookup(authCtx, openFile.ParentHandle, baseFileName); lookupErr == nil {
+					preFile = baseFile
+				}
+			}
+			if preFile == nil {
+				preFile, err = metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
+				if err != nil {
+					logger.Warn("SET_INFO: failed to read file for freeze/unfreeze", "path", openFile.Path, "error", err)
+				}
 			}
 		}
 
