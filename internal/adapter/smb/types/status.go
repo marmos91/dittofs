@@ -200,7 +200,7 @@ const (
 
 	// StatusInvalidLockRange indicates the lock range (offset+length) overflows
 	// the maximum 64-bit value. Per MS-SMB2 3.3.5.14.
-	StatusInvalidLockRange Status = 0xC00000BE
+	StatusInvalidLockRange Status = 0xC00001A1
 )
 
 // String returns a human-readable name for the status code.

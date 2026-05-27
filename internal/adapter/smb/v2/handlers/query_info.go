@@ -364,6 +364,23 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	case types.SMB2InfoTypeFilesystem:
 		info, err = h.buildFilesystemInfo(ctx.Context, types.FileInfoClass(req.FileInfoClass), metaSvc, openFile.MetadataHandle)
 	case types.SMB2InfoTypeSecurity:
+		// Per MS-SMB2 §3.3.5.20.3: querying OWNER, GROUP, or DACL requires
+		// READ_CONTROL on the open handle. SACL requires ACCESS_SYSTEM_SECURITY.
+		// When AdditionalInfo is 0, no sections are requested — return a minimal
+		// empty SD without any access check (Windows behavior per smbtorture
+		// smb2.sdread).
+		if req.AdditionalInfo != 0 {
+			if req.AdditionalInfo&(OwnerSecurityInformation|GroupSecurityInformation|DACLSecurityInformation) != 0 {
+				if !hasAccessRight(openFile.GrantedAccess, uint32(types.ReadControl)) {
+					return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+				}
+			}
+			if req.AdditionalInfo&SACLSecurityInformation != 0 {
+				if !hasAccessRight(openFile.GrantedAccess, uint32(types.AccessSystemSecurity)) {
+					return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+				}
+			}
+		}
 		info, err = BuildSecurityDescriptor(file, req.AdditionalInfo)
 	default:
 		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
@@ -374,10 +391,13 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	}
 
 	// Truncate if necessary
-	// Note: We return STATUS_SUCCESS instead of STATUS_BUFFER_OVERFLOW because
-	// Linux kernel CIFS treats STATUS_BUFFER_OVERFLOW as an error, causing I/O failures.
-	// The truncated data is still valid and useful for the client.
 	if uint32(len(info)) > req.OutputBufferLength {
+		// Security descriptors are atomic — partial SD is invalid.
+		// MS-SMB2 §3.3.5.20.3: return STATUS_BUFFER_TOO_SMALL.
+		if req.InfoType == types.SMB2InfoTypeSecurity {
+			return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBufferTooSmall}}, nil
+		}
+
 		info = info[:req.OutputBufferLength]
 
 		// For FILE_ALL_INFORMATION, the FileNameLength field at offset 96

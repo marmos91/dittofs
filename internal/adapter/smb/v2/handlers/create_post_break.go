@@ -422,6 +422,43 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		}
 	}
 
+	// Apply security descriptor from SMB2_CREATE_SD_BUFFER create context.
+	// MS-SMB2 §2.2.13.2.2: client supplies an initial SD at CREATE time.
+	if createAction == types.FileCreated {
+		if sdCtx := FindCreateContext(req.CreateContexts, SDBufferCreateContextTag); sdCtx != nil && len(sdCtx.Data) > 0 {
+			opts := h.parseSDOptsForShare(d.tree.ShareName)
+			ownerUID, ownerGID, fileACL, parseErr := ParseSecurityDescriptorWithOptions(sdCtx.Data, opts)
+			if parseErr != nil {
+				logger.Debug("CREATE: failed to parse SD_BUFFER", "path", baseName, "error", parseErr)
+			} else {
+				setAttrs := &metadata.SetAttrs{}
+				apply := false
+				if ownerUID != nil {
+					setAttrs.UID = ownerUID
+					apply = true
+				}
+				if ownerGID != nil {
+					setAttrs.GID = ownerGID
+					apply = true
+				}
+				if fileACL != nil {
+					setAttrs.ACL = fileACL
+					apply = true
+				}
+				if apply {
+					metaSvc := h.Registry.GetMetadataService()
+					if setErr := metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs); setErr != nil {
+						logger.Debug("CREATE: failed to apply SD_BUFFER", "path", baseName, "error", setErr)
+					} else {
+						if updated, getErr := metaSvc.GetFile(authCtx.Context, fileHandle); getErr == nil {
+							file = updated
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Compute GrantedAccess for new/overwritten files. The fileExists branch
 	// above already populated grantedAccess from CheckFileAccess on the
 	// existing file's DACL (the open-time gate).

@@ -180,6 +180,11 @@ func Evaluate(a *ACL, evalCtx *EvaluateContext, requestedMask uint32) bool {
 		return false
 	}
 
+	// Null DACL (SE_DACL_PRESENT but no DACL body) grants everyone full access.
+	if a.NullDACL {
+		return true
+	}
+
 	// First pass: does this DACL contain any effective OWNER_RIGHTS ACE
 	// that affects access decisions? The override only matters when the
 	// requester is the file owner, so non-owners skip the scan entirely.

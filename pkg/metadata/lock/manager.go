@@ -351,6 +351,12 @@ type FileLock struct {
 	// ClientAddr is the network address of the client holding the lock.
 	// Used for debugging and logging.
 	ClientAddr string
+
+	// IsZeroByte marks this as a zero-byte lock (SMB2 Length=0).
+	// Zero-byte locks never conflict with any other lock. They are stored
+	// and require explicit unlock, but do not block other lock acquisitions.
+	// NFS/NLM never sets this; NFS uses Length=0 for "to EOF" semantics.
+	IsZeroByte bool
 }
 
 // LockConflict describes a conflicting lock for error reporting.
@@ -397,33 +403,90 @@ func callerOwnerID(openID string, sessionID uint64) string {
 
 // IsLockConflicting checks if two locks conflict with each other.
 //
-// Conflict rules:
-//   - Shared locks don't conflict with other shared locks (multiple readers)
-//   - Exclusive locks conflict with all other locks
-//   - Locks from the same open (OpenID) don't conflict (allows re-locking same range)
-//   - Ranges must overlap for a conflict to occur
+// Mirrors Samba brl_conflict (source3/locking/brlock.c):
+//
+//  1. Zero-byte + zero-byte → never conflict (regardless of offset).
+//  2. Zero-byte vs non-zero → conflict iff zero-byte offset is strictly
+//     inside the other range (Samba byte_range_overlap with last=ofs+len-1).
+//  3. Read + Read → never conflict (multiple readers OK).
+//  4. Same owner (same OpenID), existing Write, new Read → no conflict
+//     ("a read lock can stack on top of a write lock", Samba comment).
+//  5. Everything else → conflict iff ranges overlap.
 //
 // Per MS-SMB2, lock ownership is per-open (per FileID), not per-session. Two
 // different opens from the same session are independent lock owners and MUST
 // conflict with each other when acquiring exclusive locks on overlapping ranges.
 func IsLockConflicting(existing, requested *FileLock) bool {
-	// Check range overlap first (common case: no overlap, avoids string allocation)
-	if !RangesOverlap(existing.Offset, existing.Length, requested.Offset, requested.Length) {
+	// Compute overlap first, including zero-byte lock semantics.
+	if !locksOverlap(existing, requested) {
 		return false
 	}
 
-	// Same owner - no conflict (allows re-locking same range with different type)
-	if lockOwnerID(existing) == lockOwnerID(requested) {
-		return false
-	}
-
-	// Both shared (read) locks - no conflict
+	// Read locks never conflict with each other.
 	if !existing.Exclusive && !requested.Exclusive {
 		return false
 	}
 
-	// At least one is exclusive and ranges overlap - conflict
+	// Same owner handling. NFS/NLM (OpenID empty) uses session-level
+	// ownership where same-process re-locking always succeeds (POSIX).
+	// SMB (OpenID set) uses per-open ownership with restricted stacking
+	// per Samba brl_conflict: only shared-on-exclusive from same open is
+	// allowed; all other combos fall through to the overlap check.
+	if lockOwnerID(existing) == lockOwnerID(requested) {
+		if existing.OpenID == "" || requested.OpenID == "" {
+			return false // NFS/NLM: same session, no conflict
+		}
+		if existing.Exclusive && !requested.Exclusive {
+			return false // SMB: read stacks on write from same open
+		}
+		// SMB same-open: exclusive+exclusive or shared+exclusive conflict
+		return true
+	}
+
+	// At least one is exclusive and ranges overlap — conflict.
 	return true
+}
+
+// locksOverlap returns true if two FileLocks have overlapping byte ranges,
+// correctly handling SMB2 zero-byte locks (IsZeroByte).
+//
+// Mirrors Samba byte_range_overlap (source3/locking/brlock.c) with
+// inclusive-end semantics: last = offset + length - 1. A zero-byte lock at
+// offset N produces an inverted range [N, N-1] that only overlaps with
+// ranges spanning strictly across N (i.e., start < N < start+length).
+//
+// Two zero-byte locks never overlap. A zero-byte lock at offset 0 never
+// overlaps anything (MS-FSA {0,0} special case).
+func locksOverlap(a, b *FileLock) bool {
+	// Two zero-byte locks never overlap each other.
+	if a.IsZeroByte && b.IsZeroByte {
+		return false
+	}
+
+	// One zero-byte, one non-zero: check if zero-byte offset is strictly
+	// inside the other range. {0, 0} never overlaps (MS-FSA special case).
+	if a.IsZeroByte || b.IsZeroByte {
+		var zb, other *FileLock
+		if a.IsZeroByte {
+			zb, other = a, b
+		} else {
+			zb, other = b, a
+		}
+
+		// {0, 0} never overlaps anything.
+		if zb.Offset == 0 {
+			return false
+		}
+
+		// Samba inclusive-end: last = offset + length - 1.
+		// For zero-byte lock: last = zb.Offset - 1 (inverted range).
+		// Overlap iff other.Offset < zb.Offset AND otherEnd > zb.Offset.
+		otherEnd := rangeEnd(other.Offset, other.Length)
+		return other.Offset < zb.Offset && otherEnd > zb.Offset
+	}
+
+	// Both non-zero-byte: standard range overlap.
+	return RangesOverlap(a.Offset, a.Length, b.Offset, b.Length)
 }
 
 // CheckIOConflict checks if an I/O operation conflicts with an existing lock.
@@ -452,6 +515,11 @@ func IsLockConflicting(existing, requested *FileLock) bool {
 //
 // Returns true if the I/O is blocked by the existing lock.
 func CheckIOConflict(existing *FileLock, openID string, sessionID uint64, offset, length uint64, isWrite bool) bool {
+	// Zero-byte locks never block I/O — they have no actual byte range.
+	if existing.IsZeroByte {
+		return false
+	}
+
 	// Check range overlap first (common case: no overlap)
 	if !RangesOverlap(existing.Offset, existing.Length, offset, length) {
 		return false
@@ -573,17 +641,23 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 		}
 	}
 
-	// Check if this exact lock already exists (same owner, offset, length)
-	// If so, update it (allows changing exclusive flag)
-	for i := range existing {
-		if lockOwnerID(&existing[i]) == lockOwnerID(&lock) &&
-			existing[i].Offset == lock.Offset &&
-			existing[i].Length == lock.Length {
-			// Update existing lock in place
-			existing[i].Exclusive = lock.Exclusive
-			existing[i].AcquiredAt = time.Now()
-			existing[i].ID = lock.ID
-			return nil
+	// NFS/NLM (OpenID empty): POSIX semantics — re-locking the same range
+	// from the same session replaces the existing lock in place.
+	// SMB (OpenID set): Windows semantics — every Lock call stacks a new
+	// entry even when (owner, offset, length, type) match. Each entry
+	// requires a separate Unlock call. Per MS-SMB2 §3.3.5.14 and Samba
+	// brl_lock_windows (source3/locking/brlock.c).
+	if lock.OpenID == "" {
+		for i := range existing {
+			if lockOwnerID(&existing[i]) == lockOwnerID(&lock) &&
+				existing[i].Offset == lock.Offset &&
+				existing[i].Length == lock.Length {
+				// Update existing lock in place (NFS/POSIX re-lock)
+				existing[i].Exclusive = lock.Exclusive
+				existing[i].AcquiredAt = time.Now()
+				existing[i].ID = lock.ID
+				return nil
+			}
 		}
 	}
 

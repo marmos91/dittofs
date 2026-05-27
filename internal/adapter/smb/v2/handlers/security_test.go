@@ -11,6 +11,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
+const allSecInfo = OwnerSecurityInformation | GroupSecurityInformation | DACLSecurityInformation
+
 // TestMain sets up a deterministic SIDMapper for all tests in this package.
 func TestMain(m *testing.M) {
 	// Use a fixed machine SID (0,0,0) for deterministic test results.
@@ -50,7 +52,7 @@ func TestBuildSecurityDescriptorWithACL(t *testing.T) {
 		},
 	}
 
-	data, err := BuildSecurityDescriptor(file, 0)
+	data, err := BuildSecurityDescriptor(file, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor: %v", err)
 	}
@@ -117,7 +119,7 @@ func TestBuildSD_NilACL_SynthesizesWindowsDefault(t *testing.T) {
 		},
 	}
 
-	data, err := BuildSecurityDescriptor(file, 0)
+	data, err := BuildSecurityDescriptor(file, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor: %v", err)
 	}
@@ -159,6 +161,49 @@ func TestBuildSD_NilACL_SynthesizesWindowsDefault(t *testing.T) {
 	}
 }
 
+// TestBuildSD_ZeroSecInfo_ReturnsEmptySD verifies that additionalSecInfo==0
+// produces a minimal 20-byte header-only SD with control=SE_SELF_RELATIVE
+// and no owner/group/DACL/SACL. Matches Windows behavior exercised by
+// smbtorture smb2.sdread (secinfo_flags=0 on a handle without READ_CONTROL).
+func TestBuildSD_ZeroSecInfo_ReturnsEmptySD(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				ACEs: []acl.ACE{
+					{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: 0x001F01FF, Who: "OWNER@"},
+				},
+			},
+		},
+	}
+
+	data, err := BuildSecurityDescriptor(file, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor(secinfo=0): %v", err)
+	}
+
+	if len(data) != sdHeaderSize {
+		t.Fatalf("Expected %d-byte header-only SD, got %d bytes", sdHeaderSize, len(data))
+	}
+	if data[0] != 1 {
+		t.Errorf("Revision = %d, want 1", data[0])
+	}
+	control := binary.LittleEndian.Uint16(data[2:4])
+	if control != seSelfRelative {
+		t.Errorf("Control = 0x%04x, want SE_SELF_RELATIVE (0x%04x)", control, seSelfRelative)
+	}
+	ownerOff := binary.LittleEndian.Uint32(data[4:8])
+	groupOff := binary.LittleEndian.Uint32(data[8:12])
+	saclOff := binary.LittleEndian.Uint32(data[12:16])
+	daclOff := binary.LittleEndian.Uint32(data[16:20])
+	if ownerOff != 0 || groupOff != 0 || saclOff != 0 || daclOff != 0 {
+		t.Errorf("Expected all offsets=0, got owner=%d group=%d sacl=%d dacl=%d",
+			ownerOff, groupOff, saclOff, daclOff)
+	}
+}
+
 // TestBuildSD_EmptyACL_EmitsZeroACEDACL verifies the FileAttr.ACL contract
 // (pkg/metadata/file_types.go): file.ACL non-nil with len(ACEs)==0 is an
 // explicit empty DACL (deny-all) and MUST NOT fall through to Windows-default
@@ -173,7 +218,7 @@ func TestBuildSD_EmptyACL_EmitsZeroACEDACL(t *testing.T) {
 		},
 	}
 
-	data, err := BuildSecurityDescriptor(file, 0)
+	data, err := BuildSecurityDescriptor(file, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor: %v", err)
 	}
@@ -212,7 +257,7 @@ func TestBuildSD_ExplicitACL_UsesExisting(t *testing.T) {
 		},
 	}
 
-	data, err := BuildSecurityDescriptor(file, 0)
+	data, err := BuildSecurityDescriptor(file, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor: %v", err)
 	}
@@ -341,7 +386,7 @@ func TestBuildSD_AutoInherited_PerACEFlagNotEnough(t *testing.T) {
 		},
 	}
 
-	data, err := BuildSecurityDescriptor(file, 0)
+	data, err := BuildSecurityDescriptor(file, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor: %v", err)
 	}
@@ -373,7 +418,7 @@ func TestBuildSD_Protected(t *testing.T) {
 		},
 	}
 
-	data, err := BuildSecurityDescriptor(file, 0)
+	data, err := BuildSecurityDescriptor(file, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor: %v", err)
 	}
@@ -467,7 +512,7 @@ func TestParseSD_RoundTrip(t *testing.T) {
 		},
 	}
 
-	data, err := BuildSecurityDescriptor(file, 0)
+	data, err := BuildSecurityDescriptor(file, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor: %v", err)
 	}
@@ -606,7 +651,7 @@ func TestFourByteAlignment(t *testing.T) {
 		},
 	}
 
-	data, err := BuildSecurityDescriptor(file, 0)
+	data, err := BuildSecurityDescriptor(file, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor: %v", err)
 	}
@@ -673,7 +718,7 @@ func TestSDRoundTripWithMapper(t *testing.T) {
 		},
 	}
 
-	data, err := BuildSecurityDescriptor(file, 0)
+	data, err := BuildSecurityDescriptor(file, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor: %v", err)
 	}
@@ -781,7 +826,7 @@ func TestParseSecurityDescriptor_PreservesSIDForm(t *testing.T) {
 		},
 	}
 
-	data, err := BuildSecurityDescriptor(file, 0)
+	data, err := BuildSecurityDescriptor(file, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor: %v", err)
 	}
@@ -822,7 +867,7 @@ func TestSecurityDescriptor_SIDFormRoundTrip(t *testing.T) {
 		},
 	}
 
-	data1, err := BuildSecurityDescriptor(file, 0)
+	data1, err := BuildSecurityDescriptor(file, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor pass 1: %v", err)
 	}
@@ -848,7 +893,7 @@ func TestSecurityDescriptor_SIDFormRoundTrip(t *testing.T) {
 			ACL:  parsed1,
 		},
 	}
-	data2, err := BuildSecurityDescriptor(file2, 0)
+	data2, err := BuildSecurityDescriptor(file2, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor pass 2: %v", err)
 	}
@@ -969,7 +1014,7 @@ func TestSecurityDescriptor_OwnerRightsRoundTrip(t *testing.T) {
 			},
 		},
 	}
-	data, err := BuildSecurityDescriptor(file, 0)
+	data, err := BuildSecurityDescriptor(file, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor: %v", err)
 	}
@@ -1011,7 +1056,7 @@ func TestBuildSD_AutoInherited_FromACLField(t *testing.T) {
 		},
 	}
 
-	data, err := BuildSecurityDescriptor(file, 0)
+	data, err := BuildSecurityDescriptor(file, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor: %v", err)
 	}
@@ -1057,7 +1102,7 @@ func TestBuildSD_AutoInherited_RoundTrip(t *testing.T) {
 			ACL:  parsed,
 		},
 	}
-	data2, err := BuildSecurityDescriptor(file2, 0)
+	data2, err := BuildSecurityDescriptor(file2, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor (rebuild): %v", err)
 	}
@@ -1095,7 +1140,7 @@ func TestBuildSD_AutoInherited_NotSet(t *testing.T) {
 		},
 	}
 
-	data, err := BuildSecurityDescriptor(file, 0)
+	data, err := BuildSecurityDescriptor(file, allSecInfo)
 	if err != nil {
 		t.Fatalf("BuildSecurityDescriptor: %v", err)
 	}
@@ -1209,7 +1254,7 @@ func TestParseSD_AutoInheritedCanonicalization(t *testing.T) {
 					ACL:  parsed,
 				},
 			}
-			rebuilt, err := BuildSecurityDescriptor(file, 0)
+			rebuilt, err := BuildSecurityDescriptor(file, allSecInfo)
 			if err != nil {
 				t.Fatalf("BuildSecurityDescriptor: %v", err)
 			}

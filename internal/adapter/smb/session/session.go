@@ -99,6 +99,13 @@ type Session struct {
 	// attempting signature verification on a defunct session.
 	LoggedOff atomic.Bool
 
+	// OriginConnID is the ConnID of the TCP connection that created this
+	// session via SESSION_SETUP. For SMB 2.x (below 3.0), session lookup
+	// is per-connection per MS-SMB2 §3.3.5.5, so a SESSION_SETUP from a
+	// different connection referencing this session's ID must return
+	// STATUS_USER_SESSION_DELETED. For SMB 3.x, sessions are global.
+	OriginConnID uint64
+
 	// Credit tracking
 	credits Credits
 

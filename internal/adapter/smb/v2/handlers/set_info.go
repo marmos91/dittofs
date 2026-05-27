@@ -14,6 +14,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -1355,9 +1356,15 @@ func (h *Handler) setSecurityInfo(
 		changed = true
 	}
 
-	if (additionalInfo&DACLSecurityInformation) != 0 && fileACL != nil {
-		setAttrs.ACL = fileACL
-		changed = true
+	if (additionalInfo & DACLSecurityInformation) != 0 {
+		if fileACL != nil {
+			setAttrs.ACL = fileACL
+			changed = true
+		} else {
+			// DACL section requested but no DACL in SD → null DACL
+			setAttrs.ACL = &acl.ACL{NullDACL: true}
+			changed = true
+		}
 	}
 
 	if !changed {

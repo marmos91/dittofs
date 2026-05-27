@@ -7,13 +7,16 @@ import (
 // NewLockedError creates error for lock conflicts (legacy FileLock).
 func NewLockedError(path string, conflict *LockConflict) *errors.StoreError {
 	msg := "resource is locked"
+	var ownerID string
 	if conflict != nil {
 		msg = "resource is locked by another session"
+		ownerID = conflict.OwnerID
 	}
 	return &errors.StoreError{
-		Code:    errors.ErrLocked,
-		Message: msg,
-		Path:    path,
+		Code:            errors.ErrLocked,
+		Message:         msg,
+		Path:            path,
+		ConflictOwnerID: ownerID,
 	}
 }
 
@@ -29,13 +32,20 @@ func NewLockNotFoundError(path string) *errors.StoreError {
 // NewLockConflictError creates error for unified lock conflicts.
 func NewLockConflictError(path string, conflict *UnifiedLockConflict) *errors.StoreError {
 	msg := "lock conflict"
-	if conflict != nil && conflict.Reason != "" {
-		msg = conflict.Reason
+	var ownerID string
+	if conflict != nil {
+		if conflict.Reason != "" {
+			msg = conflict.Reason
+		}
+		if conflict.Lock != nil {
+			ownerID = conflict.Lock.Owner.OwnerID
+		}
 	}
 	return &errors.StoreError{
-		Code:    errors.ErrLockConflict,
-		Message: msg,
-		Path:    path,
+		Code:            errors.ErrLockConflict,
+		Message:         msg,
+		Path:            path,
+		ConflictOwnerID: ownerID,
 	}
 }
 

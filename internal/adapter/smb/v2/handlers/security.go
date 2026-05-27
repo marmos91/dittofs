@@ -34,6 +34,10 @@ const (
 	SACLSecurityInformation  = 0x00000008
 )
 
+// SDBufferCreateContextTag is the SMB2_CREATE_SD_BUFFER create context tag
+// per MS-SMB2 §2.2.13.2.2 — client supplies an initial SD at CREATE time.
+const SDBufferCreateContextTag = "SecD"
+
 // Security Descriptor control flags per MS-DTYP Section 2.4.6.
 const (
 	seSelfRelative       = 0x8000
@@ -131,7 +135,9 @@ func GetSIDMapper() *sid.SIDMapper {
 //   - DACL translated from file ACL (if DACLSecurityInformation requested)
 //   - SACL empty stub (if SACLSecurityInformation requested)
 //
-// If additionalSecInfo is 0, all sections (owner, group, DACL) are included.
+// If additionalSecInfo is 0, no sections are included and a minimal empty SD
+// is returned (header only). Callers should pass explicit flags for the
+// sections they need.
 //
 // The binary field ordering follows Windows convention: SACL, DACL, Owner, Group.
 // This matches byte-level comparison expectations in smbtorture and Windows.
@@ -142,11 +148,6 @@ func GetSIDMapper() *sid.SIDMapper {
 //
 // Returns the binary Security Descriptor or an error.
 func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]byte, error) {
-	// Default: include everything if no specific flags
-	if additionalSecInfo == 0 {
-		additionalSecInfo = OwnerSecurityInformation | GroupSecurityInformation | DACLSecurityInformation
-	}
-
 	includeOwner := (additionalSecInfo & OwnerSecurityInformation) != 0
 	includeGroup := (additionalSecInfo & GroupSecurityInformation) != 0
 	includeDACL := (additionalSecInfo & DACLSecurityInformation) != 0
@@ -156,10 +157,13 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 	ownerSID := defaultSIDMapper.UserSID(file.UID)
 	groupSID := defaultSIDMapper.GroupSID(file.GID)
 
+	// Null DACL: SE_DACL_PRESENT set but no DACL body (daclOffset stays 0)
+	isNullDACL := includeDACL && file.ACL != nil && file.ACL.NullDACL
+
 	// Build DACL
 	var daclBuf bytes.Buffer
 	var fileACL *acl.ACL
-	if includeDACL {
+	if includeDACL && !isNullDACL {
 		fileACL = buildDACL(&daclBuf, file)
 	}
 
@@ -185,11 +189,16 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 	// (mirroring Samba source3/smbd/smb2_nttrans.c::canonicalize_inheritance_bits)
 	// ensures AutoInherited reflects only client SETs of (AUTO_INHERITED &&
 	// AUTO_INHERIT_REQ).
-	if fileACL != nil {
-		if fileACL.AutoInherited {
+	// Source for control flags: the built DACL, or file.ACL for null DACL case
+	flagSource := fileACL
+	if flagSource == nil && isNullDACL {
+		flagSource = file.ACL
+	}
+	if flagSource != nil {
+		if flagSource.AutoInherited {
 			control |= seDACLAutoInherited
 		}
-		if fileACL.Protected {
+		if flagSource.Protected {
 			control |= seDACLProtected
 		}
 	}
@@ -203,7 +212,7 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 		currentOffset += uint32(saclBuf.Len())
 	}
 
-	if includeDACL {
+	if includeDACL && !isNullDACL {
 		daclOffset = currentOffset
 		currentOffset += uint32(daclBuf.Len())
 	}
@@ -451,6 +460,9 @@ func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (owner
 		if err != nil {
 			return ownerUID, ownerGID, nil, fmt.Errorf("failed to parse DACL: %w", err)
 		}
+	} else if offsetDACL == 0 && control&seDACLPresent != 0 {
+		// SE_DACL_PRESENT set but offset is zero → null DACL (everyone full access)
+		fileACL = &acl.ACL{NullDACL: true}
 	}
 
 	// Surface SD Control flags onto the ACL so SE_DACL_PROTECTED and

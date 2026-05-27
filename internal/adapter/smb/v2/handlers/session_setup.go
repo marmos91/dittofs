@@ -166,11 +166,28 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 			return h.completeNTLMAuth(ctx, req.SecurityBuffer)
 		}
 
-		// Re-authentication: client sends SESSION_SETUP on an existing session
-		// with no pending auth. Per MS-SMB2 3.3.5.5.2, this initiates a new
-		// authentication on the existing session (identity update).
-		// The existing session remains valid until re-auth completes.
-		if _, ok := h.GetSession(ctx.SessionID); ok {
+		// Per MS-SMB2 §3.3.5.5: for dialects below 3.0, session lookup uses
+		// Connection.SessionTable (per-connection). A non-binding SESSION_SETUP
+		// from a different connection than the one that created the session
+		// must return STATUS_USER_SESSION_DELETED.
+		if sess, ok := h.GetSession(ctx.SessionID); ok {
+			var connDialect types.Dialect
+			if ctx.ConnCryptoState != nil {
+				connDialect = ctx.ConnCryptoState.GetDialect()
+			}
+			if connDialect < types.Dialect0300 && sess.OriginConnID != ctx.ConnID {
+				logger.Debug("SESSION_SETUP: session belongs to different connection (SMB 2.x per-connection scope)",
+					"sessionID", ctx.SessionID,
+					"sessionConnID", sess.OriginConnID,
+					"requestConnID", ctx.ConnID,
+					"dialect", fmt.Sprintf("0x%04x", uint16(connDialect)))
+				return NewErrorResult(types.StatusUserSessionDeleted), nil
+			}
+
+			// Re-authentication: client sends SESSION_SETUP on an existing session
+			// with no pending auth. Per MS-SMB2 3.3.5.5.2, this initiates a new
+			// authentication on the existing session (identity update).
+			// The existing session remains valid until re-auth completes.
 			logger.Debug("SESSION_SETUP: re-authentication on existing session",
 				"sessionID", ctx.SessionID)
 			// Fall through to normal auth flow — the NTLM negotiate handler
@@ -760,7 +777,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 		// Resolve identity mapping: check if this NTLM principal maps to a different
 		// control plane username (enables cross-protocol uid/gid consistency).
 		principal := formatNTLMPrincipal(authMsg.Domain, authMsg.Username)
-		resolvedUsername, mappingFound := h.resolveIdentityMapping(ctx.Context, principal, authMsg.Username)
+		resolvedUsername, _ := h.resolveIdentityMapping(ctx.Context, principal, authMsg.Username)
 
 		// Look up user by resolved username
 		user, err := userStore.GetUser(ctx.Context, resolvedUsername)
@@ -861,6 +878,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				}
 
 				sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
+				sess.OriginConnID = ctx.ConnID
 
 				// Configure signing with derived signing key
 				if errResult := h.configureSessionSigningWithKey(sess, signingKey[:], ctx); errResult != nil {
@@ -902,6 +920,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 			}
 
 			sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
+			sess.OriginConnID = ctx.ConnID
 
 			// No signing without proper session key derivation
 			logger.Debug("NTLM authentication complete (no credential validation)",
@@ -914,20 +933,13 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 		}
 
 		// User not found or disabled
-		if err != nil {
+		if err != nil || user == nil {
 			logger.Debug("User not found in UserStore", "username", resolvedUsername, "error", err)
-		} else if user != nil && !user.Enabled {
-			logger.Debug("User account disabled", "username", resolvedUsername)
 			h.destroySessionOnReauthFailure(ctx.Context, pending, authMsg.Username)
 			return NewErrorResult(types.StatusLogonFailure), nil
 		}
-
-		// If an identity mapping existed but the resolved user doesn't exist,
-		// hard-fail rather than falling through to guest. An operator created
-		// this mapping intentionally — silently granting guest access is wrong.
-		if mappingFound {
-			logger.Info("Identity mapping resolved but user not found, denying access",
-				"principal", principal, "resolvedUsername", resolvedUsername)
+		if !user.Enabled {
+			logger.Debug("User account disabled", "username", resolvedUsername)
 			h.destroySessionOnReauthFailure(ctx.Context, pending, authMsg.Username)
 			return NewErrorResult(types.StatusLogonFailure), nil
 		}
@@ -997,6 +1009,7 @@ func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *Pend
 	}
 
 	sess := h.CreateSessionWithID(pending.SessionID, pending.ClientAddr, true, "guest", "")
+	sess.OriginConnID = ctx.ConnID
 	ctx.IsGuest = true
 
 	logger.Info("Guest session created",
@@ -1019,6 +1032,7 @@ func (h *Handler) createGuestSession(ctx *SMBHandlerContext) (*HandlerResult, er
 	}
 
 	sess := h.CreateSession(ctx.ClientAddr, true, "guest", "")
+	sess.OriginConnID = ctx.ConnID
 
 	ctx.SessionID = sess.SessionID
 	ctx.IsGuest = true
