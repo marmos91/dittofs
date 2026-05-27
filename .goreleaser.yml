@@ -26,17 +26,6 @@ builds:
     goarch:
       - amd64
       - arm64
-      - arm
-
-    goarm:
-      - "7"  # ARMv7 for Raspberry Pi, etc.
-
-    # Ignore combinations that don't make sense
-    ignore:
-      - goos: darwin
-        goarch: arm
-      - goos: windows
-        goarch: arm
 
     ldflags:
       # Inject version info
@@ -61,17 +50,6 @@ builds:
     goarch:
       - amd64
       - arm64
-      - arm
-
-    goarm:
-      - "7"  # ARMv7 for Raspberry Pi, etc.
-
-    # Ignore combinations that don't make sense
-    ignore:
-      - goos: darwin
-        goarch: arm
-      - goos: windows
-        goarch: arm
 
     ldflags:
       # Inject version info
