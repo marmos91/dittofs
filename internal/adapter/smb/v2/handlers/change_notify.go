@@ -58,8 +58,9 @@ const (
 	// [MS-SMB2] 2.2.35 / [MS-FSCC] 2.6.
 	FileNotifyChangeStreamWrite uint32 = 0x00000800
 
-	// AllValidCompletionFilterFlags is the bitmask of all valid completion filter flags.
-	// Used to validate CHANGE_NOTIFY requests per MS-SMB2 3.3.5.15.
+	// AllValidCompletionFilterFlags is the bitmask of all recognized completion
+	// filter flags per MS-SMB2 2.2.35. Used by MatchesFilter for event routing;
+	// not used for request validation (any non-zero filter is accepted).
 	AllValidCompletionFilterFlags uint32 = FileNotifyChangeFileName | FileNotifyChangeDirName |
 		FileNotifyChangeAttributes | FileNotifyChangeSize | FileNotifyChangeLastWrite |
 		FileNotifyChangeLastAccess | FileNotifyChangeCreation | FileNotifyChangeEa |
@@ -144,7 +145,7 @@ type OnOverflow func(fileID [16]byte)
 // for an OVERWRITE/SUPERSEDE) append to the buffer. When the timer fires,
 // all accumulated events are encoded into a single FILE_NOTIFY_INFORMATION
 // response. Mirrors Samba's tevent-based deferred delivery.
-const notifyFlushDelay = 100 * time.Microsecond
+const notifyFlushDelay = 5 * time.Millisecond
 
 // PendingNotify tracks a pending CHANGE_NOTIFY request waiting for filesystem events.
 // Each instance represents one client watch registered via the CHANGE_NOTIFY command.
@@ -168,6 +169,7 @@ type PendingNotify struct {
 	// Watch parameters
 	WatchPath        string // Share-relative directory path
 	ShareName        string
+	TreeID           uint32
 	CompletionFilter uint32
 	WatchTree        bool // Recursive watching
 	MaxOutputLength  uint32
@@ -255,6 +257,7 @@ type armedHandle struct {
 	FileID           [16]byte
 	SessionID        uint64
 	ShareName        string
+	TreeID           uint32
 	WatchPath        string
 	CompletionFilter uint32
 	WatchTree        bool
@@ -273,6 +276,10 @@ type armedHandle struct {
 	// Overflowed is set on first overflow trip and prevents further
 	// OnOverflow invocations until Disarm/ResetArmedOverflow.
 	Overflowed bool
+	// BufferedEvents accumulates events that arrived when no live watcher
+	// was pending (one-shot consumed, client hasn't re-armed yet). Replayed
+	// on the next Register — mirrors Samba's notify_buffer (smb2.notify.tcon).
+	BufferedEvents []FileNotifyInformation
 }
 
 // notifyMsgKey identifies a pending notify by the tuple that uniquely names
@@ -363,6 +370,7 @@ func (r *NotifyRegistry) armLocked(n *PendingNotify) {
 		// still count.
 		existing.SessionID = n.SessionID
 		existing.ShareName = n.ShareName
+		existing.TreeID = n.TreeID
 		existing.WatchPath = n.WatchPath
 		existing.CompletionFilter = n.CompletionFilter
 		existing.WatchTree = n.WatchTree
@@ -376,11 +384,23 @@ func (r *NotifyRegistry) armLocked(n *PendingNotify) {
 		FileID:           n.FileID,
 		SessionID:        n.SessionID,
 		ShareName:        n.ShareName,
+		TreeID:           n.TreeID,
 		WatchPath:        n.WatchPath,
 		CompletionFilter: n.CompletionFilter,
 		WatchTree:        n.WatchTree,
 		MaxOutputLength:  n.MaxOutputLength,
 		OnOverflow:       n.OnOverflow,
+	}
+}
+
+// ClearBufferedEvents discards queued events on the armed handle for fileID.
+// Called after CANCEL so the next Register doesn't replay stale events
+// (smb2.notify.mask).
+func (r *NotifyRegistry) ClearBufferedEvents(fileID [16]byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if a, ok := r.armed[string(fileID[:])]; ok {
+		a.BufferedEvents = nil
 	}
 }
 
@@ -472,14 +492,22 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	r.byAsyncId[notify.AsyncId] = notify
 	r.pending[notify.WatchPath] = append(r.pending[notify.WatchPath], notify)
 
-	// Arm the handle for buffered-event accounting. The armed entry survives
-	// across CANCEL and one-shot completion of this pending notify; only
-	// CLOSE or session/tree teardown disarms it. If the handle was already
-	// armed (re-issued CHANGE_NOTIFY after a CANCEL or after a successful
-	// async completion), refresh the MaxOutputLength but preserve the
-	// running BufferedBytes / Overflowed state — events accumulated while
-	// the client wasn't waiting must continue to count.
+	// Arm (or refresh) the handle for buffered-event accounting. On re-arm,
+	// MaxOutputLength is updated but BufferedBytes/Overflowed are preserved.
 	r.armLocked(notify)
+
+	// Replay events that arrived while no live watcher was pending
+	// (goroutine-per-request race). The flush timer delivers them after
+	// notifyFlushDelay; a racing CANCEL clears them before the timer fires.
+	key := string(notify.FileID[:])
+	if a, ok := r.armed[key]; ok && len(a.BufferedEvents) > 0 {
+		for _, ev := range a.BufferedEvents {
+			if MatchesFilter(ev.Action, notify.CompletionFilter) {
+				r.bufferEventLocked(notify, ev)
+			}
+		}
+		a.BufferedEvents = nil
+	}
 
 	logger.Debug("NotifyRegistry: registered watch",
 		"path", notify.WatchPath,
@@ -739,6 +767,26 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 		relativePath := relativePathFromWatch(w.watchPath, parentPath, fileName)
 		r.bufferEventLocked(w.notify, FileNotifyInformation{Action: action, FileName: relativePath})
 	}
+	// Buffer events on armed handles that have no live watcher so they
+	// can be replayed when the first event after re-register arrives.
+	for _, a := range r.armed {
+		if a.ShareName != shareName || a.Overflowed {
+			continue
+		}
+		if _, live := liveFileIDs[a.FileID]; live {
+			continue
+		}
+		if a.WatchPath != parentPath {
+			if !a.WatchTree || !pathIsAncestor(a.WatchPath, parentPath) {
+				continue
+			}
+		}
+		if a.CompletionFilter&filter == 0 {
+			continue
+		}
+		relName := relativePathFromWatch(a.WatchPath, parentPath, fileName)
+		a.BufferedEvents = append(a.BufferedEvents, FileNotifyInformation{Action: action, FileName: relName})
+	}
 	r.mu.Unlock()
 
 	r.chargeArmedBuffer(shareName, parentPath, filter, []string{fileName}, liveFileIDs)
@@ -775,6 +823,30 @@ func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, new
 		newRelativePath := relativePathFromWatch(w.watchPath, newParentPath, newFileName)
 		r.bufferEventLocked(w.notify, FileNotifyInformation{Action: FileActionRenamedOldName, FileName: oldRelativePath})
 		r.bufferEventLocked(w.notify, FileNotifyInformation{Action: FileActionRenamedNewName, FileName: newRelativePath})
+	}
+	// Buffer rename events on armed handles with no live watcher (mirrors
+	// the same pattern in NotifyChange).
+	for _, a := range r.armed {
+		if a.ShareName != shareName || a.Overflowed {
+			continue
+		}
+		if _, live := liveFileIDs[a.FileID]; live {
+			continue
+		}
+		matchesOld := a.WatchPath == oldParentPath || (a.WatchTree && pathIsAncestor(a.WatchPath, oldParentPath))
+		matchesNew := a.WatchPath == newParentPath || (a.WatchTree && pathIsAncestor(a.WatchPath, newParentPath))
+		if !matchesOld && !matchesNew {
+			continue
+		}
+		if a.CompletionFilter&filter == 0 {
+			continue
+		}
+		oldRel := relativePathFromWatch(a.WatchPath, oldParentPath, oldFileName)
+		newRel := relativePathFromWatch(a.WatchPath, newParentPath, newFileName)
+		a.BufferedEvents = append(a.BufferedEvents,
+			FileNotifyInformation{Action: FileActionRenamedOldName, FileName: oldRel},
+			FileNotifyInformation{Action: FileActionRenamedNewName, FileName: newRel},
+		)
 	}
 	r.mu.Unlock()
 
@@ -1087,14 +1159,17 @@ func (r *NotifyRegistry) UnregisterAllForSession(sessionID uint64) []*PendingNot
 }
 
 // UnregisterAllForTree unregisters all pending watchers for a specific tree
-// connect (identified by sessionID + shareName). Sends STATUS_NOTIFY_CLEANUP
-// for each. Called during TREE_DISCONNECT cleanup.
-func (r *NotifyRegistry) UnregisterAllForTree(sessionID uint64, shareName string) []*PendingNotify {
+// connect (identified by sessionID + treeID). Uses TreeID rather than
+// ShareName because multiple tree connects to the same share each get a
+// distinct TreeID, and TREE_DISCONNECT must only tear down watchers opened
+// through *that* tree connect — not watchers from a sibling tree connect to
+// the same share (smb2.notify.tcon).
+func (r *NotifyRegistry) UnregisterAllForTree(sessionID uint64, treeID uint32) []*PendingNotify {
 	r.mu.Lock()
 	var toRemove []*PendingNotify
 	for _, watchers := range r.pending {
 		for _, w := range watchers {
-			if w.SessionID == sessionID && w.ShareName == shareName {
+			if w.SessionID == sessionID && w.TreeID == treeID {
 				toRemove = append(toRemove, w)
 			}
 		}
@@ -1103,7 +1178,7 @@ func (r *NotifyRegistry) UnregisterAllForTree(sessionID uint64, shareName string
 		r.unregisterLocked(w)
 	}
 	for key, a := range r.armed {
-		if a.SessionID == sessionID && a.ShareName == shareName {
+		if a.SessionID == sessionID && a.TreeID == treeID {
 			delete(r.armed, key)
 		}
 	}
@@ -1244,14 +1319,13 @@ func (r *AsyncResponseRegistry) Len() int {
 	return len(r.ops)
 }
 
-// IsValidCompletionFilter checks if the CompletionFilter contains only valid flags.
-// Per MS-SMB2 3.3.5.15: if CompletionFilter is 0 or contains invalid flags,
-// return STATUS_INVALID_PARAMETER.
+// IsValidCompletionFilter checks if the CompletionFilter is non-zero.
+// Per MS-SMB2 3.3.5.15: if CompletionFilter is 0, return STATUS_INVALID_PARAMETER.
+// Windows Server and Samba accept reserved/unknown bits — they simply never
+// match any event. smb2.notify.mask iterates all 32 bit positions and expects
+// each to be accepted (then cancelled).
 func IsValidCompletionFilter(filter uint32) bool {
-	// Per MS-SMB2 3.3.5.15: CompletionFilter must contain at least one valid flag.
-	// Windows Server ignores reserved/unknown bits rather than rejecting them,
-	// so we only check that at least one recognized bit is set.
-	return filter&AllValidCompletionFilterFlags != 0
+	return filter != 0
 }
 
 // relativePathFromWatch computes the relative path of a changed item from the

@@ -115,22 +115,18 @@ share modes pass due to the stub implementation.
 
 ### Change Notify (Remaining)
 
-Phase 73 Plan 03 completed async ChangeNotify infrastructure: basedir, close,
-dir, double, mask, mask-change, rec, rmdir1-4, tree, logoff, tdis,
-tdis1, tcp, tcon now pass. Remaining tests require features not yet implemented.
+Phase 73 Plan 03 completed async ChangeNotify infrastructure. Wave 2 fixed
+handle-permissions, overflow, tree, invalid-reauth, tcon (5 more flips).
+Passing: basedir, close, handle-permissions, invalid-reauth, logoff,
+overflow, rec, rmdir1-4, tcon, tdis, tdis1, tcp, tree.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.notify.handle-permissions | Change Notify | Notify per-handle permission enforcement not tested | - |
-| smb2.notify.invalid-reauth | Change Notify | Notify re-auth interaction edge case | - |
-| smb2.notify.overflow | Change Notify | Notify buffer overflow edge case | - |
-| smb2.notify.session-reconnect | Change Notify | Depends on session reconnect (not re-auth) | - |
-| smb2.notify.dir | Change Notify | Full-suite flaky (directory notify race) | - |
-| smb2.notify.tcon | Change Notify | Flaky, fails intermittently on memory and memory-fs | - |
-| smb2.notify.mask | Change Notify | Newly exposed after notify.dir hang fix (#635) | - |
-| smb2.notify.mask-change | Change Notify | Newly exposed after notify.dir hang fix (#635) | - |
-| smb2.notify.tree | Change Notify | Newly exposed after notify.dir hang fix (#635) | - |
-| smb2.notify.valid-req | Change Notify | CompletionFilter validation rejects previously-accepted requests | - |
+| smb2.notify.valid-req | Change Notify | Needs kernel inotify for MODIFIED on WRITE (also fails on reference Samba in Docker) | - |
+| smb2.notify.session-reconnect | Change Notify | PreviousSessionID signing key derivation mismatch (not notify-specific) | - |
+| smb2.notify.dir | Change Notify | CLOSE can race ahead of CHANGE_NOTIFY (goroutine-per-request); close-triggers-cleanup expects buffered events | - |
+| smb2.notify.mask | Change Notify | Armed-handle event replay interacts with NOTIFY_MASK_TEST cancel-setup pattern | - |
+| smb2.notify.mask-change | Change Notify | SHARING_VIOLATION on directory open (pre-existing, never passed individually) | - |
 
 ### Oplocks (Multi-Client Coordination Not Implemented)
 
@@ -651,7 +647,7 @@ Removed from known failures:
 Added 2 new failures:
 
 - `smb2.create.multi` — regression from recent changes, fails on all 3 stores
-- `smb2.notify.tcon` — flaky, fails intermittently on memory and memory-fs
+- `smb2.notify.tcon` — fixed: armed-handle event buffering + TreeID-scoped tree disconnect
 
 ### 2026-04-27 — Round 7 lease cluster: ClientGUID-scoped break dispatch (`v2_complex1`)
 

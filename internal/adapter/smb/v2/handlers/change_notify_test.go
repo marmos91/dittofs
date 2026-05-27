@@ -913,7 +913,7 @@ func TestIsValidCompletionFilter(t *testing.T) {
 		{"zero is invalid", 0, false},
 		{"all valid flags", AllValidCompletionFilterFlags, true},
 		{"single valid flag", FileNotifyChangeFileName, true},
-		{"reserved-only bit is invalid", 0x80000000, false},
+		{"reserved-only bit is valid", 0x80000000, true},
 		{"valid + reserved mixed is valid", FileNotifyChangeFileName | 0x80000000, true},
 	}
 	for _, tt := range tests {
@@ -1128,19 +1128,12 @@ func TestIsValidCompletionFilter_AllBits(t *testing.T) {
 		}
 	}
 
-	// Reserved bits alone (no valid bits) should be rejected
+	// Reserved bits alone are accepted (Windows/Samba behavior: they never
+	// match any event but are not rejected at the filter-validation gate).
 	reservedOnlyBits := []uint32{0x00001000, 0x00010000, 0x01000000, 0x80000000}
 	for _, bit := range reservedOnlyBits {
-		if IsValidCompletionFilter(bit) {
-			t.Errorf("IsValidCompletionFilter(0x%08X) = true, want false (reserved-only)", bit)
-		}
-	}
-
-	// Reserved bits combined with valid bits should be accepted (Windows behavior)
-	for _, bit := range reservedOnlyBits {
-		mixed := bit | FileNotifyChangeFileName
-		if !IsValidCompletionFilter(mixed) {
-			t.Errorf("IsValidCompletionFilter(0x%08X) = false, want true (valid + reserved)", mixed)
+		if !IsValidCompletionFilter(bit) {
+			t.Errorf("IsValidCompletionFilter(0x%08X) = false, want true (non-zero)", bit)
 		}
 	}
 }
@@ -1677,26 +1670,26 @@ func TestReleaseSessionLeasesAndNotifies_FiresCleanupSynchronously(t *testing.T)
 func TestUnregisterAllForTree_PreservesOtherTrees(t *testing.T) {
 	r := NewNotifyRegistry()
 
-	// Same session, different shares
+	// Same session and share, different tree IDs (two tree connects to same share)
 	mustRegister(t, r, &PendingNotify{
 		FileID: [16]byte{1}, SessionID: 100, MessageID: 10, AsyncId: 1000,
-		WatchPath: "/dir1", ShareName: "share1", CompletionFilter: FileNotifyChangeFileName,
+		WatchPath: "/dir1", ShareName: "share1", TreeID: 1, CompletionFilter: FileNotifyChangeFileName,
 	})
 	mustRegister(t, r, &PendingNotify{
 		FileID: [16]byte{2}, SessionID: 100, MessageID: 20, AsyncId: 2000,
-		WatchPath: "/dir1", ShareName: "share2", CompletionFilter: FileNotifyChangeFileName,
+		WatchPath: "/dir1", ShareName: "share1", TreeID: 2, CompletionFilter: FileNotifyChangeFileName,
 	})
 
-	// Disconnect share1 tree only
-	removed := r.UnregisterAllForTree(100, "share1")
+	// Disconnect tree 1 only
+	removed := r.UnregisterAllForTree(100, 1)
 	if len(removed) != 1 {
-		t.Errorf("expected 1 watcher removed for share1, got %d", len(removed))
+		t.Errorf("expected 1 watcher removed for tree 1, got %d", len(removed))
 	}
 
-	// share2 watcher must remain
+	// Tree 2 watcher must remain
 	watchers := r.GetWatchersForPath("/dir1")
-	if len(watchers) != 1 || watchers[0].ShareName != "share2" {
-		t.Errorf("expected share2 watcher to remain, got %d watchers", len(watchers))
+	if len(watchers) != 1 || watchers[0].TreeID != 2 {
+		t.Errorf("expected tree 2 watcher to remain, got %d watchers", len(watchers))
 	}
 }
 

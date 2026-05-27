@@ -240,6 +240,11 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 				"asyncId", cancelled.AsyncId,
 				"messageID", cancelled.MessageID)
 
+			// Discard events that arrived while the watcher was live —
+			// the client abandoned them. Without this, the next register
+			// replays stale events (smb2.notify.mask).
+			h.NotifyRegistry.ClearBufferedEvents(cancelled.FileID)
+
 			// Send STATUS_CANCELLED for the original CHANGE_NOTIFY request
 			// via the async callback. This completes the pending request.
 			if cancelled.AsyncCallback != nil {
@@ -407,8 +412,13 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// Get the open file (must be a directory)
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
+		// Per MS-SMB2 3.3.5.19: if the handle is gone, the directory was
+		// already closed. Return NOTIFY_CLEANUP rather than FILE_CLOSED so
+		// the client interprets this as "your watch was cleaned up" — the
+		// CLOSE goroutine may have raced ahead of this CHANGE_NOTIFY
+		// goroutine (smb2.notify.dir close-triggers-cleanup subtest).
 		logger.Debug("CHANGE_NOTIFY: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
-		return NewErrorResult(types.StatusFileClosed), nil
+		return NewErrorResult(types.StatusNotifyCleanup), nil
 	}
 
 	// Verify it's a directory
@@ -486,9 +496,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// completion. Also reset the registry's buffered-event accounting so
 	// the buffer starts fresh with the newly advertised OutputBufferLength.
 	if openFile.NotifyOverflowed.CompareAndSwap(true, false) {
-		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.ResetArmedOverflow(req.FileID, req.OutputBufferLength)
-		}
+		h.NotifyRegistry.ResetArmedOverflow(req.FileID, req.OutputBufferLength)
 		respBytes, err := (&ChangeNotifyResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
 		}).Encode()
@@ -548,6 +556,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		AsyncId:          asyncId,
 		WatchPath:        watchPath,
 		ShareName:        openFile.ShareName,
+		TreeID:           ctx.TreeID,
 		CompletionFilter: effectiveFilter,
 		WatchTree:        req.Flags&SMB2WatchTree != 0,
 		MaxOutputLength:  effectiveMax,
