@@ -136,9 +136,22 @@ func (s *BadgerMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockst
 	return hs, nil
 }
 
+// kvEntry holds a single key-value pair collected during restore stream
+// parsing, before CRC verification. Entries are buffered in RAM (metadata
+// streams are typically megabytes) and only flushed to Badger after the
+// trailing CRC confirms stream integrity.
+type kvEntry struct {
+	Key   []byte
+	Value []byte
+}
+
 // Restore reads a backup stream from r and rebuilds metadata state in the
 // Badger store. The store must be empty (no existing share data); otherwise
 // ErrRestoreDestinationNotEmpty is returned.
+//
+// Integrity guarantee: all KV entries are collected in memory first, the
+// trailing CRC is verified, and only then are entries written to Badger
+// via WriteBatch. A corrupt stream leaves the store empty and retryable.
 func (s *BadgerMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 	// Check destination is empty by looking for any s: prefix key.
 	isEmpty, err := s.isStoreEmpty()
@@ -170,20 +183,20 @@ func (s *BadgerMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 		return fmt.Errorf("%w: got version %d, want %d", metadata.ErrSchemaVersionMismatch, schemaVer, badgerSchemaVersion)
 	}
 
-	// Read KV pairs using WriteBatch for large-database safety.
-	wb := s.db.NewWriteBatch()
-	entryCount := 0
+	// Phase 1: Collect all KV entries into memory without writing to Badger.
+	// The payloadReader is a tee reader that accumulates bytes into the CRC
+	// hash. By the time the sentinel is read, the accumulator covers the
+	// entire payload and VerifyCRC can validate the trailing 4 CRC bytes.
+	var entries []kvEntry
 
 	var buf [4]byte
 	for {
 		if err := ctx.Err(); err != nil {
-			wb.Cancel()
 			return fmt.Errorf("%w: %v", metadata.ErrRestoreCorrupt, err)
 		}
 
 		// Read key_len.
 		if _, err := io.ReadFull(payloadReader, buf[:]); err != nil {
-			wb.Cancel()
 			return fmt.Errorf("%w: read key_len: %v", metadata.ErrRestoreCorrupt, err)
 		}
 		keyLen := binary.LittleEndian.Uint32(buf[:])
@@ -196,13 +209,11 @@ func (s *BadgerMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 		// Read key.
 		key := make([]byte, keyLen)
 		if _, err := io.ReadFull(payloadReader, key); err != nil {
-			wb.Cancel()
 			return fmt.Errorf("%w: read key: %v", metadata.ErrRestoreCorrupt, err)
 		}
 
 		// Read value_len.
 		if _, err := io.ReadFull(payloadReader, buf[:]); err != nil {
-			wb.Cancel()
 			return fmt.Errorf("%w: read value_len: %v", metadata.ErrRestoreCorrupt, err)
 		}
 		valLen := binary.LittleEndian.Uint32(buf[:])
@@ -210,18 +221,28 @@ func (s *BadgerMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 		// Read value.
 		val := make([]byte, valLen)
 		if _, err := io.ReadFull(payloadReader, val); err != nil {
-			wb.Cancel()
 			return fmt.Errorf("%w: read value: %v", metadata.ErrRestoreCorrupt, err)
 		}
 
-		// Write entry to batch.
-		if err := wb.SetEntry(badgerdb.NewEntry(key, val)); err != nil {
+		entries = append(entries, kvEntry{Key: key, Value: val})
+	}
+
+	// Phase 2: Verify CRC BEFORE any durable write.
+	// The tee reader has accumulated all payload bytes; the original reader
+	// r still has the trailing 4 CRC bytes unread.
+	if err := backup.VerifyCRC(r, acc); err != nil {
+		return fmt.Errorf("%w: %v", metadata.ErrRestoreCorrupt, err)
+	}
+
+	// Phase 3: CRC verified — flush entries to Badger via WriteBatch.
+	wb := s.db.NewWriteBatch()
+	for i, e := range entries {
+		if err := wb.SetEntry(badgerdb.NewEntry(e.Key, e.Value)); err != nil {
 			wb.Cancel()
 			return fmt.Errorf("%w: set entry: %v", metadata.ErrRestoreCorrupt, err)
 		}
 
-		entryCount++
-		if entryCount%restoreBatchSize == 0 {
+		if (i+1)%restoreBatchSize == 0 {
 			if err := wb.Flush(); err != nil {
 				return fmt.Errorf("%w: flush batch: %v", metadata.ErrRestoreCorrupt, err)
 			}
@@ -232,11 +253,6 @@ func (s *BadgerMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 	// Flush remaining entries.
 	if err := wb.Flush(); err != nil {
 		return fmt.Errorf("%w: flush final batch: %v", metadata.ErrRestoreCorrupt, err)
-	}
-
-	// Verify CRC using the original reader (not the tee/payload reader).
-	if err := backup.VerifyCRC(r, acc); err != nil {
-		return fmt.Errorf("%w: %v", metadata.ErrRestoreCorrupt, err)
 	}
 
 	return nil
