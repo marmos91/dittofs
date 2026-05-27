@@ -690,6 +690,8 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			nameFilter := uint32(FileNotifyChangeFileName)
 			if openFile.IsDirectory {
 				nameFilter = FileNotifyChangeDirName
+			} else if strings.Contains(baseName, ":") {
+				nameFilter = FileNotifyChangeStreamName
 			}
 			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionAdded, nameFilter)
 		case types.FileOverwritten, types.FileSuperseded:
