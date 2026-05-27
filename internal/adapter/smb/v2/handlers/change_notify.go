@@ -138,6 +138,14 @@ type AsyncResponseCallback func(sessionID, messageID, asyncId uint64, response *
 // all do"). Wired by the registering handler; nil for unit tests.
 type OnOverflow func(fileID [16]byte)
 
+// notifyFlushDelay is the accumulation window for buffered CHANGE_NOTIFY
+// events. When the first event matches a live watcher, a timer starts;
+// subsequent events from the same burst (e.g. REMOVED + ADDED + MODIFIED
+// for an OVERWRITE/SUPERSEDE) append to the buffer. When the timer fires,
+// all accumulated events are encoded into a single FILE_NOTIFY_INFORMATION
+// response. Mirrors Samba's tevent-based deferred delivery.
+const notifyFlushDelay = 100 * time.Microsecond
+
 // PendingNotify tracks a pending CHANGE_NOTIFY request waiting for filesystem events.
 // Each instance represents one client watch registered via the CHANGE_NOTIFY command.
 // It stores the watch path, completion filter, and the async callback for delivering
@@ -173,6 +181,14 @@ type PendingNotify struct {
 	// STATUS_NOTIFY_ENUM_DIR so the open handle's sticky overflow flag can
 	// be set. Optional.
 	OnOverflow OnOverflow
+
+	// bufferedChanges accumulates events during the notifyFlushDelay window.
+	// Protected by NotifyRegistry.mu.
+	bufferedChanges []FileNotifyInformation
+
+	// flushTimer fires after notifyFlushDelay to deliver all buffered events.
+	// nil when no events are buffered. Protected by NotifyRegistry.mu.
+	flushTimer *time.Timer
 }
 
 // NotifyRegistry manages pending CHANGE_NOTIFY requests from SMB2 clients.
@@ -520,9 +536,14 @@ func (r *NotifyRegistry) UnregisterByAsyncId(asyncId uint64) *PendingNotify {
 	return r.unregisterLocked(notify)
 }
 
-// unregisterLocked removes a PendingNotify from all internal maps.
-// Must be called with r.mu held.
+// unregisterLocked removes a PendingNotify from all internal maps and cancels
+// any pending flush timer. Must be called with r.mu held.
 func (r *NotifyRegistry) unregisterLocked(notify *PendingNotify) *PendingNotify {
+	if notify.flushTimer != nil {
+		notify.flushTimer.Stop()
+		notify.flushTimer = nil
+	}
+
 	fileIDKey := string(notify.FileID[:])
 	delete(r.byFileID, fileIDKey)
 	delete(r.byMsgKey, notifyMsgKey{ConnID: notify.ConnID, MessageID: notify.MessageID})
@@ -703,77 +724,42 @@ func EncodeFileNotifyInformation(changes []FileNotifyInformation) []byte {
 // ============================================================================
 
 // NotifyChange records a filesystem change that may trigger pending CHANGE_NOTIFY
-// requests. When a matching watcher has an AsyncCallback set, it sends the
-// async response. Otherwise, the change is logged for debugging.
+// requests. Events are buffered for notifyFlushDelay before delivery so that
+// multiple events from the same burst (e.g. OVERWRITE -> REMOVED+ADDED+MODIFIED)
+// are batched into a single response.
 //
-// Parameters:
-//   - shareName: The share where the change occurred
-//   - parentPath: Share-relative path of the directory containing the changed item
-//   - fileName: Name of the changed file/directory
-//   - action: One of FileAction* constants
-//
-// The function walks up the directory hierarchy to support recursive (WatchTree)
-// watchers. When a matching watcher is found:
-//  1. Builds a FileNotifyInformation structure with the change details
-//  2. Encodes it into the response format
-//  3. Calls the AsyncCallback to send the response
-//  4. Unregisters the watcher (CHANGE_NOTIFY is one-shot per request)
-func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, action uint32) {
-	r.mu.RLock()
-	watchers := r.findWatchersLocked(shareName, parentPath, action)
+// filter specifies which FILE_NOTIFY_CHANGE_* flags this event matches. Only
+// watchers whose CompletionFilter intersects filter are notified.
+func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, action uint32, filter uint32) {
+	r.mu.Lock()
+	watchers := r.findWatchersLocked(shareName, parentPath, filter)
 	liveFileIDs := make(map[[16]byte]struct{}, len(watchers))
 	for _, w := range watchers {
 		liveFileIDs[w.notify.FileID] = struct{}{}
-	}
-	r.mu.RUnlock()
-
-	for _, w := range watchers {
 		relativePath := relativePathFromWatch(w.watchPath, parentPath, fileName)
-		changes := []FileNotifyInformation{
-			{Action: action, FileName: relativePath},
-		}
-		r.sendAndUnregister(w.notify, changes, actionToString(action))
+		r.bufferEventLocked(w.notify, FileNotifyInformation{Action: action, FileName: relativePath})
 	}
+	r.mu.Unlock()
 
-	// Charge against armed-but-unsatisfied handles so subsequent events
-	// while the client isn't waiting still count toward overflow. Handles
-	// with a live watcher were already serviced above and are excluded.
-	r.chargeArmedBuffer(shareName, parentPath, action, []string{fileName}, liveFileIDs)
+	r.chargeArmedBuffer(shareName, parentPath, filter, []string{fileName}, liveFileIDs)
 }
 
-// NotifyRename records a rename event as a paired FILE_NOTIFY_INFORMATION response.
-//
-// Per [MS-FSCC] 2.4.42 and [MS-SMB2] 3.3.4.4, a rename notification MUST contain
-// two entries in a single response: FILE_ACTION_RENAMED_OLD_NAME followed by
-// FILE_ACTION_RENAMED_NEW_NAME. Sending them as separate one-shot notifications
-// is incorrect because CHANGE_NOTIFY is one-shot -- the first notification
-// unregisters the watcher, causing the second to be silently dropped.
-//
-// Parameters:
-//   - shareName: The share where the rename occurred
-//   - oldParentPath: Share-relative directory path of the old location
-//   - oldFileName: Old filename
-//   - newParentPath: Share-relative directory path of the new location
-//   - newFileName: New filename
-func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, newParentPath, newFileName string) {
-	r.mu.RLock()
+// NotifyRename records a rename as a paired FILE_ACTION_RENAMED_OLD_NAME /
+// FILE_ACTION_RENAMED_NEW_NAME response. filter specifies the
+// FILE_NOTIFY_CHANGE_* flags (typically FileName or DirName).
+func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, newParentPath, newFileName string, filter uint32) {
+	r.mu.Lock()
 
-	// Walk up from the old parent path to find watchers.
-	// We match against the old parent path as the primary watch target,
-	// since that's where Explorer has its directory watch.
-	oldWatchers := r.findWatchersLocked(shareName, oldParentPath, FileActionRenamedOldName)
+	oldWatchers := r.findWatchersLocked(shareName, oldParentPath, filter)
 
-	// Also walk up from the new parent path if different, to catch watchers
-	// on the destination directory that aren't ancestors of the old path.
 	var newWatchers []watcherMatch
 	if newParentPath != oldParentPath {
-		// Build a set of already-matched FileIDs for O(1) dedup lookup
 		matchedFileIDs := make(map[[16]byte]struct{}, len(oldWatchers))
 		for _, m := range oldWatchers {
 			matchedFileIDs[m.notify.FileID] = struct{}{}
 		}
 
-		allNew := r.findWatchersLocked(shareName, newParentPath, FileActionRenamedNewName)
+		allNew := r.findWatchersLocked(shareName, newParentPath, filter)
 		for _, m := range allNew {
 			if _, alreadyMatched := matchedFileIDs[m.notify.FileID]; !alreadyMatched {
 				newWatchers = append(newWatchers, m)
@@ -785,28 +771,16 @@ func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, new
 	liveFileIDs := make(map[[16]byte]struct{}, len(combined))
 	for _, w := range combined {
 		liveFileIDs[w.notify.FileID] = struct{}{}
-	}
-	r.mu.RUnlock()
-
-	// Send paired rename notifications for all matched watchers.
-	// Both old and new names are computed relative to each watcher's watch path,
-	// so recursive watchers at higher-level directories report correct paths.
-	for _, w := range combined {
 		oldRelativePath := relativePathFromWatch(w.watchPath, oldParentPath, oldFileName)
 		newRelativePath := relativePathFromWatch(w.watchPath, newParentPath, newFileName)
-		changes := []FileNotifyInformation{
-			{Action: FileActionRenamedOldName, FileName: oldRelativePath},
-			{Action: FileActionRenamedNewName, FileName: newRelativePath},
-		}
-		r.sendAndUnregister(w.notify, changes, "RENAME")
+		r.bufferEventLocked(w.notify, FileNotifyInformation{Action: FileActionRenamedOldName, FileName: oldRelativePath})
+		r.bufferEventLocked(w.notify, FileNotifyInformation{Action: FileActionRenamedNewName, FileName: newRelativePath})
 	}
+	r.mu.Unlock()
 
-	// Charge against any armed handles that did not have a live waiter.
-	// Both directories are checked so handles armed on either end of a
-	// cross-directory rename are accounted for.
-	r.chargeArmedBuffer(shareName, oldParentPath, FileActionRenamedOldName, []string{oldFileName, newFileName}, liveFileIDs)
+	r.chargeArmedBuffer(shareName, oldParentPath, filter, []string{oldFileName, newFileName}, liveFileIDs)
 	if newParentPath != oldParentPath {
-		r.chargeArmedBuffer(shareName, newParentPath, FileActionRenamedNewName, []string{oldFileName, newFileName}, liveFileIDs)
+		r.chargeArmedBuffer(shareName, newParentPath, filter, []string{oldFileName, newFileName}, liveFileIDs)
 	}
 }
 
@@ -830,7 +804,7 @@ func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, new
 // (source3/smbd/notify.c) likewise marshals the stored per-watcher name,
 // with UTF-16 length doubling and a 4-byte alignment pad.
 func (r *NotifyRegistry) chargeArmedBuffer(
-	shareName, parentPath string, action uint32,
+	shareName, parentPath string, filter uint32,
 	candidateNames []string,
 	skipFileIDs map[[16]byte]struct{},
 ) {
@@ -861,7 +835,7 @@ func (r *NotifyRegistry) chargeArmedBuffer(
 				continue
 			}
 		}
-		if !MatchesFilter(action, a.CompletionFilter) {
+		if a.CompletionFilter&filter == 0 {
 			continue
 		}
 		if a.Overflowed {
@@ -936,9 +910,9 @@ type watcherMatch struct {
 }
 
 // findWatchersLocked walks up the directory hierarchy from parentPath to find
-// watchers matching the given share and action. Must be called with r.mu held
-// (at least read-locked). Returns matched watchers with their watch paths.
-func (r *NotifyRegistry) findWatchersLocked(shareName, parentPath string, action uint32) []watcherMatch {
+// watchers whose CompletionFilter intersects the event's filter mask. Must be
+// called with r.mu held (at least read-locked).
+func (r *NotifyRegistry) findWatchersLocked(shareName, parentPath string, filter uint32) []watcherMatch {
 	var matches []watcherMatch
 
 	currentPath := parentPath
@@ -950,7 +924,7 @@ func (r *NotifyRegistry) findWatchersLocked(shareName, parentPath string, action
 			if currentPath != parentPath && !w.WatchTree {
 				continue
 			}
-			if !MatchesFilter(action, w.CompletionFilter) {
+			if w.CompletionFilter&filter == 0 {
 				continue
 			}
 			matches = append(matches, watcherMatch{notify: w, watchPath: currentPath})
@@ -965,58 +939,65 @@ func (r *NotifyRegistry) findWatchersLocked(shareName, parentPath string, action
 	return matches
 }
 
-// sendAndUnregister encodes a list of FileNotifyInformation changes, sends
-// the notification via the watcher's AsyncCallback, and unregisters the
-// watcher (CHANGE_NOTIFY is one-shot). If the encoded buffer exceeds the
-// watcher's MaxOutputLength, the watcher is unregistered without sending.
-func (r *NotifyRegistry) sendAndUnregister(w *PendingNotify, changes []FileNotifyInformation, label string) {
-	// Unregister FIRST to prevent double-fire: two concurrent NotifyChange calls
-	// can both snapshot the same watcher under RLock. By unregistering before
-	// calling the callback, only the first caller proceeds (Unregister returns
-	// nil for the second). This is critical because sending two async responses
-	// for the same MessageID violates the protocol.
-	removed := r.Unregister(w.FileID)
-	if removed == nil {
-		return // already fired by another goroutine
+// bufferEventLocked appends a change to the watcher's buffer and starts the
+// flush timer on the first event. Must be called with r.mu held for write.
+func (r *NotifyRegistry) bufferEventLocked(notify *PendingNotify, change FileNotifyInformation) {
+	notify.bufferedChanges = append(notify.bufferedChanges, change)
+	if notify.flushTimer == nil {
+		fileID := notify.FileID
+		notify.flushTimer = time.AfterFunc(notifyFlushDelay, func() {
+			r.flushWatcher(fileID)
+		})
 	}
+}
 
-	if removed.AsyncCallback == nil {
-		logger.Debug("CHANGE_NOTIFY: would notify watcher (no callback)",
-			"watchPath", removed.WatchPath,
-			"action", label,
-			"messageID", removed.MessageID)
+// flushWatcher drains the buffered events for a watcher identified by fileID,
+// unregisters it (one-shot), and sends the async response. Called by the flush
+// timer after notifyFlushDelay.
+func (r *NotifyRegistry) flushWatcher(fileID [16]byte) {
+	r.mu.Lock()
+	key := string(fileID[:])
+	notify, ok := r.byFileID[key]
+	if !ok {
+		r.mu.Unlock()
+		return
+	}
+	changes := notify.bufferedChanges
+	notify.bufferedChanges = nil
+	notify.flushTimer = nil
+	r.unregisterLocked(notify)
+	r.mu.Unlock()
+
+	r.deliverChanges(notify, changes)
+}
+
+// deliverChanges encodes and sends buffered events via the watcher's
+// AsyncCallback. Called from flushWatcher (timer path) and FlushAll (test
+// path). Must be called AFTER the watcher is unregistered — caller is
+// responsible for one-shot semantics.
+func (r *NotifyRegistry) deliverChanges(notify *PendingNotify, changes []FileNotifyInformation) {
+	if notify.AsyncCallback == nil || len(changes) == 0 {
 		return
 	}
 
 	buffer := EncodeFileNotifyInformation(changes)
 
-	// Per MS-SMB2 3.3.4.4 / MS-FSCC 2.4.42: when the encoded notification
-	// exceeds MaxOutputLength, complete the request with STATUS_NOTIFY_ENUM_DIR
-	// to tell the client to re-enumerate the directory.
-	//
-	// The "if the first notify returns NOTIFY_ENUM_DIR, all do" property
-	// from smb2.notify.valid-req is satisfied at the handler layer: the
-	// handle's NotifyMaxBufferSize is fixed by the first CHANGE_NOTIFY and
-	// MIN-capped into MaxOutputLength here on every subsequent request.
-	if uint32(len(buffer)) > removed.MaxOutputLength {
-		logger.Warn("CHANGE_NOTIFY: notification exceeds MaxOutputLength; sending STATUS_NOTIFY_ENUM_DIR",
-			"watchPath", removed.WatchPath,
-			"action", label,
+	if uint32(len(buffer)) > notify.MaxOutputLength {
+		logger.Warn("CHANGE_NOTIFY: flush exceeds MaxOutputLength; sending STATUS_NOTIFY_ENUM_DIR",
+			"watchPath", notify.WatchPath,
+			"numChanges", len(changes),
 			"encodedLength", len(buffer),
-			"maxOutputLength", removed.MaxOutputLength,
-			"messageID", removed.MessageID)
-		// Mark the handle as overflowed so the next CHANGE_NOTIFY on it
-		// also returns ENUM_DIR per Samba notify_buffer semantics.
-		if removed.OnOverflow != nil {
-			removed.OnOverflow(removed.FileID)
+			"maxOutputLength", notify.MaxOutputLength,
+			"messageID", notify.MessageID)
+		if notify.OnOverflow != nil {
+			notify.OnOverflow(notify.FileID)
 		}
 		enumResp := &ChangeNotifyResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
 		}
-		if err := removed.AsyncCallback(removed.SessionID, removed.MessageID, removed.AsyncId, enumResp); err != nil {
+		if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, enumResp); err != nil {
 			logger.Warn("CHANGE_NOTIFY: failed to send STATUS_NOTIFY_ENUM_DIR",
-				"messageID", removed.MessageID,
-				"error", err)
+				"messageID", notify.MessageID, "error", err)
 		}
 		return
 	}
@@ -1026,16 +1007,15 @@ func (r *NotifyRegistry) sendAndUnregister(w *PendingNotify, changes []FileNotif
 		Buffer:             buffer,
 	}
 
-	logger.Debug("CHANGE_NOTIFY: sending async response",
-		"watchPath", removed.WatchPath,
-		"action", label,
-		"messageID", removed.MessageID,
-		"sessionID", removed.SessionID)
+	logger.Debug("CHANGE_NOTIFY: flush — sending async response",
+		"watchPath", notify.WatchPath,
+		"numChanges", len(changes),
+		"messageID", notify.MessageID,
+		"sessionID", notify.SessionID)
 
-	if err := removed.AsyncCallback(removed.SessionID, removed.MessageID, removed.AsyncId, response); err != nil {
+	if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, response); err != nil {
 		logger.Warn("CHANGE_NOTIFY: failed to send async response",
-			"messageID", removed.MessageID,
-			"error", err)
+			"messageID", notify.MessageID, "error", err)
 	}
 }
 
@@ -1078,7 +1058,7 @@ func (r *NotifyRegistry) NotifyRmdir(shareName, parentPath, dirName string) {
 	}
 
 	// Second: notify parent watchers about the directory removal
-	r.NotifyChange(shareName, parentPath, dirName, FileActionRemoved)
+	r.NotifyChange(shareName, parentPath, dirName, FileActionRemoved, FileNotifyChangeDirName)
 }
 
 // UnregisterAllForSession unregisters all pending watchers for a session.
@@ -1130,6 +1110,39 @@ func (r *NotifyRegistry) UnregisterAllForTree(sessionID uint64, shareName string
 	}
 	r.mu.Unlock()
 	return toRemove
+}
+
+// FlushAll stops all pending flush timers and immediately delivers buffered
+// events for every watcher that has data. Drains buffers under the lock to
+// prevent a TOCTOU race where a concurrent NotifyChange buffers an event
+// between the timer stop and the flush. Used by unit tests.
+func (r *NotifyRegistry) FlushAll() {
+	type snapshot struct {
+		notify  *PendingNotify
+		changes []FileNotifyInformation
+	}
+	r.mu.Lock()
+	var snaps []snapshot
+	for _, notify := range r.byFileID {
+		if len(notify.bufferedChanges) == 0 {
+			continue
+		}
+		if notify.flushTimer != nil {
+			notify.flushTimer.Stop()
+			notify.flushTimer = nil
+		}
+		snaps = append(snaps, snapshot{
+			notify:  notify,
+			changes: notify.bufferedChanges,
+		})
+		notify.bufferedChanges = nil
+		r.unregisterLocked(notify)
+	}
+	r.mu.Unlock()
+
+	for _, s := range snaps {
+		r.deliverChanges(s.notify, s.changes)
+	}
 }
 
 // WatcherCount returns the total number of pending notify watchers.
@@ -1240,30 +1253,6 @@ func IsValidCompletionFilter(filter uint32) bool {
 	// Windows Server ignores reserved/unknown bits rather than rejecting them,
 	// so we only check that at least one recognized bit is set.
 	return filter&AllValidCompletionFilterFlags != 0
-}
-
-// actionToString converts an action code to a readable string.
-func actionToString(action uint32) string {
-	switch action {
-	case FileActionAdded:
-		return "ADDED"
-	case FileActionRemoved:
-		return "REMOVED"
-	case FileActionModified:
-		return "MODIFIED"
-	case FileActionRenamedOldName:
-		return "RENAMED_OLD"
-	case FileActionRenamedNewName:
-		return "RENAMED_NEW"
-	case FileActionAddedStream:
-		return "ADDED_STREAM"
-	case FileActionRemovedStream:
-		return "REMOVED_STREAM"
-	case FileActionModifiedStream:
-		return "MODIFIED_STREAM"
-	default:
-		return fmt.Sprintf("UNKNOWN(0x%X)", action)
-	}
 }
 
 // relativePathFromWatch computes the relative path of a changed item from the

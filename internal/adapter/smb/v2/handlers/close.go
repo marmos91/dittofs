@@ -399,7 +399,11 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 					if h.NotifyRegistry != nil {
 						parentPath := GetParentPath(openFile.Path)
-						h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved)
+						nameFilter := uint32(FileNotifyChangeFileName)
+						if openFile.IsDirectory {
+							nameFilter = FileNotifyChangeDirName
+						}
+						h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved, nameFilter)
 					}
 				}
 			}
