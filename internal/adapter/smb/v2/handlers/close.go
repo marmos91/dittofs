@@ -349,23 +349,9 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		// For base file DOC: also check for open stream handles.
 		if !otherHandleExists && isBaseFile && !openFile.BaseFileDeletePending {
 			basePrefix := openFile.FileName + ":"
-			h.files.Range(func(_, value any) bool {
-				other := value.(*OpenFile)
-				if other.FileID == openFile.FileID {
-					return true
-				}
-				if other.IsPipe {
-					return true
-				}
-				// Check if this is a stream of the same base file: same parent
-				// directory and filename starts with "baseFile:".
-				if bytes.Equal(other.ParentHandle, openFile.ParentHandle) &&
-					len(other.FileName) > len(basePrefix) &&
-					strings.EqualFold(other.FileName[:len(basePrefix)], basePrefix) {
-					streamHandleExists = true
-					return false
-				}
-				return true
+			h.rangeStreamsOfBase(openFile.FileID, openFile.ParentHandle, basePrefix, func(other *OpenFile) bool {
+				streamHandleExists = true
+				return false
 			})
 		}
 
@@ -374,17 +360,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		// base file removal must wait until ALL such handles close.
 		if !otherHandleExists && !streamHandleExists && openFile.BaseFileDeletePending {
 			basePrefix := openFile.BaseFileDeleteFileName + ":"
-			h.files.Range(func(_, value any) bool {
-				other := value.(*OpenFile)
-				if other.FileID == openFile.FileID {
-					return true
-				}
-				if other.IsPipe {
-					return true
-				}
-				if bytes.Equal(other.ParentHandle, openFile.BaseFileDeleteParentHandle) &&
-					strings.HasPrefix(other.FileName, basePrefix) &&
-					other.BaseFileDeletePending {
+			h.rangeStreamsOfBase(openFile.FileID, openFile.BaseFileDeleteParentHandle, basePrefix, func(other *OpenFile) bool {
+				if other.BaseFileDeletePending {
 					otherHandleExists = true
 					return false
 				}
@@ -418,24 +395,13 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// stream handles close. Mark them with BaseFileDeletePending so
 			// the last stream CLOSE triggers the base file removal.
 			basePrefix := openFile.FileName + ":"
-			h.files.Range(func(_, value any) bool {
-				other := value.(*OpenFile)
-				if other.FileID == openFile.FileID {
-					return true
-				}
-				if other.IsPipe {
-					return true
-				}
-				if bytes.Equal(other.ParentHandle, openFile.ParentHandle) &&
-					len(other.FileName) > len(basePrefix) &&
-					strings.EqualFold(other.FileName[:len(basePrefix)], basePrefix) {
-					other.BaseFileDeletePending = true
-					other.BaseFileDeleteParentHandle = openFile.ParentHandle
-					other.BaseFileDeleteFileName = openFile.FileName
-					other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
-					other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
-					h.StoreOpenFile(other)
-				}
+			h.rangeStreamsOfBase(openFile.FileID, openFile.ParentHandle, basePrefix, func(other *OpenFile) bool {
+				other.BaseFileDeletePending = true
+				other.BaseFileDeleteParentHandle = openFile.ParentHandle
+				other.BaseFileDeleteFileName = openFile.FileName
+				other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
+				other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
+				h.StoreOpenFile(other)
 				return true
 			})
 			logger.Debug("CLOSE: base file DOC deferred to stream handles",
@@ -842,6 +808,28 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 		"target", target)
 
 	return nil
+}
+
+// rangeStreamsOfBase iterates over open files that are streams of a base file,
+// filtering out self (by FileID), pipes, handles in a different parent
+// directory, and names that don't start with basePrefix. The caller's fn
+// receives each matching *OpenFile and returns true to continue or false to
+// stop. This consolidates the repeated skip-self/skip-pipe/check-prefix
+// pattern used in the DOC block of Close.
+func (h *Handler) rangeStreamsOfBase(selfFileID [16]byte, parentHandle metadata.FileHandle, basePrefix string, fn func(*OpenFile) bool) {
+	h.files.Range(func(_, value any) bool {
+		other := value.(*OpenFile)
+		if other.FileID == selfFileID || other.IsPipe {
+			return true
+		}
+		if !bytes.Equal(other.ParentHandle, parentHandle) {
+			return true
+		}
+		if len(other.FileName) <= len(basePrefix) || !strings.EqualFold(other.FileName[:len(basePrefix)], basePrefix) {
+			return true
+		}
+		return fn(other)
+	})
 }
 
 // cascadeDeleteADSStreams removes all alternate data streams belonging to a

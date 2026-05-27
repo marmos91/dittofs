@@ -1551,6 +1551,42 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 	return conflict
 }
 
+// paginatedChildScan iterates over a directory's children in pages and
+// returns the first entry whose name satisfies matchFn, confirmed by a
+// Lookup. This is the shared pagination/scan/confirm loop used by both
+// lookupCaseInsensitive and lookupStreamCaseInsensitive. Returns nil/""
+// when no match is found.
+func (h *Handler) paginatedChildScan(
+	authCtx *metadata.AuthContext,
+	metaSvc *metadata.MetadataService,
+	parentHandle metadata.FileHandle,
+	matchFn func(entryName string) bool,
+) (*metadata.File, string) {
+	store, err := metaSvc.GetStoreForShare(shareNameFromHandle(parentHandle))
+	if err != nil {
+		return nil, ""
+	}
+	cursor := ""
+	for {
+		entries, nextCursor, listErr := store.ListChildren(authCtx.Context, parentHandle, cursor, 500)
+		if listErr != nil {
+			break
+		}
+		for _, entry := range entries {
+			if matchFn(entry.Name) {
+				if f, lookupErr := metaSvc.Lookup(authCtx, parentHandle, entry.Name); lookupErr == nil {
+					return f, entry.Name
+				}
+			}
+		}
+		if nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
+	}
+	return nil, ""
+}
+
 // lookupCaseInsensitive performs a case-insensitive child lookup in a
 // directory.  It first tries an exact-case Lookup; on failure it falls
 // back to scanning the parent's children with strings.EqualFold.
@@ -1567,30 +1603,9 @@ func (h *Handler) lookupCaseInsensitive(
 	if f, err := metaSvc.Lookup(authCtx, parentHandle, name); err == nil {
 		return f, name
 	}
-
-	store, err := metaSvc.GetStoreForShare(shareNameFromHandle(parentHandle))
-	if err != nil {
-		return nil, ""
-	}
-	cursor := ""
-	for {
-		entries, nextCursor, listErr := store.ListChildren(authCtx.Context, parentHandle, cursor, 500)
-		if listErr != nil {
-			break
-		}
-		for _, entry := range entries {
-			if strings.EqualFold(entry.Name, name) {
-				if f, lookupErr := metaSvc.Lookup(authCtx, parentHandle, entry.Name); lookupErr == nil {
-					return f, entry.Name
-				}
-			}
-		}
-		if nextCursor == "" {
-			break
-		}
-		cursor = nextCursor
-	}
-	return nil, ""
+	return h.paginatedChildScan(authCtx, metaSvc, parentHandle, func(entryName string) bool {
+		return strings.EqualFold(entryName, name)
+	})
 }
 
 // lookupStreamCaseInsensitive searches the parent directory for a stream
@@ -1602,30 +1617,9 @@ func (h *Handler) lookupStreamCaseInsensitive(
 	parentHandle metadata.FileHandle,
 	baseFileName, streamEntryName string,
 ) (*metadata.File, string) {
-	store, err := metaSvc.GetStoreForShare(shareNameFromHandle(parentHandle))
-	if err != nil {
-		return nil, ""
-	}
-	upperTarget := strings.ToUpper(streamEntryName)
-	cursor := ""
-	for {
-		entries, nextCursor, listErr := store.ListChildren(authCtx.Context, parentHandle, cursor, 500)
-		if listErr != nil {
-			break
-		}
-		for _, entry := range entries {
-			if strings.ToUpper(entry.Name) == upperTarget {
-				if f, lookupErr := metaSvc.Lookup(authCtx, parentHandle, entry.Name); lookupErr == nil {
-					return f, entry.Name
-				}
-			}
-		}
-		if nextCursor == "" {
-			break
-		}
-		cursor = nextCursor
-	}
-	return nil, ""
+	return h.paginatedChildScan(authCtx, metaSvc, parentHandle, func(entryName string) bool {
+		return strings.EqualFold(entryName, streamEntryName)
+	})
 }
 
 // shareNameFromHandle extracts the share name from an encoded file handle.

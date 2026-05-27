@@ -956,3 +956,29 @@ func TestOpenFile(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// adsBasePath Tests
+// =============================================================================
+
+func TestAdsBasePath(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"StreamWithDir", "dir/file.txt:stream", "dir/file.txt"},
+		{"StreamWithoutDir", "file.txt:stream", "file.txt"},
+		{"NotADS_PlainFile", "file.txt", ""},
+		{"NotADS_Empty", "", ""},
+		{"NotADS_DirAndFile", "dir/file.txt", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := adsBasePath(tc.input)
+			if got != tc.expected {
+				t.Errorf("adsBasePath(%q) = %q, want %q", tc.input, got, tc.expected)
+			}
+		})
+	}
+}
