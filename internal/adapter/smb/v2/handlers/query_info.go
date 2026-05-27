@@ -391,10 +391,13 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	}
 
 	// Truncate if necessary
-	// Note: We return STATUS_SUCCESS instead of STATUS_BUFFER_OVERFLOW because
-	// Linux kernel CIFS treats STATUS_BUFFER_OVERFLOW as an error, causing I/O failures.
-	// The truncated data is still valid and useful for the client.
 	if uint32(len(info)) > req.OutputBufferLength {
+		// Security descriptors are atomic — partial SD is invalid.
+		// MS-SMB2 §3.3.5.20.3: return STATUS_BUFFER_TOO_SMALL.
+		if req.InfoType == types.SMB2InfoTypeSecurity {
+			return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBufferTooSmall}}, nil
+		}
+
 		info = info[:req.OutputBufferLength]
 
 		// For FILE_ALL_INFORMATION, the FileNameLength field at offset 96
