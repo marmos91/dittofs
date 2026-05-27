@@ -121,6 +121,20 @@ overflow, rec, rmdir1-4, tcon, tdis, tdis1, tcp, tree.
 | smb2.notify.tree | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
 | smb2.notify.double | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
 | smb2.notify.rec | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.tdis | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.tdis1 | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.basedir | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.tcp | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.logoff | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.close | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.tcon | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.handle-permissions | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.overflow | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.file | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.rmdir1 | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.rmdir2 | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.rmdir3 | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.rmdir4 | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
 
 ### Compound Requests (Intermittent)
 
