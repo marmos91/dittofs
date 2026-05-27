@@ -119,6 +119,8 @@ overflow, rec, rmdir1-4, tcon, tdis, tdis1, tcp, tree.
 | smb2.notify.mask-change | Change Notify | SHARING_VIOLATION on directory open (pre-existing, never passed individually) | - |
 | smb2.notify.invalid-reauth | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
 | smb2.notify.tree | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.double | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
+| smb2.notify.rec | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
 
 ### Compound Requests (Intermittent)
 
