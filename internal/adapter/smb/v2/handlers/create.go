@@ -544,6 +544,14 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameInvalid}}, nil
 	}
 
+	// Per MS-FSA 2.1.5.1, wildcard characters are invalid in path
+	// components. Note: wildcards ARE valid inside stream names (e.g.,
+	// "file:?Stream*" is legal), so this check applies only to the base
+	// file path (stream suffix already stripped above).
+	if strings.ContainsAny(filename, "*?<>\"") {
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameInvalid}}, nil
+	}
+
 	// Reject paths that traverse above the share root (e.g., "../../..")
 	// Per MS-SMB2: return STATUS_OBJECT_PATH_SYNTAX_BAD for invalid path syntax.
 	cleaned := path.Clean(filename)
@@ -1093,11 +1101,24 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// with STATUS_DELETE_PENDING without triggering an oplock break. The
 	// check runs BEFORE breakAndMaybeParkCreate so the holder's oplock
 	// remains intact. Required by smbtorture smb2.oplock.doc.
+	//
+	// Also checks cross-stream delete-pending: when a base file has been
+	// unlinked while a stream handle is still open, opens on both the base
+	// file and any of its streams MUST return STATUS_DELETE_PENDING
+	// (smbtorture smb2.streams.delete).
 	if fileExists && existingFile != nil {
 		if existingHandle, encErr := metadata.EncodeFileHandle(existingFile); encErr == nil {
-			if h.isFileDeletePending(existingHandle) {
+			if h.isFileOrBaseDeletePending(existingHandle, filename) {
 				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDeletePending}}, nil
 			}
+		}
+	}
+	// Even when the file does not exist in the metadata store (already
+	// removed by the unlink), a deferred base-file delete may still be
+	// pending on an open stream handle. Check by path.
+	if !fileExists {
+		if h.isFileOrBaseDeletePending(nil, filename) {
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDeletePending}}, nil
 		}
 	}
 
