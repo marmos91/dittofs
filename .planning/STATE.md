@@ -4,8 +4,8 @@ milestone: v0.16.0
 milestone_name: Share Snapshots
 status: executing
 stopped_at: Phase 21 context gathered
-last_updated: "2026-05-27T13:07:28.814Z"
-last_activity: 2026-05-27 -- Phase 21 planning complete
+last_updated: "2026-05-27T13:29:35.717Z"
+last_activity: 2026-05-27 -- Phase 21 execution started
 progress:
   total_phases: 18
   completed_phases: 8
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-23)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 20 — backupable-interface-conformance-suite-cleanup
+**Current focus:** Phase 21 — per-engine-backup-drivers
 
 ## Current Position
 
-Phase: 21
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-05-27 -- Phase 21 planning complete
+Phase: 21 (per-engine-backup-drivers) — EXECUTING
+Plan: 1 of 3
+Status: Executing Phase 21
+Last activity: 2026-05-27 -- Phase 21 execution started
 
 ## Next Actionable
 
