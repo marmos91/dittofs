@@ -32,13 +32,20 @@ func NewLockNotFoundError(path string) *errors.StoreError {
 // NewLockConflictError creates error for unified lock conflicts.
 func NewLockConflictError(path string, conflict *UnifiedLockConflict) *errors.StoreError {
 	msg := "lock conflict"
-	if conflict != nil && conflict.Reason != "" {
-		msg = conflict.Reason
+	var ownerID string
+	if conflict != nil {
+		if conflict.Reason != "" {
+			msg = conflict.Reason
+		}
+		if conflict.Lock != nil {
+			ownerID = conflict.Lock.Owner.OwnerID
+		}
 	}
 	return &errors.StoreError{
-		Code:    errors.ErrLockConflict,
-		Message: msg,
-		Path:    path,
+		Code:            errors.ErrLockConflict,
+		Message:         msg,
+		Path:            path,
+		ConflictOwnerID: ownerID,
 	}
 }
 
