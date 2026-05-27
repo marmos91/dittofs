@@ -27,6 +27,11 @@ const (
 	// restoreBatchSize is the number of KV entries per WriteBatch flush
 	// during restore. Keeps memory bounded for large databases.
 	restoreBatchSize = 10000
+
+	// maxRestoreAllocSize is the maximum single allocation size (256 MiB)
+	// permitted when reading key/value lengths from an untrusted backup
+	// stream. Prevents OOM from crafted streams with bogus size fields.
+	maxRestoreAllocSize = 256 << 20
 )
 
 // Compile-time assertion: BadgerMetadataStore implements Backupable.
@@ -48,22 +53,31 @@ func (s *BadgerMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockst
 		return nil, fmt.Errorf("%w: %v", metadata.ErrBackupAborted, err)
 	}
 
-	envW, err := backup.NewWriter(w, badgerEngineTag)
-	if err != nil {
-		return nil, fmt.Errorf("%w: envelope: %v", metadata.ErrBackupAborted, err)
-	}
-
-	// Write schema version (uint32 LE).
-	var verBuf [4]byte
-	binary.LittleEndian.PutUint32(verBuf[:], badgerSchemaVersion)
-	if _, err := envW.Write(verBuf[:]); err != nil {
-		return nil, fmt.Errorf("%w: schema version: %v", metadata.ErrBackupAborted, err)
-	}
-
 	hs := blockstore.NewHashSet(0)
 
+	// Declare envW outside the callback so Finish() can be called after
+	// the View returns.
+	var envW *backup.Writer
+
 	// MVCC snapshot: all reads inside this View see a consistent state.
-	err = s.db.View(func(txn *badgerdb.Txn) error {
+	// The envelope writer and schema version are created INSIDE the
+	// callback so the first Write to w (which triggers the signalWriter
+	// in the ConcurrentWriter test) happens after the MVCC snapshot is
+	// established.
+	err := s.db.View(func(txn *badgerdb.Txn) error {
+		var writeErr error
+		envW, writeErr = backup.NewWriter(w, badgerEngineTag)
+		if writeErr != nil {
+			return fmt.Errorf("%w: envelope: %v", metadata.ErrBackupAborted, writeErr)
+		}
+
+		// Write schema version (uint32 LE).
+		var verBuf [4]byte
+		binary.LittleEndian.PutUint32(verBuf[:], badgerSchemaVersion)
+		if _, writeErr = envW.Write(verBuf[:]); writeErr != nil {
+			return fmt.Errorf("%w: schema version: %v", metadata.ErrBackupAborted, writeErr)
+		}
+
 		opts := badgerdb.DefaultIteratorOptions
 		opts.PrefetchValues = true
 		opts.PrefetchSize = 100
@@ -206,6 +220,11 @@ func (s *BadgerMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 			break
 		}
 
+		// Reject oversized key allocations from untrusted streams.
+		if keyLen > maxRestoreAllocSize {
+			return fmt.Errorf("%w: key size %d exceeds maximum %d", metadata.ErrRestoreCorrupt, keyLen, maxRestoreAllocSize)
+		}
+
 		// Read key.
 		key := make([]byte, keyLen)
 		if _, err := io.ReadFull(payloadReader, key); err != nil {
@@ -217,6 +236,11 @@ func (s *BadgerMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 			return fmt.Errorf("%w: read value_len: %v", metadata.ErrRestoreCorrupt, err)
 		}
 		valLen := binary.LittleEndian.Uint32(buf[:])
+
+		// Reject oversized value allocations from untrusted streams.
+		if valLen > maxRestoreAllocSize {
+			return fmt.Errorf("%w: value size %d exceeds maximum %d", metadata.ErrRestoreCorrupt, valLen, maxRestoreAllocSize)
+		}
 
 		// Read value.
 		val := make([]byte, valLen)
