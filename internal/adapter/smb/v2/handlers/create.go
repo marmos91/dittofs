@@ -528,7 +528,11 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		case "::$DATA":
 			explicitDataStream = true
 			filename = basePart
-		case "::$INDEX_ALLOCATION":
+		case "::$INDEX_ALLOCATION", ":$I30:$INDEX_ALLOCATION":
+			// Both forms refer to the directory's default index stream.
+			// ::$INDEX_ALLOCATION is the unnamed variant; :$I30:$INDEX_ALLOCATION
+			// names the $I30 index explicitly (NTFS directory listing index).
+			// Strip the suffix so the open resolves to the directory itself.
 			filename = basePart
 		default:
 			// Named ADS: strip trailing :$DATA type indicator, isolate
