@@ -703,14 +703,37 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 	// Per MS-FSA 2.1.5.1.2: share mode enforcement is per-stream.
 	// Opens on different streams of the same base file do NOT conflict.
 
-	t.Run("BaseFileVsStream_Conflict", func(t *testing.T) {
+	t.Run("BaseFileVsStream_DeleteConflict", func(t *testing.T) {
+		h := NewHandler()
+
+		const deleteAccess = uint32(0x00010000)
+		h.StoreOpenFile(&OpenFile{
+			FileID:         h.GenerateFileID(),
+			Path:           "file.txt:stream1",
+			DesiredAccess:  fileReadData,
+			ShareAccess:    fileShareRead, // no FILE_SHARE_DELETE
+			MetadataHandle: []byte{0x01},
+		})
+
+		conflict := h.checkShareModeConflict(
+			[]byte{0x02},
+			deleteAccess,
+			fileShareRead|fileShareWrite,
+			"file.txt",
+		)
+		if !conflict {
+			t.Error("Expected conflict: stream doesn't share delete, base file requests delete")
+		}
+	})
+
+	t.Run("BaseFileVsStream_ReadWriteNoConflict", func(t *testing.T) {
 		h := NewHandler()
 
 		h.StoreOpenFile(&OpenFile{
 			FileID:         h.GenerateFileID(),
 			Path:           "file.txt:stream1",
 			DesiredAccess:  fileReadData,
-			ShareAccess:    fileShareRead,
+			ShareAccess:    fileShareRead, // no write sharing
 			MetadataHandle: []byte{0x01},
 		})
 
@@ -720,30 +743,8 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 			fileShareRead|fileShareWrite,
 			"file.txt",
 		)
-		if !conflict {
-			t.Error("Expected conflict: stream open blocks base file write access")
-		}
-	})
-
-	t.Run("StreamVsBaseFile_Conflict", func(t *testing.T) {
-		h := NewHandler()
-
-		h.StoreOpenFile(&OpenFile{
-			FileID:         h.GenerateFileID(),
-			Path:           "file.txt",
-			DesiredAccess:  fileReadData,
-			ShareAccess:    fileShareRead,
-			MetadataHandle: []byte{0x01},
-		})
-
-		conflict := h.checkShareModeConflict(
-			[]byte{0x02},
-			fileWriteData,
-			fileShareRead|fileShareWrite,
-			"file.txt:stream1",
-		)
-		if !conflict {
-			t.Error("Expected conflict: base file open blocks stream write access")
+		if conflict {
+			t.Error("Expected no conflict: cross-stream only checks DELETE, not read/write")
 		}
 	})
 

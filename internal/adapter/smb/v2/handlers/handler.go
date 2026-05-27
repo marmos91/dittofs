@@ -1413,10 +1413,11 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 			return true
 		}
 
-		// Same stream (same metadata handle) → always check.
+		// Same stream (same metadata handle) → full share mode check.
 		sameFile := bytes.Equal(existing.MetadataHandle, fileHandle)
+		crossStream := false
 		if !sameFile {
-			// Base file vs its stream (or vice versa) → check.
+			// Base file vs its stream (or vice versa) → DELETE-only check.
 			// Stream A vs stream B (different streams) → skip.
 			existingBase := adsBasePath(existing.Path)
 			baseVsStream := false
@@ -1428,16 +1429,25 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 			if !baseVsStream {
 				return true
 			}
+			crossStream = true
 		}
 
-		// Skip non-conflicting existing opens. Per Samba `share_conflict`
-		// (source3/smbd/open.c L1505): an entry with none of
-		// FILE_READ_DATA|FILE_WRITE_DATA|FILE_APPEND_DATA|FILE_EXECUTE|
-		// DELETE_ACCESS imposes no share-mode constraint. This covers
-		// stat-only opens (smb2.lease.statopen) and also EA-only,
-		// WRITE_DAC-only, and WRITE_OWNER-only opens.
-		// GENERIC_*/MAXIMUM_ALLOWED imply data access, so an existing
-		// open carrying those bits still constrains.
+		// Cross-stream (base file vs its stream): per Samba, only DELETE
+		// sharing is enforced — read/write access to the base file is
+		// independent of stream share modes.
+		if crossStream {
+			if hasDelete(existing.DesiredAccess) && newShareAccess&fileShareDelete == 0 {
+				conflict = true
+				return false
+			}
+			if hasDelete(newDesiredAccess) && existing.ShareAccess&fileShareDelete == 0 {
+				conflict = true
+				return false
+			}
+			return true
+		}
+
+		// Same-stream: full share mode check per MS-FSA.
 		if !hasRead(existing.DesiredAccess) &&
 			!hasWrite(existing.DesiredAccess) &&
 			!hasDelete(existing.DesiredAccess) &&
@@ -1445,7 +1455,6 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 			return true
 		}
 
-		// Check: existing access vs new sharing
 		if hasRead(existing.DesiredAccess) && newShareAccess&fileShareRead == 0 {
 			conflict = true
 			return false
@@ -1459,7 +1468,6 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 			return false
 		}
 
-		// Check: new access vs existing sharing
 		if hasRead(newDesiredAccess) && existing.ShareAccess&fileShareRead == 0 {
 			conflict = true
 			return false
