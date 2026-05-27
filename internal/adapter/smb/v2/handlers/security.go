@@ -189,11 +189,16 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 	// (mirroring Samba source3/smbd/smb2_nttrans.c::canonicalize_inheritance_bits)
 	// ensures AutoInherited reflects only client SETs of (AUTO_INHERITED &&
 	// AUTO_INHERIT_REQ).
-	if fileACL != nil {
-		if fileACL.AutoInherited {
+	// Source for control flags: the built DACL, or file.ACL for null DACL case
+	flagSource := fileACL
+	if flagSource == nil && isNullDACL {
+		flagSource = file.ACL
+	}
+	if flagSource != nil {
+		if flagSource.AutoInherited {
 			control |= seDACLAutoInherited
 		}
-		if fileACL.Protected {
+		if flagSource.Protected {
 			control |= seDACLProtected
 		}
 	}
