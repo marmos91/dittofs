@@ -292,11 +292,13 @@ func (ul *UnifiedLock) IsDelegation() bool {
 //  1. Access mode conflicts (SMB deny modes)
 //  2. OpLock vs OpLock (lease-to-lease conflicts)
 //  3. OpLock vs byte-range (cross-type conflicts)
-//  4. Byte-range vs byte-range — mirrors Samba brl_conflict:
-//     - Zero-length byte-range locks never conflict with anything
-//     - Shared+Shared never conflict
-//     - Same owner: only shared-on-exclusive is allowed (stacking)
-//     - Everything else conflicts if ranges overlap
+//  4. Byte-range vs byte-range (POSIX same-owner semantics: same owner
+//     never conflicts; different owner conflicts when at least one is
+//     exclusive and ranges overlap)
+//
+// Note: SMB-specific same-owner restrictions (restricted stacking per
+// Samba brl_conflict) and zero-byte lock semantics live in
+// IsLockConflicting (FileLock layer), not here.
 //
 // Returns true if the locks conflict and one must be denied or broken.
 func (ul *UnifiedLock) ConflictsWith(other *UnifiedLock) bool {

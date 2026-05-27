@@ -72,7 +72,8 @@ type LockElement struct {
 	// Offset is the starting byte offset of the lock.
 	Offset uint64
 
-	// Length is the number of bytes to lock (0 = to EOF).
+	// Length is the number of bytes to lock.
+	// 0 means a zero-byte lock (never conflicts, SMB2 semantics).
 	Length uint64
 
 	// Flags specifies the lock type and behavior.

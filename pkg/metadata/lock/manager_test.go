@@ -1199,6 +1199,21 @@ func TestLock_SMB_SameOpen_SharedStacking_OK(t *testing.T) {
 	}
 }
 
+func TestLock_SMB_SameOpen_ExclusiveNonOverlapping_OK(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	l1 := FileLock{SessionID: 1, OpenID: "open1", Offset: 0, Length: 10, Exclusive: true}
+	if err := lm.Lock("file1", l1); err != nil {
+		t.Fatal(err)
+	}
+
+	l2 := FileLock{SessionID: 1, OpenID: "open1", Offset: 10, Length: 10, Exclusive: true}
+	if err := lm.Lock("file1", l2); err != nil {
+		t.Fatal("Same-open exclusive locks on non-overlapping ranges should succeed")
+	}
+}
+
 func TestLock_SMB_DifferentOpen_ExclusiveConflict(t *testing.T) {
 	t.Parallel()
 
