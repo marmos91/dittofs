@@ -636,9 +636,9 @@ Phase 20 unblocks both 21 and 22 (parallel). Phase 23 requires both 21+22. Phase
   - `internal/cli/backupfmt/` (delete)
   - `.planning/phases/01-*` through `07-*` (archive)
 **Plans**: 3 plans
-  - [ ] 20-01-PLAN.md — ENG-01/02/03: HashSet type + Backupable interface + error sentinels + envelope package (Wave 1)
+  - [x] 20-01-PLAN.md — ENG-01/02/03: HashSet type + Backupable interface + error sentinels + envelope package (Wave 1)
   - [ ] 20-02-PLAN.md — ENG-04: Backup conformance suite with 5 subtests (Wave 2)
-  - [ ] 20-03-PLAN.md — CLN-01/02: Delete backupfmt + stale planning phases 01-07 (Wave 1)
+  - [x] 20-03-PLAN.md — CLN-01/02: Delete backupfmt + stale planning phases 01-07 (Wave 1)
 
 ### Phase 21: Per-Engine Backup Drivers
 **Goal**: Implement `Backupable` for all three metadata stores, each passing the conformance suite.
@@ -726,7 +726,7 @@ Phase 20 unblocks both 21 and 22 (parallel). Phase 23 requires both 21+22. Phase
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 20. Backupable Interface + Cleanup | 0/3 | Planned | - |
+| 20. Backupable Interface + Cleanup | 2/3 | In Progress|  |
 | 21. Per-Engine Backup Drivers | 0/? | Not started | - |
 | 22. Snapshot Records + GC Hold | 0/? | Not started | - |
 | 23. Snapshot Create Orchestration | 0/? | Not started | - |
