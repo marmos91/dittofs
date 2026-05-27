@@ -36,6 +36,7 @@ const asyncBlockingLockTimeout = 35 * time.Second
 // reports for smb2.lock.open-brlock-deadlock / ctdb-delrec-deadlock.
 func (h *Handler) parkLockOnConflict(
 	ctx *SMBHandlerContext,
+	authCtx *metadata.AuthContext,
 	openFile *OpenFile,
 	fileLock metadata.FileLock,
 	lockElem LockElement,
@@ -76,6 +77,7 @@ func (h *Handler) parkLockOnConflict(
 		MessageID: ctx.MessageID,
 		AsyncId:   asyncId,
 		OwnerID:   fileLock.OpenID,
+		Identity:  authCtx.Identity,
 		Cancel:    cancel,
 		Callback:  ctx.AsyncLockCompleteCallback,
 	}
@@ -185,13 +187,9 @@ func (h *Handler) resumePendingLock(
 	}()
 
 	metaSvc := h.Registry.GetMetadataService()
-	// Synchronous LockFile already validated identity on the first attempt;
-	// the in-memory LockManager rejects on conflict before re-checking
-	// permissions, so an empty Identity here only exposes us to a spurious
-	// permission-denied if file ownership changes mid-retry — acceptable.
 	authCtx := &metadata.AuthContext{
 		Context:  waitCtx,
-		Identity: &metadata.Identity{},
+		Identity: pending.Identity,
 	}
 
 	ticker := time.NewTicker(BlockingLockRetryInterval)

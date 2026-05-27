@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // AsyncLockCompleteCallback delivers the final async LOCK response for a
@@ -41,6 +42,11 @@ type PendingLock struct {
 	// OwnerID is the per-open lock owner identifier. Used as the WFG node
 	// for this waiter so RemoveWaiter can prune our edges on completion.
 	OwnerID string
+
+	// Identity is the authenticated identity from the original LOCK request.
+	// Carried into the resume goroutine so permission checks in
+	// MetadataService.LockFile succeed on retry.
+	Identity *metadata.Identity
 
 	// Cancel tears down the resume goroutine's retry loop (via context
 	// cancel) so cancellation paths can unblock it promptly.
@@ -264,6 +270,33 @@ func (r *PendingLockRegistry) removeLocked(asyncId uint64) *PendingLock {
 		}
 	}
 	return p
+}
+
+// UnregisterAllForOwner removes and returns every pending LOCK whose OwnerID
+// matches, invoking Cancel on each. Used when a file handle is closed to
+// unblock the resume goroutine before the handle state is freed (file-close
+// cancellation per Samba brl_close_fnum).
+func (r *PendingLockRegistry) UnregisterAllForOwner(ownerID string) []*PendingLock {
+	r.mu.Lock()
+	var toRemove []uint64
+	for asyncId, p := range r.byAsyncId {
+		if p.OwnerID == ownerID {
+			toRemove = append(toRemove, asyncId)
+		}
+	}
+	removed := make([]*PendingLock, 0, len(toRemove))
+	for _, asyncId := range toRemove {
+		if rp := r.removeLocked(asyncId); rp != nil {
+			removed = append(removed, rp)
+		}
+	}
+	r.mu.Unlock()
+	for _, p := range removed {
+		if p.Cancel != nil {
+			p.Cancel()
+		}
+	}
+	return removed
 }
 
 // Len returns the number of pending LOCKs.
