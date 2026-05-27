@@ -131,7 +131,9 @@ func GetSIDMapper() *sid.SIDMapper {
 //   - DACL translated from file ACL (if DACLSecurityInformation requested)
 //   - SACL empty stub (if SACLSecurityInformation requested)
 //
-// If additionalSecInfo is 0, all sections (owner, group, DACL) are included.
+// If additionalSecInfo is 0, no sections are included and a minimal empty SD
+// is returned (header only). Callers should pass explicit flags for the
+// sections they need.
 //
 // The binary field ordering follows Windows convention: SACL, DACL, Owner, Group.
 // This matches byte-level comparison expectations in smbtorture and Windows.
@@ -142,11 +144,6 @@ func GetSIDMapper() *sid.SIDMapper {
 //
 // Returns the binary Security Descriptor or an error.
 func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]byte, error) {
-	// Default: include everything if no specific flags
-	if additionalSecInfo == 0 {
-		additionalSecInfo = OwnerSecurityInformation | GroupSecurityInformation | DACLSecurityInformation
-	}
-
 	includeOwner := (additionalSecInfo & OwnerSecurityInformation) != 0
 	includeGroup := (additionalSecInfo & GroupSecurityInformation) != 0
 	includeDACL := (additionalSecInfo & DACLSecurityInformation) != 0
