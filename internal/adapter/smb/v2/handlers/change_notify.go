@@ -499,8 +499,7 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	// Replay events that arrived while no live watcher was pending
 	// (goroutine-per-request race). The flush timer delivers them after
 	// notifyFlushDelay; a racing CANCEL clears them before the timer fires.
-	key := string(notify.FileID[:])
-	if a, ok := r.armed[key]; ok && len(a.BufferedEvents) > 0 {
+	if a, ok := r.armed[string(notify.FileID[:])]; ok && len(a.BufferedEvents) > 0 {
 		for _, ev := range a.BufferedEvents {
 			if !MatchesFilter(ev.Action, notify.CompletionFilter) {
 				continue
