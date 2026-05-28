@@ -165,6 +165,84 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 	return snapID, nil
 }
 
+// WaitForSnapshot blocks until the snapshot's orchestration goroutine
+// completes (the per-snap result chan is signalled-and-closed by
+// runSnapshotOrchestration) or ctx is cancelled, then returns the final
+// snapshot record fetched via GetSnapshot.
+//
+// Return values:
+//   - In-flight snapshot, orchestration succeeded: blocks until the
+//     goroutine sends snapResult{err: nil} + close(doneCh), then returns
+//     the final row (state=ready) with nil error.
+//   - In-flight snapshot, orchestration failed: blocks until the
+//     goroutine sends snapResult{err: wrappedSentinel} + close(doneCh),
+//     then returns the row (state=failed) PLUS the wrapped error so
+//     callers can errors.Is against the D-23-12 sentinels (e.g.
+//     models.ErrSnapshotVerifyFailed).
+//   - Already-complete snapshot (chan drained or removed from registry):
+//     no chan present → falls through to GetSnapshot immediately with
+//     nil orchestration error. The row state carries the outcome.
+//   - ctx cancel during wait: returns nil, ctx.Err() without consulting
+//     GetSnapshot.
+//   - Unknown snapshot id: GetSnapshot returns
+//     models.ErrSnapshotNotFound which propagates unchanged.
+//
+// Concurrency: the per-snap chan is buffered with cap 1 and closed after
+// the single send (see runSnapshotOrchestration's deferred cleanup), so
+// reads after the close yield the zero-value snapResult{} — the first
+// reader observes the orchestration error and subsequent readers see the
+// row state (which already reflects failure as state=failed). This
+// single-broadcast behavior is acceptable for the current single-caller
+// pattern; the multi-subscriber event-stream upgrade (sync.Cond) is
+// listed as deferred per CONTEXT D-23-19 "WaitForSnapshot event-stream
+// API for many subscribers".
+//
+// Plan: 23-06 / D-23-19.
+func (r *Runtime) WaitForSnapshot(ctx context.Context, shareName, snapID string) (*models.Snapshot, error) {
+	if r == nil || r.store == nil {
+		return nil, errors.New("runtime: nil store")
+	}
+
+	// Snapshot the per-snap done chan under the registry lock so the
+	// goroutine cleanup (unregisterSnap) cannot race the lookup. If no
+	// share entry or no per-snap chan exists, the orchestration is either
+	// already-complete or the snapID was never in-flight in this process
+	// — both cases fall through to a direct GetSnapshot.
+	var (
+		doneCh chan snapResult
+		hasCh  bool
+	)
+	r.snapInFlightMu.Lock()
+	if entry, ok := r.snapInFlight[shareName]; ok {
+		entry.mu.Lock()
+		doneCh, hasCh = entry.done[snapID]
+		entry.mu.Unlock()
+	}
+	r.snapInFlightMu.Unlock()
+
+	var orchErr error
+	if hasCh {
+		select {
+		case res := <-doneCh:
+			// nil err on success or the wrapped sentinel on failure.
+			// Closed-then-drained chans yield the zero-value
+			// snapResult{} → orchErr stays nil and the row state is the
+			// authoritative outcome for late subscribers.
+			orchErr = res.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	snap, gerr := r.store.GetSnapshot(ctx, shareName, snapID)
+	if gerr != nil {
+		// ErrSnapshotNotFound propagates as-is via Phase 22's wrapping
+		// (errors.Is works through the wrap).
+		return nil, gerr
+	}
+	return snap, orchErr
+}
+
 // registerSnapInFlight allocates / reuses the per-share snapInFlight
 // entry, derives a cancellable child ctx from r.runtimeCtx, appends the
 // cancel func to the entry, records a buffered per-snap result channel,
