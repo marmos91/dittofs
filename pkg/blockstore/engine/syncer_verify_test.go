@@ -2,7 +2,7 @@ package engine
 
 import (
 	"context"
-	"strings"
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -58,8 +58,8 @@ func TestMirrorOnce_DetectsLocalCorruption_RefusesUpload(t *testing.T) {
 	if err == nil {
 		t.Fatalf("mirrorOnce returned nil; want error reporting local corruption")
 	}
-	if !strings.Contains(err.Error(), "local corruption") {
-		t.Errorf("mirrorOnce error = %q; want substring %q", err.Error(), "local corruption")
+	if !errors.Is(err, blockstore.ErrCASContentMismatch) {
+		t.Errorf("mirrorOnce error = %v; want errors.Is(ErrCASContentMismatch)", err)
 	}
 	if got := rs.puts.Load(); got != 0 {
 		t.Errorf("remote.Put called %d times; want 0 (upload must be refused on hash mismatch)", got)

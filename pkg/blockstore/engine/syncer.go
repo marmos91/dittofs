@@ -325,7 +325,7 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 				"hash", hash.String(),
 				"computed", computed.String(),
 				"bytes", len(data))
-			return fmt.Errorf("local corruption on hash %s: computed %s (refusing upload)", hash.String(), computed.String())
+			return fmt.Errorf("%w on hash %s: computed %s (refusing upload)", blockstore.ErrCASContentMismatch, hash.String(), computed.String())
 		}
 		if err := m.remoteStore.Put(ctx, hash, data); err != nil {
 			return fmt.Errorf("remote put %s: %w", hash, err)
