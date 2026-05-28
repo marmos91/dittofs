@@ -101,34 +101,22 @@ overflow, rec, rmdir1-4, tcon, tdis, tdis1, tcp, tree.
 ### Oplocks (Multi-Client Coordination Not Implemented)
 
 Oplock tests require multi-client coordination (oplock break notifications to
-other clients). DittoFS has basic oplock support but the smbtorture oplock
-tests use two connections with coordinated break callbacks that require full
-oplock break notification delivery.
+other clients). DittoFS has basic oplock support; the residual failures cluster
+around stat-only-open conflict suppression, LEVEL_II coercion of subsequent
+oplock grants, and a few specialized response-mapping cases (#479).
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.oplock.batch1 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch6 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch8 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch9 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch9a | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch10 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch11 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch12 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch13 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch14 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch16 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch22a | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch23 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.exclusive4 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.exclusive9 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.levelii500 | Oplocks | Level II oplock notification not implemented | - |
-| smb2.oplock.brl1 | Oplocks | Byte-range lock + oplock interaction | - |
-| smb2.oplock.brl2 | Oplocks | Byte-range lock + oplock interaction | - |
-| smb2.oplock.brl3 | Oplocks | Byte-range lock + oplock interaction | - |
-| smb2.oplock.doc | Oplocks | Delete-on-close + oplock interaction | - |
-| smb2.oplock.statopen1 | Oplocks | Stat open + oplock interaction | - |
-| smb2.oplock.stream1 | Oplocks | Stream + oplock interaction | - |
+| smb2.oplock.batch9a | Oplocks | Stat-only open vs normal-open break-count drift | #479 |
+| smb2.oplock.batch10 | Oplocks | Subsequent oplock request must coerce to LEVEL_II when prior open holds no oplock | #479 |
+| smb2.oplock.batch12 | Oplocks | SetPathInfo allocation-size needs second break stage (count=2) | #479 |
+| smb2.oplock.batch13 | Oplocks | OVERWRITE with attrs-only second open: granted oplock must be LEVEL_II | #479 |
+| smb2.oplock.batch14 | Oplocks | SUPERSEDE with attrs-only second open: granted oplock must be LEVEL_II | #479 |
+| smb2.oplock.batch16 | Oplocks | OVERWRITE_IF with attrs-only second open: granted oplock must be LEVEL_II | #479 |
+| smb2.oplock.batch22a | Oplocks | Break timeout window not honored (~35s expected) | #479 |
+| smb2.oplock.batch23 | Oplocks | After break to LEVEL_II, 3rd open must receive LEVEL_II grant | #479 |
+| smb2.oplock.levelii500 | Oplocks | ACK LEVEL_II→None must return STATUS_INVALID_OPLOCK_PROTOCOL | #479 |
+| smb2.oplock.statopen1 | Oplocks | READ_CONTROL access-mask should trigger break | #479 |
 
 Note: the four `smb2.kernel-oplocks.*` tests require Linux kernel oplock integration via `F_SETLEASE` on the underlying fd — architecturally incompatible with DittoFS's userspace virtual filesystem. They are listed in the [Permanently Unimplementable](#permanently-unimplementable-out-of-scope) appendix.
 

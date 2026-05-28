@@ -724,6 +724,23 @@ func mapLeaseAckErr(err error) types.Status {
 	}
 }
 
+// mapOplockAckErr maps an AcknowledgeLeaseBreak error to its SMB2 status for
+// the traditional OPLOCK_BREAK ack path (MS-SMB2 §3.3.5.22.1). The traditional
+// oplock break is structurally distinct from the lease break: a LEVEL_II
+// break-to-NONE does not require an ack, so when an ack arrives for a
+// non-breaking record the server returns STATUS_INVALID_OPLOCK_PROTOCOL —
+// smbtorture smb2.oplock.levelii500 asserts this.
+func mapOplockAckErr(err error) types.Status {
+	switch {
+	case errors.Is(err, lock.ErrAcknowledgedStateExceedsBreakTo),
+		errors.Is(err, lock.ErrLeaseAckNotBreaking),
+		errors.Is(err, lock.ErrLeaseAckNotFound):
+		return types.StatusInvalidOplockProtocol
+	default:
+		return types.StatusInvalidParameter
+	}
+}
+
 // handleLeaseBreakAck handles an SMB2 Lease Break Acknowledgment [MS-SMB2] 2.2.24.2.
 func (h *Handler) handleLeaseBreakAck(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	ack, err := DecodeLeaseBreakAcknowledgment(body)
@@ -803,7 +820,7 @@ func (h *Handler) handleOplockBreakAck(ctx *SMBHandlerContext, body []byte) (*Ha
 		logger.Warn("OPLOCK_BREAK_ACK: acknowledgment failed",
 			"fileID", fmt.Sprintf("%x", ack.FileID),
 			"error", err)
-		return NewErrorResult(mapLeaseAckErr(err)), nil
+		return NewErrorResult(mapOplockAckErr(err)), nil
 	}
 
 	// Update the oplock level on the open file

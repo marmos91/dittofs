@@ -1656,6 +1656,17 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 		maxAllowed     = uint32(0x02000000)
 	)
 
+	// Stat-only opens (FILE_READ_ATTRIBUTES / FILE_WRITE_ATTRIBUTES /
+	// READ_CONTROL / SYNCHRONIZE only) impose no share-mode constraint per
+	// MS-SMB2 §3.3.5.9 + Samba `share_conflict` (source3/locking/share_mode_lock.c)
+	// + `is_stat_open` (source3/smbd/open.c). smbtorture smb2.oplock.batch8 /
+	// exclusive4 expect a stat-only second open on a BATCH/EXCLUSIVE holder
+	// with ShareAccess=NONE to succeed with NT_STATUS_OK (no break, no
+	// sharing violation).
+	if isStatOnlyOpen(newDesiredAccess) {
+		return false
+	}
+
 	// Helper: does access mask imply read?
 	hasRead := func(access uint32) bool {
 		return access&(fileReadData|fileExecute|genericRead|genericAll|maxAllowed) != 0
