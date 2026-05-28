@@ -376,9 +376,9 @@ recognises them.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.replay_broken_windows | Locks | Lock replay requires LockSequence tracking | #430 |
-| smb2.replay_smb3_specification_durable | Locks | Lock replay with durable handles needs LockSequence | #430 |
-| smb2.replay_smb3_specification_multi | Locks | Lock replay across channels needs multichannel | #430 |
+| smb2.lock.replay_broken_windows | Locks | Lock replay requires LockSequence tracking | #430 |
+| smb2.lock.replay_smb3_specification_durable | Locks | Lock replay with durable handles needs LockSequence | #430 |
+| smb2.lock.replay_smb3_specification_multi | Locks | Lock replay across channels needs multichannel | #430 |
 
 ### Sessions (Remaining)
 
