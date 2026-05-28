@@ -39,6 +39,9 @@ func init() {
 		FsctlSrvCopyChunk:           (*Handler).handleSrvCopyChunk,
 		FsctlSrvCopyChunkWrite:      (*Handler).handleSrvCopyChunk,
 		FsctlQueryNetworkInterfInfo: (*Handler).handleQueryNetworkInterfaceInfo,
+		FsctlSetSparse:              (*Handler).handleSetSparse,
+		FsctlQueryAllocatedRanges:   (*Handler).handleQueryAllocatedRanges,
+		FsctlSetZeroData:            (*Handler).handleSetZeroData,
 
 		// Samba-private torture FSCTLs. Accepted as no-ops so that smbtorture
 		// fixtures (notably the multichannel.leases.test{2,3} pair) don't get
