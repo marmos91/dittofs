@@ -26,6 +26,10 @@ var (
 	ErrAdapterNotFound  = errors.New("adapter not found")
 	ErrDuplicateAdapter = errors.New("adapter already exists")
 
+	// Snapshot errors
+	ErrSnapshotNotFound      = errors.New("snapshot not found")
+	ErrSnapshotStateConflict = errors.New("snapshot is not in a state that allows this operation")
+
 	// Setting errors
 	ErrSettingNotFound = errors.New("setting not found")
 
