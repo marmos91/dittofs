@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -291,15 +290,193 @@ func testRestoreAllowNonDurable(t *testing.T) {
 }
 
 func testRestorePreVerifyFailsFast(t *testing.T) {
-	t.Skip("implemented in Task 2")
+	fx := newRestoreFixture(t, restoreFixtureOpts{})
+	defer fx.close()
+
+	ctx := fx.ctx()
+	files := fx.populateFiles(ctx, []string{"pv1.bin", "pv2.bin"})
+	all := fx.allHashes()
+	fx.seedRemoteAll(all)
+
+	// Source snapshot must succeed (remote has every hash).
+	snapID, err := fx.rt.CreateSnapshot(ctx, fx.shareName, CreateSnapshotOpts{})
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	if _, werr := fx.rt.WaitForSnapshot(ctx, fx.shareName, snapID); werr != nil {
+		t.Fatalf("WaitForSnapshot source: %v", werr)
+	}
+
+	// Mutate so pre-Reset state has something distinct (witness for the
+	// metadata-unchanged invariant). Then arm the head-failure for ONE
+	// hash on every subsequent call (threshold=0).
+	if err := fx.meta.DeleteFile(ctx, files[0].handle); err != nil {
+		t.Fatalf("delete pre-restore witness: %v", err)
+	}
+	preCount := fx.countFiles(ctx)
+	fx.remote.failHashAfterCount(files[1].hashes[0], 0) // every Head() for this hash fails
+
+	err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
+	if !errors.Is(err, models.ErrRestoreVerifyFailed) {
+		t.Fatalf("RestoreSnapshot err = %v, want errors.Is(ErrRestoreVerifyFailed)", err)
+	}
+
+	// Reset was NEVER called: metadata count unchanged.
+	postCount := fx.countFiles(ctx)
+	if postCount != preCount {
+		t.Fatalf("metadata mutated despite pre-verify fail: file count %d -> %d", preCount, postCount)
+	}
+
+	// Safety snapshot was NEVER created (pre-verify fires before step 3).
+	snaps, err := fx.store.ListSnapshots(ctx, fx.shareName)
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	if len(snaps) != 1 || snaps[0].ID != snapID {
+		t.Fatalf("safety snapshot created despite pre-verify fail: ListSnapshots = %d entries (want 1, just %q)", len(snaps), snapID)
+	}
+
+	// Share stays disabled.
+	enabled, _ := fx.rt.sharesSvc.IsShareEnabled(fx.shareName)
+	if enabled {
+		t.Fatal("D-24-01: share enabled after pre-verify fail — must stay disabled")
+	}
 }
 
 func testRestorePostVerifyFails(t *testing.T) {
-	t.Skip("implemented in Task 2")
+	fx := newRestoreFixture(t, restoreFixtureOpts{})
+	defer fx.close()
+
+	ctx := fx.ctx()
+	// Populate two files so we can delete one BEFORE the safety snap is
+	// taken — the deleted file's hash is in the source manifest but NOT
+	// in the safety snap's manifest, so we can target Head() failure at
+	// it without affecting pre-verify or the safety-snap verify.
+	files := fx.populateFiles(ctx, []string{"post1.bin", "post2.bin"})
+	all := fx.allHashes()
+	fx.seedRemoteAll(all)
+
+	snapID, err := fx.rt.CreateSnapshot(ctx, fx.shareName, CreateSnapshotOpts{})
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	if _, werr := fx.rt.WaitForSnapshot(ctx, fx.shareName, snapID); werr != nil {
+		t.Fatalf("WaitForSnapshot source: %v", werr)
+	}
+
+	// Mutate AFTER snapshot create: delete files[0]. files[0].hashes[0]
+	// is now only in the source manifest (the safety snap will capture
+	// the mutated state without it).
+	if err := fx.meta.DeleteFile(ctx, files[0].handle); err != nil {
+		t.Fatalf("delete files[0]: %v", err)
+	}
+
+	// Arm head-failure for files[0].hashes[0] starting at the 2nd call.
+	// Sequence:
+	//   1st Head(h0) — pre-verify (source manifest contains h0). PASS.
+	//   safety snap verify — does NOT call Head(h0) (h0 isn't in safety
+	//     snap manifest because we deleted files[0] above).
+	//   2nd Head(h0) — post-verify (restored manifest contains h0). FAIL.
+	deletedHash := files[0].hashes[0]
+	fx.remote.failHashAfterCount(deletedHash, 1)
+
+	err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
+	if !errors.Is(err, models.ErrRestoreVerifyFailed) {
+		t.Fatalf("RestoreSnapshot err = %v, want errors.Is(ErrRestoreVerifyFailed)", err)
+	}
+
+	// Metadata WAS restored (we reached post-verify, which means Reset +
+	// Restore both ran before the failure). The deleted file should now
+	// be back in the store.
+	if _, gerr := fx.meta.GetFile(ctx, files[0].handle); gerr != nil {
+		t.Fatalf("post-restore GetFile (proves we reached post-verify): %v", gerr)
+	}
+
+	// Safety snapshot exists on disk + in DB.
+	safetyID := fx.safetySnapshotID(ctx, snapID)
+	if safetyID == "" {
+		t.Fatal("safety snapshot ID not found in ListSnapshots")
+	}
+	fileExistsNonEmpty(t,
+		(&models.Snapshot{ID: safetyID}).MetadataDumpPath(fx.localStoreDir),
+		"safety snap dump retained on disk")
+
+	// Share stays disabled.
+	enabled, _ := fx.rt.sharesSvc.IsShareEnabled(fx.shareName)
+	if enabled {
+		t.Fatal("D-24-01: share enabled after post-verify fail — must stay disabled")
+	}
 }
 
 func testRestoreInterruptedReset(t *testing.T) {
-	t.Skip("implemented in Task 2")
+	fx := newRestoreFixture(t, restoreFixtureOpts{useFailableResetable: true})
+	defer fx.close()
+
+	ctx := fx.ctx()
+	files := fx.populateFiles(ctx, []string{"i1.bin", "i2.bin"})
+	all := fx.allHashes()
+	fx.seedRemoteAll(all)
+
+	snapID, err := fx.rt.CreateSnapshot(ctx, fx.shareName, CreateSnapshotOpts{})
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	if _, werr := fx.rt.WaitForSnapshot(ctx, fx.shareName, snapID); werr != nil {
+		t.Fatalf("WaitForSnapshot source: %v", werr)
+	}
+
+	// Mutate the store so the safety snap captures a recoverable
+	// intermediate state. We delete files[0] — the safety snap will
+	// reflect "only files[1] survives" and recovery must put us back to
+	// that state.
+	if err := fx.meta.DeleteFile(ctx, files[0].handle); err != nil {
+		t.Fatalf("delete files[0]: %v", err)
+	}
+
+	// Arm Reset failure (one-shot).
+	fx.failable.setFailNextReset(true)
+
+	err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
+	if !errors.Is(err, models.ErrRestoreAborted) {
+		t.Fatalf("RestoreSnapshot err = %v, want errors.Is(ErrRestoreAborted)", err)
+	}
+
+	// Safety snapshot must exist for rollback.
+	safetyID := fx.safetySnapshotID(ctx, snapID)
+	if safetyID == "" {
+		t.Fatal("safety snapshot ID not found — recovery primitive lost")
+	}
+	fileExistsNonEmpty(t,
+		(&models.Snapshot{ID: safetyID}).MetadataDumpPath(fx.localStoreDir),
+		"safety snap dump retained on disk")
+
+	// Share stays disabled.
+	enabled, _ := fx.rt.sharesSvc.IsShareEnabled(fx.shareName)
+	if enabled {
+		t.Fatal("D-24-01: share enabled after aborted restore — must stay disabled")
+	}
+
+	// --- Recovery: RestoreSnapshot(safetyID) ---
+	// failNextReset already cleared (one-shot consumption). Underlying
+	// MemoryMetadataStore.Reset will now run normally.
+	if err := fx.rt.RestoreSnapshot(ctx, fx.shareName, safetyID, RestoreSnapshotOpts{}); err != nil {
+		t.Fatalf("RestoreSnapshot(safetyID) recovery: %v", err)
+	}
+
+	// Post-recovery: files[1] is back (it was alive when the safety snap
+	// was taken), files[0] is NOT (it was deleted before safety snap).
+	if _, gerr := fx.meta.GetFile(ctx, files[1].handle); gerr != nil {
+		t.Fatalf("files[1] missing after recovery: %v", gerr)
+	}
+	if _, gerr := fx.meta.GetFile(ctx, files[0].handle); gerr == nil {
+		t.Fatal("files[0] present after recovery — safety snap captured the deleted state")
+	}
+
+	// Share STILL disabled after recovery.
+	enabled, _ = fx.rt.sharesSvc.IsShareEnabled(fx.shareName)
+	if enabled {
+		t.Fatal("D-24-01: share enabled after recovery — must stay disabled")
+	}
 }
 
 // ----- Fixture -----
@@ -574,9 +751,17 @@ func newRestoreRemote(inner *remotememory.Store) *restoreRemote {
 }
 
 // failHashAfterCount configures Head() to return ErrBlockNotFound for hash
-// on the (threshold+1)-th and subsequent invocations. A threshold of 0
-// means every call fails; a threshold of 1 means the first call passes and
-// every subsequent call fails. Set to a negative value to clear.
+// on the (threshold+1)-th call counted from NOW (subsequent calls after
+// gate-arm). The threshold is interpreted relative to the call counter
+// observed at the moment of arming: a value of 0 means "fail the very
+// next call and every subsequent one"; 1 means "the next call passes,
+// the one after fails", etc. Set threshold negative to clear an active
+// gate.
+//
+// Counting-from-now decouples test timing from incidental Head() calls
+// the harness made before arming the gate (e.g. the source snapshot's
+// own VerifyRemoteDurability ran Head() once per manifest hash during
+// CreateSnapshot, well before the test reached RestoreSnapshot).
 func (r *restoreRemote) failHashAfterCount(hash blockstore.ContentHash, threshold int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -584,7 +769,8 @@ func (r *restoreRemote) failHashAfterCount(hash blockstore.ContentHash, threshol
 		delete(r.failAfter, hash)
 		return
 	}
-	r.failAfter[hash] = threshold
+	current := r.hashCallCounts[hash]
+	r.failAfter[hash] = current + threshold
 }
 
 func (r *restoreRemote) Put(ctx context.Context, hash blockstore.ContentHash, data []byte) error {
@@ -682,10 +868,6 @@ var _ metadata.Backupable = (*failableResetable)(nil)
 // Note: hashAllByte and mustFileNonEmpty are defined in
 // snapshot_integration_test.go (same package). We re-use them directly.
 
-// filepathOf is a tiny convenience wrapper so callers don't need the
-// filepath import just to assemble a snapshot dir path inside an assertion.
-var _ = filepath.Join // suppress unused import when destructive scenarios stub out
-
 // safetySnapshotID returns the ID of the most-recently-created snapshot
 // for shareName that is NOT sourceID. Used by InterruptedRestore +
 // PostVerifyFails to discover the safety snap created mid-restore.
@@ -703,12 +885,7 @@ func (f *restoreFixture) safetySnapshotID(ctx context.Context, sourceID string) 
 	return ""
 }
 
-// snapshotDir returns the on-disk directory for a given snap ID.
-func (f *restoreFixture) snapshotDir(snapID string) string {
-	return (&models.Snapshot{ID: snapID}).SnapshotDir(f.localStoreDir)
-}
-
-// fileExists is a small assertion helper used in the destructive-path
+// fileExistsNonEmpty is a small assertion helper used in the destructive-path
 // scenarios.
 func fileExistsNonEmpty(t *testing.T, path, label string) {
 	t.Helper()
@@ -720,10 +897,3 @@ func fileExistsNonEmpty(t *testing.T, path, label string) {
 		t.Fatalf("%s: %q is empty, want non-empty", label, path)
 	}
 }
-
-// suppress unused warnings for helpers used only in Task 2 sub-tests.
-var (
-	_ = fileExistsNonEmpty
-	_ = (*restoreFixture)(nil).snapshotDir
-	_ = (*restoreFixture)(nil).safetySnapshotID
-)
