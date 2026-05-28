@@ -419,19 +419,19 @@ func (r *Runtime) runSnapshotOrchestration(
 
 	// --- Step 3: NoSyncGate short-circuit (D-23-11) ---
 	if opts.NoSyncGate {
-		if err := r.store.UpdateSnapshotState(ctx, shareName, snapID, models.StateReady); err != nil {
+		// Atomic state+durable flip mirrors the sync-gated path. The
+		// remote_durable value is explicit (false) here so the row's
+		// durability bit is set in the same UPDATE as the state, not
+		// left to the column default. This way the post-create row
+		// state is fully deterministic on success and not subject to
+		// schema-default drift.
+		if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, false); err != nil {
 			r.failSnap(shareName, snapID)
-			terminalErr = fmt.Errorf("snapshot create %s: flip ready (no-sync-gate): %w: %v",
+			terminalErr = fmt.Errorf("snapshot create %s: mark ready (no-sync-gate): %w: %v",
 				snapID, models.ErrSnapshotBackupFailed, err)
-			logger.Error("snapshot create: flip ready failed (no-sync-gate)",
+			logger.Error("snapshot create: mark ready failed (no-sync-gate)",
 				"snapshot_id", snapID, "share", shareName, "error", err)
 			return
-		}
-		if err := r.store.UpdateSnapshotDurable(ctx, shareName, snapID, false); err != nil {
-			// Best-effort log; state is already ready, so caller will
-			// see ready+default(false). Don't fail.
-			logger.Error("snapshot create: clear remote_durable failed",
-				"snapshot_id", snapID, "share", shareName, "error", err)
 		}
 		logger.Info("snapshot create: ready (sync gate skipped)",
 			"snapshot_id", snapID,
@@ -510,20 +510,19 @@ func (r *Runtime) runSnapshotOrchestration(
 	}
 
 	// --- Step 6: Ready flip (D-23-03) ---
-	if err := r.store.UpdateSnapshotState(ctx, shareName, snapID, models.StateReady); err != nil {
+	// Atomically transition state=creating -> state=ready AND set
+	// remote_durable=true in a single conditional UPDATE. A two-step
+	// (state, durable) sequence would leave a transient window where a
+	// crash mid-update produces ready+remote_durable=false — visually
+	// indistinguishable from the intentional --no-sync-gate result and
+	// a false negative for Phase 24 restore's durability gate.
+	if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, true); err != nil {
 		r.failSnap(shareName, snapID)
-		terminalErr = fmt.Errorf("snapshot create %s: flip ready: %w: %v",
+		terminalErr = fmt.Errorf("snapshot create %s: mark ready: %w: %v",
 			snapID, models.ErrSnapshotBackupFailed, err)
-		logger.Error("snapshot create: flip ready failed",
+		logger.Error("snapshot create: mark ready failed",
 			"snapshot_id", snapID, "share", shareName, "error", err)
 		return
-	}
-	if err := r.store.UpdateSnapshotDurable(ctx, shareName, snapID, true); err != nil {
-		// State is already ready; durability flip failure is logged but
-		// not fatal. Caller observing the row will see ready+default(false)
-		// and can re-run the verify path explicitly if needed.
-		logger.Error("snapshot create: set remote_durable=true failed",
-			"snapshot_id", snapID, "share", shareName, "error", err)
 	}
 	logger.Info("snapshot create: ready",
 		"snapshot_id", snapID,

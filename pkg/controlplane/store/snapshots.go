@@ -141,6 +141,46 @@ func (s *GORMStore) UpdateSnapshotDurable(ctx context.Context, shareName, id str
 	return nil
 }
 
+// MarkSnapshotReady atomically transitions the snapshot row (shareName, id)
+// from state='creating' to state='ready' AND sets remote_durable=durable in
+// a single conditional UPDATE. Used by the snapshot orchestration goroutine
+// (Phase 23 D-23-03) after VerifyRemoteDurability passes so the final state
+// flip and the durability bit can never disagree — a half-applied update
+// would leave the row indistinguishable from the intentional --no-sync-gate
+// path (ready + remote_durable=false), confusing operators and Phase 24
+// restore.
+//
+// Returns models.ErrSnapshotNotFound if no row matches (shareName, id).
+// Returns models.ErrSnapshotStateConflict if the row exists but is not in
+// state='creating'.
+func (s *GORMStore) MarkSnapshotReady(ctx context.Context, shareName, id string, durable bool) error {
+	db := s.db.WithContext(ctx)
+	res := db.Model(&models.Snapshot{}).
+		Where("share_name = ? AND id = ? AND state = ?", shareName, id, models.StateCreating).
+		Updates(map[string]any{
+			"state":          models.StateReady,
+			"remote_durable": durable,
+			"updated_at":     time.Now(),
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 1 {
+		return nil
+	}
+	// 0 rows: either the row is absent or its prior state is not 'creating'.
+	var count int64
+	if err := db.Model(&models.Snapshot{}).
+		Where("share_name = ? AND id = ?", shareName, id).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return models.ErrSnapshotNotFound
+	}
+	return models.ErrSnapshotStateConflict
+}
+
 // allowedPriorStates returns the set of states from which `next` is reachable.
 // Transitions: creating -> ready, creating -> failed, failed -> creating.
 func allowedPriorStates(next string) []string {
