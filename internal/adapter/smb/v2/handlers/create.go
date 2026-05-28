@@ -547,20 +547,19 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// Validate FileAttributes per MS-FSCC §2.6 and MS-SMB2 §2.2.13. Only the
 	// attributes defined for files/directories are accepted on CREATE; the
 	// reserved/volume/device bits MUST be rejected with STATUS_INVALID_PARAMETER.
-	// Samba's `invalid_parameter_mask = 0xffff8048` covers everything outside
-	// the legal mask `0x00007fb7` (smbtorture smb2.create.gentest).
 	//
-	// Legal attributes on CREATE (MS-FSCC §2.6 + Samba `samba_dir_attribs`):
+	// Legal attributes on CREATE (MS-FSCC §2.6):
 	//   READONLY (0x1)         HIDDEN (0x2)          SYSTEM (0x4)
 	//   DIRECTORY (0x10)       ARCHIVE (0x20)        NORMAL (0x80)
 	//   TEMPORARY (0x100)      SPARSE_FILE (0x200)   REPARSE_POINT (0x400)
 	//   COMPRESSED (0x800)     OFFLINE (0x1000)      NOT_CONTENT_INDEXED (0x2000)
-	//   ENCRYPTED (0x4000)
+	//   ENCRYPTED (0x4000)     INTEGRITY_STREAM (0x8000)
 	//
-	// Mask = 0x00007FB7 (0x1|0x2|0x4|0x10|0x20|0x80|0x100|0x200|0x400|0x800|
-	//                    0x1000|0x2000|0x4000). Bit 0x8 (FILE_ATTRIBUTE_VOLUME)
-	// and 0x40 (FILE_ATTRIBUTE_DEVICE) are reserved-on-the-wire and rejected.
-	const validFileAttributesMask uint32 = 0x00007FB7
+	// Bit 0x8 (FILE_ATTRIBUTE_VOLUME) and 0x40 (FILE_ATTRIBUTE_DEVICE) are
+	// reserved-on-the-wire and rejected. INTEGRITY_STREAM (0x8000) is silently
+	// accepted (no-op on DittoFS) — WPTS FSA tests probe basic-info on a file
+	// created with that attribute and require CREATE to succeed.
+	const validFileAttributesMask uint32 = 0x0000FFB7
 	if uint32(req.FileAttributes)&^validFileAttributesMask != 0 {
 		logger.Debug("CREATE: invalid FileAttributes bits set",
 			"attrs", fmt.Sprintf("0x%08x", uint32(req.FileAttributes)))
