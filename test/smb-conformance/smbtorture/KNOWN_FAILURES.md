@@ -81,26 +81,15 @@ is advertised.
 | smb2.set-sparse-ioctl | IOCTL | Sparse file IOCTL not implemented | - |
 | smb2.zero-data-ioctl | IOCTL | Zero data IOCTL not implemented | - |
 
-### Alternate Data Streams (Not Implemented)
+### Alternate Data Streams (Partial)
 
-ADS (Alternate Data Streams / named streams) are a Windows NTFS feature not
-applicable to DittoFS's virtual filesystem. Only basic stream rename and
-share modes pass due to the stub implementation.
+ADS conformance brought 13/14 smb2.streams.* tests to PASS. The remaining
+attributes2 case exercises non-default-stream attribute round-trip which
+DittoFS does not yet persist independently from the base file.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.streams.attributes1 | Streams | ADS attributes not implemented | - |
-| smb2.streams.attributes2 | Streams | ADS attributes not implemented | - |
-| smb2.streams.basefile-rename-with-open-stream | Streams | ADS rename semantics not implemented | - |
-| smb2.streams.create-disposition | Streams | ADS create disposition not implemented | - |
-| smb2.streams.delete | Streams | ADS delete not implemented | - |
-| smb2.streams.dir | Streams | ADS directory listing not implemented | - |
-| smb2.streams.io | Streams | ADS I/O not implemented | - |
-| smb2.streams.names | Streams | ADS name enumeration not implemented | - |
-| smb2.streams.names2 | Streams | ADS name enumeration not implemented | - |
-| smb2.streams.names3 | Streams | ADS name enumeration not implemented | - |
-| smb2.streams.sharemodes | Streams | ADS share mode enforcement edge cases (newly reachable) | - |
-| smb2.streams.zero-byte | Streams | ADS zero-byte handling not implemented | - |
+| smb2.streams.attributes2 | Streams | ADS attributes not persisted independently from base file | #471 |
 | smb2.create_no_streams.no_stream | Streams | No-streams create context not implemented | - |
 
 ### Change Notify (Remaining)

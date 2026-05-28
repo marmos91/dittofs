@@ -376,6 +376,16 @@ type OpenFile struct {
 	DeleteOnCloseParentKey    [16]byte
 	HasDeleteOnCloseParentKey bool
 
+	// BaseFileDeletePending is set on a stream handle when the base file was
+	// unlinked while this stream was still open. Per MS-FSA 2.1.5.4, the
+	// actual base-file removal is deferred until all handles (including
+	// stream handles) are closed. When the last such handle closes, the
+	// CLOSE handler uses BaseFileDeleteParentHandle / BaseFileDeleteFileName
+	// to perform the base file deletion.
+	BaseFileDeletePending      bool
+	BaseFileDeleteParentHandle metadata.FileHandle
+	BaseFileDeleteFileName     string
+
 	// Durable handle state (SMB3 durable handles)
 	// IsDurable indicates this handle has been granted durability.
 	// When true, the handle will be persisted to DurableHandleStore on disconnect
@@ -1334,15 +1344,6 @@ func (h *Handler) DeleteAllPendingAuthForSession(sessionID uint64) {
 	})
 }
 
-// checkShareModeConflict checks if opening a file with the given access and sharing
-// modes would conflict with any existing opens. Per MS-FSA 2.1.5.1.2 (Sharing mode
-// check), the share mode deny table is:
-//
-//   - If an existing open has read access AND the new open doesn't share read -> conflict
-//   - If an existing open has write access AND the new open doesn't share write -> conflict
-//   - If an existing open has delete access AND the new open doesn't share delete -> conflict
-//   - Vice versa: if the new open requests access that the existing open doesn't share
-//
 // isFileDeletePending reports whether any existing open on the same file
 // (identified by its metadata handle) has DeletePending set. Per MS-FSA
 // 2.1.5.1.2 and MS-SMB2 3.3.5.9: a subsequent open on a delete-pending
@@ -1371,10 +1372,67 @@ func (h *Handler) isFileDeletePending(fileHandle metadata.FileHandle) bool {
 	return pending
 }
 
-// The filePath parameter is the share-relative path of the file being opened (e.g.,
-// "dir/file.txt" or "dir/file.txt:stream:$DATA"). When opening an ADS or the base
-// file, the check also considers opens on other streams of the same base file per
-// MS-FSA 2.1.5.1.2.1 (share mode enforcement spans all streams of a file).
+// isFileOrBaseDeletePending extends isFileDeletePending to also check whether
+// a deferred base-file delete is pending across stream/base handles.
+//
+// Per Samba semantics (also matches WPTS expectations): a stream open does
+// NOT inherit the base file's DOC pending state. Streams are tracked as
+// independent fsps; the base's mark-for-delete only fails subsequent stream
+// opens once the base has actually been unlinked and the delete is being
+// deferred for outstanding stream handles (BaseFileDeletePending).
+//
+// Cases handled here:
+//   - Opening a base file: reject if any stream handle on the same base
+//     carries BaseFileDeletePending (base was unlinked, delete deferred).
+//   - Opening a stream:   reject if any handle on the base file or sibling
+//     stream carries BaseFileDeletePending.
+//
+// filePath is the normalized path being opened (e.g., "file" or "file:Stream One").
+func (h *Handler) isFileOrBaseDeletePending(fileHandle metadata.FileHandle, filePath string) bool {
+	// Fast path: direct metadata-handle match against an existing handle
+	// whose own DeletePending is set. Covers the same-file re-open case
+	// (smbtorture smb2.oplock.doc, smb2.streams.delete).
+	if h.isFileDeletePending(fileHandle) {
+		return true
+	}
+
+	openBase := adsBasePath(filePath) // non-empty if filePath is a stream
+	pending := false
+	h.files.Range(func(_, value any) bool {
+		existing := value.(*OpenFile)
+		if existing.IsPipe || len(existing.MetadataHandle) == 0 {
+			return true
+		}
+		if !existing.BaseFileDeletePending {
+			return true
+		}
+		existingBase := adsBasePath(existing.Path)
+		if openBase == "" {
+			// Opening a base file: match against any stream of this base.
+			if strings.EqualFold(existingBase, filePath) {
+				pending = true
+				return false
+			}
+		} else {
+			// Opening a stream: match against a sibling stream sharing the
+			// same base path, or against a base-file handle of that base.
+			if strings.EqualFold(existingBase, openBase) ||
+				strings.EqualFold(existing.Path, openBase) {
+				pending = true
+				return false
+			}
+		}
+		return true
+	})
+	return pending
+}
+
+// checkShareModeConflict checks if opening a file with the given access and sharing
+// modes would conflict with any existing opens on the same file or related
+// streams. Per MS-FSA 2.1.5.1.2 + Samba semantics, share mode enforcement is:
+//   - Same stream (same metadata handle) → always checked
+//   - Base file vs its stream (or vice versa) → checked
+//   - Stream A vs Stream B (different streams, same base) → NOT checked
 //
 // Returns true if a conflict exists (CREATE should fail with STATUS_SHARING_VIOLATION).
 func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesiredAccess, newShareAccess uint32, filePath string) bool {
@@ -1408,15 +1466,11 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 		return access&(deleteAccess|genericAll) != 0
 	}
 
-	// Compute the base path for ADS cross-stream checking.
-	// If the file is an ADS (path contains ":"), strip the stream suffix to get
-	// the base file path. Share mode checks must span the base file and all its streams.
-	newBasePath := adsBasePath(filePath)
+	newBase := adsBasePath(filePath)
 
 	conflict := false
 	h.files.Range(func(key, value any) bool {
 		existing := value.(*OpenFile)
-		// Skip pipes
 		if existing.IsPipe {
 			return true
 		}
@@ -1424,36 +1478,39 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 			return true
 		}
 
-		// Check if this open is on the same file or a related stream.
-		// Match by: (1) exact metadata handle, or (2) same base file path
-		// when either the new file or existing open is an ADS.
-		// Per MS-FSA 2.1.5.1.2: share mode enforcement spans the base file
-		// and ALL its alternate data streams.
+		// Same stream (same metadata handle) → full share mode check.
+		// Base file vs its stream (or vice versa) → DELETE-only check.
+		// Stream A vs stream B (different streams) → skip.
 		sameFile := bytes.Equal(existing.MetadataHandle, fileHandle)
+		crossStream := false
 		if !sameFile {
-			existingBasePath := adsBasePath(existing.Path)
-			if newBasePath != "" {
-				// New file is an ADS: check if existing is the base file or another stream
-				sameFile = (existingBasePath != "" && existingBasePath == newBasePath) ||
-					(existing.Path == newBasePath) ||
-					(existingBasePath == filePath)
-			} else if existingBasePath != "" {
-				// New file is a base file, existing is an ADS: check if it's our stream
-				sameFile = (existingBasePath == filePath)
+			existingBase := adsBasePath(existing.Path)
+			baseVsStream := false
+			if newBase == "" && existingBase != "" {
+				baseVsStream = strings.EqualFold(existingBase, filePath)
+			} else if newBase != "" && existingBase == "" {
+				baseVsStream = strings.EqualFold(newBase, existing.Path)
 			}
+			if !baseVsStream {
+				return true
+			}
+			crossStream = true
 		}
-		if !sameFile {
+
+		// Cross-stream: only DELETE sharing enforced per Samba.
+		if crossStream {
+			if hasDelete(existing.DesiredAccess) && newShareAccess&fileShareDelete == 0 {
+				conflict = true
+				return false
+			}
+			if hasDelete(newDesiredAccess) && existing.ShareAccess&fileShareDelete == 0 {
+				conflict = true
+				return false
+			}
 			return true
 		}
 
-		// Skip non-conflicting existing opens. Per Samba `share_conflict`
-		// (source3/smbd/open.c L1505): an entry with none of
-		// FILE_READ_DATA|FILE_WRITE_DATA|FILE_APPEND_DATA|FILE_EXECUTE|
-		// DELETE_ACCESS imposes no share-mode constraint. This covers
-		// stat-only opens (smb2.lease.statopen) and also EA-only,
-		// WRITE_DAC-only, and WRITE_OWNER-only opens.
-		// GENERIC_*/MAXIMUM_ALLOWED imply data access, so an existing
-		// open carrying those bits still constrains.
+		// Same-stream: full share mode check.
 		if !hasRead(existing.DesiredAccess) &&
 			!hasWrite(existing.DesiredAccess) &&
 			!hasDelete(existing.DesiredAccess) &&
@@ -1461,7 +1518,6 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 			return true
 		}
 
-		// Check: existing access vs new sharing
 		if hasRead(existing.DesiredAccess) && newShareAccess&fileShareRead == 0 {
 			conflict = true
 			return false
@@ -1475,7 +1531,6 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 			return false
 		}
 
-		// Check: new access vs existing sharing
 		if hasRead(newDesiredAccess) && existing.ShareAccess&fileShareRead == 0 {
 			conflict = true
 			return false
@@ -1494,12 +1549,73 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 	return conflict
 }
 
+// paginatedChildScan iterates over a directory's children in pages and
+// returns the first entry whose name satisfies matchFn, confirmed by a
+// Lookup. Surfaces real store errors (anything other than ErrNotFound)
+// so callers can distinguish "no match" from "store unhealthy / not a
+// directory / permission denied".
+func (h *Handler) paginatedChildScan(
+	authCtx *metadata.AuthContext,
+	metaSvc *metadata.MetadataService,
+	parentHandle metadata.FileHandle,
+	matchFn func(entryName string) bool,
+) (*metadata.File, string, error) {
+	store, err := metaSvc.GetStoreForShare(shareNameFromHandle(parentHandle))
+	if err != nil {
+		return nil, "", err
+	}
+	cursor := ""
+	for {
+		entries, nextCursor, listErr := store.ListChildren(authCtx.Context, parentHandle, cursor, 500)
+		if listErr != nil {
+			if metadata.IsNotFoundError(listErr) {
+				return nil, "", nil
+			}
+			return nil, "", listErr
+		}
+		for _, entry := range entries {
+			if matchFn(entry.Name) {
+				if f, lookupErr := metaSvc.Lookup(authCtx, parentHandle, entry.Name); lookupErr == nil {
+					return f, entry.Name, nil
+				}
+			}
+		}
+		if nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
+	}
+	return nil, "", nil
+}
+
+// lookupCaseInsensitive performs a case-insensitive child lookup in a
+// directory. It first tries an exact-case Lookup; on ErrNotFound it
+// falls back to scanning the parent's children with strings.EqualFold.
+// Any non-NotFound error (e.g., ErrNotDirectory, permission errors)
+// propagates to the caller so the resulting SMB status reflects the
+// real condition. Returns nil/""/nil when no match exists.
+func (h *Handler) lookupCaseInsensitive(
+	authCtx *metadata.AuthContext,
+	metaSvc *metadata.MetadataService,
+	parentHandle metadata.FileHandle,
+	name string,
+) (*metadata.File, string, error) {
+	f, err := metaSvc.Lookup(authCtx, parentHandle, name)
+	if err == nil {
+		return f, name, nil
+	}
+	if !metadata.IsNotFoundError(err) {
+		return nil, "", err
+	}
+	return h.paginatedChildScan(authCtx, metaSvc, parentHandle, func(entryName string) bool {
+		return strings.EqualFold(entryName, name)
+	})
+}
+
 // adsBasePath extracts the base file path from a potentially ADS-qualified path.
-// For "dir/file.txt:stream:$DATA" returns "dir/file.txt".
+// For "dir/file.txt:stream" returns "dir/file.txt".
 // For "dir/file.txt" (no stream) returns "" (not an ADS).
-// The last component's first colon is the stream separator.
 func adsBasePath(filePath string) string {
-	// Find the last path separator to isolate the filename component
 	lastSep := strings.LastIndex(filePath, "/")
 	var fileName string
 	if lastSep >= 0 {
@@ -1507,18 +1623,24 @@ func adsBasePath(filePath string) string {
 	} else {
 		fileName = filePath
 	}
-
-	// Check for stream separator in the filename
 	colonIdx := strings.Index(fileName, ":")
 	if colonIdx <= 0 {
-		return "" // Not an ADS path
+		return ""
 	}
-
-	// Return the path with the stream suffix stripped
 	if lastSep >= 0 {
 		return filePath[:lastSep+1] + fileName[:colonIdx]
 	}
 	return fileName[:colonIdx]
+}
+
+// shareNameFromHandle extracts the share name from an encoded file handle.
+func shareNameFromHandle(handle metadata.FileHandle) string {
+	if len(handle) > 0 {
+		if name, _, err := metadata.DecodeFileHandle(handle); err == nil && name != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 // checkShareDeleteConflict checks if any other open handle on the same file

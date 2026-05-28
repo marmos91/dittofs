@@ -880,6 +880,17 @@ func EncodeFileNotifyInformation(changes []FileNotifyInformation) []byte {
 // Notification Helpers
 // ============================================================================
 
+// notifyStreamName appends the ":$DATA" stream-type suffix to ADS notification
+// filenames. WPTS and Windows expect ChangeNotify events for alternate data
+// streams to carry the full "file:stream:$DATA" form, but internally we strip
+// the type suffix during normalization. This restores it for the wire.
+func notifyStreamName(name string) string {
+	if strings.Contains(name, ":") && !strings.HasSuffix(strings.ToUpper(name), ":$DATA") {
+		return name + ":$DATA"
+	}
+	return name
+}
+
 // NotifyChange records a filesystem change that may trigger pending CHANGE_NOTIFY
 // requests. Events are buffered for notifyFlushDelay before delivery so that
 // multiple events from the same burst (e.g. OVERWRITE -> REMOVED+ADDED+MODIFIED)

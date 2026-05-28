@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -511,17 +512,62 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
 
-	// Strip NTFS stream suffixes. The default data stream (::$DATA) and
-	// directory index (::$INDEX_ALLOCATION) are implicit and should not be
-	// part of the actual filename stored in the metadata store.
+	// Normalize NTFS stream syntax. Stream names may contain characters
+	// like "/" which path.Dir/path.Base would misinterpret as path
+	// separators, so extract the stream portion BEFORE any path operations.
+	//
+	// After normalization, named ADS are stored as "file.txt:StreamName"
+	// (no type suffix). FileStreamInformation re-appends ":$DATA" on wire.
+	var streamSuffix string // e.g., ":StreamName" — empty for non-ADS
+	var explicitDataStream bool
 	if idx := strings.Index(filename, ":"); idx >= 0 {
-		streamSuffix := filename[idx:]
-		basePath := filename[:idx]
-		upperSuffix := strings.ToUpper(streamSuffix)
-		if upperSuffix == "::$DATA" || upperSuffix == "::$INDEX_ALLOCATION" {
-			filename = basePath
+		colonPart := filename[idx:]
+		basePart := filename[:idx]
+		upper := strings.ToUpper(colonPart)
+		switch upper {
+		case "::$DATA":
+			explicitDataStream = true
+			filename = basePart
+		case "::$INDEX_ALLOCATION", ":$I30:$INDEX_ALLOCATION":
+			// Both forms refer to the directory's default index stream.
+			// ::$INDEX_ALLOCATION is the unnamed variant; :$I30:$INDEX_ALLOCATION
+			// names the $I30 index explicitly (NTFS directory listing index).
+			// Strip the suffix so the open resolves to the directory itself.
+			filename = basePart
+		default:
+			// Named ADS: strip trailing :$DATA type indicator, isolate
+			// stream suffix so it doesn't pollute path.Dir/path.Base.
+			if strings.HasSuffix(upper, ":$DATA") {
+				colonPart = colonPart[:len(colonPart)-len(":$DATA")]
+			}
+			// `file:$DATA` (empty stream name, $DATA type with single
+			// colon) resolves to a stream entity distinct from the
+			// base file. Per Samba/WPTS semantics, opens on this
+			// path are independent of the base file's DOC and share
+			// state. Preserve the literal suffix so the metadata
+			// lookup resolves to a separate child entry rather than
+			// collapsing onto the base file (which would inherit
+			// the base's pending-delete state and reject the open).
+			if colonPart == "" {
+				streamSuffix = ":$DATA"
+			} else {
+				streamSuffix = colonPart
+			}
+			filename = basePart
 		}
-		// Other stream names (alternate data streams) are kept as-is
+	}
+
+	// A stream without a base file (":streamname") is invalid.
+	if streamSuffix != "" && filename == "" {
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameInvalid}}, nil
+	}
+
+	// Per MS-FSA 2.1.5.1, wildcard characters are invalid in path
+	// components. Note: wildcards ARE valid inside stream names (e.g.,
+	// "file:?Stream*" is legal), so this check applies only to the base
+	// file path (stream suffix already stripped above).
+	if strings.ContainsAny(filename, "*?<>\"") {
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameInvalid}}, nil
 	}
 
 	// Reject paths that traverse above the share root (e.g., "../../..")
@@ -538,8 +584,16 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBadNetworkName}}, nil
 	}
 
+	// Build the full normalized filename (including stream suffix) for
+	// durable reconnect and logging. The base `filename` has the stream
+	// suffix stripped for safe path.Dir/path.Base; `fullFilename` preserves it.
+	fullFilename := filename
+	if streamSuffix != "" {
+		fullFilename = filename + streamSuffix
+	}
+
 	// Handle root directory case
-	if filename == "" {
+	if filename == "" && streamSuffix == "" {
 		return h.handleOpenRootCreate(ctx, req, authCtx, rootHandle, tree)
 	}
 
@@ -564,7 +618,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			reconnResult, status, reconnErr := ProcessDurableReconnectContext(
 				authCtx.Context, h.DurableStore, metaSvc, req.CreateContexts,
 				ctx.SessionID, sess.Username, sessionKeyHash,
-				tree.ShareName, filename,
+				tree.ShareName, fullFilename,
 			)
 			if reconnErr != nil {
 				logger.Warn("CREATE: durable reconnect error", "error", reconnErr)
@@ -784,9 +838,18 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
-	// Split path into directory and name components
+	// Split path into directory and name components. The stream suffix was
+	// already stripped from filename above, so path.Dir/path.Base operate
+	// only on the base-file path and won't split on "/" inside stream names.
 	dirPath := path.Dir(filename)
 	baseName := path.Base(filename)
+	isADS := streamSuffix != ""
+	var adsBaseFileName string // base file entry name (e.g., "file.txt")
+	if isADS {
+		adsBaseFileName = baseName
+		baseName = baseName + streamSuffix // e.g., "file.txt:StreamName"
+		filename = filename + streamSuffix // restore full filename for logging
+	}
 
 	// Walk to parent directory
 	parentHandle := rootHandle
@@ -795,6 +858,26 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		if err != nil {
 			logger.Debug("CREATE: parent path not found", "path", dirPath, "error", err)
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectPathNotFound}}, nil
+		}
+	}
+
+	// ADS early validation (before any metadata ops, including share mode
+	// checks). Per MS-FSA, name validation precedes access checks.
+	if isADS {
+		// Streams are always non-directory objects per MS-FSA.
+		if req.CreateOptions&types.FileDirectoryFile != 0 {
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotADirectory}}, nil
+		}
+		adsStreamName := streamSuffix[1:] // strip leading ":"
+		// Per Samba/Windows: "/", "\", and ":" are OBJECT_NAME_INVALID in
+		// stream names. "/" and "\" are path separators; ":" is the stream
+		// type delimiter — an extra colon means a malformed type suffix
+		// (e.g., trailing ":", ":$FOO", ":?D*a").
+		// An empty stream name (just ":") is also invalid.
+		// Control characters (0x01-0x1F) are permitted — Samba allows them
+		// and smbtorture creates streams containing \x05, \n, etc.
+		if adsStreamName == "" || strings.ContainsAny(adsStreamName, "/\\:") {
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameInvalid}}, nil
 		}
 	}
 
@@ -838,8 +921,36 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
-	existingFile, lookupErr := metaSvc.Lookup(authCtx, parentHandle, baseName)
-	fileExists := (lookupErr == nil)
+	// For ADS opens, existence is based on the STREAM entry, and the base
+	// file is auto-created when the disposition would create.
+	//
+	// NTFS/SMB names are case-preserving but case-insensitive.
+	// First try a general case-insensitive lookup for the baseName (covers
+	// both regular files and ADS entries whose exact case differs).
+	// For ADS, also fall back to the stream-specific scanner which matches
+	// on the stream suffix within the parent directory.
+	existingFile, foundName, lookupErr := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, baseName)
+	if lookupErr != nil {
+		logger.Debug("CREATE: parent lookup failed", "name", baseName, "error", lookupErr)
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(lookupErr)}}, nil
+	}
+	fileExists := (existingFile != nil)
+	if fileExists && foundName != baseName {
+		baseName = foundName // use the canonical stored name
+	}
+	// lookupCaseInsensitive already does a full EqualFold scan of all
+	// children — no separate stream-specific fallback needed.
+
+	// Per MS-FSA: directories do not have a default data stream. When the
+	// client explicitly requests "dir::$DATA", the open must fail even if
+	// the directory itself exists. FILE_DIRECTORY_FILE → NOT_A_DIRECTORY;
+	// otherwise → FILE_IS_A_DIRECTORY.
+	if explicitDataStream && fileExists && existingFile.Type == metadata.FileTypeDirectory {
+		if req.CreateOptions&types.FileDirectoryFile != 0 {
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotADirectory}}, nil
+		}
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileIsADirectory}}, nil
+	}
 
 	// Debug logging to trace file type issues in Lookup
 	if fileExists {
@@ -862,16 +973,52 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// Per MS-FSA 2.1.5.1.1: Disposition check (e.g., FILE_CREATE failing with
 	// OBJECT_NAME_COLLISION when the name exists) takes priority over type
 	// constraint checks (NOT_A_DIRECTORY / FILE_IS_A_DIRECTORY).
+	// For ADS, this also takes priority over base-file share mode checks:
+	// if the stream doesn't exist and the disposition is FILE_OPEN, we must
+	// return OBJECT_NAME_NOT_FOUND, not SHARING_VIOLATION (per smbtorture
+	// smb2.streams.names2). The per-stream share mode check in
+	// checkShareModeConflict still runs later for existing streams.
 
 	createAction, dispErr := ResolveCreateDisposition(req.CreateDisposition, fileExists)
 	if dispErr != nil {
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(dispErr)}}, nil
 	}
 
+	// ADS auto-create: when the disposition would create the stream,
+	// ensure the base file exists first. Per MS-FSA, creating a named
+	// stream implicitly creates the base file.
+	if isADS && (createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded) {
+		if f, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, adsBaseFileName); f == nil {
+			baseAttr := &metadata.FileAttr{
+				Mode: SMBModeFromAttrs(0, false),
+				Type: metadata.FileTypeRegular,
+			}
+			if authCtx.Identity.UID != nil {
+				baseAttr.UID = *authCtx.Identity.UID
+			}
+			if authCtx.Identity.GID != nil {
+				baseAttr.GID = *authCtx.Identity.GID
+			}
+			if _, createBaseErr := metaSvc.CreateFile(authCtx, parentHandle, adsBaseFileName, baseAttr); createBaseErr != nil {
+				// Concurrent stream CREATE may race on base-file creation.
+				// ErrAlreadyExists means another goroutine won — proceed.
+				var storeErr *metadata.StoreError
+				if errors.As(createBaseErr, &storeErr) && storeErr.Code == metadata.ErrAlreadyExists {
+					logger.Debug("CREATE: ADS base file created concurrently", "base", adsBaseFileName)
+				} else {
+					logger.Debug("CREATE: ADS auto-create base file failed",
+						"base", adsBaseFileName, "error", createBaseErr)
+					return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(createBaseErr)}}, nil
+				}
+			}
+			logger.Debug("CREATE: ADS auto-created base file", "base", adsBaseFileName)
+		}
+	}
+
 	// Validate directory vs file constraints for existing files.
 	// Only applies when the disposition opens or overwrites (not FILE_CREATE,
 	// which already failed above if the file existed).
-	if fileExists {
+	if fileExists && !isADS {
 		if isDirectoryRequest && existingFile.Type != metadata.FileTypeDirectory {
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotADirectory}}, nil
 		}
@@ -946,7 +1093,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// Cross-stream share-mode check for new files (no lease break needed).
 	if !fileExists {
 		if shareConflict := h.checkShareModeConflict(nil, req.DesiredAccess, req.ShareAccess, filename); shareConflict {
-			logger.Debug("CREATE: cross-stream sharing violation",
+			logger.Debug("CREATE: sharing violation on new file",
 				"path", filename,
 				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
 				"shareAccess", fmt.Sprintf("0x%x", req.ShareAccess))
@@ -961,11 +1108,24 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// with STATUS_DELETE_PENDING without triggering an oplock break. The
 	// check runs BEFORE breakAndMaybeParkCreate so the holder's oplock
 	// remains intact. Required by smbtorture smb2.oplock.doc.
-	if fileExists && existingFile != nil {
+	//
+	// Also checks cross-stream delete-pending: when a base file has been
+	// unlinked while a stream handle is still open, opens on both the base
+	// file and any of its streams MUST return STATUS_DELETE_PENDING
+	// (smbtorture smb2.streams.delete).
+	if fileExists {
 		if existingHandle, encErr := metadata.EncodeFileHandle(existingFile); encErr == nil {
-			if h.isFileDeletePending(existingHandle) {
+			if h.isFileOrBaseDeletePending(existingHandle, filename) {
 				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDeletePending}}, nil
 			}
+		}
+	}
+	// Even when the file does not exist in the metadata store (already
+	// removed by the unlink), a deferred base-file delete may still be
+	// pending on an open stream handle. Check by path.
+	if !fileExists {
+		if h.isFileOrBaseDeletePending(nil, filename) {
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDeletePending}}, nil
 		}
 	}
 
@@ -1324,9 +1484,15 @@ func (h *Handler) walkPath(
 			continue
 		}
 
-		file, err := metaSvc.Lookup(authCtx, currentHandle, part)
-		if err != nil {
-			return nil, err
+		file, _, lookupErr := h.lookupCaseInsensitive(authCtx, metaSvc, currentHandle, part)
+		if lookupErr != nil {
+			return nil, lookupErr
+		}
+		if file == nil {
+			return nil, &metadata.StoreError{
+				Code:    metadata.ErrNotFound,
+				Message: fmt.Sprintf("child not found: %s", part),
+			}
 		}
 
 		if file.Type != metadata.FileTypeDirectory {
@@ -1336,9 +1502,10 @@ func (h *Handler) walkPath(
 			}
 		}
 
-		currentHandle, err = metadata.EncodeFileHandle(file)
-		if err != nil {
-			return nil, err
+		var encErr error
+		currentHandle, encErr = metadata.EncodeFileHandle(file)
+		if encErr != nil {
+			return nil, encErr
 		}
 	}
 
@@ -1459,8 +1626,8 @@ func (h *Handler) updateBaseObjectCtime(
 	parentHandle metadata.FileHandle,
 	baseObjectName string,
 ) {
-	baseFile, err := metaSvc.Lookup(authCtx, parentHandle, baseObjectName)
-	if err != nil {
+	baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, baseObjectName)
+	if baseFile == nil {
 		return
 	}
 	baseHandle, err := metadata.EncodeFileHandle(baseFile)
@@ -1485,8 +1652,8 @@ func (h *Handler) updateBaseObjectTimestampsForADSWrite(
 	openFile *OpenFile,
 	baseObjectName string,
 ) {
-	baseFile, err := metaSvc.Lookup(authCtx, openFile.ParentHandle, baseObjectName)
-	if err != nil {
+	baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseObjectName)
+	if baseFile == nil {
 		return
 	}
 	baseHandle, err := metadata.EncodeFileHandle(baseFile)

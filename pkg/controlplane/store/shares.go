@@ -140,6 +140,15 @@ func (s *GORMStore) DeleteShare(ctx context.Context, name string) error {
 			return err
 		}
 
+		// Delete snapshot rows for this share. The on-disk snapshot
+		// directory is removed by Runtime.RemoveShare; leaving the rows
+		// behind would let SnapshotHoldProvider read stale records and
+		// fail GC against vanished manifest files if the share name is
+		// later reused.
+		if err := tx.Where("share_name = ?", share.Name).Delete(&models.Snapshot{}).Error; err != nil {
+			return err
+		}
+
 		// Delete share
 		return tx.Delete(&share).Error
 	})

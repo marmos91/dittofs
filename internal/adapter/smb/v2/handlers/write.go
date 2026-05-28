@@ -432,7 +432,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 
 	if isADSWrite && h.NotifyRegistry != nil {
 		parentDirPath := GetParentPath(openFile.Path)
-		h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, openFile.FileName, FileActionModifiedStream, FileNotifyChangeStreamWrite|FileNotifyChangeStreamSize)
+		h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, notifyStreamName(openFile.FileName), FileActionModifiedStream, FileNotifyChangeStreamWrite|FileNotifyChangeStreamSize)
 	}
 
 	logger.Debug("WRITE successful",

@@ -224,7 +224,7 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 			types.FileLinkInformation,
 			types.FileDispositionInformation, types.FileDispositionInformationEx,
 			types.FileEndOfFileInformation, types.FileAllocationInformation,
-			15: // FileFullEaInformation
+			types.FileFullEaInformation:
 			// These have specific access checks in their handlers or
 			// are validated by the metadata layer
 		default:
@@ -358,12 +358,36 @@ func (h *Handler) setFileInfoFromStore(
 		// handle. Pre-read the file to capture current timestamps, then pin
 		// sentinel timestamps to their current value in setAttrs to suppress
 		// auto-updates (e.g., Ctime auto-update when FileAttributes change).
+		//
+		// Per NTFS: ADS (alternate data streams) share the base file's
+		// timestamps. When the open is for a stream, capture the base file's
+		// timestamps so the frozen value reflects the base file, not the
+		// stream entry.
+		//
+		// We also need the pre-image whenever the caller sends ChangeTime = 0
+		// ("don't change") alongside any other mutation — the metadata layer
+		// auto-bumps Ctime on any modification, but smbtorture `smb2.setinfo`
+		// (setinfo.c:203) asserts the previously-set Ctime survives a no-op
+		// SET_INFO. The mutation can be attribute-only, timestamp-only
+		// (e.g. LastWriteTime), or both; pinning Ctime to the current value
+		// suppresses the auto-bump in all of these cases.
+		anyBasicMutation := fileAttrs != 0 || creationFT != 0 || atimeFT != 0 || mtimeFT != 0
+		needPreFile := hasFreezeOrUnfreeze || (ctimeFT == 0 && anyBasicMutation && !openFile.CtimeFrozen)
 		var preFile *metadata.File
-		if hasFreezeOrUnfreeze {
+		if needPreFile {
 			var err error
-			preFile, err = metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
-			if err != nil {
-				logger.Warn("SET_INFO: failed to read file for freeze/unfreeze", "path", openFile.Path, "error", err)
+			if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 && len(openFile.ParentHandle) > 0 {
+				// ADS: capture base file timestamps.
+				baseFileName := openFile.FileName[:colonIdx]
+				if baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName); baseFile != nil {
+					preFile = baseFile
+				}
+			}
+			if preFile == nil {
+				preFile, err = metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
+				if err != nil {
+					logger.Warn("SET_INFO: failed to read file for freeze/unfreeze", "path", openFile.Path, "error", err)
+				}
 			}
 		}
 
@@ -405,6 +429,18 @@ func (h *Handler) setFileInfoFromStore(
 			setAttrs.Atime = openFile.FrozenAtime
 		}
 
+		// ChangeTime stickiness: once SET_INFO BasicInfo has been used on a
+		// handle to mutate attributes or any timestamp, the metadata layer's
+		// automatic Ctime bump (file_modify.go: `if attrs.Ctime == nil {
+		// file.Ctime = now }`) must NOT overwrite a previously-set ChangeTime
+		// when the caller sends ChangeTime = 0. Pin Ctime to the current value
+		// so the auto-bump is a no-op. smbtorture `smb2.setinfo`
+		// (setinfo.c:203) asserts this for attribute changes; the same
+		// constraint applies to timestamp-only mutations (e.g. LastWriteTime).
+		if ctimeFT == 0 && setAttrs.Ctime == nil && !openFile.CtimeFrozen && preFile != nil {
+			setAttrs.Ctime = &preFile.Ctime
+		}
+
 		// Per MS-FSA 2.1.5.14.2: When FileAttributes change, the object store
 		// SHOULD also update LastWriteTime. The metadata layer only auto-updates
 		// Ctime (POSIX semantics), so we handle Mtime auto-update here.
@@ -417,6 +453,25 @@ func (h *Handler) setFileInfoFromStore(
 		if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Path, "error", err)
 			return setInfoStatus(common.MapToSMB(err)), nil
+		}
+
+		// Per NTFS: only TIMESTAMPS set on an ADS propagate to the base
+		// file. FileAttributes/Mode do NOT propagate — they are per-file.
+		if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 && len(openFile.ParentHandle) > 0 {
+			tsAttrs := &metadata.SetAttrs{
+				Mtime:        setAttrs.Mtime,
+				Ctime:        setAttrs.Ctime,
+				Atime:        setAttrs.Atime,
+				CreationTime: setAttrs.CreationTime,
+			}
+			if tsAttrs.Mtime != nil || tsAttrs.Ctime != nil || tsAttrs.Atime != nil || tsAttrs.CreationTime != nil {
+				baseFileName := openFile.FileName[:colonIdx]
+				if baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName); baseFile != nil {
+					if baseHandle, encErr := metadata.EncodeFileHandle(baseFile); encErr == nil {
+						_ = metaSvc.SetFileAttributes(authCtx, baseHandle, tsAttrs)
+					}
+				}
+			}
 		}
 
 		// Apply freeze/unfreeze state to the open handle using pre-change values.
@@ -504,7 +559,7 @@ func (h *Handler) setFileInfoFromStore(
 				nf |= FileNotifyChangeLastWrite
 			}
 			if nf != 0 {
-				h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified, nf)
+				h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, nf)
 			}
 		}
 
@@ -553,10 +608,15 @@ func (h *Handler) setFileInfoFromStore(
 		// ================================================================
 		if strings.HasPrefix(newPath, ":") {
 			// Extract the base file name from the current open file name.
-			// The current file is an ADS: "basefile:streamname:$DATA"
+			// The current file is an ADS: "basefile:streamname"
 			baseName := openFile.FileName
 			if colonIdx := strings.Index(baseName, ":"); colonIdx > 0 {
 				baseName = baseName[:colonIdx]
+			}
+
+			// Strip :$DATA type suffix from rename target.
+			if strings.HasSuffix(strings.ToUpper(newPath), ":$DATA") {
+				newPath = newPath[:len(newPath)-len(":$DATA")]
 			}
 
 			// Build new child name: basefile + new stream suffix
@@ -600,7 +660,7 @@ func (h *Handler) setFileInfoFromStore(
 					if NameChangeFilterFor(oldFileName, openFile.IsDirectory) == FileNotifyChangeStreamName {
 						renameFilter = FileNotifyChangeStreamName
 					}
-					h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, oldFileName, newParentPath, toName, renameFilter)
+					h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, notifyStreamName(oldFileName), newParentPath, notifyStreamName(toName), renameFilter)
 				}
 			}
 
@@ -1078,7 +1138,7 @@ func (h *Handler) setFileInfoFromStore(
 		h.breakParentDirLeasesForContentChange(authCtx, openFile)
 
 		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified, FileNotifyChangeSize)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeSize)
 		}
 
 		return setInfoStatus(types.StatusSuccess), nil
@@ -1107,12 +1167,12 @@ func (h *Handler) setFileInfoFromStore(
 		// Reserved (7B), RootDirectory (8B), FileNameLength (4B), FileName (UTF-16LE).
 		return h.handleFileLinkInformation(authCtx, openFile, buffer)
 
-	case 15: // FileFullEaInformation [MS-FSCC] 2.4.15 - Extended attributes
+	case types.FileFullEaInformation: // [MS-FSCC] 2.4.15 - Extended attributes
 		// Accept EA writes as a no-op. DittoFS does not persist extended attributes
 		// but returning SUCCESS allows ChangeNotify EA tests to proceed.
 		logger.Debug("SET_INFO: FileFullEaInformation (no-op)", "path", openFile.Path)
 		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified, FileNotifyChangeEa)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeEa)
 		}
 		return setInfoStatus(types.StatusSuccess), nil
 
@@ -1372,7 +1432,7 @@ func (h *Handler) setSecurityInfo(
 
 	if !changed {
 		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified, FileNotifyChangeSecurity)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeSecurity)
 		}
 		return setInfoStatus(types.StatusSuccess), nil
 	}
@@ -1385,7 +1445,7 @@ func (h *Handler) setSecurityInfo(
 	}
 
 	if h.NotifyRegistry != nil {
-		h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified, FileNotifyChangeSecurity)
+		h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeSecurity)
 	}
 
 	return setInfoStatus(types.StatusSuccess), nil
