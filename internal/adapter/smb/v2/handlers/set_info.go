@@ -455,19 +455,36 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(common.MapToSMB(err)), nil
 		}
 
-		// Per NTFS: SET_INFO BasicInformation on an ADS handle propagates
-		// both timestamps AND DOS file attributes (Hidden + the DOS bits
-		// stored in the high mode bits) to the base file.
-		// smb2.streams.attributes2 (source4/torture/smb2/streams.c) asserts
-		// that setting attribs via the stream changes the base file's
-		// attribs too, and vice-versa — base and stream always report
-		// identical FileAttributes via QUERY_INFO. QUERY_INFO on a stream
-		// already resolves to base via resolveBaseFileAttrForADS, so the
-		// propagation here is what makes the round-trip consistent for both
-		// opens. Mode propagation only overlays the DOS bits onto the base
-		// file's existing POSIX permissions — overwriting the base's POSIX
-		// mode with the stream-derived default (0o644) would clobber any
-		// out-of-band chmod the operator applied via NFS.
+		// NTFS contract: SET_INFO BasicInformation on an ADS handle MUST be
+		// observable on the base file via QUERY_INFO, and vice-versa — base
+		// and stream always report identical FileAttributes.
+		// smb2.streams.attributes2 (source4/torture/smb2/streams.c) round-
+		// trips this both ways: setting attribs through the stream and
+		// re-querying the base must agree, and the reverse. QUERY_INFO on
+		// a stream already resolves to base via resolveBaseFileAttrForADS,
+		// so the only piece that closes the loop is propagating the writes
+		// from the stream's SET_INFO back onto the base. The propagation:
+		//
+		//   - Forwards CreationTime / LastAccessTime / LastWriteTime /
+		//     ChangeTime onto the base. nil-valued pointers are skipped,
+		//     so a "timestamp-only" SET_INFO that leaves FileAttributes=0
+		//     does not touch the base's DOS bits or Hidden flag.
+		//   - Forwards the Hidden flag when FileAttributes was set.
+		//   - Overlays only the four explicit DOS bits
+		//     (modeDOSExplicit | modeDOSArchive | modeDOSSystem |
+		//     modeDOSReadonly) from the stream's computed mode onto the
+		//     base's existing mode. All other bits in the base's mode
+		//     are preserved:
+		//       * POSIX permission bits (0o7777) — an out-of-band NFS
+		//         chmod must survive a stream SET_INFO.
+		//       * modeDOSCompressed (0x40000) — FSCTL-managed, lives on
+		//         the base file and is never derived from FileAttributes
+		//         on a stream SET_INFO.
+		//
+		// The base SetFileAttributes call is fire-and-forget: a failure to
+		// propagate is logged at the metadata layer and does not roll back
+		// the stream's own SET_INFO (the stream is the explicitly-targeted
+		// handle and its write has already succeeded above).
 		if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 && len(openFile.ParentHandle) > 0 {
 			baseFileName := openFile.FileName[:colonIdx]
 			if baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName); baseFile != nil {

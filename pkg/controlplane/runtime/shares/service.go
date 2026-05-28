@@ -150,8 +150,12 @@ type ShareConfig struct {
 	// rejects SMB2 CHANGE_NOTIFY with STATUS_NOT_IMPLEMENTED.
 	ChangeNotifyDisabled bool
 
-	// StreamsDisabled mirrors models.Share's per-share toggle that
-	// rejects ADS opens with STATUS_OBJECT_NAME_INVALID.
+	// StreamsDisabled mirrors models.Share's per-share toggle that rejects
+	// SMB2 CREATE on Alternate Data Streams with STATUS_OBJECT_NAME_INVALID
+	// (named ADS, `::$DATA`, or any stream-type suffix). When set, the SMB
+	// handler also strips FILE_NAMED_STREAMS from the
+	// FileFsAttributeInformation FileSystemAttributes mask so the
+	// filesystem advertises no ADS support.
 	StreamsDisabled bool
 
 	RootAttr *metadata.FileAttr

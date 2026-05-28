@@ -16,6 +16,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/binary"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -169,5 +170,46 @@ func TestCreate_StreamsNotDisabled_AcceptsStreamSyntax(t *testing.T) {
 	}
 	if resp.Status == types.StatusObjectNameInvalid {
 		t.Fatalf("Create on streams-enabled share: STATUS_OBJECT_NAME_INVALID returned — gate fired on a streams-enabled share")
+	}
+}
+
+// TestQueryInfo_FsAttrs_NamedStreamsBit pins the FileFsAttributeInformation
+// FileSystemAttributes round-trip: streams-enabled shares advertise
+// FILE_NAMED_STREAMS (0x00040000), streams-disabled shares strip it. This
+// is the QUERY_INFO half of the StreamsDisabled contract (the CREATE half
+// is covered by TestCreate_StreamsDisabled_RejectsStreamSyntax above).
+func TestQueryInfo_FsAttrs_NamedStreamsBit(t *testing.T) {
+	const fileNamedStreams uint32 = 0x00040000
+
+	cases := []struct {
+		name            string
+		streamsDisabled bool
+		wantStreams     bool
+	}{
+		{"StreamsEnabled_AdvertisesNamedStreams", false, true},
+		{"StreamsDisabled_StripsNamedStreams", true, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, smbCtx, rootHandle := setupStreamsDisabledShare(t, tc.streamsDisabled)
+			metaSvc := h.Registry.GetMetadataService()
+
+			// buildFilesystemInfo needs an OpenFile to source the handle.
+			// The streams-disabled gate is applied based on tree state,
+			// which is what the call site (handler) reads — mirror that.
+			info, err := h.buildFilesystemInfo(smbCtx.Context, 5, metaSvc, rootHandle, tc.streamsDisabled)
+			if err != nil {
+				t.Fatalf("buildFilesystemInfo: %v", err)
+			}
+			if len(info) < 4 {
+				t.Fatalf("FileFsAttributeInformation buffer too short: %d", len(info))
+			}
+			fsAttrs := binary.LittleEndian.Uint32(info[0:4])
+			gotStreams := fsAttrs&fileNamedStreams != 0
+			if gotStreams != tc.wantStreams {
+				t.Fatalf("FILE_NAMED_STREAMS bit: got=%v want=%v (fsAttrs=0x%08x)", gotStreams, tc.wantStreams, fsAttrs)
+			}
+		})
 	}
 }

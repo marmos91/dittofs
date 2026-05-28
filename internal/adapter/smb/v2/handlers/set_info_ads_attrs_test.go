@@ -179,6 +179,56 @@ func TestSetInfo_ADS_PreservesBasePOSIXMode(t *testing.T) {
 	}
 }
 
+// TestSetInfo_ADS_PreservesBaseCompressedBitWithExistingDosBits: when the
+// base file already carries explicit DOS bits (Explicit+System) plus the
+// FSCTL-managed Compressed bit, a stream SET_INFO that flips only HIDDEN
+// must (a) preserve the Compressed bit (FSCTL-managed, never derived from
+// FileAttributes), (b) overlay HIDDEN onto the base, and (c) keep the
+// base's POSIX permissions. This is the strict version of the
+// modeDOSCompressed survival assertion — the previous test only set
+// Compressed on top of a 0o644/0o700 base, this one stacks the
+// FSCTL-managed bit underneath several existing explicit DOS bits.
+func TestSetInfo_ADS_PreservesBaseCompressedBitWithExistingDosBits(t *testing.T) {
+	h, authCtx, baseHandle, _, streamOpen := setupADSAttrPropagationTest(t, 0o640)
+	metaSvc := h.Registry.GetMetadataService()
+
+	// Seed the base file with extra DOS bits on top of the default
+	// modeDOSCompressed already set by setupADSAttrPropagationTest.
+	preBase, err := metaSvc.GetFile(authCtx.Context, baseHandle)
+	if err != nil {
+		t.Fatalf("GetFile(base) pre: %v", err)
+	}
+	const extraDOS = modeDOSExplicit | modeDOSSystem
+	seedMode := preBase.Mode | extraDOS
+	if err := metaSvc.SetFileAttributes(authCtx, baseHandle, &metadata.SetAttrs{Mode: &seedMode}); err != nil {
+		t.Fatalf("SetFileAttributes(base seed): %v", err)
+	}
+
+	// SET_INFO via stream: FileAttributes = HIDDEN.
+	buf := make([]byte, 40)
+	binary.LittleEndian.PutUint32(buf[32:36], uint32(types.FileAttributeHidden))
+
+	resp, err := h.setFileInfoFromStore(authCtx, streamOpen, types.FileBasicInformation, buf)
+	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
+		t.Fatalf("setFileInfoFromStore on stream: err=%v status=%v", err, resp)
+	}
+
+	base, err := metaSvc.GetFile(authCtx.Context, baseHandle)
+	if err != nil {
+		t.Fatalf("GetFile(base): %v", err)
+	}
+
+	if !base.Hidden {
+		t.Errorf("base.Hidden = false after stream SET_INFO HIDDEN; expected true")
+	}
+	if base.Mode&modeDOSCompressed == 0 {
+		t.Errorf("base.Mode lost modeDOSCompressed after stream SET_INFO; FSCTL-managed bit must survive")
+	}
+	if gotPOSIX := base.Mode & 0o7777; gotPOSIX != 0o640 {
+		t.Errorf("base POSIX mode = 0o%o after stream SET_INFO; expected 0o640", gotPOSIX)
+	}
+}
+
 // TestSetInfo_ADS_TimestampOnlyDoesNotPropagateAttrs: SET_INFO
 // BasicInformation with FileAttributes=0 (timestamp-only) must NOT touch
 // the base file's Hidden field or DOS mode bits. Only an explicit
