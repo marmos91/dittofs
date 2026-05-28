@@ -838,7 +838,10 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
-	existingFile, lookupErr := metaSvc.Lookup(authCtx, parentHandle, baseName)
+	// Case-insensitive baseName resolution mirrors Windows/NTFS open semantics
+	// (smbtorture `smb2.getinfo.normalized`). Falls through to the exact-name
+	// fast path when present; only scans the parent dir on miss.
+	existingFile, lookupErr := h.lookupCaseInsensitive(authCtx, parentHandle, baseName)
 	fileExists := (lookupErr == nil)
 
 	// Debug logging to trace file type issues in Lookup
@@ -1324,7 +1327,7 @@ func (h *Handler) walkPath(
 			continue
 		}
 
-		file, err := metaSvc.Lookup(authCtx, currentHandle, part)
+		file, err := h.lookupCaseInsensitive(authCtx, currentHandle, part)
 		if err != nil {
 			return nil, err
 		}
@@ -1343,6 +1346,53 @@ func (h *Handler) walkPath(
 	}
 
 	return currentHandle, nil
+}
+
+// lookupCaseInsensitive performs a case-sensitive Lookup first (fast path).
+// On NotFound, it falls back to enumerating the parent directory and matching
+// the name case-insensitively, mirroring Windows/NTFS semantics required by
+// `smb2.getinfo.normalized` and the broader SMB protocol contract. The
+// fast-path keeps the common case (exact name) at one map lookup; the fallback
+// is only paid when the exact name miss occurs.
+func (h *Handler) lookupCaseInsensitive(
+	authCtx *metadata.AuthContext,
+	dirHandle metadata.FileHandle,
+	name string,
+) (*metadata.File, error) {
+	metaSvc := h.Registry.GetMetadataService()
+
+	if file, err := metaSvc.Lookup(authCtx, dirHandle, name); err == nil {
+		return file, nil
+	} else if !metadata.IsNotFoundError(err) {
+		return nil, err
+	}
+
+	// Fallback: case-insensitive scan. ReadDirectory enforces traverse +
+	// read permission on the directory, matching what Lookup would have
+	// required; an EqualFold match is converted back into a Lookup by the
+	// resolved canonical name so any per-child permission semantics
+	// (DACL, traverse) still flow through the standard path. Page through
+	// the directory in case it has more than the per-call default limit.
+	notFound := &metadata.StoreError{Code: metadata.ErrNotFound, Message: "child not found"}
+	cookie := uint64(0)
+	for {
+		page, err := metaSvc.ReadDirectory(authCtx, dirHandle, cookie, 0)
+		if err != nil {
+			// Surface the original NotFound rather than a permission error here:
+			// if ReadDirectory denies, the caller almost certainly hit a deny
+			// ACE that would have triggered on the case-sensitive Lookup too.
+			return nil, notFound
+		}
+		for _, e := range page.Entries {
+			if strings.EqualFold(e.Name, name) {
+				return metaSvc.Lookup(authCtx, dirHandle, e.Name)
+			}
+		}
+		if !page.HasMore {
+			return nil, notFound
+		}
+		cookie = page.NextCookie
+	}
 }
 
 // createNewFile creates a new file or directory in the metadata store.

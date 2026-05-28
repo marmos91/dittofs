@@ -358,8 +358,16 @@ func (h *Handler) setFileInfoFromStore(
 		// handle. Pre-read the file to capture current timestamps, then pin
 		// sentinel timestamps to their current value in setAttrs to suppress
 		// auto-updates (e.g., Ctime auto-update when FileAttributes change).
+		//
+		// We also need the pre-image when the caller sends ChangeTime = 0
+		// ("don't change") and FileAttributes is non-zero — the metadata
+		// layer auto-bumps Ctime on any modification (file_modify.go line
+		// 311 et seq.), but smbtorture `smb2.setinfo` (setinfo.c:203) asserts
+		// the previously-set Ctime survives a no-op SET_INFO. Pinning Ctime
+		// to the current value suppresses the auto-bump.
+		needPreFile := hasFreezeOrUnfreeze || (ctimeFT == 0 && fileAttrs != 0 && !openFile.CtimeFrozen)
 		var preFile *metadata.File
-		if hasFreezeOrUnfreeze {
+		if needPreFile {
 			var err error
 			preFile, err = metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
 			if err != nil {
@@ -403,6 +411,17 @@ func (h *Handler) setFileInfoFromStore(
 		}
 		if atimeFT == 0 && openFile.AtimeFrozen && openFile.FrozenAtime != nil {
 			setAttrs.Atime = openFile.FrozenAtime
+		}
+
+		// ChangeTime stickiness: once SET_INFO BasicInfo has been used on a
+		// handle to mutate attributes, the metadata layer's automatic Ctime
+		// bump (file_modify.go: `if attrs.Ctime == nil { file.Ctime = now }`)
+		// must NOT overwrite a previously-set ChangeTime when the caller
+		// sends ChangeTime = 0 alongside an attribute change. Pin Ctime to
+		// the current value so the auto-bump is a no-op. smbtorture
+		// `smb2.setinfo` (setinfo.c:203) asserts this exact behavior.
+		if ctimeFT == 0 && setAttrs.Ctime == nil && fileAttrs != 0 && preFile != nil {
+			setAttrs.Ctime = &preFile.Ctime
 		}
 
 		// Per MS-FSA 2.1.5.14.2: When FileAttributes change, the object store
