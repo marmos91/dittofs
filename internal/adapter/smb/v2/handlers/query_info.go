@@ -688,7 +688,12 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		if filePath == "" {
 			filePath = openFile.Path
 		}
-		if filePath == "" || filePath == "/" {
+		// Strip the share-root leading separator: file.Path is stored as
+		// "/dir/name" but the normalized form is share-relative (matches
+		// Samba `smb_fname->base_name` and the smbtorture assertion which
+		// expects "dir\\name", not "\\dir\\name").
+		filePath = strings.TrimPrefix(filePath, "/")
+		if filePath == "" {
 			w := smbenc.NewWriter(4)
 			w.WriteUint32(0) // FileNameLength = 0 (root)
 			return w.Bytes(), nil
