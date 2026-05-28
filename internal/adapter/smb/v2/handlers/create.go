@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -1366,27 +1367,32 @@ func (h *Handler) lookupCaseInsensitive(
 ) (*metadata.File, error) {
 	metaSvc := h.Registry.GetMetadataService()
 
-	if file, err := metaSvc.Lookup(authCtx, dirHandle, name); err == nil {
-		return file, nil
-	} else if !metadata.IsNotFoundError(err) {
-		return nil, err
+	lookupFile, lookupErr := metaSvc.Lookup(authCtx, dirHandle, name)
+	if lookupErr == nil {
+		return lookupFile, nil
+	}
+	if !metadata.IsNotFoundError(lookupErr) {
+		return nil, lookupErr
 	}
 
-	// Fallback: case-insensitive scan. ReadDirectory enforces traverse +
-	// read permission on the directory, matching what Lookup would have
-	// required; an EqualFold match is converted back into a Lookup by the
-	// resolved canonical name so any per-child permission semantics
-	// (DACL, traverse) still flow through the standard path. Page through
-	// the directory in case it has more than the per-call default limit.
-	notFound := &metadata.StoreError{Code: metadata.ErrNotFound, Message: "child not found"}
+	// Fallback: case-insensitive scan. ReadDirectory needs traverse + read on
+	// the parent (Lookup only needed traverse); on AccessDenied we surface the
+	// original NotFound from Lookup so traverse-only callers see exactly what
+	// they used to. An EqualFold match is re-resolved via Lookup so per-child
+	// permission semantics (DACL, traverse) still flow through the standard
+	// path. Page through the directory in case it has more than the per-call
+	// default limit.
 	cookie := uint64(0)
 	for {
 		page, err := metaSvc.ReadDirectory(authCtx, dirHandle, cookie, 0)
 		if err != nil {
-			// Surface the original NotFound rather than a permission error here:
-			// if ReadDirectory denies, the caller almost certainly hit a deny
-			// ACE that would have triggered on the case-sensitive Lookup too.
-			return nil, notFound
+			var se *metadata.StoreError
+			if errors.As(err, &se) && se.Code == metadata.ErrAccessDenied {
+				// Traverse-only callers couldn't have enumerated either; preserve
+				// the prior Lookup-only behavior by returning the original NotFound.
+				return nil, lookupErr
+			}
+			return nil, err
 		}
 		for _, e := range page.Entries {
 			if strings.EqualFold(e.Name, name) {
@@ -1394,7 +1400,7 @@ func (h *Handler) lookupCaseInsensitive(
 			}
 		}
 		if !page.HasMore {
-			return nil, notFound
+			return nil, lookupErr
 		}
 		cookie = page.NextCookie
 	}

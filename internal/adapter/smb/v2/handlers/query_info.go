@@ -751,7 +751,7 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 	case types.FileAllInformation:
 		return h.buildFileAllInformationFromStore(authCtx, file, openFile), nil
 
-	case 15: // FileFullEaInformation [MS-FSCC §2.4.15]
+	case types.FileFullEaInformation:
 		// We don't persist extended attributes (#220 tracks adapter EA support).
 		// Samba returns NO_EAS_ON_FILE when the list is empty, but smbtorture
 		// (`smb2.getinfo.complex` and `getinfo_access`) asserts NT_STATUS_OK
@@ -1197,7 +1197,7 @@ func fileInfoClassRequiredAccess(class types.FileInfoClass) (uint32, bool) {
 		types.FileNetworkOpenInformation,
 		types.FileAttributeTagInformation:
 		return uint32(types.FileReadAttributes), true
-	case 15: // FileFullEaInformation [MS-FSCC §2.4.15]; constant not defined in types pkg
+	case types.FileFullEaInformation:
 		return uint32(types.FileReadEA), true
 	}
 	return 0, false
