@@ -97,12 +97,16 @@ func (f *fakeCoordinator) IncrementRefCount(_ context.Context, hash blockstore.C
 	return nil
 }
 
+// errInducedDecrement is a sentinel returned by failOnNthDecrement so
+// tests can assert errors.Is on the rollback path.
+var errInducedDecrement = errors.New("fakeCoordinator: induced DecrementRefCount failure")
+
 func (f *fakeCoordinator) DecrementRefCount(_ context.Context, hash blockstore.ContentHash) (uint32, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.decCallCount++
 	if f.failOnNthDecrement > 0 && f.decCallCount == f.failOnNthDecrement {
-		return 0, errors.New("fakeCoordinator: induced DecrementRefCount failure")
+		return 0, errInducedDecrement
 	}
 	f.decHashes = append(f.decHashes, hash)
 	return 0, nil

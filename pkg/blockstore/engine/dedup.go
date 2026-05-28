@@ -215,6 +215,34 @@ func isObjectIDConflict(err error) bool {
 	return false
 }
 
+// rollbackIncrements decrements RefCount on every hash in `seen` and
+// joins all decrement failures into a single error (or returns nil if
+// every decrement succeeded). Each failure is logged at Error because
+// a swallowed decrement failure here translates directly into a
+// permanent RefCount leak — the matching CAS chunk can never be
+// reclaimed by GC, so the operator MUST see the signal even if the
+// caller chooses not to propagate it.
+//
+// `reason` is a short tag identifying which rollback site invoked the
+// helper (race-conflict pre-retry vs. non-conflict persist error); it
+// is woven into the log line so operators can tell the two leak
+// sources apart without grepping line numbers.
+func (m *Syncer) rollbackIncrements(
+	ctx context.Context,
+	seen map[blockstore.ContentHash]struct{},
+	reason string,
+) error {
+	var errs []error
+	for h := range seen {
+		if _, derr := m.coordinator.DecrementRefCount(ctx, h); derr != nil {
+			logger.Error(reason+": decrement failed (refcount leak — CAS chunk pinned against GC)",
+				"hash", h.String(), "err", derr)
+			errs = append(errs, fmt.Errorf("decrement %s: %w", h.String(), derr))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // applyFileLevelDedupHit performs the metadata-side swap once
 // FindByObjectID has confirmed a file with identical Merkle root
 // already exists in the metadata store. See trySpeculativeFileLevelDedup
@@ -262,15 +290,17 @@ func (m *Syncer) applyFileLevelDedupHit(
 			// rejected it because the retry unconditionally
 			// re-increments every updatedTarget hash; skipping shared
 			// hashes here would leave them at +2 after retry instead
-			// of the intended +1. audit reconciles any
-			// transient dip while the retry runs (RefCount is
-			// non-blocking; GC keys off FileAttr.Blocks references in
-			// the persisted state, not the in-flight rollback window).
-			for h := range seen {
-				if _, derr := m.coordinator.DecrementRefCount(ctx, h); derr != nil {
-					logger.Warn("file-level dedup race rollback decrement failed",
-						"hash", h.String(), "err", derr)
-				}
+			// of the intended +1.
+			//
+			// CRITICAL: if rollback decrement fails on any hash we
+			// MUST NOT retry. A retry re-increments every target
+			// hash; combined with a failed decrement on the original
+			// pass, the surviving over-increment becomes a permanent
+			// RefCount leak that pins a CAS chunk against GC. Surface
+			// both the original conflict + the rollback failure
+			// upward so the caller observes the leak window.
+			if rbErr := m.rollbackIncrements(ctx, seen, "file-level dedup race rollback"); rbErr != nil {
+				return false, fmt.Errorf("file-level dedup race: persist conflict (refcount rollback also failed; retry aborted to avoid permanent refcount leak): %w", errors.Join(err, rbErr))
 			}
 			updatedTarget, ferr := m.coordinator.FindByObjectID(ctx, provisional)
 			if ferr != nil {
@@ -281,12 +311,13 @@ func (m *Syncer) applyFileLevelDedupHit(
 			}
 			return m.applyFileLevelDedupHit(ctx, payloadID, speculativeBlocks, updatedTarget, provisional, true /*isRetry*/)
 		}
-		// Best-effort rollback of refcount increments on a non-conflict error.
-		for h := range seen {
-			if _, derr := m.coordinator.DecrementRefCount(ctx, h); derr != nil {
-				logger.Warn("file-level dedup hit rollback decrement failed",
-					"hash", h.String(), "err", derr)
-			}
+		// Rollback of refcount increments on a non-conflict error. The
+		// caller does not retry on this branch, but a failed decrement
+		// still leaves a permanent +1 RefCount on a CAS chunk; surface
+		// the rollback failure alongside the persist error so the leak
+		// is observable.
+		if rbErr := m.rollbackIncrements(ctx, seen, "file-level dedup hit rollback"); rbErr != nil {
+			return false, fmt.Errorf("file-level dedup persist (refcount rollback also failed): %w", errors.Join(err, rbErr))
 		}
 		return false, fmt.Errorf("file-level dedup persist: %w", err)
 	}
