@@ -107,52 +107,91 @@ func TestSnapshotHoldProvider_NilStore_NoOp(t *testing.T) {
 	assert.Zero(t, called, "no callbacks expected when store is nil")
 }
 
-// TestSnapshotHoldProvider_FiltersByReadyState asserts only state=ready
-// snapshots contribute to the held set; creating/failed are skipped
-// without opening any manifest file (so their missing manifests do not
-// surface as errors).
-func TestSnapshotHoldProvider_FiltersByReadyState(t *testing.T) {
-	rt := newSnapshotHoldRuntime(t)
-	localStoreDir := t.TempDir()
+// TestSnapshotHoldProvider_FilterByManifestOnDisk asserts the D-23-02
+// filter: any snapshot whose manifest.hashes exists on disk contributes
+// hashes, regardless of state. Snapshots whose manifest is absent (because
+// the orchestrator has not written it yet, or an operator removed it) are
+// short-circuited via os.IsNotExist with no error.
+//
+// The six rows mirror the plan's enumerated behaviors:
+//
+//  1. ready + manifest      → contributes (Phase 22 regression)
+//  2. creating + manifest   → contributes (D-23-02 window: post-manifest, pre-flip)
+//  3. failed + manifest     → contributes (D-23-02 window: retained for retry)
+//  4. creating + no manifest → no contribution (pre-manifest-write, no panic)
+//  5. ready + no manifest   → no contribution (operator-deleted manifest)
+//  6. failed + no manifest  → no contribution (failed before manifest)
+//
+// The partial unique index idx_share_creating allows at most one
+// creating row per share, so each row gets its own share.
+func TestSnapshotHoldProvider_FilterByManifestOnDisk(t *testing.T) {
+	type row struct {
+		state          string
+		writeManifest  bool
+		wantContribute bool
+		seed           byte
+	}
+	cases := []struct {
+		name string
+		row  row
+	}{
+		{name: "ready + manifest contributes", row: row{models.StateReady, true, true, 0x11}},
+		{name: "creating + manifest contributes", row: row{models.StateCreating, true, true, 0x22}},
+		{name: "failed + manifest contributes", row: row{models.StateFailed, true, true, 0x33}},
+		{name: "creating + no manifest skipped", row: row{models.StateCreating, false, false, 0x44}},
+		{name: "ready + no manifest skipped", row: row{models.StateReady, false, false, 0x55}},
+		{name: "failed + no manifest skipped", row: row{models.StateFailed, false, false, 0x66}},
+	}
 
-	rt.sharesSvc.InjectShareForTesting(&shares.Share{
-		Name:          "alpha",
-		MetadataStore: "memory",
-	})
-	require.NoError(t, rt.sharesSvc.SetLocalStoreDirForTesting("alpha", localStoreDir))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := newSnapshotHoldRuntime(t)
+			localStoreDir := t.TempDir()
 
-	// Three rows for the same share: ready, failed, creating. The unique
-	// partial index on state='creating' allows at most one in-flight row
-	// per share, so insert the terminal-state rows first by transitioning
-	// out of creating, then leave the final creating row untouched.
-	readyID := snapshotHoldCreateState(t, rt, "alpha", models.StateReady)
-	_ = snapshotHoldCreateState(t, rt, "alpha", models.StateFailed)
-	_ = snapshotHoldCreateState(t, rt, "alpha", models.StateCreating)
+			shareName := "alpha"
+			rt.sharesSvc.InjectShareForTesting(&shares.Share{
+				Name:          shareName,
+				MetadataStore: "memory",
+			})
+			require.NoError(t, rt.sharesSvc.SetLocalStoreDirForTesting(shareName, localStoreDir))
 
-	want := []blockstore.ContentHash{hashAll(0x11), hashAll(0x22)}
-	// Build a Snapshot value to reuse ManifestPath (state field irrelevant).
-	manifestPath := (&models.Snapshot{ID: readyID}).ManifestPath(localStoreDir)
-	snapshotHoldWriteManifest(t, manifestPath, want)
+			id := snapshotHoldCreateState(t, rt, shareName, tc.row.state)
 
-	provider := rt.snapshotHoldForRemote([]string{"alpha"})
+			hash := hashAll(tc.row.seed)
+			if tc.row.writeManifest {
+				manifestPath := (&models.Snapshot{ID: id}).ManifestPath(localStoreDir)
+				snapshotHoldWriteManifest(t, manifestPath, []blockstore.ContentHash{hash})
+			}
 
-	var got []blockstore.ContentHash
-	err := provider.HeldHashes(context.Background(), "remote-1", []string{"alpha"},
-		func(h blockstore.ContentHash) error {
-			got = append(got, h)
-			return nil
+			provider := rt.snapshotHoldForRemote([]string{shareName})
+
+			var got []blockstore.ContentHash
+			err := provider.HeldHashes(context.Background(), "remote-1", []string{shareName},
+				func(h blockstore.ContentHash) error {
+					got = append(got, h)
+					return nil
+				})
+			require.NoError(t, err, "missing manifest must not error (os.IsNotExist short-circuit)")
+
+			if tc.row.wantContribute {
+				require.Len(t, got, 1)
+				assert.Equal(t, hash, got[0])
+			} else {
+				assert.Empty(t, got, "no manifest on disk must contribute zero hashes")
+			}
 		})
-	require.NoError(t, err)
-	require.Len(t, got, 2, "exactly the two ready-row hashes")
-	sortHashes(got)
-	sortHashes(want)
-	assert.Equal(t, want, got)
+	}
 }
 
-// TestSnapshotHoldProvider_FailClosed_OnMissingManifest asserts that a
-// state=ready row with no on-disk manifest aborts the run (fail-closed,
-// orphan-not-deleted preferred over live-data-deleted).
-func TestSnapshotHoldProvider_FailClosed_OnMissingManifest(t *testing.T) {
+// TestSnapshotHoldProvider_FailClosed_OnManifestStatError asserts that a
+// non-IsNotExist error from os.Stat (e.g., permission denied) propagates
+// as a wrapped error so the GC mark phase aborts (INV-04 fail-closed).
+// Only os.IsNotExist is the no-hold short-circuit.
+func TestSnapshotHoldProvider_FailClosed_OnManifestStatError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-denied scenario does not apply when running as root")
+	}
+
 	rt := newSnapshotHoldRuntime(t)
 	localStoreDir := t.TempDir()
 
@@ -162,19 +201,26 @@ func TestSnapshotHoldProvider_FailClosed_OnMissingManifest(t *testing.T) {
 	})
 	require.NoError(t, rt.sharesSvc.SetLocalStoreDirForTesting("alpha", localStoreDir))
 
-	// Ready row, but deliberately no WriteManifestAtomic call → file absent.
-	_ = snapshotHoldCreateReady(t, rt, "alpha")
+	id := snapshotHoldCreateReady(t, rt, "alpha")
+
+	// Create the snapshot dir, then chmod it 0o000 so os.Stat on the
+	// manifest path returns EACCES (not ENOENT). Cleanup restores perms
+	// so t.TempDir teardown can recurse.
+	snapDir := (&models.Snapshot{ID: id}).SnapshotDir(localStoreDir)
+	require.NoError(t, os.MkdirAll(snapDir, 0o755))
+	require.NoError(t, os.Chmod(snapDir, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(snapDir, 0o755) })
 
 	provider := rt.snapshotHoldForRemote([]string{"alpha"})
 
 	err := provider.HeldHashes(context.Background(), "remote-1", []string{"alpha"},
 		func(h blockstore.ContentHash) error {
-			t.Fatalf("callback must not be invoked when manifest is missing")
+			t.Fatalf("callback must not be invoked when stat errors out")
 			return nil
 		})
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, os.ErrNotExist),
-		"expected os.ErrNotExist in error chain, got %v", err)
+	assert.False(t, errors.Is(err, os.ErrNotExist),
+		"non-IsNotExist error must NOT be confused with the short-circuit path")
 }
 
 // TestSnapshotHoldProvider_MemoryShare_Skipped asserts a share with no
