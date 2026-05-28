@@ -55,18 +55,19 @@ Each area gets PR-A (REVIEW.md) → triage → PR-B (fixes + simplifier + review
 
 | # | Area | Path(s) | LOC | Cross-check ref | Perf leverage |
 |---|---|---|---|---|---|
-| 1 | Block stores + CAS + engine | `pkg/blockstore/{engine,local,remote,chunker,compression,encryption}` | 19.3K | FastCDC paper, S3 API spec, BLAKE3 spec | **HIGH** (data path) |
+| 1 | Block stores + CAS + engine + **GC** | `pkg/blockstore/{engine,local,remote,chunker,compression,encryption,blockstoretest}` (GC = `engine/gc*` bundled here) | 19.3K | FastCDC paper, S3 API spec, BLAKE3 spec | **HIGH** (data path) |
 | 2 | Syncer | `pkg/blockstore/{remote,engine}/syncer` | (subset of #1) | RFC 7233 ranges, S3 multipart | **HIGH** (background I/O) |
 | 3 | SMB handlers (SMB2 wire family: dialects 2.0.2 / 2.1 / 3.0 / 3.0.2 / 3.1.1; **path-rename candidate** — see §SMB layout below) | `internal/adapter/smb/`, `pkg/adapter/smb/` | 36.9K | MS-SMB2, Samba `source3/smbd/smb2_*`, MS-FSA | **HIGH** (protocol hot path) |
 | 4 | NFS handlers | `internal/adapter/nfs/`, `pkg/adapter/nfs/` | 52.9K | RFC 1813 / 7530 / 8881, Linux `fs/nfsd/`, `fs/nfs/` | **HIGH** (protocol hot path) |
 | 5 | Lock manager + ACL | `pkg/metadata/lock`, `pkg/metadata/acl` | ~3.5K | MS-FSA §2.1.5, Samba locking, MS-DTYP SD | MED (contention-prone) |
 | 6 | Metadata stores | `pkg/metadata/store/{badger,memory,postgres}` | 15.4K | POSIX.1-2017 VFS, Linux `fs/` — **NOT storetest** | MED |
 | 7 | Runtime | `pkg/controlplane/runtime/` | 11.1K | (internal — graph from gsd-graphify) | MED |
-| 8 | GC | `pkg/blockstore/engine/gc*` | (subset of #1) | RFC-style ref-counted CAS | LOW (background) |
-| 9 | Backup/Snapshot | per [[project_share_snapshots_design]] | n/a (new) | (replaces deprecated v0.13 backup) | LOW |
-| 10 | Config | `pkg/config/` | 1.2K | — | LOW |
-| 11 | `dfs` + `dfsctl` CLI | `cmd/dfs/`, `cmd/dfsctl/`, `internal/cli/` | 14K | UX coherence, Cobra patterns | LOW |
-| 12 | K8s operator | `k8s/dittofs-operator/` | 9.6K | controller-runtime, kubebuilder patterns | LOW |
+| 8 | Backup/Snapshot | per [[project_share_snapshots_design]] | n/a (new) | (replaces deprecated v0.13 backup) | LOW |
+| 9 | Config | `pkg/config/` | 1.2K | — | LOW |
+| 10 | `dfs` + `dfsctl` CLI | `cmd/dfs/`, `cmd/dfsctl/`, `internal/cli/` | 14K | UX coherence, Cobra patterns | LOW |
+| 11 | K8s operator | `k8s/dittofs-operator/` | 9.6K | controller-runtime, kubebuilder patterns | LOW |
+
+**Area count dropped 12 → 11** (2026-05-28): area #8 GC bundled into area #1 — `engine/gc*.go` lives in the same package, splitting wastes audit context. Numbering shifted: backup/snapshot is now #8.
 
 **Each PR-A (audit) checks** (9 dimensions):
 
@@ -103,7 +104,13 @@ Each area gets PR-A (REVIEW.md) → triage → PR-B (fixes + simplifier + review
    - **Goroutine profile** — leaks, stuck goroutines.
    - Per-area workload definitions:
      - SMB / NFS handlers — smbtorture / pjdfstest + macro-bench (random write, metadata burst, large sequential).
-     - Block store / engine — FastCDC chunker bench, S3 sync loop under load, GC sweep on large CAS.
+     - **Block store / engine** — five seeded, replayable workloads (`--seed N`):
+       - **(a)** small-files concurrent writes (N workers × M files × 4-64 KiB).
+       - **(b)** small-files concurrent reads (same fileset, randomized reader assignment).
+       - **(c)** big-files concurrent writes (N workers × M files × 64-256 MiB).
+       - **(d)** big-files concurrent reads (random offsets, mixed seq + rand).
+       - **(e)** mixed-ops storm — thousands of seeded random WRITE/READ/LIST/DELETE; seed printed alongside every result so a regression triage replays the exact op trace. Replay command: `... --seed <N> --replay`.
+       - Plus FastCDC chunker bench, S3 sync loop under load, GC sweep on large CAS (existing micro-bench targets retained).
      - Metadata stores — concurrent OPEN/CREATE/RENAME storm on badger + postgres.
      - Lock manager — multi-client lease churn, BR-lock storm.
      - Runtime — share lifecycle churn, mount/unmount loop.
@@ -152,6 +159,7 @@ Output: `.planning/v1.0-audit/{area}/REVIEW.md` with sections — Current State,
 - Look for missing edge cases the implementation doesn't handle (which is why the test was never written).
 - Verify the suite exercises ALL backends equally — no badger-shaped assertions that happen to pass on postgres by accident.
 - Pair the conformance suite audit with the corresponding store/backend audit so spec drift is found once and fixed in both.
+- **Rewrite-from-scratch is a valid outcome.** If the audit finds the suite is anchored on impl rather than spec, replacing it is preferred over patching. Per assertion: KEEP / REWRITE / DELETE / MISSING — recorded in the area's REVIEW.md §4.
 
 Where ground truth is unclear, prefer **external test suites** (pjdfstest for POSIX, smbtorture + WPTS for SMB, NFS Tests Suite or Connectathon for NFS) over our own conformance code.
 
@@ -187,7 +195,7 @@ Filed as **issue #674** (will create alongside the area-pair kickoff).
 Run alongside Wave 1.
 
 1. **E2E flakiness stabilization** — replace 135 `time.Sleep`/`time.After` with `WaitFor*` framework helpers (10 already exist; extend). Audit `test/e2e/framework/` (17K `mount.go` is heavy — trim). Branch `v1.0/e2e-stabilize`.
-2. **Test coverage gap-fill** — postgres store (6 tests / 20 src), `pkg/metadata/errors` (0), `pkg/controlplane` (0). Use `superpowers:test-driven-development` skill where adding new tests for un-tested code. Branch `v1.0/test-coverage`.
+2. **Test coverage gap-fill** — postgres store (6 tests / 20 src), `pkg/metadata/errors` (0), `pkg/controlplane` (0). Use `superpowers:test-driven-development` skill where adding new tests for un-tested code. Branch `v1.0/test-coverage`. **Plus per-area gap-fill** sub-issues filed as Wave 1 area audits surface them: **#679 blockstore coverage** (s3 21.7%, engine 62.5%, local/fs 66.9%, keyprovider 45.4%).
 3. **Bench suite — from-scratch redesign** — Wave 0 baseline run proved the current harness is fundamentally mis-designed: `dfsctl bench run` confuses CI-gate and user-facing roles, has no per-op timeout (a server hang wedges the client into D-state and loses results), and shares implicit state between runs. Three-layer rebuild on branch `v1.0/bench-refactor`:
    - **bench primitives** (`pkg/bench/workloads/`) — pure I/O workload generators (seq-write, rand-write, metadata, …). Every syscall wrapped in `context.WithTimeout`. No filesystem assumptions.
    - **bench runner** (`pkg/bench/runner/`) — composes workloads, manages bench-env lifecycle (mount/fixture/teardown). Emits structured events. Targets any directory. Hard `--budget` wall-clock kill. Health checks (stat + readdir + small round-trip) between phases — failure aborts with structured error, skips remaining phases, still emits partial JSON. Explicit `--env-dir` scratch dir; refuses to reuse an existing scratch dir from a previous run.
@@ -199,8 +207,10 @@ Run alongside Wave 1.
 
    The Wave 0 baseline (`.planning/v1.0-audit/_baseline/`) documents 8 specific failure modes (B1–B8) the new harness must handle. Original entry was 1 line: "3 docs → 1 + wire D-40/41/42 into CI" — way too narrow given what the baseline run uncovered.
 4. **Discarded-error sampling** — random sample of 50 `_ =` sites, categorize, fix HIGH-risk discards. Branch `v1.0/err-discard-audit`.
-5. **Perf-optimization stream** *(NEW)* — cross-area hot-path wins surfaced by pprof that don't fit inside a single area PR-B: object pooling retrofit, streaming I/O conversions (per [[feedback_streaming_io_for_data_paths]]), allocation reduction in protocol decoders, lock-contention fixes. Driven by the aggregated Bottlenecks sections from Wave 1 REVIEW.md files. Branch `v1.0/perf-fixes`, may produce multiple sub-PRs.
+5. **Perf-optimization stream** *(NEW — reactive)* — cross-area hot-path wins surfaced by pprof that don't fit inside a single area PR-B: object pooling retrofit, streaming I/O conversions (per [[feedback_streaming_io_for_data_paths]]), allocation reduction in protocol decoders, lock-contention fixes. Driven by the aggregated Bottlenecks sections from Wave 1 REVIEW.md files. Branch `v1.0/perf-fixes`, may produce multiple sub-PRs.
 6. **Security verification** *(NEW)* — once Wave 1 finishes, invoke `gsd-secure-phase` and `security-review` skills across the touched code. Branch `v1.0/security-verify`.
+7. **Perf-pass — proactive pprof capture** *(NEW)* — issue **#680**. Owns the CAPTURE side that feeds stream 5 (which is reactive). Distinct because §Bottlenecks in each REVIEW.md needs a runtime+workload driver, not static analysis. Per-area pprofs (CPU + heap + block + mutex + goroutine) under the seeded workload matrix (a)-(e) defined in §Performance. Prerequisites: #672 bench harness rebuild + #671 mutex/block profile wiring + workload (e) ~200-LoC Go harness. Captures pre-PR-B baseline + post-PR-B delta per area into `.planning/v1.0-audit/<area>/_profiles/{baseline,post-fix}/`. Branch `v1.0/perf-pass`. Feeds stream 5.
+8. **Repo-wide pkg rename — collapse stutters + domain symmetry** *(NEW)* — issue **#678**. Mechanical `gopls`-driven rename: `pkg/blockstore → pkg/block`, `blockstore.BlockStore → block.Store`, `engine.BlockStore → engine.Store`, `metadata.MetadataStore → metadata.Store`, `metadata.MetadataService → metadata.Service`. Zero logic change. ~600+ import lines. Time during a calm window vs SMB conformance worktrees + share backup work to avoid merge hell. Branch `v1.0/pkg-rename`.
 
 ## Wave 3 — Docs & CLAUDE.md
 
@@ -231,7 +241,6 @@ Final stream. Branch `v1.0/docs-rewrite`.
   blockstore/REVIEW.md
   runtime/REVIEW.md
   syncer/REVIEW.md
-  gc/REVIEW.md
   backup-snapshot/REVIEW.md
   config/REVIEW.md
   cli/REVIEW.md
@@ -267,10 +276,10 @@ Final stream. Branch `v1.0/docs-rewrite`.
 Wave 0 (1 PR + baseline profiles)
     ↓
 Wave 1 area-pairs in hot-path-first order (perf leverage):
-    blockstore → syncer → smb → nfs → lock/acl → metadata → runtime → gc → snapshot → config → cli → operator
+    blockstore+gc → syncer → smb → nfs → lock/acl → metadata → runtime → snapshot → config → cli → operator
     (each area: PR-A audit → triage → PR-B fix + simplifier + reviewer + verify; with per-area pprof delta)
     ↓
-Wave 2 streams in parallel with Wave 1 (e2e-stabilize, test-coverage, bench-refactor, err-discard, perf-fixes, security-verify)
+Wave 2 streams in parallel with Wave 1 (e2e-stabilize, test-coverage, bench-refactor, err-discard, perf-fixes (reactive), security-verify, perf-pass (proactive capture), pkg-rename)
     ↓
 Wave 3 (docs + CLAUDE.md rewrite)
     ↓
