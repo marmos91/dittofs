@@ -200,6 +200,22 @@ func (c *Connection) Serve(ctx context.Context) {
 			c.server.config.Timeouts.Read, verifier, ci.EncryptionMiddleware, handleSMB1,
 		)
 		if err != nil {
+			// Encrypted message for a SessionId the server no longer knows
+			// (typical post-LOGOFF / reconnect-supersede race per MS-SMB2
+			// §3.3.5.2.7). Respond with a plaintext STATUS_USER_SESSION_DELETED
+			// using the synthetic header returned by the framing layer, then
+			// keep reading. Do NOT count this against DecryptFailures — a
+			// brute-force AEAD attack can't get a synthetic header back.
+			if errors.Is(err, smb.ErrUnknownEncryptedSession) && hdr != nil {
+				if sendErr := smb.SendErrorResponse(hdr, types.StatusUserSessionDeleted, ci); sendErr != nil {
+					logger.Debug("Failed to send synthetic USER_SESSION_DELETED",
+						"address", clientAddr,
+						"sessionID", hdr.SessionID,
+						"error", sendErr)
+				}
+				continue
+			}
+
 			// Track consecutive decryption failures. After 5, drop the connection
 			// to prevent brute-force attacks on the AEAD authentication.
 			if isDecryptionError(err) {

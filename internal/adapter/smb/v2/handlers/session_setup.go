@@ -1280,7 +1280,6 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 			}
 
 			if encCipherId != 0 {
-				cryptoState.EncryptData = true
 				if err := cryptoState.CreateEncryptors(encCipherId); err != nil {
 					if h.EncryptionConfig.Mode == "required" {
 						logger.Warn("Failed to create session encryptors in required mode, rejecting session",
@@ -1289,14 +1288,26 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 						return NewErrorResult(types.StatusAccessDenied)
 					}
 					// Preferred mode: degrade gracefully
-					logger.Warn("Failed to create session encryptors, disabling encryption",
+					logger.Warn("Failed to create session encryptors, available=false",
 						"sessionID", sess.SessionID, "error", err)
-					cryptoState.EncryptData = false
 				} else {
-					logger.Info("SMB3 encryption enabled for session",
+					// Per MS-SMB2 §3.3.5.5.3: Session.EncryptData is forced on
+					// only when the server requires encryption globally; in
+					// preferred mode the encryptors are available but enforce-
+					// ment is gated per-share at TREE_CONNECT (Share.EncryptData).
+					// Forcing EncryptData=true here causes smbtorture signing
+					// tests (signing-hmac-sha-256, signing-aes-128-{cmac,gmac})
+					// to skip with "Can't test signing only if encryption is
+					// required" because the outer tcon then advertises
+					// session-level encryption regardless of share config.
+					if h.EncryptionConfig.Mode == "required" {
+						cryptoState.EncryptData = true
+					}
+					logger.Info("SMB3 encryption available for session",
 						"sessionID", sess.SessionID,
 						"cipherId", fmt.Sprintf("0x%04x", encCipherId),
-						"dialect", dialect.String())
+						"dialect", dialect.String(),
+						"sessionEnforced", cryptoState.EncryptData)
 				}
 			}
 			// encCipherId == 0 && preferred mode: no encryption for this session

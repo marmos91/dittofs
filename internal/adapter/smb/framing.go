@@ -3,6 +3,7 @@ package smb
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,15 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/v2/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
 )
+
+// ErrUnknownEncryptedSession is returned by ReadRequest when an encrypted
+// transform-header message references a SessionId the server does not know.
+// The connection loop uses errors.Is to detect this and send a plaintext
+// STATUS_USER_SESSION_DELETED response via the synthesized SMB2 header that
+// is also returned. Without this sentinel the caller can't distinguish a
+// recoverable post-LOGOFF race from a genuine AEAD authentication failure
+// (which should drop the connection after 5 attempts).
+var ErrUnknownEncryptedSession = errors.New("encrypted message for unknown session")
 
 // SigningVerifier verifies SMB2 message signatures during request reading.
 // This decouples the framing layer from session management.
@@ -78,6 +88,31 @@ func ReadRequest(
 		}
 		decrypted, transformSessionID, err := encMiddleware.DecryptRequest(message)
 		if err != nil {
+			// Per MS-SMB2 §3.3.5.2.7: an encrypted message addressed to a
+			// SessionId the server no longer knows about (typical race:
+			// reconnect1 issues SESSION_SETUP with PreviousSessionId on a
+			// parallel connection, which tears down the original session
+			// while the original connection still has an in-flight request)
+			// must be answered with a plaintext STATUS_USER_SESSION_DELETED
+			// rather than silently dropped. Without the synthetic reply the
+			// peer waits the full client-side timeout, and the cascading
+			// "Establishing SMB2 connection failed / NT_STATUS_NO_MEMORY"
+			// errors that flow out of an overrun smbtorture client mask
+			// downstream per-algorithm crypto tests (#717).
+			//
+			// Synthesize a minimal SMB2 request header so the connection
+			// layer can dispatch through SendErrorResponse — MessageID is
+			// unknowable post-AEAD, so use 0xFFFFFFFFFFFFFFFF as Samba does
+			// for spontaneous server-originated replies.
+			if errors.Is(err, encryption.ErrUnknownSession) {
+				synthetic := &header.SMB2Header{
+					ProtocolID: [4]byte{0xFE, 'S', 'M', 'B'},
+					Command:    types.SMB2SessionSetup,
+					MessageID:  ^uint64(0),
+					SessionID:  transformSessionID,
+				}
+				return synthetic, nil, nil, true, ErrUnknownEncryptedSession
+			}
 			return nil, nil, nil, false, fmt.Errorf("decrypt transform message: %w", err)
 		}
 

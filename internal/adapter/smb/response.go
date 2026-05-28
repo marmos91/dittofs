@@ -471,7 +471,8 @@ func SendResponseWithHooks(reqHeader *header.SMB2Header, ctx *handlers.SMBHandle
 	preWrite := func(wirePlaintext []byte) {
 		RunAfterHooks(connInfo, reqHeader.Command, wirePlaintext)
 	}
-	err := sendMessage(respHeader, body, connInfo, preWrite)
+	requestEncrypted := ctx != nil && ctx.RequestEncrypted
+	err := sendMessage(respHeader, body, connInfo, requestEncrypted, preWrite)
 	// Fire ReleaseData AFTER the wire write completes, regardless of
 	// write success. The pooled buffer is no longer referenced once the
 	// write attempt returns, so release is safe whether or not the bytes
@@ -485,7 +486,8 @@ func SendResponseWithHooks(reqHeader *header.SMB2Header, ctx *handlers.SMBHandle
 // SendResponse sends an SMB2 response with credit management and signing.
 func SendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *HandlerResult, connInfo *ConnInfo) error {
 	respHeader, body := buildResponseHeaderAndBody(reqHeader, ctx, result, connInfo)
-	err := SendMessage(respHeader, body, connInfo)
+	requestEncrypted := ctx != nil && ctx.RequestEncrypted
+	err := sendMessage(respHeader, body, connInfo, requestEncrypted, nil)
 	// See SendResponseWithHooks — release pooled buffer after wire write.
 	if result.ReleaseData != nil {
 		result.ReleaseData()
@@ -598,7 +600,7 @@ func SendErrorResponse(reqHeader *header.SMB2Header, status types.Status, connIn
 // created session MUST NOT be encrypted (client hasn't derived keys yet), but
 // MUST be signed. Re-authentication SESSION_SETUP responses ARE encrypted.
 func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error {
-	return sendMessage(hdr, body, connInfo, nil)
+	return sendMessage(hdr, body, connInfo, false, nil)
 }
 
 // sendMessage is the internal implementation used by SendMessage and
@@ -607,7 +609,7 @@ func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error 
 // written to the TCP connection. SendResponseWithHooks uses this to run the
 // preauth integrity hash update in the window where the client cannot yet have
 // observed the response — see the SendResponseWithHooks docstring.
-func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWrite func(wirePlaintext []byte)) error {
+func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, responseEncrypted bool, preWrite func(wirePlaintext []byte)) error {
 	smbPayload := append(hdr.Encode(), body...)
 
 	if hdr.SessionID != 0 {
@@ -627,7 +629,23 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWri
 			if isSessionSetupSuccess && sess.NewlyCreated {
 				sess.NewlyCreated = false // Clear so subsequent messages get encrypted
 			}
-			if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil && !isSessionSetup {
+			// Encrypt when the session forces it (mode=required), the
+			// per-share tree forces it (Share.EncryptData via TREE_CONNECT),
+			// or the inbound request was itself encrypted (MS-SMB2 §3.3.4.1.4).
+			// In preferred mode Session.EncryptData stays false so signing-only
+			// torture tests can run, but encrypted shares and clients that
+			// opt-in to encryption per-connection (e.g. smbtorture's
+			// encryption-aes-128-ccm with SMB_ENCRYPTION_REQUIRED credentials)
+			// must still get encrypted responses — pull the tree-level flag
+			// and honour responseEncrypted.
+			shouldEncrypt := sess.ShouldEncrypt() || responseEncrypted
+			if !shouldEncrypt && hdr.TreeID != 0 && sess.CryptoState != nil &&
+				sess.CryptoState.Encryptor != nil {
+				if tree, ok := connInfo.Handler.GetTree(hdr.TreeID); ok && tree.EncryptData {
+					shouldEncrypt = true
+				}
+			}
+			if shouldEncrypt && connInfo.EncryptionMiddleware != nil && !isSessionSetup {
 				// Run pre-write hook on the PLAINTEXT bytes — the preauth chain
 				// hashes plaintext on both sides, not the encrypted wire form.
 				if preWrite != nil {

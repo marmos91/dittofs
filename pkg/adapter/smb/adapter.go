@@ -280,8 +280,23 @@ func (s *Adapter) SetRuntime(rtAny any) {
 }
 
 // applySMBSettings reads current SMB adapter settings from the runtime's
-// SettingsWatcher and applies them. Called during SetRuntime (startup).
+// SettingsWatcher and applies them. Called during SetRuntime (startup) and
+// on each settings-watcher change callback.
+//
+// To close the window between a settings PATCH and the next 10s poll, this
+// performs a synchronous DB refresh first. Without it, an
+// `adapter disable smb && adapter enable smb` sequence issued immediately
+// after `--enable-encryption true` reads the stale cached settings and
+// leaves Mode="disabled", which breaks the SMB 3.1.1 per-algorithm crypto
+// torture tests that run inside the poll window.
 func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
+	if sw := rt.GetSettingsWatcher(); sw != nil {
+		if err := sw.RefreshSMBSettings(context.Background()); err != nil {
+			logger.Debug("SMB adapter: settings refresh failed, using cached values",
+				"error", err)
+		}
+	}
+
 	settings := rt.GetSMBSettings()
 	if settings == nil {
 		logger.Debug("SMB adapter: no live settings available, using defaults")

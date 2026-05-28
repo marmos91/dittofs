@@ -962,7 +962,11 @@ func TestConfigureSessionSigningWithKey_Encryption(t *testing.T) {
 		wantError   bool
 		wantStatus  types.Status
 	}{
-		{"PreferredMode_3x", "preferred", types.Dialect0311, types.CipherAES128GCM, true, false, 0},
+		// Preferred mode derives encryptors so the per-share Share.EncryptData
+		// path can use them, but Session.EncryptData stays false — otherwise
+		// signing-only torture tests skip with "Can't test signing only if
+		// encryption is required" (#717).
+		{"PreferredMode_3x", "preferred", types.Dialect0311, types.CipherAES128GCM, false, false, 0},
 		{"RequiredMode_3x", "required", types.Dialect0300, types.CipherAES128GCM, true, false, 0},
 		{"DisabledMode_3x", "disabled", types.Dialect0311, types.CipherAES128GCM, false, false, 0},
 		{"Dialect2xRejectedInRequired", "required", types.Dialect0210, 0, false, true, types.StatusAccessDenied},
@@ -1003,6 +1007,35 @@ func TestConfigureSessionSigningWithKey_Encryption(t *testing.T) {
 			}
 		})
 	}
+
+	// Preferred mode must still derive encryptors so per-share tcons that
+	// negotiate Share.EncryptData can wrap their responses with the
+	// session-level cipher.
+	t.Run("PreferredMode_3x_EncryptorsDerived", func(t *testing.T) {
+		h := NewHandler()
+		h.EncryptionConfig = EncryptionConfig{
+			Mode:           "preferred",
+			AllowedCiphers: []uint16{types.CipherAES128GCM},
+		}
+		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
+		ctx := newTestContext(sess.SessionID)
+		ctx.ConnCryptoState = &mockCryptoState{
+			dialect:  types.Dialect0311,
+			cipherId: types.CipherAES128GCM,
+		}
+		if errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); errResult != nil {
+			t.Fatalf("unexpected error result: %v", errResult.Status)
+		}
+		if sess.CryptoState == nil || sess.CryptoState.Encryptor == nil {
+			t.Error("Encryptor not created in preferred mode (per-share enforcement needs it)")
+		}
+		if sess.CryptoState.Decryptor == nil {
+			t.Error("Decryptor not created in preferred mode")
+		}
+		if sess.ShouldEncrypt() {
+			t.Error("Session.EncryptData unexpectedly set in preferred mode (would skip signing-only torture tests)")
+		}
+	})
 }
 
 func TestSessionSetupConstants(t *testing.T) {

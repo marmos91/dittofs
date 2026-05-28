@@ -13,6 +13,14 @@ import (
 // relying on string matching.
 var ErrDecryptFailed = errors.New("SMB3 decryption failed")
 
+// ErrUnknownSession is a sentinel error indicating that a transform-header
+// message was received for a SessionId not present in the session table.
+// Returned wrapped together with ErrDecryptFailed so existing error-matching
+// continues to work; callers can use errors.Is to branch on this distinct
+// case and synthesize a plaintext STATUS_USER_SESSION_DELETED response
+// (MS-SMB2 §3.3.5.2.7) instead of silently dropping the message.
+var ErrUnknownSession = errors.New("encrypted message for unknown session")
+
 // EncryptableSession is the minimal interface for a session that supports encryption.
 // This decouples the middleware from the full session.Session type to avoid circular imports.
 type EncryptableSession interface {
@@ -75,7 +83,13 @@ func (m *sessionEncryptionMiddleware) DecryptRequest(transformMessage []byte) ([
 
 	sess, ok := m.sessionLookup(th.SessionId)
 	if !ok {
-		return nil, 0, fmt.Errorf("session 0x%x not found for decryption: %w", th.SessionId, ErrDecryptFailed)
+		// Return th.SessionId so the caller can build a synthetic
+		// STATUS_USER_SESSION_DELETED plaintext reply. This is the common
+		// race when a parallel connection has previously-session-IDed
+		// the session via SESSION_SETUP.PreviousSessionId (reconnect1,
+		// MS-SMB2 §3.3.5.5.1).
+		return nil, th.SessionId, fmt.Errorf("session 0x%x not found for decryption: %w: %w",
+			th.SessionId, ErrUnknownSession, ErrDecryptFailed)
 	}
 
 	// Extract encrypted data (everything after the 52-byte transform header)
