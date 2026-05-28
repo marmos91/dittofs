@@ -57,7 +57,7 @@ Each area gets PR-A (REVIEW.md) → triage → PR-B (fixes + simplifier + review
 |---|---|---|---|---|---|
 | 1 | Block stores + CAS + engine | `pkg/blockstore/{engine,local,remote,chunker,compression,encryption}` | 19.3K | FastCDC paper, S3 API spec, BLAKE3 spec | **HIGH** (data path) |
 | 2 | Syncer | `pkg/blockstore/{remote,engine}/syncer` | (subset of #1) | RFC 7233 ranges, S3 multipart | **HIGH** (background I/O) |
-| 3 | SMB handlers | `internal/adapter/smb/`, `pkg/adapter/smb/` | 36.9K | MS-SMB2, Samba `source3/smbd/smb2_*`, MS-FSA | **HIGH** (protocol hot path) |
+| 3 | SMB handlers (SMB2 wire family: dialects 2.0.2 / 2.1 / 3.0 / 3.0.2 / 3.1.1; **path-rename candidate** — see §SMB layout below) | `internal/adapter/smb/`, `pkg/adapter/smb/` | 36.9K | MS-SMB2, Samba `source3/smbd/smb2_*`, MS-FSA | **HIGH** (protocol hot path) |
 | 4 | NFS handlers | `internal/adapter/nfs/`, `pkg/adapter/nfs/` | 52.9K | RFC 1813 / 7530 / 8881, Linux `fs/nfsd/`, `fs/nfs/` | **HIGH** (protocol hot path) |
 | 5 | Lock manager + ACL | `pkg/metadata/lock`, `pkg/metadata/acl` | ~3.5K | MS-FSA §2.1.5, Samba locking, MS-DTYP SD | MED (contention-prone) |
 | 6 | Metadata stores | `pkg/metadata/store/{badger,memory,postgres}` | 15.4K | POSIX.1-2017 VFS, Linux `fs/` — **NOT storetest** | MED |
@@ -158,6 +158,29 @@ Where ground truth is unclear, prefer **external test suites** (pjdfstest for PO
 **Each PR-B (fix)** applies HIGH; MED/LOW filed as `v1.0-followup` issues.
 
 **Parallelization**: areas with no overlap can run audit-streams concurrently. Suggest pairs that share files (lock+ACL+metadata; engine+syncer+GC) run sequentially.
+
+### SMB layout — rename `v2/` and flatten
+
+Sub-decision under area #3 (SMB handlers). The current path `internal/adapter/smb/v2/handlers/` is misleading: `v2/` looks like it implies the server only speaks SMB 2.x, when in fact it supports the full SMB2 wire family — dialects 2.0.2, 2.1, 3.0, 3.0.2, 3.1.1 — plus SMB3-only features (AES-CCM/GCM encryption, CMAC/GMAC signing, SMB3 KDF, multi-channel, durable handles V1, leases, ACLs). The `v2` token there is Microsoft's name for the wire format ("SMB2"), not a dialect ceiling.
+
+External readers (and our future selves) read `v2/handlers/` as "this is the SMB2.x-only handler bag, SMB3 must live elsewhere." There IS no elsewhere — every command handler under that dir is dispatched for every SMB 2.x AND 3.x request. The naming is technically defensible per MS-SMB2 spec convention but actively misleads code review.
+
+**Proposal** — bundle a structural rename into the area #3 PR-B:
+- **Option A (minimal, recommended)**: collapse `internal/adapter/smb/v2/handlers/` → `internal/adapter/smb/handlers/`. The `v2` segment carries zero information at the path level — dispatch already routes by dialect at runtime, and there is no `v3/handlers/` sibling. Single `git mv`, `goimports`, and one round of import-path updates. ~88 files moved, no logic change.
+- **Option B**: keep `v2/` but rename to `wire/` or `commands/` — preserves a layer of grouping if we expect future non-wire SMB code (e.g. an admin REST surface). Same migration cost.
+- **Option C**: do nothing — keep `v2/` but document the meaning in a top-level `internal/adapter/smb/README.md`. Cheapest, least durable.
+
+Decision points for the area-pair PR-A:
+- Are there any *non-SMB2-wire* code paths planned under `internal/adapter/smb/` that would justify a sibling to `v2/`?  (If no — A wins.)
+- Does any external consumer import `internal/adapter/smb/v2/...`? (Probably no — `internal/` blocks external imports anyway.)
+- Does `pkg/adapter/smb/` need the same treatment? (It exports types; check whether `v2` appears in the public API.)
+
+Migration constraints:
+- `internal/` packages have no external consumers, so the rename is repo-internal — no SemVer concerns.
+- Bundle the rename into PR-B for area #3 so the audit's other findings land together with the move. Don't ship a "rename-only" PR — it would conflict with every active SMB branch (durable-handle V2 #432, BR-lock async #430, ADS-cluster #471, …).
+- Update `CLAUDE.md` references to `internal/adapter/smb/v2/handlers/` after the rename.
+
+Filed as **issue #674** (will create alongside the area-pair kickoff).
 
 ## Wave 2 — Cross-cutting streams
 
