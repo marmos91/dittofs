@@ -37,7 +37,7 @@ var (
 	ErrSnapshotRetryTargetNotFound  = errors.New("snapshot retry target not found")
 	ErrSnapshotRetryTargetNotFailed = errors.New("snapshot retry target is not in failed state")
 
-	// Phase 24 (D-24-08): restore orchestration sentinels surfaced to REST in Phase 25.
+	// Restore orchestration sentinels.
 	ErrShareEnabled                = errors.New("share must be disabled before restore")
 	ErrSnapshotNotDurable          = errors.New("snapshot is not remote-durable; pass AllowNonDurable to override")
 	ErrSnapshotMetadataDumpMissing = errors.New("snapshot metadata dump file is missing")

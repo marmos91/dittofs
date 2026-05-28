@@ -7,19 +7,14 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// Compile-time assertion: PostgresMetadataStore implements Resetable.
 var _ metadata.Resetable = (*PostgresMetadataStore)(nil)
 
 // Reset truncates every metadata table in a single REPEATABLE READ
 // transaction. The table list is the same backupTables slice used by
-// Backup/Restore (single source of truth; the D-24-03 CI guard
-// TestBackupTablesCoversAllMigrations keeps it in sync with migrations).
-//
-// The same *pgx.Pool stays valid across Reset — callers can immediately
-// follow up with Backupable.Restore or any other operation. While the tx
-// holds, concurrent writers block on the truncated tables; Reset is only
-// invoked by Runtime.RestoreSnapshot after share.Enabled=false has been
-// verified (D-24-01), so no concurrent serving traffic should exist.
+// Backup/Restore; the TestBackupTablesCoversAllMigrations CI guard keeps
+// it in sync with migrations. While the tx holds, concurrent writers
+// block on the truncated tables; Reset assumes Runtime.RestoreSnapshot
+// has already verified the share is disabled.
 func (s *PostgresMetadataStore) Reset(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("reset cancelled: %w", err)

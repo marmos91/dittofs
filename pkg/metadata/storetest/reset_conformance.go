@@ -19,18 +19,12 @@ func asResetable(t *testing.T, store metadata.MetadataStore) metadata.Resetable 
 }
 
 // ResetThenRestoreConformance verifies that a store implementing both
-// metadata.Backupable AND metadata.Resetable satisfies the Phase 24
-// restore-flow contract: a populated store can be backed up, then Reset
-// to empty, then restored from the same backup to its original content.
-//
-// This is the test-suite analog of D-24-09 steps 4–6 (open dump → Reset
-// → Restore): the Reset must leave the store empty enough for Restore to
-// proceed past its ErrRestoreDestinationNotEmpty precondition, and the
-// Restored state must equal the pre-Reset state.
-//
-// The factory MUST return a store implementing both Backupable and
-// Resetable; t.Fatal otherwise (mirroring the Backupable conformance
-// pattern). Single scenario per D-24-12 (not a multi-subtest tree).
+// Backupable and Resetable satisfies the restore-flow contract: a
+// populated store can be backed up, Reset to empty, then restored from
+// the same backup to its original content. Reset must leave the store
+// empty enough for Restore to proceed past its
+// ErrRestoreDestinationNotEmpty precondition, and the restored state
+// must equal the pre-Reset state.
 func ResetThenRestoreConformance(t *testing.T, factory BackupableStoreFactory) {
 	t.Helper()
 
@@ -69,14 +63,13 @@ func ResetThenRestoreConformance(t *testing.T, factory BackupableStoreFactory) {
 	}
 
 	// 4. Restore from the same dump into the (now-empty) same store
-	//    instance. The Reset above satisfied the ErrRestoreDestinationNotEmpty
-	//    precondition (D-24-03 invariant) so Restore must succeed.
+	//    instance. The Reset above satisfied the
+	//    ErrRestoreDestinationNotEmpty precondition so Restore must succeed.
 	if err := b.Restore(ctx, &dumpBuf); err != nil {
 		t.Fatalf("Restore post-Reset: %v", err)
 	}
 
-	// 5. Verify shares + representative file survived round-trip
-	//    (mirrors lines 156-211 of backup_conformance.go::testBackup_RoundTrip).
+	// 5. Verify shares + representative file survived round-trip.
 	restored, err := store.ListShares(ctx)
 	if err != nil {
 		t.Fatalf("ListShares post-Restore: %v", err)
