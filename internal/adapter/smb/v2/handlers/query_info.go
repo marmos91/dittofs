@@ -362,7 +362,14 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	case types.SMB2InfoTypeFile:
 		info, err = h.buildFileInfoFromStore(authCtx, file, openFile, types.FileInfoClass(req.FileInfoClass))
 	case types.SMB2InfoTypeFilesystem:
-		info, err = h.buildFilesystemInfo(ctx.Context, types.FileInfoClass(req.FileInfoClass), metaSvc, openFile.MetadataHandle)
+		// FileFsAttributeInformation advertises FILE_NAMED_STREAMS iff the
+		// tree's share allows ADS. Look up StreamsDisabled from the open's
+		// tree; default to streams-enabled when the tree isn't found.
+		streamsDisabled := false
+		if tree, ok := h.GetTree(ctx.TreeID); ok {
+			streamsDisabled = tree.StreamsDisabled
+		}
+		info, err = h.buildFilesystemInfo(ctx.Context, types.FileInfoClass(req.FileInfoClass), metaSvc, openFile.MetadataHandle, streamsDisabled)
 	case types.SMB2InfoTypeSecurity:
 		// Per MS-SMB2 §3.3.5.20.3: querying OWNER, GROUP, or DACL requires
 		// READ_CONTROL on the open handle. SACL requires ACCESS_SYSTEM_SECURITY.
@@ -1029,8 +1036,12 @@ func shareNameForOpenFile(openFile *OpenFile) string {
 	return openFile.ShareName
 }
 
-// buildFilesystemInfo builds filesystem information [MS-FSCC] 2.5.
-func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoClass, metaSvc *metadata.MetadataService, handle metadata.FileHandle) ([]byte, error) {
+// buildFilesystemInfo builds filesystem information [MS-FSCC] 2.5. The
+// streamsDisabled flag suppresses FILE_NAMED_STREAMS in the
+// FileFsAttributeInformation FileSystemAttributes mask so that clients on a
+// streams-disabled share see the FS advertise no ADS support, matching the
+// CREATE-time rejection in create.go.
+func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoClass, metaSvc *metadata.MetadataService, handle metadata.FileHandle, streamsDisabled bool) ([]byte, error) {
 	switch class {
 	case 1: // FileFsVolumeInformation [MS-FSCC] 2.5.9
 		label := encodeUTF16LE("DittoFS")
@@ -1078,9 +1089,14 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 		// FILE_CASE_SENSITIVE_SEARCH(0x01) | FILE_CASE_PRESERVED_NAMES(0x02) |
 		// FILE_UNICODE_ON_DISK(0x04) | FILE_PERSISTENT_ACLS(0x08) |
 		// FILE_FILE_COMPRESSION(0x10) | FILE_SUPPORTS_SPARSE_FILES(0x40) |
-		// FILE_SUPPORTS_REPARSE_POINTS(0x80) | FILE_SUPPORTS_OBJECT_IDS(0x10000) |
-		// FILE_SUPPORTS_ENCRYPTION(0x20000)
-		w.WriteUint32(0x000300DF)
+		// FILE_SUPPORTS_REPARSE_POINTS(0x80) | FILE_NAMED_STREAMS(0x40000) |
+		// FILE_SUPPORTS_OBJECT_IDS(0x10000) | FILE_SUPPORTS_ENCRYPTION(0x20000)
+		const fileNamedStreams uint32 = 0x00040000
+		fsAttrs := uint32(0x000300DF) | fileNamedStreams
+		if streamsDisabled {
+			fsAttrs &^= fileNamedStreams
+		}
+		w.WriteUint32(fsAttrs)
 		w.WriteUint32(255)
 		w.WriteUint32(uint32(len(fsName)))
 		w.WriteBytes(fsName)

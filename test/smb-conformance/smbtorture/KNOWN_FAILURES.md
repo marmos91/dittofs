@@ -85,17 +85,6 @@ is advertised.
 | smb2.set-sparse-ioctl | IOCTL | Sparse file IOCTL not implemented | - |
 | smb2.zero-data-ioctl | IOCTL | Zero data IOCTL not implemented | - |
 
-### Alternate Data Streams (Partial)
-
-ADS conformance brought 13/14 smb2.streams.* tests to PASS. The remaining
-attributes2 case exercises non-default-stream attribute round-trip which
-DittoFS does not yet persist independently from the base file.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.streams.attributes2 | Streams | ADS attributes not persisted independently from base file | #471 |
-| smb2.create_no_streams.no_stream | Streams | No-streams create context not implemented | - |
-
 ### Change Notify (Remaining)
 
 Phase 73 Plan 03 completed async ChangeNotify infrastructure. Wave 2 fixed

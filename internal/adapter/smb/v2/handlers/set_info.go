@@ -455,20 +455,62 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(common.MapToSMB(err)), nil
 		}
 
-		// Per NTFS: only TIMESTAMPS set on an ADS propagate to the base
-		// file. FileAttributes/Mode do NOT propagate — they are per-file.
+		// NTFS contract: SET_INFO BasicInformation on an ADS handle MUST be
+		// observable on the base file via QUERY_INFO, and vice-versa — base
+		// and stream always report identical FileAttributes.
+		// smb2.streams.attributes2 (source4/torture/smb2/streams.c) round-
+		// trips this both ways: setting attribs through the stream and
+		// re-querying the base must agree, and the reverse. QUERY_INFO on
+		// a stream already resolves to base via resolveBaseFileAttrForADS,
+		// so the only piece that closes the loop is propagating the writes
+		// from the stream's SET_INFO back onto the base. The propagation:
+		//
+		//   - Forwards CreationTime / LastAccessTime / LastWriteTime /
+		//     ChangeTime onto the base. nil-valued pointers are skipped,
+		//     so a "timestamp-only" SET_INFO that leaves FileAttributes=0
+		//     does not touch the base's DOS bits or Hidden flag.
+		//   - Forwards the Hidden flag when FileAttributes was set.
+		//   - Overlays only the four explicit DOS bits
+		//     (modeDOSExplicit | modeDOSArchive | modeDOSSystem |
+		//     modeDOSReadonly) from the stream's computed mode onto the
+		//     base's existing mode. All other bits in the base's mode
+		//     are preserved:
+		//       * POSIX permission bits (0o7777) — an out-of-band NFS
+		//         chmod must survive a stream SET_INFO.
+		//       * modeDOSCompressed (0x40000) — FSCTL-managed, lives on
+		//         the base file and is never derived from FileAttributes
+		//         on a stream SET_INFO.
+		//
+		// The base SetFileAttributes call is fire-and-forget: a failure to
+		// propagate is logged at the metadata layer and does not roll back
+		// the stream's own SET_INFO (the stream is the explicitly-targeted
+		// handle and its write has already succeeded above).
 		if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 && len(openFile.ParentHandle) > 0 {
-			tsAttrs := &metadata.SetAttrs{
-				Mtime:        setAttrs.Mtime,
-				Ctime:        setAttrs.Ctime,
-				Atime:        setAttrs.Atime,
-				CreationTime: setAttrs.CreationTime,
-			}
-			if tsAttrs.Mtime != nil || tsAttrs.Ctime != nil || tsAttrs.Atime != nil || tsAttrs.CreationTime != nil {
-				baseFileName := openFile.FileName[:colonIdx]
-				if baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName); baseFile != nil {
+			baseFileName := openFile.FileName[:colonIdx]
+			if baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName); baseFile != nil {
+				basePropagate := &metadata.SetAttrs{
+					Mtime:        setAttrs.Mtime,
+					Ctime:        setAttrs.Ctime,
+					Atime:        setAttrs.Atime,
+					CreationTime: setAttrs.CreationTime,
+					Hidden:       setAttrs.Hidden,
+				}
+				if setAttrs.Mode != nil {
+					// Strip the stream-derived POSIX bits and keep only the
+					// DOS attribute bits (Explicit/Archive/System/Readonly).
+					// modeDOSCompressed lives in the base file's mode and is
+					// FSCTL-managed, so leave it untouched.
+					const dosBits = modeDOSExplicit | modeDOSArchive | modeDOSSystem | modeDOSReadonly
+					newMode := (baseFile.Mode &^ dosBits) | (*setAttrs.Mode & dosBits)
+					if newMode != baseFile.Mode {
+						basePropagate.Mode = &newMode
+					}
+				}
+				if basePropagate.Mtime != nil || basePropagate.Ctime != nil ||
+					basePropagate.Atime != nil || basePropagate.CreationTime != nil ||
+					basePropagate.Mode != nil || basePropagate.Hidden != nil {
 					if baseHandle, encErr := metadata.EncodeFileHandle(baseFile); encErr == nil {
-						_ = metaSvc.SetFileAttributes(authCtx, baseHandle, tsAttrs)
+						_ = metaSvc.SetFileAttributes(authCtx, baseHandle, basePropagate)
 					}
 				}
 			}

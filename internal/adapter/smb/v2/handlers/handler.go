@@ -265,6 +265,11 @@ type TreeConnection struct {
 	// STATUS_NOT_IMPLEMENTED — matches Samba `kernel change notify = no`
 	// and the smb2.change_notify_disabled torture test.
 	ChangeNotifyDisabled bool
+	// StreamsDisabled mirrors the share-level toggle. When true, CREATE
+	// requests that reference an Alternate Data Stream are rejected with
+	// STATUS_OBJECT_NAME_INVALID — matches Samba `smbd:streams = no`
+	// and the smb2.create_no_streams.no_stream torture test.
+	StreamsDisabled bool
 }
 
 // OpenFile represents an open file handle created by the CREATE command.

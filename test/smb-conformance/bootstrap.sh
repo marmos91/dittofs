@@ -179,6 +179,12 @@ main() {
     # smb2.acls_non_canonical.flags; verifies AUTO_INHERITED round-trips
     # verbatim through SET_INFO Security without the AUTO_INHERIT_REQ gate.
     $DFSCTL share create --name /smbnoncanon --acl-canonicalize-inherited=false $share_flags
+    # /create_no_streams rejects SMB2 Alternate Data Stream opens with
+    # STATUS_OBJECT_NAME_INVALID. Target of
+    # smb2.create_no_streams.no_stream which verifies the server rejects
+    # named ADS, ::$DATA, and arbitrary stream-type suffixes on a share
+    # configured with the Samba `smbd:streams = no` semantics.
+    $DFSCTL share create --name /create_no_streams --streams-disabled $share_flags
 
     # Create test users with DISTINCT UIDs. Without --uid each user falls back
     # to defaultUID=1000 in internal/adapter/smb/v2/handlers/auth_helper.go,
@@ -219,7 +225,7 @@ main() {
     # Wait for SMB adapter to start
     wait_for_smb localhost
 
-    log_info "Bootstrap complete: shares=smbbasic,smbencrypted,fileshare,hideunread,change_notify_disabled,smbnoncanon users=wpts-admin,nonadmin adapter=smb:${SMB_PORT}"
+    log_info "Bootstrap complete: shares=smbbasic,smbencrypted,fileshare,hideunread,change_notify_disabled,smbnoncanon,create_no_streams users=wpts-admin,nonadmin adapter=smb:${SMB_PORT}"
 }
 
 main "$@"

@@ -195,6 +195,7 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			AclFlagInheritedCanonicalization: share.AclFlagInheritedCanonicalization,
 			AccessBasedEnumeration:           share.AccessBasedEnumeration,
 			ChangeNotifyDisabled:             share.ChangeNotifyDisabled,
+			StreamsDisabled:                  share.StreamsDisabled,
 			DefaultPermission:                share.DefaultPermission,
 			Squash:                           nfsOpts.GetSquashMode(),
 			AnonymousUID:                     nfsOpts.GetAnonymousUID(),
