@@ -435,6 +435,117 @@ func (r *Runtime) failSnap(shareName, snapID string) {
 	}
 }
 
+// cancelAndWaitInFlightSnaps cancels every in-flight snapshot orchestration
+// goroutine for the given share and blocks until they all complete. Safe to
+// call when no entry exists for the share (no-op). Called from
+// Runtime.RemoveShare BEFORE delegating to sharesSvc.RemoveShare so the
+// goroutines do not race the per-share snapshots/ tree wipe (Phase 22 D-15)
+// or any in-flight metadata-store I/O. D-23-17.
+//
+// Lock discipline: snapInFlightMu is held only long enough to snapshot the
+// cancel funcs + take a reference to the WaitGroup, then released BEFORE the
+// wg.Wait. Per PATTERNS.md shared-pattern §lock-protected registry: never
+// block under the registry mutex.
+func (r *Runtime) cancelAndWaitInFlightSnaps(shareName string) {
+	r.snapInFlightMu.Lock()
+	entry, ok := r.snapInFlight[shareName]
+	if !ok {
+		r.snapInFlightMu.Unlock()
+		return
+	}
+	// Remove the share entry from the map so subsequent CreateSnapshot
+	// calls (if any race in despite the RemoveShare caller's contract)
+	// allocate a fresh entry rather than reusing one we are about to drain.
+	delete(r.snapInFlight, shareName)
+	r.snapInFlightMu.Unlock()
+
+	// Snapshot the cancel funcs under the per-entry mutex (separate from
+	// the registry mutex), then release before draining the WaitGroup.
+	entry.mu.Lock()
+	cancels := append([]context.CancelFunc(nil), entry.cancels...)
+	entry.mu.Unlock()
+
+	logger.Info("snapshot lifecycle: cancelling in-flight snapshots",
+		"share", shareName,
+		"count", len(cancels),
+	)
+	for _, cancel := range cancels {
+		cancel()
+	}
+
+	// Wait OUTSIDE the lock — goroutines need to acquire entry.mu inside
+	// their cleanup path (unregisterSnap) to delete their done-chan entry.
+	entry.wg.Wait()
+
+	logger.Info("snapshot lifecycle: in-flight snapshots drained",
+		"share", shareName,
+	)
+}
+
+// shutdownSnapshots cancels all in-flight snapshot goroutines across all
+// shares and waits (bounded by ctx) for them to drain. Called as the FIRST
+// step of Runtime.Shutdown so snapshot orchestration cannot use-after-close
+// the metadata stores or control-plane DB. D-23-17.
+//
+// Step 1 cancels runtimeCtx, which propagates to every child ctx derived in
+// registerSnapInFlight — every orchestration goroutine then notices the
+// cancellation at its next ctx-aware call (Backup, DrainAllUploads,
+// VerifyRemoteDurability, UpdateSnapshotState). The failSnap helper uses
+// context.Background, so the state=failed flip still completes even with
+// runtimeCtx cancelled.
+//
+// If ctx fires before all goroutines exit, this function logs a warning and
+// returns. Orphan goroutines will still exit on their own (runtimeCancel
+// already fired) — they just may not have finished by the time the caller
+// moves on to StopAllAdapters / CloseMetadataStores. Callers wanting a hard
+// upper bound should pass context.WithTimeout(...); callers passing
+// context.Background block until full drain.
+func (r *Runtime) shutdownSnapshots(ctx context.Context) {
+	// Step 1: cancel every child ctx derived from runtimeCtx. Idempotent:
+	// second call is a no-op.
+	if r.runtimeCancel != nil {
+		r.runtimeCancel()
+	}
+
+	// Step 2: snapshot the per-share entries under the registry mutex,
+	// then clear the map (lock-protected registry pattern).
+	r.snapInFlightMu.Lock()
+	entries := make([]*snapInFlight, 0, len(r.snapInFlight))
+	for _, e := range r.snapInFlight {
+		entries = append(entries, e)
+	}
+	r.snapInFlight = make(map[string]*snapInFlight)
+	r.snapInFlightMu.Unlock()
+
+	if len(entries) == 0 {
+		logger.Info("snapshot lifecycle: no in-flight snapshots at shutdown")
+		return
+	}
+
+	// Step 3: drain on a side goroutine so we can race ctx.Done.
+	done := make(chan struct{})
+	go func() {
+		for _, e := range entries {
+			e.wg.Wait()
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		logger.Info("snapshot lifecycle: all snapshots drained",
+			"share_count", len(entries),
+		)
+	case <-ctx.Done():
+		logger.Warn("snapshot lifecycle: shutdownSnapshots ctx cancelled before all goroutines drained",
+			"share_count", len(entries),
+			"error", ctx.Err(),
+		)
+		// Do not block further; runtimeCancel already fired so the
+		// remaining goroutines will exit on their own.
+	}
+}
+
 // Ensure unused-import safety: the shares package is referenced via the
 // type returned by GetBlockStoreForShare and via ErrShareNotFound in
 // caller code. Keep the alias here in case future refactors prune.
