@@ -92,8 +92,22 @@ loop:
 					hash, blockstore.ErrChunkNotFound,
 				))
 			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-				// Sibling probe cancelled us; do NOT overwrite firstErr
-				// — let the sibling's error win.
+				// Distinguish "sibling probe cancelled us" from "the remote
+				// itself returned a ctx-class error before our cancel
+				// fired." Only the former is safe to drop. If errCtx is
+				// still live, the remote-side ctx error is a real probe
+				// failure and must be recorded, otherwise the verifier
+				// would silently skip a chunk and report success.
+				if errCtx.Err() == nil {
+					logger.Error("snapshot sync gate: head probe failed with ctx error pre-cancel",
+						"hash", hash.String(),
+						"error", err,
+					)
+					recordErr(fmt.Errorf(
+						"snapshot: remote durability verify: head probe %s: %w",
+						hash, err,
+					))
+				}
 				return
 			default:
 				logger.Error("snapshot sync gate: head probe failed",
