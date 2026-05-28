@@ -29,8 +29,8 @@ import (
 // migrate.MigrateShareToCAS per share, and writes the per-share
 // `.cas-migrated-v1` sentinel that the boot guard requires.
 //
-// Refuses to run while the dfs server holds the PID lockfile (D-02
-// OFFLINE constraint).
+// Refuses to run while the dfs server holds the PID lockfile
+// (OFFLINE constraint).
 //
 // The MetadataAdapter opens the badger metadata store directly (offline
 // — the server must be stopped). Production shares normally go through
@@ -99,7 +99,7 @@ func init() {
 func runMigrateToCAS(cmd *cobra.Command, args []string) error {
 	// PID guard: refuse to run while a live dfs server holds the
 	// lockfile. The migration rewrites .blk files in place; a concurrent
-	// server would race the rename and corrupt the store. (D-02)
+	// server would race the rename and corrupt the store.
 	if err := guardPidFile(); err != nil {
 		return err
 	}
@@ -166,13 +166,13 @@ func runMigrateToCAS(cmd *cobra.Command, args []string) error {
 		shareDir := filepath.Join(sharesRoot, name)
 
 		// Destination BlockStore for this share. Use the migration-bypass
-		// constructor so Plan 09's sentinel-detection gate (added later
-		// inside fs.New / fs.NewWithOptions) does not refuse the share
-		// — that gate is precisely what the migration is establishing.
+		// constructor so the sentinel-detection gate (added later inside
+		// fs.New / fs.NewWithOptions) does not refuse the share — that
+		// gate is precisely what the migration is establishing.
 		//
-		// Phase 19 follow-up: baseDir is the share root (not the redundant
-		// `<shareDir>/blocks/` sub-path). FSStore internally creates
-		// `blocks/` (CAS) + `logs/` (append log) as siblings under baseDir.
+		// baseDir is the share root (not the redundant `<shareDir>/blocks/`
+		// sub-path). FSStore internally creates `blocks/` (CAS) + `logs/`
+		// (append log) as siblings under baseDir.
 		bs, openErr := fs.NewFSStoreForMigration(shareDir,
 			migrateMaxDisk, migrateMaxMemory, nopFileBlockStore{},
 			fs.FSStoreOptions{})
@@ -183,7 +183,7 @@ func runMigrateToCAS(cmd *cobra.Command, args []string) error {
 		opts := migrate.MigrationOpts{
 			DryRun:   migrateDryRun,
 			Progress: makeProgressFn(name),
-			// Sentinel lives at the FSStore baseDir (Plan 09 boot guard
+			// Sentinel lives at the FSStore baseDir (boot guard
 			// probes `<baseDir>/.cas-migrated-v1`), which post-follow-up
 			// is shareDir.
 			StoreDir: shareDir,
@@ -385,9 +385,9 @@ func (nopFileBlockStore) DecrementRefCount(_ context.Context, _ string) (uint32,
 	return 0, nil
 }
 func (nopFileBlockStore) AddRef(_ context.Context, _ blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
-	// Phase 19 D-04: migration path doesn't exercise the LRU hit path,
-	// so always returning ErrUnknownHash is safe — production callers
-	// fall back to the full Put path on this sentinel.
+	// Migration path doesn't exercise the LRU hit path, so always
+	// returning ErrUnknownHash is safe — production callers fall back to
+	// the full Put path on this sentinel.
 	return blockstore.ErrUnknownHash
 }
 func (nopFileBlockStore) ListPending(_ context.Context, _ time.Duration, _ int) ([]*blockstore.FileBlock, error) {

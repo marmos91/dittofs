@@ -134,7 +134,7 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 // timer fires (or count exceeds maxBatchSize), accumulated notifications
 // are flushed via CB_NOTIFY.
 //
-// This method is non-blocking: it does NOT hold sm.mu during backchannel sends.
+// Non-blocking: does NOT hold sm.mu during backchannel sends.
 //
 // Caller must NOT hold sm.mu (method acquires RLock).
 func (sm *StateManager) NotifyDirChange(dirFH []byte, notif DirNotification) {

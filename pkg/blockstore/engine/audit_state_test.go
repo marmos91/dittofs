@@ -14,7 +14,7 @@ import (
 )
 
 // seedAuditTestStore creates a memory metadata store with one share named
-// "audit-test" and three regular files. The first file has 5 BlockRefs,
+// "audit-test" and three regular files. The first file has 5 BlockRefs
 // the second has 3, the third has 2. Each FileBlock is seeded with a
 // matching RefCount=1 so the pre-leak invariant ∑RefCount == ∑len(Blocks)
 // holds (3+5+2 = 10 refs, 10 blocks × RefCount=1). Used by all three

@@ -21,8 +21,8 @@ import (
 // coordination under various scenarios including bidirectional breaks, directory leases,
 // concurrent conflicts, and data consistency.
 //
-// These tests validate the Phase 39 implementation of bidirectional SMB3 lease and
-// NFS delegation coordination:
+// These tests validate the bidirectional SMB3 lease and NFS delegation
+// coordination:
 //   - SMB3 lease break triggered by NFS write
 //   - NFS delegation recall triggered by SMB open
 //   - SMB3 directory lease break triggered by NFS create/delete/rename

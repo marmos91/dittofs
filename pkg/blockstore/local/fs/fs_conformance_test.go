@@ -11,9 +11,9 @@ import (
 )
 
 // newFSStoreForConformance builds a fresh *fs.FSStore with the production
-// wiring used across Phase 17 conformance scenarios: UseAppendLog=true,
+// wiring used across conformance scenarios: UseAppendLog=true
 // memory-backed RollupStore, rollup pool started. Returns the store and a
-// cleanup closure that closes it. Plan 17-06 D-09: shared between the
+// cleanup closure that closes it. -06: shared between the
 // BlockStore and BlockStoreAppend factories so the wiring is identical
 // across both contracts.
 func newFSStoreForConformance(t *testing.T) *fs.FSStore {
@@ -35,10 +35,10 @@ func newFSStoreForConformance(t *testing.T) *fs.FSStore {
 	return bc
 }
 
-// TestFSStore_BlockStoreConformance runs the unified Phase 17 D-09
+// TestFSStore_BlockStoreConformance runs the unified
 // BlockStoreConformance suite from pkg/blockstore/blockstoretest against
 // *fs.FSStore. The fs backend satisfies the BlockStore contract by way
-// of its embedded BlockStoreAppend implementation (Plan 17-07 lands the
+// of its embedded BlockStoreAppend implementation (07 lands the
 // missing Put/Has/Walk/etc. methods that complete the interface).
 func TestFSStore_BlockStoreConformance(t *testing.T) {
 	factory := func(t *testing.T) (blockstore.BlockStore, func()) {
@@ -52,15 +52,13 @@ func TestFSStore_BlockStoreConformance(t *testing.T) {
 
 // TestFSStore_BlockStoreAppendConformance runs the random-write
 // absorber suite from pkg/blockstore/blockstoretest against
-// *fs.FSStore. The fs backend implements BlockStoreAppend in full (it
-// is the only backend that does so per D-09 — s3 / memory-remote
-// implement only BlockStore).
+// *fs.FSStore. The fs backend implements BlockStoreAppend in full
+// (s3 and memory-remote implement only BlockStore).
 //
 // Note: three of the five scenarios (PressureChannel_INV05,
-// TornWriteRecovery_LSL06, RollupOffsetMonotone_INV03) `t.Skip` on the
-// interface-only surface because they require fs-internal probes that
-// intentionally do not appear on BlockStoreAppend (Plan 17-02 SUMMARY
-// §"Three legacy scenarios `t.Skip` with explicit rationale"). The fs
+// TornWriteRecovery_LSL06, RollupOffsetMonotone_INV03) `t.Skip` on
+// the interface-only surface because they require fs-internal probes
+// that intentionally do not appear on BlockStoreAppend. The fs
 // backend continues to exercise those scenarios in
 // appendlog_test.go / recovery_test.go via internal test hooks.
 func TestFSStore_BlockStoreAppendConformance(t *testing.T) {

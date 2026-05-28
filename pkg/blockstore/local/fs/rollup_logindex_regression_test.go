@@ -10,17 +10,17 @@ import (
 // TestRollup_OutOfOrderArrivals_AllRecordsRolledUp is the load-bearing
 // regression case from the Direction-1 redesign proposal. Four AppendWrites
 // at file offsets {32768, 458752, 0, 1540096} arrive in that order — the
-// per-file mu serializes them so on-disk frame order matches arrival order,
+// per-file mu serializes them so on-disk frame order matches arrival order
 // which is exactly the parallel-write shape that broke the legacy rollup.
 //
-// Pre-fix: the linear scan from rollup_offset read frame 0 (file_off=32768),
+// Pre-fix: the linear scan from rollup_offset read frame 0 (file_off=32768)
 // then frame 1 (file_off=458752) — past the chosen stable interval — and
 // broke out. Frame 2 (file_off=0) was never read for the [0, …) stable
 // interval. Net effect: recs=0, no chunks for that region, rollup_offset
 // stalled or skipped past it.
 //
 // Post-fix: every stable interval's EntriesForInterval lookup finds the
-// matching arrival-order entries regardless of where they sit in the log,
+// matching arrival-order entries regardless of where they sit in the log
 // so all four regions produce chunks and rollup_offset advances to EOF.
 func TestRollup_OutOfOrderArrivals_AllRecordsRolledUp(t *testing.T) {
 	bc, rs := newRollupFSStore(t, 1<<30, 10)
@@ -179,7 +179,7 @@ func TestRollup_StalledFence_ChunksStillCommitted(t *testing.T) {
 //
 // Pre-R-7 (#566's design): consumption was keyed by logPos. The head
 // record's logPos pinned the fence at the log header even when every
-// byte of its file region had been chunked by a subsequent overwrite,
+// byte of its file region had been chunked by a subsequent overwrite
 // because the head was not itself "in the consumed set" yet.
 //
 // Post-R-7: consumption is keyed by FILE-OFFSET interval. The overwrite's
@@ -188,7 +188,7 @@ func TestRollup_StalledFence_ChunksStillCommitted(t *testing.T) {
 // frames once the overwrite is chunked. rollup_offset advances even
 // though the head's dirty interval is still considered unstable.
 //
-// We exercise this end-to-end by:
+// We exercise this end-to-end by
 //  1. Writing a head record at file_off=0.
 //  2. Writing an overwrite at the SAME file_off=0 (same length).
 //  3. Waiting several stabilization windows so the interval-tree entry
@@ -284,7 +284,7 @@ func TestRollup_R7_LogIndexLevel_StalledFence(t *testing.T) {
 
 	// Mark the overwrite and the tail consumed; explicitly do NOT mark
 	// the head. Under the old logPos-keyed scheme, the head's logPos sat
-	// in the consumed map's complement and pinned the fence. Under R-7,
+	// in the consumed map's complement and pinned the fence. Under R-7
 	// the overwrite's coverage [0, 4K) subsumes the head's extent —
 	// the head's frame is dead and the fence walks straight through.
 	idx.MarkConsumed(0, payload)    // covers head AND overwrite

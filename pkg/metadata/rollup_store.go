@@ -1,8 +1,8 @@
-// Package metadata — rollup_store.go (Phase 10).
+// Package metadata — rollup_store.go.
 //
 // RollupStore persists the per-file append-log rollup_offset for the hybrid
 // local tier. See pkg/blockstore/local/fs/rollup.go for the consumer; see
-// .planning/phases/10-fastcdc-chunker-hybrid-local-store-a1/10-CONTEXT.md D-12
+// planning/phases/10-fastcdc-chunker-hybrid-local-store-a1/10-CONTEXT.md
 // for the atomicity contract.
 package metadata
 
@@ -12,10 +12,10 @@ import (
 )
 
 // RollupStore persists the per-file rollup_offset for the hybrid local
-// append-log tier (LSL-05). Introduced by Phase 10; a broader per-file
-// metadata row may fold this in during A3 (Phase 12).
+// append-log tier. Introduced by a broader per-file
+// metadata row may fold this in during A3.
 //
-// INV-03 (rollup_offset monotonicity) is enforced at the STORE layer, not by
+// (rollup_offset monotonicity) is enforced at the STORE layer, not by
 // the caller. SetRollupOffset is atomic-monotone: it rejects any update where
 // the currently-stored offset > newOffset, returning (storedOffset,
 // ErrRollupOffsetRegression). The stored value remains unchanged on rejection.
@@ -37,6 +37,6 @@ type RollupStore interface {
 }
 
 // ErrRollupOffsetRegression is returned by SetRollupOffset when newOffset <
-// the currently-stored offset (INV-03 violation). Benign by design: callers
+// the currently-stored offset (violation). Benign by design: callers
 // treat it as "another worker raced ahead of me" and drop the partial work.
 var ErrRollupOffsetRegression = errors.New("metadata: rollup offset regression rejected")

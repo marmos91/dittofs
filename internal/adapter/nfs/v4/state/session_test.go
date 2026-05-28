@@ -250,7 +250,7 @@ func TestNewSession_SlotCountClamping(t *testing.T) {
 }
 
 // ============================================================================
-// CreateSession Tests (Phase 19)
+// CreateSession Tests
 // ============================================================================
 
 func TestCreateSession_Success(t *testing.T) {
@@ -573,7 +573,7 @@ func TestCreateSession_ChannelNegotiation(t *testing.T) {
 }
 
 // ============================================================================
-// DestroySession Tests (Phase 19)
+// DestroySession Tests
 // ============================================================================
 
 func TestDestroySession_Success(t *testing.T) {
@@ -684,7 +684,7 @@ func TestForceDestroySession_BypassesInFlight(t *testing.T) {
 }
 
 // ============================================================================
-// Channel Negotiation Tests (Phase 19)
+// Channel Negotiation Tests
 // ============================================================================
 
 func TestNegotiateChannelAttrs_ClampToLimits(t *testing.T) {
@@ -808,7 +808,7 @@ func TestNegotiateChannelAttrs_WithinLimits(t *testing.T) {
 }
 
 // ============================================================================
-// HasInFlightRequests Tests (Phase 19)
+// HasInFlightRequests Tests
 // ============================================================================
 
 func TestSlotTable_HasInFlightRequests(t *testing.T) {
@@ -868,7 +868,7 @@ func TestSession_HasInFlightRequests_NilForeChannel(t *testing.T) {
 }
 
 // ============================================================================
-// Callback Security Tests (Phase 19)
+// Callback Security Tests
 // ============================================================================
 
 func TestHasAcceptableCallbackSecurity(t *testing.T) {
@@ -902,7 +902,7 @@ func TestHasAcceptableCallbackSecurity(t *testing.T) {
 }
 
 // ============================================================================
-// Session Reaper Tests (Phase 19)
+// Session Reaper Tests
 // ============================================================================
 
 func TestReaper_ExpiredLease(t *testing.T) {
@@ -1019,7 +1019,7 @@ func TestReaper_ContextCancellation(t *testing.T) {
 }
 
 // ============================================================================
-// PurgeV41Client Session Cleanup Tests (Phase 19)
+// PurgeV41Client Session Cleanup Tests
 // ============================================================================
 
 func TestPurgeV41Client_DestroysAllSessions(t *testing.T) {
@@ -1064,7 +1064,7 @@ func TestPurgeV41Client_DestroysAllSessions(t *testing.T) {
 }
 
 // ============================================================================
-// ListSessionsForClient Tests (Phase 19)
+// ListSessionsForClient Tests
 // ============================================================================
 
 func TestListSessionsForClient_Empty(t *testing.T) {
@@ -1099,7 +1099,7 @@ func TestListSessionsForClient_MultipleSessions(t *testing.T) {
 }
 
 // ============================================================================
-// CacheCreateSessionResponse Tests (Phase 19)
+// CacheCreateSessionResponse Tests
 // ============================================================================
 
 func TestCacheCreateSessionResponse(t *testing.T) {

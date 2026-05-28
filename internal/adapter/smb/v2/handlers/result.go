@@ -42,11 +42,10 @@ type SMBResponseBase struct {
 	// the hook by which pooled response buffers are returned to
 	// internal/adapter/pool.
 	//
-	// Per D-09 (phase 09 context): SMB regular-file READ hands
-	// common.BlockReadResult.Release here instead of deferring in the handler,
-	// so the buffer lifetime extends through compound response assembly +
-	// encryption and the release fires exactly once AFTER the bytes reach the
-	// socket.
+	// SMB regular-file READ hands common.BlockReadResult.Release here
+	// instead of deferring in the handler, so the buffer lifetime
+	// extends through compound response assembly + encryption and the
+	// release fires exactly once AFTER the bytes reach the socket.
 	//
 	// Non-pooled responses — which is every non-READ command AND the
 	// pipe/symlink READ variants whose buffer sources (mfsymlink.Encode,
@@ -57,7 +56,7 @@ type SMBResponseBase struct {
 
 // GetStatus returns the NT_STATUS code for this response.
 //
-// This method satisfies the smbResponse interface, enabling
+// Satisfies the smbResponse interface, enabling
 // responses to be used with the generic handleRequest helper.
 func (b SMBResponseBase) GetStatus() types.Status {
 	return b.Status

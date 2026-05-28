@@ -18,7 +18,7 @@ const BlockSize = 8 * 1024 * 1024
 // HashSize is the size of content hashes (BLAKE3 = 32 bytes).
 const HashSize = 32
 
-// ContentHash represents a BLAKE3-256 content hash. Width is 32 bytes,
+// ContentHash represents a BLAKE3-256 content hash. Width is 32 bytes
 // matching SHA-256 wire-compat so legacy metadata deserializes unchanged.
 type ContentHash [HashSize]byte
 
@@ -62,7 +62,8 @@ func ParseContentHash(s string) (ContentHash, error) {
 //   - Pending (0): RefCount >= 1, not yet uploaded. Safe zero value for legacy
 //     rows deserialized without this field.
 //   - Syncing (1): Claimed by a syncer goroutine; upload in flight.
-//   - Remote (2):  PUT + metadata-txn confirmed; eligible for local eviction.
+//
+// - Remote (2): PUT + metadata-txn confirmed; eligible for local eviction.
 //
 // Write-after-sync resets Remote -> Pending (clears Hash + BlockStoreKey).
 type BlockState uint8
@@ -90,7 +91,7 @@ func (s BlockState) String() string {
 // MarshalJSON encodes a ContentHash as the canonical CAS scheme string
 // "blake3:{hex}" (mirrors CASKey()). Round-trips with UnmarshalJSON.
 //
-// Added in Phase 12 to drive BlockRef JSON serialization (META-01 / D-10).
+// Added in to drive BlockRef JSON serialization.
 // Without this, encoding/json would default to base64 for the [32]byte
 // array — readable diffs in Postgres/Badger payloads would be impossible.
 func (h ContentHash) MarshalJSON() ([]byte, error) {
@@ -105,7 +106,7 @@ func (h ContentHash) MarshalJSON() ([]byte, error) {
 // "{hex}" form, and the pre-Phase-12 default base64 form (encoding/json's
 // default for [32]byte arrays without a custom MarshalJSON). The base64
 // fallback preserves backward compatibility for FileBlock rows persisted
-// by Phase 11 Badger before this MarshalJSON existed.
+// by Badger before this MarshalJSON existed.
 func (h *ContentHash) UnmarshalJSON(data []byte) error {
 	// v0.14.x and earlier had no custom MarshalJSON — encoding/json
 	// serialized [32]byte as a JSON number array: [0,0,...,0]. Accept
@@ -132,7 +133,7 @@ func (h *ContentHash) UnmarshalJSON(data []byte) error {
 		}
 	}
 	// Legacy: encoding/json's default base64 form for [32]byte (no custom
-	// MarshalJSON existed before Phase 12). Decode and copy.
+	// MarshalJSON existed before). Decode and copy.
 	b, b64Err := base64.StdEncoding.DecodeString(s)
 	if b64Err == nil && len(b) == HashSize {
 		copy(h[:], b)
@@ -144,29 +145,29 @@ func (h *ContentHash) UnmarshalJSON(data []byte) error {
 // BlockRef is a single content-addressed reference to a chunk of a
 // file's payload. The list FileAttr.Blocks []BlockRef is sorted by
 // Offset and covers the file end-to-end (gaps within Size are sparse
-// holes, zero-filled on read per Phase 12 D-21).
+// holes, zero-filled on read per).
 //
 // Hash identifies a CAS object (FormatCASKey -> "cas/{hh}/{hh}/{hex}").
 // Offset is the byte offset within the file (uint64 to support files
 // >4 GiB; VM workload requirement).
-// Size is the chunk length in bytes (FastCDC min 1 MiB, max 16 MiB;
+// Size is the chunk length in bytes (FastCDC min 1 MiB, max 16 MiB
 // uint32 chosen to match FileBlock.DataSize column type).
 //
-// See Phase 12 API-01..04, META-01, decisions D-10/D-19.
+// See, decisions.
 type BlockRef struct {
 	Hash   ContentHash `json:"hash"`
 	Offset uint64      `json:"offset"`
 	Size   uint32      `json:"size"`
 }
 
-// FileBlock is the single block entity in DittoFS. Content-addressed:
+// FileBlock is the single block entity in DittoFS. Content-addressed
 // blocks with the same hash are shared across files for dedup.
 //
-// Lifecycle:
-//  1. Pending  — created on write (LocalPath set, BlockStoreKey empty).
-//  2. Syncing  — claim batch flipped State and stamped LastSyncAttemptAt.
-//  3. Remote   — PUT + metadata-txn confirmed (BlockStoreKey set).
-//  4. Evicted  — LocalPath cleared; data lives only in the remote store.
+// Lifecycle
+// 1. Pending — created on write (LocalPath set, BlockStoreKey empty).
+// 2. Syncing — claim batch flipped State and stamped LastSyncAttemptAt.
+// 3. Remote — PUT + metadata-txn confirmed (BlockStoreKey set).
+// 4. Evicted — LocalPath cleared; data lives only in the remote store.
 type FileBlock struct {
 	// ID is a stable UUID for this block.
 	ID string
@@ -216,7 +217,7 @@ func NewFileBlock(id string, localPath string) *FileBlock {
 }
 
 // IsRemote returns true if the block has been synced to the remote block store.
-// Dual-read fallback (D-21): legacy zero-valued rows (State==Pending) that
+// Dual-read fallback: legacy zero-valued rows (State==Pending) that
 // already carry a BlockStoreKey were uploaded under the legacy non-CAS path
 // and must still be treated as Remote during the dual-read window.
 func (b *FileBlock) IsRemote() bool {
@@ -252,7 +253,7 @@ func (b *FileBlock) IsLocal() bool {
 // FormatCASKey returns the flat S3 object key for a content-addressed block.
 // Format: "cas/{hex[0:2]}/{hex[2:4]}/{hex}". Two-level fanout caps the
 // top-level prefix count at 256 and bounds per-prefix file count predictably.
-// Mirror to ParseCASKey. See BSCAS-01.
+// Mirror to ParseCASKey.
 func FormatCASKey(h ContentHash) string {
 	hexStr := hex.EncodeToString(h[:])
 	return "cas/" + hexStr[0:2] + "/" + hexStr[2:4] + "/" + hexStr
@@ -261,7 +262,7 @@ func FormatCASKey(h ContentHash) string {
 // ParseCASKey parses an S3 object key produced by FormatCASKey and returns
 // the embedded ContentHash. Returns ErrCASKeyMalformed wrapped with the
 // offending input on any shape, length, or hex error.
-// Symmetric to FormatCASKey. See BSCAS-01 / D-29.
+// Symmetric to FormatCASKey.
 func ParseCASKey(key string) (ContentHash, error) {
 	const prefix = "cas/"
 	if !strings.HasPrefix(key, prefix) {
@@ -297,7 +298,7 @@ func ParseCASKey(key string) (ContentHash, error) {
 //
 // Example: "export/docs/report.pdf/7" -> ("export/docs/report.pdf", 7, nil).
 //
-// Returns a wrapped error for malformed inputs: missing separator,
+// Returns a wrapped error for malformed inputs: missing separator
 // empty trailing index, or non-numeric index. Callers that previously
 // relied on silent zero-value returns must now propagate the error.
 func ParseBlockID(blockID string) (payloadID string, blockIdx uint64, err error) {

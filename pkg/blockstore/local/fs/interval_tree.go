@@ -6,7 +6,7 @@ import (
 	"github.com/google/btree"
 )
 
-// interval is a dirty range recorded in the per-file interval tree (D-16).
+// interval is a dirty range recorded in the per-file interval tree.
 //
 // Offset is the byte offset in the logical payload file; Length is the
 // byte length of the dirty region; Touched is the wall-clock time the
@@ -21,7 +21,7 @@ type interval struct {
 // less orders intervals by Offset, breaking ties by Touched so two
 // entries with the same Offset and Touched are still distinguishable by
 // the btree — otherwise ReplaceOrInsert would coalesce them and the tree
-// would drop legitimate appends at the same offset (see D-35 "last record
+// would drop legitimate appends at the same offset (see "last record
 // in log wins; rollup respects log order" — the interval tree keeps both
 // entries; log order is the tiebreaker the rollup uses).
 func (a *interval) less(b *interval) bool {
@@ -41,7 +41,7 @@ func (a *interval) less(b *interval) bool {
 // Backed by github.com/google/btree (BTreeG) for O(log n) insert + scan.
 //
 // Not safe for concurrent use — callers must serialize via the per-file
-// mutex (D-32). AppendWrite acquires the mutex around writeRecord + Insert,
+// mutex. AppendWrite acquires the mutex around writeRecord + Insert
 // the rollup acquires it around EarliestStable + ConsumeUpTo.
 type intervalTree struct {
 	t *btree.BTreeG[*interval]
@@ -58,7 +58,7 @@ func (it *intervalTree) Len() int { return it.t.Len() }
 
 // Insert records a dirty region (off, off+length) touched at `now`.
 // Overlapping regions keep both entries; merging is the rollup's job
-// (D-35). O(log n).
+// . O(log n).
 func (it *intervalTree) Insert(off uint64, length uint32, now time.Time) {
 	it.t.ReplaceOrInsert(&interval{Offset: off, Length: length, Touched: now})
 }
@@ -69,9 +69,9 @@ func (it *intervalTree) Insert(off uint64, length uint32, now time.Time) {
 // The scan walks from low to high Offset. If the LOWEST-offset interval
 // is still unstable (Touched > threshold), no stable interval can be
 // returned: skipping ahead to a later-offset stable entry would let the
-// rollup advance past data that has not yet met the stabilization window,
+// rollup advance past data that has not yet met the stabilization window
 // filling the resulting gap with zeros when reconstructStream materializes
-// the contiguous byte buffer (D-16, D-35). The correct behavior is to
+// the contiguous byte buffer. The correct behavior is to
 // wait (return not-found) rather than emit out-of-order / zero-holed
 // chunks.
 //
@@ -117,7 +117,7 @@ func (it *intervalTree) ConsumeUpTo(endExclusive uint64) {
 
 // DropAbove removes intervals whose Offset >= boundary, and clips
 // intervals where Offset < boundary < Offset+Length so they end at
-// boundary. Used by Truncate (D-29).
+// boundary. Used by Truncate.
 func (it *intervalTree) DropAbove(boundary uint64) {
 	var toDelete []*interval
 	var toClip []*interval

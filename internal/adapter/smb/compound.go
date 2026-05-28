@@ -17,7 +17,7 @@ type compoundResponse struct {
 	respHeader *header.SMB2Header
 	body       []byte
 	// releaseData, when non-nil, returns a pooled response buffer to the pool
-	// AFTER the single composed wire write completes (D-09). Sub-response Data
+	// AFTER the single composed wire write completes. Sub-response Data
 	// buffers are still referenced inside the composed frame until the write
 	// returns, so firing between sub-responses would be a use-after-release;
 	// sendCompoundResponses collects these closures and invokes every non-nil
@@ -203,7 +203,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	}
 
 	respHeader, body := buildResponseHeaderAndBody(firstHeader, handlerCtx, result, connInfo)
-	// Per D-09: collect ReleaseData from the sub-result so sendCompoundResponses
+	// collect ReleaseData from the sub-result so sendCompoundResponses
 	// can fire it AFTER the composed wire write — not between sub-responses.
 	var firstRelease func()
 	if result != nil {
@@ -387,7 +387,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		if hdr.IsRelated() {
 			rh.Flags |= types.FlagRelated
 		}
-		// Per D-09: propagate the sub-result's ReleaseData so the composed wire
+		// propagate the sub-result's ReleaseData so the composed wire
 		// write can fire it post-write (see compoundResponse doc comment).
 		var subRelease func()
 		if cmdResult != nil {
@@ -434,7 +434,7 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) err
 		return nil
 	}
 
-	// Per D-09: fire every sub-response's ReleaseData closure AFTER the single
+	// fire every sub-response's ReleaseData closure AFTER the single
 	// composed wire write completes. Deferring the loop covers the single-
 	// response shortcut, plain compound, and encrypted compound paths alike,
 	// and still runs on write error — the pooled buffer is no longer
@@ -814,8 +814,8 @@ func InjectFileID(command types.Command, body []byte, fileID [16]byte) []byte {
 // result and all subsequent commands, then sends it as a single compound frame.
 //
 // Per MS-SMB2 §3.3.4.4: the CREATE's interim STATUS_PENDING was already sent
-// standalone by ProcessCompoundRequest. This function delivers the remaining
-// responses (the CREATE completion + GETINFO + CLOSE etc.) as a compound.
+// standalone by ProcessCompoundRequest. completeCompoundAfterAsyncCreate delivers
+// the remaining responses (the CREATE completion + GETINFO + CLOSE etc.) as a compound.
 //
 // The asyncID is used to set FlagAsync on the CREATE's final response header
 // so the client correlates it with the earlier interim.

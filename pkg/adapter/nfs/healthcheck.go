@@ -17,7 +17,7 @@ import (
 //
 // Phase U-C does not introduce new error instrumentation, so a running
 // NFS adapter currently always reports healthy. A future phase can
-// upgrade this method to return [health.StatusDegraded] when recent
+// upgrade Healthcheck to return [health.StatusDegraded] when recent
 // lease breaches, NLM lock timeouts, or RPC dispatch errors cross a
 // per-window threshold.
 func (a *NFSAdapter) Healthcheck(ctx context.Context) health.Report {

@@ -149,7 +149,7 @@ func New(config Config) *Adapter {
 
 // SetRuntime injects the runtime containing all stores and shares.
 //
-// This method is called by Runtime before Serve() is called. The runtime
+// Called by Runtime before Serve() is called. The runtime
 // provides access to all configured metadata stores, content stores, and shares.
 //
 // Parameters:
@@ -534,7 +534,7 @@ func (s *Adapter) findDurableHandleStore() lock.DurableHandleStore {
 
 // OnReconnect is called when an SMB session reconnects after server restart.
 //
-// During the grace period, this method triggers lease reclaim for all leases
+// During the grace period, OnReconnect triggers lease reclaim for all leases
 // the client previously held. This allows SMB clients to restore their caching
 // state after server restart, maintaining cache consistency.
 //

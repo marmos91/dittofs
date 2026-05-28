@@ -7,23 +7,20 @@ import (
 
 // FileBlockStore defines content-addressed block CRUD for the engine.
 //
-// 7 methods (Phase 19 — AddRef joined the original 6 from Phase 12
-// META-03 / D-09; see .planning/phases/19-write-path-ram-optimizations/
-// 19-CONTEXT.md D-22b): GetByHash, Put, Delete, IncrementRefCount,
+// 7 methods: GetByHash, Put, Delete, IncrementRefCount,
 // DecrementRefCount, ListPending, AddRef. Block identity is hash-keyed
 // at the contract level; backends still use `id VARCHAR PRIMARY KEY +
-// hash non-unique index` internally to preserve the Phase 11
-// IN-3-02 / WR-4-01 multi-row-per-hash tolerance for legacy data.
+// hash non-unique index` internally to preserve the
+// multi-row-per-hash tolerance for legacy data.
 //
-// The Phase 11 contract: Put returned nil for any
-// hash-already-present-on-another-row case. Phase 12 D-37 fixes the
-// dedup short-circuit so the upload path produces only one row per
-// hash going forward; legacy data may still hold dual rows. The
-// conformance test storetest.testPut_TwoIDsSameHash pins
-// this contract for legacy tolerance.
+// Contract: Put returns nil for any hash-already-present-on-another-
+// row case. The upload path produces only one row per hash going
+// forward; legacy data may still hold dual rows. The conformance test
+// storetest.testPut_TwoIDsSameHash pins this contract for legacy
+// tolerance.
 //
-// Enumeration of all FileBlocks across the store moved up to
-// MetadataStore.EnumerateFileBlocks in Phase 12 (D-08).
+// Enumeration of all FileBlocks across the store has moved up to
+// MetadataStore.EnumerateFileBlocks.
 //
 // Backends MAY (and currently do) implement additional methods
 // (GetFileBlock, ListFileBlocks, ListRemoteBlocks, ListUnreferenced)
@@ -46,7 +43,7 @@ type FileBlockStore interface {
 	// FileBlock IDs sharing the same ContentHash when two file regions
 	// hash-match. Backends MUST tolerate this without erroring.
 	//
-	// Phase 11 IN-3-02 / WR-4-01: backend implementations:
+	// backend implementations
 	//
 	//   - memory + badger maintain hash→id maps that silently overwrite
 	//     on collision (the most recent writer wins the hash index).
@@ -85,8 +82,7 @@ type FileBlockStore interface {
 	DecrementRefCount(ctx context.Context, id string) (uint32, error)
 
 	// AddRef atomically increments RefCount on the FileBlock row
-	// indexed by hash. Introduced in Phase 19 for the in-memory hash
-	// dedup LRU hit path (Opt 1 — see Phase 19 CONTEXT.md D-04).
+	// indexed by hash. Used by the in-memory hash dedup LRU hit path.
 	//
 	// On success, RefCount is incremented; BlockState is UNCHANGED
 	// (no Pending→Syncing→Remote transition; no new row created).
@@ -97,26 +93,26 @@ type FileBlockStore interface {
 	// hash. Callers (see pkg/blockstore/local/fs/rollup.go LRU hit
 	// path) MUST fall back to the full Put path on this sentinel —
 	// the LRU may be ahead of the metadata store after a crash, or
-	// the hash may simply not be present yet.
+	// the hash may not be present yet.
 	//
 	// Atomicity matches IncrementRefCount's contract: the increment
 	// is performed under the backend's native concurrency primitive
 	// (mutex / Badger txn / Postgres conditional UPDATE) so AddRef
 	// is TOCTOU-free against concurrent DecrementRefCount cascade
-	// (D-04 — the dedup hit path otherwise races engine.Delete).
+	// (the dedup hit path otherwise races engine.Delete).
 	//
-	// Multi-row-per-hash tolerance (Phase 11 IN-3-02 / WR-4-01):
+	// Multi-row-per-hash tolerance
 	// AddRef MAY operate on any one matching row when more than one
 	// row shares the hash (legacy data + dedup short-circuit). The
 	// caller's BlockRef contract is satisfied either way — RefCount
 	// is a per-row property, and any non-zero RefCount keeps the row
 	// alive past GC.
 	//
-	// STATE-01..03 invariant preserved (D-27): AddRef references an
-	// existing block; the LRU hit path never creates a new block, so
-	// the "every block must visit Pending" rule is not contradicted.
-	// No new block row is materialized on success or on the
-	// ErrUnknownHash failure path.
+	// Invariant preserved: AddRef references an existing block; the
+	// LRU hit path never creates a new block, so the "every block
+	// must visit Pending" rule is not contradicted. No new block row
+	// is materialized on success or on the ErrUnknownHash failure
+	// path.
 	//
 	// payloadID and blockRef are passed for backend-side
 	// observability (logging, tracing) and to allow future
@@ -126,23 +122,22 @@ type FileBlockStore interface {
 
 	// ListPending returns up-to-limit Pending FileBlocks older than
 	// olderThan, for the syncer claim path. Replaces the legacy
-	// ListLocalBlocks (Phase 11 narrowed local→pending semantics
-	// already; this is just the rename).
+	// ListLocalBlocks (narrowed local→pending semantics already; this
+	// is just the rename).
 	ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*FileBlock, error)
 }
 
-// EngineFileBlockStore is the engine-internal extension of FileBlockStore.
-// Phase 12 (META-03 / D-09) narrowed the public FileBlockStore to 6
-// methods; the engine + local/fs packages still need the by-ID and
-// per-file lookups for the dual-read read path, recovery, dedup-delete,
-// and stats fan-out (see Phase 12 plan 04 SUMMARY for the full caller
-// list under pkg/blockstore/{engine,local/fs}/).
+// EngineFileBlockStore is the engine-internal extension of
+// FileBlockStore. The engine + local/fs packages still need by-ID
+// and per-file lookups for the dual-read read path, recovery,
+// dedup-delete and stats fan-out (callers under
+// pkg/blockstore/{engine,local/fs}/).
 //
 // All three metadata backends (memory/badger/postgres) satisfy this
-// interface — the methods are concrete on the backend struct, just not
-// on the public FileBlockStore surface. Phase 13/14 will eliminate the
-// remaining call sites by routing reads through FileAttr.Blocks
-// (D-13/D-20); the interface goes away with them.
+// interface — the methods are concrete on the backend struct, just
+// not on the public FileBlockStore surface. Future work will
+// eliminate the remaining call sites by routing reads through
+// FileAttr.Blocks, and this interface will go away with them.
 type EngineFileBlockStore interface {
 	FileBlockStore
 
@@ -158,14 +153,14 @@ type EngineFileBlockStore interface {
 
 // Reader defines read operations on the block store.
 //
-// Phase 12 API-01..04: read operations thread a caller-supplied
+// read operations thread a caller-supplied
 // []BlockRef snapshot of the file's FileAttr.Blocks. Empty/nil blocks
-// triggers the Phase 11 dual-read shim (D-20) — engine routes through
+// triggers the dual-read shim — engine routes through
 // the legacy {payloadID}/block-{N} resolver. Non-empty blocks routes
 // through the CAS path: findBlocksForRange + cache.OnRead.
 type Reader interface {
 	// ReadAt reads data from storage at the given offset into dest.
-	// Empty blocks => dual-read shim (Phase 11 path, D-20).
+	// Empty blocks => dual-read shim (path).
 	ReadAt(ctx context.Context, payloadID string, blocks []BlockRef, dest []byte, offset uint64) (int, error)
 
 	// GetSize returns the stored size of a payload.
@@ -177,7 +172,7 @@ type Reader interface {
 
 // Writer defines write operations on the block store.
 //
-// Phase 12 API-01..04: write operations thread a caller-supplied
+// write operations thread a caller-supplied
 // []BlockRef snapshot of the file's FileAttr.Blocks. WriteAt returns the
 // new []BlockRef (caller persists via PutFile in the same metadata txn).
 // Truncate / Delete invoke the MetadataCoordinator to decrement RefCount
@@ -202,7 +197,7 @@ type Writer interface {
 	// Increments the RefCount of each unique hash via the coordinator
 	// (no per-block data copy); returns a deep copy of srcBlocks as
 	// the destination's BlockRef list. The caller's metadata txn
-	// rolls back all increments on any error per Phase 12 D-11.
+	// rolls back all increments on any error.
 	CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID string, srcBlocks []BlockRef) ([]BlockRef, error)
 }
 
@@ -251,7 +246,7 @@ type Stats struct {
 }
 
 // RemoteObjectInfo describes a single remote object listed by the GC sweep
-// phase via the RemoteStore.ListByPrefixWithMeta cursor (D-05). The full
+// phase via the RemoteStore.ListByPrefixWithMeta cursor. The full
 // interface declaration lives in pkg/blockstore/remote/remote.go alongside
 // the rest of the RemoteStore surface; this re-export documents the shape
 // at the package root for readers tracing GC plumbing.
@@ -263,7 +258,7 @@ type RemoteObjectInfo struct {
 
 // RemoteStoreSweepSurface is a documentation-only interface that captures
 // the subset of remote.RemoteStore methods consumed by the GC sweep phase
-// (Phase 11 Plan 06, D-05/D-07). The real interface is remote.RemoteStore
+// . The real interface is remote.RemoteStore
 // in pkg/blockstore/remote/remote.go — this declaration exists at the
 // blockstore package root so callers tracing the sweep plumbing can find
 // the shape without crossing package boundaries.

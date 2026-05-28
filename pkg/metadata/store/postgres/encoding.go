@@ -136,8 +136,8 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		}
 	}
 
-	// Phase 13 META-02 / BSCAS-04: object_id BYTEA -> FileAttr.ObjectID.
-	// NULL or empty -> ObjectID stays zero (D-03 sentinel: never quiesced).
+	// object_id BYTEA -> FileAttr.ObjectID.
+	// NULL or empty -> ObjectID stays zero (sentinel: never quiesced).
 	if len(objectIDRaw) > 0 {
 		if len(objectIDRaw) != blockstore.HashSize {
 			return nil, fmt.Errorf(

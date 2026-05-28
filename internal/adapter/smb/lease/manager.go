@@ -760,7 +760,7 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpenAsync(
 // isOverwrite=true) break the same way; the destination's holder is by
 // definition someone other than the renamer, so no exclusion is applied there.
 //
-// Dispatch is fire-and-forget: this method does NOT wait for ACK. Callers that
+// Dispatch is fire-and-forget: BreakLeasesOnRename does NOT wait for ACK. Callers that
 // must park the request behind the break (smbtorture rename_wait) check
 // HasOtherBreakingLeases on the source handle and route to
 // WaitForOtherKeyBreaks. This mirrors the round-3 / round-4 CREATE async-park

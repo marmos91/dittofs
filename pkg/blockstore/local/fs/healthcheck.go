@@ -13,11 +13,11 @@ import (
 // Healthcheck verifies that the on-disk local block store is operational
 // and returns a structured [health.Report].
 //
-// The probe performs three checks in sequence:
+// The probe performs three checks in sequence
 //
 //  1. The store hasn't been Closed (closedFlag).
 //  2. The configured baseDir exists and is a directory (os.Stat).
-//  3. The process can write to baseDir — verified by [verifyWritable],
+//  3. The process can write to baseDir — verified by [verifyWritable]
 //     which creates a temporary marker file directly inside baseDir and
 //     immediately removes it. This catches read-only mounts and
 //     permission regressions that a plain stat() would miss.
@@ -28,7 +28,7 @@ import (
 // tripped. Success is [health.StatusHealthy] with the measured
 // probe latency.
 //
-// The probe is intentionally light. It does not walk subdirectories,
+// The probe is intentionally light. It does not walk subdirectories
 // touch the fdPool, or interact with the in-memory block maps; the
 // expected per-call cost is two filesystem syscalls plus an unlink.
 // Cache the result via [health.CachedChecker] in callers that hit it

@@ -34,6 +34,20 @@ if [ "${#SUBJECT}" -gt 100 ]; then
     exit 1
 fi
 
+if grep -qiE '(co-authored-by:.*claude|generated with claude|🤖 generated|claude code|anthropic\.com)' "$MSG_FILE"; then
+    cat >&2 <<EOF
+commit-msg: AI/Claude trailer detected in commit message.
+
+  DittoFS commits must not reference Claude Code, Claude, AI tools, or
+  add Co-Authored-By trailers attributing the commit to an AI.
+
+  Strip the offending line(s) and try again.
+
+  Use 'git commit --no-verify' or DITTOFS_SKIP_COMMITMSG=1 to skip.
+EOF
+    exit 1
+fi
+
 if ! echo "$SUBJECT" | grep -Eq '^(feat|fix|chore|docs|refactor|test|perf|ci|build|style|revert)(\([a-zA-Z0-9/_.-]+\))?!?: .+'; then
     cat >&2 <<EOF
 commit-msg: subject does not match expected format.

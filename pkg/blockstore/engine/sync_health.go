@@ -16,7 +16,7 @@ type HealthTransitionCallback func(healthy bool)
 // HealthMonitor periodically probes a remote store and manages a healthy/unhealthy
 // state machine. It is the single source of truth for remote store availability.
 //
-// State transitions:
+// State transitions
 //   - Starts healthy.
 //   - After failureThreshold consecutive probe failures: transitions to unhealthy.
 //   - After 1 successful probe while unhealthy: transitions back to healthy.

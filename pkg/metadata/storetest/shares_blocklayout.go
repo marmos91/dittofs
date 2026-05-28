@@ -12,7 +12,7 @@ import (
 // RunBlockLayoutSuite asserts that a metadata.MetadataStore round-trips
 // ShareOptions.BlockLayout across CreateShare / GetShareOptions /
 // UpdateShareOptions. Backends invoke this from their per-backend test
-// file. Conformance gate for MIG-03 (D-A6) — every metadata backend
+// file. Conformance gate for (D-A6) — every metadata backend
 // MUST persist the per-share block_layout flag so the dual-read shim
 // can route per-share during the v0.13/v0.14 → v0.15 migration window.
 //
@@ -21,7 +21,8 @@ import (
 //   - RoundTripCASOnly         — explicit cas-only survives Create+Get.
 //   - RoundTripLegacy          — explicit legacy survives Create+Get.
 //   - DefaultLegacyOnEmpty     — zero-value coerces to legacy on read
-//     (D-A6 safe default; pre-Phase-14 rows pass this path).
+//
+// (D-A6 safe default rows pass this path).
 //   - UpdateLegacyToCASOnly    — UpdateShareOptions flips the flag,
 //     observable via the next GetShareOptions call (this is how the
 //     migration tool's auto-cutover works, D-A7).
@@ -53,7 +54,7 @@ func RunBlockLayoutSuite(t *testing.T, factory StoreFactory) {
 	t.Run("DefaultLegacyOnEmpty", func(t *testing.T) {
 		store := factory(t)
 		// Zero-value BlockLayout (i.e. caller never set the field) —
-		// mirrors a pre-Phase-14 share row that lacks the column.
+		// mirrors a share row that lacks the column.
 		_ = createBlockLayoutShare(t, store, "/empty-share", "")
 
 		got, err := store.GetShareOptions(t.Context(), "/empty-share")
@@ -120,7 +121,7 @@ func createBlockLayoutShare(
 	//   - Badger writes Options on CreateShare; CreateRootDirectory's
 	//     createNewRoot now READS the existing share row and
 	//     preserves Options before re-writing the row with the new
-	//     RootHandle (Plan 14-01 fix; pre-fix it wiped Options).
+	// RootHandle (fix; pre-fix it wiped Options).
 	//   - Postgres CreateShare INSERTs share_name+options+block_layout
 	//     into the shares table; CreateRootDirectory ON CONFLICT
 	//     UPDATEs root_file_id only, leaving block_layout intact.

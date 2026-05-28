@@ -288,7 +288,7 @@ func (ul *UnifiedLock) IsDelegation() bool {
 
 // ConflictsWith checks if this lock conflicts with another lock.
 //
-// This method handles all 4 conflict cases:
+// Handles all 4 conflict cases:
 //  1. Access mode conflicts (SMB deny modes)
 //  2. OpLock vs OpLock (lease-to-lease conflicts)
 //  3. OpLock vs byte-range (cross-type conflicts)

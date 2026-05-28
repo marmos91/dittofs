@@ -25,9 +25,8 @@ import (
 
 // EX_CONFIG is the exit code per sysexits(3) — "configuration error".
 // Used by the legacy-layout boot guard when a share directory still
-// contains pre-v0.16 `.blk` files without a `.cas-migrated-v1` sentinel
-// (Phase 17 Plan 09 D-11). The operator runs `dfs migrate-to-cas`
-// before retrying.
+// contains pre-v0.16 `.blk` files without a `.cas-migrated-v1` sentinel.
+// The operator runs `dfs migrate-to-cas` before retrying.
 const EX_CONFIG = 78
 
 // exitFn is the production exit path for the legacy-layout boot guard.
@@ -35,7 +34,7 @@ const EX_CONFIG = 78
 // test (start_test.go::TestStart_LegacyLayoutExitCode) can stub it to
 // capture the exit code deterministically without spawning a subprocess.
 // Production code MUST NOT reassign exitFn — only the test does, and
-// only via a t.Cleanup-restored override (Phase 17 T-17-09-07).
+// only via a t.Cleanup-restored override.
 var exitFn = os.Exit
 
 var (
@@ -180,7 +179,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		ParallelDownloads: deduced.ParallelFetches,
 		PrefetchWorkers:   deduced.PrefetchWorkers,
 	})
-	// Phase 11 WR-01: wire operator-configured GC knobs into the runtime so
+	// Wire operator-configured GC knobs into the runtime so
 	// engine.CollectGarbage receives them in engine.Options. Without this,
 	// the validated gc.* config in pkg/config/config.go is silently dropped
 	// and the engine falls back to hardcoded defaults.
@@ -189,20 +188,20 @@ func runStart(cmd *cobra.Command, args []string) error {
 		SweepConcurrency: cfg.GC.SweepConcurrency,
 		DryRunSampleSize: cfg.GC.DryRunSampleSize,
 	})
-	// Phase 11 WR-3-02: gc.interval is parsed and validated but no
-	// periodic-GC scheduler is wired in v0.15.0 — the docs were updated
-	// to reflect the deferred status, and any operator who configured a
-	// non-zero value gets a loud startup WARN so the silent
-	// "feature non-existence" failure mode does not bite.
+	// gc.interval is parsed and validated but no periodic-GC scheduler is
+	// wired in v0.15.0 — the docs were updated to reflect the deferred
+	// status, and any operator who configured a non-zero value gets a
+	// loud startup WARN so the silent "feature non-existence" failure
+	// mode does not bite.
 	if cfg.GC.Interval > 0 {
 		logger.Warn("gc.interval is configured but no periodic-GC scheduler ships in v0.15.0 — the value is ignored. Trigger GC on demand via `dfsctl store block gc <share>` (or schedule via cron). Periodic scheduling is tracked for a follow-up phase.",
 			"configured_interval", cfg.GC.Interval)
 	}
 
 	// Load shares (per-share BlockStores are created during AddShare).
-	// Phase 17 D-11: legacy-layout detection is a hard boot stop. Other
-	// share-loading failures stay best-effort (logged + ignored, the
-	// historical behavior).
+	// Legacy-layout detection is a hard boot stop. Other share-loading
+	// failures stay best-effort (logged + ignored, the historical
+	// behavior).
 	if stop := handleLoadSharesError(runtime.LoadSharesFromStore(ctx, rt, cpStore), os.Stderr); stop {
 		return nil
 	}
@@ -359,7 +358,7 @@ func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 //
 // Production code MUST go through this helper — direct termination
 // from runStart would bypass the exitFn indirection the test depends
-// on (Phase 17 T-17-09-07).
+// on.
 func handleLoadSharesError(err error, stderr *os.File) bool {
 	if err == nil {
 		return false
@@ -376,12 +375,11 @@ func handleLoadSharesError(err error, stderr *os.File) bool {
 }
 
 // formatLegacyLayoutDirective renders the multi-line operator directive
-// printed when LoadSharesFromStore surfaces ErrLegacyLayoutDetected
-// (Phase 17 Plan 09 D-11). The full wrapped error message
-// (`share "<name>": share <path>: blockstore: legacy .blk layout
-// detected (run `dfs migrate-to-cas`)`) is embedded verbatim so the
-// operator sees BOTH the share name AND the offending path without
-// fragile substring extraction.
+// printed when LoadSharesFromStore surfaces ErrLegacyLayoutDetected.
+// The full wrapped error message (`share "<name>": share <path>:
+// blockstore: legacy .blk layout detected (run `dfs migrate-to-cas`)`)
+// is embedded verbatim so the operator sees BOTH the share name AND
+// the offending path without fragile substring extraction.
 func formatLegacyLayoutDirective(err error) string {
 	return fmt.Sprintf(`Detected legacy .blk layout: %s.
 v0.16+ requires CAS migration. Run:

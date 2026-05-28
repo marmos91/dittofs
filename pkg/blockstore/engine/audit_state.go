@@ -1,18 +1,18 @@
-// Package engine — INV-02 audit (Phase 12 D-36 / D-42)
+// Package engine — audit
 //
 // AuditRefcounts walks a share's metadata store and reconciles the global
-// invariant:
+// invariant
 //
-//	∑ FileBlock.RefCount  ==  ∑ len(FileAttr.Blocks)
+//	∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks)
 //
 // A non-zero delta indicates a refcount drift that may block GC reclamation
 // (a leaked block's CAS object survives the grace window) or signal a bug
-// in the dedup short-circuit (WR-4-01-style donor leak). The audit is
-// operator-invoked via `dfsctl blockstore audit-refcounts <share>`; no
-// periodic schedule in v0.15.0 (Phase 12 alternative-considered note).
+// in the dedup short-circuit (donor leak). The audit is operator-invoked
+// via `dfsctl blockstore audit-refcounts <share>`; there is no periodic
+// schedule.
 //
 // Persistence: the last-run summary is written atomically (.tmp + rename)
-// to <localStoreRoot>/audit-state/last-inv02.json, mirroring Phase 11 GC's
+// to <localStoreRoot>/audit-state/last-inv02.json, mirroring GC's
 // last-run.json under <gcStateRoot>/last-run.json. An empty localStoreRoot
 // means "do not persist" — used when the share's local store has no
 // persistent root (in-memory backend).
@@ -28,8 +28,8 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
-	// API-02 justification: AuditRefcounts is the cross-file metadata-walk
-	// entrypoint for INV-02 reconciliation (D-36/D-42). It MUST bind
+	// justification: AuditRefcounts is the cross-file metadata-walk
+	// entrypoint for reconciliation. It MUST bind
 	// metadata.MetadataStore to enumerate FileAttr.Blocks across the share's
 	// directory tree (GetRootHandle, GetFile, ListChildren). Lifting these
 	// helpers into pkg/blockstore would create a circular import.
@@ -42,9 +42,9 @@ const (
 	auditLastRunTmpExt = ".tmp"
 )
 
-// AuditRefcountsResult is the operator-facing outcome of an INV-02 audit.
+// AuditRefcountsResult is the operator-facing outcome of an audit.
 // All counts are aggregate (no PII, no per-file paths). Same release surface
-// as Phase 11 GC last-run.json.
+// as GC last-run.json.
 type AuditRefcountsResult struct {
 	// Share is the share whose metadata store was audited.
 	Share string `json:"share"`
@@ -65,22 +65,22 @@ type AuditRefcountsResult struct {
 	TotalRefs uint64 `json:"total_refs"`
 
 	// TotalRefCount is ∑ FileBlock.RefCount summed across distinct hashes
-	// (the post-D-37 single-row-per-hash world; legacy multi-row data is
+	// (the post- single-row-per-hash world; legacy multi-row data is
 	// dedup'd via GetByHash so cross-row hash duplicates don't double-count).
 	TotalRefCount uint64 `json:"total_refcount"`
 
-	// Delta is TotalRefs - TotalRefCount. Zero means INV-02 holds; non-zero
+	// Delta is TotalRefs - TotalRefCount. Zero means holds; non-zero
 	// indicates drift (positive: file refs exceed RefCount; negative: leaked
 	// RefCount with no owning file).
 	Delta int64 `json:"delta"`
 }
 
-// AuditRefcounts walks the metadata store and computes the INV-02
+// AuditRefcounts walks the metadata store and computes the
 // invariant for the named share. Persists last-run summary at
 // <localStoreRoot>/audit-state/last-inv02.json. Pass an empty
 // localStoreRoot to skip persistence (in-memory backend).
 //
-// Phase 12 D-36 / D-42: per-share audit, slog-only observability,
+// per-share audit, slog-only observability
 // no Prometheus surface in this phase.
 func AuditRefcounts(ctx context.Context, share string, store metadata.MetadataStore, localStoreRoot string) (*AuditRefcountsResult, error) {
 	if store == nil {
@@ -97,8 +97,8 @@ func AuditRefcounts(ctx context.Context, share string, store metadata.MetadataSt
 	}
 
 	// 1) ∑ FileBlock.RefCount across distinct ContentHashes via the
-	//    cursor-bounded EnumerateFileBlocks (D-02 memory bound). Dedup
-	//    by hash mirrors the post-D-37 single-row-per-hash world; legacy
+	// cursor-bounded EnumerateFileBlocks (memory bound). Dedup
+	// by hash mirrors the post- single-row-per-hash world; legacy
 	//    multi-row data is collapsed because every row sharing a hash
 	//    carries the same RefCount semantics (GetByHash returns ANY one).
 	seen := make(map[blockstore.ContentHash]struct{})
@@ -142,7 +142,7 @@ func AuditRefcounts(ctx context.Context, share string, store metadata.MetadataSt
 	return result, nil
 }
 
-// walkAuditShareFiles recursively walks the share rooted at dirHandle,
+// walkAuditShareFiles recursively walks the share rooted at dirHandle
 // invoking fn for every regular file. Pagination is via the existing
 // ListChildren cursor; depth is unbounded but bounded by the share's
 // directory tree depth. Pure-traversal — no mutation, safe for concurrent

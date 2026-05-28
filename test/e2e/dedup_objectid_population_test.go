@@ -1,9 +1,9 @@
 //go:build e2e
 
-// TestObjectIDPopulation_NFSWriteQuiesce is the goal-backward verification gate
-// for Phase 13 must-have #1 of 13-VERIFICATION.md (lines 257-266): after a real
-// NFSv3 write quiesces through the runtime, FileAttr.ObjectID for that file
-// MUST be a non-zero BLAKE3 Merkle root equal to ComputeObjectID(Blocks).
+// TestObjectIDPopulation_NFSWriteQuiesce is the goal-backward verification
+// gate: after a real NFSv3 write quiesces through the runtime,
+// FileAttr.ObjectID for that file MUST be a non-zero BLAKE3 Merkle root
+// equal to ComputeObjectID(Blocks).
 //
 // The ObjectID-population path now lives inside the local store's
 // rollup-completion callback (the ObjectIDPersister installed by
@@ -18,8 +18,6 @@
 //
 //	cd test/e2e && DITTOFS_E2E_NIGHTLY=1 sudo ./run-e2e.sh \
 //	    --s3 --test TestObjectIDPopulation_NFSWriteQuiesce
-//
-// See Phase 13 plan 13-11, 13-VERIFICATION.md must-have #1, and 13-09 SUMMARY:49.
 package e2e
 
 import (
@@ -197,14 +195,14 @@ func TestObjectIDPopulation_NFSWriteQuiesce(t *testing.T) {
 			"the coordinator should have persisted it to FileAttr.ObjectID.",
 		objectIDPopulationPayloadSize)
 
-	// ---- REQUIRED CORRECTNESS ASSERT (regression catcher post-Plan-13-12) ----
+	// ---- REQUIRED CORRECTNESS ASSERT (regression catcher) ----
 	expected := blockstore.ComputeObjectID(file.FileAttr.Blocks)
 	require.Equalf(t, expected, file.FileAttr.ObjectID,
 		"ObjectID is non-zero but does NOT equal ComputeObjectID(Blocks) — "+
 			"D-01 Merkle-root reproducibility broken. blocks=%d expected=%s got=%s",
 		len(file.FileAttr.Blocks), expected.String(), file.FileAttr.ObjectID.String())
 
-	// ---- D-20 telemetry parity: emit at slog INFO for trend tracking ----
+	// ---- Telemetry parity: emit at slog INFO for trend tracking ----
 	slog.Info("DEDUP-04 objectid populated",
 		"payload_id", string(payloadID),
 		"object_id", file.FileAttr.ObjectID.String(),
@@ -213,7 +211,7 @@ func TestObjectIDPopulation_NFSWriteQuiesce(t *testing.T) {
 }
 
 // objIDDrainUploads mirrors dedup_cross_share_test.go::dedupDrainUploads and
-// dedup_vmfleet_test.go::vmFleetDrainUploads — kept inline per Plan 09's
+// dedup_vmfleet_test.go::vmFleetDrainUploads — kept inline
 // "keep the diff minimal" guidance. If a fourth drain-uploads test arrives
 // we should lift to a shared helper; today's diff stays minimal.
 func objIDDrainUploads(t *testing.T, runner *helpers.CLIRunner) {

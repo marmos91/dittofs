@@ -156,7 +156,7 @@ func testObjectID_RestartStability(t *testing.T, factory StoreFactory) {
 	}
 }
 
-// testObjectID_ConcurrentQuiesceRace asserts D-14 first-committer-wins
+// testObjectID_ConcurrentQuiesceRace asserts first-committer-wins
 // semantics: two PutFile calls racing to claim the SAME ObjectID for
 // DIFFERENT files settle so exactly one survives in the secondary index.
 //
@@ -165,7 +165,7 @@ func testObjectID_RestartStability(t *testing.T, factory StoreFactory) {
 // concurrentRaceErrIsConflict accepts both.
 //
 // Index row count is verified via the optional ObjectIDIndexAccessor
-// capability — required by all three backends in Plan 05; type-assertion
+// capability — required by all three backends in type-assertion
 // failure means the backend forgot to implement it.
 func testObjectID_ConcurrentQuiesceRace(t *testing.T, factory StoreFactory) {
 	store := factory(t)
@@ -234,7 +234,7 @@ func testObjectID_ConcurrentQuiesceRace(t *testing.T, factory StoreFactory) {
 	}
 }
 
-// testObjectID_CrossShareDedupScope verifies D-13 / DEDUP-02: FindByObjectID
+// testObjectID_CrossShareDedupScope verifies FindByObjectID
 // resolves at the metadata-store layer, NOT at the share layer. Two shares are
 // created against the SAME factory-produced store, each receives a quiesced
 // file with a DIFFERENT ObjectID, and the store-level FindByObjectID returns
@@ -243,7 +243,7 @@ func testObjectID_ConcurrentQuiesceRace(t *testing.T, factory StoreFactory) {
 // lookup against a never-persisted ObjectID returns nil (no false hit
 // across the share boundary either way).
 //
-// Phase 13 plan 13-08 strengthens this scenario from the plan-05 baseline
+// 08 strengthens this scenario from the plan-05 baseline
 // (single file in share-A) to two files in two shares with distinct
 // ObjectIDs, locking the symmetric per-store invariant.
 func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
@@ -292,7 +292,7 @@ func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 		}
 	}
 
-	// Per D-13: the lookup operates at the metadata-store layer, not the
+	// Per the lookup operates at the metadata-store layer, not the
 	// share layer; either share's ObjectID resolves to its persisted
 	// BlockRef list regardless of which share's file owns it.
 

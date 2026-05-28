@@ -15,7 +15,7 @@ import (
 )
 
 // ============================================================================
-// BackchannelSender Integration Tests (Phase 22)
+// BackchannelSender Integration Tests
 // ============================================================================
 
 // createTestBackchannelSender creates a BackchannelSender with a StateManager,

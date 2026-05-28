@@ -577,8 +577,8 @@ func TestGracePeriodTiming(t *testing.T) {
 	t.Log("TestGracePeriodTiming - PASSED")
 }
 
-// TestGracePeriodEarlyExit tests that grace period can exit early when all locks reclaimed.
-// Per Phase 01-03: Early grace period exit optimization.
+// TestGracePeriodEarlyExit tests that grace period can exit early when
+// all locks reclaimed (early grace period exit optimization).
 func TestGracePeriodEarlyExit(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping grace period early exit test in short mode")
@@ -589,9 +589,9 @@ func TestGracePeriodEarlyExit(t *testing.T) {
 
 	t.Log("Testing grace period early exit when all locks reclaimed")
 
-	// This tests the optimization from Phase 01-03:
-	// If all persisted locks are reclaimed before the grace period timer expires,
-	// the grace period can end early to allow new locks sooner.
+	// This tests the early-exit optimization: if all persisted locks
+	// are reclaimed before the grace period timer expires, the grace
+	// period can end early to allow new locks sooner.
 
 	// Start server
 	sp := helpers.StartServerProcess(t, "")

@@ -40,7 +40,7 @@ type NFSResponseBase struct {
 
 // GetStatus returns the NFS status code from the response.
 //
-// This method is automatically available on all response types that embed NFSResponseBase,
+// Automatically available on all response types that embed NFSResponseBase,
 // satisfying the rpcResponse interface requirement without duplicating code.
 func (r *NFSResponseBase) GetStatus() uint32 {
 	return r.Status

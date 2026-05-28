@@ -1,19 +1,16 @@
-// Phase 19 Plan 09 — Opt 4 e2e correctness hard-gate (D-17).
-//
-// TestSmallFileEagerDedup_BSCAS06 pins the BSCAS-06 contract that two
-// payloads with identical small-file content dedup at Flush time via
-// the eager small-file fast-path: the second payload's Flush skips the
+// TestSmallFileEagerDedup pins the contract that two payloads with
+// identical small-file content dedup at Flush time via the eager
+// small-file fast-path: the second payload's Flush skips the
 // chunker, the appendlog, and any CAS-side StoreChunk; the engine
-// Cache is warm for the matched hash; and ReadAt on the second payload
-// returns the same bytes as the first (D-14 short-circuit MUST NOT
-// corrupt data).
+// Cache is warm for the matched hash; and ReadAt on the second
+// payload returns the same bytes as the first (short-circuit MUST
+// NOT corrupt data).
 //
-// Naming suffix _BSCAS06 ties back to v0.15.0's BSCAS-01..06 requirement
-// family (CONTEXT.md preserves the BSCAS-* contracts). Plan 08's unit-
-// and flush-level tests cover the internals (tryEagerSmallFileDedup
-// branch behavior, FindByObjectID seeding, applyFileLevelDedupHit
-// fingerprint); this gate covers the end-to-end *observable* contract a
-// downstream caller (NFS COMMIT, SMB Flush) actually relies on.
+// Unit- and flush-level tests cover the internals
+// (tryEagerSmallFileDedup branch behavior, FindByObjectID seeding,
+// applyFileLevelDedupHit fingerprint); this gate covers the
+// end-to-end observable contract a downstream caller (NFS COMMIT,
+// SMB Flush) actually relies on.
 //
 // Counter instrumentation:
 //   - Eager-path fingerprint = Cache.Put recorded with the content hash
@@ -26,9 +23,8 @@
 //     sufficient proxy: chunker.Next is the only caller path inside
 //     rollupFile, and rollup is the only path that invokes StoreChunk.
 //   - appendlog cleanup observable = post-Flush bs.local.ReadPayloadAt
-//     returns ErrFileBlockNotFound (Plan 08's
-//     EagerHit_DeletesAppendLog pattern, asserted again here as part
-//     of BSCAS-06's end-to-end shape).
+//     returns ErrFileBlockNotFound (EagerHit_DeletesAppendLog
+//     pattern, asserted again here as part of the end-to-end shape).
 
 package engine
 
@@ -42,21 +38,22 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/chunker"
 )
 
-// TestSmallFileEagerDedup_BSCAS06 — Opt 4 end-to-end hard-gate (D-17).
+// TestSmallFileEagerDedup_BSCAS06 — Opt 4 end-to-end hard-gate.
 //
-// Flow:
+// Flow
 //  1. Write file-A with 64 KiB identical content; Flush; observe its
 //     ObjectID gets seeded into the coordinator (file-A's own rollup
 //     path materializes the row; we seed manually for the test fixture
 //     because the engine_test.go stub fileBlockStore + fakeCoordinator
 //     don't run a real rollup pump).
-//  2. Write file-B with IDENTICAL 64 KiB content; Flush; observe:
+//  2. Write file-B with IDENTICAL 64 KiB content; Flush; observe
 //     a. Flush returns Finalized=true (eager hit short-circuit).
 //     b. fc.getFileObjectIDCalls remains 0 for file-B's Flush —
 //     speculative branch was skipped.
 //     c. Cache.Put fingerprint observed for file-B's content hash.
 //     d. Post-Flush ReadPayloadAt for file-B returns
-//     ErrFileBlockNotFound — D-11 appendlog cleanup verified.
+//
+// ErrFileBlockNotFound — appendlog cleanup verified.
 func TestSmallFileEagerDedup_BSCAS06(t *testing.T) {
 	ctx := context.Background()
 	fc := newFakeCoordinator()
@@ -77,7 +74,7 @@ func TestSmallFileEagerDedup_BSCAS06(t *testing.T) {
 	// file-A's own rollup pass before file-B's Flush arrives; the stub
 	// + fakeCoordinator harness elides the rollup pump and seeds the row
 	// directly. The shape of the seeded data mirrors what
-	// applyFileLevelDedupHit's set-difference math (Plan 08 D-04) expects.
+	// applyFileLevelDedupHit's set-difference math expects.
 	fc.objectIDHits[provisional] = []blockstore.BlockRef{
 		{Hash: contentHash, Offset: 0, Size: uint32(len(content))},
 	}
@@ -128,7 +125,7 @@ func TestSmallFileEagerDedup_BSCAS06(t *testing.T) {
 			specCalls)
 	}
 
-	// (c) Cache.Put fingerprint for file-B's content hash — D-16 cache
+	// (c) Cache.Put fingerprint for file-B's content hash — cache
 	// warming on eager hit.
 	rec.mu.Lock()
 	puts := rec.putCalls
@@ -145,7 +142,7 @@ func TestSmallFileEagerDedup_BSCAS06(t *testing.T) {
 			puts, sawHash, contentHash.String())
 	}
 
-	// (d) D-11 appendlog cleanup: post-hit ReadPayloadAt returns
+	// (d) appendlog cleanup: post-hit ReadPayloadAt returns
 	// ErrFileBlockNotFound. The shared applyFileLevelDedupHit machinery
 	// fires local.DeleteLog as part of the finalize sequence, so the
 	// per-payload appendlog is gone.
@@ -157,10 +154,10 @@ func TestSmallFileEagerDedup_BSCAS06(t *testing.T) {
 
 // TestSmallFileEagerDedup_AtThreshold — boundary: exactly MinChunkSize
 // triggers the eager path (inclusive upper bound: data <= MinChunkSize
-// proceeds; > MinChunkSize bypasses). Together with the +1 test below,
-// pins the D-13 threshold gate at both sides.
+// proceeds; > MinChunkSize bypasses). Together with the +1 test below
+// pins the threshold gate at both sides.
 //
-// The miss path is asserted (no seeded ObjectID): eager runs, misses,
+// The miss path is asserted (no seeded ObjectID): eager runs, misses
 // and the speculative branch runs (getFileObjectIDCalls == 1).
 func TestSmallFileEagerDedup_AtThreshold(t *testing.T) {
 	ctx := context.Background()
@@ -206,7 +203,7 @@ func TestSmallFileEagerDedup_AboveThreshold(t *testing.T) {
 	// eager block is skipped wholesale — no FindByObjectID lookups from
 	// the eager path. The speculative branch then runs (FindByObjectID
 	// MAY fire from there on snapshotPendingBlockRefs evaluation, but
-	// its presence/absence is not part of THIS boundary's contract;
+	// its presence/absence is not part of THIS boundary's contract
 	// the contract is "GetFileObjectID == 1, eager bypassed").
 	data := []byte(strings.Repeat("b", chunker.MinChunkSize+1))
 

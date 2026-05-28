@@ -26,7 +26,7 @@ Examples:
 
 Note: Unmount commands typically require sudo/root privileges on Unix systems.
 Unmount identifies the target by mount-point path rather than share name
-because a single share can be mounted to multiple local paths; the D-35
+because a single share can be mounted to multiple local paths; the
 ` + "`share <name> <verb>`" + ` shape therefore does not extend to unmount.`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) < 1 {

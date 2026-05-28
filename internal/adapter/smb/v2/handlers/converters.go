@@ -416,7 +416,7 @@ func processFiletimeForSet(ft uint64, target **time.Time) {
 	}
 }
 
-// Note (ADAPT-03, D-06/D-08 §2): MetadataErrorToSMBStatus and
+// Note: MetadataErrorToSMBStatus and
 // ContentErrorToSMBStatus were consolidated into
 // internal/adapter/common/errmap.go and content_errmap.go. Handlers now call
 // common.MapToSMB and common.MapContentToSMB directly — common uses

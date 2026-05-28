@@ -43,7 +43,7 @@ func TestFindBlocksForRange_Empty(t *testing.T) {
 }
 
 // TestFindBlocksForRange_RangeBeforeFirstBlock: a range fully before the
-// first block returns (0, 0). The dual-read shim (D-20) or zero-fill
+// first block returns (0, 0). The dual-read shim or zero-fill
 // upstream handles serving the bytes.
 func TestFindBlocksForRange_RangeBeforeFirstBlock(t *testing.T) {
 	blocks := mkBlocks(1<<20, 4<<20, 5<<20, 4<<20) // [1M..5M), [5M..9M)
@@ -91,7 +91,7 @@ func TestFindBlocksForRange_SpanThreeContiguousBlocks(t *testing.T) {
 // hole (gap between BlockRef N and N+1) returns indices covering both —
 // caller zero-fills the gap.
 func TestFindBlocksForRange_SpanWithSparseHole(t *testing.T) {
-	// Two blocks with a gap [1024..4096):
+	// Two blocks with a gap [1024..4096)
 	blocks := mkBlocks(0, 1024, 4096, 1024)
 	start, end := findBlocksForRange(blocks, 0, 5120) // [0..5120) crosses the hole
 	if got := end - start; got != 2 {
@@ -123,7 +123,7 @@ func TestFindBlocksForRange_PartialOverlapAtHead(t *testing.T) {
 // random (offset, size), every BlockRef within [start, end) overlaps
 // the range, and no BlockRef outside that index range overlaps.
 //
-// Phase 12 D-22 caller-snapshot-wins: sortedness is the caller's
+// caller-snapshot-wins: sortedness is the caller's
 // invariant; this test asserts that given a sorted slice, the helper
 // produces the unique correct index range.
 func TestFindBlocksForRange_Property(t *testing.T) {

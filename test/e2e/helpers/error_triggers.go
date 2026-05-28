@@ -18,7 +18,7 @@
 // Linux cifs client) translate the on-wire protocol code into a syscall.Errno
 // that the Go test observes. The cross-protocol assertion is "same
 // metadata.ErrorCode surfaces via the same client-observable errno on both
-// mounts" — which is the definition of D-14.
+// mounts".
 package helpers
 
 import (
@@ -69,7 +69,7 @@ func newResult(err error) TriggerResult {
 }
 
 // ----------------------------------------------------------------------------
-// Triggerable metadata.ErrorCodes (D-13 e2e tier, ~18 codes).
+// Triggerable metadata.ErrorCodes (e2e tier, ~18 codes).
 // ----------------------------------------------------------------------------
 
 // TriggerErrNotFound fires a stat() on a path that does not exist. Produces
@@ -234,8 +234,8 @@ func TriggerErrStaleHandle(t *testing.T, mountRoot string) TriggerResult {
 // that reliably surfaces EIO: read() on a file whose backing block was
 // removed out-of-band. Not in this plan's scope — skipped at the e2e tier.
 //
-// Per D-13, ErrIOError is listed as e2e-triggerable in principle but
-// requires a backend with artificial fault injection to reproduce reliably.
+// ErrIOError is listed as e2e-triggerable in principle but requires
+// a backend with artificial fault injection to reproduce reliably.
 // When that infrastructure is not available, the unit tier coverage in
 // common/errmap_test.go provides the correctness assertion; the e2e row
 // is included for completeness and skipped with a documented reason.

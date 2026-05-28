@@ -26,7 +26,7 @@ type memBlock struct {
 
 // Store is an in-memory implementation of remote.RemoteStore for testing.
 // The map is keyed by blockstore.ContentHash (the unified CAS key from
-// Phase 17 Plan 01); previous versions of this package used opaque string
+// ); previous versions of this package used opaque string
 // blockKeys and stamped x-amz-meta-content-hash separately.
 type Store struct {
 	mu     sync.RWMutex
@@ -60,7 +60,6 @@ func (s *Store) SetNowFnForTest(fn func() time.Time) {
 // Put writes data under the CAS-shaped key derived from hash. The
 // in-memory backend stamps time.Now() (via nowFn) into LastModified at
 // Put time — every Meta.LastModified surfaced by Head / Walk is non-zero
-// (Phase 11 WR-4-02 / INV-04).
 func (s *Store) Put(_ context.Context, hash blockstore.ContentHash, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -102,7 +101,7 @@ func (s *Store) Get(_ context.Context, hash blockstore.ContentHash) ([]byte, err
 }
 
 // ReadBlockVerified mirrors s3.Store.ReadBlockVerified for in-memory
-// testing (INV-06). The in-memory backend has no header to pre-check —
+// testing. The in-memory backend has no header to pre-check —
 // it always re-hashes the stored bytes so a test that mutates the
 // in-memory blob still surfaces ErrCASContentMismatch.
 //
@@ -122,7 +121,7 @@ func (s *Store) ReadBlockVerified(_ context.Context, hash blockstore.ContentHash
 		return nil, blockstore.ErrBlockNotFound
 	}
 
-	// Body recompute (D-18). No streaming response body here.
+	// Body recompute. No streaming response body here.
 	got := blake3.Sum256(mb.data)
 	var gotHash blockstore.ContentHash
 	copy(gotHash[:], got[:])
@@ -166,7 +165,7 @@ func (s *Store) GetRange(_ context.Context, hash blockstore.ContentHash, offset,
 }
 
 // Has reports whether the CAS object addressed by hash exists in the
-// store. Implements the blockstore.BlockStore contract (Phase 17 D-04).
+// store. Implements the blockstore.BlockStore contract.
 func (s *Store) Has(_ context.Context, hash blockstore.ContentHash) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -215,8 +214,8 @@ func (s *Store) Delete(_ context.Context, hash blockstore.ContentHash) error {
 
 // Walk enumerates every CAS object in the store. Honors
 // blockstore.ErrStopWalk for clean early exit (Walk returns nil); any
-// other callback error is wrapped as "walk halted at %s: %w" (Phase 17
-// D-07). Context cancellation aborts immediately.
+// other callback error is wrapped as "walk halted at %s: %w".
+// Context cancellation aborts immediately.
 func (s *Store) Walk(ctx context.Context, fn func(hash blockstore.ContentHash, meta blockstore.Meta) error) error {
 	if err := ctx.Err(); err != nil {
 		return err

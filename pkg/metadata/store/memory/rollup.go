@@ -14,7 +14,7 @@ var _ metadata.RollupStore = (*MemoryMetadataStore)(nil)
 //
 // On regression (newOffset < stored), returns (storedOffset,
 // metadata.ErrRollupOffsetRegression); the stored value is UNCHANGED.
-// INV-03 is enforced here — the read, compare, and write all happen under
+// is enforced here — the read, compare, and write all happen under
 // s.rollupMu.
 func (s *MemoryMetadataStore) SetRollupOffset(ctx context.Context, payloadID string, newOffset uint64) (uint64, error) {
 	if err := ctx.Err(); err != nil {

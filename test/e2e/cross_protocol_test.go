@@ -382,7 +382,7 @@ func testDirSMBToNFS(t *testing.T, nfsMount, smbMount *framework.Mount) {
 }
 
 // ============================================================================
-// TestCrossProtocol_ErrorConformance (ADAPT-05 / D-13 e2e tier).
+// TestCrossProtocol_ErrorConformance (ADAPT-05 e2e tier).
 // ============================================================================
 //
 // Table-driven verification that the same metadata.ErrorCode produces
@@ -392,7 +392,7 @@ func testDirSMBToNFS(t *testing.T, nfsMount, smbMount *framework.Mount) {
 // NFS mount + one SMB mount, reused across all ~18 subtests (PATTERNS.md
 // gotcha: per-subtest mount bootstrap is flaky and compounds CI time).
 //
-// Per D-14 the assertion is: MapToNFS3(storeErr) AND MapToSMB(storeErr) from
+// The assertion is: MapToNFS3(storeErr) AND MapToSMB(storeErr) from
 // the common/ table match what the kernel NFS/SMB client actually delivers.
 // Since the kernel translates protocol codes into errnos for userspace, the
 // test compares observed syscall.Errno to the errno that the protocol code
@@ -403,7 +403,7 @@ func testDirSMBToNFS(t *testing.T, nfsMount, smbMount *framework.Mount) {
 // test/e2e/helpers/error_triggers.go and one table row here — the expected
 // errnos are derived at runtime from common/'s MapToNFS3 / MapToSMB.
 //
-// Test tier split (D-13):
+// Test tier split:
 //   - E2E tier (this function): ~18 codes triggerable via real kernel ops.
 //   - Unit tier: ~9 exotic codes (deadlock, quota, grace period, connection
 //     limits) that require backend fault injection or protocol-specific
@@ -450,7 +450,7 @@ func TestCrossProtocol_ErrorConformance(t *testing.T) {
 		// entries (ErrIOError, ErrNoSpace, ErrNotSupported, ErrAuthRequired,
 		// ErrLockNotFound) have trigger helpers that t.Skip() with a
 		// documented reason; they are retained as table rows so the shape
-		// matches D-13's e2e-tier list and so a future plan that wires
+		// matches the e2e-tier list and so a future plan that wires
 		// backend fault injection can unskip them with one edit each.
 		{name: "ErrIOError", code: merrs.ErrIOError, trigger: helpers.TriggerErrIOError},
 		{name: "ErrNoSpace", code: merrs.ErrNoSpace, trigger: helpers.TriggerErrNoSpace},
@@ -462,8 +462,8 @@ func TestCrossProtocol_ErrorConformance(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			// Derive expected errno-per-protocol from common/'s table.
-			// This is the single-source-of-truth pivot (D-14): adding a
-			// new row in common/errmap.go propagates here automatically.
+			// Single-source-of-truth pivot: adding a new row in
+			// common/errmap.go propagates here automatically.
 			sentinel := &merrs.StoreError{Code: c.code, Message: c.name}
 			wantNFSErrno := nfs3StatusToErrno(common.MapToNFS3(sentinel))
 			wantSMBErrno := smbStatusToErrno(common.MapToSMB(sentinel))

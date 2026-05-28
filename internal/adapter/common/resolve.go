@@ -30,8 +30,8 @@ func ResolveForRead(ctx context.Context, reg BlockStoreRegistry, handle metadata
 
 // ResolveForWrite is the write-path twin of ResolveForRead. Semantically
 // identical today; kept as a separate named helper so the call-site seam
-// is already in place for Phase 12 (API-01) when the signatures diverge
-// to take []BlockRef (see D-12). One edit later, not two.
+// is already in place for when the signatures diverge to take
+// []BlockRef. One edit later, not two.
 func ResolveForWrite(ctx context.Context, reg BlockStoreRegistry, handle metadata.FileHandle) (*engine.BlockStore, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("common.ResolveForWrite: nil BlockStoreRegistry")

@@ -106,7 +106,7 @@ func NewAlreadyExistsError(path string) *StoreError {
 	return errors.NewAlreadyExistsError(path)
 }
 
-// NewConflictError creates a StoreError for ObjectID concurrent-write conflicts (Phase 13 D-14).
+// NewConflictError creates a StoreError for ObjectID concurrent-write conflicts.
 // Deprecated: Use errors.NewConflictError directly.
 func NewConflictError(op, message string) *StoreError {
 	return errors.NewConflictError(op, message)
@@ -200,7 +200,7 @@ func IsDeadlockError(err error) bool {
 	return errors.IsDeadlockError(err)
 }
 
-// IsConflictError checks if an error is a StoreError with ErrConflict code (Phase 13 D-14).
+// IsConflictError checks if an error is a StoreError with ErrConflict code.
 // Deprecated: Use errors.IsConflictError directly.
 func IsConflictError(err error) bool {
 	return errors.IsConflictError(err)

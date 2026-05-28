@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/apiclient"
 )
 
-// TestShareEnabledString maps the boolean to yes/no per D-28.
+// TestShareEnabledString maps the boolean to yes/no.
 func TestShareEnabledString(t *testing.T) {
 	if got := shareEnabledString(true); got != "yes" {
 		t.Errorf("shareEnabledString(true) = %q, want \"yes\"", got)
@@ -79,9 +79,9 @@ func TestShareJSONMarshal_IncludesEnabled(t *testing.T) {
 	}
 }
 
-// TestShareTree_AllVerbsDiscoverable asserts every D-35 canonical verb is
-// registered as a child of the share parent, including the new Phase-6
-// disable/enable and the inherited permission sub-tree.
+// TestShareTree_AllVerbsDiscoverable asserts every canonical verb is
+// registered as a child of the share parent, including the
+// disable/enable verbs and the inherited permission sub-tree.
 func TestShareTree_AllVerbsDiscoverable(t *testing.T) {
 	verbs := []string{
 		"list", "create",

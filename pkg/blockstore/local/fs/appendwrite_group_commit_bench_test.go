@@ -1,27 +1,24 @@
-// Phase 19 Plan 09 — Opt 2 yellow-flag bench (D-17).
-//
 // BenchmarkAppendWrite_GroupCommit measures the per-file fsync
 // coordinator's coalescence under concurrent AppendWrite load. G=8
 // goroutines perform b.N total AppendWrites against a single logFile;
 // the coordinator's fsyncFn is wrapped at construction time with an
-// atomic counter so we can observe how many actual fsync syscalls the
-// coordinator issued vs how many AppendWrite calls landed.
+// atomic counter so we can observe how many actual fsync syscalls
+// the coordinator issued vs how many AppendWrite calls landed.
 //
 // Reported metric: fsyncs_per_op = fsync invocations / total
 // AppendWrites. Expected on a well-coalescing coordinator: < 1.0
 // (concurrent writers piggyback on a single fsync window). Note that
-// per-file mu (D-32) serializes same-payload writers, so the
-// AppendWrite hot-path does not exhibit dramatic coalescence — the
-// metric is closer to 1.0 in practice (one fsync per writer arrival).
-// 19-06 SUMMARY documents this architectural reality. Cross-payload
-// fan-out across distinct logFiles would coalesce more aggressively,
-// but THIS bench keeps the production hot-path shape (one logFile,
-// G writers) to track regressions in the depth-1 inline bypass path
-// (D-06) and the coordinator's overhead in steady state.
+// per-file mu serializes same-payload writers, so the AppendWrite
+// hot-path does not exhibit dramatic coalescence — the metric is
+// closer to 1.0 in practice (one fsync per writer arrival).
+// Cross-payload fan-out across distinct logFiles would coalesce more
+// aggressively but THIS bench keeps the production hot-path shape
+// (one logFile, G writers) to track regressions in the depth-1
+// inline bypass path and the coordinator's overhead in steady state.
 //
-// Yellow-flag per D-17 — the bench REPORTS the ratio via
-// b.ReportMetric but never gates (no b.Fatal on perf regression). The
-// hard gate is D-21 aggregate (internal/bench/phase19_test.go).
+// The bench REPORTS the ratio via b.ReportMetric but never gates (no
+// b.Fatal on perf regression). The hard gate is aggregate
+// (internal/bench/phase19_test.go).
 //
 // Skip-under-race honored via the raceEnabled constant
 // (raceenabled_norace_test.go / raceenabled_race_test.go pair). The
@@ -37,11 +34,11 @@ import (
 	"testing"
 )
 
-// BenchmarkAppendWrite_GroupCommit — Opt 2 yellow-flag bench (D-17).
+// BenchmarkAppendWrite_GroupCommit — Opt 2 yellow-flag bench.
 // Fans out G goroutines doing AppendWrite at distinct offsets within
 // a single logFile; counts fsync invocations via a wrapped fsyncFn.
 //
-// Yellow-flag per D-17: reports custom metrics via b.ReportMetric and
+// Yellow-flag: reports custom metrics via b.ReportMetric and
 // never gates (no b.Fatal on perf regression).
 func BenchmarkAppendWrite_GroupCommit(b *testing.B) {
 	if raceEnabled {
@@ -134,7 +131,7 @@ func BenchmarkAppendWrite_GroupCommit(b *testing.B) {
 }
 
 // newBenchFSStore mirrors newFSStoreForTest but accepts *testing.B so
-// the Plan 09 benches can stand up an FSStore + nopFBS without
+// the benches can stand up an FSStore + nopFBS without
 // refactoring the test-side helper.
 func newBenchFSStore(b *testing.B, opts FSStoreOptions) *FSStore {
 	b.Helper()

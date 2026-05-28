@@ -22,9 +22,9 @@ type Share struct {
 	LocalBlockStoreID  string  `json:"local_block_store_id"`
 	RemoteBlockStoreID *string `json:"remote_block_store_id"`
 	ReadOnly           bool    `json:"read_only,omitempty"`
-	// Enabled mirrors models.Share.Enabled — Phase 6 D-28. The tag is
-	// deliberately NOT omitempty: `false` is semantically meaningful
-	// ("share is disabled") whereas read_only:false is the inert default.
+	// Enabled mirrors models.Share.Enabled. The tag is deliberately NOT
+	// omitempty: `false` is semantically meaningful ("share is
+	// disabled") whereas read_only:false is the inert default.
 	Enabled           bool     `json:"enabled"`
 	EncryptData       bool     `json:"encrypt_data,omitempty"`
 	DefaultPermission string   `json:"default_permission,omitempty"`
@@ -180,7 +180,7 @@ func (c *Client) RemoveGroupSharePermission(shareName, groupName string) error {
 }
 
 // DisableShare flips Enabled=false on the share. Returns the updated Share
-// (with Enabled=false). Admin-only on the server side (D-27).
+// (with Enabled=false). Admin-only on the server side.
 func (c *Client) DisableShare(name string) (*Share, error) {
 	var share Share
 	if err := c.post(fmt.Sprintf("/api/v1/shares/%s/disable",

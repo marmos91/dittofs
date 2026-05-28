@@ -15,7 +15,7 @@ import (
 //
 // Path components are derived exclusively from hex.EncodeToString(h[:]) — the
 // characters are constrained to [0-9a-f], so path traversal via crafted hash
-// input is not possible (threat T-10-05-01).
+// input is not possible (threat).
 func (bc *FSStore) chunkPath(h blockstore.ContentHash) string {
 	hex := h.String()
 	return filepath.Join(bc.baseDir, "blocks", hex[0:2], hex[2:4], hex)
@@ -23,19 +23,19 @@ func (bc *FSStore) chunkPath(h blockstore.ContentHash) string {
 
 // StoreChunk writes data under its content-addressed path. Atomic via
 // .tmp + rename; fsyncs the chunk file and the containing directory so the
-// rename is durable (D-12 step 1 CAS durability, torn-write safety —
-// threat T-10-05-02).
+// rename is durable (step 1 CAS durability, torn-write safety —
+// threat).
 //
-// Idempotent: if the chunk already exists (HasChunk returns true for h),
+// Idempotent: if the chunk already exists (HasChunk returns true for h)
 // StoreChunk is a no-op and returns nil. This is what lets the rollup pool
-// (plan 06) retry safely after a crash between StoreChunk and CommitChunks.
+// retry safely after a crash between StoreChunk and CommitChunks.
 //
 // Caller is responsible for asserting that BLAKE3(data) == h before calling;
-// this method trusts its inputs (threat T-10-05-03 accept). The rollup pool
+// StoreChunk trusts its inputs (threat accept). The rollup pool
 // is the only production caller.
 //
 // TRANSITIONAL-NEXT-MILESTONE: zstd compression (see #519 "Deferred to
-// v0.17+"). Compression would wrap the data slice before disk write;
+// v0.17+"). Compression would wrap the data slice before disk write
 // OnChunkComplete still receives the UNCOMPRESSED data so the engine
 // Cache can serve reads without an extra decompress hop.
 func (bc *FSStore) StoreChunk(ctx context.Context, h blockstore.ContentHash, data []byte) error {
@@ -60,8 +60,8 @@ func (bc *FSStore) StoreChunk(ctx context.Context, h blockstore.ContentHash, dat
 
 	// Use a unique temp filename per attempt so two concurrent StoreChunk
 	// calls for the same hash (whether on Unix or Windows) do not race on
-	// the same .tmp file. The destination is content-addressed and idempotent;
-	// if the rename target already exists from a winning concurrent call,
+	// the same .tmp file. The destination is content-addressed and idempotent
+	// if the rename target already exists from a winning concurrent call
 	// treat that as success after re-stating the destination.
 	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -85,7 +85,7 @@ func (bc *FSStore) StoreChunk(ctx context.Context, h blockstore.ContentHash, dat
 	if err := os.Rename(tmp, path); err != nil {
 		// On Windows, os.Rename fails if the destination already exists.
 		// CAS writes are idempotent — if the destination is already there
-		// with the same content (a concurrent winner stored the same hash),
+		// with the same content (a concurrent winner stored the same hash)
 		// treat that as success and clean up our tmp.
 		if _, statErr := os.Stat(path); statErr == nil {
 			_ = os.Remove(tmp)
@@ -103,7 +103,7 @@ func (bc *FSStore) StoreChunk(ctx context.Context, h blockstore.ContentHash, dat
 		_ = dir.Close()
 	}
 	bc.diskUsed.Add(int64(len(data)))
-	// LSL-08: register the chunk with the in-process LRU so eviction can
+	// register the chunk with the in-process LRU so eviction can
 	// reach it. This is the canonical post-write touch — readers use a
 	// separate ReadChunk wiring to promote on cache hits.
 	//
@@ -113,10 +113,10 @@ func (bc *FSStore) StoreChunk(ctx context.Context, h blockstore.ContentHash, dat
 	// the OnChunkComplete callback to fire from the RAM-tier path instead.
 	bc.lruTouch(h, int64(len(data)), path)
 
-	// Phase 19 Opt 3 (D-10/D-12): fire the chunk-completion callback after
-	// disk store + LRU touch succeed. Exactly-once-per-successful-touch
-	// contract. Nil-safe (D-12) — pre-Phase-19 behavior preserved when no
-	// callback is installed. Fires OUTSIDE the lruMu lock (lruTouch
+	// Fire the chunk-completion callback after disk store + LRU touch
+	// succeed. Exactly-once-per-successful-touch contract. Nil-safe —
+	// the legacy behavior is preserved when no callback is installed.
+	// Fires OUTSIDE the lruMu lock (lruTouch
 	// released it on return) to avoid widening the hot lock window across
 	// an unrelated lock (the typical consumer is engine.Cache.Put, which
 	// takes its own lock). Error paths above already returned before this
@@ -149,7 +149,7 @@ func (bc *FSStore) ReadChunk(ctx context.Context, h blockstore.ContentHash) ([]b
 	if err != nil {
 		return nil, fmt.Errorf("chunkstore: read: %w", err)
 	}
-	// LSL-08: promote on cache hit so frequently-read chunks survive
+	// promote on cache hit so frequently-read chunks survive
 	// eviction. A concurrent lruEvictOne may have unlinked the file
 	// between os.Open and here — the open fd still reads on POSIX, but
 	// re-inserting into the LRU would create a ghost entry that points at
@@ -163,7 +163,7 @@ func (bc *FSStore) ReadChunk(ctx context.Context, h blockstore.ContentHash) ([]b
 }
 
 // Get implements local.LocalStore.Get by delegating to ReadChunk.
-// See ReadChunk for semantics, error contract, and LSL-08 LRU touch
+// See ReadChunk for semantics, error contract, and LRU touch
 // behavior. Signature is forward-compatible with the unified
 // BlockStore.Get interface.
 func (bc *FSStore) Get(ctx context.Context, h blockstore.ContentHash) ([]byte, error) {
@@ -214,7 +214,7 @@ func (bc *FSStore) DeleteChunk(ctx context.Context, h blockstore.ContentHash) er
 	if statErr == nil && st.Size() > 0 {
 		bc.diskUsed.Add(-st.Size())
 	}
-	// LSL-08: prune from the in-process LRU so a future ensureSpace doesn't
+	// prune from the in-process LRU so a future ensureSpace doesn't
 	// try to unlink a file we just deleted.
 	bc.lruMu.Lock()
 	if el, ok := bc.lruIndex[h]; ok {

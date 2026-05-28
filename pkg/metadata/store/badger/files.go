@@ -132,11 +132,10 @@ func (s *BadgerMetadataStore) GetFileByPayloadID(ctx context.Context, payloadID 
 // FindByObjectID looks up a file by its Merkle-root ObjectID via the
 // secondary key obj:<hex> -> file UUID (binary-marshaled). Returns
 // (nil, nil) on miss (zero-valued input, missing index entry, or index
-// drift where the indexed file row no longer exists). Phase 13 META-02 /
-// D-12.
+// drift where the indexed file row no longer exists).
 //
 // Block list is deep-copied out of the txn-scoped decoded file to avoid
-// slice aliasing into Badger's internal buffers (Phase 12 D-05 discipline).
+// slice aliasing into Badger's internal buffers (discipline).
 func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -169,7 +168,7 @@ func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID block
 		fileItem, err := txn.Get(keyFile(fileID))
 		if errors.Is(err, badgerdb.ErrKeyNotFound) {
 			// Index drift — secondary key points at a removed file.
-			// Treat as miss; the INV-02 audit reconciles drift.
+			// Treat as miss; the audit reconciles drift.
 			return nil
 		}
 		if err != nil {
@@ -187,7 +186,7 @@ func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID block
 		}
 
 		// Deep-copy the BlockRef slice so the caller's view does not
-		// alias the JSON-decoded buffer (Phase 12 D-05).
+		// alias the JSON-decoded buffer.
 		if len(f.Blocks) > 0 {
 			blocks = append([]blockstore.BlockRef(nil), f.Blocks...)
 		}
@@ -203,9 +202,9 @@ func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID block
 // optional capability. Returns 1 if the obj:<hex> secondary key is
 // present, 0 otherwise.
 //
-// Test-only — never call from production code. Used by the Phase 13
-// Plan 05 ConcurrentQuiesceRace scenario to assert exactly one row
-// survives the D-14 first-committer-wins resolution.
+// Test-only — never call from production code. Used by the
+// ConcurrentQuiesceRace scenario to assert exactly one row
+// survives the first-committer-wins resolution.
 //
 // Zero-valued objectID inputs short-circuit to (0, nil) without backend
 // access, mirroring FindByObjectID's partial/skip-zero discipline.

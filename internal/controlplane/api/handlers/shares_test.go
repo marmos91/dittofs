@@ -193,8 +193,9 @@ func TestShareHandler_Enable_NotFound(t *testing.T) {
 	}
 }
 
-// TestShareHandler_Get_IncludesEnabledField verifies D-28 at the integration
-// layer: the `enabled` JSON field is always present and mirrors the DB row.
+// TestShareHandler_Get_IncludesEnabledField verifies at the integration
+// layer that the `enabled` JSON field is always present and mirrors the
+// DB row.
 func TestShareHandler_Get_IncludesEnabledField(t *testing.T) {
 	cpStore, _, handler := setupShareTestWithRuntime(t)
 	seedShare(t, cpStore, "s-enabled-json")

@@ -18,7 +18,7 @@ import (
 //
 // Per RFC 1813 Section 2.2 (nfsstat3):
 // NFS procedures return status codes indicating success or specific failure
-// conditions. This function translates internal store errors into the
+// conditions. Translates internal store errors into the
 // appropriate NFS status codes for client consumption.
 //
 // Error Mapping:
@@ -37,7 +37,7 @@ import (
 //   - ErrIOError → types.NFS3ErrIO (EIO: I/O error)
 //   - Other errors → types.NFS3ErrIO (EIO: Generic I/O error)
 //
-// This function also handles audit logging at appropriate levels:
+// Also handles audit logging at appropriate levels:
 //   - Client errors (NotFound, AccessDenied): logged as warnings
 //   - Server errors: logged as errors
 //
@@ -53,8 +53,8 @@ func MapStoreErrorToNFSStatus(err error, clientIP string, operation string) uint
 		return types.NFS3OK
 	}
 
-	// Delegate the code translation to common.MapToNFS3 (ADAPT-03, D-06 —
-	// single source of truth across NFSv3/NFSv4/SMB). This wrapper only adds
+	// Delegate the code translation to common.MapToNFS3 (the single
+	// source of truth across NFSv3/NFSv4/SMB). This wrapper only adds
 	// audit logging at appropriate levels.
 	nfsCode := common.MapToNFS3(err)
 
@@ -78,7 +78,7 @@ func MapStoreErrorToNFSStatus(err error, clientIP string, operation string) uint
 // MapContentErrorToNFSStatus maps content repository errors to appropriate
 // NFS status codes.
 //
-// This function analyzes error messages and types to determine the most
+// Analyzes error messages and types to determine the most
 // appropriate NFS error code. In the future, the content repository should
 // return typed errors for more precise mapping.
 //

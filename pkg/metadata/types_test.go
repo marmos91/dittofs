@@ -250,7 +250,7 @@ func TestHandleToINode(t *testing.T) {
 // ============================================================================
 
 // ============================================================================
-// BlockLayout Tests (Phase 14 Plan 01 — MIG-03 / D-A6)
+// BlockLayout Tests (D-A6)
 // ============================================================================
 
 func TestParseBlockLayout(t *testing.T) {
@@ -272,7 +272,7 @@ func TestParseBlockLayout(t *testing.T) {
 
 	t.Run("empty string coerces to BlockLayoutLegacy (forward-compat)", func(t *testing.T) {
 		t.Parallel()
-		// D-A6: pre-Phase-14 DB rows lack the column; reading them must
+		// D-A6 DB rows lack the column; reading them must
 		// surface as `legacy` so the dual-read shim stays active.
 		got, err := ParseBlockLayout("")
 		require.NoError(t, err)
@@ -281,7 +281,7 @@ func TestParseBlockLayout(t *testing.T) {
 
 	t.Run("unknown value returns ErrInvalidBlockLayout", func(t *testing.T) {
 		t.Parallel()
-		// T-14-01-01: a hand-edited row with a bogus value must fail
+		// a hand-edited row with a bogus value must fail
 		// loud rather than being silently treated as cas-only.
 		got, err := ParseBlockLayout("bogus")
 		assert.Error(t, err)

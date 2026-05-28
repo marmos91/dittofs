@@ -59,7 +59,7 @@ func (h *Handler) UmntAll(
 }
 
 // DecodeUmountAllRequest decodes an UMOUNTALL request.
-// Since UMNTALL takes no parameters, this function simply validates
+// Since UMNTALL takes no parameters, it validates
 // that the data is empty and returns an empty request struct.
 //
 // Parameters:

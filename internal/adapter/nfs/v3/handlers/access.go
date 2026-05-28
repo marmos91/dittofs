@@ -395,7 +395,7 @@ func validateAccessRequest(req *AccessRequest) *validationError {
 	// than those defined in this section."
 	//
 	// Therefore, we do NOT reject unknown access bits. Instead, we accept
-	// the request and simply don't grant those unknown permissions in the
+	// the request and don't grant those unknown permissions in the
 	// response. This allows for forward compatibility with future protocol
 	// extensions.
 	//

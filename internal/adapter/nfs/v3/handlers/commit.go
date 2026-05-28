@@ -217,8 +217,8 @@ func (h *Handler) Commit(
 	// Per RFC 1813 Section 3.3.21, the server MAY choose when data reaches
 	// stable storage. Our WAL cache provides the durability guarantee.
 	//
-	// Routed through common.CommitBlockStore so the Phase-12 []BlockRef
-	// plumbing lands in one place (see common/doc.go Phase-12 seam / D-12).
+	// Routed through common.CommitBlockStore so any future []BlockRef
+	// plumbing lands in one place (see common/doc.go).
 	flushErr := common.CommitBlockStore(ctx.Context, blockStore, file.PayloadID)
 	if flushErr != nil {
 		logError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "payload_id", file.PayloadID, "client", clientIP)

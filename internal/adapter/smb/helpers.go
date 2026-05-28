@@ -97,7 +97,7 @@ func handleRequest[Req smbRequest, Resp smbResponse](
 
 	status := resp.GetStatus()
 
-	// Per D-09: propagate any pooled-buffer release closure from the typed
+	// Propagate any pooled-buffer release closure from the typed
 	// response envelope onto the wire-level HandlerResult so SendResponse /
 	// SendResponseWithHooks / compound path can fire it once AFTER the wire
 	// write. Non-pooled responses return nil from GetReleaseData() — the

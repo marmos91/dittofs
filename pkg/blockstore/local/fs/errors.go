@@ -3,9 +3,9 @@ package fs
 import "errors"
 
 // Append-log sentinel errors. Surfaced by unmarshalHeader and readLogHeader
-// when the on-disk log in <baseDir>/logs/{payloadID}.log is malformed,
+// when the on-disk log in <baseDir>/logs/{payloadID}.log is malformed
 // corrupted, or written by an incompatible version. Consumed by recovery
-// (LSL-06) in later phases of the v0.15.0 block store refactor.
+// in later phases of the v0.15.0 block store refactor.
 var (
 	// ErrLogBadMagic indicates the log header magic bytes do not match "DFLG".
 	ErrLogBadMagic = errors.New("append log: bad magic")
@@ -15,8 +15,8 @@ var (
 	ErrLogBadHeaderCRC = errors.New("append log: bad header CRC")
 
 	// ErrDeleted is returned by AppendWrite when the payload's append log
-	// has been tombstoned by a concurrent DeleteAppendLog call (D-28 /
-	// plan 09). Writers that observe the tombstone short-circuit before
+	// has been tombstoned by a concurrent DeleteAppendLog call (/
+	// ). Writers that observe the tombstone short-circuit before
 	// touching the log so a deleted payload never gains new records.
 	ErrDeleted = errors.New("append log: payload deleted")
 )

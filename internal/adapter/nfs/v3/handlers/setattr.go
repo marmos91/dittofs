@@ -422,7 +422,7 @@ func validateSetAttrRequest(req *SetAttrRequest) *validationError {
 	// handler, returning current attributes without modification.
 
 	// Validate and normalize mode value if being set
-	// NOTE: This function modifies req.NewAttr.Mode in place for normalization.
+	// NOTE: Modifies req.NewAttr.Mode in place for normalization.
 	// This mutation is intentional and normalizes client-provided modes to a
 	// canonical form before further processing.
 	if req.NewAttr.Mode != nil {

@@ -20,17 +20,17 @@ import (
 // can probe RollupOffset, LogBytesTotal, HeaderRollupOffset, etc. via
 // the *ForTest hooks on *FSStore.
 //
-// Plan 17-06 inlined these three scenarios (PressureChannel_INV05,
+// -06 inlined these three scenarios (PressureChannel_INV05
 // TornWriteRecovery_LSL06, RollupOffsetMonotone_INV03) from
 // pkg/blockstore/local/localtest/appendlog_suite.go (deleted in this
-// plan). The other two scenarios from that suite (AppendLogRoundTrip,
+// plan). The other two scenarios from that suite (AppendLogRoundTrip
 // ConcurrentStorm) now live in pkg/blockstore/blockstoretest as
 // BlockStoreAppendConformance subtests; the fs backend invokes them
 // via fs_conformance_test.go.
 //
 // These three scenarios stay here because they require fs-internal
 // probes that intentionally do NOT appear on the BlockStoreAppend
-// interface surface (D-09).
+// interface surface.
 func appendlogFactory(t *testing.T) *fs.FSStore {
 	t.Helper()
 	dir := t.TempDir()
@@ -51,7 +51,7 @@ func appendlogFactory(t *testing.T) *fs.FSStore {
 	return bc
 }
 
-// TestAppendLog_PressureChannel_INV05 asserts INV-05 (D-14/D-15): once
+// TestAppendLog_PressureChannel_INV05 asserts: once
 // the total log bytes exceed maxLogBytes, subsequent AppendWrites
 // block until the rollup drains the budget. The concurrent writers
 // must all finish without deadlock, and the post-drain budget
@@ -104,7 +104,7 @@ func TestAppendLog_PressureChannel_INV05(t *testing.T) {
 	}
 }
 
-// TestAppendLog_TornWriteRecovery_LSL06 asserts LSL-06: appending
+// TestAppendLog_TornWriteRecovery_LSL06 asserts: appending
 // garbage past a clean tail does NOT corrupt the surviving records.
 // After reopening (which runs Recover), the interval tree has exactly
 // the prior record count and the log is truncated at the first bad
@@ -119,7 +119,7 @@ func TestAppendLog_TornWriteRecovery_LSL06(t *testing.T) {
 	// window (50 ms) so the unrelated subtests in this suite can
 	// exercise the rollup path; on slow-IO platforms (Windows NTFS)
 	// 5 sequential AppendWrite + fsync iterations exceed that window
-	// and the rollup advances rollup_offset past records mid-test,
+	// and the rollup advances rollup_offset past records mid-test
 	// leaving Recover with fewer intervals than were actually
 	// written. ReopenForTest constructs an FSStore without calling
 	// StartRollup, so AppendWrites stay durably in the log until we
@@ -171,9 +171,9 @@ func TestAppendLog_TornWriteRecovery_LSL06(t *testing.T) {
 	}
 }
 
-// TestAppendLog_RollupOffsetMonotone_INV03 asserts INV-03: if metadata
+// TestAppendLog_RollupOffsetMonotone_INV03 asserts: if metadata
 // has advanced past the on-disk header's rollup_offset (simulating a
-// crash between D-12 step 2 SetRollupOffset and step 3
+// crash between step 2 SetRollupOffset and step 3
 // advanceRollupOffset), the next recovery writes the header forward to
 // match metadata and never regresses the offset.
 func TestAppendLog_RollupOffsetMonotone_INV03(t *testing.T) {
@@ -208,7 +208,7 @@ func TestAppendLog_RollupOffsetMonotone_INV03(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// Simulate a crash BETWEEN SetRollupOffset and advanceRollupOffset:
+	// Simulate a crash BETWEEN SetRollupOffset and advanceRollupOffset
 	// metadata already at metaOff; on-disk header still at the post-init
 	// value of logHeaderSize (64). We zero bytes [8..16) of the header
 	// and recompute its CRC so the log is "valid but behind metadata" —

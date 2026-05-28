@@ -22,11 +22,9 @@ const (
 	StateTypeOpen byte = 0x01
 
 	// StateTypeLock identifies a lock stateid (created by LOCK, removed by LOCKU).
-	// Reserved for Phase 10.
 	StateTypeLock byte = 0x02
 
 	// StateTypeDeleg identifies a delegation stateid (created by OPEN delegation grant).
-	// Reserved for Phase 11.
 	StateTypeDeleg byte = 0x03
 )
 

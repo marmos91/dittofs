@@ -14,7 +14,7 @@ import (
 )
 
 // ============================================================================
-// INV-02 Property-Based Fuzzer (Phase 12 D-36)
+// Property-Based Fuzzer
 //
 // Verifies that across concurrent create/delete/copy churn, the metadata
 // store maintains the global invariant:
@@ -28,14 +28,14 @@ import (
 // RefCount and verify the reconciliation arithmetic detects the drift.
 //
 // Bug surface this test covers:
-//   - WR-4-01-style donor-refcount leaks in dedup short-circuits
+// style donor-refcount leaks in dedup short-circuits
 //   - missed RefCount decrements on file delete
 //   - lost-update race on concurrent CopyPayload-style ref-bumps
 //   - silent backend bugs that under/over-count refs
 // ============================================================================
 
-// Operation constants for the INV-02 fuzz worker switch. Phase 13 Plan 05
-// adds opMutateObjectID to exercise the D-12 secondary-index discipline
+// Operation constants for the fuzz worker switch.
+// adds opMutateObjectID to exercise the secondary-index discipline
 // alongside the original create/delete/copy mix.
 const (
 	opCreate         = 0
@@ -45,7 +45,7 @@ const (
 )
 
 // RefCountLeakInjector is an optional backend capability used by the
-// INV-02 leak-injection scenario to artificially desynchronize a
+// leak-injection scenario to artificially desynchronize a
 // single FileBlock's RefCount from the FileAttr.Blocks references that
 // (logically) own it. Backends that cannot represent a desynchronized
 // refcount cleanly skip the scenario via type-assertion failure.
@@ -66,18 +66,18 @@ type RefCountLeakInjector interface {
 //
 //	∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks)
 //
-// Bug surface: WR-4-01-style donor leaks, missed decrements on file
+// Bug surface style donor leaks, missed decrements on file
 // delete, lost-update on concurrent CopyPayload. Runs against all 3
 // backends via the conformance factory.
 //
-// Phase 12 D-36 defaults: 100 iterations, 10 concurrent goroutines.
+// defaults: 100 iterations, 10 concurrent goroutines.
 func testINV02_PropertyFuzz(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
 	const shareName = "inv02-fuzz"
 	const concurrency = 10
-	const opsPerWorker = 10 // 10 workers × 10 ops = 100 total ops (D-36)
+	const opsPerWorker = 10 // 10 workers × 10 ops = 100 total ops
 
 	rootHandle := createTestShare(t, store, shareName)
 
@@ -133,10 +133,10 @@ func testINV02_PropertyFuzz(t *testing.T, factory StoreFactory) {
 			totalRefs, totalRefCount, delta)
 	}
 
-	// Phase 13 Plan 05: ObjectID drift assertion. Walk every regular
+	// ObjectID drift assertion. Walk every regular
 	// file in the share; for any file with a non-zero ObjectID, recompute
 	// it from its current Blocks list and assert byte-equality. A non-
-	// zero ObjectID always reflects a fully-quiesced state (D-06); if
+	// zero ObjectID always reflects a fully-quiesced state; if
 	// the recomputed value differs, the index discipline drifted somewhere
 	// in the create/delete/copy/mutate cycle.
 	if err := assertObjectIDDrift(ctx, store, shareName); err != nil {
@@ -362,7 +362,7 @@ func fuzzDeleteFile(ctx context.Context, store metadata.MetadataStore, rootHandl
 // fuzzCopyFile picks a random source file owned by this worker, increments
 // each source block's RefCount, and creates a new destination file with
 // the same FileAttr.Blocks list. Mirrors engine.CopyPayload's O(1)
-// semantics (Phase 12 API-04) at the metadata level.
+// semantics at the metadata level.
 func fuzzCopyFile(ctx context.Context, store metadata.MetadataStore, shareName string, rootHandle metadata.FileHandle, workerID, opID int, rng *rand.Rand, ws *workerState) error {
 	if len(ws.files) == 0 {
 		return nil // nothing to copy from; promote to a create
@@ -432,11 +432,11 @@ func fuzzCopyFile(ctx context.Context, store metadata.MetadataStore, shareName s
 // fuzzMutateObjectID picks a random file owned by this worker, recomputes
 // its ObjectID from the current Blocks slice, and PutFile-s the result so
 // the secondary index gets refreshed. Mirrors the engine's post-Flush
-// coordinator hook (D-05) at the storetest level — independent of any
-// engine wiring, but exercising the SAME index discipline. Phase 13 D-04
+// coordinator hook at the storetest level — independent of any
+// engine wiring, but exercising the SAME index discipline.
 // confirms recompute-stability is the conformance contract.
 //
-// First-committer-wins (D-14) conflicts are tolerated: independent
+// First-committer-wins conflicts are tolerated: independent
 // workers may ship distinct hashes (the create helper seeds per-worker)
 // but the test harness still treats ErrConflict / ErrAlreadyExists as a
 // non-fatal signal so the fuzzer doesn't false-fail.
@@ -461,7 +461,7 @@ func fuzzMutateObjectID(ctx context.Context, store metadata.MetadataStore, rng *
 
 	f.ObjectID = blockstore.ComputeObjectID(f.Blocks)
 	if err := store.PutFile(ctx, f); err != nil {
-		// D-14 first-committer-wins: another worker may have claimed
+		// first-committer-wins: another worker may have claimed
 		// the same ObjectID (improbable for distinct seed-derived
 		// hashes, but legal). Treat as non-fatal.
 		if isConcurrentQuiesceConflict(err) {
@@ -473,7 +473,7 @@ func fuzzMutateObjectID(ctx context.Context, store metadata.MetadataStore, rng *
 }
 
 // isConcurrentQuiesceConflict returns true for the per-backend conflict
-// signals surfaced by D-14 first-committer-wins on PutFile. Mirrors the
+// signals surfaced by first-committer-wins on PutFile. Mirrors the
 // concurrentRaceErrIsConflict helper in objectid_roundtrip.go.
 func isConcurrentQuiesceConflict(err error) bool {
 	if err == nil {
@@ -500,9 +500,9 @@ func isConcurrentQuiesceConflict(err error) bool {
 // scenario) can distinguish "invariant holds" from "invariant violated"
 // without fataling inside the helper.
 //
-// The distinct-hash dedup on RefCount sums mirrors the Phase 12 D-37
+// The distinct-hash dedup on RefCount sums mirrors the
 // post-fix world: one FileBlock row per hash. Legacy multi-row data is
-// tolerated because GetByHash returns ANY one row per the WR-4-01 contract,
+// tolerated because GetByHash returns ANY one row per the contract,
 // and all rows with the same hash carry the same RefCount semantics.
 func reconcileINV02(ctx context.Context, store metadata.MetadataStore, shareName string) (totalRefs, totalRefCount uint64, err error) {
 	// 1) ∑ FileBlock.RefCount across distinct hashes via EnumerateFileBlocks.

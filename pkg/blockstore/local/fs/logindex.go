@@ -5,8 +5,7 @@ import (
 	"sync"
 )
 
-// Per-file logIndex (Direction 1 redesign — see
-// .planning/proposals/2026-05-22-logindex-rollup-redesign.md).
+// Per-file logIndex (Direction 1 redesign —
 //
 // The existing interval tree (interval_tree.go) is the oracle for which
 // FILE-OFFSET regions are dirty and stable. The logIndex is the oracle for
@@ -212,7 +211,7 @@ func (idx *logIndex) MarkConsumed(fileOff uint64, payloadLen uint32) {
 // is then DROPPED from `idx.entries` and the matching keys are removed
 // from `idx.consumed`. This bounds steady-state memory at the
 // unconsumed-record set, not the full payload history. Trimming is
-// safe because:
+// safe because
 //
 //   - Fenced entries' chunks are already durable in CAS (the rollup
 //     called MarkConsumed only after a successful StoreChunk pass).
@@ -224,7 +223,7 @@ func (idx *logIndex) MarkConsumed(fileOff uint64, payloadLen uint32) {
 //     persisted rollup_offset forward — it never consults pre-fence
 //     in-memory entries.
 //
-// After trim, the post-condition holds: for all i,
+// After trim, the post-condition holds: for all i
 // idx.entries[i].logPos >= idx.compactionFence; fenceCursor is reset
 // to 0 so the next AdvanceFence call starts from the new head.
 //
@@ -251,7 +250,7 @@ func (idx *logIndex) AdvanceFence() uint64 {
 // Caller MUST hold idx.mu. fenceCursor is reset to 0 so subsequent
 // AdvanceFence calls resume from the new head.
 //
-// To bound RSS at ~steady-state (not at the historical high-water mark),
+// To bound RSS at ~steady-state (not at the historical high-water mark)
 // the backing array is REALLOCATED whenever its capacity exceeds 4x the
 // surviving length. A plain reslice (`entries[fenceCursor:]`) would pin
 // the original backing array forever — defeating the point of #581 on
@@ -350,7 +349,7 @@ func (idx *logIndex) Len() int {
 // is a pure interval-union problem with neither timestamps nor stable-
 // interval semantics — a flat sorted slice is faster, simpler, and has
 // the same big-O for both operations at the workload-realistic entry
-// counts (the per-payload coverage set tracks unique consumed regions,
+// counts (the per-payload coverage set tracks unique consumed regions
 // which the rollup actively coalesces by chunking adjacent intervals).
 type coverageSet struct {
 	intervals []coverageInterval
@@ -409,7 +408,7 @@ func (cs *coverageSet) add(start, end uint64) {
 //
 // O(log N) binary search to locate the candidate interval, plus a single
 // containment test. Because the set is merged-on-insert, at most one
-// stored interval can contain a given query range; if that one doesn't,
+// stored interval can contain a given query range; if that one doesn't
 // no other can.
 func (cs *coverageSet) covers(start, end uint64) bool {
 	if end <= start {

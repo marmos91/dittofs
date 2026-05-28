@@ -1,4 +1,4 @@
-// Unified BlockStore contract — Phase 17.
+// Unified BlockStore contract.
 //
 // This file declares the single CAS-keyed surface that replaces the
 // split LocalStore (22 methods) + RemoteStore (12 methods) of v0.15.
@@ -8,11 +8,6 @@
 //
 // Sentinel-file conventions (.cas-migrated-v1) and the legacy-layout
 // boot guard (ErrLegacyLayoutDetected) live in doc.go and errors.go.
-//
-// No implementer is wired against these types in this commit — the
-// rest of Phase 17 (Waves 2-6) narrows LocalStore onto BlockStoreAppend,
-// renames RemoteStore methods onto BlockStore, and lands the unified
-// blockstoretest conformance suite. This file is the locked target.
 
 package blockstore
 
@@ -22,11 +17,11 @@ import (
 )
 
 // Meta is the minimal per-object metadata returned by BlockStore.Head
-// and BlockStore.Walk. Per Phase 17 D-08, the lookup key (ContentHash)
-// is NEVER echoed inside Meta — it is the input, not output.
+// and BlockStore.Walk. The lookup key (ContentHash) is NEVER echoed
+// inside Meta — it is the input, not output.
 //
 // The S3 backend continues to stamp x-amz-meta-content-hash on every
-// PutObject as defense-in-depth (BSCAS-06: ReadBlockVerified compares
+// PutObject as defense-in-depth (ReadBlockVerified compares
 // the header against the recomputed BLAKE3 before returning bytes), but
 // that header stays inside the s3 backend and is not surfaced through
 // Meta. Callers that need integrity verification use BlockStore.Get
@@ -38,17 +33,17 @@ type Meta struct {
 
 	// LastModified is the backend's last-modified timestamp. MUST be
 	// non-zero for every object the backend reports — the GC sweep
-	// fails closed on a zero LastModified (mirrors Phase 11 WR-4-02 /
-	// INV-04). Backends that cannot natively report a timestamp MUST
-	// stamp time.Now() at Put time and surface that value here.
+	// fails closed on a zero LastModified. Backends that cannot
+	// natively report a timestamp MUST stamp time.Now() at Put time
+	// and surface that value here.
 	LastModified time.Time
 }
 
 // BlockStore is the unified content-addressed block storage contract.
-// Every implementation is keyed by ContentHash (BLAKE3-256, 32 bytes);
+// Every implementation is keyed by ContentHash (BLAKE3-256, 32 bytes)
 // no opaque "block key" strings appear on this surface.
 //
-// Implementations:
+// Implementations
 //   - pkg/blockstore/local/fs.FSStore (also implements BlockStoreAppend)
 //   - pkg/blockstore/remote/s3.Store
 //   - pkg/blockstore/remote/memory.Store
@@ -60,7 +55,7 @@ type Meta struct {
 type BlockStore interface {
 	// Put writes data under the key derived from hash. Put is
 	// idempotent: a second Put with the same hash and identical bytes
-	// is a no-op (or an integrity-verified rewrite, backend's choice);
+	// is a no-op (or an integrity-verified rewrite, backend's choice)
 	// a Put with the same hash but different bytes is undefined
 	// behavior — callers MUST NOT rely on either outcome and the
 	// conformance suite asserts only the same-bytes idempotent case.
@@ -73,14 +68,14 @@ type BlockStore interface {
 	// The returned []byte is freshly allocated and owned by the caller
 	// — matches the prior mmap-then-copy semantics from the engine
 	// Cache's perspective (the Cache always copied bytes out of the
-	// mmapped region into its LRU slot, so the allocation simply moves
+	// mmapped region into its LRU slot, so the allocation moves
 	// earlier in the pipeline).
 	//
 	// Returns blockstore.ErrChunkNotFound if the chunk is absent from
 	// the store. Implementations MUST NOT return a slice that aliases
 	// internal storage; no read-buffer pool is used.
 	//
-	// Signature is byte-identical to the Phase 16 *fs.FSStore.Get and
+	// Signature is byte-identical to the *fs.FSStore.Get and
 	// LocalStore.Get methods that this contract supersedes — engine
 	// call sites narrow the receiver type from *fs.FSStore (or
 	// LocalStore) to BlockStore with zero rename churn.
@@ -105,13 +100,13 @@ type BlockStore interface {
 	// Get with a Range: bytes=0-0 probe (more portable, costlier) —
 	// the choice is per-backend.
 	//
-	// Returns (false, nil) for a confirmed miss; (true, nil) for a hit;
+	// Returns (false, nil) for a confirmed miss; (true, nil) for a hit
 	// (_, err) for backend errors that do not constitute a definitive
 	// answer (network failures, permission errors, etc.). Callers MUST
 	// distinguish (false, nil) from (false, err).
 	Has(ctx context.Context, hash ContentHash) (bool, error)
 
-	// Delete removes the object addressed by hash. Delete is idempotent:
+	// Delete removes the object addressed by hash. Delete is idempotent
 	// deleting an absent hash returns nil (no ErrChunkNotFound). The
 	// conformance suite asserts Delete-then-Get returns ErrChunkNotFound
 	// and Delete-then-Delete returns nil.
@@ -162,10 +157,10 @@ type BlockStore interface {
 // Remote backends (s3, memory) do NOT implement this interface — they
 // only see the rolled-up Put calls.
 //
-// Note: the narrowed LocalStore interface that Plan 04 lands keeps
-// additional lifecycle / admin methods (Truncate, EvictMemory,
-// SetRetentionPolicy, SetEvictionEnabled, Stats, ListFiles,
-// GetStoredFileSize, Healthcheck, SyncFileBlocks, SyncFileBlocksForFile,
+// Note: the narrowed LocalStore interface that lands keeps
+// additional lifecycle / admin methods (Truncate, EvictMemory
+// SetRetentionPolicy, SetEvictionEnabled, Stats, ListFiles
+// GetStoredFileSize, Healthcheck, SyncFileBlocks, SyncFileBlocksForFile
 // Flush, Start, Close) as a strict admin-superset of BlockStoreAppend.
 // Those methods belong on LocalStore (boot-path / observability /
 // retention), NOT on BlockStoreAppend — the append surface here is
@@ -190,7 +185,7 @@ type BlockStoreAppend interface {
 	// DeleteLog removes the per-file append log and its tracked
 	// intervals for payloadID (formerly named DeleteAppendLog on
 	// *fs.FSStore — renamed here to match the conformance-suite test
-	// `testDeleteLog`). BSCAS-05 invokes this on a file-level dedup
+	// `testDeleteLog`). invokes this on a file-level dedup
 	// hit to discard speculative chunks the syncer was about to
 	// upload.
 	//

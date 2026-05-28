@@ -20,9 +20,9 @@ import (
 // time. Clients compare it across WRITE and COMMIT responses to detect
 // server restarts, at which point they re-send unstable writes.
 //
-// Phase 5 restore calls BumpBootVerifier() on successful in-place
-// restore (D-09). NFSv4 clients whose next request lands post-swap
-// see a new verifier, enter reclaim grace, and fail reclaim with
+// The restore path calls BumpBootVerifier() on successful in-place
+// restore. NFSv4 clients whose next request lands post-swap see a new
+// verifier, enter reclaim grace, and fail reclaim with
 // NFS4ERR_RECLAIM_BAD — forcing fresh OPENs against the restored
 // metadata state.
 //
@@ -37,8 +37,8 @@ func init() {
 }
 
 // BumpBootVerifier replaces the current verifier with a fresh
-// time-derived value. Exported for Phase 5 storebackups.Service.
-// RunRestore to invoke after a successful metadata swap.
+// time-derived value. Exported for storebackups.Service.RunRestore to
+// invoke after a successful metadata swap.
 //
 // Safe to call concurrently with read-side handlers; the atomic
 // pointer swap is lock-free.
@@ -215,7 +215,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 
 	fileHandle := metadata.FileHandle(ctx.CurrentFH)
 
-	// Phase 1: PrepareWrite -- validates permissions, returns intent
+	// Step 1: PrepareWrite -- validates permissions, returns intent
 	intent, err := metaSvc.PrepareWrite(authCtx, fileHandle, newSize)
 	if err != nil {
 		status := common.MapToNFS4(err)
@@ -244,9 +244,9 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 			"client", ctx.ClientAddr)
 	}
 
-	// Phase 2: Write actual data via BlockStore.
-	// Routed through common.WriteToBlockStore so the Phase-12 []BlockRef
-	// plumbing lands in one place (see common/doc.go Phase-12 seam / D-12).
+	// Step 2: Write actual data via BlockStore.
+	// Routed through common.WriteToBlockStore so any future []BlockRef
+	// plumbing lands in one place (see common/doc.go).
 	err = common.WriteToBlockStore(ctx.Context, blockStore, intent.PayloadID, data, offset)
 	if err != nil {
 		logger.Debug("NFSv4 WRITE payload error",
@@ -260,7 +260,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 		}
 	}
 
-	// Phase 3: CommitWrite -- updates metadata (size, timestamps)
+	// Step 3: CommitWrite -- updates metadata (size, timestamps)
 	_, err = metaSvc.CommitWrite(authCtx, intent)
 	if err != nil {
 		status := common.MapToNFS4(err)

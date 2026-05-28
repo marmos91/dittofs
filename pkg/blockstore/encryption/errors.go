@@ -9,7 +9,7 @@ var (
 	ErrUnsupportedAEAD = errors.New("encryption: unsupported aead algorithm")
 
 	// ErrEncryptedFrameCorrupt is returned when a wire payload begins
-	// with the DFENC magic but the rest of the header (version, algos,
+	// with the DFENC magic but the rest of the header (version, algos
 	// uvarint lengths, nonce length) fails to parse.
 	ErrEncryptedFrameCorrupt = errors.New("encryption: corrupt frame header")
 

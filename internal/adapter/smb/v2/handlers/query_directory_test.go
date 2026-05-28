@@ -561,7 +561,7 @@ func TestQueryDirectory_PatternChange_RestartsCursor(t *testing.T) {
 		t.Fatalf("drain: status = 0x%x, want StatusNoMoreFiles", uint32(r.Status))
 	}
 
-	// Pattern change to "*.log" with NO restart flag — per spec, server MUST
+	// Pattern change to "*.log" with NO restart flag — per MS-SMB2, server MUST
 	// restart the enumeration when the pattern differs from the previous one.
 	r = callQuery(t, h, smbCtx, open.FileID, "*.log", 0)
 	if r.Status != types.StatusSuccess {

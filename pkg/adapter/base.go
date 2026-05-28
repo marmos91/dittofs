@@ -539,7 +539,7 @@ func (b *BaseAdapter) GetActiveConnections() int32 {
 }
 
 // GetListenerAddr returns the address the server is listening on.
-// This method blocks until the listener is ready, making it safe for tests.
+// Blocks until the listener is ready, making it safe for tests.
 func (b *BaseAdapter) GetListenerAddr() string {
 	<-b.ListenerReady
 
@@ -563,7 +563,7 @@ func (b *BaseAdapter) Protocol() string {
 }
 
 // MapError is a default stub implementation that returns nil.
-// Protocol-specific adapters should override this method to translate domain
+// Protocol-specific adapters should override MapError to translate domain
 // errors into protocol-specific ProtocolError values with appropriate status codes.
 func (b *BaseAdapter) MapError(_ error) ProtocolError {
 	return nil
@@ -583,7 +583,7 @@ func (b *BaseAdapter) ForceCloseByAddress(addr string) bool {
 }
 
 // MapIdentity is a default stub implementation that returns an error.
-// Protocol-specific adapters should override this method to convert auth results
+// Protocol-specific adapters should override MapIdentity to convert auth results
 // into protocol-specific identities (e.g., NFS AUTH_UNIX, SMB NTLM sessions).
 func (b *BaseAdapter) MapIdentity(_ context.Context, _ *auth.AuthResult) (*auth.Identity, error) {
 	return nil, fmt.Errorf("%s: identity mapping not implemented", b.protocolName)

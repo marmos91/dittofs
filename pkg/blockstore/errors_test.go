@@ -9,7 +9,7 @@ import (
 )
 
 // TestErrStopWalk_DetectsThroughWrap pins the Walk callback contract
-// (Phase 17 D-07): callbacks wrap ErrStopWalk with fmt.Errorf("...: %w", ...)
+// callbacks wrap ErrStopWalk with fmt.Errorf("...: %w", ...)
 // and Walk implementations match via errors.Is.
 func TestErrStopWalk_DetectsThroughWrap(t *testing.T) {
 	wrapped := fmt.Errorf("gc found target deadbeef: %w", blockstore.ErrStopWalk)
@@ -22,7 +22,7 @@ func TestErrStopWalk_DetectsThroughWrap(t *testing.T) {
 }
 
 // TestErrLegacyLayoutDetected_DetectsThroughWrap pins the boot-guard
-// contract (Phase 17 D-10/D-11): NewFSStore wraps the sentinel with the
+// contract: NewFSStore wraps the sentinel with the
 // share path via fmt.Errorf("%w: share path %s", ...) and cmd/dfs/start
 // matches via errors.Is.
 func TestErrLegacyLayoutDetected_DetectsThroughWrap(t *testing.T) {

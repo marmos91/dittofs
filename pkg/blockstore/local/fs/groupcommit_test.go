@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// TestGroupCommit_SingleWriter_FiresImmediately exercises D-06 adaptive
+// TestGroupCommit_SingleWriter_FiresImmediately exercises adaptive
 // bypass: when the pending queue is empty and no timer is armed, Sync
 // must call fsyncFn inline without waiting for the 1ms window. The
 // budget is 500µs — well under the 1ms window — to defend against
@@ -142,7 +142,7 @@ func TestGroupCommit_FsyncErrorPropagatesToAllWaiters(t *testing.T) {
 }
 
 // TestGroupCommit_CtxCancel_MidWait_ReturnsCtxErr_ButFsyncStillRuns
-// verifies D-08: a canceled context returns ctx.Err() to the caller, but
+// verifies: a canceled context returns ctx.Err() to the caller, but
 // the in-flight fsync still completes for any other batched waiters.
 func TestGroupCommit_CtxCancel_MidWait_ReturnsCtxErr_ButFsyncStillRuns(t *testing.T) {
 	var calls atomic.Int32
@@ -189,7 +189,7 @@ func TestGroupCommit_CtxCancel_MidWait_ReturnsCtxErr_ButFsyncStillRuns(t *testin
 	}
 }
 
-// TestGroupCommit_NoLogsMuTouch enforces the D-09 lock-order
+// TestGroupCommit_NoLogsMuTouch enforces the lock-order
 // invariant by grepping the source file: the coordinator must never
 // reference bc.logsMu.
 func TestGroupCommit_NoLogsMuTouch(t *testing.T) {

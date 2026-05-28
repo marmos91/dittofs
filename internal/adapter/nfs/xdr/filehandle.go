@@ -17,7 +17,7 @@ import (
 // number) is used by NFS clients for cache coherency and to display in tools
 // like ls -i and find.
 //
-// IMPORTANT: This function delegates to metadata.HandleToFileID() to ensure
+// IMPORTANT: Delegates to metadata.HandleToFileID() to ensure
 // consistent inode generation across the entire system. Do not implement
 // custom hashing logic here.
 //
@@ -35,7 +35,7 @@ func ExtractFileID(handle metadata.FileHandle) uint64 {
 // DecodeFileHandleFromRequest decodes a file handle from NFS request data.
 //
 // Most NFS v3 procedures include a file handle as the first field in their
-// request parameters. This function uses XDR decoding to extract it.
+// request parameters. Uses XDR decoding to extract it.
 //
 // The file handle is encoded as XDR opaque data per RFC 1813:
 //   - 4 bytes: length (big-endian uint32)

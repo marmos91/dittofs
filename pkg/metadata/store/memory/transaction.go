@@ -14,7 +14,7 @@ import (
 // ============================================================================
 
 // memoryTransaction wraps the store for transactional operations.
-// Since the memory store uses a global mutex, the transaction simply
+// Since the memory store uses a global mutex, the transaction
 // holds the lock for the duration of all operations.
 type memoryTransaction struct {
 	store *MemoryMetadataStore
@@ -80,8 +80,7 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	key := handleToKey(handle)
 	attrCopy := file.FileAttr
 	// Deep-copy slice fields so the stored view cannot be mutated by
-	// later caller-side mutation of the input slice (Phase 12 D-05,
-	// T-12-09 mitigation).
+	// later caller-side mutation of the input slice.
 	attrCopy.Blocks = cloneBlocks(file.Blocks)
 
 	// Track size delta for regular files.
@@ -96,11 +95,11 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		}
 	}
 
-	// Phase 13 D-12: Maintain ObjectID secondary index BEFORE overwriting
+	// Maintain ObjectID secondary index BEFORE overwriting
 	// tx.store.files[key]. The caller (WithTransaction) holds the write
 	// lock; tx.store.files is mutated directly without per-call locking.
 	//
-	// WR-03 (Phase 13 review iteration 1): race detection MUST run before
+	// (review iteration 1): race detection MUST run before
 	// stale-entry cleanup. memory's WithTransaction has no rollback (see
 	// transaction.go WithTransaction docstring): "If fn returns an error,
 	// no rollback is needed since operations are performed directly on the
@@ -111,7 +110,7 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	// persists with that ObjectID. Reorder so a failed PutFile leaves
 	// every map untouched.
 	//
-	// Step 1: race detection (D-14 first-committer-wins). If someone
+	// Step 1: race detection (first-committer-wins). If someone
 	// else's file already claims this ObjectID, reject before we mutate
 	// any state.
 	if !attrCopy.ObjectID.IsZero() {
@@ -173,7 +172,7 @@ func (tx *memoryTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		tx.store.usedBytes.Add(-int64(existing.Attr.Size))
 	}
 
-	// Phase 13 D-12: drop ObjectID secondary entry. The "only if mapped
+	// drop ObjectID secondary entry. The "only if mapped
 	// to this same key" guard is defensive -- under the write lock that
 	// guards both maps a divergence is impossible, but the guard cheaply
 	// protects against future refactors.
@@ -303,7 +302,7 @@ func (tx *memoryTransaction) ListChildren(ctx context.Context, dirHandle metadat
 			Handle: childHandle,
 		}
 
-		// Try to get attributes (deep-copy Blocks per Phase 12 D-05 / T-12-09).
+		// Try to get attributes (deep-copy Blocks per T-12-09).
 		childKey := handleToKey(childHandle)
 		if fileData, exists := tx.store.files[childKey]; exists {
 			attr := *fileData.Attr
@@ -529,7 +528,7 @@ func (tx *memoryTransaction) DeleteShare(ctx context.Context, shareName string) 
 			if fd.Attr.Type == metadata.FileTypeRegular && fd.Attr.Size > 0 {
 				tx.store.usedBytes.Add(-int64(fd.Attr.Size))
 			}
-			// Phase 13 D-12: drop ObjectID secondary entry too.
+			// drop ObjectID secondary entry too.
 			if fd.Attr != nil && !fd.Attr.ObjectID.IsZero() {
 				if mapped, ok := tx.store.objectIndex[fd.Attr.ObjectID]; ok && mapped == key {
 					delete(tx.store.objectIndex, fd.Attr.ObjectID)

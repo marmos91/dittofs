@@ -17,7 +17,7 @@ import (
 // rather than [health.StatusUnhealthy] (which would falsely suggest the
 // store itself is broken).
 //
-// This method does not acquire any locks; it is designed to be
+// Does not acquire any locks; designed to be
 // non-blocking so the cache wrapper can call it from /status routes
 // without contention.
 func (store *MemoryMetadataStore) Healthcheck(ctx context.Context) health.Report {

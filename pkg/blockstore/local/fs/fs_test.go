@@ -17,10 +17,10 @@ import (
 )
 
 // countingFileBlockStore wraps a blockstore.EngineFileBlockStore and
-// counts calls per method. Used by the LSL-08 conformance suite (and
+// counts calls per method. Used by the conformance suite (and
 // neighboring eviction tests) to assert that the local store's
 // synchronous hot-path / eviction paths make zero FileBlockStore calls
-// (TD-02d / D-19).
+// (d /).
 //
 // Counters are atomic so tests may observe them without racing the
 // background SyncFileBlocks goroutine that Start() launches.
@@ -32,7 +32,7 @@ type countingFileBlockStore struct {
 	del               atomic.Int64 // Delete (was DeleteFileBlock)
 	incrementRefCount atomic.Int64
 	decrementRefCount atomic.Int64
-	addRef            atomic.Int64 // Phase 19 D-04 LRU hit path
+	addRef            atomic.Int64 // LRU hit path
 	getByHash         atomic.Int64 // GetByHash (was FindFileBlockByHash)
 	listPending       atomic.Int64 // ListPending (was ListLocalBlocks)
 	listFileBlocks    atomic.Int64 // engine-internal
@@ -121,7 +121,7 @@ func diffSnapshot(before, after fbsCallSnapshot) fbsCallSnapshot {
 }
 
 // ResetCount and TotalCount satisfy the FBSCounter interface declared in
-// test_hooks.go so the LSL-08 conformance suite can assert no
+// test_hooks.go so the conformance suite can assert no
 // FileBlockStore calls happen during ensureSpace.
 func (c *countingFileBlockStore) ResetCount() {
 	c.get.Store(0)
@@ -331,13 +331,13 @@ func TestNewFSStoreForMigration_BypassesSentinel(t *testing.T) {
 	t.Cleanup(func() { _ = bc.Close() })
 }
 
-// --- Phase 19 Plan 04: FSStoreOptions OnChunkComplete + DedupLRUSize. ---
+// ---: FSStoreOptions OnChunkComplete + DedupLRUSize. ---
 //
 // These tests assert the additive Wave-1 surfaces land correctly: the
-// per-FSStore dedupLRU is instantiated with the default-on-zero idiom,
+// per-FSStore dedupLRU is instantiated with the default-on-zero idiom
 // the explicit size is honored, and the OnChunkComplete callback is
 // stored on the FSStore struct without altering pre-Phase-19 lruTouch
-// behavior (D-12 nil-safety contract — see 19-CONTEXT.md).
+// behavior (nil-safety contract — see 19-CONTEXT.md).
 
 // TestFSStore_DefaultDedupLRUSize_AppliedWhenZero asserts the
 // default-on-zero idiom: when FSStoreOptions.DedupLRUSize is unset, the
@@ -364,11 +364,11 @@ func TestFSStore_ExplicitDedupLRUSize_Honored(t *testing.T) {
 	}
 }
 
-// TestFSStore_NilOnChunkComplete_LruTouchUnchanged is the D-12
+// TestFSStore_NilOnChunkComplete_LruTouchUnchanged is the
 // nil-safety gate: with no OnChunkComplete configured, StoreChunk must
 // still succeed and lruTouch must behave identically to pre-Phase-19
 // (no panic; the absent callback is unreferenced). chunkstore.go is
-// unmodified in Plan 04 — this is a regression guard, not an active
+// unmodified in — this is a regression guard, not an active
 // wire-in test.
 func TestFSStore_NilOnChunkComplete_LruTouchUnchanged(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{})
@@ -390,7 +390,7 @@ func TestFSStore_NilOnChunkComplete_LruTouchUnchanged(t *testing.T) {
 
 // TestFSStore_OnChunkComplete_StoredOnConstruction asserts a non-nil
 // callback passed via FSStoreOptions lands on the FSStore struct.
-// Plan 07 will fire it from chunkstore.lruTouch; Plan 04 only stores.
+// will fire it from chunkstore.lruTouch; only stores.
 func TestFSStore_OnChunkComplete_StoredOnConstruction(t *testing.T) {
 	var calls atomic.Int64
 	cb := func(_ blockstore.ContentHash, _ []byte, _ string) {
@@ -410,7 +410,7 @@ func TestFSStore_OnChunkComplete_StoredOnConstruction(t *testing.T) {
 }
 
 // TestFSStore_DedupLRU_FieldExists is a regression guard: future
-// refactors must keep bc.dedupLRU populated. Plan 05 + 07 depend on it.
+// refactors must keep bc.dedupLRU populated. + 07 depend on it.
 func TestFSStore_DedupLRU_FieldExists(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{})
 	if bc.dedupLRU == nil {

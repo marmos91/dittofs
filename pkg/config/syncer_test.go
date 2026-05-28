@@ -5,15 +5,14 @@ import (
 	"time"
 )
 
-// Phase 11 Plan 02 (D-14/D-25):
-// SyncerConfig exposes upload-pool / janitor knobs at the top-level Config
-// so operators can tune the v0.15.0 syncer without recompiling. The defaults
-// match D-25 (8 parallel uploads per share), D-14 (10-minute claim timeout),
-// and D-24 (30-second tick).
+// SyncerConfig exposes upload-pool / janitor knobs at the top-level
+// Config so operators can tune the syncer without recompiling. The
+// defaults are 8 parallel uploads per share, 10-minute claim timeout,
+// and 30-second tick.
 //
-// Phase 19 D-23 closed the Phase 18 D-16 `claim_batch_size` deprecation cycle:
-// the field was set/defaulted in Phase 11 but never read by the syncer claim
-// path. The defaults/validate/test assertions for it are gone.
+// The `claim_batch_size` field was set/defaulted historically but
+// never read by the syncer claim path. The defaults/validate/test
+// assertions for it have been removed.
 
 func TestSyncerConfig_DefaultsApplied(t *testing.T) {
 	cfg := &Config{}

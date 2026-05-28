@@ -581,7 +581,7 @@ func TestCompound_V41_MultipleSlots(t *testing.T) {
 }
 
 // ============================================================================
-// Exempt Operations (Phase 18/19 regression tests with new dispatch)
+// Exempt Operations (regression tests with new dispatch)
 // ============================================================================
 
 func TestCompound_V41_ExemptOps_AllFour(t *testing.T) {
@@ -765,7 +765,7 @@ func TestCompound_V41_OpCountLimit(t *testing.T) {
 }
 
 // ============================================================================
-// Benchmarks (Phase 20-02)
+// Benchmarks
 // ============================================================================
 
 func BenchmarkSequenceValidation(b *testing.B) {

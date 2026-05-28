@@ -235,7 +235,7 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 // extractShareName attempts to extract the share name from NFS request data.
 //
 // Most NFS procedures include a file handle at the beginning of the request.
-// This function decodes the file handle using XDR and resolves it to a share
+// Decodes the file handle using XDR and resolves it to a share
 // name using the registry.
 //
 // Parameters:

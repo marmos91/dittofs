@@ -561,7 +561,7 @@ type AuthenticateMessage struct {
 
 // ParseAuthenticate parses an NTLM Type 3 (AUTHENTICATE) message.
 //
-// This function extracts the authentication fields from a Type 3 message:
+// Extracts the authentication fields from a Type 3 message:
 //   - Username and domain for user lookup
 //   - Challenge responses for potential credential validation
 //   - Workstation name for logging
@@ -700,7 +700,7 @@ const (
 //
 // [MS-NLMP] Section 3.3.1
 //
-// This function delegates to models.ComputeNTHash to avoid code duplication.
+// Delegates to models.ComputeNTHash to avoid code duplication.
 func ComputeNTHash(password string) [16]byte {
 	return models.ComputeNTHash(password)
 }
@@ -795,7 +795,7 @@ func ValidateNTLMv2Response(
 // When KEY_EXCH is NOT negotiated:
 //   - SessionBaseKey is used directly for signing
 //
-// This function handles both cases transparently.
+// Handles both cases transparently.
 //
 // Parameters:
 //   - sessionBaseKey: The session key from ValidateNTLMv2Response

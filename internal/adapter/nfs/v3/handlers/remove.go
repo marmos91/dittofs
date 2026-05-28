@@ -225,9 +225,9 @@ func (h *Handler) Remove(
 	// Any unflushed cache data will be cleaned up by cache eviction.
 
 	if removedFileAttr.PayloadID != "" {
-		// Phase 12 API-01: nil []BlockRef triggers the dual-read /
-		// legacy delete path (D-20). Plan 08 threads the file's
-		// FileAttr.Blocks snapshot here.
+		// Nil []BlockRef triggers the dual-read / legacy delete path.
+		// A later refactor will thread the file's FileAttr.Blocks
+		// snapshot here.
 		if err := blockStore.Delete(ctx.Context, string(removedFileAttr.PayloadID), nil); err != nil {
 			// Log but don't fail the operation - metadata is already removed
 			logger.WarnCtx(ctx.Context, "REMOVE: failed to delete content", "name", req.Filename, "payload_id", removedFileAttr.PayloadID, "error", err)

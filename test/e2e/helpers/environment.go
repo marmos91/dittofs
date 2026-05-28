@@ -34,7 +34,7 @@ var globalEnv *TestEnvironment
 // It starts or reuses shared Postgres and Localstack containers.
 // Failures are reported via t.Fatal for fail-fast behavior.
 //
-// This function is idempotent - calling it multiple times returns environments
+// It is idempotent - calling it multiple times returns environments
 // that share the same underlying containers via framework singletons.
 func NewTestEnvironment(t *testing.T) *TestEnvironment {
 	t.Helper()

@@ -6,8 +6,8 @@ import (
 )
 
 // TestClient_DisableShare_ReturnsEnabledFalse verifies the client parses the
-// Enabled=false field from the response body (Plan 01 Task 4 landed the
-// field; Plan 02 wires the handler).
+// Enabled=false field from the response body (Task 4 landed the
+// field; wires the handler).
 func TestClient_DisableShare_ReturnsEnabledFalse(t *testing.T) {
 	s := newStubServer(t)
 	defer s.Close()

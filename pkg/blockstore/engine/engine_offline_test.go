@@ -56,7 +56,7 @@ func waitForUnhealthy(t *testing.T, bs *BlockStore, timeout time.Duration) {
 	t.Fatal("timed out waiting for remote to become unhealthy")
 }
 
-// TestOfflineReadCachedBlockSucceeds proves RESIL-01:
+// TestOfflineReadCachedBlockSucceeds proves RESIL-01
 // When remote is unhealthy, reading a locally-cached block still works.
 func TestOfflineReadCachedBlockSucceeds(t *testing.T) {
 	bs, fakeRemote := newHealthTestEngine(t)
@@ -103,13 +103,13 @@ func TestOfflineReadCachedBlockSucceeds(t *testing.T) {
 // content-addressed chunks (they may be shared across files via
 // file-level dedup); chunk eviction flows through the refcount → GC
 // path. The legacy "remote-only block" state would require seeding
-// metadata in a way that bypasses the production write path entirely,
+// metadata in a way that bypasses the production write path entirely
 // so reproducing it at the unit level is infeasible.
 // End-to-end "remote unhealthy + only-on-remote" coverage
-// moves to Plan 18-09's integration suite where a real GC pass can
+// moves to -09's integration suite where a real GC pass can
 // drain orphan chunks.
 
-// TestOfflineWriteSucceeds proves RESIL-03:
+// TestOfflineWriteSucceeds proves RESIL-03
 // When remote is unhealthy, writes succeed (go to local store).
 func TestOfflineWriteSucceeds(t *testing.T) {
 	bs, fakeRemote := newHealthTestEngine(t)
@@ -151,7 +151,7 @@ func TestOfflineWriteSucceeds(t *testing.T) {
 }
 
 // No unit-level assertion for the OfflineReadsBlocked counter lives
-// here: it required engine.EvictLocal to drive a local CAS chunk gone,
+// here: it required engine.EvictLocal to drive a local CAS chunk gone
 // which is no longer the contract — chunks live until refcount → GC
 // reaps them. Equivalent coverage lives in the integration suite.
 

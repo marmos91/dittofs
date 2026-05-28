@@ -1,8 +1,8 @@
-// Phase 19 Plan 08 Task 2 — engine.Flush ordering tests for eager
+// Task 2 — engine.Flush ordering tests for eager
 // small-file dedup (Opt 4).
 //
 // These pin engine.Flush's pre-rollup hook ordering: eager small-file
-// dedup runs BEFORE trySpeculativeFileLevelDedup (D-14). On hit the
+// dedup runs BEFORE trySpeculativeFileLevelDedup. On hit the
 // eager path returns &blockstore.FlushResult{Finalized: true}, nil and
 // the speculative branch (which calls coordinator.GetFileObjectID) is
 // skipped entirely.
@@ -115,7 +115,7 @@ func TestEngine_Flush_SmallFile_Miss_FallsThroughToRollup(t *testing.T) {
 		t.Fatalf("Flush: %v", err)
 	}
 	// On miss the eager path returns false → engine.Flush proceeds to
-	// the speculative branch, which (with no seeded hit) also misses,
+	// the speculative branch, which (with no seeded hit) also misses
 	// and finally delegates to bs.syncer.Flush — the rollup path.
 	// FlushResult is allowed to be non-nil or nil depending on the
 	// syncer's local-only-mode return; what matters is the speculative
@@ -147,7 +147,7 @@ func TestEngine_Flush_SmallFile_Miss_FallsThroughToRollup(t *testing.T) {
 // (getFileObjectIDCalls == 1).
 //
 // Eager's only side effect on this path is the early-return; no Cache.Put
-// fires (eager only warms cache on HIT — see D-16 + the cache-warming
+// fires (eager only warms cache on HIT — see + the cache-warming
 // fingerprint covered by Hit_ShortCircuits).
 func TestEngine_Flush_LargeFile_Bypasses_EagerPath(t *testing.T) {
 	ctx := context.Background()
@@ -155,7 +155,7 @@ func TestEngine_Flush_LargeFile_Bypasses_EagerPath(t *testing.T) {
 
 	payloadID := "large-bypass"
 	// MinChunkSize + 1 byte: above threshold ⇒ eager bypasses
-	// FindByObjectID entirely (D-13).
+	// FindByObjectID entirely.
 	data := []byte(strings.Repeat("y", chunker.MinChunkSize+1))
 
 	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
@@ -174,7 +174,7 @@ func TestEngine_Flush_LargeFile_Bypasses_EagerPath(t *testing.T) {
 	}
 }
 
-// TestEngine_Flush_EagerHit_DeletesAppendLog — D-11 mirror: on hit the
+// TestEngine_Flush_EagerHit_DeletesAppendLog — mirror: on hit the
 // shared applyFileLevelDedupHit machinery calls local.DeleteLog so any
 // in-flight appendlog state is cleaned up. We assert via the memory
 // backend's ReadPayloadAt: post-Flush, reads at offset 0 return
@@ -205,7 +205,7 @@ func TestEngine_Flush_EagerHit_DeletesAppendLog(t *testing.T) {
 		t.Fatalf("Flush: %v", err)
 	}
 
-	// Post-Flush hit: DeleteLog cleaned up the appendlog (D-11). The
+	// Post-Flush hit: DeleteLog cleaned up the appendlog. The
 	// memory backend's ReadPayloadAt returns ErrFileBlockNotFound once
 	// the appendlog has been dropped.
 	probe2 := make([]byte, len(data))

@@ -8,28 +8,26 @@ import (
 )
 
 // dedupLRU is the in-memory hash dedup LRU consulted between FastCDC
-// Next() and the CAS Put(hash, data) path in rollup.go (Phase 19 Opt 1,
-// see .planning/phases/19-write-path-ram-optimizations/19-CONTEXT.md
-// decisions D-02, D-04, D-05, D-22a).
+// Next() and the CAS Put(hash, data) path in rollup.go.
 //
-// Scope (D-02): per-share by architecture. Each share owns its own
+// Scope: per-share by architecture. Each share owns its own
 // local store and therefore its own dedupLRU. Cross-share dedup is
 // already handled by FileBlockStore.GetByHash; this LRU's job is to
 // skip even that µs hop on hot hashes.
 //
-// Crash semantics (D-05): RAM-only, lost on restart. The first
+// Crash semantics: RAM-only, lost on restart. The first
 // post-restart write that would have been an LRU hit falls through to
 // FileBlockStore.GetByHash + AddRef (correct, slightly slower for the
 // first hot-hash).
 //
-// Concurrency (D-05 "Claude's discretion" — flat-mutex chosen here):
+// Concurrency ("Claude's discretion" — flat-mutex chosen here)
 // matches the in-package fdpool.go and chunkstore lruTouch precedent
 // (sync.Mutex over container/list + map). Striping would add bucket-
 // boundary complexity without proven benefit at the 4096-slot default.
 // Re-evaluate if a future bench shows mutex contention as the limiter.
 //
-// All identifiers are package-internal — Plan 04 wires this into the
-// per-share local store; consumers in Plan 05 call Get/Put/Has via the
+// All identifiers are package-internal — fsStore wires this into the
+// per-share local store; in-package consumers call Get/Put/Has via the
 // owning store's field.
 type dedupLRU struct {
 	mu      sync.Mutex

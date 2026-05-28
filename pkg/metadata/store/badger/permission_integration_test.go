@@ -93,7 +93,7 @@ func TestBadgerStore_PermissionPersistence(t *testing.T) {
 
 	var rootHandle metadata.FileHandle
 
-	// Phase 1: Create with mode 0755
+	// Create with mode 0755
 	{
 		store, err := badger.NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
 		if err != nil {
@@ -116,7 +116,7 @@ func TestBadgerStore_PermissionPersistence(t *testing.T) {
 		store.Close()
 	}
 
-	// Phase 2: Reopen and verify persistence
+	// Reopen and verify persistence
 	{
 		store, err := badger.NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
 		if err != nil {

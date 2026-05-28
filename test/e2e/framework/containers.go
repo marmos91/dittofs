@@ -161,16 +161,16 @@ func (lh *LocalstackHelper) CreateBucket(ctx context.Context, bucketName string)
 }
 
 // S3ObjectInfo is a minimal projection of an S3 ListObjects entry used
-// by Phase 13 dedup ratio assertions.
+// by dedup ratio assertions.
 type S3ObjectInfo struct {
 	Key  string
 	Size int64
 }
 
 // ListS3PrefixWithSizes lists all objects under the given prefix in
-// the given bucket, returning their key + size. Phase 13 DEDUP-02 +
-// DEDUP-03 use this for byte-summation assertions; mirrors the
-// CleanupBucket enumeration pattern.
+// the given bucket, returning their key + size. DEDUP-02 + DEDUP-03
+// use this for byte-summation assertions; mirrors the CleanupBucket
+// enumeration pattern.
 func (lh *LocalstackHelper) ListS3PrefixWithSizes(t *testing.T, bucket, prefix string) []S3ObjectInfo {
 	t.Helper()
 	if lh.Client == nil {

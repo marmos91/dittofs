@@ -27,11 +27,11 @@ func (f *fakeBlockStoreConfig) GetConfig() (map[string]any, error) {
 	return cp, nil
 }
 
-// TestCreateLocalStoreFromConfig_AppendLogMandatory exercises the Phase 17
-// config wiring: append is mandatory on the local tier. With a metadata
-// backend that satisfies metadata.RollupStore, CreateLocalStoreFromConfig
-// must build an FSStore via NewWithOptions, start the rollup pool, and
-// return a store whose AppendWrite path succeeds.
+// TestCreateLocalStoreFromConfig_AppendLogMandatory exercises the config
+// wiring: append is mandatory on the local tier. With a metadata backend
+// that satisfies metadata.RollupStore, CreateLocalStoreFromConfig must
+// build an FSStore via NewWithOptions, start the rollup pool, and return
+// a store whose AppendWrite path succeeds.
 func TestCreateLocalStoreFromConfig_AppendLogMandatory(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
@@ -66,8 +66,8 @@ func TestCreateLocalStoreFromConfig_AppendLogMandatory(t *testing.T) {
 	}
 
 	// Sanity check: the share root was created at the expected location.
-	// Phase 19 follow-up: baseDir is shareDir, not shareDir/blocks; the
-	// FSStore creates `blocks/` (CAS) + `logs/` (append log) inside.
+	// baseDir is shareDir, not shareDir/blocks; the FSStore creates
+	// `blocks/` (CAS) + `logs/` (append log) inside.
 	expectedShareDir := filepath.Join(tmp, "shares", "test-share")
 	if _, statErr := statDir(expectedShareDir); statErr != nil {
 		t.Errorf("share dir %q not created: %v", expectedShareDir, statErr)
@@ -84,7 +84,7 @@ func TestCreateLocalStoreFromConfig_InvalidTypesIgnored(t *testing.T) {
 	cfg := &fakeBlockStoreConfig{
 		cfg: map[string]any{
 			"path":                       tmp,
-			"use_append_log":             "not-a-bool", // accepted then warned (no-op post-Phase 17)
+			"use_append_log":             "not-a-bool", // accepted then warned (no-op)
 			"max_log_bytes":              "not-a-number",
 			"rollup_workers":             float64(-1),
 			"stabilization_ms":           float64(0),

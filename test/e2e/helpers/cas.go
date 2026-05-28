@@ -1,10 +1,10 @@
 //go:build e2e
 
-// Package helpers — CAS-related E2E helpers (Phase 11).
+// Package helpers — CAS-related E2E helpers.
 //
 // These helpers are used by the canonical correctness E2E
-// (TestBlockStoreImmutableOverwrites) and the BSCAS-06 external-verifier
-// sanity test (TestExternalVerifier_ContentHashHeader). They isolate the
+// (TestBlockStoreImmutableOverwrites) and the external-verifier sanity
+// test (TestExternalVerifier_ContentHashHeader). They isolate the
 // "talk to S3 directly, bypassing DittoFS" pattern that proves the CAS
 // contract holds outside the system.
 
@@ -106,7 +106,7 @@ func GetCASObject(t *testing.T, lsHelper *framework.LocalstackHelper, bucketName
 // PutCASObject overwrites the body of a CAS key with arbitrary bytes,
 // preserving the key. Used by the canonical-correctness test to inject a
 // tampered object and confirm the BLAKE3 streaming verifier rejects the
-// next read (INV-06 tamper detection). The metadata header is preserved
+// next read (tamper detection). The metadata header is preserved
 // as-is (header pre-check should pass; body recompute should fail).
 func PutCASObject(t *testing.T, lsHelper *framework.LocalstackHelper, bucketName, key string, body []byte, metadata map[string]string) {
 	t.Helper()
@@ -168,11 +168,10 @@ func CASKeySetDiff(before, after []string) (added, removed []string) {
 // TriggerBlockGC runs `dfsctl store block gc <share>` via the existing
 // CLI runner. Returns nil on success, a non-nil error otherwise.
 //
-// Phase 11 status: the `dfsctl store block gc` subcommand lands in plan
-// 11-07 (PR-C). Until that plan is merged, this helper returns an error
-// (the dfsctl binary will reject the unknown subcommand). The canonical
-// E2E recognizes that and SKIPS with an explanatory message. After 11-07
-// merges, the helper succeeds and the test executes end-to-end.
+// If the `dfsctl store block gc` subcommand is not present in this
+// build (e.g. older binary), the dfsctl runner rejects the unknown
+// subcommand and this helper returns an error. The canonical E2E
+// recognizes that and SKIPS with an explanatory message.
 func TriggerBlockGC(t *testing.T, runner *CLIRunner, shareName string) error {
 	t.Helper()
 

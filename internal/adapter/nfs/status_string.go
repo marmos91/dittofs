@@ -10,7 +10,7 @@ import (
 // NFSStatusToString converts an NFS v3 status code to a human-readable string
 // suitable for use as a metric label.
 //
-// This function maps all NFS v3 error codes defined in RFC 1813 to their
+// It maps all NFS v3 error codes defined in RFC 1813 to their
 // canonical string representations. Unknown status codes are returned as
 // "UNKNOWN_<code>".
 //
@@ -71,7 +71,7 @@ func NFSStatusToString(status uint32) string {
 // MountStatusToString converts a Mount protocol status code to a human-readable
 // string suitable for use as a metric label.
 //
-// This function maps Mount protocol status codes defined in RFC 1813 Appendix I
+// It maps Mount protocol status codes defined in RFC 1813 Appendix I
 // to their canonical string representations. Unknown status codes are returned
 // as "MOUNT_UNKNOWN_<code>".
 //

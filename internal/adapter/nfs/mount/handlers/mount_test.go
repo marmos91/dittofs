@@ -67,10 +67,11 @@ func newMountCtx(reqCtx context.Context) *MountHandlerContext {
 	}
 }
 
-// TestMount_DisabledShare_ReturnsAccess covers REST-02: a runtime share with
-// Enabled=false must refuse MOUNT with MountErrAccess (MNT3ERR_ACCES=13) and
-// must NOT return a root file handle. This is the adapter-side belt in the
-// share-disabled-for-restore workflow (Plan 05-09 D-02).
+// TestMount_DisabledShare_ReturnsAccess covers the disabled-share path:
+// a runtime share with Enabled=false must refuse MOUNT with
+// MountErrAccess (MNT3ERR_ACCES=13) and must NOT return a root file
+// handle. This is the adapter-side belt in the share-disabled-for-restore
+// workflow.
 func TestMount_DisabledShare_ReturnsAccess(t *testing.T) {
 	h, ctx := newTestMountHandler(t, "/disabled", false)
 

@@ -1,12 +1,10 @@
 //go:build e2e
 
-// TestBlockStoreImmutableOverwrites is the canonical correctness gate for
-// v0.15.0 Phase 11 (A2). It currently FAILS on develop (per STATE.md
-// "Pending Todos") — Phase 11 ships it green. ROADMAP success criterion #1.
-// Milestone gate VER-01.
+// TestBlockStoreImmutableOverwrites is the canonical correctness gate
+// for the CAS block-store surface.
 //
-// The test exercises the full Phase 11 surface end-to-end through real
-// NFS + real Localstack S3:
+// The test exercises the full CAS surface end-to-end through real NFS +
+// real Localstack S3:
 //
 //  1. Write payload A (deterministic pseudo-random bytes) to a file.
 //  2. Drain uploads. List S3 directly: assert a non-empty cas/ key set
@@ -18,19 +16,17 @@
 //     List S3 directly: assert ONLY the B keys remain — every keysA
 //     entry has been swept (GC reaped the orphans).
 //  5. Read the file back through NFS; assert payload == B byte-for-byte
-//     (BLAKE3 verification on the read path passes — INV-06 happy path).
+//     (BLAKE3 verification on the read path passes — happy path).
 //  6. Tamper one byte of one B object directly in Localstack
 //     (preserving the CAS key but changing the body bytes). Re-read the
 //     file through NFS; assert the read FAILS (BLAKE3 streaming
-//     verifier catches the mismatch — INV-06 tamper detection).
+//     verifier catches the mismatch — tamper detection).
 //
-// Status of the GC step (Plan 11-08 author note):
+// Status of the GC step:
 //
-//	The `dfsctl store block gc <share>` subcommand lands in Plan 11-07
-//	(PR-C). Until that plan merges, the GC step uses helpers.TriggerBlockGC
-//	which delegates to the CLI runner; if the runner reports the
-//	subcommand is unknown, the test SKIPs with an explanatory message
-//	rather than failing. After 11-07 merges, the test runs end-to-end.
+//	The GC step uses helpers.TriggerBlockGC which delegates to the CLI
+//	runner; if the runner reports the subcommand is unknown, the test
+//	SKIPs with an explanatory message rather than failing.
 //
 // Run command (requires sudo + Docker for Localstack):
 //
@@ -53,8 +49,8 @@ import (
 )
 
 // payloadSize is the canonical-test file size. Chosen so the FastCDC
-// chunker (Phase 10: min 1 MiB / avg 4 MiB / max 16 MiB) emits more
-// than one chunk on average — exercising the multi-chunk overwrite
+// chunker (min 1 MiB / avg 4 MiB / max 16 MiB) emits more than one
+// chunk on average — exercising the multi-chunk overwrite
 // path. Two-chunk minimum makes "old keys preserved, new keys distinct"
 // non-trivial (a single-chunk file would only tell us "one CAS key got
 // replaced", which is weaker than "the chunk SET is disjoint between
@@ -162,14 +158,14 @@ func TestBlockStoreImmutableOverwrites(t *testing.T) {
 		t.Skipf("DEFERRED: dfsctl store block gc subcommand not yet wired (Plan 11-07 dependency): %v", err)
 	}
 
-	// GC has a grace period (default 1h per D-05). The test config does
-	// NOT override that today — once Plan 11-07 lands a knob to set
-	// gc.grace_period or pass --grace-period 0 on the CLI, this test
-	// can drop the conservative wait. For now: sleep briefly to let
-	// the in-process GC last-run.json land, then re-list. If the keys
-	// have not yet been reaped (because the grace period swallowed the
-	// run), surface that as a clear error so the operator knows to
-	// configure grace=0 in the test profile.
+	// GC has a grace period (default 1h). The test config does NOT
+	// override that today — once a knob to set gc.grace_period or pass
+	// --grace-period 0 on the CLI lands, this test can drop the
+	// conservative wait. For now: sleep briefly to let the in-process
+	// GC last-run.json land, then re-list. If the keys have not yet
+	// been reaped (because the grace period swallowed the run), surface
+	// that as a clear error so the operator knows to configure grace=0
+	// in the test profile.
 	time.Sleep(1 * time.Second)
 
 	keysAfterGC := helpers.ListCASKeys(t, lsHelper, bucket)
@@ -225,7 +221,7 @@ func TestBlockStoreImmutableOverwrites(t *testing.T) {
 		t.Logf("step 4: re-read OK, sha256=%s matches payload B", shortSha256(got))
 	}
 
-	// ---- Step 5 (INV-06): tamper one B object directly; assert read fails ----
+	// ---- Step 5: tamper one B object directly; assert read fails ----
 	require.NotEmpty(t, keysAfterGC, "must have at least one surviving CAS key for tamper test")
 	tamperKey := keysAfterGC[0]
 	originalMeta, _ := helpers.HeadCASObject(t, lsHelper, bucket, tamperKey)

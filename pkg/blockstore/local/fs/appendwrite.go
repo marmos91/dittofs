@@ -14,30 +14,30 @@ import (
 )
 
 // logFile wraps an open per-payload append-log file descriptor. The path
-// is held alongside so recovery (Phase 10-06) can reopen after a forced
+// is held alongside so recovery (06) can reopen after a forced
 // close on write error (mirrors fdPool.Evict posture from the legacy
 // path).
 type logFile struct {
 	f    *os.File
 	path string
 	// groupCommit coalesces concurrent fsyncs against this log's fd into
-	// a single underlying f.Sync() call (Phase 19 Opt 2, D-06/D-07/D-08).
+	// a single underlying f.Sync() call (Opt 2).
 	// Per-file scope — different logFiles fsync independently. Synchronous
 	// durability preserved: Sync(ctx) blocks until fsync completes; NFS
 	// COMMIT / SMB Flush callers see no async ack.
 	//
 	// The coordinator is bound to lf.f.Sync at construction (bound method
-	// value). The fd is owned for the lifetime of the FSStore (D-34, not
+	// value). The fd is owned for the lifetime of the FSStore (not
 	// pooled, not rotated); there is no file-rotation path that would
 	// stale-capture lf.f. On error-recovery close (the writeRecord-error
 	// branch in AppendWrite), the entire *logFile is dropped from
 	// bc.logFDs and a fresh one is constructed on next touch — the
 	// coordinator goes with it.
 	//
-	// Teardown: no explicit Stop is required. The Plan 03 design has no
+	// Teardown: no explicit Stop is required. The design has no
 	// goroutines outside the in-flight piggyback path; any in-flight
-	// fsync against a Close()d fd surfaces as an EBADF to its caller,
-	// which is the correct error posture (D-08 — caller observes the
+	// fsync against a Close()d fd surfaces as an EBADF to its caller
+	// which is the correct error posture (caller observes the
 	// fsync result).
 	groupCommit *groupCommit
 
@@ -51,8 +51,8 @@ type logFile struct {
 	eofPos uint64
 }
 
-// logPath returns the on-disk path for a payload's append-log file:
-// {baseDir}/logs/{payloadID}.log (D-09 flat layout; one log per payload).
+// logPath returns the on-disk path for a payload's append-log file
+// {baseDir}/logs/{payloadID}.log (flat layout; one log per payload).
 func (bc *FSStore) logPath(payloadID string) string {
 	return filepath.Join(bc.baseDir, "logs", payloadID+".log")
 }
@@ -67,7 +67,7 @@ func (bc *FSStore) logPath(payloadID string) string {
 // append. The per-file mutex and interval tree are allocated per payload
 // on first call and reused thereafter.
 //
-// D-34: the log fd is owned here for the lifetime of the FSStore and is
+// the log fd is owned here for the lifetime of the FSStore and is
 // NOT routed through fdPool — AppendWrite is append-only single-file-per-
 // payload, so the pool (optimized for random-access .blk files) would be
 // a pessimization.
@@ -94,7 +94,7 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 			return nil, nil, nil, fmt.Errorf("append log: mkdir: %w", err)
 		}
 		// Declare f at outer scope and use `=` (not `:=`) in the branches
-		// below to avoid the shadowing bug called out in plan 04.
+		// below to avoid the shadowing bug called out in.
 		var f *os.File
 		var eof int64
 		_, statErr := os.Stat(path)
@@ -123,7 +123,7 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 			return nil, nil, nil, fmt.Errorf("append log: stat: %w", statErr)
 		}
 		lf = &logFile{f: f, path: path, eofPos: uint64(eof)}
-		// Phase 19 Opt 2 (D-06/D-07/D-08): per-file fsync coordinator.
+		// Opt 2: per-file fsync coordinator.
 		// Bound method value captures lf.f at construction; lf.f is not
 		// rotated for the FSStore lifetime, so the binding stays valid.
 		lf.groupCommit = newGroupCommit(lf.f.Sync)
@@ -147,28 +147,27 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 }
 
 // AppendWrite writes exactly one framed record to the payload's append
-// log (LSL-03). The append is serialized by a per-file mutex (D-32) to
+// log. The append is serialized by a per-file mutex to
 // guarantee crash-safe log ordering — a lock-free log would risk torn
-// pwrite + successful fsync overwriting acknowledged data (see D-32
-// rationale).
+// pwrite + successful fsync overwriting acknowledged data.
 //
-// Returns:
+// Returns
 //   - ErrStoreClosed if the store is closed.
 //   - nil if len(data) == 0 (matches WriteAt short-circuit).
 //   - ctx.Err() if the context is canceled before or during the pressure
 //     wait.
 //
-// Pressure semantics (D-14/D-15): if logBytesTotal exceeds maxLogBytes,
-// AppendWrite blocks on bc.pressureCh (pulsed by the rollup in Phase
-// 10-06) or ctx.Done / bc.done. This is the only blocking arm; the
+// Pressure semantics: if logBytesTotal exceeds maxLogBytes
+// AppendWrite blocks on bc.pressureCh (pulsed by the rollup) or
+// ctx.Done / bc.done. This is the only blocking arm; the
 // mutex window itself is bounded to pwrite + fsync + tree.Insert (~5µs
 // on NVMe).
 //
 // On successful append the interval tree gains a single entry covering
 // [offset, offset+len(data)) with Touched=now; the rollup later consumes
-// it after the stabilization window (D-16).
+// it after the stabilization window.
 //
-// D-34: this method never touches bc.fdPool — the log fd is owned for
+// AppendWrite never touches bc.fdPool — the log fd is owned for
 // the lifetime of the FSStore, not pooled.
 func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byte, offset uint64) error {
 	if bc.isClosed() {
@@ -184,7 +183,7 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		return fmt.Errorf("append log: payload too large: %d", len(data))
 	}
 
-	// D-28 / plan 09: short-circuit writes for tombstoned payloads. This
+	// short-circuit writes for tombstoned payloads. This
 	// check sits BEFORE the pressure loop so a writer stuck on pressure
 	// for a to-be-deleted payload still surfaces ErrDeleted promptly once
 	// DeleteAppendLog tombstones the id (DeleteAppendLog acquires the
@@ -197,7 +196,7 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		return ErrDeleted
 	}
 
-	// Pressure loop (D-14/D-15). Re-check under the loop in case the
+	// Pressure loop. Re-check under the loop in case the
 	// rollup pulsed pressureCh but another writer consumed the freed
 	// budget before this goroutine could proceed.
 	for bc.logBytesTotal.Load() > bc.maxLogBytes {
@@ -235,7 +234,7 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		return ErrStoreClosed
 	}
 
-	// Tombstone re-check under the per-file mutex (D-28 / plan 09). A
+	// Tombstone re-check under the per-file mutex. A
 	// DeleteAppendLog call that tombstoned the payload while we were
 	// waiting on the mutex above must be surfaced here rather than after
 	// a wasted log append; DeleteAppendLog itself acquires the same mutex
@@ -266,14 +265,14 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 
 	n, err := writeRecord(lf.f, offset, data)
 	if err != nil {
-		// Recovery posture mirrors fdPool.Evict in the legacy write path:
+		// Recovery posture mirrors fdPool.Evict in the legacy write path
 		// close + drop the fd so the next call reopens fresh and an
 		// already-written prefix does not poison subsequent appends.
 		//
-		// LOCK ORDERING (FIX-2 / FIX-20 extension, Phase 19 D-09):
+		// LOCK ORDERING (FIX-2 / FIX-20 extension)
 		//   per-file `mu` (held by caller across this region)
 		//     → groupCommit.mu (acquired inside lf.groupCommit.Sync below)
-		//       → bc.logsMu (NEVER held while waiting on groupCommit.mu;
+		// → bc.logsMu (NEVER held while waiting on groupCommit.mu
 		//                    the coordinator NEVER references logsMu
 		//                    directly — enforced by the
 		//                    TestGroupCommit_NoLogsMuTouch grep gate).
@@ -303,12 +302,12 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		_ = lf.f.Close()
 		return fmt.Errorf("append log: %w", err)
 	}
-	// Phase 19 Opt 2 (D-06/D-07/D-08): fsync coalesced through the
+	// Opt 2: fsync coalesced through the
 	// per-logFile groupCommit coordinator. Synchronous durability
 	// preserved — caller blocks until fsync completes; NFS COMMIT /
 	// SMB Flush callers see no async ack. The per-file `mu` is still
 	// held across this call; coordinator's internal mu is a different
-	// lock (D-09 lock-order rule in the godoc block above).
+	// lock (lock-order rule in the godoc block above).
 	//
 	// TRANSITIONAL-NEXT-MILESTONE: O_DIRECT for log writes (see #519
 	// "Deferred to v0.17+"). When O_DIRECT lands, the groupCommit
@@ -343,7 +342,7 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		idx.Append(logPos, offset, uint32(len(data)))
 	}
 
-	// Non-blocking nudge to the rollup pool (plan 06). If the channel is
+	// Non-blocking nudge to the rollup pool. If the channel is
 	// full, drop the signal — the rollup worker's ticker arm will pick up
 	// this payloadID on the next scan of dirtyIntervals.
 	if bc.rollupCh != nil {
@@ -355,11 +354,11 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 	return nil
 }
 
-// DeleteAppendLog runs the D-28 delete sequence for payloadID. Idempotent:
+// DeleteAppendLog runs the delete sequence for payloadID. Idempotent
 // calling on a payload with no log is a no-op (returns nil).
 //
 // FIX-17: step 4 (`os.Remove(lf.path)`) may legitimately fail in the wild
-// (EBUSY on Windows-mounted volumes, EROFS on a degraded backing store,
+// (EBUSY on Windows-mounted volumes, EROFS on a degraded backing store
 // EACCES if file ownership shifted). The error is now SURFACED to the
 // caller — wrapped and logged — instead of silently swallowed. Step 5
 // state cleanup still runs so the in-memory FSStore stays consistent
@@ -372,7 +371,7 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 // Tombstone lifecycle: the tombstone set in step 1 is CLEARED in step 5
 // after the in-flight drain (step 2) has serialized us against all
 // pre-delete AppendWrites and rollups. Clearing on success is safe
-// because:
+// because
 //
 //   - Step 2's Lock/Unlock barrier waits for any goroutine that
 //     snapshotted bc.logFDs / bc.logLocks BEFORE step 1's
@@ -386,22 +385,22 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 //     existed, which is exactly the desired semantics for the
 //     "unlink + create at same path" workflow DittoFS's path-based
 //     PayloadID strategy requires (see
-//     metadata/file_helpers.go::buildPayloadID — PayloadID is derived
+//     metadata/file_helpers.go:buildPayloadID — PayloadID is derived
 //     from shareName + path, so recreating a file at the same path
 //     reuses the same PayloadID).
 //
 // This reverses the FIX-8 invariant (which kept the tombstone for the
 // FSStore lifetime to eliminate a clear-on-success resurrection race).
-// FIX-8 assumed callers would allocate a fresh PayloadID on recreate;
-// DittoFS's path-based PayloadID strategy violates that assumption,
+// FIX-8 assumed callers would allocate a fresh PayloadID on recreate
+// DittoFS's path-based PayloadID strategy violates that assumption
 // breaking POSIX recreate-at-same-name workflows over NFSv3 (which
-// has no silly-rename masking — see pjdfstest chmod/12.t, unlink/14.t,
+// has no silly-rename masking — see pjdfstest chmod/12.t, unlink/14.t
 // open/00.t).
 //
-// Ordering (D-28, Blocker 3 fix):
+// Ordering (Blocker 3 fix)
 //  1. Set tombstone under bc.logsMu so new AppendWrites and new rollupFile
 //     entries short-circuit immediately.
-//  2. Acquire the per-file mutex. Because rollupFile (plan 06) holds the
+//  2. Acquire the per-file mutex. Because rollupFile holds the
 //     same mutex through reconstructStream → chunker → StoreChunk →
 //     CommitChunks, blocking on Lock() here genuinely waits for any
 //     in-flight rollup to finish. Rollup's pre-commit tombstone re-check
@@ -409,20 +408,20 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 //     for a tombstoned payload even if it acquired the mutex first — so
 //     once we hold the mutex, metadata is guaranteed consistent with the
 //     tombstone we just set.
-//  3. Clear the rollup_offset row (best-effort; INV-03 rejection is
+//  3. Clear the rollup_offset row (best-effort; rejection is
 //     expected when a prior rollup persisted a positive offset and is
 //     treated as benign — the tombstone blocks any future rollup so a
 //     residual positive offset is harmless once the log and dirty state
 //     are gone).
 //  4. Close + unlink the log file.
-//  5. Clear per-file in-memory state (fd, lock, interval tree,
+//  5. Clear per-file in-memory state (fd, lock, interval tree
 //     truncation boundary) AND clear the tombstone — the drain in
 //     step 2 has serialized us against all pre-delete writers/rollups
 //     so it is safe to allow fresh recreates here.
 //
 // Orphan content-addressed chunks under blocks/{hh}/{hh}/{hex} are NOT
-// removed here; they are swept by Phase 11's mark-sweep GC. This is a
-// known and documented limitation (10-CONTEXT.md D-38).
+// removed here; they are swept by 's mark-sweep GC. This is a
+// known and documented limitation (10-CONTEXT.md).
 func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error {
 	if bc.isClosed() {
 		return ErrStoreClosed
@@ -455,12 +454,12 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 		mu.Unlock() //nolint:staticcheck // SA2001: see above
 	}
 
-	// Step 3: clear metadata row (source of truth advance). INV-03
+	// Step 3: clear metadata row (source of truth advance).
 	// monotone enforcement means SetRollupOffset(payloadID, 0) is
 	// rejected with ErrRollupOffsetRegression when a prior rollup
 	// persisted a positive offset. That rejection is BENIGN: the
 	// tombstone set in step 1 prevents any future rollup from touching
-	// this payload, and Phase 11 mark-sweep GC will collect the
+	// this payload, and mark-sweep GC will collect the
 	// associated chunks. We deliberately swallow the error.
 	if bc.rollupStore != nil {
 		_, _ = bc.rollupStore.SetRollupOffset(ctx, payloadID, 0)
@@ -520,8 +519,8 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 	return stepFourErr
 }
 
-// TruncateAppendLog records a truncation boundary for payloadID (D-29).
-// Subsequent behavior:
+// TruncateAppendLog records a truncation boundary for payloadID.
+// Subsequent behavior
 //   - The per-file interval tree drops entries whose Offset >= newSize and
 //     clips entries that straddle (intervalTree.DropAbove).
 //   - rollupFile consults bc.truncations and filters / clips records
@@ -536,8 +535,8 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 //
 // Idempotent on a payload with no log (no-op).
 //
-// D-29 explicitly accepts that the truncation boundary is in-memory only
-// this phase (T-10-09-04). Persistent truncate across crash is Phase 12
+// explicitly accepts that the truncation boundary is in-memory only
+// this phase. Persistent truncate across crash is
 // when `[]BlockRef` carries per-chunk size.
 func (bc *FSStore) TruncateAppendLog(_ context.Context, payloadID string, newSize uint64) error {
 	if bc.isClosed() {

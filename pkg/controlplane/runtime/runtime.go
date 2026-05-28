@@ -178,8 +178,8 @@ func (r *Runtime) GetMetadataStoreForShare(shareName string) (metadata.MetadataS
 }
 
 // LocalStoreDir returns the on-disk data directory for the named share's
-// local block store. Used by the Phase 14 migration status REST handler
-// (Plan 14-06) to locate the per-share `.migration-state.jsonl` journal.
+// local block store. Used by the migration status REST handler to locate
+// the per-share `.migration-state.jsonl` journal.
 //
 // Returns an empty string + nil error when the share's local store has
 // no persistent root (memory backend) — handlers should treat "" as
@@ -206,7 +206,7 @@ func (r *Runtime) LocalStoreDir(shareName string) (string, error) {
 //     say anything definitive about a share it doesn't know about.
 //   - "metadata store not loaded" → [health.StatusUnknown] as well.
 //     The store may have been registered earlier but evicted, or
-//     simply never registered (a startup misconfiguration). Without
+//     never registered (a startup misconfiguration). Without
 //     a way to distinguish those cases — the registry doesn't expose
 //     the difference — the conservative answer is StatusUnknown:
 //     the probe is indeterminate, not the share itself broken. A
@@ -471,10 +471,10 @@ func (r *Runtime) SetSyncerDefaults(cfg *shares.SyncerDefaults) {
 }
 
 // GCDefaults captures the operator-configured GC knobs the runtime threads
-// into engine.Options on every CollectGarbage invocation. Phase 11 WR-01:
-// without this wiring the engine silently fell back to its hardcoded
-// defaults (1h grace, 16-way sweep, 1000-sample dry run) regardless of
-// what the operator put in gc.* config.
+// into engine.Options on every CollectGarbage invocation. Without this
+// wiring the engine silently falls back to its hardcoded defaults (1h
+// grace, 16-way sweep, 1000-sample dry run) regardless of what the
+// operator put in gc.* config.
 type GCDefaults struct {
 	GracePeriod      time.Duration
 	SweepConcurrency int

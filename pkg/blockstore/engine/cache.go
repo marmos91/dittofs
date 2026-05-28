@@ -28,7 +28,7 @@ const defaultPrefetchWorkers = 4
 const reqQueueSize = 64
 
 // CacheInterface is the narrow surface engine code depends on. The
-// concrete *Cache and the nullCache{} Null Object both satisfy it,
+// concrete *Cache and the nullCache{} Null Object both satisfy it
 // eliminating defensive nil-checks across the engine package.
 type CacheInterface interface {
 	Get(hash blockstore.ContentHash) ([]byte, bool)
@@ -47,15 +47,15 @@ var _ CacheInterface = nullCache{}
 // to v0.17+"). When cold-cache prefetch lands, the Cache will be
 // proactively warmed on share-open via an offline LRU snapshot, not
 // just on first-read. The current write-side OnChunkComplete wiring
-// (engine.go Plan 07) already covers the warm-after-write case; cold-
+// (engine.go) already covers the warm-after-write case; cold-
 // cache covers the restart-then-read case.
 
 // Cache is the single-type, CAS-keyed in-memory cache (CACHE-01..05). It
 // folds the prefetch worker pool into one type.
 //
-// On miss, bytes are loaded via local.Get(ctx, hash) — see
+// On miss, bytes are loaded via local.Get(ctx, hash) —
 // engine.loadByHash. The Cache copies the returned []byte into its
-// LRU slot (buffer ownership). No mmap/page-cache fast path exists;
+// LRU slot (buffer ownership). No mmap/page-cache fast path exists
 // production workloads are warm-cache and the per-miss alloc is
 // uncontended.
 //
@@ -70,7 +70,7 @@ var _ CacheInterface = nullCache{}
 // boundary, so T-12-25 is "accept" by design.
 //
 // CACHE-02 cross-file dedup: two payloads referencing the same
-// ContentHash share one cache entry. Eviction is hash-scoped (LRU);
+// ContentHash share one cache entry. Eviction is hash-scoped (LRU)
 // InvalidateFile is surgical (drops only the explicitly-listed hashes
 // for a file, preserving any shared entries).
 type Cache struct {
@@ -94,7 +94,7 @@ type Cache struct {
 	closed atomic.Bool
 }
 
-// cacheEntry is the value stored in each list.Element. Keyed by hash;
+// cacheEntry is the value stored in each list.Element. Keyed by hash
 // data is a heap-copied slice owned by the cache.
 type cacheEntry struct {
 	hash blockstore.ContentHash
@@ -110,7 +110,7 @@ type cacheEntry struct {
 type LoadByHashFn func(ctx context.Context, hash blockstore.ContentHash) ([]byte, error)
 
 // seqTracker — per-payloadID sequential-read state machine. lastHashes
-// is a ring of the most recent OnRead hashes (capped at seqThreshold);
+// is a ring of the most recent OnRead hashes (capped at seqThreshold)
 // allHashes is a longer running window used to choose which upcoming
 // hashes to prefetch when the threshold is reached.
 type seqTracker struct {
@@ -136,7 +136,7 @@ type CacheStats struct {
 }
 
 // nullCache is a no-op CacheInterface implementation. The BlockStore
-// constructor substitutes nullCache{} when the cache budget is zero,
+// constructor substitutes nullCache{} when the cache budget is zero
 // eliminating defensive nil-checks across the engine (Null Object
 // pattern).
 type nullCache struct{}
@@ -317,7 +317,7 @@ func (c *Cache) InvalidateFile(payloadID string, removedHashes []blockstore.Cont
 // satisfied the read; the cache uses the per-payloadID sequential
 // tracker to decide whether to fire prefetch on the upcoming hashes.
 //
-// Tracker semantics:
+// Tracker semantics
 //
 //   - Empty hashes: explicit "reset" signal. Drop the tracker; no
 //     prefetch.

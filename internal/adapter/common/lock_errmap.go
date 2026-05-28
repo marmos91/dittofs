@@ -9,7 +9,7 @@ import (
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
-// Lock-context mapping (D-08 §3).
+// Lock-context mapping.
 //
 // In a LOCK request (SMB2 LOCK, NLM/NFSv3 NLM_LOCK, NFSv4 LOCK/LOCKU) the
 // same merrs.ErrorCode values map to different protocol codes than in the

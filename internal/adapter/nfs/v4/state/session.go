@@ -12,8 +12,8 @@ import (
 //
 // A session ties together a session ID, client ID, fore/back channel
 // slot tables, and negotiated channel attributes. Sessions are created
-// by the CREATE_SESSION operation (Phase 19) and looked up by ID in
-// the SEQUENCE operation (Phase 20).
+// by the CREATE_SESSION operation and looked up by ID in the SEQUENCE
+// operation.
 //
 // This struct is intentionally independent of StateManager -- the
 // CREATE_SESSION handler creates a Session via NewSession and then
@@ -48,7 +48,7 @@ type Session struct {
 	CreatedAt time.Time
 
 	// ============================================================================
-	// Backchannel State (Phase 22)
+	// Backchannel State
 	// ============================================================================
 
 	// BackchannelSecParms stores the callback security parameters from
@@ -71,7 +71,7 @@ type Session struct {
 // NewSlotTable clamps the slot count to [MinSlots, DefaultMaxSlots].
 //
 // This constructor does NOT register the session with StateManager.
-// Registration is Phase 19's responsibility (CREATE_SESSION handler).
+// Registration is the CREATE_SESSION handler's responsibility.
 func NewSession(clientID uint64, foreAttrs, backAttrs types.ChannelAttrs, flags, cbProgram uint32) (*Session, error) {
 	var sid types.SessionId4
 

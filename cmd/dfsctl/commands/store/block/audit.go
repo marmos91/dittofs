@@ -11,9 +11,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/apiclient"
 )
 
-// auditRefcountsCmd verifies INV-02 (∑ FileBlock.RefCount ==
-// ∑ len(FileAttr.Blocks)) for the named share. Persists last-run
-// summary at <localStore>/audit-state/last-inv02.json (Phase 12 D-36).
+// auditRefcountsCmd verifies the refcount invariant (∑ FileBlock.RefCount
+// == ∑ len(FileAttr.Blocks)) for the named share. Persists last-run
+// summary at <localStore>/audit-state/last-inv02.json.
 var auditRefcountsCmd = &cobra.Command{
 	Use:   "audit-refcounts <share>",
 	Short: "Verify FileBlock.RefCount matches FileAttr.Blocks references",
@@ -26,7 +26,7 @@ or signal a bug in the dedup short-circuit.
 
 Persists last-run summary at <localStore>/audit-state/last-inv02.json
 analogously to GC's last-run.json. Operator-invokable; no periodic
-schedule in v0.15.0 (Phase 12 D-36).
+schedule in v0.15.0.
 
 Examples:
   dfsctl store block audit-refcounts myshare

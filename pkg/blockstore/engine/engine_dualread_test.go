@@ -107,7 +107,7 @@ func TestDualRead_CASRowRoutesToVerified(t *testing.T) {
 		t.Fatalf("seed remote: %v", err)
 	}
 
-	// Register the FileBlock metadata: Hash set, BlockStoreKey = casKey,
+	// Register the FileBlock metadata: Hash set, BlockStoreKey = casKey
 	// State = Remote (post-Phase-11 row).
 	fb := &blockstore.FileBlock{
 		ID:            fmt.Sprintf("%s/0", payloadID),
@@ -160,7 +160,7 @@ func TestDualRead_NoFileBlockReturnsNil(t *testing.T) {
 
 // TestDualRead_CASRowMismatchSurfacesError asserts that bytes that fail
 // BLAKE3 verification are surfaced as ErrCASContentMismatch through the
-// engine read path (INV-06 plumbed end-to-end).
+// engine read path (plumbed end-to-end).
 func TestDualRead_CASRowMismatchSurfacesError(t *testing.T) {
 	env := newDualReadEnv(t)
 	ctx := context.Background()
@@ -208,10 +208,10 @@ func TestDualRead_CASRowMismatchSurfacesError(t *testing.T) {
 	}
 }
 
-// TestDualRead_CASMissingObjectFailsClosed (Phase 11 IN-3-05): a row
+// TestDualRead_CASMissingObjectFailsClosed: a row
 // with a non-zero hash whose CAS object is absent from the remote MUST
-// surface as ErrBlockNotFound, NOT silently return zeros. INV-04
-// fail-closed makes this state structurally impossible under correct GC,
+// surface as ErrBlockNotFound, NOT silently return zeros.
+// fail-closed makes this state structurally impossible under correct GC
 // but if a bug ever lets a live CAS object get reaped, the read path
 // should fail loudly rather than corrupt the caller's data.
 func TestDualRead_CASMissingObjectFailsClosed(t *testing.T) {
@@ -249,9 +249,9 @@ func TestDualRead_CASMissingObjectFailsClosed(t *testing.T) {
 	}
 }
 
-// TestDualRead_LegacyRowRefusedPostMigration (Phase 17): a FileBlock
+// TestDualRead_LegacyRowRefusedPostMigration: a FileBlock
 // with a zero ContentHash that reaches dispatchRemoteFetch is migration
-// drift. Plan 09's boot guard refuses to start against an un-migrated
+// drift. 's boot guard refuses to start against an un-migrated
 // store, but if the sentinel is lost or hand-removed and a stray legacy-
 // shaped row surfaces at runtime, the read path MUST refuse rather than
 // silently return zeros. This is the replacement for the pre-Phase-17
@@ -261,8 +261,8 @@ func TestDualRead_LegacyRowRefusedPostMigration(t *testing.T) {
 	ctx := context.Background()
 
 	const payloadID = "share/legacy-row"
-	// Synthesize the legacy "{payloadID}/block-{idx}" key shape directly;
-	// the helper was deleted in Phase 17 with the rest of the legacy
+	// Synthesize the legacy "{payloadID}/block-{idx}" key shape directly
+	// the helper was deleted in with the rest of the legacy
 	// path-keyed surface.
 	legacyKey := payloadID + "/block-0"
 

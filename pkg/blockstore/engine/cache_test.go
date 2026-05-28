@@ -23,7 +23,7 @@ func hashN(b byte) blockstore.ContentHash {
 }
 
 // TestCache_GetPut_Basic — Task 1 behavior 1.
-// Put(h, data) ; Get(h) returns the same bytes ; Get(otherHash) returns false.
+// Put(h, data); Get(h) returns the same bytes; Get(otherHash) returns false.
 func TestCache_GetPut_Basic(t *testing.T) {
 	c := newCacheNoWorkers(1024)
 	require.NotNil(t, c)
@@ -43,7 +43,7 @@ func TestCache_GetPut_Basic(t *testing.T) {
 }
 
 // TestCache_LRUEviction — Task 1 behavior 2.
-// maxBytes=10 ; Put 12 bytes; oldest evicted; newest still hits.
+// maxBytes=10; Put 12 bytes; oldest evicted; newest still hits.
 func TestCache_LRUEviction(t *testing.T) {
 	c := newCacheNoWorkers(10)
 	require.NotNil(t, c)

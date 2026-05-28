@@ -101,7 +101,7 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		return NewErrorResult(types.StatusBadNetworkName), nil
 	}
 
-	// REST-02 / D-02: refuse TREE_CONNECT on a disabled share. Matches
+	// Refuse TREE_CONNECT on a disabled share. Matches
 	// MS-SMB2 2.2.9 — STATUS_NETWORK_NAME_DELETED is the spec error for a
 	// share that existed but is no longer available. The Enabled flag is
 	// flipped by shares.Service.DisableShare before restore; clients see

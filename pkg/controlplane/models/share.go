@@ -24,7 +24,7 @@ type Share struct {
 	LocalBlockStoreID  string  `gorm:"not null;size:36" json:"local_block_store_id"`
 	RemoteBlockStoreID *string `gorm:"size:36" json:"remote_block_store_id"`
 	ReadOnly           bool    `gorm:"default:false" json:"read_only"`
-	Enabled            bool    `gorm:"default:true;not null" json:"enabled"` // D-01/D-25. REST-02 gate: restore refuses if any share on the target store is still enabled.
+	Enabled            bool    `gorm:"default:true;not null" json:"enabled"` // REST-02 gate: restore refuses if any share on the target store is still enabled.
 	EncryptData        bool    `gorm:"default:false" json:"encrypt_data"`    // SMB3: set SMB2_SHAREFLAG_ENCRYPT_DATA in TREE_CONNECT
 	// AclFlagInheritedCanonicalization controls whether the SMB CREATE/SET_INFO
 	// Security path canonicalizes the SE_DACL_AUTO_INHERITED control bit per

@@ -14,7 +14,7 @@ import (
 )
 
 // This file lands the BlockStore + BlockStoreAppend method surface on
-// *FSStore (Phase 17 Plan 07). Each method delegates to the existing
+// *FSStore. Each method delegates to the existing
 // chunkstore.go primitives (StoreChunk / ReadChunk / HasChunk /
 // DeleteChunk / chunkPath) — there is no new on-disk layout introduced
 // here. The CAS chunk store under <baseDir>/blocks/<hh>/<hh>/<hex>
@@ -159,7 +159,7 @@ func (bc *FSStore) Walk(ctx context.Context, fn func(hash blockstore.ContentHash
 		if infoErr != nil {
 			// Race vs concurrent Delete: a file enumerated by WalkDir
 			// can disappear before d.Info() runs. Skip vanished
-			// entries silently; surface anything else (permission,
+			// entries silently; surface anything else (permission
 			// transient I/O) so callers like GC don't miss objects.
 			if errors.Is(infoErr, os.ErrNotExist) {
 				return nil
@@ -189,7 +189,7 @@ func (bc *FSStore) Walk(ctx context.Context, fn func(hash blockstore.ContentHash
 
 // ListUnsynced returns a push iterator over every CAS hash present in
 // the local store that has not yet been marked synced. The iterator
-// materializes the hash set up front by running Walk to completion,
+// materializes the hash set up front by running Walk to completion
 // then filters that snapshot against the injected SyncedHashStore one
 // hash at a time. Snapshot-at-start semantics keep iteration bounded
 // even under hot-write workloads: chunks rolled up after Walk returns

@@ -129,7 +129,7 @@ func NewSlotTable(numSlots uint32) *SlotTable {
 // Returns the validation result, a pointer to the slot (for SeqNew/SeqRetry),
 // and an error (for BADSLOT, SEQ_MISORDERED, DELAY, RETRY_UNCACHED_REP).
 //
-// For a SeqNew result, this method also marks the slot as in-use while
+// For a SeqNew result, also marks the slot as in-use while
 // holding st.mu, making validation and reservation atomic. The caller must
 // call CompleteSlotRequest when the request is finished.
 //

@@ -26,7 +26,7 @@ func logFileSize(t *testing.T, bc *FSStore, payloadID string) int64 {
 // the deadline expires. Used to confirm rollup drained the budget. We
 // key compaction-bound tests off logBytesTotal rather than
 // metadata.rollup_offset because once compaction trips, the metadata
-// fence is frozen by INV-03 monotonicity at the pre-compaction
+// fence is frozen by monotonicity at the pre-compaction
 // high-water mark — only the in-memory budget continues to drop as
 // records are consumed.
 func waitForLogBytesBelow(t *testing.T, bc *FSStore, max int64, timeout time.Duration) {
@@ -85,7 +85,7 @@ func TestCompaction_BoundedLogSize(t *testing.T) {
 	// AppendWrite has been processed. logBytesTotal goes back to zero
 	// when every record is consumed; we don't key off metadata
 	// rollup_offset because once compaction trips, the metadata fence
-	// is frozen at the pre-compaction high-water mark by INV-03
+	// is frozen at the pre-compaction high-water mark by
 	// monotonicity — only the in-memory fence and on-disk header
 	// continue to advance.
 	waitForLogBytesBelow(t, bc, 64*1024, 10*time.Second)
@@ -166,7 +166,7 @@ func TestCompaction_RecoveryRebuildsAfterCompact(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// Phase 1: write enough records to drive at least one compaction.
+	// write enough records to drive at least one compaction.
 	chunk := bytes.Repeat([]byte{0xA1}, 4*1024)
 	const phase1Writes = 64
 	for i := 0; i < phase1Writes; i++ {
@@ -177,7 +177,7 @@ func TestCompaction_RecoveryRebuildsAfterCompact(t *testing.T) {
 	phase1Bytes := uint64(phase1Writes) * uint64(len(chunk))
 	waitForLogBytesBelow(t, bc, 32*1024, 10*time.Second)
 
-	// Phase 2: close the store BEFORE measuring size. Close() joins rollup
+	// close the store BEFORE measuring size. Close() joins rollup
 	// and compaction workers, guaranteeing no in-flight compaction can leave
 	// a partial tail that recovery would then truncate — which was the root
 	// cause of the pre-existing flake (pre/post size mismatch).
@@ -207,7 +207,7 @@ func TestCompaction_RecoveryRebuildsAfterCompact(t *testing.T) {
 		t.Fatalf("Recover: %v", err)
 	}
 
-	// Phase 3: post-recovery, the in-memory logIndex should reflect the
+	// post-recovery, the in-memory logIndex should reflect the
 	// post-compaction layout — entries from the dropped prefix must NOT
 	// reappear. The on-disk log size should be unchanged (recovery did
 	// not re-grow the file).
@@ -217,7 +217,7 @@ func TestCompaction_RecoveryRebuildsAfterCompact(t *testing.T) {
 			preReopenSize, postReopenSize)
 	}
 
-	// Phase 4: append new records against the recovered payload and let
+	// append new records against the recovered payload and let
 	// the rollup process them. This exercises the post-compaction
 	// append + rollup loop end-to-end after a reopen.
 	if err := bc2.StartRollup(context.Background()); err != nil {

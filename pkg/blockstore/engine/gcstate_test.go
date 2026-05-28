@@ -231,9 +231,9 @@ func TestGCState_LargeFanout(t *testing.T) {
 	}
 }
 
-// TestGCState_BatchedAdd_FlushSemantics asserts the IN-4-04 batched-Add
+// TestGCState_BatchedAdd_FlushSemantics asserts the batched-Add
 // contract. Both forms must produce the same observable Has() state for
-// callers:
+// callers
 //
 //   - Explicit FlushAdd() after a sub-batch run lets Has() see every Add.
 //   - Has() with a pending batch implicitly flushes (defensive consistency
@@ -241,7 +241,7 @@ func TestGCState_LargeFanout(t *testing.T) {
 //
 // Without this regression test a future refactor could silently regress
 // the implicit-flush behavior — the sweep would then read stale state
-// for the final partial batch and reap live CAS objects (INV-04 violation
+// for the final partial batch and reap live CAS objects (violation
 // by data path).
 func TestGCState_BatchedAdd_FlushSemantics(t *testing.T) {
 	root := t.TempDir()

@@ -38,7 +38,7 @@ func TestIntervalTree_EarliestStable_HonorsTimestamp(t *testing.T) {
 // the offset-100 stable one, the rollup would advance past file bytes
 // [0..100) — bytes which are dirty but not yet stable — filling that gap
 // with zeros when reconstructStream materializes the contiguous buffer
-// (data loss). INV-17 / D-16 requires the rollup to wait instead.
+// (data loss). requires the rollup to wait instead.
 func TestIntervalTree_EarliestStable_BlockedByEarlierUnstable(t *testing.T) {
 	it := newIntervalTree()
 	now := time.Unix(1000, 0)

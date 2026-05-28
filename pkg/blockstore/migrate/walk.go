@@ -24,7 +24,7 @@ const walkPageSize = 256
 // Callback errors abort the walk and are returned wrapped.
 //
 // Note: This helper is deliberately self-contained — the metadata
-// store does not expose a single WalkFiles method (Plan 14-03 review
+// store does not expose a single WalkFiles method (03 review
 // flagged this), and the existing primitives (GetRootHandle +
 // ListChildren) compose into the walk we need without modifying the
 // MetadataStore interface.
@@ -79,7 +79,7 @@ func walkDir(
 				continue
 			}
 			// Only regular files are delivered to the callback. The
-			// migration tool does not re-chunk symlinks, devices,
+			// migration tool does not re-chunk symlinks, devices
 			// sockets, or fifos — they have no payload.
 			if child.Type != metadata.FileTypeRegular {
 				continue

@@ -140,7 +140,7 @@ func (lm *Manager) findLeaseByKey(leaseKey [16]byte) (string, *UnifiedLock, int)
 // NLM lock conflict detection and lock owner tracking) and is sufficient
 // for the smbtorture single-session duplicate_create / duplicate_open
 // cases. Tightening to true ClientGuid scoping is tracked under the
-// multichannel Phase 2 work (#361) where ClientGuid threading is needed
+// multichannel work (#361) where ClientGuid threading is needed
 // for cross-channel break fan-out anyway.
 //
 // Must be called with lm.mu held (read or write).
@@ -172,7 +172,7 @@ func (lm *Manager) hasLeaseKeyOnOtherFile(leaseKey [16]byte, excludeHandleKey, c
 // Implementation pulls the client-scoped lease set from lockStore and walks
 // for a matching key on a different FileID. Same scoping caveats as
 // hasLeaseKeyOnOtherFile (clientID is session-scoped today; tracked under
-// #361 Phase 2). Called BEFORE lm.mu.Lock() — same pattern as the existing
+// #361). Called BEFORE lm.mu.Lock() — same pattern as the existing
 // CheckNLMLocksForLeaseConflict pre-check — so external IO does not block
 // the in-memory critical section. The race window between this snapshot and
 // the in-memory grant is closed by the second hasLeaseKeyOnOtherFile call

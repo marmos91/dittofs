@@ -31,13 +31,13 @@ type Config struct {
 
 	// FileBlockStore provides block metadata for block store statistics
 	// AND the engine-internal lookups (GetFileBlock, ListFileBlocks) the
-	// dual-read resolver and populateBlockCounts still consume — see
+	// dual-read resolver and populateBlockCounts still consume —
 	// blockstore.EngineFileBlockStore. When set, GetStats() populates
 	// BlocksLocal/BlocksRemote/BlocksTotal.
 	FileBlockStore blockstore.EngineFileBlockStore
 
 	// Coordinator handles all metadata-store operations the engine
-	// needs (RefCount mutations, BlockRef-list persistence). API-02:
+	// needs (RefCount mutations, BlockRef-list persistence).
 	// keeps pkg/metadata out of the engine hot path. May be nil in
 	// tests; production wiring (pkg/controlplane/runtime/shares/
 	// service.go) MUST inject a real impl. See coordinator.go for the
@@ -48,7 +48,7 @@ type Config struct {
 	// Sourced from the same per-share metadata-store handle the
 	// Coordinator wraps. Threaded through to the Syncer so the mirror
 	// loop in Flush can call MarkSynced after each successful
-	// remote.Put. Nil is accepted (local-only / no-remote fixtures);
+	// remote.Put. Nil is accepted (local-only / no-remote fixtures)
 	// the Syncer's mirror loop early-exits in that mode.
 	SyncedHashStore metadata.SyncedHashStore
 
@@ -74,7 +74,7 @@ type BlockStore struct {
 	remote remote.RemoteStore
 	syncer *Syncer
 
-	// META-03: widened to EngineFileBlockStore so populateBlockCounts
+	// widened to EngineFileBlockStore so populateBlockCounts
 	// can call ListFileBlocks (engine-internal method not on the public
 	// FileBlockStore surface).
 	fileBlockStore blockstore.EngineFileBlockStore // optional: for block count stats
@@ -197,25 +197,26 @@ func New(cfg Config) (*BlockStore, error) {
 			return bs.coordinator.PersistFileBlocks(ctx, payloadID, blocks, objectID)
 		})
 	}
-	// Phase 19 Opt 3 (D-10/D-11/D-16): install the chunk-completion
-	// callback on local stores that expose the setter (production
-	// *fs.FSStore does; the in-memory backend does not — its writes go
-	// through SetChunkEmitter below and don't materialize through the
-	// CAS chunkstore.StoreChunk + lruTouch path Plan 07 hooks). The
-	// closure delegates every successful chunkstore write to
-	// bs.cache.Put: the engine Cache becomes warm on the write side, so
-	// the NFS COMMIT-then-READ pattern never goes back to disk for the
-	// just-written chunk. The closure captures bs (not bs.cache) so the
-	// Null-Object→real-Cache swap performed by BlockStore.Start at
-	// engine.go:267-270 is observed transparently. The path arg is
-	// intentionally discarded (`_ string`) — Cache.Put doesn't consume it;
-	// the firing-site contract still passes it to enable future mmap-or-
-	// copy strategies (cache.go docstring). Cache.Put is nil-safe + closed-
-	// safe + max-bytes-safe (cache.go:229-235), so this binding is the
-	// canonical safe wiring (RAM ceiling bounded by Cache's existing LRU,
-	// D-11). Same lifecycle precedent as SetObjectIDPersister above —
-	// install once at construction; FSStore guarantees no chunk activity
-	// fires before Start completes.
+	// Install the chunk-completion callback on local stores that
+	// expose the setter (production *fs.FSStore does; the in-memory
+	// backend does not — its writes go through SetChunkEmitter below
+	// and don't materialize through the CAS chunkstore.StoreChunk +
+	// lruTouch path hooks). The closure delegates every successful
+	// chunkstore write to bs.cache.Put: the engine Cache becomes warm
+	// on the write side, so the NFS COMMIT-then-READ pattern never
+	// goes back to disk for the just-written chunk. The closure
+	// captures bs (not bs.cache) so the Null-Object→real-Cache swap
+	// performed by BlockStore.Start at engine.go:267-270 is observed
+	// transparently. The path arg is intentionally discarded
+	// (`_ string`) — Cache.Put doesn't consume it; the firing-site
+	// contract still passes it to enable future mmap-or-copy
+	// strategies (cache.go docstring). Cache.Put is nil-safe,
+	// closed-safe, and max-bytes-safe (cache.go:229-235), so this
+	// binding is the canonical safe wiring (RAM ceiling bounded by
+	// Cache's existing LRU). Same lifecycle precedent as
+	// SetObjectIDPersister above — install once at construction;
+	// FSStore guarantees no chunk activity fires before Start
+	// completes.
 	if setter, ok := cfg.Local.(interface {
 		SetOnChunkComplete(fn func(hash blockstore.ContentHash, data []byte, path string))
 	}); ok {
@@ -256,7 +257,7 @@ func New(cfg Config) (*BlockStore, error) {
 			}
 		})
 	}
-	// BSCAS-05: wire the BlockStore back-reference onto the Syncer so
+	// wire the BlockStore back-reference onto the Syncer so
 	// the file-level dedup short-circuit can reach BlockStore.cache for
 	// surgical invalidation of orphaned speculative chunks. Reading
 	// through the back-reference (instead of caching a CacheInterface
@@ -337,7 +338,7 @@ func (bs *BlockStore) loadByHash(ctx context.Context, hash blockstore.ContentHas
 }
 
 // Close releases resources held by the store. Closes the cache (stops
-// prefetch workers and drops entries), then syncer (drains uploads),
+// prefetch workers and drops entries), then syncer (drains uploads)
 // local store, and remote store.
 func (bs *BlockStore) Close() error {
 	// Cache is never nil thanks to the Null Object pattern.
@@ -359,11 +360,11 @@ func (bs *BlockStore) Close() error {
 	return errors.Join(errs...)
 }
 
-// ReadAt reads data from storage at the given offset into dest. API-01:
+// ReadAt reads data from storage at the given offset into dest.
 // a non-nil/non-empty []BlockRef carries the CAS hashes covering the
 // requested range (zero-filling sparse holes).
 //
-// After a successful read the engine calls cache.OnRead(payloadID,
+// After a successful read the engine calls cache.OnRead(payloadID
 // blockHashes, fileSize) so the Cache's sequential-detection state
 // machine can fire prefetch on upcoming hashes. The cache is hint-only
 // here; reads always go through local/remote stores.
@@ -429,17 +430,17 @@ func (bs *BlockStore) Exists(ctx context.Context, payloadID string) (bool, error
 // handles background upload. Read buffer entries for affected blocks
 // are invalidated and prefetcher is reset.
 //
-// API-01: signature returns []BlockRef so the caller can persist
+// signature returns []BlockRef so the caller can persist
 // FileAttr.Blocks in the same metadata txn.
 //
 // WriteAt remains a per-write append into the local store — it does
 // NOT chunk or assemble BlockRefs. The FastCDC chunker runs at the
-// local-store rollup layer (pkg/blockstore/local/fs/rollup.go::
+// local-store rollup layer (pkg/blockstore/local/fs/rollup.go
 // rollupFile), which produces Pending FileBlocks carrying chunk
 // hashes. Syncer.Flush projects ListFileBlocks(payloadID) into the
 // canonical sorted []BlockRef list at quiesce time and invokes either
-// the file-level dedup short-circuit (BSCAS-05) or the per-block
-// upload pump + post-Flush hook (BSCAS-04 / META-02). FileAttr.Blocks
+// the file-level dedup short-circuit or the per-block
+// upload pump + post-Flush hook. FileAttr.Blocks
 // AND FileAttr.ObjectID are written in the same metadata transaction
 // by the runtime coordinator's PersistFileBlocks.
 //
@@ -452,16 +453,16 @@ func (bs *BlockStore) WriteAt(ctx context.Context, payloadID string, currentBloc
 	if err := bs.local.AppendWrite(ctx, payloadID, data, offset); err != nil {
 		return currentBlocks, err
 	}
-	// Cache invalidation lives in common.WriteToBlockStore (post-txn),
+	// Cache invalidation lives in common.WriteToBlockStore (post-txn)
 	// not here. The engine itself does NOT touch cache on the write
 	// path beyond resetting the per-payload sequential tracker via
 	// OnRead's empty-hashes signal — keeps prefetch from chasing
 	// pre-write hashes after the underlying data shifted. nullCache is
 	// a no-op (Null Object).
 	bs.cache.OnRead(payloadID, nil, 0)
-	// BSCAS-05: the FastCDC chunker output is
+	// the FastCDC chunker output is
 	// produced by the local-store rollup pump
-	// (pkg/blockstore/local/fs/rollup.go::rollupFile) and lands as
+	// (pkg/blockstore/local/fs/rollup.go:rollupFile) and lands as
 	// Pending FileBlocks with chunk-hash populated. The canonical
 	// []BlockRef projection is built at Flush time from
 	// ListFileBlocks(payloadID) — see Syncer.snapshotPendingBlockRefs
@@ -478,13 +479,13 @@ func (bs *BlockStore) WriteAt(ctx context.Context, payloadID string, currentBloc
 // store. Invalidates read buffer entries above the new size and resets
 // prefetcher state.
 //
-// API-01: when currentBlocks is non-empty, blocks strictly past newSize
+// when currentBlocks is non-empty, blocks strictly past newSize
 // are dropped and the coordinator decrements RefCount for each dropped
 // hash. The new []BlockRef list is returned for the caller to persist
 // via PutFile. When currentBlocks is empty the legacy path runs and
 // the returned slice is empty (dual-read shim semantics).
 func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, currentBlocks []blockstore.BlockRef, newSize uint64) ([]blockstore.BlockRef, error) {
-	// WR-03: coordinator decrements run FIRST so a refcount-bookkeeping
+	// coordinator decrements run FIRST so a refcount-bookkeeping
 	// failure leaves the file untouched on disk and remote. Previous
 	// order (local → cache → syncer → coordinator) could leave 4-of-5
 	// hashes leaked when step 4 failed mid-loop because local data was
@@ -509,8 +510,8 @@ func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, currentBlo
 				}
 				continue
 			}
-			// Block fully or partially before newSize — keep. Plan 09 will
-			// re-chunk the partial-tail block; Plan 07 keeps it as-is.
+			// Block fully or partially before newSize — keep. will
+			// re-chunk the partial-tail block; keeps it as-is.
 			kept = append(kept, b)
 		}
 	}
@@ -527,7 +528,7 @@ func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, currentBlo
 
 	// Remote sweep is best-effort: GC will reconcile stragglers, so a
 	// failure here does NOT roll back the coordinator decrements (matches
-	// engine.Delete semantics post-WR-04).
+	// engine.Delete semantics post-).
 	if err := bs.syncer.Truncate(ctx, payloadID, newSize); err != nil {
 		return kept, err
 	}
@@ -541,7 +542,7 @@ func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, currentBlo
 // Delete removes all data for a payload from local store and remote store.
 // Invalidates all read buffer entries for the file and resets prefetcher state.
 //
-// Local cleanup runs in this order under the unified CAS surface:
+// Local cleanup runs in this order under the unified CAS surface
 //  1. SyncFileBlocksForFile persists any in-flight FileBlock metadata so
 //     the refcount decrements below operate on the authoritative manifest
 //     for the file (see "blocks" arg).
@@ -553,7 +554,7 @@ func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, currentBlo
 //  3. DeleteLog tombstones and removes the per-file append log so any
 //     pre-rollup bytes are discarded.
 //
-// Subsequent steps (cache invalidate, coordinator refcount decrements,
+// Subsequent steps (cache invalidate, coordinator refcount decrements
 // optional remote sweep) are unchanged.
 func (bs *BlockStore) Delete(ctx context.Context, payloadID string, blocks []blockstore.BlockRef) error {
 	bs.local.SyncFileBlocksForFile(ctx, payloadID)
@@ -580,7 +581,7 @@ func (bs *BlockStore) Delete(ctx context.Context, payloadID string, blocks []blo
 	// sweep fails (Truncate / janitor will reconcile orphans). Empty
 	// blocks (legacy / dual-read shim) skips the coordinator entirely.
 	//
-	// WR-04: continue past coordinator errors so the syncer.Delete
+	// continue past coordinator errors so the syncer.Delete
 	// remote sweep ALWAYS runs. Returning early left the local data
 	// deleted, the metadata partially decremented, and the remote alive
 	// forever — operators saw inconsistent state until GC's next pass
@@ -598,7 +599,7 @@ func (bs *BlockStore) Delete(ctx context.Context, payloadID string, blocks []blo
 				}
 				continue
 			}
-			// Refcount hit zero: the local CAS chunk is being reclaimed,
+			// Refcount hit zero: the local CAS chunk is being reclaimed
 			// so drop the synced marker too. Without this cascade the
 			// synced set would drift out of strict-subset relationship
 			// with local CAS contents — a future re-Put of the same hash
@@ -632,7 +633,7 @@ func (bs *BlockStore) Delete(ctx context.Context, payloadID string, blocks []blo
 // txn rolls back all increments on any error.
 //
 // Empty srcBlocks => nil-safe legacy path: copies nothing (legacy
-// CopyPayload data-copy semantics are removed in Plan 07; the legacy
+// CopyPayload data-copy semantics are removed in; the legacy
 // adapter call sites that need data copies should drive ReadAt+WriteAt
 // directly during the dual-read window). Production callers always
 // supply a snapshot of the source file's FileAttr.Blocks.
@@ -695,20 +696,20 @@ func (bs *BlockStore) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadI
 // to the syncer. On miss / nil-coordinator the syncer's mirror loop
 // runs as usual.
 //
-// Auto-promote into the read buffer is intentionally NOT done here:
+// Auto-promote into the read buffer is intentionally NOT done here
 // the Cache is CAS-keyed and Flush has no BlockRef snapshot at this
 // layer to translate flushed bytes into hash-keyed cache entries.
 func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
 	// Both pre-rollup dedup hooks require a coordinator; gate them
 	// jointly so the nil-check isn't repeated.
 	if bs.coordinator != nil {
-		// Phase 19 Opt 4 (D-13/D-14/D-16): eager small-file dedup BEFORE
+		// Opt 4: eager small-file dedup BEFORE
 		// the speculative path. Files at or below chunker.MinChunkSize
 		// (1 MiB) emit a single chunk under FastCDC anyway; hashing the
 		// whole content in RAM and consulting metadata.FindByObjectID
 		// skips chunker + log + CAS write entirely on hit. Sibling fast-
 		// path; shares applyFileLevelDedupHit's finalize machinery so
-		// STATE-01..03 + cache invalidation + D-11 appendlog cleanup
+		// + cache invalidation + appendlog cleanup
 		// invariants remain identical to the speculative path.
 		//
 		// Source-of-truth for the in-RAM bytes: bs.local.ReadPayloadAt
@@ -725,7 +726,7 @@ func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.
 		// real authority) but lets us skip the ReadPayloadAt alloc + I/O
 		// entirely for large files.
 		if size, found := bs.local.GetFileSize(ctx, payloadID); found && size > 0 && size <= chunker.MinChunkSize {
-			// Outer gate already bounds size to chunker.MinChunkSize (1 MiB),
+			// Outer gate already bounds size to chunker.MinChunkSize (1 MiB)
 			// well below math.MaxInt on every supported platform. The cast
 			// here is therefore safe; the explicit form documents the
 			// bounded-uint64->int conversion for readers and linters.
@@ -815,7 +816,7 @@ func (bs *BlockStore) HealthCheck(ctx context.Context) error {
 // satisfies [health.Checker] so the API layer can wrap the engine in
 // a [health.CachedChecker] for /status routes.
 //
-// Derivation rules (worst-of):
+// Derivation rules (worst-of)
 //
 //   - If the local store reports unhealthy → engine is unhealthy
 //     (we can't even serve cached blocks).
@@ -1096,7 +1097,7 @@ func (bs *BlockStore) ensureAndReadFromLocal(ctx context.Context, payloadID stri
 }
 
 // readLocalByHash serves [offset, offset+len(dest)) by walking the
-// payload's CAS chunk manifest (via FileBlockStore.ListFileBlocks),
+// payload's CAS chunk manifest (via FileBlockStore.ListFileBlocks)
 // finding each chunk whose absolute byte range intersects the
 // requested window, and copying the matching slice of the local CAS
 // chunk into dest. Returns (true, nil) when every requested byte was

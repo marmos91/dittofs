@@ -16,7 +16,7 @@ import (
 
 // fakeCoordinator records IncrementRefCount/DecrementRefCount/PersistFileBlocks
 // invocations and lets tests inject failure on the Nth IncrementRefCount call
-// for the rollback contract (BLOCKER-2).
+// for the rollback contract.
 type fakeCoordinator struct {
 	incrementCalls    []blockstore.ContentHash
 	decrementCalls    []blockstore.ContentHash
@@ -49,18 +49,17 @@ func (f *fakeCoordinator) PersistFileBlocks(_ context.Context, payloadID string,
 	return nil
 }
 
-// FindByObjectID — Phase 13 META-02 stub. Adapter-common tests don't
-// exercise short-circuit lookups (those live in pkg/blockstore/engine
-// and pkg/metadata/storetest); satisfy the interface so the fake
-// satisfies engine.MetadataCoordinator.
+// FindByObjectID stub. Adapter-common tests don't exercise short-circuit
+// lookups (those live in pkg/blockstore/engine and pkg/metadata/storetest);
+// satisfy the interface so the fake satisfies engine.MetadataCoordinator.
 func (f *fakeCoordinator) FindByObjectID(_ context.Context, _ blockstore.ObjectID) ([]blockstore.BlockRef, error) {
 	return nil, nil
 }
 
-// GetFileObjectID — Phase 13 Plan 13 (BSCAS-05) stub. Adapter-common
-// tests do not drive the Syncer.Flush short-circuit path; returning the
-// zero ObjectID + nil is the "never quiesced" disposition that keeps
-// the interface satisfied without affecting any assertions.
+// GetFileObjectID stub. Adapter-common tests do not drive the
+// Syncer.Flush short-circuit path; returning the zero ObjectID + nil is
+// the "never quiesced" disposition that keeps the interface satisfied
+// without affecting any assertions.
 func (f *fakeCoordinator) GetFileObjectID(_ context.Context, _ string) (blockstore.ObjectID, error) {
 	return blockstore.ObjectID{}, nil
 }
@@ -168,7 +167,7 @@ func TestCopyPayload_AtomicSuccess(t *testing.T) {
 	}
 }
 
-// TestCopyPayload_RollsBackOnIncrementError pins the BLOCKER-2 contract:
+// TestCopyPayload_RollsBackOnIncrementError pins the rollback contract:
 // mid-loop IncrementRefCount failure rolls back ALL writes (no PutFile(dst),
 // no partial dstFileAttr persisted, no InvalidateFile call).
 func TestCopyPayload_RollsBackOnIncrementError(t *testing.T) {
@@ -256,8 +255,8 @@ func TestCopyPayload_LegacyEmptyBlocks(t *testing.T) {
 }
 
 // TestCopyPayload_NilCacheTolerated asserts that a nil cache argument is
-// tolerated by the helper (Plan 11 callers pass nil until Plan 12-09 wires
-// the engine.Cache).
+// tolerated by the helper (callers pass nil until the engine.Cache is
+// wired).
 func TestCopyPayload_NilCacheTolerated(t *testing.T) {
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()

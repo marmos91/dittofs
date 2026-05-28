@@ -31,7 +31,7 @@ func (h *Handler) Notify(ctx *NSMHandlerContext, data []byte) (*HandlerResult, e
 		"mon_name", statChge.MonName,
 		"new_state", statChge.State)
 
-	// TODO (Plan 03-03): Dispatch callbacks to local clients monitoring this host
+	// TODO : Dispatch callbacks to local clients monitoring this host
 	//
 	// The full implementation should:
 	// 1. Find all local registrations where MonName matches statChge.MonName

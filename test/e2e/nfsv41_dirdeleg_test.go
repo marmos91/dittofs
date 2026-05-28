@@ -26,7 +26,7 @@ import (
 // contents and receive notifications when the directory changes, avoiding
 // expensive READDIR operations.
 //
-// Per Phase 24 implementation:
+// Implementation details:
 // - CB_NOTIFY batching window is 50ms with max batch size 100
 // - Tests wait at least 500ms after mutation for CB_NOTIFY delivery
 // - The Linux NFS client may not request GET_DIR_DELEGATION; tests detect
@@ -304,9 +304,9 @@ func TestNFSv41DirDelegationEntryRenamed(t *testing.T) {
 // Test 4: CB_NOTIFY on Attribute Change
 // =============================================================================
 
-// TestNFSv41DirDelegationAttrChanged validates CB_NOTIFY notification when
-// file attributes change significantly (mode/owner/group/size). Per Phase 24
-// decision, only significant attr changes trigger notification -- atime/ctime
+// TestNFSv41DirDelegationAttrChanged validates CB_NOTIFY notification
+// when file attributes change significantly (mode/owner/group/size).
+// Only significant attr changes trigger notification — atime/ctime
 // changes alone do NOT trigger CB_NOTIFY.
 func TestNFSv41DirDelegationAttrChanged(t *testing.T) {
 	if testing.Short() {

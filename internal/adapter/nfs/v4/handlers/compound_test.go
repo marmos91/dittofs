@@ -488,7 +488,7 @@ func TestCompound_MinorVersion1_Accepted(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// After Phase 20: v4.1 COMPOUND with PUTROOTFH (non-exempt, no SEQUENCE)
+	// Currently: v4.1 COMPOUND with PUTROOTFH (non-exempt, no SEQUENCE)
 	// must return NFS4ERR_OP_NOT_IN_SESSION per RFC 8881.
 	data := buildCompoundArgs([]byte("v4.1"), 1, []uint32{types.OP_PUTROOTFH})
 	resp, err := h.ProcessCompound(ctx, data)
@@ -518,7 +518,7 @@ func TestCompound_MinorVersion1_V41Op_NOTSUPP(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// After Phase 20: RECLAIM_COMPLETE is not exempt from SEQUENCE.
+	// Currently: RECLAIM_COMPLETE is not exempt from SEQUENCE.
 	// Without SEQUENCE, the COMPOUND should return NFS4ERR_OP_NOT_IN_SESSION.
 	ops := []compoundOp{
 		{opCode: types.OP_RECLAIM_COMPLETE, data: encodeReclaimCompleteArgs()},
@@ -605,7 +605,7 @@ func TestCompound_V41_StubConsumesArgs(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// After Phase 20: RECLAIM_COMPLETE is not exempt from SEQUENCE.
+	// Currently: RECLAIM_COMPLETE is not exempt from SEQUENCE.
 	// Without SEQUENCE, the COMPOUND returns NFS4ERR_OP_NOT_IN_SESSION.
 	// The stub arg consumption test is now covered by the SEQUENCE-gated tests.
 	ops := []compoundOp{
@@ -634,7 +634,7 @@ func TestCompound_V41_StubConsumesArgs(t *testing.T) {
 }
 
 func TestCompound_V41_AllStubOps(t *testing.T) {
-	// After Phase 20: non-exempt v4.1 ops without SEQUENCE return
+	// Currently: non-exempt v4.1 ops without SEQUENCE return
 	// NFS4ERR_OP_NOT_IN_SESSION. The dispatch table completeness
 	// is tested in TestCompound_V41_DispatchTableComplete.
 	h := newTestHandler()
@@ -719,7 +719,7 @@ func TestCompound_V41_IllegalOpOutsideRange(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// After Phase 20: opcode 99999 is not exempt from SEQUENCE.
+	// Currently: opcode 99999 is not exempt from SEQUENCE.
 	// The first op check sees it's not exempt and not SEQUENCE, so
 	// NFS4ERR_OP_NOT_IN_SESSION is returned before opcode validation.
 	data := buildCompoundArgs([]byte(""), 1, []uint32{99999})
@@ -770,7 +770,7 @@ func TestCompound_V41_EmptyCompound(t *testing.T) {
 }
 
 // ============================================================================
-// v4.0 Regression Tests (Phase 20-02)
+// v4.0 Regression Tests
 // ============================================================================
 //
 // These tests verify that v4.0 COMPOUND scenarios continue to work correctly
@@ -1027,7 +1027,7 @@ func TestCompound_V40_Regression(t *testing.T) {
 }
 
 // ============================================================================
-// v4.0/v4.1 Coexistence Tests (Phase 20-02)
+// v4.0/v4.1 Coexistence Tests
 // ============================================================================
 //
 // These tests verify that v4.0 and v4.1 COMPOUNDs work correctly on the same
@@ -1180,7 +1180,7 @@ func TestCompound_V40_V41_Coexistence(t *testing.T) {
 }
 
 // ============================================================================
-// Concurrent Mixed Traffic Tests (Phase 20-02)
+// Concurrent Mixed Traffic Tests
 // ============================================================================
 
 func TestCompound_ConcurrentMixedTraffic(t *testing.T) {
@@ -1289,7 +1289,7 @@ func TestCompound_ConcurrentMixedTraffic(t *testing.T) {
 }
 
 // ============================================================================
-// Version Range Gating Tests (Phase 20-02)
+// Version Range Gating Tests
 // ============================================================================
 
 func TestCompound_VersionRangeGating(t *testing.T) {
@@ -1429,7 +1429,7 @@ func TestCompound_VersionRangeGating(t *testing.T) {
 }
 
 // ============================================================================
-// Connection Binding Integration Tests (Phase 21-01)
+// Connection Binding Integration Tests
 // ============================================================================
 
 func TestCompound_BindConnToSession_ExemptOp(t *testing.T) {
@@ -1612,7 +1612,7 @@ func encodeBindConnToSessionArgs(sessionID types.SessionId4, dir uint32, rdma bo
 }
 
 // ============================================================================
-// Multi-Connection Integration Tests (Phase 21-02)
+// Multi-Connection Integration Tests
 // ============================================================================
 
 // createTestSessionWithConnectionID creates a session using CREATE_SESSION
@@ -2054,7 +2054,7 @@ func TestCompound_CreateSession_AutoBind_Verify(t *testing.T) {
 }
 
 // ============================================================================
-// BACKCHANNEL_CTL Compound Integration Test (Phase 22-02)
+// BACKCHANNEL_CTL Compound Integration Test
 // ============================================================================
 
 func TestCompound_SequenceAndBackchannelCtl(t *testing.T) {
@@ -2150,7 +2150,7 @@ func TestCompound_SequenceAndBackchannelCtl(t *testing.T) {
 }
 
 // ============================================================================
-// v4.0-only operation rejection in v4.1 COMPOUNDs (Phase 23-02)
+// v4.0-only operation rejection in v4.1 COMPOUNDs
 // ============================================================================
 
 func TestCompound_V41_RejectsV40OnlyOps(t *testing.T) {

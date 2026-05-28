@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestContentHash_CASKey_Format is the FIX-9 explicit format guard:
+// TestContentHash_CASKey_Format is the FIX-9 explicit format guard
 // asserts the prefix, total length, and exact hex serialization of CASKey
 // for a deterministic hash pattern. This sits alongside TestContentHashCASKey
 // (which only asserts the exact string) so accidental changes to the prefix
@@ -32,8 +32,8 @@ func TestContentHash_CASKey_Format(t *testing.T) {
 }
 
 // TestContentHashCASKey asserts CASKey returns the "blake3:{hex}" scheme
-// for a known hash pattern. Phase 10 ships the helper ahead of the Phase 11
-// CAS write-path wiring (D-06).
+// for a known hash pattern. ships the helper ahead of the
+// CAS write-path wiring.
 func TestContentHashCASKey(t *testing.T) {
 	var h ContentHash
 	for i := 0; i < HashSize; i++ {
@@ -74,13 +74,13 @@ func TestContentHashString_Unchanged(t *testing.T) {
 	}
 }
 
-// TestParseStoreKey_RoundTrip was deleted in Phase 17 alongside the
+// TestParseStoreKey_RoundTrip was deleted in alongside the
 // blockstore.ParseStoreKey helper it covered. The legacy
 // "{payloadID}/block-{N}" key shape is gone post-CAS — content
 // addressing supersedes the path-keyed form.
 
 // TestParseBlockID_RoundTrip covers the canonical internal blockID parser
-// (format: "{payloadID}/{blockIdx}"). Part of TD-04 consolidation (5 -> 2).
+// (format: "{payloadID}/{blockIdx}"). Part of consolidation (5 -> 2).
 func TestParseBlockID_RoundTrip(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -132,7 +132,7 @@ func TestParseBlockID_RoundTrip(t *testing.T) {
 
 // TestParseBlockID_Invalid asserts the canonical parser rejects malformed
 // inputs that the superseded per-site parsers either silently accepted or
-// handled via sentinel zero-values (T-08-15-01 mitigation).
+// handled via sentinel zero-values (mitigation).
 func TestParseBlockID_Invalid(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -157,12 +157,12 @@ func TestParseBlockID_Invalid(t *testing.T) {
 }
 
 // blake3EmptyHex is the BLAKE3-256 of the empty input — used as a known
-// vector for the FormatCASKey/ParseCASKey round-trip tests (BSCAS-01, D-29).
+// vector for the FormatCASKey/ParseCASKey round-trip tests.
 const blake3EmptyHex = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
 
 // TestFormatCASKey asserts FormatCASKey returns exactly
 // "cas/{hex[0:2]}/{hex[2:4]}/{hex}" for both the all-zero hash and a
-// known-vector hash. See BSCAS-01.
+// known-vector hash.
 func TestFormatCASKey(t *testing.T) {
 	tests := []struct {
 		name string
@@ -208,7 +208,7 @@ func TestFormatCASKey(t *testing.T) {
 }
 
 // TestParseCASKey_RoundTrip asserts ParseCASKey accepts the output of
-// FormatCASKey and returns the original hash unchanged. See BSCAS-01.
+// FormatCASKey and returns the original hash unchanged.
 func TestParseCASKey_RoundTrip(t *testing.T) {
 	hashes := []func() ContentHash{
 		func() ContentHash { return ContentHash{} },
@@ -270,10 +270,10 @@ func TestParseCASKey_Malformed(t *testing.T) {
 	}
 }
 
-// TestBlockStateConstants asserts the post-Phase-11 collapsed state machine:
-// exactly three named constants Pending=0, Syncing=1, Remote=2 with matching
-// String() output. Pending=0 is the safe default for legacy zero-valued rows
-// (D-12). See STATE-01.
+// TestBlockStateConstants asserts the collapsed state machine
+// exposes exactly three named constants Pending=0, Syncing=1,
+// Remote=2 with matching String() output. Pending=0 is the safe
+// default for legacy zero-valued rows.
 func TestBlockStateConstants(t *testing.T) {
 	if BlockStatePending != 0 {
 		t.Errorf("BlockStatePending = %d, want 0", BlockStatePending)
@@ -301,7 +301,7 @@ func TestBlockStateConstants(t *testing.T) {
 }
 
 // TestFileBlockLastSyncAttemptAt asserts the new field exists on the
-// FileBlock zero value as a zero time.Time (D-13/D-14: janitor uses this to
+// FileBlock zero value as a zero time.Time (janitor uses this to
 // requeue stale Syncing rows; never-attempted = zero value).
 func TestFileBlockLastSyncAttemptAt(t *testing.T) {
 	var fb FileBlock
@@ -336,7 +336,7 @@ func TestErrCASSentinels(t *testing.T) {
 }
 
 // TestBlockRef_JSON exercises BlockRef zero-value invariants, JSON
-// round-trip, and slice ordering preservation. Phase 12 META-01 / D-10.
+// round-trip, and slice ordering preservation..
 func TestBlockRef_JSON(t *testing.T) {
 	t.Run("zero value", func(t *testing.T) {
 		var br BlockRef
@@ -441,8 +441,8 @@ func TestBlockRef_JSON(t *testing.T) {
 
 // TestContentHash_JSONBackwardCompat asserts UnmarshalJSON accepts both
 // the new canonical "blake3:{hex}" form and the legacy default base64
-// form that encoding/json produced for [32]byte before Phase 12 added a
-// MarshalJSON. Critical for reading FileBlock rows persisted by Phase 11
+// form that encoding/json produced for [32]byte before added a
+// MarshalJSON. Critical for reading FileBlock rows persisted by
 // Badger backends.
 func TestContentHash_JSONBackwardCompat(t *testing.T) {
 	hash, err := ParseContentHash(blake3EmptyHex)
@@ -512,7 +512,7 @@ func TestContentHash_JSONBackwardCompat_V014Array(t *testing.T) {
 
 // TestErrBlockRefMissing asserts the new sentinel exists, is self-identical
 // via errors.Is, and has the expected message style ("blockstore:" prefix
-// + mentions "block ref"). Phase 12 D-23.
+// + mentions "block ref")..
 func TestErrBlockRefMissing(t *testing.T) {
 	if !errors.Is(ErrBlockRefMissing, ErrBlockRefMissing) {
 		t.Error("errors.Is(ErrBlockRefMissing, ErrBlockRefMissing) = false")

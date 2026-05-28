@@ -126,7 +126,7 @@ type ShareResponse struct {
 	ReadOnly           bool    `json:"read_only"`
 	// Enabled mirrors models.Share.Enabled. No omitempty — `false` is
 	// semantically meaningful (the share is disabled) and consumers must
-	// render that state explicitly (D-28).
+	// render that state explicitly.
 	Enabled           bool     `json:"enabled"`
 	EncryptData       bool     `json:"encrypt_data"`
 	DefaultPermission string   `json:"default_permission"`
@@ -653,8 +653,8 @@ func (h *ShareHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 // Disable handles POST /api/v1/shares/{name}/disable.
 // Flips Enabled=false on the share's DB row and runtime registry; adapters
-// drop any active sessions (Phase 5 D-02/D-03; Phase 6 D-27). Idempotent at
-// the runtime layer on already-disabled shares.
+// drop any active sessions. Idempotent at the runtime layer on
+// already-disabled shares.
 func (h *ShareHandler) Disable(w http.ResponseWriter, r *http.Request) {
 	name := normalizeShareName(chi.URLParam(r, "name"))
 	if name == "/" {

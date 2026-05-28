@@ -92,12 +92,12 @@ const (
 	// ErrConnectionLimitReached indicates connection limit has been reached.
 	ErrConnectionLimitReached
 
-	// ErrConflict indicates a concurrent-write conflict (Phase 13 D-14).
+	// ErrConflict indicates a concurrent-write conflict.
 	// Used by ObjectID secondary-index maintenance on Memory and Badger
 	// backends when two writers attempt to claim the same Merkle-root
 	// ObjectID concurrently. Postgres surfaces the same condition through
 	// the underlying SQLSTATE 23505 (unique_violation) on
-	// files_object_id_idx; Plan 07's runtime coordinator wraps both into
+	// files_object_id_idx; runtime coordinator wraps both into
 	// engine.ErrObjectIDConflict.
 	ErrConflict
 )
@@ -250,7 +250,7 @@ func NewAlreadyExistsError(path string) *StoreError {
 	}
 }
 
-// NewConflictError creates a Conflict error (Phase 13 D-14).
+// NewConflictError creates a Conflict error.
 // op is the calling operation name (e.g., "memory PutFile",
 // "badger PutFile"); message is the specific reason (e.g.,
 // "object_id already mapped to file <other-id>").
@@ -363,7 +363,7 @@ func IsLockLimitError(err error) bool {
 }
 
 // IsConflictError returns true if the error is a Conflict error
-// (Phase 13 D-14). Unwraps via errors.As so wrapped StoreErrors classify
+// Unwraps via errors.As so wrapped StoreErrors classify
 // correctly.
 func IsConflictError(err error) bool {
 	var storeErr *StoreError

@@ -41,7 +41,7 @@ func hashBytes(data []byte) blockstore.ContentHash {
 }
 
 // storeChunk writes data through StoreChunk and returns the resulting hash.
-// Used by LSL-08 tests to seed the LRU via the canonical write path.
+// Used by tests to seed the LRU via the canonical write path.
 func storeChunk(t *testing.T, bc *FSStore, data []byte) blockstore.ContentHash {
 	t.Helper()
 	h := hashBytes(data)
@@ -84,7 +84,7 @@ func TestAccessTracker_Remove(t *testing.T) {
 }
 
 // ============================================================================
-// LSL-08 Eviction Tests (in-process LRU keyed by ContentHash)
+// Eviction Tests (in-process LRU keyed by ContentHash)
 // ============================================================================
 
 // TestLSL08_PinMode_NeverEvicts asserts ensureSpace never evicts in pin mode
@@ -137,7 +137,7 @@ func TestLSL08_LRU_OldestEvictedFirst(t *testing.T) {
 }
 
 // TestLSL08_NoFileBlockStoreCallsDuringEviction is the load-bearing assertion
-// for D-27: ensureSpace MUST NOT consult FileBlockStore. Wraps the metadata
+// for: ensureSpace MUST NOT consult FileBlockStore. Wraps the metadata
 // store in a strict spy that fails the test on any call.
 func TestLSL08_NoFileBlockStoreCallsDuringEviction(t *testing.T) {
 	dir := t.TempDir()

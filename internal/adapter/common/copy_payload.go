@@ -11,10 +11,10 @@ import (
 
 // CopyPayload performs an O(1) file-level copy: bumps RefCount on every
 // unique src hash and persists dstFileAttr.Blocks atomically in one
-// metadata transaction. CACHE-05 invalidation (if cache != nil) runs
-// POST-txn, after the commit succeeded (Phase 12 D-35).
+// metadata transaction. Cache invalidation (if cache != nil) runs
+// POST-txn, after the commit succeeded.
 //
-// Transaction ownership (BLOCKER-2 resolution, 2026-04-26):
+// Transaction ownership:
 //   - This helper opens the metadata txn via metadataStore.WithTransaction.
 //   - Inside the txn, engine.CopyPayload invokes
 //     coordinator.IncrementRefCount for each unique src hash; the
@@ -23,13 +23,12 @@ import (
 //   - On any error (Increment failure, PutFile failure, ctx cancel), the
 //     txn rolls back ALL writes — no partial dstFileAttr, no partial
 //     RefCount bumps committed.
-//   - cache.InvalidateFile runs ONLY on success, AFTER the commit (D-35).
+//   - cache.InvalidateFile runs ONLY on success, AFTER the commit.
 //
-// Wiring status (Plan 12-08): the helper is NOT yet routed from NFS/SMB
-// CREATE-file copy paths — those continue using their existing flows for
-// Phase 12. Phase 13 (file-level dedup, BSCAS-04/05) will route copy
-// operations through this helper. For Plan 12-08 the helper exists with
-// full test coverage and is consumed only by tests.
+// Wiring status: the helper is NOT yet routed from NFS/SMB CREATE-file
+// copy paths — those continue using their existing flows. File-level
+// dedup will route copy operations through this helper. The helper
+// exists with full test coverage and is consumed only by tests.
 //
 // Note on engine txn semantics: engine.CopyPayload is invoked with the
 // caller-supplied context (NOT a txn-bound ctx). The coordinator
@@ -53,12 +52,11 @@ func CopyPayload(
 	}
 
 	err = metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		// CR-01 (Phase 12 review iteration 1): bind the active txn into
-		// the context so the per-share metadataCoordinator's
-		// IncrementRefCount / DecrementRefCount calls route through it
-		// instead of the connection pool. Without this, every
-		// successful Increment commits on its own connection and
-		// survives a downstream PutFile rollback — silent INV-02 leak.
+		// Bind the active txn into the context so the per-share
+		// metadataCoordinator's IncrementRefCount / DecrementRefCount
+		// calls route through it instead of the connection pool. Without
+		// this, every successful Increment commits on its own connection
+		// and survives a downstream PutFile rollback — silent leak.
 		// See pkg/metadata/tx_context.go for the carrier API.
 		txCtx := metadata.WithTx(ctx, tx)
 
@@ -86,10 +84,10 @@ func CopyPayload(
 		return err
 	}
 
-	// POST-txn (D-35): conservative invalidation for dst — its content
-	// changed wholesale. Pass nil removedHashes so the cache drops
-	// everything keyed at dstPayloadID. Other files referencing the
-	// shared hashes via dedup keep their entries warm (CACHE-02).
+	// POST-txn: conservative invalidation for dst — its content changed
+	// wholesale. Pass nil removedHashes so the cache drops everything
+	// keyed at dstPayloadID. Other files referencing the shared hashes
+	// via dedup keep their entries warm.
 	if cache != nil {
 		cache.InvalidateFile(dstPayloadID, nil)
 	}

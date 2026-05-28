@@ -8,17 +8,17 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 )
 
-// AuditRefcounts runs the Phase 12 D-36 INV-02 reconciliation audit for
-// the named share. Resolves the share's metadata store and audit-state
-// root, then delegates to engine.AuditRefcounts which walks the metadata
-// and computes:
+// AuditRefcounts runs the refcount reconciliation audit for the named
+// share. Resolves the share's metadata store and audit-state root, then
+// delegates to engine.AuditRefcounts which walks the metadata and
+// computes:
 //
 //	∑ FileBlock.RefCount   vs   ∑ len(FileAttr.Blocks)
 //
-// A non-zero delta indicates INV-02 drift (refcount leak or missed
-// decrement). Last-run summary is persisted under
-// <localStoreRoot>/audit-state/last-inv02.json — analogous to Phase 11
-// GC's last-run.json under <gcStateRoot>/.
+// A non-zero delta indicates refcount drift (leak or missed decrement).
+// Last-run summary is persisted under
+// <localStoreRoot>/audit-state/last-inv02.json — analogous to GC's
+// last-run.json under <gcStateRoot>/.
 //
 // Returns ErrShareNotFound (wrapped) when the share is unknown. The
 // audit runs to completion and is operator-invoked (no periodic

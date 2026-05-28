@@ -94,18 +94,17 @@ type Share struct {
 	remoteConfigID string
 
 	// gcStateRoot is the on-disk directory under which the GC engine
-	// persists per-run gc-state and `last-run.json` (Phase 11 D-01/D-10).
+	// persists per-run gc-state and `last-run.json`.
 	// Populated for fs-backed local stores at share creation; empty for
 	// in-memory stores (no persistent gc-state then — last-run.json is
 	// skipped, matching engine.PersistLastRunSummary's empty-root contract).
 	gcStateRoot string
 
 	// localStoreDir is the on-disk per-share local data directory used by
-	// the Phase 14 migration tool to locate `.migration-state.jsonl`
-	// (D-A2) and by the REST status handler (Plan 14-06) to read it back.
-	// Populated for fs-backed local stores at share creation; empty for
-	// in-memory backends — the status handler treats "" as "no journal
-	// available" rather than an error.
+	// the migration tool to locate `.migration-state.jsonl` and by the
+	// REST status handler to read it back. Populated for fs-backed local
+	// stores at share creation; empty for in-memory backends — the status
+	// handler treats "" as "no journal available" rather than an error.
 	localStoreDir string
 }
 
@@ -515,7 +514,7 @@ func (s *Service) createBlockStoreForShare(
 	// Eviction requires a remote store (so evicted blocks can be re-fetched) and
 	// must not be pin mode (pin keeps blocks stored locally indefinitely).
 	localStore.SetEvictionEnabled(remoteStore != nil && config.RetentionPolicy != blockstore.RetentionPin)
-	// Note: SetSkipFsync was removed in LSL-07. Local-disk durability is now
+	// Note: SetSkipFsync was removed. Local-disk durability is now
 	// unconditional (the syncer will refetch from S3 on the rare crash path).
 	localStore.SetRetentionPolicy(config.RetentionPolicy, config.RetentionTTL)
 
@@ -538,12 +537,12 @@ func (s *Service) createBlockStoreForShare(
 		}
 	}
 
-	// Phase 12 API-02: wire the metadata coordinator so the engine can
-	// invoke RefCount mutations + FileAttr.Blocks persistence without
-	// importing pkg/metadata on its hot paths. The fileBlockStore on the
-	// engine seam is the per-share metadata store cast to
-	// EngineFileBlockStore (Plan 04); the coordinator wraps the same
-	// store as a metadata.MetadataStore for the typed operations.
+	// Wire the metadata coordinator so the engine can invoke RefCount
+	// mutations + FileAttr.Blocks persistence without importing
+	// pkg/metadata on its hot paths. The fileBlockStore on the engine
+	// seam is the per-share metadata store cast to EngineFileBlockStore;
+	// the coordinator wraps the same store as a metadata.MetadataStore
+	// for the typed operations.
 	var coordinator engine.MetadataCoordinator
 	if metadataStore, ok := fileBlockStore.(metadata.MetadataStore); ok {
 		coordinator = newMetadataCoordinator(metadataStore)
@@ -590,7 +589,7 @@ func (s *Service) createBlockStoreForShare(
 	// last-run.json persistence entirely (engine.PersistLastRunSummary is a
 	// no-op on empty rootDir).
 	share.gcStateRoot = deriveGCStateRoot(localCfg, config.Name)
-	// Plan 14-06: per-share local data dir for the migration journal.
+	// per-share local data dir for the migration journal.
 	// Same source-of-truth + emptiness semantics as gcStateRoot — memory
 	// backends produce "" so the status handler can short-circuit.
 	share.localStoreDir = deriveLocalStoreDir(localCfg, config.Name)
@@ -950,11 +949,10 @@ func (s *Service) GetShare(name string) (*Share, error) {
 }
 
 // GetGCStateDirForShare returns the per-share gc-state directory used by
-// the GC engine to persist `last-run.json` (Phase 11 D-10). Returns an
-// empty string when the share's local store has no persistent root
-// (in-memory backend) — callers should treat empty as "no run summary
-// available". Returns an ErrShareNotFound-wrapped error if the share is
-// unknown.
+// the GC engine to persist `last-run.json`. Returns an empty string when
+// the share's local store has no persistent root (in-memory backend) —
+// callers should treat empty as "no run summary available". Returns an
+// ErrShareNotFound-wrapped error if the share is unknown.
 func (s *Service) GetGCStateDirForShare(name string) (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -967,11 +965,10 @@ func (s *Service) GetGCStateDirForShare(name string) (string, error) {
 }
 
 // LocalStoreDir returns the per-share on-disk data directory used by the
-// Phase 14 migration tool to locate `.migration-state.jsonl` (D-A2) and
-// by the REST status handler (Plan 14-06) to read it back. Mirrors
-// GetGCStateDirForShare's empty-string-for-memory-backend contract:
-// callers should treat "" as "no on-disk journal available" rather than
-// an error.
+// migration tool to locate `.migration-state.jsonl` and by the REST
+// status handler to read it back. Mirrors GetGCStateDirForShare's
+// empty-string-for-memory-backend contract: callers should treat "" as
+// "no on-disk journal available" rather than an error.
 //
 // Returns an ErrShareNotFound-wrapped error when the share is unknown so
 // callers can map it to a deterministic 404.
@@ -1372,11 +1369,11 @@ func (s *Service) EvictBlockStore(ctx context.Context, shareName string, opts Ev
 }
 
 // deriveGCStateRoot returns the per-share gc-state directory used by the
-// GC engine to persist its run state and last-run.json (Phase 11 D-01/D-10).
-// Mirrors the path layout used in CreateLocalStoreFromConfig for fs-backed
-// local stores (`<basePath>/shares/<sanitized>/gc-state`). Returns "" for
-// any non-fs backend or when the config does not yield a usable absolute
-// path — engine.PersistLastRunSummary treats "" as "do not persist".
+// GC engine to persist its run state and last-run.json. Mirrors the path
+// layout used in CreateLocalStoreFromConfig for fs-backed local stores
+// (`<basePath>/shares/<sanitized>/gc-state`). Returns "" for any non-fs
+// backend or when the config does not yield a usable absolute path —
+// engine.PersistLastRunSummary treats "" as "do not persist".
 func deriveGCStateRoot(localCfg interface {
 	GetConfig() (map[string]any, error)
 }, shareName string) string {
@@ -1402,11 +1399,11 @@ func deriveGCStateRoot(localCfg interface {
 }
 
 // deriveLocalStoreDir returns the per-share on-disk data directory the
-// Phase 14 migration tool uses to host `.migration-state.jsonl` and the
-// rolling snapshot (D-A2). Mirrors deriveGCStateRoot's path-extraction
-// logic for fs-backed local stores; returns "" for in-memory or
-// unresolvable configs (the REST status handler treats "" as "no
-// journal available", not an error).
+// migration tool uses to host `.migration-state.jsonl` and the rolling
+// snapshot. Mirrors deriveGCStateRoot's path-extraction logic for
+// fs-backed local stores; returns "" for in-memory or unresolvable
+// configs (the REST status handler treats "" as "no journal available",
+// not an error).
 //
 // Path layout: `<basePath>/shares/<sanitized>/`. Note the absence of a
 // "blocks" or "gc-state" suffix — the migration journal lives at the
@@ -1469,10 +1466,10 @@ func CreateLocalStoreFromConfig(
 		}
 	}
 
-	// Phase 17: append is mandatory on the local tier — the
-	// use_append_log opt-out flag was deleted with the legacy
-	// path-keyed writer. Budgets still surface through FSStoreOptions
-	// to fs.NewWithOptions; invalid values are warned and ignored.
+	// Append is mandatory on the local tier — the use_append_log opt-out
+	// flag was deleted with the legacy path-keyed writer. Budgets still
+	// surface through FSStoreOptions to fs.NewWithOptions; invalid values
+	// are warned and ignored.
 	var fsOpts fs.FSStoreOptions
 	if _, ok := config["use_append_log"]; ok {
 		logger.Warn("block store config has use_append_log: append is mandatory in v0.16+, flag is ignored")
@@ -1517,10 +1514,10 @@ func CreateLocalStoreFromConfig(
 			logger.Warn("block store config has orphan_log_min_age_seconds but it is invalid or non-positive; ignoring", "value", v)
 		}
 	}
-	// Phase 19 Plan 03 + Plan 07: dedup LRU slot count. Per-share JSON config
-	// `dedup_lru_size` takes precedence; falls back to the global YAML default
-	// (blockstore.local.dedup_lru_size) plumbed via LocalStoreDefaults; falls
-	// back to FSStore's internal default (4096) when both are zero.
+	// Dedup LRU slot count. Per-share JSON config `dedup_lru_size` takes
+	// precedence; falls back to the global YAML default
+	// (blockstore.local.dedup_lru_size) plumbed via LocalStoreDefaults;
+	// falls back to FSStore's internal default (4096) when both are zero.
 	if defaults != nil && defaults.DedupLRUSize > 0 {
 		fsOpts.DedupLRUSize = defaults.DedupLRUSize
 	}
@@ -1558,9 +1555,8 @@ func CreateLocalStoreFromConfig(
 			return nil, fmt.Errorf("fs local store path must be absolute, got %q", basePath)
 		}
 		sanitized := sanitizeShareName(shareName)
-		// Phase 19 follow-up: drop the redundant `blocks/` parent dir; the
-		// FSStore already creates `blocks/` (CAS) and `logs/` (append log) as
-		// siblings under its baseDir. The previous layout produced a doubled
+		// The FSStore creates `blocks/` (CAS) and `logs/` (append log) as
+		// siblings under its baseDir. A previous layout produced a doubled
 		// `shares/{name}/blocks/blocks/...` path. Existing pre-v0.16 installs
 		// migrate via `dfs migrate-to-cas` (which uses share-root as its
 		// state-dir, already aligned with deriveLocalStoreDir).
@@ -1569,12 +1565,12 @@ func CreateLocalStoreFromConfig(
 			return nil, fmt.Errorf("failed to create share directory: %w", err)
 		}
 
-		// Phase 17: append is mandatory. Wire a RollupStore from the
-		// metadata backend and start the rollup worker pool. The type
-		// assertion couples the block-store factory to a metadata-layer
-		// interface via runtime type check — accepted because memory /
-		// badger / postgres all implement both FileBlockStore and
-		// RollupStore on the same Store type.
+		// Append is mandatory. Wire a RollupStore from the metadata
+		// backend and start the rollup worker pool. The type assertion
+		// couples the block-store factory to a metadata-layer interface
+		// via runtime type check — accepted because memory / badger /
+		// postgres all implement both FileBlockStore and RollupStore on
+		// the same Store type.
 		rs, ok := fileBlockStore.(metadata.RollupStore)
 		if !ok {
 			return nil, fmt.Errorf("fs local store: metadata backend must implement metadata.RollupStore for the mandatory append-log path")

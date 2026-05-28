@@ -14,7 +14,7 @@ import (
 // TestPostgresRollupStore_Suite exercises the shared RollupStore conformance
 // suite against the Postgres backend. Requires a live PostgreSQL at
 // DITTOFS_TEST_POSTGRES_DSN (the same env-var gate used by the Postgres
-// conformance suite). Atomic-monotone semantics (INV-03) are enforced by
+// conformance suite). Atomic-monotone semantics are enforced by
 // the ON CONFLICT ... WHERE clause — see pkg/metadata/store/postgres/rollup.go.
 func TestPostgresRollupStore_Suite(t *testing.T) {
 	if os.Getenv("DITTOFS_TEST_POSTGRES_DSN") == "" {

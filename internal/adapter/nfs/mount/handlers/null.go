@@ -79,7 +79,7 @@ func (h *Handler) MountNull(
 // DecodeNullRequest decodes a NULL request from XDR-encoded bytes.
 //
 // The NULL procedure takes no arguments, so the request body should be empty.
-// However, we still provide this function for consistency with other procedures
+// However, we still provide it for consistency with other procedures
 // and to handle any unexpected data gracefully.
 //
 // Per RFC 1813, the NULL request has no parameters:

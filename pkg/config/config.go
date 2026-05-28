@@ -68,46 +68,44 @@ type Config struct {
 	//   DITTOFS_KERBEROS_PRINCIPAL overrides ServicePrincipal (DITTOFS_KERBEROS_SERVICE_PRINCIPAL for compat)
 	Kerberos KerberosConfig `mapstructure:"kerberos" yaml:"kerberos"`
 
-	// Syncer configures the engine.Syncer claim/upload cycle (Phase 11 D-13/D-14/D-25).
+	// Syncer configures the engine.Syncer claim/upload cycle.
 	// These knobs apply globally to every share's *engine.BlockStore syncer.
 	Syncer SyncerConfig `mapstructure:"syncer" yaml:"syncer"`
 
-	// Blockstore configures local/remote blockstore tunables (Phase 19+).
-	// Phase 19 introduces the first knob: blockstore.local.dedup_lru_size.
+	// Blockstore configures local/remote blockstore tunables.
 	Blockstore BlockstoreConfig `mapstructure:"blockstore" yaml:"blockstore"`
 
-	// GC configures the engine.CollectGarbage mark-sweep run (Phase 11 D-04..D-08).
+	// GC configures the engine.CollectGarbage mark-sweep run.
 	// These knobs apply globally to every block-store GC invocation.
 	GC GCConfig `mapstructure:"gc" yaml:"gc"`
 }
 
-// SyncerConfig configures the engine.Syncer claim/upload cycle. See Phase 11
-// CONTEXT.md decisions D-14 (restart-recovery janitor), D-24 (periodic-only
-// sync trigger), D-25 (bounded share-wide upload pool).
+// SyncerConfig configures the engine.Syncer claim/upload cycle. Knobs
+// cover the restart-recovery janitor, the periodic-only sync trigger,
+// and the bounded share-wide upload pool.
 //
-// Phase 19 D-23 closed the Phase 18 D-16 `claim_batch_size` deprecation cycle:
-// the field was set/defaulted in Phase 11 but never read by the syncer claim
-// path. The mapstructure/yaml tag `claim_batch_size` is gone; viper silently
-// ignores it on existing config files (unknown keys do not error).
+// The `claim_batch_size` mapstructure/yaml tag has been removed; viper
+// silently ignores it on existing config files (unknown keys do not
+// error).
 type SyncerConfig struct {
-	// UploadConcurrency is the per-share upload goroutine pool size (D-25).
+	// UploadConcurrency is the per-share upload goroutine pool size.
 	// Caps S3 connections per share; predictable throughput.
 	// Default: 8.
 	UploadConcurrency int `mapstructure:"upload_concurrency" yaml:"upload_concurrency"`
 
 	// ClaimTimeout bounds how long a row may remain in Syncing before the
-	// restart-recovery janitor requeues it back to Pending (D-14). CAS
+	// restart-recovery janitor requeues it back to Pending. CAS
 	// idempotency makes a duplicate re-upload a benign no-op.
 	// Default: 10 minutes.
 	ClaimTimeout time.Duration `mapstructure:"claim_timeout" yaml:"claim_timeout"`
 
-	// Tick is the periodic uploader cadence (D-24). The pressure channel from
-	// Phase 10 LSL-04 also drives sync drains independently.
+	// Tick is the periodic uploader cadence. The local-store pressure
+	// channel also drives sync drains independently.
 	// Default: 30 seconds.
 	Tick time.Duration `mapstructure:"tick" yaml:"tick"`
 }
 
-// ApplyDefaults fills any zero-valued field with the Phase 11 defaults.
+// ApplyDefaults fills any zero-valued field with the defaults.
 func (c *SyncerConfig) ApplyDefaults() {
 	if c.UploadConcurrency <= 0 {
 		c.UploadConcurrency = 8
@@ -129,26 +127,26 @@ func (c *SyncerConfig) Validate() error {
 	return nil
 }
 
-// GCConfig configures the engine.CollectGarbage mark-sweep run. See Phase
-// 11 CONTEXT.md decisions D-04 (sweep concurrency), D-05 (grace TTL),
-// D-06 (mark fail-closed — INV-04), D-07 (sweep continue+capture),
-// D-08 (interval defaults to disabled — operator opt-in).
+// GCConfig configures the engine.CollectGarbage mark-sweep run. Knobs
+// cover sweep concurrency, the grace TTL, the fail-closed mark
+// semantics, the continue-and-capture sweep, and the
+// disabled-by-default interval (operator opt-in).
 type GCConfig struct {
-	// Interval is reserved for a future periodic-GC scheduler. Phase 11
-	// WR-3-02: v0.15.0 ships only on-demand GC (dfsctl/REST). The field
-	// is parsed and validated, but any non-zero value is reported with
-	// a startup WARN at server boot and otherwise ignored — the periodic
-	// scheduler is tracked for a follow-up phase. Schedule via cron in
-	// the meantime.
+	// Interval is reserved for a future periodic-GC scheduler. v0.15.0
+	// ships only on-demand GC (dfsctl/REST). The field is parsed and
+	// validated, but any non-zero value is reported with a startup
+	// WARN at server boot and otherwise ignored — the periodic
+	// scheduler is tracked for a follow-up. Schedule via cron in the
+	// meantime.
 	Interval time.Duration `mapstructure:"interval" yaml:"interval"`
 
 	// SweepConcurrency bounds the worker pool that walks the 256
-	// cas/XX/* prefixes during the sweep phase (D-04). Defaults to 16,
+	// cas/XX/* prefixes during the sweep phase. Defaults to 16,
 	// capped at 32 to prevent storming the remote endpoint.
 	SweepConcurrency int `mapstructure:"sweep_concurrency" yaml:"sweep_concurrency"`
 
 	// GracePeriod is the TTL applied during sweep: an object whose
-	// LastModified is within snapshot - GracePeriod is preserved (D-05).
+	// LastModified is within snapshot - GracePeriod is preserved.
 	// Defaults to 1 hour. Values in (0, 5m) are rejected at config load;
 	// values in [5m, 10m) are accepted but emit a warning.
 	GracePeriod time.Duration `mapstructure:"grace_period" yaml:"grace_period"`
@@ -158,9 +156,9 @@ type GCConfig struct {
 	DryRunSampleSize int `mapstructure:"dry_run_sample_size" yaml:"dry_run_sample_size"`
 }
 
-// ApplyDefaults fills any zero-valued field with the Phase 11 defaults.
+// ApplyDefaults fills any zero-valued field with the defaults.
 func (c *GCConfig) ApplyDefaults() {
-	// Interval default is 0 (disabled — operator opt-in per D-08).
+	// Interval default is 0 (disabled — operator opt-in).
 	if c.SweepConcurrency <= 0 {
 		c.SweepConcurrency = 16
 	}
@@ -179,7 +177,7 @@ func (c *GCConfig) ApplyDefaults() {
 // rejected: server-S3 clock skew under sustained load can easily exceed
 // a few minutes, and a sub-5m grace TTL collapses the snapshot-grace
 // contract that protects in-flight CAS PUTs from being reaped on the
-// same sweep (D-05). Values in [5m, 10m) are accepted but emit a warn —
+// same sweep. Values in [5m, 10m) are accepted but emit a warn —
 // they're inside spec but tighter than the recommended floor.
 func (c *GCConfig) Validate() error {
 	if c.SweepConcurrency > 32 {

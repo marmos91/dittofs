@@ -13,7 +13,7 @@ import (
 )
 
 // fileBlockStoreLegacy captures the legacy GetFileBlock + ListFileBlocks
-// methods that Phase 12 (META-03 / D-09) removed from the public
+// methods that removed from the public
 // FileBlockStore interface but kept on each backend struct for engine-
 // internal callers. The conformance suite type-asserts the factory's
 // MetadataStore to this interface so the existing tests can still drive
@@ -72,7 +72,7 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 		testListFileBlocksEmptyStore(t, factory)
 	})
 
-	// Phase 11 Plan 02 (D-13/D-14): the syncer claim cycle stamps
+	// the syncer claim cycle stamps
 	// LastSyncAttemptAt = now when flipping a block to Syncing, and the
 	// restart-recovery janitor compares it against ClaimTimeout. Every
 	// metadata backend MUST round-trip the field — otherwise a process
@@ -85,7 +85,7 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 		testPutGet_LastSyncAttemptAt_Zero(t, factory)
 	})
 
-	// Phase 11 WR-4-01: the dedup short-circuit (engine.uploadOne) writes a
+	// the dedup short-circuit (engine.uploadOne) writes a
 	// second FileBlock with a fresh ID but the same ContentHash whenever two
 	// file regions hash-match. Hash is NOT a uniqueness key at the contract
 	// level (see FileBlockStore.Put godoc). Backends that enforce
@@ -96,7 +96,7 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 		testPut_TwoIDsSameHash(t, factory)
 	})
 
-	// Phase 11 Plan 06 (GC-01 / D-02): the GC mark phase calls
+	// the GC mark phase calls
 	// EnumerateFileBlocks on the metadata store to stream every live
 	// ContentHash into the disk-backed live set. Every backend MUST yield
 	// every block — under-yield risks the sweep deleting referenced data.
@@ -124,7 +124,7 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 		testEnumerateFileBlocks_ZeroHashEmitted(t, factory)
 	})
 
-	// Phase 11 INV-04 (mark fail-closed): backends that store the
+	// (mark fail-closed): backends that store the
 	// ContentHash as text (Postgres) MUST surface a parse error when a
 	// row's hash column holds a malformed value. Coercing the row to the
 	// zero hash would let GC reap a still-live CAS object once the grace
@@ -135,7 +135,7 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 		testEnumerateFileBlocks_CorruptHashFailsClosed(t, factory)
 	})
 
-	// Phase 12 CR-01 (review iteration 1): IncrementRefCount /
+	// (review iteration 1): IncrementRefCount /
 	// DecrementRefCount called via a metadata.Transaction MUST roll back
 	// when the wrapping WithTransaction returns an error. Memory backend
 	// has documented best-effort semantics (single mutex, no rollback
@@ -145,10 +145,10 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 		testTx_IncrementRefCount_RollsBack(t, factory)
 	})
 
-	// Phase 19 D-04 / D-21: AddRef is the LRU-hit refcount path for the
+	// AddRef is the LRU-hit refcount path for the
 	// in-memory hash dedup LRU (Opt 1). Three scenarios pin the contract
 	// across all backends: existing-hash RefCount bumps (state preserved
-	// per D-27), missing-hash returns the ErrUnknownHash sentinel and
+	// per), missing-hash returns the ErrUnknownHash sentinel and
 	// creates no row, and concurrent AddRef vs DecrementRefCount cascade
 	// preserves the TOCTOU-free serialization invariant.
 	t.Run("AddRef_ExistingHash_BumpsRefCount", func(t *testing.T) {
@@ -191,7 +191,7 @@ func testListPending(t *testing.T, factory StoreFactory) {
 		t.Fatalf("ListPending() error: %v", err)
 	}
 
-	// Phase 11 (STATE-01) collapsed Dirty + Local into Pending; ListLocalBlocks
+	// collapsed Dirty + Local into Pending; ListLocalBlocks
 	// now returns every Pending row with a LocalPath. Three of the seeded
 	// blocks (file-a/0, file-a/1, file-b/0) match.
 	if len(result) != 3 {
@@ -281,7 +281,7 @@ func testListPendingEmptyStore(t *testing.T, factory StoreFactory) {
 // ============================================================================
 // ListFileBlocks Tests
 //
-// Phase 12 (META-03 / D-09): ListFileBlocks is no longer on the public
+// ListFileBlocks is no longer on the public
 // FileBlockStore interface but is retained as a backend method for engine-
 // internal callers. Tests use the legacyFileBlockStore type assertion to
 // reach the method on each backend; backends that don't implement it
@@ -445,12 +445,12 @@ func testListFileBlocksEmptyStore(t *testing.T, factory StoreFactory) {
 }
 
 // ============================================================================
-// LastSyncAttemptAt Round-Trip (Phase 11 Plan 02 — D-13/D-14)
+// LastSyncAttemptAt Round-Trip
 // ============================================================================
 
 // testPutGet_LastSyncAttemptAt asserts that a non-zero LastSyncAttemptAt
 // round-trips through Put/Get for every metadata backend. The syncer's
-// restart-recovery janitor (D-14) reads this field on Start and requeues
+// restart-recovery janitor reads this field on Start and requeues
 // stale Syncing rows; a backend that drops the field would silently break
 // the recovery contract.
 func testPutGet_LastSyncAttemptAt(t *testing.T, factory StoreFactory) {
@@ -521,7 +521,7 @@ func testPutGet_LastSyncAttemptAt_Zero(t *testing.T, factory StoreFactory) {
 
 // testPut_TwoIDsSameHash asserts that two distinct FileBlock IDs
 // sharing the same ContentHash both round-trip through PutFileBlock without
-// error. Phase 11 WR-4-01: the dedup short-circuit (engine.uploadOne) emits
+// error. the dedup short-circuit (engine.uploadOne) emits
 // such pairs whenever two file regions hash-match (e.g. all-zero blocks
 // across distinct VM image files). A backend that rejects the second
 // writer breaks the dedup path, leaves the FileBlock stuck in Syncing,
@@ -606,7 +606,7 @@ func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 }
 
 // ============================================================================
-// EnumerateFileBlocks Tests (Phase 11 Plan 06 — GC-01 / D-02)
+// EnumerateFileBlocks Tests ()
 // ============================================================================
 
 // hashOf returns a deterministic non-zero ContentHash from a seed string.
@@ -907,7 +907,7 @@ type CorruptHashInjector interface {
 
 // testEnumerateFileBlocks_CorruptHashFailsClosed asserts that a malformed CAS
 // hash on disk surfaces as an error from EnumerateFileBlocks rather than being
-// silently coerced to the zero ContentHash. INV-04 mark fail-closed: the GC
+// silently coerced to the zero ContentHash. mark fail-closed: the GC
 // mark phase MUST abort on enumeration error so the sweep cannot reap a live
 // CAS object whose live-set hash was lost in transit.
 func testEnumerateFileBlocks_CorruptHashFailsClosed(t *testing.T, factory StoreFactory) {
@@ -955,10 +955,10 @@ func testEnumerateFileBlocks_CorruptHashFailsClosed(t *testing.T, factory StoreF
 }
 
 // ============================================================================
-// Tx Rollback Tests (Phase 12 CR-01 review iteration 1)
+// Tx Rollback Tests (review iteration 1)
 // ============================================================================
 
-// testTx_IncrementRefCount_RollsBack pins the BLOCKER-2 / CR-01 contract:
+// testTx_IncrementRefCount_RollsBack pins the contract:
 // when IncrementRefCount is invoked through a metadata.Transaction and the
 // wrapping WithTransaction returns an error, the per-row RefCount UPDATE
 // MUST be rolled back atomically. This is the conformance-level pin for
@@ -1044,19 +1044,19 @@ func testTx_IncrementRefCount_RollsBack(t *testing.T, factory StoreFactory) {
 }
 
 // ============================================================================
-// AddRef Tests (Phase 19 D-04 / D-21)
+// AddRef Tests
 //
-// AddRef is the LRU-hit refcount path for the in-memory hash dedup LRU
-// (Opt 1). It atomically bumps RefCount on the FileBlock row indexed by
-// hash; BlockState is UNCHANGED (D-27 STATE-01..03 preservation). The
-// LRU never creates blocks — it only references already-stored ones —
-// so AddRef returns ErrUnknownHash when the hash is not yet in the
-// store (caller falls back to the full Put path).
+// AddRef is the LRU-hit refcount path for the in-memory hash dedup
+// LRU. It atomically bumps RefCount on the FileBlock row indexed by
+// hash; BlockState is left unchanged. The LRU never creates blocks —
+// it only references already-stored ones — so AddRef returns
+// ErrUnknownHash when the hash is not yet in the store (caller falls
+// back to the full Put path).
 // ============================================================================
 
 // testAddRef_ExistingHash_BumpsRefCount: seed a single FileBlock with a
 // known hash at RefCount=1 and BlockState=Remote, AddRef once, assert
-// RefCount becomes 2 AND BlockState stays Remote (D-27 — state
+// RefCount becomes 2 AND BlockState stays Remote (state
 // preservation is the load-bearing contract).
 func testAddRef_ExistingHash_BumpsRefCount(t *testing.T, factory StoreFactory) {
 	t.Helper()
@@ -1095,7 +1095,7 @@ func testAddRef_ExistingHash_BumpsRefCount(t *testing.T, factory StoreFactory) {
 	if got.RefCount != 2 {
 		t.Errorf("RefCount = %d after AddRef on RefCount=1 seed; want 2", got.RefCount)
 	}
-	// D-27: BlockState UNCHANGED. AddRef MUST NOT fire any
+	// BlockState UNCHANGED. AddRef MUST NOT fire any
 	// Pending→Syncing→Remote transition; the hit path references an
 	// existing block, it never creates one.
 	if got.State != blockstore.BlockStateRemote {
@@ -1106,7 +1106,7 @@ func testAddRef_ExistingHash_BumpsRefCount(t *testing.T, factory StoreFactory) {
 // testAddRef_MissingHash_ReturnsErrUnknownHash: AddRef on a hash that
 // has never been Put must return blockstore.ErrUnknownHash (also
 // re-exported as metadata.ErrUnknownHash) AND must NOT materialize a
-// row for that hash. D-04: caller falls back to the full Put path on
+// row for that hash. caller falls back to the full Put path on
 // this sentinel.
 func testAddRef_MissingHash_ReturnsErrUnknownHash(t *testing.T, factory StoreFactory) {
 	t.Helper()
@@ -1124,7 +1124,7 @@ func testAddRef_MissingHash_ReturnsErrUnknownHash(t *testing.T, factory StoreFac
 		t.Errorf("AddRef(missing hash) returned %v; want errors.Is(...,metadata.ErrUnknownHash)", err)
 	}
 
-	// D-04 / D-27: AddRef MUST NOT create a row on the missing-hash
+	// AddRef MUST NOT create a row on the missing-hash
 	// path. GetByHash returns (nil, nil) for an absent hash by contract.
 	got, err := store.GetByHash(ctx, hash)
 	if err != nil {
@@ -1139,7 +1139,7 @@ func testAddRef_MissingHash_ReturnsErrUnknownHash(t *testing.T, factory StoreFac
 // FileBlock at RefCount=10 (high enough that 8 concurrent decrements
 // cannot underflow), spawn 8 AddRef goroutines + 8 DecrementRefCount
 // goroutines all targeting the same row, assert final RefCount is
-// exactly 10 (TOCTOU-free serialization invariant from D-04 — AddRef
+// exactly 10 (TOCTOU-free serialization invariant from AddRef
 // matches IncrementRefCount's atomicity contract). Mirrors the
 // ConcurrentMonotone subtest shape from rollup_store_suite.go.
 func testAddRef_Concurrent_With_DecrementRefCountCascade(t *testing.T, factory StoreFactory) {
@@ -1201,7 +1201,7 @@ func testAddRef_Concurrent_With_DecrementRefCountCascade(t *testing.T, factory S
 	}
 	wg.Wait()
 
-	// D-04 TOCTOU-free serialization invariant: 10 + 8 (AddRef) - 8
+	// TOCTOU-free serialization invariant: 10 + 8 (AddRef) - 8
 	// (Decrement) = 10. Any backend that races read+compare+write
 	// outside the native concurrency primitive will land off-by-N.
 	got, err := store.GetByHash(ctx, hash)

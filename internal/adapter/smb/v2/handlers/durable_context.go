@@ -130,7 +130,7 @@ func EncodeDH2QResponse(timeoutMs uint32, flags uint32) CreateContext {
 	w.WriteUint32(timeoutMs)
 	w.WriteUint32(flags)
 	return CreateContext{
-		Name: DurableHandleV2RequestTag, // Server echoes same tag per spec
+		Name: DurableHandleV2RequestTag, // Server echoes same tag per MS-SMB2
 		Data: w.Bytes(),
 	}
 }

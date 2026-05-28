@@ -33,7 +33,7 @@ const (
 
 // SendGrantedCallback sends an NLM_GRANTED callback to a client.
 //
-// This function establishes a new TCP connection to the client, sends the
+// Establishes a new TCP connection to the client, sends the
 // NLM_GRANTED RPC call, and waits for the reply to confirm delivery.
 //
 // Per CONTEXT.md locked decision:

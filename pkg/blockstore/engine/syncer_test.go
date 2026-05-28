@@ -25,10 +25,10 @@ import (
 )
 
 // Integration coverage for the unified mirror-loop syncer against real
-// remote backends. The unit suite (engine_test.go, syncer_put_error_test.go,
-// engine_delete_test.go) exercises Flush wiring + cascade math with stubs;
+// remote backends. The unit suite (engine_test.go, syncer_put_error_test.go
+// engine_delete_test.go) exercises Flush wiring + cascade math with stubs
 // this file is the end-to-end smoke proving the loop behaves on actual
-// blob stores under:
+// blob stores under
 //
 //  1. Happy path — every locally rolled-up CAS chunk is mirrored to the
 //     remote and IsSynced flips to true.
@@ -41,13 +41,13 @@ import (
 //  4. Refcount cascade — engine.Delete on a fully-synced file drops the
 //     synced marker so the synced set stays a strict subset of local CAS.
 //
-// Two backend fixtures:
+// Two backend fixtures
 //
-//  - memory   — pkg/blockstore/remote/memory.New(). Always available.
-//  - s3       — pkg/blockstore/remote/s3.NewFromConfig against a
+// - memory — pkg/blockstore/remote/memory.New(). Always available.
+// - s3 — pkg/blockstore/remote/s3.NewFromConfig against a
 //               Localstack/MinIO endpoint. Gated on
-//               DITTOFS_TEST_S3_ENDPOINT (with DITTOFS_TEST_S3_ACCESS_KEY,
-//               DITTOFS_TEST_S3_SECRET_KEY, DITTOFS_TEST_S3_BUCKET,
+// DITTOFS_TEST_S3_ENDPOINT (with DITTOFS_TEST_S3_ACCESS_KEY
+// DITTOFS_TEST_S3_SECRET_KEY, DITTOFS_TEST_S3_BUCKET
 //               DITTOFS_TEST_S3_REGION, DITTOFS_TEST_S3_FORCE_PATH_STYLE
 //               available as overrides). Skipped cleanly when unset.
 
@@ -95,7 +95,7 @@ func newMemoryRemote(t *testing.T) remote.RemoteStore {
 }
 
 // newS3LocalstackRemote constructs an S3-backed RemoteStore against a
-// Localstack/MinIO endpoint. Per-test KeyPrefix isolates parallel runs;
+// Localstack/MinIO endpoint. Per-test KeyPrefix isolates parallel runs
 // t.Cleanup deletes every object the test wrote and closes the client.
 func newS3LocalstackRemote(t *testing.T) remote.RemoteStore {
 	t.Helper()
@@ -186,7 +186,7 @@ func skipIfNoLocalstack(t *testing.T) {
 // actual data flow rather than a degenerate no-op.
 //
 // Snapshot-at-start semantics mirror the FSStore behavior: Walk is
-// run to completion under the read lock to materialize the hash list,
+// run to completion under the read lock to materialize the hash list
 // then per-hash IsSynced filters run outside Walk's snapshot. New
 // chunks rolled up mid-iteration land in the NEXT pass.
 type casLocalStore struct {
@@ -252,7 +252,7 @@ func (c *casLocalStore) ListUnsynced(ctx context.Context) iter.Seq2[blockstore.C
 // SyncedHashStore.
 //
 // We keep the type around for symmetry but the test instead injects
-// failure into the SyncedHashStore (markFailingSyncedHashStore below),
+// failure into the SyncedHashStore (markFailingSyncedHashStore below)
 // which is the actually-broken-in-crash-replay component.
 
 // markFailingSyncedHashStore wraps a SyncedHashStore and induces
@@ -336,7 +336,7 @@ func (s *stubFBS) DecrementRefCount(_ context.Context, _ string) (uint32, error)
 }
 
 func (s *stubFBS) AddRef(_ context.Context, h blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
-	// Phase 19 D-04: bump RefCount on any row indexed by hash.
+	// bump RefCount on any row indexed by hash.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, fb := range s.blocks {
@@ -538,7 +538,7 @@ func TestSyncer_MirrorLoop_HappyPath(t *testing.T) {
 //
 // A SyncedHashStore wrapper fails MarkSynced ONCE after the remote.Put
 // has succeeded. Flush surfaces an error. The second Flush is the happy
-// path: remote.Put on idempotent (hash, identical bytes) returns nil,
+// path: remote.Put on idempotent (hash, identical bytes) returns nil
 // MarkSynced flips through the wrapper (no longer failing), every hash
 // ends up synced. Crucially, the remote bytes match the local bytes —
 // the failed Mark did not corrupt anything.
@@ -564,8 +564,8 @@ func TestSyncer_MirrorLoop_PutThenMark_CrashReplay(t *testing.T) {
 		}
 
 		// First Flush — the wrapped Mark fires errOnce on the first
-		// (hash, _) and the loop returns the wrapped error. Crucially,
-		// Put has already landed bytes in the remote at this point;
+		// (hash, _) and the loop returns the wrapped error. Crucially
+		// Put has already landed bytes in the remote at this point
 		// crash replay simulates the kill-9 window.
 		_, err := f.bs.Flush(ctx, "crash-replay")
 		if err == nil {
@@ -590,7 +590,7 @@ func TestSyncer_MirrorLoop_PutThenMark_CrashReplay(t *testing.T) {
 			t.Fatalf("no hash present in remote after first Flush; failure landed earlier than Mark window")
 		}
 
-		// Second Flush — Put is a no-op on idempotent identical bytes,
+		// Second Flush — Put is a no-op on idempotent identical bytes
 		// Mark passes through (the wrapper exhausted its failOnce
 		// budget), every hash ends up synced. No corruption: every
 		// remote object's bytes match what local has.
@@ -658,7 +658,7 @@ func TestSyncer_MirrorLoop_ListUnsyncedSnapshotSemantics(t *testing.T) {
 			t.Fatalf("expected >=3 initial CAS chunks, got %d", len(initialHashes))
 		}
 
-		// Install the mid-iteration hook. On the first yielded hash,
+		// Install the mid-iteration hook. On the first yielded hash
 		// fire a goroutine that AppendWrites two new payloads and
 		// waits for them to roll up. The goroutine is non-blocking
 		// against the in-progress Flush.
@@ -676,7 +676,7 @@ func TestSyncer_MirrorLoop_ListUnsyncedSnapshotSemantics(t *testing.T) {
 			})
 		}
 
-		// First pass: snapshots the initialHashes set, mirrors them,
+		// First pass: snapshots the initialHashes set, mirrors them
 		// and ignores the chunks the hook spawned (they don't exist
 		// in the captured snapshot).
 		res, err := f.bs.Flush(ctx, "snap-base-0")
@@ -779,7 +779,7 @@ func diff(candidates []blockstore.ContentHash, seen map[blockstore.ContentHash]s
 //
 // Distinct from the unit cascade test in engine_delete_test.go in that
 // it exercises the cascade end-to-end against a real remote backend —
-// Plan 07's unit suite proves the wiring; this proves the path under
+// 's unit suite proves the wiring; this proves the path under
 // real Put/MarkSynced state.
 // ----------------------------------------------------------------------
 
@@ -834,7 +834,7 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 			t.Fatalf("Flush: %v", err)
 		}
 
-		// Pre-conditions: synced set is a strict superset of nothing;
+		// Pre-conditions: synced set is a strict superset of nothing
 		// every produced hash is synced.
 		for _, h := range hashes {
 			ok, err := synced.IsSynced(ctx, h)

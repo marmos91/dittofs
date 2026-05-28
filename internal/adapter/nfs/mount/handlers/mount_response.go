@@ -34,7 +34,7 @@ type MountResponseBase struct {
 
 // GetStatus returns the Mount protocol status code.
 //
-// This method is automatically available on all response types that embed MountResponseBase.
+// Automatically available on all response types that embed MountResponseBase.
 func (r *MountResponseBase) GetStatus() uint32 {
 	return r.Status
 }

@@ -50,8 +50,7 @@ type V41ClientRecord struct {
 	// RFC 8881 Section 18.36), then advances SequenceID to match.
 	SequenceID uint32
 
-	// Confirmed becomes true after CREATE_SESSION completes (Phase 19).
-	// Always false in Phase 18.
+	// Confirmed becomes true after CREATE_SESSION completes.
 	Confirmed bool
 
 	// ClientAddr is the network address of the client (for logging/debugging).
@@ -314,7 +313,7 @@ func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
 }
 
 // ============================================================================
-// Helper Methods (for REST API in Plan 02)
+// Helper Methods (for REST API in)
 // ============================================================================
 
 // ListV41Clients returns pointers to all registered v4.1 client records.

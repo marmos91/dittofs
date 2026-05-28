@@ -118,7 +118,7 @@ func (u *User) GetGroupNames() []string {
 
 // GetExplicitSharePermission returns the user's explicit permission for a share.
 // Returns PermissionNone and false if no explicit permission is set.
-// Note: This method requires SharePermissions to be loaded with ShareName populated.
+// Note: Requires SharePermissions to be loaded with ShareName populated.
 func (u *User) GetExplicitSharePermission(shareName string) (SharePermission, bool) {
 	for _, p := range u.SharePermissions {
 		if p.ShareName == shareName {

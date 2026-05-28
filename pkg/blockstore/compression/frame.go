@@ -32,7 +32,7 @@ func frameOverhead(origSize uint64) int {
 	return FrameHeaderFixedSize + n
 }
 
-// encodeFrame builds the wire form for a compressed body:
+// encodeFrame builds the wire form for a compressed body
 //
 //	[magic | algo | uvarint(origSize) | body]
 func encodeFrame(algo Algo, origSize uint64, body []byte) []byte {
@@ -54,7 +54,7 @@ func hasFrameMagic(b []byte) bool {
 }
 
 // tryDecodeFrame parses b and returns the framed payload metadata. When
-// b does not carry the DFCMP magic, framed is false and (algo, origSize,
+// b does not carry the DFCMP magic, framed is false and (algo, origSize
 // body) are zero-valued — callers treat b as raw plaintext in that
 // case.
 //

@@ -389,7 +389,7 @@ func TestMigrateShareToCAS_DryRun(t *testing.T) {
 		t.Errorf("dry-run left %d chunks on destination", len(bs.chunks))
 	}
 
-	// EstDedupRatio should be in (0, 1] when at least one chunk sampled;
+	// EstDedupRatio should be in (0, 1] when at least one chunk sampled
 	// allow 0 if the per-file sample budget produced no chunks.
 	if res.EstDedupRatio < 0 || res.EstDedupRatio > 1 {
 		t.Errorf("EstDedupRatio out of [0,1]: %f", res.EstDedupRatio)

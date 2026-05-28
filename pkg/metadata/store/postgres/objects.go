@@ -20,10 +20,10 @@ import (
 // This file implements the FileBlockStore interface for the PostgreSQL metadata store.
 // It provides content-addressed file block tracking for deduplication and caching.
 //
-// Phase 12 (META-03 / D-09): the FileBlockStore interface narrowed to 6
-// methods. The backend retains the legacy GetFileBlock + ListFileBlocks
-// helpers as concrete methods on the struct (not on the public interface)
-// for engine-internal callers.
+// The FileBlockStore interface is narrowed to 6 methods. The backend
+// retains the legacy GetFileBlock + ListFileBlocks helpers as
+// concrete methods on the struct (not on the public interface) for
+// engine-internal callers.
 //
 // Table:
 //   - file_blocks: File block data with UUID as primary key and hash index
@@ -40,7 +40,7 @@ var _ blockstore.FileBlockStore = (*PostgresMetadataStore)(nil)
 // ============================================================================
 
 // GetFileBlock retrieves a file block by its ID. Not on the narrowed
-// FileBlockStore interface (Phase 12 META-03 / D-09); kept as a backend
+// FileBlockStore interface; kept as a backend
 // method for engine-internal callers.
 func (s *PostgresMetadataStore) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
@@ -57,8 +57,8 @@ func (s *PostgresMetadataStore) GetFileBlock(ctx context.Context, id string) (*m
 	return block, nil
 }
 
-// Put stores or updates a file block. Renamed from PutFileBlock in
-// Phase 12 (META-03 / D-09) to match the narrowed interface.
+// Put stores or updates a file block. Renamed from PutFileBlock to
+// match the narrowed interface.
 func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileBlock) error {
 	var hashStr *string
 	if block.IsFinalized() {
@@ -73,7 +73,7 @@ func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileBlo
 	if block.LocalPath != "" {
 		cachePath = &block.LocalPath
 	}
-	// Phase 11 D-13/D-14: persist LastSyncAttemptAt as NULL when zero so the
+	// persist LastSyncAttemptAt as NULL when zero so the
 	// janitor's WHERE last_sync_attempt_at < cutoff predicate excludes
 	// never-claimed rows naturally instead of matching every Pending row.
 	var lastSyncAttemptAt *time.Time
@@ -82,7 +82,7 @@ func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileBlo
 		lastSyncAttemptAt = &t
 	}
 
-	// WR-05 (Phase 12 review iteration 1): omit ref_count from the ON
+	// (review iteration 1): omit ref_count from the ON
 	// CONFLICT UPDATE list so concurrent IncrementRefCount / DecrementRefCount
 	// (which run as atomic SQL `+1` / `-1` UPDATEs) cannot be silently
 	// overwritten by a stale Put-with-in-memory-RefCount. RefCount on the
@@ -110,7 +110,6 @@ func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileBlo
 }
 
 // Delete removes a file block by its ID. Renamed from DeleteFileBlock in
-// Phase 12 (META-03 / D-09).
 func (s *PostgresMetadataStore) Delete(ctx context.Context, id string) error {
 	result, err := s.exec(ctx, `DELETE FROM file_blocks WHERE id = $1`, id)
 	if err != nil {
@@ -153,19 +152,19 @@ func (s *PostgresMetadataStore) DecrementRefCount(ctx context.Context, id string
 
 // AddRef atomically bumps RefCount on the FileBlock row(s) indexed by
 // the given content hash. Implements the FileBlockStore.AddRef contract
-// (Phase 19 D-04): used by the in-memory hash dedup LRU hit path to
+// used by the in-memory hash dedup LRU hit path to
 // reference an already-stored block without creating a new row.
 //
 // Atomicity: a single UPDATE statement performs the bump — PostgreSQL's
 // row-level locking serializes contended updates against the same row,
 // so AddRef is TOCTOU-free against concurrent DecrementRefCount cascade
-// (D-04 — matches the existing IncrementRefCount idiom).
+// (matches the existing IncrementRefCount idiom).
 //
 // Returns metadata.ErrUnknownHash when RowsAffected == 0 (no row exists
 // for this hash). Callers (the LRU hit site) fall back to the full Put
 // path on this sentinel.
 //
-// Multi-row-per-hash tolerance (D-22b / Phase 11 IN-3-02 / WR-4-01):
+// Multi-row-per-hash tolerance:
 // the hash index on file_blocks is a NON-UNIQUE partial index (migration
 // 000011), so a single hash may match multiple rows in legacy data. The
 // UPDATE deliberately omits LIMIT — all matching rows are bumped
@@ -173,11 +172,11 @@ func (s *PostgresMetadataStore) DecrementRefCount(ctx context.Context, id string
 // row a later DecrementRefCount targets. The conformance test seeds a
 // single row, so RefCount goes from N to N+1 exactly.
 //
-// D-27: only ref_count is mutated. block_state is never touched —
-// AddRef references an existing block; the LRU hit path never creates
-// or transitions one (STATE-01..03 preservation).
+// Only ref_count is mutated. block_state is never touched: AddRef
+// references an existing block, and the LRU hit path never creates
+// or transitions one.
 func (s *PostgresMetadataStore) AddRef(ctx context.Context, hash blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
-	// payloadID + blockRef accepted for future GC traceability (D-04);
+	// payloadID + blockRef accepted for future GC traceability;
 	// postgres backend records ref count only — parameters intentionally
 	// blanked.
 	result, err := s.exec(ctx,
@@ -193,12 +192,10 @@ func (s *PostgresMetadataStore) AddRef(ctx context.Context, hash blockstore.Cont
 }
 
 // GetByHash looks up a finalized block by its content hash.
-// Returns nil without error if not found. Renamed from FindFileBlockByHash
-// in Phase 12 (META-03 / D-09).
-//
-// Phase 11 STATE-01: dedup matches only Remote (state=2) blocks — Pending
-// or Syncing rows have not been confirmed on the remote and are unsafe
-// dedup targets.
+// Returns nil without error if not found. Renamed from
+// FindFileBlockByHash. Dedup matches only Remote (state=2) blocks —
+// Pending or Syncing rows have not been confirmed on the remote and
+// are unsafe dedup targets.
 func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE hash = $1 AND state = 2 /* Remote */`
@@ -215,13 +212,13 @@ func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.Con
 }
 
 // ListPending returns blocks in Pending state (RefCount>=1, not yet
-// uploaded — D-13) older than the given duration. Renamed from
-// ListLocalBlocks in Phase 12 (META-03 / D-09); the underlying semantics
-// already match Phase 11 STATE-01 ("Local" was renamed Pending).
-// If limit > 0, at most limit blocks are returned.
+// uploaded) older than the given duration. Renamed from
+// ListLocalBlocks; the underlying semantics already match ("Local"
+// was renamed Pending). If limit > 0, at most limit blocks are
+// returned.
 //
-// Phase 11 STATE-01: the legacy four-state machine collapsed to three;
-// "Pending" replaces both "Dirty" and "Local". The state literal here is 0,
+// The legacy four-state machine collapsed to three; "Pending"
+// replaces both "Dirty" and "Local". The state literal here is 0,
 // matching blockstore.BlockStatePending.
 func (s *PostgresMetadataStore) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
 	// olderThan <= 0 means "no age filter" — return every local block. The
@@ -250,7 +247,7 @@ func (s *PostgresMetadataStore) ListPending(ctx context.Context, olderThan time.
 
 // ListFileBlocks returns all blocks belonging to a file, ordered by block index.
 // Uses LIKE query on block ID prefix, then sorts in Go for correct numeric ordering.
-// Not on the narrowed FileBlockStore interface (Phase 12 META-03 / D-09);
+// Not on the narrowed FileBlockStore interface;
 // kept as a backend method for engine-internal callers.
 func (s *PostgresMetadataStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
@@ -277,11 +274,11 @@ func (s *PostgresMetadataStore) ListFileBlocks(ctx context.Context, payloadID st
 	return result, nil
 }
 
-// EnumerateFileBlocks streams every FileBlock's ContentHash through fn using
-// a row cursor over the file_blocks table. NULL hashes (legacy rows pre-CAS)
-// are emitted as the zero ContentHash so the GC mark phase can skip them
-// explicitly. See GC-01 / D-02. Phase 12 (META-03 / D-08): lifted from
-// FileBlockStore to MetadataStore — implementation unchanged.
+// EnumerateFileBlocks streams every FileBlock's ContentHash through fn
+// using a row cursor over the file_blocks table. NULL hashes (legacy
+// rows pre-CAS) are emitted as the zero ContentHash so the GC mark
+// phase can skip them explicitly. Lifted from FileBlockStore to
+// MetadataStore — implementation unchanged.
 func (s *PostgresMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
 	rows, err := s.query(ctx, `SELECT hash FROM file_blocks ORDER BY id`)
 	if err != nil {
@@ -300,7 +297,7 @@ func (s *PostgresMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func
 		if hashStr.Valid {
 			parsed, perr := metadata.ParseContentHash(hashStr.String)
 			if perr != nil {
-				// Phase 11 INV-04 (mark fail-closed): a malformed hash row
+				// (mark fail-closed): a malformed hash row
 				// cannot be silently coerced to the zero hash — that would
 				// invite the GC mark phase to treat the row as a legacy
 				// pre-CAS entry and the sweep would reap a still-live CAS
@@ -350,7 +347,7 @@ func scanFileBlock(row pgx.Row) (*metadata.FileBlock, error) {
 		return nil, err
 	}
 	if hashStr.Valid {
-		// Phase 11 INV-04: do not silently coerce malformed CAS hashes to the
+		// do not silently coerce malformed CAS hashes to the
 		// zero hash — see EnumerateFileBlocks for the data-loss scenario.
 		h, perr := metadata.ParseContentHash(hashStr.String)
 		if perr != nil {
@@ -391,13 +388,13 @@ func scanFileBlockRows(rows pgx.Rows) ([]*metadata.FileBlock, error) {
 // Ensure postgresTransaction implements FileBlockStore
 var _ blockstore.FileBlockStore = (*postgresTransaction)(nil)
 
-// CR-01 (Phase 12 review iteration 1): the FileBlockStore methods on
+// (review iteration 1): the FileBlockStore methods on
 // postgresTransaction MUST execute against the txn's own pgx.Tx, not the
 // public store's connection-pool helpers. Previously every method just
 // called `tx.store.X(...)` which routed through the pool — defeating
 // rollback for any caller that bumped RefCount inside WithTransaction
-// then encountered a downstream PutFile failure (BLOCKER-2 silent
-// INV-02 leak). All proxies below are now tx-bound; non-mutating
+// then encountered a downstream PutFile failure (silent
+// leak). All proxies below are now tx-bound; non-mutating
 // helpers that don't support tx-binding here (ListPending, etc.) keep
 // the pool path because no caller mutates state through them.
 
@@ -440,7 +437,7 @@ func (tx *postgresTransaction) Put(ctx context.Context, block *metadata.FileBloc
 		t := block.LastSyncAttemptAt
 		lastSyncAttemptAt = &t
 	}
-	// WR-05: omit ref_count from the ON CONFLICT update list (matches
+	// omit ref_count from the ON CONFLICT update list (matches
 	// the pool-path Put). RefCount mutates only via Increment/Decrement.
 	query := `
 		INSERT INTO file_blocks (id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at)
@@ -477,7 +474,7 @@ func (tx *postgresTransaction) Delete(ctx context.Context, id string) error {
 }
 
 // IncrementRefCount runs the +1 UPDATE on the active pgx.Tx so a
-// subsequent rollback undoes the bump (CR-01 fix). Production callers
+// subsequent rollback undoes the bump (fix). Production callers
 // route here through metadataCoordinator.IncrementRefCount when ctx
 // carries an active tx via metadata.WithTx.
 func (tx *postgresTransaction) IncrementRefCount(ctx context.Context, id string) error {
@@ -496,7 +493,7 @@ func (tx *postgresTransaction) IncrementRefCount(ctx context.Context, id string)
 }
 
 // DecrementRefCount runs the -1 UPDATE on the active pgx.Tx so a
-// subsequent rollback undoes the decrement (CR-01 fix).
+// subsequent rollback undoes the decrement (fix).
 func (tx *postgresTransaction) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -514,10 +511,10 @@ func (tx *postgresTransaction) DecrementRefCount(ctx context.Context, id string)
 }
 
 // AddRef runs the +1 UPDATE keyed by hash on the active pgx.Tx so a
-// subsequent rollback undoes the bump (CR-01 parity for the Phase 19
+// subsequent rollback undoes the bump (parity for the
 // LRU hit path). Returns metadata.ErrUnknownHash when no row matches.
 func (tx *postgresTransaction) AddRef(ctx context.Context, hash blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
-	// payloadID + blockRef accepted for future GC traceability (D-04);
+	// payloadID + blockRef accepted for future GC traceability;
 	// postgres backend records ref count only — parameters intentionally
 	// blanked.
 	if err := ctx.Err(); err != nil {
@@ -554,7 +551,7 @@ func (tx *postgresTransaction) GetByHash(ctx context.Context, hash metadata.Cont
 
 // ListPending and ListFileBlocks are read-only helpers; no caller
 // mutates state through them, so they keep the pool path. Same for
-// EnumerateFileBlocks — the GC mark phase / INV-02 audit don't require
+// EnumerateFileBlocks — the GC mark phase audit don't require
 // txn binding (they tolerate concurrent mutation).
 func (tx *postgresTransaction) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
 	return tx.store.ListPending(ctx, olderThan, limit)
@@ -574,7 +571,7 @@ func (tx *postgresTransaction) EnumerateFileBlocks(ctx context.Context, fn func(
 // InjectCorruptHashRow stores a file_blocks row whose hash column holds a
 // syntactically malformed value. Test-only: implements the storetest
 // CorruptHashInjector capability so the conformance suite can exercise
-// INV-04 fail-closed enumeration. The TEXT column lets us bypass the
+// fail-closed enumeration. The TEXT column lets us bypass the
 // Put contract that always serializes a valid ContentHash.String().
 func (s *PostgresMetadataStore) InjectCorruptHashRow(ctx context.Context, blockID string, badHash string) error {
 	now := time.Now()

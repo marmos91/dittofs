@@ -10,7 +10,7 @@ import (
 
 // InitConfig creates a sample configuration file at the default location.
 //
-// This function:
+// Steps:
 //  1. Creates the config directory if it doesn't exist
 //  2. Generates a config file with defaults and helpful comments
 //  3. Returns an error if the file already exists (won't overwrite)

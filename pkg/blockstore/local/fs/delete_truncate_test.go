@@ -14,7 +14,7 @@ import (
 	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// TestDelete_FreshPayload_UnlinksLog is the baseline happy-path check:
+// TestDelete_FreshPayload_UnlinksLog is the baseline happy-path check
 // AppendWrite lands a record, DeleteAppendLog runs, the on-disk log file
 // disappears and FSStore per-file state is cleared.
 func TestDelete_FreshPayload_UnlinksLog(t *testing.T) {
@@ -81,7 +81,7 @@ func TestDelete_Idempotent_OnMissingFile(t *testing.T) {
 // returns ENOENT — FIX-17 must treat that as benign and return nil
 // (idempotency preserved).
 //
-// Because step-5 cleanup wipes lf from logFDs after the first delete,
+// Because step-5 cleanup wipes lf from logFDs after the first delete
 // the second delete's snapshot returns nil lf and the os.Remove path is
 // not actually re-entered — but the user-facing nil-return contract is
 // what callers depend on. This test guards that contract.
@@ -219,14 +219,14 @@ func TestDelete_DuringActiveWriters_NoDataRace(t *testing.T) {
 // TestDelete_DuringActiveRollup_NoMetadataZombie — plan-checker Blocker 3
 // verification. A rollup is started for payloadID "target"; the rollup
 // worker picks it up while DeleteAppendLog runs concurrently. After
-// Delete returns, assert:
+// Delete returns, assert
 //
 //	(a) rollup_offset in RollupStore is 0 — no zombie metadata row.
 //	(b) The log file is unlinked.
 //	(c) Rollup did not error the test (benign abort only).
 //
 // Race determinism: rollupFile holds the per-file mutex through the
-// entire StoreChunk → SetRollupOffset path (plan 06), so
+// entire StoreChunk → SetRollupOffset path, so
 // DeleteAppendLog's mutex.Lock() either (a) runs first and the rollup
 // worker immediately bails on the entry tombstone check, or (b) runs
 // after the rollup pre-commit tombstone re-check which also bails
@@ -295,7 +295,7 @@ func TestDelete_DuringActiveRollup_NoMetadataZombie(t *testing.T) {
 }
 
 // TestDelete_CrashBetweenMetadataAndUnlink_OrphanSwept simulates the
-// crash window between clearing metadata and unlinking the log:
+// crash window between clearing metadata and unlinking the log
 // manually create a log file with no matching metadata, age its mtime
 // past the orphan sweep threshold, then call Recover and assert the
 // orphan was swept.
@@ -353,7 +353,7 @@ func TestDelete_CrashBetweenMetadataAndUnlink_OrphanSwept(t *testing.T) {
 	}
 }
 
-// TestTruncate_DropsIntervalsAbove: records at offsets 0, 4096, 8192,
+// TestTruncate_DropsIntervalsAbove: records at offsets 0, 4096, 8192
 // 16384; truncate to 8192; tree has entries only for offsets < 8192.
 func TestTruncate_DropsIntervalsAbove(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
@@ -450,7 +450,7 @@ func TestTruncate_ClosedStore_ReturnsErrStoreClosed(t *testing.T) {
 	}
 }
 
-// TestTruncate_Rollup_SkipsBeyondBoundary: run rollup after truncate;
+// TestTruncate_Rollup_SkipsBeyondBoundary: run rollup after truncate
 // verify chunks emitted only contain data up to newSize. We do this by
 // counting chunks in blocks/ after rollup and by asserting the rollup
 // did not error.
@@ -521,7 +521,7 @@ func TestTruncate_Rollup_SkipsBeyondBoundary(t *testing.T) {
 // payloadID must succeed and create a fresh log. This is required by
 // DittoFS's path-based PayloadID lifecycle — metadata.buildPayloadID
 // derives PayloadID from shareName + path, so 'unlink + create at
-// same path' reuses the PayloadID. Exposed by pjdfstest chmod/12.t,
+// same path' reuses the PayloadID. Exposed by pjdfstest chmod/12.t
 // unlink/14.t, open/00.t on NFSv3 (NFSv4 silly-rename masks it).
 //
 // Reverses the prior FIX-8 invariant (tombstone permanent for the

@@ -152,7 +152,7 @@ func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.File
 		return nil, mapPgError(err, "GetFile", "")
 	}
 
-	// Phase 12 META-01: load FileAttr.Blocks inside the same tx.
+	// load FileAttr.Blocks inside the same tx.
 	if file.Type == metadata.FileTypeRegular {
 		blocks, err := getFileBlockRefs(ctx, tx.tx, id)
 		if err != nil {
@@ -233,11 +233,11 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		}
 	}
 
-	// Phase 13 META-02 / BSCAS-04: object_id BYTEA argument.
+	// object_id BYTEA argument.
 	// Zero-valued ObjectID writes SQL NULL so the partial unique index
 	// (files_object_id_idx WHERE object_id IS NOT NULL) skips the row —
 	// legacy / never-quiesced / partially-flushed files never collide on
-	// the all-zero sentinel (Phase 13 D-03 / D-07).
+	// the all-zero sentinel.
 	var objectIDArg interface{}
 	if !file.ObjectID.IsZero() {
 		objectIDArg = file.ObjectID[:]
@@ -315,7 +315,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			"size", file.Size)
 	}
 
-	// Phase 12 META-01: persist FileAttr.Blocks into file_block_refs.
+	// persist FileAttr.Blocks into file_block_refs.
 	// Atomic with the files-row UPDATE/INSERT above (same tx). Only regular
 	// files carry BlockRef payloads. Empty/nil Blocks performs a DELETE-only
 	// pass, ensuring no stale rows survive a write that drops Blocks.
@@ -545,8 +545,8 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 			}
 		}
 
-		// Phase 13 META-02: hydrate ObjectID for directory entries so the
-		// shape matches GetFile. NULL/empty -> zero (D-03 sentinel).
+		// hydrate ObjectID for directory entries so the
+		// shape matches GetFile. NULL/empty -> zero (sentinel).
 		attr := &metadata.FileAttr{
 			Type:         metadata.FileType(fileType),
 			Mode:         uint32(mode),
@@ -788,7 +788,7 @@ func (tx *postgresTransaction) GetShareOptions(ctx context.Context, shareName st
 	}
 
 	// Authoritative: block_layout column overrides JSON blob (Phase
-	// 14 Plan 01 / D-A6). ParseBlockLayout coerces "" → legacy.
+	// 14 / D-A6). ParseBlockLayout coerces "" → legacy.
 	layout, err := metadata.ParseBlockLayout(blockLayoutText)
 	if err != nil {
 		return nil, fmt.Errorf("share %q: %w", shareName, err)

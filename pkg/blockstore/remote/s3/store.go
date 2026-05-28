@@ -177,7 +177,7 @@ func normalizeEndpoint(endpoint string) string {
 	if endpoint == "" {
 		return ""
 	}
-	// Look for "://" preceded by a valid URI scheme (RFC 3986: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )).
+	// Look for "://" preceded by a valid URI scheme (RFC 3986: ALPHA *(ALPHA / DIGIT / "+" / "-" / ".")).
 	// We cannot use url.Parse alone because it misinterprets "host:port" as scheme "host".
 	if i := strings.Index(endpoint, "://"); i > 0 {
 		scheme := endpoint[:i]
@@ -230,7 +230,7 @@ func (s *Store) hashKey(hash blockstore.ContentHash) string {
 
 // Put writes data under the CAS-shaped key derived from hash. The
 // x-amz-meta-content-hash header is stamped atomically with the PUT
-// (BSCAS-06): the AWS SDK normalizes the metadata key to lowercase and
+// the AWS SDK normalizes the metadata key to lowercase and
 // prepends "x-amz-meta-" on the wire, so we pass the bare key
 // "content-hash". The header value is the canonical "blake3:{hex}" form
 // via ContentHash.CASKey().
@@ -257,7 +257,7 @@ func (s *Store) Put(ctx context.Context, hash blockstore.ContentHash, data []byt
 
 // Get reads a complete object from S3 by content hash. Returns raw bytes
 // WITHOUT BLAKE3 verification — production CAS reads should use
-// ReadBlockVerified (BSCAS-06).
+// ReadBlockVerified.
 func (s *Store) Get(ctx context.Context, hash blockstore.ContentHash) ([]byte, error) {
 	if err := s.checkClosed(); err != nil {
 		return nil, err
@@ -281,9 +281,8 @@ func (s *Store) Get(ctx context.Context, hash blockstore.ContentHash) ([]byte, e
 
 // ReadBlockVerified GETs the object at the CAS-derived key and verifies
 // the body's BLAKE3 hash matches expected before returning bytes
-// (INV-06).
 //
-// Two-stage verification (D-19 + D-18, fail-closed twice):
+// Two-stage verification (fail-closed twice)
 //  1. Header pre-check: if the response carries x-amz-meta-content-hash
 //     and it does not match expected, return ErrCASContentMismatch
 //     BEFORE reading any body bytes (saves a doomed body transfer).
@@ -310,16 +309,16 @@ func (s *Store) ReadBlockVerified(ctx context.Context, hash blockstore.ContentHa
 		return nil, fmt.Errorf("s3 get: %w", err)
 	}
 
-	// D-19 header pre-check. AWS SDK lower-cases user metadata keys and
+	// header pre-check. AWS SDK lower-cases user metadata keys and
 	// strips the x-amz-meta- prefix. Memory store mirror uses the same
-	// "content-hash" key (BSCAS-06).
+	// "content-hash" key.
 	if hdr, ok := resp.Metadata["content-hash"]; ok && hdr != expected.CASKey() {
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("%w: header %q != expected %q",
 			blockstore.ErrCASContentMismatch, hdr, expected.CASKey())
 	}
 
-	// D-18 streaming recompute. The verifier owns Close on resp.Body —
+	// streaming recompute. The verifier owns Close on resp.Body —
 	// it surfaces ErrCASContentMismatch if the caller closes before EOF.
 	reader := newVerifyingReader(resp.Body, expected)
 	data, readErr := readAllVerified(reader, resp.ContentLength, maxBlockReadSize)
@@ -379,7 +378,7 @@ func readResponseBody(body io.ReadCloser, contentLength *int64, fallbackSize int
 }
 
 // Has reports whether the CAS object addressed by hash exists in the
-// bucket. Implements the blockstore.BlockStore contract (Phase 17 D-04).
+// bucket. Implements the blockstore.BlockStore contract.
 // Implemented via HEAD for cost and latency reasons (a Get with
 // Range: bytes=0-0 would still transfer one byte body).
 func (s *Store) Has(ctx context.Context, hash blockstore.ContentHash) (bool, error) {
@@ -404,10 +403,10 @@ func (s *Store) Has(ctx context.Context, hash blockstore.ContentHash) (bool, err
 // without transferring the body. Returns blockstore.ErrBlockNotFound on
 // missing keys (same convention as Get).
 //
-// Per Phase 17 D-08, the x-amz-meta-content-hash header is NOT echoed in
-// the returned Meta — the lookup key (ContentHash) is the input, not
-// output. The header is still consulted internally by ReadBlockVerified
-// for BSCAS-06 defense-in-depth.
+// The x-amz-meta-content-hash header is NOT echoed in the returned
+// Meta — the lookup key (ContentHash) is the input, not output. The
+// header is still consulted internally by ReadBlockVerified for
+// defense-in-depth.
 func (s *Store) Head(ctx context.Context, hash blockstore.ContentHash) (blockstore.Meta, error) {
 	if err := s.checkClosed(); err != nil {
 		return blockstore.Meta{}, err
@@ -435,7 +434,7 @@ func (s *Store) Head(ctx context.Context, hash blockstore.ContentHash) (blocksto
 	return out, nil
 }
 
-// Delete removes the CAS object addressed by hash. Delete is idempotent:
+// Delete removes the CAS object addressed by hash. Delete is idempotent
 // S3's DeleteObject succeeds with 204 even when the key is absent.
 func (s *Store) Delete(ctx context.Context, hash blockstore.ContentHash) error {
 	if err := s.checkClosed(); err != nil {
@@ -459,7 +458,7 @@ func (s *Store) Delete(ctx context.Context, hash blockstore.ContentHash) error {
 // (skipping non-CAS keys), and dispatches the callback with the parsed
 // ContentHash and the per-object blockstore.Meta. Honors
 // blockstore.ErrStopWalk for clean early exit; any other callback error
-// halts and is wrapped as "walk halted at %s: %w" (Phase 17 D-07).
+// halts and is wrapped as "walk halted at %s: %w".
 // Context cancellation aborts immediately.
 func (s *Store) Walk(ctx context.Context, fn func(hash blockstore.ContentHash, meta blockstore.Meta) error) error {
 	if err := s.checkClosed(); err != nil {

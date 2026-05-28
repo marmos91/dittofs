@@ -139,7 +139,7 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	}
 
 	// Read existing record once to capture both the size delta (for usedBytes
-	// tracking) and the previous ObjectID (for D-12 secondary-index cleanup).
+	// tracking) and the previous ObjectID (for secondary-index cleanup).
 	var oldSize uint64
 	var oldObjectID metadata.ContentHash
 	if item, err := tx.txn.Get(keyFile(file.ID)); err == nil {
@@ -172,7 +172,7 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		return err
 	}
 
-	// Phase 13 D-12: maintain ObjectID -> file UUID secondary index in the
+	// maintain ObjectID -> file UUID secondary index in the
 	// same Txn as the primary file write (atomic on commit).
 	//
 	// Step 1: drop stale secondary entry if the ObjectID changed.
@@ -182,7 +182,7 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		}
 	}
 
-	// Step 2: write new secondary entry if non-zero. Detect D-14 race
+	// Step 2: write new secondary entry if non-zero. Detect race
 	// (another file already claims this ObjectID) and surface as ErrConflict.
 	if !file.ObjectID.IsZero() {
 		if existing, gerr := tx.txn.Get(keyObjectID(file.ObjectID)); gerr == nil {
@@ -238,7 +238,7 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 	}
 
 	// Subtract size from counter for regular files; capture ObjectID for
-	// secondary-index cleanup (Phase 13 D-12).
+	// secondary-index cleanup.
 	var existingObjectID metadata.ContentHash
 	_ = item.Value(func(val []byte) error {
 		file, decErr := decodeFile(val)
@@ -264,7 +264,7 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		}
 	}
 
-	// Phase 13 D-12: drop ObjectID secondary entry if present.
+	// drop ObjectID secondary entry if present.
 	if !existingObjectID.IsZero() {
 		if err := tx.txn.Delete(keyObjectID(existingObjectID)); err != nil && !goerrors.Is(err, badgerdb.ErrKeyNotFound) {
 			return fmt.Errorf("badger DeleteFile: delete obj index: %w", err)
@@ -714,7 +714,7 @@ func (tx *badgerTransaction) GetShareOptions(ctx context.Context, shareName stri
 			return err
 		}
 		optsCopy := data.Share.Options
-		// Coerce BlockLayout: pre-Phase-14 share blobs lack the
+		// Coerce BlockLayout share blobs lack the
 		// field entirely, so the JSON unmarshal produces an empty
 		// string — D-A6 maps that to `legacy`.
 		if normalized, perr := metadata.ParseBlockLayout(string(optsCopy.BlockLayout)); perr == nil {
@@ -967,7 +967,7 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 
 	// Preserve existing share configuration (e.g. ShareOptions written
 	// by a prior CreateShare call) when materializing the root row.
-	// Phase 14 Plan 01 (Rule 2 deviation): mirrors the same fix in the
+	// (Rule 2 deviation): mirrors the same fix in the
 	// non-transactional createNewRoot — the original code wrote a
 	// fresh `metadata.Share{Name: shareName}` here, silently wiping
 	// any Options the caller had set via CreateShare. Correctness-

@@ -725,8 +725,8 @@ func (h *Handler) setFileInfoFromStore(
 		// exists, dispatch the dst H-lease break (RWH→RW). Even after that
 		// break drains, ANY open handle on dst blocks the overwrite per
 		// MS-FSA §2.1.5.14.10 — surface STATUS_ACCESS_DENIED. The dst close
-		// path (smbtorture v2_rename_target_overwrite Phase 3) clears the
-		// open and the post-wait recheck then proceeds to the rename.
+		// path (smbtorture v2_rename_target_overwrite stage 3) clears
+		// the open and the post-wait recheck then proceeds to the rename.
 		isOverwrite := renameInfo.ReplaceIfExists
 		metaSvc := h.Registry.GetMetadataService()
 		var dstMetaHandle metadata.FileHandle
@@ -776,7 +776,7 @@ func (h *Handler) setFileInfoFromStore(
 		// FileID) blocks the overwrite. The H-lease break above stripped
 		// caching rights, but did NOT close the underlying handle — the
 		// holder must do that itself (smbtorture v2_rename_target_overwrite
-		// Phase 1 / Phase 2: ACK leaves dst open ⇒ ACCESS_DENIED).
+		// stages 1/2: ACK leaves dst open ⇒ ACCESS_DENIED).
 		if isOverwrite && len(dstMetaHandle) > 0 && h.hasOpenHandleOnFile(dstMetaHandle, openFile.FileID) {
 			logger.Debug("SET_INFO: rename overwrite blocked by open handle on destination",
 				"src", openFile.Path,
@@ -1478,7 +1478,7 @@ func (h *Handler) breakParentDirLeasesForContentChangeOn(authCtx *metadata.AuthC
 // implicit DELETE+FILE_ADD_FILE open. Called BEFORE the dst-parent share-mode
 // conflict check so the break notification is observed even when the conflict
 // surfaces STATUS_SHARING_VIOLATION (smbtorture smb2.dirlease.rename_dst_parent
-// Phase 1, lease.c:7331). Read caching is preserved (RH -> R) — the rename
+// stage 1, lease.c:7331). Read caching is preserved (RH -> R) — the rename
 // hasn't mutated directory contents yet, only the dst-parent's Handle caching
 // is invalidated by the implicit destructive open intent.
 //

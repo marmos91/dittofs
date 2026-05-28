@@ -107,7 +107,7 @@ func (h *Handler) Mount(
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrServerFault}}, nil
 	}
 
-	// REST-02 / D-02: refuse MOUNT on a disabled share. Per-request check is
+	// Refuse MOUNT on a disabled share. Per-request check is
 	// the last line of defense when adapters hold a stale reference; the
 	// runtime Share.Enabled flag is flipped synchronously by shares.Service
 	// DisableShare before restore begins. MNT3ERR_ACCES (MountErrAccess=13)

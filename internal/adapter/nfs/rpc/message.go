@@ -157,7 +157,7 @@ type OpaqueAuth struct {
 
 // GetAuthFlavor returns the authentication flavor from the RPC call credentials.
 //
-// This method provides convenient access to the authentication type being used
+// Provides convenient access to the authentication type being used
 // by the client. The server should check this to determine how to interpret
 // the authentication body and what level of trust to place in the client.
 //
@@ -191,7 +191,7 @@ func (c *RPCCallMessage) GetAuthFlavor() uint32 {
 
 // GetAuthBody returns the authentication body data.
 //
-// This method provides access to the raw authentication credentials sent
+// Provides access to the raw authentication credentials sent
 // by the client. The format of this data depends on the authentication
 // flavor (see GetAuthFlavor).
 //

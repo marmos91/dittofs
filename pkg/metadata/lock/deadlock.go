@@ -74,7 +74,7 @@ func (wfg *WaitForGraph) WouldCauseCycle(waiter string, owners []string) bool {
 // AddWaiter records that waiter is waiting for all specified owners.
 //
 // IMPORTANT: Caller MUST call WouldCauseCycle first to ensure this won't
-// create a deadlock. This method does NOT check for cycles.
+// create a deadlock. AddWaiter does NOT check for cycles.
 //
 // Parameters:
 //   - waiter: The owner ID that is now waiting

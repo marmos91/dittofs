@@ -16,7 +16,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
 )
 
-// Compile-time interface satisfaction check. Plan 17-07 restored the
+// Compile-time interface satisfaction check. -07 restored the
 // assertion after MemoryStore gained the BlockStoreAppend-contributed
 // methods (Put/Get/GetRange/Has/Delete/Head/Walk/AppendWrite/DeleteLog).
 var _ local.LocalStore = (*MemoryStore)(nil)
@@ -73,7 +73,7 @@ type MemoryStore struct {
 	closed bool
 }
 
-// SetChunkEmitter wires the rollup-time per-chunk callback. Idempotent;
+// SetChunkEmitter wires the rollup-time per-chunk callback. Idempotent
 // the most recent setter wins. Mirrors the *fs.FSStore's
 // SetObjectIDPersister plumbing pattern. The signature uses the raw
 // function type (rather than the ChunkEmitter alias) so the engine's
@@ -337,7 +337,7 @@ func (s *MemoryStore) AppendWrite(_ context.Context, payloadID string, data []by
 	return nil
 }
 
-// rollupLocked runs FastCDC over the consolidated payload buffer,
+// rollupLocked runs FastCDC over the consolidated payload buffer
 // stores the resulting chunks in the CAS map, and invokes the
 // chunkEmitter callback (if wired) once per chunk so downstream
 // FileBlock metadata can mirror the rollup's chunk boundaries.
@@ -413,7 +413,7 @@ func (s *MemoryStore) ReadPayloadAt(_ context.Context, payloadID string, dest []
 // tracked file-size entry. Already-rolled-up CAS chunks remain in
 // the store — orphan-chunk cleanup is GC's responsibility per the
 // contract. Subsequent AppendWrites for the same payloadID resurrect
-// a fresh log (required by DittoFS's path-based PayloadID lifecycle:
+// a fresh log (required by DittoFS's path-based PayloadID lifecycle
 // unlink + create at the same path reuses the same PayloadID).
 //
 // Implements blockstore.BlockStoreAppend.

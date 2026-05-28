@@ -19,13 +19,13 @@ import (
 // begin, AND that metadata.rollup_offset is the same physical position).
 // After compaction the file is renumbered so the surviving records start
 // at logHeaderSize while metadata.rollup_offset still records the
-// pre-compaction byte offset (it is monotonic per INV-03 and cannot be
+// pre-compaction byte offset (it is monotonic per and cannot be
 // regressed). Without the flag, recovery would interpret metaOff > hdrOff
 // as a crash between SetRollupOffset and advanceRollupOffset and seek
 // past the compacted file's EOF, losing every surviving record.
 const LogFlagCompacted uint32 = 1 << 0
 
-// defaultCompactionDivisor controls the default compaction threshold:
+// defaultCompactionDivisor controls the default compaction threshold
 // maxLogBytes / defaultCompactionDivisor. A compaction pass runs after
 // rollup when the in-memory fence advanced by at least this many bytes
 // since the last compaction (or since the log was created). Setting the
@@ -39,16 +39,17 @@ const defaultCompactionDivisor int64 = 4
 //
 // Caller MUST hold the per-file mu (rollupFile does — it calls this
 // before releasing the mutex via defer). The lf and idx parameters
-// must be the canonical pointers stored in bc.logFDs / bc.logIndices;
+// must be the canonical pointers stored in bc.logFDs / bc.logIndices
 // we mutate them in place under the per-file mu so concurrent callers
 // (other AppendWrite / rollupFile goroutines that already snapshotted
 // these pointers and are awaiting mu) observe the post-compaction state
 // when they finally acquire mu.
 //
-// Returns nil and skips compaction silently if:
-//   - bc.compactionThresholdBytes <= 0 (compaction disabled);
+// Returns nil and skips compaction silently if
+// - bc.compactionThresholdBytes <= 0 (compaction disabled)
 //   - the fence has not advanced past logHeaderSize by more than the
-//     threshold (nothing meaningful to reclaim);
+//
+// threshold (nothing meaningful to reclaim)
 //   - idx is nil (defensive — should not happen given the caller's
 //     pre-conditions, but ranging over a nil idx would panic).
 //
@@ -93,7 +94,7 @@ func (bc *FSStore) maybeCompactLog(ctx context.Context, payloadID string, lf *lo
 // Crash safety: the rename(2) is the linearization point. A crash at
 // any point before rename leaves the original log untouched (the temp
 // file is unlinked on the error paths below; orphaned temps surviving a
-// hard kill are cleaned up by the boot-time orphan sweep — see
+// hard kill are cleaned up by the boot-time orphan sweep —
 // cleanupCompactTemps). A crash after rename but before the new fd is
 // reopened is also safe: the next AppendWrite / rollupFile will reopen
 // from disk and pick up the compacted layout transparently. Recovery
@@ -147,7 +148,7 @@ func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *l
 	// to trust the header rather than metadata.
 	//
 	// CreatedAt is preserved from the original log so the boot-time
-	// orphan sweep age gate (D-28) still classifies the payload against
+	// orphan sweep age gate still classifies the payload against
 	// its original first-record timestamp, not a freshly-bumped one.
 	origHdr, hdrErr := readLogHeader(lf.f)
 	if hdrErr != nil {
@@ -306,7 +307,7 @@ func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *l
 
 	// Atomic rename. Per POSIX, rename(2) is atomic with respect to a
 	// crash on the same filesystem: the dentry transition is all-or-
-	// nothing. After this point the on-disk log is the compacted file;
+	// nothing. After this point the on-disk log is the compacted file
 	// we now reopen the new fd and swap it into lf under the per-file
 	// mu we still hold.
 	if err := os.Rename(tmpPath, lf.path); err != nil {

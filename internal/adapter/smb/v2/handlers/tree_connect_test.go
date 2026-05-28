@@ -763,7 +763,7 @@ func TestResolveSharePermission_RootBypass(t *testing.T) {
 }
 
 // =============================================================================
-// REST-02 Adapter Gate Tests (Plan 05-09 D-02)
+// Disabled-Share Adapter Gate Tests
 // =============================================================================
 
 // newTreeConnectGateHandler builds an SMB handler with a registry containing

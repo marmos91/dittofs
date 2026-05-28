@@ -10,7 +10,7 @@ import (
 )
 
 // TestShareList_Headers_IncludesEnabled asserts the table headers grew an
-// ENABLED column (D-28 surfacing).
+// ENABLED column.
 func TestShareList_Headers_IncludesEnabled(t *testing.T) {
 	sl := ShareList{}
 	headers := sl.Headers()
@@ -77,7 +77,7 @@ func TestShareList_Table_IncludesEnabledHeaderAndRow(t *testing.T) {
 }
 
 // TestShareList_JSON_IncludesEnabledField marshals a shareRow as JSON and
-// confirms the `enabled` tag is present (D-28 -o json surfacing).
+// confirms the `enabled` tag is present in -o json output.
 func TestShareList_JSON_IncludesEnabledField(t *testing.T) {
 	sl := ShareList{
 		{Name: "/alice", Enabled: true},

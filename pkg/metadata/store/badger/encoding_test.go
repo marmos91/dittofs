@@ -16,7 +16,7 @@ import (
 )
 
 // TestBadgerEncodeFile_BlocksRoundTrip verifies that FileAttr.Blocks
-// (Phase 12 META-01) round-trips through the Badger JSON encoder
+// round-trips through the Badger JSON encoder
 // (encodeFile/decodeFile) without loss, including ContentHash bytes.
 func TestBadgerEncodeFile_BlocksRoundTrip(t *testing.T) {
 	// Build three deterministic content hashes.
@@ -74,13 +74,13 @@ func TestBadgerEncodeFile_BlocksRoundTrip(t *testing.T) {
 	assert.Equal(t, original.Mode, decoded.Mode)
 }
 
-// TestBadgerEncodeFile_LegacyBlobNoBlocks asserts that a pre-Phase-12
+// TestBadgerEncodeFile_LegacyBlobNoBlocks asserts that a
 // JSON blob (no "blocks" key at all) deserializes cleanly with Blocks==nil.
-// This locks in D-06 (legacy compat) and threat T-12-08 (mitigation:
+// This locks in (legacy compat) and (mitigation:
 // json+omitempty handles legacy blobs).
 func TestBadgerEncodeFile_LegacyBlobNoBlocks(t *testing.T) {
 	// Hand-crafted minimal JSON blob representing a file persisted before
-	// Phase 12 added the "blocks" field. No "blocks" key — must decode
+	// added the "blocks" field. No "blocks" key — must decode
 	// with no error and result in Blocks == nil.
 	legacyJSON := []byte(`{
 		"id": "11111111-2222-3333-4444-555555555555",
@@ -111,7 +111,7 @@ func TestBadgerEncodeFile_LegacyBlobNoBlocks(t *testing.T) {
 
 // TestBadgerEncodeFile_NilBlocksOmitted asserts the omitempty tag on
 // FileAttr.Blocks so encoding a file with nil Blocks does NOT emit a
-// "blocks" key — keeps legacy/zero-value blobs free of churn (D-05).
+// "blocks" key — keeps legacy/zero-value blobs free of churn.
 func TestBadgerEncodeFile_NilBlocksOmitted(t *testing.T) {
 	file := &metadata.File{
 		ID:        uuid.MustParse("11111111-2222-3333-4444-555555555555"),

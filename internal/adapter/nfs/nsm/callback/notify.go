@@ -10,7 +10,7 @@ import (
 
 // SendNotify sends an SM_NOTIFY callback to a registered client.
 //
-// This function builds the SM_NOTIFY status message and sends it to the client
+// Builds the SM_NOTIFY status message and sends it to the client
 // at the address specified in their registration. It uses the callback information
 // (program, version, procedure) from the client's original SM_MON request.
 //

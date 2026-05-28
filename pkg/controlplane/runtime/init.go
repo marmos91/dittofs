@@ -190,7 +190,7 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			Name:                             share.Name,
 			MetadataStore:                    metaStoreCfg.Name,
 			ReadOnly:                         share.ReadOnly,
-			Enabled:                          share.Enabled, // Plan 05-09 D-02: propagate DB Enabled flag so adapter gates read the correct runtime value.
+			Enabled:                          share.Enabled, // propagate DB Enabled flag so adapter gates read the correct runtime value.
 			EncryptData:                      share.EncryptData,
 			AclFlagInheritedCanonicalization: share.AclFlagInheritedCanonicalization,
 			AccessBasedEnumeration:           share.AccessBasedEnumeration,
@@ -216,11 +216,11 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 		}
 
 		if err := rt.AddShare(ctx, shareConfig); err != nil {
-			// Phase 17 D-11: legacy-layout detection is a hard boot
-			// stop, not a per-share warn-and-skip. Surface it so
-			// cmd/dfs/commands/start.go can exit 78 with the
-			// operator directive. Every other AddShare failure stays
-			// a warn-and-skip (preserves existing behavior).
+			// Legacy-layout detection is a hard boot stop, not a
+			// per-share warn-and-skip. Surface it so
+			// cmd/dfs/commands/start.go can exit 78 with the operator
+			// directive. Every other AddShare failure stays a
+			// warn-and-skip (preserves existing behavior).
 			if errors.Is(err, blockstore.ErrLegacyLayoutDetected) {
 				return fmt.Errorf("share %q: %w", share.Name, err)
 			}

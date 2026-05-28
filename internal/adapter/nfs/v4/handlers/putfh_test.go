@@ -1,4 +1,4 @@
-// NFSv4 PUTFH tests — REST-02 adapter-side enforcement (Plan 05-09 D-02).
+// NFSv4 PUTFH tests — disabled-share adapter-side enforcement.
 //
 // PUTFH resolves a client-presented filehandle into the CompoundContext's
 // CurrentFH for subsequent operations. When the owning share has been

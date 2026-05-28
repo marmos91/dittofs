@@ -362,8 +362,8 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Step 10: Write data to BlockStore (uses local cache internally)
 	// ========================================================================
 
-	// Routed through common.WriteToBlockStore so the Phase-12 []BlockRef
-	// plumbing lands in one place (see common/doc.go Phase-12 seam / D-12).
+	// Routed through common.WriteToBlockStore so any future []BlockRef
+	// plumbing lands in one place (see common/doc.go).
 	err = common.WriteToBlockStore(authCtx.Context, blockStore, writeOp.PayloadID, req.Data, req.Offset)
 	if err != nil {
 		logger.Warn("WRITE: content write failed", "path", openFile.Path, "error", err)

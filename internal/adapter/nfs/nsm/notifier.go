@@ -99,7 +99,7 @@ func NewNotifier(config NotifierConfig) *Notifier {
 
 // NotifyAllClients sends SM_NOTIFY to all registered clients in parallel.
 //
-// This method is called on server startup after loading registrations from
+// Called on server startup after loading registrations from
 // the persistent store. It sends SM_NOTIFY callbacks to all clients that
 // registered for monitoring via SM_MON.
 //
@@ -202,7 +202,7 @@ func (n *Notifier) handleClientCrash(ctx context.Context, clientID string) {
 
 // DetectCrash handles notification of a client crash from an external source.
 //
-// This method can be called when:
+// Can be called when:
 //   - SM_NOTIFY is received indicating a host state change
 //   - A callback to a client fails during normal operation
 //   - Any other crash detection mechanism triggers
@@ -218,7 +218,7 @@ func (n *Notifier) DetectCrash(ctx context.Context, clientID string) {
 
 // LoadRegistrationsFromStore loads persisted registrations into the tracker.
 //
-// This method is called on server startup to restore NSM state from the
+// Called on server startup to restore NSM state from the
 // persistent store. After loading, the server can send SM_NOTIFY to all
 // clients to inform them of the restart.
 //

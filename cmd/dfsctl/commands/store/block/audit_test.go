@@ -15,7 +15,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 )
 
-// auditServer is a recording stub for the INV-02 audit endpoint.
+// auditServer is a recording stub for the refcount audit endpoint.
 type auditServer struct {
 	*httptest.Server
 	lastMethod string
@@ -123,7 +123,7 @@ func TestAuditCmd_CallsClient_AndPrintsSummary(t *testing.T) {
 }
 
 // TestAuditCmd_DriftSurfacesViolation asserts a non-zero delta appends
-// the INV-02 violation banner to the table output.
+// the violation banner to the table output.
 func TestAuditCmd_DriftSurfacesViolation(t *testing.T) {
 	s := newAuditServer(t)
 	defer s.Close()

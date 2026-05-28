@@ -15,12 +15,12 @@ import (
 	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// TestFSStore_EvictionLSL08Conformance runs the LSL-08 D-27 eviction
+// TestFSStore_EvictionLSL08Conformance runs the eviction
 // conformance scenarios against *fs.FSStore. The factory wires a small
 // disk limit (so eviction is easy to trigger) and a counting
 // FileBlockStore (so the no-FBS-call assertion can probe).
 //
-// Plan 17-06 inlined the scenarios here from
+// -06 inlined the scenarios here from
 // pkg/blockstore/local/localtest/eviction_lsl08_suite.go (deleted in
 // this plan). The scenarios remain fs-specific — they exercise CAS
 // chunk paths, LRU eviction policy, and the FBS-call invariant —
@@ -33,7 +33,7 @@ func TestFSStore_EvictionLSL08Conformance(t *testing.T) {
 	t.Run("eviction_lru_seed_on_startup", func(t *testing.T) { testLSL08LRUSeedOnStartup(t, lsl08Factory) })
 }
 
-// lsl08Factory constructs an *fs.FSStore configured for LSL-08 eviction
+// lsl08Factory constructs an *fs.FSStore configured for eviction
 // tests: small maxDisk so eviction is easy to trigger, LRU retention
 // policy, eviction enabled. Tests register tempdir cleanup.
 func lsl08Factory(t *testing.T) *fs.FSStore {
@@ -76,7 +76,7 @@ func testLSL08LRUOrder(t *testing.T, factory func(t *testing.T) *fs.FSStore) {
 	if _, err := bc.ReadChunk(ctx, hB); err != nil {
 		t.Fatalf("ReadChunk b: %v", err)
 	}
-	// Need enough space to force eviction (factory's maxDisk is 600;
+	// Need enough space to force eviction (factory's maxDisk is 600
 	// existing diskUsed = 400; ask for 300 -> 700 > 600 -> evict 1 chunk
 	// of 200, free to 500, then stop).
 	if err := bc.EnsureSpaceForTest(ctx, 300); err != nil {
@@ -189,10 +189,10 @@ func testLSL08LRUSeedOnStartup(t *testing.T, factory func(t *testing.T) *fs.FSSt
 // countingFBSWrapper is a thin call-counting wrapper around a
 // blockstore.EngineFileBlockStore. Mirrors the package-internal
 // countingFileBlockStore but lives here so it can be wired into the
-// LSL-08 conformance factory. Satisfies fs.FBSCounter via the exported
+// conformance factory. Satisfies fs.FBSCounter via the exported
 // ResetCount/TotalCount methods.
 //
-// Phase 12 (META-03 / D-09): wraps the wider engine-internal interface
+// wraps the wider engine-internal interface
 // (the 6 narrowed FileBlockStore methods plus the engine-internal
 // GetFileBlock + ListFileBlocks).
 type countingFBSWrapper struct {

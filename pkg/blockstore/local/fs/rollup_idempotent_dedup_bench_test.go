@@ -1,8 +1,6 @@
-// Phase 19 Plan 09 — Opt 1 yellow-flag bench (D-17).
-//
 // BenchmarkRandWriteCAS_IdempotentBytes measures the in-memory hash
 // dedup LRU's effectiveness on idempotent rewrites: K rollup passes
-// of identical content. On the first pass the LRU is cold,
+// of identical content. On the first pass the LRU is cold;
 // StoreChunk fires once per emitted chunk, and the LRU is seeded
 // (rollup.go:371-373 — Put(h, payloadID) after successful StoreChunk).
 // On every subsequent pass the LRU hit path takes over: AddRef bumps
@@ -11,9 +9,9 @@
 //
 // Reported metric: stores_per_chunk = StoreChunk invocations / total
 // chunks emitted. Expected at K rewrites: 1/K (only the first pass
-// stores). Yellow-flag per D-17 — the bench REPORTS the ratio via
-// b.ReportMetric but never gates (no t.Fatal on perf regression). The
-// hard gate is D-21 aggregate (internal/bench/phase19_test.go).
+// stores). The bench REPORTS the ratio via b.ReportMetric but never
+// gates (no t.Fatal on perf regression). The hard gate is aggregate
+// (internal/bench/phase19_test.go).
 //
 // Skip-under-race honored via the raceEnabled constant
 // (raceenabled_norace_test.go / raceenabled_race_test.go pair). The
@@ -81,14 +79,14 @@ func runRollupOncePB(b *testing.B, bc *FSStore, payloadID string, payload []byte
 }
 
 // BenchmarkRandWriteCAS_IdempotentBytes — Opt 1 yellow-flag bench
-// (D-17). Drives b.N rollup passes of identical content across
+// . Drives b.N rollup passes of identical content across
 // distinct payload IDs (the LRU is hash-keyed; cross-payload
 // idempotency is the same hit-path as same-payload re-writes) and
 // reports the stores_per_chunk ratio.
 //
-// Yellow-flag per D-17: this bench reports custom metrics via
+// Yellow-flag: this bench reports custom metrics via
 // b.ReportMetric and never gates (no b.Fatal on perf regression). The
-// hard quantitative merge gate is D-21 aggregate.
+// hard quantitative merge gate is aggregate.
 func BenchmarkRandWriteCAS_IdempotentBytes(b *testing.B) {
 	if raceEnabled {
 		b.Skip("Phase 19 D-17 yellow-flag — skip under -race to avoid detector overhead collapsing ratio to noise")
@@ -150,7 +148,7 @@ func BenchmarkRandWriteCAS_IdempotentBytes(b *testing.B) {
 	chunksStored := (endDisk - startDisk) / int64(len(payload))
 	addRefDelta := endAddRef - baseAddRef
 
-	// Yellow-flag: report the ratio. With the LRU pre-seeded above,
+	// Yellow-flag: report the ratio. With the LRU pre-seeded above
 	// expected stores_per_chunk ≈ 0 (every emit hits LRU + AddRef).
 	if totalChunks > 0 {
 		ratio := float64(chunksStored) / float64(totalChunks)

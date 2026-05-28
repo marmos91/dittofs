@@ -12,9 +12,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/blockstoretest"
 )
 
-// TestStore_BlockStoreConformance runs the unified Phase 17 D-09
+// TestStore_BlockStoreConformance runs the unified
 // BlockStoreConformance suite against the in-memory remote backend.
-// Per D-09 the remote backends implement only BlockStore (no
+// Per the remote backends implement only BlockStore (no
 // BlockStoreAppend); only BlockStoreConformance runs here.
 //
 // The inline TestStore_* tests below remain in place as a fine-grained
@@ -22,7 +22,7 @@ import (
 // rejection paths, ReadBlockVerified mismatch case) — they exercise
 // backend-specific behaviors that are not part of the unified contract.
 //
-// Plan 17-07 lands the missing Has() method on the remote-memory
+// -07 lands the missing Has() method on the remote-memory
 // *Store; until then the factory return type does not type-check.
 func TestStore_BlockStoreConformance(t *testing.T) {
 	factory := func(t *testing.T) (blockstore.BlockStore, func()) {
@@ -172,7 +172,7 @@ func TestStore_Head(t *testing.T) {
 	}
 }
 
-// TestStore_Walk asserts the Phase 17 D-07 Walk contract: every stored
+// TestStore_Walk asserts the Walk contract: every stored
 // CAS object is visited; the callback receives a non-zero Meta; ordering
 // is unspecified so we collect into a set.
 func TestStore_Walk(t *testing.T) {
@@ -215,7 +215,7 @@ func TestStore_Walk(t *testing.T) {
 	}
 }
 
-// TestStore_Walk_ErrStopWalk pins the D-07 early-exit contract:
+// TestStore_Walk_ErrStopWalk pins the early-exit contract
 // returning blockstore.ErrStopWalk from the callback exits cleanly with
 // nil from Walk.
 func TestStore_Walk_ErrStopWalk(t *testing.T) {
@@ -246,7 +246,7 @@ func TestStore_Walk_ErrStopWalk(t *testing.T) {
 	}
 }
 
-// TestStore_Walk_CallbackErrorWrapped pins the D-07 contract that
+// TestStore_Walk_CallbackErrorWrapped pins the contract that
 // non-ErrStopWalk callback errors are wrapped as "walk halted at %s: %w".
 func TestStore_Walk_CallbackErrorWrapped(t *testing.T) {
 	ctx := context.Background()
@@ -270,7 +270,7 @@ func TestStore_Walk_CallbackErrorWrapped(t *testing.T) {
 	}
 }
 
-// TestStore_ReadBlockVerified covers the BSCAS-06 happy path and the
+// TestStore_ReadBlockVerified covers the happy path and the
 // body-mismatch failure mode.
 func TestStore_ReadBlockVerified(t *testing.T) {
 	ctx := context.Background()

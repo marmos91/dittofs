@@ -12,11 +12,11 @@ import (
 )
 
 // ============================================================================
-// RollupStore Implementation for PostgreSQL Store (Phase 10 LSL-05)
+// RollupStore Implementation for PostgreSQL Store
 // ============================================================================
 //
 // Persists the per-file rollup_offset for the hybrid append-log tier. The
-// atomic-monotone contract (INV-03) is enforced at the DATABASE layer via
+// atomic-monotone contract is enforced at the DATABASE layer via
 // a conditional WHERE predicate on the ON CONFLICT DO UPDATE branch — no
 // read-modify-write race window exists application-side, because the
 // engine itself rejects regressions.

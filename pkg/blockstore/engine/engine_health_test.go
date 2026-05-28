@@ -114,7 +114,7 @@ func newHealthTestEngine(t *testing.T) (*BlockStore, *fakeRemoteStore) {
 	return bs, fakeRemote
 }
 
-// TestEngineHealthEvictionSuspension verifies that when remote goes unhealthy,
+// TestEngineHealthEvictionSuspension verifies that when remote goes unhealthy
 // the engine's health callback disables eviction on the local store. When remote
 // recovers, eviction is re-enabled.
 func TestEngineHealthEvictionSuspension(t *testing.T) {

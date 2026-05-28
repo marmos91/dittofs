@@ -202,7 +202,7 @@ func ConvertSetAttrsToMetadata(fileType metadata.FileType, setAttrs *metadata.Se
 // The fields are discriminated unions allowing the client to specify which
 // attributes to set and which to leave unchanged.
 //
-// This function only modifies attributes that are explicitly marked as "set"
+// Only modifies attributes that are explicitly marked as "set"
 // in the request, leaving all other attributes unchanged. This is critical
 // for preserving file metadata integrity.
 //

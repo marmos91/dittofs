@@ -9,7 +9,7 @@ var (
 	ErrUnsupportedCompressionAlgo = errors.New("compression: unsupported algorithm")
 
 	// ErrCompressedFrameCorrupt is returned when a wire payload begins
-	// with the DFCMP magic but the rest of the header (algo byte,
+	// with the DFCMP magic but the rest of the header (algo byte
 	// uvarint orig_size) fails to parse.
 	ErrCompressedFrameCorrupt = errors.New("compression: corrupt frame header")
 )

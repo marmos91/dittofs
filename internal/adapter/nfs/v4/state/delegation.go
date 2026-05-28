@@ -263,7 +263,7 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 // ReturnDelegation removes a delegation by its stateid.
 //
 // Per RFC 7530 Section 16.8, DELEGRETURN returns a delegation to the server.
-// This method removes the delegation from both delegByOther and delegByFile maps.
+// Removes the delegation from both delegByOther and delegByFile maps.
 //
 // For directory delegations, pending notifications are flushed via CB_NOTIFY
 // before the delegation is removed (ensuring the client receives all pending
@@ -347,7 +347,7 @@ func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
 
 // GetDelegationsForFile returns all active delegations for a given file handle.
 //
-// Used by conflict detection (Plan 11-03) to check if another client holds
+// Used by conflict detection to check if another client holds
 // a delegation before granting a new OPEN.
 //
 // Caller must NOT hold sm.mu (method acquires it with RLock).

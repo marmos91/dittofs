@@ -23,7 +23,7 @@ import (
 // testBlockStoreHandler pattern in blockstore_test.go.
 type BlockGCRuntime interface {
 	// RunBlockGCForShare dispatches a GC run scoped to the named share's
-	// gc-state directory for last-run.json persistence (D-10).
+	// gc-state directory for last-run.json persistence.
 	RunBlockGCForShare(ctx context.Context, shareName string, dryRun bool) (*engine.GCStats, error)
 
 	// GCStateDirForShare returns the per-share gc-state directory the GC
@@ -32,8 +32,7 @@ type BlockGCRuntime interface {
 	GCStateDirForShare(shareName string) (string, error)
 }
 
-// BlockStoreGCHandler exposes on-demand GC + last-run-summary endpoints
-// (Phase 11 D-08/D-10).
+// BlockStoreGCHandler exposes on-demand GC + last-run-summary endpoints.
 type BlockStoreGCHandler struct {
 	runtime BlockGCRuntime
 }
@@ -49,7 +48,7 @@ func NewBlockStoreGCHandler(rt BlockGCRuntime) *BlockStoreGCHandler {
 // The dry_run flag flows through to engine.Options.DryRun: mark + sweep
 // enumeration runs, but no DELETEs are issued, and the candidate set is
 // captured in GCStats.DryRunCandidates (capped at engine.Options.DryRunSampleSize,
-// default 1000 — D-09).
+// default 1000).
 type BlockStoreGCRequest struct {
 	DryRun bool `json:"dry_run,omitempty"`
 }
@@ -64,9 +63,9 @@ type BlockStoreGCResponse struct {
 //
 // Body: BlockStoreGCRequest (optional; missing body equals {dry_run:false}).
 // Behavior: invokes Runtime.RunBlockGCForShare with the URL share name
-// and the body's dry_run flag. The cross-share aggregation (D-03) means
-// the GC scans every share whose remote-store config matches; the {name}
-// path parameter scopes the last-run.json persistence target, not the
+// and the body's dry_run flag. Cross-share aggregation means the GC
+// scans every share whose remote-store config matches; the {name} path
+// parameter scopes the last-run.json persistence target, not the
 // mark/sweep set itself.
 //
 // Status codes:
@@ -113,8 +112,8 @@ func (h *BlockStoreGCHandler) RunGC(w http.ResponseWriter, r *http.Request) {
 
 // GCStatus handles GET /api/v1/shares/{name}/blockstore/gc-status.
 //
-// Reads `<gcStateRoot>/last-run.json` (Phase 11 D-10) for the share and
-// returns the parsed engine.GCRunSummary. Returns 404 when no run has
+// Reads `<gcStateRoot>/last-run.json` for the share and returns the
+// parsed engine.GCRunSummary. Returns 404 when no run has
 // completed yet (file does not exist), letting operators distinguish
 // "GC has never run for this share" from "GC ran and reported errors".
 //

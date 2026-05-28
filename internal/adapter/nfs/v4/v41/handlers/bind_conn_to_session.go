@@ -37,7 +37,7 @@ func HandleBindConnToSession(
 			"client", ctx.ClientAddr)
 	}
 
-	// Validate connection ID is plumbed through (should never be zero after Phase 21)
+	// Validate connection ID is plumbed through (should never be zero)
 	if ctx.ConnectionID == 0 {
 		logger.Error("BIND_CONN_TO_SESSION: ConnectionID is zero (plumbing error)",
 			"client", ctx.ClientAddr)

@@ -60,14 +60,14 @@ type SyncerConfig struct {
 	HealthCheckFailureThreshold int           // Consecutive failures to mark unhealthy (default: 3)
 	UnhealthyCheckInterval      time.Duration // Probe interval when unhealthy (default: 5s)
 
-	// Phase 11 Plan 02 (D-14/D-25) — CAS upload-path knobs. The
+	// — CAS upload-path knobs. The
 	// authoritative defaults live in pkg/config.SyncerConfig; these fields
 	// mirror them on the engine-local config struct so the syncer can be
 	// constructed without depending on pkg/config (avoids an import cycle
 	// from local/fs and other low-level callers).
 	//
-	// Phase 19 D-23: ClaimBatchSize removed — the field was set/defaulted
-	// but never read by the syncer claim path; the Phase 18 D-16
+	// ClaimBatchSize removed — the field was set/defaulted
+	// but never read by the syncer claim path; the
 	// deprecation cycle ends here.
 	UploadConcurrency int           // Per-share upload goroutine pool size (default: 8)
 	ClaimTimeout      time.Duration // Max age of a Syncing row before the janitor requeues it (default: 10m)
@@ -85,7 +85,7 @@ func DefaultConfig() SyncerConfig {
 		HealthCheckInterval:         30 * time.Second,
 		HealthCheckFailureThreshold: 3,
 		UnhealthyCheckInterval:      5 * time.Second,
-		// Phase 11 Plan 02 — match pkg/config defaults.
+		// — match pkg/config defaults.
 		UploadConcurrency: 8,
 		ClaimTimeout:      10 * time.Minute,
 	}

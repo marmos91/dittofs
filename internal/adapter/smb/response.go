@@ -472,9 +472,10 @@ func SendResponseWithHooks(reqHeader *header.SMB2Header, ctx *handlers.SMBHandle
 		RunAfterHooks(connInfo, reqHeader.Command, wirePlaintext)
 	}
 	err := sendMessage(respHeader, body, connInfo, preWrite)
-	// Per D-09: fire ReleaseData AFTER the wire write completes, regardless of
-	// write success. The pooled buffer is no longer referenced once the write
-	// attempt returns, so release is safe whether or not the bytes landed.
+	// Fire ReleaseData AFTER the wire write completes, regardless of
+	// write success. The pooled buffer is no longer referenced once the
+	// write attempt returns, so release is safe whether or not the bytes
+	// landed.
 	if result.ReleaseData != nil {
 		result.ReleaseData()
 	}
@@ -485,7 +486,7 @@ func SendResponseWithHooks(reqHeader *header.SMB2Header, ctx *handlers.SMBHandle
 func SendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *HandlerResult, connInfo *ConnInfo) error {
 	respHeader, body := buildResponseHeaderAndBody(reqHeader, ctx, result, connInfo)
 	err := SendMessage(respHeader, body, connInfo)
-	// Per D-09: see SendResponseWithHooks — release pooled buffer after wire write.
+	// See SendResponseWithHooks — release pooled buffer after wire write.
 	if result.ReleaseData != nil {
 		result.ReleaseData()
 	}
@@ -771,8 +772,8 @@ func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, respons
 // SendAsyncCompletionResponse sends a standalone async completion response for
 // a previously pending operation. This is used when a handler returns
 // STATUS_PENDING with an AsyncId in a compound request: the compound includes
-// an interim response at that position, and this function delivers the final
-// result as a separate message with the matching AsyncId.
+// an interim response at that position, and SendAsyncCompletionResponse delivers
+// the final result as a separate message with the matching AsyncId.
 //
 // Per MS-SMB2 3.3.4.4: The async completion response uses the async header
 // format (FlagAsync set, AsyncId in header) and carries the handler's final

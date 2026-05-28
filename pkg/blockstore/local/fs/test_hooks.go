@@ -17,11 +17,11 @@ import (
 // eviction_lsl08_conformance_test.go and appendlog_internals_test.go
 // can observe / manipulate internal state. Every symbol here has a
 // `_ForTest` suffix so reviewers can catch production misuse
-// (T-10-10-01 STRIDE mitigation).
+// (STRIDE mitigation).
 //
-// These helpers exist only to support the D-22 conformance scenarios
-// (plan 10-10) and the LSL-08 eviction scenarios (plan 11). They are
-// not part of the production FSStore API. The Plan 17-06 mega-PR
+// These helpers exist only to support the conformance scenarios
+// (10) and the eviction scenarios. They are
+// not part of the production FSStore API. The -06 mega-PR
 // retired the legacy pkg/blockstore/local/localtest/ package that
 // originally consumed these hooks; the scenarios now live inside the
 // fs package as external `_test.go` files.
@@ -155,13 +155,13 @@ func RecomputeHeaderCRCForTest(header []byte) {
 }
 
 // EnsureSpaceForTest invokes ensureSpace from external test packages.
-// Used by the LSL-08 conformance suite (RunEvictionLSL08Suite).
+// Used by the conformance suite (RunEvictionLSL08Suite).
 func (bc *FSStore) EnsureSpaceForTest(ctx context.Context, needed int64) error {
 	return bc.ensureSpace(ctx, needed)
 }
 
 // ChunkPathForTest returns the absolute path where a chunk addressed by h
-// would live under blocks/{hh}/{hh}/{hex}. Used by the LSL-08 conformance
+// would live under blocks/{hh}/{hh}/{hex}. Used by the conformance
 // suite to assert eviction unlinked the file.
 func (bc *FSStore) ChunkPathForTest(h blockstore.ContentHash) string {
 	return bc.chunkPath(h)
@@ -169,24 +169,24 @@ func (bc *FSStore) ChunkPathForTest(h blockstore.ContentHash) string {
 
 // SeedLRUFromDiskForTest re-runs the cold-start LRU seeding pass against
 // the current on-disk blocks/ tree. Returns true unconditionally so a
-// callable factory can override behavior; the LSL-08 suite uses the
+// callable factory can override behavior; the suite uses the
 // boolean as a "is this supported" probe.
 func (bc *FSStore) SeedLRUFromDiskForTest() bool {
 	bc.seedLRUFromDisk()
 	return true
 }
 
-// fbsCallCounterForTest hooks for the LSL-08 "no FileBlockStore calls
+// fbsCallCounterForTest hooks for the "no FileBlockStore calls
 // during ensureSpace" assertion. Backends that wrap FBS in a counting
-// wrapper expose ResetFBSCallCounterForTest / FBSCallCountForTest;
+// wrapper expose ResetFBSCallCounterForTest / FBSCallCountForTest
 // otherwise these helpers are no-ops returning 0.
 //
 // FSStore implements them via the *countingFileBlockStore wrapper
-// installed by the LSL-08 factory in eviction_lsl08_conformance_test.go.
+// installed by the factory in eviction_lsl08_conformance_test.go.
 // When the field is nil (not-counted), both helpers are no-ops.
 
 // FBSCounter is implemented by counting wrappers around FileBlockStore.
-// Used by the LSL-08 conformance suite to assert ensureSpace makes zero
+// Used by the conformance suite to assert ensureSpace makes zero
 // FileBlockStore calls. Exported so cross-package test wrappers can
 // satisfy it.
 type FBSCounter interface {
@@ -215,7 +215,7 @@ func (bc *FSStore) FBSCallCountForTest() int {
 // nopFBSForTest is a no-op FileBlockStore used by the ReopenForTest
 // helper. Every read returns ErrFileBlockNotFound; every write is a
 // no-op. Sufficient for the append-log conformance suite because
-// AppendWrite (D-34) does not consult FileBlockStore at all, and the
+// AppendWrite does not consult FileBlockStore at all, and the
 // Recover walk over .blk files finds none in a test tempdir that only
 // holds logs/ + blocks/.
 //
@@ -240,7 +240,7 @@ func (nopFBSForTest) DecrementRefCount(_ context.Context, _ string) (uint32, err
 	return 0, nil
 }
 func (nopFBSForTest) AddRef(_ context.Context, _ blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
-	// Phase 19 D-04: no-op test stub. Every hash is "unknown" so the
+	// no-op test stub. Every hash is "unknown" so the
 	// LRU hit path in production would always fall back to the full
 	// Put path — but this stub is only used by ReopenForTest scenarios
 	// that don't exercise AddRef at all.
@@ -250,7 +250,7 @@ func (nopFBSForTest) ListPending(_ context.Context, _ time.Duration, _ int) ([]*
 	return nil, nil
 }
 
-// Legacy engine-internal surface (Phase 12 META-03 / D-09 — kept off the
+// Legacy engine-internal surface (kept off the
 // public FileBlockStore interface but required by EngineFileBlockStore).
 func (nopFBSForTest) GetFileBlock(_ context.Context, _ string) (*blockstore.FileBlock, error) {
 	return nil, blockstore.ErrFileBlockNotFound

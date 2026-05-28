@@ -86,7 +86,7 @@ func TestAppendLog_RoundTrip(t *testing.T) {
 
 // TestAppendLog_TornPayload_DetectedByCRC truncates the log mid-payload
 // and asserts readRecord surfaces (0, nil, false, nil) — the recovery
-// signal for "stop here and truncate" (LSL-06).
+// signal for "stop here and truncate".
 func TestAppendLog_TornPayload_DetectedByCRC(t *testing.T) {
 	path, f := tmpLog(t)
 	if _, err := f.Seek(logHeaderSize, 0); err != nil {
@@ -234,7 +234,7 @@ func TestAppendLog_AdvanceRollupOffset_Idempotent(t *testing.T) {
 }
 
 // TestAppendLog_AdvanceRollupOffset_Monotone_NotEnforcedByFunction
-// documents that advanceRollupOffset itself does not enforce INV-03
+// documents that advanceRollupOffset itself does not enforce
 // (monotone rollup_offset). The caller (CommitChunks in later plans) is
 // responsible for the monotonicity check; this helper is a pure pwrite.
 func TestAppendLog_AdvanceRollupOffset_Monotone_NotEnforcedByFunction(t *testing.T) {

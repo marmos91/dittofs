@@ -77,7 +77,7 @@ func RunAfterHooks(connInfo *ConnInfo, cmd types.Command, rawMessage []byte) {
 //
 // Per [MS-SMB2] 3.3.5.4: H(i) = SHA-512(H(i-1) || Message(i))
 // We always update here because the dialect is not yet known at NEGOTIATE time.
-// If the final negotiated dialect is not 3.1.1, the hash value is simply unused.
+// If the final negotiated dialect is not 3.1.1, the hash value is unused.
 func preauthHashBeforeHook(connInfo *ConnInfo, cmd types.Command, rawMessage []byte) {
 	if connInfo.CryptoState == nil {
 		return

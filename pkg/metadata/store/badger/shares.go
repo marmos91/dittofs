@@ -90,7 +90,7 @@ func (s *BadgerMetadataStore) GetShareOptions(ctx context.Context, shareName str
 				return err
 			}
 			optsCopy := data.Share.Options
-			// D-A6: empty BlockLayout (pre-Phase-14 share blob without
+			// D-A6: empty BlockLayout (share blob without
 			// the field) coerces to `legacy`. Unknown values are
 			// fail-loud — matches Postgres backend + ErrInvalidBlockLayout.
 			normalized, perr := metadata.ParseBlockLayout(string(optsCopy.BlockLayout))
@@ -439,7 +439,7 @@ func (s *BadgerMetadataStore) createNewRoot(txn *badgerdb.Txn, shareName string,
 
 	// Preserve existing share configuration (e.g. ShareOptions written
 	// by a prior CreateShare call) when materializing the root row.
-	// Phase 14 Plan 01 (Rule 2 deviation): the original code wrote a
+	// (Rule 2 deviation): the original code wrote a
 	// fresh `metadata.Share{Name: shareName}` here, silently wiping
 	// any Options the caller had set via CreateShare. That's
 	// correctness-critical now that ShareOptions.BlockLayout is the

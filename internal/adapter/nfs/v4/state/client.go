@@ -73,7 +73,7 @@ type ClientRecord struct {
 	Lease *LeaseState
 
 	// OpenOwners tracks all open-owners for this client.
-	// Keyed by hex-encoded owner data. Populated in Plan 09-02.
+	// Keyed by hex-encoded owner data. Populated in .
 	OpenOwners map[string]*OpenOwner
 
 	// CBPathUp indicates whether the callback path to this client has been
@@ -93,7 +93,7 @@ func (cr *ClientRecord) VerifierMatches(v [8]byte) bool {
 // ============================================================================
 
 // CallbackInfo holds the client's callback program information
-// for delegation recall (Phase 11) and other server-initiated callbacks.
+// for delegation recall and other server-initiated callbacks.
 //
 // Per RFC 7530 Section 16.33 (cb_client4):
 //
@@ -127,4 +127,4 @@ type SetClientIDResult struct {
 }
 
 // Note: OpenOwner is defined in openowner.go with full seqid validation,
-// replay caching, and open state management (Plan 09-02).
+// replay caching, and open state management .

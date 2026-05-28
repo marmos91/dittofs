@@ -239,7 +239,7 @@ func TestJournal_ReadOnlyRejectsWrites(t *testing.T) {
 }
 
 // TestJournal_AggregateReportsPresenceFlags exercises Aggregate for the
-// REST handler in Plan 14-06.
+// REST handler in -06.
 func TestJournal_AggregateReportsPresenceFlags(t *testing.T) {
 	dir := t.TempDir()
 	j, err := OpenJournal(dir)
