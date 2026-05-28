@@ -118,15 +118,16 @@ func TestCreate_WireValidation_CreateOptionsReserved(t *testing.T) {
 // TestCreate_WireValidation_CreateOptionsUnsupported verifies that the three
 // CreateOptions bits defined-but-unimplemented in DittoFS return
 // STATUS_NOT_SUPPORTED. Samba sets `not_supported_mask = 0x00102080` for these
-// probes (smbtorture smb2.create.gentest).
+// probes (smbtorture smb2.create.gentest). Bit 7 and bit 20 are reserved on
+// the wire per MS-SMB2 §2.2.13; Samba's legacy names are kept for traceability.
 func TestCreate_WireValidation_CreateOptionsUnsupported(t *testing.T) {
 	cases := []struct {
 		name    string
 		options uint32
 	}{
-		{"FILE_COMPLETE_IF_OPLOCKED", 0x00000080},
-		{"FILE_OPEN_BY_FILE_ID", 0x00002000},
-		{"FILE_OPEN_REQUIRING_OPLOCK", 0x00100000},
+		{"NTCREATEX_OPTIONS_TREE_CONNECTION", 0x00000080},
+		{"FILE_OPEN_BY_FILE_ID", uint32(types.FileOpenByFileId)},
+		{"NTCREATEX_OPTIONS_OPFILTER", 0x00100000},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

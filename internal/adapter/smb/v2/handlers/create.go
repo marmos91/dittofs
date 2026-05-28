@@ -524,13 +524,20 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	}
 
 	// Per MS-SMB2 §2.2.13 + MS-FSCC §2.6, three CreateOptions bits are defined
-	// by the spec but unimplemented in DittoFS and MUST return STATUS_NOT_SUPPORTED
+	// in Samba but unimplemented in DittoFS and MUST return STATUS_NOT_SUPPORTED
 	// rather than silently succeed. Samba sets `not_supported_mask = 0x00102080`
 	// for these probes (smbtorture smb2.create.gentest):
-	//   bit 7  (0x00000080) FILE_COMPLETE_IF_OPLOCKED — oplock-conditional open
-	//   bit 13 (0x00002000) FILE_OPEN_BY_FILE_ID    — open by FileId reference
-	//   bit 20 (0x00100000) FILE_OPEN_REQUIRING_OPLOCK — atomic open+oplock grant
-	const unsupportedCreateOptionsMask uint32 = 0x00102080
+	//   bit 7  (0x00000080) NTCREATEX_OPTIONS_TREE_CONNECTION — reserved on the
+	//                       wire per MS-SMB2; Samba legacy name retained.
+	//   bit 13 (0x00002000) FILE_OPEN_BY_FILE_ID — open by FileId reference
+	//                       (matches types.FileOpenByFileId).
+	//   bit 20 (0x00100000) NTCREATEX_OPTIONS_OPFILTER — reserved on the wire
+	//                       per MS-SMB2; Samba legacy name retained.
+	// Note: FILE_COMPLETE_IF_OPLOCKED (0x00000100, types.FileCompleteIfOplocked)
+	// is NOT in this mask — Samba's `ok_mask` accepts it.
+	const unsupportedCreateOptionsMask uint32 = 0x00000080 | // bit 7  (TREE_CONNECTION)
+		uint32(types.FileOpenByFileId) | // bit 13 (0x00002000)
+		0x00100000 // bit 20 (OPFILTER)
 	if uint32(req.CreateOptions)&unsupportedCreateOptionsMask != 0 {
 		logger.Debug("CREATE: unsupported CreateOptions bits set",
 			"options", fmt.Sprintf("0x%08x", uint32(req.CreateOptions)))
