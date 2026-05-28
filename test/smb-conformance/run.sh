@@ -376,10 +376,20 @@ run_compose() {
     PROFILE="$PROFILE" docker compose up -d dittofs
     wait_until "docker compose exec dittofs wget -q --spider http://localhost:8080/health/ready" 60 "DittoFS"
 
-    # Extract auto-generated admin password from container logs
+    # Extract auto-generated admin password from container logs.
+    # /health/ready can flip green before the admin user creation log line is
+    # emitted on cold start, so retry briefly before giving up.
     log_step "Extracting admin password from DittoFS logs..."
     local admin_password=""
-    admin_password=$(docker compose logs dittofs 2>/dev/null | grep -o 'password: [^ ]*' | head -1 | awk '{print $2}' || echo "")
+    local attempt=1
+    while [ "$attempt" -le 20 ]; do
+        admin_password=$(docker compose logs dittofs 2>/dev/null | grep -o 'password: [^ ]*' | head -1 | awk '{print $2}' || echo "")
+        if [[ -n "$admin_password" ]]; then
+            break
+        fi
+        sleep 1
+        attempt=$((attempt + 1))
+    done
     if [[ -z "$admin_password" ]]; then
         log_error "Could not extract admin password from DittoFS logs"
         return 1

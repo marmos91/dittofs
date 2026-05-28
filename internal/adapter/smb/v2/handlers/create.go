@@ -1786,9 +1786,21 @@ func (h *Handler) updateBaseObjectTimestampsForADSWrite(
 	if !mtimeFrozen {
 		setAttrs.Mtime = &now
 	}
-	if setAttrs.Ctime != nil || setAttrs.Mtime != nil {
-		_ = metaSvc.SetFileAttributes(authCtx, baseHandle, setAttrs)
+	if setAttrs.Ctime == nil && setAttrs.Mtime == nil {
+		return
 	}
+	// If only one timestamp is frozen, metadata's SetFileAttributes will
+	// auto-bump Ctime to NOW because modified=true and attrs.Ctime==nil
+	// (file_modify.go: `if modified { if attrs.Ctime == nil { file.Ctime = now }}`).
+	// Per MS-FSA 2.1.5.14.2, the freeze sentinel applies to the underlying
+	// object, so an ADS write must not bump the base's frozen ChangeTime
+	// (WPTS FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_ChangeTime).
+	// Pin Ctime to the base's current value when the ADS handle has Ctime frozen.
+	if ctimeFrozen && setAttrs.Ctime == nil {
+		baseCtime := baseFile.Ctime
+		setAttrs.Ctime = &baseCtime
+	}
+	_ = metaSvc.SetFileAttributes(authCtx, baseHandle, setAttrs)
 }
 
 // isStatOnlyOpen returns true when DesiredAccess contains only stat-open bits:
