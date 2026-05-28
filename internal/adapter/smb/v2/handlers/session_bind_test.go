@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
+	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
 
@@ -154,6 +155,109 @@ func TestSessionSetup_AllowsNonBindingOnBoundChannel_SMB3(t *testing.T) {
 	// No NTLM token + bound channel reaches the guest-session path.
 	if result.Status == types.StatusUserSessionDeleted {
 		t.Fatalf("status=StatusUserSessionDeleted, bound channel should bypass the cross-connection gate")
+	}
+}
+
+// TestSessionSetup_BindRejectsGMACSessionWithNonGMACChannel covers Samba
+// smb2_sesssetup.c:724-729: once the session has negotiated AES-128-GMAC,
+// a bind on a channel that did not also negotiate GMAC must return
+// REQUEST_OUT_OF_SEQUENCE. Mirrors smbtorture bind_negative_smb3signG*.
+func TestSessionSetup_BindRejectsGMACSessionWithNonGMACChannel(t *testing.T) {
+	h := NewHandler()
+	sess := h.CreateSession("127.0.0.1:1", false, "alice", "WORKGROUP")
+	sess.Dialect = types.Dialect0311
+	sess.SigningAlgo = signing.SigningAlgAESGMAC
+
+	ctx := newTestContext(sess.SessionID)
+	ctx.ConnCryptoState = &mockCryptoState{
+		dialect:            types.Dialect0311,
+		signingAlgorithmId: signing.SigningAlgAESCMAC,
+	}
+
+	result, err := h.SessionSetup(ctx, buildBindRequestBody())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != types.StatusRequestOutOfSequence {
+		t.Fatalf("status=0x%x, want StatusRequestOutOfSequence (0x%x)", result.Status, types.StatusRequestOutOfSequence)
+	}
+}
+
+// TestSessionSetup_BindRejectsGMACChannelWithNonGMACSession covers Samba
+// smb2_sesssetup.c:730-735: a channel that negotiated GMAC cannot bind to a
+// session whose signing algorithm is something else — must return
+// NOT_SUPPORTED. Mirrors smbtorture bind_negative_smb3sign[CH]toG /
+// bind_negative_smb3sneXtoG.
+func TestSessionSetup_BindRejectsGMACChannelWithNonGMACSession(t *testing.T) {
+	h := NewHandler()
+	sess := h.CreateSession("127.0.0.1:1", false, "alice", "WORKGROUP")
+	sess.Dialect = types.Dialect0311
+	sess.SigningAlgo = signing.SigningAlgAESCMAC
+
+	ctx := newTestContext(sess.SessionID)
+	ctx.ConnCryptoState = &mockCryptoState{
+		dialect:            types.Dialect0311,
+		signingAlgorithmId: signing.SigningAlgAESGMAC,
+	}
+
+	result, err := h.SessionSetup(ctx, buildBindRequestBody())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != types.StatusNotSupported {
+		t.Fatalf("status=0x%x, want StatusNotSupported (0x%x)", result.Status, types.StatusNotSupported)
+	}
+}
+
+// TestSessionSetup_BindRejectsDialectMismatch covers Samba
+// smb2_sesssetup.c:752-757: bind must reject a channel whose negotiated
+// dialect differs from the session's. Mirrors smbtorture
+// bind_negative_smb2to3* (session 2.x ↔ channel 3.x) and
+// bind_negative_smb3to3* (session 3.0.2 ↔ channel 3.1.1).
+func TestSessionSetup_BindRejectsDialectMismatch(t *testing.T) {
+	h := NewHandler()
+	sess := h.CreateSession("127.0.0.1:1", false, "alice", "WORKGROUP")
+	sess.Dialect = types.Dialect0302
+	sess.SigningAlgo = signing.SigningAlgAESCMAC
+
+	ctx := newTestContext(sess.SessionID)
+	ctx.ConnCryptoState = &mockCryptoState{
+		dialect:            types.Dialect0311,
+		signingAlgorithmId: signing.SigningAlgAESCMAC,
+	}
+
+	result, err := h.SessionSetup(ctx, buildBindRequestBody())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != types.StatusInvalidParameter {
+		t.Fatalf("status=0x%x, want StatusInvalidParameter (0x%x)", result.Status, types.StatusInvalidParameter)
+	}
+}
+
+// TestSessionSetup_BindRejectsCipherMismatch covers Samba
+// smb2_sesssetup.c:759-764: the cipher negotiated on the bound channel must
+// match the session's. Mirrors smbtorture bind_negative_smb3encGtoC*.
+func TestSessionSetup_BindRejectsCipherMismatch(t *testing.T) {
+	h := NewHandler()
+	sess := h.CreateSession("127.0.0.1:1", false, "alice", "WORKGROUP")
+	sess.Dialect = types.Dialect0311
+	sess.SigningAlgo = signing.SigningAlgAESCMAC
+	sess.CipherId = types.CipherAES128GCM
+
+	ctx := newTestContext(sess.SessionID)
+	ctx.ConnCryptoState = &mockCryptoState{
+		dialect:            types.Dialect0311,
+		signingAlgorithmId: signing.SigningAlgAESCMAC,
+		cipherId:           types.CipherAES128CCM,
+	}
+
+	result, err := h.SessionSetup(ctx, buildBindRequestBody())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != types.StatusInvalidParameter {
+		t.Fatalf("status=0x%x, want StatusInvalidParameter (0x%x)", result.Status, types.StatusInvalidParameter)
 	}
 }
 

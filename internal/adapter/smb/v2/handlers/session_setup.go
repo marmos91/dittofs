@@ -325,6 +325,22 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	return h.createGuestSession(ctx)
 }
 
+// recordSessionBindIdentity captures the negotiated dialect, signing
+// algorithm, cipher, and client GUID of the origin connection onto the
+// session so subsequent SESSION_SETUP bind requests can validate that a new
+// channel's negotiated parameters match (MS-SMB2 §3.3.5.5.2). No-op when
+// the connection has no crypto state (legacy 2.x test paths).
+func recordSessionBindIdentity(sess *session.Session, ctx *SMBHandlerContext) {
+	if sess == nil || ctx == nil || ctx.ConnCryptoState == nil {
+		return
+	}
+	dialect := ctx.ConnCryptoState.GetDialect()
+	signingAlgo, _ := ctx.ConnCryptoState.GetSigningAlgorithmId()
+	cipherId := ctx.ConnCryptoState.GetCipherId()
+	clientGUID := ctx.ConnCryptoState.GetClientGUID()
+	sess.SetBindIdentity(dialect, signingAlgo, cipherId, clientGUID)
+}
+
 // extractNTLMToken extracts the NTLM token from a security buffer.
 // Handles both raw NTLM and SPNEGO-wrapped tokens.
 //
@@ -387,15 +403,19 @@ func findNTLMSSP(data []byte) []byte {
 // Validation order mirrors Samba source3/smbd/smb2_sesssetup.c:715-867. Each
 // check fails fast with the spec-mandated NT_STATUS:
 //
-//  1. ctx.SessionID != 0                         → STATUS_INVALID_PARAMETER
-//  2. session exists                             → STATUS_USER_SESSION_DELETED
-//  3. connection dialect ≥ SMB 3.0               → STATUS_REQUEST_NOT_ACCEPTED
-//  4. session dialect matches connection dialect → STATUS_INVALID_PARAMETER
-//     (deferred: DittoFS does not yet record a per-session dialect, and
-//     every live session today runs on the dialect of its first connection,
-//     making this check meaningful only once sessions outlive their
-//     establishing connection)
-//  5. session is not guest / anonymous           → STATUS_NOT_SUPPORTED
+//  1. ctx.SessionID != 0                                          → STATUS_INVALID_PARAMETER
+//  2. session exists                                               → STATUS_USER_SESSION_DELETED
+//  3. session.signing_algo ≥ GMAC && conn.signing_algo ≠ session   → STATUS_REQUEST_OUT_OF_SEQUENCE
+//  4. conn.signing_algo ≥ GMAC && session.signing_algo ≠ conn      → STATUS_NOT_SUPPORTED
+//  5. connection dialect ≥ SMB 3.0                                 → STATUS_REQUEST_NOT_ACCEPTED
+//  6. session dialect matches connection dialect                   → STATUS_INVALID_PARAMETER
+//  7. session cipher matches connection cipher                     → STATUS_INVALID_PARAMETER
+//  8. session is not guest / anonymous                             → STATUS_NOT_SUPPORTED
+//  9. session client GUID matches connection client GUID           → STATUS_REQUEST_NOT_ACCEPTED
+//
+// Order mirrors Samba source3/smbd/smb2_sesssetup.c:713-810 so smbtorture's
+// test_session_bind_negative_smbXtoX harness sees the expected NTSTATUS at
+// each rejection point.
 func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupRequest) (*HandlerResult, error) {
 	if ctx.SessionID == 0 {
 		logger.Debug("SESSION_SETUP bind: SessionID is zero")
@@ -409,9 +429,34 @@ func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupReq
 	}
 
 	var connDialect types.Dialect
+	var connSigningAlgo uint16
+	var connCipher uint16
 	if ctx.ConnCryptoState != nil {
 		connDialect = ctx.ConnCryptoState.GetDialect()
+		connSigningAlgo, _ = ctx.ConnCryptoState.GetSigningAlgorithmId()
+		connCipher = ctx.ConnCryptoState.GetCipherId()
 	}
+
+	// Steps 3-4: GMAC-symmetry. Per MS-SMB2 §3.3.5.5.2 a bound channel must
+	// use the same signing algorithm as the session; once either side has
+	// negotiated AES-128-GMAC, the bind cannot fall back to CMAC/HMAC. Samba
+	// reference: smb2_sesssetup.c:724-735.
+	if sess.SigningAlgo >= signing.SigningAlgAESGMAC && connSigningAlgo != sess.SigningAlgo {
+		logger.Info("SESSION_SETUP bind rejected: session uses GMAC, channel does not match",
+			"sessionID", ctx.SessionID,
+			"sessionSigningAlgo", fmt.Sprintf("0x%04x", sess.SigningAlgo),
+			"channelSigningAlgo", fmt.Sprintf("0x%04x", connSigningAlgo))
+		return NewErrorResult(types.StatusRequestOutOfSequence), nil
+	}
+	if connSigningAlgo >= signing.SigningAlgAESGMAC && sess.SigningAlgo != connSigningAlgo {
+		logger.Info("SESSION_SETUP bind rejected: channel uses GMAC, session does not match",
+			"sessionID", ctx.SessionID,
+			"sessionSigningAlgo", fmt.Sprintf("0x%04x", sess.SigningAlgo),
+			"channelSigningAlgo", fmt.Sprintf("0x%04x", connSigningAlgo))
+		return NewErrorResult(types.StatusNotSupported), nil
+	}
+
+	// Step 5: bind requires SMB 3.0+ on the new connection.
 	if connDialect < types.Dialect0300 {
 		logger.Info("SESSION_SETUP bind rejected: dialect below SMB 3.0",
 			"sessionID", ctx.SessionID,
@@ -419,6 +464,32 @@ func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupReq
 		return NewErrorResult(types.StatusRequestNotAccepted), nil
 	}
 
+	// Step 6: dialect-match between the existing session and the new channel
+	// (Samba smb2_sesssetup.c:752-757). For SMB 2.x the session has no bind
+	// support at all (already rejected by step 5 when sess.Dialect < 3.0),
+	// so we only enforce this when both sides have a recorded 3.x dialect.
+	if sess.Dialect >= types.Dialect0300 && sess.Dialect != connDialect {
+		logger.Info("SESSION_SETUP bind rejected: dialect mismatch",
+			"sessionID", ctx.SessionID,
+			"sessionDialect", fmt.Sprintf("0x%04x", uint16(sess.Dialect)),
+			"channelDialect", fmt.Sprintf("0x%04x", uint16(connDialect)))
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// Step 7: cipher-match (Samba smb2_sesssetup.c:759-764). Zero cipher
+	// means "no encryption negotiated", which still must match across the
+	// two channels — e.g. the session was established with AES-128-GCM but
+	// the new channel negotiated AES-128-CCM.
+	if sess.CipherId != connCipher {
+		logger.Info("SESSION_SETUP bind rejected: cipher mismatch",
+			"sessionID", ctx.SessionID,
+			"sessionCipher", fmt.Sprintf("0x%04x", sess.CipherId),
+			"channelCipher", fmt.Sprintf("0x%04x", connCipher))
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// Step 8: guest / anonymous sessions cannot be bound (no real identity
+	// to authenticate against on the new channel).
 	if sess.IsGuest || sess.IsNull {
 		logger.Info("SESSION_SETUP bind rejected: session is guest/anonymous",
 			"sessionID", ctx.SessionID,
@@ -426,6 +497,13 @@ func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupReq
 			"isNull", sess.IsNull)
 		return NewErrorResult(types.StatusNotSupported), nil
 	}
+
+	// Note: ClientGuid match is intentionally NOT validated here. Samba's
+	// bind path (smb2_sesssetup.c:713-810) doesn't check it either —
+	// multiple smbtorture tests (bind_negative_smb3signCtoHd, …HtoCd, …)
+	// expect a bind from a different ClientGuid to succeed when dialect /
+	// signing-algo / cipher all match. Session.ClientGUID is retained for
+	// forensic logging only.
 
 	// If a binding PendingAuth already exists for this session, this is
 	// the TYPE_3 of an in-flight bind — route to completeNTLMAuth, which
@@ -936,6 +1014,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 
 				sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
 				sess.OriginConnID = ctx.ConnID
+				recordSessionBindIdentity(sess, ctx)
 
 				// Configure signing with derived signing key
 				if errResult := h.configureSessionSigningWithKey(sess, signingKey[:], ctx); errResult != nil {
@@ -978,6 +1057,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 
 			sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
 			sess.OriginConnID = ctx.ConnID
+			recordSessionBindIdentity(sess, ctx)
 
 			// No signing without proper session key derivation
 			logger.Debug("NTLM authentication complete (no credential validation)",
@@ -1067,6 +1147,7 @@ func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *Pend
 
 	sess := h.CreateSessionWithID(pending.SessionID, pending.ClientAddr, true, "guest", "")
 	sess.OriginConnID = ctx.ConnID
+	recordSessionBindIdentity(sess, ctx)
 	ctx.IsGuest = true
 
 	logger.Info("Guest session created",
@@ -1090,6 +1171,7 @@ func (h *Handler) createGuestSession(ctx *SMBHandlerContext) (*HandlerResult, er
 
 	sess := h.CreateSession(ctx.ClientAddr, true, "guest", "")
 	sess.OriginConnID = ctx.ConnID
+	recordSessionBindIdentity(sess, ctx)
 
 	ctx.SessionID = sess.SessionID
 	ctx.IsGuest = true

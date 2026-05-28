@@ -201,6 +201,13 @@ const (
 	// StatusInvalidLockRange indicates the lock range (offset+length) overflows
 	// the maximum 64-bit value. Per MS-SMB2 3.3.5.14.
 	StatusInvalidLockRange Status = 0xC00001A1
+
+	// StatusRequestOutOfSequence indicates a request was made in the wrong
+	// protocol state [MS-ERREF 2.3.1]. Returned by SESSION_SETUP bind when
+	// the existing session was negotiated with AES-128-GMAC signing but the
+	// new connection's signing algorithm is not GMAC (MS-SMB2 §3.3.5.5.2;
+	// Samba source3/smbd/smb2_sesssetup.c:724-729).
+	StatusRequestOutOfSequence Status = 0xC010000A
 )
 
 // String returns a human-readable name for the status code.
@@ -300,6 +307,8 @@ func (s Status) String() string {
 		return "STATUS_CANNOT_DELETE"
 	case StatusInvalidLockRange:
 		return "STATUS_INVALID_LOCK_RANGE"
+	case StatusRequestOutOfSequence:
+		return "STATUS_REQUEST_OUT_OF_SEQUENCE"
 	default:
 		return fmt.Sprintf("STATUS_0x%08X", uint32(s))
 	}
