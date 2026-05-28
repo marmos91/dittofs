@@ -9,19 +9,21 @@ type Chunker struct{}
 // NewChunker returns a chunker configured with the package defaults.
 func NewChunker() *Chunker { return &Chunker{} }
 
-// Reset clears internal state. Placeholder for future stateful extensions;
+// Reset clears internal state. Placeholder for future stateful extensions
 // currently Chunker holds no cross-call state.
 func (c *Chunker) Reset() {}
 
 // Next returns the boundary (exclusive end index) of the next chunk within data.
 //
-// Contract:
+// Contract
 //   - final == false: return the first breakpoint at i >= MinChunkSize where
 //     (fp & mask) == 0, OR MaxChunkSize if no breakpoint is hit, OR 0 if
 //     the input is shorter than MinChunkSize (caller accumulates more).
 //   - final == true: if len(data) <= MinChunkSize, return (len(data), true)
-//     per D-30 (small / final chunk). Otherwise return the first breakpoint,
-//     MaxChunkSize, or len(data), whichever comes first.
+//
+// per (small / final chunk). Otherwise return the first breakpoint
+//
+//	MaxChunkSize, or len(data), whichever comes first.
 //
 // The returned done flag is true when the returned boundary equals len(data)
 // and no further data is expected (either final==true with a short tail, or
@@ -32,12 +34,12 @@ func (c *Chunker) Next(data []byte, final bool) (int, bool) {
 		return 0, final
 	}
 
-	// D-30: final chunk may be smaller than MinChunkSize.
+	// final chunk may be smaller than MinChunkSize.
 	if final && n <= MinChunkSize {
 		return n, true
 	}
 
-	// Not enough data to reach min; caller must accumulate (unless final,
+	// Not enough data to reach min; caller must accumulate (unless final
 	// handled above).
 	if n < MinChunkSize {
 		return 0, false
@@ -79,7 +81,7 @@ func (c *Chunker) Next(data []byte, final bool) (int, bool) {
 	if end == MaxChunkSize {
 		return MaxChunkSize, false
 	}
-	// Not final and we ran out without breakpoint and without hitting max:
+	// Not final and we ran out without breakpoint and without hitting max
 	// ask caller for more.
 	if !final {
 		return 0, false

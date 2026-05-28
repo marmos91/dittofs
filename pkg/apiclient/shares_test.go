@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestShare_JSON_IncludesEnabled — Phase 6 D-28 regression guard.
+// TestShare_JSON_IncludesEnabled is a regression guard.
 //
 // Marshal/unmarshal must round-trip the `enabled` field without `omitempty`
 // semantics: the CLI + dittofs-pro UI surfaces a share's enabled state as

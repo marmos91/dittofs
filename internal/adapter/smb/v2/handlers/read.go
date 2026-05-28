@@ -337,7 +337,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 11: Read data from BlockStore (uses local cache internally)
 	// ========================================================================
 
-	// Per D-09/D-10 (narrowed): regular-file READ routes through the pooled
+	// Regular-file READ routes through the pooled
 	// common.ReadFromBlockStore helper. The returned buffer is pool-backed,
 	// and readResult.Release is handed to the response encoder via
 	// SMBResponseBase.ReleaseData so the pool.Put fires AFTER the wire write
@@ -374,7 +374,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 13: Return success response
 	// ========================================================================
 
-	// Hand readResult.Release to the encoder (D-09) — NOT a defer in the
+	// Hand readResult.Release to the encoder — NOT a defer in the
 	// handler. The encoder fires it once AFTER the wire write completes so
 	// the pooled buffer stays valid through compound response assembly and
 	// encryption.
@@ -392,10 +392,10 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 // handleSymlinkRead generates MFsymlink content for a symlink read request.
 // SMB clients (macOS, Windows) expect symlinks to be stored as MFsymlink files -
 // regular files with a special XSym format containing the symlink target.
-// This function generates that content on-the-fly from the symlink's LinkTarget
+// Generates that content on-the-fly from the symlink's LinkTarget
 // and returns the appropriate portion based on the request offset and length.
 //
-// NOTE (D-10 narrowed scope, plan 09-02): symlink READ buffers are not pool-backed.
+// NOTE: symlink READ buffers are not pool-backed.
 // mfsymlink.Encode returns a freshly heap-allocated slice (always 1067 bytes per
 // MFsymlink spec). A pool-backed path would memcpy that output into a pooled
 // slice for no benefit — the encoder's allocation already dominates the
@@ -454,13 +454,13 @@ func (h *Handler) handleSymlinkRead(
 
 // handlePipeRead handles READ from a named pipe for DCE/RPC communication.
 //
-// NOTE (D-10 narrowed scope, plan 09-02): pipe READ buffers are not pool-backed.
+// NOTE: pipe READ buffers are not pool-backed.
 // pipe.ProcessRead returns a slice whose lifetime is owned by PipeManager's
 // internal state machine — coercing it through internal/adapter/pool would
 // require an extra memcpy per read (to copy into a pool-backed slice before
 // returning) with no observable benefit. Pipe reads are typically small and
-// infrequent compared with the regular-file READ hot path that ADAPT-02
-// targets. The returned *ReadResponse therefore leaves
+// infrequent compared with the regular-file READ hot path. The returned
+// *ReadResponse therefore leaves
 // SMBResponseBase.ReleaseData nil; the response encoder's null-check handles
 // this deliberately. Regression coverage lives in
 // TestRead_PipeRead_LeavesReleaseDataNil.

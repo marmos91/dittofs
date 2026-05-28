@@ -84,7 +84,7 @@ func (store *MemoryMetadataStore) GetFilesystemCapabilities(ctx context.Context,
 
 // SetFilesystemCapabilities updates the filesystem capabilities for this store.
 //
-// This method allows updating the static capabilities after store creation,
+// Allows updating the static capabilities after store creation,
 // which is useful during initialization when capabilities are loaded from
 // global configuration.
 func (store *MemoryMetadataStore) SetFilesystemCapabilities(capabilities metadata.FilesystemCapabilities) {

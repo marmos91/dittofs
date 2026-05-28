@@ -4,7 +4,7 @@
 // It implements the full local.LocalStore interface for testing and ephemeral
 // use cases where durability is not required.
 //
-// This store is useful for:
+// This store is useful for
 //   - Unit tests that need a fast, isolated LocalStore
 //   - Running the conformance test suite (blockstoretest)
 //   - Ephemeral configurations where data loss on restart is acceptable

@@ -17,7 +17,7 @@ const claimsContextKey contextKey = "claims"
 // GetClaimsFromContext retrieves JWT claims from the request context.
 // Returns nil if no claims are present.
 //
-// This function should only be called within API handler code that runs
+// Should only be called within API handler code that runs
 // after the JWTAuth middleware has processed the request. If called before
 // authentication, or in routes without JWTAuth middleware, it will return nil.
 func GetClaimsFromContext(ctx context.Context) *auth.Claims {

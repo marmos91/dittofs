@@ -424,7 +424,7 @@ func TestReturnDelegation_CleansFileMap(t *testing.T) {
 }
 
 // ============================================================================
-// ShouldGrantDelegation Tests (Plan 11-03)
+// ShouldGrantDelegation Tests
 // ============================================================================
 
 // setCBPathUp is a test helper that sets the CBPathUp flag on a client.
@@ -659,7 +659,7 @@ func TestShouldGrantDelegation_OtherClientHasDeleg(t *testing.T) {
 }
 
 // ============================================================================
-// CheckDelegationConflict Tests (Plan 11-03)
+// CheckDelegationConflict Tests
 // ============================================================================
 
 func TestCheckDelegationConflict_NoConflict(t *testing.T) {
@@ -791,7 +791,7 @@ func TestCheckDelegationConflict_SetsRecallSent(t *testing.T) {
 }
 
 // ============================================================================
-// ValidateDelegationStateid Tests (Plan 11-03)
+// ValidateDelegationStateid Tests
 // ============================================================================
 
 func TestValidateDelegationStateid_Success(t *testing.T) {
@@ -851,7 +851,7 @@ func TestValidateDelegationStateid_StaleEpoch(t *testing.T) {
 }
 
 // ============================================================================
-// EncodeDelegation Tests (Plan 11-03)
+// EncodeDelegation Tests
 // ============================================================================
 
 func TestEncodeDelegation_None(t *testing.T) {
@@ -911,7 +911,7 @@ func TestEncodeDelegation_Write(t *testing.T) {
 }
 
 // ============================================================================
-// Recall Timer and Revocation Tests (Plan 11-04)
+// Recall Timer and Revocation Tests
 // ============================================================================
 
 func TestRecallTimer_FiresRevocation(t *testing.T) {
@@ -1088,7 +1088,7 @@ func TestRevokedDelegation_ReturnSucceeds(t *testing.T) {
 }
 
 // ============================================================================
-// Callback Path Tracking Tests (Plan 11-04)
+// Callback Path Tracking Tests
 // ============================================================================
 
 func TestCBPathUp_VerifiedOnConfirm(t *testing.T) {
@@ -1252,7 +1252,7 @@ func TestShouldGrantDelegation_CBPathDown(t *testing.T) {
 }
 
 // ============================================================================
-// Recently-Recalled Cache Tests (Plan 11-04)
+// Recently-Recalled Cache Tests
 // ============================================================================
 
 func TestRecentlyRecalled_BlocksGrant(t *testing.T) {
@@ -1359,7 +1359,7 @@ func TestRecentlyRecalled_AddedOnRevocation(t *testing.T) {
 }
 
 // ============================================================================
-// Shutdown Tests (Plan 11-04)
+// Shutdown Tests
 // ============================================================================
 
 func TestShutdown_StopsRecallTimers(t *testing.T) {

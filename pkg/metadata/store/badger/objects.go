@@ -20,10 +20,10 @@ import (
 // This file implements the FileBlockStore interface for the BadgerDB metadata store.
 // It provides content-addressed file block tracking for deduplication and caching.
 //
-// Phase 12 (META-03 / D-09): the FileBlockStore interface narrowed to 6
-// methods. The backend retains the legacy GetFileBlock + ListFileBlocks
-// helpers as concrete methods on the struct (not on the public interface)
-// for engine-internal callers.
+// The FileBlockStore interface is narrowed to 6 methods. The backend
+// retains the legacy GetFileBlock + ListFileBlocks helpers as
+// concrete methods on the struct (not on the public interface) for
+// engine-internal callers.
 //
 // Key Prefixes:
 //   - fb:{id}          - FileBlock data (keyed by UUID)
@@ -50,7 +50,7 @@ var _ blockstore.FileBlockStore = (*BadgerMetadataStore)(nil)
 // ============================================================================
 
 // GetFileBlock retrieves a file block by its ID. Not on the narrowed
-// FileBlockStore interface (Phase 12 META-03 / D-09); kept as a backend
+// FileBlockStore interface; kept as a backend
 // method for engine-internal callers.
 func (s *BadgerMetadataStore) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
 	var block metadata.FileBlock
@@ -73,8 +73,8 @@ func (s *BadgerMetadataStore) GetFileBlock(ctx context.Context, id string) (*met
 	return &block, nil
 }
 
-// Put stores or updates a file block. Renamed from PutFileBlock in
-// Phase 12 (META-03 / D-09) to match the narrowed interface.
+// Put stores or updates a file block. Renamed from PutFileBlock to
+// match the narrowed interface.
 func (s *BadgerMetadataStore) Put(ctx context.Context, block *metadata.FileBlock) error {
 	return s.db.Update(func(txn *badger.Txn) error {
 		key := []byte(fileBlockPrefix + block.ID)
@@ -116,7 +116,6 @@ func (s *BadgerMetadataStore) Put(ctx context.Context, block *metadata.FileBlock
 }
 
 // Delete removes a file block by its ID. Renamed from DeleteFileBlock in
-// Phase 12 (META-03 / D-09).
 func (s *BadgerMetadataStore) Delete(ctx context.Context, id string) error {
 	return s.db.Update(func(txn *badger.Txn) error {
 		key := []byte(fileBlockPrefix + id)
@@ -163,7 +162,7 @@ func (s *BadgerMetadataStore) Delete(ctx context.Context, id string) error {
 // ErrConflict loop used by WithTransaction (transaction.go). BadgerDB's
 // optimistic concurrency control surfaces ErrConflict when two
 // in-flight Updates touch the same key — the retry converts that into
-// the "atomic, TOCTOU-free" contract D-04 mandates for the refcount
+// the "atomic, TOCTOU-free" contract mandates for the refcount
 // mutators (IncrementRefCount, DecrementRefCount, AddRef). Returns the
 // last conflict error if all retries are exhausted; non-conflict
 // errors short-circuit.
@@ -250,13 +249,13 @@ func (s *BadgerMetadataStore) DecrementRefCount(ctx context.Context, id string) 
 
 // AddRef atomically bumps RefCount on the FileBlock row indexed by the
 // given content hash. Implements the FileBlockStore.AddRef contract
-// (Phase 19 D-04): used by the in-memory hash dedup LRU hit path to
+// used by the in-memory hash dedup LRU hit path to
 // reference an already-stored block without creating a new row.
 //
 // Atomicity: the entire hash→id secondary-index lookup, fb:{id} fetch,
 // RefCount++, and Set run inside a single s.db.Update transaction so
 // AddRef is TOCTOU-free against concurrent DecrementRefCount cascade
-// (D-04 — matches the existing IncrementRefCount idiom).
+// (matches the existing IncrementRefCount idiom).
 //
 // Returns metadata.ErrUnknownHash on:
 //   - fb-hash:{hash} secondary-index miss (the hash has never been Put), AND
@@ -264,11 +263,11 @@ func (s *BadgerMetadataStore) DecrementRefCount(ctx context.Context, id string) 
 //     — defends against orphan-index scenarios; should not normally
 //     happen but maps to the same caller behavior: fall back to full Put).
 //
-// D-27: RefCount is the ONLY field mutated. BlockState is preserved
+// RefCount is the ONLY field mutated. BlockState is preserved
 // across the read-modify-write (Pending stays Pending, Remote stays
 // Remote — no transition is fired by the hit path).
 func (s *BadgerMetadataStore) AddRef(ctx context.Context, hash blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
-	// payloadID + blockRef accepted for future GC traceability (D-04);
+	// payloadID + blockRef accepted for future GC traceability;
 	// badger backend records ref count only — parameters intentionally
 	// blanked.
 	return s.updateWithConflictRetry(ctx, func(txn *badger.Txn) error {
@@ -317,7 +316,6 @@ func (s *BadgerMetadataStore) AddRef(ctx context.Context, hash blockstore.Conten
 
 // GetByHash looks up a finalized block by its content hash.
 // Returns nil without error if not found. Renamed from FindFileBlockByHash
-// in Phase 12 (META-03 / D-09).
 func (s *BadgerMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
 	var block metadata.FileBlock
 	var found bool
@@ -369,8 +367,8 @@ func (s *BadgerMetadataStore) GetByHash(ctx context.Context, hash metadata.Conte
 
 // ListPending returns blocks in Pending state (complete, on disk, not yet
 // synced to remote) older than the given duration. Renamed from
-// ListLocalBlocks in Phase 12 (META-03 / D-09); the underlying semantics
-// already match Phase 11 STATE-01 ("Local" was renamed Pending).
+// ListLocalBlocks; the underlying semantics already match ("Local" was
+// renamed Pending).
 // If limit > 0, at most limit blocks are returned.
 //
 // Uses the fb-local: secondary index for O(local) iteration instead of
@@ -427,7 +425,7 @@ func (s *BadgerMetadataStore) ListPending(ctx context.Context, olderThan time.Du
 
 // ListFileBlocks returns all blocks belonging to a file, ordered by block index.
 // Uses the fb-file:{payloadID}: secondary index for efficient O(file_blocks) queries.
-// Not on the narrowed FileBlockStore interface (Phase 12 META-03 / D-09);
+// Not on the narrowed FileBlockStore interface;
 // kept as a backend method for engine-internal callers.
 func (s *BadgerMetadataStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
 	var result []*metadata.FileBlock
@@ -481,8 +479,8 @@ func (s *BadgerMetadataStore) ListFileBlocks(ctx context.Context, payloadID stri
 
 // EnumerateFileBlocks streams every FileBlock's ContentHash through fn using
 // a Badger prefix iterator over fb:. The iterator yields one row per block
-// (no allocation of a full slice in application memory). See GC-01 / D-02.
-// Phase 12 (META-03 / D-08): lifted from FileBlockStore to MetadataStore —
+// (no allocation of a full slice in application memory)..
+// lifted from FileBlockStore to MetadataStore
 // implementation unchanged.
 func (s *BadgerMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
 	return s.db.View(func(txn *badger.Txn) error {
@@ -542,13 +540,13 @@ func parseBlockIdx(id string) int {
 // Ensure badgerTransaction implements FileBlockStore
 var _ blockstore.FileBlockStore = (*badgerTransaction)(nil)
 
-// CR-01 (Phase 12 review iteration 1): FileBlockStore methods on
+// (review iteration 1): FileBlockStore methods on
 // badgerTransaction MUST run against the txn's *badger.Txn so a
 // rollback (returning an error from WithTransaction's fn) discards the
 // RefCount mutation. Previously every method called `tx.store.X(...)`
 // which opened its own db.Update — defeating rollback for any caller
 // that bumped RefCount inside WithTransaction then encountered a
-// downstream PutFile failure (BLOCKER-2 silent INV-02 leak).
+// downstream PutFile failure (silent leak).
 
 func (tx *badgerTransaction) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
 	if err := ctx.Err(); err != nil {
@@ -637,7 +635,7 @@ func (tx *badgerTransaction) Delete(ctx context.Context, id string) error {
 }
 
 // IncrementRefCount runs the +1 read-modify-write under the active
-// badger.Txn so a subsequent rollback discards the mutation (CR-01 fix).
+// badger.Txn so a subsequent rollback discards the mutation (fix).
 func (tx *badgerTransaction) IncrementRefCount(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -665,7 +663,7 @@ func (tx *badgerTransaction) IncrementRefCount(ctx context.Context, id string) e
 }
 
 // DecrementRefCount runs the -1 read-modify-write under the active
-// badger.Txn so a subsequent rollback discards the mutation (CR-01 fix).
+// badger.Txn so a subsequent rollback discards the mutation (fix).
 func (tx *badgerTransaction) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -700,10 +698,10 @@ func (tx *badgerTransaction) DecrementRefCount(ctx context.Context, id string) (
 
 // AddRef runs the hash→id resolve + RefCount++ read-modify-write under
 // the active badger.Txn so a subsequent rollback discards the mutation
-// (mirrors the CR-01 fix applied to IncrementRefCount). Returns
+// (mirrors the fix applied to IncrementRefCount). Returns
 // metadata.ErrUnknownHash on index miss or value miss.
 func (tx *badgerTransaction) AddRef(ctx context.Context, hash metadata.ContentHash, _ string, _ blockstore.BlockRef) error {
-	// payloadID + blockRef accepted for future GC traceability (D-04);
+	// payloadID + blockRef accepted for future GC traceability;
 	// badger backend records ref count only — parameters intentionally
 	// blanked.
 	if err := ctx.Err(); err != nil {

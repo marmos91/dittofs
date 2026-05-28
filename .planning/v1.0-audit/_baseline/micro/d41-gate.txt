@@ -1,0 +1,6 @@
+=== RUN   TestBLAKE3AtLeast3xSHA256
+    hash_bench_test.go:128: D-41 gate [GOARCH=arm64 threshold=0.50x]: BLAKE3=135955588 ns/op  SHA-256=116659560 ns/op  ratio=0.86x
+    hash_bench_test.go:139: D-41 gate met on arm64: ratio=0.86x >= 0.50x
+--- PASS: TestBLAKE3AtLeast3xSHA256 (2.34s)
+PASS
+ok  	github.com/marmos91/dittofs/pkg/blockstore	2.686s

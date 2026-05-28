@@ -76,8 +76,8 @@ func TestMetadataCoordinator_RoutesThroughContextTx(t *testing.T) {
 // no-context-tx path: Truncate / Delete in the engine call into the
 // coordinator without a wrapping WithTransaction. The coordinator MUST
 // still function (route through the public store) so those code paths
-// keep working — non-atomic at the cross-store level by design (Phase 12
-// stance: INV-02 audit reconciles drift).
+// keep working — non-atomic at the cross-store level by design (the
+// refcount audit reconciles drift).
 func TestMetadataCoordinator_FallsBackToPublicStoreWithoutTx(t *testing.T) {
 	ctx := context.Background()
 	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()

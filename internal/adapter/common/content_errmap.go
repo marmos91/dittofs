@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// Content-error mapping (D-08 §2).
+// Content-error mapping.
 //
 // Block-store content errors (failed reads from remote/cache, transient
 // backend failures) map to I/O-class codes in every protocol. Today the
@@ -28,22 +28,22 @@ func MapContentToNFS3(err error) uint32 {
 	if err == nil {
 		return nfs3types.NFS3OK
 	}
-	// Phase 11 BSCAS-06 / INV-06 — CAS key parse failure indicates
-	// corrupted metadata; surfaced as invalid argument.
+	// CAS key parse failure indicates corrupted metadata; surfaced as
+	// invalid argument.
 	if goerrors.Is(err, blockstore.ErrCASKeyMalformed) {
 		return nfs3types.NFS3ErrInval
 	}
-	// Phase 11 BSCAS-06 / INV-06 — silent S3 corruption surfaced as
-	// I/O error to the client. The streaming verifier rejected bytes
-	// before they reached the caller; the protocol arm reports EIO.
+	// Silent S3 corruption surfaced as I/O error to the client. The
+	// streaming verifier rejected bytes before they reached the caller;
+	// the protocol arm reports EIO.
 	if goerrors.Is(err, blockstore.ErrCASContentMismatch) {
 		return nfs3types.NFS3ErrIO
 	}
-	// Phase 12 D-23 — BlockRef.Hash refers to a FileBlock that's been
-	// GC'd or never existed. Operators triage via log inspection
-	// (vs. ErrCASContentMismatch which means bytes don't match the
-	// hash). Both surface as EIO at the wire — a data-integrity
-	// failure the client must retry / refresh against.
+	// BlockRef.Hash refers to a FileBlock that's been GC'd or never
+	// existed. Operators triage via log inspection (vs.
+	// ErrCASContentMismatch which means bytes don't match the hash).
+	// Both surface as EIO at the wire — a data-integrity failure the
+	// client must retry / refresh against.
 	if goerrors.Is(err, blockstore.ErrBlockRefMissing) {
 		return nfs3types.NFS3ErrIO
 	}
@@ -64,7 +64,7 @@ func MapContentToNFS4(err error) uint32 {
 	if goerrors.Is(err, blockstore.ErrCASContentMismatch) {
 		return nfs4types.NFS4ERR_IO
 	}
-	// Phase 12 D-23 — BlockRef hash missing (see MapContentToNFS3).
+	// BlockRef hash missing (see MapContentToNFS3).
 	if goerrors.Is(err, blockstore.ErrBlockRefMissing) {
 		return nfs4types.NFS4ERR_IO
 	}
@@ -89,7 +89,7 @@ func MapContentToSMB(err error) smbtypes.Status {
 		// also what the existing fallback uses for opaque I/O failures.
 		return smbtypes.StatusUnexpectedIOError
 	}
-	// Phase 12 D-23 — BlockRef hash missing (see MapContentToNFS3).
+	// BlockRef hash missing (see MapContentToNFS3).
 	// SMB clients see the same StatusUnexpectedIOError signal as for
 	// CAS content mismatch; both are CAS-integrity failures.
 	if goerrors.Is(err, blockstore.ErrBlockRefMissing) {

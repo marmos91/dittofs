@@ -1,20 +1,20 @@
 //go:build e2e
 
-// TestDEDUP03_VMFleet40Pct is the headline business-outcome gate for
-// Phase 13 (v0.15.0 A4): >=40% storage reduction across N qcow2 clones
-// derived from one pinned Alpine cloud base image with ~7.5% per-clone
-// random divergence. Gates milestone VER-03.
+// TestDEDUP03_VMFleet40Pct is the headline business-outcome gate
+// (DEDUP-03): >=40% storage reduction across N qcow2 clones derived
+// from one pinned Alpine cloud base image with ~7.5% per-clone random
+// divergence. Gates milestone VER-03.
 //
 // Why this fixture:
 //
 //   - Real qcow2 content (file-system journal headers, BIOS images,
 //     cloud-init artifacts) is representative of what FastCDC chunks
 //     in production VM workloads. A synthetic byte-shift fixture would
-//     overstate the dedup hit rate (T-13-22 / D-15).
+//     overstate the dedup hit rate.
 //   - Deterministic synthesis: the seeded RNG produces identical
 //     clones across CI runs and machines.
-//   - Pinned upstream URL + SHA256 (T-13-20 mitigation): a stale CDN
-//     swap fails the test loudly rather than silently rotating bytes.
+//   - Pinned upstream URL + SHA256: a stale CDN swap fails the test
+//     loudly rather than silently rotating bytes.
 //
 // Theoretical ratio floor (8 clones, ~7.5% per-clone divergence):
 //
@@ -28,8 +28,8 @@
 // 16 MiB, so localized 4-32 KiB patches affect at most a few chunks
 // per patch site).
 //
-// Tier: nightly only (DITTOFS_E2E_NIGHTLY=1) per Phase 13 D-15 — also
-// requires sudo + kernel NFS client + Localstack + Postgres, mirroring
+// Tier: nightly only (DITTOFS_E2E_NIGHTLY=1) — also requires sudo +
+// kernel NFS client + Localstack + Postgres, mirroring
 // dedup_cross_share_test.go.
 //
 // Run:
@@ -37,8 +37,8 @@
 //	cd test/e2e && DITTOFS_E2E_NIGHTLY=1 sudo ./run-e2e.sh \
 //	    --s3 --test TestDEDUP03_VMFleet40Pct
 //
-// See Phase 13 plan 13-09, decision D-15 (storage-reduction gate),
-// D-20 (slog INFO ratio emission).
+// Headline outcome: >=40% storage-reduction gate; the achieved ratio
+// is emitted at slog INFO for nightly trend tracking.
 package e2e
 
 import (
@@ -58,7 +58,7 @@ import (
 
 const (
 	// vmFleetCloneCount is the number of synthesized clones written
-	// through NFS. 8 is the lower bound from D-15 (8-16 range); keeps
+	// through NFS. 8 is the lower bound of the documented 8-16 range; keeps
 	// the nightly run-time bounded while preserving the headline
 	// outcome (>=40% ratio with wide headroom).
 	vmFleetCloneCount = 8
@@ -206,8 +206,8 @@ func TestDEDUP03_VMFleet40Pct(t *testing.T) {
 		"DEDUP-03: pre-dedup byte count is zero (no clones synthesized?)")
 	reduction := 1.0 - float64(postDedupBytes)/float64(preDedupBytes)
 
-	// D-20: emit the achieved ratio at slog INFO so nightly logs can
-	// trend the metric over time without a Prometheus surface.
+	// Emit the achieved ratio at slog INFO so nightly logs can trend the
+	// metric over time without a Prometheus surface.
 	slog.Info("DEDUP-03 vm-fleet ratio",
 		"clones", len(clones),
 		"pre_dedup_bytes", preDedupBytes,
@@ -231,7 +231,7 @@ func TestDEDUP03_VMFleet40Pct(t *testing.T) {
 
 // vmFleetDrainUploads mirrors dedup_cross_share_test.go::dedupDrainUploads
 // — kept inline to avoid lifting drainUploads to a shared helper for a
-// single additional call site (matches Plan 08 / 09's "keep changes
+// single additional call site (matches / 09's "keep changes
 // minimal" guidance).
 func vmFleetDrainUploads(t *testing.T, runner *helpers.CLIRunner) {
 	t.Helper()

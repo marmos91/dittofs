@@ -1,10 +1,9 @@
 //go:build e2e
 
-// Phase 13 DEDUP-03 (VER-03 gate) qcow2 fixture: pinned-URL download +
-// SHA256 verify + deterministic clone synthesis. See
-// test/e2e/fixtures/qcow2/README.md for the fixture rationale, and
-// .planning/phases/13-merkle-root-file-level-dedup-a4/13-CONTEXT.md
-// decision D-15 for the >=40% storage-reduction gate.
+// DEDUP-03 (VER-03 gate) qcow2 fixture: pinned-URL download + SHA256
+// verify + deterministic clone synthesis. See
+// test/e2e/fixtures/qcow2/README.md for the fixture rationale and the
+// >=40% storage-reduction gate.
 package framework
 
 import (

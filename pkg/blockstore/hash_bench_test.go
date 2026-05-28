@@ -1,8 +1,7 @@
 // Package blockstore benchmarks BLAKE3 vs SHA-256 hashing throughput used by
-// the v0.15.0 CAS content-hash layer (see Phase 10 design decisions D-08 and
-// D-41).
+// the v0.15.0 CAS content-hash layer (see design decisions and
 //
-// D-41 gate (amended 2026-04-24 for physical reality on arm64):
+// gate (amended 2026-04-24 for physical reality on arm64)
 //
 // The BLAKE3/SHA-256 ratio is hardware-dependent. On amd64, BLAKE3's SIMD
 // assembly (AVX-512/AVX-2/SSE4.1) dwarfs Go's software SHA-256 and the 3x
@@ -12,7 +11,7 @@
 // (zeebo/blake3 is in the same boat). The resulting ratio is closer to
 // 1.5-2x — a 3x universal gate is physically unachievable on arm64 today.
 //
-// Gate applied here (platform-aware, user-approved Option A):
+// Gate applied here (platform-aware, user-approved Option A)
 //
 //   - amd64: BLAKE3 throughput must be >= 3.0x SHA-256. Detects a missing
 //     AVX-2 compile flag or a silently slow portable-Go fallback on a CPU
@@ -22,11 +21,11 @@
 //     SHA-256. Catches a pathologically broken wiring while acknowledging
 //     the hw-SHA vs portable-Go BLAKE3 asymmetry.
 //
-// The hard 3x D-41 target is validated on the CI amd64 perf lane per D-43;
+// The hard 3x target is validated on the CI amd64 perf lane
 // this test keeps the local dev loop green on Apple Silicon without
 // masking a real amd64 regression.
 //
-// We depend on lukechampine.com/blake3 (D-08 amendment) rather than
+// We depend on lukechampine.com/blake3 (amendment) rather than
 // github.com/zeebo/blake3 because the former ships both amd64 SIMD and
 // arm64 NEON paths where applicable.
 package blockstore_test
@@ -41,7 +40,7 @@ import (
 	"lukechampine.com/blake3"
 )
 
-// benchBufSize is 256 MiB per the D-41 microbenchmark spec. Large enough to
+// benchBufSize is 256 MiB per the microbenchmark spec. Large enough to
 // amortize per-call setup and exercise the full SIMD path.
 const benchBufSize = 256 * 1024 * 1024
 
@@ -76,7 +75,7 @@ func BenchmarkSHA256_256MiB(b *testing.B) {
 	}
 }
 
-// TestBLAKE3FasterThanSHA256 enforces the platform-aware D-41 perf gate.
+// TestBLAKE3FasterThanSHA256 enforces the platform-aware perf gate.
 // See the package doc comment for the rationale behind the threshold split.
 //
 // Skipped under `-short` because each benchmark allocates 256 MiB and the
@@ -103,8 +102,8 @@ func TestBLAKE3FasterThanSHA256(t *testing.T) {
 
 	ratio := float64(sr.NsPerOp()) / float64(br.NsPerOp())
 
-	// Threshold model (D-41 amended 2026-04-24, hardened 2026-04-25, relaxed
-	// 2026-05-06 for shared-runner reality):
+	// Threshold model (amended 2026-04-24, hardened 2026-04-25, relaxed
+	// 2026-05-06 for shared-runner reality)
 	//
 	//   - Default (CI lanes, generic dev hosts): >= 0.5x. BLAKE3 must not
 	//     collapse to half-speed against SHA-NI-accelerated SHA-256.
@@ -113,8 +112,8 @@ func TestBLAKE3FasterThanSHA256(t *testing.T) {
 	//     amd64 runners often have SHA-NI for SHA-256 yet not the AVX2/AVX-512
 	//     paths lukechampine.com/blake3 needs to reach 1.0x parity.
 	//   - Opt-in strict (D41_STRICT_GATE=1, amd64 only): >= 3.0x — the original
-	//     D-41 hardware-quality gate. Lives on the dedicated CI perf lane
-	//     (Phase 11 prereq per D-43) and on local dev hosts that opt in.
+	// hardware-quality gate. Lives on the dedicated CI perf lane
+	// (prereq per) and on local dev hosts that opt in.
 	//   - arm64 always uses the 0.5x sanity threshold even with the strict
 	//     env var, since lukechampine.com/blake3 currently has no NEON path
 	//     and cannot reach 3x against ARMv8 SHA-NI.

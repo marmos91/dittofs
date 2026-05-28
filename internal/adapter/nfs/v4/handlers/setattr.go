@@ -50,7 +50,7 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		}
 	}
 
-	// Log stateid at debug level (Phase 9 validates; Phase 8 accepts any)
+	// Log stateid at debug level (StateManager validates separately)
 	logger.Debug("NFSv4 SETATTR stateid",
 		"seqid", stateid.Seqid,
 		"special", stateid.IsSpecialStateid(),

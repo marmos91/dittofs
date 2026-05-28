@@ -1,18 +1,19 @@
 // Package engine — GCState
 //
-// Phase 11 Plan 06 (D-01): the GC mark phase persists the live ContentHash
-// set on disk under <localStore>/gc-state/<runID>/ using a Badger temp
-// store. This bounds memory regardless of metadata size: a backend with
-// 100M file blocks would OOM if we held the entire live set in a Go map.
+// The GC mark phase persists the live ContentHash set on disk under
+// <localStore>/gc-state/<runID>/ using a Badger temp store. This
+// bounds memory regardless of metadata size: a backend with 100M
+// file blocks would OOM if we held the entire live set in a Go map.
 //
-// Each run creates an `incomplete.flag` marker on entry and removes it via
-// MarkComplete() on success. CleanStaleGCStateDirs reclaims any directory
-// whose marker is still present (a crashed prior run). Mark is idempotent;
-// we do not resume a crashed run, we discard and start fresh.
+// Each run creates an `incomplete.flag` marker on entry and removes
+// it via MarkComplete() on success. CleanStaleGCStateDirs reclaims
+// any directory whose marker is still present (a crashed prior run).
+// Mark is idempotent; we do not resume a crashed run, we discard and
+// start fresh.
 //
-// last-run.json (D-10) is written under the gc-state root after a
-// successful run with aggregate counts the operator and `dfsctl store
-// block gc-status` (plan 07) consume.
+// last-run.json is written under the gc-state root after a
+// successful run with aggregate counts that the operator and `dfsctl
+// store block gc-status` consume.
 package engine
 
 import (
@@ -37,9 +38,9 @@ const (
 // directory. Backed by Badger so memory remains bounded regardless of
 // metadata size. The incomplete.flag marker is created at NewGCState and
 // removed by MarkComplete; CleanStaleGCStateDirs uses the marker to
-// detect crashed runs and reclaim their dirs. See D-01.
+// detect crashed runs and reclaim their dirs.
 //
-// Phase 11 IN-4-04: Add() batches writes through Badger's WriteBatch
+// Add() batches writes through Badger's WriteBatch
 // (gcAddBatchSize hashes per commit) instead of opening a fresh
 // txn.Update per hash. Per-call WriteBatch overhead is amortized so
 // 10M+ live sets no longer hit the txn-per-hash throughput cliff
@@ -93,8 +94,8 @@ func NewGCState(rootDir, runID string) (*GCState, error) {
 }
 
 // Add records a live ContentHash. Idempotent — repeated calls with the same
-// hash are no-ops at the data layer. Phase 11 IN-4-04: writes are buffered
-// through a Badger WriteBatch and flushed every gcAddBatchSize hashes;
+// hash are no-ops at the data layer.: writes are buffered
+// through a Badger WriteBatch and flushed every gcAddBatchSize hashes
 // FlushAdd() forces a flush so callers can rely on Has() seeing every
 // preceding Add().
 //
@@ -139,7 +140,7 @@ func (g *GCState) flushBatchLocked() error {
 
 // Has reports whether a hash was Add-ed during this run.
 //
-// Phase 11 IN-4-04: Has() implicitly flushes any pending Add() batch
+// Has() implicitly flushes any pending Add() batch
 // so callers querying mid-mark observe a consistent view. The
 // production sweep path explicitly invokes FlushAdd() after the mark
 // phase completes so the implicit flush here is a defensive no-op in
@@ -165,7 +166,7 @@ func (g *GCState) Has(h blockstore.ContentHash) (bool, error) {
 	return present, err
 }
 
-// MarkComplete removes the incomplete.flag marker. After this returns nil,
+// MarkComplete removes the incomplete.flag marker. After this returns nil
 // CleanStaleGCStateDirs will not reclaim this dir.
 func (g *GCState) MarkComplete() error {
 	if err := os.Remove(filepath.Join(g.runDir, gcStateIncompleteFlag)); err != nil {
@@ -200,7 +201,7 @@ func (g *GCState) Close() error {
 func (g *GCState) RunDir() string { return g.runDir }
 
 // CleanStaleGCStateDirs removes any per-runID directory under rootDir
-// whose incomplete.flag still exists. Mark is idempotent (D-01) so we
+// whose incomplete.flag still exists. Mark is idempotent so we
 // do not resume; we discard and start fresh. Completed dirs (no flag)
 // are left alone — the caller decides retention. The last-run.json file
 // at rootDir's top level is also left alone.
@@ -229,12 +230,11 @@ func CleanStaleGCStateDirs(rootDir string) error {
 	return nil
 }
 
-// GCRunSummary is the persisted last-run.json shape. See D-10.
+// GCRunSummary is the persisted last-run.json shape.
 //
-// All counts are aggregate (no file paths or hashes beyond DryRunCandidates
+// All counts are aggregate (no file paths or hashes beyond DryRunCandidates,
 // which only contain CAS keys, not source paths). This file lives under
-// the gc-state root and is consumed by `dfsctl store block gc-status`
-// (plan 07).
+// the gc-state root and is consumed by `dfsctl store block gc-status`.
 type GCRunSummary struct {
 	RunID            string    `json:"run_id"`
 	StartedAt        time.Time `json:"started_at"`

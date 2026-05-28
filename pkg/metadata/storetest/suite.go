@@ -41,25 +41,25 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		runFileBlockOpsTests(t, factory)
 	})
 
-	// BlockRefOps: META-04 conformance for FileAttr.Blocks []BlockRef
+	// BlockRefOps conformance for FileAttr.Blocks []BlockRef
 	// round-trip across PutFile/GetFile, replace semantics, and the
-	// Postgres-only FK-cascade behavior (Plan 02 D-03). Memory and
-	// Badger skip the cascade scenario via FileBlockRefsAccessor
-	// type-assertion failure.
+	// Postgres-only FK-cascade behavior. Memory and Badger skip the
+	// cascade scenario via FileBlockRefsAccessor type-assertion
+	// failure.
 	t.Run("BlockRefOps", func(t *testing.T) {
 		runBlockRefOpsTests(t, factory)
 	})
 
-	// ObjectIDOps: META-02 conformance for FileAttr.ObjectID round-trip,
-	// FindByObjectID lookup, mutation lifecycle, and the D-14 first-
-	// committer-wins concurrent-quiesce race (Phase 13 Plan 05). All
+	// ObjectIDOps conformance for FileAttr.ObjectID round-trip,
+	// FindByObjectID lookup, mutation lifecycle, and the first-
+	// committer-wins concurrent-quiesce race. All
 	// three backends implement ObjectIDIndexAccessor so the race
 	// scenario asserts index-row counts directly rather than skipping.
 	t.Run("ObjectIDOps", func(t *testing.T) {
 		runObjectIDOpsTests(t, factory)
 	})
 
-	// INV02Fuzz: Phase 12 D-36 property-based fuzzer for the global
+	// INV02Fuzz property-based fuzzer for the global
 	// invariant ∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks). Runs
 	// 10 concurrent goroutines × 10 ops each (create/delete/copy mix)
 	// against every backend. The leak-injection scenario uses an

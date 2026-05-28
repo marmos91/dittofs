@@ -451,7 +451,7 @@ func (s *MetadataService) UpdatePendingMtime(handle FileHandle, mtime time.Time)
 }
 
 // FlushAllPendingWritesForShutdown flushes all pending metadata writes during shutdown.
-// Unlike FlushPendingWrites, this method doesn't require an AuthContext and uses a
+// Unlike FlushPendingWrites, doesn't require an AuthContext and uses a
 // background context with a timeout. This should be called during graceful shutdown
 // to ensure all metadata changes are persisted before closing stores.
 func (s *MetadataService) FlushAllPendingWritesForShutdown(timeout time.Duration) (int, error) {

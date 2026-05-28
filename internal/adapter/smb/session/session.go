@@ -113,7 +113,7 @@ type Session struct {
 	mu sync.Mutex
 
 	// channels holds TCP connections explicitly bound to this session, keyed
-	// by ConnID. In Phase 1 only secondary (bound) connections are
+	// by ConnID. Only secondary (bound) connections are currently
 	// registered via SESSION_SETUP with SMB2_SESSION_FLAG_BINDING per
 	// MS-SMB2 §3.3.5.5.2; the original connection continues to use the
 	// session-level Signer via the dispatch fallback. All channels share

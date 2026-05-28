@@ -107,7 +107,7 @@ func TestLogIndex_PopulatedFromAppendWrite_Concurrent(t *testing.T) {
 }
 
 // TestLogIndex_OutOfOrderArrivals_RecoverableByLookup is the end-to-end
-// regression case. Several goroutines write to interleaved file offsets;
+// regression case. Several goroutines write to interleaved file offsets
 // after they drain, an EntriesForInterval query against a window that
 // includes the LATEST-arrived file offset (which lands in the middle of
 // the log, not at its head) must surface the matching record. This is

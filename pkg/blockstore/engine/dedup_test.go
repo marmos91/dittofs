@@ -1,29 +1,28 @@
-// Phase 13 BSCAS-05 short-circuit unit tests.
+// short-circuit unit tests.
 //
-// Plan 06 (TDD-RED): tests written against the contract.
-// Plan 07 (GREEN): implementation flips them to PASS.
+// (TDD-RED): tests written against the contract.
+// (GREEN): implementation flips them to PASS.
 //
-// See .planning/phases/13-merkle-root-file-level-dedup-a4/13-CONTEXT.md
-// D-08, D-09, D-10, D-11, D-14 for the exact semantics:
+// for the exact semantics
 //
-//   - D-08: speculative pre-upload short-circuit (chunk locally, look up
+// -: speculative pre-upload short-circuit (chunk locally, look up
 //     by Merkle-root ObjectID BEFORE any S3 PUT).
-//   - D-09: trigger condition — len(Blocks)>0 AND every BlockState==Pending
+// -: trigger condition — len(Blocks)>0 AND every BlockState==Pending
 //     AND file.ObjectID == zero.
-//   - D-10: on hit, RefCount++ on every distinct hash in target.Blocks,
+// -: on hit, RefCount++ on every distinct hash in target.Blocks
 //     persist FileAttr.Blocks = target.Blocks (deep copy), persist
-//     FileAttr.ObjectID = provisional, decrement speculative-only hashes,
+// FileAttr.ObjectID = provisional, decrement speculative-only hashes
 //     invalidate cache for orphaned speculative chunks, truncate local
 //     append-log immediately.
-//   - D-11: local append-log + chunker rollup files truncated immediately.
-//   - D-14: concurrent-quiesce race — first-committer wins via the partial
+// -: local append-log + chunker rollup files truncated immediately.
+// -: concurrent-quiesce race — first-committer wins via the partial
 //     UNIQUE index; loser detects the conflict, decrements its just-uploaded
-//     blocks, re-calls FindByObjectID, swaps to target's BlockRef list,
+// blocks, re-calls FindByObjectID, swaps to target's BlockRef list
 //     and re-commits.
 //
-// The Plan 06 stub `trySpeculativeFileLevelDedup` always returns
+// The stub `trySpeculativeFileLevelDedup` always returns
 // (false, nil); these tests therefore FAIL on the current codebase and
-// PASS unmodified after Plan 07 wires the implementation. That is the
+// PASS unmodified after wires the implementation. That is the
 // desired RED state — the assertions encode the contract.
 
 package engine
@@ -41,7 +40,7 @@ import (
 // Returns the syncer + coord so each scenario can seed objectIDHits and
 // invoke trySpeculativeFileLevelDedup directly.
 //
-// Plan 07 may rebind the entry point onto a different receiver; the
+// may rebind the entry point onto a different receiver; the
 // helper is intentionally minimal so it stays adaptable.
 func dedupTestSetup(t *testing.T) (*Syncer, *fakeCoordinator) {
 	t.Helper()
@@ -71,7 +70,7 @@ func makeSpeculativeBlocks(tags ...byte) []blockstore.BlockRef {
 }
 
 // pendingStates returns a parallel BlockState slice with every entry
-// set to Pending — the D-09 trigger requires "every block.State ==
+// set to Pending — the trigger requires "every block.State ==
 // Pending".
 func pendingStates(n int) []blockstore.BlockState {
 	out := make([]blockstore.BlockState, n)
@@ -81,8 +80,8 @@ func pendingStates(n int) []blockstore.BlockState {
 	return out
 }
 
-// TestDedup_TriggerCondition encodes D-09: short-circuit fires only
-// when ALL THREE of these hold:
+// TestDedup_TriggerCondition encodes: short-circuit fires only
+// when ALL THREE of these hold
 //
 //   - len(Blocks) > 0
 //   - every BlockState == Pending
@@ -92,8 +91,8 @@ func pendingStates(n int) []blockstore.BlockState {
 // FindByObjectID call. The positive (all three satisfied) sub-test
 // MUST trigger exactly one FindByObjectID call.
 //
-// On the Plan 06 stub, the negative sub-tests pass trivially (the stub
-// never calls FindByObjectID). The positive sub-test FAILS — Plan 07
+// On the stub, the negative sub-tests pass trivially (the stub
+// never calls FindByObjectID). The positive sub-test FAILS —
 // will flip it to PASS by issuing the lookup.
 func TestDedup_TriggerCondition(t *testing.T) {
 	ctx := context.Background()
@@ -171,7 +170,7 @@ func TestDedup_TriggerCondition(t *testing.T) {
 	})
 }
 
-// TestDedup_ShortCircuit_HitFlow encodes D-10: on a seeded objectIDHits
+// TestDedup_ShortCircuit_HitFlow encodes: on a seeded objectIDHits
 // match, the short-circuit
 //
 //   - calls IncrementRefCount once per distinct target hash
@@ -179,8 +178,8 @@ func TestDedup_TriggerCondition(t *testing.T) {
 //   - calls PersistFileBlocks with target's BlockRefs and the provisional
 //     ObjectID in a single metadata txn
 //
-// Plan 06 stub returns (false, nil) and performs no work — this test
-// fails on every assertion and Plan 07 flips it.
+// stub returns (false, nil) and performs no work — this test
+// fails on every assertion and flips it.
 func TestDedup_ShortCircuit_HitFlow(t *testing.T) {
 	ctx := context.Background()
 	m, fc := dedupTestSetup(t)
@@ -233,7 +232,7 @@ func TestDedup_ShortCircuit_HitFlow(t *testing.T) {
 	}
 }
 
-// TestDedup_ShortCircuit_MissFlow encodes the miss path of D-08: when
+// TestDedup_ShortCircuit_MissFlow encodes the miss path of: when
 // FindByObjectID returns no hit, trySpeculativeFileLevelDedup returns
 // (false, nil) — the caller proceeds with the existing per-block path.
 //
@@ -242,8 +241,8 @@ func TestDedup_ShortCircuit_HitFlow(t *testing.T) {
 //     (the per-block path's post-Flush hook persists later).
 //   - IncrementRefCount NOT called (no target to RefCount-bump).
 //
-// On the Plan 06 stub the short-circuit doesn't run at all, so the
-// FindByObjectID assertion fails. Plan 07 fires the lookup, gets a
+// On the stub the short-circuit doesn't run at all, so the
+// FindByObjectID assertion fails. fires the lookup, gets a
 // miss, and returns (false, nil) — every assertion holds.
 func TestDedup_ShortCircuit_MissFlow(t *testing.T) {
 	ctx := context.Background()
@@ -271,17 +270,18 @@ func TestDedup_ShortCircuit_MissFlow(t *testing.T) {
 	}
 }
 
-// TestDedup_RefCountMath encodes D-10 step 4 + INV-02:
+// TestDedup_RefCountMath encodes step 4 +
 //
 //   - speculative file has hashes {A, B, C, D}
-//   - target file has hashes     {A, C, E}
 //
-// After the short-circuit hit, observable RefCount calls MUST be:
+// - target file has hashes {A, C, E}
+//
+// After the short-circuit hit, observable RefCount calls MUST be
 //
 //   - IncrementRefCount on each distinct target hash: A, C, E (3 total).
 //   - DecrementRefCount on each speculative-only hash: B, D (2 total).
 //
-// The stub does nothing → 0/0; Plan 07 must produce 3/2.
+// The stub does nothing → 0/0; must produce 3/2.
 //
 // (The pre-claimed RefCount for speculative-only hashes B and D was
 // bumped by the per-block path BEFORE the short-circuit; the swap must
@@ -335,7 +335,7 @@ func TestDedup_RefCountMath(t *testing.T) {
 	}
 }
 
-// TestDedup_CacheInvalidation encodes D-10 step 5 + Phase 12 D-35: after
+// TestDedup_CacheInvalidation encodes step 5 +: after
 // the short-circuit hit, the engine's Cache MUST be invalidated for the
 // speculative chunks that did NOT make it into target's BlockRef list
 // (orphans — they got pre-claimed in fileBlockStore.Put before the
@@ -344,8 +344,8 @@ func TestDedup_RefCountMath(t *testing.T) {
 // Speculative {A, B, C}; target {A, C}. Expected InvalidateFile call
 // with removed = [B] (and ONLY B — A and C are still owned via target).
 //
-// On the Plan 06 stub: cache is never invalidated → invalidateCalls = 0
-// and assertion fails. Plan 07 wires the call.
+// On the stub: cache is never invalidated → invalidateCalls = 0
+// and assertion fails. wires the call.
 func TestDedup_CacheInvalidation(t *testing.T) {
 	ctx := context.Background()
 	_, fc := dedupTestSetup(t)
@@ -353,7 +353,7 @@ func TestDedup_CacheInvalidation(t *testing.T) {
 	rec := &recordingCache{}
 	// BlockStore.cache is package-private; the helper exposed it earlier
 	// (see TestClose_ClosesCache pattern in engine_test.go). The Syncer
-	// cannot invalidate without the BlockStore reference; Plan 07 will
+	// cannot invalidate without the BlockStore reference; will
 	// thread the call site appropriately. We attach the recorder via the
 	// *BlockStore that owns the syncer.
 	bs := newTestEngineWithCoordinator(t, fc)
@@ -394,39 +394,40 @@ func TestDedup_CacheInvalidation(t *testing.T) {
 
 // fakePgConflictError is a stand-in for the Postgres unique-violation
 // (23505) the loser detects on the partial UNIQUE index over
-// files.object_id (D-14). Plan 07 should treat this as the
-// concurrent-quiesce-race signal: decrement just-uploaded refcounts,
+// files.object_id. should treat this as the
+// concurrent-quiesce-race signal: decrement just-uploaded refcounts
 // re-look-up via FindByObjectID, swap to target's BlockRefs, retry
 // PersistFileBlocks.
 type fakePgConflictError struct{}
 
 func (e *fakePgConflictError) Error() string { return "fake Postgres unique violation (23505)" }
 
-// IsConflict satisfies a hypothetical interface Plan 07 may use to
-// detect the race-loser signal without coupling to pgx error codes in
-// the engine. If Plan 07 picks a different sentinel (errors.Is on a
+// IsConflict satisfies a hypothetical interface the engine may use to
+// detect the race-loser signal without coupling to pgx error codes.
+// If a future change picks a different sentinel (errors.Is on a
 // blockstore.ErrConflict), the test still compiles — it just relies on
 // the surrounding flow assertions, not on this sentinel directly.
 func (e *fakePgConflictError) IsConflict() bool { return true }
 
-// TestDedup_ConcurrentRace encodes D-14: two clones quiesce
+// TestDedup_ConcurrentRace encodes: two clones quiesce
 // simultaneously; first commits (no race), second detects the
 // unique-violation, decrements its just-uploaded blocks, swaps to the
 // (now-existing) target's BlockRefs, and re-commits.
 //
 // Setup: persistErr is set to a *fakePgConflictError on the FIRST
-// PersistFileBlocks call. The retry path MUST then:
+// PersistFileBlocks call. The retry path MUST then
 //
 //  1. (Optionally) re-call FindByObjectID — the target now exists.
 //  2. Decrement RefCount on the just-uploaded speculative-only blocks.
 //  3. Re-call PersistFileBlocks — this time persistErr is cleared and
 //     the call succeeds.
 //
-// Net observable: at least 2 PersistFileBlocks calls (the first errored,
-// the second succeeded); the file's final BlockRef list equals target.
+// Net observable: at least 2 PersistFileBlocks calls (the first
+// errored, the second succeeded); the file's final BlockRef list
+// equals target.
 //
-// On the Plan 06 stub: the function is a no-op → 0 PersistFileBlocks
-// calls → assertion fails. Plan 07 wires the retry loop.
+// On a no-op stub: 0 PersistFileBlocks calls → assertion fails. The
+// retry loop wires this path.
 func TestDedup_ConcurrentRace(t *testing.T) {
 	ctx := context.Background()
 	m, fc := dedupTestSetup(t)
@@ -434,7 +435,7 @@ func TestDedup_ConcurrentRace(t *testing.T) {
 	speculative := makeSpeculativeBlocks(0xA1, 0xA2, 0xA3)
 	target := makeSpeculativeBlocks(0xB1, 0xB2)
 	provisional := blockstore.ComputeObjectID(speculative)
-	// Pre-seed: when the loser RE-looks up after detecting the conflict,
+	// Pre-seed: when the loser RE-looks up after detecting the conflict
 	// the target is already there.
 	fc.objectIDHits[provisional] = target
 	// Inject conflict on the first PersistFileBlocks (single-shot).
@@ -473,6 +474,6 @@ func TestDedup_ConcurrentRace(t *testing.T) {
 	}
 }
 
-// Compile-time check: keep errors import live even if Plan 07 reshapes
+// Compile-time check: keep errors import live even if reshapes
 // the error-handling path. Tests that need errors.Is can adopt this.
 var _ = errors.Is

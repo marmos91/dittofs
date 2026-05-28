@@ -95,7 +95,7 @@ func (h *Handler) Dump(ctx *MountHandlerContext, req *DumpRequest) (*DumpRespons
 }
 
 // DecodeDumpRequest decodes a DUMP request.
-// Since DUMP takes no parameters, this function simply validates
+// Since DUMP takes no parameters, it validates
 // that the data is empty and returns an empty request struct.
 //
 // Parameters:

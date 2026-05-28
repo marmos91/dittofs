@@ -1,11 +1,8 @@
-// Phase 19 Plan 09 — Opt 3 correctness hard-gate (D-17).
-//
-// TestCache_PopulatedOnRollupComplete pins the end-to-end contract that
-// every chunk emitted by the local rollup pump lands in the engine
-// Cache via the OnChunkComplete callback wired in Plan 07. After Flush,
-// each post-rollup FileBlock hash must be reachable via bs.cache.Get
-// without consulting disk. This is the load-bearing correctness gate
-// for Opt 3 — if it fails, the mega-PR is blocked from merging.
+// TestCache_PopulatedOnRollupComplete pins the end-to-end contract
+// that every chunk emitted by the local rollup pump lands in the
+// engine Cache via the OnChunkComplete callback. After Flush, each
+// post-rollup FileBlock hash must be reachable via bs.cache.Get
+// without consulting disk.
 //
 // Mechanism: cache hits are observed via the recordingPutCache (from
 // eager_dedup_test.go) installed in place of the realCache. Every
@@ -37,7 +34,7 @@ import (
 //
 // The recordingPutCache replaces the realCache AFTER bs.Start so the
 // engine.New wiring (closure-captures-bs, reads-bs.cache-at-fire-time
-// per Plan 07's setter pattern) lands every Put on the recorder.
+// 07's setter pattern) lands every Put on the recorder.
 func newRollupCacheFixture(t *testing.T) (*BlockStore, *fs.FSStore, *recordingPutCache) {
 	t.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
@@ -71,7 +68,7 @@ func newRollupCacheFixture(t *testing.T) (*BlockStore, *fs.FSStore, *recordingPu
 
 	// Swap in the recording cache AFTER Start so the OnChunkComplete
 	// closure (which reads bs.cache at fire time) observes the recorder
-	// — Plan 07 D-10 wiring is the load-bearing seam being exercised.
+	// — wiring is the load-bearing seam being exercised.
 	rec := newRecordingPutCache()
 	bs.cache = rec
 
@@ -97,7 +94,7 @@ func waitForChunks(t *testing.T, bs *BlockStore, payloadID string, timeout time.
 }
 
 // TestCache_PopulatedOnRollupComplete — Opt 3 correctness hard-gate
-// (D-17). Write data spanning multiple chunks; drive engine.Flush;
+// . Write data spanning multiple chunks; drive engine.Flush
 // assert every post-rollup chunk hash is reachable in bs.cache.
 //
 // Payload sizing: pkg/blockstore/chunker emits a single chunk for data
@@ -150,7 +147,7 @@ func TestCache_PopulatedOnRollupComplete(t *testing.T) {
 
 	// For each post-rollup hash, the recorder must hold byte-identical
 	// data. Recording happens at chunkstore.StoreChunk firing site
-	// (Plan 07 producer side) and is RAM-only — a hit is structural
+	// (producer side) and is RAM-only — a hit is structural
 	// proof of cache-side warming at write time.
 	for i, fb := range blocks {
 		got, ok := rec.Get(fb.Hash)
@@ -194,8 +191,8 @@ func TestCache_PopulatedOnRollupComplete_EmptyRollup(t *testing.T) {
 // CacheCap, but driven through the rollup pump rather than direct
 // StoreChunk: a chunk larger than the Cache's maxBytes triggers
 // Cache.Put's > c.maxBytes silent-skip (cache.go:233). The rollup
-// pump still succeeds — Cache.Put's guard is a no-op on oversize,
-// matching the "bounded by Cache LRU" D-11 contract.
+// pump still succeeds — Cache.Put's guard is a no-op on oversize
+// matching the "bounded by Cache LRU" contract.
 //
 // The recordingPutCache has no size guard (it's a test cache) so
 // every chunk is recorded; this test instead asserts the structural
@@ -212,7 +209,7 @@ func TestCache_PopulatedOnRollupComplete_LargeChunkRespectsCacheCap(t *testing.T
 	// MinChunkSize-sized constant-byte payload → single chunk under
 	// FastCDC's final=true emit (constant data, no breakpoint hit).
 	// Tests pass at this size because the recorder has no cap; the
-	// realCache cap behavior is covered by Plan 07's test.
+	// realCache cap behavior is covered by 's test.
 	data := bytes.Repeat([]byte{0xC4}, 1024*1024)
 
 	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {

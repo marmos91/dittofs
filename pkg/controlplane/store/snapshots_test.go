@@ -94,7 +94,7 @@ func TestSnapshot_CreateMultiple_ReadyAllowed(t *testing.T) {
 	defer store.Close()
 	ctx := context.Background()
 
-	// D-08: multiple ready snapshots per share are explicitly allowed.
+	// Multiple ready snapshots per share are explicitly allowed.
 	for i := 0; i < 5; i++ {
 		snap := mkSnap("gamma", models.StateReady)
 		if _, err := store.CreateSnapshot(ctx, snap); err != nil {

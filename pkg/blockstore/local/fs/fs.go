@@ -73,10 +73,10 @@ type FSStore struct {
 	baseDir   string
 	maxDisk   int64
 	maxMemory int64
-	// Phase 12 (META-03 / D-09): the local store is one of the engine-
+	// the local store is one of the engine-
 	// internal callers that still uses the wider EngineFileBlockStore
 	// surface (GetFileBlock, ListFileBlocks) on top of the narrowed
-	// FileBlockStore. Phase 13/14 routes reads through FileAttr.Blocks
+	// FileBlockStore. routes reads through FileAttr.Blocks
 	// and lets us drop the wider interface entirely.
 	blockStore blockstore.EngineFileBlockStore
 
@@ -114,7 +114,7 @@ type FSStore struct {
 	// create, WriteFromRemote, Recover) and pruned on delete/evict. The
 	// write hot path and eviction consult diskIndex INSTEAD of the
 	// FileBlockStore, decoupling those paths from the underlying metadata
-	// backend (TD-02d / D-19).
+	// backend (d /).
 	//
 	// Entries survive pendingFBs drain so subsequent hot-path operations
 	// (e.g., a second pwrite into the same block after BadgerDB persistence)
@@ -156,9 +156,9 @@ type FSStore struct {
 	closeOnce sync.Once
 	wg        sync.WaitGroup
 
-	// --- Append-log path (Phase 10, LSL-01/03). ---
+	// --- Append-log path (/03). ---
 	//
-	// Append is mandatory on the local tier in Phase 17 — the flag-gated
+	// Append is mandatory on the local tier in — the flag-gated
 	// opt-out was deleted alongside the legacy path-keyed writer. All
 	// AppendWrite + rollup machinery runs unconditionally.
 	maxLogBytes     int64
@@ -167,9 +167,8 @@ type FSStore struct {
 
 	// logBytesTotal is the current total bytes of un-rolled-up log content
 	// across every payloadID in this FSStore. Incremented by AppendWrite
-	// (framed-record size) and decremented by the rollup (Phase 10-06).
+	// (framed-record size) and decremented by the rollup (06).
 	// AppendWrite blocks on pressureCh when logBytesTotal > maxLogBytes
-	// (D-14, D-15).
 	logBytesTotal atomic.Int64
 
 	// pressureCh is a buffered channel (size 1) that the rollup pulses after
@@ -181,9 +180,9 @@ type FSStore struct {
 	// tombstones. Double-checked locking idiom matches blocksMu /
 	// memBlocks in getOrCreateMemBlock.
 	logsMu         sync.RWMutex
-	logFDs         map[string]*logFile      // payloadID -> open log fd wrapper (D-34: one fd per file, bypasses fdPool)
-	logLocks       map[string]*sync.Mutex   // payloadID -> per-file append mutex (D-32)
-	dirtyIntervals map[string]*intervalTree // payloadID -> dirty-region tree (D-16)
+	logFDs         map[string]*logFile      // payloadID -> open log fd wrapper (one fd per file, bypasses fdPool)
+	logLocks       map[string]*sync.Mutex   // payloadID -> per-file append mutex
+	dirtyIntervals map[string]*intervalTree // payloadID -> dirty-region tree
 	// logIndices is the per-payload log-position oracle (Direction-1
 	// rollup redesign). One entry per appended record carries the
 	// frame's log byte offset, its file_offset, and its payload length.
@@ -192,7 +191,7 @@ type FSStore struct {
 	// a stable file-offset interval into the set of records to pread.
 	logIndices map[string]*logIndex
 	// tombstones marks payloadIDs whose append log has been (or is being)
-	// deleted by DeleteAppendLog (plan 09). rollupFile (plan 06) consults
+	// deleted by DeleteAppendLog. rollupFile consults
 	// this BEFORE and AFTER the per-file mutex hand-off to ensure no
 	// rollup_offset gets persisted for a dead payload. Initialized in New
 	// alongside the other logs-* maps. Cleared at the end of
@@ -203,7 +202,7 @@ type FSStore struct {
 	tombstones map[string]struct{}
 
 	// truncations records per-payload truncation boundaries set by
-	// TruncateAppendLog (D-29 / plan 09). rollupFile consults this after
+	// TruncateAppendLog. rollupFile consults this after
 	// reading the record batch and filters / clips records whose
 	// file_offset >= boundary so the emitted chunk stream never includes
 	// bytes past the truncation point. Entries are cleared when the
@@ -211,7 +210,7 @@ type FSStore struct {
 	// passes keep honoring the boundary.
 	truncations map[string]uint64
 
-	// --- Phase 10-06 rollup pool (D-13/D-33). ---
+	// --- -06 rollup pool. ---
 	//
 	// StartRollup launches bc.rollupWorkers goroutines that consume
 	// payloadIDs from bc.rollupCh (AppendWrite non-blocking send) and also
@@ -241,16 +240,16 @@ type FSStore struct {
 	persisterMu       sync.RWMutex
 	objectIDPersister ObjectIDPersister
 
-	// --- Phase 11 LSL-08: in-process LRU for CAS chunks. ---
+	// ---: in-process LRU for CAS chunks. ---
 	//
 	// Eviction is driven entirely from on-disk presence under
 	// blocks/{hh}/{hh}/{hex}, indexed by ContentHash in lruIndex/lruList.
 	// Eviction = unlink the file directly; no FileBlockStore lookup happens
-	// on the write hot path (D-27).
+	// on the write hot path.
 	//
-	// Population:
-	//   - StoreChunk(...)   -> lruTouch on rename success.
-	//   - ReadChunk(...)    -> lruTouch on read success (re-promote).
+	// Population
+	// - StoreChunk(...) -> lruTouch on rename success.
+	// - ReadChunk(...) -> lruTouch on read success (re-promote).
 	//   - seedLRUFromDisk() -> alphabetical scan at New() so warm-started
 	//                          stores have a deterministic LRU position.
 	//
@@ -261,16 +260,16 @@ type FSStore struct {
 	lruIndex map[blockstore.ContentHash]*list.Element // *lruEntry
 	lruList  *list.List                               // most-recent at front
 
-	// --- Phase 19 Plan 04: hash dedup LRU + chunk-complete hook. ---
+	// ---: hash dedup LRU + chunk-complete hook. ---
 	//
-	// dedupLRU is the per-FSStore hash dedup LRU (Phase 19 Opt 1).
-	// Consulted by rollup.go (Plan 05) between FastCDC.Next() and
+	// dedupLRU is the per-FSStore hash dedup LRU (Opt 1).
+	// Consulted by rollup.go between FastCDC.Next() and
 	// StoreChunk to skip a metadata round-trip on hot hashes. RAM-only
-	// (D-05); instantiated unconditionally in newFSStoreWithOptionsInternal.
+	// instantiated unconditionally in newFSStoreWithOptionsInternal.
 	dedupLRU *dedupLRU
 
 	// onChunkComplete fires after every successful chunkstore.lruTouch
-	// (Phase 19 Opt 3, D-10). Nil-safe: chunkstore.lruTouch (Plan 07)
+	// (Opt 3). Nil-safe: chunkstore.lruTouch
 	// checks for nil before invocation. Install via FSStoreOptions at
 	// construction or post-hoc via SetOnChunkComplete — the engine's
 	// Cache materializes in BlockStore.Start, AFTER cfg.Local is
@@ -283,7 +282,7 @@ type FSStore struct {
 	// records below idx.compactionFence). Default = maxLogBytes /
 	// defaultCompactionDivisor when FSStoreOptions.CompactionThresholdBytes
 	// is zero. Set to a negative value to disable compaction entirely
-	// (the log file then grows until DeleteAppendLog wipes the payload,
+	// (the log file then grows until DeleteAppendLog wipes the payload
 	// matching pre-#579 behavior).
 	//
 	// Trade-off: a smaller threshold caps disk growth tighter at the
@@ -292,7 +291,7 @@ type FSStore struct {
 	compactionThresholdBytes int64
 
 	// orphanLogMinAgeSeconds gates the append-log orphan sweep during
-	// recovery (D-28 / Warning 3). A log is considered orphan only when
+	// recovery. A log is considered orphan only when
 	// (a) its rollup_offset in metadata is 0, (b) no FileBlock exists for
 	// block-0 of the payloadID, AND (c) the log file's mtime is older
 	// than this threshold. The mtime gate guarantees freshly-created logs
@@ -300,13 +299,13 @@ type FSStore struct {
 	//
 	// Default 3600 (1h) is set by NewWithOptions when the option is left
 	// at zero. Configurable via
-	// `blockstore.local.fs.orphan_log_min_age_seconds` (plan 08 wiring).
+	// `blockstore.local.fs.orphan_log_min_age_seconds` (wiring).
 	orphanLogMinAgeSeconds int
 }
 
 // New creates a new FSStore.
 //
-// Parameters:
+// Parameters
 //   - baseDir: directory for .blk block files, created if absent.
 //   - maxDisk: maximum total size of on-disk .blk files in bytes. 0 = unlimited.
 //   - maxMemory: memory budget for dirty write buffers in bytes. 0 defaults to 256MB.
@@ -315,23 +314,23 @@ func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blocksto
 	return newFSStoreInternal(baseDir, maxDisk, maxMemory, fileBlockStore, false)
 }
 
-// newFSStoreInternal is the shared inner constructor. Phase 17 Plan 09
+// newFSStoreInternal is the shared inner constructor.
 // adds the legacy-layout sentinel-detection gate guarded on
 // skipSentinelCheck: when false, the constructor stats
 // `<baseDir>/.cas-migrated-v1` and, on absence, runs a depth-limited
 // `.blk` probe — returning blockstore.ErrLegacyLayoutDetected when
 // legacy data is present without a migration sentinel. The four-state
-// matrix is:
+// matrix is
 //
-//   - sentinel PRESENT, no .blk files     → success (post-migration steady state)
-//   - sentinel PRESENT, .blk files PRESENT → success (Phase 17 trusts the
+//   - sentinel PRESENT, no .blk files → success (post-migration steady state)
+//   - sentinel PRESENT, .blk files PRESENT → success (trusts the
 //     sentinel as ground truth; operator footgun per
-//     .planning/phases/17-unified-blockstore/17-CONTEXT.md D-10)
-//   - sentinel MISSING, no .blk files     → success (fresh install)
+//
+// - sentinel MISSING, no .blk files → success (fresh install)
 //   - sentinel MISSING, .blk files PRESENT → ErrLegacyLayoutDetected
 //
 // NewFSStoreForMigration passes true; New / NewWithOptions pass false.
-// See 17-CONTEXT.md D-10 (per-share sentinel) + D-11 (errors.Is contract).
+// See 17-CONTEXT.md (per-share sentinel) + (errors.Is contract).
 func newFSStoreInternal(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, skipSentinelCheck bool) (*FSStore, error) {
 	if !skipSentinelCheck {
 		if err := checkLegacyLayoutSentinel(baseDir); err != nil {
@@ -363,11 +362,11 @@ func newFSStoreInternal(baseDir string, maxDisk int64, maxMemory int64, fileBloc
 	}
 	bc.evictionEnabled.Store(true)
 
-	// Phase 11 LSL-08: in-process LRU for CAS chunks (see field comments).
+	// in-process LRU for CAS chunks (see field comments).
 	bc.lruIndex = make(map[blockstore.ContentHash]*list.Element)
 	bc.lruList = list.New()
 
-	// Phase 17: append-log plumbing — maps + pressure channel are
+	// append-log plumbing — maps + pressure channel are
 	// always initialized; the opt-out flag was deleted with the legacy
 	// path-keyed writer.
 	bc.pressureCh = make(chan struct{}, 1)
@@ -377,15 +376,15 @@ func newFSStoreInternal(baseDir string, maxDisk int64, maxMemory int64, fileBloc
 	bc.logIndices = make(map[string]*logIndex)
 	bc.tombstones = make(map[string]struct{})
 	bc.truncations = make(map[string]uint64)
-	bc.maxLogBytes = 1 << 30 // 1 GiB default (D-14)
-	bc.stabilizationMS = 250 // D-16 default
-	bc.rollupWorkers = 2     // D-13/D-33 default
-	// rollupCh buffered so AppendWrite's non-blocking send rarely drops;
+	bc.maxLogBytes = 1 << 30 // 1 GiB default
+	bc.stabilizationMS = 250 // default
+	bc.rollupWorkers = 2     // default
+	// rollupCh buffered so AppendWrite's non-blocking send rarely drops
 	// on drop, the ticker arm in chunkRollupWorker picks up the payload
 	// on the next scan.
 	bc.rollupCh = make(chan string, bc.rollupWorkers*4)
 
-	// Seed the in-process LRU (LSL-08) from any chunks already present on
+	// Seed the in-process LRU from any chunks already present on
 	// disk under blocks/{hh}/{hh}/{hex}. Cold-start order is alphabetical
 	// for determinism; subsequent reads/writes promote chunks to the front.
 	bc.seedLRUFromDisk()
@@ -393,7 +392,7 @@ func newFSStoreInternal(baseDir string, maxDisk int64, maxMemory int64, fileBloc
 	return bc, nil
 }
 
-// sentinelFileName is the per-share Plan 09 boot-guard marker written by
+// sentinelFileName is the per-share boot-guard marker written by
 // `dfs migrate-to-cas` at the successful completion of a share migration.
 // Kept in sync with pkg/blockstore/migrate.SentinelFileName.
 const sentinelFileName = ".cas-migrated-v1"
@@ -407,21 +406,21 @@ const sentinelFileName = ".cas-migrated-v1"
 // Any `.blk` past depth 4 is treated as non-legacy noise and skipped.
 const legacyLayoutWalkDepthCap = 4
 
-// checkLegacyLayoutSentinel implements Plan 09 D-10 / D-11. Returns
+// checkLegacyLayoutSentinel implements. Returns
 // blockstore.ErrLegacyLayoutDetected (wrapped with the share path) when
 // the `.cas-migrated-v1` sentinel is absent from baseDir AND at least
 // one `.blk` file is detected by a depth-capped WalkDir under baseDir.
 // Returns nil for the other three states (sentinel present, or sentinel
 // absent + no legacy data).
 //
-// Boot-path performance: post-migration the first stat short-circuits;
+// Boot-path performance: post-migration the first stat short-circuits
 // no walk. Pre-migration on legacy stores, the walk terminates at the
 // first `.blk` via fs.SkipAll. Fresh installs with no baseDir yet hit
 // the iofs.ErrNotExist branch and fall through to construction.
 func checkLegacyLayoutSentinel(baseDir string) error {
 	sentinelPath := filepath.Join(baseDir, sentinelFileName)
 	if _, err := os.Stat(sentinelPath); err == nil {
-		// Sentinel present — Phase 17 trusts it as ground truth.
+		// Sentinel present — trusts it as ground truth.
 		return nil
 	} else if !errors.Is(err, iofs.ErrNotExist) {
 		return fmt.Errorf("local store: stat sentinel %q: %w", sentinelPath, err)
@@ -571,14 +570,14 @@ func (bc *FSStore) seedLRUFromDisk() {
 }
 
 // FSStoreOptions configures the append-log path. Append is mandatory in
-// Phase 17 — the UseAppendLog opt-out flag was deleted with the legacy
+// — the UseAppendLog opt-out flag was deleted with the legacy
 // path-keyed writer. MaxLogBytes, RollupWorkers, and StabilizationMS
 // default via New() when left zero here.
 type FSStoreOptions struct {
 	MaxLogBytes     int64
 	RollupWorkers   int
 	StabilizationMS int
-	// RollupStore persists per-file rollup_offset (LSL-05). Required
+	// RollupStore persists per-file rollup_offset. Required
 	// when StartRollup will be called. Nil is accepted when the caller
 	// will not start the rollup pool.
 	RollupStore metadata.RollupStore
@@ -598,25 +597,24 @@ type FSStoreOptions struct {
 	// OrphanLogMinAgeSeconds is the minimum age (seconds) a log file must
 	// have before recovery will classify it as orphan and sweep it.
 	// Defaults to 3600 (1h) when zero. See FSStore.orphanLogMinAgeSeconds
-	// and D-28 / Warning 3 in 10-CONTEXT.md for the rationale.
+	// for the rationale.
 	OrphanLogMinAgeSeconds int
 
 	// OnChunkComplete is invoked once per successful chunkstore.lruTouch
 	// (post-disk-store), with the chunk's content hash, bytes, and on-disk
 	// path. Wire to engine.Cache.Put to populate the read cache at write
-	// time (Phase 19 Opt 3, D-10). Nil is accepted: chunkstore behaves
-	// identically to pre-Phase-19 if the callback is absent (D-12
-	// nil-safety contract). Callback MUST be non-blocking on hot paths.
+	// time. Nil is accepted: chunkstore behaves identically to the
+	// pre-callback path if absent. Callback MUST be non-blocking on
+	// hot paths.
 	OnChunkComplete func(hash blockstore.ContentHash, data []byte, path string)
 
-	// DedupLRUSize is the slot count for the in-memory hash dedup LRU
-	// (Phase 19 Opt 1). Default 4096 when zero. Per-FSStore scope (D-02);
-	// RAM-only (D-05). Surfaced via pkg/config as
-	// blockstore.local.dedup_lru_size.
+	// DedupLRUSize is the slot count for the in-memory hash dedup LRU.
+	// Default 4096 when zero. Per-FSStore scope, RAM-only. Surfaced
+	// via pkg/config as blockstore.local.dedup_lru_size.
 	DedupLRUSize int
 
 	// CompactionThresholdBytes controls when physical log compaction
-	// runs (#579). After a rollup pass advances idx.compactionFence,
+	// runs (#579). After a rollup pass advances idx.compactionFence
 	// the rewrite is invoked if the fence sits more than this many
 	// bytes above logHeaderSize. Zero defers to the default
 	// (maxLogBytes / defaultCompactionDivisor). A negative value
@@ -633,7 +631,7 @@ func NewWithOptions(baseDir string, maxDisk, maxMemory int64, fileBlockStore blo
 }
 
 // NewFSStoreForMigration constructs an FSStore that skips the legacy-
-// layout sentinel check (Phase 17 Plan 09 D-10/D-11).
+// layout sentinel check.
 //
 // MIGRATION TOOL USE ONLY — production code paths must call New /
 // NewWithOptions, which always run the sentinel gate. The `dfs
@@ -650,7 +648,7 @@ func NewFSStoreForMigration(baseDir string, maxDisk, maxMemory int64, fileBlockS
 
 // newFSStoreWithOptionsInternal is the shared body for NewWithOptions
 // and NewFSStoreForMigration. The skipSentinelCheck argument is threaded
-// through to newFSStoreInternal where Plan 09's legacy-layout gate will
+// through to newFSStoreInternal where 's legacy-layout gate will
 // consult it.
 func newFSStoreWithOptionsInternal(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, opts FSStoreOptions, skipSentinelCheck bool) (*FSStore, error) {
 	bc, err := newFSStoreInternal(baseDir, maxDisk, maxMemory, fileBlockStore, skipSentinelCheck)
@@ -680,7 +678,7 @@ func newFSStoreWithOptionsInternal(baseDir string, maxDisk, maxMemory int64, fil
 
 	// Compaction threshold (#579). Zero → derive from maxLogBytes so a
 	// smaller log budget compacts proportionally more aggressively; a
-	// negative value disables compaction entirely (pre-#579 behavior,
+	// negative value disables compaction entirely (pre-#579 behavior
 	// useful for tests pinned to the legacy growth pattern).
 	switch {
 	case opts.CompactionThresholdBytes > 0:
@@ -696,10 +694,10 @@ func newFSStoreWithOptionsInternal(baseDir string, maxDisk, maxMemory int64, fil
 		}
 	}
 
-	// Phase 19 Plan 04: per-FSStore hash dedup LRU + chunk-complete
+	// per-FSStore hash dedup LRU + chunk-complete
 	// hook. Default-on-zero idiom matches existing FSStoreOptions
-	// tunables. Wave-1 additive — Plan 05 consumes the LRU from
-	// rollup.go; Plan 07 fires onChunkComplete from chunkstore.lruTouch.
+	// tunables. Wave-1 additive — consumes the LRU from
+	// rollup.go; fires onChunkComplete from chunkstore.lruTouch.
 	size := opts.DedupLRUSize
 	if size <= 0 {
 		size = 4096
@@ -739,9 +737,9 @@ func (bc *FSStore) SetObjectIDPersister(p func(ctx context.Context, payloadID st
 // (typically engine.NewBlockStore / BlockStore.Start, where the read
 // Cache materializes AFTER cfg.Local was already constructed) install
 // once before serving traffic. Concurrent installs are not supported —
-// the field is read by chunkstore.lruTouch (Plan 07) on the hot path
-// without locking. Nil is accepted: chunkstore.lruTouch reverts to the
-// pre-Phase-19 codepath (D-12).
+// the field is read by chunkstore.lruTouch on the hot path
+// without locking. Nil is accepted: chunkstore.lruTouch reverts to
+// the no-callback codepath.
 //
 // The parameter type is spelled out as a raw func value (rather than
 // referring to FSStoreOptions.OnChunkComplete) so engine.go can call
@@ -773,7 +771,7 @@ func (bc *FSStore) getRetention() retentionConfig {
 // Close is idempotent: multiple calls signal the background goroutine launched
 // by Start() exactly once (via closeOnce), then deterministically join the
 // goroutine via wg.Wait() before returning. This prevents the goroutine leak
-// previously possible when Start's ctx outlived Close (TD-02a).
+// previously possible when Start's ctx outlived Close (a).
 func (bc *FSStore) Close() error {
 	bc.closedFlag.Store(true)
 	bc.closeOnce.Do(func() {
@@ -791,9 +789,9 @@ func (bc *FSStore) Close() error {
 	bc.fdPool.CloseAll()
 	bc.readFDPool.CloseAll()
 
-	// Close append-log fds (Phase 10). Safe after closedFlag.Store(true) +
-	// wg.Wait above: no new AppendWrite can acquire an fd (isClosed guard),
-	// and any rollup worker (Phase 10-06) has already joined via wg.
+	// Close append-log fds. Safe after closedFlag.Store(true) +
+	// wg.Wait above: no new AppendWrite can acquire an fd (isClosed guard)
+	// and any rollup worker (06) has already joined via wg.
 	bc.logsMu.Lock()
 	for pid, lf := range bc.logFDs {
 		if lf != nil && lf.f != nil {
@@ -816,7 +814,7 @@ func (bc *FSStore) isClosed() bool {
 // Must be called after New and before any writes.
 // The goroutine stops on either ctx cancellation or Close() (whichever fires
 // first), with a final drain on exit. Close() waits for the goroutine to
-// terminate so teardown is deterministic — see TD-02a.
+// terminate so teardown is deterministic — see a.
 func (bc *FSStore) Start(ctx context.Context) {
 	bc.wg.Add(1)
 	go func() {

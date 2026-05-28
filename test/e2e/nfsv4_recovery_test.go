@@ -168,7 +168,7 @@ func TestServerRestartRecovery(t *testing.T) {
 //
 // NOTE: The behavior is ENOENT (not ESTALE) because we unmount and re-mount,
 // so the client does a fresh LOOKUP which returns ENOENT since the file
-// simply does not exist in the new empty filesystem.
+// does not exist in the new empty filesystem.
 func TestStaleNFSHandle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping stale NFS handle test in short mode")

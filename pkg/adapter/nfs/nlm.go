@@ -305,7 +305,7 @@ func (s *routingNLMService) serviceForHandle(handle []byte) (*nlmService, error)
 
 // processNLMWaiters processes pending NLM lock requests after a lock is released.
 //
-// This method is called asynchronously (in a goroutine) when an NLM unlock occurs.
+// Called asynchronously (in a goroutine) when an NLM unlock occurs.
 // It iterates through queued waiters in FIFO order and attempts to grant their locks.
 // For each successful grant, it sends an NLM_GRANTED callback to the client.
 //
@@ -401,7 +401,7 @@ func (s *NFSAdapter) getLockManagerForHandle(handle metadata.FileHandle) *lock.M
 // NSM (Network Status Monitor) enables clients to register for crash
 // notifications and recover locks after server restarts.
 //
-// This method creates:
+// Creates:
 //   - ConnectionTracker for tracking registered clients
 //   - NSM handler for processing SM_MON, SM_UNMON, etc.
 //   - NSM notifier for sending SM_NOTIFY on server restart
@@ -502,7 +502,7 @@ func (s *NFSAdapter) handleClientCrash(ctx context.Context, clientID string, met
 		// The actual lock cleanup happens when:
 		// 1. NSM notifier detects crash and calls this callback
 		// 2. This callback logs the event for audit
-		// 3. The grace period mechanism from Phase 1 handles reclaims
+		// 3. The grace period mechanism from handles reclaims
 		//
 		// A production enhancement would be to iterate the LockStore
 		// and explicitly release all locks matching the prefix.
@@ -521,7 +521,7 @@ func (s *NFSAdapter) handleClientCrash(ctx context.Context, clientID string, met
 
 // performNSMStartup handles NSM-related startup tasks.
 //
-// This method is called during server startup and:
+// Called during server startup, and:
 //  1. Loads persisted client registrations from the store
 //  2. Increments the server state counter (marks restart)
 //  3. Sends SM_NOTIFY to all registered clients in parallel

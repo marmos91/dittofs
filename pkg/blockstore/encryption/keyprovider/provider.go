@@ -36,7 +36,7 @@ type KeyProvider interface {
 	// CurrentMasterKeyID returns the identifier that Wrap will record.
 	CurrentMasterKeyID() string
 
-	// Close releases any resources held by the provider (file handles,
+	// Close releases any resources held by the provider (file handles
 	// network connections, in-memory key material).
 	Close() error
 }

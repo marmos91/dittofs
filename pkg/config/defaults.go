@@ -10,7 +10,7 @@ import (
 
 // ApplyDefaults sets default values for any unspecified configuration fields.
 //
-// This function is called after loading configuration from file and environment
+// Called after loading configuration from file and environment
 // variables to fill in any missing values with sensible defaults.
 //
 // Default Strategy:

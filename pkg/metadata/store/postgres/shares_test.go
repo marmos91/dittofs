@@ -13,10 +13,10 @@ import (
 )
 
 // TestBlockLayoutConformance runs the per-share BlockLayout conformance
-// scenarios against the Postgres metadata store (Phase 14 Plan 01,
-// MIG-03 / D-A6). Gated by DITTOFS_TEST_POSTGRES_DSN matching the
-// existing convention (postgres_conformance_test.go) — skip cleanly
-// outside the dedicated CI lane.
+// scenarios against the Postgres metadata store. Gated by
+// DITTOFS_TEST_POSTGRES_DSN matching the existing convention
+// (postgres_conformance_test.go) — skip cleanly outside the dedicated
+// CI lane.
 func TestBlockLayoutConformance(t *testing.T) {
 	connStr := os.Getenv("DITTOFS_TEST_POSTGRES_DSN")
 	if connStr == "" {

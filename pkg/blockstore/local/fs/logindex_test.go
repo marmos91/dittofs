@@ -274,7 +274,7 @@ func TestLogIndex_AdvanceFence_CursorSkipsConsumed(t *testing.T) {
 }
 
 // TestLogIndex_AdvanceFence_TrimsConsumedPrefix verifies the R-2 (#581)
-// invariant: after AdvanceFence walks past a prefix of consumed entries,
+// invariant: after AdvanceFence walks past a prefix of consumed entries
 // those entries are dropped from idx.entries and their logPos keys are
 // removed from idx.consumed. The fence value itself is preserved.
 func TestLogIndex_AdvanceFence_TrimsConsumedPrefix(t *testing.T) {

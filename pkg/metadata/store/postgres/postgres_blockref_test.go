@@ -77,7 +77,7 @@ func createShareAndFile(t *testing.T, store metadata.MetadataStore, shareName, f
 	// (via ON CONFLICT in transaction.go's CreateRootDirectory). We skip
 	// the standalone CreateShare call because the postgres backend's
 	// CreateShare INSERT does not include root_file_id (pre-existing
-	// scope-boundary issue, not introduced by Phase 12).
+	// scope-boundary issue, not introduced by).
 	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o755,
@@ -222,7 +222,7 @@ func TestPostgres_FileBlockRefs_ReplaceFully(t *testing.T) {
 }
 
 // TestPostgres_FileBlockRefs_CascadeDelete asserts that deleting a file row
-// cascades to file_block_refs (D-03 FK ON DELETE CASCADE).
+// cascades to file_block_refs (FK ON DELETE CASCADE).
 func TestPostgres_FileBlockRefs_CascadeDelete(t *testing.T) {
 	store := newTestStore(t)
 	ctx := t.Context()

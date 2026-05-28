@@ -8,12 +8,12 @@ import (
 )
 
 // MetadataCoordinator abstracts the metadata-store operations the engine
-// needs without importing pkg/metadata on hot paths (Phase 12 API-02).
+// needs without importing pkg/metadata on hot paths.
 // Implementations live in the per-share runtime service
 // (pkg/controlplane/runtime/shares/) and bind to the concrete
 // metadata-store backend at construction time.
 //
-// Transaction ownership rule (BLOCKER-1/2/3 resolution, 2026-04-26):
+// Transaction ownership rule (BLOCKER-1/2/3 resolution, 2026-04-26)
 // the engine NEVER opens a metadata txn. The CALLER (per-share runtime
 // wrapper for CopyPayload/WriteAt; common.WriteToBlockStore for the
 // adapter path; syncer post-Flush wrapper for PersistFileBlocks) opens
@@ -22,12 +22,12 @@ import (
 // caller-owned txn.
 //
 // PayloadID is passed as a `string` rather than a strongly-typed
-// blockstore.PayloadID because Phase 12 plan 07 deferred introducing a
-// new typed alias to avoid type-system churn across every adapter caller
-// (which all use metadata.PayloadID and cast to string at the engine
-// boundary). The MetadataCoordinator interface keeps the engine seam
-// clean; a future plan can promote the parameter to a typed alias when
-// the adapter call sites are converged on a single PayloadID type.
+// blockstore.PayloadID to avoid type-system churn across every
+// adapter caller (which all use metadata.PayloadID and cast to string
+// at the engine boundary). The MetadataCoordinator interface keeps
+// the engine seam clean; a future plan can promote the parameter to
+// a typed alias when the adapter call sites converge on a single
+// PayloadID type.
 type MetadataCoordinator interface {
 	// IncrementRefCount atomically bumps the FileBlock RefCount for a
 	// hash. Engine invokes this once per unique hash inside CopyPayload
@@ -47,15 +47,15 @@ type MetadataCoordinator interface {
 	//
 	// ObjectID is the BLAKE3 Merkle root over blocks (computed by
 	// blockstore.ComputeObjectID at rollup commit time). Pass an
-	// all-zero ObjectID to mean "do not update ObjectID" (e.g.,
+	// all-zero ObjectID to mean "do not update ObjectID" (e.g.
 	// partial flushes — but those currently never reach this hook per
 	// Flush semantics).
 	PersistFileBlocks(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error
 
 	// FindByObjectID looks up a previously-quiesced file in the
 	// metadata store by Merkle-root ObjectID. Returns (nil, nil) on
-	// miss. Used by the BSCAS-05 file-level dedup short-circuit
-	// (Plan 07). Per-metadata-store scope, not per-share (D-13).
+	// miss. Used by the file-level dedup short-circuit
+	// . Per-metadata-store scope, not per-share.
 	//
 	// Implementations short-circuit on zero-valued ObjectID and return
 	// (nil, nil) without touching the metadata store.
@@ -63,10 +63,9 @@ type MetadataCoordinator interface {
 
 	// GetFileObjectID returns the current FileAttr.ObjectID for
 	// payloadID, or the all-zero sentinel when the file has never
-	// quiesced (or does not exist). Used by Syncer.Flush (Phase 13
-	// Plan 13) to evaluate the D-09 trigger condition for the
-	// file-level dedup short-circuit BEFORE running the per-block
-	// upload pump.
+	// quiesced (or does not exist). Used by Syncer.Flush to evaluate the
+	// trigger condition for the file-level dedup short-circuit BEFORE
+	// running the per-block upload pump.
 	//
 	// Implementations MUST NOT open a metadata transaction — this is a
 	// single-row read on the public metadata-store surface. The
@@ -92,30 +91,33 @@ var ErrMetadataCoordinatorNotWired = errors.New("engine: metadata coordinator no
 
 // ErrPersistFileBlocksNotWired signals that PersistFileBlocks was invoked
 // against a coordinator whose payloadID → fileHandle resolution chain has
-// not yet been wired (Phase 12 plan 07 / WR-02). The Syncer's post-Flush
+// not yet been wired. The Syncer's post-Flush
 // hook recognises this sentinel and tolerates it (the dual-read shim keeps
 // reads correct), but logs a warning so the silent-drop window is
 // observable. Other callers should treat it as a hard error so a future
 // plan flipping WriteAt to return real BlockRefs is forced to implement
 // the method rather than silently succeed.
-var ErrPersistFileBlocksNotWired = errors.New("engine: PersistFileBlocks not wired (Phase 12 deferred — dual-read shim covers reads)")
+var ErrPersistFileBlocksNotWired = errors.New("engine: PersistFileBlocks not wired (dual-read shim covers reads)")
 
 // ErrObjectIDConflict signals that PersistFileBlocks rejected a write
 // because another file already holds the same FileAttr.ObjectID
-// (Phase 13 D-14 first-committer-wins). The BSCAS-05 short-circuit
+// (first-committer-wins). The short-circuit
 // caller (applyFileLevelDedupHit) catches this, rolls back the
 // just-incremented refcounts on the original target, re-fetches the
 // now-canonical target via FindByObjectID, and retries once.
 //
 // Wrapping: the runtime coordinator wraps three sources into this
-// sentinel via errors.Join:
+// sentinel via errors.Join
 //  1. Postgres pgconn.PgError with Code "23505" AND ConstraintName
 //     "files_object_id_idx".
 //  2. Postgres pgconn.PgError with Code "23505" AND empty
 //     ConstraintName whose Message text mentions "object_id"
 //     (defensive fallback — some pg drivers strip ConstraintName under
-//     certain configurations; D-14 detection MUST NOT rely solely on
-//     the constraint label).
-//  3. metadata.errors.StoreError with Code == errors.ErrConflict
-//     (Memory and Badger surface this from Plan 03 maintenance).
-var ErrObjectIDConflict = errors.New("engine: object_id already mapped to another file (Phase 13 D-14)")
+//
+// certain configurations; detection MUST NOT rely solely on
+//
+//	   the constraint label).
+//	3. metadata.errors.StoreError with Code == errors.ErrConflict
+//
+// (Memory and Badger surface this from maintenance).
+var ErrObjectIDConflict = errors.New("engine: object_id already mapped to another file")

@@ -96,7 +96,7 @@ func TestChunker_BoundaryStability_70pct(t *testing.T) {
 		_, _ = rng.Read(prefix)
 		shifted := append(prefix, base...)
 		shiftedBoundaries := chunkAll(t, shifted)
-		// Translate shifted boundaries into "base frame" by subtracting k,
+		// Translate shifted boundaries into "base frame" by subtracting k
 		// then keep only those that landed beyond the prefix.
 		preserved := 0
 		for _, sb := range shiftedBoundaries {

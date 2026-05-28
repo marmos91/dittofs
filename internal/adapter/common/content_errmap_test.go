@@ -10,8 +10,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// TestContentErrMap_CASMismatch (Phase 11 BSCAS-06 / INV-06) verifies
-// that a wrapped blockstore.ErrCASContentMismatch maps to I/O-class
+// TestContentErrMap_CASMismatch verifies that a wrapped
+// blockstore.ErrCASContentMismatch maps to I/O-class
 // codes in every protocol arm. The streaming verifier rejected bytes
 // before they reached the client; the protocol surfaces this as EIO
 // (NFS) / unexpected I/O (SMB).
@@ -49,8 +49,8 @@ func TestContentErrMap_CASMismatch_Direct(t *testing.T) {
 	}
 }
 
-// TestContentErrMap_CASKeyMalformed (Phase 11 BSCAS-01) verifies that
-// a wrapped blockstore.ErrCASKeyMalformed maps to invalid-argument
+// TestContentErrMap_CASKeyMalformed verifies that a wrapped
+// blockstore.ErrCASKeyMalformed maps to invalid-argument
 // codes — the metadata describing the CAS object is corrupt.
 func TestContentErrMap_CASKeyMalformed(t *testing.T) {
 	wrapped := fmt.Errorf("parse cas key %q: %w",
@@ -86,8 +86,8 @@ func TestContentErrMap_CASKeyMalformed_Direct(t *testing.T) {
 	}
 }
 
-// TestContentErrMap_BlockRefMissing (Phase 12 D-23) verifies that a
-// wrapped blockstore.ErrBlockRefMissing maps to I/O-class codes in
+// TestContentErrMap_BlockRefMissing verifies that a wrapped
+// blockstore.ErrBlockRefMissing maps to I/O-class codes in
 // every protocol arm. A BlockRef.Hash referring to a FileBlock that
 // has been GC'd or never existed is a data-integrity failure surfaced
 // to the client identically to ErrCASContentMismatch.

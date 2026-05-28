@@ -516,7 +516,7 @@ func TestComputeInheritedACL_CreatorGroupSubstitution_SID(t *testing.T) {
 
 	ace := result.ACEs[0]
 	// Group substitution uses creator.SID for Windows form when available.
-	// Per plan: "SpecialCreatorGroup → creator.GID/SID" — the SID branch
+	// "SpecialCreatorGroup → creator.GID/SID" — the SID branch
 	// embeds the creator's SID. The same SID is used because the SD only
 	// carries one identifier per creator (no separate group SID is plumbed).
 	if ace.Who != "sid:S-1-5-21-1-2-3-2001" {

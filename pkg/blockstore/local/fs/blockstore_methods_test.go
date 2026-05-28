@@ -78,7 +78,7 @@ func hashSetEqual(a, b []blockstore.ContentHash) bool {
 }
 
 // TestFSStore_ListUnsynced exercises the contract on every behavioral
-// edge: empty store, nil-syncedStore, all-synced, all-unsynced,
+// edge: empty store, nil-syncedStore, all-synced, all-unsynced
 // partial, and mid-iter ctx cancellation.
 func TestFSStore_ListUnsynced(t *testing.T) {
 	t.Run("EmptyStore", func(t *testing.T) {

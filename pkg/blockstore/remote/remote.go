@@ -5,10 +5,10 @@
 // object key shape (cas/{hh}/{hh}/{hex}) is derived from the hash via
 // blockstore.FormatCASKey and is an implementation detail backends may
 // not expose. The interface is structurally compatible with
-// blockstore.BlockStore (Phase 17 Plan 01) — Plan 05 retargets engine
-// consumers onto that unified type and this package becomes the s3 /
-// memory backend home; the methods on this interface match the unified
-// BlockStore method set verbatim, with two backend-specific additions
+// blockstore.BlockStore — future work retargets engine consumers onto
+// that unified type and this package becomes the s3 / memory backend
+// home. The methods on this interface match the unified BlockStore
+// method set verbatim, with two backend-specific additions
 // (ReadBlockVerified for production CAS reads, Close + HealthCheck +
 // Healthcheck for backend lifecycle / health).
 package remote
@@ -21,7 +21,7 @@ import (
 )
 
 // RemoteStore is the unified content-addressed remote block storage
-// interface. Implemented by:
+// interface. Implemented by
 //
 //   - pkg/blockstore/remote/s3.Store
 //   - pkg/blockstore/remote/memory.Store
@@ -30,16 +30,17 @@ import (
 // strings appear on this surface. Backends derive their on-disk / on-wire
 // key shape via blockstore.FormatCASKey internally.
 //
-// The Put/Get/GetRange/Delete/Head/Walk method set matches the unified
-// blockstore.BlockStore contract from Plan 01 byte-for-byte; ReadBlockVerified
-// is a backend-specific extension (NOT part of BlockStore) used by the
-// engine's verified-read path (BSCAS-06). Plan 05 type-asserts to access
-// it on the s3 backend; the memory backend implements it as the trivial
-// body-recompute case so test fixtures can exercise the same code path.
+// The Put/Get/GetRange/Delete/Head/Walk method set matches the
+// unified blockstore.BlockStore contract byte-for-byte;
+// ReadBlockVerified is a backend-specific extension (NOT part of
+// BlockStore) used by the engine's verified-read path. Callers
+// type-assert to access it on the s3 backend; the memory backend
+// implements it as the trivial body-recompute case so test fixtures
+// can exercise the same code path.
 type RemoteStore interface {
 	// Put writes data under the CAS-shaped key derived from hash. Backends
-	// MUST stamp the content hash atomically with the PUT (S3:
-	// x-amz-meta-content-hash header) — BSCAS-06 defense-in-depth.
+	// MUST stamp the content hash atomically with the PUT (S3
+	// x-amz-meta-content-hash header) — defense-in-depth.
 	// Idempotent on the same (hash, data) pair; a Put with the same hash
 	// but different bytes is undefined behavior — callers MUST NOT rely
 	// on either outcome.
@@ -75,13 +76,13 @@ type RemoteStore interface {
 	// without transferring the body. Returns blockstore.ErrBlockNotFound
 	// when the object is absent.
 	//
-	// The backend's defense-in-depth content-hash header (S3:
+	// The backend's defense-in-depth content-hash header (S3
 	// x-amz-meta-content-hash) is verified internally during
-	// ReadBlockVerified but is NOT echoed via Meta — per Phase 17 D-08,
+	// ReadBlockVerified but is NOT echoed via Meta —
 	// the lookup key (ContentHash) is the input, not output, and Meta
 	// stays minimal {Size, LastModified}.
 	//
-	// Meta.LastModified MUST be non-zero (Phase 11 WR-4-02 / INV-04: GC
+	// Meta.LastModified MUST be non-zero (GC
 	// sweep fails closed otherwise). Backends that cannot natively report
 	// a timestamp MUST stamp time.Now() at Put time and surface that
 	// value here.
@@ -112,20 +113,20 @@ type RemoteStore interface {
 	// content-hash metadata (S3: x-amz-meta-content-hash) and fail fast
 	// on header mismatch. Returns blockstore.ErrCASContentMismatch
 	// wrapped with diagnostic context on any verification failure. Per
-	// INV-06, the buffer is discarded on mismatch — bad bytes never
+	// the buffer is discarded on mismatch — bad bytes never
 	// reach the caller.
 	//
 	// Both hash arguments are intentional: hash derives the canonical
 	// CAS key, while expected is the body BLAKE3 the caller is
 	// asserting. Verification proves byte-on-disk == hash-in-key ==
-	// expected; the redundancy is BSCAS-06 defense-in-depth and guards
+	// expected; the redundancy is defense-in-depth and guards
 	// against key-vs-content mismatch on backends where the two might
 	// drift (e.g., during external mutation).
 	//
 	// ReadBlockVerified is NOT part of the unified blockstore.BlockStore
 	// contract — it is a backend-specific extension on RemoteStore. The
 	// engine accesses it via type-assertion on the unified BlockStore in
-	// Plan 05; backends that do not need verification (in-memory test
+	// backends that do not need verification (in-memory test
 	// fixtures) implement it as a trivial body-recompute wrapper.
 	ReadBlockVerified(ctx context.Context, hash blockstore.ContentHash, expected blockstore.ContentHash) ([]byte, error)
 

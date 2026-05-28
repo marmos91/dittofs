@@ -17,7 +17,7 @@ import (
 //
 // Phase U-C does not introduce new error instrumentation, so a running
 // SMB adapter currently always reports healthy. A future phase can
-// upgrade this method to return [health.StatusDegraded] when recent
+// upgrade Healthcheck to return [health.StatusDegraded] when recent
 // decrypt failures, signing verification failures, or session-setup
 // rejections cross a per-window threshold — the building blocks
 // (e.g. the per-connection DecryptFailures atomic counter) are already

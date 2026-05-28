@@ -35,7 +35,7 @@ type BlockState = blockstore.BlockState
 
 // BlockState constants re-exported from blockstore.
 //
-// Phase 11 (STATE-01) collapsed the previous 4-state machine
+// collapsed the previous 4-state machine
 // (Dirty/Local/Syncing/Remote) to 3 states (Pending/Syncing/Remote);
 // Pending(0) replaces both Dirty(0) and Local(1).
 const (
@@ -68,5 +68,5 @@ var ErrFileBlockNotFound = blockstore.ErrFileBlockNotFound
 // ErrUnknownHash is returned by FileBlockStore.AddRef when the hash is
 // not yet present in the metadata store. Re-exported from blockstore
 // for backward compatibility — see blockstore.ErrUnknownHash for the
-// canonical declaration and full contract. Phase 19 (D-04 / D-22b).
+// canonical declaration and full contract..
 var ErrUnknownHash = blockstore.ErrUnknownHash

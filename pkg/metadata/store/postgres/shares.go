@@ -48,8 +48,8 @@ func (s *PostgresMetadataStore) GetRootHandle(ctx context.Context, shareName str
 //
 // The block_layout column is read alongside the legacy options JSON
 // blob and overrides whatever the JSON happens to contain — the
-// dedicated column is the authoritative source per Phase 14 Plan 01
-// (MIG-03 / D-A6). Empty / NULL values coerce to legacy via
+// dedicated column is the authoritative source per
+// (D-A6). Empty / NULL values coerce to legacy via
 // ParseBlockLayout for forward-compat with pre-migration rows.
 func (s *PostgresMetadataStore) GetShareOptions(ctx context.Context, shareName string) (*metadata.ShareOptions, error) {
 	if err := ctx.Err(); err != nil {
@@ -79,7 +79,7 @@ func (s *PostgresMetadataStore) GetShareOptions(ctx context.Context, shareName s
 	// the empty-string default (DEFAULT 'legacy' in the schema, but
 	// also any pre-migration row with NULL→"" via the COALESCE-like
 	// behavior of TEXT NOT NULL DEFAULT) into BlockLayoutLegacy.
-	// Unknown values surface ErrInvalidBlockLayout (T-14-01-01).
+	// Unknown values surface ErrInvalidBlockLayout.
 	layout, err := metadata.ParseBlockLayout(blockLayoutText)
 	if err != nil {
 		return nil, fmt.Errorf("share %q: %w", shareName, err)

@@ -35,7 +35,7 @@ type ClientRegistration struct {
 	LockCount int
 
 	// ============================================================================
-	// NSM-specific fields (Phase 3)
+	// NSM-specific fields
 	// ============================================================================
 
 	// MonName is the monitored hostname (mon_id.mon_name from SM_MON).
@@ -316,7 +316,7 @@ func (ct *ConnectionTracker) GetPendingDisconnectCount() int {
 }
 
 // ============================================================================
-// NSM-specific methods (Phase 3)
+// NSM-specific methods
 // ============================================================================
 
 // UpdateNSMInfo updates NSM-specific fields for a client.

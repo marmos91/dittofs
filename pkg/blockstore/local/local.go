@@ -22,14 +22,14 @@ type Stats struct {
 // LocalStore is the host-side admin interface for the on-node block
 // store. It EMBEDS [blockstore.BlockStoreAppend] (the byte-access +
 // append-log surface tested by
-// [blockstoretest.BlockStoreAppendConformance]) and adds lifecycle,
+// [blockstoretest.BlockStoreAppendConformance]) and adds lifecycle
 // eviction, retention, and observability methods that are caller-
 // visible only from within the daemon process.
 type LocalStore interface {
-	// Embedding contributes Put, Get, GetRange, Has, Delete, Head,
+	// Embedding contributes Put, Get, GetRange, Has, Delete, Head
 	// Walk from BlockStore plus AppendWrite and DeleteLog from
 	// BlockStoreAppend. The Get signature is byte-identical to the
-	// Phase 16 LocalStore.Get this interface supersedes — engine
+	// LocalStore.Get this interface supersedes — engine
 	// call sites that currently type-assert a *fs.FSStore continue
 	// to compile when narrowed to local.LocalStore (or further to
 	// blockstore.BlockStore).

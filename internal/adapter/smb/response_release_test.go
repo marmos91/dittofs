@@ -1,12 +1,10 @@
 package smb
 
-// Tests for the ReleaseData encoder hook (D-09). These assert that the SMB
-// response encoder invokes HandlerResult.ReleaseData exactly once per response
-// AFTER the wire write completes — plain, encrypted-disabled, and compound
-// paths alike. Non-pooled responses leave ReleaseData nil; the encoder must
-// null-check.
-//
-// Per plan 09-02 Task 1 (ADAPT-02).
+// Tests for the ReleaseData encoder hook. These assert that the SMB
+// response encoder invokes HandlerResult.ReleaseData exactly once per
+// response AFTER the wire write completes — plain, encrypted-disabled,
+// and compound paths alike. Non-pooled responses leave ReleaseData nil;
+// the encoder must null-check.
 
 import (
 	"context"

@@ -17,7 +17,7 @@ import (
 //   - Hard link management (decrement or set nlink=0)
 //   - Parent timestamp updates
 //
-// Important: This method does NOT delete the file's content data.
+// Important: Does NOT delete the file's content data.
 // The returned File includes PayloadID for caller to coordinate content deletion.
 // PayloadID is empty if other hard links still reference the content.
 //

@@ -19,12 +19,12 @@ import (
 // This file implements the FileBlockStore interface for the in-memory metadata store.
 // It provides content-addressed file block tracking for deduplication and caching.
 //
-// Phase 12 (META-03 / D-09): the FileBlockStore interface narrowed to 6
-// methods. The backend retains the legacy GetFileBlock + ListFileBlocks
-// helpers as concrete methods on the struct (not on the public interface)
-// for engine-internal callers (engine/{fetch,dedup,syncer,engine}.go,
-// blockstore/local/fs/{recovery,manage,fs}.go) that consume them via a
-// wider engine-internal interface — see the SUMMARY for the full list.
+// The FileBlockStore interface is narrowed to 6 methods. The backend
+// retains the legacy GetFileBlock + ListFileBlocks helpers as
+// concrete methods on the struct (not on the public interface) for
+// engine-internal callers (engine/{fetch,dedup,syncer,engine}.go,
+// blockstore/local/fs/{recovery,manage,fs}.go) that consume them via
+// a wider engine-internal interface.
 //
 // Thread Safety: All operations are protected by the store's mutex.
 //
@@ -55,7 +55,7 @@ var _ blockstore.FileBlockStore = (*MemoryMetadataStore)(nil)
 // ============================================================================
 
 // GetFileBlock retrieves a file block by its ID. Not on the narrowed
-// FileBlockStore interface (Phase 12 META-03 / D-09); kept as a backend
+// FileBlockStore interface; kept as a backend
 // method for engine-internal callers.
 func (s *MemoryMetadataStore) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
 	s.mu.RLock()
@@ -63,16 +63,15 @@ func (s *MemoryMetadataStore) GetFileBlock(ctx context.Context, id string) (*met
 	return s.getFileBlockLocked(ctx, id)
 }
 
-// Put stores or updates a file block. Renamed from PutFileBlock in
-// Phase 12 (META-03 / D-09) to match the narrowed interface.
+// Put stores or updates a file block. Renamed from PutFileBlock to
+// match the narrowed interface.
 func (s *MemoryMetadataStore) Put(ctx context.Context, block *metadata.FileBlock) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.putFileBlockLocked(ctx, block)
 }
 
-// Delete removes a file block by its ID. Renamed from DeleteFileBlock in
-// Phase 12 (META-03 / D-09).
+// Delete removes a file block by its ID. Renamed from DeleteFileBlock.
 func (s *MemoryMetadataStore) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -95,20 +94,19 @@ func (s *MemoryMetadataStore) DecrementRefCount(ctx context.Context, id string) 
 
 // AddRef atomically increments RefCount on the FileBlock row indexed by
 // the given content hash. Implements the FileBlockStore.AddRef contract
-// (Phase 19 D-04): used by the in-memory hash dedup LRU hit path to
+// used by the in-memory hash dedup LRU hit path to
 // bump RefCount on an already-stored block without creating a new row.
 //
 // Atomicity: the entire hash→id resolve + RefCount mutation runs under
 // a single s.mu Write lock so AddRef is TOCTOU-free against concurrent
-// DecrementRefCount cascade (D-04).
+// DecrementRefCount cascade.
 //
 // Returns metadata.ErrUnknownHash when no row exists for the hash;
 // caller (LRU hit site) falls back to the full Put path.
 //
-// D-27: RefCount is the ONLY field mutated. BlockState is left
+// RefCount is the ONLY field mutated. BlockState is left
 // unchanged — no Pending→Syncing→Remote transition; no new row is
-// materialized on either the success or the ErrUnknownHash branch
-// (STATE-01..03 preservation).
+// materialized on either the success or the ErrUnknownHash branch.
 func (s *MemoryMetadataStore) AddRef(ctx context.Context, hash blockstore.ContentHash, payloadID string, blockRef blockstore.BlockRef) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -117,7 +115,6 @@ func (s *MemoryMetadataStore) AddRef(ctx context.Context, hash blockstore.Conten
 
 // GetByHash looks up a finalized block by its content hash.
 // Returns nil without error if not found. Renamed from FindFileBlockByHash
-// in Phase 12 (META-03 / D-09).
 func (s *MemoryMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -126,8 +123,8 @@ func (s *MemoryMetadataStore) GetByHash(ctx context.Context, hash metadata.Conte
 
 // ListPending returns blocks in Pending state (complete, on disk, not yet
 // synced to remote) older than the given duration. Renamed from
-// ListLocalBlocks in Phase 12 (META-03 / D-09); the underlying semantics
-// already match Phase 11 STATE-01 ("Local" was renamed Pending).
+// ListLocalBlocks; the underlying semantics already match ("Local" was
+// renamed Pending).
 // If limit > 0, at most limit blocks are returned.
 func (s *MemoryMetadataStore) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
 	s.mu.RLock()
@@ -136,7 +133,7 @@ func (s *MemoryMetadataStore) ListPending(ctx context.Context, olderThan time.Du
 }
 
 // ListFileBlocks returns all blocks belonging to a file, ordered by block index.
-// Not on the narrowed FileBlockStore interface (Phase 12 META-03 / D-09);
+// Not on the narrowed FileBlockStore interface;
 // kept as a backend method for engine-internal callers.
 func (s *MemoryMetadataStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
 	s.mu.RLock()
@@ -145,10 +142,10 @@ func (s *MemoryMetadataStore) ListFileBlocks(ctx context.Context, payloadID stri
 }
 
 // EnumerateFileBlocks streams every FileBlock's ContentHash through fn.
-// The memory backend snapshots hashes under the read lock then releases the
-// lock before invoking fn so callers can issue further metadata operations.
-// See GC-01 / D-02. Phase 12 (META-03 / D-08): lifted from FileBlockStore
-// to MetadataStore — implementation unchanged.
+// The memory backend snapshots hashes under the read lock then releases
+// the lock before invoking fn so callers can issue further metadata
+// operations. Lifted from FileBlockStore to MetadataStore —
+// implementation unchanged.
 func (s *MemoryMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
 	s.mu.RLock()
 	var snapshot []blockstore.ContentHash
@@ -171,7 +168,7 @@ func (s *MemoryMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(b
 }
 
 // EnumerateSyncingBlocks returns every FileBlock currently in
-// BlockStateSyncing. Phase 11 D-14: the engine.Syncer janitor uses this to
+// BlockStateSyncing. the engine.Syncer janitor uses this to
 // requeue rows abandoned by a previous syncer instance. The memory backend
 // implements this via direct map iteration; other backends may opt in
 // when their query surface allows.
@@ -312,10 +309,10 @@ func (s *MemoryMetadataStore) incrementRefCountLocked(_ context.Context, id stri
 
 // addRefLocked resolves hash→id via the secondary index and bumps
 // RefCount on the resolved row. Caller MUST hold s.mu Write lock so
-// the entire resolve+mutate sequence is atomic (D-04 — TOCTOU-free
+// the entire resolve+mutate sequence is atomic (TOCTOU-free
 // against concurrent DecrementRefCount cascade).
 func (s *MemoryMetadataStore) addRefLocked(_ context.Context, hash blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
-	// payloadID + blockRef accepted for future GC traceability (D-04);
+	// payloadID + blockRef accepted for future GC traceability;
 	// memory backend records ref count only — parameters intentionally
 	// blanked.
 	// No data → no rows → hash is unknown by definition.
@@ -433,9 +430,9 @@ func (s *MemoryMetadataStore) listFileBlocksLocked(_ context.Context, payloadID 
 }
 
 // InjectRefCountLeak is a test-only capability hook implementing the
-// storetest.RefCountLeakInjector interface (Phase 12 D-36 INV-02 audit).
+// storetest.RefCountLeakInjector interface (audit).
 // It bumps the named block's RefCount by leakAmount without touching any
-// FileAttr.Blocks reference, deliberately violating the global INV-02
+// FileAttr.Blocks reference, deliberately violating the global
 // invariant so the leak-injection scenario can verify the reconciliation
 // arithmetic detects the drift. NEVER call from production code.
 func (s *MemoryMetadataStore) InjectRefCountLeak(_ context.Context, blockID string, leakAmount uint32) error {

@@ -28,7 +28,7 @@ const (
 	sessionSetupSecBufferLengthOffset   = 14 // 2 bytes: Security buffer length
 	sessionSetupPreviousSessionIDOffset = 16 // 8 bytes: Previous session ID
 	sessionSetupFixedSize               = 24 // Fixed part size (without buffer)
-	sessionSetupMinSize                 = 25 // Minimum request size (per spec)
+	sessionSetupMinSize                 = 25 // Minimum request size per MS-SMB2
 )
 
 // SMB2_SESSION_FLAG_BINDING is set in SESSION_SETUP request Flags byte to
@@ -44,7 +44,7 @@ const (
 	sessionSetupRespSecBufferOffsetOffset = 4 // 2 bytes: Security buffer offset
 	sessionSetupRespSecBufferLengthOffset = 6 // 2 bytes: Security buffer length
 	sessionSetupRespFixedSize             = 8 // Fixed response size
-	sessionSetupRespStructureSize         = 9 // StructureSize field value (per spec)
+	sessionSetupRespStructureSize         = 9 // StructureSize field value per MS-SMB2
 
 	// Security buffer offset is relative to SMB2 header start
 	smb2HeaderSize = 64

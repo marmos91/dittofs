@@ -1,15 +1,14 @@
 package handlers
 
-// Tests for SMB2 READ handler (plan 09-02 / ADAPT-02). These focus on the
-// narrow D-10 scope: regular-file READ uses common.ReadFromBlockStore and
-// hands Release to the encoder via SMBResponseBase.ReleaseData; pipe and
-// symlink READ variants stay on their heap-allocated source buffers and
-// MUST leave ReleaseData nil.
+// Tests for SMB2 READ handler. These focus on the narrow scope:
+// regular-file READ uses common.ReadFromBlockStore and hands Release to
+// the encoder via SMBResponseBase.ReleaseData; pipe and symlink READ
+// variants stay on their heap-allocated source buffers and MUST leave
+// ReleaseData nil.
 //
 // Integration tests that exercise the full regular-file READ round trip
-// (Test 6 / Test 9 in the plan) require a full metadata+block-store
-// fixture — those are covered by the whole-repo -race regression and by
-// grep-based acceptance criteria in the plan.
+// require a full metadata+block-store fixture — those are covered by the
+// whole-repo -race regression.
 
 import (
 	"context"
@@ -21,9 +20,9 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Test 7 (plan): handlePipeRead returns a *ReadResponse whose ReleaseData is
-// nil. Pipe READ buffers are NOT pool-backed — pipe.ProcessRead returns a
-// slice owned by PipeManager's state machine (D-10, narrowed).
+// handlePipeRead returns a *ReadResponse whose ReleaseData is nil. Pipe
+// READ buffers are NOT pool-backed — pipe.ProcessRead returns a slice
+// owned by PipeManager's state machine.
 // ---------------------------------------------------------------------------
 
 func TestRead_PipeRead_LeavesReleaseDataNil(t *testing.T) {
@@ -51,7 +50,7 @@ func TestRead_PipeRead_LeavesReleaseDataNil(t *testing.T) {
 	// StatusInvalidHandle — the important invariant under test is that
 	// the returned *ReadResponse keeps ReleaseData nil on ALL pipe paths.
 	if resp.ReleaseData != nil {
-		t.Fatal("pipe read response must leave ReleaseData nil (D-10 narrowed scope: pipes are NOT pool-backed)")
+		t.Fatal("pipe read response must leave ReleaseData nil (pipes are NOT pool-backed)")
 	}
 	if resp.Status != types.StatusInvalidHandle {
 		t.Logf("pipe read status = %v (expected StatusInvalidHandle without a registered pipe)", resp.Status)
@@ -59,10 +58,10 @@ func TestRead_PipeRead_LeavesReleaseDataNil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 8 (plan): handleSymlinkRead returns a *ReadResponse whose ReleaseData
-// is nil. Symlink READ buffers are NOT pool-backed — mfsymlink.Encode
-// returns a freshly heap-allocated slice, and copying it into a pooled
-// buffer would be a pure memcpy with no benefit (D-10, narrowed).
+// handleSymlinkRead returns a *ReadResponse whose ReleaseData is nil.
+// Symlink READ buffers are NOT pool-backed — mfsymlink.Encode returns a
+// freshly heap-allocated slice, and copying it into a pooled buffer
+// would be a pure memcpy with no benefit.
 // ---------------------------------------------------------------------------
 
 func TestRead_SymlinkRead_LeavesReleaseDataNil(t *testing.T) {
@@ -92,7 +91,7 @@ func TestRead_SymlinkRead_LeavesReleaseDataNil(t *testing.T) {
 		t.Fatal("handleSymlinkRead returned nil response")
 	}
 	if resp.ReleaseData != nil {
-		t.Fatal("symlink read response must leave ReleaseData nil (D-10 narrowed scope: symlinks are NOT pool-backed)")
+		t.Fatal("symlink read response must leave ReleaseData nil (symlinks are NOT pool-backed)")
 	}
 	if resp.Status != types.StatusSuccess {
 		t.Errorf("symlink read status = %v, want StatusSuccess", resp.Status)

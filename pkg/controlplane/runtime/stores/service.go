@@ -98,14 +98,14 @@ func (s *Service) CloseMetadataStores() {
 // newStore and returns the displaced instance so the caller can Close() it
 // and clean up its backing path/schema.
 //
-// The write lock makes this the commit point for Phase-5's in-place restore
-// (D-05 step 10 / D-23): concurrent readers see either the old or the new
-// store — never a nil or half-initialized entry.
+// The write lock makes this the commit point for the in-place restore:
+// concurrent readers see either the old or the new store — never a nil
+// or half-initialized entry.
 //
-// This method does NOT call Close() on the displaced store — the caller
-// (Phase-5 CommitSwap) owns the close + backing-path cleanup so it can
-// coordinate schema drops, directory renames, or deferred disposal without
-// the registry getting involved.
+// SwapMetadataStore does NOT call Close() on the displaced store — the caller
+// (CommitSwap) owns the close + backing-path cleanup so it can
+// coordinate schema drops, directory renames, or deferred disposal
+// without the registry getting involved.
 //
 // Errors:
 //   - "cannot swap to nil metadata store" — newStore is nil.
@@ -138,10 +138,10 @@ func (s *Service) SwapMetadataStore(name string, newStore metadata.MetadataStore
 
 // OpenMetadataStoreAtPath constructs a fresh engine instance using cfg but
 // overrides the backing path/schema per pathOverride. The returned engine is
-// NOT registered; callers (Phase-5 restore orchestrator) use
-// SwapMetadataStore to install it at commit time.
+// NOT registered; callers (the restore orchestrator) use SwapMetadataStore
+// to install it at commit time.
 //
-// pathOverride semantics per cfg.Type (D-08):
+// pathOverride semantics per cfg.Type:
 //   - "memory":   pathOverride is ignored; always a fresh in-memory instance.
 //   - "badger":   pathOverride is the filesystem backing directory.
 //   - "postgres": pathOverride is the target schema name (same connection
@@ -171,8 +171,7 @@ func (s *Service) OpenMetadataStoreAtPath(
 	case "memory":
 		// Memory engine has no persistent backing; pathOverride is ignored
 		// by design. Construction always succeeds and always returns an
-		// empty store (Phase-2 D-06 "destination must be empty" holds by
-		// construction).
+		// empty store ("destination must be empty" holds by construction).
 		return memory.NewMemoryMetadataStoreWithDefaults(), nil
 
 	case "badger":
@@ -215,13 +214,13 @@ type PostgresRestoreOrphan struct {
 }
 
 // ListPostgresRestoreOrphans enumerates schemas on the same connection as
-// the live Postgres store named originalName that match the Phase-5 restore
+// the live Postgres store named originalName that match the restore
 // temp-schema naming convention: `<origSchema>_restore_<ulid>`. The caller
-// (Phase-5 orphan sweep) passes the full prefix including the `_restore_`
+// (the orphan sweep) passes the full prefix including the `_restore_`
 // separator.
 //
-// This method is REQUIRED (not optional) for Phase-5 D-14 Postgres orphan
-// sweep: if the registered store does not implement schema enumeration, the
+// ListPostgresRestoreOrphans is REQUIRED (not optional) for the Postgres orphan sweep:
+// if the registered store does not implement schema enumeration, the
 // method returns a clear error rather than silently degrading. Silent
 // skip-on-type-mismatch would let orphan schemas accumulate indefinitely
 // on restart after a crash-interrupted restore — operator never sees a
@@ -273,17 +272,17 @@ func (s *Service) ListPostgresRestoreOrphans(
 
 // DropPostgresSchema issues `DROP SCHEMA <schemaName> CASCADE IF EXISTS`
 // using the connection pool of the live Postgres store named originalName.
-// Used by Phase-5 restore's CommitSwap after a successful swap to reclaim
-// the displaced schema's storage, and by the D-14 orphan sweep to reclaim
+// Used by restore's CommitSwap after a successful swap to reclaim the
+// displaced schema's storage, and by the orphan sweep to reclaim
 // leftover `<orig>_restore_<ulid>` schemas older than the grace window.
 //
 // Idempotent: the underlying `IF EXISTS` swallows the case where the schema
 // has already been dropped by a concurrent process.
 //
 // Caller MUST validate schemaName against SQL injection upstream — the
-// Phase-5 orchestrator generates schema names from ULIDs only (T-05-04-03
-// mitigation). This method applies double-quote escaping as defense in
-// depth but does not otherwise sanitize the input.
+// restore orchestrator generates schema names from ULIDs only. This
+// method applies double-quote escaping as defense in depth but does not
+// otherwise sanitize the input.
 //
 // Errors:
 //   - originalName not registered — wraps GetMetadataStore error.
@@ -322,10 +321,10 @@ func (s *Service) DropPostgresSchema(ctx context.Context, originalName, schemaNa
 //	search_path plumbing that belongs to a later plan in this phase
 //	(fresh_store.go + restore executor).
 //
-//	Plan 04's contract is the METHOD SIGNATURE + dispatch behavior — the
-//	four methods must exist with correct error semantics so Plan 06 / 07
+//	contract is the METHOD SIGNATURE + dispatch behavior — the
+//	four methods must exist with correct error semantics so / 07
 //	can wire the full flow. For postgres, we return a clear
-//	"not yet implemented at this call site" error; Plan 06's fresh_store.go
+//	"not yet implemented at this call site" error; fresh_store.go
 //	replaces this stub with a real search_path-scoped construction path
 //	and the corresponding migration runner.
 //

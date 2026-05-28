@@ -9,7 +9,7 @@ import (
 )
 
 // syncLocalBlocks runs one mirror-loop pass for the periodic uploader
-// tick body. The mirror-loop helper is shared with explicit Flush:
+// tick body. The mirror-loop helper is shared with explicit Flush
 // every CAS hash present locally but not yet marked synced is Put to
 // remote and MarkSynced, with Put-then-Mark ordering for crash safety.
 //

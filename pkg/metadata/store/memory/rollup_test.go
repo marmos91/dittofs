@@ -65,7 +65,7 @@ func TestMemoryRollupStore_SetGet(t *testing.T) {
 	}
 }
 
-// TestMemoryRollupStore_RejectsRegression_KeepsPriorValue: INV-03 at the
+// TestMemoryRollupStore_RejectsRegression_KeepsPriorValue at the
 // store layer. An attempted regression returns ErrRollupOffsetRegression and
 // leaves the stored value untouched.
 func TestMemoryRollupStore_RejectsRegression_KeepsPriorValue(t *testing.T) {

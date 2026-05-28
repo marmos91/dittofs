@@ -275,7 +275,7 @@ func (f *HandlerTestFixture) CreateFile(path string, content []byte) metadata.Fi
 
 	// Write content if provided (using BlockStore with local cache)
 	if len(content) > 0 {
-		// Phase 12 API-01: nil currentBlocks => dual-read shim path.
+		// Nil currentBlocks => dual-read shim path.
 		if _, err := f.BlockStore.WriteAt(ctx, string(file.PayloadID), nil, content, 0); err != nil {
 			f.t.Fatalf("Failed to write content to file %q: %v", path, err)
 		}
@@ -402,7 +402,7 @@ func (f *HandlerTestFixture) ReadContent(path string) []byte {
 
 	// Read content using BlockStore
 	content := make([]byte, size)
-	// Phase 12 API-01: nil []BlockRef => dual-read shim path.
+	// Nil []BlockRef => dual-read shim path.
 	n, err := f.BlockStore.ReadAt(ctx, string(file.PayloadID), nil, content, 0)
 	if err != nil {
 		f.t.Fatalf("Failed to read content from %q: %v", path, err)

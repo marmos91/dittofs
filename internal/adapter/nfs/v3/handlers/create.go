@@ -371,7 +371,7 @@ func (h *Handler) Create(
 
 // createNewFile creates a new file using the metadata store's Create method.
 //
-// This function:
+// Steps:
 //  1. Builds file attributes with defaults from context
 //  2. Calls store.Create() which atomically:
 //     - Creates file metadata
@@ -541,9 +541,9 @@ func truncateExistingFile(
 
 	// Truncate content if file has content
 	if existingFile.PayloadID != "" {
-		// Phase 12 API-01: nil currentBlocks triggers the legacy/
-		// dual-read truncate path; returned []BlockRef is discarded.
-		// Plan 08 threads the file's FileAttr.Blocks snapshot here.
+		// Nil currentBlocks triggers the legacy/dual-read truncate path;
+		// returned []BlockRef is discarded. A later refactor will thread
+		// the file's FileAttr.Blocks snapshot here.
 		if _, err := blockStore.Truncate(authCtx.Context, string(existingFile.PayloadID), nil, targetSize); err != nil {
 			logger.Warn("Failed to truncate content", "size", targetSize, "error", err)
 			// Non-fatal: metadata is already updated

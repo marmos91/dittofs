@@ -195,7 +195,7 @@ func TestSyncQueue_PrefetchDropWhenFull(t *testing.T) {
 	}
 
 	// Second prefetch should be dropped silently (queue full)
-	// This should NOT return false but simply drop - check pending count
+	// This should NOT return false but drop silently - check pending count
 	q.EnqueuePrefetch(NewPrefetchRequest("payload", 1))
 
 	// Only 1 should be pending (second was dropped)

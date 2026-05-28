@@ -116,7 +116,6 @@ type CompoundContext struct {
 	Context context.Context
 
 	// ClientState holds minimal NFSv4 connection state.
-	// This is a placeholder for Phase 9 (State Management).
 	ClientState *V4ClientState
 
 	// SkipOwnerSeqid is set to true by the v4.1 dispatch path after
@@ -133,7 +132,7 @@ type CompoundContext struct {
 }
 
 // V4ClientState holds NFSv4 client state associated with a connection.
-// Extended in Phase 9 to carry the client ID for state lookups.
+// Carries the client ID for state lookups.
 type V4ClientState struct {
 	// ClientAddr is the address of the connected client.
 	ClientAddr string

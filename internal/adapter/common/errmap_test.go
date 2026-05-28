@@ -152,13 +152,13 @@ func TestMapContentToNFS4(t *testing.T) {
 	}
 }
 
-// TestMapContentToSMB exercises nil + unknown fallback (Test F per plan).
+// TestMapContentToSMB exercises nil + unknown fallback.
 func TestMapContentToSMB(t *testing.T) {
 	if got := MapContentToSMB(nil); got != smbtypes.StatusSuccess {
 		t.Errorf("MapContentToSMB(nil) = %v, want StatusSuccess", got)
 	}
-	// Plan Test F: "cache full" and other unknown content errors fall back to
-	// StatusUnexpectedIOError per D-08 §2.
+	// "cache full" and other unknown content errors fall back to
+	// StatusUnexpectedIOError.
 	if got := MapContentToSMB(goerrors.New("cache full")); got != smbtypes.StatusUnexpectedIOError {
 		t.Errorf("MapContentToSMB(cache full) = %v, want StatusUnexpectedIOError", got)
 	}
@@ -248,10 +248,10 @@ func TestMapLockToNFS4(t *testing.T) {
 }
 
 // ============================================================================
-// Unit-tier exotic codes (ADAPT-05 / D-13 unit tier).
+// Unit-tier exotic codes.
 // ============================================================================
 
-// exoticCodes is the D-13 unit-tier list: codes that cannot be reliably
+// exoticCodes is the unit-tier list: codes that cannot be reliably
 // e2e-triggered through kernel NFS/SMB file-I/O syscalls (they require
 // backend fault injection, quota-constrained fixtures, domain controllers,
 // or protocol-specific lock RPCs). The unit tier covers them by synthesizing
@@ -277,13 +277,13 @@ func exoticCodes() []merrs.ErrorCode {
 }
 
 // TestExoticErrorCodes asserts that every exotic (non-e2e-triggerable)
-// ErrorCode per D-13 has an errorMap row AND that each protocol mapper
-// returns the row's expected value when given a synthesized StoreError.
+// ErrorCode has an errorMap row AND that each protocol mapper returns the
+// row's expected value when given a synthesized StoreError.
 //
-// This is the "unit tier" leg of the ADAPT-05 two-tier conformance test —
-// the e2e tier in test/e2e/cross_protocol_test.go covers the ~18
-// kernel-triggerable codes; this test covers the ~9 remaining codes that
-// need error injection to reproduce.
+// This is the "unit tier" leg of the two-tier conformance test — the e2e
+// tier in test/e2e/cross_protocol_test.go covers the ~18 kernel-triggerable
+// codes; this test covers the ~9 remaining codes that need error injection
+// to reproduce.
 //
 // Both tiers drive assertions from common/'s tables: this test iterates
 // exoticCodes() and looks up errorMap (and, where applicable, lockErrorMap)
@@ -314,9 +314,9 @@ func TestExoticErrorCodes(t *testing.T) {
 			// For codes that ALSO live in lockErrorMap, assert the
 			// lock-context mappers surface the lockErrorMap values (not
 			// errorMap's general-context values). This catches the
-			// lock-vs-general divergence that D-13 calls out for
-			// ErrDeadlock, ErrGracePeriod, ErrLockLimitExceeded,
-			// ErrLockConflict, ErrLockNotFound.
+			// lock-vs-general divergence called out for ErrDeadlock,
+			// ErrGracePeriod, ErrLockLimitExceeded, ErrLockConflict,
+			// ErrLockNotFound.
 			if lockRow, lockOK := lockErrorMap[code]; lockOK {
 				if got := MapLockToNFS3(storeErr); got != lockRow.NFS3 {
 					t.Errorf("MapLockToNFS3(%v) = %d, want lockRow.NFS3 = %d", code, got, lockRow.NFS3)
@@ -332,8 +332,8 @@ func TestExoticErrorCodes(t *testing.T) {
 	}
 }
 
-// TestCrossProtocolUnitConformance is the unit-tier belt-and-braces for
-// ADAPT-05: every code in allErrorCodes() must be covered by EITHER the
+// TestCrossProtocolUnitConformance is the unit-tier belt-and-braces:
+// every code in allErrorCodes() must be covered by EITHER the
 // e2e-triggerable tier (denoted implicitly — not in exoticCodes()) OR the
 // exotic unit tier (in exoticCodes()). A code that falls off both lists is
 // drift and fails here.
@@ -344,7 +344,7 @@ func TestExoticErrorCodes(t *testing.T) {
 // test/e2e/cross_protocol_test.go:TestCrossProtocol_ErrorConformance; this
 // unit test reconstructs it by subtraction: all codes minus exoticCodes().
 func TestCrossProtocolUnitConformance(t *testing.T) {
-	// e2eTriggerableCodes mirrors the D-13 e2e-triggerable list and must
+	// e2eTriggerableCodes mirrors the e2e-triggerable list and must
 	// match the table driving TestCrossProtocol_ErrorConformance. When the
 	// e2e table changes, this list must change too — coverage will drift
 	// silently otherwise.

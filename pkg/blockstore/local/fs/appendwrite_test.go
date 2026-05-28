@@ -13,9 +13,9 @@ import (
 	"time"
 )
 
-// TestAppendWrite_Enabled_HappyPath writes three records and verifies:
-//   - the on-disk log has header + 3 records of the expected total size,
-//   - logBytesTotal counts the framed-record overhead (not just payload),
+// TestAppendWrite_Enabled_HappyPath writes three records and verifies
+// - the on-disk log has header + 3 records of the expected total size
+// - logBytesTotal counts the framed-record overhead (not just payload)
 //   - the interval tree gains exactly 3 entries.
 func TestAppendWrite_Enabled_HappyPath(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
@@ -68,7 +68,7 @@ func TestAppendWrite_CtxCanceled(t *testing.T) {
 	}
 }
 
-// TestAppendWrite_PerFileSerial proves the per-file mutex (D-32)
+// TestAppendWrite_PerFileSerial proves the per-file mutex
 // serializes concurrent AppendWrite calls to the same payload: 50
 // goroutines each append a 64-byte record, final logBytesTotal must equal
 // the deterministic sum of framed-record sizes (no partial writes, no
@@ -103,10 +103,10 @@ func TestAppendWrite_PerFileSerial(t *testing.T) {
 	}
 }
 
-// TestAppendWrite_PressureBlocks_UntilSignaled exercises the D-15
+// TestAppendWrite_PressureBlocks_UntilSignaled exercises the
 // pressure wait. maxLogBytes is set to 1 so the second AppendWrite
 // blocks on bc.pressureCh; a simulated rollup resets logBytesTotal and
-// pulses the channel. No real rollup worker runs in Phase 10-04 — the
+// pulses the channel. No real rollup worker runs in -04 — the
 // test drives the signal directly.
 func TestAppendWrite_PressureBlocks_UntilSignaled(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1})
@@ -139,11 +139,11 @@ func TestAppendWrite_PressureBlocks_UntilSignaled(t *testing.T) {
 	}
 }
 
-// TestLogFile_GroupCommit_NonNilAfterConstruction verifies Plan 06 Task 1
+// TestLogFile_GroupCommit_NonNilAfterConstruction verifies Task 1
 // step 1: the logFile struct gains a `groupCommit *groupCommit` field that
 // is instantiated by the canonical constructor (getOrCreateLog → on first
 // touch). The field MUST be non-nil after the first AppendWrite drives
-// getOrCreateLog to materialize the logFile for "file1" (D-07: per-file
+// getOrCreateLog to materialize the logFile for "file1" (per-file
 // scope, one coordinator per open log fd).
 func TestLogFile_GroupCommit_NonNilAfterConstruction(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
@@ -163,7 +163,7 @@ func TestLogFile_GroupCommit_NonNilAfterConstruction(t *testing.T) {
 
 // TestLogFile_GroupCommit_FsyncFn_BoundToLfFile verifies the coordinator's
 // fsyncFn actually fsyncs the underlying log file. End-to-end durability
-// via the coordinator: write a record, drive lf.groupCommit.Sync directly,
+// via the coordinator: write a record, drive lf.groupCommit.Sync directly
 // close, reopen, and verify the bytes are on disk. This guards against a
 // future refactor where the coordinator is constructed with the wrong
 // fsync target (e.g., a no-op or a different fd).
@@ -205,10 +205,10 @@ func TestLogFile_GroupCommit_FsyncFn_BoundToLfFile(t *testing.T) {
 }
 
 // TestAppendWrite_CoordinatorOnHotPath_BurstCounts: N=4 AppendWrites to
-// the same payload. The per-file mutex (D-32) serializes the writers
+// the same payload. The per-file mutex serializes the writers
 // strictly — only one can enter the Sync call site at a time — so the
 // in-flight piggyback CANNOT batch same-payload writes (this is the
-// architectural cost of crash-safe log ordering, see D-32 rationale in
+// architectural cost of crash-safe log ordering, see rationale in
 // AppendWrite's godoc). What we CAN verify is that the coordinator is
 // on the hot path: every successful AppendWrite goes through
 // lf.groupCommit.Sync exactly once (no double-fsync regression, no
@@ -219,10 +219,10 @@ func TestLogFile_GroupCommit_FsyncFn_BoundToLfFile(t *testing.T) {
 // in-flight piggyback wins when multiple goroutines call coordinator.Sync
 // concurrently, which the per-file mu prevents for same-payload writes.
 // Documented as a deviation in 19-06-SUMMARY.md. Batching wins are still
-// real for: (a) future call sites that call Sync without holding mu (e.g.,
+// real for: (a) future call sites that call Sync without holding mu (e.g.
 // an NFS COMMIT path that flushes already-appended records), and (b)
 // micro-architectural — the coordinator absorbs one syscall even at
-// depth-1 with no extra overhead (D-06 adaptive bypass verified by the
+// depth-1 with no extra overhead (adaptive bypass verified by the
 // SingleWriter_NoLatencyPenalty test).
 func TestAppendWrite_CoordinatorOnHotPath_BurstCounts(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
@@ -270,7 +270,7 @@ func TestAppendWrite_CoordinatorOnHotPath_BurstCounts(t *testing.T) {
 	}
 }
 
-// TestAppendWrite_SingleWriter_NoLatencyPenalty exercises D-06 adaptive
+// TestAppendWrite_SingleWriter_NoLatencyPenalty exercises adaptive
 // bypass at the integration level: a single AppendWrite should complete
 // quickly — the coordinator's inline-bypass path means we're not waiting
 // on any 1ms window.
@@ -281,7 +281,7 @@ func TestAppendWrite_SingleWriter_NoLatencyPenalty(t *testing.T) {
 		t.Fatalf("AppendWrite: %v", err)
 	}
 	elapsed := time.Since(start)
-	// The fsync itself is bounded by disk hardware (~100µs-2ms on NVMe,
+	// The fsync itself is bounded by disk hardware (~100µs-2ms on NVMe
 	// up to ~10ms on rotational/CI VMs; GHA hosted Windows runners are
 	// regularly observed at 60-90ms). This is a smoke gate; the real
 	// double-fsync detection lives in
@@ -324,7 +324,7 @@ func TestAppendWrite_FsyncError_PropagatesToCaller(t *testing.T) {
 	}
 }
 
-// TestAppendWrite_CtxCancel_StillFsyncs verifies D-08 durability:
+// TestAppendWrite_CtxCancel_StillFsyncs verifies durability
 // AppendWrite-B's ctx is canceled while it is enqueued behind A's
 // in-flight fsync; B observes ctx.Err() but A's fsync still completes and
 // the data ends up on disk. We instrument fsyncFn to gate completion on
@@ -357,14 +357,14 @@ func TestAppendWrite_CtxCancel_StillFsyncs(t *testing.T) {
 		aDone <- bc.AppendWrite(context.Background(), "file1", []byte("AAAA"), 4096)
 	}()
 	// Give A enough time to acquire mu, write the record, enter Sync, and
-	// block in fsyncFn. The per-file mu (D-32) is held across this entire
+	// block in fsyncFn. The per-file mu is held across this entire
 	// window — B's AppendWrite below MUST wait for A to release it.
 	time.Sleep(20 * time.Millisecond)
 
 	// B: a separate ctx that we cancel while B is blocked on mu (since
-	// the per-file mu serializes B behind A). When mu becomes available,
+	// the per-file mu serializes B behind A). When mu becomes available
 	// B will observe its own ctx is canceled at the next ctx check OR
-	// proceed and observe cancel inside coordinator's waitOn. Either way,
+	// proceed and observe cancel inside coordinator's waitOn. Either way
 	// AppendWrite-B returns ctx.Err() per the contract.
 	ctxB, cancelB := context.WithCancel(context.Background())
 	bDone := make(chan error, 1)
@@ -389,7 +389,7 @@ func TestAppendWrite_CtxCancel_StillFsyncs(t *testing.T) {
 	select {
 	case err := <-bDone:
 		if err != nil && !errors.Is(err, context.Canceled) {
-			// B may have raced past the cancel and completed successfully;
+			// B may have raced past the cancel and completed successfully
 			// either outcome is acceptable as long as A's fsync ran. The
 			// failure mode the invariant protects against is "B's cancel
 			// abort A's fsync".
@@ -421,7 +421,7 @@ func TestAppendWrite_CtxCancel_StillFsyncs(t *testing.T) {
 // writers under -race and asserts no race detection. The per-file mu
 // (bc.logLocks[payloadID]) is held by AppendWrite across the
 // lf.groupCommit.Sync call site; the coordinator's internal mu is a
-// separate lock (D-09). If either lock were inverted with bc.logsMu, the
+// separate lock. If either lock were inverted with bc.logsMu, the
 // race detector would surface it under heavy load.
 func TestAppendWrite_LockOrder_PerFileMuStillHeldAcrossSync(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})

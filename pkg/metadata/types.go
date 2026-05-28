@@ -152,12 +152,12 @@ type ShareOptions struct {
 	IdentityMapping *IdentityMapping
 
 	// BlockLayout selects the block-key scheme used by this share's
-	// engine. New shares created post-Phase-14 default to cas-only.
+	// engine. New shares created default to cas-only.
 	// v0.13/v0.14 imports default to legacy; the dual-read shim
 	// serves both legacy {payloadID}/block-{idx} and cas/.../h reads
 	// until `dfsctl blockstore migrate` flips this to cas-only.
 	// Empty string is treated as legacy for forward-compatibility
-	// with pre-Phase-14 metadata rows (see ParseBlockLayout).
+	// with metadata rows (see ParseBlockLayout).
 	BlockLayout BlockLayout `json:"block_layout,omitempty"`
 }
 
@@ -167,14 +167,14 @@ type ShareOptions struct {
 
 // BlockLayout names the block-key scheme a share is currently using.
 // Per-share gate for the dual-read shim during the v0.13/v0.14 -> v0.15
-// migration window (MIG-03, D-A6). Greenfield v0.15 shares default to
+// migration window (D-A6). Greenfield v0.15 shares default to
 // cas-only; shares created on v0.13 or v0.14 default to legacy and are
 // flipped to cas-only by `dfsctl blockstore migrate`.
 type BlockLayout string
 
 const (
 	// BlockLayoutLegacy means the share still keys blocks under the
-	// pre-Phase-11 path-indexed scheme `{payloadID}/block-{idx}`. The
+	// path-indexed scheme `{payloadID}/block-{idx}`. The
 	// dual-read shim is active for these shares.
 	BlockLayoutLegacy BlockLayout = "legacy"
 
@@ -189,12 +189,12 @@ const (
 var ErrInvalidBlockLayout = errors.New("invalid block_layout")
 
 // ParseBlockLayout parses a string into a BlockLayout. The empty string
-// returns BlockLayoutLegacy so that pre-Phase-14 DB rows (which lack the
+// returns BlockLayoutLegacy so that DB rows (which lack the
 // column or have null/empty values) read as `legacy` — the safe default
 // because the dual-read shim must remain active until proven otherwise
-// (D-A6, MIG-03). Unknown values surface as ErrInvalidBlockLayout so a
+// (D-A6). Unknown values surface as ErrInvalidBlockLayout so a
 // hand-edited row with a bogus value fails loud rather than being
-// silently treated as cas-only (T-14-01-01 mitigation).
+// silently treated as cas-only (mitigation).
 func ParseBlockLayout(s string) (BlockLayout, error) {
 	switch s {
 	case "":

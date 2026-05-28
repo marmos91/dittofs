@@ -1,7 +1,7 @@
 //go:build e2e
 
-// TestDEDUP02_CrossShareDedup verifies the Phase 13 cross-share file-level
-// dedup invariant (DEDUP-02 / D-13). Two NFS shares pointing at one Postgres
+// TestDEDUP02_CrossShareDedup verifies the cross-share file-level dedup
+// invariant (DEDUP-02). Two NFS shares pointing at one Postgres
 // metadata store and ONE shared S3 bucket are written with identical content;
 // the resulting CAS object set must reflect the chunks of ONE file, not two.
 //
@@ -39,8 +39,8 @@
 //	cd test/e2e && DITTOFS_E2E_NIGHTLY=1 sudo ./run-e2e.sh \
 //	    --s3 --test TestDEDUP02_CrossShareDedup
 //
-// See Phase 13 plan 13-08, decisions D-13 (per-metadata-store dedup scope)
-// and D-09 (file-level dedup short-circuit on full-quiesce-of-Pending file).
+// Dedup scope is per-metadata-store; file-level dedup short-circuits
+// on full-quiesce-of-Pending file.
 package e2e
 
 import (
@@ -75,7 +75,7 @@ const crossShareDedupPayloadSize = 16 * 1024 * 1024
 // which still vastly exceeds this bound for 16 MiB payloads.
 const crossShareDedupCASKeyBound = 16
 
-// TestDEDUP02_CrossShareDedup is the e2e gate for Phase 13 DEDUP-02.
+// TestDEDUP02_CrossShareDedup is the e2e gate for DEDUP-02.
 func TestDEDUP02_CrossShareDedup(t *testing.T) {
 	if os.Getenv("DITTOFS_E2E_NIGHTLY") != "1" {
 		t.Skip("nightly tier only; set DITTOFS_E2E_NIGHTLY=1")
@@ -215,7 +215,7 @@ func TestDEDUP02_CrossShareDedup(t *testing.T) {
 	// no cross-share GetByHash hits, no file-level short-circuit), the
 	// observed key count would scale with 2× the chunk count of 16 MiB
 	// (≈8-32 keys). With dedup engaged at either tier (block-level via
-	// Phase 11 GetByHash OR file-level via Phase 13 BSCAS-05), share-b's
+	// GetByHash OR file-level via the dedup short-circuit), share-b's
 	// chunks collide with share-a's hashes and share-b contributes zero
 	// new uploads. crossShareDedupCASKeyBound captures the dedup-pass
 	// regime with headroom for FastCDC boundary variance.
@@ -251,7 +251,7 @@ func dedupDeterministicPayload(t *testing.T, size int, seed int64) []byte {
 }
 
 // dedupDrainUploads mirrors cas_immutable_overwrites_test.go::drainUploads
-// (kept inline per Plan 13-08's "one extra test-local helper is acceptable"
+// (kept inline "one extra test-local helper is acceptable"
 // guidance — we did not lift it to helpers.DrainAllUploads to keep the diff
 // minimal).
 func dedupDrainUploads(t *testing.T, runner *helpers.CLIRunner) {

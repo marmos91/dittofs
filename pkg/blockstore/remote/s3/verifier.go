@@ -12,14 +12,14 @@ import (
 )
 
 // verifyingReader wraps an io.ReadCloser and feeds every byte through a
-// BLAKE3 hasher. On EOF, the accumulated hash is compared to expected;
+// BLAKE3 hasher. On EOF, the accumulated hash is compared to expected
 // mismatch surfaces ErrCASContentMismatch. The wrapper is single-use and
 // not goroutine-safe.
 //
-// Per D-18: zero extra body allocation — the verifier sees bytes once as
-// they flow through the reader, and the hasher state is constant-cost
-// regardless of body size. Per INV-06, on mismatch the caller MUST
-// discard whatever bytes were read so corrupt bytes never reach upstream.
+// Zero extra body allocation: the verifier sees bytes once as they
+// flow through the reader, and the hasher state is constant-cost
+// regardless of body size. On mismatch the caller MUST discard
+// whatever bytes were read so corrupt bytes never reach upstream.
 type verifyingReader struct {
 	src      io.ReadCloser
 	hasher   *blake3.Hasher
@@ -122,7 +122,7 @@ func (v *verifyingReader) checkHash() error {
 // buffer. When contentLength is known and positive, the buffer is
 // pre-sized exactly; otherwise fallback is used (capped at maxBlockReadSize).
 //
-// Per INV-06: on ErrCASContentMismatch (surfaced by the verifier on EOF
+// Per: on ErrCASContentMismatch (surfaced by the verifier on EOF
 // or by a header pre-check upstream), the partially-filled buffer is
 // discarded by returning a nil slice. Bad bytes never escape.
 func readAllVerified(r *verifyingReader, contentLength *int64, fallbackSize int64) ([]byte, error) {

@@ -18,7 +18,7 @@ const ConfigHashAnnotation = "dittofs.io/config-hash"
 // - All referenced Secrets (JWT secret, admin password, database credentials)
 // - CRD generation number (for extra safety)
 //
-// The secrets map keys should be sorted before calling this function, or this
+// The secrets map keys should be sorted before calling, or this
 // function will sort them internally to ensure deterministic output.
 //
 // Parameters:

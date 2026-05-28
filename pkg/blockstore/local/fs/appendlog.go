@@ -9,22 +9,21 @@ import (
 	"os"
 )
 
-// Append-log on-disk format constants. See D-09, D-10, D-11 in
-// .planning/phases/10-fastcdc-chunker-hybrid-local-store-a1/10-CONTEXT.md.
+// Append-log on-disk format constants. See in
 //
-// Log layout:
+// Log layout
 //
-//	[0..64)                   fixed header (see logHeader + marshalHeader)
-//	[64..)                    append-only stream of records (see writeRecord)
+//	[0..64) fixed header (see logHeader + marshalHeader)
+//	[64..) append-only stream of records (see writeRecord)
 //
-// Record framing:
+// Record framing
 //
-//	uint32 LE  payload_len
-//	uint64 LE  file_offset    (byte offset inside the logical payload)
-//	uint32 LE  crc32c         (Castagnoli, over file_offset_8B_LE || payload)
-//	[]byte     payload        (payload_len bytes)
+//	uint32 LE payload_len
+//	uint64 LE file_offset (byte offset inside the logical payload)
+//	uint32 LE crc32c (Castagnoli, over file_offset_8B_LE || payload)
+//	[]byte payload (payload_len bytes)
 //
-// Recovery (LSL-06) truncates at the first bad CRC or short record.
+// Recovery truncates at the first bad CRC or short record.
 const (
 	logHeaderSize       = 64
 	recordFrameOverhead = 16 // payload_len(4) + file_offset(8) + crc(4)
@@ -35,7 +34,7 @@ const (
 	// a 4 GiB-1 allocation per bad frame → OOM / DoS. Set just above the
 	// chunker's hard maximum (16 MiB) plus slack so legitimate records
 	// always pass; anything larger is treated as corruption and the
-	// caller (LSL-06) truncates the log at the previous valid position.
+	// caller truncates the log at the previous valid position.
 	maxRecordPayload = 17 * 1024 * 1024
 )
 
@@ -43,11 +42,11 @@ const (
 var logMagic = [4]byte{'D', 'F', 'L', 'G'}
 
 // crcTable is the Castagnoli CRC32 table used for record and header CRCs
-// (D-10). Hardware-accelerated on amd64 (SSE4.2) and arm64 (ARMv8 CRC32
+// . Hardware-accelerated on amd64 (SSE4.2) and arm64 (ARMv8 CRC32
 // extension).
 var crcTable = crc32.MakeTable(crc32.Castagnoli)
 
-// logHeader is the 64-byte on-disk layout documented in D-09.
+// logHeader is the 64-byte on-disk layout documented in.
 //
 // The fixed 32-byte reserved tail (bytes [32..64)) and the 4-byte header_crc
 // (bytes [28..32)) are not represented as struct fields — they are handled
@@ -104,7 +103,7 @@ func unmarshalHeader(buf []byte) (logHeader, error) {
 	return h, nil
 }
 
-// writeRecord writes one framed record to w. The on-disk layout (D-11) is
+// writeRecord writes one framed record to w. The on-disk layout is
 // payload_len(uint32 LE) || file_offset(uint64 LE) || crc(uint32 LE) || payload.
 // The CRC is computed over (file_offset_8B_LE || payload).
 //
@@ -147,11 +146,10 @@ func writeRecord(w io.Writer, fileOffset uint64, payload []byte) (int, error) {
 
 // readRecord reads one framed record from r.
 //
-// Return semantics:
+// Return semantics
 //   - (off, payload, true, nil) on success.
 //   - (0, nil, false, nil) on clean EOF, short read, length-overflow, or CRC
 //     mismatch — caller truncates the log at the previous valid position
-//     (LSL-06).
 //   - (0, nil, false, err) only on hard I/O errors (not EOF / CRC).
 func readRecord(r io.Reader) (uint64, []byte, bool, error) {
 	var frame [recordFrameOverhead]byte
@@ -191,7 +189,7 @@ func readRecord(r io.Reader) (uint64, []byte, bool, error) {
 // entry's payloadLen field), so we issue a single pread of the full
 // record (frame header + payload) instead of two sequential reads.
 //
-// Returns the decoded file_offset and the payload bytes. Errors:
+// Returns the decoded file_offset and the payload bytes. Errors
 //   - payloadLen exceeds the maxRecordPayload DoS cap (also enforced
 //     by readRecord; mirrored here so a pathological logIndex entry
 //     cannot drive a multi-GB allocation if memory corruption ever
@@ -231,19 +229,19 @@ func readRecordAt(rf io.ReaderAt, logPos uint64, payloadLen uint32) (uint64, []b
 
 // advanceRollupOffset atomically updates the log header's rollup_offset
 // field and fsyncs. FIX-6: split into a two-phase pwrite+fsync sequence
-// so the on-disk state is always either fully old-valid, fully new-valid,
+// so the on-disk state is always either fully old-valid, fully new-valid
 // or "new-offset present but CRC stale" (which recovery treats as a hard
 // header corruption → re-init, the same posture as any other bad-CRC
 // header). The previous single 32-byte WriteAt could yield a torn
-// rollup_offset whose lower bytes were updated but upper bytes weren't,
+// rollup_offset whose lower bytes were updated but upper bytes weren't
 // while the CRC happened to land on disk first and validate against the
 // torn value — silently corrupting recovery's view of the rollup point.
 //
-// Phase 1: pwrite new rollup_offset bytes [8..16), fsync.
-// Phase 2: recompute CRC over [0..28), pwrite CRC bytes [28..32), fsync.
+// pwrite new rollup_offset bytes [8..16), fsync.
+// recompute CRC over [0..28), pwrite CRC bytes [28..32), fsync.
 //
 // Idempotent: calling with the same newOffset twice is a no-op on disk
-// state (D-12 step 4; INV-03 monotone rollup_offset is enforced by the
+// state (step 4; monotone rollup_offset is enforced by the
 // caller — this helper does not reject backward moves).
 func advanceRollupOffset(f *os.File, newOffset uint64) error {
 	// Read the existing header (need bytes [0..28) to recompute CRC).
@@ -252,11 +250,11 @@ func advanceRollupOffset(f *os.File, newOffset uint64) error {
 		return fmt.Errorf("append log: read header for advance: %w", err)
 	}
 
-	// Phase 1: write the new rollup_offset bytes, fsync. After this point
+	// write the new rollup_offset bytes, fsync. After this point
 	// a crash leaves either the OLD rollup_offset on disk (write didn't
 	// reach the platter) or the NEW rollup_offset with the OLD CRC. The
 	// latter fails CRC validation on next boot — recovery treats it as
-	// header corruption and re-inits the log (existing LSL-06 path).
+	// header corruption and re-inits the log (existing path).
 	binary.LittleEndian.PutUint64(hdr[8:16], newOffset)
 	if _, err := f.WriteAt(hdr[8:16], 8); err != nil {
 		return fmt.Errorf("append log: write header rollup_offset: %w", err)
@@ -265,9 +263,9 @@ func advanceRollupOffset(f *os.File, newOffset uint64) error {
 		return fmt.Errorf("append log: fsync header phase 1: %w", err)
 	}
 
-	// Phase 2: recompute the CRC over [0..28) using the in-memory bytes
+	// recompute the CRC over [0..28) using the in-memory bytes
 	// we just wrote, pwrite [28..32), fsync. After this completes the
-	// header is fully valid. A crash between phase 1 and phase 2 is the
+	// header is fully valid. A crash between is the
 	// "stale CRC" case described above — safe.
 	crc := crc32.Checksum(hdr[0:28], crcTable)
 	binary.LittleEndian.PutUint32(hdr[28:32], crc)

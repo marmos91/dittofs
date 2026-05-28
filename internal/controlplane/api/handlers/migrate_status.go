@@ -36,7 +36,7 @@ func isValidShareName(s string) bool {
 // that records calls and returns canned responses, mirroring the
 // BlockGCRuntime pattern in block_gc.go.
 //
-// BLOCKER 2 fix from Plan 14-06 review: the methods reference here
+// BLOCKER 2 fix from review: the methods reference here
 // match the Runtime's actual exported surface. `MetadataStoreFor` and
 // `LocalStoreDirFor` from the pre-revision plan never existed —
 // `GetMetadataStoreForShare` is the canonical method, and `LocalStoreDir`
@@ -44,29 +44,28 @@ func isValidShareName(s string) bool {
 // shares service.
 type MigrateStatusRuntime interface {
 	// GetMetadataStoreForShare returns the metadata store backing the
-	// named share. Used to read the share's BlockLayout (Plan 14-01) and
+	// named share. Used to read the share's BlockLayout and
 	// to walk the file tree for the FilesTotal field.
 	GetMetadataStoreForShare(shareName string) (metadata.MetadataStore, error)
 
 	// LocalStoreDir returns the per-share on-disk data directory hosting
-	// the migration journal (Plan 14-06's new accessor). Empty string +
+	// the migration journal (new accessor). Empty string +
 	// nil error indicates a memory-backed share — handler short-circuits
 	// the journal read.
 	LocalStoreDir(shareName string) (string, error)
 }
 
 // MigrateStatusHandler handles the per-share migration status endpoint:
-// GET /api/v1/blockstore/migrate/status?share=NAME (D-A16).
+// GET /api/v1/blockstore/migrate/status?share=NAME.
 //
 // Response shape mirrors apiclient.MigrateStatusResponse so dittofs-pro
 // and dfsctl share a single contract. Admin-only auth is enforced by
-// the router placing the route inside JWTAuth + RequireAdmin middleware
-// (T-14-06-01 mitigation).
+// the router placing the route inside JWTAuth + RequireAdmin middleware.
 //
-// BLOCKER 3 fix: this file imports `pkg/blockstore/migrate` (the
-// journal type added in Plan 14-03 Task 2 — placed in pkg/ from day
-// one for exactly this reason) rather than `cmd/dfsctl/...`, which Go's
-// build system forbids from being imported by internal/.
+// This file imports `pkg/blockstore/migrate` (the journal type, placed
+// in pkg/ from day one for exactly this reason) rather than
+// `cmd/dfsctl/...`, which Go's build system forbids from being imported
+// by internal/.
 type MigrateStatusHandler struct {
 	rt MigrateStatusRuntime
 }
@@ -94,11 +93,10 @@ type migrateStatusResponse struct {
 	LastCommitAt    string `json:"last_commit_at,omitempty"`
 }
 
-// fileWalkTimeout is the bound on the FilesTotal walk per request
-// (T-14-06-03 mitigation). On timeout, FilesTotal is set to -1 (the
-// documented incomplete-walk sentinel) and the response still ships
-// with everything else valid. Operators can bypass the walk entirely
-// via ?with_total=false.
+// fileWalkTimeout is the bound on the FilesTotal walk per request.
+// On timeout, FilesTotal is set to -1 (the documented incomplete-walk
+// sentinel) and the response still ships with everything else valid.
+// Operators can bypass the walk entirely via ?with_total=false.
 const fileWalkTimeout = 30 * time.Second
 
 // Status handles GET /api/v1/blockstore/migrate/status.
@@ -184,10 +182,9 @@ func (h *MigrateStatusHandler) Status(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Read journal + snapshot (if any). Read-only open so a
-	//    concurrent migration writer (D-A8 fail-loud + offline-only,
-	//    but keep the read side robust anyway) cannot be interfered
-	//    with — OpenJournalReadOnly never truncates or rotates
-	//    (T-14-06-04 mitigation).
+	//    concurrent migration writer (fail-loud + offline-only, but
+	//    keep the read side robust anyway) cannot be interfered with
+	//    — OpenJournalReadOnly never truncates or rotates.
 	if journalDir != "" {
 		j, jerr := migrate.OpenJournalReadOnly(journalDir)
 		if jerr != nil {
@@ -215,13 +212,12 @@ func (h *MigrateStatusHandler) Status(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4. FilesTotal: walk the share via migrate.WalkShareFiles
-	//    (BLOCKER 2 fix — `Runtime.CountFiles` did not exist; walk
-	//    the metadata store directly via the Plan 14-03 helper).
+	// 4. FilesTotal: walk the share via migrate.WalkShareFiles —
+	//    walk the metadata store directly via the migrate helper.
 	//    Bounded at fileWalkTimeout so a TB-scale share cannot hold
-	//    the API server hostage (T-14-06-03 mitigation). On timeout
-	//    or error, FilesTotal is set to -1 (incomplete sentinel) and
-	//    the rest of the response still ships.
+	//    the API server hostage. On timeout or error, FilesTotal is
+	//    set to -1 (incomplete sentinel) and the rest of the response
+	//    still ships.
 	if r.URL.Query().Get("with_total") != "false" {
 		ctx, cancel := context.WithTimeout(r.Context(), fileWalkTimeout)
 		defer cancel()

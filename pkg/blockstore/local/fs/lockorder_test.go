@@ -9,7 +9,7 @@ import (
 	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// TestAppendWrite_DeleteRace_NoDeadlock is a regression guard for FIX-2:
+// TestAppendWrite_DeleteRace_NoDeadlock is a regression guard for FIX-2
 // the AppendWrite error-recovery path used to acquire bc.logsMu.Lock()
 // while still holding the per-file mutex. Combined with any path that
 // holds logsMu and then waits on the per-file mutex, the result was an

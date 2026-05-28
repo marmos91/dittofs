@@ -386,7 +386,7 @@ type OpenFile struct {
 	BaseFileDeleteParentHandle metadata.FileHandle
 	BaseFileDeleteFileName     string
 
-	// Durable handle state (Phase 38: SMB3 durable handles)
+	// Durable handle state (SMB3 durable handles)
 	// IsDurable indicates this handle has been granted durability.
 	// When true, the handle will be persisted to DurableHandleStore on disconnect
 	// instead of being closed immediately.
@@ -1101,8 +1101,8 @@ func (h *Handler) cancelAsyncOpsForSession(sessionID uint64) {
 // When false (explicit LOGOFF), all handles are fully closed.
 //
 // IMPORTANT: The caller must call SignalPendingCleanup(1) before calling
-// this method to ensure the cleanup barrier is visible to new sessions.
-// The WaitGroup decrement (Done) happens in this method via defer.
+// CleanupSession to ensure the cleanup barrier is visible to new sessions.
+// The WaitGroup decrement (Done) happens via defer.
 func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64, isDisconnect bool) {
 	defer h.cleanupWg.Done()
 

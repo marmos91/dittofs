@@ -12,7 +12,7 @@ import (
 
 // newOnChunkCompleteFixture builds an FS-backed engine.BlockStore with a
 // configurable cache budget so the Cache materializes in Start (when
-// readBufferBytes > 0) or remains the Null Object (when 0). The Plan 07
+// readBufferBytes > 0) or remains the Null Object (when 0). The
 // wire-in is expected to install OnChunkComplete from engine.New via a
 // structural-interface assertion on cfg.Local; the fixture is the canonical
 // integration site because only the FSStore exposes SetOnChunkComplete.
@@ -45,7 +45,7 @@ func newOnChunkCompleteFixture(t *testing.T, readBufferBytes int64) (*BlockStore
 // cache budget, every successful StoreChunk on the underlying FSStore
 // populates bs.cache via the wired OnChunkComplete callback. The
 // subsequent bs.cache.Get(hash) hit proves the chunk is in RAM —
-// satisfying the "wrote then read" no-disk-hop contract (D-16).
+// satisfying the "wrote then read" no-disk-hop contract.
 func TestEngine_OnChunkComplete_WiredToCache(t *testing.T) {
 	bs, localStore := newOnChunkCompleteFixture(t, 64*1024*1024)
 	ctx := context.Background()
@@ -72,7 +72,7 @@ func TestEngine_OnChunkComplete_WiredToCache(t *testing.T) {
 // when a chunk's size exceeds the Cache's maxBytes, Cache.Put silently
 // skips it (existing guard at cache.go:233). StoreChunk itself still
 // succeeds — the size guard lives in the Cache, not at the chunkstore
-// firing site (D-11 — bounded by Cache LRU; no extra cap upstream).
+// firing site (bounded by Cache LRU; no extra cap upstream).
 func TestEngine_OnChunkComplete_LargeChunkRespectsCacheCap(t *testing.T) {
 	// 4 KiB cache budget; 8 KiB chunk → Cache.Put guard fires.
 	bs, localStore := newOnChunkCompleteFixture(t, 4*1024)

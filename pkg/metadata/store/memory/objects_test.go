@@ -130,7 +130,7 @@ func TestFileBlockStore_FindByHash_Found(t *testing.T) {
 		DataSize:      2048,
 		RefCount:      1,
 		BlockStoreKey: "s3://bucket/key",
-		// Phase 11 (STATE-01): IsFinalized() now means State==Remote — only
+		// IsFinalized() now means State==Remote — only
 		// Remote rows enter the hash index for dedup lookups.
 		State: metadata.BlockStateRemote,
 	}
@@ -168,7 +168,7 @@ func TestFileBlockStore_DedupFlow(t *testing.T) {
 	hash := sha256.Sum256(content)
 
 	// First file writes this block (already finalized to Remote: dedup
-	// only matches confirmed remote blocks per the Phase 11 STATE-01 collapse).
+	// only matches confirmed remote blocks per the collapse).
 	id1 := uuid.New().String()
 	block := &metadata.FileBlock{
 		ID:            id1,

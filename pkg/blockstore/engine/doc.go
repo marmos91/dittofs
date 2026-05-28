@@ -7,7 +7,7 @@
 // import the root blockstore package for types and interfaces, so the root
 // package cannot import them back.
 //
-// As of the TD-01 merge (Phase 08), the previously separate sibling packages
+// As of the merge, the previously separate sibling packages
 // pkg/blockstore/{readbuffer,sync,gc} are folded into this package. The merge
 // preserves all public behaviour; only the package path, a handful of
 // collision-resolving type/function names, and the package-qualified call
@@ -17,7 +17,7 @@
 //
 // ReadBuffer is an LRU block buffer that stores full 8MB blocks (matching
 // blockstore.BlockSize) as heap-allocated []byte slices with copy-on-read
-// semantics. It uses RWMutex for concurrent access: reads take RLock,
+// semantics. It uses RWMutex for concurrent access: reads take RLock
 // mutations take WLock. Eviction is synchronous and inline during Put
 // (dropping a []byte reference is O(1), no I/O needed).
 //
@@ -32,13 +32,13 @@
 // Prefetcher detects sequential access patterns per file and pre-loads
 // upcoming blocks into the ReadBuffer using a bounded worker pool. It uses
 // adaptive depth (1->2->4->8 blocks) following the Linux readahead pattern.
-// Non-blocking submit drops requests when the worker channel is full,
+// Non-blocking submit drops requests when the worker channel is full
 // providing natural backpressure.
 //
 // # Syncer (formerly pkg/blockstore/sync)
 //
 // The syncer is responsible for moving data between the local store and the
-// remote block store (S3 or memory). It handles:
+// remote block store (S3 or memory). It handles
 //
 //   - Periodic sync: Scan for local blocks and upload them in the background
 //   - Fetch: Retrieve blocks from remote store on local miss, with download priority
@@ -46,7 +46,7 @@
 //   - Flush: Write dirty memory blocks to disk on NFS COMMIT / SMB CLOSE
 //   - Content-addressed deduplication: Skip uploads when identical blocks exist
 //
-// Key design principles:
+// Key design principles
 //
 //   - Dedicated worker pools: Separate pools for uploads and downloads prevent starvation
 //   - Priority scheduling: Downloads > Uploads > Prefetch
@@ -55,7 +55,7 @@
 //   - In-flight deduplication: Avoid duplicate downloads for the same block
 //   - Non-blocking: Most operations return immediately; I/O happens in background
 //
-// The Syncer struct is created via NewSyncer() and requires a LocalStore,
+// The Syncer struct is created via NewSyncer() and requires a LocalStore
 // RemoteStore, and FileBlockStore.
 //
 // # Block garbage collection (formerly pkg/blockstore/gc)
@@ -69,7 +69,7 @@
 // payloadID, and checks each payloadID against the metadata store. Blocks
 // without metadata are deleted.
 //
-// Usage:
+// Usage
 //
 //	// Dry run first
 //	dryStats := engine.CollectGarbage(ctx, remoteStore, registry, &engine.Options{DryRun: true})

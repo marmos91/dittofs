@@ -27,7 +27,7 @@ const kmipDefaultTimeout = 5 * time.Second
 // at startup, caches the bytes in memory for the daemon's lifetime, and
 // performs per-block wrap / unwrap locally using AES-256-GCM.
 //
-// Trade-off vs full HSM-resident envelope ops (KMIP Encrypt / Decrypt):
+// Trade-off vs full HSM-resident envelope ops (KMIP Encrypt / Decrypt)
 // the master-key bytes live in process memory while the daemon runs, so
 // a compromise of the daemon's address space recovers the key. The HSM
 // is still the canonical custodian — operators rotate by writing a new

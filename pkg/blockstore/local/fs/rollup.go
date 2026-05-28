@@ -19,7 +19,7 @@ import (
 // reconstructStream can take []rec without shadowing.
 //
 // endPos is the on-disk file position immediately AFTER the record's
-// framed bytes (i.e., where the next record would start). FIX-19:
+// framed bytes (i.e., where the next record would start). FIX-19
 // rollupFile uses this to recompute targetPos AFTER the truncation
 // filter has dropped records past the truncation boundary, so
 // SetRollupOffset never persists past bytes that did not contribute
@@ -31,7 +31,7 @@ type rec struct {
 	endPos  uint64
 }
 
-// StartRollup launches the chunkRollup worker pool (D-13). Idempotent;
+// StartRollup launches the chunkRollup worker pool. Idempotent
 // subsequent calls after the first are no-ops. Requires a non-nil
 // RollupStore.
 //
@@ -57,7 +57,7 @@ func (bc *FSStore) StartRollup(ctx context.Context) error {
 // chunkRollupWorker is the per-worker goroutine body. It consumes payload
 // IDs from bc.rollupCh and also periodically scans bc.dirtyIntervals on a
 // ticker so payloads whose rollupCh signal was dropped (buffer full) still
-// get processed. D-15 three-arm select guarantees no leaks on Close or ctx
+// get processed. three-arm select guarantees no leaks on Close or ctx
 // cancellation.
 func (bc *FSStore) chunkRollupWorker(ctx context.Context, _ int) {
 	defer bc.rollupWg.Done()
@@ -119,21 +119,21 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 }
 
 // rollupFile consumes the earliest stable interval for payloadID, emits
-// chunks, and commits atomically per D-12.
+// chunks, and commits atomically.
 //
 // Concurrency: the per-file mutex (`mu`) is held through the ENTIRE
 // reconstructStream -> chunker -> StoreChunk -> CommitChunks sequence.
 // This is the fix for the plan-checker's Blocker 3: releasing the mutex
 // before StoreChunk/CommitChunks would break DeleteAppendLog's ability
-// (plan 09) to wait for in-flight rollup by acquiring the same mutex.
+// to wait for in-flight rollup by acquiring the same mutex.
 // Holding the mutex serializes same-file rollup against same-file
 // AppendWrite; this is acceptable because (a) rollup runs in a background
-// worker pool (D-13), (b) AppendWrite's mutex window is ~5 µs under
-// ordinary load (D-32), (c) different files have independent mutexes so
+// worker pool, (b) AppendWrite's mutex window is ~5 µs under
+// ordinary load, (c) different files have independent mutexes so
 // one file's rollup never stalls another, and (d) pressure-channel
 // blocking only trips when the log budget is exceeded.
 //
-// CommitChunks atomic ordering (D-12, reordered #588):
+// CommitChunks atomic ordering (reordered #588)
 //  1. For each emitted chunk: StoreChunk(hash, data) — idempotent, fsynced.
 //  2. ObjectIDPersister(payloadID, blocks, objectID) — writes per-chunk
 //     FileBlock manifest rows + FileAttr.Blocks. MUST land before
@@ -141,11 +141,12 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 //     UNCHANGED and the next pass retries; the alternative (persister
 //     after SetRollupOffset) silently lost the manifest while
 //     rollup_offset already advanced past the records.
-//  3. rollupStore.SetRollupOffset(payloadID, targetPos) — atomic-monotone;
+//  3. rollupStore.SetRollupOffset(payloadID, targetPos) — atomic-monotone
 //     on ErrRollupOffsetRegression, log at Debug and return nil (benign).
 //  4. advanceRollupOffset(logFile, targetPos) — idempotent derived-state.
 //     If it fails, metadata is already the source of truth and recovery
-//     (plan 07) will reconcile the header on next boot.
+//
+// will reconcile the header on next boot.
 //  5. tree.ConsumeUpTo + logBytesTotal.Add(-reclaimed) + pressureCh signal.
 func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	if bc.isClosed() {
@@ -174,7 +175,7 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	// AppendWrite that hit a writeRecord error could have run the FIX-2
 	// recovery path: removed the lf from bc.logFDs and closed lf.f. If we
 	// proceed with the stale lf we'd read from a closed fd. The
-	// double-checked re-read under the per-file mutex closes that window:
+	// double-checked re-read under the per-file mutex closes that window
 	// any FIX-2 cleanup must serialize behind us via mu, and any
 	// already-completed cleanup will have left bc.logFDs[payloadID] nil
 	// (or replaced with a fresh lf on a subsequent getOrCreateLog). A
@@ -188,10 +189,10 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	}
 
 	// Tombstone re-check AFTER mutex acquire (Blocker 3). DeleteAppendLog
-	// (plan 09) sets the tombstone BEFORE acquiring this mutex; if we see
+	// sets the tombstone BEFORE acquiring this mutex; if we
 	// it here, delete is in flight (or completed) and we must bail out
 	// without persisting rollup state for a dead payload. The tombstones
-	// map may be nil through Phase 10 plans up to plan 09, which is fine:
+	// map may be nil through plans up to, which is fine
 	// ranging over a nil map is legal and the check becomes a no-op.
 	if bc.isTombstoned(payloadID) {
 		return nil
@@ -214,7 +215,7 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	// Direction-1 rollup redesign: consult the per-payload logIndex to
 	// translate the stable file-offset interval into a set of records
 	// whose frames sit somewhere in the on-disk log (not necessarily
-	// contiguous at the head). Each entry carries logPos + payloadLen,
+	// contiguous at the head). Each entry carries logPos + payloadLen
 	// so we pread each frame directly instead of scanning the log
 	// sequentially. A separate read-only fd is used so we don't disturb
 	// lf.f's append position.
@@ -285,9 +286,9 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 		consumedExtents = append(consumedExtents, consumedExt{fileOff: e.fileOff, payloadLen: e.payloadLen})
 	}
 
-	// D-29 truncation filter: drop records entirely past the truncation
+	// truncation filter: drop records entirely past the truncation
 	// boundary and clip straddling records. Recorded by TruncateAppendLog
-	// (plan 09); consulted here so emitted chunks never contain bytes
+	// consulted here so emitted chunks never contain bytes
 	// beyond the client-observed size at truncate time.
 	//
 	// Direction-1 redesign: consumedExtents is filtered in lockstep with
@@ -327,7 +328,7 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 		return nil
 	}
 
-	// Reconstruct contiguous byte stream (D-35 "later record wins") + chunk
+	// Reconstruct contiguous byte stream ("later record wins") + chunk
 	// + store. Chunker is stateless across calls; we feed it the whole
 	// reconstructed buffer and slice out chunks by the returned boundaries.
 	//
@@ -338,7 +339,7 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	// rollup passes (FastCDC gear-hash masks are buffer-position-keyed).
 	//
 	// FIX-5: reconstructStream may refuse to allocate when maxEnd exceeds
-	// the 16 GiB ceiling. Treat that as benign at the rollup-pass level:
+	// the 16 GiB ceiling. Treat that as benign at the rollup-pass level
 	// log + return nil without persisting derived state. The dirty
 	// intervals stay in the tree so a later pass (possibly after a
 	// TruncateAppendLog) has another chance.
@@ -370,14 +371,14 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 			Size:   uint32(b),
 		}
 
-		// Phase 19 Opt 1 (D-04): consult the per-FSStore dedup LRU between
-		// FastCDC.Next() and StoreChunk. On hit, FileBlockStore.AddRef
-		// atomically bumps RefCount on the existing row and we skip the
-		// local CAS write entirely. The BlockRef append below still happens
-		// — D-02 manifest invariant: ComputeObjectID later in this function
-		// sees the same BlockRef list with or without the LRU. D-27 STATE
-		// preservation: AddRef leaves BlockState unchanged; this hit path
-		// neither creates a row nor transitions one.
+		// Consult the per-FSStore dedup LRU between FastCDC.Next() and
+		// StoreChunk. On hit, FileBlockStore.AddRef atomically bumps
+		// RefCount on the existing row and we skip the local CAS write
+		// entirely. The BlockRef append below still happens — manifest
+		// invariant: ComputeObjectID later in this function sees the
+		// same BlockRef list with or without the LRU. State
+		// preservation: AddRef leaves BlockState unchanged; this hit
+		// path neither creates a row nor transitions one.
 		skipStoreChunk := false
 		if bc.dedupLRU != nil {
 			if _, ok := bc.dedupLRU.Get(h); ok {
@@ -405,7 +406,7 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 			if err := bc.StoreChunk(ctx, h, chunkBytes); err != nil {
 				return fmt.Errorf("rollup: StoreChunk: %w", err)
 			}
-			// Phase 19 Opt 1: first-write seeds the LRU for subsequent
+			// Opt 1: first-write seeds the LRU for subsequent
 			// idempotent rewrites of the same content.
 			if bc.dedupLRU != nil {
 				bc.dedupLRU.Put(h, payloadID)
@@ -419,7 +420,7 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	// Tombstone re-check IMMEDIATELY before metadata commit (Blocker 3).
 	// Even if a delete raced between the first check and now, we must not
 	// persist rollup_offset for a deleted payload. Content-addressed chunks
-	// in blocks/ are swept by Phase 11 GC.
+	// in blocks/ are swept by GC.
 	if bc.isTombstoned(payloadID) {
 		return nil
 	}
@@ -446,11 +447,11 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	}
 	targetPos := idx.AdvanceFence()
 
-	// CommitChunks atomic sequence (D-12, reordered #588). The on-disk
+	// CommitChunks atomic sequence (reordered #588). The on-disk
 	// CAS chunks are already durable from StoreChunk above. The remaining
 	// commit steps must land in this order so a partial failure never
 	// advances rollup_offset past records whose FileBlock manifest rows
-	// haven't been persisted:
+	// haven't been persisted
 	//
 	//  1. ObjectIDPersister(payloadID, blocks, objectID) — writes the
 	//     per-chunk FileBlock rows AND the FileAttr.Blocks manifest +
@@ -508,8 +509,8 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	}
 
 	// Derived-state: advance the log header. If this fails, metadata is
-	// already the source of truth and recovery (plan 07) will reconcile
-	// — except when LogFlagCompacted is set (post-compaction state),
+	// already the source of truth and recovery will reconcile
+	// — except when LogFlagCompacted is set (post-compaction state)
 	// in which case the header IS the truth and a failure here means
 	// the next boot may re-replay records that were already chunked.
 	// CAS is idempotent so that is benign correctness-wise (only a
@@ -546,7 +547,7 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	//
 	// Close rf first: Windows refuses to rename over a file with an
 	// open handle, and compaction's atomic rename would otherwise fail
-	// with ERROR_SHARING_VIOLATION. On POSIX the close is harmless;
+	// with ERROR_SHARING_VIOLATION. On POSIX the close is harmless
 	// rf is otherwise unused past this point.
 	_ = rf.Close()
 	rfClosed = true
@@ -565,7 +566,7 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 const maxReconstructBytes = uint64(1) << 34
 
 // reconstructStream flattens records by absolute file_offset, later writes
-// overwriting earlier ones at the same offset (D-35). Produces a contiguous
+// overwriting earlier ones at the same offset. Produces a contiguous
 // byte slice starting at FILE BYTE 0 (NOT minOff), extending to the maximum
 // record end.
 //
@@ -574,7 +575,7 @@ const maxReconstructBytes = uint64(1) << 34
 // overlapping windows starting at different minOff values, identical bytes
 // would land at different buffer positions across passes and the chunker
 // would emit different content boundaries → no dedup across rollups (breaks
-// D-21). Anchoring the buffer at file byte 0 (with zero-padded gaps for
+// ). Anchoring the buffer at file byte 0 (with zero-padded gaps for
 // untouched regions) guarantees the chunker sees the same prefix bytes for
 // the same file region every pass, so chunk boundaries are stable.
 //
@@ -587,7 +588,7 @@ const maxReconstructBytes = uint64(1) << 34
 //
 // The caller is responsible for starting the chunker at minOff (not 0) so
 // only the relevant suffix is processed. Callers that ALSO want the minOff
-// can derive it from recs themselves; this function only returns the
+// can derive it from recs themselves; reconstructStream only returns the
 // file-offset-indexed buffer.
 func reconstructStream(recs []rec) ([]byte, error) {
 	if len(recs) == 0 {
@@ -604,7 +605,7 @@ func reconstructStream(recs []rec) ([]byte, error) {
 		return nil, fmt.Errorf("rollup: reconstruct would require %d bytes, exceeds %d ceiling", maxEnd, maxReconstructBytes)
 	}
 	buf := make([]byte, maxEnd)
-	// Apply records in input (log) order so that D-35 "last record wins"
+	// Apply records in input (log) order so that "last record wins"
 	// at the same offset holds — the mutex-serialized log order is the
 	// authoritative ordering for same-offset overwrites.
 	for _, r := range recs {
@@ -628,7 +629,7 @@ func minRecOffset(recs []rec) uint64 {
 
 // blake3ContentHash returns the 32-byte BLAKE3 hash of data as a
 // blockstore.ContentHash. Matches the rollup's content-address contract
-// (D-05/D-06): chunks in blocks/{hh}/{hh}/{hex} are keyed by BLAKE3(data).
+// chunks in blocks/{hh}/{hh}/{hex} are keyed by BLAKE3(data).
 func blake3ContentHash(data []byte) blockstore.ContentHash {
 	var h blockstore.ContentHash
 	sum := blake3.Sum256(data)
@@ -637,7 +638,7 @@ func blake3ContentHash(data []byte) blockstore.ContentHash {
 }
 
 // isTombstoned reports whether payloadID has been marked for deletion by
-// DeleteAppendLog (plan 09). Through Phase 10 plans up to 09, bc.tombstones
+// DeleteAppendLog. Through plans up to 09, bc.tombstones
 // is nil and this always returns false — which is correct, because no
 // deletion path exists yet.
 func (bc *FSStore) isTombstoned(payloadID string) bool {

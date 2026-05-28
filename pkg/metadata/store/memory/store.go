@@ -238,9 +238,9 @@ type MemoryMetadataStore struct {
 	// across calls on the same instance.
 	storeID string
 
-	// rollupMu guards rollupOffsets for Phase 10 rollup_offset persistence
-	// (LSL-05). Kept separate from s.mu so rollup_offset read/compare/write
-	// does not contend with unrelated metadata operations. INV-03 is enforced
+	// rollupMu guards rollupOffsets for rollup_offset persistence
+	// Kept separate from s.mu so rollup_offset read/compare/write
+	// does not contend with unrelated metadata operations. is enforced
 	// here: the read+compare+write all happen under rollupMu.
 	rollupMu sync.RWMutex
 	// rollupOffsets maps payloadID -> persisted rollup_offset. Lazily
@@ -259,8 +259,8 @@ type MemoryMetadataStore struct {
 	synced map[blockstore.ContentHash]time.Time
 
 	// objectIndex maps FileAttr.ObjectID -> handle key (the same string
-	// used as the key in `files`) for the BSCAS-05 dedup short-circuit
-	// lookup (Phase 13 D-12). Populated only for non-zero ObjectIDs
+	// used as the key in `files`) for the dedup short-circuit
+	// lookup. Populated only for non-zero ObjectIDs
 	// (post-quiesce); zero entries skipped.
 	//
 	// Maintained inside PutFile/DeleteFile under the same store-level lock
@@ -270,7 +270,7 @@ type MemoryMetadataStore struct {
 	// NOTE: `fileData` carries no separate UUID field; the canonical
 	// identifier in this package is the handle string (`handleToKey`
 	// output). FindByObjectID resolves through this map -> files lookup
-	// chain (added in Plan 04).
+	// chain (added in).
 	objectIndex map[blockstore.ContentHash]string
 }
 
@@ -338,9 +338,9 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		// though memory-backed stores do not survive restart, the
 		// identifier is stable for the lifetime of the instance.
 		storeID: ulid.Make().String(),
-		// Phase 10 (LSL-05): rollup_offset persistence (see rollup.go).
+		// rollup_offset persistence (see rollup.go).
 		rollupOffsets: make(map[string]uint64),
-		// Phase 13 (D-12): ObjectID -> handle-key secondary index.
+		// ObjectID -> handle-key secondary index.
 		objectIndex: make(map[blockstore.ContentHash]string),
 	}
 
@@ -437,7 +437,7 @@ var _ interface{ GetStoreID() string } = (*MemoryMetadataStore)(nil)
 // handleToKey converts a FileHandle to a string key for map indexing.
 //
 // FileHandle is a []byte type, which cannot be used directly as a map key
-// in Go. This function converts it to a string using unsafe.String to avoid
+// in Go. Converts it to a string using unsafe.String to avoid
 // allocations (Go 1.20+).
 //
 // Safety:
@@ -496,7 +496,7 @@ func (store *MemoryMetadataStore) buildFileWithNlink(
 	attr := *fileData.Attr
 	attr.Nlink = nlink
 	// Deep-copy slice fields so a caller-side mutation of the returned
-	// slice cannot leak into the stored view (Phase 12 D-05, T-12-09).
+	// slice cannot leak into the stored view (T-12-09).
 	attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
 
 	return &metadata.File{
@@ -509,7 +509,7 @@ func (store *MemoryMetadataStore) buildFileWithNlink(
 
 // generateFileHandle creates a UUID-based file handle from a share name.
 //
-// This function generates a new UUID for each file and encodes it with the
+// Generates a new UUID for each file and encodes it with the
 // share name to create a unique file handle in the format:
 //
 //	Format: "shareName:uuid"
@@ -564,7 +564,7 @@ func (s *MemoryMetadataStore) invalidateDirCache(dirHandle metadata.FileHandle) 
 
 // getSortedDirEntries returns a sorted list of child names for a directory.
 //
-// This function uses a cache to avoid repeated O(n log n) sorting on every
+// Uses a cache to avoid repeated O(n log n) sorting on every
 // ReadDirectory call. The cache is lazy-populated on first access and
 // invalidated when directory contents change.
 //
@@ -600,7 +600,7 @@ func (s *MemoryMetadataStore) getSortedDirEntries(dirHandle metadata.FileHandle,
 
 // getSortedDirEntriesWithCache returns a sorted list of child names with proper cache management.
 //
-// This function reads from sortedDirCache while holding a read lock. This is safe because
+// Reads from sortedDirCache while holding a read lock. This is safe because
 // Go's sync.RWMutex guarantees mutual exclusion between readers and writers - when any
 // goroutine holds RLock(), no other goroutine can hold Lock(), so no concurrent writes
 // to sortedDirCache can occur.

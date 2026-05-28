@@ -11,7 +11,7 @@ import (
 )
 
 // shareEnabledString renders the Share.Enabled field as "yes" / "no" for
-// human-readable table output. D-28 specifies the two-valued display.
+// human-readable table output.
 func shareEnabledString(enabled bool) string {
 	if enabled {
 		return "yes"

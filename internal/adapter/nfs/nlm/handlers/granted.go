@@ -13,7 +13,7 @@ import (
 // When the server sends NLM_GRANTED to a client, the client may respond
 // with NLM_GRANTED_RES. However, most implementations ignore the response.
 // Per CONTEXT.md, we implement the procedure for protocol completeness
-// but simply acknowledge receipt.
+// but only acknowledge receipt.
 type GrantedRequest struct {
 	// Cookie is an opaque value echoed back in the response.
 	Cookie []byte
@@ -67,7 +67,7 @@ func EncodeGrantedResponse(resp *GrantedResponse) ([]byte, error) {
 
 // Granted handles NLM GRANTED (RFC 1813, NLM procedure 5).
 // Acknowledges receipt of an NLM_GRANTED callback (server-to-client lock grant notification).
-// No delegation; simply returns NLM4_GRANTED for protocol completeness.
+// No delegation; returns NLM4_GRANTED for protocol completeness.
 // No side effects; the actual lock was already granted by the blocking queue.
 // Errors: always NLM4_GRANTED (acknowledgment never fails).
 func (h *Handler) Granted(ctx *NLMHandlerContext, req *GrantedRequest) (*GrantedResponse, error) {
@@ -78,7 +78,7 @@ func (h *Handler) Granted(ctx *NLMHandlerContext, req *GrantedRequest) (*Granted
 		"offset", req.Lock.Offset,
 		"length", req.Lock.Length)
 
-	// Simply acknowledge receipt
+	// Acknowledge receipt
 	return &GrantedResponse{
 		Cookie: req.Cookie,
 		Status: types.NLM4Granted,

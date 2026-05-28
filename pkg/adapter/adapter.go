@@ -48,7 +48,7 @@ type Adapter interface {
 
 	// SetRuntime injects the shared Runtime containing all stores and shares.
 	//
-	// This method is called exactly once by Runtime before Serve() is called.
+	// Called exactly once by Runtime before Serve() is called.
 	// Implementations should store the runtime for use during operation to
 	// resolve shares and access their corresponding stores.
 	//
@@ -61,7 +61,7 @@ type Adapter interface {
 
 	// Stop initiates graceful shutdown of the protocol server.
 	//
-	// This method may be called concurrently with Serve() during DittoServer shutdown.
+	// May be called concurrently with Serve() during DittoServer shutdown.
 	// Implementations must:
 	//   - Be safe to call multiple times (idempotent)
 	//   - Be safe to call concurrently with Serve()
@@ -93,7 +93,7 @@ type Adapter interface {
 
 	// MapError translates a domain error into a protocol-specific ProtocolError.
 	//
-	// Each adapter must implement this method to convert domain errors (e.g.,
+	// Each adapter must implement MapError to convert domain errors (e.g.,
 	// metadata.ErrNoEntity, blockstore.ErrContentNotFound) into the appropriate
 	// wire-format error code for the protocol (NFS status codes, NTSTATUS, etc.).
 	//

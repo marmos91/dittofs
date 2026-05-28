@@ -263,8 +263,8 @@ func (h *Handler) Write(
 	}
 
 	// Write to BlockStore (uses local cache, will be flushed on COMMIT).
-	// Routed through common.WriteToBlockStore so the Phase-12 []BlockRef
-	// plumbing lands in one place (see common/doc.go Phase-12 seam / D-12).
+	// Routed through common.WriteToBlockStore so any future []BlockRef
+	// plumbing lands in one place (see common/doc.go).
 	err = common.WriteToBlockStore(ctx.Context, blockStore, writeIntent.PayloadID, req.Data, req.Offset)
 	if err != nil {
 		logError(ctx.Context, err, "WRITE failed: BlockStore write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "payload_id", writeIntent.PayloadID, "client", clientIP)

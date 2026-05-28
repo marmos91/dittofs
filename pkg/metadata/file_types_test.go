@@ -9,14 +9,16 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// TestFileAttr_BlocksRoundTrip exercises the Phase 12 reintroduction of
-// FileAttr.Blocks []blockstore.BlockRef (META-01 / D-05). Asserts:
+// TestFileAttr_BlocksRoundTrip exercises the reintroduction of
+// FileAttr.Blocks []blockstore.BlockRef. Asserts:
 //
 //  1. omitempty: zero-value FileAttr does not emit a "blocks" key.
 //  2. Round trip preserves order and all fields of every BlockRef.
 //  3. Legacy JSON without a "blocks" key deserializes cleanly to nil
-//     (forward compat for files written before Phase 12 — D-20 dual-read
-//     shim trigger).
+//
+// (forward compat for files written before dual-read
+//
+//	shim trigger).
 func TestFileAttr_BlocksRoundTrip(t *testing.T) {
 	t.Run("omitempty when nil", func(t *testing.T) {
 		var fa FileAttr
@@ -77,9 +79,9 @@ func TestFileAttr_BlocksRoundTrip(t *testing.T) {
 	})
 
 	t.Run("legacy JSON without blocks key deserializes nil", func(t *testing.T) {
-		// Realistic pre-Phase-12 FileAttr blob — no "blocks" key. T-12-03
+		// Realistic FileAttr blob — no "blocks" key. T-12-03
 		// mitigation: must NOT error and must yield nil Blocks (triggers
-		// the dual-read shim per D-20).
+		// the dual-read shim per).
 		legacy := `{"type":0,"mode":420,"uid":1000,"gid":1000,"nlink":1,"size":42,"atime":"2026-01-01T00:00:00Z","mtime":"2026-01-01T00:00:00Z","ctime":"2026-01-01T00:00:00Z","creation_time":"2026-01-01T00:00:00Z","content_id":"share/file.bin"}`
 		var fa FileAttr
 		if err := json.Unmarshal([]byte(legacy), &fa); err != nil {

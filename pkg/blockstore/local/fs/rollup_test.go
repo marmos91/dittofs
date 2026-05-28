@@ -71,7 +71,7 @@ func countChunksInBlocks(t *testing.T, baseDir string) int {
 }
 
 // TestRollup_CommitChunks_HappyPath: AppendWrite a large payload under a
-// short stabilization window, let the rollup pool fire, and assert:
+// short stabilization window, let the rollup pool fire, and assert
 //   - at least one chunk landed in blocks/
 //   - rollup_offset in metadata advanced past logHeaderSize
 //   - logBytesTotal decreased (budget released)
@@ -147,7 +147,7 @@ func TestRollup_PressureReleasesAppendWrite(t *testing.T) {
 // TestRollup_CommitChunks_MonotoneEnforced: if rollup_offset is pre-seeded
 // to a value ABOVE what rollupFile would advance to, the call must treat
 // ErrRollupOffsetRegression as benign — returning nil AND leaving the stored
-// value unchanged (INV-03).
+// value unchanged.
 //
 // We deliberately do NOT call StartRollup so the test has exclusive control
 // of rollupFile invocation. Use a tiny stabilization so the single record
@@ -223,7 +223,7 @@ func TestRollup_StartRollup_Idempotent(t *testing.T) {
 	}
 }
 
-// TestRollup_ReconstructStream_OverwriteLaterWins: unit test for D-35 order
+// TestRollup_ReconstructStream_OverwriteLaterWins: unit test for order
 // semantics — later records overwrite earlier at the same offset.
 //
 // FIX-3: the buffer is indexed by FILE OFFSET — bytes [0..minOff) are
@@ -259,7 +259,7 @@ func TestRollup_ReconstructStream_OverwriteLaterWins(t *testing.T) {
 // bytes at the same file offsets) reconstruct identical buffers regardless
 // of whether other dirty regions sit at lower offsets in either pass. This
 // is what guarantees the chunker emits the same boundaries → dedup holds
-// across rollup passes (D-21).
+// across rollup passes.
 func TestRollup_ReconstructStream_BoundaryStability_FIX3(t *testing.T) {
 	// Pass A: only the high-offset region is dirty.
 	passA := []rec{
@@ -329,7 +329,7 @@ func TestRollup_ReconstructStream_DoSCeiling_FIX5(t *testing.T) {
 }
 
 // TestRollup_TruncateMidWindow_DoesNotAdvancePastUncommittedTail is the
-// regression guard for FIX-19. Repro:
+// regression guard for FIX-19. Repro
 //
 //  1. AppendWrite three small records at offsets 0, 100, 200.
 //  2. TruncateAppendLog(150) — the record at offset 200 is past the
@@ -357,8 +357,8 @@ func TestRollup_TruncateMidWindow_DoesNotAdvancePastUncommittedTail(t *testing.T
 	})
 	ctx := context.Background()
 
-	// Three small records at distinct offsets. Use len 50 so:
-	//   - rec at off=0   covers [0,50)   — survives truncation
+	// Three small records at distinct offsets. Use len 50 so
+	// - rec at off=0 covers [0,50) — survives truncation
 	//   - rec at off=100 covers [100,150) — survives truncation (end == trunc)
 	//   - rec at off=200 covers [200,250) — DROPPED by truncation
 	payload := bytes.Repeat([]byte{0xAA}, 50)
@@ -429,15 +429,17 @@ func runRollupOnce(t *testing.T, bc *FSStore, payloadID string, payload []byte) 
 }
 
 // TestRollup_CommitChunks_PersistsObjectID covers the rollup-time
-// ObjectID compute path:
+// ObjectID compute path
 //
 //  1. PersistsObjectIDOnCommit — happy path: persister invoked exactly
-//     once with a non-empty BlockRef manifest, BlockRefs sorted-by-Offset,
-//     and an ObjectID equal to ComputeObjectID(blocks).
-//  2. NilPersisterIsBenign — rollup proceeds without panic or error when
-//     FSStoreOptions.ObjectIDPersister is left nil (local-only fixture).
-//  3. PersisterErrorPropagates — persister error surfaces wrapped through
-//     errors.Is so callers can distinguish it from neighbour errors.
+//
+// once with a non-empty BlockRef manifest, BlockRefs sorted-by-Offset
+//
+//	   and an ObjectID equal to ComputeObjectID(blocks).
+//	2. NilPersisterIsBenign — rollup proceeds without panic or error when
+//	   FSStoreOptions.ObjectIDPersister is left nil (local-only fixture).
+//	3. PersisterErrorPropagates — persister error surfaces wrapped through
+//	   errors.Is so callers can distinguish it from neighbour errors.
 func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
 	t.Run("PersistsObjectIDOnCommit", func(t *testing.T) {
 		rs := memmeta.NewMemoryMetadataStoreWithDefaults()
@@ -570,11 +572,11 @@ func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
 	})
 }
 
-// --- Phase 19 Plan 05: rollup LRU-hit fast-path tests ---
+// --- rollup LRU-hit fast-path tests ---
 //
 // These tests cover the dedupLRU consult inserted between FastCDC.Next()
-// and StoreChunk in rollup.go's chunker emit loop (D-04 hit-path / fallback
-// flow; D-02 manifest invariant; D-27 STATE preservation).
+// and StoreChunk in rollup.go's chunker emit loop: hit-path / fallback
+// flow, manifest invariant, and BlockState preservation.
 //
 // Test payload sizing: 256 KiB is well under MinChunkSize (1 MiB), so
 // FastCDC.Next emits exactly ONE chunk per rollup pass with final=true.
@@ -633,7 +635,7 @@ func (p *programmableFBS) ListFileBlocks(ctx context.Context, payloadID string) 
 // newFSStoreForRollupLRUTest constructs an FSStore backed by a
 // programmableFBS wrapping a memory metadata store. The same store
 // instance is used for both the EngineFileBlockStore and the RollupStore
-// surfaces so seeded FileBlocks are visible to both. Returns the store,
+// surfaces so seeded FileBlocks are visible to both. Returns the store
 // the FBS wrapper (for AddRef assertions), and the raw memory store (for
 // seeding FileBlock rows and reading them back post-rollup).
 func newFSStoreForRollupLRUTest(t *testing.T) (*FSStore, *programmableFBS, *memmeta.MemoryMetadataStore) {
@@ -665,7 +667,7 @@ func hashOfSingleChunk(payload []byte) blockstore.ContentHash {
 }
 
 // TestRollup_FirstChunk_PopulatesLRU: empty LRU; rollup a payload that
-// produces hash H; afterwards bc.dedupLRU.Has(H) is true (D-04 first-
+// produces hash H; afterwards bc.dedupLRU.Has(H) is true (first-
 // write seeding).
 func TestRollup_FirstChunk_PopulatesLRU(t *testing.T) {
 	bc, _, _ := newFSStoreForRollupLRUTest(t)
@@ -686,7 +688,7 @@ func TestRollup_FirstChunk_PopulatesLRU(t *testing.T) {
 
 // TestRollup_LRUHit_SkipsStoreChunk: seed dedupLRU with hash H mapped to
 // "payload-prev"; pre-populate FBS with a FileBlock row for H so AddRef
-// succeeds; rollup a second payload with the same content. Assert:
+// succeeds; rollup a second payload with the same content. Assert
 //   - AddRef invoked exactly once with hash=H (counter +1)
 //   - StoreChunk skipped: pre-deleted CAS file is NOT recreated on disk
 //   - blocks slice still contains a BlockRef{Hash:H,Offset:..,Size:..}
@@ -719,7 +721,7 @@ func TestRollup_LRUHit_SkipsStoreChunk(t *testing.T) {
 
 	// Install a persister to capture the BlockRef manifest — proves the
 	// blocks slice still received the BlockRef append unconditionally
-	// (D-02 manifest invariant).
+	// (manifest invariant).
 	var mu sync.Mutex
 	var captured []capturedPersist
 	bc.SetObjectIDPersister(func(_ context.Context, pid string, blocks []blockstore.BlockRef, oid blockstore.ObjectID) error {
@@ -767,7 +769,7 @@ func TestRollup_LRUHit_SkipsStoreChunk(t *testing.T) {
 	}
 }
 
-// TestRollup_AddRefReturnsErrUnknownHash_FallsBackToStoreChunk: LRU has h;
+// TestRollup_AddRefReturnsErrUnknownHash_FallsBackToStoreChunk: LRU has h
 // programmable FBS returns ErrUnknownHash on every AddRef (simulating
 // TOCTOU eviction); rollup must proceed to StoreChunk normally.
 func TestRollup_AddRefReturnsErrUnknownHash_FallsBackToStoreChunk(t *testing.T) {
@@ -801,7 +803,7 @@ func TestRollup_AddRefReturnsErrUnknownHash_FallsBackToStoreChunk(t *testing.T) 
 
 // TestRollup_AddRefError_OtherThan_ErrUnknownHash_Propagates: AddRef
 // returns errors.New(...); rollupFile must return the wrapped error —
-// NO silent fallback (D-04 error-surfacing contract).
+// NO silent fallback (error-surfacing contract).
 func TestRollup_AddRefError_OtherThan_ErrUnknownHash_Propagates(t *testing.T) {
 	bc, wrapped, _ := newFSStoreForRollupLRUTest(t)
 	ctx := context.Background()
@@ -840,7 +842,7 @@ func TestRollup_AddRefError_OtherThan_ErrUnknownHash_Propagates(t *testing.T) {
 
 // TestRollup_ComputeObjectID_UnaffectedByLRUHit: write two payloads with
 // identical content; ObjectID and BlockRefs of each match. Verifies the
-// D-02 manifest invariant: LRU hit does NOT mutate the manifest seen
+// manifest invariant: LRU hit does NOT mutate the manifest seen
 // by ComputeObjectID.
 func TestRollup_ComputeObjectID_UnaffectedByLRUHit(t *testing.T) {
 	bc, _, _ := newFSStoreForRollupLRUTest(t)
@@ -886,8 +888,8 @@ func TestRollup_ComputeObjectID_UnaffectedByLRUHit(t *testing.T) {
 
 // TestRollup_LRUHit_NoBlockStateMutation: pre-seed a FileBlock row at
 // State=Remote, RefCount=5; run a rollup that triggers the LRU hit
-// AddRef path; assert post-rollup the row still has State=Remote and
-// RefCount=6 (D-27 STATE-01..03 preservation).
+// AddRef path; assert the row is preserved at State=Remote with
+// RefCount=6 post-rollup.
 func TestRollup_LRUHit_NoBlockStateMutation(t *testing.T) {
 	bc, _, mem := newFSStoreForRollupLRUTest(t)
 	ctx := context.Background()

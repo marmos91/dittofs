@@ -177,7 +177,7 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 
 	case types.CLAIM_DELEGATE_PREV:
 		// CLAIM_DELEGATE_PREV: reclaiming delegations after server restart.
-		// Requires persistent delegation state which is out of scope for Phase 11.
+		// Requires persistent delegation state which is currently out of scope.
 		// Must consume the component4 arg to prevent XDR desync.
 		xdr.DecodeString(reader) //nolint:errcheck
 		return openError(types.NFS4ERR_NOTSUPP)

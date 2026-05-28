@@ -18,7 +18,7 @@ func makeHash(seed byte) ContentHash {
 
 // TestComputeObjectID_Empty verifies that nil and empty input both yield the
 // same canonical empty-file ObjectID — BLAKE3 of just the domain prefix
-// (Phase 13 D-03). The result MUST NOT be all-zero (the all-zero value is
+// . The result MUST NOT be all-zero (the all-zero value is
 // the "never quiesced" sentinel and must be distinct from any real ObjectID).
 func TestComputeObjectID_Empty(t *testing.T) {
 	a := ComputeObjectID(nil)
@@ -45,7 +45,7 @@ func TestComputeObjectID_Empty(t *testing.T) {
 }
 
 // TestComputeObjectID_DomainSeparation verifies that a single-block ObjectID
-// is NOT equal to that block's bare Hash (Phase 13 D-02). The domain prefix
+// is NOT equal to that block's bare Hash. The domain prefix
 // keeps the ObjectID output space disjoint from per-chunk ContentHash values.
 func TestComputeObjectID_DomainSeparation(t *testing.T) {
 	var h0 ContentHash
@@ -58,7 +58,7 @@ func TestComputeObjectID_DomainSeparation(t *testing.T) {
 	}
 }
 
-// TestComputeObjectID_SortStability verifies ComputeObjectID is deterministic:
+// TestComputeObjectID_SortStability verifies ComputeObjectID is deterministic
 // two calls on the same BlockRef slice produce identical output.
 func TestComputeObjectID_SortStability(t *testing.T) {
 	blocks := []BlockRef{

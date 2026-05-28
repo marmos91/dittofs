@@ -245,7 +245,7 @@ func TestGCStatusCmd_NoArg_Errors(t *testing.T) {
 
 // TestGCCmd_HelpListsDryRun is a guard against a future refactor that
 // removes the --dry-run flag — operators read --help to discover the
-// dry-run mode (D-09 essential for first-deploy confidence).
+// dry-run mode, essential for first-deploy confidence.
 func TestGCCmd_HelpListsDryRun(t *testing.T) {
 	if f := gcCmd.Flags().Lookup("dry-run"); f == nil {
 		t.Fatal("gc subcommand must declare --dry-run flag")

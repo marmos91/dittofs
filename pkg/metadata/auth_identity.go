@@ -176,11 +176,11 @@ type Identity struct {
 
 // HasGID checks if the identity has the specified group ID in its supplementary groups.
 //
-// This method provides O(1) group membership lookup by lazily building and caching
+// Provides O(1) group membership lookup by lazily building and caching
 // a map on first use. For users with many supplementary groups (e.g., 50-100+),
 // this is significantly faster than linear search.
 //
-// Thread safety: This method is NOT thread-safe. Identity objects should not be
+// Thread safety: NOT thread-safe. Identity objects should not be
 // shared across goroutines, or callers must provide their own synchronization.
 //
 // Parameters:
@@ -245,7 +245,7 @@ var (
 
 // ApplyIdentityMapping applies identity transformation rules.
 //
-// This function implements identity mapping (squashing) rules for NFS shares:
+// Implements identity mapping (squashing) rules for NFS shares:
 //   - MapAllToAnonymous: All users mapped to anonymous (all_squash in NFS)
 //   - MapPrivilegedToAnonymous: Root/administrator mapped to anonymous (root_squash in NFS)
 //

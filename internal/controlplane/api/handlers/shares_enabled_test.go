@@ -8,9 +8,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// TestShareResponse_IncludesEnabled verifies D-28: the ShareResponse JSON
-// always includes the `enabled` field (no omitempty) so clients can render
-// the disabled state explicitly.
+// TestShareResponse_IncludesEnabled verifies the ShareResponse JSON
+// always includes the `enabled` field (no omitempty) so clients can
+// render the disabled state explicitly.
 func TestShareResponse_IncludesEnabled(t *testing.T) {
 	share := &models.Share{
 		ID:      "s1",

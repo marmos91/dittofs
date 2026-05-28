@@ -25,14 +25,14 @@ type FileBlockRefsAccessor interface {
 	CountFileBlockRefs(ctx context.Context, fileID uuid.UUID) (int, error)
 }
 
-// runBlockRefOpsTests dispatches the META-04 BlockRef round-trip conformance
+// runBlockRefOpsTests dispatches the BlockRef round-trip conformance
 // scenarios against the provided factory. Each backend wires
 // RunConformanceSuite into its *_conformance_test.go, so adding scenarios here
 // automatically runs them against Memory, Badger, and Postgres.
 //
-// Phase 12 META-04: every metadata backend MUST round-trip FileAttr.Blocks
-// across PutFile/GetFile (including replace and nil semantics). Postgres
-// additionally exercises the FK ON DELETE CASCADE behavior from Plan 02.
+// Every metadata backend MUST round-trip FileAttr.Blocks across
+// PutFile/GetFile (including replace and nil semantics). Postgres
+// additionally exercises the FK ON DELETE CASCADE behavior.
 func runBlockRefOpsTests(t *testing.T, factory StoreFactory) {
 	t.Helper()
 
@@ -138,7 +138,7 @@ func testBlockRef_NilBlocks(t *testing.T, factory StoreFactory) {
 
 // testBlockRef_ReplaceBlocks asserts that PutFile fully replaces the
 // previous BlockRefs list — no leftover rows from prior PutFile calls.
-// Plan 02 Postgres backend implements this via DELETE+INSERT in the same tx;
+// The Postgres backend implements this via DELETE+INSERT in the same tx;
 // Memory and Badger replace the slice trivially (single-blob encoding).
 func testBlockRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 	store := factory(t)
@@ -201,9 +201,9 @@ func testBlockRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 }
 
 // testBlockRef_CascadeDeleteOnFileDelete asserts that deleting a file row
-// cascades to the file_block_refs join table (Plan 02 D-03 FK ON DELETE
-// CASCADE). Postgres-only via the FileBlockRefsAccessor capability hook;
-// Memory and Badger have no separate refs table and skip cleanly.
+// cascades to the file_block_refs join table (via FK ON DELETE CASCADE).
+// Postgres-only via the FileBlockRefsAccessor capability hook; Memory
+// and Badger have no separate refs table and skip cleanly.
 func testBlockRef_CascadeDeleteOnFileDelete(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 
@@ -245,8 +245,8 @@ func testBlockRef_CascadeDeleteOnFileDelete(t *testing.T, factory StoreFactory) 
 		t.Fatalf("pre-delete row count: got %d, want %d", pre, len(blocks))
 	}
 
-	// Remove the parent's child mapping first (matches the Plan 02 test pattern;
-	// DeleteFile expects the file row to be detachable).
+	// Remove the parent's child mapping first (DeleteFile expects the
+	// file row to be detachable).
 	parent, err := store.GetParent(ctx, fileHandle)
 	if err != nil {
 		t.Fatalf("GetParent: %v", err)

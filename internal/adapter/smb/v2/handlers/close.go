@@ -192,8 +192,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 	// Flush cached data to ensure durability.
 	// Unlike NFS COMMIT which is non-blocking, SMB CLOSE requires immediate durability.
-	// Routed through common.CommitBlockStore so the Phase-12 []BlockRef plumbing
-	// lands in one place (see common/doc.go Phase-12 seam / D-12).
+	// Routed through common.CommitBlockStore so any future []BlockRef
+	// plumbing lands in one place (see common/doc.go).
 	if !openFile.IsDirectory && openFile.PayloadID != "" {
 		blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, openFile.MetadataHandle)
 		if bsErr != nil {
@@ -671,7 +671,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 // checkAndConvertMFsymlink checks if a file is an MFsymlink and converts it to a real symlink.
 //
 // MFsymlinks are 1067-byte files with XSym\n header used by macOS/Windows SMB clients
-// for symlink creation. This function:
+// for symlink creation. Steps:
 //  1. Checks file size is exactly 1067 bytes
 //  2. Reads content and verifies MFsymlink format
 //  3. Parses the symlink target
@@ -741,8 +741,8 @@ func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFil
 	}
 
 	// Read the MFsymlink content (always 1067 bytes).
-	// Routed through common.ReadFromBlockStore so the Phase-12 []BlockRef
-	// plumbing lands in one place (see common/doc.go Phase-12 seam / D-12).
+	// Routed through common.ReadFromBlockStore so any future []BlockRef
+	// plumbing lands in one place (see common/doc.go).
 	// The bytes are copied into a caller-owned slice because the MFsymlink
 	// parse path retains them past Release().
 	result, err := common.ReadFromBlockStore(ctx.Context, blockStore, openFile.PayloadID, 0, uint32(mfsymlink.Size))
@@ -788,8 +788,8 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 	// Delete content from block store (optional - ignore errors)
 	if openFile.PayloadID != "" {
 		if blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, openFile.MetadataHandle); bsErr == nil {
-			// Phase 12 API-01: nil []BlockRef triggers the dual-read /
-			// legacy delete path (D-20). Plan 08 threads the caller's
+			// Nil []BlockRef triggers the dual-read / legacy delete
+			// path. A later refactor will thread the caller's
 			// FileAttr.Blocks snapshot here.
 			_ = blockStore.Delete(ctx.Context, string(openFile.PayloadID), nil)
 		}

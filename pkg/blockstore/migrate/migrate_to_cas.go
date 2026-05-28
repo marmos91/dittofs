@@ -18,13 +18,13 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// MigrationToolVersion is recorded inside `.cas-migrated-v1` so Plan 09's
+// MigrationToolVersion is recorded inside `.cas-migrated-v1` so 's
 // boot guard + ops can audit which tool revision migrated a share. Bump
 // on any schema change to the sentinel / journal layout.
 const MigrationToolVersion = "v1.0.0"
 
-// SentinelFileName is the Plan 09 boot-guard marker. Written PER-SHARE
-// at `<shareDir>/.cas-migrated-v1` via atomic rename (D-10).
+// SentinelFileName is the boot-guard marker. Written PER-SHARE
+// at `<shareDir>/.cas-migrated-v1` via atomic rename.
 const SentinelFileName = ".cas-migrated-v1"
 
 // MigrateJournalFile is the per-share resumability journal. Distinct
@@ -36,7 +36,7 @@ const MigrateJournalFile = ".dittofs-migrate-to-cas.state"
 const SentinelTmpSuffix = ".tmp"
 
 // ErrChunkPutMismatch is returned when post-Put re-Get yields bytes that
-// disagree with the input (BSCAS-06 carry-forward, defense-in-depth).
+// disagree with the input (carry-forward, defense-in-depth).
 // Fatal — the journal preserves the resume point. Detect via errors.Is.
 var ErrChunkPutMismatch = errors.New("migrate: post-Put verification failed")
 
@@ -56,7 +56,7 @@ type MigrationOpts struct {
 
 	// StoreDir overrides where the `.cas-migrated-v1` sentinel is written.
 	// Empty defaults to shareDir. Production callers (cmd/dfs migrate-to-cas)
-	// pass the FSStore baseDir so the sentinel sits where Plan 09's boot
+	// pass the FSStore baseDir so the sentinel sits where 's boot
 	// guard looks (`<baseDir>/.cas-migrated-v1`). When the FSStore baseDir
 	// is a subdirectory of shareDir (e.g. `<shareDir>/blocks`), this MUST
 	// be set or the boot guard will never find the sentinel.
@@ -147,7 +147,7 @@ type sentinelContent struct {
 // file has FileAttr.Blocks rebuilt + FileAttr.BlockLayout == CASOnly.
 //
 // On failure: the journal at `<shareDir>/.dittofs-migrate-to-cas.state`
-// preserves the resume point; the sentinel is NOT written so Plan 09's
+// preserves the resume point; the sentinel is NOT written so 's
 // boot guard continues to refuse the share until a successful run.
 //
 // Idempotent: re-running after success is a no-op (legacy-file
@@ -262,7 +262,7 @@ func MigrateShareToCAS(
 
 		// Remove legacy `.blk` files for this file (best-effort —
 		// metadata is already cut over; orphan `.blk` files on disk
-		// will be reaped by Plan 09's boot guard at the next start).
+		// will be reaped by 's boot guard at the next start).
 		if err := removeLegacyBlkFiles(shareDir, f); err != nil {
 			// Non-fatal: log via the journal but continue. The boot
 			// guard's sentinel check is not affected by leftover .blk
@@ -312,7 +312,7 @@ func MigrateShareToCAS(
 	return MigrationResult{Stats: stats, Duration: time.Since(start)}, nil
 }
 
-// migrateOneFile re-chunks one legacy file's `.blk` tree via FastCDC,
+// migrateOneFile re-chunks one legacy file's `.blk` tree via FastCDC
 // Puts each chunk to the destination CAS store, verifies each Put via a
 // re-Get + BLAKE3 compare, and returns the rebuilt manifest plus
 // running counters.
@@ -356,7 +356,7 @@ func migrateOneFile(
 				return manifest, bytesPut, dedupHits, chunksWritten,
 					fmt.Errorf("migrate: Put %s offset %d: %w", f.Path, offset, perr)
 			}
-			// Defense-in-depth verification (BSCAS-06 carry-forward):
+			// Defense-in-depth verification (carry-forward)
 			// re-Get the chunk and compare bytes. A mismatch is fatal.
 			got, gerr := bs.Get(ctx, h)
 			if gerr != nil {
@@ -720,7 +720,7 @@ func contextErr(ctx context.Context, err error) error {
 }
 
 // blake3ContentHash returns the 32-byte BLAKE3 hash of data. Mirrors
-// pkg/blockstore/local/fs/rollup.go::blake3ContentHash (CAS chunk
+// pkg/blockstore/local/fs/rollup.go:blake3ContentHash (CAS chunk
 // hashing contract).
 func blake3ContentHash(data []byte) blockstore.ContentHash {
 	var h blockstore.ContentHash

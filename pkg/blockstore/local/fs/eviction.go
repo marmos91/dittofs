@@ -10,24 +10,23 @@ import (
 )
 
 // ensureSpace makes room for the given number of bytes by evicting CAS chunks
-// from the in-process LRU (LSL-08, D-27). Eviction order is least-recently-
+// from the in-process LRU. Eviction order is least-recently-
 // used; the picked chunk file is unlinked from blocks/{hh}/{hh}/{hex} and
 // bc.diskUsed is decremented atomically.
 //
 // Critical invariant: the eviction path does NOT consult the metadata
 // store. On the write hot path, eviction must rely entirely on on-disk
-// presence and the in-process LRU index — Phase 12+ may change the
-// engine API without leaking back into local storage decisions
-// (T-11-B-11).
+// presence and the in-process LRU index. Future changes to the engine
+// API must not leak back into local storage decisions.
 //
 // Pin mode and the eviction-disabled flag short-circuit to ErrDiskFull
 // without touching the LRU. Retention TTL with a non-positive duration
-// behaves the same way (matches the pre-LSL-08 contract that retention
-// policy can keep blocks around regardless of LRU position).
+// behaves the same way: retention policy can keep blocks around
+// regardless of LRU position.
 //
 // Concurrent ReadChunk that races an evict surfaces as
-// blockstore.ErrChunkNotFound and the engine refetches from CAS
-// (T-11-B-08, accept/refetch posture).
+// blockstore.ErrChunkNotFound; the engine refetches from CAS
+// (accept/refetch posture).
 func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 	if bc.maxDisk <= 0 {
 		return nil

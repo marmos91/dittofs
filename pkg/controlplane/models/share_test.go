@@ -6,13 +6,13 @@ import (
 	"testing"
 )
 
-// TestShare_JSON_IncludesEnabled — Phase 6 D-28 regression guard.
+// TestShare_JSON_IncludesEnabled is a regression guard.
 //
-// Locks in the Phase 5 landing of the `enabled` JSON tag on models.Share.
-// The Phase-6 CLI `share list` / `share show` columns and the Phase-6
-// apiclient `Share.Enabled` field depend on this field round-tripping
-// without `omitempty` semantics; if a future edit drops the tag or adds
-// `omitempty`, this test fails.
+// Locks in the `enabled` JSON tag on models.Share. The CLI
+// `share list` / `share show` columns and the apiclient `Share.Enabled`
+// field depend on this field round-tripping without `omitempty`
+// semantics; if a future edit drops the tag or adds `omitempty`, this
+// test fails.
 func TestShare_JSON_IncludesEnabled(t *testing.T) {
 	// Marshal: `enabled:true` is emitted.
 	b, err := json.Marshal(Share{Enabled: true})

@@ -65,7 +65,7 @@ func (store *MemoryMetadataStore) GetShareOptions(ctx context.Context, shareName
 
 	// Return a copy to avoid external mutation.
 	optsCopy := shareData.Share.Options
-	// D-A6: empty BlockLayout is the pre-Phase-14 forward-compat case
+	// D-A6: empty BlockLayout is the forward-compat case
 	// and resolves to `legacy`. Unknown values are fail-loud (matches
 	// Postgres backend + ErrInvalidBlockLayout contract).
 	normalized, err := metadata.ParseBlockLayout(string(optsCopy.BlockLayout))

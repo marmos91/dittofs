@@ -137,7 +137,7 @@ func TestChunkStore_ShardPath_TwoLevel(t *testing.T) {
 // known-hex hash and asserts the resulting file lives at the documented
 // blocks/{hex[0:2]}/{hex[2:4]}/{hex} layout under baseDir — a regression
 // guard if the sharding scheme is ever changed without updating callers
-// (recovery's sharding inverse + Phase 11 GC mark-sweep both rely on this
+// (recovery's sharding inverse + GC mark-sweep both rely on this
 // shape).
 func TestChunkPathFormat(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{})
@@ -162,12 +162,12 @@ func TestChunkPathFormat(t *testing.T) {
 	}
 }
 
-// --- Phase 19 Plan 07: OnChunkComplete wire-in in StoreChunk. ---
+// ---: OnChunkComplete wire-in in StoreChunk. ---
 //
-// Plan 04 landed the FSStoreOptions.OnChunkComplete slot + the storage
-// field. Plan 07 fires the callback from StoreChunk AFTER lruTouch on
+// landed the FSStoreOptions.OnChunkComplete slot + the storage
+// field. fires the callback from StoreChunk AFTER lruTouch on
 // every successful chunk write. The five tests below pin the producer-
-// side contract end-to-end: exactly-once on success, never on error,
+// side contract end-to-end: exactly-once on success, never on error
 // nil-safe, and outside the lruMu hot lock so consumers (engine.Cache.Put)
 // can take their own locks without deadlock risk.
 
@@ -211,7 +211,7 @@ func TestChunkstore_OnChunkComplete_FiresAfterSuccessfulStoreChunk(t *testing.T)
 }
 
 // TestChunkstore_NilOnChunkComplete_NoOp asserts StoreChunk succeeds and
-// does NOT panic when no callback is installed (D-12 nil-safety contract,
+// does NOT panic when no callback is installed (nil-safety contract
 // gated at the firing site — chunkstore.go is the producer).
 func TestChunkstore_NilOnChunkComplete_NoOp(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{})
@@ -229,7 +229,7 @@ func TestChunkstore_NilOnChunkComplete_NoOp(t *testing.T) {
 	}
 }
 
-// TestChunkstore_OnChunkComplete_FiresExactlyOnce_PerSuccessfulCall asserts:
+// TestChunkstore_OnChunkComplete_FiresExactlyOnce_PerSuccessfulCall asserts
 //   - Two StoreChunk calls with DIFFERENT hashes → counter == 2.
 //   - A second StoreChunk for an already-stored hash short-circuits via
 //     HasChunk (idempotent CAS) and does NOT fire again — the callback is
@@ -268,7 +268,7 @@ func TestChunkstore_OnChunkComplete_FiresExactlyOnce_PerSuccessfulCall(t *testin
 }
 
 // TestChunkstore_OnChunkComplete_DoesNotFireOnError asserts that error
-// paths through StoreChunk leave the callback un-invoked (D-12 — never
+// paths through StoreChunk leave the callback un-invoked (never
 // fire on error). The setup pre-creates the blocks/<hh>/<hh> directory as
 // a regular file so MkdirAll fails before the rename / LRU touch / callback
 // can run.
@@ -282,7 +282,7 @@ func TestChunkstore_OnChunkComplete_DoesNotFireOnError(t *testing.T) {
 	data := bytes.Repeat([]byte{0xBE}, 256)
 
 	// Pre-create one of the shard parent directories AS A FILE so
-	// MkdirAll on its child path fails with ENOTDIR. Layout:
+	// MkdirAll on its child path fails with ENOTDIR. Layout
 	//   <baseDir>/blocks/<hh>/<hh>/<hex>
 	// With h = bebe...be the first shard is "be"; create
 	// <baseDir>/blocks/be as a regular file before StoreChunk runs.

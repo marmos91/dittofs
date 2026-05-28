@@ -139,7 +139,7 @@ var _ metadata.SyncedHashStore = (*recordingSyncedHashStore)(nil)
 // can focus on engine.Delete's coordinator + syncedHashStore loop
 // without filesystem state.
 //
-// Note on race semantics (T-18-07-01 in the plan threat model): the
+// Note on race semantics (in the plan threat model): the
 // DecrementRefCount returns the new count BEFORE DeleteSynced fires.
 // A parallel mirror-loop pass would have already snapshotted the hash
 // at iteration start; if the local CAS chunk is gone by the time it
@@ -172,7 +172,7 @@ func buildCascadeFixture(t *testing.T, coord MetadataCoordinator, syncedStore me
 // TestEngine_Delete_CascadesDeleteSynced asserts that engine.Delete
 // fires syncedHashStore.DeleteSynced exactly when the coordinator's
 // DecrementRefCount returns newCount == 0, and never otherwise. The
-// cascade keeps the synced set a strict subset of local CAS contents:
+// cascade keeps the synced set a strict subset of local CAS contents
 // a stale marker would cause the next mirror pass on a re-Put of the
 // same hash to skip the upload, leaving the remote out of sync with
 // local.

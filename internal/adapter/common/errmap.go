@@ -45,7 +45,7 @@ var defaultCodes = protoCodes{
 //   - SMB column: internal/adapter/smb/v2/handlers/converters.go:354-395 for
 //     general (non-lock) context. Lock-context deltas go in lock_errmap.go.
 //
-// Three-way drift surfaced during consolidation (per D-07 / PATTERNS.md
+// Three-way drift surfaced during consolidation (see PATTERNS.md
 // gotcha #7). Each row with a drift item is annotated inline with the
 // authority source and the fallback chosen for the omitting protocol:
 //

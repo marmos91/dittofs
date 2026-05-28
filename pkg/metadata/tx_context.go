@@ -11,14 +11,14 @@ type txContextKey struct{}
 // transaction is retrievable via TxFromContext from anywhere in the
 // call chain.
 //
-// Phase 12 CR-01 (review iteration 1): wired by common.CopyPayload
+// (review iteration 1): wired by common.CopyPayload
 // (and any future caller that needs to bind engine-level RefCount
 // mutations to its WithTransaction-owned tx). The per-share
 // metadataCoordinator (pkg/controlplane/runtime/shares/coordinator.go)
 // reads this on every IncrementRefCount / DecrementRefCount call so the
 // underlying SQL/Badger UPDATE shares the caller's txn — without it
 // every increment commits on a fresh pool connection and survives the
-// caller's rollback (silent INV-02 leak).
+// caller's rollback (silent leak).
 //
 // Memory and Badger backends are tolerant of the context-carried tx:
 // memory's WithTransaction holds a single mutex (so the public-store

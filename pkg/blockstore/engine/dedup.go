@@ -11,20 +11,20 @@ import (
 	"lukechampine.com/blake3"
 )
 
-// tryEagerSmallFileDedup is the Phase 19 Plan 08 (Opt 4) file-level
-// dedup fast-path for files at or below chunker.MinChunkSize (D-13 — 1
+// tryEagerSmallFileDedup is the (Opt 4) file-level
+// dedup fast-path for files at or below chunker.MinChunkSize (1
 // MiB). Such files emit a single chunk under FastCDC, so the eager
-// path is pure work elimination: hash the whole content in RAM,
+// path is pure work elimination: hash the whole content in RAM
 // compute the trivial single-block ObjectID, consult
 // metadata.FindByObjectID, and on hit short-circuit chunker + log +
 // CAS write entirely.
 //
 // Sits BEFORE trySpeculativeFileLevelDedup in engine.Flush's pre-rollup
-// hook (D-14). Sibling fast-path — shares applyFileLevelDedupHit's
-// finalize machinery so STATE-01..03 + cache invalidation invariants
-// remain identical to the speculative path's hit.
+// hook. Sibling fast-path — shares applyFileLevelDedupHit's
+// finalize machinery so cache invalidation invariants remain identical
+// to the speculative path's hit.
 //
-// ObjectID semantics (D-14, verified against pkg/blockstore/objectid.go):
+// ObjectID semantics (verified against pkg/blockstore/objectid.go)
 // ComputeObjectID returns BLAKE3(prefix || h0 || ... || hN-1), so the
 // single-block ObjectID is BLAKE3(prefix || hash(data)) — NOT a bare
 // leaf hash. A previously-quiesced file dedups to this ObjectID only
@@ -32,12 +32,12 @@ import (
 // content hash (the only single-block input that produces the same
 // Merkle root).
 //
-// Cache warming (D-16): on HIT, bs.cache.Put(hash, data) is called
+// Cache warming: on HIT, bs.cache.Put(hash, data) is called
 // AFTER applyFileLevelDedupHit succeeds (don't poison the cache on a
 // failed finalize). On MISS the rollup path's OnChunkComplete wiring
-// (Plan 07) handles warm-after-write.
+// handles warm-after-write.
 //
-// RAM guard (D-15): bounded naturally by per-share concurrent Flush
+// RAM guard: bounded naturally by per-share concurrent Flush
 // count × MinChunkSize. Thousand-file-burst is a v0.17+ concern per
 // CONTEXT.md <deferred>.
 //
@@ -52,7 +52,7 @@ func (m *Syncer) tryEagerSmallFileDedup(
 	if m.coordinator == nil {
 		return false, nil
 	}
-	// D-13 threshold gate: files above MinChunkSize bypass eager (the
+	// threshold gate: files above MinChunkSize bypass eager (the
 	// rollup will run as usual and the speculative path handles them).
 	// Empty data is defensive — speculative path has its own empty-blocks
 	// gate; eager opts out to keep the contract simple.
@@ -61,7 +61,7 @@ func (m *Syncer) tryEagerSmallFileDedup(
 	}
 
 	// Compute the single-block content hash + provisional ObjectID.
-	// ContentHash is [32]byte (same shape as blake3.Sum256's return),
+	// ContentHash is [32]byte (same shape as blake3.Sum256's return)
 	// so a direct conversion avoids the temp + copy.
 	h := blockstore.ContentHash(blake3.Sum256(data))
 	blockRef := blockstore.BlockRef{Hash: h, Offset: 0, Size: uint32(len(data))}
@@ -76,7 +76,7 @@ func (m *Syncer) tryEagerSmallFileDedup(
 		return false, nil
 	}
 
-	// Delegate to the shared finalize machinery — STATE-01..03 + cache
+	// Delegate to the shared finalize machinery — + cache
 	// invalidation invariants identical to the speculative path's hit.
 	// Passing the speculative single-block ref keeps the set-difference
 	// math correct (target's ObjectID == provisional ⇒ target has the
@@ -96,9 +96,9 @@ func (m *Syncer) tryEagerSmallFileDedup(
 		return hit, err
 	}
 
-	// D-16 cache warming: populate engine Cache with the bytes we just
+	// cache warming: populate engine Cache with the bytes we just
 	// hashed (we already have them in RAM). MISS case is handled by the
-	// regular rollup path's OnChunkComplete wiring (Plan 07). Reading
+	// regular rollup path's OnChunkComplete wiring. Reading
 	// through the BlockStore back-reference so post-construction
 	// `bs.cache = rec` swaps (TestClose_ClosesCache pattern) are
 	// observed; bs.cache is never nil thanks to the Null Object pattern
@@ -115,10 +115,10 @@ func (m *Syncer) tryEagerSmallFileDedup(
 	return true, nil
 }
 
-// trySpeculativeFileLevelDedup is the BSCAS-05 file-level dedup
-// short-circuit entry point (Phase 13 D-08 / D-09 / D-10 / D-11 / D-14).
+// trySpeculativeFileLevelDedup is the file-level dedup
+// short-circuit entry point.
 //
-// Trigger condition (D-09):
+// Trigger condition
 //
 //	len(speculativeBlocks) > 0 AND
 //	every blockStates[i] == blockstore.BlockStatePending AND
@@ -126,24 +126,25 @@ func (m *Syncer) tryEagerSmallFileDedup(
 //
 // Note (W-6): chunker output is by construction Pending. The
 // blockStates parameter is retained for explicit invariant checking
-// and to keep parity with Plan 06's RED test signature; callers MUST
+// and to keep parity with 's RED test signature; callers MUST
 // only invoke this with the chunker's freshly-emitted blocks where the
 // invariant holds.
 //
-// On hit (D-10): in one metadata txn (caller-owned)
+// On hit: in one metadata txn (caller-owned)
 //   - IncrementRefCount on every distinct hash in target.Blocks.
 //   - PersistFileBlocks(payloadID, target.Blocks, provisionalObjectID).
 //   - Best-effort DecrementRefCount on speculative-only hashes.
 //   - Cache.InvalidateFile for orphaned speculative chunks.
-//   - DeleteAppendLog for the per-file log (D-11).
 //
-// On race-loser (D-14): PersistFileBlocks returns ErrObjectIDConflict.
+// - DeleteAppendLog for the per-file log.
+//
+// On race-loser: PersistFileBlocks returns ErrObjectIDConflict.
 // We re-call FindByObjectID, decrement RefCount on our just-incremented
 // target hashes, swap to the now-canonical target's BlockRef list, and
 // re-call PersistFileBlocks. Single retry; further conflicts propagate.
 //
 // Returns (true, nil) on hit, (false, nil) on miss (caller proceeds
-// with the existing per-block GetByHash + WriteBlockWithHash path),
+// with the existing per-block GetByHash + WriteBlockWithHash path)
 // (false, err) on a backend error that should propagate.
 func (m *Syncer) trySpeculativeFileLevelDedup(
 	ctx context.Context,
@@ -155,7 +156,7 @@ func (m *Syncer) trySpeculativeFileLevelDedup(
 	if m.coordinator == nil {
 		return false, nil
 	}
-	// D-09 trigger condition.
+	// trigger condition.
 	if len(speculativeBlocks) == 0 {
 		return false, nil
 	}
@@ -183,8 +184,8 @@ func (m *Syncer) trySpeculativeFileLevelDedup(
 	return m.applyFileLevelDedupHit(ctx, payloadID, speculativeBlocks, targetBlocks, provisional, false /*isRetry*/)
 }
 
-// isObjectIDConflict reports whether err signals a Phase 13 D-14
-// first-committer-wins concurrent-quiesce race. Recognises two shapes:
+// isObjectIDConflict reports whether err signals a
+// first-committer-wins concurrent-quiesce race. Recognises two shapes
 //
 //  1. errors.Is(err, ErrObjectIDConflict) — the runtime coordinator
 //     wraps backend conflict errors (Postgres 23505 on
@@ -218,7 +219,7 @@ func isObjectIDConflict(err error) bool {
 // FindByObjectID has confirmed a file with identical Merkle root
 // already exists in the metadata store. See trySpeculativeFileLevelDedup
 // for the higher-level contract; this helper is also re-entered once
-// (with isRetry=true) to absorb the D-14 first-committer-wins race.
+// (with isRetry=true) to absorb the first-committer-wins race.
 func (m *Syncer) applyFileLevelDedupHit(
 	ctx context.Context,
 	payloadID string,
@@ -244,7 +245,7 @@ func (m *Syncer) applyFileLevelDedupHit(
 	err := m.coordinator.PersistFileBlocks(ctx, payloadID, targetBlocks, provisional)
 	if err != nil {
 		if !isRetry && isObjectIDConflict(err) {
-			// Concurrent-quiesce race (D-14): someone else committed
+			// Concurrent-quiesce race: someone else committed
 			// first. Roll back our just-incremented refcounts on the
 			// original target, re-fetch the now-canonical target, and
 			// retry once. For hashes shared between original and
@@ -256,12 +257,12 @@ func (m *Syncer) applyFileLevelDedupHit(
 			// applyFileLevelDedupHit call must own exactly one
 			// increment per target hash by the time it returns
 			// success, so partial rollbacks risk double-counting on
-			// the retry. WR-01 (Phase 13 review iteration 1):
+			// the retry. (review iteration 1)
 			// considered the symmetric-difference optimisation but
 			// rejected it because the retry unconditionally
 			// re-increments every updatedTarget hash; skipping shared
 			// hashes here would leave them at +2 after retry instead
-			// of the intended +1. INV-02 audit reconciles any
+			// of the intended +1. audit reconciles any
 			// transient dip while the retry runs (RefCount is
 			// non-blocking; GC keys off FileAttr.Blocks references in
 			// the persisted state, not the in-flight rollback window).
@@ -290,16 +291,16 @@ func (m *Syncer) applyFileLevelDedupHit(
 		return false, fmt.Errorf("file-level dedup persist: %w", err)
 	}
 
-	// 3. Decrement RefCount on speculative-only hashes (D-10 step 4).
+	// 3. Decrement RefCount on speculative-only hashes (step 4).
 	//
 	// W-5: this step is BEST-EFFORT. Step 2's PersistFileBlocks has
 	// already committed the swap to target's BlockRef list. Failures
 	// here do NOT roll back the persisted state — they leave orphaned
-	// refcount entries that the GC sweep (Phase 11 GC-01..04) will
+	// refcount entries that the GC sweep will
 	// reclaim. Logging at WARN matches that contract (orphan; GC will
 	// reclaim).
 	//
-	// WR-02 (Phase 13 review iteration 1): retry-time invariant. On
+	// (review iteration 1): retry-time invariant. On
 	// the retry path (isRetry=true) targetBlocks is the updated
 	// canonical target's slice (passed via the recursive call after
 	// FindByObjectID); seen is the recursive frame's freshly-built
@@ -330,8 +331,8 @@ func (m *Syncer) applyFileLevelDedupHit(
 		}
 	}
 
-	// 4. Cache invalidation for orphaned speculative chunks (D-10 step
-	// 5 / Phase 12 D-35). Build the removed-hash list in BlockRef order
+	// 4. Cache invalidation for orphaned speculative chunks (step
+	// 5 /). Build the removed-hash list in BlockRef order
 	// (preserves multiplicity expectations of the surgical-invalidate
 	// contract). Read through the BlockStore back-reference so that
 	// post-construction `bs.cache = rec` swaps (TestClose_ClosesCache
@@ -347,7 +348,7 @@ func (m *Syncer) applyFileLevelDedupHit(
 		m.bs.cache.InvalidateFile(payloadID, removed)
 	}
 
-	// 5. Per-file append-log truncation (D-11). Best-effort: a failure
+	// 5. Per-file append-log truncation. Best-effort: a failure
 	// here leaves a stale append log behind that the next quiesce will
 	// rewrite, but the metadata commit has already happened and reads
 	// will resolve via target's BlockRefs.
@@ -358,12 +359,12 @@ func (m *Syncer) applyFileLevelDedupHit(
 		}
 	}
 
-	// 6. WR-02 (Phase 13 review iteration 2): purge speculative FileBlock
-	// rows for payloadID. After step 2 PersistFileBlocks succeeded,
+	// 6. (review iteration 2): purge speculative FileBlock
+	// rows for payloadID. After step 2 PersistFileBlocks succeeded
 	// FileAttr.Blocks points to the target's BlockRefs and reads resolve
 	// via target's hashes (GetByHash routes to the target's persisted
 	// row, whose RefCount we just incremented). The local speculative
-	// rows under "{payloadID}/{idx}" are now orphans:
+	// rows under "{payloadID}/{idx}" are now orphans
 	//
 	//   - They are still Pending (the upload pump was bypassed) so the
 	//     periodic mirror loop would surface them via ListUnsynced and
@@ -374,7 +375,7 @@ func (m *Syncer) applyFileLevelDedupHit(
 	//     them Remote, computing a Merkle root from speculative content
 	//     and silently overwriting the target-sourced FileAttr.Blocks /
 	//     ObjectID — reverting the dedup hit's atomic swap.
-	//   - Syncer.GetFileSize / Exists consult ListFileBlocks(payloadID);
+	// - Syncer.GetFileSize / Exists consult ListFileBlocks(payloadID)
 	//     a speculative row reaching Remote could diverge from
 	//     FileAttr.Size / target-derived size.
 	//

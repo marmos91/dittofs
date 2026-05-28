@@ -23,7 +23,7 @@ type Serializable interface {
 
 // ReadCall parses an RPC call message from raw bytes.
 //
-// This function deserializes the RPC call header from the network data,
+// Deserializes the RPC call header from the network data,
 // extracting all the routing and authentication information needed to
 // process the request. It validates that the message is actually a CALL
 // (not a REPLY) and properly unmarshals all fields.
@@ -81,12 +81,12 @@ func ReadCall(data []byte) (*RPCCallMessage, error) {
 
 // ReadData extracts the procedure-specific parameters from an RPC message.
 //
-// After parsing the RPC call header with ReadCall, this function extracts
+// After parsing the RPC call header with ReadCall, ReadData extracts
 // the remaining bytes that contain the procedure-specific parameters. It
 // skips over the RPC header fields and authentication data to find where
 // the actual procedure arguments begin.
 //
-// This function manually calculates offsets instead of using XDR unmarshaling
+// Manually calculates offsets instead of using XDR unmarshaling
 // because we don't know the structure of the procedure parameters at this point -
 // that's determined by the specific program/version/procedure being called.
 //
@@ -168,7 +168,7 @@ func ReadData(message []byte, call *RPCCallMessage) ([]byte, error) {
 
 // MakeSuccessReply constructs an RPC success reply message.
 //
-// This function builds a complete RPC reply indicating successful execution
+// Builds a complete RPC reply indicating successful execution
 // of a procedure. It creates the RPC reply header with appropriate fields
 // and prepends the RPC fragment header required by the RPC record marking
 // standard (RFC 5531 Section 11).
@@ -274,7 +274,7 @@ func MakeSuccessReply(xid uint32, data []byte) ([]byte, error) {
 
 // MakeErrorReply creates an RPC error reply message.
 //
-// This function constructs a complete RPC reply that indicates an error
+// Constructs a complete RPC reply that indicates an error
 // occurred on the server side. It's used when the server accepts the RPC call
 // but cannot successfully execute it due to system errors, resource exhaustion,
 // or rate limiting.
@@ -340,7 +340,7 @@ func MakeErrorReply(xid uint32, acceptStat uint32) ([]byte, error) {
 
 // MakeProgMismatchReply creates an RPC PROG_MISMATCH reply message.
 //
-// This function constructs a complete RPC reply that indicates the client
+// Constructs a complete RPC reply that indicates the client
 // requested an unsupported version of a supported program. The reply includes
 // the range of versions that the server supports for that program, allowing
 // the client to automatically retry with a supported version.
@@ -573,7 +573,7 @@ const (
 //   - length=4: padding=0 (already aligned)
 //   - length=5: padding=3 (pad to 8 bytes)
 //
-// This function is useful when manually encoding XDR data or calculating
+// Useful when manually encoding XDR data or calculating
 // sizes for buffer allocation.
 //
 // Parameters:

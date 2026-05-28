@@ -299,7 +299,7 @@ func MountSMB(t *testing.T, port int, creds SMBCredentials) *Mount {
 }
 
 // MountSMBWithError mounts an SMB share and returns the mount info or an error.
-// Unlike MountSMB, this function does NOT call t.Fatal on mount failure.
+// Unlike MountSMB, it does NOT call t.Fatal on mount failure.
 // Use this for testing scenarios where mount is expected to fail (e.g., permission denied).
 func MountSMBWithError(t *testing.T, port int, creds SMBCredentials) (*Mount, error) {
 	t.Helper()

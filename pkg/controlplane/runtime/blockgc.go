@@ -16,15 +16,15 @@ import (
 // isolation; remote stores ref-counted"), and invokes engine.CollectGarbage
 // once per remote.
 //
-// Phase 11 Plan 06 cross-share aggregation (D-03): each per-remote
-// invocation receives a MultiShareReconciler scoped to the shares
-// pointing at that remote, so the mark phase enumerates the union of
-// every share's FileBlocks. Without this, two shares sharing one remote
-// would each delete the other's CAS objects.
+// Cross-share aggregation: each per-remote invocation receives a
+// MultiShareReconciler scoped to the shares pointing at that remote,
+// so the mark phase enumerates the union of every share's FileBlocks.
+// Without this, two shares sharing one remote would each delete the
+// other's CAS objects.
 //
 // Arguments:
 //   - sharePrefix: HISTORICAL — preserved in the signature for callers
-//     that still pass it, but Phase 11 WR-04 removed engine.Options.SharePrefix
+//     that still pass it, but engine.Options.SharePrefix was removed
 //     because the mark-sweep design has a global live set and per-share
 //     scoping no longer makes sense. A non-empty value is logged at WARN
 //     so operators see that the flag is no longer honored, then ignored.
@@ -52,11 +52,10 @@ func (r *Runtime) RunBlockGC(ctx context.Context, sharePrefix string, dryRun boo
 	for _, entry := range entries {
 		opts := &engine.Options{
 			DryRun: dryRun,
-			// Phase 11 IN-3-04: thread the remote-store config UUID
-			// and the per-remote share scope into engine.Options so the
-			// engine's own start/complete log lines carry the
-			// correlation keys SREs need for cross-checking against
-			// S3 access logs.
+			// Thread the remote-store config UUID and the per-remote
+			// share scope into engine.Options so the engine's own
+			// start/complete log lines carry the correlation keys SREs
+			// need for cross-checking against S3 access logs.
 			RemoteEndpointID: entry.ConfigID,
 			Shares:           append([]string(nil), entry.Shares...),
 		}
@@ -73,9 +72,8 @@ func (r *Runtime) RunBlockGC(ctx context.Context, sharePrefix string, dryRun boo
 
 		// Per-remote MultiShareReconciler: the mark phase enumerates
 		// EnumerateFileBlocks across every share pointing at this
-		// remote so the live set is the union (D-03). Without this,
-		// each share's GC would treat the other's CAS objects as
-		// orphans.
+		// remote so the live set is the union. Without this, each
+		// share's GC would treat the other's CAS objects as orphans.
 		rec := &perRemoteReconciler{rt: r, shares: entry.Shares}
 
 		stats := collectGarbageFn(ctx, entry.Store, rec, opts)
@@ -108,12 +106,12 @@ func (p *perRemoteReconciler) GetMetadataStoreForShare(shareName string) (metada
 }
 
 // RunBlockGCForShare looks up the named share, derives its persistent
-// gc-state directory (Phase 11 D-10), and dispatches a GC run that scopes
-// last-run.json persistence to that share. Behavior beyond persistence
-// matches RunBlockGC: every distinct remote referenced by any registered
-// share is scanned, and the cross-share live set (D-03) is enforced —
-// the {name} parameter only narrows where the run summary is written, not
-// what is marked or swept.
+// gc-state directory, and dispatches a GC run that scopes last-run.json
+// persistence to that share. Behavior beyond persistence matches
+// RunBlockGC: every distinct remote referenced by any registered share
+// is scanned, and the cross-share live set is enforced — the {name}
+// parameter only narrows where the run summary is written, not what is
+// marked or swept.
 //
 // Returns an ErrShareNotFound-wrapped error if name is unknown.
 func (r *Runtime) RunBlockGCForShare(ctx context.Context, name string, dryRun bool) (*engine.GCStats, error) {
@@ -135,8 +133,8 @@ func (r *Runtime) RunBlockGCForShare(ctx context.Context, name string, dryRun bo
 		opts := &engine.Options{
 			DryRun:      dryRun,
 			GCStateRoot: gcRoot,
-			// Phase 11 IN-3-04: surface per-remote correlation in the
-			// engine logs even on the per-share path.
+			// Surface per-remote correlation in the engine logs even on
+			// the per-share path.
 			RemoteEndpointID: entry.ConfigID,
 			Shares:           append([]string(nil), entry.Shares...),
 		}
@@ -177,11 +175,11 @@ func (r *Runtime) GCStateDirForShare(name string) (string, error) {
 	return r.sharesSvc.GetGCStateDirForShare(name)
 }
 
-// applyGCDefaults overlays operator-configured GC defaults onto opts. Phase
-// 11 WR-01: without this, the gc.grace_period / gc.sweep_concurrency /
+// applyGCDefaults overlays operator-configured GC defaults onto opts.
+// Without this, the gc.grace_period / gc.sweep_concurrency /
 // gc.dry_run_sample_size knobs surfaced in pkg/config and validated at
-// startup were silently ignored — every CollectGarbage invocation
-// fell back to the engine's hardcoded defaults (1h, 16, 1000).
+// startup would be silently ignored — every CollectGarbage invocation
+// would fall back to the engine's hardcoded defaults (1h, 16, 1000).
 //
 // Per-call opts fields take precedence over defaults so a future caller
 // can still override on a single run.

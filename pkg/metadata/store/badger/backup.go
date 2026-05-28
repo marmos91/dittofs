@@ -198,7 +198,7 @@ func (s *BadgerMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 		return fmt.Errorf("%w: got version %d, want %d", metadata.ErrSchemaVersionMismatch, schemaVer, badgerSchemaVersion)
 	}
 
-	// Phase 1: Collect all KV entries into memory without writing to Badger.
+	// Collect all KV entries into memory without writing to Badger.
 	// The payloadReader is a tee reader that accumulates bytes into the CRC
 	// hash. By the time the sentinel is read, the accumulator covers the
 	// entire payload and VerifyCRC can validate the trailing 4 CRC bytes.
@@ -252,14 +252,14 @@ func (s *BadgerMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 		entries = append(entries, kvEntry{Key: key, Value: val})
 	}
 
-	// Phase 2: Verify CRC BEFORE any durable write.
+	// Verify CRC BEFORE any durable write.
 	// The tee reader has accumulated all payload bytes; the original reader
 	// r still has the trailing 4 CRC bytes unread.
 	if err := backup.VerifyCRC(r, acc); err != nil {
 		return fmt.Errorf("%w: %v", metadata.ErrRestoreCorrupt, err)
 	}
 
-	// Phase 3: CRC verified — flush entries to Badger via WriteBatch.
+	// CRC verified — flush entries to Badger via WriteBatch.
 	wb := s.db.NewWriteBatch()
 	for i, e := range entries {
 		if err := wb.SetEntry(badgerdb.NewEntry(e.Key, e.Value)); err != nil {

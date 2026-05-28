@@ -1,10 +1,10 @@
 //go:build e2e
 
-// TestExternalVerifier_ContentHashHeader confirms BSCAS-06 (D-33): every
-// cas/.../ object stamped by Phase 11's syncer carries the
-// x-amz-meta-content-hash user-metadata header so that EXTERNAL tooling
-// (e.g., aws s3api head-object) can verify integrity without depending
-// on DittoFS's own metadata store.
+// TestExternalVerifier_ContentHashHeader confirms that every cas/.../
+// object stamped by the syncer carries the x-amz-meta-content-hash
+// user-metadata header so that EXTERNAL tooling (e.g.,
+// aws s3api head-object) can verify integrity without depending on
+// DittoFS's own metadata store.
 //
 // The test:
 //
@@ -97,7 +97,7 @@ func TestExternalVerifier_ContentHashHeader(t *testing.T) {
 
 	drainUploads(t, cli)
 
-	// ---- Direct S3 verification (BSCAS-06) ----
+	// ---- Direct S3 verification ----
 	keys := helpers.ListCASKeys(t, lsHelper, bucket)
 	require.NotEmpty(t, keys, "expected at least one cas/.../ object after write+drain")
 	t.Logf("listed %d cas/ objects via direct S3 SDK", len(keys))

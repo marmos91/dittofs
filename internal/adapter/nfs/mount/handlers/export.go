@@ -99,7 +99,7 @@ func (h *Handler) Export(
 }
 
 // DecodeExportRequest decodes an EXPORT request.
-// Since EXPORT takes no parameters, this function simply validates
+// Since EXPORT takes no parameters, it validates
 // that the data is empty and returns an empty request struct.
 //
 // Parameters:

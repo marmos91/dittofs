@@ -38,11 +38,11 @@ type SessionCryptoState struct {
 	// For 3.x: KDF-derived 16-byte signing key.
 	SigningKey []byte
 
-	// EncryptionKey is the client-to-server encryption key (Phase 35).
+	// EncryptionKey is the client-to-server encryption key.
 	// Only populated for SMB 3.x sessions.
 	EncryptionKey []byte
 
-	// DecryptionKey is the server-to-client decryption key (Phase 35).
+	// DecryptionKey is the server-to-client decryption key.
 	// Only populated for SMB 3.x sessions.
 	DecryptionKey []byte
 

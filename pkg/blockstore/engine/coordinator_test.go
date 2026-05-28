@@ -30,7 +30,7 @@ type fakeCoordinator struct {
 	failOnNthDecrement int
 	decCallCount       int
 
-	// Phase 13 BSCAS-05 short-circuit support (Plan 06 RED tests).
+	// short-circuit support (RED tests).
 	//
 	// findCalls records every ObjectID looked up via FindByObjectID so
 	// tests can assert call sequence + count.
@@ -43,23 +43,23 @@ type fakeCoordinator struct {
 	// objectIDHits is the seedable hit-table: when FindByObjectID is
 	// invoked with an ObjectID present here, returns the canned BlockRef
 	// list (deep-copied on the way out to keep slice-aliasing discipline
-	// per Phase 12 D-05). Empty / unset key means miss → (nil, nil).
+	// per). Empty / unset key means miss → (nil, nil).
 	objectIDHits map[blockstore.ObjectID][]blockstore.BlockRef
 	// persistErr is a single-shot injection: the next PersistFileBlocks
 	// call returns this error and clears the field. Used by the
-	// concurrent-race RED test (D-14) to simulate the loser detecting a
+	// concurrent-race RED test to simulate the loser detecting a
 	// unique-violation on the partial UNIQUE index.
 	persistErr error
 	// fileObjectIDs is the seedable per-payload current-ObjectID lookup
-	// for GetFileObjectID. Phase 13 Plan 13 (BSCAS-05): Syncer.Flush
-	// reads this to evaluate the D-09 trigger condition before the
+	// for GetFileObjectID.: Syncer.Flush
+	// reads this to evaluate the trigger condition before the
 	// per-block upload pump. Unset / zero-valued entries mean "never
 	// quiesced" (zero ObjectID), which lets the trigger condition fire
 	// when speculativeBlocks are present and all-Pending.
 	fileObjectIDs map[string]blockstore.ObjectID
 
-	// getFileObjectIDCalls counts GetFileObjectID invocations. Phase 19
-	// Plan 08 (Opt 4): the eager small-file dedup fast-path runs BEFORE
+	// getFileObjectIDCalls counts GetFileObjectID invocations.
+	// (Opt 4): the eager small-file dedup fast-path runs BEFORE
 	// the speculative-dedup hook in engine.Flush and does NOT consult
 	// GetFileObjectID; the speculative hook DOES. A zero count after a
 	// Flush therefore proves the eager path short-circuited (the
@@ -122,10 +122,10 @@ func (f *fakeCoordinator) PersistFileBlocks(_ context.Context, payloadID string,
 	return nil
 }
 
-// FindByObjectID — Phase 13 META-02 / BSCAS-05. Records every lookup
+// FindByObjectID —. Records every lookup
 // in findCalls and returns a deep-copied BlockRef slice when the
 // ObjectID is present in the seeded objectIDHits map. Miss returns
-// (nil, nil). The deep copy preserves Phase 12 D-05 slice-aliasing
+// (nil, nil). The deep copy preserves slice-aliasing
 // discipline so tests cannot accidentally mutate seeded state.
 func (f *fakeCoordinator) FindByObjectID(_ context.Context, oid blockstore.ObjectID) ([]blockstore.BlockRef, error) {
 	f.mu.Lock()
@@ -137,7 +137,7 @@ func (f *fakeCoordinator) FindByObjectID(_ context.Context, oid blockstore.Objec
 	return nil, nil
 }
 
-// GetFileObjectID — Phase 13 Plan 13 (BSCAS-05). Returns the seeded
+// GetFileObjectID —. Returns the seeded
 // ObjectID for payloadID from the fileObjectIDs map, or the all-zero
 // sentinel + nil when the map is unset / payload absent. Mirrors the
 // runtime coordinator's "no row → zero ObjectID" disposition so unit

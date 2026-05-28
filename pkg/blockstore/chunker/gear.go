@@ -2,7 +2,7 @@ package chunker
 
 // gearTable is the 256-entry FastCDC gear hash lookup table. Values are
 // derived from a splitmix64-seeded PRNG (seed = 0x9E3779B97F4A7C15) so the
-// table is deterministic across builds and platforms (D-21 boundary
+// table is deterministic across builds and platforms (boundary
 // stability depends on this).
 var gearTable = func() [256]uint64 {
 	var t [256]uint64

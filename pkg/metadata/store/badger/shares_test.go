@@ -11,8 +11,7 @@ import (
 )
 
 // TestBlockLayoutConformance runs the per-share BlockLayout conformance
-// scenarios against the BadgerDB metadata store (Phase 14 Plan 01,
-// MIG-03 / D-A6).
+// scenarios against the BadgerDB metadata store.
 //
 // Note: this test does NOT carry the `//go:build integration` tag — it
 // is a fast, self-contained scenario like rollup_test.go and is part

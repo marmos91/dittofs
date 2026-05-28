@@ -309,7 +309,7 @@ func TestPut_ConcurrentNonceUniqueness(t *testing.T) {
 	}
 }
 
-// TestHead_DoesNotDecryptFullPayload pins the perf-correctness contract:
+// TestHead_DoesNotDecryptFullPayload pins the perf-correctness contract
 // Head must NOT fetch and decrypt the full block to report Meta.Size.
 // We instrument the inner store to count Get calls; Head should make
 // zero Gets (it uses inner.Head + inner.GetRange for the header probe).

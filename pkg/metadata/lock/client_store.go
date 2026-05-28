@@ -6,7 +6,7 @@ import (
 )
 
 // ============================================================================
-// Client Registration Persistence for NSM (Phase 3)
+// Client Registration Persistence for NSM
 // ============================================================================
 
 // PersistedClientRegistration is the storage representation of a client registration.

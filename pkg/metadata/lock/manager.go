@@ -940,7 +940,7 @@ func (lm *Manager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (state 
 
 // SetLeaseEpoch sets the epoch on an existing lease identified by leaseKey.
 // Per MS-SMB2 3.3.5.9: For V2 leases, the server should track the client's
-// epoch from the RqLs create context. This method is called after RequestLease
+// epoch from the RqLs create context. SetLeaseEpoch is called after RequestLease
 // to initialize the epoch to the client's requested value.
 // Returns false if no lease was found with the given key.
 func (lm *Manager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) bool {

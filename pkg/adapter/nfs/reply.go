@@ -76,7 +76,7 @@ func (c *NFSConnection) sendGSSReply(xid uint32, data []byte, sessionInfo *gss.G
 // It applies write timeout if configured, constructs the RPC success reply,
 // and writes it to the connection.
 //
-// This method is thread-safe and can be called from multiple goroutines.
+// Thread-safe and can be called from multiple goroutines.
 // Writes are serialized using writeMu to prevent concurrent writes from
 // corrupting the TCP stream.
 //

@@ -45,7 +45,7 @@ type IdentityMapper interface {
 // ResolvedIdentity contains the result of identity resolution.
 //
 // Found=false means the principal could not be resolved. This is distinct from
-// an error -- it simply means the mapper does not know this principal. Unknown
+// an error -- it means the mapper does not know this principal. Unknown
 // principals are preserved as-is in ACEs and skipped during evaluation.
 type ResolvedIdentity struct {
 	// Username is the resolved username in the control plane.

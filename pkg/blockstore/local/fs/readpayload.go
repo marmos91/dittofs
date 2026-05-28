@@ -17,7 +17,7 @@ import (
 // payload-keyed read entry on FSStore; the engine calls this BEFORE
 // falling back to a CAS-hash-keyed walk on miss.
 //
-// Resolution order:
+// Resolution order
 //
 //  1. Snapshot the per-payload log fd + lock; if present, replay the log
 //     records (skipping the header) under the per-file mutex and copy any
@@ -25,7 +25,7 @@ import (
 //     pre-rollup writes — records that have not yet been rolled into CAS
 //     live here and ONLY here.
 //
-//  2. For any portion of the requested window NOT satisfied from the log,
+//  2. For any portion of the requested window NOT satisfied from the log
 //     walk the FileBlock manifest (via the engine-internal FileBlockStore)
 //     and copy bytes from the rolled-up CAS chunks. This handles
 //     post-rollup reads where the log records past rollup_offset may have
@@ -35,8 +35,8 @@ import (
 //     uncovered, return (0, blockstore.ErrFileBlockNotFound) so the caller
 //     falls back to remote-fetch + zero-fill.
 //
-// Returns (len(dest), nil) on full local satisfaction; (0,
-// ErrFileBlockNotFound) when nothing is available locally for the range;
+// Returns (len(dest), nil) on full local satisfaction; (0
+// ErrFileBlockNotFound) when nothing is available locally for the range
 // (n, err) for genuine I/O errors.
 func (bc *FSStore) ReadPayloadAt(ctx context.Context, payloadID string, dest []byte, offset uint64) (int, error) {
 	if len(dest) == 0 {
@@ -60,7 +60,7 @@ func (bc *FSStore) ReadPayloadAt(ctx context.Context, payloadID string, dest []b
 	// [offset, end). The log records are framed by writeRecord and
 	// stored on disk after the 64-byte header; replaying them gives us
 	// the pre-rollup byte contents at known file offsets. Later records
-	// at the same offset overwrite earlier ones (D-35 "last record in
+	// at the same offset overwrite earlier ones ("last record in
 	// log wins" — the rollup respects log order; ReadPayloadAt must
 	// too).
 	if err := bc.replayLogIntoDest(ctx, payloadID, dest, offset, end, covered); err != nil {
@@ -96,7 +96,7 @@ func allCovered(covered []bool) bool {
 // replayLogIntoDest opens the payload's append log (if any) and replays
 // every record, copying the portions that intersect [reqStart, reqEnd)
 // into dest. Records are applied in log order so later writes at the
-// same offset overwrite earlier ones (D-35).
+// same offset overwrite earlier ones.
 //
 // Returns nil when no log exists for payloadID (treated as "nothing to
 // fill from the log") OR after a successful replay. Returns a non-nil

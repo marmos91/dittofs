@@ -21,7 +21,7 @@ import (
 const maxPayloadIDLen = 4352 // metadata.MaxPathLen (4096) + 256 share-prefix slack
 
 // isValidPayloadID accepts the structural shape of a path-keyed payloadID
-// while preserving the FIX-18 path-traversal mitigation. Structural rules:
+// while preserving the FIX-18 path-traversal mitigation. Structural rules
 //
 //   - Non-empty.
 //   - Length <= maxPayloadIDLen.
@@ -55,15 +55,16 @@ func isValidPayloadID(s string) bool {
 }
 
 // Recover scans the block store directory for .blk files and reconciles them with
-// the FileBlockStore (BadgerDB). Called on startup to restore local store state:
+// the FileBlockStore (BadgerDB). Called on startup to restore local store state
 //
 //   - Rebuilds the in-memory files map (payloadID -> fileSize) from disk
 //   - Deletes orphan .blk files that have no FileBlock metadata
 //   - Fixes stale LocalPaths (e.g., block store directory was moved)
 //   - Reverts interrupted syncs (Syncing -> Local) for retry
 //   - When useAppendLog=true: scans logs/*.log, reconciles header vs metadata
-//     rollup_offset (D-12), truncates at first bad CRC, rebuilds interval
-//     trees (D-16), and sweeps orphan logs (D-28 / LSL-06).
+//
+// rollup_offset, truncates at first bad CRC, rebuilds interval
+// trees, and sweeps orphan logs.
 func (bc *FSStore) Recover(ctx context.Context) error {
 	logger.Info("local store: starting recovery", "dir", bc.baseDir)
 
@@ -115,13 +116,13 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 		}
 
 		// Blocks with a BlockStoreKey but still Pending -> already synced to remote
-		// (legacy zero-valued rows; D-21 dual-read window).
+		// (legacy zero-valued rows; dual-read window).
 		if fb.BlockStoreKey != "" && fb.State == blockstore.BlockStatePending {
 			fb.State = blockstore.BlockStateRemote
 			needsUpdate = true
 		}
 
-		// Revert interrupted syncs so they get retried (Syncing -> Pending; D-14).
+		// Revert interrupted syncs so they get retried (Syncing -> Pending).
 		if fb.State == blockstore.BlockStateSyncing {
 			fb.State = blockstore.BlockStatePending
 			needsUpdate = true
@@ -136,7 +137,7 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 
 		// Seed the in-process diskIndex so the post-Recover write hot path
 		// and eviction can see this block without a FileBlockStore query
-		// (TD-02d / D-19).
+		// (d /).
 		bc.diskIndexStore(fb)
 
 		payloadID, blockIdx, parseErr := blockstore.ParseBlockID(blockID)
@@ -179,23 +180,23 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 
 // recoverAppendLogs scans {baseDir}/logs/*.log, reconciles each log's header
 // against the metadata rollup_offset, truncates any log at the first bad-CRC
-// record, rebuilds per-file interval trees, and sweeps orphan logs (D-28).
+// record, rebuilds per-file interval trees, and sweeps orphan logs.
 //
-// Returns (logsScanned, logsRecovered, recordsTruncated, intervalsRebuilt,
+// Returns (logsScanned, logsRecovered, recordsTruncated, intervalsRebuilt
 // orphanLogsSwept, headersReconciled).
 //
-// D-12 crash-window reconciliation: rollupFile commits in the order
+// crash-window reconciliation: rollupFile commits in the order
 // (1) StoreChunk → (2) SetRollupOffset metadata → (3) advanceRollupOffset
 // header → (4) tree.ConsumeUpTo. A crash between steps 2 and 3 leaves
-// metadata ahead of the on-disk header; this function rewrites the header
+// metadata ahead of the on-disk header; recovery rewrites the header
 // to match metadata on next boot, so a second rollup pass does not re-emit
 // chunks for bytes that are already committed.
 //
-// LSL-06: truncation at the first unreadable record preserves every record
+// truncation at the first unreadable record preserves every record
 // that passed CRC. Surviving records are re-inserted into the interval
 // tree so the rollup picks up where the previous run left off.
 //
-// D-28 / Warning 3 (orphan sweep): a log is swept only when ALL of
+// / Warning 3 (orphan sweep): a log is swept only when ALL of
 // (a) metadata rollup_offset == 0, (b) no block-0 FileBlock exists for
 // the payload, AND (c) the log's on-disk mtime is older than
 // orphanLogMinAgeSeconds. The age gate prevents a false positive on a
@@ -257,7 +258,7 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 		}
 
 		// Capture the on-disk mtime BEFORE any RDWR operation so the
-		// orphan-sweep age gate (D-28) sees the pre-boot mtime, not a
+		// orphan-sweep age gate sees the pre-boot mtime, not a
 		// fresh timestamp produced by this recovery pass (Truncate /
 		// advanceRollupOffset both touch mtime on most filesystems).
 		// FIX-26: open the file FIRST, then call f.Stat() on the open
@@ -293,7 +294,7 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 			// initLogFile fsyncs and bumps mtime to "now"; without
 			// restoring the original mtime, a repeatedly-corrupted log
 			// would never become "old enough" for the orphan-sweep age
-			// gate (D-28) to fire — the clock would reset on every boot.
+			// gate to fire — the clock would reset on every boot.
 			logger.Warn("recovery: header corrupt; truncating log",
 				"path", path, "error", err)
 			_ = f.Close()
@@ -314,7 +315,7 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 			return nil
 		}
 
-		// D-12 reconciliation: metadata > header means a CommitChunks
+		// reconciliation: metadata > header means a CommitChunks
 		// crashed between step 2 (SetRollupOffset) and step 3
 		// (advanceRollupOffset). Rewrite the header to match metadata so
 		// replay does not re-emit chunks for bytes already persisted.
@@ -367,11 +368,11 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 				break
 			}
 			if !ok {
-				// LSL-06: truncate at the last-successful-record boundary,
+				// truncate at the last-successful-record boundary
 				// but only when there are actually trailing bytes past
 				// lastPos. A clean EOF at the record boundary leaves the
 				// file untouched so mtime remains authoritative for the
-				// orphan-sweep age gate (D-28).
+				// orphan-sweep age gate.
 				if st, serr := f.Stat(); serr == nil && st.Size() > int64(lastPos) {
 					if terr := f.Truncate(int64(lastPos)); terr != nil {
 						logger.Warn("recovery: truncate failed", "path", path, "offset", lastPos, "error", terr)
@@ -385,9 +386,9 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 						// FIX-22: if the post-truncate fsync FAILS, do
 						// NOT install the fd. The truncate is not
 						// durable so the trimmed bytes can resurface
-						// on a crash; pairing that with an installed,
+						// on a crash; pairing that with an installed
 						// in-use fd would let the next AppendWrite
-						// extend an inconsistent tail. Close the fd,
+						// extend an inconsistent tail. Close the fd
 						// log Error, and continue — the next boot's
 						// recovery + orphan-sweep will reconcile.
 						if syncErr := f.Sync(); syncErr != nil {
@@ -411,7 +412,7 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 		}
 		recovered++
 
-		// D-28 / Warning 3 orphan sweep: a log is swept only when
+		// / Warning 3 orphan sweep: a log is swept only when
 		//   (a) metaOff == 0
 		//   (b) no block-0 live FileBlock for the payloadID
 		//   (c) log mtime >= effectiveMinAgeSec (computed once at entry, FIX-16)
@@ -435,7 +436,7 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 			// FIX-23: surface the os.Remove failure. The previous
 			// behavior silently fell through to fd install, leaving
 			// operators with no signal that an orphan log persisted
-			// on disk — and Phase 11 mark-sweep cannot reach this
+			// on disk — and mark-sweep cannot reach this
 			// path because the sweep is gated on rollup_offset != 0.
 			logger.Warn("recovery: orphan log sweep failed, installing fd anyway",
 				"path", path, "err", rerr)
@@ -457,7 +458,7 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 		}
 		bc.logsMu.Lock()
 		lf := &logFile{f: f, path: path, eofPos: uint64(eof)}
-		// Phase 19 Opt 2 (D-06/D-07/D-08): per-file fsync coordinator,
+		// Opt 2: per-file fsync coordinator
 		// matching the getOrCreateLog construction site in appendwrite.go.
 		lf.groupCommit = newGroupCommit(lf.f.Sync)
 		bc.logFDs[payloadID] = lf

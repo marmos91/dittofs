@@ -1,19 +1,19 @@
-// Phase 19 Plan 08 — eager small-file dedup (Opt 4) unit tests.
+// — eager small-file dedup (Opt 4) unit tests.
 //
 // tryEagerSmallFileDedup is the file-level dedup fast-path for files at
-// or below chunker.MinChunkSize (D-13). Hashes whole content in RAM,
+// or below chunker.MinChunkSize. Hashes whole content in RAM
 // computes the single-block ObjectID, consults FindByObjectID, and on
 // hit short-circuits chunker + log + CAS write entirely. Sits BEFORE
-// trySpeculativeFileLevelDedup in engine.Flush (D-14).
+// trySpeculativeFileLevelDedup in engine.Flush.
 //
-// These tests pin the contract:
+// These tests pin the contract
 //
-//   - D-13: threshold = chunker.MinChunkSize; files > threshold return
+// -: threshold = chunker.MinChunkSize; files > threshold return
 //     (false, nil) immediately without consulting FindByObjectID.
-//   - D-14: hit path uses applyFileLevelDedupHit to honor
-//     STATE-01..03 + cache invalidation invariants identical to the
+// -: hit path uses applyFileLevelDedupHit to honor
+// + cache invalidation invariants identical to the
 //     speculative path.
-//   - D-16: on HIT, cache is populated with the hashed bytes (no extra
+// -: on HIT, cache is populated with the hashed bytes (no extra
 //     disk hop on subsequent reads).
 //   - Defensive: empty data and nil-coordinator return (false, nil).
 
@@ -31,7 +31,7 @@ import (
 )
 
 // recordingPutCache is a CacheInterface that records every Put so eager
-// dedup tests can assert D-16 cache warming (the existing recordingCache
+// dedup tests can assert cache warming (the existing recordingCache
 // has a no-op Put, which can't observe the warming).
 type recordingPutCache struct {
 	mu        sync.Mutex
@@ -87,7 +87,7 @@ func singleBlockObjectID(data []byte) blockstore.ObjectID {
 }
 
 // TestTryEagerSmallFileDedup_DataAboveThreshold_ReturnsFalse —
-// D-13: files > chunker.MinChunkSize bypass the eager path and do NOT
+// files > chunker.MinChunkSize bypass the eager path and do NOT
 // invoke FindByObjectID (avoids hashing a multi-MiB buffer for no win).
 func TestTryEagerSmallFileDedup_DataAboveThreshold_ReturnsFalse(t *testing.T) {
 	ctx := context.Background()
@@ -109,7 +109,7 @@ func TestTryEagerSmallFileDedup_DataAboveThreshold_ReturnsFalse(t *testing.T) {
 }
 
 // TestTryEagerSmallFileDedup_DataAtThreshold_Proceeds —
-// D-13: files at exactly chunker.MinChunkSize trigger the eager path
+// files at exactly chunker.MinChunkSize trigger the eager path
 // (inclusive upper bound; <= MinChunkSize). FindByObjectID is invoked.
 func TestTryEagerSmallFileDedup_DataAtThreshold_Proceeds(t *testing.T) {
 	ctx := context.Background()
@@ -135,7 +135,7 @@ func TestTryEagerSmallFileDedup_DataAtThreshold_Proceeds(t *testing.T) {
 }
 
 // TestTryEagerSmallFileDedup_Hit_ReturnsTrue —
-// D-14: seeded ObjectID hit short-circuits with hit=true; the shared
+// seeded ObjectID hit short-circuits with hit=true; the shared
 // finalize machinery (applyFileLevelDedupHit) was invoked, evidenced
 // by PersistFileBlocks recording the provisional ObjectID + target
 // blocks, and IncrementRefCount being called on each target hash.
@@ -172,7 +172,7 @@ func TestTryEagerSmallFileDedup_Hit_ReturnsTrue(t *testing.T) {
 		t.Errorf("PersistFileBlocks objectID=%s; want provisional %s",
 			fc.persistCalls[0].objectID.String(), provisional.String())
 	}
-	// IncrementRefCount called once on the target hash (D-14 step 1).
+	// IncrementRefCount called once on the target hash (step 1).
 	if got := len(fc.incHashes); got != 1 {
 		t.Errorf("IncrementRefCount calls=%d; want 1 (one target hash)", got)
 	}
@@ -211,9 +211,9 @@ func TestTryEagerSmallFileDedup_Miss_ReturnsFalse(t *testing.T) {
 }
 
 // TestTryEagerSmallFileDedup_Hit_PopulatesCache —
-// D-16: on HIT the engine Cache is populated with the in-RAM bytes via
+// on HIT the engine Cache is populated with the in-RAM bytes via
 // Cache.Put(h, data). The MISS case is covered by the rollup path's
-// OnChunkComplete wiring (Plan 07) — not exercised here.
+// OnChunkComplete wiring — not exercised here.
 func TestTryEagerSmallFileDedup_Hit_PopulatesCache(t *testing.T) {
 	ctx := context.Background()
 	fc := newFakeCoordinator()

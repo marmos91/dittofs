@@ -25,7 +25,7 @@ type IdentityMapping struct {
 
 // MappingStore provides CRUD operations for identity mappings.
 //
-// Implementations are provided by the control plane (Plan 05).
+// Implementations are provided by the control plane .
 // For testing, use a simple in-memory implementation.
 type MappingStore interface {
 	// GetMapping looks up a single mapping by principal.

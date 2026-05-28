@@ -151,7 +151,7 @@ func ValidateName(name string) error {
 // relative to the mount point (e.g., "dir/file"). POSIX PATH_MAX (4096) includes
 // the null terminator, so client paths can be up to 4095 characters. However,
 // our internal paths add a leading "/" making them up to 4096 characters.
-// This function validates the internal path length using > MaxPathLen.
+// ValidatePath validates the internal path length using > MaxPathLen.
 func ValidatePath(path string) error {
 	if len(path) > MaxPathLen {
 		return &StoreError{
@@ -268,8 +268,8 @@ func ApplyOwnerDefaults(attr *FileAttr, ctx *AuthContext) {
 
 // ApplyCreateDefaults applies default values to FileAttr for create operations.
 //
-// IMPORTANT: This function does NOT set UID/GID defaults. Callers are responsible
-// for setting UID/GID before calling this function. This is because UID=0 and GID=0
+// IMPORTANT: Does NOT set UID/GID defaults. Callers are responsible
+// for setting UID/GID before calling ApplyCreateDefaults. This is because UID=0 and GID=0
 // are valid values (root), so we cannot use 0 as a sentinel for "not set".
 // The XDR layer (ConvertSetAttrsToMetadata) handles UID/GID defaulting correctly
 // using pointer semantics.

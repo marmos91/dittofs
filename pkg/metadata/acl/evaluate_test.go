@@ -580,7 +580,7 @@ func TestEvaluate_OwnerRights_SuppressesOwnerAce(t *testing.T) {
 // TestEvaluate_OwnerRights_DenyOverridesOwnerAllow covers the DENY case from
 // MS-DTYP §2.5.3 and the smb2.acls.OWNER-RIGHTS-DENY family of tests: an
 // OWNER_RIGHTS DENY ACE must take effect even when an OWNER@ ACE earlier in
-// (or simply elsewhere in) the DACL would grant the same bits.
+// (or elsewhere in) the DACL would grant the same bits.
 func TestEvaluate_OwnerRights_DenyOverridesOwnerAllow(t *testing.T) {
 	// Order matters under first-match-wins: place OWNER_RIGHTS Allow READ
 	// before the OWNER_RIGHTS Deny WRITE so that READ is granted via the

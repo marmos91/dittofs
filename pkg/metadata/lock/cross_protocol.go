@@ -196,11 +196,11 @@ func (lm *Manager) hasByteRangeLockConflictForLease(ctx context.Context, handleK
 //
 // Returns false if lockStore is nil or no conflicts exist.
 //
-// Note: this function only sees PERSISTED locks. SMB2 byte-range locks taken
-// via Manager.Lock currently live only in the in-memory legacy map; callers
+// Note: CheckNLMLocksForLeaseConflict only sees PERSISTED locks. SMB2 byte-range locks
+// taken via Manager.Lock currently live only in the in-memory legacy map; callers
 // inside the lock package should prefer Manager.hasByteRangeLockConflictForLease
-// which combines both views. This function stays exported for external callers
-// (e.g. NFS-side) that only have a LockStore handle.
+// which combines both views. CheckNLMLocksForLeaseConflict stays exported for external
+// callers (e.g. NFS-side) that only have a LockStore handle.
 func CheckNLMLocksForLeaseConflict(lockStore LockStore, ctx context.Context, handleKey string, requestedState uint32, clientID string) bool {
 	if lockStore == nil {
 		return false

@@ -1,31 +1,22 @@
-// Phase 19 Plan 09 — D-21 aggregate gate ≤1.00 vs Phase 11 baseline
-// (D-19).
+// Aggregate RandWrite warm-cache merge gate.
 //
 // TestPhase19_AggregateRandWriteGate_LeqOne is the load-bearing
-// quantitative merge gate for Phase 19. The four write-path RAM
-// optimizations (LRU dedup, group commit, direct-to-Cache, eager
-// small-file dedup) MUST together keep RandWrite warm-cache parity
-// with the Phase 11 baseline — no regression allowed. The gate was
-// tightened from ≤1.02 (the v0.15+ default Δ tolerance) to ≤1.00 per
-// CONTEXT.md D-19 because Phase 19's entire purpose is write-path
-// throughput improvement; if the four opts can't even keep parity,
-// the LoC isn't justified.
+// quantitative merge gate for the write-path RAM optimizations. The
+// four opts (LRU dedup, group commit, direct-to-Cache, eager small-file
+// dedup) MUST together keep RandWrite warm-cache parity with the
+// captured baseline — no regression allowed. The gate is tightened to
+// ≤1.00 because the entire purpose of these opts is write-path
+// throughput improvement; if they can't even keep parity, the LoC
+// isn't justified.
 //
-// This is the FIRST aggregate runner in internal/bench/. The Phase 11
-// baseline ns/op is captured below as a constant. The runner exercises
-// the canonical RandWrite warm-cache shape (in-tree microbench:
-// memory metadata + memory local store + 4 KiB blocks + 4 MiB
-// FastCDC-sized chunks + 64 MiB seeded file) and asserts the measured
-// ns/op divided by the baseline ns/op is ≤ 1.00.
+// The runner exercises the canonical RandWrite warm-cache shape
+// (in-tree microbench: memory metadata + memory local store + 4 KiB
+// blocks + 4 MiB FastCDC-sized chunks + 64 MiB seeded file) and
+// asserts the measured ns/op divided by the baseline ns/op is ≤ 1.00.
 //
 // On dev-laptop variance: this gate is calibrated for the canonical
-// bench-infra lane (per CONTEXT.md "bench infra vs dev-laptop"
-// discipline). Local runs that trip the gate must be re-run on the
-// canonical lane before merge — see 19-09-SUMMARY.md for the
-// dev-laptop vs bench-infra disclaimer mirror of Phase 17 Plan 10.
-//
-// D-06, D-41, D-43 gates remain at their previous tolerances —
-// only D-21 is tightened here.
+// bench-infra lane. Local runs that trip the gate must be re-run on
+// the canonical lane before merge.
 
 package bench
 
@@ -42,32 +33,27 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/local/memory"
 )
 
-// phase11BaselineRandWriteNsPerOp is the Phase 11 baseline ns/op for
-// the canonical RandWrite warm-cache microbench. Captured on the
-// canonical bench-infra lane during Phase 11; verbatim per
-// CONTEXT.md D-19 ("≤1.00 vs Phase 11 baseline").
+// phase11BaselineRandWriteNsPerOp is the baseline ns/op for the
+// canonical RandWrite warm-cache microbench. Captured on the canonical
+// bench-infra lane.
 //
-// Per Phase 17 Plan 10 SUMMARY: dev-laptop variance can trip this
-// gate. Re-baseline on the canonical bench-infra lane via the
-// procedure documented in test/e2e/BENCHMARKS.md when a re-baseline
-// is required.
+// Dev-laptop variance can trip this gate. Re-baseline on the canonical
+// bench-infra lane via the procedure documented in test/e2e/BENCHMARKS.md
+// when a re-baseline is required.
 //
-// Initial value (Phase 19 Plan 09): 0 — sentinel meaning "no
-// captured baseline yet; record on the next clean canonical lane
-// run". When 0, the gate runs in **observation mode** — it computes
-// the ratio against the just-measured value (a self-comparison that
-// always yields 1.00) and never fails. This lets the gate file land
-// in the mega-PR's pre-merge wave with the bench-infra capture
-// scheduled as the merge-gate step. SUMMARY.md documents the policy.
+// Initial value 0 — sentinel meaning "no captured baseline yet; record
+// on the next clean canonical lane run". When 0, the gate runs in
+// **observation mode** — it computes the ratio against the
+// just-measured value (a self-comparison that always yields 1.00) and
+// never fails. This lets the gate file land before the bench-infra
+// capture step.
 const phase11BaselineRandWriteNsPerOp = 0.0
 
-// d21MaxRatio is the D-19-tightened ratio: 1.00 vs Phase 11 baseline.
-// D-06, D-41, D-43 remain at their previous tolerances (unchanged).
+// d21MaxRatio is the tightened ratio against the captured baseline.
 const d21MaxRatio = 1.00
 
 // phase19FixtureFileSize is the seeded file size for the RandWrite
-// warm-cache benchmark — matches Phase 12's phase12FixtureFileSize.
-// 64 MiB / 4 MiB blocks = 16 BlockRefs.
+// warm-cache benchmark. 64 MiB / 4 MiB blocks = 16 BlockRefs.
 const phase19FixtureFileSize = 64 * 1024 * 1024
 
 // phase19FixtureWriteSize is the per-WriteAt I/O size — 4 KiB matches
@@ -78,34 +64,31 @@ const phase19FixtureWriteSize = 4096
 // sequence so re-runs are comparable.
 const phase19RandSeed = 17
 
-// TestPhase19_AggregateRandWriteGate_LeqOne — the D-19 / D-21 hard
-// merge gate. Runs the canonical RandWrite warm-cache microbench
-// in-process and computes the measured / baseline ratio. Fails if the
-// ratio exceeds d21MaxRatio (1.00).
+// TestPhase19_AggregateRandWriteGate_LeqOne is the hard merge gate.
+// Runs the canonical RandWrite warm-cache microbench in-process and
+// computes the measured / baseline ratio. Fails if the ratio exceeds
+// d21MaxRatio (1.00).
 //
-// **Load-bearing merge gate for Phase 19.** If this test fails, the
-// mega-PR is blocked from merging. Re-baseline on canonical
-// bench-infra per test/e2e/BENCHMARKS.md if the failure is
-// dev-laptop variance.
+// **Load-bearing merge gate.** If this test fails, the mega-PR is
+// blocked from merging. Re-baseline on canonical bench-infra per
+// test/e2e/BENCHMARKS.md if the failure is dev-laptop variance.
 func TestPhase19_AggregateRandWriteGate_LeqOne(t *testing.T) {
 	if testing.Short() {
 		t.Skip("D-21 aggregate gate skipped under -short")
 	}
-	// Only run on the canonical bench-infra lane. Dev-laptop / CI variance
-	// trips this gate per CONTEXT.md "bench infra vs dev-laptop" discipline.
-	// CI runs default to short timeouts; the seeded 64 MiB warm-cache pass
-	// can exceed 10 min on shared runners. Gated behind DITTOFS_BENCH_LANE=1
-	// so the canonical lane can opt in.
+	// Only run on the canonical bench-infra lane. Dev-laptop / CI
+	// variance trips this gate. CI runs default to short timeouts; the
+	// seeded 64 MiB warm-cache pass can exceed 10 min on shared runners.
+	// Gated behind DITTOFS_BENCH_LANE=1 so the canonical lane can opt in.
 	if os.Getenv("DITTOFS_BENCH_LANE") != "1" {
 		t.Skip("D-21 aggregate gate requires DITTOFS_BENCH_LANE=1 (canonical bench-infra lane only)")
 	}
 
-	// Run the same benchmark fixture as Phase 12 / Phase 16's D-06
-	// gate but on the WRITE side. The fixture seeds an
-	// engine.BlockStore with one phase19FixtureFileSize-byte payload
-	// (warm cache already established by the seeding writes), then
-	// performs rand-write IOs at phase19RandSeed-driven offsets and
-	// measures ns/op.
+	// Run the canonical benchmark fixture on the WRITE side. The fixture
+	// seeds an engine.BlockStore with one phase19FixtureFileSize-byte
+	// payload (warm cache already established by the seeding writes),
+	// then performs rand-write IOs at phase19RandSeed-driven offsets
+	// and measures ns/op.
 	measured := runPhase19RandWriteWarmCache(t)
 
 	baseline := phase11BaselineRandWriteNsPerOp
@@ -185,8 +168,8 @@ func runPhase19RandWriteWarmCache(t *testing.T) float64 {
 }
 
 // newPhase19BlockStore builds the in-tree microbench engine.BlockStore
-// for the D-21 gate. Memory metadata + memory local store match the
-// Phase 12 perf-gate shape (perf_bench_phase12_test.go).
+// for the aggregate gate. Memory metadata + memory local store match
+// the canonical perf-gate fixture shape.
 func newPhase19BlockStore(t *testing.T) *engine.BlockStore {
 	t.Helper()
 	localStore := memory.New()

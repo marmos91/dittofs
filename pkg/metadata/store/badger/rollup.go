@@ -12,11 +12,11 @@ import (
 )
 
 // ============================================================================
-// RollupStore Implementation for BadgerDB Store (Phase 10 LSL-05)
+// RollupStore Implementation for BadgerDB Store
 // ============================================================================
 //
 // Persists the per-file rollup_offset for the hybrid append-log tier. The
-// atomic-monotone contract (INV-03) is enforced inside a single Badger
+// atomic-monotone contract is enforced inside a single Badger
 // transaction: the read, compare, and write all happen under the same
 // db.Update call, so concurrent rollup workers cannot race the stored value
 // backwards.
@@ -48,7 +48,7 @@ func keyRollupOffset(payloadID string) []byte {
 // On monotone violation (newOffset < stored), returns (storedOffset,
 // metadata.ErrRollupOffsetRegression); the stored value is UNCHANGED.
 //
-// INV-03 is enforced by wrapping the read+compare+write in a single
+// is enforced by wrapping the read+compare+write in a single
 // db.Update transaction. Badger's default MVCC conflict detection ensures
 // that if two concurrent transactions read the same key, only one commits
 // — the other retries automatically inside db.Update, at which point it

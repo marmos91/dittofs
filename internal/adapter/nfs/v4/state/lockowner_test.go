@@ -616,7 +616,7 @@ func TestLockNew_SharedNoConflict(t *testing.T) {
 }
 
 // ============================================================================
-// CloseFile with Locks Held Tests (Plan 10-03)
+// CloseFile with Locks Held Tests
 // ============================================================================
 
 func TestCloseFile_LocksHeld(t *testing.T) {
@@ -677,7 +677,7 @@ func TestCloseFile_LocksHeld(t *testing.T) {
 }
 
 // ============================================================================
-// ReleaseLockOwner Tests (Plan 10-03)
+// ReleaseLockOwner Tests
 // ============================================================================
 
 func TestReleaseLockOwner_NoLocks(t *testing.T) {
@@ -758,7 +758,7 @@ func TestReleaseLockOwner_Unknown(t *testing.T) {
 }
 
 // ============================================================================
-// Lease Expiry Lock Cleanup Tests (Plan 10-03)
+// Lease Expiry Lock Cleanup Tests
 // ============================================================================
 
 func TestLeaseExpiry_CleansLockState(t *testing.T) {

@@ -18,9 +18,7 @@ import (
 type AppendFactory func(t *testing.T) (blockstore.BlockStoreAppend, func())
 
 // BlockStoreAppendConformance runs the random-write absorber suite
-// against any BlockStoreAppend implementation. Mirrors the structure
-// of the original D-22 5-scenario suite but is re-expressed against
-// the interface surface declared in Phase 17:
+// against any BlockStoreAppend implementation.
 //
 //   - AppendLogRoundTrip — AppendWrite payload, wait for the rollup
 //     to surface chunks via Walk, then DeleteLog tombstones the log.
@@ -41,9 +39,7 @@ type AppendFactory func(t *testing.T) (blockstore.BlockStoreAppend, func())
 // The three SKIPPED scenarios are exercised by the fs backend via
 // fs-internal `_test.go` files
 // (pkg/blockstore/local/fs/appendlog_internals_test.go) that hold the
-// scenarios verbatim and call the fs-internal *ForTest probes. They
-// were lifted out of the deleted pkg/blockstore/local/localtest/
-// package by Plan 17-06.
+// scenarios verbatim and call the fs-internal *ForTest probes.
 func BlockStoreAppendConformance(t *testing.T, factory AppendFactory) {
 	t.Helper()
 	t.Run("AppendLogRoundTrip", func(t *testing.T) { testAppendLogRoundTrip(t, factory) })
@@ -54,14 +50,14 @@ func BlockStoreAppendConformance(t *testing.T, factory AppendFactory) {
 	t.Run("RollupOffsetMonotone_INV03", func(t *testing.T) { testRollupOffsetMonotoneINV03(t, factory) })
 }
 
-// testAppendLogRoundTrip asserts the LSL-01/02/03/05 end-to-end
-// behavior on the public BlockStoreAppend surface: an AppendWrite
-// eventually surfaces content-addressed chunks via Walk (the rollup
-// loop emits them via Put), and DeleteLog tombstones the per-file
-// append log. The scenario does NOT pin the chunk count (FastCDC
-// boundaries are payload-dependent) nor the timing — backends with
-// background rollup pools may need to poll Walk for up to a few
-// seconds before chunks appear.
+// testAppendLogRoundTrip asserts the end-to-end behavior on the
+// public BlockStoreAppend surface: an AppendWrite eventually surfaces
+// content-addressed chunks via Walk (the rollup loop emits them via
+// Put), and DeleteLog tombstones the per-file append log. The
+// scenario does NOT pin the chunk count (FastCDC boundaries are
+// payload-dependent) nor the timing — backends with background
+// rollup pools may need to poll Walk for up to a few seconds before
+// chunks appear.
 func testAppendLogRoundTrip(t *testing.T, factory AppendFactory) {
 	bs, cleanup := factory(t)
 	t.Cleanup(cleanup)
@@ -76,9 +72,9 @@ func testAppendLogRoundTrip(t *testing.T, factory AppendFactory) {
 	}
 
 	// Poll Walk for the first emitted chunk. The interface surface
-	// does not expose a synchronous-rollup hook (per D-09 — that
-	// stays internal to the fs backend), so a deadline-driven poll
-	// is the portable way to assert the rollup advances.
+	// does not expose a synchronous-rollup hook (that stays internal
+	// to the fs backend), so a deadline-driven poll is the portable
+	// way to assert the rollup advances.
 	deadline := time.Now().Add(10 * time.Second)
 	var chunkCount int
 	for time.Now().Before(deadline) {
@@ -127,7 +123,7 @@ func testAppendLogRoundTrip(t *testing.T, factory AppendFactory) {
 // same payloadID must succeed and start a fresh log. This is required
 // by DittoFS's path-based PayloadID lifecycle (an unlink-then-create
 // at the same path reuses the same PayloadID and must work — POSIX
-// recreate semantics surfaced via NFSv3 / pjdfstest chmod/12.t,
+// recreate semantics surfaced via NFSv3 / pjdfstest chmod/12.t
 // unlink/14.t, open/00.t).
 //
 // The scenario writes once, deletes the log, then writes again at the
@@ -151,7 +147,7 @@ func testRecreateAfterDeleteLog(t *testing.T, factory AppendFactory) {
 	}
 }
 
-// testPressureChannelINV05 asserts INV-05 — once the in-memory
+// testPressureChannelINV05 asserts that once the in-memory
 // append-log budget is exceeded, subsequent AppendWrites block until
 // the rollup drains the budget.
 //
@@ -161,15 +157,15 @@ func testRecreateAfterDeleteLog(t *testing.T, factory AppendFactory) {
 // Neither probe is on the interface, and the suite cannot legally
 // observe internal byte accounting through the public surface. The
 // fs backend continues to exercise this scenario via the legacy
-// fs-internal appendlog_internals_test.go scenarios (moved out of the deleted localtest package by Plan 17-06).
+// fs-internal appendlog_internals_test.go scenarios.
 func testPressureChannelINV05(t *testing.T, factory AppendFactory) {
 	t.Skip("PressureChannel_INV05 is not portable to BlockStoreAppend: requires fs-internal SetMaxLogBytesForTest + LogBytesTotalForTest probes. The fs backend exercises this via pkg/blockstore/local/fs/appendlog_internals_test.go (the scenarios were moved out of the deleted localtest package by Plan 17-06).")
 }
 
-// testTornWriteRecoveryLSL06 asserts LSL-06 — appending random
-// garbage past the clean tail does not corrupt surviving records;
-// after reopen, the interval tree carries exactly the prior record
-// count and the log is truncated at the first bad CRC.
+// testTornWriteRecoveryLSL06 asserts that appending random garbage
+// past the clean tail does not corrupt surviving records after
+// reopen: the interval tree carries exactly the prior record count
+// and the log is truncated at the first bad CRC.
 //
 // SKIPPED on the BlockStoreAppend interface surface: the assertion
 // requires direct write access to the on-disk log file
@@ -179,8 +175,7 @@ func testPressureChannelINV05(t *testing.T, factory AppendFactory) {
 // on-disk paths or recovery hooks — recovery is a backend-internal
 // concern. The fs backend continues to exercise this scenario via
 // the fs-internal appendlog_internals_test.go scenarios in
-// pkg/blockstore/local/fs/ (moved out of the deleted localtest
-// package by Plan 17-06).
+// pkg/blockstore/local/fs/.
 func testTornWriteRecoveryLSL06(t *testing.T, factory AppendFactory) {
 	t.Skip("TornWriteRecovery_LSL06 is not portable to BlockStoreAppend: requires direct on-disk log access + ReopenForTest / IntervalsLenForTest fs-internal probes. The fs backend exercises this via pkg/blockstore/local/fs/appendlog_internals_test.go (the scenarios were moved out of the deleted localtest package by Plan 17-06).")
 }
@@ -203,15 +198,14 @@ func testTornWriteRecoveryLSL06(t *testing.T, factory AppendFactory) {
 // flaky on CI to keep in the conformance suite.
 //
 // The fs backend continues to exercise this scenario via the legacy
-// fs-internal appendlog_internals_test.go scenarios (moved out of the
-// deleted localtest package by Plan 17-06), which use the
+// fs-internal appendlog_internals_test.go scenarios, which use the
 // LogBytesTotalForTest / RollupOffsetForTest internal probes for
 // deterministic assertions instead of polling Walk.
 func testConcurrentStorm(t *testing.T, factory AppendFactory) {
 	t.Skip("ConcurrentStorm is not portable to BlockStoreAppend: the only portable rollup-progress hook is polling Walk, which is timing-dependent and flakes on CI runners with slow shared IO. The fs backend exercises this via pkg/blockstore/local/fs/appendlog_internals_test.go using fs-internal probes for deterministic assertions.")
 }
 
-// testRollupOffsetMonotoneINV03 asserts INV-03 — if metadata has
+// testRollupOffsetMonotoneINV03 asserts that if metadata has
 // advanced past the on-disk header's rollup_offset (simulating a
 // crash between SetRollupOffset and advanceRollupOffset), recovery
 // writes the header forward to match metadata and never regresses
@@ -222,8 +216,8 @@ func testConcurrentStorm(t *testing.T, factory AppendFactory) {
 // (RecomputeHeaderCRCForTest, byte-edit of <base>/logs/<id>.log,
 // ReopenForTest, HeaderRollupOffsetForTest). The interface does not
 // expose any on-disk path or recovery probe. The fs backend
-// continues to exercise this scenario via the legacy
-// fs-internal appendlog_internals_test.go scenarios (moved out of the deleted localtest package by Plan 17-06).
+// continues to exercise this scenario via the legacy fs-internal
+// appendlog_internals_test.go scenarios.
 func testRollupOffsetMonotoneINV03(t *testing.T, factory AppendFactory) {
 	t.Skip("RollupOffsetMonotone_INV03 is not portable to BlockStoreAppend: requires header-CRC corruption + ReopenForTest / HeaderRollupOffsetForTest fs-internal probes. The fs backend exercises this via pkg/blockstore/local/fs/appendlog_internals_test.go (the scenarios were moved out of the deleted localtest package by Plan 17-06).")
 }

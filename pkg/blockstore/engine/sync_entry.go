@@ -38,8 +38,8 @@ func NewBlockUploadRequest(payloadID string, blockIdx uint64) TransferRequest {
 	}
 }
 
-// BlockKey returns a unique string key for this block. Internal to the
-// engine after blockstore.FormatStoreKey was deleted in Phase 17.
+// BlockKey returns a unique string key for this block. Internal to
+// the engine after blockstore.FormatStoreKey was removed.
 func (r TransferRequest) BlockKey() string {
 	return fmt.Sprintf("%s/%d", r.PayloadID, r.BlockIndex)
 }

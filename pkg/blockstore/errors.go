@@ -11,7 +11,7 @@ import (
 var (
 	// ErrContentNotFound indicates the requested content does not exist.
 	//
-	// Protocol Mapping:
+	// Protocol Mapping
 	//   - NFS: NFS3ErrNoEnt (2)
 	//   - SMB: STATUS_OBJECT_NAME_NOT_FOUND
 	//   - HTTP: 404 Not Found
@@ -19,7 +19,7 @@ var (
 
 	// ErrContentExists indicates content with this ID already exists.
 	//
-	// Protocol Mapping:
+	// Protocol Mapping
 	//   - NFS: NFS3ErrExist (17)
 	//   - SMB: STATUS_OBJECT_NAME_COLLISION
 	//   - HTTP: 409 Conflict
@@ -27,7 +27,7 @@ var (
 
 	// ErrInvalidOffset indicates the offset is invalid for the operation.
 	//
-	// Protocol Mapping:
+	// Protocol Mapping
 	//   - NFS: NFS3ErrInval (22)
 	//   - SMB: STATUS_INVALID_PARAMETER
 	//   - HTTP: 416 Range Not Satisfiable
@@ -35,7 +35,7 @@ var (
 
 	// ErrInvalidSize indicates the size parameter is invalid.
 	//
-	// Protocol Mapping:
+	// Protocol Mapping
 	//   - NFS: NFS3ErrInval (22)
 	//   - SMB: STATUS_INVALID_PARAMETER
 	ErrInvalidSize = errors.New("invalid size")
@@ -44,7 +44,7 @@ var (
 	//
 	// This is a transient error - it may succeed after cleanup.
 	//
-	// Protocol Mapping:
+	// Protocol Mapping
 	//   - NFS: NFS3ErrNoSpc (28)
 	//   - SMB: STATUS_DISK_FULL
 	//   - HTTP: 507 Insufficient Storage
@@ -52,7 +52,7 @@ var (
 
 	// ErrQuotaExceeded indicates a storage quota has been exceeded.
 	//
-	// Protocol Mapping:
+	// Protocol Mapping
 	//   - NFS: NFS3ErrDQuot (69)
 	//   - SMB: STATUS_QUOTA_EXCEEDED
 	//   - HTTP: 507 Insufficient Storage
@@ -60,7 +60,7 @@ var (
 
 	// ErrIntegrityCheckFailed indicates content integrity verification failed.
 	//
-	// Protocol Mapping:
+	// Protocol Mapping
 	//   - NFS: NFS3ErrIO (5)
 	//   - SMB: STATUS_DATA_CHECKSUM_ERROR
 	//   - HTTP: 500 Internal Server Error
@@ -68,7 +68,7 @@ var (
 
 	// ErrReadOnly indicates the content store is read-only.
 	//
-	// Protocol Mapping:
+	// Protocol Mapping
 	//   - NFS: NFS3ErrRoFs (30)
 	//   - SMB: STATUS_MEDIA_WRITE_PROTECTED
 	//   - HTTP: 403 Forbidden
@@ -76,7 +76,7 @@ var (
 
 	// ErrNotSupported indicates the operation is not supported.
 	//
-	// Protocol Mapping:
+	// Protocol Mapping
 	//   - NFS: NFS3ErrNotSupp (10004)
 	//   - SMB: STATUS_NOT_SUPPORTED
 	//   - HTTP: 501 Not Implemented
@@ -86,7 +86,7 @@ var (
 	//
 	// Callers should retry with fresh data.
 	//
-	// Protocol Mapping:
+	// Protocol Mapping
 	//   - NFS: NFS3ErrStale (70) or NFS3ErrJukebox (10008)
 	//   - SMB: STATUS_FILE_LOCK_CONFLICT
 	//   - HTTP: 409 Conflict or 412 Precondition Failed
@@ -94,7 +94,7 @@ var (
 
 	// ErrInvalidPayloadID indicates the PayloadID format is invalid.
 	//
-	// Protocol Mapping:
+	// Protocol Mapping
 	//   - NFS: NFS3ErrBadHandle (10001)
 	//   - SMB: STATUS_INVALID_PARAMETER
 	//   - HTTP: 400 Bad Request
@@ -102,7 +102,7 @@ var (
 
 	// ErrTooLarge indicates the content or operation is too large.
 	//
-	// Protocol Mapping:
+	// Protocol Mapping
 	//   - NFS: NFS3ErrFBig (27)
 	//   - SMB: STATUS_FILE_TOO_LARGE
 	//   - HTTP: 413 Payload Too Large
@@ -112,7 +112,7 @@ var (
 	//
 	// This is a transient error - retrying may succeed.
 	//
-	// Protocol Mapping:
+	// Protocol Mapping
 	//   - NFS: NFS3ErrJukebox (10008)
 	//   - SMB: STATUS_DEVICE_NOT_READY
 	//   - HTTP: 503 Service Unavailable
@@ -124,7 +124,7 @@ var (
 
 	// ErrChunkNotFound indicates the requested content-addressed chunk does
 	// not exist in the local chunk store. Mirrors ErrBlockNotFound /
-	// ErrContentNotFound style (Phase 10, LSL-02).
+	// ErrContentNotFound style.
 	ErrChunkNotFound = errors.New("chunk not found")
 
 	// ErrStoreClosed is returned when operations are attempted on a closed store.
@@ -138,22 +138,22 @@ var (
 
 	// ErrUnknownHash is returned by FileBlockStore.AddRef when no
 	// FileBlock row exists for the given hash. The LRU hit path
-	// (Phase 19 Opt 1 — see pkg/blockstore/local/fs/rollup.go) MUST
+	// (Opt 1 — see pkg/blockstore/local/fs/rollup.go) MUST
 	// fall back to the full Put path on this sentinel; the LRU may
-	// be ahead of the metadata store after a crash (RAM-only LRU,
-	// see Phase 19 D-05), or the hash may simply not be present yet.
+	// be ahead of the metadata store after a crash (RAM-only LRU
+	// see), or the hash may not be present yet.
 	ErrUnknownHash = errors.New("metadata: hash not yet present in FileBlockStore (AddRef called before Put)")
 
 	// ErrRemoteUnavailable is returned when a remote store operation is needed
 	// but the remote store is currently unreachable. Protocol handlers should
-	// map this to appropriate I/O error codes (NFS3ERR_IO, NFS4ERR_IO,
+	// map this to appropriate I/O error codes (NFS3ERR_IO, NFS4ERR_IO
 	// STATUS_UNEXPECTED_IO_ERROR).
 	//
 	// The error is intentionally returned early (before attempting network I/O)
 	// when the health monitor reports the remote as unhealthy, avoiding network
 	// timeouts.
 	//
-	// Protocol Mapping:
+	// Protocol Mapping
 	//   - NFS: NFS3ErrIO (5) / NFS4ERR_IO (5)
 	//   - SMB: STATUS_UNEXPECTED_IO_ERROR (0xC00000E9)
 	//   - HTTP: 503 Service Unavailable
@@ -161,19 +161,18 @@ var (
 
 	// ErrCASContentMismatch is returned by the streaming BLAKE3 verifier on
 	// S3 GET when the recomputed hash (or the x-amz-meta-content-hash header)
-	// does not match the expected ContentHash. Per INV-06, the buffer is
+	// does not match the expected ContentHash. On mismatch, the buffer is
 	// discarded and this error surfaces — bad bytes never reach the caller.
 	ErrCASContentMismatch = errors.New("blockstore: CAS content hash mismatch")
 
 	// ErrCASKeyMalformed is returned by ParseCASKey for any input that does
-	// not match the cas/{hh}/{hh}/{hex} shape. See BSCAS-01.
+	// not match the cas/{hh}/{hh}/{hex} shape.
 	ErrCASKeyMalformed = errors.New("blockstore: malformed CAS key")
 
 	// ErrBlockRefMissing is returned by engine.ReadAt when a BlockRef.Hash
 	// refers to a FileBlock that has been GC'd or never existed. The
 	// adapter layer (internal/adapter/common/errmap.go) maps this to
 	// NFS3ERR_IO / STATUS_DATA_ERROR consistently across protocols.
-	// See Phase 12 D-23.
 	ErrBlockRefMissing = errors.New("blockstore: block ref hash missing in store")
 
 	// ErrStopWalk is the sentinel a Walk callback returns to request a
@@ -182,7 +181,7 @@ var (
 	// wrapped with file/offset context. Mirrors filepath.SkipDir /
 	// fs.SkipAll.
 	//
-	// Detection pattern (callback side, when wrapping is required):
+	// Detection pattern (callback side, when wrapping is required)
 	//
 	//   return fmt.Errorf("gc target %s: %w", id, blockstore.ErrStopWalk)
 	//
@@ -190,19 +189,19 @@ var (
 	// return nil to the outer caller. Any other non-nil callback error
 	// halts and is wrapped as fmt.Errorf("walk halted at %s: %w", hash, err).
 	//
-	// See BlockStore.Walk (Phase 17 D-07).
+	// See BlockStore.Walk.
 	ErrStopWalk = errors.New("blockstore: stop walk")
 
 	// ErrLegacyLayoutDetected is returned by *fs.FSStore.NewFSStore when
 	// the share directory contains legacy `.blk` files but no
 	// `.cas-migrated-v1` sentinel marker file. The wrapped target
-	// carries the offending share path:
+	// carries the offending share path
 	//
 	//   return nil, fmt.Errorf("%w: share path %s", ErrLegacyLayoutDetected, baseDir)
 	//
 	// Detection at boot is via errors.Is, not errors.As — the sentinel
 	// is an errors.New value (not a typed struct), so errors.Is is the
-	// idiomatic match:
+	// idiomatic match
 	//
 	//   if errors.Is(err, blockstore.ErrLegacyLayoutDetected) { ... }
 	//
@@ -214,7 +213,7 @@ var (
 	//
 	// Operator action: run `dfs migrate-to-cas --share <name>` (or
 	// `dfs migrate-to-cas` for all shares) and retry. See
-	// docs/CONFIGURATION.md §migration. Phase 17 D-10/D-11.
+	// docs/CONFIGURATION.md §migration..
 	ErrLegacyLayoutDetected = errors.New("blockstore: legacy .blk layout detected (run `dfs migrate-to-cas`)")
 )
 
@@ -222,13 +221,13 @@ var (
 //
 // It provides rich operational metadata for diagnosing block storage issues
 // without losing compatibility with errors.Is() checks on the underlying sentinel.
-// For example:
+// For example
 //
 //	err := NewBlockStoreError("upload", "/archive", "abc123", 5, "s3", ErrUnavailable)
 //	errors.Is(err, ErrUnavailable) // true
 //
 // Fields capture the operation type, affected share, payload identifier, block
-// index, backend type, and the wrapped sentinel error. Optional fields (Size,
+// index, backend type, and the wrapped sentinel error. Optional fields (Size
 // Duration, Retries) can be set after construction for performance debugging.
 type BlockStoreError struct {
 	// Op describes the operation that failed: "upload", "download", "dedup", or "gc".

@@ -7,9 +7,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Phase 19 Plan 03 (D-03, D-22c):
 // BlockstoreLocalConfig exposes the dedup_lru_size knob at the
-// top-level Config so operators can tune Phase 19 Opt 1 without
+// top-level Config so operators can tune the dedup LRU without
 // recompiling. Default 4096 slots; Validate rejects non-positive
 // values; YAML round-trip works under the canonical loader pattern.
 

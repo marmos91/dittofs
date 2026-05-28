@@ -14,7 +14,7 @@ import (
 // No delegation; validates handle size (max 128 bytes) and sets CompoundContext.CurrentFH.
 // Sets CurrentFH for subsequent compound operations; no store access or state changes.
 // Errors: NFS4ERR_BADHANDLE (empty or oversized handle), NFS4ERR_BADXDR,
-// NFS4ERR_STALE (REST-02: share quiesced for restore, Plan 05-09 D-02).
+// NFS4ERR_STALE (share quiesced for restore).
 func (h *Handler) handlePutFH(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Read filehandle as XDR opaque
 	handle, err := xdr.DecodeOpaque(reader)
@@ -44,7 +44,7 @@ func (h *Handler) handlePutFH(ctx *types.CompoundContext, reader io.Reader) *typ
 		}
 	}
 
-	// REST-02 / D-02: if the handle traces back to a known runtime share and
+	// If the handle traces back to a known runtime share and
 	// that share is disabled, refuse with NFS4ERR_STALE. Clients reacquire
 	// fresh handles after restore + explicit re-enable. Handles that do not
 	// decode to a known share fall through unchanged — PUTFH stays

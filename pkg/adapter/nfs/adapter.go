@@ -342,7 +342,7 @@ func (s *NFSAdapter) SetKerberosConfig(cfg *config.KerberosConfig) {
 
 // SetRuntime injects the runtime containing all stores and shares.
 //
-// This method is called by Runtime before Serve() is called. The runtime
+// Called by Runtime before Serve() is called. The runtime
 // provides access to all configured metadata stores, content stores, and shares.
 //
 // The NFS adapter stores the runtime and injects it into both the NFS and Mount
@@ -398,7 +398,7 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 
 	logger.Debug("NFS adapter configured with runtime", "shares", rt.CountShares())
 
-	// Register NFSBreakHandler on each share's LockManager (Plan 39-02).
+	// Register NFSBreakHandler on each share's LockManager.
 	// When the shared LockManager recalls a delegation (e.g., due to an SMB
 	// write conflicting with an NFS delegation), the handler translates the
 	// recall into a CB_RECALL sent via the NFS backchannel.

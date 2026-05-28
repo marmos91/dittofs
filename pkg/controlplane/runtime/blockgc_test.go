@@ -19,9 +19,9 @@ type fakeRemoteStore struct {
 	name string
 }
 
-// All methods on remote.RemoteStore (Phase 17 unified surface). The
-// fake is identity-only — it never actually performs I/O; tests assert
-// on pointer identity and dedup wiring, not on byte-level behavior.
+// All methods on remote.RemoteStore. The fake is identity-only — it
+// never actually performs I/O; tests assert on pointer identity and
+// dedup wiring, not on byte-level behavior.
 func (f *fakeRemoteStore) Put(_ context.Context, _ blockstore.ContentHash, _ []byte) error {
 	return nil
 }
@@ -116,10 +116,10 @@ func TestRunBlockGC_DedupesSharedRemoteStores(t *testing.T) {
 }
 
 // TestRunBlockGC_DryRunPropagates asserts dryRun flows into the Options
-// struct passed to CollectGarbage. Phase 11 WR-04 removed
-// engine.Options.SharePrefix because the mark-sweep design has a global
-// live set; the historical sharePrefix argument on RunBlockGC is preserved
-// for caller compatibility but ignored.
+// struct passed to CollectGarbage. engine.Options.SharePrefix was
+// removed because the mark-sweep design has a global live set; the
+// historical sharePrefix argument on RunBlockGC is preserved for
+// caller compatibility but ignored.
 func TestRunBlockGC_DryRunPropagates(t *testing.T) {
 	captured := installCollectGarbageSpy(t)
 

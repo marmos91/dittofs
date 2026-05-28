@@ -25,7 +25,7 @@ func newRollupTestStore(t *testing.T) *BadgerMetadataStore {
 
 // TestBadgerRollupStore_Suite exercises the shared RollupStore conformance
 // suite against the Badger backend. Proves atomic-monotone semantics
-// (INV-03) on top of Badger's MVCC transactions.
+// on top of Badger's MVCC transactions.
 func TestBadgerRollupStore_Suite(t *testing.T) {
 	s := newRollupTestStore(t)
 	metadata.RunRollupStoreSuite(t, s)

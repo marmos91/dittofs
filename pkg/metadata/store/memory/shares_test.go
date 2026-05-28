@@ -9,8 +9,7 @@ import (
 )
 
 // TestBlockLayoutConformance runs the per-share BlockLayout conformance
-// scenarios against the in-memory metadata store (Phase 14 Plan 01,
-// MIG-03 / D-A6).
+// scenarios against the in-memory metadata store.
 func TestBlockLayoutConformance(t *testing.T) {
 	storetest.RunBlockLayoutSuite(t, func(t *testing.T) metadata.MetadataStore {
 		return memory.NewMemoryMetadataStoreWithDefaults()

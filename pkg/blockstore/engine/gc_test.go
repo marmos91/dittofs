@@ -316,7 +316,7 @@ func TestGCMarkSweep_SweepErrorsContinueAndCapture(t *testing.T) {
 	// Force LastModified to be old enough that grace TTL doesn't preserve.
 	inner.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
 
-	// Pick two hashes whose CAS keys land in distinct top-level prefixes:
+	// Pick two hashes whose CAS keys land in distinct top-level prefixes
 	// one inside "ab" (failing) and one elsewhere.
 	failHash := mustHashWithPrefix(t, "ab")
 	okHash := mustHashWithPrefix(t, "cd")
@@ -343,8 +343,8 @@ func TestGCMarkSweep_SweepErrorsContinueAndCapture(t *testing.T) {
 	}
 }
 
-// TestGCMarkSweep_DryRun (behavior 6): DryRun=true performs no Deletes;
-// DryRunCandidates contains up to DryRunSampleSize candidates;
+// TestGCMarkSweep_DryRun (behavior 6): DryRun=true performs no Deletes
+// DryRunCandidates contains up to DryRunSampleSize candidates
 // ObjectsSwept counts what WOULD be deleted; BytesFreed=0.
 func TestGCMarkSweep_DryRun(t *testing.T) {
 	ctx := t.Context()
@@ -544,7 +544,7 @@ func TestGCMarkSweep_HoldProvider_ErrorFailsClosed(t *testing.T) {
 	}
 }
 
-// TestGCMarkSweep_LastRunJSON (behavior 8): after a successful run,
+// TestGCMarkSweep_LastRunJSON (behavior 8): after a successful run
 // <gcStateRoot>/last-run.json exists and parses as GCRunSummary.
 func TestGCMarkSweep_LastRunJSON(t *testing.T) {
 	ctx := t.Context()
@@ -603,10 +603,10 @@ func TestGCMarkSweep_StaleDirCleanup(t *testing.T) {
 	}
 }
 
-// TestGCMarkSweep_ConcurrencyBound was removed in Phase 17: the engine
-// GC sweep no longer shards work across 256 prefix workers (the
-// RemoteStore.Walk-based replacement enumerates every CAS object in a
-// single call, with sharding now an internal backend concern). The
+// TestGCMarkSweep_ConcurrencyBound has been removed: the engine GC
+// sweep no longer shards work across 256 prefix workers (the
+// RemoteStore.Walk-based replacement enumerates every CAS object in
+// a single call, with sharding now an internal backend concern). The
 // SweepConcurrency Option remains as a tunable for a future
 // per-shard Walk extension but exposes no observable knob today.
 
@@ -703,7 +703,7 @@ func (d *deleteCountingRemote) Healthcheck(ctx context.Context) health.Report {
 }
 func (d *deleteCountingRemote) Close() error { return d.inner.Close() }
 
-// TestClassifyGCError_DiversifiesByVerb (Phase 11 IN-3-03): the
+// TestClassifyGCError_DiversifiesByVerb: the
 // classifier strips the high-cardinality path/key tail from the verb
 // prefix and the body's tail-after-first-":" so semantically distinct
 // errors collapse to distinct class keys but per-key noise does not.
@@ -765,7 +765,7 @@ func TestClassifyGCError_DiversifiesByVerb(t *testing.T) {
 	}
 }
 
-// TestGCMarkSweep_FirstErrorsDiversifyAcrossClasses (Phase 11 IN-3-03):
+// TestGCMarkSweep_FirstErrorsDiversifyAcrossClasses
 // when a single sweep produces many identical errors (e.g. 503 SlowDown
 // from List) plus a single distinct error from another source, the
 // distinct error MUST land in FirstErrors instead of being shadowed by
@@ -793,7 +793,7 @@ func TestGCMarkSweep_FirstErrorsDiversifyAcrossClasses(t *testing.T) {
 	// path: fail Deletes in two distinct classes by stacking two
 	// wrappers — but the simpler observation is enough: the existing
 	// error path captures the first occurrence per class. Here we just
-	// assert that with 20 identical "delete cas/ab/...: ..." failures,
+	// assert that with 20 identical "delete cas/ab/...: ..." failures
 	// FirstErrors has exactly ONE entry (collapsed by class) and
 	// ErrorCount reflects the full count.
 	rs := &prefixDeleteFailerRemote{inner: inner, failPrefix: "cas/ab/"}
@@ -814,12 +814,12 @@ func TestGCMarkSweep_FirstErrorsDiversifyAcrossClasses(t *testing.T) {
 	}
 }
 
-// TestGCMarkSweep_ConcurrentRunsAgainstSharedRoot (Phase 11 WR-3-01):
+// TestGCMarkSweep_ConcurrentRunsAgainstSharedRoot
 // N parallel CollectGarbage calls that share a GCStateRoot must serialize
 // — no run may delete another run's per-runID directory mid-mark. We fire
 // 8 goroutines and assert (a) every run completes without an "open
 // badger" or "stale dir cleanup" error, (b) ObjectsSwept matches the
-// expected orphan count on every run (the live set was not truncated),
+// expected orphan count on every run (the live set was not truncated)
 // and (c) at run completion every per-run directory has been cleanly
 // torn down (MarkComplete removed each incomplete.flag).
 func TestGCMarkSweep_ConcurrentRunsAgainstSharedRoot(t *testing.T) {

@@ -141,7 +141,7 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 	// Protocol operations
 	h.opDispatchTable[types.OP_ILLEGAL] = h.handleIllegal
 
-	// Stateful I/O operations (Phase 7 placeholders, Phase 9 proper state)
+	// Stateful I/O operations
 	h.opDispatchTable[types.OP_OPEN] = h.handleOpen
 	h.opDispatchTable[types.OP_OPEN_CONFIRM] = h.handleOpenConfirm
 	h.opDispatchTable[types.OP_CLOSE] = h.handleClose
@@ -158,17 +158,17 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 	// Security negotiation
 	h.opDispatchTable[types.OP_SECINFO] = h.handleSecInfo
 
-	// Client setup stubs (Phase 9 implements proper state management)
+	// Client setup operations
 	h.opDispatchTable[types.OP_SETCLIENTID] = h.handleSetClientID
 	h.opDispatchTable[types.OP_SETCLIENTID_CONFIRM] = h.handleSetClientIDConfirm
 	h.opDispatchTable[types.OP_RENEW] = h.handleRenew
 
-	// Lock operations (Plan 10-01, 10-02)
+	// Lock operations (, 10-02)
 	h.opDispatchTable[types.OP_LOCK] = h.handleLock
 	h.opDispatchTable[types.OP_LOCKT] = h.handleLockT
 	h.opDispatchTable[types.OP_LOCKU] = h.handleLockU
 
-	// Delegation operations (Plan 11-01, 11-03)
+	// Delegation operations (, 11-03)
 	h.opDispatchTable[types.OP_DELEGRETURN] = h.handleDelegReturn
 	h.opDispatchTable[types.OP_DELEGPURGE] = h.handleDelegPurge
 
@@ -177,7 +177,7 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 	h.opDispatchTable[types.OP_OPEN_DOWNGRADE] = h.handleOpenDowngrade
 	h.opDispatchTable[types.OP_RELEASE_LOCKOWNER] = h.handleReleaseLockOwner
 
-	// Grace period lifecycle (Plan 09-04):
+	// Grace period lifecycle :
 	// On server startup (if previous clients exist):
 	//   handler.StateManager.StartGracePeriod(previousClientIDs)
 	// On graceful shutdown:

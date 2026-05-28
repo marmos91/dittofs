@@ -1,5 +1,5 @@
 // Bench / regression gate for the []BlockRef-threaded read path
-// (binary search via findBlocksForRange, Cache OnRead hint,
+// (binary search via findBlocksForRange, Cache OnRead hint
 // RAM-cache-backed local.Get on miss).
 //
 // This file is the in-tree microbench canary. Real-S3 performance is
@@ -7,11 +7,11 @@
 // lane. See test/e2e/BENCHMARKS.md for the microbench-vs-real-S3
 // disclaimer.
 //
-// Reproduce locally:
+// Reproduce locally
 //
 //	make bench-phase12
 //
-// Or directly:
+// Or directly
 //
 //	go test -bench BenchmarkPerfGate_Phase12 -benchtime=10s -run=^$ \
 //	    ./pkg/blockstore/engine/...
@@ -73,7 +73,7 @@ func (f *phase12Fixture) Close() {}
 // phase12FixtureBlockSize chunks. Each chunk's BlockRef carries a
 // stable BLAKE3 hash of its (deterministic) payload so the OnRead hint
 // path in engine.ReadAt sees a realistic []ContentHash sequence — but
-// the actual byte-serving comes from the in-memory local store,
+// the actual byte-serving comes from the in-memory local store
 // keeping the bench network-free.
 //
 // Cache budget is large enough to keep all hashes live (16 entries ×
@@ -192,7 +192,7 @@ func BenchmarkRandRead_Phase12(b *testing.B) {
 // regression bound: IOPS must be within 5% of the per-machine in-tree
 // microbench floor recorded in test/e2e/BENCHMARKS.md. This is a TRUE
 // benchmark function (not a Test invoking testing.Benchmark()), invoked
-// via:
+// via
 //
 //	go test -bench BenchmarkPerfGate_Phase12 -benchtime=10s -run=^$ \
 //	    ./pkg/blockstore/engine/...
@@ -270,10 +270,10 @@ func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 // real-S3 lane is verified separately at milestone-gate VER-02.
 const phase12MicrobenchFloorIOPS = 50000.0
 
-// TestPerfGate_Phase12_BinarySearchOverhead is a supporting bound:
+// TestPerfGate_Phase12_BinarySearchOverhead is a supporting bound
 // findBlocksForRange over a 16 K BlockRef slice (the VM-workload upper
 // bound — 16 K × 4 MiB = 64 GiB file) MUST average <1 µs per call. If
-// the lookup grows linear (or worse) the rand-read gate will trip;
+// the lookup grows linear (or worse) the rand-read gate will trip
 // this test localises the regression to the binary-search seam itself.
 func TestPerfGate_Phase12_BinarySearchOverhead(t *testing.T) {
 	const N = 16000

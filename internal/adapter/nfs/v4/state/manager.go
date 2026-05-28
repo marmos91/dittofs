@@ -118,7 +118,7 @@ type StateManager struct {
 	graceDuration time.Duration
 
 	// ============================================================================
-	// NFSv4.1 State (Phase 18+)
+	// NFSv4.1 State
 	// ============================================================================
 
 	// v41ClientsByID maps server-assigned client IDs to v4.1 client records.
@@ -145,7 +145,7 @@ type StateManager struct {
 	serverIdentity *ServerIdentity
 
 	// ============================================================================
-	// Connection Binding State (Phase 21)
+	// Connection Binding State
 	// ============================================================================
 
 	// connMu protects connection binding maps. Separate from sm.mu to avoid
@@ -163,7 +163,7 @@ type StateManager struct {
 	maxConnsPerSession int
 
 	// ============================================================================
-	// Backchannel State (Phase 22)
+	// Backchannel State
 	// ============================================================================
 
 	// connWriters maps connectionID -> ConnWriter callback for writing backchannel
@@ -221,11 +221,11 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		maxSessionsPerClient: 16,
 		foreMaxSlots:         64,
 		serverIdentity:       newServerIdentity(epoch),
-		// Connection binding state (Phase 21)
+		// Connection binding state
 		connByID:           make(map[uint64]*BoundConnection),
 		connBySession:      make(map[types.SessionId4][]*BoundConnection),
 		maxConnsPerSession: 16,
-		// Backchannel state (Phase 22)
+		// Backchannel state
 		connWriters:       make(map[uint64]ConnWriter),
 		cbRepliesByConn:   make(map[uint64]*PendingCBReplies),
 		backchannelFaults: make(map[uint64]bool),
@@ -643,7 +643,7 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 	// Remove all open states AND lock states for all owners
 	for _, owner := range record.OpenOwners {
 		for _, openState := range owner.OpenStates {
-			// Phase 10: Clean up lock states associated with this open
+			// Clean up lock states associated with this open
 			for _, lockState := range openState.LockStates {
 				// Remove from lockStateByOther map
 				delete(sm.lockStateByOther, lockState.Stateid.Other)
@@ -678,7 +678,7 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 		delete(sm.openOwners, ownerKey)
 	}
 
-	// Phase 11: Clean up delegations for the expired client
+	// Clean up delegations for the expired client
 	for other, deleg := range sm.delegByOther {
 		if deleg.ClientID != clientID {
 			continue
@@ -727,7 +727,7 @@ func (sm *StateManager) RevokeDelegation(delegOther [types.NFS4_OTHER_SIZE]byte)
 	sm.removeDelegFromFile(deleg)
 	sm.addRecentlyRecalled(deleg.FileHandle)
 
-	// Clean up LockManager delegation and stateid mapping (Plan 39-02)
+	// Clean up LockManager delegation and stateid mapping
 	lmDelegID := deleg.LockManagerDelegID
 	fhKey := string(deleg.FileHandle)
 	if lmDelegID != "" {
@@ -786,7 +786,7 @@ func (sm *StateManager) Shutdown() {
 }
 
 // ============================================================================
-// Grace Period Operations (Plan 09-04)
+// Grace Period Operations
 // ============================================================================
 
 // StartGracePeriod creates and starts a grace period for server restart recovery.
@@ -872,7 +872,7 @@ func (sm *StateManager) ReclaimComplete(clientID uint64) error {
 // CLAIM_NULL, LOCK). Operations that use existing state (READ, WRITE, RENEW,
 // CLOSE) should NOT call this.
 //
-// NOTE: LOCK operations (Phase 10) will also need to check this.
+// NOTE: LOCK operations will also need to check this.
 func (sm *StateManager) CheckGraceForNewState() error {
 	if sm.IsInGrace() {
 		return ErrGrace
@@ -921,7 +921,7 @@ func (sm *StateManager) SaveClientState() []ClientSnapshot {
 }
 
 // ============================================================================
-// Open File Operations (Plan 09-02)
+// Open File Operations
 // ============================================================================
 
 // OpenFile implements the state management side of OPEN.
@@ -1240,7 +1240,7 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*types
 		}
 	}
 
-	// Phase 10: Check for held locks before closing
+	// Check for held locks before closing
 	// Per RFC 7530, CLOSE MUST fail if byte-range locks are held.
 	// Client must LOCKU all locks before CLOSE.
 	if len(openState.LockStates) > 0 {
@@ -1379,7 +1379,7 @@ func (sm *StateManager) GetOpenState(other [types.NFS4_OTHER_SIZE]byte) *OpenSta
 }
 
 // ============================================================================
-// Lease Operations (Plan 09-02, Task 4)
+// Lease Operations (, Task 4)
 // ============================================================================
 
 // RenewLease implements the RENEW operation's state management.
@@ -1423,7 +1423,7 @@ func (sm *StateManager) RenewLease(clientID uint64) error {
 }
 
 // ============================================================================
-// Lock Manager Integration (Plan 10-01)
+// Lock Manager Integration
 // ============================================================================
 
 // SetLockManager sets the unified lock manager for byte-range conflict detection.
@@ -1751,7 +1751,7 @@ func (sm *StateManager) acquireLock(lockState *LockState, lockType uint32, offse
 }
 
 // ============================================================================
-// LOCKT - Lock Test (Plan 10-02)
+// LOCKT - Lock Test
 // ============================================================================
 
 // TestLock tests for byte-range lock conflicts without creating any state.
@@ -1833,7 +1833,7 @@ func (sm *StateManager) TestLock(
 }
 
 // ============================================================================
-// LOCKU - Unlock File (Plan 10-02)
+// LOCKU - Unlock File
 // ============================================================================
 
 // UnlockFile releases a byte-range lock via the lock manager using POSIX split semantics.
@@ -1843,7 +1843,7 @@ func (sm *StateManager) TestLock(
 //   - Calls the lock manager's RemoveUnifiedLock for POSIX splitting
 //   - Increments the lock stateid seqid on success
 //   - The lock state is NOT removed (persists for future LOCK operations)
-//   - RELEASE_LOCKOWNER (Plan 10-03) handles state cleanup
+//   - RELEASE_LOCKOWNER handles state cleanup
 //
 // Lock-not-found from the lock manager is treated as success (idempotent unlock).
 //
@@ -1927,7 +1927,7 @@ func (sm *StateManager) UnlockFile(
 }
 
 // ============================================================================
-// RELEASE_LOCKOWNER (Plan 10-03)
+// RELEASE_LOCKOWNER
 // ============================================================================
 
 // ReleaseLockOwner releases all state associated with a lock-owner.
@@ -2028,7 +2028,7 @@ func parseConflictOwner(ownerID string, denied *LOCK4denied) {
 }
 
 // ============================================================================
-// NFSv4.1 Lease and Status (Phase 20)
+// NFSv4.1 Lease and Status
 // ============================================================================
 
 // RenewV41Lease renews the lease for a v4.1 client by updating LastRenewal.
@@ -2102,7 +2102,7 @@ func (sm *StateManager) GetStatusFlags(session *Session) uint32 {
 }
 
 // ============================================================================
-// NFSv4.1 Session Management (Phase 19)
+// NFSv4.1 Session Management
 // ============================================================================
 
 // CreateSession implements the CREATE_SESSION algorithm per RFC 8881 Section 18.36.
@@ -2402,7 +2402,7 @@ func (sm *StateManager) reapExpiredSessions() {
 }
 
 // ============================================================================
-// Connection Binding (Phase 21)
+// Connection Binding
 // ============================================================================
 
 // BindConnToSession associates a TCP connection with a session.
@@ -2662,7 +2662,7 @@ func (sm *StateManager) SetMaxSessionsPerClient(n int) {
 }
 
 // ============================================================================
-// Backchannel Operations (Phase 22)
+// Backchannel Operations
 // ============================================================================
 
 // RegisterConnWriter registers a ConnWriter callback for a back-bound connection.

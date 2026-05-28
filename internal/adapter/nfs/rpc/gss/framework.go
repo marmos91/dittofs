@@ -257,7 +257,7 @@ func parseASN1Length(data []byte) (int, int, error) {
 //
 //	struct rpc_gss_init_arg { opaque gss_token<>; };
 //
-// This function decodes the length-prefixed opaque value to get the raw token.
+// Decodes the length-prefixed opaque value to get the raw token.
 // XDR opaque format: 4-byte big-endian length + data + padding to 4-byte boundary.
 func decodeOpaqueToken(data []byte) ([]byte, error) {
 	if len(data) < 4 {

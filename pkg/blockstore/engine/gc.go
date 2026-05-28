@@ -1,6 +1,6 @@
 // Package engine — Mark-Sweep CollectGarbage.
 //
-// Two phases:
+// Two phases
 //
 //  1. MARK: stream every live FileBlock's ContentHash into a disk-backed
 //     live set (see GCState in gcstate.go). Memory is bounded regardless
@@ -10,16 +10,16 @@
 //     the snapshot - GracePeriod TTL filter, and DELETE iff absent from
 //     the live set.
 //
-// Invariants:
-//   - INV-04 (mark fail-closed): any error during EnumerateFileBlocks
+// Invariants
+//   - (mark fail-closed): any error during EnumerateFileBlocks
 //     aborts the sweep entirely — orphan-not-deleted is always preferred
 //     over live-data-deleted.
-//   - D-07 (sweep continue+capture): a Delete or list error in one prefix
+//   - (sweep continue+capture): a Delete or list error in one prefix
 //     worker is recorded in GCStats but does not abort the run.
 //   - GC is opt-in: the operator enables it via gc.interval.
 //
 // Cross-share aggregation lives in Runtime.RunBlockGC: it enumerates
-// distinct remote stores and invokes CollectGarbage once per remote,
+// distinct remote stores and invokes CollectGarbage once per remote
 // with a MultiShareReconciler that fans EnumerateFileBlocks across every
 // share pointing at that remote.
 package engine
@@ -38,9 +38,9 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
-	// API-02 justification: GC is the cross-share metadata-mark
+	// justification: GC is the cross-share metadata-mark
 	// entrypoint — it MUST bind metadata.MetadataStore /
-	// MetadataReconciler to enumerate live FileBlocks (D-03 / INV-04).
+	// MetadataReconciler to enumerate live FileBlocks.
 	// Lifting these to blockstore would create a circular import.
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -49,14 +49,14 @@ import (
 const BlockSize = blockstore.BlockSize
 
 // gcRootLocks serializes CollectGarbage invocations that share a
-// GCStateRoot. Phase 11 WR-3-01: without this, two concurrent calls
+// GCStateRoot.: without this, two concurrent calls
 // against the same root race in CleanStaleGCStateDirs — Run B can sweep
-// Run A's open Badger directory while Run A is still writing to it,
-// silently truncating the live set and risking INV-04 (mark fail-closed)
+// Run A's open Badger directory while Run A is still writing to it
+// silently truncating the live set and risking (mark fail-closed)
 // violation by data path.
 //
 // Scope is per-process: a sync.Mutex keyed by absolute GCStateRoot path.
-// IN-4-05: lock granularity is therefore PER-SHARE in practice — each
+// lock granularity is therefore PER-SHARE in practice — each
 // share owns its own gc-state directory under <localStore>/gc-state/, so
 // concurrent runs against DIFFERENT shares acquire DIFFERENT mutexes and
 // proceed in parallel; only same-share GC calls serialize. For the
@@ -69,7 +69,7 @@ const BlockSize = blockstore.BlockSize
 // each other. This is conservative: each temp root is unique per call so
 // races on the temp dir itself are impossible, but sharing one mutex
 // across all temp-root runs prevents accidental concurrent CollectGarbage
-// pile-ups against a single remote endpoint (see WR-3-01 sketch).
+// pile-ups against a single remote endpoint (see sketch).
 var (
 	gcRootLocksMu sync.Mutex
 	gcRootLocks   = make(map[string]*sync.Mutex)
@@ -98,7 +98,7 @@ func acquireGCRootLock(root string) *sync.Mutex {
 // GCStats holds statistics about the garbage collection run.
 //
 // The mark-sweep fields are authoritative; the legacy aggregator fields
-// (SharesScanned, BlocksScanned, OrphanFiles, OrphanBlocks, BytesReclaimed,
+// (SharesScanned, BlocksScanned, OrphanFiles, OrphanBlocks, BytesReclaimed
 // Errors) are preserved for Runtime.RunBlockGC and the dfsctl gc-status
 // surface and are populated by finalizeStats as aliases of the new ones.
 type GCStats struct {
@@ -133,17 +133,17 @@ type Options struct {
 	MaxOrphansPerShare int
 
 	// ProgressCallback is called periodically with progress updates.
-	// May be nil. Phase 11 Plan 06: invoked at most once per cas/XX/
+	// May be nil.: invoked at most once per cas/XX/
 	// prefix completion.
 	ProgressCallback func(stats GCStats)
 
 	// GracePeriod is the TTL applied during sweep: an object whose
-	// LastModified is within snapshot - GracePeriod is preserved (D-05).
+	// LastModified is within snapshot - GracePeriod is preserved.
 	// Zero defaults to one hour.
 	GracePeriod time.Duration
 
 	// SweepConcurrency bounds the worker pool walking the 256 cas/XX/*
-	// prefixes (D-04). Zero defaults to 16; values above 32 are clamped.
+	// prefixes. Zero defaults to 16; values above 32 are clamped.
 	SweepConcurrency int
 
 	// DryRunSampleSize bounds the count of candidate keys captured in
@@ -151,21 +151,21 @@ type Options struct {
 	DryRunSampleSize int
 
 	// GCStateRoot is the directory in which the per-run gc-state dir
-	// (and last-run.json) are persisted (D-01 / D-10). Empty means
+	// (and last-run.json) are persisted. Empty means
 	// "do not persist": GCState falls back to a temp dir under os.TempDir
 	// and last-run.json is skipped.
 	GCStateRoot string
 
 	// RemoteEndpointID identifies the remote store this run targets
 	// (typically the remote-store config UUID — for S3 a bucket/prefix
-	// would also work). Phase 11 IN-3-04: included in the engine's
+	// would also work).: included in the engine's
 	// start/complete log lines so SREs can correlate engine GC activity
 	// with S3 access logs without round-tripping through the runtime
 	// caller. Empty when the caller does not provide one.
 	RemoteEndpointID string
 
 	// Shares is the list of share names this run scoped its mark phase
-	// to (the MultiShareReconciler.SharesForGC return). Phase 11 IN-3-04:
+	// to (the MultiShareReconciler.SharesForGC return).
 	// surfaces the share scope in the engine's log lines for cross-
 	// correlation. Optional — engine logic does not depend on this
 	// field; SharesForGC remains the source of truth for marking.
@@ -187,7 +187,7 @@ type MetadataReconciler interface {
 
 // MultiShareReconciler enumerates every share pointing at a single remote
 // store so the mark phase can union live FileBlocks across all of them
-// (D-03). A reconciler that does not implement this is treated as having
+// . A reconciler that does not implement this is treated as having
 // no shares — every CAS object becomes a sweep candidate.
 type MultiShareReconciler interface {
 	MetadataReconciler
@@ -208,9 +208,9 @@ type HoldProvider interface {
 }
 
 // CollectGarbage scans the remote store and removes orphan blocks via the
-// mark-sweep algorithm. Mark errors abort the sweep entirely (INV-04
-// fail-closed); sweep errors are captured and the sweep continues
-// (D-07). Returns a non-nil *GCStats with aggregate counts.
+// mark-sweep algorithm. Mark errors abort the sweep entirely
+// (fail-closed); sweep errors are captured and the sweep continues.
+// Returns a non-nil *GCStats with aggregate counts.
 //
 // reconciler MUST satisfy MultiShareReconciler when more than one share
 // points at the remote. A reconciler that satisfies only the legacy
@@ -230,11 +230,11 @@ func CollectGarbage(
 	runID := started.UTC().Format("20060102T150405Z") + "-" + randSuffix(6)
 	stats := &GCStats{RunID: runID, DryRun: options.DryRun}
 
-	// Phase 11 WR-3-01: serialize concurrent CollectGarbage calls that
+	// serialize concurrent CollectGarbage calls that
 	// share a GCStateRoot. Without this, two parallel runs race in
 	// CleanStaleGCStateDirs — one run can delete the other's open Badger
 	// directory mid-mark, silently truncating the live set and risking
-	// INV-04 (mark fail-closed) violation by data path. Lock is acquired
+	// (mark fail-closed) violation by data path. Lock is acquired
 	// before any disk-state work and released on return.
 	rootLock := acquireGCRootLock(options.GCStateRoot)
 	defer rootLock.Unlock()
@@ -256,7 +256,7 @@ func CollectGarbage(
 		dryRunSample = 1000
 	}
 
-	// Stale-dir cleanup before opening this run's GCState (D-01).
+	// Stale-dir cleanup before opening this run's GCState.
 	if options.GCStateRoot != "" {
 		if err := CleanStaleGCStateDirs(options.GCStateRoot); err != nil {
 			slog.Warn("GC: stale dir cleanup failed", "err", err)
@@ -300,10 +300,10 @@ func CollectGarbage(
 	)
 
 	// MARK: stream every FileBlock's ContentHash into gcs across every share
-	// the reconciler reports. Mark fail-closed per INV-04.
+	// the reconciler reports. Mark fail-closed.
 	if err := markPhase(ctx, reconciler, gcs, stats, options.HoldProvider, options.RemoteEndpointID, options.Shares); err != nil {
 		recordGCError(stats, "mark: "+err.Error())
-		slog.Error("GC: mark failed — aborting sweep (fail-closed per INV-04)",
+		slog.Error("GC: mark failed — aborting sweep (fail-closed)",
 			"run_id", runID, "err", err,
 			"remote_endpoint_id", options.RemoteEndpointID,
 			"shares", options.Shares)
@@ -312,7 +312,7 @@ func CollectGarbage(
 		return stats
 	}
 
-	// SWEEP: single Walk over the unified CAS namespace (D-04 + Phase 17).
+	// SWEEP: single Walk over the unified CAS namespace.
 	sweepPhase(ctx, remoteStore, gcs, stats, snapshotTime, gracePeriod, dryRunSample, options)
 
 	// Mark complete + persist summary.
@@ -339,12 +339,12 @@ func CollectGarbage(
 
 // markPhase iterates every share's FileBlockStore and calls
 // EnumerateFileBlocks to populate the live set. The first error from any
-// store aborts the entire mark phase (INV-04 fail-closed).
+// store aborts the entire mark phase (fail-closed).
 //
-// Phase 11 WR-02: an empty share list is treated as a HARD ERROR. With no
+// an empty share list is treated as a HARD ERROR. With no
 // shares to enumerate, the engine cannot prove what is live and therefore
 // MUST NOT sweep — orphan-not-deleted is always preferred over
-// live-data-deleted (INV-04). Callers that genuinely have no shares must
+// live-data-deleted. Callers that genuinely have no shares must
 // short-circuit at a higher level (Runtime.RunBlockGC already does so
 // when DistinctRemoteStores returns an empty slice).
 func markPhase(ctx context.Context, reconciler MetadataReconciler, gcs *GCState, stats *GCStats, hold HoldProvider, remoteEndpointID string, shares []string) error {
@@ -384,8 +384,10 @@ func markPhase(ctx context.Context, reconciler MetadataReconciler, gcs *GCState,
 		}
 	}
 
-	// Phase 11 IN-4-04: flush the batched Add()s so the sweep's Has()
-	// queries observe every marked hash.
+	// flush the batched Add()s so the sweep's Has() queries observe every
+	// marked hash. Without this the final partial batch (< gcAddBatchSize
+	// hashes from the last share) sits in memory and Has() returns false
+	// for them — fail-closed violation by data path.
 	if err := gcs.FlushAdd(); err != nil {
 		return fmt.Errorf("flush gcstate batch: %w", err)
 	}
@@ -407,12 +409,12 @@ func sharesForReconciler(r MetadataReconciler) []string {
 
 // sweepPhase walks the unified CAS namespace via a single
 // remoteStore.Walk call. Per-object errors are captured in stats but
-// do not abort the sweep (D-07). Foreign keys (non-CAS) are silently
+// do not abort the sweep. Foreign keys (non-CAS) are silently
 // skipped (T-11-C-07). Objects within snapshot - GracePeriod are
-// preserved (D-05).
+// preserved.
 //
 // sweepConcurrency is accepted for backward-compatibility with the
-// Options surface and ignored — Phase 17 collapsed the 256-way prefix
+// Options surface and ignored — collapsed the 256-way prefix
 // sharding onto RemoteStore.Walk, which paginates internally at the
 // backend layer. A future re-sharding extension (per-prefix Walk
 // fan-out) is expected to re-wire concurrency at the backend, not
@@ -430,7 +432,7 @@ func sweepPhase(
 ) {
 	var statsMu sync.Mutex
 
-	// Phase 11 IN-3-03: keep FirstErrors heterogeneous. Without
+	// keep FirstErrors heterogeneous. Without
 	// diversification a burst of identical "list cas/aa: 503 SlowDown"
 	// errors fills the 16-slot cap and silently hides any 17th distinct
 	// error (e.g. an AccessDenied on DeleteBlock). We capture the FIRST
@@ -464,10 +466,10 @@ func sweepPhase(
 				return err
 			}
 			casKey := blockstore.FormatCASKey(h)
-			// Phase 11 WR-4-02 — fail-closed on missing LastModified.
+			// — fail-closed on missing LastModified.
 			// A zero LastModified means the backend did not report
 			// per-object age; we cannot evaluate the snapshot - grace
-			// TTL filter (D-05) and we MUST NOT proceed to delete on
+			// TTL filter and we MUST NOT proceed to delete on
 			// the live-set check alone. Preserve the object and capture
 			// a diagnostic.
 			if meta.LastModified.IsZero() {
@@ -475,7 +477,7 @@ func sweepPhase(
 				return nil
 			}
 			if meta.LastModified.After(snapshotTime.Add(-gracePeriod)) {
-				return nil // within grace window (D-05)
+				return nil // within grace window
 			}
 			present, err := gcs.Has(h)
 			if err != nil {
@@ -495,7 +497,7 @@ func sweepPhase(
 				return nil
 			}
 			if err := remoteStore.Delete(ctx, h); err != nil {
-				// D-07: continue + capture
+				// continue + capture
 				addError("delete " + casKey + ": " + err.Error())
 				return nil
 			}
@@ -542,12 +544,12 @@ func recordGCError(stats *GCStats, msg string) {
 }
 
 // classifyGCError extracts a short class key from a sweep-phase error
-// string so the FirstErrors capture stays heterogeneous (Phase 11
-// IN-3-03). The class is derived from the leading "<verb> <args>:"
+// string so the FirstErrors capture stays heterogeneous. The class is
+// derived from the leading "<verb> <args>:"
 // prefix the addError callers consistently produce — e.g.
-// "list aa: 503 SlowDown"           -> "list:503 SlowDown"
+// "list aa: 503 SlowDown" -> "list:503 SlowDown"
 // "delete cas/bb/cc/...: AccessDenied" -> "delete:AccessDenied"
-// "gcstate has cas/bb/...: io error"  -> "gcstate has:io error"
+// "gcstate has cas/bb/...: io error" -> "gcstate has:io error"
 //
 // We strip the per-prefix/per-key tail (which is high-cardinality) and
 // truncate the underlying error to its first ":" segment (S3 errors are
@@ -587,7 +589,7 @@ func classifyGCError(msg string) string {
 // gcRunSummaryFromStats projects a *GCStats into the GCRunSummary shape
 // for last-run.json persistence.
 //
-// Phase 11 IN-01: DryRunCandidates is forced to nil when DryRun=false.
+// DryRunCandidates is forced to nil when DryRun=false.
 // The current sweepPhase only populates the slice on DryRun runs, but
 // pinning the contract here means a future change that populates the
 // slice on real runs (e.g. for "blocks deleted" tracing) cannot leak
@@ -629,7 +631,7 @@ func makeTempGCStateRoot() (string, error) {
 	return os.MkdirTemp("", "dittofs-gc-")
 }
 
-// cleanupTempGCStateRoot removes a temp gc-state root. Phase 11 IN-03:
+// cleanupTempGCStateRoot removes a temp gc-state root.
 // log a WARN on failure so repeated cleanup leaks (permissions, mounted
 // FS quirks) surface in monitoring instead of silently accumulating
 // under os.TempDir().

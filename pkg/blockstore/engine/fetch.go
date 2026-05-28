@@ -9,15 +9,15 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// inFlightKey returns the deterministic per-block dedup key used by the
-// engine's in-flight map. Internal to the engine after
-// blockstore.FormatStoreKey was deleted in Phase 17.
+// inFlightKey returns the deterministic per-block dedup key used by
+// the engine's in-flight map. Internal to the engine after
+// blockstore.FormatStoreKey was removed.
 func inFlightKey(payloadID string, blockIdx uint64) string {
 	return fmt.Sprintf("%s/%d", payloadID, blockIdx)
 }
 
 // resolveFileBlock returns the FileBlock whose chunk range covers the
-// byte window [blockIdx*BlockSize, (blockIdx+1)*BlockSize) for payloadID,
+// byte window [blockIdx*BlockSize, (blockIdx+1)*BlockSize) for payloadID
 // or (nil, nil) if no row covers that window (sparse / not yet uploaded).
 //
 // Post-Phase-18 the engine writers (ObjectIDPersister, ChunkEmitter)
@@ -86,7 +86,7 @@ func (m *Syncer) blockIsLocal(ctx context.Context, payloadID string, blockIdx ui
 // dispatchRemoteFetch routes a per-block S3 GET through the CAS verified-
 // read path. Post-Phase-17 there is no legacy fallback: any FileBlock
 // surfacing here with a zero Hash is migration drift and the boot guard
-// (cmd/dfs/start, Plan 09) should have refused to start. If a stray row
+// (cmd/dfs/start) should have refused to start. If a stray row
 // reaches this code path at runtime, refuse the read instead of returning
 // silent zeros.
 //
@@ -97,7 +97,7 @@ func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *blockstore.FileBlo
 		return "", nil, nil
 	}
 	if fb.Hash.IsZero() {
-		// Legacy path deleted Phase 17 (subsumes Phase 15 A6). Any
+		// Legacy path deleted (subsumes A6). Any
 		// FileBlock surfacing here without a CAS hash is migration
 		// drift — refuse the read instead of returning silent zeros.
 		// Boot guard (cmd/dfs/start) refuses to start against an un-
@@ -110,7 +110,7 @@ func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *blockstore.FileBlo
 	}
 	// CAS path: verified read via BLAKE3 recompute. Canonical key is
 	// derived from the hash; both arguments to ReadBlockVerified are
-	// the same hash per the Plan 03 signature (canonical-key hash +
+	// the same hash per the signature (canonical-key hash +
 	// expected-body hash collapse onto one value when hash IS the key).
 	key := blockstore.FormatCASKey(fb.Hash)
 	data, err := m.remoteStore.ReadBlockVerified(ctx, fb.Hash, fb.Hash)
@@ -148,10 +148,10 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 	storeKey, data, err := m.dispatchRemoteFetch(ctx, fb)
 	if err != nil {
 		if errors.Is(err, blockstore.ErrBlockNotFound) {
-			// Phase 11 IN-3-05: fail-closed on the CAS path. A row
+			// fail-closed on the CAS path. A row
 			// with a non-zero hash is a live reference to a CAS
 			// object; if that object is missing from the remote, the
-			// invariant has been violated (INV-04 GC fail-closed
+			// invariant has been violated (GC fail-closed
 			// should make this impossible). Returning silent zeros
 			// here would corrupt the caller's read with no log trace.
 			// Surface ErrBlockNotFound so the caller sees the data
@@ -199,7 +199,7 @@ func (m *Syncer) allBlocksLocal(ctx context.Context, payloadID string, startIdx,
 }
 
 // EnsureAvailableAndRead downloads blocks and copies data directly to dest, avoiding
-// a second local ReadAt. Demanded blocks are downloaded inline in the caller's goroutine;
+// a second local ReadAt. Demanded blocks are downloaded inline in the caller's goroutine
 // prefetch uses the worker pool. Returns (filled, error).
 func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, offset uint64, length uint32, dest []byte) (bool, error) {
 	if length == 0 {
@@ -308,11 +308,11 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 	}
 
 	// Caller (EnsureAvailableAndRead) already verified remoteStore != nil.
-	// CAS verified-read dispatch — legacy branch deleted in Phase 17.
+	// CAS verified-read dispatch — legacy branch has been removed.
 	storeKey, data, err := m.dispatchRemoteFetch(ctx, fb)
 	if err != nil {
 		if errors.Is(err, blockstore.ErrBlockNotFound) {
-			// Phase 11 IN-3-05: fail-closed on the CAS path. See
+			// fail-closed on the CAS path. See
 			// fetchBlock for the rationale — a non-zero-hash row that
 			// resolves to a missing CAS object is a live-data-loss
 			// signal that must NOT silently return zeros. Post-Phase-17
@@ -338,7 +338,7 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 	}
 
 	// Store locally synchronously; data is already downloaded so there's no
-	// reason to hold it in a background goroutine. Under high concurrency,
+	// reason to hold it in a background goroutine. Under high concurrency
 	// background goroutines each holding 8MB data caused OOM.
 	//
 	// CAS rewire: write under fb.Hash (verified by ReadBlockVerified). The

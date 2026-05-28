@@ -46,7 +46,7 @@ Examples:
 }
 
 func init() {
-	// Root-level verbs (no target name — D-35 canonical shape)
+	// Root-level verbs (no target name).
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(createCmd)
 	Cmd.AddCommand(permission.Cmd) // nested sub-tree keeps its own shape
@@ -59,7 +59,6 @@ func init() {
 	Cmd.AddCommand(mountCmd)
 	Cmd.AddCommand(unmountCmd)
 
-	// Phase 6 additions
 	Cmd.AddCommand(disableCmd)
 	Cmd.AddCommand(enableCmd)
 }

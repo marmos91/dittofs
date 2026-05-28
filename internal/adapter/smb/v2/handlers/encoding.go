@@ -29,7 +29,7 @@ import (
 // encodeUTF16LE converts a Go string to UTF-16LE bytes.
 //
 // SMB2 uses UTF-16LE encoding for all string data (filenames, paths, etc.).
-// This function handles the conversion from Go's internal UTF-8 representation.
+// Handles the conversion from Go's internal UTF-8 representation.
 //
 // **Process:**
 //  1. Convert Go string (UTF-8) to runes
@@ -59,7 +59,7 @@ func encodeUTF16LE(s string) []byte {
 // decodeUTF16LE converts UTF-16LE bytes to a Go string.
 //
 // SMB2 uses UTF-16LE encoding for all string data (filenames, paths, etc.).
-// This function handles the conversion to Go's internal UTF-8 representation.
+// Handles the conversion to Go's internal UTF-8 representation.
 //
 // **Process:**
 //  1. Pair bytes into 16-bit values (little-endian)

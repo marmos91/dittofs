@@ -1390,7 +1390,7 @@ func (r *NotifyRegistry) RangeWatchers(fn func(n *PendingNotify) bool) {
 }
 
 // ============================================================================
-// Generalized Async Response Registry (D-21)
+// Generalized Async Response Registry
 // ============================================================================
 // AsyncResponseRegistry provides a general-purpose mechanism for tracking
 // pending async operations. ChangeNotify is the primary consumer; future
@@ -1471,7 +1471,7 @@ func (r *AsyncResponseRegistry) Len() int {
 
 // IsValidCompletionFilter checks if the CompletionFilter is non-zero.
 // Per MS-SMB2 3.3.5.15: if CompletionFilter is 0, return STATUS_INVALID_PARAMETER.
-// Windows Server and Samba accept reserved/unknown bits — they simply never
+// Windows Server and Samba accept reserved/unknown bits — they never
 // match any event. smb2.notify.mask iterates all 32 bit positions and expects
 // each to be accepted (then cancelled).
 func IsValidCompletionFilter(filter uint32) bool {

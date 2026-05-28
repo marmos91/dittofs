@@ -16,10 +16,10 @@ import (
 //
 // Used by the ConcurrentQuiesceRace scenario to verify that exactly one
 // row remains indexed under a contested ObjectID after the
-// first-committer-wins resolution (Phase 13 D-14). Backends that do not
+// first-committer-wins resolution. Backends that do not
 // implement the capability skip the scenario via type-assertion failure.
 //
-// Memory, Badger, and Postgres all satisfy this in Phase 13 Plan 05.
+// Memory, Badger, and Postgres all satisfy this.
 type ObjectIDIndexAccessor interface {
 	// CountObjectIDIndexRows returns the number of files indexed under
 	// the given objectID. Test-only; never call from production code.
@@ -29,8 +29,8 @@ type ObjectIDIndexAccessor interface {
 	CountObjectIDIndexRows(ctx context.Context, objectID blockstore.ObjectID) (int, error)
 }
 
-// runObjectIDOpsTests dispatches the META-02 ObjectID conformance scenarios
-// (Phase 13 D-04 / D-12). Each backend wires RunConformanceSuite into its
+// runObjectIDOpsTests dispatches the ObjectID conformance scenarios
+// Each backend wires RunConformanceSuite into its
 // *_conformance_test.go, so adding scenarios here automatically runs them
 // against Memory, Badger, and Postgres.
 //
@@ -93,7 +93,7 @@ func testObjectID_RoundTripBasic(t *testing.T, factory StoreFactory) {
 // testObjectID_ZeroSentinel asserts that the all-zero ObjectID sentinel is
 // accepted on PutFile and read back as zero, and that FindByObjectID with
 // a zero argument short-circuits to (nil, nil) without backend access
-// (Phase 13 D-03 / D-12 — partial/skip-zero discipline).
+// (partial/skip-zero discipline).
 func testObjectID_ZeroSentinel(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
@@ -137,7 +137,7 @@ func testObjectID_ZeroSentinel(t *testing.T, factory StoreFactory) {
 	}
 }
 
-// testObjectID_MutationLifecycle exercises the D-07 lifecycle: a quiesced
+// testObjectID_MutationLifecycle exercises the lifecycle: a quiesced
 // file has a non-zero ObjectID and a populated index entry; mutating it to
 // the zero sentinel (simulating a fresh dirty write) MUST clear the
 // secondary index so subsequent FindByObjectID returns (nil, nil).
@@ -173,7 +173,7 @@ func testObjectID_MutationLifecycle(t *testing.T, factory StoreFactory) {
 		t.Fatalf("FindByObjectID (pre-mutation): got %d refs, want %d", len(refs), len(blocks))
 	}
 
-	// Simulate the D-07 dirty-write event: caller (engine) clears
+	// Simulate the dirty-write event: caller (engine) clears
 	// ObjectID to zero in the same metadata txn that mutates Blocks.
 	mutated, err := store.GetFile(ctx, fileHandle)
 	if err != nil {
@@ -258,7 +258,7 @@ func testObjectID_SortStability(t *testing.T, factory StoreFactory) {
 }
 
 // concurrentRaceErrIsConflict accepts both Memory/Badger ErrConflict
-// (D-14 first-committer-wins; surfaced via mderrors.NewConflictError) and
+// (first-committer-wins; surfaced via mderrors.NewConflictError) and
 // Postgres ErrAlreadyExists (the partial UNIQUE index 23505 maps to
 // ErrAlreadyExists in mapPgErrorCode). Either is the documented loser
 // signal across backends.

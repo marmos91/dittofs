@@ -28,15 +28,15 @@ type fetchResult struct {
 	mu   gosync.Mutex  // Protects err during write
 }
 
-// Syncer handles async local-to-remote transfers with eager upload,
+// Syncer handles async local-to-remote transfers with eager upload
 // parallel download, prefetch, in-flight dedup, and content-addressed dedup.
 type Syncer struct {
 	local       local.LocalStore
 	remoteStore remote.RemoteStore
-	// Phase 12 (META-03 / D-09): the syncer is one of the engine-internal
+	// the syncer is one of the engine-internal
 	// callers that still reaches into the wider EngineFileBlockStore
 	// surface (GetFileBlock for dual-read resolve, ListFileBlocks for
-	// GetFileSize/Exists). Phase 13/14 routes reads through
+	// GetFileSize/Exists). routes reads through
 	// FileAttr.Blocks and lets us drop the wider interface.
 	fileBlockStore blockstore.EngineFileBlockStore // Required: enables content-addressed deduplication
 
@@ -57,8 +57,8 @@ type Syncer struct {
 	// SetSyncedHashStore.
 	syncedHashStore metadata.SyncedHashStore
 
-	// bs is a back-reference to the owning BlockStore. Phase 13 BSCAS-05
-	// (Plan 07): the file-level dedup short-circuit needs to reach
+	// bs is a back-reference to the owning BlockStore.
+	// the file-level dedup short-circuit needs to reach
 	// BlockStore.cache to fire InvalidateFile on orphaned speculative
 	// chunks. Reading through the back-reference (rather than copying a
 	// `cache` field on the Syncer at construction time) lets test code
@@ -102,8 +102,8 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 	if config.PrefetchBlocks <= 0 {
 		config.PrefetchBlocks = DefaultPrefetchBlocks
 	}
-	// Phase 11 Plan 02 (D-14/D-25) — apply CAS-path defaults.
-	// Phase 19 D-23: ClaimBatchSize default removed (field deleted).
+	// — apply CAS-path defaults.
+	// ClaimBatchSize default removed (field deleted).
 	if config.UploadConcurrency <= 0 {
 		config.UploadConcurrency = 8
 	}
@@ -132,7 +132,7 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 func (m *Syncer) Queue() *SyncQueue { return m.queue }
 
 // SetCoordinator wires the MetadataCoordinator the file-level dedup
-// short-circuit reaches into (FindByObjectID, GetFileObjectID,
+// short-circuit reaches into (FindByObjectID, GetFileObjectID
 // IncrementRefCount). engine.New plumbs the BlockStore's coordinator
 // into the syncer at construction. Idempotent.
 func (m *Syncer) SetCoordinator(c MetadataCoordinator) {
@@ -194,7 +194,7 @@ func (m *Syncer) OfflineReadsBlocked() int64 {
 }
 
 // logOfflineRead logs a read failure due to remote unavailability.
-// First failure after a healthy->unhealthy transition logs at WARN level;
+// First failure after a healthy->unhealthy transition logs at WARN level
 // subsequent failures log at DEBUG to avoid log spam.
 func (m *Syncer) logOfflineRead(method, payloadID string, blockIdx uint64) {
 	if m.firstOfflineRead.CompareAndSwap(false, true) {
@@ -322,12 +322,12 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 }
 
 // snapshotPendingBlockRefs returns the speculativeBlocks list +
-// parallel blockStates slice for the Phase 13 BSCAS-05 / D-09 trigger
+// parallel blockStates slice for the trigger
 // evaluation. Projection: ListFileBlocks(payloadID) yields the FastCDC
 // chunker output already produced by the local-store rollup
-// (pkg/blockstore/local/fs/rollup.go::rollupFile populates Pending
+// (pkg/blockstore/local/fs/rollup.go:rollupFile populates Pending
 // FileBlocks at chunk boundaries with the BLAKE3-256 chunk hash as
-// FileBlock.Hash). Phase 13 D-09 expects the trigger to fire only when
+// FileBlock.Hash). expects the trigger to fire only when
 // every projected block is Pending; this helper returns the FULL
 // projection (every block, regardless of state) so the trigger
 // guard inside trySpeculativeFileLevelDedup can veto on any non-Pending
@@ -359,7 +359,7 @@ func (m *Syncer) snapshotPendingBlockRefs(ctx context.Context, payloadID string)
 		if len(fb.ID) <= len(prefix) || fb.ID[:len(prefix)] != prefix {
 			continue
 		}
-		// Phase 18: writers encode the chunk's absolute byte Offset
+		// writers encode the chunk's absolute byte Offset
 		// directly in the trailing ID component (FastCDC chunk
 		// boundaries do not align to BlockSize). Use the parsed value
 		// as-is — do NOT multiply by BlockSize.
@@ -394,13 +394,13 @@ func (m *Syncer) DrainAllUploads(ctx context.Context) error {
 
 // GetFileSize returns the total size of a file from the remote store.
 //
-// Blocks are stored under content-addressed keys (cas/XX/YY/<hash>),
+// Blocks are stored under content-addressed keys (cas/XX/YY/<hash>)
 // so we resolve via FileBlock metadata: enumerate every block belonging
 // to payloadID, find the highest-offset remote-mirrored chunk, and
 // compute size = chunkOffset + chunk.DataSize. DataSize is stamped at
 // rollup time, so no extra S3 round-trip is needed.
 //
-// Phase 18 (mirror loop): mirrorOnce writes to remote.Put + MarkSynced
+// (mirror loop): mirrorOnce writes to remote.Put + MarkSynced
 // but never transitions FileBlock.State to BlockStateRemote (the row
 // state remains Pending/Syncing for the life of the payload). The
 // authoritative per-hash mirror signal is therefore SyncedHashStore —
@@ -444,7 +444,7 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 
 	// ListFileBlocks returns blocks ordered by absolute chunk offset.
 	// Walk from the end to find the highest-offset remote-mirrored chunk.
-	// Phase 18: the trailing ID component is the chunk's absolute byte
+	// the trailing ID component is the chunk's absolute byte
 	// Offset (FastCDC), not a synthetic blockIdx — do NOT multiply by
 	// BlockSize.
 	prefix := payloadID + "/"
@@ -474,11 +474,11 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 
 // Exists checks if any blocks exist for a file in the remote store.
 //
-// Phase 18: file existence is gated on SyncedHashStore — a chunk is
+// file existence is gated on SyncedHashStore — a chunk is
 // considered remote-resident iff syncedHashStore.IsSynced(fb.Hash)
 // returns true. The mirror loop (mirrorOnce) does not transition
 // FileBlock.State to BlockStateRemote, so the legacy State filter is no
-// longer authoritative. If no SyncedHashStore is wired (test fixtures),
+// longer authoritative. If no SyncedHashStore is wired (test fixtures)
 // Exists returns false — matching the pre-fix behavior under the same
 // configuration.
 func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
@@ -528,7 +528,7 @@ func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
 // prefix to enumerate. Truncate's metadata-side RefCount decrement runs
 // inside engine.Truncate (which prunes FileAttr.Blocks and decrements per
 // dropped hash); orphan CAS objects are reclaimed by the GC sweep. This
-// method therefore becomes a no-op at the remote-side after Phase 17,
+// method therefore becomes a no-op at the remote-side after
 // kept as a stable seam for callers (engine.Truncate invokes it
 // unconditionally) and so the legacy prefix-scan pattern is unambiguously
 // gone.
@@ -555,7 +555,7 @@ func (m *Syncer) Truncate(ctx context.Context, payloadID string, newSize uint64)
 // Post-Phase-17 the engine is CAS-keyed: file deletion routes through the
 // refcount path (engine.Delete decrements RefCount per BlockRef hash and
 // orphan CAS objects are reclaimed by GC). The legacy per-file prefix
-// sweep is gone — this method now records the deletion intent and lets
+// sweep is gone — Delete now records the deletion intent and lets
 // the refcount + GC mechanism do the work.
 func (m *Syncer) Delete(ctx context.Context, payloadID string) error {
 	if err := m.checkReady(ctx); err != nil {
@@ -590,7 +590,7 @@ func (m *Syncer) Start(ctx context.Context) {
 		return
 	}
 
-	// Phase 11 D-14: one-shot janitor pass before the periodic uploader
+	// one-shot janitor pass before the periodic uploader
 	// starts. Requeues Syncing rows abandoned by a previous instance.
 	// Failure here is logged at WARN — a bad metadata read should not
 	// prevent the syncer from running its periodic loop.
@@ -665,14 +665,15 @@ func (m *Syncer) SyncNow(ctx context.Context) error {
 	return m.mirrorOnce(ctx)
 }
 
-// recoverStaleSyncing requeues blocks left in Syncing by a previous run
-// (e.g., process killed mid-upload). Per D-14, any Syncing row whose
-// LastSyncAttemptAt is older than cfg.ClaimTimeout is flipped back to
-// Pending with LastSyncAttemptAt cleared. CAS idempotency makes the
-// re-upload safe even if the original upload eventually completes — both
-// writes target byte-identical bytes at byte-identical keys.
+// recoverStaleSyncing requeues blocks left in Syncing by a previous
+// run (e.g., process killed mid-upload). Any Syncing row whose
+// LastSyncAttemptAt is older than cfg.ClaimTimeout is flipped back
+// to Pending with LastSyncAttemptAt cleared. CAS idempotency makes
+// the re-upload safe even if the original upload eventually
+// completes — both writes target byte-identical bytes at
+// byte-identical keys.
 //
-// Backends that opt in to syncingEnumerator return precise candidates;
+// Backends that opt in to syncingEnumerator return precise candidates
 // others degrade to a no-op.
 func (m *Syncer) recoverStaleSyncing(ctx context.Context) error {
 	if m.fileBlockStore == nil {
@@ -700,7 +701,7 @@ func (m *Syncer) recoverStaleSyncing(ctx context.Context) error {
 		fb.State = blockstore.BlockStatePending
 		fb.LastSyncAttemptAt = time.Time{}
 		if err := m.fileBlockStore.Put(ctx, fb); err != nil {
-			// Phase 11 IN-02: elevate per-row failure to ERROR and track
+			// elevate per-row failure to ERROR and track
 			// counts so a fully-broken metadata path produces a non-nil
 			// return error visible to the caller (Start logs it at WARN).
 			logger.Error("janitor: requeue failed", "blockID", fb.ID, "error", err)

@@ -403,7 +403,7 @@ func (resp *CreateResponse) Encode() ([]byte, error) {
 	const fixedSize = 88 // actual wire bytes for fixed fields
 
 	w := smbenc.NewWriter(fixedSize + len(ctxBuf))
-	w.WriteUint16(89)                                        // StructureSize (always 89 per spec)
+	w.WriteUint16(89)                                        // StructureSize (always 89)
 	w.WriteUint8(resp.OplockLevel)                           // OplockLevel
 	w.WriteUint8(resp.Flags)                                 // Flags
 	w.WriteUint32(uint32(resp.CreateAction))                 // CreateAction

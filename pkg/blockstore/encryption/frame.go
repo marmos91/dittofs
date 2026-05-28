@@ -71,7 +71,7 @@ func frameHeaderSize(b []byte) (headerLen int, framed bool, err error) {
 	return len(b) - len(view.ciphertext), true, nil
 }
 
-// encodeFrame builds the wire form for an encrypted block:
+// encodeFrame builds the wire form for an encrypted block
 //
 //	[magic | version | aead | wrap | uvarint(len(masterKeyID)) | masterKeyID
 //	 | uvarint(len(wrappedKey)) | wrappedKey

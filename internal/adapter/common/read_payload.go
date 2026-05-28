@@ -15,8 +15,8 @@ import (
 // Callers MUST call Release() after the buffer is no longer referenced
 // (typically after the response has been written to the wire).
 // For SMB, the Release closure is handed to the response encoder via
-// SMBResponseBase.ReleaseData (wired in plan 02 per D-09). For NFSv3,
-// the existing Releaser path at internal/adapter/nfs/helpers.go fires it.
+// SMBResponseBase.ReleaseData. For NFSv3, the existing Releaser path at
+// internal/adapter/nfs/helpers.go fires it.
 type BlockReadResult struct {
 	Data []byte
 	EOF  bool
@@ -36,16 +36,16 @@ func (r *BlockReadResult) Release() {
 // block store into a pooled buffer. On any error path the pooled buffer is
 // returned via pool.Put and a zero-value BlockReadResult is returned.
 //
-// Per D-03 this helper takes a plain context.Context — callers thread in
-// an auth-scoped ctx from their own dispatch layer (NFSv3 NFSHandlerContext,
+// This helper takes a plain context.Context — callers thread in an
+// auth-scoped ctx from their own dispatch layer (NFSv3 NFSHandlerContext,
 // SMB SMBHandlerContext, NFSv4 compound ctx). Structural logging fields
 // (clientIP, handle bytes) are logged at the call site, not here, because
 // they are protocol-specific and common/ cannot couple to those types.
 //
-// Phase-12 seam: when FileAttr.Blocks becomes []BlockRef (META-01) and
-// engine.BlockStore.ReadAt takes []BlockRef (API-01), this function body
-// gains the "fetch FileAttr.Blocks → slice to [offset, offset+len) → pass
-// resolved refs" logic. Call-site code (protocol handlers) does not change.
+// When FileAttr.Blocks becomes []BlockRef and engine.BlockStore.ReadAt
+// takes []BlockRef, this function body gains the "fetch FileAttr.Blocks →
+// slice to [offset, offset+len) → pass resolved refs" logic. Call-site
+// code (protocol handlers) does not change.
 func ReadFromBlockStore(
 	ctx context.Context,
 	blockStore *engine.BlockStore,
@@ -54,11 +54,11 @@ func ReadFromBlockStore(
 	count uint32,
 ) (BlockReadResult, error) {
 	data := pool.Get(int(count))
-	// Phase 12 API-01: pass nil []BlockRef so engine routes through the
-	// dual-read shim (D-20). The caller-snapshot []BlockRef from
-	// FileAttr.Blocks lands here in Phase 12 Plan 08 (adapter helper
-	// refactor); until then the engine resolves via the legacy
-	// {payloadID}/block-{N} path and the result is identical.
+	// Pass nil []BlockRef so the engine routes through the dual-read
+	// shim. The caller-snapshot []BlockRef from FileAttr.Blocks will
+	// thread here in a later adapter-helper refactor; until then the
+	// engine resolves via the legacy {payloadID}/block-{N} path and the
+	// result is identical.
 	n, readErr := blockStore.ReadAt(ctx, string(payloadID), nil, data, offset)
 
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {

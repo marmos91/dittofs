@@ -12,7 +12,7 @@ import (
 
 // ProcessGrantedCallback sends NLM_GRANTED callback to a waiter and handles failures.
 //
-// This function:
+// Steps:
 // 1. Checks if the waiter was cancelled while processing
 // 2. Builds the NLM_GRANTED callback arguments
 // 3. Sends the callback to the client

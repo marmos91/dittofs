@@ -10,11 +10,11 @@ import (
 )
 
 // ============================================================================
-// file_block_refs CRUD (META-01)
+// file_block_refs CRUD
 // ============================================================================
 //
-// Stores FileAttr.Blocks []blockstore.BlockRef rows for files. Per Phase 12
-// D-01 we use a separate table (not JSONB on files) to avoid TOAST write
+// Stores FileAttr.Blocks []blockstore.BlockRef rows for files. Per
+// we use a separate table (not JSONB on files) to avoid TOAST write
 // amplification on the VM-primary workload.
 //
 // All helpers operate against a pgx.Tx so that PutFile's BlockRef replace
@@ -97,7 +97,7 @@ func getFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID) ([]block
 	return out, nil
 }
 
-// deleteFileBlockRefs removes all rows for fileID. The FK cascade (D-03)
+// deleteFileBlockRefs removes all rows for fileID. The FK cascade
 // handles this automatically when the files row is deleted; this helper
 // is exposed for callers that pre-clear refs without dropping the row.
 //
@@ -156,7 +156,7 @@ func (s *PostgresMetadataStore) loadFileBlockRefs(ctx context.Context, fileID uu
 // ============================================================================
 
 // RawSQLAccessor is an optional capability backends may implement to expose
-// a small set of test-only direct-SQL helpers. Used by Phase 12
+// a small set of test-only direct-SQL helpers. Used by
 // postgres_blockref_test.go to assert FK cascade behavior.
 type RawSQLAccessor interface {
 	// CountFileBlockRefs returns the number of file_block_refs rows for

@@ -1,12 +1,12 @@
 // Package migrate provides the offline block-store migration journal
-// and share-tree walk helper for Phase 14.
+// and share-tree walk helper for.
 //
 // The package lives at pkg/ rather than cmd/ because the controlplane
-// REST handler (Plan 14-06) needs to import the journal type to surface
+// REST handler (06) needs to import the journal type to surface
 // migration progress without taking a round-trip through dfsctl —
 // Go's build system forbids pkg/ and internal/ from importing cmd/.
 //
-// Components:
+// Components
 //
 //   - Journal: an append-only JSON-line log + periodic snapshot, one per
 //     share. Append + Snapshot + Replay support resumability after a
@@ -37,7 +37,7 @@ import (
 const JournalFile = ".migration-state.jsonl"
 
 // SnapshotFile is the on-disk filename for the compacted snapshot
-// component (D-A2). Lives at {dir}/.migration-state.snapshot.json,
+// component (D-A2). Lives at {dir}/.migration-state.snapshot.json
 // rotated atomically every DefaultSnapshotInterval Append calls (D-A3).
 const SnapshotFile = ".migration-state.snapshot.json"
 
@@ -59,8 +59,8 @@ type JournalEntry struct {
 	// future readers to detect forward-compat boundaries.
 	Version int `json:"v"`
 
-	// Kind discriminates the entry semantics:
-	//   - "file_done":   file was re-chunked + committed in one txn.
+	// Kind discriminates the entry semantics
+	// - "file_done": file was re-chunked + committed in one txn.
 	//   - "file_skipped": file was skipped (e.g., already in CAS layout).
 	Kind string `json:"kind"`
 
@@ -77,11 +77,10 @@ type JournalEntry struct {
 
 	// Blocks is the post-migration BlockRef list the metadata txn
 	// persisted into FileAttr.Blocks. Captured for audit and the
-	// integrity check (Plan 14-05).
+	// integrity check (05).
 	Blocks []blockstore.BlockRef `json:"blocks,omitempty"`
 
-	// ObjectID is the BLAKE3 Merkle root over Blocks (Phase 13 D-14
-	// backfill).
+	// ObjectID is the BLAKE3 Merkle root over Blocks (backfill).
 	ObjectID blockstore.ObjectID `json:"object_id,omitempty"`
 
 	// BytesUploaded is the count of bytes the migration loop PUT to
@@ -105,11 +104,11 @@ var ErrJournalReadOnly = errors.New("migrate: journal opened read-only — mutat
 // at most one open Journal handle, and the journal's mutex serializes
 // Append + Snapshot.
 //
-// On-disk layout:
+// On-disk layout
 //
-//	{dir}/.migration-state.snapshot.json   sorted-by-handle slice of done entries
-//	{dir}/.migration-state.jsonl           append-only log of new commits since snapshot
-//	{dir}/.migration-state.snapshot.json.tmp   transient — atomic-rename target
+//	{dir}/.migration-state.snapshot.json sorted-by-handle slice of done entries
+//	{dir}/.migration-state.jsonl append-only log of new commits since snapshot
+//	{dir}/.migration-state.snapshot.json.tmp transient — atomic-rename target
 //
 // Resume semantics: load snapshot first, then replay journal tail; the
 // in-memory `done` map is the union (D-A4 — trust the surviving prefix).
@@ -135,7 +134,7 @@ func OpenJournal(dir string) (*Journal, error) {
 	return openJournal(dir, DefaultSnapshotInterval, false)
 }
 
-// OpenJournalWithInterval is the test-injection variant of OpenJournal:
+// OpenJournalWithInterval is the test-injection variant of OpenJournal
 // it forces a custom snapshot trigger so tests can exercise the rotation
 // path without writing 1000 entries.
 func OpenJournalWithInterval(dir string, snapshotEvery int) (*Journal, error) {
@@ -400,7 +399,7 @@ func (j *Journal) snapshotLocked() error {
 }
 
 // Replay returns the in-memory done set as a sorted-by-handle slice.
-// Useful for the REST status handler (Plan 14-06) and for tests
+// Useful for the REST status handler (06) and for tests
 // asserting the surviving entries after a crash + reopen.
 func (j *Journal) Replay() ([]JournalEntry, error) {
 	j.mu.Lock()
@@ -408,7 +407,7 @@ func (j *Journal) Replay() ([]JournalEntry, error) {
 	return j.sortedDoneEntriesLocked(), nil
 }
 
-// Aggregate is a convenience for the REST status handler (Plan 14-06).
+// Aggregate is a convenience for the REST status handler (06).
 // Returns the replayed entries plus presence flags + last-commit timestamp.
 func (j *Journal) Aggregate() (entries []JournalEntry, journalPresent, snapshotPresent bool, lastCommitAt time.Time) {
 	jpath := filepath.Join(j.dir, JournalFile)

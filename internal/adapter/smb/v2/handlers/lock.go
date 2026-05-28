@@ -653,7 +653,7 @@ func encodeLockResponseBody() []byte {
 	return w.Bytes()
 }
 
-// Note (ADAPT-03, D-08 §3): lockErrorToStatus was consolidated into
+// Note: lockErrorToStatus was consolidated into
 // internal/adapter/common/lock_errmap.go. Callers now use
 // common.MapLockToSMB — lock-context and general-context mappings are now
 // driven by the same three-column tables used by NFSv3/NFSv4.

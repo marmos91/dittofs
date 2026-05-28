@@ -61,7 +61,7 @@ func NewUnixAuthenticator(identityStore models.IdentityStore) *UnixAuthenticator
 //   - gid (4 bytes, big-endian)
 //   - gids (XDR array: count + elements)
 //
-// AUTH_UNIX is always single-round: this method never returns
+// AUTH_UNIX is always single-round: Authenticate never returns
 // ErrMoreProcessingRequired. The challenge return value is always nil.
 //
 // If the UID maps to a known DittoFS user, that user is returned in the

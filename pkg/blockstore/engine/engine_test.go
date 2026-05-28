@@ -62,7 +62,7 @@ func (s *stubFileBlockStore) DecrementRefCount(_ context.Context, _ string) (uin
 	return 0, nil
 }
 func (s *stubFileBlockStore) AddRef(_ context.Context, h blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
-	// Phase 19 D-04: bump RefCount on any row indexed by hash. The stub
+	// bump RefCount on any row indexed by hash. The stub
 	// holds blocks keyed by id but each row carries a Hash field, so
 	// resolve linearly. ErrUnknownHash when no row matches.
 	s.mu.Lock()
@@ -102,7 +102,7 @@ func (s *stubFileBlockStore) ListFileBlocks(_ context.Context, payloadID string)
 	return out, nil
 }
 
-// newTestEngine creates an engine.BlockStore with memory local store, nil remote,
+// newTestEngine creates an engine.BlockStore with memory local store, nil remote
 // optional cache budget and prefetch settings. Coordinator is left nil — tests
 // that exercise Coordinator-dependent paths (CopyPayload/Delete/Truncate
 // with non-empty BlockRef list) should use newTestEngineWithCoordinator.
@@ -131,7 +131,7 @@ func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *Bl
 }
 
 // newTestEngineWithCoordinator creates an engine.BlockStore with the
-// supplied MetadataCoordinator wired in (Phase 12 Plan 07 Task 0).
+// supplied MetadataCoordinator wired in (Task 0).
 // Used by tests that assert engine-coordinator integration without
 // touching the heavier Syncer/Remote setup.
 func newTestEngineWithCoordinator(t *testing.T, c MetadataCoordinator) *BlockStore {
@@ -158,7 +158,7 @@ func newTestEngineWithCoordinator(t *testing.T, c MetadataCoordinator) *BlockSto
 }
 
 // TestReadAt_BasicRoundtrip exercises ReadAt + WriteAt without any cache
-// integration concerns. Phase 12 Plan 09 simplified the read path:
+// integration concerns. simplified the read path
 // reads always go through local/remote stores; the Cache is hint-only
 // (post-read OnRead hook) and does not serve bytes.
 func TestReadAt_BasicRoundtrip(t *testing.T) {
@@ -186,7 +186,7 @@ func TestReadAt_BasicRoundtrip(t *testing.T) {
 }
 
 // TestReadAt_CacheDisabled verifies the engine works with the Null
-// Object cache (ReadBufferBytes=0). Plan 09 WARN-8: there are no
+// Object cache (ReadBufferBytes=0). WARN-8: there are no
 // nil-checks anywhere — the cache is always callable.
 func TestReadAt_CacheDisabled(t *testing.T) {
 	bs := newTestEngine(t, 0, 0)
@@ -379,7 +379,7 @@ func TestClose_ClosesCache(t *testing.T) {
 }
 
 // TestCopyPayload_EmptySource verifies CopyPayload handles empty source gracefully.
-// Phase 12 Plan 07: with an empty []BlockRef the engine returns nil
+// with an empty []BlockRef the engine returns nil
 // without invoking the coordinator (no work to do).
 func TestCopyPayload_EmptySource(t *testing.T) {
 	bs := newTestEngine(t, 0, 0)

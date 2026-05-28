@@ -84,15 +84,15 @@ func (c *Client) BlockStoreEvictForShare(shareName string, req *BlockStoreEvictO
 // engine.Options.DryRun: mark + sweep enumeration runs but no DELETEs
 // are issued; candidate keys are returned in
 // BlockStoreGCResult.Stats.DryRunCandidates (capped at the engine
-// dry-run sample size, default 1000 — Phase 11 D-09).
+// dry-run sample size, default 1000).
 type BlockStoreGCOptions struct {
 	DryRun bool `json:"dry_run,omitempty"`
 }
 
 // BlockStoreGCResult is the response body for
 // POST /api/v1/shares/{name}/blockstore/gc. Stats wraps the *engine.GCStats
-// summed across every distinct remote scanned during the run (D-03
-// cross-share aggregation). Mirrors the server-side
+// summed across every distinct remote scanned during the run
+// (cross-share aggregation). Mirrors the server-side
 // handlers.BlockStoreGCResponse shape.
 type BlockStoreGCResult struct {
 	Stats *engine.GCStats `json:"stats"`
@@ -100,7 +100,7 @@ type BlockStoreGCResult struct {
 
 // BlockStoreGC triggers an on-demand GC run for the named share. The
 // run scans every share whose remote-store config matches the named
-// share's remote (D-03), but `last-run.json` is persisted under the
+// share's remote, but `last-run.json` is persisted under the
 // named share's gc-state directory. opts may be nil (treated as a
 // non-dry-run request).
 //
@@ -133,13 +133,13 @@ func (c *Client) BlockStoreGCStatus(shareName string) (*engine.GCRunSummary, err
 
 // BlockStoreAuditResult is the response body for
 // POST /api/v1/shares/{name}/audit/refcounts. Wraps the
-// engine.AuditRefcountsResult value (Phase 12 D-36 INV-02 audit).
+// engine.AuditRefcountsResult value (refcount audit).
 // Mirrors the server-side handlers.BlockStoreAuditResponse shape.
 type BlockStoreAuditResult struct {
 	Result *engine.AuditRefcountsResult `json:"result"`
 }
 
-// BlockStoreAuditRefcounts triggers the on-demand INV-02 reconciliation
+// BlockStoreAuditRefcounts triggers the on-demand refcount reconciliation
 // audit for the named share. Server walks the share's metadata store
 // and computes ∑ FileBlock.RefCount vs ∑ len(FileAttr.Blocks); a
 // non-zero delta indicates drift. The audit persists last-inv02.json
@@ -159,9 +159,9 @@ func (c *Client) BlockStoreAuditRefcounts(shareName string) (*BlockStoreAuditRes
 
 // MigrateStatusResponse is the JSON response shape for both
 // GET /api/v1/blockstore/migrate/status and the dfsctl `blockstore migrate status`
-// CLI subcommand. It unifies what the journal (Plan 14-03 OpenJournalReadOnly +
-// Aggregate) reports with the per-share BlockLayout flag (Plan 14-01) and the
-// total file count walked from the metadata store (Plan 14-03 WalkShareFiles).
+// CLI subcommand. It unifies what the journal (OpenJournalReadOnly +
+// Aggregate) reports with the per-share BlockLayout flag and the
+// total file count walked from the metadata store (WalkShareFiles).
 //
 // FilesTotal == -1 is the sentinel for "the file walk hit the 30s server-side
 // timeout"; the rest of the fields remain valid. Operators see this on

@@ -82,7 +82,7 @@ func TestSwapMetadataStore_HappyPath(t *testing.T) {
 func TestSwapMetadataStore_DoesNotCloseOldStore(t *testing.T) {
 	// The swap contract delegates Close() to the caller — we do NOT call
 	// Close() on the displaced store inside SwapMetadataStore. The caller
-	// (Phase 5 CommitSwap) owns close + backing-path cleanup.
+	// (CommitSwap) owns close + backing-path cleanup.
 	svc := stores.New()
 	a := newMemStore()
 	b := newMemStore()

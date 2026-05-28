@@ -1,8 +1,8 @@
-// Package metadata — rollup_store_suite.go (Phase 10).
+// Package metadata — rollup_store_suite.go.
 //
 // Shared conformance suite for the RollupStore interface. Each metadata
 // backend (memory, badger, postgres) exercises this suite to prove it
-// upholds the INV-03 atomic-monotone contract.
+// upholds the atomic-monotone contract.
 //
 // The suite lives in the metadata package rather than storetest to keep
 // the dependency direction clean: storetest already depends on metadata,
@@ -100,7 +100,7 @@ func RunRollupStoreSuite(t *testing.T, rs RollupStore) {
 	})
 
 	t.Run("SetRollupOffset_RejectsRegression_KeepsPriorValue", func(t *testing.T) {
-		// INV-03 enforced at the STORE layer (Phase 10 Blocker 2 fix).
+		// enforced at the STORE layer (Blocker 2 fix).
 		ctx := context.Background()
 		const pid = "suite-regression"
 

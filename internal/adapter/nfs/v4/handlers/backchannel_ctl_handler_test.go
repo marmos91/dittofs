@@ -9,7 +9,7 @@ import (
 )
 
 // ============================================================================
-// BACKCHANNEL_CTL Handler Tests (Phase 22)
+// BACKCHANNEL_CTL Handler Tests
 // ============================================================================
 
 // encodeBackchannelCtlArgs builds BACKCHANNEL_CTL XDR args for testing.

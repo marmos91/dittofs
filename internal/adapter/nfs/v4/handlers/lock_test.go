@@ -807,7 +807,7 @@ func TestHandleLockU_Dispatched(t *testing.T) {
 }
 
 // ============================================================================
-// RELEASE_LOCKOWNER Handler Tests (Plan 10-03)
+// RELEASE_LOCKOWNER Handler Tests
 // ============================================================================
 
 func TestHandleReleaseLockOwner_NoLocks(t *testing.T) {
@@ -897,7 +897,7 @@ func TestHandleReleaseLockOwner_LocksHeld(t *testing.T) {
 }
 
 // ============================================================================
-// CLOSE with Locks Held Handler Tests (Plan 10-03)
+// CLOSE with Locks Held Handler Tests
 // ============================================================================
 
 func TestHandleClose_LocksHeld(t *testing.T) {
@@ -992,7 +992,7 @@ func TestHandleClose_AfterUnlock(t *testing.T) {
 }
 
 // ============================================================================
-// Full Lock Lifecycle End-to-End Test (Plan 10-03)
+// Full Lock Lifecycle End-to-End Test
 // ============================================================================
 
 func TestFullLockLifecycle(t *testing.T) {

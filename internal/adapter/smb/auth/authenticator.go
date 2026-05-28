@@ -38,7 +38,7 @@ const (
 // For NTLM, the authenticator manages multi-round state internally using
 // session IDs to correlate Type 1 (NEGOTIATE) and Type 3 (AUTHENTICATE) messages.
 //
-// For Kerberos, authentication completes in a single round (placeholder for Phase 39+).
+// For Kerberos, authentication completes in a single round (placeholder).
 //
 // Thread safety: Safe for concurrent use. Each authentication session is tracked
 // independently using atomic session IDs and sync.Map for pending state.

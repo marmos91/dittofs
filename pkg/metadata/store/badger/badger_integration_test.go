@@ -81,7 +81,7 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 	t.Run("Persistence", func(t *testing.T) {
 		var rootHandle metadata.FileHandle
 
-		// Phase 1: Create store, add data, close
+		// Create store, add data, close
 		{
 			store, err := badger.NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
 			if err != nil {
@@ -110,7 +110,7 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 			}
 		}
 
-		// Phase 2: Reopen store and verify data persisted
+		// Reopen store and verify data persisted
 		{
 			store, err := badger.NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
 			if err != nil {

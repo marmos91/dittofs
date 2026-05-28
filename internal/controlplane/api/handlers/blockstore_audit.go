@@ -19,14 +19,13 @@ import (
 // responses, mirroring testBlockStoreHandler in blockstore_test.go and
 // fakeGCRuntime in block_gc_test.go.
 type BlockAuditRuntime interface {
-	// AuditRefcounts dispatches an INV-02 reconciliation walk for the
+	// AuditRefcounts dispatches a refcount reconciliation walk for the
 	// named share and persists last-inv02.json under the share's
-	// audit-state directory (Phase 12 D-36 / D-42).
+	// audit-state directory.
 	AuditRefcounts(ctx context.Context, shareName string) (*engine.AuditRefcountsResult, error)
 }
 
-// BlockStoreAuditHandler exposes the on-demand INV-02 audit endpoint
-// (Phase 12 D-36).
+// BlockStoreAuditHandler exposes the on-demand refcount audit endpoint.
 type BlockStoreAuditHandler struct {
 	runtime BlockAuditRuntime
 }
@@ -49,7 +48,7 @@ type BlockStoreAuditResponse struct {
 // Behavior: invokes Runtime.AuditRefcounts with the URL share name.
 // The audit walks the share's metadata store, computing
 // ∑ FileBlock.RefCount and ∑ len(FileAttr.Blocks); a non-zero delta
-// indicates INV-02 drift. Last-run summary is persisted under
+// indicates refcount drift. Last-run summary is persisted under
 // <localStoreRoot>/audit-state/last-inv02.json.
 //
 // Status codes:
@@ -78,14 +77,14 @@ func (h *BlockStoreAuditHandler) RunAudit(w http.ResponseWriter, r *http.Request
 		logger.Debug("Block store INV-02 audit error", "share", name, "error", err)
 		// Strip the underlying err string from the response body — it
 		// can leak filesystem paths or other internal details. Details
-		// are logged at Debug above for operator postmortems (mirror
-		// IN-4-02 from the GC handler).
+		// are logged at Debug above for operator postmortems (mirrors
+		// the GC handler's behavior).
 		InternalServerError(w, "audit failed")
 		return
 	}
 
-	// Phase 12 D-42: structured slog INFO for the audit result so
-	// operators can grep INV-02 violations without scraping HTTP logs.
+	// Structured slog INFO for the audit result so operators can grep
+	// refcount violations without scraping HTTP logs.
 	logger.Info("Block store INV-02 audit complete",
 		"share", name,
 		"total_files", res.TotalFiles,

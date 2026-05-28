@@ -9,7 +9,7 @@ import (
 )
 
 // TestCopyPayload_O1_IncrementsRefCountPerUniqueHash asserts the Plan
-// 07 D-11 contract: CopyPayload bumps RefCount once per unique source
+// 07 contract: CopyPayload bumps RefCount once per unique source
 // hash and copies no bytes — purely a metadata operation.
 func TestCopyPayload_O1_IncrementsRefCountPerUniqueHash(t *testing.T) {
 	fc := &fakeCoordinator{}
@@ -57,7 +57,7 @@ func TestCopyPayload_O1_IncrementsRefCountPerUniqueHash(t *testing.T) {
 	}
 }
 
-// TestCopyPayload_FailureRollsBack pins the Plan 07 D-11 mid-failure
+// TestCopyPayload_FailureRollsBack pins the mid-failure
 // contract: any IncrementRefCount error is surfaced immediately and no
 // further increments are attempted (caller's metadata txn rolls back
 // every committed bump).
@@ -106,7 +106,7 @@ func TestCopyPayload_NilCoordinator(t *testing.T) {
 	}
 }
 
-// TestDelete_DecrementsRefCounts asserts the Plan 07 D-17 contract:
+// TestDelete_DecrementsRefCounts asserts the contract
 // engine.Delete invokes coordinator.DecrementRefCount for every
 // BlockRef hash in the input slice.
 func TestDelete_DecrementsRefCounts(t *testing.T) {
@@ -144,7 +144,7 @@ func TestDelete_EmptyBlocksSkipsCoordinator(t *testing.T) {
 	}
 }
 
-// TestTruncate_DropsBlocksPastNewSize asserts the Plan 07 D-15 contract:
+// TestTruncate_DropsBlocksPastNewSize asserts the contract
 // blocks whose Offset >= newSize are dropped from the returned BlockRef
 // list and their hashes flow through DecrementRefCount.
 func TestTruncate_DropsBlocksPastNewSize(t *testing.T) {
@@ -191,8 +191,8 @@ func TestTruncate_EmptyBlocksLegacyPath(t *testing.T) {
 	}
 }
 
-// TestWriteAt_ReturnsCurrentBlocks asserts the Plan 07 contract: until
-// Plan 09 wires the FastCDC re-chunking, WriteAt returns
+// TestWriteAt_ReturnsCurrentBlocks asserts the contract: until
+// wires the FastCDC re-chunking, WriteAt returns
 // currentBlocks unchanged so the caller's PutFile sees a stable list.
 func TestWriteAt_ReturnsCurrentBlocks(t *testing.T) {
 	bs := newTestEngine(t, 0, 0)

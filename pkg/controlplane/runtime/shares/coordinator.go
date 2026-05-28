@@ -18,7 +18,7 @@ import (
 // engine.MetadataCoordinator. It binds the engine's metadata-coordination
 // surface (RefCount mutations, FileAttr.Blocks persistence) to a concrete
 // metadata.MetadataStore so the engine package itself can satisfy the
-// Phase 12 API-02 strict-grep gate (zero pkg/metadata imports under
+// strict-grep boundary (zero pkg/metadata imports under
 // pkg/blockstore/engine/*.go).
 //
 // Transaction ownership rule (BLOCKER-1/2/3 resolution): the engine
@@ -54,12 +54,12 @@ func newMetadataCoordinator(metadataStore metadata.MetadataStore) engine.Metadat
 // FileBlockStore, so GetByHash / IncrementRefCount / DecrementRefCount
 // are available on both surfaces with identical signatures.
 //
-// CR-01 (Phase 12 review iteration 1): without this, every coordinator
-// mutation routes through the Postgres connection pool and commits
-// immediately on its own connection — defeating the BLOCKER-2 atomic
-// rollback contract documented in copy_payload.go and engine.go. The
-// returned blockstore.FileBlockStore-shaped surface is the narrow set
-// of methods the coordinator needs.
+// Without this, every coordinator mutation routes through the Postgres
+// connection pool and commits immediately on its own connection —
+// defeating the BLOCKER-2 atomic rollback contract documented in
+// copy_payload.go and engine.go. The returned
+// blockstore.FileBlockStore-shaped surface is the narrow set of methods
+// the coordinator needs.
 func (c *metadataCoordinator) resolveStore(ctx context.Context) blockstore.FileBlockStore {
 	if tx := metadata.TxFromContext(ctx); tx != nil {
 		return tx
@@ -72,11 +72,11 @@ func (c *metadataCoordinator) resolveStore(ctx context.Context) blockstore.FileB
 // ErrFileBlockNotFound (the caller — typically CopyPayload — surfaces
 // this so the metadata txn can roll back).
 //
-// CR-01 (Phase 12 review iteration 1): when the caller has bound an
-// active metadata.Transaction into ctx via metadata.WithTx, both
-// GetByHash and IncrementRefCount route through that tx — keeping the
-// per-row UPDATE inside the caller's txn so a downstream PutFile
-// failure rolls back BOTH the file attrs AND every increment.
+// When the caller has bound an active metadata.Transaction into ctx
+// via metadata.WithTx, both GetByHash and IncrementRefCount route
+// through that tx — keeping the per-row UPDATE inside the caller's
+// txn so a downstream PutFile failure rolls back BOTH the file attrs
+// AND every increment.
 func (c *metadataCoordinator) IncrementRefCount(ctx context.Context, hash blockstore.ContentHash) error {
 	store := c.resolveStore(ctx)
 	fb, err := store.GetByHash(ctx, hash)
@@ -98,13 +98,13 @@ func (c *metadataCoordinator) IncrementRefCount(ctx context.Context, hash blocks
 // Delete on a hash that has already been swept by GC is not a caller
 // error.
 //
-// CR-01 (Phase 12 review iteration 1): when the caller has bound an
-// active metadata.Transaction into ctx via metadata.WithTx, both
-// GetByHash and DecrementRefCount route through that tx. Truncate and
-// Delete from the engine path do NOT currently bind a tx (no wrapping
-// WithTransaction), so those callers route through the public store —
-// the documented Phase 12 stance is that Truncate/Delete are non-atomic
-// at the cross-store level and the INV-02 audit reconciles drift.
+// When the caller has bound an active metadata.Transaction into ctx
+// via metadata.WithTx, both GetByHash and DecrementRefCount route
+// through that tx. Truncate and Delete from the engine path do NOT
+// currently bind a tx (no wrapping WithTransaction), so those callers
+// route through the public store — Truncate/Delete are non-atomic at
+// the cross-store level by design and the refcount audit reconciles
+// drift.
 func (c *metadataCoordinator) DecrementRefCount(ctx context.Context, hash blockstore.ContentHash) (uint32, error) {
 	store := c.resolveStore(ctx)
 	fb, err := store.GetByHash(ctx, hash)
@@ -132,22 +132,21 @@ func (c *metadataCoordinator) DecrementRefCount(ctx context.Context, hash blocks
 // payloadID → fileHandle → file via tx.GetFileByPayloadID and persists
 // the updated FileAttr via tx.PutFile.
 //
-// Phase 12 D-37 / D-20: this is the post-Flush seam — the syncer
-// invokes this after every successful Flush so the canonical
-// FileAttr.Blocks list reflects every Remote BlockRef the engine has
-// produced.
+// This is the post-Flush seam — the syncer invokes this after every
+// successful Flush so the canonical FileAttr.Blocks list reflects every
+// Remote BlockRef the engine has produced.
 //
-// Phase 13 D-05/D-06: the syncer computes the BLAKE3 Merkle-root
-// ObjectID over `blocks` (via blockstore.ComputeObjectID) and threads
-// it through this hook so the metadata write atomically updates both
-// Blocks AND ObjectID in the same PutFile transaction.
+// The syncer computes the BLAKE3 Merkle-root ObjectID over `blocks`
+// (via blockstore.ComputeObjectID) and threads it through this hook so
+// the metadata write atomically updates both Blocks AND ObjectID in the
+// same PutFile transaction.
 //
 // Conflict mapping: a Postgres unique-violation on files_object_id_idx
-// (Phase 13 D-14 first-committer-wins) — or the equivalent
-// mderrors.ErrConflict from Memory/Badger — is wrapped into
-// engine.ErrObjectIDConflict by mapObjectIDConflict so the BSCAS-05
-// short-circuit retry path in Syncer.applyFileLevelDedupHit detects
-// the race uniformly across backends.
+// (first-committer-wins) — or the equivalent mderrors.ErrConflict from
+// Memory/Badger — is wrapped into engine.ErrObjectIDConflict by
+// mapObjectIDConflict so the file-level dedup short-circuit retry path
+// in Syncer.applyFileLevelDedupHit detects the race uniformly across
+// backends.
 func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error {
 	return c.metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		file, err := tx.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
@@ -159,7 +158,7 @@ func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID s
 		}
 		// FileAttr is embedded on metadata.File (not a pointer).
 		file.Blocks = blocks
-		// Phase 13 D-05/D-06: same-txn write of Blocks AND ObjectID.
+		// Same-txn write of Blocks AND ObjectID.
 		file.ObjectID = objectID
 		if err := tx.PutFile(ctx, file); err != nil {
 			return mapObjectIDConflict(err)
@@ -169,11 +168,11 @@ func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID s
 }
 
 // mapObjectIDConflict wraps backend conflict errors into
-// engine.ErrObjectIDConflict so the BSCAS-05 short-circuit (Phase 13
-// Plan 07) can detect concurrent-quiesce races uniformly across
-// Postgres / Badger / Memory. Returns nil when err is nil; returns the
-// unwrapped error untouched when no conflict signal is present so other
-// failure modes propagate without false positives (T-13-26).
+// engine.ErrObjectIDConflict so the file-level dedup short-circuit can
+// detect concurrent-quiesce races uniformly across Postgres / Badger /
+// Memory. Returns nil when err is nil; returns the unwrapped error
+// untouched when no conflict signal is present so other failure modes
+// propagate without false positives.
 //
 // Detection rules:
 //
@@ -184,9 +183,9 @@ func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID s
 //     ConstraintName whose Message text mentions "object_id" —
 //     defensive fallback for drivers that strip ConstraintName under
 //     certain configurations. Other 23505 errors (e.g., file path
-//     uniqueness violations) propagate untouched (T-13-26).
+//     uniqueness violations) propagate untouched.
 //  3. metadata.errors.StoreError with Code == ErrConflict — Memory and
-//     Badger surface this from Plan 03 maintenance.
+//     Badger surface this from their maintenance paths.
 //
 // Wrapping uses errors.Join (Go 1.20+) so callers can both
 // `errors.Is(err, engine.ErrObjectIDConflict)` AND see the underlying
@@ -224,9 +223,9 @@ func mapObjectIDConflict(err error) error {
 // FindByObjectID lookup. Returns (nil, nil) on zero-valued ObjectID
 // (defense-in-depth — backends also short-circuit) and on cache miss.
 //
-// Phase 13 BSCAS-05 / D-12: callers (Plan 07 short-circuit) use this
-// to detect whether a provisional ObjectID matches a previously-quiesced
-// file's BlockRef list, enabling file-level dedup at write time.
+// Callers use this to detect whether a provisional ObjectID matches a
+// previously-quiesced file's BlockRef list, enabling file-level dedup
+// at write time.
 func (c *metadataCoordinator) FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error) {
 	if objectID.IsZero() {
 		return nil, nil
@@ -237,14 +236,12 @@ func (c *metadataCoordinator) FindByObjectID(ctx context.Context, objectID block
 // GetFileObjectID reads the current FileAttr.ObjectID for payloadID
 // from the metadata store. Returns the all-zero ObjectID + nil when
 // the file does not exist or has never quiesced — callers (Syncer.Flush)
-// treat zero as "evaluate short-circuit" / "skip short-circuit" per the
-// D-09 trigger condition.
+// treat zero as "evaluate short-circuit" / "skip short-circuit".
 //
-// Phase 13 BSCAS-05 / D-09: callers use this to evaluate the trigger
-// condition for file-level dedup BEFORE running the per-block upload
-// pump. Reads on the public metadataStore surface (not bound to a
-// caller-owned txn) — the read is a single-row lookup, not part of any
-// per-flow transaction.
+// Callers use this to evaluate the trigger condition for file-level
+// dedup BEFORE running the per-block upload pump. Reads on the public
+// metadataStore surface (not bound to a caller-owned txn) — the read
+// is a single-row lookup, not part of any per-flow transaction.
 //
 // Backend NotFound semantics: the Memory and Badger backends return a
 // StoreError with ErrNotFound code when the payloadID has no row; the

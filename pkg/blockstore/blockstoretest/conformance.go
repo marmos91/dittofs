@@ -25,12 +25,12 @@ import (
 // document the contract explicitly when constructing the factory.
 type Factory func(t *testing.T) (blockstore.BlockStore, func())
 
-// BlockStoreConformance runs the unified Phase 17 D-09 contract suite
+// BlockStoreConformance runs the unified contract suite
 // against any BlockStore implementation. Backends call this from their
 // own _test.go files via a backend-specific factory.
 //
 // The scenarios pin the contract documented on the BlockStore interface
-// in pkg/blockstore/blockstore.go:
+// in pkg/blockstore/blockstore.go
 //
 //   - Put + Get round-trip with no-aliasing of internal storage.
 //   - Get on an unstored hash returns blockstore.ErrChunkNotFound.
@@ -39,9 +39,11 @@ type Factory func(t *testing.T) (blockstore.BlockStore, func())
 //   - Walk enumerates every object with non-zero LastModified.
 //   - Walk callback may return blockstore.ErrStopWalk to exit cleanly
 //     (Walk returns nil); any other non-nil error halts and is wrapped
-//     "walk halted at %s: %w" per D-07.
+//
+// "walk halted at %s: %w".
 //   - Head returns Meta whose Size matches Get's body length and whose
-//     LastModified is non-zero (WR-4-02 carry-forward).
+//
+// LastModified is non-zero (carry-forward).
 //   - Put is idempotent under same-hash same-bytes.
 //   - Put is safe under concurrent same-hash same-bytes writers.
 //
@@ -99,7 +101,7 @@ func testPutGetRoundtrip(t *testing.T, factory Factory) {
 		t.Fatalf("Get #1 returned bytes that differ from stored payload")
 	}
 
-	// Aliasing defense (Phase 16 D-05 carry-forward): mutate the slice
+	// Aliasing defense (carry-forward): mutate the slice
 	// returned by the first Get and confirm a fresh Get returns the
 	// unchanged bytes. Backends MUST NOT alias internal storage on
 	// reads — the Cache copy-out invariant depends on it.
@@ -230,7 +232,7 @@ func testWalkStopSentinel(t *testing.T, factory Factory) {
 	ctx := context.Background()
 
 	// Seed three objects. The callback returns ErrStopWalk after the
-	// first invocation and the contract (D-07) requires Walk to return
+	// first invocation and the contract requires Walk to return
 	// nil to the outer caller AND to not invoke the callback again.
 	for _, p := range [][]byte{[]byte("a"), []byte("b"), []byte("c")} {
 		h := blake3Sum(p)
@@ -252,7 +254,7 @@ func testWalkStopSentinel(t *testing.T, factory Factory) {
 	}
 }
 
-// testWalkErrorWrap pins the D-07 "non-ErrStopWalk error halts and is
+// testWalkErrorWrap pins the "non-ErrStopWalk error halts and is
 // wrapped 'walk halted at %s: %w'" contract: the suite returns a custom
 // sentinel from the callback and asserts the Walk's return error
 // matches via errors.Is.

@@ -23,9 +23,9 @@ func (r *recordingInvalidator) InvalidateFile(payloadID metadata.PayloadID, remo
 }
 
 // TestCacheInvalidatorInterface_Compiles is a compile-time + behavioural
-// guarantee that the CacheInvalidator interface (Plan 12-08 seam for
+// guarantee that the CacheInvalidator interface (seam for
 // CACHE-05 post-txn invalidation) accepts a payloadID + removedHashes
-// pair. The interface is consumed by Plan 09 cache rewrite when the
+// pair. The interface is consumed by cache rewrite when the
 // engine.Cache type implements it; this plan defines the surface.
 func TestCacheInvalidatorInterface_Compiles(t *testing.T) {
 	var inv CacheInvalidator = &recordingInvalidator{}
@@ -46,7 +46,7 @@ func TestCacheInvalidatorInterface_Compiles(t *testing.T) {
 
 // TestDiffRemovedHashes_SubsetRemoved asserts diffRemovedHashes returns the
 // hashes that disappeared between an old BlockRef list and a new one. The
-// helper backs Plan 12-08's surgical CACHE-05 invalidation contract — only
+// helper backs surgical CACHE-05 invalidation contract — only
 // hashes present in old but absent from new are reported.
 func TestDiffRemovedHashes_SubsetRemoved(t *testing.T) {
 	h1 := blockstore.ContentHash{0x01}

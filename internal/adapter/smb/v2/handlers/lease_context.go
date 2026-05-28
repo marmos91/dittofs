@@ -317,7 +317,7 @@ func FindCreateContext(contexts []CreateContext, name string) *CreateContext {
 
 // ProcessLeaseCreateContext processes a lease create context from a CREATE request.
 //
-// This function:
+// Steps:
 // 1. Parses the RqLs create context
 // 2. Requests the lease through LeaseManager (which delegates to shared LockManager)
 // 3. Returns a LeaseResponseContext to include in the CREATE response

@@ -1,286 +1,187 @@
 # Architecture
 
-**Analysis Date:** 2026-02-09
+**Analysis Date:** 2026-05-28
 
 ## Pattern Overview
 
-**Overall:** Layered architecture with a Control Plane runtime managing protocol adapters and shared storage backends.
+**Overall:** Modular layered architecture. A single `Runtime` composes six sub-services and acts as the canonical entrypoint for every file/share/adapter operation. Protocol adapters (NFSv3/v4/v4.1 and SMB2/3) and REST handlers both go through `Runtime`.
 
-**Key Characteristics:**
-- Single control plane (`pkg/controlplane/runtime/`) serves as the entrypoint for all operations
-- Named store registry pattern enables resource efficiency (one S3 client for multiple shares)
-- Protocol adapters (NFS, SMB) receive runtime reference and delegate all file operations to metadata/payload services
-- Graceful shutdown with configurable timeouts across all layers
-- Content-addressed storage with deduplication at 4MB block level
+**Key characteristics:**
+- Single composition root (`pkg/controlplane/runtime/`) over six sub-services: `adapters/`, `stores/`, `shares/`, `mounts/`, `lifecycle/`, `identity/`.
+- Per-share resources — every share owns its own `*engine.BlockStore` (local + remote + syncer); remote stores ref-counted when configs are shared.
+- Content-addressed storage (BLAKE3-256) end to end; FastCDC chunker + dedup; reference-CAS GC.
+- Opaque file handles created by metadata stores; encode share identity so the runtime can route, but never parsed by protocol handlers.
+- `*metadata.AuthContext` threads every operation; permission checks live in metadata layer, not in adapters.
 
 ## Layers
 
-**Protocol Adapters:**
-- Purpose: Implement file sharing protocols (NFSv3, SMBv2) and translate wire operations to repository calls
-- Location: `pkg/adapter/{nfs,smb}/`
-- Contains: Connection management, XDR/wire protocol encoding, RPC dispatch, auth context extraction
-- Depends on: Runtime (for store access), Metadata/Payload services
-- Used by: External clients mounting via NFS or SMB
+**Protocol adapters (shell):** `pkg/adapter/{nfs,smb}/`
+- Lifecycle, connection/session bookkeeping, settings, graceful shutdown.
+- Provide hooks `SetRuntime(r *Runtime)` and `Serve(ctx)`.
 
-**Control Plane Runtime:**
-- Purpose: Central orchestrator managing all server state (metadata stores, shares, mounts, adapters)
-- Location: `pkg/controlplane/runtime/`
-- Contains: Ephemeral state (loaded metadata stores, active shares with root handles, NFS mounts), adapter lifecycle management, API server/metrics server startup
-- Depends on: Control plane store (persistent DB), adapter implementations
-- Used by: API handlers, protocol adapters, CLI commands
+**Protocol implementations (wire):** `internal/adapter/{nfs,smb}/`
+- XDR/SMB framing, RPC/command dispatch, codecs per procedure.
+- Auth extraction (AUTH_UNIX, RPCSEC_GSS, NTLM/SPNEGO, Kerberos).
+- Handlers call into `Runtime` → metadata + blockstore.
 
-**Metadata Service Layer:**
-- Purpose: Route file operations to correct metadata store, handle permission checking, manage file handle lifecycle
-- Location: `pkg/metadata/service.go`
-- Contains: Business logic for CRUD operations, permission enforcement, hard link reference counting, lock manager ownership
-- Depends on: MetadataStore interface (via share name routing), PayloadService (for content coordination)
-- Used by: Protocol adapters, internal file operations
+**Runtime composition:** `pkg/controlplane/runtime/`
+- `Runtime` owns and wires six sub-services + the metadata façade + client registry.
+- Health-checker cache (`checkers.go`) lazily produces per-entity health probes.
+- `SettingsWatcher` reacts to live config changes and rewires sub-services.
+- `blockstore_init.go` brings up per-share blockstore (local + remote + syncer + GC).
 
-**Metadata Store Interface:**
-- Purpose: Persistence layer for file metadata (names, attributes, directory structure)
-- Location: `pkg/metadata/store.go`
-- Contains: File CRUD, directory child mappings, parent tracking, link counts, content-addressed object storage (Objects, Chunks, Blocks)
-- Depends on: Nothing (boundary)
-- Used by: MetadataService
+**Sub-services:**
+- `adapters/` — protocol adapter registration + lifecycle
+- `stores/` — metadata store factory (memory/badger/postgres)
+- `shares/` — share coordinator: create/delete, ACL canonicalization, healthcheck
+- `mounts/` — NFS mount tracking
+- `lifecycle/` — auxiliary servers (REST API, metrics), shutdown orchestration
+- `identity/` — squash mapping (RootSquash/AllSquash), idmap (Kerberos ↔ POSIX)
 
-**Metadata Store Implementations:**
-- Memory: `pkg/metadata/store/memory/` - UUID handles, RWMutex-based locking, ephemeral
-- BadgerDB: `pkg/metadata/store/badger/` - Path-based handles enabling recovery, persistent, stats cache with TTL
-- PostgreSQL: `pkg/metadata/store/postgres/` - UUID handles with share encoding, distributed support
+**Metadata service:** `pkg/metadata/`
+- `MetadataService` façade; one `MetadataStore` per share, routed by share name encoded in handles.
+- Owns ACLs, BR locks, leases, oplocks, delegations, NFSv4 grace + reclaim, idempotency cookies.
+- Conformance via `pkg/metadata/storetest/`.
 
-**Payload Service:**
-- Purpose: Coordinate cache and transfer manager for file content operations
-- Location: `pkg/payload/service.go`
-- Contains: Read/write operations with chunk boundary handling, COW (copy-on-write) source support, flush coordination
-- Depends on: Cache (in-memory buffer), TransferManager (persistence to block store)
-- Used by: Protocol adapters (READ/WRITE operations)
+**Block storage:** `pkg/blockstore/`
+- Unified CAS contract: `BlockStore` + optional `BlockStoreAppend`.
+- `engine/` composes local + remote + syncer + dedup + GC + audit.
+- FastCDC chunker (`chunker/`), optional lz4 compression (`compression/`), optional AEAD encryption (`encryption/`).
+- Filesystem backend has append log + idempotent rollup (D-23 deleted ClaimBatchSize; D-21 sentinel-zero observation).
+- Reference-CAS GC with HoldProvider (engine `Options`).
 
-**Cache Layer:**
-- Purpose: In-memory buffer with mmap WAL backing for crash-safe persistence
-- Location: `pkg/cache/`
-- Contains: Block-aware caching (4MB buffers), LRU eviction with dirty tracking, three states (Pending→Uploading→Uploaded)
-- Depends on: WAL persister (for crash recovery), TransferManager (for draining on flush)
-- Used by: PayloadService
+**Control-plane store:** `pkg/controlplane/store/`
+- GORM-based persistence (SQLite default, PostgreSQL HA).
+- Users, groups, group memberships, shares + share-adapter configs, adapters + adapter-settings, settings, identity mappings, netgroups, durable-handle hints.
 
-**Transfer Manager:**
-- Purpose: Background async persistence of cache blocks to block store with deduplication
-- Location: `pkg/payload/transfer/`
-- Contains: Flush coordination (NFS COMMIT), transfer queue with priorities, WAL recovery on startup
-- Depends on: Block store, ObjectStore (for dedup metadata)
-- Used by: PayloadService (non-blocking flush), cache eviction
-
-**Block Store Interface:**
-- Purpose: Durable storage for file content blocks (4MB units)
-- Location: `pkg/payload/store/block/store.go`
-- Contains: Read, WriteAt, Truncate operations; implementations support range reads and multipart uploads
-- Depends on: Nothing (boundary)
-- Used by: TransferManager, PayloadService (cache misses)
-
-**Block Store Implementations:**
-- Memory: `pkg/payload/store/memory/` - Ephemeral, testing only
-- Filesystem: `pkg/payload/store/fs/` - Local disk storage
-- S3: `pkg/payload/store/s3/` - Production-ready with range reads, streaming multipart, retry backoff
-
-**Control Plane Store:**
-- Purpose: Persistent database for configuration (users, groups, shares, adapters, settings)
-- Location: `pkg/controlplane/store/`
-- Contains: GORM-based storage supporting SQLite (single-node) and PostgreSQL (HA), user auth with bcrypt + NT hash
-- Depends on: Nothing (boundary)
-- Used by: Runtime initialization, API handlers
-
-**API Server:**
-- Purpose: REST API for remote management (user/group CRUD, share configuration, adapter lifecycle)
-- Location: `pkg/controlplane/api/` and `internal/controlplane/api/`
-- Contains: HTTP handlers, JWT authentication, request validation
-- Depends on: Runtime (for mutations), Control plane store (for reads)
-- Used by: `dittofsctl` CLI client, external tools
+**REST API:** `pkg/controlplane/api/` + `internal/controlplane/api/`
+- chi router; JWT middleware; resource handlers under `internal/controlplane/api/handlers/`.
 
 ## Data Flow
 
-**File Operation (e.g., NFSv3 READ):**
+**NFSv3 READ:**
+1. NFS client RPC → connection handler in `pkg/adapter/nfs/connection.go`.
+2. `internal/adapter/nfs/dispatch_nfs.go` decodes the RPC, builds `*metadata.AuthContext` (UID/GID, client addr).
+3. Procedure handler (`internal/adapter/nfs/v3/handlers/read.go`) calls `Runtime` for the metadata store + blockstore for the handle's share.
+4. `MetadataStore.ReadFile` (permission check, attr fetch) → returns block references.
+5. Engine `Get(ctx, hash)` resolves bytes (local cache → local CAS → remote on miss).
+6. Bytes XDR-encoded and returned.
 
-1. NFS client sends READ RPC → TCP connection handler (`pkg/adapter/nfs/nfs_connection.go`)
-2. Handler parses XDR request, extracts auth context (UID, GID, client IP)
-3. Handler calls `v3.Handler.HandleRead()` (`internal/protocol/nfs/v3/handlers/read.go`)
-4. Handler delegates to `runtime.Metadata(ctx)` → `MetadataService.GetFile()` (permission check)
-5. MetadataService routes to `MetadataStore.GetFile(handle)` via share name in handle
-6. MetadataService then calls `PayloadService.ReadAt(payloadID, offset, length)`
-7. PayloadService checks cache first, falls back to block store on miss
-8. Data returned through all layers, XDR-encoded, sent back to client
-9. All context cancellation signals propagate on shutdown for graceful termination
+**NFSv3 WRITE + COMMIT:**
+1. `WRITE` handler:
+   - `MetadataStore.WriteFile` runs permission check + size/mtime update + returns pre-op attrs for WCC.
+   - `Runtime.GetBlockStoreForHandle(ctx, handle)` resolves the per-share engine.
+   - Engine `WriteAt` chunks via FastCDC (random-write path stages through the per-file append log on `fs` backend); dedup is consulted before upload.
+   - Handler returns updated attrs.
+2. `COMMIT`:
+   - Engine syncer drains pending dirty regions to the remote tier; rollup converts append-log records into normalized blocks (idempotent under interrupted runs).
 
-**File Write (e.g., NFSv3 WRITE + COMMIT):**
+**Server startup (`dfs start`):**
+1. Cobra entry → load config (file + env + flags).
+2. Init logger, telemetry, optional Pyroscope.
+3. Open control-plane store (SQLite/PostgreSQL); ensure schema (golang-migrate).
+4. Ensure default admin user, default groups, default adapters.
+5. `runtime.New(...)` composes sub-services + metadata service.
+6. `Runtime.Initialize`:
+   - Loads metadata-store configs → instantiates them through `stores.Service`.
+   - Loads shares → for each share, brings up blockstore engine (local + remote + syncer + GC) via `blockstore_init.go`, attaches metadata store, creates root handle.
+   - Registers adapter factories + creates adapter instances.
+7. `lifecycle.Service` starts auxiliary servers (REST API + metrics).
+8. Each adapter goroutine runs `Serve(ctx)`.
+9. Process blocks on signal; on shutdown the lifecycle service cascades context cancellation.
 
-1. Client sends WRITE RPC with data
-2. Handler calls `v3.Handler.HandleWrite()`
-3. Handler updates metadata (size, mtime) via `MetadataService.WriteFile()`
-4. Handler writes data via `PayloadService.WriteAt()` → cache (non-blocking)
-5. Handler returns immediately (data is now in mmap cache)
-6. Later, client sends COMMIT RPC
-7. Handler calls `PayloadService.Flush()` which:
-   - Enqueues cache blocks to TransferManager (non-blocking)
-   - Returns immediately; upload happens asynchronously
-8. TransferManager background worker:
-   - Computes block hashes for deduplication
-   - Queries ObjectStore for existing blocks
-   - Uploads new blocks to block store (S3, filesystem)
-   - Marks cache blocks as Uploaded (safe for LRU eviction)
-
-**Server Startup:**
-
-1. `cmd/dittofs start` entry point
-2. Load config from YAML + env overrides
-3. Initialize logger, telemetry, profiling
-4. Create control plane store (SQLite/PostgreSQL)
-5. Ensure admin user, default groups, default adapters exist
-6. `runtime.InitializeFromStore()`:
-   - Load metadata store configs from DB
-   - Create metadata store instances (memory, badger, postgres)
-   - Load share configs from DB
-   - For each share, create root directory if needed
-   - Create PayloadService once (single global cache + transfer manager)
-7. Register adapter factories with runtime
-8. For each adapter in config:
-   - Create adapter instance
-   - Call `SetRuntime()` to inject dependencies
-   - Launch in goroutine calling `Serve(ctx)`
-9. Start API server, metrics server
-10. Block on context until SIGINT/SIGTERM
-
-**Graceful Shutdown:**
-
-1. SIGINT/SIGTERM signal received
-2. Context cancelled
-3. All adapters detect context cancellation in their `Serve()` loop
-4. NFS adapter:
-   - Listener closed (stops accepting new connections)
-   - Shutdown context cancelled (signals in-flight requests)
-   - Waits up to ShutdownTimeout for active connections to complete
-   - Force-closes remaining connections after timeout
-5. SMB adapter: Similar flow
-6. API server: Returns with context cancellation
-7. Metrics server: Gracefully shuts down
-8. Runtime cleanup
-9. Control plane store connection closed
-10. Process exits
-
-**State Management:**
-
-**Control Plane Store (Persistent):**
-- Users, groups, group memberships
-- Share configurations (name, metadata store ref, payload store ref)
-- Adapter configurations and runtime state
-- Settings
-
-**Runtime (Ephemeral):**
-- Loaded metadata store instances (keyed by store name)
-- Active shares (keyed by share name, contains root handle)
-- NFS mounts (keyed by client address, contains mount point)
-- Single PayloadService instance (cache + transfer manager)
-- Active protocol adapters and their error channels
-
-**Cache (Persistent via WAL):**
-- 4MB block buffers for each chunk
-- Dirty flags and coverage bitmaps
-- Flush state (Pending/Uploading/Uploaded)
-- WAL persister backs cache to mmap file for crash recovery
-
-**Lock Manager (Per-Share, Ephemeral):**
-- Byte-range locks for SMB/NLM
-- Lock manager created per share in MetadataService
-- Locks are advisory only (don't survive restart)
+**Graceful shutdown:**
+1. SIGINT/SIGTERM → root context cancelled.
+2. `lifecycle.Service` issues shutdown to adapters in registered order.
+3. Each adapter closes listeners, waits up to `ShutdownTimeout` for in-flight requests, force-closes the rest.
+4. Engine syncers drain (configurable timeout); GC stops cleanly.
+5. Metadata stores close; control-plane store closes.
+6. Process exits.
 
 ## Key Abstractions
 
-**Adapter Interface:**
-- Purpose: Unified lifecycle for protocol-specific servers
-- Examples: `pkg/adapter/nfs/`, `pkg/adapter/smb/`
-- Pattern: `SetRuntime()` → `Serve()` → `Stop()` with context-based shutdown
+**`adapter.Adapter` (`pkg/adapter/adapter.go`):**
+- Unified lifecycle: `SetRuntime` → `Serve(ctx)` → `Stop`. NFS and SMB adapters both implement this.
 
-**MetadataService:**
-- Purpose: Central routing and permission enforcement for file operations
-- Examples: File CRUD, directory ops, permission checking, hard link management
-- Pattern: Service methods take `*AuthContext` and route via share name extracted from handle
+**`Runtime` (`pkg/controlplane/runtime/runtime.go`):**
+- Single composition point. Type-aliases sub-services for backward compatibility.
+- Exposes accessors like `GetBlockStoreForHandle`, `MetadataServiceForShare`, plus health-checker factories.
 
-**MetadataStore:**
-- Purpose: Pluggable persistence for file metadata
-- Examples: Memory, BadgerDB, PostgreSQL implementations
-- Pattern: Handle-based CRUD with parent/child relationships and transaction support
+**`MetadataStore` (`pkg/metadata/store.go`):**
+- Files, directories, ACLs, locks, durable handles, content-addressed object references.
+- Backends: `memory`, `badger`, `postgres`. All must pass `pkg/metadata/storetest`.
 
-**PayloadService:**
-- Purpose: Coordinate cache and transfer for file content
-- Examples: Read/write operations with chunk awareness, flush coordination
-- Pattern: Non-blocking writes to cache, async persistence via TransferManager
+**`BlockStore` + `BlockStoreAppend` (`pkg/blockstore/blockstore.go`):**
+- BLAKE3-keyed unified content surface. Append variant adds the absorber-tier methods used only by `local/fs`.
+- Backends: `local/memory`, `local/fs`, `remote/memory`, `remote/s3`.
 
-**BlockStore:**
-- Purpose: Pluggable durable storage for content blocks
-- Examples: Memory, Filesystem, S3 implementations
-- Pattern: `ReadAt`, `WriteAt`, `Truncate` with optional deduplication support
+**`engine.BlockStore` (`pkg/blockstore/engine/engine.go`):**
+- Per-share orchestrator wrapping local + remote + syncer + GC + audit + dedup LRU. Created by `blockstore_init.go`.
 
-**ObjectStore (within MetadataStore):**
-- Purpose: Content-addressed metadata enabling deduplication
-- Examples: Object (file), Chunk (64MB), Block (4MB) hierarchy with RefCounting
-- Pattern: Find blocks by hash, increment/decrement reference counts atomically
+**`MetadataService`:** Façade routing handle → store, applying export squashing, owning lock managers, mediating durable-handle reconnect.
 
 ## Entry Points
 
 **Server CLI:**
-- Location: `cmd/dittofs/main.go`
-- Triggers: `dittofs start [--foreground] [--config /path]`
-- Responsibilities: Parse flags, load config, initialize runtime and adapters, handle graceful shutdown
+- `cmd/dfs/main.go` → `cmd/dfs/commands/start.go`
+- Starts daemon (foreground or backgrounded via `daemon_*.go`).
 
 **Remote CLI:**
-- Location: `cmd/dittofsctl/main.go`
-- Triggers: `dittofsctl [command] [args]`
-- Responsibilities: Authenticate to API, execute management commands, output results
+- `cmd/dfsctl/main.go` → user/group/share/store/adapter/settings/bench/etc.
 
-**Protocol Handlers (NFS):**
-- Location: `internal/protocol/nfs/v3/handlers/` and `internal/protocol/nfs/mount/handlers/`
-- Triggers: Incoming RPC calls from NFS clients
-- Responsibilities: Parse XDR, validate auth, delegate to metadata/payload services, encode response
+**Wire entry points:**
+- NFS: `internal/adapter/nfs/dispatch.go` (NFS), `dispatch_mount.go` (Mount), plus NLM/NSM/portmap handlers.
+- SMB: `internal/adapter/smb/dispatch.go` then `internal/adapter/smb/v2/handlers/`.
 
-**Protocol Handlers (SMB):**
-- Location: `internal/protocol/smb/v2/handlers/`
-- Triggers: Incoming SMB packets from SMB clients
-- Responsibilities: Parse wire format, manage sessions, delegate to metadata/payload services
-
-**API Handlers:**
-- Location: `internal/controlplane/api/handlers/`
-- Triggers: HTTP requests from dittofsctl or external tools
-- Responsibilities: Validate auth, parse JSON, call runtime methods, return JSON responses
+**REST API:**
+- `pkg/controlplane/api/router.go` mounts handlers in `internal/controlplane/api/handlers/`.
+- Auth via `internal/controlplane/api/middleware/` + JWT in `internal/controlplane/api/auth/`.
 
 ## Error Handling
 
-**Strategy:** Layered error types with semantic mapping to protocol responses
+**Strategy:** Semantic errors at the metadata layer get mapped to protocol-specific status codes at the adapter boundary.
 
 **Patterns:**
-- `metadata.ExportError`: Semantic errors that map to NFS status codes (ErrNotDirectory, ErrNoEntity, ErrAccess, etc.)
-- Context propagation: `*AuthContext` required for all operations; permission checks happen at service layer
-- Logging: Debug-level for expected errors (permission denied, file not found), Error-level for unexpected errors
-- NFS: Return proper NFS3ERR_* codes via `metadata.ExportError`
-- SMB: Return NTSTATUS codes via error types in `internal/protocol/smb/types/`
-- Graceful degradation: If share initialization fails, log warning but continue with other shares
+- `metadata.ExportError` enum (`pkg/metadata/errors/`): `ErrNotDirectory`, `ErrNoEntity`, `ErrAccess`, `ErrExist`, `ErrNotEmpty`, `ErrIO`, …
+- NFS adapter maps `ExportError` → `NFS3ERR_*` / NFSv4 `NFS4ERR_*` via `internal/adapter/nfs/types/`.
+- SMB adapter maps to NTSTATUS via `internal/adapter/common/errmap.go` + `internal/adapter/smb/types/`.
+- Blockstore sentinels: `ErrUnknownHash`, `ErrLegacyLayoutDetected`, `ErrAlreadyExists` (CAS conflict is a no-op success).
+- Logging discipline: expected outcomes at `Debug`, unexpected at `Error` (CLAUDE.md invariant 6).
 
 ## Cross-Cutting Concerns
 
-**Logging:** Structured logging via `internal/logger/` with configurable level (DEBUG/INFO/WARN/ERROR) and format (text/json)
+**Logging:** `internal/logger/` (slog-based) with structured fields, text/json format, configurable level + sink.
 
-**Validation:**
-- GORM struct tags for control plane store (`validate:"required,gt=0"`)
-- Protocol-specific validation in handlers (e.g., `CheckExportAccess()` for NFS mount access)
-- Configuration validation in `pkg/config/` with environment variable override support
+**Validation:** `go-playground/validator/v10` struct tags on config + REST DTOs; protocol-level checks in handlers before metadata calls.
 
 **Authentication:**
-- NFS: AUTH_UNIX with optional AllSquash/RootSquash export-level access control
-- SMB: NTLM/SPNEGO with session state management
-- API: JWT tokens with claims containing user ID and group memberships
+- NFSv3: AUTH_UNIX + export-level RootSquash/AllSquash.
+- NFSv4 / v4.1: AUTH_UNIX + RPCSEC_GSS (Kerberos via `gokrb5/v8`).
+- SMB: NTLM + SPNEGO + Kerberos; signing (HMAC-SHA256, AES-CMAC, AES-GMAC); encryption (AES-CCM, AES-GCM).
+- REST API: JWT (HMAC); access + refresh tokens.
 
-**Metrics:** Optional Prometheus collection via `pkg/metrics/prometheus/` with zero overhead when disabled
+**Metrics:** Optional Prometheus collector (zero overhead when off); registered through `pkg/health/` wrappers for per-entity probes.
 
-**Tracing:** Optional OpenTelemetry via `internal/telemetry/` with configurable sample rate and OTLP endpoint
+**Tracing:** Optional OpenTelemetry OTLP (sample rate configurable; insecure transport gated by config).
 
-**Rate Limiting:** Optional per-adapter request rate limiting using token bucket algorithm
+**Profiling:** Optional Pyroscope; gated by config.
+
+**Health:** `pkg/health/` types + `Runtime.statusCheckers` cache; per-entity checkers for blockstores, metadata stores, adapters, shares.
+
+**Rate limiting:** Per-adapter token bucket (global; per-share/user limits are a known gap).
+
+## Invariants (must preserve when editing)
+
+These are codified in `CLAUDE.md`:
+
+1. Protocol handlers handle only protocol concerns; business logic lives in `pkg/metadata/` and store implementations.
+2. Every operation carries an `*metadata.AuthContext`; squashing happens at mount in `CheckExportAccess`.
+3. File handles are opaque; handlers never parse them.
+4. Block stores are per-share; resolve via `Runtime.GetBlockStoreForHandle`. Remote stores ref-counted when configs match; local storage dirs are isolated.
+5. WRITE order: `metadataStore.WriteFile` → `GetBlockStoreForHandle` → `blockStore.WriteAt` → return updated attrs.
+6. Return `ExportError` values; log expected at `Debug`, unexpected at `Error`.
+7. New metadata backend must pass `pkg/metadata/storetest`; new blockstore backend must pass `pkg/blockstore/blockstoretest`.
 
 ---
 
-*Architecture analysis: 2026-02-09*
+*Architecture analysis: 2026-05-28*

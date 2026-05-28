@@ -36,7 +36,7 @@ func TestNormalizeEndpoint(t *testing.T) {
 	}
 }
 
-// TestStore_BlockStoreConformance runs the unified Phase 17 D-09
+// TestStore_BlockStoreConformance runs the unified
 // BlockStoreConformance suite against the S3 backend.
 //
 // Skipped unless DITTOFS_S3_ENDPOINT (and the credential pair
@@ -46,13 +46,13 @@ func TestNormalizeEndpoint(t *testing.T) {
 // path. CI wires Localstack; local developers may run with `make
 // e2e-s3` or by exporting the env directly.
 //
-// Per D-09 the S3 backend does NOT implement BlockStoreAppend; only
-// BlockStoreConformance runs here. The BSCAS-06 x-amz-meta-content-hash
+// Per the S3 backend does NOT implement BlockStoreAppend; only
+// BlockStoreConformance runs here. The x-amz-meta-content-hash
 // header round-trip is exercised by verifier_test.go (the header is an
 // fs-internal defense-in-depth marker and is not part of the unified
-// Meta surface — D-08).
+// Meta surface —).
 //
-// Plan 17-07 adds the missing Has() method on *Store; until then the
+// -07 adds the missing Has() method on *Store; until then the
 // factory return type does not type-check.
 func TestStore_BlockStoreConformance(t *testing.T) {
 	endpoint := os.Getenv("DITTOFS_S3_ENDPOINT")

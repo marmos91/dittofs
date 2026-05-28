@@ -12,16 +12,16 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// TestStart_LegacyLayoutExitCode asserts the Phase 17 Plan 09 D-11
-// boot-guard contract: when LoadSharesFromStore surfaces an error
-// wrapping blockstore.ErrLegacyLayoutDetected, the start command must
+// TestStart_LegacyLayoutExitCode asserts the boot-guard contract:
+// when LoadSharesFromStore surfaces an error wrapping
+// blockstore.ErrLegacyLayoutDetected, the start command must
 // (1) print the multi-line operator directive to stderr,
 // (2) exit with code 78 (EX_CONFIG).
 //
 // The test stubs the production `exitFn` indirection through a
 // t.Cleanup-restored override so the captured exit code is observable
-// in-process without spawning a subprocess (T-17-09-07: cleanup
-// restores the original os.Exit binding before the next test runs).
+// in-process without spawning a subprocess (cleanup restores the
+// original os.Exit binding before the next test runs).
 //
 // The test uses the package-internal helper `handleLoadSharesError`
 // directly because the full `runStart` cobra path requires DB setup,
@@ -106,9 +106,9 @@ func TestStart_LegacyLayoutExitCode(t *testing.T) {
 }
 
 // TestHandleLoadSharesError_NonLegacyContinues asserts the helper's
-// warn-and-continue behavior for non-legacy errors (T-17-09-07
-// non-regression — generic share-load failures must NOT trigger exit
-// 78, preserving the historical best-effort behavior).
+// warn-and-continue behavior for non-legacy errors: generic share-load
+// failures must NOT trigger exit 78, preserving the historical
+// best-effort behavior.
 func TestHandleLoadSharesError_NonLegacyContinues(t *testing.T) {
 	origExit := exitFn
 	t.Cleanup(func() { exitFn = origExit })

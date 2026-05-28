@@ -88,7 +88,7 @@ type UnixAuth struct {
 
 // ParseUnixAuth parses AUTH_UNIX credentials from the opaque auth body.
 //
-// This function decodes the XDR-encoded authentication data from an RPC
+// Decodes the XDR-encoded authentication data from an RPC
 // call message. The body parameter should be the raw bytes from the
 // OpaqueAuth.Body field when the flavor is AUTH_UNIX.
 //
