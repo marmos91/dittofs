@@ -477,7 +477,7 @@ func TestSnapshotHoldProvider_DeleteVsHeldHashes_Race(t *testing.T) {
 			}
 		}()
 		for i := 0; i < iters; i++ {
-			release := provider.AcquireDeleteLock()
+			release := provider.AcquireDeleteLock(shareName)
 			time.Sleep(50 * time.Microsecond)
 			release()
 		}

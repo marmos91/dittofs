@@ -79,6 +79,17 @@ type Runtime struct {
 	snapInFlight   map[string]*snapInFlight
 	snapInFlightMu sync.Mutex
 
+	// snapDeleteLocks is the shared registry of per-share RWMutexes that
+	// serialize the snapshot GC mark phase (HeldHashes, RLock) against
+	// the snapshot-delete write path (AcquireDeleteLock, Lock). The
+	// registry is keyed by share name; every SnapshotHoldProvider built
+	// for that share — across multiple GC runs and the delete path —
+	// looks up the SAME mutex pointer here, so a per-instance mutex on
+	// the provider can never collude with a delete on a different
+	// provider instance. D-23-04.
+	snapDeleteLocks   map[string]*sync.RWMutex
+	snapDeleteLocksMu sync.Mutex
+
 	// runtimeCtx is a long-lived ctx cancelled by Runtime.Shutdown
 	// (plan 23-05). Snapshot orchestration goroutines derive their
 	// child ctx from this so they outlive any caller request ctx
@@ -105,6 +116,7 @@ func New(s store.Store) *Runtime {
 		clientRegistry:   NewClientRegistry(),
 		adapterProviders: make(map[string]any),
 		snapInFlight:     make(map[string]*snapInFlight),
+		snapDeleteLocks:  make(map[string]*sync.RWMutex),
 		storesSvc:        stores.New(),
 		sharesSvc:        shares.New(),
 		lifecycleSvc:     lifecycle.New(DefaultShutdownTimeout),
