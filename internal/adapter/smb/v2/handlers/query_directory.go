@@ -273,6 +273,19 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
 
+	// Serialize concurrent QUERY_DIRECTORY on the same FileID (#585). MS-SMB2
+	// does not mandate in-order delivery across multichannel sessions, so two
+	// QUERY_DIRECTORY requests on the same handle can land on different
+	// goroutines and race on the EnumerationComplete / EnumerationIndex /
+	// EnumerationPattern cursor. Holding openFile.mu for the full request
+	// gives each call an atomic view of the cursor and prevents skipped /
+	// duplicated entries. We do hold the lock across the metadata
+	// ReadDirectory call below, but contention is bounded to the (rare) case
+	// of a client pipelining QUERY_DIRECTORY on the same FileID — different
+	// handles are unaffected.
+	openFile.Lock()
+	defer openFile.Unlock()
+
 	// QUERY_DIRECTORY arrives keyed only by FileID, so the dispatcher
 	// cannot prefill ctx.User. See primeAuthContextFromOpenFile for the
 	// UID-0 root-bypass this prevents (refs #603 — ABE filterByAccess).

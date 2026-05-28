@@ -609,6 +609,10 @@ func (h *Handler) resolveBaseFileAttrForADS(authCtx *metadata.AuthContext, openF
 	}
 	// Make a copy so frozen-timestamp overrides don't mutate the store.
 	attr := baseFile.FileAttr
+	// Read the freeze flags and Frozen* pointers under openFile.mu (read);
+	// SET_INFO BasicInfo on a parallel goroutine mutates them under the
+	// write lock (#606).
+	openFile.mu.RLock()
 	if openFile.BtimeFrozen && openFile.FrozenBtime != nil {
 		attr.CreationTime = *openFile.FrozenBtime
 	}
@@ -621,6 +625,7 @@ func (h *Handler) resolveBaseFileAttrForADS(authCtx *metadata.AuthContext, openF
 	if openFile.AtimeFrozen && openFile.FrozenAtime != nil {
 		attr.Atime = *openFile.FrozenAtime
 	}
+	openFile.mu.RUnlock()
 	return &attr
 }
 

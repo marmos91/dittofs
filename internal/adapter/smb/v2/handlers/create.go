@@ -1696,10 +1696,17 @@ func (h *Handler) updateBaseObjectTimestampsForADSWrite(
 	}
 	now := time.Now()
 	setAttrs := &metadata.SetAttrs{}
-	if !openFile.CtimeFrozen {
+	// Snapshot the freeze flags under the per-OpenFile read lock so we
+	// observe a consistent view against a concurrent SET_INFO freeze/thaw
+	// (#606).
+	openFile.mu.RLock()
+	ctimeFrozen := openFile.CtimeFrozen
+	mtimeFrozen := openFile.MtimeFrozen
+	openFile.mu.RUnlock()
+	if !ctimeFrozen {
 		setAttrs.Ctime = &now
 	}
-	if !openFile.MtimeFrozen {
+	if !mtimeFrozen {
 		setAttrs.Mtime = &now
 	}
 	if setAttrs.Ctime != nil || setAttrs.Mtime != nil {

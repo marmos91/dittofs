@@ -527,7 +527,13 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// parent key -> close breaks dir lease; write with parent key -> close
 	// does NOT break (suppressed).
 
-	if !openFile.DeletePending && !openFile.IsDirectory && openFile.SmbWriteTriggered {
+	// SmbWriteTriggered is written under openFile.mu (write) in
+	// armSmbDelayedWrite. Snapshot it under the read lock so we observe a
+	// consistent value against a parallel WRITE on the same handle (#606).
+	openFile.mu.RLock()
+	smbWriteTriggered := openFile.SmbWriteTriggered
+	openFile.mu.RUnlock()
+	if !openFile.DeletePending && !openFile.IsDirectory && smbWriteTriggered {
 		authCtx, authErr := BuildAuthContext(ctx)
 		if authErr != nil {
 			logger.Warn("CLOSE: failed to build auth context for modified-file dir-lease break", "path", openFile.Path, "error", authErr)

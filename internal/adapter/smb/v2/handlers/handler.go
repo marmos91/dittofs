@@ -293,7 +293,25 @@ type TreeConnection struct {
 // It links the SMB2 FileID to the underlying metadata handle and payload ID,
 // tracks directory enumeration state, delete-on-close flags, and oplock level.
 // Stored in a sync.Map keyed by the 16-byte FileID.
+//
+// Concurrency: SMB clients legitimately pipeline operations on the same handle
+// (e.g. WRITE + QUERY_INFO; multi-channel sessions can also dispatch concurrent
+// QUERY_DIRECTORY on the same FileID). The exported mutable fields below are
+// guarded by `mu` — read-locked when surfacing state to the wire (QUERY_INFO,
+// override application) and write-locked when mutating (enumeration cursor,
+// freeze/thaw, delayed-write arm/flush). Hold the lock around the full
+// read-modify-write region; release before any I/O to the metadata store to
+// keep the critical section bounded. Atomic-typed fields
+// (NotifyOverflowed/NotifyMaxBufferSize/NotifyCompletionFilter) and immutable
+// fields (FileID/TreeID/SessionID/Path/MetadataHandle/PayloadID/CreateOptions)
+// are safe to access without the mutex.
 type OpenFile struct {
+	// mu guards the mutable fields listed in the struct comment above. Held
+	// across QueryDirectory enumeration R-M-W, freeze/thaw bookkeeping in
+	// SET_INFO BasicInfo, the SMB delayed-write timestamp helpers and the
+	// QUERY_INFO frozen/delayed-write overlay reads.
+	mu sync.RWMutex
+
 	FileID        [16]byte
 	TreeID        uint32
 	SessionID     uint64
@@ -548,6 +566,38 @@ func openHasLocks(metaSvc *metadata.MetadataService, openFile *OpenFile) bool {
 		}
 	}
 	return false
+}
+
+// Lock / Unlock / RLock / RUnlock expose `mu` for handlers that need to hold
+// the OpenFile lock across a longer R-M-W critical section (e.g. QueryDirectory
+// cursor advancement, SET_INFO BasicInfo freeze/thaw bookkeeping). For simple
+// boolean reads prefer IsAtimeFrozen / SnapshotFreeze.
+func (f *OpenFile) Lock()    { f.mu.Lock() }
+func (f *OpenFile) Unlock()  { f.mu.Unlock() }
+func (f *OpenFile) RLock()   { f.mu.RLock() }
+func (f *OpenFile) RUnlock() { f.mu.RUnlock() }
+
+// IsAtimeFrozen returns the AtimeFrozen flag under the read lock. Used by
+// READ / WRITE / QUERY_DIRECTORY / COPYCHUNK to decide whether to bump
+// LastAccessTime after a successful operation.
+func (f *OpenFile) IsAtimeFrozen() bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.AtimeFrozen
+}
+
+// IsMtimeFrozen returns the MtimeFrozen flag under the read lock.
+func (f *OpenFile) IsMtimeFrozen() bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.MtimeFrozen
+}
+
+// IsCtimeFrozen returns the CtimeFrozen flag under the read lock.
+func (f *OpenFile) IsCtimeFrozen() bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.CtimeFrozen
 }
 
 // notifyMaxBufferSizeSetBit marks the NotifyMaxBufferSize uint64 as having
