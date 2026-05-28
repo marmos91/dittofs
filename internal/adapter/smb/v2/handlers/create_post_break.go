@@ -713,7 +713,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		// this: OVERWRITE_IF + attrs-only request must grant LEVEL_II
 		// (NOT NONE). batch8 / exclusive4 (non-destructive + attrs-only)
 		// must strip to NONE.
-		!(fileExists && isOplockStatOpen(effectiveAccessForOpen(req.DesiredAccess, req.CreateDisposition))) {
+		(!fileExists || !isOplockStatOpen(effectiveAccessForOpen(req.DesiredAccess, req.CreateDisposition))) {
 
 		var requestedState uint32
 		switch req.OplockLevel {
