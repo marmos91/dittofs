@@ -363,15 +363,15 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	// Offset is automatic because pos advances monotonically — that
 	// matches the canonical FileAttr.Blocks invariant the downstream
 	// ObjectID compute relies on.
+	// #669: the LRU is populated AFTER the ObjectIDPersister callback
+	// below confirms the FileBlock rows are durable. Populating before
+	// persister success let a concurrent rollup on the same payload
+	// observe the hash via the LRU and call AddRef before the row
+	// existed → ErrUnknownHash storm under load (and a silent retry
+	// loop). The hashes pushed into the LRU are derived from `blocks`
+	// at the call site below; both the LRU-hit and StoreChunk paths
+	// append to `blocks`, so no separate buffer is needed.
 	var blocks []blockstore.BlockRef
-	// #669: collect hashes that StoreChunk wrote this pass, plus
-	// hashes the LRU hit path successfully bumped. Both are pushed into
-	// the LRU AFTER the ObjectIDPersister callback below confirms the
-	// FileBlock rows are durable. Populating the LRU before persister
-	// success let a concurrent rollup on the same payload observe the
-	// hash via the LRU and call AddRef before the row existed →
-	// ErrUnknownHash storm under load (and a silent retry loop).
-	var pendingLRUPuts []blockstore.ContentHash
 	for pos < uint64(len(stream)) {
 		b, _ := ck.Next(stream[pos:], true)
 		if b <= 0 {
@@ -400,7 +400,7 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 		// leaves BlockState unchanged; this hit path neither creates a
 		// row nor transitions one.
 		skipStoreChunk := false
-		if bc.dedupLRU != nil && bc.dedupLRU.Get(h, payloadID) {
+		if bc.dedupLRU != nil && bc.dedupLRU.Hit(h, payloadID) {
 			addRefErr := bc.blockStore.AddRef(ctx, h, payloadID, blockRef)
 			switch {
 			case addRefErr == nil:
@@ -424,11 +424,6 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 			}
 		}
 
-		// Queue the hash for LRU population after persister success.
-		// Either path is valid: a successful AddRef proves the row
-		// already exists for this (hash, payloadID); StoreChunk plus the
-		// persister write below is what makes a fresh row durable.
-		pendingLRUPuts = append(pendingLRUPuts, h)
 		blocks = append(blocks, blockRef)
 		pos += uint64(b)
 	}
@@ -496,8 +491,12 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	// payload that observes a hash here is guaranteed to find a
 	// committed row when it calls AddRef. PutMany is keyed by
 	// (hash, payloadID) so cross-payload short-circuit cannot occur.
-	if bc.dedupLRU != nil && len(pendingLRUPuts) > 0 {
-		bc.dedupLRU.PutMany(pendingLRUPuts, payloadID)
+	if bc.dedupLRU != nil && len(blocks) > 0 {
+		hashes := make([]blockstore.ContentHash, len(blocks))
+		for i, b := range blocks {
+			hashes[i] = b.Hash
+		}
+		bc.dedupLRU.PutMany(hashes, payloadID)
 	}
 
 	// SetRollupOffset is atomic-monotone at the RollupStore layer: on

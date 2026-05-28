@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -406,12 +407,24 @@ type capturedPersist struct {
 // runRollupOnce triggers exactly one rollupFile pass for payloadID after
 // AppendWrite-ing the supplied payload and giving the dirty interval time
 // to stabilize. Mirrors the test pattern used by TestRollup_CommitChunks_
-// MonotoneEnforced.
+// MonotoneEnforced. NOT safe to call from a goroutine other than the
+// test's own — uses t.Fatal*. Use runRollupOnceErr for concurrent tests.
 func runRollupOnce(t *testing.T, bc *FSStore, payloadID string, payload []byte) {
 	t.Helper()
+	if err := runRollupOnceErr(bc, payloadID, payload); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// runRollupOnceErr is the goroutine-safe variant: it returns errors
+// instead of calling t.Fatal*. Concurrent tests must use this and
+// fan errors back to the test goroutine via a channel; t.FailNow
+// (which t.Fatal* call) is undefined when invoked from a non-test
+// goroutine.
+func runRollupOnceErr(bc *FSStore, payloadID string, payload []byte) error {
 	ctx := context.Background()
 	if err := bc.AppendWrite(ctx, payloadID, payload, 0); err != nil {
-		t.Fatalf("AppendWrite: %v", err)
+		return fmt.Errorf("AppendWrite: %w", err)
 	}
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
@@ -421,11 +434,12 @@ func runRollupOnce(t *testing.T, bc *FSStore, payloadID string, payload []byte) 
 		time.Sleep(2 * time.Millisecond)
 	}
 	if !bc.EarliestStableForTest(payloadID) {
-		t.Fatal("dirty interval did not stabilize within 500 ms")
+		return fmt.Errorf("dirty interval did not stabilize within 500 ms")
 	}
 	if err := bc.rollupFile(ctx, payloadID); err != nil {
-		t.Fatalf("rollupFile: %v", err)
+		return fmt.Errorf("rollupFile: %w", err)
 	}
+	return nil
 }
 
 // TestRollup_CommitChunks_PersistsObjectID covers the rollup-time

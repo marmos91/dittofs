@@ -19,7 +19,7 @@ func makeHash(b byte) blockstore.ContentHash {
 
 func TestDedupLRU_GetMiss_ReturnsFalse(t *testing.T) {
 	lru := newDedupLRU(8)
-	if lru.Get(makeHash(1), "p") {
+	if lru.Hit(makeHash(1), "p") {
 		t.Fatalf("empty LRU Get: got true, want false")
 	}
 }
@@ -28,7 +28,7 @@ func TestDedupLRU_PutThenGet_HitsForSamePayload(t *testing.T) {
 	lru := newDedupLRU(8)
 	h := makeHash(0x42)
 	lru.Put(h, "payload-1")
-	if !lru.Get(h, "payload-1") {
+	if !lru.Hit(h, "payload-1") {
 		t.Fatalf("after Put: Get(h, payload-1) = false, want true")
 	}
 }
@@ -41,7 +41,7 @@ func TestDedupLRU_CrossPayload_Misses(t *testing.T) {
 	lru := newDedupLRU(8)
 	h := makeHash(0x42)
 	lru.Put(h, "payload-1")
-	if lru.Get(h, "payload-2") {
+	if lru.Hit(h, "payload-2") {
 		t.Fatalf("cross-payload Get: got true, want false (compound key scoping)")
 	}
 	if lru.Has(h, "payload-2") {
@@ -72,11 +72,11 @@ func TestDedupLRU_EvictsLRUWhenOverCapacity(t *testing.T) {
 	lru.Put(h3, "p")
 	lru.Put(h4, "p") // forces eviction of h1 (LRU)
 
-	if lru.Get(h1, "p") {
+	if lru.Hit(h1, "p") {
 		t.Fatalf("h1 should have been evicted")
 	}
 	for i, h := range []blockstore.ContentHash{h2, h3, h4} {
-		if !lru.Get(h, "p") {
+		if !lru.Hit(h, "p") {
 			t.Fatalf("h%d should still be present", i+2)
 		}
 	}
@@ -92,15 +92,15 @@ func TestDedupLRU_PromoteOnGet(t *testing.T) {
 	lru.Put(h2, "p")
 	lru.Put(h3, "p")
 	// Touch h1 — promotes it to MRU.
-	if !lru.Get(h1, "p") {
+	if !lru.Hit(h1, "p") {
 		t.Fatalf("h1 missing before promote")
 	}
 	lru.Put(h4, "p") // evicts h2 (now the LRU)
 
-	if !lru.Get(h1, "p") {
+	if !lru.Hit(h1, "p") {
 		t.Fatalf("h1 should still be present after promote")
 	}
-	if lru.Get(h2, "p") {
+	if lru.Hit(h2, "p") {
 		t.Fatalf("h2 should have been evicted after promoting h1")
 	}
 }
@@ -110,7 +110,7 @@ func TestDedupLRU_DuplicatePut_PromotesAndDeduplicates(t *testing.T) {
 	h := makeHash(0x1)
 	lru.Put(h, "p1")
 	lru.Put(h, "p1")
-	if !lru.Get(h, "p1") {
+	if !lru.Hit(h, "p1") {
 		t.Fatalf("duplicate Put should still hit: Get(h, p1) = false")
 	}
 	if got := lru.order.Len(); got != 1 {
@@ -126,10 +126,10 @@ func TestDedupLRU_SameHash_DistinctPayloads_IndependentSlots(t *testing.T) {
 	h := makeHash(0x1)
 	lru.Put(h, "p1")
 	lru.Put(h, "p2")
-	if !lru.Get(h, "p1") {
+	if !lru.Hit(h, "p1") {
 		t.Fatalf("Get(h, p1) = false after distinct-payload Puts")
 	}
-	if !lru.Get(h, "p2") {
+	if !lru.Hit(h, "p2") {
 		t.Fatalf("Get(h, p2) = false after distinct-payload Puts")
 	}
 	if got := lru.order.Len(); got != 2 {
@@ -161,7 +161,7 @@ func TestDedupLRU_ConcurrentAccess_NoRace(t *testing.T) {
 				if i%2 == 0 {
 					lru.Put(k, "p")
 				} else {
-					_ = lru.Get(k, "p")
+					_ = lru.Hit(k, "p")
 					_ = lru.Has(k, "p")
 				}
 				i++
@@ -175,7 +175,7 @@ func TestDedupLRU_ZeroSize_DegradesToNoop(t *testing.T) {
 	lru := newDedupLRU(0)
 	// Operations must be safe and never panic.
 	lru.Put(makeHash(1), "p")
-	if lru.Get(makeHash(1), "p") {
+	if lru.Hit(makeHash(1), "p") {
 		t.Fatalf("zero-size LRU Get should always return false")
 	}
 	if lru.Has(makeHash(1), "p") {

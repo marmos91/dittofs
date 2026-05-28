@@ -87,10 +87,10 @@ func newDedupLRU(maxSize int) *dedupLRU {
 	}
 }
 
-// Get reports whether (hash, payloadID) is present and promotes the
+// Hit reports whether (hash, payloadID) is present and promotes the
 // entry to MRU on hit. Returns false on miss or on a degenerate LRU
-// (nil receiver or maxSize <= 0).
-func (c *dedupLRU) Get(hash blockstore.ContentHash, payloadID string) bool {
+// (nil receiver or maxSize <= 0). Use Has for a side-effect-free probe.
+func (c *dedupLRU) Hit(hash blockstore.ContentHash, payloadID string) bool {
 	if c == nil || c.maxSize <= 0 {
 		return false
 	}
@@ -105,7 +105,7 @@ func (c *dedupLRU) Get(hash blockstore.ContentHash, payloadID string) bool {
 }
 
 // Has reports whether (hash, payloadID) is present in the LRU. Unlike
-// Get, Has does NOT promote the entry.
+// Hit, Has does NOT promote the entry.
 func (c *dedupLRU) Has(hash blockstore.ContentHash, payloadID string) bool {
 	if c == nil || c.maxSize <= 0 {
 		return false

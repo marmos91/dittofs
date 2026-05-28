@@ -418,8 +418,8 @@ func TestFSStore_DedupLRU_FieldExists(t *testing.T) {
 		t.Fatal("bc.dedupLRU must be non-nil after construction")
 	}
 	// Sanity: the LRU is functional. Probe an unset (hash, payloadID).
-	if bc.dedupLRU.Get(blockstore.ContentHash{}, "any") {
-		t.Fatal("freshly-constructed dedupLRU must miss on Get(zero hash)")
+	if bc.dedupLRU.Hit(blockstore.ContentHash{}, "any") {
+		t.Fatal("freshly-constructed dedupLRU must miss on Hit(zero hash)")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -167,15 +168,28 @@ func TestRollup_DedupLRU_ConcurrentRollups_NoErrUnknownHash(t *testing.T) {
 
 	const N = 8
 	var wg sync.WaitGroup
+	errCh := make(chan error, N)
 	for i := 0; i < N; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			pid := "concurrent-" + string(rune('a'+i))
-			runRollupOnce(t, bc, pid, payload)
+			// t.FailNow (via t.Fatal*) is undefined when called from
+			// a non-test goroutine — fan errors back via channel so
+			// the test goroutine reports them.
+			if err := runRollupOnceErr(bc, pid, payload); err != nil {
+				errCh <- fmt.Errorf("%s: %w", pid, err)
+			}
 		}(i)
 	}
 	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("concurrent rollup: %v", err)
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
 
 	if got := unknownHashSeen.Load(); got != 0 {
 		t.Fatalf("#669 regression: AddRef returned ErrUnknownHash %d times under concurrent same-content rollups across distinct payloads — the #669 storm has not been closed", got)
