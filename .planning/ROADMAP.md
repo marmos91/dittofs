@@ -713,8 +713,8 @@ Phase 20 unblocks both 21 and 22 (parallel). Phase 23 requires both 21+22. Phase
 **Files to touch**:
   - `pkg/controlplane/runtime/snapshot.go` (extend)
 **Plans**: 4 plans
-  - [ ] 24-01-PLAN.md — Resetable interface + 3 backend impls (memory/badger/postgres) + ResetThenRestoreConformance suite wired into 3 backend test entries
-  - [ ] 24-02-PLAN.md — 7 typed error sentinels (D-24-08) in pkg/controlplane/models/errors.go + RestoreSnapshotOpts{AllowNonDurable} in pkg/controlplane/runtime/restore_opts.go
+  - [x] 24-01-PLAN.md — Resetable interface + 3 backend impls (memory/badger/postgres) + ResetThenRestoreConformance suite wired into 3 backend test entries
+  - [x] 24-02-PLAN.md — 7 typed error sentinels (D-24-08) in pkg/controlplane/models/errors.go + RestoreSnapshotOpts{AllowNonDurable} in pkg/controlplane/runtime/restore_opts.go
   - [ ] 24-03-PLAN.md — Runtime.RestoreSnapshot 8-step sync orchestration (D-24-09) + HashSetFromMetadataStore walker (D-24-14) for REST-03 post-verify
   - [ ] 24-04-PLAN.md — E2E integration test snapshot_restore_test.go covering 9 scenarios from D-24-13 failure-mode taxonomy (memory-only fixture per Phase 23 P23-06)
 
@@ -748,7 +748,7 @@ Phase 20 unblocks both 21 and 22 (parallel). Phase 23 requires both 21+22. Phase
 | 21. Per-Engine Backup Drivers | 5/5 | Complete    | 2026-05-27 |
 | 22. Snapshot Records + GC Hold | 6/6 | Complete   | 2026-05-28 |
 | 23. Snapshot Create Orchestration | 6/6 | Complete    | 2026-05-28 |
-| 24. Restore Flow | 0/4 | Planned     | - |
+| 24. Restore Flow | 2/4 | In Progress|  |
 | 25. CLI + REST API + Docs | 0/? | Not started | - |
 
 ## v0.16.0 Coverage Summary
