@@ -1,11 +1,16 @@
 // BenchmarkRandWriteCAS_IdempotentBytes measures the in-memory hash
 // dedup LRU's effectiveness on idempotent rewrites: K rollup passes
-// of identical content. On the first pass the LRU is cold;
-// StoreChunk fires once per emitted chunk, and the LRU is seeded
-// (rollup.go:371-373 — Put(h, payloadID) after successful StoreChunk).
+// of identical content under the SAME payloadID. On the first pass
+// the LRU is cold; StoreChunk fires once per emitted chunk, and the
+// LRU is seeded by PutMany after the ObjectIDPersister callback
+// confirms the FileBlock row is durable (#669 ordering).
 // On every subsequent pass the LRU hit path takes over: AddRef bumps
 // RefCount on the existing FileBlock row and StoreChunk is skipped
 // entirely.
+//
+// #669: the LRU is keyed by (hash, payloadID). This bench drives
+// repeated rewrites against ONE payload so the steady-state hot path
+// fires; cross-payload short-circuit is intentionally not supported.
 //
 // Reported metric: stores_per_chunk = StoreChunk invocations / total
 // chunks emitted. Expected at K rewrites: 1/K (only the first pass
@@ -23,7 +28,6 @@ package fs
 import (
 	"bytes"
 	"context"
-	"strconv"
 	"testing"
 	"time"
 
@@ -78,11 +82,10 @@ func runRollupOncePB(b *testing.B, bc *FSStore, payloadID string, payload []byte
 	}
 }
 
-// BenchmarkRandWriteCAS_IdempotentBytes — Opt 1 yellow-flag bench
-// . Drives b.N rollup passes of identical content across
-// distinct payload IDs (the LRU is hash-keyed; cross-payload
-// idempotency is the same hit-path as same-payload re-writes) and
-// reports the stores_per_chunk ratio.
+// BenchmarkRandWriteCAS_IdempotentBytes — Opt 1 yellow-flag bench.
+// Drives b.N rollup passes of identical content under the SAME
+// payloadID — the supported LRU hit pattern post-#669 — and reports
+// the stores_per_chunk ratio.
 //
 // Yellow-flag: this bench reports custom metrics via
 // b.ReportMetric and never gates (no b.Fatal on perf regression). The
@@ -123,7 +126,11 @@ func BenchmarkRandWriteCAS_IdempotentBytes(b *testing.B) {
 	// hot loop measures the steady-state LRU-hit ratio rather than
 	// including a one-iteration cold-start. (Cold-start behavior is
 	// exercised by TestRollup_FirstChunk_PopulatesLRU.)
-	bc.dedupLRU.Put(contentHash, "bench-seed")
+	//
+	// #669: LRU key is now (hash, payloadID). Seed the same
+	// payloadID the hot loop will reuse.
+	const benchPID = "bench-idempotent"
+	bc.dedupLRU.Put(contentHash, benchPID)
 
 	startDisk := bc.diskUsed.Load()
 	baseAddRef := wrapped.addRefCalls.Load()
@@ -132,7 +139,7 @@ func BenchmarkRandWriteCAS_IdempotentBytes(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		runRollupOncePB(b, bc, benchPayloadID(i), payload)
+		runRollupOncePB(b, bc, benchPID, payload)
 	}
 
 	b.StopTimer()
@@ -158,11 +165,4 @@ func BenchmarkRandWriteCAS_IdempotentBytes(b *testing.B) {
 	// fingerprint.
 	b.ReportMetric(float64(addRefDelta), "addref_calls_total")
 	b.ReportMetric(float64(chunksStored), "stores_total")
-}
-
-// benchPayloadID generates short distinct payload IDs. Supports any
-// b.N — uses strconv.Itoa so the bench can run with -benchtime=1000x
-// or longer.
-func benchPayloadID(i int) string {
-	return "p-" + strconv.Itoa(i)
 }

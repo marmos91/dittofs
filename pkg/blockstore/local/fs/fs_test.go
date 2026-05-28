@@ -417,8 +417,8 @@ func TestFSStore_DedupLRU_FieldExists(t *testing.T) {
 	if bc.dedupLRU == nil {
 		t.Fatal("bc.dedupLRU must be non-nil after construction")
 	}
-	// Sanity: the LRU is functional. Probe an unset hash.
-	if _, ok := bc.dedupLRU.Get(blockstore.ContentHash{}); ok {
+	// Sanity: the LRU is functional. Probe an unset (hash, payloadID).
+	if bc.dedupLRU.Get(blockstore.ContentHash{}, "any") {
 		t.Fatal("freshly-constructed dedupLRU must miss on Get(zero hash)")
 	}
 }
