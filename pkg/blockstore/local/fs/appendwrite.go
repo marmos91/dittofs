@@ -57,29 +57,37 @@ func (bc *FSStore) logPath(payloadID string) string {
 	return filepath.Join(bc.baseDir, "logs", payloadID+".log")
 }
 
-// getOrCreateLog returns the open log file, per-file append mutex, and
-// interval tree for payloadID, creating them on first touch. Uses the
-// standard double-checked-locking idiom against bc.logsMu (mirrors
-// getOrCreateMemBlock in fs.go).
+// getOrCreateLog returns the open log file, per-file append mutex,
+// interval tree, and logIndex for payloadID, creating them on first
+// touch. Uses the standard double-checked-locking idiom against
+// bc.logsMu (mirrors getOrCreateMemBlock in fs.go).
 //
 // On first touch it initializes a fresh log via initLogFile; if the log
 // already exists on disk it is reopened O_RDWR and seeked to EOF for
-// append. The per-file mutex and interval tree are allocated per payload
-// on first call and reused thereafter.
+// append. The per-file mutex, interval tree, and logIndex are allocated
+// per payload on first call and reused thereafter.
 //
 // the log fd is owned here for the lifetime of the FSStore and is
 // NOT routed through fdPool — AppendWrite is append-only single-file-per-
 // payload, so the pool (optimized for random-access .blk files) would be
 // a pessimization.
-func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *intervalTree, error) {
-	// Fast path: all three already present.
+//
+// Returning the logIndex alongside the tree lets AppendWrite use the
+// snapshot that getOrCreateLog produced under bc.logsMu rather than
+// re-reading bc.logIndices on a second RLock cycle. That second lookup
+// could observe a nil idx if the map had been cleared between AppendWrite's
+// tree.Insert and the logIndex re-read, producing a tree/logIndex
+// divergence that wedged rollup (#668).
+func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *intervalTree, *logIndex, error) {
+	// Fast path: all four already present.
 	bc.logsMu.RLock()
 	lf, lfOk := bc.logFDs[payloadID]
 	mu, muOk := bc.logLocks[payloadID]
 	tree, treeOk := bc.dirtyIntervals[payloadID]
+	idx, idxOk := bc.logIndices[payloadID]
 	bc.logsMu.RUnlock()
-	if lfOk && muOk && treeOk {
-		return lf, mu, tree, nil
+	if lfOk && muOk && treeOk && idxOk {
+		return lf, mu, tree, idx, nil
 	}
 
 	// Slow path: upgrade to write lock, double-check, create missing entries.
@@ -88,10 +96,11 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 	lf, lfOk = bc.logFDs[payloadID]
 	mu, muOk = bc.logLocks[payloadID]
 	tree, treeOk = bc.dirtyIntervals[payloadID]
+	idx, idxOk = bc.logIndices[payloadID]
 	if !lfOk {
 		path := bc.logPath(payloadID)
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-			return nil, nil, nil, fmt.Errorf("append log: mkdir: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("append log: mkdir: %w", err)
 		}
 		// Declare f at outer scope and use `=` (not `:=`) in the branches
 		// below to avoid the shadowing bug called out in.
@@ -103,24 +112,24 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 			var err error
 			f, err = os.OpenFile(path, os.O_RDWR, 0644)
 			if err != nil {
-				return nil, nil, nil, fmt.Errorf("append log: reopen: %w", err)
+				return nil, nil, nil, nil, fmt.Errorf("append log: reopen: %w", err)
 			}
 			if eof, err = f.Seek(0, io.SeekEnd); err != nil {
 				_ = f.Close()
-				return nil, nil, nil, fmt.Errorf("append log: seek end: %w", err)
+				return nil, nil, nil, nil, fmt.Errorf("append log: seek end: %w", err)
 			}
 		} else if os.IsNotExist(statErr) {
 			var err error
 			f, err = initLogFile(path, time.Now().Unix())
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 			if eof, err = f.Seek(0, io.SeekEnd); err != nil {
 				_ = f.Close()
-				return nil, nil, nil, fmt.Errorf("append log: seek end: %w", err)
+				return nil, nil, nil, nil, fmt.Errorf("append log: seek end: %w", err)
 			}
 		} else {
-			return nil, nil, nil, fmt.Errorf("append log: stat: %w", statErr)
+			return nil, nil, nil, nil, fmt.Errorf("append log: stat: %w", statErr)
 		}
 		lf = &logFile{f: f, path: path, eofPos: uint64(eof)}
 		// Opt 2: per-file fsync coordinator.
@@ -140,10 +149,18 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 	// Direction-1 rollup redesign: pair every payload's interval tree
 	// with a logIndex. The logIndex is allocated on first touch (here)
 	// and from recovery's install path. Both sites run under bc.logsMu.
-	if _, ok := bc.logIndices[payloadID]; !ok {
-		bc.logIndices[payloadID] = newLogIndex()
+	//
+	// #668: the tree and logIndex MUST be allocated under the same
+	// bc.logsMu write lock so any caller that observes a non-nil tree on
+	// the fast path also observes a non-nil logIndex. A prior version
+	// re-read bc.logIndices on a second RLock cycle inside AppendWrite,
+	// which could see nil and skip Append while tree.Insert had already
+	// landed — wedging the rollup on the next stabilization tick.
+	if !idxOk {
+		idx = newLogIndex()
+		bc.logIndices[payloadID] = idx
 	}
-	return lf, mu, tree, nil
+	return lf, mu, tree, idx, nil
 }
 
 // AppendWrite writes exactly one framed record to the payload's append
@@ -210,7 +227,7 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		}
 	}
 
-	lf, mu, tree, err := bc.getOrCreateLog(payloadID)
+	lf, mu, tree, idx, err := bc.getOrCreateLog(payloadID)
 	if err != nil {
 		return err
 	}
@@ -327,20 +344,20 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 	logPos := lf.eofPos
 	lf.eofPos += uint64(n)
 	bc.logBytesTotal.Add(int64(n))
-	tree.Insert(offset, uint32(len(data)), time.Now())
 	// Direction-1 redesign: record this AppendWrite in the per-payload
-	// logIndex. The interval tree above answers "which file regions are
+	// logIndex. The interval tree answers "which file regions are
 	// dirty"; logIndex answers "where in the log are the records for
 	// those regions" — decoupling the two domains so the rollup can
 	// translate a stable file-offset interval into a pread set even
-	// when records arrived out of file-offset order. Still no consumer
-	// in this commit; P5 switches the rollup to read it.
-	bc.logsMu.RLock()
-	idx := bc.logIndices[payloadID]
-	bc.logsMu.RUnlock()
-	if idx != nil {
-		idx.Append(logPos, offset, uint32(len(data)))
-	}
+	// when records arrived out of file-offset order.
+	//
+	// #668: idx is the snapshot getOrCreateLog returned under
+	// bc.logsMu, paired with tree under the same lock. Append BEFORE
+	// tree.Insert so a future rollup pass that observes the dirty
+	// interval is guaranteed to also see the matching logIndex entry,
+	// closing the divergence window that wedged rollupFile permanently.
+	idx.Append(logPos, offset, uint32(len(data)))
+	tree.Insert(offset, uint32(len(data)), time.Now())
 
 	// Non-blocking nudge to the rollup pool. If the channel is
 	// full, drop the signal — the rollup worker's ticker arm will pick up

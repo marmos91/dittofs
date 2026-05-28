@@ -222,15 +222,24 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	entries := idx.EntriesForInterval(stable.Offset, uint64(stable.Length))
 	if len(entries) == 0 {
 		// The tree reported a stable interval the logIndex cannot back —
-		// only possible under a tree/logIndex divergence (e.g. AppendWrite
-		// inserted into the tree but skipped the logIndex append, or
-		// recovery rebuilt the tree from records the index missed).
-		// Returning nil here would silently re-queue the same dirty
-		// interval indefinitely; surface a hard error so the worker pool
-		// logs it and a future pass after recovery / restart can retry
-		// from a known-good state.
-		return fmt.Errorf("rollup: tree/logIndex divergence — stable interval [%d,%d) has no logIndex entries",
-			stable.Offset, stableEnd)
+		// only possible under a tree/logIndex divergence (e.g. recovery
+		// rebuilt the tree from records the index missed, or a residual
+		// dirty interval was left behind by an interrupted write before
+		// AppendWrite's atomic tree+logIndex update landed).
+		//
+		// #668: returning an error here re-queued the same dirty
+		// interval on every ticker pass, wedging the payload's rollup
+		// permanently in a tight Error-log loop until process restart.
+		// Drop the divergent interval from the tree so the next pass
+		// either picks up a later stable interval or finds the tree
+		// empty; log once at Warn so operators still see the divergence
+		// without the loop.
+		slog.Warn("rollup: dropping divergent stable interval (no logIndex entries)",
+			"payloadID", payloadID,
+			"offset", stable.Offset,
+			"length", stable.Length)
+		tree.DropExact(stable.Offset, stable.Length)
+		return nil
 	}
 
 	rf, err := os.Open(lf.path)
