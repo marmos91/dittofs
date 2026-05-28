@@ -481,10 +481,6 @@ TCP connections with different SMB dialect and signing/encryption combinations.
 | smb2.session.bind_negative_smb2to3d | Session binding | Multi-channel session binding not implemented | - |
 | smb2.session.bind_negative_smb3to2s | Session binding | Multi-channel session binding not implemented | - |
 | smb2.session.bind_negative_smb3to2d | Session binding | Multi-channel session binding not implemented | - |
-| smb2.session.bind_negative_smb3to3s | Session binding | Multi-channel session binding not implemented | - |
-| smb2.session.bind_negative_smb3to3d | Session binding | Multi-channel session binding not implemented | - |
-| smb2.session.bind_negative_smb3encGtoCs | Session binding | Multi-channel encryption binding not implemented | - |
-| smb2.session.bind_negative_smb3encGtoCd | Session binding | Multi-channel encryption binding not implemented | - |
 | smb2.session.bind_negative_smb3signCtoHs | Session binding | Multi-channel signing binding not implemented | - |
 | smb2.session.bind_negative_smb3signCtoHd | Session binding | Multi-channel signing binding not implemented | - |
 | smb2.session.bind_negative_smb3signCtoGs | Session binding | Multi-channel signing binding not implemented | - |
