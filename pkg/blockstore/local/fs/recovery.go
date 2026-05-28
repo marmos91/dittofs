@@ -35,7 +35,7 @@ const maxPayloadIDLen = 4352 // metadata.MaxPathLen (4096) + 256 share-prefix sl
 // Charset is intentionally NOT restricted: metadata.ValidateName allows
 // any character (including spaces and Unicode) in filenames, so the
 // recovery walker must follow suit or it will silently orphan logs
-// for legitimate user-facing files.
+// for legitimate user-facing files (#588 follow-up).
 func isValidPayloadID(s string) bool {
 	if len(s) == 0 || len(s) > maxPayloadIDLen {
 		return false

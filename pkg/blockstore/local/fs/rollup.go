@@ -187,7 +187,7 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 		return nil
 	}
 
-	// Tombstone re-check AFTER mutex acquire (Blocker 3). DeleteAppendLog
+	// Tombstone re-check AFTER mutex acquire. DeleteAppendLog
 	// sets the tombstone BEFORE acquiring this mutex; if we
 	// it here, delete is in flight (or completed) and we must bail out
 	// without persisting rollup state for a dead payload. The tombstones
@@ -416,7 +416,7 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 		pos += uint64(b)
 	}
 
-	// Tombstone re-check IMMEDIATELY before metadata commit (Blocker 3).
+	// Tombstone re-check IMMEDIATELY before metadata commit.
 	// Even if a delete raced between the first check and now, we must not
 	// persist rollup_offset for a deleted payload. Content-addressed chunks
 	// in blocks/ are swept by GC.
