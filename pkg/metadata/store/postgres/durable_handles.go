@@ -26,12 +26,14 @@ const durableHandleColumns = `
 	lease_key, lease_state, create_guid, app_instance_id,
 	username, session_key_hash, is_v2, created_at, disconnected_at,
 	timeout_ms, server_start_time,
-	delete_pending, parent_handle, file_name, is_directory
+	delete_pending, parent_handle, file_name, is_directory,
+	position_info, original_file_id
 `
 
 func scanDurableHandle(row pgx.Row) (*lock.PersistedDurableHandle, error) {
 	var h lock.PersistedDurableHandle
-	var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes []byte
+	var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, originalFileIDBytes []byte
+	var positionInfoSigned int64
 
 	err := row.Scan(
 		&h.ID,
@@ -60,6 +62,8 @@ func scanDurableHandle(row pgx.Row) (*lock.PersistedDurableHandle, error) {
 		&h.ParentHandle,
 		&h.FileName,
 		&h.IsDirectory,
+		&positionInfoSigned,
+		&originalFileIDBytes,
 	)
 
 	if err == pgx.ErrNoRows {
@@ -69,8 +73,12 @@ func scanDurableHandle(row pgx.Row) (*lock.PersistedDurableHandle, error) {
 		return nil, err
 	}
 
+	h.PositionInfo = uint64(positionInfoSigned)
 	copyFixedByteArrays(&h, fileIDBytes, leaseKeyBytes, createGuidBytes,
 		appInstanceIdBytes, sessionKeyHashBytes)
+	if len(originalFileIDBytes) == 16 {
+		copy(h.OriginalFileID[:], originalFileIDBytes)
+	}
 	return &h, nil
 }
 
@@ -80,7 +88,8 @@ func scanDurableHandleRows(rows pgx.Rows) ([]*lock.PersistedDurableHandle, error
 	var result []*lock.PersistedDurableHandle
 	for rows.Next() {
 		var h lock.PersistedDurableHandle
-		var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes []byte
+		var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, originalFileIDBytes []byte
+		var positionInfoSigned int64
 
 		err := rows.Scan(
 			&h.ID,
@@ -109,12 +118,18 @@ func scanDurableHandleRows(rows pgx.Rows) ([]*lock.PersistedDurableHandle, error
 			&h.ParentHandle,
 			&h.FileName,
 			&h.IsDirectory,
+			&positionInfoSigned,
+			&originalFileIDBytes,
 		)
 		if err != nil {
 			return nil, err
 		}
 
+		h.PositionInfo = uint64(positionInfoSigned)
 		copyFixedByteArrays(&h, fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes)
+		if len(originalFileIDBytes) == 16 {
+			copy(h.OriginalFileID[:], originalFileIDBytes)
+		}
 		result = append(result, &h)
 	}
 
@@ -160,9 +175,10 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 			lease_key, lease_state, create_guid, app_instance_id,
 			username, session_key_hash, is_v2, created_at, disconnected_at,
 			timeout_ms, server_start_time,
-			delete_pending, parent_handle, file_name, is_directory
+			delete_pending, parent_handle, file_name, is_directory,
+			position_info, original_file_id
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
 		ON CONFLICT (id) DO UPDATE SET
 			file_id = EXCLUDED.file_id,
 			path = EXCLUDED.path,
@@ -188,7 +204,9 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 			delete_pending = EXCLUDED.delete_pending,
 			parent_handle = EXCLUDED.parent_handle,
 			file_name = EXCLUDED.file_name,
-			is_directory = EXCLUDED.is_directory
+			is_directory = EXCLUDED.is_directory,
+			position_info = EXCLUDED.position_info,
+			original_file_id = EXCLUDED.original_file_id
 	`
 
 	_, err := s.pool.Exec(ctx, query,
@@ -218,6 +236,12 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 		handle.ParentHandle,
 		handle.FileName,
 		handle.IsDirectory,
+		// PositionInfo is a file offset (FILE_POSITION_INFORMATION.CurrentByteOffset,
+		// MS-FSCC 2.4.32) stored as BIGINT (signed int64). File offsets fit in
+		// int64 in practice; reinterpret the bit pattern to preserve any high-bit
+		// value. The scan path mirrors this with uint64(int64) on read.
+		int64(handle.PositionInfo),
+		handle.OriginalFileID[:],
 	)
 	return err
 }

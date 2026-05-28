@@ -121,6 +121,13 @@ func makeDurableHandle(id string, shareName string) *lock.PersistedDurableHandle
 	var sessionKeyHash [32]byte
 	copy(sessionKeyHash[:], []byte("sessionhash-"+id))
 
+	// OriginalFileID is the full 16-byte FileID (persistent + volatile half)
+	// from the original CREATE response. The primary FileID above zeros the
+	// volatile half so DHnC lookup matches the spec; OriginalFileID preserves
+	// the original bytes so BR-lock OpenID stays stable across reconnect.
+	var originalFileID [16]byte
+	copy(originalFileID[:], []byte("origfid-"+id))
+
 	return &lock.PersistedDurableHandle{
 		ID:              id,
 		FileID:          fileID,
@@ -144,6 +151,8 @@ func makeDurableHandle(id string, shareName string) *lock.PersistedDurableHandle
 		DisconnectedAt:  now,
 		TimeoutMs:       60000,
 		ServerStartTime: now.Add(-1 * time.Hour),
+		PositionInfo:    0xDEADBEEFCAFE,
+		OriginalFileID:  originalFileID,
 	}
 }
 
@@ -219,6 +228,12 @@ func assertDurableHandleEqual(t *testing.T, expected, actual *lock.PersistedDura
 	}
 	if !expected.ServerStartTime.Equal(actual.ServerStartTime) {
 		t.Errorf("ServerStartTime: got %v, want %v", actual.ServerStartTime, expected.ServerStartTime)
+	}
+	if expected.PositionInfo != actual.PositionInfo {
+		t.Errorf("PositionInfo: got %d, want %d", actual.PositionInfo, expected.PositionInfo)
+	}
+	if expected.OriginalFileID != actual.OriginalFileID {
+		t.Errorf("OriginalFileID: got %x, want %x", actual.OriginalFileID, expected.OriginalFileID)
 	}
 }
 
