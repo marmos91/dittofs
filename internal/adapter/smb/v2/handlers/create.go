@@ -1468,6 +1468,25 @@ func (h *Handler) storeCreateReplayIfApplicable(ctx *SMBHandlerContext, req *Cre
 	h.CreateReplayCache.Store(ctx.SessionID, createGuid, resp)
 }
 
+// lookupCreateReplay returns a cached CREATE response when the request
+// carries SMB2_FLAGS_REPLAY_OPERATION and a matching DH2Q CreateGuid is
+// still in the per-session cache (MS-SMB2 §3.3.5.9 replay handling).
+// Returns nil on miss; caller falls through to the normal CREATE path.
+func (h *Handler) lookupCreateReplay(ctx *SMBHandlerContext, req *CreateRequest) *CreateResponse {
+	if !ctx.IsReplay || h.CreateReplayCache == nil {
+		return nil
+	}
+	dh2qCtx := FindCreateContext(req.CreateContexts, DurableHandleV2RequestTag)
+	if dh2qCtx == nil {
+		return nil
+	}
+	_, _, createGuid, err := DecodeDH2QRequest(dh2qCtx.Data)
+	if err != nil || createGuid == ([16]byte{}) {
+		return nil
+	}
+	return h.CreateReplayCache.Lookup(ctx.SessionID, createGuid)
+}
+
 // handlePipeCreate handles CREATE on IPC$ for named pipes.
 // Named pipes are used for DCE/RPC communication, e.g., srvsvc for share enumeration.
 func (h *Handler) handlePipeCreate(ctx *SMBHandlerContext, req *CreateRequest, tree *TreeConnection) (*CreateResponse, error) {
