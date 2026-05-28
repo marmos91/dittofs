@@ -418,23 +418,24 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		}
 	}
 
-	// Step 6e: Break parent directory Handle / Read leases on
-	// create/overwrite/supersede BEFORE the actual file mutation so the
-	// metadata-layer notifyDirChange (fire-and-forget) finds the dir lease
-	// already broken and does not mark the recently-broken cache — which
-	// would block the test's lease rearm (test_rearm_dirlease). Mirrors
-	// Samba's delay_for_oplock_fn running before the actual create.
+	// Step 6e: Break parent directory leases on create/overwrite/supersede
+	// BEFORE the actual file mutation so the metadata-layer notifyDirChange
+	// (fire-and-forget) finds the dir lease already broken and does not
+	// mark the recently-broken cache — which would block the test's lease
+	// rearm (test_rearm_dirlease). Mirrors Samba's delay_for_oplock_fn
+	// running before the actual create.
 	//
 	// Parent-key suppression (MS-SMB2 §3.3.4.20 / Samba dirlease_should_break,
 	// #470 C2): if this CREATE carried an RqLs with
 	// LEASE_FLAG_PARENT_LEASE_KEY_SET, extract the ParentLeaseKey from the
 	// incoming request so the matching dir-lease is NOT broken.
 	//
-	// Destructive disposition split (#470 C4, smb2.dirlease.overwrite): per
-	// Samba `delay_for_oplock_fn` `will_overwrite` arm, OVERWRITE/SUPERSEDE
-	// collapses the strip-H + strip-R steps into a single break-to-None
-	// notification. CREATE (FileCreated) keeps the two-step pattern because
-	// the parent dir-lease only loses Handle caching there.
+	// Single break-to-None per Samba do_dirlease_break_to_none
+	// (source3/smbd/smb2_oplock.c): a directory-content change emits ONE
+	// LEASE_BREAK to None per dir-lease holder, not the two-step strip-H /
+	// strip-R pattern used for file leases. Applies uniformly to CREATE,
+	// OVERWRITE, and SUPERSEDE — WPTS BVT_DirectoryLeasing_ReadWriteHandleCaching
+	// (#454) asserts the break notification carries NewLeaseState=None.
 	if (createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded) && h.LeaseManager != nil {
 		parentLockHandle := lock.FileHandle(parentHandle)
 		// Per Samba dirlease_should_break: no ClientID exclusion for parent
@@ -450,18 +451,8 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 				hasExcludeKey = true
 			}
 		}
-		isDestructive := createAction == types.FileOverwritten || createAction == types.FileSuperseded
-		if isDestructive {
-			if breakErr := h.LeaseManager.BreakParentDirLeasesOnDestructiveCreate(authCtx.Context, parentLockHandle, tree.ShareName, "", excludeParentKey, hasExcludeKey); breakErr != nil {
-				logger.Debug("CREATE: parent directory destructive lease break failed", "error", breakErr)
-			}
-		} else {
-			if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, tree.ShareName, "", excludeParentKey, hasExcludeKey); breakErr != nil {
-				logger.Debug("CREATE: parent directory Handle lease break failed", "error", breakErr)
-			}
-			if breakErr := h.LeaseManager.BreakParentReadLeasesOnModify(authCtx.Context, parentLockHandle, tree.ShareName, "", excludeParentKey, hasExcludeKey); breakErr != nil {
-				logger.Debug("CREATE: parent directory Read lease break failed", "error", breakErr)
-			}
+		if breakErr := h.LeaseManager.BreakParentDirLeasesOnDestructiveCreate(authCtx.Context, parentLockHandle, tree.ShareName, "", excludeParentKey, hasExcludeKey); breakErr != nil {
+			logger.Debug("CREATE: parent directory lease break failed", "error", breakErr)
 		}
 	}
 
