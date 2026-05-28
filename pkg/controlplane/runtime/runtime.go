@@ -468,7 +468,18 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		logger.Error("snapshot recovery returned error (continuing startup)", "error", err)
 	}
 
-	return r.lifecycleSvc.Serve(ctx, r.settingsWatcher, r.adaptersSvc, r.metadataService, r.storesSvc, r.store)
+	return r.lifecycleSvc.Serve(ctx, r.settingsWatcher, r.adaptersSvc, r.metadataService, r.storesSvc, r.store, r)
+}
+
+// ShutdownSnapshots exposes shutdownSnapshots for the lifecycle.Service
+// shutdown sequence so the normal server path (signal -> ctx cancel ->
+// lifecycle.shutdown) drains in-flight snapshot goroutines BEFORE
+// StopAllAdapters / CloseMetadataStores. Direct callers should prefer
+// Runtime.Shutdown which orchestrates the full sequence; this method
+// exists to satisfy lifecycle.SnapshotDrainer without exporting
+// internal lifecycle details. D-23-17 #R3-1.
+func (r *Runtime) ShutdownSnapshots(ctx context.Context) {
+	r.shutdownSnapshots(ctx)
 }
 
 // --- Identity Mapping (delegated to identity.Service) ---
