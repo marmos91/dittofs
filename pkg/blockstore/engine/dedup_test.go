@@ -30,6 +30,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
@@ -477,3 +478,114 @@ func TestDedup_ConcurrentRace(t *testing.T) {
 // Compile-time check: keep errors import live even if reshapes
 // the error-handling path. Tests that need errors.Is can adopt this.
 var _ = errors.Is
+
+// TestApplyFileLevelDedupHit_RollbackPropagates_NonConflict encodes the
+// fix for audit finding C-2 on the non-conflict persist-error branch.
+//
+// PersistFileBlocks returns a generic (non-conflict) error and one of
+// the rollback DecrementRefCount calls also fails. The returned error
+// MUST wrap both signals so the caller observes the permanent
+// RefCount leak; the helper MUST NOT retry (no second persist call,
+// no FindByObjectID re-lookup) because the conflict-retry branch is
+// not in play.
+func TestApplyFileLevelDedupHit_RollbackPropagates_NonConflict(t *testing.T) {
+	ctx := context.Background()
+	m, fc := dedupTestSetup(t)
+
+	speculative := makeSpeculativeBlocks(0xA1, 0xA2)
+	target := makeSpeculativeBlocks(0xB1, 0xB2)
+	provisional := blockstore.ComputeObjectID(speculative)
+	fc.objectIDHits[provisional] = target
+
+	// Generic (non-conflict) persist failure.
+	persistErr := errors.New("induced non-conflict persist failure")
+	fc.persistErr = persistErr
+
+	// Fail the SECOND decrement so we exercise the "some succeed, some
+	// fail" path; errors.Join must surface the failing one.
+	fc.failOnNthDecrement = 2
+
+	hit, err := m.trySpeculativeFileLevelDedup(ctx, "pid",
+		speculative, blockstore.ObjectID{}, pendingStates(len(speculative)))
+	if hit {
+		t.Fatalf("hit=true on persist failure; want false")
+	}
+	if err == nil {
+		t.Fatalf("err=nil; want wrapped persist+rollback failure")
+	}
+	if !errors.Is(err, persistErr) {
+		t.Errorf("returned err does not wrap original persist failure via errors.Is; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "refcount rollback also failed") {
+		t.Errorf("returned err does not surface rollback failure signal; got %q", err.Error())
+	}
+
+	// No retry on the non-conflict branch: FindByObjectID stays at 1
+	// (the initial lookup), PersistFileBlocks at 1 (the failing one).
+	if got := len(fc.findCalls); got != 1 {
+		t.Errorf("FindByObjectID calls=%d; want 1 (no retry on non-conflict err)", got)
+	}
+	if got := len(fc.persistCalls); got != 1 {
+		t.Errorf("PersistFileBlocks calls=%d; want 1 (no retry on non-conflict err)", got)
+	}
+}
+
+// TestApplyFileLevelDedupHit_RollbackPropagates_ConflictNoRetry encodes
+// the fix for audit finding C-2 on the race-conflict branch.
+//
+// PersistFileBlocks returns an ErrObjectIDConflict-shaped error
+// (fakePgConflictError implements IsConflict), but one of the
+// rollback DecrementRefCount calls fails. The retry MUST be aborted
+// (a retry would re-increment over the un-rolled-back leak, doubling
+// the pinned refcount), no FindByObjectID re-lookup may fire, and the
+// returned error MUST wrap both the conflict and the rollback
+// failure.
+func TestApplyFileLevelDedupHit_RollbackPropagates_ConflictNoRetry(t *testing.T) {
+	ctx := context.Background()
+	m, fc := dedupTestSetup(t)
+
+	speculative := makeSpeculativeBlocks(0xA1, 0xA2)
+	target := makeSpeculativeBlocks(0xB1, 0xB2)
+	provisional := blockstore.ComputeObjectID(speculative)
+	fc.objectIDHits[provisional] = target
+
+	// Inject conflict on the first PersistFileBlocks (single-shot).
+	fc.persistErr = &fakePgConflictError{}
+
+	// Fail the FIRST decrement so rollback surfaces an error and the
+	// retry MUST be aborted.
+	fc.failOnNthDecrement = 1
+
+	hit, err := m.trySpeculativeFileLevelDedup(ctx, "pid",
+		speculative, blockstore.ObjectID{}, pendingStates(len(speculative)))
+	if hit {
+		t.Fatalf("hit=true after aborted retry; want false")
+	}
+	if err == nil {
+		t.Fatalf("err=nil; want wrapped conflict+rollback failure")
+	}
+	if !strings.Contains(err.Error(), "refcount rollback also failed") {
+		t.Errorf("returned err does not surface rollback failure signal; got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "retry aborted") {
+		t.Errorf("returned err does not surface retry-aborted signal; got %q", err.Error())
+	}
+
+	// Retry MUST NOT fire: exactly ONE PersistFileBlocks (the failing
+	// initial call) and exactly ONE FindByObjectID (the initial lookup
+	// — the conflict-path re-lookup never runs).
+	if got := len(fc.persistCalls); got != 1 {
+		t.Errorf("PersistFileBlocks calls=%d; want 1 (retry must be aborted on failed rollback)", got)
+	}
+	if got := len(fc.findCalls); got != 1 {
+		t.Errorf("FindByObjectID calls=%d; want 1 (retry re-lookup must NOT fire on failed rollback)", got)
+	}
+
+	// Sanity: the persist single-shot did fire — fakeCoordinator clears
+	// persistErr after each call. If we somehow ran a second
+	// PersistFileBlocks that call would have succeeded (persistErr nil)
+	// and the test above would report 2 calls.
+	if fc.persistErr != nil {
+		t.Errorf("persistErr still armed after initial conflict; should be drained (single-shot)")
+	}
+}
