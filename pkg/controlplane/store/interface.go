@@ -472,10 +472,12 @@ type SnapshotStore interface {
 
 	// UpdateSnapshotState transitions a snapshot's state. Allowed transitions:
 	// creating -> ready, creating -> failed, failed -> creating (retry).
-	// Returns models.ErrSnapshotNotFound if no row has the given id.
+	// shareName scopes the update so an id collision across shares cannot
+	// rewrite the wrong row.
+	// Returns models.ErrSnapshotNotFound if no row matches.
 	// Returns models.ErrSnapshotStateConflict for any other transition,
 	// including same-state updates.
-	UpdateSnapshotState(ctx context.Context, id, state string) error
+	UpdateSnapshotState(ctx context.Context, shareName, id, state string) error
 }
 
 // HealthStore provides store health check and lifecycle operations.

@@ -169,7 +169,7 @@ func TestSnapshot_UpdateState_AllowedTransitions(t *testing.T) {
 				t.Fatalf("create: %v", err)
 			}
 
-			if err := store.UpdateSnapshotState(ctx, snap.ID, tc.to); err != nil {
+			if err := store.UpdateSnapshotState(ctx, snap.ShareName, snap.ID, tc.to); err != nil {
 				t.Fatalf("update %s->%s: %v", tc.from, tc.to, err)
 			}
 
@@ -210,7 +210,7 @@ func TestSnapshot_UpdateState_RejectsDisallowed(t *testing.T) {
 				t.Fatalf("create: %v", err)
 			}
 
-			err := store.UpdateSnapshotState(ctx, snap.ID, tc.to)
+			err := store.UpdateSnapshotState(ctx, snap.ShareName, snap.ID, tc.to)
 			if !errors.Is(err, models.ErrSnapshotStateConflict) {
 				t.Fatalf("expected ErrSnapshotStateConflict, got %v", err)
 			}
@@ -232,7 +232,7 @@ func TestSnapshot_UpdateState_NotFound(t *testing.T) {
 	defer store.Close()
 	ctx := context.Background()
 
-	err := store.UpdateSnapshotState(ctx, "nonexistent-id", models.StateReady)
+	err := store.UpdateSnapshotState(ctx, "any-share", "nonexistent-id", models.StateReady)
 	if !errors.Is(err, models.ErrSnapshotNotFound) {
 		t.Fatalf("expected ErrSnapshotNotFound, got %v", err)
 	}

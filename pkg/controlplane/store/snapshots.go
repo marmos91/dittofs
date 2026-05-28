@@ -11,11 +11,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// CreateSnapshot persists a new snapshot record. If snap.ID is empty a UUID is
-// generated. If snap.State is empty it defaults to models.StateCreating.
-// Returns models.ErrSnapshotStateConflict if another in-flight (state='creating')
-// snapshot already exists for snap.ShareName — surfaced via the idx_share_creating
-// partial unique index.
+// CreateSnapshot persists a new snapshot record. If snap.ID is empty a UUID
+// is generated; if snap.State is empty it defaults to models.StateCreating.
+// Returns models.ErrSnapshotStateConflict when another in-flight snapshot
+// already exists for snap.ShareName (surfaced via the idx_share_creating
+// partial unique index).
 func (s *GORMStore) CreateSnapshot(ctx context.Context, snap *models.Snapshot) (string, error) {
 	if snap.ID == "" {
 		snap.ID = uuid.New().String()
@@ -27,23 +27,15 @@ func (s *GORMStore) CreateSnapshot(ctx context.Context, snap *models.Snapshot) (
 	snap.CreatedAt = now
 	snap.UpdatedAt = now
 
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(snap).Error; err != nil {
-			if isUniqueConstraintError(err) && snap.State == models.StateCreating {
-				return models.ErrSnapshotStateConflict
-			}
-			return err
+	if err := s.db.WithContext(ctx).Create(snap).Error; err != nil {
+		if isUniqueConstraintError(err) && snap.State == models.StateCreating {
+			return "", models.ErrSnapshotStateConflict
 		}
-		return nil
-	})
-	if err != nil {
 		return "", err
 	}
 	return snap.ID, nil
 }
 
-// GetSnapshot returns a snapshot by (shareName, snapID).
-// Returns models.ErrSnapshotNotFound if no row matches.
 func (s *GORMStore) GetSnapshot(ctx context.Context, shareName, snapID string) (*models.Snapshot, error) {
 	var snap models.Snapshot
 	err := s.db.WithContext(ctx).
@@ -55,9 +47,8 @@ func (s *GORMStore) GetSnapshot(ctx context.Context, shareName, snapID string) (
 	return &snap, nil
 }
 
-// ListSnapshots returns ALL snapshots for shareName in ALL states, ordered by
-// created_at DESC. Per D-14 the store does not filter by state — callers
-// (HoldProvider, REST handlers) apply their own filters.
+// ListSnapshots returns ALL snapshots for shareName in ALL states, ordered
+// by created_at DESC. Callers filter by state as needed.
 func (s *GORMStore) ListSnapshots(ctx context.Context, shareName string) ([]*models.Snapshot, error) {
 	var snaps []*models.Snapshot
 	err := s.db.WithContext(ctx).
@@ -70,39 +61,38 @@ func (s *GORMStore) ListSnapshots(ctx context.Context, shareName string) ([]*mod
 	return snaps, nil
 }
 
-// DeleteSnapshot hard-deletes the snapshot row matching (shareName, snapID).
+// DeleteSnapshot hard-deletes the row matching (shareName, snapID).
 // Filesystem cleanup of the on-disk snapshot directory is the Runtime's
-// responsibility (see Runtime.RemoveShare hook), not the store's.
-// Returns models.ErrSnapshotNotFound if no row matches.
+// responsibility.
 func (s *GORMStore) DeleteSnapshot(ctx context.Context, shareName, snapID string) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result := tx.Where("share_name = ? AND id = ?", shareName, snapID).
-			Delete(&models.Snapshot{})
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return models.ErrSnapshotNotFound
-		}
-		return nil
-	})
+	result := s.db.WithContext(ctx).
+		Where("share_name = ? AND id = ?", shareName, snapID).
+		Delete(&models.Snapshot{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return models.ErrSnapshotNotFound
+	}
+	return nil
 }
 
 // UpdateSnapshotState transitions a snapshot's state. Allowed transitions:
-// creating -> ready, creating -> failed, failed -> creating (retry).
-// Any other transition (including same-state) returns
-// models.ErrSnapshotStateConflict.
-func (s *GORMStore) UpdateSnapshotState(ctx context.Context, id, state string) error {
+// creating -> ready, creating -> failed, failed -> creating. Any other
+// transition (including same-state) returns models.ErrSnapshotStateConflict.
+// shareName scopes the update so an id collision across shares cannot
+// rewrite the wrong row.
+func (s *GORMStore) UpdateSnapshotState(ctx context.Context, shareName, id, state string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var snap models.Snapshot
-		if err := tx.Where("id = ?", id).First(&snap).Error; err != nil {
+		if err := tx.Where("share_name = ? AND id = ?", shareName, id).First(&snap).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return models.ErrSnapshotNotFound
 			}
 			return err
 		}
-		if err := validateStateTransition(snap.State, state); err != nil {
-			return err
+		if !isAllowedStateTransition(snap.State, state) {
+			return models.ErrSnapshotStateConflict
 		}
 		return tx.Model(&snap).Updates(map[string]any{
 			"state":      state,
@@ -111,23 +101,12 @@ func (s *GORMStore) UpdateSnapshotState(ctx context.Context, id, state string) e
 	})
 }
 
-// validateStateTransition enforces the snapshot state machine. Allowed:
-//
-//	creating -> ready
-//	creating -> failed
-//	failed   -> creating   (retry)
-//
-// All other transitions, including same-state updates, return
-// models.ErrSnapshotStateConflict.
-func validateStateTransition(current, next string) error {
-	switch {
-	case current == models.StateCreating && next == models.StateReady:
-		return nil
-	case current == models.StateCreating && next == models.StateFailed:
-		return nil
-	case current == models.StateFailed && next == models.StateCreating:
-		return nil
-	default:
-		return models.ErrSnapshotStateConflict
+func isAllowedStateTransition(current, next string) bool {
+	switch current {
+	case models.StateCreating:
+		return next == models.StateReady || next == models.StateFailed
+	case models.StateFailed:
+		return next == models.StateCreating
 	}
+	return false
 }

@@ -194,24 +194,15 @@ type MultiShareReconciler interface {
 	SharesForGC() []string
 }
 
-// HoldProvider lets a higher layer inject "held" hashes into the GC mark
-// phase so referenced blocks are never collected. The mark phase invokes
-// HeldHashes AFTER per-share EnumerateFileBlocks and BEFORE FlushAdd, so
-// held hashes land in the SAME live set used by the sweep's presence check.
+// HoldProvider injects "held" hashes into the GC mark phase so referenced
+// blocks are never collected. The mark phase invokes HeldHashes AFTER
+// per-share EnumerateFileBlocks and BEFORE FlushAdd, so held hashes land
+// in the SAME live set used by the sweep's presence check. Any error
+// from HeldHashes aborts the run via the mark fail-closed path.
 //
-// The callback shape mirrors metadata.MetadataStore.EnumerateFileBlocks so
-// markPhase can reuse its hash-add loop verbatim. Implementations stream
-// each held ContentHash through fn; returning a non-nil error from fn
-// aborts the stream.
-//
-// Any non-nil error returned from HeldHashes aborts the entire GC run via
-// the mark fail-closed path — orphan-not-deleted is always preferred over
-// live-data-deleted.
-//
-// The implementation is scoped per-remote via the remoteEndpointID +
-// shares arguments: a SnapshotHoldProvider filters its held set to ready
-// snapshots whose share intersects the run's share list and whose backing
-// remote matches remoteEndpointID.
+// Scope is per-remote: remoteEndpointID and shares carry the run's
+// remote-store identity and share scope so implementations can filter
+// their held set accordingly.
 type HoldProvider interface {
 	HeldHashes(ctx context.Context, remoteEndpointID string, shares []string, fn func(blockstore.ContentHash) error) error
 }
@@ -362,6 +353,18 @@ func markPhase(ctx context.Context, reconciler MetadataReconciler, gcs *GCState,
 		return fmt.Errorf("mark phase: reconciler reports zero shares — refusing to sweep CAS objects without a live set (INV-04 fail-closed)")
 	}
 
+	addHash := func(h blockstore.ContentHash) error {
+		if h.IsZero() {
+			// Legacy rows pre-CAS — not in the CAS keyspace.
+			return nil
+		}
+		if err := gcs.Add(h); err != nil {
+			return fmt.Errorf("gcstate add: %w", err)
+		}
+		stats.HashesMarked++
+		return nil
+	}
+
 	for _, shareName := range reconcilerShares {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("mark phase ctx: %w", err)
@@ -370,44 +373,19 @@ func markPhase(ctx context.Context, reconciler MetadataReconciler, gcs *GCState,
 		if err != nil {
 			return fmt.Errorf("get metadata store for share %q: %w", shareName, err)
 		}
-		if err := store.EnumerateFileBlocks(ctx, func(h blockstore.ContentHash) error {
-			if h.IsZero() {
-				// Legacy rows pre-CAS — not in the CAS keyspace.
-				return nil
-			}
-			if err := gcs.Add(h); err != nil {
-				return fmt.Errorf("gcstate add: %w", err)
-			}
-			stats.HashesMarked++
-			return nil
-		}); err != nil {
+		if err := store.EnumerateFileBlocks(ctx, addHash); err != nil {
 			return fmt.Errorf("enumerate share %q: %w", shareName, err)
 		}
 	}
 
-	// Held hashes land in the same GCState live set used by the sweep's
-	// presence check. Failures fail closed (orphan-not-deleted is always
-	// preferred over live-data-deleted).
 	if hold != nil {
-		cb := func(h blockstore.ContentHash) error {
-			if h.IsZero() {
-				return nil
-			}
-			if err := gcs.Add(h); err != nil {
-				return fmt.Errorf("gcstate add: %w", err)
-			}
-			stats.HashesMarked++
-			return nil
-		}
-		if err := hold.HeldHashes(ctx, remoteEndpointID, shares, cb); err != nil {
+		if err := hold.HeldHashes(ctx, remoteEndpointID, shares, addHash); err != nil {
 			return fmt.Errorf("hold provider: %w", err)
 		}
 	}
 
 	// Phase 11 IN-4-04: flush the batched Add()s so the sweep's Has()
-	// queries observe every marked hash. Without this the final partial
-	// batch (< gcAddBatchSize hashes from the last share) sits in memory
-	// and Has() returns false for them — INV-04 violation by data path.
+	// queries observe every marked hash.
 	if err := gcs.FlushAdd(); err != nil {
 		return fmt.Errorf("flush gcstate batch: %w", err)
 	}

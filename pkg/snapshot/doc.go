@@ -19,8 +19,8 @@
 //     HashSet.Sorted (bytes.Compare). Writers consume that order
 //     verbatim; readers do not depend on it (HashSet is unordered).
 //
-// The file extension convention is .hashes (see the SnapshotDir layout
-// in 22-CONTEXT).
+// The canonical path is <shareDataDir>/snapshots/<id>/manifest.hashes
+// (see models.Snapshot.ManifestPath).
 //
 // # Atomic write contract
 //

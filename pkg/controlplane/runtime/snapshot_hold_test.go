@@ -32,16 +32,6 @@ func newSnapshotHoldRuntime(t *testing.T) *Runtime {
 	return New(s)
 }
 
-// snapshotHoldHashN returns a deterministic ContentHash with the supplied
-// seed byte repeated across every byte position.
-func snapshotHoldHashN(seed byte) blockstore.ContentHash {
-	var h blockstore.ContentHash
-	for i := range h {
-		h[i] = seed
-	}
-	return h
-}
-
 // snapshotHoldWriteManifest builds a manifest with the supplied hashes
 // and atomically writes it to path, creating parent directories as needed.
 func snapshotHoldWriteManifest(t *testing.T, path string, hashes []blockstore.ContentHash) {
@@ -66,7 +56,7 @@ func snapshotHoldCreateReady(t *testing.T, rt *Runtime, shareName string) string
 		MetadataEngine: "sqlite",
 	})
 	require.NoError(t, err)
-	require.NoError(t, rt.store.UpdateSnapshotState(ctx, id, models.StateReady))
+	require.NoError(t, rt.store.UpdateSnapshotState(ctx, shareName, id, models.StateReady))
 	return id
 }
 
@@ -87,9 +77,9 @@ func snapshotHoldCreateState(t *testing.T, rt *Runtime, shareName, state string)
 	case models.StateCreating:
 		// nothing — already in creating
 	case models.StateReady:
-		require.NoError(t, rt.store.UpdateSnapshotState(ctx, id, models.StateReady))
+		require.NoError(t, rt.store.UpdateSnapshotState(ctx, shareName, id, models.StateReady))
 	case models.StateFailed:
-		require.NoError(t, rt.store.UpdateSnapshotState(ctx, id, models.StateFailed))
+		require.NoError(t, rt.store.UpdateSnapshotState(ctx, shareName, id, models.StateFailed))
 	default:
 		t.Fatalf("unsupported state %q", state)
 	}
@@ -105,7 +95,7 @@ func TestSnapshotHoldProvider_NilStore_NoOp(t *testing.T) {
 		MetadataStore: "memory",
 	})
 
-	provider := rt.snapshotHoldForRemote("remote-1", []string{"alpha"})
+	provider := rt.snapshotHoldForRemote([]string{"alpha"})
 
 	called := 0
 	err := provider.HeldHashes(context.Background(), "remote-1", []string{"alpha"},
@@ -139,12 +129,12 @@ func TestSnapshotHoldProvider_FiltersByReadyState(t *testing.T) {
 	_ = snapshotHoldCreateState(t, rt, "alpha", models.StateFailed)
 	_ = snapshotHoldCreateState(t, rt, "alpha", models.StateCreating)
 
-	want := []blockstore.ContentHash{snapshotHoldHashN(0x11), snapshotHoldHashN(0x22)}
+	want := []blockstore.ContentHash{hashAll(0x11), hashAll(0x22)}
 	// Build a Snapshot value to reuse ManifestPath (state field irrelevant).
 	manifestPath := (&models.Snapshot{ID: readyID}).ManifestPath(localStoreDir)
 	snapshotHoldWriteManifest(t, manifestPath, want)
 
-	provider := rt.snapshotHoldForRemote("remote-1", []string{"alpha"})
+	provider := rt.snapshotHoldForRemote([]string{"alpha"})
 
 	var got []blockstore.ContentHash
 	err := provider.HeldHashes(context.Background(), "remote-1", []string{"alpha"},
@@ -175,7 +165,7 @@ func TestSnapshotHoldProvider_FailClosed_OnMissingManifest(t *testing.T) {
 	// Ready row, but deliberately no WriteManifestAtomic call → file absent.
 	_ = snapshotHoldCreateReady(t, rt, "alpha")
 
-	provider := rt.snapshotHoldForRemote("remote-1", []string{"alpha"})
+	provider := rt.snapshotHoldForRemote([]string{"alpha"})
 
 	err := provider.HeldHashes(context.Background(), "remote-1", []string{"alpha"},
 		func(h blockstore.ContentHash) error {
@@ -201,7 +191,7 @@ func TestSnapshotHoldProvider_MemoryShare_Skipped(t *testing.T) {
 
 	_ = snapshotHoldCreateReady(t, rt, "memshare")
 
-	provider := rt.snapshotHoldForRemote("remote-1", []string{"memshare"})
+	provider := rt.snapshotHoldForRemote([]string{"memshare"})
 
 	called := 0
 	err := provider.HeldHashes(context.Background(), "remote-1", []string{"memshare"},
@@ -230,12 +220,12 @@ func TestSnapshotHoldProvider_MultipleSharesUnion(t *testing.T) {
 	idA := snapshotHoldCreateReady(t, rt, "alpha")
 	idB := snapshotHoldCreateReady(t, rt, "beta")
 
-	wantA := []blockstore.ContentHash{snapshotHoldHashN(0xAA), snapshotHoldHashN(0xAB)}
-	wantB := []blockstore.ContentHash{snapshotHoldHashN(0xBA), snapshotHoldHashN(0xBB)}
+	wantA := []blockstore.ContentHash{hashAll(0xAA), hashAll(0xAB)}
+	wantB := []blockstore.ContentHash{hashAll(0xBA), hashAll(0xBB)}
 	snapshotHoldWriteManifest(t, (&models.Snapshot{ID: idA}).ManifestPath(dirA), wantA)
 	snapshotHoldWriteManifest(t, (&models.Snapshot{ID: idB}).ManifestPath(dirB), wantB)
 
-	provider := rt.snapshotHoldForRemote("remote-1", []string{"alpha", "beta"})
+	provider := rt.snapshotHoldForRemote([]string{"alpha", "beta"})
 
 	var got []blockstore.ContentHash
 	err := provider.HeldHashes(context.Background(), "remote-1", []string{"alpha", "beta"},

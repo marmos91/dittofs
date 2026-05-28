@@ -121,11 +121,9 @@ func TestRead_RejectsMalformed(t *testing.T) {
 	}
 
 	// Malformed line on line 3 must surface line=3 in the message.
-	body := good + "\n" + good + "\n" + "deadbeef\n"
-	// Force good lines that differ from each other to avoid HashSet collapse
-	// confusing the line numbering — line 2 deliberately differs.
+	// Use distinct good lines so HashSet collapse cannot confuse line numbering.
 	good2 := mustHash(0xBB).String()
-	body = good + "\n" + good2 + "\n" + "deadbeef\n"
+	body := good + "\n" + good2 + "\n" + "deadbeef\n"
 	_, err := snapshot.ReadManifest(strings.NewReader(body))
 	if err == nil {
 		t.Fatal("expected error for malformed line 3")

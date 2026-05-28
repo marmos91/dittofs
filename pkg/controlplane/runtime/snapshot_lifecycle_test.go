@@ -174,7 +174,7 @@ func TestSnapshotLifecycleVsGC(t *testing.T) {
 			t.Fatalf("WriteManifestAtomic: %v", err)
 		}
 
-		if err := fx.rt.store.UpdateSnapshotState(ctx, snapID, models.StateReady); err != nil {
+		if err := fx.rt.store.UpdateSnapshotState(ctx, fx.shareName, snapID, models.StateReady); err != nil {
 			t.Fatalf("UpdateSnapshotState->ready: %v", err)
 		}
 
@@ -259,7 +259,7 @@ func TestSnapshotLifecycleVsGC(t *testing.T) {
 		if err := snapshot.WriteManifestAtomic(snap.ManifestPath(fx.localStoreDir), hs); err != nil {
 			t.Fatalf("WriteManifestAtomic: %v", err)
 		}
-		if err := fx.rt.store.UpdateSnapshotState(ctx, snapID, models.StateReady); err != nil {
+		if err := fx.rt.store.UpdateSnapshotState(ctx, fx.shareName, snapID, models.StateReady); err != nil {
 			t.Fatalf("UpdateSnapshotState->ready: %v", err)
 		}
 
