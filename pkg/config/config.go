@@ -78,6 +78,10 @@ type Config struct {
 	// GC configures the engine.CollectGarbage mark-sweep run.
 	// These knobs apply globally to every block-store GC invocation.
 	GC GCConfig `mapstructure:"gc" yaml:"gc"`
+
+	// Snapshot configures the snapshot create orchestration. Knobs apply
+	// to every Runtime.CreateSnapshot invocation.
+	Snapshot SnapshotConfig `mapstructure:"snapshot" yaml:"snapshot"`
 }
 
 // SyncerConfig configures the engine.Syncer claim/upload cycle. Knobs
@@ -198,6 +202,36 @@ func (c *GCConfig) Validate() error {
 	}
 	if c.DryRunSampleSize < 0 {
 		return fmt.Errorf("gc.dry_run_sample_size must be >= 0 (got %d)", c.DryRunSampleSize)
+	}
+	return nil
+}
+
+// SnapshotConfig configures the snapshot create orchestration. Knobs
+// apply to every Runtime.CreateSnapshot invocation. The single knob
+// today bounds the parallel Head() probes the sync gate fires against
+// the remote during VerifyRemoteDurability.
+type SnapshotConfig struct {
+	// SyncGateConcurrency bounds the parallel Head() probes the sync
+	// gate fires against the remote during VerifyRemoteDurability.
+	// Default: 16. Validate range: [1, 256] — higher values risk
+	// overwhelming restrictive remote endpoints; lower values trade
+	// verify latency for safety on slow networks.
+	SyncGateConcurrency int `mapstructure:"sync_gate_concurrency" yaml:"sync_gate_concurrency"`
+}
+
+// ApplyDefaults fills any zero-valued field with the defaults.
+func (c *SnapshotConfig) ApplyDefaults() {
+	if c.SyncGateConcurrency <= 0 {
+		c.SyncGateConcurrency = 16
+	}
+}
+
+// Validate returns an error if the SnapshotConfig has invalid values.
+// Out-of-range concurrency is rejected at config load to keep operator
+// mistakes from reaching the runtime.
+func (c *SnapshotConfig) Validate() error {
+	if c.SyncGateConcurrency < 1 || c.SyncGateConcurrency > 256 {
+		return fmt.Errorf("snapshot.sync_gate_concurrency must be in [1, 256] (got %d)", c.SyncGateConcurrency)
 	}
 	return nil
 }
