@@ -457,7 +457,7 @@ func (r *Runtime) runSnapshotOrchestration(
 		// left to the column default. This way the post-create row
 		// state is fully deterministic on success and not subject to
 		// schema-default drift.
-		if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, false); err != nil {
+		if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, false, int64(manifestCount)); err != nil {
 			r.failSnap(shareName, snapID)
 			terminalErr = fmt.Errorf("snapshot create %s: mark ready (no-sync-gate): %w: %v",
 				snapID, models.ErrSnapshotBackupFailed, err)
@@ -548,7 +548,7 @@ func (r *Runtime) runSnapshotOrchestration(
 	// crash mid-update produces ready+remote_durable=false — visually
 	// indistinguishable from the intentional --no-sync-gate result and
 	// a false negative for Phase 24 restore's durability gate.
-	if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, true); err != nil {
+	if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, true, int64(manifestCount)); err != nil {
 		r.failSnap(shareName, snapID)
 		terminalErr = fmt.Errorf("snapshot create %s: mark ready: %w: %v",
 			snapID, models.ErrSnapshotBackupFailed, err)
