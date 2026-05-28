@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"crypto/md5"
+	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -58,6 +59,22 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	openFile, ok := h.GetOpenFile(fileID)
 	if !ok {
 		return NewErrorResult(types.StatusFileClosed), nil
+	}
+
+	// Samba `smb2_ioctl_filesys.c::fsctl_set_cmprn` calls
+	// `check_any_access_fsp(fsp, FILE_WRITE_DATA)` — strictly FILE_WRITE_DATA,
+	// not WRITE_ATTRIBUTES or APPEND_DATA. smbtorture smb2.ioctl.compress_perms
+	// opens with SEC_RIGHTS_FILE_WRITE & ~SEC_FILE_WRITE_DATA (so APPEND_DATA
+	// and WRITE_ATTRIBUTES are still granted) and asserts ACCESS_DENIED for
+	// both COMPRESSION_FORMAT_DEFAULT and COMPRESSION_FORMAT_NONE. Use the
+	// resolved GrantedAccess snapshot from CREATE — GENERIC_* and
+	// MAXIMUM_ALLOWED are already expanded by resolveAccessFlags, so a bare
+	// FILE_WRITE_DATA bit check matches Samba's semantics.
+	if openFile.GrantedAccess&uint32(types.FileWriteData) == 0 {
+		logger.Debug("IOCTL FSCTL_SET_COMPRESSION: missing FILE_WRITE_DATA",
+			"path", openFile.Path,
+			"grantedAccess", fmt.Sprintf("0x%x", openFile.GrantedAccess))
+		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 
 	// Parse InputBuffer: CompressionState (2 bytes) at InputOffset

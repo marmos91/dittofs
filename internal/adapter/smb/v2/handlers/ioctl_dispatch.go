@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -46,6 +47,7 @@ func init() {
 		// `test_block_smb2_transport` falls through to a hard failure.
 		// See issue #436 and the constant comment in stub_handlers.go.
 		FsctlSmbtortureForceUnackedTimeout: (*Handler).handleSmbtortureForceUnackedTimeout,
+		FsctlSmbtortureFspAsyncSleep:       (*Handler).handleSmbtortureFspAsyncSleep,
 	}
 }
 
@@ -151,6 +153,64 @@ func (h *Handler) handleSmbtortureForceUnackedTimeout(ctx *SMBHandlerContext, bo
 	}
 	logger.Debug("IOCTL FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT: accepting as no-op (smbtorture-only)")
 	resp := buildIoctlResponse(FsctlSmbtortureForceUnackedTimeout, fileID, nil)
+	return NewResult(types.StatusSuccess, resp), nil
+}
+
+// handleSmbtortureFspAsyncSleep handles FSCTL_SMBTORTURE_FSP_ASYNC_SLEEP
+// (Samba's torture-only 0x83848043). Per source3/smbd/smb2_ioctl_smbtorture.c
+// the InputBuffer is exactly 1 byte (CVAL) interpreted as a delay in
+// milliseconds; the FSCTL completes successfully once the delay elapses.
+//
+// smbtorture `smb2.ioctl.bug14769` regression-tests the property that a
+// CLOSE arriving while the FSCTL is in flight must NOT race the IOCTL to
+// completion — the handle must remain valid until the IOCTL's reply has
+// been sent. We honour this by holding the per-FileID in-flight WaitGroup
+// (via AcquireOpenFile / ReleaseOpenFile) across the sleep, so the CLOSE
+// handler's WaitAndDeleteOpenFile drains.
+//
+// Bound the sleep at 1 second to keep the test-only path from being weaponised
+// against the dispatcher: smbtorture's longest call is 200ms.
+func (h *Handler) handleSmbtortureFspAsyncSleep(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
+	fileID, ok := parseIoctlFileID(body)
+	if !ok {
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	inputData := parseIoctlInputData(body)
+	if len(inputData) != 1 {
+		logger.Debug("IOCTL FSCTL_SMBTORTURE_FSP_ASYNC_SLEEP: bad input length",
+			"len", len(inputData))
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+	delayMs := uint32(inputData[0])
+	const maxDelayMs uint32 = 1000
+	if delayMs > maxDelayMs {
+		delayMs = maxDelayMs
+	}
+
+	// Pin the handle for the duration of the sleep so a concurrent CLOSE
+	// blocks in WaitAndDeleteOpenFile until we return. If AcquireOpenFile
+	// fails the handle was already gone — return FILE_CLOSED (the same
+	// status the generic IOCTL gate uses).
+	if _, ok := h.AcquireOpenFile(fileID); !ok {
+		logger.Debug("IOCTL FSCTL_SMBTORTURE_FSP_ASYNC_SLEEP: handle gone",
+			"fileID", fmt.Sprintf("%x", fileID))
+		return NewErrorResult(types.StatusFileClosed), nil
+	}
+	defer h.ReleaseOpenFile(fileID)
+
+	logger.Debug("IOCTL FSCTL_SMBTORTURE_FSP_ASYNC_SLEEP: sleeping",
+		"delayMs", delayMs)
+
+	timer := time.NewTimer(time.Duration(delayMs) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Context.Done():
+		return NewErrorResult(types.StatusCancelled), nil
+	}
+
+	resp := buildIoctlResponse(FsctlSmbtortureFspAsyncSleep, fileID, nil)
 	return NewResult(types.StatusSuccess, resp), nil
 }
 
