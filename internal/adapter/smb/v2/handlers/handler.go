@@ -1600,16 +1600,6 @@ func adsBasePath(filePath string) string {
 	return fileName[:colonIdx]
 }
 
-// shareNameFromHandle extracts the share name from an encoded file handle.
-func shareNameFromHandle(handle metadata.FileHandle) string {
-	if len(handle) > 0 {
-		if name, _, err := metadata.DecodeFileHandle(handle); err == nil && name != "" {
-			return name
-		}
-	}
-	return ""
-}
-
 // checkShareDeleteConflict checks if any other open handle on the same file
 // lacks FILE_SHARE_DELETE in its ShareAccess. Per MS-FSA 2.1.5.14.10, a rename
 // requires all other opens to permit delete sharing. Returns true if a conflict
