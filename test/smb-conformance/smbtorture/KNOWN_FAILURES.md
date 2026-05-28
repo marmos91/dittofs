@@ -115,7 +115,6 @@ overflow, rec, rmdir1-4, tcon, tdis, tdis1, tcp, tree.
 | smb2.notify.valid-req | Change Notify | Needs kernel inotify for MODIFIED on WRITE (also fails on reference Samba in Docker) | - |
 | smb2.notify.session-reconnect | Change Notify | PreviousSessionID signing key derivation mismatch (not notify-specific) | - |
 | smb2.notify.mask-change | Change Notify | SHARING_VIOLATION on directory open (pre-existing, never passed individually) | - |
-| smb2.notify.mask | Change Notify | Pre-existing INVALID_NETWORK_RESPONSE in NOTIFY_MASK_TEST cancel-setup pattern (KNOWN on develop since #635); deferred — not in scope for this PR | - |
 
 ### Compound Requests (Intermittent)
 

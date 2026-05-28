@@ -248,16 +248,25 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 			h.NotifyRegistry.ClearBufferedEvents(cancelled.FileID)
 
 			// Send STATUS_CANCELLED for the original CHANGE_NOTIFY request
-			// via the async callback. This completes the pending request.
+			// via the async callback. The send is gated on the interim
+			// STATUS_PENDING having reached the wire — if CANCEL won the
+			// race against NOTIFY's dispatcher, the cancel response is
+			// deferred so the on-wire order PENDING → CANCELLED is
+			// preserved (smb2.notify.mask). Clients reject any final
+			// response that arrives before PENDING with NETWORK_RESPONSE
+			// and RST the connection.
 			if cancelled.AsyncCallback != nil {
-				cancelResp := &ChangeNotifyResponse{
-					SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled},
-				}
-				if err := cancelled.AsyncCallback(cancelled.SessionID, cancelled.MessageID, cancelled.AsyncId, cancelResp); err != nil {
-					logger.Warn("CANCEL: failed to send STATUS_CANCELLED",
-						"messageID", cancelled.MessageID,
-						"error", err)
-				}
+				cb := cancelled
+				h.NotifyRegistry.QueueFinalAfterInterim(cb, func() {
+					cancelResp := &ChangeNotifyResponse{
+						SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled},
+					}
+					if err := cb.AsyncCallback(cb.SessionID, cb.MessageID, cb.AsyncId, cancelResp); err != nil {
+						logger.Warn("CANCEL: failed to send STATUS_CANCELLED",
+							"messageID", cb.MessageID,
+							"error", err)
+					}
+				})
 			}
 		} else if ctx.RequestAsyncId == 0 {
 			// CANCEL arrived before the matching CHANGE_NOTIFY had a chance
@@ -579,6 +588,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		CompletionFilter: effectiveFilter,
 		WatchTree:        req.Flags&SMB2WatchTree != 0,
 		MaxOutputLength:  effectiveMax,
+		GateInterim:      true,
 		AsyncCallback:    ctx.AsyncNotifyCallback,
 		OnOverflow: func(fileID [16]byte) {
 			if of, ok := h.GetOpenFile(fileID); ok {
@@ -625,6 +635,19 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		"messageID", ctx.MessageID,
 		"asyncId", asyncId,
 		"asyncEnabled", hasAsyncCallback)
+
+	// Wire PostSend to mark interim-sent. Any racing CANCEL / CLOSE that
+	// queued a final response into PendingNotify.deferredFinal will fire
+	// from MarkInterimSent on this goroutine after the dispatcher writes
+	// the PENDING interim — ensuring on-wire order PENDING → final.
+	notifyRef := notify
+	prevPostSend := ctx.PostSend
+	ctx.PostSend = func() {
+		if prevPostSend != nil {
+			prevPostSend()
+		}
+		h.NotifyRegistry.MarkInterimSent(notifyRef.ConnID, notifyRef.MessageID)
+	}
 
 	// Return STATUS_PENDING with AsyncId - the client will receive an
 	// interim response with SMB2_FLAGS_ASYNC_COMMAND set and this AsyncId.

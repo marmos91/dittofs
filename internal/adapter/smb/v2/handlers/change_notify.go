@@ -174,6 +174,17 @@ type PendingNotify struct {
 	WatchTree        bool // Recursive watching
 	MaxOutputLength  uint32
 
+	// GateInterim, when true, defers any async final response (CANCELLED,
+	// OK, NOTIFY_CLEANUP, NOTIFY_ENUM_DIR) until MarkInterimSent fires for
+	// this notify's (ConnID, MessageID). Set by the production CHANGE_NOTIFY
+	// handler — the handler returns STATUS_PENDING and its PostSend hook
+	// calls MarkInterimSent after the interim is on the wire. Tests that
+	// call Register directly leave this false so deliveries happen inline.
+	// Without the gate, a racing CANCEL can send its STATUS_CANCELLED before
+	// the dispatcher writes the interim PENDING — the client receives
+	// CANCELLED before PENDING and RSTs the connection (smb2.notify.mask).
+	GateInterim bool
+
 	// AsyncCallback is called when a matching change is detected.
 	// If nil, the change is logged but no response is sent.
 	// The callback is responsible for sending the async SMB2 response.
@@ -191,6 +202,22 @@ type PendingNotify struct {
 	// flushTimer fires after notifyFlushDelay to deliver all buffered events.
 	// nil when no events are buffered. Protected by NotifyRegistry.mu.
 	flushTimer *time.Timer
+
+	// interimSent is set when the dispatcher has written the STATUS_PENDING
+	// interim response for this notify to the wire. Until this is true, any
+	// async final response (STATUS_CANCELLED from CANCEL, STATUS_OK from a
+	// matching event, STATUS_NOTIFY_CLEANUP from CLOSE) MUST be deferred —
+	// otherwise it races ahead of the interim PENDING and the client sees
+	// an out-of-order async response, treats it as a malformed message, and
+	// RSTs the TCP connection. The deferral hook is `deferredFinal`.
+	// Protected by NotifyRegistry.mu.
+	interimSent bool
+
+	// deferredFinal is set when an async final response was queued before
+	// the interim PENDING reached the wire. Runs exactly once via
+	// MarkInterimSent, on the goroutine that writes the interim.
+	// Protected by NotifyRegistry.mu.
+	deferredFinal func()
 }
 
 // NotifyRegistry manages pending CHANGE_NOTIFY requests from SMB2 clients.
@@ -242,6 +269,16 @@ type NotifyRegistry struct {
 	// CANCEL cannot race because the client only learns AsyncId from the
 	// interim response, which is sent strictly AFTER Register has run.
 	cancelTombstones map[notifyMsgKey]time.Time
+
+	// pendingInterim retains the PendingNotify for an in-flight CHANGE_NOTIFY
+	// whose interim STATUS_PENDING has not yet been written to the wire, even
+	// after it was unregistered (e.g. by a racing CANCEL). The CANCEL handler
+	// MUST defer its STATUS_CANCELLED response into PendingNotify.deferredFinal
+	// when interimSent is still false — otherwise the cancel response races
+	// ahead of the interim PENDING and the client drops the connection
+	// (smb2.notify.mask). MarkInterimSent fires the deferred response after
+	// writing interim and clears this map entry. Keyed by (ConnID, MessageID).
+	pendingInterim map[notifyMsgKey]*PendingNotify
 }
 
 // cancelTombstoneTTL bounds how long a pre-arrival SMB2_CANCEL is remembered
@@ -298,6 +335,77 @@ func NewNotifyRegistry() *NotifyRegistry {
 		byAsyncId:        make(map[uint64]*PendingNotify),
 		armed:            make(map[string]*armedHandle),
 		cancelTombstones: make(map[notifyMsgKey]time.Time),
+		pendingInterim:   make(map[notifyMsgKey]*PendingNotify),
+	}
+}
+
+// MarkInterimSent runs after the dispatcher has written the interim
+// STATUS_PENDING response for a CHANGE_NOTIFY. If any final response
+// (CANCELLED, NOTIFY_CLEANUP, OK) was queued before interim reached the wire,
+// it is delivered now — preserving the on-wire order PENDING → final that
+// clients require.
+func (r *NotifyRegistry) MarkInterimSent(connID, messageID uint64) {
+	r.mu.Lock()
+	key := notifyMsgKey{ConnID: connID, MessageID: messageID}
+	notify := r.pendingInterim[key]
+	delete(r.pendingInterim, key)
+	var deferred func()
+	if notify != nil {
+		notify.interimSent = true
+		deferred = notify.deferredFinal
+		notify.deferredFinal = nil
+	} else if n, ok := r.byMsgKey[key]; ok {
+		// Still registered and live. Mark the flag so any future async
+		// final response delivery skips the deferral path.
+		n.interimSent = true
+	}
+	r.mu.Unlock()
+
+	if deferred != nil {
+		deferred()
+	}
+}
+
+// QueueFinalAfterInterim defers a final-response callback on the given notify
+// until its interim STATUS_PENDING is written to the wire. If interim has
+// already been sent, the callback runs immediately on the caller's goroutine.
+// Returns true when the callback ran inline (interim already on wire);
+// false when it was deferred. Must hold r.mu for write.
+//
+// Use this from any path that wants to send an async final response
+// (CANCEL, CLOSE / NOTIFY_CLEANUP, session/tree teardown) on a notify that
+// may have just registered but not yet returned through the dispatch loop.
+func (r *NotifyRegistry) queueFinalAfterInterimLocked(notify *PendingNotify, run func()) bool {
+	if notify.interimSent {
+		return true
+	}
+	// Chain — first-writer-wins isn't right here; we want every queued final
+	// (typically only one, but allow more) to fire in registration order.
+	prev := notify.deferredFinal
+	notify.deferredFinal = func() {
+		if prev != nil {
+			prev()
+		}
+		run()
+	}
+	key := notifyMsgKey{ConnID: notify.ConnID, MessageID: notify.MessageID}
+	r.pendingInterim[key] = notify
+	return false
+}
+
+// QueueFinalAfterInterim is the locked wrapper around the helper above.
+// When notify.GateInterim is false (test path / no real dispatcher to
+// signal interim), runs the callback inline without deferral.
+func (r *NotifyRegistry) QueueFinalAfterInterim(notify *PendingNotify, run func()) {
+	if !notify.GateInterim {
+		run()
+		return
+	}
+	r.mu.Lock()
+	inline := r.queueFinalAfterInterimLocked(notify, run)
+	r.mu.Unlock()
+	if inline {
+		run()
 	}
 }
 
@@ -1063,6 +1171,26 @@ func (r *NotifyRegistry) flushWatcher(fileID [16]byte) {
 	r.deliverChanges(notify, changes)
 }
 
+// sendFinalGated invokes notify.AsyncCallback with the given response,
+// deferring the send until the interim STATUS_PENDING for this notify has
+// been written to the wire. Use this for any async final response (CANCELLED,
+// OK, NOTIFY_CLEANUP, NOTIFY_ENUM_DIR) so the on-wire order PENDING → final
+// is preserved (smb2.notify.mask).
+func (r *NotifyRegistry) sendFinalGated(notify *PendingNotify, resp *ChangeNotifyResponse, where string) {
+	if notify.AsyncCallback == nil {
+		return
+	}
+	r.QueueFinalAfterInterim(notify, func() {
+		if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, resp); err != nil {
+			logger.Warn("CHANGE_NOTIFY: failed to send async final",
+				"where", where,
+				"messageID", notify.MessageID,
+				"status", resp.GetStatus().String(),
+				"error", err)
+		}
+	})
+}
+
 // deliverChanges encodes and sends buffered events via the watcher's
 // AsyncCallback. Called from flushWatcher (timer path) and FlushAll (test
 // path). Must be called AFTER the watcher is unregistered — caller is
@@ -1090,10 +1218,7 @@ func (r *NotifyRegistry) deliverChanges(notify *PendingNotify, changes []FileNot
 		enumResp := &ChangeNotifyResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
 		}
-		if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, enumResp); err != nil {
-			logger.Warn("CHANGE_NOTIFY: failed to send STATUS_NOTIFY_ENUM_DIR",
-				"messageID", notify.MessageID, "error", err)
-		}
+		r.sendFinalGated(notify, enumResp, "deliverChanges/overflow")
 		return
 	}
 
@@ -1108,10 +1233,7 @@ func (r *NotifyRegistry) deliverChanges(notify *PendingNotify, changes []FileNot
 		"messageID", notify.MessageID,
 		"sessionID", notify.SessionID)
 
-	if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, response); err != nil {
-		logger.Warn("CHANGE_NOTIFY: failed to send async response",
-			"messageID", notify.MessageID, "error", err)
-	}
+	r.sendFinalGated(notify, response, "deliverChanges")
 }
 
 // NotifyRmdir handles directory removal notification: send STATUS_NOTIFY_CLEANUP
@@ -1139,17 +1261,10 @@ func (r *NotifyRegistry) NotifyRmdir(shareName, parentPath, dirName string) {
 
 	// Send STATUS_NOTIFY_CLEANUP to each removed watcher
 	for _, w := range cleanupWatchers {
-		if w.AsyncCallback != nil {
-			cleanupResp := &ChangeNotifyResponse{
-				SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
-			}
-			if err := w.AsyncCallback(w.SessionID, w.MessageID, w.AsyncId, cleanupResp); err != nil {
-				logger.Warn("CHANGE_NOTIFY: failed to send STATUS_NOTIFY_CLEANUP for rmdir",
-					"dirPath", dirPath,
-					"messageID", w.MessageID,
-					"error", err)
-			}
+		cleanupResp := &ChangeNotifyResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
 		}
+		r.sendFinalGated(w, cleanupResp, "NotifyRmdir")
 	}
 
 	// Second: notify parent watchers about the directory removal
