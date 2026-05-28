@@ -13,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"lukechampine.com/blake3"
 )
 
 // defaultShutdownTimeout is the maximum time to wait for the transfer queue
@@ -310,6 +311,21 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 		data, err := m.local.Get(ctx, hash)
 		if err != nil {
 			return fmt.Errorf("local get %s: %w", hash, err)
+		}
+		// Re-hash fetched bytes before upload. Local bitrot, torn
+		// writes, or hardware errors between rollup-time hashing and
+		// this read would otherwise silently propagate corrupt bytes
+		// to remote and MarkSynced them. Downstream verification via
+		// ReadBlockVerified is post-facto and useless once the local
+		// copy is evicted, so refuse the upload here and surface an
+		// error to the syncer loop.
+		computed := blockstore.ContentHash(blake3.Sum256(data))
+		if computed != hash {
+			logger.Error("local corruption detected before mirror upload — refusing to upload",
+				"hash", hash.String(),
+				"computed", computed.String(),
+				"bytes", len(data))
+			return fmt.Errorf("%w on hash %s: computed %s (refusing upload)", blockstore.ErrCASContentMismatch, hash.String(), computed.String())
 		}
 		if err := m.remoteStore.Put(ctx, hash, data); err != nil {
 			return fmt.Errorf("remote put %s: %w", hash, err)

@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	memorylocal "github.com/marmos91/dittofs/pkg/blockstore/local/memory"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
+	"lukechampine.com/blake3"
 )
 
 // errBoomPut is the sentinel error returned by failingPutRemote.
@@ -74,8 +75,11 @@ func (o *oneHashLocalStore) ListUnsynced(_ context.Context) iter.Seq2[blockstore
 // remote.
 func TestMirrorLoop_PropagatesPutError(t *testing.T) {
 	ctx := context.Background()
-	hash := blockstore.ContentHash{0xDE, 0xAD, 0xBE, 0xEF}
 	payload := []byte("mirror-loop-put-error")
+	// Use the real BLAKE3 hash of the payload so the pre-upload verify
+	// step in mirrorOnce passes and the test exercises the Put failure
+	// path (not the corruption-refusal path).
+	hash := blockstore.ContentHash(blake3.Sum256(payload))
 
 	local := newOneHashLocalStore(t, hash, payload)
 	rs := &failingPutRemote{}
