@@ -251,17 +251,15 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 			h.DeleteAllTreesForSession(req.PreviousSessionID)
 			h.DeleteAllPendingAuthForSession(req.PreviousSessionID)
 
-			// Deferred delete with barrier: the goroutine waits briefly for
-			// in-flight responses on the old connection to be signed, then
-			// removes the session from the manager. SignalPendingCleanup
-			// ensures WaitForCleanup in the next SESSION_SETUP blocks until
-			// this goroutine completes, preventing stale-session observation.
-			h.SignalPendingCleanup(1)
-			go func(sid uint64) {
-				defer h.SignalCleanupDone()
-				time.Sleep(500 * time.Millisecond)
-				h.DeleteSession(sid)
-			}(req.PreviousSessionID)
+			// Keep the prior session as a LoggedOff zombie in the manager until
+			// the connection closes. Deleting it here would race a still-in-flight
+			// client request on the prior SessionID (e.g. smbtorture
+			// smb2.notify.session-reconnect issues an explicit LOGOFF on the old
+			// session right after supersession). When the session is gone,
+			// SendMessage can't sign the USER_SESSION_DELETED response, and the
+			// client rejects the unsigned reply as STATUS_ACCESS_DENIED. The
+			// LOGOFF handler already uses this exact pattern — keep parity here.
+			// Connection close fan-out (cleanupSessions) tears it down.
 		}
 	}
 

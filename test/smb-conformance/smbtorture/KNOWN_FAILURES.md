@@ -95,7 +95,6 @@ overflow, rec, rmdir1-4, tcon, tdis, tdis1, tcp, tree.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.notify.valid-req | Change Notify | Needs kernel inotify for MODIFIED on WRITE (also fails on reference Samba in Docker) | - |
-| smb2.notify.session-reconnect | Change Notify | PreviousSessionID signing key derivation mismatch (not notify-specific) | - |
 | smb2.notify.mask-change | Change Notify | SHARING_VIOLATION on directory open (pre-existing, never passed individually) | - |
 
 ### Oplocks (Multi-Client Coordination Not Implemented)

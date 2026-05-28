@@ -578,7 +578,15 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// Return NOTIFY_ENUM_DIR immediately without setting the sticky overflow
 	// flag and without registering a watcher. This is distinct from a real
 	// overflow (buffer>0 but too small) which latches sticky overflow.
+	// Disarm the handle so events fired between this response and the next
+	// CHANGE_NOTIFY register are dropped: ENUM_DIR tells the client to
+	// re-enumerate, so any pre-register events would diverge from the
+	// directory snapshot the client is about to take (smb2.notify.valid-req:
+	// after buffer_size=0 → ENUM_DIR, the next notify must reflect only
+	// events that occur after that next CHANGE_NOTIFY is registered). The
+	// next CHANGE_NOTIFY's Register re-arms the handle from a clean state.
 	if effectiveMax == 0 {
+		h.NotifyRegistry.Disarm(req.FileID)
 		respBytes, encErr := (&ChangeNotifyResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
 		}).Encode()
