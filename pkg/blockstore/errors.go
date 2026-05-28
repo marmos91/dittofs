@@ -118,13 +118,8 @@ var (
 	//   - HTTP: 503 Service Unavailable
 	ErrUnavailable = errors.New("storage unavailable")
 
-	// ErrBlockNotFound is returned when a requested block doesn't exist in the
-	// remote block store.
-	ErrBlockNotFound = errors.New("block not found")
-
-	// ErrChunkNotFound indicates the requested content-addressed chunk does
-	// not exist in the local chunk store. Mirrors ErrBlockNotFound /
-	// ErrContentNotFound style.
+	// ErrChunkNotFound indicates the requested content-addressed chunk
+	// does not exist in the store (local or remote).
 	ErrChunkNotFound = errors.New("chunk not found")
 
 	// ErrStoreClosed is returned when operations are attempted on a closed store.

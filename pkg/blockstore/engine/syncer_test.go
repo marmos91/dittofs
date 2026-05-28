@@ -457,7 +457,7 @@ func remoteHasHash(t *testing.T, rs remote.RemoteStore, hash blockstore.ContentH
 	if err == nil {
 		return true
 	}
-	if errors.Is(err, blockstore.ErrBlockNotFound) || errors.Is(err, blockstore.ErrChunkNotFound) {
+	if errors.Is(err, blockstore.ErrChunkNotFound) {
 		return false
 	}
 	t.Fatalf("Head(%s): %v", hash, err)

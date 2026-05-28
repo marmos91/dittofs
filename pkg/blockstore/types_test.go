@@ -312,7 +312,7 @@ func TestFileBlockLastSyncAttemptAt(t *testing.T) {
 
 // TestErrCASSentinels asserts the new exported sentinels exist, are
 // distinct, self-identical via errors.Is, and have non-empty messages
-// prefixed with "blockstore:" — matching ErrInvalidHash / ErrBlockNotFound
+// prefixed with "blockstore:" — matching ErrInvalidHash / ErrChunkNotFound
 // style.
 func TestErrCASSentinels(t *testing.T) {
 	if !errors.Is(ErrCASContentMismatch, ErrCASContentMismatch) {

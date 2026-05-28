@@ -130,11 +130,10 @@ func testGetNotFound(t *testing.T, factory Factory) {
 	if err == nil {
 		t.Fatalf("Get on missing hash: expected error, got nil (data len=%d)", len(data))
 	}
-	// BlockStore contract accepts either ErrChunkNotFound (local) or
-	// ErrBlockNotFound (remote) for missing-key reads — see blockstore.go
-	// Get godoc.
-	if !errors.Is(err, blockstore.ErrChunkNotFound) && !errors.Is(err, blockstore.ErrBlockNotFound) {
-		t.Fatalf("Get on missing hash: want ErrChunkNotFound or ErrBlockNotFound, got %v", err)
+	// BlockStore contract: missing-key reads return ErrChunkNotFound —
+	// see blockstore.go Get godoc.
+	if !errors.Is(err, blockstore.ErrChunkNotFound) {
+		t.Fatalf("Get on missing hash: want ErrChunkNotFound, got %v", err)
 	}
 	if data != nil {
 		t.Fatalf("Get on missing hash: want nil data, got %d bytes", len(data))
@@ -176,8 +175,8 @@ func testDelete(t *testing.T, factory Factory) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	if _, err := bs.Get(ctx, h); !errors.Is(err, blockstore.ErrChunkNotFound) && !errors.Is(err, blockstore.ErrBlockNotFound) {
-		t.Fatalf("Get after Delete: want ErrChunkNotFound or ErrBlockNotFound, got %v", err)
+	if _, err := bs.Get(ctx, h); !errors.Is(err, blockstore.ErrChunkNotFound) {
+		t.Fatalf("Get after Delete: want ErrChunkNotFound, got %v", err)
 	}
 }
 

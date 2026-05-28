@@ -270,7 +270,7 @@ func (s *Store) Get(ctx context.Context, hash blockstore.ContentHash) ([]byte, e
 	})
 	if err != nil {
 		if isNotFoundError(err) {
-			return nil, blockstore.ErrBlockNotFound
+			return nil, blockstore.ErrChunkNotFound
 		}
 		return nil, fmt.Errorf("s3 get: %w", err)
 	}
@@ -304,7 +304,7 @@ func (s *Store) ReadBlockVerified(ctx context.Context, hash blockstore.ContentHa
 	})
 	if err != nil {
 		if isNotFoundError(err) {
-			return nil, blockstore.ErrBlockNotFound
+			return nil, blockstore.ErrChunkNotFound
 		}
 		return nil, fmt.Errorf("s3 get: %w", err)
 	}
@@ -348,7 +348,7 @@ func (s *Store) GetRange(ctx context.Context, hash blockstore.ContentHash, offse
 	})
 	if err != nil {
 		if isNotFoundError(err) {
-			return nil, blockstore.ErrBlockNotFound
+			return nil, blockstore.ErrChunkNotFound
 		}
 		return nil, fmt.Errorf("s3 get range: %w", err)
 	}
@@ -400,7 +400,7 @@ func (s *Store) Has(ctx context.Context, hash blockstore.ContentHash) (bool, err
 }
 
 // Head returns blockstore.Meta for the CAS object addressed by hash
-// without transferring the body. Returns blockstore.ErrBlockNotFound on
+// without transferring the body. Returns blockstore.ErrChunkNotFound on
 // missing keys (same convention as Get).
 //
 // The x-amz-meta-content-hash header is NOT echoed in the returned
@@ -419,7 +419,7 @@ func (s *Store) Head(ctx context.Context, hash blockstore.ContentHash) (blocksto
 	})
 	if err != nil {
 		if isNotFoundError(err) {
-			return blockstore.Meta{}, blockstore.ErrBlockNotFound
+			return blockstore.Meta{}, blockstore.ErrChunkNotFound
 		}
 		return blockstore.Meta{}, fmt.Errorf("s3 head: %w", err)
 	}

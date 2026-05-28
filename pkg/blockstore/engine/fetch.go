@@ -147,14 +147,14 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 
 	storeKey, data, err := m.dispatchRemoteFetch(ctx, fb)
 	if err != nil {
-		if errors.Is(err, blockstore.ErrBlockNotFound) {
+		if errors.Is(err, blockstore.ErrChunkNotFound) {
 			// fail-closed on the CAS path. A row
 			// with a non-zero hash is a live reference to a CAS
 			// object; if that object is missing from the remote, the
 			// invariant has been violated (GC fail-closed
 			// should make this impossible). Returning silent zeros
 			// here would corrupt the caller's read with no log trace.
-			// Surface ErrBlockNotFound so the caller sees the data
+			// Surface ErrChunkNotFound so the caller sees the data
 			// loss explicitly. Post-Phase-17 the legacy zero-hash
 			// branch is gone, so the !IsZero guard is implicit —
 			// any successful dispatchRemoteFetch return implies a
@@ -162,7 +162,7 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 			logger.Error("CAS object missing for live FileBlock — possible GC race or live-data-loss",
 				"block_id", fb.ID, "store_key", storeKey, "hash", fb.Hash.String())
 			return nil, fmt.Errorf("CAS object missing for live row %s (key %s): %w",
-				fb.ID, storeKey, blockstore.ErrBlockNotFound)
+				fb.ID, storeKey, blockstore.ErrChunkNotFound)
 		}
 		return nil, fmt.Errorf("download block %s: %w", storeKey, err)
 	}
@@ -311,7 +311,7 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 	// CAS verified-read dispatch — legacy branch has been removed.
 	storeKey, data, err := m.dispatchRemoteFetch(ctx, fb)
 	if err != nil {
-		if errors.Is(err, blockstore.ErrBlockNotFound) {
+		if errors.Is(err, blockstore.ErrChunkNotFound) {
 			// fail-closed on the CAS path. See
 			// fetchBlock for the rationale — a non-zero-hash row that
 			// resolves to a missing CAS object is a live-data-loss
@@ -320,11 +320,11 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 			logger.Error("CAS object missing for live FileBlock — possible GC race or live-data-loss",
 				"block_id", fb.ID, "store_key", storeKey, "hash", fb.Hash.String())
 			wrapped := fmt.Errorf("CAS object missing for live row %s (key %s): %w",
-				fb.ID, storeKey, blockstore.ErrBlockNotFound)
+				fb.ID, storeKey, blockstore.ErrChunkNotFound)
 			completionErr = wrapped
 			return nil, false, wrapped
 		}
-		// Mirror the ErrBlockNotFound branch above: piggyback waiters
+		// Mirror the ErrChunkNotFound branch above: piggyback waiters
 		// read completionErr after result.done closes (via the deferred
 		// completeInFlight), so we MUST set completionErr to the same
 		// wrapped error the direct caller sees — otherwise the waiter

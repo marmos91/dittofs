@@ -117,10 +117,8 @@ type BlockStore interface {
 	Delete(ctx context.Context, hash ContentHash) error
 
 	// Head returns Meta for the object addressed by hash without
-	// transferring the body. Returns blockstore.ErrChunkNotFound (or
-	// blockstore.ErrBlockNotFound for remote backends — both are
-	// acceptable; callers match via errors.Is on either) when the
-	// object is absent.
+	// transferring the body. Returns blockstore.ErrChunkNotFound when
+	// the object is absent.
 	//
 	// Meta.Size MUST equal the byte length of what Get would return for
 	// the same hash. Meta.LastModified MUST be non-zero (see Meta

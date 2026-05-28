@@ -80,7 +80,7 @@ func (s *Store) Put(_ context.Context, hash blockstore.ContentHash, data []byte)
 }
 
 // Get returns the bytes addressed by hash. Returns
-// blockstore.ErrBlockNotFound on miss. The returned slice is a defensive
+// blockstore.ErrChunkNotFound on miss. The returned slice is a defensive
 // copy.
 func (s *Store) Get(_ context.Context, hash blockstore.ContentHash) ([]byte, error) {
 	s.mu.RLock()
@@ -92,7 +92,7 @@ func (s *Store) Get(_ context.Context, hash blockstore.ContentHash) ([]byte, err
 
 	mb, ok := s.blocks[hash]
 	if !ok {
-		return nil, blockstore.ErrBlockNotFound
+		return nil, blockstore.ErrChunkNotFound
 	}
 
 	copied := make([]byte, len(mb.data))
@@ -118,7 +118,7 @@ func (s *Store) ReadBlockVerified(_ context.Context, hash blockstore.ContentHash
 
 	mb, ok := s.blocks[hash]
 	if !ok {
-		return nil, blockstore.ErrBlockNotFound
+		return nil, blockstore.ErrChunkNotFound
 	}
 
 	// Body recompute. No streaming response body here.
@@ -146,12 +146,12 @@ func (s *Store) GetRange(_ context.Context, hash blockstore.ContentHash, offset,
 
 	mb, ok := s.blocks[hash]
 	if !ok {
-		return nil, blockstore.ErrBlockNotFound
+		return nil, blockstore.ErrChunkNotFound
 	}
 
 	// Bounds checking
 	if offset < 0 || offset >= int64(len(mb.data)) {
-		return nil, blockstore.ErrBlockNotFound
+		return nil, blockstore.ErrChunkNotFound
 	}
 
 	end := offset + length
@@ -178,7 +178,7 @@ func (s *Store) Has(_ context.Context, hash blockstore.ContentHash) (bool, error
 }
 
 // Head returns blockstore.Meta{Size, LastModified} for the CAS object
-// addressed by hash. Returns blockstore.ErrBlockNotFound on miss.
+// addressed by hash. Returns blockstore.ErrChunkNotFound on miss.
 func (s *Store) Head(_ context.Context, hash blockstore.ContentHash) (blockstore.Meta, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -189,7 +189,7 @@ func (s *Store) Head(_ context.Context, hash blockstore.ContentHash) (blockstore
 
 	mb, ok := s.blocks[hash]
 	if !ok {
-		return blockstore.Meta{}, blockstore.ErrBlockNotFound
+		return blockstore.Meta{}, blockstore.ErrChunkNotFound
 	}
 
 	return blockstore.Meta{
