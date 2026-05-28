@@ -57,10 +57,10 @@ Each area gets PR-A (REVIEW.md) → triage → PR-B (fixes + simplifier + review
 |---|---|---|---|---|---|
 | 1 | Block stores + CAS + engine | `pkg/blockstore/{engine,local,remote,chunker,compression,encryption}` | 19.3K | FastCDC paper, S3 API spec, BLAKE3 spec | **HIGH** (data path) |
 | 2 | Syncer | `pkg/blockstore/{remote,engine}/syncer` | (subset of #1) | RFC 7233 ranges, S3 multipart | **HIGH** (background I/O) |
-| 3 | SMB handlers | `internal/adapter/smb/` | 36.9K | MS-SMB2, Samba `source3/smbd/smb2_*`, MS-FSA | **HIGH** (protocol hot path) |
-| 4 | NFS handlers | `internal/adapter/nfs/` | 52.9K | RFC 1813 / 7530 / 8881, Linux `fs/nfsd/`, `fs/nfs/` | **HIGH** (protocol hot path) |
+| 3 | SMB handlers | `internal/adapter/smb/`, `pkg/adapter/smb/` | 36.9K | MS-SMB2, Samba `source3/smbd/smb2_*`, MS-FSA | **HIGH** (protocol hot path) |
+| 4 | NFS handlers | `internal/adapter/nfs/`, `pkg/adapter/nfs/` | 52.9K | RFC 1813 / 7530 / 8881, Linux `fs/nfsd/`, `fs/nfs/` | **HIGH** (protocol hot path) |
 | 5 | Lock manager + ACL | `pkg/metadata/lock`, `pkg/metadata/acl` | ~3.5K | MS-FSA §2.1.5, Samba locking, MS-DTYP SD | MED (contention-prone) |
-| 6 | Metadata stores | `pkg/metadata/{badger,postgres,memory}` | 15.4K | POSIX.1-2017 VFS, Linux `fs/` — **NOT storetest** | MED |
+| 6 | Metadata stores | `pkg/metadata/store/{badger,memory,postgres}` | 15.4K | POSIX.1-2017 VFS, Linux `fs/` — **NOT storetest** | MED |
 | 7 | Runtime | `pkg/controlplane/runtime/` | 11.1K | (internal — graph from gsd-graphify) | MED |
 | 8 | GC | `pkg/blockstore/engine/gc*` | (subset of #1) | RFC-style ref-counted CAS | LOW (background) |
 | 9 | Backup/Snapshot | per [[project_share_snapshots_design]] | n/a (new) | (replaces deprecated v0.13 backup) | LOW |
@@ -145,7 +145,7 @@ Each area gets PR-A (REVIEW.md) → triage → PR-B (fixes + simplifier + review
 
 Output: `.planning/v1.0-audit/{area}/REVIEW.md` with sections — Current State, Structural Findings, Bug Findings, Tests Findings, HIGH/MED/LOW triage table, reuse opportunities, suggested deletes.
 
-**In-tree conformance suites are AUDIT SUBJECTS, not authorities.** `pkg/metadata/storetest/`, `pkg/blockstore/local/localtest/`, `pkg/blockstore/remote/remotetest/` were authored as part of the same AI-assisted effort and may carry the same biases as the implementations they test (a backend can pass a suite that codifies a bug). Each suite gets its own audit pass:
+**In-tree conformance suites are AUDIT SUBJECTS, not authorities.** `pkg/metadata/storetest/` and `pkg/blockstore/blockstoretest/` were authored as part of the same AI-assisted effort and may carry the same biases as the implementations they test (a backend can pass a suite that codifies a bug). Each suite gets its own audit pass:
 
 - Cross-check the assertions against external specs (POSIX, MS-FSA, S3 API), not against current DittoFS behavior.
 - Look for "round-trip" tests that just echo implementation choice instead of asserting spec behavior.
@@ -219,7 +219,7 @@ Final stream. Branch `v1.0/docs-rewrite`.
 - `go test -race ./...` clean (no `KNOWN_FAILURES` regressions).
 - `staticcheck ./...` clean (add to CI if missing).
 - `go list -deps ./...` shows no import cycles. (`pkg/` ↔ `internal/` rule depends on (a)/(b)/(c) decision above — if (a), enforce no `pkg/` → `internal/` edges.)
-- No exported symbol in `pkg/` is consumed by exactly zero external callers (`unused` / `unparam` lints).
+- Public-API surface audit: every exported `pkg/` symbol has at least one external caller. Tooling — `staticcheck` `U1000` (in-package unused) + manual `grep`-based external-callsite check across the repo. (Note: `unused` does **not** flag exported symbols by zero external callers; `unparam` is not enabled in `.golangci.yml` — wire it in if we want unused-parameter coverage as a separate CI gate.)
 - `cd test/e2e && sudo ./run-e2e.sh` green for all configs including `--s3`.
 - `test/smb-conformance` no new failures.
 - `test/posix` pjdfstest baseline holds.
