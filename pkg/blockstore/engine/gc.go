@@ -305,11 +305,12 @@ func CollectGarbage(
 		"sweep_concurrency", sweepConcurrency,
 		"remote_endpoint_id", options.RemoteEndpointID,
 		"shares", options.Shares,
+		"hold_provider", options.HoldProvider != nil,
 	)
 
 	// MARK: stream every FileBlock's ContentHash into gcs across every share
 	// the reconciler reports. Mark fail-closed per INV-04.
-	if err := markPhase(ctx, reconciler, gcs, stats); err != nil {
+	if err := markPhase(ctx, reconciler, gcs, stats, options.HoldProvider, options.RemoteEndpointID, options.Shares); err != nil {
 		recordGCError(stats, "mark: "+err.Error())
 		slog.Error("GC: mark failed — aborting sweep (fail-closed per INV-04)",
 			"run_id", runID, "err", err,
@@ -355,13 +356,13 @@ func CollectGarbage(
 // live-data-deleted (INV-04). Callers that genuinely have no shares must
 // short-circuit at a higher level (Runtime.RunBlockGC already does so
 // when DistinctRemoteStores returns an empty slice).
-func markPhase(ctx context.Context, reconciler MetadataReconciler, gcs *GCState, stats *GCStats) error {
-	shares := sharesForReconciler(reconciler)
-	if len(shares) == 0 {
+func markPhase(ctx context.Context, reconciler MetadataReconciler, gcs *GCState, stats *GCStats, hold HoldProvider, remoteEndpointID string, shares []string) error {
+	reconcilerShares := sharesForReconciler(reconciler)
+	if len(reconcilerShares) == 0 {
 		return fmt.Errorf("mark phase: reconciler reports zero shares — refusing to sweep CAS objects without a live set (INV-04 fail-closed)")
 	}
 
-	for _, shareName := range shares {
+	for _, shareName := range reconcilerShares {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("mark phase ctx: %w", err)
 		}
@@ -383,6 +384,26 @@ func markPhase(ctx context.Context, reconciler MetadataReconciler, gcs *GCState,
 			return fmt.Errorf("enumerate share %q: %w", shareName, err)
 		}
 	}
+
+	// Held hashes land in the same GCState live set used by the sweep's
+	// presence check. Failures fail closed (orphan-not-deleted is always
+	// preferred over live-data-deleted).
+	if hold != nil {
+		cb := func(h blockstore.ContentHash) error {
+			if h.IsZero() {
+				return nil
+			}
+			if err := gcs.Add(h); err != nil {
+				return fmt.Errorf("gcstate add: %w", err)
+			}
+			stats.HashesMarked++
+			return nil
+		}
+		if err := hold.HeldHashes(ctx, remoteEndpointID, shares, cb); err != nil {
+			return fmt.Errorf("hold provider: %w", err)
+		}
+	}
+
 	// Phase 11 IN-4-04: flush the batched Add()s so the sweep's Has()
 	// queries observe every marked hash. Without this the final partial
 	// batch (< gcAddBatchSize hashes from the last share) sits in memory

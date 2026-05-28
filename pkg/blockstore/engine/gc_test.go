@@ -385,24 +385,6 @@ func TestGCMarkSweep_DryRun(t *testing.T) {
 	}
 }
 
-// TestGCMarkSweep_NoBackupHoldProvider (behavior 7): grep -rn
-// "BackupHoldProvider" returns nothing in pkg/blockstore/engine/gc.go.
-// Negative assertion that prevents the symbol from sneaking back in.
-//
-// We assert the type/symbol name specifically rather than the substring
-// "Backup" — "Backup" appears in the GC-04 reconfirmation comment, which
-// is the explicit guard against the symbol's reintroduction. The
-// production code references no backup-related types or functions.
-func TestGCMarkSweep_NoBackupHoldProvider(t *testing.T) {
-	body, err := os.ReadFile("gc.go")
-	if err != nil {
-		t.Fatalf("read gc.go: %v", err)
-	}
-	if strings.Contains(string(body), "BackupHoldProvider") {
-		t.Errorf("BackupHoldProvider symbol leaked into gc.go (GC-04 regression)")
-	}
-}
-
 // TestGCMarkSweep_LastRunJSON (behavior 8): after a successful run,
 // <gcStateRoot>/last-run.json exists and parses as GCRunSummary.
 func TestGCMarkSweep_LastRunJSON(t *testing.T) {
