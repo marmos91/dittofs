@@ -1113,7 +1113,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// unlinked while a stream handle is still open, opens on both the base
 	// file and any of its streams MUST return STATUS_DELETE_PENDING
 	// (smbtorture smb2.streams.delete).
-	if fileExists && existingFile != nil {
+	if fileExists {
 		if existingHandle, encErr := metadata.EncodeFileHandle(existingFile); encErr == nil {
 			if h.isFileOrBaseDeletePending(existingHandle, filename) {
 				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDeletePending}}, nil

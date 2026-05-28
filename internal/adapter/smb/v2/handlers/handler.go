@@ -1373,27 +1373,29 @@ func (h *Handler) isFileDeletePending(fileHandle metadata.FileHandle) bool {
 }
 
 // isFileOrBaseDeletePending extends isFileDeletePending to also check whether
-// the base file of a stream (or a stream of a base file) is delete-pending.
-// Per MS-FSA 2.1.5.1.2, when a base file has been marked delete-pending while
-// a stream handle is still open, subsequent opens of BOTH the base file AND
-// any of its streams MUST return STATUS_DELETE_PENDING.
+// a deferred base-file delete is pending across stream/base handles.
+//
+// Per Samba semantics (also matches WPTS expectations): a stream open does
+// NOT inherit the base file's DOC pending state. Streams are tracked as
+// independent fsps; the base's mark-for-delete only fails subsequent stream
+// opens once the base has actually been unlinked and the delete is being
+// deferred for outstanding stream handles (BaseFileDeletePending).
+//
+// Cases handled here:
+//   - Opening a base file: reject if any stream handle on the same base
+//     carries BaseFileDeletePending (base was unlinked, delete deferred).
+//   - Opening a stream:   reject if any handle on the base file or sibling
+//     stream carries BaseFileDeletePending.
 //
 // filePath is the normalized path being opened (e.g., "file" or "file:Stream One").
 func (h *Handler) isFileOrBaseDeletePending(fileHandle metadata.FileHandle, filePath string) bool {
-	// First check the direct metadata handle match (fast path).
+	// Fast path: direct metadata-handle match against an existing handle
+	// whose own DeletePending is set. Covers the same-file re-open case
+	// (smbtorture smb2.oplock.doc, smb2.streams.delete).
 	if h.isFileDeletePending(fileHandle) {
 		return true
 	}
 
-	// Cross-stream check: look for open handles whose DeletePending or
-	// BaseFileDeletePending is set and whose path relationship indicates
-	// the same base file.
-	//
-	// If opening a base file (no ":"), check if any stream handle has
-	// BaseFileDeletePending (the base was already unlinked, deferred).
-	//
-	// If opening a stream, check if any base-file handle or sibling stream
-	// has BaseFileDeletePending or DeletePending for the same base path.
 	openBase := adsBasePath(filePath) // non-empty if filePath is a stream
 	pending := false
 	h.files.Range(func(_, value any) bool {
@@ -1401,25 +1403,21 @@ func (h *Handler) isFileOrBaseDeletePending(fileHandle metadata.FileHandle, file
 		if existing.IsPipe || len(existing.MetadataHandle) == 0 {
 			return true
 		}
-
+		if !existing.BaseFileDeletePending {
+			return true
+		}
+		existingBase := adsBasePath(existing.Path)
 		if openBase == "" {
-			// Opening a base file: check if any stream of this file has
-			// BaseFileDeletePending set (base file delete was deferred to
-			// stream close).
-			existingBase := adsBasePath(existing.Path)
-			if strings.EqualFold(existingBase, filePath) && existing.BaseFileDeletePending {
+			// Opening a base file: match against any stream of this base.
+			if strings.EqualFold(existingBase, filePath) {
 				pending = true
 				return false
 			}
 		} else {
-			// Opening a stream: check if any handle on the base file or
-			// sibling stream has the base file delete-pending.
-			if strings.EqualFold(existing.Path, openBase) && existing.DeletePending {
-				pending = true
-				return false
-			}
-			existingBase := adsBasePath(existing.Path)
-			if strings.EqualFold(existingBase, openBase) && existing.BaseFileDeletePending {
+			// Opening a stream: match against a sibling stream sharing the
+			// same base path, or against a base-file handle of that base.
+			if strings.EqualFold(existingBase, openBase) ||
+				strings.EqualFold(existing.Path, openBase) {
 				pending = true
 				return false
 			}
