@@ -514,26 +514,19 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// Strip NTFS stream suffixes. The default data stream (::$DATA) and
 	// directory index (::$INDEX_ALLOCATION) are implicit and should not be
 	// part of the actual filename stored in the metadata store.
-	//
-	// For named alternate data streams (e.g. ":streamName" or
-	// ":streamName:$DATA"), strip a trailing ":$DATA" type qualifier so
-	// equivalent forms collapse to the same metadata key. Per MS-FSCC
-	// 2.1.5, `:streamName` and `:streamName:$DATA` reference the same
-	// stream; smbtorture `smb2.getinfo.normalized` (getinfo.c:309) opens
-	// streams in both forms and expects them to resolve to the same handle.
 	if idx := strings.Index(filename, ":"); idx >= 0 {
 		streamSuffix := filename[idx:]
 		basePath := filename[:idx]
 		upperSuffix := strings.ToUpper(streamSuffix)
-		switch {
-		case upperSuffix == "::$DATA", upperSuffix == "::$INDEX_ALLOCATION":
+		if upperSuffix == "::$DATA" || upperSuffix == "::$INDEX_ALLOCATION" {
 			filename = basePath
-		case strings.HasSuffix(upperSuffix, ":$DATA"):
-			// Named ADS with explicit type qualifier — strip the trailing
-			// ":$DATA" (case-insensitive on the qualifier, length matches
-			// `upperSuffix` byte-for-byte since the suffix is ASCII).
-			filename = basePath + streamSuffix[:len(streamSuffix)-len(":$DATA")]
 		}
+		// Other stream names (alternate data streams) are kept as-is.
+		// Named ADS with explicit ":$DATA" type qualifier is left intact:
+		// `:stream` and `:stream:$DATA` storage paths stay distinct, matching
+		// the rest of the pipeline (FileStreamInformation, ChangeNotify) that
+		// emits the stored name on the wire. Collapsing them here without
+		// re-appending `:$DATA` downstream regressed WPTS BVT ADS tests.
 	}
 
 	// Reject paths that traverse above the share root (e.g., "../../..")
