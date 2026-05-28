@@ -92,7 +92,10 @@ type SessionCryptoState struct {
 //   - preauthHash: the preauth integrity hash (only used for 3.1.1)
 //   - cipherId: the negotiated cipher ID (determines encryption key length)
 //   - signingAlgId: the negotiated signing algorithm ID
-func DeriveAllKeys(sessionKey []byte, dialect types.Dialect, preauthHash [64]byte, cipherId uint16, signingAlgId uint16) *SessionCryptoState {
+//   - signingAlgExplicit: true when signingAlgId came from an explicit
+//     SIGNING_CAPABILITIES negotiate context (required to disambiguate
+//     HMAC-SHA256, whose wire value is 0, from a default-zero placeholder)
+func DeriveAllKeys(sessionKey []byte, dialect types.Dialect, preauthHash [64]byte, cipherId uint16, signingAlgId uint16, signingAlgExplicit bool) *SessionCryptoState {
 	cs := &SessionCryptoState{}
 	cs.SessionKey = make([]byte, len(sessionKey))
 	copy(cs.SessionKey, sessionKey)
@@ -109,7 +112,7 @@ func DeriveAllKeys(sessionKey []byte, dialect types.Dialect, preauthHash [64]byt
 	// SMB 3.x: derive all 4 keys via SP800-108 KDF
 	sigLabel, sigCtx := kdf.LabelAndContext(kdf.SigningKeyPurpose, dialect, preauthHash)
 	cs.SigningKey = kdf.DeriveKey(sessionKey, sigLabel, sigCtx, 128)
-	cs.Signer = signing.NewSigner(dialect, signingAlgId, cs.SigningKey)
+	cs.Signer = signing.NewSigner(dialect, signingAlgId, signingAlgExplicit, cs.SigningKey)
 
 	encKeyBits := uint32(128)
 	if cipherId == types.CipherAES256CCM || cipherId == types.CipherAES256GCM {

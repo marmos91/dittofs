@@ -574,9 +574,10 @@ func (h *Handler) completeSessionBind(
 	// Determine the new channel's dialect and signing algorithm.
 	connDialect := types.Dialect0300
 	var signingAlgId uint16
+	var signingAlgExplicit bool
 	if ctx.ConnCryptoState != nil {
 		connDialect = ctx.ConnCryptoState.GetDialect()
-		signingAlgId = ctx.ConnCryptoState.GetSigningAlgorithmId()
+		signingAlgId, signingAlgExplicit = ctx.ConnCryptoState.GetSigningAlgorithmId()
 	}
 
 	// For SMB 3.1.1 the channel's preauth integrity hash is the KDF context
@@ -604,7 +605,7 @@ func (h *Handler) completeSessionBind(
 			"error", err)
 		return NewErrorResult(types.StatusInvalidParameter)
 	}
-	channelSigner := signing.NewSigner(connDialect, signingAlgId, channelSigningKey)
+	channelSigner := signing.NewSigner(connDialect, signingAlgId, signingAlgExplicit, channelSigningKey)
 
 	channel := &session.Channel{
 		ConnID:      ctx.ConnID,
@@ -1133,6 +1134,7 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 	var preauthHash [64]byte
 	var cipherId uint16
 	var signingAlgId uint16
+	var signingAlgExplicit bool
 
 	if ctx != nil && ctx.ConnCryptoState != nil {
 		dialect = ctx.ConnCryptoState.GetDialect()
@@ -1143,7 +1145,7 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 			// SESSION_SETUP messages.
 			preauthHash = ctx.ConnCryptoState.GetSessionPreauthHash(sess.SessionID)
 			cipherId = ctx.ConnCryptoState.GetCipherId()
-			signingAlgId = ctx.ConnCryptoState.GetSigningAlgorithmId()
+			signingAlgId, signingAlgExplicit = ctx.ConnCryptoState.GetSigningAlgorithmId()
 		}
 
 		// Clean up the per-session preauth hash entry now that keys are derived
@@ -1166,7 +1168,7 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 		// SMB 3.x: always derive keys via SP800-108 KDF when signing or encryption
 		// is enabled. Key derivation must not be skipped when only encryption is
 		// enabled, since encryption keys come from the same KDF derivation.
-		cryptoState := session.DeriveAllKeys(sessionKey, dialect, preauthHash, cipherId, signingAlgId)
+		cryptoState := session.DeriveAllKeys(sessionKey, dialect, preauthHash, cipherId, signingAlgId, signingAlgExplicit)
 
 		if h.SigningConfig.Enabled {
 			cryptoState.SigningEnabled = true

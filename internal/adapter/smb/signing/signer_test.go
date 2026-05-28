@@ -16,6 +16,7 @@ func TestNewSigner_Dispatch(t *testing.T) {
 		name       string
 		dialect    types.Dialect
 		signingAlg uint16
+		explicit   bool
 		wantType   string
 	}{
 		{
@@ -58,13 +59,26 @@ func TestNewSigner_Dispatch(t *testing.T) {
 			name:       "SMB 3.1.1 with explicit HMAC-SHA256 returns HMACSigner",
 			dialect:    types.Dialect0311,
 			signingAlg: SigningAlgHMACSHA256,
+			explicit:   true,
 			wantType:   "*signing.HMACSigner",
+		},
+		{
+			// Regression: HMAC-SHA256 has wire value 0x0000, which is
+			// indistinguishable from a default-zero placeholder. Without
+			// an explicit-selection signal, a 3.1.1 session that never
+			// negotiated SIGNING_CAPABILITIES (or any other default-zero
+			// plumbing) must fall through to CMAC.
+			name:       "SMB 3.1.1 with implicit zero signingAlg returns CMACSigner",
+			dialect:    types.Dialect0311,
+			signingAlg: SigningAlgHMACSHA256,
+			explicit:   false,
+			wantType:   "*signing.CMACSigner",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			signer := NewSigner(tt.dialect, tt.signingAlg, key)
+			signer := NewSigner(tt.dialect, tt.signingAlg, tt.explicit, key)
 			if signer == nil {
 				t.Fatal("NewSigner returned nil")
 			}
@@ -83,8 +97,8 @@ func TestNewSigner_Dispatch(t *testing.T) {
 			}
 
 			if typeName != tt.wantType {
-				t.Errorf("NewSigner(%v, 0x%04x) = %s, want %s",
-					tt.dialect, tt.signingAlg, typeName, tt.wantType)
+				t.Errorf("NewSigner(%v, 0x%04x, explicit=%v) = %s, want %s",
+					tt.dialect, tt.signingAlg, tt.explicit, typeName, tt.wantType)
 			}
 		})
 	}

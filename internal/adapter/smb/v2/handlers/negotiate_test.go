@@ -104,26 +104,32 @@ func newNegotiateTestContext() *SMBHandlerContext {
 
 // mockCryptoState implements the CryptoState interface for testing.
 type mockCryptoState struct {
-	dialect            types.Dialect
-	cipherId           uint16
-	signingAlgorithmId uint16
-	preauthHashId      uint16
-	preauthHash        [64]byte
-	serverGUID         [16]byte
-	serverCapabilities types.Capabilities
-	serverSecurityMode types.SecurityMode
-	clientGUID         [16]byte
-	clientCapabilities types.Capabilities
-	clientSecurityMode types.SecurityMode
-	clientDialects     []types.Dialect
+	dialect                  types.Dialect
+	cipherId                 uint16
+	signingAlgorithmId       uint16
+	signingAlgorithmExplicit bool
+	preauthHashId            uint16
+	preauthHash              [64]byte
+	serverGUID               [16]byte
+	serverCapabilities       types.Capabilities
+	serverSecurityMode       types.SecurityMode
+	clientGUID               [16]byte
+	clientCapabilities       types.Capabilities
+	clientSecurityMode       types.SecurityMode
+	clientDialects           []types.Dialect
 }
 
-func (m *mockCryptoState) SetDialect(d types.Dialect)                                     { m.dialect = d }
-func (m *mockCryptoState) GetDialect() types.Dialect                                      { return m.dialect }
-func (m *mockCryptoState) SetCipherId(id uint16)                                          { m.cipherId = id }
-func (m *mockCryptoState) GetCipherId() uint16                                            { return m.cipherId }
-func (m *mockCryptoState) SetSigningAlgorithmId(id uint16)                                { m.signingAlgorithmId = id }
-func (m *mockCryptoState) GetSigningAlgorithmId() uint16                                  { return m.signingAlgorithmId }
+func (m *mockCryptoState) SetDialect(d types.Dialect) { m.dialect = d }
+func (m *mockCryptoState) GetDialect() types.Dialect  { return m.dialect }
+func (m *mockCryptoState) SetCipherId(id uint16)      { m.cipherId = id }
+func (m *mockCryptoState) GetCipherId() uint16        { return m.cipherId }
+func (m *mockCryptoState) SetSigningAlgorithmId(id uint16, explicit bool) {
+	m.signingAlgorithmId = id
+	m.signingAlgorithmExplicit = explicit
+}
+func (m *mockCryptoState) GetSigningAlgorithmId() (uint16, bool) {
+	return m.signingAlgorithmId, m.signingAlgorithmExplicit
+}
 func (m *mockCryptoState) SetPreauthIntegrityHashId(id uint16)                            { m.preauthHashId = id }
 func (m *mockCryptoState) GetPreauthHash() [64]byte                                       { return m.preauthHash }
 func (m *mockCryptoState) SetServerGUID(guid [16]byte)                                    { m.serverGUID = guid }

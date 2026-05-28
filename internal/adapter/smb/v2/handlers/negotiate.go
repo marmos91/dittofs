@@ -103,9 +103,10 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	var selectedSigningAlg uint16
 	is311 := selectedDialect == types.Dialect0311
 
+	var signingAlgExplicit bool
 	if is311 {
 		if negotiateContextCount > 0 && negotiateContextOffset > 0 {
-			responseContexts, selectedCipher, selectedSigningAlg = h.processNegotiateContexts(
+			responseContexts, selectedCipher, selectedSigningAlg, signingAlgExplicit = h.processNegotiateContexts(
 				body, negotiateContextOffset, negotiateContextCount)
 		}
 		// Per MS-SMB2 3.3.5.4: SMB 3.1.1 MUST include PREAUTH_INTEGRITY_CAPABILITIES
@@ -245,7 +246,7 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 		if is311 {
 			ctx.ConnCryptoState.SetCipherId(selectedCipher)
 			ctx.ConnCryptoState.SetPreauthIntegrityHashId(types.HashAlgSHA512)
-			ctx.ConnCryptoState.SetSigningAlgorithmId(selectedSigningAlg)
+			ctx.ConnCryptoState.SetSigningAlgorithmId(selectedSigningAlg, signingAlgExplicit)
 		}
 	}
 
@@ -327,12 +328,14 @@ func (h *Handler) buildCapabilities(dialect types.Dialect) types.Capabilities {
 // processNegotiateContexts parses client negotiate contexts and builds response contexts.
 // Only called for SMB 3.1.1 negotiation.
 //
-// Returns the response contexts, the selected cipher ID, and the selected signing algorithm ID.
+// Returns the response contexts, the selected cipher ID, the selected signing
+// algorithm ID, and whether the signing algorithm came from an explicit
+// SIGNING_CAPABILITIES negotiate context (vs. server-side default).
 func (h *Handler) processNegotiateContexts(
 	body []byte,
 	contextOffset uint32,
 	contextCount uint16,
-) ([]types.NegotiateContext, uint16, uint16) {
+) ([]types.NegotiateContext, uint16, uint16, bool) {
 	// Context offset is relative to the start of the SMB2 header (64 bytes before body).
 	// Our body starts at header offset 64, so:
 	//   bodyOffset = contextOffset - 64
@@ -340,13 +343,13 @@ func (h *Handler) processNegotiateContexts(
 	if bodyOffset < 0 || bodyOffset >= len(body) {
 		logger.Debug("Negotiate context offset out of range",
 			"offset", contextOffset, "bodyLen", len(body))
-		return nil, 0, 0
+		return nil, 0, 0, false
 	}
 
 	clientContexts, err := types.ParseNegotiateContextList(body[bodyOffset:], int(contextCount))
 	if err != nil {
 		logger.Debug("Failed to parse negotiate contexts", "error", err)
-		return nil, 0, 0
+		return nil, 0, 0, false
 	}
 
 	var responseContexts []types.NegotiateContext
@@ -449,7 +452,7 @@ func (h *Handler) processNegotiateContexts(
 		selectedSigningAlg = signing.SigningAlgAESCMAC
 	}
 
-	return responseContexts, selectedCipher, selectedSigningAlg
+	return responseContexts, selectedCipher, selectedSigningAlg, signingCapsReceived
 }
 
 // defaultSigningAlgorithmPreference is the server's default signing algorithm

@@ -15,7 +15,7 @@ import (
 func TestDeriveChannelSigningKey_MatchesDeriveAllKeys_SMB30(t *testing.T) {
 	sessionKey := bytes.Repeat([]byte{0x42}, 16)
 
-	cs := DeriveAllKeys(sessionKey, types.Dialect0300, [64]byte{}, 0, 0)
+	cs := DeriveAllKeys(sessionKey, types.Dialect0300, [64]byte{}, 0, 0, false)
 
 	channelKey, err := DeriveChannelSigningKey(sessionKey, types.Dialect0300, [64]byte{})
 	if err != nil {
