@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
@@ -71,6 +72,33 @@ type Runtime struct {
 	adapterProviders   map[string]any
 	adapterProvidersMu sync.RWMutex
 
+	// snapInFlight tracks per-share in-flight snapshot orchestration
+	// goroutines so RemoveShare (plan 23-05) and Runtime.Shutdown can
+	// cancel + wait before tearing down state. Keyed by share name.
+	// See pkg/controlplane/runtime/snapshot.go (Phase 23, D-23-17).
+	snapInFlight   map[string]*snapInFlight
+	snapInFlightMu sync.Mutex
+
+	// snapDeleteLocks is the shared registry of per-share RWMutexes that
+	// serialize the snapshot GC mark phase (HeldHashes, RLock) against
+	// the snapshot-delete write path (AcquireDeleteLock, Lock). The
+	// registry is keyed by share name; every SnapshotHoldProvider built
+	// for that share — across multiple GC runs and the delete path —
+	// looks up the SAME mutex pointer here, so a per-instance mutex on
+	// the provider can never collude with a delete on a different
+	// provider instance. D-23-04.
+	snapDeleteLocks   map[string]*sync.RWMutex
+	snapDeleteLocksMu sync.Mutex
+
+	// runtimeCtx is a long-lived ctx cancelled by Runtime.Shutdown
+	// (plan 23-05). Snapshot orchestration goroutines derive their
+	// child ctx from this so they outlive any caller request ctx
+	// but die promptly on Runtime shutdown. D-23-17.
+	runtimeCtx    context.Context
+	runtimeCancel context.CancelFunc
+
+	snapshotCfg SnapshotDefaults
+
 	identityChangeCallbacks []func()
 
 	// statusCheckers is the lazy per-entity cached health-checker
@@ -87,12 +115,19 @@ func New(s store.Store) *Runtime {
 		mountTracker:     NewMountTracker(),
 		clientRegistry:   NewClientRegistry(),
 		adapterProviders: make(map[string]any),
+		snapInFlight:     make(map[string]*snapInFlight),
+		snapDeleteLocks:  make(map[string]*sync.RWMutex),
 		storesSvc:        stores.New(),
 		sharesSvc:        shares.New(),
 		lifecycleSvc:     lifecycle.New(DefaultShutdownTimeout),
 		identitySvc:      identity.New(),
 		statusCheckers:   newCheckerCache(StatusCacheTTL),
+		snapshotCfg:      SnapshotDefaults{SyncGateConcurrency: defaultSyncGateConcurrency},
 	}
+
+	// Long-lived ctx for snapshot orchestration goroutines (D-23-17).
+	// Cancelled by Runtime shutdown in plan 23-05.
+	rt.runtimeCtx, rt.runtimeCancel = context.WithCancel(context.Background())
 
 	rt.adaptersSvc = adapters.New(s, DefaultShutdownTimeout)
 	rt.adaptersSvc.SetRuntime(rt)
@@ -116,6 +151,44 @@ func (r *Runtime) SetShutdownTimeout(d time.Duration) {
 	}
 	r.adaptersSvc.SetShutdownTimeout(d)
 	r.lifecycleSvc.SetShutdownTimeout(d)
+}
+
+// Shutdown drains in-flight snapshot goroutines, stops all protocol
+// adapters, and closes metadata stores in that order.
+//
+// ORDER IS LOAD-BEARING (D-23-17):
+//
+//  1. shutdownSnapshots — cancel in-flight snapshot goroutines and wait.
+//     These goroutines call into Backupable.Backup (on metadata stores)
+//     and r.store (control-plane DB). If metadata stores or the control
+//     plane were torn down first, snap goroutines would panic on
+//     use-after-close.
+//  2. StopAllAdapters — adapters no longer accept new RPCs. Existing
+//     in-flight RPCs fail naturally (no waiters left to receive them).
+//  3. CloseMetadataStores — now safe; nothing holds open references.
+//
+// Idempotent: a second call is a no-op (runtimeCancel is already
+// triggered, adapters and storesSvc handle re-close internally).
+//
+// ctx bounds only the snapshot-drain step. If ctx fires before all
+// goroutines exit, shutdownSnapshots returns and the rest of the
+// sequence proceeds — runtimeCancel has already fired, so the orphan
+// goroutines will exit on their own. Callers wanting a hard deadline
+// should pass context.WithTimeout(...); callers passing
+// context.Background block until full snapshot drain.
+//
+// Composes the existing piecewise lifecycle helpers (StopAllAdapters,
+// CloseMetadataStores) which remain public for tests that need to
+// drive the steps individually.
+func (r *Runtime) Shutdown(ctx context.Context) error {
+	r.shutdownSnapshots(ctx)
+	if err := r.StopAllAdapters(); err != nil {
+		// Continue: snapshot drain already succeeded; the metadata-store
+		// close still must run so file handles are released.
+		logger.Warn("Runtime.Shutdown: StopAllAdapters error", "error", err)
+	}
+	r.CloseMetadataStores()
+	return nil
 }
 
 func (r *Runtime) CreateAdapter(ctx context.Context, cfg *models.AdapterConfig) error {
@@ -280,7 +353,20 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	return nil
 }
 
+// RemoveShare removes a share. Snapshot orchestration goroutines for the
+// share are cancelled and drained BEFORE the per-share snapshots/ tree is
+// wiped (Phase 22 D-15 hook inside sharesSvc.RemoveShare) — without this
+// ordering a still-running snap goroutine could write into the
+// about-to-be-deleted directory.
+//
+// Per Phase 22 invariant (shares/service.go:776 "DB row is the source of
+// truth"), snapshot DB rows are NOT cascade-deleted: the cancelled
+// goroutine has already flipped its row to state=failed per D-23-09 (or the
+// startup-recovery sweep in plan 23-05 / D-23-18 will), and that orphan row
+// is harmless because the on-disk manifest is wiped and the hold filter
+// (D-23-02) returns false once the snapshots/ tree is gone. D-23-17.
 func (r *Runtime) RemoveShare(name string) error {
+	r.cancelAndWaitInFlightSnaps(name) // D-23-17: drain BEFORE tree wipe
 	return r.sharesSvc.RemoveShare(name)
 }
 
@@ -370,7 +456,30 @@ func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
 func (r *Runtime) Serve(ctx context.Context) error {
 	r.clientRegistry.StartSweeper(ctx)
 
-	return r.lifecycleSvc.Serve(ctx, r.settingsWatcher, r.adaptersSvc, r.metadataService, r.storesSvc, r.store)
+	// D-23-18: Reconcile snapshot rows abandoned by a prior crash BEFORE
+	// adapters start serving. Metadata stores and shares are already
+	// registered by the cmd/dfs boot sequence at this point; running
+	// recovery here means by the time the first CreateSnapshot RPC
+	// arrives, the Phase 22 D-08 partial unique index slot for any
+	// previously-crashed share is already released. Failure is logged
+	// but non-fatal: the operator can still serve, and DeleteSnapshot
+	// reconciles whatever rows we could not flip.
+	if err := r.recoverOrphanedSnapshots(r.runtimeCtx); err != nil {
+		logger.Error("snapshot recovery returned error (continuing startup)", "error", err)
+	}
+
+	return r.lifecycleSvc.Serve(ctx, r.settingsWatcher, r.adaptersSvc, r.metadataService, r.storesSvc, r.store, r)
+}
+
+// ShutdownSnapshots exposes shutdownSnapshots for the lifecycle.Service
+// shutdown sequence so the normal server path (signal -> ctx cancel ->
+// lifecycle.shutdown) drains in-flight snapshot goroutines BEFORE
+// StopAllAdapters / CloseMetadataStores. Direct callers should prefer
+// Runtime.Shutdown which orchestrates the full sequence; this method
+// exists to satisfy lifecycle.SnapshotDrainer without exporting
+// internal lifecycle details. D-23-17 #R3-1.
+func (r *Runtime) ShutdownSnapshots(ctx context.Context) {
+	r.shutdownSnapshots(ctx)
 }
 
 // --- Identity Mapping (delegated to identity.Service) ---
@@ -596,3 +705,82 @@ func (r *Runtime) SetNFSClientProvider(p any) { r.SetAdapterProvider("nfs", p) }
 
 // NFSClientProvider is deprecated; use GetAdapterProvider("nfs").
 func (r *Runtime) NFSClientProvider() any { return r.GetAdapterProvider("nfs") }
+
+// --- Snapshot Defaults (Phase 23 D-23-22) ---
+
+// defaultSyncGateConcurrency is the defense-in-depth default applied
+// when the operator has not configured snapshot.sync_gate_concurrency.
+// Matches the SnapshotConfig default landed in plan 23-01.
+const defaultSyncGateConcurrency = 16
+
+// SnapshotDefaults captures operator-configured knobs the Runtime threads
+// into snapshot orchestration. Populated from the YAML knob
+// `snapshot.sync_gate_concurrency` per D-23-22 (schema in plan 23-01).
+// cmd/dfs/start.go calls SetSnapshotDefaults from the parsed config at
+// boot.
+type SnapshotDefaults struct {
+	// SyncGateConcurrency bounds the parallel Head() probes the sync
+	// gate fires during VerifyRemoteDurability. Default 16 (matches
+	// SnapshotConfig default).
+	SyncGateConcurrency int
+}
+
+// SetSnapshotDefaults sets the operator-configured snapshot knobs the
+// runtime threads into Runtime.CreateSnapshot orchestration. Values
+// <= 0 are coerced to the built-in default (defense-in-depth — the
+// config loader already validates, but a programmatic caller could
+// pass zero).
+func (r *Runtime) SetSnapshotDefaults(d SnapshotDefaults) {
+	if d.SyncGateConcurrency <= 0 {
+		d.SyncGateConcurrency = defaultSyncGateConcurrency
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.snapshotCfg = d
+}
+
+// snapshotDefaults returns a copy of the current SnapshotDefaults under
+// the runtime read lock. Used by the orchestration goroutine to read
+// SyncGateConcurrency at launch time.
+func (r *Runtime) snapshotDefaults() SnapshotDefaults {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	cfg := r.snapshotCfg
+	if cfg.SyncGateConcurrency <= 0 {
+		cfg.SyncGateConcurrency = defaultSyncGateConcurrency
+	}
+	return cfg
+}
+
+// snapInFlight tracks the per-share orchestration goroutines launched
+// by Runtime.CreateSnapshot. See pkg/controlplane/runtime/snapshot.go
+// for the registration + cleanup helpers.
+//
+// The done map keys are snapshot IDs; each chan is buffered (cap 1) and
+// receives exactly one snapResult before the goroutine closes it, so
+// WaitForSnapshot (plan 23-06) can surface the orchestration error via
+// errors.Is without consulting the DB. D-23-17.
+type snapInFlight struct {
+	wg sync.WaitGroup
+	// cancels is keyed by snapshot ID so completed snapshots can release
+	// their cancel func (and the derived ctx attached to runtimeCtx) at
+	// unregisterSnap time instead of leaking for the share's lifetime.
+	cancels map[string]context.CancelFunc
+	done    map[string]chan snapResult
+	mu      sync.Mutex
+	// draining is set true by cancelAndWaitInFlightSnaps after it has
+	// cancelled the per-snap ctxs but BEFORE wg.Wait, so concurrent
+	// WaitForSnapshot callers continue to observe the per-snap doneCh
+	// (instead of falling through to GetSnapshot and reporting a row
+	// still in state='creating'). A registerSnapInFlight observing a
+	// draining entry replaces the map slot with a fresh entry — the
+	// original entry pointer is still held locally by the draining
+	// caller, so its wg.Wait remains valid.
+	draining bool
+}
+
+// snapResult is sent exactly once on a snap's done channel, immediately
+// before close. nil err == success; non-nil err is wrapped per D-23-12.
+type snapResult struct {
+	err error
+}

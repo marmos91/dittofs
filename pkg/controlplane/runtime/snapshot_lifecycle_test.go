@@ -5,12 +5,16 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -340,4 +344,155 @@ func mustNotHave(t *testing.T, ctx context.Context, rs *remotememory.Store, h bl
 func backupAndDiscard(ctx context.Context, st *metadatamemory.MemoryMetadataStore) (*blockstore.HashSet, error) {
 	var buf bytes.Buffer
 	return st.Backup(ctx, &buf)
+}
+
+// TestSnapshotHoldProvider_DeleteVsHeldHashes_Race exercises the D-23-04
+// provider-level RWMutex: concurrent HeldHashes readers + a Delete-style
+// writer (AcquireDeleteLock) must never panic, deadlock, or produce
+// torn/partial hash counts. Runs under `go test -race`; the writer holds
+// the lock briefly to widen the race window. Observed hash counts must
+// be either fully-pre-delete or fully-post-delete, never partial.
+func TestSnapshotHoldProvider_DeleteVsHeldHashes_Race(t *testing.T) {
+	ctx := context.Background()
+
+	// Use a real on-disk SQLite file rather than `:memory:` so the
+	// connection pool shares schema state across reader goroutines.
+	// A fresh `:memory:` DB is per-connection and would cause spurious
+	// "no such table" errors when goroutines pick up new connections.
+	dbPath := filepath.Join(t.TempDir(), "race.db")
+	cp, err := cpstore.New(&cpstore.Config{
+		Type:   cpstore.DatabaseTypeSQLite,
+		SQLite: cpstore.SQLiteConfig{Path: dbPath},
+	})
+	if err != nil {
+		t.Fatalf("cpstore.New: %v", err)
+	}
+	t.Cleanup(func() { _ = cp.Close() })
+
+	rt := New(cp)
+	shareName := "race"
+	rt.sharesSvc.InjectShareForTesting(&shares.Share{
+		Name:          shareName,
+		MetadataStore: "memory",
+	})
+	localStoreDir := t.TempDir()
+	if err := rt.sharesSvc.SetLocalStoreDirForTesting(shareName, localStoreDir); err != nil {
+		t.Fatalf("SetLocalStoreDirForTesting: %v", err)
+	}
+
+	// Seed three ready snapshots, each with a 4-hash manifest. The
+	// hold-set is fixed at 12 hashes pre-delete.
+	const snapCount = 3
+	const hashesPerSnap = 4
+	for s := 0; s < snapCount; s++ {
+		id, err := rt.store.CreateSnapshot(ctx, &models.Snapshot{
+			ShareName:      shareName,
+			State:          models.StateCreating,
+			MetadataEngine: "memory",
+		})
+		if err != nil {
+			t.Fatalf("CreateSnapshot[%d]: %v", s, err)
+		}
+		if err := rt.store.UpdateSnapshotState(ctx, shareName, id, models.StateReady); err != nil {
+			t.Fatalf("UpdateSnapshotState[%d]: %v", s, err)
+		}
+		snap := &models.Snapshot{ID: id}
+		if err := os.MkdirAll(snap.SnapshotDir(localStoreDir), 0o755); err != nil {
+			t.Fatalf("MkdirAll[%d]: %v", s, err)
+		}
+		hs := blockstore.NewHashSet(hashesPerSnap)
+		for h := 0; h < hashesPerSnap; h++ {
+			hs.Add(hashAll(byte(s*hashesPerSnap + h + 1)))
+		}
+		if err := snapshot.WriteManifestAtomic(snap.ManifestPath(localStoreDir), hs); err != nil {
+			t.Fatalf("WriteManifestAtomic[%d]: %v", s, err)
+		}
+	}
+
+	expectedHoldSize := snapCount * hashesPerSnap
+
+	provider, ok := rt.snapshotHoldForRemote([]string{shareName}).(*SnapshotHoldProvider)
+	if !ok {
+		t.Fatalf("snapshotHoldForRemote did not return *SnapshotHoldProvider")
+	}
+
+	const readers = 4
+	const iters = 50
+
+	var wg sync.WaitGroup
+	var panicCount atomic.Int64
+
+	// Reserve all WaitGroup slots BEFORE spawning the watcher so the
+	// watcher's wg.Wait never races with subsequent wg.Add calls
+	// (the race detector flags Add-after-Wait even if Wait has not yet
+	// returned zero).
+	wg.Add(readers + 1)
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	// Reader goroutines: hammer HeldHashes for `iters` iterations each.
+	// Every observation must equal expectedHoldSize (no torn read; the
+	// writer either holds the lock fully or not at all).
+	for r := 0; r < readers; r++ {
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if rec := recover(); rec != nil {
+					panicCount.Add(1)
+					t.Errorf("reader panic: %v", rec)
+				}
+			}()
+			for i := 0; i < iters; i++ {
+				count := 0
+				if err := provider.HeldHashes(ctx, "remote-race", []string{shareName},
+					func(h blockstore.ContentHash) error {
+						count++
+						return nil
+					}); err != nil {
+					t.Errorf("HeldHashes iter %d: %v", i, err)
+					return
+				}
+				if count != expectedHoldSize {
+					t.Errorf("iter %d: got %d hashes, want %d (torn read)", i, count, expectedHoldSize)
+					return
+				}
+			}
+		}()
+	}
+
+	// Writer goroutine: repeatedly acquire the delete-side write lock,
+	// sleep briefly to widen the race window, then release. Mimics the
+	// orchestration-layer (plans 23-04/05) delete path. wg.Add already
+	// reserved above.
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if rec := recover(); rec != nil {
+				panicCount.Add(1)
+				t.Errorf("writer panic: %v", rec)
+			}
+		}()
+		for i := 0; i < iters; i++ {
+			release := provider.AcquireDeleteLock(shareName)
+			time.Sleep(50 * time.Microsecond)
+			release()
+		}
+	}()
+
+	// Watchdog: assert the whole thing terminates well under the test
+	// timeout — a deadlock would otherwise hang for minutes.
+	select {
+	case <-done:
+		// ok
+	case <-time.After(15 * time.Second):
+		t.Fatal("deadlock: HeldHashes/AcquireDeleteLock did not finish within 15s")
+	}
+
+	if panicCount.Load() != 0 {
+		t.Fatalf("%d goroutine(s) panicked under -race", panicCount.Load())
+	}
 }

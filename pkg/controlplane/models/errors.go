@@ -30,6 +30,13 @@ var (
 	ErrSnapshotNotFound      = errors.New("snapshot not found")
 	ErrSnapshotStateConflict = errors.New("snapshot is not in a state that allows this operation")
 
+	// Phase 23 (D-23-12): orchestration sentinels surfaced to REST in Phase 25.
+	ErrSnapshotBackupFailed         = errors.New("snapshot backup failed")
+	ErrSnapshotVerifyFailed         = errors.New("snapshot verify failed: missing hashes on remote after drain")
+	ErrSnapshotDrainTimeout         = errors.New("snapshot drain timed out")
+	ErrSnapshotRetryTargetNotFound  = errors.New("snapshot retry target not found")
+	ErrSnapshotRetryTargetNotFailed = errors.New("snapshot retry target is not in failed state")
+
 	// Setting errors
 	ErrSettingNotFound = errors.New("setting not found")
 

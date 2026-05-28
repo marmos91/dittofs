@@ -38,6 +38,17 @@ type StoreCloser interface {
 	CloseMetadataStores()
 }
 
+// SnapshotDrainer cancels all in-flight snapshot orchestration goroutines
+// and waits (bounded by ctx) for them to drain. Threaded through Serve so
+// snapshot orchestration cannot use-after-close the metadata stores or
+// control-plane DB during graceful shutdown — without this hook the
+// normal server path (signal -> ctx cancel -> lifecycle.shutdown) would
+// call StopAllAdapters + CloseMetadataStores directly while snapshot
+// goroutines still hold references to the closing stores. D-23-17.
+type SnapshotDrainer interface {
+	ShutdownSnapshots(ctx context.Context)
+}
+
 // MachineSIDStore provides access to the SettingsStore for machine SID
 // persistence. The lifecycle service uses this to load or generate the
 // machine SID on first boot, ensuring consistent identity mapping across
@@ -140,6 +151,13 @@ func (s *Service) SetAPIServer(server AuxiliaryServer) {
 //
 // The machineSIDStore parameter is used to load or generate the machine SID
 // for Windows identity mapping. Pass nil to use an ephemeral SID (testing).
+//
+// The snapshotDrainer parameter is invoked as the FIRST shutdown step so
+// in-flight snapshot orchestration goroutines are cancelled and drained
+// BEFORE StopAllAdapters + CloseMetadataStores — otherwise those
+// goroutines would race a closing metadata store / control-plane DB.
+// Pass nil to skip snapshot draining (tests that do not exercise the
+// snapshot pipeline). D-23-17 #R3-1.
 func (s *Service) Serve(
 	ctx context.Context,
 	settings SettingsInitializer,
@@ -147,12 +165,13 @@ func (s *Service) Serve(
 	metadataFlusher MetadataFlusher,
 	storeCloser StoreCloser,
 	machineSIDStore MachineSIDStore,
+	snapshotDrainer SnapshotDrainer,
 ) error {
 	var err error
 
 	s.serveOnce.Do(func() {
 		s.served = true
-		err = s.serve(ctx, settings, adapterLoader, metadataFlusher, storeCloser, machineSIDStore)
+		err = s.serve(ctx, settings, adapterLoader, metadataFlusher, storeCloser, machineSIDStore, snapshotDrainer)
 	})
 
 	return err
@@ -165,6 +184,7 @@ func (s *Service) serve(
 	metadataFlusher MetadataFlusher,
 	storeCloser StoreCloser,
 	machineSIDStore MachineSIDStore,
+	snapshotDrainer SnapshotDrainer,
 ) error {
 	logger.Info("Starting DittoFS runtime")
 
@@ -203,7 +223,7 @@ func (s *Service) serve(
 		shutdownErr = fmt.Errorf("API server error: %w", err)
 	}
 
-	s.shutdown(settings, adapterLoader, metadataFlusher, storeCloser)
+	s.shutdown(settings, adapterLoader, metadataFlusher, storeCloser, snapshotDrainer)
 
 	logger.Info("DittoFS runtime stopped")
 	return shutdownErr
@@ -214,9 +234,23 @@ func (s *Service) shutdown(
 	adapterLoader AdapterLoader,
 	metadataFlusher MetadataFlusher,
 	storeCloser StoreCloser,
+	snapshotDrainer SnapshotDrainer,
 ) {
 	if settings != nil {
 		settings.Stop()
+	}
+
+	// Drain in-flight snapshot orchestration goroutines BEFORE stopping
+	// adapters / closing metadata stores — those goroutines hold
+	// references to both. ShutdownSnapshots cancels runtimeCtx (every
+	// per-snap ctx derives from it) and waits, bounded by the shutdown
+	// timeout. Orphans after the timeout will still exit on their own
+	// since runtimeCtx is already cancelled; we just may proceed before
+	// every wg.Done fires. D-23-17 #R3-1.
+	if snapshotDrainer != nil {
+		drainCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
+		snapshotDrainer.ShutdownSnapshots(drainCtx)
+		cancel()
 	}
 
 	logger.Info("Stopping all adapters")

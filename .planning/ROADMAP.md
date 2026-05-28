@@ -742,7 +742,7 @@ Phase 20 unblocks both 21 and 22 (parallel). Phase 23 requires both 21+22. Phase
 | 20. Backupable Interface + Cleanup | 3/3 | Complete    | 2026-05-27 |
 | 21. Per-Engine Backup Drivers | 5/5 | Complete    | 2026-05-27 |
 | 22. Snapshot Records + GC Hold | 6/6 | Complete   | 2026-05-28 |
-| 23. Snapshot Create Orchestration | 0/? | Not started | - |
+| 23. Snapshot Create Orchestration | 6/6 | Complete    | 2026-05-28 |
 | 24. Restore Flow | 0/? | Not started | - |
 | 25. CLI + REST API + Docs | 0/? | Not started | - |
 

@@ -374,6 +374,12 @@ func LocalForTest(bs *BlockStore) local.LocalStore { return bs.local }
 // (e.g., shared remote store identity). Do not use in production code.
 func (bs *BlockStore) RemoteForTesting() remote.RemoteStore { return bs.remote }
 
+// RemoteStore returns the per-share remote object store, or nil if the
+// share is local-only. Used by the snapshot sync-gate verify step
+// (Phase 23) to drive VerifyRemoteDurability after DrainAllUploads.
+// RemoteForTesting above remains as the documented test alias.
+func (bs *BlockStore) RemoteStore() remote.RemoteStore { return bs.remote }
+
 // ListFiles returns the payloadIDs of all files tracked in the local store.
 func (bs *BlockStore) ListFiles() []string { return bs.local.ListFiles() }
 

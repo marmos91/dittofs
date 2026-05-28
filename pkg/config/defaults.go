@@ -26,6 +26,7 @@ func ApplyDefaults(cfg *Config) {
 	applyKerberosDefaults(&cfg.Kerberos)
 	cfg.Syncer.ApplyDefaults()
 	cfg.GC.ApplyDefaults()
+	cfg.Snapshot.ApplyDefaults()
 	cfg.Blockstore.ApplyDefaults()
 }
 
