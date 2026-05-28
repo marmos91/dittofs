@@ -240,10 +240,23 @@ func (m *Syncer) canProcess(ctx context.Context) bool {
 // per the unified BlockStore contract, so the next Flush pass re-Puts
 // the same hash and proceeds to MarkSynced.
 //
-// Returns Finalized=true when the mirror loop ran to completion (or
-// there was nothing to mirror) and Finalized=false when the local
-// store is configured without a healthy remote, in which case the
-// caller treats the payload as still-local-only.
+// Return contract — see blockstore.Flusher godoc for the full state
+// machine and caller-retry guidance. In brief:
+//   - Finalized=true, err=nil: durable on the configured remote.
+//   - Finalized=false, err=nil: SOFT condition (no remote configured,
+//     remote unhealthy, OR another in-flight mirror pass holds the
+//     `uploading` CAS gate). Callers MUST NOT tight-loop retry — see
+//     #670 below.
+//   - err != nil: hard failure, do not retry until addressed.
+//
+// #670: callers driving NFS COMMIT or SMB Flush loops over this method
+// must rate-limit retries on Finalized=false. The `uploading`
+// CompareAndSwap gate below makes the EXPLICIT Flush caller lose every
+// attempt that races the periodic uploader's tick, so a tight
+// in-handler retry loop pegs the CPU without ever making progress and
+// starves the uploading goroutine. Recommended pattern: surface the
+// soft-fail to the protocol client (NFS3_COMMITTED=false; SMB Flush
+// returns success after a bounded attempt) instead of spinning.
 func (m *Syncer) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return nil, err
@@ -266,9 +279,14 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*blockstore.Flush
 	}
 	// Serialize the explicit mirror against the periodic uploader's
 	// tick body. Both paths take the uploading atomic gate; whichever
-	// holds it runs and the other observes Finalized=false (explicit
-	// caller will retry on the next Flush; periodic caller will retry
-	// on the next tick).
+	// holds it runs and the other observes Finalized=false.
+	//
+	// #670: the contention branch returns Finalized=false WITHOUT
+	// waiting for the in-flight pass to complete. This is intentional —
+	// blocking the explicit caller until the periodic uploader's tick
+	// finishes could span minutes of remote I/O and translate into
+	// protocol-client D-state. Callers MUST NOT spin-retry: see godoc
+	// above and the Flusher.Flush contract in pkg/blockstore.
 	if !m.uploading.CompareAndSwap(false, true) {
 		return &blockstore.FlushResult{Finalized: false}, nil
 	}
