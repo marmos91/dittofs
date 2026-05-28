@@ -226,6 +226,17 @@ func (f HeaderFlags) IsSigned() bool {
 	return f.Has(FlagSigned)
 }
 
+// IsReplay returns true if the message is a replay operation
+// (SMB2_FLAGS_REPLAY_OPERATION per MS-SMB2 §2.2.1.2). Set by the
+// client when retransmitting a request whose response was lost on
+// a previous channel (multichannel) or whose response window was
+// missed. The server uses this to consult per-CreateGuid /
+// per-LockSequence replay state (MS-SMB2 §3.3.5.2.5, §3.3.5.9,
+// §3.3.5.14) instead of treating the request as fresh.
+func (f HeaderFlags) IsReplay() bool {
+	return f.Has(FlagReplay)
+}
+
 // Legacy aliases for backward compatibility
 const (
 	SMB2FlagsServerToRedir   = uint32(FlagResponse)

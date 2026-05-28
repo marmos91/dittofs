@@ -188,6 +188,49 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 		"lockCount", req.LockCount,
 		"sessionID", ctx.SessionID)
 
+	// SMB3 LOCK replay protection (MS-SMB2 §3.3.5.14 step 4).
+	// LockSequence packs (Index << 28 | Number); when both are
+	// non-zero the client has opted into per-slot replay tracking.
+	// A second LOCK with FLAGS_REPLAY_OPERATION + matching
+	// (FileID, Index, Number) MUST return the cached status —
+	// otherwise an already-acquired lock retries and yields
+	// STATUS_LOCK_NOT_GRANTED, or an already-released lock retries
+	// and yields STATUS_RANGE_NOT_LOCKED (smbtorture
+	// smb2.lock.replay_*).
+	//
+	// Note: the cache is consulted even when FLAGS_REPLAY_OPERATION
+	// is NOT set, mirroring Samba `smb2_lock_recv` — clients legally
+	// re-use a slot number for the next distinct lock operation, so
+	// the cache stores per (Index, Number) pair, not just per slot.
+	var lockSeqIndex uint8
+	var lockSeqNumber uint32
+	var lockSeqEnabled bool
+	if h.LockReplayCache != nil {
+		lockSeqIndex, lockSeqNumber, lockSeqEnabled = UnpackLockSequence(req.LockSequence)
+		if lockSeqEnabled {
+			if cachedStatus, hit := h.LockReplayCache.Lookup(req.FileID, lockSeqIndex, lockSeqNumber); hit {
+				logger.Debug("LOCK: replay hit — returning cached status",
+					"fileID", fmt.Sprintf("%x", req.FileID),
+					"index", lockSeqIndex,
+					"number", lockSeqNumber,
+					"status", cachedStatus)
+				if cachedStatus != types.StatusSuccess {
+					return NewErrorResult(cachedStatus), nil
+				}
+				resp := &LockResponse{
+					SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+					StructureSize:   4,
+				}
+				respBytes, encErr := resp.Encode()
+				if encErr != nil {
+					logger.Error("LOCK: encode error on replay-hit success", "error", encErr)
+					return NewErrorResult(types.StatusInternalError), nil
+				}
+				return NewResult(types.StatusSuccess, respBytes), nil
+			}
+		}
+	}
+
 	// Get open file
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
@@ -539,6 +582,14 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	if err != nil {
 		logger.Error("LOCK: encode error", "error", err)
 		return NewErrorResult(types.StatusInternalError), nil
+	}
+
+	// Record success in the LOCK replay cache so a subsequent
+	// FLAGS_REPLAY_OPERATION retry with the same (FileID, Index,
+	// Number) returns this status instead of re-running the
+	// acquire/release path (MS-SMB2 §3.3.5.14 step 4).
+	if lockSeqEnabled && h.LockReplayCache != nil {
+		h.LockReplayCache.Store(req.FileID, lockSeqIndex, lockSeqNumber, types.StatusSuccess)
 	}
 
 	return NewResult(types.StatusSuccess, respBytes), nil

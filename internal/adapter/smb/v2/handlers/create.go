@@ -489,6 +489,38 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
 	}
 
+	// SMB3 replay protection (MS-SMB2 §3.3.5.9 step 5; §2.2.1.2 REPLAY_OPERATION).
+	// When FLAGS_REPLAY_OPERATION is set on a CREATE carrying a
+	// DH2Q with a non-zero CreateGuid, the client is retransmitting
+	// a request whose original response was lost. The server MUST
+	// return the cached response — otherwise the legitimate retry
+	// trips STATUS_SHARING_VIOLATION (the original open is still
+	// alive on the server) and the DH2Q CREATE pattern is unusable
+	// over flaky multichannel topologies (smbtorture
+	// smb2.replay.replay-dhv2-*).
+	//
+	// The cache is scoped per-session and bounded by a short TTL; a
+	// miss falls through to the normal CREATE path, which on
+	// success records the response into the cache for the next
+	// replay window.
+	if ctx.IsReplay && h.CreateReplayCache != nil {
+		if dh2qCtx := FindCreateContext(req.CreateContexts, DurableHandleV2RequestTag); dh2qCtx != nil {
+			if _, _, createGuid, decodeErr := DecodeDH2QRequest(dh2qCtx.Data); decodeErr == nil && createGuid != ([16]byte{}) {
+				if cached := h.CreateReplayCache.Lookup(ctx.SessionID, createGuid); cached != nil {
+					logger.Debug("CREATE: replay hit — returning cached response",
+						"sessionID", ctx.SessionID,
+						"createGuid", fmt.Sprintf("%x", createGuid),
+						"fileID", fmt.Sprintf("%x", cached.FileID))
+					// Return a shallow copy so the caller can stamp
+					// per-response fields without mutating the cache
+					// entry (the encoder reads fields verbatim).
+					resp := *cached
+					return &resp, nil
+				}
+			}
+		}
+	}
+
 	// TWrp (SMB2_CREATE_TIMEWARP_TOKEN, MS-SMB2 §2.2.13.2.7) requests a
 	// previous-version (snapshot) view of the share. DittoFS has no VSS-style
 	// snapshot backend wired into CREATE, so any non-zero snapshot timestamp
