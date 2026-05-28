@@ -101,35 +101,6 @@ type BlockStore struct {
 	prefetchWorkers int   // stored from config, used in Start()
 }
 
-// BlockStoreStats holds comprehensive block store statistics for a BlockStore.
-type BlockStoreStats struct {
-	FileCount    int `json:"file_count"`
-	BlocksDirty  int `json:"blocks_dirty"`
-	BlocksLocal  int `json:"blocks_local"`
-	BlocksRemote int `json:"blocks_remote"`
-	BlocksTotal  int `json:"blocks_total"`
-
-	LocalDiskUsed int64 `json:"local_disk_used"`
-	LocalDiskMax  int64 `json:"local_disk_max"`
-	LocalMemUsed  int64 `json:"local_mem_used"`
-	LocalMemMax   int64 `json:"local_mem_max"`
-
-	ReadBufferEntries int   `json:"read_buffer_entries"`
-	ReadBufferUsed    int64 `json:"read_buffer_used"`
-	ReadBufferMax     int64 `json:"read_buffer_max"`
-
-	HasRemote      bool `json:"has_remote"`
-	PendingSyncs   int  `json:"pending_syncs"`
-	PendingUploads int  `json:"pending_uploads"`
-	CompletedSyncs int  `json:"completed_syncs"`
-	FailedSyncs    int  `json:"failed_syncs"`
-
-	RemoteHealthy       bool    `json:"remote_healthy"`
-	EvictionSuspended   bool    `json:"eviction_suspended"`
-	OutageDurationSecs  float64 `json:"outage_duration_seconds"`
-	OfflineReadsBlocked int64   `json:"offline_reads_blocked"`
-}
-
 // New creates a new BlockStore from the given configuration.
 // Local store and syncer are required; remote may be nil for local-only mode.
 func New(cfg Config) (*BlockStore, error) {
