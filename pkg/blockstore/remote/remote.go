@@ -54,9 +54,7 @@ type RemoteStore interface {
 	// implementations MUST NOT return a slice that aliases internal
 	// storage.
 	//
-	// Returns blockstore.ErrBlockNotFound (or blockstore.ErrChunkNotFound
-	// for fs-style backends — callers match via errors.Is on either) when
-	// the chunk is absent.
+	// Returns blockstore.ErrChunkNotFound when the chunk is absent.
 	//
 	// For S3, prefer ReadBlockVerified on the production read path — Get
 	// returns raw bytes WITHOUT BLAKE3 verification.
@@ -64,7 +62,7 @@ type RemoteStore interface {
 
 	// GetRange returns a byte sub-range [offset, offset+length) of the
 	// chunk addressed by hash. The returned slice is freshly allocated
-	// (same no-aliasing rule as Get). Returns blockstore.ErrBlockNotFound
+	// (same no-aliasing rule as Get). Returns blockstore.ErrChunkNotFound
 	// if the chunk is absent.
 	GetRange(ctx context.Context, hash blockstore.ContentHash, offset, length int64) ([]byte, error)
 
@@ -73,7 +71,7 @@ type RemoteStore interface {
 	Delete(ctx context.Context, hash blockstore.ContentHash) error
 
 	// Head returns blockstore.Meta for the object addressed by hash
-	// without transferring the body. Returns blockstore.ErrBlockNotFound
+	// without transferring the body. Returns blockstore.ErrChunkNotFound
 	// when the object is absent.
 	//
 	// The backend's defense-in-depth content-hash header (S3

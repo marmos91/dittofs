@@ -112,7 +112,7 @@ func (d *EncryptedRemote) Has(ctx context.Context, hash blockstore.ContentHash) 
 	if err == nil {
 		return true, nil
 	}
-	if errors.Is(err, blockstore.ErrBlockNotFound) || errors.Is(err, blockstore.ErrChunkNotFound) {
+	if errors.Is(err, blockstore.ErrChunkNotFound) {
 		return false, nil
 	}
 	return false, err

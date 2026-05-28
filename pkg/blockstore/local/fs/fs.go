@@ -33,9 +33,6 @@ var (
 	ErrDiskFull       = errors.New("local store: disk full after eviction")
 	ErrFileNotInStore = errors.New("file not in local store")
 
-	// ErrBlockNotFound is an alias for blockstore.ErrBlockNotFound.
-	ErrBlockNotFound = blockstore.ErrBlockNotFound
-
 	// errLRUEmpty is returned by lruEvictOne when there are no candidates left.
 	errLRUEmpty = errors.New("local store: LRU empty, no eviction candidates")
 )

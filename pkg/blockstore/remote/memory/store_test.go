@@ -72,8 +72,8 @@ func TestStore_GetNotFound(t *testing.T) {
 
 	hash := hashOf(t, []byte("nonexistent"))
 	_, err := s.Get(ctx, hash)
-	if !errors.Is(err, blockstore.ErrBlockNotFound) {
-		t.Errorf("Get returned error %v, want %v", err, blockstore.ErrBlockNotFound)
+	if !errors.Is(err, blockstore.ErrChunkNotFound) {
+		t.Errorf("Get returned error %v, want %v", err, blockstore.ErrChunkNotFound)
 	}
 }
 
@@ -132,8 +132,8 @@ func TestStore_Delete(t *testing.T) {
 	}
 
 	_, err := s.Get(ctx, hash)
-	if !errors.Is(err, blockstore.ErrBlockNotFound) {
-		t.Errorf("Get after delete returned %v, want %v", err, blockstore.ErrBlockNotFound)
+	if !errors.Is(err, blockstore.ErrChunkNotFound) {
+		t.Errorf("Get after delete returned %v, want %v", err, blockstore.ErrChunkNotFound)
 	}
 
 	// Delete on absent hash is idempotent.
@@ -167,8 +167,8 @@ func TestStore_Head(t *testing.T) {
 
 	// Missing hash
 	missing := hashOf(t, []byte("does-not-exist"))
-	if _, err := s.Head(ctx, missing); !errors.Is(err, blockstore.ErrBlockNotFound) {
-		t.Errorf("Head on missing hash = %v, want %v", err, blockstore.ErrBlockNotFound)
+	if _, err := s.Head(ctx, missing); !errors.Is(err, blockstore.ErrChunkNotFound) {
+		t.Errorf("Head on missing hash = %v, want %v", err, blockstore.ErrChunkNotFound)
 	}
 }
 
@@ -300,8 +300,8 @@ func TestStore_ReadBlockVerified(t *testing.T) {
 
 	// Not found
 	missing := hashOf(t, []byte("missing"))
-	if _, err := s.ReadBlockVerified(ctx, missing, missing); !errors.Is(err, blockstore.ErrBlockNotFound) {
-		t.Fatalf("ReadBlockVerified on missing hash = %v, want wrapped ErrBlockNotFound", err)
+	if _, err := s.ReadBlockVerified(ctx, missing, missing); !errors.Is(err, blockstore.ErrChunkNotFound) {
+		t.Fatalf("ReadBlockVerified on missing hash = %v, want wrapped ErrChunkNotFound", err)
 	}
 }
 

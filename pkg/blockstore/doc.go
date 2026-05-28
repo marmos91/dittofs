@@ -142,8 +142,7 @@
 //     un-migrated `.blk` layout; operator must run
 //     `dfs migrate-to-cas`.
 //   - ErrChunkNotFound — content-addressed chunk is absent
-//     from the store.
-//   - ErrBlockNotFound — remote-side block-miss error.
+//     from the store (local or remote).
 //   - ErrCASContentMismatch — recomputed BLAKE3 disagreed with the
 //     expected ContentHash on read (fail-closed).
 //   - ErrCASKeyMalformed — ParseCASKey rejected an input that

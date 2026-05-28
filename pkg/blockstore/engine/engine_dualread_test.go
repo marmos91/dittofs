@@ -210,7 +210,7 @@ func TestDualRead_CASRowMismatchSurfacesError(t *testing.T) {
 
 // TestDualRead_CASMissingObjectFailsClosed: a row
 // with a non-zero hash whose CAS object is absent from the remote MUST
-// surface as ErrBlockNotFound, NOT silently return zeros.
+// surface as ErrChunkNotFound, NOT silently return zeros.
 // fail-closed makes this state structurally impossible under correct GC
 // but if a bug ever lets a live CAS object get reaped, the read path
 // should fail loudly rather than corrupt the caller's data.
@@ -239,10 +239,10 @@ func TestDualRead_CASMissingObjectFailsClosed(t *testing.T) {
 
 	got, err := env.syncer.fetchBlock(ctx, payloadID, 0)
 	if err == nil {
-		t.Fatalf("fetchBlock: expected ErrBlockNotFound, got nil with data=%v", got)
+		t.Fatalf("fetchBlock: expected ErrChunkNotFound, got nil with data=%v", got)
 	}
-	if !errors.Is(err, blockstore.ErrBlockNotFound) {
-		t.Fatalf("fetchBlock err = %v, want wrapped ErrBlockNotFound", err)
+	if !errors.Is(err, blockstore.ErrChunkNotFound) {
+		t.Fatalf("fetchBlock err = %v, want wrapped ErrChunkNotFound", err)
 	}
 	if got != nil {
 		t.Errorf("fetchBlock data = %v, want nil on fail-closed CAS miss", got)
