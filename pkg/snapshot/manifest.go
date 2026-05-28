@@ -96,7 +96,11 @@ func ReadManifest(r io.Reader) (*blockstore.HashSet, error) {
 		hs.Add(h)
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("snapshot: read manifest: %w", err)
+		// bufio.Scanner errors during tokenization (e.g. line exceeds
+		// maxManifestLine) are line-shape failures from the caller's
+		// perspective; surface them through the same sentinel so callers
+		// can rely on errors.Is(err, ErrInvalidManifestLine).
+		return nil, fmt.Errorf("%w: after line %d: %v", ErrInvalidManifestLine, lineNum, err)
 	}
 	return hs, nil
 }

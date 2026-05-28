@@ -80,7 +80,7 @@ func streamManifest(path string, fn func(blockstore.ContentHash) error) (int, er
 	if err != nil {
 		return 0, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	hs, err := snapshot.ReadManifest(f)
 	if err != nil {

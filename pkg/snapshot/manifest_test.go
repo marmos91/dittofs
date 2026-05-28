@@ -226,7 +226,7 @@ func TestWriteAtomic_CompleteFileOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	got, err := snapshot.ReadManifest(f)
 	if err != nil {
 		t.Fatalf("ReadManifest: %v", err)
@@ -287,7 +287,7 @@ func TestWriteAtomic_OverwritesExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	got, err := snapshot.ReadManifest(f)
 	if err != nil {
 		t.Fatalf("ReadManifest: %v", err)

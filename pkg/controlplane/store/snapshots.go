@@ -2,11 +2,9 @@ package store
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
@@ -82,31 +80,50 @@ func (s *GORMStore) DeleteSnapshot(ctx context.Context, shareName, snapID string
 // transition (including same-state) returns models.ErrSnapshotStateConflict.
 // shareName scopes the update so an id collision across shares cannot
 // rewrite the wrong row.
+//
+// The check-then-update is atomic at the DB level: a single conditional
+// UPDATE matches both the (shareName, id) tuple and the expected prior
+// state. RowsAffected disambiguates "no such row" from "state already
+// moved" without a separate SELECT, which would race under READ COMMITTED.
 func (s *GORMStore) UpdateSnapshotState(ctx context.Context, shareName, id, state string) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var snap models.Snapshot
-		if err := tx.Where("share_name = ? AND id = ?", shareName, id).First(&snap).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return models.ErrSnapshotNotFound
-			}
-			return err
-		}
-		if !isAllowedStateTransition(snap.State, state) {
-			return models.ErrSnapshotStateConflict
-		}
-		return tx.Model(&snap).Updates(map[string]any{
+	priors := allowedPriorStates(state)
+	if len(priors) == 0 {
+		return models.ErrSnapshotStateConflict
+	}
+	db := s.db.WithContext(ctx)
+	res := db.Model(&models.Snapshot{}).
+		Where("share_name = ? AND id = ? AND state IN ?", shareName, id, priors).
+		Updates(map[string]any{
 			"state":      state,
 			"updated_at": time.Now(),
-		}).Error
-	})
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 1 {
+		return nil
+	}
+	// 0 rows: either row absent or prior state not in the allowed set.
+	var count int64
+	if err := db.Model(&models.Snapshot{}).
+		Where("share_name = ? AND id = ?", shareName, id).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return models.ErrSnapshotNotFound
+	}
+	return models.ErrSnapshotStateConflict
 }
 
-func isAllowedStateTransition(current, next string) bool {
-	switch current {
+// allowedPriorStates returns the set of states from which `next` is reachable.
+// Transitions: creating -> ready, creating -> failed, failed -> creating.
+func allowedPriorStates(next string) []string {
+	switch next {
+	case models.StateReady, models.StateFailed:
+		return []string{models.StateCreating}
 	case models.StateCreating:
-		return next == models.StateReady || next == models.StateFailed
-	case models.StateFailed:
-		return next == models.StateCreating
+		return []string{models.StateFailed}
 	}
-	return false
+	return nil
 }
