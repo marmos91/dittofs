@@ -132,28 +132,23 @@ oplock break notification delivery.
 
 Note: the four `smb2.kernel-oplocks.*` tests require Linux kernel oplock integration via `F_SETLEASE` on the underlying fd — architecturally incompatible with DittoFS's userspace virtual filesystem. They are listed in the [Permanently Unimplementable](#permanently-unimplementable-out-of-scope) appendix.
 
-### Directory Leases (Not Implemented)
+### Directory Leases (Partial Implementation)
 
 Directory leases (dirlease) are a separate feature from file leases.
-DittoFS implements file leases (Phase 37) but not directory leases.
+DittoFS implements file leases (Phase 37) and a substantial subset of
+directory leases (see #470 PR history). Remaining failures cluster on:
+(1) same-dir rename / hardlink break/ack ordering, (2) DELETE_PENDING
+visibility on initial-DOC unlink cases.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.dirlease.hardlink | Directory Leases | Directory leases not implemented | - |
+| smb2.dirlease.hardlink | Directory Leases | samedir-wrong-parent-leaskey: break/ack ordering on single-dir hardlink | #470 |
 | smb2.dirlease.oplocks | Directory Leases | Skipped by runner — smbtorture 4.22.6 client SIGSEGVs in this subtest and aborts the rest of the dirlease suite (see run.sh) | #633 |
-| smb2.dirlease.rename | Directory Leases | Directory leases not implemented | - |
-| smb2.dirlease.rename_dst_parent | Directory Leases | Directory leases not implemented | - |
-| smb2.dirlease.setatime | Directory Leases | Directory leases not implemented | - |
-| smb2.dirlease.setbtime | Directory Leases | Directory leases not implemented | - |
-| smb2.dirlease.setctime | Directory Leases | Directory leases not implemented | - |
-| smb2.dirlease.setdos | Directory Leases | Directory leases not implemented | - |
-| smb2.dirlease.seteof | Directory Leases | Directory leases not implemented | - |
-| smb2.dirlease.setmtime | Directory Leases | Directory leases not implemented | - |
-| smb2.dirlease.unlink_different_initial_and_close | Directory Leases | Directory leases not implemented | - |
-| smb2.dirlease.unlink_different_set_and_close | Directory Leases | Directory leases not implemented | - |
-| smb2.dirlease.unlink_same_initial_and_close | Directory Leases | Directory leases not implemented | - |
-| smb2.dirlease.unlink_same_set_and_close | Directory Leases | Directory leases not implemented | - |
-| smb2.dirlease.v2_request | Directory Leases | Directory leases not implemented | - |
+| smb2.dirlease.rename | Directory Leases | samedir-wrong-parent-leaskey: break/ack ordering on single-dir rename | #470 |
+| smb2.dirlease.unlink_different_initial_and_close | Directory Leases | DELETE_PENDING returned on second open of a file with initial DOC (delete-on-close shouldn't block reopens before actual delete) | #470 |
+| smb2.dirlease.unlink_different_set_and_close | Directory Leases | smb2_lease_break_ack returns UNSUCCESSFUL — break/ack state mismatch on last-handle delete with mismatched parent keys | #470 |
+| smb2.dirlease.unlink_same_initial_and_close | Directory Leases | DELETE_PENDING returned on second open of a file with initial DOC | #470 |
+| smb2.dirlease.v2_request | Directory Leases | SHARING_VIOLATION on requeued CREATE after dir-lease holder closes during break | #470 |
 
 ### Credit Management
 

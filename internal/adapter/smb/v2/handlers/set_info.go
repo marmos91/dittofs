@@ -798,7 +798,17 @@ func (h *Handler) setFileInfoFromStore(
 		// as the renamer itself). On Phase-2 of the test, the holder's break
 		// handler closes its handle inside our wait, the post-break conflict
 		// recheck observes the close, and the rename proceeds.
-		h.breakDstParentDirHandleLeasesForRename(authCtx, toDir, openFile)
+		//
+		// Skip when toDir == srcParent (same-directory rename): the
+		// post-rename content-change break on srcParent already emits a
+		// single LEASE_BREAK to None for that dir-lease holder. Running
+		// the pre-break here would emit a separate strip-H notification
+		// FIRST, producing two break events instead of the single break
+		// the smbtorture rename samedir-* / hardlink samedir-* cases expect
+		// (Samba's contend_dirleases emits exactly one break-to-None).
+		if !bytes.Equal(toDir, openFile.ParentHandle) {
+			h.breakDstParentDirHandleLeasesForRename(authCtx, toDir, openFile)
+		}
 		if conflict := h.checkParentDirRenameConflict(openFile.FileID, toDir); conflict {
 			logger.Debug("SET_INFO: rename blocked by destination-parent sharing violation",
 				"path", openFile.Path,
@@ -1613,16 +1623,22 @@ func (h *Handler) breakParentDirLeasesForContentChange(authCtx *metadata.AuthCon
 }
 
 // breakParentDirLeasesForContentChangeOn is the multi-parent variant used by
-// the rename branch (#470 C3): break Handle + Read leases on an arbitrary
-// directory handle (src-parent or dst-parent), honoring the originating
-// handle's ParentLeaseKey suppression from C2.
+// the rename branch (#470 C3): break parent directory leases to None on an
+// arbitrary directory handle (src-parent or dst-parent), honoring the
+// originating handle's ParentLeaseKey suppression from C2.
+//
+// Per Samba `contend_dirleases` / `do_dirlease_break_to_none`
+// (source3/smbd/smb2_oplock.c): a directory-content change emits a SINGLE
+// LEASE_BREAK to None per holder, not the two-step strip-H / strip-R pattern
+// used for file leases. Using `BreakParentDirLeasesOnDestructiveCreate`
+// (single break-to-None) avoids sending two break notifications for an RH
+// dir lease — required by smbtorture rename / hardlink / setinfo /
+// unlink_*_set_and_close (same-dir, wrong/no parent-leaskey cases).
 //
 // Per Samba dirlease_should_break: ClientID is NOT used for suppression —
 // a same-client SET_INFO / WRITE / CLOSE / RENAME with a mismatched (or
 // absent) ParentLeaseKey MUST still break the parent dir lease held by that
-// same client. The smbtorture dirlease tests (setinfo, rename, hardlink,
-// unlink, v2_request) all exercise same-client scenarios where the dir
-// lease is expected to break when the parent key doesn't match.
+// same client.
 func (h *Handler) breakParentDirLeasesForContentChangeOn(authCtx *metadata.AuthContext, parentHandle metadata.FileHandle, openFile *OpenFile) {
 	if h.LeaseManager == nil || len(parentHandle) == 0 {
 		return
@@ -1637,11 +1653,11 @@ func (h *Handler) breakParentDirLeasesForContentChangeOn(authCtx *metadata.AuthC
 	excludeParentKey := openFile.ParentLeaseKey
 	hasExcludeKey := openFile.HasParentLeaseKey
 
-	if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, openFile.ShareName, "", excludeParentKey, hasExcludeKey); breakErr != nil {
-		logger.Debug("SET_INFO: parent directory Handle lease break failed", "path", openFile.Path, "parent", fmt.Sprintf("%x", parentHandle), "error", breakErr)
-	}
-	if breakErr := h.LeaseManager.BreakParentReadLeasesOnModify(authCtx.Context, parentLockHandle, openFile.ShareName, "", excludeParentKey, hasExcludeKey); breakErr != nil {
-		logger.Debug("SET_INFO: parent directory Read lease break failed", "path", openFile.Path, "parent", fmt.Sprintf("%x", parentHandle), "error", breakErr)
+	if breakErr := h.LeaseManager.BreakParentDirLeasesOnDestructiveCreate(
+		authCtx.Context, parentLockHandle, openFile.ShareName, "",
+		excludeParentKey, hasExcludeKey,
+	); breakErr != nil {
+		logger.Debug("SET_INFO: parent directory lease break-to-None failed", "path", openFile.Path, "parent", fmt.Sprintf("%x", parentHandle), "error", breakErr)
 	}
 }
 
@@ -1822,25 +1838,21 @@ func (h *Handler) handleFileLinkInformation(
 		return setInfoStatus(common.MapToSMB(err)), nil
 	}
 
-	// Break Handle/Read leases on the destination parent (MS-FSA 2.1.5.14:
-	// directory contents changed). Parent-key suppression only — no ClientID
-	// exclusion per Samba dirlease_should_break.
+	// Break parent directory leases on the destination parent to None
+	// (MS-FSA 2.1.5.14: directory contents changed). Parent-key suppression
+	// only — no ClientID exclusion per Samba dirlease_should_break. Single
+	// break-to-None matches Samba `contend_dirleases` / `do_dirlease_break_to_none`
+	// — required by smbtorture hardlink samedir-{wrong,no}-parent-leaskey
+	// which expect exactly one LEASE_BREAK per holder.
 	if h.LeaseManager != nil {
 		dstParentLock := lock.FileHandle(dstDir)
 		excludeParentKey := openFile.ParentLeaseKey
 		hasExcludeKey := openFile.HasParentLeaseKey
-		if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(
+		if breakErr := h.LeaseManager.BreakParentDirLeasesOnDestructiveCreate(
 			authCtx.Context, dstParentLock, openFile.ShareName,
 			"", excludeParentKey, hasExcludeKey,
 		); breakErr != nil {
-			logger.Debug("SET_INFO: hardlink dst-parent Handle lease break failed",
-				"dst", newPath, "error", breakErr)
-		}
-		if breakErr := h.LeaseManager.BreakParentReadLeasesOnModify(
-			authCtx.Context, dstParentLock, openFile.ShareName,
-			"", excludeParentKey, hasExcludeKey,
-		); breakErr != nil {
-			logger.Debug("SET_INFO: hardlink dst-parent Read lease break failed",
+			logger.Debug("SET_INFO: hardlink dst-parent dir lease break-to-None failed",
 				"dst", newPath, "error", breakErr)
 		}
 	}
