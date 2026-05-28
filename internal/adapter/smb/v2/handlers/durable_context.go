@@ -196,6 +196,22 @@ func ProcessDurableHandleContext(
 			return nil
 		}
 
+		// Per MS-SMB2 §3.3.5.9.10: V2 durability MUST NOT be granted unless
+		// either OplockLevel is Batch (legacy oplock-backed durable) or the
+		// granted lease includes SMB2_LEASE_HANDLE_CACHING. Matches Samba
+		// `smbd_smb2_create_durable_lease_check`. smbtorture
+		// smb2.durable-v2-open.open-oplock iterates 8 share-mode × 4 oplock-
+		// level combinations and expects `out.durable_open_v2 == false` for
+		// every non-Batch row — granting V2 unconditionally trips those
+		// assertions (line 293 / 455).
+		hasHandle := len(leaseIncludesHandle) > 0 && leaseIncludesHandle[0]
+		if openFile.OplockLevel != OplockLevelBatch && !hasHandle {
+			logger.Debug("ProcessDurableHandleContext: V2 rejected (no Batch oplock or Handle lease)",
+				"oplockLevel", openFile.OplockLevel,
+				"hasHandleLease", hasHandle)
+			return nil
+		}
+
 		// Calculate granted timeout: min(requested, configured max), 0 = server default
 		grantedTimeout := configuredTimeoutMs
 		if timeout > 0 && timeout < configuredTimeoutMs {
@@ -406,11 +422,18 @@ func processV2Reconnect(
 		return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
 	}
 
-	// Validate FileID from DH2C against persisted handle to prevent wrong-handle reconnect
-	if fileID != handle.FileID {
-		logger.Debug("processV2Reconnect: FileID mismatch",
-			"expected", fmt.Sprintf("%x", handle.FileID),
-			"actual", fmt.Sprintf("%x", fileID))
+	// Validate FileID from DH2C against persisted handle to prevent wrong-
+	// handle reconnect. Compare only the persistent half (bytes 0-7): a
+	// compliant V1 client sends Data.Volatile=0 per MS-SMB2 §3.2.4.4, but
+	// smbtorture (and other test clients) replay the original full FileID
+	// for V2 reconnect, so a 16-byte compare against the persisted
+	// (volatile-zeroed) FileID would reject every legitimate V2 replay
+	// returning STATUS_INVALID_PARAMETER. CreateGuid is the primary
+	// identifier on V2 anyway; the persistent half is just an extra check.
+	if [8]byte(fileID[:8]) != [8]byte(handle.FileID[:8]) {
+		logger.Debug("processV2Reconnect: persistent FileID mismatch",
+			"expected", fmt.Sprintf("%x", handle.FileID[:8]),
+			"actual", fmt.Sprintf("%x", fileID[:8]))
 		return nil, 0, [16]byte{}, types.StatusInvalidParameter, nil
 	}
 

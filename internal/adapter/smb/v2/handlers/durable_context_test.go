@@ -333,9 +333,11 @@ func TestProcessDurableHandleContext_V1RejectWithoutBatchOplock(t *testing.T) {
 }
 
 func TestProcessDurableHandleContext_V2GrantWithCreateGuid(t *testing.T) {
+	// V2 durability MUST NOT be granted without Batch oplock or Handle lease
+	// (MS-SMB2 §3.3.5.9.10). Use Batch to test the happy path.
 	openFile := &OpenFile{
 		FileID:      [16]byte{1, 2, 3},
-		OplockLevel: OplockLevelNone,
+		OplockLevel: OplockLevelBatch,
 	}
 
 	createGuid := [16]byte{0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF}
@@ -369,8 +371,9 @@ func TestProcessDurableHandleContext_V2GrantWithCreateGuid(t *testing.T) {
 
 func TestProcessDurableHandleContext_V2ZeroTimeoutUsesServerDefault(t *testing.T) {
 	openFile := &OpenFile{
-		FileID:      [16]byte{1, 2, 3},
-		OplockLevel: OplockLevelNone,
+		FileID: [16]byte{1, 2, 3},
+		// V2 needs Batch oplock or Handle lease — see §3.3.5.9.10.
+		OplockLevel: OplockLevelBatch,
 	}
 
 	createGuid := [16]byte{0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF}
@@ -1230,5 +1233,54 @@ func TestValidateAndRestore_ClientGUIDRoundtrip(t *testing.T) {
 	if res.OpenFile.ClientGUID != originalGUID {
 		t.Errorf("restored ClientGUID = %x, want %x (Copilot review #1: chained reconnect breaks lease scoping)",
 			res.OpenFile.ClientGUID, originalGUID)
+	}
+}
+
+// TestProcessDurableHandleContext_V2RequiresBatchOrHandleLease locks in
+// MS-SMB2 §3.3.5.9.10: V2 durability MUST NOT be granted unless OplockLevel
+// is Batch OR the granted lease includes SMB2_LEASE_HANDLE_CACHING.
+// smbtorture smb2.durable-v2-open.open-oplock iterates 8 share-mode × 4
+// oplock-level rows expecting `out.durable_open_v2 == false` for every
+// non-Batch row.
+func TestProcessDurableHandleContext_V2RequiresBatchOrHandleLease(t *testing.T) {
+	createGuid := [16]byte{0xA0, 0xA1, 0xA2}
+	dh2qData := make([]byte, 32)
+	binary.LittleEndian.PutUint32(dh2qData[0:4], 60000)
+	copy(dh2qData[16:32], createGuid[:])
+
+	cases := []struct {
+		name          string
+		oplockLevel   uint8
+		handleLease   bool
+		expectGranted bool
+	}{
+		{"None oplock, no lease", OplockLevelNone, false, false},
+		{"Level II oplock", OplockLevelII, false, false},
+		{"Exclusive oplock", OplockLevelExclusive, false, false},
+		{"Batch oplock", OplockLevelBatch, false, true},
+		{"None oplock, Handle lease", OplockLevelNone, true, true},
+		{"Lease level with Handle", OplockLevelLease, true, true},
+		{"Lease level no Handle", OplockLevelLease, false, false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			openFile := &OpenFile{
+				FileID:      [16]byte{1, 2, 3},
+				OplockLevel: c.oplockLevel,
+			}
+			contexts := []CreateContext{
+				{Name: DurableHandleV2RequestTag, Data: dh2qData},
+			}
+			resp := ProcessDurableHandleContext(contexts, openFile, 60000, c.handleLease)
+			granted := resp != nil
+			if granted != c.expectGranted {
+				t.Errorf("granted=%v want %v (oplock=%d handleLease=%v)",
+					granted, c.expectGranted, c.oplockLevel, c.handleLease)
+			}
+			if openFile.IsDurable != c.expectGranted {
+				t.Errorf("IsDurable=%v want %v", openFile.IsDurable, c.expectGranted)
+			}
+		})
 	}
 }

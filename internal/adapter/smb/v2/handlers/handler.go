@@ -557,8 +557,14 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		DirectoryLeasingEnabled: true,
 		NtlmEnabled:             true,
 		GuestEnabled:            true,
-		DurableTimeoutMs:        60000, // 60 seconds default durable handle timeout
-		resumeKeys:              newResumeKeyStore(),
+		// Default durable handle timeout: 300s (5 minutes). Matches Samba's
+		// `durable_default_timeout_msec` (source3/smbd/smb2_create.c).
+		// smbtorture asserts this value when the client requests
+		// UINT32_MAX (clamp to server max): smb2.durable-v2-open.create-blob,
+		// reopen1, reopen1a, reopen1a-lease, reopen2, app-instance, … all
+		// CHECK_VAL(io.out.timeout, 300*1000).
+		DurableTimeoutMs: 300000,
+		resumeKeys:       newResumeKeyStore(),
 	}
 
 	// Generate random server GUID
