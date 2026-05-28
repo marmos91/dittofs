@@ -369,6 +369,19 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		"actual", len(readResult.Data))
 
 	// ========================================================================
+	// Step 11b: Update CurrentByteOffset (MS-FSA 2.1.5.2 / smb2.read.position)
+	// ========================================================================
+	//
+	// Per MS-FSA Server Algorithm for Reading a File: after a successful
+	// READ at Offset O of Length L, the open's CurrentByteOffset advances to
+	// O + (bytes returned). This is what GetInfo FilePositionInformation
+	// (and FILE_ALL_INFORMATION.PositionInformation at offset 80) must
+	// return. Windows clients carry their own client-side position and do
+	// not depend on this for I/O dispatch, but the smb2.read.position
+	// torture test asserts the value.
+	openFile.PositionInfo = req.Offset + uint64(len(readResult.Data))
+
+	// ========================================================================
 	// Step 12: Update LastAccessTime (MS-FSA Algorithm for Noting File Accessed)
 	// ========================================================================
 
