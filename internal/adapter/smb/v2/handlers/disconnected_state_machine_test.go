@@ -157,30 +157,38 @@ func TestDisconnectedConflictOnNewOpen(t *testing.T) {
 }
 
 // TestDisconnectedConflictOnDataChange covers the WRITE/RENAME break paths.
+// The fast-path `breakToBelowHandle == false` early-return is the caller's
+// responsibility; the predicate here only distinguishes own-handle (preserve)
+// from foreign-handle (purge), including the LeaseState=0 case (purged
+// because such a handle has no caching rights and no reconnect prospect).
 func TestDisconnectedConflictOnDataChange(t *testing.T) {
 	leaseA := [16]byte{0x01}
 	leaseB := [16]byte{0x02}
-	rh := smbLeaseRead | smbLeaseHandle
 
 	// Writer's lease (excludeLeaseKey == leaseA) → its own disconnected D
 	// entries are never purged on its own WRITE/RENAME.
-	if got := disconnectedConflictOnDataChange(rh, leaseA, leaseA, true); got != disconnectedActionPreserve {
+	if got := disconnectedConflictOnDataChange(leaseA, leaseA); got != disconnectedActionPreserve {
 		t.Fatalf("same key: got=%v want preserve", got)
 	}
 
-	// Different lease key + break_to lacks H → purge.
-	if got := disconnectedConflictOnDataChange(rh, leaseA, leaseB, true); got != disconnectedActionPurge {
-		t.Fatalf("diff key with break_below_H: got=%v want purge", got)
+	// Different lease key → purge.
+	if got := disconnectedConflictOnDataChange(leaseA, leaseB); got != disconnectedActionPurge {
+		t.Fatalf("diff key: got=%v want purge", got)
 	}
 
-	// break_to retains H (no destructive break) → preserve.
-	if got := disconnectedConflictOnDataChange(rh, leaseA, leaseB, false); got != disconnectedActionPreserve {
-		t.Fatalf("break preserves H: got=%v want preserve", got)
+	// Disconnected handle with all-zero lease key (no lease persisted) is
+	// foreign to any keyed actor and gets purged. This pins the finding-#1
+	// fix: dLeaseState=0 records (which always carry zero lease keys) no
+	// longer silently preserve.
+	if got := disconnectedConflictOnDataChange([16]byte{}, leaseA); got != disconnectedActionPurge {
+		t.Fatalf("zero key vs foreign actor: got=%v want purge", got)
 	}
 
-	// D holds no lease (lease cleared on disconnect) → nothing to break.
-	if got := disconnectedConflictOnDataChange(0, leaseA, leaseB, true); got != disconnectedActionPreserve {
-		t.Fatalf("no lease: got=%v want preserve", got)
+	// Both keys zero → still purge: the same-actor short-circuit explicitly
+	// requires the key to be non-zero before treating it as "same actor",
+	// otherwise every zero-key actor would be treated as the same.
+	if got := disconnectedConflictOnDataChange([16]byte{}, [16]byte{}); got != disconnectedActionPurge {
+		t.Fatalf("both zero keys: got=%v want purge", got)
 	}
 }
 

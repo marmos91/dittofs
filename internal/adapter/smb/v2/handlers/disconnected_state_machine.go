@@ -140,21 +140,26 @@ func disconnectedConflictOnNewOpen(
 // (lose H). Renames break Handle leases to R (lose H). Both cases purge any
 // disconnected handle holding a lease whose key differs from the actor's,
 // because the disconnected client cannot ack the break.
+//
+// dLeaseState == 0 is treated as "no caching rights and no reconnect prospect"
+// → purge. A disconnected handle whose lease was already downgraded to None
+// pre-disconnect (e.g. a lease break the client acked before the transport
+// dropped) is unreconnectable: the persisted LeaseState=0 record cannot
+// re-establish caching on reconnect, so leaving it in place only serves to
+// block subsequent break-cascade decisions until the scavenger times it out.
+// Mirrors Samba `share_mode_cleanup_disconnected` which evicts entries
+// lacking caching bits on the same trigger paths.
+//
+// Contract: the caller (purgeConflictingDisconnectedHandlesForDataChange) is
+// responsible for the fast-path `breakToBelowHandle == false` early-return.
+// This predicate assumes the data-change WILL break to below H and only
+// distinguishes own-handle (preserve) from foreign-handle (purge).
 func disconnectedConflictOnDataChange(
-	dLeaseState uint32,
 	dLeaseKey [16]byte,
 	excludeLeaseKey [16]byte,
-	breakToBelowHandle bool,
 ) disconnectedHandleAction {
-	if !breakToBelowHandle {
-		return disconnectedActionPreserve
-	}
 	// Same actor — never purge our own handle.
 	if dLeaseKey == excludeLeaseKey && dLeaseKey != ([16]byte{}) {
-		return disconnectedActionPreserve
-	}
-	// D holds no lease — there is nothing to break; preserve.
-	if dLeaseState == 0 {
 		return disconnectedActionPreserve
 	}
 	return disconnectedActionPurge
@@ -233,9 +238,7 @@ func (h *Handler) purgeConflictingDisconnectedHandlesForDataChange(
 		if d.DisconnectedAt.IsZero() {
 			continue
 		}
-		action := disconnectedConflictOnDataChange(
-			d.LeaseState, d.LeaseKey, excludeLeaseKey, breakToBelowHandle,
-		)
+		action := disconnectedConflictOnDataChange(d.LeaseKey, excludeLeaseKey)
 		if action != disconnectedActionPurge {
 			continue
 		}
