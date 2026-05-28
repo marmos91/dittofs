@@ -823,37 +823,28 @@ var _ = shares.ErrShareNotFound
 //
 // Caller contract: the share MUST already be disabled (operator runs
 // `dfsctl share disable` before invoking restore). Share-disabled is the
-// barrier per D-24-01; no runtime lock is added. The function does NOT
-// re-enable the share on success — the operator runs `dfsctl share
-// enable` after inspecting the restored data.
+// only barrier; no runtime lock is added. On success the share STAYS
+// DISABLED — the operator runs `dfsctl share enable` after inspecting
+// the restored data.
 //
-// Orchestration (D-24-09, strictly sequential, no goroutines):
-//  1. precheck: share exists + Enabled==false; snapshot exists; snap is
-//     in StateReady; snap.RemoteDurable OR opts.AllowNonDurable.
-//  2. pre-verify: read manifest.hashes -> VerifyRemoteDurability before
-//     any destructive op (REST-03 first half).
-//  3. safety snapshot: CreateSnapshot(opts{}) (default NoSyncGate=false
-//     so the safety snap is fully remote-durable) -> WaitForSnapshot;
-//     assert State==StateReady.
-//  4. open metadata dump file at MetadataDumpPath(localStoreDir).
-//  5. Reset metaStore via the optional metadata.Resetable interface.
-//  6. Restore from the dump via the optional metadata.Backupable interface.
-//  7. post-verify: HashSetFromMetadataStore -> VerifyRemoteDurability
-//     (REST-03 second half).
-//  8. return nil — share STAYS DISABLED per D-24-01.
+// Orchestration is strictly sequential:
+//  1. precheck: share Enabled==false; snapshot in StateReady;
+//     RemoteDurable OR opts.AllowNonDurable.
+//  2. pre-verify manifest hashes against the remote (no destructive op
+//     has run yet).
+//  3. create a sync-gated safety snapshot and wait for StateReady.
+//  4. open the metadata dump.
+//  5. Reset the metadata store.
+//  6. Restore from the dump.
+//  7. post-verify the restored hashes against the remote.
 //
-// Failure modes (D-24-13):
-//   - Precheck failure: no destructive op ran; safety snap not created.
-//   - Pre-verify failure: wraps ErrRestoreVerifyFailed; no Reset attempted;
-//     no safety snap (step 3 hasn't run).
+// Failure modes:
+//   - Precheck / pre-verify failure: no destructive op ran; no safety snap.
 //   - Safety-snap failure: wraps ErrRestoreSafetySnapFailed; no Reset.
-//   - Reset failure: wraps ErrRestoreAborted; error message includes the
-//     safety-snap ID so the operator can roll back via the safety snap.
-//   - Restore failure: same shape as Reset failure (ErrRestoreAborted +
-//     safety-snap ID).
+//   - Reset / Restore failure: wraps ErrRestoreAborted; the error message
+//     includes the safety-snap ID for operator rollback.
 //   - Post-verify failure: wraps ErrRestoreVerifyFailed + safety-snap ID;
-//     the restored metadata is in place but a hash that should resolve
-//     does not — operator decides whether to roll back via safety snap.
+//     restored metadata is in place but a hash failed to resolve.
 func (r *Runtime) RestoreSnapshot(
 	ctx context.Context,
 	shareName, snapID string,
@@ -863,7 +854,7 @@ func (r *Runtime) RestoreSnapshot(
 		return errors.New("runtime: nil store")
 	}
 
-	// --- Step 1: precheck (D-24-09 step 1) ---
+	// --- precheck ---
 	enabled, err := r.sharesSvc.IsShareEnabled(shareName)
 	if err != nil {
 		return err
@@ -875,7 +866,6 @@ func (r *Runtime) RestoreSnapshot(
 
 	snap, err := r.store.GetSnapshot(ctx, shareName, snapID)
 	if err != nil {
-		// ErrSnapshotNotFound propagates via errors.Is through the wrap.
 		return err
 	}
 	if snap.State != models.StateReady {
@@ -899,7 +889,7 @@ func (r *Runtime) RestoreSnapshot(
 		"remote_durable", snap.RemoteDurable,
 	)
 
-	// --- Step 2: pre-verify (D-24-09 step 2, REST-03 first half) ---
+	// --- pre-verify ---
 	manifestPath := snap.ManifestPath(localStoreDir)
 	manifestFile, err := os.Open(manifestPath)
 	if err != nil {
@@ -932,14 +922,10 @@ func (r *Runtime) RestoreSnapshot(
 			snapID, shareName, models.ErrRestoreVerifyFailed)
 	}
 	concurrency := r.snapshotDefaults().SyncGateConcurrency
-	manifestCount := 0
-	if manifest != nil {
-		manifestCount = manifest.Len()
-	}
 	logger.Info("snapshot restore: pre-verify start",
 		"snapshot_id", snapID,
 		"share", shareName,
-		"manifest_count", manifestCount,
+		"manifest_count", manifest.Len(),
 		"verify_concurrency", concurrency,
 	)
 	if verr := snapshot.VerifyRemoteDurability(ctx, remoteStore, manifest, concurrency); verr != nil {
@@ -951,11 +937,10 @@ func (r *Runtime) RestoreSnapshot(
 		"share", shareName,
 	)
 
-	// --- Step 3: safety snapshot (D-24-09 step 3, D-24-04) ---
-	// Default opts ⇒ NoSyncGate=false so the safety snap is sync-gate-
-	// drained + verified — it is the recovery primitive if Reset/Restore
-	// or post-verify fails. Auto-generated UUID is sufficient for
-	// operator discovery via ListSnapshots filtered by created_at desc.
+	// --- safety snapshot ---
+	// Default opts (NoSyncGate=false) keep the safety snap sync-gate-
+	// drained and verified — it is the rollback primitive if any step
+	// below fails.
 	safetyID, err := r.CreateSnapshot(ctx, shareName, CreateSnapshotOpts{})
 	if err != nil {
 		return fmt.Errorf("restore snapshot %q: create safety snap: %w: %v",
@@ -966,13 +951,9 @@ func (r *Runtime) RestoreSnapshot(
 		return fmt.Errorf("restore snapshot %q: wait safety snap %q: %w: %v",
 			snapID, safetyID, models.ErrRestoreSafetySnapFailed, err)
 	}
-	if safetySnap == nil || safetySnap.State != models.StateReady {
-		state := ""
-		if safetySnap != nil {
-			state = safetySnap.State
-		}
+	if safetySnap.State != models.StateReady {
 		return fmt.Errorf("restore snapshot %q: safety snap %q final state=%q, want %q: %w",
-			snapID, safetyID, state, models.StateReady, models.ErrRestoreSafetySnapFailed)
+			snapID, safetyID, safetySnap.State, models.StateReady, models.ErrRestoreSafetySnapFailed)
 	}
 	logger.Info("snapshot restore: safety snapshot ready",
 		"snapshot_id", snapID,
@@ -980,7 +961,7 @@ func (r *Runtime) RestoreSnapshot(
 		"safety_snap_id", safetyID,
 	)
 
-	// --- Step 4: open dump (D-24-09 step 4) ---
+	// --- open dump ---
 	dumpPath := snap.MetadataDumpPath(localStoreDir)
 	dumpFile, err := os.Open(dumpPath)
 	if err != nil {
@@ -993,7 +974,7 @@ func (r *Runtime) RestoreSnapshot(
 	}
 	defer func() { _ = dumpFile.Close() }()
 
-	// --- Step 5: Reset (D-24-09 step 5) ---
+	// --- reset ---
 	metaStore, err := r.GetMetadataStoreForShare(shareName)
 	if err != nil {
 		return fmt.Errorf("restore snapshot %q: metadata store lookup (safety-snap=%s): %w: %v",
@@ -1024,7 +1005,7 @@ func (r *Runtime) RestoreSnapshot(
 		"safety_snap_id", safetyID,
 	)
 
-	// --- Step 6: Restore (D-24-09 step 6) ---
+	// --- restore ---
 	logger.Info("snapshot restore: restore start",
 		"snapshot_id", snapID,
 		"share", shareName,
@@ -1041,16 +1022,13 @@ func (r *Runtime) RestoreSnapshot(
 		"safety_snap_id", safetyID,
 	)
 
-	// --- Step 7: post-verify (D-24-09 step 7, REST-03 second half) ---
+	// --- post-verify ---
 	restoredHashes, err := snapshot.HashSetFromMetadataStore(ctx, metaStore)
 	if err != nil {
 		return fmt.Errorf("restore snapshot %q: enumerate restored hashes (safety-snap=%s): %w: %v",
 			snapID, safetyID, models.ErrRestoreVerifyFailed, err)
 	}
-	restoredCount := 0
-	if restoredHashes != nil {
-		restoredCount = restoredHashes.Len()
-	}
+	restoredCount := restoredHashes.Len()
 	logger.Info("snapshot restore: post-verify start",
 		"snapshot_id", snapID,
 		"share", shareName,
@@ -1063,7 +1041,7 @@ func (r *Runtime) RestoreSnapshot(
 			snapID, safetyID, models.ErrRestoreVerifyFailed, verr)
 	}
 
-	// --- Step 8: success — share STAYS DISABLED per D-24-01 ---
+	// Share STAYS DISABLED — operator re-enables after inspecting result.
 	logger.Info("snapshot restore: complete",
 		"snapshot_id", snapID,
 		"share", shareName,
