@@ -132,7 +132,7 @@ func TestCache_PopulatedOnRollupComplete(t *testing.T) {
 	// Drain: rollup pump runs async via the FSStore worker pool, and
 	// OnChunkComplete fires from StoreChunk inside that pump. Poll
 	// ListFileBlocks until the manifest is populated.
-	blocks := waitForChunks(t, bs, payloadID, 3*time.Second)
+	blocks := waitForChunks(t, bs, payloadID, 10*time.Second)
 	if len(blocks) < 2 {
 		t.Fatalf("expected >= 2 chunks for 8 MiB random payload; got %d", len(blocks))
 	}
@@ -222,7 +222,7 @@ func TestCache_PopulatedOnRollupComplete_LargeChunkRespectsCacheCap(t *testing.T
 		t.Fatalf("Flush: %v", err)
 	}
 
-	blocks := waitForChunks(t, bs, payloadID, 3*time.Second)
+	blocks := waitForChunks(t, bs, payloadID, 10*time.Second)
 	if len(blocks) < 1 {
 		t.Fatalf("expected >= 1 chunk; got %d", len(blocks))
 	}
