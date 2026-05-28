@@ -114,7 +114,7 @@ type FSStore struct {
 	// create, WriteFromRemote, Recover) and pruned on delete/evict. The
 	// write hot path and eviction consult diskIndex INSTEAD of the
 	// FileBlockStore, decoupling those paths from the underlying metadata
-	// backend (d /).
+	// backend.
 	//
 	// Entries survive pendingFBs drain so subsequent hot-path operations
 	// (e.g., a second pwrite into the same block after BadgerDB persistence)
@@ -156,18 +156,18 @@ type FSStore struct {
 	closeOnce sync.Once
 	wg        sync.WaitGroup
 
-	// --- Append-log path (/03). ---
+	// --- Append-log path. ---
 	//
-	// Append is mandatory on the local tier in — the flag-gated
-	// opt-out was deleted alongside the legacy path-keyed writer. All
-	// AppendWrite + rollup machinery runs unconditionally.
+	// Append is mandatory on the local tier — the flag-gated opt-out was
+	// deleted alongside the legacy path-keyed writer. All AppendWrite +
+	// rollup machinery runs unconditionally.
 	maxLogBytes     int64
 	stabilizationMS int
 	rollupWorkers   int
 
 	// logBytesTotal is the current total bytes of un-rolled-up log content
 	// across every payloadID in this FSStore. Incremented by AppendWrite
-	// (framed-record size) and decremented by the rollup (06).
+	// (framed-record size) and decremented by the rollup.
 	// AppendWrite blocks on pressureCh when logBytesTotal > maxLogBytes
 	logBytesTotal atomic.Int64
 

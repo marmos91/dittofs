@@ -77,13 +77,12 @@ func (bc *FSStore) chunkRollupWorker(ctx context.Context, _ int) {
 		select {
 		case pid := <-bc.rollupCh:
 			if err := bc.rollupFile(ctx, pid); err != nil {
-				// Surface (#588): a swallowed error here meant
-				// FileBlock manifest persistence failures and
-				// logIndex/tree divergence reports never reached
-				// operator logs. Log at Error so misconfigured or
-				// corrupted state is observable; the dirty
-				// interval stays in the tree and a future pass
-				// (or restart + recovery) retries.
+				// Log at Error so misconfigured or corrupted state is
+				// observable; the dirty interval stays in the tree and
+				// a future pass (or restart + recovery) retries. A
+				// swallowed error here would hide FileBlock manifest
+				// persistence failures and logIndex/tree divergence
+				// reports from operator logs.
 				slog.Error("rollupFile failed",
 					"payloadID", pid, "error", err)
 			}
@@ -123,9 +122,9 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 //
 // Concurrency: the per-file mutex (`mu`) is held through the ENTIRE
 // reconstructStream -> chunker -> StoreChunk -> CommitChunks sequence.
-// This is the fix for the plan-checker's Blocker 3: releasing the mutex
-// before StoreChunk/CommitChunks would break DeleteAppendLog's ability
-// to wait for in-flight rollup by acquiring the same mutex.
+// Releasing the mutex before StoreChunk/CommitChunks would break
+// DeleteAppendLog's ability to wait for in-flight rollup by acquiring
+// the same mutex.
 // Holding the mutex serializes same-file rollup against same-file
 // AppendWrite; this is acceptable because (a) rollup runs in a background
 // worker pool, (b) AppendWrite's mutex window is ~5 µs under
@@ -133,7 +132,7 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 // one file's rollup never stalls another, and (d) pressure-channel
 // blocking only trips when the log budget is exceeded.
 //
-// CommitChunks atomic ordering (reordered #588)
+// CommitChunks atomic ordering:
 //  1. For each emitted chunk: StoreChunk(hash, data) — idempotent, fsynced.
 //  2. ObjectIDPersister(payloadID, blocks, objectID) — writes per-chunk
 //     FileBlock manifest rows + FileAttr.Blocks. MUST land before
@@ -447,21 +446,20 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	}
 	targetPos := idx.AdvanceFence()
 
-	// CommitChunks atomic sequence (reordered #588). The on-disk
-	// CAS chunks are already durable from StoreChunk above. The remaining
-	// commit steps must land in this order so a partial failure never
-	// advances rollup_offset past records whose FileBlock manifest rows
-	// haven't been persisted
+	// CommitChunks atomic sequence. The on-disk CAS chunks are already
+	// durable from StoreChunk above. The remaining commit steps must
+	// land in this order so a partial failure never advances
+	// rollup_offset past records whose FileBlock manifest rows haven't
+	// been persisted:
 	//
 	//  1. ObjectIDPersister(payloadID, blocks, objectID) — writes the
 	//     per-chunk FileBlock rows AND the FileAttr.Blocks manifest +
 	//     ObjectID. If this fails, rollup_offset stays UNCHANGED and the
 	//     next rollup pass retries — chunks are content-addressed and
-	//     idempotent on re-store. (Prior to #588 the persister fired
-	//     AFTER SetRollupOffset, which meant a persister failure left
-	//     rollup_offset advanced past records whose manifest never
-	//     landed; the engine read path then fell into the sparse-zero
-	//     branch.)
+	//     idempotent on re-store. (Persister-after-SetRollupOffset is
+	//     the wrong ordering: a persister failure leaves rollup_offset
+	//     advanced past records whose manifest never landed, and the
+	//     engine read path falls into the sparse-zero branch.)
 	//  2. rollupStore.SetRollupOffset(payloadID, targetPos) — atomic-
 	//     monotone metadata-authoritative fence advance.
 	//  3. advanceRollupOffset(logFile, targetPos) — idempotent derived

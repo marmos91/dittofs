@@ -350,7 +350,7 @@ func CollectGarbage(
 func markPhase(ctx context.Context, reconciler MetadataReconciler, gcs *GCState, stats *GCStats, hold HoldProvider, remoteEndpointID string, shares []string) error {
 	reconcilerShares := sharesForReconciler(reconciler)
 	if len(reconcilerShares) == 0 {
-		return fmt.Errorf("mark phase: reconciler reports zero shares — refusing to sweep CAS objects without a live set (INV-04 fail-closed)")
+		return fmt.Errorf("mark phase: reconciler reports zero shares — refusing to sweep CAS objects without a live set (fail-closed)")
 	}
 
 	addHash := func(h blockstore.ContentHash) error {
