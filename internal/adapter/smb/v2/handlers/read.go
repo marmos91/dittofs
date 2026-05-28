@@ -222,6 +222,15 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		logger.Debug("READ: invalid session ID", "sessionID", openFile.SessionID)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUserSessionDeleted}}, nil
 	}
+	// Per MS-SMB2 §3.3.5.2.5: verify the request's TreeID/SessionID match
+	// the handle's owning TreeConnect/Session — mirrors the gate added to
+	// WRITE/CHANGE_NOTIFY for the smb2.tcon torture test.
+	if openFile.TreeID != ctx.TreeID || openFile.SessionID != ctx.SessionID {
+		logger.Debug("READ: handle does not belong to request's tree/session",
+			"handleTreeID", openFile.TreeID, "reqTreeID", ctx.TreeID,
+			"handleSessionID", openFile.SessionID, "reqSessionID", ctx.SessionID)
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileClosed}}, nil
+	}
 	h.primeAuthContextFromOpenFile(ctx, openFile)
 
 	// ========================================================================
