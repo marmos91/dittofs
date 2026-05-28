@@ -203,7 +203,40 @@ type Writer interface {
 
 // Flusher defines flush/sync operations on the block store.
 type Flusher interface {
-	// Flush ensures all dirty data for a payload is persisted.
+	// Flush quiesces the payload's local-side state and (when a healthy
+	// remote is configured) mirrors every locally stored CAS chunk to
+	// the remote store. Return-value contract:
+	//
+	//   - (Finalized=true, nil)
+	//     All locally-mirrored data for payloadID is durable on the
+	//     configured remote (or no remote is configured and the local
+	//     quiesce completed). Callers may report COMMIT/Flush success
+	//     to the client.
+	//
+	//   - (Finalized=false, nil)
+	//     A NON-fatal soft condition prevented finalization THIS call:
+	//     either the remote is configured but currently unhealthy, or
+	//     another in-flight mirror pass (periodic uploader or
+	//     overlapping Flush) is already running. The dirty state is
+	//     unchanged and will be re-attempted on the next Flush or the
+	//     next periodic uploader tick.
+	//
+	//     Callers driving NFS COMMIT or SMB Flush loops MUST rate-limit
+	//     their retries against this branch. A tight retry storm on
+	//     Finalized=false starves the uploading goroutine (the
+	//     CompareAndSwap gate in syncer.Flush makes the explicit caller
+	//     LOSE every retry attempt against the periodic uploader's
+	//     in-flight tick) and pegs the CPU without making progress.
+	//     Recommended pattern: surface the soft-fail to the protocol
+	//     client (NFS3_COMMITTED=false → client reissues COMMIT on its
+	//     own schedule; SMB Flush returns success after a bounded
+	//     attempt) rather than spin in-handler.
+	//
+	//   - (nil, err)
+	//     Hard failure (I/O error, remote.Put rejection, MarkSynced
+	//     metadata error). Do NOT retry until the underlying condition
+	//     is addressed; the caller should surface a protocol-level
+	//     error to the client.
 	Flush(ctx context.Context, payloadID string) (*FlushResult, error)
 
 	// DrainAllUploads waits for all pending uploads to complete.
@@ -230,9 +263,16 @@ type Store interface {
 	Close() error
 }
 
-// FlushResult indicates the outcome of a flush operation.
+// FlushResult indicates the outcome of a flush operation. See the Flush
+// method on Flusher for the full (Finalized, err) state-machine and
+// caller-retry guidance.
 type FlushResult struct {
-	// Finalized indicates all blocks have been synced to the backend store.
+	// Finalized indicates all blocks have been synced to the backend
+	// store. When false alongside a nil error, the call hit a soft
+	// non-fatal condition (remote unhealthy or another mirror pass
+	// already in flight); the dirty state is unchanged and will be
+	// re-attempted by the next Flush or the periodic uploader. Callers
+	// MUST NOT spin-retry on Finalized=false — see Flusher.Flush godoc.
 	Finalized bool
 }
 

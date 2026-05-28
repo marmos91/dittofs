@@ -19,4 +19,19 @@ var (
 	// ). Writers that observe the tombstone short-circuit before
 	// touching the log so a deleted payload never gains new records.
 	ErrDeleted = errors.New("append log: payload deleted")
+
+	// ErrPressureTimeout is returned by AppendWrite when its pressure
+	// loop has waited longer than FSStoreOptions.PressureMaxWait without
+	// rollup freeing enough log budget to admit the write. Distinguished
+	// from ctx.Err() (caller-imposed deadline) and ErrStoreClosed (the
+	// store is shutting down): ErrPressureTimeout specifically means the
+	// rollup pool is making no forward progress.
+	//
+	// I-3 / #670 — defense-in-depth. NFS COMMIT and SMB Flush typically
+	// arrive with no caller-supplied deadline (or one measured in
+	// minutes), so a wedged rollup translated into D-state on the client.
+	// Surfacing this sentinel lets the protocol adapter decide whether
+	// to map it to NFS3ERR_SERVERFAULT / STATUS_INTERNAL_ERROR, log, and
+	// release the goroutine instead of blocking indefinitely.
+	ErrPressureTimeout = errors.New("append log: pressure wait timed out")
 )

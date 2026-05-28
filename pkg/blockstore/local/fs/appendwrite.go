@@ -180,6 +180,14 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 // mutex window itself is bounded to pwrite + fsync + tree.Insert (~5µs
 // on NVMe).
 //
+// Deadline (I-3 / #670 defense-in-depth): the pressure wait is bounded
+// by bc.pressureMaxWait (FSStoreOptions.PressureMaxWait; default 30s).
+// On expiry AppendWrite returns ErrPressureTimeout — distinguishable
+// from ctx.Err() (caller-side deadline) and ErrStoreClosed (store
+// shutdown). This bound prevents a wedged rollup pool from translating
+// into NFS-client D-state when the caller (NFS COMMIT / SMB Flush)
+// arrived with no usable deadline. Set PressureMaxWait < 0 to disable.
+//
 // On successful append the interval tree gains a single entry covering
 // [offset, offset+len(data)) with Touched=now; the rollup later consumes
 // it after the stabilization window.
@@ -216,14 +224,38 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 	// Pressure loop. Re-check under the loop in case the
 	// rollup pulsed pressureCh but another writer consumed the freed
 	// budget before this goroutine could proceed.
+	//
+	// I-3 / #670: bound the wait with bc.pressureMaxWait so a wedged
+	// rollup cannot translate into NFS-client D-state. The timer is
+	// allocated lazily — only when we actually need to block — and is
+	// shared across pressureCh wake-ups so a sequence of false-wakes
+	// (rollup pulses + another writer immediately consumes the freed
+	// budget) still respects the cumulative deadline. Using time.NewTimer
+	// + defer Stop() instead of time.After avoids leaking the underlying
+	// timer goroutine when pressureCh or bc.done fires first.
+	var pressureTimer *time.Timer
+	var pressureC <-chan time.Time
+	defer func() {
+		if pressureTimer != nil {
+			pressureTimer.Stop()
+		}
+	}()
 	for bc.logBytesTotal.Load() > bc.maxLogBytes {
+		if pressureTimer == nil && bc.pressureMaxWait > 0 {
+			pressureTimer = time.NewTimer(bc.pressureMaxWait)
+			pressureC = pressureTimer.C
+		}
 		select {
 		case <-bc.pressureCh:
-			// rollup (future plan) or test freed space; re-check budget.
+			// rollup or test freed space; re-check budget. Timer keeps
+			// running so a writer that loses the budget race repeatedly
+			// still surfaces ErrPressureTimeout at the cumulative deadline.
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-bc.done:
 			return ErrStoreClosed
+		case <-pressureC:
+			return ErrPressureTimeout
 		}
 	}
 
