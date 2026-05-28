@@ -49,6 +49,20 @@ type PersistedDurableHandle struct {
 	ParentHandle  []byte // Parent directory handle for deletion
 	FileName      string // File name within parent for deletion
 	IsDirectory   bool   // Whether the file is a directory
+
+	// PositionInfo is the FILE_POSITION_INFORMATION CurrentByteOffset
+	// (MS-FSCC 2.4.32) captured at disconnect. Restored to the OpenFile
+	// on reconnect so SET/GET FilePositionInformation round-trips across
+	// the disconnect (smb2.durable-open.file-position).
+	PositionInfo uint64
+
+	// OriginalFileID is the full 16-byte FileID (persistent + volatile)
+	// from the original CREATE response. FileID above zeros the volatile
+	// half so DHnC lookup matches the spec ([MS-SMB2] 3.2.4.4: client
+	// sends Data.Volatile=0). On successful reconnect the handler restores
+	// OriginalFileID into the new OpenFile so byte-range locks (which key
+	// on OpenID derived from FileID) stay valid across the disconnect.
+	OriginalFileID [16]byte
 }
 
 // DurableHandleStore provides persistence for SMB3 durable handle state.

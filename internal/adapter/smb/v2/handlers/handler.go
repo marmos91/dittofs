@@ -394,6 +394,13 @@ type OpenFile struct {
 	// The handle expires this many milliseconds after client disconnects.
 	DurableTimeoutMs uint32
 
+	// PositionInfo is the FILE_POSITION_INFORMATION CurrentByteOffset
+	// (MS-FSCC 2.4.32). Servers track this per-handle so SET/GET via
+	// FilePositionInformation round-trips even though network filesystems
+	// do not use it for I/O dispatch. Preserved across durable handle
+	// disconnect/reconnect (smb2.durable-open.file-position).
+	PositionInfo uint64
+
 	// NotifyOverflowed is the sticky overflow flag for SMB2 CHANGE_NOTIFY on
 	// this directory handle. Set when a notify completes with
 	// STATUS_NOTIFY_ENUM_DIR because the encoded change list exceeds the
@@ -743,7 +750,19 @@ func (h *Handler) closeFilesWithFilter(
 		// disconnect (not an explicit LOGOFF), persist the handle to the
 		// DurableHandleStore for later reconnection. On explicit LOGOFF the client
 		// is intentionally closing the session, so durable handles are fully closed.
-		if openFile.IsDurable && h.DurableStore != nil && isDisconnect {
+		//
+		// Refuse to persist if the handle requested FILE_DELETE_ON_CLOSE at CREATE
+		// time or marked DeletePending later via FileDispositionInformation. This
+		// mirrors Samba `vfs_default_durable_disconnect` (source3/smbd/durable.c):
+		// the disconnect path returns NT_STATUS_NOT_SUPPORTED for delete-on-close
+		// opens so the caller falls back to normal close and executes the delete.
+		// Required for smb2.durable-open.delete_on_close1 — without this, the
+		// file persists across the disconnect and a subsequent fresh CREATE sees
+		// the stale content instead of a freshly-created empty file. The matching
+		// delete_on_close2 test stays in KNOWN_FAILURES (same as Samba upstream).
+		hasDeleteOnClose := openFile.CreateOptions&types.FileDeleteOnClose != 0 ||
+			openFile.DeletePending
+		if openFile.IsDurable && h.DurableStore != nil && isDisconnect && !hasDeleteOnClose {
 			username := ""
 			var sessionKeyHash [32]byte
 			if sess != nil {

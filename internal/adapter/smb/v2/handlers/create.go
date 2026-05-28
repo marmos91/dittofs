@@ -579,16 +579,23 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			restored := reconnResult.OpenFile
 
 			// Reconnect succeeded: register the restored OpenFile.
-			// Per MS-SMB2 3.3.5.9.7: keep the persistent FileId (bytes 0-7)
-			// but regenerate the volatile FileId (bytes 8-15) so it is unique
-			// on this connection.  The old volatile part is stale after the
-			// server restart / disconnect.
+			// Per MS-SMB2 3.3.5.9.7: the server returns the original Open.FileId.
+			// We restore both halves (persistent + volatile) from the persisted
+			// OriginalFileID so the OpenID derived from FileID matches any
+			// byte-range locks taken before disconnect — UNLOCK after reconnect
+			// on the same volatile would otherwise fail with RANGE_NOT_LOCKED
+			// (smb2.durable-open.lock-{oplock,lease}). For older persisted
+			// handles written before OriginalFileID existed, the restore path
+			// already falls back to the volatile-zeroed FileID; regenerate the
+			// volatile half in that fallback case so the FileID is still unique
+			// on this connection.
 			restored.TreeID = ctx.TreeID
 			restored.SessionID = ctx.SessionID
 			smbFileID := restored.FileID
-			// Regenerate volatile part (bytes 8-15)
-			_, _ = rand.Read(smbFileID[8:16])
-			restored.FileID = smbFileID
+			if reconnResult.OriginalFileID == ([16]byte{}) {
+				_, _ = rand.Read(smbFileID[8:16])
+				restored.FileID = smbFileID
+			}
 
 			// Re-grant durability on reconnect. The handle was durable before
 			// disconnect, and the successful reconnect implicitly restores it.

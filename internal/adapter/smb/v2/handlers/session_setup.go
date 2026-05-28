@@ -219,7 +219,13 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 			logger.Info("SESSION_SETUP: tearing down previous session",
 				"previousSessionID", req.PreviousSessionID)
 			prevSess.LoggedOff.Store(true)
-			h.CloseAllFilesForSession(ctx.Context, req.PreviousSessionID, false)
+			// Treat PreviousSessionID supersession as a transport disconnect for
+			// durable-handle purposes: per MS-SMB2 3.3.5.5.3 / 3.3.5.9.7, the
+			// new session inherits the right to reconnect the prior session's
+			// durable handles via DHnC/DH2C. Closing with isDisconnect=false
+			// would prematurely tear down the open and break the lease-backed
+			// durable reopen paths (smb2.durable-open.reopen1a*).
+			h.CloseAllFilesForSession(ctx.Context, req.PreviousSessionID, true)
 			h.releaseSessionLeasesAndNotifies(ctx.Context, req.PreviousSessionID)
 			h.DeleteAllTreesForSession(req.PreviousSessionID)
 			h.DeleteAllPendingAuthForSession(req.PreviousSessionID)
