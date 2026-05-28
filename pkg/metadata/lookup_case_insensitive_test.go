@@ -107,6 +107,13 @@ func TestLookupCaseInsensitive_SpecialNames(t *testing.T) {
 	require.NotNil(t, file)
 	assert.Equal(t, ".", matched)
 	assert.Equal(t, metadata.FileTypeDirectory, file.Type)
+
+	// ".." from root resolves to root (no parent ⇒ Lookup returns self).
+	parent, matchedDotDot, err := fx.service.LookupCaseInsensitive(fx.rootContext(), fx.rootHandle, "..")
+	require.NoError(t, err)
+	require.NotNil(t, parent)
+	assert.Equal(t, "..", matchedDotDot)
+	assert.Equal(t, metadata.FileTypeDirectory, parent.Type)
 }
 
 // TestLookupCaseInsensitive_PreservesCaseAcrossMultipleEntries makes sure the
