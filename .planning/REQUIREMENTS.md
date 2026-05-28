@@ -35,9 +35,9 @@
 
 ### Sync gate and orchestration (ORCH)
 
-- [ ] **ORCH-01**: `VerifyRemoteDurability` — verify all manifest hashes exist on remote via `Head()` with bounded concurrency
-- [ ] **ORCH-02**: Snapshot create orchestration: metadata dump → hash manifest → sync gate → record "ready"
-- [ ] **ORCH-03**: Optional `--no-sync-gate` flag skips remote verification (GC hold still applies)
+- [x] **ORCH-01**: `VerifyRemoteDurability` — verify all manifest hashes exist on remote via `Head()` with bounded concurrency
+- [x] **ORCH-02**: Snapshot create orchestration: metadata dump → hash manifest → sync gate → record "ready"
+- [x] **ORCH-03**: Optional `--no-sync-gate` flag skips remote verification (GC hold still applies)
 
 ### Restore (REST)
 
@@ -110,9 +110,9 @@
 | SNAP-03 | Phase 22 | Pending |
 | SNAP-04 | Phase 22 | Pending |
 | SNAP-05 | Phase 22 | Pending |
-| ORCH-01 | Phase 23 | Pending |
-| ORCH-02 | Phase 23 | Pending |
-| ORCH-03 | Phase 23 | Pending |
+| ORCH-01 | Phase 23 | Complete |
+| ORCH-02 | Phase 23 | Complete |
+| ORCH-03 | Phase 23 | Complete |
 | REST-01 | Phase 24 | Pending |
 | REST-02 | Phase 24 | Pending |
 | REST-03 | Phase 24 | Pending |
