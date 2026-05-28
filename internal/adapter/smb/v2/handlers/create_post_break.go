@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -101,6 +102,36 @@ func effectiveAccessForOpen(desiredAccess uint32, disposition types.CreateDispos
 	return desiredAccess | uint32(types.FileWriteData)
 }
 
+// hasOtherOpenForFile reports whether any open in h.files refers to the same
+// metadata handle as fileHandle, excluding the open identified by selfFileID
+// (the CREATE-in-flight has not yet been registered, so selfFileID typically
+// matches nothing — but the parameter is kept for symmetry and future use).
+//
+// Used by the traditional-oplock grant path to coerce Batch/Exclusive to
+// LEVEL_II when another open already exists on the same file (MS-SMB2
+// §3.3.5.9 / Samba `grant_fsp_oplock_type`).
+func (h *Handler) hasOtherOpenForFile(fileHandle metadata.FileHandle, selfFileID [16]byte) bool {
+	if len(fileHandle) == 0 {
+		return false
+	}
+	found := false
+	h.files.Range(func(_, value any) bool {
+		other := value.(*OpenFile)
+		if other.FileID == selfFileID {
+			return true
+		}
+		if len(other.MetadataHandle) == 0 {
+			return true
+		}
+		if !bytes.Equal(other.MetadataHandle, fileHandle) {
+			return true
+		}
+		found = true
+		return false
+	})
+	return found
+}
+
 // breakAndMaybeParkCreate dispatches the handle-lease break required before
 // the post-break share-mode check, then decides between parking the CREATE on
 // an interim STATUS_PENDING (returning a non-zero AsyncId) or waiting
@@ -118,13 +149,40 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	if !d.fileExists || d.existingHandle == nil {
 		return 0
 	}
-	// No lease manager or stat-only open (MS-SMB2 3.3.5.9.8) → skip break.
-	if h.LeaseManager == nil || isStatOnlyOpen(d.req.DesiredAccess) {
+	if h.LeaseManager == nil {
 		return 0
 	}
 
 	lockFileHandle := lock.FileHandle(d.existingHandle)
 	shareName := d.tree.ShareName
+
+	// Stat-only opens skip the break for non-destructive dispositions only.
+	// Per MS-SMB2 §3.3.5.9.8 + Samba `is_lease_stat_open` (source3/smbd/open.c),
+	// READ_ATTRIBUTES / WRITE_ATTRIBUTES / SYNCHRONIZE / READ_CONTROL
+	// combinations do not trigger lease breaks — UNLESS the disposition is
+	// destructive (OVERWRITE / OVERWRITE_IF / SUPERSEDE), in which case the
+	// new open will replace the file's content and a break is required
+	// regardless of the access mask. smbtorture smb2.oplock.batch13/14/16 +
+	// smb2.oplock.exclusive5 cover destructive+stat-only break.
+	//
+	// A narrower oplock variant (no READ_CONTROL) applies when an existing
+	// holder is a traditional oplock — Samba's `is_oplock_stat_open` — so a
+	// READ_CONTROL-only new open MUST break a traditional-oplock holder even
+	// for non-destructive dispositions. Covers smbtorture
+	// smb2.oplock.statopen1 test 8.
+	if isStatOnlyOpen(d.req.DesiredAccess) && !isDestructiveDisposition(d.req.CreateDisposition) {
+		// Stat-only per the lease mask. Apply the narrower oplock rule only
+		// when there is a traditional-oplock holder AND the new opener carries
+		// READ_CONTROL (the only bit that differs between the two masks).
+		if d.req.DesiredAccess&uint32(0x00020000) == 0 {
+			return 0
+		}
+		if !h.LeaseManager.AnyHolderIsTraditionalOplock(lockFileHandle, shareName) {
+			return 0
+		}
+		// Fall through to dispatch the break for the READ_CONTROL-on-oplock
+		// case.
+	}
 
 	// Per Samba delay_for_oplock_fn: break-target depends on the new
 	// opener's intent. Destructive disposition (OVERWRITE/SUPERSEDE) →
@@ -623,6 +681,18 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			requestedState = lock.LeaseStateRead | lock.LeaseStateWrite
 		case OplockLevelII:
 			requestedState = lock.LeaseStateRead
+		}
+		// Coerce Batch/Exclusive → LEVEL_II when any other open of this file
+		// is already present (whether it holds an oplock or not). Per MS-SMB2
+		// §3.3.5.9 and Samba `grant_fsp_oplock_type` (source3/smbd/open.c):
+		// exclusive caching (RWH/RW) requires the requestor to be the only
+		// open. A pre-existing non-oplocked open invalidates that requirement,
+		// so the strongest grantable level is LEVEL_II (Read caching). The
+		// lock-manager-level conflict check only sees lease/oplock records,
+		// not raw opens, so we apply this gate here. Covers smbtorture
+		// smb2.oplock.batch10 and smb2.oplock.exclusive9.
+		if h.hasOtherOpenForFile(fileHandle, smbFileID) {
+			requestedState &^= (lock.LeaseStateWrite | lock.LeaseStateHandle)
 		}
 		if requestedState != 0 {
 			syntheticKey := generateSyntheticLeaseKey(smbFileID)

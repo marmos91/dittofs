@@ -1598,6 +1598,21 @@ func (lm *Manager) AnyHolderHasLeaseBits(handleKey string, exceptKey [16]byte, m
 	return false
 }
 
+// AnyHolderIsTraditionalOplock reports whether any record on handleKey is a
+// traditional oplock (IsTraditionalOplock=true). Used by the SMB CREATE path
+// to apply the narrower oplock stat-open mask when a traditional holder is
+// present (MS-SMB2 §3.3.5.9 / Samba `is_oplock_stat_open`).
+func (lm *Manager) AnyHolderIsTraditionalOplock(handleKey string) bool {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	for _, l := range lm.unifiedLocks[handleKey] {
+		if l.Lease != nil && l.Lease.IsTraditionalOplock {
+			return true
+		}
+	}
+	return false
+}
+
 // HasOtherBreakingLeases reports whether any lease (other than exceptKey) or
 // any delegation on handleKey is currently Breaking. Non-blocking. Used by the
 // SMB CREATE async-park path to decide whether to emit STATUS_PENDING and

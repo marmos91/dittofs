@@ -685,6 +685,20 @@ func (lm *LeaseManager) AnyHolderHasLeaseBits(fileHandle lock.FileHandle, shareN
 	return lockMgr.AnyHolderHasLeaseBits(string(fileHandle), excludeKey, mask)
 }
 
+// AnyHolderIsTraditionalOplock reports whether any holder on fileHandle is a
+// traditional oplock (synthetic-key record). Returns false when no LockManager
+// is bound for the share.
+func (lm *LeaseManager) AnyHolderIsTraditionalOplock(fileHandle lock.FileHandle, shareName string) bool {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return false
+	}
+	if mgr, ok := lockMgr.(*lock.Manager); ok {
+		return mgr.AnyHolderIsTraditionalOplock(string(fileHandle))
+	}
+	return false
+}
+
 // WaitForOtherKeyBreaks waits on ctx for all breaks on fileHandle other than
 // excludeKey to drain. The caller controls the cancellation context — the
 // SMB CREATE async-park path passes a context whose lifetime is bound to

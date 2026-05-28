@@ -141,6 +141,11 @@ const (
 	// StatusInternalError indicates an internal server error.
 	StatusInternalError Status = 0xC00000E5
 
+	// StatusInvalidOplockProtocol indicates an oplock break acknowledgment
+	// violated the protocol (e.g., ack arrived for a no-ack break, or the
+	// acknowledged state is not a valid downgrade target). MS-SMB2 §3.3.5.22.1.
+	StatusInvalidOplockProtocol Status = 0xC00000E3
+
 	// StatusDirectoryNotEmpty indicates the directory is not empty.
 	StatusDirectoryNotEmpty Status = 0xC0000101
 
