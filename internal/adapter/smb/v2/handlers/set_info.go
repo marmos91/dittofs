@@ -862,6 +862,38 @@ func (h *Handler) setFileInfoFromStore(
 			); err != nil {
 				logger.Debug("SET_INFO: rename lease break dispatch failed", "error", err)
 			}
+
+			// MS-SMB2 §3.3.4.18 / §3.3.5.21: RENAME breaks Handle leases on
+			// the renamed file (and on the overwrite target). Any
+			// disconnected durable handle with a different lease key loses
+			// H — the disconnected client cannot ack the break, so the
+			// durable is purged. smbtorture
+			// smb2.durable-v2-open.purge-disconnected-rh-with-rename.
+			if h.DurableStore != nil {
+				if purged := h.purgeConflictingDisconnectedHandlesForDataChange(
+					authCtx.Context,
+					openFile.MetadataHandle,
+					openFile.LeaseKey,
+					true, // RENAME break_to strips H.
+				); purged > 0 {
+					logger.Debug("SET_INFO: purged disconnected handles on rename",
+						"src", openFile.Path,
+						"dst", newPath,
+						"count", purged)
+				}
+				if isOverwrite && len(dstMetaHandle) > 0 && !bytes.Equal(dstMetaHandle, openFile.MetadataHandle) {
+					if purged := h.purgeConflictingDisconnectedHandlesForDataChange(
+						authCtx.Context,
+						dstMetaHandle,
+						[16]byte{}, // dst holder is by definition not the renamer
+						true,
+					); purged > 0 {
+						logger.Debug("SET_INFO: purged disconnected handles on rename target overwrite",
+							"dst", newPath,
+							"count", purged)
+					}
+				}
+			}
 			waitCtx, cancelWait := context.WithTimeout(authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
 			if waitErr := h.LeaseManager.WaitForOtherKeyBreaks(
 				waitCtx, srcMetaHandle, openFile.ShareName, openFile.LeaseKey,
@@ -1155,6 +1187,21 @@ func (h *Handler) setFileInfoFromStore(
 			lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
 			if breakErr := h.LeaseManager.BreakReadLeasesOnWrite(lockFileHandle, openFile.ShareName, openFile.LeaseKey); breakErr != nil {
 				logger.Debug("SET_INFO: oplock break on EOF set failed (non-fatal)", "path", openFile.Path, "error", breakErr)
+			}
+			// MS-SMB2 §3.3.4.18: truncation is a data-modifying op that
+			// breaks Level-II Read leases to NONE — purge any disconnected
+			// durable handle whose lease holds R-caching from a different key.
+			if h.DurableStore != nil {
+				if purged := h.purgeConflictingDisconnectedHandlesForDataChange(
+					authCtx.Context,
+					openFile.MetadataHandle,
+					openFile.LeaseKey,
+					true,
+				); purged > 0 {
+					logger.Debug("SET_INFO: purged disconnected handles on EOF set",
+						"path", openFile.Path,
+						"count", purged)
+				}
 			}
 		}
 

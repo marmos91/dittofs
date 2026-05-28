@@ -346,6 +346,25 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		}
 	}
 
+	// MS-SMB2 §3.3.4.18 / §3.3.5.16: a WRITE breaks Level-II (Read) leases
+	// on the same file to NONE. Any disconnected durable handle with a
+	// lease holding R-caching on this file (and a different lease key from
+	// the writer's) loses H along with R and must be purged — the
+	// disconnected client cannot ack the break.
+	// smbtorture smb2.durable-v2-open.purge-disconnected-rh-with-write.
+	if h.DurableStore != nil && len(openFile.MetadataHandle) > 0 {
+		if purged := h.purgeConflictingDisconnectedHandlesForDataChange(
+			authCtx.Context,
+			openFile.MetadataHandle,
+			openFile.LeaseKey,
+			true, // WRITE breaks Read leases to NONE — break_to lacks H.
+		); purged > 0 {
+			logger.Debug("WRITE: purged disconnected handles on data change",
+				"path", openFile.Path,
+				"count", purged)
+		}
+	}
+
 	// ========================================================================
 	// Step 9: Prepare write operation
 	// ========================================================================

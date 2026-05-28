@@ -508,6 +508,40 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		}
 	}
 
+	// Step 8a-bis: MS-SMB2 §3.3.4.18 disconnected-handle preservation/purge.
+	//
+	// Evaluate any disconnected durable handles on this metadata handle
+	// against the new open's lease/share-mode and purge those that the new
+	// open's required break_to would knock below H caching. Runs after the
+	// live-lease break (8a) so the disconnected-side check sees the same
+	// post-break view, and before lease grant (8b) so the granted state
+	// reflects only handles that survive the purge. See
+	// disconnected_state_machine.go for the predicate.
+	if fileExists && h.DurableStore != nil && len(fileHandle) > 0 {
+		var newLeaseState uint32
+		var newLeaseKey [16]byte
+		if req.OplockLevel == OplockLevelLease {
+			if lc := FindCreateContext(req.CreateContexts, LeaseContextTagRequest); lc != nil {
+				if parsed, decErr := DecodeLeaseCreateContext(lc.Data); decErr == nil && parsed != nil {
+					newLeaseState = parsed.LeaseState
+					newLeaseKey = parsed.LeaseKey
+				}
+			}
+		}
+		if purged := h.purgeConflictingDisconnectedHandlesForOpen(
+			authCtx.Context,
+			fileHandle,
+			newLeaseState,
+			newLeaseKey,
+			connClientGUID(ctx),
+			req.ShareAccess,
+		); purged > 0 {
+			logger.Debug("CREATE: purged disconnected handles on conflicting open",
+				"path", filename,
+				"count", purged)
+		}
+	}
+
 	// Step 8b: Request oplock or lease if applicable.
 	var grantedOplock uint8
 	var leaseResponse *LeaseResponseContext

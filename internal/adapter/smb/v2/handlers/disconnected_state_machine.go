@@ -1,0 +1,294 @@
+package handlers
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
+)
+
+// MS-SMB2 §3.3.4.18 — Disconnected durable handle preservation/purge state machine.
+//
+// When a client transport-disconnects, an open with IsDurable set is persisted
+// to the DurableHandleStore. While disconnected, operations from OTHER opens on
+// the same underlying file may conflict with the disconnected open's persisted
+// state. This file implements the preserve/purge decision per [MS-SMB2] §3.3.4.18
+// (Server Receives an Object Store Operation) and §3.3.5.9 (Receiving an SMB2
+// CREATE Request, Step 10 share-mode/lease conflict handling) — mirroring
+// Samba's `delay_for_oplock_fn` + `share_mode_cleanup_disconnected` semantics
+// from source3/smbd/open.c and source3/smbd/scavenger.c.
+//
+// Rule summary (validated against smbtorture smb2.durable-v2-open):
+//
+//   - A disconnected open holding a lease that would need to be broken to a
+//     state lacking SMB2_LEASE_HANDLE_CACHING is purged on the spot — the
+//     disconnected client cannot ack the break, so the durable is irrecoverably
+//     lost (Samba sends the break message and the scavenger evicts the entry
+//     after timeout; we collapse the two steps).
+//
+//   - A new open with FILE_SHARE_NONE on a file with a disconnected handle
+//     purges the disconnected handle (share-mode conflict, MS-FSA 2.1.5.1.2).
+//
+//   - A WRITE from a live handle breaks Level-II (Read) leases on the same
+//     file to None per MS-SMB2 §3.3.5.16; any disconnected RH lease on the
+//     file with a different lease-key is purged (it would break to None).
+//
+//   - A RENAME from a live handle breaks Handle leases on the same file to
+//     Read (loses H) per MS-SMB2 §3.3.5.21; any disconnected lease with a
+//     different lease-key is purged (it would lose H).
+//
+// Non-rules (these MUST NOT purge — covered by smb2.durable-v2-open.keep-*):
+//
+//   - A new open with a default share (read|write|delete) on a file with a
+//     disconnected RH/RWH handle does NOT purge the disconnected handle by
+//     itself; the new open instead gets a downgraded lease grant. The grant
+//     downgrade is enforced by the LeaseManager (see bestGrantableState in
+//     pkg/metadata/lock/leases.go); this state machine only intervenes when
+//     the disconnected handle would have to lose H.
+
+// disconnectedHandleAction is the decision the state machine returns for
+// each disconnected handle inspected.
+type disconnectedHandleAction int
+
+const (
+	disconnectedActionPreserve disconnectedHandleAction = iota
+	disconnectedActionPurge
+)
+
+// SMB2 lease bits (mirrors pkg/metadata/lock constants, redefined here to
+// keep this file independent of the lock package's internal naming).
+const (
+	smbLeaseRead   uint32 = 0x01
+	smbLeaseHandle uint32 = 0x02
+	smbLeaseWrite  uint32 = 0x04
+)
+
+// SMB2 share-access bits.
+const (
+	smbShareRead   uint32 = 0x01
+	smbShareWrite  uint32 = 0x02
+	smbShareDelete uint32 = 0x04
+)
+
+// disconnectedConflictOnNewOpen evaluates whether a new CREATE on the same
+// underlying file should purge a disconnected durable handle D.
+//
+// Inputs:
+//   - dLeaseState: the lease state persisted at disconnect (R/RH/RWH bits or None).
+//   - dLeaseKey: D's lease key (for same-key reconnect detection).
+//   - dClientGUID: D's client GUID (for same-client reconnect detection).
+//   - newLeaseState: lease state requested by the new open (zero if no lease).
+//   - newLeaseKey, newClientGUID: identifiers of the new open's lease.
+//   - newShareAccess: share-mode bits from the new CREATE.
+//
+// Decision rules (see file-level comment for spec mapping):
+//
+//   - Same (clientGUID, leaseKey) as D → preserve (this is the reconnect path,
+//     handled by ProcessDurableReconnectContext, not by this predicate).
+//   - newShareAccess excludes all of {READ, WRITE, DELETE} (SHARE_NONE) →
+//     purge (MS-FSA 2.1.5.1.2 share-mode conflict).
+//   - D holds W (RWH) AND new open requests any non-None lease with a
+//     DIFFERENT lease key → purge (two W-capable cachers on different keys
+//     cannot coexist; the break_to value strips W and, per Samba's
+//     delay_for_oplock_fn lease-strip cascade, leaves W-only which is an
+//     invalid lease state → effectively break to NONE → lose H).
+//   - Otherwise → preserve.
+func disconnectedConflictOnNewOpen(
+	dLeaseState uint32,
+	dLeaseKey [16]byte,
+	dClientGUID [16]byte,
+	newLeaseState uint32,
+	newLeaseKey [16]byte,
+	newClientGUID [16]byte,
+	newShareAccess uint32,
+) disconnectedHandleAction {
+	// Same lease key + client GUID → this is the reconnect path. Let the
+	// dedicated reconnect handler decide; we MUST NOT purge here.
+	if dLeaseKey == newLeaseKey && dLeaseKey != ([16]byte{}) && dClientGUID == newClientGUID {
+		return disconnectedActionPreserve
+	}
+
+	// SHARE_NONE conflict: any disconnected handle is purged because the
+	// disconnected open held shared access and the new open denies it.
+	if newShareAccess&(smbShareRead|smbShareWrite|smbShareDelete) == 0 {
+		return disconnectedActionPurge
+	}
+
+	// W-on-W conflict on different keys: the disconnected handle held W,
+	// new open requests any non-None lease (W or RH). Even an RH request
+	// from a different key forces the W-holder to lose W; in Samba this
+	// cascades through the candidate downgrade chain (RWH → RH → R → NONE)
+	// and lands on a state lacking H because the disconnected holder cannot
+	// ack the in-flight break. Purge.
+	if dLeaseState&smbLeaseWrite != 0 && newLeaseState != 0 {
+		return disconnectedActionPurge
+	}
+
+	return disconnectedActionPreserve
+}
+
+// disconnectedConflictOnDataChange evaluates whether a WRITE or RENAME from a
+// live opener should purge a disconnected durable handle D.
+//
+// excludeLeaseKey is the lease key of the actor (writer / renamer). Handles
+// matching that key are preserved — the actor holding the lease cannot be
+// breaking its own lease.
+//
+// breakToBelowHandle is true when the action's break_to value strips
+// SMB2_LEASE_HANDLE from the broken lease. Writes break Level-II to None
+// (lose H). Renames break Handle leases to R (lose H). Both cases purge any
+// disconnected handle holding a lease whose key differs from the actor's,
+// because the disconnected client cannot ack the break.
+func disconnectedConflictOnDataChange(
+	dLeaseState uint32,
+	dLeaseKey [16]byte,
+	excludeLeaseKey [16]byte,
+	breakToBelowHandle bool,
+) disconnectedHandleAction {
+	if !breakToBelowHandle {
+		return disconnectedActionPreserve
+	}
+	// Same actor — never purge our own handle.
+	if dLeaseKey == excludeLeaseKey && dLeaseKey != ([16]byte{}) {
+		return disconnectedActionPreserve
+	}
+	// D holds no lease — there is nothing to break; preserve.
+	if dLeaseState == 0 {
+		return disconnectedActionPreserve
+	}
+	return disconnectedActionPurge
+}
+
+// purgeConflictingDisconnectedHandlesForOpen scans disconnected handles for
+// the underlying file (keyed by metadata handle) and purges those that
+// conflict with the new open under §3.3.4.18.
+//
+// Returns the number of purged handles. Errors looking up the store are
+// logged at debug — purge is best-effort and must not block CREATE.
+func (h *Handler) purgeConflictingDisconnectedHandlesForOpen(
+	ctx context.Context,
+	metaHandle []byte,
+	newLeaseState uint32,
+	newLeaseKey [16]byte,
+	newClientGUID [16]byte,
+	newShareAccess uint32,
+) int {
+	if h.DurableStore == nil || len(metaHandle) == 0 {
+		return 0
+	}
+	handles, err := h.DurableStore.GetDurableHandlesByFileHandle(ctx, metaHandle)
+	if err != nil {
+		logger.Debug("purgeConflictingDisconnectedHandlesForOpen: lookup failed",
+			"error", err)
+		return 0
+	}
+	if len(handles) == 0 {
+		return 0
+	}
+	var purged int
+	for _, d := range handles {
+		// Only consider handles that survived a transport disconnect — the
+		// store may transiently hold pre-disconnect rows on some backends.
+		if d.DisconnectedAt.IsZero() {
+			continue
+		}
+		action := disconnectedConflictOnNewOpen(
+			d.LeaseState, d.LeaseKey, d.ClientGUID,
+			newLeaseState, newLeaseKey, newClientGUID,
+			newShareAccess,
+		)
+		if action != disconnectedActionPurge {
+			continue
+		}
+		h.purgeOneDisconnectedHandle(ctx, d, "new-open conflict")
+		purged++
+	}
+	return purged
+}
+
+// purgeConflictingDisconnectedHandlesForDataChange scans disconnected handles
+// for the underlying file and purges those that would lose H caching due to
+// the actor's WRITE or RENAME.
+func (h *Handler) purgeConflictingDisconnectedHandlesForDataChange(
+	ctx context.Context,
+	metaHandle []byte,
+	excludeLeaseKey [16]byte,
+	breakToBelowHandle bool,
+) int {
+	if h.DurableStore == nil || len(metaHandle) == 0 || !breakToBelowHandle {
+		return 0
+	}
+	handles, err := h.DurableStore.GetDurableHandlesByFileHandle(ctx, metaHandle)
+	if err != nil {
+		logger.Debug("purgeConflictingDisconnectedHandlesForDataChange: lookup failed",
+			"error", err)
+		return 0
+	}
+	if len(handles) == 0 {
+		return 0
+	}
+	var purged int
+	for _, d := range handles {
+		if d.DisconnectedAt.IsZero() {
+			continue
+		}
+		action := disconnectedConflictOnDataChange(
+			d.LeaseState, d.LeaseKey, excludeLeaseKey, breakToBelowHandle,
+		)
+		if action != disconnectedActionPurge {
+			continue
+		}
+		h.purgeOneDisconnectedHandle(ctx, d, "data-change break")
+		purged++
+	}
+	return purged
+}
+
+// purgeOneDisconnectedHandle deletes a single disconnected handle and releases
+// its locks. Mirrors the cleanup half of DurableHandleScavenger.cleanupAndDelete
+// but is callable from CREATE/WRITE/RENAME hot paths without the scavenger
+// ticker overhead.
+func (h *Handler) purgeOneDisconnectedHandle(
+	ctx context.Context,
+	d *lock.PersistedDurableHandle,
+	reason string,
+) {
+	if h.Registry != nil {
+		if metaSvc := h.Registry.GetMetadataService(); metaSvc != nil && len(d.MetadataHandle) > 0 {
+			// SessionID 0 mirrors DurableHandleScavenger: not tied to a session.
+			if err := metaSvc.UnlockAllForSession(ctx, d.MetadataHandle, 0); err != nil {
+				logger.Debug("purgeOneDisconnectedHandle: lock release failed",
+					"id", d.ID, "path", d.Path, "error", err)
+			}
+		}
+	}
+	if err := h.DurableStore.DeleteDurableHandle(ctx, d.ID); err != nil {
+		logger.Warn("purgeOneDisconnectedHandle: delete failed",
+			"id", d.ID, "path", d.Path, "error", err)
+		return
+	}
+	logger.Debug("purgeOneDisconnectedHandle: purged disconnected handle",
+		"id", d.ID,
+		"path", d.Path,
+		"leaseState", fmt.Sprintf("0x%x", d.LeaseState),
+		"reason", reason)
+}
+
+// shouldPersistDurableOnDisconnect returns false when an open MUST NOT be
+// persisted as a durable handle at transport-disconnect time, even if it
+// carries IsDurable. Per MS-SMB2 §3.3.4.18 and smb2.durable-v2-open.lock-noW-lease,
+// an open holding a byte-range lock under a lease that lacks W (write caching)
+// cannot reliably resume: the BR-lock is bound to the open's OpenID and the
+// lease cannot promote to W on reconnect without breaking other holders.
+// Samba's `vfs_default_durable_disconnect` mirrors this by returning
+// NT_STATUS_NOT_SUPPORTED, which falls through to a normal close.
+func shouldPersistDurableOnDisconnect(
+	leaseState uint32,
+	hasByteRangeLocks bool,
+) bool {
+	if hasByteRangeLocks && leaseState&smbLeaseWrite == 0 {
+		return false
+	}
+	return true
+}

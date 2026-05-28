@@ -464,6 +464,18 @@ type OpenFile struct {
 	// from each request. Encoding mirrors NotifyMaxBufferSize: bit 32 = set,
 	// low 32 bits = filter value. Zero means unset.
 	NotifyCompletionFilter atomic.Uint64
+
+	// HasByteRangeLocks is set the first time a LOCK request successfully
+	// records at least one byte-range lock under this open. The flag is
+	// strictly monotonic for the lifetime of the open — UNLOCK does NOT
+	// clear it, mirroring the pessimistic check Samba performs in
+	// `vfs_default_durable_disconnect`. The flag participates in the
+	// disconnect-time decision to persist a durable handle (see
+	// shouldPersistDurableOnDisconnect): an open holding any BR-lock under a
+	// lease that lacks W must NOT be persisted, because its locks cannot
+	// reliably survive an in-flight lease downgrade.
+	// smbtorture smb2.durable-v2-open.lock-noW-lease.
+	HasByteRangeLocks atomic.Bool
 }
 
 // OpenID returns a unique identifier for this open file handle.
@@ -835,22 +847,39 @@ func (h *Handler) closeFilesWithFilter(
 					leaseState = state
 				}
 			}
-			persisted := buildPersistedDurableHandle(openFile, username, sessionKeyHash, h.StartTime, leaseState)
-			if err := h.DurableStore.PutDurableHandle(ctx, persisted); err != nil {
-				logger.Warn(caller+": failed to persist durable handle",
+
+			// MS-SMB2 §3.3.4.18 persist gate: refuse to persist when the
+			// open holds a byte-range lock under a lease lacking W. The
+			// disconnected reconnect cannot reliably re-establish the lock
+			// because the BR-lock is bound to the open's OpenID and a
+			// non-W lease cannot promote to W on reconnect without breaking
+			// other holders. Mirrors Samba's vfs_default_durable_disconnect
+			// (NT_STATUS_NOT_SUPPORTED → fall through to normal close).
+			// smbtorture smb2.durable-v2-open.lock-noW-lease.
+			persistGated := !shouldPersistDurableOnDisconnect(leaseState, openFile.HasByteRangeLocks.Load())
+			if persistGated {
+				logger.Debug(caller+": durable persist refused (BR-lock without W lease)",
 					"path", openFile.Path,
-					"error", err)
-				// Fall through to normal close on persistence failure
+					"leaseState", fmt.Sprintf("0x%x", leaseState),
+					"hasBRLocks", true)
 			} else {
-				logger.Debug(caller+": durable handle persisted for reconnect",
-					"path", openFile.Path,
-					"fileID", fmt.Sprintf("%x", openFile.FileID),
-					"timeout", openFile.DurableTimeoutMs)
-				// Do NOT release locks, flush caches, or execute delete-on-close
-				// The handle lives on in the DurableHandleStore
-				toDelete = append(toDelete, openFile.FileID)
-				closed++
-				return true
+				persisted := buildPersistedDurableHandle(openFile, username, sessionKeyHash, h.StartTime, leaseState)
+				if err := h.DurableStore.PutDurableHandle(ctx, persisted); err != nil {
+					logger.Warn(caller+": failed to persist durable handle",
+						"path", openFile.Path,
+						"error", err)
+					// Fall through to normal close on persistence failure
+				} else {
+					logger.Debug(caller+": durable handle persisted for reconnect",
+						"path", openFile.Path,
+						"fileID", fmt.Sprintf("%x", openFile.FileID),
+						"timeout", openFile.DurableTimeoutMs)
+					// Do NOT release locks, flush caches, or execute delete-on-close
+					// The handle lives on in the DurableHandleStore
+					toDelete = append(toDelete, openFile.FileID)
+					closed++
+					return true
+				}
 			}
 		}
 

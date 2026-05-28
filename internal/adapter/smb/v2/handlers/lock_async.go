@@ -227,6 +227,12 @@ func (h *Handler) resumePendingLock(
 				finalStatus = types.StatusSuccess
 				finalBody = encodeLockResponseBody()
 				h.lastDeniedLocks.Delete(pending.OwnerID)
+				// Mirror the sync path in lock.go: parked LOCK requests that
+				// finally succeed must also mark the open as having held a
+				// byte-range lock, so the disconnect-time durable-persist
+				// decision (shouldPersistDurableOnDisconnect, MS-SMB2 §3.3.4.18
+				// / smb2.durable-v2-open.lock-noW-lease) sees the lock.
+				openFile.HasByteRangeLocks.Store(true)
 				goto deliver
 			}
 			var storeErr *metadata.StoreError
