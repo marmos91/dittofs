@@ -217,39 +217,51 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 
-	// Per MS-SMB2 3.3.5.14: When there are multiple lock elements and the
-	// first element is a lock (not unlock), it MUST have FailImmediately set.
-	// This prevents blocking lock requests in batch operations.
+	// First-element flag validation. Per MS-SMB2 §3.3.5.14 / Samba
+	// smbd_smb2_lock_send (source3/smbd/smb2_lock.c): only five flag
+	// combinations are valid for the first element. Anything else MUST
+	// produce STATUS_INVALID_PARAMETER:
 	//
-	// Additionally, per MS-SMB2 §3.3.5.14.1 and Samba smbd_smb2_lock_send,
-	// a multi-element request MUST NOT mix lock and unlock elements. When
-	// first is lock and a later element is unlock → INVALID_PARAMETER
-	// immediately. When first is unlock and a later element is lock → the
-	// unlocks are processed first, then INVALID_PARAMETER is returned
-	// (Samba deferred-invalid semantics: unlock side-effects persist).
-	hasMixedUnlockThenLock := false
-	if req.LockCount > 1 {
-		firstIsLock := (req.Locks[0].Flags & SMB2LockFlagUnlock) == 0
-		firstHasFailImm := (req.Locks[0].Flags & SMB2LockFlagFailImmediately) != 0
-		if firstIsLock && !firstHasFailImm {
-			logger.Debug("LOCK: multi-element request without FailImmediately on first lock")
+	//   SHARED              (blocking shared, requires LockCount==1)
+	//   EXCLUSIVE           (blocking exclusive, requires LockCount==1)
+	//   SHARED | FAIL_IMM
+	//   EXCLUSIVE | FAIL_IMM
+	//   UNLOCK              (UNLOCK alone — FAIL_IMM is illegal here)
+	//
+	// Notably this rejects UNLOCK|FAIL_IMM and any unknown bits set
+	// (smbtorture smb2.lock.valid-request lines 247-256).
+	firstFlags := req.Locks[0].Flags
+	isUnlockRequest := false
+	switch firstFlags {
+	case SMB2LockFlagSharedLock, SMB2LockFlagExclusiveLock:
+		// Blocking lock — only allowed when LockCount==1.
+		if req.LockCount > 1 {
+			logger.Debug("LOCK: blocking first element requires single-element request")
 			return NewErrorResult(types.StatusInvalidParameter), nil
 		}
+	case SMB2LockFlagSharedLock | SMB2LockFlagFailImmediately,
+		SMB2LockFlagExclusiveLock | SMB2LockFlagFailImmediately:
+		// Non-blocking lock — multi-element request is allowed but every
+		// subsequent element MUST also be non-blocking (checked below).
+	case SMB2LockFlagUnlock:
+		isUnlockRequest = true
+	default:
+		logger.Debug("LOCK: invalid first-element flags",
+			"flags", fmt.Sprintf("0x%08X", firstFlags))
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
 
-		// Detect mixed lock/unlock elements.
-		firstIsUnlock := !firstIsLock
+	// Multi-element validation. When the first element is a non-blocking
+	// lock, every subsequent element MUST also carry FAIL_IMM (per Samba's
+	// loop at smb2_lock.c:371). The UNLOCK-first deferred-invalid path is
+	// enforced per-element in the main processing loop below (Samba's
+	// "invalid" defer at smb2_lock.c:425).
+	if req.LockCount > 1 && !isUnlockRequest {
 		for i := 1; i < len(req.Locks); i++ {
-			elemIsUnlock := (req.Locks[i].Flags & SMB2LockFlagUnlock) != 0
-			if firstIsLock && elemIsUnlock {
-				// Lock-first, unlock later → reject immediately.
-				logger.Debug("LOCK: multi-element request mixes lock then unlock",
+			if (req.Locks[i].Flags & SMB2LockFlagFailImmediately) == 0 {
+				logger.Debug("LOCK: multi-element request without FailImmediately",
 					"elem", i)
 				return NewErrorResult(types.StatusInvalidParameter), nil
-			}
-			if firstIsUnlock && !elemIsUnlock {
-				// Unlock-first, lock later → process unlocks, then error.
-				hasMixedUnlockThenLock = true
-				break
 			}
 		}
 	}
@@ -296,26 +308,61 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	// Process each lock element
 	for i, lockElem := range req.Locks {
 		isUnlock := (lockElem.Flags & SMB2LockFlagUnlock) != 0
-		isShared := (lockElem.Flags & SMB2LockFlagSharedLock) != 0
 		isExclusive := (lockElem.Flags & SMB2LockFlagExclusiveLock) != 0
 
-		// Validate flag combinations per MS-SMB2 2.2.26:
-		// - SharedLock and ExclusiveLock are mutually exclusive
-		// - Unlock must not be combined with lock type flags
-		// - Lock operations must specify either SharedLock or ExclusiveLock
-		invalidFlags := (isShared && isExclusive) ||
-			(isUnlock && (isShared || isExclusive)) ||
-			(!isUnlock && !isShared && !isExclusive)
-		if invalidFlags {
-			logger.Debug("LOCK: invalid flag combination",
-				"index", i,
-				"flags", fmt.Sprintf("0x%08X", lockElem.Flags))
+		// Per-element flag validation, mirroring Samba's per-element switch
+		// (source3/smbd/smb2_lock.c:382). For an UNLOCK-first request, any
+		// element with invalid flags (a lock element OR a bare-UNLOCK with
+		// extra bits set, e.g. UNLOCK|FAIL_IMM) is flagged as invalid but
+		// deferred: the prior unlocks executed persist and the request
+		// completes with INVALID_PARAMETER without processing this element.
+		// For a lock-first request, a pure UNLOCK element is rejected
+		// immediately.
+		deferredInvalid := false
+		switch lockElem.Flags {
+		case SMB2LockFlagSharedLock, SMB2LockFlagExclusiveLock,
+			SMB2LockFlagSharedLock | SMB2LockFlagFailImmediately,
+			SMB2LockFlagExclusiveLock | SMB2LockFlagFailImmediately:
+			if isUnlockRequest {
+				// UNLOCK-first chain followed by a lock element: defer.
+				deferredInvalid = true
+			}
+		case SMB2LockFlagUnlock:
+			if !isUnlockRequest {
+				logger.Debug("LOCK: UNLOCK element in lock-first request",
+					"elem", i,
+					"flags", fmt.Sprintf("0x%08X", lockElem.Flags))
+				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
+				return NewErrorResult(types.StatusInvalidParameter), nil
+			}
+		default:
+			if isUnlockRequest {
+				// Defer: persist prior unlocks, error after. Critically we
+				// must NOT process this element (its flags are invalid);
+				// otherwise UNLOCK|FAIL_IMM would slip through the
+				// isUnlock=true branch and run UnlockFile.
+				deferredInvalid = true
+			} else {
+				logger.Debug("LOCK: invalid element flags",
+					"elem", i,
+					"flags", fmt.Sprintf("0x%08X", lockElem.Flags))
+				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
+				return NewErrorResult(types.StatusInvalidParameter), nil
+			}
+		}
+
+		if deferredInvalid {
+			// Stop processing — prior unlocks persist, return error now.
 			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
 			return NewErrorResult(types.StatusInvalidParameter), nil
 		}
 
-		// Per MS-SMB2 3.3.5.14: Validate offset+length doesn't overflow
-		if lockElem.Length > 0 && lockElem.Offset > ^uint64(0)-lockElem.Length {
+		// Per MS-SMB2 3.3.5.14: a range is invalid only when its last byte
+		// (offset+length-1) overflows uint64. {offset=~0, length=1} addresses
+		// exactly the byte at 2^64-1 and is valid; {offset=~0, length=2}
+		// would address byte 2^64 which overflows. Empty (length=0) ranges
+		// are always valid (zero-byte lock semantics handled downstream).
+		if lockElem.Length > 0 && lockElem.Offset > ^uint64(0)-(lockElem.Length-1) {
 			logger.Debug("LOCK: range overflow",
 				"index", i,
 				"offset", lockElem.Offset,
@@ -331,16 +378,6 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			"flags", fmt.Sprintf("0x%08X", lockElem.Flags),
 			"unlock", isUnlock,
 			"exclusive", isExclusive)
-
-		// Mixed unlock-then-lock: process unlocks, reject on first lock element.
-		// Per Samba smbd_smb2_lock_send, unlocks persist but the overall request
-		// returns INVALID_PARAMETER when a lock element follows.
-		if hasMixedUnlockThenLock && !isUnlock {
-			logger.Debug("LOCK: mixed unlock-then-lock, rejecting lock element",
-				"index", i)
-			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
-			return NewErrorResult(types.StatusInvalidParameter), nil
-		}
 
 		if isUnlock {
 			// Unlock operation.
@@ -397,7 +434,6 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			// FailImmediately requests).
 			err := metaSvc.LockFile(authCtx, openFile.MetadataHandle, fileLock)
 			if err == nil {
-				h.lastDeniedLocks.Delete(openID)
 				acquiredLocks = append(acquiredLocks, lockElem)
 				continue
 			}
@@ -411,11 +447,13 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 				return NewErrorResult(common.MapLockToSMB(err)), nil
 			}
 
-			// Conflict path. FailImmediately → return immediately with the
-			// LOCK_NOT_GRANTED / FILE_LOCK_CONFLICT distinction.
+			// Conflict path. FailImmediately → return LOCK_NOT_GRANTED.
+			// Per MS-SMB2 §3.3.5.14, SMBv2 lock denials always surface
+			// LOCK_NOT_GRANTED (FILE_LOCK_CONFLICT is reserved for the
+			// I/O paths — see source4/torture/smb2/lock.c:1183-1186).
 			if failImmediately {
 				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
-				return NewErrorResult(h.mapLockConflictStatus(openID, lockElem, isExclusive, storeErr.ConflictOwnerID)), nil
+				return NewErrorResult(types.StatusLockNotGranted), nil
 			}
 
 			// Blocking conflict. Try async parking first; if parking is
@@ -432,7 +470,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			if ctx.NextCommand == 0 && req.LockCount == 1 && len(acquiredLocks) == 0 &&
 				h.PendingLockRegistry != nil && ctx.AsyncLockCompleteCallback != nil &&
 				ctx.TryReserveAsync != nil && ctx.ReleaseAsync != nil {
-				if asyncId, parked := h.parkLockOnConflict(ctx, authCtx, openFile, fileLock, lockElem); parked {
+				if asyncId, parked := h.parkLockOnConflict(ctx, authCtx, openFile, fileLock); parked {
 					return &HandlerResult{
 						Status:  types.StatusPending,
 						AsyncId: asyncId,
@@ -458,16 +496,17 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 					rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
 					return NewErrorResult(types.StatusCancelled), nil
 				}
-				var retryStoreErr *metadata.StoreError
-				var retryConflictOwner string
-				if goerrors.As(err, &retryStoreErr) {
-					retryConflictOwner = retryStoreErr.ConflictOwnerID
-				}
 				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
-				return NewErrorResult(h.mapLockConflictStatus(openID, lockElem, isExclusive, retryConflictOwner)), nil
+				// Lock conflict on retry → LOCK_NOT_GRANTED. Non-conflict
+				// errors (e.g. file deleted while parked) flow through
+				// common.MapLockToSMB.
+				var retryStoreErr *metadata.StoreError
+				if goerrors.As(err, &retryStoreErr) && retryStoreErr.Code == merrs.ErrLocked {
+					return NewErrorResult(types.StatusLockNotGranted), nil
+				}
+				return NewErrorResult(common.MapLockToSMB(err)), nil
 			}
 
-			h.lastDeniedLocks.Delete(openID)
 			acquiredLocks = append(acquiredLocks, lockElem)
 		}
 	}
@@ -618,42 +657,6 @@ func rollbackLocks(
 				"error", err)
 		}
 	}
-}
-
-// mapLockConflictStatus maps a byte-range lock conflict (ErrLocked) to the
-// correct SMB status. Per MS-SMB2 3.3.5.14: first denial of a given range
-// returns STATUS_LOCK_NOT_GRANTED; if the same client retries the same
-// (offset, length, type) on the same open and gets denied again, return
-// STATUS_FILE_LOCK_CONFLICT instead. The handler tracks the last-denied
-// triple per OpenID; on success the entry is cleared.
-//
-// Self-conflicts (conflictOwnerID == openID, i.e. the requesting open already
-// holds the blocking lock) always return LOCK_NOT_GRANTED and never escalate
-// to FILE_LOCK_CONFLICT. Per Samba behaviour and smbtorture expectations
-// (smb2.lock.auto-unlock line 572, smb2.lock.errorcode line 1253), the
-// escalation only applies to cross-handle conflicts.
-//
-// Used by the synchronous fail-immediately path, the inline-retry fallback,
-// and the async-park resume goroutine.
-func (h *Handler) mapLockConflictStatus(openID string, lockElem LockElement, isExclusive bool, conflictOwnerID string) types.Status {
-	// Self-conflict: the requesting open already holds the blocking lock.
-	// Always return LOCK_NOT_GRANTED without storing or escalating.
-	if conflictOwnerID != "" && conflictOwnerID == openID {
-		return types.StatusLockNotGranted
-	}
-
-	denied := lastDeniedLock{
-		Offset:    lockElem.Offset,
-		Length:    lockElem.Length,
-		Exclusive: isExclusive,
-	}
-	if prev, ok := h.lastDeniedLocks.Load(openID); ok {
-		if prev.(lastDeniedLock) == denied {
-			return types.StatusFileLockConflict
-		}
-	}
-	h.lastDeniedLocks.Store(openID, denied)
-	return types.StatusLockNotGranted
 }
 
 // encodeLockResponseBody encodes the canonical 4-byte SMB2 LOCK response
