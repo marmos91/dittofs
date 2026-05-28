@@ -224,7 +224,7 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 			types.FileLinkInformation,
 			types.FileDispositionInformation, types.FileDispositionInformationEx,
 			types.FileEndOfFileInformation, types.FileAllocationInformation,
-			15: // FileFullEaInformation
+			types.FileFullEaInformation:
 			// These have specific access checks in their handlers or
 			// are validated by the metadata layer
 		default:
@@ -358,8 +358,19 @@ func (h *Handler) setFileInfoFromStore(
 		// handle. Pre-read the file to capture current timestamps, then pin
 		// sentinel timestamps to their current value in setAttrs to suppress
 		// auto-updates (e.g., Ctime auto-update when FileAttributes change).
+		//
+		// We also need the pre-image whenever the caller sends ChangeTime = 0
+		// ("don't change") alongside any other mutation — the metadata layer
+		// auto-bumps Ctime on any modification (file_modify.go line 311 et
+		// seq.), but smbtorture `smb2.setinfo` (setinfo.c:203) asserts the
+		// previously-set Ctime survives a no-op SET_INFO. The mutation can be
+		// attribute-only, timestamp-only (e.g. LastWriteTime), or both;
+		// pinning Ctime to the current value suppresses the auto-bump in all
+		// of these cases.
+		anyBasicMutation := fileAttrs != 0 || creationFT != 0 || atimeFT != 0 || mtimeFT != 0
+		needPreFile := hasFreezeOrUnfreeze || (ctimeFT == 0 && anyBasicMutation && !openFile.CtimeFrozen)
 		var preFile *metadata.File
-		if hasFreezeOrUnfreeze {
+		if needPreFile {
 			var err error
 			preFile, err = metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
 			if err != nil {
@@ -403,6 +414,18 @@ func (h *Handler) setFileInfoFromStore(
 		}
 		if atimeFT == 0 && openFile.AtimeFrozen && openFile.FrozenAtime != nil {
 			setAttrs.Atime = openFile.FrozenAtime
+		}
+
+		// ChangeTime stickiness: once SET_INFO BasicInfo has been used on a
+		// handle to mutate attributes or any timestamp, the metadata layer's
+		// automatic Ctime bump (file_modify.go: `if attrs.Ctime == nil {
+		// file.Ctime = now }`) must NOT overwrite a previously-set ChangeTime
+		// when the caller sends ChangeTime = 0. Pin Ctime to the current value
+		// so the auto-bump is a no-op. smbtorture `smb2.setinfo`
+		// (setinfo.c:203) asserts this for attribute changes; the same
+		// constraint applies to timestamp-only mutations (e.g. LastWriteTime).
+		if ctimeFT == 0 && setAttrs.Ctime == nil && !openFile.CtimeFrozen && preFile != nil {
+			setAttrs.Ctime = &preFile.Ctime
 		}
 
 		// Per MS-FSA 2.1.5.14.2: When FileAttributes change, the object store
@@ -1107,7 +1130,7 @@ func (h *Handler) setFileInfoFromStore(
 		// Reserved (7B), RootDirectory (8B), FileNameLength (4B), FileName (UTF-16LE).
 		return h.handleFileLinkInformation(authCtx, openFile, buffer)
 
-	case 15: // FileFullEaInformation [MS-FSCC] 2.4.15 - Extended attributes
+	case types.FileFullEaInformation: // [MS-FSCC] 2.4.15 - Extended attributes
 		// Accept EA writes as a no-op. DittoFS does not persist extended attributes
 		// but returning SUCCESS allows ChangeNotify EA tests to proceed.
 		logger.Debug("SET_INFO: FileFullEaInformation (no-op)", "path", openFile.Path)

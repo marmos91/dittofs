@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -521,7 +522,12 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		if upperSuffix == "::$DATA" || upperSuffix == "::$INDEX_ALLOCATION" {
 			filename = basePath
 		}
-		// Other stream names (alternate data streams) are kept as-is
+		// Other stream names (alternate data streams) are kept as-is.
+		// Named ADS with explicit ":$DATA" type qualifier is left intact:
+		// `:stream` and `:stream:$DATA` storage paths stay distinct, matching
+		// the rest of the pipeline (FileStreamInformation, ChangeNotify) that
+		// emits the stored name on the wire. Collapsing them here without
+		// re-appending `:$DATA` downstream regressed WPTS BVT ADS tests.
 	}
 
 	// Reject paths that traverse above the share root (e.g., "../../..")
@@ -838,7 +844,10 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
-	existingFile, lookupErr := metaSvc.Lookup(authCtx, parentHandle, baseName)
+	// Case-insensitive baseName resolution mirrors Windows/NTFS open semantics
+	// (smbtorture `smb2.getinfo.normalized`). Falls through to the exact-name
+	// fast path when present; only scans the parent dir on miss.
+	existingFile, lookupErr := h.lookupCaseInsensitive(authCtx, parentHandle, baseName)
 	fileExists := (lookupErr == nil)
 
 	// Debug logging to trace file type issues in Lookup
@@ -1324,7 +1333,7 @@ func (h *Handler) walkPath(
 			continue
 		}
 
-		file, err := metaSvc.Lookup(authCtx, currentHandle, part)
+		file, err := h.lookupCaseInsensitive(authCtx, currentHandle, part)
 		if err != nil {
 			return nil, err
 		}
@@ -1343,6 +1352,58 @@ func (h *Handler) walkPath(
 	}
 
 	return currentHandle, nil
+}
+
+// lookupCaseInsensitive performs a case-sensitive Lookup first (fast path).
+// On NotFound, it falls back to enumerating the parent directory and matching
+// the name case-insensitively, mirroring Windows/NTFS semantics required by
+// `smb2.getinfo.normalized` and the broader SMB protocol contract. The
+// fast-path keeps the common case (exact name) at one map lookup; the fallback
+// is only paid when the exact name miss occurs.
+func (h *Handler) lookupCaseInsensitive(
+	authCtx *metadata.AuthContext,
+	dirHandle metadata.FileHandle,
+	name string,
+) (*metadata.File, error) {
+	metaSvc := h.Registry.GetMetadataService()
+
+	lookupFile, lookupErr := metaSvc.Lookup(authCtx, dirHandle, name)
+	if lookupErr == nil {
+		return lookupFile, nil
+	}
+	if !metadata.IsNotFoundError(lookupErr) {
+		return nil, lookupErr
+	}
+
+	// Fallback: case-insensitive scan. ReadDirectory needs traverse + read on
+	// the parent (Lookup only needed traverse); on AccessDenied we surface the
+	// original NotFound from Lookup so traverse-only callers see exactly what
+	// they used to. An EqualFold match is re-resolved via Lookup so per-child
+	// permission semantics (DACL, traverse) still flow through the standard
+	// path. Page through the directory in case it has more than the per-call
+	// default limit.
+	cookie := uint64(0)
+	for {
+		page, err := metaSvc.ReadDirectory(authCtx, dirHandle, cookie, 0)
+		if err != nil {
+			var se *metadata.StoreError
+			if errors.As(err, &se) && se.Code == metadata.ErrAccessDenied {
+				// Traverse-only callers couldn't have enumerated either; preserve
+				// the prior Lookup-only behavior by returning the original NotFound.
+				return nil, lookupErr
+			}
+			return nil, err
+		}
+		for _, e := range page.Entries {
+			if strings.EqualFold(e.Name, name) {
+				return metaSvc.Lookup(authCtx, dirHandle, e.Name)
+			}
+		}
+		if !page.HasMore {
+			return nil, lookupErr
+		}
+		cookie = page.NextCookie
+	}
 }
 
 // createNewFile creates a new file or directory in the metadata store.

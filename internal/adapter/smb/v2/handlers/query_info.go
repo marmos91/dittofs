@@ -390,7 +390,14 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported}}, nil
 	}
 
-	// Truncate if necessary
+	// Truncate if necessary.
+	//
+	// Per MS-SMB2 §3.3.5.20.1, when the response data exceeds OutputBufferLength
+	// but the fixed portion fits, the server returns the truncated bytes with
+	// STATUS_BUFFER_OVERFLOW (matches Samba `smbd_smb2_getinfo_send`). The
+	// fixed-portion-too-small case (data_size < fixed_portion) is already
+	// rejected with STATUS_INFO_LENGTH_MISMATCH in Step 3 above.
+	overflowStatus := types.StatusSuccess
 	if uint32(len(info)) > req.OutputBufferLength {
 		// Security descriptors are atomic — partial SD is invalid.
 		// MS-SMB2 §3.3.5.20.3: return STATUS_BUFFER_TOO_SMALL.
@@ -399,6 +406,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 		}
 
 		info = info[:req.OutputBufferLength]
+		overflowStatus = types.StatusBufferOverflow
 
 		// For FILE_ALL_INFORMATION, the FileNameLength field at offset 96
 		// must be updated to reflect the actual available bytes after truncation.
@@ -418,7 +426,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	// ========================================================================
 
 	return &QueryInfoResponse{
-		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+		SMBResponseBase: SMBResponseBase{Status: overflowStatus},
 		Data:            info,
 	}, nil
 }
@@ -583,7 +591,11 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		return EncodeFileBasicInfo(basicInfo), nil
 
 	case types.FileStandardInformation:
-		standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, false)
+		// Reflect SET_INFO DispositionInformation state in the DeletePending
+		// field — smbtorture `smb2.setinfo` (setinfo.c:228) asserts that
+		// querying STANDARD / ALL_INFORMATION after setting delete disposition
+		// surfaces delete_pending = 1.
+		standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, openFile.DeletePending)
 		return EncodeFileStandardInfo(standardInfo), nil
 
 	case types.FileInternalInformation:
@@ -667,10 +679,25 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 
 	case types.FileNormalizedNameInformation:
 		// FILE_NORMALIZED_NAME_INFORMATION [MS-FSCC] 2.4.28 (4 bytes + variable)
-		// Returns the normalized name relative to the share root.
-		// Per MS-FSCC: for the root directory, the name is empty.
-		filePath := openFile.Path
-		if filePath == "" || filePath == "/" {
+		//
+		// Returns the canonical name relative to the share root. Per
+		// smbtorture `smb2.getinfo.normalized`, the response must reflect
+		// the on-disk casing — not the client-supplied open path — when the
+		// caller opened the file through a case-insensitive match. Prefer
+		// the metadata store's Path (the canonical form), and fall back to
+		// the OpenFile path only when the metadata layer has no recorded
+		// path (e.g., root-handle opens). Per MS-FSCC: for the root
+		// directory, the name is empty.
+		filePath := file.Path
+		if filePath == "" {
+			filePath = openFile.Path
+		}
+		// Strip the share-root leading separator: file.Path is stored as
+		// "/dir/name" but the normalized form is share-relative (matches
+		// Samba `smb_fname->base_name` and the smbtorture assertion which
+		// expects "dir\\name", not "\\dir\\name").
+		filePath = strings.TrimPrefix(filePath, "/")
+		if filePath == "" {
 			w := smbenc.NewWriter(4)
 			w.WriteUint32(0) // FileNameLength = 0 (root)
 			return w.Bytes(), nil
@@ -724,6 +751,19 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 	case types.FileAllInformation:
 		return h.buildFileAllInformationFromStore(authCtx, file, openFile), nil
 
+	case types.FileFullEaInformation:
+		// We don't persist extended attributes (#220 tracks adapter EA support).
+		// Samba returns NO_EAS_ON_FILE when the list is empty, but smbtorture
+		// (`smb2.getinfo.complex` and `getinfo_access`) asserts NT_STATUS_OK
+		// against the reference implementation — match the asserted Windows
+		// behavior here. The client parser (Samba `ea_pull_list_chained`
+		// behind `FINFO_CHECK_MIN_SIZE(4)` in source4/libcli/raw/rawfileinfo.c)
+		// rejects a zero-byte payload with STATUS_INFO_LENGTH_MISMATCH, so we
+		// return a 4-byte sentinel: NextEntryOffset = 0 ("no further entries"),
+		// which both parsers and Windows-compatible clients interpret as
+		// "no EAs".
+		return make([]byte, 4), nil
+
 	default:
 		return nil, types.ErrNotSupported
 	}
@@ -735,7 +775,10 @@ func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext
 	// Basic (40) + Standard (24) + Internal (8) + EA (4) + Access (4) + Position (8) + Mode (4) + Alignment (4) + Name (variable)
 
 	basicInfo := FileAttrToFileBasicInfoWithName(&file.FileAttr, basenameForHidden(openFile))
-	standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, false)
+	// Reflect delete-on-close disposition (set via SET_INFO DispositionInformation
+	// or FILE_DELETE_ON_CLOSE on CREATE) in the embedded StandardInformation.
+	// smbtorture `smb2.setinfo` (setinfo.c:228) asserts delete_pending = 1 here.
+	standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, openFile.DeletePending)
 	nameBytes := encodeUTF16LE(toSMBPath(openFile.Path))
 
 	// Fixed part: 96 bytes + NameInformation header (4 bytes for length) + name data
@@ -1027,6 +1070,8 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 // fixed-size file information class. Returns 0 for variable-length classes
 // (which may be truncated instead of rejected).
 func fileInfoClassMinSize(class types.FileInfoClass) uint32 {
+	// Values match Samba `smbd_do_qfilepathinfo` fixed_portion (source3/smbd/smb2_trans2.c)
+	// so smbtorture `smb2.getinfo.qfile_buffercheck` round-trips identically.
 	switch class {
 	case types.FileBasicInformation:
 		return 40
@@ -1044,15 +1089,20 @@ func fileInfoClassMinSize(class types.FileInfoClass) uint32 {
 	case types.FileAttributeTagInformation:
 		return 8
 	case types.FileAllInformation:
-		return 100 // 40+24+8+4+4+8+4+4+4 fixed fields before variable NameInformation
+		// Samba SMB2_FILE_ALL_INFORMATION fixed_portion = 104.
+		return 104
 	case types.FileIdInformation:
 		return 24
 	case types.FileNameInformation:
 		return 4 // FileNameLength field minimum
 	case types.FileStreamInformation:
-		return 8 // NextEntryOffset + StreamNameLength minimum
+		// Samba SMB_FILE_STREAM_INFORMATION fixed_portion = 32
+		// (single FILE_STREAM_INFORMATION entry header sans variable name).
+		return 32
 	case types.FileAlternateNameInformation, types.FileNormalizedNameInformation:
-		return 4 // FileNameLength field minimum
+		// Samba SMB_FILE_*_NAME_INFORMATION fixed_portion = 8
+		// (4-byte FileNameLength + 4 bytes alignment / minimum name byte pair).
+		return 8
 	default:
 		return 0 // Variable-length or unknown; allow truncation
 	}
@@ -1062,23 +1112,27 @@ func fileInfoClassMinSize(class types.FileInfoClass) uint32 {
 // fixed-size filesystem information class [MS-FSCC] 2.5. Returns 0 for
 // variable-length classes (which may be truncated instead of rejected).
 func fsInfoClassMinSize(class types.FileInfoClass) uint32 {
+	// Values match Samba `smbd_do_qfsinfo` fixed_portion (source3/smbd/smb2_trans2.c)
+	// so smbtorture `smb2.getinfo.qfs_buffercheck` round-trips identically.
 	switch class {
-	case 3: // FileFsSizeInformation [MS-FSCC] 2.5.8 (24 bytes)
+	case 1: // FileFsVolumeInformation [MS-FSCC §2.5.9]
+		// Samba reports fixed_portion = 24 (fixed header before VolumeLabel).
 		return 24
-	case 4: // FileFsDeviceInformation [MS-FSCC] 2.5.9 (8 bytes)
+	case 3: // FileFsSizeInformation [MS-FSCC §2.5.8] (24 bytes)
+		return 24
+	case 4: // FileFsDeviceInformation [MS-FSCC §2.5.10] (8 bytes)
 		return 8
-	case 7: // FileFsFullSizeInformation [MS-FSCC] 2.5.4 (32 bytes)
-		return 32
-	case 8: // FileFsObjectIdInformation [MS-FSCC] 2.5.6 (64 bytes)
-		return 64
-	case 11: // FileFsSectorSizeInformation [MS-FSCC] 2.5.8 (28 bytes)
-		return 28
-	case 1: // FileFsVolumeInformation [MS-FSCC] 2.5.9 (min 18 bytes)
-		return 18
-	case 5: // FileFsAttributeInformation [MS-FSCC] 2.5.1 (min 12 bytes)
-		return 12
-	case 6: // FileFsControlInformation [MS-FSCC] 2.5.2 (48 bytes)
+	case 5: // FileFsAttributeInformation [MS-FSCC §2.5.1]
+		// Samba reports fixed_portion = 16 (fixed header before FileSystemName).
+		return 16
+	case 6: // FileFsControlInformation [MS-FSCC §2.5.2] (48 bytes)
 		return 48
+	case 7: // FileFsFullSizeInformation [MS-FSCC §2.5.4] (32 bytes)
+		return 32
+	case 8: // FileFsObjectIdInformation [MS-FSCC §2.5.6] (64 bytes)
+		return 64
+	case 11: // FileFsSectorSizeInformation [MS-FSCC §2.5.8] (28 bytes)
+		return 28
 	default:
 		return 0 // Variable-length or unknown
 	}
@@ -1143,7 +1197,7 @@ func fileInfoClassRequiredAccess(class types.FileInfoClass) (uint32, bool) {
 		types.FileNetworkOpenInformation,
 		types.FileAttributeTagInformation:
 		return uint32(types.FileReadAttributes), true
-	case 15: // FileFullEaInformation [MS-FSCC §2.4.15]; constant not defined in types pkg
+	case types.FileFullEaInformation:
 		return uint32(types.FileReadEA), true
 	}
 	return 0, false

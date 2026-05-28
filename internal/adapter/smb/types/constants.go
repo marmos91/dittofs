@@ -541,6 +541,7 @@ const (
 	FileNamesInformation           FileInfoClass = 12
 	FileDispositionInformation     FileInfoClass = 13
 	FilePositionInformation        FileInfoClass = 14
+	FileFullEaInformation          FileInfoClass = 15
 	FileModeInformation            FileInfoClass = 16
 	FileAlignmentInformation       FileInfoClass = 17
 	FileAllInformation             FileInfoClass = 18
