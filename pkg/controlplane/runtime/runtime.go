@@ -754,6 +754,15 @@ type snapInFlight struct {
 	cancels []context.CancelFunc
 	done    map[string]chan snapResult
 	mu      sync.Mutex
+	// draining is set true by cancelAndWaitInFlightSnaps after it has
+	// cancelled the per-snap ctxs but BEFORE wg.Wait, so concurrent
+	// WaitForSnapshot callers continue to observe the per-snap doneCh
+	// (instead of falling through to GetSnapshot and reporting a row
+	// still in state='creating'). A registerSnapInFlight observing a
+	// draining entry replaces the map slot with a fresh entry — the
+	// original entry pointer is still held locally by the draining
+	// caller, so its wg.Wait remains valid.
+	draining bool
 }
 
 // snapResult is sent exactly once on a snap's done channel, immediately
