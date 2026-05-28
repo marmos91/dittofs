@@ -220,8 +220,13 @@ type SnapshotConfig struct {
 }
 
 // ApplyDefaults fills any zero-valued field with the defaults.
+//
+// Only the zero value is replaced — an explicit negative (e.g. an operator
+// typo `snapshot.sync_gate_concurrency: -1` in YAML) is preserved so the
+// subsequent Validate pass can reject it. Defaulting `<= 0` here would
+// silently mask invalid input as the default 16.
 func (c *SnapshotConfig) ApplyDefaults() {
-	if c.SyncGateConcurrency <= 0 {
+	if c.SyncGateConcurrency == 0 {
 		c.SyncGateConcurrency = 16
 	}
 }
