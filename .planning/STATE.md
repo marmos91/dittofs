@@ -4,8 +4,8 @@ milestone: v0.16.0
 milestone_name: Share Snapshots
 status: executing
 stopped_at: Phase 21 context gathered
-last_updated: "2026-05-28T07:19:19.225Z"
-last_activity: 2026-05-28 -- Phase 22 planning complete
+last_updated: "2026-05-28T07:24:45.762Z"
+last_activity: 2026-05-28 -- Phase 22 execution started
 progress:
   total_phases: 18
   completed_phases: 9
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-23)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 21 — per-engine-backup-drivers
+**Current focus:** Phase 22 — snapshot-records-hash-manifest-gc-hold
 
 ## Current Position
 
-Phase: 22
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-05-28 -- Phase 22 planning complete
+Phase: 22 (snapshot-records-hash-manifest-gc-hold) — EXECUTING
+Plan: 1 of 6
+Status: Executing Phase 22
+Last activity: 2026-05-28 -- Phase 22 execution started
 
 ## Next Actionable
 
