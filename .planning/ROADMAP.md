@@ -684,7 +684,7 @@ Phase 20 unblocks both 21 and 22 (parallel). Phase 23 requires both 21+22. Phase
   - [x] 22-03-PLAN.md — SnapshotStore interface + GORM CRUD + automigrate + idx_share_creating fallback (Wave 2)
   - [x] 22-04-PLAN.md — engine.HoldProvider interface + Options field + markPhase wiring (Wave 1)
   - [x] 22-05-PLAN.md — SnapshotHoldProvider runtime impl + RunBlockGC wiring + RemoveShare cleanup hook (Wave 3)
-  - [ ] 22-06-PLAN.md — End-to-end snapshot lifecycle vs GC integration test (Wave 4)
+  - [x] 22-06-PLAN.md — End-to-end snapshot lifecycle vs GC integration test (Wave 4)
 
 ### Phase 23: Snapshot Create Orchestration + Sync Gate
 **Goal**: Wire end-to-end snapshot creation: metadata dump → hash manifest → sync gate → record.
@@ -741,7 +741,7 @@ Phase 20 unblocks both 21 and 22 (parallel). Phase 23 requires both 21+22. Phase
 |-------|----------------|--------|-----------|
 | 20. Backupable Interface + Cleanup | 3/3 | Complete    | 2026-05-27 |
 | 21. Per-Engine Backup Drivers | 5/5 | Complete    | 2026-05-27 |
-| 22. Snapshot Records + GC Hold | 5/6 | In Progress|  |
+| 22. Snapshot Records + GC Hold | 6/6 | Complete   | 2026-05-28 |
 | 23. Snapshot Create Orchestration | 0/? | Not started | - |
 | 24. Restore Flow | 0/? | Not started | - |
 | 25. CLI + REST API + Docs | 0/? | Not started | - |
