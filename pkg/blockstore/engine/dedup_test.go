@@ -516,6 +516,9 @@ func TestApplyFileLevelDedupHit_RollbackPropagates_NonConflict(t *testing.T) {
 	if !errors.Is(err, persistErr) {
 		t.Errorf("returned err does not wrap original persist failure via errors.Is; got %v", err)
 	}
+	if !errors.Is(err, errInducedDecrement) {
+		t.Errorf("returned err does not wrap rollback decrement failure via errors.Is; got %v", err)
+	}
 	if !strings.Contains(err.Error(), "refcount rollback also failed") {
 		t.Errorf("returned err does not surface rollback failure signal; got %q", err.Error())
 	}
@@ -563,6 +566,9 @@ func TestApplyFileLevelDedupHit_RollbackPropagates_ConflictNoRetry(t *testing.T)
 	}
 	if err == nil {
 		t.Fatalf("err=nil; want wrapped conflict+rollback failure")
+	}
+	if !errors.Is(err, errInducedDecrement) {
+		t.Errorf("returned err does not wrap rollback decrement failure via errors.Is; got %v", err)
 	}
 	if !strings.Contains(err.Error(), "refcount rollback also failed") {
 		t.Errorf("returned err does not surface rollback failure signal; got %q", err.Error())

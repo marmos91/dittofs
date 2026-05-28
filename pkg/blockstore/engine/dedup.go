@@ -300,7 +300,7 @@ func (m *Syncer) applyFileLevelDedupHit(
 			// both the original conflict + the rollback failure
 			// upward so the caller observes the leak window.
 			if rbErr := m.rollbackIncrements(ctx, seen, "file-level dedup race rollback"); rbErr != nil {
-				return false, fmt.Errorf("file-level dedup race: persist conflict: %w (refcount rollback also failed, retry aborted to avoid permanent refcount leak: %v)", err, rbErr)
+				return false, fmt.Errorf("file-level dedup race: persist conflict (refcount rollback also failed; retry aborted to avoid permanent refcount leak): %w", errors.Join(err, rbErr))
 			}
 			updatedTarget, ferr := m.coordinator.FindByObjectID(ctx, provisional)
 			if ferr != nil {
@@ -317,7 +317,7 @@ func (m *Syncer) applyFileLevelDedupHit(
 		// the rollback failure alongside the persist error so the leak
 		// is observable.
 		if rbErr := m.rollbackIncrements(ctx, seen, "file-level dedup hit rollback"); rbErr != nil {
-			return false, fmt.Errorf("file-level dedup persist: %w (refcount rollback also failed: %v)", err, rbErr)
+			return false, fmt.Errorf("file-level dedup persist (refcount rollback also failed): %w", errors.Join(err, rbErr))
 		}
 		return false, fmt.Errorf("file-level dedup persist: %w", err)
 	}
