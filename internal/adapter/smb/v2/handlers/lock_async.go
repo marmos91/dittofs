@@ -39,7 +39,6 @@ func (h *Handler) parkLockOnConflict(
 	authCtx *metadata.AuthContext,
 	openFile *OpenFile,
 	fileLock metadata.FileLock,
-	lockElem LockElement,
 ) (uint64, bool) {
 	// Deadlock detection: probe the conflicting holder via TestLock and
 	// check the WFG. If granting our wait would close a cycle, refuse to
@@ -99,7 +98,7 @@ func (h *Handler) parkLockOnConflict(
 		h.LockWaitGraph.AddWaiter(fileLock.OpenID, owners)
 	}
 
-	go h.resumePendingLock(waitCtx, pending, openFile, fileLock, lockElem)
+	go h.resumePendingLock(waitCtx, pending, openFile, fileLock)
 
 	logger.Debug("LOCK: parked on conflict — sent interim STATUS_PENDING",
 		"sessionID", ctx.SessionID,
@@ -171,13 +170,12 @@ func lockOwnerOf(fl *metadata.FileLock) string {
 //   - TREE_DISCONNECT / LOGOFF → registry drains and fires its own callback
 //     with StatusRangeNotLocked; same Unregister-check short-circuits.
 //   - Timeout → fall through to StatusLockNotGranted (unless it's a
-//     repeat-of-same-range deny, in which case StatusFileLockConflict).
+//     repeat-of-same-range deny, all surface StatusLockNotGranted).
 func (h *Handler) resumePendingLock(
 	waitCtx context.Context,
 	pending *PendingLock,
 	openFile *OpenFile,
 	fileLock metadata.FileLock,
-	lockElem LockElement,
 ) {
 	defer pending.Cancel()
 	defer func() {
@@ -200,23 +198,16 @@ func (h *Handler) resumePendingLock(
 	for {
 		select {
 		case <-waitCtx.Done():
-			// waitCtx.Done can fire from either:
+			// waitCtx.Done fires from either:
 			//   (a) timeout — DeadlineExceeded; we own delivery and surface
-			//       LOCK_NOT_GRANTED / FILE_LOCK_CONFLICT.
+			//       STATUS_LOCK_NOT_GRANTED.
 			//   (b) external cancel — CANCEL / TDIS / LOGOFF called
 			//       pending.Cancel(). The canceller already drained our
 			//       registry entry and fired its own callback; the
 			//       Unregister below will return nil and we exit cleanly
 			//       without a duplicate response.
-			//
-			// Only compute the conflict status (which mutates lastDeniedLocks)
-			// in case (a). On external cancel, the canceller owns delivery and
-			// the mutation would taint the next retry from the same OpenID.
 			if goerrors.Is(waitCtx.Err(), context.DeadlineExceeded) {
-				// Async-parked locks are always cross-handle conflicts (self-
-				// conflicts are caught synchronously before parking), so pass
-				// empty conflictOwnerID to allow normal escalation logic.
-				finalStatus = h.mapLockConflictStatus(pending.OwnerID, lockElem, fileLock.Exclusive, "")
+				finalStatus = types.StatusLockNotGranted
 			}
 			finalBody = nil
 			goto deliver
@@ -226,7 +217,6 @@ func (h *Handler) resumePendingLock(
 			if err == nil {
 				finalStatus = types.StatusSuccess
 				finalBody = encodeLockResponseBody()
-				h.lastDeniedLocks.Delete(pending.OwnerID)
 				// Mirror the sync path in lock.go: parked LOCK requests that
 				// finally succeed mark the open as having held a byte-range
 				// lock. The authoritative source of truth at disconnect-time

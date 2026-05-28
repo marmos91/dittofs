@@ -91,12 +91,6 @@ type Handler struct {
 	// async-credit pool exhausted, or registry full).
 	pendingLocks sync.Map
 
-	// Per-open last denied lock request tracking for LOCK_NOT_GRANTED vs
-	// FILE_LOCK_CONFLICT distinction. Key: openID string, Value: lastDeniedLock.
-	// Per MS-SMB2 3.3.5.14: first denial returns LOCK_NOT_GRANTED, retry of
-	// the same range returns FILE_LOCK_CONFLICT.
-	lastDeniedLocks sync.Map
-
 	// Configuration
 	MaxTransactSize uint32
 	MaxReadSize     uint32
@@ -591,17 +585,6 @@ func (f *OpenFile) CaptureNotifyCompletionFilter(filter uint32) (captured uint32
 	return uint32(f.NotifyCompletionFilter.Load()), false
 }
 
-// lastDeniedLock tracks the last denied lock request per open for
-// LOCK_NOT_GRANTED vs FILE_LOCK_CONFLICT distinction per MS-SMB2 3.3.5.14.
-// The first failed lock attempt returns LOCK_NOT_GRANTED. If the same
-// request (same offset/length/exclusive flag) is retried, FILE_LOCK_CONFLICT
-// is returned instead. This is per-open state tracked in the Handler.
-type lastDeniedLock struct {
-	Offset    uint64
-	Length    uint64
-	Exclusive bool
-}
-
 // NewHandler creates a new SMB2 handler with a default session manager.
 // It initializes the pipe manager, notify registry, and generates a random
 // server GUID. For custom session management (e.g., shared across adapters),
@@ -956,8 +939,28 @@ func (h *Handler) closeFilesWithFilter(
 			}
 		}
 
-		// Release locks for this file (per-open ownership)
+		// Cancel any pending blocking LOCK requests for this handle and
+		// release held byte-range locks. Mirrors the explicit CLOSE path
+		// (close.go step 7) so callers like LOGOFF / tree-disconnect /
+		// transport drop deliver STATUS_RANGE_NOT_LOCKED to parked waiters
+		// per Samba `brl_close_fnum`. Without this, blocking locks parked
+		// on a closing handle wait for the catch-all session/tree drain
+		// which fires STATUS_CANCELLED — failing smb2.lock.cancel-logoff
+		// which expects RANGE_NOT_LOCKED or OK.
 		if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
+			if h.PendingLockRegistry != nil {
+				for _, parked := range h.PendingLockRegistry.UnregisterAllForOwner(openFile.OpenID()) {
+					if parked.Callback != nil {
+						if err := parked.Callback(parked.SessionID, parked.MessageID, parked.AsyncId, types.StatusRangeNotLocked, nil); err != nil {
+							logger.Debug(caller+": failed to send RANGE_NOT_LOCKED",
+								"asyncId", parked.AsyncId, "error", err)
+						}
+					}
+					if h.LockWaitGraph != nil && parked.OwnerID != "" {
+						h.LockWaitGraph.RemoveWaiter(parked.OwnerID)
+					}
+				}
+			}
 			_ = metaSvc.UnlockAllForOpen(ctx, openFile.MetadataHandle, openFile.OpenID())
 		}
 

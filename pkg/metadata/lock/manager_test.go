@@ -311,6 +311,11 @@ func TestRangesOverlap(t *testing.T) {
 		{"unbounded second", 100, 10, 0, 0, true},
 		{"both unbounded", 0, 0, 100, 0, true},
 		{"same range", 0, 10, 0, 10, true},
+		// Boundary: single byte at the max uint64 offset. The exclusive
+		// end (offset+length) wraps to 0 — inclusive-end arithmetic must
+		// still report self-overlap. Required for smb2.lock max/1 case.
+		{"max-byte self", ^uint64(0), 1, ^uint64(0), 1, true},
+		{"max-byte vs unbounded", ^uint64(0), 1, 0, 0, true},
 	}
 
 	for _, tt := range tests {
