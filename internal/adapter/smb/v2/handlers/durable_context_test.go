@@ -1027,3 +1027,50 @@ func TestProcessDurableReconnectContext_PositionInfoRestored(t *testing.T) {
 		t.Errorf("restored PositionInfo = 0x%x, want 0x1000", res.OpenFile.PositionInfo)
 	}
 }
+
+func TestValidateDurableContexts(t *testing.T) {
+	mkDH2C := func() CreateContext {
+		return CreateContext{Name: DurableHandleV2ReconnectTag, Data: make([]byte, 36)}
+	}
+	mkDH2Q := func() CreateContext {
+		return CreateContext{Name: DurableHandleV2RequestTag, Data: make([]byte, 32)}
+	}
+	mkDHnC := func() CreateContext {
+		return CreateContext{Name: DurableHandleV1ReconnectTag, Data: make([]byte, 16)}
+	}
+	mkDHnQ := func() CreateContext {
+		// DHnQ uses the same tag as DH2Q on the wire; the length distinguishes.
+		return CreateContext{Name: DurableHandleV1RequestTag, Data: make([]byte, 16)}
+	}
+
+	cases := []struct {
+		name     string
+		contexts []CreateContext
+		want     types.Status
+	}{
+		{"empty", nil, types.StatusSuccess},
+		{"DHnQ only", []CreateContext{mkDHnQ()}, types.StatusSuccess},
+		{"DH2Q only", []CreateContext{mkDH2Q()}, types.StatusSuccess},
+		{"DHnC only", []CreateContext{mkDHnC()}, types.StatusSuccess},
+		{"DH2C only", []CreateContext{mkDH2C()}, types.StatusSuccess},
+
+		// MS-SMB2 §3.3.5.9.12 rejection cases (smbtorture create-blob)
+		{"DHnC + DH2C", []CreateContext{mkDHnC(), mkDH2C()}, types.StatusInvalidParameter},
+		{"DHnC + DH2Q", []CreateContext{mkDHnC(), mkDH2Q()}, types.StatusInvalidParameter},
+		{"DH2C + DHnQ", []CreateContext{mkDH2C(), mkDHnQ()}, types.StatusInvalidParameter},
+		{"DH2C + DH2Q", []CreateContext{mkDH2C(), mkDH2Q()}, types.StatusInvalidParameter},
+
+		// Truncated DH2C (length must be exactly 36 per Samba; we accept >=36
+		// at decode time but reject mismatched length up-front).
+		{"DH2C short", []CreateContext{{Name: DurableHandleV2ReconnectTag, Data: make([]byte, 20)}}, types.StatusInvalidParameter},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ValidateDurableContexts(c.contexts)
+			if got != c.want {
+				t.Errorf("ValidateDurableContexts() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

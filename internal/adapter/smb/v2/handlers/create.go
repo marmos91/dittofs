@@ -480,6 +480,15 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	}
 	h.primeAuthContext(ctx, ctx.TreeID, ctx.SessionID)
 
+	// Validate durable-handle create context combinations per MS-SMB2
+	// §3.3.5.9.6/7/11/12. Mutually-exclusive pairs of DHnQ/DHnC/DH2Q/DH2C
+	// MUST be rejected with STATUS_INVALID_PARAMETER (smbtorture
+	// smb2.durable-v2-open.create-blob).
+	if status := ValidateDurableContexts(req.CreateContexts); status != types.StatusSuccess {
+		logger.Debug("CREATE: invalid durable context combination", "status", status)
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
+	}
+
 	// ========================================================================
 	// Step 2: Check for IPC$ named pipe operations
 	// ========================================================================
@@ -656,17 +665,17 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			restored.IsDurable = true
 			restored.DurableTimeoutMs = h.DurableTimeoutMs
 
-			// Build response create contexts: DH2Q/DHnQ response + lease response
+			// Per MS-SMB2 §3.3.5.9.7 / §3.3.5.9.12 and Samba
+			// `smbd_smb2_create_send` (which only emits the DH2Q response
+			// blob when the request actually carried a DH2Q request context),
+			// a reconnect (DHnC / DH2C) response MUST NOT include a DHnQ or
+			// DH2Q grant blob: `out.durable_open` and `out.durable_open_v2`
+			// are expected to be false and `out.timeout` zero. The handle
+			// stays durable for *future* disconnects via the server-side
+			// IsDurable flag set above — no wire signaling is required.
+			// smbtorture smb2.durable-v2-open.{reopen1a,reopen2,reopen2b,...}
+			// assert "no dh2q response blob" on every successful reconnect.
 			var reconnectContexts []CreateContext
-
-			// Per MS-SMB2 3.3.5.9.12/7: return DH2Q or DHnQ response on reconnect
-			if reconnResult.IsV2 {
-				resp := EncodeDH2QResponse(h.DurableTimeoutMs, 0)
-				reconnectContexts = append(reconnectContexts, resp)
-			} else {
-				resp := EncodeDHnQResponse()
-				reconnectContexts = append(reconnectContexts, resp)
-			}
 
 			// Re-register lease/oplock in the LeaseManager. During disconnect,
 			// ReleaseSessionLeases cleared the lease state from the LeaseManager.

@@ -46,6 +46,39 @@ func DecodeDHnCReconnect(data []byte) ([16]byte, error) {
 	return fileID, nil
 }
 
+// ValidateDurableContexts checks the durable-handle context combination rules
+// from MS-SMB2 §3.3.5.9.6/7/11/12 (mirrors Samba `source3/smbd/smb2_create.c`
+// `smbd_smb2_create_send` ~lines 775-846). Returns a non-success status when
+// the combination is invalid:
+//
+//   - DHnC + DH2C, DHnC + DH2Q, DH2C + DHnQ, DH2Q + DH2C (any pair of these
+//     four) → STATUS_INVALID_PARAMETER
+//   - DH2C with wrong length (≠ 36) → STATUS_INVALID_PARAMETER
+//
+// The "extra unexpected blobs alongside reconnect → OBJECT_NAME_NOT_FOUND"
+// rule is intentionally NOT enforced here: smbtorture create-blob does not
+// exercise it, and our broader CREATE pipeline does not yet account for the
+// full set of allowed companion contexts.
+func ValidateDurableContexts(contexts []CreateContext) types.Status {
+	dhnq := FindCreateContext(contexts, DurableHandleV1RequestTag)
+	dhnc := FindCreateContext(contexts, DurableHandleV1ReconnectTag)
+	dh2q := FindCreateContext(contexts, DurableHandleV2RequestTag)
+	dh2c := FindCreateContext(contexts, DurableHandleV2ReconnectTag)
+
+	if (dhnc != nil && dh2c != nil) ||
+		(dhnc != nil && dh2q != nil) ||
+		(dh2c != nil && dhnq != nil) ||
+		(dh2q != nil && dh2c != nil) {
+		return types.StatusInvalidParameter
+	}
+
+	if dh2c != nil && len(dh2c.Data) != 36 {
+		return types.StatusInvalidParameter
+	}
+
+	return types.StatusSuccess
+}
+
 // DecodeDH2QRequest parses a V2 durable handle request (DH2Q).
 // Returns timeout (ms), flags, and CreateGuid.
 // [MS-SMB2] 2.2.13.2.11
