@@ -86,7 +86,7 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 	// sets sparse, 0x00 clears. Inputs larger than 1 byte are accepted —
 	// only the first byte is inspected (Samba parity, sparse_set_oversize).
 	setSparse := true
-	if input := parseIoctlInputData(body); len(input) >= 1 {
+	if input := parseIoctlInputData(body); len(input) > 0 {
 		setSparse = input[0] != 0
 	}
 
@@ -158,7 +158,7 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 	}
 
 	// MS-FSA §2.1.5.10.4 / Samba `fsctl_qar`: requires FILE_READ_DATA.
-	if uint32(types.AccessMask(openFile.GrantedAccess))&uint32(types.FileReadData) == 0 {
+	if openFile.GrantedAccess&uint32(types.FileReadData) == 0 {
 		logger.Debug("IOCTL FSCTL_QUERY_ALLOCATED_RANGES: handle lacks FILE_READ_DATA",
 			"path", openFile.Path,
 			"granted", fmt.Sprintf("0x%08X", openFile.GrantedAccess))
@@ -198,17 +198,13 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 	if err != nil {
 		return NewErrorResult(common.MapToSMB(err)), nil
 	}
-	fileSize := file.Size
 
 	rangeEnd := reqOffset + reqLength
 	if rangeEnd < reqOffset { // overflow guard
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 	allocStart := reqOffset
-	allocEnd := rangeEnd
-	if allocEnd > fileSize {
-		allocEnd = fileSize
-	}
+	allocEnd := min(rangeEnd, file.Size)
 
 	var ranges []allocatedRange
 	if allocStart < allocEnd {
@@ -310,14 +306,8 @@ func (h *Handler) scanAllocatedRanges(authCtx *metadata.AuthContext, openFile *O
 		if !inRun {
 			return
 		}
-		off := curOffset
-		if off < start {
-			off = start
-		}
-		ce := curEnd
-		if ce > end {
-			ce = end
-		}
+		off := max(curOffset, start)
+		ce := min(curEnd, end)
 		if off < ce {
 			ranges = append(ranges, allocatedRange{Offset: off, Length: ce - off})
 		}
@@ -362,6 +352,10 @@ func (h *Handler) scanAllocatedRanges(authCtx *metadata.AuthContext, openFile *O
 	return ranges, nil
 }
 
+// fileZeroDataBufSize is the on-wire size of a FILE_ZERO_DATA_INFORMATION
+// buffer (FileOffset uint64 + BeyondFinalZero uint64).
+const fileZeroDataBufSize = 16
+
 // zeroDataMaxFileSize mirrors the NTFS upper bound that the regular WRITE
 // path enforces (see write.go). Without this cap a client could request an
 // arbitrary <2^63 range and tie the handler up in a multi-hour zero-fill
@@ -394,7 +388,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 	}
 
 	// MS-FSA §2.1.5.10.35: SET_ZERO_DATA requires FILE_WRITE_DATA.
-	if uint32(types.AccessMask(openFile.GrantedAccess))&uint32(types.FileWriteData) == 0 {
+	if openFile.GrantedAccess&uint32(types.FileWriteData) == 0 {
 		logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: handle lacks FILE_WRITE_DATA",
 			"path", openFile.Path,
 			"granted", fmt.Sprintf("0x%08X", openFile.GrantedAccess))
@@ -402,10 +396,10 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 	}
 
 	input := parseIoctlInputData(body)
-	if len(input) < 16 {
+	if len(input) < fileZeroDataBufSize {
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
-	r := smbenc.NewReader(input[:16])
+	r := smbenc.NewReader(input[:fileZeroDataBufSize])
 	fileOffset := r.ReadUint64()
 	beyond := r.ReadUint64()
 	if r.Err() != nil {
@@ -450,9 +444,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		resp := buildIoctlResponse(FsctlSetZeroData, fileID, nil)
 		return NewResult(types.StatusSuccess, resp), nil
 	}
-	if beyond > fileForSize.Size {
-		beyond = fileForSize.Size
-	}
+	beyond = min(beyond, fileForSize.Size)
 
 	// Byte-range lock check on the write window. WRITE and COPYCHUNK both
 	// gate on this; without it another handle could hold a conflicting
@@ -524,10 +516,7 @@ func (h *Handler) zeroFillRange(authCtx *metadata.AuthContext, openFile *OpenFil
 		return err
 	}
 
-	chunkLen := uint64(zeroFillChunkSize)
-	if total := end - start; total < chunkLen {
-		chunkLen = total
-	}
+	chunkLen := min(uint64(zeroFillChunkSize), end-start)
 	zeros := make([]byte, chunkLen)
 
 	for offset := start; offset < end; {
@@ -537,10 +526,7 @@ func (h *Handler) zeroFillRange(authCtx *metadata.AuthContext, openFile *OpenFil
 			}
 			return err
 		}
-		remaining := end - offset
-		if remaining > uint64(len(zeros)) {
-			remaining = uint64(len(zeros))
-		}
+		remaining := min(end-offset, uint64(len(zeros)))
 		newSize := offset + remaining
 		writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
 		if err != nil {
