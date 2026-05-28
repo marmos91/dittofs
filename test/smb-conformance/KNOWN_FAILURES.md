@@ -1,6 +1,6 @@
 # Known Failures - SMB Conformance (WPTS BVT)
 
-Last updated: 2026-05-28 (Wave 4 WPTS sweep: walk back 3 confirmed PASS + ADS base ChangeTime freeze fix + Permanently Unimplementable appendix)
+Last updated: 2026-05-28 (Wave 4 WPTS sweep: walk back 4 confirmed PASS — 3 on develop + 1 from ADS base ChangeTime freeze fix — and add Permanently Unimplementable appendix)
 
 Tests listed here are expected to fail. CI will pass (exit 0) as long as
 all failures are in this list. New failures not listed here will cause CI to fail.
@@ -18,7 +18,7 @@ row (`Test Name`) are ignored.
 ## Baseline Status
 
 - **Initial baseline (Phase 29.8):** 133/240 BVT tests passing
-- **Current baseline (Wave 4):** 224/265 PASS, 41 known failures (39 permanent + 2 expected)
+- **Current baseline (Wave 4):** 225/265 PASS, 40 known failures (39 permanent + 1 expected)
 - **Target:** All BVT tests pass except genuinely unimplemented features
 
 ## Expected Failures
@@ -28,7 +28,6 @@ either be flipped or promoted into the appendix with a reason.
 
 | Test Name | Category | Reason | Status | Issue |
 |-----------|----------|--------|--------|-------|
-| FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_ChangeTime | Timestamp | Directory ChangeTime freeze not enforced when ADS writes bump base timestamps. Under investigation — per-handle freeze flag does not propagate to base object across handle boundaries. | Expected | - |
 | BVT_DirectoryLeasing_ReadWriteHandleCaching | Leasing | Flaky in CI: identical SMB wire trace as develop (which passes) including the same DIRECTORY_NOT_EMPTY in cleanup; outcome depends on WPTS-framework-internal cleanup-phase exception handling. | Expected | - |
 
 ## Status Legend
@@ -157,7 +156,7 @@ Format for Permanently Unimplementable:
 
 ## Changelog
 
-- **Wave 4 (2026-05-28):** Walk back 3 confirmed PASS (`Algorithm_NotingFileModified_Dir_LastAccessTime`, `FileInfo_Set_FileBasicInformation_Timestamp_MinusTwo_Dir_LastWriteTime`, `BVT_DirectoryLeasing_LeaseBreakOnMultiClients`). Fix ADS write on directory base auto-bumping frozen ChangeTime (preserve base.Ctime when ADS handle has Ctime frozen but Mtime is not). Restructure with Permanently Unimplementable appendix mirroring the smbtorture file layout.
+- **Wave 4 (2026-05-28):** Walk back 4 confirmed PASS. Three were already passing on develop: `Algorithm_NotingFileModified_Dir_LastAccessTime`, `FileInfo_Set_FileBasicInformation_Timestamp_MinusTwo_Dir_LastWriteTime`, `BVT_DirectoryLeasing_LeaseBreakOnMultiClients`. The fourth, `FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_ChangeTime`, was flipped by an ADS-write fix that preserves the base object's frozen ChangeTime — previously, file_modify.go auto-bumped Ctime to NOW whenever `modified=true && attrs.Ctime==nil`, clobbering the freeze even when only the ADS handle's Mtime was unfrozen. Restructure with Permanently Unimplementable appendix mirroring the smbtorture file layout.
 - **v0.10.0 Phase 73 (2026-03-24):** SMB Conformance Deep-Dive. Plan 01: ChangeNotify ADS stream notifications wired (5 tests). Plan 02: ADS share access + timestamp conformance (9 ADS + 3 timestamp tests removed). Plan 03: ChangeNotify completion, session re-auth, anonymous encryption (~25 smbtorture tests). Plan 04: DH/lease state machine fixes (~26 smbtorture tests). Plan 05: Per-field CreationTime freeze/unfreeze, ChangeEa reclassified as Permanent. Total: 56 (53 permanent + 3 expected).
 - **v0.10.0 Phase 72 (2026-03-23):** ChangeNotify fully implemented with async responses, CANCEL support, and all MS-SMB2 completion filter events (Plan 01, 16 tests fixed). Client-preference cipher/signing selection, DH V1 volatile FileID regeneration, TREE_DISCONNECT signing exemption, lease V1/V2 state transitions fixed (Plan 02, 12 tests fixed). Timestamp freeze/unfreeze per MS-FSA 2.1.5.14.2, parent directory atime on file write (Plan 03, 3 tests fixed). Total removed: 31. New total: 65 (52 permanent + 13 expected).
 - **v4.5 Phase 69 (2026-03-20):** Full MS-SMB2 3.3.x signing audit completed. Added spec section references (3.3.5.2.4, 3.3.4.1.1, 3.3.5.2.7.2) to framing.go, response.go, compound.go. Enforced NegSigningRequired for 3.1.1 NEGOTIATE and SigningRequired for 3.1.1 SESSION_SETUP. All signing paths verified compliant.
