@@ -240,9 +240,11 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 				"asyncId", cancelled.AsyncId,
 				"messageID", cancelled.MessageID)
 
-			// Discard events that arrived while the watcher was live —
-			// the client abandoned them. Without this, the next register
-			// replays stale events (smb2.notify.mask).
+			// Discard events buffered on the armed handle while no live
+			// watcher was pending. Live-watcher events were already dropped
+			// when unregisterLocked stopped this notify's flushTimer; only
+			// the stale-replay queue needs explicit clearing here
+			// (smb2.notify.mask).
 			h.NotifyRegistry.ClearBufferedEvents(cancelled.FileID)
 
 			// Send STATUS_CANCELLED for the original CHANGE_NOTIFY request
@@ -510,6 +512,10 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// the buffer starts fresh with the newly advertised OutputBufferLength.
 	if openFile.NotifyOverflowed.CompareAndSwap(true, false) {
 		h.NotifyRegistry.ResetArmedOverflow(req.FileID, req.OutputBufferLength)
+		// Discard armed-handle buffered events — STATUS_NOTIFY_ENUM_DIR
+		// tells the client to re-enumerate; any retained events would
+		// replay stale state on the next Register.
+		h.NotifyRegistry.ClearBufferedEvents(req.FileID)
 		respBytes, err := (&ChangeNotifyResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
 		}).Encode()

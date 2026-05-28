@@ -3,9 +3,11 @@ package handlers
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
@@ -2218,4 +2220,220 @@ func TestNotifyRegistry_ConcurrentCancelBeforeRegister(t *testing.T) {
 		}()
 		<-done
 	}
+}
+
+// TestArmedBuffer_ReplayDeliversBufferedEventsOnReregister covers the
+// goroutine-per-request race in smb2.notify.tcon: an event arrives while the
+// first CHANGE_NOTIFY has already completed one-shot but the client hasn't
+// re-registered yet. The event must buffer on the armed handle and be
+// replayed on the next Register so the client doesn't miss it.
+func TestArmedBuffer_ReplayDeliversBufferedEventsOnReregister(t *testing.T) {
+	r := NewNotifyRegistry()
+	fileID := [16]byte{0xAA, 0xBB}
+
+	// First Register — arms the handle — then UnregisterByAsyncId to leave
+	// the handle armed but with no live watcher (mirrors one-shot completion).
+	first := &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 10, AsyncId: 100,
+		WatchPath: "/d", ShareName: "s", CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength: 64 * 1024,
+		AsyncCallback:   func(uint64, uint64, uint64, *ChangeNotifyResponse) error { return nil },
+	}
+	mustRegister(t, r, first)
+	if got := r.UnregisterByAsyncId(100); got == nil {
+		t.Fatalf("expected to unregister first watcher")
+	}
+
+	// Event arrives in the gap between consumption and re-arm.
+	r.NotifyChange("s", "/d", "appeared.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	// Re-arm with a callback that captures the delivered events. The replay
+	// path in Register should hand off the buffered event to bufferEventLocked
+	// so the flush timer drains it via the new callback.
+	var got []FileNotifyInformation
+	var mu sync.Mutex
+	done := make(chan struct{}, 1)
+	second := &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 11, AsyncId: 101,
+		WatchPath: "/d", ShareName: "s", CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength: 64 * 1024,
+		AsyncCallback: func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if resp.Status == 0 {
+				got = decodeFileNotifyInfos(resp.Buffer)
+			}
+			select {
+			case done <- struct{}{}:
+			default:
+			}
+			return nil
+		},
+	}
+	mustRegister(t, r, second)
+
+	// Drain timer.
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		r.FlushAll()
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 || got[0].FileName != "appeared.txt" || got[0].Action != FileActionAdded {
+		t.Fatalf("expected replay of [{Added appeared.txt}], got %#v", got)
+	}
+}
+
+// TestArmedBuffer_CancelClearsBufferedEvents covers smb2.notify.mask: when
+// the client cancels a pending notify, any events buffered on the armed
+// handle must be discarded so a subsequent register does not replay stale
+// state into a fresh request with a different filter.
+func TestArmedBuffer_CancelClearsBufferedEvents(t *testing.T) {
+	r := NewNotifyRegistry()
+	fileID := [16]byte{0xCD}
+
+	first := &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 10, AsyncId: 100,
+		WatchPath: "/d", ShareName: "s", CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength: 64 * 1024,
+		AsyncCallback:   func(uint64, uint64, uint64, *ChangeNotifyResponse) error { return nil },
+	}
+	mustRegister(t, r, first)
+	// Cancel via UnregisterByAsyncId (the CANCEL path in stub_handlers calls
+	// this and then ClearBufferedEvents).
+	if got := r.UnregisterByAsyncId(100); got == nil {
+		t.Fatalf("expected to unregister")
+	}
+
+	// Buffer events while no live watcher is pending.
+	r.NotifyChange("s", "/d", "leak.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	// Simulate the CANCEL handler's discard.
+	r.ClearBufferedEvents(fileID)
+
+	// Re-register: the previously buffered events must NOT replay.
+	var got []FileNotifyInformation
+	var mu sync.Mutex
+	done := make(chan struct{}, 1)
+	second := &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 11, AsyncId: 101,
+		WatchPath: "/d", ShareName: "s", CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength: 64 * 1024,
+		AsyncCallback: func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+			mu.Lock()
+			defer mu.Unlock()
+			got = decodeFileNotifyInfos(resp.Buffer)
+			select {
+			case done <- struct{}{}:
+			default:
+			}
+			return nil
+		},
+	}
+	mustRegister(t, r, second)
+
+	select {
+	case <-done:
+		t.Fatalf("expected no replay after ClearBufferedEvents; got %#v", got)
+	case <-time.After(50 * time.Millisecond):
+		// No callback fired → buffer was empty as expected.
+	}
+}
+
+// TestArmedBuffer_OverflowClearsBufferedEvents asserts that when the sticky
+// overflow flag is consumed (handler returns STATUS_NOTIFY_ENUM_DIR), any
+// buffered events on the armed handle are dropped — the client has been
+// told to re-enumerate, so the stale buffer must not replay.
+func TestArmedBuffer_OverflowClearsBufferedEvents(t *testing.T) {
+	r := NewNotifyRegistry()
+	fileID := [16]byte{0xEE}
+
+	first := &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 10, AsyncId: 100,
+		WatchPath: "/d", ShareName: "s", CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength: 64 * 1024,
+		AsyncCallback:   func(uint64, uint64, uint64, *ChangeNotifyResponse) error { return nil },
+	}
+	mustRegister(t, r, first)
+	if got := r.UnregisterByAsyncId(100); got == nil {
+		t.Fatalf("expected to unregister")
+	}
+
+	// Buffer an event on the armed handle.
+	r.NotifyChange("s", "/d", "stale.txt", FileActionAdded, FileNotifyChangeFileName)
+
+	// Simulate the handler consuming the sticky overflow.
+	r.ClearBufferedEvents(fileID)
+	r.ResetArmedOverflow(fileID, 64*1024)
+
+	// Re-register: nothing should replay.
+	done := make(chan struct{}, 1)
+	second := &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 11, AsyncId: 101,
+		WatchPath: "/d", ShareName: "s", CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength: 64 * 1024,
+		AsyncCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+			select {
+			case done <- struct{}{}:
+			default:
+			}
+			return nil
+		},
+	}
+	mustRegister(t, r, second)
+
+	select {
+	case <-done:
+		t.Fatalf("expected no replay after overflow clears buffer")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// TestNameChangeFilterFor covers the ADS-aware filter selection used by
+// CREATE / delete-on-close / rename notification sites: stream entries
+// (FileName contains ':') route via FILE_NOTIFY_CHANGE_STREAM_NAME, dirs via
+// FILE_NOTIFY_CHANGE_DIR_NAME, everything else via FILE_NOTIFY_CHANGE_FILE_NAME.
+func TestNameChangeFilterFor(t *testing.T) {
+	cases := []struct {
+		name string
+		dir  bool
+		want uint32
+	}{
+		{"file.txt", false, FileNotifyChangeFileName},
+		{"file.txt", true, FileNotifyChangeDirName},
+		{"file.txt:stream:$DATA", false, FileNotifyChangeStreamName},
+		{"file.txt:stream:$DATA", true, FileNotifyChangeStreamName},
+	}
+	for _, c := range cases {
+		if got := NameChangeFilterFor(c.name, c.dir); got != c.want {
+			t.Errorf("NameChangeFilterFor(%q, %v) = 0x%x, want 0x%x", c.name, c.dir, got, c.want)
+		}
+	}
+}
+
+// decodeFileNotifyInfos walks a FILE_NOTIFY_INFORMATION list (MS-FSCC §2.4.42).
+// Test helper only — production decode happens client-side.
+func decodeFileNotifyInfos(buf []byte) []FileNotifyInformation {
+	var out []FileNotifyInformation
+	off := 0
+	for off+12 <= len(buf) {
+		next := uint32(buf[off]) | uint32(buf[off+1])<<8 | uint32(buf[off+2])<<16 | uint32(buf[off+3])<<24
+		action := uint32(buf[off+4]) | uint32(buf[off+5])<<8 | uint32(buf[off+6])<<16 | uint32(buf[off+7])<<24
+		nameLen := uint32(buf[off+8]) | uint32(buf[off+9])<<8 | uint32(buf[off+10])<<16 | uint32(buf[off+11])<<24
+		if off+12+int(nameLen) > len(buf) {
+			break
+		}
+		u16 := make([]uint16, nameLen/2)
+		for i := range u16 {
+			u16[i] = uint16(buf[off+12+i*2]) | uint16(buf[off+12+i*2+1])<<8
+		}
+		out = append(out, FileNotifyInformation{Action: action, FileName: string(utf16.Decode(u16))})
+		if next == 0 {
+			break
+		}
+		off += int(next)
+	}
+	return out
 }
