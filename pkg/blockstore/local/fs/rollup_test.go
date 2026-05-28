@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -406,12 +407,24 @@ type capturedPersist struct {
 // runRollupOnce triggers exactly one rollupFile pass for payloadID after
 // AppendWrite-ing the supplied payload and giving the dirty interval time
 // to stabilize. Mirrors the test pattern used by TestRollup_CommitChunks_
-// MonotoneEnforced.
+// MonotoneEnforced. NOT safe to call from a goroutine other than the
+// test's own — uses t.Fatal*. Use runRollupOnceErr for concurrent tests.
 func runRollupOnce(t *testing.T, bc *FSStore, payloadID string, payload []byte) {
 	t.Helper()
+	if err := runRollupOnceErr(bc, payloadID, payload); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// runRollupOnceErr is the goroutine-safe variant: it returns errors
+// instead of calling t.Fatal*. Concurrent tests must use this and
+// fan errors back to the test goroutine via a channel; t.FailNow
+// (which t.Fatal* call) is undefined when invoked from a non-test
+// goroutine.
+func runRollupOnceErr(bc *FSStore, payloadID string, payload []byte) error {
 	ctx := context.Background()
 	if err := bc.AppendWrite(ctx, payloadID, payload, 0); err != nil {
-		t.Fatalf("AppendWrite: %v", err)
+		return fmt.Errorf("AppendWrite: %w", err)
 	}
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
@@ -421,11 +434,12 @@ func runRollupOnce(t *testing.T, bc *FSStore, payloadID string, payload []byte) 
 		time.Sleep(2 * time.Millisecond)
 	}
 	if !bc.EarliestStableForTest(payloadID) {
-		t.Fatal("dirty interval did not stabilize within 500 ms")
+		return fmt.Errorf("dirty interval did not stabilize within 500 ms")
 	}
 	if err := bc.rollupFile(ctx, payloadID); err != nil {
-		t.Fatalf("rollupFile: %v", err)
+		return fmt.Errorf("rollupFile: %w", err)
 	}
+	return nil
 }
 
 // TestRollup_CommitChunks_PersistsObjectID covers the rollup-time
@@ -667,36 +681,44 @@ func hashOfSingleChunk(payload []byte) blockstore.ContentHash {
 }
 
 // TestRollup_FirstChunk_PopulatesLRU: empty LRU; rollup a payload that
-// produces hash H; afterwards bc.dedupLRU.Has(H) is true (first-
-// write seeding).
+// produces hash H; afterwards bc.dedupLRU.Has(H, payloadID) is true
+// (first-write seeding, scoped to the writing payload — #669).
 func TestRollup_FirstChunk_PopulatesLRU(t *testing.T) {
 	bc, _, _ := newFSStoreForRollupLRUTest(t)
 
+	const pid = "first-pop"
 	payload := bytes.Repeat([]byte{0xAA}, 256*1024)
 	expectedHash := hashOfSingleChunk(payload)
 
-	if bc.dedupLRU.Has(expectedHash) {
+	if bc.dedupLRU.Has(expectedHash, pid) {
 		t.Fatal("precondition: dedupLRU should not contain hash before rollup")
 	}
 
-	runRollupOnce(t, bc, "first-pop", payload)
+	runRollupOnce(t, bc, pid, payload)
 
-	if !bc.dedupLRU.Has(expectedHash) {
-		t.Fatal("post-rollup: dedupLRU.Has(H) is false — first-write LRU seeding did not run")
+	if !bc.dedupLRU.Has(expectedHash, pid) {
+		t.Fatal("post-rollup: dedupLRU.Has(H, pid) is false — first-write LRU seeding did not run")
 	}
 }
 
-// TestRollup_LRUHit_SkipsStoreChunk: seed dedupLRU with hash H mapped to
-// "payload-prev"; pre-populate FBS with a FileBlock row for H so AddRef
-// succeeds; rollup a second payload with the same content. Assert
+// TestRollup_LRUHit_SkipsStoreChunk: seed dedupLRU with (hash H,
+// payloadID="hitfile") (the payload that will run rollup);
+// pre-populate FBS with a FileBlock row for H so AddRef succeeds;
+// rollup the payload. Assert
 //   - AddRef invoked exactly once with hash=H (counter +1)
 //   - StoreChunk skipped: pre-deleted CAS file is NOT recreated on disk
 //   - blocks slice still contains a BlockRef{Hash:H,Offset:..,Size:..}
 //     (verified via the ObjectIDPersister capture)
+//
+// #669: the LRU is keyed by (hash, payloadID); the seed payloadID
+// MUST match the rollup payloadID for the hit path to fire. Cross-payload
+// short-circuit is intentionally not supported (see
+// TestRollup_CrossPayload_LRUMisses below).
 func TestRollup_LRUHit_SkipsStoreChunk(t *testing.T) {
 	bc, wrapped, mem := newFSStoreForRollupLRUTest(t)
 	ctx := context.Background()
 
+	const pid = "hitfile"
 	payload := bytes.Repeat([]byte{0xBE}, 256*1024)
 	h := hashOfSingleChunk(payload)
 
@@ -712,11 +734,10 @@ func TestRollup_LRUHit_SkipsStoreChunk(t *testing.T) {
 		t.Fatalf("seed Put: %v", err)
 	}
 
-	// Seed the LRU with the hash mapped to a different payloadID — the
-	// PRECONDITION the hit path consults.
-	bc.dedupLRU.Put(h, "payload-prev")
-	if !bc.dedupLRU.Has(h) {
-		t.Fatal("precondition: LRU.Has(h) is false after Put")
+	// Seed the LRU with (h, pid) — the PRECONDITION the hit path consults.
+	bc.dedupLRU.Put(h, pid)
+	if !bc.dedupLRU.Has(h, pid) {
+		t.Fatal("precondition: LRU.Has(h, pid) is false after Put")
 	}
 
 	// Install a persister to capture the BlockRef manifest — proves the
@@ -740,7 +761,7 @@ func TestRollup_LRUHit_SkipsStoreChunk(t *testing.T) {
 
 	baseAddRef := wrapped.addRefCalls.Load()
 
-	runRollupOnce(t, bc, "hitfile", payload)
+	runRollupOnce(t, bc, pid, payload)
 
 	gotAddRef := wrapped.addRefCalls.Load() - baseAddRef
 	if gotAddRef != 1 {
@@ -769,16 +790,19 @@ func TestRollup_LRUHit_SkipsStoreChunk(t *testing.T) {
 	}
 }
 
-// TestRollup_AddRefReturnsErrUnknownHash_FallsBackToStoreChunk: LRU has h
-// programmable FBS returns ErrUnknownHash on every AddRef (simulating
-// TOCTOU eviction); rollup must proceed to StoreChunk normally.
+// TestRollup_AddRefReturnsErrUnknownHash_FallsBackToStoreChunk: LRU has
+// (h, pid); programmable FBS returns ErrUnknownHash on every AddRef
+// (simulating a TOCTOU sweep by engine.Delete cascade between
+// LRU populate and the next rollup pass); rollup must proceed to
+// StoreChunk normally.
 func TestRollup_AddRefReturnsErrUnknownHash_FallsBackToStoreChunk(t *testing.T) {
 	bc, wrapped, _ := newFSStoreForRollupLRUTest(t)
 
+	const pid = "fallback"
 	payload := bytes.Repeat([]byte{0xCA}, 256*1024)
 	h := hashOfSingleChunk(payload)
 
-	bc.dedupLRU.Put(h, "stale-payload")
+	bc.dedupLRU.Put(h, pid)
 	wrapped.addRefOverride = func(_ context.Context, _ blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
 		return blockstore.ErrUnknownHash
 	}
@@ -788,7 +812,7 @@ func TestRollup_AddRefReturnsErrUnknownHash_FallsBackToStoreChunk(t *testing.T) 
 		_ = os.Remove(casPath)
 	}
 
-	runRollupOnce(t, bc, "fallback", payload)
+	runRollupOnce(t, bc, pid, payload)
 
 	if wrapped.addRefCalls.Load() != 1 {
 		t.Fatalf("AddRef calls: got %d want 1 (LRU hit triggered AddRef)", wrapped.addRefCalls.Load())
@@ -796,8 +820,8 @@ func TestRollup_AddRefReturnsErrUnknownHash_FallsBackToStoreChunk(t *testing.T) 
 	if _, err := os.Stat(casPath); err != nil {
 		t.Fatalf("CAS chunk %s missing post-rollup; ErrUnknownHash fallback did NOT call StoreChunk: %v", casPath, err)
 	}
-	if !bc.dedupLRU.Has(h) {
-		t.Fatal("LRU not (re-)populated after StoreChunk fallback path — Put step missing")
+	if !bc.dedupLRU.Has(h, pid) {
+		t.Fatal("LRU not (re-)populated after StoreChunk fallback path — post-persister PutMany missing")
 	}
 }
 
@@ -810,7 +834,7 @@ func TestRollup_AddRefError_OtherThan_ErrUnknownHash_Propagates(t *testing.T) {
 
 	payload := bytes.Repeat([]byte{0xDE}, 256*1024)
 	h := hashOfSingleChunk(payload)
-	bc.dedupLRU.Put(h, "any-payload")
+	bc.dedupLRU.Put(h, "errpath")
 
 	simulated := errors.New("metadata: postgres down")
 	wrapped.addRefOverride = func(_ context.Context, _ blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
@@ -840,11 +864,20 @@ func TestRollup_AddRefError_OtherThan_ErrUnknownHash_Propagates(t *testing.T) {
 	}
 }
 
-// TestRollup_ComputeObjectID_UnaffectedByLRUHit: write two payloads with
-// identical content; ObjectID and BlockRefs of each match. Verifies the
-// manifest invariant: LRU hit does NOT mutate the manifest seen
-// by ComputeObjectID.
-func TestRollup_ComputeObjectID_UnaffectedByLRUHit(t *testing.T) {
+// TestRollup_ComputeObjectID_StableAcrossPayloads: write two payloads
+// with identical content; ObjectID and BlockRefs of each match.
+// Verifies the manifest invariant: the chunker and ComputeObjectID
+// produce identical output across payloads regardless of LRU outcome.
+//
+// #669: under compound-key LRU scoping both passes MISS the LRU
+// (each payload only ever hits LRU entries IT populated). The test
+// therefore exercises the StoreChunk path twice for the same content;
+// content-addressed CAS makes the second Put idempotent. The pre-#669
+// version of this test conflated cross-payload dedup with LRU
+// short-circuit — the LRU short-circuit is now intentionally scoped to
+// same-payload idempotent rewrites; cross-payload dedup happens via
+// the regular CAS + FileBlockStore.GetByHash path.
+func TestRollup_ComputeObjectID_StableAcrossPayloads(t *testing.T) {
 	bc, _, _ := newFSStoreForRollupLRUTest(t)
 
 	payload := bytes.Repeat([]byte{0xF1}, 256*1024)
@@ -860,10 +893,11 @@ func TestRollup_ComputeObjectID_UnaffectedByLRUHit(t *testing.T) {
 		return nil
 	})
 
-	// First payload — LRU miss → StoreChunk + LRU seeding.
+	// First payload — LRU miss → StoreChunk + post-persister LRU seed.
 	runRollupOnce(t, bc, "oid-A", payload)
-	// Second payload — same content → LRU hit → AddRef. Manifest must
-	// still be identical.
+	// Second payload — different payloadID, same content. LRU miss
+	// under compound-key scoping → StoreChunk again (idempotent under
+	// CAS). Manifest must still be identical.
 	runRollupOnce(t, bc, "oid-B", payload)
 
 	mu.Lock()
@@ -910,9 +944,12 @@ func TestRollup_LRUHit_NoBlockStateMutation(t *testing.T) {
 		t.Fatalf("seed Put: %v", err)
 	}
 
-	bc.dedupLRU.Put(h, "prev-payload")
+	// #669: LRU keyed by (hash, payloadID). Seed under the SAME
+	// payloadID the rollup will run on so the hit path fires.
+	const pid = "no-state-mutation"
+	bc.dedupLRU.Put(h, pid)
 
-	runRollupOnce(t, bc, "no-state-mutation", payload)
+	runRollupOnce(t, bc, pid, payload)
 
 	// Read the row back via GetByHash (the row might be looked up via
 	// any matching ID; GetByHash is the public path).
