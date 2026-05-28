@@ -856,3 +856,111 @@ func TestDirFreezeTimestamps_ChildCreate_SingleField(t *testing.T) {
 		})
 	}
 }
+
+// TestUpdateBaseObjectTimestampsForADSWrite_PreservesBaseCtimeWhenFrozen
+// reproduces the WPTS scenario in
+// `FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_ChangeTime`:
+//
+//  1. The client opens an ADS handle on a base object (directory or file).
+//  2. The client freezes ChangeTime on the ADS handle via SET_INFO -1.
+//  3. The client writes data to the ADS.
+//
+// Per MS-FSA 2.1.5.14.2 the freeze sentinel applies to the underlying object,
+// so the base's ChangeTime must not be bumped by the ADS write. The metadata
+// layer auto-bumps Ctime when SetFileAttributes is called with any modified
+// attribute and attrs.Ctime == nil; updateBaseObjectTimestampsForADSWrite
+// must therefore explicitly pin the base's Ctime when the ADS handle has it
+// frozen but Mtime is not.
+func TestUpdateBaseObjectTimestampsForADSWrite_PreservesBaseCtimeWhenFrozen(t *testing.T) {
+	rt := runtime.New(nil)
+	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	if err := rt.RegisterMetadataStore("ts-meta", memStore); err != nil {
+		t.Fatalf("RegisterMetadataStore: %v", err)
+	}
+	shareName := "/ts"
+	if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
+		Name:          shareName,
+		MetadataStore: "ts-meta",
+		RootAttr:      &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755},
+	}); err != nil {
+		t.Fatalf("AddShare: %v", err)
+	}
+	rootHandle, err := rt.GetRootHandle(shareName)
+	if err != nil {
+		t.Fatalf("GetRootHandle: %v", err)
+	}
+	uid, gid := uint32(0), uint32(0)
+	authCtx := &metadata.AuthContext{
+		Context:                context.Background(),
+		Identity:               &metadata.Identity{UID: &uid, GID: &gid},
+		BypassTraverseChecking: true,
+	}
+	metaSvc := rt.GetMetadataService()
+
+	// Create the base directory (mirrors WPTS test: directory hosts the ADS).
+	baseDir, err := metaSvc.CreateDirectory(authCtx, rootHandle, "basedir", &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0o755,
+	})
+	if err != nil {
+		t.Fatalf("CreateDirectory: %v", err)
+	}
+	baseHandle, err := metadata.EncodeFileHandle(baseDir)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle base: %v", err)
+	}
+
+	// Create the ADS as a sibling entry under root (matches CREATE handler's
+	// stream-entry layout: stream `basedir:streamname` is a root child).
+	streamFile, err := metaSvc.CreateFile(authCtx, rootHandle, "basedir:streamname", &metadata.FileAttr{
+		Type: metadata.FileTypeRegular,
+		Mode: 0o644,
+	})
+	if err != nil {
+		t.Fatalf("CreateFile stream: %v", err)
+	}
+	streamHandle, err := metadata.EncodeFileHandle(streamFile)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle stream: %v", err)
+	}
+
+	// Pin the base directory's Ctime to a known value.
+	pinned := time.Date(2026, 1, 2, 13, 40, 49, 0, time.UTC)
+	if err := metaSvc.SetFileAttributes(authCtx, baseHandle, &metadata.SetAttrs{
+		Ctime: &pinned, Mtime: &pinned, CreationTime: &pinned, Atime: &pinned,
+	}); err != nil {
+		t.Fatalf("pin base: %v", err)
+	}
+
+	h := NewHandler()
+	h.Registry = rt
+	adsOpen := &OpenFile{
+		FileID:         [16]byte{0xAD, 0x5C},
+		MetadataHandle: streamHandle,
+		ParentHandle:   rootHandle,
+		FileName:       "basedir:streamname",
+		Path:           "basedir:streamname",
+		ShareName:      shareName,
+		IsDirectory:    false,
+		DesiredAccess:  uint32(types.FileWriteData) | uint32(types.FileWriteAttributes),
+		CtimeFrozen:    true, // SET_INFO -1 on ChangeTime
+		FrozenCtime:    &pinned,
+	}
+	h.StoreOpenFile(adsOpen)
+
+	// Trigger the WRITE-path base-timestamp update.
+	h.updateBaseObjectTimestampsForADSWrite(authCtx, metaSvc, adsOpen, "basedir")
+
+	// Verify the base directory's Ctime is unchanged but Mtime was advanced
+	// (because only Ctime is frozen on the ADS handle).
+	post, err := metaSvc.GetFile(authCtx.Context, baseHandle)
+	if err != nil {
+		t.Fatalf("GetFile post: %v", err)
+	}
+	if !post.Ctime.Equal(pinned) {
+		t.Errorf("base Ctime was bumped: got %v want %v (frozen)", post.Ctime, pinned)
+	}
+	if post.Mtime.Equal(pinned) {
+		t.Errorf("base Mtime was not advanced: got %v want != %v", post.Mtime, pinned)
+	}
+}
