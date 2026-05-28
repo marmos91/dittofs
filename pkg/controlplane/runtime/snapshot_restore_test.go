@@ -21,19 +21,12 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// TestRestoreSnapshot_Integration drives the end-to-end restore orchestration
-// landed in plans 24-01..03 (Wave 1 + Wave 2) against a memory-only fixture
-// per CONTEXT D-24-10 P24-04: cpstore SQLite + memory metadata + memory remote.
-// Each sub-test exercises one of the 9 scenarios from D-24-10 — happy path
-// plus the failure-mode taxonomy of D-24-13.
-//
-// REST-XX coverage:
-//   - REST-01 (orchestration completes end-to-end): HappyPath, AllowNonDurable
-//   - REST-02 (safety-snap recovery primitive): InterruptedRestore
-//   - REST-03 (pre+post verify gates): PreVerifyFailsFast, PostVerifyFails
-//
-// D-24-01 invariant (share stays disabled across success + failure) is
-// asserted in every sub-test that reaches a non-trivial code path.
+// TestRestoreSnapshot_Integration drives the end-to-end restore
+// orchestration against a memory-only fixture (cpstore SQLite + memory
+// metadata + memory remote). Each sub-test exercises one scenario —
+// happy path plus the failure-mode taxonomy. The "share stays disabled"
+// invariant is asserted in every sub-test that reaches a non-trivial
+// code path.
 func TestRestoreSnapshot_Integration(t *testing.T) {
 	t.Run("HappyPath", testRestoreHappyPath)
 	t.Run("EnabledShareRefuses", testRestoreEnabledShareRefuses)
@@ -94,13 +87,13 @@ func testRestoreHappyPath(t *testing.T) {
 		t.Fatal("GetFile post-restore: nil file")
 	}
 
-	// D-24-01: share stays disabled.
+	// share stays disabled.
 	enabled, err := fx.rt.sharesSvc.IsShareEnabled(fx.shareName)
 	if err != nil {
 		t.Fatalf("IsShareEnabled: %v", err)
 	}
 	if enabled {
-		t.Fatal("D-24-01: share is enabled after RestoreSnapshot — must stay disabled")
+		t.Fatal("share is enabled after RestoreSnapshot — must stay disabled")
 	}
 
 	// A safety snapshot was created (in addition to the source snap).
@@ -285,7 +278,7 @@ func testRestoreAllowNonDurable(t *testing.T) {
 	// Share stays disabled.
 	enabled, _ := fx.rt.sharesSvc.IsShareEnabled(fx.shareName)
 	if enabled {
-		t.Fatal("D-24-01: share enabled after restore — must stay disabled")
+		t.Fatal("share enabled after restore — must stay disabled")
 	}
 }
 
@@ -339,7 +332,7 @@ func testRestorePreVerifyFailsFast(t *testing.T) {
 	// Share stays disabled.
 	enabled, _ := fx.rt.sharesSvc.IsShareEnabled(fx.shareName)
 	if enabled {
-		t.Fatal("D-24-01: share enabled after pre-verify fail — must stay disabled")
+		t.Fatal("share enabled after pre-verify fail — must stay disabled")
 	}
 }
 
@@ -404,7 +397,7 @@ func testRestorePostVerifyFails(t *testing.T) {
 	// Share stays disabled.
 	enabled, _ := fx.rt.sharesSvc.IsShareEnabled(fx.shareName)
 	if enabled {
-		t.Fatal("D-24-01: share enabled after post-verify fail — must stay disabled")
+		t.Fatal("share enabled after post-verify fail — must stay disabled")
 	}
 }
 
@@ -453,7 +446,7 @@ func testRestoreInterruptedReset(t *testing.T) {
 	// Share stays disabled.
 	enabled, _ := fx.rt.sharesSvc.IsShareEnabled(fx.shareName)
 	if enabled {
-		t.Fatal("D-24-01: share enabled after aborted restore — must stay disabled")
+		t.Fatal("share enabled after aborted restore — must stay disabled")
 	}
 
 	// --- Recovery: RestoreSnapshot(safetyID) ---
@@ -475,7 +468,7 @@ func testRestoreInterruptedReset(t *testing.T) {
 	// Share STILL disabled after recovery.
 	enabled, _ = fx.rt.sharesSvc.IsShareEnabled(fx.shareName)
 	if enabled {
-		t.Fatal("D-24-01: share enabled after recovery — must stay disabled")
+		t.Fatal("share enabled after recovery — must stay disabled")
 	}
 }
 

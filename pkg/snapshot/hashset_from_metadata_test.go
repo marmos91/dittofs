@@ -98,8 +98,7 @@ func TestHashSetFromMetadataStore_ThreeUniqueHashes(t *testing.T) {
 
 // TestHashSetFromMetadataStore_Deduplication: two FileBlock rows that
 // share a ContentHash collapse to one entry. Combined with two other
-// unique hashes that gives Len()==3 from 4 input rows. This pins the
-// dedup property D-24-14 calls out — manifest counts depend on it.
+// unique hashes that gives Len()==3 from 4 input rows.
 func TestHashSetFromMetadataStore_Deduplication(t *testing.T) {
 	store := newMemStore(t)
 
