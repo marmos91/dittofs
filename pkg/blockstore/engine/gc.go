@@ -170,6 +170,13 @@ type Options struct {
 	// correlation. Optional — engine logic does not depend on this
 	// field; SharesForGC remains the source of truth for marking.
 	Shares []string
+
+	// HoldProvider injects held hashes into the GC mark phase. Optional —
+	// nil means "no holds" and the live set is determined solely by
+	// EnumerateFileBlocks. Errors from HeldHashes abort the entire run
+	// (orphan-not-deleted is always preferred over live-data-deleted, per
+	// the mark fail-closed invariant).
+	HoldProvider HoldProvider
 }
 
 // MetadataReconciler resolves per-share metadata stores. The mark phase
@@ -185,6 +192,28 @@ type MetadataReconciler interface {
 type MultiShareReconciler interface {
 	MetadataReconciler
 	SharesForGC() []string
+}
+
+// HoldProvider lets a higher layer inject "held" hashes into the GC mark
+// phase so referenced blocks are never collected. The mark phase invokes
+// HeldHashes AFTER per-share EnumerateFileBlocks and BEFORE FlushAdd, so
+// held hashes land in the SAME live set used by the sweep's presence check.
+//
+// The callback shape mirrors metadata.MetadataStore.EnumerateFileBlocks so
+// markPhase can reuse its hash-add loop verbatim. Implementations stream
+// each held ContentHash through fn; returning a non-nil error from fn
+// aborts the stream.
+//
+// Any non-nil error returned from HeldHashes aborts the entire GC run via
+// the mark fail-closed path — orphan-not-deleted is always preferred over
+// live-data-deleted.
+//
+// The implementation is scoped per-remote via the remoteEndpointID +
+// shares arguments: a SnapshotHoldProvider filters its held set to ready
+// snapshots whose share intersects the run's share list and whose backing
+// remote matches remoteEndpointID.
+type HoldProvider interface {
+	HeldHashes(ctx context.Context, remoteEndpointID string, shares []string, fn func(blockstore.ContentHash) error) error
 }
 
 // CollectGarbage scans the remote store and removes orphan blocks via the
