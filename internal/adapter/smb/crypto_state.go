@@ -35,6 +35,14 @@ type ConnectionCryptoState struct {
 	// Selected signing algorithm (set during NEGOTIATE)
 	SigningAlgorithmId uint16
 
+	// SigningAlgorithmExplicit reports whether the client explicitly
+	// negotiated the signing algorithm via a SIGNING_CAPABILITIES negotiate
+	// context (MS-SMB2 §3.1.1.2). When false, SigningAlgorithmId carries the
+	// server-side default (AES-128-CMAC for 3.x), not a client selection.
+	// Used to disambiguate HMAC-SHA256 (wire value 0x0000) from a
+	// default-zero placeholder.
+	SigningAlgorithmExplicit bool
+
 	// Server's GUID (set during NEGOTIATE)
 	ServerGUID [16]byte
 
@@ -228,18 +236,23 @@ func (cs *ConnectionCryptoState) GetCipherId() uint16 {
 	return cs.CipherId
 }
 
-// SetSigningAlgorithmId records the selected signing algorithm.
-func (cs *ConnectionCryptoState) SetSigningAlgorithmId(id uint16) {
+// SetSigningAlgorithmId records the selected signing algorithm and whether
+// the client explicitly negotiated it via a SIGNING_CAPABILITIES context.
+// The explicit flag is required to disambiguate HMAC-SHA256 (wire value 0)
+// from a default-zero placeholder when constructing signers.
+func (cs *ConnectionCryptoState) SetSigningAlgorithmId(id uint16, explicit bool) {
 	cs.mu.Lock()
 	cs.SigningAlgorithmId = id
+	cs.SigningAlgorithmExplicit = explicit
 	cs.mu.Unlock()
 }
 
-// GetSigningAlgorithmId returns the selected signing algorithm.
-func (cs *ConnectionCryptoState) GetSigningAlgorithmId() uint16 {
+// GetSigningAlgorithmId returns the selected signing algorithm and whether
+// it was explicitly negotiated by the client.
+func (cs *ConnectionCryptoState) GetSigningAlgorithmId() (uint16, bool) {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
-	return cs.SigningAlgorithmId
+	return cs.SigningAlgorithmId, cs.SigningAlgorithmExplicit
 }
 
 // SetPreauthIntegrityHashId records the selected hash algorithm.

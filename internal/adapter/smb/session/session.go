@@ -283,7 +283,7 @@ type SessionStats struct {
 // This creates a CryptoState with an HMACSigner for SMB 2.x sessions.
 // For 3.x sessions, use SetCryptoState with DeriveAllKeys instead.
 func (s *Session) SetSigningKey(sessionKey []byte) {
-	s.CryptoState = DeriveAllKeys(sessionKey, types.Dialect0202, [64]byte{}, 0, signing.SigningAlgHMACSHA256)
+	s.CryptoState = DeriveAllKeys(sessionKey, types.Dialect0202, [64]byte{}, 0, signing.SigningAlgHMACSHA256, false)
 }
 
 // EnableSigning enables message signing for this session.

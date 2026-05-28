@@ -49,10 +49,12 @@ type CryptoState interface {
 	SetClientDialects(dialects []types.Dialect)
 	// GetClientDialects returns the client's offered dialect list.
 	GetClientDialects() []types.Dialect
-	// SetSigningAlgorithmId records the selected signing algorithm.
-	SetSigningAlgorithmId(id uint16)
-	// GetSigningAlgorithmId returns the selected signing algorithm.
-	GetSigningAlgorithmId() uint16
+	// SetSigningAlgorithmId records the selected signing algorithm and
+	// whether the client explicitly negotiated it via SIGNING_CAPABILITIES.
+	SetSigningAlgorithmId(id uint16, explicit bool)
+	// GetSigningAlgorithmId returns the selected signing algorithm and
+	// whether it was explicitly negotiated by the client.
+	GetSigningAlgorithmId() (uint16, bool)
 	// GetCipherId returns the selected encryption cipher.
 	GetCipherId() uint16
 	// GetPreauthHash returns a copy of the current connection-level preauth integrity hash value.

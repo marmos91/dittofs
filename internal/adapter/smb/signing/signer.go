@@ -31,16 +31,34 @@ type Signer interface {
 // NewSigner creates the appropriate Signer for the negotiated dialect and
 // signing algorithm.
 //
+// SigningAlgHMACSHA256 has the wire value 0 per MS-SMB2 §2.2.3.1.7, which is
+// indistinguishable from an unset/default-zero signingAlgorithmId. To avoid
+// accidentally returning HMACSigner for a 3.1.1 session that never explicitly
+// negotiated HMAC-SHA256 (e.g. no SIGNING_CAPABILITIES context, or a default-
+// zero plumbing path), HMAC-SHA256 is only selected when explicitlyNegotiated
+// is true.
+//
 // Dispatch logic:
-//   - dialect < 3.0: HMACSigner (HMAC-SHA256)
+//   - dialect < 3.0: HMACSigner (HMAC-SHA256, the only signer for 2.x)
 //   - signingAlgorithmId == SigningAlgAESGMAC: GMACSigner
-//   - otherwise (3.0/3.0.2, or 3.1.1 without GMAC): CMACSigner
-func NewSigner(dialect types.Dialect, signingAlgorithmId uint16, key []byte) Signer {
+//   - signingAlgorithmId == SigningAlgHMACSHA256 on 3.1.1 AND
+//     explicitlyNegotiated: HMACSigner
+//   - otherwise (3.0/3.0.2, or 3.1.1 with CMAC, or any non-explicit zero):
+//     CMACSigner
+func NewSigner(dialect types.Dialect, signingAlgorithmId uint16, explicitlyNegotiated bool, key []byte) Signer {
 	if dialect < types.Dialect0300 {
 		return NewHMACSigner(key)
 	}
-	if signingAlgorithmId == SigningAlgAESGMAC {
+	switch signingAlgorithmId {
+	case SigningAlgAESGMAC:
 		return NewGMACSigner(key)
+	case SigningAlgHMACSHA256:
+		// Wire value 0 — ambiguous with default-zero. Only honour HMAC-SHA256
+		// on 3.1.1 when the caller signals an explicit SIGNING_CAPABILITIES
+		// selection. Otherwise fall through to CMAC (the 3.x default).
+		if dialect >= types.Dialect0311 && explicitlyNegotiated {
+			return NewHMACSigner(key)
+		}
 	}
 	return NewCMACSigner(key)
 }

@@ -103,9 +103,10 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	var selectedSigningAlg uint16
 	is311 := selectedDialect == types.Dialect0311
 
+	var signingAlgExplicit bool
 	if is311 {
 		if negotiateContextCount > 0 && negotiateContextOffset > 0 {
-			responseContexts, selectedCipher, selectedSigningAlg = h.processNegotiateContexts(
+			responseContexts, selectedCipher, selectedSigningAlg, signingAlgExplicit = h.processNegotiateContexts(
 				body, negotiateContextOffset, negotiateContextCount)
 		}
 		// Per MS-SMB2 3.3.5.4: SMB 3.1.1 MUST include PREAUTH_INTEGRITY_CAPABILITIES
@@ -245,7 +246,7 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 		if is311 {
 			ctx.ConnCryptoState.SetCipherId(selectedCipher)
 			ctx.ConnCryptoState.SetPreauthIntegrityHashId(types.HashAlgSHA512)
-			ctx.ConnCryptoState.SetSigningAlgorithmId(selectedSigningAlg)
+			ctx.ConnCryptoState.SetSigningAlgorithmId(selectedSigningAlg, signingAlgExplicit)
 		}
 	}
 
@@ -327,12 +328,14 @@ func (h *Handler) buildCapabilities(dialect types.Dialect) types.Capabilities {
 // processNegotiateContexts parses client negotiate contexts and builds response contexts.
 // Only called for SMB 3.1.1 negotiation.
 //
-// Returns the response contexts, the selected cipher ID, and the selected signing algorithm ID.
+// Returns the response contexts, the selected cipher ID, the selected signing
+// algorithm ID, and whether the signing algorithm came from an explicit
+// SIGNING_CAPABILITIES negotiate context (vs. server-side default).
 func (h *Handler) processNegotiateContexts(
 	body []byte,
 	contextOffset uint32,
 	contextCount uint16,
-) ([]types.NegotiateContext, uint16, uint16) {
+) ([]types.NegotiateContext, uint16, uint16, bool) {
 	// Context offset is relative to the start of the SMB2 header (64 bytes before body).
 	// Our body starts at header offset 64, so:
 	//   bodyOffset = contextOffset - 64
@@ -340,13 +343,13 @@ func (h *Handler) processNegotiateContexts(
 	if bodyOffset < 0 || bodyOffset >= len(body) {
 		logger.Debug("Negotiate context offset out of range",
 			"offset", contextOffset, "bodyLen", len(body))
-		return nil, 0, 0
+		return nil, 0, 0, false
 	}
 
 	clientContexts, err := types.ParseNegotiateContextList(body[bodyOffset:], int(contextCount))
 	if err != nil {
 		logger.Debug("Failed to parse negotiate contexts", "error", err)
-		return nil, 0, 0
+		return nil, 0, 0, false
 	}
 
 	var responseContexts []types.NegotiateContext
@@ -449,16 +452,19 @@ func (h *Handler) processNegotiateContexts(
 		selectedSigningAlg = signing.SigningAlgAESCMAC
 	}
 
-	return responseContexts, selectedCipher, selectedSigningAlg
+	return responseContexts, selectedCipher, selectedSigningAlg, signingCapsReceived
 }
 
 // defaultSigningAlgorithmPreference is the server's default signing algorithm
 // preference order, used when SigningAlgorithmPreference is not configured.
-// Only AES algorithms are included because SIGNING_CAPABILITIES is a 3.1.1-only
-// negotiate context, and HMAC-SHA256 is not valid for SMB 3.x sessions.
+// HMAC-SHA256 is included because clients MAY explicitly request it via the
+// 3.1.1 SIGNING_CAPABILITIES negotiate context (MS-SMB2 §3.1.1.2). When
+// selected for 3.1.1 the signing key is the first 16 bytes of the
+// SP800-108-derived SigningKey and the verifier uses HMAC-SHA256.
 var defaultSigningAlgorithmPreference = []uint16{
 	signing.SigningAlgAESGMAC,
 	signing.SigningAlgAESCMAC,
+	signing.SigningAlgHMACSHA256,
 }
 
 // selectSigningAlgorithm selects a signing algorithm from the client's offered
@@ -466,9 +472,9 @@ var defaultSigningAlgorithmPreference = []uint16{
 // MS-SMB2 3.3.5.4. It iterates the client's array and returns the first
 // algorithm that the server supports.
 //
-// HMAC-SHA256 is excluded because SIGNING_CAPABILITIES is a 3.1.1-only
-// negotiate context, and HMAC-SHA256 is a 2.x-only algorithm. Selecting it
-// for 3.1.1 would cause a mismatch with the KDF-based signing key derivation.
+// HMAC-SHA256 is valid for 3.1.1 when the client explicitly negotiates it via
+// SIGNING_CAPABILITIES. Samba accepts this and the signing-hmac-sha-256
+// torture test exercises the path.
 //
 // Falls back to AES-128-CMAC as the mandatory baseline per MS-SMB2 if no
 // intersection is found.
@@ -479,10 +485,6 @@ func (h *Handler) selectSigningAlgorithm(clientAlgorithms []uint16) uint16 {
 	}
 
 	for _, clientAlg := range clientAlgorithms {
-		// Skip HMAC-SHA256 -- not valid for 3.1.1 SIGNING_CAPABILITIES
-		if clientAlg == signing.SigningAlgHMACSHA256 {
-			continue
-		}
 		if slices.Contains(allowed, clientAlg) {
 			return clientAlg
 		}
