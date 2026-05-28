@@ -244,29 +244,3 @@ type Stats struct {
 	ContentCount  uint64 // Total number of content items
 	AverageSize   uint64 // Average size of content items in bytes
 }
-
-// RemoteObjectInfo describes a single remote object listed by the GC sweep
-// phase via the RemoteStore.ListByPrefixWithMeta cursor. The full
-// interface declaration lives in pkg/blockstore/remote/remote.go alongside
-// the rest of the RemoteStore surface; this re-export documents the shape
-// at the package root for readers tracing GC plumbing.
-type RemoteObjectInfo struct {
-	Key          string
-	Size         int64
-	LastModified time.Time
-}
-
-// RemoteStoreSweepSurface is a documentation-only interface that captures
-// the subset of remote.RemoteStore methods consumed by the GC sweep phase
-// . The real interface is remote.RemoteStore
-// in pkg/blockstore/remote/remote.go — this declaration exists at the
-// blockstore package root so callers tracing the sweep plumbing can find
-// the shape without crossing package boundaries.
-//
-// Implementations (memory, s3) live alongside the real interface; this
-// type is never used as a parameter — the production code uses
-// remote.RemoteStore directly.
-type RemoteStoreSweepSurface interface {
-	Delete(ctx context.Context, key string) error
-	ListByPrefixWithMeta(ctx context.Context, prefix string) ([]RemoteObjectInfo, error)
-}
