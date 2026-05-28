@@ -242,11 +242,11 @@ func (m *Syncer) canProcess(ctx context.Context) bool {
 //
 // Return contract — see blockstore.Flusher godoc for the full state
 // machine and caller-retry guidance. In brief:
-//   - Finalized=true, err=nil: durable on remote (or no remote configured
-//     and local quiesce complete).
-//   - Finalized=false, err=nil: SOFT condition (remote unhealthy OR another
-//     in-flight mirror pass holds the `uploading` CAS gate). Callers MUST
-//     NOT tight-loop retry — see #670 below.
+//   - Finalized=true, err=nil: durable on the configured remote.
+//   - Finalized=false, err=nil: SOFT condition (no remote configured,
+//     remote unhealthy, OR another in-flight mirror pass holds the
+//     `uploading` CAS gate). Callers MUST NOT tight-loop retry — see
+//     #670 below.
 //   - err != nil: hard failure, do not retry until addressed.
 //
 // #670: callers driving NFS COMMIT or SMB Flush loops over this method

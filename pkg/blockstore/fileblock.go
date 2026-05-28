@@ -209,17 +209,18 @@ type Flusher interface {
 	//
 	//   - (Finalized=true, nil)
 	//     All locally-mirrored data for payloadID is durable on the
-	//     configured remote (or no remote is configured and the local
-	//     quiesce completed). Callers may report COMMIT/Flush success
+	//     configured remote. Callers may report COMMIT/Flush success
 	//     to the client.
 	//
 	//   - (Finalized=false, nil)
 	//     A NON-fatal soft condition prevented finalization THIS call:
-	//     either the remote is configured but currently unhealthy, or
-	//     another in-flight mirror pass (periodic uploader or
-	//     overlapping Flush) is already running. The dirty state is
-	//     unchanged and will be re-attempted on the next Flush or the
-	//     next periodic uploader tick.
+	//     no remote is configured (local-only mode — local quiesce
+	//     completed but no remote durability target exists), the remote
+	//     is configured but currently unhealthy, or another in-flight
+	//     mirror pass (periodic uploader or overlapping Flush) is
+	//     already running. The dirty state is unchanged and will be
+	//     re-attempted on the next Flush or the next periodic uploader
+	//     tick.
 	//
 	//     Callers driving NFS COMMIT or SMB Flush loops MUST rate-limit
 	//     their retries against this branch. A tight retry storm on
