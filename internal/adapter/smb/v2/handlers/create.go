@@ -1457,12 +1457,8 @@ func (h *Handler) storeCreateReplayIfApplicable(ctx *SMBHandlerContext, req *Cre
 	if h.CreateReplayCache == nil || resp == nil || resp.Status != types.StatusSuccess {
 		return
 	}
-	dh2qCtx := FindCreateContext(req.CreateContexts, DurableHandleV2RequestTag)
-	if dh2qCtx == nil {
-		return
-	}
-	_, _, createGuid, err := DecodeDH2QRequest(dh2qCtx.Data)
-	if err != nil || createGuid == ([16]byte{}) {
+	createGuid := dh2qCreateGuid(req)
+	if createGuid == ([16]byte{}) {
 		return
 	}
 	h.CreateReplayCache.Store(ctx.SessionID, createGuid, resp)
@@ -1476,15 +1472,28 @@ func (h *Handler) lookupCreateReplay(ctx *SMBHandlerContext, req *CreateRequest)
 	if !ctx.IsReplay || h.CreateReplayCache == nil {
 		return nil
 	}
-	dh2qCtx := FindCreateContext(req.CreateContexts, DurableHandleV2RequestTag)
-	if dh2qCtx == nil {
-		return nil
-	}
-	_, _, createGuid, err := DecodeDH2QRequest(dh2qCtx.Data)
-	if err != nil || createGuid == ([16]byte{}) {
+	createGuid := dh2qCreateGuid(req)
+	if createGuid == ([16]byte{}) {
 		return nil
 	}
 	return h.CreateReplayCache.Lookup(ctx.SessionID, createGuid)
+}
+
+// dh2qCreateGuid extracts the CreateGuid from a CREATE request's
+// SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2 context. Returns the zero
+// GUID when the context is missing, malformed, or carries a zero
+// CreateGuid — callers must treat that as "no replay keying
+// possible" (MS-SMB2 §2.2.13.2.11).
+func dh2qCreateGuid(req *CreateRequest) [16]byte {
+	dh2qCtx := FindCreateContext(req.CreateContexts, DurableHandleV2RequestTag)
+	if dh2qCtx == nil {
+		return [16]byte{}
+	}
+	_, _, createGuid, err := DecodeDH2QRequest(dh2qCtx.Data)
+	if err != nil {
+		return [16]byte{}
+	}
+	return createGuid
 }
 
 // handlePipeCreate handles CREATE on IPC$ for named pipes.
