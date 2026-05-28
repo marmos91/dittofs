@@ -628,6 +628,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 				authCtx.Context, h.DurableStore, metaSvc, req.CreateContexts,
 				ctx.SessionID, sess.Username, sessionKeyHash,
 				tree.ShareName, fullFilename, connClientGUID(ctx),
+				req.DesiredAccess, req.ShareAccess,
 			)
 			if reconnErr != nil {
 				logger.Warn("CREATE: durable reconnect error", "error", reconnErr)

@@ -92,6 +92,17 @@ type DurableHandleStore interface {
 	GetDurableHandle(ctx context.Context, id string) (*PersistedDurableHandle, error)
 	GetDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*PersistedDurableHandle, error)
 	GetDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*PersistedDurableHandle, error)
+	// ConsumeDurableHandleByFileID atomically fetches and deletes the
+	// persisted handle keyed by the original FileID, returning the previous
+	// record (or nil if no match). Used on V1 reconnect (DHnC) to prevent
+	// the TOCTOU window where two concurrent reconnects from the same
+	// retrying client could both succeed a Get-then-Delete sequence and end
+	// up with two live opens claiming the same persisted handle.
+	// MS-SMB2 §3.3.5.9.7.
+	ConsumeDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*PersistedDurableHandle, error)
+	// ConsumeDurableHandleByCreateGuid is the V2 (DH2C) counterpart of
+	// ConsumeDurableHandleByFileID. MS-SMB2 §3.3.5.9.12.
+	ConsumeDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*PersistedDurableHandle, error)
 	GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*PersistedDurableHandle, error)
 	GetDurableHandlesByFileHandle(ctx context.Context, fileHandle []byte) ([]*PersistedDurableHandle, error)
 	DeleteDurableHandle(ctx context.Context, id string) error
