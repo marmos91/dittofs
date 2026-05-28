@@ -89,6 +89,27 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 			shareName, models.ErrSnapshotBackupFailed)
 	}
 
+	// (2b) Resolve the metadata-store engine type ("memory" | "badger" |
+	// "postgres") so Snapshot.MetadataEngine can be populated on the
+	// fresh-create row. The retry path inherits MetadataEngine from the
+	// existing failed row, so it does not need to look this up. Phase 24
+	// restore consumes MetadataEngine to dispatch the per-engine
+	// Restoreable driver; an empty value would break that lookup.
+	shareCfg, err := r.sharesSvc.GetShare(shareName)
+	if err != nil {
+		return "", err
+	}
+	metaStoreCfg, err := r.store.GetMetadataStore(ctx, shareCfg.MetadataStore)
+	if err != nil {
+		return "", fmt.Errorf("snapshot create %q: resolve metadata store config %q: %w",
+			shareName, shareCfg.MetadataStore, err)
+	}
+	metadataEngine := metaStoreCfg.Type
+	if metadataEngine == "" {
+		return "", fmt.Errorf("snapshot create %q: metadata store %q has empty Type, cannot record engine: %w",
+			shareName, shareCfg.MetadataStore, models.ErrSnapshotBackupFailed)
+	}
+
 	// (3) Insert / flip the state='creating' row BEFORE any I/O (D-23-01).
 	// The Phase 22 idx_share_creating partial unique index only enforces
 	// concurrent-create rejection if the row exists during the second
@@ -116,9 +137,10 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 	} else {
 		// Fresh-create path: insert a new row.
 		snap = &models.Snapshot{
-			ID:        uuid.NewString(),
-			ShareName: shareName,
-			State:     models.StateCreating,
+			ID:             uuid.NewString(),
+			ShareName:      shareName,
+			State:          models.StateCreating,
+			MetadataEngine: metadataEngine,
 		}
 		if _, cerr := r.store.CreateSnapshot(ctx, snap); cerr != nil {
 			// ErrSnapshotStateConflict is surfaced as-is so callers can
