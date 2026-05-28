@@ -325,6 +325,19 @@ func New(config *Config) (*GORMStore, error) {
 		}
 	}
 
+	// Post-migration: ensure idx_share_creating partial unique index exists
+	// on snapshots(share_name) WHERE state = 'creating'. GORM v1.31.x is
+	// known to drop the `where:` clause from struct-tag partial indexes on
+	// some dialects, which would silently disable the "at most one in-flight
+	// snapshot per share" guard. SQLite and PostgreSQL both support the
+	// CREATE UNIQUE INDEX ... WHERE syntax; the IF NOT EXISTS makes this
+	// idempotent across restarts. Startup must not proceed without the guard.
+	if err := db.Exec(
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_share_creating ON snapshots(share_name) WHERE state = 'creating'",
+	).Error; err != nil {
+		return nil, fmt.Errorf("failed to ensure idx_share_creating: %w", err)
+	}
+
 	store := &GORMStore{
 		db:     db,
 		config: config,
