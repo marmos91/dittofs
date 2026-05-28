@@ -2,6 +2,7 @@ package fs
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -54,11 +55,27 @@ func (nopFBS) ListFileBlocks(_ context.Context, _ string) ([]*blockstore.FileBlo
 // store. Shared by plan 04/05/06/07/09 test files in the fs package.
 func newFSStoreForTest(t *testing.T, opts FSStoreOptions) *FSStore {
 	t.Helper()
-	dir := t.TempDir()
+	dir, err := os.MkdirTemp("", "fsstore-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
 	bc, err := NewWithOptions(dir, 1<<30, 1<<30, nopFBS{}, opts)
 	if err != nil {
+		_ = os.RemoveAll(dir)
 		t.Fatalf("NewWithOptions: %v", err)
 	}
-	t.Cleanup(func() { _ = bc.Close() })
+	t.Cleanup(func() {
+		_ = bc.Close()
+		// On Windows, file handles may linger after Close due to
+		// kernel-level delayed release. Retry so cleanup doesn't
+		// fail the test for a timing issue.
+		for range 5 {
+			if os.RemoveAll(dir) == nil {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		_ = os.RemoveAll(dir)
+	})
 	return bc
 }

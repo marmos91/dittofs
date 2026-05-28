@@ -287,10 +287,28 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// ========================================================================
 
 	if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
+		// Cancel any pending (parked) blocking LOCKs for this handle before
+		// releasing held locks. The resume goroutine would fail with
+		// STATUS_FILE_CLOSED on its next retry, but smbtorture expects
+		// immediate STATUS_RANGE_NOT_LOCKED on handle close (Samba
+		// brl_close_fnum).
+		if h.PendingLockRegistry != nil {
+			for _, parked := range h.PendingLockRegistry.UnregisterAllForOwner(openFile.OpenID()) {
+				if parked.Callback != nil {
+					if err := parked.Callback(parked.SessionID, parked.MessageID, parked.AsyncId, types.StatusRangeNotLocked, nil); err != nil {
+						logger.Debug("CLOSE: failed to send LOCK cancel response",
+							"asyncId", parked.AsyncId, "error", err)
+					}
+				}
+				if h.LockWaitGraph != nil && parked.OwnerID != "" {
+					h.LockWaitGraph.RemoveWaiter(parked.OwnerID)
+				}
+			}
+		}
+
 		metaSvc := h.Registry.GetMetadataService()
 		if unlockErr := metaSvc.UnlockAllForOpen(ctx.Context, openFile.MetadataHandle, openFile.OpenID()); unlockErr != nil {
 			logger.Warn("CLOSE: failed to release locks", "path", openFile.Path, "error", unlockErr)
-			// Continue with close even if unlock fails
 		}
 	}
 

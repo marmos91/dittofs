@@ -403,6 +403,67 @@ func TestFileAllInformation_AccessInformationReturnsGrantedAccess(t *testing.T) 
 	}
 }
 
+// TestFilePositionInformation_RoundTrip locks in the contract added in #661:
+// SET_INFO FilePositionInformation stores the CurrentByteOffset on OpenFile,
+// and QUERY_INFO must echo the same value both via the dedicated class and
+// via the FileAllInformation embedded PositionInformation block at offset 80.
+// Required so smb2.durable-open.file-position survives across reconnect.
+func TestFilePositionInformation_RoundTrip(t *testing.T) {
+	h := NewHandler()
+	file := &metadata.File{
+		ID: uuid.New(),
+		FileAttr: metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Size: 0,
+		},
+	}
+	openFile := &OpenFile{
+		FileName: "test.txt",
+		Path:     "test.txt",
+	}
+	authCtx := &metadata.AuthContext{Context: context.Background(), Identity: &metadata.Identity{}}
+
+	// Drive the full SET → QUERY round-trip through the actual handlers so
+	// the regression covers the in-memory OpenFile mutation, not just the
+	// query encoding.
+	setBuf := make([]byte, 8)
+	binary.LittleEndian.PutUint64(setBuf, 0x1000)
+	resp, err := h.setFileInfoFromStore(authCtx, openFile, types.FilePositionInformation, setBuf)
+	if err != nil {
+		t.Fatalf("SET FilePositionInformation: unexpected error: %v", err)
+	}
+	if resp.Status != types.StatusSuccess {
+		t.Fatalf("SET FilePositionInformation status = %s, want SUCCESS", resp.Status)
+	}
+	if openFile.PositionInfo != 0x1000 {
+		t.Errorf("openFile.PositionInfo after SET = 0x%x, want 0x1000", openFile.PositionInfo)
+	}
+
+	// Dedicated FilePositionInformation class returns the 8-byte offset
+	info, err := h.buildFileInfoFromStore(authCtx, file, openFile, types.FilePositionInformation)
+	if err != nil {
+		t.Fatalf("FilePositionInformation: unexpected error: %v", err)
+	}
+	if len(info) != 8 {
+		t.Fatalf("FilePositionInformation info length = %d, want 8", len(info))
+	}
+	if got := binary.LittleEndian.Uint64(info); got != 0x1000 {
+		t.Errorf("FilePositionInformation = 0x%x, want 0x1000", got)
+	}
+
+	// FileAllInformation embeds the same value at offset 80
+	all, err := h.buildFileInfoFromStore(authCtx, file, openFile, types.FileAllInformation)
+	if err != nil {
+		t.Fatalf("FileAllInformation: unexpected error: %v", err)
+	}
+	if len(all) < 88 {
+		t.Fatalf("FileAllInformation length = %d, want >= 88", len(all))
+	}
+	if got := binary.LittleEndian.Uint64(all[80:88]); got != 0x1000 {
+		t.Errorf("FileAllInformation PositionInformation @ offset 80 = 0x%x, want 0x1000", got)
+	}
+}
+
 func TestResolveAccessFlags(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -230,9 +230,15 @@ func cloneDurableHandle(h *lock.PersistedDurableHandle) *lock.PersistedDurableHa
 		DisconnectedAt:  h.DisconnectedAt,
 		TimeoutMs:       h.TimeoutMs,
 		ServerStartTime: h.ServerStartTime,
+		DeletePending:   h.DeletePending,
+		FileName:        h.FileName,
+		IsDirectory:     h.IsDirectory,
+		PositionInfo:    h.PositionInfo,
+		OriginalFileID:  h.OriginalFileID,
 	}
 
 	clone.MetadataHandle = bytes.Clone(h.MetadataHandle)
+	clone.ParentHandle = bytes.Clone(h.ParentHandle)
 
 	return clone
 }

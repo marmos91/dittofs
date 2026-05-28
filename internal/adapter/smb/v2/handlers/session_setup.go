@@ -184,6 +184,27 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 				return NewErrorResult(types.StatusUserSessionDeleted), nil
 			}
 
+			// MS-SMB2 §3.3.5.5 step 1: for SMB 3.x dialects, a non-binding
+			// SESSION_SETUP that targets an existing session must arrive on a
+			// connection that already has a channel for the session (the
+			// origin connection or a previously bound channel). Otherwise the
+			// client is trying to re-authenticate on an unbound connection,
+			// which is indistinguishable from accessing a deleted session.
+			// Returning STATUS_USER_SESSION_DELETED here matches Samba
+			// (source3/smbd/smb2_sesssetup.c) and is what smbtorture's
+			// session_bind_negative_smbXtoX harness asserts at session.c:2799
+			// after the bind has already been rejected on the same transport.
+			if connDialect >= types.Dialect0300 &&
+				sess.OriginConnID != ctx.ConnID &&
+				sess.GetChannel(ctx.ConnID) == nil {
+				logger.Debug("SESSION_SETUP: SMB 3.x non-binding setup on unbound connection",
+					"sessionID", ctx.SessionID,
+					"sessionConnID", sess.OriginConnID,
+					"requestConnID", ctx.ConnID,
+					"dialect", fmt.Sprintf("0x%04x", uint16(connDialect)))
+				return NewErrorResult(types.StatusUserSessionDeleted), nil
+			}
+
 			// Re-authentication: client sends SESSION_SETUP on an existing session
 			// with no pending auth. Per MS-SMB2 3.3.5.5.2, this initiates a new
 			// authentication on the existing session (identity update).
@@ -195,17 +216,52 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		}
 	}
 
-	// Handle PreviousSessionID: tear down old session per MS-SMB2 3.3.5.5.3.
-	// When a client reconnects (e.g. after network disruption), it sets
-	// PreviousSessionID to its old session. The server tears down the old
-	// session's resources (open files, locks, tree connections) so the new
-	// session starts clean. This prevents resource leaks and lock conflicts.
+	// Tear down old session per MS-SMB2 3.3.5.5.3.
+	//
+	// Two constraints must be satisfied simultaneously:
+	//
+	//  1. The old session's signing key must remain available briefly so that
+	//     error responses sent on the OLD connection (e.g. STATUS_USER_SESSION_DELETED
+	//     for in-flight requests) can be signed. Without the key the client
+	//     receives an unsigned error and reports STATUS_ACCESS_DENIED
+	//     (smb2.session.reconnect1 / reconnect2).
+	//
+	//  2. The old session must be fully deleted promptly so subsequent operations
+	//     do not observe a stale LoggedOff zombie. Leaving it indefinitely would
+	//     defer cleanup to connection close, which may not happen promptly.
+	//
+	// Strategy: mark LoggedOff and do full resource cleanup inline, then
+	// schedule a deferred DeleteSession via the cleanup barrier. The barrier
+	// ensures that the next SESSION_SETUP waits for the delete to complete.
+	// The 500ms grace period lets in-flight responses on the old connection
+	// be signed before the session record is removed from the manager.
 	if req.PreviousSessionID != 0 {
-		if _, ok := h.GetSession(req.PreviousSessionID); ok {
+		if prevSess, ok := h.GetSession(req.PreviousSessionID); ok {
 			logger.Info("SESSION_SETUP: tearing down previous session",
 				"previousSessionID", req.PreviousSessionID)
+			prevSess.LoggedOff.Store(true)
+			// Treat PreviousSessionID supersession as a transport disconnect for
+			// durable-handle purposes: per MS-SMB2 3.3.5.5.3 / 3.3.5.9.7, the
+			// new session inherits the right to reconnect the prior session's
+			// durable handles via DHnC/DH2C. Closing with isDisconnect=false
+			// would prematurely tear down the open and break the lease-backed
+			// durable reopen paths (smb2.durable-open.reopen1a*).
+			h.CloseAllFilesForSession(ctx.Context, req.PreviousSessionID, true)
+			h.releaseSessionLeasesAndNotifies(ctx.Context, req.PreviousSessionID)
+			h.DeleteAllTreesForSession(req.PreviousSessionID)
+			h.DeleteAllPendingAuthForSession(req.PreviousSessionID)
+
+			// Deferred delete with barrier: the goroutine waits briefly for
+			// in-flight responses on the old connection to be signed, then
+			// removes the session from the manager. SignalPendingCleanup
+			// ensures WaitForCleanup in the next SESSION_SETUP blocks until
+			// this goroutine completes, preventing stale-session observation.
 			h.SignalPendingCleanup(1)
-			h.CleanupSession(ctx.Context, req.PreviousSessionID, false)
+			go func(sid uint64) {
+				defer h.SignalCleanupDone()
+				time.Sleep(500 * time.Millisecond)
+				h.DeleteSession(sid)
+			}(req.PreviousSessionID)
 		}
 	}
 

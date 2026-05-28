@@ -291,6 +291,13 @@ Advanced connection and tree connect edge cases.
 | smb2.tcon | Tree connect | Advanced tree connect semantics not implemented | - |
 | smb2.maxfid | Connection | Connection drops under high FD pressure | - |
 
+### Intermittent / Flaky
+
+| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|
+| smb2.compound_find.compound_find_close | Compound | Flaky compound FIND+CLOSE race - passes intermittently | - |
+| smb2.lease.statopen4 | Leases | Flaky stat-open lease test - passes intermittently | - |
+
 ### Previous Versions / Time Warp (Not Implemented)
 
 Previous versions (shadow copies / TWRP) are a Windows Volume Shadow Copy
@@ -441,6 +448,8 @@ fail due to incomplete lock contention and async lock handling.
 | smb2.lock.replay_smb3_specification_durable | Locks | Lock replay with durable handles not fully working | #430 |
 | smb2.lock.replay_smb3_specification_multi | Locks | Lock replay with multi-channel not fully working | #430 |
 | smb2.lock.async | Locks | Blocking lock deadlocks dispatch goroutine (needs async LOCK with interim response) | #430 |
+| smb2.lock.cancel-logoff | Locks | Pending lock not re-acquired after logoff releases held lock — timing issue in async retry | #430 |
+| smb2.lock.cancel-tdis | Locks | Pending lock cancel on tree disconnect not fully working | #430 |
 | smb2.lock.open-brlock-deadlock | Locks | Open + byte-range lock deadlock detection not working | #430 |
 | smb2.lock.ctdb-delrec-deadlock | Locks | CTDB delete record deadlock not working | #430 |
 
@@ -471,10 +480,6 @@ TCP connections with different SMB dialect and signing/encryption combinations.
 | smb2.session.bind_negative_smb2to3d | Session binding | Multi-channel session binding not implemented | - |
 | smb2.session.bind_negative_smb3to2s | Session binding | Multi-channel session binding not implemented | - |
 | smb2.session.bind_negative_smb3to2d | Session binding | Multi-channel session binding not implemented | - |
-| smb2.session.bind_negative_smb3to3s | Session binding | Multi-channel session binding not implemented | - |
-| smb2.session.bind_negative_smb3to3d | Session binding | Multi-channel session binding not implemented | - |
-| smb2.session.bind_negative_smb3encGtoCs | Session binding | Multi-channel encryption binding not implemented | - |
-| smb2.session.bind_negative_smb3encGtoCd | Session binding | Multi-channel encryption binding not implemented | - |
 | smb2.session.bind_negative_smb3signCtoHs | Session binding | Multi-channel signing binding not implemented | - |
 | smb2.session.bind_negative_smb3signCtoHd | Session binding | Multi-channel signing binding not implemented | - |
 | smb2.session.bind_negative_smb3signCtoGs | Session binding | Multi-channel signing binding not implemented | - |

@@ -1090,8 +1090,11 @@ func (h *Handler) setFileInfoFromStore(
 		if len(buffer) < 8 {
 			return setInfoStatus(types.StatusInfoLengthMismatch), nil
 		}
-		// Server-side position tracking is not required for network filesystems.
-		// Accept and succeed as a no-op (SMB clients manage their own offsets).
+		// Network filesystems do not use the server-side position for I/O
+		// dispatch (READ/WRITE carry explicit offsets), but the value must
+		// round-trip through SET/GET FilePositionInformation and survive
+		// durable-handle reconnect (smb2.durable-open.file-position).
+		openFile.PositionInfo = smbenc.NewReader(buffer[:8]).ReadUint64()
 		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FileAllocationInformation:

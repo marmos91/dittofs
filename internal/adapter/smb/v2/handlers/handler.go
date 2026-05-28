@@ -394,6 +394,13 @@ type OpenFile struct {
 	// The handle expires this many milliseconds after client disconnects.
 	DurableTimeoutMs uint32
 
+	// PositionInfo is the FILE_POSITION_INFORMATION CurrentByteOffset
+	// (MS-FSCC 2.4.32). Servers track this per-handle so SET/GET via
+	// FilePositionInformation round-trips even though network filesystems
+	// do not use it for I/O dispatch. Preserved across durable handle
+	// disconnect/reconnect (smb2.durable-open.file-position).
+	PositionInfo uint64
+
 	// NotifyOverflowed is the sticky overflow flag for SMB2 CHANGE_NOTIFY on
 	// this directory handle. Set when a notify completes with
 	// STATUS_NOTIFY_ENUM_DIR because the encoded change list exceeds the
@@ -743,7 +750,19 @@ func (h *Handler) closeFilesWithFilter(
 		// disconnect (not an explicit LOGOFF), persist the handle to the
 		// DurableHandleStore for later reconnection. On explicit LOGOFF the client
 		// is intentionally closing the session, so durable handles are fully closed.
-		if openFile.IsDurable && h.DurableStore != nil && isDisconnect {
+		//
+		// Refuse to persist if the handle requested FILE_DELETE_ON_CLOSE at CREATE
+		// time or marked DeletePending later via FileDispositionInformation. This
+		// mirrors Samba `vfs_default_durable_disconnect` (source3/smbd/durable.c):
+		// the disconnect path returns NT_STATUS_NOT_SUPPORTED for delete-on-close
+		// opens so the caller falls back to normal close and executes the delete.
+		// Required for smb2.durable-open.delete_on_close1 — without this, the
+		// file persists across the disconnect and a subsequent fresh CREATE sees
+		// the stale content instead of a freshly-created empty file. The matching
+		// delete_on_close2 test stays in KNOWN_FAILURES (same as Samba upstream).
+		hasDeleteOnClose := openFile.CreateOptions&types.FileDeleteOnClose != 0 ||
+			openFile.DeletePending
+		if openFile.IsDurable && h.DurableStore != nil && isDisconnect && !hasDeleteOnClose {
 			username := ""
 			var sessionKeyHash [32]byte
 			if sess != nil {
@@ -1018,6 +1037,13 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 			})
 		}
 	}
+	h.cancelAsyncOpsForSession(sessionID)
+}
+
+// cancelAsyncOpsForSession cancels pending pipe reads, parked CREATEs, and
+// blocked LOCKs for a session. Used by both CleanupSession and
+// PreviousSessionID teardown.
+func (h *Handler) cancelAsyncOpsForSession(sessionID uint64) {
 	if h.PipeReadRegistry != nil {
 		for _, pending := range h.PipeReadRegistry.UnregisterAllForSession(sessionID) {
 			if pending.Callback != nil {
@@ -1031,9 +1057,6 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 	}
 	if h.PendingCreateRegistry != nil {
 		for _, parked := range h.PendingCreateRegistry.UnregisterAllForSession(sessionID) {
-			// Fire a STATUS_CANCELLED so the client releases the async slot
-			// and does not wait indefinitely for our interim response.
-			// Connection is likely tearing down so the send may fail; log and move on.
 			if parked.Callback != nil {
 				go func(p *PendingCreate) {
 					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusCancelled, nil); err != nil {
@@ -1046,10 +1069,6 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 	}
 	if h.PendingLockRegistry != nil {
 		for _, parked := range h.PendingLockRegistry.UnregisterAllForSession(sessionID) {
-			// MS-SMB2 §3.3.5.14 + smb2.lock.cancel-logoff: parked blocking
-			// LOCK requests on a logged-off session must be completed with
-			// STATUS_RANGE_NOT_LOCKED (matches Samba and Windows behavior on
-			// LOGOFF — the open is gone, the lock state is not "still held").
 			if parked.Callback != nil {
 				go func(p *PendingLock) {
 					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusRangeNotLocked, nil); err != nil {

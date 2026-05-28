@@ -183,7 +183,29 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 	logger.Debug("Logoff: partial cleanup (session kept for response signing)",
 		"sessionID", ctx.SessionID)
 
+	// Close files FIRST to release held byte-range locks. This lets
+	// pending blocking LOCKs from other handles retry and potentially
+	// succeed before we cancel them. Matches Samba's brl_close_fnum
+	// ordering where lock release precedes waiter cancellation.
 	filesClosed := h.CloseAllFilesForSession(ctx.Context, ctx.SessionID, false)
+
+	// Drain any remaining pending blocking LOCKs for this session.
+	// After file close, most pending locks on this session's handles are
+	// already resolved (Close handler sends RANGE_NOT_LOCKED). This
+	// catches any stragglers not tied to a specific open.
+	if h.PendingLockRegistry != nil {
+		for _, parked := range h.PendingLockRegistry.UnregisterAllForSession(ctx.SessionID) {
+			if parked.Callback != nil {
+				if err := parked.Callback(parked.SessionID, parked.MessageID, parked.AsyncId, types.StatusCancelled, nil); err != nil {
+					logger.Debug("Logoff: failed to send LOCK cancel response",
+						"asyncId", parked.AsyncId, "error", err)
+				}
+			}
+			if h.LockWaitGraph != nil && parked.OwnerID != "" {
+				h.LockWaitGraph.RemoveWaiter(parked.OwnerID)
+			}
+		}
+	}
 
 	// Release leases and notify watchers that may not have been cleaned up
 	// by per-file CLOSE (e.g. client skipped CLOSE before LOGOFF).

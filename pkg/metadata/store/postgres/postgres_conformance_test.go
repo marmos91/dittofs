@@ -12,14 +12,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/storetest"
 )
 
-func TestConformance(t *testing.T) {
-	// Skip if no PostgreSQL connection string is provided
-	connStr := os.Getenv("DITTOFS_TEST_POSTGRES_DSN")
-	if connStr == "" {
-		t.Skip("DITTOFS_TEST_POSTGRES_DSN not set, skipping PostgreSQL conformance tests")
-	}
-
-	storetest.RunConformanceSuite(t, func(t *testing.T) metadata.MetadataStore {
+// newPostgresStoreFactory returns a factory that creates a fresh
+// PostgresMetadataStore for each subtest. Shared by both conformance
+// suites so the config and capabilities stay consistent.
+func newPostgresStoreFactory() func(t *testing.T) metadata.MetadataStore {
+	return func(t *testing.T) metadata.MetadataStore {
 		cfg := &postgres.PostgresMetadataStoreConfig{
 			Host:        "localhost",
 			Port:        5432,
@@ -29,9 +26,6 @@ func TestConformance(t *testing.T) {
 			SSLMode:     "disable",
 			AutoMigrate: true,
 		}
-
-		// If a full DSN is provided, use defaults but override host/port/etc.
-		// The DSN environment variable is just a signal to run the test.
 
 		caps := metadata.FilesystemCapabilities{
 			MaxReadSize:         1048576,
@@ -57,5 +51,21 @@ func TestConformance(t *testing.T) {
 			store.Close()
 		})
 		return store
-	})
+	}
+}
+
+func TestConformance(t *testing.T) {
+	if os.Getenv("DITTOFS_TEST_POSTGRES_DSN") == "" {
+		t.Skip("DITTOFS_TEST_POSTGRES_DSN not set, skipping PostgreSQL conformance tests")
+	}
+
+	storetest.RunConformanceSuite(t, newPostgresStoreFactory())
+}
+
+func TestBackupConformance(t *testing.T) {
+	if os.Getenv("DITTOFS_TEST_POSTGRES_DSN") == "" {
+		t.Skip("DITTOFS_TEST_POSTGRES_DSN not set, skipping PostgreSQL backup conformance tests")
+	}
+
+	storetest.RunBackupConformanceSuite(t, newPostgresStoreFactory())
 }
