@@ -571,6 +571,17 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameInvalid}}, nil
 	}
 
+	// Per smb2.create_no_streams.no_stream (source4/torture/smb2/create.c):
+	// shares configured with StreamsDisabled must reject any CREATE that
+	// references a stream — named ADS, the default ::$DATA syntax, and
+	// arbitrary stream-type suffixes — with STATUS_OBJECT_NAME_INVALID.
+	// Mirrors the Samba `smbd:streams = no` semantics. The gate runs after
+	// stream-suffix extraction so `streamSuffix != ""` covers named ADS and
+	// the default ::$DATA case toggles `explicitDataStream`.
+	if tree.StreamsDisabled && (streamSuffix != "" || explicitDataStream) {
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameInvalid}}, nil
+	}
+
 	// Per MS-FSA 2.1.5.1, wildcard characters are invalid in path
 	// components. Note: wildcards ARE valid inside stream names (e.g.,
 	// "file:?Stream*" is legal), so this check applies only to the base

@@ -363,7 +363,7 @@ fi
 # 4th run_smbtorture argument because that suite requires
 # `acl flag inherited canonicalization = no` (Samba extension) on the share,
 # whereas the default smb2.acls suite requires Windows-default canonicalization.
-SMBTORTURE_DEFAULT_SHARE="smbbasic"
+SMBTORTURE_DEFAULT_SHARE="${SMBTORTURE_DEFAULT_SHARE:-smbbasic}"
 
 # run_smbtorture FILTER [PER_TEST_TIMEOUT] [SUITE_PREFIX] [SHARE]
 # Runs smbtorture with the given filter, appending output to results file.
@@ -446,7 +446,7 @@ else
         "smb2.compound_async:compound_async"
         "smb2.compound_find:compound_find"
         "smb2.create:create"
-        "smb2.create_no_streams:create_no_streams"
+        "smb2.create_no_streams:create_no_streams:create_no_streams"
         "smb2.credits:credits"
         "smb2.delete-on-close-perms:delete-on-close-perms"
         "smb2.deny:deny"

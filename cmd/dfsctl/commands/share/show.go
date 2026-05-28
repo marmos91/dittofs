@@ -69,6 +69,8 @@ func (sd ShareDetail) Rows() [][]string {
 		{"Default Permission", s.DefaultPermission},
 		{"ACL Canonicalize Inherited", fmt.Sprintf("%v", s.AclFlagInheritedCanonicalization)},
 		{"Access-Based Enumeration", fmt.Sprintf("%v", s.AccessBasedEnumeration)},
+		{"Change Notify Disabled", fmt.Sprintf("%v", s.ChangeNotifyDisabled)},
+		{"Streams Disabled", fmt.Sprintf("%v", s.StreamsDisabled)},
 		{"Retention", retPolicy},
 	}
 

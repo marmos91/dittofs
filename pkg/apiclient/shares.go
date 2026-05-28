@@ -47,9 +47,12 @@ type Share struct {
 	AccessBasedEnumeration bool `json:"access_based_enumeration"`
 	// ChangeNotifyDisabled mirrors models.Share. No omitempty: `false` is
 	// the operator-meaningful "change notify enabled" state.
-	ChangeNotifyDisabled bool      `json:"change_notify_disabled"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	ChangeNotifyDisabled bool `json:"change_notify_disabled"`
+	// StreamsDisabled mirrors models.Share. No omitempty for the same
+	// reason as ChangeNotifyDisabled.
+	StreamsDisabled bool      `json:"streams_disabled"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // CreateShareRequest is the request to create a share.
@@ -77,6 +80,9 @@ type CreateShareRequest struct {
 	// ChangeNotifyDisabled — pointer so callers can distinguish "unset →
 	// server default (false)" from "explicit true".
 	ChangeNotifyDisabled *bool `json:"change_notify_disabled,omitempty"`
+	// StreamsDisabled — pointer so callers can distinguish "unset →
+	// server default (false)" from "explicit true".
+	StreamsDisabled *bool `json:"streams_disabled,omitempty"`
 }
 
 // UpdateShareRequest is the request to update a share.
@@ -102,6 +108,9 @@ type UpdateShareRequest struct {
 	// ChangeNotifyDisabled — nil = no change; non-nil = explicit set. Takes
 	// effect on adapter restart.
 	ChangeNotifyDisabled *bool `json:"change_notify_disabled,omitempty"`
+	// StreamsDisabled — nil = no change; non-nil = explicit set. Takes
+	// effect on adapter restart.
+	StreamsDisabled *bool `json:"streams_disabled,omitempty"`
 }
 
 // SharePermission represents a permission on a share.

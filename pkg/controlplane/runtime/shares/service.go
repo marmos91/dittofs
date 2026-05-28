@@ -72,6 +72,12 @@ type Share struct {
 	// and the smb2.change_notify_disabled torture test.
 	ChangeNotifyDisabled bool
 
+	// StreamsDisabled rejects SMB2 CREATE requests that reference an
+	// Alternate Data Stream with STATUS_OBJECT_NAME_INVALID. Mirrors the
+	// Samba `smbd:streams = no` config and the
+	// smb2.create_no_streams.no_stream torture test.
+	StreamsDisabled bool
+
 	// NFS-specific options
 	DisableReaddirplus bool
 
@@ -143,6 +149,11 @@ type ShareConfig struct {
 	// ChangeNotifyDisabled mirrors models.Share's per-share toggle that
 	// rejects SMB2 CHANGE_NOTIFY with STATUS_NOT_IMPLEMENTED.
 	ChangeNotifyDisabled bool
+
+	// StreamsDisabled mirrors models.Share's per-share toggle that
+	// rejects ADS opens with STATUS_OBJECT_NAME_INVALID and hides the
+	// FILE_NAMED_STREAMS attribute bit.
+	StreamsDisabled bool
 
 	RootAttr *metadata.FileAttr
 
@@ -441,6 +452,7 @@ func (s *Service) prepareShare(
 		AclFlagInheritedCanonicalization: config.AclFlagInheritedCanonicalization,
 		AccessBasedEnumeration:           config.AccessBasedEnumeration,
 		ChangeNotifyDisabled:             config.ChangeNotifyDisabled,
+		StreamsDisabled:                  config.StreamsDisabled,
 		DefaultPermission:                config.DefaultPermission,
 		Squash:                           config.Squash,
 		AnonymousUID:                     config.AnonymousUID,

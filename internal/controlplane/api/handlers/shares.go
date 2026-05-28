@@ -87,6 +87,9 @@ type CreateShareRequest struct {
 	// ChangeNotifyDisabled — pointer so nil keeps default false (change
 	// notify enabled).
 	ChangeNotifyDisabled *bool `json:"change_notify_disabled,omitempty"`
+	// StreamsDisabled — pointer so nil keeps default false (streams
+	// supported).
+	StreamsDisabled *bool `json:"streams_disabled,omitempty"`
 }
 
 // UpdateShareRequest is the request body for PUT /api/v1/shares/{name}.
@@ -114,6 +117,9 @@ type UpdateShareRequest struct {
 	// ChangeNotifyDisabled — nil = no change; non-nil = explicit set.
 	// Persisted on UpdateShare; takes effect on adapter restart.
 	ChangeNotifyDisabled *bool `json:"change_notify_disabled,omitempty"`
+	// StreamsDisabled — nil = no change; non-nil = explicit set.
+	// Persisted on UpdateShare; takes effect on adapter restart.
+	StreamsDisabled *bool `json:"streams_disabled,omitempty"`
 }
 
 // ShareResponse is the response body for share endpoints.
@@ -148,9 +154,11 @@ type ShareResponse struct {
 	AccessBasedEnumeration bool `json:"access_based_enumeration"`
 	// ChangeNotifyDisabled mirrors models.Share. No omitempty for the same
 	// reason.
-	ChangeNotifyDisabled bool      `json:"change_notify_disabled"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	ChangeNotifyDisabled bool `json:"change_notify_disabled"`
+	// StreamsDisabled mirrors models.Share. No omitempty for the same reason.
+	StreamsDisabled bool      `json:"streams_disabled"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 
 	// Status is the worst-of health report derived from the share's
 	// metadata store and block store engine. Non-omitempty so
@@ -301,6 +309,12 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		cnDisabled = *req.ChangeNotifyDisabled
 	}
 
+	// Streams default enabled (false = streams supported).
+	streamsDisabled := false
+	if req.StreamsDisabled != nil {
+		streamsDisabled = *req.StreamsDisabled
+	}
+
 	now := time.Now()
 	share := &models.Share{
 		ID:                               uuid.New().String(),
@@ -320,6 +334,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		AclFlagInheritedCanonicalization: aclCanon,
 		AccessBasedEnumeration:           abe,
 		ChangeNotifyDisabled:             cnDisabled,
+		StreamsDisabled:                  streamsDisabled,
 		CreatedAt:                        now,
 		UpdatedAt:                        now,
 	}
@@ -362,6 +377,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			AclFlagInheritedCanonicalization: share.AclFlagInheritedCanonicalization,
 			AccessBasedEnumeration:           share.AccessBasedEnumeration,
 			ChangeNotifyDisabled:             share.ChangeNotifyDisabled,
+			StreamsDisabled:                  share.StreamsDisabled,
 			DefaultPermission:                defaultPerm,
 			Squash:                           nfsOpts.GetSquashMode(),
 			AnonymousUID:                     nfsOpts.GetAnonymousUID(),
@@ -496,6 +512,10 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.ChangeNotifyDisabled != nil {
 		// Persisted to DB; takes effect on adapter restart.
 		share.ChangeNotifyDisabled = *req.ChangeNotifyDisabled
+	}
+	if req.StreamsDisabled != nil {
+		// Persisted to DB; takes effect on adapter restart.
+		share.StreamsDisabled = *req.StreamsDisabled
 	}
 	if req.DefaultPermission != nil {
 		share.DefaultPermission = *req.DefaultPermission
@@ -995,6 +1015,7 @@ func shareToResponse(s *models.Share) ShareResponse {
 		AclFlagInheritedCanonicalization: s.AclFlagInheritedCanonicalization,
 		AccessBasedEnumeration:           s.AccessBasedEnumeration,
 		ChangeNotifyDisabled:             s.ChangeNotifyDisabled,
+		StreamsDisabled:                  s.StreamsDisabled,
 		CreatedAt:                        s.CreatedAt,
 		UpdatedAt:                        s.UpdatedAt,
 	}

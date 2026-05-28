@@ -287,6 +287,14 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, fmt.Errorf("failed to backfill shares.change_notify_disabled: %w", err)
 	}
 
+	// Backfill shares.streams_disabled for rows that predate the column.
+	if err := db.Exec(
+		"UPDATE shares SET streams_disabled = ? WHERE streams_disabled IS NULL",
+		false,
+	).Error; err != nil {
+		return nil, fmt.Errorf("failed to backfill shares.streams_disabled: %w", err)
+	}
+
 	// --- Post-AutoMigrate migrations ---
 	// Step 2: Migrate legacy Share payload_store_id column to local/remote block store IDs.
 	postMigrator := db.Migrator()
