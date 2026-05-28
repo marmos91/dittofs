@@ -385,6 +385,165 @@ func TestGCMarkSweep_DryRun(t *testing.T) {
 	}
 }
 
+// stubHoldProvider streams a fixed slice of hashes through the HeldHashes
+// callback. Used by the positive snapshot-hold test below.
+type stubHoldProvider struct {
+	held []blockstore.ContentHash
+}
+
+func (s stubHoldProvider) HeldHashes(_ context.Context, _ string, _ []string, fn func(blockstore.ContentHash) error) error {
+	for _, h := range s.held {
+		if err := fn(h); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// stubErrHoldProvider always errors from HeldHashes. Used by the
+// fail-closed regression test.
+type stubErrHoldProvider struct{ err error }
+
+func (s stubErrHoldProvider) HeldHashes(_ context.Context, _ string, _ []string, _ func(blockstore.ContentHash) error) error {
+	return s.err
+}
+
+// TestGCMarkSweep_NoSnapshotHoldProvider: Options.HoldProvider == nil keeps
+// the pre-Phase-22 behavior verbatim — mark + sweep proceed with the live
+// set derived solely from EnumerateFileBlocks.
+func TestGCMarkSweep_NoSnapshotHoldProvider(t *testing.T) {
+	ctx := t.Context()
+	rs := remotememory.New()
+	defer func() { _ = rs.Close() }()
+
+	// Force LastModified into the past so the orphan is sweep-eligible.
+	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
+
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-a")
+
+	liveHash := hashFromString("nil-hold-live")
+	orphanHash := hashFromString("nil-hold-orphan")
+	putBlock(t, st, "file-live/0", liveHash)
+	writeCASObject(t, ctx, rs, liveHash, []byte("L"))
+	writeCASObject(t, ctx, rs, orphanHash, []byte("O"))
+
+	stats := CollectGarbage(ctx, rs, rec, &Options{
+		GCStateRoot: t.TempDir(),
+		GracePeriod: time.Minute,
+		// HoldProvider intentionally left nil.
+	})
+
+	if stats.ErrorCount != 0 {
+		t.Fatalf("ErrorCount=%d want 0; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
+	}
+	if stats.HashesMarked != 1 {
+		t.Errorf("HashesMarked=%d want 1 (one FileBlock, no holds)", stats.HashesMarked)
+	}
+	if stats.ObjectsSwept != 1 {
+		t.Errorf("ObjectsSwept=%d want 1", stats.ObjectsSwept)
+	}
+	if _, err := rs.Get(ctx, liveHash); err != nil {
+		t.Errorf("live hash deleted: %v", err)
+	}
+	if _, err := rs.Get(ctx, orphanHash); err == nil {
+		t.Errorf("orphan should have been deleted")
+	}
+}
+
+// TestGCMarkSweep_SnapshotHoldProvider: held hashes streamed by the
+// HoldProvider land in the same live set as FileBlock hashes — referenced,
+// held, and orphan CAS objects each get the right disposition.
+func TestGCMarkSweep_SnapshotHoldProvider(t *testing.T) {
+	ctx := t.Context()
+	rs := remotememory.New()
+	defer func() { _ = rs.Close() }()
+
+	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
+
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-a")
+
+	hashA := hashFromString("ref-A")  // referenced by a FileBlock
+	hashB := hashFromString("held-B") // held by the provider, no FileBlock
+	hashC := hashFromString("orphan-C")
+
+	putBlock(t, st, "file-A/0", hashA)
+	writeCASObject(t, ctx, rs, hashA, []byte("A"))
+	writeCASObject(t, ctx, rs, hashB, []byte("B"))
+	writeCASObject(t, ctx, rs, hashC, []byte("C"))
+
+	provider := stubHoldProvider{held: []blockstore.ContentHash{hashB}}
+
+	stats := CollectGarbage(ctx, rs, rec, &Options{
+		GCStateRoot:  t.TempDir(),
+		GracePeriod:  time.Minute,
+		HoldProvider: provider,
+	})
+
+	if stats.ErrorCount != 0 {
+		t.Fatalf("ErrorCount=%d want 0; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
+	}
+	// 1 FileBlock-derived + 1 held = 2 hashes marked.
+	if stats.HashesMarked != 2 {
+		t.Errorf("HashesMarked=%d want 2 (1 file + 1 held)", stats.HashesMarked)
+	}
+	if stats.ObjectsSwept != 1 {
+		t.Errorf("ObjectsSwept=%d want 1 (only C is truly orphan)", stats.ObjectsSwept)
+	}
+	if _, err := rs.Get(ctx, hashA); err != nil {
+		t.Errorf("referenced hash A deleted: %v", err)
+	}
+	if _, err := rs.Get(ctx, hashB); err != nil {
+		t.Errorf("held hash B deleted (HoldProvider live-set leak): %v", err)
+	}
+	if _, err := rs.Get(ctx, hashC); err == nil {
+		t.Errorf("unheld orphan C should have been swept")
+	}
+}
+
+// TestGCMarkSweep_HoldProvider_ErrorFailsClosed: a HoldProvider that errors
+// from HeldHashes aborts the run via the mark fail-closed path — sweep does
+// NOT execute, and the orphan that would have been deleted stays put.
+func TestGCMarkSweep_HoldProvider_ErrorFailsClosed(t *testing.T) {
+	ctx := t.Context()
+	rs := &deleteCountingRemote{inner: remotememory.New()}
+	defer func() { _ = rs.Close() }()
+
+	rs.inner.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
+
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-a")
+	putBlock(t, st, "file-live/0", hashFromString("hp-live"))
+
+	orphanHash := hashFromString("hp-orphan")
+	writeCASObject(t, ctx, rs, orphanHash, []byte("orphan"))
+
+	provider := stubErrHoldProvider{err: errors.New("simulated hold failure")}
+
+	stats := CollectGarbage(ctx, rs, rec, &Options{
+		GCStateRoot:  t.TempDir(),
+		GracePeriod:  time.Minute,
+		HoldProvider: provider,
+	})
+
+	if stats.ErrorCount == 0 {
+		t.Fatalf("ErrorCount=0 want >0 (HoldProvider error must fail-closed)")
+	}
+	if len(stats.FirstErrors) == 0 || !strings.Contains(stats.FirstErrors[0], "hold provider") {
+		t.Errorf("FirstErrors=%v want one mentioning 'hold provider'", stats.FirstErrors)
+	}
+	if stats.ObjectsSwept != 0 {
+		t.Errorf("ObjectsSwept=%d want 0 (sweep must not run)", stats.ObjectsSwept)
+	}
+	if rs.deletes.Load() != 0 {
+		t.Errorf("Delete invoked %d times, want 0 (sweep must not run)", rs.deletes.Load())
+	}
+	if _, err := rs.inner.Get(ctx, orphanHash); err != nil {
+		t.Errorf("orphan deleted despite mark fail-closed: %v", err)
+	}
+}
+
 // TestGCMarkSweep_LastRunJSON (behavior 8): after a successful run,
 // <gcStateRoot>/last-run.json exists and parses as GCRunSummary.
 func TestGCMarkSweep_LastRunJSON(t *testing.T) {
