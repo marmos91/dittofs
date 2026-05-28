@@ -1753,10 +1753,15 @@ func (h *Handler) hasOpenHandleOnFile(targetMeta metadata.FileHandle, excludeFil
 }
 
 // hasReadAccess reports whether the given access mask includes read access.
-// Checks FILE_READ_DATA, GENERIC_READ, GENERIC_ALL, and MAXIMUM_ALLOWED.
+// Checks FILE_READ_DATA, FILE_EXECUTE, GENERIC_READ, GENERIC_ALL, and
+// MAXIMUM_ALLOWED. FILE_EXECUTE is treated as read access because the
+// canonical SMB clients (Samba, Windows) allow READ on a handle opened with
+// only FILE_EXECUTE — execution implies read, and the smb2.read.access
+// torture test exercises that path.
 func hasReadAccess(access uint32) bool {
 	m := types.AccessMask(access)
 	return m&types.FileReadData != 0 ||
+		m&types.FileExecute != 0 ||
 		m&types.GenericRead != 0 ||
 		m&types.GenericAll != 0 ||
 		m&types.MaximumAllowed != 0
