@@ -572,12 +572,15 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	}
 
 	// Per smb2.create_no_streams.no_stream (source4/torture/smb2/create.c):
-	// shares configured with StreamsDisabled must reject any CREATE that
-	// references a stream — named ADS, the default ::$DATA syntax, and
-	// arbitrary stream-type suffixes — with STATUS_OBJECT_NAME_INVALID.
-	// Mirrors the Samba `smbd:streams = no` semantics. The gate runs after
-	// stream-suffix extraction so `streamSuffix != ""` covers named ADS and
-	// the default ::$DATA case toggles `explicitDataStream`.
+	// shares with StreamsDisabled reject CREATEs that name a data stream —
+	// the cases the test exercises and that the upstream extractor surfaces
+	// here: named ADS ("file:stream"), stream-with-type suffix
+	// ("file:stream:$DATA"), arbitrary stream-type suffix ("file::foo"),
+	// and the explicit default data stream ("file::$DATA"). Mirrors
+	// Samba `smbd:streams = no`. Directory-index syntaxes
+	// (`::$INDEX_ALLOCATION`, `:$I30:$INDEX_ALLOCATION`) are normalized away
+	// earlier and resolve to the directory itself, so they are not stream
+	// references and remain allowed.
 	if tree.StreamsDisabled && (streamSuffix != "" || explicitDataStream) {
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameInvalid}}, nil
 	}

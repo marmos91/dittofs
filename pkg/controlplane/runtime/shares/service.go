@@ -151,8 +151,7 @@ type ShareConfig struct {
 	ChangeNotifyDisabled bool
 
 	// StreamsDisabled mirrors models.Share's per-share toggle that
-	// rejects ADS opens with STATUS_OBJECT_NAME_INVALID and hides the
-	// FILE_NAMED_STREAMS attribute bit.
+	// rejects ADS opens with STATUS_OBJECT_NAME_INVALID.
 	StreamsDisabled bool
 
 	RootAttr *metadata.FileAttr
