@@ -34,13 +34,25 @@ type Signer interface {
 // Dispatch logic:
 //   - dialect < 3.0: HMACSigner (HMAC-SHA256)
 //   - signingAlgorithmId == SigningAlgAESGMAC: GMACSigner
-//   - otherwise (3.0/3.0.2, or 3.1.1 without GMAC): CMACSigner
+//   - signingAlgorithmId == SigningAlgHMACSHA256 on 3.1.1: HMACSigner (when
+//     the client explicitly negotiates HMAC-SHA256 via SIGNING_CAPABILITIES)
+//   - otherwise (3.0/3.0.2, or 3.1.1 with CMAC): CMACSigner
 func NewSigner(dialect types.Dialect, signingAlgorithmId uint16, key []byte) Signer {
 	if dialect < types.Dialect0300 {
 		return NewHMACSigner(key)
 	}
-	if signingAlgorithmId == SigningAlgAESGMAC {
+	switch signingAlgorithmId {
+	case SigningAlgAESGMAC:
 		return NewGMACSigner(key)
+	case SigningAlgHMACSHA256:
+		// Only reachable when a 3.1.1 client explicitly selects
+		// HMAC-SHA256 via SIGNING_CAPABILITIES negotiate context.
+		// 3.0 / 3.0.2 paths leave signingAlgorithmId == 0 and would
+		// hit this branch too — but those dialects historically used
+		// CMAC, so fall through to the default for them.
+		if dialect >= types.Dialect0311 {
+			return NewHMACSigner(key)
+		}
 	}
 	return NewCMACSigner(key)
 }

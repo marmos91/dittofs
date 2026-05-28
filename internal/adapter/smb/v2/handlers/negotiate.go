@@ -454,11 +454,14 @@ func (h *Handler) processNegotiateContexts(
 
 // defaultSigningAlgorithmPreference is the server's default signing algorithm
 // preference order, used when SigningAlgorithmPreference is not configured.
-// Only AES algorithms are included because SIGNING_CAPABILITIES is a 3.1.1-only
-// negotiate context, and HMAC-SHA256 is not valid for SMB 3.x sessions.
+// HMAC-SHA256 is included because clients MAY explicitly request it via the
+// 3.1.1 SIGNING_CAPABILITIES negotiate context (MS-SMB2 §3.1.1.2). When
+// selected for 3.1.1 the signing key is the first 16 bytes of the
+// SP800-108-derived SigningKey and the verifier uses HMAC-SHA256.
 var defaultSigningAlgorithmPreference = []uint16{
 	signing.SigningAlgAESGMAC,
 	signing.SigningAlgAESCMAC,
+	signing.SigningAlgHMACSHA256,
 }
 
 // selectSigningAlgorithm selects a signing algorithm from the client's offered
@@ -466,9 +469,9 @@ var defaultSigningAlgorithmPreference = []uint16{
 // MS-SMB2 3.3.5.4. It iterates the client's array and returns the first
 // algorithm that the server supports.
 //
-// HMAC-SHA256 is excluded because SIGNING_CAPABILITIES is a 3.1.1-only
-// negotiate context, and HMAC-SHA256 is a 2.x-only algorithm. Selecting it
-// for 3.1.1 would cause a mismatch with the KDF-based signing key derivation.
+// HMAC-SHA256 is valid for 3.1.1 when the client explicitly negotiates it via
+// SIGNING_CAPABILITIES. Samba accepts this and the signing-hmac-sha-256
+// torture test exercises the path.
 //
 // Falls back to AES-128-CMAC as the mandatory baseline per MS-SMB2 if no
 // intersection is found.
@@ -479,10 +482,6 @@ func (h *Handler) selectSigningAlgorithm(clientAlgorithms []uint16) uint16 {
 	}
 
 	for _, clientAlg := range clientAlgorithms {
-		// Skip HMAC-SHA256 -- not valid for 3.1.1 SIGNING_CAPABILITIES
-		if clientAlg == signing.SigningAlgHMACSHA256 {
-			continue
-		}
 		if slices.Contains(allowed, clientAlg) {
 			return clientAlg
 		}

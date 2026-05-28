@@ -55,10 +55,10 @@ func TestNewSigner_Dispatch(t *testing.T) {
 			wantType:   "*signing.CMACSigner",
 		},
 		{
-			name:       "SMB 3.1.1 without GMAC negotiation returns CMACSigner",
+			name:       "SMB 3.1.1 with explicit HMAC-SHA256 returns HMACSigner",
 			dialect:    types.Dialect0311,
-			signingAlg: 0,
-			wantType:   "*signing.CMACSigner",
+			signingAlg: SigningAlgHMACSHA256,
+			wantType:   "*signing.HMACSigner",
 		},
 	}
 
