@@ -37,6 +37,15 @@ var (
 	ErrSnapshotRetryTargetNotFound  = errors.New("snapshot retry target not found")
 	ErrSnapshotRetryTargetNotFailed = errors.New("snapshot retry target is not in failed state")
 
+	// Restore orchestration sentinels.
+	ErrShareEnabled                = errors.New("share must be disabled before restore")
+	ErrSnapshotNotDurable          = errors.New("snapshot is not remote-durable; pass AllowNonDurable to override")
+	ErrSnapshotMetadataDumpMissing = errors.New("snapshot metadata dump file is missing")
+	ErrMetadataStoreNotResetable   = errors.New("metadata engine does not implement Resetable")
+	ErrRestoreSafetySnapFailed     = errors.New("restore safety snapshot creation or wait failed")
+	ErrRestoreAborted              = errors.New("restore aborted; safety snapshot retained for rollback")
+	ErrRestoreVerifyFailed         = errors.New("restore verify failed: missing hashes on remote")
+
 	// Setting errors
 	ErrSettingNotFound = errors.New("setting not found")
 

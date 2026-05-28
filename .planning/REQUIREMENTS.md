@@ -41,9 +41,9 @@
 
 ### Restore (REST)
 
-- [ ] **REST-01**: Reference restore: disable share → verify blocks on remote → close metadata store → create fresh → `Restore()` → re-register → enable
-- [ ] **REST-02**: Interrupted restore leaves share disabled with original data intact (no partial state)
-- [ ] **REST-03**: Restore verification — after metadata restore, confirm all manifest hashes accessible before enabling share
+- [x] **REST-01**: Reference restore: disable share → verify blocks on remote → close metadata store → create fresh → `Restore()` → re-register → enable
+- [x] **REST-02**: Interrupted restore leaves share disabled with original data intact (no partial state)
+- [x] **REST-03**: Restore verification — after metadata restore, confirm all manifest hashes accessible before enabling share
 
 ### CLI and REST API (API)
 
@@ -113,9 +113,9 @@
 | ORCH-01 | Phase 23 | Complete |
 | ORCH-02 | Phase 23 | Complete |
 | ORCH-03 | Phase 23 | Complete |
-| REST-01 | Phase 24 | Pending |
-| REST-02 | Phase 24 | Pending |
-| REST-03 | Phase 24 | Pending |
+| REST-01 | Phase 24 | Complete |
+| REST-02 | Phase 24 | Complete |
+| REST-03 | Phase 24 | Complete |
 | API-01 | Phase 25 | Pending |
 | API-02 | Phase 25 | Pending |
 | API-03 | Phase 25 | Pending |
