@@ -195,7 +195,7 @@ Filed as **issue #674** (will create alongside the area-pair kickoff).
 Run alongside Wave 1.
 
 1. **E2E flakiness stabilization** — replace 135 `time.Sleep`/`time.After` with `WaitFor*` framework helpers (10 already exist; extend). Audit `test/e2e/framework/` (17K `mount.go` is heavy — trim). Branch `v1.0/e2e-stabilize`.
-2. **Test coverage gap-fill** — postgres store (6 tests / 20 src), `pkg/metadata/errors` (0), `pkg/controlplane` (0). Use `superpowers:test-driven-development` skill where adding new tests for un-tested code. Branch `v1.0/test-coverage`.
+2. **Test coverage gap-fill** — postgres store (6 tests / 20 src), `pkg/metadata/errors` (0), `pkg/controlplane` (0). Use `superpowers:test-driven-development` skill where adding new tests for un-tested code. Branch `v1.0/test-coverage`. **Plus per-area gap-fill** sub-issues filed as Wave 1 area audits surface them: **#679 blockstore coverage** (s3 21.7%, engine 62.5%, local/fs 66.9%, keyprovider 45.4%).
 3. **Bench suite — from-scratch redesign** — Wave 0 baseline run proved the current harness is fundamentally mis-designed: `dfsctl bench run` confuses CI-gate and user-facing roles, has no per-op timeout (a server hang wedges the client into D-state and loses results), and shares implicit state between runs. Three-layer rebuild on branch `v1.0/bench-refactor`:
    - **bench primitives** (`pkg/bench/workloads/`) — pure I/O workload generators (seq-write, rand-write, metadata, …). Every syscall wrapped in `context.WithTimeout`. No filesystem assumptions.
    - **bench runner** (`pkg/bench/runner/`) — composes workloads, manages bench-env lifecycle (mount/fixture/teardown). Emits structured events. Targets any directory. Hard `--budget` wall-clock kill. Health checks (stat + readdir + small round-trip) between phases — failure aborts with structured error, skips remaining phases, still emits partial JSON. Explicit `--env-dir` scratch dir; refuses to reuse an existing scratch dir from a previous run.
@@ -207,8 +207,10 @@ Run alongside Wave 1.
 
    The Wave 0 baseline (`.planning/v1.0-audit/_baseline/`) documents 8 specific failure modes (B1–B8) the new harness must handle. Original entry was 1 line: "3 docs → 1 + wire D-40/41/42 into CI" — way too narrow given what the baseline run uncovered.
 4. **Discarded-error sampling** — random sample of 50 `_ =` sites, categorize, fix HIGH-risk discards. Branch `v1.0/err-discard-audit`.
-5. **Perf-optimization stream** *(NEW)* — cross-area hot-path wins surfaced by pprof that don't fit inside a single area PR-B: object pooling retrofit, streaming I/O conversions (per [[feedback_streaming_io_for_data_paths]]), allocation reduction in protocol decoders, lock-contention fixes. Driven by the aggregated Bottlenecks sections from Wave 1 REVIEW.md files. Branch `v1.0/perf-fixes`, may produce multiple sub-PRs.
+5. **Perf-optimization stream** *(NEW — reactive)* — cross-area hot-path wins surfaced by pprof that don't fit inside a single area PR-B: object pooling retrofit, streaming I/O conversions (per [[feedback_streaming_io_for_data_paths]]), allocation reduction in protocol decoders, lock-contention fixes. Driven by the aggregated Bottlenecks sections from Wave 1 REVIEW.md files. Branch `v1.0/perf-fixes`, may produce multiple sub-PRs.
 6. **Security verification** *(NEW)* — once Wave 1 finishes, invoke `gsd-secure-phase` and `security-review` skills across the touched code. Branch `v1.0/security-verify`.
+7. **Perf-pass — proactive pprof capture** *(NEW)* — issue **#680**. Owns the CAPTURE side that feeds stream 5 (which is reactive). Distinct because §Bottlenecks in each REVIEW.md needs a runtime+workload driver, not static analysis. Per-area pprofs (CPU + heap + block + mutex + goroutine) under the seeded workload matrix (a)-(e) defined in §Performance. Prerequisites: #672 bench harness rebuild + #671 mutex/block profile wiring + workload (e) ~200-LoC Go harness. Captures pre-PR-B baseline + post-PR-B delta per area into `.planning/v1.0-audit/<area>/_profiles/{baseline,post-fix}/`. Branch `v1.0/perf-pass`. Feeds stream 5.
+8. **Repo-wide pkg rename — collapse stutters + domain symmetry** *(NEW)* — issue **#678**. Mechanical `gopls`-driven rename: `pkg/blockstore → pkg/block`, `blockstore.BlockStore → block.Store`, `engine.BlockStore → engine.Store`, `metadata.MetadataStore → metadata.Store`, `metadata.MetadataService → metadata.Service`. Zero logic change. ~600+ import lines. Time during a calm window vs SMB conformance worktrees + share backup work to avoid merge hell. Branch `v1.0/pkg-rename`.
 
 ## Wave 3 — Docs & CLAUDE.md
 
@@ -277,7 +279,7 @@ Wave 1 area-pairs in hot-path-first order (perf leverage):
     blockstore+gc → syncer → smb → nfs → lock/acl → metadata → runtime → snapshot → config → cli → operator
     (each area: PR-A audit → triage → PR-B fix + simplifier + reviewer + verify; with per-area pprof delta)
     ↓
-Wave 2 streams in parallel with Wave 1 (e2e-stabilize, test-coverage, bench-refactor, err-discard, perf-fixes, security-verify)
+Wave 2 streams in parallel with Wave 1 (e2e-stabilize, test-coverage, bench-refactor, err-discard, perf-fixes (reactive), security-verify, perf-pass (proactive capture), pkg-rename)
     ↓
 Wave 3 (docs + CLAUDE.md rewrite)
     ↓
