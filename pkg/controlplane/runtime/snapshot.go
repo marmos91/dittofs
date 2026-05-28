@@ -249,11 +249,32 @@ func (r *Runtime) WaitForSnapshot(ctx context.Context, shareName, snapID string)
 // and increments the WaitGroup. Returns the child ctx + per-snap chan +
 // the entry pointer (so the goroutine can call back into the entry for
 // cleanup via unregisterSnap). D-23-17.
+//
+// Publish-race safety: r.snapInFlightMu is held for the WHOLE function
+// body, including the entry.mu critical section. cancelAndWaitInFlightSnaps
+// snapshots the entry pointer under r.snapInFlightMu; if it wins the
+// registry lock before this function, it observes "share not present"
+// and is a no-op. If it loses the registry lock, it observes a fully
+// populated entry (cancel appended + done chan written + wg.Add(1)
+// already executed), so its subsequent entry.wg.Wait() blocks until the
+// goroutine launched after we return drains. Without this ordering a
+// concurrent share teardown could delete the share entry between the
+// registry publish and the wg.Add, and wg.Wait() would return
+// immediately while the freshly-launched goroutine continued running
+// against a wiped snapshots tree.
+//
+// Lock ordering rule (PATTERNS §lock-protected registry): registry
+// mutex outermost; per-entry mutex inside. cancelAndWaitInFlightSnaps
+// honors the same ordering — it acquires r.snapInFlightMu, then
+// entry.mu while snapshotting cancels — so there is no inversion. We
+// don't block under r.snapInFlightMu either: every operation inside it
+// is in-process and bounded.
 func (r *Runtime) registerSnapInFlight(shareName, snapID string) (context.Context, chan snapResult, *snapInFlight) {
 	childCtx, cancel := context.WithCancel(r.runtimeCtx)
 	doneCh := make(chan snapResult, 1)
 
 	r.snapInFlightMu.Lock()
+	defer r.snapInFlightMu.Unlock()
 	entry, ok := r.snapInFlight[shareName]
 	if !ok {
 		entry = &snapInFlight{
@@ -261,7 +282,6 @@ func (r *Runtime) registerSnapInFlight(shareName, snapID string) (context.Contex
 		}
 		r.snapInFlight[shareName] = entry
 	}
-	r.snapInFlightMu.Unlock()
 
 	entry.mu.Lock()
 	entry.cancels = append(entry.cancels, cancel)
