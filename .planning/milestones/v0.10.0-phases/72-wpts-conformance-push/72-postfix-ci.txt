@@ -1,0 +1,135 @@
+# Phase 72 Post-Fix Linux CI WPTS BVT Result — GATE FAILURE
+
+Run URL: https://github.com/marmos91/dittofs/actions/runs/24106439910 (cancelled, superseded)
+Run URL: https://github.com/marmos91/dittofs/actions/runs/24106442860 (cancelled, superseded)
+Run URL: https://github.com/marmos91/dittofs/actions/runs/24106445657 (cancelled, superseded)
+Run URL: https://github.com/marmos91/dittofs/actions/runs/24106448660 (cancelled, superseded)
+Run URL (authoritative): https://github.com/marmos91/dittofs/actions/runs/24106451238
+Git SHA: 360a3f85bb3bf02647eb0ef81fead00892ef4cff
+Branch: fix/phase-72-wpts-trailing-fixes
+Runner: ubuntu-latest (Linux x86_64)
+Workflow: smb-conformance.yml
+WPTS BVT job ID: 70330772206
+Job conclusion: success (but see gate-failure note below)
+
+## Gate-failure note
+The WPTS BVT job is reported as `success` because `parse-results.sh`
+treats BVT_DirectoryLeasing_LeaseBreakOnMultiClients as an Expected
+failure in `test/smb-conformance/KNOWN_FAILURES.md`. The raw TRX shows
+the test still FAILS with System.TimeoutException — Plan 01's bounded
+WaitForBreakCompletion fix did NOT resolve the race in Linux CI.
+
+Phase 72 Plan 02 flake gate requires 5/5 PASS on this specific test.
+Actual: 0/1 PASS (did not trigger remaining 4 runs — GitHub Actions
+concurrency group cancelled runs 1-4 in favor of run 5; gate fails
+on a single confirmed failure).
+
+## BVT_DirectoryLeasing_LeaseBreakOnMultiClients raw result
+Status: Failed
+Duration: 00:00:08.1554549
+StartTime: 2026-04-07T22:11:22.1316939+00:00
+EndTime:   2026-04-07T22:11:30.2879734+00:00
+Exception: System.TimeoutException: The operation has timed out.
+Stack (relevant frames):
+  at LeasingExtendedTest.CreateOpenFromClient(...) in DirectoryLeasingExtendedTest.cs:line 799
+  at LeasingExtendedTest.BVT_DirectoryLeasing_LeaseBreakOnMultiClients() in DirectoryLeasingExtendedTest.cs:line 180
+
+## Wire-level trace (from dittofs.log inside TRX)
+22:11:22.193 [TestStep] Client1 sends CREATE with lease READ|HANDLE caching
+22:11:22.194 C CREATE, DesiredAccess=GENERIC_READ, ShareAccess=(RW)
+22:11:22.196 R CREATE, FileId={ ...0x4e096a845db82de3 }
+22:11:22.197 Client1 CREATE succeeded (STATUS_SUCCESS)
+22:11:22.197 [TestStep] Client2 sends CREATE with lease READ|HANDLE caching
+22:11:22.211 C NEGOTIATE (Client2)
+22:11:22.212 C CREATE (Client2), DesiredAccess=GENERIC_READ, ShareAccess=(RW)
+22:11:22.214 R Lease Break NOTIFICATION → Client1 (READ|HANDLE -> READ)
+<<< 8 seconds of silence — Client2 CREATE response never arrives >>>
+22:11:30.221 [Comment] CreateOpenFromClient timed out
+22:11:30.221 Test teardown: negotiate/tree connect/delete directory
+22:11:30.237 [TestFailed]
+
+## Diagnosis
+Server dispatched the lease break notification at 22:11:22.214 and
+then parked Client2's CREATE waiting on WaitForBreakCompletion. The
+5s bounded timeout (`parentLeaseBreakWaitTimeout`) should have fired
+at ~22:11:27.2 and forceCompleteBreaks should have unblocked the
+CREATE. Instead the CREATE response never reached Client2 — the
+client's own 8s timeout fired first.
+
+Two plausible root causes:
+  1. WaitForBreakCompletion honors the forced completion but the
+     CREATE handler holds a second lock that the forced-complete path
+     doesn't release.
+  2. The 5s timeout is longer than WPTS client's CREATE timeout
+     (looks like ~8s total but initial ack-timer may be shorter), so
+     even a well-behaved bounded wait pushes past the client budget.
+
+Either way Plan 01's fix as currently shipped does NOT satisfy the
+WPTS BVT determinism requirement in Linux CI. The fix must either
+(a) complete the CREATE synchronously as soon as the lease break
+is queued (not wait for ack at all for the triggering session) or
+(b) use a much shorter timeout (e.g., 500ms) and prove the forced
+completion path actually releases the CREATE handler.
+
+## Flake gate result: FAIL
+Gate requires 5/5 PASS on BVT_DirectoryLeasing_LeaseBreakOnMultiClients.
+Run 5 (24106451238) shows the test still failing with the same
+TimeoutException symptom reported on develop before Plan 01.
+
+Plan 01 must be reopened with a revised fix before Plan 02's
+reconciliation + mark-done steps can proceed. PR will NOT be opened.
+
+## Server-side trace (dittofs.log)
+Key log line: line 76872 of dittofs.log
+  22:11:22 [DEBUG] SMBBreakHandler: dispatching lease break notification
+           leaseKey=17fed12115af524eb9e993458aecd72e sessionID=650
+           currentState=RW breakToState=R epoch=2
+  22:11:22 [DEBUG] Sending LEASE_BREAK_NOTIFICATION sessionID=650
+           newState=R epoch=2 ackRequired=true
+  <<< no further log entries for Client2's CREATE handler >>>
+  22:11:30 [DEBUG] SMB connection closed by client address=127.0.0.1:60150
+           (Client2's connection closed on timeout)
+
+No "CREATE: parent directory Handle lease break failed" log line
+appeared for this test, which means the hang is NOT in
+BreakParentHandleLeasesOnCreate (the code path Plan 01 fixed).
+
+Diagnosis (revised): the lease break is initiated from
+`RequestLease` at line 76868:
+  [DEBUG] RequestLease: cross-key conflict, initiating break
+          existingKey=17fed12115af524eb9e993458aecd72e
+          requestedKey=07571a7609fbd147876b235bed0aedf5
+          existingState=RW requestedState=RW breakToState=R
+
+This is a CROSS-KEY lease conflict in `RequestLease`, NOT a
+parent-directory handle-lease break. The hang is in the `RequestLease`
+code path, NOT in `BreakParentHandleLeasesOnCreate` /
+`BreakParentReadLeasesOnModify`.
+
+**Plan 01's fix targeted the wrong functions.** The researcher's
+analysis in 72-RESEARCH.md identified parent-directory lease breaks as
+the race site, but the actual WPTS test exercises the cross-key
+RequestLease path where two clients hold the same directory open with
+different lease keys. Plan 01's `WaitForBreakCompletion` additions to
+`BreakParentHandleLeasesOnCreate` + `BreakParentReadLeasesOnModify` are
+unreached by this test.
+
+The real fix must target the `RequestLease` cross-key conflict
+handler (`internal/adapter/smb/lease/manager.go` — find the site that
+logs "RequestLease: cross-key conflict, initiating break"). That code
+must either:
+  1. Wait for the LEASE_BREAK_ACK before completing the new CREATE,
+     with a bounded timeout that's shorter than the WPTS client
+     deadline (observed ~8s; use <5s with a generous safety margin
+     so the CREATE response arrives before the client gives up), OR
+  2. Return the new CREATE immediately with the pre-break lease state
+     visible, and rely on a subsequent notification path to reconcile.
+
+Given WPTS expects (per test name and assertions) to observe the
+broken state before Client1's disconnect, option 1 is the correct fix.
+
+## Gate result: FAIL — Plan 01 diagnosis incorrect, fix must be revised
+Do NOT mark Phase 72 done. Do NOT open PR. Do NOT reconcile
+KNOWN_FAILURES.md (the entry must remain until a working fix lands).
+Plan 01 must be reopened with corrected diagnosis targeting
+`RequestLease` cross-key conflict path.

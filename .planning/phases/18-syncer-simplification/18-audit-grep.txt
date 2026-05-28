@@ -1,0 +1,34 @@
+=== AUDIT TIMESTAMP: 2026-05-21T10:53:57Z (post-sweep, final) ===
+=== Base commit: 85f869a1 → tip: f9faa9d4 ===
+
+=== Production (non-test) references to deleted symbols — MUST be empty ===
+(empty — clean)
+
+=== TRANSITIONAL-PHASE-18 marker references — MUST be empty (deletion complete) ===
+(empty — marker fully removed)
+
+=== uploadOne / persistFileBlocksAfterFlush residuals (historical comments only) ===
+pkg/blockstore/store.go:44:	// short-circuit (engine.uploadOne) WILL produce two distinct
+pkg/blockstore/store.go:62:	// circuit in engine.uploadOne) treat the lookup as best-effort —
+pkg/metadata/storetest/file_block_ops.go:87:	// Phase 11 WR-4-01: the dedup short-circuit (engine.uploadOne) writes a
+pkg/metadata/storetest/file_block_ops.go:505:// error. Phase 11 WR-4-01: the dedup short-circuit (engine.uploadOne) emits
+pkg/metadata/store/postgres/migrations/000011_file_blocks_hash_nonunique.down.sql:4:-- bug — engine.uploadOne dedup short-circuits will start failing on
+pkg/metadata/store/postgres/migrations/000010_file_blocks.up.sql:30:-- dedup short-circuit (engine.uploadOne) produces multiple FileBlock rows
+pkg/metadata/store/postgres/migrations/000011_file_blocks_hash_nonunique.up.sql:3:-- The Phase 11 dedup short-circuit (engine.uploadOne) intentionally produces
+pkg/metadata/store/postgres/migrations/000011_file_blocks_hash_nonunique.up.sql:9:-- "duplicate key value violates unique constraint", causing engine.uploadOne
+test/e2e/dedup_objectid_population_test.go:9:// the RED gate. The failure proves the gap: Syncer.persistFileBlocksAfterFlush
+test/e2e/dedup_objectid_population_test.go:196:			"Plan 13-12 wires Syncer.Flush -> persistFileBlocksAfterFlush. "+
+
+=== m.local.Flush call sites — must be 0 (swapped to SyncFileBlocksForFile) ===
+(empty — swap complete)
+
+=== m.local.SyncFileBlocksForFile call sites — must be >= 1 ===
+pkg/blockstore/engine/syncer.go:260:	m.local.SyncFileBlocksForFile(ctx, payloadID)
+pkg/blockstore/engine/engine.go:515:	bs.local.SyncFileBlocksForFile(ctx, payloadID)
+
+=== LocalStore implementer enumeration ===
+pkg/blockstore/local/memory/memory.go:22:var _ local.LocalStore = (*MemoryStore)(nil)
+pkg/blockstore/local/fs/fs.go:45:var _ local.LocalStore = (*FSStore)(nil)
+
+=== Method count on LocalStore interface (sanity) ===
+14
