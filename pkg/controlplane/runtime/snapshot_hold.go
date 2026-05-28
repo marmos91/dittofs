@@ -4,22 +4,31 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/snapshot"
 )
 
-// SnapshotHoldProvider streams the union of every ready snapshot's
+// SnapshotHoldProvider streams the union of every held snapshot's
 // manifest hashes into the block-GC mark phase, scoped to a fixed share
-// list captured at construction time. Only state='ready' rows contribute.
-// A ready row whose on-disk manifest is missing aborts the run via the
-// mark fail-closed path. Shares with no persistent local-store directory
-// (memory backend) are skipped.
+// list captured at construction time.
+//
+// D-23-02 filter: a snapshot contributes its hashes iff its on-disk
+// manifest.hashes file exists, regardless of state. The on-disk manifest
+// is the ground truth (Phase 22 D-04); its existence is the only fact
+// GC needs. This covers three windows the prior state='ready' filter
+// missed: (1) creating-post-manifest-pre-flip, (2) failed-retained-for-retry,
+// (3) failed → creating retry (same id, same dir, atomic overwrite).
+//
+// A manifest missing via os.IsNotExist is the no-hold short-circuit. Any
+// other stat error (e.g., permission denied, I/O fault) propagates so the
+// mark phase aborts (INV-04 fail-closed). Shares with no persistent
+// local-store directory (memory backend) are skipped.
 type SnapshotHoldProvider struct {
 	rt     *Runtime
 	shares []string
@@ -53,10 +62,16 @@ func (p *SnapshotHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID 
 		}
 
 		for _, snap := range snaps {
-			if snap.State != models.StateReady {
-				continue
-			}
 			manifestPath := snap.ManifestPath(localStoreDir)
+			if _, err := os.Stat(manifestPath); err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					// D-23-02: no manifest = no hold. Covers
+					// pre-manifest-write creating rows and
+					// operator-deleted ready/failed manifests.
+					continue
+				}
+				return fmt.Errorf("snapshot hold: stat manifest %q: %w", manifestPath, err)
+			}
 			count, err := streamManifest(manifestPath, fn)
 			if err != nil {
 				return fmt.Errorf("snapshot hold: stream manifest for share %q snapshot %q at %q: %w",
@@ -65,6 +80,7 @@ func (p *SnapshotHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID 
 			logger.Debug("snapshot hold: streamed hashes",
 				"share", shareName,
 				"snapshot_id", snap.ID,
+				"state", snap.State,
 				"count", count,
 				"remote_endpoint_id", remoteEndpointID,
 			)
