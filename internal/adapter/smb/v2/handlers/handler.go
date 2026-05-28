@@ -1011,6 +1011,13 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 			}
 		}
 	}
+	h.cancelAsyncOpsForSession(sessionID)
+}
+
+// cancelAsyncOpsForSession cancels pending pipe reads, parked CREATEs, and
+// blocked LOCKs for a session. Used by both CleanupSession and
+// PreviousSessionID teardown.
+func (h *Handler) cancelAsyncOpsForSession(sessionID uint64) {
 	if h.PipeReadRegistry != nil {
 		for _, pending := range h.PipeReadRegistry.UnregisterAllForSession(sessionID) {
 			if pending.Callback != nil {
@@ -1024,9 +1031,6 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 	}
 	if h.PendingCreateRegistry != nil {
 		for _, parked := range h.PendingCreateRegistry.UnregisterAllForSession(sessionID) {
-			// Fire a STATUS_CANCELLED so the client releases the async slot
-			// and does not wait indefinitely for our interim response.
-			// Connection is likely tearing down so the send may fail; log and move on.
 			if parked.Callback != nil {
 				go func(p *PendingCreate) {
 					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusCancelled, nil); err != nil {
@@ -1039,10 +1043,6 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 	}
 	if h.PendingLockRegistry != nil {
 		for _, parked := range h.PendingLockRegistry.UnregisterAllForSession(sessionID) {
-			// MS-SMB2 §3.3.5.14 + smb2.lock.cancel-logoff: parked blocking
-			// LOCK requests on a logged-off session must be completed with
-			// STATUS_RANGE_NOT_LOCKED (matches Samba and Windows behavior on
-			// LOGOFF — the open is gone, the lock state is not "still held").
 			if parked.Callback != nil {
 				go func(p *PendingLock) {
 					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusRangeNotLocked, nil); err != nil {
