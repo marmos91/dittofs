@@ -45,6 +45,20 @@ func TestBackupConformance(t *testing.T) {
 	})
 }
 
+func TestResetThenRestoreConformance(t *testing.T) {
+	storetest.ResetThenRestoreConformance(t, func(t *testing.T) metadata.MetadataStore {
+		dbPath := filepath.Join(t.TempDir(), "metadata.db")
+		store, err := badger.NewBadgerMetadataStoreWithDefaults(context.Background(), dbPath)
+		if err != nil {
+			t.Fatalf("NewBadgerMetadataStoreWithDefaults() failed: %v", err)
+		}
+		t.Cleanup(func() {
+			store.Close()
+		})
+		return store
+	})
+}
+
 func TestBadgerStore_PutGetFile_BlocksRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "metadata.db")
