@@ -620,7 +620,10 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 
 	case types.FilePositionInformation:
 		// FILE_POSITION_INFORMATION [MS-FSCC] 2.4.32 (8 bytes)
-		return make([]byte, 8), nil // CurrentByteOffset = 0 (server doesn't track position)
+		// Round-trip the per-handle CurrentByteOffset (see set_info.go).
+		w := smbenc.NewWriter(8)
+		w.WriteUint64(openFile.PositionInfo)
+		return w.Bytes(), nil
 
 	case types.FileModeInformation:
 		// FILE_MODE_INFORMATION [MS-FSCC] 2.4.24 (4 bytes)
@@ -756,7 +759,7 @@ func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext
 	w.WriteUint64(fileIndex)              // InternalInformation (8 bytes) at offset 64
 	w.WriteUint32(0)                      // EaInformation (4 bytes) at offset 72
 	w.WriteUint32(openFile.GrantedAccess) // AccessInformation (4 bytes) at offset 76 — see FileAccessInformation
-	w.WriteUint64(0)                      // PositionInformation (8 bytes) at offset 80
+	w.WriteUint64(openFile.PositionInfo)  // PositionInformation (8 bytes) at offset 80
 	w.WriteUint32(0)                      // ModeInformation (4 bytes) at offset 88
 	w.WriteUint32(0)                      // AlignmentInformation (4 bytes) at offset 92
 	w.WriteUint32(uint32(len(nameBytes))) // NameInformation length at offset 96
