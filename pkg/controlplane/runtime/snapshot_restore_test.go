@@ -723,7 +723,7 @@ func (f *restoreFixture) countFiles(ctx context.Context) int {
 // restoreRemote wraps a memory RemoteStore and exposes a phase-aware
 // head-failure injection knob. Each Head call increments a global call
 // counter; when failHashAfterCount(hash, n) is set, the (n+1)-th and
-// subsequent Head calls for hash return ErrBlockNotFound until the knob is
+// subsequent Head calls for hash return ErrChunkNotFound until the knob is
 // cleared. Pre-verify (called first in RestoreSnapshot) sees count==0; the
 // safety-snap create + post-verify see higher counts, so a count of 1
 // passes pre-verify and fails post-verify.
@@ -743,7 +743,7 @@ func newRestoreRemote(inner *remotememory.Store) *restoreRemote {
 	}
 }
 
-// failHashAfterCount configures Head() to return ErrBlockNotFound for hash
+// failHashAfterCount configures Head() to return ErrChunkNotFound for hash
 // on the (threshold+1)-th call counted from NOW (subsequent calls after
 // gate-arm). The threshold is interpreted relative to the call counter
 // observed at the moment of arming: a value of 0 means "fail the very
@@ -789,7 +789,7 @@ func (r *restoreRemote) Head(ctx context.Context, hash blockstore.ContentHash) (
 	threshold, hasGate := r.failAfter[hash]
 	r.mu.Unlock()
 	if hasGate && count >= threshold {
-		return blockstore.Meta{}, blockstore.ErrBlockNotFound
+		return blockstore.Meta{}, blockstore.ErrChunkNotFound
 	}
 	return r.inner.Head(ctx, hash)
 }
