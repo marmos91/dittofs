@@ -131,6 +131,20 @@ func (resp *ReadResponse) Encode() ([]byte, error) {
 // Protocol Handler
 // ============================================================================
 
+// recordReadProgress advances Open.CurrentByteOffset (the PositionInfo
+// field) to offset + bytesReturned after a successful READ. Centralised so
+// every success path — regular file, zero-length read, symlink — updates
+// the same field consistently. Per MS-FSA 2.1.5.2 (Server Algorithm for
+// Reading a File): on success CurrentByteOffset := ByteOffset + BytesRead.
+// The smb2.read.position torture test asserts the value via GetInfo
+// FilePositionInformation.
+func recordReadProgress(open *OpenFile, offset uint64, bytesReturned uint64) {
+	if open == nil {
+		return
+	}
+	open.PositionInfo = offset + bytesReturned
+}
+
 // Read handles SMB2 READ command [MS-SMB2] 2.2.19, 2.2.20.
 //
 // READ allows clients to read data from an open file at a specified offset.
@@ -167,9 +181,12 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 2b: Validate read access
 	// ========================================================================
 	//
-	// Per MS-SMB2 3.3.5.15: The server MUST verify that the open was created
-	// with read access (FILE_READ_DATA). If the open lacks read access,
-	// return STATUS_ACCESS_DENIED.
+	// Per MS-SMB2 3.3.5.15: the server MUST verify that the open was created
+	// with read access. hasReadAccess treats FILE_READ_DATA, FILE_EXECUTE,
+	// GENERIC_READ, GENERIC_ALL, and MAXIMUM_ALLOWED as read access — Samba
+	// and Windows allow READ on an FILE_EXECUTE-only handle (execution
+	// implies read), and the smb2.read.access torture test exercises that
+	// path. If the open lacks any of those, return STATUS_ACCESS_DENIED.
 	//
 	// Gate consults Open.GrantedAccess (post-DACL intersection at CREATE),
 	// not the pre-DACL DesiredAccess — otherwise a MAXIMUM_ALLOWED open whose
@@ -312,6 +329,9 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	if req.Length == 0 && req.MinimumCount == 0 {
 		logger.Debug("READ: zero-length read (success)", "path", openFile.Path,
 			"offset", req.Offset, "size", fileSize)
+		// MS-FSA 2.1.5.2: even a zero-byte successful READ advances
+		// CurrentByteOffset to req.Offset (offset + 0 bytes returned).
+		recordReadProgress(openFile, req.Offset, 0)
 		return &ReadResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
 			DataOffset:      0x50,
@@ -379,7 +399,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// return. Windows clients carry their own client-side position and do
 	// not depend on this for I/O dispatch, but the smb2.read.position
 	// torture test asserts the value.
-	openFile.PositionInfo = req.Offset + uint64(len(readResult.Data))
+	recordReadProgress(openFile, req.Offset, uint64(len(readResult.Data)))
 
 	// ========================================================================
 	// Step 12: Update LastAccessTime (MS-FSA Algorithm for Noting File Accessed)
@@ -464,6 +484,11 @@ func (h *Handler) handleSymlinkRead(
 		"offset", req.Offset,
 		"requested", req.Length,
 		"actual", len(data))
+
+	// MS-FSA 2.1.5.2: advance CurrentByteOffset on the symlink success path
+	// too. smb2.read.position asserts PositionInfo regardless of the
+	// underlying source of the returned bytes.
+	recordReadProgress(openFile, req.Offset, uint64(len(data)))
 
 	// Build response
 	return &ReadResponse{
