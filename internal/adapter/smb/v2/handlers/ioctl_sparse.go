@@ -221,7 +221,7 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 	}
 
 	maxOut := parseIoctlMaxOutputSize(body)
-	totalBytes := uint32(len(ranges)) * fileAllocatedRangeBufSize
+	totalBytes := uint64(len(ranges)) * fileAllocatedRangeBufSize
 
 	// Empty result is always SUCCESS (no entries to write, no overflow).
 	if len(ranges) == 0 {
@@ -239,7 +239,7 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 
 	// Truncate to whole entries that fit and report BUFFER_OVERFLOW.
 	status := types.StatusSuccess
-	if maxOut < totalBytes {
+	if uint64(maxOut) < totalBytes {
 		fits := int(maxOut / fileAllocatedRangeBufSize)
 		ranges = ranges[:fits]
 		status = types.StatusBufferOverflow
