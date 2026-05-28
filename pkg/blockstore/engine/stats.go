@@ -1,0 +1,109 @@
+package engine
+
+import (
+	"context"
+	"time"
+
+	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/blockstore/local"
+)
+
+// Stats returns storage statistics from the local store.
+func (bs *BlockStore) Stats() (*blockstore.Stats, error) {
+	localStats := bs.local.Stats()
+	files := bs.local.ListFiles()
+	used := uint64(localStats.DiskUsed)
+	total := uint64(localStats.MaxDisk)
+	avail := uint64(0)
+	if total > used {
+		avail = total - used
+	}
+	count := uint64(len(files))
+	avg := uint64(0)
+	if count > 0 {
+		avg = used / count
+	}
+	return &blockstore.Stats{
+		UsedSize:      used,
+		ContentCount:  count,
+		TotalSize:     total,
+		AvailableSize: avail,
+		AverageSize:   avg,
+	}, nil
+}
+
+// GetStats returns comprehensive block store statistics.
+func (bs *BlockStore) GetStats() BlockStoreStats {
+	localStats := bs.local.Stats()
+	files := bs.local.ListFiles()
+
+	cacheStats := bs.cache.Stats()
+
+	pending, completed, failed := bs.syncer.Queue().Stats()
+	_, uploads, _ := bs.syncer.Queue().PendingByType()
+
+	remoteHealthy := bs.syncer.IsRemoteHealthy()
+	outageDuration := bs.syncer.RemoteOutageDuration()
+
+	stats := BlockStoreStats{
+		FileCount:           len(files),
+		LocalDiskUsed:       localStats.DiskUsed,
+		LocalDiskMax:        localStats.MaxDisk,
+		LocalMemUsed:        localStats.MemUsed,
+		LocalMemMax:         localStats.MaxMemory,
+		ReadBufferEntries:   cacheStats.Entries,
+		ReadBufferUsed:      cacheStats.CurBytes,
+		ReadBufferMax:       cacheStats.MaxBytes,
+		HasRemote:           bs.remote != nil,
+		PendingSyncs:        pending,
+		PendingUploads:      uploads,
+		CompletedSyncs:      completed,
+		FailedSyncs:         failed,
+		RemoteHealthy:       remoteHealthy,
+		EvictionSuspended:   bs.remote != nil && !remoteHealthy,
+		OutageDurationSecs:  outageDuration.Seconds(),
+		OfflineReadsBlocked: bs.syncer.OfflineReadsBlocked(),
+	}
+
+	bs.populateBlockCounts(&stats, files)
+
+	return stats
+}
+
+// populateBlockCounts fills block count fields from the metadata store.
+func (bs *BlockStore) populateBlockCounts(stats *BlockStoreStats, files []string) {
+	if bs.fileBlockStore == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for _, payloadID := range files {
+		blocks, err := bs.fileBlockStore.ListFileBlocks(ctx, payloadID)
+		if err != nil {
+			continue
+		}
+		for _, b := range blocks {
+			stats.BlocksTotal++
+			switch b.State {
+			case blockstore.BlockStatePending:
+				// Pending now covers both legacy Dirty (no LocalPath / no key)
+				// and Local (complete, awaiting sync). Distinguish by data
+				// state to keep the existing introspection counters meaningful.
+				if b.LocalPath != "" || b.BlockStoreKey != "" {
+					stats.BlocksLocal++
+				} else {
+					stats.BlocksDirty++
+				}
+			case blockstore.BlockStateSyncing:
+				stats.BlocksLocal++
+			case blockstore.BlockStateRemote:
+				stats.BlocksRemote++
+			}
+		}
+	}
+}
+
+// LocalStats returns a snapshot of local store statistics.
+func (bs *BlockStore) LocalStats() local.Stats { return bs.local.Stats() }
