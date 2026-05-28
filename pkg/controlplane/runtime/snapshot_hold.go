@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"sync"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
@@ -32,6 +33,13 @@ import (
 type SnapshotHoldProvider struct {
 	rt     *Runtime
 	shares []string
+
+	// mu serializes HeldHashes (RLock) against the orchestration-layer
+	// snapshot-delete path (Lock, via AcquireDeleteLock). Provider-wide
+	// granularity is acceptable for typical snapshot counts (low
+	// hundreds per share); a per-snapshot upgrade is tracked under
+	// deferred ideas if head-of-line blocking surfaces. D-23-04.
+	mu sync.RWMutex
 }
 
 // HeldHashes implements engine.HoldProvider. The engine-passed shares
@@ -41,6 +49,12 @@ func (p *SnapshotHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID 
 	if p == nil || p.rt == nil || p.rt.store == nil {
 		return nil
 	}
+
+	// D-23-04: RLock blocks the orchestration-layer delete path from
+	// removing rows + dirs mid-stream. Concurrent HeldHashes callers
+	// run in parallel under the read side.
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
 	for _, shareName := range p.shares {
 		localStoreDir, err := p.rt.sharesSvc.LocalStoreDir(shareName)
@@ -106,6 +120,17 @@ func streamManifest(path string, fn func(blockstore.ContentHash) error) (int, er
 		return 0, err
 	}
 	return hs.Len(), nil
+}
+
+// AcquireDeleteLock is the write-side counterpart used by the snapshot
+// orchestration layer (Phase 23 plans 23-04/05) before invoking
+// store.DeleteSnapshot + os.RemoveAll of the snapshot dir. Holding the
+// lock blocks new HeldHashes callers until release is invoked, so a
+// concurrent GC mark phase never observes a snapshot whose row has been
+// removed but whose manifest is still being read (or vice versa). D-23-04.
+func (p *SnapshotHoldProvider) AcquireDeleteLock() (release func()) {
+	p.mu.Lock()
+	return p.mu.Unlock
 }
 
 // snapshotHoldForRemote returns an engine.HoldProvider that streams held

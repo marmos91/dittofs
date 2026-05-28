@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -354,9 +355,14 @@ func backupAndDiscard(ctx context.Context, st *metadatamemory.MemoryMetadataStor
 func TestSnapshotHoldProvider_DeleteVsHeldHashes_Race(t *testing.T) {
 	ctx := context.Background()
 
+	// Use a real on-disk SQLite file rather than `:memory:` so the
+	// connection pool shares schema state across reader goroutines.
+	// A fresh `:memory:` DB is per-connection and would cause spurious
+	// "no such table" errors when goroutines pick up new connections.
+	dbPath := filepath.Join(t.TempDir(), "race.db")
 	cp, err := cpstore.New(&cpstore.Config{
 		Type:   cpstore.DatabaseTypeSQLite,
-		SQLite: cpstore.SQLiteConfig{Path: ":memory:"},
+		SQLite: cpstore.SQLiteConfig{Path: dbPath},
 	})
 	if err != nil {
 		t.Fatalf("cpstore.New: %v", err)
@@ -416,6 +422,12 @@ func TestSnapshotHoldProvider_DeleteVsHeldHashes_Race(t *testing.T) {
 	var wg sync.WaitGroup
 	var panicCount atomic.Int64
 
+	// Reserve all WaitGroup slots BEFORE spawning the watcher so the
+	// watcher's wg.Wait never races with subsequent wg.Add calls
+	// (the race detector flags Add-after-Wait even if Wait has not yet
+	// returned zero).
+	wg.Add(readers + 1)
+
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -426,7 +438,6 @@ func TestSnapshotHoldProvider_DeleteVsHeldHashes_Race(t *testing.T) {
 	// Every observation must equal expectedHoldSize (no torn read; the
 	// writer either holds the lock fully or not at all).
 	for r := 0; r < readers; r++ {
-		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			defer func() {
@@ -455,8 +466,8 @@ func TestSnapshotHoldProvider_DeleteVsHeldHashes_Race(t *testing.T) {
 
 	// Writer goroutine: repeatedly acquire the delete-side write lock,
 	// sleep briefly to widen the race window, then release. Mimics the
-	// orchestration-layer (plans 23-04/05) delete path.
-	wg.Add(1)
+	// orchestration-layer (plans 23-04/05) delete path. wg.Add already
+	// reserved above.
 	go func() {
 		defer wg.Done()
 		defer func() {
