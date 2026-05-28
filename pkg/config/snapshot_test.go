@@ -27,14 +27,20 @@ func TestSnapshotConfig_ApplyDefaults_ExplicitValuePreserved(t *testing.T) {
 	}
 }
 
-func TestSnapshotConfig_ApplyDefaults_NegativeIsCorrected(t *testing.T) {
+func TestSnapshotConfig_ApplyDefaults_NegativeIsPreservedForValidation(t *testing.T) {
+	// An explicit negative is preserved through ApplyDefaults so the
+	// subsequent Validate pass can reject the operator typo. Silently
+	// substituting 16 here would mask invalid YAML input.
 	cfg := &Config{
 		Snapshot: SnapshotConfig{SyncGateConcurrency: -1},
 	}
 	ApplyDefaults(cfg)
 
-	if cfg.Snapshot.SyncGateConcurrency != 16 {
-		t.Errorf("negative SyncGateConcurrency: got %d, want 16 (default)", cfg.Snapshot.SyncGateConcurrency)
+	if cfg.Snapshot.SyncGateConcurrency != -1 {
+		t.Errorf("negative SyncGateConcurrency: got %d, want -1 (preserved for validation)", cfg.Snapshot.SyncGateConcurrency)
+	}
+	if err := cfg.Snapshot.Validate(); err == nil {
+		t.Fatal("Validate() on negative SyncGateConcurrency returned nil, want range error")
 	}
 }
 

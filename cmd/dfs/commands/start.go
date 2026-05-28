@@ -188,6 +188,14 @@ func runStart(cmd *cobra.Command, args []string) error {
 		SweepConcurrency: cfg.GC.SweepConcurrency,
 		DryRunSampleSize: cfg.GC.DryRunSampleSize,
 	})
+	// Wire operator-configured snapshot knobs into the runtime so
+	// Runtime.CreateSnapshot picks up the validated
+	// snapshot.sync_gate_concurrency value from config. Without this the
+	// parsed YAML is silently dropped and the runtime constructor default
+	// (16) is used regardless of what the operator configured.
+	rt.SetSnapshotDefaults(runtime.SnapshotDefaults{
+		SyncGateConcurrency: cfg.Snapshot.SyncGateConcurrency,
+	})
 	// gc.interval is parsed and validated but no periodic-GC scheduler is
 	// wired in v0.15.0 — the docs were updated to reflect the deferred
 	// status, and any operator who configured a non-zero value gets a

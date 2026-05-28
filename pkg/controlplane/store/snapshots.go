@@ -98,6 +98,14 @@ func (s *GORMStore) UpdateSnapshotState(ctx context.Context, shareName, id, stat
 			"updated_at": time.Now(),
 		})
 	if res.Error != nil {
+		// failed -> creating retries can collide with idx_share_creating
+		// when another snapshot is already in flight for this share. The
+		// raw DB error would bypass the documented ErrSnapshotStateConflict
+		// surface that downstream errors.Is callers rely on (Runtime
+		// CreateSnapshot retry path; REST 409 mapping).
+		if state == models.StateCreating && isUniqueConstraintError(res.Error) {
+			return models.ErrSnapshotStateConflict
+		}
 		return res.Error
 	}
 	if res.RowsAffected == 1 {

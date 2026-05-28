@@ -150,19 +150,34 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 	}
 	snapID := snap.ID
 
-	// (4) Create on-disk dir. Failure here is synchronous — flip the row
-	// to failed so the index slot is released for the next attempt.
+	// (4) Register the goroutine in the per-share registry under the
+	// snapInFlight lock BEFORE any RemoveShare-visible work (mkdir under
+	// the snapshots tree). Deriving the registry entry from runtimeCtx
+	// here closes the window where a concurrent RemoveShare ->
+	// cancelAndWaitInFlightSnaps could observe an empty registry between
+	// the DB insert at (3) and the registration call. Without this
+	// early-register, RemoveShare would no-op, wipe the snapshots/ tree,
+	// and the orchestration goroutine launched below would later write
+	// dump + manifest into a directory that had been deleted.
+	//
+	// Lock ordering rule: any synchronous failure between here and the
+	// `go r.runSnapshotOrchestration(...)` call MUST run
+	// abortSnapInFlight to release the wg.Add(1) the registration took
+	// and close+drain the doneCh, otherwise cancelAndWaitInFlightSnaps
+	// would block forever waiting for the never-launched goroutine.
+	// D-23-17.
+	childCtx, doneCh, entry := r.registerSnapInFlight(shareName, snapID)
+
+	// (5) Create on-disk dir. Failure here is synchronous — flip the row
+	// to failed so the index slot is released for the next attempt, AND
+	// release the in-flight registration so the lifecycle WaitGroup
+	// decrements.
 	dir := snap.SnapshotDir(localStoreDir)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
+		r.abortSnapInFlight(shareName, snapID, entry, doneCh)
 		_ = r.store.UpdateSnapshotState(ctx, shareName, snapID, models.StateFailed)
 		return "", fmt.Errorf("snapshot create %q: mkdir %q: %w", snapID, dir, err)
 	}
-
-	// (5) Register the goroutine in the per-share registry under the
-	// snapInFlight lock (D-23-17). Derive the child ctx from runtimeCtx
-	// (not the caller's request ctx) so the orchestration outlives the
-	// caller and dies promptly on Runtime shutdown.
-	childCtx, doneCh, entry := r.registerSnapInFlight(shareName, snapID)
 
 	// (6) Launch orchestration. Goroutine owns: backup, dump+manifest,
 	// (optional) drain+verify, final state flip, posting to doneCh,
@@ -323,6 +338,23 @@ func (r *Runtime) unregisterSnap(shareName, snapID string, entry *snapInFlight) 
 	entry.mu.Lock()
 	delete(entry.done, snapID)
 	entry.mu.Unlock()
+}
+
+// abortSnapInFlight releases a registry entry created via
+// registerSnapInFlight when CreateSnapshot fails synchronously BEFORE
+// launching the orchestration goroutine. It is the synchronous-failure
+// twin of runSnapshotOrchestration's deferred cleanup: drop the per-snap
+// done map entry, close the doneCh so any racing WaitForSnapshot
+// observes the zero-value snapResult{}, and call wg.Done so
+// cancelAndWaitInFlightSnaps does not block forever.
+//
+// Idempotent under the snapInFlight scheme — only invoked once per
+// failure path between registerSnapInFlight and the goroutine launch in
+// CreateSnapshot.
+func (r *Runtime) abortSnapInFlight(shareName, snapID string, entry *snapInFlight, doneCh chan snapResult) {
+	r.unregisterSnap(shareName, snapID, entry)
+	close(doneCh)
+	entry.wg.Done()
 }
 
 // runSnapshotOrchestration executes the per-snapshot pipeline on its own
