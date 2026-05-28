@@ -119,3 +119,22 @@ func (c *dedupLRU) Put(hash blockstore.ContentHash, payloadID string) {
 	el := c.order.PushFront(&dedupLRUEntry{hash: hash, payloadID: payloadID})
 	c.index[hash] = el
 }
+
+// Delete removes hash from the LRU. No-op on miss or on a degenerate
+// LRU. Used by the rollup hit path to evict stale entries on
+// ErrUnknownHash (LRU points at a row that no longer exists or was
+// never persisted) so a concurrent rollup pass cannot re-hit the same
+// stale entry and trigger a retry storm against the metadata store.
+func (c *dedupLRU) Delete(hash blockstore.ContentHash) {
+	if c == nil || c.maxSize <= 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	el, found := c.index[hash]
+	if !found {
+		return
+	}
+	delete(c.index, hash)
+	c.order.Remove(el)
+}

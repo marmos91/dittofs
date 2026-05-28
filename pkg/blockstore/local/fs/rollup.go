@@ -31,6 +31,17 @@ type rec struct {
 	endPos  uint64
 }
 
+// pendingLRUPut tracks a (hash, payloadID) pair whose CAS chunk was
+// freshly StoreChunk'd during the current rollup pass but whose
+// FileBlock row has not yet been confirmed by objectIDPersister. I-2
+// (#669) Prong A: dedupLRU population is deferred to AFTER the
+// persister returns nil so a concurrent rollup that hits the LRU is
+// guaranteed to find a backing FileBlock row for its AddRef call.
+type pendingLRUPut struct {
+	hash      blockstore.ContentHash
+	payloadID string
+}
+
 // StartRollup launches the chunkRollup worker pool. Idempotent
 // subsequent calls after the first are no-ops. Requires a non-nil
 // RollupStore.
@@ -364,6 +375,13 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	// matches the canonical FileAttr.Blocks invariant the downstream
 	// ObjectID compute relies on.
 	var blocks []blockstore.BlockRef
+	// I-2 (#669) — Prong A: collect (hash, payloadID) pairs whose CAS
+	// chunks were freshly StoreChunk'd this pass. We populate the
+	// dedupLRU for these pairs AFTER objectIDPersister returns nil
+	// below — never before — so the LRU only references hashes whose
+	// FileBlock row has actually been persisted. Cap initial capacity
+	// at len(entries) so the slice rarely grows.
+	pendingLRUPuts := make([]pendingLRUPut, 0, len(entries))
 	for pos < uint64(len(stream)) {
 		b, _ := ck.Next(stream[pos:], true)
 		if b <= 0 {
@@ -397,12 +415,28 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 					slog.Debug("rollup: LRU dedup hit",
 						"hash", h, "payloadID", payloadID, "size", b)
 				case errors.Is(addRefErr, metadata.ErrUnknownHash):
-					// TOCTOU: hash was in LRU but the row got swept by a
-					// concurrent engine.Delete cascade (or never existed
-					// — a post-restart LRU re-seed without a backing
-					// metadata row would also land here). Fall through to
-					// StoreChunk + LRU repopulate below.
-					slog.Debug("rollup: LRU stale (ErrUnknownHash); falling back to StoreChunk",
+					// I-2 (#669): LRU pointed at a hash whose FileBlock
+					// row does NOT exist in the metadata store. Two
+					// observed causes:
+					//
+					//  (a) Temporal race — a concurrent rollup populated
+					//      the LRU between its StoreChunk and its
+					//      objectIDPersister write. With the post-#669
+					//      ordering this window is closed (we now Put
+					//      AFTER persister returns nil); a residual
+					//      window remains only across process restart
+					//      when the LRU was rebuilt by a future feature.
+					//  (b) TOCTOU — engine.Delete cascade swept the row
+					//      between Get and AddRef.
+					//
+					// Evict the stale entry so a concurrent rollup
+					// against the same hash does not re-hit the LRU,
+					// re-call AddRef, and re-fail in a tight loop
+					// (the retry storm the audit flagged). The hit path
+					// falls through to StoreChunk below; the post-
+					// persister populate will re-seed.
+					bc.dedupLRU.Delete(h)
+					slog.Debug("rollup: LRU stale (ErrUnknownHash); evicted + falling back to StoreChunk",
 						"hash", h, "payloadID", payloadID)
 				default:
 					return fmt.Errorf("rollup: AddRef: %w", addRefErr)
@@ -414,11 +448,13 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 			if err := bc.StoreChunk(ctx, h, chunkBytes); err != nil {
 				return fmt.Errorf("rollup: StoreChunk: %w", err)
 			}
-			// Opt 1: first-write seeds the LRU for subsequent
-			// idempotent rewrites of the same content.
-			if bc.dedupLRU != nil {
-				bc.dedupLRU.Put(h, payloadID)
-			}
+			// I-2 (#669) — Prong A: do NOT populate the LRU here.
+			// Defer the Put until AFTER objectIDPersister confirms the
+			// FileBlock row is written, so a concurrent rollup that
+			// hits the LRU is guaranteed to find a backing row for the
+			// subsequent AddRef. Track the (hash, payloadID) pair for
+			// the deferred Put below.
+			pendingLRUPuts = append(pendingLRUPuts, pendingLRUPut{hash: h, payloadID: payloadID})
 		}
 
 		blocks = append(blocks, blockRef)
@@ -480,6 +516,21 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 	if persister != nil {
 		if err := persister(ctx, payloadID, blocks, objectID); err != nil {
 			return fmt.Errorf("rollup: ObjectIDPersister: %w", err)
+		}
+	}
+
+	// I-2 (#669) — Prong A: populate the dedupLRU NOW that the
+	// FileBlock rows for every freshly-stored chunk are persisted (or
+	// the persister is intentionally nil — a local-only fixture, in
+	// which case there is no metadata row to race against). Doing
+	// this AFTER persister closes the cross-payload race where a
+	// concurrent rollup hit the LRU between StoreChunk and the
+	// persister write and observed ErrUnknownHash. Failures after
+	// this point (SetRollupOffset / advanceRollupOffset) do not
+	// invalidate the LRU entries — the rows are durable.
+	if bc.dedupLRU != nil {
+		for _, p := range pendingLRUPuts {
+			bc.dedupLRU.Put(p.hash, p.payloadID)
 		}
 	}
 
