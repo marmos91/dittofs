@@ -570,6 +570,14 @@ func validateAndRestore(
 		FileName:       handle.FileName,
 		IsDirectory:    handle.IsDirectory,
 		PositionInfo:   handle.PositionInfo,
+		// Restore the ClientGUID recorded at the original CREATE so a
+		// chained disconnect→reconnect→disconnect cycle preserves the
+		// per-(ClientGuid, LeaseKey) lease scoping check on the next
+		// reconnect attempt. Without this, the next persist would write a
+		// zero ClientGUID, and the §3.3.5.9.12 lease-scoping check in
+		// processV2Reconnect would silently no-op (handle.ClientGUID == 0
+		// is the "pre-#432 forward-compat" branch).
+		ClientGUID: handle.ClientGUID,
 		// IsDurable is NOT set on restore -- client must re-request durability
 	}
 

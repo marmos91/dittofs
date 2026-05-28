@@ -1039,7 +1039,7 @@ func TestValidateDurableContexts(t *testing.T) {
 		return CreateContext{Name: DurableHandleV1ReconnectTag, Data: make([]byte, 16)}
 	}
 	mkDHnQ := func() CreateContext {
-		// DHnQ uses the same tag as DH2Q on the wire; the length distinguishes.
+		// V1 request: tag "DHnQ", 16 reserved bytes.
 		return CreateContext{Name: DurableHandleV1RequestTag, Data: make([]byte, 16)}
 	}
 
@@ -1179,5 +1179,56 @@ func TestProcessDurableReconnectContext_V2OplockNoClientGUIDCheck(t *testing.T) 
 	}
 	if status != types.StatusSuccess {
 		t.Errorf("oplock V2 reconnect with different ClientGuid: got status %v, want SUCCESS", status)
+	}
+}
+
+// TestValidateAndRestore_ClientGUIDRoundtrip verifies that ClientGUID is
+// restored onto the OpenFile by the reconnect path so the next persist
+// (chained disconnect→reconnect→disconnect) carries the original GUID.
+// Without this, the §3.3.5.9.12 lease-scoping check would no-op on the
+// second reconnect and any client could reclaim a lease-backed durable handle.
+// Locks in Copilot review finding on durable_context.go:742.
+func TestValidateAndRestore_ClientGUIDRoundtrip(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	keyHash := makeSessionKeyHash("session-key")
+	originalGUID := [16]byte{0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5}
+	leaseKey := [16]byte{0xB0, 0xB1, 0xB2}
+	createGuid := [16]byte{0xC0, 0xC1, 0xC2}
+	fileID := [16]byte{0xD0, 0xD1, 0xD2}
+
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:             "h-roundtrip",
+		FileID:         fileID,
+		Path:           "leasefile.txt",
+		ShareName:      "/share1",
+		Username:       "alice",
+		SessionKeyHash: keyHash,
+		CreateGuid:     createGuid,
+		LeaseKey:       leaseKey,
+		ClientGUID:     originalGUID,
+		IsV2:           true,
+		CreatedAt:      time.Now().Add(-time.Minute),
+		DisconnectedAt: time.Now().Add(-time.Second),
+		TimeoutMs:      60000,
+		MetadataHandle: []byte{0xAA},
+	})
+
+	dh2cData := make([]byte, 36)
+	copy(dh2cData[:16], fileID[:])
+	copy(dh2cData[16:32], createGuid[:])
+	contexts := []CreateContext{
+		{Name: DurableHandleV2ReconnectTag, Data: dh2cData},
+	}
+
+	res, status, err := ProcessDurableReconnectContext(ctx, store, nil, contexts,
+		1, "alice", keyHash, "/share1", "leasefile.txt", originalGUID)
+	if err != nil || status != types.StatusSuccess {
+		t.Fatalf("reconnect failed: status=%v err=%v", status, err)
+	}
+	if res.OpenFile.ClientGUID != originalGUID {
+		t.Errorf("restored ClientGUID = %x, want %x (Copilot review #1: chained reconnect breaks lease scoping)",
+			res.OpenFile.ClientGUID, originalGUID)
 	}
 }
