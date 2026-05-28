@@ -546,6 +546,81 @@ func (r *Runtime) shutdownSnapshots(ctx context.Context) {
 	}
 }
 
+// recoverOrphanedSnapshots scans every share for snapshot rows still in
+// state='creating' and flips each to state='failed'. Called once from
+// Runtime.Serve AFTER metadata-store registration but BEFORE adapters
+// start serving, so the Phase 22 D-08 partial unique index (one
+// concurrent 'creating' row per share) is free for new CreateSnapshot
+// calls. D-23-18.
+//
+// Recovery is structured-log-only (no schema column): each flip emits a
+// slog.Warn marker with reason="abandoned_at_startup" so an operator
+// triaging post-crash state can grep the log to distinguish failures
+// that happened pre-restart from ones in the current run. This matches
+// D-23-09: the on-disk metadata.dump + manifest.hashes are retained
+// (hold filter D-23-02 continues to protect their blocks), and the
+// operator can retry via CreateSnapshot with opts.RetryOf set.
+//
+// Non-fatal: any per-share or per-snap error is logged + accumulated
+// into firstErr; the scan continues so a single corrupt share row does
+// not block startup. The eventual DeleteSnapshot path (when the
+// operator decides) reconciles whatever is left.
+func (r *Runtime) recoverOrphanedSnapshots(ctx context.Context) error {
+	if r == nil || r.store == nil {
+		return nil
+	}
+
+	shareNames := r.sharesSvc.ListShares()
+	var firstErr error
+	var sharesScanned, recovered, errs int
+
+	for _, shareName := range shareNames {
+		sharesScanned++
+		snaps, err := r.store.ListSnapshots(ctx, shareName)
+		if err != nil {
+			logger.Error("snapshot recovery: list snapshots failed",
+				"share", shareName,
+				"error", err,
+			)
+			errs++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		for _, snap := range snaps {
+			if snap.State != models.StateCreating {
+				continue
+			}
+			if uerr := r.store.UpdateSnapshotState(ctx, shareName, snap.ID, models.StateFailed); uerr != nil {
+				logger.Error("snapshot recovery: flip to failed",
+					"snapshot_id", snap.ID,
+					"share", shareName,
+					"error", uerr,
+				)
+				errs++
+				if firstErr == nil {
+					firstErr = uerr
+				}
+				continue
+			}
+			recovered++
+			logger.Warn("snapshot recovery: abandoned creating snapshot flipped to failed",
+				"snapshot_id", snap.ID,
+				"share", shareName,
+				"reason", "abandoned_at_startup",
+			)
+		}
+	}
+
+	logger.Info("snapshot recovery: complete",
+		"shares_scanned", sharesScanned,
+		"recovered", recovered,
+		"errors", errs,
+	)
+	return firstErr
+}
+
 // Ensure unused-import safety: the shares package is referenced via the
 // type returned by GetBlockStoreForShare and via ErrShareNotFound in
 // caller code. Keep the alias here in case future refactors prune.

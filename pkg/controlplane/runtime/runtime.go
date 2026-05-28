@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
@@ -138,6 +139,44 @@ func (r *Runtime) SetShutdownTimeout(d time.Duration) {
 	}
 	r.adaptersSvc.SetShutdownTimeout(d)
 	r.lifecycleSvc.SetShutdownTimeout(d)
+}
+
+// Shutdown drains in-flight snapshot goroutines, stops all protocol
+// adapters, and closes metadata stores in that order.
+//
+// ORDER IS LOAD-BEARING (D-23-17):
+//
+//  1. shutdownSnapshots — cancel in-flight snapshot goroutines and wait.
+//     These goroutines call into Backupable.Backup (on metadata stores)
+//     and r.store (control-plane DB). If metadata stores or the control
+//     plane were torn down first, snap goroutines would panic on
+//     use-after-close.
+//  2. StopAllAdapters — adapters no longer accept new RPCs. Existing
+//     in-flight RPCs fail naturally (no waiters left to receive them).
+//  3. CloseMetadataStores — now safe; nothing holds open references.
+//
+// Idempotent: a second call is a no-op (runtimeCancel is already
+// triggered, adapters and storesSvc handle re-close internally).
+//
+// ctx bounds only the snapshot-drain step. If ctx fires before all
+// goroutines exit, shutdownSnapshots returns and the rest of the
+// sequence proceeds — runtimeCancel has already fired, so the orphan
+// goroutines will exit on their own. Callers wanting a hard deadline
+// should pass context.WithTimeout(...); callers passing
+// context.Background block until full snapshot drain.
+//
+// Composes the existing piecewise lifecycle helpers (StopAllAdapters,
+// CloseMetadataStores) which remain public for tests that need to
+// drive the steps individually.
+func (r *Runtime) Shutdown(ctx context.Context) error {
+	r.shutdownSnapshots(ctx)
+	if err := r.StopAllAdapters(); err != nil {
+		// Continue: snapshot drain already succeeded; the metadata-store
+		// close still must run so file handles are released.
+		logger.Warn("Runtime.Shutdown: StopAllAdapters error", "error", err)
+	}
+	r.CloseMetadataStores()
+	return nil
 }
 
 func (r *Runtime) CreateAdapter(ctx context.Context, cfg *models.AdapterConfig) error {
@@ -404,6 +443,18 @@ func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
 
 func (r *Runtime) Serve(ctx context.Context) error {
 	r.clientRegistry.StartSweeper(ctx)
+
+	// D-23-18: Reconcile snapshot rows abandoned by a prior crash BEFORE
+	// adapters start serving. Metadata stores and shares are already
+	// registered by the cmd/dfs boot sequence at this point; running
+	// recovery here means by the time the first CreateSnapshot RPC
+	// arrives, the Phase 22 D-08 partial unique index slot for any
+	// previously-crashed share is already released. Failure is logged
+	// but non-fatal: the operator can still serve, and DeleteSnapshot
+	// reconciles whatever rows we could not flip.
+	if err := r.recoverOrphanedSnapshots(r.runtimeCtx); err != nil {
+		logger.Error("snapshot recovery returned error (continuing startup)", "error", err)
+	}
 
 	return r.lifecycleSvc.Serve(ctx, r.settingsWatcher, r.adaptersSvc, r.metadataService, r.storesSvc, r.store)
 }
