@@ -363,7 +363,7 @@ func (m *Syncer) snapshotPendingBlockRefs(ctx context.Context, payloadID string)
 		// directly in the trailing ID component (FastCDC chunk
 		// boundaries do not align to BlockSize). Use the parsed value
 		// as-is — do NOT multiply by BlockSize.
-		chunkOffset, ok := parseChunkOffsetFromID(fb.ID)
+		chunkOffset, ok := blockstore.ParseChunkOffset(fb.ID)
 		if !ok {
 			continue
 		}
@@ -463,7 +463,7 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 		if !synced {
 			continue
 		}
-		chunkOffset, ok := parseChunkOffsetFromID(fb.ID)
+		chunkOffset, ok := blockstore.ParseChunkOffset(fb.ID)
 		if !ok {
 			continue
 		}
