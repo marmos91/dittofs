@@ -253,11 +253,9 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 
 	// Multi-element validation. When the first element is a non-blocking
 	// lock, every subsequent element MUST also carry FAIL_IMM (per Samba's
-	// loop at smb2_lock.c:371). When the first element is UNLOCK, lock-typed
-	// elements after the unlock chain trigger deferred INVALID_PARAMETER —
-	// the unlocks still execute but the overall request returns the error
-	// (Samba's "invalid" defer at smb2_lock.c:425).
-	hasMixedUnlockThenLock := false
+	// loop at smb2_lock.c:371). The UNLOCK-first deferred-invalid path is
+	// enforced per-element in the main processing loop below (Samba's
+	// "invalid" defer at smb2_lock.c:425).
 	if req.LockCount > 1 && !isUnlockRequest {
 		for i := 1; i < len(req.Locks); i++ {
 			if (req.Locks[i].Flags & SMB2LockFlagFailImmediately) == 0 {
@@ -313,18 +311,21 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 		isExclusive := (lockElem.Flags & SMB2LockFlagExclusiveLock) != 0
 
 		// Per-element flag validation, mirroring Samba's per-element switch
-		// (source3/smbd/smb2_lock.c:382). For an UNLOCK-first request, lock-
-		// typed elements after the unlock chain are flagged as invalid but
-		// deferred: the unlocks already executed persist and the request
-		// completes with INVALID_PARAMETER. For a lock-first request, an
-		// UNLOCK element is rejected immediately.
+		// (source3/smbd/smb2_lock.c:382). For an UNLOCK-first request, any
+		// element with invalid flags (a lock element OR a bare-UNLOCK with
+		// extra bits set, e.g. UNLOCK|FAIL_IMM) is flagged as invalid but
+		// deferred: the prior unlocks executed persist and the request
+		// completes with INVALID_PARAMETER without processing this element.
+		// For a lock-first request, a pure UNLOCK element is rejected
+		// immediately.
+		deferredInvalid := false
 		switch lockElem.Flags {
 		case SMB2LockFlagSharedLock, SMB2LockFlagExclusiveLock,
 			SMB2LockFlagSharedLock | SMB2LockFlagFailImmediately,
 			SMB2LockFlagExclusiveLock | SMB2LockFlagFailImmediately:
 			if isUnlockRequest {
 				// UNLOCK-first chain followed by a lock element: defer.
-				hasMixedUnlockThenLock = true
+				deferredInvalid = true
 			}
 		case SMB2LockFlagUnlock:
 			if !isUnlockRequest {
@@ -336,8 +337,11 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			}
 		default:
 			if isUnlockRequest {
-				// Defer: keep processing pending unlocks, return error after.
-				hasMixedUnlockThenLock = true
+				// Defer: persist prior unlocks, error after. Critically we
+				// must NOT process this element (its flags are invalid);
+				// otherwise UNLOCK|FAIL_IMM would slip through the
+				// isUnlock=true branch and run UnlockFile.
+				deferredInvalid = true
 			} else {
 				logger.Debug("LOCK: invalid element flags",
 					"elem", i,
@@ -345,6 +349,12 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
 				return NewErrorResult(types.StatusInvalidParameter), nil
 			}
+		}
+
+		if deferredInvalid {
+			// Stop processing — prior unlocks persist, return error now.
+			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
+			return NewErrorResult(types.StatusInvalidParameter), nil
 		}
 
 		// Per MS-SMB2 3.3.5.14: a range is invalid only when its last byte
@@ -368,16 +378,6 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			"flags", fmt.Sprintf("0x%08X", lockElem.Flags),
 			"unlock", isUnlock,
 			"exclusive", isExclusive)
-
-		// Mixed unlock-then-lock: process unlocks, reject on first lock element.
-		// Per Samba smbd_smb2_lock_send, unlocks persist but the overall request
-		// returns INVALID_PARAMETER when a lock element follows.
-		if hasMixedUnlockThenLock && !isUnlock {
-			logger.Debug("LOCK: mixed unlock-then-lock, rejecting lock element",
-				"index", i)
-			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
-			return NewErrorResult(types.StatusInvalidParameter), nil
-		}
 
 		if isUnlock {
 			// Unlock operation.
