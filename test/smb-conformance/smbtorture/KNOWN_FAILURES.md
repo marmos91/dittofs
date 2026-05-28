@@ -184,16 +184,6 @@ files, create blobs) are not implemented. Basic create operations pass.
 | smb2.create.multi | Create | Regression from recent changes, fails on all 3 stores | #480 |
 | smb2.create.path-length | Create | Flaky in CI (path length validation race) | #480 |
 
-### Read/Write Operations (Advanced Semantics)
-
-Advanced read/write scenarios requiring access check enforcement or protocol
-edge cases.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.read.access | Read | Read access enforcement not fully implemented (needs DesiredAccess from CREATE) | - |
-| smb2.read.position | Read | Read position tracking not implemented | - |
-
 ### Query/Set Info (Advanced Scenarios)
 
 Advanced getinfo scenarios requiring security descriptor queries, buffer size
