@@ -215,8 +215,8 @@ func TestChunkstore_OnChunkComplete_FiresAfterSuccessfulStoreChunk(t *testing.T)
 // gated at the firing site — chunkstore.go is the producer).
 func TestChunkstore_NilOnChunkComplete_NoOp(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{})
-	if bc.onChunkComplete != nil {
-		t.Fatalf("precondition: onChunkComplete must start nil; got %T", bc.onChunkComplete)
+	if cb := bc.onChunkComplete.Load(); cb == nil || cb.fn != nil {
+		t.Fatalf("precondition: onChunkComplete.fn must start nil; holder=%v", cb)
 	}
 	h := hashFromHex(t, strings.Repeat("8b", 32))
 	data := bytes.Repeat([]byte{0x8B}, 512)
