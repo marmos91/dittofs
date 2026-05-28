@@ -43,6 +43,9 @@ const (
 	FsctlGetObjectID            uint32 = 0x0009009C // [MS-FSCC] 2.3.28 - Get object ID
 	FsctlMarkHandle             uint32 = 0x000900FC // [MS-FSCC] 2.3.36 - Mark handle
 	FsctlQueryFileRegions       uint32 = 0x00090284 // [MS-FSCC] 2.3.51 - Query file regions
+	FsctlSetSparse              uint32 = 0x000900C4 // [MS-FSCC] 2.3.50 - Set sparse attribute
+	FsctlQueryAllocatedRanges   uint32 = 0x000940CF // [MS-FSCC] 2.3.32 - Query allocated byte ranges
+	FsctlSetZeroData            uint32 = 0x000980C8 // [MS-FSCC] 2.3.67 - Zero a byte range
 
 	// FSCTL_SMBTORTURE_* are Samba's private torture control codes (see
 	// libcli/smb/smb_constants.h in samba). They have no MS-FSCC analog; the
