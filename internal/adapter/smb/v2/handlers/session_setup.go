@@ -184,6 +184,27 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 				return NewErrorResult(types.StatusUserSessionDeleted), nil
 			}
 
+			// MS-SMB2 §3.3.5.5 step 1: for SMB 3.x dialects, a non-binding
+			// SESSION_SETUP that targets an existing session must arrive on a
+			// connection that already has a channel for the session (the
+			// origin connection or a previously bound channel). Otherwise the
+			// client is trying to re-authenticate on an unbound connection,
+			// which is indistinguishable from accessing a deleted session.
+			// Returning STATUS_USER_SESSION_DELETED here matches Samba
+			// (source3/smbd/smb2_sesssetup.c) and is what smbtorture's
+			// session_bind_negative_smbXtoX harness asserts at session.c:2799
+			// after the bind has already been rejected on the same transport.
+			if connDialect >= types.Dialect0300 &&
+				sess.OriginConnID != ctx.ConnID &&
+				sess.GetChannel(ctx.ConnID) == nil {
+				logger.Debug("SESSION_SETUP: SMB 3.x non-binding setup on unbound connection",
+					"sessionID", ctx.SessionID,
+					"sessionConnID", sess.OriginConnID,
+					"requestConnID", ctx.ConnID,
+					"dialect", fmt.Sprintf("0x%04x", uint16(connDialect)))
+				return NewErrorResult(types.StatusUserSessionDeleted), nil
+			}
+
 			// Re-authentication: client sends SESSION_SETUP on an existing session
 			// with no pending auth. Per MS-SMB2 3.3.5.5.2, this initiates a new
 			// authentication on the existing session (identity update).
