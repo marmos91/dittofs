@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v0.16.0
 milestone_name: Share Snapshots
-status: ready_to_plan
-stopped_at: Phase 24 context gathered
-last_updated: "2026-05-28T14:14:29.695Z"
-last_activity: 2026-05-28 -- Phase 24 planning complete
+status: planning
+stopped_at: Phase 25 context gathered
+last_updated: "2026-05-28T20:50:24.973Z"
+last_activity: 2026-05-28
 progress:
   total_phases: 18
-  completed_phases: 7
-  total_plans: 48
-  completed_plans: 44
-  percent: 39
+  completed_phases: 8
+  total_plans: 54
+  completed_plans: 54
+  percent: 100
 ---
 
 # Project State
@@ -135,8 +135,8 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-28T13:49:30.115Z
-Stopped at: Phase 24 context gathered
+Last session: 2026-05-28T20:50:24.911Z
+Stopped at: Phase 25 context gathered
 Next action: Wait for the parallel sentinel-path-mismatch fix work stream (Plan 09 SUMMARY Deviations) to land; then Phase 17 is ready for develop merge. Plan 17-10 SUMMARY at `.planning/phases/17-unified-blockstore/17-10-SUMMARY.md`. Three doc surfaces (pkg/blockstore/doc.go, docs/CONFIGURATION.md §Migration, docs/CLI.md dfs migrate-to-cas) pinned by acceptance-criteria grep gates against future flag drift. Commits: `bb97ec34`, `99b5ef58`, `9f604247`.
 
 Previous next-action (preserved for context): **Phase 14 phase-execution complete.** Two outstanding follow-ups before production rollout: (1) `openOfflineRuntime` production wiring (controlplane DB read + per-share metadata/remote-store factory dispatch) — tracked under #425, interfaces stable, runbook documents this prominently as a Known Limitation; (2) per-payload-id streaming variant of `deleteLegacyKeys` only if real workloads surface S3 LIST cost (T-14-05-04). Status surface (CLI + REST) is fully usable today against a running daemon. Once #425 closes, no runbook changes needed — the four worked transcripts will then run literally rather than aspirationally. Phase 15 (A6 — legacy cleanup) remains intentionally deferred until #425 closes and migration is rolled out across production workloads.
