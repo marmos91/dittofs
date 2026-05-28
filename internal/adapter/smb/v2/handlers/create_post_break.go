@@ -668,6 +668,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		ShareAccess:    req.ShareAccess,
 		CreateOptions:  req.CreateOptions,
 		DeletePending:  req.CreateOptions&types.FileDeleteOnClose != 0,
+		ClientGUID:     connClientGUID(ctx),
 	}
 
 	if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
