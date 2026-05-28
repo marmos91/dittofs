@@ -58,8 +58,9 @@ const (
 	// [MS-SMB2] 2.2.35 / [MS-FSCC] 2.6.
 	FileNotifyChangeStreamWrite uint32 = 0x00000800
 
-	// AllValidCompletionFilterFlags is the bitmask of all valid completion filter flags.
-	// Used to validate CHANGE_NOTIFY requests per MS-SMB2 3.3.5.15.
+	// AllValidCompletionFilterFlags is the bitmask of all recognized completion
+	// filter flags per MS-SMB2 2.2.35. Used by MatchesFilter for event routing;
+	// not used for request validation (any non-zero filter is accepted).
 	AllValidCompletionFilterFlags uint32 = FileNotifyChangeFileName | FileNotifyChangeDirName |
 		FileNotifyChangeAttributes | FileNotifyChangeSize | FileNotifyChangeLastWrite |
 		FileNotifyChangeLastAccess | FileNotifyChangeCreation | FileNotifyChangeEa |
@@ -168,9 +169,21 @@ type PendingNotify struct {
 	// Watch parameters
 	WatchPath        string // Share-relative directory path
 	ShareName        string
+	TreeID           uint32
 	CompletionFilter uint32
 	WatchTree        bool // Recursive watching
 	MaxOutputLength  uint32
+
+	// GateInterim, when true, defers any async final response (CANCELLED,
+	// OK, NOTIFY_CLEANUP, NOTIFY_ENUM_DIR) until MarkInterimSent fires for
+	// this notify's (ConnID, MessageID). Set by the production CHANGE_NOTIFY
+	// handler — the handler returns STATUS_PENDING and its PostSend hook
+	// calls MarkInterimSent after the interim is on the wire. Tests that
+	// call Register directly leave this false so deliveries happen inline.
+	// Without the gate, a racing CANCEL can send its STATUS_CANCELLED before
+	// the dispatcher writes the interim PENDING — the client receives
+	// CANCELLED before PENDING and RSTs the connection (smb2.notify.mask).
+	GateInterim bool
 
 	// AsyncCallback is called when a matching change is detected.
 	// If nil, the change is logged but no response is sent.
@@ -189,6 +202,22 @@ type PendingNotify struct {
 	// flushTimer fires after notifyFlushDelay to deliver all buffered events.
 	// nil when no events are buffered. Protected by NotifyRegistry.mu.
 	flushTimer *time.Timer
+
+	// interimSent is set when the dispatcher has written the STATUS_PENDING
+	// interim response for this notify to the wire. Until this is true, any
+	// async final response (STATUS_CANCELLED from CANCEL, STATUS_OK from a
+	// matching event, STATUS_NOTIFY_CLEANUP from CLOSE) MUST be deferred —
+	// otherwise it races ahead of the interim PENDING and the client sees
+	// an out-of-order async response, treats it as a malformed message, and
+	// RSTs the TCP connection. The deferral hook is `deferredFinal`.
+	// Protected by NotifyRegistry.mu.
+	interimSent bool
+
+	// deferredFinal is set when an async final response was queued before
+	// the interim PENDING reached the wire. Runs exactly once via
+	// MarkInterimSent, on the goroutine that writes the interim.
+	// Protected by NotifyRegistry.mu.
+	deferredFinal func()
 }
 
 // NotifyRegistry manages pending CHANGE_NOTIFY requests from SMB2 clients.
@@ -240,6 +269,16 @@ type NotifyRegistry struct {
 	// CANCEL cannot race because the client only learns AsyncId from the
 	// interim response, which is sent strictly AFTER Register has run.
 	cancelTombstones map[notifyMsgKey]time.Time
+
+	// pendingInterim retains the PendingNotify for an in-flight CHANGE_NOTIFY
+	// whose interim STATUS_PENDING has not yet been written to the wire, even
+	// after it was unregistered (e.g. by a racing CANCEL). The CANCEL handler
+	// MUST defer its STATUS_CANCELLED response into PendingNotify.deferredFinal
+	// when interimSent is still false — otherwise the cancel response races
+	// ahead of the interim PENDING and the client drops the connection
+	// (smb2.notify.mask). MarkInterimSent fires the deferred response after
+	// writing interim and clears this map entry. Keyed by (ConnID, MessageID).
+	pendingInterim map[notifyMsgKey]*PendingNotify
 }
 
 // cancelTombstoneTTL bounds how long a pre-arrival SMB2_CANCEL is remembered
@@ -255,6 +294,7 @@ type armedHandle struct {
 	FileID           [16]byte
 	SessionID        uint64
 	ShareName        string
+	TreeID           uint32
 	WatchPath        string
 	CompletionFilter uint32
 	WatchTree        bool
@@ -273,6 +313,10 @@ type armedHandle struct {
 	// Overflowed is set on first overflow trip and prevents further
 	// OnOverflow invocations until Disarm/ResetArmedOverflow.
 	Overflowed bool
+	// BufferedEvents accumulates events that arrived when no live watcher
+	// was pending (one-shot consumed, client hasn't re-armed yet). Replayed
+	// on the next Register — mirrors Samba's notify_buffer (smb2.notify.tcon).
+	BufferedEvents []FileNotifyInformation
 }
 
 // notifyMsgKey identifies a pending notify by the tuple that uniquely names
@@ -291,6 +335,77 @@ func NewNotifyRegistry() *NotifyRegistry {
 		byAsyncId:        make(map[uint64]*PendingNotify),
 		armed:            make(map[string]*armedHandle),
 		cancelTombstones: make(map[notifyMsgKey]time.Time),
+		pendingInterim:   make(map[notifyMsgKey]*PendingNotify),
+	}
+}
+
+// MarkInterimSent runs after the dispatcher has written the interim
+// STATUS_PENDING response for a CHANGE_NOTIFY. If any final response
+// (CANCELLED, NOTIFY_CLEANUP, OK) was queued before interim reached the wire,
+// it is delivered now — preserving the on-wire order PENDING → final that
+// clients require.
+func (r *NotifyRegistry) MarkInterimSent(connID, messageID uint64) {
+	r.mu.Lock()
+	key := notifyMsgKey{ConnID: connID, MessageID: messageID}
+	notify := r.pendingInterim[key]
+	delete(r.pendingInterim, key)
+	var deferred func()
+	if notify != nil {
+		notify.interimSent = true
+		deferred = notify.deferredFinal
+		notify.deferredFinal = nil
+	} else if n, ok := r.byMsgKey[key]; ok {
+		// Still registered and live. Mark the flag so any future async
+		// final response delivery skips the deferral path.
+		n.interimSent = true
+	}
+	r.mu.Unlock()
+
+	if deferred != nil {
+		deferred()
+	}
+}
+
+// QueueFinalAfterInterim defers a final-response callback on the given notify
+// until its interim STATUS_PENDING is written to the wire. If interim has
+// already been sent, the callback runs immediately on the caller's goroutine.
+// Returns true when the callback ran inline (interim already on wire);
+// false when it was deferred. Must hold r.mu for write.
+//
+// Use this from any path that wants to send an async final response
+// (CANCEL, CLOSE / NOTIFY_CLEANUP, session/tree teardown) on a notify that
+// may have just registered but not yet returned through the dispatch loop.
+func (r *NotifyRegistry) queueFinalAfterInterimLocked(notify *PendingNotify, run func()) bool {
+	if notify.interimSent {
+		return true
+	}
+	// Chain — first-writer-wins isn't right here; we want every queued final
+	// (typically only one, but allow more) to fire in registration order.
+	prev := notify.deferredFinal
+	notify.deferredFinal = func() {
+		if prev != nil {
+			prev()
+		}
+		run()
+	}
+	key := notifyMsgKey{ConnID: notify.ConnID, MessageID: notify.MessageID}
+	r.pendingInterim[key] = notify
+	return false
+}
+
+// QueueFinalAfterInterim is the locked wrapper around the helper above.
+// When notify.GateInterim is false (test path / no real dispatcher to
+// signal interim), runs the callback inline without deferral.
+func (r *NotifyRegistry) QueueFinalAfterInterim(notify *PendingNotify, run func()) {
+	if !notify.GateInterim {
+		run()
+		return
+	}
+	r.mu.Lock()
+	inline := r.queueFinalAfterInterimLocked(notify, run)
+	r.mu.Unlock()
+	if inline {
+		run()
 	}
 }
 
@@ -363,6 +478,7 @@ func (r *NotifyRegistry) armLocked(n *PendingNotify) {
 		// still count.
 		existing.SessionID = n.SessionID
 		existing.ShareName = n.ShareName
+		existing.TreeID = n.TreeID
 		existing.WatchPath = n.WatchPath
 		existing.CompletionFilter = n.CompletionFilter
 		existing.WatchTree = n.WatchTree
@@ -376,11 +492,23 @@ func (r *NotifyRegistry) armLocked(n *PendingNotify) {
 		FileID:           n.FileID,
 		SessionID:        n.SessionID,
 		ShareName:        n.ShareName,
+		TreeID:           n.TreeID,
 		WatchPath:        n.WatchPath,
 		CompletionFilter: n.CompletionFilter,
 		WatchTree:        n.WatchTree,
 		MaxOutputLength:  n.MaxOutputLength,
 		OnOverflow:       n.OnOverflow,
+	}
+}
+
+// ClearBufferedEvents discards queued events on the armed handle for fileID.
+// Called after CANCEL so the next Register doesn't replay stale events
+// (smb2.notify.mask).
+func (r *NotifyRegistry) ClearBufferedEvents(fileID [16]byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if a, ok := r.armed[string(fileID[:])]; ok {
+		a.BufferedEvents = nil
 	}
 }
 
@@ -472,14 +600,28 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	r.byAsyncId[notify.AsyncId] = notify
 	r.pending[notify.WatchPath] = append(r.pending[notify.WatchPath], notify)
 
-	// Arm the handle for buffered-event accounting. The armed entry survives
-	// across CANCEL and one-shot completion of this pending notify; only
-	// CLOSE or session/tree teardown disarms it. If the handle was already
-	// armed (re-issued CHANGE_NOTIFY after a CANCEL or after a successful
-	// async completion), refresh the MaxOutputLength but preserve the
-	// running BufferedBytes / Overflowed state — events accumulated while
-	// the client wasn't waiting must continue to count.
+	// Arm (or refresh) the handle for buffered-event accounting. On re-arm,
+	// MaxOutputLength is updated but BufferedBytes/Overflowed are preserved.
 	r.armLocked(notify)
+
+	// Replay events that arrived while no live watcher was pending
+	// (goroutine-per-request race). The flush timer delivers them after
+	// notifyFlushDelay; a racing CANCEL clears them before the timer fires.
+	if a, ok := r.armed[string(notify.FileID[:])]; ok && len(a.BufferedEvents) > 0 {
+		for _, ev := range a.BufferedEvents {
+			if !MatchesFilter(ev.Action, notify.CompletionFilter) {
+				continue
+			}
+			// WatchTree is non-sticky — respect the current request's flag.
+			// Events buffered while the armed handle was recursive may
+			// include subdirectory entries; skip them for non-recursive.
+			if !notify.WatchTree && strings.Contains(ev.FileName, "/") {
+				continue
+			}
+			r.bufferEventLocked(notify, ev)
+		}
+		a.BufferedEvents = nil
+	}
 
 	logger.Debug("NotifyRegistry: registered watch",
 		"path", notify.WatchPath,
@@ -583,6 +725,21 @@ const (
 	FileActionRemovedStream  uint32 = 0x00000007
 	FileActionModifiedStream uint32 = 0x00000008
 )
+
+// NameChangeFilterFor returns the appropriate FileNotifyChange* mask for a
+// file-name-change event on a target with the given baseName and directory
+// flag. ADS streams (name contains ':') route via FILE_NOTIFY_CHANGE_STREAM_NAME
+// per MS-FSCC §2.6 — applies to create / delete / rename of stream entries so
+// stream-name watchers see them.
+func NameChangeFilterFor(baseName string, isDirectory bool) uint32 {
+	if strings.Contains(baseName, ":") {
+		return FileNotifyChangeStreamName
+	}
+	if isDirectory {
+		return FileNotifyChangeDirName
+	}
+	return FileNotifyChangeFileName
+}
 
 // MatchesFilter checks if a filesystem change action matches a CHANGE_NOTIFY
 // completion filter [MS-SMB2] 2.2.35. It maps FileAction* constants to the
@@ -739,6 +896,26 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 		relativePath := relativePathFromWatch(w.watchPath, parentPath, fileName)
 		r.bufferEventLocked(w.notify, FileNotifyInformation{Action: action, FileName: relativePath})
 	}
+	// Buffer events on armed handles that have no live watcher so they
+	// can be replayed when the first event after re-register arrives.
+	for _, a := range r.armed {
+		if a.ShareName != shareName || a.Overflowed {
+			continue
+		}
+		if _, live := liveFileIDs[a.FileID]; live {
+			continue
+		}
+		if a.WatchPath != parentPath {
+			if !a.WatchTree || !pathIsAncestor(a.WatchPath, parentPath) {
+				continue
+			}
+		}
+		if a.CompletionFilter&filter == 0 {
+			continue
+		}
+		relName := relativePathFromWatch(a.WatchPath, parentPath, fileName)
+		a.BufferedEvents = append(a.BufferedEvents, FileNotifyInformation{Action: action, FileName: relName})
+	}
 	r.mu.Unlock()
 
 	r.chargeArmedBuffer(shareName, parentPath, filter, []string{fileName}, liveFileIDs)
@@ -775,6 +952,30 @@ func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, new
 		newRelativePath := relativePathFromWatch(w.watchPath, newParentPath, newFileName)
 		r.bufferEventLocked(w.notify, FileNotifyInformation{Action: FileActionRenamedOldName, FileName: oldRelativePath})
 		r.bufferEventLocked(w.notify, FileNotifyInformation{Action: FileActionRenamedNewName, FileName: newRelativePath})
+	}
+	// Buffer rename events on armed handles with no live watcher (mirrors
+	// the same pattern in NotifyChange).
+	for _, a := range r.armed {
+		if a.ShareName != shareName || a.Overflowed {
+			continue
+		}
+		if _, live := liveFileIDs[a.FileID]; live {
+			continue
+		}
+		matchesOld := a.WatchPath == oldParentPath || (a.WatchTree && pathIsAncestor(a.WatchPath, oldParentPath))
+		matchesNew := a.WatchPath == newParentPath || (a.WatchTree && pathIsAncestor(a.WatchPath, newParentPath))
+		if !matchesOld && !matchesNew {
+			continue
+		}
+		if a.CompletionFilter&filter == 0 {
+			continue
+		}
+		oldRel := relativePathFromWatch(a.WatchPath, oldParentPath, oldFileName)
+		newRel := relativePathFromWatch(a.WatchPath, newParentPath, newFileName)
+		a.BufferedEvents = append(a.BufferedEvents,
+			FileNotifyInformation{Action: FileActionRenamedOldName, FileName: oldRel},
+			FileNotifyInformation{Action: FileActionRenamedNewName, FileName: newRel},
+		)
 	}
 	r.mu.Unlock()
 
@@ -970,6 +1171,26 @@ func (r *NotifyRegistry) flushWatcher(fileID [16]byte) {
 	r.deliverChanges(notify, changes)
 }
 
+// sendFinalGated invokes notify.AsyncCallback with the given response,
+// deferring the send until the interim STATUS_PENDING for this notify has
+// been written to the wire. Use this for any async final response (CANCELLED,
+// OK, NOTIFY_CLEANUP, NOTIFY_ENUM_DIR) so the on-wire order PENDING → final
+// is preserved (smb2.notify.mask).
+func (r *NotifyRegistry) sendFinalGated(notify *PendingNotify, resp *ChangeNotifyResponse, where string) {
+	if notify.AsyncCallback == nil {
+		return
+	}
+	r.QueueFinalAfterInterim(notify, func() {
+		if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, resp); err != nil {
+			logger.Warn("CHANGE_NOTIFY: failed to send async final",
+				"where", where,
+				"messageID", notify.MessageID,
+				"status", resp.GetStatus().String(),
+				"error", err)
+		}
+	})
+}
+
 // deliverChanges encodes and sends buffered events via the watcher's
 // AsyncCallback. Called from flushWatcher (timer path) and FlushAll (test
 // path). Must be called AFTER the watcher is unregistered — caller is
@@ -991,13 +1212,13 @@ func (r *NotifyRegistry) deliverChanges(notify *PendingNotify, changes []FileNot
 		if notify.OnOverflow != nil {
 			notify.OnOverflow(notify.FileID)
 		}
+		// Drop any armed-handle buffered events; the client must re-enumerate
+		// the directory and stale buffered entries would replay otherwise.
+		r.ClearBufferedEvents(notify.FileID)
 		enumResp := &ChangeNotifyResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
 		}
-		if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, enumResp); err != nil {
-			logger.Warn("CHANGE_NOTIFY: failed to send STATUS_NOTIFY_ENUM_DIR",
-				"messageID", notify.MessageID, "error", err)
-		}
+		r.sendFinalGated(notify, enumResp, "deliverChanges/overflow")
 		return
 	}
 
@@ -1012,10 +1233,7 @@ func (r *NotifyRegistry) deliverChanges(notify *PendingNotify, changes []FileNot
 		"messageID", notify.MessageID,
 		"sessionID", notify.SessionID)
 
-	if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, response); err != nil {
-		logger.Warn("CHANGE_NOTIFY: failed to send async response",
-			"messageID", notify.MessageID, "error", err)
-	}
+	r.sendFinalGated(notify, response, "deliverChanges")
 }
 
 // NotifyRmdir handles directory removal notification: send STATUS_NOTIFY_CLEANUP
@@ -1043,17 +1261,10 @@ func (r *NotifyRegistry) NotifyRmdir(shareName, parentPath, dirName string) {
 
 	// Send STATUS_NOTIFY_CLEANUP to each removed watcher
 	for _, w := range cleanupWatchers {
-		if w.AsyncCallback != nil {
-			cleanupResp := &ChangeNotifyResponse{
-				SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
-			}
-			if err := w.AsyncCallback(w.SessionID, w.MessageID, w.AsyncId, cleanupResp); err != nil {
-				logger.Warn("CHANGE_NOTIFY: failed to send STATUS_NOTIFY_CLEANUP for rmdir",
-					"dirPath", dirPath,
-					"messageID", w.MessageID,
-					"error", err)
-			}
+		cleanupResp := &ChangeNotifyResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
 		}
+		r.sendFinalGated(w, cleanupResp, "NotifyRmdir")
 	}
 
 	// Second: notify parent watchers about the directory removal
@@ -1087,14 +1298,17 @@ func (r *NotifyRegistry) UnregisterAllForSession(sessionID uint64) []*PendingNot
 }
 
 // UnregisterAllForTree unregisters all pending watchers for a specific tree
-// connect (identified by sessionID + shareName). Sends STATUS_NOTIFY_CLEANUP
-// for each. Called during TREE_DISCONNECT cleanup.
-func (r *NotifyRegistry) UnregisterAllForTree(sessionID uint64, shareName string) []*PendingNotify {
+// connect (identified by sessionID + treeID). Uses TreeID rather than
+// ShareName because multiple tree connects to the same share each get a
+// distinct TreeID, and TREE_DISCONNECT must only tear down watchers opened
+// through *that* tree connect — not watchers from a sibling tree connect to
+// the same share (smb2.notify.tcon).
+func (r *NotifyRegistry) UnregisterAllForTree(sessionID uint64, treeID uint32) []*PendingNotify {
 	r.mu.Lock()
 	var toRemove []*PendingNotify
 	for _, watchers := range r.pending {
 		for _, w := range watchers {
-			if w.SessionID == sessionID && w.ShareName == shareName {
+			if w.SessionID == sessionID && w.TreeID == treeID {
 				toRemove = append(toRemove, w)
 			}
 		}
@@ -1103,7 +1317,7 @@ func (r *NotifyRegistry) UnregisterAllForTree(sessionID uint64, shareName string
 		r.unregisterLocked(w)
 	}
 	for key, a := range r.armed {
-		if a.SessionID == sessionID && a.ShareName == shareName {
+		if a.SessionID == sessionID && a.TreeID == treeID {
 			delete(r.armed, key)
 		}
 	}
@@ -1244,14 +1458,13 @@ func (r *AsyncResponseRegistry) Len() int {
 	return len(r.ops)
 }
 
-// IsValidCompletionFilter checks if the CompletionFilter contains only valid flags.
-// Per MS-SMB2 3.3.5.15: if CompletionFilter is 0 or contains invalid flags,
-// return STATUS_INVALID_PARAMETER.
+// IsValidCompletionFilter checks if the CompletionFilter is non-zero.
+// Per MS-SMB2 3.3.5.15: if CompletionFilter is 0, return STATUS_INVALID_PARAMETER.
+// Windows Server and Samba accept reserved/unknown bits — they simply never
+// match any event. smb2.notify.mask iterates all 32 bit positions and expects
+// each to be accepted (then cancelled).
 func IsValidCompletionFilter(filter uint32) bool {
-	// Per MS-SMB2 3.3.5.15: CompletionFilter must contain at least one valid flag.
-	// Windows Server ignores reserved/unknown bits rather than rejecting them,
-	// so we only check that at least one recognized bit is set.
-	return filter&AllValidCompletionFilterFlags != 0
+	return filter != 0
 }
 
 // relativePathFromWatch computes the relative path of a changed item from the

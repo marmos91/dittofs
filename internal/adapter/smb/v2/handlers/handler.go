@@ -830,17 +830,21 @@ func (h *Handler) closeFilesWithFilter(
 		if h.NotifyRegistry != nil {
 			h.NotifyRegistry.Disarm(fileID)
 			if notify := h.NotifyRegistry.Unregister(fileID); notify != nil && notify.AsyncCallback != nil {
-				go func(n *PendingNotify) {
-					cleanupResp := &ChangeNotifyResponse{
-						SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
-					}
+				cleanupResp := &ChangeNotifyResponse{
+					SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
+				}
+				// Gate on interim PENDING — even during teardown, the
+				// interim must reach the wire first or the client sees
+				// out-of-order responses on its still-alive socket.
+				n := notify
+				go h.NotifyRegistry.QueueFinalAfterInterim(n, func() {
 					if err := n.AsyncCallback(n.SessionID, n.MessageID, n.AsyncId, cleanupResp); err != nil {
 						logger.Debug("closeFilesWithFilter: failed to send STATUS_NOTIFY_CLEANUP",
 							"sessionID", n.SessionID,
 							"messageID", n.MessageID,
 							"error", err)
 					}
-				}(notify)
+				})
 			}
 		}
 		h.DeleteOpenFile(fileID)
@@ -1022,12 +1026,15 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 			cleanupResp := &ChangeNotifyResponse{
 				SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
 			}
-			if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, cleanupResp); err != nil {
-				logger.Debug("session cleanup: failed to send STATUS_NOTIFY_CLEANUP",
-					"sessionID", notify.SessionID,
-					"messageID", notify.MessageID,
-					"error", err)
-			}
+			n := notify
+			h.NotifyRegistry.QueueFinalAfterInterim(n, func() {
+				if err := n.AsyncCallback(n.SessionID, n.MessageID, n.AsyncId, cleanupResp); err != nil {
+					logger.Debug("session cleanup: failed to send STATUS_NOTIFY_CLEANUP",
+						"sessionID", n.SessionID,
+						"messageID", n.MessageID,
+						"error", err)
+				}
+			})
 		}
 	}
 	h.cancelAsyncOpsForSession(sessionID)

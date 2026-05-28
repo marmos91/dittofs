@@ -596,9 +596,9 @@ func (h *Handler) setFileInfoFromStore(
 					if newParentPath == "" || newParentPath == "." {
 						newParentPath = "/"
 					}
-					renameFilter := uint32(FileNotifyChangeFileName)
-					if openFile.IsDirectory {
-						renameFilter = FileNotifyChangeDirName
+					renameFilter := NameChangeFilterFor(toName, openFile.IsDirectory)
+					if NameChangeFilterFor(oldFileName, openFile.IsDirectory) == FileNotifyChangeStreamName {
+						renameFilter = FileNotifyChangeStreamName
 					}
 					h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, oldFileName, newParentPath, toName, renameFilter)
 				}
@@ -874,9 +874,9 @@ func (h *Handler) setFileInfoFromStore(
 				if newParentPath == "" || newParentPath == "." {
 					newParentPath = "/"
 				}
-				renameFilter := uint32(FileNotifyChangeFileName)
-				if openFile.IsDirectory {
-					renameFilter = FileNotifyChangeDirName
+				renameFilter := NameChangeFilterFor(toName, openFile.IsDirectory)
+				if NameChangeFilterFor(oldFileName, openFile.IsDirectory) == FileNotifyChangeStreamName {
+					renameFilter = FileNotifyChangeStreamName
 				}
 				h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, oldFileName, newParentPath, toName, renameFilter)
 			} else {

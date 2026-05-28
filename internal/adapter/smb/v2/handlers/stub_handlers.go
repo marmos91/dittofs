@@ -240,17 +240,33 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 				"asyncId", cancelled.AsyncId,
 				"messageID", cancelled.MessageID)
 
+			// Discard events buffered on the armed handle while no live
+			// watcher was pending. Live-watcher events were already dropped
+			// when unregisterLocked stopped this notify's flushTimer; only
+			// the stale-replay queue needs explicit clearing here
+			// (smb2.notify.mask).
+			h.NotifyRegistry.ClearBufferedEvents(cancelled.FileID)
+
 			// Send STATUS_CANCELLED for the original CHANGE_NOTIFY request
-			// via the async callback. This completes the pending request.
+			// via the async callback. The send is gated on the interim
+			// STATUS_PENDING having reached the wire — if CANCEL won the
+			// race against NOTIFY's dispatcher, the cancel response is
+			// deferred so the on-wire order PENDING → CANCELLED is
+			// preserved (smb2.notify.mask). Clients reject any final
+			// response that arrives before PENDING with NETWORK_RESPONSE
+			// and RST the connection.
 			if cancelled.AsyncCallback != nil {
-				cancelResp := &ChangeNotifyResponse{
-					SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled},
-				}
-				if err := cancelled.AsyncCallback(cancelled.SessionID, cancelled.MessageID, cancelled.AsyncId, cancelResp); err != nil {
-					logger.Warn("CANCEL: failed to send STATUS_CANCELLED",
-						"messageID", cancelled.MessageID,
-						"error", err)
-				}
+				cb := cancelled
+				h.NotifyRegistry.QueueFinalAfterInterim(cb, func() {
+					cancelResp := &ChangeNotifyResponse{
+						SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled},
+					}
+					if err := cb.AsyncCallback(cb.SessionID, cb.MessageID, cb.AsyncId, cancelResp); err != nil {
+						logger.Warn("CANCEL: failed to send STATUS_CANCELLED",
+							"messageID", cb.MessageID,
+							"error", err)
+					}
+				})
 			}
 		} else if ctx.RequestAsyncId == 0 {
 			// CANCEL arrived before the matching CHANGE_NOTIFY had a chance
@@ -407,8 +423,26 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// Get the open file (must be a directory)
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
+		// Per MS-SMB2 3.3.5.19: if the handle is gone, the directory was
+		// already closed. Return NOTIFY_CLEANUP rather than FILE_CLOSED so
+		// the client interprets this as "your watch was cleaned up" — the
+		// CLOSE goroutine may have raced ahead of this CHANGE_NOTIFY
+		// goroutine (smb2.notify.dir close-triggers-cleanup subtest).
+		//
+		// STATUS_NOTIFY_CLEANUP / STATUS_NOTIFY_ENUM_DIR are NOT classified
+		// as errors by the WPTS decoder (search Smb2Decoder.cs for
+		// "STATUS_NOTIFY_CLEANUP"). They parse the body as a regular
+		// CHANGE_NOTIFY Response with empty output buffer. Using
+		// NewErrorResult here returns an SMB2 ERROR body, which the client
+		// rejects as INVALID_NETWORK_RESPONSE.
 		logger.Debug("CHANGE_NOTIFY: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
-		return NewErrorResult(types.StatusFileClosed), nil
+		respBytes, encErr := (&ChangeNotifyResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
+		}).Encode()
+		if encErr != nil {
+			return NewErrorResult(types.StatusInternalError), nil
+		}
+		return NewResult(types.StatusNotifyCleanup, respBytes), nil
 	}
 
 	// Verify it's a directory
@@ -486,9 +520,11 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// completion. Also reset the registry's buffered-event accounting so
 	// the buffer starts fresh with the newly advertised OutputBufferLength.
 	if openFile.NotifyOverflowed.CompareAndSwap(true, false) {
-		if h.NotifyRegistry != nil {
-			h.NotifyRegistry.ResetArmedOverflow(req.FileID, req.OutputBufferLength)
-		}
+		h.NotifyRegistry.ResetArmedOverflow(req.FileID, req.OutputBufferLength)
+		// Discard armed-handle buffered events — STATUS_NOTIFY_ENUM_DIR
+		// tells the client to re-enumerate; any retained events would
+		// replay stale state on the next Register.
+		h.NotifyRegistry.ClearBufferedEvents(req.FileID)
 		respBytes, err := (&ChangeNotifyResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
 		}).Encode()
@@ -548,9 +584,11 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		AsyncId:          asyncId,
 		WatchPath:        watchPath,
 		ShareName:        openFile.ShareName,
+		TreeID:           ctx.TreeID,
 		CompletionFilter: effectiveFilter,
 		WatchTree:        req.Flags&SMB2WatchTree != 0,
 		MaxOutputLength:  effectiveMax,
+		GateInterim:      true,
 		AsyncCallback:    ctx.AsyncNotifyCallback,
 		OnOverflow: func(fileID [16]byte) {
 			if of, ok := h.GetOpenFile(fileID); ok {
@@ -597,6 +635,19 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		"messageID", ctx.MessageID,
 		"asyncId", asyncId,
 		"asyncEnabled", hasAsyncCallback)
+
+	// Wire PostSend to mark interim-sent. Any racing CANCEL / CLOSE that
+	// queued a final response into PendingNotify.deferredFinal will fire
+	// from MarkInterimSent on this goroutine after the dispatcher writes
+	// the PENDING interim — ensuring on-wire order PENDING → final.
+	notifyRef := notify
+	prevPostSend := ctx.PostSend
+	ctx.PostSend = func() {
+		if prevPostSend != nil {
+			prevPostSend()
+		}
+		h.NotifyRegistry.MarkInterimSent(notifyRef.ConnID, notifyRef.MessageID)
+	}
 
 	// Return STATUS_PENDING with AsyncId - the client will receive an
 	// interim response with SMB2_FLAGS_ASYNC_COMMAND set and this AsyncId.

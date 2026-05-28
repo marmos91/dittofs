@@ -417,10 +417,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 					if h.NotifyRegistry != nil {
 						parentPath := GetParentPath(openFile.Path)
-						nameFilter := uint32(FileNotifyChangeFileName)
-						if openFile.IsDirectory {
-							nameFilter = FileNotifyChangeDirName
-						}
+						nameFilter := NameChangeFilterFor(openFile.FileName, openFile.IsDirectory)
 						h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved, nameFilter)
 					}
 				}
@@ -531,20 +528,23 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// unregistered, so capturing the pointer is safe — nothing else can
 			// see or mutate it.
 			if notify.AsyncCallback != nil {
+				n := notify
 				ctx.PostSend = func() {
 					cleanupResp := &ChangeNotifyResponse{
 						SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
 					}
-					if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, cleanupResp); err != nil {
-						logger.Warn("CLOSE: failed to send STATUS_NOTIFY_CLEANUP",
-							"messageID", notify.MessageID,
-							"error", err)
-						return
-					}
-					logger.Debug("CLOSE: sent STATUS_NOTIFY_CLEANUP (post-close)",
-						"path", openFile.Path,
-						"messageID", notify.MessageID,
-						"asyncId", notify.AsyncId)
+					h.NotifyRegistry.QueueFinalAfterInterim(n, func() {
+						if err := n.AsyncCallback(n.SessionID, n.MessageID, n.AsyncId, cleanupResp); err != nil {
+							logger.Warn("CLOSE: failed to send STATUS_NOTIFY_CLEANUP",
+								"messageID", n.MessageID,
+								"error", err)
+							return
+						}
+						logger.Debug("CLOSE: sent STATUS_NOTIFY_CLEANUP (post-close)",
+							"path", openFile.Path,
+							"messageID", n.MessageID,
+							"asyncId", n.AsyncId)
+					})
 				}
 			}
 			logger.Debug("CLOSE: unregistered pending CHANGE_NOTIFY",
