@@ -328,10 +328,10 @@ func (b *blockingRemote) Healthcheck(context.Context) health.Report { return hea
 // countingRemote: tracks max-in-flight + total calls; sleeps `delay`
 // per Head so the bound assertion is observable.
 type countingRemote struct {
-	delay   time.Duration
-	flying  atomic.Int64
-	maxFly  atomic.Int64
-	calls   atomic.Int64
+	delay  time.Duration
+	flying atomic.Int64
+	maxFly atomic.Int64
+	calls  atomic.Int64
 }
 
 var _ remote.RemoteStore = (*countingRemote)(nil)
