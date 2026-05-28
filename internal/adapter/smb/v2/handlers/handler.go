@@ -625,6 +625,29 @@ type handleOpTracker struct {
 	wg sync.WaitGroup
 }
 
+// BeginHandleOp registers an in-flight operation on fileID without checking
+// whether the OpenFile is currently present. It is intended for the
+// connection dispatcher to call synchronously on the read loop BEFORE
+// spawning the request goroutine, so that the handleOps counter for the
+// FileID is incremented in wire order (independent of goroutine scheduling).
+// Without this, a later CLOSE on the same TCP connection can race ahead of
+// an earlier request's goroutine, observe handleOps empty, and delete the
+// OpenFile before the prior request calls AcquireOpenFile — yielding a
+// spurious STATUS_FILE_CLOSED (smbtorture compound_find.compound_find_close).
+//
+// The returned release func MUST be called exactly once when the request
+// completes. A subsequent in-handler AcquireOpenFile/ReleaseOpenFile pair on
+// the same FileID still works correctly: the tracker is shared, so the
+// nested Add/Done cancel out and the dispatcher's outer Done fires when the
+// request finishes.
+func (h *Handler) BeginHandleOp(fileID [16]byte) func() {
+	key := string(fileID[:])
+	v, _ := h.handleOps.LoadOrStore(key, &handleOpTracker{})
+	tracker := v.(*handleOpTracker)
+	tracker.wg.Add(1)
+	return func() { tracker.wg.Done() }
+}
+
 // AcquireOpenFile retrieves an open file by FileID and registers an in-flight
 // operation on it. The caller MUST call ReleaseOpenFile when done. Returns
 // nil,false when the handle is not found. This prevents a CLOSE on a concurrent
@@ -671,9 +694,13 @@ func (h *Handler) WaitAndDeleteOpenFile(fileID [16]byte) {
 }
 
 // DeleteOpenFile removes an open file by FileID and revokes any
-// resume keys issued for this handle (used by FSCTL_SRV_COPYCHUNK).
+// resume keys issued for this handle (used by FSCTL_SRV_COPYCHUNK and the
+// session-cleanup path closeFilesWithFilter). Also clears the handleOps
+// tracker so trackers created by BeginHandleOp on this FileID do not leak.
 func (h *Handler) DeleteOpenFile(fileID [16]byte) {
-	h.files.Delete(string(fileID[:]))
+	key := string(fileID[:])
+	h.files.Delete(key)
+	h.handleOps.Delete(key)
 	h.resumeKeys.revoke(fileID)
 }
 

@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-05-28 (v1.0 conformance gate — extract 14 architecturally-unimplementable entries into Permanently Unimplementable appendix; defer 70 Kerberos entries to v1.0+kerberos milestone)
+Last updated: 2026-05-28 (close FIND+CLOSE goroutine-spawn race via dispatch-time pre-acquire of per-FileID in-flight counter — walks back `smb2.compound_find.compound_find_close` from Compound and Intermittent sections, #472)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -97,12 +97,6 @@ overflow, rec, rmdir1-4, tcon, tdis, tdis1, tcp, tree.
 | smb2.notify.valid-req | Change Notify | Needs kernel inotify for MODIFIED on WRITE (also fails on reference Samba in Docker) | - |
 | smb2.notify.session-reconnect | Change Notify | PreviousSessionID signing key derivation mismatch (not notify-specific) | - |
 | smb2.notify.mask-change | Change Notify | SHARING_VIOLATION on directory open (pre-existing, never passed individually) | - |
-
-### Compound Requests (Intermittent)
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.compound_find.compound_find_close | Compound | Intermittent race in compound FIND+CLOSE sequencing | - |
 
 ### Oplocks (Multi-Client Coordination Not Implemented)
 
@@ -275,7 +269,6 @@ Advanced connection and tree connect edge cases.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.compound_find.compound_find_close | Compound | Flaky compound FIND+CLOSE race - passes intermittently | - |
 | smb2.lease.statopen4 | Leases | Flaky stat-open lease test - passes intermittently | - |
 
 ### Character Set (Edge Cases)

@@ -254,6 +254,30 @@ func (c *Connection) Serve(ctx context.Context) {
 		c.requestSem <- struct{}{}
 		c.wg.Add(1)
 
+		// Pre-acquire the per-FileID in-flight counter on the read loop so
+		// that ordering is established in wire order, not goroutine-spawn
+		// order. Without this, a CLOSE goroutine for a later request on the
+		// same connection can race ahead of an earlier request's goroutine,
+		// observe an empty handleOps map for the FileID, and delete the
+		// OpenFile before the prior request reaches AcquireOpenFile —
+		// causing a spurious STATUS_FILE_CLOSED (smbtorture
+		// compound_find.compound_find_close).
+		//
+		// Skip pre-acquire for CLOSE: it is the deleter that drains the
+		// counter via WaitAndDeleteOpenFile, so bumping the counter for it
+		// would deadlock CLOSE against itself.
+		//
+		// Pre-acquire only applies to non-compound single requests. Compound
+		// chains are processed sequentially inside ProcessCompoundRequest, so
+		// no intra-chain race exists; cross-chain races for the chain's
+		// trailing command are still possible but rare in practice.
+		var releaseHandleOp func()
+		if len(remainingCompound) == 0 && hdr.Command != types.CommandClose {
+			if fid, ok := smb.ExtractRequestFileID(hdr.Command, body); ok {
+				releaseHandleOp = c.server.handler.BeginHandleOp(fid)
+			}
+		}
+
 		if len(remainingCompound) > 0 {
 			// Copy compound data to avoid races (goroutine owns this copy)
 			compoundData := make([]byte, len(remainingCompound))
@@ -265,14 +289,17 @@ func (c *Connection) Serve(ctx context.Context) {
 				smb.ProcessCompoundRequest(ctx, reqHeader, reqBody, raw, compoundData, ci, encrypted, asyncCallback)
 			}(hdr, body, rawMessage, isEncrypted)
 		} else {
-			go func(reqHeader *header.SMB2Header, reqBody, raw []byte, encrypted bool) {
+			go func(reqHeader *header.SMB2Header, reqBody, raw []byte, encrypted bool, release func()) {
+				if release != nil {
+					defer release()
+				}
 				defer c.handleRequestPanic(clientAddr, reqHeader.MessageID)
 
 				asyncCallback := c.makeAsyncNotifyCallback(ci)
 				if err := smb.ProcessSingleRequest(ctx, reqHeader, reqBody, raw, ci, encrypted, asyncCallback); err != nil {
 					logger.Debug("Error processing SMB request", "address", clientAddr, "messageID", reqHeader.MessageID, "error", err)
 				}
-			}(hdr, body, rawMessage, isEncrypted)
+			}(hdr, body, rawMessage, isEncrypted, releaseHandleOp)
 		}
 
 		// Reset idle timeout after reading request (read-only)
