@@ -302,7 +302,20 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	return nil
 }
 
+// RemoveShare removes a share. Snapshot orchestration goroutines for the
+// share are cancelled and drained BEFORE the per-share snapshots/ tree is
+// wiped (Phase 22 D-15 hook inside sharesSvc.RemoveShare) — without this
+// ordering a still-running snap goroutine could write into the
+// about-to-be-deleted directory.
+//
+// Per Phase 22 invariant (shares/service.go:776 "DB row is the source of
+// truth"), snapshot DB rows are NOT cascade-deleted: the cancelled
+// goroutine has already flipped its row to state=failed per D-23-09 (or the
+// startup-recovery sweep in plan 23-05 / D-23-18 will), and that orphan row
+// is harmless because the on-disk manifest is wiped and the hold filter
+// (D-23-02) returns false once the snapshots/ tree is gone. D-23-17.
 func (r *Runtime) RemoveShare(name string) error {
+	r.cancelAndWaitInFlightSnaps(name) // D-23-17: drain BEFORE tree wipe
 	return r.sharesSvc.RemoveShare(name)
 }
 
