@@ -678,6 +678,13 @@ Phase 20 unblocks both 21 and 22 (parallel). Phase 23 requires both 21+22. Phase
   - `pkg/snapshot/manifest.go` (new)
   - `pkg/blockstore/engine/gc.go` (modify — add SnapshotHoldProvider)
   - `pkg/controlplane/runtime/blockgc.go` (modify — implement SnapshotHoldProvider)
+**Plans**: 6 plans
+  - [ ] 22-01-PLAN.md — Snapshot GORM model + state constants + path helpers + error sentinels (Wave 1)
+  - [ ] 22-02-PLAN.md — Hash manifest writer/reader + atomic write helper (Wave 1)
+  - [ ] 22-03-PLAN.md — SnapshotStore interface + GORM CRUD + automigrate + idx_share_creating fallback (Wave 2)
+  - [ ] 22-04-PLAN.md — engine.HoldProvider interface + Options field + markPhase wiring (Wave 1)
+  - [ ] 22-05-PLAN.md — SnapshotHoldProvider runtime impl + RunBlockGC wiring + RemoveShare cleanup hook (Wave 3)
+  - [ ] 22-06-PLAN.md — End-to-end snapshot lifecycle vs GC integration test (Wave 4)
 
 ### Phase 23: Snapshot Create Orchestration + Sync Gate
 **Goal**: Wire end-to-end snapshot creation: metadata dump → hash manifest → sync gate → record.
@@ -734,7 +741,7 @@ Phase 20 unblocks both 21 and 22 (parallel). Phase 23 requires both 21+22. Phase
 |-------|----------------|--------|-----------|
 | 20. Backupable Interface + Cleanup | 3/3 | Complete    | 2026-05-27 |
 | 21. Per-Engine Backup Drivers | 5/5 | Complete    | 2026-05-27 |
-| 22. Snapshot Records + GC Hold | 0/? | Not started | - |
+| 22. Snapshot Records + GC Hold | 0/6 | Planned     | - |
 | 23. Snapshot Create Orchestration | 0/? | Not started | - |
 | 24. Restore Flow | 0/? | Not started | - |
 | 25. CLI + REST API + Docs | 0/? | Not started | - |
