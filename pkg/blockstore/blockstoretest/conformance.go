@@ -84,7 +84,7 @@ func testPutGetRoundtrip(t *testing.T, factory Factory) {
 	// below is meaningful — never trust the slice that was handed to
 	// Put after the Put returns; backends may reference it during
 	// asynchronous flushes.
-	original := []byte("conformance: Put_Get_Roundtrip payload bytes (Phase 17 D-05)")
+	original := []byte("conformance: Put_Get_Roundtrip payload bytes")
 	stored := make([]byte, len(original))
 	copy(stored, original)
 
@@ -221,7 +221,7 @@ func testWalk(t *testing.T, factory Factory) {
 			t.Errorf("Walk Meta.Size for %s = %d, want %d", h, m.Size, wantSize)
 		}
 		if m.LastModified.IsZero() {
-			t.Errorf("Walk Meta.LastModified for %s is zero (WR-4-02 contract violation)", h)
+			t.Errorf("Walk Meta.LastModified for %s is zero (contract violation)", h)
 		}
 	}
 }
@@ -306,7 +306,7 @@ func testHead(t *testing.T, factory Factory) {
 		t.Errorf("Head Meta.Size = %d, want %d", m.Size, len(stored))
 	}
 	if m.LastModified.IsZero() {
-		t.Error("Head Meta.LastModified is zero (WR-4-02 contract violation)")
+		t.Error("Head Meta.LastModified is zero (contract violation)")
 	}
 }
 
@@ -343,7 +343,7 @@ func testPutConcurrent(t *testing.T, factory Factory) {
 	t.Cleanup(cleanup)
 	ctx := context.Background()
 
-	stored := []byte("concurrent same-hash same-bytes payload — Phase 17 D-09")
+	stored := []byte("concurrent same-hash same-bytes payload")
 	h := blake3Sum(stored)
 
 	const writers = 8
