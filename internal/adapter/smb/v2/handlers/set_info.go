@@ -791,7 +791,7 @@ func (h *Handler) setFileInfoFromStore(
 		metaSvc := h.Registry.GetMetadataService()
 		var dstMetaHandle metadata.FileHandle
 		if isOverwrite {
-			dstFile, lookupErr := metaSvc.Lookup(authCtx, toDir, toName)
+			dstFile, _, lookupErr := metaSvc.LookupCaseInsensitive(authCtx, toDir, toName)
 			if lookupErr == nil && dstFile != nil {
 				if encoded, encErr := metadata.EncodeFileHandle(dstFile); encErr == nil {
 					dstMetaHandle = encoded
@@ -1689,10 +1689,10 @@ func (h *Handler) handleFileLinkInformation(
 	// ErrAlreadyExists → STATUS_OBJECT_NAME_COLLISION via common.MapToSMB.
 	metaSvc := h.Registry.GetMetadataService()
 	if linkInfo.ReplaceIfExists {
-		if existing, lookupErr := metaSvc.Lookup(authCtx, dstDir, linkName); lookupErr == nil && existing != nil {
-			if _, rmErr := metaSvc.RemoveFile(authCtx, dstDir, linkName); rmErr != nil {
+		if existing, matchedName, lookupErr := metaSvc.LookupCaseInsensitive(authCtx, dstDir, linkName); lookupErr == nil && existing != nil {
+			if _, rmErr := metaSvc.RemoveFile(authCtx, dstDir, matchedName); rmErr != nil {
 				logger.Debug("SET_INFO: hardlink replace failed to remove existing",
-					"name", linkName, "error", rmErr)
+					"name", matchedName, "error", rmErr)
 				return setInfoStatus(common.MapToSMB(rmErr)), nil
 			}
 		}

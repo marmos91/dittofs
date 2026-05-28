@@ -76,6 +76,68 @@ func (s *MetadataService) Lookup(ctx *AuthContext, dirHandle FileHandle, name st
 	return store.GetFile(ctx.Context, childHandle)
 }
 
+// LookupCaseInsensitive resolves a name within a directory like Lookup, but
+// falls back to a case-insensitive scan of the directory's children when the
+// exact-case lookup returns ErrNotFound. It is intended for SMB callers, which
+// treat NTFS-style paths as case-insensitive while DittoFS stores names with
+// their original case on disk.
+//
+// Returns:
+//   - (file, matchedName, nil) on success — matchedName is the on-disk name
+//     (case-preserved) that satisfied the match.
+//   - (nil, "", nil) when no entry matches.
+//   - (nil, "", err) for any non-NotFound error (NotDirectory, permission,
+//     transport, …); callers should map this to the appropriate SMB status.
+//
+// Special names "." and ".." short-circuit to the exact-case Lookup path.
+//
+// Note: NFS callers must keep using Lookup directly — POSIX paths are
+// case-sensitive.
+func (s *MetadataService) LookupCaseInsensitive(ctx *AuthContext, dirHandle FileHandle, name string) (*File, string, error) {
+	f, err := s.Lookup(ctx, dirHandle, name)
+	if err == nil {
+		return f, name, nil
+	}
+	if !IsNotFoundError(err) {
+		return nil, "", err
+	}
+	if name == "" || name == "." || name == ".." {
+		return nil, "", nil
+	}
+
+	store, storeErr := s.storeForHandle(dirHandle)
+	if storeErr != nil {
+		return nil, "", storeErr
+	}
+
+	cursor := ""
+	for {
+		entries, nextCursor, listErr := store.ListChildren(ctx.Context, dirHandle, cursor, 500)
+		if listErr != nil {
+			if IsNotFoundError(listErr) {
+				return nil, "", nil
+			}
+			return nil, "", listErr
+		}
+		for _, entry := range entries {
+			if strings.EqualFold(entry.Name, name) {
+				match, matchErr := s.Lookup(ctx, dirHandle, entry.Name)
+				if matchErr != nil {
+					if IsNotFoundError(matchErr) {
+						continue
+					}
+					return nil, "", matchErr
+				}
+				return match, entry.Name, nil
+			}
+		}
+		if nextCursor == "" {
+			return nil, "", nil
+		}
+		cursor = nextCursor
+	}
+}
+
 // ReadSymlink reads the target path of a symbolic link.
 func (s *MetadataService) ReadSymlink(ctx *AuthContext, handle FileHandle) (string, *File, error) {
 	store, err := s.storeForHandle(handle)
