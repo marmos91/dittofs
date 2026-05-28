@@ -27,6 +27,15 @@ type retentionConfig struct {
 	ttl    time.Duration
 }
 
+// chunkCompleteCallback boxes the OnChunkComplete callback so each
+// SetOnChunkComplete swap installs a stable addressable
+// *chunkCompleteCallback in atomic.Pointer (a func literal/parameter
+// isn't directly addressable). fn may itself be nil — the read path on
+// the chunkstore hot path checks fn before invocation.
+type chunkCompleteCallback struct {
+	fn func(hash blockstore.ContentHash, data []byte, path string)
+}
+
 // Errors returned by FSStore.
 var (
 	ErrStoreClosed    = errors.New("local store: closed")
@@ -265,13 +274,22 @@ type FSStore struct {
 	// instantiated unconditionally in newFSStoreWithOptionsInternal.
 	dedupLRU *dedupLRU
 
-	// onChunkComplete fires after every successful chunkstore.lruTouch
-	// (Opt 3). Nil-safe: chunkstore.lruTouch
-	// checks for nil before invocation. Install via FSStoreOptions at
-	// construction or post-hoc via SetOnChunkComplete — the engine's
-	// Cache materializes in BlockStore.Start, AFTER cfg.Local is
-	// constructed, so the setter path is the production wire-in site.
-	onChunkComplete func(hash blockstore.ContentHash, data []byte, path string)
+	// onChunkComplete fires once per successful chunkstore.StoreChunk
+	// (immediately after that path's lruTouch). The ReadChunk path also
+	// touches the LRU but does not fire the callback — only the rollup
+	// pool's StoreChunk completion is reported. Install via
+	// FSStoreOptions at construction or post-hoc via SetOnChunkComplete;
+	// the engine's Cache materializes in BlockStore.Start, AFTER
+	// cfg.Local is constructed, so the setter path is the production
+	// wire-in site.
+	//
+	// Stored via atomic.Pointer so SetOnChunkComplete can swap the
+	// callback safely while rollup workers read it on the hot path in
+	// chunkstore.StoreChunk. The pointer always holds a stable
+	// addressable *chunkCompleteCallback so the read path never observes
+	// a nil pointer — the inner fn may itself be nil and is checked
+	// there.
+	onChunkComplete atomic.Pointer[chunkCompleteCallback]
 
 	// compactionThresholdBytes is the minimum number of pre-fence bytes
 	// that must accumulate in a per-payload log before the next rollup
@@ -700,7 +718,10 @@ func newFSStoreWithOptionsInternal(baseDir string, maxDisk, maxMemory int64, fil
 		size = 4096
 	}
 	bc.dedupLRU = newDedupLRU(size)
-	bc.onChunkComplete = opts.OnChunkComplete
+	// Install a non-nil holder so the hot-path Load never observes nil;
+	// opts.OnChunkComplete may itself be nil, which is checked at the
+	// firing site.
+	bc.onChunkComplete.Store(&chunkCompleteCallback{fn: opts.OnChunkComplete})
 	return bc, nil
 }
 
@@ -733,17 +754,17 @@ func (bc *FSStore) SetObjectIDPersister(p func(ctx context.Context, payloadID st
 // construction. Mirrors the SetObjectIDPersister lifecycle: callers
 // (typically engine.NewBlockStore / BlockStore.Start, where the read
 // Cache materializes AFTER cfg.Local was already constructed) install
-// once before serving traffic. Concurrent installs are not supported —
-// the field is read by chunkstore.lruTouch on the hot path
-// without locking. Nil is accepted: chunkstore.lruTouch reverts to
-// the no-callback codepath.
+// once before serving traffic. The swap is race-free — the field is
+// an atomic.Pointer read by chunkstore.StoreChunk on the hot path.
+// Nil is accepted: chunkstore reverts to the no-callback codepath
+// (the holder is always non-nil; the inner fn may be nil).
 //
 // The parameter type is spelled out as a raw func value (rather than
 // referring to FSStoreOptions.OnChunkComplete) so engine.go can call
 // the setter through a structural interface assertion without
 // importing this package's named-type spelling.
 func (bc *FSStore) SetOnChunkComplete(fn func(hash blockstore.ContentHash, data []byte, path string)) {
-	bc.onChunkComplete = fn
+	bc.onChunkComplete.Store(&chunkCompleteCallback{fn: fn})
 }
 
 // SetRetentionPolicy updates the retention policy and TTL for eviction decisions.

@@ -121,8 +121,8 @@ func (bc *FSStore) StoreChunk(ctx context.Context, h blockstore.ContentHash, dat
 	// an unrelated lock (the typical consumer is engine.Cache.Put, which
 	// takes its own lock). Error paths above already returned before this
 	// point — the callback is invariant on successful StoreChunk only.
-	if bc.onChunkComplete != nil {
-		bc.onChunkComplete(h, data, path)
+	if cb := bc.onChunkComplete.Load(); cb != nil && cb.fn != nil {
+		cb.fn(h, data, path)
 	}
 	return nil
 }

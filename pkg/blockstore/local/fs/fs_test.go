@@ -372,8 +372,8 @@ func TestFSStore_ExplicitDedupLRUSize_Honored(t *testing.T) {
 // wire-in test.
 func TestFSStore_NilOnChunkComplete_LruTouchUnchanged(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{})
-	if bc.onChunkComplete != nil {
-		t.Fatalf("bc.onChunkComplete must be nil when option is unset; got %T", bc.onChunkComplete)
+	if cb := bc.onChunkComplete.Load(); cb == nil || cb.fn != nil {
+		t.Fatalf("bc.onChunkComplete.fn must be nil when option is unset; holder=%v", cb)
 	}
 	h := hashFromHex(t, strings.Repeat("19", 32))
 	data := bytes.Repeat([]byte{0x19}, 256)
@@ -397,13 +397,14 @@ func TestFSStore_OnChunkComplete_StoredOnConstruction(t *testing.T) {
 		calls.Add(1)
 	}
 	bc := newFSStoreForTest(t, FSStoreOptions{OnChunkComplete: cb})
-	if bc.onChunkComplete == nil {
-		t.Fatal("bc.onChunkComplete must be non-nil after construction with explicit callback")
+	holder := bc.onChunkComplete.Load()
+	if holder == nil || holder.fn == nil {
+		t.Fatal("bc.onChunkComplete.fn must be non-nil after construction with explicit callback")
 	}
 	// Fire the stored callback directly to confirm it is the value we
 	// passed in (function identity check — Go does not permit ==
 	// comparison of func values, so invoke and observe the counter).
-	bc.onChunkComplete(blockstore.ContentHash{}, nil, "")
+	holder.fn(blockstore.ContentHash{}, nil, "")
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("stored callback fired %d times; want 1", got)
 	}
@@ -430,17 +431,18 @@ func TestFSStore_DedupLRU_FieldExists(t *testing.T) {
 // via setter (mirror SetObjectIDPersister)".
 func TestFSStore_SetOnChunkComplete_PostHocInstall(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{})
-	if bc.onChunkComplete != nil {
-		t.Fatal("precondition: onChunkComplete must start nil")
+	if cb := bc.onChunkComplete.Load(); cb == nil || cb.fn != nil {
+		t.Fatal("precondition: onChunkComplete.fn must start nil")
 	}
 	var calls atomic.Int64
 	bc.SetOnChunkComplete(func(_ blockstore.ContentHash, _ []byte, _ string) {
 		calls.Add(1)
 	})
-	if bc.onChunkComplete == nil {
-		t.Fatal("SetOnChunkComplete must populate bc.onChunkComplete")
+	holder := bc.onChunkComplete.Load()
+	if holder == nil || holder.fn == nil {
+		t.Fatal("SetOnChunkComplete must populate bc.onChunkComplete.fn")
 	}
-	bc.onChunkComplete(blockstore.ContentHash{}, nil, "")
+	holder.fn(blockstore.ContentHash{}, nil, "")
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("installed callback fired %d times; want 1", got)
 	}
