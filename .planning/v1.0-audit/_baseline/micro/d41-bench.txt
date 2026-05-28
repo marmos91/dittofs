@@ -1,0 +1,8 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/marmos91/dittofs/pkg/blockstore
+cpu: Apple M1 Max
+BenchmarkBLAKE3_256MiB-10    	       3	  66268861 ns/op	4050.70 MB/s	 4532568 B/op	   37276 allocs/op
+BenchmarkSHA256_256MiB-10    	       3	 110982861 ns/op	2418.71 MB/s	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/marmos91/dittofs/pkg/blockstore	0.921s

@@ -1,0 +1,10 @@
+BenchmarkAppendWrite_GroupCommit-10    	       5	   7573683 ns/op	         8.000 fsync_calls_total	         1.000 fsyncs_per_op	         8.000 ops_total	     838 B/op	      14 allocs/op
+ok  	github.com/marmos91/dittofs/pkg/blockstore/local/fs	0.479s
+BenchmarkAppendWrite_GroupCommit-10    	       5	   6971217 ns/op	         8.000 fsync_calls_total	         1.000 fsyncs_per_op	         8.000 ops_total	    1731 B/op	      16 allocs/op
+ok  	github.com/marmos91/dittofs/pkg/blockstore/local/fs	0.291s
+BenchmarkAppendWrite_GroupCommit-10    	       5	   6983375 ns/op	         8.000 fsync_calls_total	         1.000 fsyncs_per_op	         8.000 ops_total	    1644 B/op	      15 allocs/op
+ok  	github.com/marmos91/dittofs/pkg/blockstore/local/fs	0.287s
+BenchmarkAppendWrite_GroupCommit-10    	       5	   6384300 ns/op	         8.000 fsync_calls_total	         1.000 fsyncs_per_op	         8.000 ops_total	    1596 B/op	      15 allocs/op
+ok  	github.com/marmos91/dittofs/pkg/blockstore/local/fs	0.278s
+BenchmarkAppendWrite_GroupCommit-10    	       5	   6579792 ns/op	         8.000 fsync_calls_total	         1.000 fsyncs_per_op	         8.000 ops_total	    1664 B/op	      15 allocs/op
+ok  	github.com/marmos91/dittofs/pkg/blockstore/local/fs	0.290s

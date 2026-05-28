@@ -1,0 +1,25 @@
+=== RUN   TestChunker_BoundaryStability_70pct
+    chunker_test.go:112: iter 0: shift=2694 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 1: shift=1606 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 2: shift=2276 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 3: shift=3095 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 4: shift=1885 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 5: shift=2880 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 6: shift=2090 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 7: shift=2324 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 8: shift=2160 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 9: shift=166 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 10: shift=2896 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 11: shift=2705 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 12: shift=3819 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 13: shift=270 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 14: shift=3220 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 15: shift=2722 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 16: shift=3364 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 17: shift=3325 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 18: shift=615 preserved=62/62 ratio=1.000
+    chunker_test.go:112: iter 19: shift=2693 preserved=62/62 ratio=1.000
+    chunker_test.go:119: D-42 gate met: mean preservation 1.000 over 20 iterations
+--- PASS: TestChunker_BoundaryStability_70pct (1.03s)
+PASS
+ok  	github.com/marmos91/dittofs/pkg/blockstore/chunker	1.324s

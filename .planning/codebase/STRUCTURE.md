@@ -1,485 +1,392 @@
 # Codebase Structure
 
-**Analysis Date:** 2026-02-09
+**Analysis Date:** 2026-05-28
 
 ## Directory Layout
 
 ```
-dittofs/
-├── cmd/                           # CLI binary entry points
-│   ├── dittofs/                   # Server daemon CLI
-│   │   ├── main.go               # Entry point
-│   │   └── commands/             # Cobra command handlers
-│   │       ├── root.go           # Root command, global flags
-│   │       ├── start.go          # Start server
-│   │       ├── stop.go           # Stop server
-│   │       ├── status.go         # Server status
-│   │       ├── logs.go           # Tail logs
-│   │       ├── init.go           # Initialize config
-│   │       ├── migrate.go        # Database migrations
-│   │       ├── version.go        # Version info
-│   │       ├── completion.go     # Shell completion
-│   │       ├── config/           # Config subcommands (init, show, validate, edit, schema)
-│   │       ├── backup/           # Backup subcommands (controlplane)
-│   │       └── restore/          # Restore subcommands (controlplane)
+dittofs-v10-plan/
+├── cmd/                                  # Binary entry points
+│   ├── dfs/                              # Server daemon
+│   │   ├── main.go                       # Entry point
+│   │   └── commands/
+│   │       ├── root.go                   # Root Cobra command
+│   │       ├── start.go                  # Launch server (loads config, runtime, adapters)
+│   │       ├── stop.go / stop_unix.go / stop_windows.go
+│   │       ├── status.go, logs.go
+│   │       ├── init.go                   # Generate initial config
+│   │       ├── migrate.go                # DB schema migrations
+│   │       ├── migrate_to_cas.go         # Legacy → CAS blockstore migration
+│   │       ├── daemon_unix.go / daemon_windows.go
+│   │       ├── version.go, completion.go
+│   │       └── config/                   # config subcommands (show, edit, validate, schema)
 │   │
-│   └── dittofsctl/               # Client CLI binary (remote management)
-│       ├── main.go              # Entry point
-│       ├── cmdutil/             # Shared utilities (auth, output, flags)
-│       │   └── util.go
-│       └── commands/            # Cobra commands
-│           ├── root.go          # Root command, global flags (-o, --no-color)
-│           ├── login.go         # Authentication
-│           ├── logout.go
-│           ├── version.go
-│           ├── completion.go
-│           ├── context/         # Multi-server context management
-│           ├── user/            # User CRUD
-│           ├── group/           # Group CRUD
-│           ├── share/           # Share management
-│           │   └── permission/  # Share permissions
-│           ├── store/           # Store management
-│           │   ├── metadata/    # Metadata store management
-│           │   └── payload/     # Payload store management
-│           ├── adapter/         # Protocol adapter management
-│           └── settings/        # Server settings
+│   └── dfsctl/                           # Remote management CLI
+│       ├── main.go
+│       ├── cmdutil/                      # Shared CLI helpers (output, auth, flags)
+│       └── commands/
+│           ├── root.go
+│           ├── login.go / logout.go / switch_user.go
+│           ├── status.go, version.go, completion.go
+│           ├── context/                  # Multi-server context management
+│           ├── user/, group/, share/     # Resource CRUD (each w/ subcommands)
+│           ├── store/                    # metadata + blockstore management
+│           ├── adapter/                  # Protocol adapter management
+│           ├── settings/                 # Server settings
+│           ├── netgroup/, idmap/         # NIS netgroups + identity mapping
+│           ├── grace/                    # NFSv4 grace period control
+│           ├── client/                   # Client info / kill
+│           ├── system/                   # System info, health
+│           └── bench/                    # Bench harness commands
 │
-├── pkg/                          # Public API packages (stable interfaces)
-│   ├── adapter/                  # Protocol adapter interface and implementations
-│   │   ├── adapter.go           # Core Adapter interface
-│   │   ├── nfs/                 # NFSv3 adapter
-│   │   │   ├── nfs_adapter.go
-│   │   │   └── nfs_connection.go
-│   │   └── smb/                 # SMBv2 adapter
-│   │       ├── smb_adapter.go
-│   │       └── smb_connection.go
+├── pkg/                                  # Public-ish packages (stable surfaces)
+│   ├── adapter/                          # Protocol adapter shell (NFS + SMB lifecycle)
+│   │   ├── adapter.go                    # Adapter interface, base lifecycle
+│   │   ├── base.go, auth.go, errors.go
+│   │   ├── identity.go, healthcheck.go
+│   │   ├── nfs/                          # NFSv3+v4 adapter shell
+│   │   │   ├── adapter.go, connection.go, dispatch.go
+│   │   │   ├── handlers.go, reply.go, shutdown.go
+│   │   │   ├── settings.go, nlm.go, portmap.go
+│   │   │   └── identity/
+│   │   └── smb/                          # SMB2/3 adapter shell
+│   │       ├── adapter.go, connection.go, config.go
+│   │       ├── lease_notifier.go, healthcheck.go
 │   │
-│   ├── metadata/                 # Metadata service and store interface
-│   │   ├── service.go           # MetadataService (business logic, routing)
-│   │   ├── store.go             # MetadataStore interface
-│   │   ├── interface.go         # MetadataServiceInterface
-│   │   ├── authentication.go    # Auth context and permission checks
-│   │   ├── errors.go            # ExportError type mapping to NFS codes
-│   │   ├── types.go             # File, FileAttr, FileHandle types
-│   │   ├── file.go              # File operations logic
-│   │   ├── directory.go         # Directory operations logic
-│   │   ├── io.go                # I/O preparation/commit patterns
-│   │   ├── locking.go           # Lock manager for byte-range locks
-│   │   ├── chunks.go            # Chunk/block hierarchy types
-│   │   ├── object.go            # Object store (content-addressed metadata)
-│   │   ├── pending_writes.go    # Write coordination state
-│   │   └── store/               # MetadataStore implementations
-│   │       ├── memory/          # In-memory store (ephemeral, testing)
-│   │       ├── badger/          # BadgerDB store (persistent, path-based handles)
-│   │       └── postgres/        # PostgreSQL store (distributed, UUID handles)
+│   ├── apiclient/                        # HTTP client for control-plane REST API
 │   │
-│   ├── payload/                  # Payload (content) service
-│   │   ├── service.go           # PayloadService (cache + transfer coordination)
-│   │   ├── types.go             # FlushResult, StorageStats types
-│   │   ├── errors.go            # Payload-specific errors
-│   │   ├── chunk/               # Chunk boundary calculations
-│   │   ├── store/               # Block store interface and implementations
-│   │   │   ├── store.go         # BlockStore interface
-│   │   │   ├── memory/          # In-memory block store
-│   │   │   ├── fs/              # Filesystem block store
-│   │   │   └── s3/              # S3 block store (production-ready)
-│   │   │       └── s3.go
-│   │   └── transfer/            # Transfer manager (async persistence)
-│   │       ├── manager.go       # TransferManager
-│   │       ├── queue.go         # TransferQueue
-│   │       ├── entry.go         # TransferQueueEntry interface
-│   │       └── recovery.go      # WAL recovery on startup
+│   ├── auth/                             # Auth primitives shared by protocols
+│   │   ├── auth.go, identity.go
+│   │   ├── kerberos/                     # Kerberos provider + keytab handling
+│   │   └── sid/                          # Windows SID, well-known mapping
 │   │
-│   ├── cache/                    # Block-aware cache with WAL
-│   │   ├── cache.go             # Cache implementation (LRU, dirty tracking)
-│   │   ├── read.go              # Cache read operations
-│   │   ├── write.go             # Cache write operations
-│   │   ├── flush.go             # Cache flush to block store
-│   │   ├── eviction.go          # LRU eviction with dirty protection
-│   │   ├── state.go             # Block state machine
-│   │   ├── types.go             # BlockState, PendingBlock types
-│   │   └── wal/                 # Write-Ahead Log persistence
-│   │       ├── persister.go     # Persister interface + NullPersister
-│   │       ├── mmap.go          # MmapPersister (memory-mapped file)
-│   │       └── types.go         # BlockWriteEntry, WAL record types
+│   ├── bench/                            # In-tree benchmark workloads
+│   │   ├── runner.go, stats.go
+│   │   └── workload_*.go                 # seq, rand, small, meta, storage_tiers
 │   │
-│   ├── controlplane/             # Control plane (configuration + runtime)
-│   │   ├── models/              # Domain models (User, Group, Share, Adapter)
-│   │   │   ├── user.go
-│   │   │   ├── group.go
-│   │   │   ├── share.go
-│   │   │   ├── adapter.go
-│   │   │   ├── setting.go
-│   │   │   └── types.go         # Permission types, enums
-│   │   ├── store/               # GORM-based persistent storage
-│   │   │   ├── store.go         # Store interface
-│   │   │   ├── gorm.go          # GORMStore implementation
-│   │   │   ├── users.go         # User CRUD + auth
-│   │   │   ├── groups.go        # Group CRUD
-│   │   │   ├── shares.go        # Share CRUD
-│   │   │   ├── permissions.go   # Permission resolution
-│   │   │   ├── settings.go      # Settings CRUD
-│   │   │   └── adapters.go      # Adapter config CRUD
-│   │   ├── runtime/             # Ephemeral runtime state manager
-│   │   │   ├── runtime.go       # Runtime manager (shares, stores, adapters)
-│   │   │   ├── init.go          # Runtime initialization from store
-│   │   │   ├── share.go         # Share management and root handle tracking
-│   │   │   └── mounts.go        # NFS mount tracking
-│   │   └── api/                 # REST API server config
-│   │       └── api.go           # APIConfig struct
+│   ├── blockstore/                       # Unified CAS block storage
+│   │   ├── blockstore.go                 # BlockStore + BlockStoreAppend interfaces
+│   │   ├── store.go, types.go            # Shared types
+│   │   ├── defaults.go, errors.go
+│   │   ├── objectid.go, retention.go     # ObjectID + retention metadata
+│   │   ├── hashset.go                    # Hash-keyed set helper
+│   │   ├── doc.go                        # Package overview + sentinel files
+│   │   ├── chunker/                      # FastCDC chunker (BLAKE3-keyed CAS)
+│   │   ├── compression/                  # lz4 codec + decorator
+│   │   ├── encryption/                   # AEAD decorator + KMIP keyprovider
+│   │   ├── engine/                       # Coordinator (local + remote + syncer + GC + audit)
+│   │   │   ├── engine.go, coordinator.go, cache.go
+│   │   │   ├── syncer.go, sync_queue.go, sync_entry.go, sync_health.go
+│   │   │   ├── gc.go, gcstate.go         # Reference-CAS GC
+│   │   │   ├── dedup.go, fetch.go, upload.go
+│   │   │   ├── audit_state.go, healthcheck.go
+│   │   │   └── range.go                  # Range read assembly
+│   │   ├── local/                        # Local CAS implementations
+│   │   │   ├── memory/                   # In-memory CAS
+│   │   │   └── fs/                       # Filesystem CAS (append log + rollup)
+│   │   │       ├── fs.go                 # FSStore
+│   │   │       ├── appendlog.go, rollup.go, logindex.go
+│   │   │       ├── chunkstore.go, eviction.go, dedup_lru.go
+│   │   │       ├── compaction.go, recovery.go, groupcommit.go
+│   │   │       ├── access_tracker.go, fdpool.go
+│   │   │       └── interval_tree.go
+│   │   ├── remote/                       # Remote CAS implementations
+│   │   │   ├── remote.go                 # Common helpers
+│   │   │   ├── memory/                   # Ephemeral remote
+│   │   │   └── s3/                       # S3 + verifier
+│   │   ├── migrate/                      # Legacy blockstore → CAS migration
+│   │   └── blockstoretest/               # Cross-backend conformance suite
 │   │
-│   ├── config/                   # Configuration parsing and validation
-│   │   ├── config.go            # Main Config struct
-│   │   ├── stores.go            # Factory functions for store creation
-│   │   ├── runtime.go           # Runtime initialization from config
-│   │   ├── defaults.go          # Default configuration values
-│   │   └── init.go              # Config file generation ('dittofs init')
+│   ├── config/                           # Config types + loading + validation
 │   │
-│   ├── apiclient/                # REST API client library
-│   │   ├── client.go            # HTTP client with JWT auth
-│   │   ├── users.go             # User API methods
-│   │   ├── groups.go            # Group API methods
-│   │   ├── shares.go            # Share API methods
-│   │   ├── stores.go            # Store API methods
-│   │   ├── adapters.go          # Adapter API methods
-│   │   ├── settings.go          # Settings API methods
-│   │   └── errors.go            # API error types
+│   ├── controlplane/                     # Control plane (config + runtime)
+│   │   ├── controlplane.go               # Top-level wiring
+│   │   ├── models/                       # Domain models (User, Group, Share, Adapter, …)
+│   │   ├── store/                        # GORM persistent store (SQLite/Postgres)
+│   │   │   ├── gorm.go, store.go, interface.go
+│   │   │   ├── users.go, groups.go, shares.go, permissions.go
+│   │   │   ├── adapters.go, adapter_settings.go, settings.go
+│   │   │   ├── identity.go, netgroups.go, metadata.go, block.go
+│   │   │   └── health.go, helpers.go
+│   │   ├── api/                          # REST API server (chi + JWT)
+│   │   │   ├── server.go, router.go, config.go
+│   │   └── runtime/                      # Ephemeral runtime composing sub-services
+│   │       ├── runtime.go                # Composition root + Runtime type
+│   │       ├── init.go, share.go, mounts.go
+│   │       ├── checkers.go               # Lazy per-entity health-checkers
+│   │       ├── settings_watcher.go       # Live settings → sub-service rewiring
+│   │       ├── blockstore_init.go        # Per-share blockstore bring-up
+│   │       ├── blockgc.go, blockaudit.go # GC + audit hooks
+│   │       ├── clients.go, netgroups.go
+│   │       ├── adapters/                 # adapters.Service (registration + lifecycle)
+│   │       ├── stores/                   # stores.Service (metadata-store factory)
+│   │       ├── shares/                   # shares.Service (share coordinator, ACL, healthcheck)
+│   │       ├── mounts/                   # mounts.Service (NFS mount tracker)
+│   │       ├── lifecycle/                # lifecycle.Service (aux servers, shutdown)
+│   │       ├── identity/                 # identity.Service (squash + idmap)
+│   │       ├── blockstoreprobe/          # Bootstrap probe before mounting backends
+│   │       └── clients/                  # Client registry (per-IP tracking)
 │   │
-│   └── metrics/                  # Metrics collection (optional)
-│       ├── metrics.go           # Metrics interface
-│       └── prometheus/          # Prometheus implementation
-│           └── prometheus.go
+│   ├── health/                           # Health-check primitives + wrappers
+│   ├── identity/                         # ID mapping + resolver + Kerberos provider
+│   │
+│   └── metadata/                         # Metadata service + store contract
+│       ├── service.go, interface.go      # MetadataService (façade)
+│       ├── store.go                      # MetadataStore interface
+│       ├── types.go, errors.go           # File, FileAttr, FileHandle, ExportError
+│       ├── auth_identity.go, auth_permissions.go, authentication_test.go
+│       ├── file_create.go, file_modify.go, file_remove.go, file_helpers.go, file_types.go
+│       ├── directory.go, io.go, validation.go
+│       ├── object.go, pending_writes.go  # Content-addressed coordination
+│       ├── rollup_store.go, synced_hash_store.go
+│       ├── unified_view.go, lock_exports.go
+│       ├── tx_context.go, cookies.go     # Transaction context, READDIR cookies
+│       ├── notify_dir_change_parent_key_test.go
+│       ├── acl/                          # ACL evaluation, inheritance, GENERIC expansion
+│       ├── backup/                       # Metadata-store envelope for CAS snapshots
+│       ├── errors/                       # ExportError catalog
+│       ├── lock/                         # Locks: BR, leases, oplocks, delegations, grace
+│       ├── store/                        # MetadataStore implementations
+│       │   ├── memory/                   # Ephemeral in-memory store
+│       │   ├── badger/                   # BadgerDB persistent store
+│       │   └── postgres/                 # PostgreSQL distributed store
+│       └── storetest/                    # Cross-store conformance suite
 │
-├── internal/                     # Private implementation details
-│   ├── logger/                  # Structured logging
-│   │   └── logger.go            # Logger with configurable level/format
+├── internal/                             # Private implementations
+│   ├── adapter/                          # Wire-protocol implementations
+│   │   ├── common/                       # Shared adapter helpers
+│   │   │   ├── resolve.go                # Handle resolution
+│   │   │   ├── read_payload.go, write_payload.go, copy_payload.go
+│   │   │   ├── cache_invalidator.go
+│   │   │   ├── errmap.go, content_errmap.go, lock_errmap.go
+│   │   ├── pool/                         # Adapter buffer pool (4K/64K/1M tiers)
+│   │   ├── nfs/                          # NFSv3 + NFSv4 + Mount + NLM + NSM + portmap
+│   │   │   ├── dispatch.go, dispatch_nfs.go, dispatch_mount.go
+│   │   │   ├── connection.go, helpers.go
+│   │   │   ├── rpc/, xdr/, types/, middleware/
+│   │   │   ├── auth/                     # AUTH_UNIX + RPCSEC_GSS
+│   │   │   ├── mount/                    # Mount protocol handlers
+│   │   │   ├── nlm/                      # Network Lock Manager
+│   │   │   ├── nsm/                      # Network Status Monitor
+│   │   │   ├── portmap/                  # Portmapper
+│   │   │   ├── v3/                       # NFSv3 procedure handlers
+│   │   │   │   └── handlers/             # One *.go + codec + tests per procedure
+│   │   │   └── v4/                       # NFSv4.0 + 4.1 handlers
+│   │   │       ├── handlers/             # Compound op handlers
+│   │   │       ├── attrs/, types/, state/, pseudofs/
+│   │   │       └── v41/                  # SESSION-related extensions
+│   │   └── smb/                          # SMB2/3 protocol
+│   │       ├── dispatch.go, framing.go, response.go, helpers.go, compound.go
+│   │       ├── crypto_state.go, conn_types.go, hooks.go
+│   │       ├── header/, rpc/, types/
+│   │       ├── auth/                     # SMB auth state
+│   │       ├── kdf/                      # SMB3 KDF
+│   │       ├── session/                  # Session + channel + credit + sequence window
+│   │       ├── signing/                  # HMAC + CMAC + GMAC signers
+│   │       ├── encryption/               # AES-CCM/GCM encryptors + middleware
+│   │       ├── smbenc/                   # Encoding helpers
+│   │       ├── lease/                    # Lease manager + notifier
+│   │       └── v2/                       # Procedure handlers
+│   │           └── handlers/             # 88 files — one per SMB2 command + tests
 │   │
-│   ├── cli/                     # CLI utilities (shared between dittofs and dittofsctl)
-│   │   ├── output/              # Output formatting
-│   │   │   ├── table.go         # Table format
-│   │   │   ├── json.go          # JSON format
-│   │   │   └── yaml.go          # YAML format
-│   │   ├── prompt/              # Interactive prompts
-│   │   │   ├── confirm.go       # Yes/no confirmation
-│   │   │   ├── password.go      # Password prompt
-│   │   │   └── select.go        # Menu selection
-│   │   ├── credentials/         # Multi-context credential storage
-│   │   │   └── credentials.go
-│   │   ├── health/              # Server health checks
-│   │   │   └── health.go
-│   │   └── timeutil/            # Time formatting utilities
-│   │       └── timeutil.go
-│   │
-│   ├── protocol/                # Wire protocol implementations
-│   │   ├── nfs/                 # NFSv3 + Mount protocols
-│   │   │   ├── dispatch.go      # RPC procedure routing
-│   │   │   ├── doc.go           # Package documentation
-│   │   │   ├── rpc/             # RPC layer (call/reply handling)
-│   │   │   │   └── message.go
-│   │   │   ├── xdr/             # XDR encoding/decoding
-│   │   │   │   └── types.go
-│   │   │   ├── types/           # NFS constants and types
-│   │   │   │   ├── types.go
-│   │   │   │   └── constants.go
-│   │   │   ├── mount/           # Mount protocol handlers
-│   │   │   │   └── handlers/
-│   │   │   │       ├── mnt.go   # MNT procedure
-│   │   │   │       ├── umnt.go  # UMNT procedure
-│   │   │   │       ├── export.go# EXPORT procedure
-│   │   │   │       └── dump.go  # DUMP procedure
-│   │   │   └── v3/              # NFSv3 protocol handlers
-│   │   │       ├── doc.go
-│   │   │       ├── handlers/    # Individual procedure handlers
-│   │   │       │   ├── read.go          # READ procedure
-│   │   │       │   ├── write.go         # WRITE procedure
-│   │   │       │   ├── lookup.go        # LOOKUP procedure
-│   │   │       │   ├── create.go        # CREATE procedure
-│   │   │       │   ├── mkdir.go         # MKDIR procedure
-│   │   │       │   ├── remove.go        # REMOVE procedure
-│   │   │       │   ├── rmdir.go         # RMDIR procedure
-│   │   │       │   ├── rename.go        # RENAME procedure
-│   │   │       │   ├── readdir.go       # READDIR procedure
-│   │   │       │   ├── readdirplus.go   # READDIRPLUS procedure
-│   │   │       │   ├── symlink.go       # SYMLINK procedure
-│   │   │       │   ├── link.go          # LINK procedure
-│   │   │       │   ├── getattr.go       # GETATTR procedure
-│   │   │       │   ├── setattr.go       # SETATTR procedure
-│   │   │       │   ├── commit.go        # COMMIT procedure (flush coordination)
-│   │   │       │   ├── fsinfo.go        # FSINFO procedure
-│   │   │       │   └── utils.go         # Common handler utilities
-│   │   │       └── testing/    # Handler testing utilities
-│   │   │
-│   │   └── smb/                 # SMBv2 protocol
-│   │       ├── rpc/             # SMB message handling
-│   │       ├── v2/              # SMBv2 procedures
-│   │       │   └── handlers/    # SMB procedure handlers
-│   │       ├── header/          # SMB header parsing
-│   │       ├── session/         # Session state management
-│   │       ├── signing/         # SMB signing implementation
-│   │       └── types/           # SMB constants and types
-│   │
-│   ├── controlplane/            # Control plane API server
-│   │   └── api/                 # REST API implementation
-│   │       ├── middleware/      # HTTP middleware (JWT auth, CORS)
-│   │       │   └── auth.go
-│   │       ├── auth/            # JWT service
-│   │       │   ├── jwt.go       # JWT token creation/validation
-│   │       │   └── claims.go    # JWT claims structure
-│   │       └── handlers/        # HTTP handlers for each resource
-│   │           ├── users.go
-│   │           ├── groups.go
-│   │           ├── shares.go
-│   │           ├── stores.go
-│   │           ├── adapters.go
-│   │           └── settings.go
-│   │
-│   ├── auth/                    # Protocol authentication
-│   │   ├── ntlm/                # NTLM authentication
-│   │   │   └── ntlm.go
-│   │   └── spnego/              # SPNEGO authentication
-│   │       └── spnego.go
-│   │
-│   ├── bufpool/                 # Buffer pooling for I/O
-│   │   └── bufpool.go           # Three-tier buffer pool (4KB/64KB/1MB)
-│   │
-│   ├── bytesize/                # Byte size parsing
-│   │   └── bytesize.go          # Parse "1MB", "512KB" etc.
-│   │
-│   ├── mfsymlink/               # Symbolic link utilities
-│   │   └── mfsymlink.go
-│   │
-│   └── telemetry/               # OpenTelemetry tracing and profiling
-│       └── telemetry.go         # Tracing and Pyroscope profiling config
+│   ├── auth/                             # Auth services (NTLM, SPNEGO, GSS wrap, replay)
+│   │   └── kerberos/                     # Kerberos service wiring
+│   ├── bench/                            # Internal bench helpers
+│   ├── bytesize/                         # "1MB", "512KB" parser
+│   ├── cli/                              # Shared CLI utilities
+│   │   ├── output/                       # table / json / yaml
+│   │   ├── prompt/                       # confirm, input, password, select
+│   │   ├── credentials/                  # Multi-context credential store
+│   │   ├── health/                       # Health display
+│   │   └── timeutil/
+│   ├── controlplane/                     # REST API handler implementations
+│   │   └── api/                          # handlers, middleware, JWT
+│   ├── logger/                           # Structured logger (slog-based)
+│   ├── mfsymlink/                        # MFSYMLINK support
+│   ├── pathutil/                         # Path expansion helpers
+│   └── sysinfo/                          # Per-OS sysinfo (darwin/linux/windows)
 │
-├── test/                        # Test suites
-│   ├── e2e/                     # End-to-end tests (real NFS mounts)
-│   │   ├── framework/           # Test framework (server startup, mount management)
-│   │   ├── helpers/             # Test utilities (file operations, assertions)
-│   │   ├── run-e2e.sh          # Test runner script
-│   │   └── *_test.go           # Test cases
-│   │
-│   └── posix/                   # POSIX compliance tests
-│       ├── configs/             # Test configuration files
-│       └── results/             # Test result output
+├── test/                                 # Test suites outside packages
+│   ├── e2e/                              # End-to-end tests (real NFS/SMB mounts)
+│   │   ├── framework/                    # Server startup, containers, fixtures
+│   │   ├── helpers/                      # CLI runner, login, unique naming
+│   │   ├── fixtures/
+│   │   ├── run-e2e.sh
+│   │   ├── BENCHMARKS.md
+│   │   └── *_test.go                     # Per-feature suites (matrix, ACLs, lease, etc.)
+│   ├── edge/                             # Edge / fuzz-adjacent suites
+│   ├── integration/
+│   │   ├── kerberos/
+│   │   └── portmap/
+│   ├── nfs-conformance/                  # pjdfstest / RFC suite runner
+│   ├── smb-conformance/                  # smbtorture / WPTS runner
+│   └── posix/                            # POSIX compliance tests
 │
-├── docs/                        # User and contributor documentation
-│   ├── ARCHITECTURE.md          # Design patterns and implementation
-│   ├── CONFIGURATION.md         # Configuration guide with examples
-│   ├── NFS.md                   # NFSv3 protocol details
-│   ├── CONTRIBUTING.md          # Development guide
-│   ├── IMPLEMENTING_STORES.md   # Guide for custom store implementations
-│   ├── TROUBLESHOOTING.md       # Common issues and solutions
-│   ├── SECURITY.md              # Security considerations
-│   ├── FAQ.md                   # Frequently asked questions
-│   ├── RELEASING.md             # Release process
-│   └── KNOWN_LIMITATIONS.md     # Limitations and compliance
+├── docs/                                 # User + developer documentation
+│   ├── ARCHITECTURE.md, CONFIGURATION.md
+│   ├── NFS.md, SMB.md, ACLS.md, ENCRYPTION.md
+│   ├── CLI.md, CONTRIBUTING.md, IMPLEMENTING_STORES.md
+│   ├── FAQ.md, SECURITY.md, TROUBLESHOOTING.md
+│   ├── RELEASING.md, BENCHMARKS.md
+│   ├── BLOCKSTORE_MIGRATION.md, WINDOWS_TESTING.md
+│   └── assets/
 │
-├── monitoring/                  # Monitoring and observability configs
-│   ├── prometheus/              # Prometheus configs
-│   └── grafana/                 # Grafana dashboard definitions
+├── bench/                                # External benchmark harness (Pulumi)
+│   ├── infra/                            # Pulumi stacks (Scaleway) + scripts
+│   └── tools/, runner/, …
 │
-├── k8s/                         # Kubernetes integration
-│   └── dittofs-operator/        # Kubernetes operator for DittoFS
-│       ├── api/                 # CRD definitions
-│       ├── internal/            # Controller implementation
-│       ├── config/              # K8s manifests (RBAC, CRDs, etc.)
-│       ├── chart/               # Helm chart
-│       └── utils/               # K8s utilities
+├── k8s/                                  # Kubernetes operator
+│   └── dittofs-operator/
+│       ├── api/, internal/, cmd/, config/, chart/, utils/
 │
-├── CLAUDE.md                    # Project instructions (non-obvious conventions)
-├── CONTRIBUTING                 # Contribution guidelines
-├── LICENSE                      # License file
-├── README.md                    # Quick start and overview
-├── go.mod                       # Go module definition
-├── go.sum                       # Go module checksums
-├── Dockerfile                   # Docker image build
-├── Dockerfile.goreleaser        # Release build image
-├── docker-compose.yml           # Local development environment
-├── flake.nix                    # Nix flake (reproducible builds)
-├── .golangci.yml               # Linting config
-├── .markdownlint.yaml          # Markdown linting
-└── .goreleaser.yml             # Release automation config
+├── monitoring/                           # Prometheus + Grafana configs
+├── .planning/                            # GSD planning artifacts (NOT shipped)
+├── .github/workflows/                    # CI: unit, lint, e2e, smb/nfs/posix conformance, …
+├── CLAUDE.md                             # Project rules for Claude Code
+├── README.md, LICENSE
+├── go.mod, go.sum
+├── Dockerfile, Dockerfile.goreleaser
+├── docker-compose.yml
+├── flake.nix
+├── .golangci.yml, .markdownlint.yaml, .goreleaser.yml
+└── install.sh, uninstall.sh
 ```
 
 ## Directory Purposes
 
-**cmd/:**
-- Entry points for both server and client binaries
-- All CLI logic lives in `commands/` subdirectories
-- Uses Cobra for command structure and shell completion
-- Global flags (config file, verbosity) defined in `root.go`
+**cmd/dfs/**, **cmd/dfsctl/:**
+- Two Cobra-based binaries: server (`dfs`) and remote CLI (`dfsctl`).
+- All logic in `commands/`; entry points are thin.
 
 **pkg/:**
-- Public API packages with stable interfaces
-- Import these to integrate DittoFS into other projects
-- Each subdirectory is a complete module (adapter, service, store, etc.)
-- Interfaces in package root, implementations in subdirectories
+- Stable surfaces. Consumed by adapters, runtime, and (sparingly) external integrations.
+- Key contracts: `pkg/blockstore/blockstore.go`, `pkg/metadata/store.go`, `pkg/adapter/adapter.go`.
 
 **internal/:**
-- Private implementation details not meant for external use
-- Protocol handlers are implementation-specific (NFSv3 wire format, SMBv2 frame format)
-- CLI utilities shared between dittofs and dittofsctl
-- Logging, authentication, telemetry infrastructure
+- Wire-protocol implementations, internal CLI helpers, OS-specific code.
+- `internal/adapter/{nfs,smb}/` contain the bulk of protocol code.
 
 **test/:**
-- E2E tests run against real NFS/SMB mounts
-- POSIX compliance verification
-- Tests require special permissions (NFS mounting) and external tools
+- E2E, conformance, integration, edge suites. Often gated by build tags or env.
 
 **docs/:**
-- User-facing documentation (deployment, configuration, security)
-- Developer guides (architecture, contributing, implementing stores)
-- Problem-solving (troubleshooting, known limitations, FAQ)
+- User and contributor docs. Maintained manually.
+
+**bench/, monitoring/, k8s/:**
+- Auxiliary tooling for benchmarking, observability, K8s operator.
 
 ## Key File Locations
 
-**Entry Points:**
-- `cmd/dittofs/main.go`: Server daemon entry point
-- `cmd/dittofsctl/main.go`: Remote CLI entry point
-- `cmd/dittofs/commands/root.go`: Root command with global flags
-- `cmd/dittofs/commands/start.go`: Server startup logic (loads config, initializes runtime, launches adapters)
+**Entry points:**
+- `cmd/dfs/main.go` → `cmd/dfs/commands/root.go` → `start.go`
+- `cmd/dfsctl/main.go` → `cmd/dfsctl/commands/root.go`
 
-**Configuration:**
-- `pkg/config/config.go`: Main Config struct (logging, telemetry, database, cache, admin)
-- `pkg/config/defaults.go`: Default values for all settings
-- `pkg/config/stores.go`: Factory functions for creating stores from config
-- `cmd/dittofs/commands/config/`: Config subcommands (init, show, validate, edit, schema)
+**Core composition:**
+- `pkg/controlplane/runtime/runtime.go` — Runtime composing 6 sub-services
+- `pkg/controlplane/runtime/init.go` — Bring-up from persistent store
+- `pkg/controlplane/runtime/share.go` — Per-share resources + root handle
+- `pkg/controlplane/runtime/blockstore_init.go` — Per-share blockstore wiring
 
-**Core Logic:**
-- `pkg/controlplane/runtime/runtime.go`: Central runtime manager (orchestrates stores, shares, adapters)
-- `pkg/controlplane/store/gorm.go`: GORM-based persistent storage (users, groups, shares, adapters)
-- `pkg/metadata/service.go`: File operation routing and business logic
-- `pkg/metadata/store.go`: MetadataStore interface defining metadata persistence contract
-- `pkg/payload/service.go`: PayloadService coordinating cache and transfers
-- `pkg/adapter/nfs/nfs_adapter.go`: NFSv3 server with graceful shutdown
-- `pkg/adapter/smb/smb_adapter.go`: SMBv2 server
-- `internal/protocol/nfs/dispatch.go`: RPC procedure routing and auth context extraction
+**Metadata:**
+- `pkg/metadata/service.go` — Façade over per-share `MetadataStore`s
+- `pkg/metadata/store.go` — Store contract; conformance suite at `storetest/`
 
-**Testing:**
-- `test/e2e/`: End-to-end tests with real NFS mounts
-- `test/posix/`: POSIX compliance tests
-- `*_test.go`: Unit tests throughout codebase (co-located with code)
+**Block storage:**
+- `pkg/blockstore/blockstore.go` — Unified `BlockStore` interface
+- `pkg/blockstore/engine/engine.go` — Local + remote + syncer + GC coordinator
+- `pkg/blockstore/local/fs/fs.go` — Append log + rollup CAS
+
+**Protocol dispatch:**
+- `internal/adapter/nfs/dispatch.go` — NFS RPC routing + AUTH_UNIX extraction
+- `internal/adapter/smb/dispatch.go` — SMB2 command routing
+- `internal/adapter/smb/v2/handlers/` — 88 handler files
+
+**Locks / leases / delegations:**
+- `pkg/metadata/lock/` — byte-range, leases, oplocks, delegations, grace, reclaim
+
+**Adapter shells:**
+- `pkg/adapter/nfs/adapter.go` — NFS server lifecycle
+- `pkg/adapter/smb/adapter.go` — SMB server lifecycle
 
 ## Naming Conventions
 
 **Files:**
-- Handlers in `internal/protocol/{nfs,smb}/`: One file per RPC procedure (read.go, write.go, lookup.go, etc.)
-- Tests: `*_test.go` co-located with source code
-- Implementations: Subdirectories named for concrete type (memory/, badger/, s3/, postgres/)
-- Commands: One file per subcommand, e.g. `user.go`, `group.go`, `share.go`
-
-**Directories:**
-- Command packages: lowercase plural (commands/)
-- Store implementations: lowercase (memory/, badger/, s3/, postgres/)
-- Protocol subdirectories: protocol name lowercase (nfs/, smb/)
-- Nested protocol modules: logical grouping (handlers/, rpc/, types/, etc.)
+- Co-located tests: `foo.go` + `foo_test.go`
+- Codec / serialization helpers next to handler: e.g. `read.go` + `read_codec.go`
+- One file per RPC/SMB procedure in `internal/adapter/{nfs/v3,smb/v2}/handlers/`
+- Per-OS suffixes: `_unix.go`, `_windows.go`, `_darwin.go`, `_linux.go`
 
 **Packages:**
-- All lowercase, no underscores or dashes
-- Short names (adapter, metadata, payload, config, cache, etc.)
-- Plural for collections (handlers, metrics, models)
+- Lowercase, no underscores
+- Implementation subdirs named for backend: `memory/`, `badger/`, `postgres/`, `fs/`, `s3/`
+- Test-only doubles in sibling packages (e.g. `pkg/metadata/storetest`)
 
 **Types:**
-- PascalCase for exported types (Config, Handler, Service, Store, etc.)
-- Interfaces end in 'Interface' or descriptive verb (Reader, Writer, closer via io.Closer pattern)
-- Implementation types reflect backend (MemoryStore, BadgerStore, S3Store)
+- PascalCase exported (`Runtime`, `BlockStore`, `MetadataService`, `FileHandle`)
+- Interfaces named for role (`BlockStore`, `BlockStoreAppend`, `MetadataStore`)
 
-**Functions/Methods:**
-- camelCase (getData, createFile, handleWrite, etc.)
-- Verb-first for actions (GetFile, CreateDirectory, HandleLookup, etc.)
-- Noun-first for accessor/factory (NewHandler, NewStore, etc.)
+**Functions:**
+- `New*` constructors, `Get*` accessors, verb-first for actions
+- Receiver names short (1–3 letters)
 
-**Constants:**
-- SCREAMING_SNAKE_CASE for iota enums (NFS3_OK, NFS3_ERR_*, etc.)
-- Mixed case for errors (ErrNotFound, ErrAccess, ErrNoEntity, etc.)
-- Uppercase for package-level constants (DefaultTimeout, MaxConnections, etc.)
+**Errors / constants:**
+- `Err*` sentinel values for expected outcomes (`ErrNotFound`, `ErrUnknownHash`, `ErrLegacyLayoutDetected`)
+- Status codes per protocol live in protocol type packages (`internal/adapter/nfs/types/`, `internal/adapter/smb/types/`)
 
 ## Where to Add New Code
 
-**New NFS Procedure:**
-- Implement handler in `internal/protocol/nfs/v3/handlers/{procedure_name}.go`
-- Add test in `internal/protocol/nfs/v3/handlers/{procedure_name}_test.go`
-- Register in dispatch table in `internal/protocol/nfs/dispatch.go`
-- Update README with procedure support matrix
+**New NFSv3 procedure:**
+- `internal/adapter/nfs/v3/handlers/{proc}.go` + `{proc}_codec.go` + `{proc}_test.go`
+- Register in `internal/adapter/nfs/dispatch_nfs.go`
 
-**New SMB Procedure:**
-- Implement handler in `internal/protocol/smb/v2/handlers/{procedure_name}.go`
-- Add test in `internal/protocol/smb/v2/handlers/{procedure_name}_test.go`
-- Register in dispatch table in `internal/protocol/smb/rpc/dispatch.go`
+**New NFSv4 op:**
+- `internal/adapter/nfs/v4/handlers/{op}.go`
+- Wire into compound dispatcher in `internal/adapter/nfs/v4/`
 
-**New Metadata Store Backend:**
-- Create package in `pkg/metadata/store/{backend}/`
-- Implement `MetadataStore` interface from `pkg/metadata/store.go`
-- Add factory in `pkg/config/stores.go`
-- Add integration tests in `test/integration/`
-- Document in `docs/IMPLEMENTING_STORES.md`
+**New SMB2/3 command:**
+- `internal/adapter/smb/v2/handlers/{cmd}.go` + `{cmd}_test.go`
+- Register in `internal/adapter/smb/dispatch.go`
 
-**New Block Store Backend:**
-- Create package in `pkg/payload/store/{backend}/`
-- Implement `BlockStore` interface from `pkg/payload/store/store.go`
-- Add factory in `pkg/config/stores.go`
-- Add integration tests in `test/integration/`
+**New metadata backend:**
+- `pkg/metadata/store/{backend}/` implementing `pkg/metadata/store.go::MetadataStore`
+- Pass `pkg/metadata/storetest` conformance suite
+- Factory in `pkg/controlplane/runtime/stores/service.go`
 
-**New Protocol Adapter:**
-- Create package in `pkg/adapter/{protocol}/`
-- Implement `adapter.Adapter` interface
-- Create connection handler type
-- Add factory function in `cmd/dittofs/commands/start.go`
-- Update README with protocol documentation
+**New blockstore backend:**
+- `pkg/blockstore/{local,remote}/{backend}/` implementing `BlockStore` (+ optionally `BlockStoreAppend`)
+- Pass `pkg/blockstore/blockstoretest` conformance suite
+- Wire in `pkg/controlplane/runtime/blockstore_init.go`
 
-**New API Endpoint:**
-- Add handler in `internal/controlplane/api/handlers/{resource}.go`
-- Add HTTP routes in handler package
-- Add client method in `pkg/apiclient/{resource}.go`
-- Add dittofsctl command in `cmd/dittofsctl/commands/{resource}/`
+**New control-plane resource:**
+- Model in `pkg/controlplane/models/`
+- GORM persistence in `pkg/controlplane/store/`
+- HTTP handler in `internal/controlplane/api/handlers/`
+- Client method in `pkg/apiclient/`
+- `dfsctl` command in `cmd/dfsctl/commands/{resource}/`
 
-**New CLI Command:**
-- Create file in `cmd/{dittofs,dittofsctl}/commands/{command}.go`
-- Define Cobra Command struct and handler function
-- Register in `commands/root.go`
-- Add tests as needed
-- Update shell completion
+**New CLI command:**
+- `cmd/{dfs,dfsctl}/commands/...`
+- Register in the resource's parent command file
 
-**Shared Utilities:**
-- Helper functions: `internal/cli/`
-- Buffer pooling: `internal/bufpool/`
-- Logging: `internal/logger/`
-- Authentication: `internal/auth/`
-- Protocol-specific utils: `internal/protocol/{protocol}/` subdirs
+**Shared adapter utilities:**
+- `internal/adapter/common/` for cross-protocol helpers (cache invalidation, error mapping, payload copy)
 
 ## Special Directories
 
 **vendor/:**
-- Purpose: Go module dependencies (managed by `go mod tidy`)
-- Generated: Yes
-- Committed: No (git-ignored by default, included for offline builds)
+- Not committed (Go modules with `go.sum` for verification)
 
-**.planning/codebase/:**
-- Purpose: Generated codebase analysis documents for GSD phase planning
-- Generated: Yes (by /gsd:map-codebase)
-- Committed: Yes (reference documents for planning phases)
+**.planning/:**
+- GSD planning artifacts (CONTEXT, PLAN, REVIEW per phase)
+- `.planning/codebase/` — These intel docs (referenced from planning, NOT from source)
+- Decision IDs / phase IDs live only here, never in source comments
 
-**docs/:**
-- Purpose: User and developer documentation
-- Generated: No (manually maintained)
-- Committed: Yes
-
-**monitoring/:**
-- Purpose: Prometheus/Grafana configurations for observability
-- Generated: No
-- Committed: Yes
+**bench/infra/:**
+- Pulumi-managed Scaleway VMs for benchmarking (`base` + `bench` stacks)
 
 **k8s/dittofs-operator/:**
-- Purpose: Kubernetes operator and Helm chart
-- Generated: Partially (CRDs generated from Go types)
-- Committed: Yes
-
-**test/e2e/:**
-- Purpose: End-to-end test suite requiring real NFS mounts
-- Generated: No (test code)
-- Committed: Yes
-- Special: Requires `sudo`, NFS client, and test runner script
+- Standalone Go module (separate `go.mod`) for the operator + Helm chart
 
 ---
 
-*Structure analysis: 2026-02-09*
+*Structure analysis: 2026-05-28*

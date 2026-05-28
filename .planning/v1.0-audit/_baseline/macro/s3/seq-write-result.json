@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-05-28T11:18:28.853034127Z",
+  "system": "dittofs-s3",
+  "path": "/mnt/bench-s3",
+  "config": {
+    "threads": 4,
+    "file_size": 134217728,
+    "block_size": 4096,
+    "duration": 30000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 114.95887834814592,
+      "latency_p50_us": 1257,
+      "latency_p95_us": 1626,
+      "latency_p99_us": 2291,
+      "latency_avg_us": 1281.01171875,
+      "total_ops": 512,
+      "total_bytes": 536870912,
+      "errors": 4,
+      "duration": 4453766489
+    }
+  },
+  "total_duration": 4456234820
+}

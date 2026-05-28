@@ -1,0 +1,7 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/marmos91/dittofs/pkg/blockstore/local/fs
+cpu: Apple M1 Max
+BenchmarkAppendWrite_GroupCommit-10    	       3	  14989750 ns/op	         8.000 fsync_calls_total	         1.000 fsyncs_per_op	         8.000 ops_total	    2704 B/op	      26 allocs/op
+PASS
+ok  	github.com/marmos91/dittofs/pkg/blockstore/local/fs	0.428s
