@@ -106,6 +106,28 @@ type Session struct {
 	// STATUS_USER_SESSION_DELETED. For SMB 3.x, sessions are global.
 	OriginConnID uint64
 
+	// Dialect is the SMB2 dialect negotiated on the origin connection when
+	// this session was established. Used by SESSION_SETUP bind validation
+	// to enforce dialect-match across channels (MS-SMB2 §3.3.5.5.2; Samba
+	// source3/smbd/smb2_sesssetup.c:752-757).
+	Dialect types.Dialect
+
+	// SigningAlgo is the signing algorithm ID negotiated on the origin
+	// connection. Used by bind to enforce GMAC symmetry between channels
+	// (Samba source3/smbd/smb2_sesssetup.c:724-735).
+	SigningAlgo uint16
+
+	// CipherId is the encryption cipher negotiated on the origin connection.
+	// Used by bind to reject channels whose cipher doesn't match (Samba
+	// source3/smbd/smb2_sesssetup.c:759-764).
+	CipherId uint16
+
+	// ClientGUID is the SMB2 ClientGuid presented in the NEGOTIATE of the
+	// origin connection. Recorded so bind can reject cross-client requests
+	// (an attacker holding a SessionID from one client must not be able to
+	// bind to it from a different ClientGuid).
+	ClientGUID [16]byte
+
 	// Credit tracking
 	credits Credits
 
@@ -185,6 +207,18 @@ func NewSessionWithUser(sessionID uint64, clientAddr string, user *models.User, 
 	}
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
+}
+
+// SetBindIdentity records the negotiated dialect, signing algorithm, cipher,
+// and client GUID of the origin connection so subsequent SESSION_SETUP bind
+// requests can validate that the new channel's negotiated parameters match
+// the session (MS-SMB2 §3.3.5.5.2). Safe to call on any session; for SMB 2.x
+// only Dialect is meaningful but it's harmless to set the rest.
+func (s *Session) SetBindIdentity(dialect types.Dialect, signingAlgo uint16, cipherId uint16, clientGUID [16]byte) {
+	s.Dialect = dialect
+	s.SigningAlgo = signingAlgo
+	s.CipherId = cipherId
+	s.ClientGUID = clientGUID
 }
 
 // IsExpired returns true if the session has a Kerberos ticket that has expired.

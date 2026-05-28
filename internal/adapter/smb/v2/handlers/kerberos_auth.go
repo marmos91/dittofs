@@ -104,6 +104,7 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 		authResult.APReq.Ticket.DecryptedEncPart.EndTime,
 	)
 	sess.OriginConnID = ctx.ConnID
+	recordSessionBindIdentity(sess, ctx)
 	ctx.SessionID = sessionID
 	ctx.IsGuest = false
 
