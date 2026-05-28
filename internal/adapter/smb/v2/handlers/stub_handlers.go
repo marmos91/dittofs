@@ -72,6 +72,17 @@ const (
 	// fires from any later assertion failure, leaving clean state for test3.
 	// See issue #436.
 	FsctlSmbtortureForceUnackedTimeout uint32 = 0x83848003
+
+	// FsctlSmbtortureFspAsyncSleep is Samba's per-handle async-sleep torture
+	// FSCTL (libcli/smb/smb_constants.h FSCTL_SMBTORTURE_FSP_ASYNC_SLEEP =
+	// FSCTL_SMBTORTURE | ACCESS_WRITE | 0x0040 | METHOD_NEITHER). smbtorture
+	// `smb2.ioctl.bug14769` issues this IOCTL with a 1-byte sleep duration
+	// (milliseconds) and IMMEDIATELY follows it with a CLOSE on the same
+	// handle. The bug being regression-tested is: the server must let the
+	// IOCTL complete before completing the CLOSE — otherwise the IOCTL gets
+	// STATUS_FILE_CLOSED. We honour this by holding the per-FileID in-flight
+	// WaitGroup across the sleep so WaitAndDeleteOpenFile in CLOSE drains.
+	FsctlSmbtortureFspAsyncSleep uint32 = 0x83848043
 )
 
 // Reparse point constants [MS-FSCC] 2.1.2.1

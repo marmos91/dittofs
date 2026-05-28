@@ -54,7 +54,10 @@ func (h *Handler) handleQueryNetworkInterfaceInfo(ctx *SMBHandlerContext, body [
 	if !ok {
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
-	// MS-SMB2 §3.3.5.15.13: FileID must be the all-0xFF sentinel.
+	// MS-SMB2 §3.3.5.15.13: FileID must be the all-0xFF sentinel. A
+	// non-sentinel FileID is INVALID_PARAMETER regardless of MaxOutputResponse
+	// (smbtorture smb2.ioctl.bug14788.NETWORK_INTERFACE asserts this distinct
+	// from FILE_CLOSED / BUFFER_TOO_SMALL).
 	if !bytes.Equal(fileID[:], allFFFileID) {
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
@@ -71,6 +74,13 @@ func (h *Handler) handleQueryNetworkInterfaceInfo(ctx *SMBHandlerContext, body [
 	}
 
 	output := encodeNetworkInterfaceInfoList(entries)
+	// MS-SMB2 §3.3.4.20.13: if MaxOutputResponse is insufficient for the
+	// full reply, return STATUS_BUFFER_TOO_SMALL. smbtorture bug14788
+	// exercises max_output=1 against the sentinel FileID and asserts
+	// BUFFER_TOO_SMALL distinct from INVALID_PARAMETER.
+	if maxOutput := parseIoctlMaxOutputSize(body); maxOutput < uint32(len(output)) {
+		return NewErrorResult(types.StatusBufferTooSmall), nil
+	}
 	resp := buildIoctlResponse(FsctlQueryNetworkInterfInfo, fileID, output)
 	return NewResult(types.StatusSuccess, resp), nil
 }
