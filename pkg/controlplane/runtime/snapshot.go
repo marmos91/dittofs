@@ -89,6 +89,27 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 			shareName, models.ErrSnapshotBackupFailed)
 	}
 
+	// (2b) Resolve the metadata-store engine type ("memory" | "badger" |
+	// "postgres") so Snapshot.MetadataEngine can be populated on the
+	// fresh-create row. The retry path inherits MetadataEngine from the
+	// existing failed row, so it does not need to look this up. Phase 24
+	// restore consumes MetadataEngine to dispatch the per-engine
+	// Restoreable driver; an empty value would break that lookup.
+	shareCfg, err := r.sharesSvc.GetShare(shareName)
+	if err != nil {
+		return "", err
+	}
+	metaStoreCfg, err := r.store.GetMetadataStore(ctx, shareCfg.MetadataStore)
+	if err != nil {
+		return "", fmt.Errorf("snapshot create %q: resolve metadata store config %q: %w",
+			shareName, shareCfg.MetadataStore, err)
+	}
+	metadataEngine := metaStoreCfg.Type
+	if metadataEngine == "" {
+		return "", fmt.Errorf("snapshot create %q: metadata store %q has empty Type, cannot record engine: %w",
+			shareName, shareCfg.MetadataStore, models.ErrSnapshotBackupFailed)
+	}
+
 	// (3) Insert / flip the state='creating' row BEFORE any I/O (D-23-01).
 	// The Phase 22 idx_share_creating partial unique index only enforces
 	// concurrent-create rejection if the row exists during the second
@@ -116,9 +137,10 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 	} else {
 		// Fresh-create path: insert a new row.
 		snap = &models.Snapshot{
-			ID:        uuid.NewString(),
-			ShareName: shareName,
-			State:     models.StateCreating,
+			ID:             uuid.NewString(),
+			ShareName:      shareName,
+			State:          models.StateCreating,
+			MetadataEngine: metadataEngine,
 		}
 		if _, cerr := r.store.CreateSnapshot(ctx, snap); cerr != nil {
 			// ErrSnapshotStateConflict is surfaced as-is so callers can
@@ -249,11 +271,32 @@ func (r *Runtime) WaitForSnapshot(ctx context.Context, shareName, snapID string)
 // and increments the WaitGroup. Returns the child ctx + per-snap chan +
 // the entry pointer (so the goroutine can call back into the entry for
 // cleanup via unregisterSnap). D-23-17.
+//
+// Publish-race safety: r.snapInFlightMu is held for the WHOLE function
+// body, including the entry.mu critical section. cancelAndWaitInFlightSnaps
+// snapshots the entry pointer under r.snapInFlightMu; if it wins the
+// registry lock before this function, it observes "share not present"
+// and is a no-op. If it loses the registry lock, it observes a fully
+// populated entry (cancel appended + done chan written + wg.Add(1)
+// already executed), so its subsequent entry.wg.Wait() blocks until the
+// goroutine launched after we return drains. Without this ordering a
+// concurrent share teardown could delete the share entry between the
+// registry publish and the wg.Add, and wg.Wait() would return
+// immediately while the freshly-launched goroutine continued running
+// against a wiped snapshots tree.
+//
+// Lock ordering rule (PATTERNS §lock-protected registry): registry
+// mutex outermost; per-entry mutex inside. cancelAndWaitInFlightSnaps
+// honors the same ordering — it acquires r.snapInFlightMu, then
+// entry.mu while snapshotting cancels — so there is no inversion. We
+// don't block under r.snapInFlightMu either: every operation inside it
+// is in-process and bounded.
 func (r *Runtime) registerSnapInFlight(shareName, snapID string) (context.Context, chan snapResult, *snapInFlight) {
 	childCtx, cancel := context.WithCancel(r.runtimeCtx)
 	doneCh := make(chan snapResult, 1)
 
 	r.snapInFlightMu.Lock()
+	defer r.snapInFlightMu.Unlock()
 	entry, ok := r.snapInFlight[shareName]
 	if !ok {
 		entry = &snapInFlight{
@@ -261,7 +304,6 @@ func (r *Runtime) registerSnapInFlight(shareName, snapID string) (context.Contex
 		}
 		r.snapInFlight[shareName] = entry
 	}
-	r.snapInFlightMu.Unlock()
 
 	entry.mu.Lock()
 	entry.cancels = append(entry.cancels, cancel)
@@ -377,19 +419,19 @@ func (r *Runtime) runSnapshotOrchestration(
 
 	// --- Step 3: NoSyncGate short-circuit (D-23-11) ---
 	if opts.NoSyncGate {
-		if err := r.store.UpdateSnapshotState(ctx, shareName, snapID, models.StateReady); err != nil {
+		// Atomic state+durable flip mirrors the sync-gated path. The
+		// remote_durable value is explicit (false) here so the row's
+		// durability bit is set in the same UPDATE as the state, not
+		// left to the column default. This way the post-create row
+		// state is fully deterministic on success and not subject to
+		// schema-default drift.
+		if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, false); err != nil {
 			r.failSnap(shareName, snapID)
-			terminalErr = fmt.Errorf("snapshot create %s: flip ready (no-sync-gate): %w: %v",
+			terminalErr = fmt.Errorf("snapshot create %s: mark ready (no-sync-gate): %w: %v",
 				snapID, models.ErrSnapshotBackupFailed, err)
-			logger.Error("snapshot create: flip ready failed (no-sync-gate)",
+			logger.Error("snapshot create: mark ready failed (no-sync-gate)",
 				"snapshot_id", snapID, "share", shareName, "error", err)
 			return
-		}
-		if err := r.store.UpdateSnapshotDurable(ctx, shareName, snapID, false); err != nil {
-			// Best-effort log; state is already ready, so caller will
-			// see ready+default(false). Don't fail.
-			logger.Error("snapshot create: clear remote_durable failed",
-				"snapshot_id", snapID, "share", shareName, "error", err)
 		}
 		logger.Info("snapshot create: ready (sync gate skipped)",
 			"snapshot_id", snapID,
@@ -468,20 +510,19 @@ func (r *Runtime) runSnapshotOrchestration(
 	}
 
 	// --- Step 6: Ready flip (D-23-03) ---
-	if err := r.store.UpdateSnapshotState(ctx, shareName, snapID, models.StateReady); err != nil {
+	// Atomically transition state=creating -> state=ready AND set
+	// remote_durable=true in a single conditional UPDATE. A two-step
+	// (state, durable) sequence would leave a transient window where a
+	// crash mid-update produces ready+remote_durable=false — visually
+	// indistinguishable from the intentional --no-sync-gate result and
+	// a false negative for Phase 24 restore's durability gate.
+	if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, true); err != nil {
 		r.failSnap(shareName, snapID)
-		terminalErr = fmt.Errorf("snapshot create %s: flip ready: %w: %v",
+		terminalErr = fmt.Errorf("snapshot create %s: mark ready: %w: %v",
 			snapID, models.ErrSnapshotBackupFailed, err)
-		logger.Error("snapshot create: flip ready failed",
+		logger.Error("snapshot create: mark ready failed",
 			"snapshot_id", snapID, "share", shareName, "error", err)
 		return
-	}
-	if err := r.store.UpdateSnapshotDurable(ctx, shareName, snapID, true); err != nil {
-		// State is already ready; durability flip failure is logged but
-		// not fatal. Caller observing the row will see ready+default(false)
-		// and can re-run the verify path explicitly if needed.
-		logger.Error("snapshot create: set remote_durable=true failed",
-			"snapshot_id", snapID, "share", shareName, "error", err)
 	}
 	logger.Info("snapshot create: ready",
 		"snapshot_id", snapID,

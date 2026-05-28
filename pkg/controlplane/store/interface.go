@@ -486,6 +486,17 @@ type SnapshotStore interface {
 	// keep the state-machine helper (UpdateSnapshotState) single-purpose.
 	// Returns models.ErrSnapshotNotFound if no row matches.
 	UpdateSnapshotDurable(ctx context.Context, shareName, id string, durable bool) error
+
+	// MarkSnapshotReady atomically transitions (creating -> ready) and
+	// sets remote_durable=durable in a single conditional UPDATE.
+	// Required so the final state flip and the durability bit cannot be
+	// half-applied — a partial update would leave the row in
+	// ready+remote_durable=false, indistinguishable from the intentional
+	// --no-sync-gate path and a false negative for Phase 24 restore.
+	// Returns models.ErrSnapshotNotFound if no row matches (shareName, id).
+	// Returns models.ErrSnapshotStateConflict if the row exists but is
+	// not in state='creating'.
+	MarkSnapshotReady(ctx context.Context, shareName, id string, durable bool) error
 }
 
 // HealthStore provides store health check and lifecycle operations.

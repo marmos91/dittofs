@@ -461,6 +461,14 @@ func newOrchestrationFixture(t *testing.T) *orchestrationFixture {
 	if err := rt.RegisterMetadataStore("memory", backup); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
+	// Seed a matching MetadataStoreConfig DB row so CreateSnapshot can
+	// resolve the engine Type ("memory") for Snapshot.MetadataEngine.
+	if _, err := cp.CreateMetadataStore(context.Background(), &models.MetadataStoreConfig{
+		Name: "memory",
+		Type: "memory",
+	}); err != nil {
+		t.Fatalf("CreateMetadataStore: %v", err)
+	}
 
 	localStoreDir := t.TempDir()
 	shareName := "data"
