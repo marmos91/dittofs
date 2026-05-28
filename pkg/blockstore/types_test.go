@@ -310,10 +310,10 @@ func TestFileBlockLastSyncAttemptAt(t *testing.T) {
 	}
 }
 
-// TestErrCASSentinels asserts the new exported sentinels exist, are
-// distinct, self-identical via errors.Is, and have non-empty messages
-// prefixed with "blockstore:" — matching ErrInvalidHash / ErrChunkNotFound
-// style.
+// TestErrCASSentinels asserts the CAS sentinels exist, are distinct,
+// self-identical via errors.Is, and have non-empty messages prefixed
+// with "blockstore:" (the package-qualified style used by
+// ErrCASContentMismatch and ErrCASKeyMalformed).
 func TestErrCASSentinels(t *testing.T) {
 	if !errors.Is(ErrCASContentMismatch, ErrCASContentMismatch) {
 		t.Error("errors.Is(ErrCASContentMismatch, ErrCASContentMismatch) = false")
