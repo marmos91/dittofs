@@ -55,44 +55,73 @@ const BlockSize = blockstore.BlockSize
 // silently truncating the live set and risking (mark fail-closed)
 // violation by data path.
 //
-// Scope is per-process: a sync.Mutex keyed by absolute GCStateRoot path.
-// lock granularity is therefore PER-SHARE in practice — each
-// share owns its own gc-state directory under <localStore>/gc-state/, so
-// concurrent runs against DIFFERENT shares acquire DIFFERENT mutexes and
-// proceed in parallel; only same-share GC calls serialize. For the
-// Phase-11 single-server deployment this is sufficient; cross-process
-// safety (multi-server) requires an OS-level flock and is left as a TODO
-// for the multi-process phase.
+// Scope is per-process: a refcounted *gcRootLock keyed by absolute
+// GCStateRoot path (the empty key "" maps to its own shared lock so
+// temp-root callers still serialize against each other). Lock
+// granularity is therefore PER-SHARE in practice — each share owns its
+// own gc-state directory under <localStore>/gc-state/, so concurrent
+// runs against DIFFERENT shares acquire DIFFERENT locks and proceed in
+// parallel; only same-share GC calls serialize. For the Phase-11
+// single-server deployment this is sufficient; cross-process safety
+// (multi-server) requires an OS-level flock and is left as a TODO for
+// the multi-process phase.
 //
-// The empty key ("") receives its own mutex so callers that pass no
-// GCStateRoot (RunBlockGC's temp-root variant) still serialize against
-// each other. This is conservative: each temp root is unique per call so
-// races on the temp dir itself are impossible, but sharing one mutex
-// across all temp-root runs prevents accidental concurrent CollectGarbage
-// pile-ups against a single remote endpoint (see sketch).
+// Entries are reference-counted and deleted from the map when their
+// refcount drops to zero, so the map shrinks back to size 0 whenever no
+// GC run is in flight. Without this, a long-running server that creates
+// and destroys shares with distinct gc-state paths would accumulate
+// stale map entries indefinitely.
 var (
 	gcRootLocksMu sync.Mutex
-	gcRootLocks   = make(map[string]*sync.Mutex)
+	gcRootLocks   = make(map[string]*gcRootLock)
 )
 
-// acquireGCRootLock returns the per-root mutex (creating it on first use)
-// already locked. Callers MUST defer mu.Unlock(). The lock key is
-// filepath.Clean'd so cosmetic differences ("/a/b" vs "/a/b/") map to the
-// same mutex.
-func acquireGCRootLock(root string) *sync.Mutex {
+// gcRootLock is the map value: a serializing mutex plus a refcount
+// guarded by gcRootLocksMu. The refcount tracks live acquireGCRootLock
+// callers so releaseGCRootLock can drop the map entry when nobody else
+// is holding or waiting on it.
+type gcRootLock struct {
+	mu       sync.Mutex
+	refCount int // guarded by gcRootLocksMu
+}
+
+// acquireGCRootLock returns the per-root lock (creating it on first
+// use) already locked. Callers MUST pair this with releaseGCRootLock so
+// the refcount drops and the entry can be reclaimed when idle. The lock
+// key is filepath.Clean'd so cosmetic differences ("/a/b" vs "/a/b/")
+// map to the same lock.
+func acquireGCRootLock(root string) *gcRootLock {
 	key := root
 	if key != "" {
 		key = filepath.Clean(key)
 	}
 	gcRootLocksMu.Lock()
-	mu, ok := gcRootLocks[key]
+	entry, ok := gcRootLocks[key]
 	if !ok {
-		mu = &sync.Mutex{}
-		gcRootLocks[key] = mu
+		entry = &gcRootLock{}
+		gcRootLocks[key] = entry
+	}
+	entry.refCount++
+	gcRootLocksMu.Unlock()
+	entry.mu.Lock()
+	return entry
+}
+
+// releaseGCRootLock unlocks the per-root lock and drops the map entry
+// when no other caller is holding or waiting on it. Pairs with
+// acquireGCRootLock.
+func releaseGCRootLock(root string, entry *gcRootLock) {
+	entry.mu.Unlock()
+	key := root
+	if key != "" {
+		key = filepath.Clean(key)
+	}
+	gcRootLocksMu.Lock()
+	entry.refCount--
+	if entry.refCount <= 0 {
+		delete(gcRootLocks, key)
 	}
 	gcRootLocksMu.Unlock()
-	mu.Lock()
-	return mu
 }
 
 // GCStats holds statistics about the garbage collection run.
@@ -237,7 +266,7 @@ func CollectGarbage(
 	// (mark fail-closed) violation by data path. Lock is acquired
 	// before any disk-state work and released on return.
 	rootLock := acquireGCRootLock(options.GCStateRoot)
-	defer rootLock.Unlock()
+	defer releaseGCRootLock(options.GCStateRoot, rootLock)
 
 	// Apply defaults that the caller did not specify.
 	gracePeriod := options.GracePeriod
