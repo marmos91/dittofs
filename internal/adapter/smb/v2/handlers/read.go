@@ -407,7 +407,9 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 
 	// Per MS-FSA 2.1.5.4, after a successful read the server updates
 	// LastAccessTime to the current system time, unless frozen via SET_INFO -1.
-	if !openFile.AtimeFrozen {
+	// IsAtimeFrozen takes openFile.mu (read) so we observe a consistent value
+	// against a concurrent SET_INFO freeze/thaw on the same handle (#606).
+	if !openFile.IsAtimeFrozen() {
 		now := time.Now()
 		_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
 	}

@@ -521,10 +521,11 @@ func (h *Handler) executeCopyChunks(
 	// Per MS-FSA 2.1.5.3: update LastAccessTime on source (read) and destination (write).
 	// Hoist a single timestamp for consistency (matches write.go pattern).
 	now := time.Now()
-	if !srcOpen.AtimeFrozen {
+	// IsAtimeFrozen takes the per-OpenFile read lock; see #606.
+	if !srcOpen.IsAtimeFrozen() {
 		_ = metaSvc.SetFileAttributes(authCtx, srcOpen.MetadataHandle, &metadata.SetAttrs{Atime: &now})
 	}
-	if !dstOpen.AtimeFrozen {
+	if !dstOpen.IsAtimeFrozen() {
 		_ = metaSvc.SetFileAttributes(authCtx, dstOpen.MetadataHandle, &metadata.SetAttrs{Atime: &now})
 	}
 	if len(dstOpen.ParentHandle) > 0 {

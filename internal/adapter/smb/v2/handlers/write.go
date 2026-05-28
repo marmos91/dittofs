@@ -372,9 +372,16 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Snapshot the pre-write Mtime so the SMB delayed-write window can
 	// keep returning that value via QUERY_INFO until the 2-second timer
 	// expires (Samba: trigger_write_time_update). Best-effort — only the
-	// first WRITE on the open consumes the snapshot.
+	// first WRITE on the open consumes the snapshot. Probe under the per-
+	// OpenFile read lock so a concurrent armSmbDelayedWrite /
+	// setSmbStickyWriteTime cannot tear our view (#606); armSmbDelayedWrite
+	// below re-checks the flags under the write lock so a race between probe
+	// and arm collapses to a single first-write capture.
 	var preWriteMtime time.Time
-	if !openFile.SmbWriteTriggered && openFile.SmbStickyWriteTime == nil {
+	openFile.mu.RLock()
+	probeArm := !openFile.SmbWriteTriggered && openFile.SmbStickyWriteTime == nil
+	openFile.mu.RUnlock()
+	if probeArm {
 		if preFile, getErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); getErr == nil {
 			preWriteMtime = preFile.Mtime
 		}
@@ -445,7 +452,8 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// to the current system time, unless frozen via SET_INFO -1.
 	// Per MS-FSA 2.1.4.4: Parent directory's LastAccessTime is also updated.
 	now := time.Now()
-	if !openFile.AtimeFrozen {
+	// IsAtimeFrozen takes openFile.mu (read); see #606.
+	if !openFile.IsAtimeFrozen() {
 		_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
 	}
 	if len(openFile.ParentHandle) > 0 {

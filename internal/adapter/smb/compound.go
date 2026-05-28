@@ -147,15 +147,6 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	// and the inline sync wait would deadlock because the test/client cannot
 	// ACK the lease break until it receives the STATUS_PENDING interim.
 	if result != nil && result.Status == types.StatusPending && result.AsyncId != 0 && len(compoundData) >= header.HeaderSize {
-		// Send interim STATUS_PENDING as a standalone async response.
-		interimCredits := grantConnectionCredits(connInfo, firstHeader.SessionID, firstHeader.Credits, firstHeader.CreditCharge)
-		interimHeader := header.NewResponseHeaderWithCredits(firstHeader, types.StatusPending, interimCredits)
-		interimHeader.Flags |= types.FlagAsync
-		interimHeader.AsyncId = result.AsyncId
-		if err := SendMessage(interimHeader, MakeErrorBody(), connInfo); err != nil {
-			logger.Debug("Error sending compound async interim response", "error", err)
-		}
-
 		// The parkCreateOnLeaseBreak goroutine will call
 		// AsyncCreateCompleteCallback when the CREATE completes. We
 		// overwrite that callback (it was set to send a standalone
@@ -163,6 +154,15 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		// The original callback was captured by the goroutine's closure
 		// via PendingCreate.Callback; we replace PendingCreate.Callback
 		// in the registry so the goroutine picks up our wrapper.
+		//
+		// Order matters: replace BEFORE sending the interim. The goroutine
+		// is parked on a break-wait that can only complete after the client
+		// observes the interim and ACKs the lease break, so as long as the
+		// replacement happens before the interim hits the wire, the goroutine
+		// cannot wake with the stale standalone callback (compound-break
+		// regression — without the reorder the wake can race ReplaceCallback
+		// on a fast localhost loop, causing the CREATE to complete
+		// standalone, the GETINFO never to run, and the client to time out).
 		if connInfo.Handler.PendingCreateRegistry != nil {
 			connInfo.Handler.PendingCreateRegistry.ReplaceCallback(result.AsyncId, func(sessionID, messageID, asyncID uint64, status types.Status, createBody []byte) error {
 				connInfo.ReleaseAsync()
@@ -175,6 +175,15 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 				)
 				return nil
 			})
+		}
+
+		// Send interim STATUS_PENDING as a standalone async response.
+		interimCredits := grantConnectionCredits(connInfo, firstHeader.SessionID, firstHeader.Credits, firstHeader.CreditCharge)
+		interimHeader := header.NewResponseHeaderWithCredits(firstHeader, types.StatusPending, interimCredits)
+		interimHeader.Flags |= types.FlagAsync
+		interimHeader.AsyncId = result.AsyncId
+		if err := SendMessage(interimHeader, MakeErrorBody(), connInfo); err != nil {
+			logger.Debug("Error sending compound async interim response", "error", err)
 		}
 		return
 	}

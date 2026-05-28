@@ -29,9 +29,9 @@ import (
 // smbDelayedWriteWindow is Samba's WRITE_TIME_UPDATE_USEC_DELAY (2 s).
 const smbDelayedWriteWindow = 2 * time.Second
 
-// armSmbDelayedWrite records that a WRITE happened and arms the 2-second
-// visibility window on the first call. Subsequent calls are no-ops.
-func armSmbDelayedWrite(openFile *OpenFile, preMtime time.Time, writeTime time.Time) {
+// armSmbDelayedWriteLocked is the lock-free body of armSmbDelayedWrite.
+// Callers must hold openFile.mu (write).
+func armSmbDelayedWriteLocked(openFile *OpenFile, preMtime time.Time, writeTime time.Time) {
 	if openFile == nil {
 		return
 	}
@@ -49,21 +49,52 @@ func armSmbDelayedWrite(openFile *OpenFile, preMtime time.Time, writeTime time.T
 	openFile.SmbWriteFlushAt = time.Now().Add(smbDelayedWriteWindow)
 }
 
-// flushSmbDelayedWrite collapses the visibility window so the next
-// QUERY_INFO surfaces the post-write Mtime. Called from FLUSH, SET_INFO
-// BasicInfo (any flavour) and SET_INFO EndOfFile per Samba's
-// trigger_write_time_update_immediate.
-func flushSmbDelayedWrite(openFile *OpenFile) {
-	if openFile == nil || !openFile.SmbWriteTriggered {
+// armSmbDelayedWrite records that a WRITE happened and arms the 2-second
+// visibility window on the first call. Subsequent calls are no-ops.
+//
+// Takes OpenFile.mu (write) — concurrent WRITE pipelines on the same handle
+// must serialize their first-write capture (#606). Callers that already hold
+// the write lock should call armSmbDelayedWriteLocked instead.
+func armSmbDelayedWrite(openFile *OpenFile, preMtime time.Time, writeTime time.Time) {
+	if openFile == nil {
+		return
+	}
+	openFile.mu.Lock()
+	defer openFile.mu.Unlock()
+	armSmbDelayedWriteLocked(openFile, preMtime, writeTime)
+}
+
+// flushSmbDelayedWriteLocked is the lock-free body of flushSmbDelayedWrite.
+// Callers must hold openFile.mu (write).
+func flushSmbDelayedWriteLocked(openFile *OpenFile) {
+	if openFile == nil {
+		return
+	}
+	if !openFile.SmbWriteTriggered {
 		return
 	}
 	openFile.SmbWriteFlushAt = time.Time{}
 }
 
-// setSmbStickyWriteTime records an explicit SetBasic write_time. While
-// sticky, QUERY_INFO returns the chosen value regardless of subsequent
-// writes on this handle.
-func setSmbStickyWriteTime(openFile *OpenFile, t time.Time) {
+// flushSmbDelayedWrite collapses the visibility window so the next
+// QUERY_INFO surfaces the post-write Mtime. Called from FLUSH, SET_INFO
+// BasicInfo (any flavour) and SET_INFO EndOfFile per Samba's
+// trigger_write_time_update_immediate.
+//
+// Takes OpenFile.mu (write). Callers that already hold the write lock should
+// call flushSmbDelayedWriteLocked instead.
+func flushSmbDelayedWrite(openFile *OpenFile) {
+	if openFile == nil {
+		return
+	}
+	openFile.mu.Lock()
+	defer openFile.mu.Unlock()
+	flushSmbDelayedWriteLocked(openFile)
+}
+
+// setSmbStickyWriteTimeLocked is the lock-free body of setSmbStickyWriteTime.
+// Callers must hold openFile.mu (write).
+func setSmbStickyWriteTimeLocked(openFile *OpenFile, t time.Time) {
 	if openFile == nil {
 		return
 	}
@@ -71,13 +102,34 @@ func setSmbStickyWriteTime(openFile *OpenFile, t time.Time) {
 	openFile.SmbStickyWriteTime = &v
 }
 
+// setSmbStickyWriteTime records an explicit SetBasic write_time. While
+// sticky, QUERY_INFO returns the chosen value regardless of subsequent
+// writes on this handle.
+//
+// Takes OpenFile.mu (write). Callers that already hold the write lock should
+// call setSmbStickyWriteTimeLocked instead.
+func setSmbStickyWriteTime(openFile *OpenFile, t time.Time) {
+	if openFile == nil {
+		return
+	}
+	openFile.mu.Lock()
+	defer openFile.mu.Unlock()
+	setSmbStickyWriteTimeLocked(openFile, t)
+}
+
 // applySmbDelayedWriteOverride overlays the SMB-visible LastWriteTime on
 // top of a freshly-read metadata.File for QUERY_INFO responses. Returns
 // the file unchanged when the handle has no delayed-write state.
+//
+// Takes OpenFile.mu (read) — must observe a consistent snapshot of the
+// SmbWrite* fields against concurrent armSmbDelayedWrite / flushSmbDelayedWrite
+// on the same handle (#606).
 func applySmbDelayedWriteOverride(openFile *OpenFile, file *metadata.File) {
 	if openFile == nil || file == nil {
 		return
 	}
+	openFile.mu.RLock()
+	defer openFile.mu.RUnlock()
 	if openFile.SmbStickyWriteTime != nil {
 		file.Mtime = *openFile.SmbStickyWriteTime
 		return
