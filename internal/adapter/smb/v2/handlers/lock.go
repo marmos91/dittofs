@@ -476,6 +476,19 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 		"fileID", fmt.Sprintf("%x", req.FileID),
 		"lockCount", req.LockCount)
 
+	// Mark this open as having held at least one byte-range lock. The flag
+	// is consumed at disconnect by shouldPersistDurableOnDisconnect to refuse
+	// durable persistence for opens that hold BR-locks under a non-W lease
+	// (smbtorture smb2.durable-v2-open.lock-noW-lease, MS-SMB2 §3.3.4.18).
+	// Strictly monotonic — UNLOCK does NOT clear it, mirroring Samba's
+	// pessimistic `vfs_default_durable_disconnect` semantics.
+	for _, le := range req.Locks {
+		if le.Flags&SMB2LockFlagUnlock == 0 {
+			openFile.HasByteRangeLocks.Store(true)
+			break
+		}
+	}
+
 	// Build response
 	resp := &LockResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},

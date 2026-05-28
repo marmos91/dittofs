@@ -227,6 +227,13 @@ func (h *Handler) resumePendingLock(
 				finalStatus = types.StatusSuccess
 				finalBody = encodeLockResponseBody()
 				h.lastDeniedLocks.Delete(pending.OwnerID)
+				// Mirror the sync path in lock.go: parked LOCK requests that
+				// finally succeed mark the open as having held a byte-range
+				// lock. The authoritative source of truth at disconnect-time
+				// is the lock manager itself (queried by openHasLocks in
+				// handler.go); this flag is the cheap path used by call-sites
+				// that don't have the meta service handy.
+				openFile.HasByteRangeLocks.Store(true)
 				goto deliver
 			}
 			var storeErr *metadata.StoreError
