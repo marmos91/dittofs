@@ -59,31 +59,9 @@ not advertised — they consume no failure slots and are not listed below.
 The compress_notsup_get/set tests correctly SKIP because FILE_FILE_COMPRESSION
 is advertised.
 
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.ioctl.bug14769 | IOCTL | IOCTL edge case not implemented | - |
-| smb2.ioctl.compress_perms | IOCTL | FSCTL_SET_COMPRESSION requires SEC_FILE_WRITE_DATA check (not implemented) | - |
-| smb2.ioctl.copy_chunk_sparse_dest | IOCTL | Sparse file semantics not implemented for server-side copy | - |
-| smb2.ioctl.bug14788.NETWORK_INTERFACE | IOCTL | Network interface enumeration not implemented | - |
-| smb2.ioctl.sparse_compressed | IOCTL | Sparse + compression not implemented | - |
-| smb2.ioctl.sparse_copy_chunk | IOCTL | Sparse + server-side copy not implemented | - |
-| smb2.ioctl.sparse_dir_flag | IOCTL | Sparse file semantics not implemented | - |
-| smb2.ioctl.sparse_file_flag | IOCTL | Sparse file semantics not implemented | - |
-| smb2.ioctl.sparse_hole_dealloc | IOCTL | Sparse file hole deallocation not implemented | - |
-| smb2.ioctl.sparse_lock | IOCTL | Sparse file locking not implemented | - |
-| smb2.ioctl.sparse_perms | IOCTL | Sparse file permissions not implemented | - |
-| smb2.ioctl.sparse_punch | IOCTL | Sparse file hole punching not implemented | - |
-| smb2.ioctl.sparse_punch_invalid | IOCTL | Sparse file hole punching not implemented | - |
-| smb2.ioctl.sparse_qar | IOCTL | Sparse query allocated ranges not implemented | - |
-| smb2.ioctl.sparse_qar_malformed | IOCTL | Sparse query allocated ranges not implemented | - |
-| smb2.ioctl.sparse_qar_multi | IOCTL | Sparse query allocated ranges not implemented | - |
-| smb2.ioctl.sparse_qar_ob1 | IOCTL | Sparse query allocated ranges not implemented | - |
-| smb2.ioctl.sparse_qar_overflow | IOCTL | Sparse query allocated ranges not implemented | - |
-| smb2.ioctl.sparse_qar_truncated | IOCTL | Sparse query allocated ranges not implemented | - |
-| smb2.ioctl.sparse_set_nobuf | IOCTL | Sparse file set not implemented | - |
-| smb2.ioctl.sparse_set_oversize | IOCTL | Sparse file set not implemented | - |
-| smb2.set-sparse-ioctl | IOCTL | Sparse file IOCTL not implemented | - |
-| smb2.zero-data-ioctl | IOCTL | Zero data IOCTL not implemented | - |
+_All IOCTL sparse-family entries walked back under #718. Newly-surfaced failures
+are intentionally left visible (no KF rows) per project policy: do not silence
+new failures by widening KNOWN_FAILURES._
 
 ### Change Notify (Remaining)
 
