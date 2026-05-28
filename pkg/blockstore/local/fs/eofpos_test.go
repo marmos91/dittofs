@@ -15,7 +15,7 @@ import (
 // lf.eofPos to logHeaderSize on a fresh log (no prior on-disk file).
 func TestLogFile_EofPos_InitialFresh(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
-	lf, _, _, err := bc.getOrCreateLog("file-fresh")
+	lf, _, _, _, err := bc.getOrCreateLog("file-fresh")
 	if err != nil {
 		t.Fatalf("getOrCreateLog: %v", err)
 	}

@@ -115,6 +115,33 @@ func (it *intervalTree) ConsumeUpTo(endExclusive uint64) {
 	}
 }
 
+// DropExact removes every interval whose (Offset, Length) pair exactly
+// matches the supplied region. Used by the rollup recovery path when the
+// logIndex cannot back a stable interval the tree reported (see #668).
+// The exact match requirement avoids dropping unrelated overlapping
+// appends that may still have valid logIndex coverage.
+//
+// Touched is intentionally ignored in the match: EarliestStable returns
+// the interval by (Offset, Length) without exposing the original
+// Touched value to the caller, so we drop every Touched variant at the
+// same (Offset, Length) pair to make the caller's "remove the divergent
+// interval" intent total.
+func (it *intervalTree) DropExact(off uint64, length uint32) {
+	var toDelete []*interval
+	it.t.Ascend(func(iv *interval) bool {
+		if iv.Offset > off {
+			return false
+		}
+		if iv.Offset == off && iv.Length == length {
+			toDelete = append(toDelete, iv)
+		}
+		return true
+	})
+	for _, iv := range toDelete {
+		it.t.Delete(iv)
+	}
+}
+
 // DropAbove removes intervals whose Offset >= boundary, and clips
 // intervals where Offset < boundary < Offset+Length so they end at
 // boundary. Used by Truncate.
