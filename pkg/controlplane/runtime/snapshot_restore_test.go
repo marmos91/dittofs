@@ -541,6 +541,12 @@ func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
 	if err := rt.RegisterMetadataStore(metaStoreName, registered); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
+	if _, err := cp.CreateMetadataStore(context.Background(), &models.MetadataStoreConfig{
+		Name: metaStoreName,
+		Type: "memory",
+	}); err != nil {
+		t.Fatalf("CreateMetadataStore: %v", err)
+	}
 
 	localStoreDir := t.TempDir()
 	shareName := "restore-data"
