@@ -13,10 +13,10 @@ import (
 
 // VerifyRemoteDurability probes the remote store for every hash in the
 // manifest and reports the first miss. It dispatches up to concurrency
-// parallel Head() probes; the first probe to return ErrBlockNotFound
+// parallel Head() probes; the first probe to return ErrChunkNotFound
 // cancels in-flight siblings and the call returns a wrapped
-// blockstore.ErrBlockNotFound naming the missing hash. Non-NotFound
-// I/O errors propagate unchanged (not wrapped as ErrBlockNotFound) so
+// blockstore.ErrChunkNotFound naming the missing hash. Non-NotFound
+// I/O errors propagate unchanged (not wrapped as ErrChunkNotFound) so
 // callers can distinguish "block is genuinely absent on remote" from
 // "remote was unreachable mid-verify."
 //
@@ -83,13 +83,13 @@ loop:
 			switch {
 			case err == nil:
 				return
-			case errors.Is(err, blockstore.ErrBlockNotFound):
+			case errors.Is(err, blockstore.ErrChunkNotFound):
 				logger.Debug("snapshot sync gate: missing hash on remote",
 					"hash", hash.String(),
 				)
 				recordErr(fmt.Errorf(
 					"snapshot: remote durability verify: missing hash %s: %w",
-					hash, blockstore.ErrBlockNotFound,
+					hash, blockstore.ErrChunkNotFound,
 				))
 			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 				// Sibling probe cancelled us; do NOT overwrite firstErr

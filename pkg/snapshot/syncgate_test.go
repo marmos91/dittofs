@@ -83,7 +83,7 @@ func TestVerifyRemoteDurability_NilManifest(t *testing.T) {
 }
 
 // TestVerifyRemoteDurability_MissingHashFailFast: at least one hash is
-// absent → returns wrapped ErrBlockNotFound naming that hash.
+// absent → returns wrapped ErrChunkNotFound naming that hash.
 func TestVerifyRemoteDurability_MissingHashFailFast(t *testing.T) {
 	rs := remotememory.New()
 	t.Cleanup(func() { _ = rs.Close() })
@@ -100,10 +100,10 @@ func TestVerifyRemoteDurability_MissingHashFailFast(t *testing.T) {
 
 	err := snapshot.VerifyRemoteDurability(context.Background(), rs, hs, 4)
 	if err == nil {
-		t.Fatal("missing hash: got nil err, want wrapped ErrBlockNotFound")
+		t.Fatal("missing hash: got nil err, want wrapped ErrChunkNotFound")
 	}
-	if !errors.Is(err, blockstore.ErrBlockNotFound) {
-		t.Fatalf("errors.Is(err, ErrBlockNotFound) = false; err = %v", err)
+	if !errors.Is(err, blockstore.ErrChunkNotFound) {
+		t.Fatalf("errors.Is(err, ErrChunkNotFound) = false; err = %v", err)
 	}
 	if !contains(err.Error(), missing.String()) {
 		t.Fatalf("err message %q should name missing hash %s", err.Error(), missing.String())
@@ -111,7 +111,7 @@ func TestVerifyRemoteDurability_MissingHashFailFast(t *testing.T) {
 }
 
 // TestVerifyRemoteDurability_IOErrorPropagates: a non-NotFound Head
-// error propagates without being wrapped as ErrBlockNotFound.
+// error propagates without being wrapped as ErrChunkNotFound.
 func TestVerifyRemoteDurability_IOErrorPropagates(t *testing.T) {
 	sentinel := errors.New("synthetic-io-failure")
 	rs := &errRemote{err: sentinel}
@@ -125,8 +125,8 @@ func TestVerifyRemoteDurability_IOErrorPropagates(t *testing.T) {
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("errors.Is(err, sentinel) = false; err = %v", err)
 	}
-	if errors.Is(err, blockstore.ErrBlockNotFound) {
-		t.Fatalf("err should NOT wrap ErrBlockNotFound; got %v", err)
+	if errors.Is(err, blockstore.ErrChunkNotFound) {
+		t.Fatalf("err should NOT wrap ErrChunkNotFound; got %v", err)
 	}
 }
 
@@ -225,8 +225,8 @@ func TestVerifyRemoteDurability_FailFastCancelsSiblings(t *testing.T) {
 	}
 
 	err := snapshot.VerifyRemoteDurability(context.Background(), sm, hs, concurrency)
-	if !errors.Is(err, blockstore.ErrBlockNotFound) {
-		t.Fatalf("got %v, want wrapped ErrBlockNotFound", err)
+	if !errors.Is(err, blockstore.ErrChunkNotFound) {
+		t.Fatalf("got %v, want wrapped ErrChunkNotFound", err)
 	}
 
 	// With cancellation, far fewer than `total` Heads should complete.
@@ -383,7 +383,7 @@ func (c *countingRemote) Close() error                              { return nil
 func (c *countingRemote) HealthCheck(context.Context) error         { return nil }
 func (c *countingRemote) Healthcheck(context.Context) health.Report { return health.Report{} }
 
-// slowMissingRemote: returns ErrBlockNotFound for a single
+// slowMissingRemote: returns ErrChunkNotFound for a single
 // nominated hash, nil for everything else, with a small delay per call
 // so the fail-fast cancellation is observable.
 type slowMissingRemote struct {
@@ -404,7 +404,7 @@ func (s *slowMissingRemote) Head(ctx context.Context, h blockstore.ContentHash) 
 	}
 	s.completed.Add(1)
 	if h == s.missing {
-		return blockstore.Meta{}, blockstore.ErrBlockNotFound
+		return blockstore.Meta{}, blockstore.ErrChunkNotFound
 	}
 	return blockstore.Meta{}, nil
 }

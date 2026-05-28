@@ -439,7 +439,7 @@ func (r *Runtime) runSnapshotOrchestration(
 		"snapshot_id", snapID, "share", shareName,
 		"verify_concurrency", concurrency)
 	verr := snapshot.VerifyRemoteDurability(ctx, remoteStore, hashSet, concurrency)
-	if verr != nil && errors.Is(verr, blockstore.ErrBlockNotFound) {
+	if verr != nil && errors.Is(verr, blockstore.ErrChunkNotFound) {
 		// One drain + re-verify retry (D-23-05). Common cause: syncer
 		// was behind during the first verify; a fresh drain catches up.
 		logger.Debug("snapshot create: verify miss, retrying drain+verify",

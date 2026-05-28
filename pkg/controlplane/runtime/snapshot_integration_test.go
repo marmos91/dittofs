@@ -128,7 +128,7 @@ func testDrainThenVerifyFails(t *testing.T) {
 	hashes := makeHashes(3, 0xc0)
 	fx.setBackupHashes(hashes)
 	// Seed all but the LAST hash so the verify step's per-hash Head probe
-	// hits ErrBlockNotFound for one specific hash even after the
+	// hits ErrChunkNotFound for one specific hash even after the
 	// post-miss re-drain (memory drain is a no-op so the second verify
 	// still misses).
 	fx.seedRemoteSubset(hashes[:len(hashes)-1])
@@ -614,7 +614,7 @@ func (c *controlledBackupable) Backup(ctx context.Context, w io.Writer) (*blocks
 // interceptingRemote wraps a memory RemoteStore and delegates everything
 // to it. The "missing one hash" sub-test does not actually need
 // interception; we exercise the missing-hash path by simply not seeding
-// that hash into the inner store (Head returns ErrBlockNotFound
+// that hash into the inner store (Head returns ErrChunkNotFound
 // naturally). The wrapper is retained as a future hook point and to
 // keep all RemoteStore-related test helpers funnelled through one type.
 type interceptingRemote struct {
