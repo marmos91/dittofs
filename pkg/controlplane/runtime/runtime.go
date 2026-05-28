@@ -71,6 +71,22 @@ type Runtime struct {
 	adapterProviders   map[string]any
 	adapterProvidersMu sync.RWMutex
 
+	// snapInFlight tracks per-share in-flight snapshot orchestration
+	// goroutines so RemoveShare (plan 23-05) and Runtime.Shutdown can
+	// cancel + wait before tearing down state. Keyed by share name.
+	// See pkg/controlplane/runtime/snapshot.go (Phase 23, D-23-17).
+	snapInFlight   map[string]*snapInFlight
+	snapInFlightMu sync.Mutex
+
+	// runtimeCtx is a long-lived ctx cancelled by Runtime.Shutdown
+	// (plan 23-05). Snapshot orchestration goroutines derive their
+	// child ctx from this so they outlive any caller request ctx
+	// but die promptly on Runtime shutdown. D-23-17.
+	runtimeCtx    context.Context
+	runtimeCancel context.CancelFunc
+
+	snapshotCfg SnapshotDefaults
+
 	identityChangeCallbacks []func()
 
 	// statusCheckers is the lazy per-entity cached health-checker
@@ -87,12 +103,18 @@ func New(s store.Store) *Runtime {
 		mountTracker:     NewMountTracker(),
 		clientRegistry:   NewClientRegistry(),
 		adapterProviders: make(map[string]any),
+		snapInFlight:     make(map[string]*snapInFlight),
 		storesSvc:        stores.New(),
 		sharesSvc:        shares.New(),
 		lifecycleSvc:     lifecycle.New(DefaultShutdownTimeout),
 		identitySvc:      identity.New(),
 		statusCheckers:   newCheckerCache(StatusCacheTTL),
+		snapshotCfg:      SnapshotDefaults{SyncGateConcurrency: defaultSyncGateConcurrency},
 	}
+
+	// Long-lived ctx for snapshot orchestration goroutines (D-23-17).
+	// Cancelled by Runtime shutdown in plan 23-05.
+	rt.runtimeCtx, rt.runtimeCancel = context.WithCancel(context.Background())
 
 	rt.adaptersSvc = adapters.New(s, DefaultShutdownTimeout)
 	rt.adaptersSvc.SetRuntime(rt)
@@ -596,3 +618,70 @@ func (r *Runtime) SetNFSClientProvider(p any) { r.SetAdapterProvider("nfs", p) }
 
 // NFSClientProvider is deprecated; use GetAdapterProvider("nfs").
 func (r *Runtime) NFSClientProvider() any { return r.GetAdapterProvider("nfs") }
+
+// --- Snapshot Defaults (Phase 23 D-23-22) ---
+
+// defaultSyncGateConcurrency is the defense-in-depth default applied
+// when the operator has not configured snapshot.sync_gate_concurrency.
+// Matches the SnapshotConfig default landed in plan 23-01.
+const defaultSyncGateConcurrency = 16
+
+// SnapshotDefaults captures operator-configured knobs the Runtime threads
+// into snapshot orchestration. Populated from the YAML knob
+// `snapshot.sync_gate_concurrency` per D-23-22 (schema in plan 23-01).
+// cmd/dfs/start.go calls SetSnapshotDefaults from the parsed config at
+// boot.
+type SnapshotDefaults struct {
+	// SyncGateConcurrency bounds the parallel Head() probes the sync
+	// gate fires during VerifyRemoteDurability. Default 16 (matches
+	// SnapshotConfig default).
+	SyncGateConcurrency int
+}
+
+// SetSnapshotDefaults sets the operator-configured snapshot knobs the
+// runtime threads into Runtime.CreateSnapshot orchestration. Values
+// <= 0 are coerced to the built-in default (defense-in-depth — the
+// config loader already validates, but a programmatic caller could
+// pass zero).
+func (r *Runtime) SetSnapshotDefaults(d SnapshotDefaults) {
+	if d.SyncGateConcurrency <= 0 {
+		d.SyncGateConcurrency = defaultSyncGateConcurrency
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.snapshotCfg = d
+}
+
+// snapshotDefaults returns a copy of the current SnapshotDefaults under
+// the runtime read lock. Used by the orchestration goroutine to read
+// SyncGateConcurrency at launch time.
+func (r *Runtime) snapshotDefaults() SnapshotDefaults {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	cfg := r.snapshotCfg
+	if cfg.SyncGateConcurrency <= 0 {
+		cfg.SyncGateConcurrency = defaultSyncGateConcurrency
+	}
+	return cfg
+}
+
+// snapInFlight tracks the per-share orchestration goroutines launched
+// by Runtime.CreateSnapshot. See pkg/controlplane/runtime/snapshot.go
+// for the registration + cleanup helpers.
+//
+// The done map keys are snapshot IDs; each chan is buffered (cap 1) and
+// receives exactly one snapResult before the goroutine closes it, so
+// WaitForSnapshot (plan 23-06) can surface the orchestration error via
+// errors.Is without consulting the DB. D-23-17.
+type snapInFlight struct {
+	wg      sync.WaitGroup
+	cancels []context.CancelFunc
+	done    map[string]chan snapResult
+	mu      sync.Mutex
+}
+
+// snapResult is sent exactly once on a snap's done channel, immediately
+// before close. nil err == success; non-nil err is wrapped per D-23-12.
+type snapResult struct {
+	err error
+}

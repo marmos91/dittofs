@@ -116,6 +116,31 @@ func (s *GORMStore) UpdateSnapshotState(ctx context.Context, shareName, id, stat
 	return models.ErrSnapshotStateConflict
 }
 
+// UpdateSnapshotDurable flips the RemoteDurable bit on the snapshot row
+// matching (shareName, id). Called by the snapshot orchestration goroutine
+// (Phase 23 D-23-03) immediately before / after the ready-state flip:
+// durable=true after VerifyRemoteDurability passes, durable=false on the
+// --no-sync-gate path. Independent of state so the state-machine helper
+// (UpdateSnapshotState) stays single-purpose.
+//
+// Returns models.ErrSnapshotNotFound if no row matches.
+func (s *GORMStore) UpdateSnapshotDurable(ctx context.Context, shareName, id string, durable bool) error {
+	db := s.db.WithContext(ctx)
+	res := db.Model(&models.Snapshot{}).
+		Where("share_name = ? AND id = ?", shareName, id).
+		Updates(map[string]any{
+			"remote_durable": durable,
+			"updated_at":     time.Now(),
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return models.ErrSnapshotNotFound
+	}
+	return nil
+}
+
 // allowedPriorStates returns the set of states from which `next` is reachable.
 // Transitions: creating -> ready, creating -> failed, failed -> creating.
 func allowedPriorStates(next string) []string {

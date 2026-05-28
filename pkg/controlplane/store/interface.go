@@ -478,6 +478,14 @@ type SnapshotStore interface {
 	// Returns models.ErrSnapshotStateConflict for any other transition,
 	// including same-state updates.
 	UpdateSnapshotState(ctx context.Context, shareName, id, state string) error
+
+	// UpdateSnapshotDurable flips the RemoteDurable bit on the snapshot
+	// row matching (shareName, id). Called by the orchestration goroutine
+	// (Phase 23 D-23-03) after VerifyRemoteDurability passes (durable=true)
+	// or under --no-sync-gate (durable=false). Independent of state to
+	// keep the state-machine helper (UpdateSnapshotState) single-purpose.
+	// Returns models.ErrSnapshotNotFound if no row matches.
+	UpdateSnapshotDurable(ctx context.Context, shareName, id string, durable bool) error
 }
 
 // HealthStore provides store health check and lifecycle operations.
