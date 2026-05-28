@@ -1,9 +1,16 @@
 # smbtorture Known Failures
 
-Last updated: 2026-05-27 (walk back sdread, secleak, qsec_buffercheck, aclfile, acldir, nulldacl + 4 compound tests)
+Last updated: 2026-05-28 (v1.0 conformance gate — extract 14 architecturally-unimplementable entries into Permanently Unimplementable appendix; defer 70 Kerberos entries to v1.0+kerberos milestone)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
+
+## Policy (v1.0 conformance gate, #673)
+
+- The [Permanently Unimplementable](#permanently-unimplementable-out-of-scope) appendix at the bottom is the **only** place new entries may be added without an accompanying GH sub-issue.
+- Every entry above the appendix MUST either (a) reference an open GH sub-issue under the `v1.0.0` milestone, or (b) be promoted into the appendix with a documented architectural reason.
+- Walking a test back (removing from this file) is encouraged whenever it starts passing on develop. Do not re-add a passing test to silence a transient flake — fix the flake.
+- Goal: every non-appendix entry resolved before tagging v1.0.
 
 The `parse-results.sh` script reads test names from the first column of the
 table below. Lines starting with `#`, `|---`, empty lines, and the header row
@@ -35,12 +42,9 @@ async credit coordination.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.multichannel.leases.test1 | Multi-channel | Cross-channel lease break fan-out is Phase 2 work on #361; test flakes on DittoFS until the primary/secondary channel coordination lands | #361 |
-| smb2.multichannel.leases.test2 | Multi-channel | Requires torture_block_tcp_transport (Samba-internal test-harness operation) to simulate a blocked channel — not implementable | - |
 | smb2.multichannel.leases.test3 | Multi-channel | Spurious lease break on uncontested open — separate bug from #417 epoch drift | #436 |
-| smb2.multichannel.leases.test4 | Multi-channel | Requires torture_block_tcp_transport (Samba-internal test-harness operation) — not implementable | - |
-| smb2.multichannel.oplocks.test2 | Multi-channel | Requires FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT (Samba test-harness FSCTL) to simulate connection failure — not implementable | - |
-| smb2.multichannel.oplocks.test3_windows | Multi-channel | Requires FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT to block TCP transport — not implementable | - |
-| smb2.multichannel.oplocks.test3_specification | Multi-channel | Requires FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT + 32-channel coordination — not implementable | - |
+
+Note: the five `smb2.multichannel.{leases,oplocks}` tests requiring Samba-internal harness FSCTLs (`torture_block_tcp_transport`, `FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT`) have been moved to the [Permanently Unimplementable](#permanently-unimplementable-out-of-scope) appendix.
 
 ### IOCTL/FSCTL Operations (Not Implemented)
 
@@ -142,10 +146,8 @@ oplock break notification delivery.
 | smb2.oplock.doc | Oplocks | Delete-on-close + oplock interaction | - |
 | smb2.oplock.statopen1 | Oplocks | Stat open + oplock interaction | - |
 | smb2.oplock.stream1 | Oplocks | Stream + oplock interaction | - |
-| smb2.kernel-oplocks.kernel_oplocks2 | Kernel Oplocks | Kernel oplock break coordination (newly reachable) | - |
-| smb2.kernel-oplocks.kernel_oplocks4 | Kernel Oplocks | Kernel oplock break coordination (newly reachable) | - |
-| smb2.kernel-oplocks.kernel_oplocks8 | Kernel Oplocks | Flaky in CI (skip/fail race on localdir check) | - |
-| smb2.kernel-oplocks.kernel_oplocks5 | Kernel Oplocks | Lease downgrade grants Level II where kernel oplock expects None (kernel oplock semantics not implemented) | - |
+
+Note: the four `smb2.kernel-oplocks.*` tests require Linux kernel oplock integration via `F_SETLEASE` on the underlying fd — architecturally incompatible with DittoFS's userspace virtual filesystem. They are listed in the [Permanently Unimplementable](#permanently-unimplementable-out-of-scope) appendix.
 
 ### Directory Leases (Not Implemented)
 
@@ -287,16 +289,6 @@ Advanced connection and tree connect edge cases.
 | smb2.compound_find.compound_find_close | Compound | Flaky compound FIND+CLOSE race - passes intermittently | - |
 | smb2.lease.statopen4 | Leases | Flaky stat-open lease test - passes intermittently | - |
 
-### Previous Versions / Time Warp (Not Implemented)
-
-Previous versions (shadow copies / TWRP) are a Windows Volume Shadow Copy
-feature not applicable to DittoFS.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.twrp.openroot | Previous versions | Time-warp not implemented | - |
-| smb2.twrp.listdir | Previous versions | Time-warp not implemented | - |
-
 ### Character Set (Edge Cases)
 
 Unicode and character set edge cases (partial surrogates, wide-A collision) are
@@ -306,15 +298,6 @@ since basic charset support works.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.charset.Testing | Character set | Unicode surrogate pair / wide-A handling not implemented | #435 |
-
-### Name Mangling (Not Implemented)
-
-8.3 short name mangling (DOS compatibility) is not implemented.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.name-mangling.mangle | Name mangling | 8.3 short name mangling not implemented | - |
-| smb2.name-mangling.mangled-mask | Name mangling | Mangled name mask search not implemented | - |
 
 ### Extended Attributes (ACL-Based)
 
@@ -331,14 +314,6 @@ Timestamp resolution test requires sub-second precision enforcement.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.timestamp_resolution.resolution1 | Timestamps | Timestamp resolution enforcement not implemented | - |
-
-### Samba-Specific Tests
-
-Samba3-specific POSIX lock extensions not implemented.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.samba3misc.localposixlock1 | Samba-specific | POSIX lock extensions not implemented | - |
 
 ### Session Signing Edge Cases
 
@@ -592,6 +567,40 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 | smb2.replay.replay4 | Replay | Replay detection not implemented | - |
 | smb2.replay.replay5 | Replay | Replay detection not implemented | - |
 | smb2.replay.replay6 | Replay | Replay detection not implemented | - |
+
+## Permanently Unimplementable (Out of Scope)
+
+Tests below cannot be implemented in DittoFS by design. Reasons fall into three buckets:
+
+1. **Samba-internal test-harness operations.** The smbtorture client invokes Samba-specific FSCTLs that exist only inside Samba's test build (`torture_block_tcp_transport`, `FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT`). DittoFS cannot implement these without becoming Samba.
+2. **Kernel-level features.** Tests that require Linux kernel oplock semantics via `F_SETLEASE` on a real fd. DittoFS is a userspace virtual filesystem with no underlying kernel-fd to set leases on.
+3. **OS-shell features outside the SMB protocol surface.** NTFS 8.3 short-name mangling (DOS compatibility) and VSS shadow copies / Previous Versions / Time Warp (`SMB2_CREATE_TIMEWARP_TOKEN`) are Windows OS features layered on top of NTFS, not protocol-level features of SMB2/3.
+4. **Samba-private POSIX lock extensions** that ride on Samba's smb1-derived semantics and have no MS-SMB2 spec equivalent.
+
+These entries remain in CI's known-failure set (so they don't break the build) but are explicitly outside the v1.0 conformance gate. Do not file sub-issues for them.
+
+| Test Name | Category | Reason |
+|-----------|----------|--------|
+| smb2.multichannel.leases.test2 | Multi-channel | Requires `torture_block_tcp_transport` (Samba-internal test-harness operation) |
+| smb2.multichannel.leases.test4 | Multi-channel | Requires `torture_block_tcp_transport` (Samba-internal test-harness operation) |
+| smb2.multichannel.oplocks.test2 | Multi-channel | Requires `FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT` (Samba test-harness FSCTL) |
+| smb2.multichannel.oplocks.test3_windows | Multi-channel | Requires `FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT` (Samba test-harness FSCTL) |
+| smb2.multichannel.oplocks.test3_specification | Multi-channel | Requires `FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT` + 32-channel coordination (Samba-internal) |
+| smb2.kernel-oplocks.kernel_oplocks2 | Kernel oplocks | Requires Linux kernel `F_SETLEASE` on underlying fd — userspace VFS cannot |
+| smb2.kernel-oplocks.kernel_oplocks4 | Kernel oplocks | Requires Linux kernel `F_SETLEASE` on underlying fd — userspace VFS cannot |
+| smb2.kernel-oplocks.kernel_oplocks5 | Kernel oplocks | Kernel oplock vs lease downgrade semantics — DittoFS has no kernel oplock layer |
+| smb2.kernel-oplocks.kernel_oplocks8 | Kernel oplocks | smbtorture-side localdir check is host-FS-specific — not applicable to a virtual FS |
+| smb2.name-mangling.mangle | Name mangling | NTFS 8.3 short-name mangling — DOS/Win9x legacy, not in SMB2/3 protocol surface |
+| smb2.name-mangling.mangled-mask | Name mangling | NTFS 8.3 short-name mask search — DOS/Win9x legacy, not in SMB2/3 protocol surface |
+| smb2.twrp.openroot | Previous Versions / TWRP | Requires Volume Shadow Copy backend (`SMB2_CREATE_TIMEWARP_TOKEN`) — Windows OS feature, not protocol |
+| smb2.twrp.listdir | Previous Versions / TWRP | Requires Volume Shadow Copy backend (`SMB2_CREATE_TIMEWARP_TOKEN`) — Windows OS feature, not protocol |
+| smb2.samba3misc.localposixlock1 | Samba-private | Samba-specific POSIX lock extensions (smb1-derived, no MS-SMB2 equivalent) |
+
+**Total: 14 tests permanently out of scope.**
+
+### Kerberos
+
+The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
 
