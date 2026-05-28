@@ -176,14 +176,13 @@ files, create blobs) are not implemented. Basic create operations pass.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.create.blob | Create | Create context blobs not fully implemented | - |
-| smb2.create.gentest | Create | Generic create test (impersonation) not implemented | - |
-| smb2.create.impersonation | Create | Impersonation levels not implemented | - |
-| smb2.create.mkdir-dup | Create | Flaky in CI (parallel CREATE OPEN_IF race — passes intermittently on develop, perturbed by unrelated timing changes) | - |
-| smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | - |
-| smb2.create.multi | Create | Regression from recent changes, fails on all 3 stores | - |
-| smb2.create.path-length | Create | Flaky in CI (path length validation race) | - |
-| smb2.create.quota-fake-file | Create | Quota fake file not implemented | - |
+| smb2.create.blob | Create | Create context blobs not fully implemented | #480 |
+| smb2.create.gentest | Create | Generic create test (impersonation) not implemented | #480 |
+| smb2.create.impersonation | Create | Impersonation levels not implemented | #480 |
+| smb2.create.mkdir-dup | Create | Flaky in CI (parallel CREATE OPEN_IF race — passes intermittently on develop, perturbed by unrelated timing changes) | #480 |
+| smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | #480 |
+| smb2.create.multi | Create | Regression from recent changes, fails on all 3 stores | #480 |
+| smb2.create.path-length | Create | Flaky in CI (path length validation race) | #480 |
 
 ### Read/Write Operations (Advanced Semantics)
 
@@ -546,14 +545,29 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.twrp.openroot | Previous Versions / TWRP | Requires Volume Shadow Copy backend (`SMB2_CREATE_TIMEWARP_TOKEN`) — Windows OS feature, not protocol |
 | smb2.twrp.listdir | Previous Versions / TWRP | Requires Volume Shadow Copy backend (`SMB2_CREATE_TIMEWARP_TOKEN`) — Windows OS feature, not protocol |
 | smb2.samba3misc.localposixlock1 | Samba-private | Samba-specific POSIX lock extensions (smb1-derived, no MS-SMB2 equivalent) |
+| smb2.create.quota-fake-file | NTFS-internal | Synthesises NTFS pseudo-file `$Extend\$Quota:$Q:$INDEX_ALLOCATION`. NTFS volume-quota subsystem is a Windows on-disk-format feature; DittoFS has no NTFS metadata layer, no $Extend reserved files, no quota subsystem, and no protocol-defined way to surface these as fake objects on non-NTFS backends. |
 
-**Total: 14 tests permanently out of scope.**
+**Total: 15 tests permanently out of scope.**
 
 ### Kerberos
 
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-28 — CREATE wire validation + quota-fake-file to appendix (#480)
+
+- Server now validates ImpersonationLevel (>3 → BAD_IMPERSONATION_LEVEL),
+  CreateOptions reserved bits (0xff000000 → INVALID_PARAMETER),
+  CreateOptions unsupported bits (0x00102080 → NOT_SUPPORTED), FileAttributes
+  bits outside 0x7FB7 (→ INVALID_PARAMETER), and TWrp (previous-version
+  token) → OBJECT_NAME_NOT_FOUND. Targets flips for `smb2.create.impersonation`
+  and partial coverage for `smb2.create.gentest` / `smb2.create.blob`.
+- `smb2.create.quota-fake-file` promoted to Permanently Unimplementable —
+  NTFS `$Extend\$Quota:$Q:$INDEX_ALLOCATION` is a Windows on-disk-format
+  internal object with no equivalent in DittoFS's metadata model.
+- Remaining `smb2.create.*` entries (blob, gentest, impersonation, mkdir-dup,
+  mkdir-visible, multi, path-length) gated under #480 pending CI confirmation.
 
 ### 2026-05-27 — Walk back 4 compound tests (section removed)
 

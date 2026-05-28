@@ -489,6 +489,83 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
 	}
 
+	// TWrp (SMB2_CREATE_TIMEWARP_TOKEN, MS-SMB2 §2.2.13.2.7) requests a
+	// previous-version (snapshot) view of the share. DittoFS has no VSS-style
+	// snapshot backend wired into CREATE, so any non-zero snapshot timestamp
+	// MUST return STATUS_OBJECT_NAME_NOT_FOUND — the requested snapshot does
+	// not exist. Required by smbtorture smb2.create.blob ("Testing timewarp").
+	if twrp := FindCreateContext(req.CreateContexts, "TWrp"); twrp != nil {
+		logger.Debug("CREATE: TWrp (previous version) requested — no snapshot backend",
+			"filename", req.FileName,
+			"dataLen", len(twrp.Data))
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameNotFound}}, nil
+	}
+
+	// Validate ImpersonationLevel per MS-SMB2 §2.2.13: only the four defined
+	// values are accepted (0=Anonymous, 1=Identification, 2=Impersonation,
+	// 3=Delegate). Anything else MUST be rejected with
+	// STATUS_BAD_IMPERSONATION_LEVEL. Required by smbtorture
+	// smb2.create.impersonation.
+	if req.ImpersonationLevel > 3 {
+		logger.Debug("CREATE: invalid impersonation level",
+			"level", fmt.Sprintf("0x%08x", req.ImpersonationLevel))
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBadImpersonationLevel}}, nil
+	}
+
+	// Validate reserved bits in CreateOptions per MS-SMB2 §2.2.13. The upper
+	// byte (bits 24-31) is reserved and MUST be zero; any non-zero reserved
+	// bit returns STATUS_INVALID_PARAMETER. Samba sets `invalid_parameter_mask
+	// = 0xff000000` in source3/smbd/smb2_create.c for these probes (smbtorture
+	// smb2.create.gentest).
+	if uint32(req.CreateOptions)&0xff000000 != 0 {
+		logger.Debug("CREATE: reserved CreateOptions bits set",
+			"options", fmt.Sprintf("0x%08x", uint32(req.CreateOptions)))
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+	}
+
+	// Per MS-SMB2 §2.2.13 + MS-FSCC §2.6, three CreateOptions bits are defined
+	// in Samba but unimplemented in DittoFS and MUST return STATUS_NOT_SUPPORTED
+	// rather than silently succeed. Samba sets `not_supported_mask = 0x00102080`
+	// for these probes (smbtorture smb2.create.gentest):
+	//   bit 7  (0x00000080) NTCREATEX_OPTIONS_TREE_CONNECTION — reserved on the
+	//                       wire per MS-SMB2; Samba legacy name retained.
+	//   bit 13 (0x00002000) FILE_OPEN_BY_FILE_ID — open by FileId reference
+	//                       (matches types.FileOpenByFileId).
+	//   bit 20 (0x00100000) NTCREATEX_OPTIONS_OPFILTER — reserved on the wire
+	//                       per MS-SMB2; Samba legacy name retained.
+	// Note: FILE_COMPLETE_IF_OPLOCKED (0x00000100, types.FileCompleteIfOplocked)
+	// is NOT in this mask — Samba's `ok_mask` accepts it.
+	const unsupportedCreateOptionsMask uint32 = 0x00000080 | // bit 7  (TREE_CONNECTION)
+		uint32(types.FileOpenByFileId) | // bit 13 (0x00002000)
+		0x00100000 // bit 20 (OPFILTER)
+	if uint32(req.CreateOptions)&unsupportedCreateOptionsMask != 0 {
+		logger.Debug("CREATE: unsupported CreateOptions bits set",
+			"options", fmt.Sprintf("0x%08x", uint32(req.CreateOptions)))
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported}}, nil
+	}
+
+	// Validate FileAttributes per MS-FSCC §2.6 and MS-SMB2 §2.2.13. Only the
+	// attributes defined for files/directories are accepted on CREATE; the
+	// reserved/volume/device bits MUST be rejected with STATUS_INVALID_PARAMETER.
+	//
+	// Legal attributes on CREATE (MS-FSCC §2.6):
+	//   READONLY (0x1)         HIDDEN (0x2)          SYSTEM (0x4)
+	//   DIRECTORY (0x10)       ARCHIVE (0x20)        NORMAL (0x80)
+	//   TEMPORARY (0x100)      SPARSE_FILE (0x200)   REPARSE_POINT (0x400)
+	//   COMPRESSED (0x800)     OFFLINE (0x1000)      NOT_CONTENT_INDEXED (0x2000)
+	//   ENCRYPTED (0x4000)     INTEGRITY_STREAM (0x8000)
+	//
+	// Bit 0x8 (FILE_ATTRIBUTE_VOLUME) and 0x40 (FILE_ATTRIBUTE_DEVICE) are
+	// reserved-on-the-wire and rejected. INTEGRITY_STREAM (0x8000) is silently
+	// accepted (no-op on DittoFS) — WPTS FSA tests probe basic-info on a file
+	// created with that attribute and require CREATE to succeed.
+	const validFileAttributesMask uint32 = 0x0000FFB7
+	if uint32(req.FileAttributes)&^validFileAttributesMask != 0 {
+		logger.Debug("CREATE: invalid FileAttributes bits set",
+			"attrs", fmt.Sprintf("0x%08x", uint32(req.FileAttributes)))
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+	}
+
 	// ========================================================================
 	// Step 2: Check for IPC$ named pipe operations
 	// ========================================================================

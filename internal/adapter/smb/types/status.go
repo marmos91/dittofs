@@ -118,6 +118,12 @@ const (
 	// StatusInsufficientResources indicates server lacks resources.
 	StatusInsufficientResources Status = 0xC000009A
 
+	// StatusBadImpersonationLevel indicates the CREATE request supplied an
+	// impersonation level outside the four defined values (Anonymous,
+	// Identification, Impersonation, Delegate) per MS-SMB2 §2.2.13. Required
+	// by smbtorture smb2.create.impersonation.
+	StatusBadImpersonationLevel Status = 0xC00000A5
+
 	// StatusFileIsADirectory indicates a file operation was attempted on a directory.
 	StatusFileIsADirectory Status = 0xC00000BA
 
@@ -271,6 +277,8 @@ func (s Status) String() string {
 		return "STATUS_INTERNAL_ERROR"
 	case StatusInsufficientResources:
 		return "STATUS_INSUFFICIENT_RESOURCES"
+	case StatusBadImpersonationLevel:
+		return "STATUS_BAD_IMPERSONATION_LEVEL"
 	case StatusRequestNotAccepted:
 		return "STATUS_REQUEST_NOT_ACCEPTED"
 	case StatusLogonFailure:
