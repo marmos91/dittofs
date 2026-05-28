@@ -487,16 +487,18 @@ type SnapshotStore interface {
 	// Returns models.ErrSnapshotNotFound if no row matches.
 	UpdateSnapshotDurable(ctx context.Context, shareName, id string, durable bool) error
 
-	// MarkSnapshotReady atomically transitions (creating -> ready) and
-	// sets remote_durable=durable in a single conditional UPDATE.
-	// Required so the final state flip and the durability bit cannot be
-	// half-applied — a partial update would leave the row in
-	// ready+remote_durable=false, indistinguishable from the intentional
-	// --no-sync-gate path and a false negative for Phase 24 restore.
+	// MarkSnapshotReady atomically transitions (creating -> ready),
+	// sets remote_durable=durable, and persists manifest_count in a
+	// single conditional UPDATE. Required so the final state flip,
+	// the durability bit, and the manifest size cannot be half-applied
+	// — a partial update would leave the row in ready+remote_durable=false
+	// (indistinguishable from --no-sync-gate) or manifest_count=0
+	// (incorrect ListSnapshots output even though the manifest on disk
+	// holds N hashes).
 	// Returns models.ErrSnapshotNotFound if no row matches (shareName, id).
 	// Returns models.ErrSnapshotStateConflict if the row exists but is
 	// not in state='creating'.
-	MarkSnapshotReady(ctx context.Context, shareName, id string, durable bool) error
+	MarkSnapshotReady(ctx context.Context, shareName, id string, durable bool, manifestCount int64) error
 }
 
 // HealthStore provides store health check and lifecycle operations.

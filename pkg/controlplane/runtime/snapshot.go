@@ -313,15 +313,30 @@ func (r *Runtime) registerSnapInFlight(shareName, snapID string) (context.Contex
 	r.snapInFlightMu.Lock()
 	defer r.snapInFlightMu.Unlock()
 	entry, ok := r.snapInFlight[shareName]
+	if ok {
+		// An entry observed mid-drain (cancelAndWaitInFlightSnaps has
+		// flipped draining=true but not yet wg.Wait'd) must not be reused:
+		// reusing it would attach the new snap to the wg the drainer is
+		// already waiting on, deadlocking shutdown. Replace the map slot
+		// with a fresh entry; the drainer still holds the original pointer
+		// locally so its wg.Wait remains valid against the old entry.
+		entry.mu.Lock()
+		draining := entry.draining
+		entry.mu.Unlock()
+		if draining {
+			ok = false
+		}
+	}
 	if !ok {
 		entry = &snapInFlight{
-			done: make(map[string]chan snapResult),
+			cancels: make(map[string]context.CancelFunc),
+			done:    make(map[string]chan snapResult),
 		}
 		r.snapInFlight[shareName] = entry
 	}
 
 	entry.mu.Lock()
-	entry.cancels = append(entry.cancels, cancel)
+	entry.cancels[snapID] = cancel
 	entry.done[snapID] = doneCh
 	entry.wg.Add(1)
 	entry.mu.Unlock()
@@ -329,13 +344,23 @@ func (r *Runtime) registerSnapInFlight(shareName, snapID string) (context.Contex
 	return childCtx, doneCh, entry
 }
 
-// unregisterSnap removes the per-snap done channel from the share entry.
+// unregisterSnap removes the per-snap done channel and cancel func from
+// the share entry. The cancel func is invoked here (cheap on an
+// already-completed ctx) and deleted so the derived ctx is released from
+// runtimeCtx's child list — otherwise completed snapshot contexts would
+// pile up on runtimeCtx and entry.cancels would grow for the lifetime
+// of the share.
+//
 // The share entry itself is intentionally left in place even when empty
 // — RemoveShare and Shutdown (plan 23-05) enumerate it and rely on
 // wg.Wait. Leaving stale empty maps around is acceptable bookkeeping
 // cost vs. the synchronization needed to delete on every snap completion.
 func (r *Runtime) unregisterSnap(shareName, snapID string, entry *snapInFlight) {
 	entry.mu.Lock()
+	if cancel, ok := entry.cancels[snapID]; ok {
+		cancel()
+		delete(entry.cancels, snapID)
+	}
 	delete(entry.done, snapID)
 	entry.mu.Unlock()
 }
@@ -457,7 +482,7 @@ func (r *Runtime) runSnapshotOrchestration(
 		// left to the column default. This way the post-create row
 		// state is fully deterministic on success and not subject to
 		// schema-default drift.
-		if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, false); err != nil {
+		if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, false, int64(manifestCount)); err != nil {
 			r.failSnap(shareName, snapID)
 			terminalErr = fmt.Errorf("snapshot create %s: mark ready (no-sync-gate): %w: %v",
 				snapID, models.ErrSnapshotBackupFailed, err)
@@ -548,7 +573,7 @@ func (r *Runtime) runSnapshotOrchestration(
 	// crash mid-update produces ready+remote_durable=false — visually
 	// indistinguishable from the intentional --no-sync-gate result and
 	// a false negative for Phase 24 restore's durability gate.
-	if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, true); err != nil {
+	if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, true, int64(manifestCount)); err != nil {
 		r.failSnap(shareName, snapID)
 		terminalErr = fmt.Errorf("snapshot create %s: mark ready: %w: %v",
 			snapID, models.ErrSnapshotBackupFailed, err)
@@ -604,17 +629,22 @@ func (r *Runtime) cancelAndWaitInFlightSnaps(shareName string) {
 		r.snapInFlightMu.Unlock()
 		return
 	}
-	// Remove the share entry from the map so subsequent CreateSnapshot
-	// calls (if any race in despite the RemoveShare caller's contract)
-	// allocate a fresh entry rather than reusing one we are about to drain.
-	delete(r.snapInFlight, shareName)
-	r.snapInFlightMu.Unlock()
-
-	// Snapshot the cancel funcs under the per-entry mutex (separate from
-	// the registry mutex), then release before draining the WaitGroup.
+	// Keep the entry visible in the registry while we wait so a concurrent
+	// WaitForSnapshot observes the per-snap doneCh and blocks on it,
+	// rather than falling through to GetSnapshot and reporting a row in
+	// state='creating' with nil orchestration error. Flip draining=true
+	// so registerSnapInFlight (if a new CreateSnapshot races in despite
+	// the RemoveShare caller's contract) allocates a fresh entry that
+	// replaces the map slot — our local entry pointer keeps the wg.Wait
+	// pinned to the goroutines actually being drained.
 	entry.mu.Lock()
-	cancels := append([]context.CancelFunc(nil), entry.cancels...)
+	entry.draining = true
+	cancels := make([]context.CancelFunc, 0, len(entry.cancels))
+	for _, c := range entry.cancels {
+		cancels = append(cancels, c)
+	}
 	entry.mu.Unlock()
+	r.snapInFlightMu.Unlock()
 
 	logger.Info("snapshot lifecycle: cancelling in-flight snapshots",
 		"share", shareName,
@@ -627,6 +657,16 @@ func (r *Runtime) cancelAndWaitInFlightSnaps(shareName string) {
 	// Wait OUTSIDE the lock — goroutines need to acquire entry.mu inside
 	// their cleanup path (unregisterSnap) to delete their done-chan entry.
 	entry.wg.Wait()
+
+	// Now delete the entry — but only if the map slot still references
+	// THIS entry. If a new CreateSnapshot raced in and replaced the slot
+	// (registerSnapInFlight saw draining=true), we must not clobber the
+	// replacement.
+	r.snapInFlightMu.Lock()
+	if cur, ok := r.snapInFlight[shareName]; ok && cur == entry {
+		delete(r.snapInFlight, shareName)
+	}
+	r.snapInFlightMu.Unlock()
 
 	logger.Info("snapshot lifecycle: in-flight snapshots drained",
 		"share", shareName,

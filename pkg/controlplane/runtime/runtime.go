@@ -468,7 +468,18 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		logger.Error("snapshot recovery returned error (continuing startup)", "error", err)
 	}
 
-	return r.lifecycleSvc.Serve(ctx, r.settingsWatcher, r.adaptersSvc, r.metadataService, r.storesSvc, r.store)
+	return r.lifecycleSvc.Serve(ctx, r.settingsWatcher, r.adaptersSvc, r.metadataService, r.storesSvc, r.store, r)
+}
+
+// ShutdownSnapshots exposes shutdownSnapshots for the lifecycle.Service
+// shutdown sequence so the normal server path (signal -> ctx cancel ->
+// lifecycle.shutdown) drains in-flight snapshot goroutines BEFORE
+// StopAllAdapters / CloseMetadataStores. Direct callers should prefer
+// Runtime.Shutdown which orchestrates the full sequence; this method
+// exists to satisfy lifecycle.SnapshotDrainer without exporting
+// internal lifecycle details. D-23-17 #R3-1.
+func (r *Runtime) ShutdownSnapshots(ctx context.Context) {
+	r.shutdownSnapshots(ctx)
 }
 
 // --- Identity Mapping (delegated to identity.Service) ---
@@ -750,10 +761,22 @@ func (r *Runtime) snapshotDefaults() SnapshotDefaults {
 // WaitForSnapshot (plan 23-06) can surface the orchestration error via
 // errors.Is without consulting the DB. D-23-17.
 type snapInFlight struct {
-	wg      sync.WaitGroup
-	cancels []context.CancelFunc
+	wg sync.WaitGroup
+	// cancels is keyed by snapshot ID so completed snapshots can release
+	// their cancel func (and the derived ctx attached to runtimeCtx) at
+	// unregisterSnap time instead of leaking for the share's lifetime.
+	cancels map[string]context.CancelFunc
 	done    map[string]chan snapResult
 	mu      sync.Mutex
+	// draining is set true by cancelAndWaitInFlightSnaps after it has
+	// cancelled the per-snap ctxs but BEFORE wg.Wait, so concurrent
+	// WaitForSnapshot callers continue to observe the per-snap doneCh
+	// (instead of falling through to GetSnapshot and reporting a row
+	// still in state='creating'). A registerSnapInFlight observing a
+	// draining entry replaces the map slot with a fresh entry — the
+	// original entry pointer is still held locally by the draining
+	// caller, so its wg.Wait remains valid.
+	draining bool
 }
 
 // snapResult is sent exactly once on a snap's done channel, immediately

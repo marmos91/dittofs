@@ -150,24 +150,27 @@ func (s *GORMStore) UpdateSnapshotDurable(ctx context.Context, shareName, id str
 }
 
 // MarkSnapshotReady atomically transitions the snapshot row (shareName, id)
-// from state='creating' to state='ready' AND sets remote_durable=durable in
-// a single conditional UPDATE. Used by the snapshot orchestration goroutine
-// (Phase 23 D-23-03) after VerifyRemoteDurability passes so the final state
-// flip and the durability bit can never disagree — a half-applied update
+// from state='creating' to state='ready', sets remote_durable=durable, and
+// persists manifest_count in a single conditional UPDATE. Used by the
+// snapshot orchestration goroutine (Phase 23 D-23-03) after
+// VerifyRemoteDurability passes so the final state flip, the durability
+// bit, and the manifest size can never disagree — a half-applied update
 // would leave the row indistinguishable from the intentional --no-sync-gate
-// path (ready + remote_durable=false), confusing operators and Phase 24
-// restore.
+// path (ready + remote_durable=false), or expose manifest_count=0 to
+// ListSnapshots / GetSnapshot callers even when the on-disk manifest
+// contains N hashes.
 //
 // Returns models.ErrSnapshotNotFound if no row matches (shareName, id).
 // Returns models.ErrSnapshotStateConflict if the row exists but is not in
 // state='creating'.
-func (s *GORMStore) MarkSnapshotReady(ctx context.Context, shareName, id string, durable bool) error {
+func (s *GORMStore) MarkSnapshotReady(ctx context.Context, shareName, id string, durable bool, manifestCount int64) error {
 	db := s.db.WithContext(ctx)
 	res := db.Model(&models.Snapshot{}).
 		Where("share_name = ? AND id = ? AND state = ?", shareName, id, models.StateCreating).
 		Updates(map[string]any{
 			"state":          models.StateReady,
 			"remote_durable": durable,
+			"manifest_count": manifestCount,
 			"updated_at":     time.Now(),
 		})
 	if res.Error != nil {

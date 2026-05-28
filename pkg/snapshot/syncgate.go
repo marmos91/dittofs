@@ -21,8 +21,13 @@ import (
 // "remote was unreachable mid-verify."
 //
 // Iteration order matches manifest.Sorted (deterministic; mirrors
-// WriteManifest), so given the same inputs every run reports the same
-// missing hash first.
+// WriteManifest), so probes are dispatched in a stable order. With
+// concurrency > 1, however, the first miss observed depends on which
+// remote Head() returns first — different remote latencies can surface
+// a later sorted hash before an earlier one. Callers needing a
+// deterministic "lowest missing hash" must sort the observations
+// themselves; this helper only guarantees that *some* missing hash is
+// reported when any are absent.
 //
 // concurrency values <= 0 are clamped to 1 (safe lower bound; never
 // deadlocks, never panics). A nil or empty manifest returns nil
