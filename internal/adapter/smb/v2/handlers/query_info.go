@@ -588,7 +588,7 @@ func (h *Handler) resolveBaseFileAttrForADS(authCtx *metadata.AuthContext, openF
 	}
 	metaSvc := h.Registry.GetMetadataService()
 	baseFileName := openFile.FileName[:colonIdx]
-	baseFile, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName)
+	baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName)
 	if baseFile == nil {
 		return nil
 	}
@@ -659,12 +659,23 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		return h.buildFileStreamInformation(authCtx, file, openFile)
 
 	case types.FileNetworkOpenInformation:
-		// Per NTFS: ADS share the base file's timestamps and attributes.
-		attr := &file.FileAttr
+		// Per NTFS: ADS share the base file's timestamps and attributes, but
+		// the size/allocation reflect the stream's own data.
 		if baseAttr := h.resolveBaseFileAttrForADS(authCtx, openFile); baseAttr != nil {
-			attr = baseAttr
+			creation, access, write, change := FileAttrToSMBTimes(baseAttr)
+			size := getSMBSize(&file.FileAttr)
+			networkInfo := &FileNetworkOpenInfo{
+				CreationTime:   creation,
+				LastAccessTime: access,
+				LastWriteTime:  write,
+				ChangeTime:     change,
+				AllocationSize: calculateAllocationSize(size),
+				EndOfFile:      size,
+				FileAttributes: FileAttrToSMBAttributesWithName(baseAttr, basenameForHidden(openFile)),
+			}
+			return EncodeFileNetworkOpenInfo(networkInfo), nil
 		}
-		networkInfo := FileAttrToFileNetworkOpenInfoWithName(attr, basenameForHidden(openFile))
+		networkInfo := FileAttrToFileNetworkOpenInfoWithName(&file.FileAttr, basenameForHidden(openFile))
 		return EncodeFileNetworkOpenInfo(networkInfo), nil
 
 	case types.FilePositionInformation:
@@ -870,7 +881,7 @@ func (h *Handler) buildFileStreamInformation(authCtx *metadata.AuthContext, file
 	var defaultSize uint64
 	if !isBaseDirectory && strings.Contains(openFile.FileName, ":") && len(openFile.ParentHandle) > 0 {
 		metaSvc := h.Registry.GetMetadataService()
-		if baseFile, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseName); baseFile != nil {
+		if baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseName); baseFile != nil {
 			if baseFile.Type == metadata.FileTypeDirectory {
 				isBaseDirectory = true
 			}

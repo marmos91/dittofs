@@ -1553,29 +1553,32 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 
 // paginatedChildScan iterates over a directory's children in pages and
 // returns the first entry whose name satisfies matchFn, confirmed by a
-// Lookup. This is the shared pagination/scan/confirm loop used by both
-// lookupCaseInsensitive. Returns nil/""
-// when no match is found.
+// Lookup. Surfaces real store errors (anything other than ErrNotFound)
+// so callers can distinguish "no match" from "store unhealthy / not a
+// directory / permission denied".
 func (h *Handler) paginatedChildScan(
 	authCtx *metadata.AuthContext,
 	metaSvc *metadata.MetadataService,
 	parentHandle metadata.FileHandle,
 	matchFn func(entryName string) bool,
-) (*metadata.File, string) {
+) (*metadata.File, string, error) {
 	store, err := metaSvc.GetStoreForShare(shareNameFromHandle(parentHandle))
 	if err != nil {
-		return nil, ""
+		return nil, "", err
 	}
 	cursor := ""
 	for {
 		entries, nextCursor, listErr := store.ListChildren(authCtx.Context, parentHandle, cursor, 500)
 		if listErr != nil {
-			break
+			if metadata.IsNotFoundError(listErr) {
+				return nil, "", nil
+			}
+			return nil, "", listErr
 		}
 		for _, entry := range entries {
 			if matchFn(entry.Name) {
 				if f, lookupErr := metaSvc.Lookup(authCtx, parentHandle, entry.Name); lookupErr == nil {
-					return f, entry.Name
+					return f, entry.Name, nil
 				}
 			}
 		}
@@ -1584,24 +1587,27 @@ func (h *Handler) paginatedChildScan(
 		}
 		cursor = nextCursor
 	}
-	return nil, ""
+	return nil, "", nil
 }
 
 // lookupCaseInsensitive performs a case-insensitive child lookup in a
-// directory.  It first tries an exact-case Lookup; on failure it falls
-// back to scanning the parent's children with strings.EqualFold.
-// Returns the found file and its canonical (stored) name, or nil/"" if
-// no match exists.  This implements NTFS-style case-insensitive
-// semantics for the SMB adapter only; NFS remains case-sensitive.
+// directory. It first tries an exact-case Lookup; on ErrNotFound it
+// falls back to scanning the parent's children with strings.EqualFold.
+// Any non-NotFound error (e.g., ErrNotDirectory, permission errors)
+// propagates to the caller so the resulting SMB status reflects the
+// real condition. Returns nil/""/nil when no match exists.
 func (h *Handler) lookupCaseInsensitive(
 	authCtx *metadata.AuthContext,
 	metaSvc *metadata.MetadataService,
 	parentHandle metadata.FileHandle,
 	name string,
-) (*metadata.File, string) {
-	// Fast path: exact-case hit.
-	if f, err := metaSvc.Lookup(authCtx, parentHandle, name); err == nil {
-		return f, name
+) (*metadata.File, string, error) {
+	f, err := metaSvc.Lookup(authCtx, parentHandle, name)
+	if err == nil {
+		return f, name, nil
+	}
+	if !metadata.IsNotFoundError(err) {
+		return nil, "", err
 	}
 	return h.paginatedChildScan(authCtx, metaSvc, parentHandle, func(entryName string) bool {
 		return strings.EqualFold(entryName, name)

@@ -540,7 +540,19 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			if strings.HasSuffix(upper, ":$DATA") {
 				colonPart = colonPart[:len(colonPart)-len(":$DATA")]
 			}
-			streamSuffix = colonPart
+			// `file:$DATA` (empty stream name, $DATA type with single
+			// colon) resolves to a stream entity distinct from the
+			// base file. Per Samba/WPTS semantics, opens on this
+			// path are independent of the base file's DOC and share
+			// state. Preserve the literal suffix so the metadata
+			// lookup resolves to a separate child entry rather than
+			// collapsing onto the base file (which would inherit
+			// the base's pending-delete state and reject the open).
+			if colonPart == "" {
+				streamSuffix = ":$DATA"
+			} else {
+				streamSuffix = colonPart
+			}
 			filename = basePart
 		}
 	}
@@ -917,7 +929,11 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// both regular files and ADS entries whose exact case differs).
 	// For ADS, also fall back to the stream-specific scanner which matches
 	// on the stream suffix within the parent directory.
-	existingFile, foundName := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, baseName)
+	existingFile, foundName, lookupErr := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, baseName)
+	if lookupErr != nil {
+		logger.Debug("CREATE: parent lookup failed", "name", baseName, "error", lookupErr)
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(lookupErr)}}, nil
+	}
 	fileExists := (existingFile != nil)
 	if fileExists && foundName != baseName {
 		baseName = foundName // use the canonical stored name
@@ -972,7 +988,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// ensure the base file exists first. Per MS-FSA, creating a named
 	// stream implicitly creates the base file.
 	if isADS && (createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded) {
-		if f, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, adsBaseFileName); f == nil {
+		if f, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, adsBaseFileName); f == nil {
 			baseAttr := &metadata.FileAttr{
 				Mode: SMBModeFromAttrs(0, false),
 				Type: metadata.FileTypeRegular,
@@ -1468,7 +1484,10 @@ func (h *Handler) walkPath(
 			continue
 		}
 
-		file, _ := h.lookupCaseInsensitive(authCtx, metaSvc, currentHandle, part)
+		file, _, lookupErr := h.lookupCaseInsensitive(authCtx, metaSvc, currentHandle, part)
+		if lookupErr != nil {
+			return nil, lookupErr
+		}
 		if file == nil {
 			return nil, &metadata.StoreError{
 				Code:    metadata.ErrNotFound,
@@ -1607,7 +1626,7 @@ func (h *Handler) updateBaseObjectCtime(
 	parentHandle metadata.FileHandle,
 	baseObjectName string,
 ) {
-	baseFile, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, baseObjectName)
+	baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, baseObjectName)
 	if baseFile == nil {
 		return
 	}
@@ -1633,7 +1652,7 @@ func (h *Handler) updateBaseObjectTimestampsForADSWrite(
 	openFile *OpenFile,
 	baseObjectName string,
 ) {
-	baseFile, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseObjectName)
+	baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseObjectName)
 	if baseFile == nil {
 		return
 	}
