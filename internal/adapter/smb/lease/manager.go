@@ -699,6 +699,22 @@ func (lm *LeaseManager) AnyHolderIsTraditionalOplock(fileHandle lock.FileHandle,
 	return false
 }
 
+// OnlyTimeoutTombstoneRecords reports whether handleKey has at least one
+// lease record AND every present record is a timeout tombstone
+// (BrokenViaTimeout=true). Used by the CREATE-grant LEVEL_II coercion to
+// recognize the "holder timed out, server moved on" case and decline to
+// constrain the new opener's grant by an abandoned holder.
+func (lm *LeaseManager) OnlyTimeoutTombstoneRecords(fileHandle lock.FileHandle, shareName string) bool {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return false
+	}
+	if mgr, ok := lockMgr.(*lock.Manager); ok {
+		return mgr.OnlyTimeoutTombstoneRecords(string(fileHandle))
+	}
+	return false
+}
+
 // WaitForOtherKeyBreaks waits on ctx for all breaks on fileHandle other than
 // excludeKey to drain. The caller controls the cancellation context — the
 // SMB CREATE async-park path passes a context whose lifetime is bound to

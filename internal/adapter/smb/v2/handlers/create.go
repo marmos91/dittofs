@@ -1735,6 +1735,30 @@ func isStatOnlyOpen(desiredAccess uint32) bool {
 	return desiredAccess&statOpenBits != 0 && desiredAccess&^statOpenBits == 0
 }
 
+// isOplockStatOpen mirrors Samba `is_oplock_stat_open` (source3/smbd/open.c).
+// It is the *narrower* sibling of isStatOnlyOpen: it excludes READ_CONTROL,
+// because Samba's traditional-oplock path treats a READ_CONTROL-bearing open
+// as a non-stat opener that must break a traditional-oplock holder.
+//
+// At the new-opener side, this gate is used to strip a *requested* traditional
+// oplock down to NONE when the new opener's access mask is oplock-stat-only:
+// Samba `open_file_ntcreate`, source3/smbd/open.c line 4000:
+//
+//	if (is_oplock_stat_open(open_access_mask) && lease == NULL) {
+//	    oplock_request &= SAMBA_PRIVATE_OPLOCK_MASK;
+//	}
+//
+// smbtorture smb2.oplock.batch8 / exclusive4 cover this: the second open is
+// FILE_READ_ATTRIBUTES|FILE_WRITE_ATTRIBUTES|SYNCHRONIZE asking for BATCH /
+// EXCLUSIVE — expected grant is NO_OPLOCK_RETURN (LEVEL_NONE) with NO break
+// dispatched to the original holder.
+func isOplockStatOpen(desiredAccess uint32) bool {
+	const oplockStatBits uint32 = 0x00000080 | // FILE_READ_ATTRIBUTES
+		0x00000100 | // FILE_WRITE_ATTRIBUTES
+		0x00100000 //  SYNCHRONIZE
+	return desiredAccess&oplockStatBits != 0 && desiredAccess&^oplockStatBits == 0
+}
+
 // computeSessionKeyHash computes the SHA-256 hash of the session's signing key.
 // This is used for durable handle security validation during reconnect.
 // Returns zero hash if the session has no crypto state or signing key.

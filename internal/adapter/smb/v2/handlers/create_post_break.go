@@ -102,15 +102,23 @@ func effectiveAccessForOpen(desiredAccess uint32, disposition types.CreateDispos
 	return desiredAccess | uint32(types.FileWriteData)
 }
 
-// hasOtherOpenForFile reports whether any open in h.files refers to the same
-// metadata handle as fileHandle, excluding the open identified by selfFileID
-// (the CREATE-in-flight has not yet been registered, so selfFileID typically
-// matches nothing — but the parameter is kept for symmetry and future use).
+// hasOtherNonStatOpenForFile reports whether any open in h.files refers to
+// the same metadata handle as fileHandle (excluding the open identified by
+// selfFileID) AND has a non-stat-only access mask. Stat-only opens are
+// excluded because Samba's `disallow_write_lease` predicate
+// (source3/smbd/open.c lines 2397-2403) ignores them — they do not invalidate
+// the exclusive caching premise of a Batch/Exclusive grant on a subsequent
+// opener.
 //
 // Used by the traditional-oplock grant path to coerce Batch/Exclusive to
-// LEVEL_II when another open already exists on the same file (MS-SMB2
-// §3.3.5.9 / Samba `grant_fsp_oplock_type`).
-func (h *Handler) hasOtherOpenForFile(fileHandle metadata.FileHandle, selfFileID [16]byte) bool {
+// LEVEL_II when a previously-existing raw (non-oplocked) open is present.
+// Callers must additionally verify that no lease/oplock record exists for the
+// file via LeaseManager.HasAnyLeaseRecord — when a record exists (even at
+// LeaseStateNone post-break-timeout), bestGrantableState already handles the
+// grant correctly and the coarse OpenFile coercion would incorrectly demote
+// a grant that the lease layer would otherwise allow (smbtorture batch22b
+// post-timeout re-grant).
+func (h *Handler) hasOtherNonStatOpenForFile(fileHandle metadata.FileHandle, selfFileID [16]byte) bool {
 	if len(fileHandle) == 0 {
 		return false
 	}
@@ -124,6 +132,11 @@ func (h *Handler) hasOtherOpenForFile(fileHandle metadata.FileHandle, selfFileID
 			return true
 		}
 		if !bytes.Equal(other.MetadataHandle, fileHandle) {
+			return true
+		}
+		// Skip stat-only existing opens (Samba `is_oplock_stat_open` carve-out
+		// in `delay_for_oplock_fn`).
+		if isOplockStatOpen(other.DesiredAccess) {
 			return true
 		}
 		found = true
@@ -672,7 +685,36 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 
 	if grantedOplock == OplockLevelNone && req.OplockLevel != OplockLevelNone &&
 		req.OplockLevel != OplockLevelLease && h.LeaseManager != nil &&
-		file.Type != metadata.FileTypeDirectory {
+		file.Type != metadata.FileTypeDirectory &&
+		// Strip a traditional oplock request to NONE when the new opener's
+		// EFFECTIVE access mask is oplock-stat-only (Samba
+		// `is_oplock_stat_open` — FILE_READ_ATTRIBUTES / FILE_WRITE_ATTRIBUTES
+		// / SYNCHRONIZE only, NO READ_CONTROL). Mirrors `open_file_ntcreate`
+		// source3/smbd/open.c line 4000:
+		//
+		//	if (is_oplock_stat_open(open_access_mask) && lease == NULL) {
+		//	    oplock_request &= SAMBA_PRIVATE_OPLOCK_MASK;
+		//	}
+		//
+		// Samba's comment on this gate is load-bearing:
+		//
+		//	stat opens on existing files don't get oplocks. They can get
+		//	leases. Note that we check for stat open on the
+		//	*open_access_mask*, i.e. the access mask we actually used to do
+		//	the open, not the one the client asked for (which is in
+		//	fsp->access_mask). This is due to the fact that FILE_OVERWRITE
+		//	and FILE_OVERWRITE_IF add in O_TRUNC, which adds FILE_WRITE_DATA
+		//	to open_access_mask.
+		//
+		// So a destructive disposition (OVERWRITE / OVERWRITE_IF /
+		// SUPERSEDE) with attrs-only DesiredAccess still gets the requested
+		// oplock — the implicit truncate-WRITE_DATA disqualifies it from
+		// the stat-open carve-out. smbtorture smb2.oplock.exclusive5 covers
+		// this: OVERWRITE_IF + attrs-only request must grant LEVEL_II
+		// (NOT NONE). batch8 / exclusive4 (non-destructive + attrs-only)
+		// must strip to NONE.
+		!(fileExists && isOplockStatOpen(effectiveAccessForOpen(req.DesiredAccess, req.CreateDisposition))) {
+
 		var requestedState uint32
 		switch req.OplockLevel {
 		case OplockLevelBatch:
@@ -682,21 +724,33 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		case OplockLevelII:
 			requestedState = lock.LeaseStateRead
 		}
-		// Coerce Batch/Exclusive → LEVEL_II when any other open of this file
-		// is already present (whether it holds an oplock or not). Per MS-SMB2
-		// §3.3.5.9 and Samba `grant_fsp_oplock_type` (source3/smbd/open.c):
-		// exclusive caching (RWH/RW) requires the requestor to be the only
-		// open. A pre-existing non-oplocked open invalidates that requirement,
-		// so the strongest grantable level is LEVEL_II (Read caching). The
-		// lock-manager-level conflict check only sees lease/oplock records,
-		// not raw opens, so we apply this gate here. Covers smbtorture
-		// smb2.oplock.batch10 and smb2.oplock.exclusive9.
-		if h.hasOtherOpenForFile(fileHandle, smbFileID) {
+		// Coerce Batch/Exclusive → LEVEL_II when another "effective"
+		// non-stat opener is present on the same file, mirroring Samba's
+		// `disallow_write_lease` predicate (source3/smbd/open.c:2397).
+		// The lock layer's bestGrantableState already handles records
+		// with active R/W/H bits; this branch covers the case where the
+		// record is absent or at LeaseStateNone but the underlying open
+		// is still alive — those would otherwise slip past
+		// bestGrantableState and yield a too-permissive grant.
+		//
+		// An open counts as "effective" unless its lease record has been
+		// force-completed via break-ack timeout — the holder stopped
+		// responding to breaks and the server moved on:
+		//   1) No record + non-stat OpenFile → effective (batch10: tree1
+		//      raw-open → tree2 BATCH gets LEVEL_II).
+		//   2) Acked-None record alongside a live OpenFile → effective
+		//      (exclusive9 SUPERSEDE: tree1 lease acked to None, tree2
+		//      EXCLUSIVE gets LEVEL_II).
+		//   3) Timeout-tombstone record → NOT effective (batch22b: tree1
+		//      BATCH timed out → BrokenViaTimeout=true → tree2 BATCH
+		//      gets full BATCH despite tree1's OpenFile still existing).
+		lockFileHandle := lock.FileHandle(fileHandle)
+		if h.hasOtherNonStatOpenForFile(fileHandle, smbFileID) &&
+			!h.LeaseManager.OnlyTimeoutTombstoneRecords(lockFileHandle, tree.ShareName) {
 			requestedState &^= (lock.LeaseStateWrite | lock.LeaseStateHandle)
 		}
 		if requestedState != 0 {
 			syntheticKey := generateSyntheticLeaseKey(smbFileID)
-			lockFileHandle := lock.FileHandle(fileHandle)
 			ownerID := fmt.Sprintf("smb:oplock:%x", smbFileID)
 			clientID := fmt.Sprintf("smb:%d", ctx.SessionID)
 			// RequestLeaseAsOplock tags the new record IsTraditionalOplock=true

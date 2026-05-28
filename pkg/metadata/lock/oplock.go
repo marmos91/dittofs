@@ -218,6 +218,21 @@ type OpLock struct {
 	// `bestGrantableState` consults this field on existing entries to
 	// apply both rules.
 	IsTraditionalOplock bool
+
+	// BrokenViaTimeout indicates this record was force-completed to
+	// LeaseStateNone by `forceCompleteBreaks` (the break-ack timeout
+	// path), rather than acked normally by the client. The flag stays
+	// set until the holder closes its handle.
+	//
+	// Used by `HasAnyLeaseRecord` so the CREATE grant path can
+	// distinguish "holder normally broke its caching" (record carries the
+	// holder's active state — bestGrantableState should govern) from
+	// "holder timed out and the server moved on" (record is a tombstone —
+	// the new opener's grant should not be constrained by it). Covers
+	// the contrast between smbtorture batch22b (timeout → tree2 BATCH
+	// expected) and exclusive9 SUPERSEDE iteration (ack → tree2 LEVEL_II
+	// expected) despite identical post-break LeaseState=None records.
+	BrokenViaTimeout bool
 }
 
 // HasRead returns true if the lease includes Read caching permission.

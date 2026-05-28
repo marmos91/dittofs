@@ -1613,6 +1613,37 @@ func (lm *Manager) AnyHolderIsTraditionalOplock(handleKey string) bool {
 	return false
 }
 
+// OnlyTimeoutTombstoneRecords reports whether handleKey has at least one
+// lease record AND every present lease record is a timeout tombstone
+// (BrokenViaTimeout=true). Returns false when no records exist at all, or
+// when at least one record is not a timeout tombstone.
+//
+// Used by the CREATE-grant LEVEL_II coercion to distinguish "holder timed
+// out and the server moved on" (only timeout tombstones present → don't
+// constrain the new grant by the abandoned holder) from "holder normally
+// acked or is still active" (at least one live record → defer to
+// bestGrantableState or fall back to non-stat-open coercion).
+//
+// Covers the contrast between smbtorture batch22b (timeout → tree2 BATCH
+// expected) and exclusive9 SUPERSEDE iteration (ack → tree2 LEVEL_II
+// expected) which both leave LeaseState=None records but originate from
+// different paths.
+func (lm *Manager) OnlyTimeoutTombstoneRecords(handleKey string) bool {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	any := false
+	for _, l := range lm.unifiedLocks[handleKey] {
+		if l.Lease == nil {
+			continue
+		}
+		any = true
+		if !l.Lease.BrokenViaTimeout {
+			return false
+		}
+	}
+	return any
+}
+
 // HasOtherBreakingLeases reports whether any lease (other than exceptKey) or
 // any delegation on handleKey is currently Breaking. Non-blocking. Used by the
 // SMB CREATE async-park path to decide whether to emit STATUS_PENDING and
@@ -1729,6 +1760,7 @@ func (lm *Manager) forceCompleteBreaksExceptKey(handleKey string, exceptKey [16]
 		l.Lease.Breaking = false
 		l.Lease.BreakToState = 0
 		l.Lease.BreakStarted = time.Time{}
+		l.Lease.BrokenViaTimeout = true
 		l.Type = lockTypeForLeaseState(l.Lease.LeaseState)
 
 		if lm.lockStore != nil {
