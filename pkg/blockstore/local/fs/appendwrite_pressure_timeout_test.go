@@ -8,10 +8,10 @@ import (
 )
 
 // TestAppendWrite_PressureTimeout_FiresWhenRollupStuck exercises the
-// I-3 / #670 defense-in-depth deadline added to AppendWrite's pressure
-// loop. Configures a tiny PressureMaxWait, primes the budget so the
-// second write would block, then withholds the pressureCh pulse and
-// expects ErrPressureTimeout within roughly PressureMaxWait + jitter.
+// defense-in-depth deadline added to AppendWrite's pressure loop (#670).
+// Configures a tiny PressureMaxWait, primes the budget so the second
+// write would block, then withholds the pressureCh pulse and expects
+// ErrPressureTimeout within roughly PressureMaxWait + jitter.
 //
 // No rollup worker runs here (StartRollup is not invoked); the test
 // simulates a wedged rollup by simply never pulsing pressureCh.
@@ -74,9 +74,9 @@ func TestAppendWrite_PressureTimeout_ContextDeadlinePreferredOverTimer(t *testin
 }
 
 // TestAppendWrite_PressureTimeout_DisabledByNegativeOption keeps the
-// pre-I-3 "block forever" semantics when PressureMaxWait < 0. The test
-// proves the disable path actually disables: the writer stays blocked
-// past what would have been the default deadline, then unblocks when
+// "block forever" semantics when PressureMaxWait < 0. The test proves
+// the disable path actually disables: the writer stays blocked past
+// what would have been the default deadline, then unblocks when
 // pressureCh is pulsed.
 func TestAppendWrite_PressureTimeout_DisabledByNegativeOption(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{

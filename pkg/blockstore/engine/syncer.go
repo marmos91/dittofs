@@ -246,11 +246,11 @@ func (m *Syncer) canProcess(ctx context.Context) bool {
 //     and local quiesce complete).
 //   - Finalized=false, err=nil: SOFT condition (remote unhealthy OR another
 //     in-flight mirror pass holds the `uploading` CAS gate). Callers MUST
-//     NOT tight-loop retry — see I-3 / #670 below.
+//     NOT tight-loop retry — see #670 below.
 //   - err != nil: hard failure, do not retry until addressed.
 //
-// I-3 / #670: callers driving NFS COMMIT or SMB Flush loops over this
-// method must rate-limit retries on Finalized=false. The `uploading`
+// #670: callers driving NFS COMMIT or SMB Flush loops over this method
+// must rate-limit retries on Finalized=false. The `uploading`
 // CompareAndSwap gate below makes the EXPLICIT Flush caller lose every
 // attempt that races the periodic uploader's tick, so a tight
 // in-handler retry loop pegs the CPU without ever making progress and
@@ -281,7 +281,7 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*blockstore.Flush
 	// tick body. Both paths take the uploading atomic gate; whichever
 	// holds it runs and the other observes Finalized=false.
 	//
-	// I-3 / #670: the contention branch returns Finalized=false WITHOUT
+	// #670: the contention branch returns Finalized=false WITHOUT
 	// waiting for the in-flight pass to complete. This is intentional —
 	// blocking the explicit caller until the periodic uploader's tick
 	// finishes could span minutes of remote I/O and translate into

@@ -173,11 +173,16 @@ type FSStore struct {
 
 	// pressureMaxWait caps how long AppendWrite blocks in the pressure
 	// loop before returning ErrPressureTimeout. Defense-in-depth against
-	// a wedged rollup (I-3 / #670): NFS COMMIT and SMB Flush callers
-	// commonly arrive with no usable deadline, so without an upper bound
-	// here a stuck rollup translates directly into D-state on the client.
-	// Default is set in newFSStoreInternal; FSStoreOptions.PressureMaxWait
-	// overrides it.
+	// a wedged rollup (#670): NFS COMMIT and SMB Flush callers commonly
+	// arrive with no usable deadline, so without an upper bound here a
+	// stuck rollup translates directly into D-state on the client.
+	//
+	// Internal encoding: 0 means "deadline disabled" (no timer armed in
+	// AppendWrite's pressure loop). The default 30s is installed by
+	// newFSStoreInternal before any option override runs; the only way
+	// this field is 0 post-construction is via an explicit negative
+	// FSStoreOptions.PressureMaxWait (test-only). Direct struct-literal
+	// construction of FSStore is not supported.
 	pressureMaxWait time.Duration
 
 	// logBytesTotal is the current total bytes of un-rolled-up log content
@@ -403,7 +408,7 @@ func newFSStoreInternal(baseDir string, maxDisk int64, maxMemory int64, fileBloc
 	bc.maxLogBytes = 1 << 30              // 1 GiB default
 	bc.stabilizationMS = 250              // default
 	bc.rollupWorkers = 2                  // default
-	bc.pressureMaxWait = 30 * time.Second // default — I-3 / #670 defense-in-depth
+	bc.pressureMaxWait = 30 * time.Second // default — #670 defense-in-depth
 	// rollupCh buffered so AppendWrite's non-blocking send rarely drops
 	// on drop, the ticker arm in chunkRollupWorker picks up the payload
 	// on the next scan.
@@ -641,14 +646,14 @@ type FSStoreOptions struct {
 	// PressureMaxWait bounds how long AppendWrite blocks in its pressure
 	// loop (logBytesTotal > maxLogBytes) before returning
 	// ErrPressureTimeout. Zero defers to the 30s default. A negative
-	// value disables the deadline (block indefinitely — pre-I-3 behavior,
-	// not recommended in production).
+	// value disables the deadline (block indefinitely; not recommended
+	// in production).
 	//
-	// Defense-in-depth against a wedged rollup pool (I-3 / #670). NFS
-	// COMMIT and SMB Flush adapters frequently arrive with no usable
-	// deadline, so without this bound a stuck rollup wedges the client
-	// process in D-state. Pick an upper-bound value clearly larger than
-	// any legitimate rollup latency under load — this is NOT an SLA.
+	// Defense-in-depth against a wedged rollup pool (#670). NFS COMMIT
+	// and SMB Flush adapters frequently arrive with no usable deadline,
+	// so without this bound a stuck rollup wedges the client process in
+	// D-state. Pick an upper-bound value clearly larger than any
+	// legitimate rollup latency under load — this is NOT an SLA.
 	PressureMaxWait time.Duration
 
 	// CompactionThresholdBytes controls when physical log compaction
@@ -709,8 +714,8 @@ func newFSStoreWithOptionsInternal(baseDir string, maxDisk, maxMemory int64, fil
 	case opts.PressureMaxWait > 0:
 		bc.pressureMaxWait = opts.PressureMaxWait
 	case opts.PressureMaxWait < 0:
-		// Negative explicitly disables the deadline (block forever — pre-I-3
-		// behavior). Required for tests that drive the pressure loop directly
+		// Negative explicitly disables the deadline (block forever).
+		// Required for tests that drive the pressure loop directly
 		// without a rollup worker; not recommended in production.
 		bc.pressureMaxWait = 0
 	}
