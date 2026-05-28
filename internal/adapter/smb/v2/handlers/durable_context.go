@@ -190,6 +190,17 @@ func ProcessDurableHandleContext(
 			return nil
 		}
 
+		// Per MS-SMB2 §2.2.13.2.11: CreateGuid MUST be a valid GUID; an
+		// all-zero CreateGuid is not a valid identifier and cannot key the
+		// reconnect lookup (it would also collide with the "no CreateGuid"
+		// sentinel in storage). Reject without granting durability —
+		// matches Samba's `smbd_smb2_create_durable_v2_check` which treats
+		// a NULL/zero create_guid as "do not grant V2".
+		if createGuid == ([16]byte{}) {
+			logger.Debug("ProcessDurableHandleContext: V2 rejected (zero CreateGuid)")
+			return nil
+		}
+
 		// Reject persistent flag (not supported)
 		if flags&DH2FlagPersistent != 0 {
 			logger.Debug("ProcessDurableHandleContext: persistent flag rejected (not supported)")
@@ -299,12 +310,14 @@ func ProcessDurableReconnectContext(
 	shareName string,
 	filename string,
 	connClientGUID [16]byte,
+	desiredAccess uint32,
+	shareAccess uint32,
 ) (*ReconnectResult, types.Status, error) {
 
 	// Determine V2 (DH2C) or V1 (DHnC) reconnect
 	if dh2cCtx := FindCreateContext(contexts, DurableHandleV2ReconnectTag); dh2cCtx != nil {
 		openFile, leaseState, origID, status, err := processV2Reconnect(ctx, durableStore, metaSvc, contexts, dh2cCtx,
-			sessionID, username, sessionKeyHash, shareName, filename, connClientGUID)
+			sessionID, username, sessionKeyHash, shareName, filename, connClientGUID, desiredAccess, shareAccess)
 		if err != nil || status != types.StatusSuccess {
 			return nil, status, err
 		}
@@ -313,7 +326,7 @@ func ProcessDurableReconnectContext(
 
 	if dhnCCtx := FindCreateContext(contexts, DurableHandleV1ReconnectTag); dhnCCtx != nil {
 		openFile, leaseState, origID, status, err := processV1Reconnect(ctx, durableStore, metaSvc, contexts, dhnCCtx,
-			sessionID, username, sessionKeyHash, shareName, filename)
+			sessionID, username, sessionKeyHash, shareName, filename, desiredAccess, shareAccess)
 		if err != nil || status != types.StatusSuccess {
 			return nil, status, err
 		}
@@ -337,6 +350,8 @@ func processV1Reconnect(
 	sessionKeyHash [32]byte,
 	shareName string,
 	filename string,
+	desiredAccess uint32,
+	shareAccess uint32,
 ) (*OpenFile, uint32, [16]byte, types.Status, error) {
 	// Parse V1 reconnect context
 	fileID, err := DecodeDHnCReconnect(dhnCCtx.Data)
@@ -358,7 +373,13 @@ func processV1Reconnect(
 		return nil, 0, [16]byte{}, types.StatusInvalidParameter, nil
 	}
 
-	// Look up persisted handle by FileID
+	// Non-destructive lookup: validation-failure paths (share/path/username/
+	// access mismatch) must leave the persisted handle reclaimable until
+	// expiry — a transient mismatched retry should not destroy a valid
+	// durable open. The TOCTOU window is closed on the *success* path
+	// (claimDurableHandleByFileID below) which atomically re-reads via
+	// Consume; a second concurrent reconnect that also passes validation
+	// will find the handle already gone and return OBJECT_NAME_NOT_FOUND.
 	handle, err := durableStore.GetDurableHandleByFileID(ctx, fileID)
 	if err != nil {
 		logger.Warn("processV1Reconnect: store error", "error", err)
@@ -370,9 +391,11 @@ func processV1Reconnect(
 		return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
 	}
 
-	// V1 reconnect does not carry DesiredAccess/ShareAccess in the context
 	openFile, status, restoreErr := validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
-		sessionKeyHash, shareName, filename, 0, 0)
+		sessionKeyHash, shareName, filename, desiredAccess, shareAccess,
+		func(ctx context.Context) (*lock.PersistedDurableHandle, error) {
+			return durableStore.ConsumeDurableHandleByFileID(ctx, fileID)
+		})
 	return openFile, handle.LeaseState, handle.OriginalFileID, status, restoreErr
 }
 
@@ -390,6 +413,8 @@ func processV2Reconnect(
 	shareName string,
 	filename string,
 	connClientGUID [16]byte,
+	desiredAccess uint32,
+	shareAccess uint32,
 ) (*OpenFile, uint32, [16]byte, types.Status, error) {
 	// Parse V2 reconnect context
 	fileID, createGuid, flags, err := DecodeDH2CReconnect(dh2cCtx.Data)
@@ -410,7 +435,9 @@ func processV2Reconnect(
 		"shareName", shareName,
 		"filename", filename)
 
-	// Look up persisted handle by CreateGuid
+	// Non-destructive lookup: see processV1Reconnect comment. The
+	// TOCTOU-closing Consume runs on the success path inside
+	// validateAndRestore.
 	handle, err := durableStore.GetDurableHandleByCreateGuid(ctx, createGuid)
 	if err != nil {
 		logger.Warn("processV2Reconnect: store error", "error", err)
@@ -454,16 +481,31 @@ func processV2Reconnect(
 		return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
 	}
 
-	// V2 reconnect does not carry DesiredAccess/ShareAccess in DH2C context either
 	openFile, status, restoreErr := validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
-		sessionKeyHash, shareName, filename, 0, 0)
+		sessionKeyHash, shareName, filename, desiredAccess, shareAccess,
+		func(ctx context.Context) (*lock.PersistedDurableHandle, error) {
+			return durableStore.ConsumeDurableHandleByCreateGuid(ctx, createGuid)
+		})
 	return openFile, handle.LeaseState, handle.OriginalFileID, status, restoreErr
 }
 
-// validateAndRestore runs the shared reconnect validation checks and restores the OpenFile.
-// These checks apply to both V1 and V2 reconnects.
-// desiredAccess and shareAccess are from the CREATE request; zero means "not provided"
-// (V1 reconnect does not include these in the context).
+// validateAndRestore runs the shared reconnect validation checks and restores
+// the OpenFile. These checks apply to both V1 and V2 reconnects.
+//
+// desiredAccess and shareAccess are from the CREATE request; zero means
+// "not provided" (used during the in-flight upgrade window when older CREATE
+// paths did not thread the values through).
+//
+// consume is invoked on the success path to atomically remove the persisted
+// record. If consume returns nil, another goroutine has already claimed the
+// handle — the reconnect fails with OBJECT_NAME_NOT_FOUND. This is the only
+// place that mutates the durable store on reconnect, which is what makes the
+// path safe against the V1/V2 reconnect TOCTOU window.
+//
+// TODO: per CLAUDE.md invariant 1 the identity / access checks (username,
+// DesiredAccess, ShareAccess) belong in pkg/metadata/lock — e.g. inside the
+// Consume* call returning a typed mismatch error. Left in the handler for
+// this iteration to keep the scope of the TOCTOU fix small.
 func validateAndRestore(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
@@ -476,6 +518,7 @@ func validateAndRestore(
 	filename string,
 	desiredAccess uint32,
 	shareAccess uint32,
+	consume func(ctx context.Context) (*lock.PersistedDurableHandle, error),
 ) (*OpenFile, types.Status, error) {
 	if handle.ShareName != shareName {
 		logger.Debug("validateAndRestore: share name mismatch",
@@ -526,7 +569,7 @@ func validateAndRestore(
 			"disconnectedAt", handle.DisconnectedAt,
 			"timeoutMs", handle.TimeoutMs,
 			"expiresAt", expiresAt)
-		// Clean up expired handle
+		// Clean up expired handle (best-effort; scavenger will catch any leftover).
 		_ = durableStore.DeleteDurableHandle(ctx, handle.ID)
 		return nil, types.StatusObjectNameNotFound, nil
 	}
@@ -540,6 +583,21 @@ func validateAndRestore(
 			_ = durableStore.DeleteDurableHandle(ctx, handle.ID)
 			return nil, types.StatusObjectNameNotFound, nil
 		}
+	}
+
+	// All checks passed — atomically consume the persisted record. If
+	// somebody else (a concurrent reconnect from a retrying client) already
+	// claimed it, consume returns nil and we fail OBJECT_NAME_NOT_FOUND
+	// rather than handing out a second OpenFile against the same handle.
+	consumed, err := consume(ctx)
+	if err != nil {
+		logger.Warn("validateAndRestore: consume failed", "error", err)
+		return nil, types.StatusInternalError, err
+	}
+	if consumed == nil {
+		logger.Debug("validateAndRestore: handle already consumed by concurrent reconnect",
+			"handleID", handle.ID)
+		return nil, types.StatusObjectNameNotFound, nil
 	}
 
 	logger.Debug("validateAndRestore: all checks passed, restoring open file",
@@ -604,11 +662,8 @@ func validateAndRestore(
 		// IsDurable is NOT set on restore -- client must re-request durability
 	}
 
-	// Delete persisted handle (reconnect consumes it)
-	if err := durableStore.DeleteDurableHandle(ctx, handle.ID); err != nil {
-		logger.Warn("validateAndRestore: failed to delete persisted handle", "error", err)
-		// Non-fatal: continue with reconnect
-	}
+	// Persisted record was removed by the consume() call above; no
+	// further store mutation is required here.
 
 	return restored, types.StatusSuccess, nil
 }

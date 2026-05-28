@@ -84,6 +84,14 @@ func RunDurableHandleStoreTests(t *testing.T, factory StoreFactory) {
 	t.Run("DeleteExpiredKeepsActive", func(t *testing.T) {
 		testDurableDeleteExpiredKeepsActive(t, factory)
 	})
+
+	t.Run("ConsumeByFileIDAtomic", func(t *testing.T) {
+		testDurableConsumeByFileIDAtomic(t, factory)
+	})
+
+	t.Run("ConsumeByCreateGuidAtomic", func(t *testing.T) {
+		testDurableConsumeByCreateGuidAtomic(t, factory)
+	})
 }
 
 // getDurableStore extracts the DurableHandleStore from a factory-created store.
@@ -594,5 +602,85 @@ func testDurableDeleteExpiredKeepsActive(t *testing.T, factory StoreFactory) {
 	// Boundary handles should be expired (DisconnectedAt + TimeoutMs == now means expired)
 	if count != 1 {
 		t.Fatalf("expected boundary handle to be expired, got count %d", count)
+	}
+}
+
+// testDurableConsumeByFileIDAtomic verifies that ConsumeDurableHandleByFileID
+// atomically returns the persisted record and removes it from the store, so
+// a second concurrent reconnect attempt for the same FileID cannot also
+// claim the handle. Closes the TOCTOU window present in the old
+// Get-then-Delete pattern.
+func testDurableConsumeByFileIDAtomic(t *testing.T, factory StoreFactory) {
+	ds := getDurableStore(t, factory)
+	ctx := context.Background()
+
+	handle := makeDurableHandle("consume-fid-1", "/export")
+	if err := ds.PutDurableHandle(ctx, handle); err != nil {
+		t.Fatalf("PutDurableHandle() error: %v", err)
+	}
+
+	// First consume returns the record.
+	got, err := ds.ConsumeDurableHandleByFileID(ctx, handle.FileID)
+	if err != nil {
+		t.Fatalf("ConsumeDurableHandleByFileID() error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("first consume returned nil; expected record")
+	}
+	assertDurableHandleEqual(t, handle, got)
+
+	// Second consume sees nothing.
+	got, err = ds.ConsumeDurableHandleByFileID(ctx, handle.FileID)
+	if err != nil {
+		t.Fatalf("second ConsumeDurableHandleByFileID() error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("second consume returned a record, want nil — atomicity broken")
+	}
+
+	// Primary GetDurableHandle also reports gone.
+	got, err = ds.GetDurableHandle(ctx, handle.ID)
+	if err != nil {
+		t.Fatalf("GetDurableHandle() error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("primary key still resolves after consume: %+v", got)
+	}
+}
+
+// testDurableConsumeByCreateGuidAtomic is the V2 counterpart of
+// testDurableConsumeByFileIDAtomic.
+func testDurableConsumeByCreateGuidAtomic(t *testing.T, factory StoreFactory) {
+	ds := getDurableStore(t, factory)
+	ctx := context.Background()
+
+	handle := makeDurableHandle("consume-cguid-1", "/export")
+	if err := ds.PutDurableHandle(ctx, handle); err != nil {
+		t.Fatalf("PutDurableHandle() error: %v", err)
+	}
+
+	got, err := ds.ConsumeDurableHandleByCreateGuid(ctx, handle.CreateGuid)
+	if err != nil {
+		t.Fatalf("ConsumeDurableHandleByCreateGuid() error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("first consume returned nil; expected record")
+	}
+	assertDurableHandleEqual(t, handle, got)
+
+	got, err = ds.ConsumeDurableHandleByCreateGuid(ctx, handle.CreateGuid)
+	if err != nil {
+		t.Fatalf("second ConsumeDurableHandleByCreateGuid() error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("second consume returned a record, want nil — atomicity broken")
+	}
+
+	got, err = ds.GetDurableHandle(ctx, handle.ID)
+	if err != nil {
+		t.Fatalf("GetDurableHandle() error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("primary key still resolves after consume: %+v", got)
 	}
 }

@@ -237,6 +237,19 @@ func (s *postgresDurableStore) GetDurableHandleByCreateGuid(ctx context.Context,
 	return scanDurableHandle(s.pool.QueryRow(ctx, query, createGuid[:]))
 }
 
+// ConsumeDurableHandleByFileID atomically fetches and deletes via
+// `DELETE ... RETURNING`, closing the V1 reconnect TOCTOU window.
+func (s *postgresDurableStore) ConsumeDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
+	query := `DELETE FROM durable_handles WHERE file_id = $1 RETURNING ` + durableHandleColumns
+	return scanDurableHandle(s.pool.QueryRow(ctx, query, fileID[:]))
+}
+
+// ConsumeDurableHandleByCreateGuid is the V2 counterpart.
+func (s *postgresDurableStore) ConsumeDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
+	query := `DELETE FROM durable_handles WHERE create_guid = $1 RETURNING ` + durableHandleColumns
+	return scanDurableHandle(s.pool.QueryRow(ctx, query, createGuid[:]))
+}
+
 func (s *postgresDurableStore) GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {
 	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles WHERE app_instance_id = $1 ORDER BY created_at`
 	rows, err := s.pool.Query(ctx, query, appInstanceId[:])
@@ -318,6 +331,14 @@ func (s *PostgresMetadataStore) GetDurableHandleByFileID(ctx context.Context, fi
 
 func (s *PostgresMetadataStore) GetDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
 	return s.getDurableStore().GetDurableHandleByCreateGuid(ctx, createGuid)
+}
+
+func (s *PostgresMetadataStore) ConsumeDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().ConsumeDurableHandleByFileID(ctx, fileID)
+}
+
+func (s *PostgresMetadataStore) ConsumeDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().ConsumeDurableHandleByCreateGuid(ctx, createGuid)
 }
 
 func (s *PostgresMetadataStore) GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {

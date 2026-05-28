@@ -311,6 +311,56 @@ func (s *badgerDurableStore) getHandlesByPrefix(txn *badgerdb.Txn, prefix []byte
 	return result, nil
 }
 
+// consumeByIndexTx fetches the handle referenced by indexKey, deletes the
+// primary record and all secondary indices in the same transaction, and
+// returns the previous record (or nil if no match). Used by Consume* APIs to
+// close the V1/V2 reconnect TOCTOU window.
+func (s *badgerDurableStore) consumeByIndexTx(txn *badgerdb.Txn, indexKey []byte) (*lock.PersistedDurableHandle, error) {
+	handle, err := s.getHandleByIndex(txn, indexKey)
+	if err != nil || handle == nil {
+		return nil, err
+	}
+
+	if err := s.deleteDurableHandleTx(txn, handle.ID); err != nil {
+		return nil, err
+	}
+	return handle, nil
+}
+
+func (s *badgerDurableStore) ConsumeDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	var handle *lock.PersistedDurableHandle
+	err := s.db.Update(func(txn *badgerdb.Txn) error {
+		var err error
+		handle, err = s.consumeByIndexTx(txn, []byte(prefixDHFileID+hexEncode16(fileID)))
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return handle, nil
+}
+
+func (s *badgerDurableStore) ConsumeDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	var handle *lock.PersistedDurableHandle
+	err := s.db.Update(func(txn *badgerdb.Txn) error {
+		var err error
+		handle, err = s.consumeByIndexTx(txn, []byte(prefixDHCreateGuid+hexEncode16(createGuid)))
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return handle, nil
+}
+
 func (s *badgerDurableStore) GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -520,6 +570,14 @@ func (s *BadgerMetadataStore) GetDurableHandleByFileID(ctx context.Context, file
 
 func (s *BadgerMetadataStore) GetDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
 	return s.getDurableStore().GetDurableHandleByCreateGuid(ctx, createGuid)
+}
+
+func (s *BadgerMetadataStore) ConsumeDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().ConsumeDurableHandleByFileID(ctx, fileID)
+}
+
+func (s *BadgerMetadataStore) ConsumeDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().ConsumeDurableHandleByCreateGuid(ctx, createGuid)
 }
 
 func (s *BadgerMetadataStore) GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {

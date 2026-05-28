@@ -95,6 +95,50 @@ func (s *memoryDurableStore) GetDurableHandleByCreateGuid(ctx context.Context, c
 	return nil, nil
 }
 
+func (s *memoryDurableStore) ConsumeDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if fileID == ([16]byte{}) {
+		return nil, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for id, handle := range s.handles {
+		if handle.FileID == fileID {
+			delete(s.handles, id)
+			return cloneDurableHandle(handle), nil
+		}
+	}
+
+	return nil, nil
+}
+
+func (s *memoryDurableStore) ConsumeDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if createGuid == ([16]byte{}) {
+		return nil, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for id, handle := range s.handles {
+		if handle.CreateGuid == createGuid {
+			delete(s.handles, id)
+			return cloneDurableHandle(handle), nil
+		}
+	}
+
+	return nil, nil
+}
+
 func (s *memoryDurableStore) GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -272,6 +316,14 @@ func (s *MemoryMetadataStore) GetDurableHandleByFileID(ctx context.Context, file
 
 func (s *MemoryMetadataStore) GetDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
 	return s.getDurableStore().GetDurableHandleByCreateGuid(ctx, createGuid)
+}
+
+func (s *MemoryMetadataStore) ConsumeDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().ConsumeDurableHandleByFileID(ctx, fileID)
+}
+
+func (s *MemoryMetadataStore) ConsumeDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().ConsumeDurableHandleByCreateGuid(ctx, createGuid)
 }
 
 func (s *MemoryMetadataStore) GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {
