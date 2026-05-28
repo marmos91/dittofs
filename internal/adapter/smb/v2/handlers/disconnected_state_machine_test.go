@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -424,4 +425,49 @@ func TestShouldPersistDurableOnDisconnect(t *testing.T) {
 	if shouldPersistDurableOnDisconnect(0, true) {
 		t.Fatal("BR-locks without lease must refuse persist")
 	}
+}
+
+// TestOpenHasLocksFailClosed pins the fail-closed semantics of the
+// disconnect-time lock-noW-lease gate: any uncertainty about whether the
+// open holds byte-range locks MUST resolve to "has locks" so the caller
+// refuses to persist a durable handle that could silently bypass the gate.
+func TestOpenHasLocksFailClosed(t *testing.T) {
+	t.Run("nil open returns false (nothing to gate)", func(t *testing.T) {
+		if openHasLocks(nil, nil) {
+			t.Fatal("nil open must return false; caller short-circuits")
+		}
+	})
+
+	t.Run("optimistic flag true is authoritative", func(t *testing.T) {
+		of := &OpenFile{}
+		of.HasByteRangeLocks.Store(true)
+		if !openHasLocks(nil, of) {
+			t.Fatal("flag=true must report has-locks regardless of meta service")
+		}
+	})
+
+	t.Run("nil meta service with flag false fails closed", func(t *testing.T) {
+		of := &OpenFile{MetadataHandle: []byte("ignored-without-svc")}
+		if !openHasLocks(nil, of) {
+			t.Fatal("missing meta service must fail closed (return true)")
+		}
+	})
+
+	t.Run("empty metadata handle with svc fails closed", func(t *testing.T) {
+		svc := metadata.New()
+		of := &OpenFile{}
+		if !openHasLocks(svc, of) {
+			t.Fatal("empty metadata handle must fail closed (return true)")
+		}
+	})
+
+	t.Run("malformed handle (decode failure) fails closed", func(t *testing.T) {
+		svc := metadata.New()
+		// Garbage bytes that DecodeFileHandle will reject, forcing
+		// GetLockManagerForHandle to return an error.
+		of := &OpenFile{MetadataHandle: []byte{0xff, 0xff, 0xff, 0xff}}
+		if !openHasLocks(svc, of) {
+			t.Fatal("lock manager lookup failure must fail closed (return true)")
+		}
+	})
 }

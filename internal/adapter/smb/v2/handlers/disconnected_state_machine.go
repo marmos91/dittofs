@@ -273,10 +273,22 @@ func (h *Handler) purgeOneDisconnectedHandle(
 ) {
 	if h.Registry != nil {
 		if metaSvc := h.Registry.GetMetadataService(); metaSvc != nil && len(d.MetadataHandle) > 0 {
-			// SessionID 0 mirrors DurableHandleScavenger: not tied to a session.
-			if err := metaSvc.UnlockAllForSession(ctx, d.MetadataHandle, 0); err != nil {
+			// Release byte-range locks held by the disconnected open. SMB
+			// locks are keyed by per-open OpenID (derived from the original
+			// FileID — see OpenFile.OpenID), NOT by SessionID. The persisted
+			// OriginalFileID is the full 16-byte FileID captured at the
+			// first CREATE; reconstruct the OpenID via the same formula so
+			// the release matches the recording side. Older persisted rows
+			// (pre-OriginalFileID) decode to all zeros — fall back to
+			// FileID for forward compatibility.
+			fileID := d.OriginalFileID
+			if fileID == ([16]byte{}) {
+				fileID = d.FileID
+			}
+			openID := fmt.Sprintf("%x", fileID)
+			if err := metaSvc.UnlockAllForOpen(ctx, d.MetadataHandle, openID); err != nil {
 				logger.Warn("purgeOneDisconnectedHandle: lock release failed",
-					"id", d.ID, "path", d.Path, "error", err)
+					"id", d.ID, "path", d.Path, "openID", openID, "error", err)
 			}
 		}
 	}

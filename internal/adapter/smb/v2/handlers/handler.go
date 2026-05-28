@@ -512,18 +512,34 @@ func (f *OpenFile) OpenID() string {
 // flag flip and the disconnect-time read (see lock_async.go::resumePendingLock,
 // MS-SMB2 §3.3.5.14 / smb2.durable-v2-open.lock-noW-lease).
 //
-// Returns true on any unexpected lookup error to fail closed: if we cannot
-// confirm the open is lock-free we MUST not persist a durable handle that
-// might be silently bypassing the lock-noW-lease gate.
+// Fail-closed semantics: when we cannot authoritatively confirm the open is
+// lock-free — missing metadata service, missing handle, lock-manager lookup
+// failure, or a stale optimistic flag — we MUST NOT permit durable
+// persistence. The caller treats true as "do not persist". Returning true
+// on any uncertainty preserves the lock-noW-lease gate at the cost of
+// occasionally declining to persist a genuinely lock-free handle whose
+// lock-manager is transiently unreachable.
 func openHasLocks(metaSvc *metadata.MetadataService, openFile *OpenFile) bool {
-	if metaSvc == nil || openFile == nil || len(openFile.MetadataHandle) == 0 {
-		return openFile != nil && openFile.HasByteRangeLocks.Load()
+	if openFile == nil {
+		// No open to gate; nothing to persist. Caller short-circuits.
+		return false
+	}
+	// Optimistic flag is consulted first as an inexpensive positive signal.
+	// A true here is authoritative ("a lock was recorded at some point").
+	// A false alone is NOT authoritative — the flag can lag a concurrent
+	// LOCK completion (see lock_async.go::resumePendingLock).
+	if openFile.HasByteRangeLocks.Load() {
+		return true
+	}
+	if metaSvc == nil || len(openFile.MetadataHandle) == 0 {
+		// Cannot consult the lock manager — fail closed.
+		return true
 	}
 	lm, err := metaSvc.GetLockManagerForHandle(openFile.MetadataHandle)
 	if err != nil || lm == nil {
-		// Fail closed: surface the optimistic flag rather than silently
-		// claiming "no locks" on a lookup miss.
-		return openFile.HasByteRangeLocks.Load()
+		logger.Debug("openHasLocks: lock manager lookup failed, failing closed",
+			"error", err)
+		return true
 	}
 	openID := openFile.OpenID()
 	for _, fl := range lm.ListLocks(string(openFile.MetadataHandle)) {
