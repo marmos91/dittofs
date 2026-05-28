@@ -591,7 +591,11 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		return EncodeFileBasicInfo(basicInfo), nil
 
 	case types.FileStandardInformation:
-		standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, false)
+		// Reflect SET_INFO DispositionInformation state in the DeletePending
+		// field — smbtorture `smb2.setinfo` (setinfo.c:228) asserts that
+		// querying STANDARD / ALL_INFORMATION after setting delete disposition
+		// surfaces delete_pending = 1.
+		standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, openFile.DeletePending)
 		return EncodeFileStandardInfo(standardInfo), nil
 
 	case types.FileInternalInformation:
@@ -748,14 +752,17 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		return h.buildFileAllInformationFromStore(authCtx, file, openFile), nil
 
 	case 15: // FileFullEaInformation [MS-FSCC §2.4.15]
-		// We don't persist extended attributes (#220 tracks adapter EA support),
-		// so the canonical response is an empty chained-EA buffer with
-		// STATUS_SUCCESS. Samba returns NO_EAS_ON_FILE when the EA list is
-		// empty, but smbtorture (`smb2.getinfo.complex` and `getinfo_access`)
-		// asserts NT_STATUS_OK against the reference implementation — so we
-		// match the asserted Windows behavior here. The wire format permits a
-		// zero-byte payload (no entries), which clients interpret as "no EAs".
-		return []byte{}, nil
+		// We don't persist extended attributes (#220 tracks adapter EA support).
+		// Samba returns NO_EAS_ON_FILE when the list is empty, but smbtorture
+		// (`smb2.getinfo.complex` and `getinfo_access`) asserts NT_STATUS_OK
+		// against the reference implementation — match the asserted Windows
+		// behavior here. The client parser (Samba `ea_pull_list_chained`
+		// behind `FINFO_CHECK_MIN_SIZE(4)` in source4/libcli/raw/rawfileinfo.c)
+		// rejects a zero-byte payload with STATUS_INFO_LENGTH_MISMATCH, so we
+		// return a 4-byte sentinel: NextEntryOffset = 0 ("no further entries"),
+		// which both parsers and Windows-compatible clients interpret as
+		// "no EAs".
+		return make([]byte, 4), nil
 
 	default:
 		return nil, types.ErrNotSupported
@@ -768,7 +775,10 @@ func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext
 	// Basic (40) + Standard (24) + Internal (8) + EA (4) + Access (4) + Position (8) + Mode (4) + Alignment (4) + Name (variable)
 
 	basicInfo := FileAttrToFileBasicInfoWithName(&file.FileAttr, basenameForHidden(openFile))
-	standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, false)
+	// Reflect delete-on-close disposition (set via SET_INFO DispositionInformation
+	// or FILE_DELETE_ON_CLOSE on CREATE) in the embedded StandardInformation.
+	// smbtorture `smb2.setinfo` (setinfo.c:228) asserts delete_pending = 1 here.
+	standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, openFile.DeletePending)
 	nameBytes := encodeUTF16LE(toSMBPath(openFile.Path))
 
 	// Fixed part: 96 bytes + NameInformation header (4 bytes for length) + name data
