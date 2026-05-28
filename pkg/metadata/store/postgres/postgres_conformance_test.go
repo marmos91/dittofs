@@ -69,3 +69,11 @@ func TestBackupConformance(t *testing.T) {
 
 	storetest.RunBackupConformanceSuite(t, newPostgresStoreFactory())
 }
+
+func TestResetThenRestoreConformance(t *testing.T) {
+	if os.Getenv("DITTOFS_TEST_POSTGRES_DSN") == "" {
+		t.Skip("DITTOFS_TEST_POSTGRES_DSN not set, skipping PostgreSQL reset-then-restore conformance tests")
+	}
+
+	storetest.ResetThenRestoreConformance(t, newPostgresStoreFactory())
+}
