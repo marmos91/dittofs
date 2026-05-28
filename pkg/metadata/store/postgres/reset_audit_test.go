@@ -3,8 +3,8 @@ package postgres
 // This audit test lives in package `postgres` (not `postgres_test`) so it can
 // read the unexported `backupTables` slice directly. It has NO build tag and
 // requires NO database — it's a pure file-system audit over the migrations
-// directory, satisfying the D-24-03 CI guard ("every new CREATE TABLE that
-// lands without a backupTables update fails the test").
+// directory: every new CREATE TABLE that lands without a backupTables update
+// fails the test.
 
 import (
 	"os"
@@ -14,14 +14,12 @@ import (
 	"testing"
 )
 
-// TestBackupTablesCoversAllMigrations is the D-24-03 CI guard: every
-// CREATE TABLE in pkg/metadata/store/postgres/migrations/*.up.sql must
-// appear in the `backupTables` slice. This catches the case where a new
-// migration lands without a corresponding backupTables update — which
-// would silently leave the new table un-backed-up AND un-truncated by
-// Reset, producing a half-restored state.
-//
-// Runs WITHOUT a Postgres DSN — it's a pure file-system audit.
+// TestBackupTablesCoversAllMigrations is a CI guard: every CREATE TABLE in
+// pkg/metadata/store/postgres/migrations/*.up.sql must appear in the
+// `backupTables` slice. Catches the case where a new migration lands
+// without a corresponding backupTables update — which would silently
+// leave the new table un-backed-up AND un-truncated by Reset, producing
+// a half-restored state. Runs without a Postgres DSN.
 func TestBackupTablesCoversAllMigrations(t *testing.T) {
 	migrationsDir := "migrations"
 	entries, err := os.ReadDir(migrationsDir)
