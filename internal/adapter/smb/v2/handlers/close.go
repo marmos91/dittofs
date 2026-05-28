@@ -444,7 +444,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				// actual target type — stream handles always have IsDirectory=false.
 				isDeleteTargetDir := openFile.IsDirectory
 				if isBaseFileDelete {
-					if targetFile, lookupErr := metaSvc.Lookup(authCtx, deleteParentHandle, deleteFileName); lookupErr == nil {
+					if targetFile, _, lookupErr := metaSvc.LookupCaseInsensitive(authCtx, deleteParentHandle, deleteFileName); lookupErr == nil && targetFile != nil {
 						isDeleteTargetDir = targetFile.Type == metadata.FileTypeDirectory
 					}
 				}

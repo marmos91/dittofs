@@ -1242,7 +1242,7 @@ func (h *Handler) generateAsyncId() uint64 {
 func (h *Handler) baseFileUUID(authCtx *metadata.AuthContext, parentHandle metadata.FileHandle, name string, fallback [16]byte) [16]byte {
 	if colonIdx := strings.Index(name, ":"); colonIdx > 0 && len(parentHandle) > 0 {
 		metaSvc := h.Registry.GetMetadataService()
-		if baseFile, err := metaSvc.Lookup(authCtx, parentHandle, name[:colonIdx]); err == nil {
+		if baseFile, _, err := metaSvc.LookupCaseInsensitive(authCtx, parentHandle, name[:colonIdx]); err == nil && baseFile != nil {
 			return baseFile.ID
 		}
 	}
@@ -1565,67 +1565,18 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 	return conflict
 }
 
-// paginatedChildScan iterates over a directory's children in pages and
-// returns the first entry whose name satisfies matchFn, confirmed by a
-// Lookup. Surfaces real store errors (anything other than ErrNotFound)
-// so callers can distinguish "no match" from "store unhealthy / not a
-// directory / permission denied".
-func (h *Handler) paginatedChildScan(
-	authCtx *metadata.AuthContext,
-	metaSvc *metadata.MetadataService,
-	parentHandle metadata.FileHandle,
-	matchFn func(entryName string) bool,
-) (*metadata.File, string, error) {
-	store, err := metaSvc.GetStoreForShare(shareNameFromHandle(parentHandle))
-	if err != nil {
-		return nil, "", err
-	}
-	cursor := ""
-	for {
-		entries, nextCursor, listErr := store.ListChildren(authCtx.Context, parentHandle, cursor, 500)
-		if listErr != nil {
-			if metadata.IsNotFoundError(listErr) {
-				return nil, "", nil
-			}
-			return nil, "", listErr
-		}
-		for _, entry := range entries {
-			if matchFn(entry.Name) {
-				if f, lookupErr := metaSvc.Lookup(authCtx, parentHandle, entry.Name); lookupErr == nil {
-					return f, entry.Name, nil
-				}
-			}
-		}
-		if nextCursor == "" {
-			break
-		}
-		cursor = nextCursor
-	}
-	return nil, "", nil
-}
-
-// lookupCaseInsensitive performs a case-insensitive child lookup in a
-// directory. It first tries an exact-case Lookup; on ErrNotFound it
-// falls back to scanning the parent's children with strings.EqualFold.
-// Any non-NotFound error (e.g., ErrNotDirectory, permission errors)
-// propagates to the caller so the resulting SMB status reflects the
-// real condition. Returns nil/""/nil when no match exists.
+// lookupCaseInsensitive is a thin shim around
+// MetadataService.LookupCaseInsensitive that keeps the existing
+// (handler, metaSvc, parent, name) call signature used across the SMB
+// handlers. NTFS-style paths are case-insensitive; DittoFS preserves the
+// original on-disk casing and returns it via the second result.
 func (h *Handler) lookupCaseInsensitive(
 	authCtx *metadata.AuthContext,
 	metaSvc *metadata.MetadataService,
 	parentHandle metadata.FileHandle,
 	name string,
 ) (*metadata.File, string, error) {
-	f, err := metaSvc.Lookup(authCtx, parentHandle, name)
-	if err == nil {
-		return f, name, nil
-	}
-	if !metadata.IsNotFoundError(err) {
-		return nil, "", err
-	}
-	return h.paginatedChildScan(authCtx, metaSvc, parentHandle, func(entryName string) bool {
-		return strings.EqualFold(entryName, name)
-	})
+	return metaSvc.LookupCaseInsensitive(authCtx, parentHandle, name)
 }
 
 // adsBasePath extracts the base file path from a potentially ADS-qualified path.
@@ -1647,16 +1598,6 @@ func adsBasePath(filePath string) string {
 		return filePath[:lastSep+1] + fileName[:colonIdx]
 	}
 	return fileName[:colonIdx]
-}
-
-// shareNameFromHandle extracts the share name from an encoded file handle.
-func shareNameFromHandle(handle metadata.FileHandle) string {
-	if len(handle) > 0 {
-		if name, _, err := metadata.DecodeFileHandle(handle); err == nil && name != "" {
-			return name
-		}
-	}
-	return ""
 }
 
 // checkShareDeleteConflict checks if any other open handle on the same file

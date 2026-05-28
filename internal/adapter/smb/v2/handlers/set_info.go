@@ -790,12 +790,21 @@ func (h *Handler) setFileInfoFromStore(
 		isOverwrite := renameInfo.ReplaceIfExists
 		metaSvc := h.Registry.GetMetadataService()
 		var dstMetaHandle metadata.FileHandle
+		// dstMatchedName is the on-disk name of the destination entry when
+		// the case-insensitive lookup succeeds. Move's underlying GetChild is
+		// exact-case, so if the client supplied a different-case spelling
+		// (e.g. "FOO.TXT" while the on-disk entry is "Foo.txt") we MUST hand
+		// the canonical casing to Move — otherwise Move would silently
+		// create a second sibling entry instead of overwriting. Empty when
+		// there is no destination or the lookup failed.
+		var dstMatchedName string
 		if isOverwrite {
-			dstFile, lookupErr := metaSvc.Lookup(authCtx, toDir, toName)
+			dstFile, matched, lookupErr := metaSvc.LookupCaseInsensitive(authCtx, toDir, toName)
 			if lookupErr == nil && dstFile != nil {
 				if encoded, encErr := metadata.EncodeFileHandle(dstFile); encErr == nil {
 					dstMetaHandle = encoded
 				}
+				dstMatchedName = matched
 			}
 		}
 
@@ -891,6 +900,20 @@ func (h *Handler) setFileInfoFromStore(
 		// Per MS-FSA 2.1.5.14.10: Save mtime/ctime before rename so we can
 		// restore them after. Rename should NOT update the file's timestamps.
 		restoreTimestamps := h.saveTimestamps(authCtx, openFile.MetadataHandle)
+
+		// Pre-overwrite the case-mismatched destination: Move's destination
+		// probe is exact-case GetChild(toName), so a destination that exists
+		// under a different casing (e.g. on disk "Foo.txt", client said
+		// "FOO.TXT") would be missed and Move would silently create a second
+		// sibling entry. Remove the matched-case destination upfront so Move
+		// inserts the source under the client-requested casing.
+		if isOverwrite && dstMatchedName != "" && dstMatchedName != toName {
+			if _, rmErr := metaSvc.RemoveFile(authCtx, toDir, dstMatchedName); rmErr != nil {
+				logger.Debug("SET_INFO: rename overwrite pre-remove failed",
+					"name", dstMatchedName, "error", rmErr)
+				return setInfoStatus(common.MapToSMB(rmErr)), nil
+			}
+		}
 
 		// Perform the rename/move
 		err = metaSvc.Move(authCtx, openFile.ParentHandle, openFile.FileName, toDir, toName)
@@ -1689,10 +1712,10 @@ func (h *Handler) handleFileLinkInformation(
 	// ErrAlreadyExists → STATUS_OBJECT_NAME_COLLISION via common.MapToSMB.
 	metaSvc := h.Registry.GetMetadataService()
 	if linkInfo.ReplaceIfExists {
-		if existing, lookupErr := metaSvc.Lookup(authCtx, dstDir, linkName); lookupErr == nil && existing != nil {
-			if _, rmErr := metaSvc.RemoveFile(authCtx, dstDir, linkName); rmErr != nil {
+		if existing, matchedName, lookupErr := metaSvc.LookupCaseInsensitive(authCtx, dstDir, linkName); lookupErr == nil && existing != nil {
+			if _, rmErr := metaSvc.RemoveFile(authCtx, dstDir, matchedName); rmErr != nil {
 				logger.Debug("SET_INFO: hardlink replace failed to remove existing",
-					"name", linkName, "error", rmErr)
+					"name", matchedName, "error", rmErr)
 				return setInfoStatus(common.MapToSMB(rmErr)), nil
 			}
 		}
