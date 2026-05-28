@@ -235,6 +235,7 @@ func cloneDurableHandle(h *lock.PersistedDurableHandle) *lock.PersistedDurableHa
 		IsDirectory:     h.IsDirectory,
 		PositionInfo:    h.PositionInfo,
 		OriginalFileID:  h.OriginalFileID,
+		ClientGUID:      h.ClientGUID,
 	}
 
 	clone.MetadataHandle = bytes.Clone(h.MetadataHandle)

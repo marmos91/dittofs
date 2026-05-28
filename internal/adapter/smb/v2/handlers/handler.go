@@ -404,6 +404,16 @@ type OpenFile struct {
 	// The handle expires this many milliseconds after client disconnects.
 	DurableTimeoutMs uint32
 
+	// ClientGUID is the SMB2 NEGOTIATE ClientGuid of the connection that
+	// established this open. Captured at CREATE time so it can be persisted
+	// with the durable handle and matched against the reconnecting
+	// connection on V2 lease reconnect (smbtorture
+	// smb2.durable-v2-open.reopen1a-lease — reconnect with a different
+	// ClientGuid fails OBJECT_NAME_NOT_FOUND, reconnect with the original
+	// ClientGuid succeeds). Non-lease V2 reconnect (reopen1a/reopen2/...)
+	// does NOT consult this — those tests reconnect with a fresh ClientGuid.
+	ClientGUID [16]byte
+
 	// PositionInfo is the FILE_POSITION_INFORMATION CurrentByteOffset
 	// (MS-FSCC 2.4.32). Servers track this per-handle so SET/GET via
 	// FilePositionInformation round-trips even though network filesystems
@@ -547,8 +557,14 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		DirectoryLeasingEnabled: true,
 		NtlmEnabled:             true,
 		GuestEnabled:            true,
-		DurableTimeoutMs:        60000, // 60 seconds default durable handle timeout
-		resumeKeys:              newResumeKeyStore(),
+		// Default durable handle timeout: 300s (5 minutes). Matches Samba's
+		// `durable_default_timeout_msec` (source3/smbd/smb2_create.c).
+		// smbtorture asserts this value when the client requests
+		// UINT32_MAX (clamp to server max): smb2.durable-v2-open.create-blob,
+		// reopen1, reopen1a, reopen1a-lease, reopen2, app-instance, … all
+		// CHECK_VAL(io.out.timeout, 300*1000).
+		DurableTimeoutMs: 300000,
+		resumeKeys:       newResumeKeyStore(),
 	}
 
 	// Generate random server GUID

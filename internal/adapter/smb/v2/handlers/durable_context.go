@@ -46,6 +46,39 @@ func DecodeDHnCReconnect(data []byte) ([16]byte, error) {
 	return fileID, nil
 }
 
+// ValidateDurableContexts checks the durable-handle context combination rules
+// from MS-SMB2 §3.3.5.9.6/7/11/12 (mirrors Samba `source3/smbd/smb2_create.c`
+// `smbd_smb2_create_send` ~lines 775-846). Returns a non-success status when
+// the combination is invalid:
+//
+//   - DHnC + DH2C, DHnC + DH2Q, DH2C + DHnQ, DH2Q + DH2C (any pair of these
+//     four) → STATUS_INVALID_PARAMETER
+//   - DH2C with wrong length (≠ 36) → STATUS_INVALID_PARAMETER
+//
+// The "extra unexpected blobs alongside reconnect → OBJECT_NAME_NOT_FOUND"
+// rule is intentionally NOT enforced here: smbtorture create-blob does not
+// exercise it, and our broader CREATE pipeline does not yet account for the
+// full set of allowed companion contexts.
+func ValidateDurableContexts(contexts []CreateContext) types.Status {
+	dhnq := FindCreateContext(contexts, DurableHandleV1RequestTag)
+	dhnc := FindCreateContext(contexts, DurableHandleV1ReconnectTag)
+	dh2q := FindCreateContext(contexts, DurableHandleV2RequestTag)
+	dh2c := FindCreateContext(contexts, DurableHandleV2ReconnectTag)
+
+	if (dhnc != nil && dh2c != nil) ||
+		(dhnc != nil && dh2q != nil) ||
+		(dh2c != nil && dhnq != nil) ||
+		(dh2q != nil && dh2c != nil) {
+		return types.StatusInvalidParameter
+	}
+
+	if dh2c != nil && len(dh2c.Data) != 36 {
+		return types.StatusInvalidParameter
+	}
+
+	return types.StatusSuccess
+}
+
 // DecodeDH2QRequest parses a V2 durable handle request (DH2Q).
 // Returns timeout (ms), flags, and CreateGuid.
 // [MS-SMB2] 2.2.13.2.11
@@ -163,6 +196,22 @@ func ProcessDurableHandleContext(
 			return nil
 		}
 
+		// Per MS-SMB2 §3.3.5.9.10: V2 durability MUST NOT be granted unless
+		// either OplockLevel is Batch (legacy oplock-backed durable) or the
+		// granted lease includes SMB2_LEASE_HANDLE_CACHING. Matches Samba
+		// `smbd_smb2_create_durable_lease_check`. smbtorture
+		// smb2.durable-v2-open.open-oplock iterates 8 share-mode × 4 oplock-
+		// level combinations and expects `out.durable_open_v2 == false` for
+		// every non-Batch row — granting V2 unconditionally trips those
+		// assertions (line 293 / 455).
+		hasHandle := len(leaseIncludesHandle) > 0 && leaseIncludesHandle[0]
+		if openFile.OplockLevel != OplockLevelBatch && !hasHandle {
+			logger.Debug("ProcessDurableHandleContext: V2 rejected (no Batch oplock or Handle lease)",
+				"oplockLevel", openFile.OplockLevel,
+				"hasHandleLease", hasHandle)
+			return nil
+		}
+
 		// Calculate granted timeout: min(requested, configured max), 0 = server default
 		grantedTimeout := configuredTimeoutMs
 		if timeout > 0 && timeout < configuredTimeoutMs {
@@ -231,6 +280,14 @@ type ReconnectResult struct {
 // ProcessDurableReconnectContext processes DHnC or DH2C create contexts for reconnection.
 // It looks up the persisted handle, validates all reconnect conditions per MS-SMB2,
 // and on success returns a ReconnectResult. On failure, returns a specific NTSTATUS code.
+//
+// connClientGUID is the ClientGuid of the reconnecting connection (from
+// NEGOTIATE). It is matched against the persisted handle's ClientGUID only on
+// V2 *lease-backed* reconnect — see reopen1a-lease in
+// `source4/torture/smb2/durable_v2_open.c`. Pass [16]byte{} from contexts that
+// have no notion of ClientGuid; lease reconnect with a zero ClientGuid will
+// fail OBJECT_NAME_NOT_FOUND, mirroring Samba's strict per-client-GUID lease
+// key scoping.
 func ProcessDurableReconnectContext(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
@@ -241,12 +298,13 @@ func ProcessDurableReconnectContext(
 	sessionKeyHash [32]byte,
 	shareName string,
 	filename string,
+	connClientGUID [16]byte,
 ) (*ReconnectResult, types.Status, error) {
 
 	// Determine V2 (DH2C) or V1 (DHnC) reconnect
 	if dh2cCtx := FindCreateContext(contexts, DurableHandleV2ReconnectTag); dh2cCtx != nil {
 		openFile, leaseState, origID, status, err := processV2Reconnect(ctx, durableStore, metaSvc, contexts, dh2cCtx,
-			sessionID, username, sessionKeyHash, shareName, filename)
+			sessionID, username, sessionKeyHash, shareName, filename, connClientGUID)
 		if err != nil || status != types.StatusSuccess {
 			return nil, status, err
 		}
@@ -331,6 +389,7 @@ func processV2Reconnect(
 	sessionKeyHash [32]byte,
 	shareName string,
 	filename string,
+	connClientGUID [16]byte,
 ) (*OpenFile, uint32, [16]byte, types.Status, error) {
 	// Parse V2 reconnect context
 	fileID, createGuid, flags, err := DecodeDH2CReconnect(dh2cCtx.Data)
@@ -363,12 +422,36 @@ func processV2Reconnect(
 		return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
 	}
 
-	// Validate FileID from DH2C against persisted handle to prevent wrong-handle reconnect
-	if fileID != handle.FileID {
-		logger.Debug("processV2Reconnect: FileID mismatch",
-			"expected", fmt.Sprintf("%x", handle.FileID),
-			"actual", fmt.Sprintf("%x", fileID))
+	// Validate FileID from DH2C against persisted handle to prevent wrong-
+	// handle reconnect. Compare only the persistent half (bytes 0-7): a
+	// compliant V1 client sends Data.Volatile=0 per MS-SMB2 §3.2.4.4, but
+	// smbtorture (and other test clients) replay the original full FileID
+	// for V2 reconnect, so a 16-byte compare against the persisted
+	// (volatile-zeroed) FileID would reject every legitimate V2 replay
+	// returning STATUS_INVALID_PARAMETER. CreateGuid is the primary
+	// identifier on V2 anyway; the persistent half is just an extra check.
+	if [8]byte(fileID[:8]) != [8]byte(handle.FileID[:8]) {
+		logger.Debug("processV2Reconnect: persistent FileID mismatch",
+			"expected", fmt.Sprintf("%x", handle.FileID[:8]),
+			"actual", fmt.Sprintf("%x", fileID[:8]))
 		return nil, 0, [16]byte{}, types.StatusInvalidParameter, nil
+	}
+
+	// Per MS-SMB2 §3.3.5.9.12 and Samba lease-key scoping (per-(ClientGuid,
+	// LeaseKey)), a V2 *lease-backed* durable open MUST be reconnected from
+	// the same ClientGuid that established it. A non-zero LeaseKey on the
+	// persisted handle is our marker for "lease-backed". An older persisted
+	// handle written before ClientGUID was captured carries the zero value;
+	// treat that as "no recorded ClientGuid" and skip the check to preserve
+	// forward compatibility with handles written by pre-#432 binaries
+	// (matches the fall-back pattern already used for GrantedAccess in
+	// validateAndRestore). smbtorture smb2.durable-v2-open.reopen1a-lease.
+	if handle.LeaseKey != ([16]byte{}) && handle.ClientGUID != ([16]byte{}) &&
+		handle.ClientGUID != connClientGUID {
+		logger.Debug("processV2Reconnect: ClientGuid mismatch on lease-backed reconnect",
+			"persisted", fmt.Sprintf("%x", handle.ClientGUID),
+			"connecting", fmt.Sprintf("%x", connClientGUID))
+		return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
 	}
 
 	// V2 reconnect does not carry DesiredAccess/ShareAccess in DH2C context either
@@ -510,6 +593,14 @@ func validateAndRestore(
 		FileName:       handle.FileName,
 		IsDirectory:    handle.IsDirectory,
 		PositionInfo:   handle.PositionInfo,
+		// Restore the ClientGUID recorded at the original CREATE so a
+		// chained disconnect→reconnect→disconnect cycle preserves the
+		// per-(ClientGuid, LeaseKey) lease scoping check on the next
+		// reconnect attempt. Without this, the next persist would write a
+		// zero ClientGUID, and the §3.3.5.9.12 lease-scoping check in
+		// processV2Reconnect would silently no-op (handle.ClientGUID == 0
+		// is the "pre-#432 forward-compat" branch).
+		ClientGUID: handle.ClientGUID,
 		// IsDurable is NOT set on restore -- client must re-request durability
 	}
 
@@ -523,10 +614,20 @@ func validateAndRestore(
 }
 
 // ProcessAppInstanceId processes the SMB2_CREATE_APP_INSTANCE_ID context.
-// If present, it looks up existing durable handles with the same AppInstanceId
-// and force-closes them (Hyper-V failover pattern).
+// Per MS-SMB2 §3.3.5.9.13, when a CREATE arrives carrying an AppInstanceId
+// matching an existing open's AppInstanceId, the server MUST force-close the
+// existing open before establishing the new one. This is the Hyper-V failover
+// pattern: a VM moving between hosts presents the same AppInstanceId, and the
+// new host claims the file from the old. The forced close MUST cover both:
 //
-// Returns the parsed AppInstanceId (zero value if not present).
+//   - Disconnected (persisted) durable handles in the DurableHandleStore.
+//   - Live opens still tracked in Handler.files. smbtorture
+//     smb2.durable-v2-open.app-instance opens with AppInstanceId X on tree1,
+//     then opens the same file with X on tree2 with tree1 *still connected*.
+//     Subsequent CLOSE on the tree1 handle MUST return STATUS_FILE_CLOSED —
+//     this requires the live handle to be removed from Handler.files.
+//
+// Returns the parsed AppInstanceId (zero value if not present or zero).
 func ProcessAppInstanceId(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
@@ -544,12 +645,32 @@ func ProcessAppInstanceId(
 		return [16]byte{}
 	}
 
-	// Zero AppInstanceId means "not set"
 	if appId == ([16]byte{}) {
 		return [16]byte{}
 	}
 
-	// Look up existing handles with this AppInstanceId
+	// 1) Force-close live opens with matching AppInstanceId. Uses
+	// closeFilesWithFilter with isDisconnect=false so the open is fully
+	// closed (locks released, caches flushed, file removed from
+	// Handler.files) — NOT persisted into the durable store, since the new
+	// AppInstanceId open is claiming this handle.
+	if handler != nil {
+		liveClosed := handler.closeFilesWithFilter(
+			ctx,
+			0, // no specific sessionID — match across sessions
+			func(f *OpenFile) bool { return f.AppInstanceId == appId },
+			"ProcessAppInstanceId",
+			false, // explicit close, not transport disconnect
+		)
+		if liveClosed > 0 {
+			logger.Debug("ProcessAppInstanceId: force-closed live opens",
+				"appInstanceId", fmt.Sprintf("%x", appId),
+				"count", liveClosed)
+		}
+	}
+
+	// 2) Force-close persisted (disconnected) durable handles with matching
+	// AppInstanceId.
 	existing, err := durableStore.GetDurableHandlesByAppInstanceId(ctx, appId)
 	if err != nil {
 		logger.Warn("ProcessAppInstanceId: store error", "error", err)
@@ -560,15 +681,12 @@ func ProcessAppInstanceId(
 		return appId
 	}
 
-	logger.Debug("ProcessAppInstanceId: force-closing existing handles",
+	logger.Debug("ProcessAppInstanceId: force-closing persisted handles",
 		"appInstanceId", fmt.Sprintf("%x", appId),
 		"count", len(existing))
 
-	// Force-close each existing handle
 	for _, h := range existing {
-		// If handler is available, perform full cleanup (release locks, flush caches)
 		if handler != nil {
-			// Build minimal OpenFile for cleanup
 			cleanupFile := &OpenFile{
 				FileID:         h.FileID,
 				Path:           h.Path,
@@ -576,11 +694,7 @@ func ProcessAppInstanceId(
 				MetadataHandle: h.MetadataHandle,
 				PayloadID:      metadata.PayloadID(h.PayloadID),
 			}
-
-			// Flush cache
 			handler.flushFileCache(ctx, cleanupFile)
-
-			// Release locks if metadata handle is valid
 			if len(h.MetadataHandle) > 0 && handler.Registry != nil {
 				if metaSvc := handler.Registry.GetMetadataService(); metaSvc != nil {
 					_ = metaSvc.UnlockAllForSession(ctx, h.MetadataHandle, 0)
@@ -588,15 +702,10 @@ func ProcessAppInstanceId(
 			}
 		}
 
-		// Delete from durable store
 		if delErr := durableStore.DeleteDurableHandle(ctx, h.ID); delErr != nil {
 			logger.Warn("ProcessAppInstanceId: failed to delete handle",
 				"handleID", h.ID,
 				"error", delErr)
-		} else {
-			logger.Debug("ProcessAppInstanceId: force-closed handle",
-				"handleID", h.ID,
-				"path", h.Path)
 		}
 	}
 
@@ -661,5 +770,6 @@ func buildPersistedDurableHandle(
 		IsDirectory:     openFile.IsDirectory,
 		PositionInfo:    openFile.PositionInfo,
 		OriginalFileID:  openFile.FileID,
+		ClientGUID:      openFile.ClientGUID,
 	}
 }

@@ -333,9 +333,11 @@ func TestProcessDurableHandleContext_V1RejectWithoutBatchOplock(t *testing.T) {
 }
 
 func TestProcessDurableHandleContext_V2GrantWithCreateGuid(t *testing.T) {
+	// V2 durability MUST NOT be granted without Batch oplock or Handle lease
+	// (MS-SMB2 §3.3.5.9.10). Use Batch to test the happy path.
 	openFile := &OpenFile{
 		FileID:      [16]byte{1, 2, 3},
-		OplockLevel: OplockLevelNone,
+		OplockLevel: OplockLevelBatch,
 	}
 
 	createGuid := [16]byte{0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF}
@@ -369,8 +371,9 @@ func TestProcessDurableHandleContext_V2GrantWithCreateGuid(t *testing.T) {
 
 func TestProcessDurableHandleContext_V2ZeroTimeoutUsesServerDefault(t *testing.T) {
 	openFile := &OpenFile{
-		FileID:      [16]byte{1, 2, 3},
-		OplockLevel: OplockLevelNone,
+		FileID: [16]byte{1, 2, 3},
+		// V2 needs Batch oplock or Handle lease — see §3.3.5.9.10.
+		OplockLevel: OplockLevelBatch,
 	}
 
 	createGuid := [16]byte{0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF}
@@ -500,7 +503,7 @@ func TestProcessDurableReconnectContext_V1Success(t *testing.T) {
 	}
 
 	restored, status, err := ProcessDurableReconnectContext(
-		context.Background(), store, nil, contexts, 999, "alice", keyHash, "/share1", "test.txt",
+		context.Background(), store, nil, contexts, 999, "alice", keyHash, "/share1", "test.txt", [16]byte{},
 	)
 	if err != nil {
 		t.Fatalf("ProcessDurableReconnectContext error: %v", err)
@@ -570,7 +573,7 @@ func TestProcessDurableReconnectContext_V2Success(t *testing.T) {
 	}
 
 	restored, status, err := ProcessDurableReconnectContext(
-		context.Background(), store, nil, contexts, 999, "bob", keyHash, "/share1", "report.docx",
+		context.Background(), store, nil, contexts, 999, "bob", keyHash, "/share1", "report.docx", [16]byte{},
 	)
 	if err != nil {
 		t.Fatalf("ProcessDurableReconnectContext error: %v", err)
@@ -609,7 +612,7 @@ func TestProcessDurableReconnectContext_HandleNotFound(t *testing.T) {
 	}
 
 	_, status, _ := ProcessDurableReconnectContext(
-		context.Background(), store, nil, contexts, 999, "alice", makeSessionKeyHash("key"), "/share1", "test.txt",
+		context.Background(), store, nil, contexts, 999, "alice", makeSessionKeyHash("key"), "/share1", "test.txt", [16]byte{},
 	)
 	if status != types.StatusObjectNameNotFound {
 		t.Errorf("Expected STATUS_OBJECT_NAME_NOT_FOUND, got %s", status)
@@ -646,7 +649,7 @@ func TestProcessDurableReconnectContext_UsernameMismatch(t *testing.T) {
 	}
 
 	_, status, _ := ProcessDurableReconnectContext(
-		context.Background(), store, nil, contexts, 999, "eve", keyHash, "/share1", "test.txt",
+		context.Background(), store, nil, contexts, 999, "eve", keyHash, "/share1", "test.txt", [16]byte{},
 	)
 	if status != types.StatusAccessDenied {
 		t.Errorf("Expected STATUS_ACCESS_DENIED for username mismatch, got %s", status)
@@ -689,7 +692,7 @@ func TestProcessDurableReconnectContext_SessionKeyMismatchAllowed(t *testing.T) 
 	}
 
 	_, status, _ := ProcessDurableReconnectContext(
-		context.Background(), store, nil, contexts, 999, "alice", differentKeyHash, "/share1", "test.txt",
+		context.Background(), store, nil, contexts, 999, "alice", differentKeyHash, "/share1", "test.txt", [16]byte{},
 	)
 	if status != types.StatusSuccess {
 		t.Errorf("Expected STATUS_SUCCESS for session key mismatch with matching username, got %s", status)
@@ -726,7 +729,7 @@ func TestProcessDurableReconnectContext_ShareNameMismatch(t *testing.T) {
 	}
 
 	_, status, _ := ProcessDurableReconnectContext(
-		context.Background(), store, nil, contexts, 999, "alice", keyHash, "/different-share", "test.txt",
+		context.Background(), store, nil, contexts, 999, "alice", keyHash, "/different-share", "test.txt", [16]byte{},
 	)
 	if status != types.StatusObjectNameNotFound {
 		t.Errorf("Expected STATUS_OBJECT_NAME_NOT_FOUND for share mismatch, got %s", status)
@@ -766,7 +769,7 @@ func TestProcessDurableReconnectContext_PathMismatch(t *testing.T) {
 	}
 
 	_, status, _ := ProcessDurableReconnectContext(
-		context.Background(), store, nil, contexts, 999, "alice", keyHash, "/share1", "other.txt",
+		context.Background(), store, nil, contexts, 999, "alice", keyHash, "/share1", "other.txt", [16]byte{},
 	)
 	if status != types.StatusInvalidParameter {
 		t.Errorf("Expected STATUS_INVALID_PARAMETER for path mismatch, got %s", status)
@@ -805,7 +808,7 @@ func TestProcessDurableReconnectContext_V1ConflictingV2Tag(t *testing.T) {
 	}
 
 	_, status, _ := ProcessDurableReconnectContext(
-		context.Background(), store, nil, contexts, 999, "alice", keyHash, "/share1", "test.txt",
+		context.Background(), store, nil, contexts, 999, "alice", keyHash, "/share1", "test.txt", [16]byte{},
 	)
 	if status != types.StatusInvalidParameter {
 		t.Errorf("Expected STATUS_INVALID_PARAMETER for conflicting V2 tag with V1 reconnect, got %s", status)
@@ -930,7 +933,7 @@ func TestProcessDurableReconnectContext_OriginalFileIDRestored(t *testing.T) {
 	}
 
 	res, status, err := ProcessDurableReconnectContext(ctx, store, nil, contexts,
-		1, "alice", keyHash, "/share1", "lockfile.txt")
+		1, "alice", keyHash, "/share1", "lockfile.txt", [16]byte{})
 	if err != nil || status != types.StatusSuccess {
 		t.Fatalf("reconnect: status=%s err=%v", status, err)
 	}
@@ -975,7 +978,7 @@ func TestProcessDurableReconnectContext_OriginalFileIDFallback(t *testing.T) {
 	}
 
 	res, status, err := ProcessDurableReconnectContext(ctx, store, nil, contexts,
-		1, "alice", keyHash, "/share1", "legacy.txt")
+		1, "alice", keyHash, "/share1", "legacy.txt", [16]byte{})
 	if err != nil || status != types.StatusSuccess {
 		t.Fatalf("reconnect: status=%s err=%v", status, err)
 	}
@@ -1019,11 +1022,265 @@ func TestProcessDurableReconnectContext_PositionInfoRestored(t *testing.T) {
 	}
 
 	res, status, err := ProcessDurableReconnectContext(ctx, store, nil, contexts,
-		1, "alice", keyHash, "/share1", "position.txt")
+		1, "alice", keyHash, "/share1", "position.txt", [16]byte{})
 	if err != nil || status != types.StatusSuccess {
 		t.Fatalf("reconnect: status=%s err=%v", status, err)
 	}
 	if res.OpenFile.PositionInfo != 0x1000 {
 		t.Errorf("restored PositionInfo = 0x%x, want 0x1000", res.OpenFile.PositionInfo)
+	}
+}
+
+func TestValidateDurableContexts(t *testing.T) {
+	mkDH2C := func() CreateContext {
+		return CreateContext{Name: DurableHandleV2ReconnectTag, Data: make([]byte, 36)}
+	}
+	mkDH2Q := func() CreateContext {
+		return CreateContext{Name: DurableHandleV2RequestTag, Data: make([]byte, 32)}
+	}
+	mkDHnC := func() CreateContext {
+		return CreateContext{Name: DurableHandleV1ReconnectTag, Data: make([]byte, 16)}
+	}
+	mkDHnQ := func() CreateContext {
+		// V1 request: tag "DHnQ", 16 reserved bytes.
+		return CreateContext{Name: DurableHandleV1RequestTag, Data: make([]byte, 16)}
+	}
+
+	cases := []struct {
+		name     string
+		contexts []CreateContext
+		want     types.Status
+	}{
+		{"empty", nil, types.StatusSuccess},
+		{"DHnQ only", []CreateContext{mkDHnQ()}, types.StatusSuccess},
+		{"DH2Q only", []CreateContext{mkDH2Q()}, types.StatusSuccess},
+		{"DHnC only", []CreateContext{mkDHnC()}, types.StatusSuccess},
+		{"DH2C only", []CreateContext{mkDH2C()}, types.StatusSuccess},
+
+		// MS-SMB2 §3.3.5.9.12 rejection cases (smbtorture create-blob)
+		{"DHnC + DH2C", []CreateContext{mkDHnC(), mkDH2C()}, types.StatusInvalidParameter},
+		{"DHnC + DH2Q", []CreateContext{mkDHnC(), mkDH2Q()}, types.StatusInvalidParameter},
+		{"DH2C + DHnQ", []CreateContext{mkDH2C(), mkDHnQ()}, types.StatusInvalidParameter},
+		{"DH2C + DH2Q", []CreateContext{mkDH2C(), mkDH2Q()}, types.StatusInvalidParameter},
+
+		// Truncated DH2C (length must be exactly 36 per Samba; we accept >=36
+		// at decode time but reject mismatched length up-front).
+		{"DH2C short", []CreateContext{{Name: DurableHandleV2ReconnectTag, Data: make([]byte, 20)}}, types.StatusInvalidParameter},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ValidateDurableContexts(c.contexts)
+			if got != c.want {
+				t.Errorf("ValidateDurableContexts() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestProcessDurableReconnectContext_V2LeaseClientGUIDMismatch locks in the
+// MS-SMB2 §3.3.5.9.12 lease-key per-ClientGuid scoping behavior exercised by
+// smb2.durable-v2-open.reopen1a-lease.
+func TestProcessDurableReconnectContext_V2LeaseClientGUIDMismatch(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	keyHash := makeSessionKeyHash("session-key")
+	createGuid := [16]byte{0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7}
+	leaseKey := [16]byte{0xAA, 0xBB, 0xCC, 0xDD}
+	fileID := [16]byte{0x10, 0x20, 0x30}
+	originalGUID := [16]byte{0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7}
+	differentGUID := [16]byte{0xF0, 0xF1, 0xF2}
+
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:             "h-001",
+		FileID:         fileID,
+		Path:           "leasefile.txt",
+		ShareName:      "/share1",
+		Username:       "alice",
+		SessionKeyHash: keyHash,
+		CreateGuid:     createGuid,
+		LeaseKey:       leaseKey,
+		ClientGUID:     originalGUID,
+		IsV2:           true,
+		CreatedAt:      time.Now().Add(-time.Minute),
+		DisconnectedAt: time.Now().Add(-time.Second),
+		TimeoutMs:      60000,
+		MetadataHandle: []byte{0xAA},
+	})
+
+	// Build DH2C reconnect (FileID + CreateGuid + zero flags).
+	dh2cData := make([]byte, 36)
+	copy(dh2cData[:16], fileID[:])
+	copy(dh2cData[16:32], createGuid[:])
+	contexts := []CreateContext{
+		{Name: DurableHandleV2ReconnectTag, Data: dh2cData},
+	}
+
+	// Wrong ClientGuid → OBJECT_NAME_NOT_FOUND
+	_, status, err := ProcessDurableReconnectContext(ctx, store, nil, contexts,
+		1, "alice", keyHash, "/share1", "leasefile.txt", differentGUID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != types.StatusObjectNameNotFound {
+		t.Errorf("ClientGuid mismatch: got status %v, want OBJECT_NAME_NOT_FOUND", status)
+	}
+
+	// Original ClientGuid → success
+	_, status, err = ProcessDurableReconnectContext(ctx, store, nil, contexts,
+		1, "alice", keyHash, "/share1", "leasefile.txt", originalGUID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != types.StatusSuccess {
+		t.Errorf("ClientGuid match: got status %v, want SUCCESS", status)
+	}
+}
+
+// TestProcessDurableReconnectContext_V2OplockNoClientGUIDCheck covers
+// reopen1a (oplock-backed, not lease-backed): reconnect with a different
+// ClientGuid MUST still succeed because lease scoping does not apply.
+func TestProcessDurableReconnectContext_V2OplockNoClientGUIDCheck(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	keyHash := makeSessionKeyHash("session-key")
+	createGuid := [16]byte{0x11, 0x22, 0x33, 0x44}
+	fileID := [16]byte{0x55, 0x66, 0x77}
+	originalGUID := [16]byte{0xAA, 0xBB, 0xCC}
+	differentGUID := [16]byte{0xDD, 0xEE, 0xFF}
+
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:             "h-002",
+		FileID:         fileID,
+		Path:           "oplockfile.txt",
+		ShareName:      "/share1",
+		Username:       "alice",
+		SessionKeyHash: keyHash,
+		CreateGuid:     createGuid,
+		// LeaseKey deliberately zero → oplock-backed open
+		ClientGUID:     originalGUID,
+		IsV2:           true,
+		CreatedAt:      time.Now().Add(-time.Minute),
+		DisconnectedAt: time.Now().Add(-time.Second),
+		TimeoutMs:      60000,
+		MetadataHandle: []byte{0xAA},
+	})
+
+	dh2cData := make([]byte, 36)
+	copy(dh2cData[:16], fileID[:])
+	copy(dh2cData[16:32], createGuid[:])
+	contexts := []CreateContext{
+		{Name: DurableHandleV2ReconnectTag, Data: dh2cData},
+	}
+
+	_, status, err := ProcessDurableReconnectContext(ctx, store, nil, contexts,
+		1, "alice", keyHash, "/share1", "oplockfile.txt", differentGUID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != types.StatusSuccess {
+		t.Errorf("oplock V2 reconnect with different ClientGuid: got status %v, want SUCCESS", status)
+	}
+}
+
+// TestValidateAndRestore_ClientGUIDRoundtrip verifies that ClientGUID is
+// restored onto the OpenFile by the reconnect path so the next persist
+// (chained disconnect→reconnect→disconnect) carries the original GUID.
+// Without this, the §3.3.5.9.12 lease-scoping check would no-op on the
+// second reconnect and any client could reclaim a lease-backed durable handle.
+// Locks in Copilot review finding on durable_context.go:742.
+func TestValidateAndRestore_ClientGUIDRoundtrip(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	keyHash := makeSessionKeyHash("session-key")
+	originalGUID := [16]byte{0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5}
+	leaseKey := [16]byte{0xB0, 0xB1, 0xB2}
+	createGuid := [16]byte{0xC0, 0xC1, 0xC2}
+	fileID := [16]byte{0xD0, 0xD1, 0xD2}
+
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:             "h-roundtrip",
+		FileID:         fileID,
+		Path:           "leasefile.txt",
+		ShareName:      "/share1",
+		Username:       "alice",
+		SessionKeyHash: keyHash,
+		CreateGuid:     createGuid,
+		LeaseKey:       leaseKey,
+		ClientGUID:     originalGUID,
+		IsV2:           true,
+		CreatedAt:      time.Now().Add(-time.Minute),
+		DisconnectedAt: time.Now().Add(-time.Second),
+		TimeoutMs:      60000,
+		MetadataHandle: []byte{0xAA},
+	})
+
+	dh2cData := make([]byte, 36)
+	copy(dh2cData[:16], fileID[:])
+	copy(dh2cData[16:32], createGuid[:])
+	contexts := []CreateContext{
+		{Name: DurableHandleV2ReconnectTag, Data: dh2cData},
+	}
+
+	res, status, err := ProcessDurableReconnectContext(ctx, store, nil, contexts,
+		1, "alice", keyHash, "/share1", "leasefile.txt", originalGUID)
+	if err != nil || status != types.StatusSuccess {
+		t.Fatalf("reconnect failed: status=%v err=%v", status, err)
+	}
+	if res.OpenFile.ClientGUID != originalGUID {
+		t.Errorf("restored ClientGUID = %x, want %x (Copilot review #1: chained reconnect breaks lease scoping)",
+			res.OpenFile.ClientGUID, originalGUID)
+	}
+}
+
+// TestProcessDurableHandleContext_V2RequiresBatchOrHandleLease locks in
+// MS-SMB2 §3.3.5.9.10: V2 durability MUST NOT be granted unless OplockLevel
+// is Batch OR the granted lease includes SMB2_LEASE_HANDLE_CACHING.
+// smbtorture smb2.durable-v2-open.open-oplock iterates 8 share-mode × 4
+// oplock-level rows expecting `out.durable_open_v2 == false` for every
+// non-Batch row.
+func TestProcessDurableHandleContext_V2RequiresBatchOrHandleLease(t *testing.T) {
+	createGuid := [16]byte{0xA0, 0xA1, 0xA2}
+	dh2qData := make([]byte, 32)
+	binary.LittleEndian.PutUint32(dh2qData[0:4], 60000)
+	copy(dh2qData[16:32], createGuid[:])
+
+	cases := []struct {
+		name          string
+		oplockLevel   uint8
+		handleLease   bool
+		expectGranted bool
+	}{
+		{"None oplock, no lease", OplockLevelNone, false, false},
+		{"Level II oplock", OplockLevelII, false, false},
+		{"Exclusive oplock", OplockLevelExclusive, false, false},
+		{"Batch oplock", OplockLevelBatch, false, true},
+		{"None oplock, Handle lease", OplockLevelNone, true, true},
+		{"Lease level with Handle", OplockLevelLease, true, true},
+		{"Lease level no Handle", OplockLevelLease, false, false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			openFile := &OpenFile{
+				FileID:      [16]byte{1, 2, 3},
+				OplockLevel: c.oplockLevel,
+			}
+			contexts := []CreateContext{
+				{Name: DurableHandleV2RequestTag, Data: dh2qData},
+			}
+			resp := ProcessDurableHandleContext(contexts, openFile, 60000, c.handleLease)
+			granted := resp != nil
+			if granted != c.expectGranted {
+				t.Errorf("granted=%v want %v (oplock=%d handleLease=%v)",
+					granted, c.expectGranted, c.oplockLevel, c.handleLease)
+			}
+			if openFile.IsDurable != c.expectGranted {
+				t.Errorf("IsDurable=%v want %v", openFile.IsDurable, c.expectGranted)
+			}
+		})
 	}
 }
