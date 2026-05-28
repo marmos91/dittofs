@@ -201,11 +201,6 @@ checks, and ACL-based access control.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.getinfo.complex | Query Info | Complex getinfo not implemented | - |
-| smb2.getinfo.getinfo_access | Query Info | Access-based getinfo not implemented | - |
-| smb2.getinfo.normalized | Query Info | Normalized name info not implemented | - |
-| smb2.getinfo.qfile_buffercheck | Query Info | Buffer check validation not implemented | - |
-| smb2.getinfo.qfs_buffercheck | Query Info | FS buffer check not implemented | - |
 | smb2.setinfo | Set Info | SET_INFO timestamp preservation not implemented | - |
 
 ### Share Modes and Deny (Advanced Scenarios)

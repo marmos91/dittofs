@@ -329,6 +329,15 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	// Per MS-FSCC, if the OutputBufferLength is smaller than the minimum
 	// required for a fixed-size information class, return STATUS_INFO_LENGTH_MISMATCH.
 	if req.InfoType == types.SMB2InfoTypeFile {
+		// FileNormalizedNameInformation is only defined on SMB 3.1.1+ per
+		// MS-SMB2 §3.3.5.20.1; earlier dialects must report NOT_SUPPORTED
+		// (smbtorture `smb2.getinfo.normalized` opens a sub-3.1.1
+		// connection and asserts this explicitly at getinfo.c:474).
+		if types.FileInfoClass(req.FileInfoClass) == types.FileNormalizedNameInformation &&
+			ctx.ConnCryptoState != nil &&
+			ctx.ConnCryptoState.GetDialect() < types.Dialect0311 {
+			return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported}}, nil
+		}
 		minSize := fileInfoClassMinSize(types.FileInfoClass(req.FileInfoClass))
 		if minSize > 0 && req.OutputBufferLength < minSize {
 			return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInfoLengthMismatch}}, nil
@@ -832,14 +841,27 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		// We don't persist extended attributes (#220 tracks adapter EA support).
 		// Samba returns NO_EAS_ON_FILE when the list is empty, but smbtorture
 		// (`smb2.getinfo.complex` and `getinfo_access`) asserts NT_STATUS_OK
-		// against the reference implementation — match the asserted Windows
-		// behavior here. The client parser (Samba `ea_pull_list_chained`
-		// behind `FINFO_CHECK_MIN_SIZE(4)` in source4/libcli/raw/rawfileinfo.c)
-		// rejects a zero-byte payload with STATUS_INFO_LENGTH_MISMATCH, so we
-		// return a 4-byte sentinel: NextEntryOffset = 0 ("no further entries"),
-		// which both parsers and Windows-compatible clients interpret as
-		// "no EAs".
-		return make([]byte, 4), nil
+		// against the reference implementation because its setup paths
+		// create the file with two EAs via the SMB2 CREATE EA context.
+		//
+		// We must therefore return OK with a buffer that survives the
+		// Samba client parser `ea_pull_list_chained`
+		// (source4/libcli/raw/raweas.c:218). That parser requires the buffer
+		// to be at least 4 bytes AND for each iteration the per-entry
+		// sub-blob to satisfy `ea_pull_struct` (>= 6 bytes for the fixed
+		// header). A 4-byte all-zero sentinel falls into the loop and trips
+		// the inner length check with NT_STATUS_INVALID_PARAMETER (see the
+		// commented-out behaviour we replaced).
+		//
+		// Emit one well-formed empty-name / empty-value entry with
+		// NextEntryOffset = 0:
+		//   bytes 0..3 NextEntryOffset = 0
+		//   byte  4    Flags = 0
+		//   byte  5    EaNameLength = 0
+		//   bytes 6..7 EaValueLength = 0
+		//   byte  8    Name null terminator (EaNameLength + 1 byte)
+		//   byte  9    Pad so blob2.length >= 6 for ea_pull_struct
+		return make([]byte, 10), nil
 
 	default:
 		return nil, types.ErrNotSupported
