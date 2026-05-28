@@ -10,6 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // Sparse-file FSCTL handlers — issue #359.
@@ -28,30 +29,6 @@ import (
 //   - FSCTL_SET_ZERO_DATA          MS-FSCC §2.3.67 / §2.3.68
 //
 // Samba reference: source3/smbd/smb2_ioctl_filesys.c
-
-// ioctlInputBuffer extracts the input buffer portion of an IOCTL request
-// using the InputOffset / InputCount fields from the SMB2 IOCTL request
-// (MS-SMB2 §2.2.31). InputOffset is relative to the SMB2 header (64 bytes
-// before the body), so the buffer starts at offset 56 inside body.
-func ioctlInputBuffer(body []byte) []byte {
-	if len(body) < 56 {
-		return nil
-	}
-	r := smbenc.NewReader(body)
-	r.Skip(4)                    // StructureSize + Reserved
-	r.Skip(4)                    // CtlCode
-	r.Skip(16)                   // FileId
-	_ = r.ReadUint32()           // InputOffset (relative to SMB2 header)
-	inputCount := r.ReadUint32() // InputCount
-	if r.Err() != nil || inputCount == 0 {
-		return nil
-	}
-	const bufStart = uint32(56)
-	if uint32(len(body)) < bufStart+inputCount {
-		return nil
-	}
-	return body[bufStart : bufStart+inputCount]
-}
 
 // handleSetSparse handles FSCTL_SET_SPARSE [MS-FSCC] 2.3.50.
 //
@@ -73,9 +50,9 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
-	// Per MS-FSA §2.1.5.10.34: SET_SPARSE requires FILE_WRITE_DATA. The smb2.
-	// ioctl.sparse_perms test confirms this gate by opening with read-only
-	// access and expecting STATUS_ACCESS_DENIED.
+	// Per MS-FSA §2.1.5.10.34: SET_SPARSE requires FILE_WRITE_DATA. The
+	// smb2.ioctl.sparse_perms test confirms this gate by opening with
+	// read-only access and expecting STATUS_ACCESS_DENIED.
 	if uint32(types.AccessMask(openFile.GrantedAccess))&uint32(types.FileWriteData) == 0 {
 		logger.Debug("IOCTL FSCTL_SET_SPARSE: handle lacks FILE_WRITE_DATA",
 			"path", openFile.Path,
@@ -83,10 +60,11 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 
-	// Input is either empty (default: set sparse) or 1 byte; reject larger
-	// buffers per Samba `fsctl_set_sparse` (returns INVALID_PARAMETER on
-	// inputs longer than 1 byte — covered by smb2.ioctl.sparse_set_oversize).
-	if input := ioctlInputBuffer(body); len(input) > 1 {
+	// Reject input buffers larger than 1 byte per Samba `fsctl_set_sparse`
+	// (covered by smb2.ioctl.sparse_set_oversize). parseIoctlInputData
+	// honours InputOffset and guards against the uint32-arithmetic overflow
+	// pattern that an ad-hoc slice would expose to malformed requests.
+	if input := parseIoctlInputData(body); len(input) > 1 {
 		logger.Debug("IOCTL FSCTL_SET_SPARSE: input too large", "len", len(input))
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
@@ -99,10 +77,10 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 
 // handleQueryAllocatedRanges handles FSCTL_QUERY_ALLOCATED_RANGES [MS-FSCC]
 // 2.3.32. The client supplies a (FileOffset, Length) window and the server
-// reports which sub-ranges are allocated. Since DittoFS does not track holes
-// independently from the payload, we report the intersection of the client's
-// window with [0, FileSize) as a single allocated range. Bytes past EOF
-// produce an empty output buffer, matching Samba `fsctl_qar`.
+// reports which sub-ranges are allocated. Since DittoFS does not track
+// holes independently from the payload, we report the intersection of the
+// client's window with [0, FileSize) as a single allocated range. Bytes
+// past EOF produce an empty output buffer, matching Samba `fsctl_qar`.
 func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	fileID, ok := parseIoctlFileID(body)
 	if !ok {
@@ -123,7 +101,7 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 
-	input := ioctlInputBuffer(body)
+	input := parseIoctlInputData(body)
 	if len(input) < 16 {
 		logger.Debug("IOCTL FSCTL_QUERY_ALLOCATED_RANGES: malformed input", "len", len(input))
 		return NewErrorResult(types.StatusInvalidParameter), nil
@@ -143,8 +121,10 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
-	// Resolve the file's logical size. PrepareWrite would mutate state, so
-	// read attributes directly via the metadata service.
+	// Prime ctx with the OpenFile's recorded session state — without this
+	// hand-off BuildAuthContext takes the ctx.User==nil arm and synthesises
+	// UID-0 (root), bypassing DACL checks on the GetFile probe (#619).
+	h.primeAuthContextFromOpenFile(ctx, openFile)
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		return NewErrorResult(types.StatusAccessDenied), nil
@@ -177,6 +157,15 @@ func (h *Handler) handleQueryAllocatedRanges(ctx *SMBHandlerContext, body []byte
 	return NewResult(types.StatusSuccess, resp), nil
 }
 
+// zeroDataMaxFileSize mirrors the NTFS upper bound that the regular WRITE
+// path enforces (see write.go). Without this cap a client could request an
+// arbitrary <2^63 range and tie the handler up in a multi-hour zero-fill
+// loop while the metadata service grows file size past anything WRITE
+// would accept. Keeping the two limits identical also prevents a SET_ZERO_
+// DATA followed by a normal WRITE from refusing the write because the
+// preceding FSCTL pushed the file past the WRITE cap.
+const zeroDataMaxFileSize = uint64(0xFFFFFFF0000) // ~16 TiB, identical to WRITE handler
+
 // handleSetZeroData handles FSCTL_SET_ZERO_DATA [MS-FSCC] 2.3.67.
 //
 // Writes zeros across the [FileOffset, BeyondFinalZero) byte window. We
@@ -207,7 +196,7 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 
-	input := ioctlInputBuffer(body)
+	input := parseIoctlInputData(body)
 	if len(input) < 16 {
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
@@ -225,11 +214,53 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		resp := buildIoctlResponse(FsctlSetZeroData, fileID, nil)
 		return NewResult(types.StatusSuccess, resp), nil
 	}
+	if beyond > zeroDataMaxFileSize {
+		logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: range exceeds MAXFILESIZE",
+			"path", openFile.Path, "beyond", beyond)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
 
+	// Prime ctx with the OpenFile's session/tree so BuildAuthContext picks
+	// up the correct identity for downstream metadata permission checks.
+	// Without this, FileID-only IOCTL requests fall through to anonymous
+	// UID-0 (root) and CommitWrite skips the non-root SUID/SGID clearing
+	// path (#619, same class as #603).
+	h.primeAuthContextFromOpenFile(ctx, openFile)
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
+
+	// Byte-range lock check on the write window. WRITE and COPYCHUNK both
+	// gate on this; without it another handle could hold a conflicting
+	// lock over [fileOffset, beyond) and the zero-fill would silently win
+	// (smb2.ioctl.sparse_lock).
+	metaSvc := h.Registry.GetMetadataService()
+	if err := metaSvc.CheckLockForIO(
+		authCtx.Context,
+		openFile.MetadataHandle,
+		openFile.OpenID(),
+		ctx.SessionID,
+		fileOffset,
+		beyond-fileOffset,
+		true, // isWrite
+	); err != nil {
+		logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: blocked by lock",
+			"path", openFile.Path, "offset", fileOffset, "length", beyond-fileOffset)
+		return NewErrorResult(types.StatusFileLockConflict), nil
+	}
+
+	// Break Level II (Read) caching leases held by other clients on the
+	// target so they invalidate stale cached data. Mirrors the WRITE and
+	// COPYCHUNK paths.
+	if h.LeaseManager != nil {
+		lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
+		if breakErr := h.LeaseManager.BreakReadLeasesOnWrite(lockFileHandle, openFile.ShareName, openFile.LeaseKey); breakErr != nil {
+			logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: oplock break failed (non-fatal)",
+				"path", openFile.Path, "error", breakErr)
+		}
+	}
+
 	if err := h.zeroFillRange(authCtx, openFile, fileOffset, beyond); err != nil {
 		if errors.Is(err, errZeroFillCancelled) {
 			return NewErrorResult(types.StatusCancelled), nil
@@ -237,6 +268,14 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 		logger.Warn("IOCTL FSCTL_SET_ZERO_DATA: write failed",
 			"path", openFile.Path, "error", err)
 		return NewErrorResult(common.MapContentToSMB(err)), nil
+	}
+
+	// SMB requires immediate cross-session metadata visibility (unlike NFS
+	// which uses explicit COMMIT). Flush deferred metadata so a subsequent
+	// QUERY_INFO sees the new size/timestamps without waiting for CLOSE.
+	if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle); flushErr != nil {
+		logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: deferred metadata flush failed (non-fatal)",
+			"path", openFile.Path, "error", flushErr)
 	}
 
 	resp := buildIoctlResponse(FsctlSetZeroData, fileID, nil)
