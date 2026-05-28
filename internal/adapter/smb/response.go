@@ -251,13 +251,11 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 	// (MS-SMB2 §3.3.4.4). Zero means standalone or last-in-compound — async OK.
 	handlerCtx.NextCommand = reqHeader.NextCommand
 
-	// Replay protection (MS-SMB2 §2.2.1.2, §3.3.5.2.5): surface the
-	// FLAGS_REPLAY_OPERATION flag and ChannelSequence (low 16 bits of
-	// the request Status field) to handlers. CREATE consults IsReplay
-	// to return a cached DH2Q response by CreateGuid; LOCK consults it
-	// to return a cached result by (FileID, LockSequence).
+	// Replay protection (MS-SMB2 §2.2.1.2): surface the
+	// FLAGS_REPLAY_OPERATION flag to handlers. CREATE consults this
+	// to return a cached DH2Q response by CreateGuid; LOCK consults
+	// it to return a cached result by (FileID, LockSequence).
 	handlerCtx.IsReplay = reqHeader.IsReplay()
-	handlerCtx.ChannelSequence = reqHeader.ChannelSequence()
 
 	// Populate CryptoState so handlers (e.g., NEGOTIATE) can store
 	// negotiation parameters on the connection.

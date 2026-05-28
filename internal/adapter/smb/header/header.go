@@ -158,16 +158,6 @@ func (h *SMB2Header) IsReplay() bool {
 	return h.Flags.IsReplay()
 }
 
-// ChannelSequence is the per-channel sequence number for this
-// request (low 16 bits of the request Status field per MS-SMB2
-// §2.2.1.2). Used by the server to detect requests that targeted
-// a now-defunct channel and apply the §3.3.5.2.5 verification
-// rules. Meaningful only on requests; responses use the Status
-// field for NT_STATUS.
-func (h *SMB2Header) ChannelSequence() uint16 {
-	return uint16(uint32(h.Status))
-}
-
 // CommandName returns the string name of the command.
 func (h *SMB2Header) CommandName() string {
 	return h.Command.String()

@@ -844,15 +844,7 @@ func (h *Handler) WaitAndDeleteOpenFile(fileID [16]byte) {
 		v.(*handleOpTracker).wg.Wait()
 		h.handleOps.Delete(key)
 	}
-	if v, ok := h.files.Load(key); ok {
-		of := v.(*OpenFile)
-		if h.CreateReplayCache != nil && of.CreateGuid != ([16]byte{}) {
-			h.CreateReplayCache.Forget(of.CreateGuid)
-		}
-	}
-	if h.LockReplayCache != nil {
-		h.LockReplayCache.ForgetFile(fileID)
-	}
+	h.forgetReplayState(fileID)
 	h.files.Delete(key)
 	h.resumeKeys.revoke(fileID)
 }
@@ -863,18 +855,27 @@ func (h *Handler) WaitAndDeleteOpenFile(fileID [16]byte) {
 // tracker so trackers created by BeginHandleOp on this FileID do not leak.
 func (h *Handler) DeleteOpenFile(fileID [16]byte) {
 	key := string(fileID[:])
-	if v, ok := h.files.Load(key); ok {
-		of := v.(*OpenFile)
-		if h.CreateReplayCache != nil && of.CreateGuid != ([16]byte{}) {
-			h.CreateReplayCache.Forget(of.CreateGuid)
+	h.forgetReplayState(fileID)
+	h.files.Delete(key)
+	h.handleOps.Delete(key)
+	h.resumeKeys.revoke(fileID)
+}
+
+// forgetReplayState drops both CREATE (by CreateGuid via the OpenFile)
+// and LOCK (by FileID) replay-cache entries for a handle that is being
+// closed. The cache windows are only meaningful while a retry could
+// still arrive — once the handle is gone, so is any legitimate replay.
+func (h *Handler) forgetReplayState(fileID [16]byte) {
+	if h.CreateReplayCache != nil {
+		if v, ok := h.files.Load(string(fileID[:])); ok {
+			if of := v.(*OpenFile); of.CreateGuid != ([16]byte{}) {
+				h.CreateReplayCache.Forget(of.CreateGuid)
+			}
 		}
 	}
 	if h.LockReplayCache != nil {
 		h.LockReplayCache.ForgetFile(fileID)
 	}
-	h.files.Delete(key)
-	h.handleOps.Delete(key)
-	h.resumeKeys.revoke(fileID)
 }
 
 // ReleaseAllLocksForSession releases all byte-range locks held by a session.

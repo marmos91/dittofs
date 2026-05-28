@@ -49,18 +49,12 @@ const replayCacheTTL = 600 * time.Second
 // each store call.
 const maxCreateReplayEntries = 4096
 
-// createReplayKey identifies a cached CREATE response. CreateGuid is
-// client-generated and globally unique per durable open, so it is
-// sufficient on its own; SessionID is recorded for diagnostics and so
-// session teardown can flush related entries.
-type createReplayKey struct {
-	CreateGuid [16]byte
-}
-
 // CachedCreateResponse holds the materialised wire-level CREATE
 // response that should be returned on replay. We cache the full
 // CreateResponse (not just the encoded body) so the caller can still
-// access FileID for compound-chain FileID propagation.
+// access FileID for compound-chain FileID propagation. SessionID is
+// recorded so session teardown can flush related entries and so a
+// CreateGuid collision across sessions cannot hijack another open.
 type CachedCreateResponse struct {
 	SessionID uint64
 	Response  *CreateResponse
@@ -69,16 +63,17 @@ type CachedCreateResponse struct {
 
 // CreateReplayCache stores CREATE responses keyed by DH2Q CreateGuid
 // so a replayed CREATE (FLAGS_REPLAY_OPERATION) returns the original
-// result instead of re-executing.
+// result instead of re-executing. CreateGuid is client-generated and
+// globally unique per durable open, so it is sufficient as the key.
 type CreateReplayCache struct {
 	mu      sync.Mutex
-	entries map[createReplayKey]*CachedCreateResponse
+	entries map[[16]byte]*CachedCreateResponse
 }
 
 // NewCreateReplayCache builds an empty cache.
 func NewCreateReplayCache() *CreateReplayCache {
 	return &CreateReplayCache{
-		entries: make(map[createReplayKey]*CachedCreateResponse),
+		entries: make(map[[16]byte]*CachedCreateResponse),
 	}
 }
 
@@ -87,16 +82,13 @@ func NewCreateReplayCache() *CreateReplayCache {
 // CREATE should run through the normal handler path and may even
 // succeed the second time.
 func (c *CreateReplayCache) Store(sessionID uint64, createGuid [16]byte, resp *CreateResponse) {
-	if createGuid == ([16]byte{}) || resp == nil {
-		return
-	}
-	if resp.Status != types.StatusSuccess {
+	if createGuid == ([16]byte{}) || resp == nil || resp.Status != types.StatusSuccess {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.pruneLocked()
-	c.entries[createReplayKey{CreateGuid: createGuid}] = &CachedCreateResponse{
+	c.entries[createGuid] = &CachedCreateResponse{
 		SessionID: sessionID,
 		Response:  resp,
 		StoredAt:  time.Now(),
@@ -113,15 +105,12 @@ func (c *CreateReplayCache) Lookup(sessionID uint64, createGuid [16]byte) *Creat
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry, ok := c.entries[createReplayKey{CreateGuid: createGuid}]
-	if !ok {
-		return nil
-	}
-	if entry.SessionID != sessionID {
+	entry, ok := c.entries[createGuid]
+	if !ok || entry.SessionID != sessionID {
 		return nil
 	}
 	if time.Since(entry.StoredAt) > replayCacheTTL {
-		delete(c.entries, createReplayKey{CreateGuid: createGuid})
+		delete(c.entries, createGuid)
 		return nil
 	}
 	return entry.Response
@@ -136,7 +125,7 @@ func (c *CreateReplayCache) Forget(createGuid [16]byte) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.entries, createReplayKey{CreateGuid: createGuid})
+	delete(c.entries, createGuid)
 }
 
 // ForgetSession drops all entries for the given session. Called by
@@ -173,7 +162,7 @@ func (c *CreateReplayCache) pruneLocked() {
 		return
 	}
 	// Over-cap: drop oldest. Linear scan since the cap is small.
-	var oldestKey createReplayKey
+	var oldestKey [16]byte
 	var oldestAt time.Time
 	for k, e := range c.entries {
 		if oldestAt.IsZero() || e.StoredAt.Before(oldestAt) {

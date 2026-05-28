@@ -53,9 +53,7 @@ func TestCreateReplayCache_TTLExpiry(t *testing.T) {
 	c.Store(1, guid, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}})
 	// Force expiry by rewriting StoredAt
 	c.mu.Lock()
-	e := c.entries[createReplayKey{CreateGuid: guid}]
-	e.StoredAt = time.Now().Add(-2 * replayCacheTTL)
-	c.entries[createReplayKey{CreateGuid: guid}] = e
+	c.entries[guid].StoredAt = time.Now().Add(-2 * replayCacheTTL)
 	c.mu.Unlock()
 	if c.Lookup(1, guid) != nil {
 		t.Fatal("expired entry must miss")

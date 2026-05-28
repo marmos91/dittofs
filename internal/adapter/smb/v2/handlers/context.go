@@ -196,15 +196,6 @@ type SMBHandlerContext struct {
 	// previously-computed result instead of re-executing.
 	IsReplay bool
 
-	// ChannelSequence carries the per-channel sequence number from
-	// the request header (low 16 bits of the Status field on
-	// requests, per MS-SMB2 §2.2.1.2). Used by §3.3.5.2.5 to
-	// detect requests sent over a now-defunct channel. Currently
-	// recorded for diagnostic / future enforcement; the CREATE and
-	// LOCK replay paths key on FLAGS_REPLAY_OPERATION rather than
-	// ChannelSequence alone.
-	ChannelSequence uint16
-
 	// PostSend is an optional hook invoked by the dispatch layer AFTER the
 	// response for this command has been written to the wire. It is used by
 	// handlers (currently only CLOSE) to defer async side-effects that must
