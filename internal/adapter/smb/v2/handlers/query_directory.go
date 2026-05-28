@@ -310,6 +310,8 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		openFile.EnumerationComplete = false
 		openFile.EnumerationIndex = 0
 		openFile.EnumerationPattern = ""
+		openFile.EnumerationLastName = ""
+		openFile.EnumerationSpecialDone = 0
 	}
 
 	// Per MS-SMB2 §3.3.5.18: if the search pattern has changed since the last
@@ -329,6 +331,8 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 			"old", openFile.EnumerationPattern, "new", req.FileName)
 		openFile.EnumerationComplete = false
 		openFile.EnumerationIndex = 0
+		openFile.EnumerationLastName = ""
+		openFile.EnumerationSpecialDone = 0
 	}
 
 	if openFile.EnumerationComplete && !restartScans && !reopenFlag {
@@ -342,6 +346,8 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		openFile.EnumerationComplete = false
 		openFile.EnumerationIndex = 0
 		openFile.EnumerationPattern = ""
+		openFile.EnumerationLastName = ""
+		openFile.EnumerationSpecialDone = 0
 		startingFresh = true
 	}
 
@@ -349,13 +355,7 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	// raw FileName (including ""); normalization happens in the comparison.
 	openFile.EnumerationPattern = req.FileName
 
-	// Read directory entries from metadata store
 	metaSvc := h.Registry.GetMetadataService()
-	page, err := metaSvc.ReadDirectory(authCtx, openFile.MetadataHandle, 0, maxDirectoryReadBytes)
-	if err != nil {
-		logger.Debug("QUERY_DIRECTORY: failed to read directory", "path", openFile.Path, "error", err)
-		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
-	}
 
 	// Fetch the directory's own attributes so "." and ".." entries report the
 	// actual directory timestamps instead of NowFiletime(). This prevents
@@ -366,7 +366,19 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		dirAttr = &dirFile.FileAttr
 	}
 
-	// Filter entries and build response
+	// Re-read the directory fresh on every call. We use a name-based cursor
+	// (EnumerationLastName) to skip entries already returned, so concurrent
+	// CREATE / UNLINK / RENAME on other handles are reflected: deleted entries
+	// drop out, new entries that sort after the cursor appear in subsequent
+	// pages. Mirrors Samba's source3/smbd/dir.c. Required by smb2.dir.fixed
+	// (#728) where one handle deletes files mid-enumeration on another.
+	page, err := metaSvc.ReadDirectory(authCtx, openFile.MetadataHandle, 0, maxDirectoryReadBytes)
+	if err != nil {
+		logger.Debug("QUERY_DIRECTORY: failed to read directory", "path", openFile.Path, "error", err)
+		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
+	}
+
+	// Filter entries by search pattern.
 	filteredEntries := filterDirEntries(page.Entries, req.FileName)
 
 	// Refs #532: when the share advertises SMB2_SHARE_CAP_ACCESS_BASED_DIRECTORY_ENUM
@@ -379,9 +391,7 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		// but DirEntry.Attr is optional on the metadata layer (see
 		// pkg/metadata/validation.go). When a backend omits it, fall back
 		// to a single GetFile so we don't leak entries on the fail-open
-		// branch. This is a per-missing-entry cost, not per-entry —
-		// Postgres now hydrates ACL inline (#532 review), Memory/Badger
-		// have always carried Attr.
+		// branch.
 		hydrate := func(entry *metadata.DirEntry) *metadata.FileAttr {
 			if entry.Handle == nil {
 				return nil
@@ -403,30 +413,43 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 
 	isWildcardSearch := req.FileName == "" || req.FileName == "*" || req.FileName == "*.*" || req.FileName == "<"
 
-	// Compute special entries count ("." and "..")
-	specialCount := 0
+	// Compute how many special entries ("." and "..") still need to be returned.
+	// Wildcard searches return both at the start of the first page (#728: only
+	// once per enumeration sequence, tracked by EnumerationSpecialDone so we
+	// don't resurface them after deletions shift the live entry list).
+	specialRemaining := 0
 	if isWildcardSearch {
-		specialCount = 2
-	}
-	totalEntries := specialCount + len(filteredEntries)
-
-	// Determine starting position in the enumeration
-	idx := openFile.EnumerationIndex
-	if startingFresh {
-		idx = 0
-	}
-
-	// Handle SMB2_INDEX_SPECIFIED: resume from a specific file index
-	indexSpecified := flags&types.SMB2IndexSpecified != 0
-	if indexSpecified && req.FileIndex > 0 {
-		// FileIndex is 1-based in our encoding, convert to 0-based
-		targetIdx := int(req.FileIndex) - 1
-		if targetIdx >= 0 && targetIdx < totalEntries {
-			idx = targetIdx
+		specialRemaining = 2 - openFile.EnumerationSpecialDone
+		if specialRemaining < 0 {
+			specialRemaining = 0
 		}
 	}
 
-	if idx >= totalEntries {
+	// Advance past entries already returned in prior calls using the
+	// name-based cursor. The cursor stores the case-folded last-returned
+	// name; the sort above is case-insensitive on the same key so this is
+	// the inverse of the sort comparison.
+	dataStart := 0
+	if openFile.EnumerationLastName != "" {
+		for dataStart < len(filteredEntries) &&
+			strings.ToLower(filteredEntries[dataStart].Name) <= openFile.EnumerationLastName {
+			dataStart++
+		}
+	}
+
+	// Handle SMB2_INDEX_SPECIFIED: clients pass the file_index of the last
+	// entry they received. Our encoding sets FileIndex = ordinalPosition+1
+	// (1-based) of the entry within the current sorted list. We cannot
+	// guarantee that ordinal is stable across re-reads with concurrent
+	// modifications, so we treat the cursor we already maintain as
+	// authoritative and accept the client's index only as a hint that the
+	// resumed enumeration is still in-progress.
+	indexSpecified := flags&types.SMB2IndexSpecified != 0
+	_ = indexSpecified
+
+	totalRemaining := specialRemaining + (len(filteredEntries) - dataStart)
+
+	if totalRemaining <= 0 {
 		status := types.StatusNoMoreFiles
 		if startingFresh && !isWildcardSearch && len(filteredEntries) == 0 {
 			// Per MS-SMB2 3.3.5.17: first query with no matches → STATUS_NO_SUCH_FILE
@@ -438,40 +461,56 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	}
 
 	// Build entries incrementally, respecting OutputBufferLength.
-	// This unified loop handles both SMB2_RETURN_SINGLE_ENTRY and batch queries,
-	// and enables proper pagination when entries exceed the output buffer.
+	// This unified loop handles both SMB2_RETURN_SINGLE_ENTRY and batch queries.
 	fileInfoClass := types.FileInfoClass(req.FileInfoClass)
 	maxBytes := req.OutputBufferLength
 	var result []byte
 	var prevNextOffset int
 	entriesReturned := 0
+	specialEmitted := 0
+	dataIdx := dataStart
+	lastEmittedName := openFile.EnumerationLastName
+	specialDone := openFile.EnumerationSpecialDone
 
 	var dirFileID uint64
-	if specialCount > 0 {
+	if specialRemaining > 0 {
 		dirFileID = smbFileIDFromHandle(openFile.MetadataHandle)
 	}
 
-	for idx < totalEntries {
+	for {
+		// Choose next entry: special entries first, then data entries.
 		var entryBytes []byte
-		fileIndex := uint64(idx + 1) // 1-based
+		var emittedName string
+		var emittedSpecial bool
 
-		if idx < specialCount {
+		switch {
+		case specialEmitted < specialRemaining:
+			specialIdx := specialDone + specialEmitted
 			name := "."
 			fileID := dirFileID
-			if idx == 1 {
+			if specialIdx == 1 {
 				name = ".."
 				// Per WPTS BVT_QueryDirectory_FileId{Full,Both}DirectoryInformation:
 				// the ".." entry MUST report FileId=0 in FILE_ID_*_DIR_INFORMATION.
-				// Windows treats ".." as a non-resolvable reference here, even
-				// though the directory itself has a real FileInternalInformation
-				// inode.
 				fileID = 0
 			}
+			fileIndex := uint64(specialIdx + 1)
 			entryBytes = encodeSingleDirEntry(fileInfoClass, name, dirAttr, fileIndex, fileID)
-		} else {
-			realIdx := idx - specialCount
-			e := &filteredEntries[realIdx]
+			emittedName = name
+			emittedSpecial = true
+		case dataIdx < len(filteredEntries):
+			e := &filteredEntries[dataIdx]
+			// FileIndex on data entries is the 1-based position within the
+			// current sorted view (special entries counted from 0). Clients
+			// that resume via INDEX_SPECIFIED echo this value back; our
+			// cursor logic above ignores it in favour of the name-based
+			// cursor, so the precise value just needs to be deterministic.
+			fileIndex := uint64(dataIdx + 1 + 2) // +2 reserves slots for . and ..
 			entryBytes = encodeSingleDirEntry(fileInfoClass, e.Name, e.Attr, fileIndex, smbFileIDFromHandle(e.Handle))
+			emittedName = e.Name
+		default:
+			// Nothing left to emit.
+			goto doneLoop
 		}
 
 		// Check if entry fits in the output buffer
@@ -484,13 +523,20 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		}
 
 		result = linkEntry(result, &prevNextOffset, entryBytes)
-		idx++
 		entriesReturned++
+
+		if emittedSpecial {
+			specialEmitted++
+		} else {
+			dataIdx++
+			lastEmittedName = strings.ToLower(emittedName)
+		}
 
 		if returnSingleEntry {
 			break
 		}
 	}
+doneLoop:
 
 	if len(result) == 0 {
 		openFile.EnumerationComplete = true
@@ -498,9 +544,12 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNoMoreFiles}}, nil
 	}
 
-	// Update enumeration state
-	openFile.EnumerationIndex = idx
-	if idx >= totalEntries {
+	// Update enumeration state with what we emitted.
+	openFile.EnumerationLastName = lastEmittedName
+	openFile.EnumerationSpecialDone = specialDone + specialEmitted
+	// Track ordinal index for callers that still inspect it (legacy tests).
+	openFile.EnumerationIndex += entriesReturned
+	if specialEmitted == specialRemaining && dataIdx >= len(filteredEntries) {
 		openFile.EnumerationComplete = true
 	}
 	h.StoreOpenFile(openFile)
