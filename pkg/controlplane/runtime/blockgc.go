@@ -61,6 +61,8 @@ func (r *Runtime) RunBlockGC(ctx context.Context, sharePrefix string, dryRun boo
 			Shares:           append([]string(nil), entry.Shares...),
 		}
 		applyGCDefaults(opts, gcDefaults)
+		// Inject held hashes from ready snapshots into the GC mark phase.
+		opts.HoldProvider = r.snapshotHoldForRemote(entry.Shares)
 		logger.Info("RunBlockGC: starting",
 			"configID", entry.ConfigID,
 			"shares", entry.Shares,
@@ -139,6 +141,8 @@ func (r *Runtime) RunBlockGCForShare(ctx context.Context, name string, dryRun bo
 			Shares:           append([]string(nil), entry.Shares...),
 		}
 		applyGCDefaults(opts, gcDefaults)
+		// Inject held hashes from ready snapshots into the GC mark phase.
+		opts.HoldProvider = r.snapshotHoldForRemote(entry.Shares)
 		logger.Info("RunBlockGCForShare: starting",
 			"share", name,
 			"configID", entry.ConfigID,
