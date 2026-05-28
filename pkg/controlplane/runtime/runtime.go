@@ -750,8 +750,11 @@ func (r *Runtime) snapshotDefaults() SnapshotDefaults {
 // WaitForSnapshot (plan 23-06) can surface the orchestration error via
 // errors.Is without consulting the DB. D-23-17.
 type snapInFlight struct {
-	wg      sync.WaitGroup
-	cancels []context.CancelFunc
+	wg sync.WaitGroup
+	// cancels is keyed by snapshot ID so completed snapshots can release
+	// their cancel func (and the derived ctx attached to runtimeCtx) at
+	// unregisterSnap time instead of leaking for the share's lifetime.
+	cancels map[string]context.CancelFunc
 	done    map[string]chan snapResult
 	mu      sync.Mutex
 	// draining is set true by cancelAndWaitInFlightSnaps after it has

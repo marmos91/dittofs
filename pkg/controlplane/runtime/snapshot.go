@@ -329,13 +329,14 @@ func (r *Runtime) registerSnapInFlight(shareName, snapID string) (context.Contex
 	}
 	if !ok {
 		entry = &snapInFlight{
-			done: make(map[string]chan snapResult),
+			cancels: make(map[string]context.CancelFunc),
+			done:    make(map[string]chan snapResult),
 		}
 		r.snapInFlight[shareName] = entry
 	}
 
 	entry.mu.Lock()
-	entry.cancels = append(entry.cancels, cancel)
+	entry.cancels[snapID] = cancel
 	entry.done[snapID] = doneCh
 	entry.wg.Add(1)
 	entry.mu.Unlock()
@@ -343,13 +344,23 @@ func (r *Runtime) registerSnapInFlight(shareName, snapID string) (context.Contex
 	return childCtx, doneCh, entry
 }
 
-// unregisterSnap removes the per-snap done channel from the share entry.
+// unregisterSnap removes the per-snap done channel and cancel func from
+// the share entry. The cancel func is invoked here (cheap on an
+// already-completed ctx) and deleted so the derived ctx is released from
+// runtimeCtx's child list — otherwise completed snapshot contexts would
+// pile up on runtimeCtx and entry.cancels would grow for the lifetime
+// of the share.
+//
 // The share entry itself is intentionally left in place even when empty
 // — RemoveShare and Shutdown (plan 23-05) enumerate it and rely on
 // wg.Wait. Leaving stale empty maps around is acceptable bookkeeping
 // cost vs. the synchronization needed to delete on every snap completion.
 func (r *Runtime) unregisterSnap(shareName, snapID string, entry *snapInFlight) {
 	entry.mu.Lock()
+	if cancel, ok := entry.cancels[snapID]; ok {
+		cancel()
+		delete(entry.cancels, snapID)
+	}
 	delete(entry.done, snapID)
 	entry.mu.Unlock()
 }
@@ -628,7 +639,10 @@ func (r *Runtime) cancelAndWaitInFlightSnaps(shareName string) {
 	// pinned to the goroutines actually being drained.
 	entry.mu.Lock()
 	entry.draining = true
-	cancels := append([]context.CancelFunc(nil), entry.cancels...)
+	cancels := make([]context.CancelFunc, 0, len(entry.cancels))
+	for _, c := range entry.cancels {
+		cancels = append(cancels, c)
+	}
 	entry.mu.Unlock()
 	r.snapInFlightMu.Unlock()
 
