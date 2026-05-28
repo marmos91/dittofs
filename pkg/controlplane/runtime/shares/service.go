@@ -768,8 +768,21 @@ func (s *Service) RemoveShare(name string) error {
 	}
 	bs := share.BlockStore
 	remoteConfigID := share.remoteConfigID
+	localStoreDir := share.localStoreDir
 	delete(s.registry, name)
 	s.mu.Unlock()
+
+	// Cleanup per-share snapshot directories alongside registry removal.
+	// The DB row is the source of truth; orphaned files left behind on a
+	// removal error are operationally harmless and must not abort the
+	// removal sequence.
+	if localStoreDir != "" {
+		snapsDir := filepath.Join(localStoreDir, "snapshots")
+		if err := os.RemoveAll(snapsDir); err != nil {
+			logger.Warn("RemoveShare: failed to remove snapshots dir",
+				"share", name, "dir", snapsDir, "error", err)
+		}
+	}
 
 	if bs != nil {
 		if err := bs.Close(); err != nil {
