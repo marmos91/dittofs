@@ -56,12 +56,11 @@ const (
 	disconnectedActionPurge
 )
 
-// SMB2 lease bits (mirrors pkg/metadata/lock constants, redefined here to
-// keep this file independent of the lock package's internal naming).
+// SMB2 lease bits. Import from pkg/metadata/lock so we don't drift on rename.
 const (
-	smbLeaseRead   uint32 = 0x01
-	smbLeaseHandle uint32 = 0x02
-	smbLeaseWrite  uint32 = 0x04
+	smbLeaseRead   = lock.LeaseStateRead
+	smbLeaseHandle = lock.LeaseStateHandle
+	smbLeaseWrite  = lock.LeaseStateWrite
 )
 
 // SMB2 share-access bits.
@@ -71,21 +70,28 @@ const (
 	smbShareDelete uint32 = 0x04
 )
 
-// disconnectedConflictOnNewOpen evaluates whether a new CREATE on the same
-// underlying file should purge a disconnected durable handle D.
+// disconnectedConflictOnNewOpen evaluates whether a FRESH (non-reconnect)
+// CREATE on the same underlying file should purge a disconnected durable
+// handle D.
+//
+// Contract: this predicate MUST NOT be called from a durable reconnect
+// CREATE (DHnC / DH2C). Reconnect is handled by ProcessDurableReconnectContext
+// which restores the persisted handle without consulting this predicate; by
+// the time control reaches the steady-state CREATE path that calls into us,
+// the disconnect-vs-reconnect choice has already been made. The single
+// callsite (create_post_break.go::handleCreate) only runs on the fresh path
+// because create.go::handleCreate's reconnect branch early-returns before
+// reaching Step 8a-bis.
 //
 // Inputs:
 //   - dLeaseState: the lease state persisted at disconnect (R/RH/RWH bits or None).
-//   - dLeaseKey: D's lease key (for same-key reconnect detection).
-//   - dClientGUID: D's client GUID (for same-client reconnect detection).
+//   - dLeaseKey: D's lease key.
 //   - newLeaseState: lease state requested by the new open (zero if no lease).
-//   - newLeaseKey, newClientGUID: identifiers of the new open's lease.
+//   - newLeaseKey: lease key of the new open's lease (zero if no lease).
 //   - newShareAccess: share-mode bits from the new CREATE.
 //
 // Decision rules (see file-level comment for spec mapping):
 //
-//   - Same (clientGUID, leaseKey) as D → preserve (this is the reconnect path,
-//     handled by ProcessDurableReconnectContext, not by this predicate).
 //   - newShareAccess excludes all of {READ, WRITE, DELETE} (SHARE_NONE) →
 //     purge (MS-FSA 2.1.5.1.2 share-mode conflict).
 //   - D holds W (RWH) AND new open requests any non-None lease with a
@@ -97,18 +103,10 @@ const (
 func disconnectedConflictOnNewOpen(
 	dLeaseState uint32,
 	dLeaseKey [16]byte,
-	dClientGUID [16]byte,
 	newLeaseState uint32,
 	newLeaseKey [16]byte,
-	newClientGUID [16]byte,
 	newShareAccess uint32,
 ) disconnectedHandleAction {
-	// Same lease key + client GUID → this is the reconnect path. Let the
-	// dedicated reconnect handler decide; we MUST NOT purge here.
-	if dLeaseKey == newLeaseKey && dLeaseKey != ([16]byte{}) && dClientGUID == newClientGUID {
-		return disconnectedActionPreserve
-	}
-
 	// SHARE_NONE conflict: any disconnected handle is purged because the
 	// disconnected open held shared access and the new open denies it.
 	if newShareAccess&(smbShareRead|smbShareWrite|smbShareDelete) == 0 {
@@ -121,8 +119,14 @@ func disconnectedConflictOnNewOpen(
 	// cascades through the candidate downgrade chain (RWH → RH → R → NONE)
 	// and lands on a state lacking H because the disconnected holder cannot
 	// ack the in-flight break. Purge.
+	//
+	// Key comparison treats a zero lease key as "no key" — distinct from any
+	// other key, including another zero. This matters for oplock-V2 / no-lease
+	// opens on both sides: they cannot coexist with a W-holder either.
 	if dLeaseState&smbLeaseWrite != 0 && newLeaseState != 0 {
-		return disconnectedActionPurge
+		if dLeaseKey != newLeaseKey || dLeaseKey == ([16]byte{}) {
+			return disconnectedActionPurge
+		}
 	}
 
 	return disconnectedActionPreserve
@@ -171,17 +175,22 @@ func disconnectedConflictOnDataChange(
 //
 // Returns the number of purged handles. Errors looking up the store are
 // logged at debug — purge is best-effort and must not block CREATE.
+//
+// Holds Handler.durablePurgeMu across the Get→Delete window so a concurrent
+// disconnect persist (handler.go:closeFilesMatching) cannot Put a new
+// disconnected handle between our snapshot and the per-id Delete.
 func (h *Handler) purgeConflictingDisconnectedHandlesForOpen(
 	ctx context.Context,
 	metaHandle []byte,
 	newLeaseState uint32,
 	newLeaseKey [16]byte,
-	newClientGUID [16]byte,
 	newShareAccess uint32,
 ) int {
 	if h.DurableStore == nil || len(metaHandle) == 0 {
 		return 0
 	}
+	h.durablePurgeMu.Lock()
+	defer h.durablePurgeMu.Unlock()
 	handles, err := h.DurableStore.GetDurableHandlesByFileHandle(ctx, metaHandle)
 	if err != nil {
 		logger.Debug("purgeConflictingDisconnectedHandlesForOpen: lookup failed",
@@ -199,8 +208,8 @@ func (h *Handler) purgeConflictingDisconnectedHandlesForOpen(
 			continue
 		}
 		action := disconnectedConflictOnNewOpen(
-			d.LeaseState, d.LeaseKey, d.ClientGUID,
-			newLeaseState, newLeaseKey, newClientGUID,
+			d.LeaseState, d.LeaseKey,
+			newLeaseState, newLeaseKey,
 			newShareAccess,
 		)
 		if action != disconnectedActionPurge {
@@ -215,6 +224,9 @@ func (h *Handler) purgeConflictingDisconnectedHandlesForOpen(
 // purgeConflictingDisconnectedHandlesForDataChange scans disconnected handles
 // for the underlying file and purges those that would lose H caching due to
 // the actor's WRITE or RENAME.
+//
+// Holds Handler.durablePurgeMu across the Get→Delete window for the same
+// reason as purgeConflictingDisconnectedHandlesForOpen.
 func (h *Handler) purgeConflictingDisconnectedHandlesForDataChange(
 	ctx context.Context,
 	metaHandle []byte,
@@ -224,6 +236,8 @@ func (h *Handler) purgeConflictingDisconnectedHandlesForDataChange(
 	if h.DurableStore == nil || len(metaHandle) == 0 || !breakToBelowHandle {
 		return 0
 	}
+	h.durablePurgeMu.Lock()
+	defer h.durablePurgeMu.Unlock()
 	handles, err := h.DurableStore.GetDurableHandlesByFileHandle(ctx, metaHandle)
 	if err != nil {
 		logger.Debug("purgeConflictingDisconnectedHandlesForDataChange: lookup failed",
@@ -261,7 +275,7 @@ func (h *Handler) purgeOneDisconnectedHandle(
 		if metaSvc := h.Registry.GetMetadataService(); metaSvc != nil && len(d.MetadataHandle) > 0 {
 			// SessionID 0 mirrors DurableHandleScavenger: not tied to a session.
 			if err := metaSvc.UnlockAllForSession(ctx, d.MetadataHandle, 0); err != nil {
-				logger.Debug("purgeOneDisconnectedHandle: lock release failed",
+				logger.Warn("purgeOneDisconnectedHandle: lock release failed",
 					"id", d.ID, "path", d.Path, "error", err)
 			}
 		}

@@ -528,12 +528,15 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 				}
 			}
 		}
+		// This callsite is the FRESH-CREATE path; durable reconnect early-returns
+		// in create.go before reaching here (see create.go::handleCreate, the
+		// ProcessDurableReconnectContext branch). The predicate's contract
+		// relies on this — see disconnectedConflictOnNewOpen doc.
 		if purged := h.purgeConflictingDisconnectedHandlesForOpen(
 			authCtx.Context,
 			fileHandle,
 			newLeaseState,
 			newLeaseKey,
-			connClientGUID(ctx),
 			req.ShareAccess,
 		); purged > 0 {
 			logger.Debug("CREATE: purged disconnected handles on conflicting open",

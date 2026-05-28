@@ -138,6 +138,23 @@ type Handler struct {
 	sharesCacheMu    sync.RWMutex
 	sharesCacheValid bool
 
+	// durablePurgeMu serializes the read-then-mutate windows on the
+	// DurableHandleStore that would otherwise TOCTOU around each other:
+	//
+	//   (a) disconnect path: GetLeaseState → buildPersistedDurableHandle →
+	//       PutDurableHandle (the "persist" half of close).
+	//   (b) create path: purgeConflictingDisconnectedHandlesForOpen and
+	//       purgeConflictingDisconnectedHandlesForDataChange
+	//       (GetDurableHandlesByFileHandle → loop DeleteDurableHandle).
+	//
+	// Without serialization a CREATE in (b) can race against a concurrent
+	// disconnect in (a): the disconnect's PutDurableHandle lands between the
+	// CREATE's Get and Delete, leaving a phantom unreconnectable entry until
+	// the scavenger evicts it. The mutex is coarse-grained (process-wide) but
+	// covers only durable-store IO and the disconnect-time persist step,
+	// neither of which is on the steady-state hot path.
+	durablePurgeMu sync.Mutex
+
 	// KerberosProvider holds the shared Kerberos keytab/config provider.
 	// Injected by the adapter layer before Serve(). When nil, Kerberos
 	// auth returns STATUS_LOGON_FAILURE gracefully.
@@ -486,6 +503,35 @@ func (f *OpenFile) OpenID() string {
 		f.cachedOpenID = fmt.Sprintf("%x", f.FileID)
 	}
 	return f.cachedOpenID
+}
+
+// openHasLocks reports whether any byte-range lock is currently recorded
+// against the given open under the lock manager. Source of truth for the
+// MS-SMB2 §3.3.4.18 durable persist gate at disconnect time — avoids the
+// TOCTOU race between an async-parked LOCK goroutine's HasByteRangeLocks
+// flag flip and the disconnect-time read (see lock_async.go::resumePendingLock,
+// MS-SMB2 §3.3.5.14 / smb2.durable-v2-open.lock-noW-lease).
+//
+// Returns true on any unexpected lookup error to fail closed: if we cannot
+// confirm the open is lock-free we MUST not persist a durable handle that
+// might be silently bypassing the lock-noW-lease gate.
+func openHasLocks(metaSvc *metadata.MetadataService, openFile *OpenFile) bool {
+	if metaSvc == nil || openFile == nil || len(openFile.MetadataHandle) == 0 {
+		return openFile != nil && openFile.HasByteRangeLocks.Load()
+	}
+	lm, err := metaSvc.GetLockManagerForHandle(openFile.MetadataHandle)
+	if err != nil || lm == nil {
+		// Fail closed: surface the optimistic flag rather than silently
+		// claiming "no locks" on a lookup miss.
+		return openFile.HasByteRangeLocks.Load()
+	}
+	openID := openFile.OpenID()
+	for _, fl := range lm.ListLocks(string(openFile.MetadataHandle)) {
+		if fl.OpenID == openID {
+			return true
+		}
+	}
+	return false
 }
 
 // notifyMaxBufferSizeSetBit marks the NotifyMaxBufferSize uint64 as having
@@ -856,15 +902,26 @@ func (h *Handler) closeFilesWithFilter(
 			// other holders. Mirrors Samba's vfs_default_durable_disconnect
 			// (NT_STATUS_NOT_SUPPORTED → fall through to normal close).
 			// smbtorture smb2.durable-v2-open.lock-noW-lease.
-			persistGated := !shouldPersistDurableOnDisconnect(leaseState, openFile.HasByteRangeLocks.Load())
+			//
+			// Source of truth is the lock manager — not openFile.HasByteRangeLocks
+			// — to close a TOCTOU window where an async-parked LOCK goroutine
+			// could set the flag after this read. The manager carries the
+			// authoritative per-OpenID lock list (lock_async.go::resumePendingLock
+			// adds via metaSvc.LockFile, which the manager records).
+			persistGated := !shouldPersistDurableOnDisconnect(leaseState, openHasLocks(metaSvc, openFile))
 			if persistGated {
 				logger.Debug(caller+": durable persist refused (BR-lock without W lease)",
 					"path", openFile.Path,
 					"leaseState", fmt.Sprintf("0x%x", leaseState),
 					"hasBRLocks", true)
 			} else {
+				// Serialize the persist against concurrent create-time
+				// purge windows; see durablePurgeMu comment.
+				h.durablePurgeMu.Lock()
 				persisted := buildPersistedDurableHandle(openFile, username, sessionKeyHash, h.StartTime, leaseState)
-				if err := h.DurableStore.PutDurableHandle(ctx, persisted); err != nil {
+				err := h.DurableStore.PutDurableHandle(ctx, persisted)
+				h.durablePurgeMu.Unlock()
+				if err != nil {
 					logger.Warn(caller+": failed to persist durable handle",
 						"path", openFile.Path,
 						"error", err)

@@ -1,11 +1,21 @@
 package handlers
 
-import "testing"
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
+)
 
 // TestDisconnectedConflictOnNewOpen exercises the MS-SMB2 §3.3.4.18 truth
-// table for new CREATE opens against disconnected durable handles, mirroring
-// the matrix asserted by smb2.durable-v2-open.{keep,purge}-disconnected-* in
-// source4/torture/smb2/durable_v2_open.c.
+// table for FRESH (non-reconnect) CREATE opens against disconnected durable
+// handles, mirroring the matrix asserted by
+// smb2.durable-v2-open.{keep,purge}-disconnected-* in
+// source4/torture/smb2/durable_v2_open.c. The reconnect path is handled
+// upstream by ProcessDurableReconnectContext and never reaches this
+// predicate — see the contract comment on disconnectedConflictOnNewOpen.
 func TestDisconnectedConflictOnNewOpen(t *testing.T) {
 	const (
 		rh          = smbLeaseRead | smbLeaseHandle
@@ -18,17 +28,13 @@ func TestDisconnectedConflictOnNewOpen(t *testing.T) {
 
 	leaseA := [16]byte{0x01}
 	leaseB := [16]byte{0x02}
-	clientA := [16]byte{0xA1}
-	clientB := [16]byte{0xB1}
 
 	tests := []struct {
 		name           string
 		dLeaseState    uint32
 		dLeaseKey      [16]byte
-		dClientGUID    [16]byte
 		newLeaseState  uint32
 		newLeaseKey    [16]byte
-		newClientGUID  [16]byte
 		newShareAccess uint32
 		want           disconnectedHandleAction
 	}{
@@ -38,10 +44,8 @@ func TestDisconnectedConflictOnNewOpen(t *testing.T) {
 			name:           "keep_RH_with_stat",
 			dLeaseState:    rh,
 			dLeaseKey:      leaseA,
-			dClientGUID:    clientA,
 			newLeaseState:  none,
 			newLeaseKey:    [16]byte{},
-			newClientGUID:  clientB,
 			newShareAccess: shareAll,
 			want:           disconnectedActionPreserve,
 		},
@@ -52,23 +56,20 @@ func TestDisconnectedConflictOnNewOpen(t *testing.T) {
 			name:           "keep_RWH_with_stat",
 			dLeaseState:    rwh,
 			dLeaseKey:      leaseA,
-			dClientGUID:    clientA,
 			newLeaseState:  none,
 			newLeaseKey:    [16]byte{},
-			newClientGUID:  clientB,
 			newShareAccess: shareAll,
 			want:           disconnectedActionPreserve,
 		},
 		{
 			// keep-disconnected-rh-with-rh-open: two RH leases on different
-			// keys can coexist — disconnected stays.
+			// keys can coexist — disconnected stays. Reaches the W-on-W rule
+			// but D doesn't hold W, so falls through to preserve.
 			name:           "keep_RH_with_RH_diff_key",
 			dLeaseState:    rh,
 			dLeaseKey:      leaseA,
-			dClientGUID:    clientA,
 			newLeaseState:  rh,
 			newLeaseKey:    leaseB,
-			newClientGUID:  clientB,
 			newShareAccess: shareAll,
 			want:           disconnectedActionPreserve,
 		},
@@ -76,13 +77,12 @@ func TestDisconnectedConflictOnNewOpen(t *testing.T) {
 			// keep-disconnected-rh-with-rwh-open: disconnected RH stays
 			// even when the new open requests RWH — the new open just gets
 			// downgraded to RH (W denied by the H-holder), no break needed.
+			// D doesn't hold W, so the W-on-W rule doesn't fire.
 			name:           "keep_RH_with_RWH_diff_key",
 			dLeaseState:    rh,
 			dLeaseKey:      leaseA,
-			dClientGUID:    clientA,
 			newLeaseState:  rwh,
 			newLeaseKey:    leaseB,
-			newClientGUID:  clientB,
 			newShareAccess: shareAll,
 			want:           disconnectedActionPreserve,
 		},
@@ -93,10 +93,8 @@ func TestDisconnectedConflictOnNewOpen(t *testing.T) {
 			name:           "purge_RWH_with_RWH_diff_key",
 			dLeaseState:    rwh,
 			dLeaseKey:      leaseA,
-			dClientGUID:    clientA,
 			newLeaseState:  rwh,
 			newLeaseKey:    leaseB,
-			newClientGUID:  clientB,
 			newShareAccess: shareAll,
 			want:           disconnectedActionPurge,
 		},
@@ -107,10 +105,8 @@ func TestDisconnectedConflictOnNewOpen(t *testing.T) {
 			name:           "purge_RWH_with_RH_diff_key",
 			dLeaseState:    rwh,
 			dLeaseKey:      leaseA,
-			dClientGUID:    clientA,
 			newLeaseState:  rh,
 			newLeaseKey:    leaseB,
-			newClientGUID:  clientB,
 			newShareAccess: shareAll,
 			want:           disconnectedActionPurge,
 		},
@@ -120,33 +116,32 @@ func TestDisconnectedConflictOnNewOpen(t *testing.T) {
 			name:           "purge_RH_with_share_none",
 			dLeaseState:    rh,
 			dLeaseKey:      leaseA,
-			dClientGUID:    clientA,
 			newLeaseState:  none,
 			newLeaseKey:    [16]byte{},
-			newClientGUID:  clientB,
 			newShareAccess: shareNone,
 			want:           disconnectedActionPurge,
 		},
 		{
-			// Reconnect path guard: the same (clientGuid, leaseKey) is the
-			// reconnect path and must NEVER be purged here.
-			name:           "reconnect_same_guid_and_key",
+			// Zero-key W-holder vs new lease (any key): zero key is "no key"
+			// and never matches another, including another zero. Two opens
+			// with empty lease keys cannot coexist on a W lease. This pins
+			// the finding-#4 behaviour where oplock-V2 (no lease) reconnect
+			// no longer accidentally hides behind the old reconnect-guard.
+			name:           "purge_RWH_zero_key_vs_RH",
 			dLeaseState:    rwh,
-			dLeaseKey:      leaseA,
-			dClientGUID:    clientA,
-			newLeaseState:  rwh,
-			newLeaseKey:    leaseA,
-			newClientGUID:  clientA,
+			dLeaseKey:      [16]byte{},
+			newLeaseState:  rh,
+			newLeaseKey:    leaseB,
 			newShareAccess: shareAll,
-			want:           disconnectedActionPreserve,
+			want:           disconnectedActionPurge,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := disconnectedConflictOnNewOpen(
-				tc.dLeaseState, tc.dLeaseKey, tc.dClientGUID,
-				tc.newLeaseState, tc.newLeaseKey, tc.newClientGUID,
+				tc.dLeaseState, tc.dLeaseKey,
+				tc.newLeaseState, tc.newLeaseKey,
 				tc.newShareAccess,
 			)
 			if got != tc.want {
@@ -190,6 +185,217 @@ func TestDisconnectedConflictOnDataChange(t *testing.T) {
 	if got := disconnectedConflictOnDataChange([16]byte{}, [16]byte{}); got != disconnectedActionPurge {
 		t.Fatalf("both zero keys: got=%v want purge", got)
 	}
+}
+
+// TestPurgeConflictingDisconnectedHandlesForDataChange covers the wrapper
+// behaviour: only handles with non-zero DisconnectedAt are inspected, the
+// predicate is invoked per-handle, and the durablePurgeMu critical section
+// covers the Get → Delete window. Mock store reuses durable_scavenger_test.go's
+// mockDurableStore.
+func TestPurgeConflictingDisconnectedHandlesForDataChange(t *testing.T) {
+	now := time.Now()
+	metaHandle := []byte("file-handle-1")
+
+	tests := []struct {
+		name            string
+		seed            []*lock.PersistedDurableHandle
+		excludeLeaseKey [16]byte
+		breakBelowH     bool
+		wantPurged      int
+		wantRemaining   int
+	}{
+		{
+			name: "preserves_own_handle",
+			seed: []*lock.PersistedDurableHandle{
+				{
+					ID:             "self",
+					MetadataHandle: metaHandle,
+					LeaseKey:       [16]byte{0x01},
+					LeaseState:     smbLeaseRead | smbLeaseHandle,
+					DisconnectedAt: now.Add(-time.Second),
+				},
+			},
+			excludeLeaseKey: [16]byte{0x01},
+			breakBelowH:     true,
+			wantPurged:      0,
+			wantRemaining:   1,
+		},
+		{
+			name: "purges_foreign_handle_with_R_lease",
+			seed: []*lock.PersistedDurableHandle{
+				{
+					ID:             "foreign",
+					MetadataHandle: metaHandle,
+					LeaseKey:       [16]byte{0x02},
+					LeaseState:     smbLeaseRead | smbLeaseHandle,
+					DisconnectedAt: now.Add(-time.Second),
+				},
+			},
+			excludeLeaseKey: [16]byte{0x01},
+			breakBelowH:     true,
+			wantPurged:      1,
+			wantRemaining:   0,
+		},
+		{
+			// Finding #1: a handle with LeaseState=0 (lease previously
+			// downgraded pre-disconnect) is unreconnectable and must be
+			// purged on a foreign data-change, not preserved.
+			name: "purges_foreign_handle_with_zero_lease_state",
+			seed: []*lock.PersistedDurableHandle{
+				{
+					ID:             "foreign-no-lease",
+					MetadataHandle: metaHandle,
+					LeaseKey:       [16]byte{0x03},
+					LeaseState:     0,
+					DisconnectedAt: now.Add(-time.Second),
+				},
+			},
+			excludeLeaseKey: [16]byte{0x01},
+			breakBelowH:     true,
+			wantPurged:      1,
+			wantRemaining:   0,
+		},
+		{
+			// Live (not yet disconnected) handles are skipped — they're
+			// active opens whose lease break is handled inline.
+			name: "skips_live_handles",
+			seed: []*lock.PersistedDurableHandle{
+				{
+					ID:             "live",
+					MetadataHandle: metaHandle,
+					LeaseKey:       [16]byte{0x04},
+					LeaseState:     smbLeaseRead | smbLeaseHandle,
+					DisconnectedAt: time.Time{},
+				},
+			},
+			excludeLeaseKey: [16]byte{0x01},
+			breakBelowH:     true,
+			wantPurged:      0,
+			wantRemaining:   1,
+		},
+		{
+			// Fast-path: breakBelowH=false skips the lookup entirely.
+			name: "fast_path_break_preserves_H",
+			seed: []*lock.PersistedDurableHandle{
+				{
+					ID:             "foreign",
+					MetadataHandle: metaHandle,
+					LeaseKey:       [16]byte{0x05},
+					LeaseState:     smbLeaseRead | smbLeaseHandle,
+					DisconnectedAt: now.Add(-time.Second),
+				},
+			},
+			excludeLeaseKey: [16]byte{0x01},
+			breakBelowH:     false,
+			wantPurged:      0,
+			wantRemaining:   1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockDurableStore()
+			for _, h := range tc.seed {
+				_ = store.PutDurableHandle(context.Background(), h)
+			}
+			h := &Handler{DurableStore: store}
+			got := h.purgeConflictingDisconnectedHandlesForDataChange(
+				context.Background(), metaHandle, tc.excludeLeaseKey, tc.breakBelowH,
+			)
+			if got != tc.wantPurged {
+				t.Fatalf("purged=%d want=%d", got, tc.wantPurged)
+			}
+			if c := store.count(); c != tc.wantRemaining {
+				t.Fatalf("store count=%d want=%d", c, tc.wantRemaining)
+			}
+		})
+	}
+}
+
+// TestPurgeConflictingDisconnectedHandlesForOpen pins the wrapper behaviour
+// for the CREATE path: zero-length metaHandle is a no-op, live handles are
+// skipped, and the SHARE_NONE / W-on-W rules fire through the predicate.
+func TestPurgeConflictingDisconnectedHandlesForOpen(t *testing.T) {
+	const (
+		rh  = smbLeaseRead | smbLeaseHandle
+		rwh = smbLeaseRead | smbLeaseHandle | smbLeaseWrite
+
+		shareAll uint32 = smbShareRead | smbShareWrite | smbShareDelete
+	)
+	now := time.Now()
+	metaHandle := []byte("file-handle-2")
+
+	store := newMockDurableStore()
+	_ = store.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
+		ID:             "disconnected-rwh",
+		MetadataHandle: metaHandle,
+		LeaseKey:       [16]byte{0x01},
+		LeaseState:     rwh,
+		DisconnectedAt: now.Add(-time.Second),
+	})
+	_ = store.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
+		ID:             "live",
+		MetadataHandle: metaHandle,
+		LeaseKey:       [16]byte{0x02},
+		LeaseState:     rwh,
+		// Not disconnected — must be skipped.
+		DisconnectedAt: time.Time{},
+	})
+
+	h := &Handler{DurableStore: store}
+	// New RH open with a different key → purges the disconnected RWH (W
+	// must be broken; cascade strips H), leaves the live handle alone.
+	got := h.purgeConflictingDisconnectedHandlesForOpen(
+		context.Background(), metaHandle,
+		rh, [16]byte{0x99}, shareAll,
+	)
+	if got != 1 {
+		t.Fatalf("purged=%d want=1", got)
+	}
+	if c := store.count(); c != 1 {
+		t.Fatalf("remaining=%d want=1", c)
+	}
+}
+
+// TestDurablePurgeMuSerializesPersistAndPurge proves the durablePurgeMu
+// critical section serializes a disconnect-time PutDurableHandle against a
+// concurrent create-time purge, closing the finding-#3 TOCTOU. Runs under
+// `go test -race`.
+func TestDurablePurgeMuSerializesPersistAndPurge(t *testing.T) {
+	store := newMockDurableStore()
+	h := &Handler{DurableStore: store}
+	metaHandle := []byte("file-handle-3")
+
+	const iterations = 500
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			h.durablePurgeMu.Lock()
+			_ = store.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
+				ID:             "disconnected",
+				MetadataHandle: metaHandle,
+				LeaseState:     smbLeaseRead | smbLeaseHandle,
+				LeaseKey:       [16]byte{0x01},
+				DisconnectedAt: time.Now(),
+			})
+			h.durablePurgeMu.Unlock()
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			// SHARE_NONE forces purge of any disconnected handle on the file.
+			h.purgeConflictingDisconnectedHandlesForOpen(
+				context.Background(), metaHandle, 0, [16]byte{}, 0,
+			)
+		}
+	}()
+	wg.Wait()
+	// No assertion on final state — race detector is the gate.
 }
 
 // TestShouldPersistDurableOnDisconnect pins down the lock-noW-lease persist

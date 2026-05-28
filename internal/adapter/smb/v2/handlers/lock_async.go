@@ -228,10 +228,11 @@ func (h *Handler) resumePendingLock(
 				finalBody = encodeLockResponseBody()
 				h.lastDeniedLocks.Delete(pending.OwnerID)
 				// Mirror the sync path in lock.go: parked LOCK requests that
-				// finally succeed must also mark the open as having held a
-				// byte-range lock, so the disconnect-time durable-persist
-				// decision (shouldPersistDurableOnDisconnect, MS-SMB2 §3.3.4.18
-				// / smb2.durable-v2-open.lock-noW-lease) sees the lock.
+				// finally succeed mark the open as having held a byte-range
+				// lock. The authoritative source of truth at disconnect-time
+				// is the lock manager itself (queried by openHasLocks in
+				// handler.go); this flag is the cheap path used by call-sites
+				// that don't have the meta service handy.
 				openFile.HasByteRangeLocks.Store(true)
 				goto deliver
 			}
