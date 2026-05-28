@@ -892,3 +892,138 @@ func TestProcessAppInstanceId_ForceClosesOldHandles(t *testing.T) {
 		t.Error("Expected old-002 to be deleted")
 	}
 }
+
+// TestProcessDurableReconnectContext_OriginalFileIDRestored locks in the
+// contract added in #661: when a durable handle was persisted by the
+// updated handler, OriginalFileID carries the full 16-byte FileID from the
+// original CREATE response. validateAndRestore MUST use OriginalFileID for
+// the new OpenFile so byte-range locks (which key on OpenID derived from
+// FileID) stay valid across the durable disconnect. Required for
+// smb2.durable-open.lock-{oplock,lease}.
+func TestProcessDurableReconnectContext_OriginalFileIDRestored(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	// DHnC lookup uses volatile-zeroed FileID; OriginalFileID retains full bytes
+	persistentFileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0}
+	originalFileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
+	keyHash := makeSessionKeyHash("session-key-orig")
+
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:             "dh-orig",
+		FileID:         persistentFileID,
+		OriginalFileID: originalFileID,
+		Path:           "lockfile.txt",
+		ShareName:      "/share1",
+		MetadataHandle: []byte{0xCA, 0xFE},
+		Username:       "alice",
+		SessionKeyHash: keyHash,
+		CreatedAt:      time.Now().Add(-time.Minute),
+		DisconnectedAt: time.Now().Add(-time.Second),
+		TimeoutMs:      60000,
+	})
+
+	dhnCData := make([]byte, 16)
+	copy(dhnCData, persistentFileID[:])
+	contexts := []CreateContext{
+		{Name: DurableHandleV1ReconnectTag, Data: dhnCData},
+	}
+
+	res, status, err := ProcessDurableReconnectContext(ctx, store, nil, contexts,
+		1, "alice", keyHash, "/share1", "lockfile.txt")
+	if err != nil || status != types.StatusSuccess {
+		t.Fatalf("reconnect: status=%s err=%v", status, err)
+	}
+	if res.OpenFile.FileID != originalFileID {
+		t.Errorf("restored FileID = %x, want %x (OriginalFileID)", res.OpenFile.FileID, originalFileID)
+	}
+	if res.OriginalFileID != originalFileID {
+		t.Errorf("ReconnectResult.OriginalFileID = %x, want %x", res.OriginalFileID, originalFileID)
+	}
+}
+
+// TestProcessDurableReconnectContext_OriginalFileIDFallback covers the
+// upgrade-boundary case: a handle persisted before OriginalFileID existed
+// decodes with OriginalFileID == 0. validateAndRestore MUST fall back to
+// handle.FileID (volatile-zeroed) so old handles still reconnect; the
+// create.go reconnect path then regenerates the volatile half (#661).
+func TestProcessDurableReconnectContext_OriginalFileIDFallback(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	persistentFileID := [16]byte{9, 9, 9, 9, 9, 9, 9, 9, 0, 0, 0, 0, 0, 0, 0, 0}
+	keyHash := makeSessionKeyHash("session-key-old")
+
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:     "dh-legacy",
+		FileID: persistentFileID,
+		// OriginalFileID intentionally zero (pre-#661 handle)
+		Path:           "legacy.txt",
+		ShareName:      "/share1",
+		MetadataHandle: []byte{0xDE, 0xAD},
+		Username:       "alice",
+		SessionKeyHash: keyHash,
+		CreatedAt:      time.Now().Add(-time.Minute),
+		DisconnectedAt: time.Now().Add(-time.Second),
+		TimeoutMs:      60000,
+	})
+
+	dhnCData := make([]byte, 16)
+	copy(dhnCData, persistentFileID[:])
+	contexts := []CreateContext{
+		{Name: DurableHandleV1ReconnectTag, Data: dhnCData},
+	}
+
+	res, status, err := ProcessDurableReconnectContext(ctx, store, nil, contexts,
+		1, "alice", keyHash, "/share1", "legacy.txt")
+	if err != nil || status != types.StatusSuccess {
+		t.Fatalf("reconnect: status=%s err=%v", status, err)
+	}
+	if res.OpenFile.FileID != persistentFileID {
+		t.Errorf("legacy restore FileID = %x, want %x (handle.FileID fallback)",
+			res.OpenFile.FileID, persistentFileID)
+	}
+	if res.OriginalFileID != ([16]byte{}) {
+		t.Errorf("ReconnectResult.OriginalFileID = %x, want zero", res.OriginalFileID)
+	}
+}
+
+// TestProcessDurableReconnectContext_PositionInfoRestored locks in the
+// FilePositionInformation persistence added in #661 — required so
+// smb2.durable-open.file-position survives reconnect.
+func TestProcessDurableReconnectContext_PositionInfoRestored(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	fileID := [16]byte{0xFE, 0xED, 0xFA, 0xCE, 0xBE, 0xEF, 0xCA, 0xFE, 0, 0, 0, 0, 0, 0, 0, 0}
+	keyHash := makeSessionKeyHash("session-key-pos")
+
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:             "dh-pos",
+		FileID:         fileID,
+		Path:           "position.txt",
+		ShareName:      "/share1",
+		MetadataHandle: []byte{0xAA},
+		Username:       "alice",
+		SessionKeyHash: keyHash,
+		PositionInfo:   0x1000,
+		CreatedAt:      time.Now().Add(-time.Minute),
+		DisconnectedAt: time.Now().Add(-time.Second),
+		TimeoutMs:      60000,
+	})
+
+	dhnCData := make([]byte, 16)
+	copy(dhnCData, fileID[:])
+	contexts := []CreateContext{
+		{Name: DurableHandleV1ReconnectTag, Data: dhnCData},
+	}
+
+	res, status, err := ProcessDurableReconnectContext(ctx, store, nil, contexts,
+		1, "alice", keyHash, "/share1", "position.txt")
+	if err != nil || status != types.StatusSuccess {
+		t.Fatalf("reconnect: status=%s err=%v", status, err)
+	}
+	if res.OpenFile.PositionInfo != 0x1000 {
+		t.Errorf("restored PositionInfo = 0x%x, want 0x1000", res.OpenFile.PositionInfo)
+	}
+}
