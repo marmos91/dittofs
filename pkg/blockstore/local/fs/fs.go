@@ -27,11 +27,11 @@ type retentionConfig struct {
 	ttl    time.Duration
 }
 
-// chunkCompleteCallback wraps the OnChunkComplete callback for atomic
-// swap. atomic.Pointer[T] requires T to be a struct (a bare func is not
-// addressable through the generic), so we box the func in a holder. fn
-// may itself be nil — the read path on the chunkstore hot path checks
-// fn before invocation.
+// chunkCompleteCallback boxes the OnChunkComplete callback so each
+// SetOnChunkComplete swap installs a stable addressable
+// *chunkCompleteCallback in atomic.Pointer (a func literal/parameter
+// isn't directly addressable). fn may itself be nil — the read path on
+// the chunkstore hot path checks fn before invocation.
 type chunkCompleteCallback struct {
 	fn func(hash blockstore.ContentHash, data []byte, path string)
 }
@@ -274,19 +274,19 @@ type FSStore struct {
 	// instantiated unconditionally in newFSStoreWithOptionsInternal.
 	dedupLRU *dedupLRU
 
-	// onChunkComplete fires after every successful chunkstore.lruTouch
-	// (Opt 3). Nil-safe: chunkstore.lruTouch
-	// checks for nil before invocation. Install via FSStoreOptions at
-	// construction or post-hoc via SetOnChunkComplete — the engine's
-	// Cache materializes in BlockStore.Start, AFTER cfg.Local is
-	// constructed, so the setter path is the production wire-in site.
+	// onChunkComplete fires once per successful chunkstore.StoreChunk
+	// (immediately after that path's lruTouch). The ReadChunk path also
+	// touches the LRU but does not fire the callback — only the rollup
+	// pool's StoreChunk completion is reported. Install via
+	// FSStoreOptions at construction or post-hoc via SetOnChunkComplete;
+	// the engine's Cache materializes in BlockStore.Start, AFTER
+	// cfg.Local is constructed, so the setter path is the production
+	// wire-in site.
 	//
 	// Stored via atomic.Pointer so SetOnChunkComplete can swap the
-	// callback safely while rollup workers read it on the hot path
-	// (chunkstore.StoreChunk). Holder struct is required because
-	// atomic.Pointer's type parameter must be a struct; we cannot
-	// directly atomically swap a bare func value. A non-nil holder is
-	// always installed at construction so the read path never observes
+	// callback safely while rollup workers read it on the hot path in
+	// chunkstore.StoreChunk. The pointer always holds a stable
+	// addressable *chunkCompleteCallback so the read path never observes
 	// a nil pointer — the inner fn may itself be nil and is checked
 	// there.
 	onChunkComplete atomic.Pointer[chunkCompleteCallback]

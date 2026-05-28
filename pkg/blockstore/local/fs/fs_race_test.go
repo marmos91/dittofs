@@ -3,6 +3,7 @@
 package fs
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -41,6 +42,8 @@ func TestFSStore_OnChunkComplete_RaceFreeSwap(t *testing.T) {
 				if cb := bc.onChunkComplete.Load(); cb != nil && cb.fn != nil {
 					cb.fn(blockstore.ContentHash{}, nil, "")
 					invocations.Add(1)
+				} else {
+					runtime.Gosched()
 				}
 			}
 		}()
