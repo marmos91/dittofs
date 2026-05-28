@@ -49,7 +49,7 @@ func (m *Syncer) resolveFileBlock(ctx context.Context, payloadID string, blockId
 		if fb == nil {
 			continue
 		}
-		abs, ok := parseChunkOffsetFromID(fb.ID)
+		abs, ok := blockstore.ParseChunkOffset(fb.ID)
 		if !ok {
 			continue
 		}

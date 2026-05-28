@@ -207,7 +207,7 @@ func (bc *FSStore) fillFromCASManifest(ctx context.Context, payloadID string, de
 		if fb == nil {
 			continue
 		}
-		off, ok := parsePayloadOffsetFromBlockID(fb.ID)
+		off, ok := blockstore.ParseChunkOffset(fb.ID)
 		if !ok {
 			continue
 		}
@@ -266,31 +266,4 @@ func (bc *FSStore) fillFromCASManifest(ctx context.Context, payloadID string, de
 		}
 	}
 	return nil
-}
-
-// parsePayloadOffsetFromBlockID extracts the trailing numeric component
-// of a FileBlock ID of the form "<payloadID>/<chunkOffset>" and returns
-// (chunkOffset, true) on success. Mirrors the engine-side
-// parseChunkOffsetFromID; duplicated here to avoid a circular import
-// (the engine package depends on this fs package, not the other way
-// around).
-func parsePayloadOffsetFromBlockID(id string) (uint64, bool) {
-	slash := -1
-	for i := len(id) - 1; i >= 0; i-- {
-		if id[i] == '/' {
-			slash = i
-			break
-		}
-	}
-	if slash < 0 || slash == len(id)-1 {
-		return 0, false
-	}
-	var v uint64
-	for _, c := range id[slash+1:] {
-		if c < '0' || c > '9' {
-			return 0, false
-		}
-		v = v*10 + uint64(c-'0')
-	}
-	return v, true
 }
