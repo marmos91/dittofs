@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"testing"
 
@@ -188,6 +189,9 @@ func TestSnapshotHoldProvider_FilterByManifestOnDisk(t *testing.T) {
 // as a wrapped error so the GC mark phase aborts (INV-04 fail-closed).
 // Only os.IsNotExist is the no-hold short-circuit.
 func TestSnapshotHoldProvider_FailClosed_OnManifestStatError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows ignores Unix-style chmod for read access; os.Stat succeeds despite 0o000")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("permission-denied scenario does not apply when running as root")
 	}
