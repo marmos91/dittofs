@@ -580,14 +580,58 @@ func (h *Handler) handlePipeFileInfo(req *QueryInfoRequest, openFile *OpenFile) 
 	}
 }
 
+// resolveBaseFileAttrForADS returns the base file's FileAttr when openFile is
+// an ADS (alternate data stream). Per NTFS semantics, streams share the base
+// file's timestamps and attributes; QUERY_INFO on a stream must report those
+// values, not the stream entry's own metadata. Returns nil when the open is not
+// an ADS or the base file cannot be resolved (callers fall back to the stream's
+// own FileAttr).
+//
+// The returned FileAttr is a copy with the stream handle's frozen timestamp
+// overrides applied so QUERY_INFO returns the correct value for frozen handles.
+func (h *Handler) resolveBaseFileAttrForADS(authCtx *metadata.AuthContext, openFile *OpenFile) *metadata.FileAttr {
+	colonIdx := strings.Index(openFile.FileName, ":")
+	if colonIdx <= 0 || len(openFile.ParentHandle) == 0 {
+		return nil
+	}
+	metaSvc := h.Registry.GetMetadataService()
+	baseFileName := openFile.FileName[:colonIdx]
+	baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseFileName)
+	if baseFile == nil {
+		return nil
+	}
+	// Make a copy so frozen-timestamp overrides don't mutate the store.
+	attr := baseFile.FileAttr
+	if openFile.BtimeFrozen && openFile.FrozenBtime != nil {
+		attr.CreationTime = *openFile.FrozenBtime
+	}
+	if openFile.MtimeFrozen && openFile.FrozenMtime != nil {
+		attr.Mtime = *openFile.FrozenMtime
+	}
+	if openFile.CtimeFrozen && openFile.FrozenCtime != nil {
+		attr.Ctime = *openFile.FrozenCtime
+	}
+	if openFile.AtimeFrozen && openFile.FrozenAtime != nil {
+		attr.Atime = *openFile.FrozenAtime
+	}
+	return &attr
+}
+
 // buildFileInfoFromStore builds file information based on class using metadata store.
 func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *metadata.File, openFile *OpenFile, class types.FileInfoClass) ([]byte, error) {
 	switch class {
 	case types.FileBasicInformation:
+		// Per NTFS: ADS (alternate data streams) share the base file's
+		// timestamps and attributes. Resolve the base file when the open
+		// is for a stream so QUERY_INFO reports the base file's values.
+		attr := &file.FileAttr
+		if baseAttr := h.resolveBaseFileAttrForADS(authCtx, openFile); baseAttr != nil {
+			attr = baseAttr
+		}
 		// Use name-aware variant so dot-prefixed files surface HIDDEN per
 		// MS-FSCC §2.6 (matches QUERY_DIRECTORY which always sees the name).
 		// Required by smb2.dosmode (source4/torture/smb2/dosmode.c).
-		basicInfo := FileAttrToFileBasicInfoWithName(&file.FileAttr, basenameForHidden(openFile))
+		basicInfo := FileAttrToFileBasicInfoWithName(attr, basenameForHidden(openFile))
 		return EncodeFileBasicInfo(basicInfo), nil
 
 	case types.FileStandardInformation:
@@ -627,6 +671,22 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		return h.buildFileStreamInformation(authCtx, file, openFile)
 
 	case types.FileNetworkOpenInformation:
+		// Per NTFS: ADS share the base file's timestamps and attributes, but
+		// the size/allocation reflect the stream's own data.
+		if baseAttr := h.resolveBaseFileAttrForADS(authCtx, openFile); baseAttr != nil {
+			creation, access, write, change := FileAttrToSMBTimes(baseAttr)
+			size := getSMBSize(&file.FileAttr)
+			networkInfo := &FileNetworkOpenInfo{
+				CreationTime:   creation,
+				LastAccessTime: access,
+				LastWriteTime:  write,
+				ChangeTime:     change,
+				AllocationSize: calculateAllocationSize(size),
+				EndOfFile:      size,
+				FileAttributes: FileAttrToSMBAttributesWithName(baseAttr, basenameForHidden(openFile)),
+			}
+			return EncodeFileNetworkOpenInfo(networkInfo), nil
+		}
 		networkInfo := FileAttrToFileNetworkOpenInfoWithName(&file.FileAttr, basenameForHidden(openFile))
 		return EncodeFileNetworkOpenInfo(networkInfo), nil
 
@@ -742,7 +802,12 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 	case types.FileAttributeTagInformation:
 		// FILE_ATTRIBUTE_TAG_INFORMATION [MS-FSCC] 2.4.6 (8 bytes)
 		// FileAttributes (4) + ReparseTag (4)
-		attrs := FileAttrToSMBAttributesWithName(&file.FileAttr, basenameForHidden(openFile))
+		// Per NTFS: ADS share the base file's attributes.
+		attrSrc := &file.FileAttr
+		if baseAttr := h.resolveBaseFileAttrForADS(authCtx, openFile); baseAttr != nil {
+			attrSrc = baseAttr
+		}
+		attrs := FileAttrToSMBAttributesWithName(attrSrc, basenameForHidden(openFile))
 		w := smbenc.NewWriter(8)
 		w.WriteUint32(uint32(attrs))
 		w.WriteUint32(0) // ReparseTag = 0 for non-reparse points
@@ -774,10 +839,16 @@ func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext
 	// FILE_ALL_INFORMATION [MS-FSCC] 2.4.2 (varies)
 	// Basic (40) + Standard (24) + Internal (8) + EA (4) + Access (4) + Position (8) + Mode (4) + Alignment (4) + Name (variable)
 
-	basicInfo := FileAttrToFileBasicInfoWithName(&file.FileAttr, basenameForHidden(openFile))
-	// Reflect delete-on-close disposition (set via SET_INFO DispositionInformation
-	// or FILE_DELETE_ON_CLOSE on CREATE) in the embedded StandardInformation.
-	// smbtorture `smb2.setinfo` (setinfo.c:228) asserts delete_pending = 1 here.
+	// Per NTFS: ADS share the base file's timestamps and attributes for
+	// BasicInformation. StandardInformation reflects the stream's own size
+	// and the open handle's delete-pending state (set via SET_INFO
+	// DispositionInformation or FILE_DELETE_ON_CLOSE on CREATE) — smbtorture
+	// `smb2.setinfo` (setinfo.c:228) asserts delete_pending = 1 here.
+	attr := &file.FileAttr
+	if baseAttr := h.resolveBaseFileAttrForADS(authCtx, openFile); baseAttr != nil {
+		attr = baseAttr
+	}
+	basicInfo := FileAttrToFileBasicInfoWithName(attr, basenameForHidden(openFile))
 	standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, openFile.DeletePending)
 	nameBytes := encodeUTF16LE(toSMBPath(openFile.Path))
 
@@ -854,7 +925,7 @@ func (h *Handler) buildFileStreamInformation(authCtx *metadata.AuthContext, file
 	var defaultSize uint64
 	if !isBaseDirectory && strings.Contains(openFile.FileName, ":") && len(openFile.ParentHandle) > 0 {
 		metaSvc := h.Registry.GetMetadataService()
-		if baseFile, err := metaSvc.Lookup(authCtx, openFile.ParentHandle, baseName); err == nil {
+		if baseFile, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, openFile.ParentHandle, baseName); baseFile != nil {
 			if baseFile.Type == metadata.FileTypeDirectory {
 				isBaseDirectory = true
 			}
@@ -886,9 +957,13 @@ func (h *Handler) buildFileStreamInformation(authCtx *metadata.AuthContext, file
 					break
 				}
 				for _, entry := range entries {
-					if strings.HasPrefix(entry.Name, prefix) {
-						// Extract stream name portion: "file:stream:$DATA" -> ":stream:$DATA"
+					if len(entry.Name) > len(prefix) && strings.EqualFold(entry.Name[:len(prefix)], prefix) {
+						// Extract stream name portion: "file:stream" → ":stream"
 						streamSuffix := entry.Name[len(baseName):]
+						// Always report with :$DATA type suffix per MS-FSCC 2.4.44.
+						if !strings.HasSuffix(strings.ToUpper(streamSuffix), ":$DATA") {
+							streamSuffix += ":$DATA"
+						}
 						var adsSize uint64
 						if entry.Attr != nil {
 							adsSize = entry.Attr.Size

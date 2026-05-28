@@ -689,38 +689,7 @@ func TestSession(t *testing.T) {
 }
 
 // =============================================================================
-// ADS Base Path Tests
-// =============================================================================
-
-func TestAdsBasePath(t *testing.T) {
-	tests := []struct {
-		name     string
-		path     string
-		expected string
-	}{
-		{"BaseFile", "file.txt", ""},
-		{"BaseFileInDir", "subdir/file.txt", ""},
-		{"ADSOnFile", "file.txt:stream1:$DATA", "file.txt"},
-		{"ADSOnFileInDir", "subdir/file.txt:stream1:$DATA", "subdir/file.txt"},
-		{"ADSOnFileDeepDir", "a/b/c/file.txt:s1:$DATA", "a/b/c/file.txt"},
-		{"RootFile", "readme.md", ""},
-		{"ADSNoDir", "doc:notes:$DATA", "doc"},
-		{"EmptyPath", "", ""},
-		{"DirectoryOnly", "subdir/", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := adsBasePath(tt.path)
-			if result != tt.expected {
-				t.Errorf("adsBasePath(%q) = %q, want %q", tt.path, result, tt.expected)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// Share Mode Conflict Tests (ADS cross-stream enforcement)
+// Share Mode Conflict Tests (per-stream enforcement)
 // =============================================================================
 
 func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
@@ -731,181 +700,131 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 		fileShareWrite = uint32(0x02)
 	)
 
-	t.Run("BaseFileAndADS_ConflictingShareMode", func(t *testing.T) {
+	// Per MS-FSA 2.1.5.1.2: share mode enforcement is per-stream.
+	// Opens on different streams of the same base file do NOT conflict.
+
+	t.Run("BaseFileVsStream_DeleteConflict", func(t *testing.T) {
 		h := NewHandler()
 
-		// Open base file with read access, no write sharing
-		baseFileID := h.GenerateFileID()
-		baseFile := &OpenFile{
-			FileID:         baseFileID,
-			Path:           "file.txt",
+		const deleteAccess = uint32(0x00010000)
+		h.StoreOpenFile(&OpenFile{
+			FileID:         h.GenerateFileID(),
+			Path:           "file.txt:stream1",
 			DesiredAccess:  fileReadData,
-			ShareAccess:    fileShareRead, // share read only, no write
+			ShareAccess:    fileShareRead, // no FILE_SHARE_DELETE
 			MetadataHandle: []byte{0x01},
-		}
-		h.StoreOpenFile(baseFile)
+		})
 
-		// Try to open ADS on same file with write access
-		// The base file doesn't share write, so this should conflict
 		conflict := h.checkShareModeConflict(
-			[]byte{0x02}, // different handle
-			fileWriteData,
+			[]byte{0x02},
+			deleteAccess,
 			fileShareRead|fileShareWrite,
-			"file.txt:stream1:$DATA",
+			"file.txt",
 		)
 		if !conflict {
-			t.Error("Expected conflict: base file doesn't share write, ADS wants write")
+			t.Error("Expected conflict: stream doesn't share delete, base file requests delete")
 		}
 	})
 
-	t.Run("ADSAndBaseFile_ConflictingShareMode", func(t *testing.T) {
+	t.Run("BaseFileVsStream_ReadWriteNoConflict", func(t *testing.T) {
 		h := NewHandler()
 
-		// Open ADS with read access, no write sharing
-		adsFileID := h.GenerateFileID()
-		adsFile := &OpenFile{
-			FileID:         adsFileID,
-			Path:           "file.txt:stream1:$DATA",
+		h.StoreOpenFile(&OpenFile{
+			FileID:         h.GenerateFileID(),
+			Path:           "file.txt:stream1",
 			DesiredAccess:  fileReadData,
-			ShareAccess:    fileShareRead, // share read only
+			ShareAccess:    fileShareRead, // no write sharing
 			MetadataHandle: []byte{0x01},
-		}
-		h.StoreOpenFile(adsFile)
+		})
 
-		// Try to open base file with write access
-		// The ADS doesn't share write, so this should conflict
 		conflict := h.checkShareModeConflict(
 			[]byte{0x02},
 			fileWriteData,
 			fileShareRead|fileShareWrite,
 			"file.txt",
 		)
-		if !conflict {
-			t.Error("Expected conflict: ADS doesn't share write, base file wants write")
+		if conflict {
+			t.Error("Expected no conflict: cross-stream only checks DELETE, not read/write")
 		}
 	})
 
-	t.Run("TwoADS_ConflictingShareMode", func(t *testing.T) {
+	t.Run("TwoADS_NoConflict_DifferentStreams", func(t *testing.T) {
 		h := NewHandler()
 
-		// Open ADS stream1 with read access, no write sharing
-		ads1FileID := h.GenerateFileID()
-		ads1File := &OpenFile{
-			FileID:         ads1FileID,
-			Path:           "file.txt:stream1:$DATA",
+		h.StoreOpenFile(&OpenFile{
+			FileID:         h.GenerateFileID(),
+			Path:           "file.txt:stream1",
 			DesiredAccess:  fileReadData,
 			ShareAccess:    fileShareRead,
 			MetadataHandle: []byte{0x01},
-		}
-		h.StoreOpenFile(ads1File)
+		})
 
-		// Try to open ADS stream2 with write access
 		conflict := h.checkShareModeConflict(
 			[]byte{0x02},
 			fileWriteData,
 			fileShareRead|fileShareWrite,
-			"file.txt:stream2:$DATA",
+			"file.txt:stream2",
 		)
-		if !conflict {
-			t.Error("Expected conflict: stream1 doesn't share write, stream2 wants write")
+		if conflict {
+			t.Error("Expected no conflict: different streams are independent")
 		}
 	})
 
-	t.Run("TwoADS_CompatibleShareMode", func(t *testing.T) {
+	t.Run("SameADS_Conflict", func(t *testing.T) {
 		h := NewHandler()
 
-		// Open ADS stream1 with read access, share everything
-		ads1FileID := h.GenerateFileID()
-		ads1File := &OpenFile{
-			FileID:         ads1FileID,
-			Path:           "file.txt:stream1:$DATA",
+		h.StoreOpenFile(&OpenFile{
+			FileID:         h.GenerateFileID(),
+			Path:           "file.txt:stream1",
 			DesiredAccess:  fileReadData,
-			ShareAccess:    fileShareRead | fileShareWrite,
+			ShareAccess:    fileShareRead,
 			MetadataHandle: []byte{0x01},
-		}
-		h.StoreOpenFile(ads1File)
+		})
 
-		// Open ADS stream2 with write access -- should NOT conflict
 		conflict := h.checkShareModeConflict(
-			[]byte{0x02},
+			[]byte{0x01},
 			fileWriteData,
 			fileShareRead|fileShareWrite,
-			"file.txt:stream2:$DATA",
+			"file.txt:stream1",
 		)
-		if conflict {
-			t.Error("Expected no conflict: both share read+write")
+		if !conflict {
+			t.Error("Expected conflict: same stream, incompatible share modes")
 		}
 	})
 
 	t.Run("DifferentBaseFiles_NoConflict", func(t *testing.T) {
 		h := NewHandler()
 
-		// Open file1.txt with exclusive access
-		file1ID := h.GenerateFileID()
-		file1 := &OpenFile{
-			FileID:         file1ID,
+		h.StoreOpenFile(&OpenFile{
+			FileID:         h.GenerateFileID(),
 			Path:           "file1.txt",
 			DesiredAccess:  fileReadData | fileWriteData,
-			ShareAccess:    0, // no sharing at all
+			ShareAccess:    0,
 			MetadataHandle: []byte{0x01},
-		}
-		h.StoreOpenFile(file1)
+		})
 
-		// Open file2.txt:stream with any access -- should NOT conflict
 		conflict := h.checkShareModeConflict(
 			[]byte{0x02},
 			fileReadData|fileWriteData,
 			0,
-			"file2.txt:stream:$DATA",
+			"file2.txt:stream",
 		)
 		if conflict {
 			t.Error("Expected no conflict: different base files")
 		}
 	})
 
-	t.Run("DirectoryADS_CrossStreamConflict", func(t *testing.T) {
-		h := NewHandler()
-
-		// Open directory base with exclusive read
-		dirFileID := h.GenerateFileID()
-		dirFile := &OpenFile{
-			FileID:         dirFileID,
-			Path:           "mydir",
-			DesiredAccess:  fileReadData,
-			ShareAccess:    0, // no sharing
-			MetadataHandle: []byte{0x01},
-			IsDirectory:    true,
-		}
-		h.StoreOpenFile(dirFile)
-
-		// Try to open ADS on the directory -- should conflict
-		conflict := h.checkShareModeConflict(
-			[]byte{0x02},
-			fileReadData,
-			fileShareRead,
-			"mydir:stream1:$DATA",
-		)
-		if !conflict {
-			t.Error("Expected conflict: directory base doesn't share read, ADS wants read")
-		}
-	})
-
 	t.Run("StatOnlyExisting_NoConflict", func(t *testing.T) {
-		// Per Samba `share_conflict` (source3/smbd/open.c L1505): an existing
-		// stat-only open (FILE_READ_ATTRIBUTES with share=0) imposes no
-		// share-mode constraint on incoming opens. Regression for
-		// smb2.lease.statopen which expected NT_STATUS_OK at lease.c:776.
 		h := NewHandler()
 
 		const fileReadAttributes = uint32(0x00000080)
-		statOpen := &OpenFile{
+		h.StoreOpenFile(&OpenFile{
 			FileID:         h.GenerateFileID(),
 			Path:           "file.txt",
 			DesiredAccess:  fileReadAttributes,
 			ShareAccess:    0,
 			MetadataHandle: []byte{0x01},
-		}
-		h.StoreOpenFile(statOpen)
+		})
 
 		conflict := h.checkShareModeConflict(
 			[]byte{0x01},
@@ -919,11 +838,6 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 	})
 
 	t.Run("NonConflictingExistingAccess_NoConstraint", func(t *testing.T) {
-		// Per Samba `share_conflict` (source3/smbd/open.c L1505): existing
-		// entries with none of FILE_READ_DATA|FILE_WRITE_DATA|FILE_APPEND_DATA|
-		// FILE_EXECUTE|DELETE_ACCESS impose no share-mode constraint —
-		// even when not strictly stat-only. Verifies WRITE_DAC-only existing
-		// open with share=0 doesn't block an incoming full-access open.
 		const writeDac = uint32(0x00040000)
 		h := NewHandler()
 		h.StoreOpenFile(&OpenFile{
@@ -941,18 +855,14 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 	t.Run("PipesSkipped", func(t *testing.T) {
 		h := NewHandler()
 
-		// Open a pipe -- should not interfere with file opens
-		pipeFileID := h.GenerateFileID()
-		pipeFile := &OpenFile{
-			FileID:        pipeFileID,
+		h.StoreOpenFile(&OpenFile{
+			FileID:        h.GenerateFileID(),
 			Path:          "srvsvc",
 			DesiredAccess: fileReadData | fileWriteData,
 			ShareAccess:   0,
 			IsPipe:        true,
-		}
-		h.StoreOpenFile(pipeFile)
+		})
 
-		// Open a regular file -- pipe should be skipped
 		conflict := h.checkShareModeConflict(
 			[]byte{0x01},
 			fileReadData,
@@ -1045,4 +955,30 @@ func TestOpenFile(t *testing.T) {
 			t.Error("IsDirectory should be true")
 		}
 	})
+}
+
+// =============================================================================
+// adsBasePath Tests
+// =============================================================================
+
+func TestAdsBasePath(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"StreamWithDir", "dir/file.txt:stream", "dir/file.txt"},
+		{"StreamWithoutDir", "file.txt:stream", "file.txt"},
+		{"NotADS_PlainFile", "file.txt", ""},
+		{"NotADS_Empty", "", ""},
+		{"NotADS_DirAndFile", "dir/file.txt", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := adsBasePath(tc.input)
+			if got != tc.expected {
+				t.Errorf("adsBasePath(%q) = %q, want %q", tc.input, got, tc.expected)
+			}
+		})
+	}
 }

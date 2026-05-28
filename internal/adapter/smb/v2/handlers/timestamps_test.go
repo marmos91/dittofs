@@ -456,3 +456,403 @@ func TestSetFileInfo_DelayedWriteVsSetbasic(t *testing.T) {
 		})
 	}
 }
+
+// TestDirFreezeTimestamps_ChildCreate_AllFrozen verifies that freezing ALL
+// directory timestamps via SET_INFO(-1) survives a child file creation.
+func TestDirFreezeTimestamps_ChildCreate_AllFrozen(t *testing.T) {
+	rt := runtime.New(nil)
+	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	if err := rt.RegisterMetadataStore("ts-meta", memStore); err != nil {
+		t.Fatalf("RegisterMetadataStore: %v", err)
+	}
+	shareName := "/ts"
+	if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
+		Name:          shareName,
+		MetadataStore: "ts-meta",
+		RootAttr:      &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755},
+	}); err != nil {
+		t.Fatalf("AddShare: %v", err)
+	}
+	rootHandle, err := rt.GetRootHandle(shareName)
+	if err != nil {
+		t.Fatalf("GetRootHandle: %v", err)
+	}
+	uid, gid := uint32(0), uint32(0)
+	authCtx := &metadata.AuthContext{
+		Context:  context.Background(),
+		Identity: &metadata.Identity{UID: &uid, GID: &gid},
+	}
+	metaSvc := rt.GetMetadataService()
+
+	// Step 1: Create a subdirectory.
+	dir, err := metaSvc.CreateDirectory(authCtx, rootHandle, "testdir", &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0o755,
+	})
+	if err != nil {
+		t.Fatalf("CreateDirectory: %v", err)
+	}
+	dirHandle, err := metadata.EncodeFileHandle(dir)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle(dir): %v", err)
+	}
+
+	// Pin timestamps to a well-known value so assertions are deterministic.
+	pinned := time.Date(2026, 1, 2, 13, 40, 49, 0, time.UTC)
+	if err := metaSvc.SetFileAttributes(authCtx, dirHandle, &metadata.SetAttrs{
+		CreationTime: &pinned,
+		Mtime:        &pinned,
+		Atime:        &pinned,
+		Ctime:        &pinned,
+	}); err != nil {
+		t.Fatalf("pin timestamps: %v", err)
+	}
+
+	h := NewHandler()
+	h.Registry = rt
+
+	// Step 2: "Open" the directory (create an OpenFile).
+	dirOpenFile := &OpenFile{
+		FileID:         [16]byte{0xAA},
+		MetadataHandle: dirHandle,
+		ParentHandle:   rootHandle,
+		FileName:       "testdir",
+		Path:           "testdir",
+		ShareName:      shareName,
+		IsDirectory:    true,
+		DesiredAccess:  uint32(types.FileWriteAttributes) | uint32(types.FileReadAttributes),
+	}
+	h.StoreOpenFile(dirOpenFile)
+
+	// Step 3: Freeze all four timestamps via SET_INFO(-1).
+	freezeAll := makeBasicInfoBuffer(filetimeFreeze, filetimeFreeze, filetimeFreeze, filetimeFreeze, 0)
+	resp, err := h.setFileInfoFromStore(authCtx, dirOpenFile, types.FileBasicInformation, freezeAll)
+	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
+		t.Fatalf("freeze SET_INFO: err=%v status=%v", err, resp)
+	}
+
+	// Verify frozen state was recorded.
+	if !dirOpenFile.BtimeFrozen || dirOpenFile.FrozenBtime == nil {
+		t.Fatalf("BtimeFrozen not set after freeze")
+	}
+	if !dirOpenFile.MtimeFrozen || dirOpenFile.FrozenMtime == nil {
+		t.Fatalf("MtimeFrozen not set after freeze")
+	}
+	if !dirOpenFile.AtimeFrozen || dirOpenFile.FrozenAtime == nil {
+		t.Fatalf("AtimeFrozen not set after freeze")
+	}
+	if !dirOpenFile.CtimeFrozen || dirOpenFile.FrozenCtime == nil {
+		t.Fatalf("CtimeFrozen not set after freeze")
+	}
+
+	// Step 4: Create a child file -- this updates the directory's
+	// Mtime/Ctime/Atime in the metadata store.
+	if _, createErr := metaSvc.CreateFile(authCtx, dirHandle, "child.dat", &metadata.FileAttr{
+		Type: metadata.FileTypeRegular,
+		Mode: 0o644,
+	}); createErr != nil {
+		t.Fatalf("CreateFile(child): %v", createErr)
+	}
+
+	// Step 4a: restoreParentDirFrozenTimestamps -- mirrors the CREATE handler.
+	h.restoreParentDirFrozenTimestamps(authCtx, dirHandle)
+
+	// Step 5: Read the directory from the store and apply frozen overrides
+	// (same as QUERY_INFO handler).
+	dirFile, err := metaSvc.GetFile(authCtx.Context, dirHandle)
+	if err != nil {
+		t.Fatalf("GetFile(dir) after child create: %v", err)
+	}
+	applyFrozenTimestamps(dirOpenFile, dirFile)
+
+	// Verify all four timestamps are still the pinned value.
+	if !dirFile.CreationTime.Equal(pinned) {
+		t.Errorf("CreationTime changed: got %v want %v", dirFile.CreationTime, pinned)
+	}
+	if !dirFile.Mtime.Equal(pinned) {
+		t.Errorf("Mtime changed: got %v want %v", dirFile.Mtime, pinned)
+	}
+	if !dirFile.Atime.Equal(pinned) {
+		t.Errorf("Atime changed: got %v want %v", dirFile.Atime, pinned)
+	}
+	if !dirFile.Ctime.Equal(pinned) {
+		t.Errorf("Ctime changed: got %v want %v", dirFile.Ctime, pinned)
+	}
+
+	// Also verify the raw store values (before applyFrozenTimestamps) for
+	// fields that are frozen.
+	rawDir, err := metaSvc.GetFile(authCtx.Context, dirHandle)
+	if err != nil {
+		t.Fatalf("GetFile(dir) raw: %v", err)
+	}
+	// CreationTime is never modified by createEntry, so it should be
+	// the pinned value in the store regardless of freeze.
+	if !rawDir.CreationTime.Equal(pinned) {
+		t.Errorf("store CreationTime changed: got %v want %v", rawDir.CreationTime, pinned)
+	}
+	// Mtime, Ctime, Atime are updated by createEntry but restored by
+	// restoreParentDirFrozenTimestamps. Check restoration.
+	if !rawDir.Mtime.Equal(pinned) {
+		t.Errorf("store Mtime not restored: got %v want %v", rawDir.Mtime, pinned)
+	}
+	if !rawDir.Atime.Equal(pinned) {
+		t.Errorf("store Atime not restored: got %v want %v", rawDir.Atime, pinned)
+	}
+	// Ctime may be auto-updated by SetFileAttributes to time.Now() if the
+	// restore call only sets some fields. Check it was properly restored.
+	if !rawDir.Ctime.Equal(pinned) {
+		t.Errorf("store Ctime not restored: got %v want %v", rawDir.Ctime, pinned)
+	}
+}
+
+// TestDirFreezeTimestamps_ChildCreate_WalkPath verifies that the parentHandle
+// from walkPath matches the directory's MetadataHandle so that
+// restoreParentDirFrozenTimestamps can find and restore frozen timestamps.
+func TestDirFreezeTimestamps_ChildCreate_WalkPath(t *testing.T) {
+	rt := runtime.New(nil)
+	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	if err := rt.RegisterMetadataStore("ts-meta", memStore); err != nil {
+		t.Fatalf("RegisterMetadataStore: %v", err)
+	}
+	shareName := "/ts"
+	if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
+		Name:          shareName,
+		MetadataStore: "ts-meta",
+		RootAttr:      &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755},
+	}); err != nil {
+		t.Fatalf("AddShare: %v", err)
+	}
+	rootHandle, err := rt.GetRootHandle(shareName)
+	if err != nil {
+		t.Fatalf("GetRootHandle: %v", err)
+	}
+	uid, gid := uint32(0), uint32(0)
+	authCtx := &metadata.AuthContext{
+		Context:                context.Background(),
+		Identity:               &metadata.Identity{UID: &uid, GID: &gid},
+		BypassTraverseChecking: true,
+	}
+	metaSvc := rt.GetMetadataService()
+
+	// Create subdirectory.
+	dir, err := metaSvc.CreateDirectory(authCtx, rootHandle, "testdir", &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0o755,
+	})
+	if err != nil {
+		t.Fatalf("CreateDirectory: %v", err)
+	}
+	dirHandle, err := metadata.EncodeFileHandle(dir)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+
+	// Pin and freeze all timestamps.
+	pinned := time.Date(2026, 1, 2, 13, 40, 49, 0, time.UTC)
+	if err := metaSvc.SetFileAttributes(authCtx, dirHandle, &metadata.SetAttrs{
+		CreationTime: &pinned, Mtime: &pinned, Atime: &pinned, Ctime: &pinned,
+	}); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+
+	h := NewHandler()
+	h.Registry = rt
+	dirOpenFile := &OpenFile{
+		FileID:         [16]byte{0xCC},
+		MetadataHandle: dirHandle,
+		ParentHandle:   rootHandle,
+		FileName:       "testdir",
+		Path:           "testdir",
+		ShareName:      shareName,
+		IsDirectory:    true,
+		DesiredAccess:  uint32(types.FileWriteAttributes) | uint32(types.FileReadAttributes),
+	}
+	h.StoreOpenFile(dirOpenFile)
+
+	freezeAll := makeBasicInfoBuffer(filetimeFreeze, filetimeFreeze, filetimeFreeze, filetimeFreeze, 0)
+	resp, err := h.setFileInfoFromStore(authCtx, dirOpenFile, types.FileBasicInformation, freezeAll)
+	if err != nil || resp.GetStatus() != types.StatusSuccess {
+		t.Fatalf("freeze: err=%v status=%v", err, resp)
+	}
+
+	// Resolve parentHandle via walkPath (as the CREATE handler would for
+	// "testdir/child.dat").
+	walkedHandle, walkErr := h.walkPath(authCtx, rootHandle, "testdir")
+	if walkErr != nil {
+		t.Fatalf("walkPath: %v", walkErr)
+	}
+
+	// Verify walkedHandle matches the directory's MetadataHandle.
+	if string(walkedHandle) != string(dirHandle) {
+		t.Fatalf("walkPath handle mismatch: walked=%q dir=%q", walkedHandle, dirHandle)
+	}
+
+	// Create child and restore (using walked handle as the CREATE handler would).
+	if _, createErr := metaSvc.CreateFile(authCtx, walkedHandle, "child.dat", &metadata.FileAttr{
+		Type: metadata.FileTypeRegular, Mode: 0o644,
+	}); createErr != nil {
+		t.Fatalf("CreateFile: %v", createErr)
+	}
+	h.restoreParentDirFrozenTimestamps(authCtx, walkedHandle)
+
+	dirFile, err := metaSvc.GetFile(authCtx.Context, dirHandle)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	applyFrozenTimestamps(dirOpenFile, dirFile)
+
+	if !dirFile.CreationTime.Equal(pinned) {
+		t.Errorf("CreationTime: got %v want %v", dirFile.CreationTime, pinned)
+	}
+	if !dirFile.Mtime.Equal(pinned) {
+		t.Errorf("Mtime: got %v want %v", dirFile.Mtime, pinned)
+	}
+	if !dirFile.Atime.Equal(pinned) {
+		t.Errorf("Atime: got %v want %v", dirFile.Atime, pinned)
+	}
+	if !dirFile.Ctime.Equal(pinned) {
+		t.Errorf("Ctime: got %v want %v", dirFile.Ctime, pinned)
+	}
+}
+
+// TestDirFreezeTimestamps_ChildCreate_SingleField verifies that freezing a
+// SINGLE directory timestamp via SET_INFO(-1) survives a child file creation.
+// This mirrors the WPTS tests which freeze only one timestamp at a time.
+// The key concern is that restoreParentDirFrozenTimestamps calls
+// SetFileAttributes with only the frozen field, which may trigger a Ctime
+// auto-update side effect for the non-frozen fields.
+func TestDirFreezeTimestamps_ChildCreate_SingleField(t *testing.T) {
+	cases := []struct {
+		name      string
+		freezeBuf []byte
+		checkFn   func(t *testing.T, file *metadata.File, pinned time.Time)
+	}{
+		{
+			name:      "CreationTime",
+			freezeBuf: makeBasicInfoBuffer(filetimeFreeze, 0, 0, 0, 0),
+			checkFn: func(t *testing.T, file *metadata.File, pinned time.Time) {
+				if !file.CreationTime.Equal(pinned) {
+					t.Errorf("CreationTime changed: got %v want %v", file.CreationTime, pinned)
+				}
+			},
+		},
+		{
+			name:      "LastWriteTime",
+			freezeBuf: makeBasicInfoBuffer(0, 0, filetimeFreeze, 0, 0),
+			checkFn: func(t *testing.T, file *metadata.File, pinned time.Time) {
+				if !file.Mtime.Equal(pinned) {
+					t.Errorf("Mtime changed: got %v want %v", file.Mtime, pinned)
+				}
+			},
+		},
+		{
+			name:      "LastAccessTime",
+			freezeBuf: makeBasicInfoBuffer(0, filetimeFreeze, 0, 0, 0),
+			checkFn: func(t *testing.T, file *metadata.File, pinned time.Time) {
+				if !file.Atime.Equal(pinned) {
+					t.Errorf("Atime changed: got %v want %v", file.Atime, pinned)
+				}
+			},
+		},
+		{
+			name:      "ChangeTime",
+			freezeBuf: makeBasicInfoBuffer(0, 0, 0, filetimeFreeze, 0),
+			checkFn: func(t *testing.T, file *metadata.File, pinned time.Time) {
+				if !file.Ctime.Equal(pinned) {
+					t.Errorf("Ctime changed: got %v want %v", file.Ctime, pinned)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := runtime.New(nil)
+			memStore := memory.NewMemoryMetadataStoreWithDefaults()
+			if err := rt.RegisterMetadataStore("ts-meta", memStore); err != nil {
+				t.Fatalf("RegisterMetadataStore: %v", err)
+			}
+			shareName := "/ts"
+			if err := rt.AddShare(context.Background(), &runtime.ShareConfig{
+				Name:          shareName,
+				MetadataStore: "ts-meta",
+				RootAttr:      &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755},
+			}); err != nil {
+				t.Fatalf("AddShare: %v", err)
+			}
+			rootHandle, err := rt.GetRootHandle(shareName)
+			if err != nil {
+				t.Fatalf("GetRootHandle: %v", err)
+			}
+			uid, gid := uint32(0), uint32(0)
+			authCtx := &metadata.AuthContext{
+				Context:  context.Background(),
+				Identity: &metadata.Identity{UID: &uid, GID: &gid},
+			}
+			metaSvc := rt.GetMetadataService()
+
+			// Create subdirectory and pin all timestamps.
+			dir, err := metaSvc.CreateDirectory(authCtx, rootHandle, "testdir", &metadata.FileAttr{
+				Type: metadata.FileTypeDirectory,
+				Mode: 0o755,
+			})
+			if err != nil {
+				t.Fatalf("CreateDirectory: %v", err)
+			}
+			dirHandle, err := metadata.EncodeFileHandle(dir)
+			if err != nil {
+				t.Fatalf("EncodeFileHandle: %v", err)
+			}
+			pinned := time.Date(2026, 1, 2, 13, 40, 49, 0, time.UTC)
+			if err := metaSvc.SetFileAttributes(authCtx, dirHandle, &metadata.SetAttrs{
+				CreationTime: &pinned,
+				Mtime:        &pinned,
+				Atime:        &pinned,
+				Ctime:        &pinned,
+			}); err != nil {
+				t.Fatalf("pin timestamps: %v", err)
+			}
+
+			h := NewHandler()
+			h.Registry = rt
+			dirOpenFile := &OpenFile{
+				FileID:         [16]byte{0xBB},
+				MetadataHandle: dirHandle,
+				ParentHandle:   rootHandle,
+				FileName:       "testdir",
+				Path:           "testdir",
+				ShareName:      shareName,
+				IsDirectory:    true,
+				DesiredAccess:  uint32(types.FileWriteAttributes) | uint32(types.FileReadAttributes),
+			}
+			h.StoreOpenFile(dirOpenFile)
+
+			// Freeze only the target timestamp.
+			resp, sErr := h.setFileInfoFromStore(authCtx, dirOpenFile, types.FileBasicInformation, tc.freezeBuf)
+			if sErr != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
+				t.Fatalf("freeze SET_INFO: err=%v status=%v", sErr, resp)
+			}
+
+			// Create child file (updates dir Mtime/Ctime/Atime).
+			if _, createErr := metaSvc.CreateFile(authCtx, dirHandle, "child.dat", &metadata.FileAttr{
+				Type: metadata.FileTypeRegular,
+				Mode: 0o644,
+			}); createErr != nil {
+				t.Fatalf("CreateFile(child): %v", createErr)
+			}
+
+			// Restore frozen timestamps (mirrors CREATE handler).
+			h.restoreParentDirFrozenTimestamps(authCtx, dirHandle)
+
+			// Read file and apply frozen overrides (mirrors QUERY_INFO).
+			dirFile, err := metaSvc.GetFile(authCtx.Context, dirHandle)
+			if err != nil {
+				t.Fatalf("GetFile: %v", err)
+			}
+			applyFrozenTimestamps(dirOpenFile, dirFile)
+
+			// The frozen timestamp must still be the pinned value.
+			tc.checkFn(t, dirFile, pinned)
+		})
+	}
+}
