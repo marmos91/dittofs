@@ -114,27 +114,7 @@ overflow, rec, rmdir1-4, tcon, tdis, tdis1, tcp, tree.
 |-----------|----------|--------|-------|
 | smb2.notify.valid-req | Change Notify | Needs kernel inotify for MODIFIED on WRITE (also fails on reference Samba in Docker) | - |
 | smb2.notify.session-reconnect | Change Notify | PreviousSessionID signing key derivation mismatch (not notify-specific) | - |
-| smb2.notify.dir | Change Notify | CLOSE can race ahead of CHANGE_NOTIFY (goroutine-per-request); close-triggers-cleanup expects buffered events | - |
-| smb2.notify.mask | Change Notify | Armed-handle event replay interacts with NOTIFY_MASK_TEST cancel-setup pattern | - |
 | smb2.notify.mask-change | Change Notify | SHARING_VIOLATION on directory open (pre-existing, never passed individually) | - |
-| smb2.notify.invalid-reauth | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.tree | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.double | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.rec | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.tdis | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.tdis1 | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.basedir | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.tcp | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.logoff | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.close | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.tcon | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.handle-permissions | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.overflow | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.file | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.rmdir1 | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.rmdir2 | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.rmdir3 | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
-| smb2.notify.rmdir4 | Change Notify | Passes individually; cascading failure in full suite after dir/mask timeouts | - |
 
 ### Compound Requests (Intermittent)
 

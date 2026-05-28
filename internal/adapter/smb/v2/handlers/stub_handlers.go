@@ -417,8 +417,21 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		// the client interprets this as "your watch was cleaned up" — the
 		// CLOSE goroutine may have raced ahead of this CHANGE_NOTIFY
 		// goroutine (smb2.notify.dir close-triggers-cleanup subtest).
+		//
+		// STATUS_NOTIFY_CLEANUP / STATUS_NOTIFY_ENUM_DIR are NOT classified
+		// as errors by the WPTS decoder (search Smb2Decoder.cs for
+		// "STATUS_NOTIFY_CLEANUP"). They parse the body as a regular
+		// CHANGE_NOTIFY Response with empty output buffer. Using
+		// NewErrorResult here returns an SMB2 ERROR body, which the client
+		// rejects as INVALID_NETWORK_RESPONSE.
 		logger.Debug("CHANGE_NOTIFY: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
-		return NewErrorResult(types.StatusNotifyCleanup), nil
+		respBytes, encErr := (&ChangeNotifyResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
+		}).Encode()
+		if encErr != nil {
+			return NewErrorResult(types.StatusInternalError), nil
+		}
+		return NewResult(types.StatusNotifyCleanup, respBytes), nil
 	}
 
 	// Verify it's a directory
