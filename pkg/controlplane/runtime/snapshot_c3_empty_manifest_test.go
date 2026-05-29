@@ -40,14 +40,89 @@ func TestCreateSnapshot_EmptyManifestOnNonEmptyShareFails(t *testing.T) {
 		t.Fatalf("CreateSnapshot (sync part): %v", err)
 	}
 	snap, werr := fx.rt.WaitForSnapshot(ctx, fx.shareName, snapID)
-	if !errors.Is(werr, models.ErrSnapshotVerifyFailed) {
-		t.Fatalf("WaitForSnapshot err = %v, want errors.Is(ErrSnapshotVerifyFailed)", werr)
+	// An empty manifest on a non-empty share is the manifestCount==0 edge
+	// of the broader incomplete-manifest guard, so it surfaces the more
+	// precise ErrSnapshotManifestIncomplete sentinel.
+	if !errors.Is(werr, models.ErrSnapshotManifestIncomplete) {
+		t.Fatalf("WaitForSnapshot err = %v, want errors.Is(ErrSnapshotManifestIncomplete)", werr)
 	}
 	if snap == nil || snap.State != models.StateFailed {
 		t.Fatalf("snapshot state = %v, want failed", snap)
 	}
 	if snap.RemoteDurable {
 		t.Fatal("RemoteDurable=true on a snapshot that captured zero hashes for a non-empty share (hollow durability)")
+	}
+}
+
+// TestCreateSnapshot_PartialManifestFails covers the #789 guard: a
+// metadata backend that persists block refs incompletely yields a manifest
+// that covers SOME but not ALL of the blocks the metadata still references
+// (0 < manifestCount < liveHashes). VerifyRemoteDurability would only probe
+// the captured subset and the snapshot would be marked remote_durable=true
+// over a silently-truncated manifest. The orchestration must refuse with
+// ErrSnapshotManifestIncomplete.
+//
+// Scenario: populate three files {a,b,c} (each seeds a File.Blocks entry
+// AND a standalone FileBlock row). Delete ONLY the File entry for c,
+// leaving its FileBlock row in place. Backup builds the manifest from
+// File.Blocks -> {a,b}; HashSetFromMetadataStore enumerates FileBlock rows
+// -> {a,b,c}. The completeness cross-check detects 2 < 3 and fails.
+func TestCreateSnapshot_PartialManifestFails(t *testing.T) {
+	t.Parallel()
+	fx := newRestoreFixture(t, restoreFixtureOpts{})
+	defer fx.close()
+
+	ctx := fx.ctx()
+	files := fx.populateFiles(ctx, []string{"a.bin", "b.bin", "c.bin"})
+	fx.seedRemoteAll(fx.allHashes())
+
+	// Delete ONLY the File for c.bin, NOT its standalone FileBlock row.
+	if err := fx.meta.DeleteFile(ctx, files[2].handle); err != nil {
+		t.Fatalf("DeleteFile c.bin: %v", err)
+	}
+
+	snapID, err := fx.rt.CreateSnapshot(ctx, fx.shareName, CreateSnapshotOpts{})
+	if err != nil {
+		t.Fatalf("CreateSnapshot (sync part): %v", err)
+	}
+	snap, werr := fx.rt.WaitForSnapshot(ctx, fx.shareName, snapID)
+	if !errors.Is(werr, models.ErrSnapshotManifestIncomplete) {
+		t.Fatalf("WaitForSnapshot err = %v, want errors.Is(ErrSnapshotManifestIncomplete)", werr)
+	}
+	if snap == nil || snap.State != models.StateFailed {
+		t.Fatalf("snapshot state = %v, want failed", snap)
+	}
+	if snap.RemoteDurable {
+		t.Fatal("RemoteDurable=true on a snapshot whose manifest dropped a referenced block")
+	}
+}
+
+// TestCreateSnapshot_CompleteManifestSucceeds is the positive counterpart:
+// when the manifest covers EVERY block the metadata references
+// (manifestCount == liveHashes), the completeness guard passes and the
+// snapshot reaches ready+remote_durable=true.
+func TestCreateSnapshot_CompleteManifestSucceeds(t *testing.T) {
+	t.Parallel()
+	fx := newRestoreFixture(t, restoreFixtureOpts{})
+	defer fx.close()
+
+	ctx := fx.ctx()
+	fx.populateFiles(ctx, []string{"a.bin", "b.bin", "c.bin"})
+	fx.seedRemoteAll(fx.allHashes())
+
+	snapID, err := fx.rt.CreateSnapshot(ctx, fx.shareName, CreateSnapshotOpts{})
+	if err != nil {
+		t.Fatalf("CreateSnapshot (sync part): %v", err)
+	}
+	snap, werr := fx.rt.WaitForSnapshot(ctx, fx.shareName, snapID)
+	if werr != nil {
+		t.Fatalf("WaitForSnapshot on complete manifest: %v", werr)
+	}
+	if snap.State != models.StateReady {
+		t.Fatalf("snapshot state = %q, want ready", snap.State)
+	}
+	if !snap.RemoteDurable {
+		t.Fatal("RemoteDurable=false on a complete-manifest snapshot")
 	}
 }
 

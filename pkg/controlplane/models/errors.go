@@ -37,6 +37,15 @@ var (
 	ErrSnapshotRetryTargetNotFound  = errors.New("snapshot retry target not found")
 	ErrSnapshotRetryTargetNotFailed = errors.New("snapshot retry target is not in failed state")
 
+	// ErrSnapshotManifestIncomplete is returned when the backup-derived
+	// manifest covers fewer blocks than the share's metadata still
+	// references (manifestCount < live hash count). The most common cause
+	// is a metadata backend that persists block refs incompletely (e.g.
+	// the Postgres multi-chunk bug, #789): the snapshot would verify only
+	// the captured subset and falsely report remote_durable=true over a
+	// silently-truncated manifest. Fail the snapshot loudly instead.
+	ErrSnapshotManifestIncomplete = errors.New("snapshot manifest is incomplete: backend did not persist all block refs")
+
 	// ErrSnapshotInFlight is returned when an operation (delete) is
 	// attempted on a snapshot whose create/retry orchestration is still
 	// running. Mapped to 409 — the caller should retry once the

@@ -319,6 +319,7 @@ func mapSnapshotError(w http.ResponseWriter, err error) bool {
 		return true
 	case errors.Is(err, models.ErrSnapshotBackupFailed),
 		errors.Is(err, models.ErrSnapshotVerifyFailed),
+		errors.Is(err, models.ErrSnapshotManifestIncomplete),
 		errors.Is(err, models.ErrRestoreSafetySnapFailed),
 		errors.Is(err, models.ErrRestoreAborted),
 		errors.Is(err, models.ErrRestoreVerifyFailed):

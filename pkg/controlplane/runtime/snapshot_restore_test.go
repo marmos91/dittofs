@@ -120,10 +120,13 @@ func testRestoreHappyPath(t *testing.T) {
 	}
 
 	// Mutate: delete one of the files so restore has something to recover.
+	// Use the cascade helper (File + its standalone FileBlock row) so the
+	// safety snapshot's manifest stays consistent with EnumerateFileBlocks
+	// — otherwise the orphaned FileBlock row leaves the manifest covering
+	// fewer blocks than the metadata references and trips the
+	// manifest-completeness guard in CreateSnapshot.
 	deletedFile := files[0]
-	if err := fx.meta.DeleteFile(ctx, deletedFile.handle); err != nil {
-		t.Fatalf("delete file alpha pre-restore: %v", err)
-	}
+	fx.deleteFileCascade(ctx, deletedFile)
 
 	// Restore — must complete with no error.
 	safetyID, err := fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})

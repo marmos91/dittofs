@@ -584,46 +584,57 @@ func (r *Runtime) runSnapshotOrchestration(
 			"snapshot_id", snapID, "share", shareName)
 		return
 	}
-	// --- empty-manifest guard: empty manifest on a non-empty share ---
-	// VerifyRemoteDurability returns success for an empty manifest without
-	// probing any block (verify.go). After the Step-0 drain a genuinely
-	// non-empty share MUST produce a non-empty manifest; an empty one
-	// means the backup undercounted the share's referenced blocks (e.g. a
-	// rollup that never persisted FileAttr.Blocks).
-	// Reporting remote_durable=true here would be a hollow durability
-	// claim over zero verified blocks. Cross-check the manifest against
-	// the live FileBlock enumeration; fail if the store still references
-	// hashes but the manifest captured none. A truly-empty share (both
-	// zero) legitimately passes with a vacuous verify.
-	if manifestCount == 0 {
+	// --- manifest-completeness guard ---
+	// VerifyRemoteDurability only probes the hashes the manifest captured,
+	// so it cannot detect a manifest that captured FEWER blocks than the
+	// share's metadata still references. Two undercount modes must both be
+	// caught here before we can honestly report remote_durable=true:
+	//
+	//   - empty manifest on a non-empty share (manifestCount == 0 < live):
+	//     a rollup that never persisted FileAttr.Blocks, so the verify
+	//     would be vacuous over zero blocks.
+	//   - partial manifest (0 < manifestCount < live): a backend that
+	//     persisted block refs incompletely (the Postgres multi-chunk bug,
+	//     #789). The verify would cover only the captured subset and mark
+	//     the snapshot durable over a silently-truncated manifest.
+	//
+	// Enumerate the live hash set UNCONDITIONALLY and require the manifest
+	// to cover every block the metadata references (manifestCount ==
+	// liveHashes.Len()). A genuinely-empty share (both zero) legitimately
+	// passes with a vacuous verify.
+	{
 		metaStore, mserr := r.GetMetadataStoreForShare(shareName)
 		if mserr != nil {
-			terminalErr = fmt.Errorf("snapshot create %s: metadata store lookup for empty-manifest check: %w: %v",
+			terminalErr = fmt.Errorf("snapshot create %s: metadata store lookup for manifest-completeness check: %w: %v",
 				snapID, models.ErrSnapshotVerifyFailed, mserr)
 			r.failSnap(shareName, snapID, terminalErr)
-			logger.Error("snapshot create: metadata store lookup failed (empty-manifest check)",
+			logger.Error("snapshot create: metadata store lookup failed (manifest-completeness check)",
 				"snapshot_id", snapID, "share", shareName, "error", mserr)
 			return
 		}
 		liveHashes, herr := snapshot.HashSetFromMetadataStore(ctx, metaStore)
 		if herr != nil {
-			terminalErr = fmt.Errorf("snapshot create %s: enumerate live hashes for empty-manifest check: %w: %v",
+			terminalErr = fmt.Errorf("snapshot create %s: enumerate live hashes for manifest-completeness check: %w: %v",
 				snapID, models.ErrSnapshotVerifyFailed, herr)
 			r.failSnap(shareName, snapID, terminalErr)
-			logger.Error("snapshot create: live hash enumeration failed (empty-manifest check)",
+			logger.Error("snapshot create: live hash enumeration failed (manifest-completeness check)",
 				"snapshot_id", snapID, "share", shareName, "error", herr)
 			return
 		}
-		if liveHashes.Len() > 0 {
-			terminalErr = fmt.Errorf("snapshot create %s: empty manifest on non-empty share (%d live hashes), refusing to report durability: %w",
-				snapID, liveHashes.Len(), models.ErrSnapshotVerifyFailed)
+		liveCount := liveHashes.Len()
+		if manifestCount < liveCount {
+			terminalErr = fmt.Errorf("snapshot create %s: manifest covers %d of %d blocks the metadata references, refusing to report durability: %w",
+				snapID, manifestCount, liveCount, models.ErrSnapshotManifestIncomplete)
 			r.failSnap(shareName, snapID, terminalErr)
-			logger.Error("snapshot create: empty manifest on non-empty share",
-				"snapshot_id", snapID, "share", shareName, "live_hashes", liveHashes.Len())
+			logger.Error("snapshot create: incomplete manifest on non-empty share",
+				"snapshot_id", snapID, "share", shareName,
+				"manifest_count", manifestCount, "live_hashes", liveCount)
 			return
 		}
-		logger.Info("snapshot create: empty manifest on genuinely-empty share (verify vacuously ok)",
-			"snapshot_id", snapID, "share", shareName)
+		if liveCount == 0 {
+			logger.Info("snapshot create: empty manifest on genuinely-empty share (verify vacuously ok)",
+				"snapshot_id", snapID, "share", shareName)
+		}
 	}
 
 	// Hardcoded; benchmarking confirmed no operator tuning need.
