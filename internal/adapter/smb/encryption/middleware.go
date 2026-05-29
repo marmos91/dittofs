@@ -21,6 +21,14 @@ var ErrDecryptFailed = errors.New("SMB3 decryption failed")
 // (MS-SMB2 §3.3.5.2.7) instead of silently dropping the message.
 var ErrUnknownSession = errors.New("encrypted message for unknown session")
 
+// ErrNoDecryptor indicates the session exists but has no derivable AEAD
+// key (anonymous / guest / SMB 2.x). Encrypting requests on such a session
+// is a protocol error — smbtorture's smb2.session.anon-encryption{1,2,3}
+// drives exactly this path and asserts CONNECTION_RESET. Callers terminate
+// the TCP connection on this error instead of treating it as a transient
+// decrypt failure (which would let the client retry indefinitely).
+var ErrNoDecryptor = errors.New("session has no decryptor (anonymous / guest / SMB 2.x)")
+
 // EncryptableSession is the minimal interface for a session that supports encryption.
 // This decouples the middleware from the full session.Session type to avoid circular imports.
 type EncryptableSession interface {
@@ -92,6 +100,19 @@ func (m *sessionEncryptionMiddleware) DecryptRequest(transformMessage []byte) ([
 			th.SessionId, ErrUnknownSession, ErrDecryptFailed)
 	}
 
+	// Anonymous / guest / SMB 2.x sessions never derive AEAD keys, so they
+	// have no decryptor. An encrypted request reaching such a session is a
+	// protocol violation (MS-SMB2 §3.3.5.2.1 — "If Session.SessionFlags has
+	// the SMB2_SESSION_FLAG_IS_NULL or SMB2_SESSION_FLAG_IS_GUEST bit set,
+	// the request MUST be rejected"). Surface a typed error so the connection
+	// layer can drop the TCP connection rather than retrying decrypt
+	// (smbtorture smb2.session.anon-encryption{1,2,3} asserts CONNECTION_RESET).
+	nonceSize := sess.DecryptorNonceSize()
+	if nonceSize == 0 {
+		return nil, th.SessionId, fmt.Errorf("session 0x%x has no decryptor: %w: %w",
+			th.SessionId, ErrNoDecryptor, ErrDecryptFailed)
+	}
+
 	// Extract encrypted data (everything after the 52-byte transform header)
 	encryptedData := transformMessage[header.TransformHeaderSize:]
 
@@ -103,7 +124,6 @@ func (m *sessionEncryptionMiddleware) DecryptRequest(transformMessage []byte) ([
 	copy(ciphertextWithTag[len(encryptedData):], th.Signature[:])
 
 	// Extract nonce (first NonceSize bytes from the 16-byte Nonce field)
-	nonceSize := sess.DecryptorNonceSize()
 	nonce := make([]byte, nonceSize)
 	copy(nonce, th.Nonce[:nonceSize])
 

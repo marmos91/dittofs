@@ -288,30 +288,22 @@ incomplete break notification delivery and multi-client coordination.
 
 ### Sessions (Remaining)
 
-Phase 73 Plan 03 implemented session re-authentication with key re-derivation
-per MS-SMB2 3.3.5.5.3. Remaining tests need session reconnect or multi-channel
-binding. reauth1-6 / anon-encryption1-3 / ntlmssp_bug14932 were previously
-masked because earlier suite tests hung; once the hang cleared they surfaced
-as pre-existing failures rather than regressions and are tracked here for
-follow-up.
+reauth4-5 + anon-encryption1-3 are the residuals after #746: re-auth keys
+are no longer regenerated, malformed NTLMv2 maps to INVALID_PARAMETER,
+USER_SESSION_DELETED is signed with the original session key, and encrypted
+requests on sessions without an AEAD decryptor drop the connection. The
+remaining failures need handle-identity binding (reauth4/5 — file handle
+must carry the original opener's auth context across re-auth, not the new
+re-auth'd identity) and anonymous SESSION_SETUP plumbing (anon-encryption1-3
+still return INVALID_PARAMETER for the anon TYPE_3 itself).
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.session.reconnect1 | Sessions | Session reconnect not fully working | #746 |
-| smb2.session.reconnect2 | Sessions | Session reconnect not fully working | #746 |
-| smb2.session.bind_negative_smb202 | Sessions | Session binding validation not fully working | #746 |
-| smb2.session.bind_negative_smb210s | Sessions | Session binding validation not fully working | #746 |
-| smb2.session.bind_negative_smb210d | Sessions | Session binding validation not fully working | #746 |
-| smb2.session.reauth1 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client (signature/preauth chain) | #746 |
-| smb2.session.reauth2 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | #746 |
-| smb2.session.reauth3 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | #746 |
-| smb2.session.reauth4 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | #746 |
-| smb2.session.reauth5 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | #746 |
-| smb2.session.reauth6 | Sessions | Pre-existing: re-auth expects LOGON_FAILURE for malformed creds, gets ACCESS_DENIED | #746 |
-| smb2.session.ntlmssp_bug14932 | Sessions | Pre-existing: malformed NTLMSSP expects INVALID_PARAMETER, gets ACCESS_DENIED | #746 |
-| smb2.session.anon-encryption1 | Sessions | Pre-existing: anonymous encryption setup rejected with INVALID_PARAMETER | #746 |
-| smb2.session.anon-encryption2 | Sessions | Pre-existing: anonymous encryption setup rejected with INVALID_PARAMETER | #746 |
-| smb2.session.anon-encryption3 | Sessions | Pre-existing: anonymous encryption setup rejected with INVALID_PARAMETER | #746 |
+| smb2.session.reauth4 | Sessions | Pre-existing: handle's original opener auth context is not preserved across re-auth — set_secdesc on a handle opened by user fails after reauth to anon | #746 |
+| smb2.session.reauth5 | Sessions | Pre-existing: same handle-identity binding gap as reauth4 — rename / unlink after reauth fails because path checks use the new auth context | #746 |
+| smb2.session.anon-encryption1 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #746 |
+| smb2.session.anon-encryption2 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #746 |
+| smb2.session.anon-encryption3 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #746 |
 
 ### Session Binding (Multi-Channel, Not Implemented)
 

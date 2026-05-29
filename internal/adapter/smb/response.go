@@ -624,10 +624,26 @@ func grantConnectionCredits(connInfo *ConnInfo, sessionID uint64, requested, cre
 func SendErrorResponse(reqHeader *header.SMB2Header, status types.Status, connInfo *ConnInfo) error {
 	credits := grantConnectionCredits(connInfo, reqHeader.SessionID, reqHeader.Credits, reqHeader.CreditCharge)
 	respHeader := header.NewResponseHeaderWithCredits(reqHeader, status, credits)
-	if status == types.StatusUserSessionDeleted && connInfo.SessionTracker != nil {
-		if fallback := connInfo.SessionTracker.AnyTrackedSession(); fallback != 0 {
-			if _, ok := connInfo.Handler.GetSession(fallback); ok {
-				return sendMessageWithSigner(respHeader, MakeErrorBody(), connInfo, fallback)
+	if status == types.StatusUserSessionDeleted {
+		// Prefer the request's own SessionID when it still resolves to a
+		// session record — typically a LoggedOff zombie kept alive so its
+		// signing key remains reachable for in-flight responses (LOGOFF,
+		// supersession via PreviousSessionID — smb2.session.reconnect{1,2}).
+		// The client signed the request with that key and expects the reply
+		// signed with the same key; falling through to AnyTrackedSession
+		// would pick whatever map iteration order surfaces — possibly the
+		// NEW session created by the supersession, whose key the client has
+		// no way to know yet → STATUS_ACCESS_DENIED on the client's verifier.
+		if reqHeader.SessionID != 0 {
+			if _, ok := connInfo.Handler.GetSession(reqHeader.SessionID); ok {
+				return sendMessageWithSigner(respHeader, MakeErrorBody(), connInfo, reqHeader.SessionID)
+			}
+		}
+		if connInfo.SessionTracker != nil {
+			if fallback := connInfo.SessionTracker.AnyTrackedSession(); fallback != 0 {
+				if _, ok := connInfo.Handler.GetSession(fallback); ok {
+					return sendMessageWithSigner(respHeader, MakeErrorBody(), connInfo, fallback)
+				}
 			}
 		}
 	}

@@ -26,6 +26,13 @@ import (
 // (which should drop the connection after 5 attempts).
 var ErrUnknownEncryptedSession = errors.New("encrypted message for unknown session")
 
+// ErrAnonEncryption is returned by ReadRequest when a transform-header
+// message targets a session that exists but has no AEAD decryptor — an
+// anonymous, guest, or SMB 2.x session. The connection loop closes the TCP
+// connection on this error (smbtorture smb2.session.anon-encryption{1,2,3}
+// asserts CONNECTION_RESET).
+var ErrAnonEncryption = errors.New("encrypted message for session without decryptor")
+
 // SigningVerifier verifies SMB2 message signatures during request reading.
 // This decouples the framing layer from session management.
 type SigningVerifier interface {
@@ -112,6 +119,9 @@ func ReadRequest(
 					SessionID:  transformSessionID,
 				}
 				return synthetic, nil, nil, true, ErrUnknownEncryptedSession
+			}
+			if errors.Is(err, encryption.ErrNoDecryptor) {
+				return nil, nil, nil, false, fmt.Errorf("%w: %w", ErrAnonEncryption, err)
 			}
 			return nil, nil, nil, false, fmt.Errorf("decrypt transform message: %w", err)
 		}
