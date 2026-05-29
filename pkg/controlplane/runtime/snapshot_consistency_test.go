@@ -199,12 +199,13 @@ func (f *realBackupFixture) assertNoTornFiles(t *testing.T, store metadata.Metad
 	t.Helper()
 	ctx := context.Background()
 
+	// The fixture creates the share before any snapshot and the dump always
+	// captures shares, so the root must be present in every restored image.
+	// A genuine not-found would mean the share was dropped from the dump (a
+	// real consistency bug); any other error is an unexpected store failure.
 	root, err := store.GetRootHandle(ctx, f.shareName)
 	if err != nil {
-		// The share may not yet exist in the dump if the very first
-		// snapshot raced ahead of CreateShare; that is itself consistent
-		// (empty image), so treat absence as a clean empty snapshot.
-		return
+		t.Fatalf("snapshot %d: root handle missing from restored dump: %v", n, err)
 	}
 
 	entries, _, err := store.ListChildren(ctx, root, "", 0)
@@ -355,13 +356,18 @@ func (f *realBackupFixture) tryPutMultiChunkFile(ctx context.Context, name strin
 
 	// Reuse the existing handle on overwrite (real-client semantics) so the
 	// working set stays bounded; only mint a fresh handle for a new name.
+	// A not-found error means the child does not exist yet; any other error
+	// is a real store failure that must propagate.
 	h, err := f.mem.GetChild(ctx, root, name)
-	isNew := err != nil
-	if isNew {
+	isNew := err != nil && metadata.IsNotFoundError(err)
+	switch {
+	case isNew:
 		h, err = f.mem.GenerateHandle(ctx, f.shareName, "/"+name)
 		if err != nil {
 			return fmt.Errorf("generate handle: %w", err)
 		}
+	case err != nil:
+		return fmt.Errorf("get child %q: %w", name, err)
 	}
 	_, id, err := metadata.DecodeFileHandle(h)
 	if err != nil {
