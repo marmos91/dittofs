@@ -562,28 +562,12 @@ func (r *Runtime) runSnapshotOrchestration(
 		return
 	}
 
-	// --- Step 4: Verify gate drain ---
-	// bs was resolved in Step 0 and reused here.
-	logger.Debug("snapshot create: drain start", "snapshot_id", snapID, "share", shareName)
-	if err := bs.DrainAllUploads(ctx); err != nil {
-		terminalErr = fmt.Errorf("snapshot create %s: drain: %w: %v", snapID, drainSentinel(err), err)
-		r.failSnap(shareName, snapID, terminalErr)
-		logger.Error("snapshot create: drain failed",
-			"snapshot_id", snapID, "share", shareName, "error", err)
-		return
-	}
-	logger.Info("snapshot create: drain complete", "snapshot_id", snapID, "share", shareName)
-
-	// --- Step 5: Verify ---
+	// --- Step 4: resolve the remote durability target ---
+	// bs was resolved in Step 0 and reused here. A local-only share (no
+	// remote) cannot be remote-verified; it is handled after the
+	// manifest-completeness guard below (#791).
 	remoteStore := bs.RemoteStore()
-	if remoteStore == nil {
-		terminalErr = fmt.Errorf("snapshot create %s: share %q has no remote store, cannot verify: %w",
-			snapID, shareName, models.ErrSnapshotVerifyFailed)
-		r.failSnap(shareName, snapID, terminalErr)
-		logger.Error("snapshot create: no remote store",
-			"snapshot_id", snapID, "share", shareName)
-		return
-	}
+
 	// --- empty-manifest guard: empty manifest on a non-empty share ---
 	// VerifyRemoteDurability returns success for an empty manifest without
 	// probing any block (verify.go). After the Step-0 drain a genuinely
@@ -625,6 +609,42 @@ func (r *Runtime) runSnapshotOrchestration(
 		logger.Info("snapshot create: empty manifest on genuinely-empty share (verify vacuously ok)",
 			"snapshot_id", snapID, "share", shareName)
 	}
+
+	// --- Step 5: local-only shares skip remote durability ---
+	// A share with no remote store cannot be remote-verified, but its
+	// snapshot still protects against accidental in-share writes/deletes
+	// (the metadata dump + local CAS hold). Mark it ready with
+	// remote_durable=false rather than failing (#791). Mirrors the
+	// restore-side no-remote skip so create and restore agree.
+	if remoteStore == nil {
+		if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, false, int64(manifestCount)); err != nil {
+			terminalErr = fmt.Errorf("snapshot create %s: mark ready (local-only): %w: %v",
+				snapID, models.ErrSnapshotBackupFailed, err)
+			r.failSnap(shareName, snapID, terminalErr)
+			logger.Error("snapshot create: mark ready failed (local-only)",
+				"snapshot_id", snapID, "share", shareName, "error", err)
+			return
+		}
+		logger.Info("snapshot create: ready (local-only, no remote durability)",
+			"snapshot_id", snapID,
+			"share", shareName,
+			"manifest_count", manifestCount,
+			"final_state", "ready",
+			"remote_durable", false,
+		)
+		return
+	}
+
+	// --- Step 6: Verify gate drain ---
+	logger.Debug("snapshot create: drain start", "snapshot_id", snapID, "share", shareName)
+	if err := bs.DrainAllUploads(ctx); err != nil {
+		terminalErr = fmt.Errorf("snapshot create %s: drain: %w: %v", snapID, drainSentinel(err), err)
+		r.failSnap(shareName, snapID, terminalErr)
+		logger.Error("snapshot create: drain failed",
+			"snapshot_id", snapID, "share", shareName, "error", err)
+		return
+	}
+	logger.Info("snapshot create: drain complete", "snapshot_id", snapID, "share", shareName)
 
 	// Hardcoded; benchmarking confirmed no operator tuning need.
 	concurrency := 16
