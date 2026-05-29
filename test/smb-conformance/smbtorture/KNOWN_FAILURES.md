@@ -277,7 +277,7 @@ incomplete break notification delivery and multi-client coordination.
 
 ### Sessions (Remaining)
 
-reauth4-5 are the remaining residuals after #746 + #773. anonymous
+reauth4-5 are the remaining residuals after #746 + #773. Anonymous
 SESSION_SETUP now completes with an MS-NLMP-aligned signing key plus a
 proper SPNEGO accept-completed token (anon-encryption1-3 flipped in #773).
 The remaining failures need handle-identity binding (reauth4/5 — file

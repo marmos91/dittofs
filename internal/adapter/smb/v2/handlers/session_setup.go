@@ -1376,14 +1376,19 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 
 		// Encryption: activate encryptors for preferred/required modes on 3.x sessions.
 		// Guest sessions never reach here (no session key), so they are exempt.
-		// Per MS-SMB2 §3.3.5.2.9 anonymous (IsNull) sessions also bypass
-		// encryption — the smbtorture smb2.session.anon-encryption{1,2,3}
-		// asserts that a transform-header inbound on an anonymous session
-		// triggers CONNECTION_RESET, which the connection layer drives off
-		// ErrAnonEncryption when CryptoState.Decryptor is nil. Deriving the
-		// AEAD decryptor here would let that path silently succeed and
-		// break the negative test.
-		if encryptionEnabled && !sess.IsNull {
+		//
+		// IsNull (anonymous) sessions DO derive AEAD keys here, mirroring
+		// Samba source3/smbd/smb2_sesssetup.c:328-360 which calls
+		// smb2_signing_key_cipher_create on session_info->session_key for
+		// every 3.x session regardless of the internal anon→guest mapping.
+		// anon-encryption2 sends an encrypted TCON on the anon session and
+		// expects it to decrypt cleanly — skipping derivation here would
+		// disconnect that connection. The negative anon-encryption{1,3}
+		// cases (transform header on a connection without a prior user
+		// session) are handled at the framing layer via the
+		// ConnInfo.GotAuthenticatedSession gate, which mirrors Samba's
+		// smb2_server.c:499 got_authenticated_session check.
+		if encryptionEnabled {
 			// SMB 3.0/3.0.2 don't use negotiate contexts, so cipherId may be 0.
 			// Per MS-SMB2 spec, AES-128-CCM is the mandatory cipher for SMB 3.0.
 			encCipherId := cipherId
