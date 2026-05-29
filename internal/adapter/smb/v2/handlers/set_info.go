@@ -257,7 +257,20 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 	case types.SMB2InfoTypeFile:
 		return h.setFileInfoFromStore(ctx, authCtx, openFile, types.FileInfoClass(req.FileInfoClass), req.Buffer)
 	case types.SMB2InfoTypeSecurity:
-		return h.setSecurityInfo(authCtx, openFile, req.AdditionalInfo, req.Buffer)
+		// Authorise the SD-write under the opener's identity rather than
+		// the session's current identity. MS-SMB2 §3.3.5.5.3 freezes the
+		// open's SecurityContext at CREATE; the handler-level WRITE_DAC /
+		// WRITE_OWNER / ACCESS_SYSTEM_SECURITY check inside setSecurityInfo
+		// has already gated on OpenFile.GrantedAccess, so the metadata
+		// ownership check that BuildAuthContext-from-session would trip
+		// after a re-auth to a different principal would be wrong. See
+		// smbtorture smb2.session.reauth4 / reauth5. Falls back to the
+		// session-current authCtx when no opener snapshot exists.
+		secAuthCtx := h.buildOpenerAuthContext(ctx, openFile)
+		if secAuthCtx == nil {
+			secAuthCtx = authCtx
+		}
+		return h.setSecurityInfo(secAuthCtx, openFile, req.AdditionalInfo, req.Buffer)
 	default:
 		return setInfoStatus(types.StatusInvalidParameter), nil
 	}

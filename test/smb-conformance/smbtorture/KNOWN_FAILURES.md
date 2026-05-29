@@ -261,19 +261,27 @@ incomplete break notification delivery and multi-client coordination.
 
 ### Sessions (Remaining)
 
-reauth4-5 + anon-encryption1-3 are the residuals after #746: re-auth keys
+anon-encryption1-3 are the residuals after #746: re-auth keys
 are no longer regenerated, malformed NTLMv2 maps to INVALID_PARAMETER,
 USER_SESSION_DELETED is signed with the original session key, and encrypted
 requests on sessions without an AEAD decryptor drop the connection. The
-remaining failures need handle-identity binding (reauth4/5 — file handle
-must carry the original opener's auth context across re-auth, not the new
-re-auth'd identity) and anonymous SESSION_SETUP plumbing (anon-encryption1-3
+remaining failures need anonymous SESSION_SETUP plumbing (anon-encryption1-3
 still return INVALID_PARAMETER for the anon TYPE_3 itself).
+
+reauth5 remains failing on the `smb2_util_unlink(fname2)` assertion at
+session.c:730 — the helper issues CREATE(DISP_OPEN, DELETE_ON_CLOSE) on a
+file that does NOT yet exist, expecting NT_STATUS_OK. Upstream Samba marks
+this as a known-fail (`selftest/knownfail:213` "samba3.smb2.session.\*reauth5
+# some special anonymous checks?"), so the test is asserting stricter
+semantics than Samba's own reference server implements. Closing reauth5
+would require either (a) returning OK from CREATE-on-nonexistent under
+anonymous re-auth, or (b) Samba accepting the stricter semantics upstream.
+Both are out of scope for #772, which targeted the handle-identity binding
+shape that reauth4 actually exercises.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.session.reauth4 | Sessions | Pre-existing: handle's original opener auth context is not preserved across re-auth — set_secdesc on a handle opened by user fails after reauth to anon | #772 |
-| smb2.session.reauth5 | Sessions | Pre-existing: same handle-identity binding gap as reauth4 — rename / unlink after reauth fails because path checks use the new auth context | #772 |
+| smb2.session.reauth5 | Sessions | Upstream Samba knownfail (`selftest/knownfail:213`): smb2_util_unlink(nonexistent) asserts NT_STATUS_OK, server returns OBJECT_NAME_NOT_FOUND. Beyond #772's handle-identity binding scope | #772 |
 | smb2.session.anon-encryption1 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #773 |
 | smb2.session.anon-encryption2 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #773 |
 | smb2.session.anon-encryption3 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #773 |
