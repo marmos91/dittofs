@@ -128,18 +128,6 @@ counter already matched. The `2conn_notify_max_async_credits` failure that
 remained here was a cross-connection MessageID collision in
 `NotifyRegistry`, fixed in #416.
 
-### Create Contexts (Advanced Semantics Not Implemented)
-
-Advanced CREATE context features (impersonation, ACL-based create, quota fake
-files, create blobs) are not implemented. Basic create operations pass.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.create.impersonation | Create | Impersonation levels not implemented | #771 |
-| smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | #771 |
-| smb2.create.multi | Create | Regression from recent changes, fails on all 3 stores | #771 |
-| smb2.create.path-length | Create | Flaky in CI (path length validation race) | #771 |
-
 ### Query/Set Info (Advanced Scenarios)
 
 Advanced getinfo scenarios requiring security descriptor queries, buffer size
@@ -420,6 +408,29 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-29 — #771 closed: 4 `smb2.create.*` residuals walked back
+
+PR with per-kind parent-DACL bit (`ADD_FILE` vs `ADD_SUBDIRECTORY`) in
+`CheckParentCreateAccess` flips `smb2.create.mkdir-visible`. The other
+three rows tracked under #771 were already PASS / SKIP against the
+develop tip and the KF entries were stale:
+
+- **`smb2.create.impersonation`** — already PASSes; `create.go` rejects
+  `ImpersonationLevel > 3` with `STATUS_BAD_IMPERSONATION_LEVEL`
+  (added in PR #480, baseline 2026-05-28).
+- **`smb2.create.mkdir-visible`** — newly flipped. Parent DACL with
+  inheritable deny-WORLD-`SEC_DIR_ADD_FILE` no longer blocks
+  subdirectory creation (MS-FSA 2.1.5.1.1 / Samba `mkdir_internal`).
+- **`smb2.create.multi`** — already PASSes; 3 concurrent CREATEs on the
+  same name resolve to 1 OK + 2 `OBJECT_NAME_COLLISION` via the
+  existing transactional TOCTOU guard in `createEntry`.
+- **`smb2.create.path-length`** — `--interactive`-only test (returns
+  `TORTURE_SKIP` in non-interactive runs per Samba
+  `source4/torture/smb2/create.c:3806`). Not a failure; KF row was
+  stale.
+
+Umbrella #771 closed.
 
 ### 2026-05-29 — #741 residual triage: blob+gentest → appendix; split into #771; close #741
 
