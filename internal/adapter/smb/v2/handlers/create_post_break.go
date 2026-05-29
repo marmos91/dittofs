@@ -179,12 +179,6 @@ func (h *Handler) hasSameClientNonStatOpenForFile(
 	if len(fileHandle) == 0 {
 		return false
 	}
-	// A zero ClientGUID is never a "real" client identity (NEGOTIATE always
-	// generates a non-zero GUID); short-circuit so a missing GUID does not
-	// false-match other zero-GUID opens.
-	if clientGUID == ([16]byte{}) {
-		return false
-	}
 	found := false
 	h.files.Range(func(_, value any) bool {
 		other := value.(*OpenFile)
