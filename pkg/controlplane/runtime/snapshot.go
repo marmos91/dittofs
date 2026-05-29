@@ -635,7 +635,7 @@ func (r *Runtime) runSnapshotOrchestration(
 		return
 	}
 
-	// --- Step 6: Verify gate drain ---
+	// --- Step 6: Verify gate (drain then verify remote durability) ---
 	logger.Debug("snapshot create: drain start", "snapshot_id", snapID, "share", shareName)
 	if err := bs.DrainAllUploads(ctx); err != nil {
 		terminalErr = fmt.Errorf("snapshot create %s: drain: %w: %v", snapID, drainSentinel(err), err)
@@ -676,7 +676,7 @@ func (r *Runtime) runSnapshotOrchestration(
 		return
 	}
 
-	// --- Step 6: Ready flip ---
+	// --- Step 7: Ready flip ---
 	// Atomically transition state=creating -> state=ready AND set
 	// remote_durable=true in a single conditional UPDATE. A two-step
 	// (state, durable) sequence would leave a transient window where a
