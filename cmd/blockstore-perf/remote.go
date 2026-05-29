@@ -13,7 +13,7 @@ import (
 
 // setupRemote constructs the RemoteStore backing the harness run.
 // Returns a cleanup that closes the store ONLY for memory remotes —
-// the engine.BlockStore Close already closes the remote it owns, so
+// the engine.Store Close already closes the remote it owns, so
 // when the remote is passed into engine.New the caller must skip our
 // cleanup (the s3 path is only used by the raw-s3-put workload that
 // bypasses the engine, and that path takes ownership of the cleanup).

@@ -142,7 +142,7 @@ func run(cfg config) error {
 		return err
 	}
 	defer closeFn()
-	// engine.BlockStore.Close closes the remote — no separate remoteClose.
+	// engine.Store.Close closes the remote — no separate remoteClose.
 
 	profDir, cpuStop, err := startProfiles(cfg)
 	if err != nil {
