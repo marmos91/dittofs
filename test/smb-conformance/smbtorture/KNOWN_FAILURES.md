@@ -42,7 +42,7 @@ async credit coordination.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.multichannel.leases.test1 | Multi-channel | Cross-channel lease break fan-out is Phase 2 work on #361; test flakes on DittoFS until the primary/secondary channel coordination lands | #745 |
-| smb2.multichannel.leases.test3 | Multi-channel | Spurious lease break on uncontested open — separate bug from #417 epoch drift | #740 |
+| smb2.multichannel.leases.test3 | Multi-channel | Spurious lease break on uncontested open — separate bug from #417 epoch drift | #745 |
 
 Note: the five `smb2.multichannel.{leases,oplocks}` tests requiring Samba-internal harness FSCTLs (`torture_block_tcp_transport`, `FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT`) have been moved to the [Permanently Unimplementable](#permanently-unimplementable-out-of-scope) appendix.
 
@@ -201,7 +201,7 @@ Advanced connection and tree connect edge cases.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.lease.statopen4 | Leases | Flaky stat-open lease test - passes intermittently | #750 |
+| smb2.lease.statopen4 | Leases | Flaky stat-open lease test - passes intermittently | #751 |
 
 ### Character Set (Edge Cases)
 
@@ -243,20 +243,20 @@ still fail due to incomplete reconnect and lease coordination.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-open.reopen1a | Durable handles V1 | Durable reopen not fully working | #749 |
-| smb2.durable-open.reopen1a-lease | Durable handles V1 | Durable reopen with lease not fully working | #749 |
-| smb2.durable-open.reopen2 | Durable handles V1 | Durable reopen not fully working | #749 |
-| smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | #749 |
-| smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | #749 |
-| smb2.durable-open.reopen2a | Durable handles V1 | Durable reopen not fully working | #749 |
-| smb2.durable-open.reopen4 | Durable handles V1 | Durable reopen not fully working | #749 |
-| smb2.durable-open.delete_on_close1 | Durable handles V1 | Durable DOC not fully working | #749 |
-| smb2.durable-open.delete_on_close2 | Durable handles V1 | Durable DOC not fully working | #749 |
-| smb2.durable-open.file-position | Durable handles V1 | Durable file position not fully working | #749 |
-| smb2.durable-open.lock-oplock | Durable handles V1 | Durable lock + oplock not fully working | #749 |
-| smb2.durable-open.lock-lease | Durable handles V1 | Durable lock + lease not fully working | #749 |
-| smb2.durable-open.alloc-size | Durable handles V1 | Pre-existing: out.alloc_size returned 0 instead of expected non-zero | #749 |
-| smb2.durable-open.read-only | Durable handles V1 | Pre-existing: OBJECT_NAME_NOT_FOUND on durable read-only reopen | #749 |
+| smb2.durable-open.reopen1a | Durable handles V1 | Durable reopen not fully working | #738 |
+| smb2.durable-open.reopen1a-lease | Durable handles V1 | Durable reopen with lease not fully working | #738 |
+| smb2.durable-open.reopen2 | Durable handles V1 | Durable reopen not fully working | #738 |
+| smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | #738 |
+| smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | #738 |
+| smb2.durable-open.reopen2a | Durable handles V1 | Durable reopen not fully working | #738 |
+| smb2.durable-open.reopen4 | Durable handles V1 | Durable reopen not fully working | #738 |
+| smb2.durable-open.delete_on_close1 | Durable handles V1 | Durable DOC not fully working | #738 |
+| smb2.durable-open.delete_on_close2 | Durable handles V1 | Durable DOC not fully working | #738 |
+| smb2.durable-open.file-position | Durable handles V1 | Durable file position not fully working | #738 |
+| smb2.durable-open.lock-oplock | Durable handles V1 | Durable lock + oplock not fully working | #738 |
+| smb2.durable-open.lock-lease | Durable handles V1 | Durable lock + lease not fully working | #738 |
+| smb2.durable-open.alloc-size | Durable handles V1 | Pre-existing: out.alloc_size returned 0 instead of expected non-zero | #738 |
+| smb2.durable-open.read-only | Durable handles V1 | Pre-existing: OBJECT_NAME_NOT_FOUND on durable read-only reopen | #738 |
 
 ### Durable Handles V2 (Fix Candidate)
 
@@ -265,38 +265,38 @@ still fail due to incomplete reconnect, lease coordination, and persistence.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-v2-open.create-blob | Durable handles V2 | DH2Q create context blob validation | #749 |
-| smb2.durable-v2-open.open-oplock | Durable handles V2 | DH2 open with oplock not fully working | #749 |
-| smb2.durable-v2-open.open-lease | Durable handles V2 | DH2 open with lease not fully working | #749 |
-| smb2.durable-v2-open.reopen1 | Durable handles V2 | DH2 reopen not fully working | #749 |
-| smb2.durable-v2-open.reopen1a | Durable handles V2 | DH2 reopen not fully working | #749 |
-| smb2.durable-v2-open.reopen1a-lease | Durable handles V2 | DH2 reopen with lease not fully working | #749 |
-| smb2.durable-v2-open.reopen2 | Durable handles V2 | DH2 reopen not fully working | #749 |
-| smb2.durable-v2-open.reopen2b | Durable handles V2 | DH2 reopen not fully working | #749 |
-| smb2.durable-v2-open.reopen2-lease | Durable handles V2 | DH2 reopen with lease not fully working | #749 |
-| smb2.durable-v2-open.reopen2-lease-v2 | Durable handles V2 | DH2 reopen with lease V2 not fully working | #749 |
-| smb2.durable-v2-open.durable-v2-setinfo | Durable handles V2 | DH2 setinfo not fully working | #749 |
-| smb2.durable-v2-open.lock-oplock | Durable handles V2 | DH2 lock with oplock not fully working | #749 |
-| smb2.durable-v2-open.lock-lease | Durable handles V2 | DH2 lock with lease not fully working | #749 |
-| smb2.durable-v2-open.lock-noW-lease | Durable handles V2 | DH2 lock without write lease not fully working | #749 |
-| smb2.durable-v2-open.stat-and-lease | Durable handles V2 | DH2 stat + lease interaction not fully working | #749 |
-| smb2.durable-v2-open.nonstat-and-lease | Durable handles V2 | DH2 non-stat + lease interaction not fully working | #749 |
-| smb2.durable-v2-open.statRH-and-lease | Durable handles V2 | DH2 stat-RH + lease interaction not fully working | #749 |
-| smb2.durable-v2-open.two-same-lease | Durable handles V2 | DH2 two handles same lease not fully working | #749 |
-| smb2.durable-v2-open.two-different-lease | Durable handles V2 | DH2 two handles different leases not fully working | #749 |
-| smb2.durable-v2-open.keep-disconnected-rh-with-stat-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #749 |
-| smb2.durable-v2-open.keep-disconnected-rh-with-rh-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #749 |
-| smb2.durable-v2-open.keep-disconnected-rh-with-rwh-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #749 |
-| smb2.durable-v2-open.keep-disconnected-rwh-with-stat-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #749 |
-| smb2.durable-v2-open.purge-disconnected-rwh-with-rwh-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #749 |
-| smb2.durable-v2-open.purge-disconnected-rwh-with-rh-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #749 |
-| smb2.durable-v2-open.purge-disconnected-rh-with-share-none-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #749 |
-| smb2.durable-v2-open.purge-disconnected-rh-with-write | Durable handles V2 | DH2 disconnected handle purge not fully working | #749 |
-| smb2.durable-v2-open.purge-disconnected-rh-with-rename | Durable handles V2 | DH2 disconnected handle purge not fully working | #749 |
-| smb2.durable-v2-open.app-instance | Durable handles V2 | App instance ID not fully working | #749 |
-| smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Persistent handles not implemented | #749 |
-| smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Persistent handles not implemented | #749 |
-| smb2.durable-v2-delay.durable_v2_reconnect_delay | Durable handles V2 | DH2 reconnect delay not fully working | #749 |
+| smb2.durable-v2-open.create-blob | Durable handles V2 | DH2Q create context blob validation | #739 |
+| smb2.durable-v2-open.open-oplock | Durable handles V2 | DH2 open with oplock not fully working | #739 |
+| smb2.durable-v2-open.open-lease | Durable handles V2 | DH2 open with lease not fully working | #739 |
+| smb2.durable-v2-open.reopen1 | Durable handles V2 | DH2 reopen not fully working | #739 |
+| smb2.durable-v2-open.reopen1a | Durable handles V2 | DH2 reopen not fully working | #739 |
+| smb2.durable-v2-open.reopen1a-lease | Durable handles V2 | DH2 reopen with lease not fully working | #739 |
+| smb2.durable-v2-open.reopen2 | Durable handles V2 | DH2 reopen not fully working | #739 |
+| smb2.durable-v2-open.reopen2b | Durable handles V2 | DH2 reopen not fully working | #739 |
+| smb2.durable-v2-open.reopen2-lease | Durable handles V2 | DH2 reopen with lease not fully working | #739 |
+| smb2.durable-v2-open.reopen2-lease-v2 | Durable handles V2 | DH2 reopen with lease V2 not fully working | #739 |
+| smb2.durable-v2-open.durable-v2-setinfo | Durable handles V2 | DH2 setinfo not fully working | #739 |
+| smb2.durable-v2-open.lock-oplock | Durable handles V2 | DH2 lock with oplock not fully working | #739 |
+| smb2.durable-v2-open.lock-lease | Durable handles V2 | DH2 lock with lease not fully working | #739 |
+| smb2.durable-v2-open.lock-noW-lease | Durable handles V2 | DH2 lock without write lease not fully working | #739 |
+| smb2.durable-v2-open.stat-and-lease | Durable handles V2 | DH2 stat + lease interaction not fully working | #739 |
+| smb2.durable-v2-open.nonstat-and-lease | Durable handles V2 | DH2 non-stat + lease interaction not fully working | #739 |
+| smb2.durable-v2-open.statRH-and-lease | Durable handles V2 | DH2 stat-RH + lease interaction not fully working | #739 |
+| smb2.durable-v2-open.two-same-lease | Durable handles V2 | DH2 two handles same lease not fully working | #739 |
+| smb2.durable-v2-open.two-different-lease | Durable handles V2 | DH2 two handles different leases not fully working | #739 |
+| smb2.durable-v2-open.keep-disconnected-rh-with-stat-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #739 |
+| smb2.durable-v2-open.keep-disconnected-rh-with-rh-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #739 |
+| smb2.durable-v2-open.keep-disconnected-rh-with-rwh-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #739 |
+| smb2.durable-v2-open.keep-disconnected-rwh-with-stat-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #739 |
+| smb2.durable-v2-open.purge-disconnected-rwh-with-rwh-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #739 |
+| smb2.durable-v2-open.purge-disconnected-rwh-with-rh-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #739 |
+| smb2.durable-v2-open.purge-disconnected-rh-with-share-none-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #739 |
+| smb2.durable-v2-open.purge-disconnected-rh-with-write | Durable handles V2 | DH2 disconnected handle purge not fully working | #739 |
+| smb2.durable-v2-open.purge-disconnected-rh-with-rename | Durable handles V2 | DH2 disconnected handle purge not fully working | #739 |
+| smb2.durable-v2-open.app-instance | Durable handles V2 | App instance ID not fully working | #739 |
+| smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Persistent handles not implemented | #739 |
+| smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Persistent handles not implemented | #739 |
+| smb2.durable-v2-delay.durable_v2_reconnect_delay | Durable handles V2 | DH2 reconnect delay not fully working | #739 |
 
 ### Leases (Fix Candidate)
 
@@ -332,9 +332,9 @@ follow-up.
 |-----------|----------|--------|-------|
 | smb2.session.reconnect1 | Sessions | Session reconnect not fully working | #746 |
 | smb2.session.reconnect2 | Sessions | Session reconnect not fully working | #746 |
-| smb2.session.bind_negative_smb202 | Sessions | Session binding validation not fully working | #747 |
-| smb2.session.bind_negative_smb210s | Sessions | Session binding validation not fully working | #747 |
-| smb2.session.bind_negative_smb210d | Sessions | Session binding validation not fully working | #747 |
+| smb2.session.bind_negative_smb202 | Sessions | Session binding validation not fully working | #746 |
+| smb2.session.bind_negative_smb210s | Sessions | Session binding validation not fully working | #746 |
+| smb2.session.bind_negative_smb210d | Sessions | Session binding validation not fully working | #746 |
 | smb2.session.reauth1 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client (signature/preauth chain) | #746 |
 | smb2.session.reauth2 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | #746 |
 | smb2.session.reauth3 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | #746 |
