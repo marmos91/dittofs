@@ -42,6 +42,7 @@ go.work.sum
 /dittofs
 /dfs
 /dfsctl
+/dfsbench
 /main
 
 # Operator binaries and tools
@@ -56,7 +57,7 @@ temp/
 benchmark_results/
 *.prof
 
-# blockstore-perf pprof output
+# cmd/bench pprof output (per-area subdir: _profiles/<area>/<workload>-<ts>/)
 _profiles/
 
 # POSIX test results

@@ -1,4 +1,4 @@
-.PHONY: setup-hooks check-hooks fmt lint vet build bench-phase12
+.PHONY: setup-hooks check-hooks fmt lint vet build bench-phase12 build-bench bench-blockstore bench-all
 
 # Configure git to use the project's hooks directory and make hooks
 # executable. Safe to re-run.
@@ -54,3 +54,17 @@ build:
 # regression, which surfaces as a non-zero exit from `go test -bench`.
 bench-phase12:
 	go test -bench BenchmarkPerfGate_Phase12 -benchtime=10s -run=^$$ ./pkg/blockstore/engine/...
+
+# Build the unified bench CLI (cmd/bench). See bench/README.md.
+# Output is dfsbench (not "bench") to avoid colliding with the
+# bench/ source directory at the repo root.
+build-bench:
+	go build -o dfsbench ./cmd/bench
+
+# Run blockstore Go benchmarks (10 iterations for benchstat).
+bench-blockstore:
+	go test -bench=. -benchtime=10x -run=^$$ ./bench/blockstore/
+
+# Umbrella target — only blockstore is wired today. As gc / snapshots /
+# metadata / adapters / e2e land, append their bench-<area> targets.
+bench-all: bench-blockstore
