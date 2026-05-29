@@ -1,8 +1,8 @@
 // blockstore-perf is a seeded workload harness for pkg/blockstore/engine.
-// Composes FSStore local + memory remote + in-memory metadata + Syncer
+// Composes FSStore local + (memory|s3) remote + in-memory metadata + Syncer
 // and drives one of: sequential-write, random-write, dedup-heavy,
-// mixed-rw, flush-churn. Captures wall-clock, throughput, and CPU + heap
-// pprof to <profile-dir>/<workload>-<timestamp>/.
+// mixed-rw, flush-churn, walk, delete, gc, raw-s3-put. Captures wall-clock,
+// throughput, and CPU + heap pprof to <profile-dir>/<workload>-<timestamp>/.
 //
 // Example: go run ./cmd/blockstore-perf --workload random-write --ops 5000
 package main
@@ -21,7 +21,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -33,12 +33,14 @@ const (
 )
 
 type config struct {
-	workload   string
-	ops        int
-	blockSize  int
-	workingSet int
-	profileDir string
-	seed       uint64
+	workload       string
+	ops            int
+	blockSize      int
+	workingSet     int
+	profileDir     string
+	seed           uint64
+	remote         string
+	gcGarbageRatio float64
 }
 
 func main() {
@@ -50,12 +52,25 @@ func main() {
 
 func parseFlags() config {
 	var c config
-	flag.StringVar(&c.workload, "workload", "", "workload name (sequential-write|random-write|dedup-heavy|mixed-rw|flush-churn)")
+	flag.StringVar(&c.workload, "workload", "", "workload name (sequential-write|random-write|dedup-heavy|mixed-rw|flush-churn|walk|delete|gc|raw-s3-put)")
 	flag.IntVar(&c.ops, "ops", 10000, "operation count")
 	bs := flag.Int("block-size", 0, "per-op block size in bytes (default: 8 MiB for sequential/dedup, 4 KiB for the rest)")
 	flag.IntVar(&c.workingSet, "working-set", 1, "number of files in the working set")
 	flag.StringVar(&c.profileDir, "profile-dir", "_profiles", "directory for pprof output")
 	flag.Uint64Var(&c.seed, "seed", 1, "PRNG seed for randomized workloads")
+	flag.StringVar(&c.remote, "remote", "memory", "remote backend (memory|s3); s3 reads AWS_* env")
+	envFile := flag.String("env-file", "", "optional .env file (KEY=VALUE) loaded before --remote=s3 reads AWS_* env")
+	_ = envFile // consumed via preScanEnvFile before flag.Parse so the flag registration only documents the surface
+
+	flag.Float64Var(&c.gcGarbageRatio, "gc-garbage-ratio", 0.3, "fraction of seeded chunks left unreferenced for the gc workload")
+	// Two-phase parse: pre-scan os.Args for --env-file so its contents
+	// can populate env BEFORE flag.Parse evaluates downstream defaults.
+	if path := preScanEnvFile(os.Args[1:]); path != "" {
+		if err := parseEnvFile(path); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+	}
 	flag.Parse()
 	if c.workload == "" {
 		fmt.Fprintln(os.Stderr, "--workload is required")
@@ -73,6 +88,24 @@ func parseFlags() config {
 	return c
 }
 
+// preScanEnvFile finds --env-file=PATH or --env-file PATH in argv
+// without consuming the flag — the real flag.Parse runs afterwards.
+func preScanEnvFile(argv []string) string {
+	for i, a := range argv {
+		switch {
+		case a == "--env-file" || a == "-env-file":
+			if i+1 < len(argv) {
+				return argv[i+1]
+			}
+		case len(a) > 11 && a[:11] == "--env-file=":
+			return a[11:]
+		case len(a) > 10 && a[:10] == "-env-file=":
+			return a[10:]
+		}
+	}
+	return ""
+}
+
 func run(cfg config) error {
 	tmpDir, err := os.MkdirTemp("", "blockstore-perf-")
 	if err != nil {
@@ -80,11 +113,36 @@ func run(cfg config) error {
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	bs, closeFn, err := newBlockStore(tmpDir)
+	remoteStore, remoteClose, err := setupRemote(cfg)
 	if err != nil {
 		return err
 	}
+	// raw-s3-put bypasses the engine; the engine path takes ownership
+	// of remote close otherwise.
+	rawS3 := cfg.workload == "raw-s3-put"
+	if rawS3 {
+		defer remoteClose()
+		return runRawS3(cfg, remoteStore)
+	}
+	// Local/walk/delete workloads run against the local store only.
+	if cfg.workload == "walk" || cfg.workload == "delete" {
+		defer remoteClose()
+		return runLocalOnly(cfg, tmpDir)
+	}
+	if cfg.workload == "gc" {
+		defer remoteClose()
+		return runGC(cfg, remoteStore)
+	}
+
+	bs, closeFn, err := newBlockStore(tmpDir, remoteStore)
+	if err != nil {
+		// engine never took ownership of the remote on construction
+		// failure — drop it here.
+		remoteClose()
+		return err
+	}
 	defer closeFn()
+	// engine.BlockStore.Close closes the remote — no separate remoteClose.
 
 	profDir, cpuStop, err := startProfiles(cfg)
 	if err != nil {
@@ -133,9 +191,10 @@ func run(cfg config) error {
 	return nil
 }
 
-// newBlockStore wires production-equivalent FSStore + memory remote +
-// memory metadata + Syncer, sized for short-lived benchmark runs.
-func newBlockStore(baseDir string) (*engine.Store, func(), error) {
+// newBlockStore wires production-equivalent FSStore + caller-supplied
+// remote + memory metadata + Syncer, sized for short-lived benchmark
+// runs. Takes ownership of remoteStore via engine.Store.Close.
+func newBlockStore(baseDir string, remoteStore remote.RemoteStore) (*engine.Store, func(), error) {
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	local, err := fs.NewWithOptions(baseDir, 0, memBudget, ms, fs.FSStoreOptions{
 		MaxLogBytes:     logBudget,
@@ -150,7 +209,6 @@ func newBlockStore(baseDir string) (*engine.Store, func(), error) {
 	if err := local.StartRollup(context.Background()); err != nil {
 		return nil, nil, fmt.Errorf("StartRollup: %w", err)
 	}
-	remoteStore := remotememory.New()
 	syncer := engine.NewSyncer(local, remoteStore, ms, engine.DefaultConfig())
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           local,
@@ -197,6 +255,37 @@ func writeHeapProfile(dir string) error {
 	defer func() { _ = f.Close() }()
 	if err := pprof.WriteHeapProfile(f); err != nil {
 		return fmt.Errorf("WriteHeapProfile: %w", err)
+	}
+	return nil
+}
+
+// timedRun wraps the profile+timer scaffolding shared by every
+// runner: opens a profile dir, starts the CPU profile, calls fn,
+// stops the CPU profile, writes the heap snapshot, and prints a
+// single-line result. fn returns (ops, bytes) for the report.
+func timedRun(cfg config, label string, fn func() (int64, int64, error)) error {
+	profDir, cpuStop, err := startProfiles(cfg)
+	if err != nil {
+		return err
+	}
+	start := time.Now()
+	ops, bytes, err := fn()
+	dur := time.Since(start)
+	cpuStop()
+	if err != nil {
+		return err
+	}
+	if err := writeHeapProfile(profDir); err != nil {
+		return err
+	}
+	durMs := float64(dur.Microseconds()) / 1000.0
+	opsPerSec := float64(ops) / dur.Seconds()
+	if bytes > 0 {
+		fmt.Printf("workload=%s ops=%d dur=%.3fms ops_per_sec=%.2f bytes_per_sec=%.2f profiles=%s\n",
+			label, ops, durMs, opsPerSec, float64(bytes)/dur.Seconds(), profDir)
+	} else {
+		fmt.Printf("workload=%s ops=%d dur=%.3fms ops_per_sec=%.2f profiles=%s\n",
+			label, ops, durMs, opsPerSec, profDir)
 	}
 	return nil
 }
