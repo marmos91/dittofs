@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
+	"github.com/marmos91/dittofs/internal/adapter/smb/header"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -219,6 +220,35 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 				return NewErrorResult(types.StatusUserSessionDeleted), nil
 			}
 
+			// MS-SMB2 §3.3.5.2.4 (Samba source3/smbd/smb2_server.c:3189-3255):
+			// a re-authentication SESSION_SETUP that arrives on a connection
+			// which already owns a bound channel with a valid signing key MUST
+			// have its signature verified against that channel key. When the
+			// channel exists Samba's `has_channel` is true, so the "skip
+			// signing on SESSION_SETUP" recovery (smb2_server.c:3226-3252) does
+			// NOT apply and a bad signature fails the request with
+			// STATUS_ACCESS_DENIED — the connection stays alive.
+			//
+			// This is the multi-channel re-auth case exercised by
+			// smb2.session.bind_negative_smb3sign{CtoH,HtoC}{s,d}: after a
+			// successful CMAC<->HMAC bind, the harness re-initialises a fresh
+			// client session (session.c:2808) that derives a different signing
+			// key, then issues a non-binding SESSION_SETUP on the bound
+			// transport. Without this gate the server proceeds into a fresh
+			// NTLM handshake and replies with a CHALLENGE signed by the bound
+			// channel key; the fresh client cannot match it and drops the
+			// transport (CONNECTION_DISCONNECTED) instead of observing
+			// ACCESS_DENIED.
+			//
+			// Scoped to a registered bound channel (GetChannel != nil) so the
+			// origin-connection re-auth path (smb2.session.reauth1-6, which is
+			// not signature-verified here today) is unaffected. The TYPE_3 of a
+			// legitimate in-flight handshake never reaches this branch — it is
+			// routed to completeNTLMAuth by the pending-auth check above.
+			if reauthRejected := h.verifyReauthChannelSignature(ctx, sess); reauthRejected != nil {
+				return reauthRejected, nil
+			}
+
 			// Re-authentication: client sends SESSION_SETUP on an existing session
 			// with no pending auth. Per MS-SMB2 3.3.5.5.2, this initiates a new
 			// authentication on the existing session (identity update).
@@ -327,6 +357,56 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 	// No recognized auth mechanism - create guest session
 	return h.createGuestSession(ctx)
+}
+
+// verifyReauthChannelSignature enforces the SESSION_SETUP request-signature
+// check for a re-authentication that arrives on a bound secondary channel
+// (MS-SMB2 §3.3.5.2.4; Samba source3/smbd/smb2_server.c:3189-3255 with
+// has_channel == true). It returns a non-nil ACCESS_DENIED result when the
+// request is signed (or the session requires signing) but its signature does
+// not verify against the channel's signing key, and nil when verification
+// passes or the gate does not apply.
+//
+// Scope conditions (all required):
+//   - the connection owns a registered bound channel for the session with a
+//     valid signer — origin-connection re-auth (no Channel entry) is excluded
+//     so the existing reauth1-6 path is untouched;
+//   - the inbound request is signed OR the session requires signing;
+//   - the raw request bytes are available to verify.
+func (h *Handler) verifyReauthChannelSignature(ctx *SMBHandlerContext, sess *session.Session) *HandlerResult {
+	ch := sess.GetChannel(ctx.ConnID)
+	if ch == nil || ch.Signer == nil {
+		return nil
+	}
+	if len(ctx.RawRequest) == 0 {
+		return nil
+	}
+
+	// Verify only the first command's bytes for a compound request, mirroring
+	// the framing verifier (framing.go) so a legitimately signed SESSION_SETUP
+	// chained ahead of other subcommands is not rejected over its trailing
+	// bytes.
+	verifyBytes := ctx.RawRequest
+	requestSigned := false
+	if hdr, err := header.Parse(ctx.RawRequest); err == nil {
+		requestSigned = hdr.IsSigned()
+		if hdr.NextCommand > 0 && int(hdr.NextCommand) <= len(verifyBytes) {
+			verifyBytes = verifyBytes[:hdr.NextCommand]
+		}
+	}
+	if !requestSigned && !sess.ShouldVerify() {
+		return nil
+	}
+
+	if sess.VerifyMessageOnChannel(ctx.ConnID, verifyBytes) {
+		return nil
+	}
+
+	logger.Info("SESSION_SETUP re-auth on bound channel: signature mismatch",
+		"sessionID", ctx.SessionID,
+		"connID", ctx.ConnID,
+		"channelSigningAlgo", fmt.Sprintf("0x%04x", ch.SigningAlgo))
+	return NewErrorResult(types.StatusAccessDenied)
 }
 
 // recordSessionBindIdentity captures the negotiated dialect, signing
