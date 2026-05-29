@@ -720,6 +720,35 @@ func bestGrantableState(locks []*UnifiedLock, leaseKey [16]byte, requestedState 
 		stripMask = LeaseStateHandle
 	}
 
+	// Active-holder cap (Samba `grant_fsp_oplock_type` source3/smbd/open.c
+	// lines 2397-2403 + 2637-2643 + 2662-2672): when any other-key lease or
+	// trad-oplock record on the file is still alive (NOT a timeout
+	// tombstone), the new grant cannot carry W (Samba's
+	// `disallow_write_lease`), and a trad-oplock requestor additionally
+	// drops H so a BATCH/EXCLUSIVE request collapses to LEVEL_II — per the
+	// `map_lease_type_to_oplock` round-trip which Samba applies for non-
+	// LEASE_OPLOCK requests. Timeout tombstones (BrokenViaTimeout=true)
+	// are excluded so smb2.oplock.batch22b can grant a fresh BATCH after
+	// the abandoned holder times out. Required by smbtorture
+	// smb2.oplock.batch9a / batch13 / batch14 / batch16.
+	var hasOtherActiveHolder bool
+	for _, lock := range locks {
+		if lock.Lease == nil || lock.Lease.LeaseKey == leaseKey {
+			continue
+		}
+		if lock.Lease.BrokenViaTimeout {
+			continue
+		}
+		hasOtherActiveHolder = true
+		break
+	}
+	if hasOtherActiveHolder {
+		stripMask |= LeaseStateWrite
+		if isTraditionalOplock {
+			stripMask |= LeaseStateHandle
+		}
+	}
+
 	candidates := downgradeCandidates(requestedState, isDirectory)
 
 outer:

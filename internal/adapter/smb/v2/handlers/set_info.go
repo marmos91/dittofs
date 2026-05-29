@@ -1291,7 +1291,23 @@ func (h *Handler) setFileInfoFromStore(
 		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FileAllocationInformation:
-		// Set allocation size - accept but treat as no-op (allocation handled automatically)
+		// FILE_ALLOCATION_INFORMATION [MS-FSCC] 2.4.4.
+		//
+		// Allocation size is not persisted (DittoFS does not preallocate), but
+		// per MS-FSA 2.1.5.14.1 and Samba `smbd_smb2_setinfo_lease_break_fsp_check`
+		// (source3/smbd/smb2_setinfo.c) setting allocation is a data-modifying
+		// operation: it must break Read (Level II) leases on the same file the
+		// same way SET_EOF does. Without this, a remote reader that cached the
+		// pre-set state can serve stale data. Required by smbtorture
+		// smb2.oplock.batch12 (path-based composite SetAlloc must produce two
+		// break notifications: one from the transient CREATE used to address
+		// the path, plus this one).
+		if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
+			lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
+			if breakErr := h.LeaseManager.BreakReadLeasesOnWrite(lockFileHandle, openFile.ShareName, openFile.LeaseKey); breakErr != nil {
+				logger.Debug("SET_INFO: oplock break on allocation set failed (non-fatal)", "path", openFile.Path, "error", breakErr)
+			}
+		}
 		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FileLinkInformation:

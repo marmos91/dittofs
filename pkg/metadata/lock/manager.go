@@ -1856,6 +1856,19 @@ func (lm *Manager) breakOpLocks(
 
 		targetState := computeFreshTarget(lock.Lease.LeaseState, breakToState)
 
+		// Per Samba `delay_for_oplock_fn` (source3/smbd/open.c lines 2439-2444):
+		// traditional oplocks only support breaking to R or NONE — any Handle
+		// or Write residue in the strip-W/strip-H target must be cleared so the
+		// holder lands at R (LEVEL_II) or 0 (NONE). Lease holders retain the
+		// fine-grained break-to bits; this mask only applies to traditional
+		// oplocks tagged at grant time. Required by smbtorture
+		// smb2.oplock.batch9a (BATCH attrs-only holder must break to R so the
+		// subsequent normal-open BATCH request can be granted LEVEL_II via
+		// bestGrantableState).
+		if lock.Lease.IsTraditionalOplock {
+			targetState &^= LeaseStateHandle | LeaseStateWrite
+		}
+
 		if lock.Lease.Breaking {
 			// Concurrent break: AND-merge the new opener's target into the
 			// cumulative final target. No notification, no epoch bump
