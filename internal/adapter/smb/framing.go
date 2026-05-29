@@ -33,6 +33,20 @@ var ErrUnknownEncryptedSession = errors.New("encrypted message for unknown sessi
 // asserts CONNECTION_RESET).
 var ErrAnonEncryption = errors.New("encrypted message for session without decryptor")
 
+// ErrSignatureVerification is returned by ReadRequest when the verifier
+// rejects an inbound message — either the signature is wrong or signing is
+// required and the message arrived unsigned. The connection loop catches
+// this and replies with STATUS_ACCESS_DENIED (unsigned) rather than dropping
+// the connection. Mirrors Samba source3/smbd/smb2_server.c:3253 which calls
+// smbd_smb2_request_error(req, STATUS_ACCESS_DENIED) and keeps the TCP
+// connection open so the client can recover (smbtorture
+// smb2.session.anon-signing2 asserts the second tcon succeeds after the
+// first one is rejected with ACCESS_DENIED). For sessions with
+// SigningRequired AND the inbound was signed-but-wrong the response is
+// echoed-signature, matching the Samba client check at
+// libcli/smb/smbXcli_base.c:4529-4538.
+var ErrSignatureVerification = errors.New("signature verification failed")
+
 // SigningVerifier verifies SMB2 message signatures during request reading.
 // This decouples the framing layer from session management.
 type SigningVerifier interface {
@@ -255,7 +269,13 @@ func parseSMB2Message(message []byte, verifier SigningVerifier, logRequest bool)
 
 	if verifier != nil {
 		if err := verifier.VerifyRequest(hdr, message); err != nil {
-			return nil, nil, nil, err
+			// Preserve the parsed header so the connection loop can build a
+			// proper STATUS_ACCESS_DENIED reply addressed to the same
+			// MessageId / SessionId the client used. Without this, sig-fail
+			// would drop the connection (smbtorture
+			// smb2.session.anon-signing2 expects ACCESS_DENIED + still
+			// connected).
+			return hdr, nil, nil, err
 		}
 	}
 
@@ -402,7 +422,7 @@ func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message 
 			"command", hdr.Command.String(),
 			"sessionID", hdr.SessionID,
 			"client", sv.conn.RemoteAddr().String())
-		return fmt.Errorf("STATUS_ACCESS_DENIED: message not signed")
+		return fmt.Errorf("%w: message not signed", ErrSignatureVerification)
 	}
 
 	// Per MS-SMB2 3.3.5.2.4: For dialect 3.1.1, if the request is not signed
@@ -435,7 +455,7 @@ func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message 
 				"connID", sv.connID,
 				"client", sv.conn.RemoteAddr().String(),
 				"msgSignature", fmt.Sprintf("%x", message[48:64]))
-			return fmt.Errorf("STATUS_ACCESS_DENIED: signature verification failed")
+			return fmt.Errorf("%w: signature mismatch", ErrSignatureVerification)
 		}
 		logger.Debug("Verified incoming SMB2 message signature",
 			"command", hdr.Command.String(),

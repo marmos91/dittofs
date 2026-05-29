@@ -690,6 +690,49 @@ func SendErrorResponse(reqHeader *header.SMB2Header, status types.Status, connIn
 	return SendMessage(respHeader, MakeErrorBody(), connInfo)
 }
 
+// SendSignatureFailureResponse sends an STATUS_ACCESS_DENIED reply after a
+// signature verification rejection. The reply is signed with the server's
+// session signing key when one is available — mirrors Samba
+// source3/smbd/smb2_server.c:3253 which sets `req->do_signing = true` at
+// :3219-3221 before the rejection. Clients with `no_signing_disconnect`
+// (Samba libcli/smb/smbXcli_base.c:4513-4583) recover from the resulting
+// signature mismatch on the response and surface the status to the
+// caller (smbtorture smb2.session.anon-signing2). Without
+// SMB2_FLAGS_SIGNED set on the response, Samba's
+// smb2cli_inbuf_parse_compound at line 4409-4414 short-circuits with
+// ACCESS_DENIED and disconnects the TCP connection regardless of the
+// signing_skipped recovery path — so an unsigned ACCESS_DENIED on a
+// `should_sign` session tears the link down before reaching the
+// recovery code.
+func SendSignatureFailureResponse(reqHeader *header.SMB2Header, status types.Status, connInfo *ConnInfo) error {
+	credits := grantConnectionCredits(connInfo, reqHeader.SessionID, reqHeader.Credits, reqHeader.CreditCharge)
+	respHeader := header.NewResponseHeaderWithCredits(reqHeader, status, credits)
+	smbPayload := append(respHeader.Encode(), MakeErrorBody()...)
+
+	if reqHeader.SessionID != 0 {
+		if sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID); ok && sess.ShouldSign() {
+			sess.SignMessageOnChannel(connInfo.ConnID, smbPayload)
+			copy(respHeader.Signature[:], smbPayload[48:64])
+			logger.Debug("Signed ACCESS_DENIED response after signature verification failure",
+				"command", reqHeader.Command.String(),
+				"messageID", reqHeader.MessageID,
+				"sessionID", reqHeader.SessionID)
+			return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, smbPayload)
+		}
+	}
+
+	// No session signing key — fall back to echoing the inbound signature
+	// so clients with no_signing_disconnect can match it byte-for-byte
+	// (libcli/smb/smbXcli_base.c:4529-4538) and skip the response check.
+	respHeader.Signature = reqHeader.Signature
+	smbPayload = append(respHeader.Encode(), MakeErrorBody()...)
+	logger.Debug("Sending unsigned ACCESS_DENIED response (no session signing key)",
+		"command", reqHeader.Command.String(),
+		"messageID", reqHeader.MessageID,
+		"sessionID", reqHeader.SessionID)
+	return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, smbPayload)
+}
+
 // sendMessageWithSigner sends an SMB2 message whose wire SessionId differs
 // from the session whose key is used to sign it. Used by SendErrorResponse
 // on the wrong-SessionId USER_SESSION_DELETED path.
@@ -807,7 +850,21 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, respon
 				}
 				return writeErr
 			}
-			if sess.ShouldSign() {
+			// Per Samba libcli/smb/smbXcli_base.c:7100-7102, when
+			// anonymous_signing is set the client skips the
+			// SESSION_SETUP response signature check — unless the
+			// SMB2_FLAGS_SIGNED bit forces it back on (line 7108-7121).
+			// Setting the bit on an anonymous SESSION_SETUP success
+			// reply is exactly what trips smb2.session.anon-signing2:
+			// the client has installed a wrong forced_session_key, so
+			// our (correctly signed) reply fails the client-side check
+			// and set_session_key returns ACCESS_DENIED. Mirror
+			// Samba's "vendors sometimes don't sign the final
+			// SESSION_SETUP response" path by leaving the bit off for
+			// IsNull sessions — anon-signing1 still passes because
+			// check_signature stays false there too.
+			skipSignForNullSetup := isSessionSetupSuccess && sess.IsNull
+			if sess.ShouldSign() && !skipSignForNullSetup {
 				sess.SignMessageOnChannel(connInfo.ConnID, smbPayload)
 				// Sync signature back so callers that re-encode the header see
 				// the real signature. Flag-level mutations from signing (setting

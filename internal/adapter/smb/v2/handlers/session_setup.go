@@ -906,7 +906,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 		if pending.IsBinding {
 			return NewErrorResult(types.StatusLogonFailure), nil
 		}
-		return h.createGuestSessionWithID(ctx, pending)
+		return h.createAnonymousSession(ctx, pending, authMsg)
 	}
 
 	// Try to authenticate against UserStore
@@ -1160,6 +1160,59 @@ func (h *Handler) destroySessionOnReauthFailure(ctx context.Context, pending *Pe
 	h.DeleteAllTreesForSession(pending.SessionID)
 }
 
+// createAnonymousSession creates an IsNull (anonymous-authenticated) session
+// with a properly-derived signing key per MS-NLMP §3.3.2 + §3.4.5.
+//
+// NTLMv2 anonymous authentication produces a session base key of all zeros
+// (the NT response is empty and the ResponseKeyNT branch never fires).
+// DeriveSigningKey then RC4-decrypts the EncryptedRandomSessionKey using
+// that zero key when KEY_EXCH is negotiated — the standard NTLM key-exchange
+// path, just with a known-zero KEK. The resulting signing key matches what
+// Samba's client computes when smb2_session.anonymous_session_key=true
+// (libcli/smb2/session.c:395-419), so subsequent signed requests verify and
+// the SESSION_SETUP SUCCESS response is signed with a key the client can
+// reproduce. Without this, the client's gensec finalization rejects the
+// unsigned reply with NT_STATUS_INVALID_PARAMETER (smbtorture
+// smb2.session.anon-signing1 / anon-signing2).
+//
+// The session is marked IsNull (not IsGuest) so:
+//   - framing.go:415's "unsigned unencrypted on 3.1.1 → disconnect" gate is
+//     skipped (mirrors Samba: anonymous + IsNull bypasses the implicit-sign
+//     enforcement);
+//   - configureSessionSigningWithKey leaves Session.SigningRequired off even
+//     on 3.1.1 — anon-signing2's second tcon arrives unsigned and must reach
+//     the handler instead of being short-circuited.
+func (h *Handler) createAnonymousSession(ctx *SMBHandlerContext, pending *PendingAuth, authMsg *auth.AuthenticateMessage) (*HandlerResult, error) {
+	if result := h.checkGuestPolicy(); result != nil {
+		// Anonymous reuses the guest policy gate — both depend on
+		// GuestEnabled / SigningRequired-server-config the same way.
+		return result, nil
+	}
+
+	// MS-NLMP §3.3.2: anonymous NTLMv2 has SessionBaseKey = 0.
+	var zeroBaseKey [16]byte
+	signingKey := auth.DeriveSigningKey(zeroBaseKey, authMsg.NegotiateFlags, authMsg.EncryptedRandomSessionKey)
+
+	sess := h.CreateSessionWithID(pending.SessionID, pending.ClientAddr, false, "", "")
+	sess.OriginConnID = ctx.ConnID
+	recordSessionBindIdentity(sess, ctx)
+	ctx.IsGuest = false // IsNull, not guest — auth_helper picks the right arm
+
+	logger.Info("Anonymous session created",
+		"sessionID", sess.SessionID,
+		"isNull", sess.IsNull,
+		"keyExch", (authMsg.NegotiateFlags&auth.FlagKeyExch) != 0)
+
+	// Configure crypto with the anon-derived signing key. The IsNull check
+	// inside configureSessionSigningWithKey ensures SigningRequired stays
+	// off even on 3.1.1.
+	if errResult := h.configureSessionSigningWithKey(sess, signingKey[:], ctx); errResult != nil {
+		return errResult, nil
+	}
+
+	return h.buildAuthenticatedResponse(pending, signingKey[:], authMsg.NegotiateFlags, false), nil
+}
+
 // createGuestSessionWithID creates a guest session with a specific session ID.
 // Used when completing NTLM authentication as guest.
 func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *PendingAuth) (*HandlerResult, error) {
@@ -1293,13 +1346,25 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 		if h.SigningConfig.Enabled {
 			cryptoState.SigningEnabled = true
 			// Per MS-SMB2 3.3.5.5: for dialect 3.1.1, Session.SigningRequired
-			// SHOULD be set to TRUE. Both Windows Server and Samba enforce this.
-			cryptoState.SigningRequired = h.SigningConfig.Required || dialect == types.Dialect0311
+			// SHOULD be set to TRUE for authenticated sessions. Both Windows
+			// Server and Samba enforce this. Anonymous (IsNull) sessions are
+			// exempt — anon-signing2's second tcon arrives unsigned and must
+			// reach the handler; Samba's smbd_smb2_signing_key returns NULL
+			// for null sessions, so the unsigned-required gate doesn't fire
+			// there either.
+			cryptoState.SigningRequired = (h.SigningConfig.Required || dialect == types.Dialect0311) && !sess.IsNull
 		}
 
 		// Encryption: activate encryptors for preferred/required modes on 3.x sessions.
 		// Guest sessions never reach here (no session key), so they are exempt.
-		if encryptionEnabled {
+		// Per MS-SMB2 §3.3.5.2.9 anonymous (IsNull) sessions also bypass
+		// encryption — the smbtorture smb2.session.anon-encryption{1,2,3}
+		// asserts that a transform-header inbound on an anonymous session
+		// triggers CONNECTION_RESET, which the connection layer drives off
+		// ErrAnonEncryption when CryptoState.Decryptor is nil. Deriving the
+		// AEAD decryptor here would let that path silently succeed and
+		// break the negative test.
+		if encryptionEnabled && !sess.IsNull {
 			// SMB 3.0/3.0.2 don't use negotiate contexts, so cipherId may be 0.
 			// Per MS-SMB2 spec, AES-128-CCM is the mandatory cipher for SMB 3.0.
 			encCipherId := cipherId
