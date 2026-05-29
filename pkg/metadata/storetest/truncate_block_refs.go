@@ -57,6 +57,9 @@ func testTruncateDownPrunesBlockRefs(t *testing.T, factory StoreFactory) {
 			Size:   uint32(mib),
 		}
 	}
+	// Quiesce the file: a non-zero ObjectID (Merkle root over Blocks) means the
+	// truncate must keep it consistent with the trimmed list, not leave it stale.
+	file.ObjectID = blockstore.ComputeObjectID(file.Blocks)
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile() with 4 MiB block list failed: %v", err)
 	}
@@ -108,5 +111,12 @@ func testTruncateDownPrunesBlockRefs(t *testing.T, factory StoreFactory) {
 		if _, found := referenced[b.Hash]; found {
 			t.Errorf("pruned tail block %x still referenced after truncate", b.Hash[:4])
 		}
+	}
+
+	// ObjectID must stay consistent with the trimmed block list (the dedup
+	// invariant: a non-zero ObjectID equals ComputeObjectID(Blocks)).
+	if want := blockstore.ComputeObjectID(got.Blocks); got.ObjectID != want {
+		t.Errorf("ObjectID = %s, want recompute(Blocks) %s after truncate",
+			got.ObjectID.String(), want.String())
 	}
 }

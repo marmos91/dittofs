@@ -320,11 +320,25 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		}
 		// A size-down truncate must trim the content-addressed block list to
 		// the new size, otherwise stale-tail refs past EOF survive in
-		// FileAttr.Blocks: the GC then holds extra blocks and a restore would
-		// emit a file longer than the current size (#817). Refs straddling the
-		// new EOF are kept — the tail bytes past EOF are ignored on read.
+		// FileAttr.Blocks: the snapshot manifest (built from FileAttr.Blocks)
+		// over-references them, the block-store GC holds them, and a restore
+		// would emit a file longer than the current size (#817). Refs
+		// straddling the new EOF are kept — the tail bytes past EOF are
+		// ignored on read. Block refcounts are reconciled by the block-store
+		// GC, the same as RemoveFile, which drops a file's entire block list
+		// without inline decrements.
 		if *attrs.Size < file.Size && len(file.Blocks) > 0 {
 			file.Blocks = blockstore.PruneBlockRefsToSize(file.Blocks, *attrs.Size)
+			// Keep ObjectID (the Merkle root over Blocks) consistent with the
+			// trimmed list, or zero it when no blocks remain so the file reads
+			// as "never quiesced" instead of carrying a stale dedup pointer.
+			if !file.ObjectID.IsZero() {
+				if len(file.Blocks) == 0 {
+					file.ObjectID = blockstore.ObjectID{}
+				} else {
+					file.ObjectID = blockstore.ComputeObjectID(file.Blocks)
+				}
+			}
 		}
 		file.Size = *attrs.Size
 		modified = true
