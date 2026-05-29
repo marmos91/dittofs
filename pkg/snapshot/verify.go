@@ -26,7 +26,14 @@ import (
 // guarantees that *some* missing hash is reported when any are absent.
 //
 // concurrency <= 0 is clamped to 1. A nil or empty manifest returns nil
-// without any remote I/O. The caller's ctx is the only deadline source.
+// without any remote I/O — verifying nothing is vacuously durable. This
+// short-circuit is intentional and applies to GENUINELY-empty manifests
+// (a truly empty share). It is NOT a license to report durability over a
+// spuriously-empty manifest: detecting "empty manifest on a non-empty
+// share" (the C3 hollow-durability case) is the caller's responsibility.
+// Runtime.runSnapshotOrchestration cross-checks an empty manifest against
+// the live FileBlock enumeration before this call and fails the snapshot
+// if the share still references hashes — see the C3 guard there.
 //
 // Caller wraps the returned error with models.ErrSnapshotVerifyFailed
 // at the Runtime orchestration layer; this helper stays purely

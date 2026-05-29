@@ -412,6 +412,33 @@ func (r *Runtime) runSnapshotOrchestration(
 	// CRUD methods only need (shareName, id) so we don't need to refetch.
 	snap := &models.Snapshot{ID: snapID, ShareName: shareName}
 
+	// --- Step 0: Drain rollups BEFORE Backup ---
+	// Force every dirty append-log payload through rollup into CAS + the
+	// FileBlock manifest so the Backup() below sees a fully-populated
+	// FileAttr.Blocks. Without this, a snapshot taken before the async
+	// rollup catches up captures an empty/partial manifest — the C1 bug.
+	// Resolve the block store once here; the verify gate (Step 4) reuses
+	// the same lookup pattern.
+	bs, err := r.sharesSvc.GetBlockStoreForShare(shareName)
+	if err != nil || bs == nil {
+		r.failSnap(shareName, snapID)
+		terminalErr = fmt.Errorf("snapshot create %s: no block store for share %q: %w",
+			snapID, shareName, models.ErrSnapshotBackupFailed)
+		logger.Error("snapshot create: block store lookup failed (pre-backup)",
+			"snapshot_id", snapID, "share", shareName, "error", err)
+		return
+	}
+	logger.Debug("snapshot create: drain rollups start", "snapshot_id", snapID, "share", shareName)
+	if derr := bs.DrainRollups(ctx); derr != nil {
+		r.failSnap(shareName, snapID)
+		terminalErr = fmt.Errorf("snapshot create %s: drain rollups: %w: %v",
+			snapID, models.ErrSnapshotBackupFailed, derr)
+		logger.Error("snapshot create: drain rollups failed",
+			"snapshot_id", snapID, "share", shareName, "error", derr)
+		return
+	}
+	logger.Debug("snapshot create: drain rollups complete", "snapshot_id", snapID, "share", shareName)
+
 	// --- Step 1: Backup -> metadata.dump (atomic temp+rename) ---
 	dumpPath := snap.MetadataDumpPath(localStoreDir)
 	logger.Debug("snapshot create: backup start",
@@ -495,15 +522,7 @@ func (r *Runtime) runSnapshotOrchestration(
 	}
 
 	// --- Step 4: Verify gate drain ---
-	bs, err := r.sharesSvc.GetBlockStoreForShare(shareName)
-	if err != nil || bs == nil {
-		r.failSnap(shareName, snapID)
-		terminalErr = fmt.Errorf("snapshot create %s: no block store for share %q: %w",
-			snapID, shareName, models.ErrSnapshotVerifyFailed)
-		logger.Error("snapshot create: block store lookup failed",
-			"snapshot_id", snapID, "share", shareName, "error", err)
-		return
-	}
+	// bs was resolved in Step 0 and reused here.
 	logger.Debug("snapshot create: drain start", "snapshot_id", snapID, "share", shareName)
 	if err := bs.DrainAllUploads(ctx); err != nil {
 		r.failSnap(shareName, snapID)
@@ -524,6 +543,48 @@ func (r *Runtime) runSnapshotOrchestration(
 			"snapshot_id", snapID, "share", shareName)
 		return
 	}
+	// --- C3 guard: empty manifest on a non-empty share ---
+	// VerifyRemoteDurability returns success for an empty manifest without
+	// probing any block (verify.go). After the Step-0 drain a genuinely
+	// non-empty share MUST produce a non-empty manifest; an empty one
+	// means the backup undercounted the share's referenced blocks (e.g. a
+	// rollup that never persisted FileAttr.Blocks — the C1 failure mode).
+	// Reporting remote_durable=true here would be a hollow durability
+	// claim over zero verified blocks. Cross-check the manifest against
+	// the live FileBlock enumeration; fail if the store still references
+	// hashes but the manifest captured none. A truly-empty share (both
+	// zero) legitimately passes with a vacuous verify.
+	if manifestCount == 0 {
+		metaStore, mserr := r.GetMetadataStoreForShare(shareName)
+		if mserr != nil {
+			r.failSnap(shareName, snapID)
+			terminalErr = fmt.Errorf("snapshot create %s: metadata store lookup for empty-manifest check: %w: %v",
+				snapID, models.ErrSnapshotVerifyFailed, mserr)
+			logger.Error("snapshot create: metadata store lookup failed (empty-manifest check)",
+				"snapshot_id", snapID, "share", shareName, "error", mserr)
+			return
+		}
+		liveHashes, herr := snapshot.HashSetFromMetadataStore(ctx, metaStore)
+		if herr != nil {
+			r.failSnap(shareName, snapID)
+			terminalErr = fmt.Errorf("snapshot create %s: enumerate live hashes for empty-manifest check: %w: %v",
+				snapID, models.ErrSnapshotVerifyFailed, herr)
+			logger.Error("snapshot create: live hash enumeration failed (empty-manifest check)",
+				"snapshot_id", snapID, "share", shareName, "error", herr)
+			return
+		}
+		if liveHashes.Len() > 0 {
+			r.failSnap(shareName, snapID)
+			terminalErr = fmt.Errorf("snapshot create %s: empty manifest on non-empty share (%d live hashes), refusing to report durability: %w",
+				snapID, liveHashes.Len(), models.ErrSnapshotVerifyFailed)
+			logger.Error("snapshot create: empty manifest on non-empty share",
+				"snapshot_id", snapID, "share", shareName, "live_hashes", liveHashes.Len())
+			return
+		}
+		logger.Info("snapshot create: empty manifest on genuinely-empty share (verify vacuously ok)",
+			"snapshot_id", snapID, "share", shareName)
+	}
+
 	// Hardcoded; benchmarking confirmed no operator tuning need.
 	concurrency := 16
 	logger.Debug("snapshot create: verify start",
@@ -1015,6 +1076,26 @@ func (r *Runtime) RestoreSnapshot(
 			snapID, safetySnapshotID, models.ErrRestoreAborted, err)
 	}
 	logger.Info("snapshot restore: restore ok",
+		"snapshot_id", snapID,
+		"share", shareName,
+		"safety_snap_id", safetySnapshotID,
+	)
+
+	// --- reset block-store local state ---
+	// The metadata store now reflects the snapshot, but the block store's
+	// per-payload append log may still hold post-snapshot write records.
+	// ReadPayloadAt replays those records on top of the restored CAS
+	// content ("last record wins"), so a file modified in place after the
+	// snapshot would come back as the mutated bytes (C2 corruption).
+	// Dropping the append-log overlay makes the restored CAS manifest the
+	// sole source of truth. Safe here because BOTH the snapshot being
+	// restored AND the safety snapshot drained rollups, so every byte that
+	// must survive is already durable in CAS.
+	if rerr := bs.ResetLocalState(ctx); rerr != nil {
+		return safetySnapshotID, fmt.Errorf("restore snapshot %q: reset block-store local state (safety-snap=%s): %w: %v",
+			snapID, safetySnapshotID, models.ErrRestoreAborted, rerr)
+	}
+	logger.Info("snapshot restore: block-store local state reset",
 		"snapshot_id", snapID,
 		"share", shareName,
 		"safety_snap_id", safetySnapshotID,
