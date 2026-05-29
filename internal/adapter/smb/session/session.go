@@ -128,6 +128,18 @@ type Session struct {
 	// bind to it from a different ClientGuid).
 	ClientGUID [16]byte
 
+	// PreauthIntegrityHash is the per-session SHA-512 preauth hash captured
+	// at the end of the ORIGINAL SESSION_SETUP that established this session
+	// (MS-SMB2 §3.3.5.5.3 Session.PreauthIntegrityHashValue). The spec freezes
+	// this value once the session is established: on re-authentication the
+	// server MUST re-derive Session.SigningKey / EncryptionKey / DecryptionKey
+	// from the NEW SessionBaseKey combined with this UNCHANGED preauth hash.
+	// Without this snapshot the server would have to reset the per-connection
+	// per-session hash entry from the fresh NEGOTIATE hash, producing a
+	// different key than the client computes ("Bad SMB2 (sign_algo_id=2)
+	// signature" rejection at reauth1-5).
+	PreauthIntegrityHash [64]byte
+
 	// Credit tracking
 	credits Credits
 

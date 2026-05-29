@@ -1218,14 +1218,30 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 	var signingAlgId uint16
 	var signingAlgExplicit bool
 
+	// Detect re-authentication: the session was previously established and
+	// has a captured Session.PreauthIntegrityHashValue. Per MS-SMB2
+	// §3.3.5.5.3, on re-auth the preauth hash is UNCHANGED from the original
+	// setup — the new SigningKey / EncryptionKey / DecryptionKey are derived
+	// from the new SessionBaseKey combined with that frozen hash. Resetting
+	// from the per-connection preauth chain would diverge from the client and
+	// produce "Bad SMB2 (sign_algo_id=2) signature" rejections on the next
+	// signed message (smb2.session.reauth1-5).
+	var zeroHash [64]byte
+	isReauth := sess.PreauthIntegrityHash != zeroHash
+
 	if ctx != nil && ctx.ConnCryptoState != nil {
 		dialect = ctx.ConnCryptoState.GetDialect()
 		if dialect >= types.Dialect0300 {
-			// Per [MS-SMB2] 3.3.5.5: use the per-session preauth hash for key
-			// derivation, not the connection-level hash. Each session maintains
-			// its own hash chain including only that session's NEGOTIATE and
-			// SESSION_SETUP messages.
-			preauthHash = ctx.ConnCryptoState.GetSessionPreauthHash(sess.SessionID)
+			if isReauth {
+				// Frozen preauth hash from the original SESSION_SETUP.
+				preauthHash = sess.PreauthIntegrityHash
+			} else {
+				// Per [MS-SMB2] 3.3.5.5: use the per-session preauth hash for
+				// key derivation, not the connection-level hash. Each session
+				// maintains its own hash chain including only that session's
+				// NEGOTIATE and SESSION_SETUP messages.
+				preauthHash = ctx.ConnCryptoState.GetSessionPreauthHash(sess.SessionID)
+			}
 			cipherId = ctx.ConnCryptoState.GetCipherId()
 			signingAlgId, signingAlgExplicit = ctx.ConnCryptoState.GetSigningAlgorithmId()
 		}
@@ -1314,6 +1330,15 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 		}
 
 		sess.SetCryptoState(cryptoState)
+
+		// Snapshot the frozen Session.PreauthIntegrityHashValue per MS-SMB2
+		// §3.3.5.5.3 on first establishment so re-authentication can re-derive
+		// keys from this same value instead of resetting the per-connection
+		// per-session hash entry. Skipped on re-auth (we already used the
+		// stored value above).
+		if !isReauth {
+			sess.PreauthIntegrityHash = preauthHash
+		}
 	} else {
 		// SMB 2.x: cannot encrypt. Reject in required mode.
 		if h.EncryptionConfig.Mode == "required" {
