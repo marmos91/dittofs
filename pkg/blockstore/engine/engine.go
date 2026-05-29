@@ -197,7 +197,37 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 			if bs.coordinator == nil {
 				return nil
 			}
-			return bs.coordinator.PersistFileBlocks(ctx, payloadID, blocks, objectID)
+			if err := bs.coordinator.PersistFileBlocks(ctx, payloadID, blocks, objectID); err != nil {
+				// File-level dedup: another file already owns this
+				// Merkle-root ObjectID (byte-identical content). The
+				// object_id index enforces "one ObjectID -> one file", so
+				// this duplicate cannot claim the canonical pointer. It
+				// MUST still persist its own block list (so the file is
+				// restorable and its FileBlock manifest is complete) — it
+				// simply does so WITHOUT owning the object_id (left zero =
+				// "not the canonical dedup target"). Retrying with a zero
+				// ObjectID writes object_id NULL, which the partial unique
+				// index skips, so the per-file blocks land cleanly.
+				//
+				// Propagating the raw conflict instead would (a) fail an
+				// explicit DrainRollups, (b) wedge the background rollup
+				// worker into retrying the same conflict forever, and (c)
+				// leave the duplicate with an empty block list →
+				// unrestorable. The block hashes themselves are content-
+				// addressed and already durable in CAS from StoreChunk.
+				if isObjectIDConflict(err) {
+					logger.Debug("rollup persist: object_id already mapped to another file; persisting duplicate's blocks without claiming the dedup pointer",
+						"payloadID", payloadID,
+						"objectID", objectID.String())
+					var zeroObjectID blockstore.ObjectID
+					if rerr := bs.coordinator.PersistFileBlocks(ctx, payloadID, blocks, zeroObjectID); rerr != nil {
+						return fmt.Errorf("rollup persist: retry without object_id after dedup conflict: %w", rerr)
+					}
+					return nil
+				}
+				return err
+			}
+			return nil
 		})
 
 		// (2) Install the chunk-completion callback (production
