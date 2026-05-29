@@ -1598,6 +1598,31 @@ func (lm *Manager) AnyHolderHasLeaseBits(handleKey string, exceptKey [16]byte, m
 	return false
 }
 
+// HasActiveLeaseRecord reports whether handleKey has any lease record (other
+// than one keyed on excludeKey) that is not a timeout tombstone. A holder
+// kept alive at LeaseState=None after ack-to-None still counts as active —
+// Samba's `disallow_write_lease` predicate (source3/smbd/open.c lines
+// 2397-2403) gates on `op_type != NO_OPLOCK`, not on lease state. Timeout
+// tombstones (BrokenViaTimeout=true) are excluded so a new opener after the
+// abandoned holder's timeout is not constrained by the dead record.
+func (lm *Manager) HasActiveLeaseRecord(handleKey string, excludeKey [16]byte) bool {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	for _, l := range lm.unifiedLocks[handleKey] {
+		if l.Lease == nil {
+			continue
+		}
+		if l.Lease.LeaseKey == excludeKey {
+			continue
+		}
+		if l.Lease.BrokenViaTimeout {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // AnyHolderIsTraditionalOplock reports whether any record on handleKey is a
 // traditional oplock (IsTraditionalOplock=true). Used by the SMB CREATE path
 // to apply the narrower oplock stat-open mask when a traditional holder is

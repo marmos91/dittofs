@@ -769,7 +769,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			requestedState = lock.LeaseStateRead
 		}
 		// Coerce Batch/Exclusive → LEVEL_II when another "effective"
-		// non-stat opener is present on the same file, mirroring Samba's
+		// holder is present on the same file, mirroring Samba's
 		// `disallow_write_lease` predicate (source3/smbd/open.c:2397).
 		// The lock layer's bestGrantableState already handles records
 		// with active R/W/H bits; this branch covers the case where the
@@ -777,20 +777,25 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		// is still alive — those would otherwise slip past
 		// bestGrantableState and yield a too-permissive grant.
 		//
-		// An open counts as "effective" unless its lease record has been
-		// force-completed via break-ack timeout — the holder stopped
-		// responding to breaks and the server moved on:
-		//   1) No record + non-stat OpenFile → effective (batch10: tree1
-		//      raw-open → tree2 BATCH gets LEVEL_II).
-		//   2) Acked-None record alongside a live OpenFile → effective
-		//      (exclusive9 SUPERSEDE: tree1 lease acked to None, tree2
-		//      EXCLUSIVE gets LEVEL_II).
-		//   3) Timeout-tombstone record → NOT effective (batch22b: tree1
-		//      BATCH timed out → BrokenViaTimeout=true → tree2 BATCH
-		//      gets full BATCH despite tree1's OpenFile still existing).
+		// An "effective" holder is either:
+		//   1) A non-stat-only OpenFile on the same metadata handle —
+		//      batch10 (tree1 raw-open → tree2 BATCH coerced to LEVEL_II).
+		//   2) A live lease/oplock record (not a BrokenViaTimeout tombstone)
+		//      regardless of whether the holder's OpenFile is stat-only —
+		//      batch9a / batch13 / batch14 / batch16 where tree1's attrs-only
+		//      open holds a trad-oplock record that has been acked through a
+		//      break.  Samba's `disallow_write_lease` gates on `op_type !=
+		//      NO_OPLOCK` independent of the access mask, so an attrs-only
+		//      oplock holder still constrains the next opener.
+		// Timeout tombstones (BrokenViaTimeout=true) are excluded from BOTH
+		// paths so smb2.oplock.batch22b can grant a fresh BATCH after the
+		// abandoned holder times out (tree1's OpenFile is still alive but
+		// its record is a tombstone).
 		lockFileHandle := lock.FileHandle(fileHandle)
-		if h.hasOtherNonStatOpenForFile(fileHandle, smbFileID) &&
-			!h.LeaseManager.OnlyTimeoutTombstoneRecords(lockFileHandle, tree.ShareName) {
+		onlyTimeoutTombstone := h.LeaseManager.OnlyTimeoutTombstoneRecords(lockFileHandle, tree.ShareName)
+		hasActiveRecord := h.LeaseManager.HasActiveLeaseRecord(lockFileHandle, tree.ShareName, [16]byte{})
+		hasNonStatOpen := h.hasOtherNonStatOpenForFile(fileHandle, smbFileID)
+		if !onlyTimeoutTombstone && (hasActiveRecord || hasNonStatOpen) {
 			requestedState &^= (lock.LeaseStateWrite | lock.LeaseStateHandle)
 		}
 		if requestedState != 0 {
