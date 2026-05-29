@@ -227,87 +227,91 @@ func TestRollup_StartRollup_Idempotent(t *testing.T) {
 // TestRollup_ReconstructStream_OverwriteLaterWins: unit test for order
 // semantics — later records overwrite earlier at the same offset.
 //
-// FIX-3: the buffer is indexed by FILE OFFSET — bytes [0..minOff) are
-// zero-padded so the chunker sees identical prefixes across rollup passes
-// and chunk boundaries stay stable.
+// The buffer is anchored at baseOff (the smallest record offset): buf[0]
+// holds file byte baseOff, so the dead [0,baseOff) prefix is not allocated.
 func TestRollup_ReconstructStream_OverwriteLaterWins(t *testing.T) {
 	recs := []rec{
 		{off: 100, payload: []byte("AAAA")},
 		{off: 100, payload: []byte("BBBB")}, // same offset, later wins
 		{off: 104, payload: []byte("CCCC")},
 	}
-	got, err := reconstructStream(recs)
+	got, baseOff, err := reconstructStream(recs)
 	if err != nil {
 		t.Fatalf("reconstructStream: %v", err)
 	}
-	if len(got) != 108 {
-		t.Fatalf("reconstructStream length: got %d want 108 (file-offset-indexed)", len(got))
+	if baseOff != 100 {
+		t.Fatalf("reconstructStream baseOff: got %d want 100", baseOff)
 	}
-	// First 100 bytes are the zero-padded gap below minOff.
-	for i := 0; i < 100; i++ {
-		if got[i] != 0 {
-			t.Fatalf("reconstructStream[%d]: got %d want 0 (gap below minOff)", i, got[i])
-		}
+	// span = maxEnd(108) - baseOff(100) = 8; no zero-padded prefix.
+	if len(got) != 8 {
+		t.Fatalf("reconstructStream length: got %d want 8 (span, baseOff-anchored)", len(got))
 	}
 	want := []byte("BBBBCCCC")
-	if !bytes.Equal(got[100:], want) {
-		t.Fatalf("reconstructStream payload: got %q want %q", got[100:], want)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("reconstructStream payload: got %q want %q", got, want)
 	}
 }
 
-// TestRollup_ReconstructStream_BoundaryStability_FIX3 asserts the FIX-3
-// invariant: two passes that both touch the same file region (same payload
-// bytes at the same file offsets) reconstruct identical buffers regardless
-// of whether other dirty regions sit at lower offsets in either pass. This
-// is what guarantees the chunker emits the same boundaries → dedup holds
-// across rollup passes.
-func TestRollup_ReconstructStream_BoundaryStability_FIX3(t *testing.T) {
-	// Pass A: only the high-offset region is dirty.
-	passA := []rec{
-		{off: 1024, payload: []byte("PAYLOAD-AT-OFFSET-1024")},
+// TestRollup_ReconstructStream_SparseGapZeroed: records with a gap inside
+// the window leave the gap zero-filled, and the buffer starts at the lowest
+// record offset (no dead prefix below it).
+func TestRollup_ReconstructStream_SparseGapZeroed(t *testing.T) {
+	recs := []rec{
+		{off: 200, payload: []byte("AB")},
+		{off: 210, payload: []byte("CD")}, // 8-byte gap [202,210)
 	}
-	// Pass B: the high-offset region is dirty AND a small low-offset
-	// region (which would shift minOff under the old behavior).
+	got, baseOff, err := reconstructStream(recs)
+	if err != nil {
+		t.Fatalf("reconstructStream: %v", err)
+	}
+	if baseOff != 200 {
+		t.Fatalf("baseOff: got %d want 200", baseOff)
+	}
+	want := []byte("AB\x00\x00\x00\x00\x00\x00\x00\x00CD") // span = 212-200 = 12
+	if !bytes.Equal(got, want) {
+		t.Fatalf("reconstructStream sparse: got %q want %q", got, want)
+	}
+}
+
+// TestRollup_ReconstructStream_ContentMapping asserts the file-offset →
+// content invariant dedup relies on: the same payload bytes land at the
+// same buffer-relative position (absOff - baseOff) regardless of what else
+// is dirty in the pass. FastCDC is content-defined, so the chunker — fed
+// stream[i:] — emits identical boundaries for identical suffix bytes; the
+// absolute backing-array anchor is irrelevant.
+func TestRollup_ReconstructStream_ContentMapping(t *testing.T) {
+	high := []byte("PAYLOAD-AT-OFFSET-1024")
+	passA := []rec{{off: 1024, payload: high}}
 	passB := []rec{
 		{off: 16, payload: []byte("LOW")},
-		{off: 1024, payload: []byte("PAYLOAD-AT-OFFSET-1024")},
+		{off: 1024, payload: high},
 	}
-	bufA, errA := reconstructStream(passA)
+	bufA, baseA, errA := reconstructStream(passA)
 	if errA != nil {
 		t.Fatalf("reconstructStream passA: %v", errA)
 	}
-	bufB, errB := reconstructStream(passB)
+	bufB, baseB, errB := reconstructStream(passB)
 	if errB != nil {
 		t.Fatalf("reconstructStream passB: %v", errB)
 	}
-
-	// The byte at offset 1024 in BOTH buffers must be the first byte of
-	// the high-offset payload — i.e., the file-offset → buffer-index
-	// mapping is invariant under changes to minOff.
-	wantHigh := []byte("PAYLOAD-AT-OFFSET-1024")
-	if got := bufA[1024 : 1024+len(wantHigh)]; !bytes.Equal(got, wantHigh) {
-		t.Fatalf("passA[1024..]: got %q want %q", got, wantHigh)
+	if got := bufA[1024-baseA : 1024-baseA+uint64(len(high))]; !bytes.Equal(got, high) {
+		t.Fatalf("passA high region: got %q want %q", got, high)
 	}
-	if got := bufB[1024 : 1024+len(wantHigh)]; !bytes.Equal(got, wantHigh) {
-		t.Fatalf("passB[1024..]: got %q want %q", got, wantHigh)
-	}
-	// Both buffers' [1024..end) range must be byte-identical so the
-	// chunker (gear-hash position-keyed) emits the same boundaries.
-	if !bytes.Equal(bufA[1024:], bufB[1024:]) {
-		t.Fatal("FIX-3 violated: high-offset region differs between passes; chunker boundaries would drift")
+	if got := bufB[1024-baseB : 1024-baseB+uint64(len(high))]; !bytes.Equal(got, high) {
+		t.Fatalf("passB high region: got %q want %q", got, high)
 	}
 }
 
 // TestRollup_ReconstructStream_Empty: empty input returns nil.
 func TestRollup_ReconstructStream_Empty(t *testing.T) {
-	got, err := reconstructStream(nil)
+	got, _, err := reconstructStream(nil)
 	if err != nil {
 		t.Fatalf("reconstructStream nil err: %v", err)
 	}
 	if got != nil {
 		t.Fatalf("reconstructStream nil: got %v want nil", got)
 	}
-	got, err = reconstructStream([]rec{})
+	got, _, err = reconstructStream([]rec{})
 	if err != nil {
 		t.Fatalf("reconstructStream empty err: %v", err)
 	}
@@ -317,14 +321,16 @@ func TestRollup_ReconstructStream_Empty(t *testing.T) {
 }
 
 // TestRollup_ReconstructStream_DoSCeiling_FIX5 asserts reconstructStream
-// refuses to allocate when maxEnd exceeds the 16 GiB ceiling. We forge a
-// record with a far-future offset (no payload bytes are actually
-// allocated by the test itself).
+// refuses to allocate when the SPAN (maxEnd-baseOff) exceeds the ceiling.
+// Lower the ceiling so two close records force refusal without allocating.
 func TestRollup_ReconstructStream_DoSCeiling_FIX5(t *testing.T) {
+	defer func(old uint64) { maxReconstructBytes = old }(maxReconstructBytes)
+	maxReconstructBytes = 16
 	recs := []rec{
-		{off: maxReconstructBytes + 1, payload: []byte("x")},
+		{off: 0, payload: []byte("x")},
+		{off: 64, payload: []byte("x")}, // span 65 > 16-byte test ceiling
 	}
-	if _, err := reconstructStream(recs); err == nil {
+	if _, _, err := reconstructStream(recs); err == nil {
 		t.Fatal("reconstructStream above ceiling: want error, got nil")
 	}
 }

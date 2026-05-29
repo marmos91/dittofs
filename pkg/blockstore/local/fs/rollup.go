@@ -361,18 +361,19 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 	// + store. Chunker is stateless across calls; we feed it the whole
 	// reconstructed buffer and slice out chunks by the returned boundaries.
 	//
-	// FIX-3: the buffer is indexed by FILE OFFSET (zero-padded for untouched
-	// gaps below minOff), so we start the chunker at minOff — that is the
-	// first byte that actually belongs to a record this pass. Indexing the
-	// buffer by file offset is what makes chunk boundaries stable across
-	// rollup passes (FastCDC gear-hash masks are buffer-position-keyed).
+	// reconstructStream returns a buffer covering [baseOff, maxEnd) where
+	// baseOff is the smallest record offset this pass; buf[i] holds file
+	// byte baseOff+i, with untouched gaps inside the window zero-filled.
+	// FastCDC is content-defined, so feeding the chunker stream[i:] yields
+	// the same boundaries regardless of baseOff — anchoring at baseOff
+	// avoids materializing the dead [0,baseOff) prefix.
 	//
-	// FIX-5: reconstructStream may refuse to allocate when maxEnd exceeds
-	// the 16 GiB ceiling. Treat that as benign at the rollup-pass level
-	// log + return nil without persisting derived state. The dirty
-	// intervals stay in the tree so a later pass (possibly after a
-	// TruncateAppendLog) has another chance.
-	stream, rerr := reconstructStream(recs)
+	// FIX-5: reconstructStream may refuse to allocate when the span exceeds
+	// the ceiling. Treat that as benign at the rollup-pass level: log +
+	// return nil without persisting derived state. The dirty intervals stay
+	// in the tree so a later pass (possibly after a TruncateAppendLog) has
+	// another chance.
+	stream, baseOff, rerr := reconstructStream(recs)
 	if rerr != nil {
 		slog.Warn("rollup: reconstruct refused", "payloadID", payloadID, "error", rerr)
 		return nil
@@ -381,9 +382,10 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 	// tail: stream is consumed entirely by the chunker loop below and is
 	// never captured by a closure, goroutine, or persisted beyond it.
 	defer putReconstructBuf(stream)
-	minOff := minRecOffset(recs)
 	ck := chunker.NewChunker()
-	pos := minOff
+	// pos indexes the buffer; the absolute file offset of buf[pos] is
+	// baseOff+pos (used for the BlockRef manifest below).
+	pos := uint64(0)
 	// Accumulate the BlockRef manifest as chunks are emitted. Sorted-by-
 	// Offset is automatic because pos advances monotonically — that
 	// matches the canonical FileAttr.Blocks invariant the downstream
@@ -408,7 +410,7 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 		h := blake3ContentHash(chunkBytes)
 		blockRef := blockstore.BlockRef{
 			Hash:   h,
-			Offset: pos,
+			Offset: baseOff + pos,
 			Size:   uint32(b),
 		}
 
@@ -608,74 +610,65 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 }
 
 // maxReconstructBytes caps the in-memory reconstruction buffer at 16 GiB
-// (FIX-5). A pathological set of records could otherwise force an
-// arbitrarily large allocation. Above the cap reconstructStream returns an
-// error and the caller skips the rollup pass without persisting any state.
-const maxReconstructBytes = uint64(1) << 34
+// (FIX-5). A pathological set of sparse records spread across a huge file-
+// offset span could otherwise force an arbitrarily large allocation. Above
+// the cap reconstructStream returns an error and the caller skips the rollup
+// pass without persisting any state. A var (not const) so tests can lower
+// the ceiling to exercise the refusal path without allocating gigabytes.
+// Tests that mutate this MUST defer-restore it and MUST NOT run with
+// t.Parallel() or alongside a started rollup worker pool — rollup workers
+// read it concurrently, so a mutation under either condition races.
+var maxReconstructBytes = uint64(1) << 34
 
-// reconstructStream flattens records by absolute file_offset, later writes
-// overwriting earlier ones at the same offset. Produces a contiguous
-// byte slice starting at FILE BYTE 0 (NOT minOff), extending to the maximum
-// record end.
+// reconstructStream flattens records by file offset, later writes overwriting
+// earlier ones at the same offset. Produces a contiguous byte slice anchored
+// at baseOff (the smallest record offset): buf[i] holds file byte baseOff+i,
+// with untouched gaps inside the window zero-filled. Returns (buf, baseOff).
 //
-// FIX-3 — chunker boundary stability: FastCDC gear-hash masks are
-// buffer-position-keyed. If two sequential rollup passes reconstructed
-// overlapping windows starting at different minOff values, identical bytes
-// would land at different buffer positions across passes and the chunker
-// would emit different content boundaries → no dedup across rollups (breaks
-// ). Anchoring the buffer at file byte 0 (with zero-padded gaps for
-// untouched regions) guarantees the chunker sees the same prefix bytes for
-// the same file region every pass, so chunk boundaries are stable.
+// Why baseOff-anchored (not file byte 0): the only consumer is the FastCDC
+// chunker, which is content-defined — Chunker.Next computes its gear hash
+// from data[0] of the slice it is handed, independent of the bytes' absolute
+// file position. The rollup feeds it stream[i:] starting at the first real
+// byte, so anchoring the backing array at baseOff yields byte-identical
+// chunker input as a file-0-anchored buffer would, while not allocating the
+// dead [0,baseOff) prefix (the dominant rollup allocation on large/append-
+// heavy files). Chunk boundaries — and therefore dedup — are unchanged.
 //
-// FIX-5 — DoS guard: returns an error when maxEnd exceeds
-// maxReconstructBytes (16 GiB). The caller (rollupFile) treats the error
-// as benign at the rollup-pass level: log a warning and return without
-// persisting derived state. The dirty intervals stay in the tree so a
-// later pass — possibly after a TruncateAppendLog or a partial drain —
-// has another chance.
-//
-// The caller is responsible for starting the chunker at minOff (not 0) so
-// only the relevant suffix is processed. Callers that ALSO want the minOff
-// can derive it from recs themselves; reconstructStream only returns the
-// file-offset-indexed buffer.
-func reconstructStream(recs []rec) ([]byte, error) {
+// FIX-5 — DoS guard: returns an error when the span (maxEnd-baseOff) exceeds
+// maxReconstructBytes. The caller (rollupFile) treats the error as benign at
+// the rollup-pass level: log a warning and return without persisting derived
+// state. The dirty intervals stay in the tree so a later pass — possibly
+// after a TruncateAppendLog or a partial drain — has another chance.
+func reconstructStream(recs []rec) ([]byte, uint64, error) {
 	if len(recs) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
+	baseOff := recs[0].off
 	var maxEnd uint64
 	for _, r := range recs {
+		if r.off < baseOff {
+			baseOff = r.off
+		}
 		end := r.off + uint64(len(r.payload))
 		if end > maxEnd {
 			maxEnd = end
 		}
 	}
-	if maxEnd > maxReconstructBytes {
-		return nil, fmt.Errorf("rollup: reconstruct would require %d bytes, exceeds %d ceiling", maxEnd, maxReconstructBytes)
+	span := maxEnd - baseOff
+	if span > maxReconstructBytes {
+		return nil, 0, fmt.Errorf("rollup: reconstruct would require %d bytes, exceeds %d ceiling", span, maxReconstructBytes)
 	}
-	// Pooled, pre-zeroed buffer — the caller MUST release it via
-	// putReconstructBuf once the rollup pass completes. Zero-fill is
-	// load-bearing: untouched gaps below maxEnd stay zero (FIX-3).
-	buf := getReconstructBuf(maxEnd)
+	// Pooled, pre-zeroed buffer covering [baseOff, maxEnd) — the caller MUST
+	// release it via putReconstructBuf once the rollup pass completes. Zero-
+	// fill is load-bearing: untouched gaps inside the window stay zero.
+	buf := getReconstructBuf(span)
 	// Apply records in input (log) order so that "last record wins"
 	// at the same offset holds — the mutex-serialized log order is the
 	// authoritative ordering for same-offset overwrites.
 	for _, r := range recs {
-		copy(buf[r.off:], r.payload)
+		copy(buf[r.off-baseOff:], r.payload)
 	}
-	return buf, nil
-}
-
-// minRecOffset returns the smallest file offset across recs. Caller-side
-// helper used by rollupFile to position the chunker after the buffer
-// has been built file-offset-indexed (FIX-3).
-func minRecOffset(recs []rec) uint64 {
-	min := recs[0].off
-	for _, r := range recs[1:] {
-		if r.off < min {
-			min = r.off
-		}
-	}
-	return min
+	return buf, baseOff, nil
 }
 
 // blake3ContentHash returns the 32-byte BLAKE3 hash of data as a
