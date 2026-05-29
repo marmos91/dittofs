@@ -34,6 +34,19 @@ type PendingCreate struct {
 	// goroutine on normal completion OR by the registry on CANCEL (with
 	// StatusCancelled + nil body). Releases the async slot as part of its work.
 	Callback AsyncCreateCompleteCallback
+
+	// started is closed by MarkStarted once the dispatch layer has finalized
+	// the Callback assignment for this entry. The resume goroutine MUST wait
+	// on it before invoking Callback. Without this gate, a fast localhost
+	// break ACK can let the resume goroutine fire the original callback
+	// BEFORE the compound dispatcher has had a chance to swap in the
+	// continue-compound wrapper, sending the CREATE response standalone and
+	// stranding the remaining compound subcommands (smbtorture
+	// smb2.compound.compound-break IO_TIMEOUT, observed flake).
+	//
+	// CANCEL / session-teardown paths invoke Callback directly without going
+	// through the resume goroutine, so they do NOT need to wait on this gate.
+	started chan struct{}
 }
 
 // PendingCreateRegistry indexes pending CREATEs by three keys: per-connection
@@ -152,6 +165,10 @@ func (r *PendingCreateRegistry) UnregisterByMessageID(connID, messageID uint64) 
 	}
 	r.removeLocked(p.AsyncId)
 	r.mu.Unlock()
+	// Release the started gate so any resume goroutine racing the cancel
+	// path past its Unregister check will not deadlock waiting on dispatch
+	// to MarkStarted (CANCEL/teardown bypass the dispatcher).
+	markStarted(p)
 	if p.Cancel != nil {
 		p.Cancel()
 	}
@@ -164,8 +181,11 @@ func (r *PendingCreateRegistry) UnregisterByAsyncId(asyncId uint64) *PendingCrea
 	r.mu.Lock()
 	p := r.removeLocked(asyncId)
 	r.mu.Unlock()
-	if p != nil && p.Cancel != nil {
-		p.Cancel()
+	if p != nil {
+		markStarted(p)
+		if p.Cancel != nil {
+			p.Cancel()
+		}
 	}
 	return p
 }
@@ -188,6 +208,7 @@ func (r *PendingCreateRegistry) UnregisterAllForSession(sessionID uint64) []*Pen
 	}
 	r.mu.Unlock()
 	for _, p := range removed {
+		markStarted(p)
 		if p.Cancel != nil {
 			p.Cancel()
 		}
@@ -227,6 +248,43 @@ func (r *PendingCreateRegistry) ReplaceCallback(asyncId uint64, cb AsyncCreateCo
 	}
 	p.Callback = cb
 	return true
+}
+
+// MarkStarted releases the resume goroutine for the pending CREATE identified
+// by asyncId so it may invoke its (possibly replaced) Callback. Callers MUST
+// invoke MarkStarted after they have finished any callback reassignment
+// (e.g. compound dispatcher's ReplaceCallback). Idempotent: safe to call
+// even after the entry has been unregistered by CANCEL / teardown.
+//
+// Returns true if the gate was successfully signalled, false if the entry
+// was no longer in the registry. The latter is not an error — CANCEL /
+// teardown already drove the callback synchronously and the gate is moot.
+func (r *PendingCreateRegistry) MarkStarted(asyncId uint64) bool {
+	r.mu.Lock()
+	p, ok := r.byAsyncId[asyncId]
+	r.mu.Unlock()
+	if !ok {
+		return false
+	}
+	markStarted(p)
+	return true
+}
+
+// markStarted closes the started gate exactly once. Called both by the
+// public MarkStarted (dispatch-layer release) and by internal cleanup paths
+// (CANCEL / teardown) that pull entries directly and need to unblock any
+// resume goroutine still parked on the wait — without the unblock, the
+// goroutine would leak when CANCEL runs after MarkStarted's window closes.
+func markStarted(p *PendingCreate) {
+	if p == nil || p.started == nil {
+		return
+	}
+	select {
+	case <-p.started:
+		// Already closed.
+	default:
+		close(p.started)
+	}
 }
 
 // Len returns the number of pending CREATEs.

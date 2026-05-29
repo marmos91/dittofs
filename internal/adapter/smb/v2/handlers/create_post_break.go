@@ -1014,6 +1014,14 @@ func (h *Handler) parkCreateOnLeaseBreak(
 		AsyncId:   asyncId,
 		Cancel:    cancel,
 		Callback:  ctx.AsyncCreateCompleteCallback,
+		// started is closed by the dispatcher (response.go single-cmd path
+		// or compound.go after ReplaceCallback) once the Callback has been
+		// finalized. The resume goroutine waits on it before invoking
+		// Callback so a fast localhost break ACK can't fire the original
+		// callback before the compound dispatcher has had a chance to swap
+		// it for the continue-compound wrapper (smb2.compound.compound-break
+		// IO_TIMEOUT race observed in CI).
+		started: make(chan struct{}),
 	}
 
 	if err := h.PendingCreateRegistry.Register(pending); err != nil {
@@ -1058,6 +1066,7 @@ func (h *Handler) parkCreateOnLeaseBreak(
 				"messageID", messageID,
 				"asyncId", asyncId,
 				"treeID", ctx.TreeID)
+			<-pending.started
 			if err := pending.Callback(pending.SessionID, messageID, asyncId, types.StatusNetworkNameDeleted, nil); err != nil {
 				logger.Debug("CREATE async: failed to send tree-deleted response", "error", err)
 			}
@@ -1077,6 +1086,9 @@ func (h *Handler) parkCreateOnLeaseBreak(
 			}
 		}
 
+		// Wait for the dispatcher to finalize the callback assignment before
+		// firing. See PendingCreate.started doc for the race this closes.
+		<-pending.started
 		if err := pending.Callback(pending.SessionID, messageID, asyncId, status, body); err != nil {
 			logger.Warn("CREATE async: failed to send final response",
 				"messageID", messageID,

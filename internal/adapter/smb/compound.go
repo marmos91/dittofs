@@ -175,6 +175,14 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 				)
 				return nil
 			})
+			// Release the resume goroutine NOW that the callback has been
+			// swapped. The goroutine was parked on PendingCreate.started
+			// (initialized in parkCreateOnLeaseBreak) precisely so this
+			// ReplaceCallback could land before the original standalone
+			// callback fired. Skipping the release would deadlock the CREATE
+			// after the wait drains (smbtorture compound.compound-break
+			// IO_TIMEOUT race).
+			connInfo.Handler.PendingCreateRegistry.MarkStarted(result.AsyncId)
 		}
 
 		// Send interim STATUS_PENDING as a standalone async response.
@@ -186,6 +194,16 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 			logger.Debug("Error sending compound async interim response", "error", err)
 		}
 		return
+	}
+
+	// Fall-through path: the first command returned STATUS_PENDING + AsyncId
+	// AND there were no more commands in the compound. The interim is sent
+	// as part of the compound response below; the resume goroutine fires the
+	// original (standalone-completion) callback with the final response, so
+	// release its started gate now.
+	if result != nil && result.Status == types.StatusPending && result.AsyncId != 0 &&
+		connInfo.Handler.PendingCreateRegistry != nil {
+		connInfo.Handler.PendingCreateRegistry.MarkStarted(result.AsyncId)
 	}
 
 	if fileID != [16]byte{} {
@@ -388,6 +406,17 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 			lastCmdSessionFailed = false
 			lastCmdFailed = false
 			lastCmdStatus = 0
+		}
+
+		// A subsequent compound subcommand that returns STATUS_PENDING + AsyncId
+		// (parked CREATE) inherits the original standalone-completion callback —
+		// no ReplaceCallback redirect happens here, since the subcommand is
+		// already the tail of the chain. Release its resume-goroutine gate so
+		// the deferred completion is not blocked waiting for a swap that will
+		// never arrive.
+		if cmdResult != nil && cmdResult.Status == types.StatusPending && cmdResult.AsyncId != 0 &&
+			connInfo.Handler.PendingCreateRegistry != nil {
+			connInfo.Handler.PendingCreateRegistry.MarkStarted(cmdResult.AsyncId)
 		}
 
 		rh, rb := buildResponseHeaderAndBody(hdr, cmdCtx, cmdResult, connInfo)
@@ -980,6 +1009,15 @@ func completeCompoundAfterAsyncCreate(
 			lastCmdSessionFailed = false
 			lastCmdFailed = false
 			lastCmdStatus = 0
+		}
+
+		// Release any parked-CREATE goroutine for this subcommand (see same
+		// guard in ProcessCompoundRequest's subcommand loop). The deferred
+		// continue-compound wrapper already owns the chain bookkeeping, so
+		// the resume goroutine just delivers the original callback.
+		if cmdResult != nil && cmdResult.Status == types.StatusPending && cmdResult.AsyncId != 0 &&
+			connInfo.Handler.PendingCreateRegistry != nil {
+			connInfo.Handler.PendingCreateRegistry.MarkStarted(cmdResult.AsyncId)
 		}
 
 		rh, rb := buildResponseHeaderAndBody(hdr, cmdCtx, cmdResult, connInfo)
