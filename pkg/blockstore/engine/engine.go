@@ -140,22 +140,28 @@ func New(cfg Config) (*BlockStore, error) {
 	if cfg.SyncedHashStore != nil {
 		cfg.Syncer.SetSyncedHashStore(cfg.SyncedHashStore)
 	}
-	// Install the rollup-completion ObjectIDPersister callback on the
-	// local store if it supports the setter. The callback (1) writes
-	// per-block FileBlock rows so the engine's CAS read path
-	// (readLocalByHash → resolveFileBlock) can resolve
-	// (payloadID, blockIdx) → hash and (2) delegates to the
-	// coordinator's PersistFileBlocks so FileAttr.Blocks and
-	// FileAttr.ObjectID land in a single metadata txn at rollup time.
-	// Local stores that don't implement the setter (in-memory /
-	// fixtures use the parallel ChunkEmitter hook below) silently skip
-	// the install — ObjectID compute still runs inside rollup but the
-	// persist step is no-op.
-	if setter, ok := cfg.Local.(interface {
-		SetObjectIDPersister(p func(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error)
-	}); ok {
+	// Wire the per-store chunk-lifecycle callbacks via the named
+	// [local.ChunkLifecycleHooks] capability surface. Three setters
+	// install closures that downstream FileBlock metadata and the read
+	// cache depend on; each implementation may treat any setter as a
+	// no-op when its data path doesn't reach that hook (FSStore's
+	// rollup-completion path covers ObjectIDPersister + OnChunkComplete;
+	// the in-memory backend covers ChunkEmitter). Foreign local stores
+	// that don't satisfy the interface silently skip all three installs.
+	hooks, hasHooks := cfg.Local.(local.ChunkLifecycleHooks)
+	if hasHooks {
+		// (1) Install the rollup-completion ObjectIDPersister callback.
+		// The callback writes per-block FileBlock rows so the engine's
+		// CAS read path (readLocalByHash → resolveFileBlock) can
+		// resolve (payloadID, blockIdx) → hash and delegates to the
+		// coordinator's PersistFileBlocks so FileAttr.Blocks and
+		// FileAttr.ObjectID land in a single metadata txn at rollup
+		// time. Stores that don't drive a rollup-completion path
+		// (in-memory / fixtures use the parallel ChunkEmitter hook
+		// below) install a no-op setter — ObjectID compute still runs
+		// inside rollup but the persist step is no-op.
 		fbs := cfg.FileBlockStore
-		setter.SetObjectIDPersister(func(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error {
+		hooks.SetObjectIDPersister(func(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error {
 			// (1) Per-chunk FileBlock rows. The row ID encodes the
 			//     chunk's absolute byte Offset directly (rather than
 			//     a synthetic blockIdx = Offset / BlockSize); the
@@ -193,66 +199,59 @@ func New(cfg Config) (*BlockStore, error) {
 			}
 			return bs.coordinator.PersistFileBlocks(ctx, payloadID, blocks, objectID)
 		})
-	}
-	// Install the chunk-completion callback on local stores that
-	// expose the setter (production *fs.FSStore does; the in-memory
-	// backend does not — its writes go through SetChunkEmitter below
-	// and don't materialize through the CAS chunkstore.StoreChunk +
-	// lruTouch path hooks). The closure delegates every successful
-	// chunkstore write to bs.cache.Put: the engine Cache becomes warm
-	// on the write side, so the NFS COMMIT-then-READ pattern never
-	// goes back to disk for the just-written chunk. The closure
-	// captures bs (not bs.cache) so the Null-Object→real-Cache swap
-	// performed by BlockStore.Start at engine.go:267-270 is observed
-	// transparently. The path arg is intentionally discarded
-	// (`_ string`) — Cache.Put doesn't consume it; the firing-site
-	// contract still passes it to enable future mmap-or-copy
-	// strategies (cache.go docstring). Cache.Put is nil-safe,
-	// closed-safe, and max-bytes-safe (cache.go:229-235), so this
-	// binding is the canonical safe wiring (RAM ceiling bounded by
-	// Cache's existing LRU). Same lifecycle precedent as
-	// SetObjectIDPersister above — install once at construction;
-	// FSStore guarantees no chunk activity fires before Start
-	// completes.
-	if setter, ok := cfg.Local.(interface {
-		SetOnChunkComplete(fn func(hash blockstore.ContentHash, data []byte, path string))
-	}); ok {
-		setter.SetOnChunkComplete(func(hash blockstore.ContentHash, data []byte, _ string) {
+
+		// (2) Install the chunk-completion callback (production
+		// *fs.FSStore wires this on the chunkstore hot path; the
+		// in-memory backend no-ops since its writes don't materialize
+		// through the CAS chunkstore.StoreChunk + lruTouch path). The
+		// closure delegates every successful chunkstore write to
+		// bs.cache.Put: the engine Cache becomes warm on the write
+		// side, so the NFS COMMIT-then-READ pattern never goes back to
+		// disk for the just-written chunk. The closure captures bs
+		// (not bs.cache) so the Null-Object→real-Cache swap performed
+		// by BlockStore.Start is observed transparently. The path arg
+		// is intentionally discarded (`_ string`) — Cache.Put doesn't
+		// consume it; the firing-site contract still passes it to
+		// enable future mmap-or-copy strategies. Cache.Put is
+		// nil-safe, closed-safe, and max-bytes-safe, so this binding
+		// is the canonical safe wiring (RAM ceiling bounded by Cache's
+		// existing LRU). Same lifecycle precedent as the persister
+		// above — install once at construction; FSStore guarantees no
+		// chunk activity fires before Start completes.
+		hooks.SetOnChunkComplete(func(hash blockstore.ContentHash, data []byte, _ string) {
 			bs.cache.Put(hash, data)
 		})
-	}
-	// Install a per-chunk emitter on local stores that expose one (the
-	// in-memory backend uses this; *fs.FSStore drives the equivalent
-	// rollup-side path through the ObjectIDPersister callback above).
-	// The emitter mirrors each freshly-emitted CAS chunk into a
-	// FileBlock row keyed by {payloadID}/{blockIdx} so the engine's
-	// CAS read path (readLocalByHash) can resolve (payloadID, offset)
-	// → hash without a separate manifest. blockIdx is derived from
-	// chunkStart / blockstore.BlockSize — works correctly for the
-	// in-memory backend's small / aligned test workloads. Production
-	// FSStore writes its own FileBlock rows through the
-	// rollup.PersistFileBlocks path and never installs the emitter.
-	if emitter, ok := cfg.Local.(interface {
-		SetChunkEmitter(emit func(payloadID string, chunkStart uint64, size uint32, hash blockstore.ContentHash))
-	}); ok && cfg.FileBlockStore != nil {
-		fbs := cfg.FileBlockStore
-		emitter.SetChunkEmitter(func(payloadID string, chunkStart uint64, size uint32, hash blockstore.ContentHash) {
-			fb := &blockstore.FileBlock{
-				ID:       fmt.Sprintf("%s/%d", payloadID, chunkStart),
-				Hash:     hash,
-				DataSize: size,
-				State:    blockstore.BlockStatePending,
-			}
-			// Crash-consistency (#583): emitter signature is void by
-			// contract; a put failure here means the manifest row never
-			// landed and reads will sparse-zero that range. Log at Error
-			// so operators see the loss instead of silently swallowing
-			// it. Follow-up: promote emitter to return an error so the
-			// caller can fail the rollup pass.
-			if err := fbs.Put(context.Background(), fb); err != nil {
-				logger.Error("ChunkEmitter: FileBlock.Put failed", "id", fb.ID, "error", err)
-			}
-		})
+
+		// (3) Install the per-chunk emitter (the in-memory backend
+		// uses this; *fs.FSStore no-ops since it drives the equivalent
+		// rollup-side path through the ObjectIDPersister callback
+		// above). The emitter mirrors each freshly-emitted CAS chunk
+		// into a FileBlock row keyed by {payloadID}/{chunkStart} so the
+		// engine's CAS read path (readLocalByHash) can resolve
+		// (payloadID, offset) → hash without a separate manifest.
+		// Requires a FileBlockStore — fixtures running without one
+		// rely on the no-op default.
+		if cfg.FileBlockStore != nil {
+			fbs := cfg.FileBlockStore
+			hooks.SetChunkEmitter(func(payloadID string, chunkStart uint64, size uint32, hash blockstore.ContentHash) {
+				fb := &blockstore.FileBlock{
+					ID:       fmt.Sprintf("%s/%d", payloadID, chunkStart),
+					Hash:     hash,
+					DataSize: size,
+					State:    blockstore.BlockStatePending,
+				}
+				// Crash-consistency (#583): emitter signature is void
+				// by contract; a put failure here means the manifest
+				// row never landed and reads will sparse-zero that
+				// range. Log at Error so operators see the loss
+				// instead of silently swallowing it. Follow-up:
+				// promote emitter to return an error so the caller
+				// can fail the rollup pass.
+				if err := fbs.Put(context.Background(), fb); err != nil {
+					logger.Error("ChunkEmitter: FileBlock.Put failed", "id", fb.ID, "error", err)
+				}
+			})
+		}
 	}
 	// wire the BlockStore back-reference onto the Syncer so
 	// the file-level dedup short-circuit can reach BlockStore.cache for
