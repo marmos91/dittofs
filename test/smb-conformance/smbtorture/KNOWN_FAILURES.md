@@ -159,7 +159,6 @@ Advanced share mode enforcement and deny mode scenarios.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.sharemode.bug14375 | Share modes | Share mode edge case not implemented | #750 |
 
 ### Maximum Allowed Access (Partial)
 
@@ -201,7 +200,14 @@ Extended attribute tests requiring ACL-based access control.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.ea.acl_xattr | Extended attributes | EA ACL enforcement not implemented | #750 |
+
+### Timestamp Resolution
+
+Timestamp resolution test requires sub-second precision enforcement.
+
+| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|
+| smb2.timestamp_resolution.resolution1 | Timestamps | Timestamp resolution enforcement not implemented | - |
 
 ### Session Signing Edge Cases
 
@@ -835,3 +841,4 @@ Format:
 ```
 | smb2.exact.test.name | Category | Specific reason for expected failure | #issue or Phase N |
 ```
+

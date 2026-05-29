@@ -3,11 +3,29 @@ package handlers
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// implicitAuthenticatedGroupSIDs returns the canonical "automatic" groups
+// every authenticated Windows principal belongs to, per MS-DTYP §2.4.2.4 and
+// MS-LSAD §3.1.1.2.1 — Everyone (S-1-1-0) and Authenticated Users (S-1-5-11).
+// DittoFS's local user model only persists the user's named groups, so a
+// DACL ACE keyed on S-1-5-11 (e.g. the SD in smbtorture
+// smb2.maximum_allowed.maximum_allowed) would never match without this
+// implicit injection. Mirrors the SID set Windows LSA stamps onto every
+// authenticated token at logon.
+//
+// Anonymous and guest sessions do not get S-1-5-11: per MS-DTYP §2.4.2.4
+// "Authenticated Users" excludes anonymous logons and explicit guest accounts.
+var implicitAuthenticatedGroupSIDs = []string{
+	sid.FormatSID(sid.WellKnownEveryone),           // S-1-1-0
+	sid.FormatSID(sid.WellKnownAuthenticatedUsers), // S-1-5-11
+}
 
 // Default UID/GID used when user has no UID/GID configured.
 const (
@@ -128,12 +146,10 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metada
 		authCtx.Identity.GID = &gid
 		authCtx.Identity.Username = user.Username
 		if user.SID != "" {
-			sid := user.SID
-			authCtx.Identity.SID = &sid
+			userSID := user.SID
+			authCtx.Identity.SID = &userSID
 		}
-		if len(user.GroupSIDs) > 0 {
-			authCtx.Identity.GroupSIDs = append([]string(nil), user.GroupSIDs...)
-		}
+		authCtx.Identity.GroupSIDs = mergeImplicitAuthSIDs(user.GroupSIDs)
 	}
 
 	// Set share-level permission flags
@@ -142,6 +158,24 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metada
 	authCtx.ShareReadOnly = ctx.Permission == models.PermissionRead
 
 	return authCtx
+}
+
+// mergeImplicitAuthSIDs returns the union of an authenticated user's named
+// group SIDs with the implicit "Everyone" + "Authenticated Users" group SIDs.
+// Order is implicit-first then user-named (deduplicated), so a DACL ACE keyed
+// against either S-1-1-0 or S-1-5-11 matches without depending on whether the
+// local user model happened to enumerate the well-known groups. See
+// implicitAuthenticatedGroupSIDs for the spec citation.
+func mergeImplicitAuthSIDs(userGroupSIDs []string) []string {
+	merged := make([]string, 0, len(implicitAuthenticatedGroupSIDs)+len(userGroupSIDs))
+	merged = append(merged, implicitAuthenticatedGroupSIDs...)
+	for _, s := range userGroupSIDs {
+		if slices.Contains(merged, s) {
+			continue
+		}
+		merged = append(merged, s)
+	}
+	return merged
 }
 
 // primeAuthContextFromOpenFile hand-offs the open's recorded session/tree

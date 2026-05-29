@@ -32,8 +32,11 @@ func TestBuildAuthContextFromUser_PopulatesSID(t *testing.T) {
 	if got := *authCtx.Identity.SID; got != user.SID {
 		t.Errorf("Identity.SID = %q, want %q", got, user.SID)
 	}
-	if len(authCtx.Identity.GroupSIDs) != 1 || authCtx.Identity.GroupSIDs[0] != user.GroupSIDs[0] {
-		t.Errorf("Identity.GroupSIDs = %v, want %v", authCtx.Identity.GroupSIDs, user.GroupSIDs)
+	// GroupSIDs MUST be the implicit Everyone + Authenticated Users set
+	// (S-1-1-0 + S-1-5-11) merged with the user's named group SIDs.
+	wantGroupSIDs := []string{"S-1-1-0", "S-1-5-11", "S-1-5-21-1-2-3-513"}
+	if !equalStrings(authCtx.Identity.GroupSIDs, wantGroupSIDs) {
+		t.Errorf("Identity.GroupSIDs = %v, want %v", authCtx.Identity.GroupSIDs, wantGroupSIDs)
 	}
 }
 
@@ -46,9 +49,37 @@ func TestBuildAuthContextFromUser_NoSIDLeavesIdentityEmpty(t *testing.T) {
 	if authCtx.Identity.SID != nil {
 		t.Errorf("Identity.SID = %v, want nil for user without SID", *authCtx.Identity.SID)
 	}
-	if len(authCtx.Identity.GroupSIDs) != 0 {
-		t.Errorf("Identity.GroupSIDs = %v, want empty", authCtx.Identity.GroupSIDs)
+	// Even when no SID is populated, the authenticated session still gets
+	// the implicit Everyone + Authenticated Users group SIDs — a DACL ACE
+	// keyed on S-1-5-11 must match the authenticated user without depending
+	// on the local user model's named-group enumeration.
+	wantGroupSIDs := []string{"S-1-1-0", "S-1-5-11"}
+	if !equalStrings(authCtx.Identity.GroupSIDs, wantGroupSIDs) {
+		t.Errorf("Identity.GroupSIDs = %v, want %v", authCtx.Identity.GroupSIDs, wantGroupSIDs)
 	}
+}
+
+// TestMergeImplicitAuthSIDs_Dedupes pins the dedup contract so a user model
+// that already enumerates Everyone or Authenticated Users in user.GroupSIDs
+// does not produce duplicate entries.
+func TestMergeImplicitAuthSIDs_Dedupes(t *testing.T) {
+	got := mergeImplicitAuthSIDs([]string{"S-1-5-11", "S-1-5-21-1-2-3-513", "S-1-1-0"})
+	want := []string{"S-1-1-0", "S-1-5-11", "S-1-5-21-1-2-3-513"}
+	if !equalStrings(got, want) {
+		t.Errorf("mergeImplicitAuthSIDs = %v, want %v", got, want)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestPrimeAuthContext_GuestSessionPropagatesIsGuest pins the guest-session

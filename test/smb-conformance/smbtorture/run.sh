@@ -345,6 +345,10 @@ if $KERBEROS; then
         "--option=client min protocol=SMB2_02"
         "--option=client max protocol=SMB3"
         "--option=torture:smbd=false"
+        # Reserved server-side ACL xattr name surfaced to smbtorture
+        # smb2.ea.acl_xattr. The server rejects EA writes targeting this name
+        # with STATUS_ACCESS_DENIED (set_info.go::reservedACLXattrName).
+        "--option=torture:acl_xattr_name=security.NTACL"
     )
     log_info "Kerberos mode: targeting ${SMBTORTURE_HOST}/<share> with SPNEGO/Kerberos"
 else
@@ -356,6 +360,10 @@ else
         "--option=client min protocol=SMB2_02"
         "--option=client max protocol=SMB3"
         "--option=torture:smbd=false"
+        # Reserved server-side ACL xattr name surfaced to smbtorture
+        # smb2.ea.acl_xattr. The server rejects EA writes targeting this name
+        # with STATUS_ACCESS_DENIED (set_info.go::reservedACLXattrName).
+        "--option=torture:acl_xattr_name=security.NTACL"
     )
 fi
 

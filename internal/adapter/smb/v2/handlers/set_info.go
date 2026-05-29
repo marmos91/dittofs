@@ -1301,8 +1301,28 @@ func (h *Handler) setFileInfoFromStore(
 		return h.handleFileLinkInformation(authCtx, openFile, buffer)
 
 	case types.FileFullEaInformation: // [MS-FSCC] 2.4.15 - Extended attributes
-		// Accept EA writes as a no-op. DittoFS does not persist extended attributes
-		// but returning SUCCESS allows ChangeNotify EA tests to proceed.
+		// Reject SET on the reserved ACL xattr name with ACCESS_DENIED so the
+		// server-stored security descriptor cannot be tampered with through the
+		// FILE_FULL_EA_INFORMATION channel. Mirrors Samba vfs_acl_xattr (which
+		// stores the NT ACL as `security.NTACL` and shields that xattr from the
+		// EA API): smbtorture smb2.ea.acl_xattr asserts ACCESS_DENIED when a
+		// client tries to overwrite the reserved name. The reserved name is
+		// surfaced to the torture client via the `--option=acl_xattr_name=...`
+		// torture setting and listed in the EA enumeration response as absent
+		// (FileFullEaInformation in query_info.go returns no real entries).
+		if eaNames, err := decodeFullEaNames(buffer); err == nil {
+			for _, name := range eaNames {
+				if isReservedACLXattrName(name) {
+					logger.Debug("SET_INFO: FileFullEaInformation reserved name rejected",
+						"path", openFile.Path,
+						"name", name)
+					return setInfoStatus(types.StatusAccessDenied), nil
+				}
+			}
+		}
+		// Otherwise accept EA writes as a no-op. DittoFS does not persist
+		// extended attributes but returning SUCCESS allows ChangeNotify EA
+		// tests to proceed.
 		logger.Debug("SET_INFO: FileFullEaInformation (no-op)", "path", openFile.Path)
 		if h.NotifyRegistry != nil {
 			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeEa)
@@ -1926,4 +1946,83 @@ func (h *Handler) handleFileLinkInformation(
 	logger.Debug("SET_INFO: hardlink created",
 		"src", openFile.Path, "dst", newPath, "name", linkName)
 	return setInfoStatus(types.StatusSuccess), nil
+}
+
+// ============================================================================
+// FILE_FULL_EA_INFORMATION decoding (MS-FSCC §2.4.15)
+// ============================================================================
+
+// reservedACLXattrName is the xattr name DittoFS reserves for the server's
+// stored security descriptor blob — the EA-API equivalent of Samba's
+// `security.NTACL`. Writes targeting this name through FileFullEaInformation
+// MUST be rejected with STATUS_ACCESS_DENIED so a client cannot tamper with
+// the stored ACL through the EA channel. Reads (FileFullEaInformation in
+// QUERY_INFO) already omit this name from enumeration. The torture client
+// learns the name via the `--option=acl_xattr_name=security.NTACL` setting
+// (smbtorture smb2.ea.acl_xattr).
+//
+// The name is matched case-insensitively because EA names are NTFS-style
+// case-insensitive on the wire even though MS-FSCC §2.4.15 reserves the right
+// to canonicalize the casing. Samba's vfs_acl_xattr uses a fixed lower-case
+// constant; smbtorture's torture_setting_string returns the literal it was
+// configured with. Match either casing.
+const reservedACLXattrName = "security.NTACL"
+
+// isReservedACLXattrName reports whether name (an EA name in canonical NT
+// form, no domain prefix) matches the reserved ACL xattr slot. NT EA names
+// are case-insensitive, so the comparison is folded.
+func isReservedACLXattrName(name string) bool {
+	return strings.EqualFold(name, reservedACLXattrName)
+}
+
+// decodeFullEaNames extracts the EA names from a FILE_FULL_EA_INFORMATION
+// chain (MS-FSCC §2.4.15). Returns an error if any entry is malformed.
+//
+// Wire layout per entry, aligned at 4 bytes:
+//
+//	+0  4B NextEntryOffset (LE) — 0 ⇒ last
+//	+4  1B Flags
+//	+5  1B EaNameLength (without NUL terminator)
+//	+6  2B EaValueLength
+//	+8  N  EaName (ASCII, NUL-terminated)
+//	+8+N+1 M EaValue (raw bytes)
+//
+// Callers only need the names so we skip the value bytes.
+func decodeFullEaNames(buffer []byte) ([]string, error) {
+	var names []string
+	offset := 0
+	for {
+		if offset+8 > len(buffer) {
+			if offset == len(buffer) {
+				return names, nil
+			}
+			return nil, fmt.Errorf("FILE_FULL_EA_INFORMATION: entry header at offset %d truncated", offset)
+		}
+		nextEntryOffset := uint32(buffer[offset]) |
+			uint32(buffer[offset+1])<<8 |
+			uint32(buffer[offset+2])<<16 |
+			uint32(buffer[offset+3])<<24
+		nameLen := int(buffer[offset+5])
+		valueLen := int(uint16(buffer[offset+6]) | uint16(buffer[offset+7])<<8)
+		nameStart := offset + 8
+		nameEnd := nameStart + nameLen
+		// +1 for the trailing NUL byte mandated by MS-FSCC §2.4.15.
+		if nameEnd+1 > len(buffer) {
+			return nil, fmt.Errorf("FILE_FULL_EA_INFORMATION: name at offset %d truncated", offset)
+		}
+		valueEnd := nameEnd + 1 + valueLen
+		if valueEnd > len(buffer) {
+			return nil, fmt.Errorf("FILE_FULL_EA_INFORMATION: value at offset %d truncated", offset)
+		}
+		names = append(names, string(buffer[nameStart:nameEnd]))
+		if nextEntryOffset == 0 {
+			return names, nil
+		}
+		// NextEntryOffset is measured from the start of the current entry.
+		newOffset := offset + int(nextEntryOffset)
+		if newOffset <= offset || newOffset > len(buffer) {
+			return nil, fmt.Errorf("FILE_FULL_EA_INFORMATION: invalid NextEntryOffset %d at %d", nextEntryOffset, offset)
+		}
+		offset = newOffset
+	}
 }
