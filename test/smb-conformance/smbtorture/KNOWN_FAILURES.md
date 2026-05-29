@@ -200,20 +200,13 @@ to the DH state machine — tracked under #792 / #793.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-open.reopen1a | Durable handles V1 | Durable reopen not fully working | #738 |
 | smb2.durable-open.reopen1a-lease | Durable handles V1 | Durable reopen with lease not fully working | #738 |
 | smb2.durable-open.reopen2 | Durable handles V1 | Durable reopen not fully working | #738 |
 | smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | #738 |
 | smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | #738 |
-| smb2.durable-open.reopen2a | Durable handles V1 | Durable reopen not fully working | #738 |
 | smb2.durable-open.reopen4 | Durable handles V1 | Durable reopen not fully working | #738 |
-| smb2.durable-open.delete_on_close1 | Durable handles V1 | Durable DOC not fully working | #738 |
 | smb2.durable-open.delete_on_close2 | Durable handles V1 | Durable DOC not fully working | #738 |
-| smb2.durable-open.file-position | Durable handles V1 | Durable file position not fully working | #738 |
-| smb2.durable-open.lock-oplock | Durable handles V1 | Durable lock + oplock not fully working | #738 |
-| smb2.durable-open.lock-lease | Durable handles V1 | Durable lock + lease not fully working | #738 |
 | smb2.durable-open.alloc-size | CREATE allocation | Pre-existing non-DH bug: out.alloc_size=0 on CREATE with in.alloc_size set (fails before any reconnect) | #792 |
-| smb2.durable-open.read-only | READONLY attribute | OBJECT_NAME_NOT_FOUND on durable reopen of FILE_ATTRIBUTE_READONLY file (attribute-restore gap) | #793 |
 | smb2.durable-open.oplock | Disconnected-DH purge | Intervening conflicting open should purge disconnected DH; surfaced after V1 DHnC FileID lookup fix | #808 |
 | smb2.durable-open.open2-lease | Disconnected-DH purge | Intervening conflicting open should purge disconnected DH; surfaced after V1 DHnC FileID lookup fix | #808 |
 | smb2.durable-open.open2-oplock | Disconnected-DH purge | Intervening conflicting open should purge disconnected DH; surfaced after V1 DHnC FileID lookup fix | #808 |
