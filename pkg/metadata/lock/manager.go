@@ -250,6 +250,14 @@ type LockManager interface {
 	// Zero exceptKey means "match any".
 	AnyHolderHasLeaseBits(handleKey string, exceptKey [16]byte, mask uint32) bool
 
+	// SignalParkedCreates wakes any parked CREATE waiter on handleKey so it
+	// re-evaluates its post-break gate. Used by the SMB CLOSE path after the
+	// open-file table entry has been removed: a parked CREATE that was
+	// waiting on a share-mode conflict with the closing holder must re-check
+	// share-mode against the now-shrunk table. Idempotent — safe to call
+	// even when no waiter exists.
+	SignalParkedCreates(handleKey string)
+
 	// ========================================================================
 	// Break Callbacks
 	// ========================================================================
@@ -1810,6 +1818,13 @@ func (lm *Manager) signalBreakWait(handleKey string) {
 	lm.mu.Lock()
 	lm.signalBreakWaitLocked(handleKey)
 	lm.mu.Unlock()
+}
+
+// SignalParkedCreates is the LockManager-interface entry point for
+// signalBreakWait, exposed so the SMB CLOSE path can wake a parked CREATE
+// waiter after the open-file table entry has been removed. See interface doc.
+func (lm *Manager) SignalParkedCreates(handleKey string) {
+	lm.signalBreakWait(handleKey)
 }
 
 // signalBreakWaitLocked is the lock-held variant of signalBreakWait.

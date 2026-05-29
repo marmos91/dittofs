@@ -244,7 +244,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// (1067-byte files with XSym\n header). On CLOSE, we convert these to
 	// real symlinks in the metadata store for NFS interoperability.
 
-	if !openFile.IsDirectory && openFile.PayloadID != "" && !openFile.DeletePending {
+	if !openFile.IsDirectory && openFile.PayloadID != "" && !openFile.DeletePending && !openFile.InitialDeleteOnClose {
 		if converted, _ := h.checkAndConvertMFsymlink(ctx, openFile); converted {
 			logger.Debug("CLOSE: converted MFsymlink to symlink", "path", openFile.Path)
 		}
@@ -315,6 +315,18 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// ========================================================================
 	// Step 8: Handle delete-on-close (FileDispositionInformation)
 	// ========================================================================
+
+	// Promote per-handle InitialDeleteOnClose to shared committed DOC at CLOSE
+	// time, mirroring Samba close.c::close_normal_file: if the closing handle
+	// requested initial DOC at CREATE and nobody else has committed a shared
+	// DOC via SET_INFO disposition, set DeletePending so the deletion path
+	// fires (whether this is the last handle or DOC propagates to siblings
+	// via the propagation block below). InitialDeleteOnClose is a per-handle
+	// flag and must NOT block subsequent opens prior to this CLOSE — required
+	// by smbtorture smb2.dirlease.{unlink_same, unlink_different}_initial_and_close.
+	if openFile.InitialDeleteOnClose && !openFile.DeletePending {
+		openFile.DeletePending = true
+	}
 
 	if openFile.DeletePending || openFile.BaseFileDeletePending {
 		// Per MS-FSA 2.1.5.4: delete-on-close only removes the file when the
@@ -671,6 +683,17 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// goroutine on the same connection and causing a spurious FILE_CLOSED
 	// (smbtorture compound_find.compound_find_close).
 	h.WaitAndDeleteOpenFile(req.FileID)
+
+	// Wake any parked CREATE on this handle so it can re-evaluate share-mode
+	// against the now-shrunk open-file table. The signal MUST follow the
+	// open-file removal (not just the lease release) so the parked CREATE's
+	// share-mode recheck does not still observe the closing holder. Required
+	// by smbtorture smb2.dirlease.v2_request: tree2's conflicting CREATE
+	// parks on tree1's breaking RH dir lease; tree1's CLOSE must wake it
+	// without waiting for the 5 s async-break timeout.
+	if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
+		h.LeaseManager.SignalParkedCreates(lock.FileHandle(openFile.MetadataHandle), openFile.ShareName)
+	}
 
 	logger.Debug("CLOSE successful",
 		"fileID", fmt.Sprintf("%x", req.FileID),
