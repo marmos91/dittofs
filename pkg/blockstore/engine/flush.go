@@ -107,7 +107,7 @@ func (bs *Store) DrainAllUploads(ctx context.Context) error {
 // FileAttr.Blocks (and therefore a non-empty snapshot manifest). It must
 // run before DrainAllUploads — rollup is what produces the CAS chunks the
 // syncer then mirrors to the remote.
-func (bs *BlockStore) DrainRollups(ctx context.Context) error {
+func (bs *Store) DrainRollups(ctx context.Context) error {
 	return bs.local.DrainRollups(ctx)
 }
 
@@ -116,6 +116,6 @@ func (bs *BlockStore) DrainRollups(ctx context.Context) error {
 // The snapshot-restore orchestration calls this AFTER the metadata
 // Restore() so a file modified in place after the snapshot is not served
 // from a stale append-log record overlaid on the restored CAS bytes.
-func (bs *BlockStore) ResetLocalState(ctx context.Context) error {
+func (bs *Store) ResetLocalState(ctx context.Context) error {
 	return bs.local.ResetLocalState(ctx)
 }

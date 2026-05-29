@@ -142,12 +142,12 @@ func (c *testCoordinator) GetFileObjectID(ctx context.Context, payloadID string)
 	return file.ObjectID, nil
 }
 
-// newEngineOverStore builds a full engine.BlockStore over a real fs local
+// newEngineOverStore builds a full engine.Store over a real fs local
 // store + the supplied metadata store, wired with a faithful coordinator,
 // and a LARGE stabilization window with the rollup worker pool NOT started
 // so the only path from append-log bytes -> CAS + manifest is an explicit
 // DrainRollups (the snapshot-create primitive).
-func newEngineOverStore(t *testing.T, ms metadata.MetadataStore) *engine.BlockStore {
+func newEngineOverStore(t *testing.T, ms metadata.MetadataStore) *engine.Store {
 	t.Helper()
 	rollupStore, ok := ms.(metadata.RollupStore)
 	if !ok {
@@ -169,7 +169,7 @@ func newEngineOverStore(t *testing.T, ms metadata.MetadataStore) *engine.BlockSt
 	}
 	coord := &testCoordinator{store: ms}
 	syncer := engine.NewSyncer(localStore, nil, ms, engine.DefaultConfig())
-	bs, err := engine.New(engine.Config{
+	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
 		Syncer:          syncer,
 		FileBlockStore:  ms,

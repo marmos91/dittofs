@@ -9,13 +9,13 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// newDrainResetFixture builds a full engine.BlockStore over an fs local
+// newDrainResetFixture builds a full engine.Store over an fs local
 // store + memory metadata, with a LARGE stabilization window and the
 // rollup worker pool DELIBERATELY NOT started, so the only way dirty
 // append-log bytes reach CAS + the FileBlock manifest is via an explicit
 // DrainRollups. This reproduces the snapshot race where a snapshot is
 // taken before the async rollup catches up.
-func newDrainResetFixture(t *testing.T) (*BlockStore, *fs.FSStore) {
+func newDrainResetFixture(t *testing.T) (*Store, *fs.FSStore) {
 	t.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, 16*1024*1024, ms, fs.FSStoreOptions{
@@ -31,7 +31,7 @@ func newDrainResetFixture(t *testing.T) (*BlockStore, *fs.FSStore) {
 	// NOTE: intentionally NOT calling StartRollup.
 
 	syncer := NewSyncer(localStore, nil, ms, DefaultConfig())
-	bs, err := New(Config{
+	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Syncer:          syncer,
 		FileBlockStore:  ms,
