@@ -127,6 +127,7 @@ func (h *SnapshotHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snapID, err := h.runtime.CreateSnapshot(r.Context(), name, runtime.CreateSnapshotOpts{
+		Name:     req.Name,
 		NoVerify: req.NoVerify,
 		RetryOf:  req.RetryOf,
 	})
@@ -229,6 +230,7 @@ func (h *SnapshotHandler) Restore(w http.ResponseWriter, r *http.Request) {
 func (h *SnapshotHandler) toWire(s *models.Snapshot, includeDisk bool) dto.Snapshot {
 	out := dto.Snapshot{
 		ID:            s.ID,
+		Name:          s.Name,
 		Share:         s.ShareName,
 		State:         s.State,
 		RemoteDurable: s.RemoteDurable,

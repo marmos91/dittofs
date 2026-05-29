@@ -22,6 +22,11 @@ import (
 // CreateSnapshot invocation. Zero-value (NoVerify=false, RetryOf="")
 // requests the default behavior: a fresh UUID, verify gate enabled.
 type CreateSnapshotOpts struct {
+	// Name is an optional human-readable label persisted on the snapshot
+	// row. Empty leaves the column empty. Ignored on the RetryOf path,
+	// which inherits the original row's Name.
+	Name string
+
 	// NoVerify skips DrainAllUploads + VerifyRemoteDurability (the verify
 	// gate). Final state: ready with RemoteDurable=false. Restore reads
 	// RemoteDurable=false and refuses unless AllowNonDurable is set.
@@ -137,6 +142,7 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 		// Fresh-create path: insert a new row.
 		snap = &models.Snapshot{
 			ID:             uuid.NewString(),
+			Name:           opts.Name,
 			ShareName:      shareName,
 			State:          models.StateCreating,
 			MetadataEngine: metadataEngine,

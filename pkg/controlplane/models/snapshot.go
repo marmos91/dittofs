@@ -21,6 +21,7 @@ const (
 // in-flight snapshot per share.
 type Snapshot struct {
 	ID             string    `gorm:"primaryKey;size:36" json:"id"`
+	Name           string    `gorm:"size:255" json:"name,omitempty"`
 	ShareName      string    `gorm:"index;not null;size:255;index:idx_share_creating,where:state='creating',unique" json:"share_name"`
 	State          string    `gorm:"not null;size:20;default:'creating'" json:"state"`
 	MetadataEngine string    `gorm:"not null;size:20" json:"metadata_engine"`

@@ -173,6 +173,34 @@ func newTestRuntime(t *testing.T) *Runtime {
 	return New(cp)
 }
 
+// TestRuntimeSnapshot_NamePersists asserts a snapshot's Name column
+// round-trips through the store layer (the column was previously absent so
+// --name was silently dropped).
+func TestRuntimeSnapshot_NamePersists(t *testing.T) {
+	rt := newTestRuntime(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	const shareName = "alpha"
+	snapID, err := rt.store.CreateSnapshot(ctx, &models.Snapshot{
+		Name:           "weekly",
+		ShareName:      shareName,
+		State:          models.StateCreating,
+		MetadataEngine: "memory",
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	got, err := rt.GetSnapshot(ctx, shareName, snapID)
+	if err != nil {
+		t.Fatalf("GetSnapshot: %v", err)
+	}
+	if got.Name != "weekly" {
+		t.Fatalf("Name = %q, want weekly", got.Name)
+	}
+}
+
 // TestRuntimeGetSnapshot_NotFound asserts ErrSnapshotNotFound propagates
 // from the store through the Runtime wrapper.
 func TestRuntimeGetSnapshot_NotFound(t *testing.T) {

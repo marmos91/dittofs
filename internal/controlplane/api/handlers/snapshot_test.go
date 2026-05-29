@@ -119,6 +119,56 @@ func TestSnapshotHandler_Create_HappyPath(t *testing.T) {
 	}
 }
 
+// TestSnapshotHandler_Create_ForwardsName asserts the request body's name
+// is forwarded to CreateSnapshotOpts.Name (was previously dropped).
+func TestSnapshotHandler_Create_ForwardsName(t *testing.T) {
+	var gotName string
+	fake := &fakeSnapshotRuntime{
+		createFn: func(_ context.Context, _ string, opts runtime.CreateSnapshotOpts) (string, error) {
+			gotName = opts.Name
+			return "snap-1", nil
+		},
+	}
+	h := NewSnapshotHandler(fake, 30*time.Second, nil)
+	body := bytes.NewBufferString(`{"name":"weekly"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares/data/snapshots/", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	newSnapshotRouter(h).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: body=%s", rr.Code, rr.Body.String())
+	}
+	if gotName != "weekly" {
+		t.Fatalf("opts.Name = %q, want weekly", gotName)
+	}
+}
+
+// TestSnapshotHandler_Get_IncludesName asserts the model's Name is surfaced
+// in the wire DTO on the show endpoint.
+func TestSnapshotHandler_Get_IncludesName(t *testing.T) {
+	fake := &fakeSnapshotRuntime{
+		getFn: func(_ context.Context, _, snapID string) (*models.Snapshot, error) {
+			return &models.Snapshot{ID: snapID, Name: "weekly", ShareName: "/data", State: models.StateReady}, nil
+		},
+	}
+	h := NewSnapshotHandler(fake, 30*time.Second, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/shares/data/snapshots/snap-1", nil)
+	rr := httptest.NewRecorder()
+	newSnapshotRouter(h).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var got dto.Snapshot
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Name != "weekly" {
+		t.Fatalf("name = %q, want weekly", got.Name)
+	}
+}
+
 func TestSnapshotHandler_List_EmptyArrayNotNull(t *testing.T) {
 	fake := &fakeSnapshotRuntime{
 		listFn: func(_ context.Context, _ string) ([]*models.Snapshot, error) {
