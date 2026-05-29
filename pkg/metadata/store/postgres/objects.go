@@ -57,11 +57,21 @@ func (s *PostgresMetadataStore) GetFileBlock(ctx context.Context, id string) (*m
 	return block, nil
 }
 
-// Put stores or updates a file block. Renamed from PutFileBlock to
-// match the narrowed interface.
+// Put stores or updates a file block.
+//
+// The hash column is persisted whenever the block carries a non-zero
+// content hash, regardless of block state. The content hash is derived
+// at rollup time (long before the block reaches the remote) and is the
+// key the engine's CAS read path uses to resolve a chunk. Gating the
+// write on IsFinalized() left every Pending row with a NULL hash; reads
+// then survived only while the bytes stayed in the local append log or
+// RAM cache, and broke the moment local state went cold (restart +
+// cache eviction, or a snapshot restore's ResetLocalState). The memory
+// and badger backends always store the hash inline on the row, so this
+// matches their behavior.
 func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileBlock) error {
 	var hashStr *string
-	if block.IsFinalized() {
+	if !block.Hash.IsZero() {
 		h := block.Hash.String()
 		hashStr = &h
 	}
@@ -179,8 +189,16 @@ func (s *PostgresMetadataStore) AddRef(ctx context.Context, hash blockstore.Cont
 	// payloadID + blockRef accepted for future GC traceability;
 	// postgres backend records ref count only — parameters intentionally
 	// blanked.
+	//
+	// state = 2 (Remote) scoping mirrors GetByHash and the memory/badger
+	// backends, whose AddRef resolves the hash only through the finalized
+	// hash index. The dedup hit path references a block already confirmed
+	// on the remote; a Pending row (which now also carries its hash) is
+	// not a valid dedup donor, so AddRef must miss it and return
+	// ErrUnknownHash exactly as before, letting the caller fall back to
+	// the full Put path.
 	result, err := s.exec(ctx,
-		`UPDATE file_blocks SET ref_count = ref_count + 1 WHERE hash = $1`,
+		`UPDATE file_blocks SET ref_count = ref_count + 1 WHERE hash = $1 AND state = 2 /* Remote */`,
 		hash.String())
 	if err != nil {
 		return fmt.Errorf("add ref: %w", err)
@@ -420,7 +438,7 @@ func (tx *postgresTransaction) Put(ctx context.Context, block *metadata.FileBloc
 		return err
 	}
 	var hashStr *string
-	if block.IsFinalized() {
+	if !block.Hash.IsZero() {
 		h := block.Hash.String()
 		hashStr = &h
 	}
@@ -520,8 +538,10 @@ func (tx *postgresTransaction) AddRef(ctx context.Context, hash blockstore.Conte
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// state = 2 (Remote) scoping mirrors the pool-path AddRef and the
+	// memory/badger backends — a Pending row is not a valid dedup donor.
 	result, err := tx.tx.Exec(ctx,
-		`UPDATE file_blocks SET ref_count = ref_count + 1 WHERE hash = $1`,
+		`UPDATE file_blocks SET ref_count = ref_count + 1 WHERE hash = $1 AND state = 2 /* Remote */`,
 		hash.String())
 	if err != nil {
 		return fmt.Errorf("add ref: %w", err)

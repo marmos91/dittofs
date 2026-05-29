@@ -307,11 +307,46 @@ func (s *PostgresMetadataStore) Restore(ctx context.Context, r io.Reader) error 
 		return fmt.Errorf("%w: %v", metadata.ErrRestoreCorrupt, err)
 	}
 
+	// Reconcile file_blocks.hash from file_block_refs before commit.
+	// Backups produced before the Put hash-gate fix carry NULL hashes on
+	// every file_blocks row (the hash was only written for finalized
+	// rows). After a restore clears local state, the engine's CAS read
+	// path resolves chunks through file_blocks.hash and a NULL there
+	// makes the file read as zeros. file_block_refs always carries the
+	// correct hash, so backfill the per-file read index from it. New
+	// backups already carry the hash; the UPDATE is a no-op for them.
+	if err := reconcileFileBlockHashes(ctx, pgRaw); err != nil {
+		return fmt.Errorf("%w: reconcile file_blocks hashes: %v", metadata.ErrRestoreCorrupt, err)
+	}
+
 	// CRC verified — commit the restore transaction.
 	if _, err := pgRaw.Exec(ctx, "COMMIT").ReadAll(); err != nil {
 		return fmt.Errorf("restore: commit: %w", err)
 	}
 
+	return nil
+}
+
+// reconcileFileBlockHashes backfills file_blocks.hash from
+// file_block_refs for rows whose hash is NULL. The file_blocks row ID is
+// "{files.content_id}/{offset}" and file_block_refs is keyed by
+// (file_id, offset); the join recovers each block's content hash. The
+// hash column is hex TEXT (ContentHash.String()), so the BYTEA ref hash
+// is encoded with encode(..., 'hex'), which produces the same lowercase
+// hex string. Only the hash is touched — block state and remote-durability
+// tracking (synced_hashes) are left as restored.
+func reconcileFileBlockHashes(ctx context.Context, raw *pgconn.PgConn) error {
+	const sql = `
+		UPDATE file_blocks fb
+		SET hash = encode(r.hash, 'hex')
+		FROM file_block_refs r
+		JOIN files f ON f.id = r.file_id
+		WHERE fb.hash IS NULL
+		  AND f.content_id IS NOT NULL
+		  AND fb.id = f.content_id || '/' || r."offset"`
+	if _, err := raw.Exec(ctx, sql).ReadAll(); err != nil {
+		return fmt.Errorf("UPDATE file_blocks: %w", err)
+	}
 	return nil
 }
 
