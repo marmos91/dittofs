@@ -13,6 +13,7 @@ import (
 
 	"lukechampine.com/blake3"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/chunker"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -264,12 +265,12 @@ func MigrateShareToCAS(
 		// metadata is already cut over; orphan `.blk` files on disk
 		// will be reaped by 's boot guard at the next start).
 		if err := removeLegacyBlkFiles(shareDir, f); err != nil {
-			// Non-fatal: log via the journal but continue. The boot
-			// guard's sentinel check is not affected by leftover .blk
-			// files in already-migrated payloads (the share-level
-			// sentinel takes precedence). Surface to the operator via
-			// progress when a Progress callback is wired.
-			_ = err
+			// Non-fatal: metadata is already cut over and the boot
+			// guard's sentinel check is unaffected by leftover .blk
+			// files. Surface to the operator so post-migration
+			// cleanup failures are visible.
+			logger.Warn("migrate: legacy .blk cleanup failed",
+				"share", shareDir, "file", f.Path, "error", err)
 		}
 
 		stats.FilesDone++
@@ -306,7 +307,9 @@ func MigrateShareToCAS(
 	}
 	if err := os.Remove(journalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		// Non-fatal: sentinel is durable; journal cleanup is best-effort.
-		_ = err
+		// ENOENT is idempotent (journal may already be gone on resume).
+		logger.Warn("migrate: journal cleanup failed",
+			"share", shareDir, "journal", journalPath, "error", err)
 	}
 
 	return MigrationResult{Stats: stats, Duration: time.Since(start)}, nil
