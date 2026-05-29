@@ -800,28 +800,25 @@ func (h *Handler) setFileInfoFromStore(
 		// conflicts. Stream renames don't traverse the directory layer and
 		// returned earlier above; we're past that branch here.
 		//
-		// Pre-conflict dst-parent dir-lease break (#470 C3 / smbtorture
-		// smb2.dirlease.rename_dst_parent, lease.c:7331). Even when the
-		// conflict surfaces SHARING_VIOLATION, the dst-parent's RH dir-lease
-		// holder must observe an RH→R break: the rename's implicit destructive
-		// open intent invalidates the holder's Handle caching regardless of
-		// whether the rename ultimately succeeds. Parent-key suppression
-		// applies (the renamer's RqLs ParentLeaseKey, if any, marks the holder
-		// as the renamer itself). On Phase-2 of the test, the holder's break
-		// handler closes its handle inside our wait, the post-break conflict
-		// recheck observes the close, and the rename proceeds.
+		// Conflict-gated dst-parent dir-lease pre-break (#470 C3 / smbtorture
+		// smb2.dirlease.rename_dst_parent, lease.c:7331): when an existing
+		// holder on dst-parent denies the implicit destructive open with
+		// SHARING_VIOLATION, the dst-parent's RH dir-lease holder must observe
+		// an RH→R strip-Handle break first, so its handler can close the
+		// conflicting open and let the rename proceed on the smbtorture
+		// phase-2 retry.
 		//
-		// Skip when toDir == srcParent (same-directory rename): the
-		// post-rename content-change break on srcParent already emits a
-		// single LEASE_BREAK to None for that dir-lease holder. Running
-		// the pre-break here would emit a separate strip-H notification
-		// FIRST, producing two break events instead of the single break
-		// the smbtorture rename samedir-* / hardlink samedir-* cases expect
-		// (Samba's contend_dirleases emits exactly one break-to-None).
-		if !bytes.Equal(toDir, openFile.ParentHandle) {
+		// On a clean rename (no conflict), Skip the strip-H pre-break — the
+		// post-rename content-change break on dst-parent (single LEASE_BREAK
+		// to None per Samba `contend_dirleases`) already invalidates the
+		// holder's caching, and dispatching strip-H FIRST would emit two
+		// separate notifications where smbtorture rename otherdir-*
+		// (.expect_dstdir_break=true) expects exactly one RH→"".
+		conflict := h.checkParentDirRenameConflict(openFile.FileID, toDir)
+		if conflict && !bytes.Equal(toDir, openFile.ParentHandle) {
 			h.breakDstParentDirHandleLeasesForRename(authCtx, toDir, openFile)
 		}
-		if conflict := h.checkParentDirRenameConflict(openFile.FileID, toDir); conflict {
+		if conflict {
 			logger.Debug("SET_INFO: rename blocked by destination-parent sharing violation",
 				"path", openFile.Path,
 				"toDir", fmt.Sprintf("%x", toDir),
