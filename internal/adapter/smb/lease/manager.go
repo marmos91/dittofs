@@ -715,6 +715,27 @@ func (lm *LeaseManager) OnlyTimeoutTombstoneRecords(fileHandle lock.FileHandle, 
 	return false
 }
 
+// HasActiveLeaseRecord reports whether handleKey has any lease record that is
+// NOT a timeout tombstone (BrokenViaTimeout=true) and is owned by a key other
+// than excludeKey. A "live" record — including a holder that has acked-to-None
+// (Samba `disallow_write_lease` keeps treating it as a real holder) — counts
+// as active and constrains the new opener's grant. Timeout tombstones are
+// excluded so smb2.oplock.batch22b can still grant a fresh BATCH after the
+// abandoned holder times out. Used by the CREATE-grant LEVEL_II coercion when
+// the existing OpenFile is stat-only — covers smbtorture
+// smb2.oplock.batch9a / batch13 / batch14 / batch16 where the prior holder's
+// lease record is the only signal of "another holder is alive".
+func (lm *LeaseManager) HasActiveLeaseRecord(fileHandle lock.FileHandle, shareName string, excludeKey [16]byte) bool {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return false
+	}
+	if mgr, ok := lockMgr.(*lock.Manager); ok {
+		return mgr.HasActiveLeaseRecord(string(fileHandle), excludeKey)
+	}
+	return false
+}
+
 // WaitForOtherKeyBreaks waits on ctx for all breaks on fileHandle other than
 // excludeKey to drain. The caller controls the cancellation context — the
 // SMB CREATE async-park path passes a context whose lifetime is bound to

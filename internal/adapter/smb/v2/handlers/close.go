@@ -547,7 +547,20 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// Step 9: Release oplock/lease if held
 	// ========================================================================
 
-	if openFile.OplockLevel != OplockLevelNone && h.LeaseManager != nil {
+	// Release any lease/oplock record associated with this open. The gate
+	// previously checked openFile.OplockLevel != None, but an oplock that was
+	// broken-to-None has its OplockLevel updated to None on ACK (see
+	// handleOplockBreakAck) — gating on the demoted level would leave the
+	// synthetic-key lease record alive past CLOSE. Per Samba ack-to-None
+	// semantics the record IS kept alive at LeaseState=None until CLOSE
+	// removes it (Samba `share_mode_cleanup_disconnected`); CLOSE is the
+	// release point. Gate on LeaseKey instead so the same release runs for
+	// real leases (OplockLevelLease) and for traditional oplocks (LEVEL_II
+	// / Exclusive / Batch and their broken-to-None descendants). Required by
+	// smbtorture smb2.oplock.exclusive9 (multi-iter EXCLUSIVE+SUPERSEDE loop
+	// where each iter's tree1 ack-to-None must clean up before the next
+	// iter's tree1 EXCLUSIVE request).
+	if h.LeaseManager != nil {
 		leaseKey := openFile.LeaseKey
 
 		if leaseKey != ([16]byte{}) {

@@ -96,16 +96,7 @@ oplock grants, and a few specialized response-mapping cases (#479).
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.oplock.batch9a | Oplocks | Stat-only open vs normal-open break-count drift | #740 |
-| smb2.oplock.batch10 | Oplocks | Subsequent oplock request must coerce to LEVEL_II when prior open holds no oplock | #740 |
-| smb2.oplock.batch12 | Oplocks | SetPathInfo allocation-size needs second break stage (count=2) | #740 |
-| smb2.oplock.batch13 | Oplocks | OVERWRITE with attrs-only second open: granted oplock must be LEVEL_II | #740 |
-| smb2.oplock.batch14 | Oplocks | SUPERSEDE with attrs-only second open: granted oplock must be LEVEL_II | #740 |
-| smb2.oplock.batch16 | Oplocks | OVERWRITE_IF with attrs-only second open: granted oplock must be LEVEL_II | #740 |
 | smb2.oplock.batch22a | Oplocks | Break timeout window not honored (~35s expected) | #740 |
-| smb2.oplock.batch23 | Oplocks | After break to LEVEL_II, 3rd open must receive LEVEL_II grant | #740 |
-| smb2.oplock.levelii500 | Oplocks | ACK LEVEL_II→None must return STATUS_INVALID_OPLOCK_PROTOCOL | #740 |
-| smb2.oplock.statopen1 | Oplocks | READ_CONTROL access-mask should trigger break | #740 |
 
 Note: the four `smb2.kernel-oplocks.*` tests require Linux kernel oplock integration via `F_SETLEASE` on the underlying fd — architecturally incompatible with DittoFS's userspace virtual filesystem. They are listed in the [Permanently Unimplementable](#permanently-unimplementable-out-of-scope) appendix.
 
