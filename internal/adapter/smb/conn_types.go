@@ -61,9 +61,9 @@ type ConnInfo struct {
 	// Nil when encryption is not configured or not yet negotiated.
 	EncryptionMiddleware encryption.EncryptionMiddleware
 
-	// DecryptFailures tracks consecutive decryption failures for this connection.
-	// After 5 consecutive failures, the connection is dropped per security best practice.
-	// Reset to 0 on each successful decrypt.
+	// DecryptFailures counts decryption failures on this connection. The
+	// connection is dropped on the first failure, so the counter never
+	// exceeds 1 before teardown.
 	DecryptFailures *atomic.Int32
 
 	// GotAuthenticatedSession tracks whether any non-anonymous, non-guest
