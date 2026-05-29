@@ -12,27 +12,50 @@ import (
 
 // Client is the DittoFS API client.
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
-	token      string
+	baseURL            string
+	httpClient         *http.Client
+	token              string
+	restoreHTTPTimeout time.Duration
 }
 
+// ClientOption configures a Client at construction time.
+type ClientOption func(*Client)
+
+// WithRestoreTimeout overrides the http.Client timeout used for restore
+// calls. The default is 30 minutes. Other endpoints continue to use the
+// default 30 second client timeout.
+func WithRestoreTimeout(d time.Duration) ClientOption {
+	return func(c *Client) { c.restoreHTTPTimeout = d }
+}
+
+// defaultRestoreHTTPTimeout is the timeout applied to the restore HTTP call
+// when no override is supplied. Restore is an inherently long-running
+// operation (full metadata-dump replay plus refcount rebuild), so the
+// default 30 second http.Client timeout would routinely kill it.
+const defaultRestoreHTTPTimeout = 30 * time.Minute
+
 // New creates a new API client.
-func New(baseURL string) *Client {
-	return &Client{
+func New(baseURL string, opts ...ClientOption) *Client {
+	c := &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		restoreHTTPTimeout: defaultRestoreHTTPTimeout,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // WithToken returns a new client with the given token.
 func (c *Client) WithToken(token string) *Client {
 	return &Client{
-		baseURL:    c.baseURL,
-		httpClient: c.httpClient,
-		token:      token,
+		baseURL:            c.baseURL,
+		httpClient:         c.httpClient,
+		token:              token,
+		restoreHTTPTimeout: c.restoreHTTPTimeout,
 	}
 }
 
@@ -129,4 +152,63 @@ func (c *Client) patch(path string, body, result any) error {
 // delete performs a DELETE request.
 func (c *Client) delete(path string, result any) error {
 	return c.do(http.MethodDelete, path, nil, result)
+}
+
+// doWithTimeout performs an HTTP request using a per-call timeout. It
+// builds a transient http.Client that shares the underlying transport
+// (so connection pooling still applies) and never mutates c.httpClient —
+// safe for concurrent callers.
+func (c *Client) doWithTimeout(method, path string, body, result any, timeout time.Duration) error {
+	override := &http.Client{
+		Transport:     c.httpClient.Transport,
+		CheckRedirect: c.httpClient.CheckRedirect,
+		Jar:           c.httpClient.Jar,
+		Timeout:       timeout,
+	}
+
+	var bodyReader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("failed to marshal request body: %w", err)
+		}
+		bodyReader = bytes.NewReader(data)
+	}
+
+	req, err := http.NewRequest(method, c.baseURL+path, bodyReader)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := override.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		var apiErr APIError
+		if json.Unmarshal(respBody, &apiErr) == nil && apiErr.Message != "" {
+			apiErr.StatusCode = resp.StatusCode
+			return &apiErr
+		}
+		return &APIError{StatusCode: resp.StatusCode, Message: string(respBody)}
+	}
+
+	if result != nil && len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, result); err != nil {
+			return fmt.Errorf("failed to decode response: %w", err)
+		}
+	}
+	return nil
 }
