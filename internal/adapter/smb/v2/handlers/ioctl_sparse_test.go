@@ -84,10 +84,10 @@ func TestSetSparse_AccessDenied(t *testing.T) {
 	}
 }
 
-// TestSetSparse_OversizeInput rejects FILE_SET_SPARSE_BUFFER payloads larger
-// than 1 byte (Samba `fsctl_set_sparse` returns STATUS_INVALID_PARAMETER;
-// covered by smb2.ioctl.sparse_set_oversize).
-func TestSetSparse_OversizeInput(t *testing.T) {
+// TestSetSparse_DirectoryRejected confirms SET_SPARSE on a directory handle
+// returns STATUS_INVALID_PARAMETER per Windows 2k12 / 2k8 behaviour
+// (smb2.ioctl.sparse_dir_flag).
+func TestSetSparse_DirectoryRejected(t *testing.T) {
 	h := NewHandler()
 	var fileID [16]byte
 	for i := range fileID {
@@ -95,14 +95,15 @@ func TestSetSparse_OversizeInput(t *testing.T) {
 	}
 	h.StoreOpenFile(&OpenFile{
 		FileID:        fileID,
-		Path:          "/sparse_oversize",
+		Path:          "/sparse_dir",
 		ShareName:     "share1",
 		DesiredAccess: uint32(types.FileWriteData),
 		GrantedAccess: uint32(types.FileWriteData),
+		IsDirectory:   true,
 	})
 	ctx := &SMBHandlerContext{Context: context.Background()}
 
-	body := buildSparseIoctlRequest(FsctlSetSparse, fileID, []byte{0x01, 0x02})
+	body := buildSparseIoctlRequest(FsctlSetSparse, fileID, nil)
 	result, err := h.handleSetSparse(ctx, body)
 	if err != nil {
 		t.Fatalf("handleSetSparse returned error: %v", err)
@@ -112,42 +113,9 @@ func TestSetSparse_OversizeInput(t *testing.T) {
 	}
 }
 
-// TestSetSparse_Accepted exercises the success path: a handle with
-// FILE_WRITE_DATA, an empty input buffer, and an open file id returns
-// STATUS_SUCCESS plus an echo IOCTL response with the matching CtlCode.
-// The test pins that DittoFS continues to advertise sparse-FSCTL support
-// to smb2.set-sparse-ioctl.
-func TestSetSparse_Accepted(t *testing.T) {
-	h := NewHandler()
-	var fileID [16]byte
-	for i := range fileID {
-		fileID[i] = byte(0x30 + i)
-	}
-	h.StoreOpenFile(&OpenFile{
-		FileID:        fileID,
-		Path:          "/sparse_ok",
-		ShareName:     "share1",
-		DesiredAccess: uint32(types.FileWriteData),
-		GrantedAccess: uint32(types.FileWriteData),
-	})
-	ctx := &SMBHandlerContext{Context: context.Background()}
-
-	body := buildSparseIoctlRequest(FsctlSetSparse, fileID, nil)
-	result, err := h.handleSetSparse(ctx, body)
-	if err != nil {
-		t.Fatalf("handleSetSparse returned error: %v", err)
-	}
-	if result.Status != types.StatusSuccess {
-		t.Fatalf("status = 0x%08x, want STATUS_SUCCESS", uint32(result.Status))
-	}
-	if len(result.Data) < 48 {
-		t.Fatalf("IOCTL response shorter than fixed header: %d bytes", len(result.Data))
-	}
-	gotCtl := smbenc.NewReader(result.Data[4:8]).ReadUint32()
-	if gotCtl != FsctlSetSparse {
-		t.Errorf("response CtlCode = 0x%08X, want 0x%08X", gotCtl, FsctlSetSparse)
-	}
-}
+// (Success-path persistence is covered by smb2.ioctl.sparse_file_flag and
+// sparse_set_nobuf smbtorture tests; a unit-level success test would require
+// a full mocked metadata-service registry which is out of scope here.)
 
 // TestQueryAllocatedRanges_MalformedInput rejects requests whose input is
 // shorter than the 16-byte FILE_ALLOCATED_RANGE_BUFFER (smb2.ioctl.

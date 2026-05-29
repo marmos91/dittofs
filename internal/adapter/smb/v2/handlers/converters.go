@@ -56,6 +56,13 @@ const (
 	// source3/smbd/dosmode.c, which decouples DOS bits from POSIX mode.
 	modeDOSReadonly = uint32(0x100000)
 
+	// modeDOSSparse tracks whether FSCTL_SET_SPARSE has been applied. When set,
+	// FILE_ATTRIBUTE_SPARSE_FILE (0x0200) is included in the SMB file attributes
+	// returned by GETINFO queries. Persisted in metadata Mode so it survives
+	// handle close/reopen — smbtorture smb2.ioctl.sparse_file_flag asserts the
+	// attribute reflects in FileBasicInformation immediately after SET_SPARSE.
+	modeDOSSparse = uint32(0x200000)
+
 	// filetimeFreeze is the FILETIME sentinel value -1 (0xFFFFFFFFFFFFFFFF).
 	// Per MS-FSA 2.1.5.14.2: The object store MUST NOT change this attribute
 	// for this or subsequent operations on this handle.
@@ -177,6 +184,12 @@ func fileAttrToSMBAttributesInternal(attr *metadata.FileAttr, hidden bool) types
 	// marked compressed via FSCTL_SET_COMPRESSION. Stored in modeDOSCompressed.
 	if attr.Mode&modeDOSCompressed != 0 {
 		attrs |= types.FileAttributeCompressed
+	}
+
+	// Per MS-FSCC 2.6: FILE_ATTRIBUTE_SPARSE_FILE is set when the file has been
+	// marked sparse via FSCTL_SET_SPARSE. Stored in modeDOSSparse.
+	if attr.Mode&modeDOSSparse != 0 {
+		attrs |= types.FileAttributeSparseFile
 	}
 
 	// Per MS-FSCC 2.6: FILE_ATTRIBUTE_SYSTEM is stored in modeDOSSystem.

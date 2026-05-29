@@ -230,17 +230,18 @@ func DefaultMode(fileType FileType) uint32 {
 }
 
 // modeMask defines the valid mode bits: Unix permissions (bits 0-11) plus
-// three persistent SMB adapter bits:
+// four persistent SMB adapter bits:
 //
 //	0x40000  modeDOSCompressed — FSCTL_SET_COMPRESSION was applied
 //	0x80000  modeDOSSystem     — FILE_ATTRIBUTE_SYSTEM was explicitly set
 //	0x100000 modeDOSReadonly   — FILE_ATTRIBUTE_READONLY was explicitly set
+//	0x200000 modeDOSSparse     — FSCTL_SET_SPARSE was applied
 //
 // modeDOSExplicit (0x10000) and modeDOSArchive (0x20000) are intentionally
 // excluded: they are only set via SET_INFO which bypasses ApplyModeDefault,
 // so they must not be preserved through CREATE defaults (which would suppress
 // the automatic ARCHIVE bit for regular files).
-const modeMask = uint32(0o7777) | 0x40000 | 0x80000 | 0x100000 // Unix perms + Compressed + System + Readonly
+const modeMask = uint32(0o7777) | 0x40000 | 0x80000 | 0x100000 | 0x200000 // Unix perms + Compressed + System + Readonly + Sparse
 
 // ApplyModeDefault applies the default mode if the provided mode is 0.
 // Masks to valid bits (Unix permissions + extended DOS flags) to prevent
