@@ -21,7 +21,7 @@ type AppendFactory func(t *testing.T) (blockstore.BlockStoreAppend, func())
 // against any BlockStoreAppend implementation.
 //
 //   - AppendLogRoundTrip — AppendWrite payload, wait for the rollup
-//     to surface chunks via Walk, then DeleteLog tombstones the log.
+//     to surface chunks via Walk, then DeleteAppendLog tombstones the log.
 //   - PressureChannel_INV05 — backpressure when the in-memory log
 //     budget is exceeded. SKIPPED on the interface-only surface:
 //     requires fs-internal SetMaxLogBytesForTest /
@@ -43,7 +43,7 @@ type AppendFactory func(t *testing.T) (blockstore.BlockStoreAppend, func())
 func BlockStoreAppendConformance(t *testing.T, factory AppendFactory) {
 	t.Helper()
 	t.Run("AppendLogRoundTrip", func(t *testing.T) { testAppendLogRoundTrip(t, factory) })
-	t.Run("RecreateAfterDeleteLog", func(t *testing.T) { testRecreateAfterDeleteLog(t, factory) })
+	t.Run("RecreateAfterDeleteAppendLog", func(t *testing.T) { testRecreateAfterDeleteAppendLog(t, factory) })
 	t.Run("PressureChannel_INV05", func(t *testing.T) { testPressureChannelINV05(t, factory) })
 	t.Run("TornWriteRecovery_LSL06", func(t *testing.T) { testTornWriteRecoveryLSL06(t, factory) })
 	t.Run("ConcurrentStorm", func(t *testing.T) { testConcurrentStorm(t, factory) })
@@ -53,7 +53,7 @@ func BlockStoreAppendConformance(t *testing.T, factory AppendFactory) {
 // testAppendLogRoundTrip asserts the end-to-end behavior on the
 // public BlockStoreAppend surface: an AppendWrite eventually surfaces
 // content-addressed chunks via Walk (the rollup loop emits them via
-// Put), and DeleteLog tombstones the per-file append log. The
+// Put), and DeleteAppendLog tombstones the per-file append log. The
 // scenario does NOT pin the chunk count (FastCDC boundaries are
 // payload-dependent) nor the timing — backends with background
 // rollup pools may need to poll Walk for up to a few seconds before
@@ -95,14 +95,14 @@ func testAppendLogRoundTrip(t *testing.T, factory AppendFactory) {
 		t.Fatal("rollup did not emit any chunks within 10s — Walk surfaced 0 objects")
 	}
 
-	// DeleteLog resets the per-file append log. After it returns, a
+	// DeleteAppendLog resets the per-file append log. After it returns, a
 	// subsequent AppendWrite for the same payloadID must succeed
-	// (per BlockStoreAppend.DeleteLog godoc — recreate semantics
+	// (per BlockStoreAppend.DeleteAppendLog godoc — recreate semantics
 	// required by DittoFS's path-based PayloadID lifecycle). The
 	// already-rolled-up chunks remain in the store (orphan-chunk
-	// sweep is GC's job, not DeleteLog's).
-	if err := bs.DeleteLog(ctx, payloadID); err != nil {
-		t.Fatalf("DeleteLog: %v", err)
+	// sweep is GC's job, not DeleteAppendLog's).
+	if err := bs.DeleteAppendLog(ctx, payloadID); err != nil {
+		t.Fatalf("DeleteAppendLog: %v", err)
 	}
 
 	postCount := 0
@@ -111,14 +111,14 @@ func testAppendLogRoundTrip(t *testing.T, factory AppendFactory) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("Walk after DeleteLog: %v", err)
+		t.Fatalf("Walk after DeleteAppendLog: %v", err)
 	}
 	if postCount == 0 {
-		t.Fatal("DeleteLog removed previously rolled-up chunks; GC sweep is responsible for those, not DeleteLog")
+		t.Fatal("DeleteAppendLog removed previously rolled-up chunks; GC sweep is responsible for those, not DeleteAppendLog")
 	}
 }
 
-// testRecreateAfterDeleteLog asserts that DeleteLog does NOT
+// testRecreateAfterDeleteAppendLog asserts that DeleteAppendLog does NOT
 // permanently tombstone a payloadID: a subsequent AppendWrite for the
 // same payloadID must succeed and start a fresh log. This is required
 // by DittoFS's path-based PayloadID lifecycle (an unlink-then-create
@@ -128,7 +128,7 @@ func testAppendLogRoundTrip(t *testing.T, factory AppendFactory) {
 //
 // The scenario writes once, deletes the log, then writes again at the
 // same payloadID and asserts the second write returns nil.
-func testRecreateAfterDeleteLog(t *testing.T, factory AppendFactory) {
+func testRecreateAfterDeleteAppendLog(t *testing.T, factory AppendFactory) {
 	bs, cleanup := factory(t)
 	t.Cleanup(cleanup)
 	ctx := context.Background()
@@ -139,11 +139,11 @@ func testRecreateAfterDeleteLog(t *testing.T, factory AppendFactory) {
 	if err := bs.AppendWrite(ctx, payloadID, payload, 0); err != nil {
 		t.Fatalf("first AppendWrite: %v", err)
 	}
-	if err := bs.DeleteLog(ctx, payloadID); err != nil {
-		t.Fatalf("DeleteLog: %v", err)
+	if err := bs.DeleteAppendLog(ctx, payloadID); err != nil {
+		t.Fatalf("DeleteAppendLog: %v", err)
 	}
 	if err := bs.AppendWrite(ctx, payloadID, payload, 0); err != nil {
-		t.Fatalf("AppendWrite after DeleteLog (recreate semantics required by path-based PayloadID lifecycle): %v", err)
+		t.Fatalf("AppendWrite after DeleteAppendLog (recreate semantics required by path-based PayloadID lifecycle): %v", err)
 	}
 }
 

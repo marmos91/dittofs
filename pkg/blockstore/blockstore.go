@@ -149,8 +149,8 @@ type BlockStore interface {
 // tier used by the local fs backend only. The append log absorbs
 // adapter writes that arrive out-of-order or below the FastCDC chunk
 // boundary; a background rollup loop chunks the log into CAS objects
-// via Put and then trims the log via DeleteLog (or implicitly during
-// the rollup, backend's choice).
+// via Put and then trims the log via DeleteAppendLog (or implicitly
+// during the rollup, backend's choice).
 //
 // Remote backends (s3, memory) do NOT implement this interface — they
 // only see the rolled-up Put calls.
@@ -180,15 +180,13 @@ type BlockStoreAppend interface {
 	// waiting on log-bytes pressure surfaces as ctx.Err().
 	AppendWrite(ctx context.Context, payloadID string, data []byte, offset uint64) error
 
-	// DeleteLog removes the per-file append log and its tracked
-	// intervals for payloadID (formerly named DeleteAppendLog on
-	// *fs.FSStore — renamed here to match the conformance-suite test
-	// `testDeleteLog`). invokes this on a file-level dedup
-	// hit to discard speculative chunks the syncer was about to
+	// DeleteAppendLog removes the per-file append log and its tracked
+	// intervals for payloadID. The engine invokes this on a file-level
+	// dedup hit to discard speculative chunks the syncer was about to
 	// upload.
 	//
 	// Implementations MUST be safe to call when no log exists for the
-	// payload (no-op return nil). After DeleteLog returns, the
+	// payload (no-op return nil). After DeleteAppendLog returns, the
 	// payload's append-log state is fully reset; a subsequent
 	// AppendWrite for the same payloadID MUST succeed and start a
 	// fresh log (recreate semantics). This is required by DittoFS's
@@ -196,10 +194,10 @@ type BlockStoreAppend interface {
 	// buildPayloadID derives PayloadID from shareName + path, so
 	// 'unlink + create at same path' reuses the same PayloadID).
 	// Backends that maintain a tombstone for race-safety reasons MUST
-	// clear it before DeleteLog returns.
+	// clear it before DeleteAppendLog returns.
 	//
 	// Orphan content-addressed chunks already emitted by a prior
 	// rollup are NOT removed here — they are swept by the mark-sweep
 	// GC.
-	DeleteLog(ctx context.Context, payloadID string) error
+	DeleteAppendLog(ctx context.Context, payloadID string) error
 }

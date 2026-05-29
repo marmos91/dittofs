@@ -20,7 +20,7 @@
 //     *pkg/blockstore/remote/memory.Store (in-memory CAS for tests).
 //
 //   - BlockStoreAppend — embeds BlockStore and adds AppendWrite +
-//     DeleteLog for the random-write absorber tier (the per-file
+//     DeleteAppendLog for the random-write absorber tier (the per-file
 //     append log + FastCDC rollup loop on the fs backend). s3 and
 //     memory backends do NOT implement this — they only see rolled-up
 //     Put calls.
@@ -76,7 +76,7 @@
 //     place and fsyncs the parent directory.
 //
 //   - Read by backend constructors at open time. *fs.FSStore (via
-//     NewFSStore → newFSStoreInternal) stats <baseDir>/.cas-migrated-v1
+//     NewWithOptions → newFSStore) stats <baseDir>/.cas-migrated-v1
 //     before any other I/O. Presence is the ground-truth proof of
 //     completion. Cost is O(1).
 //
@@ -89,7 +89,7 @@
 //     halts boot.
 //
 // Per-share placement: the sentinel lives at the share root that
-// production passes to fs.NewFSStore as baseDir. Per-share semantics
+// production passes to fs.NewWithOptions as baseDir. Per-share semantics
 // (not per-storage-dir global) mean `--share <name>` migrations
 // produce per-share sentinels and partial multi-share runs leave
 // already-migrated shares boot-able while unmigrated ones remain

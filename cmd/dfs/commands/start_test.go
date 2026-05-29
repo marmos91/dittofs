@@ -31,7 +31,7 @@ import (
 // runtime.LoadSharesFromStore returns. Capturing the wrap shape
 // (`share "<name>": share <path>: blockstore: legacy ...`) matches
 // what runtime.LoadSharesFromStore produces when AddShare bubbles
-// `ErrLegacyLayoutDetected` from `fs.NewFSStore`.
+// `ErrLegacyLayoutDetected` from `fs.NewWithOptions`.
 func TestStart_LegacyLayoutExitCode(t *testing.T) {
 	// Stub exitFn to capture the exit code without terminating the process.
 	origExit := exitFn
@@ -57,7 +57,7 @@ func TestStart_LegacyLayoutExitCode(t *testing.T) {
 	t.Cleanup(func() { os.Stderr = origStderr })
 
 	// Synthesize the exact wrap shape runtime.LoadSharesFromStore
-	// produces: `share %q: %w` around the fs.NewFSStore output, which
+	// produces: `share %q: %w` around the fs.NewWithOptions output, which
 	// is itself `share %s: %w` around blockstore.ErrLegacyLayoutDetected.
 	sharePath := filepath.Join(t.TempDir(), "share-A")
 	innerErr := fmt.Errorf("share %s: %w", sharePath, blockstore.ErrLegacyLayoutDetected)

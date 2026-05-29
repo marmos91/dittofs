@@ -387,7 +387,7 @@ func (bs *BlockStore) EvictLocal(ctx context.Context, payloadID string) error {
 	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
 		return err
 	}
-	return bs.local.DeleteLog(ctx, payloadID)
+	return bs.local.DeleteAppendLog(ctx, payloadID)
 }
 
 // DestroyCache closes the in-memory read cache and replaces it with a

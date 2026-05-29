@@ -63,9 +63,9 @@ func newDualReadEnv(t *testing.T) *dualReadEnv {
 	t.Helper()
 	tmp := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := fs.New(tmp, 0, 0, ms)
+	bc, err := fs.NewWithOptions(tmp, 0, 0, ms, fs.FSStoreOptions{})
 	if err != nil {
-		t.Fatalf("fs.New: %v", err)
+		t.Fatalf("fs.NewWithOptions: %v", err)
 	}
 	inner := remotememory.New()
 	rs := newSpyingRemoteStore(inner)

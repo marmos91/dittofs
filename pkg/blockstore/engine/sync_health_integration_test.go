@@ -326,9 +326,9 @@ func TestHealthCallbackInvocation(t *testing.T) {
 func TestHealthMonitorNilRemoteStore(t *testing.T) {
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := fs.New(tmpDir, 0, 0, ms)
+	bc, err := fs.NewWithOptions(tmpDir, 0, 0, ms, fs.FSStoreOptions{})
 	if err != nil {
-		t.Fatalf("fs.New() error = %v", err)
+		t.Fatalf("fs.NewWithOptions() error = %v", err)
 	}
 
 	m := NewSyncer(bc, nil, ms, healthTestConfig())

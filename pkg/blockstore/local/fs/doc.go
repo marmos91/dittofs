@@ -171,11 +171,4 @@
 // consumes stabilized dirty intervals from a shared queue. AppendWrite
 // bypasses fdpool entirely -- each log is opened once per payload and held
 // for the FSStore lifetime.
-//
-// # Flag-gated construction
-//
-// When use_append_log=false (default), FSStore never creates logs/, never
-// starts the rollup pool, and AppendWrite returns an error. Production
-// deployments on v0.15.0 see zero new runtime behavior. See
-// docs/CONFIGURATION.md for the full key list.
 package fs

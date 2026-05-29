@@ -188,7 +188,7 @@ func TestFSStoreStartCloseNoGoroutineLeak(t *testing.T) {
 	for i := 0; i < cycles; i++ {
 		dir := t.TempDir()
 		blockStore := memory.NewMemoryMetadataStoreWithDefaults()
-		bc, err := New(dir, 0, 256*1024*1024, blockStore)
+		bc, err := NewWithOptions(dir, 0, 256*1024*1024, blockStore, FSStoreOptions{})
 		if err != nil {
 			t.Fatalf("cycle %d: New failed: %v", i, err)
 		}
@@ -242,7 +242,7 @@ func TestNewFSStore_SentinelDetection(t *testing.T) {
 				writeLegacyBlkForTest(t, shareDir)
 			}
 			mds := memory.NewMemoryMetadataStoreWithDefaults()
-			bc, err := New(shareDir, 0, 256*1024*1024, mds)
+			bc, err := NewWithOptions(shareDir, 0, 256*1024*1024, mds, FSStoreOptions{})
 			if tc.wantLegacy {
 				if err == nil {
 					_ = bc.Close()
@@ -282,7 +282,7 @@ func TestNewFSStore_DeepBlkFile(t *testing.T) {
 			t.Fatalf("write blk: %v", err)
 		}
 		mds := memory.NewMemoryMetadataStoreWithDefaults()
-		_, err := New(shareDir, 0, 256*1024*1024, mds)
+		_, err := NewWithOptions(shareDir, 0, 256*1024*1024, mds, FSStoreOptions{})
 		if !errors.Is(err, blockstore.ErrLegacyLayoutDetected) {
 			t.Fatalf("expected ErrLegacyLayoutDetected at legacy depth; got %v", err)
 		}
@@ -301,7 +301,7 @@ func TestNewFSStore_DeepBlkFile(t *testing.T) {
 			t.Fatalf("write blk: %v", err)
 		}
 		mds := memory.NewMemoryMetadataStoreWithDefaults()
-		bc, err := New(shareDir, 0, 256*1024*1024, mds)
+		bc, err := NewWithOptions(shareDir, 0, 256*1024*1024, mds, FSStoreOptions{})
 		if err != nil {
 			t.Fatalf("expected success (depth>3 .blk not detected); got %v", err)
 		}
@@ -319,8 +319,8 @@ func TestNewFSStoreForMigration_BypassesSentinel(t *testing.T) {
 
 	// Confirm the production constructor refuses, so we know the
 	// bypass is actually being exercised by the next call.
-	if _, err := New(shareDir, 0, 256*1024*1024, memory.NewMemoryMetadataStoreWithDefaults()); !errors.Is(err, blockstore.ErrLegacyLayoutDetected) {
-		t.Fatalf("precondition: New should refuse legacy layout; got %v", err)
+	if _, err := NewWithOptions(shareDir, 0, 256*1024*1024, memory.NewMemoryMetadataStoreWithDefaults(), FSStoreOptions{}); !errors.Is(err, blockstore.ErrLegacyLayoutDetected) {
+		t.Fatalf("precondition: NewWithOptions should refuse legacy layout; got %v", err)
 	}
 
 	bc, err := NewFSStoreForMigration(shareDir, 0, 256*1024*1024,

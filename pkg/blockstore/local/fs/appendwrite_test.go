@@ -282,16 +282,16 @@ func TestAppendWrite_SingleWriter_NoLatencyPenalty(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 	// The fsync itself is bounded by disk hardware (~100µs-2ms on NVMe
-	// up to ~10ms on rotational/CI VMs; GHA hosted Windows runners are
-	// regularly observed at 60-90ms). This is a smoke gate; the real
-	// double-fsync detection lives in
+	// up to ~10ms on rotational/CI VMs; GHA hosted Windows runners
+	// regularly spike to several hundred ms under noisy-neighbor load).
+	// This is a smoke gate; the real double-fsync detection lives in
 	// TestAppendWrite_CoordinatorOnHotPath_BurstCounts. See #554.
 	budget := 200 * time.Millisecond
 	if runtime.GOOS == "windows" {
-		budget = 500 * time.Millisecond
+		budget = 1500 * time.Millisecond
 	}
 	if elapsed > budget {
-		t.Fatalf("single-writer AppendWrite took %v; want < %v (D-06 bypass broken)", elapsed, budget)
+		t.Fatalf("single-writer AppendWrite took %v; want < %v (bypass broken)", elapsed, budget)
 	}
 }
 

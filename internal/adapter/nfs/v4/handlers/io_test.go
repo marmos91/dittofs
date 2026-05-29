@@ -10,7 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
@@ -41,7 +41,7 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 
 	// Create local store, syncer, and block store engine
 	tmpDir := t.TempDir()
-	localStore, err := fs.New(tmpDir, 0, 0, metaStore)
+	localStore, err := fs.NewWithOptions(tmpDir, 0, 0, metaStore, fs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("create local store: %v", err)
 	}

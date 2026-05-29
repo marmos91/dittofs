@@ -175,7 +175,7 @@ func TestEngine_Flush_LargeFile_Bypasses_EagerPath(t *testing.T) {
 }
 
 // TestEngine_Flush_EagerHit_DeletesAppendLog — mirror: on hit the
-// shared applyFileLevelDedupHit machinery calls local.DeleteLog so any
+// shared applyFileLevelDedupHit machinery calls local.DeleteAppendLog so any
 // in-flight appendlog state is cleaned up. We assert via the memory
 // backend's ReadPayloadAt: post-Flush, reads at offset 0 return
 // ErrFileBlockNotFound because the per-payload appendlog was dropped.
@@ -205,7 +205,7 @@ func TestEngine_Flush_EagerHit_DeletesAppendLog(t *testing.T) {
 		t.Fatalf("Flush: %v", err)
 	}
 
-	// Post-Flush hit: DeleteLog cleaned up the appendlog. The
+	// Post-Flush hit: DeleteAppendLog cleaned up the appendlog. The
 	// memory backend's ReadPayloadAt returns ErrFileBlockNotFound once
 	// the appendlog has been dropped.
 	probe2 := make([]byte, len(data))

@@ -185,7 +185,7 @@ var (
 	// See BlockStore.Walk.
 	ErrStopWalk = errors.New("blockstore: stop walk")
 
-	// ErrLegacyLayoutDetected is returned by *fs.FSStore.NewFSStore when
+	// ErrLegacyLayoutDetected is returned by fs.NewWithOptions when
 	// the share directory contains legacy `.blk` files but no
 	// `.cas-migrated-v1` sentinel marker file. The wrapped target
 	// carries the offending share path

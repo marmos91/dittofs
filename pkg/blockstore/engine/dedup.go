@@ -384,7 +384,7 @@ func (m *Syncer) applyFileLevelDedupHit(
 	// rewrite, but the metadata commit has already happened and reads
 	// will resolve via target's BlockRefs.
 	if m.local != nil {
-		if err := m.local.DeleteLog(ctx, payloadID); err != nil {
+		if err := m.local.DeleteAppendLog(ctx, payloadID); err != nil {
 			logger.Warn("file-level dedup: delete append log",
 				"payloadID", payloadID, "err", err)
 		}
