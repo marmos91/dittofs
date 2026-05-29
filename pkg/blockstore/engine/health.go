@@ -11,9 +11,10 @@ import (
 // HealthCheck verifies the store is operational by checking the syncer health
 // (which in turn checks the remote store).
 //
-// Legacy error-returning probe. New callers should prefer Healthcheck
-// (lowercase 'c') which returns a structured [health.Report] derived
-// from both the local and remote stores and satisfies [health.Checker].
+// Deprecated: use [BlockStore.Healthcheck] (lowercase 'c'), which returns a
+// structured [health.Report] derived from both the local and remote stores
+// and satisfies [health.Checker]. This method only collapses the structured
+// state into a single error and is retained for backward compatibility.
 func (bs *BlockStore) HealthCheck(ctx context.Context) error {
 	return bs.syncer.HealthCheck(ctx)
 }
