@@ -51,7 +51,7 @@ import (
 //   - /api/v1/mounts - Unified mount listing (admin only)
 //   - GET /api/v1/durable-handles - List active durable handles (admin only)
 //   - DELETE /api/v1/durable-handles/{id} - Force-close a durable handle (admin only)
-func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.Store, pprofEnabled bool) http.Handler {
+func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.Store, pprofEnabled bool, restoreHTTPTimeout time.Duration) http.Handler {
 	r := chi.NewRouter()
 
 	// Middleware stack - order matters
@@ -196,6 +196,17 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				// Enable/disable lifecycle (admin-only, inherited).
 				r.Post("/{name}/disable", shareHandler.Disable)
 				r.Post("/{name}/enable", shareHandler.Enable)
+
+				// Per-share snapshot lifecycle. RequireAdmin is inherited
+				// from the parent /shares group.
+				snapshotHandler := handlers.NewSnapshotHandler(rt, restoreHTTPTimeout, rt.LocalStoreDir)
+				r.Route("/{name}/snapshots", func(r chi.Router) {
+					r.Post("/", snapshotHandler.Create)
+					r.Get("/", snapshotHandler.List)
+					r.Get("/{id}", snapshotHandler.Get)
+					r.Delete("/{id}", snapshotHandler.Delete)
+					r.Post("/{id}/restore", snapshotHandler.Restore)
+				})
 
 				// Share permissions
 				r.Get("/{name}/permissions", shareHandler.ListPermissions)

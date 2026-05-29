@@ -3,10 +3,13 @@ package runtime
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
@@ -151,5 +154,154 @@ func TestWaitForSnapshot_CtxCancelDuringWait(t *testing.T) {
 		// Decrement the WG slot so it does not leak. registerSnapInFlight
 		// did wg.Add(1); no goroutine will ever wg.Done it.
 		entry.wg.Done()
+	}
+}
+
+// newTestRuntime builds a Runtime backed by an in-memory SQLite cpstore,
+// suitable for testing the new GetSnapshot / ListSnapshots / DeleteSnapshot
+// wrappers without spinning up a metadata store or block store.
+func newTestRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	cp, err := cpstore.New(&cpstore.Config{
+		Type:   cpstore.DatabaseTypeSQLite,
+		SQLite: cpstore.SQLiteConfig{Path: ":memory:"},
+	})
+	if err != nil {
+		t.Fatalf("cpstore.New: %v", err)
+	}
+	t.Cleanup(func() { _ = cp.Close() })
+	return New(cp)
+}
+
+// TestRuntimeGetSnapshot_NotFound asserts ErrSnapshotNotFound propagates
+// from the store through the Runtime wrapper.
+func TestRuntimeGetSnapshot_NotFound(t *testing.T) {
+	rt := newTestRuntime(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := rt.GetSnapshot(ctx, "missing-share", "missing-id")
+	if !errors.Is(err, models.ErrSnapshotNotFound) {
+		t.Fatalf("GetSnapshot err = %v, want errors.Is(ErrSnapshotNotFound)", err)
+	}
+}
+
+// TestRuntimeListSnapshots_Empty asserts the wrapper returns a non-nil
+// empty slice (so JSON encodes [] not null) when the share has no rows.
+func TestRuntimeListSnapshots_Empty(t *testing.T) {
+	rt := newTestRuntime(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	got, err := rt.ListSnapshots(ctx, "alpha")
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	if got == nil {
+		t.Fatal("ListSnapshots: got nil slice, want non-nil empty slice")
+	}
+	if len(got) != 0 {
+		t.Fatalf("ListSnapshots: len = %d, want 0", len(got))
+	}
+}
+
+// TestRuntimeDeleteSnapshot_HappyPath asserts the wrapper deletes the
+// store row and the on-disk dir under the per-share delete lock.
+func TestRuntimeDeleteSnapshot_HappyPath(t *testing.T) {
+	rt := newTestRuntime(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	const shareName = "alpha"
+
+	// Inject the share into the registry and assign a tempdir as the
+	// per-share local store dir so DeleteSnapshot can compute and wipe
+	// the snapshot directory.
+	localStoreDir := t.TempDir()
+	rt.sharesSvc.InjectShareForTesting(&shares.Share{Name: shareName})
+	if err := rt.sharesSvc.SetLocalStoreDirForTesting(shareName, localStoreDir); err != nil {
+		t.Fatalf("SetLocalStoreDirForTesting: %v", err)
+	}
+
+	// Seed the store row.
+	snap := &models.Snapshot{
+		ShareName:      shareName,
+		State:          models.StateReady,
+		MetadataEngine: "memory",
+	}
+	snapID, err := rt.store.CreateSnapshot(ctx, snap)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	// Create the on-disk snapshot dir + a marker file under it.
+	snapDir := (&models.Snapshot{ID: snapID}).SnapshotDir(localStoreDir)
+	if err := os.MkdirAll(snapDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll %q: %v", snapDir, err)
+	}
+	markerPath := filepath.Join(snapDir, "marker")
+	if err := os.WriteFile(markerPath, []byte("alive"), 0o600); err != nil {
+		t.Fatalf("WriteFile %q: %v", markerPath, err)
+	}
+
+	if err := rt.DeleteSnapshot(ctx, shareName, snapID); err != nil {
+		t.Fatalf("DeleteSnapshot: %v", err)
+	}
+
+	// Row is gone.
+	_, gerr := rt.store.GetSnapshot(ctx, shareName, snapID)
+	if !errors.Is(gerr, models.ErrSnapshotNotFound) {
+		t.Fatalf("post-delete GetSnapshot err = %v, want ErrSnapshotNotFound", gerr)
+	}
+
+	// Marker file + dir gone.
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("marker file still present after DeleteSnapshot: stat err = %v", err)
+	}
+	if _, err := os.Stat(snapDir); !os.IsNotExist(err) {
+		t.Fatalf("snapshot dir still present after DeleteSnapshot: stat err = %v", err)
+	}
+
+	// Lock was released: a follow-up Lock() must succeed without blocking.
+	lock := rt.snapshotDeleteLock(shareName)
+	gotLock := make(chan struct{})
+	go func() {
+		lock.Lock()
+		close(gotLock)
+		lock.Unlock()
+	}()
+	select {
+	case <-gotLock:
+	case <-time.After(2 * time.Second):
+		t.Fatal("snapshot delete lock not released after DeleteSnapshot")
+	}
+}
+
+// TestRuntimeDeleteSnapshot_NotFound asserts ErrSnapshotNotFound from the
+// store propagates verbatim and the on-disk wipe step is NOT attempted.
+func TestRuntimeDeleteSnapshot_NotFound(t *testing.T) {
+	rt := newTestRuntime(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := rt.DeleteSnapshot(ctx, "alpha", "no-such-snap")
+	if !errors.Is(err, models.ErrSnapshotNotFound) {
+		t.Fatalf("DeleteSnapshot err = %v, want errors.Is(ErrSnapshotNotFound)", err)
+	}
+}
+
+// TestRuntimeDeleteSnapshot_RejectsPathTraversal asserts a snapID with
+// path-separator characters is rejected as ErrSnapshotNotFound before any
+// store or filesystem touch.
+func TestRuntimeDeleteSnapshot_RejectsPathTraversal(t *testing.T) {
+	rt := newTestRuntime(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for _, bad := range []string{"../escape", "a/b", `a\b`} {
+		err := rt.DeleteSnapshot(ctx, "alpha", bad)
+		if !errors.Is(err, models.ErrSnapshotNotFound) {
+			t.Fatalf("DeleteSnapshot(%q) err = %v, want ErrSnapshotNotFound", bad, err)
+		}
 	}
 }

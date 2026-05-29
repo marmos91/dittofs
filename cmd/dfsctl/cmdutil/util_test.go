@@ -324,6 +324,73 @@ func TestGetAuthenticatedClient_RefreshRejectsEmptyRefreshToken(t *testing.T) {
 	}
 }
 
+func TestConfirmDestructive_YesShortCircuits(t *testing.T) {
+	var inCalls, outBuf bytes.Buffer
+	origIn, origOut := ConfirmInput, ConfirmOutput
+	ConfirmInput, ConfirmOutput = &inCalls, &outBuf
+	defer func() { ConfirmInput, ConfirmOutput = origIn, origOut }()
+
+	ok, err := ConfirmDestructive("delete?", true)
+	if err != nil || !ok {
+		t.Fatalf("yes flag must return (true,nil); got (%v,%v)", ok, err)
+	}
+	if outBuf.Len() != 0 {
+		t.Errorf("yes flag must not print a prompt; got %q", outBuf.String())
+	}
+}
+
+func TestConfirmDestructive_YInputConfirms(t *testing.T) {
+	var outBuf bytes.Buffer
+	origIn, origOut := ConfirmInput, ConfirmOutput
+	ConfirmInput, ConfirmOutput = strings.NewReader("y\n"), &outBuf
+	defer func() { ConfirmInput, ConfirmOutput = origIn, origOut }()
+
+	ok, err := ConfirmDestructive("delete?", false)
+	if err != nil || !ok {
+		t.Fatalf("y input must confirm; got (%v,%v)", ok, err)
+	}
+	if !strings.Contains(outBuf.String(), "delete?") {
+		t.Errorf("expected prompt in output, got %q", outBuf.String())
+	}
+}
+
+func TestConfirmDestructive_NInputAborts(t *testing.T) {
+	var outBuf bytes.Buffer
+	origIn, origOut := ConfirmInput, ConfirmOutput
+	ConfirmInput, ConfirmOutput = strings.NewReader("n\n"), &outBuf
+	defer func() { ConfirmInput, ConfirmOutput = origIn, origOut }()
+
+	ok, err := ConfirmDestructive("delete?", false)
+	if err != nil || ok {
+		t.Fatalf("n input must not confirm; got (%v,%v)", ok, err)
+	}
+}
+
+func TestConfirmDestructive_EmptyInputAborts(t *testing.T) {
+	origIn, origOut := ConfirmInput, ConfirmOutput
+	ConfirmInput, ConfirmOutput = strings.NewReader(""), &bytes.Buffer{}
+	defer func() { ConfirmInput, ConfirmOutput = origIn, origOut }()
+
+	ok, err := ConfirmDestructive("delete?", false)
+	if err != nil {
+		t.Fatalf("EOF must not be a hard error; got %v", err)
+	}
+	if ok {
+		t.Errorf("empty input must not confirm")
+	}
+}
+
+func TestConfirmDestructive_YesWord(t *testing.T) {
+	origIn, origOut := ConfirmInput, ConfirmOutput
+	ConfirmInput, ConfirmOutput = strings.NewReader("YES\n"), &bytes.Buffer{}
+	defer func() { ConfirmInput, ConfirmOutput = origIn, origOut }()
+
+	ok, err := ConfirmDestructive("delete?", false)
+	if err != nil || !ok {
+		t.Fatalf("YES (uppercase) must confirm; got (%v,%v)", ok, err)
+	}
+}
+
 func TestGetAuthenticatedClient_RefreshRejectsEmptyAccessToken(t *testing.T) {
 	server := newRefreshServer(t, apiclient.TokenResponse{
 		AccessToken:  "",

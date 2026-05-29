@@ -20,6 +20,7 @@ package controlplane
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
@@ -50,6 +51,10 @@ type Options struct {
 
 	// API configuration (optional - set Enabled=false to disable)
 	API *api.APIConfig
+
+	// RestoreHTTPTimeout bounds the REST snapshot-restore handler's
+	// per-request context. Zero falls back to api.DefaultRestoreHTTPTimeout.
+	RestoreHTTPTimeout time.Duration
 }
 
 // New creates a new ControlPlane with the given options.
@@ -84,7 +89,11 @@ func New(ctx context.Context, opts *Options) (*ControlPlane, error) {
 
 	// Initialize API server (always enabled - required for managing shares/users)
 	if opts.API != nil {
-		apiServer, err := api.NewServer(*opts.API, rt, cpStore)
+		timeout := opts.RestoreHTTPTimeout
+		if timeout == 0 {
+			timeout = api.DefaultRestoreHTTPTimeout
+		}
+		apiServer, err := api.NewServer(*opts.API, rt, cpStore, timeout)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create API server: %w", err)
 		}

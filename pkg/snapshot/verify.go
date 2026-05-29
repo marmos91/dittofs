@@ -20,19 +20,13 @@ import (
 // callers can distinguish "block is genuinely absent on remote" from
 // "remote was unreachable mid-verify."
 //
-// Iteration order matches manifest.Sorted (deterministic; mirrors
-// WriteManifest), so probes are dispatched in a stable order. With
-// concurrency > 1, however, the first miss observed depends on which
-// remote Head() returns first — different remote latencies can surface
-// a later sorted hash before an earlier one. Callers needing a
-// deterministic "lowest missing hash" must sort the observations
-// themselves; this helper only guarantees that *some* missing hash is
-// reported when any are absent.
+// Iteration order matches manifest.Sorted, but with concurrency > 1 the
+// first miss observed depends on remote latency — different remotes can
+// surface a later sorted hash before an earlier one. This helper only
+// guarantees that *some* missing hash is reported when any are absent.
 //
-// concurrency values <= 0 are clamped to 1 (safe lower bound; never
-// deadlocks, never panics). A nil or empty manifest returns nil
-// without any remote I/O. The caller's ctx is the only deadline source;
-// there is no internal timeout.
+// concurrency <= 0 is clamped to 1. A nil or empty manifest returns nil
+// without any remote I/O. The caller's ctx is the only deadline source.
 //
 // Caller wraps the returned error with models.ErrSnapshotVerifyFailed
 // at the Runtime orchestration layer; this helper stays purely
@@ -67,15 +61,12 @@ func VerifyRemoteDurability(
 		})
 	}
 
-	hashes := manifest.Sorted()
 loop:
-	for _, h := range hashes {
+	for _, h := range manifest.Sorted() {
 		select {
 		case sem <- struct{}{}:
-			// Acquired a worker slot, dispatch the probe.
 		case <-errCtx.Done():
-			// Either parent ctx cancelled or a sibling probe failed —
-			// stop dispatching new work.
+			// Parent ctx cancelled or a sibling probe failed.
 			break loop
 		}
 
@@ -89,36 +80,29 @@ loop:
 			case err == nil:
 				return
 			case errors.Is(err, blockstore.ErrChunkNotFound):
-				logger.Debug("snapshot sync gate: missing hash on remote",
-					"hash", hash.String(),
-				)
+				logger.Debug("snapshot verify: missing hash on remote", "hash", hash.String())
 				recordErr(fmt.Errorf(
 					"snapshot: remote durability verify: missing hash %s: %w",
 					hash, blockstore.ErrChunkNotFound,
 				))
 			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-				// Distinguish "sibling probe cancelled us" from "the remote
-				// itself returned a ctx-class error before our cancel
-				// fired." Only the former is safe to drop. If errCtx is
-				// still live, the remote-side ctx error is a real probe
-				// failure and must be recorded, otherwise the verifier
-				// would silently skip a chunk and report success.
+				// Distinguish "sibling probe cancelled us" (safe to drop)
+				// from "the remote itself returned a ctx-class error
+				// before our cancel fired" (real failure). If errCtx is
+				// still live, the remote-side ctx error must be recorded
+				// or the verifier would silently skip a chunk and report
+				// success.
 				if errCtx.Err() == nil {
-					logger.Error("snapshot sync gate: head probe failed with ctx error pre-cancel",
-						"hash", hash.String(),
-						"error", err,
-					)
+					logger.Error("snapshot verify: head probe failed with ctx error pre-cancel",
+						"hash", hash.String(), "error", err)
 					recordErr(fmt.Errorf(
 						"snapshot: remote durability verify: head probe %s: %w",
 						hash, err,
 					))
 				}
-				return
 			default:
-				logger.Error("snapshot sync gate: head probe failed",
-					"hash", hash.String(),
-					"error", err,
-				)
+				logger.Error("snapshot verify: head probe failed",
+					"hash", hash.String(), "error", err)
 				recordErr(fmt.Errorf(
 					"snapshot: remote durability verify: head hash %s: %w",
 					hash, err,

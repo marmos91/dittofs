@@ -77,7 +77,7 @@ func testSetup(t *testing.T, port int) (store.Store, APIConfig) {
 func TestAPIServer_Lifecycle(t *testing.T) {
 	cpStore, cfg := testSetup(t, 18080)
 
-	server, err := NewServer(cfg, nil, cpStore)
+	server, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestAPIServer_Lifecycle(t *testing.T) {
 func TestAPIServer_Port(t *testing.T) {
 	cpStore, cfg := testSetup(t, 9999)
 
-	server, err := NewServer(cfg, nil, cpStore)
+	server, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestAPIServer_DefaultConfig(t *testing.T) {
 		},
 	}
 
-	server, err := NewServer(cfg, nil, cpStore)
+	server, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestAPIServer_DefaultConfig(t *testing.T) {
 func TestAPIServer_HealthEndpoint_NoRuntime(t *testing.T) {
 	cpStore, cfg := testSetup(t, 18081)
 
-	server, err := NewServer(cfg, nil, cpStore)
+	server, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestAPIServer_HealthEndpoint_NoRuntime(t *testing.T) {
 func TestAPIServer_RootRedirectsToHealth(t *testing.T) {
 	cpStore, cfg := testSetup(t, 18082)
 
-	server, err := NewServer(cfg, nil, cpStore)
+	server, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestAPIServer_InvalidJWTSecret(t *testing.T) {
 		},
 	}
 
-	_, err := NewServer(cfg, nil, cpStore)
+	_, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
 	if err == nil {
 		t.Fatal("Expected error for invalid JWT secret, got nil")
 	}

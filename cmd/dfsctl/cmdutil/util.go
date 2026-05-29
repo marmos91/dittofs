@@ -2,6 +2,7 @@
 package cmdutil
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,34 @@ import (
 	"github.com/marmos91/dittofs/internal/cli/prompt"
 	"github.com/marmos91/dittofs/pkg/apiclient"
 )
+
+// ConfirmInput is the source ConfirmDestructive reads its Y/N answer from.
+// Tests override this with a strings.Reader to inject answers.
+var ConfirmInput io.Reader = os.Stdin
+
+// ConfirmOutput is the writer ConfirmDestructive prints the prompt to.
+// Tests override this with a bytes.Buffer to capture output.
+var ConfirmOutput io.Writer = os.Stdout
+
+// ConfirmDestructive prints prompt to ConfirmOutput and reads a Y/N
+// answer from ConfirmInput. If yes is true, the prompt is skipped and
+// (true, nil) is returned immediately. Empty input or any non-y/yes
+// answer returns false (the prompt is biased toward refusing).
+func ConfirmDestructive(prompt string, yes bool) (bool, error) {
+	if yes {
+		return true, nil
+	}
+	_, _ = fmt.Fprintln(ConfirmOutput, prompt)
+	_, _ = fmt.Fprint(ConfirmOutput, "Type 'y' to confirm: ")
+
+	reader := bufio.NewReader(ConfirmInput)
+	line, err := reader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return false, err
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes", nil
+}
 
 // Flags stores global flag values accessible by subcommands.
 var Flags = &GlobalFlags{}

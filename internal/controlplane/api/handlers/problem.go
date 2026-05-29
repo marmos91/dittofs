@@ -84,6 +84,20 @@ func UnprocessableEntity(w http.ResponseWriter, detail string) {
 	WriteProblem(w, http.StatusUnprocessableEntity, "Unprocessable Entity", detail)
 }
 
+// PreconditionFailed writes a 412 Precondition Failed problem response.
+// Use when a request would succeed only after a server-state precondition
+// is met that the caller can resolve (e.g. snapshot not durable).
+func PreconditionFailed(w http.ResponseWriter, detail string) {
+	WriteProblem(w, http.StatusPreconditionFailed, "Precondition Failed", detail)
+}
+
+// GatewayTimeout writes a 504 Gateway Timeout problem response. Use when
+// an upstream operation the handler is waiting on did not complete in
+// time and the caller may retry.
+func GatewayTimeout(w http.ResponseWriter, detail string) {
+	WriteProblem(w, http.StatusGatewayTimeout, "Gateway Timeout", detail)
+}
+
 // InternalServerError writes a 500 Internal Server Error problem response.
 func InternalServerError(w http.ResponseWriter, detail string) {
 	WriteProblem(w, http.StatusInternalServerError, "Internal Server Error", detail)
@@ -106,6 +120,13 @@ func WriteJSON(w http.ResponseWriter, status int, data any) {
 // WriteJSONOK writes a 200 OK JSON response.
 func WriteJSONOK(w http.ResponseWriter, data any) {
 	WriteJSON(w, http.StatusOK, data)
+}
+
+// WriteJSONAccepted writes a 202 Accepted JSON response. Use when the
+// server has accepted the request and kicked off asynchronous work; the
+// caller is expected to poll a separate endpoint for completion.
+func WriteJSONAccepted(w http.ResponseWriter, data any) {
+	WriteJSON(w, http.StatusAccepted, data)
 }
 
 // WriteJSONCreated writes a 201 Created JSON response.

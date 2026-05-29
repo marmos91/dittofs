@@ -533,6 +533,210 @@ file-count walk on pathologically large shares.
 **Cross-reference:** [BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md#phase-14-v015x-a5--dfsctl-blockstore-migrate-runbook)
 for the full operator runbook with worked transcripts.
 
+### Share Snapshots
+
+Point-in-time, reference-based protection for a share's content.
+Five `dfsctl share snapshot` subcommands: `create`, `list`, `show`,
+`delete`, `restore`. All subcommands require admin auth (JWT) and
+operate against the daemon's snapshot store.
+
+For workflows, recovery procedures, and the verify-gate explanation
+see [SNAPSHOTS.md](SNAPSHOTS.md#7-restore-runbook).
+
+#### `dfsctl share snapshot create`
+
+Create a point-in-time snapshot of a share. By default the command
+blocks until the snapshot reaches `ready` or `failed`.
+
+**Synopsis:**
+
+```
+dfsctl share snapshot create <share> [flags]
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--name` | `""` | Human-friendly name for the snapshot. Not required to be unique. |
+| `--no-verify` | `false` | Skip the verify gate (upload drain + remote HEAD probes). The snapshot completes with `remote_durable=false`. |
+| `--retry` | `""` | Resume orchestration from a prior `failed` snapshot ID. The target row must exist and be in `failed` state. |
+| `--no-wait` | `false` | Return immediately with the new snapshot ID; do not block on `ready`. |
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| `0` | Snapshot reached `ready` (or `--no-wait` returned the new ID). |
+| `1` | Snapshot reached `failed`, authentication failure, network error, retry target invalid (404 / 409), or a verify / drain failure (504). |
+
+**Examples:**
+
+```bash
+# Create a snapshot and block until it is ready.
+dfsctl share snapshot create /photos
+
+# Create with a name, return immediately.
+dfsctl share snapshot create /photos --name weekly-2026-05 --no-wait
+
+# Resume a failed snapshot.
+dfsctl share snapshot create /photos --retry 4c19fbe0
+```
+
+#### `dfsctl share snapshot list`
+
+List snapshots for a share. Newest-first. Filters AND together; no
+pagination flags.
+
+**Synopsis:**
+
+```
+dfsctl share snapshot list <share> [flags]
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--state` | `""` | Filter by state: `creating`, `ready`, or `failed`. |
+| `--name-prefix` | `""` | Filter by name prefix (case-sensitive). |
+| `--no-relative` | `false` | Render `CREATED` as ISO 8601 instead of relative ("2h ago"). |
+
+**Table columns:** `ID` (8-char short of UUID), `NAME`, `STATE`,
+`DURABLE`, `CREATED`, `SIZE`. The `SIZE` column is always `-` in
+list mode; use `show` to resolve the manifest hash count.
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| `0` | List retrieved (an empty list is still success). |
+| `1` | Share not found (404), authentication failure, or network error. |
+
+**Examples:**
+
+```bash
+dfsctl share snapshot list /photos
+dfsctl share snapshot list /photos --state=failed
+dfsctl share snapshot list /photos --name-prefix=pre-restore-
+dfsctl share snapshot list /photos -o json
+```
+
+#### `dfsctl share snapshot show`
+
+Detail view for a single snapshot. Resolves the manifest hash count
+and the metadata-dump size from disk.
+
+**Synopsis:**
+
+```
+dfsctl share snapshot show <share> <id>
+```
+
+This subcommand has no flags beyond the global `-o` output format.
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| `0` | Record retrieved. |
+| `1` | Snapshot not found (404), share not found (404), authentication failure, or network error. |
+
+**Example:**
+
+```bash
+dfsctl share snapshot show /photos 7a3ec1b2
+```
+
+#### `dfsctl share snapshot delete`
+
+Delete a snapshot. Removes the database row, wipes the on-disk
+artifacts, and releases the GC hold on the snapshot's referenced
+blocks.
+
+**Synopsis:**
+
+```
+dfsctl share snapshot delete <share> <id> [--yes]
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--yes` | `false` | Skip the interactive Y/N confirmation. |
+
+Safety snapshots (`pre-restore-*` names) are not treated specially —
+the same prompt + `--yes` policy applies.
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| `0` | Snapshot deleted, or the operator aborted at the prompt. |
+| `1` | Snapshot not found (404), authentication failure, or network error. |
+
+**Examples:**
+
+```bash
+dfsctl share snapshot delete /photos 9f2dab17
+dfsctl share snapshot delete /photos 9f2dab17 --yes
+```
+
+#### `dfsctl share snapshot restore`
+
+Restore a share from a snapshot. The restore is synchronous: the
+command blocks until the server reports success or failure.
+
+**Pre-flight requirements:**
+
+- The share must be disabled (`dfsctl share disable /<share>`).
+  The command refuses on an enabled share with a hint to disable
+  first.
+- The snapshot must be `remote_durable=true`, OR `--force` must be
+  passed.
+
+**Synopsis:**
+
+```
+dfsctl share snapshot restore <share> <id> [flags]
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--yes` | `false` | Skip the interactive Y/N confirmation. |
+| `--force` | `false` | Restore a snapshot whose `remote_durable=false`. Maps to `allow_non_durable=true` on the REST request. |
+
+On success, prints the safety snapshot ID returned by the server.
+The safety snap captures the share's state immediately before
+restore; delete it explicitly once the restored share is validated.
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| `0` | Restore completed successfully. |
+| `1` | Share enabled (pre-flight refusal), snapshot not found (404), not remotely durable without `--force` (412), drain timeout (504), other restore failure (500), authentication failure, or network error. |
+
+**Examples:**
+
+```bash
+# Standard restore flow.
+dfsctl share disable /photos
+dfsctl share snapshot restore /photos 7a3ec1b2
+dfsctl share enable /photos
+
+# Restore from a non-durable snapshot.
+dfsctl share snapshot restore /photos 9f2dab17 --force --yes
+```
+
+**Cross-reference:**
+[SNAPSHOTS.md — Restore runbook](SNAPSHOTS.md#7-restore-runbook)
+for the complete step-by-step procedure, safety-snap recovery, and
+the failure-mode taxonomy.
+
 ### Block Store Migration
 
 v0.15.0 replaces the legacy `{payloadID}/block-{idx}` block layout with the

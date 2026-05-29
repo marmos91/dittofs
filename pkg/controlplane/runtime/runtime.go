@@ -122,7 +122,7 @@ func New(s store.Store) *Runtime {
 		lifecycleSvc:     lifecycle.New(DefaultShutdownTimeout),
 		identitySvc:      identity.New(),
 		statusCheckers:   newCheckerCache(StatusCacheTTL),
-		snapshotCfg:      SnapshotDefaults{SyncGateConcurrency: defaultSyncGateConcurrency},
+		snapshotCfg:      SnapshotDefaults{},
 	}
 
 	// Long-lived ctx for snapshot orchestration goroutines (D-23-17).
@@ -705,50 +705,20 @@ func (r *Runtime) SetNFSClientProvider(p any) { r.SetAdapterProvider("nfs", p) }
 // NFSClientProvider is deprecated; use GetAdapterProvider("nfs").
 func (r *Runtime) NFSClientProvider() any { return r.GetAdapterProvider("nfs") }
 
-// --- Snapshot Defaults (Phase 23 D-23-22) ---
-
-// defaultSyncGateConcurrency is the defense-in-depth default applied
-// when the operator has not configured snapshot.sync_gate_concurrency.
-// Matches the SnapshotConfig default landed in plan 23-01.
-const defaultSyncGateConcurrency = 16
+// --- Snapshot Defaults ---
 
 // SnapshotDefaults captures operator-configured knobs the Runtime threads
-// into snapshot orchestration. Populated from the YAML knob
-// `snapshot.sync_gate_concurrency` per D-23-22 (schema in plan 23-01).
-// cmd/dfs/start.go calls SetSnapshotDefaults from the parsed config at
-// boot.
-type SnapshotDefaults struct {
-	// SyncGateConcurrency bounds the parallel Head() probes the sync
-	// gate fires during VerifyRemoteDurability. Default 16 (matches
-	// SnapshotConfig default).
-	SyncGateConcurrency int
-}
+// into snapshot orchestration. cmd/dfs/start.go calls SetSnapshotDefaults
+// from the parsed config at boot. Currently empty; future operator knobs
+// will be added here.
+type SnapshotDefaults struct{}
 
 // SetSnapshotDefaults sets the operator-configured snapshot knobs the
-// runtime threads into Runtime.CreateSnapshot orchestration. Values
-// <= 0 are coerced to the built-in default (defense-in-depth — the
-// config loader already validates, but a programmatic caller could
-// pass zero).
+// runtime threads into Runtime.CreateSnapshot orchestration.
 func (r *Runtime) SetSnapshotDefaults(d SnapshotDefaults) {
-	if d.SyncGateConcurrency <= 0 {
-		d.SyncGateConcurrency = defaultSyncGateConcurrency
-	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.snapshotCfg = d
-}
-
-// snapshotDefaults returns a copy of the current SnapshotDefaults under
-// the runtime read lock. Used by the orchestration goroutine to read
-// SyncGateConcurrency at launch time.
-func (r *Runtime) snapshotDefaults() SnapshotDefaults {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	cfg := r.snapshotCfg
-	if cfg.SyncGateConcurrency <= 0 {
-		cfg.SyncGateConcurrency = defaultSyncGateConcurrency
-	}
-	return cfg
 }
 
 // snapInFlight tracks the per-share orchestration goroutines launched
