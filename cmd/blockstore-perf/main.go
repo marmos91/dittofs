@@ -135,7 +135,7 @@ func run(cfg config) error {
 
 // newBlockStore wires production-equivalent FSStore + memory remote +
 // memory metadata + Syncer, sized for short-lived benchmark runs.
-func newBlockStore(baseDir string) (*engine.BlockStore, func(), error) {
+func newBlockStore(baseDir string) (*engine.Store, func(), error) {
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	local, err := fs.NewWithOptions(baseDir, 0, memBudget, ms, fs.FSStoreOptions{
 		MaxLogBytes:     logBudget,
@@ -165,7 +165,7 @@ func newBlockStore(baseDir string) (*engine.BlockStore, func(), error) {
 	if err := bs.Start(context.Background()); err != nil {
 		return nil, nil, fmt.Errorf("engine.Start: %w", err)
 	}
-	// engine.BlockStore.Close already closes the remote — no double close here.
+	// engine.Store.Close already closes the remote — no double close here.
 	return bs, func() { _ = bs.Close() }, nil
 }
 
@@ -206,7 +206,7 @@ func writeHeapProfile(dir string) error {
 // Seeding is excluded from timing because seedAndOffsetCap writes
 // 32–64 MiB per file that would otherwise pollute throughput numbers
 // without being counted in ops/bytes.
-func prepareWorkload(ctx context.Context, bs *engine.BlockStore, cfg config) (func(i int) (int, error), error) {
+func prepareWorkload(ctx context.Context, bs *engine.Store, cfg config) (func(i int) (int, error), error) {
 	files := max(cfg.workingSet, 1)
 	buf := make([]byte, cfg.blockSize)
 	// PRNG drives both per-op offset selection and per-op buffer fill.
@@ -306,7 +306,7 @@ func runLoop(cfg config, step func(i int) (int, error)) (int64, error) {
 // seedAndOffsetCap seeds N payloads of `size` bytes and returns the max
 // legal write offset (size-blockSize). Errors when blockSize > size
 // (would otherwise underflow when cast to uint64).
-func seedAndOffsetCap(ctx context.Context, bs *engine.BlockStore, files int, prefix string, cfg config, size int) (uint64, error) {
+func seedAndOffsetCap(ctx context.Context, bs *engine.Store, files int, prefix string, cfg config, size int) (uint64, error) {
 	if cfg.blockSize > size {
 		return 0, fmt.Errorf("%s: --block-size %d exceeds seeded file size %d", cfg.workload, cfg.blockSize, size)
 	}
