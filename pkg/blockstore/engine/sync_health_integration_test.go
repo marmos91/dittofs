@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
@@ -118,6 +119,13 @@ func newHealthTestEnv(t *testing.T) *healthTestEnv {
 	// MarkSynced step actually fires (mirror loop short-circuits to a
 	// no-op when the SyncedHashStore is nil).
 	m.SetSyncedHashStore(ms)
+	// Replicate engine.New's onChunkComplete wiring (this test builds a
+	// Syncer + FSStore directly, bypassing engine.New): every rolled-up
+	// chunk registers in the syncer pending-upload set so the mirror loop
+	// has something to drain.
+	bc.SetOnChunkComplete(func(hash blockstore.ContentHash, _ []byte, _ string) {
+		m.addPendingHash(hash)
+	})
 	t.Cleanup(func() {
 		_ = m.Close()
 		_ = bc.Close()
