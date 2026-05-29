@@ -214,11 +214,16 @@ const (
 	StatusInvalidLockRange Status = 0xC00001A1
 
 	// StatusRequestOutOfSequence indicates a request was made in the wrong
-	// protocol state [MS-ERREF 2.3.1]. Returned by SESSION_SETUP bind when
-	// the existing session was negotiated with AES-128-GMAC signing but the
-	// new connection's signing algorithm is not GMAC (MS-SMB2 §3.3.5.5.2;
-	// Samba source3/smbd/smb2_sesssetup.c:724-729).
-	StatusRequestOutOfSequence Status = 0xC010000A
+	// protocol state. Per MS-ERREF (Samba libcli/util/ntstatus_err_table.txt
+	// section "MS-ERREF 2.3.1") the value is 0xC000042A — NOT the
+	// MS-ERREF section 2.4 (RPC facility) "STATUS_REQUEST_OUT_OF_SEQUENCE"
+	// 0xC010000A, which is RPC-scoped and smbtorture's nt_errstr() displays
+	// as "HRES code 0xc010000a" because that code is in the HRESULT facility
+	// table, not the NTSTATUS one. Returned by SESSION_SETUP bind when the
+	// existing session was negotiated with AES-128-GMAC signing but the new
+	// connection's signing algorithm is not GMAC (MS-SMB2 §3.3.5.5.2; Samba
+	// source3/smbd/smb2_sesssetup.c:724-729).
+	StatusRequestOutOfSequence Status = 0xC000042A
 )
 
 // String returns a human-readable name for the status code.
