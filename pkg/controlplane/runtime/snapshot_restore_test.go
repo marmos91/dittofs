@@ -788,6 +788,10 @@ func (r *restoreRemote) Delete(ctx context.Context, hash blockstore.ContentHash)
 	return r.inner.Delete(ctx, hash)
 }
 
+func (r *restoreRemote) Has(ctx context.Context, hash blockstore.ContentHash) (bool, error) {
+	return r.inner.Has(ctx, hash)
+}
+
 func (r *restoreRemote) Head(ctx context.Context, hash blockstore.ContentHash) (blockstore.Meta, error) {
 	r.mu.Lock()
 	count := r.hashCallCounts[hash]

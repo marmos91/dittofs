@@ -649,6 +649,9 @@ func (p *prefixDeleteFailerRemote) Delete(ctx context.Context, h blockstore.Cont
 	}
 	return p.inner.Delete(ctx, h)
 }
+func (p *prefixDeleteFailerRemote) Has(ctx context.Context, h blockstore.ContentHash) (bool, error) {
+	return p.inner.Has(ctx, h)
+}
 func (p *prefixDeleteFailerRemote) Head(ctx context.Context, h blockstore.ContentHash) (blockstore.Meta, error) {
 	return p.inner.Head(ctx, h)
 }
@@ -685,6 +688,9 @@ func (d *deleteCountingRemote) GetRange(ctx context.Context, h blockstore.Conten
 func (d *deleteCountingRemote) Delete(ctx context.Context, h blockstore.ContentHash) error {
 	d.deletes.Add(1)
 	return d.inner.Delete(ctx, h)
+}
+func (d *deleteCountingRemote) Has(ctx context.Context, h blockstore.ContentHash) (bool, error) {
+	return d.inner.Has(ctx, h)
 }
 func (d *deleteCountingRemote) Head(ctx context.Context, h blockstore.ContentHash) (blockstore.Meta, error) {
 	return d.inner.Head(ctx, h)
