@@ -90,13 +90,29 @@ func run(cfg config) error {
 	if err != nil {
 		return err
 	}
-	defer cpuStop()
+	cpuStopped := false
+	defer func() {
+		if !cpuStopped {
+			cpuStop()
+		}
+	}()
+
+	ctx := context.Background()
+	// Pre-seed any working-set state BEFORE timing — seedAndOffsetCap
+	// writes 32–64 MiB per file and must not pollute throughput numbers.
+	workload, err := prepareWorkload(ctx, bs, cfg)
+	if err != nil {
+		return err
+	}
 
 	statsBefore := bs.GetStats()
-	ctx := context.Background()
 	start := time.Now()
-	bytesWritten, err := driveWorkload(ctx, bs, cfg)
+	bytesWritten, err := runLoop(cfg, workload)
 	dur := time.Since(start)
+	// Stop CPU profile right after the timed region — heap snapshot and
+	// runtime.GC below must not appear in the workload CPU profile.
+	cpuStop()
+	cpuStopped = true
 	if err != nil {
 		return err
 	}
@@ -149,7 +165,8 @@ func newBlockStore(baseDir string) (*engine.BlockStore, func(), error) {
 	if err := bs.Start(context.Background()); err != nil {
 		return nil, nil, fmt.Errorf("engine.Start: %w", err)
 	}
-	return bs, func() { _ = bs.Close(); _ = remoteStore.Close() }, nil
+	// engine.BlockStore.Close already closes the remote — no double close here.
+	return bs, func() { _ = bs.Close() }, nil
 }
 
 // startProfiles creates the per-run profile dir and begins CPU
@@ -184,78 +201,93 @@ func writeHeapProfile(dir string) error {
 	return nil
 }
 
-// driveWorkload runs the selected workload and returns bytes written.
-func driveWorkload(ctx context.Context, bs *engine.BlockStore, cfg config) (int64, error) {
+// prepareWorkload seeds any pre-workload state (outside the timed
+// region) and returns the per-op step function consumed by runLoop.
+// Seeding is excluded from timing because seedAndOffsetCap writes
+// 32–64 MiB per file that would otherwise pollute throughput numbers
+// without being counted in ops/bytes.
+func prepareWorkload(ctx context.Context, bs *engine.BlockStore, cfg config) (func(i int) (int, error), error) {
 	files := max(cfg.workingSet, 1)
-	buf := seededBytes(cfg.seed, cfg.blockSize)
+	buf := make([]byte, cfg.blockSize)
+	// PRNG drives both per-op offset selection and per-op buffer fill.
+	// Filling buf per-iteration (rng.Read) defeats CAS dedup that would
+	// otherwise swallow most ops when only buf[0] varied across writes.
 	rng := rand.New(rand.NewPCG(cfg.seed, 0))
 
 	switch cfg.workload {
 	case "sequential-write":
-		var off uint64
-		return runLoop(cfg, func(i int) (int, error) {
-			buf[0] = byte(i)
-			pid := fmt.Sprintf("perf/seq/%d", i%files)
-			_, err := bs.WriteAt(ctx, pid, nil, buf, off)
-			off += uint64(len(buf))
+		// Per-file offsets — when working-set > 1, each payloadID must
+		// track its own monotonic offset; a shared `off` would smear
+		// writes across files at correlated positions.
+		offs := make([]int64, files)
+		return func(i int) (int, error) {
+			fillRandom(rng, buf)
+			idx := i % files
+			pid := fmt.Sprintf("perf/seq/%d", idx)
+			_, err := bs.WriteAt(ctx, pid, nil, buf, uint64(offs[idx]))
+			offs[idx] += int64(len(buf))
 			return len(buf), err
-		})
+		}, nil
 	case "random-write":
 		const fileSize = 64 * 1024 * 1024
 		maxOff, err := seedAndOffsetCap(ctx, bs, files, "perf/rand", cfg, fileSize)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
-		return runLoop(cfg, func(i int) (int, error) {
-			buf[0] = byte(i)
+		return func(i int) (int, error) {
+			fillRandom(rng, buf)
 			pid := fmt.Sprintf("perf/rand/%d", i%files)
 			_, err := bs.WriteAt(ctx, pid, nil, buf, rng.Uint64N(maxOff+1))
 			return len(buf), err
-		})
+		}, nil
 	case "dedup-heavy":
-		// Same block bytes -> distinct file per op exercises file-level dedup.
-		return runLoop(cfg, func(i int) (int, error) {
+		// Same block bytes across distinct files exercises file-level
+		// dedup; deliberately fill buf once before the loop.
+		fillRandom(rng, buf)
+		return func(i int) (int, error) {
 			pid := fmt.Sprintf("perf/dedup/%d", i)
 			if _, err := bs.WriteAt(ctx, pid, nil, buf, 0); err != nil {
 				return 0, err
 			}
 			_, err := bs.Flush(ctx, pid)
 			return len(buf), err
-		})
+		}, nil
 	case "mixed-rw":
 		const fileSize = 32 * 1024 * 1024
 		maxOff, err := seedAndOffsetCap(ctx, bs, files, "perf/mixed", cfg, fileSize)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		rbuf := make([]byte, cfg.blockSize)
-		return runLoop(cfg, func(i int) (int, error) {
+		return func(i int) (int, error) {
 			off := rng.Uint64N(maxOff + 1)
 			pid := fmt.Sprintf("perf/mixed/%d", i%files)
 			if i%2 == 0 {
-				buf[0] = byte(i)
+				fillRandom(rng, buf)
 				_, err := bs.WriteAt(ctx, pid, nil, buf, off)
 				return len(buf), err
 			}
 			_, err := bs.ReadAt(ctx, pid, nil, rbuf, off)
 			return 0, err
-		})
+		}, nil
 	case "flush-churn":
-		var off uint64
-		return runLoop(cfg, func(i int) (int, error) {
-			buf[0] = byte(i)
-			pid := fmt.Sprintf("perf/churn/%d", i%files)
-			if _, err := bs.WriteAt(ctx, pid, nil, buf, off); err != nil {
+		// Per-file offsets — same rationale as sequential-write.
+		offs := make([]int64, files)
+		return func(i int) (int, error) {
+			fillRandom(rng, buf)
+			idx := i % files
+			pid := fmt.Sprintf("perf/churn/%d", idx)
+			if _, err := bs.WriteAt(ctx, pid, nil, buf, uint64(offs[idx])); err != nil {
 				return 0, err
 			}
 			if _, err := bs.Flush(ctx, pid); err != nil {
 				return 0, err
 			}
-			off += uint64(len(buf))
+			offs[idx] += int64(len(buf))
 			return len(buf), nil
-		})
+		}, nil
 	default:
-		return 0, fmt.Errorf("unknown workload %q", cfg.workload)
+		return nil, fmt.Errorf("unknown workload %q", cfg.workload)
 	}
 }
 
@@ -292,8 +324,32 @@ func seedAndOffsetCap(ctx context.Context, bs *engine.BlockStore, files int, pre
 func seededBytes(seed uint64, size int) []byte {
 	rng := rand.New(rand.NewPCG(seed, 0))
 	out := make([]byte, size)
-	for i := range out {
-		out[i] = byte(rng.Uint32())
-	}
+	fillRandom(rng, out)
 	return out
+}
+
+// fillRandom overwrites buf with PRNG bytes drawn 8 at a time. Used
+// per-op in the timed loop so payload bytes are unique across ops —
+// otherwise CAS dedup would short-circuit most writes and the workload
+// would not reflect realistic block churn.
+func fillRandom(rng *rand.Rand, buf []byte) {
+	i := 0
+	for ; i+8 <= len(buf); i += 8 {
+		v := rng.Uint64()
+		buf[i] = byte(v)
+		buf[i+1] = byte(v >> 8)
+		buf[i+2] = byte(v >> 16)
+		buf[i+3] = byte(v >> 24)
+		buf[i+4] = byte(v >> 32)
+		buf[i+5] = byte(v >> 40)
+		buf[i+6] = byte(v >> 48)
+		buf[i+7] = byte(v >> 56)
+	}
+	if i < len(buf) {
+		v := rng.Uint64()
+		for ; i < len(buf); i++ {
+			buf[i] = byte(v)
+			v >>= 8
+		}
+	}
 }
