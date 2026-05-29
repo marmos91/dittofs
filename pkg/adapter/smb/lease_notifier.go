@@ -266,3 +266,8 @@ func (t *connRegistryTracker) UntrackSession(sessionID uint64) {
 		}
 	}
 }
+
+// AnyTrackedSession delegates to the inner tracker.
+func (t *connRegistryTracker) AnyTrackedSession() uint64 {
+	return t.inner.AnyTrackedSession()
+}

@@ -98,6 +98,16 @@ func ProcessSingleRequest(
 	// for preauth integrity hash chaining (SESSION_SETUP). See #362.
 	handlerCtx.RawRequest = rawMessage
 
+	// Sticky-track that the peer is using encryption on this session so that
+	// async completion responses (CHANGE_NOTIFY CANCELLED in particular)
+	// can mirror the peer's encryption stance even when Session.EncryptData
+	// stays false in preferred mode. See Session.PeerUsedEncryption.
+	if isEncrypted && reqHeader.SessionID != 0 {
+		if sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID); ok {
+			sess.PeerUsedEncryption.Store(true)
+		}
+	}
+
 	// Per MS-SMB2 3.3.5.2.1: enforce encryption requirements.
 	if errStatus := checkEncryptionRequired(reqHeader, connInfo, isEncrypted); errStatus != 0 {
 		return SendErrorResponse(reqHeader, errStatus, connInfo)
@@ -322,6 +332,13 @@ func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.
 	// NextCommand. Re-encoding reqHeader would diverge on those fields.
 	handlerCtx.RawRequest = rawMessage
 
+	// Sticky-track peer encryption usage; see ProcessSingleRequest.
+	if isEncrypted && reqHeader.SessionID != 0 {
+		if sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID); ok {
+			sess.PeerUsedEncryption.Store(true)
+		}
+	}
+
 	// Per MS-SMB2 3.3.5.2.1: enforce encryption requirements.
 	if errStatus := checkEncryptionRequired(reqHeader, connInfo, isEncrypted); errStatus != 0 {
 		return &HandlerResult{Status: errStatus, Data: MakeErrorBody()}, fileID, handlerCtx
@@ -477,7 +494,12 @@ func SendResponseWithHooks(reqHeader *header.SMB2Header, ctx *handlers.SMBHandle
 	preWrite := func(wirePlaintext []byte) {
 		RunAfterHooks(connInfo, reqHeader.Command, wirePlaintext)
 	}
-	err := sendMessage(respHeader, body, connInfo, preWrite)
+	requestEncrypted := ctx != nil && ctx.RequestEncrypted
+	// Channel-bind SESSION_SETUP responses MUST be sent plaintext-signed even
+	// when the underlying session has encryption — the peer has no derivable
+	// keys for the new channel yet (MS-SMB2 §3.3.5.5.2).
+	suppressSetupEncryption := result.IsBinding
+	err := sendMessage(respHeader, body, connInfo, requestEncrypted, suppressSetupEncryption, preWrite)
 	// Fire ReleaseData AFTER the wire write completes, regardless of
 	// write success. The pooled buffer is no longer referenced once the
 	// write attempt returns, so release is safe whether or not the bytes
@@ -491,7 +513,9 @@ func SendResponseWithHooks(reqHeader *header.SMB2Header, ctx *handlers.SMBHandle
 // SendResponse sends an SMB2 response with credit management and signing.
 func SendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *HandlerResult, connInfo *ConnInfo) error {
 	respHeader, body := buildResponseHeaderAndBody(reqHeader, ctx, result, connInfo)
-	err := SendMessage(respHeader, body, connInfo)
+	requestEncrypted := ctx != nil && ctx.RequestEncrypted
+	suppressSetupEncryption := result.IsBinding
+	err := sendMessage(respHeader, body, connInfo, requestEncrypted, suppressSetupEncryption, nil)
 	// See SendResponseWithHooks — release pooled buffer after wire write.
 	if result.ReleaseData != nil {
 		result.ReleaseData()
@@ -586,10 +610,49 @@ func grantConnectionCredits(connInfo *ConnInfo, sessionID uint64, requested, cre
 // SendErrorResponse sends an SMB2 error response.
 // Per user decision: all responses on encrypted sessions are encrypted,
 // including error responses.
+//
+// Special case STATUS_USER_SESSION_DELETED: per Samba
+// source3/smbd/smb2_server.c::smbd_smb2_request_dispatch ("We fallback to a
+// session of another process in order to get the signing correct"), when the
+// inbound request carries a SessionId that no longer maps to a session, the
+// outbound USER_SESSION_DELETED reply MUST still be signed with the keys of
+// some valid session on this transport so the client accepts it under
+// SigningRequired. Otherwise the unsigned reply is mapped to
+// NT_STATUS_ACCESS_DENIED by Samba's smbXcli verifier and smb2.session-id
+// reports the wrong status code. The wire SessionId stays the original
+// (wrong) value the client used; only the signing key is borrowed.
 func SendErrorResponse(reqHeader *header.SMB2Header, status types.Status, connInfo *ConnInfo) error {
 	credits := grantConnectionCredits(connInfo, reqHeader.SessionID, reqHeader.Credits, reqHeader.CreditCharge)
 	respHeader := header.NewResponseHeaderWithCredits(reqHeader, status, credits)
+	if status == types.StatusUserSessionDeleted && connInfo.SessionTracker != nil {
+		if fallback := connInfo.SessionTracker.AnyTrackedSession(); fallback != 0 {
+			if _, ok := connInfo.Handler.GetSession(fallback); ok {
+				return sendMessageWithSigner(respHeader, MakeErrorBody(), connInfo, fallback)
+			}
+		}
+	}
 	return SendMessage(respHeader, MakeErrorBody(), connInfo)
+}
+
+// sendMessageWithSigner sends an SMB2 message whose wire SessionId differs
+// from the session whose key is used to sign it. Used by SendErrorResponse
+// on the wrong-SessionId USER_SESSION_DELETED path.
+func sendMessageWithSigner(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, signingSessionID uint64) error {
+	smbPayload := append(hdr.Encode(), body...)
+	sess, ok := connInfo.Handler.GetSession(signingSessionID)
+	if !ok || sess.CryptoState == nil {
+		// Falls back to plain unsigned send.
+		return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, smbPayload)
+	}
+	if sess.ShouldSign() {
+		sess.SignMessageOnChannel(connInfo.ConnID, smbPayload)
+		copy(hdr.Signature[:], smbPayload[48:64])
+		logger.Debug("Signed outgoing SMB2 message with fallback session",
+			"command", hdr.Command.String(),
+			"wireSessionID", hdr.SessionID,
+			"signerSessionID", signingSessionID)
+	}
+	return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, smbPayload)
 }
 
 // SendMessage sends an SMB2 message with NetBIOS framing, optional encryption,
@@ -600,11 +663,16 @@ func SendErrorResponse(reqHeader *header.SMB2Header, status types.Status, connIn
 // the server MUST sign the response using the session's signing key. Encrypted
 // sessions use AEAD for integrity instead of signing (MS-SMB2 3.3.4.1.3).
 //
-// Per MS-SMB2 3.3.5.5.3: the initial SESSION_SETUP SUCCESS response for a newly
-// created session MUST NOT be encrypted (client hasn't derived keys yet), but
-// MUST be signed. Re-authentication SESSION_SETUP responses ARE encrypted.
+// Per MS-SMB2 3.3.5.5.3 / 3.3.5.5.2: the initial SESSION_SETUP SUCCESS response
+// for a newly created session and the channel-bind SESSION_SETUP response MUST
+// NOT be encrypted (peer has no derivable keys for that channel yet) but MUST
+// be signed. Re-authentication SESSION_SETUP responses ARE encrypted when the
+// existing session has encryption available. SendMessage cannot distinguish
+// re-auth from bind because it has no HandlerResult context, so it always
+// treats SESSION_SETUP as bind/new-session (skip encryption). Re-auth must go
+// through SendResponse/SendResponseWithHooks which thread the IsBinding flag.
 func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error {
-	return sendMessage(hdr, body, connInfo, nil)
+	return sendMessage(hdr, body, connInfo, false, true, nil)
 }
 
 // sendMessage is the internal implementation used by SendMessage and
@@ -613,27 +681,51 @@ func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error 
 // written to the TCP connection. SendResponseWithHooks uses this to run the
 // preauth integrity hash update in the window where the client cannot yet have
 // observed the response — see the SendResponseWithHooks docstring.
-func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWrite func(wirePlaintext []byte)) error {
+//
+// suppressSessionSetupEncryption=true forces the SESSION_SETUP response to go
+// out plaintext-signed even if the session has encryption keys. Callers set
+// it for newly-created sessions, channel-bind responses, and the synthetic
+// SendMessage path (no IsBinding context available).
+func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, responseEncrypted bool, suppressSessionSetupEncryption bool, preWrite func(wirePlaintext []byte)) error {
 	smbPayload := append(hdr.Encode(), body...)
 
 	if hdr.SessionID != 0 {
 		sess, ok := connInfo.Handler.GetSession(hdr.SessionID)
 		if ok {
-			// Per MS-SMB2 3.3.5.5.3 and 3.3.5.5.2: SESSION_SETUP responses
-			// MUST be signed and MUST NOT be encrypted, in all three cases:
-			// new session (client has no encryption keys yet), re-auth, and
-			// channel bind (client must validate Channel.SigningKey from the
-			// plaintext response before treating the channel as bound).
-			// Applies to both the final SUCCESS response AND interim
-			// STATUS_MORE_PROCESSING_REQUIRED challenges — the bind peer has
-			// no channel-scoped keys yet, so encrypting the challenge makes
-			// the client drop the connection with ACCESS_DENIED (#361).
+			// Per MS-SMB2 3.3.5.5.3 and 3.3.5.5.2: the initial SESSION_SETUP
+			// SUCCESS response for a newly created session and the channel-bind
+			// response MUST be signed and MUST NOT be encrypted — the peer has
+			// no derivable keys for that channel yet, so encrypting causes the
+			// client to drop the connection with ACCESS_DENIED (#361).
+			// Re-authentication SESSION_SETUP on an existing session DOES get
+			// encrypted with the existing session keys (the peer can decrypt).
+			// Interim STATUS_MORE_PROCESSING_REQUIRED responses also stay
+			// plaintext for the same reason.
 			isSessionSetup := hdr.Command == types.SMB2SessionSetup
 			isSessionSetupSuccess := isSessionSetup && hdr.Status == types.StatusSuccess
+			isInterim := isSessionSetup && hdr.Status != types.StatusSuccess
 			if isSessionSetupSuccess && sess.NewlyCreated {
 				sess.NewlyCreated = false // Clear so subsequent messages get encrypted
+				suppressSessionSetupEncryption = true
 			}
-			if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil && !isSessionSetup {
+			// Encrypt when the session forces it (mode=required), the
+			// per-share tree forces it (Share.EncryptData via TREE_CONNECT),
+			// or the inbound request was itself encrypted (MS-SMB2 §3.3.4.1.4).
+			// In preferred mode Session.EncryptData stays false so signing-only
+			// torture tests can run, but encrypted shares and clients that
+			// opt-in to encryption per-connection (e.g. smbtorture's
+			// encryption-aes-128-ccm with SMB_ENCRYPTION_REQUIRED credentials)
+			// must still get encrypted responses — pull the tree-level flag
+			// and honour responseEncrypted.
+			shouldEncrypt := sess.ShouldEncrypt() || responseEncrypted
+			if !shouldEncrypt && hdr.TreeID != 0 && sess.CryptoState != nil &&
+				sess.CryptoState.Encryptor != nil {
+				if tree, ok := connInfo.Handler.GetTree(hdr.TreeID); ok && tree.EncryptData {
+					shouldEncrypt = true
+				}
+			}
+			suppressForSetup := isInterim || (isSessionSetup && suppressSessionSetupEncryption)
+			if shouldEncrypt && connInfo.EncryptionMiddleware != nil && !suppressForSetup {
 				// Run pre-write hook on the PLAINTEXT bytes — the preauth chain
 				// hashes plaintext on both sides, not the encrypted wire form.
 				if preWrite != nil {
@@ -772,7 +864,15 @@ func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, respons
 			"bufferLen", len(response.Buffer))
 	}
 
-	return SendMessage(respHeader, body, connInfo)
+	// Async completion must mirror the peer's encryption stance per MS-SMB2
+	// §3.3.4.1.4 — if any prior request on this session arrived encrypted,
+	// the peer expects this response encrypted too, even when
+	// Session.EncryptData=false (preferred mode without per-share enforcement).
+	mirrorEncryption := false
+	if sess, ok := connInfo.Handler.GetSession(sessionID); ok {
+		mirrorEncryption = sess.PeerUsedEncryption.Load()
+	}
+	return sendMessage(respHeader, body, connInfo, mirrorEncryption, true, nil)
 }
 
 // SendAsyncCompletionResponse sends a standalone async completion response for
@@ -823,7 +923,12 @@ func SendAsyncCompletionResponse(sessionID uint64, messageID uint64, asyncId uin
 		"messageID", messageID,
 		"asyncId", asyncId)
 
-	return SendMessage(respHeader, body, connInfo)
+	// Mirror the peer's encryption stance (see SendAsyncChangeNotifyResponse).
+	mirrorEncryption := false
+	if sess, ok := connInfo.Handler.GetSession(sessionID); ok {
+		mirrorEncryption = sess.PeerUsedEncryption.Load()
+	}
+	return sendMessage(respHeader, body, connInfo, mirrorEncryption, true, nil)
 }
 
 // encodeReadResponseBody encodes a READ response body for async pipe-read completion.

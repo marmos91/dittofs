@@ -1221,14 +1221,30 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 	var signingAlgId uint16
 	var signingAlgExplicit bool
 
+	// Detect re-authentication: the session was previously established and
+	// has a captured Session.PreauthIntegrityHashValue. Per MS-SMB2
+	// §3.3.5.5.3, on re-auth the preauth hash is UNCHANGED from the original
+	// setup — the new SigningKey / EncryptionKey / DecryptionKey are derived
+	// from the new SessionBaseKey combined with that frozen hash. Resetting
+	// from the per-connection preauth chain would diverge from the client and
+	// produce "Bad SMB2 (sign_algo_id=2) signature" rejections on the next
+	// signed message (smb2.session.reauth1-5).
+	var zeroHash [64]byte
+	isReauth := sess.PreauthIntegrityHash != zeroHash
+
 	if ctx != nil && ctx.ConnCryptoState != nil {
 		dialect = ctx.ConnCryptoState.GetDialect()
 		if dialect >= types.Dialect0300 {
-			// Per [MS-SMB2] 3.3.5.5: use the per-session preauth hash for key
-			// derivation, not the connection-level hash. Each session maintains
-			// its own hash chain including only that session's NEGOTIATE and
-			// SESSION_SETUP messages.
-			preauthHash = ctx.ConnCryptoState.GetSessionPreauthHash(sess.SessionID)
+			if isReauth {
+				// Frozen preauth hash from the original SESSION_SETUP.
+				preauthHash = sess.PreauthIntegrityHash
+			} else {
+				// Per [MS-SMB2] 3.3.5.5: use the per-session preauth hash for
+				// key derivation, not the connection-level hash. Each session
+				// maintains its own hash chain including only that session's
+				// NEGOTIATE and SESSION_SETUP messages.
+				preauthHash = ctx.ConnCryptoState.GetSessionPreauthHash(sess.SessionID)
+			}
 			cipherId = ctx.ConnCryptoState.GetCipherId()
 			signingAlgId, signingAlgExplicit = ctx.ConnCryptoState.GetSigningAlgorithmId()
 		}
@@ -1283,7 +1299,6 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 			}
 
 			if encCipherId != 0 {
-				cryptoState.EncryptData = true
 				if err := cryptoState.CreateEncryptors(encCipherId); err != nil {
 					if h.EncryptionConfig.Mode == "required" {
 						logger.Warn("Failed to create session encryptors in required mode, rejecting session",
@@ -1292,20 +1307,41 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 						return NewErrorResult(types.StatusAccessDenied)
 					}
 					// Preferred mode: degrade gracefully
-					logger.Warn("Failed to create session encryptors, disabling encryption",
+					logger.Warn("Failed to create session encryptors, available=false",
 						"sessionID", sess.SessionID, "error", err)
-					cryptoState.EncryptData = false
 				} else {
-					logger.Info("SMB3 encryption enabled for session",
+					// Per MS-SMB2 §3.3.5.5.3: Session.EncryptData is forced on
+					// only when the server requires encryption globally; in
+					// preferred mode the encryptors are available but enforce-
+					// ment is gated per-share at TREE_CONNECT (Share.EncryptData).
+					// Forcing EncryptData=true here causes smbtorture signing
+					// tests (signing-hmac-sha-256, signing-aes-128-{cmac,gmac})
+					// to skip with "Can't test signing only if encryption is
+					// required" because the outer tcon then advertises
+					// session-level encryption regardless of share config.
+					if h.EncryptionConfig.Mode == "required" {
+						cryptoState.EncryptData = true
+					}
+					logger.Info("SMB3 encryption available for session",
 						"sessionID", sess.SessionID,
 						"cipherId", fmt.Sprintf("0x%04x", encCipherId),
-						"dialect", dialect.String())
+						"dialect", dialect.String(),
+						"sessionEnforced", cryptoState.EncryptData)
 				}
 			}
 			// encCipherId == 0 && preferred mode: no encryption for this session
 		}
 
 		sess.SetCryptoState(cryptoState)
+
+		// Snapshot the frozen Session.PreauthIntegrityHashValue per MS-SMB2
+		// §3.3.5.5.3 on first establishment so re-authentication can re-derive
+		// keys from this same value instead of resetting the per-connection
+		// per-session hash entry. Skipped on re-auth (we already used the
+		// stored value above).
+		if !isReauth {
+			sess.PreauthIntegrityHash = preauthHash
+		}
 	} else {
 		// SMB 2.x: cannot encrypt. Reject in required mode.
 		if h.EncryptionConfig.Mode == "required" {

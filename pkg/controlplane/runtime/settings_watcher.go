@@ -200,6 +200,15 @@ func (w *SettingsWatcher) pollNFSSettings(ctx context.Context) error {
 	return nil
 }
 
+// RefreshSMBSettings forces a synchronous re-read of SMB adapter settings
+// from the database, bypassing the periodic poll cadence. Use when adapter
+// lifecycle events (enable/disable, restart) must see settings updates that
+// happened within the current poll window. Returns the same errors as the
+// internal poll and is a no-op if the settings version is unchanged.
+func (w *SettingsWatcher) RefreshSMBSettings(ctx context.Context) error {
+	return w.pollSMBSettings(ctx)
+}
+
 // pollSMBSettings checks the DB for SMB adapter settings changes.
 // If the version has changed, swaps the cached settings atomically.
 func (w *SettingsWatcher) pollSMBSettings(ctx context.Context) error {
