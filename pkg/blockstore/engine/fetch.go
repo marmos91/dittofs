@@ -495,8 +495,12 @@ func (m *Syncer) enqueueDownload(payloadID string, blockIdx uint64) chan error {
 	m.inFlightMu.Unlock()
 
 	callerDone := make(chan error, 1)
-	req := NewDownloadRequest(payloadID, blockIdx, nil)
-	req.Done = make(chan error, 1)
+	req := TransferRequest{
+		Type:       TransferDownload,
+		PayloadID:  payloadID,
+		BlockIndex: blockIdx,
+		Done:       make(chan error, 1),
+	}
 
 	go func() {
 		// Wait for either download completion or syncer shutdown.
@@ -542,5 +546,9 @@ func (m *Syncer) enqueuePrefetch(payloadID string, blockIdx uint64) {
 		return
 	}
 
-	m.queue.EnqueuePrefetch(NewPrefetchRequest(payloadID, blockIdx))
+	m.queue.EnqueuePrefetch(TransferRequest{
+		Type:       TransferPrefetch,
+		PayloadID:  payloadID,
+		BlockIndex: blockIdx,
+	})
 }

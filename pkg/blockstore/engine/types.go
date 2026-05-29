@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -44,6 +45,20 @@ func (t TransferType) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// TransferRequest holds data for a pending transfer operation (download, upload, or prefetch).
+type TransferRequest struct {
+	Type       TransferType // Transfer type and priority
+	PayloadID  string       // Payload ID
+	BlockIndex uint64       // Flat block index (fileOffset / BlockSize)
+	Done       chan error   // Completion channel; nil for async (fire-and-forget)
+}
+
+// BlockKey returns a unique string key for this block. Internal to
+// the engine after blockstore.FormatStoreKey was removed.
+func (r TransferRequest) BlockKey() string {
+	return fmt.Sprintf("%s/%d", r.PayloadID, r.BlockIndex)
 }
 
 // Config holds configuration for the Syncer.
