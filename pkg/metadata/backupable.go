@@ -28,9 +28,24 @@ import (
 // Restore reads a previously-backed-up stream from r and rebuilds the
 // metadata state. The destination store must be empty (no existing share
 // data); otherwise ErrRestoreDestinationNotEmpty is returned.
+//
+// Consistency contract (issue #811): blocks are immutable and
+// content-addressed, so the only source of metadata-vs-block skew is the
+// dump and the returned hash set being read at different logical instants.
+// Implementations MUST therefore capture BOTH the serialized metadata
+// written to w AND the returned HashSet from a single consistent read-view
+// — e.g. a single MVCC/REPEATABLE READ transaction (postgres), one managed
+// read txn (badger), or a copy-on-read under the write lock (memory). The
+// hash set MUST be derived from that same view (enumerating the captured
+// files' block refs), never from a later live re-read. Writes may proceed
+// concurrently; no global quiesce is required. The result is a true
+// point-in-time image: a file present in the dump always has its blocks in
+// the manifest, and vice versa. The ConcurrentWriter case in the storetest
+// backup conformance suite enforces this.
 type Backupable interface {
 	// Backup serializes all metadata into w and returns the set of
-	// content-addressed block hashes referenced by the snapshot.
+	// content-addressed block hashes referenced by the snapshot, both
+	// captured from a single consistent read-view (see contract above).
 	Backup(ctx context.Context, w io.Writer) (*blockstore.HashSet, error)
 
 	// Restore reads a backup stream from r and rebuilds metadata state.
