@@ -306,19 +306,6 @@ incomplete break notification delivery and multi-client coordination.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 
-### Byte-Range Locks (Replay subset — depends on multichannel #482)
-
-The remaining smb2.lock failures are the replay-protection tests, which
-need LockSequence tracking + multichannel reflection support. Those land
-under #482 (multichannel session binding); track here so the parser
-recognises them.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.lock.replay_broken_windows | Locks | Lock replay requires LockSequence tracking | #744 |
-| smb2.lock.replay_smb3_specification_durable | Locks | Lock replay with durable handles needs LockSequence | #744 |
-| smb2.lock.replay_smb3_specification_multi | Locks | Lock replay across channels needs multichannel | #744 |
-
 ### Sessions (Remaining)
 
 Phase 73 Plan 03 implemented session re-authentication with key re-derivation
