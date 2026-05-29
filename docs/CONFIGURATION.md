@@ -365,10 +365,6 @@ blockstore:
                                 # WARN and is otherwise ignored. Schedule
                                 # via cron until the periodic scheduler
                                 # ships in a follow-up phase.
-    sweep_concurrency: 16       # Parallel cas/{XX}/ prefix workers.
-                                # Default 16, max 32. Higher values
-                                # accelerate sweep on large buckets but
-                                # increase risk of S3 503 SlowDown.
     grace_period: 1h            # Objects whose LastModified is newer than
                                 # (snapshot - grace_period) are NEVER
                                 # deleted. Default 1h. Values in (0, 5m)
@@ -400,9 +396,6 @@ blockstore:
 - `gc.grace_period` MUST be longer than your worst-case
   metadata-commit latency after a successful PUT. The default 1h is
   comfortable for any commit path that completes in seconds.
-- `gc.sweep_concurrency=16` is the validated default. Increase only
-  if you observe sweep-phase wall time as a bottleneck; back off on
-  S3 503 SlowDown. The hard cap is 32.
 
 Env-var mapping (dot-path convention; viper binds the top-level `syncer`
 and `gc` blocks directly, with no `blockstore.` prefix):
@@ -411,7 +404,6 @@ and `gc` blocks directly, with no `blockstore.` prefix):
 `DITTOFS_SYNCER_UPLOAD_CONCURRENCY`,
 `DITTOFS_SYNCER_CLAIM_TIMEOUT`,
 `DITTOFS_GC_INTERVAL`,
-`DITTOFS_GC_SWEEP_CONCURRENCY`,
 `DITTOFS_GC_GRACE_PERIOD`,
 `DITTOFS_GC_DRY_RUN_SAMPLE_SIZE`.
 

@@ -5,10 +5,11 @@
 //  1. MARK: stream every live FileBlock's ContentHash into a disk-backed
 //     live set (see GCState in gcstate.go). Memory is bounded regardless
 //     of metadata size.
-//  2. SWEEP: enumerate the 256 cas/XX/* prefixes via a bounded worker
-//     pool. For each object: parse the CAS key, skip foreign keys, apply
-//     the snapshot - GracePeriod TTL filter, and DELETE iff absent from
-//     the live set.
+//  2. SWEEP: enumerate the unified CAS namespace via a single
+//     RemoteStore.Walk call (the backend paginates internally). For each
+//     object: parse the CAS key, skip foreign keys, apply the
+//     snapshot - GracePeriod TTL filter, and DELETE iff absent from the
+//     live set.
 //
 // Invariants
 //   - (mark fail-closed): any error during EnumerateFileBlocks
@@ -127,9 +128,9 @@ func releaseGCRootLock(root string, entry *gcRootLock) {
 // GCStats holds statistics about the garbage collection run.
 //
 // The mark-sweep fields are authoritative; the legacy aggregator fields
-// (SharesScanned, BlocksScanned, OrphanFiles, OrphanBlocks, BytesReclaimed
-// Errors) are preserved for Runtime.RunBlockGC and the dfsctl gc-status
-// surface and are populated by finalizeStats as aliases of the new ones.
+// (OrphanFiles, OrphanBlocks, BytesReclaimed, Errors) are preserved for
+// Runtime.RunBlockGC and the dfsctl gc-status surface and are populated
+// by finalizeStats as aliases of the new ones.
 type GCStats struct {
 	RunID            string
 	HashesMarked     int64
@@ -142,8 +143,17 @@ type GCStats struct {
 	DryRunCandidates []string
 
 	// Legacy aggregator fields (compat aliases — see finalizeStats).
-	SharesScanned  int   // Always 0 in mark-sweep.
-	BlocksScanned  int   // Always 0 in mark-sweep.
+
+	// Deprecated: SharesScanned is retained on the REST/dfsctl wire for
+	// compatibility with older clients but is never populated by the
+	// mark-sweep engine and will always be zero. New consumers should
+	// rely on HashesMarked / the per-share log lines instead.
+	SharesScanned int
+	// Deprecated: BlocksScanned is retained on the REST/dfsctl wire for
+	// compatibility with older clients but is never populated by the
+	// mark-sweep engine and will always be zero. New consumers should
+	// rely on ObjectsSwept / HashesMarked instead.
+	BlocksScanned  int
 	OrphanFiles    int   // = ObjectsSwept.
 	OrphanBlocks   int   // = ObjectsSwept.
 	BytesReclaimed int64 // = BytesFreed.
@@ -170,10 +180,6 @@ type Options struct {
 	// LastModified is within snapshot - GracePeriod is preserved.
 	// Zero defaults to one hour.
 	GracePeriod time.Duration
-
-	// SweepConcurrency bounds the worker pool walking the 256 cas/XX/*
-	// prefixes. Zero defaults to 16; values above 32 are clamped.
-	SweepConcurrency int
 
 	// DryRunSampleSize bounds the count of candidate keys captured in
 	// GCStats.DryRunCandidates. Zero defaults to 1000.
@@ -273,13 +279,6 @@ func CollectGarbage(
 	if gracePeriod <= 0 {
 		gracePeriod = time.Hour
 	}
-	sweepConcurrency := options.SweepConcurrency
-	if sweepConcurrency <= 0 {
-		sweepConcurrency = 16
-	}
-	if sweepConcurrency > 32 {
-		sweepConcurrency = 32
-	}
 	dryRunSample := options.DryRunSampleSize
 	if dryRunSample <= 0 {
 		dryRunSample = 1000
@@ -322,7 +321,6 @@ func CollectGarbage(
 		"snapshot_time", snapshotTime,
 		"dry_run", options.DryRun,
 		"grace_period", gracePeriod,
-		"sweep_concurrency", sweepConcurrency,
 		"remote_endpoint_id", options.RemoteEndpointID,
 		"shares", options.Shares,
 		"hold_provider", options.HoldProvider != nil,
@@ -442,10 +440,9 @@ func sharesForReconciler(r MetadataReconciler) []string {
 // skipped (T-11-C-07). Objects within snapshot - GracePeriod are
 // preserved.
 //
-// sweepConcurrency is accepted for backward-compatibility with the
-// Options surface and ignored — collapsed the 256-way prefix
-// sharding onto RemoteStore.Walk, which paginates internally at the
-// backend layer. A future re-sharding extension (per-prefix Walk
+// There is no caller-side concurrency knob: the 256-way prefix sharding
+// has been collapsed onto RemoteStore.Walk, which paginates internally
+// at the backend layer. A future re-sharding extension (per-prefix Walk
 // fan-out) is expected to re-wire concurrency at the backend, not
 // here. Callers wanting per-prefix parallelism should file against
 // the backend.

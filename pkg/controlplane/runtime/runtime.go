@@ -582,11 +582,10 @@ func (r *Runtime) SetSyncerDefaults(cfg *shares.SyncerDefaults) {
 // GCDefaults captures the operator-configured GC knobs the runtime threads
 // into engine.Options on every CollectGarbage invocation. Without this
 // wiring the engine silently falls back to its hardcoded defaults (1h
-// grace, 16-way sweep, 1000-sample dry run) regardless of what the
-// operator put in gc.* config.
+// grace, 1000-sample dry run) regardless of what the operator put in
+// gc.* config.
 type GCDefaults struct {
 	GracePeriod      time.Duration
-	SweepConcurrency int
 	DryRunSampleSize int
 }
 

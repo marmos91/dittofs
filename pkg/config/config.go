@@ -132,9 +132,9 @@ func (c *SyncerConfig) Validate() error {
 }
 
 // GCConfig configures the engine.CollectGarbage mark-sweep run. Knobs
-// cover sweep concurrency, the grace TTL, the fail-closed mark
-// semantics, the continue-and-capture sweep, and the
-// disabled-by-default interval (operator opt-in).
+// cover the grace TTL, the fail-closed mark semantics, the
+// continue-and-capture sweep, and the disabled-by-default interval
+// (operator opt-in).
 type GCConfig struct {
 	// Interval is reserved for a future periodic-GC scheduler. v0.15.0
 	// ships only on-demand GC (dfsctl/REST). The field is parsed and
@@ -143,11 +143,6 @@ type GCConfig struct {
 	// scheduler is tracked for a follow-up. Schedule via cron in the
 	// meantime.
 	Interval time.Duration `mapstructure:"interval" yaml:"interval"`
-
-	// SweepConcurrency bounds the worker pool that walks the 256
-	// cas/XX/* prefixes during the sweep phase. Defaults to 16,
-	// capped at 32 to prevent storming the remote endpoint.
-	SweepConcurrency int `mapstructure:"sweep_concurrency" yaml:"sweep_concurrency"`
 
 	// GracePeriod is the TTL applied during sweep: an object whose
 	// LastModified is within snapshot - GracePeriod is preserved.
@@ -163,9 +158,6 @@ type GCConfig struct {
 // ApplyDefaults fills any zero-valued field with the defaults.
 func (c *GCConfig) ApplyDefaults() {
 	// Interval default is 0 (disabled — operator opt-in).
-	if c.SweepConcurrency <= 0 {
-		c.SweepConcurrency = 16
-	}
 	if c.GracePeriod <= 0 {
 		c.GracePeriod = time.Hour
 	}
@@ -184,12 +176,6 @@ func (c *GCConfig) ApplyDefaults() {
 // same sweep. Values in [5m, 10m) are accepted but emit a warn —
 // they're inside spec but tighter than the recommended floor.
 func (c *GCConfig) Validate() error {
-	if c.SweepConcurrency > 32 {
-		return fmt.Errorf("gc.sweep_concurrency must be <= 32 (got %d)", c.SweepConcurrency)
-	}
-	if c.SweepConcurrency < 0 {
-		return fmt.Errorf("gc.sweep_concurrency must be >= 0 (got %d)", c.SweepConcurrency)
-	}
 	if c.GracePeriod < 0 {
 		return fmt.Errorf("gc.grace_period must be >= 0 (got %v)", c.GracePeriod)
 	}

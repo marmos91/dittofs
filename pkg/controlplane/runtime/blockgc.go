@@ -67,7 +67,6 @@ func (r *Runtime) RunBlockGC(ctx context.Context, sharePrefix string, dryRun boo
 			"shares", entry.Shares,
 			"dryRun", dryRun,
 			"gracePeriod", opts.GracePeriod,
-			"sweepConcurrency", opts.SweepConcurrency,
 			"dryRunSampleSize", opts.DryRunSampleSize)
 
 		// Per-remote MultiShareReconciler: the mark phase enumerates
@@ -148,7 +147,6 @@ func (r *Runtime) RunBlockGCForShare(ctx context.Context, name string, dryRun bo
 			"dryRun", dryRun,
 			"gcStateRoot", gcRoot,
 			"gracePeriod", opts.GracePeriod,
-			"sweepConcurrency", opts.SweepConcurrency,
 			"dryRunSampleSize", opts.DryRunSampleSize,
 		)
 
@@ -176,10 +174,10 @@ func (r *Runtime) GCStateDirForShare(name string) (string, error) {
 }
 
 // applyGCDefaults overlays operator-configured GC defaults onto opts.
-// Without this, the gc.grace_period / gc.sweep_concurrency /
-// gc.dry_run_sample_size knobs surfaced in pkg/config and validated at
-// startup would be silently ignored — every CollectGarbage invocation
-// would fall back to the engine's hardcoded defaults (1h, 16, 1000).
+// Without this, the gc.grace_period / gc.dry_run_sample_size knobs
+// surfaced in pkg/config and validated at startup would be silently
+// ignored — every CollectGarbage invocation would fall back to the
+// engine's hardcoded defaults (1h, 1000).
 //
 // Per-call opts fields take precedence over defaults so a future caller
 // can still override on a single run.
@@ -189,9 +187,6 @@ func applyGCDefaults(opts *engine.Options, defaults *GCDefaults) {
 	}
 	if opts.GracePeriod == 0 && defaults.GracePeriod > 0 {
 		opts.GracePeriod = defaults.GracePeriod
-	}
-	if opts.SweepConcurrency == 0 && defaults.SweepConcurrency > 0 {
-		opts.SweepConcurrency = defaults.SweepConcurrency
 	}
 	if opts.DryRunSampleSize == 0 && defaults.DryRunSampleSize > 0 {
 		opts.DryRunSampleSize = defaults.DryRunSampleSize
@@ -217,8 +212,9 @@ func accumulateGCStats(total, stats *engine.GCStats, includeDryRunMeta bool) eng
 	total.ObjectsSwept += s.ObjectsSwept
 	total.BytesFreed += s.BytesFreed
 	total.ErrorCount += s.ErrorCount
-	total.SharesScanned += s.SharesScanned
-	total.BlocksScanned += s.BlocksScanned
+	// SharesScanned / BlocksScanned are deprecated REST wire fields that
+	// are never populated by the mark-sweep engine — accumulation would
+	// always be zero, so it is skipped here. See engine.GCStats godoc.
 	total.OrphanFiles += s.OrphanFiles
 	total.OrphanBlocks += s.OrphanBlocks
 	total.BytesReclaimed += s.BytesReclaimed
