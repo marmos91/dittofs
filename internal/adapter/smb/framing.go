@@ -72,6 +72,13 @@ type SigningVerifier interface {
 //   - readTimeout: deadline for reading the request (0 = no timeout)
 //   - verifier: optional signature verifier (nil = skip verification)
 //   - encMiddleware: optional encryption middleware (nil = no encryption support)
+//   - transformAllowed: optional gate — when non-nil and returns false, an
+//     incoming SMB2_TRANSFORM header is rejected with ErrAnonEncryption
+//     before decryption. Mirrors Samba's source3/smbd/smb2_server.c:499
+//     got_authenticated_session check (smbtorture
+//     smb2.session.anon-encryption1 expects CONNECTION_RESET on an
+//     encrypted message arriving before any user session is established).
+//     Pass nil to allow all transform messages.
 //   - handleSMB1: callback to handle SMB1 NEGOTIATE upgrade (returns error)
 //
 // Returns parsed header, body bytes, remaining compound bytes, whether the
@@ -83,6 +90,7 @@ func ReadRequest(
 	readTimeout time.Duration,
 	verifier SigningVerifier,
 	encMiddleware encryption.EncryptionMiddleware,
+	transformAllowed func() bool,
 	handleSMB1 func(ctx context.Context, message []byte) error,
 ) (*header.SMB2Header, []byte, []byte, bool, error) {
 	message, err := readNetBIOSPayload(ctx, conn, maxMsgSize, readTimeout, 4)
@@ -106,6 +114,19 @@ func ReadRequest(
 		// Encrypted SMB3 message (0xFD 'S' 'M' 'B')
 		if encMiddleware == nil {
 			return nil, nil, nil, false, fmt.Errorf("encrypted message received but encryption not configured")
+		}
+		// Per Samba source3/smbd/smb2_server.c:499 (got_authenticated_session):
+		// an SMB2_TRANSFORM message is invalid until at least one
+		// non-anonymous, non-guest session has completed SESSION_SETUP on
+		// this connection. Anonymous and guest sessions never bring their
+		// own encryption privilege; without this gate an only_negprot anon
+		// connection (smbtorture smb2.session.anon-encryption1) would
+		// silently decrypt a TCON instead of being closed with
+		// CONNECTION_RESET. ErrAnonEncryption is the existing sentinel
+		// the connection layer (pkg/adapter/smb/connection.go:237) uses to
+		// drop the TCP connection.
+		if transformAllowed != nil && !transformAllowed() {
+			return nil, nil, nil, false, fmt.Errorf("%w: no authenticated session on connection", ErrAnonEncryption)
 		}
 		decrypted, transformSessionID, err := encMiddleware.DecryptRequest(message)
 		if err != nil {

@@ -1161,31 +1161,33 @@ func (h *Handler) destroySessionOnReauthFailure(ctx context.Context, pending *Pe
 }
 
 // createAnonymousSession creates an IsNull (anonymous-authenticated) session
-// with a properly-derived signing key per MS-NLMP §3.3.2 + §3.4.5.
+// with an NTLM-derived signing key per MS-NLMP §3.3.2 + §3.4.5.
 //
-// NTLMv2 anonymous authentication produces a session base key of all zeros
-// (the NT response is empty and the ResponseKeyNT branch never fires).
-// DeriveSigningKey then RC4-decrypts the EncryptedRandomSessionKey using
-// that zero key when KEY_EXCH is negotiated — the standard NTLM key-exchange
-// path, just with a known-zero KEK. The resulting signing key matches what
-// Samba's client computes when smb2_session.anonymous_session_key=true
-// (libcli/smb2/session.c:395-419), so subsequent signed requests verify and
-// the SESSION_SETUP SUCCESS response is signed with a key the client can
-// reproduce. Without this, the client's gensec finalization rejects the
-// unsigned reply with NT_STATUS_INVALID_PARAMETER (smbtorture
-// smb2.session.anon-signing1 / anon-signing2).
+// Anonymous NTLMv2 has SessionBaseKey = 0 (the NT response is empty and the
+// ResponseKeyNT branch never fires). DeriveSigningKey then RC4-decrypts the
+// EncryptedRandomSessionKey using that zero key when KEY_EXCH is negotiated —
+// the standard NTLM key-exchange path, just with a known-zero KEK. The result
+// matches what Samba's client computes when anonymous_session_key=true
+// (libcli/smb2/session.c:395-419), so the SESSION_SETUP SUCCESS response is
+// signed with a key the client can reproduce and the SPNEGO accept-completed
+// token closes the gensec state machine cleanly. Without this, the client
+// rejects the unsigned-no-token reply with NT_STATUS_INVALID_PARAMETER
+// (smbtorture smb2.session.anon-encryption{1,2,3}).
 //
-// The session is marked IsNull (not IsGuest) so:
-//   - framing.go:415's "unsigned unencrypted on 3.1.1 → disconnect" gate is
-//     skipped (mirrors Samba: anonymous + IsNull bypasses the implicit-sign
-//     enforcement);
-//   - configureSessionSigningWithKey leaves Session.SigningRequired off even
-//     on 3.1.1 — anon-signing2's second tcon arrives unsigned and must reach
-//     the handler instead of being short-circuited.
+// The session is marked IsNull (not IsGuest); configureSessionSigningWithKey
+// derives both signing and (when encryption is preferred/required) AEAD keys
+// from this signing key, mirroring Samba source3/smbd/smb2_sesssetup.c:317-360
+// which calls smb2_signing_key_*_create on session_info->session_key for
+// every dialect-3.x session regardless of guest mapping. The encryption keys
+// let anon-encryption2 succeed: the test sends an encrypted TCON on the anon
+// session, and the connection-level got_authenticated_session gate
+// (mirrored in framing.go via the EncryptionMiddleware AllowTransform check)
+// distinguishes test 2 (prior user session ⇒ transform allowed ⇒ decrypt OK)
+// from tests 1 / 3 (no prior user session ⇒ transform rejected ⇒ RESET).
 func (h *Handler) createAnonymousSession(ctx *SMBHandlerContext, pending *PendingAuth, authMsg *auth.AuthenticateMessage) (*HandlerResult, error) {
 	if result := h.checkGuestPolicy(); result != nil {
-		// Anonymous reuses the guest policy gate — both depend on
-		// GuestEnabled / SigningRequired-server-config the same way.
+		// Anonymous reuses the guest policy gate — both depend on the
+		// GuestEnabled / SigningRequired server-config bits the same way.
 		return result, nil
 	}
 
@@ -1193,23 +1195,40 @@ func (h *Handler) createAnonymousSession(ctx *SMBHandlerContext, pending *Pendin
 	var zeroBaseKey [16]byte
 	signingKey := auth.DeriveSigningKey(zeroBaseKey, authMsg.NegotiateFlags, authMsg.EncryptedRandomSessionKey)
 
+	// isGuest=false, username="" ⇒ session.IsNull=true (see NewSession).
 	sess := h.CreateSessionWithID(pending.SessionID, pending.ClientAddr, false, "", "")
 	sess.OriginConnID = ctx.ConnID
 	recordSessionBindIdentity(sess, ctx)
-	ctx.IsGuest = false // IsNull, not guest — auth_helper picks the right arm
+	ctx.IsGuest = false
 
 	logger.Info("Anonymous session created",
 		"sessionID", sess.SessionID,
 		"isNull", sess.IsNull,
 		"keyExch", (authMsg.NegotiateFlags&auth.FlagKeyExch) != 0)
 
-	// Configure crypto with the anon-derived signing key. The IsNull check
-	// inside configureSessionSigningWithKey ensures SigningRequired stays
-	// off even on 3.1.1.
+	// Derive both signing and (when encryption is preferred/required) AEAD
+	// keys. configureSessionSigningWithKey uses the anon-derived signingKey as
+	// the SP800-108 KDF input on 3.x dialects, matching Samba's behaviour for
+	// non-guest non-null sessions. We deliberately do NOT skip encryption-key
+	// derivation for IsNull: anon-encryption2 sends an encrypted TCON on the
+	// anon session and expects it to decrypt cleanly using the anon session's
+	// own AEAD key. The protocol-level "anonymous sessions cannot bring
+	// encryption to a fresh connection" rule (MS-SMB2 §3.3.5.2.1 +
+	// source3/smbd/smb2_server.c:499 got_authenticated_session) is enforced
+	// in the framing layer instead, where it correctly resolves all three
+	// tests:
+	//   - test 1 (only_negprot, no prior user session)   → transform rejected → RESET
+	//   - test 2 (user session first, anon shares conn)  → transform allowed → OK
+	//   - test 3 (user session first, anon wrong key)    → transform allowed → decrypt fails → RESET
 	if errResult := h.configureSessionSigningWithKey(sess, signingKey[:], ctx); errResult != nil {
 		return errResult, nil
 	}
 
+	// SPNEGO accept-completed terminates the client's gensec state machine.
+	// Without this the client rejects the otherwise-OK reply with
+	// NT_STATUS_INVALID_PARAMETER. buildAuthenticatedResponse also computes
+	// the mechListMIC from the anon-derived key when SPNEGO + KEY_EXCH were
+	// used, matching Samba's wire format.
 	return h.buildAuthenticatedResponse(pending, signingKey[:], authMsg.NegotiateFlags, false), nil
 }
 

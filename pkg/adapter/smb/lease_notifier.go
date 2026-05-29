@@ -230,6 +230,13 @@ type connRegistryTracker struct {
 // for break-notification fallback, and adds the primary Channel to the
 // session's channel registry. The primary channel's Signer is left nil —
 // dispatch falls back to the session-level signer via SignMessageOnChannel.
+//
+// When the tracked session is a real user (non-IsNull, non-IsGuest), the
+// connection's GotAuthenticatedSession flag is latched so subsequent
+// SMB2_TRANSFORM messages are allowed through framing.go's gate. Mirrors
+// Samba source3/smbd/smb2_server.c:499 — encrypted messages are rejected
+// until a user session has been established (smbtorture
+// smb2.session.anon-encryption1).
 func (t *connRegistryTracker) TrackSession(sessionID uint64) {
 	t.inner.TrackSession(sessionID)
 	t.sessionConns.Store(sessionID, t.connInfo)
@@ -239,6 +246,13 @@ func (t *connRegistryTracker) TrackSession(sessionID uint64) {
 	sess, ok := t.sessionLookup.GetSession(sessionID)
 	if !ok {
 		return
+	}
+	// Latch the per-connection "got authenticated session" flag once for
+	// any non-anonymous, non-guest session. Anonymous and guest sessions
+	// don't bring transform privilege — see ConnInfo.GotAuthenticatedSession
+	// doc + framing.go transform-header gate.
+	if !sess.IsNull && !sess.IsGuest {
+		t.connInfo.GotAuthenticatedSession.Store(true)
 	}
 	// Primary-channel registration. The cap (§3.3.5.5.2) is enforced at the
 	// SESSION_SETUP bind path; the primary channel always gets a slot and, if

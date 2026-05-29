@@ -66,6 +66,23 @@ type ConnInfo struct {
 	// Reset to 0 on each successful decrypt.
 	DecryptFailures *atomic.Int32
 
+	// GotAuthenticatedSession tracks whether any non-anonymous, non-guest
+	// session has completed SESSION_SETUP on this connection.
+	//
+	// Per Samba source3/smbd/smb2_server.c:499, encrypted (SMB2_TRANSFORM)
+	// messages are only accepted on a connection after at least one
+	// authenticated user session has been established — anonymous/null and
+	// guest sessions never carry encryption privileges of their own. Without
+	// this gate, smbtorture smb2.session.anon-encryption1 (only_negprot=true
+	// connection sending an encrypted TCON on an anon session) would
+	// succeed instead of being closed with CONNECTION_RESET.
+	//
+	// Set once when a non-IsNull, non-IsGuest session is tracked on the
+	// connection (see the SessionTracker.TrackSession implementation in
+	// pkg/adapter/smb/connection.go). Never reset for the lifetime of the
+	// TCP connection — Samba's flag has the same monotonic semantics.
+	GotAuthenticatedSession atomic.Bool
+
 	// SequenceWindow tracks granted MessageIds per MS-SMB2 3.3.1.1.
 	// Initialized with {0} on connection establishment.
 	// Expanded by credit grants on every response.

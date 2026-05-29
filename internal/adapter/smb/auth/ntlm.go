@@ -950,13 +950,15 @@ func ComputeNTLMSSPMechListMIC(exportedSessionKey [16]byte, mechListBytes []byte
 	// signature layout is the legacy MS-NLMP §3.4.4.1 form:
 	//   Version(4) | RandomPad(4) | Checksum=CRC32(4) | SeqNum(4)
 	// all but Version derived from a single RC4 keystream seeded with the
-	// sealing key. Samba's ntlmssp_check_packet at libcli/auth/ntlmssp_sign.c
-	// :305-317 compares bytes 8-15 (Checksum + SeqNum) in this case — the
-	// HMAC-MD5 layout we used for NTLM2 lands the wrong bytes there and the
-	// client rejects the SPNEGO accept with NT_STATUS_INVALID_PARAMETER
-	// (smb2.session.anon-signing1/2: samba clears CLI_CRED_NTLM2 for
-	// anonymous credentials in credentials_ntlm.c:143, so the anon flows
-	// always hit this branch).
+	// sealing key. Samba's ntlmssp_check_packet at
+	// libcli/auth/ntlmssp_sign.c:305-317 compares bytes 8-15
+	// (Checksum + SeqNum) in this case — the HMAC-MD5 layout we use for
+	// NTLM2 lands the wrong bytes there and the client rejects the SPNEGO
+	// accept with NT_STATUS_ACCESS_DENIED + "NTLMSSP NTLM1 packet check
+	// failed due to invalid signature!". Samba's
+	// credentials_ntlm.c:143 clears CLI_CRED_NTLM2 for anonymous
+	// credentials, so the anon flows always hit this branch — smbtorture
+	// smb2.session.anon-encryption{1,2,3} all need it (see #773).
 	if flags&FlagExtendedSecurity == 0 {
 		return computeNTLMSSPMechListMICLegacy(exportedSessionKey, mechListBytes, flags, dbg)
 	}
@@ -1031,14 +1033,14 @@ func ComputeNTLMSSPMechListMIC(exportedSessionKey [16]byte, mechListBytes []byte
 
 // computeNTLMSSPMechListMICLegacy computes the SPNEGO mechListMIC for the
 // legacy NTLM1 path (no NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY). Per
-// MS-NLMP §3.4.4.1 the signature is:
+// MS-NLMP §3.4.4.1 the signature layout is:
 //
 //	Version(4) | RandomPad(4) | Checksum=CRC32(4) | SeqNum(4)
 //
 // RandomPad, Checksum and SeqNum are all driven by a single RC4 stream
 // seeded with the SealingKey:
 //
-//	Handle = RC4(SealingKey)
+//	Handle    = RC4(SealingKey)
 //	RandomPad = RC4(Handle, 0x00000000)
 //	Checksum  = RC4(Handle, CRC32(M))
 //	SeqNum    = RC4(Handle, 0x00000000) XOR appSeqNum
@@ -1047,20 +1049,21 @@ func ComputeNTLMSSPMechListMIC(exportedSessionKey [16]byte, mechListBytes []byte
 // equals the next 4 keystream bytes.
 //
 // Legacy SealingKey derivation follows Samba's
-// auth/ntlmssp/ntlmssp_sign.c:785-833 (NTLM1 branch), which is what the
-// peer actually computes — the MS-NLMP §3.4.5.3 spec text doesn't capture
-// that weakening is gated on NTLMSSP_NEGOTIATE_LM_KEY remaining in the
-// effective neg_flags. For anonymous and any other path where LM_KEY was
-// stripped (server-side: ntlmssp_server.c:1005/1017/1026/1033 strip
-// LM_KEY whenever the auth doesn't carry an LM response), do_weak=false
-// and the seal key is the raw 16-byte session key. Only when LM_KEY
-// survives AND the session key is >=16 bytes does the legacy "first 5 +
-// 0xE5 0x38 0xB0" (or "first 7 + 0xA0" for NEGOTIATE_56) weakening apply.
+// auth/ntlmssp/ntlmssp_sign.c:785-833 (NTLM1 branch): MS-NLMP §3.4.5.3
+// spec text doesn't capture that weakening is gated on
+// NTLMSSP_NEGOTIATE_LM_KEY remaining in the effective neg_flags. Server-side,
+// Samba's ntlmssp_server.c:1005/1017/1026/1033 strip LM_KEY whenever the auth
+// doesn't carry an LM response — anonymous always lands there
+// (credentials_ntlm.c:131 produces no LM session key). So:
 //
-// FlagAnonymous in the wire neg_flags is the load-bearing signal: Samba
-// always strips LM_KEY for anonymous (credentials_ntlm.c:131 produces no
-// LM session key, and server-side 1005 strips LM_KEY accordingly), so we
-// match that by ignoring LM_KEY when FlagAnonymous is set.
+//   - LM_KEY clear (or anonymous): seal key = first 16 bytes of session key.
+//   - LM_KEY set + NEGOTIATE_56:   seal key = first 7 bytes || 0xA0.
+//   - LM_KEY set otherwise:        seal key = first 5 bytes || 0xE5 0x38 0xB0.
+//
+// FlagAnonymous in the wire neg_flags is the load-bearing signal:
+// credentials_ntlm.c:131 produces no LM session key for anonymous, and
+// server-side line 1005 strips LM_KEY accordingly, so we match by ignoring
+// LM_KEY when FlagAnonymous is set.
 func computeNTLMSSPMechListMICLegacy(exportedSessionKey [16]byte, mechListBytes []byte, flags NegotiateFlag, dbg *NTLMSSPMechListMICDebug) []byte {
 	doWeak := flags&FlagLMKey != 0 && flags&FlagAnonymous == 0
 	var sealKey []byte
@@ -1085,19 +1088,20 @@ func computeNTLMSSPMechListMICLegacy(exportedSessionKey [16]byte, mechListBytes 
 
 	cipher, err := rc4.NewCipher(sealKey)
 	if err != nil {
+		// rc4.NewCipher only fails on empty key; sealKey is always sized.
 		return mic
 	}
 
-	// RandomPad: keystream bytes 0-3
+	// RandomPad: keystream bytes 0-3 XOR 0.
 	cipher.XORKeyStream(mic[4:8], make([]byte, 4))
 
-	// Checksum: keystream bytes 4-7 XOR CRC32(mechList)
+	// Checksum: keystream bytes 4-7 XOR CRC32(mechList).
 	crc := crc32.ChecksumIEEE(mechListBytes)
 	var crcLE [4]byte
 	binary.LittleEndian.PutUint32(crcLE[:], crc)
 	cipher.XORKeyStream(mic[8:12], crcLE[:])
 
-	// SeqNum: keystream bytes 8-11 XOR 0 = keystream
+	// SeqNum: keystream bytes 8-11 XOR 0 = keystream itself.
 	cipher.XORKeyStream(mic[12:16], make([]byte, 4))
 
 	if dbg != nil {

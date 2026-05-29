@@ -209,7 +209,8 @@ func (c *Connection) Serve(ctx context.Context) {
 		// Pass EncryptionMiddleware so 0xFD transform headers are decrypted transparently.
 		hdr, body, remainingCompound, isEncrypted, err := smb.ReadRequest(
 			ctx, c.conn, c.server.config.MaxMessageSize,
-			c.server.config.Timeouts.Read, verifier, ci.EncryptionMiddleware, handleSMB1,
+			c.server.config.Timeouts.Read, verifier, ci.EncryptionMiddleware,
+			ci.GotAuthenticatedSession.Load, handleSMB1,
 		)
 		if err != nil {
 			// Encrypted message for a SessionId the server no longer knows
@@ -241,37 +242,22 @@ func (c *Connection) Serve(ctx context.Context) {
 				return
 			}
 
-			// Signature verification failure (wrong key or unsigned when
-			// signing was required). Per Samba source3/smbd/smb2_server.c:3253
-			// the response is STATUS_ACCESS_DENIED on the same MessageId and
-			// the TCP connection stays open. The reply is intentionally
-			// unsigned with the inbound signature echoed back so clients with
-			// no_signing_disconnect (smbtorture smb2.session.anon-signing2)
-			// can accept it per libcli/smb/smbXcli_base.c:4529-4538.
-			if errors.Is(err, smb.ErrSignatureVerification) && hdr != nil {
-				if sendErr := smb.SendSignatureFailureResponse(hdr, types.StatusAccessDenied, ci); sendErr != nil {
-					logger.Debug("Failed to send ACCESS_DENIED for signature failure",
-						"address", clientAddr,
-						"sessionID", hdr.SessionID,
-						"error", sendErr)
-				}
-				continue
-			}
-
-			// Track consecutive decryption failures. After 5, drop the connection
-			// to prevent brute-force attacks on the AEAD authentication.
+			// Per MS-SMB2 §3.3.5.2.1.1: an SMB2_TRANSFORM message that
+			// fails AEAD verification is a protocol violation and the server
+			// MUST disconnect. Samba source3/smbd/smb2_server.c:551 returns
+			// the decrypt status straight up, which propagates to
+			// smbd_smb2_io_handler and tears the connection down with no
+			// retry budget. smbtorture smb2.session.anon-encryption3
+			// (forced wrong session key on an anon session) asserts
+			// CONNECTION_RESET on the first encrypted request — the
+			// previous 5-attempt budget made the client time out instead
+			// of resetting.
 			if isDecryptionError(err) {
-				failures := ci.DecryptFailures.Add(1)
-				logger.Warn("Decryption failure on connection",
+				ci.DecryptFailures.Add(1)
+				logger.Warn("Dropping connection on decryption failure",
 					"address", clientAddr,
-					"consecutiveFailures", failures,
 					"error", err)
-				if failures >= 5 {
-					logger.Warn("Dropping connection after 5 consecutive decryption failures",
-						"address", clientAddr)
-					return
-				}
-				continue // Try reading next message
+				return
 			}
 
 			switch {

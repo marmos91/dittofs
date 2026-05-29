@@ -64,9 +64,9 @@ func TestComputeNTLMSSPMechListMIC(t *testing.T) {
 		return out
 	}
 
-	// All cases negotiate NTLM2 extended session security (FlagExtendedSecurity)
-	// — that is what every modern SMB client advertises. The legacy NTLM1
-	// layout exercised by computeNTLMSSPMechListMICLegacy is covered by
+	// FlagExtendedSecurity selects the NTLM2 layout (HMAC-MD5 based) that
+	// every modern SMB client negotiates. Without it the MIC falls back to
+	// the legacy NTLM1 (CRC32 + RC4-keystream) layout exercised by
 	// TestComputeNTLMSSPMechListMICLegacy below.
 	cases := []struct {
 		name         string
@@ -142,10 +142,12 @@ func TestComputeNTLMSSPMechListMIC(t *testing.T) {
 
 // TestComputeNTLMSSPMechListMICLegacy guards the NTLM1 (no
 // EXTENDED_SESSIONSECURITY) layout: Version | RandomPad | RC4-sealed CRC32 |
-// RC4-keystream SeqNum, with sealing key per Samba ntlmssp_sign.c:785-833
-// (raw 16-byte session key when LM_KEY is stripped — anonymous always, else
-// weakened with 40-bit / 56-bit tail). Exercises the anonymous path that
-// flips smbtorture smb2.session.anon-signing1.
+// RC4-keystream SeqNum, with the seal key derived per Samba
+// ntlmssp_sign.c:785-833 — raw 16-byte session key when LM_KEY is stripped
+// (anonymous always; otherwise weakened with the 40-bit or 56-bit tail).
+// Exercises the path that flips smbtorture smb2.session.anon-encryption{1,2,3}
+// (issue #773) — the client clears CLI_CRED_NTLM2 for anonymous credentials
+// (credentials_ntlm.c:143) so the wire neg_flags omit FlagExtendedSecurity.
 func TestComputeNTLMSSPMechListMICLegacy(t *testing.T) {
 	exportedSessionKey := [16]byte{
 		0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
@@ -174,8 +176,9 @@ func TestComputeNTLMSSPMechListMICLegacy(t *testing.T) {
 	}
 
 	t.Run("Anonymous_RawSessionKey", func(t *testing.T) {
-		// Anonymous flow: LM_KEY in wire flags but FlagAnonymous strips
-		// weakening — seal key is the full 16-byte ExportedSessionKey.
+		// LM_KEY in wire flags but FlagAnonymous strips weakening — seal
+		// key is the full 16-byte ExportedSessionKey. This is the path
+		// smbtorture smb2.session.anon-encryption tests drive.
 		flags := FlagNTLM | FlagKeyExch | FlagLMKey | FlagAnonymous
 		want := expectMIC(t, exportedSessionKey[:16], mechListBytes)
 		got := ComputeNTLMSSPMechListMIC(exportedSessionKey, mechListBytes, flags, nil)
