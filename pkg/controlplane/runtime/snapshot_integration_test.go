@@ -34,22 +34,22 @@ import (
 //   - SC-1 (VerifyRemoteDurability): HappyPath + DrainThenVerifyFails
 //   - SC-2 (CreateSnapshot produces ready snapshot with metadata.dump
 //   - manifest on disk): HappyPath
-//   - SC-3 (NoSyncGate skips verify, GC hold still applies): NoSyncGate
+//   - SC-3 (NoVerify skips verify, GC hold still applies): NoVerify
 //   - SC-4 (integration test passes): the suite running green
 //
 // Lifecycle decisions covered:
-//   - D-23-09 (failed rows retain artifacts on disk for retry)
-//   - D-23-10 (RetryOf reuses ID + dir)
-//   - D-23-11 (NoSyncGate path)
-//   - D-23-17 (cancel + WG.Wait before tree wipe in RemoveShare)
-//   - D-23-18 (recoverOrphanedSnapshots flips creating → failed)
-//   - D-23-19 (WaitForSnapshot carries orchestration error)
+//   - failed rows retain artifacts on disk for retry
+//   - RetryOf reuses ID + dir
+//   - NoVerify path
+//   - cancel + WG.Wait before tree wipe in RemoveShare
+//   - recoverOrphanedSnapshots flips creating → failed
+//   - WaitForSnapshot carries orchestration error
 func TestCreateSnapshot_Integration(t *testing.T) {
 	t.Run("HappyPath", testHappyPath)
 	t.Run("DrainThenVerifyPasses", testDrainThenVerifyPasses)
 	t.Run("DrainThenVerifyFails", testDrainThenVerifyFails)
 	t.Run("RetryOfFailed", testRetryOfFailed)
-	t.Run("NoSyncGate", testNoSyncGate)
+	t.Run("NoVerify", testNoVerify)
 	t.Run("RemoveShareCancelsInFlight", testRemoveShareCancelsInFlight)
 	t.Run("StartupRecovery", testStartupRecovery)
 }
@@ -215,17 +215,17 @@ func testRetryOfFailed(t *testing.T) {
 	}
 }
 
-func testNoSyncGate(t *testing.T) {
+func testNoVerify(t *testing.T) {
 	fx := newOrchestrationFixture(t)
 	defer fx.close()
 
 	hashes := makeHashes(4, 0xe0)
 	fx.setBackupHashes(hashes)
 	// Deliberately leave the remote empty — would fail verify if the
-	// sync gate engaged. NoSyncGate must skip drain + verify entirely.
+	// verify gate engaged. NoVerify must skip drain + verify entirely.
 
 	ctx := fx.ctx()
-	snapID, err := fx.rt.CreateSnapshot(ctx, fx.shareName, CreateSnapshotOpts{NoSyncGate: true})
+	snapID, err := fx.rt.CreateSnapshot(ctx, fx.shareName, CreateSnapshotOpts{NoVerify: true})
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -238,18 +238,17 @@ func testNoSyncGate(t *testing.T) {
 		t.Fatalf("snap.State = %q, want %q", snap.State, models.StateReady)
 	}
 	if snap.RemoteDurable {
-		t.Fatalf("snap.RemoteDurable = true, want false (NoSyncGate D-23-11)")
+		t.Fatalf("snap.RemoteDurable = true, want false (NoVerify)")
 	}
 
-	// SC-3 / D-23-02 sub-assertion: the plan-23-03 hold provider still
-	// streams the snapshot's hashes (manifest-on-disk filter is
-	// disposition-independent of RemoteDurable).
+	// SC-3: the hold provider still streams the snapshot's hashes
+	// (manifest-on-disk filter is disposition-independent of RemoteDurable).
 	provider, ok := fx.rt.snapshotHoldForRemote([]string{fx.shareName}).(*SnapshotHoldProvider)
 	if !ok {
 		t.Fatal("snapshotHoldForRemote did not return *SnapshotHoldProvider")
 	}
 	heldSet := make(map[blockstore.ContentHash]struct{}, len(hashes))
-	if err := provider.HeldHashes(ctx, "remote-nosg", []string{fx.shareName},
+	if err := provider.HeldHashes(ctx, "remote-nv", []string{fx.shareName},
 		func(h blockstore.ContentHash) error {
 			heldSet[h] = struct{}{}
 			return nil
@@ -258,7 +257,7 @@ func testNoSyncGate(t *testing.T) {
 	}
 	for _, h := range hashes {
 		if _, ok := heldSet[h]; !ok {
-			t.Fatalf("SC-3: hash %s missing from hold set after NoSyncGate snapshot", h)
+			t.Fatalf("SC-3: hash %s missing from hold set after NoVerify snapshot", h)
 		}
 	}
 }

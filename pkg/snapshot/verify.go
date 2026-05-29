@@ -89,7 +89,7 @@ loop:
 			case err == nil:
 				return
 			case errors.Is(err, blockstore.ErrChunkNotFound):
-				logger.Debug("snapshot sync gate: missing hash on remote",
+				logger.Debug("snapshot verify: missing hash on remote",
 					"hash", hash.String(),
 				)
 				recordErr(fmt.Errorf(
@@ -104,7 +104,7 @@ loop:
 				// failure and must be recorded, otherwise the verifier
 				// would silently skip a chunk and report success.
 				if errCtx.Err() == nil {
-					logger.Error("snapshot sync gate: head probe failed with ctx error pre-cancel",
+					logger.Error("snapshot verify: head probe failed with ctx error pre-cancel",
 						"hash", hash.String(),
 						"error", err,
 					)
@@ -115,7 +115,7 @@ loop:
 				}
 				return
 			default:
-				logger.Error("snapshot sync gate: head probe failed",
+				logger.Error("snapshot verify: head probe failed",
 					"hash", hash.String(),
 					"error", err,
 				)

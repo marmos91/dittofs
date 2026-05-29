@@ -193,37 +193,14 @@ func (c *GCConfig) Validate() error {
 }
 
 // SnapshotConfig configures the snapshot create orchestration. Knobs
-// apply to every Runtime.CreateSnapshot invocation. The single knob
-// today bounds the parallel Head() probes the sync gate fires against
-// the remote during VerifyRemoteDurability.
-type SnapshotConfig struct {
-	// SyncGateConcurrency bounds the parallel Head() probes the sync
-	// gate fires against the remote during VerifyRemoteDurability.
-	// Default: 16. Validate range: [1, 256] — higher values risk
-	// overwhelming restrictive remote endpoints; lower values trade
-	// verify latency for safety on slow networks.
-	SyncGateConcurrency int `mapstructure:"sync_gate_concurrency" yaml:"sync_gate_concurrency"`
-}
+// apply to every Runtime.CreateSnapshot invocation.
+type SnapshotConfig struct{}
 
 // ApplyDefaults fills any zero-valued field with the defaults.
-//
-// Only the zero value is replaced — an explicit negative (e.g. an operator
-// typo `snapshot.sync_gate_concurrency: -1` in YAML) is preserved so the
-// subsequent Validate pass can reject it. Defaulting `<= 0` here would
-// silently mask invalid input as the default 16.
-func (c *SnapshotConfig) ApplyDefaults() {
-	if c.SyncGateConcurrency == 0 {
-		c.SyncGateConcurrency = 16
-	}
-}
+func (c *SnapshotConfig) ApplyDefaults() {}
 
 // Validate returns an error if the SnapshotConfig has invalid values.
-// Out-of-range concurrency is rejected at config load to keep operator
-// mistakes from reaching the runtime.
 func (c *SnapshotConfig) Validate() error {
-	if c.SyncGateConcurrency < 1 || c.SyncGateConcurrency > 256 {
-		return fmt.Errorf("snapshot.sync_gate_concurrency must be in [1, 256] (got %d)", c.SyncGateConcurrency)
-	}
 	return nil
 }
 

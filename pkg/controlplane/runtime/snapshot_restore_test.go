@@ -211,9 +211,9 @@ func testRestoreNonDurableRefused(t *testing.T) {
 
 	ctx := fx.ctx()
 	fx.populateFiles(ctx, []string{"nd.bin"})
-	// Do NOT seed remote — NoSyncGate skips verify so create still succeeds.
+	// Do NOT seed remote — NoVerify skips verify so create still succeeds.
 
-	snapID, err := fx.rt.CreateSnapshot(ctx, fx.shareName, CreateSnapshotOpts{NoSyncGate: true})
+	snapID, err := fx.rt.CreateSnapshot(ctx, fx.shareName, CreateSnapshotOpts{NoVerify: true})
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -225,7 +225,7 @@ func testRestoreNonDurableRefused(t *testing.T) {
 		t.Fatalf("snap.State = %q, want %q", snap.State, models.StateReady)
 	}
 	if snap.RemoteDurable {
-		t.Fatalf("snap.RemoteDurable = true, want false (NoSyncGate)")
+		t.Fatalf("snap.RemoteDurable = true, want false (NoVerify)")
 	}
 
 	preCount := fx.countFiles(ctx)
@@ -246,7 +246,7 @@ func testRestoreAllowNonDurable(t *testing.T) {
 	ctx := fx.ctx()
 	files := fx.populateFiles(ctx, []string{"and.bin"})
 
-	snapID, err := fx.rt.CreateSnapshot(ctx, fx.shareName, CreateSnapshotOpts{NoSyncGate: true})
+	snapID, err := fx.rt.CreateSnapshot(ctx, fx.shareName, CreateSnapshotOpts{NoVerify: true})
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}

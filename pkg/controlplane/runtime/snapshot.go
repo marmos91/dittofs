@@ -18,17 +18,16 @@ import (
 )
 
 // CreateSnapshotOpts is the operator-facing configuration for one
-// CreateSnapshot invocation. Zero-value (NoSyncGate=false, RetryOf="")
-// requests the default behavior: a fresh UUID, full sync gate enabled.
-// D-23-15.
+// CreateSnapshot invocation. Zero-value (NoVerify=false, RetryOf="")
+// requests the default behavior: a fresh UUID, verify gate enabled.
 type CreateSnapshotOpts struct {
-	// NoSyncGate (D-23-11) skips DrainAllUploads + VerifyRemoteDurability.
-	// Final state: ready + RemoteDurable=false. Phase 24 restore reads
-	// RemoteDurable=false and refuses (or requires --force).
-	NoSyncGate bool
+	// NoVerify skips DrainAllUploads + VerifyRemoteDurability (the verify
+	// gate). Final state: ready with RemoteDurable=false. Restore reads
+	// RemoteDurable=false and refuses unless AllowNonDurable is set.
+	NoVerify bool
 
-	// RetryOf (D-23-10), when non-empty, reuses the failed snapshot's
-	// ID + on-disk dir and atomically overwrites manifest.hashes via
+	// RetryOf, when non-empty, reuses the failed snapshot's ID + on-disk
+	// dir and atomically overwrites manifest.hashes via
 	// WriteManifestAtomic. The target row must currently be in state
 	// 'failed' — anything else returns ErrSnapshotRetryTargetNotFailed.
 	RetryOf string
@@ -196,7 +195,7 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 	logger.Info("snapshot create: accepted",
 		"snapshot_id", snapID,
 		"share", shareName,
-		"no_sync_gate", opts.NoSyncGate,
+		"no_verify", opts.NoVerify,
 		"retry_of", opts.RetryOf,
 	)
 	return snapID, nil
@@ -409,7 +408,7 @@ func (r *Runtime) runSnapshotOrchestration(
 	logger.Debug("snapshot create: orchestration start",
 		"snapshot_id", snapID,
 		"share", shareName,
-		"no_sync_gate", opts.NoSyncGate,
+		"no_verify", opts.NoVerify,
 		"retry_of", opts.RetryOf,
 	)
 
@@ -474,8 +473,8 @@ func (r *Runtime) runSnapshotOrchestration(
 		"manifest_count", manifestCount,
 	)
 
-	// --- Step 3: NoSyncGate short-circuit (D-23-11) ---
-	if opts.NoSyncGate {
+	// --- Step 3: NoVerify short-circuit ---
+	if opts.NoVerify {
 		// Atomic state+durable flip mirrors the sync-gated path. The
 		// remote_durable value is explicit (false) here so the row's
 		// durability bit is set in the same UPDATE as the state, not
@@ -484,13 +483,13 @@ func (r *Runtime) runSnapshotOrchestration(
 		// schema-default drift.
 		if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, false, int64(manifestCount)); err != nil {
 			r.failSnap(shareName, snapID)
-			terminalErr = fmt.Errorf("snapshot create %s: mark ready (no-sync-gate): %w: %v",
+			terminalErr = fmt.Errorf("snapshot create %s: mark ready (no-verify): %w: %v",
 				snapID, models.ErrSnapshotBackupFailed, err)
-			logger.Error("snapshot create: mark ready failed (no-sync-gate)",
+			logger.Error("snapshot create: mark ready failed (no-verify)",
 				"snapshot_id", snapID, "share", shareName, "error", err)
 			return
 		}
-		logger.Info("snapshot create: ready (sync gate skipped)",
+		logger.Info("snapshot create: ready (verify gate skipped)",
 			"snapshot_id", snapID,
 			"share", shareName,
 			"final_state", "ready",
@@ -499,7 +498,7 @@ func (r *Runtime) runSnapshotOrchestration(
 		return
 	}
 
-	// --- Step 4: Sync gate drain (D-23-05) ---
+	// --- Step 4: Verify gate drain ---
 	bs, err := r.sharesSvc.GetBlockStoreForShare(shareName)
 	if err != nil || bs == nil {
 		r.failSnap(shareName, snapID)
@@ -533,14 +532,15 @@ func (r *Runtime) runSnapshotOrchestration(
 			"snapshot_id", snapID, "share", shareName)
 		return
 	}
-	concurrency := r.snapshotDefaults().SyncGateConcurrency
+	// Hardcoded; benchmarking confirmed no operator tuning need.
+	concurrency := 16
 	logger.Debug("snapshot create: verify start",
 		"snapshot_id", snapID, "share", shareName,
 		"verify_concurrency", concurrency)
 	verr := snapshot.VerifyRemoteDurability(ctx, remoteStore, hashSet, concurrency)
 	if verr != nil && errors.Is(verr, blockstore.ErrChunkNotFound) {
-		// One drain + re-verify retry (D-23-05). Common cause: syncer
-		// was behind during the first verify; a fresh drain catches up.
+		// One drain + re-verify retry. Common cause: syncer was behind
+		// during the first verify; a fresh drain catches up.
 		logger.Debug("snapshot create: verify miss, retrying drain+verify",
 			"snapshot_id", snapID, "share", shareName, "first_error", verr)
 		if derr := bs.DrainAllUploads(ctx); derr != nil {
@@ -566,13 +566,13 @@ func (r *Runtime) runSnapshotOrchestration(
 		return
 	}
 
-	// --- Step 6: Ready flip (D-23-03) ---
+	// --- Step 6: Ready flip ---
 	// Atomically transition state=creating -> state=ready AND set
 	// remote_durable=true in a single conditional UPDATE. A two-step
 	// (state, durable) sequence would leave a transient window where a
 	// crash mid-update produces ready+remote_durable=false — visually
-	// indistinguishable from the intentional --no-sync-gate result and
-	// a false negative for Phase 24 restore's durability gate.
+	// indistinguishable from the intentional --no-verify result and
+	// a false negative for restore's durability gate.
 	if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, true, int64(manifestCount)); err != nil {
 		r.failSnap(shareName, snapID)
 		terminalErr = fmt.Errorf("snapshot create %s: mark ready: %w: %v",
@@ -921,7 +921,8 @@ func (r *Runtime) RestoreSnapshot(
 		return fmt.Errorf("restore snapshot %q: share %q has no remote store, cannot verify: %w",
 			snapID, shareName, models.ErrRestoreVerifyFailed)
 	}
-	concurrency := r.snapshotDefaults().SyncGateConcurrency
+	// Hardcoded; benchmarking confirmed no operator tuning need.
+	concurrency := 16
 	logger.Info("snapshot restore: pre-verify start",
 		"snapshot_id", snapID,
 		"share", shareName,
@@ -938,9 +939,8 @@ func (r *Runtime) RestoreSnapshot(
 	)
 
 	// --- safety snapshot ---
-	// Default opts (NoSyncGate=false) keep the safety snap sync-gate-
-	// drained and verified — it is the rollback primitive if any step
-	// below fails.
+	// Default opts (NoVerify=false) keep the safety snap drained and
+	// verified — it is the rollback primitive if any step below fails.
 	safetyID, err := r.CreateSnapshot(ctx, shareName, CreateSnapshotOpts{})
 	if err != nil {
 		return fmt.Errorf("restore snapshot %q: create safety snap: %w: %v",
