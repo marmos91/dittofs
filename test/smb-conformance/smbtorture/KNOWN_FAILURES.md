@@ -96,7 +96,7 @@ oplock grants, and a few specialized response-mapping cases (#479).
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.oplock.batch22a | Oplocks | Break timeout window not honored (~35s expected) | #740 |
+| smb2.oplock.batch22a | Oplocks | Break-ack timeout (~35s) + post-timeout grant-level policy diverges from batch22b | #775 |
 
 Note: the four `smb2.kernel-oplocks.*` tests require Linux kernel oplock integration via `F_SETLEASE` on the underlying fd — architecturally incompatible with DittoFS's userspace virtual filesystem. They are listed in the [Permanently Unimplementable](#permanently-unimplementable-out-of-scope) appendix.
 
