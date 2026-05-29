@@ -145,12 +145,10 @@ files, create blobs) are not implemented. Basic create operations pass.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.create.blob | Create | Create context blobs not fully implemented | #741 |
-| smb2.create.gentest | Create | Generic create test (impersonation) not implemented | #741 |
-| smb2.create.impersonation | Create | Impersonation levels not implemented | #741 |
-| smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | #741 |
-| smb2.create.multi | Create | Regression from recent changes, fails on all 3 stores | #741 |
-| smb2.create.path-length | Create | Flaky in CI (path length validation race) | #741 |
+| smb2.create.impersonation | Create | Impersonation levels not implemented | #771 |
+| smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | #771 |
+| smb2.create.multi | Create | Regression from recent changes, fails on all 3 stores | #771 |
+| smb2.create.path-length | Create | Flaky in CI (path length validation race) | #771 |
 
 ### Query/Set Info (Advanced Scenarios)
 
@@ -307,11 +305,11 @@ still return INVALID_PARAMETER for the anon TYPE_3 itself).
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.session.reauth4 | Sessions | Pre-existing: handle's original opener auth context is not preserved across re-auth — set_secdesc on a handle opened by user fails after reauth to anon | #746 |
-| smb2.session.reauth5 | Sessions | Pre-existing: same handle-identity binding gap as reauth4 — rename / unlink after reauth fails because path checks use the new auth context | #746 |
-| smb2.session.anon-encryption1 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #746 |
-| smb2.session.anon-encryption2 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #746 |
-| smb2.session.anon-encryption3 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #746 |
+| smb2.session.reauth4 | Sessions | Pre-existing: handle's original opener auth context is not preserved across re-auth — set_secdesc on a handle opened by user fails after reauth to anon | #772 |
+| smb2.session.reauth5 | Sessions | Pre-existing: same handle-identity binding gap as reauth4 — rename / unlink after reauth fails because path checks use the new auth context | #772 |
+| smb2.session.anon-encryption1 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #773 |
+| smb2.session.anon-encryption2 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #773 |
+| smb2.session.anon-encryption3 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #773 |
 
 ### Session Binding (Multi-Channel, Not Implemented)
 
@@ -479,14 +477,34 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.dosmode | Samba server-config | Exercises Samba `smb.conf` `hide files = /*hidefile*/` glob-pattern hiding alongside HIDDEN-attribute round-trip. DittoFS supports the MS-FSCC HIDDEN attribute end-to-end (SET_INFO/GET_INFO round-trip, OVERWRITE_IF attribute-mismatch → ACCESS_DENIED, dot-prefix auto-hide) but does not implement Samba's `hide files` filename-glob config knob — that is a Samba server-side filter, not part of MS-FSCC/MS-SMB2. The test's `hidefile` subcase requires this glob. |
 | smb2.setinfo | EA persistence | Drives SET_INFO BasicInfo / DispositionInfo / AllocationInfo / EndOfFile / PositionInfo / ModeInfo / SecurityDescriptor (all working in DittoFS) and then asserts SET_INFO `FileFullEaInformation` writes survive a GET_INFO `SMB2_ALL_EAS` round-trip. DittoFS does not persist extended attributes; the SET returns SUCCESS as a no-op for ChangeNotify-EA wiring. Persistent EA storage is a separate design item from the SET_INFO surface this test otherwise covers, and is not tracked under a dedicated open issue today. |
 | smb2.timestamp_resolution.resolution1 | Timing-dependent (upstream-skipped) | Test source documents `~15ms` Windows timestamp resolution and warns of a `1/15` false-fail rate even on a low-latency reference SMB connection. Explicitly skipped by Samba's own selftest (`selftest/skip:69-70`: `^samba3.smb2.timestamp_resolution` / `^samba4.smb2.timestamp_resolution`) "preserved here for future SMB2 timestamps behaviour archealogists". DittoFS classifies the same way upstream does. |
+| smb2.create.blob | Create-context coverage (upstream-skipped) | Walks 20+ adversarial CreateContext tag/length combinations against a file-backed share. Explicitly listed in Samba's own selftest knownfail (`selftest/knownfail`: `^samba3.smb2.create.blob`) — fails against Samba's own smb3-file backend, not just DittoFS. Implementing all variants requires duplicating Samba's smb1-derived create-context corner cases that have no MS-SMB2 spec mapping. |
+| smb2.create.gentest | Generative impersonation matrix (upstream-skipped) | Brute-forces hundreds of `(create_disposition × create_options × ImpersonationLevel × attribute)` combinations expecting Windows-exact status codes. Explicitly listed in Samba's own selftest knownfail (`selftest/knownfail`: `^samba3.smb2.create.gentest`) — fails on Samba file-backed shares. The status-code surface mirrors Windows-internal IRP_MJ_CREATE behaviour, not MS-FSA. |
 
-**Total: 20 tests permanently out of scope.**
+**Total: 22 tests permanently out of scope.**
 
 ### Kerberos
 
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-29 — #741 residual triage: blob+gentest → appendix; split into #771; close #741
+
+After PR #760 flipped `smb2.create.mkdir-dup`, the remaining 6 `smb2.create.*` rows were triaged against Samba upstream selftest knownfail:
+
+- **`smb2.create.blob`** + **`smb2.create.gentest`** — both listed in `selftest/knownfail` (`^samba3.smb2.create.{blob,gentest}`). Promoted to Permanently Unimplementable (upstream-skipped on file-backed Samba; not v1.0 gating).
+- **`smb2.create.impersonation`** + **`smb2.create.mkdir-visible`** + **`smb2.create.multi`** + **`smb2.create.path-length`** — real gaps. Retagged to new tracker **#771** (split from #741 for sharper scope).
+
+Umbrella #741 closed.
+
+### 2026-05-29 — #746 residual split: handle-identity vs anon-encryption
+
+After PR #763 flipped 9/14 session residuals, the remaining 5 rows are two distinct architectural gaps. Split for sharper tracking:
+
+- **`smb2.session.reauth4`** + **`smb2.session.reauth5`** — handle-identity binding gap (handle's original opener auth context not preserved across re-auth). Retagged to **#772**.
+- **`smb2.session.anon-encryption1`** + **`anon-encryption2`** + **`anon-encryption3`** — anonymous SESSION_SETUP returns INVALID_PARAMETER on plaintext anonymous bindings before encryption context is established. Retagged to **#773**.
+
+Umbrella #746 closed.
 
 ### 2026-05-29 — Misc subset A → Permanently Unimplementable (#750)
 
