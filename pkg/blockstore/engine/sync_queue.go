@@ -29,6 +29,13 @@ type SyncQueue struct {
 	stoppedCh       chan struct{}
 	started         bool // tracks whether Start() was called
 
+	// workerCtx is the parent context for per-request contexts created in
+	// processRequest. It is cancelled when stopCh is closed so that in-flight
+	// downloads/uploads abort promptly during Stop() instead of blocking on a
+	// slow or hung remote (e.g. S3).
+	workerCtx    context.Context
+	workerCancel context.CancelFunc
+
 	// Metrics
 	mu              gosync.Mutex
 	pendingDownload int
@@ -72,7 +79,19 @@ func (q *SyncQueue) Start(ctx context.Context) {
 		return
 	}
 	q.started = true
+	// Derive the worker context from the caller's ctx and arrange for it to
+	// be cancelled when stopCh closes. processRequest uses this as parent so
+	// in-flight transfers abort during Stop() instead of pinning goroutines
+	// on a hung remote.
+	workerCtx, workerCancel := context.WithCancel(ctx)
+	q.workerCtx = workerCtx
+	q.workerCancel = workerCancel
 	q.mu.Unlock()
+
+	go func() {
+		<-q.stopCh
+		workerCancel()
+	}()
 
 	logger.Info("Starting transfer queue",
 		"download_workers", q.downloadWorkers, "upload_workers", q.uploadWorkers)
@@ -263,8 +282,15 @@ func (q *SyncQueue) drainUploads() {
 }
 
 // processRequest handles a single transfer request with a fresh context.
+// The per-request context is derived from workerCtx so that Stop() cancels
+// in-flight transfers and they release worker goroutines promptly even when
+// the remote (e.g. S3) is slow or hung.
 func (q *SyncQueue) processRequest(req TransferRequest) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	parent := q.workerCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 	defer cancel()
 
 	var err error

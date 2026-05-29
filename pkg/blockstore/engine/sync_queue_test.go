@@ -73,6 +73,31 @@ func TestSyncQueue_DoubleStart(t *testing.T) {
 	q.Stop(time.Second)
 }
 
+// TestSyncQueue_StopCancelsWorkerCtx asserts that closing stopCh propagates
+// cancellation to the workerCtx used by processRequest. Without this, an
+// in-flight processDownload would block on a hung remote and leak the worker
+// goroutine past Close()/Stop() deadlines.
+func TestSyncQueue_StopCancelsWorkerCtx(t *testing.T) {
+	cfg := DefaultSyncQueueConfig()
+	q := NewSyncQueue(nil, cfg)
+
+	ctx := context.Background()
+	q.Start(ctx)
+
+	wctx := q.workerCtx
+	if wctx == nil {
+		t.Fatal("workerCtx is nil after Start")
+	}
+
+	q.Stop(time.Second)
+
+	select {
+	case <-wctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("workerCtx was not cancelled within 1s of Stop")
+	}
+}
+
 func TestSyncQueueConfig_Defaults(t *testing.T) {
 	cfg := DefaultSyncQueueConfig()
 

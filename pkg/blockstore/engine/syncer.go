@@ -686,11 +686,15 @@ func (m *Syncer) SyncNow(ctx context.Context) error {
 	if m.remoteStore == nil {
 		return nil
 	}
-	for !m.uploading.CompareAndSwap(false, true) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(10 * time.Millisecond):
+	if !m.uploading.CompareAndSwap(false, true) {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for !m.uploading.CompareAndSwap(false, true) {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
+			}
 		}
 	}
 	defer m.uploading.Store(false)

@@ -33,6 +33,12 @@ const maxBlockReadSize = 8 * 1024 * 1024
 // blockstore.FormatCASKey output ("cas/{hh}/{hh}/{hex}").
 const casPrefix = "cas/"
 
+// s3HTTPRequestTimeout bounds the entire HTTP request lifecycle (connect +
+// request + body read). Prevents a hung S3 endpoint from pinning syncer
+// goroutines indefinitely; without it Close()/DrainAllUploads cannot honour
+// their drain deadlines.
+const s3HTTPRequestTimeout = 2 * time.Minute
+
 // Compile-time interface satisfaction check.
 var _ remote.RemoteStore = (*Store)(nil)
 
@@ -128,7 +134,7 @@ func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
 
 	httpClient := &http.Client{
 		Transport: httpTransport,
-		Timeout:   0,
+		Timeout:   s3HTTPRequestTimeout,
 	}
 	opts = append(opts, awsconfig.WithHTTPClient(httpClient))
 
