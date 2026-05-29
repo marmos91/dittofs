@@ -167,8 +167,8 @@ func runMigrateToCAS(cmd *cobra.Command, args []string) error {
 
 		// Destination BlockStore for this share. Use the migration-bypass
 		// constructor so the sentinel-detection gate (added later inside
-		// fs.New / fs.NewWithOptions) does not refuse the share — that
-		// gate is precisely what the migration is establishing.
+		// fs.NewWithOptions) does not refuse the share — that gate is
+		// precisely what the migration is establishing.
 		//
 		// baseDir is the share root (not the redundant `<shareDir>/blocks/`
 		// sub-path). FSStore internally creates `blocks/` (CAS) + `logs/`
