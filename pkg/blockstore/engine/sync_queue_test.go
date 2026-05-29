@@ -12,7 +12,11 @@ func TestSyncQueue_EnqueueUpload(t *testing.T) {
 	q := NewSyncQueue(nil, cfg)
 
 	for i := 0; i < 5; i++ {
-		req := NewBlockUploadRequest("test-content", uint64(i))
+		req := TransferRequest{
+			Type:       TransferUpload,
+			PayloadID:  "test-content",
+			BlockIndex: uint64(i),
+		}
 		if !q.EnqueueUpload(req) {
 			t.Errorf("EnqueueUpload(%d) returned false", i)
 		}
@@ -31,9 +35,9 @@ func TestSyncQueue_QueueFull(t *testing.T) {
 	q := NewSyncQueue(nil, cfg)
 	// Don't start workers - queue will fill up
 
-	req1 := NewBlockUploadRequest("c1", 0)
-	req2 := NewBlockUploadRequest("c2", 0)
-	req3 := NewBlockUploadRequest("c3", 0)
+	req1 := TransferRequest{Type: TransferUpload, PayloadID: "c1", BlockIndex: 0}
+	req2 := TransferRequest{Type: TransferUpload, PayloadID: "c2", BlockIndex: 0}
+	req3 := TransferRequest{Type: TransferUpload, PayloadID: "c3", BlockIndex: 0}
 
 	if !q.EnqueueUpload(req1) {
 		t.Error("EnqueueUpload(1) should succeed")
@@ -119,8 +123,8 @@ func TestSyncQueue_Stats(t *testing.T) {
 		t.Errorf("Stats() = (%d, %d, %d), want (0, 0, 0)", pending, completed, failed)
 	}
 
-	q.EnqueueUpload(NewBlockUploadRequest("c1", 0))
-	q.EnqueueUpload(NewBlockUploadRequest("c2", 1))
+	q.EnqueueUpload(TransferRequest{Type: TransferUpload, PayloadID: "c1", BlockIndex: 0})
+	q.EnqueueUpload(TransferRequest{Type: TransferUpload, PayloadID: "c2", BlockIndex: 1})
 
 	pending, _, _ = q.Stats()
 	if pending != 2 {
@@ -149,17 +153,17 @@ func TestSyncQueue_EnqueueByType(t *testing.T) {
 	q := NewSyncQueue(nil, cfg)
 
 	// Test download enqueue
-	if !q.EnqueueDownload(NewDownloadRequest("payload", 0, nil)) {
+	if !q.EnqueueDownload(TransferRequest{Type: TransferDownload, PayloadID: "payload", BlockIndex: 0}) {
 		t.Error("EnqueueDownload should succeed")
 	}
 
 	// Test upload enqueue
-	if !q.EnqueueUpload(NewBlockUploadRequest("payload", 0)) {
+	if !q.EnqueueUpload(TransferRequest{Type: TransferUpload, PayloadID: "payload", BlockIndex: 0}) {
 		t.Error("EnqueueUpload should succeed")
 	}
 
 	// Test prefetch enqueue
-	if !q.EnqueuePrefetch(NewPrefetchRequest("payload", 1)) {
+	if !q.EnqueuePrefetch(TransferRequest{Type: TransferPrefetch, PayloadID: "payload", BlockIndex: 1}) {
 		t.Error("EnqueuePrefetch should succeed")
 	}
 
@@ -190,13 +194,13 @@ func TestSyncQueue_PrefetchDropWhenFull(t *testing.T) {
 	// Don't start workers - queue will fill up
 
 	// First prefetch should succeed
-	if !q.EnqueuePrefetch(NewPrefetchRequest("payload", 0)) {
+	if !q.EnqueuePrefetch(TransferRequest{Type: TransferPrefetch, PayloadID: "payload", BlockIndex: 0}) {
 		t.Error("First prefetch should succeed")
 	}
 
 	// Second prefetch should be dropped silently (queue full)
 	// This should NOT return false but drop silently - check pending count
-	q.EnqueuePrefetch(NewPrefetchRequest("payload", 1))
+	q.EnqueuePrefetch(TransferRequest{Type: TransferPrefetch, PayloadID: "payload", BlockIndex: 1})
 
 	// Only 1 should be pending (second was dropped)
 	_, _, prefetch := q.PendingByType()
