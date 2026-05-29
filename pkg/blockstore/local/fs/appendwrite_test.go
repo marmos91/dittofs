@@ -417,6 +417,85 @@ func TestAppendWrite_CtxCancel_StillFsyncs(t *testing.T) {
 	}
 }
 
+// TestAppendWrite_InvalidPayloadID_RejectedBeforeFS asserts the
+// defense-in-depth guard at getOrCreateLog's entry (REVIEW.md §3b S-4):
+// malformed payloadIDs (path-traversal, absolute, separator-bearing,
+// empty, NUL-bearing) must be rejected with ErrInvalidPayloadID BEFORE
+// any FS state is touched — no <baseDir>/logs/<id>.log file, no
+// <baseDir>/logs/* parent directory entry, no FSStore map entries.
+func TestAppendWrite_InvalidPayloadID_RejectedBeforeFS(t *testing.T) {
+	cases := []struct {
+		name      string
+		payloadID string
+	}{
+		{"dotdot-only", ".."},
+		{"dot-only", "."},
+		{"empty", ""},
+		{"interior-dotdot", "../etc/passwd"},
+		{"trailing-dotdot", "share/.."},
+		{"leading-slash", "/absolute/path"},
+		{"double-slash", "share//file"},
+		{"nul-byte", "share/file\x00name"},
+		{"single-dot-segment", "share/./file"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
+
+			err := bc.AppendWrite(context.Background(), tc.payloadID, []byte("hello"), 0)
+			if !errors.Is(err, ErrInvalidPayloadID) {
+				t.Fatalf("AppendWrite(%q): got err=%v, want errors.Is(err, ErrInvalidPayloadID)", tc.payloadID, err)
+			}
+
+			// No FS state was touched: the logs/ directory was not created,
+			// and no file under baseDir matches the would-be log name.
+			// MkdirAll runs INSIDE getOrCreateLog after the validation guard
+			// so it must not have created logs/ either.
+			if _, statErr := os.Stat(filepath.Join(bc.baseDir, "logs")); !os.IsNotExist(statErr) {
+				// Either it exists (which would be a leak) or some other
+				// unexpected error.
+				if statErr == nil {
+					t.Fatalf("baseDir/logs was created despite invalid payloadID %q", tc.payloadID)
+				}
+				t.Fatalf("unexpected stat error on baseDir/logs: %v", statErr)
+			}
+
+			// No FSStore map entries for the invalid payloadID.
+			bc.logsMu.RLock()
+			_, lfOk := bc.logFDs[tc.payloadID]
+			_, muOk := bc.logLocks[tc.payloadID]
+			_, treeOk := bc.dirtyIntervals[tc.payloadID]
+			_, idxOk := bc.logIndices[tc.payloadID]
+			bc.logsMu.RUnlock()
+			if lfOk || muOk || treeOk || idxOk {
+				t.Fatalf("FSStore created map entries for invalid payloadID %q: lf=%v mu=%v tree=%v idx=%v",
+					tc.payloadID, lfOk, muOk, treeOk, idxOk)
+			}
+		})
+	}
+}
+
+// TestAppendWrite_ValidPayloadID_StillWorks is the happy-path
+// companion of TestAppendWrite_InvalidPayloadID_RejectedBeforeFS:
+// legitimate payloadIDs (plain, path-keyed, unicode) still succeed.
+func TestAppendWrite_ValidPayloadID_StillWorks(t *testing.T) {
+	cases := []string{
+		"plain",
+		"share/file.txt",
+		"share/sub1/sub2/file.bin",
+		"share/file with spaces.txt",
+		"share/日本語.txt",
+	}
+	for _, payloadID := range cases {
+		t.Run(payloadID, func(t *testing.T) {
+			bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
+			if err := bc.AppendWrite(context.Background(), payloadID, []byte("hello"), 0); err != nil {
+				t.Fatalf("AppendWrite(%q): %v", payloadID, err)
+			}
+		})
+	}
+}
+
 // TestAppendWrite_LockOrder_PerFileMuStillHeldAcrossSync runs concurrent
 // writers under -race and asserts no race detection. The per-file mu
 // (bc.logLocks[payloadID]) is held by AppendWrite across the

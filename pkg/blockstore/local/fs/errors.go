@@ -26,6 +26,17 @@ var (
 	// therefore surface as ErrPressureTimeout rather than ErrDeleted.
 	ErrDeleted = errors.New("append log: payload deleted")
 
+	// ErrInvalidPayloadID is returned by write-path entry points when the
+	// caller supplies a payloadID that fails isValidPayloadID's structural
+	// rules (empty, contains '..' / '.' / '' segments, leading '/', NUL
+	// byte, or exceeds maxPayloadIDLen). Surfaced as a defense-in-depth
+	// guard at getOrCreateLog: recovery already validates names read from
+	// disk, but the write path previously accepted any string and passed it
+	// straight to filepath.Join. A malicious or buggy caller with a '../'-
+	// bearing payloadID could otherwise place a log file outside <baseDir>/
+	// logs before recovery's check ever ran.
+	ErrInvalidPayloadID = errors.New("append log: invalid payloadID")
+
 	// ErrPressureTimeout is returned by AppendWrite when its pressure
 	// loop has waited longer than FSStoreOptions.PressureMaxWait without
 	// rollup freeing enough log budget to admit the write. Distinguished
