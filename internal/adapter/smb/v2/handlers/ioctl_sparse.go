@@ -370,8 +370,9 @@ const zeroDataMaxFileSize = uint64(0xFFFFFFF0000) // ~16 TiB, identical to WRITE
 // Writes zeros across the [FileOffset, BeyondFinalZero) byte window. We
 // honour the request by issuing zero-filled writes through the standard
 // PrepareWrite / WriteAt / CommitWrite path so file size, mtime, and
-// block-store invalidation stay consistent. The range may extend past
-// EOF, in which case the file is implicitly extended (Samba parity).
+// block-store invalidation stay consistent. The window is clamped to
+// the current file size — SET_ZERO_DATA MUST NOT extend the file (Samba
+// `fsctl_zero_data`; smb2.ioctl.sparse_punch_invalid).
 func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	fileID, ok := parseIoctlFileID(body)
 	if !ok {
