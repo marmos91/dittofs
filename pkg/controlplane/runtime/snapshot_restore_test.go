@@ -74,8 +74,12 @@ func testRestoreHappyPath(t *testing.T) {
 	}
 
 	// Restore — must complete with no error.
-	if err := fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{}); err != nil {
+	safetyID, err := fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
+	if err != nil {
 		t.Fatalf("RestoreSnapshot: %v", err)
+	}
+	if safetyID == "" {
+		t.Fatal("RestoreSnapshot: safetySnapshotID empty on success, want non-empty")
 	}
 
 	// The deleted file is now present in the metadata store again.
@@ -138,7 +142,7 @@ func testRestoreEnabledShareRefuses(t *testing.T) {
 
 	preCount := fx.countFiles(ctx)
 
-	err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
+	_, err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
 	if !errors.Is(err, models.ErrShareEnabled) {
 		t.Fatalf("RestoreSnapshot err = %v, want errors.Is(ErrShareEnabled)", err)
 	}
@@ -157,7 +161,7 @@ func testRestoreSnapshotNotFound(t *testing.T) {
 	fx.populateFiles(ctx, []string{"foo.bin"})
 
 	preCount := fx.countFiles(ctx)
-	err := fx.rt.RestoreSnapshot(ctx, fx.shareName, "nonexistent-snap-id", RestoreSnapshotOpts{})
+	_, err := fx.rt.RestoreSnapshot(ctx, fx.shareName, "nonexistent-snap-id", RestoreSnapshotOpts{})
 	if !errors.Is(err, models.ErrSnapshotNotFound) {
 		t.Fatalf("RestoreSnapshot err = %v, want errors.Is(ErrSnapshotNotFound)", err)
 	}
@@ -195,7 +199,7 @@ func testRestoreSnapshotNotReady(t *testing.T) {
 	}
 
 	preCount := fx.countFiles(ctx)
-	err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
+	_, err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
 	if !errors.Is(err, models.ErrSnapshotStateConflict) {
 		t.Fatalf("RestoreSnapshot err = %v, want errors.Is(ErrSnapshotStateConflict)", err)
 	}
@@ -229,7 +233,7 @@ func testRestoreNonDurableRefused(t *testing.T) {
 	}
 
 	preCount := fx.countFiles(ctx)
-	err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
+	_, err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
 	if !errors.Is(err, models.ErrSnapshotNotDurable) {
 		t.Fatalf("RestoreSnapshot err = %v, want errors.Is(ErrSnapshotNotDurable)", err)
 	}
@@ -267,7 +271,7 @@ func testRestoreAllowNonDurable(t *testing.T) {
 		t.Fatalf("delete pre-restore: %v", err)
 	}
 
-	if err := fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{AllowNonDurable: true}); err != nil {
+	if _, err := fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{AllowNonDurable: true}); err != nil {
 		t.Fatalf("RestoreSnapshot(AllowNonDurable): %v", err)
 	}
 
@@ -309,7 +313,7 @@ func testRestorePreVerifyFailsFast(t *testing.T) {
 	preCount := fx.countFiles(ctx)
 	fx.remote.failHashAfterCount(files[1].hashes[0], 0) // every Head() for this hash fails
 
-	err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
+	_, err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
 	if !errors.Is(err, models.ErrRestoreVerifyFailed) {
 		t.Fatalf("RestoreSnapshot err = %v, want errors.Is(ErrRestoreVerifyFailed)", err)
 	}
@@ -373,7 +377,7 @@ func testRestorePostVerifyFails(t *testing.T) {
 	deletedHash := files[0].hashes[0]
 	fx.remote.failHashAfterCount(deletedHash, 1)
 
-	err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
+	_, err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
 	if !errors.Is(err, models.ErrRestoreVerifyFailed) {
 		t.Fatalf("RestoreSnapshot err = %v, want errors.Is(ErrRestoreVerifyFailed)", err)
 	}
@@ -429,7 +433,7 @@ func testRestoreInterruptedReset(t *testing.T) {
 	// Arm Reset failure (one-shot).
 	fx.failable.setFailNextReset(true)
 
-	err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
+	_, err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
 	if !errors.Is(err, models.ErrRestoreAborted) {
 		t.Fatalf("RestoreSnapshot err = %v, want errors.Is(ErrRestoreAborted)", err)
 	}
@@ -452,7 +456,7 @@ func testRestoreInterruptedReset(t *testing.T) {
 	// --- Recovery: RestoreSnapshot(safetyID) ---
 	// failNextReset already cleared (one-shot consumption). Underlying
 	// MemoryMetadataStore.Reset will now run normally.
-	if err := fx.rt.RestoreSnapshot(ctx, fx.shareName, safetyID, RestoreSnapshotOpts{}); err != nil {
+	if _, err := fx.rt.RestoreSnapshot(ctx, fx.shareName, safetyID, RestoreSnapshotOpts{}); err != nil {
 		t.Fatalf("RestoreSnapshot(safetyID) recovery: %v", err)
 	}
 
