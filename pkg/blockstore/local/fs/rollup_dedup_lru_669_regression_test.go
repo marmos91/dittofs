@@ -88,7 +88,7 @@ func TestRollup_DedupLRU_PersisterFailure_StaysEmpty(t *testing.T) {
 	// Drive stabilization, then call rollupFile directly so we can
 	// observe the propagated persister error.
 	waitForStable(t, bc, pid)
-	err := bc.rollupFile(ctx, pid)
+	err := bc.rollupFile(ctx, pid, false)
 	if !errors.Is(err, simulated) {
 		t.Fatalf("rollupFile error: got %v, want errors.Is(simulated)", err)
 	}

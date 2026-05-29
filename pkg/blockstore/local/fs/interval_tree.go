@@ -99,6 +99,24 @@ func (it *intervalTree) EarliestStable(now time.Time, stabilization time.Duratio
 	return *found, true
 }
 
+// Earliest returns the interval with the smallest Offset, ignoring the
+// stabilization window entirely. Used by the forced snapshot-drain path
+// (DrainRollups → rollupFile force=true): at snapshot time every written
+// byte must be flushed to CAS, so the stabilization gate that
+// EarliestStable enforces is intentionally bypassed. Returns
+// (interval{}, false) when the tree is empty.
+func (it *intervalTree) Earliest() (interval, bool) {
+	var found *interval
+	it.t.Ascend(func(iv *interval) bool {
+		found = iv
+		return false // smallest-Offset entry; stop
+	})
+	if found == nil {
+		return interval{}, false
+	}
+	return *found, true
+}
+
 // ConsumeUpTo drops every interval whose end (Offset+Length) is <=
 // endExclusive. Called by the rollup after chunks covering [0, endExclusive)
 // have been durably committed.
