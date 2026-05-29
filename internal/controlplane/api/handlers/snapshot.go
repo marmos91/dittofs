@@ -93,7 +93,7 @@ func (h *SnapshotHandler) resolveShareAndSnap(w http.ResponseWriter, r *http.Req
 // a 400 already written) on a decode failure; returns true on success
 // or when the body is empty/EOF.
 func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
-	if r.Body == nil || r.ContentLength == 0 {
+	if r.Body == nil {
 		return true
 	}
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil && err != io.EOF {
@@ -104,12 +104,12 @@ func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 // handleErr maps a snapshot/restore sentinel via mapSnapshotError; if
-// unmapped, logs at Debug and writes a sanitized 500.
+// unmapped, logs at Error (unexpected) and writes a sanitized 500.
 func handleErr(w http.ResponseWriter, op string, fields []any, err error) {
 	if mapSnapshotError(w, err) {
 		return
 	}
-	logger.Debug(op+" error", append(fields, "error", err)...)
+	logger.Error(op+" error", append(fields, "error", err)...)
 	InternalServerError(w, op+" failed")
 }
 

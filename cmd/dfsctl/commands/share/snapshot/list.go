@@ -42,7 +42,7 @@ Examples:
 }
 
 func init() {
-	listCmd.Flags().StringVar(&listState, "state", "", "Filter by state (creating|ready|failed|restoring)")
+	listCmd.Flags().StringVar(&listState, "state", "", "Filter by state (creating|ready|failed)")
 	listCmd.Flags().StringVar(&listNamePrefix, "name-prefix", "", "Filter by name prefix")
 	listCmd.Flags().BoolVar(&listNoRelative, "no-relative", false, "Print absolute timestamps instead of relative")
 }

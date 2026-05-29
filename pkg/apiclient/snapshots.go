@@ -66,6 +66,17 @@ func (c *Client) GetSnapshot(share, id string) (*Snapshot, error) {
 	return getResource[Snapshot](c, snapshotPath(share, id))
 }
 
+// getSnapshotCtx is the ctx-aware variant used by poll loops so caller
+// cancellation aborts the in-flight HTTP request (not just the wait
+// between polls).
+func (c *Client) getSnapshotCtx(ctx context.Context, share, id string) (*Snapshot, error) {
+	var snap Snapshot
+	if err := c.getCtx(ctx, snapshotPath(share, id), &snap); err != nil {
+		return nil, err
+	}
+	return &snap, nil
+}
+
 // DeleteSnapshot deletes a snapshot. Server-side: row delete + on-disk
 // dir wipe + lock release. 204 → nil; non-2xx → APIError.
 func (c *Client) DeleteSnapshot(share, id string) error {
@@ -107,7 +118,7 @@ func (c *Client) WaitForSnapshot(ctx context.Context, share, id string, pollEver
 	// First poll happens immediately so callers don't pay a full pollEvery
 	// when the snapshot is already terminal.
 	for {
-		snap, err := c.GetSnapshot(share, id)
+		snap, err := c.getSnapshotCtx(ctx, share, id)
 		if err != nil {
 			return nil, err
 		}

@@ -3,6 +3,7 @@ package apiclient
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -75,15 +76,23 @@ func (c *Client) BaseURL() string {
 }
 
 // do performs an HTTP request and decodes the response using the
-// Client's default httpClient.
+// Client's default httpClient with a background context.
 func (c *Client) do(method, path string, body, result any) error {
-	return c.doVia(c.httpClient, method, path, body, result)
+	return c.doVia(context.Background(), c.httpClient, method, path, body, result)
+}
+
+// doCtx performs an HTTP request and decodes the response using the
+// Client's default httpClient, honoring the caller's context.
+func (c *Client) doCtx(ctx context.Context, method, path string, body, result any) error {
+	return c.doVia(ctx, c.httpClient, method, path, body, result)
 }
 
 // doVia performs an HTTP request and decodes the response, dispatching
 // via the provided http.Client. This is the single I/O path used by both
-// the default and the per-call-timeout flows.
-func (c *Client) doVia(hc *http.Client, method, path string, body, result any) error {
+// the default and the per-call-timeout flows. The context controls request
+// cancellation and overall deadline; the http.Client's Timeout still acts
+// as an upper bound.
+func (c *Client) doVia(ctx context.Context, hc *http.Client, method, path string, body, result any) error {
 	var bodyReader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -93,7 +102,7 @@ func (c *Client) doVia(hc *http.Client, method, path string, body, result any) e
 		bodyReader = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequest(method, c.baseURL+path, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -136,6 +145,12 @@ func (c *Client) get(path string, result any) error {
 	return c.do(http.MethodGet, path, nil, result)
 }
 
+// getCtx performs a GET request, propagating the caller's context so
+// the underlying HTTP call is cancellable. Used by poll loops.
+func (c *Client) getCtx(ctx context.Context, path string, result any) error {
+	return c.doCtx(ctx, http.MethodGet, path, nil, result)
+}
+
 // post performs a POST request.
 func (c *Client) post(path string, body, result any) error {
 	return c.do(http.MethodPost, path, body, result)
@@ -167,5 +182,5 @@ func (c *Client) doWithTimeout(method, path string, body, result any, timeout ti
 		Jar:           c.httpClient.Jar,
 		Timeout:       timeout,
 	}
-	return c.doVia(override, method, path, body, result)
+	return c.doVia(context.Background(), override, method, path, body, result)
 }
