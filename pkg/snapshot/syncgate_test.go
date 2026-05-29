@@ -267,6 +267,9 @@ func (e *errRemote) Get(context.Context, blockstore.ContentHash) ([]byte, error)
 func (e *errRemote) GetRange(context.Context, blockstore.ContentHash, int64, int64) ([]byte, error) {
 	return nil, e.err
 }
+func (e *errRemote) Has(context.Context, blockstore.ContentHash) (bool, error) {
+	return false, e.err
+}
 func (e *errRemote) Delete(context.Context, blockstore.ContentHash) error { return e.err }
 func (e *errRemote) Head(context.Context, blockstore.ContentHash) (blockstore.Meta, error) {
 	return blockstore.Meta{}, e.err
@@ -313,6 +316,9 @@ func (b *blockingRemote) Get(context.Context, blockstore.ContentHash) ([]byte, e
 }
 func (b *blockingRemote) GetRange(context.Context, blockstore.ContentHash, int64, int64) ([]byte, error) {
 	return nil, nil
+}
+func (b *blockingRemote) Has(context.Context, blockstore.ContentHash) (bool, error) {
+	return false, nil
 }
 func (b *blockingRemote) Delete(context.Context, blockstore.ContentHash) error { return nil }
 func (b *blockingRemote) Walk(context.Context, func(blockstore.ContentHash, blockstore.Meta) error) error {
@@ -372,6 +378,9 @@ func (c *countingRemote) Get(context.Context, blockstore.ContentHash) ([]byte, e
 func (c *countingRemote) GetRange(context.Context, blockstore.ContentHash, int64, int64) ([]byte, error) {
 	return nil, nil
 }
+func (c *countingRemote) Has(context.Context, blockstore.ContentHash) (bool, error) {
+	return false, nil
+}
 func (c *countingRemote) Delete(context.Context, blockstore.ContentHash) error { return nil }
 func (c *countingRemote) Walk(context.Context, func(blockstore.ContentHash, blockstore.Meta) error) error {
 	return nil
@@ -415,6 +424,9 @@ func (s *slowMissingRemote) Get(context.Context, blockstore.ContentHash) ([]byte
 }
 func (s *slowMissingRemote) GetRange(context.Context, blockstore.ContentHash, int64, int64) ([]byte, error) {
 	return nil, nil
+}
+func (s *slowMissingRemote) Has(context.Context, blockstore.ContentHash) (bool, error) {
+	return false, nil
 }
 func (s *slowMissingRemote) Delete(context.Context, blockstore.ContentHash) error { return nil }
 func (s *slowMissingRemote) Walk(context.Context, func(blockstore.ContentHash, blockstore.Meta) error) error {

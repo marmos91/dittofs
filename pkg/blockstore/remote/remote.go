@@ -4,13 +4,9 @@
 // storage. All operations are keyed by blockstore.ContentHash. The CAS
 // object key shape (cas/{hh}/{hh}/{hex}) is derived from the hash via
 // blockstore.FormatCASKey and is an implementation detail backends may
-// not expose. The interface is structurally compatible with
-// blockstore.BlockStore — future work retargets engine consumers onto
-// that unified type and this package becomes the s3 / memory backend
-// home. The methods on this interface match the unified BlockStore
-// method set verbatim, with two backend-specific additions
-// (ReadBlockVerified for production CAS reads, Close + HealthCheck +
-// Healthcheck for backend lifecycle / health).
+// not expose. The interface embeds blockstore.BlockStore and adds
+// backend-specific extras (ReadBlockVerified for production CAS reads,
+// Close + HealthCheck + Healthcheck for backend lifecycle / health).
 package remote
 
 import (
@@ -30,80 +26,17 @@ import (
 // strings appear on this surface. Backends derive their on-disk / on-wire
 // key shape via blockstore.FormatCASKey internally.
 //
-// The Put/Get/GetRange/Delete/Head/Walk method set matches the
-// unified blockstore.BlockStore contract byte-for-byte;
-// ReadBlockVerified is a backend-specific extension (NOT part of
-// BlockStore) used by the engine's verified-read path. Callers
-// type-assert to access it on the s3 backend; the memory backend
-// implements it as the trivial body-recompute case so test fixtures
-// can exercise the same code path.
+// The Put / Get / GetRange / Has / Delete / Head / Walk method set comes
+// from the embedded blockstore.BlockStore contract — byte-for-byte the
+// same semantics as the unified type. ReadBlockVerified is a
+// backend-specific extension (NOT part of BlockStore) used by the
+// engine's verified-read path; callers type-assert to access it on the
+// s3 backend, and the memory backend implements it as the trivial
+// body-recompute case so test fixtures can exercise the same code path.
+// Close / HealthCheck / Healthcheck cover backend lifecycle and health
+// probes — also outside the BlockStore contract.
 type RemoteStore interface {
-	// Put writes data under the CAS-shaped key derived from hash. Backends
-	// MUST stamp the content hash atomically with the PUT (S3
-	// x-amz-meta-content-hash header) — defense-in-depth.
-	// Idempotent on the same (hash, data) pair; a Put with the same hash
-	// but different bytes is undefined behavior — callers MUST NOT rely
-	// on either outcome.
-	//
-	// Returns an error if the backend is closed, the I/O fails, or the
-	// hash is zero (callers must compute the hash before calling).
-	Put(ctx context.Context, hash blockstore.ContentHash, data []byte) error
-
-	// Get returns the chunk bytes addressed by the given content hash.
-	// The returned []byte is freshly allocated and owned by the caller —
-	// implementations MUST NOT return a slice that aliases internal
-	// storage.
-	//
-	// Returns blockstore.ErrChunkNotFound when the chunk is absent.
-	//
-	// For S3, prefer ReadBlockVerified on the production read path — Get
-	// returns raw bytes WITHOUT BLAKE3 verification.
-	Get(ctx context.Context, hash blockstore.ContentHash) ([]byte, error)
-
-	// GetRange returns a byte sub-range [offset, offset+length) of the
-	// chunk addressed by hash. The returned slice is freshly allocated
-	// (same no-aliasing rule as Get). Returns blockstore.ErrChunkNotFound
-	// if the chunk is absent.
-	GetRange(ctx context.Context, hash blockstore.ContentHash, offset, length int64) ([]byte, error)
-
-	// Delete removes the object addressed by hash. Returns nil if the
-	// object does not exist (Delete is idempotent).
-	Delete(ctx context.Context, hash blockstore.ContentHash) error
-
-	// Head returns blockstore.Meta for the object addressed by hash
-	// without transferring the body. Returns blockstore.ErrChunkNotFound
-	// when the object is absent.
-	//
-	// The backend's defense-in-depth content-hash header (S3
-	// x-amz-meta-content-hash) is verified internally during
-	// ReadBlockVerified but is NOT echoed via Meta —
-	// the lookup key (ContentHash) is the input, not output, and Meta
-	// stays minimal {Size, LastModified}.
-	//
-	// Meta.LastModified MUST be non-zero (GC
-	// sweep fails closed otherwise). Backends that cannot natively report
-	// a timestamp MUST stamp time.Now() at Put time and surface that
-	// value here.
-	Head(ctx context.Context, hash blockstore.ContentHash) (blockstore.Meta, error)
-
-	// Walk enumerates every CAS object in the store. The callback
-	// receives the content hash and Meta for each object; ordering is
-	// unspecified (backends MAY parallelize internally; the conformance
-	// suite does not pin a traversal order).
-	//
-	// Returning blockstore.ErrStopWalk from the callback exits cleanly
-	// — Walk returns nil to the outer caller. Any other non-nil
-	// callback error halts the walk and Walk returns it wrapped with
-	//
-	//   fmt.Errorf("walk halted at %s: %w", hash, err)
-	//
-	// Context cancellation aborts immediately; the callback is NOT
-	// re-invoked after ctx.Err() != nil (Walk MUST surface ctx.Err()
-	// without one final spurious callback). Contract mirrors
-	// filepath.SkipDir / fs.SkipAll.
-	//
-	// See blockstore.ErrStopWalk for the sentinel doc.
-	Walk(ctx context.Context, fn func(hash blockstore.ContentHash, meta blockstore.Meta) error) error
+	blockstore.BlockStore
 
 	// ReadBlockVerified GETs the object addressed by hash and verifies
 	// that the body's BLAKE3 hash matches expected before returning
