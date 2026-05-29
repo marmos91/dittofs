@@ -428,7 +428,7 @@ func TestFilePositionInformation_RoundTrip(t *testing.T) {
 	// query encoding.
 	setBuf := make([]byte, 8)
 	binary.LittleEndian.PutUint64(setBuf, 0x1000)
-	resp, err := h.setFileInfoFromStore(authCtx, openFile, types.FilePositionInformation, setBuf)
+	resp, err := h.setFileInfoFromStore(nil, authCtx, openFile, types.FilePositionInformation, setBuf)
 	if err != nil {
 		t.Fatalf("SET FilePositionInformation: unexpected error: %v", err)
 	}

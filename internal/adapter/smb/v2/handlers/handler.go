@@ -379,10 +379,33 @@ type OpenFile struct {
 	EnumerationLastName    string
 	EnumerationSpecialDone int // count of special entries already returned (0..2)
 
-	// Delete on close support (FileDispositionInformation)
-	DeletePending bool                // If true, delete file/directory when handle is closed
-	ParentHandle  metadata.FileHandle // Parent directory handle for deletion
-	FileName      string              // File name within parent for deletion
+	// Delete on close support (FileDispositionInformation).
+	//
+	// DeletePending tracks the SHARED, committed delete-on-close state per
+	// MS-FSA 2.1.5.1.2.1 and Samba `is_delete_on_close_set` (locking.tdb).
+	// It is set ONLY by:
+	//   - SET_INFO FileDispositionInformation with DeleteFile=TRUE (an
+	//     explicit commit by an opener), or
+	//   - CLOSE-time promotion of InitialDeleteOnClose on the last handle
+	//     when nobody else has committed a shared DOC yet (matches Samba
+	//     close.c::close_normal_file: initial_delete_on_close
+	//     && !is_delete_on_close_set => set_delete_on_close_lck).
+	// Subsequent CREATEs see DeletePending and return STATUS_DELETE_PENDING
+	// per MS-SMB2 3.3.5.9 — the gate consumed by isFileDeletePending and
+	// isFileOrBaseDeletePending.
+	//
+	// InitialDeleteOnClose tracks the PER-HANDLE initial DOC flag from a
+	// CREATE with FILE_DELETE_ON_CLOSE (Samba `fsp_flags.initial_delete_on_close`).
+	// It is NOT visible to other handles via isFileDeletePending and does
+	// NOT block subsequent opens — those still succeed and observe the
+	// existing share-mode rules until the DOC is actually committed at
+	// CLOSE time. Required by smbtorture smb2.dirlease.{unlink_same,
+	// unlink_different}_initial_and_close which open a file with initial
+	// DOC and then immediately open a SECOND handle to it (must succeed).
+	DeletePending        bool                // committed shared DOC (visible to other opens)
+	InitialDeleteOnClose bool                // per-handle initial DOC from CREATE FILE_DELETE_ON_CLOSE
+	ParentHandle         metadata.FileHandle // Parent directory handle for deletion
+	FileName             string              // File name within parent for deletion
 
 	// ShareAccess stores the sharing mode from the CREATE request.
 	// Used for share mode conflict checking during rename and other operations.
@@ -1086,8 +1109,57 @@ func (h *Handler) closeFilesWithFilter(
 			h.flushFileCache(ctx, openFile)
 		}
 
-		// Handle delete-on-close (FileDispositionInformation)
-		if openFile.DeletePending && len(openFile.ParentHandle) > 0 && openFile.FileName != "" {
+		// Handle delete-on-close (FileDispositionInformation OR per-handle
+		// initial DOC from a CREATE FILE_DELETE_ON_CLOSE that was not
+		// promoted earlier — TDIS / LOGOFF / disconnect skip the explicit
+		// CLOSE handler, so the same close.go promotion applies here).
+		//
+		// Promote per-handle InitialDeleteOnClose to shared committed
+		// DeletePending only when no OTHER handle on the same metadata
+		// file remains open: otherwise the unlink in handleDeleteOnClose
+		// would fire before the last sibling closes, violating MS-FSA
+		// 2.1.5.4 (delete-on-close removes the file when the LAST handle
+		// closes, not on the per-handle initial flag). When siblings
+		// remain, propagate the DOC + DOC-setter parent key onto them so
+		// the eventual sibling close in close.go (or this same teardown
+		// for sibling opens in this iteration) fires the delete instead.
+		isInitialDocOnly := openFile.InitialDeleteOnClose && !openFile.DeletePending
+		if isInitialDocOnly && len(openFile.MetadataHandle) > 0 {
+			otherHandleExists := false
+			h.files.Range(func(_, value any) bool {
+				other := value.(*OpenFile)
+				if other.FileID == openFile.FileID {
+					return true
+				}
+				if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
+					otherHandleExists = true
+					return false
+				}
+				return true
+			})
+			if otherHandleExists {
+				// Propagate DOC to remaining handles so their eventual
+				// close triggers the delete. Matches the close.go path
+				// at "DOC propagated to other handles (not last)".
+				h.files.Range(func(_, value any) bool {
+					other := value.(*OpenFile)
+					if other.FileID == openFile.FileID {
+						return true
+					}
+					if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
+						other.DeletePending = true
+						other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
+						other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
+						h.StoreOpenFile(other)
+					}
+					return true
+				})
+				logger.Debug(caller+": initial DOC propagated to other handles (not last)",
+					"path", openFile.Path)
+				isInitialDocOnly = false // delete handled by remaining sibling
+			}
+		}
+		if (openFile.DeletePending || isInitialDocOnly) && len(openFile.ParentHandle) > 0 && openFile.FileName != "" {
 			h.handleDeleteOnClose(ctx, sess, openFile, caller)
 		}
 
@@ -1193,7 +1265,11 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 	}
 
 	if deleted {
-		h.breakParentDirLeasesForContentChange(authCtx, openFile)
+		// No SMBHandlerContext available on the TDIS/LOGOFF/disconnect
+		// teardown path — pass nil so the helper falls back to inline
+		// dispatch (those paths don't ship a triggering response on the
+		// same wire, so the deferred-via-PostSend ordering is unneeded).
+		h.breakParentDirLeasesForContentChange(nil, authCtx, openFile)
 	}
 }
 

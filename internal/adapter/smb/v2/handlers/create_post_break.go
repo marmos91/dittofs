@@ -234,11 +234,44 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	}
 	needsParkForFlush := h.LeaseManager.AnyHolderHasLeaseBits(lockFileHandle, shareName, waitExceptKey, delayMask)
 
-	// Directory branch: fire-and-forget. The single-threaded test driver
-	// can't ack until this CREATE returns, so waiting would deadlock.
+	// Directory branch: dispatch the break fire-and-forget, then decide
+	// between inline completion and async park (mirrors the file branch
+	// below, scoped to the share-mode-conflict case).
+	//
+	// Most dir CREATEs do NOT need to park: the existing dir-lease holder is
+	// either same-client / same-key (suppressed) or holds RHW so a new opener
+	// with the same share-mode is admitted alongside it. Only a share-mode
+	// conflict actually delays the new opener — the holder must release
+	// (close) before the CREATE can proceed. Required by smbtorture
+	// smb2.dirlease.v2_request second-attempt step: tree2 sends an
+	// `share_access=""` CREATE on a dir already opened by tree1 with `RWD`,
+	// which conflicts; the test expects STATUS_PENDING + a deferred response
+	// that completes with OK once tree1 closes its handle.
 	if d.existingFile.Type == metadata.FileTypeDirectory {
 		if err := h.LeaseManager.BreakHandleLeasesOnOpenAsync(lockFileHandle, shareName, reason, d.excludeOwner); err != nil {
 			logger.Debug("CREATE: directory handle lease break failed", "error", err)
+		}
+
+		// Park only when the conflicting holder both intersects the
+		// per-reason delay-mask AND there is at least one OTHER breaking
+		// lease to wait on (the holder's own break we just dispatched).
+		// Without these guards, dir CREATEs that don't need parking would
+		// pay an unnecessary roundtrip.
+		if reason != lock.BreakReasonSharingViolation || !needsParkForFlush {
+			return 0
+		}
+		if !h.LeaseManager.HasOtherBreakingLeases(lockFileHandle, shareName, waitExceptKey) {
+			return 0
+		}
+		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey); asyncId != 0 {
+			return asyncId
+		}
+		// Park failed (no slots / registry full): fall through to sync
+		// wait, then let completeCreateAfterBreak re-evaluate share mode.
+		waitCtx, cancelWait := context.WithTimeout(d.authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
+		defer cancelWait()
+		if err := h.LeaseManager.WaitForOtherKeyBreaks(waitCtx, lockFileHandle, shareName, waitExceptKey); err != nil {
+			logger.Debug("CREATE: sync directory break wait completed", "error", err)
 		}
 		return 0
 	}
@@ -861,24 +894,24 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	}
 
 	openFile := &OpenFile{
-		FileID:         smbFileID,
-		TreeID:         ctx.TreeID,
-		SessionID:      ctx.SessionID,
-		Path:           filename,
-		ShareName:      tree.ShareName,
-		OpenTime:       time.Now(),
-		DesiredAccess:  req.DesiredAccess,
-		GrantedAccess:  grantedAccess,
-		IsDirectory:    file.Type == metadata.FileTypeDirectory,
-		MetadataHandle: fileHandle,
-		PayloadID:      file.PayloadID,
-		ParentHandle:   parentHandle,
-		FileName:       baseName,
-		OplockLevel:    grantedOplock,
-		ShareAccess:    req.ShareAccess,
-		CreateOptions:  req.CreateOptions,
-		DeletePending:  req.CreateOptions&types.FileDeleteOnClose != 0,
-		ClientGUID:     connClientGUID(ctx),
+		FileID:               smbFileID,
+		TreeID:               ctx.TreeID,
+		SessionID:            ctx.SessionID,
+		Path:                 filename,
+		ShareName:            tree.ShareName,
+		OpenTime:             time.Now(),
+		DesiredAccess:        req.DesiredAccess,
+		GrantedAccess:        grantedAccess,
+		IsDirectory:          file.Type == metadata.FileTypeDirectory,
+		MetadataHandle:       fileHandle,
+		PayloadID:            file.PayloadID,
+		ParentHandle:         parentHandle,
+		FileName:             baseName,
+		OplockLevel:          grantedOplock,
+		ShareAccess:          req.ShareAccess,
+		CreateOptions:        req.CreateOptions,
+		InitialDeleteOnClose: req.CreateOptions&types.FileDeleteOnClose != 0,
+		ClientGUID:           connClientGUID(ctx),
 	}
 
 	if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
@@ -902,7 +935,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 
 	// Record the DOC setter's parent key for initial delete-on-close
 	// (CREATE with FILE_DELETE_ON_CLOSE). Covers dirlease unlink tests.
-	if openFile.DeletePending {
+	if openFile.InitialDeleteOnClose {
 		openFile.DeleteOnCloseParentKey = openFile.ParentLeaseKey
 		openFile.HasDeleteOnCloseParentKey = openFile.HasParentLeaseKey
 	}

@@ -117,7 +117,7 @@ func TestSetFileInfo_FreezeThaw(t *testing.T) {
 	// Step 3: SET_INFO with NTTIME_FREEZE (-1) for create_time + write_time.
 	// Atime/Ctime are 0 (omit). FileAttributes 0.
 	freezeBuf := makeBasicInfoBuffer(filetimeFreeze, 0, filetimeFreeze, 0, 0)
-	resp, err := h.setFileInfoFromStore(authCtx, openFile, types.FileBasicInformation, freezeBuf)
+	resp, err := h.setFileInfoFromStore(nil, authCtx, openFile, types.FileBasicInformation, freezeBuf)
 	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
 		t.Fatalf("setFileInfoFromStore(FREEZE): err=%v status=%v", err, resp)
 	}
@@ -136,7 +136,7 @@ func TestSetFileInfo_FreezeThaw(t *testing.T) {
 
 	// Step 5: SET_INFO with NTTIME_THAW (-2) for create_time + write_time.
 	thawBuf := makeBasicInfoBuffer(filetimeUnfreeze, 0, filetimeUnfreeze, 0, 0)
-	resp, err = h.setFileInfoFromStore(authCtx, openFile, types.FileBasicInformation, thawBuf)
+	resp, err = h.setFileInfoFromStore(nil, authCtx, openFile, types.FileBasicInformation, thawBuf)
 	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
 		t.Fatalf("setFileInfoFromStore(THAW): err=%v status=%v", err, resp)
 	}
@@ -172,7 +172,7 @@ func TestSetFileInfo_FreezeThaw_AllFields(t *testing.T) {
 	}
 
 	thawAll := makeBasicInfoBuffer(filetimeUnfreeze, filetimeUnfreeze, filetimeUnfreeze, filetimeUnfreeze, 0)
-	resp, err := h.setFileInfoFromStore(authCtx, openFile, types.FileBasicInformation, thawAll)
+	resp, err := h.setFileInfoFromStore(nil, authCtx, openFile, types.FileBasicInformation, thawAll)
 	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
 		t.Fatalf("setFileInfoFromStore: err=%v status=%v", err, resp)
 	}
@@ -441,7 +441,7 @@ func TestSetFileInfo_DelayedWriteVsSetbasic(t *testing.T) {
 			}
 			preMtime := pre.Mtime
 
-			resp, err := h.setFileInfoFromStore(authCtx, openFile, types.FileBasicInformation, tc.buf)
+			resp, err := h.setFileInfoFromStore(nil, authCtx, openFile, types.FileBasicInformation, tc.buf)
 			if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
 				t.Fatalf("setFileInfoFromStore: err=%v status=%v", err, resp)
 			}
@@ -526,7 +526,7 @@ func TestDirFreezeTimestamps_ChildCreate_AllFrozen(t *testing.T) {
 
 	// Step 3: Freeze all four timestamps via SET_INFO(-1).
 	freezeAll := makeBasicInfoBuffer(filetimeFreeze, filetimeFreeze, filetimeFreeze, filetimeFreeze, 0)
-	resp, err := h.setFileInfoFromStore(authCtx, dirOpenFile, types.FileBasicInformation, freezeAll)
+	resp, err := h.setFileInfoFromStore(nil, authCtx, dirOpenFile, types.FileBasicInformation, freezeAll)
 	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
 		t.Fatalf("freeze SET_INFO: err=%v status=%v", err, resp)
 	}
@@ -670,7 +670,7 @@ func TestDirFreezeTimestamps_ChildCreate_WalkPath(t *testing.T) {
 	h.StoreOpenFile(dirOpenFile)
 
 	freezeAll := makeBasicInfoBuffer(filetimeFreeze, filetimeFreeze, filetimeFreeze, filetimeFreeze, 0)
-	resp, err := h.setFileInfoFromStore(authCtx, dirOpenFile, types.FileBasicInformation, freezeAll)
+	resp, err := h.setFileInfoFromStore(nil, authCtx, dirOpenFile, types.FileBasicInformation, freezeAll)
 	if err != nil || resp.GetStatus() != types.StatusSuccess {
 		t.Fatalf("freeze: err=%v status=%v", err, resp)
 	}
@@ -828,7 +828,7 @@ func TestDirFreezeTimestamps_ChildCreate_SingleField(t *testing.T) {
 			h.StoreOpenFile(dirOpenFile)
 
 			// Freeze only the target timestamp.
-			resp, sErr := h.setFileInfoFromStore(authCtx, dirOpenFile, types.FileBasicInformation, tc.freezeBuf)
+			resp, sErr := h.setFileInfoFromStore(nil, authCtx, dirOpenFile, types.FileBasicInformation, tc.freezeBuf)
 			if sErr != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
 				t.Fatalf("freeze SET_INFO: err=%v status=%v", sErr, resp)
 			}

@@ -685,6 +685,21 @@ func (lm *LeaseManager) AnyHolderHasLeaseBits(fileHandle lock.FileHandle, shareN
 	return lockMgr.AnyHolderHasLeaseBits(string(fileHandle), excludeKey, mask)
 }
 
+// SignalParkedCreates wakes any parked CREATE waiter on fileHandle so it
+// re-evaluates its post-break gate. SMB CLOSE invokes this after removing the
+// closing open from the open-file table so a parked dir CREATE that was
+// share-mode-conflicting with the just-closed holder can re-check share-mode
+// against the now-shrunk table and complete with OK rather than stalling
+// until the 5 s async-break wait timeout. Required by smbtorture
+// smb2.dirlease.v2_request.
+func (lm *LeaseManager) SignalParkedCreates(fileHandle lock.FileHandle, shareName string) {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return
+	}
+	lockMgr.SignalParkedCreates(string(fileHandle))
+}
+
 // AnyHolderIsTraditionalOplock reports whether any holder on fileHandle is a
 // traditional oplock (synthetic-key record). Returns false when no LockManager
 // is bound for the share.
@@ -993,6 +1008,38 @@ func (lm *LeaseManager) BreakParentDirLeasesOnDestructiveCreate(
 	waitCtx, cancel := context.WithTimeout(ctx, parentLeaseBreakWaitTimeout)
 	defer cancel()
 	return lockMgr.WaitForBreakCompletion(waitCtx, handleKey)
+}
+
+// BreakParentDirLeasesOnContentChangeAsync dispatches the same single
+// break-to-None notification per holder as BreakParentDirLeasesOnDestructiveCreate
+// but WITHOUT waiting for the LEASE_BREAK_ACK. Used by content-change paths
+// (SET_INFO rename / hardlink / disposition, CLOSE-on-delete, WRITE-mark)
+// where the triggering request must complete on its own transport: waiting for
+// the holder's ACK inline causes a server-side timeout that force-completes
+// the lease, so when the test client (which deferred the ACK via lease_skip_ack
+// to capture the break for replay) eventually re-acks, the lease is no longer
+// in the breaking state and the ACK returns STATUS_UNSUCCESSFUL.
+//
+// Mirrors Samba `contend_dirleases` → `send_break_to_none`
+// (source3/smbd/smb2_oplock.c): the dispatch is fire-and-forget; the holder
+// acks on its own schedule and that ACK completes the per-lease state
+// transition. Required by smbtorture smb2.dirlease.{rename, hardlink,
+// unlink_different_set_and_close, unlink_*_initial_and_close} which all set
+// lease_skip_ack=true before the triggering op and replay the captured ACK
+// after the response returns.
+func (lm *LeaseManager) BreakParentDirLeasesOnContentChangeAsync(
+	parentHandle lock.FileHandle,
+	shareName string,
+	excludeClientID string,
+	excludeParentLeaseKey [16]byte,
+	hasExcludeKey bool,
+) error {
+	lockMgr, handleKey, excludeOwner := lm.resolveParentBreakArgs(
+		parentHandle, shareName, excludeClientID, excludeParentLeaseKey, hasExcludeKey)
+	if lockMgr == nil {
+		return nil
+	}
+	return lockMgr.BreakLeasesOnOpenConflict(handleKey, excludeOwner, lock.BreakReasonDestructive)
 }
 
 // BreakParentReadLeasesOnModify breaks Read leases on a parent directory
