@@ -53,7 +53,7 @@ func newRollupCacheFixture(t *testing.T) (*BlockStore, *fs.FSStore, *recordingPu
 	}
 
 	syncer := NewSyncer(localStore, nil, ms, DefaultConfig())
-	bs, err := New(Config{
+	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Syncer:          syncer,
 		FileBlockStore:  ms,

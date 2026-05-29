@@ -189,7 +189,7 @@ func TestPrefetchSuppressedWhenUnhealthy(t *testing.T) {
 
 	syncer := NewSyncer(localStore, fakeRemote, ms, syncCfg)
 
-	bsEngine, err := New(Config{
+	bsEngine, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Remote:          fakeRemote,
 		Syncer:          syncer,

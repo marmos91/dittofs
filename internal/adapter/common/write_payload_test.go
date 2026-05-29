@@ -42,7 +42,7 @@ func newTestEngine(t *testing.T) *engine.BlockStore {
 
 	syncer := engine.NewSyncer(localStore, nil, ms, engine.DefaultConfig())
 
-	bs, err := engine.New(engine.Config{
+	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
 		Remote:          nil,
 		Syncer:          syncer,

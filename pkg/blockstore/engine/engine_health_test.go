@@ -94,7 +94,7 @@ func newHealthTestEngine(t *testing.T) (*BlockStore, *fakeRemoteStore) {
 
 	syncer := NewSyncer(localStore, fakeRemote, ms, syncCfg)
 
-	bs, err := New(Config{
+	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Remote:          fakeRemote,
 		Syncer:          syncer,

@@ -175,7 +175,7 @@ func newPhase19BlockStore(t *testing.T) *engine.BlockStore {
 	localStore := memory.New()
 	fbs := newAggregateStubFileBlockStore()
 	syncer := engine.NewSyncer(localStore, nil, fbs, engine.DefaultConfig())
-	bs, err := engine.New(engine.Config{
+	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
 		Remote:         nil,
 		Syncer:         syncer,

@@ -138,7 +138,7 @@ func newPerfTestEngine(tb testing.TB, readBufferBytes int64, prefetchWorkers int
 	fbs := newStubFileBlockStore()
 	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 
-	bs, err := New(Config{
+	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Remote:          nil,
 		Syncer:          syncer,

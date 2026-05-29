@@ -561,7 +561,7 @@ func TestGetBlockStoreForHandle(t *testing.T) {
 	localStore := localmemory.New()
 	localStore.Start(context.Background())
 	syncer := engine.NewSyncer(localStore, nil, metaStore, engine.DefaultConfig())
-	bs, err := engine.New(engine.Config{
+	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:  localStore,
 		Syncer: syncer,
 	})
