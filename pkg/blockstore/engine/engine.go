@@ -95,7 +95,7 @@ type BlockStore struct {
 	// Cache type. Never nil — the constructor substitutes nullCache{}
 	// for a disabled budget so engine code does not need defensive
 	// nil-checks (Null Object pattern).
-	cache CacheInterface
+	cache cacheInterface
 
 	readBufferBytes int64 // budget for the cache (0 = disabled / Null Object)
 	prefetchWorkers int   // stored from config, used in Start()
@@ -257,7 +257,7 @@ func New(cfg Config) (*BlockStore, error) {
 	// wire the BlockStore back-reference onto the Syncer so
 	// the file-level dedup short-circuit can reach BlockStore.cache for
 	// surgical invalidation of orphaned speculative chunks. Reading
-	// through the back-reference (instead of caching a CacheInterface
+	// through the back-reference (instead of caching a cacheInterface
 	// field on the Syncer at construction time) lets test code swap
 	// `bs.cache = rec` post-construction and still observe the
 	// invalidation — mirrors the TestClose_ClosesCache pattern.
@@ -316,7 +316,7 @@ func (bs *BlockStore) Start(ctx context.Context) error {
 	return nil
 }
 
-// loadByHash is the LoadByHashFn the Cache's prefetch workers call to
+// loadByHash is the loadByHashFn the Cache's prefetch workers call to
 // pull a block by ContentHash. It performs a single content-addressed
 // local read; local.Get is the only primitive (no mmap fast-path, no
 // legacy FileBlock → GetBlockData fallback).
@@ -365,10 +365,6 @@ func (bs *BlockStore) Close() error {
 // admin paths against the concrete *fs.FSStore via a type assertion.
 // Do not use in production code.
 func (bs *BlockStore) LocalForTest() local.LocalStore { return bs.local }
-
-// LocalForTest is the package-level counterpart used when the bs
-// receiver is shadowed; mirrors RemoteForTesting on the same wire.
-func LocalForTest(bs *BlockStore) local.LocalStore { return bs.local }
 
 // RemoteForTesting returns the remote store for cross-package test verification
 // (e.g., shared remote store identity). Do not use in production code.

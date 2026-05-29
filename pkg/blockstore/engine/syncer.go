@@ -83,7 +83,7 @@ type Syncer struct {
 	uploading       atomic.Bool // Guards against overlapping periodic upload ticks
 
 	healthMonitor   *HealthMonitor           // Monitors remote store health (nil when no remote)
-	onHealthChanged HealthTransitionCallback // Callback invoked on health state transitions
+	onHealthChanged healthTransitionCallback // Callback invoked on health state transitions
 
 	firstOfflineRead    atomic.Bool  // Tracks if WARN was already logged since last healthy->unhealthy transition
 	offlineReadsBlocked atomic.Int64 // Count of read operations blocked by remote unavailability
@@ -155,7 +155,7 @@ func (m *Syncer) SetSyncedHashStore(s metadata.SyncedHashStore) {
 
 // SetHealthCallback sets the callback invoked when the remote store health state changes.
 // If the HealthMonitor is already running, the callback is forwarded to it immediately.
-func (m *Syncer) SetHealthCallback(fn HealthTransitionCallback) {
+func (m *Syncer) SetHealthCallback(fn healthTransitionCallback) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onHealthChanged = fn

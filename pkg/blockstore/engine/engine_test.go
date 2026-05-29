@@ -297,7 +297,7 @@ func TestEngine_NullCache_NoNilChecks(t *testing.T) {
 // TestEngine_NullCache_Methods_NoOp — Task 3 behavior 3.
 // Direct unit test: every nullCache method is a safe no-op.
 func TestEngine_NullCache_Methods_NoOp(t *testing.T) {
-	var c CacheInterface = nullCache{}
+	var c cacheInterface = nullCache{}
 
 	got, ok := c.Get(hashN(1))
 	if got != nil || ok {
@@ -315,7 +315,7 @@ func TestEngine_NullCache_Methods_NoOp(t *testing.T) {
 	}
 }
 
-// recordingCache is a CacheInterface impl used by Task 3 tests to
+// recordingCache is a cacheInterface impl used by Task 3 tests to
 // observe engine -> cache calls.
 type recordingCache struct {
 	mu              sync.Mutex

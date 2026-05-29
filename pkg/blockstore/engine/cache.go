@@ -27,10 +27,10 @@ const defaultPrefetchWorkers = 4
 // worker pool (T-12-24 mitigation: non-blocking submit drops when full).
 const reqQueueSize = 64
 
-// CacheInterface is the narrow surface engine code depends on. The
+// cacheInterface is the narrow surface engine code depends on. The
 // concrete *Cache and the nullCache{} Null Object both satisfy it
 // eliminating defensive nil-checks across the engine package.
-type CacheInterface interface {
+type cacheInterface interface {
 	Get(hash blockstore.ContentHash) ([]byte, bool)
 	Put(hash blockstore.ContentHash, data []byte)
 	OnRead(payloadID string, hashes []blockstore.ContentHash, fileSize uint64)
@@ -40,8 +40,8 @@ type CacheInterface interface {
 }
 
 // Compile-time interface satisfaction checks.
-var _ CacheInterface = (*Cache)(nil)
-var _ CacheInterface = nullCache{}
+var _ cacheInterface = (*Cache)(nil)
+var _ cacheInterface = nullCache{}
 
 // TRANSITIONAL-NEXT-MILESTONE: cold-cache prefetch (see #519 "Deferred
 // to v0.17+"). When cold-cache prefetch lands, the Cache will be
@@ -86,7 +86,7 @@ type Cache struct {
 	trackerMu sync.Mutex
 	trackers  map[string]*seqTracker // payloadID -> tracker
 	reqCh     chan prefetchReq
-	loadFn    LoadByHashFn
+	loadFn    loadByHashFn
 	ctx       context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
@@ -101,13 +101,13 @@ type cacheEntry struct {
 	data []byte
 }
 
-// LoadByHashFn loads a block by ContentHash from the underlying store
+// loadByHashFn loads a block by ContentHash from the underlying store
 // (local FS or remote S3). Injected at NewCache time; called by the
 // prefetch worker pool when sequential detection triggers.
 //
 // Signature is CAS-keyed. The engine bridges to the local/remote
 // stores using FormatCASKey.
-type LoadByHashFn func(ctx context.Context, hash blockstore.ContentHash) ([]byte, error)
+type loadByHashFn func(ctx context.Context, hash blockstore.ContentHash) ([]byte, error)
 
 // seqTracker — per-payloadID sequential-read state machine. lastHashes
 // is a ring of the most recent OnRead hashes (capped at seqThreshold)
@@ -135,7 +135,7 @@ type CacheStats struct {
 	MaxBytes int64 `json:"max_bytes"`
 }
 
-// nullCache is a no-op CacheInterface implementation. The BlockStore
+// nullCache is a no-op cacheInterface implementation. The BlockStore
 // constructor substitutes nullCache{} when the cache budget is zero
 // eliminating defensive nil-checks across the engine (Null Object
 // pattern).
@@ -173,7 +173,7 @@ func newCacheNoWorkers(maxBytes int64) *Cache {
 //     drop requests (no-loader path).
 //   - The bounded reqCh has capacity reqQueueSize (64); submit is
 //     non-blocking and silently drops on full queue (T-12-24).
-func NewCache(maxBytes int64, workers int, loadFn LoadByHashFn) *Cache {
+func NewCache(maxBytes int64, workers int, loadFn loadByHashFn) *Cache {
 	if maxBytes <= 0 {
 		return nil
 	}

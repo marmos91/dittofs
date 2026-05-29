@@ -135,7 +135,7 @@ func TestCache_InvalidateFile_Surgical(t *testing.T) {
 
 // --- Task 2: OnRead + sequential detection + worker pool ---
 
-// recordingLoader returns a LoadByHashFn that records every (hash) it
+// recordingLoader returns a loadByHashFn that records every (hash) it
 // is called with and lets the test inspect concurrency via an atomic
 // "in-flight" counter.
 type recordingLoader struct {
