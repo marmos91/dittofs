@@ -58,10 +58,20 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Resolve a possibly-partial --retry id (e.g. the 8-char id from list)
+	// to a full UUID before the server's exact-match retry lookup.
+	retryOf := createRetry
+	if retryOf != "" {
+		retryOf, err = resolveSnapshotID(client, share, retryOf)
+		if err != nil {
+			return err
+		}
+	}
+
 	resp, err := client.CreateSnapshot(share, apiclient.CreateSnapshotRequest{
 		Name:     createName,
 		NoVerify: createNoVerify,
-		RetryOf:  createRetry,
+		RetryOf:  retryOf,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create snapshot: %w", err)

@@ -34,7 +34,8 @@ func TestRestore_RefusesEnabledShare(t *testing.T) {
 	resetRestoreFlags()
 	restoreYes = true
 	fc := &fakeClient{
-		share: &apiclient.Share{Name: "/archive", Enabled: true},
+		share:     &apiclient.Share{Name: "/archive", Enabled: true},
+		snapshots: map[string]*apiclient.Snapshot{"snap-1": {ID: "snap-1"}},
 	}
 	withFakeClient(t, fc)
 
@@ -59,7 +60,8 @@ func TestRestore_DisabledShareYesFlag_PrintsSafetySnap(t *testing.T) {
 	resetRestoreFlags()
 	restoreYes = true
 	fc := &fakeClient{
-		share: &apiclient.Share{Name: "/archive", Enabled: false},
+		share:     &apiclient.Share{Name: "/archive", Enabled: false},
+		snapshots: map[string]*apiclient.Snapshot{"snap-1": {ID: "snap-1"}},
 		restoreResp: &apiclient.RestoreSnapshotResponse{
 			SnapshotID: "snap-1", Share: "/archive", SafetySnapshotID: "safety-abc",
 		},
@@ -90,7 +92,8 @@ func TestRestore_NoSafetySnapID_OmitsLine(t *testing.T) {
 	resetRestoreFlags()
 	restoreYes = true
 	fc := &fakeClient{
-		share: &apiclient.Share{Name: "/archive", Enabled: false},
+		share:     &apiclient.Share{Name: "/archive", Enabled: false},
+		snapshots: map[string]*apiclient.Snapshot{"snap-1": {ID: "snap-1"}},
 		restoreResp: &apiclient.RestoreSnapshotResponse{
 			SnapshotID: "snap-1", Share: "/archive", SafetySnapshotID: "",
 		},
@@ -119,6 +122,7 @@ func TestRestore_PreconditionFailedHint(t *testing.T) {
 	restoreYes = true
 	fc := &fakeClient{
 		share:      &apiclient.Share{Name: "/archive", Enabled: false},
+		snapshots:  map[string]*apiclient.Snapshot{"snap-1": {ID: "snap-1"}},
 		restoreErr: &apiclient.APIError{Code: "PRECONDITION_FAILED", Message: "not durable", StatusCode: 412},
 	}
 	withFakeClient(t, fc)
@@ -141,7 +145,8 @@ func TestRestore_ForceMapsToAllowNonDurable(t *testing.T) {
 	restoreYes = true
 	restoreForce = true
 	fc := &fakeClient{
-		share: &apiclient.Share{Name: "/archive", Enabled: false},
+		share:     &apiclient.Share{Name: "/archive", Enabled: false},
+		snapshots: map[string]*apiclient.Snapshot{"snap-1": {ID: "snap-1"}},
 		restoreResp: &apiclient.RestoreSnapshotResponse{
 			SnapshotID: "snap-1", Share: "/archive", SafetySnapshotID: "safety-abc",
 		},
@@ -170,7 +175,8 @@ func TestRestore_DisabledShareNAnswerAborts(t *testing.T) {
 	defer func() { cmdutil.ConfirmInput, cmdutil.ConfirmOutput = origIn, origOut }()
 
 	fc := &fakeClient{
-		share: &apiclient.Share{Name: "/archive", Enabled: false},
+		share:     &apiclient.Share{Name: "/archive", Enabled: false},
+		snapshots: map[string]*apiclient.Snapshot{"snap-1": {ID: "snap-1"}},
 	}
 	withFakeClient(t, fc)
 

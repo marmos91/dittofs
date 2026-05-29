@@ -25,6 +25,11 @@ func runShow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	id, err = resolveSnapshotID(client, share, id)
+	if err != nil {
+		return err
+	}
+
 	snap, err := client.GetSnapshot(share, id)
 	if err != nil {
 		return fmt.Errorf("failed to get snapshot: %w", err)

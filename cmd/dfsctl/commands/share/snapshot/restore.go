@@ -52,6 +52,11 @@ func runRestore(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	id, err = resolveSnapshotID(client, share, id)
+	if err != nil {
+		return err
+	}
+
 	// Pre-flight: refuse on enabled share with the exact hint string.
 	s, err := client.GetShare(share)
 	if err != nil {
