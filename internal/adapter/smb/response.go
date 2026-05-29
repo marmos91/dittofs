@@ -472,7 +472,11 @@ func SendResponseWithHooks(reqHeader *header.SMB2Header, ctx *handlers.SMBHandle
 		RunAfterHooks(connInfo, reqHeader.Command, wirePlaintext)
 	}
 	requestEncrypted := ctx != nil && ctx.RequestEncrypted
-	err := sendMessage(respHeader, body, connInfo, requestEncrypted, preWrite)
+	// Channel-bind SESSION_SETUP responses MUST be sent plaintext-signed even
+	// when the underlying session has encryption — the peer has no derivable
+	// keys for the new channel yet (MS-SMB2 §3.3.5.5.2).
+	suppressSetupEncryption := result.IsBinding
+	err := sendMessage(respHeader, body, connInfo, requestEncrypted, suppressSetupEncryption, preWrite)
 	// Fire ReleaseData AFTER the wire write completes, regardless of
 	// write success. The pooled buffer is no longer referenced once the
 	// write attempt returns, so release is safe whether or not the bytes
@@ -487,7 +491,8 @@ func SendResponseWithHooks(reqHeader *header.SMB2Header, ctx *handlers.SMBHandle
 func SendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *HandlerResult, connInfo *ConnInfo) error {
 	respHeader, body := buildResponseHeaderAndBody(reqHeader, ctx, result, connInfo)
 	requestEncrypted := ctx != nil && ctx.RequestEncrypted
-	err := sendMessage(respHeader, body, connInfo, requestEncrypted, nil)
+	suppressSetupEncryption := result.IsBinding
+	err := sendMessage(respHeader, body, connInfo, requestEncrypted, suppressSetupEncryption, nil)
 	// See SendResponseWithHooks — release pooled buffer after wire write.
 	if result.ReleaseData != nil {
 		result.ReleaseData()
@@ -596,11 +601,16 @@ func SendErrorResponse(reqHeader *header.SMB2Header, status types.Status, connIn
 // the server MUST sign the response using the session's signing key. Encrypted
 // sessions use AEAD for integrity instead of signing (MS-SMB2 3.3.4.1.3).
 //
-// Per MS-SMB2 3.3.5.5.3: the initial SESSION_SETUP SUCCESS response for a newly
-// created session MUST NOT be encrypted (client hasn't derived keys yet), but
-// MUST be signed. Re-authentication SESSION_SETUP responses ARE encrypted.
+// Per MS-SMB2 3.3.5.5.3 / 3.3.5.5.2: the initial SESSION_SETUP SUCCESS response
+// for a newly created session and the channel-bind SESSION_SETUP response MUST
+// NOT be encrypted (peer has no derivable keys for that channel yet) but MUST
+// be signed. Re-authentication SESSION_SETUP responses ARE encrypted when the
+// existing session has encryption available. SendMessage cannot distinguish
+// re-auth from bind because it has no HandlerResult context, so it always
+// treats SESSION_SETUP as bind/new-session (skip encryption). Re-auth must go
+// through SendResponse/SendResponseWithHooks which thread the IsBinding flag.
 func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error {
-	return sendMessage(hdr, body, connInfo, false, nil)
+	return sendMessage(hdr, body, connInfo, false, true, nil)
 }
 
 // sendMessage is the internal implementation used by SendMessage and
@@ -609,25 +619,32 @@ func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error 
 // written to the TCP connection. SendResponseWithHooks uses this to run the
 // preauth integrity hash update in the window where the client cannot yet have
 // observed the response — see the SendResponseWithHooks docstring.
-func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, responseEncrypted bool, preWrite func(wirePlaintext []byte)) error {
+//
+// suppressSessionSetupEncryption=true forces the SESSION_SETUP response to go
+// out plaintext-signed even if the session has encryption keys. Callers set
+// it for newly-created sessions, channel-bind responses, and the synthetic
+// SendMessage path (no IsBinding context available).
+func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, responseEncrypted bool, suppressSessionSetupEncryption bool, preWrite func(wirePlaintext []byte)) error {
 	smbPayload := append(hdr.Encode(), body...)
 
 	if hdr.SessionID != 0 {
 		sess, ok := connInfo.Handler.GetSession(hdr.SessionID)
 		if ok {
-			// Per MS-SMB2 3.3.5.5.3 and 3.3.5.5.2: SESSION_SETUP responses
-			// MUST be signed and MUST NOT be encrypted, in all three cases:
-			// new session (client has no encryption keys yet), re-auth, and
-			// channel bind (client must validate Channel.SigningKey from the
-			// plaintext response before treating the channel as bound).
-			// Applies to both the final SUCCESS response AND interim
-			// STATUS_MORE_PROCESSING_REQUIRED challenges — the bind peer has
-			// no channel-scoped keys yet, so encrypting the challenge makes
-			// the client drop the connection with ACCESS_DENIED (#361).
+			// Per MS-SMB2 3.3.5.5.3 and 3.3.5.5.2: the initial SESSION_SETUP
+			// SUCCESS response for a newly created session and the channel-bind
+			// response MUST be signed and MUST NOT be encrypted — the peer has
+			// no derivable keys for that channel yet, so encrypting causes the
+			// client to drop the connection with ACCESS_DENIED (#361).
+			// Re-authentication SESSION_SETUP on an existing session DOES get
+			// encrypted with the existing session keys (the peer can decrypt).
+			// Interim STATUS_MORE_PROCESSING_REQUIRED responses also stay
+			// plaintext for the same reason.
 			isSessionSetup := hdr.Command == types.SMB2SessionSetup
 			isSessionSetupSuccess := isSessionSetup && hdr.Status == types.StatusSuccess
+			isInterim := isSessionSetup && hdr.Status != types.StatusSuccess
 			if isSessionSetupSuccess && sess.NewlyCreated {
 				sess.NewlyCreated = false // Clear so subsequent messages get encrypted
+				suppressSessionSetupEncryption = true
 			}
 			// Encrypt when the session forces it (mode=required), the
 			// per-share tree forces it (Share.EncryptData via TREE_CONNECT),
@@ -645,7 +662,8 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, respon
 					shouldEncrypt = true
 				}
 			}
-			if shouldEncrypt && connInfo.EncryptionMiddleware != nil && !isSessionSetup {
+			suppressForSetup := isInterim || (isSessionSetup && suppressSessionSetupEncryption)
+			if shouldEncrypt && connInfo.EncryptionMiddleware != nil && !suppressForSetup {
 				// Run pre-write hook on the PLAINTEXT bytes — the preauth chain
 				// hashes plaintext on both sides, not the encrypted wire form.
 				if preWrite != nil {

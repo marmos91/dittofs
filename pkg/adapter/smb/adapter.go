@@ -291,7 +291,14 @@ func (s *Adapter) SetRuntime(rtAny any) {
 // torture tests that run inside the poll window.
 func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 	if sw := rt.GetSettingsWatcher(); sw != nil {
-		if err := sw.RefreshSMBSettings(context.Background()); err != nil {
+		// Bound the synchronous refresh — a stuck DB/store must not block the
+		// adapter enable/restart path. 5s is generous for a single SELECT but
+		// short enough that operators see a degraded-mode log instead of a
+		// hung process if the metadata store is unhealthy.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := sw.RefreshSMBSettings(ctx)
+		cancel()
+		if err != nil {
 			logger.Debug("SMB adapter: settings refresh failed, using cached values",
 				"error", err)
 		}
