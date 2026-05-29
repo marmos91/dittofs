@@ -1219,7 +1219,11 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 	}
 
 	if deleted {
-		h.breakParentDirLeasesForContentChange(authCtx, openFile)
+		// No SMBHandlerContext available on the TDIS/LOGOFF/disconnect
+		// teardown path — pass nil so the helper falls back to inline
+		// dispatch (those paths don't ship a triggering response on the
+		// same wire, so the deferred-via-PostSend ordering is unneeded).
+		h.breakParentDirLeasesForContentChange(nil, authCtx, openFile)
 	}
 }
 

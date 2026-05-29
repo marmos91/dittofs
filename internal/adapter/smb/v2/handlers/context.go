@@ -213,6 +213,36 @@ type SMBHandlerContext struct {
 	PostSend func()
 }
 
+// AppendPostSend chains fn onto ctx.PostSend so the dispatch layer runs both
+// the previously-installed hook and fn (in order) after the current command's
+// response has been written. Safe to call multiple times — each call wraps
+// the prior hook. No-op when ctx is nil.
+//
+// Used by SET_INFO / CLOSE / hardlink content-change paths to defer the
+// dir-lease break-to-None notification until after the triggering request's
+// response is on the wire. Mirrors Samba `send_break_to_none`
+// (source3/smbd/smb2_oplock.c): the messaging context delivers the break in
+// a later tevent cycle, so the client's lease handler runs after the request
+// completes and observes lease_skip_ack=true (set by smbtorture between
+// request and break). Without the deferral the break arrives interleaved
+// with the request response, the handler auto-acks (skip_ack still false),
+// and the test's manual replay ACK fails STATUS_UNSUCCESSFUL — covers
+// smbtorture smb2.dirlease.{rename, hardlink, unlink_different_*}.
+func AppendPostSend(ctx *SMBHandlerContext, fn func()) {
+	if ctx == nil || fn == nil {
+		return
+	}
+	prev := ctx.PostSend
+	if prev == nil {
+		ctx.PostSend = fn
+		return
+	}
+	ctx.PostSend = func() {
+		prev()
+		fn()
+	}
+}
+
 // NewSMBHandlerContext creates a new handler context from request parameters.
 // The context is populated with identifiers extracted from the SMB2 header.
 // Share-level fields (ShareName, User, Permission) are set later by handlers.

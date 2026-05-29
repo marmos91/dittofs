@@ -505,11 +505,11 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 						savedHas := openFile.HasParentLeaseKey
 						openFile.HasParentLeaseKey = false
 						openFile.ParentLeaseKey = [16]byte{}
-						h.breakParentDirLeasesForContentChange(authCtx, openFile)
+						h.breakParentDirLeasesForContentChange(ctx, authCtx, openFile)
 						openFile.ParentLeaseKey = savedKey
 						openFile.HasParentLeaseKey = savedHas
 					} else {
-						h.breakParentDirLeasesForContentChange(authCtx, openFile)
+						h.breakParentDirLeasesForContentChange(ctx, authCtx, openFile)
 					}
 
 					if h.NotifyRegistry != nil {
@@ -551,7 +551,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			logger.Warn("CLOSE: failed to build auth context for modified-file dir-lease break", "path", openFile.Path, "error", authErr)
 		} else {
 			PropagateOpenFileParentLeaseKey(authCtx, openFile)
-			h.breakParentDirLeasesForContentChange(authCtx, openFile)
+			h.breakParentDirLeasesForContentChange(ctx, authCtx, openFile)
 		}
 	}
 
@@ -684,14 +684,25 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// (smbtorture compound_find.compound_find_close).
 	h.WaitAndDeleteOpenFile(req.FileID)
 
-	// Wake any parked CREATE on this handle so it can re-evaluate share-mode
-	// against the now-shrunk open-file table. The signal MUST follow the
-	// open-file removal (not just the lease release) so the parked CREATE's
-	// share-mode recheck does not still observe the closing holder. Required
-	// by smbtorture smb2.dirlease.v2_request: tree2's conflicting CREATE
-	// parks on tree1's breaking RH dir lease; tree1's CLOSE must wake it
-	// without waiting for the 5 s async-break timeout.
-	if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
+	// Wake any parked dir-CREATE on this handle so it can re-evaluate
+	// share-mode against the now-shrunk open-file table. The signal MUST
+	// follow the open-file removal (not just the lease release) so the
+	// parked CREATE's share-mode recheck does not still observe the
+	// closing holder. Required by smbtorture smb2.dirlease.v2_request:
+	// tree2's conflicting CREATE parks on tree1's breaking RH dir lease;
+	// tree1's CLOSE must wake it without waiting for the 5 s async-break
+	// timeout.
+	//
+	// Scoped to directory closes only: file-CREATE parks in
+	// breakAndMaybeParkCreate use the same breakWait channel, but their
+	// resume contract is "wait for actual ACK (or 5 s timeout
+	// auto-downgrade)", not "wake on any CLOSE on the file". Signaling
+	// for file closes prematurely wakes a parked file CREATE whose
+	// holder closed without acking — smbtorture
+	// smb2.kernel-oplocks.kernel_oplocks7 relies on tree2's parked
+	// CREATE staying parked until the timeout while tree1's re-open
+	// arrives first (CREATE returns EXCL with no other holder visible).
+	if openFile.IsDirectory && h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
 		h.LeaseManager.SignalParkedCreates(lock.FileHandle(openFile.MetadataHandle), openFile.ShareName)
 	}
 

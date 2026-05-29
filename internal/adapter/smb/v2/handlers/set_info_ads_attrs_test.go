@@ -127,7 +127,7 @@ func TestSetInfo_ADS_PropagatesDosBitsToBase(t *testing.T) {
 	buf := make([]byte, 40)
 	binary.LittleEndian.PutUint32(buf[32:36], uint32(types.FileAttributeHidden))
 
-	resp, err := h.setFileInfoFromStore(authCtx, streamOpen, types.FileBasicInformation, buf)
+	resp, err := h.setFileInfoFromStore(nil, authCtx, streamOpen, types.FileBasicInformation, buf)
 	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
 		t.Fatalf("setFileInfoFromStore on stream: err=%v status=%v", err, resp)
 	}
@@ -155,7 +155,7 @@ func TestSetInfo_ADS_PreservesBasePOSIXMode(t *testing.T) {
 	buf := make([]byte, 40)
 	binary.LittleEndian.PutUint32(buf[32:36], uint32(types.FileAttributeHidden))
 
-	resp, err := h.setFileInfoFromStore(authCtx, streamOpen, types.FileBasicInformation, buf)
+	resp, err := h.setFileInfoFromStore(nil, authCtx, streamOpen, types.FileBasicInformation, buf)
 	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
 		t.Fatalf("setFileInfoFromStore on stream: err=%v status=%v", err, resp)
 	}
@@ -208,7 +208,7 @@ func TestSetInfo_ADS_PreservesBaseCompressedBitWithExistingDosBits(t *testing.T)
 	buf := make([]byte, 40)
 	binary.LittleEndian.PutUint32(buf[32:36], uint32(types.FileAttributeHidden))
 
-	resp, err := h.setFileInfoFromStore(authCtx, streamOpen, types.FileBasicInformation, buf)
+	resp, err := h.setFileInfoFromStore(nil, authCtx, streamOpen, types.FileBasicInformation, buf)
 	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
 		t.Fatalf("setFileInfoFromStore on stream: err=%v status=%v", err, resp)
 	}
@@ -249,7 +249,7 @@ func TestSetInfo_ADS_TimestampOnlyDoesNotPropagateAttrs(t *testing.T) {
 	// SET_INFO with all-zero FILETIME and FileAttributes=0 — a no-op call.
 	buf := make([]byte, 40)
 
-	resp, err := h.setFileInfoFromStore(authCtx, streamOpen, types.FileBasicInformation, buf)
+	resp, err := h.setFileInfoFromStore(nil, authCtx, streamOpen, types.FileBasicInformation, buf)
 	if err != nil || resp == nil || resp.GetStatus() != types.StatusSuccess {
 		t.Fatalf("setFileInfoFromStore on stream: err=%v status=%v", err, resp)
 	}
