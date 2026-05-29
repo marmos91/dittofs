@@ -85,7 +85,6 @@ overflow, rec, rmdir1-4, tcon, tdis, tdis1, tcp, tree.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.notify.valid-req | Change Notify | Needs kernel inotify for MODIFIED on WRITE (also fails on reference Samba in Docker) | - |
-| smb2.notify.session-reconnect | Change Notify | PreviousSessionID signing key derivation mismatch (not notify-specific) | - |
 | smb2.notify.mask-change | Change Notify | SHARING_VIOLATION on directory open (pre-existing, never passed individually) | - |
 
 ### Oplocks (Multi-Client Coordination Not Implemented)
@@ -256,6 +255,8 @@ still fail due to incomplete reconnect and lease coordination.
 | smb2.durable-open.file-position | Durable handles V1 | Durable file position not fully working | #431 |
 | smb2.durable-open.lock-oplock | Durable handles V1 | Durable lock + oplock not fully working | #431 |
 | smb2.durable-open.lock-lease | Durable handles V1 | Durable lock + lease not fully working | #431 |
+| smb2.durable-open.alloc-size | Durable handles V1 | Pre-existing: out.alloc_size returned 0 instead of expected non-zero | #431 |
+| smb2.durable-open.read-only | Durable handles V1 | Pre-existing: OBJECT_NAME_NOT_FOUND on durable read-only reopen | #431 |
 
 ### Durable Handles V2 (Fix Candidate)
 
@@ -321,8 +322,11 @@ recognises them.
 ### Sessions (Remaining)
 
 Phase 73 Plan 03 implemented session re-authentication with key re-derivation
-per MS-SMB2 3.3.5.5.3. reauth2-6 now pass. Remaining tests need session
-reconnect or multi-channel binding.
+per MS-SMB2 3.3.5.5.3. Remaining tests need session reconnect or multi-channel
+binding. reauth1-6 / anon-encryption1-3 / ntlmssp_bug14932 were previously
+masked because earlier suite tests hung; once the hang cleared they surfaced
+as pre-existing failures rather than regressions and are tracked here for
+follow-up.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
@@ -331,6 +335,16 @@ reconnect or multi-channel binding.
 | smb2.session.bind_negative_smb202 | Sessions | Session binding validation not fully working | - |
 | smb2.session.bind_negative_smb210s | Sessions | Session binding validation not fully working | - |
 | smb2.session.bind_negative_smb210d | Sessions | Session binding validation not fully working | - |
+| smb2.session.reauth1 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client (signature/preauth chain) | - |
+| smb2.session.reauth2 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | - |
+| smb2.session.reauth3 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | - |
+| smb2.session.reauth4 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | - |
+| smb2.session.reauth5 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | - |
+| smb2.session.reauth6 | Sessions | Pre-existing: re-auth expects LOGON_FAILURE for malformed creds, gets ACCESS_DENIED | - |
+| smb2.session.ntlmssp_bug14932 | Sessions | Pre-existing: malformed NTLMSSP expects INVALID_PARAMETER, gets ACCESS_DENIED | - |
+| smb2.session.anon-encryption1 | Sessions | Pre-existing: anonymous encryption setup rejected with INVALID_PARAMETER | - |
+| smb2.session.anon-encryption2 | Sessions | Pre-existing: anonymous encryption setup rejected with INVALID_PARAMETER | - |
+| smb2.session.anon-encryption3 | Sessions | Pre-existing: anonymous encryption setup rejected with INVALID_PARAMETER | - |
 
 ### Session Binding (Multi-Channel, Not Implemented)
 

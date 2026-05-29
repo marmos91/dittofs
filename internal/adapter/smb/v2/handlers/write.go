@@ -467,9 +467,20 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Update cached PayloadID in OpenFile
 	openFile.PayloadID = writeOp.PayloadID
 
-	if isADSWrite && h.NotifyRegistry != nil {
+	if h.NotifyRegistry != nil {
 		parentDirPath := GetParentPath(openFile.Path)
-		h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, notifyStreamName(openFile.FileName), FileActionModifiedStream, FileNotifyChangeStreamWrite|FileNotifyChangeStreamSize)
+		if isADSWrite {
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, notifyStreamName(openFile.FileName), FileActionModifiedStream, FileNotifyChangeStreamWrite|FileNotifyChangeStreamSize)
+		} else {
+			// Mirror Samba `notify_fname(... NOTIFY_ACTION_MODIFIED, ...)` from
+			// `vfs_default_pwrite_recv`: a successful WRITE on a regular file
+			// fires FILE_ACTION_MODIFIED to parent-dir watchers whose
+			// CompletionFilter intersects size/last-write/attributes. Without
+			// this hook, in-memory backends never observe the kernel inotify
+			// MODIFIED event that real Samba relies on (smb2.notify.valid-req
+			// expects REMOVED + ADDED + MODIFIED for unlink → CREATE → WRITE).
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, openFile.FileName, FileActionModified, FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes)
+		}
 	}
 
 	logger.Debug("WRITE successful",
