@@ -304,6 +304,34 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 				"expiresAt", sess.ExpiresAt)
 			return nil, nil, types.StatusNetworkSessionExpired
 		}
+		// MS-SMB2 §3.3.5.2.9: for SMB 3.x sessions, a session-gated
+		// request that arrives on a connection that is neither the
+		// session's origin nor a previously bound channel must be rejected
+		// with STATUS_USER_SESSION_DELETED. SESSION_SETUP is exempt because
+		// it carries NeedsSession=false and routes through handleSessionBind
+		// for its own per-step gating; every other NeedsSession=true command
+		// (LOGOFF, TREE_CONNECT, CREATE, READ, WRITE, …) falls into this
+		// branch and is rejected here. The client-side smb2_session_channel()
+		// call alone (without a successful SESSION_SETUP with
+		// SMB2_SESSION_FLAG_BINDING) does not register a channel on the
+		// server, so any op on that transport must fail. Mirrors Samba
+		// smbXsrv_session_find_channel — see smb2_server.c:2246, 4421 —
+		// and is what smbtorture session.bind2 / session.bind_invalid_auth
+		// assert at session.c:2209 / 2485.
+		var connDialect types.Dialect
+		if connInfo.CryptoState != nil {
+			connDialect = connInfo.CryptoState.GetDialect()
+		}
+		if connDialect >= types.Dialect0300 &&
+			sess.OriginConnID != connInfo.ConnID &&
+			sess.GetChannel(connInfo.ConnID) == nil {
+			logger.Debug("Request on unbound channel for SMB 3.x session",
+				"command", reqHeader.Command.String(),
+				"sessionID", reqHeader.SessionID,
+				"connID", connInfo.ConnID,
+				"originConnID", sess.OriginConnID)
+			return nil, nil, types.StatusUserSessionDeleted
+		}
 		handlerCtx.IsGuest = sess.IsGuest
 		handlerCtx.Username = sess.Username
 	}
