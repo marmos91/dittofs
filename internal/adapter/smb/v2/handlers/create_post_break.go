@@ -145,6 +145,64 @@ func (h *Handler) hasOtherNonStatOpenForFile(fileHandle metadata.FileHandle, sel
 	return found
 }
 
+// hasSameClientNonStatOpenForFile is the ClientGUID-scoped variant of
+// hasOtherNonStatOpenForFile. It reports whether any open in h.files on the
+// same metadata handle (excluding selfFileID) is owned by the SAME SMB
+// ClientGUID AND has a non-stat-only access mask.
+//
+// Used by the post-break trad-oplock grant path to distinguish the two arms
+// of smbtorture smb2.oplock.batch22{a,b}:
+//
+//   - batch22b (different ClientGUID, tree2 opens after tree1's batch break
+//     times out): tree2 must receive a fresh BATCH grant — the abandoned
+//     holder is on a different client, so its still-alive OpenFile does not
+//     invalidate batch caching semantics for the new client.
+//   - batch22a (same ClientGUID, h2 opens on tree1 after h1's batch break
+//     times out): h2 must receive LEVEL_II — h1 is still alive on this
+//     client and may hold dirty cached data, so exclusive batch caching
+//     cannot be granted again to the same client.
+//
+// The all-tombstones gate (OnlyTimeoutTombstoneRecords) handles the
+// different-client side by skipping the strip when only timeout tombstones
+// remain. This helper carves out the same-client exception: even after
+// timeout, a same-ClientGUID non-stat open constrains the new grant.
+//
+// Mirrors Samba's `disallow_write_lease` predicate (source3/smbd/open.c
+// lines 2397-2403) which gates on whether the existing entry's connection
+// matches the requestor's client — Samba's share entries carry the open's
+// connection identity directly; we approximate via ClientGUID equality.
+func (h *Handler) hasSameClientNonStatOpenForFile(
+	fileHandle metadata.FileHandle,
+	selfFileID [16]byte,
+	clientGUID [16]byte,
+) bool {
+	if len(fileHandle) == 0 {
+		return false
+	}
+	found := false
+	h.files.Range(func(_, value any) bool {
+		other := value.(*OpenFile)
+		if other.FileID == selfFileID {
+			return true
+		}
+		if len(other.MetadataHandle) == 0 {
+			return true
+		}
+		if !bytes.Equal(other.MetadataHandle, fileHandle) {
+			return true
+		}
+		if other.ClientGUID != clientGUID {
+			return true
+		}
+		if isOplockStatOpen(other.DesiredAccess) {
+			return true
+		}
+		found = true
+		return false
+	})
+	return found
+}
+
 // breakAndMaybeParkCreate dispatches the handle-lease break required before
 // the post-break share-mode check, then decides between parking the CREATE on
 // an interim STATUS_PENDING (returning a non-zero AsyncId) or waiting
@@ -263,7 +321,7 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		if !h.LeaseManager.HasOtherBreakingLeases(lockFileHandle, shareName, waitExceptKey) {
 			return 0
 		}
-		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey); asyncId != 0 {
+		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey, lease.AsyncCreateBreakWaitTimeout); asyncId != 0 {
 			return asyncId
 		}
 		// Park failed (no slots / registry full): fall through to sync
@@ -290,6 +348,18 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		return 0
 	}
 
+	// Per MS-SMB2 §3.3.4.6 step 4: when the existing holder is a traditional
+	// SMB oplock (LEVEL_II / Exclusive / Batch), the server waits for the
+	// implementation-specific default of ~35 s before declaring the break
+	// failed. SMB2.1+ leases keep the shorter 5 s bound (different timing
+	// semantics; existing breaking3 / timeout-disconnect tests rely on it).
+	// smbtorture batch22a / batch22b assert te ∈ [34, 50] when the holder
+	// does not ack — verifying the 35 s grace.
+	breakWaitTimeout := lease.AsyncCreateBreakWaitTimeout
+	if h.LeaseManager.AnyHolderIsTraditionalOplock(lockFileHandle, shareName) {
+		breakWaitTimeout = lease.TraditionalOplockBreakWaitTimeout
+	}
+
 	// Per MS-SMB2 §3.3.4.4 and smbtorture compound_async.getinfo_middle:
 	// When a compound CREATE needs to wait for a lease break, it MUST go async
 	// (STATUS_PENDING) even if it is not the last command in the compound.
@@ -299,14 +369,14 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	// the test (and real clients) cannot ACK the lease break until they
 	// receive the STATUS_PENDING interim response.
 	if h.LeaseManager.HasOtherBreakingLeases(lockFileHandle, shareName, waitExceptKey) {
-		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey); asyncId != 0 {
+		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey, breakWaitTimeout); asyncId != 0 {
 			return asyncId
 		}
 	}
 
 	// Sync fallback: bounded wait. On timeout forceCompleteBreaks auto-downgrades
 	// other-key leases so the post-break recheck runs against deterministic state.
-	waitCtx, cancelWait := context.WithTimeout(d.authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
+	waitCtx, cancelWait := context.WithTimeout(d.authCtx.Context, breakWaitTimeout)
 	defer cancelWait()
 	if err := h.LeaseManager.WaitForOtherKeyBreaks(waitCtx, lockFileHandle, shareName, waitExceptKey); err != nil {
 		logger.Debug("CREATE: sync break wait completed", "error", err)
@@ -824,11 +894,30 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		// paths so smb2.oplock.batch22b can grant a fresh BATCH after the
 		// abandoned holder times out (tree1's OpenFile is still alive but
 		// its record is a tombstone).
+		//
+		// Same-client carve-out (smbtorture smb2.oplock.batch22a, MS-SMB2
+		// §3.3.4.6): even when only timeout tombstones remain, if another
+		// non-stat OpenFile on the same ClientGUID is still alive, the new
+		// grant for THIS client must collapse to LEVEL_II. The abandoned
+		// holder may still hold dirty cached state on the client side, so
+		// exclusive batch caching cannot be regranted to the same client.
+		// Cross-client re-opens (batch22b) bypass this since the new client
+		// has no caching relationship with the abandoned holder.
 		lockFileHandle := lock.FileHandle(fileHandle)
 		onlyTimeoutTombstone := h.LeaseManager.OnlyTimeoutTombstoneRecords(lockFileHandle, tree.ShareName)
 		hasActiveRecord := h.LeaseManager.HasActiveLeaseRecord(lockFileHandle, tree.ShareName, [16]byte{})
 		hasNonStatOpen := h.hasOtherNonStatOpenForFile(fileHandle, smbFileID)
-		if !onlyTimeoutTombstone && (hasActiveRecord || hasNonStatOpen) {
+		// Only consult the same-client carve-out once NEGOTIATE has
+		// established a connection identity. Without CryptoState the
+		// requestor's identity is unknown — falling through would zero-
+		// vs-zero match unrelated pre-NEGOTIATE opens (regressed
+		// smb2.compound.interim2 when the early gate was removed).
+		hasSameClientOpen := false
+		if ctx != nil && ctx.ConnCryptoState != nil {
+			hasSameClientOpen = h.hasSameClientNonStatOpenForFile(fileHandle, smbFileID, connClientGUID(ctx))
+		}
+		if (!onlyTimeoutTombstone && (hasActiveRecord || hasNonStatOpen)) ||
+			(onlyTimeoutTombstone && hasSameClientOpen) {
 			requestedState &^= (lock.LeaseStateWrite | lock.LeaseStateHandle)
 		}
 		if requestedState != 0 {
@@ -1078,11 +1167,17 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 // completes the CREATE via AsyncCreateCompleteCallback. Returns the generated
 // AsyncId on success, or 0 when async parking is not possible (e.g. no async
 // slots left; registry rejected the entry). Callers fall back to sync wait.
+//
+// breakWaitTimeout bounds the server-side wait for the break to drain (or
+// auto-downgrade on expiry). Callers pass TraditionalOplockBreakWaitTimeout
+// (~35 s, MS-SMB2 §3.3.4.6) when the holder is a traditional oplock and
+// AsyncCreateBreakWaitTimeout (~5 s) otherwise.
 func (h *Handler) parkCreateOnLeaseBreak(
 	ctx *SMBHandlerContext,
 	d *createDraft,
 	lockFileHandle lock.FileHandle,
 	waitExceptKey [16]byte,
+	breakWaitTimeout time.Duration,
 ) uint64 {
 	if h.PendingCreateRegistry == nil || ctx.AsyncCreateCompleteCallback == nil ||
 		ctx.TryReserveAsync == nil || ctx.ReleaseAsync == nil {
@@ -1100,9 +1195,9 @@ func (h *Handler) parkCreateOnLeaseBreak(
 
 	// Wait context: independent of the request's Context (which would be torn
 	// down as soon as we return StatusPending). Cancellable by SMB2_CANCEL and
-	// session teardown, bounded by AsyncCreateBreakWaitTimeout so a missing ACK
+	// session teardown, bounded by breakWaitTimeout so a missing ACK
 	// auto-downgrades other-key leases and lets the CREATE proceed.
-	waitCtx, cancel := context.WithTimeout(context.Background(), lease.AsyncCreateBreakWaitTimeout)
+	waitCtx, cancel := context.WithTimeout(context.Background(), breakWaitTimeout)
 
 	pending := &PendingCreate{
 		ConnID:    ctx.ConnID,

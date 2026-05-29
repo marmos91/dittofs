@@ -41,6 +41,23 @@ const parentLeaseBreakWaitTimeout = 5 * time.Second
 // use the same 5 s as the parent break for consistency.
 const handleLeaseBreakWaitTimeout = 5 * time.Second
 
+// TraditionalOplockBreakWaitTimeout bounds the CREATE wait when the existing
+// holder is a traditional SMB1/SMB2 oplock (LEVEL_II / Exclusive / Batch)
+// rather than an SMB2.1+ lease. Per MS-SMB2 §3.3.4.6 step 4 the server
+// "waits for an implementation-specific default value, typically 35 seconds"
+// before declaring the break failed and granting the conflicting open.
+//
+// Traditional-oplock clients often DO ack within the standard 5 s lease
+// window (most smbtorture batch* tests), but a non-acking holder must be
+// given the spec-mandated 35 s grace before the server moves on. The
+// smbtorture batch22a / batch22b tests assert this directly: the second open
+// must succeed only AFTER `te ∈ [timeout-1, timeout+15]` where timeout=35.
+//
+// Leases keep the shorter handleLeaseBreakWaitTimeout — MS-SMB2 §3.3.4.7
+// lease-break flow has different timing semantics and existing tests
+// (timeout-disconnect, breaking3, etc.) rely on the shorter bound.
+const TraditionalOplockBreakWaitTimeout = 35 * time.Second
+
 // clientLeaseKey scopes lease-key bindings by (Owner.ClientID, lease-key
 // hex) because lock.Manager allows two distinct clients to each hold a
 // record under the same numeric LeaseKey on different files (per round-3
