@@ -275,23 +275,6 @@ shape that reauth4 actually exercises.
 | smb2.session.anon-encryption2 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #773 |
 | smb2.session.anon-encryption3 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #773 |
 
-### Session Binding (Multi-Channel, Same-Algo Positive Cases)
-
-The remaining session-binding rows are the four "same non-GMAC" pairings
-that expect the bind to SUCCEED and then assert a follow-up fresh-init
-SESSION_SETUP returns ACCESS_DENIED. Our server currently disconnects
-the transport on the post-success fresh-init step instead of replying
-ACCESS_DENIED — full fix needs multi-channel response-signing rework
-(retain prior-channel signing keys + return ACCESS_DENIED on
-reauth-from-fresh-init). Tracked under #747 for the v1.0 milestone.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.session.bind_negative_smb3signCtoHs | Session binding | Post-bind fresh-init reauth returns CONNECTION_DISCONNECTED instead of ACCESS_DENIED | #747 |
-| smb2.session.bind_negative_smb3signCtoHd | Session binding | Post-bind fresh-init reauth returns CONNECTION_DISCONNECTED instead of ACCESS_DENIED | #747 |
-| smb2.session.bind_negative_smb3signHtoCs | Session binding | Post-bind fresh-init reauth returns CONNECTION_DISCONNECTED instead of ACCESS_DENIED | #747 |
-| smb2.session.bind_negative_smb3signHtoCd | Session binding | Post-bind fresh-init reauth returns CONNECTION_DISCONNECTED instead of ACCESS_DENIED | #747 |
-
 ### Replay Protection (Not Implemented)
 
 Replay protection requires tracking channel sequences and detecting replayed
