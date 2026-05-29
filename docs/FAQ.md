@@ -202,8 +202,8 @@ fail-closed mark-sweep over the union of every live block's
    `bucket+endpoint+prefix`, not share name). The live set is built on
    disk under `<localStore>/gc-state/<runID>/db/` (memory-bounded
    regardless of metadata size).
-2. **Sweep.** Bounded worker pool (default `gc.sweep_concurrency=16`)
-   walks the 256 `cas/{XX}/` prefixes in parallel. An object is kept
+2. **Sweep.** A single `RemoteStore.Walk` enumerates every CAS object
+   cluster-wide (the backend paginates internally). An object is kept
    iff its hash is in the live set OR its `LastModified` is newer than
    `snapshot − gc.grace_period` (default 1h). Otherwise it is deleted.
 

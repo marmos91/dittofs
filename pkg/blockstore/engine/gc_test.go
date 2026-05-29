@@ -205,9 +205,8 @@ func TestGCMarkSweep_SweepHappyPath(t *testing.T) {
 
 	root := t.TempDir()
 	stats := CollectGarbage(ctx, rs, rec, &Options{
-		GCStateRoot:      root,
-		GracePeriod:      time.Minute, // < 2h so the seeded objects are eligible
-		SweepConcurrency: 4,
+		GCStateRoot: root,
+		GracePeriod: time.Minute, // < 2h so the seeded objects are eligible
 	})
 
 	if stats.HashesMarked != 3 {
@@ -606,9 +605,9 @@ func TestGCMarkSweep_StaleDirCleanup(t *testing.T) {
 // TestGCMarkSweep_ConcurrencyBound has been removed: the engine GC
 // sweep no longer shards work across 256 prefix workers (the
 // RemoteStore.Walk-based replacement enumerates every CAS object in
-// a single call, with sharding now an internal backend concern). The
-// SweepConcurrency Option remains as a tunable for a future
-// per-shard Walk extension but exposes no observable knob today.
+// a single call, with sharding now an internal backend concern).
+// Any future per-shard Walk extension can be driven by the backend
+// without re-introducing a caller-side concurrency knob.
 
 // ---------------------------------------------------------------------------
 // Test wrappers: failing reconciler, prefix-failing remote, concurrency tracker.

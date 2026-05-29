@@ -185,7 +185,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// and the engine falls back to hardcoded defaults.
 	rt.SetGCDefaults(&runtime.GCDefaults{
 		GracePeriod:      cfg.GC.GracePeriod,
-		SweepConcurrency: cfg.GC.SweepConcurrency,
 		DryRunSampleSize: cfg.GC.DryRunSampleSize,
 	})
 	// Wire operator-configured snapshot knobs into the runtime so

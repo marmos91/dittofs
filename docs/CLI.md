@@ -292,8 +292,7 @@ dfsctl store block gc-status /archive
 **Output:** the `GCRunSummary` JSON: `run_id`, `started_at`,
 `finished_at`, `hashes_marked`, `objects_swept`, `bytes_freed`,
 `duration_ms`, `error_count`, `error_samples`, plus the
-configuration snapshot (`grace_period`, `sweep_concurrency`,
-`dry_run`) used for the run.
+configuration snapshot (`grace_period`, `dry_run`) used for the run.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep-v0150-phase-11)
 for the full mark-sweep design and [CONFIGURATION.md](CONFIGURATION.md)

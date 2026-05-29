@@ -378,12 +378,12 @@ shares pointing at the same remote.
    identity** (`bucket+endpoint+prefix`), not share name (D-03), so an
    object reachable from any share that targets the same remote is
    considered live.
-2. **Sweep phase.** A bounded worker pool (default
-   `gc.sweep_concurrency=16`, max 32) walks the 256 top-level
-   `cas/{XX}/` prefixes in parallel (D-04). For each S3 key, the worker
-   keeps the object iff the hash is present in the live set OR the
-   object's `LastModified` is newer than `T − gc.grace_period` (default
-   1h, D-05). Otherwise the worker issues a DELETE.
+2. **Sweep phase.** A single `RemoteStore.Walk` enumerates every CAS
+   object cluster-wide; the backend (e.g. S3) paginates internally. For
+   each key, the engine keeps the object iff the hash is present in the
+   live set OR the object's `LastModified` is newer than
+   `T − gc.grace_period` (default 1h, D-05). Otherwise the engine issues
+   a DELETE.
 
 ### Fail-closed posture (INV-04)
 
