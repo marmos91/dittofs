@@ -35,16 +35,14 @@ clients now exercise the multi-channel test surface.
 Phase 2 landed break fan-out (#408). Phase 2.3 landed the per-session
 32-channel cap and fixed a concurrent-bind race on the PendingAuth slot
 (Samba bug 15346 class) — `bug_15346` and `generic.num_channels` now pass.
-The remaining known failures are pre-existing lease-break `new_epoch`
-drift, Samba-internal test-harness FSCTL requirements, and cross-channel
-async credit coordination.
+`multichannel.leases.test1` (cross-channel lease break fan-out) and
+`multichannel.leases.test3` (uncontested-open break) both pass under the
+current routing — ClientGUID-keyed primary-session election plus the
+per-session channel fan-out in `transportNotifier.orderedTransports`
+deliver the break on the first live connection of the holder's client, as
+MS-SMB2 §3.3.4.7 / Samba `smbXsrv_pending_break_submit` require.
 
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.multichannel.leases.test1 | Multi-channel | Cross-channel lease break fan-out is Phase 2 work on #361; test flakes on DittoFS until the primary/secondary channel coordination lands | #745 |
-| smb2.multichannel.leases.test3 | Multi-channel | Spurious lease break on uncontested open — separate bug from #417 epoch drift | #745 |
-
-Note: the five `smb2.multichannel.{leases,oplocks}` tests requiring Samba-internal harness FSCTLs (`torture_block_tcp_transport`, `FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT`) have been moved to the [Permanently Unimplementable](#permanently-unimplementable-out-of-scope) appendix.
+Note: the five `smb2.multichannel.{leases,oplocks}` tests requiring Samba-internal harness FSCTLs (`torture_block_tcp_transport`, `FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT`) live in the [Permanently Unimplementable](#permanently-unimplementable-out-of-scope) appendix.
 
 ### IOCTL/FSCTL Operations (Not Implemented)
 
