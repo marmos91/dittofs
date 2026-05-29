@@ -23,7 +23,16 @@ func (m *Syncer) syncLocalBlocks(ctx context.Context) {
 	m.local.SyncFileBlocks(ctx)
 
 	if err := m.mirrorOnce(ctx); err != nil {
-		logger.Debug("Periodic mirror pass failed", "error", err)
+		// Shutdown paths (context cancelled, syncer closed) are expected
+		// during graceful Close and stay at Debug. A genuine remote
+		// upload failure (network, auth, quota, S3 5xx, local bitrot) is
+		// unexpected: log at Warn so it is visible before the next
+		// health-check interval rather than silent for a tick.
+		if ctx.Err() != nil || errors.Is(err, ErrClosed) {
+			logger.Debug("Periodic mirror pass aborted during shutdown", "error", err)
+		} else {
+			logger.Warn("Periodic mirror pass failed", "error", err)
+		}
 	}
 }
 
