@@ -218,23 +218,22 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 	// Tear down old session per MS-SMB2 3.3.5.5.3.
 	//
-	// Two constraints must be satisfied simultaneously:
+	// Strategy: drain resources inline, mark the prior session LoggedOff, and
+	// leave the session record in the manager as a zombie. Cleanup of the
+	// record itself defers to connection close (cleanupSessions fan-out).
 	//
-	//  1. The old session's signing key must remain available briefly so that
-	//     error responses sent on the OLD connection (e.g. STATUS_USER_SESSION_DELETED
-	//     for in-flight requests) can be signed. Without the key the client
-	//     receives an unsigned error and reports STATUS_ACCESS_DENIED
-	//     (smb2.session.reconnect1 / reconnect2).
-	//
-	//  2. The old session must be fully deleted promptly so subsequent operations
-	//     do not observe a stale LoggedOff zombie. Leaving it indefinitely would
-	//     defer cleanup to connection close, which may not happen promptly.
-	//
-	// Strategy: mark LoggedOff and do full resource cleanup inline, then
-	// schedule a deferred DeleteSession via the cleanup barrier. The barrier
-	// ensures that the next SESSION_SETUP waits for the delete to complete.
-	// The 500ms grace period lets in-flight responses on the old connection
-	// be signed before the session record is removed from the manager.
+	// Why keep the zombie rather than delete immediately: the prior session's
+	// signing key MUST remain reachable so any error response we still owe on
+	// the old SessionID can be signed. smbtorture smb2.notify.session-reconnect
+	// supersedes the prior session and then issues an explicit LOGOFF on the
+	// OLD SessionID. With the record gone, prepareDispatch returns
+	// STATUS_USER_SESSION_DELETED but SendMessage finds no session for
+	// signing, the reply goes out unsigned, and the client rejects it as
+	// STATUS_ACCESS_DENIED. dispatch (response.go:269) and the verifier
+	// (framing.go:343) already treat LoggedOff sessions correctly: signature
+	// verification is skipped and handlers that require a session are
+	// short-circuited to STATUS_USER_SESSION_DELETED. The LOGOFF handler uses
+	// the same pattern (logoff.go step 2 — session NOT deleted there either).
 	if req.PreviousSessionID != 0 {
 		if prevSess, ok := h.GetSession(req.PreviousSessionID); ok {
 			logger.Info("SESSION_SETUP: tearing down previous session",
@@ -250,16 +249,9 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 			h.releaseSessionLeasesAndNotifies(ctx.Context, req.PreviousSessionID)
 			h.DeleteAllTreesForSession(req.PreviousSessionID)
 			h.DeleteAllPendingAuthForSession(req.PreviousSessionID)
-
-			// Keep the prior session as a LoggedOff zombie in the manager until
-			// the connection closes. Deleting it here would race a still-in-flight
-			// client request on the prior SessionID (e.g. smbtorture
-			// smb2.notify.session-reconnect issues an explicit LOGOFF on the old
-			// session right after supersession). When the session is gone,
-			// SendMessage can't sign the USER_SESSION_DELETED response, and the
-			// client rejects the unsigned reply as STATUS_ACCESS_DENIED. The
-			// LOGOFF handler already uses this exact pattern — keep parity here.
-			// Connection close fan-out (cleanupSessions) tears it down.
+			// Session record stays in the manager (LoggedOff zombie) — see
+			// rationale at the top of this block. cleanupSessions reaps it on
+			// connection close.
 		}
 	}
 
