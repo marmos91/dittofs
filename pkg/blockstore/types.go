@@ -203,6 +203,31 @@ func sortBlockRefsByOffset(b []BlockRef) {
 	sort.Slice(b, func(i, j int) bool { return b[i].Offset < b[j].Offset })
 }
 
+// PruneBlockRefsToSize drops block refs that lie entirely at or beyond size,
+// so the list never over-references content past EOF. A ref that straddles
+// the new EOF (Offset < size <= Offset+Size) is kept intact — block payloads
+// are content-addressed and immutable, so the tail bytes past EOF are simply
+// ignored on read; only fully-past-EOF refs are removed. The input slice is
+// not mutated; the result is sorted by Offset ascending.
+//
+// This is the truncate counterpart to MergeBlockRefsByOffset: a size-down
+// SetAttr must trim FileAttr.Blocks the same way a rewrite would, otherwise
+// stale-tail refs survive, the GC holds extra blocks, and a restore would
+// emit a file longer than the current size.
+func PruneBlockRefsToSize(refs []BlockRef, size uint64) []BlockRef {
+	out := make([]BlockRef, 0, len(refs))
+	for _, r := range refs {
+		if r.Offset < size {
+			out = append(out, r)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sortBlockRefsByOffset(out)
+	return out
+}
+
 // FileBlock is the single block entity in DittoFS. Content-addressed
 // blocks with the same hash are shared across files for dedup.
 //

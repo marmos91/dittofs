@@ -528,3 +528,80 @@ func TestErrBlockRefMissing(t *testing.T) {
 		t.Errorf("ErrBlockRefMissing.Error() = %q, want it to mention %q", msg, "block ref")
 	}
 }
+
+func TestPruneBlockRefsToSize(t *testing.T) {
+	ref := func(off uint64, sz uint32) BlockRef { return BlockRef{Offset: off, Size: sz} }
+	const mib = uint64(1 << 20)
+
+	tests := []struct {
+		name    string
+		refs    []BlockRef
+		size    uint64
+		want    []uint64 // expected surviving offsets, sorted
+		wantNil bool
+	}{
+		{
+			name: "truncate 4MiB to 1MiB keeps only first block",
+			refs: []BlockRef{ref(0, uint32(mib)), ref(mib, uint32(mib)), ref(2*mib, uint32(mib)), ref(3*mib, uint32(mib))},
+			size: mib,
+			want: []uint64{0},
+		},
+		{
+			name: "block straddling new EOF is kept",
+			refs: []BlockRef{ref(0, uint32(mib)), ref(mib, uint32(mib))},
+			size: mib + 100,
+			want: []uint64{0, mib},
+		},
+		{
+			name: "ref starting exactly at new size is dropped",
+			refs: []BlockRef{ref(0, uint32(mib)), ref(mib, uint32(mib))},
+			size: mib,
+			want: []uint64{0},
+		},
+		{
+			name:    "truncate to zero drops all and returns nil",
+			refs:    []BlockRef{ref(0, uint32(mib))},
+			size:    0,
+			wantNil: true,
+		},
+		{
+			name: "result is sorted by offset",
+			refs: []BlockRef{ref(2*mib, uint32(mib)), ref(0, uint32(mib)), ref(mib, uint32(mib))},
+			size: 3 * mib,
+			want: []uint64{0, mib, 2 * mib},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			in := make([]BlockRef, len(tc.refs))
+			copy(in, tc.refs)
+
+			got := PruneBlockRefsToSize(tc.refs, tc.size)
+
+			if tc.wantNil {
+				if got != nil {
+					t.Errorf("PruneBlockRefsToSize() = %v, want nil", got)
+				}
+				return
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("len = %d, want %d (%v)", len(got), len(tc.want), got)
+			}
+			for i, off := range tc.want {
+				if got[i].Offset != off {
+					t.Errorf("got[%d].Offset = %d, want %d", i, got[i].Offset, off)
+				}
+				if got[i].Offset >= tc.size {
+					t.Errorf("got[%d].Offset %d is at/past size %d", i, got[i].Offset, tc.size)
+				}
+			}
+			// Input must not be mutated.
+			for i := range in {
+				if tc.refs[i] != in[i] {
+					t.Errorf("input mutated at %d", i)
+				}
+			}
+		})
+	}
+}

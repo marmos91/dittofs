@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -316,6 +317,14 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		// Size change requires write permission
 		if err := s.checkWritePermission(ctx, handle); err != nil {
 			return err
+		}
+		// A size-down truncate must trim the content-addressed block list to
+		// the new size, otherwise stale-tail refs past EOF survive in
+		// FileAttr.Blocks: the GC then holds extra blocks and a restore would
+		// emit a file longer than the current size (#817). Refs straddling the
+		// new EOF are kept — the tail bytes past EOF are ignored on read.
+		if *attrs.Size < file.Size && len(file.Blocks) > 0 {
+			file.Blocks = blockstore.PruneBlockRefsToSize(file.Blocks, *attrs.Size)
 		}
 		file.Size = *attrs.Size
 		modified = true

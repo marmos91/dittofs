@@ -50,6 +50,13 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		runBlockRefOpsTests(t, factory)
 	})
 
+	// TruncateBlockRefOps asserts that a size-down SetAttr prunes
+	// FileAttr.Blocks / file_block_refs past the new EOF, so the snapshot
+	// manifest never over-references content past the current size (#817).
+	t.Run("TruncateBlockRefOps", func(t *testing.T) {
+		runTruncateBlockRefTests(t, factory)
+	})
+
 	// ObjectIDOps conformance for FileAttr.ObjectID round-trip,
 	// FindByObjectID lookup, mutation lifecycle, and the first-
 	// committer-wins concurrent-quiesce race. All
