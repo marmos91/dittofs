@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-05-29 (#750 subset C — walk back `smb2.tcon` (already PASSing), promote `smb2.maxfid` + `smb2.notify.mask-change` to Permanently Unimplementable, #750)
+Last updated: 2026-05-29 (#743 follow-up — walk back the 6 `smb2.dirlease.*` residuals now PASSing post PR #784: hardlink, rename, unlink_{same,different}_{initial,set}_and_close, v2_request)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -103,19 +103,14 @@ Note: the four `smb2.kernel-oplocks.*` tests require Linux kernel oplock integra
 
 Directory leases (dirlease) are a separate feature from file leases.
 DittoFS implements file leases (Phase 37) and a substantial subset of
-directory leases (see #470 PR history). Remaining failures cluster on:
-(1) same-dir rename / hardlink break/ack ordering, (2) DELETE_PENDING
-visibility on initial-DOC unlink cases.
+directory leases (see #470 PR history). The six #743 residuals
+(`rename`, `hardlink`, `unlink_{same,different}_{initial,set}_and_close`,
+`v2_request`) walked back in PR #784; the only remaining entry is the
+`oplocks` subtest the runner skips around a smbtorture-client SIGSEGV.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.dirlease.hardlink | Directory Leases | samedir-wrong-parent-leaskey: break/ack ordering on single-dir hardlink | #743 |
 | smb2.dirlease.oplocks | Directory Leases | Skipped by runner — smbtorture 4.22.6 client SIGSEGVs in this subtest and aborts the rest of the dirlease suite (see run.sh) | #750 |
-| smb2.dirlease.rename | Directory Leases | samedir-wrong-parent-leaskey: break/ack ordering on single-dir rename | #743 |
-| smb2.dirlease.unlink_different_initial_and_close | Directory Leases | DELETE_PENDING returned on second open of a file with initial DOC (delete-on-close shouldn't block reopens before actual delete) | #743 |
-| smb2.dirlease.unlink_different_set_and_close | Directory Leases | smb2_lease_break_ack returns UNSUCCESSFUL — break/ack state mismatch on last-handle delete with mismatched parent keys | #743 |
-| smb2.dirlease.unlink_same_initial_and_close | Directory Leases | DELETE_PENDING returned on second open of a file with initial DOC | #743 |
-| smb2.dirlease.v2_request | Directory Leases | SHARING_VIOLATION on requeued CREATE after dir-lease holder closes during break | #743 |
 
 ### Credit Management
 
