@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"io"
 	"testing"
 
 	"github.com/google/uuid"
@@ -51,6 +52,133 @@ func runBlockRefOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("CascadeDeleteOnFileDelete", func(t *testing.T) {
 		testBlockRef_CascadeDeleteOnFileDelete(t, factory)
 	})
+
+	t.Run("MultiPassMerge", func(t *testing.T) {
+		testBlockRef_MultiPassMerge(t, factory)
+	})
+}
+
+// testBlockRef_MultiPassMerge guards the store-layer contract that a file's
+// complete block list survives successive PutFile calls — both an append
+// (A then A+B) and an in-place overlay of an existing offset (A'). GetFile
+// and Backup must return the full, correct set after each pass; no earlier
+// offset may be dropped.
+//
+// This mirrors the engine's multi-pass rollup, which persists a file's blocks
+// across several passes. A regression that persisted only the latest pass's
+// refs (REPLACE-by-partial-list) instead of the complete merged list would
+// silently drop earlier offsets — exactly the data-loss class this asserts
+// against. The contract is: whatever complete list the caller hands PutFile,
+// GetFile/Backup return it intact and ordered by offset.
+func testBlockRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+
+	rootHandle := createTestShare(t, store, "blockref-multipass")
+	fileHandle := createTestFile(t, store, "blockref-multipass", rootHandle, "multipass.bin", 0o644)
+
+	// Pass 1 — block list A: three contiguous 1 MiB blocks (offsets 0..2 MiB).
+	listA := []blockstore.BlockRef{
+		{Hash: hashOfSeed("mp-a0"), Offset: 0, Size: 1 << 20},
+		{Hash: hashOfSeed("mp-a1"), Offset: 1 << 20, Size: 1 << 20},
+		{Hash: hashOfSeed("mp-a2"), Offset: 2 << 20, Size: 1 << 20},
+	}
+	putBlocks(t, store, fileHandle, listA)
+	assertBlocks(t, store, fileHandle, listA)
+	assertBackupContains(t, store, listA)
+
+	// Pass 2 — append block list B onto A. The caller computes the complete
+	// merged list (A+B); the store must persist all of it. A REPLACE-only
+	// persist of just B would drop A's three offsets.
+	listB := []blockstore.BlockRef{
+		{Hash: hashOfSeed("mp-b0"), Offset: 3 << 20, Size: 1 << 20},
+		{Hash: hashOfSeed("mp-b1"), Offset: 4 << 20, Size: 1 << 20},
+	}
+	merged := append(append([]blockstore.BlockRef(nil), listA...), listB...)
+	putBlocks(t, store, fileHandle, merged)
+	assertBlocks(t, store, fileHandle, merged)
+	assertBackupContains(t, store, merged)
+
+	// Pass 3 — in-place overlay: rewrite the block at offset 1 MiB (A1 -> A1')
+	// while keeping every other offset. The overlay must replace only that
+	// offset's hash and leave the rest of the complete list intact.
+	overlay := append([]blockstore.BlockRef(nil), merged...)
+	overlay[1].Hash = hashOfSeed("mp-a1-overlay")
+	putBlocks(t, store, fileHandle, overlay)
+	assertBlocks(t, store, fileHandle, overlay)
+	assertBackupContains(t, store, overlay)
+
+	// The superseded hash must no longer be referenced after the overlay.
+	bk := backupHashes(t, store)
+	if bk.Contains(hashOfSeed("mp-a1")) {
+		t.Errorf("Backup still references superseded hash mp-a1 after overlay")
+	}
+}
+
+// putBlocks loads the file, sets its complete block list, and persists it.
+func putBlocks(t *testing.T, store metadata.MetadataStore, fileHandle metadata.FileHandle, blocks []blockstore.BlockRef) {
+	t.Helper()
+	ctx := t.Context()
+
+	file, err := store.GetFile(ctx, fileHandle)
+	if err != nil {
+		t.Fatalf("GetFile (pre-put): %v", err)
+	}
+	file.Blocks = blocks
+	if err := store.PutFile(ctx, file); err != nil {
+		t.Fatalf("PutFile (%d blocks): %v", len(blocks), err)
+	}
+}
+
+// assertBlocks asserts GetFile returns exactly want, ordered by offset, with
+// deep equality on every field.
+func assertBlocks(t *testing.T, store metadata.MetadataStore, fileHandle metadata.FileHandle, want []blockstore.BlockRef) {
+	t.Helper()
+	ctx := t.Context()
+
+	got, err := store.GetFile(ctx, fileHandle)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	if len(got.Blocks) != len(want) {
+		t.Fatalf("Blocks len: got %d, want %d", len(got.Blocks), len(want))
+	}
+	for i, w := range want {
+		g := got.Blocks[i]
+		if g.Hash != w.Hash || g.Offset != w.Offset || g.Size != w.Size {
+			t.Errorf("Blocks[%d] = %+v, want %+v", i, g, w)
+		}
+	}
+}
+
+// backupHashes runs Backup and returns the referenced-hash set, discarding
+// the serialized stream.
+func backupHashes(t *testing.T, store metadata.MetadataStore) *blockstore.HashSet {
+	t.Helper()
+	ctx := t.Context()
+
+	bk, ok := store.(metadata.Backupable)
+	if !ok {
+		t.Fatalf("backend does not implement metadata.Backupable")
+	}
+	hs, err := bk.Backup(ctx, io.Discard)
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	return hs
+}
+
+// assertBackupContains asserts Backup's referenced-hash set includes every
+// block hash in want — the snapshot's block manifest must cover the complete
+// list, not just the latest persisted segment.
+func assertBackupContains(t *testing.T, store metadata.MetadataStore, want []blockstore.BlockRef) {
+	t.Helper()
+
+	hs := backupHashes(t, store)
+	for _, b := range want {
+		if !hs.Contains(b.Hash) {
+			t.Errorf("Backup hash set missing block at offset %d (hash %x)", b.Offset, b.Hash[:8])
+		}
+	}
 }
 
 // testBlockRef_RoundTripBasic asserts that a file with three sorted-by-offset
