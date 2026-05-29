@@ -65,6 +65,7 @@ func newFetchSyncer(localStore local.LocalStore, rs *remotememory.Store, fbs blo
 		inFlight:       make(map[string]*fetchResult),
 		stopCh:         make(chan struct{}),
 		config:         DefaultConfig(),
+		pendingHashes:  make(map[blockstore.ContentHash]struct{}),
 	}
 }
 

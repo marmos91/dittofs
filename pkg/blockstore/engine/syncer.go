@@ -963,6 +963,11 @@ func (m *Syncer) HealthCheck(ctx context.Context) error {
 // SetRemoteStore transitions the syncer from local-only mode to remote-backed mode.
 // This is a one-shot operation -- calling it again returns an error.
 // It sets the remoteStore, enables local store eviction, and starts the periodic syncer.
+//
+// It does NOT seed the pending-upload set from disk: chunks written while the
+// syncer was local-only are picked up by the next periodic drift reconcile
+// (seedPendingFromDisk), not immediately. Not currently wired into any
+// production control-plane path; Start() is the seeded entry point.
 func (m *Syncer) SetRemoteStore(ctx context.Context, remoteStore remote.RemoteStore) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
