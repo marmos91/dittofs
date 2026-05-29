@@ -87,12 +87,16 @@ func TestDrainRollups_ForcesManifestPopulation(t *testing.T) {
 // DrainRollups returns ErrDrainIncomplete instead of silently succeeding
 // with a partial manifest.
 //
-// Deterministic construction: AppendWrite a small record at a logical
-// offset ABOVE the 16 GiB reconstructStream ceiling. rollupFile reads the
-// (tiny) on-disk frame, but reconstructStream refuses the >16 GiB buffer
-// and returns nil WITHOUT consuming the interval — a no-progress pass that
-// leaves a genuine, logIndex-backed dirty interval in place.
+// Deterministic construction: lower the reconstruct ceiling, then write
+// contiguous records that merge into a single dirty interval whose span
+// exceeds it. rollupFile reads the on-disk frames, but reconstructStream
+// refuses the over-ceiling buffer and returns nil WITHOUT consuming the
+// interval — a no-progress pass that leaves a genuine, logIndex-backed
+// dirty interval in place.
 func TestDrainRollups_RealResidualReturnsErrDrainIncomplete(t *testing.T) {
+	defer func(old uint64) { maxReconstructBytes = old }(maxReconstructBytes)
+	maxReconstructBytes = 128
+
 	bc := newFSStoreForTest(t, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		StabilizationMS: 1,
@@ -101,10 +105,9 @@ func TestDrainRollups_RealResidualReturnsErrDrainIncomplete(t *testing.T) {
 	ctx := context.Background()
 	const payloadID = "file-real-residual"
 
-	// Offset above maxReconstructBytes (16 GiB) so reconstructStream
-	// refuses every rollup pass. The payload itself is tiny.
-	const hugeOffset = uint64(1) << 35 // 32 GiB
-	if err := bc.AppendWrite(ctx, payloadID, bytes.Repeat([]byte{0x33}, 64), hugeOffset); err != nil {
+	// One 200-byte record spans [0,200), exceeding the 128-byte test
+	// ceiling, so reconstructStream refuses every pass.
+	if err := bc.AppendWrite(ctx, payloadID, bytes.Repeat([]byte{0x33}, 200), 0); err != nil {
 		t.Fatalf("AppendWrite: %v", err)
 	}
 
@@ -125,6 +128,9 @@ func TestDrainRollups_RealResidualReturnsErrDrainIncomplete(t *testing.T) {
 // returns nil (the bytes belong to a deleted payload and never need to
 // reach the manifest).
 func TestDrainRollups_TombstonedResidualSucceeds(t *testing.T) {
+	defer func(old uint64) { maxReconstructBytes = old }(maxReconstructBytes)
+	maxReconstructBytes = 128
+
 	bc := newFSStoreForTest(t, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		StabilizationMS: 1,
@@ -133,9 +139,8 @@ func TestDrainRollups_TombstonedResidualSucceeds(t *testing.T) {
 	ctx := context.Background()
 	const payloadID = "file-tombstoned-residual"
 
-	// Same un-drainable real residual as above (offset > 16 GiB ceiling).
-	const hugeOffset = uint64(1) << 35
-	if err := bc.AppendWrite(ctx, payloadID, bytes.Repeat([]byte{0x44}, 64), hugeOffset); err != nil {
+	// Same un-drainable real residual as above (span > test ceiling).
+	if err := bc.AppendWrite(ctx, payloadID, bytes.Repeat([]byte{0x44}, 200), 0); err != nil {
 		t.Fatalf("AppendWrite: %v", err)
 	}
 
