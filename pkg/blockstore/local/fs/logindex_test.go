@@ -15,7 +15,7 @@ func TestLogIndex_Empty(t *testing.T) {
 	if idx.Fence() != logHeaderSize {
 		t.Fatalf("Fence: got %d want %d", idx.Fence(), logHeaderSize)
 	}
-	if got := idx.EntriesForInterval(0, 4096); len(got) != 0 {
+	if got := idx.EntriesForInterval(0, 4096, nil); len(got) != 0 {
 		t.Fatalf("EntriesForInterval on empty: got %v want []", got)
 	}
 }
@@ -29,7 +29,7 @@ func TestLogIndex_AppendAndLookup_InOrder(t *testing.T) {
 	idx.Append(logHeaderSize+1024+recordFrameOverhead, 1024, 1024)
 	idx.Append(logHeaderSize+2*(1024+recordFrameOverhead), 2048, 1024)
 
-	got := idx.EntriesForInterval(0, 3072)
+	got := idx.EntriesForInterval(0, 3072, nil)
 	if len(got) != 3 {
 		t.Fatalf("EntriesForInterval count: got %d want 3", len(got))
 	}
@@ -66,7 +66,7 @@ func TestLogIndex_AppendAndLookup_OutOfOrderArrivals(t *testing.T) {
 
 	// Query the [0, 65536) window — must surface the rec#2 arrival even
 	// though it sits AFTER higher-offset records in the log.
-	got := idx.EntriesForInterval(0, 65536)
+	got := idx.EntriesForInterval(0, 65536, nil)
 	if len(got) != 2 {
 		t.Fatalf("EntriesForInterval out-of-order: got %d entries want 2 (%+v)", len(got), got)
 	}
@@ -110,7 +110,7 @@ func TestLogIndex_EntriesForInterval_Boundaries(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := idx.EntriesForInterval(tc.off, tc.length)
+			got := idx.EntriesForInterval(tc.off, tc.length, nil)
 			var gotOffs []uint64
 			for _, e := range got {
 				gotOffs = append(gotOffs, e.fileOff)
@@ -308,7 +308,7 @@ func TestLogIndex_AdvanceFence_TrimsConsumedPrefix(t *testing.T) {
 	// Surviving entries must be the original positions[2] and positions[3]
 	// — verifiable via EntriesForInterval over the file-offset window
 	// they cover.
-	hits := idx.EntriesForInterval(0, 4*4096)
+	hits := idx.EntriesForInterval(0, 4*4096, nil)
 	if len(hits) != 2 {
 		t.Fatalf("EntriesForInterval after trim: got %d want 2", len(hits))
 	}
@@ -476,7 +476,7 @@ func TestLogIndex_EntriesForInterval_OverflowGuard(t *testing.T) {
 
 	// Query [^uint64(0)-300, ^uint64(0)-50): sum overflows but should
 	// still surface the third record.
-	hits := idx.EntriesForInterval(^uint64(0)-300, 250)
+	hits := idx.EntriesForInterval(^uint64(0)-300, 250, nil)
 	if len(hits) != 1 || hits[0].fileOff != ^uint64(0)-200 {
 		t.Fatalf("overflow query: got %+v want one entry at fileOff %d", hits, ^uint64(0)-200)
 	}
@@ -484,7 +484,7 @@ func TestLogIndex_EntriesForInterval_OverflowGuard(t *testing.T) {
 	// Query at fileOff = ^uint64(0) - 50 with length = 100 (definite
 	// overflow). End saturates to MaxUint64; no entries should match
 	// since the high record's extent ends at ^uint64(0) - 100.
-	hits = idx.EntriesForInterval(^uint64(0)-50, 100)
+	hits = idx.EntriesForInterval(^uint64(0)-50, 100, nil)
 	if len(hits) != 0 {
 		t.Fatalf("post-extent query: got %+v want []", hits)
 	}
@@ -732,5 +732,39 @@ func TestCoverageSet_MergeKeepsSortedInvariant(t *testing.T) {
 	}
 	if cs.intervals[1] != (coverageInterval{start: 100, end: 400}) {
 		t.Errorf("intervals[1]: got %+v want {100,400}", cs.intervals[1])
+	}
+}
+
+// TestEntriesForInterval_ScratchNoAlloc proves the caller-supplied scratch
+// slice form performs zero heap allocations on the rollup hot path when the
+// scratch has enough capacity for the result.
+func TestEntriesForInterval_ScratchNoAlloc(t *testing.T) {
+	idx := newLogIndex()
+	for i := uint64(0); i < 8; i++ {
+		idx.Append(logHeaderSize+i*(1024+recordFrameOverhead), i*1024, 1024)
+	}
+	var scratch [16]logEntry
+
+	allocs := testing.AllocsPerRun(100, func() {
+		_ = idx.EntriesForInterval(0, 8*1024, scratch[:0])
+	})
+	if allocs != 0 {
+		t.Fatalf("expected 0 allocs with pre-sized scratch, got %v", allocs)
+	}
+}
+
+// TestEntriesForInterval_ScratchSameResult proves the scratch form returns
+// the identical entry set (and order) as a nil-dst call.
+func TestEntriesForInterval_ScratchSameResult(t *testing.T) {
+	idx := newLogIndex()
+	idx.Append(logHeaderSize, 2048, 1024)
+	idx.Append(logHeaderSize+1024+recordFrameOverhead, 0, 1024)
+	idx.Append(logHeaderSize+2*(1024+recordFrameOverhead), 1024, 1024)
+
+	want := idx.EntriesForInterval(0, 3072, nil)
+	var scratch [4]logEntry
+	got := idx.EntriesForInterval(0, 3072, scratch[:0])
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("scratch result mismatch: want %+v got %+v", want, got)
 	}
 }

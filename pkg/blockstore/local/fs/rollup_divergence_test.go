@@ -190,7 +190,7 @@ func TestAppendWrite_TreeAndLogIndexAtomicity(t *testing.T) {
 	// at the same (fileOff, payloadLen). EntriesForInterval is the
 	// production query; using it here mirrors the rollup's view.
 	tree.t.Ascend(func(iv *interval) bool {
-		hits := idx.EntriesForInterval(iv.Offset, uint64(iv.Length))
+		hits := idx.EntriesForInterval(iv.Offset, uint64(iv.Length), nil)
 		found := false
 		for _, h := range hits {
 			if h.fileOff == iv.Offset && h.payloadLen == iv.Length {
@@ -250,7 +250,7 @@ func TestAppendWrite_RollupConcurrent_NoDivergence(t *testing.T) {
 	if tree != nil && idx != nil && mu != nil {
 		mu.Lock()
 		tree.t.Ascend(func(iv *interval) bool {
-			hits := idx.EntriesForInterval(iv.Offset, uint64(iv.Length))
+			hits := idx.EntriesForInterval(iv.Offset, uint64(iv.Length), nil)
 			found := false
 			for _, h := range hits {
 				if h.fileOff == iv.Offset && h.payloadLen == iv.Length {

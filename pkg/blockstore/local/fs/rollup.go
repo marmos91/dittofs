@@ -235,7 +235,12 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 	// sequentially. A separate read-only fd is used so we don't disturb
 	// lf.f's append position.
 	stableEnd := stable.Offset + uint64(stable.Length)
-	entries := idx.EntriesForInterval(stable.Offset, uint64(stable.Length))
+	// A stable interval can match thousands of log entries under
+	// parallel-write workloads; lookupInterval reuses a per-index scratch
+	// buffer so this lookup does not reallocate every rollup pass. The
+	// result is valid until the next lookupInterval call on this index —
+	// safe here because rollupFile holds the per-file mutex throughout.
+	entries := idx.lookupInterval(stable.Offset, uint64(stable.Length))
 	if len(entries) == 0 {
 		// The tree reported a stable interval the logIndex cannot back —
 		// only possible under a tree/logIndex divergence (e.g. recovery
@@ -372,6 +377,10 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 		slog.Warn("rollup: reconstruct refused", "payloadID", payloadID, "error", rerr)
 		return nil
 	}
+	// Return the pooled buffer when this pass ends. Safe at the function
+	// tail: stream is consumed entirely by the chunker loop below and is
+	// never captured by a closure, goroutine, or persisted beyond it.
+	defer putReconstructBuf(stream)
 	minOff := minRecOffset(recs)
 	ck := chunker.NewChunker()
 	pos := minOff
@@ -643,7 +652,10 @@ func reconstructStream(recs []rec) ([]byte, error) {
 	if maxEnd > maxReconstructBytes {
 		return nil, fmt.Errorf("rollup: reconstruct would require %d bytes, exceeds %d ceiling", maxEnd, maxReconstructBytes)
 	}
-	buf := make([]byte, maxEnd)
+	// Pooled, pre-zeroed buffer — the caller MUST release it via
+	// putReconstructBuf once the rollup pass completes. Zero-fill is
+	// load-bearing: untouched gaps below maxEnd stay zero (FIX-3).
+	buf := getReconstructBuf(maxEnd)
 	// Apply records in input (log) order so that "last record wins"
 	// at the same offset holds — the mutex-serialized log order is the
 	// authoritative ordering for same-offset overwrites.

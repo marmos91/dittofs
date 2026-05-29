@@ -182,7 +182,7 @@ func TestDrainRollups_DivergentResidualSucceeds(t *testing.T) {
 
 	// Sanity: no logIndex entry backs the interval, so it is NOT a real
 	// residual.
-	if len(idx.EntriesForInterval(0, 4096)) != 0 {
+	if len(idx.EntriesForInterval(0, 4096, nil)) != 0 {
 		t.Fatalf("expected no logIndex entries for divergent interval")
 	}
 	if got := bc.payloadsWithRealResidual([]string{payloadID}); len(got) != 0 {

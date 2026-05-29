@@ -166,7 +166,7 @@ func (bc *FSStore) payloadsWithRealResidual(candidates []string) []string {
 				if iv.Length == 0 {
 					return true
 				}
-				if len(idx.EntriesForInterval(iv.Offset, uint64(iv.Length))) > 0 {
+				if len(idx.EntriesForInterval(iv.Offset, uint64(iv.Length), nil)) > 0 {
 					hasReal = true
 					return false
 				}

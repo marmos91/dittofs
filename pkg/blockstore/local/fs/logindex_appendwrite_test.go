@@ -136,7 +136,7 @@ func TestLogIndex_OutOfOrderArrivals_RecoverableByLookup(t *testing.T) {
 	// Query [0, 65536) — must find both fileOff=32768 (rec#0) and
 	// fileOff=0 (rec#2), the latter buried after a higher-offset record
 	// in the log. This is the bug shape from the proposal example.
-	hits := idx.EntriesForInterval(0, 65536)
+	hits := idx.EntriesForInterval(0, 65536, nil)
 	mu.Unlock()
 	if len(hits) != 2 {
 		t.Fatalf("EntriesForInterval([0,65536)): got %d entries want 2 (%+v)", len(hits), hits)
