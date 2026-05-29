@@ -471,7 +471,10 @@ func TestProcessDurableReconnectContext_V1Success(t *testing.T) {
 	store := newMockDurableStore()
 	ctx := context.Background()
 
-	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	// Persisted FileIDs always carry zeroed volatile half — see
+	// `buildPersistedDurableHandle`. Tests must match this to model the
+	// real store contents.
+	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0}
 	keyHash := makeSessionKeyHash("session-key-1")
 
 	// Persist a V1 durable handle
@@ -538,7 +541,10 @@ func TestProcessDurableReconnectContext_V2Success(t *testing.T) {
 	store := newMockDurableStore()
 	ctx := context.Background()
 
-	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	// Persisted FileIDs always carry zeroed volatile half — see
+	// `buildPersistedDurableHandle`. Tests must match this to model the
+	// real store contents.
+	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0}
 	createGuid := [16]byte{0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF}
 	keyHash := makeSessionKeyHash("session-key-2")
 
@@ -623,7 +629,10 @@ func TestProcessDurableReconnectContext_UsernameMismatch(t *testing.T) {
 	store := newMockDurableStore()
 	ctx := context.Background()
 
-	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	// Persisted FileIDs always carry zeroed volatile half — see
+	// `buildPersistedDurableHandle`. Tests must match this to model the
+	// real store contents.
+	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0}
 	keyHash := makeSessionKeyHash("session-key-1")
 
 	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
@@ -665,7 +674,10 @@ func TestProcessDurableReconnectContext_SessionKeyMismatchAllowed(t *testing.T) 
 	store := newMockDurableStore()
 	ctx := context.Background()
 
-	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	// Persisted FileIDs always carry zeroed volatile half — see
+	// `buildPersistedDurableHandle`. Tests must match this to model the
+	// real store contents.
+	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0}
 	originalKeyHash := makeSessionKeyHash("original-key")
 	differentKeyHash := makeSessionKeyHash("different-key")
 
@@ -703,7 +715,10 @@ func TestProcessDurableReconnectContext_ShareNameMismatch(t *testing.T) {
 	store := newMockDurableStore()
 	ctx := context.Background()
 
-	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	// Persisted FileIDs always carry zeroed volatile half — see
+	// `buildPersistedDurableHandle`. Tests must match this to model the
+	// real store contents.
+	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0}
 	keyHash := makeSessionKeyHash("key")
 
 	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
@@ -741,7 +756,10 @@ func TestProcessDurableReconnectContext_PathMismatch(t *testing.T) {
 	ctx := context.Background()
 
 	createGuid := [16]byte{0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF}
-	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	// Persisted FileIDs always carry zeroed volatile half — see
+	// `buildPersistedDurableHandle`. Tests must match this to model the
+	// real store contents.
+	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0}
 	keyHash := makeSessionKeyHash("key")
 
 	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
@@ -780,7 +798,10 @@ func TestProcessDurableReconnectContext_V1ConflictingV2Tag(t *testing.T) {
 	store := newMockDurableStore()
 	ctx := context.Background()
 
-	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	// Persisted FileIDs always carry zeroed volatile half — see
+	// `buildPersistedDurableHandle`. Tests must match this to model the
+	// real store contents.
+	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0}
 	keyHash := makeSessionKeyHash("key")
 
 	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
@@ -1325,7 +1346,10 @@ func TestProcessDurableReconnectContext_ConsumeAtomicV1(t *testing.T) {
 	store := newMockDurableStore()
 	ctx := context.Background()
 
-	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	// Persisted FileIDs always carry zeroed volatile half — see
+	// `buildPersistedDurableHandle`. Tests must match this to model the
+	// real store contents.
+	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0}
 	keyHash := makeSessionKeyHash("k")
 
 	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
@@ -1374,7 +1398,10 @@ func TestProcessDurableReconnectContext_ConsumeAtomicV2(t *testing.T) {
 	store := newMockDurableStore()
 	ctx := context.Background()
 
-	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	// Persisted FileIDs always carry zeroed volatile half — see
+	// `buildPersistedDurableHandle`. Tests must match this to model the
+	// real store contents.
+	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0}
 	createGuid := [16]byte{0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF}
 	keyHash := makeSessionKeyHash("k")
 
@@ -1428,7 +1455,10 @@ func TestProcessDurableReconnectContext_V1OplockIgnoresPath(t *testing.T) {
 	store := newMockDurableStore()
 	ctx := context.Background()
 
-	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	// Persisted FileIDs always carry zeroed volatile half — see
+	// `buildPersistedDurableHandle`. Tests must match this to model the
+	// real store contents.
+	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0}
 	keyHash := makeSessionKeyHash("session-key-v1path")
 
 	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
@@ -1481,7 +1511,7 @@ func TestProcessDurableReconnectContext_V1LeasedRejectsMissingLease(t *testing.T
 	store := newMockDurableStore()
 	ctx := context.Background()
 
-	fileID := [16]byte{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}
+	fileID := [16]byte{2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 0, 0, 0, 0, 0, 0}
 	leaseKey := [16]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00}
 	keyHash := makeSessionKeyHash("session-key-v1lease")
 
@@ -1527,7 +1557,7 @@ func TestProcessDurableReconnectContext_V1LeasedWrongLeaseKey(t *testing.T) {
 	store := newMockDurableStore()
 	ctx := context.Background()
 
-	fileID := [16]byte{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}
+	fileID := [16]byte{3, 4, 5, 6, 7, 8, 9, 10, 0, 0, 0, 0, 0, 0, 0, 0}
 	leaseKey := [16]byte{0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA}
 	wrongKey := [16]byte{0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB}
 	keyHash := makeSessionKeyHash("session-key-v1wrongkey")
@@ -1578,7 +1608,7 @@ func TestProcessDurableReconnectContext_V1UnleasedRejectsLeaseCtx(t *testing.T) 
 	store := newMockDurableStore()
 	ctx := context.Background()
 
-	fileID := [16]byte{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}
+	fileID := [16]byte{4, 5, 6, 7, 8, 9, 10, 11, 0, 0, 0, 0, 0, 0, 0, 0}
 	keyHash := makeSessionKeyHash("session-key-v1nolease")
 
 	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
@@ -1615,5 +1645,63 @@ func TestProcessDurableReconnectContext_V1UnleasedRejectsLeaseCtx(t *testing.T) 
 	}
 	if status != types.StatusObjectNameNotFound {
 		t.Errorf("Expected OBJECT_NAME_NOT_FOUND for lease ctx vs oplock-only persisted handle, got %s", status)
+	}
+}
+
+// TestProcessDurableReconnectContext_V1WireReplaysFullFileID verifies that a
+// V1 DHnC reconnect succeeds when the wire FileID carries a non-zero volatile
+// half (replaying the full 16 bytes returned at original CREATE). MS-SMB2
+// §3.2.4.4 mandates Data.Volatile=0 on DHnC, but smbtorture's `smb2_push_handle`
+// (source4/libcli/smb2/request.c) does not zero the volatile — it replays the
+// full handle. The server must tolerate this by matching on the persistent
+// half only. Without this fix, smbtorture's smb2.durable-open.reopen2 step 1
+// returns OBJECT_NAME_NOT_FOUND on the first reconnect.
+func TestProcessDurableReconnectContext_V1WireReplaysFullFileID(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	// Persisted handle: volatile half is zero (matches buildPersistedDurableHandle).
+	persistedFileID := [16]byte{0xAB, 0xCD, 0xEF, 0x01, 0x02, 0x03, 0x04, 0x05, 0, 0, 0, 0, 0, 0, 0, 0}
+	keyHash := makeSessionKeyHash("session-key-replay")
+
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:             "dh-wire-replay",
+		FileID:         persistedFileID,
+		Path:           "x.dat",
+		ShareName:      "/share1",
+		MetadataHandle: []byte{0xDE, 0xAD},
+		OplockLevel:    OplockLevelBatch,
+		Username:       "alice",
+		SessionKeyHash: keyHash,
+		CreatedAt:      time.Now().Add(-5 * time.Minute),
+		DisconnectedAt: time.Now().Add(-10 * time.Second),
+		TimeoutMs:      60000,
+	})
+
+	// Wire FileID has the SAME persistent half but a non-zero volatile half
+	// (the value the server originally returned at CREATE time).
+	wireFileID := persistedFileID
+	for i := 8; i < 16; i++ {
+		wireFileID[i] = byte(0x80 + i)
+	}
+
+	dhnCData := make([]byte, 16)
+	copy(dhnCData[:], wireFileID[:])
+	contexts := []CreateContext{
+		{Name: DurableHandleV1ReconnectTag, Data: dhnCData},
+	}
+
+	res, status, err := ProcessDurableReconnectContext(
+		ctx, store, nil, contexts, 999, "alice", keyHash,
+		"/share1", "x.dat", [16]byte{}, 0, 0,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != types.StatusSuccess {
+		t.Fatalf("Expected STATUS_SUCCESS when wire replays full FileID, got %s", status)
+	}
+	if res == nil || res.OpenFile == nil {
+		t.Fatal("Expected restored OpenFile")
 	}
 }

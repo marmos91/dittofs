@@ -354,10 +354,25 @@ func processV1Reconnect(
 	shareAccess uint32,
 ) (*OpenFile, uint32, [16]byte, types.Status, error) {
 	// Parse V1 reconnect context
-	fileID, err := DecodeDHnCReconnect(dhnCCtx.Data)
+	wireFileID, err := DecodeDHnCReconnect(dhnCCtx.Data)
 	if err != nil {
 		logger.Debug("processV1Reconnect: invalid DHnC data", "error", err)
 		return nil, 0, [16]byte{}, types.StatusInvalidParameter, nil
+	}
+
+	// MS-SMB2 §3.2.4.4 mandates Data.Volatile=0 on DHnC, but smbtorture's
+	// `smb2_push_handle` (source4/libcli/smb2/request.c) replays the full
+	// original 16-byte FileID — persistent half plus the server-issued
+	// volatile half — without zeroing the volatile. Since
+	// `buildPersistedDurableHandle` zeroes the volatile half before storing,
+	// an exact 16-byte lookup against the smbtorture wire FileID misses and
+	// returns OBJECT_NAME_NOT_FOUND on the first DHnC reconnect. Match the
+	// V2 (DH2C) path which already compares persistent-half only — zero the
+	// volatile half here before delegating to the store. smbtorture
+	// smb2.durable-open.reopen2 step 1 (and every other DHnC reopen test).
+	fileID := wireFileID
+	for i := 8; i < 16; i++ {
+		fileID[i] = 0
 	}
 
 	logger.Debug("processV1Reconnect: starting validation",
