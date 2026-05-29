@@ -1,6 +1,7 @@
 package encryption
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
@@ -12,6 +13,7 @@ type testSession struct {
 	encryptor   Encryptor
 	decryptor   Encryptor
 	encryptData bool
+	isNull      bool
 }
 
 func (s *testSession) ShouldEncrypt() bool {
@@ -29,7 +31,7 @@ func (s *testSession) DecryptMessage(nonce, ciphertext, aad []byte) ([]byte, err
 func (s *testSession) EncryptorNonceSize() int { return s.encryptor.NonceSize() }
 func (s *testSession) DecryptorNonceSize() int { return s.decryptor.NonceSize() }
 func (s *testSession) EncryptorOverhead() int  { return s.encryptor.Overhead() }
-func (s *testSession) IsNullSession() bool     { return false }
+func (s *testSession) IsNullSession() bool     { return s.isNull }
 
 func makeTestSession(t *testing.T, cipherId uint16) *testSession {
 	t.Helper()
@@ -180,6 +182,72 @@ func TestMiddleware_DecryptRequest_UnknownSession(t *testing.T) {
 
 	if _, _, err := mw.DecryptRequest(encoded); err == nil {
 		t.Fatal("expected error for unknown session, got nil")
+	}
+}
+
+// TestMiddleware_DecryptRequest_IsNullSession_TamperedMapsToNoDecryptor
+// asserts that a decrypt failure on a session flagged IsNull (the
+// anonymous-encryption case smbtorture smb2.session.anon-encryption3
+// drives with a forced wrong client session key) wraps ErrNoDecryptor so
+// the connection layer can drop the TCP socket immediately rather than
+// counting against the 5-failure threshold.
+func TestMiddleware_DecryptRequest_IsNullSession_TamperedMapsToNoDecryptor(t *testing.T) {
+	sessionID := uint64(0x1234)
+	sess := makeTestSession(t, types.CipherAES128GCM)
+	sess.isNull = true
+	mw := makeMiddleware(sessionID, sess)
+
+	original := []byte("test message")
+	encrypted, err := mw.EncryptResponse(sessionID, original)
+	if err != nil {
+		t.Fatalf("EncryptResponse: %v", err)
+	}
+
+	// Flip a ciphertext byte so the AEAD tag check fails.
+	if len(encrypted) > header.TransformHeaderSize+1 {
+		encrypted[header.TransformHeaderSize+1] ^= 0xFF
+	}
+
+	_, _, decErr := mw.DecryptRequest(encrypted)
+	if decErr == nil {
+		t.Fatal("expected error on tampered ciphertext, got nil")
+	}
+	if !errors.Is(decErr, ErrNoDecryptor) {
+		t.Errorf("err = %v, expected to wrap ErrNoDecryptor", decErr)
+	}
+	if !errors.Is(decErr, ErrDecryptFailed) {
+		t.Errorf("err = %v, expected to wrap ErrDecryptFailed", decErr)
+	}
+}
+
+// TestMiddleware_DecryptRequest_NonNullSession_TamperedNoAnonMap asserts
+// the IsNull error-mapping is gated on IsNullSession()==true. A normal
+// session's decrypt failure stays a regular ErrDecryptFailed so the
+// 5-failure brute-force threshold still applies.
+func TestMiddleware_DecryptRequest_NonNullSession_TamperedNoAnonMap(t *testing.T) {
+	sessionID := uint64(0x1234)
+	sess := makeTestSession(t, types.CipherAES128GCM)
+	sess.isNull = false
+	mw := makeMiddleware(sessionID, sess)
+
+	original := []byte("test message")
+	encrypted, err := mw.EncryptResponse(sessionID, original)
+	if err != nil {
+		t.Fatalf("EncryptResponse: %v", err)
+	}
+	if len(encrypted) > header.TransformHeaderSize+1 {
+		encrypted[header.TransformHeaderSize+1] ^= 0xFF
+	}
+
+	_, _, decErr := mw.DecryptRequest(encrypted)
+	if decErr == nil {
+		t.Fatal("expected error on tampered ciphertext, got nil")
+	}
+	if errors.Is(decErr, ErrNoDecryptor) {
+		t.Errorf("err = %v, must NOT wrap ErrNoDecryptor on non-null session", decErr)
+	}
+	if !errors.Is(decErr, ErrDecryptFailed) {
+		t.Errorf("err = %v, expected to wrap ErrDecryptFailed", decErr)
 	}
 }
 

@@ -142,13 +142,16 @@ func (m *sessionEncryptionMiddleware) DecryptRequest(transformMessage []byte) ([
 	if err != nil {
 		// Decryption failures on anonymous (IsNull) sessions are treated as
 		// catastrophic — Samba's smb2_server.c terminates the connection on
-		// any non-OK status from inbuf_parse_compound. Map to ErrNoDecryptor
+		// any non-OK status from inbuf_parse_compound. Wrap ErrNoDecryptor
 		// so the connection layer drops the TCP socket immediately
 		// (smbtorture smb2.session.anon-encryption3, where a forced-wrong
 		// client session key forces decrypt failure on the encrypted tcon).
+		// The underlying AEAD error is preserved in the chain to keep logs
+		// actionable; errors.Is(err, ErrNoDecryptor) still selects the
+		// drop-on-anon path.
 		if sess.IsNullSession() {
-			return nil, th.SessionId, fmt.Errorf("decrypt failed on anonymous session 0x%x: %w: %w",
-				th.SessionId, ErrNoDecryptor, ErrDecryptFailed)
+			return nil, th.SessionId, fmt.Errorf("decrypt failed on anonymous session 0x%x: %w: %w: %w",
+				th.SessionId, err, ErrNoDecryptor, ErrDecryptFailed)
 		}
 		return nil, th.SessionId, fmt.Errorf("decrypt message for session 0x%x: %w: %w", th.SessionId, err, ErrDecryptFailed)
 	}
