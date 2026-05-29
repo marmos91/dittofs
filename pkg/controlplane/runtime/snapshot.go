@@ -457,7 +457,7 @@ func (r *Runtime) runSnapshotOrchestration(
 	// Force every dirty append-log payload through rollup into CAS + the
 	// FileBlock manifest so the Backup() below sees a fully-populated
 	// FileAttr.Blocks. Without this, a snapshot taken before the async
-	// rollup catches up captures an empty/partial manifest — the C1 bug.
+	// rollup catches up captures an empty/partial manifest.
 	// Resolve the block store once here; the verify gate (Step 4) reuses
 	// the same lookup pattern.
 	bs, err := r.sharesSvc.GetBlockStoreForShare(shareName)
@@ -584,12 +584,12 @@ func (r *Runtime) runSnapshotOrchestration(
 			"snapshot_id", snapID, "share", shareName)
 		return
 	}
-	// --- C3 guard: empty manifest on a non-empty share ---
+	// --- empty-manifest guard: empty manifest on a non-empty share ---
 	// VerifyRemoteDurability returns success for an empty manifest without
 	// probing any block (verify.go). After the Step-0 drain a genuinely
 	// non-empty share MUST produce a non-empty manifest; an empty one
 	// means the backup undercounted the share's referenced blocks (e.g. a
-	// rollup that never persisted FileAttr.Blocks — the C1 failure mode).
+	// rollup that never persisted FileAttr.Blocks).
 	// Reporting remote_durable=true here would be a hollow durability
 	// claim over zero verified blocks. Cross-check the manifest against
 	// the live FileBlock enumeration; fail if the store still references
@@ -1153,7 +1153,7 @@ func (r *Runtime) RestoreSnapshot(
 	// per-payload append log may still hold post-snapshot write records.
 	// ReadPayloadAt replays those records on top of the restored CAS
 	// content ("last record wins"), so a file modified in place after the
-	// snapshot would come back as the mutated bytes (C2 corruption).
+	// snapshot would come back as the mutated bytes (silent corruption).
 	// Dropping the append-log overlay makes the restored CAS manifest the
 	// sole source of truth. Safe here because BOTH the snapshot being
 	// restored AND the safety snapshot drained rollups, so every byte that
