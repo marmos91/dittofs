@@ -278,6 +278,10 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 		// chunk activity fires before Start completes.
 		hooks.SetOnChunkComplete(func(hash blockstore.ContentHash, data []byte, _ string) {
 			bs.cache.Put(hash, data)
+			// Register the freshly-stored chunk for upload without a
+			// directory walk (B1). The syncer drains this set on each
+			// mirror pass; harmless when no remote is configured.
+			bs.syncer.addPendingHash(hash)
 		})
 
 		// (3) Install the per-chunk emitter (the in-memory backend

@@ -87,6 +87,46 @@ type Syncer struct {
 
 	firstOfflineRead    atomic.Bool  // Tracks if WARN was already logged since last healthy->unhealthy transition
 	offlineReadsBlocked atomic.Int64 // Count of read operations blocked by remote unavailability
+
+	// pendingHashes is the set of CAS hashes present locally but not yet
+	// mirrored to remote. Populated O(1) by addPendingHash (fired from the
+	// onChunkComplete chokepoint) and drained by mirrorOnce after each
+	// MarkSynced. This replaces the per-tick full directory walk of the
+	// CAS tree: the steady-state mirror loop now consumes this set instead
+	// of rediscovering unsynced chunks via ListUnsynced. A startup
+	// reconciliation (seedPendingFromDisk) re-seeds it after a restart,
+	// since the set is volatile and orphaned chunks written-but-not-synced
+	// before a crash would otherwise be missed.
+	pendingMu     gosync.Mutex
+	pendingHashes map[blockstore.ContentHash]struct{}
+}
+
+// addPendingHash registers a newly-stored CAS hash for the next mirror
+// pass. Fired from the onChunkComplete callback (engine.New) on every
+// successful StoreChunk. Safe for concurrent use; O(1).
+func (m *Syncer) addPendingHash(h blockstore.ContentHash) {
+	m.pendingMu.Lock()
+	m.pendingHashes[h] = struct{}{}
+	m.pendingMu.Unlock()
+}
+
+// seedPendingFromDisk reconciles the in-memory pending set against the
+// on-disk CAS state by walking every locally-present chunk that is not yet
+// marked synced (ListUnsynced) and adding it to the set. This is the
+// O(total-chunks) directory walk — but it runs ONCE at startup (the
+// pending set is volatile, so chunks written-but-not-synced before a crash
+// must be rediscovered) and periodically as a slow drift reconciler, NOT
+// on every mirror tick. Returns the number of hashes seeded.
+func (m *Syncer) seedPendingFromDisk(ctx context.Context) (int, error) {
+	n := 0
+	for hash, err := range m.local.ListUnsynced(ctx) {
+		if err != nil {
+			return n, fmt.Errorf("seed pending: %w", err)
+		}
+		m.addPendingHash(hash)
+		n++
+	}
+	return n, nil
 }
 
 // NewSyncer creates a new Syncer. The fileBlockStore is required for content-addressed dedup.
@@ -119,6 +159,7 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 		config:         config,
 		inFlight:       make(map[string]*fetchResult),
 		stopCh:         make(chan struct{}),
+		pendingHashes:  make(map[blockstore.ContentHash]struct{}),
 	}
 
 	queueConfig := DefaultSyncQueueConfig()
@@ -325,11 +366,37 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 	if hashStore == nil {
 		return nil
 	}
-	for hash, err := range m.local.ListUnsynced(ctx) {
-		if err != nil {
-			return fmt.Errorf("list unsynced: %w", err)
-		}
+
+	// Snapshot the pending set, then upload outside the lock. Hashes
+	// added mid-pass surface on the NEXT pass (same snapshot-at-start
+	// semantics the walk-based ListUnsynced had). A hash is removed from
+	// the set only AFTER MarkSynced succeeds, so a crash between Put and
+	// MarkSynced is safe (re-Put is idempotent; the startup reconcile
+	// re-seeds the hash).
+	m.pendingMu.Lock()
+	if len(m.pendingHashes) == 0 {
+		m.pendingMu.Unlock()
+		return nil
+	}
+	snapshot := make([]blockstore.ContentHash, 0, len(m.pendingHashes))
+	for h := range m.pendingHashes {
+		snapshot = append(snapshot, h)
+	}
+	m.pendingMu.Unlock()
+
+	for _, hash := range snapshot {
 		data, err := m.local.Get(ctx, hash)
+		if errors.Is(err, blockstore.ErrChunkNotFound) {
+			// Evicted before upload. Eviction only runs on already-synced
+			// chunks, so this is benign drift — drop it from the set and
+			// move on rather than failing the whole pass.
+			logger.Debug("mirrorOnce: pending hash evicted before upload, skipping",
+				"hash", hash.String())
+			m.pendingMu.Lock()
+			delete(m.pendingHashes, hash)
+			m.pendingMu.Unlock()
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("local get %s: %w", hash, err)
 		}
@@ -354,6 +421,9 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 		if err := hashStore.MarkSynced(ctx, hash); err != nil {
 			return fmt.Errorf("mark synced %s: %w", hash, err)
 		}
+		m.pendingMu.Lock()
+		delete(m.pendingHashes, hash)
+		m.pendingMu.Unlock()
 	}
 	return nil
 }
@@ -635,6 +705,15 @@ func (m *Syncer) Start(ctx context.Context) {
 		logger.Warn("Syncer janitor: recoverStaleSyncing failed", "error", err)
 	}
 
+	// Seed the pending-upload set from disk: after a restart the volatile
+	// set is empty, so chunks written-but-not-synced before shutdown would
+	// otherwise never upload. This is the full walk, run once at startup.
+	if n, err := m.seedPendingFromDisk(ctx); err != nil {
+		logger.Warn("Syncer: seedPendingFromDisk failed; periodic reconcile will retry", "error", err)
+	} else if n > 0 {
+		logger.Info("Syncer: seeded pending uploads from disk", "count", n)
+	}
+
 	m.startHealthMonitor(ctx)
 	m.startPeriodicUploader(ctx)
 }
@@ -783,12 +862,28 @@ func (m *Syncer) periodicUploader(ctx context.Context, interval time.Duration) {
 
 	logger.Info("Periodic syncer started", "interval", interval, "upload_delay", m.config.UploadDelay)
 
+	// Drift reconcile: every ~10 minutes re-seed the pending set from disk
+	// to catch any chunk that bypassed the onChunkComplete chokepoint
+	// (defense-in-depth — the steady-state path keeps the set current via
+	// addPendingHash, so this is a safety net, not the primary mechanism).
+	reconcileEvery := int(((10 * time.Minute) / interval))
+	if reconcileEvery < 1 {
+		reconcileEvery = 1
+	}
+	tick := 0
+
 	for {
 		select {
 		case <-ticker.C:
 			if !m.canProcess(ctx) {
 				logger.Info("Periodic syncer: canProcess=false, exiting")
 				return
+			}
+			tick++
+			if tick%reconcileEvery == 0 {
+				if _, err := m.seedPendingFromDisk(ctx); err != nil {
+					logger.Warn("Periodic syncer: drift reconcile failed", "error", err)
+				}
 			}
 			// Skip this tick if the previous upload batch is still running.
 			// This prevents overlapping ticks from multiplying memory usage.

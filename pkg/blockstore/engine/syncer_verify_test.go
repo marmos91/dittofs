@@ -52,6 +52,10 @@ func TestMirrorOnce_DetectsLocalCorruption_RefusesUpload(t *testing.T) {
 		local:           local,
 		remoteStore:     rs,
 		syncedHashStore: synced,
+		pendingHashes:   make(map[blockstore.ContentHash]struct{}),
+	}
+	if _, err := m.seedPendingFromDisk(ctx); err != nil {
+		t.Fatalf("seedPendingFromDisk: %v", err)
 	}
 
 	err := m.mirrorOnce(ctx)
@@ -93,6 +97,10 @@ func TestMirrorOnce_GoodHash_Uploads(t *testing.T) {
 		local:           local,
 		remoteStore:     rs,
 		syncedHashStore: synced,
+		pendingHashes:   make(map[blockstore.ContentHash]struct{}),
+	}
+	if _, err := m.seedPendingFromDisk(ctx); err != nil {
+		t.Fatalf("seedPendingFromDisk: %v", err)
 	}
 
 	if err := m.mirrorOnce(ctx); err != nil {
