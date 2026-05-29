@@ -7,32 +7,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 )
 
-// BlockStoreStats holds block store statistics returned by the server.
-// Mirrors pkg/blockstore/engine.BlockStoreStats.
-type BlockStoreStats struct {
-	FileCount         int   `json:"file_count"`
-	BlocksDirty       int   `json:"blocks_dirty"`
-	BlocksLocal       int   `json:"blocks_local"`
-	BlocksRemote      int   `json:"blocks_remote"`
-	BlocksTotal       int   `json:"blocks_total"`
-	LocalDiskUsed     int64 `json:"local_disk_used"`
-	LocalDiskMax      int64 `json:"local_disk_max"`
-	LocalMemUsed      int64 `json:"local_mem_used"`
-	LocalMemMax       int64 `json:"local_mem_max"`
-	ReadBufferEntries int   `json:"read_buffer_entries"`
-	ReadBufferUsed    int64 `json:"read_buffer_used"`
-	ReadBufferMax     int64 `json:"read_buffer_max"`
-	HasRemote         bool  `json:"has_remote"`
-	PendingSyncs      int   `json:"pending_syncs"`
-	PendingUploads    int   `json:"pending_uploads"`
-	CompletedSyncs    int   `json:"completed_syncs"`
-	FailedSyncs       int   `json:"failed_syncs"`
-
-	RemoteHealthy       bool    `json:"remote_healthy"`
-	EvictionSuspended   bool    `json:"eviction_suspended"`
-	OutageDurationSecs  float64 `json:"outage_duration_seconds"`
-	OfflineReadsBlocked int64   `json:"offline_reads_blocked"`
-}
+// BlockStoreStats is the wire-shape for block store statistics returned by
+// the server. It is a type alias of engine.BlockStoreStats so the client and
+// server share a single canonical definition (identical fields, identical
+// json tags). The alias preserves the JSON wire shape and lets callers pass
+// values across the apiclient/engine boundary without conversion.
+type BlockStoreStats = engine.BlockStoreStats
 
 // ShareBlockStoreStats holds block store statistics for a single share.
 type ShareBlockStoreStats struct {
