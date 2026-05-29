@@ -192,15 +192,31 @@ func (c *GCConfig) Validate() error {
 	return nil
 }
 
-// SnapshotConfig configures the snapshot create orchestration. Knobs
-// apply to every Runtime.CreateSnapshot invocation.
-type SnapshotConfig struct{}
+// SnapshotConfig configures the snapshot create orchestration and the
+// REST handler that wraps Runtime.RestoreSnapshot.
+type SnapshotConfig struct {
+	// RestoreHTTPTimeout bounds the per-request context wrapping
+	// Runtime.RestoreSnapshot in the REST handler. Defaults to 30
+	// minutes when unset.
+	RestoreHTTPTimeout time.Duration `mapstructure:"restore_http_timeout" yaml:"restore_http_timeout"`
+}
+
+// DefaultRestoreHTTPTimeout is the fallback applied by ApplyDefaults when
+// SnapshotConfig.RestoreHTTPTimeout is zero.
+const DefaultRestoreHTTPTimeout = 30 * time.Minute
 
 // ApplyDefaults fills any zero-valued field with the defaults.
-func (c *SnapshotConfig) ApplyDefaults() {}
+func (c *SnapshotConfig) ApplyDefaults() {
+	if c.RestoreHTTPTimeout == 0 {
+		c.RestoreHTTPTimeout = DefaultRestoreHTTPTimeout
+	}
+}
 
 // Validate returns an error if the SnapshotConfig has invalid values.
 func (c *SnapshotConfig) Validate() error {
+	if c.RestoreHTTPTimeout < 0 {
+		return fmt.Errorf("snapshot.restore_http_timeout must be >= 0 (got %s)", c.RestoreHTTPTimeout)
+	}
 	return nil
 }
 
