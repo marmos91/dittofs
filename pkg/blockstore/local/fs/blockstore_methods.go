@@ -252,12 +252,3 @@ func (bc *FSStore) ListUnsynced(ctx context.Context) iter.Seq2[blockstore.Conten
 		}
 	}
 }
-
-// DeleteLog removes the per-file append log and tracked intervals for
-// payloadID. Wraps DeleteAppendLog so the *FSStore satisfies
-// blockstore.BlockStoreAppend.
-//
-// Implements blockstore.BlockStoreAppend.
-func (bc *FSStore) DeleteLog(ctx context.Context, payloadID string) error {
-	return bc.DeleteAppendLog(ctx, payloadID)
-}

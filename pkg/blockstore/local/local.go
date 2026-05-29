@@ -27,7 +27,7 @@ type Stats struct {
 // visible only from within the daemon process.
 type LocalStore interface {
 	// Embedding contributes Put, Get, GetRange, Has, Delete, Head
-	// Walk from BlockStore plus AppendWrite and DeleteLog from
+	// Walk from BlockStore plus AppendWrite and DeleteAppendLog from
 	// BlockStoreAppend. The Get signature is byte-identical to the
 	// LocalStore.Get this interface supersedes — engine
 	// call sites that currently type-assert a *fs.FSStore continue

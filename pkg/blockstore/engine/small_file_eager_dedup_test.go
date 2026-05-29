@@ -144,7 +144,7 @@ func TestSmallFileEagerDedup_BSCAS06(t *testing.T) {
 
 	// (d) appendlog cleanup: post-hit ReadPayloadAt returns
 	// ErrFileBlockNotFound. The shared applyFileLevelDedupHit machinery
-	// fires local.DeleteLog as part of the finalize sequence, so the
+	// fires local.DeleteAppendLog as part of the finalize sequence, so the
 	// per-payload appendlog is gone.
 	probe2 := make([]byte, len(content))
 	if _, err := bs.local.ReadPayloadAt(ctx, payloadB, probe2, 0); err == nil {

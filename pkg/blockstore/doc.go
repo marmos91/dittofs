@@ -20,7 +20,7 @@
 //     *pkg/blockstore/remote/memory.Store (in-memory CAS for tests).
 //
 //   - BlockStoreAppend — embeds BlockStore and adds AppendWrite +
-//     DeleteLog for the random-write absorber tier (the per-file
+//     DeleteAppendLog for the random-write absorber tier (the per-file
 //     append log + FastCDC rollup loop on the fs backend). s3 and
 //     memory backends do NOT implement this — they only see rolled-up
 //     Put calls.

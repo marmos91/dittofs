@@ -12,7 +12,7 @@ import (
 // BlockStoreConformance suite against the local in-memory backend.
 //
 // -07 lands the BlockStoreAppend-contributed methods
-// (Put/Has/Walk/Head/Delete/GetRange/AppendWrite/DeleteLog) on
+// (Put/Has/Walk/Head/Delete/GetRange/AppendWrite/DeleteAppendLog) on
 // *memory.MemoryStore; this wiring is checked in now so the conformance
 // contract is documented at the call site before the implementation
 // closes the gap (per mega-PR commit ordering — interfaces wired
@@ -34,7 +34,7 @@ func TestMemoryStore_BlockStoreConformance(t *testing.T) {
 // (AppendLogRoundTrip, ConcurrentStorm) exercise the public surface
 // via Walk-polling.
 //
-// -07 lands AppendWrite + DeleteLog on *memory.MemoryStore so
+// -07 lands AppendWrite + DeleteAppendLog on *memory.MemoryStore so
 // this test can run.
 func TestMemoryStore_BlockStoreAppendConformance(t *testing.T) {
 	factory := func(t *testing.T) (blockstore.BlockStoreAppend, func()) {

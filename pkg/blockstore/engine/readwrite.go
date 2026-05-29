@@ -176,7 +176,7 @@ func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, currentBlo
 //     to remove — the CAS chunk store under blocks/<hh>/ is the only
 //     on-disk layout, and individual chunks are reclaimed via refcount →
 //     GC, not per-file enumeration.
-//  3. DeleteLog tombstones and removes the per-file append log so any
+//  3. DeleteAppendLog tombstones and removes the per-file append log so any
 //     pre-rollup bytes are discarded.
 //
 // Subsequent steps (cache invalidate, coordinator refcount decrements
@@ -186,7 +186,7 @@ func (bs *BlockStore) Delete(ctx context.Context, payloadID string, blocks []blo
 	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
 		return fmt.Errorf("local evict memory failed: %w", err)
 	}
-	if err := bs.local.DeleteLog(ctx, payloadID); err != nil {
+	if err := bs.local.DeleteAppendLog(ctx, payloadID); err != nil {
 		return fmt.Errorf("local delete append log failed: %w", err)
 	}
 	// Surgical invalidation: drop ALL hashes belonging to this file
