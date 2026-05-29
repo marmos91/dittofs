@@ -170,7 +170,20 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		// Connection.SessionTable (per-connection). A non-binding SESSION_SETUP
 		// from a different connection than the one that created the session
 		// must return STATUS_USER_SESSION_DELETED.
-		if sess, ok := h.GetSession(ctx.SessionID); ok {
+		//
+		// LoggedOff sessions are zombies kept in the manager only so any
+		// in-flight response can still be signed (e.g. an explicit LOGOFF on
+		// the prior SessionID after a PreviousSessionID supersession — see
+		// the supersession block below). They are not re-authable: a client
+		// targeting a LoggedOff session for re-auth must observe
+		// STATUS_USER_SESSION_DELETED, matching what it would have seen
+		// after the manager entry was reaped. Without this guard a fresh
+		// SESSION_SETUP on the OLD SessionID falls into the re-auth path
+		// and answers with an unsigned response (the zombie's signing key
+		// has been retired), which the client rejects as STATUS_ACCESS_DENIED
+		// (smb2.session.reauth1-6 / durable-open.alloc-size / read-only /
+		// anon-encryption1-3 / ntlmssp_bug14932).
+		if sess, ok := h.GetSession(ctx.SessionID); ok && !sess.LoggedOff.Load() {
 			var connDialect types.Dialect
 			if ctx.ConnCryptoState != nil {
 				connDialect = ctx.ConnCryptoState.GetDialect()
