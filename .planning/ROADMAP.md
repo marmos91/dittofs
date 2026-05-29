@@ -749,7 +749,7 @@ Phase 20 unblocks both 21 and 22 (parallel). Phase 23 requires both 21+22. Phase
 | 22. Snapshot Records + GC Hold | 6/6 | Complete   | 2026-05-28 |
 | 23. Snapshot Create Orchestration | 6/6 | Complete    | 2026-05-28 |
 | 24. Restore Flow | 4/4 | Complete    | 2026-05-28 |
-| 25. CLI + REST API + Docs | 0/? | Not started | - |
+| 25. CLI + REST API + Docs | 1/4 | In Progress|  |
 
 ## v0.16.0 Coverage Summary
 

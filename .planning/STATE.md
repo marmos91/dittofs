@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v0.16.0
 milestone_name: Share Snapshots
 status: executing
-stopped_at: Phase 25 context gathered
-last_updated: "2026-05-29T09:02:33.760Z"
-last_activity: 2026-05-29 -- Phase 25 planning complete
+stopped_at: Phase 25 plan 01 shipped (foundation wave)
+last_updated: "2026-05-29T09:14:00.000Z"
+last_activity: 2026-05-29 -- Phase 25 plan 01 shipped (rename + runtime wrappers + wire DTO)
 progress:
   total_phases: 18
   completed_phases: 8
   total_plans: 58
-  completed_plans: 54
-  percent: 93
+  completed_plans: 55
+  percent: 95
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-04-23)
 ## Current Position
 
 Phase: 25
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-05-29 -- Phase 25 planning complete
+Plan: 02/03/04 (Wave 2 — can run in parallel after 25-01 shipped)
+Status: Wave 1 complete; Wave 2 ready to execute
+Last activity: 2026-05-29 -- Phase 25 plan 01 shipped (rename + runtime wrappers + wire DTO)
 
 ## Next Actionable
 
