@@ -546,6 +546,13 @@ const (
 	// allowed and uses those as the granted access.
 	accessMaskMaximumAllowed uint32 = 0x02000000
 
+	// accessMaskSystemSecurity is MS-DTYP §2.4.3 ACCESS_SYSTEM_SECURITY
+	// (SEC_FLAG_SYSTEM_SECURITY). Reading or writing the SACL requires
+	// SeSecurityPrivilege; without it the open MUST fail
+	// STATUS_PRIVILEGE_NOT_HELD rather than STATUS_ACCESS_DENIED. Mirrors
+	// Samba libcli/security/access_check.c::se_access_check_implicit_owner.
+	accessMaskSystemSecurity uint32 = 0x01000000
+
 	// accessMaskPosixGenericAll is the Windows GENERIC_ALL bundle used for
 	// MAXIMUM_ALLOWED on the no-DACL path (root bypass + nil-ACL case). The
 	// numeric value is the same one computeMaximalAccess emits for an owner
@@ -628,6 +635,24 @@ func (s *MetadataService) CheckFileAccessWithParent(file *File, parent *File, au
 			return accessMaskPosixGenericAll | explicit, nil
 		}
 		return explicit, nil
+	}
+
+	// ACCESS_SYSTEM_SECURITY (SACL access) requires SeSecurityPrivilege per
+	// MS-DTYP §2.4.3 / MS-FSA §2.1.4.13. Without that privilege the open
+	// MUST fail with STATUS_PRIVILEGE_NOT_HELD — Samba returns the same
+	// status via se_access_check_implicit_owner. DittoFS has no notion of
+	// SeSecurityPrivilege today, so the bit is unconditionally denied to
+	// non-root callers. Required by smbtorture
+	// smb2.maximum_allowed.maximum_allowed which probes the SACL bit
+	// expecting STATUS_PRIVILEGE_NOT_HELD rather than STATUS_ACCESS_DENIED.
+	// MAXIMUM_ALLOWED does NOT mask this requirement: Samba's
+	// se_access_check_implicit_owner enforces it whether the request was
+	// MAX-only or explicit.
+	if explicit&accessMaskSystemSecurity != 0 {
+		return 0, &StoreError{
+			Code:    ErrPrivilegeRequired,
+			Message: "SeSecurityPrivilege required for ACCESS_SYSTEM_SECURITY",
+		}
 	}
 
 	// No DACL stored: nothing to enforce at the open gate. Grant the explicit

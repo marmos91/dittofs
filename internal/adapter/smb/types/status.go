@@ -115,6 +115,12 @@ const (
 	// StatusLogonFailure indicates authentication failed.
 	StatusLogonFailure Status = 0xC000006D
 
+	// StatusPrivilegeNotHeld indicates the caller does not hold a required
+	// privilege [MS-ERREF §2.3.1]. Surfaced for CREATE requests that ask
+	// for SEC_FLAG_SYSTEM_SECURITY (0x01000000, "ACCESS_SYSTEM_SECURITY")
+	// without SeSecurityPrivilege — smbtorture smb2.maximum_allowed.
+	StatusPrivilegeNotHeld Status = 0xC0000061
+
 	// StatusInsufficientResources indicates server lacks resources.
 	StatusInsufficientResources Status = 0xC000009A
 

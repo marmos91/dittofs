@@ -189,10 +189,12 @@ var errorMap = map[merrs.ErrorCode]protoCodes{
 	merrs.ErrPrivilegeRequired: {
 		// NFSv3: xdr/errors.go:148-152 returns NFS3ErrPerm (matches
 		// create.go:589-591).
-		// SMB: converters.go omits; fallback StatusAccessDenied.
+		// SMB: StatusPrivilegeNotHeld per [MS-ERREF §2.3.1] — required by
+		// smbtorture smb2.maximum_allowed.maximum_allowed when the request
+		// asks for SEC_FLAG_SYSTEM_SECURITY without SeSecurityPrivilege.
 		NFS3: nfs3types.NFS3ErrPerm,
 		NFS4: nfs4types.NFS4ERR_PERM,
-		SMB:  smbtypes.StatusAccessDenied,
+		SMB:  smbtypes.StatusPrivilegeNotHeld,
 	},
 	merrs.ErrNameTooLong: {
 		// SMB: converters.go omits; fallback StatusObjectNameInvalid (closest
