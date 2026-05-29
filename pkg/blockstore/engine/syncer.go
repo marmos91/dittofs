@@ -58,15 +58,15 @@ type Syncer struct {
 	// SetSyncedHashStore.
 	syncedHashStore metadata.SyncedHashStore
 
-	// bs is a back-reference to the owning BlockStore.
+	// bs is a back-reference to the owning Store.
 	// the file-level dedup short-circuit needs to reach
-	// BlockStore.cache to fire InvalidateFile on orphaned speculative
+	// Store.cache to fire InvalidateFile on orphaned speculative
 	// chunks. Reading through the back-reference (rather than copying a
 	// `cache` field on the Syncer at construction time) lets test code
 	// swap `bs.cache = rec` after construction and still observe the
 	// invalidation — mirrors the TestClose_ClosesCache pattern. May be
 	// nil in pre-wiring tests; callers must nil-check before use.
-	bs *BlockStore
+	bs *Store
 
 	config SyncerConfig
 
@@ -134,7 +134,7 @@ func (m *Syncer) Queue() *SyncQueue { return m.queue }
 
 // SetCoordinator wires the MetadataCoordinator the file-level dedup
 // short-circuit reaches into (FindByObjectID, GetFileObjectID
-// IncrementRefCount). engine.New plumbs the BlockStore's coordinator
+// IncrementRefCount). engine.New plumbs the Store's coordinator
 // into the syncer at construction. Idempotent.
 func (m *Syncer) SetCoordinator(c MetadataCoordinator) {
 	m.mu.Lock()
@@ -237,7 +237,7 @@ func (m *Syncer) canProcess(ctx context.Context) bool {
 // written to remote.Put first, and only on success does the
 // SyncedHashStore.MarkSynced call fire. A crash between the two steps
 // is safe because remote.Put is idempotent on (hash, identical bytes)
-// per the unified BlockStore contract, so the next Flush pass re-Puts
+// per the unified Store contract, so the next Flush pass re-Puts
 // the same hash and proceeds to MarkSynced.
 //
 // Return contract — see blockstore.Flusher godoc for the full state
@@ -308,7 +308,7 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*blockstore.Flush
 //
 // Ordering is Put-then-Mark. A crash between remote.Put and MarkSynced
 // is safe because remote.Put is idempotent on (hash, identical bytes)
-// per the unified BlockStore contract; the next pass re-Puts the same
+// per the unified Store contract; the next pass re-Puts the same
 // hash and proceeds to MarkSynced. MarkSynced fires only after Put
 // returns nil — Mark never precedes Put, so a marked-synced hash is
 // always actually present remotely.

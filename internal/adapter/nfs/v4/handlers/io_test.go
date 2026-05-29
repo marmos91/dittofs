@@ -26,7 +26,7 @@ import (
 type ioTestFixture struct {
 	handler    *Handler
 	metaSvc    *metadata.MetadataService
-	blockStore *engine.BlockStore
+	blockStore *engine.Store
 	store      metadata.MetadataStore
 	rootHandle metadata.FileHandle
 	shareName  string

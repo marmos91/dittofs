@@ -69,7 +69,7 @@ type Config struct {
 	Kerberos KerberosConfig `mapstructure:"kerberos" yaml:"kerberos"`
 
 	// Syncer configures the engine.Syncer claim/upload cycle.
-	// These knobs apply globally to every share's *engine.BlockStore syncer.
+	// These knobs apply globally to every share's *engine.Store syncer.
 	Syncer SyncerConfig `mapstructure:"syncer" yaml:"syncer"`
 
 	// Blockstore configures local/remote blockstore tunables.

@@ -13,9 +13,9 @@ import (
 )
 
 // Compile-time interface satisfaction check.
-var _ blockstore.Store = (*BlockStore)(nil)
+var _ blockstore.Store = (*Store)(nil)
 
-// BlockStoreConfig holds the components that make up a BlockStore.
+// BlockStoreConfig holds the components that make up a Store.
 type BlockStoreConfig struct {
 	// Local is the on-node block store (required).
 	Local local.LocalStore
@@ -58,15 +58,15 @@ type BlockStoreConfig struct {
 	PrefetchWorkers int
 }
 
-// BlockStore is the central orchestrator for block storage. It composes a local
+// Store is the central orchestrator for block storage. It composes a local
 // store, optional remote store, and syncer into the blockstore.Store
-// interface. All protocol adapters and runtime code use BlockStore for I/O.
+// interface. All protocol adapters and runtime code use Store for I/O.
 //
 // Read operations check the read buffer first, then the local store, falling
 // back to remote download via the syncer on miss. Write operations go
 // directly to the local store and invalidate the read buffer; the syncer
 // handles background upload to remote.
-type BlockStore struct {
+type Store struct {
 	local  local.LocalStore
 	remote remote.RemoteStore
 	syncer *Syncer
@@ -101,9 +101,9 @@ type BlockStore struct {
 	prefetchWorkers int   // stored from config, used in Start()
 }
 
-// New creates a new BlockStore from the given configuration.
+// New creates a new Store from the given configuration.
 // Local store and syncer are required; remote may be nil for local-only mode.
-func New(cfg BlockStoreConfig) (*BlockStore, error) {
+func New(cfg BlockStoreConfig) (*Store, error) {
 	if cfg.Local == nil {
 		return nil, errors.New("local store is required")
 	}
@@ -111,7 +111,7 @@ func New(cfg BlockStoreConfig) (*BlockStore, error) {
 		return nil, errors.New("syncer is required")
 	}
 
-	bs := &BlockStore{
+	bs := &Store{
 		local:           cfg.Local,
 		remote:          cfg.Remote,
 		syncer:          cfg.Syncer,
@@ -209,7 +209,7 @@ func New(cfg BlockStoreConfig) (*BlockStore, error) {
 		// side, so the NFS COMMIT-then-READ pattern never goes back to
 		// disk for the just-written chunk. The closure captures bs
 		// (not bs.cache) so the Null-Object→real-Cache swap performed
-		// by BlockStore.Start is observed transparently. The path arg
+		// by Store.Start is observed transparently. The path arg
 		// is intentionally discarded (`_ string`) — Cache.Put doesn't
 		// consume it; the firing-site contract still passes it to
 		// enable future mmap-or-copy strategies. Cache.Put is
@@ -253,8 +253,8 @@ func New(cfg BlockStoreConfig) (*BlockStore, error) {
 			})
 		}
 	}
-	// wire the BlockStore back-reference onto the Syncer so
-	// the file-level dedup short-circuit can reach BlockStore.cache for
+	// wire the Store back-reference onto the Syncer so
+	// the file-level dedup short-circuit can reach Store.cache for
 	// surgical invalidation of orphaned speculative chunks. Reading
 	// through the back-reference (instead of caching a cacheInterface
 	// field on the Syncer at construction time) lets test code swap
@@ -268,14 +268,14 @@ func New(cfg BlockStoreConfig) (*BlockStore, error) {
 // Recovery runs on the local store first (if supported), then the syncer
 // and local store background goroutines are started. Finally, the prefetcher
 // is created if both the read buffer and prefetch workers are configured.
-func (bs *BlockStore) Start(ctx context.Context) error {
+func (bs *Store) Start(ctx context.Context) error {
 	// Run recovery on local store if it supports it (FSStore has Recover).
 	type recoverer interface {
 		Recover(ctx context.Context) error
 	}
 	if r, ok := bs.local.(recoverer); ok {
 		if err := r.Recover(ctx); err != nil {
-			logger.Warn("BlockStore: local store recovery encountered errors", "error", err)
+			logger.Warn("Store: local store recovery encountered errors", "error", err)
 		}
 	}
 
@@ -303,7 +303,7 @@ func (bs *BlockStore) Start(ctx context.Context) error {
 	// the legacy ReadBuffer + Prefetcher pair. readBufferBytes is read
 	// out of cfg via a stash because cfg lives only inside New; we
 	// recover it from bs's own state. Engine constructor stashes the
-	// budget on the BlockStore so Start can read it; if the budget is
+	// budget on the Store so Start can read it; if the budget is
 	// 0 we keep the Null Object.
 	if bs.readBufferBytes > 0 {
 		realCache := NewCache(bs.readBufferBytes, bs.prefetchWorkers, bs.loadByHash)
@@ -329,14 +329,14 @@ func (bs *BlockStore) Start(ctx context.Context) error {
 // best-effort and shouldn't block on a remote round-trip; if the
 // block isn't local, the next on-path read will pull it via the
 // syncer.
-func (bs *BlockStore) loadByHash(ctx context.Context, hash blockstore.ContentHash) ([]byte, error) {
+func (bs *Store) loadByHash(ctx context.Context, hash blockstore.ContentHash) ([]byte, error) {
 	return bs.local.Get(ctx, hash)
 }
 
 // Close releases resources held by the store. Closes the cache (stops
 // prefetch workers and drops entries), then syncer (drains uploads)
 // local store, and remote store.
-func (bs *BlockStore) Close() error {
+func (bs *Store) Close() error {
 	// Cache is never nil thanks to the Null Object pattern.
 	_ = bs.cache.Close()
 
@@ -363,27 +363,27 @@ func (bs *BlockStore) Close() error {
 // (e.g. internal/adapter/common) that need to drive rollup or other
 // admin paths against the concrete *fs.FSStore via a type assertion.
 // Do not use in production code.
-func (bs *BlockStore) LocalForTest() local.LocalStore { return bs.local }
+func (bs *Store) LocalForTest() local.LocalStore { return bs.local }
 
 // RemoteForTesting returns the remote store for cross-package test verification
 // (e.g., shared remote store identity). Do not use in production code.
-func (bs *BlockStore) RemoteForTesting() remote.RemoteStore { return bs.remote }
+func (bs *Store) RemoteForTesting() remote.RemoteStore { return bs.remote }
 
 // RemoteStore returns the per-share remote object store, or nil if the
 // share is local-only. Used by the snapshot sync-gate verify step
 // (Phase 23) to drive VerifyRemoteDurability after DrainAllUploads.
 // RemoteForTesting above remains as the documented test alias.
-func (bs *BlockStore) RemoteStore() remote.RemoteStore { return bs.remote }
+func (bs *Store) RemoteStore() remote.RemoteStore { return bs.remote }
 
 // ListFiles returns the payloadIDs of all files tracked in the local store.
-func (bs *BlockStore) ListFiles() []string { return bs.local.ListFiles() }
+func (bs *Store) ListFiles() []string { return bs.local.ListFiles() }
 
 // EvictLocal removes all local per-file state (memory tracking, files
 // map, accessTracker, append log) for a file. CAS chunks are NOT
 // removed here — they may be shared with other files via file-level
 // dedup and are reclaimed via the refcount → GC path (engine.Delete
 // decrements per dropped hash and the mark-sweep GC reaps orphans).
-func (bs *BlockStore) EvictLocal(ctx context.Context, payloadID string) error {
+func (bs *Store) EvictLocal(ctx context.Context, payloadID string) error {
 	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
 		return err
 	}
@@ -394,7 +394,7 @@ func (bs *BlockStore) EvictLocal(ctx context.Context, payloadID string) error {
 // no-op implementation. Intended for shutdown / share-removal teardown
 // and for the REST evict path that drops the read buffer wholesale.
 // Returns the number of entries that were present before destruction.
-func (bs *BlockStore) DestroyCache() int {
+func (bs *Store) DestroyCache() int {
 	entries := bs.cache.Stats().Entries
 	_ = bs.cache.Close()
 	// Replace closed cache with the Null Object so subsequent operations

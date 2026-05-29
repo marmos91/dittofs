@@ -1,4 +1,4 @@
-// Package engine provides the BlockStore orchestrator that composes local
+// Package engine provides the Store orchestrator that composes local
 // store, remote store, syncer, read buffer / prefetcher, and block garbage
 // collection into the blockstore.Store interface.
 //
@@ -21,7 +21,7 @@
 // mutations take WLock. Eviction is synchronous and inline during Put
 // (dropping a []byte reference is O(1), no I/O needed).
 //
-// Each per-share BlockStore gets its own ReadBuffer instance, ensuring one
+// Each per-share Store gets its own ReadBuffer instance, ensuring one
 // share's sequential scan cannot evict another share's working set. Setting
 // maxBytes to 0 disables the read buffer entirely (NewReadBuffer returns nil).
 //

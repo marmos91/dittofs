@@ -48,7 +48,7 @@ func computeFileSize(refs []blockstore.BlockRef) uint64 {
 // but the LocalStore did not surface — e.g., post-eviction reads where
 // only the metadata row survived) and finally to remote-fetch via the
 // syncer.
-func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
+func (bs *Store) readAtInternal(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
 	if len(data) == 0 {
 		return 0, nil
 	}
@@ -82,7 +82,7 @@ func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID string, data
 }
 
 // ensureAndReadFromLocal downloads blocks from remote if needed and reads from local store.
-func (bs *BlockStore) ensureAndReadFromLocal(ctx context.Context, payloadID string, dest []byte, offset uint64) error {
+func (bs *Store) ensureAndReadFromLocal(ctx context.Context, payloadID string, dest []byte, offset uint64) error {
 	length := uint32(len(dest))
 
 	// Fast path: direct-serve copies S3 data directly to dest, skipping a second read.
@@ -127,7 +127,7 @@ func (bs *BlockStore) ensureAndReadFromLocal(ctx context.Context, payloadID stri
 // N) and for the steady-state production stream where N is bounded
 // by the payload's total size divided by the average chunk size
 // (~4 MiB).
-func (bs *BlockStore) readLocalByHash(ctx context.Context, payloadID string, dest []byte, offset uint64) (bool, error) {
+func (bs *Store) readLocalByHash(ctx context.Context, payloadID string, dest []byte, offset uint64) (bool, error) {
 	if len(dest) == 0 {
 		return true, nil
 	}

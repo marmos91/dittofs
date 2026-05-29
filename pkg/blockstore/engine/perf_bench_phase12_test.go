@@ -49,15 +49,15 @@ const phase12ReadSize = 4096
 // sequence so re-runs are comparable.
 const phase12RandSeed = 42
 
-// phase12Fixture wraps a primed engine.BlockStore + the corresponding
+// phase12Fixture wraps a primed engine.Store + the corresponding
 // []BlockRef list covering the seeded file. Tests/benches run
-// rand-reads through BlockStore.ReadAt(payloadID, blocks, dest, offset)
+// rand-reads through Store.ReadAt(payloadID, blocks, dest, offset)
 // so the new binary-search + Cache-OnRead + mmap path is exercised.
 type phase12Fixture struct {
-	BlockStore *BlockStore
-	PayloadID  string
-	FileSize   uint64
-	blocks     []blockstore.BlockRef
+	Store     *Store
+	PayloadID string
+	FileSize  uint64
+	blocks    []blockstore.BlockRef
 }
 
 // AllBlockRefs returns the sorted []BlockRef list covering the seeded
@@ -68,7 +68,7 @@ func (f *phase12Fixture) AllBlockRefs() []blockstore.BlockRef { return f.blocks 
 // t.Cleanup hooks attached to newTestEngine.
 func (f *phase12Fixture) Close() {}
 
-// setupPerfFixture seeds an engine.BlockStore with one
+// setupPerfFixture seeds an engine.Store with one
 // phase12FixtureFileSize-byte payload split into N
 // phase12FixtureBlockSize chunks. Each chunk's BlockRef carries a
 // stable BLAKE3 hash of its (deterministic) payload so the OnRead hint
@@ -120,10 +120,10 @@ func setupPerfFixture(tb testing.TB) *phase12Fixture {
 	}
 
 	return &phase12Fixture{
-		BlockStore: bs,
-		PayloadID:  payloadID,
-		FileSize:   phase12FixtureFileSize,
-		blocks:     blocks,
+		Store:     bs,
+		PayloadID: payloadID,
+		FileSize:  phase12FixtureFileSize,
+		blocks:    blocks,
 	}
 }
 
@@ -132,7 +132,7 @@ func setupPerfFixture(tb testing.TB) *phase12Fixture {
 // local store + nil remote + stub fileBlockStore — the bench measures
 // the engine's read-path overhead (binary search, OnRead, copy out)
 // without any network or remote-store latency.
-func newPerfTestEngine(tb testing.TB, readBufferBytes int64, prefetchWorkers int) *BlockStore {
+func newPerfTestEngine(tb testing.TB, readBufferBytes int64, prefetchWorkers int) *Store {
 	tb.Helper()
 	localStore := memory.New()
 	fbs := newStubFileBlockStore()
@@ -179,7 +179,7 @@ func BenchmarkRandRead_Phase12(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		offset := uint64(rng.Intn(maxOffset))
-		if _, err := fixture.BlockStore.ReadAt(ctx, fixture.PayloadID, blocks, dest, offset); err != nil {
+		if _, err := fixture.Store.ReadAt(ctx, fixture.PayloadID, blocks, dest, offset); err != nil {
 			b.Fatalf("ReadAt: %v", err)
 		}
 	}
@@ -224,7 +224,7 @@ func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		offset := uint64(rng.Intn(maxOffset))
-		if _, err := fixture.BlockStore.ReadAt(ctx, fixture.PayloadID, blocks, dest, offset); err != nil {
+		if _, err := fixture.Store.ReadAt(ctx, fixture.PayloadID, blocks, dest, offset); err != nil {
 			b.Fatalf("ReadAt: %v", err)
 		}
 	}

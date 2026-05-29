@@ -443,7 +443,7 @@ func (r *Runtime) GetShareUsage(shareName string) (usedBytes int64, physicalByte
 }
 
 // GetBlockStoreForHandle resolves the per-share BlockStore from a file handle.
-func (r *Runtime) GetBlockStoreForHandle(ctx context.Context, handle metadata.FileHandle) (*engine.BlockStore, error) {
+func (r *Runtime) GetBlockStoreForHandle(ctx context.Context, handle metadata.FileHandle) (*engine.Store, error) {
 	return r.sharesSvc.GetBlockStoreForHandle(ctx, handle)
 }
 

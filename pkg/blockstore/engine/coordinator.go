@@ -81,7 +81,7 @@ type MetadataCoordinator interface {
 }
 
 // ErrMetadataCoordinatorNotWired is returned when an engine method
-// requiring metadata coordination is invoked on a BlockStore that was
+// requiring metadata coordination is invoked on a Store that was
 // constructed with a nil coordinator. Production wiring (per-share
 // runtime service in pkg/controlplane/runtime/shares/) MUST inject a
 // real coordinator; unit tests tolerate nil for ReadAt-only fixtures

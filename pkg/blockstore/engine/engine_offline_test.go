@@ -18,7 +18,7 @@ import (
 // engine.Flush deliberately does not synchronously drive rollup — the
 // production code path relies on the periodic rollup workers and the
 // stabilization window. Tests bypass that timing with this hook.
-func forceRollupOnEngineLocal(t *testing.T, bs *BlockStore, payloadID string) {
+func forceRollupOnEngineLocal(t *testing.T, bs *Store, payloadID string) {
 	t.Helper()
 	if fsLocal, ok := bs.local.(*fs.FSStore); ok {
 		// Wait past the test config's 50ms stabilization window so
@@ -44,7 +44,7 @@ func forceRollupOnEngineLocal(t *testing.T, bs *BlockStore, payloadID string) {
 }
 
 // waitForUnhealthy polls until the syncer reports unhealthy or timeout.
-func waitForUnhealthy(t *testing.T, bs *BlockStore, timeout time.Duration) {
+func waitForUnhealthy(t *testing.T, bs *Store, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

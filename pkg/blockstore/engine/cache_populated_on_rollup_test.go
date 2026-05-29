@@ -27,7 +27,7 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// newRollupCacheFixture builds a full engine.BlockStore + FSStore +
+// newRollupCacheFixture builds a full engine.Store + FSStore +
 // recordingPutCache stack so we can observe OnChunkComplete-driven
 // cache population end-to-end through engine.WriteAt → rollup →
 // StoreChunk → OnChunkComplete → Cache.Put.
@@ -35,7 +35,7 @@ import (
 // The recordingPutCache replaces the realCache AFTER bs.Start so the
 // engine.New wiring (closure-captures-bs, reads-bs.cache-at-fire-time
 // 07's setter pattern) lands every Put on the recorder.
-func newRollupCacheFixture(t *testing.T) (*BlockStore, *fs.FSStore, *recordingPutCache) {
+func newRollupCacheFixture(t *testing.T) (*Store, *fs.FSStore, *recordingPutCache) {
 	t.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, 16*1024*1024, ms, fs.FSStoreOptions{
@@ -78,7 +78,7 @@ func newRollupCacheFixture(t *testing.T) (*BlockStore, *fs.FSStore, *recordingPu
 
 // waitForChunks polls ListFileBlocks until at least one row is present
 // or the deadline elapses. Returns the post-rollup blocks slice.
-func waitForChunks(t *testing.T, bs *BlockStore, payloadID string, timeout time.Duration) []*blockstore.FileBlock {
+func waitForChunks(t *testing.T, bs *Store, payloadID string, timeout time.Duration) []*blockstore.FileBlock {
 	t.Helper()
 	ctx := context.Background()
 	deadline := time.Now().Add(timeout)

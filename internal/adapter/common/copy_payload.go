@@ -40,7 +40,7 @@ import (
 // same txn through the coordinator's per-impl mechanism.
 func CopyPayload(
 	ctx context.Context,
-	blockStore *engine.BlockStore,
+	blockStore *engine.Store,
 	metadataStore metadata.MetadataStore,
 	cache CacheInvalidator,
 	srcFileHandle, dstFileHandle metadata.FileHandle,

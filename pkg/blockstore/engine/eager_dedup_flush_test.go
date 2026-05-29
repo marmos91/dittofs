@@ -27,10 +27,10 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/chunker"
 )
 
-// flushTestSetup wires a BlockStore + fakeCoordinator + recordingPutCache.
+// flushTestSetup wires a Store + fakeCoordinator + recordingPutCache.
 // Returns all three so tests can seed objectIDHits, write bytes via
 // WriteAt, drive Flush, and assert the eager/speculative call signals.
-func flushTestSetup(t *testing.T) (*BlockStore, *fakeCoordinator, *recordingPutCache) {
+func flushTestSetup(t *testing.T) (*Store, *fakeCoordinator, *recordingPutCache) {
 	t.Helper()
 	fc := newFakeCoordinator()
 	bs := newTestEngineWithCoordinator(t, fc)

@@ -85,7 +85,7 @@ func TestPhase19_AggregateRandWriteGate_LeqOne(t *testing.T) {
 	}
 
 	// Run the canonical benchmark fixture on the WRITE side. The fixture
-	// seeds an engine.BlockStore with one phase19FixtureFileSize-byte
+	// seeds an engine.Store with one phase19FixtureFileSize-byte
 	// payload (warm cache already established by the seeding writes),
 	// then performs rand-write IOs at phase19RandSeed-driven offsets
 	// and measures ns/op.
@@ -167,10 +167,10 @@ func runPhase19RandWriteWarmCache(t *testing.T) float64 {
 	return float64(elapsed.Nanoseconds()) / float64(iterations)
 }
 
-// newPhase19BlockStore builds the in-tree microbench engine.BlockStore
+// newPhase19BlockStore builds the in-tree microbench engine.Store
 // for the aggregate gate. Memory metadata + memory local store match
 // the canonical perf-gate fixture shape.
-func newPhase19BlockStore(t *testing.T) *engine.BlockStore {
+func newPhase19BlockStore(t *testing.T) *engine.Store {
 	t.Helper()
 	localStore := memory.New()
 	fbs := newAggregateStubFileBlockStore()

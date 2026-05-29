@@ -48,7 +48,7 @@ func dedupTestSetup(t *testing.T) (*Syncer, *fakeCoordinator) {
 	fc := newFakeCoordinator()
 	bs := newTestEngineWithCoordinator(t, fc)
 	if bs.syncer == nil {
-		t.Fatalf("BlockStore.syncer is nil after construction with fakeCoordinator")
+		t.Fatalf("Store.syncer is nil after construction with fakeCoordinator")
 	}
 	return bs.syncer, fc
 }
@@ -352,11 +352,11 @@ func TestDedup_CacheInvalidation(t *testing.T) {
 	_, fc := dedupTestSetup(t)
 
 	rec := &recordingCache{}
-	// BlockStore.cache is package-private; the helper exposed it earlier
+	// Store.cache is package-private; the helper exposed it earlier
 	// (see TestClose_ClosesCache pattern in engine_test.go). The Syncer
-	// cannot invalidate without the BlockStore reference; will
+	// cannot invalidate without the Store reference; will
 	// thread the call site appropriately. We attach the recorder via the
-	// *BlockStore that owns the syncer.
+	// *Store that owns the syncer.
 	bs := newTestEngineWithCoordinator(t, fc)
 	bs.cache = rec
 	m := bs.syncer

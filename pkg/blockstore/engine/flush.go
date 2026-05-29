@@ -22,7 +22,7 @@ import (
 // Auto-promote into the read buffer is intentionally NOT done here
 // the Cache is CAS-keyed and Flush has no BlockRef snapshot at this
 // layer to translate flushed bytes into hash-keyed cache entries.
-func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
+func (bs *Store) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
 	// Both pre-rollup dedup hooks require a coordinator; gate them
 	// jointly so the nil-check isn't repeated.
 	if bs.coordinator != nil {
@@ -96,6 +96,6 @@ func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.
 }
 
 // DrainAllUploads waits for all pending uploads to complete.
-func (bs *BlockStore) DrainAllUploads(ctx context.Context) error {
+func (bs *Store) DrainAllUploads(ctx context.Context) error {
 	return bs.syncer.DrainAllUploads(ctx)
 }

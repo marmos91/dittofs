@@ -11,11 +11,11 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// newLoadByHashFixture builds an FS-backed engine.BlockStore plus the
+// newLoadByHashFixture builds an FS-backed engine.Store plus the
 // underlying *fs.FSStore for tests that stage CAS chunks directly via
 // StoreChunk. The memory local store used by newTestEngine has no CAS
 // layer, so the loadByHash pin tests need this FS-backed variant.
-func newLoadByHashFixture(t *testing.T) (*BlockStore, *fs.FSStore) {
+func newLoadByHashFixture(t *testing.T) (*Store, *fs.FSStore) {
 	t.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, 16*1024*1024, ms, fs.FSStoreOptions{})

@@ -49,7 +49,7 @@ type HandlerTestFixture struct {
 	MetadataService *metadata.MetadataService
 
 	// BlockStore provides block storage for content operations.
-	BlockStore *engine.BlockStore
+	BlockStore *engine.Store
 
 	// ShareName is the name of the test share.
 	ShareName string

@@ -281,7 +281,7 @@ func TestCopyPayload_NilCacheTolerated(t *testing.T) {
 // newCopyTestEngineWithMS constructs an engine wired against a caller-
 // supplied MemoryMetadataStore so the test can both seed files and observe
 // post-txn state via the same store.
-func newCopyTestEngineWithMS(t *testing.T, coord *fakeCoordinator, ms *metadatamemory.MemoryMetadataStore) *engine.BlockStore {
+func newCopyTestEngineWithMS(t *testing.T, coord *fakeCoordinator, ms *metadatamemory.MemoryMetadataStore) *engine.Store {
 	t.Helper()
 
 	tmpDir := t.TempDir()

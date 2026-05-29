@@ -65,8 +65,8 @@ var _ cacheInterface = nullCache{}
 // with cache hits/puts.
 //
 // Per-share isolation (CLAUDE.md rule 4): the Cache lives inside
-// *engine.BlockStore which is per-share by construction. Cross-share
-// cache sharing is impossible without going through the BlockStore
+// *engine.Store which is per-share by construction. Cross-share
+// cache sharing is impossible without going through the Store
 // boundary, so T-12-25 is "accept" by design.
 //
 // CACHE-02 cross-file dedup: two payloads referencing the same
@@ -135,7 +135,7 @@ type CacheStats struct {
 	MaxBytes int64 `json:"max_bytes"`
 }
 
-// nullCache is a no-op cacheInterface implementation. The BlockStore
+// nullCache is a no-op cacheInterface implementation. The Store
 // constructor substitutes nullCache{} when the cache budget is zero
 // eliminating defensive nil-checks across the engine (Null Object
 // pattern).

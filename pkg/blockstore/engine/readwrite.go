@@ -17,7 +17,7 @@ import (
 // blockHashes, fileSize) so the Cache's sequential-detection state
 // machine can fire prefetch on upcoming hashes. The cache is hint-only
 // here; reads always go through local/remote stores.
-func (bs *BlockStore) ReadAt(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, data []byte, offset uint64) (int, error) {
+func (bs *Store) ReadAt(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, data []byte, offset uint64) (int, error) {
 	n, err := bs.readAtInternal(ctx, payloadID, data, offset)
 	if err != nil {
 		return n, err
@@ -34,7 +34,7 @@ func (bs *BlockStore) ReadAt(ctx context.Context, payloadID string, blocks []blo
 
 // GetSize returns the stored size of a payload.
 // Checks local store first, falls back to syncer (remote).
-func (bs *BlockStore) GetSize(ctx context.Context, payloadID string) (uint64, error) {
+func (bs *Store) GetSize(ctx context.Context, payloadID string) (uint64, error) {
 	if size, found := bs.local.GetFileSize(ctx, payloadID); found {
 		return size, nil
 	}
@@ -43,7 +43,7 @@ func (bs *BlockStore) GetSize(ctx context.Context, payloadID string) (uint64, er
 
 // Exists checks whether a payload exists.
 // Checks local store first, falls back to syncer (remote).
-func (bs *BlockStore) Exists(ctx context.Context, payloadID string) (bool, error) {
+func (bs *Store) Exists(ctx context.Context, payloadID string) (bool, error) {
 	if _, found := bs.local.GetFileSize(ctx, payloadID); found {
 		return true, nil
 	}
@@ -71,7 +71,7 @@ func (bs *BlockStore) Exists(ctx context.Context, payloadID string) (bool, error
 //
 // Returns currentBlocks unchanged — the canonical projection happens
 // at Flush time, not WriteAt time.
-func (bs *BlockStore) WriteAt(ctx context.Context, payloadID string, currentBlocks []blockstore.BlockRef, data []byte, offset uint64) ([]blockstore.BlockRef, error) {
+func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []blockstore.BlockRef, data []byte, offset uint64) ([]blockstore.BlockRef, error) {
 	if len(data) == 0 {
 		return currentBlocks, nil
 	}
@@ -109,7 +109,7 @@ func (bs *BlockStore) WriteAt(ctx context.Context, payloadID string, currentBloc
 // hash. The new []BlockRef list is returned for the caller to persist
 // via PutFile. When currentBlocks is empty the legacy path runs and
 // the returned slice is empty (dual-read shim semantics).
-func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, currentBlocks []blockstore.BlockRef, newSize uint64) ([]blockstore.BlockRef, error) {
+func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks []blockstore.BlockRef, newSize uint64) ([]blockstore.BlockRef, error) {
 	// coordinator decrements run FIRST so a refcount-bookkeeping
 	// failure leaves the file untouched on disk and remote. Previous
 	// order (local → cache → syncer → coordinator) could leave 4-of-5
@@ -181,7 +181,7 @@ func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, currentBlo
 //
 // Subsequent steps (cache invalidate, coordinator refcount decrements
 // optional remote sweep) are unchanged.
-func (bs *BlockStore) Delete(ctx context.Context, payloadID string, blocks []blockstore.BlockRef) error {
+func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []blockstore.BlockRef) error {
 	bs.local.SyncFileBlocksForFile(ctx, payloadID)
 	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
 		return fmt.Errorf("local evict memory failed: %w", err)
@@ -272,7 +272,7 @@ func (bs *BlockStore) Delete(ctx context.Context, payloadID string, blocks []blo
 // RefCount only once per CopyPayload call (per-call seen-hash set).
 // The destination's []BlockRef preserves the original sequence so
 // subsequent reads still resolve every offset correctly.
-func (bs *BlockStore) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID string, srcBlocks []blockstore.BlockRef) ([]blockstore.BlockRef, error) {
+func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID string, srcBlocks []blockstore.BlockRef) ([]blockstore.BlockRef, error) {
 	// Empty src => no work, nothing to coordinate.
 	if len(srcBlocks) == 0 {
 		return nil, nil
