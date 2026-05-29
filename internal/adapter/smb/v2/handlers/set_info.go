@@ -804,19 +804,28 @@ func (h *Handler) setFileInfoFromStore(
 		// smb2.dirlease.rename_dst_parent, lease.c:7331): when an existing
 		// holder on dst-parent denies the implicit destructive open with
 		// SHARING_VIOLATION, the dst-parent's RH dir-lease holder must observe
-		// an RH→R strip-Handle break first, so its handler can close the
-		// conflicting open and let the rename proceed on the smbtorture
-		// phase-2 retry.
+		// an RH→R strip-Handle break first; the break may give the holder a
+		// chance to close its conflicting handle. After the break drains we
+		// re-check share-mode — on phase-2 of the test the holder's handler
+		// closes its handle inside our wait so the recheck observes the
+		// shrunk open table and the rename proceeds.
 		//
-		// On a clean rename (no conflict), Skip the strip-H pre-break — the
-		// post-rename content-change break on dst-parent (single LEASE_BREAK
-		// to None per Samba `contend_dirleases`) already invalidates the
-		// holder's caching, and dispatching strip-H FIRST would emit two
-		// separate notifications where smbtorture rename otherdir-*
-		// (.expect_dstdir_break=true) expects exactly one RH→"".
+		// On a clean rename (no conflict to start with), Skip the strip-H
+		// pre-break — the post-rename content-change break on dst-parent
+		// (single LEASE_BREAK to None per Samba `contend_dirleases`) already
+		// invalidates the holder's caching, and dispatching strip-H FIRST
+		// would emit two separate notifications where smbtorture rename
+		// otherdir-* (.expect_dstdir_break=true) expects exactly one RH→"".
 		conflict := h.checkParentDirRenameConflict(openFile.FileID, toDir)
 		if conflict && !bytes.Equal(toDir, openFile.ParentHandle) {
 			h.breakDstParentDirHandleLeasesForRename(authCtx, toDir, openFile)
+			// Re-check after the strip-H break drained (the holder's break
+			// handler may have closed its conflicting open). If the
+			// re-check is clean the rename can proceed without surfacing
+			// SHARING_VIOLATION — required by dirlease.rename_dst_parent
+			// phase-2 (lease.c:7361 expects NT_STATUS_OK after the holder
+			// upgrades the lease and the second setinfo runs).
+			conflict = h.checkParentDirRenameConflict(openFile.FileID, toDir)
 		}
 		if conflict {
 			logger.Debug("SET_INFO: rename blocked by destination-parent sharing violation",
