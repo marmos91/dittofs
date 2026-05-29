@@ -37,6 +37,58 @@ func TestRestoreSnapshot_Integration(t *testing.T) {
 	t.Run("PreVerifyFailsFast", testRestorePreVerifyFailsFast)
 	t.Run("PostVerifyFails", testRestorePostVerifyFails)
 	t.Run("InterruptedRestore", testRestoreInterruptedReset)
+	t.Run("LocalOnlyRestore", testRestoreLocalOnly)
+}
+
+// testRestoreLocalOnly asserts a share with no remote store can snapshot
+// (NoVerify) and restore: the pre/post remote HEAD-probe verify is skipped
+// rather than erroring out, and data is recovered from local CAS.
+func testRestoreLocalOnly(t *testing.T) {
+	fx := newRestoreFixture(t, restoreFixtureOpts{localOnly: true})
+	defer fx.close()
+
+	ctx := fx.ctx()
+	files := fx.populateFiles(ctx, []string{"lo.bin"})
+
+	// No remote → snapshot must use NoVerify (RemoteDurable=false).
+	snapID, err := fx.rt.CreateSnapshot(ctx, fx.shareName, CreateSnapshotOpts{NoVerify: true})
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	snap, werr := fx.rt.WaitForSnapshot(ctx, fx.shareName, snapID)
+	if werr != nil {
+		t.Fatalf("WaitForSnapshot: %v", werr)
+	}
+	if snap.State != models.StateReady {
+		t.Fatalf("snap.State = %q, want ready", snap.State)
+	}
+	if snap.RemoteDurable {
+		t.Fatal("snap.RemoteDurable = true, want false on a local-only share")
+	}
+
+	// Mutate: delete the file.
+	fx.deleteFileCascade(ctx, files[0])
+
+	// Restore must succeed despite no remote (AllowNonDurable required since
+	// the snapshot is not remote-durable).
+	safetyID, err := fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{AllowNonDurable: true})
+	if err != nil {
+		t.Fatalf("RestoreSnapshot(local-only): %v", err)
+	}
+	if safetyID == "" {
+		t.Fatal("RestoreSnapshot: safetySnapshotID empty on success")
+	}
+
+	// Data restored.
+	if _, gerr := fx.meta.GetFile(ctx, files[0].handle); gerr != nil {
+		t.Fatalf("GetFile post-restore: deleted file not recovered: %v", gerr)
+	}
+
+	// Share stays disabled.
+	enabled, _ := fx.rt.sharesSvc.IsShareEnabled(fx.shareName)
+	if enabled {
+		t.Fatal("share enabled after local-only restore — must stay disabled")
+	}
 }
 
 // ----- Sub-tests -----
@@ -510,6 +562,11 @@ type restoreFixtureOpts struct {
 	// Reset failure mid-orchestration. Other sub-tests use the plain
 	// MemoryMetadataStore directly.
 	useFailableResetable bool
+
+	// localOnly builds the share with no remote block store (RemoteStore()
+	// returns nil). Exercises the local-only restore path that skips the
+	// remote HEAD-probe pre/post verify.
+	localOnly bool
 }
 
 func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
@@ -548,16 +605,21 @@ func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
 	shareName := "restore-data"
 
 	localStore := bsmemory.New()
-	innerRemote := remotememory.New()
-	t.Cleanup(func() { _ = innerRemote.Close() })
-	wrappedRemote := newRestoreRemote(innerRemote)
-	syncer := engine.NewSyncer(localStore, wrappedRemote, mem, engine.SyncerConfig{
+	var wrappedRemote *restoreRemote
+	var engineRemote remote.RemoteStore
+	if !opts.localOnly {
+		innerRemote := remotememory.New()
+		t.Cleanup(func() { _ = innerRemote.Close() })
+		wrappedRemote = newRestoreRemote(innerRemote)
+		engineRemote = wrappedRemote
+	}
+	syncer := engine.NewSyncer(localStore, engineRemote, mem, engine.SyncerConfig{
 		ParallelUploads:   1,
 		ParallelDownloads: 1,
 	})
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
-		Remote:         wrappedRemote,
+		Remote:         engineRemote,
 		Syncer:         syncer,
 		FileBlockStore: mem,
 	})

@@ -987,32 +987,44 @@ func (r *Runtime) RestoreSnapshot(
 		return "", fmt.Errorf("restore snapshot %q: share %q has no block store: %w",
 			snapID, shareName, models.ErrRestoreVerifyFailed)
 	}
+	// A share with no remote store is local-only: snapshots there are not
+	// remotely durable (the precheck above already required AllowNonDurable
+	// for such a snapshot), and there is nothing to HEAD-probe. Skip both
+	// the pre- and post-verify remote probes and restore from local CAS.
+	// The remote-backed path is unchanged.
 	remoteStore := bs.RemoteStore()
-	if remoteStore == nil {
-		return "", fmt.Errorf("restore snapshot %q: share %q has no remote store, cannot verify: %w",
-			snapID, shareName, models.ErrRestoreVerifyFailed)
-	}
+	remoteVerify := remoteStore != nil
 	// Hardcoded; benchmarking confirmed no operator tuning need.
 	concurrency := 16
-	logger.Info("snapshot restore: pre-verify start",
-		"snapshot_id", snapID,
-		"share", shareName,
-		"manifest_count", manifest.Len(),
-		"verify_concurrency", concurrency,
-	)
-	if verr := snapshot.VerifyRemoteDurability(ctx, remoteStore, manifest, concurrency); verr != nil {
-		return "", fmt.Errorf("restore snapshot %q: pre-verify: %w: %v",
-			snapID, models.ErrRestoreVerifyFailed, verr)
+	if !remoteVerify {
+		logger.Info("snapshot restore: local-only share, skipping remote pre-verify",
+			"snapshot_id", snapID, "share", shareName)
+	} else {
+		logger.Info("snapshot restore: pre-verify start",
+			"snapshot_id", snapID,
+			"share", shareName,
+			"manifest_count", manifest.Len(),
+			"verify_concurrency", concurrency,
+		)
+		if verr := snapshot.VerifyRemoteDurability(ctx, remoteStore, manifest, concurrency); verr != nil {
+			return "", fmt.Errorf("restore snapshot %q: pre-verify: %w: %v",
+				snapID, models.ErrRestoreVerifyFailed, verr)
+		}
+		logger.Info("snapshot restore: pre-verify ok",
+			"snapshot_id", snapID,
+			"share", shareName,
+		)
 	}
-	logger.Info("snapshot restore: pre-verify ok",
-		"snapshot_id", snapID,
-		"share", shareName,
-	)
 
 	// --- safety snapshot ---
 	// Default opts (NoVerify=false) keep the safety snap drained and
-	// verified — it is the rollback primitive if any step below fails.
-	safetySnapshotID, err = r.CreateSnapshot(ctx, shareName, CreateSnapshotOpts{})
+	// verified — it is the rollback primitive if any step below fails. On a
+	// local-only share there is no remote to verify against, so the safety
+	// snap must skip the verify gate too (NoVerify), mirroring the
+	// remote-skip applied to the pre/post restore verify above; otherwise
+	// the safety snap would fail at its own create-verify step and abort an
+	// otherwise-valid local restore.
+	safetySnapshotID, err = r.CreateSnapshot(ctx, shareName, CreateSnapshotOpts{NoVerify: !remoteVerify})
 	if err != nil {
 		return "", fmt.Errorf("restore snapshot %q: create safety snap: %w: %v",
 			snapID, models.ErrRestoreSafetySnapFailed, err)
@@ -1120,16 +1132,21 @@ func (r *Runtime) RestoreSnapshot(
 			snapID, safetySnapshotID, models.ErrRestoreVerifyFailed, err)
 	}
 	restoredCount := restoredHashes.Len()
-	logger.Info("snapshot restore: post-verify start",
-		"snapshot_id", snapID,
-		"share", shareName,
-		"safety_snap_id", safetySnapshotID,
-		"restored_count", restoredCount,
-		"verify_concurrency", concurrency,
-	)
-	if verr := snapshot.VerifyRemoteDurability(ctx, remoteStore, restoredHashes, concurrency); verr != nil {
-		return safetySnapshotID, fmt.Errorf("restore snapshot %q: post-verify (safety-snap=%s): %w: %v",
-			snapID, safetySnapshotID, models.ErrRestoreVerifyFailed, verr)
+	if !remoteVerify {
+		logger.Info("snapshot restore: local-only share, skipping remote post-verify",
+			"snapshot_id", snapID, "share", shareName, "restored_count", restoredCount)
+	} else {
+		logger.Info("snapshot restore: post-verify start",
+			"snapshot_id", snapID,
+			"share", shareName,
+			"safety_snap_id", safetySnapshotID,
+			"restored_count", restoredCount,
+			"verify_concurrency", concurrency,
+		)
+		if verr := snapshot.VerifyRemoteDurability(ctx, remoteStore, restoredHashes, concurrency); verr != nil {
+			return safetySnapshotID, fmt.Errorf("restore snapshot %q: post-verify (safety-snap=%s): %w: %v",
+				snapID, safetySnapshotID, models.ErrRestoreVerifyFailed, verr)
+		}
 	}
 
 	// Share STAYS DISABLED — operator re-enables after inspecting result.
