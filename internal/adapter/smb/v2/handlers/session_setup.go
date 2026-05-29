@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -972,6 +973,17 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 						"ntHashPrefix", fmt.Sprintf("%x", ntHash[:4]),
 						"pendingSessionID", pending.SessionID)
 					h.destroySessionOnReauthFailure(ctx.Context, pending, authMsg.Username)
+					// MS-NLMP §2.2.2.7 / §2.2.2.8: a malformed
+					// NTLMv2_CLIENT_CHALLENGE (truncated header, AV_PAIR list
+					// without MsvAvEOL, AV_PAIR length overrun) is a wire-format
+					// violation distinct from wrong credentials, so the response
+					// MUST be STATUS_INVALID_PARAMETER (smb2.session.ntlmssp_bug14932,
+					// Windows / Samba behaviour). ErrResponseTooShort is the
+					// length gate above the AV walk and is treated the same way.
+					if errors.Is(validationErr, auth.ErrMalformedResponse) ||
+						errors.Is(validationErr, auth.ErrResponseTooShort) {
+						return NewErrorResult(types.StatusInvalidParameter), nil
+					}
 					return NewErrorResult(types.StatusLogonFailure), nil
 				}
 
@@ -1008,8 +1020,15 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				}
 
 				if pending.IsReauth {
-					// Per MS-SMB2 3.3.5.5.3: re-derive keys from the new SessionBaseKey
-					if result := h.tryReauthUpdateWithKeys(pending, resolvedUsername, authMsg.Domain, user, false, signingKey[:], authMsg.NegotiateFlags, ctx); result != nil {
+					// MS-SMB2 §3.3.5.5.3 retains the original session's signing
+					// and encryption keys across a successful re-auth — Samba
+					// (source3/smbd/smb2_sesssetup.c::smbd_smb2_reauth_generic_return)
+					// updates Session.SecurityContext only; the application key
+					// and derived signing/encryption keys stay put. Regenerating
+					// them here makes the SUCCESS response's signature diverge
+					// from what the client computes with the unchanged key
+					// (smb2.session.reauth1-5 reject the response).
+					if result := h.tryReauthUpdate(pending, resolvedUsername, authMsg.Domain, user, false); result != nil {
 						return result, nil
 					}
 					// Fallthrough: session disappeared between negotiate and auth (unlikely)
@@ -1467,41 +1486,6 @@ func (h *Handler) tryReauthUpdate(pending *PendingAuth, username, domain string,
 
 	// Prior keys retained, no new ExportedSessionKey available.
 	return h.buildAuthenticatedResponse(pending, nil, 0, existingSess.ShouldEncrypt())
-}
-
-// tryReauthUpdateWithKeys updates an existing session's identity and re-derives
-// session keys during re-authentication. Per MS-SMB2 3.3.5.5.3: on successful
-// re-authentication, the server MUST re-derive SigningKey, EncryptionKey, and
-// DecryptionKey from the new SessionBaseKey. Tree connects and open files are
-// preserved.
-// Returns a non-nil *HandlerResult if the session was found and updated,
-// or nil if the session no longer exists (caller should fall through).
-func (h *Handler) tryReauthUpdateWithKeys(pending *PendingAuth, username, domain string, user *models.User, isGuest bool, signingKey []byte, negFlags auth.NegotiateFlag, ctx *SMBHandlerContext) *HandlerResult {
-	existingSess, ok := h.GetSession(pending.SessionID)
-	if !ok {
-		return nil
-	}
-	existingSess.Username = username
-	existingSess.Domain = domain
-	existingSess.User = user
-	existingSess.IsGuest = isGuest
-	existingSess.IsNull = false
-
-	// Re-derive session keys per MS-SMB2 3.3.5.5.3
-	if len(signingKey) > 0 {
-		if errResult := h.configureSessionSigningWithKey(existingSess, signingKey, ctx); errResult != nil {
-			return errResult
-		}
-	}
-
-	logger.Info("Session re-authenticated (keys re-derived)",
-		"sessionID", existingSess.SessionID,
-		"username", existingSess.Username,
-		"domain", existingSess.Domain,
-		"signingEnabled", existingSess.ShouldSign(),
-		"encryptData", existingSess.ShouldEncrypt())
-
-	return h.buildAuthenticatedResponse(pending, signingKey, negFlags, existingSess.ShouldEncrypt())
 }
 
 // checkGuestPolicy enforces guest session prerequisites.

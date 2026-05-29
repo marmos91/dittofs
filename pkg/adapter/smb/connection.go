@@ -228,6 +228,19 @@ func (c *Connection) Serve(ctx context.Context) {
 				continue
 			}
 
+			// An encrypted message reached a session that exists but has no
+			// decryptor (anonymous / guest / SMB 2.x). MS-SMB2 §3.3.5.2.1
+			// classifies this as a protocol violation; Samba and Windows tear
+			// the connection down (smbtorture smb2.session.anon-encryption{1,2,3}
+			// asserts CONNECTION_RESET). Drop immediately rather than continuing
+			// past five decrypt failures — the client never recovers without it.
+			if errors.Is(err, smb.ErrAnonEncryption) {
+				logger.Warn("Dropping connection: encrypted message on anonymous / guest session",
+					"address", clientAddr,
+					"error", err)
+				return
+			}
+
 			// Track consecutive decryption failures. After 5, drop the connection
 			// to prevent brute-force attacks on the AEAD authentication.
 			if isDecryptionError(err) {

@@ -303,12 +303,19 @@ func TestSessionSetup_FailedReauth_NTLMv2ValidationFails_DestroysSession(t *test
 
 	f := newReauthFixture(t, cpStore)
 
-	// 24 bytes of garbage as NtChallengeResponse — passes the length gate in
-	// ValidateNTLMv2Response (line 754) but fails the HMAC compare (line 773).
-	bogusNTResponse := make([]byte, 32)
-	for i := range bogusNTResponse {
-		bogusNTResponse[i] = 0xFF
+	// A structurally valid NTLMv2_RESPONSE (NTProofStr || CLIENT_CHALLENGE)
+	// that fails the HMAC compare. The CLIENT_CHALLENGE follows MS-NLMP
+	// §2.2.2.7: RespType=0x01, HiRespType=0x01, fixed 28-byte header, then a
+	// single MsvAvEOL (AvId=0, AvLen=0) — so the malformed-structure gate
+	// added for smb2.session.ntlmssp_bug14932 passes and execution still
+	// reaches the HMAC check that returns ErrAuthenticationFailed.
+	bogusNTResponse := make([]byte, 16+28+4)
+	for i := 0; i < 16; i++ {
+		bogusNTResponse[i] = 0xFF // bogus NTProofStr (the value HMAC compares against)
 	}
+	bogusNTResponse[16] = 0x01 // RespType
+	bogusNTResponse[17] = 0x01 // HiRespType
+	// Trailing 4 bytes after the 28-byte header are MsvAvEOL (already zero).
 
 	type3Body := buildSessionSetupRequestBody(
 		buildNTLMAuthenticateForTest("carol", "WORKGROUP", bogusNTResponse),

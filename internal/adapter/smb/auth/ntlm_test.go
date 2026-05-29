@@ -466,11 +466,59 @@ func TestValidateNTLMv2Response(t *testing.T) {
 	t.Run("InvalidResponse", func(t *testing.T) {
 		ntHash := ComputeNTHash("password")
 		serverChallenge := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
-		invalidResponse := make([]byte, 32) // Long enough but invalid
+		// Structurally valid NTLMv2_RESPONSE (NTProofStr + 28-byte
+		// CLIENT_CHALLENGE header + MsvAvEOL) whose NTProofStr is all-zero.
+		// HMAC compare against a real ntHash will fail → ErrAuthenticationFailed.
+		invalidResponse := make([]byte, 16+28+4)
+		invalidResponse[16] = 0x01 // RespType
+		invalidResponse[17] = 0x01 // HiRespType
 
 		_, err := ValidateNTLMv2Response(ntHash, "user", "DOMAIN", serverChallenge, invalidResponse)
 		if err != ErrAuthenticationFailed {
 			t.Errorf("Expected ErrAuthenticationFailed, got %v", err)
+		}
+	})
+
+	t.Run("MalformedRespType", func(t *testing.T) {
+		ntHash := ComputeNTHash("password")
+		serverChallenge := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+		bad := make([]byte, 16+28+4)
+		bad[16] = 0xFF // wrong RespType
+		bad[17] = 0x01
+		_, err := ValidateNTLMv2Response(ntHash, "user", "DOMAIN", serverChallenge, bad)
+		if err != ErrMalformedResponse {
+			t.Errorf("Expected ErrMalformedResponse, got %v", err)
+		}
+	})
+
+	t.Run("MalformedAvPairOverrun", func(t *testing.T) {
+		ntHash := ComputeNTHash("password")
+		serverChallenge := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+		// AvLen=0x8108 overruns the buffer — matches the netapp diag tool
+		// blob from MS-SMB2 conformance test smb2.session.ntlmssp_bug14932.
+		bad := make([]byte, 16+28+4)
+		bad[16] = 0x01
+		bad[17] = 0x01
+		bad[16+28+0] = 0x11
+		bad[16+28+1] = 0xa2 // AvId
+		bad[16+28+2] = 0x08
+		bad[16+28+3] = 0x81 // AvLen = 33032
+		_, err := ValidateNTLMv2Response(ntHash, "user", "DOMAIN", serverChallenge, bad)
+		if err != ErrMalformedResponse {
+			t.Errorf("Expected ErrMalformedResponse, got %v", err)
+		}
+	})
+
+	t.Run("MalformedNoEOL", func(t *testing.T) {
+		ntHash := ComputeNTHash("password")
+		serverChallenge := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+		// Exactly 28 bytes of header, no AV_PAIR list at all → falls off the end.
+		bad := make([]byte, 16+28)
+		bad[16] = 0x01
+		bad[17] = 0x01
+		_, err := ValidateNTLMv2Response(ntHash, "user", "DOMAIN", serverChallenge, bad)
+		if err != ErrMalformedResponse {
+			t.Errorf("Expected ErrMalformedResponse, got %v", err)
 		}
 	})
 

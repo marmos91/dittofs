@@ -685,6 +685,15 @@ const (
 
 	// ErrResponseTooShort is returned when NT response is too short.
 	ErrResponseTooShort Error = "ntlm: response too short"
+
+	// ErrMalformedResponse is returned when the NTLMv2_RESPONSE structure
+	// itself is parseable as bytes but violates MS-NLMP §2.2.2.7 / §2.2.2.8
+	// — e.g. wrong RespType / HiRespType, AV_PAIR list missing the EOL
+	// terminator, or an AV_PAIR length that overruns the buffer. Callers
+	// surface this distinctly from a wrong-password failure so that
+	// SESSION_SETUP can answer STATUS_INVALID_PARAMETER (Samba/Windows
+	// behaviour for smb2.session.ntlmssp_bug14932) instead of LOGON_FAILURE.
+	ErrMalformedResponse Error = "ntlm: malformed NTLMv2 response"
 )
 
 // =============================================================================
@@ -759,6 +768,17 @@ func ValidateNTLMv2Response(
 	ntProofStr := ntResponse[:16]
 	clientBlob := ntResponse[16:]
 
+	// Validate NTLMv2_CLIENT_CHALLENGE structure (MS-NLMP §2.2.2.7) before
+	// the HMAC compare so a deliberately malformed blob is distinguished
+	// from a wrong-password (HMAC-mismatch) failure. The wire-level
+	// distinction is what smb2.session.ntlmssp_bug14932 asserts: the
+	// "netapp diag" NtChallengeResponse parses as NTLM but its AV_PAIR list
+	// is unwalkable, so the server MUST answer STATUS_INVALID_PARAMETER
+	// rather than STATUS_LOGON_FAILURE.
+	if err := validateNTLMv2ClientChallenge(clientBlob); err != nil {
+		return sessionKey, err
+	}
+
 	// Compute NTLMv2 hash
 	ntlmv2Hash := ComputeNTLMv2Hash(ntHash, username, domain)
 
@@ -781,6 +801,54 @@ func ValidateNTLMv2Response(
 	copy(sessionKey[:], mac.Sum(nil))
 
 	return sessionKey, nil
+}
+
+// validateNTLMv2ClientChallenge walks the NTLMv2_CLIENT_CHALLENGE that
+// follows NTProofStr in an NTLMv2_RESPONSE (MS-NLMP §2.2.2.7) and returns
+// ErrMalformedResponse when the fixed header or the AV_PAIR list cannot be
+// parsed. A correct AV_PAIR list ends with MsvAvEOL (AvId=0, AvLen=0).
+//
+// Fields validated:
+//   - RespType (byte 0)        MUST be 0x01.
+//   - HiRespType (byte 1)      MUST be 0x01.
+//   - Fixed header length (28 bytes minimum: RespType..Reserved3).
+//   - Each AV_PAIR's AvLen must not overrun the buffer.
+//   - The list must terminate with an MsvAvEOL pair before the buffer ends.
+//
+// Reserved fields are not enforced (Windows clients have been observed to
+// send nonzero bytes there).
+func validateNTLMv2ClientChallenge(blob []byte) error {
+	const (
+		ntlmv2RespType     = 0x01
+		ntlmv2HiRespType   = 0x01
+		clientChallengeHdr = 28 // RespType..Reserved3
+		avPairHeader       = 4  // AvId(2) + AvLen(2)
+		msvAvEOL           = 0
+	)
+	if len(blob) < clientChallengeHdr {
+		return ErrMalformedResponse
+	}
+	if blob[0] != ntlmv2RespType || blob[1] != ntlmv2HiRespType {
+		return ErrMalformedResponse
+	}
+	pairs := blob[clientChallengeHdr:]
+	for {
+		if len(pairs) < avPairHeader {
+			return ErrMalformedResponse
+		}
+		avID := binary.LittleEndian.Uint16(pairs[0:2])
+		avLen := binary.LittleEndian.Uint16(pairs[2:4])
+		if int(avLen) > len(pairs)-avPairHeader {
+			return ErrMalformedResponse
+		}
+		pairs = pairs[avPairHeader+int(avLen):]
+		if avID == msvAvEOL {
+			if avLen != 0 {
+				return ErrMalformedResponse
+			}
+			return nil
+		}
+	}
 }
 
 // DeriveSigningKey derives the final signing key from the session base key.
