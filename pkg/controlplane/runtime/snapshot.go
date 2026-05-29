@@ -427,18 +427,18 @@ func (r *Runtime) runSnapshotOrchestration(
 	// the same lookup pattern.
 	bs, err := r.sharesSvc.GetBlockStoreForShare(shareName)
 	if err != nil || bs == nil {
-		r.failSnap(shareName, snapID)
 		terminalErr = fmt.Errorf("snapshot create %s: no block store for share %q: %w",
 			snapID, shareName, models.ErrSnapshotBackupFailed)
+		r.failSnap(shareName, snapID, terminalErr)
 		logger.Error("snapshot create: block store lookup failed (pre-backup)",
 			"snapshot_id", snapID, "share", shareName, "error", err)
 		return
 	}
 	logger.Debug("snapshot create: drain rollups start", "snapshot_id", snapID, "share", shareName)
 	if derr := bs.DrainRollups(ctx); derr != nil {
-		r.failSnap(shareName, snapID)
 		terminalErr = fmt.Errorf("snapshot create %s: drain rollups: %w: %v",
 			snapID, models.ErrSnapshotBackupFailed, derr)
+		r.failSnap(shareName, snapID, terminalErr)
 		logger.Error("snapshot create: drain rollups failed",
 			"snapshot_id", snapID, "share", shareName, "error", derr)
 		return
@@ -456,9 +456,9 @@ func (r *Runtime) runSnapshotOrchestration(
 		return backupable.Backup(ctx, w)
 	})
 	if err != nil {
-		r.failSnap(shareName, snapID)
 		terminalErr = fmt.Errorf("snapshot create %s: backup: %w: %v",
 			snapID, models.ErrSnapshotBackupFailed, err)
+		r.failSnap(shareName, snapID, terminalErr)
 		logger.Error("snapshot create: backup failed",
 			"snapshot_id", snapID,
 			"share", shareName,
@@ -486,9 +486,9 @@ func (r *Runtime) runSnapshotOrchestration(
 		hashSet = blockstore.NewHashSet(0)
 	}
 	if err := snapshot.WriteManifestAtomic(manifestPath, hashSet); err != nil {
-		r.failSnap(shareName, snapID)
 		terminalErr = fmt.Errorf("snapshot create %s: write manifest: %w: %v",
 			snapID, models.ErrSnapshotBackupFailed, err)
+		r.failSnap(shareName, snapID, terminalErr)
 		logger.Error("snapshot create: manifest write failed",
 			"snapshot_id", snapID,
 			"share", shareName,
@@ -511,9 +511,9 @@ func (r *Runtime) runSnapshotOrchestration(
 		// state is fully deterministic on success and not subject to
 		// schema-default drift.
 		if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, false, int64(manifestCount)); err != nil {
-			r.failSnap(shareName, snapID)
 			terminalErr = fmt.Errorf("snapshot create %s: mark ready (no-verify): %w: %v",
 				snapID, models.ErrSnapshotBackupFailed, err)
+			r.failSnap(shareName, snapID, terminalErr)
 			logger.Error("snapshot create: mark ready failed (no-verify)",
 				"snapshot_id", snapID, "share", shareName, "error", err)
 			return
@@ -531,8 +531,8 @@ func (r *Runtime) runSnapshotOrchestration(
 	// bs was resolved in Step 0 and reused here.
 	logger.Debug("snapshot create: drain start", "snapshot_id", snapID, "share", shareName)
 	if err := bs.DrainAllUploads(ctx); err != nil {
-		r.failSnap(shareName, snapID)
 		terminalErr = fmt.Errorf("snapshot create %s: drain: %w: %v", snapID, drainSentinel(err), err)
+		r.failSnap(shareName, snapID, terminalErr)
 		logger.Error("snapshot create: drain failed",
 			"snapshot_id", snapID, "share", shareName, "error", err)
 		return
@@ -542,9 +542,9 @@ func (r *Runtime) runSnapshotOrchestration(
 	// --- Step 5: Verify ---
 	remoteStore := bs.RemoteStore()
 	if remoteStore == nil {
-		r.failSnap(shareName, snapID)
 		terminalErr = fmt.Errorf("snapshot create %s: share %q has no remote store, cannot verify: %w",
 			snapID, shareName, models.ErrSnapshotVerifyFailed)
+		r.failSnap(shareName, snapID, terminalErr)
 		logger.Error("snapshot create: no remote store",
 			"snapshot_id", snapID, "share", shareName)
 		return
@@ -563,26 +563,26 @@ func (r *Runtime) runSnapshotOrchestration(
 	if manifestCount == 0 {
 		metaStore, mserr := r.GetMetadataStoreForShare(shareName)
 		if mserr != nil {
-			r.failSnap(shareName, snapID)
 			terminalErr = fmt.Errorf("snapshot create %s: metadata store lookup for empty-manifest check: %w: %v",
 				snapID, models.ErrSnapshotVerifyFailed, mserr)
+			r.failSnap(shareName, snapID, terminalErr)
 			logger.Error("snapshot create: metadata store lookup failed (empty-manifest check)",
 				"snapshot_id", snapID, "share", shareName, "error", mserr)
 			return
 		}
 		liveHashes, herr := snapshot.HashSetFromMetadataStore(ctx, metaStore)
 		if herr != nil {
-			r.failSnap(shareName, snapID)
 			terminalErr = fmt.Errorf("snapshot create %s: enumerate live hashes for empty-manifest check: %w: %v",
 				snapID, models.ErrSnapshotVerifyFailed, herr)
+			r.failSnap(shareName, snapID, terminalErr)
 			logger.Error("snapshot create: live hash enumeration failed (empty-manifest check)",
 				"snapshot_id", snapID, "share", shareName, "error", herr)
 			return
 		}
 		if liveHashes.Len() > 0 {
-			r.failSnap(shareName, snapID)
 			terminalErr = fmt.Errorf("snapshot create %s: empty manifest on non-empty share (%d live hashes), refusing to report durability: %w",
 				snapID, liveHashes.Len(), models.ErrSnapshotVerifyFailed)
+			r.failSnap(shareName, snapID, terminalErr)
 			logger.Error("snapshot create: empty manifest on non-empty share",
 				"snapshot_id", snapID, "share", shareName, "live_hashes", liveHashes.Len())
 			return
@@ -603,9 +603,9 @@ func (r *Runtime) runSnapshotOrchestration(
 		logger.Debug("snapshot create: verify miss, retrying drain+verify",
 			"snapshot_id", snapID, "share", shareName, "first_error", verr)
 		if derr := bs.DrainAllUploads(ctx); derr != nil {
-			r.failSnap(shareName, snapID)
 			terminalErr = fmt.Errorf("snapshot create %s: re-drain after verify miss: %w: %v",
 				snapID, drainSentinel(derr), derr)
+			r.failSnap(shareName, snapID, terminalErr)
 			logger.Error("snapshot create: re-drain failed",
 				"snapshot_id", snapID, "share", shareName, "error", derr)
 			return
@@ -613,9 +613,9 @@ func (r *Runtime) runSnapshotOrchestration(
 		verr = snapshot.VerifyRemoteDurability(ctx, remoteStore, hashSet, concurrency)
 	}
 	if verr != nil {
-		r.failSnap(shareName, snapID)
 		terminalErr = fmt.Errorf("snapshot create %s: verify: %w: %v",
 			snapID, models.ErrSnapshotVerifyFailed, verr)
+		r.failSnap(shareName, snapID, terminalErr)
 		logger.Error("snapshot create: verify failed",
 			"snapshot_id", snapID, "share", shareName, "error", verr)
 		return
@@ -629,9 +629,9 @@ func (r *Runtime) runSnapshotOrchestration(
 	// indistinguishable from the intentional --no-verify result and
 	// a false negative for restore's durability gate.
 	if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, true, int64(manifestCount)); err != nil {
-		r.failSnap(shareName, snapID)
 		terminalErr = fmt.Errorf("snapshot create %s: mark ready: %w: %v",
 			snapID, models.ErrSnapshotBackupFailed, err)
+		r.failSnap(shareName, snapID, terminalErr)
 		logger.Error("snapshot create: mark ready failed",
 			"snapshot_id", snapID, "share", shareName, "error", err)
 		return
@@ -656,18 +656,23 @@ func drainSentinel(err error) error {
 	return models.ErrSnapshotBackupFailed
 }
 
-// failSnap flips the snapshot row to state='failed'. Best-effort: if the
-// row update itself fails (e.g., DB unavailable), we log but do not
-// double-fail the orchestration error — the wrapped sentinel posted to
-// doneCh is still the authoritative signal for callers, and the
-// startup-recovery scan will reconcile orphaned creating rows on the
-// next restart.
+// failSnap flips the snapshot row to state='failed' and persists cause's
+// message onto the row's Error column so show/list surface the reason
+// instead of "(no error message)". Best-effort: if the row update itself
+// fails (e.g., DB unavailable), we log but do not double-fail the
+// orchestration error — the wrapped sentinel posted to doneCh is still the
+// authoritative signal for callers, and the startup-recovery scan will
+// reconcile orphaned creating rows on the next restart.
 //
 // Uses context.Background so a cancelled parent ctx (the very common
 // reason orchestration is bailing out) does not also prevent the failed
 // flip.
-func (r *Runtime) failSnap(shareName, snapID string) {
-	if err := r.store.UpdateSnapshotState(context.Background(), shareName, snapID, models.StateFailed); err != nil {
+func (r *Runtime) failSnap(shareName, snapID string, cause error) {
+	var msg string
+	if cause != nil {
+		msg = cause.Error()
+	}
+	if err := r.store.MarkSnapshotFailed(context.Background(), shareName, snapID, msg); err != nil {
 		logger.Error("snapshot create: failed to flip state=failed (will reconcile on next restart)",
 			"snapshot_id", snapID,
 			"share", shareName,
@@ -847,7 +852,8 @@ func (r *Runtime) recoverOrphanedSnapshots(ctx context.Context) error {
 			if snap.State != models.StateCreating {
 				continue
 			}
-			if uerr := r.store.UpdateSnapshotState(ctx, shareName, snap.ID, models.StateFailed); uerr != nil {
+			if uerr := r.store.MarkSnapshotFailed(ctx, shareName, snap.ID,
+				"abandoned: server restarted while snapshot was still creating"); uerr != nil {
 				logger.Error("snapshot recovery: flip to failed",
 					"snapshot_id", snap.ID,
 					"share", shareName,

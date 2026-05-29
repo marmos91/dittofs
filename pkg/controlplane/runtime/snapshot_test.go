@@ -201,6 +201,51 @@ func TestRuntimeSnapshot_NamePersists(t *testing.T) {
 	}
 }
 
+// TestRuntimeFailSnap_RecordsError asserts failSnap persists the cause's
+// message onto the row so show/list surface the reason instead of
+// "(no error message)", and that a failed->creating retry clears it.
+func TestRuntimeFailSnap_RecordsError(t *testing.T) {
+	rt := newTestRuntime(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	const shareName = "alpha"
+	snapID, err := rt.store.CreateSnapshot(ctx, &models.Snapshot{
+		ShareName:      shareName,
+		State:          models.StateCreating,
+		MetadataEngine: "memory",
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	cause := errors.New("backup: disk full")
+	rt.failSnap(shareName, snapID, cause)
+
+	got, err := rt.GetSnapshot(ctx, shareName, snapID)
+	if err != nil {
+		t.Fatalf("GetSnapshot: %v", err)
+	}
+	if got.State != models.StateFailed {
+		t.Fatalf("State = %q, want failed", got.State)
+	}
+	if got.Error != "backup: disk full" {
+		t.Fatalf("Error = %q, want %q", got.Error, "backup: disk full")
+	}
+
+	// A retry (failed -> creating) clears the stale error.
+	if err := rt.store.UpdateSnapshotState(ctx, shareName, snapID, models.StateCreating); err != nil {
+		t.Fatalf("UpdateSnapshotState->creating: %v", err)
+	}
+	got, err = rt.GetSnapshot(ctx, shareName, snapID)
+	if err != nil {
+		t.Fatalf("GetSnapshot after retry: %v", err)
+	}
+	if got.Error != "" {
+		t.Fatalf("Error after retry = %q, want empty", got.Error)
+	}
+}
+
 // TestRuntimeGetSnapshot_NotFound asserts ErrSnapshotNotFound propagates
 // from the store through the Runtime wrapper.
 func TestRuntimeGetSnapshot_NotFound(t *testing.T) {

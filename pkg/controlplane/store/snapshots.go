@@ -90,13 +90,20 @@ func (s *GORMStore) UpdateSnapshotState(ctx context.Context, shareName, id, stat
 	if len(priors) == 0 {
 		return models.ErrSnapshotStateConflict
 	}
+	updates := map[string]any{
+		"state":      state,
+		"updated_at": time.Now(),
+	}
+	// A failed->creating retry clears the stale error from the prior
+	// attempt so a subsequent success leaves the row error-free and an
+	// in-flight retry never surfaces the previous failure's message.
+	if state == models.StateCreating {
+		updates["error"] = ""
+	}
 	db := s.db.WithContext(ctx)
 	res := db.Model(&models.Snapshot{}).
 		Where("share_name = ? AND id = ? AND state IN ?", shareName, id, priors).
-		Updates(map[string]any{
-			"state":      state,
-			"updated_at": time.Now(),
-		})
+		Updates(updates)
 	if res.Error != nil {
 		// failed -> creating retries can collide with idx_share_creating
 		// when another snapshot is already in flight for this share. The
@@ -122,6 +129,37 @@ func (s *GORMStore) UpdateSnapshotState(ctx context.Context, shareName, id, stat
 		return models.ErrSnapshotNotFound
 	}
 	return models.ErrSnapshotStateConflict
+}
+
+// MarkSnapshotFailed flips a snapshot to state='failed' and persists errMsg
+// onto the row's Error column in a single UPDATE, so show/list surface the
+// failure reason instead of "(no error message)". Unlike UpdateSnapshotState
+// it does not gate on the prior state: the orchestration goroutine calls this
+// from any pipeline step (still 'creating', or a retry that already flipped
+// back to 'creating'), and the recovery scan must be able to record a reason
+// regardless. errMsg is truncated to fit the column.
+//
+// Returns models.ErrSnapshotNotFound if no row matches (shareName, id).
+func (s *GORMStore) MarkSnapshotFailed(ctx context.Context, shareName, id, errMsg string) error {
+	const maxErrLen = 1024
+	if len(errMsg) > maxErrLen {
+		errMsg = errMsg[:maxErrLen]
+	}
+	db := s.db.WithContext(ctx)
+	res := db.Model(&models.Snapshot{}).
+		Where("share_name = ? AND id = ?", shareName, id).
+		Updates(map[string]any{
+			"state":      models.StateFailed,
+			"error":      errMsg,
+			"updated_at": time.Now(),
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return models.ErrSnapshotNotFound
+	}
+	return nil
 }
 
 // UpdateSnapshotDurable flips the RemoteDurable bit on the snapshot row

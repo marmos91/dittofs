@@ -27,6 +27,7 @@ type Snapshot struct {
 	MetadataEngine string    `gorm:"not null;size:20" json:"metadata_engine"`
 	ManifestCount  int64     `gorm:"not null;default:0" json:"manifest_count"`
 	RemoteDurable  bool      `gorm:"not null;default:false" json:"remote_durable"`
+	Error          string    `gorm:"size:1024" json:"error,omitempty"`
 	CreatedAt      time.Time `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt      time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }

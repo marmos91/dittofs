@@ -234,6 +234,7 @@ func (h *SnapshotHandler) toWire(s *models.Snapshot, includeDisk bool) dto.Snaps
 		Share:         s.ShareName,
 		State:         s.State,
 		RemoteDurable: s.RemoteDurable,
+		Error:         s.Error,
 		CreatedAt:     s.CreatedAt,
 		UpdatedAt:     s.UpdatedAt,
 	}
