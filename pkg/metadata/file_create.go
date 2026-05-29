@@ -200,8 +200,11 @@ func (s *MetadataService) createEntry(
 		return nil, err
 	}
 
-	// Check write permission on parent
-	if err := s.checkWritePermission(ctx, parentHandle); err != nil {
+	// Check create permission on parent. Use the precise NFSv4 mask for the
+	// child being created (ADD_FILE vs ADD_SUBDIRECTORY) so a DACL that
+	// denies only one variant does not also block the other — required by
+	// MS-FSA 2.1.5.1.1 and smbtorture smb2.create.mkdir-visible.
+	if err := s.CheckParentCreateAccess(ctx, parentHandle, fileType == FileTypeDirectory); err != nil {
 		return nil, err
 	}
 
