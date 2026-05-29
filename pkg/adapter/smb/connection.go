@@ -241,6 +241,23 @@ func (c *Connection) Serve(ctx context.Context) {
 				return
 			}
 
+			// Signature verification failure (wrong key or unsigned when
+			// signing was required). Per Samba source3/smbd/smb2_server.c:3253
+			// the response is STATUS_ACCESS_DENIED on the same MessageId and
+			// the TCP connection stays open. The reply is intentionally
+			// unsigned with the inbound signature echoed back so clients with
+			// no_signing_disconnect (smbtorture smb2.session.anon-signing2)
+			// can accept it per libcli/smb/smbXcli_base.c:4529-4538.
+			if errors.Is(err, smb.ErrSignatureVerification) && hdr != nil {
+				if sendErr := smb.SendSignatureFailureResponse(hdr, types.StatusAccessDenied, ci); sendErr != nil {
+					logger.Debug("Failed to send ACCESS_DENIED for signature failure",
+						"address", clientAddr,
+						"sessionID", hdr.SessionID,
+						"error", sendErr)
+				}
+				continue
+			}
+
 			// Track consecutive decryption failures. After 5, drop the connection
 			// to prevent brute-force attacks on the AEAD authentication.
 			if isDecryptionError(err) {

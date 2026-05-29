@@ -309,39 +309,6 @@ reauth-from-fresh-init). Tracked under #747 for the v1.0 milestone.
 | smb2.session.bind_negative_smb3signHtoCs | Session binding | Post-bind fresh-init reauth returns CONNECTION_DISCONNECTED instead of ACCESS_DENIED | #747 |
 | smb2.session.bind_negative_smb3signHtoCd | Session binding | Post-bind fresh-init reauth returns CONNECTION_DISCONNECTED instead of ACCESS_DENIED | #747 |
 
-### Session Signing Variants (Algorithm-Specific Tests)
-
-Algorithm-specific signing tests that validate signing with each algorithm
-in isolation. Newly reachable after GMAC signing fix.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.session.signing-hmac-sha-256 | Session signing | HMAC-SHA-256 signing test not fully passing | #748 |
-| smb2.session.signing-aes-128-cmac | Session signing | AES-128-CMAC signing test not fully passing | #748 |
-| smb2.session.signing-aes-128-gmac | Session signing | AES-128-GMAC signing test not fully passing | #748 |
-
-### Session Encryption Variants (Algorithm-Specific Tests)
-
-Algorithm-specific encryption tests that validate encryption with each cipher.
-Newly reachable after GMAC signing fix.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.session.encryption-aes-128-ccm | Session encryption | AES-128-CCM encryption test not fully passing | #748 |
-| smb2.session.encryption-aes-128-gcm | Session encryption | AES-128-GCM encryption test not fully passing | #748 |
-| smb2.session.encryption-aes-256-ccm | Session encryption | AES-256-CCM encryption test not fully passing | #748 |
-| smb2.session.encryption-aes-256-gcm | Session encryption | AES-256-GCM encryption test not fully passing | #748 |
-
-### Anonymous Session (Remaining)
-
-Phase 73 Plan 03 implemented anonymous session encryption bypass per MS-SMB2
-3.3.5.2.9. anon-encryption1-3 now pass. Remaining signing tests need further work.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.session.anon-signing1 | Anonymous session | Anonymous session signing not fully passing | #748 |
-| smb2.session.anon-signing2 | Anonymous session | Anonymous session signing not fully passing | #748 |
-
 ### Replay Protection (Not Implemented)
 
 Replay protection requires tracking channel sequences and detecting replayed

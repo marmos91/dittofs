@@ -17,6 +17,7 @@ import (
 	"crypto/rand"
 	"crypto/rc4" //nolint:gosec // RC4 required for NTLM KEY_EXCH; only encrypts session key, not message data
 	"encoding/binary"
+	"hash/crc32"
 	"os"
 	"strings"
 	"time"
@@ -945,6 +946,21 @@ type NTLMSSPMechListMICDebug struct {
 //
 // If dbg is non-nil it is populated with intermediates for diagnosis.
 func ComputeNTLMSSPMechListMIC(exportedSessionKey [16]byte, mechListBytes []byte, flags NegotiateFlag, dbg *NTLMSSPMechListMICDebug) []byte {
+	// Without NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY ("NTLM2") the
+	// signature layout is the legacy MS-NLMP §3.4.4.1 form:
+	//   Version(4) | RandomPad(4) | Checksum=CRC32(4) | SeqNum(4)
+	// all but Version derived from a single RC4 keystream seeded with the
+	// sealing key. Samba's ntlmssp_check_packet at libcli/auth/ntlmssp_sign.c
+	// :305-317 compares bytes 8-15 (Checksum + SeqNum) in this case — the
+	// HMAC-MD5 layout we used for NTLM2 lands the wrong bytes there and the
+	// client rejects the SPNEGO accept with NT_STATUS_INVALID_PARAMETER
+	// (smb2.session.anon-signing1/2: samba clears CLI_CRED_NTLM2 for
+	// anonymous credentials in credentials_ntlm.c:143, so the anon flows
+	// always hit this branch).
+	if flags&FlagExtendedSecurity == 0 {
+		return computeNTLMSSPMechListMICLegacy(exportedSessionKey, mechListBytes, flags, dbg)
+	}
+
 	h := md5.New()
 	h.Write(exportedSessionKey[:])
 	h.Write([]byte(serverSignMagic))
@@ -1007,6 +1023,90 @@ func ComputeNTLMSSPMechListMIC(exportedSessionKey [16]byte, mechListBytes []byte
 		copy(dbg.HMACChecksum[:], fullHMAC[:8])
 		dbg.SealKeystreamHi = keystream
 		copy(dbg.SealedChecksum[:], checksum)
+		copy(dbg.MIC[:], mic)
+	}
+
+	return mic
+}
+
+// computeNTLMSSPMechListMICLegacy computes the SPNEGO mechListMIC for the
+// legacy NTLM1 path (no NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY). Per
+// MS-NLMP §3.4.4.1 the signature is:
+//
+//	Version(4) | RandomPad(4) | Checksum=CRC32(4) | SeqNum(4)
+//
+// RandomPad, Checksum and SeqNum are all driven by a single RC4 stream
+// seeded with the SealingKey:
+//
+//	Handle = RC4(SealingKey)
+//	RandomPad = RC4(Handle, 0x00000000)
+//	Checksum  = RC4(Handle, CRC32(M))
+//	SeqNum    = RC4(Handle, 0x00000000) XOR appSeqNum
+//
+// For SPNEGO mechListMIC the application SeqNum is 0, so the wire SeqNum
+// equals the next 4 keystream bytes.
+//
+// Legacy SealingKey derivation follows Samba's
+// auth/ntlmssp/ntlmssp_sign.c:785-833 (NTLM1 branch), which is what the
+// peer actually computes — the MS-NLMP §3.4.5.3 spec text doesn't capture
+// that weakening is gated on NTLMSSP_NEGOTIATE_LM_KEY remaining in the
+// effective neg_flags. For anonymous and any other path where LM_KEY was
+// stripped (server-side: ntlmssp_server.c:1005/1017/1026/1033 strip
+// LM_KEY whenever the auth doesn't carry an LM response), do_weak=false
+// and the seal key is the raw 16-byte session key. Only when LM_KEY
+// survives AND the session key is >=16 bytes does the legacy "first 5 +
+// 0xE5 0x38 0xB0" (or "first 7 + 0xA0" for NEGOTIATE_56) weakening apply.
+//
+// FlagAnonymous in the wire neg_flags is the load-bearing signal: Samba
+// always strips LM_KEY for anonymous (credentials_ntlm.c:131 produces no
+// LM session key, and server-side 1005 strips LM_KEY accordingly), so we
+// match that by ignoring LM_KEY when FlagAnonymous is set.
+func computeNTLMSSPMechListMICLegacy(exportedSessionKey [16]byte, mechListBytes []byte, flags NegotiateFlag, dbg *NTLMSSPMechListMICDebug) []byte {
+	doWeak := flags&FlagLMKey != 0 && flags&FlagAnonymous == 0
+	var sealKey []byte
+	switch {
+	case !doWeak:
+		sealKey = make([]byte, 16)
+		copy(sealKey, exportedSessionKey[:16])
+	case flags&Flag56 != 0:
+		sealKey = make([]byte, 8)
+		copy(sealKey, exportedSessionKey[:7])
+		sealKey[7] = 0xA0
+	default:
+		sealKey = make([]byte, 8)
+		copy(sealKey, exportedSessionKey[:5])
+		sealKey[5] = 0xE5
+		sealKey[6] = 0x38
+		sealKey[7] = 0xB0
+	}
+
+	mic := make([]byte, 16)
+	binary.LittleEndian.PutUint32(mic[0:4], 0x00000001)
+
+	cipher, err := rc4.NewCipher(sealKey)
+	if err != nil {
+		return mic
+	}
+
+	// RandomPad: keystream bytes 0-3
+	cipher.XORKeyStream(mic[4:8], make([]byte, 4))
+
+	// Checksum: keystream bytes 4-7 XOR CRC32(mechList)
+	crc := crc32.ChecksumIEEE(mechListBytes)
+	var crcLE [4]byte
+	binary.LittleEndian.PutUint32(crcLE[:], crc)
+	cipher.XORKeyStream(mic[8:12], crcLE[:])
+
+	// SeqNum: keystream bytes 8-11 XOR 0 = keystream
+	cipher.XORKeyStream(mic[12:16], make([]byte, 4))
+
+	if dbg != nil {
+		copy(dbg.SealingKey[:], sealKey)
+		// Re-seed to expose the keystream prefix for diagnosis.
+		if c2, err := rc4.NewCipher(sealKey); err == nil {
+			c2.XORKeyStream(dbg.SealKeystreamHi[:], make([]byte, 8))
+		}
+		copy(dbg.SealedChecksum[:4], mic[8:12])
 		copy(dbg.MIC[:], mic)
 	}
 

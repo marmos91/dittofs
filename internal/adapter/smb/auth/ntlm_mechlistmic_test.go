@@ -6,6 +6,7 @@ import (
 	"crypto/md5" //nolint:gosec // MD5 is required for NTLM protocol testing
 	"crypto/rc4" //nolint:gosec // RC4 required to reproduce NTLMSSP seal in the oracle
 	"encoding/binary"
+	"hash/crc32"
 	"testing"
 )
 
@@ -63,6 +64,10 @@ func TestComputeNTLMSSPMechListMIC(t *testing.T) {
 		return out
 	}
 
+	// All cases negotiate NTLM2 extended session security (FlagExtendedSecurity)
+	// — that is what every modern SMB client advertises. The legacy NTLM1
+	// layout exercised by computeNTLMSSPMechListMICLegacy is covered by
+	// TestComputeNTLMSSPMechListMICLegacy below.
 	cases := []struct {
 		name         string
 		flags        NegotiateFlag
@@ -70,22 +75,22 @@ func TestComputeNTLMSSPMechListMIC(t *testing.T) {
 	}{
 		{
 			name:         "NoKeyExch_PlainHMAC",
-			flags:        FlagNTLM,
+			flags:        FlagNTLM | FlagExtendedSecurity,
 			wantChecksum: hmacChecksum,
 		},
 		{
 			name:         "KeyExch_40bit_FirstBranch",
-			flags:        FlagNTLM | FlagKeyExch,
+			flags:        FlagNTLM | FlagKeyExch | FlagExtendedSecurity,
 			wantChecksum: sealedWith(exportedSessionKey[:5]),
 		},
 		{
 			name:         "KeyExch_56bit",
-			flags:        FlagNTLM | FlagKeyExch | Flag56,
+			flags:        FlagNTLM | FlagKeyExch | Flag56 | FlagExtendedSecurity,
 			wantChecksum: sealedWith(exportedSessionKey[:7]),
 		},
 		{
 			name:         "KeyExch_128bit",
-			flags:        FlagNTLM | FlagKeyExch | Flag128,
+			flags:        FlagNTLM | FlagKeyExch | Flag128 | FlagExtendedSecurity,
 			wantChecksum: sealedWith(exportedSessionKey[:16]),
 		},
 	}
@@ -111,7 +116,7 @@ func TestComputeNTLMSSPMechListMIC(t *testing.T) {
 
 	// Sealing must actually cover mechListBytes — guards against no-op bugs.
 	t.Run("MICCoversInput", func(t *testing.T) {
-		flags := FlagNTLM | FlagKeyExch
+		flags := FlagNTLM | FlagKeyExch | FlagExtendedSecurity
 		a := ComputeNTLMSSPMechListMIC(exportedSessionKey, mechListBytes, flags, nil)
 		b := ComputeNTLMSSPMechListMIC(exportedSessionKey, append([]byte{0xff}, mechListBytes...), flags, nil)
 		if bytes.Equal(a[4:12], b[4:12]) {
@@ -122,7 +127,7 @@ func TestComputeNTLMSSPMechListMIC(t *testing.T) {
 	// Debug struct gets populated with all intermediates when provided.
 	t.Run("DebugStructPopulated", func(t *testing.T) {
 		var dbg NTLMSSPMechListMICDebug
-		mic := ComputeNTLMSSPMechListMIC(exportedSessionKey, mechListBytes, FlagNTLM|FlagKeyExch, &dbg)
+		mic := ComputeNTLMSSPMechListMIC(exportedSessionKey, mechListBytes, FlagNTLM|FlagKeyExch|FlagExtendedSecurity, &dbg)
 		if !bytes.Equal(dbg.MIC[:], mic) {
 			t.Error("dbg.MIC does not match returned mic")
 		}
@@ -131,6 +136,80 @@ func TestComputeNTLMSSPMechListMIC(t *testing.T) {
 		}
 		if dbg.HMACChecksum == [8]byte{} {
 			t.Error("dbg.HMACChecksum is zero")
+		}
+	})
+}
+
+// TestComputeNTLMSSPMechListMICLegacy guards the NTLM1 (no
+// EXTENDED_SESSIONSECURITY) layout: Version | RandomPad | RC4-sealed CRC32 |
+// RC4-keystream SeqNum, with sealing key per Samba ntlmssp_sign.c:785-833
+// (raw 16-byte session key when LM_KEY is stripped — anonymous always, else
+// weakened with 40-bit / 56-bit tail). Exercises the anonymous path that
+// flips smbtorture smb2.session.anon-signing1.
+func TestComputeNTLMSSPMechListMICLegacy(t *testing.T) {
+	exportedSessionKey := [16]byte{
+		0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+		0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+	}
+	mechListBytes := []byte{
+		0x30, 0x0c, 0x06, 0x0a,
+		0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x0a,
+	}
+
+	expectMIC := func(t *testing.T, sealKey []byte, mechList []byte) []byte {
+		t.Helper()
+		mic := make([]byte, 16)
+		binary.LittleEndian.PutUint32(mic[0:4], 1)
+		cipher, err := rc4.NewCipher(sealKey)
+		if err != nil {
+			t.Fatalf("rc4 init: %v", err)
+		}
+		cipher.XORKeyStream(mic[4:8], make([]byte, 4))
+		crc := crc32.ChecksumIEEE(mechList)
+		var crcLE [4]byte
+		binary.LittleEndian.PutUint32(crcLE[:], crc)
+		cipher.XORKeyStream(mic[8:12], crcLE[:])
+		cipher.XORKeyStream(mic[12:16], make([]byte, 4))
+		return mic
+	}
+
+	t.Run("Anonymous_RawSessionKey", func(t *testing.T) {
+		// Anonymous flow: LM_KEY in wire flags but FlagAnonymous strips
+		// weakening — seal key is the full 16-byte ExportedSessionKey.
+		flags := FlagNTLM | FlagKeyExch | FlagLMKey | FlagAnonymous
+		want := expectMIC(t, exportedSessionKey[:16], mechListBytes)
+		got := ComputeNTLMSSPMechListMIC(exportedSessionKey, mechListBytes, flags, nil)
+		if !bytes.Equal(got, want) {
+			t.Errorf("legacy MIC mismatch\nexpected %x\n     got %x", want, got)
+		}
+	})
+
+	t.Run("LMKey_40bit_Weakened", func(t *testing.T) {
+		// LM_KEY without FlagAnonymous — weakening applies, 40-bit tail.
+		flags := FlagNTLM | FlagKeyExch | FlagLMKey
+		want := expectMIC(t, append(append([]byte{}, exportedSessionKey[:5]...), 0xE5, 0x38, 0xB0), mechListBytes)
+		got := ComputeNTLMSSPMechListMIC(exportedSessionKey, mechListBytes, flags, nil)
+		if !bytes.Equal(got, want) {
+			t.Errorf("legacy MIC mismatch\nexpected %x\n     got %x", want, got)
+		}
+	})
+
+	t.Run("LMKey_56bit_Weakened", func(t *testing.T) {
+		flags := FlagNTLM | FlagKeyExch | FlagLMKey | Flag56
+		want := expectMIC(t, append(append([]byte{}, exportedSessionKey[:7]...), 0xA0), mechListBytes)
+		got := ComputeNTLMSSPMechListMIC(exportedSessionKey, mechListBytes, flags, nil)
+		if !bytes.Equal(got, want) {
+			t.Errorf("legacy MIC mismatch\nexpected %x\n     got %x", want, got)
+		}
+	})
+
+	t.Run("NoLMKey_RawSessionKey", func(t *testing.T) {
+		// No LM_KEY → no weakening regardless of Anonymous.
+		flags := FlagNTLM | FlagKeyExch
+		want := expectMIC(t, exportedSessionKey[:16], mechListBytes)
+		got := ComputeNTLMSSPMechListMIC(exportedSessionKey, mechListBytes, flags, nil)
+		if !bytes.Equal(got, want) {
+			t.Errorf("legacy MIC mismatch\nexpected %x\n     got %x", want, got)
 		}
 	})
 }
