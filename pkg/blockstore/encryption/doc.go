@@ -48,4 +48,70 @@
 // Absence of the encryption block means no wrapping (zero behavior
 // change). AEAD defaults to AES-256-GCM when the encryption block is
 // present without an explicit aead key.
+//
+// # Composition order
+//
+// When the compression decorator is also enabled for a remote, encryption
+// is the INNERMOST wrapper and compression is OUTERMOST, so the on-Put
+// data flow is
+//
+//	caller plaintext
+//	  → compression.Decorator (compress)
+//	  → encryption.EncryptedRemote (encrypt compressed bytes)
+//	  → inner remote.RemoteStore
+//
+// Get inverts the order: fetch ciphertext, decrypt, then decompress.
+// Encryption operates on whatever bytes the compression layer hands it —
+// the compressed body when the block was compressible, the raw
+// plaintext otherwise (the compression layer skips its frame when the
+// body would not shrink). EncryptedRemote does not know or care which
+// shape it sees; it simply encrypts the bytes presented on Put.
+//
+// Rationale: AEAD output has near-maximum entropy, so compressing
+// ciphertext yields a ratio of ~1.0 and wastes CPU. Compressing first
+// is the only ordering that preserves space savings.
+//
+// The CAS key is BLAKE3 over the PLAINTEXT bytes — not over the
+// compressed body, not over the ciphertext. Both decorators preserve
+// that invariant: compression keeps the hash key untouched on the way
+// down, and encryption binds the plaintext hash into the AEAD's
+// additional-authenticated-data (the hash[:] argument to Seal / Open in
+// [EncryptedRemote.Put] and the package-internal decrypt path). A swapped block
+// at the inner store fails authentication on Get because its declared
+// hash will not match the AAD bound at Put time. Dedup works across
+// remotes with different keys, AEADs, or compression policies because
+// identical plaintexts always hash to the same content key.
+//
+// Per-Put cryptographic material
+//
+//   - Block key: 32 random bytes from crypto/rand, fresh per Put,
+//     wrapped under the share's master key by the configured
+//     [keyprovider.KeyProvider] and stored in the frame header.
+//   - Nonce: AEAD-specific length from crypto/rand, fresh per Put,
+//     stored alongside the ciphertext (12 bytes for AES-256-GCM and
+//     ChaCha20-Poly1305; 24 bytes for XChaCha20-Poly1305). XChaCha's
+//     larger nonce is safe to draw at random at very high block counts;
+//     the 12-byte variants assume a per-share block budget well inside
+//     the birthday bound for random nonces.
+//
+// Composition is fixed in the controlplane share service — there is no
+// runtime toggle to flip the order. The order is established once at
+// remote-store construction and immutable for the lifetime of the
+// remote.
+//
+// Example wiring (showing the canonical composition)
+//
+//	// inner is any concrete remote.RemoteStore (S3, on-disk, …).
+//	encrypted, err := encryption.NewRemote(inner, encPolicy, keyProvider)
+//	if err != nil {
+//	    return nil, err
+//	}
+//	compressed, err := compression.NewRemote(encrypted, compPolicy)
+//	if err != nil {
+//	    _ = encrypted.Close()
+//	    return nil, err
+//	}
+//	// Hand `compressed` to the engine as the BlockStore for the share.
+//	// On Put the engine sees only plaintext; bytes are compressed first,
+//	// then encrypted, then handed to inner.
 package encryption
