@@ -67,7 +67,7 @@ func TestRollup_DivergentInterval_DroppedNoLoop(t *testing.T) {
 	// rollupFile until the divergent interval is the earliest stable.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := bc.rollupFile(ctx, payloadID); err != nil {
+		if err := bc.rollupFile(ctx, payloadID, false); err != nil {
 			t.Fatalf("rollupFile returned error (divergence wedge regression): %v", err)
 		}
 		bc.logsMu.RLock()
@@ -118,7 +118,7 @@ func TestRollup_DivergentInterval_NoErrorReturned(t *testing.T) {
 	tree.Insert(0, 4096, pastTouch)
 	mu.Unlock()
 
-	if err := bc.rollupFile(ctx, payloadID); err != nil {
+	if err := bc.rollupFile(ctx, payloadID, false); err != nil {
 		t.Fatalf("rollupFile returned error on divergent interval: %v", err)
 	}
 
@@ -131,7 +131,7 @@ func TestRollup_DivergentInterval_NoErrorReturned(t *testing.T) {
 	}
 
 	// Second pass: must remain a no-op (no loop).
-	if err := bc.rollupFile(ctx, payloadID); err != nil {
+	if err := bc.rollupFile(ctx, payloadID, false); err != nil {
 		t.Fatalf("second rollupFile after drain returned error: %v", err)
 	}
 }

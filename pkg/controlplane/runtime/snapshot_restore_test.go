@@ -37,6 +37,58 @@ func TestRestoreSnapshot_Integration(t *testing.T) {
 	t.Run("PreVerifyFailsFast", testRestorePreVerifyFailsFast)
 	t.Run("PostVerifyFails", testRestorePostVerifyFails)
 	t.Run("InterruptedRestore", testRestoreInterruptedReset)
+	t.Run("LocalOnlyRestore", testRestoreLocalOnly)
+}
+
+// testRestoreLocalOnly asserts a share with no remote store can snapshot
+// (NoVerify) and restore: the pre/post remote HEAD-probe verify is skipped
+// rather than erroring out, and data is recovered from local CAS.
+func testRestoreLocalOnly(t *testing.T) {
+	fx := newRestoreFixture(t, restoreFixtureOpts{localOnly: true})
+	defer fx.close()
+
+	ctx := fx.ctx()
+	files := fx.populateFiles(ctx, []string{"lo.bin"})
+
+	// No remote → snapshot must use NoVerify (RemoteDurable=false).
+	snapID, err := fx.rt.CreateSnapshot(ctx, fx.shareName, CreateSnapshotOpts{NoVerify: true})
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	snap, werr := fx.rt.WaitForSnapshot(ctx, fx.shareName, snapID)
+	if werr != nil {
+		t.Fatalf("WaitForSnapshot: %v", werr)
+	}
+	if snap.State != models.StateReady {
+		t.Fatalf("snap.State = %q, want ready", snap.State)
+	}
+	if snap.RemoteDurable {
+		t.Fatal("snap.RemoteDurable = true, want false on a local-only share")
+	}
+
+	// Mutate: delete the file.
+	fx.deleteFileCascade(ctx, files[0])
+
+	// Restore must succeed despite no remote (AllowNonDurable required since
+	// the snapshot is not remote-durable).
+	safetyID, err := fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{AllowNonDurable: true})
+	if err != nil {
+		t.Fatalf("RestoreSnapshot(local-only): %v", err)
+	}
+	if safetyID == "" {
+		t.Fatal("RestoreSnapshot: safetySnapshotID empty on success")
+	}
+
+	// Data restored.
+	if _, gerr := fx.meta.GetFile(ctx, files[0].handle); gerr != nil {
+		t.Fatalf("GetFile post-restore: deleted file not recovered: %v", gerr)
+	}
+
+	// Share stays disabled.
+	enabled, _ := fx.rt.sharesSvc.IsShareEnabled(fx.shareName)
+	if enabled {
+		t.Fatal("share enabled after local-only restore — must stay disabled")
+	}
 }
 
 // ----- Sub-tests -----
@@ -267,9 +319,7 @@ func testRestoreAllowNonDurable(t *testing.T) {
 	fx.seedRemoteAll(fx.allHashes())
 
 	// Mutate: delete the file.
-	if err := fx.meta.DeleteFile(ctx, files[0].handle); err != nil {
-		t.Fatalf("delete pre-restore: %v", err)
-	}
+	fx.deleteFileCascade(ctx, files[0])
 
 	if _, err := fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{AllowNonDurable: true}); err != nil {
 		t.Fatalf("RestoreSnapshot(AllowNonDurable): %v", err)
@@ -307,9 +357,7 @@ func testRestorePreVerifyFailsFast(t *testing.T) {
 	// Mutate so pre-Reset state has something distinct (witness for the
 	// metadata-unchanged invariant). Then arm the head-failure for ONE
 	// hash on every subsequent call (threshold=0).
-	if err := fx.meta.DeleteFile(ctx, files[0].handle); err != nil {
-		t.Fatalf("delete pre-restore witness: %v", err)
-	}
+	fx.deleteFileCascade(ctx, files[0])
 	preCount := fx.countFiles(ctx)
 	fx.remote.failHashAfterCount(files[1].hashes[0], 0) // every Head() for this hash fails
 
@@ -364,9 +412,7 @@ func testRestorePostVerifyFails(t *testing.T) {
 	// Mutate AFTER snapshot create: delete files[0]. files[0].hashes[0]
 	// is now only in the source manifest (the safety snap will capture
 	// the mutated state without it).
-	if err := fx.meta.DeleteFile(ctx, files[0].handle); err != nil {
-		t.Fatalf("delete files[0]: %v", err)
-	}
+	fx.deleteFileCascade(ctx, files[0])
 
 	// Arm head-failure for files[0].hashes[0] starting at the 2nd call.
 	// Sequence:
@@ -426,9 +472,7 @@ func testRestoreInterruptedReset(t *testing.T) {
 	// intermediate state. We delete files[0] — the safety snap will
 	// reflect "only files[1] survives" and recovery must put us back to
 	// that state.
-	if err := fx.meta.DeleteFile(ctx, files[0].handle); err != nil {
-		t.Fatalf("delete files[0]: %v", err)
-	}
+	fx.deleteFileCascade(ctx, files[0])
 
 	// Arm Reset failure (one-shot).
 	fx.failable.setFailNextReset(true)
@@ -518,6 +562,11 @@ type restoreFixtureOpts struct {
 	// Reset failure mid-orchestration. Other sub-tests use the plain
 	// MemoryMetadataStore directly.
 	useFailableResetable bool
+
+	// localOnly builds the share with no remote block store (RemoteStore()
+	// returns nil). Exercises the local-only restore path that skips the
+	// remote HEAD-probe pre/post verify.
+	localOnly bool
 }
 
 func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
@@ -556,16 +605,21 @@ func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
 	shareName := "restore-data"
 
 	localStore := bsmemory.New()
-	innerRemote := remotememory.New()
-	t.Cleanup(func() { _ = innerRemote.Close() })
-	wrappedRemote := newRestoreRemote(innerRemote)
-	syncer := engine.NewSyncer(localStore, wrappedRemote, mem, engine.SyncerConfig{
+	var wrappedRemote *restoreRemote
+	var engineRemote remote.RemoteStore
+	if !opts.localOnly {
+		innerRemote := remotememory.New()
+		t.Cleanup(func() { _ = innerRemote.Close() })
+		wrappedRemote = newRestoreRemote(innerRemote)
+		engineRemote = wrappedRemote
+	}
+	syncer := engine.NewSyncer(localStore, engineRemote, mem, engine.SyncerConfig{
 		ParallelUploads:   1,
 		ParallelDownloads: 1,
 	})
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
-		Remote:         wrappedRemote,
+		Remote:         engineRemote,
 		Syncer:         syncer,
 		FileBlockStore: mem,
 	})
@@ -697,6 +751,28 @@ func (f *restoreFixture) populateFiles(ctx context.Context, names []string) []fi
 		out = append(out, ff)
 	}
 	return out
+}
+
+// deleteFileCascade deletes the file AND the standalone FileBlock row the
+// fixture seeded alongside it (ID "<fileID>-blk-0"). Production deletes
+// cascade FileBlock rows via the engine's refcount→GC path, so the test
+// must mirror that — otherwise an orphaned FileBlock row makes the
+// post-delete snapshot's empty manifest disagree with EnumerateFileBlocks
+// and trips the C3 "empty-manifest-on-non-empty-share" guard in
+// CreateSnapshot.
+func (f *restoreFixture) deleteFileCascade(ctx context.Context, ff fileFixture) {
+	f.t.Helper()
+	if err := f.meta.DeleteFile(ctx, ff.handle); err != nil {
+		f.t.Fatalf("deleteFileCascade DeleteFile: %v", err)
+	}
+	_, fileID, err := metadata.DecodeFileHandle(ff.handle)
+	if err != nil {
+		f.t.Fatalf("deleteFileCascade DecodeFileHandle: %v", err)
+	}
+	if derr := f.meta.Delete(ctx, fileID.String()+"-blk-0"); derr != nil &&
+		!errors.Is(derr, blockstore.ErrFileBlockNotFound) {
+		f.t.Fatalf("deleteFileCascade Delete FileBlock: %v", derr)
+	}
 }
 
 func (f *restoreFixture) allHashes() []blockstore.ContentHash {

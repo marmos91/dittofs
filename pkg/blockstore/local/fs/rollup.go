@@ -76,7 +76,7 @@ func (bc *FSStore) chunkRollupWorker(ctx context.Context, _ int) {
 	for {
 		select {
 		case pid := <-bc.rollupCh:
-			if err := bc.rollupFile(ctx, pid); err != nil {
+			if err := bc.rollupFile(ctx, pid, false); err != nil {
 				// Log at Error so misconfigured or corrupted state is
 				// observable; the dirty interval stays in the tree and
 				// a future pass (or restart + recovery) retries. A
@@ -110,7 +110,7 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 		if err := ctx.Err(); err != nil {
 			return
 		}
-		if err := bc.rollupFile(ctx, pid); err != nil {
+		if err := bc.rollupFile(ctx, pid, false); err != nil {
 			slog.Error("rollupFile failed",
 				"payloadID", pid, "error", err, "source", "ticker")
 		}
@@ -147,7 +147,15 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 //
 // will reconcile the header on next boot.
 //  5. tree.ConsumeUpTo + logBytesTotal.Add(-reclaimed) + pressureCh signal.
-func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
+//
+// force=true bypasses the stabilization-window gate: the earliest dirty
+// interval is consumed regardless of how recently it was touched. This is
+// the snapshot-drain path (DrainRollups) — at snapshot time we want every
+// written byte flushed to CAS + the FileBlock manifest NOW, not just the
+// bytes that have aged past the stabilization window. Steady-state rollup
+// (worker pool, ticker) always passes force=false to preserve the
+// stabilization invariant.
+func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool) error {
 	if bc.isClosed() {
 		return nil
 	}
@@ -197,7 +205,15 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string) error {
 		return nil
 	}
 
-	stable, ok := tree.EarliestStable(time.Now(), stabilization)
+	var stable interval
+	var ok bool
+	if force {
+		// Snapshot drain: take the earliest dirty interval regardless of
+		// the stabilization window. Every written byte must reach CAS.
+		stable, ok = tree.Earliest()
+	} else {
+		stable, ok = tree.EarliestStable(time.Now(), stabilization)
+	}
 	if !ok {
 		return nil
 	}

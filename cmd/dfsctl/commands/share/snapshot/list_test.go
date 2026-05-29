@@ -31,6 +31,40 @@ func TestList_EmptyTable(t *testing.T) {
 	}
 }
 
+func TestList_InvalidStateErrors(t *testing.T) {
+	resetListFlags()
+	listState = "redy" // typo
+	fc := &fakeClient{snapshots: map[string]*apiclient.Snapshot{}}
+	withFakeClient(t, fc)
+	cmdutil.Flags.Output = "table"
+
+	err := runList(listCmd, []string{"/archive"})
+	if err == nil || !strings.Contains(err.Error(), "invalid --state") {
+		t.Fatalf("err = %v, want invalid --state error", err)
+	}
+}
+
+func TestList_EmptyMessageReflectsFilters(t *testing.T) {
+	resetListFlags()
+	listState = "ready"
+	listNamePrefix = "wk"
+	// A creating snapshot exists but the ready+wk filter excludes it.
+	fc := &fakeClient{listOverride: []apiclient.Snapshot{
+		{ID: "x", State: "creating", CreatedAt: time.Now()},
+	}}
+	withFakeClient(t, fc)
+
+	got := emptyListMessage("/archive", listState, listNamePrefix)
+	if !strings.Contains(got, "state=ready") || !strings.Contains(got, "name-prefix=wk") {
+		t.Fatalf("empty message %q does not reflect active filters", got)
+	}
+	// No-filter case keeps the plain message.
+	plain := emptyListMessage("/archive", "", "")
+	if strings.Contains(plain, "matching") {
+		t.Fatalf("plain message unexpectedly mentions filters: %q", plain)
+	}
+}
+
 func TestList_FilterByState(t *testing.T) {
 	resetListFlags()
 	listState = "ready"

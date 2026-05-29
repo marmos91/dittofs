@@ -49,6 +49,10 @@ func (f *fakeCoordinator) PersistFileBlocks(_ context.Context, payloadID string,
 	return nil
 }
 
+func (f *fakeCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]blockstore.BlockRef, error) {
+	return nil, nil
+}
+
 // FindByObjectID stub. Adapter-common tests don't exercise short-circuit
 // lookups (those live in pkg/blockstore/engine and pkg/metadata/storetest);
 // satisfy the interface so the fake satisfies engine.MetadataCoordinator.

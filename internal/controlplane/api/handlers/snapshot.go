@@ -127,6 +127,7 @@ func (h *SnapshotHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snapID, err := h.runtime.CreateSnapshot(r.Context(), name, runtime.CreateSnapshotOpts{
+		Name:     req.Name,
 		NoVerify: req.NoVerify,
 		RetryOf:  req.RetryOf,
 	})
@@ -229,9 +230,11 @@ func (h *SnapshotHandler) Restore(w http.ResponseWriter, r *http.Request) {
 func (h *SnapshotHandler) toWire(s *models.Snapshot, includeDisk bool) dto.Snapshot {
 	out := dto.Snapshot{
 		ID:            s.ID,
+		Name:          s.Name,
 		Share:         s.ShareName,
 		State:         s.State,
 		RemoteDurable: s.RemoteDurable,
+		Error:         s.Error,
 		CreatedAt:     s.CreatedAt,
 		UpdatedAt:     s.UpdatedAt,
 	}
@@ -281,6 +284,9 @@ func mapSnapshotError(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, models.ErrSnapshotNotFound):
 		NotFound(w, "snapshot not found")
 		return true
+	case errors.Is(err, models.ErrSnapshotLocalStoreUnsupported):
+		BadRequest(w, "snapshots require an fs-backed local store")
+		return true
 	case errors.Is(err, shares.ErrShareNotFound):
 		NotFound(w, "share not found")
 		return true
@@ -295,6 +301,9 @@ func mapSnapshotError(w http.ResponseWriter, err error) bool {
 		return true
 	case errors.Is(err, models.ErrSnapshotRetryTargetNotFailed):
 		Conflict(w, "retry target is not in failed state")
+		return true
+	case errors.Is(err, models.ErrSnapshotInFlight):
+		Conflict(w, "snapshot operation is in progress; retry once it completes")
 		return true
 	case errors.Is(err, models.ErrSnapshotStateConflict):
 		Conflict(w, "snapshot is not in a state that allows this operation")

@@ -31,6 +31,16 @@ func init() {
 func runDelete(cmd *cobra.Command, args []string) error {
 	share, id := args[0], args[1]
 
+	client, err := getClient()
+	if err != nil {
+		return err
+	}
+
+	id, err = resolveSnapshotID(client, share, id)
+	if err != nil {
+		return err
+	}
+
 	prompt := fmt.Sprintf("Delete snapshot %s from share %s? This cannot be undone.", id, share)
 	ok, err := cmdutil.ConfirmDestructive(prompt, deleteYes)
 	if err != nil {
@@ -39,11 +49,6 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	if !ok {
 		fmt.Println("Aborted.")
 		return nil
-	}
-
-	client, err := getClient()
-	if err != nil {
-		return err
 	}
 
 	if err := client.DeleteSnapshot(share, id); err != nil {

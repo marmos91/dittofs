@@ -37,6 +37,19 @@ var (
 	ErrSnapshotRetryTargetNotFound  = errors.New("snapshot retry target not found")
 	ErrSnapshotRetryTargetNotFailed = errors.New("snapshot retry target is not in failed state")
 
+	// ErrSnapshotInFlight is returned when an operation (delete) is
+	// attempted on a snapshot whose create/retry orchestration is still
+	// running. Mapped to 409 — the caller should retry once the
+	// orchestration reaches a terminal state.
+	ErrSnapshotInFlight = errors.New("snapshot operation is in progress")
+
+	// ErrSnapshotLocalStoreUnsupported is returned when a snapshot is
+	// requested on a share whose local block store has no on-disk root
+	// (the in-memory backend), so the metadata.dump + manifest.hashes
+	// artifacts have nowhere to be written. Mapped to 400 (client config
+	// error, not a server fault).
+	ErrSnapshotLocalStoreUnsupported = errors.New("snapshots require an fs-backed local store")
+
 	// Restore orchestration sentinels.
 	ErrShareEnabled                = errors.New("share must be disabled before restore")
 	ErrSnapshotNotDurable          = errors.New("snapshot is not remote-durable; pass AllowNonDurable to override")

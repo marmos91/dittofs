@@ -197,7 +197,65 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 			if bs.coordinator == nil {
 				return nil
 			}
-			return bs.coordinator.PersistFileBlocks(ctx, payloadID, blocks, objectID)
+			// The persister fires once per rollup PASS, carrying only the
+			// chunks rolled in THAT pass. FileAttr.Blocks (the snapshot
+			// manifest source, read by metadata Backup) must reflect the
+			// COMPLETE file, so a multi-pass rollup (append, or a large
+			// write split across stabilization windows) cannot persist the
+			// partial pass list here — that REPLACES FileAttr.Blocks with
+			// only the last pass's chunks, silently dropping every prior
+			// pass from the manifest (#789, backend-agnostic — Postgres
+			// just hits multi-pass more often via slower txns).
+			//
+			// Merge this pass's blocks into the already-persisted list
+			// (read back via the coordinator — file_block_refs / encoded
+			// FileAttr.Blocks, both of which store the content hash, unlike
+			// the per-file FileBlock index whose Pending rows carry a NULL
+			// hash on Postgres). The merge is offset-keyed: this pass's
+			// blocks overlay any overlapping byte ranges (in-place rewrite)
+			// and extend the rest (append). Recompute the Merkle-root
+			// ObjectID over the COMPLETE list so it matches a single-pass
+			// write of identical content and file-level dedup still resolves.
+			persistBlocks, persistObjID := blocks, objectID
+			existing, gerr := bs.coordinator.GetPersistedBlocks(ctx, payloadID)
+			if gerr != nil {
+				return fmt.Errorf("ObjectIDPersister: read persisted blocks for %s: %w", payloadID, gerr)
+			}
+			if len(existing) > 0 {
+				persistBlocks = blockstore.MergeBlockRefsByOffset(existing, blocks)
+				persistObjID = blockstore.ComputeObjectID(persistBlocks)
+			}
+			if err := bs.coordinator.PersistFileBlocks(ctx, payloadID, persistBlocks, persistObjID); err != nil {
+				// File-level dedup: another file already owns this
+				// Merkle-root ObjectID (byte-identical content). The
+				// object_id index enforces "one ObjectID -> one file", so
+				// this duplicate cannot claim the canonical pointer. It
+				// MUST still persist its own block list (so the file is
+				// restorable and its FileBlock manifest is complete) — it
+				// simply does so WITHOUT owning the object_id (left zero =
+				// "not the canonical dedup target"). Retrying with a zero
+				// ObjectID writes object_id NULL, which the partial unique
+				// index skips, so the per-file blocks land cleanly.
+				//
+				// Propagating the raw conflict instead would (a) fail an
+				// explicit DrainRollups, (b) wedge the background rollup
+				// worker into retrying the same conflict forever, and (c)
+				// leave the duplicate with an empty block list →
+				// unrestorable. The block hashes themselves are content-
+				// addressed and already durable in CAS from StoreChunk.
+				if isObjectIDConflict(err) {
+					logger.Debug("rollup persist: object_id already mapped to another file; persisting duplicate's blocks without claiming the dedup pointer",
+						"payloadID", payloadID,
+						"objectID", persistObjID.String())
+					var zeroObjectID blockstore.ObjectID
+					if rerr := bs.coordinator.PersistFileBlocks(ctx, payloadID, persistBlocks, zeroObjectID); rerr != nil {
+						return fmt.Errorf("rollup persist: retry without object_id after dedup conflict: %w", rerr)
+					}
+					return nil
+				}
+				return err
+			}
+			return nil
 		})
 
 		// (2) Install the chunk-completion callback (production

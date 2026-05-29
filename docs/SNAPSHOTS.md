@@ -60,9 +60,13 @@ Each snapshot is three artifacts on disk:
 ```
 <localStoreDir>/snapshots/<share>/<snap-id>/
   ├─ metadata.dump          ← engine-native serialization of the metadata store
-  ├─ manifest.json          ← BLAKE3 hashes of every CAS block the share references
+  ├─ manifest.hashes        ← BLAKE3 hashes of every CAS block the share references
   └─ (GC hold)              ← implicit: manifest-on-disk = held
 ```
+
+The manifest is a plain-text file, not JSON: one 64-character
+lowercase-hex BLAKE3 hash per line, LF-terminated, sorted in ascending
+byte order. There is no header, footer, or comment.
 
 The GC hold is **implicit** — there is no separate hold flag in any
 database table. Garbage collection enumerates every manifest file
@@ -111,8 +115,8 @@ Every command accepts the global `--output, -o` flag (`table|json|yaml`).
 
 ```text
 $ dfsctl share snapshot create /photos
-Snapshot 7a3ec1b2 created (state: creating)
-→ ready (3s)
+Snapshot 7a3ec1b2-9c5e-4ab8-bd31-7f60c2e814a0 queued on share /photos (state: creating)
+Snapshot 7a3ec1b2-9c5e-4ab8-bd31-7f60c2e814a0 -> ready
 $
 ```
 
@@ -121,10 +125,10 @@ By default the command blocks until the snapshot reaches `ready` or
 
 ```text
 $ dfsctl share snapshot create /photos --no-wait
-Snapshot 9f2dab17 created (state: creating)
-$ dfsctl share snapshot show /photos 9f2dab17
-ID            9f2dab17-...
-State         creating
+Snapshot 9f2dab17-1a8c-4e02-b6d4-0c2f7a91e3b5 queued on share /photos (state: creating)
+$ dfsctl share snapshot show /photos 9f2dab17-1a8c-4e02-b6d4-0c2f7a91e3b5
+ID              9f2dab17-1a8c-4e02-b6d4-0c2f7a91e3b5
+STATE           creating
 ...
 ```
 
@@ -158,22 +162,24 @@ $ dfsctl share snapshot list /photos -o json
 ### Worked transcript: show
 
 ```text
-$ dfsctl share snapshot show /photos 7a3ec1b2
+$ dfsctl share snapshot show /photos 7a3ec1b2-9c5e-4ab8-bd31-7f60c2e814a0
 ID              7a3ec1b2-9c5e-4ab8-bd31-7f60c2e814a0
-Name            weekly-2026-05
-Share           /photos
-State           ready
-Durable         yes
-Manifest        1842 blocks
-Dump            4.1 MiB
-Created         2026-05-27T18:14:22Z
-Updated         2026-05-27T18:14:25Z
-ManifestPath    /var/lib/dittofs/snapshots/photos/7a3ec1b2.../manifest.json
-DumpPath        /var/lib/dittofs/snapshots/photos/7a3ec1b2.../metadata.dump
+NAME            weekly-2026-05
+SHARE           /photos
+STATE           ready
+REMOTE DURABLE  yes
+MANIFEST COUNT  1842
+DUMP BYTES      4.1 MiB
+RETRY OF        -
+ERROR           -
+CREATED AT      2026-05-27T18:14:22Z
+UPDATED AT      2026-05-27T18:14:25Z
 ```
 
-`show` is the only command that resolves the on-disk manifest and
-dump sizes; `list` omits them to keep the row count cheap.
+`show` requires the **full** snapshot UUID, not the 8-character
+prefix shown in `list` (see §5). It reports the manifest hash count
+(`MANIFEST COUNT`) and the human-readable dump size (`DUMP BYTES`);
+`list` omits them to keep the row count cheap.
 
 ### Worked transcript: delete
 
@@ -210,14 +216,16 @@ dfsctl share snapshot create <share> [flags]
 Normally a snapshot orchestration runs in this order:
 
 1. Persist the snapshot row in `state=creating`.
-2. Drain in-flight uploads to the remote block store.
-3. Write `metadata.dump` from the metadata store.
+2. Drain pending rollups so all written data is persisted to CAS and
+   reflected in each file's block list.
+3. Write `metadata.dump` from the now-settled metadata store.
 4. Compute the hash manifest from the share's referenced blocks.
-5. Run the verify gate: HEAD-probe every block hash on the remote
+5. Drain in-flight uploads to the remote block store.
+6. Run the verify gate: HEAD-probe every block hash on the remote
    block store (concurrency = 16) to confirm remote durability.
-6. Transition to `state=ready` (or `state=failed` on any error).
+7. Transition to `state=ready` (or `state=failed` on any error).
 
-`--no-verify` skips step 2 (upload drain) and step 5 (HEAD probes).
+`--no-verify` skips step 5 (upload drain) and step 6 (HEAD probes).
 The snapshot still completes, the GC hold still applies, but the
 `remote_durable` flag is `false`. Use it when:
 
@@ -247,9 +255,9 @@ $ dfsctl share snapshot list /photos --state=failed
 ID         NAME       STATE    DURABLE  CREATED  SIZE
 4c19fbe0   nightly    failed   no       6h ago   -
 
-$ dfsctl share snapshot create /photos --retry 4c19fbe0
-Snapshot 4c19fbe0 created (state: creating)
-→ ready (12s)
+$ dfsctl share snapshot create /photos --retry 4c19fbe0-...-full-uuid
+Snapshot 4c19fbe0-...-full-uuid queued on share /photos (state: creating)
+Snapshot 4c19fbe0-...-full-uuid -> ready
 ```
 
 Retry refuses if the target ID does not exist (`404`) or is not in
@@ -278,23 +286,30 @@ flag; the list is always newest-first.
 
 | Column | Meaning |
 |---|---|
-| `ID` | First 8 characters of the snapshot UUID. Use `show` for the full ID. |
+| `ID` | First 8 characters of the snapshot UUID — **truncated for display only**. See the note below. |
 | `NAME` | Operator-set name from `--name`. Blank if unset. |
 | `STATE` | `creating` / `ready` / `failed`. |
 | `DURABLE` | `yes` if `remote_durable=true`; `no` otherwise. |
 | `CREATED` | Relative time by default; ISO with `--no-relative`. |
-| `SIZE` | Manifest hash count, but always `-` in list mode. Use `show` to see the count. |
+| `SIZE` | Dump size, but always `-` in list mode — the list handler does not stat artifacts. Use `show` to see it. |
+
+> **The `ID` column is truncated to 8 characters for readability, but
+> `show`, `delete`, `restore`, and `create --retry` all require the
+> *full* snapshot UUID.** Passing the 8-character prefix returns
+> `404 ErrSnapshotNotFound` — the server matches snapshot IDs exactly
+> and does not resolve prefixes. Get the full UUID from `list -o json`
+> (the `id` field is never truncated).
 
 The `SIZE` column is `-` in `list` because populating it would
 require one `stat` per row (the manifest lives on disk, not in the
 database). `show` resolves it on demand for a single record:
 
 ```text
-$ dfsctl share snapshot show /photos 7a3ec1b2
+$ dfsctl share snapshot show /photos 7a3ec1b2-9c5e-4ab8-bd31-7f60c2e814a0
 ID              7a3ec1b2-9c5e-4ab8-bd31-7f60c2e814a0
 ...
-Manifest        1842 blocks
-Dump            4.1 MiB
+MANIFEST COUNT  1842
+DUMP BYTES      4.1 MiB
 ...
 ```
 
@@ -531,19 +546,28 @@ gone). Setting an internal SOP for deletion keeps that bounded.
 ## 9. The verify gate
 
 The verify gate is the optional remote-durability check inside
-snapshot create. It runs in two parts:
+snapshot create. The full create pipeline runs in this order so that
+the manifest reflects every block the share actually references and
+every referenced block is proven durable on the remote:
 
-- **Drain.** Block in flight uploads finish before the manifest is
-  computed. If the syncer cannot drain within its configured
-  timeout, create fails with `ErrSnapshotDrainTimeout` (HTTP 504).
-- **HEAD probe.** Every block hash in the manifest is HEAD-probed
-  on the remote block store, with parallelism of 16 in flight.
-  Any missing hash fails the snapshot with `ErrSnapshotVerifyFailed`
-  (HTTP 500, sanitized message).
+1. **Drain rollups.** Pending rollups are flushed so all written data
+   is persisted to CAS and reflected in each file's block list. The
+   manifest computed in the next step is taken from those settled
+   block lists, not from in-flight state.
+2. **Snapshot.** The metadata dump and the hash manifest are written
+   from the now-settled metadata store.
+3. **Drain uploads.** In-flight uploads to the remote block store are
+   drained so every manifest hash has had a chance to land remotely.
+   If the syncer cannot drain within its configured timeout, create
+   fails with `ErrSnapshotDrainTimeout` (HTTP 504).
+4. **HEAD probe.** Every block hash in the manifest is HEAD-probed
+   on the remote block store, with parallelism of 16 in flight.
+   Any missing hash fails the snapshot with `ErrSnapshotVerifyFailed`
+   (HTTP 500, sanitized message).
 
-If both pass, `remote_durable=true` on the snapshot row. If
-`--no-verify` was passed, neither runs and `remote_durable=false`
-without testing.
+If the upload drain and HEAD probe both pass, `remote_durable=true`
+on the snapshot row. If `--no-verify` was passed, steps 3 and 4 are
+skipped and `remote_durable=false` without testing.
 
 The 16-way parallelism is hardcoded. It is well below typical
 remote-store rate limits (S3, R2, Backblaze B2) and large enough
@@ -567,7 +591,7 @@ one rule:
 
 Concretely:
 
-- GC's mark phase enumerates `<localStoreDir>/snapshots/<share>/*/manifest.json`
+- GC's mark phase enumerates `<localStoreDir>/snapshots/<share>/*/manifest.hashes`
   at sweep start and reads every hash referenced inside.
 - Those hashes are unioned with the live `FileAttr.Blocks` hashes
   from the metadata store.

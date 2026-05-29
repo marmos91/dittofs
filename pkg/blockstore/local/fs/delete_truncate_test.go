@@ -262,7 +262,7 @@ func TestDelete_DuringActiveRollup_NoMetadataZombie(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		rollupErr = bc.rollupFile(ctx, "target")
+		rollupErr = bc.rollupFile(ctx, "target", false)
 	}()
 
 	wg.Add(1)
@@ -488,7 +488,7 @@ func TestTruncate_Rollup_SkipsBeyondBoundary(t *testing.T) {
 	// Let stabilization elapse.
 	time.Sleep(20 * time.Millisecond)
 
-	if err := bc.rollupFile(ctx, "t1"); err != nil {
+	if err := bc.rollupFile(ctx, "t1", false); err != nil {
 		t.Fatalf("rollupFile after truncate: %v", err)
 	}
 

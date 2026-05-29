@@ -192,7 +192,7 @@ func TestRollup_CommitChunks_MonotoneEnforced(t *testing.T) {
 		t.Fatal("dirty interval did not stabilize within 500 ms — test cannot exercise regression-rejection branch")
 	}
 
-	if err := bc.rollupFile(ctx, "file1"); err != nil {
+	if err := bc.rollupFile(ctx, "file1", false); err != nil {
 		t.Fatalf("rollupFile on regression: want nil (benign), got %v", err)
 	}
 
@@ -377,7 +377,7 @@ func TestRollup_TruncateMidWindow_DoesNotAdvancePastUncommittedTail(t *testing.T
 	// Wait for stabilization (1 ms).
 	time.Sleep(20 * time.Millisecond)
 
-	if err := bc.rollupFile(ctx, "tfile"); err != nil {
+	if err := bc.rollupFile(ctx, "tfile", false); err != nil {
 		t.Fatalf("rollupFile: %v", err)
 	}
 
@@ -436,7 +436,7 @@ func runRollupOnceErr(bc *FSStore, payloadID string, payload []byte) error {
 	if !bc.EarliestStableForTest(payloadID) {
 		return fmt.Errorf("dirty interval did not stabilize within 500 ms")
 	}
-	if err := bc.rollupFile(ctx, payloadID); err != nil {
+	if err := bc.rollupFile(ctx, payloadID, false); err != nil {
 		return fmt.Errorf("rollupFile: %w", err)
 	}
 	return nil
@@ -576,7 +576,7 @@ func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
 			t.Fatal("dirty interval did not stabilize within 500 ms")
 		}
 
-		err := bc.rollupFile(ctx, "errfile")
+		err := bc.rollupFile(ctx, "errfile", false)
 		if err == nil {
 			t.Fatal("rollupFile: want persister error, got nil")
 		}
@@ -855,7 +855,7 @@ func TestRollup_AddRefError_OtherThan_ErrUnknownHash_Propagates(t *testing.T) {
 		t.Fatal("dirty interval did not stabilize")
 	}
 
-	err := bc.rollupFile(ctx, "errpath")
+	err := bc.rollupFile(ctx, "errpath", false)
 	if err == nil {
 		t.Fatal("rollupFile: want wrapped AddRef error, got nil")
 	}

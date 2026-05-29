@@ -117,7 +117,7 @@ func (bc *FSStore) HeaderRollupOffsetForTest(payloadID string) uint64 {
 // conformance suite uses this when the ambient worker pool is disabled or
 // timing would otherwise be flaky.
 func (bc *FSStore) ForceRollupForTest(ctx context.Context, payloadID string) error {
-	return bc.rollupFile(ctx, payloadID)
+	return bc.rollupFile(ctx, payloadID, false)
 }
 
 // ReopenForTest closes no store — it constructs a fresh FSStore on

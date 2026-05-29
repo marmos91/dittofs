@@ -72,6 +72,38 @@ type LocalStore interface {
 	// zeros until the async rollup commits FileBlock rows.
 	ReadPayloadAt(ctx context.Context, payloadID string, dest []byte, offset uint64) (int, error)
 
+	// --- Snapshot drain / reset ---
+
+	// DrainRollups forces rollup of ALL currently-dirty payloads to
+	// completion, bypassing the stabilization-window gate, and waits for
+	// any in-flight rollup-worker passes to finish. After it returns,
+	// every byte written via AppendWrite has been flushed into CAS AND
+	// into the FileBlock manifest (FileAttr.Blocks), so a metadata
+	// Backup() taken next observes a fully-populated manifest rather than
+	// an empty/partial one.
+	//
+	// This is the snapshot-create primitive. Backends without an
+	// asynchronous rollup (the in-memory store, whose rollup is inline on
+	// every AppendWrite) implement it as a no-op returning nil.
+	DrainRollups(ctx context.Context) error
+
+	// ResetLocalState clears ALL per-payload append-log state — in-memory
+	// indices, dirty intervals, rollup offsets, truncation boundaries —
+	// and removes any on-disk `.log` files, so subsequent reads resolve
+	// purely through the (restored) CAS manifest with no stale append-log
+	// overlay.
+	//
+	// This is the snapshot-restore primitive: after the metadata store is
+	// reset to a prior dump, the block store's per-payload append log may
+	// still hold post-snapshot write records that ReadPayloadAt would
+	// otherwise replay on top of the restored CAS content ("last record
+	// wins"), corrupting in-place-modified files. ResetLocalState drops
+	// that overlay. Callers MUST have quiesced writes (share disabled)
+	// before invoking it; it is safe only because the restored snapshot
+	// (and the pre-restore safety snapshot) drained rollups, so all
+	// content that must survive is already durable in CAS.
+	ResetLocalState(ctx context.Context) error
+
 	// --- Lifecycle ---
 
 	// Start launches background goroutines (e.g., periodic metadata

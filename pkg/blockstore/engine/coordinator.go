@@ -52,6 +52,19 @@ type MetadataCoordinator interface {
 	// Flush semantics).
 	PersistFileBlocks(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error
 
+	// GetPersistedBlocks returns the file's currently-persisted
+	// FileAttr.Blocks (with content hashes) for payloadID, or an empty
+	// slice when the file has no blocks yet / does not exist. The
+	// rollup-completion callback reads this to merge a partial rollup
+	// pass into the already-committed block list before calling
+	// PersistFileBlocks, so a multi-pass rollup keeps FileAttr.Blocks
+	// complete instead of replacing it with only the latest pass (#789).
+	//
+	// Reads the manifest source (file_block_refs on Postgres, encoded
+	// FileAttr.Blocks on Badger/Memory) — NOT the per-file FileBlock
+	// index, whose Pending rows carry a NULL hash on Postgres.
+	GetPersistedBlocks(ctx context.Context, payloadID string) ([]blockstore.BlockRef, error)
+
 	// FindByObjectID looks up a previously-quiesced file in the
 	// metadata store by Merkle-root ObjectID. Returns (nil, nil) on
 	// miss. Used by the file-level dedup short-circuit

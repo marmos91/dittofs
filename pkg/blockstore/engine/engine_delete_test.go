@@ -66,6 +66,10 @@ func (c *refcountCoordinator) PersistFileBlocks(_ context.Context, _ string, _ [
 	return nil
 }
 
+func (c *refcountCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]blockstore.BlockRef, error) {
+	return nil, nil
+}
+
 func (c *refcountCoordinator) FindByObjectID(_ context.Context, _ blockstore.ObjectID) ([]blockstore.BlockRef, error) {
 	return nil, nil
 }

@@ -77,7 +77,7 @@ func runRollupOncePB(b *testing.B, bc *FSStore, payloadID string, payload []byte
 	if !bc.EarliestStableForTest(payloadID) {
 		b.Fatal("dirty interval did not stabilize within 500 ms")
 	}
-	if err := bc.rollupFile(ctx, payloadID); err != nil {
+	if err := bc.rollupFile(ctx, payloadID, false); err != nil {
 		b.Fatalf("rollupFile: %v", err)
 	}
 }

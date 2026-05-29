@@ -451,6 +451,29 @@ func (s *MemoryStore) DeleteAppendLog(_ context.Context, payloadID string) error
 	return nil
 }
 
+// DrainRollups is a no-op on the memory store. Its rollup runs inline on
+// every AppendWrite (rollupLocked), so there is never a pending async
+// rollup to force — the CAS map and any wired chunkEmitter are always
+// current. Returns nil. Implements local.LocalStore.
+func (s *MemoryStore) DrainRollups(_ context.Context) error { return nil }
+
+// ResetLocalState clears the per-payload append-log buffers and tracked
+// file sizes so a subsequent ReadPayloadAt cannot serve stale post-restore
+// bytes from the in-memory buffer. The CAS map is intentionally retained:
+// restored content is resolved through the CAS chunks the manifest
+// references, exactly as the on-disk backend resolves through its CAS
+// store after dropping the append log. Implements local.LocalStore.
+func (s *MemoryStore) ResetLocalState(_ context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrStoreClosed
+	}
+	s.appendLogs = make(map[string]*appendLog)
+	s.files = make(map[string]uint64)
+	return nil
+}
+
 // SyncFileBlocks is a no-op in the memory store (no persistent store to sync to).
 func (s *MemoryStore) SyncFileBlocks(_ context.Context) {}
 
