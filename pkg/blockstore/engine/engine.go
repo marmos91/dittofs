@@ -312,6 +312,11 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 				if err := fbs.Put(context.Background(), fb); err != nil {
 					logger.Error("ChunkEmitter: FileBlock.Put failed", "id", fb.ID, "error", err)
 				}
+				// Register for upload (B1). The in-memory backend creates
+				// chunks via this emitter rather than onChunkComplete, so
+				// without this the mirror loop's pending set would never
+				// see memory-backend chunks.
+				bs.syncer.addPendingHash(hash)
 			})
 		}
 	}

@@ -183,24 +183,43 @@ func skipIfNoLocalstack(t *testing.T) {
 // production FSStore implementation walks every CAS hash and filters
 // via the injected SyncedHashStore. This wrapper recreates that
 // real semantic so the integration matrix exercises the mirror loop's
-// actual data flow rather than a degenerate no-op.
+// actual data flow rather than a degenerate no-op (the startup +
+// periodic seedPendingFromDisk reconcile drive the pending set through
+// this iterator).
 //
-// Snapshot-at-start semantics mirror the FSStore behavior: Walk is
-// run to completion under the read lock to materialize the hash list
-// then per-hash IsSynced filters run outside Walk's snapshot. New
-// chunks rolled up mid-iteration land in the NEXT pass.
+// Snapshot-at-start semantics mirror the production mirror loop: the
+// syncer snapshots its in-memory pending-upload set at pass start and
+// uploads outside the lock, so a chunk that lands mid-pass surfaces on
+// the NEXT pass. The pending set is fed by the onChunkComplete hook the
+// embedded MemoryStore fires per freshly-stored chunk (the parallel of
+// the FSStore StoreChunk hot path).
 type casLocalStore struct {
 	*memorylocal.MemoryStore
 	synced metadata.SyncedHashStore
 
-	// mirrorHook, when non-nil, fires from inside ListUnsynced after
-	// each yield so a test can race a parallel local.AppendWrite
-	// against an in-flight mirror pass to assert snapshot semantics.
+	// mirrorHook, when non-nil, fires from inside Get once (deduped by
+	// the caller) so a test can race a parallel local.WriteAt against an
+	// in-flight mirror pass to assert snapshot-at-start semantics:
+	// mirrorOnce calls Get per snapshotted hash, so a write landing here
+	// is excluded from the current pass's snapshot and must surface only
+	// on the next pass.
 	mirrorHook func(yielded blockstore.ContentHash)
 }
 
 func newCASLocalStore(synced metadata.SyncedHashStore) *casLocalStore {
 	return &casLocalStore{MemoryStore: memorylocal.New(), synced: synced}
+}
+
+// Get fires the mirrorHook (if installed) after delegating to the
+// embedded store. mirrorOnce calls Get once per hash in its pending-set
+// snapshot, so this is the in-pass injection point a test uses to land a
+// late write mid-iteration and assert the snapshot-at-start contract.
+func (c *casLocalStore) Get(ctx context.Context, h blockstore.ContentHash) ([]byte, error) {
+	data, err := c.MemoryStore.Get(ctx, h)
+	if c.mirrorHook != nil {
+		c.mirrorHook(h)
+	}
+	return data, err
 }
 
 func (c *casLocalStore) ListUnsynced(ctx context.Context) iter.Seq2[blockstore.ContentHash, error] {
@@ -235,9 +254,6 @@ func (c *casLocalStore) ListUnsynced(ctx context.Context) iter.Seq2[blockstore.C
 			}
 			if !yield(h, nil) {
 				return
-			}
-			if c.mirrorHook != nil {
-				c.mirrorHook(h)
 			}
 		}
 	}
@@ -389,6 +405,14 @@ type integrationFixture struct {
 }
 
 func newIntegrationFixture(t *testing.T, rs remote.RemoteStore, synced metadata.SyncedHashStore) *integrationFixture {
+	return newIntegrationFixtureWithConfig(t, rs, synced, engine.DefaultConfig())
+}
+
+// newIntegrationFixtureWithConfig is newIntegrationFixture with an
+// explicit SyncerConfig. The snapshot-semantics scenario uses it to set
+// a long UploadInterval so the periodic uploader cannot drain the
+// pending set between the two explicit Flush passes the test drives.
+func newIntegrationFixtureWithConfig(t *testing.T, rs remote.RemoteStore, synced metadata.SyncedHashStore, cfg engine.SyncerConfig) *integrationFixture {
 	t.Helper()
 	if synced == nil {
 		synced = memorymeta.NewMemoryMetadataStoreWithDefaults()
@@ -396,7 +420,7 @@ func newIntegrationFixture(t *testing.T, rs remote.RemoteStore, synced metadata.
 	local := newCASLocalStore(synced)
 	fbs := newStubFBS()
 
-	syncer := engine.NewSyncer(local, rs, fbs, engine.DefaultConfig())
+	syncer := engine.NewSyncer(local, rs, fbs, cfg)
 
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           local,
