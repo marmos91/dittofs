@@ -214,6 +214,9 @@ to the DH state machine — tracked under #792 / #793.
 | smb2.durable-open.lock-lease | Durable handles V1 | Durable lock + lease not fully working | #738 |
 | smb2.durable-open.alloc-size | CREATE allocation | Pre-existing non-DH bug: out.alloc_size=0 on CREATE with in.alloc_size set (fails before any reconnect) | #792 |
 | smb2.durable-open.read-only | READONLY attribute | OBJECT_NAME_NOT_FOUND on durable reopen of FILE_ATTRIBUTE_READONLY file (attribute-restore gap) | #793 |
+| smb2.durable-open.oplock | Disconnected-DH purge | Intervening conflicting open should purge disconnected DH; surfaced after V1 DHnC FileID lookup fix | #808 |
+| smb2.durable-open.open2-lease | Disconnected-DH purge | Intervening conflicting open should purge disconnected DH; surfaced after V1 DHnC FileID lookup fix | #808 |
+| smb2.durable-open.open2-oplock | Disconnected-DH purge | Intervening conflicting open should purge disconnected DH; surfaced after V1 DHnC FileID lookup fix | #808 |
 
 ### Durable Handles V2 (Fix Candidate)
 
