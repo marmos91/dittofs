@@ -163,24 +163,55 @@ Authoritative on-disk state: CAS chunks (`blocks/<hh>/<hh>/<hex>`), append logs 
 
 ---
 
-## 5. Bottlenecks (DEFERRED — separate task)
+## 5. Bottlenecks (B-H2 — EXECUTED 2026-05-29)
 
-Targeted micro-bench + macro-pprof pass NOT executed in this PR-A. Plan: run after PR-B groupings agreed:
+Perf pass run via the B-H1 harness (`cmd/bench blockstore`, shipped #796/#803/#804/#805/#807). Profiles captured under `_profiles/blockstore/<workload>-<UTC>/{cpu,heap}.pprof`.
 
-### Seeded workloads (replayable via `--seed N`)
-- (a) small-files concurrent writes
-- (b) small-files concurrent reads
-- (c) big-files concurrent writes
-- (d) big-files concurrent reads
-- (e) mixed-ops storm (WRITE/READ/LIST/DELETE thousands of seeded random ops, replay-from-seed for regression triage)
+**Environment & caveats.** Apple-silicon dev laptop, `--remote=memory`, in-memory metadata store. NOT the Scaleway macro-bench baseline — absolute throughput is indicative, not gate-grade (the >5% regression gate is decided on bench-infra per PLAN §Performance acceptance). Hotspot *ranking* (cum%/alloc%) transfers; absolute ns/op does not. Memory remote retains every uploaded byte in RAM, inflating RSS on the big-write workloads (sequential reached ~4.3 GB RSS at 800 ops before being capped). `block.pprof`/`mutex.pprof` not captured — harness wires CPU+heap only (#671 still open).
 
-### Output targets (`_profiles/`)
-- `cpu.{a-e}.pprof`, `heap.{a-e}.pprof`, `block.{a-e}.pprof` (requires #671 wiring first), `goroutine.{a-e}.pprof`, `seed.{a-e}.txt`
+### Workload → PLAN (a)-(e) mapping + throughput
+
+| Harness workload | PLAN class | Ops | Wall | Throughput (dev-laptop) | Profile |
+|---|---|---|---|---|---|
+| `random-write` 4 KiB ws=4 | (a) small writes | 50000 | — | **STALLED** — see §5-B1 | cpu only (failed) |
+| `random-write` 4 KiB ws=1 | (a) small writes | 40000 | — | rollup errored — see §5-B5 | cpu only |
+| `mixed-rw` 4 KiB ws=4 | (b)+(e) | 50000 | 127.5 s | ~392 ops/s | cpu+heap |
+| `sequential-write` 8 MiB | (c) big writes | 150 | 27.1 s | ~5.5 ops/s (~44 MiB/s) | cpu+heap |
+| `dedup-heavy` 8 MiB | (c) dedup | 150 | 3.95 s | ~38 ops/s (dedup short-circuit) | cpu+heap |
+| `flush-churn` 4 KiB | (e) flush storm | 1500 | 80.0 s | ~19 flush/s | cpu+heap |
+| `walk` (HasChunk) | (d)-adjacent list | 5000 | 0.20 s | 24 589 ops/s | cpu+heap |
+| `delete` | (e) delete | 5000 | 0.29 s | 17 287 ops/s | cpu+heap |
+| `gc` mark-sweep | GC sweep | 5000 | — | profile empty — see §5-H2 | empty |
+
+Pure-read workloads (b)/(d) are not first-class in the harness; `mixed-rw` (50/50 r/w) is the closest proxy. **Harness gap** — add a read-only workload.
+
+### Top 5 bottlenecks (ranked by leverage)
+
+| # | Hotspot | Where | Signal | Class | Fix |
+|---|---|---|---|---|---|
+| **B1** | `Syncer.Flush → mirrorOnce → ListUnsynced → FSStore.Walk` full-tree walk of CAS `blocks/` **every sync cycle / every Flush** | `engine/syncer.go:321`, `local/fs/blockstore_methods.go:228` | flush-churn: `os.ReadDir` **76.85% cum**, syscall `rawsyscalln` **91.9% flat**; O(total chunks) per flush → quadratic over a flush-heavy run | **HIGH (structural)** | Maintain an incremental pending-unsynced set (populate at `StoreChunk`, drain on upload-ack) instead of rediscovering by directory walk. File `v1.0-perf-blockstore` issue. |
+| **B2** | `reconstructStream` allocates a full file-extent buffer (`make([]byte, maxEnd)`) on **every** rollup pass, never pooled | `local/fs/rollup.go:619` | sequential heap: **88.5 GB alloc_space (94.9%)**; flush-churn **4.4 GB (59%)**; dedup **1.17 GB (48%)** | **HIGH (alloc)** | `sync.Pool` of size-classed buffers, or stream record→chunker without materializing the whole extent (per [[feedback_streaming_io_for_data_paths]]). Biggest single GC-pressure source. |
+| **B3** | `logIndex.EntriesForInterval` — fresh slice per call **+ O(n) linear scan over all entries** on the hot read/rollup path | `local/fs/logindex.go:144` | mixed-rw heap: **21.1 GB alloc_space (62.2%)**; 0.74 s cum CPU (1.94%) | **HIGH (alloc + algo)** | (a) caller-supplied/pooled scratch slice; (b) entries are append-ordered → binary-search the window or index by interval instead of full scan. |
+| **B4** | GC churn downstream of B2/B3 — `madvise` + mark workers | runtime (sequential `madvise` 12.9% flat, dedup/seq `pthread_cond_wait` 21-33%) | sequential CPU: `memclrNoHeapPointers` 15% (zeroing the B2 buffers) + `madvise` 12.9% | **HIGH (derived)** | Resolves largely once B2+B3 land; re-profile after. |
+| **B5** | Rollup per-record payload cap `maxRecordPayload = 17 MiB` rejects single records ≥17 MiB | `local/fs/appendlog.go:38,167` | random-write seed (single 64 MiB `WriteAt`): `rollup: payloadLen 67108864 exceeds 17825792 cap` → payload wedged, `Error` loop | **MED (limit)** | Production writes arrive ≤1 MiB chunked (NFS/SMB), so this is mostly a **harness-realism gap** (seed writes 64 MiB in one call). Either chunk the harness seed, or document the cap + fail the *write* fast rather than wedging *rollup*. |
+
+### Lower-signal observations
+
+- **blake3 hashing** is the dominant *legitimate* CPU on the dedup/sequential paths (`CompressNode`/`CompressChunk` 7–13%, `crc32.castagnoliUpdate` 6%). Intrinsic to CAS; **no action** — contention is the content-addressing cost.
+- **chunker** (`Chunker.Next`) ~3–5% flat — FastCDC, reasonable; no action.
+- **walk / delete** profiles are **dominated by bench `SeedLocalChunks`** (84–90% cum) — the measured op (`HasChunk`/`DeleteChunk`) is a thin stat/unlink and not a bottleneck. Harness should profile only the timed region, not setup.
+- **memory-remote `Put`** retains all bytes (1.1 GB sequential) — expected for the in-RAM backend; not a code finding.
+
+### Harness gaps surfaced (feed B-H follow-up / #680)
+
+- **H1** `random-write` seeds one 64 MiB `WriteAt` per working-set file → (i) exceeds B5 rollup cap, (ii) ws≥4 pins the append log near `LogBudget` so the first timed op stalls 30 s on backpressure then fails (`append log: pressure wait timed out`). Seed should write in protocol-sized (≤1 MiB) chunks.
+- **H2** `gc` workload profiled empty — it sweeps an under-seeded CAS so the timed region has ~0 samples. Needs a pre-populated store (seed N chunks, orphan a fraction) before the timed sweep.
+- **H3** No pure-read workload (b)/(d). No `block`/`mutex` profile (needs #671). No goroutine snapshot.
+- **H4** `flush-churn` at 20 000 ops is effectively unbounded wall-clock on the dev laptop (B1 quadratic walk) — capped at 1 500 here. Once B1 lands, restore the larger count.
 
 ### Macro reuse
-`.planning/v1.0-audit/_baseline/` Wave 0 pprofs diffed where applicable. No fresh Scaleway run unless a finding demands it.
 
-**Workload (e) harness does not exist yet** — needs small Go binary (~200 LoC) built atop `pkg/blockstore/engine` directly. Defer to PR-B follow-up issue.
+`.planning/v1.0-audit/_baseline/` Wave 0 pprofs diffed where applicable. Fresh Scaleway macro run deferred to the post-B-fix acceptance gate.
 
 ---
 
@@ -262,9 +293,9 @@ Group ordering balances (a) zero-risk-first, (b) coupling, (c) reviewer cost. **
 31. **B-G3** Rename `engine.BlockStore → engine.Store` (N-02). Update compile assertion + adapter type refs. **DEFER** if churn too large.
 
 ### Wave B-H — perf pass (after structural settles)
-32. **B-H1** Build seeded workload harness (~200 LoC Go binary atop `pkg/blockstore/engine`).
-33. **B-H2** Run workloads (a)-(e), capture `_profiles/`, populate REVIEW.md §5 Bottlenecks.
-34. **B-H3** Aggregate cross-area perf findings → feeds Wave 2.5 `v1.0-perf-blockstore` follow-up.
+32. ✅ **B-H1** Build seeded workload harness — shipped #796/#803/#804/#805/#807 (`cmd/bench blockstore` + `bench/blockstore/`).
+33. ✅ **B-H2** Run workloads (a)-(e), capture `_profiles/`, populate REVIEW.md §5 Bottlenecks — DONE 2026-05-29. Top findings B1 (full-tree walk per Flush), B2 (`reconstructStream` 88 GB alloc), B3 (`EntriesForInterval` 21 GB alloc + O(n) scan).
+34. **B-H3** Aggregate cross-area perf findings → file `v1.0-perf-blockstore` issue for B1/B2/B3 (structural rewrites, out of scope for an area PR-B). Feeds Wave 2 stream 5.
 
 ### Wave B-I — final
 35. **B-I1** `gsd-extract-learnings` skill — harvest decisions/patterns into memory.
@@ -282,7 +313,7 @@ Group ordering balances (a) zero-risk-first, (b) coupling, (c) reviewer cost. **
 - ✅ Conformance suite verdict: **patch, not rewrite**.
 - 🚧 `pkg/` ↔ `internal/` (a)/(b)/(c) decision belongs to runtime area #7. This audit logs 9 source-file imports as data point. **Architect recommendation**: option (b) for DittoFS as app.
 - 🚧 `engine.BlockStore` → `engine.Store` rename (N-02) — defer unless paired with broader stutter pass.
-- 🚧 Workload (e) seeded-ops harness — defer to B-H1.
+- ✅ Workload (e) seeded-ops harness — shipped (B-H1); exercised in B-H2 via `mixed-rw`. Harness gaps H1-H4 logged in §5.
 
 ---
 
@@ -295,7 +326,7 @@ Group ordering balances (a) zero-risk-first, (b) coupling, (c) reviewer cost. **
 - ✅ Pre-existing trackers #668/#669/#670 root causes confirmed.
 - ✅ Conformance suite verdict documented (patch vs rewrite).
 - ✅ PR-B sequencing proposal (groups B-A through B-I).
-- ⏸  Perf pass deferred to B-H (after structural settles).
+- ✅ Perf pass executed (B-H2, 2026-05-29) — §5 Bottlenecks populated; B1/B2/B3 → `v1.0-perf-blockstore` follow-up.
 - ⏸  PLAN.md issue tracker follow-up: file v1.0-followup issues for MED/LOW not in B-A..B-G.
 
 ---
