@@ -472,8 +472,61 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		var err error
 		file, fileHandle, err = h.createNewFile(authCtx, parentHandle, baseName, req, d.isDirectoryRequest)
 		if err != nil {
-			logger.Warn("CREATE: failed to create file", "name", baseName, "error", err)
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}
+			// Concurrent-create race: another opener won between our
+			// pre-create lookup and the metadata-store transaction. For
+			// dispositions that accept an existing target (OPEN_IF,
+			// OVERWRITE_IF, SUPERSEDE), MS-FSA §2.1.5.1.1 requires falling
+			// back to the existing-file branch — not surfacing the race as
+			// OBJECT_NAME_COLLISION. Required by smbtorture
+			// smb2.create.mkdir-dup (two parallel OPEN_IF on the same
+			// directory name MUST yield 1 CREATED + 1 EXISTED). Strict-CREATE
+			// (FILE_CREATE / FILE_OVERWRITE) still surfaces the collision per
+			// MS-FSA, matching Samba's open_file_ntcreate fallthrough.
+			var storeErr *metadata.StoreError
+			if errors.As(err, &storeErr) && storeErr.Code == metadata.ErrAlreadyExists {
+				switch req.CreateDisposition {
+				case types.FileOpenIf, types.FileOverwriteIf, types.FileSupersede:
+					winner, _, lookupErr := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, baseName)
+					if lookupErr == nil && winner != nil {
+						// Resync draft state to the winner so downstream
+						// share-mode + DACL gates and the lease/open
+						// bookkeeping run against the real file. The
+						// original pre-break share-mode recheck ran on
+						// our stale (nil) view; rerun it now.
+						existingFile = winner
+						fileExists = true
+						d.existingFile = winner
+						d.fileExists = true
+						if enc, encErr := metadata.EncodeFileHandle(winner); encErr == nil {
+							d.existingHandle = enc
+						}
+						// Re-resolve createAction: with the winner in
+						// place, OPEN_IF → Opened; OVERWRITE_IF /
+						// SUPERSEDE → Overwritten / Superseded.
+						newAction, dispErr := ResolveCreateDisposition(req.CreateDisposition, true)
+						if dispErr != nil {
+							return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(dispErr)}}
+						}
+						createAction = newAction
+						if createAction == types.FileOpened {
+							file = winner
+							fileHandle = d.existingHandle
+						} else {
+							var owErr error
+							file, fileHandle, owErr = h.overwriteFile(authCtx, winner, req)
+							if owErr != nil {
+								logger.Warn("CREATE: overwrite-after-create-race failed", "name", baseName, "error", owErr)
+								return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(owErr)}}
+							}
+						}
+						break // out of switch createAction (handled the race)
+					}
+				}
+			}
+			if file == nil {
+				logger.Warn("CREATE: failed to create file", "name", baseName, "error", err)
+				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}
+			}
 		}
 	case types.FileOverwritten, types.FileSuperseded:
 		var err error
@@ -903,6 +956,21 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	creation, access, write, change := FileAttrToSMBTimes(respAttr)
 	size := getSMBSize(&file.FileAttr)
 	allocationSize := calculateAllocationSize(size)
+
+	// AlSi (SMB2_CREATE_ALLOCATION_SIZE, MS-SMB2 §2.2.13.2.6): clients use this
+	// context to hint the desired allocated size for the new file. Per Samba
+	// (source3/smbd/smb2_create.c handling of SMB2_CREATE_TAG_ALSI) the
+	// allocation size is rounded up to the cluster boundary and surfaced via
+	// the CREATE response's AllocationSize field. DittoFS does not preallocate
+	// on the backing store, but echoing the cluster-rounded request value is
+	// required by smbtorture smb2.create.blob (CHECK_EQUAL(io.out.alloc_size,
+	// io.in.alloc_size) with in.alloc_size = 0x100000).
+	if alsiCtx := FindCreateContext(req.CreateContexts, "AlSi"); alsiCtx != nil && len(alsiCtx.Data) >= 8 {
+		requested := smbenc.NewReader(alsiCtx.Data).ReadUint64()
+		if requested > allocationSize {
+			allocationSize = calculateAllocationSize(requested)
+		}
+	}
 
 	resp := &CreateResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
