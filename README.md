@@ -50,6 +50,25 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 - ✅ **User Management**: Unified users/groups with share-level permissions (CLI + REST API)
 - ✅ **REST API**: Full management API with JWT authentication for users, groups, and shares
 - ✅ **Client-side encryption**: Per-remote envelope encryption (AES-256-GCM / ChaCha20-Poly1305 / XChaCha20-Poly1305) with local key file or KMIP-backed master keys — see [ENCRYPTION.md](docs/ENCRYPTION.md)
+- ✅ **Share Snapshots**: Point-in-time reference holds (no data copy) with CLI/REST restore and a pre-restore safety snapshot — see [SNAPSHOTS.md](docs/SNAPSHOTS.md)
+
+### Share Snapshots
+
+DittoFS supports point-in-time **share snapshots** for protection
+against accidental writes or deletes. A snapshot is a reference —
+the metadata dump plus a manifest of every CAS block the share
+references at snapshot time. The block-store GC holds those blocks
+until the snapshot is explicitly deleted.
+
+```bash
+dfsctl share snapshot create /photos
+dfsctl share snapshot list /photos
+dfsctl share disable /photos && dfsctl share snapshot restore /photos <id>
+```
+
+See [docs/SNAPSHOTS.md](docs/SNAPSHOTS.md) for the full operator
+guide including the restore runbook, the verify gate, and recovery
+from the safety snapshot.
 
 ## Quick Start
 
@@ -761,7 +780,8 @@ MIT License - See [LICENSE](LICENSE) file for details
 
 ## Changelog
 
-- **v0.15.0**: Removed unreleased v0.13.0 backup system (REST API, `dfsctl backup` commands, `pkg/backup`, scheduler). A new backup system built atop content-addressable storage (CAS) will ship in v0.16.0. Since v0.13.0 was never released, there is no backward-compatibility concern.
+- **v0.16.0**: Share snapshots — point-in-time reference-based protection for shares via `dfsctl share snapshot create|list|show|delete|restore`. Reference-only (no block copy); the block-store GC holds referenced blocks until a snapshot is explicitly deleted. See [docs/SNAPSHOTS.md](docs/SNAPSHOTS.md).
+- **v0.15.0**: Removed an unreleased predecessor backup feature (REST API, `dfsctl backup` commands, `pkg/backup`, scheduler) in preparation for the reference-based share-snapshots subsystem that shipped in v0.16.0. Since the predecessor was never released, there is no backward-compatibility concern.
 
 ## Disclaimer
 
