@@ -1113,7 +1113,53 @@ func (h *Handler) closeFilesWithFilter(
 		// initial DOC from a CREATE FILE_DELETE_ON_CLOSE that was not
 		// promoted earlier — TDIS / LOGOFF / disconnect skip the explicit
 		// CLOSE handler, so the same close.go promotion applies here).
-		if (openFile.DeletePending || openFile.InitialDeleteOnClose) && len(openFile.ParentHandle) > 0 && openFile.FileName != "" {
+		//
+		// Promote per-handle InitialDeleteOnClose to shared committed
+		// DeletePending only when no OTHER handle on the same metadata
+		// file remains open: otherwise the unlink in handleDeleteOnClose
+		// would fire before the last sibling closes, violating MS-FSA
+		// 2.1.5.4 (delete-on-close removes the file when the LAST handle
+		// closes, not on the per-handle initial flag). When siblings
+		// remain, propagate the DOC + DOC-setter parent key onto them so
+		// the eventual sibling close in close.go (or this same teardown
+		// for sibling opens in this iteration) fires the delete instead.
+		isInitialDocOnly := openFile.InitialDeleteOnClose && !openFile.DeletePending
+		if isInitialDocOnly && len(openFile.MetadataHandle) > 0 {
+			otherHandleExists := false
+			h.files.Range(func(_, value any) bool {
+				other := value.(*OpenFile)
+				if other.FileID == openFile.FileID {
+					return true
+				}
+				if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
+					otherHandleExists = true
+					return false
+				}
+				return true
+			})
+			if otherHandleExists {
+				// Propagate DOC to remaining handles so their eventual
+				// close triggers the delete. Matches the close.go path
+				// at "DOC propagated to other handles (not last)".
+				h.files.Range(func(_, value any) bool {
+					other := value.(*OpenFile)
+					if other.FileID == openFile.FileID {
+						return true
+					}
+					if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
+						other.DeletePending = true
+						other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
+						other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
+						h.StoreOpenFile(other)
+					}
+					return true
+				})
+				logger.Debug(caller+": initial DOC propagated to other handles (not last)",
+					"path", openFile.Path)
+				isInitialDocOnly = false // delete handled by remaining sibling
+			}
+		}
+		if (openFile.DeletePending || isInitialDocOnly) && len(openFile.ParentHandle) > 0 && openFile.FileName != "" {
 			h.handleDeleteOnClose(ctx, sess, openFile, caller)
 		}
 
