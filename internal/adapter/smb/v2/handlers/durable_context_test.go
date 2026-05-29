@@ -1417,3 +1417,203 @@ func TestProcessDurableReconnectContext_ConsumeAtomicV2(t *testing.T) {
 		t.Errorf("second reconnect status = %v, want STATUS_OBJECT_NAME_NOT_FOUND", status2)
 	}
 }
+
+// TestProcessDurableReconnectContext_V1OplockIgnoresPath verifies that a V1
+// DHnC reconnect on an oplock-backed durable handle (no lease) IGNORES the
+// CREATE request's filename — matching MS-SMB2 §3.3.5.9.7 and Samba's
+// `smbd_smb2_create_durable_lease_check` which only path-checks lease-backed
+// reopens. smbtorture smb2.durable-open.reopen2 step 3 deliberately passes
+// "__non_existing_fname__" to prove this.
+func TestProcessDurableReconnectContext_V1OplockIgnoresPath(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	keyHash := makeSessionKeyHash("session-key-v1path")
+
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:             "dh-v1-path-ignore",
+		FileID:         fileID,
+		Path:           "real.dat",
+		ShareName:      "/share1",
+		DesiredAccess:  0x12019F,
+		ShareAccess:    0x07,
+		MetadataHandle: []byte{0xDE, 0xAD},
+		OplockLevel:    OplockLevelBatch,
+		Username:       "alice",
+		SessionKeyHash: keyHash,
+		IsV2:           false,
+		CreatedAt:      time.Now().Add(-5 * time.Minute),
+		DisconnectedAt: time.Now().Add(-10 * time.Second),
+		TimeoutMs:      60000,
+	})
+
+	dhnCData := make([]byte, 16)
+	copy(dhnCData[:], fileID[:])
+
+	contexts := []CreateContext{
+		{Name: DurableHandleV1ReconnectTag, Data: dhnCData},
+	}
+
+	res, status, err := ProcessDurableReconnectContext(
+		ctx, store, nil, contexts, 999, "alice", keyHash,
+		"/share1", "__non_existing_fname__", [16]byte{}, 0, 0,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != types.StatusSuccess {
+		t.Fatalf("Expected STATUS_SUCCESS for V1 oplock reconnect with wrong fname, got %s", status)
+	}
+	if res == nil || res.OpenFile == nil {
+		t.Fatal("Expected restored OpenFile")
+	}
+	if res.OpenFile.Path != "real.dat" {
+		t.Errorf("Restored Path = %q, want %q", res.OpenFile.Path, "real.dat")
+	}
+}
+
+// TestProcessDurableReconnectContext_V1LeasedRejectsMissingLease verifies that
+// a V1 reconnect for a lease-backed persisted handle MUST carry a lease
+// context; absent that, the server returns OBJECT_NAME_NOT_FOUND
+// (smb2.durable-open.reopen2_lease "without lease attached" cases).
+func TestProcessDurableReconnectContext_V1LeasedRejectsMissingLease(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	fileID := [16]byte{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}
+	leaseKey := [16]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00}
+	keyHash := makeSessionKeyHash("session-key-v1lease")
+
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:             "dh-v1-leased",
+		FileID:         fileID,
+		Path:           "leased.dat",
+		ShareName:      "/share1",
+		DesiredAccess:  0x12019F,
+		ShareAccess:    0x07,
+		MetadataHandle: []byte{0xDE, 0xAD},
+		OplockLevel:    OplockLevelLease,
+		LeaseKey:       leaseKey,
+		Username:       "alice",
+		SessionKeyHash: keyHash,
+		DisconnectedAt: time.Now().Add(-10 * time.Second),
+		TimeoutMs:      60000,
+	})
+
+	dhnCData := make([]byte, 16)
+	copy(dhnCData[:], fileID[:])
+
+	contexts := []CreateContext{
+		{Name: DurableHandleV1ReconnectTag, Data: dhnCData},
+	}
+
+	_, status, err := ProcessDurableReconnectContext(
+		ctx, store, nil, contexts, 999, "alice", keyHash,
+		"/share1", "leased.dat", [16]byte{}, 0, 0,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != types.StatusObjectNameNotFound {
+		t.Errorf("Expected OBJECT_NAME_NOT_FOUND for V1 reconnect of leased handle without RqLs, got %s", status)
+	}
+}
+
+// TestProcessDurableReconnectContext_V1LeasedWrongLeaseKey verifies that a V1
+// reconnect with a lease context carrying a non-matching lease key returns
+// OBJECT_NAME_NOT_FOUND (smb2.durable-open.reopen2_lease "wrong lease key" case).
+func TestProcessDurableReconnectContext_V1LeasedWrongLeaseKey(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	fileID := [16]byte{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}
+	leaseKey := [16]byte{0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA}
+	wrongKey := [16]byte{0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB}
+	keyHash := makeSessionKeyHash("session-key-v1wrongkey")
+
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:             "dh-v1-wrongkey",
+		FileID:         fileID,
+		Path:           "leased.dat",
+		ShareName:      "/share1",
+		MetadataHandle: []byte{0xDE, 0xAD},
+		OplockLevel:    OplockLevelLease,
+		LeaseKey:       leaseKey,
+		Username:       "alice",
+		SessionKeyHash: keyHash,
+		DisconnectedAt: time.Now().Add(-10 * time.Second),
+		TimeoutMs:      60000,
+	})
+
+	dhnCData := make([]byte, 16)
+	copy(dhnCData[:], fileID[:])
+
+	// V1 lease context (32 bytes: 16 LeaseKey + 4 LeaseState + 4 Flags + 8 Duration)
+	leaseCtxData := make([]byte, 32)
+	copy(leaseCtxData[0:16], wrongKey[:])
+	binary.LittleEndian.PutUint32(leaseCtxData[16:20], 0x7) // RWH requested
+
+	contexts := []CreateContext{
+		{Name: DurableHandleV1ReconnectTag, Data: dhnCData},
+		{Name: LeaseContextTagRequest, Data: leaseCtxData},
+	}
+
+	_, status, err := ProcessDurableReconnectContext(
+		ctx, store, nil, contexts, 999, "alice", keyHash,
+		"/share1", "leased.dat", [16]byte{}, 0, 0,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != types.StatusObjectNameNotFound {
+		t.Errorf("Expected OBJECT_NAME_NOT_FOUND for wrong lease key, got %s", status)
+	}
+}
+
+// TestProcessDurableReconnectContext_V1UnleasedRejectsLeaseCtx verifies that
+// a V1 reconnect carrying a lease context against an oplock-only persisted
+// handle returns OBJECT_NAME_NOT_FOUND (mirror of the inverse asymmetry).
+func TestProcessDurableReconnectContext_V1UnleasedRejectsLeaseCtx(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	fileID := [16]byte{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}
+	keyHash := makeSessionKeyHash("session-key-v1nolease")
+
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:             "dh-v1-nolease",
+		FileID:         fileID,
+		Path:           "plain.dat",
+		ShareName:      "/share1",
+		MetadataHandle: []byte{0xDE, 0xAD},
+		OplockLevel:    OplockLevelBatch,
+		Username:       "alice",
+		SessionKeyHash: keyHash,
+		DisconnectedAt: time.Now().Add(-10 * time.Second),
+		TimeoutMs:      60000,
+	})
+
+	dhnCData := make([]byte, 16)
+	copy(dhnCData[:], fileID[:])
+
+	someLeaseKey := [16]byte{0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC}
+	leaseCtxData := make([]byte, 32)
+	copy(leaseCtxData[0:16], someLeaseKey[:])
+
+	contexts := []CreateContext{
+		{Name: DurableHandleV1ReconnectTag, Data: dhnCData},
+		{Name: LeaseContextTagRequest, Data: leaseCtxData},
+	}
+
+	_, status, err := ProcessDurableReconnectContext(
+		ctx, store, nil, contexts, 999, "alice", keyHash,
+		"/share1", "plain.dat", [16]byte{}, 0, 0,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != types.StatusObjectNameNotFound {
+		t.Errorf("Expected OBJECT_NAME_NOT_FOUND for lease ctx vs oplock-only persisted handle, got %s", status)
+	}
+}

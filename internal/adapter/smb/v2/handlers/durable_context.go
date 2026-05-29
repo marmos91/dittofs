@@ -391,8 +391,50 @@ func processV1Reconnect(
 		return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
 	}
 
+	// MS-SMB2 §3.3.5.9.7 / Samba `smbd_smb2_create_durable_lease_check`
+	// (source3/smbd/smb2_create.c): the filename in a V1 DHnC reconnect is
+	// IGNORED by the server when the open is oplock-backed (no lease). The
+	// lease/path matching rules only apply to lease-backed reopens. Compute
+	// the V1 lease-context gate before path validation so the per-test
+	// expectations of smbtorture smb2.durable-open.reopen2 hold:
+	//
+	//   - lease_ptr==nil, persisted no-lease  → skip path check, proceed
+	//   - lease_ptr==nil, persisted lease     → OBJECT_NAME_NOT_FOUND
+	//   - lease_ptr!=nil, persisted no-lease  → OBJECT_NAME_NOT_FOUND
+	//   - lease_ptr!=nil, persisted lease:
+	//       * lease key mismatch              → OBJECT_NAME_NOT_FOUND
+	//       * path mismatch                   → INVALID_PARAMETER
+	//       * else                            → proceed
+	leaseCtx := FindCreateContext(contexts, LeaseContextTagRequest)
+	persistedHasLease := handle.OplockLevel == OplockLevelLease && handle.LeaseKey != ([16]byte{})
+	checkPath := true
+	if leaseCtx == nil {
+		if persistedHasLease {
+			logger.Debug("processV1Reconnect: persisted handle has lease but request omits lease ctx")
+			return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
+		}
+		// Oplock-backed reopen: filename is ignored by the server.
+		checkPath = false
+	} else {
+		if !persistedHasLease {
+			logger.Debug("processV1Reconnect: lease ctx provided but persisted handle has no lease")
+			return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
+		}
+		leaseReq, decErr := DecodeLeaseCreateContext(leaseCtx.Data)
+		if decErr != nil || leaseReq == nil {
+			logger.Debug("processV1Reconnect: invalid lease ctx", "error", decErr)
+			return nil, 0, [16]byte{}, types.StatusInvalidParameter, nil
+		}
+		if leaseReq.LeaseKey != handle.LeaseKey {
+			logger.Debug("processV1Reconnect: lease key mismatch",
+				"expected", fmt.Sprintf("%x", handle.LeaseKey),
+				"actual", fmt.Sprintf("%x", leaseReq.LeaseKey))
+			return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
+		}
+	}
+
 	openFile, status, restoreErr := validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
-		sessionKeyHash, shareName, filename, desiredAccess, shareAccess,
+		sessionKeyHash, shareName, filename, desiredAccess, shareAccess, checkPath,
 		func(ctx context.Context) (*lock.PersistedDurableHandle, error) {
 			return durableStore.ConsumeDurableHandleByFileID(ctx, fileID)
 		})
@@ -481,8 +523,11 @@ func processV2Reconnect(
 		return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
 	}
 
+	// V2 reconnect always checks the path against the persisted handle
+	// (no Samba-style oplock-only fallthrough). The CreateGuid is the
+	// primary identifier; the path check is an extra integrity gate.
 	openFile, status, restoreErr := validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
-		sessionKeyHash, shareName, filename, desiredAccess, shareAccess,
+		sessionKeyHash, shareName, filename, desiredAccess, shareAccess, true,
 		func(ctx context.Context) (*lock.PersistedDurableHandle, error) {
 			return durableStore.ConsumeDurableHandleByCreateGuid(ctx, createGuid)
 		})
@@ -518,6 +563,7 @@ func validateAndRestore(
 	filename string,
 	desiredAccess uint32,
 	shareAccess uint32,
+	checkPath bool,
 	consume func(ctx context.Context) (*lock.PersistedDurableHandle, error),
 ) (*OpenFile, types.Status, error) {
 	if handle.ShareName != shareName {
@@ -527,7 +573,10 @@ func validateAndRestore(
 		return nil, types.StatusObjectNameNotFound, nil
 	}
 
-	if handle.Path != filename {
+	// V1 oplock-backed reconnect ignores the filename per MS-SMB2 §3.3.5.9.7
+	// (mirrors Samba `smbd_smb2_create_durable_lease_check` which only path-
+	// checks lease-backed reopens). Caller passes checkPath=false in that case.
+	if checkPath && handle.Path != filename {
 		logger.Debug("validateAndRestore: path mismatch",
 			"expected", handle.Path,
 			"actual", filename)
