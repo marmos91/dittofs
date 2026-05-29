@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"testing"
 
@@ -209,6 +210,93 @@ func TestFSStore_ListUnsynced(t *testing.T) {
 		}
 		if !sawCtxErr {
 			t.Fatalf("expected context.Canceled to be yielded after cancel, got none")
+		}
+	})
+}
+
+// TestFSStore_Walk_StopWalkSentinel pins the public Walk contract:
+//
+//   - returning blockstore.ErrStopWalk from the callback (raw or wrapped
+//     via %w) causes Walk to exit cleanly (nil).
+//   - returning io.EOF from the callback must NOT be mistaken for a
+//     clean exit — io.EOF is just another error and must halt Walk with
+//     the wrapped "walk halted at %s: %w" form.
+//   - returning any other non-nil error halts Walk and propagates the
+//     wrapped error.
+//
+// Regression guard for the I-7 bug: using io.EOF as the internal
+// short-circuit token silently swallowed legitimate io.EOF returns
+// from callbacks.
+func TestFSStore_Walk_StopWalkSentinel(t *testing.T) {
+	t.Run("CleanExitOnErrStopWalk", func(t *testing.T) {
+		bc := newFSStoreForTest(t, FSStoreOptions{})
+		_ = seedChunks(t, bc, 5)
+
+		var seen int
+		err := bc.Walk(context.Background(), func(_ blockstore.ContentHash, _ blockstore.Meta) error {
+			seen++
+			if seen == 2 {
+				return blockstore.ErrStopWalk
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("ErrStopWalk should cause clean nil exit; got %v", err)
+		}
+		if seen != 2 {
+			t.Fatalf("expected callback to stop after 2 calls, got %d", seen)
+		}
+	})
+
+	t.Run("CleanExitOnWrappedErrStopWalk", func(t *testing.T) {
+		// Callers idiomatically wrap ErrStopWalk via fmt.Errorf("%w", ...)
+		// (see pkg/blockstore/errors.go). errors.Is must detect through
+		// the wrap and still trigger clean exit.
+		bc := newFSStoreForTest(t, FSStoreOptions{})
+		_ = seedChunks(t, bc, 3)
+
+		err := bc.Walk(context.Background(), func(h blockstore.ContentHash, _ blockstore.Meta) error {
+			return fmt.Errorf("gc target %s: %w", h, blockstore.ErrStopWalk)
+		})
+		if err != nil {
+			t.Fatalf("wrapped ErrStopWalk should cause clean nil exit; got %v", err)
+		}
+	})
+
+	t.Run("EOFHaltsWithWrappedError", func(t *testing.T) {
+		// Regression guard: a callback returning io.EOF must NOT be
+		// confused with the public ErrStopWalk sentinel. It is just
+		// another error and must halt Walk with the wrapped form.
+		bc := newFSStoreForTest(t, FSStoreOptions{})
+		_ = seedChunks(t, bc, 3)
+
+		err := bc.Walk(context.Background(), func(_ blockstore.ContentHash, _ blockstore.Meta) error {
+			return io.EOF
+		})
+		if err == nil {
+			t.Fatalf("io.EOF from callback must halt Walk with a wrapped error, got nil")
+		}
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("returned error must wrap io.EOF; got %v", err)
+		}
+		if errors.Is(err, blockstore.ErrStopWalk) {
+			t.Fatalf("returned error must NOT match ErrStopWalk; got %v", err)
+		}
+	})
+
+	t.Run("ArbitraryErrorHaltsWithWrappedError", func(t *testing.T) {
+		bc := newFSStoreForTest(t, FSStoreOptions{})
+		_ = seedChunks(t, bc, 3)
+
+		boom := errors.New("boom")
+		err := bc.Walk(context.Background(), func(_ blockstore.ContentHash, _ blockstore.Meta) error {
+			return boom
+		})
+		if err == nil {
+			t.Fatalf("non-ErrStopWalk error must halt Walk, got nil")
+		}
+		if !errors.Is(err, boom) {
+			t.Fatalf("returned error must wrap the callback's error; got %v", err)
 		}
 	})
 }
