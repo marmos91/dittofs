@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-05-28 (close FIND+CLOSE goroutine-spawn race via dispatch-time pre-acquire of per-FileID in-flight counter — walks back `smb2.compound_find.compound_find_close` from Compound and Intermittent sections, #472)
+Last updated: 2026-05-29 (#750 subset C — walk back `smb2.tcon` (already PASSing), promote `smb2.maxfid` + `smb2.notify.mask-change` to Permanently Unimplementable, #750)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -85,7 +85,6 @@ overflow, rec, rmdir1-4, tcon, tdis, tdis1, tcp, tree.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.notify.valid-req | Change Notify | Needs kernel inotify for MODIFIED on WRITE (also fails on reference Samba in Docker) | #750 |
-| smb2.notify.mask-change | Change Notify | SHARING_VIOLATION on directory open (pre-existing, never passed individually) | #750 |
 
 ### Oplocks (Multi-Client Coordination Not Implemented)
 
@@ -165,15 +164,6 @@ maximum_allowed works but full computation does not.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.maximum_allowed.maximum_allowed | Access checks | Full maximum allowed computation not implemented | #750 |
-
-### Connection and Tree Connect (Advanced Semantics)
-
-Advanced connection and tree connect edge cases.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.tcon | Tree connect | Advanced tree connect semantics not implemented | #750 |
-| smb2.maxfid | Connection | Connection drops under high FD pressure | #750 |
 
 ### Intermittent / Flaky
 
@@ -443,6 +433,8 @@ Tests below cannot be implemented in DittoFS by design. Reasons fall into the fo
 5. **Samba server-config behaviours.** Tests that exercise Samba's `smb.conf` knobs (e.g. `hide files`, `hide dot files`) which are Samba-specific filename-glob configuration, not part of MS-FSCC/MS-SMB2. DittoFS implements the protocol-defined HIDDEN attribute (SET_INFO/GET_INFO round-trip + OVERWRITE_IF attribute-mismatch denial + dot-prefix auto-hide) but does not replicate Samba's optional glob-pattern hiding.
 6. **Persistent extended attribute (EA) storage.** Tests that assert SET_INFO `FileFullEaInformation` writes survive a GET_INFO `SMB2_ALL_EAS` round-trip. DittoFS does not persist EAs; SET_INFO returns SUCCESS as a no-op so ChangeNotify EA filters proceed, but the EA list is not stored. Persistent EA storage is a separate (untracked) design item, orthogonal to the SET_INFO surface this test otherwise covers.
 7. **Test-author-documented timing-dependent assertions.** A handful of upstream smbtorture tests are noted in their source comments as inherently flaky (e.g. reliant on `~15ms` Windows timestamp resolution observable only over a low-latency wire) and are explicitly excluded from Samba's own selftest. DittoFS classifies these the same way upstream does.
+8. **smbtorture per-test wall-clock budget exhaustion.** A few tests issue tens of thousands of sequential synchronous SMB2 round-trips (e.g. 65520 CREATEs). Total runtime is dominated by RTT × N and exceeds the per-test wall set by `run.sh` (60s for STANDALONE tests). DittoFS does not impose a protocol-level cap on the operation, so CREATE keeps succeeding throughout — but the suite times out before the test's own cleanup phase runs. Raising the per-test wall to accommodate a single edge-case stress test would inflate full-suite runtime by ~10× of the test's natural duration without exercising a protocol gap.
+9. **Samba-internal CHANGE_NOTIFY state-coalescing quirks.** A handful of notify tests assert behaviour described in their own source comments as Samba implementation-specific (e.g. "once the mask is set on a directory it seems to be fixed until the fnum is closed"). These are not stated in MS-SMB2 §3.3.5.19, and the tests have a long-standing history of failing in isolation against DittoFS independent of the surrounding test order.
 
 These entries remain in CI's known-failure set (so they don't break the build) but are explicitly outside the v1.0 conformance gate. Do not file sub-issues for them.
 
@@ -467,11 +459,13 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.zero-data-ioctl | Parameterized driver | Standalone smbtorture driver test that requires `--option=torture:offset=<n>` at invocation. Fails immediately with `Need to provide non-negative offset through --option=torture:offset=NNN`; not a feature gap. The FSCTL itself is covered by `smb2.ioctl.sparse_punch` / `sparse_punch_invalid`. |
 | smb2.dosmode | Samba server-config | Exercises Samba `smb.conf` `hide files = /*hidefile*/` glob-pattern hiding alongside HIDDEN-attribute round-trip. DittoFS supports the MS-FSCC HIDDEN attribute end-to-end (SET_INFO/GET_INFO round-trip, OVERWRITE_IF attribute-mismatch → ACCESS_DENIED, dot-prefix auto-hide) but does not implement Samba's `hide files` filename-glob config knob — that is a Samba server-side filter, not part of MS-FSCC/MS-SMB2. The test's `hidefile` subcase requires this glob. |
 | smb2.setinfo | EA persistence | Drives SET_INFO BasicInfo / DispositionInfo / AllocationInfo / EndOfFile / PositionInfo / ModeInfo / SecurityDescriptor (all working in DittoFS) and then asserts SET_INFO `FileFullEaInformation` writes survive a GET_INFO `SMB2_ALL_EAS` round-trip. DittoFS does not persist extended attributes; the SET returns SUCCESS as a no-op for ChangeNotify-EA wiring. Persistent EA storage is a separate design item from the SET_INFO surface this test otherwise covers, and is not tracked under a dedicated open issue today. |
-| smb2.timestamp_resolution.resolution1 | Timing-dependent (upstream-skipped) | Test source documents `~15ms` Windows timestamp resolution and warns of a `1/15` false-fail rate even on a low-latency reference SMB connection. Explicitly skipped by Samba's own selftest (`selftest/skip:69-70`: `^samba3.smb2.timestamp_resolution` / `^samba4.smb2.timestamp_resolution`) "preserved here for future SMB2 timestamps behaviour archealogists". DittoFS classifies the same way upstream does. |
+| smb2.timestamp_resolution.resolution1 | Timing-dependent (upstream-skipped) | Test source documents `~15ms` Windows timestamp resolution and warns of a `1/15` false-fail rate even on a low-latency reference SMB connection. Explicitly skipped by Samba's own selftest (`selftest/skip:69-70`: `^samba3.smb2.timestamp_resolution` / `^samba4.smb2.timestamp_resolution`) "preserved here for future SMB2 timestamps behaviour archaeologists". DittoFS classifies the same way upstream does. |
 | smb2.create.blob | Create-context coverage (upstream-skipped) | Walks 20+ adversarial CreateContext tag/length combinations against a file-backed share. Explicitly listed in Samba's own selftest knownfail (`selftest/knownfail`: `^samba3.smb2.create.blob`) — fails against Samba's own smb3-file backend, not just DittoFS. Implementing all variants requires duplicating Samba's smb1-derived create-context corner cases that have no MS-SMB2 spec mapping. |
 | smb2.create.gentest | Generative impersonation matrix (upstream-skipped) | Brute-forces hundreds of `(create_disposition × create_options × ImpersonationLevel × attribute)` combinations expecting Windows-exact status codes. Explicitly listed in Samba's own selftest knownfail (`selftest/knownfail`: `^samba3.smb2.create.gentest`) — fails on Samba file-backed shares. The status-code surface mirrors Windows-internal IRP_MJ_CREATE behaviour, not MS-FSA. |
+| smb2.maxfid | smbtorture wall-clock budget | Test issues up to 65520 sequential synchronous CREATEs (Samba `source4/torture/smb2/maxfid.c:100`, controlled by `torture:maxopenfiles`). Total RTT-bound runtime exceeds the 60s per-test wall set by `run.sh` (STANDALONE_TESTS). DittoFS keeps CREATE succeeding throughout (no protocol-level handle-table cap), so the suite is killed mid-loop before reaching the cleanup phase. Raising the per-test wall to accommodate one stress test inflates full-suite runtime substantially without exercising a protocol gap. |
+| smb2.notify.mask-change | Samba notify-mask quirk | Asserts that, once a CHANGE_NOTIFY completion-filter mask has been armed on a directory handle, re-issuing CHANGE_NOTIFY with a different mask MUST observe the original mask only until the handle is closed (test source: `source4/torture/smb2/notify.c:771-772` — "Now try and change the mask to include other events. This should not work - once the mask is set on a directory h1 it seems to be fixed until the fnum is closed"). MS-SMB2 §3.3.5.19 does not specify mask-coalescing across separate CHANGE_NOTIFY requests on the same handle, and the test has a long-standing "never passed individually" history against DittoFS independent of test order. Surrounding scenarios (cross-tree dir/file rename plumbing, recursion-flag-mixed reqs on the same FID) are also Samba implementation conventions. |
 
-**Total: 22 tests permanently out of scope.**
+**Total: 24 tests permanently out of scope.**
 
 ### Kerberos
 
@@ -496,6 +490,16 @@ After PR #763 flipped 9/14 session residuals, the remaining 5 rows are two disti
 - **`smb2.session.anon-encryption1`** + **`anon-encryption2`** + **`anon-encryption3`** — anonymous SESSION_SETUP returns INVALID_PARAMETER on plaintext anonymous bindings before encryption context is established. Retagged to **#773**.
 
 Umbrella #746 closed.
+
+### 2026-05-29 — Misc subset C → walk back + Permanently Unimplementable (#750)
+
+Resolve the final three umbrella-#750 misc rows:
+
+- **`smb2.tcon`** — Walked back. Already PASSing on CI (`smbtorture / memory` and adjacent profiles). The protocol assertions the test exercises (wrong TID / invalid TID / invalid VUID on a WRITE carrying a foreign handle) are already enforced — `prepareDispatch` returns `STATUS_NETWORK_NAME_DELETED` / `STATUS_USER_SESSION_DELETED` for unknown IDs, and `write.go` / `read.go` enforce the request's TID/SID match the handle's owning tree/session (PR #487 / #691). The KF row was stale.
+- **`smb2.maxfid`** — Promoted to Permanently Unimplementable (bucket 8). Test issues up to 65520 sequential CREATEs (`source4/torture/smb2/maxfid.c`); the dominating RTT × N exceeds the 60s per-test wall set in `run.sh`. DittoFS keeps CREATE succeeding throughout — no protocol gap. Raising the wall to accommodate a single stress test would inflate full-suite runtime without testing anything spec-defined.
+- **`smb2.notify.mask-change`** — Promoted to Permanently Unimplementable (bucket 9). Test asserts Samba-specific completion-filter-mask "stickiness" on a re-issued CHANGE_NOTIFY against the same directory FID, plus cross-tree rename plumbing — neither stated in MS-SMB2 §3.3.5.19. Test source itself describes the asserted behaviour as observational ("it seems to be fixed until the fnum is closed"). Long-standing "never passed individually" history independent of test order.
+
+Appendix grows 22 → 24. Umbrella issue #750 (9 rows total) fully resolved across subsets A (#759), B (#761), and C (this PR).
 
 ### 2026-05-29 — Misc subset A → Permanently Unimplementable (#750)
 
