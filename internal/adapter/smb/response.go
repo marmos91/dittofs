@@ -202,6 +202,18 @@ func ProcessSingleRequest(
 	// Track session lifecycle for connection cleanup
 	TrackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status, result.IsBinding, connInfo.SessionTracker)
 
+	// Release any parked-CREATE resume goroutine now that the standalone
+	// callback assignment is final. Non-compound CREATEs use the original
+	// callback installed in prepareDispatch — there is no ReplaceCallback
+	// to wait on, so the started gate can fire immediately. Without this,
+	// the resume goroutine deadlocks on PendingCreate.started after the
+	// break drains (smbtorture compound.compound-break IO_TIMEOUT race).
+	if reqHeader.Command == types.SMB2Create &&
+		result.Status == types.StatusPending && result.AsyncId != 0 &&
+		connInfo.Handler.PendingCreateRegistry != nil {
+		connInfo.Handler.PendingCreateRegistry.MarkStarted(result.AsyncId)
+	}
+
 	// Send response and run after-hooks with the response bytes. If the
 	// write fails, return early — any registered PostSend hook is
 	// intentionally dropped because the connection is likely dead and the

@@ -1067,6 +1067,14 @@ func (h *Handler) parkCreateOnLeaseBreak(
 		AsyncId:   asyncId,
 		Cancel:    cancel,
 		Callback:  ctx.AsyncCreateCompleteCallback,
+		// started is closed by the dispatcher (response.go single-cmd path
+		// or compound.go after ReplaceCallback) once the Callback has been
+		// finalized. The resume goroutine waits on it before invoking
+		// Callback so a fast localhost break ACK can't fire the original
+		// callback before the compound dispatcher has had a chance to swap
+		// it for the continue-compound wrapper (smb2.compound.compound-break
+		// IO_TIMEOUT race observed in CI).
+		started: make(chan struct{}),
 	}
 
 	if err := h.PendingCreateRegistry.Register(pending); err != nil {
@@ -1095,6 +1103,13 @@ func (h *Handler) parkCreateOnLeaseBreak(
 				"asyncId", asyncId,
 				"error", err)
 		}
+
+		// Wait for the dispatcher to finalize the callback assignment before
+		// any release path. Done BEFORE Unregister so a CANCEL/teardown that
+		// pulls the entry first can still hand off via markStarted — otherwise
+		// the gate would never close and this goroutine would block forever.
+		// See PendingCreate.started doc for the race this closes.
+		<-pending.started
 
 		// Ensure our entry is still live (not preempted by CANCEL or teardown).
 		// If it was, CANCEL / teardown already sent the final response.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
@@ -205,5 +206,123 @@ func TestPendingCreateRegistry_UnregisterByMessageID_DifferentConnsCollidingMess
 	}
 	if got := r.UnregisterByMessageID(2, 42); got != p2 {
 		t.Errorf("UnregisterByMessageID(conn=2) = %v, want p2", got)
+	}
+}
+
+// newGatedPendingCreate wires a `started` channel onto the test entry so the
+// gate behaviour matches what parkCreateOnLeaseBreak actually constructs at
+// runtime.
+func newGatedPendingCreate(asyncId uint64, calls *atomic.Int32) *PendingCreate {
+	p := newTestPendingCreate(1, 100, 42, asyncId, calls)
+	p.started = make(chan struct{})
+	return p
+}
+
+// TestPendingCreateRegistry_MarkStartedClosesGate verifies the public
+// MarkStarted entry point unblocks a goroutine waiting on PendingCreate.started.
+// This is the race that smb2.compound.compound-break exposes when the resume
+// goroutine fires before the compound dispatcher has had a chance to swap
+// the Callback for the continue-compound wrapper.
+func TestPendingCreateRegistry_MarkStartedClosesGate(t *testing.T) {
+	r := NewPendingCreateRegistry()
+	var calls atomic.Int32
+	p := newGatedPendingCreate(7, &calls)
+
+	if err := r.Register(p); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	released := make(chan struct{})
+	go func() {
+		<-p.started
+		close(released)
+	}()
+
+	// MarkStarted must wake the waiter.
+	if !r.MarkStarted(7) {
+		t.Fatalf("MarkStarted(7) = false, want true (entry registered)")
+	}
+
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("MarkStarted did not unblock waiter within 1s")
+	}
+
+	// Second call is idempotent — does not panic on already-closed channel.
+	if !r.MarkStarted(7) {
+		t.Errorf("second MarkStarted(7) = false, want true (still registered)")
+	}
+}
+
+// TestPendingCreateRegistry_CancelReleasesGate verifies CANCEL-style
+// unregistration also closes the gate so a resume goroutine racing the
+// cancel cannot deadlock waiting for a dispatcher MarkStarted that never
+// arrives (CANCEL bypasses the dispatcher).
+func TestPendingCreateRegistry_CancelReleasesGate(t *testing.T) {
+	cases := []struct {
+		name   string
+		cancel func(*PendingCreateRegistry, *PendingCreate)
+	}{
+		{
+			name: "UnregisterByMessageID",
+			cancel: func(r *PendingCreateRegistry, p *PendingCreate) {
+				r.UnregisterByMessageID(p.ConnID, p.MessageID)
+			},
+		},
+		{
+			name: "UnregisterByAsyncId",
+			cancel: func(r *PendingCreateRegistry, p *PendingCreate) {
+				r.UnregisterByAsyncId(p.AsyncId)
+			},
+		},
+		{
+			name: "UnregisterAllForSession",
+			cancel: func(r *PendingCreateRegistry, p *PendingCreate) {
+				r.UnregisterAllForSession(p.SessionID)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewPendingCreateRegistry()
+			var calls atomic.Int32
+			p := newGatedPendingCreate(7, &calls)
+			if err := r.Register(p); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+
+			released := make(chan struct{})
+			go func() {
+				<-p.started
+				close(released)
+			}()
+
+			tc.cancel(r, p)
+
+			select {
+			case <-released:
+			case <-time.After(time.Second):
+				t.Fatalf("%s did not release started gate within 1s", tc.name)
+			}
+		})
+	}
+}
+
+// TestPendingCreateRegistry_MarkStartedAfterUnregister exercises the
+// idempotency of the gate path: once the entry has been removed, MarkStarted
+// returns false (the dispatcher already lost the race to CANCEL/teardown,
+// which has its own callback fan-out).
+func TestPendingCreateRegistry_MarkStartedAfterUnregister(t *testing.T) {
+	r := NewPendingCreateRegistry()
+	var calls atomic.Int32
+	p := newGatedPendingCreate(7, &calls)
+	if err := r.Register(p); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	r.Unregister(7)
+	if r.MarkStarted(7) {
+		t.Errorf("MarkStarted after Unregister = true, want false")
 	}
 }
