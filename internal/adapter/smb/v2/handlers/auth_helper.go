@@ -226,6 +226,105 @@ func (h *Handler) primeAuthContext(ctx *SMBHandlerContext, treeID uint32, sessio
 	}
 }
 
+// CaptureOpenerIdentity records the SMB session's authenticated DittoFS user
+// on the OpenFile at CREATE time so the handle's authorization identity is
+// frozen against the user who actually opened it (MS-SMB2 §3.3.5.5.3:
+// "Session.SecurityContext is fixed at the time of the open"). Subsequent
+// SESSION_SETUP re-authentication on the same SessionID mutates Session.User
+// in-place (see tryReauthUpdate); without this snapshot, a handle-bound op
+// (e.g. SET_INFO SecurityDescriptor on h1 while the session has been re-authed
+// to anonymous) would resolve identity to the NEW principal and fail the
+// ownership gate in MetadataService.SetFileAttributes, even though the
+// handle's GrantedAccess already authorized the call at CREATE time.
+//
+// Guest and null sessions have User=nil but carry IsGuest/IsNull on the
+// session — the snapshot preserves those flags so the rebuilt opener
+// AuthContext maps back to the same nobody/65534 (or root-fallback)
+// identity rather than re-resolving against the current session's user.
+//
+// smbtorture smb2.session.reauth4 / reauth5 gate on this — the tests open
+// h1 / dh1 as U1, re-auth the session to anonymous, then SET_INFO SD on
+// the U1-opened handle and expect SUCCESS.
+func (h *Handler) CaptureOpenerIdentity(ctx *SMBHandlerContext, openFile *OpenFile) {
+	if h == nil || ctx == nil || openFile == nil {
+		return
+	}
+	openFile.OpenerUser = ctx.User
+	openFile.OpenerIsGuest = ctx.IsGuest
+	// IsNull mirrors the session-level "anonymous logon, not guest" state.
+	// SMBHandlerContext doesn't carry it explicitly; re-resolve from the
+	// session so a future re-auth to a real user doesn't lose the bit.
+	// Guard against tests that hand-build a Handler without a SessionManager.
+	if h.SessionManager == nil {
+		return
+	}
+	if sess, ok := h.GetSession(ctx.SessionID); ok && sess != nil {
+		openFile.OpenerIsNull = sess.IsNull
+	}
+}
+
+// buildOpenerAuthContext returns an AuthContext built from the OpenFile's
+// captured opener identity snapshot rather than the SMB context's current
+// session. Used by handle-bound metadata calls that must remain anchored to
+// the opener after SESSION_SETUP re-auth (notably SET_INFO SecurityDescriptor
+// — MS-SMB2 §3.3.5.21.3 + §3.3.5.5.3). The handler-level WRITE_DAC /
+// WRITE_OWNER / ACCESS_SYSTEM_SECURITY gate against OpenFile.GrantedAccess
+// has already authorised the call by the time this runs; the metadata-layer
+// ownership check that BuildAuthContext-from-session would trip is a NAT
+// of the SMB authorization model onto POSIX semantics that doesn't apply
+// here.
+//
+// Falls back to the session-current BuildAuthContext result when the opener
+// snapshot wasn't captured (legacy code paths, restored durable handles
+// pre-snapshot, tests). That preserves existing behaviour for everything
+// that already worked while fixing the re-auth handle-binding gap.
+//
+// Parent-lease-key linkage is propagated identically to the session-current
+// path so dir-lease parent-key suppression (#470 C2) keeps working.
+func (h *Handler) buildOpenerAuthContext(ctx *SMBHandlerContext, openFile *OpenFile) (*metadata.AuthContext, error) {
+	if openFile == nil {
+		return BuildAuthContext(ctx)
+	}
+	// No snapshot recorded (legacy or restored durable handle pre-binding):
+	// use the session-current identity. This is also the path tests exercise
+	// when they hand-build an OpenFile without going through CREATE.
+	if openFile.OpenerUser == nil && !openFile.OpenerIsGuest && !openFile.OpenerIsNull {
+		return BuildAuthContext(ctx)
+	}
+
+	var authCtx *metadata.AuthContext
+	if openFile.OpenerUser != nil {
+		authCtx = BuildAuthContextFromUser(ctx, openFile.OpenerUser)
+	} else {
+		// Guest / null opener: synthesise the same identity BuildAuthContext
+		// would for a User==nil session, but pinned to the captured opener
+		// flags rather than the session's current state.
+		authCtx = &metadata.AuthContext{
+			Context:                ctx.Context,
+			ClientAddr:             ctx.ClientAddr,
+			LockClientID:           fmt.Sprintf("smb:%d", ctx.SessionID),
+			Identity:               &metadata.Identity{},
+			BypassTraverseChecking: true,
+		}
+		if openFile.OpenerIsGuest {
+			guestUID := uint32(65534) // nobody
+			guestGID := uint32(65534) // nogroup
+			authCtx.Identity.UID = &guestUID
+			authCtx.Identity.GID = &guestGID
+		} else {
+			// Anonymous/null opener — fall back to root, matching the
+			// existing BuildAuthContext(ctx.User==nil, IsGuest==false) arm.
+			rootUID := uint32(0)
+			rootGID := uint32(0)
+			authCtx.Identity.UID = &rootUID
+			authCtx.Identity.GID = &rootGID
+		}
+		authCtx.ShareWritable = HasWritePermission(ctx)
+		authCtx.ShareReadOnly = ctx.Permission == models.PermissionRead
+	}
+	return authCtx, nil
+}
+
 // PropagateOpenFileParentLeaseKey copies the OpenFile's RqLs parent-lease-key
 // linkage (if any) onto an AuthContext. This is the hand-off that lets
 // MetadataService.notifyDirChange and the dir-lease parent-key suppression

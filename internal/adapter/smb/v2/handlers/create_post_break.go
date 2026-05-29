@@ -920,6 +920,12 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		openFile.LeaseKey = syntheticLeaseKey
 	}
 
+	// Snapshot the opener's identity so handle-bound ops (notably SET_INFO
+	// SecurityDescriptor) stay anchored to the user who actually opened
+	// the handle after SESSION_SETUP re-auth swaps Session.User out from
+	// under us. MS-SMB2 §3.3.5.5.3 + smbtorture smb2.session.reauth4/5.
+	h.CaptureOpenerIdentity(ctx, openFile)
+
 	// Record the RqLs parent-lease-key linkage so downstream operations on
 	// this handle (SET_INFO, WRITE, CLOSE-on-delete) can apply the MS-SMB2
 	// §3.3.4.20 / Samba `dirlease_should_break` parent-key suppression rule

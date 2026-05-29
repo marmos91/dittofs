@@ -568,6 +568,28 @@ type OpenFile struct {
 	// reliably survive an in-flight lease downgrade.
 	// smbtorture smb2.durable-v2-open.lock-noW-lease.
 	HasByteRangeLocks atomic.Bool
+
+	// OpenerUser is a snapshot of the SMB session's authenticated DittoFS
+	// user at CREATE time. After SESSION_SETUP re-authentication mutates
+	// Session.User to a different principal, handle-bound operations on
+	// this open (notably SET_INFO SecurityDescriptor) MUST be authorized
+	// against the ORIGINAL opener — MS-SMB2 §3.3.5.5.3 freezes the open's
+	// SecurityContext to the user who opened it. Re-resolving from the
+	// session at op time would (a) trip the ownership gate in
+	// MetadataService.SetFileAttributes when U1's file is being touched
+	// via h1 while the session is currently re-authed to anon/U2, and
+	// (b) misattribute authz audit records to the wrong principal.
+	//
+	// nil means "use the session-current user" — the legacy behaviour
+	// for codepaths and tests that pre-date the snapshot. Guest/Null
+	// opens set OpenerIsGuest / OpenerIsNull so handle-bound ops can
+	// rebuild the same nobody/65534 identity even after the session
+	// re-authenticates to a real user. smbtorture smb2.session.reauth4
+	// (set_secdesc on a U1-opened handle while session is anon) and
+	// reauth5 (same shape via the dir-handle dh1 SET_INFO) gate on this.
+	OpenerUser    *models.User
+	OpenerIsGuest bool
+	OpenerIsNull  bool
 }
 
 // OpenID returns a unique identifier for this open file handle.

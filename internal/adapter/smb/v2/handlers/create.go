@@ -1634,6 +1634,8 @@ func (h *Handler) handleOpenRootCreate(
 		IsDirectory:    true,
 		MetadataHandle: rootHandle,
 	}
+	// Snapshot opener identity so handle-bound ops survive re-auth (#772).
+	h.CaptureOpenerIdentity(ctx, openFile)
 	h.StoreOpenFile(openFile)
 
 	creation, access, write, change := FileAttrToSMBTimes(&rootFile.FileAttr)
