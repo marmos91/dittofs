@@ -59,38 +59,79 @@ func NewSnapshotHandler(
 	}
 }
 
-// Create handles POST /api/v1/shares/{name}/snapshots. Returns 202 with
-// a Location header pointing at the per-snapshot show URL.
-func (h *SnapshotHandler) Create(w http.ResponseWriter, r *http.Request) {
+// resolveShare validates the runtime is wired and extracts the share
+// name from the URL. Returns "" and writes an error response if any
+// precondition fails; the caller must then bail without further writes.
+func (h *SnapshotHandler) resolveShare(w http.ResponseWriter, r *http.Request) string {
 	if h.runtime == nil {
 		InternalServerError(w, "runtime not initialized")
-		return
+		return ""
 	}
 	name := normalizeShareName(chi.URLParam(r, "name"))
 	if name == "" {
 		BadRequest(w, "share name is required")
+		return ""
+	}
+	return name
+}
+
+// resolveShareAndSnap is resolveShare plus the snapshot id from the URL.
+func (h *SnapshotHandler) resolveShareAndSnap(w http.ResponseWriter, r *http.Request) (string, string) {
+	name := h.resolveShare(w, r)
+	if name == "" {
+		return "", ""
+	}
+	snapID := chi.URLParam(r, "id")
+	if snapID == "" {
+		BadRequest(w, "snapshot id is required")
+		return "", ""
+	}
+	return name, snapID
+}
+
+// decodeBody decodes an optional JSON request body. Returns false (with
+// a 400 already written) on a decode failure; returns true on success
+// or when the body is empty/EOF.
+func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if r.Body == nil || r.ContentLength == 0 {
+		return true
+	}
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil && err != io.EOF {
+		BadRequest(w, "invalid request body: "+err.Error())
+		return false
+	}
+	return true
+}
+
+// handleErr maps a snapshot/restore sentinel via mapSnapshotError; if
+// unmapped, logs at Debug and writes a sanitized 500.
+func handleErr(w http.ResponseWriter, op string, fields []any, err error) {
+	if mapSnapshotError(w, err) {
+		return
+	}
+	logger.Debug(op+" error", append(fields, "error", err)...)
+	InternalServerError(w, op+" failed")
+}
+
+// Create handles POST /api/v1/shares/{name}/snapshots. Returns 202 with
+// a Location header pointing at the per-snapshot show URL.
+func (h *SnapshotHandler) Create(w http.ResponseWriter, r *http.Request) {
+	name := h.resolveShare(w, r)
+	if name == "" {
 		return
 	}
 
 	var req dto.CreateSnapshotRequest
-	if r.Body != nil && r.ContentLength != 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
-			BadRequest(w, "invalid request body: "+err.Error())
-			return
-		}
+	if !decodeBody(w, r, &req) {
+		return
 	}
 
-	opts := runtime.CreateSnapshotOpts{
+	snapID, err := h.runtime.CreateSnapshot(r.Context(), name, runtime.CreateSnapshotOpts{
 		NoVerify: req.NoVerify,
 		RetryOf:  req.RetryOf,
-	}
-	snapID, err := h.runtime.CreateSnapshot(r.Context(), name, opts)
+	})
 	if err != nil {
-		if mapSnapshotError(w, err) {
-			return
-		}
-		logger.Debug("Snapshot create error", "share", name, "error", err)
-		InternalServerError(w, "snapshot create failed")
+		handleErr(w, "snapshot create", []any{"share", name}, err)
 		return
 	}
 
@@ -99,32 +140,19 @@ func (h *SnapshotHandler) Create(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("/api/v1/shares/%s/snapshots/%s",
 			url.PathEscape(name), url.PathEscape(snapID)),
 	)
-	WriteJSONAccepted(w, dto.CreateSnapshotResponse{
-		SnapshotID: snapID,
-		Share:      name,
-	})
+	WriteJSONAccepted(w, dto.CreateSnapshotResponse{SnapshotID: snapID, Share: name})
 }
 
 // List handles GET /api/v1/shares/{name}/snapshots. Returns 200 with a
 // JSON array of dto.Snapshot. Empty share returns [], not null.
 func (h *SnapshotHandler) List(w http.ResponseWriter, r *http.Request) {
-	if h.runtime == nil {
-		InternalServerError(w, "runtime not initialized")
-		return
-	}
-	name := normalizeShareName(chi.URLParam(r, "name"))
+	name := h.resolveShare(w, r)
 	if name == "" {
-		BadRequest(w, "share name is required")
 		return
 	}
-
 	snaps, err := h.runtime.ListSnapshots(r.Context(), name)
 	if err != nil {
-		if mapSnapshotError(w, err) {
-			return
-		}
-		logger.Debug("Snapshot list error", "share", name, "error", err)
-		InternalServerError(w, "snapshot list failed")
+		handleErr(w, "snapshot list", []any{"share", name}, err)
 		return
 	}
 	out := make([]dto.Snapshot, 0, len(snaps))
@@ -138,28 +166,13 @@ func (h *SnapshotHandler) List(w http.ResponseWriter, r *http.Request) {
 // a full dto.Snapshot (including manifest_count + dump_bytes pulled from
 // disk on demand) or 404 if the snapshot is missing.
 func (h *SnapshotHandler) Get(w http.ResponseWriter, r *http.Request) {
-	if h.runtime == nil {
-		InternalServerError(w, "runtime not initialized")
-		return
-	}
-	name := normalizeShareName(chi.URLParam(r, "name"))
+	name, snapID := h.resolveShareAndSnap(w, r)
 	if name == "" {
-		BadRequest(w, "share name is required")
 		return
 	}
-	snapID := chi.URLParam(r, "id")
-	if snapID == "" {
-		BadRequest(w, "snapshot id is required")
-		return
-	}
-
 	snap, err := h.runtime.GetSnapshot(r.Context(), name, snapID)
 	if err != nil {
-		if mapSnapshotError(w, err) {
-			return
-		}
-		logger.Debug("Snapshot get error", "share", name, "snapshot_id", snapID, "error", err)
-		InternalServerError(w, "snapshot get failed")
+		handleErr(w, "snapshot get", []any{"share", name, "snapshot_id", snapID}, err)
 		return
 	}
 	WriteJSONOK(w, h.toWire(snap, true))
@@ -168,27 +181,12 @@ func (h *SnapshotHandler) Get(w http.ResponseWriter, r *http.Request) {
 // Delete handles DELETE /api/v1/shares/{name}/snapshots/{id}. Returns
 // 204 No Content on success.
 func (h *SnapshotHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	if h.runtime == nil {
-		InternalServerError(w, "runtime not initialized")
-		return
-	}
-	name := normalizeShareName(chi.URLParam(r, "name"))
+	name, snapID := h.resolveShareAndSnap(w, r)
 	if name == "" {
-		BadRequest(w, "share name is required")
 		return
 	}
-	snapID := chi.URLParam(r, "id")
-	if snapID == "" {
-		BadRequest(w, "snapshot id is required")
-		return
-	}
-
 	if err := h.runtime.DeleteSnapshot(r.Context(), name, snapID); err != nil {
-		if mapSnapshotError(w, err) {
-			return
-		}
-		logger.Debug("Snapshot delete error", "share", name, "snapshot_id", snapID, "error", err)
-		InternalServerError(w, "snapshot delete failed")
+		handleErr(w, "snapshot delete", []any{"share", name, "snapshot_id", snapID}, err)
 		return
 	}
 	WriteNoContent(w)
@@ -198,40 +196,23 @@ func (h *SnapshotHandler) Delete(w http.ResponseWriter, r *http.Request) {
 // Returns 200 with the restored snapshot id, the share, and the safety
 // snapshot id surfaced directly from the runtime's first return value.
 func (h *SnapshotHandler) Restore(w http.ResponseWriter, r *http.Request) {
-	if h.runtime == nil {
-		InternalServerError(w, "runtime not initialized")
-		return
-	}
-	name := normalizeShareName(chi.URLParam(r, "name"))
+	name, snapID := h.resolveShareAndSnap(w, r)
 	if name == "" {
-		BadRequest(w, "share name is required")
-		return
-	}
-	snapID := chi.URLParam(r, "id")
-	if snapID == "" {
-		BadRequest(w, "snapshot id is required")
 		return
 	}
 
 	var body dto.RestoreSnapshotRequest
-	if r.Body != nil && r.ContentLength != 0 {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
-			BadRequest(w, "invalid request body: "+err.Error())
-			return
-		}
+	if !decodeBody(w, r, &body) {
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.restoreHTTPTimeout)
 	defer cancel()
 
-	opts := runtime.RestoreSnapshotOpts{AllowNonDurable: body.AllowNonDurable}
-	safetyID, err := h.runtime.RestoreSnapshot(ctx, name, snapID, opts)
+	safetyID, err := h.runtime.RestoreSnapshot(ctx, name, snapID,
+		runtime.RestoreSnapshotOpts{AllowNonDurable: body.AllowNonDurable})
 	if err != nil {
-		if mapSnapshotError(w, err) {
-			return
-		}
-		logger.Debug("Snapshot restore error", "share", name, "snapshot_id", snapID, "error", err)
-		InternalServerError(w, "snapshot restore failed")
+		handleErr(w, "snapshot restore", []any{"share", name, "snapshot_id", snapID}, err)
 		return
 	}
 	WriteJSONOK(w, dto.RestoreSnapshotResponse{

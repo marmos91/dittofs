@@ -40,7 +40,7 @@ type CreateSnapshotOpts struct {
 // per-snapshot on-disk directory is created. The backup -> manifest ->
 // drain -> verify -> ready/failed pipeline runs in a goroutine derived
 // from r.runtimeCtx (NOT the caller's ctx, so adapter teardown does not
-// kill in-flight snapshots — D-23-17).
+// kill in-flight snapshots).
 //
 // Synchronous failures returned to the caller:
 //   - shares.ErrShareNotFound — unknown share
@@ -48,10 +48,10 @@ type CreateSnapshotOpts struct {
 //     store dir) OR metadata engine doesn't implement metadata.Backupable
 //   - models.ErrSnapshotRetryTargetNotFound / models.ErrSnapshotRetryTargetNotFailed
 //   - models.ErrSnapshotStateConflict — another in-flight snapshot
-//     already exists for this share (Phase 22 D-08 partial unique index)
+//     already exists for this share (partial unique index)
 //   - wrapped fs error — snapshot directory could not be created
 //
-// Goroutine-only failures (observable via WaitForSnapshot in plan 23-06):
+// Goroutine-only failures (observable via WaitForSnapshot):
 //   - models.ErrSnapshotBackupFailed — Backupable.Backup, dump write, or
 //     manifest write failed
 //   - models.ErrSnapshotDrainTimeout — DrainAllUploads returned a ctx error
@@ -59,9 +59,8 @@ type CreateSnapshotOpts struct {
 //     even after one drain retry
 //
 // On goroutine failure, the row flips to state='failed', metadata.dump
-// and manifest.hashes are retained on disk for retry (D-23-09), and the
-// wrapped sentinel is posted to the per-snap result chan immediately
-// before close.
+// and manifest.hashes are retained on disk for retry, and the wrapped
+// sentinel is posted to the per-snap result chan immediately before close.
 func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts CreateSnapshotOpts) (string, error) {
 	if r == nil || r.store == nil {
 		return "", errors.New("runtime: nil store")
@@ -92,9 +91,9 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 	// (2b) Resolve the metadata-store engine type ("memory" | "badger" |
 	// "postgres") so Snapshot.MetadataEngine can be populated on the
 	// fresh-create row. The retry path inherits MetadataEngine from the
-	// existing failed row, so it does not need to look this up. Phase 24
-	// restore consumes MetadataEngine to dispatch the per-engine
-	// Restoreable driver; an empty value would break that lookup.
+	// existing failed row, so it does not need to look this up. Restore
+	// consumes MetadataEngine to dispatch the per-engine Restoreable
+	// driver; an empty value would break that lookup.
 	shareCfg, err := r.sharesSvc.GetShare(shareName)
 	if err != nil {
 		return "", err
@@ -110,14 +109,14 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 			shareName, shareCfg.MetadataStore, models.ErrSnapshotBackupFailed)
 	}
 
-	// (3) Insert / flip the state='creating' row BEFORE any I/O (D-23-01).
-	// The Phase 22 idx_share_creating partial unique index only enforces
+	// (3) Insert / flip the state='creating' row BEFORE any I/O. The
+	// idx_share_creating partial unique index only enforces
 	// concurrent-create rejection if the row exists during the second
 	// Create call.
 	var snap *models.Snapshot
 	if opts.RetryOf != "" {
 		// Retry path: look up + validate the failed target, then flip
-		// state failed -> creating (D-23-10).
+		// state failed -> creating.
 		existing, gerr := r.store.GetSnapshot(ctx, shareName, opts.RetryOf)
 		if gerr != nil {
 			if errors.Is(gerr, models.ErrSnapshotNotFound) {
@@ -165,7 +164,6 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 	// abortSnapInFlight to release the wg.Add(1) the registration took
 	// and close+drain the doneCh, otherwise cancelAndWaitInFlightSnaps
 	// would block forever waiting for the never-launched goroutine.
-	// D-23-17.
 	childCtx, doneCh, entry := r.registerSnapInFlight(shareName, snapID)
 
 	// (5) Create on-disk dir. Failure here is synchronous — flip the row
@@ -214,7 +212,7 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 //   - In-flight snapshot, orchestration failed: blocks until the
 //     goroutine sends snapResult{err: wrappedSentinel} + close(doneCh),
 //     then returns the row (state=failed) PLUS the wrapped error so
-//     callers can errors.Is against the D-23-12 sentinels (e.g.
+//     callers can errors.Is against the typed sentinels (e.g.
 //     models.ErrSnapshotVerifyFailed).
 //   - Already-complete snapshot (chan drained or removed from registry):
 //     no chan present → falls through to GetSnapshot immediately with
@@ -230,11 +228,8 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 // reader observes the orchestration error and subsequent readers see the
 // row state (which already reflects failure as state=failed). This
 // single-broadcast behavior is acceptable for the current single-caller
-// pattern; the multi-subscriber event-stream upgrade (sync.Cond) is
-// listed as deferred per CONTEXT D-23-19 "WaitForSnapshot event-stream
-// API for many subscribers".
-//
-// Plan: 23-06 / D-23-19.
+// pattern; a multi-subscriber event-stream upgrade (sync.Cond) is a
+// possible future enhancement.
 func (r *Runtime) WaitForSnapshot(ctx context.Context, shareName, snapID string) (*models.Snapshot, error) {
 	if r == nil || r.store == nil {
 		return nil, errors.New("runtime: nil store")
@@ -273,8 +268,8 @@ func (r *Runtime) WaitForSnapshot(ctx context.Context, shareName, snapID string)
 
 	snap, gerr := r.store.GetSnapshot(ctx, shareName, snapID)
 	if gerr != nil {
-		// ErrSnapshotNotFound propagates as-is via Phase 22's wrapping
-		// (errors.Is works through the wrap).
+		// ErrSnapshotNotFound propagates as-is (errors.Is works through
+		// the underlying wrap).
 		return nil, gerr
 	}
 	return snap, orchErr
@@ -285,7 +280,7 @@ func (r *Runtime) WaitForSnapshot(ctx context.Context, shareName, snapID string)
 // cancel func to the entry, records a buffered per-snap result channel,
 // and increments the WaitGroup. Returns the child ctx + per-snap chan +
 // the entry pointer (so the goroutine can call back into the entry for
-// cleanup via unregisterSnap). D-23-17.
+// cleanup via unregisterSnap).
 //
 // Publish-race safety: r.snapInFlightMu is held for the WHOLE function
 // body, including the entry.mu critical section. cancelAndWaitInFlightSnaps
@@ -352,9 +347,9 @@ func (r *Runtime) registerSnapInFlight(shareName, snapID string) (context.Contex
 // of the share.
 //
 // The share entry itself is intentionally left in place even when empty
-// — RemoveShare and Shutdown (plan 23-05) enumerate it and rely on
-// wg.Wait. Leaving stale empty maps around is acceptable bookkeeping
-// cost vs. the synchronization needed to delete on every snap completion.
+// — RemoveShare and Shutdown enumerate it and rely on wg.Wait. Leaving
+// stale empty maps around is acceptable bookkeeping cost vs. the
+// synchronization needed to delete on every snap completion.
 func (r *Runtime) unregisterSnap(shareName, snapID string, entry *snapInFlight) {
 	entry.mu.Lock()
 	if cancel, ok := entry.cancels[snapID]; ok {
@@ -417,7 +412,7 @@ func (r *Runtime) runSnapshotOrchestration(
 	// CRUD methods only need (shareName, id) so we don't need to refetch.
 	snap := &models.Snapshot{ID: snapID, ShareName: shareName}
 
-	// --- Step 1: Backup -> metadata.dump (D-23-21 atomic temp+rename) ---
+	// --- Step 1: Backup -> metadata.dump (atomic temp+rename) ---
 	dumpPath := snap.MetadataDumpPath(localStoreDir)
 	logger.Debug("snapshot create: backup start",
 		"snapshot_id", snapID,
@@ -453,8 +448,8 @@ func (r *Runtime) runSnapshotOrchestration(
 	if hashSet == nil {
 		// Empty engine — synthesize an empty HashSet so the manifest
 		// file exists. WriteManifestAtomic handles empty input as zero
-		// bytes; the hold filter (D-23-02) still recognizes an empty
-		// manifest as present.
+		// bytes; the hold filter still recognizes an empty manifest as
+		// present.
 		hashSet = blockstore.NewHashSet(0)
 	}
 	if err := snapshot.WriteManifestAtomic(manifestPath, hashSet); err != nil {
@@ -512,11 +507,7 @@ func (r *Runtime) runSnapshotOrchestration(
 	logger.Debug("snapshot create: drain start", "snapshot_id", snapID, "share", shareName)
 	if err := bs.DrainAllUploads(ctx); err != nil {
 		r.failSnap(shareName, snapID)
-		sentinel := models.ErrSnapshotBackupFailed
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			sentinel = models.ErrSnapshotDrainTimeout
-		}
-		terminalErr = fmt.Errorf("snapshot create %s: drain: %w: %v", snapID, sentinel, err)
+		terminalErr = fmt.Errorf("snapshot create %s: drain: %w: %v", snapID, drainSentinel(err), err)
 		logger.Error("snapshot create: drain failed",
 			"snapshot_id", snapID, "share", shareName, "error", err)
 		return
@@ -546,12 +537,8 @@ func (r *Runtime) runSnapshotOrchestration(
 			"snapshot_id", snapID, "share", shareName, "first_error", verr)
 		if derr := bs.DrainAllUploads(ctx); derr != nil {
 			r.failSnap(shareName, snapID)
-			sentinel := models.ErrSnapshotBackupFailed
-			if errors.Is(derr, context.Canceled) || errors.Is(derr, context.DeadlineExceeded) {
-				sentinel = models.ErrSnapshotDrainTimeout
-			}
 			terminalErr = fmt.Errorf("snapshot create %s: re-drain after verify miss: %w: %v",
-				snapID, sentinel, derr)
+				snapID, drainSentinel(derr), derr)
 			logger.Error("snapshot create: re-drain failed",
 				"snapshot_id", snapID, "share", shareName, "error", derr)
 			return
@@ -592,12 +579,22 @@ func (r *Runtime) runSnapshotOrchestration(
 	)
 }
 
+// drainSentinel returns the typed sentinel for a DrainAllUploads error:
+// ctx cancel / deadline -> ErrSnapshotDrainTimeout, anything else ->
+// ErrSnapshotBackupFailed.
+func drainSentinel(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return models.ErrSnapshotDrainTimeout
+	}
+	return models.ErrSnapshotBackupFailed
+}
+
 // failSnap flips the snapshot row to state='failed'. Best-effort: if the
 // row update itself fails (e.g., DB unavailable), we log but do not
 // double-fail the orchestration error — the wrapped sentinel posted to
 // doneCh is still the authoritative signal for callers, and the
-// startup-recovery scan (plan 23-05) will reconcile orphaned creating
-// rows on the next restart.
+// startup-recovery scan will reconcile orphaned creating rows on the
+// next restart.
 //
 // Uses context.Background so a cancelled parent ctx (the very common
 // reason orchestration is bailing out) does not also prevent the failed
@@ -616,8 +613,8 @@ func (r *Runtime) failSnap(shareName, snapID string) {
 // goroutine for the given share and blocks until they all complete. Safe to
 // call when no entry exists for the share (no-op). Called from
 // Runtime.RemoveShare BEFORE delegating to sharesSvc.RemoveShare so the
-// goroutines do not race the per-share snapshots/ tree wipe (Phase 22 D-15)
-// or any in-flight metadata-store I/O. D-23-17.
+// goroutines do not race the per-share snapshots/ tree wipe or any
+// in-flight metadata-store I/O.
 //
 // Lock discipline: snapInFlightMu is held only long enough to snapshot the
 // cancel funcs + take a reference to the WaitGroup, then released BEFORE the
@@ -677,7 +674,7 @@ func (r *Runtime) cancelAndWaitInFlightSnaps(shareName string) {
 // shutdownSnapshots cancels all in-flight snapshot goroutines across all
 // shares and waits (bounded by ctx) for them to drain. Called as the FIRST
 // step of Runtime.Shutdown so snapshot orchestration cannot use-after-close
-// the metadata stores or control-plane DB. D-23-17.
+// the metadata stores or control-plane DB.
 //
 // Step 1 cancels runtimeCtx, which propagates to every child ctx derived in
 // registerSnapInFlight — every orchestration goroutine then notices the
@@ -741,17 +738,16 @@ func (r *Runtime) shutdownSnapshots(ctx context.Context) {
 // recoverOrphanedSnapshots scans every share for snapshot rows still in
 // state='creating' and flips each to state='failed'. Called once from
 // Runtime.Serve AFTER metadata-store registration but BEFORE adapters
-// start serving, so the Phase 22 D-08 partial unique index (one
-// concurrent 'creating' row per share) is free for new CreateSnapshot
-// calls. D-23-18.
+// start serving, so the partial unique index (one concurrent 'creating'
+// row per share) is free for new CreateSnapshot calls.
 //
 // Recovery is structured-log-only (no schema column): each flip emits a
 // slog.Warn marker with reason="abandoned_at_startup" so an operator
 // triaging post-crash state can grep the log to distinguish failures
-// that happened pre-restart from ones in the current run. This matches
-// D-23-09: the on-disk metadata.dump + manifest.hashes are retained
-// (hold filter D-23-02 continues to protect their blocks), and the
-// operator can retry via CreateSnapshot with opts.RetryOf set.
+// that happened pre-restart from ones in the current run. The on-disk
+// metadata.dump + manifest.hashes are retained (the hold filter
+// continues to protect their blocks), and the operator can retry via
+// CreateSnapshot with opts.RetryOf set.
 //
 // Non-fatal: any per-share or per-snap error is logged + accumulated
 // into firstErr; the scan continues so a single corrupt share row does
@@ -812,11 +808,6 @@ func (r *Runtime) recoverOrphanedSnapshots(ctx context.Context) error {
 	)
 	return firstErr
 }
-
-// Ensure unused-import safety: the shares package is referenced via the
-// type returned by GetBlockStoreForShare and via ErrShareNotFound in
-// caller code. Keep the alias here in case future refactors prune.
-var _ = shares.ErrShareNotFound
 
 // RestoreSnapshot synchronously swaps a share's metadata-store contents
 // from a previously-created snapshot's dump, gated by pre+post-restore

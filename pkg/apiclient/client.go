@@ -74,8 +74,16 @@ func (c *Client) BaseURL() string {
 	return c.baseURL
 }
 
-// do performs an HTTP request and decodes the response.
+// do performs an HTTP request and decodes the response using the
+// Client's default httpClient.
 func (c *Client) do(method, path string, body, result any) error {
+	return c.doVia(c.httpClient, method, path, body, result)
+}
+
+// doVia performs an HTTP request and decodes the response, dispatching
+// via the provided http.Client. This is the single I/O path used by both
+// the default and the per-call-timeout flows.
+func (c *Client) doVia(hc *http.Client, method, path string, body, result any) error {
 	var bodyReader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -89,15 +97,13 @@ func (c *Client) do(method, path string, body, result any) error {
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
-
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -114,10 +120,7 @@ func (c *Client) do(method, path string, body, result any) error {
 			apiErr.StatusCode = resp.StatusCode
 			return &apiErr
 		}
-		return &APIError{
-			StatusCode: resp.StatusCode,
-			Message:    string(respBody),
-		}
+		return &APIError{StatusCode: resp.StatusCode, Message: string(respBody)}
 	}
 
 	if result != nil && len(respBody) > 0 {
@@ -125,7 +128,6 @@ func (c *Client) do(method, path string, body, result any) error {
 			return fmt.Errorf("failed to decode response: %w", err)
 		}
 	}
-
 	return nil
 }
 
@@ -165,50 +167,5 @@ func (c *Client) doWithTimeout(method, path string, body, result any, timeout ti
 		Jar:           c.httpClient.Jar,
 		Timeout:       timeout,
 	}
-
-	var bodyReader io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("failed to marshal request body: %w", err)
-		}
-		bodyReader = bytes.NewReader(data)
-	}
-
-	req, err := http.NewRequest(method, c.baseURL+path, bodyReader)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-
-	resp, err := override.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	if resp.StatusCode >= 400 {
-		var apiErr APIError
-		if json.Unmarshal(respBody, &apiErr) == nil && apiErr.Message != "" {
-			apiErr.StatusCode = resp.StatusCode
-			return &apiErr
-		}
-		return &APIError{StatusCode: resp.StatusCode, Message: string(respBody)}
-	}
-
-	if result != nil && len(respBody) > 0 {
-		if err := json.Unmarshal(respBody, result); err != nil {
-			return fmt.Errorf("failed to decode response: %w", err)
-		}
-	}
-	return nil
+	return c.doVia(override, method, path, body, result)
 }
