@@ -10,13 +10,13 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// newOnChunkCompleteFixture builds an FS-backed engine.BlockStore with a
+// newOnChunkCompleteFixture builds an FS-backed engine.Store with a
 // configurable cache budget so the Cache materializes in Start (when
 // readBufferBytes > 0) or remains the Null Object (when 0). The
 // wire-in is expected to install OnChunkComplete from engine.New via a
 // structural-interface assertion on cfg.Local; the fixture is the canonical
 // integration site because only the FSStore exposes SetOnChunkComplete.
-func newOnChunkCompleteFixture(t *testing.T, readBufferBytes int64) (*BlockStore, *fs.FSStore) {
+func newOnChunkCompleteFixture(t *testing.T, readBufferBytes int64) (*Store, *fs.FSStore) {
 	t.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, 16*1024*1024, ms, fs.FSStoreOptions{})
@@ -41,7 +41,7 @@ func newOnChunkCompleteFixture(t *testing.T, readBufferBytes int64) (*BlockStore
 }
 
 // TestEngine_OnChunkComplete_WiredToCache pins the consumer-side
-// contract: when the engine's BlockStore is constructed with a non-zero
+// contract: when the engine's Store is constructed with a non-zero
 // cache budget, every successful StoreChunk on the underlying FSStore
 // populates bs.cache via the wired OnChunkComplete callback. The
 // subsequent bs.cache.Get(hash) hit proves the chunk is in RAM —

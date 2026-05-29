@@ -490,7 +490,7 @@ type restoreFixture struct {
 	meta          *metadatamemory.MemoryMetadataStore
 	failable      *failableResetable // non-nil only when opts.useFailableResetable
 	remote        *restoreRemote
-	bs            *engine.BlockStore
+	bs            *engine.Store
 	localStoreDir string
 	shareName     string
 	rootHandle    metadata.FileHandle

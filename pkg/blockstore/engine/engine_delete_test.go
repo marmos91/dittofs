@@ -134,7 +134,7 @@ func (s *recordingSyncedHashStore) deletedHashes() []blockstore.ContentHash {
 
 var _ metadata.SyncedHashStore = (*recordingSyncedHashStore)(nil)
 
-// buildCascadeFixture wires a BlockStore with the supplied coordinator
+// buildCascadeFixture wires a Store with the supplied coordinator
 // and (optional) SyncedHashStore. Local store is in-memory so the test
 // can focus on engine.Delete's coordinator + syncedHashStore loop
 // without filesystem state.
@@ -146,7 +146,7 @@ var _ metadata.SyncedHashStore = (*recordingSyncedHashStore)(nil)
 // runs, local.Get errors and the mirror loop surfaces the error rather
 // than re-marking. If the chunk survives momentarily, the marker race
 // is benign because the cascade cleans it up post-race.
-func buildCascadeFixture(t *testing.T, coord MetadataCoordinator, syncedStore metadata.SyncedHashStore) *BlockStore {
+func buildCascadeFixture(t *testing.T, coord MetadataCoordinator, syncedStore metadata.SyncedHashStore) *Store {
 	t.Helper()
 	localStore := memory.New()
 	fbs := newStubFileBlockStore()

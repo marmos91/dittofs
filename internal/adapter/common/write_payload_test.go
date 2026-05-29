@@ -11,9 +11,9 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// newTestEngine constructs an engine.BlockStore backed by an on-disk
+// newTestEngine constructs an engine.Store backed by an on-disk
 // FSStore rooted at a temp dir, mirroring the engine package's test
-// helper. Used here instead of a mock because *engine.BlockStore is a
+// helper. Used here instead of a mock because *engine.Store is a
 // concrete struct and the helper under test takes it directly.
 //
 // The FSStore is constructed with an inline RollupStore +
@@ -21,7 +21,7 @@ import (
 // invoked so AppendWrite-staged bytes flow through the
 // rollup → CAS chunk → FileBlock-row pipeline that the engine's CAS
 // read path consumes.
-func newTestEngine(t *testing.T) *engine.BlockStore {
+func newTestEngine(t *testing.T) *engine.Store {
 	t.Helper()
 
 	tmpDir := t.TempDir()
@@ -65,7 +65,7 @@ func newTestEngine(t *testing.T) *engine.BlockStore {
 // the engine so AppendWrite-staged bytes land in the CAS chunk store +
 // FileBlock rows before the test reads them back. Mirrors the helper
 // used by the engine-package offline tests.
-func forceRollup(t *testing.T, bs *engine.BlockStore, payloadID string) {
+func forceRollup(t *testing.T, bs *engine.Store, payloadID string) {
 	t.Helper()
 	fsLocal, ok := bs.LocalForTest().(*fs.FSStore)
 	if !ok {

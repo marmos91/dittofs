@@ -54,7 +54,7 @@ import (
 // purely on the metadata store's status.
 //
 // A share with a remote-less block store (local-only) is handled
-// transparently because [engine.BlockStore.Healthcheck] already
+// transparently because [engine.Store.Healthcheck] already
 // returns healthy when there is no remote configured.
 func (s *Share) Healthcheck(ctx context.Context, metaStore metadata.MetadataStore) health.Report {
 	// `start` carries the monotonic reading used to compute latency.

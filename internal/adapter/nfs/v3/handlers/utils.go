@@ -30,7 +30,7 @@ var ErrMetadataServiceNotInitialized = errors.New("metadata service not initiali
 // getServicesForHandle returns both the metadata service and the per-share block store
 // resolved from the given file handle.
 // Returns an error if either service is not initialized or handle resolution fails.
-func getServicesForHandle(reg *runtime.Runtime, ctx context.Context, handle metadata.FileHandle) (*metadata.MetadataService, *engine.BlockStore, error) {
+func getServicesForHandle(reg *runtime.Runtime, ctx context.Context, handle metadata.FileHandle) (*metadata.MetadataService, *engine.Store, error) {
 	metaSvc := reg.GetMetadataService()
 	if metaSvc == nil {
 		return nil, nil, ErrMetadataServiceNotInitialized

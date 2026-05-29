@@ -102,11 +102,11 @@ func (s *stubFileBlockStore) ListFileBlocks(_ context.Context, payloadID string)
 	return out, nil
 }
 
-// newTestEngine creates an engine.BlockStore with memory local store, nil remote
+// newTestEngine creates an engine.Store with memory local store, nil remote
 // optional cache budget and prefetch settings. Coordinator is left nil — tests
 // that exercise Coordinator-dependent paths (CopyPayload/Delete/Truncate
 // with non-empty BlockRef list) should use newTestEngineWithCoordinator.
-func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *BlockStore {
+func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *Store {
 	t.Helper()
 	localStore := memory.New()
 	fbs := newStubFileBlockStore()
@@ -130,11 +130,11 @@ func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *Bl
 	return bs
 }
 
-// newTestEngineWithCoordinator creates an engine.BlockStore with the
+// newTestEngineWithCoordinator creates an engine.Store with the
 // supplied MetadataCoordinator wired in (Task 0).
 // Used by tests that assert engine-coordinator integration without
 // touching the heavier Syncer/Remote setup.
-func newTestEngineWithCoordinator(t *testing.T, c MetadataCoordinator) *BlockStore {
+func newTestEngineWithCoordinator(t *testing.T, c MetadataCoordinator) *Store {
 	t.Helper()
 	localStore := memory.New()
 	fbs := newStubFileBlockStore()
@@ -263,7 +263,7 @@ func TestReadAt_InvokesCacheOnRead(t *testing.T) {
 }
 
 // TestEngine_NullCache_NoNilChecks — Task 3 behavior 2.
-// Construct BlockStore with nil/zero ReadBufferBytes; constructor
+// Construct Store with nil/zero ReadBufferBytes; constructor
 // substitutes nullCache; ReadAt + WriteAt + Truncate + Delete run
 // without panicking. The "no nil-checks" enforcement is asserted by
 // the package-level grep in the done criteria; this test verifies the
@@ -348,7 +348,7 @@ func (r *recordingCache) InvalidateFile(payloadID string, removed []blockstore.C
 func (r *recordingCache) Stats() CacheStats { return CacheStats{} }
 func (r *recordingCache) Close() error      { r.closed.Store(true); return nil }
 
-// TestClose_ClosesCache verifies BlockStore.Close calls the cache's
+// TestClose_ClosesCache verifies Store.Close calls the cache's
 // Close. Uses a recording fake so we can observe it.
 func TestClose_ClosesCache(t *testing.T) {
 	localStore := memory.New()
@@ -374,7 +374,7 @@ func TestClose_ClosesCache(t *testing.T) {
 		t.Fatalf("Close failed: %v", err)
 	}
 	if !rec.closed.Load() {
-		t.Fatal("BlockStore.Close must invoke cache.Close")
+		t.Fatal("Store.Close must invoke cache.Close")
 	}
 }
 

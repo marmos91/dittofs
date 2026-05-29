@@ -13,7 +13,7 @@ import (
 // Declared here (not in runtime) so common/ does not import runtime
 // and stays testable with trivial mocks.
 type BlockStoreRegistry interface {
-	GetBlockStoreForHandle(ctx context.Context, handle metadata.FileHandle) (*engine.BlockStore, error)
+	GetBlockStoreForHandle(ctx context.Context, handle metadata.FileHandle) (*engine.Store, error)
 }
 
 // ResolveForRead returns the per-share BlockStore for the given handle.
@@ -21,7 +21,7 @@ type BlockStoreRegistry interface {
 // (CLAUDE.md invariant 3); this helper never inspects the handle bytes.
 // A nil registry produces a typed error rather than a panic so mis-wired
 // handler tests fail with a readable message.
-func ResolveForRead(ctx context.Context, reg BlockStoreRegistry, handle metadata.FileHandle) (*engine.BlockStore, error) {
+func ResolveForRead(ctx context.Context, reg BlockStoreRegistry, handle metadata.FileHandle) (*engine.Store, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("common.ResolveForRead: nil BlockStoreRegistry")
 	}
@@ -32,7 +32,7 @@ func ResolveForRead(ctx context.Context, reg BlockStoreRegistry, handle metadata
 // identical today; kept as a separate named helper so the call-site seam
 // is already in place for when the signatures diverge to take
 // []BlockRef. One edit later, not two.
-func ResolveForWrite(ctx context.Context, reg BlockStoreRegistry, handle metadata.FileHandle) (*engine.BlockStore, error) {
+func ResolveForWrite(ctx context.Context, reg BlockStoreRegistry, handle metadata.FileHandle) (*engine.Store, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("common.ResolveForWrite: nil BlockStoreRegistry")
 	}

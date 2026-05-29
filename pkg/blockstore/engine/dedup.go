@@ -99,7 +99,7 @@ func (m *Syncer) tryEagerSmallFileDedup(
 	// cache warming: populate engine Cache with the bytes we just
 	// hashed (we already have them in RAM). MISS case is handled by the
 	// regular rollup path's OnChunkComplete wiring. Reading
-	// through the BlockStore back-reference so post-construction
+	// through the Store back-reference so post-construction
 	// `bs.cache = rec` swaps (TestClose_ClosesCache pattern) are
 	// observed; bs.cache is never nil thanks to the Null Object pattern
 	// installed by engine.New.
@@ -365,7 +365,7 @@ func (m *Syncer) applyFileLevelDedupHit(
 	// 4. Cache invalidation for orphaned speculative chunks (step
 	// 5 /). Build the removed-hash list in BlockRef order
 	// (preserves multiplicity expectations of the surgical-invalidate
-	// contract). Read through the BlockStore back-reference so that
+	// contract). Read through the Store back-reference so that
 	// post-construction `bs.cache = rec` swaps (TestClose_ClosesCache
 	// pattern) are observed; bs.cache is never nil thanks to the Null
 	// Object pattern installed by engine.New.

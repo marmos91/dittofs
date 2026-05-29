@@ -159,7 +159,7 @@ func (f *fakeCoordinator) GetFileObjectID(_ context.Context, payloadID string) (
 // Compile-time assertion: fakeCoordinator satisfies MetadataCoordinator.
 var _ MetadataCoordinator = (*fakeCoordinator)(nil)
 
-// TestMetadataCoordinator_NilTolerated asserts that a *BlockStore can be
+// TestMetadataCoordinator_NilTolerated asserts that a *Store can be
 // constructed with coordinator=nil (test ergonomics — production wiring
 // always passes a real coordinator). The struct field exists and is
 // nil; the ErrMetadataCoordinatorNotWired sentinel is non-nil and
@@ -181,7 +181,7 @@ func TestMetadataCoordinator_NilTolerated(t *testing.T) {
 	}
 }
 
-// TestMetadataCoordinator_AcceptsFakeCoordinator asserts that a *BlockStore
+// TestMetadataCoordinator_AcceptsFakeCoordinator asserts that a *Store
 // can be constructed with a non-nil coordinator and that the field is
 // stored verbatim. Full integration assertions (the engine actually
 // invoking IncrementRefCount/DecrementRefCount/PersistFileBlocks during
@@ -191,10 +191,10 @@ func TestMetadataCoordinator_AcceptsFakeCoordinator(t *testing.T) {
 	bs := newTestEngineWithCoordinator(t, fc)
 
 	if bs.coordinator == nil {
-		t.Fatal("BlockStore.coordinator is nil after construction with non-nil fakeCoordinator")
+		t.Fatal("Store.coordinator is nil after construction with non-nil fakeCoordinator")
 	}
 	if bs.coordinator != MetadataCoordinator(fc) {
-		t.Fatal("BlockStore.coordinator does not equal injected fakeCoordinator")
+		t.Fatal("Store.coordinator does not equal injected fakeCoordinator")
 	}
 }
 

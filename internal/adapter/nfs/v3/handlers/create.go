@@ -498,7 +498,7 @@ func createNewFile(
 //   - Updated file attributes and error
 func truncateExistingFile(
 	authCtx *metadata.AuthContext,
-	blockStore *engine.BlockStore,
+	blockStore *engine.Store,
 	metaSvc *metadata.MetadataService,
 	existingFile *metadata.File,
 	req *CreateRequest,

@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
 )
 
-// BlockStoreStats holds comprehensive block store statistics for a BlockStore.
+// BlockStoreStats holds comprehensive block store statistics for a Store.
 type BlockStoreStats struct {
 	FileCount    int `json:"file_count"`
 	BlocksDirty  int `json:"blocks_dirty"`
@@ -38,7 +38,7 @@ type BlockStoreStats struct {
 }
 
 // Stats returns storage statistics from the local store.
-func (bs *BlockStore) Stats() (*blockstore.Stats, error) {
+func (bs *Store) Stats() (*blockstore.Stats, error) {
 	localStats := bs.local.Stats()
 	files := bs.local.ListFiles()
 	used := uint64(localStats.DiskUsed)
@@ -62,7 +62,7 @@ func (bs *BlockStore) Stats() (*blockstore.Stats, error) {
 }
 
 // GetStats returns comprehensive block store statistics.
-func (bs *BlockStore) GetStats() BlockStoreStats {
+func (bs *Store) GetStats() BlockStoreStats {
 	localStats := bs.local.Stats()
 	files := bs.local.ListFiles()
 
@@ -100,7 +100,7 @@ func (bs *BlockStore) GetStats() BlockStoreStats {
 }
 
 // populateBlockCounts fills block count fields from the metadata store.
-func (bs *BlockStore) populateBlockCounts(stats *BlockStoreStats, files []string) {
+func (bs *Store) populateBlockCounts(stats *BlockStoreStats, files []string) {
 	if bs.fileBlockStore == nil {
 		return
 	}
@@ -135,4 +135,4 @@ func (bs *BlockStore) populateBlockCounts(stats *BlockStoreStats, files []string
 }
 
 // LocalStats returns a snapshot of local store statistics.
-func (bs *BlockStore) LocalStats() local.Stats { return bs.local.Stats() }
+func (bs *Store) LocalStats() local.Stats { return bs.local.Stats() }

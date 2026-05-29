@@ -42,13 +42,13 @@ func (r *BlockReadResult) Release() {
 // (clientIP, handle bytes) are logged at the call site, not here, because
 // they are protocol-specific and common/ cannot couple to those types.
 //
-// When FileAttr.Blocks becomes []BlockRef and engine.BlockStore.ReadAt
+// When FileAttr.Blocks becomes []BlockRef and engine.Store.ReadAt
 // takes []BlockRef, this function body gains the "fetch FileAttr.Blocks →
 // slice to [offset, offset+len) → pass resolved refs" logic. Call-site
 // code (protocol handlers) does not change.
 func ReadFromBlockStore(
 	ctx context.Context,
-	blockStore *engine.BlockStore,
+	blockStore *engine.Store,
 	payloadID metadata.PayloadID,
 	offset uint64,
 	count uint32,

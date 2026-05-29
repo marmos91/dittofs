@@ -11,11 +11,11 @@ import (
 // HealthCheck verifies the store is operational by checking the syncer health
 // (which in turn checks the remote store).
 //
-// Deprecated: use [BlockStore.Healthcheck] (lowercase 'c'), which returns a
+// Deprecated: use [Store.Healthcheck] (lowercase 'c'), which returns a
 // structured [health.Report] derived from both the local and remote stores
 // and satisfies [health.Checker]. This method only collapses the structured
 // state into a single error and is retained for backward compatibility.
-func (bs *BlockStore) HealthCheck(ctx context.Context) error {
+func (bs *Store) HealthCheck(ctx context.Context) error {
 	return bs.syncer.HealthCheck(ctx)
 }
 
@@ -35,7 +35,7 @@ func (bs *BlockStore) HealthCheck(ctx context.Context) error {
 //
 // The combined message preserves the worst-status component's message
 // so operators can see exactly which subsystem is at fault.
-func (bs *BlockStore) Healthcheck(ctx context.Context) health.Report {
+func (bs *Store) Healthcheck(ctx context.Context) health.Report {
 	start := time.Now()
 
 	if err := ctx.Err(); err != nil {
@@ -64,19 +64,19 @@ func (bs *BlockStore) Healthcheck(ctx context.Context) health.Report {
 	return health.NewHealthyReport(time.Since(start))
 }
 
-// HasRemoteStore returns true if this BlockStore has a remote store configured.
-func (bs *BlockStore) HasRemoteStore() bool {
+// HasRemoteStore returns true if this Store has a remote store configured.
+func (bs *Store) HasRemoteStore() bool {
 	return bs.remote != nil
 }
 
 // SetRetentionPolicy updates the retention policy on the underlying local store.
 // Delegates to the local store's SetRetentionPolicy method.
-func (bs *BlockStore) SetRetentionPolicy(policy blockstore.RetentionPolicy, ttl time.Duration) {
+func (bs *Store) SetRetentionPolicy(policy blockstore.RetentionPolicy, ttl time.Duration) {
 	bs.local.SetRetentionPolicy(policy, ttl)
 }
 
 // SetEvictionEnabled controls whether the local store can evict blocks to free disk space.
 // Delegates to the local store's SetEvictionEnabled method.
-func (bs *BlockStore) SetEvictionEnabled(enabled bool) {
+func (bs *Store) SetEvictionEnabled(enabled bool) {
 	bs.local.SetEvictionEnabled(enabled)
 }

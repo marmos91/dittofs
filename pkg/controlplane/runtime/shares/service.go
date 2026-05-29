@@ -94,7 +94,7 @@ type Share struct {
 
 	// BlockStore is the per-share block store orchestrator.
 	// Nil only for metadata-only shares (unlikely in practice).
-	BlockStore *engine.BlockStore
+	BlockStore *engine.Store
 
 	// remoteConfigID tracks which remote store config this share uses (for ref counting).
 	remoteConfigID string
@@ -252,7 +252,7 @@ type sharedRemote struct {
 }
 
 // nonClosingRemote wraps a remote.RemoteStore and makes Close() a no-op.
-// This prevents engine.BlockStore.Close() from closing the shared remote;
+// This prevents engine.Store.Close() from closing the shared remote;
 // the shares.Service.releaseRemoteStore handles actual closing via ref counting.
 type nonClosingRemote struct {
 	remote.RemoteStore
@@ -1118,7 +1118,7 @@ func (s *Service) CountShares() int {
 // GetBlockStoreForHandle decodes a file handle and resolves the per-share
 // BlockStore in a single mutex acquisition, avoiding the two-RLock overhead of
 // calling GetShareNameForHandle followed by GetBlockStoreForShare separately.
-func (s *Service) GetBlockStoreForHandle(ctx context.Context, handle metadata.FileHandle) (*engine.BlockStore, error) {
+func (s *Service) GetBlockStoreForHandle(ctx context.Context, handle metadata.FileHandle) (*engine.Store, error) {
 	shareName, _, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode file handle: %w", err)
@@ -1138,7 +1138,7 @@ func (s *Service) GetBlockStoreForHandle(ctx context.Context, handle metadata.Fi
 }
 
 // GetBlockStoreForShare returns the BlockStore for a named share.
-func (s *Service) GetBlockStoreForShare(name string) (*engine.BlockStore, error) {
+func (s *Service) GetBlockStoreForShare(name string) (*engine.Store, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	share, exists := s.registry[name]
@@ -1212,7 +1212,7 @@ func (s *Service) DistinctRemoteStores() []RemoteStoreEntry {
 //
 // Test-only: panics if the share does not exist. Intended for runtime-
 // package tests that need to exercise RunBlockGC's enumeration without
-// standing up a full engine.BlockStore. Not safe for production callers.
+// standing up a full engine.Store. Not safe for production callers.
 func (s *Service) SetShareRemoteForTest(shareName string, rs remote.RemoteStore) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1239,7 +1239,7 @@ func (s *Service) SetShareRemoteForTest(shareName string, rs remote.RemoteStore)
 // DrainAllBlockStores drains all pending uploads across all per-share BlockStores.
 func (s *Service) DrainAllBlockStores(ctx context.Context) error {
 	s.mu.RLock()
-	blockStores := make([]*engine.BlockStore, 0, len(s.registry))
+	blockStores := make([]*engine.Store, 0, len(s.registry))
 	for _, share := range s.registry {
 		if share.BlockStore != nil {
 			blockStores = append(blockStores, share.BlockStore)

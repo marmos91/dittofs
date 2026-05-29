@@ -428,7 +428,7 @@ func testStartupRecovery(t *testing.T) {
 
 // orchestrationFixture composes every moving part the seven sub-tests
 // need: cpstore, runtime, memory metadata store wrapped in a controlled
-// Backupable, memory remote, real engine.BlockStore wiring the local +
+// Backupable, memory remote, real engine.Store wiring the local +
 // remote, and an injected Share that ties them together.
 type orchestrationFixture struct {
 	t             *testing.T
@@ -436,7 +436,7 @@ type orchestrationFixture struct {
 	store         cpstore.Store
 	backup        *controlledBackupable
 	remote        *interceptingRemote
-	bs            *engine.BlockStore
+	bs            *engine.Store
 	localStoreDir string
 	shareName     string
 }
@@ -472,7 +472,7 @@ func newOrchestrationFixture(t *testing.T) *orchestrationFixture {
 	localStoreDir := t.TempDir()
 	shareName := "data"
 
-	// Build a minimal real engine.BlockStore. The memory local store +
+	// Build a minimal real engine.Store. The memory local store +
 	// memory remote + memory metadata as FileBlockStore have empty
 	// ListUnsynced semantics so DrainAllUploads is a fast no-op and
 	// mirrorOnce short-circuits — exactly what the orchestration

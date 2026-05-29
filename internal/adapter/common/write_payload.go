@@ -15,7 +15,7 @@ import (
 // handler (NFSv3, NFSv4, SMB v2) calls this function and therefore stays
 // unchanged.
 //
-// Returns error only — mirrors engine.BlockStore.WriteAt. The engine contract
+// Returns error only — mirrors engine.Store.WriteAt. The engine contract
 // guarantees that a nil error means the full `data` slice was persisted at
 // `offset`; partial writes surface as an error.
 //
@@ -31,7 +31,7 @@ import (
 // layer), and common/ never retains a reference past the engine.WriteAt call.
 func WriteToBlockStore(
 	ctx context.Context,
-	blockStore *engine.BlockStore,
+	blockStore *engine.Store,
 	payloadID metadata.PayloadID,
 	data []byte,
 	offset uint64,
@@ -55,7 +55,7 @@ func WriteToBlockStore(
 // needed, widen the signature then.
 func CommitBlockStore(
 	ctx context.Context,
-	blockStore *engine.BlockStore,
+	blockStore *engine.Store,
 	payloadID metadata.PayloadID,
 ) error {
 	_, err := blockStore.Flush(ctx, string(payloadID))

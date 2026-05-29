@@ -52,13 +52,13 @@ func (f *fakeRemoteStore) Healthcheck(ctx context.Context) health.Report {
 
 func (f *fakeRemoteStore) SetHealthy(h bool) { f.healthy.Store(h) }
 
-// newHealthTestEngine creates an engine.BlockStore with an FSStore
+// newHealthTestEngine creates an engine.Store with an FSStore
 // local store, a controllable fake remote store, and a syncer with
 // short health intervals. The FSStore is constructed with an inline
 // RollupStore + a tight stabilization window so the
 // AppendWrite → rollup → CAS chunk → FileBlock-row pipeline runs
 // promptly inside the test.
-func newHealthTestEngine(t *testing.T) (*BlockStore, *fakeRemoteStore) {
+func newHealthTestEngine(t *testing.T) (*Store, *fakeRemoteStore) {
 	t.Helper()
 
 	tmpDir := t.TempDir()

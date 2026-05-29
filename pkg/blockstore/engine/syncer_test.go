@@ -35,7 +35,7 @@ import (
 //  2. Put-then-Mark crash window — a remote that fails MarkSynced ONCE
 //     after a successful Put surfaces an error from Flush; the next
 //     Flush completes idempotently because Put on identical bytes is a
-//     no-op contract per the unified BlockStore surface.
+//     no-op contract per the unified Store surface.
 //  3. ListUnsynced snapshot semantics — chunks rolled up mid-Flush land
 //     in the NEXT pass, not the current one.
 //  4. Refcount cascade — engine.Delete on a fully-synced file drops the
@@ -381,7 +381,7 @@ func (s *stubFBS) ListFileBlocks(_ context.Context, payloadID string) ([]*blocks
 // through MemoryStore.AppendWrite + synchronous rollup), then exercise
 // bs.Flush + assertions.
 type integrationFixture struct {
-	bs     *engine.BlockStore
+	bs     *engine.Store
 	local  *casLocalStore
 	remote remote.RemoteStore
 	synced metadata.SyncedHashStore

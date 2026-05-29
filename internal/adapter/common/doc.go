@@ -33,7 +33,7 @@
 //
 // The helpers ReadFromBlockStore, WriteToBlockStore, and CommitBlockStore are
 // the canonical fan-in points for []BlockRef plumbing. The engine wires
-// engine.BlockStore.ReadAt / WriteAt with `[]BlockRef` parameter on ReadAt
+// engine.Store.ReadAt / WriteAt with `[]BlockRef` parameter on ReadAt
 // and `[]BlockRef` returned from WriteAt, plus a post-transaction
 // CacheInvalidator interface and the CopyPayload helper.
 //
