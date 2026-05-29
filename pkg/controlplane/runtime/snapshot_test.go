@@ -265,6 +265,43 @@ func TestRuntimeCreateSnapshot_MemoryLocalStore(t *testing.T) {
 	}
 }
 
+// TestRuntimeDeriveWaitCtx_IgnoresCallerCancel asserts the safety-snap wait
+// ctx is rooted at runtimeCtx, so a cancelled caller (client disconnect)
+// does not abort it, while runtime shutdown does. A caller deadline is
+// preserved.
+func TestRuntimeDeriveWaitCtx_IgnoresCallerCancel(t *testing.T) {
+	rt := newTestRuntime(t)
+
+	// Caller cancelled, no deadline → derived ctx stays alive.
+	callerCtx, callerCancel := context.WithCancel(context.Background())
+	callerCancel()
+	waitCtx, waitCancel := rt.deriveWaitCtx(callerCtx)
+	if waitCtx.Err() != nil {
+		t.Fatalf("waitCtx already cancelled by caller cancel: %v", waitCtx.Err())
+	}
+
+	// Runtime shutdown DOES cancel it.
+	rt.runtimeCancel()
+	select {
+	case <-waitCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitCtx not cancelled after runtime shutdown")
+	}
+	waitCancel()
+
+	// Caller deadline is preserved on the derived ctx.
+	rt2 := newTestRuntime(t)
+	dl := time.Now().Add(123 * time.Hour)
+	withDL, dlCancel := context.WithDeadline(context.Background(), dl)
+	defer dlCancel()
+	got, gotCancel := rt2.deriveWaitCtx(withDL)
+	defer gotCancel()
+	gotDL, ok := got.Deadline()
+	if !ok || !gotDL.Equal(dl) {
+		t.Fatalf("derived deadline = (%v, %v), want %v", gotDL, ok, dl)
+	}
+}
+
 // TestRuntimeGetSnapshot_NotFound asserts ErrSnapshotNotFound propagates
 // from the store through the Runtime wrapper.
 func TestRuntimeGetSnapshot_NotFound(t *testing.T) {

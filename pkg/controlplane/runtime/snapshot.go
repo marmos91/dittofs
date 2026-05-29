@@ -366,6 +366,23 @@ func (r *Runtime) unregisterSnap(shareName, snapID string, entry *snapInFlight) 
 	entry.mu.Unlock()
 }
 
+// deriveWaitCtx returns a ctx rooted at r.runtimeCtx (so it is cancelled on
+// runtime shutdown but NOT by the caller's request cancellation, e.g. an
+// HTTP client disconnect) while still honoring the caller ctx's deadline if
+// it has one. The returned cancel func must always be called to release
+// resources. Used by RestoreSnapshot to wait for the safety snapshot
+// without letting a disconnect abandon the wait.
+func (r *Runtime) deriveWaitCtx(caller context.Context) (context.Context, context.CancelFunc) {
+	root := r.runtimeCtx
+	if root == nil {
+		root = context.Background()
+	}
+	if dl, ok := caller.Deadline(); ok {
+		return context.WithDeadline(root, dl)
+	}
+	return context.WithCancel(root)
+}
+
 // isSnapInFlight reports whether an orchestration goroutine for
 // (shareName, snapID) is currently registered (create or retry in
 // progress). Used by DeleteSnapshot to fence the delete against a running
@@ -1047,7 +1064,15 @@ func (r *Runtime) RestoreSnapshot(
 		return "", fmt.Errorf("restore snapshot %q: create safety snap: %w: %v",
 			snapID, models.ErrRestoreSafetySnapFailed, err)
 	}
-	safetySnap, err := r.WaitForSnapshot(ctx, shareName, safetySnapshotID)
+	// Wait on a ctx derived from runtimeCtx, NOT the caller's request ctx:
+	// the safety snap's orchestration is itself launched off runtimeCtx
+	// (CreateSnapshot), so a client disconnect must not abandon a wait that
+	// leaves a stray ready safety snap and a confusingly-aborted restore.
+	// The caller's deadline (if any) is preserved so a request timeout still
+	// bounds the wait; only the caller's cancellation signal is dropped.
+	waitCtx, waitCancel := r.deriveWaitCtx(ctx)
+	safetySnap, err := r.WaitForSnapshot(waitCtx, shareName, safetySnapshotID)
+	waitCancel()
 	if err != nil {
 		return safetySnapshotID, fmt.Errorf("restore snapshot %q: wait safety snap %q: %w: %v",
 			snapID, safetySnapshotID, models.ErrRestoreSafetySnapFailed, err)
