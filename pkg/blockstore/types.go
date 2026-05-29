@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -158,6 +159,48 @@ type BlockRef struct {
 	Hash   ContentHash `json:"hash"`
 	Offset uint64      `json:"offset"`
 	Size   uint32      `json:"size"`
+}
+
+// MergeBlockRefsByOffset overlays incoming block refs onto existing ones,
+// keyed by byte range. Every incoming ref is kept; an existing ref is kept
+// only if its [Offset, Offset+Size) range does not overlap any incoming ref.
+// The result is sorted by Offset ascending.
+//
+// This models a rollup pass committing a slice of a file: appended chunks
+// (new, non-overlapping offsets) extend the list, while an in-place rewrite
+// (incoming chunks covering an existing byte range, possibly with different
+// FastCDC boundaries) replaces the overlapped existing chunks. It is the
+// accumulation step that keeps FileAttr.Blocks complete across multi-pass
+// rollups instead of replacing it with only the latest pass (#789).
+func MergeBlockRefsByOffset(existing, incoming []BlockRef) []BlockRef {
+	if len(incoming) == 0 {
+		out := make([]BlockRef, len(existing))
+		copy(out, existing)
+		sortBlockRefsByOffset(out)
+		return out
+	}
+	out := make([]BlockRef, 0, len(existing)+len(incoming))
+	for _, e := range existing {
+		eEnd := e.Offset + uint64(e.Size)
+		overlaps := false
+		for _, in := range incoming {
+			inEnd := in.Offset + uint64(in.Size)
+			if e.Offset < inEnd && in.Offset < eEnd {
+				overlaps = true
+				break
+			}
+		}
+		if !overlaps {
+			out = append(out, e)
+		}
+	}
+	out = append(out, incoming...)
+	sortBlockRefsByOffset(out)
+	return out
+}
+
+func sortBlockRefsByOffset(b []BlockRef) {
+	sort.Slice(b, func(i, j int) bool { return b[i].Offset < b[j].Offset })
 }
 
 // FileBlock is the single block entity in DittoFS. Content-addressed

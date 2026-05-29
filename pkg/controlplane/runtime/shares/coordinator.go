@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
@@ -165,6 +166,46 @@ func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID s
 		}
 		return nil
 	})
+}
+
+// GetPersistedBlocks returns the file's currently-persisted FileAttr.Blocks
+// (with content hashes) for payloadID. Resolves payloadID → file row, then
+// loads the authoritative block list: Badger/Memory return it inline from
+// GetFileByPayloadID, while Postgres' GetFileByPayloadID omits blocks (a
+// read-cost optimization), so we fall back to GetFile-by-handle which loads
+// file_block_refs. Returns an empty slice (nil) when the file has no blocks
+// yet or does not exist.
+func (c *metadataCoordinator) GetPersistedBlocks(ctx context.Context, payloadID string) ([]blockstore.BlockRef, error) {
+	file, err := c.metadataStore.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
+	if err != nil {
+		return nil, fmt.Errorf("coordinator: GetFileByPayloadID(%s): %w", payloadID, err)
+	}
+	if file == nil {
+		return nil, nil
+	}
+	if len(file.Blocks) > 0 {
+		return file.Blocks, nil
+	}
+	// Memory's GetFileByPayloadID returns blocks inline but leaves ID zero;
+	// an empty Blocks here therefore means "no blocks yet" (the handle
+	// fallback below would build an unresolvable zero-ID handle). Postgres
+	// sets ID and omits blocks, so it takes the fallback to load
+	// file_block_refs.
+	if file.ID == uuid.Nil {
+		return nil, nil
+	}
+	handle, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		return nil, fmt.Errorf("coordinator: EncodeFileHandle(%s): %w", payloadID, err)
+	}
+	full, err := c.metadataStore.GetFile(ctx, handle)
+	if err != nil {
+		return nil, fmt.Errorf("coordinator: GetFile(%s): %w", payloadID, err)
+	}
+	if full == nil {
+		return nil, nil
+	}
+	return full.Blocks, nil
 }
 
 // mapObjectIDConflict wraps backend conflict errors into

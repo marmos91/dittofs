@@ -112,6 +112,10 @@ func (f *fakeCoordinator) DecrementRefCount(_ context.Context, hash blockstore.C
 	return 0, nil
 }
 
+func (f *fakeCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]blockstore.BlockRef, error) {
+	return nil, nil
+}
+
 func (f *fakeCoordinator) PersistFileBlocks(_ context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -136,6 +136,16 @@ func TestPostgresDrainRollups_UniqueContent(t *testing.T) {
 	}
 }
 
+// TestPostgresDrainRollups_MultiPassAppend reproduces #789 against a real
+// Postgres metadata store: a file rolled up in two passes (append at a new
+// offset) must end with file_block_refs covering the WHOLE byte range, not
+// just the last pass. Without the persister-side complete-list fix, Postgres
+// keeps only the last pass's chunk (DELETE-all + INSERT replace).
+func TestPostgresDrainRollups_MultiPassAppend(t *testing.T) {
+	ms := newPostgresStore(t)
+	runMultiPassAppend(t, ms, "drainpg")
+}
+
 // TestPostgresDrainRollups_IdenticalContent reproduces BUG 2 over the REAL
 // engine write path against a real Postgres metadata store: a share with two
 // byte-identical files must snapshot successfully (DrainRollups tolerates the

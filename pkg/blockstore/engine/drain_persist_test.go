@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
@@ -86,6 +87,37 @@ func mapObjectIDConflict(err error) error {
 		return errors.Join(engine.ErrObjectIDConflict, err)
 	}
 	return err
+}
+
+func (c *testCoordinator) GetPersistedBlocks(ctx context.Context, payloadID string) ([]blockstore.BlockRef, error) {
+	file, err := c.store.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
+	if err != nil {
+		return nil, err
+	}
+	if file == nil {
+		return nil, nil
+	}
+	if len(file.Blocks) > 0 {
+		return file.Blocks, nil
+	}
+	// Memory returns blocks inline with a zero ID; an unresolvable zero-ID
+	// handle means "no blocks yet". Postgres sets ID and omits blocks, so it
+	// loads them via the handle fallback.
+	if file.ID == uuid.Nil {
+		return nil, nil
+	}
+	handle, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		return nil, err
+	}
+	full, err := c.store.GetFile(ctx, handle)
+	if err != nil {
+		return nil, err
+	}
+	if full == nil {
+		return nil, nil
+	}
+	return full.Blocks, nil
 }
 
 func (c *testCoordinator) FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error) {
