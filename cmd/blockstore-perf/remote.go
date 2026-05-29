@@ -48,12 +48,22 @@ func setupS3Remote() (remote.RemoteStore, func(), error) {
 		}
 		pathStyle = b
 	}
+	var maxRetries int
+	if v, ok := os.LookupEnv("AWS_S3_MAX_RETRIES"); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return nil, nil, fmt.Errorf("AWS_S3_MAX_RETRIES: want non-negative integer, got %q", v)
+		}
+		maxRetries = n
+	}
 	store, err := remotes3.NewFromConfig(context.Background(), remotes3.Config{
 		Bucket:         bucket,
 		Region:         region,
 		Endpoint:       endpoint,
 		AccessKey:      os.Getenv("AWS_ACCESS_KEY_ID"),
 		SecretKey:      os.Getenv("AWS_SECRET_ACCESS_KEY"),
+		KeyPrefix:      os.Getenv("AWS_S3_KEY_PREFIX"),
+		MaxRetries:     maxRetries,
 		ForcePathStyle: pathStyle,
 	})
 	if err != nil {
