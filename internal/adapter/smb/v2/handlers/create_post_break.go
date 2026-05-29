@@ -519,7 +519,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 								return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(owErr)}}
 							}
 						}
-						break // out of switch createAction (handled the race)
+						break // exits inner CreateDisposition switch (race handled)
 					}
 				}
 			}

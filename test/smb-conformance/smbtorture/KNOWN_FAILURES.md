@@ -148,10 +148,18 @@ files, create blobs) are not implemented. Basic create operations pass.
 | smb2.create.blob | Create | Create context blobs not fully implemented | #741 |
 | smb2.create.gentest | Create | Generic create test (impersonation) not implemented | #741 |
 | smb2.create.impersonation | Create | Impersonation levels not implemented | #741 |
-| smb2.create.mkdir-dup | Create | Flaky in CI (parallel CREATE OPEN_IF race — passes intermittently on develop, perturbed by unrelated timing changes) | #741 |
 | smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | #741 |
 | smb2.create.multi | Create | Regression from recent changes, fails on all 3 stores | #741 |
 | smb2.create.path-length | Create | Flaky in CI (path length validation race) | #741 |
+
+### Query/Set Info (Advanced Scenarios)
+
+Advanced getinfo scenarios requiring security descriptor queries, buffer size
+checks, and ACL-based access control.
+
+| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|
+| smb2.setinfo | Set Info | SET_INFO timestamp preservation not implemented | - |
 
 ### Share Modes and Deny (Advanced Scenarios)
 
