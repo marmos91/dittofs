@@ -172,13 +172,22 @@ func (bc *FSStore) Walk(ctx context.Context, fn func(hash blockstore.ContentHash
 		}
 		if cbErr := fn(h, meta); cbErr != nil {
 			if errors.Is(cbErr, blockstore.ErrStopWalk) {
-				return io.EOF // sentinel for clean exit out of WalkDir
+				// Translate the public clean-exit sentinel into an
+				// unexported one so we can distinguish "callback
+				// asked to stop cleanly" from "filepath.WalkDir or
+				// the callback returned ErrStopWalk-wrapped-or-not
+				// for some other reason". Using a private sentinel
+				// also keeps io.EOF reserved for its real meaning:
+				// a callback that legitimately returns io.EOF (or
+				// wraps it) must halt with the wrapped error, not
+				// be silently treated as a clean exit.
+				return errStopWalkInternal
 			}
 			return fmt.Errorf("walk halted at %s: %w", h, cbErr)
 		}
 		return nil
 	})
-	if walkErr == io.EOF {
+	if errors.Is(walkErr, errStopWalkInternal) {
 		return nil
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -186,6 +195,16 @@ func (bc *FSStore) Walk(ctx context.Context, fn func(hash blockstore.ContentHash
 	}
 	return walkErr
 }
+
+// errStopWalkInternal is the unexported short-circuit sentinel
+// FSStore.Walk hands to filepath.WalkDir to abort enumeration when the
+// caller's callback returned blockstore.ErrStopWalk. It is never
+// surfaced to the caller — Walk maps it back to nil — and is never
+// observed by the callback. Keeping it private means a callback that
+// returns io.EOF (closed reader, exhausted iterator, …) is treated as
+// a halting error and wrapped via the public contract, instead of
+// being mistaken for the internal short-circuit token.
+var errStopWalkInternal = errors.New("blockstore.fs: stop walk (internal)")
 
 // ListUnsynced returns a push iterator over every CAS hash present in
 // the local store that has not yet been marked synced. The iterator
