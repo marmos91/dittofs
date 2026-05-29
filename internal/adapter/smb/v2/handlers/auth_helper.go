@@ -279,50 +279,60 @@ func (h *Handler) CaptureOpenerIdentity(ctx *SMBHandlerContext, openFile *OpenFi
 // pre-snapshot, tests). That preserves existing behaviour for everything
 // that already worked while fixing the re-auth handle-binding gap.
 //
-// Parent-lease-key linkage is propagated identically to the session-current
-// path so dir-lease parent-key suppression (#470 C2) keeps working.
-func (h *Handler) buildOpenerAuthContext(ctx *SMBHandlerContext, openFile *OpenFile) (*metadata.AuthContext, error) {
+// SET_INFO Security is the only current caller; its parent-dir-lease-break
+// path (`breakParentDirLeasesForContentChange`) reads OpenFile directly and
+// does not consult AuthContext, so this helper deliberately does NOT call
+// `PropagateOpenFileParentLeaseKey`. Future callers that route through
+// MetadataService.notifyDirChange (rename / hardlink / overwrite / unlink)
+// MUST invoke PropagateOpenFileParentLeaseKey on the returned authCtx
+// before issuing the metadata op — same contract as the BuildAuthContext
+// callsites in close.go and set_info.go.
+//
+// Returns nil only when ctx is nil-equivalent for BuildAuthContext;
+// callers MUST nil-check and may fall back to the session-current authCtx.
+func (h *Handler) buildOpenerAuthContext(ctx *SMBHandlerContext, openFile *OpenFile) *metadata.AuthContext {
 	if openFile == nil {
-		return BuildAuthContext(ctx)
+		ac, _ := BuildAuthContext(ctx)
+		return ac
 	}
 	// No snapshot recorded (legacy or restored durable handle pre-binding):
 	// use the session-current identity. This is also the path tests exercise
 	// when they hand-build an OpenFile without going through CREATE.
 	if openFile.OpenerUser == nil && !openFile.OpenerIsGuest && !openFile.OpenerIsNull {
-		return BuildAuthContext(ctx)
+		ac, _ := BuildAuthContext(ctx)
+		return ac
 	}
 
-	var authCtx *metadata.AuthContext
 	if openFile.OpenerUser != nil {
-		authCtx = BuildAuthContextFromUser(ctx, openFile.OpenerUser)
-	} else {
-		// Guest / null opener: synthesise the same identity BuildAuthContext
-		// would for a User==nil session, but pinned to the captured opener
-		// flags rather than the session's current state.
-		authCtx = &metadata.AuthContext{
-			Context:                ctx.Context,
-			ClientAddr:             ctx.ClientAddr,
-			LockClientID:           fmt.Sprintf("smb:%d", ctx.SessionID),
-			Identity:               &metadata.Identity{},
-			BypassTraverseChecking: true,
-		}
-		if openFile.OpenerIsGuest {
-			guestUID := uint32(65534) // nobody
-			guestGID := uint32(65534) // nogroup
-			authCtx.Identity.UID = &guestUID
-			authCtx.Identity.GID = &guestGID
-		} else {
-			// Anonymous/null opener — fall back to root, matching the
-			// existing BuildAuthContext(ctx.User==nil, IsGuest==false) arm.
-			rootUID := uint32(0)
-			rootGID := uint32(0)
-			authCtx.Identity.UID = &rootUID
-			authCtx.Identity.GID = &rootGID
-		}
-		authCtx.ShareWritable = HasWritePermission(ctx)
-		authCtx.ShareReadOnly = ctx.Permission == models.PermissionRead
+		return BuildAuthContextFromUser(ctx, openFile.OpenerUser)
 	}
-	return authCtx, nil
+
+	// Guest / null opener: synthesise the same identity BuildAuthContext
+	// would for a User==nil session, but pinned to the captured opener
+	// flags rather than the session's current state.
+	authCtx := &metadata.AuthContext{
+		Context:                ctx.Context,
+		ClientAddr:             ctx.ClientAddr,
+		LockClientID:           fmt.Sprintf("smb:%d", ctx.SessionID),
+		Identity:               &metadata.Identity{},
+		BypassTraverseChecking: true,
+	}
+	if openFile.OpenerIsGuest {
+		guestUID := uint32(65534) // nobody
+		guestGID := uint32(65534) // nogroup
+		authCtx.Identity.UID = &guestUID
+		authCtx.Identity.GID = &guestGID
+	} else {
+		// Anonymous/null opener — fall back to root, matching the
+		// existing BuildAuthContext(ctx.User==nil, IsGuest==false) arm.
+		rootUID := uint32(0)
+		rootGID := uint32(0)
+		authCtx.Identity.UID = &rootUID
+		authCtx.Identity.GID = &rootGID
+	}
+	authCtx.ShareWritable = HasWritePermission(ctx)
+	authCtx.ShareReadOnly = ctx.Permission == models.PermissionRead
+	return authCtx
 }
 
 // PropagateOpenFileParentLeaseKey copies the OpenFile's RqLs parent-lease-key

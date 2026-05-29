@@ -266,8 +266,8 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 		// after a re-auth to a different principal would be wrong. See
 		// smbtorture smb2.session.reauth4 / reauth5. Falls back to the
 		// session-current authCtx when no opener snapshot exists.
-		secAuthCtx, secErr := h.buildOpenerAuthContext(ctx, openFile)
-		if secErr != nil || secAuthCtx == nil {
+		secAuthCtx := h.buildOpenerAuthContext(ctx, openFile)
+		if secAuthCtx == nil {
 			secAuthCtx = authCtx
 		}
 		return h.setSecurityInfo(secAuthCtx, openFile, req.AdditionalInfo, req.Buffer)

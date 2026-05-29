@@ -73,10 +73,7 @@ func TestBuildOpenerAuthContext_UsesSnapshotAfterReauth(t *testing.T) {
 	}
 	h := &Handler{}
 
-	authCtx, err := h.buildOpenerAuthContext(ctx, openFile)
-	if err != nil {
-		t.Fatalf("buildOpenerAuthContext: %v", err)
-	}
+	authCtx := h.buildOpenerAuthContext(ctx, openFile)
 	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
 		t.Fatal("nil identity from opener-context builder")
 	}
@@ -104,10 +101,7 @@ func TestBuildOpenerAuthContext_FallsBackToSessionWithoutSnapshot(t *testing.T) 
 
 	openFile := &OpenFile{} // no snapshot
 
-	authCtx, err := h.buildOpenerAuthContext(ctx, openFile)
-	if err != nil {
-		t.Fatalf("buildOpenerAuthContext: %v", err)
-	}
+	authCtx := h.buildOpenerAuthContext(ctx, openFile)
 	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
 		t.Fatal("nil identity from fallback path")
 	}
@@ -139,10 +133,7 @@ func TestBuildOpenerAuthContext_GuestSnapshotPinsNobody(t *testing.T) {
 	}
 	h := &Handler{}
 
-	authCtx, err := h.buildOpenerAuthContext(ctx, openFile)
-	if err != nil {
-		t.Fatalf("buildOpenerAuthContext: %v", err)
-	}
+	authCtx := h.buildOpenerAuthContext(ctx, openFile)
 	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
 		t.Fatal("nil identity")
 	}
