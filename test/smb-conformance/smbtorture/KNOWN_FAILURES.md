@@ -138,15 +138,6 @@ counter already matched. The `2conn_notify_max_async_credits` failure that
 remained here was a cross-connection MessageID collision in
 `NotifyRegistry`, fixed in #416.
 
-### File Attributes (Limited Support)
-
-DittoFS has limited DOS/Windows attribute support. Hidden, system, and archive
-attributes are not fully implemented.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.dosmode | DOS attributes | DOS mode semantics not implemented | #750 |
-
 ### Create Contexts (Advanced Semantics Not Implemented)
 
 Advanced CREATE context features (impersonation, ACL-based create, quota fake
@@ -161,15 +152,6 @@ files, create blobs) are not implemented. Basic create operations pass.
 | smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | #741 |
 | smb2.create.multi | Create | Regression from recent changes, fails on all 3 stores | #741 |
 | smb2.create.path-length | Create | Flaky in CI (path length validation race) | #741 |
-
-### Query/Set Info (Advanced Scenarios)
-
-Advanced getinfo scenarios requiring security descriptor queries, buffer size
-checks, and ACL-based access control.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.setinfo | Set Info | SET_INFO timestamp preservation not implemented | #750 |
 
 ### Share Modes and Deny (Advanced Scenarios)
 
@@ -220,14 +202,6 @@ Extended attribute tests requiring ACL-based access control.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.ea.acl_xattr | Extended attributes | EA ACL enforcement not implemented | #750 |
-
-### Timestamp Resolution
-
-Timestamp resolution test requires sub-second precision enforcement.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.timestamp_resolution.resolution1 | Timestamps | Timestamp resolution enforcement not implemented | #750 |
 
 ### Session Signing Edge Cases
 
@@ -478,12 +452,15 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 
 ## Permanently Unimplementable (Out of Scope)
 
-Tests below cannot be implemented in DittoFS by design. Reasons fall into three buckets:
+Tests below cannot be implemented in DittoFS by design. Reasons fall into the following buckets:
 
 1. **Samba-internal test-harness operations.** The smbtorture client invokes Samba-specific FSCTLs that exist only inside Samba's test build (`torture_block_tcp_transport`, `FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT`). DittoFS cannot implement these without becoming Samba.
 2. **Kernel-level features.** Tests that require Linux kernel oplock semantics via `F_SETLEASE` on a real fd. DittoFS is a userspace virtual filesystem with no underlying kernel-fd to set leases on.
 3. **OS-shell features outside the SMB protocol surface.** NTFS 8.3 short-name mangling (DOS compatibility) and VSS shadow copies / Previous Versions / Time Warp (`SMB2_CREATE_TIMEWARP_TOKEN`) are Windows OS features layered on top of NTFS, not protocol-level features of SMB2/3.
 4. **Samba-private POSIX lock extensions** that ride on Samba's smb1-derived semantics and have no MS-SMB2 spec equivalent.
+5. **Samba server-config behaviours.** Tests that exercise Samba's `smb.conf` knobs (e.g. `hide files`, `hide dot files`) which are Samba-specific filename-glob configuration, not part of MS-FSCC/MS-SMB2. DittoFS implements the protocol-defined HIDDEN attribute (SET_INFO/GET_INFO round-trip + OVERWRITE_IF attribute-mismatch denial + dot-prefix auto-hide) but does not replicate Samba's optional glob-pattern hiding.
+6. **Persistent extended attribute (EA) storage.** Tests that assert SET_INFO `FileFullEaInformation` writes survive a GET_INFO `SMB2_ALL_EAS` round-trip. DittoFS does not persist EAs (tracked separately in #220 for the adapter EA roadmap); SET_INFO returns SUCCESS as a no-op so ChangeNotify EA filters proceed, but the EA list is not stored.
+7. **Test-author-documented timing-dependent assertions.** A handful of upstream smbtorture tests are noted in their source comments as inherently flaky (e.g. reliant on `~15ms` Windows timestamp resolution observable only over a low-latency wire) and are explicitly excluded from Samba's own selftest. DittoFS classifies these the same way upstream does.
 
 These entries remain in CI's known-failure set (so they don't break the build) but are explicitly outside the v1.0 conformance gate. Do not file sub-issues for them.
 
@@ -506,14 +483,27 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.create.quota-fake-file | NTFS-internal | Synthesises NTFS pseudo-file `$Extend\$Quota:$Q:$INDEX_ALLOCATION`. NTFS volume-quota subsystem is a Windows on-disk-format feature; DittoFS has no NTFS metadata layer, no $Extend reserved files, no quota subsystem, and no protocol-defined way to surface these as fake objects on non-NTFS backends. |
 | smb2.set-sparse-ioctl | Parameterized driver | Standalone smbtorture driver test that requires `--option=torture:filename=<name>` at invocation. Fails immediately with `Need to provide filename through --option=torture:filename=testfile` in any default-battery run; not a feature gap. The FSCTL itself is covered by `smb2.ioctl.sparse_*`. |
 | smb2.zero-data-ioctl | Parameterized driver | Standalone smbtorture driver test that requires `--option=torture:offset=<n>` at invocation. Fails immediately with `Need to provide non-negative offset through --option=torture:offset=NNN`; not a feature gap. The FSCTL itself is covered by `smb2.ioctl.sparse_punch` / `sparse_punch_invalid`. |
+| smb2.dosmode | Samba server-config | Exercises Samba `smb.conf` `hide files = /*hidefile*/` glob-pattern hiding alongside HIDDEN-attribute round-trip. DittoFS supports the MS-FSCC HIDDEN attribute end-to-end (SET_INFO/GET_INFO round-trip, OVERWRITE_IF attribute-mismatch → ACCESS_DENIED, dot-prefix auto-hide) but does not implement Samba's `hide files` filename-glob config knob — that is a Samba server-side filter, not part of MS-FSCC/MS-SMB2. The test's `hidefile` subcase requires this glob. |
+| smb2.setinfo | EA persistence (#220) | Drives SET_INFO BasicInfo / DispositionInfo / AllocationInfo / EndOfFile / PositionInfo / ModeInfo / SecurityDescriptor (all working in DittoFS) and then asserts SET_INFO `FileFullEaInformation` writes survive a GET_INFO `SMB2_ALL_EAS` round-trip. DittoFS does not persist extended attributes; the SET returns SUCCESS as a no-op for ChangeNotify-EA wiring. Full EA persistence is tracked separately in #220 (adapter EA roadmap) and is independent of SET_INFO surface coverage. |
+| smb2.timestamp_resolution.resolution1 | Timing-dependent (upstream-skipped) | Test source documents `~15ms` Windows timestamp resolution and warns of a `1/15` false-fail rate even on a low-latency reference SMB connection. Explicitly skipped by Samba's own selftest (`selftest/skip:69-70`: `^samba3.smb2.timestamp_resolution` / `^samba4.smb2.timestamp_resolution`) "preserved here for future SMB2 timestamps behaviour archealogists". DittoFS classifies the same way upstream does. |
 
-**Total: 17 tests permanently out of scope.**
+**Total: 20 tests permanently out of scope.**
 
 ### Kerberos
 
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-29 — Misc subset A → Permanently Unimplementable (#750)
+
+Promote three umbrella-#750 misc rows to the Permanently Unimplementable appendix with documented architectural rationale. Each is unsuitable for an Expected-Failures sub-issue:
+
+- **`smb2.dosmode`** — Exercises Samba `smb.conf` `hide files` glob (server-side filename-filter config), not MS-FSCC/MS-SMB2. DittoFS implements all protocol-level HIDDEN semantics (SET/GET round-trip, OVERWRITE_IF attribute-mismatch denial, dot-prefix auto-hide); the missing piece is the Samba-only glob config knob.
+- **`smb2.setinfo`** — Drives the full SET_INFO surface (BasicInfo, DispositionInfo, AllocationInfo, EndOfFile, PositionInfo, ModeInfo, SecurityDescriptor — all working) and then asserts persistent EA storage via `FileFullEaInformation`. DittoFS does not persist EAs; this is tracked under #220 (adapter EA roadmap) and is orthogonal to SET_INFO coverage.
+- **`smb2.timestamp_resolution.resolution1`** — Test source documents `~15ms` Windows timestamp resolution and a `1/15` false-fail rate on any non-Windows reference server. Skipped by Samba's own selftest (`selftest/skip:69-70`); DittoFS classifies the same way upstream does.
+
+Total appendix grows from 17 → 20. Umbrella issue #750 (9 rows total) stays open for subsets B and C.
 
 ### 2026-05-28 — CREATE wire validation + quota-fake-file to appendix (#480)
 
