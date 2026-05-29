@@ -478,9 +478,114 @@ func (s *MetadataService) checkWritePermission(ctx *AuthContext, handle FileHand
 // rather than OBJECT_NAME_COLLISION / DELETE_PENDING.
 //
 // The check is exactly POSIX WRITE on the parent directory; ACL evaluation
-// runs through the same code path as in-process write checks.
+// runs through the same code path as in-process write checks. Use
+// CheckParentCreateAccess when the caller knows whether a file or
+// subdirectory is being created so the precise ACL bit (ADD_FILE vs
+// ADD_SUBDIRECTORY) can be evaluated.
 func (s *MetadataService) CheckParentWriteAccess(ctx *AuthContext, parentHandle FileHandle) error {
 	return s.checkWritePermission(ctx, parentHandle)
+}
+
+// CheckParentCreateAccess verifies the caller may create a new file or
+// subdirectory in the given directory. Unlike CheckParentWriteAccess, this
+// evaluates the precise NFSv4 ACL bit corresponding to the kind of child
+// being created:
+//
+//   - File create  -> ACE4_ADD_FILE         (0x02, alias of WRITE_DATA)
+//   - Dir create   -> ACE4_ADD_SUBDIRECTORY (0x04, alias of APPEND_DATA)
+//
+// MS-FSA 2.1.5.1.1 and Samba's mkdir_internal()/open_file_ntcreate() check
+// each bit independently. A parent DACL that denies SEC_DIR_ADD_FILE only
+// (no ADD_SUBDIRECTORY deny) must still allow subdirectory creation —
+// required by smbtorture smb2.create.mkdir-visible.
+//
+// For files that do not carry an ACL we fall back to the generic
+// PermissionWrite path so POSIX mode bits, share-level overrides, and
+// DOS-READONLY enforcement are honored.
+func (s *MetadataService) CheckParentCreateAccess(ctx *AuthContext, parentHandle FileHandle, isDirectory bool) error {
+	store, err := s.storeForHandle(parentHandle)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Context.Err(); err != nil {
+		return err
+	}
+
+	file, err := store.GetFile(ctx.Context, parentHandle)
+	if err != nil {
+		return err
+	}
+
+	// Without an ACL there's nothing to refine — fall back to the generic
+	// POSIX-write check so mode bits / share-level grants apply uniformly.
+	if file.ACL == nil {
+		return s.checkWritePermission(ctx, parentHandle)
+	}
+
+	shareOpts, _ := store.GetShareOptions(ctx.Context, file.ShareName)
+
+	// Share-level read-only beats any ACL grant.
+	if shareOpts != nil && shareOpts.ReadOnly {
+		return &StoreError{Code: ErrAccessDenied, Message: "write permission denied"}
+	}
+
+	// Share-level write bypass mirrors checkFilePermissions: an ALLOW-only
+	// DACL plus ctx.ShareWritable still permits writes (load-bearing for
+	// stream-inherit-perms and create.multi). Only an explicit DENY ACE
+	// disables the bypass.
+	if ctx.ShareWritable && !ctx.ShareReadOnly && !acl.HasExplicitDeny(file.ACL) {
+		return nil
+	}
+
+	identity := ctx.Identity
+
+	// Root bypass aligns with calculatePermissions/evaluateACLPermissions:
+	// UID 0 gets all permissions except on read-only shares (handled above).
+	if identity != nil && identity.UID != nil && *identity.UID == 0 {
+		return nil
+	}
+
+	var evalCtx *acl.EvaluateContext
+	if identity == nil || identity.UID == nil {
+		// Anonymous: pin owner UID to the anonymous sentinel so OWNER@
+		// can't accidentally match a root-owned file (mirror of
+		// evaluateACLPermissions).
+		evalCtx = &acl.EvaluateContext{
+			FileOwnerUID: acl.AnonymousFileOwnerUID,
+			FileOwnerGID: file.GID,
+		}
+	} else {
+		evalCtx = &acl.EvaluateContext{
+			UID:          *identity.UID,
+			GIDs:         identity.GIDs,
+			FileOwnerUID: file.UID,
+			FileOwnerGID: file.GID,
+		}
+		if identity.GID != nil {
+			evalCtx.GID = *identity.GID
+		}
+		switch {
+		case identity.Username != "" && identity.Domain != "":
+			evalCtx.Who = identity.Username + "@" + identity.Domain
+		case identity.Username != "":
+			evalCtx.Who = identity.Username
+		}
+		if identity.SID != nil {
+			evalCtx.SID = *identity.SID
+		}
+		evalCtx.GroupSIDs = identity.GroupSIDs
+		evalCtx.RequesterHasTakeOwnership = acl.HasTakeOwnershipPrivilege(evalCtx.SID, evalCtx.GroupSIDs)
+	}
+
+	mask := uint32(acl.ACE4_ADD_FILE)
+	if isDirectory {
+		mask = acl.ACE4_ADD_SUBDIRECTORY
+	}
+
+	if !acl.Evaluate(file.ACL, evalCtx, mask) {
+		return &StoreError{Code: ErrAccessDenied, Message: "write permission denied"}
+	}
+	return nil
 }
 
 // checkDeletePermission checks permission to unlink an entry from a parent directory.

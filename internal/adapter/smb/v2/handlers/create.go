@@ -1042,17 +1042,25 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	// Pre-disposition parent-DACL gate: any non-pure-OPEN disposition mutates
 	// the parent directory's contents (creating, overwriting, or superseding a
-	// child). MS-FSA 2.1.5.1.1 + MS-SMB2 §3.3.5.9 require parent-write
+	// child). MS-FSA 2.1.5.1.1 + MS-SMB2 §3.3.5.9 require parent-create
 	// permission to be evaluated before failing on disposition collisions, so
 	// a deny ACE on the parent surfaces as ACCESS_DENIED rather than
 	// OBJECT_NAME_COLLISION / DELETE_PENDING. FILE_OPEN is the only pure-open
 	// disposition; everything else (CREATE, CREATE_IF, OVERWRITE,
 	// OVERWRITE_IF, SUPERSEDE) is gated.
+	//
+	// The check evaluates the precise ACL bit for the child kind (ADD_FILE
+	// vs ADD_SUBDIRECTORY) so a parent DACL that denies only one variant
+	// does not also block the other — required by smbtorture
+	// smb2.create.mkdir-visible (deny-WORLD-ADD_FILE inherited ACE must
+	// not block subdirectory creation).
 	if req.CreateDisposition != types.FileOpen {
-		if err := metaSvc.CheckParentWriteAccess(authCtx, parentHandle); err != nil {
-			logger.Debug("CREATE: parent DACL denies write",
+		isDirCreate := req.CreateOptions&types.FileDirectoryFile != 0
+		if err := metaSvc.CheckParentCreateAccess(authCtx, parentHandle, isDirCreate); err != nil {
+			logger.Debug("CREATE: parent DACL denies create",
 				"path", filename,
 				"disposition", req.CreateDisposition,
+				"isDirectory", isDirCreate,
 				"error", err)
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 		}
