@@ -360,6 +360,7 @@ func TestMapSnapshotError_SentinelTable(t *testing.T) {
 		{"RetryTargetNotFound", models.ErrSnapshotRetryTargetNotFound, http.StatusNotFound},
 		{"RetryTargetNotFailed", models.ErrSnapshotRetryTargetNotFailed, http.StatusConflict},
 		{"StateConflict", models.ErrSnapshotStateConflict, http.StatusConflict},
+		{"InFlight", models.ErrSnapshotInFlight, http.StatusConflict},
 		{"DrainTimeout", models.ErrSnapshotDrainTimeout, http.StatusGatewayTimeout},
 		{"MetadataDumpMissing", models.ErrSnapshotMetadataDumpMissing, http.StatusInternalServerError},
 		{"MetadataStoreNotResetable", models.ErrMetadataStoreNotResetable, http.StatusInternalServerError},

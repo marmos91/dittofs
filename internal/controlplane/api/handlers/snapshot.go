@@ -302,6 +302,9 @@ func mapSnapshotError(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, models.ErrSnapshotRetryTargetNotFailed):
 		Conflict(w, "retry target is not in failed state")
 		return true
+	case errors.Is(err, models.ErrSnapshotInFlight):
+		Conflict(w, "snapshot operation is in progress; retry once it completes")
+		return true
 	case errors.Is(err, models.ErrSnapshotStateConflict):
 		Conflict(w, "snapshot is not in a state that allows this operation")
 		return true

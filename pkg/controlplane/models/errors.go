@@ -37,6 +37,12 @@ var (
 	ErrSnapshotRetryTargetNotFound  = errors.New("snapshot retry target not found")
 	ErrSnapshotRetryTargetNotFailed = errors.New("snapshot retry target is not in failed state")
 
+	// ErrSnapshotInFlight is returned when an operation (delete) is
+	// attempted on a snapshot whose create/retry orchestration is still
+	// running. Mapped to 409 — the caller should retry once the
+	// orchestration reaches a terminal state.
+	ErrSnapshotInFlight = errors.New("snapshot operation is in progress")
+
 	// ErrSnapshotLocalStoreUnsupported is returned when a snapshot is
 	// requested on a share whose local block store has no on-disk root
 	// (the in-memory backend), so the metadata.dump + manifest.hashes

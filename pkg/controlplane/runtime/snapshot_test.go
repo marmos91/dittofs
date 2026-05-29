@@ -369,6 +369,47 @@ func TestRuntimeDeleteSnapshot_HappyPath(t *testing.T) {
 	}
 }
 
+// TestRuntimeDeleteSnapshot_RefusesInFlight asserts DeleteSnapshot refuses
+// with ErrSnapshotInFlight when an orchestration goroutine is registered for
+// the same snapID, so a delete cannot race a running create/retry.
+func TestRuntimeDeleteSnapshot_RefusesInFlight(t *testing.T) {
+	rt := newTestRuntime(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	const shareName = "alpha"
+	localStoreDir := t.TempDir()
+	rt.sharesSvc.InjectShareForTesting(&shares.Share{Name: shareName})
+	if err := rt.sharesSvc.SetLocalStoreDirForTesting(shareName, localStoreDir); err != nil {
+		t.Fatalf("SetLocalStoreDirForTesting: %v", err)
+	}
+
+	snap := &models.Snapshot{ShareName: shareName, State: models.StateCreating, MetadataEngine: "memory"}
+	snapID, err := rt.store.CreateSnapshot(ctx, snap)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	// Plant an in-flight registry entry (mimics a running orchestration).
+	_, _, entry := rt.registerSnapInFlight(shareName, snapID)
+
+	if derr := rt.DeleteSnapshot(ctx, shareName, snapID); !errors.Is(derr, models.ErrSnapshotInFlight) {
+		t.Fatalf("DeleteSnapshot err = %v, want errors.Is(ErrSnapshotInFlight)", derr)
+	}
+
+	// Row must still exist (delete refused).
+	if _, gerr := rt.store.GetSnapshot(ctx, shareName, snapID); gerr != nil {
+		t.Fatalf("row deleted despite in-flight refusal: %v", gerr)
+	}
+
+	// Drain the planted entry, then delete succeeds.
+	rt.unregisterSnap(shareName, snapID, entry)
+	entry.wg.Done()
+	if derr := rt.DeleteSnapshot(ctx, shareName, snapID); derr != nil {
+		t.Fatalf("DeleteSnapshot after drain: %v", derr)
+	}
+}
+
 // TestRuntimeDeleteSnapshot_NotFound asserts ErrSnapshotNotFound from the
 // store propagates verbatim and the on-disk wipe step is NOT attempted.
 func TestRuntimeDeleteSnapshot_NotFound(t *testing.T) {

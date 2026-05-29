@@ -366,6 +366,24 @@ func (r *Runtime) unregisterSnap(shareName, snapID string, entry *snapInFlight) 
 	entry.mu.Unlock()
 }
 
+// isSnapInFlight reports whether an orchestration goroutine for
+// (shareName, snapID) is currently registered (create or retry in
+// progress). Used by DeleteSnapshot to fence the delete against a running
+// orchestration. Honors the registry lock ordering: registry mutex
+// outermost, per-entry mutex inside.
+func (r *Runtime) isSnapInFlight(shareName, snapID string) bool {
+	r.snapInFlightMu.Lock()
+	defer r.snapInFlightMu.Unlock()
+	entry, ok := r.snapInFlight[shareName]
+	if !ok {
+		return false
+	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	_, inFlight := entry.done[snapID]
+	return inFlight
+}
+
 // abortSnapInFlight releases a registry entry created via
 // registerSnapInFlight when CreateSnapshot fails synchronously BEFORE
 // launching the orchestration goroutine. It is the synchronous-failure
@@ -1202,6 +1220,16 @@ func (r *Runtime) DeleteSnapshot(ctx context.Context, share, snapID string) erro
 	release := r.snapshotDeleteLock(share)
 	release.Lock()
 	defer release.Unlock()
+
+	// Fence against an in-flight create/retry orchestration for the same
+	// snapID: deleting the row + dir out from under a running goroutine
+	// would leave it writing dump/manifest into a wiped directory or flip
+	// the state of a row that no longer exists. Refuse with a 409-mapped
+	// sentinel so the caller retries once the orchestration is terminal.
+	if r.isSnapInFlight(share, snapID) {
+		return fmt.Errorf("delete snapshot %q on share %q: %w",
+			snapID, share, models.ErrSnapshotInFlight)
+	}
 
 	if err := r.store.DeleteSnapshot(ctx, share, snapID); err != nil {
 		return err
