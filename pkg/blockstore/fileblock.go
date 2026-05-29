@@ -229,8 +229,10 @@ type Flusher interface {
 	//     LOSE every retry attempt against the periodic uploader's
 	//     in-flight tick) and pegs the CPU without making progress.
 	//     Recommended pattern: surface the soft-fail to the protocol
-	//     client (NFS3_COMMITTED=false → client reissues COMMIT on its
-	//     own schedule; SMB Flush returns success after a bounded
+	//     adapter and let the client drive the next attempt on its own
+	//     schedule (e.g. NFSv3 reports the WRITE's "committed" enum as
+	//     UNSTABLE rather than DATASYNC/FILESYNC so the client reissues
+	//     COMMIT later; SMB Flush returns success after a bounded
 	//     attempt) rather than spin in-handler.
 	//
 	//   - (nil, err)

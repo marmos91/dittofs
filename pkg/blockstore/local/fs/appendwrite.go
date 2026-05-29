@@ -231,8 +231,10 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 	// pressureCh wake-ups so a sequence of false-wakes (rollup pulses +
 	// another writer immediately consumes the freed budget) still
 	// respects the cumulative deadline. Using time.NewTimer + defer Stop()
-	// instead of time.After avoids leaking the underlying timer goroutine
-	// when pressureCh or bc.done fires first.
+	// instead of time.After lets the runtime release the timer slot as
+	// soon as pressureCh or bc.done fires first; time.After otherwise
+	// keeps the underlying runtime timer armed until the original deadline
+	// expires.
 	var pressureTimer *time.Timer
 	var pressureC <-chan time.Time
 	defer func() {
