@@ -41,8 +41,8 @@ async credit coordination.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.multichannel.leases.test1 | Multi-channel | Cross-channel lease break fan-out is Phase 2 work on #361; test flakes on DittoFS until the primary/secondary channel coordination lands | #361 |
-| smb2.multichannel.leases.test3 | Multi-channel | Spurious lease break on uncontested open — separate bug from #417 epoch drift | #436 |
+| smb2.multichannel.leases.test1 | Multi-channel | Cross-channel lease break fan-out is Phase 2 work on #361; test flakes on DittoFS until the primary/secondary channel coordination lands | #745 |
+| smb2.multichannel.leases.test3 | Multi-channel | Spurious lease break on uncontested open — separate bug from #417 epoch drift | #740 |
 
 Note: the five `smb2.multichannel.{leases,oplocks}` tests requiring Samba-internal harness FSCTLs (`torture_block_tcp_transport`, `FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT`) have been moved to the [Permanently Unimplementable](#permanently-unimplementable-out-of-scope) appendix.
 
@@ -68,7 +68,7 @@ or materialize the [old EOF, target offset) hole as zero-reading bytes.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.ioctl.copy_chunk_sparse_dest | IOCTL | SRV_COPYCHUNK to a 0-byte destination at offset 4096 must surface the [0, 4096) gap as zeros on subsequent reads. The block-store sparse-hole zero-fill path does not run for copychunk-extended files. | #718 |
+| smb2.ioctl.copy_chunk_sparse_dest | IOCTL | SRV_COPYCHUNK to a 0-byte destination at offset 4096 must surface the [0, 4096) gap as zeros on subsequent reads. The block-store sparse-hole zero-fill path does not run for copychunk-extended files. | #750 |
 
 Note: the standalone `smb2.set-sparse-ioctl` and `smb2.zero-data-ioctl` driver
 tests require `--option=torture:filename=` / `--option=torture:offset=` runtime
@@ -84,8 +84,8 @@ overflow, rec, rmdir1-4, tcon, tdis, tdis1, tcp, tree.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.notify.valid-req | Change Notify | Needs kernel inotify for MODIFIED on WRITE (also fails on reference Samba in Docker) | - |
-| smb2.notify.mask-change | Change Notify | SHARING_VIOLATION on directory open (pre-existing, never passed individually) | - |
+| smb2.notify.valid-req | Change Notify | Needs kernel inotify for MODIFIED on WRITE (also fails on reference Samba in Docker) | #750 |
+| smb2.notify.mask-change | Change Notify | SHARING_VIOLATION on directory open (pre-existing, never passed individually) | #750 |
 
 ### Oplocks (Multi-Client Coordination Not Implemented)
 
@@ -96,16 +96,16 @@ oplock grants, and a few specialized response-mapping cases (#479).
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.oplock.batch9a | Oplocks | Stat-only open vs normal-open break-count drift | #479 |
-| smb2.oplock.batch10 | Oplocks | Subsequent oplock request must coerce to LEVEL_II when prior open holds no oplock | #479 |
-| smb2.oplock.batch12 | Oplocks | SetPathInfo allocation-size needs second break stage (count=2) | #479 |
-| smb2.oplock.batch13 | Oplocks | OVERWRITE with attrs-only second open: granted oplock must be LEVEL_II | #479 |
-| smb2.oplock.batch14 | Oplocks | SUPERSEDE with attrs-only second open: granted oplock must be LEVEL_II | #479 |
-| smb2.oplock.batch16 | Oplocks | OVERWRITE_IF with attrs-only second open: granted oplock must be LEVEL_II | #479 |
-| smb2.oplock.batch22a | Oplocks | Break timeout window not honored (~35s expected) | #479 |
-| smb2.oplock.batch23 | Oplocks | After break to LEVEL_II, 3rd open must receive LEVEL_II grant | #479 |
-| smb2.oplock.levelii500 | Oplocks | ACK LEVEL_II→None must return STATUS_INVALID_OPLOCK_PROTOCOL | #479 |
-| smb2.oplock.statopen1 | Oplocks | READ_CONTROL access-mask should trigger break | #479 |
+| smb2.oplock.batch9a | Oplocks | Stat-only open vs normal-open break-count drift | #740 |
+| smb2.oplock.batch10 | Oplocks | Subsequent oplock request must coerce to LEVEL_II when prior open holds no oplock | #740 |
+| smb2.oplock.batch12 | Oplocks | SetPathInfo allocation-size needs second break stage (count=2) | #740 |
+| smb2.oplock.batch13 | Oplocks | OVERWRITE with attrs-only second open: granted oplock must be LEVEL_II | #740 |
+| smb2.oplock.batch14 | Oplocks | SUPERSEDE with attrs-only second open: granted oplock must be LEVEL_II | #740 |
+| smb2.oplock.batch16 | Oplocks | OVERWRITE_IF with attrs-only second open: granted oplock must be LEVEL_II | #740 |
+| smb2.oplock.batch22a | Oplocks | Break timeout window not honored (~35s expected) | #740 |
+| smb2.oplock.batch23 | Oplocks | After break to LEVEL_II, 3rd open must receive LEVEL_II grant | #740 |
+| smb2.oplock.levelii500 | Oplocks | ACK LEVEL_II→None must return STATUS_INVALID_OPLOCK_PROTOCOL | #740 |
+| smb2.oplock.statopen1 | Oplocks | READ_CONTROL access-mask should trigger break | #740 |
 
 Note: the four `smb2.kernel-oplocks.*` tests require Linux kernel oplock integration via `F_SETLEASE` on the underlying fd — architecturally incompatible with DittoFS's userspace virtual filesystem. They are listed in the [Permanently Unimplementable](#permanently-unimplementable-out-of-scope) appendix.
 
@@ -119,13 +119,13 @@ visibility on initial-DOC unlink cases.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.dirlease.hardlink | Directory Leases | samedir-wrong-parent-leaskey: break/ack ordering on single-dir hardlink | #470 |
-| smb2.dirlease.oplocks | Directory Leases | Skipped by runner — smbtorture 4.22.6 client SIGSEGVs in this subtest and aborts the rest of the dirlease suite (see run.sh) | #633 |
-| smb2.dirlease.rename | Directory Leases | samedir-wrong-parent-leaskey: break/ack ordering on single-dir rename | #470 |
-| smb2.dirlease.unlink_different_initial_and_close | Directory Leases | DELETE_PENDING returned on second open of a file with initial DOC (delete-on-close shouldn't block reopens before actual delete) | #470 |
-| smb2.dirlease.unlink_different_set_and_close | Directory Leases | smb2_lease_break_ack returns UNSUCCESSFUL — break/ack state mismatch on last-handle delete with mismatched parent keys | #470 |
-| smb2.dirlease.unlink_same_initial_and_close | Directory Leases | DELETE_PENDING returned on second open of a file with initial DOC | #470 |
-| smb2.dirlease.v2_request | Directory Leases | SHARING_VIOLATION on requeued CREATE after dir-lease holder closes during break | #470 |
+| smb2.dirlease.hardlink | Directory Leases | samedir-wrong-parent-leaskey: break/ack ordering on single-dir hardlink | #743 |
+| smb2.dirlease.oplocks | Directory Leases | Skipped by runner — smbtorture 4.22.6 client SIGSEGVs in this subtest and aborts the rest of the dirlease suite (see run.sh) | #750 |
+| smb2.dirlease.rename | Directory Leases | samedir-wrong-parent-leaskey: break/ack ordering on single-dir rename | #743 |
+| smb2.dirlease.unlink_different_initial_and_close | Directory Leases | DELETE_PENDING returned on second open of a file with initial DOC (delete-on-close shouldn't block reopens before actual delete) | #743 |
+| smb2.dirlease.unlink_different_set_and_close | Directory Leases | smb2_lease_break_ack returns UNSUCCESSFUL — break/ack state mismatch on last-handle delete with mismatched parent keys | #743 |
+| smb2.dirlease.unlink_same_initial_and_close | Directory Leases | DELETE_PENDING returned on second open of a file with initial DOC | #743 |
+| smb2.dirlease.v2_request | Directory Leases | SHARING_VIOLATION on requeued CREATE after dir-lease holder closes during break | #743 |
 
 ### Credit Management
 
@@ -145,7 +145,7 @@ attributes are not fully implemented.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.dosmode | DOS attributes | DOS mode semantics not implemented | - |
+| smb2.dosmode | DOS attributes | DOS mode semantics not implemented | #750 |
 
 ### Create Contexts (Advanced Semantics Not Implemented)
 
@@ -154,13 +154,13 @@ files, create blobs) are not implemented. Basic create operations pass.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.create.blob | Create | Create context blobs not fully implemented | #480 |
-| smb2.create.gentest | Create | Generic create test (impersonation) not implemented | #480 |
-| smb2.create.impersonation | Create | Impersonation levels not implemented | #480 |
-| smb2.create.mkdir-dup | Create | Flaky in CI (parallel CREATE OPEN_IF race — passes intermittently on develop, perturbed by unrelated timing changes) | #480 |
-| smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | #480 |
-| smb2.create.multi | Create | Regression from recent changes, fails on all 3 stores | #480 |
-| smb2.create.path-length | Create | Flaky in CI (path length validation race) | #480 |
+| smb2.create.blob | Create | Create context blobs not fully implemented | #741 |
+| smb2.create.gentest | Create | Generic create test (impersonation) not implemented | #741 |
+| smb2.create.impersonation | Create | Impersonation levels not implemented | #741 |
+| smb2.create.mkdir-dup | Create | Flaky in CI (parallel CREATE OPEN_IF race — passes intermittently on develop, perturbed by unrelated timing changes) | #741 |
+| smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | #741 |
+| smb2.create.multi | Create | Regression from recent changes, fails on all 3 stores | #741 |
+| smb2.create.path-length | Create | Flaky in CI (path length validation race) | #741 |
 
 ### Query/Set Info (Advanced Scenarios)
 
@@ -169,7 +169,7 @@ checks, and ACL-based access control.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.setinfo | Set Info | SET_INFO timestamp preservation not implemented | - |
+| smb2.setinfo | Set Info | SET_INFO timestamp preservation not implemented | #750 |
 
 ### Share Modes and Deny (Advanced Scenarios)
 
@@ -177,7 +177,7 @@ Advanced share mode enforcement and deny mode scenarios.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.sharemode.bug14375 | Share modes | Share mode edge case not implemented | - |
+| smb2.sharemode.bug14375 | Share modes | Share mode edge case not implemented | #750 |
 
 ### Maximum Allowed Access (Partial)
 
@@ -186,7 +186,7 @@ maximum_allowed works but full computation does not.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.maximum_allowed.maximum_allowed | Access checks | Full maximum allowed computation not implemented | - |
+| smb2.maximum_allowed.maximum_allowed | Access checks | Full maximum allowed computation not implemented | #750 |
 
 ### Connection and Tree Connect (Advanced Semantics)
 
@@ -194,14 +194,14 @@ Advanced connection and tree connect edge cases.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.tcon | Tree connect | Advanced tree connect semantics not implemented | - |
-| smb2.maxfid | Connection | Connection drops under high FD pressure | - |
+| smb2.tcon | Tree connect | Advanced tree connect semantics not implemented | #750 |
+| smb2.maxfid | Connection | Connection drops under high FD pressure | #750 |
 
 ### Intermittent / Flaky
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.lease.statopen4 | Leases | Flaky stat-open lease test - passes intermittently | - |
+| smb2.lease.statopen4 | Leases | Flaky stat-open lease test - passes intermittently | #750 |
 
 ### Character Set (Edge Cases)
 
@@ -211,7 +211,7 @@ since basic charset support works.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.charset.Testing | Character set | Unicode surrogate pair / wide-A handling not implemented | #435 |
+| smb2.charset.Testing | Character set | Unicode surrogate pair / wide-A handling not implemented | #740 |
 
 ### Extended Attributes (ACL-Based)
 
@@ -219,7 +219,7 @@ Extended attribute tests requiring ACL-based access control.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.ea.acl_xattr | Extended attributes | EA ACL enforcement not implemented | - |
+| smb2.ea.acl_xattr | Extended attributes | EA ACL enforcement not implemented | #750 |
 
 ### Timestamp Resolution
 
@@ -227,7 +227,7 @@ Timestamp resolution test requires sub-second precision enforcement.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.timestamp_resolution.resolution1 | Timestamps | Timestamp resolution enforcement not implemented | - |
+| smb2.timestamp_resolution.resolution1 | Timestamps | Timestamp resolution enforcement not implemented | #750 |
 
 ### Session Signing Edge Cases
 
@@ -243,20 +243,20 @@ still fail due to incomplete reconnect and lease coordination.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-open.reopen1a | Durable handles V1 | Durable reopen not fully working | #431 |
-| smb2.durable-open.reopen1a-lease | Durable handles V1 | Durable reopen with lease not fully working | #431 |
-| smb2.durable-open.reopen2 | Durable handles V1 | Durable reopen not fully working | #431 |
-| smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | #431 |
-| smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | #431 |
-| smb2.durable-open.reopen2a | Durable handles V1 | Durable reopen not fully working | #431 |
-| smb2.durable-open.reopen4 | Durable handles V1 | Durable reopen not fully working | #431 |
-| smb2.durable-open.delete_on_close1 | Durable handles V1 | Durable DOC not fully working | #431 |
-| smb2.durable-open.delete_on_close2 | Durable handles V1 | Durable DOC not fully working | #431 |
-| smb2.durable-open.file-position | Durable handles V1 | Durable file position not fully working | #431 |
-| smb2.durable-open.lock-oplock | Durable handles V1 | Durable lock + oplock not fully working | #431 |
-| smb2.durable-open.lock-lease | Durable handles V1 | Durable lock + lease not fully working | #431 |
-| smb2.durable-open.alloc-size | Durable handles V1 | Pre-existing: out.alloc_size returned 0 instead of expected non-zero | #431 |
-| smb2.durable-open.read-only | Durable handles V1 | Pre-existing: OBJECT_NAME_NOT_FOUND on durable read-only reopen | #431 |
+| smb2.durable-open.reopen1a | Durable handles V1 | Durable reopen not fully working | #749 |
+| smb2.durable-open.reopen1a-lease | Durable handles V1 | Durable reopen with lease not fully working | #749 |
+| smb2.durable-open.reopen2 | Durable handles V1 | Durable reopen not fully working | #749 |
+| smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | #749 |
+| smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | #749 |
+| smb2.durable-open.reopen2a | Durable handles V1 | Durable reopen not fully working | #749 |
+| smb2.durable-open.reopen4 | Durable handles V1 | Durable reopen not fully working | #749 |
+| smb2.durable-open.delete_on_close1 | Durable handles V1 | Durable DOC not fully working | #749 |
+| smb2.durable-open.delete_on_close2 | Durable handles V1 | Durable DOC not fully working | #749 |
+| smb2.durable-open.file-position | Durable handles V1 | Durable file position not fully working | #749 |
+| smb2.durable-open.lock-oplock | Durable handles V1 | Durable lock + oplock not fully working | #749 |
+| smb2.durable-open.lock-lease | Durable handles V1 | Durable lock + lease not fully working | #749 |
+| smb2.durable-open.alloc-size | Durable handles V1 | Pre-existing: out.alloc_size returned 0 instead of expected non-zero | #749 |
+| smb2.durable-open.read-only | Durable handles V1 | Pre-existing: OBJECT_NAME_NOT_FOUND on durable read-only reopen | #749 |
 
 ### Durable Handles V2 (Fix Candidate)
 
@@ -265,38 +265,38 @@ still fail due to incomplete reconnect, lease coordination, and persistence.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-v2-open.create-blob | Durable handles V2 | DH2Q create context blob validation | #432 |
-| smb2.durable-v2-open.open-oplock | Durable handles V2 | DH2 open with oplock not fully working | #432 |
-| smb2.durable-v2-open.open-lease | Durable handles V2 | DH2 open with lease not fully working | #432 |
-| smb2.durable-v2-open.reopen1 | Durable handles V2 | DH2 reopen not fully working | #432 |
-| smb2.durable-v2-open.reopen1a | Durable handles V2 | DH2 reopen not fully working | #432 |
-| smb2.durable-v2-open.reopen1a-lease | Durable handles V2 | DH2 reopen with lease not fully working | #432 |
-| smb2.durable-v2-open.reopen2 | Durable handles V2 | DH2 reopen not fully working | #432 |
-| smb2.durable-v2-open.reopen2b | Durable handles V2 | DH2 reopen not fully working | #432 |
-| smb2.durable-v2-open.reopen2-lease | Durable handles V2 | DH2 reopen with lease not fully working | #432 |
-| smb2.durable-v2-open.reopen2-lease-v2 | Durable handles V2 | DH2 reopen with lease V2 not fully working | #432 |
-| smb2.durable-v2-open.durable-v2-setinfo | Durable handles V2 | DH2 setinfo not fully working | #432 |
-| smb2.durable-v2-open.lock-oplock | Durable handles V2 | DH2 lock with oplock not fully working | #432 |
-| smb2.durable-v2-open.lock-lease | Durable handles V2 | DH2 lock with lease not fully working | #432 |
-| smb2.durable-v2-open.lock-noW-lease | Durable handles V2 | DH2 lock without write lease not fully working | #432 |
-| smb2.durable-v2-open.stat-and-lease | Durable handles V2 | DH2 stat + lease interaction not fully working | #432 |
-| smb2.durable-v2-open.nonstat-and-lease | Durable handles V2 | DH2 non-stat + lease interaction not fully working | #432 |
-| smb2.durable-v2-open.statRH-and-lease | Durable handles V2 | DH2 stat-RH + lease interaction not fully working | #432 |
-| smb2.durable-v2-open.two-same-lease | Durable handles V2 | DH2 two handles same lease not fully working | #432 |
-| smb2.durable-v2-open.two-different-lease | Durable handles V2 | DH2 two handles different leases not fully working | #432 |
-| smb2.durable-v2-open.keep-disconnected-rh-with-stat-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #432 |
-| smb2.durable-v2-open.keep-disconnected-rh-with-rh-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #432 |
-| smb2.durable-v2-open.keep-disconnected-rh-with-rwh-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #432 |
-| smb2.durable-v2-open.keep-disconnected-rwh-with-stat-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #432 |
-| smb2.durable-v2-open.purge-disconnected-rwh-with-rwh-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #432 |
-| smb2.durable-v2-open.purge-disconnected-rwh-with-rh-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #432 |
-| smb2.durable-v2-open.purge-disconnected-rh-with-share-none-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #432 |
-| smb2.durable-v2-open.purge-disconnected-rh-with-write | Durable handles V2 | DH2 disconnected handle purge not fully working | #432 |
-| smb2.durable-v2-open.purge-disconnected-rh-with-rename | Durable handles V2 | DH2 disconnected handle purge not fully working | #432 |
-| smb2.durable-v2-open.app-instance | Durable handles V2 | App instance ID not fully working | #432 |
-| smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Persistent handles not implemented | #432 |
-| smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Persistent handles not implemented | #432 |
-| smb2.durable-v2-delay.durable_v2_reconnect_delay | Durable handles V2 | DH2 reconnect delay not fully working | #432 |
+| smb2.durable-v2-open.create-blob | Durable handles V2 | DH2Q create context blob validation | #749 |
+| smb2.durable-v2-open.open-oplock | Durable handles V2 | DH2 open with oplock not fully working | #749 |
+| smb2.durable-v2-open.open-lease | Durable handles V2 | DH2 open with lease not fully working | #749 |
+| smb2.durable-v2-open.reopen1 | Durable handles V2 | DH2 reopen not fully working | #749 |
+| smb2.durable-v2-open.reopen1a | Durable handles V2 | DH2 reopen not fully working | #749 |
+| smb2.durable-v2-open.reopen1a-lease | Durable handles V2 | DH2 reopen with lease not fully working | #749 |
+| smb2.durable-v2-open.reopen2 | Durable handles V2 | DH2 reopen not fully working | #749 |
+| smb2.durable-v2-open.reopen2b | Durable handles V2 | DH2 reopen not fully working | #749 |
+| smb2.durable-v2-open.reopen2-lease | Durable handles V2 | DH2 reopen with lease not fully working | #749 |
+| smb2.durable-v2-open.reopen2-lease-v2 | Durable handles V2 | DH2 reopen with lease V2 not fully working | #749 |
+| smb2.durable-v2-open.durable-v2-setinfo | Durable handles V2 | DH2 setinfo not fully working | #749 |
+| smb2.durable-v2-open.lock-oplock | Durable handles V2 | DH2 lock with oplock not fully working | #749 |
+| smb2.durable-v2-open.lock-lease | Durable handles V2 | DH2 lock with lease not fully working | #749 |
+| smb2.durable-v2-open.lock-noW-lease | Durable handles V2 | DH2 lock without write lease not fully working | #749 |
+| smb2.durable-v2-open.stat-and-lease | Durable handles V2 | DH2 stat + lease interaction not fully working | #749 |
+| smb2.durable-v2-open.nonstat-and-lease | Durable handles V2 | DH2 non-stat + lease interaction not fully working | #749 |
+| smb2.durable-v2-open.statRH-and-lease | Durable handles V2 | DH2 stat-RH + lease interaction not fully working | #749 |
+| smb2.durable-v2-open.two-same-lease | Durable handles V2 | DH2 two handles same lease not fully working | #749 |
+| smb2.durable-v2-open.two-different-lease | Durable handles V2 | DH2 two handles different leases not fully working | #749 |
+| smb2.durable-v2-open.keep-disconnected-rh-with-stat-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #749 |
+| smb2.durable-v2-open.keep-disconnected-rh-with-rh-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #749 |
+| smb2.durable-v2-open.keep-disconnected-rh-with-rwh-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #749 |
+| smb2.durable-v2-open.keep-disconnected-rwh-with-stat-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #749 |
+| smb2.durable-v2-open.purge-disconnected-rwh-with-rwh-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #749 |
+| smb2.durable-v2-open.purge-disconnected-rwh-with-rh-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #749 |
+| smb2.durable-v2-open.purge-disconnected-rh-with-share-none-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #749 |
+| smb2.durable-v2-open.purge-disconnected-rh-with-write | Durable handles V2 | DH2 disconnected handle purge not fully working | #749 |
+| smb2.durable-v2-open.purge-disconnected-rh-with-rename | Durable handles V2 | DH2 disconnected handle purge not fully working | #749 |
+| smb2.durable-v2-open.app-instance | Durable handles V2 | App instance ID not fully working | #749 |
+| smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Persistent handles not implemented | #749 |
+| smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Persistent handles not implemented | #749 |
+| smb2.durable-v2-delay.durable_v2_reconnect_delay | Durable handles V2 | DH2 reconnect delay not fully working | #749 |
 
 ### Leases (Fix Candidate)
 
@@ -315,9 +315,9 @@ recognises them.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.lock.replay_broken_windows | Locks | Lock replay requires LockSequence tracking | #430 |
-| smb2.lock.replay_smb3_specification_durable | Locks | Lock replay with durable handles needs LockSequence | #430 |
-| smb2.lock.replay_smb3_specification_multi | Locks | Lock replay across channels needs multichannel | #430 |
+| smb2.lock.replay_broken_windows | Locks | Lock replay requires LockSequence tracking | #744 |
+| smb2.lock.replay_smb3_specification_durable | Locks | Lock replay with durable handles needs LockSequence | #744 |
+| smb2.lock.replay_smb3_specification_multi | Locks | Lock replay across channels needs multichannel | #744 |
 
 ### Sessions (Remaining)
 
@@ -330,21 +330,21 @@ follow-up.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.session.reconnect1 | Sessions | Session reconnect not fully working | - |
-| smb2.session.reconnect2 | Sessions | Session reconnect not fully working | - |
-| smb2.session.bind_negative_smb202 | Sessions | Session binding validation not fully working | - |
-| smb2.session.bind_negative_smb210s | Sessions | Session binding validation not fully working | - |
-| smb2.session.bind_negative_smb210d | Sessions | Session binding validation not fully working | - |
-| smb2.session.reauth1 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client (signature/preauth chain) | - |
-| smb2.session.reauth2 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | - |
-| smb2.session.reauth3 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | - |
-| smb2.session.reauth4 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | - |
-| smb2.session.reauth5 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | - |
-| smb2.session.reauth6 | Sessions | Pre-existing: re-auth expects LOGON_FAILURE for malformed creds, gets ACCESS_DENIED | - |
-| smb2.session.ntlmssp_bug14932 | Sessions | Pre-existing: malformed NTLMSSP expects INVALID_PARAMETER, gets ACCESS_DENIED | - |
-| smb2.session.anon-encryption1 | Sessions | Pre-existing: anonymous encryption setup rejected with INVALID_PARAMETER | - |
-| smb2.session.anon-encryption2 | Sessions | Pre-existing: anonymous encryption setup rejected with INVALID_PARAMETER | - |
-| smb2.session.anon-encryption3 | Sessions | Pre-existing: anonymous encryption setup rejected with INVALID_PARAMETER | - |
+| smb2.session.reconnect1 | Sessions | Session reconnect not fully working | #746 |
+| smb2.session.reconnect2 | Sessions | Session reconnect not fully working | #746 |
+| smb2.session.bind_negative_smb202 | Sessions | Session binding validation not fully working | #747 |
+| smb2.session.bind_negative_smb210s | Sessions | Session binding validation not fully working | #747 |
+| smb2.session.bind_negative_smb210d | Sessions | Session binding validation not fully working | #747 |
+| smb2.session.reauth1 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client (signature/preauth chain) | #746 |
+| smb2.session.reauth2 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | #746 |
+| smb2.session.reauth3 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | #746 |
+| smb2.session.reauth4 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | #746 |
+| smb2.session.reauth5 | Sessions | Pre-existing: re-auth CHALLENGE response rejected by client | #746 |
+| smb2.session.reauth6 | Sessions | Pre-existing: re-auth expects LOGON_FAILURE for malformed creds, gets ACCESS_DENIED | #746 |
+| smb2.session.ntlmssp_bug14932 | Sessions | Pre-existing: malformed NTLMSSP expects INVALID_PARAMETER, gets ACCESS_DENIED | #746 |
+| smb2.session.anon-encryption1 | Sessions | Pre-existing: anonymous encryption setup rejected with INVALID_PARAMETER | #746 |
+| smb2.session.anon-encryption2 | Sessions | Pre-existing: anonymous encryption setup rejected with INVALID_PARAMETER | #746 |
+| smb2.session.anon-encryption3 | Sessions | Pre-existing: anonymous encryption setup rejected with INVALID_PARAMETER | #746 |
 
 ### Session Binding (Multi-Channel, Not Implemented)
 
@@ -353,36 +353,36 @@ TCP connections with different SMB dialect and signing/encryption combinations.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.session.bind2 | Session binding | Session binding not implemented | - |
-| smb2.session.bind_invalid_auth | Session binding | Session binding auth validation not implemented | - |
-| smb2.session.bind_negative_smb3signCtoHs | Session binding | Multi-channel signing binding not implemented | - |
-| smb2.session.bind_negative_smb3signCtoHd | Session binding | Multi-channel signing binding not implemented | - |
-| smb2.session.bind_negative_smb3signCtoGs | Session binding | Multi-channel signing binding not implemented | - |
-| smb2.session.bind_negative_smb3signCtoGd | Session binding | Multi-channel signing binding not implemented | - |
-| smb2.session.bind_negative_smb3signHtoCs | Session binding | Multi-channel signing binding not implemented | - |
-| smb2.session.bind_negative_smb3signHtoCd | Session binding | Multi-channel signing binding not implemented | - |
-| smb2.session.bind_negative_smb3signHtoGs | Session binding | Multi-channel signing binding not implemented | - |
-| smb2.session.bind_negative_smb3signHtoGd | Session binding | Multi-channel signing binding not implemented | - |
-| smb2.session.bind_negative_smb3signGtoCs | Session binding | Multi-channel signing binding not implemented | - |
-| smb2.session.bind_negative_smb3signGtoCd | Session binding | Multi-channel signing binding not implemented | - |
-| smb2.session.bind_negative_smb3signGtoHs | Session binding | Multi-channel signing binding not implemented | - |
-| smb2.session.bind_negative_smb3signGtoHd | Session binding | Multi-channel signing binding not implemented | - |
-| smb2.session.bind_negative_smb3sneGtoCs | Session binding | Multi-channel signing+encryption binding not implemented | - |
-| smb2.session.bind_negative_smb3sneGtoCd | Session binding | Multi-channel signing+encryption binding not implemented | - |
-| smb2.session.bind_negative_smb3sneGtoHs | Session binding | Multi-channel signing+encryption binding not implemented | - |
-| smb2.session.bind_negative_smb3sneGtoHd | Session binding | Multi-channel signing+encryption binding not implemented | - |
-| smb2.session.bind_negative_smb3sneCtoGs | Session binding | Multi-channel signing+encryption binding not implemented | - |
-| smb2.session.bind_negative_smb3sneCtoGd | Session binding | Multi-channel signing+encryption binding not implemented | - |
-| smb2.session.bind_negative_smb3sneHtoGs | Session binding | Multi-channel signing+encryption binding not implemented | - |
-| smb2.session.bind_negative_smb3sneHtoGd | Session binding | Multi-channel signing+encryption binding not implemented | - |
-| smb2.session.bind_negative_smb3signC30toGs | Session binding | Multi-channel signing binding (3.0 to GMAC) not implemented | - |
-| smb2.session.bind_negative_smb3signC30toGd | Session binding | Multi-channel signing binding (3.0 to GMAC) not implemented | - |
-| smb2.session.bind_negative_smb3signH2XtoGs | Session binding | Multi-channel signing binding (HMAC to GMAC) not implemented | - |
-| smb2.session.bind_negative_smb3signH2XtoGd | Session binding | Multi-channel signing binding (HMAC to GMAC) not implemented | - |
-| smb2.session.bind_negative_smb3signGtoC30s | Session binding | Multi-channel signing binding (GMAC to 3.0) not implemented | - |
-| smb2.session.bind_negative_smb3signGtoC30d | Session binding | Multi-channel signing binding (GMAC to 3.0) not implemented | - |
-| smb2.session.bind_negative_smb3signGtoH2Xs | Session binding | Multi-channel signing binding (GMAC to HMAC) not implemented | - |
-| smb2.session.bind_negative_smb3signGtoH2Xd | Session binding | Multi-channel signing binding (GMAC to HMAC) not implemented | - |
+| smb2.session.bind2 | Session binding | Session binding not implemented | #747 |
+| smb2.session.bind_invalid_auth | Session binding | Session binding auth validation not implemented | #747 |
+| smb2.session.bind_negative_smb3signCtoHs | Session binding | Multi-channel signing binding not implemented | #747 |
+| smb2.session.bind_negative_smb3signCtoHd | Session binding | Multi-channel signing binding not implemented | #747 |
+| smb2.session.bind_negative_smb3signCtoGs | Session binding | Multi-channel signing binding not implemented | #747 |
+| smb2.session.bind_negative_smb3signCtoGd | Session binding | Multi-channel signing binding not implemented | #747 |
+| smb2.session.bind_negative_smb3signHtoCs | Session binding | Multi-channel signing binding not implemented | #747 |
+| smb2.session.bind_negative_smb3signHtoCd | Session binding | Multi-channel signing binding not implemented | #747 |
+| smb2.session.bind_negative_smb3signHtoGs | Session binding | Multi-channel signing binding not implemented | #747 |
+| smb2.session.bind_negative_smb3signHtoGd | Session binding | Multi-channel signing binding not implemented | #747 |
+| smb2.session.bind_negative_smb3signGtoCs | Session binding | Multi-channel signing binding not implemented | #747 |
+| smb2.session.bind_negative_smb3signGtoCd | Session binding | Multi-channel signing binding not implemented | #747 |
+| smb2.session.bind_negative_smb3signGtoHs | Session binding | Multi-channel signing binding not implemented | #747 |
+| smb2.session.bind_negative_smb3signGtoHd | Session binding | Multi-channel signing binding not implemented | #747 |
+| smb2.session.bind_negative_smb3sneGtoCs | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
+| smb2.session.bind_negative_smb3sneGtoCd | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
+| smb2.session.bind_negative_smb3sneGtoHs | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
+| smb2.session.bind_negative_smb3sneGtoHd | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
+| smb2.session.bind_negative_smb3sneCtoGs | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
+| smb2.session.bind_negative_smb3sneCtoGd | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
+| smb2.session.bind_negative_smb3sneHtoGs | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
+| smb2.session.bind_negative_smb3sneHtoGd | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
+| smb2.session.bind_negative_smb3signC30toGs | Session binding | Multi-channel signing binding (3.0 to GMAC) not implemented | #747 |
+| smb2.session.bind_negative_smb3signC30toGd | Session binding | Multi-channel signing binding (3.0 to GMAC) not implemented | #747 |
+| smb2.session.bind_negative_smb3signH2XtoGs | Session binding | Multi-channel signing binding (HMAC to GMAC) not implemented | #747 |
+| smb2.session.bind_negative_smb3signH2XtoGd | Session binding | Multi-channel signing binding (HMAC to GMAC) not implemented | #747 |
+| smb2.session.bind_negative_smb3signGtoC30s | Session binding | Multi-channel signing binding (GMAC to 3.0) not implemented | #747 |
+| smb2.session.bind_negative_smb3signGtoC30d | Session binding | Multi-channel signing binding (GMAC to 3.0) not implemented | #747 |
+| smb2.session.bind_negative_smb3signGtoH2Xs | Session binding | Multi-channel signing binding (GMAC to HMAC) not implemented | #747 |
+| smb2.session.bind_negative_smb3signGtoH2Xd | Session binding | Multi-channel signing binding (GMAC to HMAC) not implemented | #747 |
 
 ### Session Signing Variants (Algorithm-Specific Tests)
 
@@ -391,9 +391,9 @@ in isolation. Newly reachable after GMAC signing fix.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.session.signing-hmac-sha-256 | Session signing | HMAC-SHA-256 signing test not fully passing | - |
-| smb2.session.signing-aes-128-cmac | Session signing | AES-128-CMAC signing test not fully passing | - |
-| smb2.session.signing-aes-128-gmac | Session signing | AES-128-GMAC signing test not fully passing | - |
+| smb2.session.signing-hmac-sha-256 | Session signing | HMAC-SHA-256 signing test not fully passing | #748 |
+| smb2.session.signing-aes-128-cmac | Session signing | AES-128-CMAC signing test not fully passing | #748 |
+| smb2.session.signing-aes-128-gmac | Session signing | AES-128-GMAC signing test not fully passing | #748 |
 
 ### Session Encryption Variants (Algorithm-Specific Tests)
 
@@ -402,10 +402,10 @@ Newly reachable after GMAC signing fix.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.session.encryption-aes-128-ccm | Session encryption | AES-128-CCM encryption test not fully passing | - |
-| smb2.session.encryption-aes-128-gcm | Session encryption | AES-128-GCM encryption test not fully passing | - |
-| smb2.session.encryption-aes-256-ccm | Session encryption | AES-256-CCM encryption test not fully passing | - |
-| smb2.session.encryption-aes-256-gcm | Session encryption | AES-256-GCM encryption test not fully passing | - |
+| smb2.session.encryption-aes-128-ccm | Session encryption | AES-128-CCM encryption test not fully passing | #748 |
+| smb2.session.encryption-aes-128-gcm | Session encryption | AES-128-GCM encryption test not fully passing | #748 |
+| smb2.session.encryption-aes-256-ccm | Session encryption | AES-256-CCM encryption test not fully passing | #748 |
+| smb2.session.encryption-aes-256-gcm | Session encryption | AES-256-GCM encryption test not fully passing | #748 |
 
 ### Anonymous Session (Remaining)
 
@@ -414,8 +414,8 @@ Phase 73 Plan 03 implemented anonymous session encryption bypass per MS-SMB2
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.session.anon-signing1 | Anonymous session | Anonymous session signing not fully passing | - |
-| smb2.session.anon-signing2 | Anonymous session | Anonymous session signing not fully passing | - |
+| smb2.session.anon-signing1 | Anonymous session | Anonymous session signing not fully passing | #748 |
+| smb2.session.anon-signing2 | Anonymous session | Anonymous session signing not fully passing | #748 |
 
 ### Replay Protection (Not Implemented)
 
@@ -424,57 +424,57 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.replay.replay3 | Replay | Flaky in CI (replay detection race) | - |
-| smb2.replay.replay-dhv2-oplock2 | Replay | Replay with durable handles not implemented | - |
-| smb2.replay.replay-dhv2-oplock-lease | Replay | Replay with durable handles not implemented | - |
-| smb2.replay.replay-dhv2-lease1 | Replay | Replay with durable handles not implemented | - |
-| smb2.replay.replay-dhv2-lease2 | Replay | Replay with durable handles not implemented | - |
-| smb2.replay.replay-dhv2-lease3 | Replay | Replay with durable handles not implemented | - |
-| smb2.replay.replay-dhv2-lease-oplock | Replay | Replay with durable handles not implemented | - |
-| smb2.replay.dhv2-pending1n-vs-violation-lease-close-sane | Replay | Replay pending violation handling not implemented | - |
-| smb2.replay.dhv2-pending1n-vs-violation-lease-ack-sane | Replay | Replay pending violation handling not implemented | - |
-| smb2.replay.dhv2-pending1n-vs-violation-lease-close-windows | Replay | Replay pending violation handling not implemented | - |
-| smb2.replay.dhv2-pending1n-vs-violation-lease-ack-windows | Replay | Replay pending violation handling not implemented | - |
-| smb2.replay.dhv2-pending1n-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending1n-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending1n-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending1n-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending1l-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending1l-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending1l-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending1l-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending1o-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending1o-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending1o-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending1o-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending2n-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending2n-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending2n-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending2n-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending2l-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending2l-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending2l-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending2l-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending2o-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending2o-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending2o-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending2o-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending3n-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending3n-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending3n-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending3n-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending3l-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending3l-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending3l-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending3l-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending3o-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending3o-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
-| smb2.replay.dhv2-pending3o-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.dhv2-pending3o-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
-| smb2.replay.channel-sequence | Replay | Channel sequence tracking not implemented | - |
-| smb2.replay.replay4 | Replay | Replay detection not implemented | - |
-| smb2.replay.replay5 | Replay | Replay detection not implemented | - |
-| smb2.replay.replay6 | Replay | Replay detection not implemented | - |
+| smb2.replay.replay3 | Replay | Flaky in CI (replay detection race) | #749 |
+| smb2.replay.replay-dhv2-oplock2 | Replay | Replay with durable handles not implemented | #749 |
+| smb2.replay.replay-dhv2-oplock-lease | Replay | Replay with durable handles not implemented | #749 |
+| smb2.replay.replay-dhv2-lease1 | Replay | Replay with durable handles not implemented | #749 |
+| smb2.replay.replay-dhv2-lease2 | Replay | Replay with durable handles not implemented | #749 |
+| smb2.replay.replay-dhv2-lease3 | Replay | Replay with durable handles not implemented | #749 |
+| smb2.replay.replay-dhv2-lease-oplock | Replay | Replay with durable handles not implemented | #749 |
+| smb2.replay.dhv2-pending1n-vs-violation-lease-close-sane | Replay | Replay pending violation handling not implemented | #749 |
+| smb2.replay.dhv2-pending1n-vs-violation-lease-ack-sane | Replay | Replay pending violation handling not implemented | #749 |
+| smb2.replay.dhv2-pending1n-vs-violation-lease-close-windows | Replay | Replay pending violation handling not implemented | #749 |
+| smb2.replay.dhv2-pending1n-vs-violation-lease-ack-windows | Replay | Replay pending violation handling not implemented | #749 |
+| smb2.replay.dhv2-pending1n-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending1n-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending1n-vs-lease-sane | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending1n-vs-lease-windows | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending1l-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending1l-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending1l-vs-lease-sane | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending1l-vs-lease-windows | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending1o-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending1o-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending1o-vs-lease-sane | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending1o-vs-lease-windows | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending2n-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending2n-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending2n-vs-lease-sane | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending2n-vs-lease-windows | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending2l-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending2l-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending2l-vs-lease-sane | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending2l-vs-lease-windows | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending2o-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending2o-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending2o-vs-lease-sane | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending2o-vs-lease-windows | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending3n-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending3n-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending3n-vs-lease-sane | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending3n-vs-lease-windows | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending3l-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending3l-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending3l-vs-lease-sane | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending3l-vs-lease-windows | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending3o-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending3o-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | #749 |
+| smb2.replay.dhv2-pending3o-vs-lease-sane | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.dhv2-pending3o-vs-lease-windows | Replay | Replay pending lease handling not implemented | #749 |
+| smb2.replay.channel-sequence | Replay | Channel sequence tracking not implemented | #749 |
+| smb2.replay.replay4 | Replay | Replay detection not implemented | #749 |
+| smb2.replay.replay5 | Replay | Replay detection not implemented | #749 |
+| smb2.replay.replay6 | Replay | Replay detection not implemented | #749 |
 
 ## Permanently Unimplementable (Out of Scope)
 
