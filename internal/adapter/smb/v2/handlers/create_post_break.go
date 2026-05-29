@@ -907,7 +907,15 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		onlyTimeoutTombstone := h.LeaseManager.OnlyTimeoutTombstoneRecords(lockFileHandle, tree.ShareName)
 		hasActiveRecord := h.LeaseManager.HasActiveLeaseRecord(lockFileHandle, tree.ShareName, [16]byte{})
 		hasNonStatOpen := h.hasOtherNonStatOpenForFile(fileHandle, smbFileID)
-		hasSameClientOpen := h.hasSameClientNonStatOpenForFile(fileHandle, smbFileID, connClientGUID(ctx))
+		// Only consult the same-client carve-out once NEGOTIATE has
+		// established a connection identity. Without CryptoState the
+		// requestor's identity is unknown — falling through would zero-
+		// vs-zero match unrelated pre-NEGOTIATE opens (regressed
+		// smb2.compound.interim2 when the early gate was removed).
+		hasSameClientOpen := false
+		if ctx != nil && ctx.ConnCryptoState != nil {
+			hasSameClientOpen = h.hasSameClientNonStatOpenForFile(fileHandle, smbFileID, connClientGUID(ctx))
+		}
 		if (!onlyTimeoutTombstone && (hasActiveRecord || hasNonStatOpen)) ||
 			(onlyTimeoutTombstone && hasSameClientOpen) {
 			requestedState &^= (lock.LeaseStateWrite | lock.LeaseStateHandle)
