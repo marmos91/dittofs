@@ -30,7 +30,7 @@ import (
 	"lukechampine.com/blake3"
 )
 
-// recordingPutCache is a CacheInterface that records every Put so eager
+// recordingPutCache is a cacheInterface that records every Put so eager
 // dedup tests can assert cache warming (the existing recordingCache
 // has a no-op Put, which can't observe the warming).
 type recordingPutCache struct {

@@ -9,9 +9,9 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// HealthTransitionCallback is invoked when the health state changes.
+// healthTransitionCallback is invoked when the health state changes.
 // The healthy parameter is true when transitioning to healthy, false when transitioning to unhealthy.
-type HealthTransitionCallback func(healthy bool)
+type healthTransitionCallback func(healthy bool)
 
 // HealthMonitor periodically probes a remote store and manages a healthy/unhealthy
 // state machine. It is the single source of truth for remote store availability.
@@ -33,7 +33,7 @@ type HealthMonitor struct {
 	consecutiveFailures atomic.Int32
 	unhealthySince      atomic.Int64 // Unix nanos; 0 when healthy
 
-	onTransition HealthTransitionCallback
+	onTransition healthTransitionCallback
 	mu           gosync.Mutex // Protects onTransition
 
 	stopCh   chan struct{}
@@ -106,7 +106,7 @@ func (hm *HealthMonitor) IsHealthy() bool {
 }
 
 // SetTransitionCallback sets the callback invoked on health state changes.
-func (hm *HealthMonitor) SetTransitionCallback(fn HealthTransitionCallback) {
+func (hm *HealthMonitor) SetTransitionCallback(fn healthTransitionCallback) {
 	hm.mu.Lock()
 	defer hm.mu.Unlock()
 	hm.onTransition = fn

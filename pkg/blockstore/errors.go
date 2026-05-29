@@ -2,8 +2,6 @@ package blockstore
 
 import (
 	"errors"
-	"fmt"
-	"time"
 )
 
 // Standard block store errors. Protocol handlers should check for these errors
@@ -211,71 +209,3 @@ var (
 	// docs/CONFIGURATION.md §migration..
 	ErrLegacyLayoutDetected = errors.New("blockstore: legacy .blk layout detected (run `dfs migrate-to-cas`)")
 )
-
-// BlockStoreError wraps sentinel block store errors with structured debugging context.
-//
-// It provides rich operational metadata for diagnosing block storage issues
-// without losing compatibility with errors.Is() checks on the underlying sentinel.
-// For example
-//
-//	err := NewBlockStoreError("upload", "/archive", "abc123", 5, "s3", ErrUnavailable)
-//	errors.Is(err, ErrUnavailable) // true
-//
-// Fields capture the operation type, affected share, payload identifier, block
-// index, backend type, and the wrapped sentinel error. Optional fields (Size
-// Duration, Retries) can be set after construction for performance debugging.
-type BlockStoreError struct {
-	// Op describes the operation that failed: "upload", "download", "dedup", or "gc".
-	Op string
-
-	// Share is the share name providing routing context for the error.
-	Share string
-
-	// PayloadID is the content identifier of the affected payload.
-	PayloadID string
-
-	// BlockIdx is the block index within the chunk that failed.
-	BlockIdx uint32
-
-	// Size is the data size involved in the operation (bytes).
-	Size int64
-
-	// Duration is how long the operation ran before failing.
-	Duration time.Duration
-
-	// Retries is the number of retry attempts made before the final failure.
-	Retries int
-
-	// Backend identifies the storage backend type: "s3" or "memory".
-	Backend string
-
-	// Err is the wrapped sentinel error (e.g., ErrContentNotFound, ErrUnavailable).
-	Err error
-}
-
-// Error returns a human-readable description of the block store error including
-// the operation, underlying error, and key context fields.
-func (e *BlockStoreError) Error() string {
-	return fmt.Sprintf("blockstore %s: %s (share=%s, payload=%s, block=%d, backend=%s)",
-		e.Op, e.Err, e.Share, e.PayloadID, e.BlockIdx, e.Backend)
-}
-
-// Unwrap returns the underlying sentinel error, enabling errors.Is() and
-// errors.As() to match through BlockStoreError wrapping.
-func (e *BlockStoreError) Unwrap() error {
-	return e.Err
-}
-
-// NewBlockStoreError creates a BlockStoreError wrapping the given sentinel error
-// with operational context. Optional fields (Size, Duration, Retries) default
-// to zero and can be set on the returned pointer after construction.
-func NewBlockStoreError(op, share, payloadID string, blockIdx uint32, backend string, err error) *BlockStoreError {
-	return &BlockStoreError{
-		Op:        op,
-		Share:     share,
-		PayloadID: payloadID,
-		BlockIdx:  blockIdx,
-		Backend:   backend,
-		Err:       err,
-	}
-}
