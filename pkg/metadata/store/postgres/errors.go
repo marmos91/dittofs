@@ -51,6 +51,26 @@ func mapPgErrorCode(pgErr *pgconn.PgError, operation, path string) error {
 	switch pgErr.Code {
 	// 23505: unique_violation
 	case "23505":
+		// Distinguish the object_id (file-level dedup) uniqueness
+		// violation from a path-hash collision. The files_object_id_idx
+		// partial unique index enforces "one ObjectID -> one file"; a
+		// second file with byte-identical content (same Merkle-root
+		// ObjectID) trips it. Callers (the rollup persist path) treat
+		// this as a BENIGN conflict — the duplicate's blocks are already
+		// covered by the canonical file's manifest — so it must surface
+		// as ErrConflict, NOT the generic ErrAlreadyExists. The defensive
+		// message-text fallback mirrors the runtime coordinator's
+		// detection for drivers that strip ConstraintName. Path-hash
+		// collisions (unique_share_path_hash_active) stay ErrAlreadyExists
+		// so the path uniqueness contract is preserved.
+		if pgErr.ConstraintName == "files_object_id_idx" ||
+			(pgErr.ConstraintName == "" && contains(pgErr.Message, "object_id")) {
+			return &metadata.StoreError{
+				Code:    metadata.ErrConflict,
+				Message: fmt.Sprintf("%s: object_id already mapped to another file", operation),
+				Path:    path,
+			}
+		}
 		return &metadata.StoreError{
 			Code:    metadata.ErrAlreadyExists,
 			Message: fmt.Sprintf("%s: already exists", operation),
