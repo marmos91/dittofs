@@ -49,13 +49,12 @@ func init() {
 
 // snapshotRow renders one row of the snapshot list table.
 type snapshotRow struct {
-	ID         string
-	Name       string
-	State      string
-	Durable    string
-	Created    string
-	Size       string
-	noRelative bool
+	ID      string
+	Name    string
+	State   string
+	Durable string
+	Created string
+	Size    string
 }
 
 // SnapshotList renders a slice of snapshots as a 6-column table.

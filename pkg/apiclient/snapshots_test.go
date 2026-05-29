@@ -14,16 +14,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSnapshot_DTOAliases asserts the local types are aliases of dto.* so
-// callers can pass them interchangeably with the wire DTO package.
+// Compile-time assertions that the local types are aliases of dto.*.
+// Functions that take one type only accept the other if the two are the
+// same Go type (alias), not just structurally identical — so the
+// compiler rejects any future drift between the two declarations.
+func acceptDtoSnapshot(dto.Snapshot)                       {}
+func acceptDtoCreateRequest(dto.CreateSnapshotRequest)     {}
+func acceptDtoCreateResponse(dto.CreateSnapshotResponse)   {}
+func acceptDtoRestoreRequest(dto.RestoreSnapshotRequest)   {}
+func acceptDtoRestoreResponse(dto.RestoreSnapshotResponse) {}
+
 func TestSnapshot_DTOAliases(t *testing.T) {
-	var (
-		_ Snapshot                = dto.Snapshot{}
-		_ CreateSnapshotRequest   = dto.CreateSnapshotRequest{}
-		_ CreateSnapshotResponse  = dto.CreateSnapshotResponse{}
-		_ RestoreSnapshotRequest  = dto.RestoreSnapshotRequest{}
-		_ RestoreSnapshotResponse = dto.RestoreSnapshotResponse{}
-	)
+	acceptDtoSnapshot(Snapshot{})
+	acceptDtoCreateRequest(CreateSnapshotRequest{})
+	acceptDtoCreateResponse(CreateSnapshotResponse{})
+	acceptDtoRestoreRequest(RestoreSnapshotRequest{})
+	acceptDtoRestoreResponse(RestoreSnapshotResponse{})
 }
 
 func TestCreateSnapshot(t *testing.T) {
