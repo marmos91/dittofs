@@ -509,6 +509,32 @@ type SnapshotStore interface {
 	MarkSnapshotReady(ctx context.Context, shareName, id string, durable bool, manifestCount int64) error
 }
 
+// RestoreMarkerStore provides durable restore-in-progress marker CRUD.
+//
+// A restore marker records that a RestoreSnapshot is mid-flight for a share:
+// it is written after the pre-restore safety snapshot is verified and BEFORE
+// the first destructive step, and deleted only after the restore fully
+// completes. At most one marker exists per share (keyed by share name). On
+// server startup, any surviving marker signals an interrupted restore that
+// must be rolled back to its safety snapshot.
+type RestoreMarkerStore interface {
+	// PutRestoreMarker upserts the per-share restore marker (keyed by
+	// share name). Re-writing for the same share overwrites the row.
+	PutRestoreMarker(ctx context.Context, marker *models.RestoreMarker) error
+
+	// GetRestoreMarker returns the marker for shareName, or
+	// models.ErrRestoreMarkerNotFound if none exists.
+	GetRestoreMarker(ctx context.Context, shareName string) (*models.RestoreMarker, error)
+
+	// ListRestoreMarkers returns every restore marker across all shares.
+	// Returns an empty slice (not nil) when none exist.
+	ListRestoreMarkers(ctx context.Context) ([]*models.RestoreMarker, error)
+
+	// DeleteRestoreMarker removes the marker for shareName. Deleting an
+	// absent marker is not an error (idempotent).
+	DeleteRestoreMarker(ctx context.Context, shareName string) error
+}
+
 // HealthStore provides store health check and lifecycle operations.
 //
 // These methods are used by health check endpoints and graceful shutdown.
@@ -612,5 +638,6 @@ type Store interface {
 	SettingsStore
 	AdminStore
 	SnapshotStore
+	RestoreMarkerStore
 	HealthStore
 }
