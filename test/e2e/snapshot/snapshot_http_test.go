@@ -28,21 +28,19 @@ import (
 // failure-mode tests inject the exact sentinel the handler is expected
 // to translate.
 type fakeRuntime struct {
-	mu       sync.Mutex
-	store    map[string]map[string]*models.Snapshot // share -> snapID -> snap
-	idSeq    int
-	hooks    fakeHooks
-	restored []string // history of (snapID restored)
+	mu    sync.Mutex
+	store map[string]map[string]*models.Snapshot // share -> snapID -> snap
+	idSeq int
+	hooks fakeHooks
 }
 
 type fakeHooks struct {
-	createErr        error
-	waitErr          error
-	restore          func(ctx context.Context, share, snapID string, opts runtime.RestoreSnapshotOpts) (string, error)
-	getErr           error
-	listErr          error
-	deleteErr        error
-	createSafetyName string // optional: name to apply to a "safety" snapshot create
+	createErr error
+	waitErr   error
+	restore   func(ctx context.Context, share, snapID string, opts runtime.RestoreSnapshotOpts) (string, error)
+	getErr    error
+	listErr   error
+	deleteErr error
 }
 
 func newFakeRuntime() *fakeRuntime {
@@ -123,7 +121,6 @@ func (f *fakeRuntime) RestoreSnapshot(ctx context.Context, share, snapID string,
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 	}
-	f.restored = append(f.restored, snapID)
 	return safetyID, nil
 }
 

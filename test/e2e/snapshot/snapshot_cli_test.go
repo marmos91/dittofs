@@ -227,11 +227,8 @@ func runCLI(t *testing.T, srv *httptest.Server, stdin string, args ...string) cl
 
 // seedReadyDurable seeds a snapshot already in the ready+durable
 // state — saves a CreateSnapshot round-trip in tests that only care
-// about the downstream surface (list/show/delete/restore). The
-// `name` parameter is accepted for call-site readability but not
-// stored, because models.Snapshot does not carry a human-readable
-// name today (the wire-side `name` field is currently always empty).
-func seedReadyDurable(f *cliFake, share, id, _ string) {
+// about the downstream surface (list/show/delete/restore).
+func seedReadyDurable(f *cliFake, share, id string) {
 	f.seedSnapshot(share, &models.Snapshot{
 		ID:            id,
 		ShareName:     share,
@@ -244,7 +241,7 @@ func seedReadyDurable(f *cliFake, share, id, _ string) {
 
 // seedReadyNonDurable seeds a snapshot in ready state but with
 // RemoteDurable=false — exercises the --force path.
-func seedReadyNonDurable(f *cliFake, share, id, _ string) {
+func seedReadyNonDurable(f *cliFake, share, id string) {
 	f.seedSnapshot(share, &models.Snapshot{
 		ID:            id,
 		ShareName:     share,
@@ -291,7 +288,7 @@ func TestCLI_CreateBlock(t *testing.T) {
 
 func TestCLI_List_TableMode(t *testing.T) {
 	f := newCLIFake()
-	seedReadyDurable(f, "/data", "snap-cli-list-1", "weekly")
+	seedReadyDurable(f, "/data", "snap-cli-list-1")
 	srv := mountCLIServer(t, f)
 
 	res := runCLI(t, srv, "", "share", "snapshot", "list", "/data")
@@ -319,8 +316,8 @@ func TestCLI_List_TableMode(t *testing.T) {
 
 func TestCLI_List_JSON(t *testing.T) {
 	f := newCLIFake()
-	seedReadyDurable(f, "/data", "snap-json-1", "alpha")
-	seedReadyDurable(f, "/data", "snap-json-2", "beta")
+	seedReadyDurable(f, "/data", "snap-json-1")
+	seedReadyDurable(f, "/data", "snap-json-2")
 	srv := mountCLIServer(t, f)
 
 	res := runCLI(t, srv, "", "share", "snapshot", "list", "/data", "-o", "json")
@@ -344,7 +341,7 @@ func TestCLI_List_JSON(t *testing.T) {
 
 func TestCLI_List_YAML(t *testing.T) {
 	f := newCLIFake()
-	seedReadyDurable(f, "/data", "snap-yaml-1", "gamma")
+	seedReadyDurable(f, "/data", "snap-yaml-1")
 	srv := mountCLIServer(t, f)
 
 	res := runCLI(t, srv, "", "share", "snapshot", "list", "/data", "-o", "yaml")
@@ -368,7 +365,7 @@ func TestCLI_List_YAML(t *testing.T) {
 
 func TestCLI_Show(t *testing.T) {
 	f := newCLIFake()
-	seedReadyDurable(f, "/data", "snap-show-1", "weekly")
+	seedReadyDurable(f, "/data", "snap-show-1")
 	srv := mountCLIServer(t, f)
 
 	res := runCLI(t, srv, "", "share", "snapshot", "show", "/data", "snap-show-1")
@@ -394,7 +391,7 @@ func TestCLI_Show(t *testing.T) {
 
 func TestCLI_Delete_RefusesWithoutYes(t *testing.T) {
 	f := newCLIFake()
-	seedReadyDurable(f, "/data", "snap-del-1", "weekly")
+	seedReadyDurable(f, "/data", "snap-del-1")
 	srv := mountCLIServer(t, f)
 
 	res := runCLI(t, srv, "n\n", "share", "snapshot", "delete", "/data", "snap-del-1")
@@ -412,7 +409,7 @@ func TestCLI_Delete_RefusesWithoutYes(t *testing.T) {
 
 func TestCLI_Delete_YesFlag(t *testing.T) {
 	f := newCLIFake()
-	seedReadyDurable(f, "/data", "snap-del-2", "weekly")
+	seedReadyDurable(f, "/data", "snap-del-2")
 	srv := mountCLIServer(t, f)
 
 	res := runCLI(t, srv, "", "share", "snapshot", "delete", "/data", "snap-del-2", "--yes")
@@ -441,7 +438,7 @@ func TestCLI_Delete_YesFlag(t *testing.T) {
 func TestCLI_Restore_RefusesEnabled(t *testing.T) {
 	f := newCLIFake()
 	f.setShareEnabled("/data", true)
-	seedReadyDurable(f, "/data", "snap-restore-1", "weekly")
+	seedReadyDurable(f, "/data", "snap-restore-1")
 	srv := mountCLIServer(t, f)
 
 	res := runCLI(t, srv, "", "share", "snapshot", "restore", "/data", "snap-restore-1", "--yes")
@@ -456,7 +453,7 @@ func TestCLI_Restore_RefusesEnabled(t *testing.T) {
 func TestCLI_Restore_Disabled_YesFlag_Success(t *testing.T) {
 	f := newCLIFake()
 	f.setShareEnabled("/data", false)
-	seedReadyDurable(f, "/data", "snap-restore-2", "weekly")
+	seedReadyDurable(f, "/data", "snap-restore-2")
 	srv := mountCLIServer(t, f)
 
 	res := runCLI(t, srv, "", "share", "snapshot", "restore", "/data", "snap-restore-2", "--yes")
@@ -471,7 +468,7 @@ func TestCLI_Restore_Disabled_YesFlag_Success(t *testing.T) {
 func TestCLI_Restore_NotDurable_NoForce(t *testing.T) {
 	f := newCLIFake()
 	f.setShareEnabled("/data", false)
-	seedReadyNonDurable(f, "/data", "snap-restore-3", "no-verify-snap")
+	seedReadyNonDurable(f, "/data", "snap-restore-3")
 	srv := mountCLIServer(t, f)
 
 	res := runCLI(t, srv, "", "share", "snapshot", "restore", "/data", "snap-restore-3", "--yes")
@@ -486,7 +483,7 @@ func TestCLI_Restore_NotDurable_NoForce(t *testing.T) {
 func TestCLI_Restore_NotDurable_Force(t *testing.T) {
 	f := newCLIFake()
 	f.setShareEnabled("/data", false)
-	seedReadyNonDurable(f, "/data", "snap-restore-4", "no-verify-snap")
+	seedReadyNonDurable(f, "/data", "snap-restore-4")
 	srv := mountCLIServer(t, f)
 
 	res := runCLI(t, srv, "", "share", "snapshot", "restore", "/data", "snap-restore-4", "--yes", "--force")
