@@ -162,6 +162,18 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("AddRef_Concurrent_With_DecrementRefCountCascade", func(t *testing.T) {
 		testAddRef_Concurrent_With_DecrementRefCountCascade(t, factory)
 	})
+
+	// A FileBlock's content hash is valid the moment the chunk is hashed
+	// at rollup time, long before it reaches the remote (BlockStateRemote).
+	// The engine's CAS read path resolves (payloadID, offset) -> Hash via
+	// ListFileBlocks / GetFileBlock, so a Pending row MUST round-trip its
+	// hash. A backend that only persists the hash for finalized rows leaves
+	// the per-file read index hash-less; once the local cache is cold
+	// (restart + eviction, or a snapshot restore that resets local state)
+	// reads can no longer resolve the chunk and the file reads as zeros.
+	t.Run("PutGet_PendingHashRoundTrips", func(t *testing.T) {
+		testPutGet_PendingHashRoundTrips(t, factory)
+	})
 }
 
 // ============================================================================
@@ -602,6 +614,55 @@ func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 	if found.ID != a.ID && found.ID != b.ID {
 		t.Errorf("FindFileBlockByHash returned ID %q; want one of [%q, %q]",
 			found.ID, a.ID, b.ID)
+	}
+}
+
+// testPutGet_PendingHashRoundTrips pins the contract that a FileBlock's
+// content hash survives a Put/Get round-trip regardless of block state.
+// Both per-file read accessors (ListFileBlocks and GetFileBlock) must
+// surface the hash for a Pending row, because the engine CAS read path
+// resolves chunks through that index, not just through finalized rows.
+func testPutGet_PendingHashRoundTrips(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	hash := hashOfSeed("pending-hash-roundtrip")
+	fb := &blockstore.FileBlock{
+		ID:         "file-pending/0",
+		Hash:       hash,
+		State:      blockstore.BlockStatePending,
+		DataSize:   4096,
+		RefCount:   1,
+		LastAccess: time.Now(),
+		CreatedAt:  time.Now(),
+	}
+	if err := store.Put(ctx, fb); err != nil {
+		t.Fatalf("Put(pending) failed: %v", err)
+	}
+
+	legacy := asLegacy(t, store)
+
+	got, err := legacy.GetFileBlock(ctx, fb.ID)
+	if err != nil {
+		t.Fatalf("GetFileBlock failed: %v", err)
+	}
+	if got.Hash != hash {
+		t.Errorf("GetFileBlock: Pending row Hash = %x, want %x "+
+			"(the content hash must persist for Pending blocks — the CAS "+
+			"read path resolves chunks via this hash even before the block "+
+			"reaches the remote)", got.Hash[:8], hash[:8])
+	}
+
+	rows, err := legacy.ListFileBlocks(ctx, "file-pending")
+	if err != nil {
+		t.Fatalf("ListFileBlocks failed: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("ListFileBlocks returned %d rows, want 1", len(rows))
+	}
+	if rows[0].Hash != hash {
+		t.Errorf("ListFileBlocks: Pending row Hash = %x, want %x",
+			rows[0].Hash[:8], hash[:8])
 	}
 }
 

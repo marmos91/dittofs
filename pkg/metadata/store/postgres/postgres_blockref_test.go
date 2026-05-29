@@ -359,3 +359,86 @@ func blockRefsEqual(x, y []blockstore.BlockRef) bool {
 	}
 	return true
 }
+
+// TestPostgres_Restore_ReconcilesNullHashFileBlocks pins the data-loss fix:
+// a backup that carries NULL-hash file_blocks rows (the shape every backup
+// had before the Put hash-gate fix) must, after restore, have those hashes
+// backfilled from file_block_refs. Otherwise the engine's CAS read path
+// resolves the per-file read index to a NULL hash and the restored file
+// reads as zeros once local cache state is cold.
+func TestPostgres_Restore_ReconcilesNullHashFileBlocks(t *testing.T) {
+	store := newTestStore(t)
+	ctx := t.Context()
+
+	handle := createShareAndFile(t, store, "/restore-reconcile", "vm.img")
+
+	want := hashOfSeed("reconcile-block-0")
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	// content_id (PayloadID) is the prefix of the file_blocks row ID. The
+	// engine derives it from share + path; set it explicitly here so the
+	// reconcile join (file_blocks.id = content_id || '/' || offset) lands.
+	payloadID := "restore-reconcile/vm.img"
+	file.PayloadID = metadata.PayloadID(payloadID)
+	file.Blocks = []blockstore.BlockRef{
+		{Hash: want, Offset: 0, Size: 4 << 20},
+	}
+	if err := store.PutFile(ctx, file); err != nil {
+		t.Fatalf("PutFile with Blocks: %v", err)
+	}
+
+	// The file_blocks read-index row ID is "{content_id}/{offset}".
+	blockID := payloadID + "/0"
+
+	rawSQL, ok := store.(postgres.RawSQLAccessor)
+	if !ok {
+		t.Fatalf("store does not implement RawSQLAccessor")
+	}
+
+	// Simulate a legacy backup: a NULL-hash file_blocks row.
+	if err := rawSQL.InsertNullHashFileBlock(ctx, blockID, 4<<20); err != nil {
+		t.Fatalf("InsertNullHashFileBlock: %v", err)
+	}
+	if got, herr := rawSQL.FileBlockHashHex(ctx, blockID); herr != nil {
+		t.Fatalf("FileBlockHashHex (pre-backup): %v", herr)
+	} else if got != "" {
+		t.Fatalf("pre-backup file_blocks.hash = %q, want NULL", got)
+	}
+
+	backupable, ok := store.(metadata.Backupable)
+	if !ok {
+		t.Fatalf("store does not implement Backupable")
+	}
+
+	var buf bytes.Buffer
+	if _, err := backupable.Backup(ctx, &buf); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+
+	resetable, ok := store.(interface {
+		Reset(ctx context.Context) error
+	})
+	if !ok {
+		t.Fatalf("store does not implement Reset")
+	}
+	if err := resetable.Reset(ctx); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+
+	if err := backupable.Restore(ctx, &buf); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	// After restore, the NULL hash must be reconciled from file_block_refs.
+	got, err := rawSQL.FileBlockHashHex(ctx, blockID)
+	if err != nil {
+		t.Fatalf("FileBlockHashHex (post-restore): %v", err)
+	}
+	if got != want.String() {
+		t.Errorf("post-restore file_blocks.hash = %q, want %q "+
+			"(restore must backfill NULL hashes from file_block_refs so the "+
+			"CAS read path can resolve restored chunks)", got, want.String())
+	}
+}

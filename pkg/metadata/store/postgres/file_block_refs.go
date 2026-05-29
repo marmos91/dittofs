@@ -162,6 +162,16 @@ type RawSQLAccessor interface {
 	// CountFileBlockRefs returns the number of file_block_refs rows for
 	// fileID. Test-only — never call this from production code.
 	CountFileBlockRefs(ctx context.Context, fileID uuid.UUID) (int, error)
+
+	// InsertNullHashFileBlock inserts a file_blocks row with a NULL hash
+	// column, simulating a legacy backup produced before the Put
+	// hash-gate fix. Test-only — never call this from production code.
+	InsertNullHashFileBlock(ctx context.Context, id string, dataSize uint32) error
+
+	// FileBlockHashHex returns the hex hash string stored on the
+	// file_blocks row for id, or "" when the hash column is NULL.
+	// Test-only — never call this from production code.
+	FileBlockHashHex(ctx context.Context, id string) (string, error)
 }
 
 // CountFileBlockRefs implements RawSQLAccessor for *PostgresMetadataStore.
@@ -172,4 +182,30 @@ func (s *PostgresMetadataStore) CountFileBlockRefs(ctx context.Context, fileID u
 		return 0, fmt.Errorf("count file_block_refs: %w", err)
 	}
 	return n, nil
+}
+
+// InsertNullHashFileBlock implements RawSQLAccessor for *PostgresMetadataStore.
+func (s *PostgresMetadataStore) InsertNullHashFileBlock(ctx context.Context, id string, dataSize uint32) error {
+	_, err := s.exec(ctx, `
+		INSERT INTO file_blocks (id, hash, data_size, ref_count, state)
+		VALUES ($1, NULL, $2, 1, 0)
+		ON CONFLICT (id) DO UPDATE SET hash = NULL`,
+		id, int32(dataSize))
+	if err != nil {
+		return fmt.Errorf("insert null-hash file_block: %w", err)
+	}
+	return nil
+}
+
+// FileBlockHashHex implements RawSQLAccessor for *PostgresMetadataStore.
+func (s *PostgresMetadataStore) FileBlockHashHex(ctx context.Context, id string) (string, error) {
+	var hash *string
+	err := s.queryRow(ctx, `SELECT hash FROM file_blocks WHERE id = $1`, id).Scan(&hash)
+	if err != nil {
+		return "", fmt.Errorf("read file_block hash: %w", err)
+	}
+	if hash == nil {
+		return "", nil
+	}
+	return *hash, nil
 }
