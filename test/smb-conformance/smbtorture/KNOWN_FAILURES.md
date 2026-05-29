@@ -205,8 +205,10 @@ Session signing edge cases requiring multi-channel binding.
 
 ### Durable Handles V1 (Fix Candidate)
 
-Durable handle V1 open/reopen operations partially implemented but tests
-still fail due to incomplete reconnect and lease coordination.
+Durable handle V1 open/reopen operations partially implemented; most rows
+fail at the reconnect / lease coordination layer. Two trailing rows
+(`alloc-size`, `read-only`) are CREATE / attribute-restore gaps unrelated
+to the DH state machine — tracked under #792 / #793.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
