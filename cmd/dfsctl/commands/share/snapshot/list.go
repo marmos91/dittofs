@@ -132,8 +132,40 @@ func applyFilters(snaps []apiclient.Snapshot, state, namePrefix string) []apicli
 	return out
 }
 
+// validateState rejects a --state filter that is not a known snapshot
+// state, so a typo errors loudly instead of silently returning nothing.
+func validateState(state string) error {
+	switch state {
+	case "", "creating", "ready", "failed":
+		return nil
+	default:
+		return fmt.Errorf("invalid --state %q: must be one of creating, ready, failed", state)
+	}
+}
+
+// emptyListMessage describes an empty result, reflecting any active filters
+// so the operator knows the share may have snapshots that the filter
+// excluded.
+func emptyListMessage(share, state, namePrefix string) string {
+	var filters []string
+	if state != "" {
+		filters = append(filters, fmt.Sprintf("state=%s", state))
+	}
+	if namePrefix != "" {
+		filters = append(filters, fmt.Sprintf("name-prefix=%s", namePrefix))
+	}
+	if len(filters) == 0 {
+		return fmt.Sprintf("No snapshots on share %q.", share)
+	}
+	return fmt.Sprintf("No snapshots on share %q matching %s.", share, strings.Join(filters, ", "))
+}
+
 func runList(cmd *cobra.Command, args []string) error {
 	share := args[0]
+
+	if err := validateState(listState); err != nil {
+		return err
+	}
 
 	client, err := getClient()
 	if err != nil {
@@ -170,7 +202,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			})
 		}
 		if len(rows) == 0 {
-			fmt.Printf("No snapshots on share %q.\n", share)
+			fmt.Println(emptyListMessage(share, listState, listNamePrefix))
 			return nil
 		}
 		return output.PrintTable(os.Stdout, rows)
