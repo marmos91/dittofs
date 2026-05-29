@@ -41,8 +41,8 @@ func (h *Handler) parkLockOnConflict(
 	fileLock metadata.FileLock,
 	fileID [16]byte,
 	lockSeqEnabled bool,
-	lockSeqIndex uint8,
-	lockSeqNumber uint32,
+	lockSeqIndex uint32,
+	lockSeqNumber uint8,
 ) (uint64, bool) {
 	// Deadlock detection: probe the conflicting holder via TestLock and
 	// check the WFG. If granting our wait would close a cycle, refuse to

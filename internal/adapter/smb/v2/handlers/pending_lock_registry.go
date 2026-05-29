@@ -65,8 +65,8 @@ type PendingLock struct {
 	// step 4).
 	FileID         [16]byte
 	LockSeqEnabled bool
-	LockSeqIndex   uint8
-	LockSeqNumber  uint32
+	LockSeqIndex   uint32
+	LockSeqNumber  uint8
 }
 
 // PendingLockRegistry indexes pending blocking LOCKs by four keys:

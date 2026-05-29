@@ -177,27 +177,27 @@ func (c *CreateReplayCache) pruneLocked() {
 // LOCK replay protection (MS-SMB2 §3.3.5.14)
 // ============================================================================
 
-// LockSequenceIndexMax bounds the 4-bit LockSequenceIndex field in
-// the SMB2_LOCK request LockSequence packed value (MS-SMB2 §2.2.26).
-// A client may have at most 16 outstanding LockSequence slots per
-// open; the server remembers the most-recent number stored in each
-// slot so a retransmission with the same (Index, Number) returns the
-// cached status.
-const LockSequenceIndexMax = 16
+// LockSequenceIndexMax bounds the 28-bit LockSequenceIndex (bucket)
+// in the SMB2_LOCK request LockSequence packed value (MS-SMB2
+// §2.2.26). Samba caps the array at 64 buckets
+// (`SMB2_LOCK_SEQUENCE_ARRAY_SIZE`); we mirror that to avoid an
+// unbounded per-open footprint when a client picks large bucket
+// numbers. Indices outside [1, LockSequenceIndexMax] are not tracked.
+const LockSequenceIndexMax uint32 = 64
 
 // CachedLockResponse holds the last LockSequenceNumber stored at a
-// given (FileID, Index) slot together with the status returned for
+// given (FileID, Index) bucket together with the status returned for
 // that request. On replay with matching number, the server returns
 // Status verbatim (MS-SMB2 §3.3.5.14 step 4).
 type CachedLockResponse struct {
-	Number uint32
+	Number uint8
 	Status types.Status
 }
 
-// lockReplayKey indexes the LOCK replay cache by FileID + slot.
+// lockReplayKey indexes the LOCK replay cache by FileID + bucket.
 type lockReplayKey struct {
 	FileID [16]byte
-	Index  uint8
+	Index  uint32
 }
 
 // LockReplayCache stores the last (LockSequenceNumber, status) pair
@@ -214,24 +214,24 @@ func NewLockReplayCache() *LockReplayCache {
 }
 
 // UnpackLockSequence extracts (index, number) from the packed
-// LockSequence field per MS-SMB2 §2.2.26: high 4 bits = Index,
-// low 28 bits = Number. A LockSequence value of zero means
-// "client opts out of replay" (Samba `lock_sequence_value == 0`).
-func UnpackLockSequence(packed uint32) (index uint8, number uint32, enabled bool) {
-	if packed == 0 {
-		return 0, 0, false
-	}
-	index = uint8((packed >> 28) & 0xF)
-	number = packed & 0x0FFFFFFF
-	return index, number, true
+// LockSequence field per MS-SMB2 §2.2.26: low 4 bits =
+// LockSequenceNumber (the byte stored in the slot), upper 28 bits =
+// LockSequenceIndex (the slot/bucket number, 1-based; 0 = "not
+// tracked"). Mirrors Samba `smb2_lock_recv`: `value = in & 0xF`,
+// `bucket = in >> 4`, replay tracked only when `bucket > 0`.
+func UnpackLockSequence(packed uint32) (index uint32, number uint8, enabled bool) {
+	number = uint8(packed & 0xF)
+	index = packed >> 4
+	enabled = index > 0
+	return index, number, enabled
 }
 
-// Lookup returns the cached status if the slot already holds the
+// Lookup returns the cached status if the bucket already holds the
 // same LockSequenceNumber. Caller passes the unpacked (index, number).
 // Returns ok=false when no match: the LOCK should execute normally
 // and the result stored via Store.
-func (c *LockReplayCache) Lookup(fileID [16]byte, index uint8, number uint32) (types.Status, bool) {
-	if index >= LockSequenceIndexMax {
+func (c *LockReplayCache) Lookup(fileID [16]byte, index uint32, number uint8) (types.Status, bool) {
+	if index == 0 || index > LockSequenceIndexMax {
 		return 0, false
 	}
 	c.mu.RLock()
@@ -246,11 +246,11 @@ func (c *LockReplayCache) Lookup(fileID [16]byte, index uint8, number uint32) (t
 	return entry.Status, true
 }
 
-// Store records the (Number, Status) pair for the given slot.
-// Subsequent calls with a different Number for the same slot
-// overwrite — the slot tracks the LATEST sequence, not history.
-func (c *LockReplayCache) Store(fileID [16]byte, index uint8, number uint32, status types.Status) {
-	if index >= LockSequenceIndexMax {
+// Store records the (Number, Status) pair for the given bucket.
+// Subsequent calls with a different Number for the same bucket
+// overwrite — the bucket tracks the LATEST sequence, not history.
+func (c *LockReplayCache) Store(fileID [16]byte, index uint32, number uint8, status types.Status) {
+	if index == 0 || index > LockSequenceIndexMax {
 		return
 	}
 	c.mu.Lock()
@@ -261,13 +261,15 @@ func (c *LockReplayCache) Store(fileID [16]byte, index uint8, number uint32, sta
 	}
 }
 
-// ForgetFile drops all 16 slots for the given FileID. Called by
+// ForgetFile drops all buckets for the given FileID. Called by
 // CLOSE so the cache footprint is freed with the handle.
 func (c *LockReplayCache) ForgetFile(fileID [16]byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for i := uint8(0); i < LockSequenceIndexMax; i++ {
-		delete(c.entries, lockReplayKey{FileID: fileID, Index: i})
+	for k := range c.entries {
+		if k.FileID == fileID {
+			delete(c.entries, k)
+		}
 	}
 }
 

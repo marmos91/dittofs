@@ -188,20 +188,33 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 		"lockCount", req.LockCount,
 		"sessionID", ctx.SessionID)
 
+	// Get open file
+	openFile, ok := h.GetOpenFile(req.FileID)
+	if !ok {
+		logger.Debug("LOCK: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
+		return NewErrorResult(types.StatusFileClosed), nil
+	}
+
 	// SMB3 LOCK replay protection (MS-SMB2 §3.3.5.14 step 4).
-	// LockSequence packs (Index << 28 | Number); a non-zero value
-	// means the client opted into per-slot replay tracking. A
-	// second LOCK with matching (FileID, Index, Number) MUST
-	// return the cached status — otherwise an already-acquired
-	// lock retries and yields STATUS_LOCK_NOT_GRANTED, or an
-	// already-released lock retries and yields STATUS_RANGE_NOT_LOCKED
-	// (smbtorture smb2.lock.replay_*).
+	// LockSequence packs (LockSequenceIndex << 4 | LockSequenceNumber)
+	// per MS-SMB2 §2.2.26 (low 4 bits = number, upper 28 bits = bucket).
 	//
-	// The cache is consulted even when FLAGS_REPLAY_OPERATION is
-	// NOT set, mirroring Samba `smb2_lock_recv` — clients legally
-	// re-use a slot number for the next distinct lock operation, so
-	// the cache keys on (Index, Number), not just slot.
+	// Per spec, the cache is consulted only when Open.IsResilient,
+	// Open.IsDurable or Open.IsPersistent is TRUE, or when the
+	// connection negotiated SMB2_GLOBAL_CAP_MULTI_CHANNEL. For all
+	// other opens the LockSequence field is ignored (mirrors Samba
+	// `smb2_lock_recv` `check_lock_sequence` gate). Without this gate
+	// a basic LOCK stacking client (smbtorture lock.valid-request)
+	// would observe its second same-sequence LOCK short-circuit out
+	// of stacking and a subsequent UNLOCK would fail RANGE_NOT_LOCKED.
+	checkLockSequence := openFile.IsDurable
+	if !checkLockSequence && ctx.ConnCryptoState != nil {
+		if ctx.ConnCryptoState.GetServerCapabilities()&types.CapMultiChannel != 0 {
+			checkLockSequence = true
+		}
+	}
 	lockSeqIndex, lockSeqNumber, lockSeqEnabled := UnpackLockSequence(req.LockSequence)
+	lockSeqEnabled = lockSeqEnabled && checkLockSequence
 	if lockSeqEnabled && h.LockReplayCache != nil {
 		if cachedStatus, hit := h.LockReplayCache.Lookup(req.FileID, lockSeqIndex, lockSeqNumber); hit {
 			logger.Debug("LOCK: replay hit — returning cached status",
@@ -222,13 +235,6 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			}
 			return NewResult(types.StatusSuccess, respBytes), nil
 		}
-	}
-
-	// Get open file
-	openFile, ok := h.GetOpenFile(req.FileID)
-	if !ok {
-		logger.Debug("LOCK: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
-		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
 	// Pipes don't support locking

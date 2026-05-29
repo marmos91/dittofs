@@ -85,17 +85,20 @@ func TestCreateReplayCache_ForgetSession(t *testing.T) {
 }
 
 func TestUnpackLockSequence(t *testing.T) {
+	// Layout per MS-SMB2 §2.2.26 / Samba: low 4 bits = number,
+	// upper 28 bits = bucket index. Bucket 0 → "not tracked".
 	cases := []struct {
 		packed     uint32
-		wantIndex  uint8
-		wantNumber uint32
+		wantIndex  uint32
+		wantNumber uint8
 		wantOK     bool
 	}{
 		{0, 0, 0, false},
-		{0x1000_0001, 1, 1, true},
-		{0xF000_0000, 15, 0, true},
-		{0xF0FF_FFFF, 15, 0x00FF_FFFF, true},
-		{0x0FFF_FFFF, 0, 0x0FFF_FFFF, true},
+		{0x0000_0001, 0, 1, false},         // bucket=0 → disabled
+		{0x0000_0010, 1, 0, true},          // bucket=1, value=0
+		{0x12345678, 0x1234567, 0x8, true}, // smbtorture valid-request value
+		{0xFFFF_FFFF, 0x0FFF_FFFF, 0xF, true},
+		{0x0000_001F, 1, 0xF, true},
 	}
 	for _, tc := range cases {
 		idx, num, ok := UnpackLockSequence(tc.packed)
@@ -127,12 +130,20 @@ func TestLockReplayCache_MissDifferentNumber(t *testing.T) {
 func TestLockReplayCache_IndexBoundsRejected(t *testing.T) {
 	c := NewLockReplayCache()
 	fid := [16]byte{0xCC}
-	c.Store(fid, LockSequenceIndexMax, 1, types.StatusSuccess)
+	// Bucket 0 is "not tracked"; bucket > LockSequenceIndexMax is out of range.
+	c.Store(fid, 0, 1, types.StatusSuccess)
 	if c.Len() != 0 {
-		t.Fatal("Store with out-of-range index must be ignored")
+		t.Fatal("Store with bucket=0 must be ignored")
 	}
-	if _, ok := c.Lookup(fid, LockSequenceIndexMax, 1); ok {
-		t.Fatal("Lookup with out-of-range index must miss")
+	c.Store(fid, LockSequenceIndexMax+1, 1, types.StatusSuccess)
+	if c.Len() != 0 {
+		t.Fatal("Store with out-of-range bucket must be ignored")
+	}
+	if _, ok := c.Lookup(fid, 0, 1); ok {
+		t.Fatal("Lookup with bucket=0 must miss")
+	}
+	if _, ok := c.Lookup(fid, LockSequenceIndexMax+1, 1); ok {
+		t.Fatal("Lookup with out-of-range bucket must miss")
 	}
 }
 
@@ -140,17 +151,17 @@ func TestLockReplayCache_ForgetFile(t *testing.T) {
 	c := NewLockReplayCache()
 	fid1 := [16]byte{1}
 	fid2 := [16]byte{2}
-	c.Store(fid1, 0, 1, types.StatusSuccess)
+	c.Store(fid1, 1, 1, types.StatusSuccess)
 	c.Store(fid1, 5, 9, types.StatusSuccess)
-	c.Store(fid2, 0, 1, types.StatusSuccess)
+	c.Store(fid2, 1, 1, types.StatusSuccess)
 	c.ForgetFile(fid1)
-	if _, ok := c.Lookup(fid1, 0, 1); ok {
-		t.Fatal("ForgetFile must drop entries for fid1 slot 0")
+	if _, ok := c.Lookup(fid1, 1, 1); ok {
+		t.Fatal("ForgetFile must drop entries for fid1 bucket 1")
 	}
 	if _, ok := c.Lookup(fid1, 5, 9); ok {
-		t.Fatal("ForgetFile must drop entries for fid1 slot 5")
+		t.Fatal("ForgetFile must drop entries for fid1 bucket 5")
 	}
-	if _, ok := c.Lookup(fid2, 0, 1); !ok {
+	if _, ok := c.Lookup(fid2, 1, 1); !ok {
 		t.Fatal("ForgetFile must not touch fid2")
 	}
 }
