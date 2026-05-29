@@ -404,6 +404,14 @@ func (s *Session) EncryptorOverhead() int {
 	return s.CryptoState.Encryptor.Overhead()
 }
 
+// IsNullSession reports whether this session was created with anonymous
+// NTLM credentials (SMB2_SESSION_FLAG_IS_NULL). Mirrors Session.IsNull but
+// is exposed through the encryption.EncryptableSession interface to
+// avoid leaking the full Session type across packages.
+func (s *Session) IsNullSession() bool {
+	return s != nil && s.IsNull
+}
+
 // ShouldSign returns true if outgoing messages should be signed.
 func (s *Session) ShouldSign() bool {
 	return s.CryptoState.ShouldSign()

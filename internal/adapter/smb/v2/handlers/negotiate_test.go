@@ -117,6 +117,7 @@ type mockCryptoState struct {
 	clientCapabilities       types.Capabilities
 	clientSecurityMode       types.SecurityMode
 	clientDialects           []types.Dialect
+	hasAuthenticatedSession  bool
 }
 
 func (m *mockCryptoState) SetDialect(d types.Dialect) { m.dialect = d }
@@ -152,6 +153,8 @@ func (m *mockCryptoState) GetSessionPreauthHash(sessionID uint64) [64]byte {
 	return m.preauthHash
 }
 func (m *mockCryptoState) DeleteSessionPreauthHash(sessionID uint64) {}
+func (m *mockCryptoState) SetHasAuthenticatedSession()               { m.hasAuthenticatedSession = true }
+func (m *mockCryptoState) HasAuthenticatedSession() bool             { return m.hasAuthenticatedSession }
 
 // newNegotiateTestContextWithCrypto creates a test context with a mock CryptoState.
 func newNegotiateTestContextWithCrypto() (*SMBHandlerContext, *mockCryptoState) {

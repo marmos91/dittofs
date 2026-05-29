@@ -29,6 +29,7 @@ func (s *testSession) DecryptMessage(nonce, ciphertext, aad []byte) ([]byte, err
 func (s *testSession) EncryptorNonceSize() int { return s.encryptor.NonceSize() }
 func (s *testSession) DecryptorNonceSize() int { return s.decryptor.NonceSize() }
 func (s *testSession) EncryptorOverhead() int  { return s.encryptor.Overhead() }
+func (s *testSession) IsNullSession() bool     { return false }
 
 func makeTestSession(t *testing.T, cipherId uint16) *testSession {
 	t.Helper()

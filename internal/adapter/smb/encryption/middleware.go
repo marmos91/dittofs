@@ -38,6 +38,14 @@ type EncryptableSession interface {
 	EncryptorNonceSize() int
 	DecryptorNonceSize() int
 	EncryptorOverhead() int
+	// IsNullSession reports whether the session was created with anonymous
+	// NTLM credentials (SMB2_SESSION_FLAG_IS_NULL). Used by the framing
+	// layer to map any decryption failure on such a session to
+	// ErrAnonEncryption — Samba treats decrypt errors on anonymous sessions
+	// as catastrophic and drops the TCP connection (smbtorture
+	// smb2.session.anon-encryption3 with a forced-wrong client session key
+	// expects CONNECTION_RESET, not the regular 5-failures-then-drop path).
+	IsNullSession() bool
 }
 
 // EncryptionMiddleware handles transparent encryption/decryption of SMB3 messages.
@@ -132,6 +140,16 @@ func (m *sessionEncryptionMiddleware) DecryptRequest(transformMessage []byte) ([
 
 	plaintext, err := sess.DecryptMessage(nonce, ciphertextWithTag, aad)
 	if err != nil {
+		// Decryption failures on anonymous (IsNull) sessions are treated as
+		// catastrophic — Samba's smb2_server.c terminates the connection on
+		// any non-OK status from inbuf_parse_compound. Map to ErrNoDecryptor
+		// so the connection layer drops the TCP socket immediately
+		// (smbtorture smb2.session.anon-encryption3, where a forced-wrong
+		// client session key forces decrypt failure on the encrypted tcon).
+		if sess.IsNullSession() {
+			return nil, th.SessionId, fmt.Errorf("decrypt failed on anonymous session 0x%x: %w: %w",
+				th.SessionId, ErrNoDecryptor, ErrDecryptFailed)
+		}
 		return nil, th.SessionId, fmt.Errorf("decrypt message for session 0x%x: %w: %w", th.SessionId, err, ErrDecryptFailed)
 	}
 
