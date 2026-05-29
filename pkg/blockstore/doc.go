@@ -89,7 +89,7 @@
 //     halts boot.
 //
 // Per-share placement: the sentinel lives at the share root that
-// production passes to fs.NewFSStore as baseDir. Per-share semantics
+// production passes to fs.NewWithOptions as baseDir. Per-share semantics
 // (not per-storage-dir global) mean `--share <name>` migrations
 // produce per-share sentinels and partial multi-share runs leave
 // already-migrated shares boot-able while unmigrated ones remain

@@ -11,11 +11,10 @@ import (
 )
 
 // newFSStoreForConformance builds a fresh *fs.FSStore with the production
-// wiring used across conformance scenarios: UseAppendLog=true
-// memory-backed RollupStore, rollup pool started. Returns the store and a
-// cleanup closure that closes it. -06: shared between the
-// BlockStore and BlockStoreAppend factories so the wiring is identical
-// across both contracts.
+// wiring used across conformance scenarios: memory-backed RollupStore,
+// rollup pool started. Returns the store and a cleanup closure that closes
+// it. Shared between the BlockStore and BlockStoreAppend factories so the
+// wiring is identical across both contracts.
 func newFSStoreForConformance(t *testing.T) *fs.FSStore {
 	t.Helper()
 	dir := t.TempDir()
