@@ -422,7 +422,13 @@ func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message 
 			"command", hdr.Command.String(),
 			"sessionID", hdr.SessionID,
 			"client", sv.conn.RemoteAddr().String())
-		return fmt.Errorf("%w: message not signed", ErrSignatureVerification)
+		// MS-SMB2 §3.3.5.7 requires the server to disconnect when an
+		// unsigned request arrives on a SigningRequired authenticated
+		// session — WPTS BVT_TreeMgmt_SMB311_Disconnect_NoSignedNoEncrypted
+		// TreeConnect asserts this behavior. Plain fmt.Errorf bypasses the
+		// ErrSignatureVerification recovery path in the connection loop,
+		// so the loop falls through to its default close-on-error branch.
+		return fmt.Errorf("message not signed (signing required): closing connection")
 	}
 
 	// Per MS-SMB2 3.3.5.2.4: For dialect 3.1.1, if the request is not signed
