@@ -87,3 +87,28 @@ Do **Phase 1 first** (both items): biggest alloc wins, lowest risk, no interface
 5. **Final acceptance**: Scaleway macro-bench (>5% gate per PLAN), re-profile to confirm B4 GC churn cleared.
 
 Per-area PR-B scope = none of these (structural) — all land under #829 as their own PR cycle (simplifier + reviewer + `-race` + verify per [[feedback_sim_review_before_pr]]).
+
+---
+
+## Phase 1 results (2026-05-29, verified via `cmd/bench blockstore`)
+
+Measured on dev-laptop, memory-remote, in-mem metadata. alloc_space = cumulative bytes allocated over the run.
+
+| Fix | Workload | Before | After | Verdict |
+|---|---|---|---|---|
+| **B3** per-index `lookupScratch` | mixed-rw 50k | `EntriesForInterval` 20.6 GB (62%) | **eliminated** (not in top-8) | ✅ strong win |
+| **B2** pooled buffer | mixed-rw / flush-churn | `reconstructStream` in top allocators | **removed from top** (bounded buffers pool-hit) | ✅ win for bounded sizes |
+| **B2** pooled buffer | sequential-write 150 (8 MiB) | 88.5 GB | 73 GB (~17%) | ⚠️ partial — growing-file buffers exceed the 512 MiB pool ceiling; the wasted `[0,minOff)` zero-prefix dominates |
+
+**First attempt that did NOT work (recorded so it isn't retried):**
+- B3 v1 = per-call stack `[32]logEntry` scratch → no win (20.6→20.6 GB): the result set k regularly exceeds 32 under parallel writes, so `append` reallocated every pass anyway.
+- B3 v2 = `sync.Pool` of `[]logEntry` → partial (20.6→8.6 GB): `sync.Pool` is cleared each GC cycle, so a high-alloc run keeps re-allocating. **Per-index persistent buffer (final) won** because it's never GC-evicted and is safe under the per-file mutex.
+
+### Deferred / new follow-ups (still under #829)
+
+1. **B2 sequential growing-file — minOff-anchored reconstruct buffer.** The real fix is to allocate `[minOff, maxEnd]` instead of `[0, maxEnd]` (the chunker only ever reads `stream[minOff:]`; the prefix is allocated, zero-filled, never hashed). **Deferred** because it changes the `reconstructStream` file-0-indexed contract and requires rewriting the FIX-3 boundary-stability regression test (`rollup_test.go:TestRollup_ReconstructStream_BoundaryStability_FIX3`) + a maintainer call on FIX-3 intent. Behaviorally the chunker input is byte-identical, but this deserves its own PR gated by the dedup conformance suite. **HIGH leverage on sequential/large-file workloads.**
+2. **rollupFile per-pass slices** — after B3, mixed-rw's dominant allocator is now `rollupFile`-flat ~12 GB = the `recs` / `consumedExtents` / `blocks` slices (`make(..., 0, len(entries))` each pass). Pool/reuse these too. MED.
+3. **B1** (full CAS walk per Flush) — Phase 2, unchanged. flush-churn still shows `os.ReadDir` 1.7 GB + 96% syscall as expected.
+
+### Shipped this phase
+B2 pool + B3 per-index scratch. Tests: `reconstruct_pool_test.go` (zeroed-on-checkout, exact-size, 0-alloc reuse), `logindex_test.go` (scratch 0-alloc + same-result). Full `pkg/blockstore/...` suite + `-race` green; golangci-lint clean; code-reviewer clean.

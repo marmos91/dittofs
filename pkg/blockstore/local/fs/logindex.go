@@ -103,6 +103,22 @@ type logIndex struct {
 	// every call, keeping amortized cost proportional to the entries
 	// it newly consumes rather than the historical entry count.
 	fenceCursor int
+	// lookupScratch is the reusable result buffer for lookupInterval (the
+	// rollup hot path). Reused across rollup passes so the per-pass result
+	// slice grows to its high-water mark once instead of reallocating every
+	// pass. Safe because lookupInterval is only ever called by rollupFile,
+	// which holds the per-file mutex start to finish.
+	lookupScratch []logEntry
+}
+
+// lookupInterval returns the entries overlapping [off, off+length) using
+// the per-index reusable scratch buffer. The result aliases lookupScratch
+// and is valid only until the next lookupInterval call on this index. The
+// caller MUST hold the per-file mutex (rollupFile does) so no concurrent
+// pass clobbers the buffer.
+func (idx *logIndex) lookupInterval(off, length uint64) []logEntry {
+	idx.lookupScratch = idx.EntriesForInterval(off, length, idx.lookupScratch[:0])
+	return idx.lookupScratch
 }
 
 // newLogIndex constructs an empty logIndex. compactionFence starts at
@@ -141,9 +157,12 @@ func (idx *logIndex) Append(logPos uint64, fileOff uint64, payloadLen uint32) {
 // formed (no record can have fileOff == MaxUint64 in practice — the
 // log can't store payloads near that scale — but the cheap guard
 // prevents pathological queries from missing genuine overlaps).
-func (idx *logIndex) EntriesForInterval(fileOff uint64, length uint64) []logEntry {
+// Passing a caller-owned scratch slice (sliced to len 0) avoids a per-call
+// heap allocation on the rollup hot path; pass nil for a freshly-allocated
+// result. The result is appended to dst, preserving logPos (arrival) order.
+func (idx *logIndex) EntriesForInterval(fileOff uint64, length uint64, dst []logEntry) []logEntry {
 	if length == 0 {
-		return nil
+		return dst
 	}
 	end := fileOff + length
 	if end < fileOff {
@@ -151,7 +170,6 @@ func (idx *logIndex) EntriesForInterval(fileOff uint64, length uint64) []logEntr
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	out := make([]logEntry, 0, 4)
 	for _, e := range idx.entries {
 		if e.fileEnd() <= fileOff {
 			continue
@@ -159,9 +177,9 @@ func (idx *logIndex) EntriesForInterval(fileOff uint64, length uint64) []logEntr
 		if e.fileOff >= end {
 			continue
 		}
-		out = append(out, e)
+		dst = append(dst, e)
 	}
-	return out
+	return dst
 }
 
 // MarkConsumed records that a record with the given file-offset extent

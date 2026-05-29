@@ -71,7 +71,7 @@
 // Rollup runs against this pair
 //
 //   - tree.EarliestStable picks the next file-offset interval to chunk.
-//   - idx.EntriesForInterval(off, length) returns the records whose
+//   - idx.EntriesForInterval(off, length, dst) returns the records whose
 //     fileOffsets intersect that window, in arrival (logPos) order — the
 //
 // order reconstructStream needs to honor "later-record-wins"
