@@ -86,18 +86,14 @@ overflow, rec, rmdir1-4, tcon, tdis, tdis1, tcp, tree.
 |-----------|----------|--------|-------|
 | smb2.notify.valid-req | Change Notify | Needs kernel inotify for MODIFIED on WRITE (also fails on reference Samba in Docker) | #750 |
 
-### Oplocks (Multi-Client Coordination Not Implemented)
+### Oplocks
 
-Oplock tests require multi-client coordination (oplock break notifications to
-other clients). DittoFS has basic oplock support; the residual failures cluster
-around stat-only-open conflict suppression, LEVEL_II coercion of subsequent
-oplock grants, and a few specialized response-mapping cases (#479).
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.oplock.batch22a | Oplocks | Break-ack timeout (~35s) + post-timeout grant-level policy diverges from batch22b | #775 |
-
-Note: the four `smb2.kernel-oplocks.*` tests require Linux kernel oplock integration via `F_SETLEASE` on the underlying fd — architecturally incompatible with DittoFS's userspace virtual filesystem. They are listed in the [Permanently Unimplementable](#permanently-unimplementable-out-of-scope) appendix.
+All remaining oplock residuals have been resolved. The four
+`smb2.kernel-oplocks.*` tests require Linux kernel oplock integration via
+`F_SETLEASE` on the underlying fd — architecturally incompatible with
+DittoFS's userspace virtual filesystem. They are listed in the
+[Permanently Unimplementable](#permanently-unimplementable-out-of-scope)
+appendix.
 
 ### Directory Leases (Partial Implementation)
 
