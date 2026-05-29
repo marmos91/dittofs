@@ -957,21 +957,6 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	size := getSMBSize(&file.FileAttr)
 	allocationSize := calculateAllocationSize(size)
 
-	// AlSi (SMB2_CREATE_ALLOCATION_SIZE, MS-SMB2 §2.2.13.2.6): clients use this
-	// context to hint the desired allocated size for the new file. Per Samba
-	// (source3/smbd/smb2_create.c handling of SMB2_CREATE_TAG_ALSI) the
-	// allocation size is rounded up to the cluster boundary and surfaced via
-	// the CREATE response's AllocationSize field. DittoFS does not preallocate
-	// on the backing store, but echoing the cluster-rounded request value is
-	// required by smbtorture smb2.create.blob (CHECK_EQUAL(io.out.alloc_size,
-	// io.in.alloc_size) with in.alloc_size = 0x100000).
-	if alsiCtx := FindCreateContext(req.CreateContexts, "AlSi"); alsiCtx != nil && len(alsiCtx.Data) >= 8 {
-		requested := smbenc.NewReader(alsiCtx.Data).ReadUint64()
-		if requested > allocationSize {
-			allocationSize = calculateAllocationSize(requested)
-		}
-	}
-
 	resp := &CreateResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
 		OplockLevel:     grantedOplock,
