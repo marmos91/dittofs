@@ -51,4 +51,18 @@ var (
 	// STATUS_INTERNAL_ERROR, log, and release the goroutine instead of
 	// blocking indefinitely.
 	ErrPressureTimeout = errors.New("append log: pressure wait timed out")
+
+	// ErrDrainIncomplete is returned by DrainRollups when, after a pass
+	// that made no forward progress, dirty intervals remain that are backed
+	// by real unflushed data — i.e. the payload is NOT tombstoned and its
+	// logIndex CAN back the residual intervals, so the bytes should have
+	// reached CAS but did not. Returning nil here would let snapshot-create
+	// proceed to Backup with a partial manifest; surfacing this sentinel
+	// lets runSnapshotOrchestration fail the snapshot visibly instead.
+	//
+	// Tombstoned payloads and tree/logIndex-divergent intervals (the
+	// rollupFile DropExact path — bytes that never reached a chunk) are NOT
+	// reported via this error: they are legitimately skipped and the drain
+	// returns nil.
+	ErrDrainIncomplete = errors.New("append log: drain left real unflushed dirty data")
 )

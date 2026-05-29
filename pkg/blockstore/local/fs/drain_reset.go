@@ -80,13 +80,29 @@ func (bc *FSStore) DrainRollups(ctx context.Context) error {
 			return nil
 		}
 		if !progressed {
-			// Dirty intervals remain but none shrank this pass — every
-			// one is an interval rollupFile intentionally leaves in place
-			// (e.g. a reconstruct-DoS refusal). Returning rather than
-			// spinning keeps DrainRollups bounded; the residual intervals
-			// are benign for snapshot purposes (their bytes never reached a
-			// chunk, so there is nothing to capture in the manifest).
-			logger.Warn("DrainRollups: residual dirty intervals not drainable",
+			// Dirty intervals remain but none shrank this pass. Distinguish
+			// two cases:
+			//
+			//   - Benign skip: tombstoned payloads (a deleted file whose
+			//     rollup is short-circuited) and tree/logIndex-divergent
+			//     intervals (the rollupFile DropExact path — bytes that
+			//     never reached a chunk). These have no backing logIndex
+			//     entries (or a tombstone), so there is nothing to capture
+			//     in the manifest and returning nil is correct.
+			//
+			//   - Real residual: a payload that is NOT tombstoned and whose
+			//     logIndex CAN back its residual dirty intervals — genuine
+			//     unflushed data that should have reached CAS. Returning nil
+			//     here would let snapshot-create proceed to Backup with a
+			//     partial manifest. Surface ErrDrainIncomplete so the
+			//     orchestration fails the snapshot visibly instead.
+			realResidual := bc.payloadsWithRealResidual(pending)
+			if len(realResidual) > 0 {
+				logger.Error("DrainRollups: residual dirty intervals with backing log data",
+					"payload_count", len(realResidual))
+				return fmt.Errorf("%w (%d payloads)", ErrDrainIncomplete, len(realResidual))
+			}
+			logger.Warn("DrainRollups: residual dirty intervals not drainable (tombstoned/divergent)",
 				"payload_count", len(pending))
 			return nil
 		}
@@ -106,11 +122,71 @@ func (bc *FSStore) dirtyLen(payloadID string) int {
 		return 0
 	}
 	if mu == nil {
+		// No per-file mutex established yet (payload registered but never
+		// written through getOrCreateLog). Guard the btree read against a
+		// racing tree mutation under the shared logsMu instead.
+		bc.logsMu.RLock()
+		defer bc.logsMu.RUnlock()
 		return tree.Len()
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	return tree.Len()
+}
+
+// payloadsWithRealResidual filters the candidate payloads down to those
+// that still carry GENUINE unflushed dirty data after a no-progress drain
+// pass: the payload is NOT tombstoned AND at least one of its dirty
+// intervals is backed by logIndex entries (so its bytes could have reached
+// a chunk but did not). Tombstoned payloads and tree/logIndex-divergent
+// intervals (no backing entries — the rollupFile DropExact case) are
+// excluded; they are legitimately skipped by the drain.
+//
+// Per-payload state is read under the per-file mutex (and the logIndex's
+// own mutex via EntriesForInterval) to match the dirtyLen / rollupFile
+// serialization contract.
+func (bc *FSStore) payloadsWithRealResidual(candidates []string) []string {
+	var out []string
+	for _, pid := range candidates {
+		bc.logsMu.RLock()
+		tree := bc.dirtyIntervals[pid]
+		mu := bc.logLocks[pid]
+		idx := bc.logIndices[pid]
+		bc.logsMu.RUnlock()
+		if tree == nil || idx == nil {
+			continue
+		}
+		if bc.isTombstoned(pid) {
+			continue
+		}
+
+		hasReal := false
+		walk := func() {
+			tree.t.Ascend(func(iv *interval) bool {
+				if iv.Length == 0 {
+					return true
+				}
+				if len(idx.EntriesForInterval(iv.Offset, uint64(iv.Length))) > 0 {
+					hasReal = true
+					return false
+				}
+				return true
+			})
+		}
+		if mu != nil {
+			mu.Lock()
+			walk()
+			mu.Unlock()
+		} else {
+			bc.logsMu.RLock()
+			walk()
+			bc.logsMu.RUnlock()
+		}
+		if hasReal {
+			out = append(out, pid)
+		}
+	}
+	return out
 }
 
 // ResetLocalState clears ALL per-payload append-log state for the store —
