@@ -337,6 +337,83 @@ canonical warm-cache regression anchor. A dedicated
 gate ≤1.10) will be added only if cold-read complaints surface in
 production.
 
+## Snapshot scale limits
+
+Snapshot `create` does a metadata `Backup` (a streamed dump plus an in-RAM
+`HashSet` of every referenced block hash), writes a hash manifest, drains
+uploads, then verifies durability by HEAD-probing every manifest hash at
+concurrency 16. `restore` reads the manifest back, resets, restores the
+dump, and re-verifies. None of these had a benchmark; the numbers below
+establish the memory ceiling and the verify budget before any large-share
+deployment claim.
+
+Workloads live in `bench/snapshots/` and run via the `dfsbench snapshots`
+CLI or the package `Benchmark*` tests. They isolate the three cost centers
+(backup, manifest, verify) from the Runtime orchestration so a single
+benchmark can sweep file counts without standing up adapters / the
+control-plane DB / real S3.
+
+### Reproduction commands
+
+```bash
+# CI-safe sweep (1e4 / 1e5 files; 1e6 cases skipped under -short):
+go test -bench=. -benchmem -short -run=^$ ./bench/snapshots/
+
+# Full sweep including 1e6-file scales (heavy — minutes, multi-GB allocs):
+go test -bench=. -benchmem -benchtime=1x -run=^$ -timeout=900s ./bench/snapshots/
+
+# One ad-hoc seed→backup→manifest→verify pass with per-stage wall time:
+go build -o dfsbench ./cmd/bench
+./dfsbench snapshots --files 1000000 --blocks-per-file 8
+```
+
+### Indicative numbers (Apple M1 Max, memory engine, in-memory remote)
+
+All-unique blocks (`--dedup 1`, the worst case for HashSet + manifest RAM).
+`benchtime=1x`. `dump_bytes` is streamed to a discard writer — it is the
+serialized dump size, not a resident buffer.
+
+| Scale (files × blocks) | unique hashes | backup ns/op | dump_bytes | manifest_bytes | verify ns/op (probes) |
+| ---------------------- | ------------: | -----------: | ---------: | -------------: | --------------------: |
+| 1e5 × 1                |       100,000 |        1.15 s |    35.0 MB |        6.5 MB |     0.14 s (100,000) |
+| 1e5 × 8                |       800,000 |        1.45 s |    67.2 MB |       52.0 MB |     1.39 s (800,000) |
+| 1e6 × 1                |     1,000,000 |        5.92 s |   350.0 MB |       65.0 MB |     1.95 s (1,000,000) |
+| 1e6 × 8                |     8,000,000 |       18.25 s |   672.0 MB |      520.0 MB |    25.27 s (8,000,000) |
+
+`write-manifest` and `read-manifest` (restore pre-verify) at 1e6 × 8:
+6.20 s / 16.18 s; the manifest parses back into a resident HashSet
+(~4.2 GB B/op at 8 M hashes, dominated by the per-line hex decode + map
+insert).
+
+### Established limits & budget
+
+- **The badger dump is streamed.** The badger engine (KV-by-KV) and the
+  manifest writer emit to an `io.Writer` without buffering the whole dump;
+  on the badger path `dump_bytes` never lands in a single allocation. The
+  dominant create-path resident allocation is then the returned `HashSet`:
+  one 32-byte `ContentHash` per **unique** block, ~26 B/entry in the Go
+  map. **Budget ~25 MB of HashSet RAM per 1 M unique blocks**; 8 M unique
+  blocks ≈ 200 MB. (The memory engine does NOT stream — see the last
+  bullet; the indicative table above uses the memory engine, so its
+  create-path `B/op` reflects that buffer, not the streaming ceiling.)
+- **Manifest on disk is 65 bytes/hash** (64 hex + LF): 65 MB per 1 M
+  hashes, 520 MB at 8 M. Written streamed; read back into a resident
+  HashSet on restore (size as above).
+- **Verify is N HEAD round-trips at concurrency 16**, holding nothing
+  across probes. The in-memory-remote times above are a **floor with zero
+  network latency**. For an S3 budget, multiply the probe count by the real
+  per-HEAD RTT ÷ 16: e.g. 8 M probes at 20 ms/HEAD ≈ 8e6 × 0.02 / 16 ≈
+  **167 minutes** of verify, plus 8 M HEAD-request charges. Large shares
+  should size their verify window (and S3 request cost) from the manifest
+  hash count, or create with `--no-verify` and accept `remote_durable=false`.
+- **The memory metadata engine is not suitable for TB/M-file shares.** It
+  gob-encodes its entire snapshot into one buffer during Backup (expected
+  for an in-RAM backend) — the create-path `B/op` for the memory engine
+  reflects that buffer, not the dump stream. **Use the badger engine for
+  large shares; it streams the dump KV-by-KV.** (Badger restore still
+  buffers all KV entries in RAM before the integrity CRC is verified — a
+  known restore-path ceiling, orthogonal to create, tracked separately.)
+
 ## End-to-end performance reports
 
 For NFSv3/NFSv4.1 + SMB end-to-end numbers against kernel NFS and

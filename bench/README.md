@@ -25,7 +25,7 @@ fixture code. The unified `cmd/bench` Cobra orchestrator plus the
 |-------------|-------------------------------------------------------------|--------|
 | blockstore  | local FSStore + remote + Syncer + engine                    | done   |
 | gc          | reference counting + sweep                                  | stub   |
-| snapshots   | reference-CAS snapshot create / restore / GC interactions   | stub   |
+| snapshots   | reference-CAS snapshot create / verify / manifest scale     | done   |
 | metadata    | listings, rename, hard links, ACL eval                      | stub   |
 | adapters    | NFS XDR + SMB2/3 framing perf (no real network)             | stub   |
 | e2e         | real NFS / SMB clients driving fio / iozone / smbtorture    | stub   |
