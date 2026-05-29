@@ -74,6 +74,16 @@ type CryptoState interface {
 	DeleteSessionPreauthHash(sessionID uint64)
 	// (removed: StashPendingSessionSetup — see #362 fix; rawMessage now flows
 	// through SMBHandlerContext.RawRequest into InitSessionPreauthHash.)
+
+	// SetHasAuthenticatedSession records that a non-anonymous, non-guest
+	// session has completed SESSION_SETUP on this connection. Sticky: only
+	// ever flips true. Used to gate AEAD key derivation for subsequent
+	// anonymous (IsNull) sessions per MS-SMB2 §3.3.5.2.1.1 (mirrors Samba
+	// xconn->smb2.got_authenticated_session at smb2_sesssetup.c:282).
+	SetHasAuthenticatedSession()
+	// HasAuthenticatedSession returns whether a non-anonymous, non-guest
+	// session has completed SESSION_SETUP on this connection.
+	HasAuthenticatedSession() bool
 }
 
 // SMBHandlerContext carries per-request state through all SMB2 handlers.

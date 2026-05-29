@@ -1048,6 +1048,93 @@ func TestConfigureSessionSigningWithKey_Encryption(t *testing.T) {
 	})
 }
 
+// TestConfigureSessionSigningWithKey_IsNullEncryptionGate validates the
+// per-connection AEAD derivation gate for anonymous (IsNull) sessions
+// introduced for smb2.session.anon-encryption{1,2,3}:
+//
+//   - First non-anonymous SESSION_SETUP must flip
+//     HasAuthenticatedSession on the connection.
+//   - Without HasAuthenticatedSession, an IsNull session must NOT derive
+//     a Decryptor — an encrypted request is then dropped via
+//     ErrAnonEncryption (anon-encryption1/3).
+//   - With HasAuthenticatedSession, an IsNull session MUST derive a
+//     Decryptor so an anonymous tcon can piggyback alongside the real
+//     session's encrypted traffic (anon-encryption2).
+func TestConfigureSessionSigningWithKey_IsNullEncryptionGate(t *testing.T) {
+	sessionKey := make([]byte, 16)
+	for i := range sessionKey {
+		sessionKey[i] = byte(i + 1)
+	}
+
+	newHandler := func() *Handler {
+		h := NewHandler()
+		h.EncryptionConfig = EncryptionConfig{
+			Mode:           "preferred",
+			AllowedCiphers: []uint16{types.CipherAES128GCM},
+		}
+		return h
+	}
+	newCryptoState := func() *mockCryptoState {
+		return &mockCryptoState{
+			dialect:  types.Dialect0311,
+			cipherId: types.CipherAES128GCM,
+		}
+	}
+
+	t.Run("FirstUserSession_SetsHasAuthenticatedSession", func(t *testing.T) {
+		h := newHandler()
+		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
+		ctx := newTestContext(sess.SessionID)
+		cs := newCryptoState()
+		ctx.ConnCryptoState = cs
+
+		if errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); errResult != nil {
+			t.Fatalf("unexpected error result: %v", errResult.Status)
+		}
+		if !cs.HasAuthenticatedSession() {
+			t.Error("HasAuthenticatedSession() = false after non-IsNull setup, want true")
+		}
+	})
+
+	t.Run("AnonOnFreshConn_NoDecryptor", func(t *testing.T) {
+		h := newHandler()
+		// IsNull = username=="" && !isGuest (see session.NewSession).
+		sess := h.CreateSession("127.0.0.1:12345", false, "", "")
+		if !sess.IsNull {
+			t.Fatalf("expected IsNull session, got IsNull=false")
+		}
+		ctx := newTestContext(sess.SessionID)
+		ctx.ConnCryptoState = newCryptoState() // HasAuthenticatedSession=false
+
+		if errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); errResult != nil {
+			t.Fatalf("unexpected error result: %v", errResult.Status)
+		}
+		if sess.CryptoState != nil && sess.CryptoState.Decryptor != nil {
+			t.Error("Decryptor derived on IsNull session without prior auth (would break anon-encryption1/3)")
+		}
+	})
+
+	t.Run("AnonAfterUserSession_DerivesDecryptor", func(t *testing.T) {
+		h := newHandler()
+		cs := newCryptoState()
+		cs.SetHasAuthenticatedSession() // Simulate prior user SESSION_SETUP.
+
+		sess := h.CreateSession("127.0.0.1:12345", false, "", "")
+		if !sess.IsNull {
+			t.Fatalf("expected IsNull session, got IsNull=false")
+		}
+		ctx := newTestContext(sess.SessionID)
+		ctx.ConnCryptoState = cs
+
+		if errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); errResult != nil {
+			t.Fatalf("unexpected error result: %v", errResult.Status)
+		}
+		if sess.CryptoState == nil || sess.CryptoState.Decryptor == nil {
+			t.Error("Decryptor NOT derived on IsNull session with prior auth (would break anon-encryption2)")
+		}
+	})
+}
+
 func TestSessionSetupConstants(t *testing.T) {
 	t.Run("RequestOffsets", func(t *testing.T) {
 		// Verify offset constants are correct per MS-SMB2 spec

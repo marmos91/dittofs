@@ -79,6 +79,20 @@ type ConnectionCryptoState struct {
 	// chain initialized from the connection hash after NEGOTIATE completes.
 	// Key: session ID, Value: current preauth hash for that session.
 	sessionPreauthHashes map[uint64][64]byte
+
+	// hasAuthenticatedSession is the sticky per-connection flag mirroring
+	// Samba's xconn->smb2.got_authenticated_session (source3/smbd/
+	// smb2_sesssetup.c:282). It flips to true once a non-anonymous,
+	// non-guest session completes SESSION_SETUP on this connection and
+	// stays true for the connection's lifetime. The flag gates AEAD key
+	// derivation for subsequent anonymous (IsNull) sessions: without a
+	// prior real session, anonymous sessions must NOT derive encryption
+	// keys (smbtorture smb2.session.anon-encryption1/3 assert
+	// CONNECTION_RESET on encrypted requests in that state); with one,
+	// they MUST derive them so the client's torture
+	// anonymous_encryption flow (smb2.session.anon-encryption2) can
+	// piggyback an encrypted anonymous tcon over the same TCP.
+	hasAuthenticatedSession bool
 }
 
 // NewConnectionCryptoState creates a new ConnectionCryptoState with all
@@ -362,4 +376,28 @@ func (cs *ConnectionCryptoState) GetClientDialects() []types.Dialect {
 	cp := make([]types.Dialect, len(cs.ClientDialects))
 	copy(cp, cs.ClientDialects)
 	return cp
+}
+
+// SetHasAuthenticatedSession records that a non-anonymous, non-guest session
+// has completed SESSION_SETUP on this connection. The flag is sticky for the
+// connection's lifetime; callers only ever set it to true.
+//
+// Mirrors Samba's xconn->smb2.got_authenticated_session
+// (source3/smbd/smb2_sesssetup.c:282). Used by configureSessionSigningWithKey
+// to decide whether anonymous (IsNull) sessions should derive AEAD keys: only
+// after a real authenticated session exists on the connection — otherwise an
+// encrypted request on an anonymous session must drop the connection
+// (MS-SMB2 §3.3.5.2.1.1; smbtorture smb2.session.anon-encryption1/3).
+func (cs *ConnectionCryptoState) SetHasAuthenticatedSession() {
+	cs.mu.Lock()
+	cs.hasAuthenticatedSession = true
+	cs.mu.Unlock()
+}
+
+// HasAuthenticatedSession returns whether a non-anonymous, non-guest session
+// has completed SESSION_SETUP on this connection.
+func (cs *ConnectionCryptoState) HasAuthenticatedSession() bool {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	return cs.hasAuthenticatedSession
 }
