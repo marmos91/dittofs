@@ -15,9 +15,15 @@ var (
 	ErrLogBadHeaderCRC = errors.New("append log: bad header CRC")
 
 	// ErrDeleted is returned by AppendWrite when the payload's append log
-	// has been tombstoned by a concurrent DeleteAppendLog call (/
-	// ). Writers that observe the tombstone short-circuit before
-	// touching the log so a deleted payload never gains new records.
+	// has been tombstoned by a concurrent DeleteAppendLog call. Writers
+	// that observe the tombstone short-circuit before touching the log so
+	// a deleted payload never gains new records.
+	//
+	// Known limitation (#670): writers already blocked in AppendWrite's
+	// pressure loop do not observe the tombstone synchronously. They
+	// unblock on the next pressureCh pulse, ctx.Done(), bc.done, or
+	// PressureMaxWait expiry — whichever fires first. A delete may
+	// therefore surface as ErrPressureTimeout rather than ErrDeleted.
 	ErrDeleted = errors.New("append log: payload deleted")
 
 	// ErrPressureTimeout is returned by AppendWrite when its pressure

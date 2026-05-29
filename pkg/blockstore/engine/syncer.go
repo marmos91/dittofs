@@ -255,8 +255,11 @@ func (m *Syncer) canProcess(ctx context.Context) bool {
 // attempt that races the periodic uploader's tick, so a tight
 // in-handler retry loop pegs the CPU without ever making progress and
 // starves the uploading goroutine. Recommended pattern: surface the
-// soft-fail to the protocol client (NFS3_COMMITTED=false; SMB Flush
-// returns success after a bounded attempt) instead of spinning.
+// soft-fail to the protocol adapter and let the client drive the next
+// attempt on its own schedule (e.g. NFSv3 reports the WRITE's
+// "committed" enum as UNSTABLE rather than DATASYNC/FILESYNC so the
+// client reissues COMMIT later; SMB Flush returns success after a
+// bounded attempt) instead of spinning in-handler.
 func (m *Syncer) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return nil, err
