@@ -79,6 +79,18 @@ func (bc *FSStore) logPath(payloadID string) string {
 // tree.Insert and the logIndex re-read, producing a tree/logIndex
 // divergence that wedged rollup (#668).
 func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *intervalTree, *logIndex, error) {
+	// Defense-in-depth (REVIEW.md §3b S-4): reject malformed payloadIDs at
+	// the FIRST line, before any mutex acquisition or fd open. logPath
+	// joins payloadID into filepath.Join, so a '../'-bearing id would
+	// otherwise place a log file outside <baseDir>/logs. Recovery already
+	// validates filenames read from disk (recovery.go ~line 254); this
+	// guard closes the symmetric write-path gap. The check is intentionally
+	// upstream of bc.logsMu so a malicious id can't take the global RLock
+	// either.
+	if !isValidPayloadID(payloadID) {
+		return nil, nil, nil, nil, fmt.Errorf("%w: %q", ErrInvalidPayloadID, payloadID)
+	}
+
 	// Fast path: all four already present.
 	bc.logsMu.RLock()
 	lf, lfOk := bc.logFDs[payloadID]
