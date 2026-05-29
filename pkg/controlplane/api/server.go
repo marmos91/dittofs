@@ -13,6 +13,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
+// DefaultRestoreHTTPTimeout is the fallback context bound applied to the
+// REST snapshot-restore handler when callers do not supply an explicit
+// timeout. The dfs binary sources this from config.SnapshotConfig.
+const DefaultRestoreHTTPTimeout = 30 * time.Minute
+
 // Server provides an HTTP server for the REST API.
 //
 // The server exposes health check endpoints and authentication APIs.
@@ -49,7 +54,7 @@ type Server struct {
 //   - cpStore: Control plane store for user/group management
 //
 // Returns a configured but not yet started Server, or an error if JWT configuration is invalid.
-func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store) (*Server, error) {
+func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store, restoreHTTPTimeout time.Duration) (*Server, error) {
 	config.applyDefaults()
 
 	// Get JWT secret from config (prefers env var)
@@ -71,7 +76,7 @@ func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store) (*Ser
 	}
 
 	// cpStore implements both IdentityStore and Store
-	router := NewRouter(rt, jwtService, cpStore, config.Pprof)
+	router := NewRouter(rt, jwtService, cpStore, config.Pprof, restoreHTTPTimeout)
 
 	writeTimeout := config.WriteTimeout
 	if config.Pprof && writeTimeout < 120*time.Second {
