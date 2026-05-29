@@ -218,14 +218,41 @@ Normally a snapshot orchestration runs in this order:
 1. Persist the snapshot row in `state=creating`.
 2. Drain pending rollups so all written data is persisted to CAS and
    reflected in each file's block list.
-3. Write `metadata.dump` from the now-settled metadata store.
-4. Compute the hash manifest from the share's referenced blocks.
-5. Drain in-flight uploads to the remote block store.
-6. Run the verify gate: HEAD-probe every block hash on the remote
+3. Write `metadata.dump` AND compute the hash manifest from a single
+   consistent read-view of the metadata store (see "Point-in-time
+   consistency" below).
+4. Drain in-flight uploads to the remote block store.
+5. Run the verify gate: HEAD-probe every block hash on the remote
    block store (concurrency = 16) to confirm remote durability.
-7. Transition to `state=ready` (or `state=failed` on any error).
+6. Transition to `state=ready` (or `state=failed` on any error).
 
-`--no-verify` skips step 5 (upload drain) and step 6 (HEAD probes).
+### Point-in-time consistency
+
+DittoFS blocks are immutable and content-addressed: once written, a block
+never changes. The only way a snapshot could capture an inconsistent image
+is if the metadata dump and the hash manifest were read at different logical
+instants while a client was writing — a file could end up in the dump
+referencing a block missing from the manifest, or a multi-chunk file could
+be torn.
+
+To prevent this, the metadata store captures the dump and the manifest from
+**a single consistent read-view**:
+
+- **postgres** — one `REPEATABLE READ` transaction; all table `COPY`s and
+  the block-hash query observe the same MVCC snapshot.
+- **badger** — one managed read transaction (`db.View`); the whole
+  key-space iteration and hash extraction share that snapshot.
+- **memory** — the in-memory maps are read under the store write lock,
+  which every mutation also takes, so the dump and manifest reflect the
+  same instant.
+
+Client writes are **not** quiesced or stalled during create: they proceed
+concurrently and are simply ordered relative to the snapshot's read-view. A
+write that lands during create is either fully visible in both the dump and
+the manifest, or in neither — never half-captured. The result is a true
+point-in-time image under active load.
+
+`--no-verify` skips step 4 (upload drain) and step 5 (HEAD probes).
 The snapshot still completes, the GC hold still applies, but the
 `remote_durable` flag is `false`. Use it when:
 
