@@ -50,6 +50,17 @@ func init() {
 	createCmd.Flags().BoolVar(&createNoWait, "no-wait", false, "Return immediately instead of waiting for completion")
 }
 
+// noWaitRecord builds a Snapshot record from the 202 create response so the
+// --no-wait JSON/YAML output carries an `id` field consistent with the
+// blocking path (which emits the full Snapshot).
+func noWaitRecord(resp *apiclient.CreateSnapshotResponse) apiclient.Snapshot {
+	return apiclient.Snapshot{
+		ID:    resp.SnapshotID,
+		Share: resp.Share,
+		State: "creating",
+	}
+}
+
 func runCreate(cmd *cobra.Command, args []string) error {
 	share := args[0]
 
@@ -83,11 +94,15 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	if createNoWait {
+		// Emit a Snapshot-shaped record so the JSON/YAML shape matches the
+		// blocking path: `jq '.id'` works regardless of --no-wait. The
+		// server returns only {snapshot_id, share} on the 202, so synthesize
+		// the known fields (the snapshot is necessarily 'creating' here).
 		switch format {
 		case output.FormatJSON:
-			return output.PrintJSON(os.Stdout, resp)
+			return output.PrintJSON(os.Stdout, noWaitRecord(resp))
 		case output.FormatYAML:
-			return output.PrintYAML(os.Stdout, resp)
+			return output.PrintYAML(os.Stdout, noWaitRecord(resp))
 		default:
 			fmt.Printf("Snapshot %s queued on share %s (state: creating)\n", resp.SnapshotID, resp.Share)
 		}
