@@ -15,7 +15,7 @@ import (
 func newTestStore(t *testing.T) *FSStore {
 	t.Helper()
 	dir := t.TempDir()
-	bs, err := New(dir, 0, 0, nil)
+	bs, err := NewWithOptions(dir, 0, 0, nil, FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("NewWithDefaults: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestFSStore_Healthcheck_UnhealthyAfterClose(t *testing.T) {
 
 func TestFSStore_Healthcheck_UnhealthyWhenBaseDirRemoved(t *testing.T) {
 	dir := t.TempDir()
-	bs, err := New(dir, 0, 0, nil)
+	bs, err := NewWithOptions(dir, 0, 0, nil, FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("NewWithDefaults: %v", err)
 	}

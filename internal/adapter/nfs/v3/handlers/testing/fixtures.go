@@ -77,7 +77,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 
 	// Create local store, syncer, and block store engine
 	tmpDir := t.TempDir()
-	localStore, err := fs.New(tmpDir, 0, 0, metaStore)
+	localStore, err := fs.NewWithOptions(tmpDir, 0, 0, metaStore, fs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create local store: %v", err)
 	}

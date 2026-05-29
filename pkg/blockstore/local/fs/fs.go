@@ -182,7 +182,7 @@ type FSStore struct {
 	//
 	// Internal encoding: 0 means "deadline disabled" (no timer armed in
 	// AppendWrite's pressure loop). The default 30s is installed by
-	// newFSStoreInternal before any option override runs; the only way
+	// newFSStore before any option override runs; the only way
 	// this field is 0 post-construction is via an explicit negative
 	// FSStoreOptions.PressureMaxWait (test-only). Direct struct-literal
 	// construction of FSStore is not supported.
@@ -288,7 +288,7 @@ type FSStore struct {
 	// dedupLRU is the per-FSStore hash dedup LRU (Opt 1).
 	// Consulted by rollup.go between FastCDC.Next() and
 	// StoreChunk to skip a metadata round-trip on hot hashes. RAM-only
-	// instantiated unconditionally in newFSStoreWithOptionsInternal.
+	// instantiated unconditionally in newFSStore.
 	dedupLRU *dedupLRU
 
 	// onChunkComplete fires once per successful chunkstore.StoreChunk
@@ -335,35 +335,19 @@ type FSStore struct {
 	orphanLogMinAgeSeconds int
 }
 
-// New creates a new FSStore.
+// newFSStore is the shared inner constructor used by NewWithOptions and
+// NewFSStoreForMigration. It runs the legacy-layout sentinel gate when
+// skipSentinelCheck is false; the migration path passes true to open a
+// share that still holds the legacy `.blk` layout the migration is
+// converting away from.
 //
-// Parameters
-//   - baseDir: directory for .blk block files, created if absent.
-//   - maxDisk: maximum total size of on-disk .blk files in bytes. 0 = unlimited.
-//   - maxMemory: memory budget for dirty write buffers in bytes. 0 defaults to 256MB.
-//   - fileBlockStore: persistent store for FileBlock metadata (local path, upload state, etc.)
-func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore) (*FSStore, error) {
-	return newFSStoreInternal(baseDir, maxDisk, maxMemory, fileBlockStore, false)
-}
-
-// newFSStoreInternal is the shared inner constructor.
-// adds the legacy-layout sentinel-detection gate guarded on
-// skipSentinelCheck: when false, the constructor stats
-// `<baseDir>/.cas-migrated-v1` and, on absence, runs a depth-limited
-// `.blk` probe — returning blockstore.ErrLegacyLayoutDetected when
-// legacy data is present without a migration sentinel. The four-state
-// matrix is
+// Four-state sentinel matrix:
 //
-//   - sentinel PRESENT, no .blk files → success (post-migration steady state)
-//   - sentinel PRESENT, .blk files PRESENT → success (trusts the
-//     sentinel as ground truth; operator footgun per
-//
-// - sentinel MISSING, no .blk files → success (fresh install)
-//   - sentinel MISSING, .blk files PRESENT → ErrLegacyLayoutDetected
-//
-// NewFSStoreForMigration passes true; New / NewWithOptions pass false.
-// See 17-CONTEXT.md (per-share sentinel) + (errors.Is contract).
-func newFSStoreInternal(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, skipSentinelCheck bool) (*FSStore, error) {
+//   - sentinel PRESENT, no .blk files       → success (post-migration steady state)
+//   - sentinel PRESENT, .blk files PRESENT  → success (sentinel is ground truth)
+//   - sentinel MISSING, no .blk files       → success (fresh install)
+//   - sentinel MISSING, .blk files PRESENT  → blockstore.ErrLegacyLayoutDetected
+func newFSStore(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, opts FSStoreOptions, skipSentinelCheck bool) (*FSStore, error) {
 	if !skipSentinelCheck {
 		if err := checkLegacyLayoutSentinel(baseDir); err != nil {
 			return nil, err
@@ -398,8 +382,8 @@ func newFSStoreInternal(baseDir string, maxDisk int64, maxMemory int64, fileBloc
 	bc.lruIndex = make(map[blockstore.ContentHash]*list.Element)
 	bc.lruList = list.New()
 
-	// append-log plumbing — maps + pressure channel are
-	// always initialized; the opt-out flag was deleted with the legacy
+	// append-log plumbing — maps + pressure channel are always
+	// initialized; the opt-out flag was deleted with the legacy
 	// path-keyed writer.
 	bc.pressureCh = make(chan struct{}, 1)
 	bc.logFDs = make(map[string]*logFile)
@@ -422,7 +406,76 @@ func newFSStoreInternal(baseDir string, maxDisk int64, maxMemory int64, fileBloc
 	// for determinism; subsequent reads/writes promote chunks to the front.
 	bc.seedLRUFromDisk()
 
+	applyFSStoreOptions(bc, opts)
 	return bc, nil
+}
+
+// applyFSStoreOptions overlays caller-supplied option values on top of
+// the construction-time defaults. Zero values keep the default; positive values
+// override; negative values (where supported) carry explicit
+// "disable" semantics — see the individual field godocs on
+// FSStoreOptions.
+func applyFSStoreOptions(bc *FSStore, opts FSStoreOptions) {
+	if opts.MaxLogBytes > 0 {
+		bc.maxLogBytes = opts.MaxLogBytes
+	}
+	if opts.RollupWorkers > 0 {
+		bc.rollupWorkers = opts.RollupWorkers
+		// Re-size rollupCh to match the caller-specified pool size so
+		// the non-blocking send in AppendWrite has proportional
+		// headroom.
+		bc.rollupCh = make(chan string, bc.rollupWorkers*4)
+	}
+	if opts.StabilizationMS > 0 {
+		bc.stabilizationMS = opts.StabilizationMS
+	}
+	switch {
+	case opts.PressureMaxWait > 0:
+		bc.pressureMaxWait = opts.PressureMaxWait
+	case opts.PressureMaxWait < 0:
+		// Negative explicitly disables the deadline (block forever).
+		// Required for tests that drive the pressure loop directly
+		// without a rollup worker; not recommended in production.
+		bc.pressureMaxWait = 0
+	}
+	bc.rollupStore = opts.RollupStore
+	bc.syncedHashStore = opts.SyncedHashStore
+	bc.objectIDPersister = opts.ObjectIDPersister
+	if opts.OrphanLogMinAgeSeconds > 0 {
+		bc.orphanLogMinAgeSeconds = opts.OrphanLogMinAgeSeconds
+	} else {
+		bc.orphanLogMinAgeSeconds = 3600
+	}
+
+	// Compaction threshold (#579). Zero → derive from maxLogBytes so a
+	// smaller log budget compacts proportionally more aggressively; a
+	// negative value disables compaction entirely (pre-#579 behavior
+	// useful for tests pinned to the legacy growth pattern).
+	switch {
+	case opts.CompactionThresholdBytes > 0:
+		bc.compactionThresholdBytes = opts.CompactionThresholdBytes
+	case opts.CompactionThresholdBytes < 0:
+		bc.compactionThresholdBytes = -1
+	default:
+		bc.compactionThresholdBytes = bc.maxLogBytes / defaultCompactionDivisor
+		if bc.compactionThresholdBytes <= 0 {
+			// maxLogBytes < defaultCompactionDivisor — clamp so a tiny
+			// budget still gets a sensible threshold floor.
+			bc.compactionThresholdBytes = int64(logHeaderSize)
+		}
+	}
+
+	// per-FSStore hash dedup LRU + chunk-complete hook. Default-on-zero
+	// idiom matches existing FSStoreOptions tunables.
+	size := opts.DedupLRUSize
+	if size <= 0 {
+		size = 4096
+	}
+	bc.dedupLRU = newDedupLRU(size)
+	// Install a non-nil holder so the hot-path Load never observes nil;
+	// opts.OnChunkComplete may itself be nil, which is checked at the
+	// firing site.
+	bc.onChunkComplete.Store(&chunkCompleteCallback{fn: opts.OnChunkComplete})
 }
 
 // sentinelFileName is the per-share boot-guard marker written by
@@ -605,7 +658,7 @@ func (bc *FSStore) seedLRUFromDisk() {
 // FSStoreOptions configures the append-log path. Append is mandatory in
 // — the UseAppendLog opt-out flag was deleted with the legacy
 // path-keyed writer. MaxLogBytes, RollupWorkers, and StabilizationMS
-// default via New() when left zero here.
+// default via NewWithOptions when left zero here.
 type FSStoreOptions struct {
 	MaxLogBytes     int64
 	RollupWorkers   int
@@ -669,18 +722,30 @@ type FSStoreOptions struct {
 	CompactionThresholdBytes int64
 }
 
-// NewWithOptions constructs an FSStore. Non-zero values in opts override
-// the defaults set by New(); zero values keep the New() defaults (1 GiB
-// log, 250ms stabilization, 2 rollup workers).
+// NewWithOptions constructs an FSStore.
+//
+// Parameters:
+//   - baseDir: directory for .blk block files, created if absent.
+//   - maxDisk: maximum total size of on-disk .blk files in bytes. 0 = unlimited.
+//   - maxMemory: memory budget for dirty write buffers in bytes. 0 defaults to 256MB.
+//   - fileBlockStore: persistent store for FileBlock metadata
+//     (local path, upload state, etc.).
+//   - opts: tunables for append-log sizing, rollup pool, dedup LRU,
+//     chunk-complete hook, etc. Zero-valued fields fall back to the
+//     defaults documented on FSStoreOptions.
+//
+// Runs the legacy-layout sentinel gate; returns
+// blockstore.ErrLegacyLayoutDetected when the share holds the pre-CAS
+// `.blk` layout without a `.cas-migrated-v1` marker.
 func NewWithOptions(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, opts FSStoreOptions) (*FSStore, error) {
-	return newFSStoreWithOptionsInternal(baseDir, maxDisk, maxMemory, fileBlockStore, opts, false)
+	return newFSStore(baseDir, maxDisk, maxMemory, fileBlockStore, opts, false)
 }
 
 // NewFSStoreForMigration constructs an FSStore that skips the legacy-
 // layout sentinel check.
 //
-// MIGRATION TOOL USE ONLY — production code paths must call New /
-// NewWithOptions, which always run the sentinel gate. The `dfs
+// MIGRATION TOOL USE ONLY — production code paths must call
+// NewWithOptions, which always runs the sentinel gate. The `dfs
 // migrate-to-cas` subcommand (cmd/dfs/commands/migrate_to_cas.go) is
 // the sole intended caller; it must open the destination FSStore
 // against a share directory that still contains the legacy `.blk`
@@ -689,80 +754,7 @@ func NewWithOptions(baseDir string, maxDisk, maxMemory int64, fileBlockStore blo
 //
 // Behavior is otherwise identical to NewWithOptions.
 func NewFSStoreForMigration(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, opts FSStoreOptions) (*FSStore, error) {
-	return newFSStoreWithOptionsInternal(baseDir, maxDisk, maxMemory, fileBlockStore, opts, true)
-}
-
-// newFSStoreWithOptionsInternal is the shared body for NewWithOptions
-// and NewFSStoreForMigration. The skipSentinelCheck argument is threaded
-// through to newFSStoreInternal where 's legacy-layout gate will
-// consult it.
-func newFSStoreWithOptionsInternal(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockstore.EngineFileBlockStore, opts FSStoreOptions, skipSentinelCheck bool) (*FSStore, error) {
-	bc, err := newFSStoreInternal(baseDir, maxDisk, maxMemory, fileBlockStore, skipSentinelCheck)
-	if err != nil {
-		return nil, err
-	}
-	if opts.MaxLogBytes > 0 {
-		bc.maxLogBytes = opts.MaxLogBytes
-	}
-	if opts.RollupWorkers > 0 {
-		bc.rollupWorkers = opts.RollupWorkers
-		// Re-size rollupCh to match the caller-specified pool size so the
-		// non-blocking send in AppendWrite has proportional headroom.
-		bc.rollupCh = make(chan string, bc.rollupWorkers*4)
-	}
-	if opts.StabilizationMS > 0 {
-		bc.stabilizationMS = opts.StabilizationMS
-	}
-	switch {
-	case opts.PressureMaxWait > 0:
-		bc.pressureMaxWait = opts.PressureMaxWait
-	case opts.PressureMaxWait < 0:
-		// Negative explicitly disables the deadline (block forever).
-		// Required for tests that drive the pressure loop directly
-		// without a rollup worker; not recommended in production.
-		bc.pressureMaxWait = 0
-	}
-	bc.rollupStore = opts.RollupStore
-	bc.syncedHashStore = opts.SyncedHashStore
-	bc.objectIDPersister = opts.ObjectIDPersister
-	if opts.OrphanLogMinAgeSeconds > 0 {
-		bc.orphanLogMinAgeSeconds = opts.OrphanLogMinAgeSeconds
-	} else {
-		bc.orphanLogMinAgeSeconds = 3600
-	}
-
-	// Compaction threshold (#579). Zero → derive from maxLogBytes so a
-	// smaller log budget compacts proportionally more aggressively; a
-	// negative value disables compaction entirely (pre-#579 behavior
-	// useful for tests pinned to the legacy growth pattern).
-	switch {
-	case opts.CompactionThresholdBytes > 0:
-		bc.compactionThresholdBytes = opts.CompactionThresholdBytes
-	case opts.CompactionThresholdBytes < 0:
-		bc.compactionThresholdBytes = -1
-	default:
-		bc.compactionThresholdBytes = bc.maxLogBytes / defaultCompactionDivisor
-		if bc.compactionThresholdBytes <= 0 {
-			// maxLogBytes < defaultCompactionDivisor — clamp so a tiny
-			// budget still gets a sensible threshold floor.
-			bc.compactionThresholdBytes = int64(logHeaderSize)
-		}
-	}
-
-	// per-FSStore hash dedup LRU + chunk-complete
-	// hook. Default-on-zero idiom matches existing FSStoreOptions
-	// tunables. Wave-1 additive — consumes the LRU from
-	// rollup.go; fires onChunkComplete from chunkstore.lruTouch.
-	size := opts.DedupLRUSize
-	if size <= 0 {
-		size = 4096
-	}
-	bc.dedupLRU = newDedupLRU(size)
-	// Install a non-nil holder so the hot-path Load never observes nil;
-	// opts.OnChunkComplete may itself be nil, which is checked at the
-	// firing site.
-	bc.onChunkComplete.Store(&chunkCompleteCallback{fn: opts.OnChunkComplete})
-	return bc, nil
+	return newFSStore(baseDir, maxDisk, maxMemory, fileBlockStore, opts, true)
 }
 
 // SetObjectIDPersister installs the rollup-completion callback. Safe to

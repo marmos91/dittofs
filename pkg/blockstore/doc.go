@@ -76,7 +76,7 @@
 //     place and fsyncs the parent directory.
 //
 //   - Read by backend constructors at open time. *fs.FSStore (via
-//     NewFSStore → newFSStoreInternal) stats <baseDir>/.cas-migrated-v1
+//     NewWithOptions → newFSStore) stats <baseDir>/.cas-migrated-v1
 //     before any other I/O. Presence is the ground-truth proof of
 //     completion. Cost is O(1).
 //

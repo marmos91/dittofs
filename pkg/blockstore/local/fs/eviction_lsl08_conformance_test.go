@@ -41,9 +41,9 @@ func lsl08Factory(t *testing.T) *fs.FSStore {
 	dir := t.TempDir()
 	mds := memmeta.NewMemoryMetadataStoreWithDefaults()
 	spy := &countingFBSWrapper{inner: mds}
-	bc, err := fs.New(dir, 600, 1<<30, spy)
+	bc, err := fs.NewWithOptions(dir, 600, 1<<30, spy, fs.FSStoreOptions{})
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("NewWithOptions: %v", err)
 	}
 	bc.SetEvictionEnabled(true)
 	bc.SetRetentionPolicy(blockstore.RetentionLRU, 0)
