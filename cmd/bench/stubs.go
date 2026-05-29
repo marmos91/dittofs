@@ -9,7 +9,7 @@ import (
 // newStubCmd builds a placeholder subcommand for an area whose
 // workloads have not been wired yet. It prints a one-line notice
 // pointing at bench/<area>/README.md and exits 0 so CI scripts can
-// invoke `bench <area>` unconditionally during the migration.
+// invoke `dfsbench <area>` unconditionally during the migration.
 func newStubCmd(area, short string) *cobra.Command {
 	return &cobra.Command{
 		Use:   area,

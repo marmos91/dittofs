@@ -1,7 +1,7 @@
 # bench/blockstore
 
 Workload drivers for `pkg/blockstore/engine`. Same exported functions
-power both the `bench blockstore` CLI subcommand and the Go
+power both the `dfsbench blockstore` CLI subcommand and the Go
 `Benchmark*` tests in this package.
 
 ## Workloads
@@ -42,13 +42,13 @@ go test -bench=BenchmarkRandomWrite4KB -count=10 -run=^$ ./bench/blockstore/
 
 ```sh
 export AWS_S3_BUCKET=dittofs-bench
-export AWS_S3_ACCESS_KEY=...
-export AWS_S3_SECRET_KEY=...
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
 export AWS_S3_REGION=us-east-1
 ```
 
-For Localstack / MinIO add `AWS_S3_ENDPOINT_URL` and
-`AWS_S3_FORCE_PATH_STYLE=true`.
+For Localstack / MinIO add `AWS_ENDPOINT_URL` and
+`AWS_S3_PATH_STYLE=true`.
 
 ## Library API
 

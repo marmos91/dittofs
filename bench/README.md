@@ -10,7 +10,7 @@ ad-hoc shell loops) and per-package `Benchmark*` tests with overlapping
 fixture code. The unified `cmd/bench` Cobra orchestrator plus the
 `bench/<area>/` library packages give us:
 
-- **One CLI** (`bench <area> <flags>`) for macro runs, real-backend exercise,
+- **One CLI** (`dfsbench <area> <flags>`) for macro runs, real-backend exercise,
   and pprof capture.
 - **Library workloads** (`bench/<area>.RunWorkload(...)`) callable from both
   the CLI and per-package Go `Benchmark*` tests — no duplicate fixture or
@@ -85,16 +85,16 @@ go tool pprof -http :8080 _profiles/blockstore/sequential-write-*/heap.pprof
 The `--remote=s3` flag drives `pkg/blockstore/remote/s3`. Either set the
 following in the environment or pass them via `--env-file ./.env`:
 
-| Variable                    | Required | Notes                              |
-|-----------------------------|----------|------------------------------------|
-| `AWS_S3_BUCKET`             | yes      | bucket name                        |
-| `AWS_S3_ACCESS_KEY`         | yes      | access key ID                      |
-| `AWS_S3_SECRET_KEY`         | yes      | secret access key                  |
-| `AWS_S3_REGION`             | no       | AWS SDK default if empty           |
-| `AWS_S3_ENDPOINT_URL`       | no       | for Localstack / MinIO             |
-| `AWS_S3_KEY_PREFIX`         | no       | prepended to every block key       |
-| `AWS_S3_MAX_RETRIES`        | no       | integer; SDK default if unset      |
-| `AWS_S3_FORCE_PATH_STYLE`   | no       | bool; required for Localstack/MinIO |
+| Variable                  | Required | Notes                                                |
+|---------------------------|----------|------------------------------------------------------|
+| `AWS_S3_BUCKET`           | yes      | bucket name                                          |
+| `AWS_ACCESS_KEY_ID`       | yes      | access key ID                                        |
+| `AWS_SECRET_ACCESS_KEY`   | yes      | secret access key                                    |
+| `AWS_S3_REGION`           | no       | AWS SDK default if empty (us-east-1 fallback)        |
+| `AWS_ENDPOINT_URL`        | no       | for Localstack / MinIO                               |
+| `AWS_S3_KEY_PREFIX`       | no       | prepended to every block key                         |
+| `AWS_S3_MAX_RETRIES`      | no       | integer; SDK default if unset                        |
+| `AWS_S3_PATH_STYLE`       | no       | bool; defaults true when `AWS_ENDPOINT_URL` is set   |
 
 Real-env values always win over `--env-file` so CI secret injection
 behaves as expected.

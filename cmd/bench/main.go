@@ -5,7 +5,7 @@
 // blockstore subcommand is wired today; the rest are stubs that
 // point at bench/<area>/README.md.
 //
-// Example: bench blockstore --workload sequential-write --ops 10000
+// Example: dfsbench blockstore --workload sequential-write --ops 10000
 package main
 
 import (
@@ -25,9 +25,9 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "bench",
+	Use:   "dfsbench",
 	Short: "DittoFS benchmark orchestrator",
-	Long: `bench drives the DittoFS benchmark suite across six areas:
+	Long: `dfsbench drives the DittoFS benchmark suite across six areas:
 
   blockstore   local fs + remote + syncer (implemented)
   gc           garbage collection (stub)
@@ -64,7 +64,7 @@ func init() {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "bench: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "dfsbench: %v\n", err)
 		os.Exit(1)
 	}
 }

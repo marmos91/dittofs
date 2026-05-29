@@ -9,8 +9,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 )
 
-// Workload identifiers. Add a new one here, a case in RunWorkload, and
-// a corresponding exported Run* function.
+// Workload identifiers. To add an engine-backed workload: add a
+// constant here, a case in prepareWorkload (workloads.go), and a
+// per-op step function — RunWorkload dispatches through that switch.
+// Workloads that bypass the engine (raw remote / local-only) instead
+// expose their own exported Run* helper in workloads_extra.go.
 const (
 	WorkloadSequentialWrite = "sequential-write"
 	WorkloadRandomWrite     = "random-write"
