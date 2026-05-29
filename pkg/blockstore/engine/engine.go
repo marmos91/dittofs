@@ -15,8 +15,8 @@ import (
 // Compile-time interface satisfaction check.
 var _ blockstore.Store = (*BlockStore)(nil)
 
-// Config holds the components that make up a BlockStore.
-type Config struct {
+// BlockStoreConfig holds the components that make up a BlockStore.
+type BlockStoreConfig struct {
 	// Local is the on-node block store (required).
 	Local local.LocalStore
 
@@ -103,7 +103,7 @@ type BlockStore struct {
 
 // New creates a new BlockStore from the given configuration.
 // Local store and syncer are required; remote may be nil for local-only mode.
-func New(cfg Config) (*BlockStore, error) {
+func New(cfg BlockStoreConfig) (*BlockStore, error) {
 	if cfg.Local == nil {
 		return nil, errors.New("local store is required")
 	}

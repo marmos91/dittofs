@@ -563,7 +563,7 @@ func (s *Service) createBlockStoreForShare(
 		coordinator = newMetadataCoordinator(metadataStore)
 	}
 
-	engineCfg := engine.Config{
+	engineCfg := engine.BlockStoreConfig{
 		Local:          localStore,
 		Remote:         engineRemote,
 		Syncer:         syncer,

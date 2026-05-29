@@ -84,7 +84,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 	t.Cleanup(func() { _ = localStore.Close() })
 	syncer := engine.NewSyncer(localStore, nil, metaStore, engine.DefaultConfig())
 
-	blockSvc, err := engine.New(engine.Config{
+	blockSvc, err := engine.New(engine.BlockStoreConfig{
 		Local:  localStore,
 		Syncer: syncer,
 	})

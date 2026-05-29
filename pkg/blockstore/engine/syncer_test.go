@@ -398,7 +398,7 @@ func newIntegrationFixture(t *testing.T, rs remote.RemoteStore, synced metadata.
 
 	syncer := engine.NewSyncer(local, rs, fbs, engine.DefaultConfig())
 
-	bs, err := engine.New(engine.Config{
+	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           local,
 		Remote:          rs,
 		Syncer:          syncer,
@@ -797,7 +797,7 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 		coord := newCascadeCoordinator()
 
 		syncer := engine.NewSyncer(local, rs, fbs, engine.DefaultConfig())
-		bs, err := engine.New(engine.Config{
+		bs, err := engine.New(engine.BlockStoreConfig{
 			Local:           local,
 			Remote:          rs,
 			Syncer:          syncer,

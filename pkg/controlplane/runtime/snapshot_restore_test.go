@@ -563,7 +563,7 @@ func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
 		ParallelUploads:   1,
 		ParallelDownloads: 1,
 	})
-	bs, err := engine.New(engine.Config{
+	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
 		Remote:         wrappedRemote,
 		Syncer:         syncer,

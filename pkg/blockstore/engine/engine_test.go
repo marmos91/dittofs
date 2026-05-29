@@ -112,7 +112,7 @@ func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *Bl
 	fbs := newStubFileBlockStore()
 	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 
-	bs, err := New(Config{
+	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Remote:          nil,
 		Syncer:          syncer,
@@ -140,7 +140,7 @@ func newTestEngineWithCoordinator(t *testing.T, c MetadataCoordinator) *BlockSto
 	fbs := newStubFileBlockStore()
 	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 
-	bs, err := New(Config{
+	bs, err := New(BlockStoreConfig{
 		Local:          localStore,
 		Remote:         nil,
 		Syncer:         syncer,
@@ -355,7 +355,7 @@ func TestClose_ClosesCache(t *testing.T) {
 	fbs := newStubFileBlockStore()
 	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 
-	bs, err := New(Config{
+	bs, err := New(BlockStoreConfig{
 		Local:  localStore,
 		Remote: nil,
 		Syncer: syncer,

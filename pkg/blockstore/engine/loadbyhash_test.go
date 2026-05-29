@@ -23,7 +23,7 @@ func newLoadByHashFixture(t *testing.T) (*BlockStore, *fs.FSStore) {
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}
 	syncer := NewSyncer(localStore, nil, ms, DefaultConfig())
-	bs, err := New(Config{
+	bs, err := New(BlockStoreConfig{
 		Local:          localStore,
 		Syncer:         syncer,
 		FileBlockStore: ms,

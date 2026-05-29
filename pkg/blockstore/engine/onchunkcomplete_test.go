@@ -24,7 +24,7 @@ func newOnChunkCompleteFixture(t *testing.T, readBufferBytes int64) (*BlockStore
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}
 	syncer := NewSyncer(localStore, nil, ms, DefaultConfig())
-	bs, err := New(Config{
+	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Syncer:          syncer,
 		FileBlockStore:  ms,
