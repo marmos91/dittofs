@@ -945,9 +945,12 @@ func (r *Runtime) recoverOrphanedSnapshots(ctx context.Context) error {
 //     has run yet).
 //  3. create a verified safety snapshot and wait for StateReady.
 //  4. open the metadata dump.
-//  5. Reset the metadata store.
-//  6. Restore from the dump.
-//  7. post-verify the restored hashes against the remote.
+//  5. reset the block store's local append-log overlay (BEFORE the
+//     metadata Reset, so no concurrent rollup can flush post-snapshot
+//     FileBlock rows into the restored metadata).
+//  6. Reset the metadata store.
+//  7. Restore from the dump.
+//  8. post-verify the restored hashes against the remote.
 //
 // Return values: safetySnapshotID carries the ID of the pre-restore safety
 // snapshot. It is empty on precheck or pre-verify failure paths (no safety
@@ -1127,6 +1130,37 @@ func (r *Runtime) RestoreSnapshot(
 		return safetySnapshotID, fmt.Errorf("restore snapshot %q: metadata engine missing Backupable: %w",
 			snapID, models.ErrRestoreAborted)
 	}
+	// --- reset block-store local state (BEFORE the metadata Reset) ---
+	// The block store's per-payload append log may still hold post-snapshot
+	// write records. ReadPayloadAt replays those records on top of the
+	// restored CAS content ("last record wins"), so a file modified in
+	// place after the snapshot would come back as the mutated bytes (silent
+	// corruption). Dropping the append-log overlay makes the restored CAS
+	// manifest the sole source of truth.
+	//
+	// This MUST run BEFORE resetable.Reset + backupable.Restore (not after):
+	// background rollup workers run throughout the restore. If we cleared
+	// the overlay only after Restore repopulated the metadata, a rollup
+	// worker could call PersistFileBlocks against the freshly-restored
+	// metadata in the window between Restore and the clear, injecting
+	// post-snapshot FileBlock rows into the restored tree. Clearing the
+	// overlay first leaves no dirty intervals for a worker to flush.
+	//
+	// Safe here because BOTH the snapshot being restored AND the pre-restore
+	// safety snapshot drained rollups (CreateSnapshot is synchronous via the
+	// WaitForSnapshot above, so the safety snap's DrainRollups completed),
+	// so every byte that must survive is already durable in CAS and there
+	// are no dirty intervals left to flush.
+	if rerr := bs.ResetLocalState(ctx); rerr != nil {
+		return safetySnapshotID, fmt.Errorf("restore snapshot %q: reset block-store local state (safety-snap=%s): %w: %v",
+			snapID, safetySnapshotID, models.ErrRestoreAborted, rerr)
+	}
+	logger.Info("snapshot restore: block-store local state reset",
+		"snapshot_id", snapID,
+		"share", shareName,
+		"safety_snap_id", safetySnapshotID,
+	)
+
 	logger.Info("snapshot restore: reset start",
 		"snapshot_id", snapID,
 		"share", shareName,
@@ -1154,26 +1188,6 @@ func (r *Runtime) RestoreSnapshot(
 			snapID, safetySnapshotID, models.ErrRestoreAborted, err)
 	}
 	logger.Info("snapshot restore: restore ok",
-		"snapshot_id", snapID,
-		"share", shareName,
-		"safety_snap_id", safetySnapshotID,
-	)
-
-	// --- reset block-store local state ---
-	// The metadata store now reflects the snapshot, but the block store's
-	// per-payload append log may still hold post-snapshot write records.
-	// ReadPayloadAt replays those records on top of the restored CAS
-	// content ("last record wins"), so a file modified in place after the
-	// snapshot would come back as the mutated bytes (silent corruption).
-	// Dropping the append-log overlay makes the restored CAS manifest the
-	// sole source of truth. Safe here because BOTH the snapshot being
-	// restored AND the safety snapshot drained rollups, so every byte that
-	// must survive is already durable in CAS.
-	if rerr := bs.ResetLocalState(ctx); rerr != nil {
-		return safetySnapshotID, fmt.Errorf("restore snapshot %q: reset block-store local state (safety-snap=%s): %w: %v",
-			snapID, safetySnapshotID, models.ErrRestoreAborted, rerr)
-	}
-	logger.Info("snapshot restore: block-store local state reset",
 		"snapshot_id", snapID,
 		"share", shareName,
 		"safety_snap_id", safetySnapshotID,
