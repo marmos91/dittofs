@@ -421,10 +421,7 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.replay.replay3 | Replay | Flaky in CI (replay detection race) | - |
-| smb2.replay.replay-commands | Replay | Replay detection not implemented | - |
-| smb2.replay.replay-dhv2-oplock1 | Replay | Replay with durable handles not implemented | - |
 | smb2.replay.replay-dhv2-oplock2 | Replay | Replay with durable handles not implemented | - |
-| smb2.replay.replay-dhv2-oplock3 | Replay | Replay with durable handles not implemented | - |
 | smb2.replay.replay-dhv2-oplock-lease | Replay | Replay with durable handles not implemented | - |
 | smb2.replay.replay-dhv2-lease1 | Replay | Replay with durable handles not implemented | - |
 | smb2.replay.replay-dhv2-lease2 | Replay | Replay with durable handles not implemented | - |

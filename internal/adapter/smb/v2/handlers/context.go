@@ -189,6 +189,13 @@ type SMBHandlerContext struct {
 	// global and per-share encryption requirements per MS-SMB2 3.3.5.2.1.
 	RequestEncrypted bool
 
+	// IsReplay is true when the request header carries
+	// SMB2_FLAGS_REPLAY_OPERATION (MS-SMB2 §2.2.1.2). Handlers that
+	// support replay (CREATE with DH2Q, LOCK with non-zero
+	// LockSequence) consult per-request replay state to return the
+	// previously-computed result instead of re-executing.
+	IsReplay bool
+
 	// PostSend is an optional hook invoked by the dispatch layer AFTER the
 	// response for this command has been written to the wire. It is used by
 	// handlers (currently only CLOSE) to defer async side-effects that must

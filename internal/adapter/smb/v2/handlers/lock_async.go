@@ -39,6 +39,10 @@ func (h *Handler) parkLockOnConflict(
 	authCtx *metadata.AuthContext,
 	openFile *OpenFile,
 	fileLock metadata.FileLock,
+	fileID [16]byte,
+	lockSeqEnabled bool,
+	lockSeqIndex uint32,
+	lockSeqNumber uint8,
 ) (uint64, bool) {
 	// Deadlock detection: probe the conflicting holder via TestLock and
 	// check the WFG. If granting our wait would close a cycle, refuse to
@@ -70,15 +74,19 @@ func (h *Handler) parkLockOnConflict(
 	waitCtx, cancel := context.WithTimeout(context.Background(), asyncBlockingLockTimeout)
 
 	pending := &PendingLock{
-		ConnID:    ctx.ConnID,
-		SessionID: ctx.SessionID,
-		TreeID:    ctx.TreeID,
-		MessageID: ctx.MessageID,
-		AsyncId:   asyncId,
-		OwnerID:   fileLock.OpenID,
-		Identity:  authCtx.Identity,
-		Cancel:    cancel,
-		Callback:  ctx.AsyncLockCompleteCallback,
+		ConnID:         ctx.ConnID,
+		SessionID:      ctx.SessionID,
+		TreeID:         ctx.TreeID,
+		MessageID:      ctx.MessageID,
+		AsyncId:        asyncId,
+		OwnerID:        fileLock.OpenID,
+		Identity:       authCtx.Identity,
+		Cancel:         cancel,
+		Callback:       ctx.AsyncLockCompleteCallback,
+		FileID:         fileID,
+		LockSeqEnabled: lockSeqEnabled,
+		LockSeqIndex:   lockSeqIndex,
+		LockSeqNumber:  lockSeqNumber,
 	}
 
 	if err := h.PendingLockRegistry.Register(pending); err != nil {
@@ -224,6 +232,14 @@ func (h *Handler) resumePendingLock(
 				// handler.go); this flag is the cheap path used by call-sites
 				// that don't have the meta service handy.
 				openFile.HasByteRangeLocks.Store(true)
+				// Record success in the LOCK replay cache so a subsequent
+				// FLAGS_REPLAY_OPERATION retry with the same
+				// (FileID, Index, Number) returns this status instead of
+				// re-running the acquire path (MS-SMB2 §3.3.5.14 step 4).
+				// Mirrors the sync success path in lock.go:Lock.
+				if pending.LockSeqEnabled && h.LockReplayCache != nil {
+					h.LockReplayCache.Store(pending.FileID, pending.LockSeqIndex, pending.LockSeqNumber, types.StatusSuccess)
+				}
 				goto deliver
 			}
 			var storeErr *metadata.StoreError

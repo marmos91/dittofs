@@ -57,6 +57,16 @@ type PendingLock struct {
 	// CANCEL / TDIS / LOGOFF (with StatusCancelled / StatusRangeNotLocked +
 	// nil body). Releases the async slot as part of its work.
 	Callback AsyncLockCompleteCallback
+
+	// SMB3 LOCK replay-cache coordinates. Carried so the resume goroutine
+	// can record success in LockReplayCache after a parked LOCK is finally
+	// granted — otherwise a FLAGS_REPLAY_OPERATION retry of the originally
+	// parked LOCK would re-execute the acquire path (MS-SMB2 §3.3.5.14
+	// step 4).
+	FileID         [16]byte
+	LockSeqEnabled bool
+	LockSeqIndex   uint32
+	LockSeqNumber  uint8
 }
 
 // PendingLockRegistry indexes pending blocking LOCKs by four keys:

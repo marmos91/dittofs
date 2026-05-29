@@ -147,6 +147,17 @@ func (h *SMB2Header) IsRelated() bool {
 	return h.Flags.IsRelated()
 }
 
+// IsReplay returns true if the request carries the
+// SMB2_FLAGS_REPLAY_OPERATION flag (MS-SMB2 §2.2.1.2). Set by the
+// client when it is retransmitting a request whose original
+// response was lost (e.g., a channel failed before the response
+// arrived). The server consults per-CreateGuid / per-LockSequence
+// replay state instead of treating the request as fresh — see
+// the CREATE replay-cache and the LOCK sequence tracker.
+func (h *SMB2Header) IsReplay() bool {
+	return h.Flags.IsReplay()
+}
+
 // CommandName returns the string name of the command.
 func (h *SMB2Header) CommandName() string {
 	return h.Command.String()

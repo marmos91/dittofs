@@ -963,6 +963,16 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			"diskFileId", fmt.Sprintf("%x", qfidFileID[:16]))
 	}
 
+	// SMB3 replay protection (MS-SMB2 §3.3.5.9): record the
+	// freshly-built success response keyed by DH2Q CreateGuid so a
+	// FLAGS_REPLAY_OPERATION retry within the replay window returns
+	// the cached result instead of re-running CREATE. Only V2
+	// durable opens carry a CreateGuid — V1 / non-durable CREATEs
+	// rely on the in-flight MessageID dedup at the framing layer.
+	if h.CreateReplayCache != nil && openFile != nil && openFile.CreateGuid != ([16]byte{}) {
+		h.CreateReplayCache.Store(openFile.SessionID, openFile.CreateGuid, resp)
+	}
+
 	return resp
 }
 

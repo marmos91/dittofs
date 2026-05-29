@@ -489,6 +489,28 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
 	}
 
+	// SMB3 replay protection (MS-SMB2 §3.3.5.9 step 5; §2.2.1.2 REPLAY_OPERATION).
+	// When FLAGS_REPLAY_OPERATION is set on a CREATE carrying a
+	// DH2Q with a non-zero CreateGuid, the client is retransmitting
+	// a request whose original response was lost. The server MUST
+	// return the cached response — otherwise the legitimate retry
+	// trips STATUS_SHARING_VIOLATION (the original open is still
+	// alive on the server) and the DH2Q CREATE pattern is unusable
+	// over flaky multichannel topologies (smbtorture
+	// smb2.replay.replay-dhv2-*).
+	//
+	// The cache is scoped per-session and bounded by a short TTL; a
+	// miss falls through to the normal CREATE path, which on
+	// success records the response into the cache for the next
+	// replay window.
+	if cached := h.lookupCreateReplay(ctx, req); cached != nil {
+		// Return a shallow copy so the caller can stamp per-response
+		// fields without mutating the cache entry (the encoder reads
+		// fields verbatim).
+		resp := *cached
+		return &resp, nil
+	}
+
 	// TWrp (SMB2_CREATE_TIMEWARP_TOKEN, MS-SMB2 §2.2.13.2.7) requests a
 	// previous-version (snapshot) view of the share. DittoFS has no VSS-style
 	// snapshot backend wired into CREATE, so any non-zero snapshot timestamp
@@ -571,7 +593,9 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// ========================================================================
 
 	if tree.ShareName == "/ipc$" {
-		return h.handlePipeCreate(ctx, req, tree)
+		resp, err := h.handlePipeCreate(ctx, req, tree)
+		h.storeCreateReplayIfApplicable(ctx, req, resp)
+		return resp, err
 	}
 
 	// ========================================================================
@@ -704,7 +728,9 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	// Handle root directory case
 	if filename == "" && streamSuffix == "" {
-		return h.handleOpenRootCreate(ctx, req, authCtx, rootHandle, tree)
+		resp, err := h.handleOpenRootCreate(ctx, req, authCtx, rootHandle, tree)
+		h.storeCreateReplayIfApplicable(ctx, req, resp)
+		return resp, err
 	}
 
 	// ========================================================================
@@ -1417,6 +1443,58 @@ func buildMaxAccessEvalContext(file *metadata.File, authCtx *metadata.AuthContex
 // ============================================================================
 // Named Pipe Handling (IPC$)
 // ============================================================================
+
+// storeCreateReplayIfApplicable mirrors the cache.Store call at the
+// bottom of completeCreateAfterBreak for CREATE return paths that
+// bypass it (notably handlePipeCreate and handleOpenRootCreate). It is
+// the single seam used by those bypass paths so a successful CREATE
+// carrying a DH2Q CreateGuid is recorded into the replay cache; a
+// FLAGS_REPLAY_OPERATION retry within the replay window can then return
+// the cached result. Cache.Store is itself a no-op when CreateGuid is
+// zero or when resp.Status != StatusSuccess, so it is safe to call
+// unconditionally here (MS-SMB2 §3.3.5.9).
+func (h *Handler) storeCreateReplayIfApplicable(ctx *SMBHandlerContext, req *CreateRequest, resp *CreateResponse) {
+	if h.CreateReplayCache == nil || resp == nil || resp.Status != types.StatusSuccess {
+		return
+	}
+	createGuid := dh2qCreateGuid(req)
+	if createGuid == ([16]byte{}) {
+		return
+	}
+	h.CreateReplayCache.Store(ctx.SessionID, createGuid, resp)
+}
+
+// lookupCreateReplay returns a cached CREATE response when the request
+// carries SMB2_FLAGS_REPLAY_OPERATION and a matching DH2Q CreateGuid is
+// still in the per-session cache (MS-SMB2 §3.3.5.9 replay handling).
+// Returns nil on miss; caller falls through to the normal CREATE path.
+func (h *Handler) lookupCreateReplay(ctx *SMBHandlerContext, req *CreateRequest) *CreateResponse {
+	if !ctx.IsReplay || h.CreateReplayCache == nil {
+		return nil
+	}
+	createGuid := dh2qCreateGuid(req)
+	if createGuid == ([16]byte{}) {
+		return nil
+	}
+	return h.CreateReplayCache.Lookup(ctx.SessionID, createGuid)
+}
+
+// dh2qCreateGuid extracts the CreateGuid from a CREATE request's
+// SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2 context. Returns the zero
+// GUID when the context is missing, malformed, or carries a zero
+// CreateGuid — callers must treat that as "no replay keying
+// possible" (MS-SMB2 §2.2.13.2.11).
+func dh2qCreateGuid(req *CreateRequest) [16]byte {
+	dh2qCtx := FindCreateContext(req.CreateContexts, DurableHandleV2RequestTag)
+	if dh2qCtx == nil {
+		return [16]byte{}
+	}
+	_, _, createGuid, err := DecodeDH2QRequest(dh2qCtx.Data)
+	if err != nil {
+		return [16]byte{}
+	}
+	return createGuid
+}
 
 // handlePipeCreate handles CREATE on IPC$ for named pipes.
 // Named pipes are used for DCE/RPC communication, e.g., srvsvc for share enumeration.

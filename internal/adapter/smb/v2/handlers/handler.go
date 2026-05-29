@@ -78,6 +78,25 @@ type Handler struct {
 	// final response via AsyncLockCompleteCallback. See pending_lock_registry.go.
 	PendingLockRegistry *PendingLockRegistry
 
+	// CreateReplayCache backs SMB3 replay protection for CREATE
+	// (MS-SMB2 §3.3.5.9). When a client sets SMB2_FLAGS_REPLAY_OPERATION
+	// on a CREATE carrying a DH2Q with CreateGuid X, the handler
+	// consults this cache first: a hit returns the original response
+	// (avoiding STATUS_SHARING_VIOLATION on the legitimate retry); a
+	// miss falls through to the normal CREATE path and the success
+	// response is stored for the next replay window. See
+	// replay_cache.go.
+	CreateReplayCache *CreateReplayCache
+
+	// LockReplayCache backs SMB3 replay protection for LOCK
+	// (MS-SMB2 §3.3.5.14). Keyed by (FileID, LockSequenceIndex),
+	// stores the last LockSequenceNumber + status pair so a replayed
+	// LOCK with matching slot returns the cached status verbatim
+	// instead of trying to re-acquire / re-release (which would trip
+	// STATUS_RANGE_NOT_LOCKED or STATUS_LOCK_NOT_GRANTED). See
+	// replay_cache.go.
+	LockReplayCache *LockReplayCache
+
 	// LockWaitGraph tracks "is waiting for" relationships among byte-range
 	// lock owners. Consulted by the blocking-LOCK async-park path before
 	// committing to wait, so a request whose grant would close a cycle is
@@ -679,6 +698,8 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		PipeReadRegistry:        NewPipeReadRegistry(),
 		PendingCreateRegistry:   NewPendingCreateRegistry(),
 		PendingLockRegistry:     NewPendingLockRegistry(),
+		CreateReplayCache:       NewCreateReplayCache(),
+		LockReplayCache:         NewLockReplayCache(),
 		LockWaitGraph:           lock.NewWaitForGraph(),
 		MaxTransactSize:         1048576, // 1MB (supports large directory listings; increases per-request memory)
 		MaxReadSize:             1048576, // 1MB
@@ -717,9 +738,15 @@ func (h *Handler) GetSession(sessionID uint64) (*session.Session, bool) {
 }
 
 // DeleteSession removes a session by ID.
-// This automatically cleans up credit tracking as well.
+// This automatically cleans up credit tracking as well, and
+// drops any cached SMB3 CREATE replay entries scoped to the
+// session so the cache footprint is freed promptly rather
+// than waiting on replayCacheTTL (MS-SMB2 §3.3.5.9).
 func (h *Handler) DeleteSession(sessionID uint64) {
 	h.SessionManager.DeleteSession(sessionID)
+	if h.CreateReplayCache != nil {
+		h.CreateReplayCache.ForgetSession(sessionID)
+	}
 }
 
 // GetTree retrieves a tree connection by ID
@@ -817,6 +844,7 @@ func (h *Handler) WaitAndDeleteOpenFile(fileID [16]byte) {
 		v.(*handleOpTracker).wg.Wait()
 		h.handleOps.Delete(key)
 	}
+	h.forgetReplayState(fileID)
 	h.files.Delete(key)
 	h.resumeKeys.revoke(fileID)
 }
@@ -827,9 +855,27 @@ func (h *Handler) WaitAndDeleteOpenFile(fileID [16]byte) {
 // tracker so trackers created by BeginHandleOp on this FileID do not leak.
 func (h *Handler) DeleteOpenFile(fileID [16]byte) {
 	key := string(fileID[:])
+	h.forgetReplayState(fileID)
 	h.files.Delete(key)
 	h.handleOps.Delete(key)
 	h.resumeKeys.revoke(fileID)
+}
+
+// forgetReplayState drops both CREATE (by CreateGuid via the OpenFile)
+// and LOCK (by FileID) replay-cache entries for a handle that is being
+// closed. The cache windows are only meaningful while a retry could
+// still arrive — once the handle is gone, so is any legitimate replay.
+func (h *Handler) forgetReplayState(fileID [16]byte) {
+	if h.CreateReplayCache != nil {
+		if v, ok := h.files.Load(string(fileID[:])); ok {
+			if of := v.(*OpenFile); of.CreateGuid != ([16]byte{}) {
+				h.CreateReplayCache.Forget(of.CreateGuid)
+			}
+		}
+	}
+	if h.LockReplayCache != nil {
+		h.LockReplayCache.ForgetFile(fileID)
+	}
 }
 
 // ReleaseAllLocksForSession releases all byte-range locks held by a session.
