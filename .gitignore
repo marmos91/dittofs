@@ -56,6 +56,9 @@ temp/
 benchmark_results/
 *.prof
 
+# blockstore-perf pprof output
+_profiles/
+
 # POSIX test results
 test/posix/results/*.txt
 test/posix/results/*.log
