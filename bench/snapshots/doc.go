@@ -20,8 +20,11 @@
 //     count so the per-block verify budget can be read directly.
 //
 // Backends: an in-memory remote store (no S3 cost) plus the memory or
-// badger metadata engine. Both engines stream the dump KV-by-KV to the
-// writer, so RAM is bounded by the returned HashSet rather than the dump
-// size — the benchmarks confirm this and establish the ceiling documented
-// in README.md.
+// badger metadata engine. The badger engine streams the dump KV-by-KV to
+// the writer, so its create-path RAM is bounded by the returned HashSet
+// rather than the dump size. The memory engine instead gob-encodes its
+// whole snapshot into one buffer during Backup (expected for an in-RAM
+// backend) — it is the convenient fast default for sweeping scales, but it
+// is NOT the streaming ceiling and is unsuitable for TB-scale shares. The
+// benchmarks quantify both; README.md documents the limits.
 package snapshots

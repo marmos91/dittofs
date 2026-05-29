@@ -41,11 +41,15 @@ func (c *countingDiscard) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// RunBackup streams a metadata Backup to a counting discard writer and
+// RunBackup runs a metadata Backup against a counting discard writer and
 // returns the dump size + the returned HashSet. The metadata engine must
-// implement Backupable (memory + badger both do). The dump is NOT buffered
-// in RAM here; only the HashSet the engine accumulates is resident, which
-// is the quantity the create-path memory ceiling is built around.
+// implement Backupable (memory + badger both do). The harness itself does
+// not buffer the dump — the writer discards. Whether the dump is resident
+// depends on the engine: badger streams KV-by-KV (only the returned
+// HashSet is resident, the quantity the create-path ceiling is built
+// around), whereas the memory engine gob-encodes its whole snapshot into
+// one internal buffer before writing (so its B/op reflects that buffer,
+// not a stream).
 func RunBackup(ctx context.Context, store metadata.MetadataStore) (BackupResult, error) {
 	backupable, ok := store.(metadata.Backupable)
 	if !ok {

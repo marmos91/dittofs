@@ -387,12 +387,15 @@ insert).
 
 ### Established limits & budget
 
-- **The metadata dump is streamed.** Both the badger (KV-by-KV) and the
+- **The badger dump is streamed.** The badger engine (KV-by-KV) and the
   manifest writer emit to an `io.Writer` without buffering the whole dump;
-  `dump_bytes` never lands in a single allocation. The dominant
-  create-path resident allocation is the returned `HashSet`: one 32-byte
-  `ContentHash` per **unique** block, ~26 B/entry in the Go map. **Budget
-  ~25 MB of HashSet RAM per 1 M unique blocks**; 8 M unique blocks ≈ 200 MB.
+  on the badger path `dump_bytes` never lands in a single allocation. The
+  dominant create-path resident allocation is then the returned `HashSet`:
+  one 32-byte `ContentHash` per **unique** block, ~26 B/entry in the Go
+  map. **Budget ~25 MB of HashSet RAM per 1 M unique blocks**; 8 M unique
+  blocks ≈ 200 MB. (The memory engine does NOT stream — see the last
+  bullet; the indicative table above uses the memory engine, so its
+  create-path `B/op` reflects that buffer, not the streaming ceiling.)
 - **Manifest on disk is 65 bytes/hash** (64 hex + LF): 65 MB per 1 M
   hashes, 520 MB at 8 M. Written streamed; read back into a resident
   HashSet on restore (size as above).

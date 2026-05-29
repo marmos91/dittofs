@@ -121,7 +121,6 @@ func seed(ctx context.Context, store metadata.MetadataStore, opts SeedOpts) (int
 		blockSize = 1 << 20
 	}
 
-	unique := make(map[blockstore.ContentHash]struct{})
 	var blockSeq uint64
 
 	for i := 0; i < opts.Files; i++ {
@@ -145,7 +144,6 @@ func seed(ctx context.Context, store metadata.MetadataStore, opts SeedOpts) (int
 			// One distinct hash per (dedup-bucketed) block. blockSeq/dedup
 			// collapses every dedup-th block onto a shared hash.
 			h := hashFromSeq(blockSeq / uint64(dedup))
-			unique[h] = struct{}{}
 			refs[b] = blockstore.BlockRef{
 				Hash:   h,
 				Offset: uint64(b) * uint64(blockSize),
@@ -176,7 +174,15 @@ func seed(ctx context.Context, store metadata.MetadataStore, opts SeedOpts) (int
 			return 0, fmt.Errorf("snapshots bench: set child: %w", err)
 		}
 	}
-	return len(unique), nil
+
+	// Unique-hash count is derived, not tracked: hashes are
+	// hashFromSeq(blockSeq/dedup) for blockSeq in [0, totalRefs), so the
+	// distinct count is ceil(totalRefs/dedup). Computing it avoids a
+	// multi-GB scratch map at the 1e6×8 scale that would otherwise pollute
+	// the benchmark's reported memory ceiling.
+	totalRefs := uint64(opts.Files) * uint64(blocksPerFile)
+	unique := int((totalRefs + uint64(dedup) - 1) / uint64(dedup))
+	return unique, nil
 }
 
 // hashFromSeq derives a deterministic unique ContentHash from a sequence

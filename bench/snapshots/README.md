@@ -67,11 +67,12 @@ probes, _ := snap.RunVerify(ctx, rs, backup.HashSet)
 See [`test/e2e/BENCHMARKS.md`](../../test/e2e/BENCHMARKS.md#snapshot-scale-limits)
 for the measured ceiling and the per-block verify budget. Summary:
 
-- The metadata dump is **streamed** (badger writes KV-by-KV; the dump byte
-  count never lands in a single buffer). The dominant create-path
-  allocation is the returned `HashSet`: one 32-byte `ContentHash` per
-  **unique** referenced block, ~26 B/entry in the Go map. Plan ~25 MB of
-  HashSet RAM per 1 M unique blocks.
+- The metadata dump is **streamed by the badger engine** (KV-by-KV; the
+  dump byte count never lands in a single buffer). On the badger path the
+  dominant create-path allocation is the returned `HashSet`: one 32-byte
+  `ContentHash` per **unique** referenced block, ~26 B/entry in the Go map.
+  Plan ~25 MB of HashSet RAM per 1 M unique blocks. (The memory engine does
+  NOT stream — see the last bullet.)
 - The manifest is streamed on write (65 bytes/hash on disk: 64 hex + LF).
 - Verify allocates per probe but holds nothing across probes; cost is N
   HEAD round-trips at concurrency 16. The in-memory remote number is a

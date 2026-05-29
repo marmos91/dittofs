@@ -26,13 +26,18 @@ var snapshotsCmd = &cobra.Command{
 --blocks-per-file BlockRefs) into the chosen metadata engine, then times
 the three snapshot cost centers in sequence:
 
-  backup          metadata dump (streamed) + resident HashSet
+  backup          metadata dump + resident HashSet
   write-manifest  sorted hex-line manifest (streamed)
   verify          HEAD-probe every hash against an in-memory remote (conc 16)
 
 Reports wall time and dump/manifest sizes per stage. Uses an in-memory
 remote so there is no S3 request cost; multiply the verify time by a real
-per-HEAD RTT for an S3 budget estimate.`,
+per-HEAD RTT for an S3 budget estimate.
+
+Engine note: --engine badger streams the dump KV-by-KV (its create-path RAM
+is the HashSet); --engine memory (default) gob-encodes the whole snapshot
+into one buffer, so its backup RAM is not the streaming ceiling. Use badger
+to model a large share.`,
 	RunE: runSnapshots,
 }
 
