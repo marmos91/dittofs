@@ -140,6 +140,20 @@ type Session struct {
 	// signature" rejection at reauth1-5).
 	PreauthIntegrityHash [64]byte
 
+	// PeerUsedEncryption is sticky-set to true the first time we receive an
+	// encrypted (Transform Header) request on this session. Per MS-SMB2
+	// §3.3.4.1.4 the response to an encrypted request MUST be encrypted; the
+	// synchronous response path already honours this via SMBHandlerContext
+	// .RequestEncrypted, but ASYNC completions (e.g. CHANGE_NOTIFY
+	// CANCELLED) lose that context once they're dispatched from the registry
+	// goroutine. Reading this sticky flag in SendAsyncChangeNotifyResponse /
+	// SendAsyncCompletionResponse lets them mirror the peer's encryption
+	// stance even when Session.EncryptData stays false (preferred mode
+	// without per-share enforcement). Smbtorture's
+	// encryption-aes-128-{ccm,gcm} forces encryption per-connection but does
+	// not set the session flag, so this is the only signal we have.
+	PeerUsedEncryption atomic.Bool
+
 	// Credit tracking
 	credits Credits
 

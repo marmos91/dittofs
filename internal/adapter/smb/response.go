@@ -98,6 +98,16 @@ func ProcessSingleRequest(
 	// for preauth integrity hash chaining (SESSION_SETUP). See #362.
 	handlerCtx.RawRequest = rawMessage
 
+	// Sticky-track that the peer is using encryption on this session so that
+	// async completion responses (CHANGE_NOTIFY CANCELLED in particular)
+	// can mirror the peer's encryption stance even when Session.EncryptData
+	// stays false in preferred mode. See Session.PeerUsedEncryption.
+	if isEncrypted && reqHeader.SessionID != 0 {
+		if sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID); ok {
+			sess.PeerUsedEncryption.Store(true)
+		}
+	}
+
 	// Per MS-SMB2 3.3.5.2.1: enforce encryption requirements.
 	if errStatus := checkEncryptionRequired(reqHeader, connInfo, isEncrypted); errStatus != 0 {
 		return SendErrorResponse(reqHeader, errStatus, connInfo)
@@ -315,6 +325,13 @@ func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.
 	// input the client hashed — including compound framing fields like
 	// NextCommand. Re-encoding reqHeader would diverge on those fields.
 	handlerCtx.RawRequest = rawMessage
+
+	// Sticky-track peer encryption usage; see ProcessSingleRequest.
+	if isEncrypted && reqHeader.SessionID != 0 {
+		if sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID); ok {
+			sess.PeerUsedEncryption.Store(true)
+		}
+	}
 
 	// Per MS-SMB2 3.3.5.2.1: enforce encryption requirements.
 	if errStatus := checkEncryptionRequired(reqHeader, connInfo, isEncrypted); errStatus != 0 {
@@ -802,7 +819,15 @@ func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, respons
 			"bufferLen", len(response.Buffer))
 	}
 
-	return SendMessage(respHeader, body, connInfo)
+	// Async completion must mirror the peer's encryption stance per MS-SMB2
+	// §3.3.4.1.4 — if any prior request on this session arrived encrypted,
+	// the peer expects this response encrypted too, even when
+	// Session.EncryptData=false (preferred mode without per-share enforcement).
+	mirrorEncryption := false
+	if sess, ok := connInfo.Handler.GetSession(sessionID); ok {
+		mirrorEncryption = sess.PeerUsedEncryption.Load()
+	}
+	return sendMessage(respHeader, body, connInfo, mirrorEncryption, true, nil)
 }
 
 // SendAsyncCompletionResponse sends a standalone async completion response for
@@ -853,7 +878,12 @@ func SendAsyncCompletionResponse(sessionID uint64, messageID uint64, asyncId uin
 		"messageID", messageID,
 		"asyncId", asyncId)
 
-	return SendMessage(respHeader, body, connInfo)
+	// Mirror the peer's encryption stance (see SendAsyncChangeNotifyResponse).
+	mirrorEncryption := false
+	if sess, ok := connInfo.Handler.GetSession(sessionID); ok {
+		mirrorEncryption = sess.PeerUsedEncryption.Load()
+	}
+	return sendMessage(respHeader, body, connInfo, mirrorEncryption, true, nil)
 }
 
 // encodeReadResponseBody encodes a READ response body for async pipe-read completion.
