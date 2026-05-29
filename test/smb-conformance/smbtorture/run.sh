@@ -348,7 +348,7 @@ if $KERBEROS; then
         # Reserved server-side ACL xattr name surfaced to smbtorture
         # smb2.ea.acl_xattr. The server rejects EA writes targeting this name
         # with STATUS_ACCESS_DENIED (set_info.go::reservedACLXattrName).
-        "--option=acl_xattr_name=security.NTACL"
+        "--option=torture:acl_xattr_name=security.NTACL"
     )
     log_info "Kerberos mode: targeting ${SMBTORTURE_HOST}/<share> with SPNEGO/Kerberos"
 else
@@ -363,7 +363,7 @@ else
         # Reserved server-side ACL xattr name surfaced to smbtorture
         # smb2.ea.acl_xattr. The server rejects EA writes targeting this name
         # with STATUS_ACCESS_DENIED (set_info.go::reservedACLXattrName).
-        "--option=acl_xattr_name=security.NTACL"
+        "--option=torture:acl_xattr_name=security.NTACL"
     )
 fi
 
