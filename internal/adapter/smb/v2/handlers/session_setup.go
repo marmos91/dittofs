@@ -368,12 +368,23 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 // passes or the gate does not apply.
 //
 // Scope conditions (all required):
+//   - the request did not arrive inside an SMB3 Transform Header — AEAD already
+//     provides integrity for encrypted messages and they carry no SMB2
+//     signature, so the framing layer (framing.go) skips signature
+//     verification for them and so must this gate;
 //   - the connection owns a registered bound channel for the session with a
 //     valid signer — origin-connection re-auth (no Channel entry) is excluded
 //     so the existing reauth1-6 path is untouched;
-//   - the inbound request is signed OR the session requires signing;
+//   - the inbound request is signed OR the session requires signing (mirroring
+//     Samba's `signing_required || (flags & SIGNED)` condition at
+//     smb2_server.c:3189 — a session where signing is merely enabled but not
+//     required must not have an unsigned re-auth rejected);
 //   - the raw request bytes are available to verify.
 func (h *Handler) verifyReauthChannelSignature(ctx *SMBHandlerContext, sess *session.Session) *HandlerResult {
+	if ctx.RequestEncrypted {
+		return nil
+	}
+
 	ch := sess.GetChannel(ctx.ConnID)
 	if ch == nil || ch.Signer == nil {
 		return nil
@@ -394,7 +405,8 @@ func (h *Handler) verifyReauthChannelSignature(ctx *SMBHandlerContext, sess *ses
 			verifyBytes = verifyBytes[:hdr.NextCommand]
 		}
 	}
-	if !requestSigned && !sess.ShouldVerify() {
+	signingRequired := sess.CryptoState != nil && sess.CryptoState.SigningRequired
+	if !requestSigned && !signingRequired {
 		return nil
 	}
 
@@ -402,7 +414,7 @@ func (h *Handler) verifyReauthChannelSignature(ctx *SMBHandlerContext, sess *ses
 		return nil
 	}
 
-	logger.Info("SESSION_SETUP re-auth on bound channel: signature mismatch",
+	logger.Warn("SESSION_SETUP re-auth on bound channel: signature mismatch",
 		"sessionID", ctx.SessionID,
 		"connID", ctx.ConnID,
 		"channelSigningAlgo", fmt.Sprintf("0x%04x", ch.SigningAlgo))
