@@ -604,10 +604,49 @@ func grantConnectionCredits(connInfo *ConnInfo, sessionID uint64, requested, cre
 // SendErrorResponse sends an SMB2 error response.
 // Per user decision: all responses on encrypted sessions are encrypted,
 // including error responses.
+//
+// Special case STATUS_USER_SESSION_DELETED: per Samba
+// source3/smbd/smb2_server.c::smbd_smb2_request_dispatch ("We fallback to a
+// session of another process in order to get the signing correct"), when the
+// inbound request carries a SessionId that no longer maps to a session, the
+// outbound USER_SESSION_DELETED reply MUST still be signed with the keys of
+// some valid session on this transport so the client accepts it under
+// SigningRequired. Otherwise the unsigned reply is mapped to
+// NT_STATUS_ACCESS_DENIED by Samba's smbXcli verifier and smb2.session-id
+// reports the wrong status code. The wire SessionId stays the original
+// (wrong) value the client used; only the signing key is borrowed.
 func SendErrorResponse(reqHeader *header.SMB2Header, status types.Status, connInfo *ConnInfo) error {
 	credits := grantConnectionCredits(connInfo, reqHeader.SessionID, reqHeader.Credits, reqHeader.CreditCharge)
 	respHeader := header.NewResponseHeaderWithCredits(reqHeader, status, credits)
+	if status == types.StatusUserSessionDeleted && connInfo.SessionTracker != nil {
+		if fallback := connInfo.SessionTracker.AnyTrackedSession(); fallback != 0 {
+			if _, ok := connInfo.Handler.GetSession(fallback); ok {
+				return sendMessageWithSigner(respHeader, MakeErrorBody(), connInfo, fallback)
+			}
+		}
+	}
 	return SendMessage(respHeader, MakeErrorBody(), connInfo)
+}
+
+// sendMessageWithSigner sends an SMB2 message whose wire SessionId differs
+// from the session whose key is used to sign it. Used by SendErrorResponse
+// on the wrong-SessionId USER_SESSION_DELETED path.
+func sendMessageWithSigner(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, signingSessionID uint64) error {
+	smbPayload := append(hdr.Encode(), body...)
+	sess, ok := connInfo.Handler.GetSession(signingSessionID)
+	if !ok || sess.CryptoState == nil {
+		// Falls back to plain unsigned send.
+		return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, smbPayload)
+	}
+	if sess.ShouldSign() {
+		sess.SignMessageOnChannel(connInfo.ConnID, smbPayload)
+		copy(hdr.Signature[:], smbPayload[48:64])
+		logger.Debug("Signed outgoing SMB2 message with fallback session",
+			"command", hdr.Command.String(),
+			"wireSessionID", hdr.SessionID,
+			"signerSessionID", signingSessionID)
+	}
+	return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, smbPayload)
 }
 
 // SendMessage sends an SMB2 message with NetBIOS framing, optional encryption,

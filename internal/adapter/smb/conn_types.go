@@ -142,6 +142,15 @@ var _ session.ChannelTransport = (*ConnInfo)(nil)
 type SessionTracker interface {
 	TrackSession(sessionID uint64)
 	UntrackSession(sessionID uint64)
+
+	// AnyTrackedSession returns one of the session IDs currently tracked on
+	// this connection (zero if none). Used by SendErrorResponse for the
+	// wrong-SessionId path so a STATUS_USER_SESSION_DELETED reply can still
+	// be signed with a valid session's key — per Samba
+	// source3/smbd/smb2_server.c::smbd_smb2_request_dispatch, "fallback to
+	// a session of another process in order to get the signing correct"
+	// (MS-SMB2 §3.2.5.1.4 / smbtorture smb2.session-id).
+	AnyTrackedSession() uint64
 }
 
 // NewSequenceWindowForConnection creates a CommandSequenceWindow sized for the

@@ -113,6 +113,18 @@ func (c *Connection) UntrackSession(sessionID uint64) {
 	}
 }
 
+// AnyTrackedSession returns one of the session IDs currently tracked on this
+// connection (zero if none). Used by SendErrorResponse on the wrong-
+// SessionId path — see SessionTracker docstring.
+func (c *Connection) AnyTrackedSession() uint64 {
+	c.sessionsMu.Lock()
+	defer c.sessionsMu.Unlock()
+	for id := range c.sessions {
+		return id
+	}
+	return 0
+}
+
 // connInfo builds the ConnInfo struct used by internal/ dispatch functions.
 func (c *Connection) connInfo() *smb.ConnInfo {
 	ci := &smb.ConnInfo{
