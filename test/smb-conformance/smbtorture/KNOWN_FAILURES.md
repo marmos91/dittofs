@@ -149,17 +149,6 @@ counter already matched. The `2conn_notify_max_async_credits` failure that
 remained here was a cross-connection MessageID collision in
 `NotifyRegistry`, fixed in #416.
 
-### Directory Operations (Advanced Queries Not Implemented)
-
-Advanced directory query features (file index, sorted results, large directory
-handling) are not fully implemented.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.dir.1kfiles_rename | Directory | Large directory rename not implemented | - |
-| smb2.dir.fixed | Directory | Fixed-size directory entries not implemented | - |
-| smb2.dir.modify | Directory | Directory modify during enumeration not implemented | - |
-
 ### File Attributes (Limited Support)
 
 DittoFS has limited DOS/Windows attribute support. Hidden, system, and archive

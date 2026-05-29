@@ -339,6 +339,27 @@ type OpenFile struct {
 	EnumerationIndex   int    // Current index in directory listing
 	EnumerationPattern string // Last search pattern used (for detecting pattern changes)
 
+	// EnumerationLastName is the case-folded name of the last directory entry
+	// returned to the client on this handle. Subsequent QUERY_DIRECTORY calls
+	// in the same enumeration sequence re-read the directory fresh and skip
+	// entries with name <= EnumerationLastName (case-insensitive). This is
+	// Samba's name-based cursor model (source3/smbd/dir.c) and is required
+	// for smb2.dir.fixed (#728): when one handle deletes files mid-enumeration
+	// on another, the second handle must see live state (deletions hidden,
+	// new files added) without skipping or duplicating entries.
+	//
+	// EnumerationLastName == "" means "before any entry"; the first call of a
+	// fresh enumeration returns "." / ".." for a wildcard search and then
+	// data entries from the start. Cleared on RESTART_SCANS, REOPEN, pattern
+	// change and EnumerationComplete.
+	//
+	// EnumerationSpecialDone tracks whether the "." and ".." entries have been
+	// returned in this sequence. Without it, deletion of the first real entry
+	// between calls could resurface "." on the next call (LastName="" but
+	// special done).
+	EnumerationLastName    string
+	EnumerationSpecialDone int // count of special entries already returned (0..2)
+
 	// Delete on close support (FileDispositionInformation)
 	DeletePending bool                // If true, delete file/directory when handle is closed
 	ParentHandle  metadata.FileHandle // Parent directory handle for deletion
