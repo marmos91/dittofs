@@ -353,6 +353,7 @@ func TestMapSnapshotError_SentinelTable(t *testing.T) {
 		want int
 	}{
 		{"SnapshotNotFound", models.ErrSnapshotNotFound, http.StatusNotFound},
+		{"LocalStoreUnsupported", models.ErrSnapshotLocalStoreUnsupported, http.StatusBadRequest},
 		{"ShareNotFound", shares.ErrShareNotFound, http.StatusNotFound},
 		{"ShareEnabled", models.ErrShareEnabled, http.StatusConflict},
 		{"SnapshotNotDurable", models.ErrSnapshotNotDurable, http.StatusPreconditionFailed},

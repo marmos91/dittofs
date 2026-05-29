@@ -284,6 +284,9 @@ func mapSnapshotError(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, models.ErrSnapshotNotFound):
 		NotFound(w, "snapshot not found")
 		return true
+	case errors.Is(err, models.ErrSnapshotLocalStoreUnsupported):
+		BadRequest(w, "snapshots require an fs-backed local store")
+		return true
 	case errors.Is(err, shares.ErrShareNotFound):
 		NotFound(w, "share not found")
 		return true

@@ -78,8 +78,8 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 		return "", err
 	}
 	if localStoreDir == "" {
-		return "", fmt.Errorf("snapshot create %q: memory-only share has no local store dir: %w",
-			shareName, models.ErrSnapshotBackupFailed)
+		return "", fmt.Errorf("snapshot create %q: in-memory local store has no on-disk root: %w",
+			shareName, models.ErrSnapshotLocalStoreUnsupported)
 	}
 
 	// (2) Resolve metadata store + type-assert to Backupable.

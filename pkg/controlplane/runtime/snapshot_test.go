@@ -246,6 +246,25 @@ func TestRuntimeFailSnap_RecordsError(t *testing.T) {
 	}
 }
 
+// TestRuntimeCreateSnapshot_MemoryLocalStore asserts a snapshot on a share
+// whose local block store has no on-disk root fails up front with the typed
+// ErrSnapshotLocalStoreUnsupported sentinel (mapped to 400) rather than an
+// opaque 500.
+func TestRuntimeCreateSnapshot_MemoryLocalStore(t *testing.T) {
+	rt := newTestRuntime(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	const shareName = "alpha"
+	// Inject a share with no local store dir (the in-memory backend case).
+	rt.sharesSvc.InjectShareForTesting(&shares.Share{Name: shareName})
+
+	_, err := rt.CreateSnapshot(ctx, shareName, CreateSnapshotOpts{})
+	if !errors.Is(err, models.ErrSnapshotLocalStoreUnsupported) {
+		t.Fatalf("CreateSnapshot err = %v, want errors.Is(ErrSnapshotLocalStoreUnsupported)", err)
+	}
+}
+
 // TestRuntimeGetSnapshot_NotFound asserts ErrSnapshotNotFound propagates
 // from the store through the Runtime wrapper.
 func TestRuntimeGetSnapshot_NotFound(t *testing.T) {
