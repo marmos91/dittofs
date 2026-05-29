@@ -19,7 +19,10 @@ import (
 // Compile-time interface satisfaction check. -07 restored the
 // assertion after MemoryStore gained the BlockStoreAppend-contributed
 // methods (Put/Get/GetRange/Has/Delete/Head/Walk/AppendWrite/DeleteLog).
-var _ local.LocalStore = (*MemoryStore)(nil)
+var (
+	_ local.LocalStore          = (*MemoryStore)(nil)
+	_ local.ChunkLifecycleHooks = (*MemoryStore)(nil)
+)
 
 // ErrStoreClosed is an alias for blockstore.ErrStoreClosed for backward compatibility.
 var ErrStoreClosed = blockstore.ErrStoreClosed
@@ -83,6 +86,26 @@ func (s *MemoryStore) SetChunkEmitter(emit func(payloadID string, chunkStart uin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.chunkEmitter = emit
+}
+
+// SetObjectIDPersister is a no-op on MemoryStore. MemoryStore mirrors
+// FileBlock rows through the per-chunk emitter installed via
+// SetChunkEmitter; the rollup-completion persister is only used by the
+// FSStore backend whose writes drive the engine's CAS read path through
+// the rollup-persisted FileBlock manifest. Implemented to satisfy
+// [local.ChunkLifecycleHooks] so engine.New can wire all three hooks
+// through a single named-interface assertion.
+func (s *MemoryStore) SetObjectIDPersister(_ func(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error) {
+}
+
+// SetOnChunkComplete is a no-op on MemoryStore. MemoryStore's writes
+// don't materialize through the CAS chunkstore + read-Cache hot path
+// that this callback warms; the in-memory rollup keeps everything in
+// the MemoryStore's CAS map and FileBlock rows are emitted via
+// SetChunkEmitter. Implemented to satisfy [local.ChunkLifecycleHooks]
+// so engine.New can wire all three hooks through a single
+// named-interface assertion.
+func (s *MemoryStore) SetOnChunkComplete(_ func(hash blockstore.ContentHash, data []byte, path string)) {
 }
 
 // appendLog is the per-payload write-absorber buffer. AppendWrite

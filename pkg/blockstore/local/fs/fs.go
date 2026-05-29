@@ -47,7 +47,10 @@ var (
 )
 
 // Compile-time interface satisfaction check.
-var _ local.LocalStore = (*FSStore)(nil)
+var (
+	_ local.LocalStore          = (*FSStore)(nil)
+	_ local.ChunkLifecycleHooks = (*FSStore)(nil)
+)
 
 // ObjectIDPersister is invoked after a rollup quiesces successfully.
 // It receives the payloadID, the BlockRef manifest collected during
@@ -802,6 +805,16 @@ func (bc *FSStore) SetObjectIDPersister(p func(ctx context.Context, payloadID st
 // importing this package's named-type spelling.
 func (bc *FSStore) SetOnChunkComplete(fn func(hash blockstore.ContentHash, data []byte, path string)) {
 	bc.onChunkComplete.Store(&chunkCompleteCallback{fn: fn})
+}
+
+// SetChunkEmitter is a no-op on FSStore. FSStore drives FileBlock row
+// writes through the rollup-completion persister installed via
+// SetObjectIDPersister; the per-chunk emitter is only used by the
+// in-memory backend whose writes don't materialize through the CAS
+// chunkstore + rollup persister path. Implemented to satisfy
+// [local.ChunkLifecycleHooks] so engine.New can wire all three hooks
+// through a single named-interface assertion.
+func (bc *FSStore) SetChunkEmitter(_ func(payloadID string, chunkStart uint64, size uint32, hash blockstore.ContentHash)) {
 }
 
 // SetRetentionPolicy updates the retention policy and TTL for eviction decisions.
