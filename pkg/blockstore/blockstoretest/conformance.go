@@ -46,6 +46,19 @@ type Factory func(t *testing.T) (blockstore.BlockStore, func())
 // LastModified is non-zero (carry-forward).
 //   - Put is idempotent under same-hash same-bytes.
 //   - Put is safe under concurrent same-hash same-bytes writers.
+//   - Put on a zero-byte payload is accepted; Has/Get/Head report it.
+//   - GetRange past EOF returns either an error (offset >= EOF) or the
+//     available tail (offset < EOF, offset+length > EOF). Backends MAY
+//     diverge on which error sentinel they wrap, so the suite asserts
+//     "any non-nil error" for the offset >= EOF case rather than pinning
+//     a specific sentinel — see the GetRange godoc on BlockStore which
+//     explicitly permits both clamp and explicit-error behaviors.
+//   - Concurrent Put + Walk never surfaces a duplicate hash from Walk;
+//     in-flight Puts MAY be invisible to Walk but any hash Walk does
+//     observe is observed at most once.
+//   - Put accepts a payload whose bytes do not match the supplied hash:
+//     the no-verify-on-Put contract is the caller's responsibility, and
+//     Get returns whatever bytes were stored under that key.
 //
 // Backends that also implement BlockStoreAppend additionally call
 // BlockStoreAppendConformance.
@@ -61,6 +74,10 @@ func BlockStoreConformance(t *testing.T, factory Factory) {
 	t.Run("Head", func(t *testing.T) { testHead(t, factory) })
 	t.Run("Put_Idempotent_SameHash", func(t *testing.T) { testPutIdempotent(t, factory) })
 	t.Run("Put_Concurrent_SameHash", func(t *testing.T) { testPutConcurrent(t, factory) })
+	t.Run("Put_ZeroByte", func(t *testing.T) { testPutZeroByte(t, factory) })
+	t.Run("GetRange_PastEOF", func(t *testing.T) { testGetRangePastEOF(t, factory) })
+	t.Run("Concurrent_Put_Walk_NoDuplicates", func(t *testing.T) { testConcurrentPutWalkNoDuplicates(t, factory) })
+	t.Run("Put_WrongHash_NoVerify", func(t *testing.T) { testPutWrongHashNoVerify(t, factory) })
 }
 
 // blake3Sum is the conformance suite's shared hashing helper. It mirrors
@@ -84,7 +101,7 @@ func testPutGetRoundtrip(t *testing.T, factory Factory) {
 	// below is meaningful — never trust the slice that was handed to
 	// Put after the Put returns; backends may reference it during
 	// asynchronous flushes.
-	original := []byte("conformance: Put_Get_Roundtrip payload bytes")
+	original := []byte("conformance: hello blockstore round-trip payload")
 	stored := make([]byte, len(original))
 	copy(stored, original)
 
@@ -378,5 +395,198 @@ func testPutConcurrent(t *testing.T, factory Factory) {
 	}
 	if count != 1 {
 		t.Fatalf("concurrent same-hash Put created %d objects, want 1", count)
+	}
+}
+
+// testPutZeroByte pins the contract that backends MUST accept a
+// zero-byte payload. The empty BLAKE3 digest is a well-known fixture
+// (af1349b9...3262) — backends that reject empty data would break
+// callers that legitimately address an empty chunk (e.g., the tail of a
+// file whose final boundary lands at offset 0). Has/Get/Head all MUST
+// reflect the stored object.
+func testPutZeroByte(t *testing.T, factory Factory) {
+	bs, cleanup := factory(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	empty := []byte{}
+	h := blake3Sum(empty)
+	if err := bs.Put(ctx, h, empty); err != nil {
+		t.Fatalf("Put zero-byte: %v", err)
+	}
+
+	has, err := bs.Has(ctx, h)
+	if err != nil {
+		t.Fatalf("Has after zero-byte Put: %v", err)
+	}
+	if !has {
+		t.Fatalf("Has after zero-byte Put: want true, got false")
+	}
+
+	got, err := bs.Get(ctx, h)
+	if err != nil {
+		t.Fatalf("Get after zero-byte Put: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("Get after zero-byte Put: want zero-length slice, got %d bytes", len(got))
+	}
+
+	m, err := bs.Head(ctx, h)
+	if err != nil {
+		t.Fatalf("Head after zero-byte Put: %v", err)
+	}
+	if m.Size != 0 {
+		t.Errorf("Head Meta.Size = %d, want 0", m.Size)
+	}
+	if m.LastModified.IsZero() {
+		t.Error("Head Meta.LastModified is zero (contract violation)")
+	}
+}
+
+// testGetRangePastEOF pins the cross-backend GetRange-past-EOF contract.
+// The BlockStore.GetRange godoc explicitly permits backends to either
+// return a clamped tail OR return an explicit error, so the conformance
+// suite asserts the union of valid behaviors:
+//
+//   - offset >= EOF MUST surface a non-nil error. The specific sentinel
+//     varies by backend (FSStore wraps a plain fmt.Errorf, remote/memory
+//     historically returned ErrChunkNotFound, the decorators return
+//     ErrInvalidOffset), so the suite checks only "any error" rather
+//     than pinning a sentinel. CS-2 in the v1.0 audit (REVIEW.md §4)
+//     flagged this divergence — aligning the sentinel across backends
+//     is tracked separately and out of scope for this conformance PR.
+//
+//   - offset < EOF but offset+length > EOF MUST return the available
+//     bytes (offset..EOF) without error. Every existing backend already
+//     clamps, so this is the safe contract to pin.
+func testGetRangePastEOF(t *testing.T, factory Factory) {
+	bs, cleanup := factory(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	stored := []byte("0123456789abcdef") // exactly 16 bytes
+	h := blake3Sum(stored)
+	if err := bs.Put(ctx, h, stored); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	// (a) offset strictly past EOF: contract requires a non-nil error.
+	got, err := bs.GetRange(ctx, h, 20, 8)
+	if err == nil {
+		t.Fatalf("GetRange offset=20 length=8 (past EOF): want non-nil error, got nil (data len=%d)", len(got))
+	}
+
+	// (b) partial past EOF: contract requires the available tail. The
+	// returned slice is the byte range [offset, EOF) — callers detect
+	// the short read by comparing returned len against requested length.
+	got, err = bs.GetRange(ctx, h, 8, 20)
+	if err != nil {
+		t.Fatalf("GetRange offset=8 length=20 (partial past EOF): want nil error, got %v", err)
+	}
+	want := stored[8:]
+	if !bytes.Equal(got, want) {
+		t.Fatalf("GetRange partial-past-EOF returned %q, want %q", got, want)
+	}
+}
+
+// testConcurrentPutWalkNoDuplicates pins the "Walk surfaces every hash
+// at most once" invariant. The S3 paginator can in principle surface a
+// duplicate hash if a key crosses a pagination boundary mid-list and
+// the next page's continuation token is mishandled; the FSStore and
+// memory backends are immune by construction. In-flight Puts are NOT
+// required to appear in Walk's snapshot — partial visibility is fine —
+// but no hash may appear twice.
+func testConcurrentPutWalkNoDuplicates(t *testing.T, factory Factory) {
+	bs, cleanup := factory(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	const writers = 8
+
+	// Seed distinct payloads up front so each writer has its own hash.
+	payloads := make([][]byte, writers)
+	hashes := make([]blockstore.ContentHash, writers)
+	for i := 0; i < writers; i++ {
+		p := []byte("concurrent-walk-payload-")
+		p = append(p, byte('A'+i))
+		p = append(p, bytes.Repeat([]byte{byte(i)}, 64)...)
+		payloads[i] = p
+		hashes[i] = blake3Sum(p)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(writers + 1)
+	errCh := make(chan error, writers+1)
+
+	// Writer goroutines.
+	for i := 0; i < writers; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			if err := bs.Put(ctx, hashes[i], payloads[i]); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+
+	// Walker goroutine — runs concurrently with the writers.
+	var walkMu sync.Mutex
+	seen := make(map[blockstore.ContentHash]int)
+	go func() {
+		defer wg.Done()
+		err := bs.Walk(ctx, func(h blockstore.ContentHash, _ blockstore.Meta) error {
+			walkMu.Lock()
+			seen[h]++
+			walkMu.Unlock()
+			return nil
+		})
+		if err != nil {
+			errCh <- err
+		}
+	}()
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("concurrent Put + Walk returned error: %v", err)
+	}
+
+	walkMu.Lock()
+	defer walkMu.Unlock()
+	for h, n := range seen {
+		if n > 1 {
+			t.Errorf("Walk observed hash %s %d times during concurrent Put (want at most once)", h, n)
+		}
+	}
+}
+
+// testPutWrongHashNoVerify pins the no-verify-on-Put contract: backends
+// MUST trust the caller-supplied hash and MUST NOT recompute or
+// validate the digest at Put time. Verification is a read-side
+// responsibility (e.g., the S3 read path's streaming BLAKE3 verifier in
+// ReadBlockVerified). A Put with a payload whose bytes do not hash to
+// the supplied key succeeds; a subsequent Get under that key returns
+// the stored bytes verbatim. No ErrCASContentMismatch surfaces from
+// Put — that sentinel is read-side only.
+func testPutWrongHashNoVerify(t *testing.T, factory Factory) {
+	bs, cleanup := factory(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	wrongHash := blake3Sum([]byte("foo"))
+	payload := []byte("bar")
+	if err := bs.Put(ctx, wrongHash, payload); err != nil {
+		if errors.Is(err, blockstore.ErrCASContentMismatch) {
+			t.Fatalf("Put with mismatched hash returned ErrCASContentMismatch — backends must not verify on Put: %v", err)
+		}
+		t.Fatalf("Put with mismatched hash: want success, got %v", err)
+	}
+
+	got, err := bs.Get(ctx, wrongHash)
+	if err != nil {
+		t.Fatalf("Get after mismatched-hash Put: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("Get after mismatched-hash Put: returned %q, want %q", got, payload)
 	}
 }
