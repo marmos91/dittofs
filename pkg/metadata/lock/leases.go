@@ -1112,20 +1112,26 @@ func (lm *Manager) releaseLeaseForHandleImpl(ctx context.Context, handleKey stri
 		remaining = append(remaining, lock)
 	}
 
-	// Track whether we removed any lease that was in the Breaking state so
-	// we can wake WaitForBreakCompletion waiters before they hit the 5s
-	// timeout. The releaseLeaseForHandle path is the no-ack way to complete
-	// a break (holder closes its conflicting handle in response to the
-	// break notification instead of sending LEASE_BREAK_ACK), and the
-	// waiting party (typically a parent-dir Handle-break wait set up by
+	// Track whether we removed any DIRECTORY lease that was in the Breaking
+	// state so we can wake WaitForBreakCompletion waiters before they hit
+	// the 5s timeout. The releaseLeaseForHandle path is the no-ack way to
+	// complete a break (the holder closes its conflicting handle in
+	// response to the break notification instead of sending LEASE_BREAK_ACK),
+	// and the waiting party (a parent-dir Handle-break wait set up by
 	// SET_INFO rename / hardlink) cannot make progress until either the
 	// signal fires or the deadline expires. Required by smbtorture
-	// smb2.dirlease.rename_dst_parent phase-2 where the holder's break
-	// handler issues SMB2_CLOSE and the rename's recheck must observe the
-	// shrunk open table promptly.
+	// smb2.dirlease.rename_dst_parent phase-2.
+	//
+	// Scoped to directory leases on purpose: file-lease parks waiting on
+	// breakWaitChans rely on the "release without signal" semantics so a
+	// holder that closes (instead of ACKing) does NOT prematurely wake a
+	// parked file CREATE — required by smb2.kernel-oplocks.kernel_oplocks7
+	// where tree2's parked CREATE must stay parked until the 5s timeout so
+	// tree1's re-open arrives first and sees an empty open table.
 	hadBreaking := false
 	for _, lock := range locks {
-		if lock.Lease != nil && lock.Lease.LeaseKey == leaseKey && lock.Lease.Breaking {
+		if lock.Lease != nil && lock.Lease.LeaseKey == leaseKey &&
+			lock.Lease.Breaking && lock.Lease.IsDirectory {
 			hadBreaking = true
 			break
 		}
