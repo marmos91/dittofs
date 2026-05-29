@@ -178,6 +178,13 @@ func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID s
 func (c *metadataCoordinator) GetPersistedBlocks(ctx context.Context, payloadID string) ([]blockstore.BlockRef, error) {
 	file, err := c.metadataStore.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
 	if err != nil {
+		// File deleted between WriteAt and rollup commit: no blocks to
+		// merge. Mirror GetFileObjectID — treat not-found as benign so the
+		// rollup persister falls through to PersistFileBlocks (which then
+		// surfaces the missing row) rather than wedging on a wrapped error.
+		if metadata.IsNotFoundError(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("coordinator: GetFileByPayloadID(%s): %w", payloadID, err)
 	}
 	if file == nil {

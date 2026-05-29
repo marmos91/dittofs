@@ -92,6 +92,9 @@ func mapObjectIDConflict(err error) error {
 func (c *testCoordinator) GetPersistedBlocks(ctx context.Context, payloadID string) ([]blockstore.BlockRef, error) {
 	file, err := c.store.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
 	if err != nil {
+		if metadata.IsNotFoundError(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	if file == nil {

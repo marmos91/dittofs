@@ -246,7 +246,7 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 				if isObjectIDConflict(err) {
 					logger.Debug("rollup persist: object_id already mapped to another file; persisting duplicate's blocks without claiming the dedup pointer",
 						"payloadID", payloadID,
-						"objectID", objectID.String())
+						"objectID", persistObjID.String())
 					var zeroObjectID blockstore.ObjectID
 					if rerr := bs.coordinator.PersistFileBlocks(ctx, payloadID, persistBlocks, zeroObjectID); rerr != nil {
 						return fmt.Errorf("rollup persist: retry without object_id after dedup conflict: %w", rerr)

@@ -11,27 +11,6 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// loggingCoordinator wraps testCoordinator to record every PersistFileBlocks
-// call so a multi-pass rollup is observable: how many calls, and the block
-// offsets carried by each.
-type loggingCoordinator struct {
-	*testCoordinator
-	t     *testing.T
-	calls [][]blockstore.BlockRef
-}
-
-func (c *loggingCoordinator) PersistFileBlocks(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error {
-	offs := make([]uint64, len(blocks))
-	for i, b := range blocks {
-		offs[i] = b.Offset
-	}
-	c.t.Logf("PersistFileBlocks(payload=%s, nblocks=%d, offsets=%v, objID=%s)",
-		payloadID, len(blocks), offs, objectID.String()[:12])
-	cp := append([]blockstore.BlockRef(nil), blocks...)
-	c.calls = append(c.calls, cp)
-	return c.testCoordinator.PersistFileBlocks(ctx, payloadID, blocks, objectID)
-}
-
 // runMultiPassAppend writes a file in TWO separate write+drain cycles at
 // DISTINCT offsets (a real append), forcing two rollup passes, then asserts
 // the persisted FileAttr.Blocks cover the WHOLE file [0, size) — not just the
