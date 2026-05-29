@@ -13,6 +13,7 @@ Operator guide: model, CLI, restore runbook, recovery paths, failure modes.
 - [6. Deleting a snapshot](#6-deleting-a-snapshot)
 - [7. Restore runbook](#7-restore-runbook)
 - [8. Recovering from the safety snapshot](#8-recovering-from-the-safety-snapshot)
+  - [8.1 Automatic crash recovery](#81-automatic-crash-recovery)
 - [9. The verify gate](#9-the-verify-gate)
 - [10. GC hold semantics](#10-gc-hold-semantics)
 - [11. Failure modes and recovery](#11-failure-modes-and-recovery)
@@ -481,17 +482,24 @@ Snapshot c12e8d4f deleted.
 2. Verify the source snapshot is remotely durable (unless `--force`).
 3. Create the pre-restore safety snapshot. Its ID is returned to
    the caller in the same response.
-4. Close the metadata store cleanly.
-5. Reset the metadata store via its `Resetable` interface.
-6. Replay the snapshot's `metadata.dump` into the empty store.
-7. Walk the restored metadata to build a hash set of every block
+4. Write a durable **restore-in-progress marker** (see
+   [§8.1](#81-automatic-crash-recovery)) naming the safety snapshot,
+   immediately before the first destructive step.
+5. Reset the block store's local append-log overlay.
+6. Reset the metadata store via its `Resetable` interface.
+7. Replay the snapshot's `metadata.dump` into the empty store.
+8. Walk the restored metadata to build a hash set of every block
    the restored share now references.
-8. Run a post-restore block verify against the block store to
+9. Run a post-restore block verify against the block store to
    confirm every required hash is reachable.
+10. Clear the restore-in-progress marker.
 
-If step 3 fails, the share is unchanged. If steps 4–8 fail, the
-safety snapshot exists and can be restored to roll back; the
-restored share may be in a partial state until you do so.
+If step 3 fails, the share is unchanged. If steps 5–9 fail, the
+restore returns an error and the safety snapshot exists for
+rollback. Crucially, the restore-in-progress marker (written at
+step 4 and cleared only at step 10) survives a crash: the next
+server startup detects it and **automatically rolls the share back
+to the safety snapshot** — see [§8.1](#81-automatic-crash-recovery).
 
 ### `--force` for non-durable snapshots
 
@@ -569,6 +577,49 @@ A reasonable cadence:
 Failing to delete safety snaps eventually consumes GC budget
 (blocks held by the chain cannot be reclaimed until the chain is
 gone). Setting an internal SOP for deletion keeps that bounded.
+
+### 8.1 Automatic crash recovery
+
+Restore is not a single atomic operation — it resets the block-store
+overlay, resets the metadata store, and replays the metadata dump as
+distinct steps. A crash (power loss, OOM kill, container restart)
+partway through would otherwise leave a **half-restored share**: the
+local overlay cleared but the metadata not yet replaced, or the
+metadata wiped but the dump replay incomplete.
+
+DittoFS makes this **self-healing** with no operator action:
+
+- **Marker.** Immediately after the safety snapshot is verified and
+  before the first destructive step, restore writes a durable
+  *restore-in-progress marker* to the control-plane database. The
+  marker records the target snapshot, the safety snapshot to roll
+  back to, and the furthest step reached. It is cleared only after
+  the restore fully completes and post-verifies.
+- **Detection.** On every startup, before any adapter begins serving
+  traffic, the server scans for restore markers. A marker that is
+  still present means a restore was interrupted.
+- **Rollback.** For each surviving marker the server automatically
+  restores the named safety snapshot — rolling the share back to its
+  exact pre-restore state — then clears the marker. The rollback runs
+  in a mode that creates no new safety snapshot and writes no new
+  marker, so the recovery is idempotent: a crash *during* rollback
+  simply re-runs the identical rollback on the next boot.
+
+Because the marker lives in the control-plane database (the same
+durable store as the snapshot records), it survives the crash and is
+consulted on the next boot regardless of how the daemon was killed.
+A half-restored share is therefore never client-reachable: recovery
+runs before adapters serve.
+
+Operators do not need to detect or repair an interrupted restore
+manually. The structured log records `restore recovery: interrupted
+restore detected, rolling back to safety snapshot` (with the share,
+target, safety-snap id, and step reached) followed by `restore
+recovery: share rolled back to safety snapshot` on success. If the
+rollback itself fails (e.g. the safety snapshot's blocks are missing
+from the remote), the marker is **retained** so a later boot retries
+once the underlying cause is fixed; the failure is logged at `Error`
+level.
 
 ## 9. The verify gate
 
@@ -748,10 +799,24 @@ and final verify — most often by HTTP timeout, container kill, or
 manual cancel. The safety snap exists; the metadata store may be in
 a partial state.
 
-**Recovery.** Re-restore the safety snap to roll back. Investigate
-the cause of the interruption (logs, resource limits, the
-`snapshot.restore_http_timeout` config). Re-run the original restore
-once the cause is fixed.
+**Recovery.** Two cases:
+
+- **The daemon kept running** (HTTP timeout, manual cancel): the
+  process is still up, so startup crash recovery did not run.
+  Re-restore the safety snap to roll back manually, or simply re-run
+  the original restore (the share is disabled, so it is not serving
+  the partial state).
+- **The daemon crashed / was killed** mid-restore: the durable
+  restore-in-progress marker survives, and the **next startup
+  automatically rolls the share back to the safety snapshot** before
+  any adapter serves traffic (see
+  [§8.1](#81-automatic-crash-recovery)). No manual step is required;
+  confirm via the `restore recovery: share rolled back to safety
+  snapshot` log line.
+
+In both cases investigate the cause of the interruption (logs,
+resource limits, the `snapshot.restore_http_timeout` config) and
+re-run the original restore once it is fixed.
 
 ### post-restore-verify-failed
 

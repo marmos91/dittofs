@@ -58,6 +58,7 @@ var (
 	ErrRestoreSafetySnapFailed     = errors.New("restore safety snapshot creation or wait failed")
 	ErrRestoreAborted              = errors.New("restore aborted; safety snapshot retained for rollback")
 	ErrRestoreVerifyFailed         = errors.New("restore verify failed: missing hashes on remote")
+	ErrRestoreMarkerNotFound       = errors.New("restore marker not found")
 
 	// Setting errors
 	ErrSettingNotFound = errors.New("setting not found")
