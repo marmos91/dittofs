@@ -313,43 +313,22 @@ still return INVALID_PARAMETER for the anon TYPE_3 itself).
 | smb2.session.anon-encryption2 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #746 |
 | smb2.session.anon-encryption3 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #746 |
 
-### Session Binding (Multi-Channel, Not Implemented)
+### Session Binding (Multi-Channel, Same-Algo Positive Cases)
 
-Session binding tests require multi-channel support to bind a session across
-TCP connections with different SMB dialect and signing/encryption combinations.
+The remaining session-binding rows are the four "same non-GMAC" pairings
+that expect the bind to SUCCEED and then assert a follow-up fresh-init
+SESSION_SETUP returns ACCESS_DENIED. Our server currently disconnects
+the transport on the post-success fresh-init step instead of replying
+ACCESS_DENIED — full fix needs multi-channel response-signing rework
+(retain prior-channel signing keys + return ACCESS_DENIED on
+reauth-from-fresh-init). Tracked under #747 for the v1.0 milestone.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.session.bind2 | Session binding | Session binding not implemented | #747 |
-| smb2.session.bind_invalid_auth | Session binding | Session binding auth validation not implemented | #747 |
-| smb2.session.bind_negative_smb3signCtoHs | Session binding | Multi-channel signing binding not implemented | #747 |
-| smb2.session.bind_negative_smb3signCtoHd | Session binding | Multi-channel signing binding not implemented | #747 |
-| smb2.session.bind_negative_smb3signCtoGs | Session binding | Multi-channel signing binding not implemented | #747 |
-| smb2.session.bind_negative_smb3signCtoGd | Session binding | Multi-channel signing binding not implemented | #747 |
-| smb2.session.bind_negative_smb3signHtoCs | Session binding | Multi-channel signing binding not implemented | #747 |
-| smb2.session.bind_negative_smb3signHtoCd | Session binding | Multi-channel signing binding not implemented | #747 |
-| smb2.session.bind_negative_smb3signHtoGs | Session binding | Multi-channel signing binding not implemented | #747 |
-| smb2.session.bind_negative_smb3signHtoGd | Session binding | Multi-channel signing binding not implemented | #747 |
-| smb2.session.bind_negative_smb3signGtoCs | Session binding | Multi-channel signing binding not implemented | #747 |
-| smb2.session.bind_negative_smb3signGtoCd | Session binding | Multi-channel signing binding not implemented | #747 |
-| smb2.session.bind_negative_smb3signGtoHs | Session binding | Multi-channel signing binding not implemented | #747 |
-| smb2.session.bind_negative_smb3signGtoHd | Session binding | Multi-channel signing binding not implemented | #747 |
-| smb2.session.bind_negative_smb3sneGtoCs | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
-| smb2.session.bind_negative_smb3sneGtoCd | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
-| smb2.session.bind_negative_smb3sneGtoHs | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
-| smb2.session.bind_negative_smb3sneGtoHd | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
-| smb2.session.bind_negative_smb3sneCtoGs | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
-| smb2.session.bind_negative_smb3sneCtoGd | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
-| smb2.session.bind_negative_smb3sneHtoGs | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
-| smb2.session.bind_negative_smb3sneHtoGd | Session binding | Multi-channel signing+encryption binding not implemented | #747 |
-| smb2.session.bind_negative_smb3signC30toGs | Session binding | Multi-channel signing binding (3.0 to GMAC) not implemented | #747 |
-| smb2.session.bind_negative_smb3signC30toGd | Session binding | Multi-channel signing binding (3.0 to GMAC) not implemented | #747 |
-| smb2.session.bind_negative_smb3signH2XtoGs | Session binding | Multi-channel signing binding (HMAC to GMAC) not implemented | #747 |
-| smb2.session.bind_negative_smb3signH2XtoGd | Session binding | Multi-channel signing binding (HMAC to GMAC) not implemented | #747 |
-| smb2.session.bind_negative_smb3signGtoC30s | Session binding | Multi-channel signing binding (GMAC to 3.0) not implemented | #747 |
-| smb2.session.bind_negative_smb3signGtoC30d | Session binding | Multi-channel signing binding (GMAC to 3.0) not implemented | #747 |
-| smb2.session.bind_negative_smb3signGtoH2Xs | Session binding | Multi-channel signing binding (GMAC to HMAC) not implemented | #747 |
-| smb2.session.bind_negative_smb3signGtoH2Xd | Session binding | Multi-channel signing binding (GMAC to HMAC) not implemented | #747 |
+| smb2.session.bind_negative_smb3signCtoHs | Session binding | Post-bind fresh-init reauth returns CONNECTION_DISCONNECTED instead of ACCESS_DENIED | #747 |
+| smb2.session.bind_negative_smb3signCtoHd | Session binding | Post-bind fresh-init reauth returns CONNECTION_DISCONNECTED instead of ACCESS_DENIED | #747 |
+| smb2.session.bind_negative_smb3signHtoCs | Session binding | Post-bind fresh-init reauth returns CONNECTION_DISCONNECTED instead of ACCESS_DENIED | #747 |
+| smb2.session.bind_negative_smb3signHtoCd | Session binding | Post-bind fresh-init reauth returns CONNECTION_DISCONNECTED instead of ACCESS_DENIED | #747 |
 
 ### Session Signing Variants (Algorithm-Specific Tests)
 
