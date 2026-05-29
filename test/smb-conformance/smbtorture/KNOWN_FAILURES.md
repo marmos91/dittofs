@@ -277,22 +277,17 @@ incomplete break notification delivery and multi-client coordination.
 
 ### Sessions (Remaining)
 
-reauth4-5 + anon-encryption1-3 are the residuals after #746: re-auth keys
-are no longer regenerated, malformed NTLMv2 maps to INVALID_PARAMETER,
-USER_SESSION_DELETED is signed with the original session key, and encrypted
-requests on sessions without an AEAD decryptor drop the connection. The
-remaining failures need handle-identity binding (reauth4/5 — file handle
-must carry the original opener's auth context across re-auth, not the new
-re-auth'd identity) and anonymous SESSION_SETUP plumbing (anon-encryption1-3
-still return INVALID_PARAMETER for the anon TYPE_3 itself).
+reauth4-5 are the remaining residuals after #746 + #773. anonymous
+SESSION_SETUP now completes with an MS-NLMP-aligned signing key plus a
+proper SPNEGO accept-completed token (anon-encryption1-3 flipped in #773).
+The remaining failures need handle-identity binding (reauth4/5 — file
+handle must carry the original opener's auth context across re-auth, not
+the new re-auth'd identity).
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.session.reauth4 | Sessions | Pre-existing: handle's original opener auth context is not preserved across re-auth — set_secdesc on a handle opened by user fails after reauth to anon | #772 |
 | smb2.session.reauth5 | Sessions | Pre-existing: same handle-identity binding gap as reauth4 — rename / unlink after reauth fails because path checks use the new auth context | #772 |
-| smb2.session.anon-encryption1 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #773 |
-| smb2.session.anon-encryption2 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #773 |
-| smb2.session.anon-encryption3 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #773 |
 
 ### Session Binding (Multi-Channel, Same-Algo Positive Cases)
 
