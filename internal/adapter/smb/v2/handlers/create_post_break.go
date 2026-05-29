@@ -1051,6 +1051,13 @@ func (h *Handler) parkCreateOnLeaseBreak(
 				"error", err)
 		}
 
+		// Wait for the dispatcher to finalize the callback assignment before
+		// any release path. Done BEFORE Unregister so a CANCEL/teardown that
+		// pulls the entry first can still hand off via markStarted — otherwise
+		// the gate would never close and this goroutine would block forever.
+		// See PendingCreate.started doc for the race this closes.
+		<-pending.started
+
 		// Ensure our entry is still live (not preempted by CANCEL or teardown).
 		// If it was, CANCEL / teardown already sent the final response.
 		if h.PendingCreateRegistry.Unregister(asyncId) == nil {
@@ -1066,7 +1073,6 @@ func (h *Handler) parkCreateOnLeaseBreak(
 				"messageID", messageID,
 				"asyncId", asyncId,
 				"treeID", ctx.TreeID)
-			<-pending.started
 			if err := pending.Callback(pending.SessionID, messageID, asyncId, types.StatusNetworkNameDeleted, nil); err != nil {
 				logger.Debug("CREATE async: failed to send tree-deleted response", "error", err)
 			}
@@ -1086,9 +1092,6 @@ func (h *Handler) parkCreateOnLeaseBreak(
 			}
 		}
 
-		// Wait for the dispatcher to finalize the callback assignment before
-		// firing. See PendingCreate.started doc for the race this closes.
-		<-pending.started
 		if err := pending.Callback(pending.SessionID, messageID, asyncId, status, body); err != nil {
 			logger.Warn("CREATE async: failed to send final response",
 				"messageID", messageID,

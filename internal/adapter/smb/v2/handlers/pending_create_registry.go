@@ -46,7 +46,8 @@ type PendingCreate struct {
 	//
 	// CANCEL / session-teardown paths invoke Callback directly without going
 	// through the resume goroutine, so they do NOT need to wait on this gate.
-	started chan struct{}
+	started     chan struct{}
+	startedOnce sync.Once
 }
 
 // PendingCreateRegistry indexes pending CREATEs by three keys: per-connection
@@ -279,12 +280,7 @@ func markStarted(p *PendingCreate) {
 	if p == nil || p.started == nil {
 		return
 	}
-	select {
-	case <-p.started:
-		// Already closed.
-	default:
-		close(p.started)
-	}
+	p.startedOnce.Do(func() { close(p.started) })
 }
 
 // Len returns the number of pending CREATEs.

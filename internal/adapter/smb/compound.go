@@ -408,13 +408,15 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 			lastCmdStatus = 0
 		}
 
-		// A subsequent compound subcommand that returns STATUS_PENDING + AsyncId
+		// A tail-of-chain compound subcommand that returns STATUS_PENDING + AsyncId
 		// (parked CREATE) inherits the original standalone-completion callback —
 		// no ReplaceCallback redirect happens here, since the subcommand is
 		// already the tail of the chain. Release its resume-goroutine gate so
 		// the deferred completion is not blocked waiting for a swap that will
-		// never arrive.
-		if cmdResult != nil && cmdResult.Status == types.StatusPending && cmdResult.AsyncId != 0 &&
+		// never arrive. Non-tail parked CREATEs MUST NOT be released here:
+		// trailing related commands still need to defer behind the CREATE
+		// completion, so the chain is not split.
+		if isLastCommand && cmdResult != nil && cmdResult.Status == types.StatusPending && cmdResult.AsyncId != 0 &&
 			connInfo.Handler.PendingCreateRegistry != nil {
 			connInfo.Handler.PendingCreateRegistry.MarkStarted(cmdResult.AsyncId)
 		}
@@ -1011,11 +1013,11 @@ func completeCompoundAfterAsyncCreate(
 			lastCmdStatus = 0
 		}
 
-		// Release any parked-CREATE goroutine for this subcommand (see same
-		// guard in ProcessCompoundRequest's subcommand loop). The deferred
-		// continue-compound wrapper already owns the chain bookkeeping, so
-		// the resume goroutine just delivers the original callback.
-		if cmdResult != nil && cmdResult.Status == types.StatusPending && cmdResult.AsyncId != 0 &&
+		// Release any parked-CREATE goroutine for this subcommand only when it is
+		// the tail of the chain — non-tail parked CREATEs still need trailing
+		// related commands deferred behind their completion (see same guard in
+		// ProcessCompoundRequest's subcommand loop).
+		if isLastCommand && cmdResult != nil && cmdResult.Status == types.StatusPending && cmdResult.AsyncId != 0 &&
 			connInfo.Handler.PendingCreateRegistry != nil {
 			connInfo.Handler.PendingCreateRegistry.MarkStarted(cmdResult.AsyncId)
 		}
