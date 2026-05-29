@@ -1112,10 +1112,33 @@ func (lm *Manager) releaseLeaseForHandleImpl(ctx context.Context, handleKey stri
 		remaining = append(remaining, lock)
 	}
 
+	// Track whether we removed any lease that was in the Breaking state so
+	// we can wake WaitForBreakCompletion waiters before they hit the 5s
+	// timeout. The releaseLeaseForHandle path is the no-ack way to complete
+	// a break (holder closes its conflicting handle in response to the
+	// break notification instead of sending LEASE_BREAK_ACK), and the
+	// waiting party (typically a parent-dir Handle-break wait set up by
+	// SET_INFO rename / hardlink) cannot make progress until either the
+	// signal fires or the deadline expires. Required by smbtorture
+	// smb2.dirlease.rename_dst_parent phase-2 where the holder's break
+	// handler issues SMB2_CLOSE and the rename's recheck must observe the
+	// shrunk open table promptly.
+	hadBreaking := false
+	for _, lock := range locks {
+		if lock.Lease != nil && lock.Lease.LeaseKey == leaseKey && lock.Lease.Breaking {
+			hadBreaking = true
+			break
+		}
+	}
+
 	if len(remaining) == 0 {
 		delete(lm.unifiedLocks, handleKey)
 	} else {
 		lm.unifiedLocks[handleKey] = remaining
+	}
+
+	if hadBreaking {
+		lm.signalBreakWaitLocked(handleKey)
 	}
 
 	if len(deleteErrs) > 0 {
