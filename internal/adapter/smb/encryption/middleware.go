@@ -27,7 +27,7 @@ var ErrUnknownSession = errors.New("encrypted message for unknown session")
 // drives exactly this path and asserts CONNECTION_RESET. Callers terminate
 // the TCP connection on this error instead of treating it as a transient
 // decrypt failure (which would let the client retry indefinitely).
-var ErrNoDecryptor = errors.New("session has no decryptor (anonymous / guest)")
+var ErrNoDecryptor = errors.New("session has no decryptor (anonymous / guest / SMB 2.x)")
 
 // EncryptableSession is the minimal interface for a session that supports encryption.
 // This decouples the middleware from the full session.Session type to avoid circular imports.
