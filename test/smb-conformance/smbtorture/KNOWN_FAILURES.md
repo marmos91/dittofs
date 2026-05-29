@@ -222,8 +222,8 @@ still fail due to incomplete reconnect and lease coordination.
 | smb2.durable-open.file-position | Durable handles V1 | Durable file position not fully working | #738 |
 | smb2.durable-open.lock-oplock | Durable handles V1 | Durable lock + oplock not fully working | #738 |
 | smb2.durable-open.lock-lease | Durable handles V1 | Durable lock + lease not fully working | #738 |
-| smb2.durable-open.alloc-size | Durable handles V1 | Pre-existing: out.alloc_size returned 0 instead of expected non-zero | #738 |
-| smb2.durable-open.read-only | Durable handles V1 | Pre-existing: OBJECT_NAME_NOT_FOUND on durable read-only reopen | #738 |
+| smb2.durable-open.alloc-size | CREATE allocation | Pre-existing non-DH bug: out.alloc_size=0 on CREATE with in.alloc_size set (fails before any reconnect) | #792 |
+| smb2.durable-open.read-only | READONLY attribute | OBJECT_NAME_NOT_FOUND on durable reopen of FILE_ATTRIBUTE_READONLY file (attribute-restore gap) | #793 |
 
 ### Durable Handles V2 (Fix Candidate)
 
