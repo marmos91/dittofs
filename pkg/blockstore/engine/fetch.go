@@ -345,9 +345,18 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 	// unified post-Phase-17 read path resolves (payloadID, blockIdx) →
 	// FileBlock.Hash → local.Get(hash), so the downloaded bytes only need
 	// to land in the CAS chunk store.
+	//
+	// A Put failure here previously logged at Warn and returned success —
+	// bytes were never persisted, callers + every inflight waiter saw a
+	// hit, and the next read silently re-fetched from the remote (disk-full
+	// / local-IO failure → permanent S3 amplification). Propagate the
+	// wrapped error to the caller AND to every waiter via completionErr so
+	// no consumer treats the unpersisted bytes as a successful download.
 	if writeErr := m.local.Put(ctx, fb.Hash, data); writeErr != nil {
-		logger.Warn("inline download: local write failed",
+		logger.Error("inline download: local write failed",
 			"block", key, "error", writeErr)
+		completionErr = fmt.Errorf("inline fetch: persist locally %s: %w", key, writeErr)
+		return nil, false, completionErr
 	}
 	completed = true
 	m.completeInFlight(key, result, nil)
