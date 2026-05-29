@@ -321,7 +321,7 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		if !h.LeaseManager.HasOtherBreakingLeases(lockFileHandle, shareName, waitExceptKey) {
 			return 0
 		}
-		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey); asyncId != 0 {
+		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey, lease.AsyncCreateBreakWaitTimeout); asyncId != 0 {
 			return asyncId
 		}
 		// Park failed (no slots / registry full): fall through to sync
