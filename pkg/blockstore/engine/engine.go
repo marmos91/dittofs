@@ -391,12 +391,11 @@ func (bs *BlockStore) EvictLocal(ctx context.Context, payloadID string) error {
 	return bs.local.DeleteLog(ctx, payloadID)
 }
 
-// EvictReadBuffer clears all entries from the cache (legacy method
-// name retained for the controlplane runtime's blockStores.evict REST
-// path; behavior post-Plan-12-09 closes the cache, which Plan-12-10
-// will rework once mmap-backed entries change the eviction story).
-// Returns the number of entries that were present before close.
-func (bs *BlockStore) EvictReadBuffer() int {
+// DestroyCache closes the in-memory read cache and replaces it with a
+// no-op implementation. Intended for shutdown / share-removal teardown
+// and for the REST evict path that drops the read buffer wholesale.
+// Returns the number of entries that were present before destruction.
+func (bs *BlockStore) DestroyCache() int {
 	entries := bs.cache.Stats().Entries
 	_ = bs.cache.Close()
 	// Replace closed cache with the Null Object so subsequent operations

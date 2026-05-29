@@ -1377,7 +1377,7 @@ func (s *Service) EvictBlockStore(ctx context.Context, shareName string, opts Ev
 		}
 
 		if !opts.LocalOnly {
-			result.ReadBufferEntriesCleared += bs.EvictReadBuffer()
+			result.ReadBufferEntriesCleared += bs.DestroyCache()
 		}
 
 		if !opts.ReadBufferOnly {
