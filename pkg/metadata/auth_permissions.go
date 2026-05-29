@@ -537,45 +537,16 @@ func (s *MetadataService) CheckParentCreateAccess(ctx *AuthContext, parentHandle
 		return nil
 	}
 
-	identity := ctx.Identity
-
 	// Root bypass aligns with calculatePermissions/evaluateACLPermissions:
 	// UID 0 gets all permissions except on read-only shares (handled above).
-	if identity != nil && identity.UID != nil && *identity.UID == 0 {
+	if ctx.Identity != nil && ctx.Identity.UID != nil && *ctx.Identity.UID == 0 {
 		return nil
 	}
 
-	var evalCtx *acl.EvaluateContext
-	if identity == nil || identity.UID == nil {
-		// Anonymous: pin owner UID to the anonymous sentinel so OWNER@
-		// can't accidentally match a root-owned file (mirror of
-		// evaluateACLPermissions).
-		evalCtx = &acl.EvaluateContext{
-			FileOwnerUID: acl.AnonymousFileOwnerUID,
-			FileOwnerGID: file.GID,
-		}
-	} else {
-		evalCtx = &acl.EvaluateContext{
-			UID:          *identity.UID,
-			GIDs:         identity.GIDs,
-			FileOwnerUID: file.UID,
-			FileOwnerGID: file.GID,
-		}
-		if identity.GID != nil {
-			evalCtx.GID = *identity.GID
-		}
-		switch {
-		case identity.Username != "" && identity.Domain != "":
-			evalCtx.Who = identity.Username + "@" + identity.Domain
-		case identity.Username != "":
-			evalCtx.Who = identity.Username
-		}
-		if identity.SID != nil {
-			evalCtx.SID = *identity.SID
-		}
-		evalCtx.GroupSIDs = identity.GroupSIDs
-		evalCtx.RequesterHasTakeOwnership = acl.HasTakeOwnershipPrivilege(evalCtx.SID, evalCtx.GroupSIDs)
-	}
+	// Reuse the canonical EvaluateContext builder so anonymous-owner
+	// handling, Who/SID population, and SeTakeOwnership derivation stay in
+	// one place with CheckFileAccess.
+	evalCtx := buildFileAccessEvalContext(file, ctx)
 
 	mask := uint32(acl.ACE4_ADD_FILE)
 	if isDirectory {
