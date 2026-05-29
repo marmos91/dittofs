@@ -432,13 +432,152 @@ simpler test surface (D-01).
   `dfsctl store block gc-status <share>`. Prometheus metrics are
   intentionally deferred to a metrics phase (D-35).
 
-GC is decoupled from any backup-hold protocol: Phase 08 deleted
-`BackupHoldProvider`, and GC-04 forbids reintroducing one. The v0.16.0
-atomic-backup design uses CAS immutability + manifest snapshots, which
-need no hold protocol (D-17).
+GC coordinates with the share-snapshots subsystem through a single
+rule: **manifest-on-disk = block held**. Snapshots register a hold
+implicitly by writing a `manifest.json` under
+`<localStoreDir>/snapshots/<share>/<id>/`. GC's mark phase enumerates
+every manifest file at sweep start and unions the referenced hashes
+into its retention set, so any block referenced by any snapshot
+survives the sweep. The provider that exposes this hold to the GC
+layer is `SnapshotHoldProvider`. No hold flag lives in any database
+table — the disk is the source of truth.
+
+See [SNAPSHOTS.md](SNAPSHOTS.md#10-gc-hold-semantics) for the
+operator-facing description of the hold semantics, including the
+delete-vs-GC race window.
 
 See `docs/CONFIGURATION.md` for every `gc.*` and `syncer.*` knob, and
 `docs/CLI.md` for the `dfsctl store block gc` reference.
+
+## Share Snapshots
+
+Share snapshots are point-in-time, reference-based protection for a
+share's content. The subsystem produces three artifacts per snapshot
+on local disk and one row in the control-plane database; it does not
+copy any block data. See [SNAPSHOTS.md](SNAPSHOTS.md) for the
+operator-facing runbook; this section describes the architectural
+layout and the orchestration flows.
+
+### Subsystem layout
+
+| Location | Role |
+|---|---|
+| `pkg/snapshot/` | Verify gate, hash-manifest read/write, helper types. |
+| `pkg/controlplane/runtime/snapshot.go` | `Runtime.CreateSnapshot`, `WaitForSnapshot`, `RestoreSnapshot`, `GetSnapshot`, `ListSnapshots`, `DeleteSnapshot`. Composition over the metadata store, block store, and snapshot store. |
+| `pkg/controlplane/runtime/snapshot_hold.go` | `SnapshotHoldProvider` — per-share delete lock + manifest-on-disk hold surface for GC. |
+| `pkg/controlplane/models/snapshot.go` | `Snapshot` GORM model; `SnapshotDir`, `ManifestPath`, `MetadataDumpPath` path helpers. |
+| `pkg/controlplane/store/snapshots.go` | `SnapshotStore` CRUD (`GetSnapshot`, `ListSnapshots`, `DeleteSnapshot`). |
+| `pkg/controlplane/api/dto/snapshot.go` | Neutral wire DTOs imported by both the REST handler and the apiclient. No GORM types cross the wire. |
+| `internal/controlplane/api/handlers/snapshot.go` | Five REST handlers (`Create`, `List`, `Get`, `Delete`, `Restore`), the narrow `SnapshotRuntime` interface (testability seam), and the single `mapSnapshotError` sentinel-to-HTTP table. |
+| `pkg/apiclient/snapshots.go` | Typed Go client (6 methods) re-exporting the wire DTOs as type aliases of `dto.Snapshot`. |
+| `cmd/dfsctl/commands/share/snapshot/` | Five cobra leaf commands matching the REST surface (`create`, `list`, `show`, `delete`, `restore`). |
+
+### On-disk artifacts
+
+Every snapshot owns a directory under the share's local store:
+
+```
+<localStoreDir>/snapshots/<share>/<snap-id>/
+  ├─ metadata.dump          ← engine-native metadata serialization
+  └─ manifest.json          ← BLAKE3 hashes of every CAS block the share references
+```
+
+`SnapshotDir(localStoreDir)`, `ManifestPath(localStoreDir)`, and
+`MetadataDumpPath(localStoreDir)` on the `Snapshot` model compute the
+canonical paths. Atomic write is via `temp + rename` so a partial
+manifest never surfaces to the GC enumeration step. The manifest
+file's existence is the GC hold; there is no separate hold record.
+
+### Create orchestration
+
+```
+CreateSnapshot ─→ persist Snapshot row (state=creating)
+              ─→ DrainAllUploads (skipped if NoVerify)
+              ─→ Dump metadata to metadata.dump
+              ─→ Build hash manifest from CAS
+              ─→ VerifyRemoteDurability (skipped if NoVerify, concurrency = 16)
+              ─→ Update row state=ready (or failed) + remote_durable flag
+```
+
+`Runtime.CreateSnapshot` returns the new snapshot ID immediately and
+runs the orchestration in a background goroutine. The REST handler
+returns `202 Accepted` with a `Location` header pointing at the
+record; callers poll `GET /snapshots/{id}` until `state != "creating"`.
+The CLI's `WaitForSnapshot` does that polling on the operator's
+behalf.
+
+`NoVerify=true` (CLI `--no-verify`) skips both the upload drain and
+the HEAD-probe phase. The snapshot still completes with
+`remote_durable=false`. Restore of a non-durable snapshot then
+requires the explicit `AllowNonDurable` flag (CLI `--force`).
+
+### Restore orchestration
+
+```
+RestoreSnapshot ─→ Pre-flight: refuse if share enabled
+                ─→ Verify source snapshot's remote durability
+                   (skipped if AllowNonDurable)
+                ─→ Pre-restore safety snapshot (ID returned to caller)
+                ─→ Close metadata store
+                ─→ Reset (via Resetable interface)
+                ─→ Restore from metadata.dump
+                ─→ HashSetFromMetadataStore walk
+                ─→ Post-restore block verify
+```
+
+`Runtime.RestoreSnapshot` returns `(safetySnapshotID, err)`. The
+safety snap ID is set as soon as step 3 succeeds, even if a later
+step fails — callers (REST + CLI) surface the ID to the operator so
+the rollback path is always available without a separate
+`ListSnapshots` filter. On precheck / pre-verify failure (before
+step 3) the safety ID is the empty string.
+
+### Per-share delete lock
+
+`SnapshotHoldProvider.AcquireDeleteLock(share)` returns a release
+function around a per-share `*sync.RWMutex`. The same mutex
+serializes `CreateSnapshot`, `RestoreSnapshot`, and
+`DeleteSnapshot` on the same share so that:
+
+- Two concurrent `delete` calls on different snapshots of the same
+  share cannot race the per-snapshot directory wipe against each
+  other.
+- A `delete` cannot race a `create` whose manifest write would
+  appear in the snapshots directory mid-sweep.
+- A `restore` cannot race a `delete` of the safety snap it is about
+  to create.
+
+`Runtime.DeleteSnapshot` is the canonical entry point — handlers
+never reach into `r.store.DeleteSnapshot` directly. The wrapper owns
+the lock acquisition, the database row delete, the on-disk
+directory wipe, and the lock release.
+
+### HTTP surface
+
+Five REST endpoints under `/api/v1/shares/{name}/snapshots` (admin
+only, inherits the existing `RequireAdmin` middleware):
+
+| Method | Path | Result |
+|---|---|---|
+| `POST` | `/` | 202 Accepted + `Location` header |
+| `GET` | `/` | 200 OK + JSON array (empty: `[]`, not `null`) |
+| `GET` | `/{id}` | 200 OK + full record |
+| `DELETE` | `/{id}` | 204 No Content |
+| `POST` | `/{id}/restore` | 200 OK + `{snapshot_id, safety_snapshot_id, share}` |
+
+The single `mapSnapshotError` helper handles the 14 typed sentinels
+that can cross the boundary (12 snapshot sentinels + share-not-found
++ nil-guard). The mapping table lives in the handler file as the
+sole source of truth; future sentinels add a single case.
+
+The Restore handler wraps `r.Context()` with
+`context.WithTimeout(ctx, cfg.Snapshot.restore_http_timeout)`
+(default 30 minutes) to bound runaway restores. The apiclient
+mirrors the timeout on the client's `http.Client` for the restore
+call only (`WithRestoreTimeout`).
+
+For the full operator runbook see
+[SNAPSHOTS.md](SNAPSHOTS.md).
 
 ## Dual-Read Window (Phase 11 → Phase 14)
 
