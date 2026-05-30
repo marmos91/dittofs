@@ -186,29 +186,51 @@ func (s *memoryLockStore) IncrementServerEpoch(ctx context.Context) (uint64, err
 // ============================================================================
 
 // cloneLock creates a deep copy of a PersistedLock.
+//
+// Every exported field of PersistedLock MUST be copied here. The memory store
+// is the system of record for an ephemeral deployment, so a field omitted from
+// this clone is silently dropped on PutLock/GetLock — the field-drop bug class
+// the storetest lock-persistence suite pins. Keep this in sync with the
+// PersistedLock struct: add a new field here whenever one is added there.
 func cloneLock(lk *lock.PersistedLock) *lock.PersistedLock {
 	clone := &lock.PersistedLock{
-		ID:          lk.ID,
-		ShareName:   lk.ShareName,
-		FileID:      lk.FileID,
-		OwnerID:     lk.OwnerID,
-		ClientID:    lk.ClientID,
-		LockType:    lk.LockType,
-		Offset:      lk.Offset,
-		Length:      lk.Length,
-		AccessMode:  lk.AccessMode,
-		AcquiredAt:  lk.AcquiredAt,
-		ServerEpoch: lk.ServerEpoch,
+		ID:                lk.ID,
+		ShareName:         lk.ShareName,
+		FileID:            lk.FileID,
+		OwnerID:           lk.OwnerID,
+		ClientID:          lk.ClientID,
+		LockType:          lk.LockType,
+		Offset:            lk.Offset,
+		Length:            lk.Length,
+		IsZeroByte:        lk.IsZeroByte,
+		IsLegacyByteRange: lk.IsLegacyByteRange,
+		AccessMode:        lk.AccessMode,
+		AcquiredAt:        lk.AcquiredAt,
+		ServerEpoch:       lk.ServerEpoch,
 		// Lease fields
-		LeaseState:   lk.LeaseState,
-		LeaseEpoch:   lk.LeaseEpoch,
-		BreakToState: lk.BreakToState,
-		Breaking:     lk.Breaking,
+		LeaseState:          lk.LeaseState,
+		LeaseEpoch:          lk.LeaseEpoch,
+		BreakToState:        lk.BreakToState,
+		BreakingToRequired:  lk.BreakingToRequired,
+		Breaking:            lk.Breaking,
+		IsDirectory:         lk.IsDirectory,
+		IsTraditionalOplock: lk.IsTraditionalOplock,
+		// Delegation fields
+		DelegationID:          lk.DelegationID,
+		DelegType:             lk.DelegType,
+		DelegBreaking:         lk.DelegBreaking,
+		DelegRecalled:         lk.DelegRecalled,
+		DelegRevoked:          lk.DelegRevoked,
+		DelegNotificationMask: lk.DelegNotificationMask,
 	}
-	// Deep copy LeaseKey slice if present
+	// Deep copy LeaseKey / ParentLeaseKey slices if present
 	if len(lk.LeaseKey) > 0 {
 		clone.LeaseKey = make([]byte, len(lk.LeaseKey))
 		copy(clone.LeaseKey, lk.LeaseKey)
+	}
+	if len(lk.ParentLeaseKey) > 0 {
+		clone.ParentLeaseKey = make([]byte, len(lk.ParentLeaseKey))
+		copy(clone.ParentLeaseKey, lk.ParentLeaseKey)
 	}
 	return clone
 }

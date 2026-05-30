@@ -13,6 +13,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	"github.com/marmos91/dittofs/pkg/metadata/storetest"
 )
@@ -47,6 +48,20 @@ func TestBackupConformance(t *testing.T) {
 
 func TestResetThenRestoreConformance(t *testing.T) {
 	storetest.ResetThenRestoreConformance(t, func(t *testing.T) metadata.MetadataStore {
+		dbPath := filepath.Join(t.TempDir(), "metadata.db")
+		store, err := badger.NewBadgerMetadataStoreWithDefaults(context.Background(), dbPath)
+		if err != nil {
+			t.Fatalf("NewBadgerMetadataStoreWithDefaults() failed: %v", err)
+		}
+		t.Cleanup(func() {
+			store.Close()
+		})
+		return store
+	})
+}
+
+func TestLockPersistenceConformance(t *testing.T) {
+	storetest.RunLockPersistenceSuite(t, func(t *testing.T) lock.LockStore {
 		dbPath := filepath.Join(t.TempDir(), "metadata.db")
 		store, err := badger.NewBadgerMetadataStoreWithDefaults(context.Background(), dbPath)
 		if err != nil {

@@ -71,6 +71,53 @@ func TestMemoryLockStore_PutAndGetLock(t *testing.T) {
 	}
 }
 
+// TestMemoryLockStore_ByteRangeFlagsRoundTrip pins the byte-range recovery
+// discriminators (IsZeroByte, IsLegacyByteRange) through the memory store's
+// clone path — they must survive Put/Get/List so RestoreLocks can route and
+// conflict-check restored locks correctly.
+func TestMemoryLockStore_ByteRangeFlagsRoundTrip(t *testing.T) {
+	store := NewMemoryMetadataStoreWithDefaults()
+	ctx := context.Background()
+
+	lock := &metadata.PersistedLock{
+		ID:                "zb-lock-1",
+		ShareName:         "/export",
+		FileID:            "/export:file-zb",
+		OwnerID:           "open-1",
+		ClientID:          "client-conn-1",
+		LockType:          1,
+		Offset:            10,
+		Length:            0,
+		IsZeroByte:        true,
+		IsLegacyByteRange: true,
+		AcquiredAt:        time.Now().Truncate(time.Millisecond),
+		ServerEpoch:       1,
+	}
+
+	if err := store.PutLock(ctx, lock); err != nil {
+		t.Fatalf("PutLock failed: %v", err)
+	}
+
+	got, err := store.GetLock(ctx, lock.ID)
+	if err != nil {
+		t.Fatalf("GetLock failed: %v", err)
+	}
+	if !got.IsZeroByte {
+		t.Error("IsZeroByte not preserved (zero-byte lock would restore as to-EOF)")
+	}
+	if !got.IsLegacyByteRange {
+		t.Error("IsLegacyByteRange not preserved (lock would restore into the wrong map)")
+	}
+
+	listed, err := store.ListLocks(ctx, metadata.LockQuery{FileID: lock.FileID})
+	if err != nil {
+		t.Fatalf("ListLocks failed: %v", err)
+	}
+	if len(listed) != 1 || !listed[0].IsZeroByte || !listed[0].IsLegacyByteRange {
+		t.Fatalf("ListLocks dropped byte-range flags: %+v", listed)
+	}
+}
+
 func TestMemoryLockStore_GetLockNotFound(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()

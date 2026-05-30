@@ -1,0 +1,15 @@
+ALTER TABLE locks DROP COLUMN IF EXISTS deleg_notification_mask;
+ALTER TABLE locks DROP COLUMN IF EXISTS deleg_revoked;
+ALTER TABLE locks DROP COLUMN IF EXISTS deleg_recalled;
+ALTER TABLE locks DROP COLUMN IF EXISTS deleg_breaking;
+ALTER TABLE locks DROP COLUMN IF EXISTS deleg_type;
+ALTER TABLE locks DROP COLUMN IF EXISTS delegation_id;
+ALTER TABLE locks DROP COLUMN IF EXISTS is_traditional_oplock;
+ALTER TABLE locks DROP COLUMN IF EXISTS is_directory;
+ALTER TABLE locks DROP COLUMN IF EXISTS parent_lease_key;
+ALTER TABLE locks DROP COLUMN IF EXISTS breaking;
+ALTER TABLE locks DROP COLUMN IF EXISTS breaking_to_required;
+ALTER TABLE locks DROP COLUMN IF EXISTS break_to_state;
+ALTER TABLE locks DROP COLUMN IF EXISTS lease_epoch;
+ALTER TABLE locks DROP COLUMN IF EXISTS lease_state;
+ALTER TABLE locks DROP COLUMN IF EXISTS lease_key;

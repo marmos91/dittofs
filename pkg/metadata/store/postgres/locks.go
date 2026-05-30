@@ -37,26 +37,60 @@ func newPostgresLockStore(pool *pgxpool.Pool) *postgresLockStore {
 	}
 }
 
-// PutLock persists a lock using upsert.
-func (s *postgresLockStore) PutLock(ctx context.Context, lk *lock.PersistedLock) error {
-	query := `
-		INSERT INTO locks (id, share_name, file_id, owner_id, client_id, lock_type,
-		                   byte_offset, byte_length, share_reservation, acquired_at, server_epoch)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		ON CONFLICT (id) DO UPDATE SET
-			share_name = EXCLUDED.share_name,
-			file_id = EXCLUDED.file_id,
-			owner_id = EXCLUDED.owner_id,
-			client_id = EXCLUDED.client_id,
-			lock_type = EXCLUDED.lock_type,
-			byte_offset = EXCLUDED.byte_offset,
-			byte_length = EXCLUDED.byte_length,
-			share_reservation = EXCLUDED.share_reservation,
-			acquired_at = EXCLUDED.acquired_at,
-			server_epoch = EXCLUDED.server_epoch
-	`
+// lockColumns is the full column list persisted for every PersistedLock. It
+// MUST list every field the suite (storetest.RunLockPersistenceSuite) asserts
+// is preserved — byte-range identity, lease, and delegation state alike.
+const lockColumns = `id, share_name, file_id, owner_id, client_id, lock_type,
+	byte_offset, byte_length, is_zero_byte, is_legacy_byte_range,
+	share_reservation, acquired_at, server_epoch,
+	lease_key, lease_state, lease_epoch, break_to_state, breaking_to_required,
+	breaking, parent_lease_key, is_directory, is_traditional_oplock,
+	delegation_id, deleg_type, deleg_breaking, deleg_recalled, deleg_revoked,
+	deleg_notification_mask`
 
-	_, err := s.pool.Exec(ctx, query,
+// putLockSQL is the upsert statement, parameterized $1..$28 in lockColumns
+// order. The ON CONFLICT clause re-syncs every column so an overwrite never
+// leaves stale lease/delegation state behind.
+const putLockSQL = `
+	INSERT INTO locks (` + lockColumns + `)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+	        $14, $15, $16, $17, $18, $19, $20, $21, $22,
+	        $23, $24, $25, $26, $27, $28)
+	ON CONFLICT (id) DO UPDATE SET
+		share_name = EXCLUDED.share_name,
+		file_id = EXCLUDED.file_id,
+		owner_id = EXCLUDED.owner_id,
+		client_id = EXCLUDED.client_id,
+		lock_type = EXCLUDED.lock_type,
+		byte_offset = EXCLUDED.byte_offset,
+		byte_length = EXCLUDED.byte_length,
+		is_zero_byte = EXCLUDED.is_zero_byte,
+		is_legacy_byte_range = EXCLUDED.is_legacy_byte_range,
+		share_reservation = EXCLUDED.share_reservation,
+		acquired_at = EXCLUDED.acquired_at,
+		server_epoch = EXCLUDED.server_epoch,
+		lease_key = EXCLUDED.lease_key,
+		lease_state = EXCLUDED.lease_state,
+		lease_epoch = EXCLUDED.lease_epoch,
+		break_to_state = EXCLUDED.break_to_state,
+		breaking_to_required = EXCLUDED.breaking_to_required,
+		breaking = EXCLUDED.breaking,
+		parent_lease_key = EXCLUDED.parent_lease_key,
+		is_directory = EXCLUDED.is_directory,
+		is_traditional_oplock = EXCLUDED.is_traditional_oplock,
+		delegation_id = EXCLUDED.delegation_id,
+		deleg_type = EXCLUDED.deleg_type,
+		deleg_breaking = EXCLUDED.deleg_breaking,
+		deleg_recalled = EXCLUDED.deleg_recalled,
+		deleg_revoked = EXCLUDED.deleg_revoked,
+		deleg_notification_mask = EXCLUDED.deleg_notification_mask
+`
+
+// putLockArgs returns the argument list for putLockSQL in lockColumns order.
+// lease_key/parent_lease_key are stored as NULL when empty so byte-range rows
+// don't carry phantom zero-length keys that IsLease() would misclassify.
+func putLockArgs(lk *lock.PersistedLock) []interface{} {
+	return []interface{}{
 		lk.ID,
 		lk.ShareName,
 		lk.FileID,
@@ -65,59 +99,57 @@ func (s *postgresLockStore) PutLock(ctx context.Context, lk *lock.PersistedLock)
 		lk.LockType,
 		lk.Offset,
 		lk.Length,
+		lk.IsZeroByte,
+		lk.IsLegacyByteRange,
 		lk.AccessMode,
 		lk.AcquiredAt,
 		lk.ServerEpoch,
-	)
+		nilIfEmpty(lk.LeaseKey),
+		lk.LeaseState,
+		lk.LeaseEpoch,
+		lk.BreakToState,
+		lk.BreakingToRequired,
+		lk.Breaking,
+		nilIfEmpty(lk.ParentLeaseKey),
+		lk.IsDirectory,
+		lk.IsTraditionalOplock,
+		lk.DelegationID,
+		lk.DelegType,
+		lk.DelegBreaking,
+		lk.DelegRecalled,
+		lk.DelegRevoked,
+		lk.DelegNotificationMask,
+	}
+}
+
+// nilIfEmpty maps an empty byte slice to a typed nil so it stores as SQL NULL.
+func nilIfEmpty(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
+// PutLock persists a lock using upsert.
+func (s *postgresLockStore) PutLock(ctx context.Context, lk *lock.PersistedLock) error {
+	_, err := s.pool.Exec(ctx, putLockSQL, putLockArgs(lk)...)
 	return err
 }
 
 // putLockTx persists a lock within an existing transaction.
 func (s *postgresLockStore) putLockTx(ctx context.Context, tx pgx.Tx, lk *lock.PersistedLock) error {
-	query := `
-		INSERT INTO locks (id, share_name, file_id, owner_id, client_id, lock_type,
-		                   byte_offset, byte_length, share_reservation, acquired_at, server_epoch)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		ON CONFLICT (id) DO UPDATE SET
-			share_name = EXCLUDED.share_name,
-			file_id = EXCLUDED.file_id,
-			owner_id = EXCLUDED.owner_id,
-			client_id = EXCLUDED.client_id,
-			lock_type = EXCLUDED.lock_type,
-			byte_offset = EXCLUDED.byte_offset,
-			byte_length = EXCLUDED.byte_length,
-			share_reservation = EXCLUDED.share_reservation,
-			acquired_at = EXCLUDED.acquired_at,
-			server_epoch = EXCLUDED.server_epoch
-	`
-
-	_, err := tx.Exec(ctx, query,
-		lk.ID,
-		lk.ShareName,
-		lk.FileID,
-		lk.OwnerID,
-		lk.ClientID,
-		lk.LockType,
-		lk.Offset,
-		lk.Length,
-		lk.AccessMode,
-		lk.AcquiredAt,
-		lk.ServerEpoch,
-	)
+	_, err := tx.Exec(ctx, putLockSQL, putLockArgs(lk)...)
 	return err
 }
 
-// GetLock retrieves a lock by ID.
-func (s *postgresLockStore) GetLock(ctx context.Context, lockID string) (*lock.PersistedLock, error) {
-	query := `
-		SELECT id, share_name, file_id, owner_id, client_id, lock_type,
-		       byte_offset, byte_length, share_reservation, acquired_at, server_epoch
-		FROM locks
-		WHERE id = $1
-	`
+// selectByID is the single-row select, columns in lockColumns order so it
+// shares the scanLock destination layout.
+const selectByID = `SELECT ` + lockColumns + ` FROM locks WHERE id = $1`
 
-	var lk lock.PersistedLock
-	err := s.pool.QueryRow(ctx, query, lockID).Scan(
+// scanArgs returns the Scan destination pointers for lk in lockColumns order.
+// Shared by every read path so a new column is wired in exactly one place.
+func scanArgs(lk *lock.PersistedLock) []interface{} {
+	return []interface{}{
 		&lk.ID,
 		&lk.ShareName,
 		&lk.FileID,
@@ -126,10 +158,33 @@ func (s *postgresLockStore) GetLock(ctx context.Context, lockID string) (*lock.P
 		&lk.LockType,
 		&lk.Offset,
 		&lk.Length,
+		&lk.IsZeroByte,
+		&lk.IsLegacyByteRange,
 		&lk.AccessMode,
 		&lk.AcquiredAt,
 		&lk.ServerEpoch,
-	)
+		&lk.LeaseKey,
+		&lk.LeaseState,
+		&lk.LeaseEpoch,
+		&lk.BreakToState,
+		&lk.BreakingToRequired,
+		&lk.Breaking,
+		&lk.ParentLeaseKey,
+		&lk.IsDirectory,
+		&lk.IsTraditionalOplock,
+		&lk.DelegationID,
+		&lk.DelegType,
+		&lk.DelegBreaking,
+		&lk.DelegRecalled,
+		&lk.DelegRevoked,
+		&lk.DelegNotificationMask,
+	}
+}
+
+// GetLock retrieves a lock by ID.
+func (s *postgresLockStore) GetLock(ctx context.Context, lockID string) (*lock.PersistedLock, error) {
+	var lk lock.PersistedLock
+	err := s.pool.QueryRow(ctx, selectByID, lockID).Scan(scanArgs(&lk)...)
 	if err == pgx.ErrNoRows {
 		return nil, &errors.StoreError{
 			Code:    errors.ErrLockNotFound,
@@ -146,27 +201,8 @@ func (s *postgresLockStore) GetLock(ctx context.Context, lockID string) (*lock.P
 
 // getLockTx retrieves a lock within an existing transaction.
 func (s *postgresLockStore) getLockTx(ctx context.Context, tx pgx.Tx, lockID string) (*lock.PersistedLock, error) {
-	query := `
-		SELECT id, share_name, file_id, owner_id, client_id, lock_type,
-		       byte_offset, byte_length, share_reservation, acquired_at, server_epoch
-		FROM locks
-		WHERE id = $1
-	`
-
 	var lk lock.PersistedLock
-	err := tx.QueryRow(ctx, query, lockID).Scan(
-		&lk.ID,
-		&lk.ShareName,
-		&lk.FileID,
-		&lk.OwnerID,
-		&lk.ClientID,
-		&lk.LockType,
-		&lk.Offset,
-		&lk.Length,
-		&lk.AccessMode,
-		&lk.AcquiredAt,
-		&lk.ServerEpoch,
-	)
+	err := tx.QueryRow(ctx, selectByID, lockID).Scan(scanArgs(&lk)...)
 	if err == pgx.ErrNoRows {
 		return nil, &errors.StoreError{
 			Code:    errors.ErrLockNotFound,
@@ -219,15 +255,10 @@ func (s *postgresLockStore) deleteLockTx(ctx context.Context, tx pgx.Tx, lockID 
 	return nil
 }
 
-// ListLocks returns locks matching the query.
-func (s *postgresLockStore) ListLocks(ctx context.Context, query lock.LockQuery) ([]*lock.PersistedLock, error) {
-	// Build dynamic query
-	baseQuery := `
-		SELECT id, share_name, file_id, owner_id, client_id, lock_type,
-		       byte_offset, byte_length, share_reservation, acquired_at, server_epoch
-		FROM locks
-		WHERE 1=1
-	`
+// buildListQuery assembles the dynamic SELECT + WHERE for a LockQuery, sharing
+// the lockColumns layout with scanArgs so reads stay in sync with the schema.
+func buildListQuery(query lock.LockQuery) (string, []interface{}) {
+	baseQuery := `SELECT ` + lockColumns + ` FROM locks WHERE 1=1`
 
 	var args []interface{}
 	argIndex := 1
@@ -251,6 +282,13 @@ func (s *postgresLockStore) ListLocks(ctx context.Context, query lock.LockQuery)
 		baseQuery += ` AND share_name = $` + strconv.Itoa(argIndex)
 		args = append(args, query.ShareName)
 	}
+
+	return baseQuery, args
+}
+
+// ListLocks returns locks matching the query.
+func (s *postgresLockStore) ListLocks(ctx context.Context, query lock.LockQuery) ([]*lock.PersistedLock, error) {
+	baseQuery, args := buildListQuery(query)
 
 	rows, err := s.pool.Query(ctx, baseQuery, args...)
 	if err != nil {
@@ -261,20 +299,7 @@ func (s *postgresLockStore) ListLocks(ctx context.Context, query lock.LockQuery)
 	var locks []*lock.PersistedLock
 	for rows.Next() {
 		var lk lock.PersistedLock
-		err := rows.Scan(
-			&lk.ID,
-			&lk.ShareName,
-			&lk.FileID,
-			&lk.OwnerID,
-			&lk.ClientID,
-			&lk.LockType,
-			&lk.Offset,
-			&lk.Length,
-			&lk.AccessMode,
-			&lk.AcquiredAt,
-			&lk.ServerEpoch,
-		)
-		if err != nil {
+		if err := rows.Scan(scanArgs(&lk)...); err != nil {
 			return nil, err
 		}
 		locks = append(locks, &lk)
@@ -285,36 +310,7 @@ func (s *postgresLockStore) ListLocks(ctx context.Context, query lock.LockQuery)
 
 // listLocksTx lists locks within an existing transaction.
 func (s *postgresLockStore) listLocksTx(ctx context.Context, tx pgx.Tx, query lock.LockQuery) ([]*lock.PersistedLock, error) {
-	// Build dynamic query
-	baseQuery := `
-		SELECT id, share_name, file_id, owner_id, client_id, lock_type,
-		       byte_offset, byte_length, share_reservation, acquired_at, server_epoch
-		FROM locks
-		WHERE 1=1
-	`
-
-	var args []interface{}
-	argIndex := 1
-
-	if query.FileID != "" {
-		baseQuery += ` AND file_id = $` + strconv.Itoa(argIndex)
-		args = append(args, query.FileID)
-		argIndex++
-	}
-	if query.OwnerID != "" {
-		baseQuery += ` AND owner_id = $` + strconv.Itoa(argIndex)
-		args = append(args, query.OwnerID)
-		argIndex++
-	}
-	if query.ClientID != "" {
-		baseQuery += ` AND client_id = $` + strconv.Itoa(argIndex)
-		args = append(args, query.ClientID)
-		argIndex++
-	}
-	if query.ShareName != "" {
-		baseQuery += ` AND share_name = $` + strconv.Itoa(argIndex)
-		args = append(args, query.ShareName)
-	}
+	baseQuery, args := buildListQuery(query)
 
 	rows, err := tx.Query(ctx, baseQuery, args...)
 	if err != nil {
@@ -325,20 +321,7 @@ func (s *postgresLockStore) listLocksTx(ctx context.Context, tx pgx.Tx, query lo
 	var locks []*lock.PersistedLock
 	for rows.Next() {
 		var lk lock.PersistedLock
-		err := rows.Scan(
-			&lk.ID,
-			&lk.ShareName,
-			&lk.FileID,
-			&lk.OwnerID,
-			&lk.ClientID,
-			&lk.LockType,
-			&lk.Offset,
-			&lk.Length,
-			&lk.AccessMode,
-			&lk.AcquiredAt,
-			&lk.ServerEpoch,
-		)
-		if err != nil {
+		if err := rows.Scan(scanArgs(&lk)...); err != nil {
 			return nil, err
 		}
 		locks = append(locks, &lk)

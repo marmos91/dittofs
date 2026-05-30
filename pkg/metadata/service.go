@@ -86,20 +86,68 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	s.stores[shareName] = store
+	_, exists := s.lockManagers[shareName]
+	s.mu.Unlock()
 
-	// Create a lock manager for this share if it doesn't exist
-	if _, exists := s.lockManagers[shareName]; !exists {
-		lm := NewLockManager()
-		s.lockManagers[shareName] = lm
-		// Wire LockManager as DirChangeNotifier: mutations on this share
-		// will dispatch directory lease breaks via the lock manager.
-		s.dirChangeNotifiers[shareName] = lm
+	if exists {
+		return nil
 	}
 
+	// Build and fully recover the lock manager on a local var BEFORE publishing
+	// it into s.lockManagers. Recovery (epoch bump + ListLocks + replay) issues
+	// backend IO, so it runs outside s.mu — but it must complete before the
+	// manager is observable: a concurrent GetLockManagerForShare that saw an
+	// empty, unrecovered manager could grant a lock conflicting with a
+	// not-yet-restored one. Publishing only after recovery closes that window.
+	lm := NewLockManager()
+	if ls, ok := store.(lock.LockStore); ok {
+		lm.SetLockStore(ls)
+		lm.SetShareName(shareName)
+		initLockManagerFromStore(lm, ls, shareName)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Re-check: another caller may have raced us to register this share while
+	// we recovered outside the lock. First publisher wins; drop our manager.
+	if _, exists := s.lockManagers[shareName]; exists {
+		return nil
+	}
+	s.lockManagers[shareName] = lm
+	// Wire LockManager as DirChangeNotifier: mutations on this share will
+	// dispatch directory lease breaks via the lock manager.
+	s.dirChangeNotifiers[shareName] = lm
+
 	return nil
+}
+
+// initLockManagerFromStore stamps a fresh server epoch and replays any locks
+// persisted by a previous run back into the lock manager. Errors are logged
+// and swallowed so a recovery failure never blocks share registration.
+func initLockManagerFromStore(lm *LockManager, ls lock.LockStore, shareName string) {
+	ctx := context.Background()
+
+	epoch, err := ls.IncrementServerEpoch(ctx)
+	if err != nil {
+		logger.Error("lock recovery: failed to increment server epoch", "share", shareName, "error", err)
+	} else {
+		lm.SetEpoch(epoch)
+	}
+
+	persisted, err := ls.ListLocks(ctx, lock.LockQuery{ShareName: shareName})
+	if err != nil {
+		logger.Error("lock recovery: failed to list persisted locks", "share", shareName, "error", err)
+		return
+	}
+	if len(persisted) == 0 {
+		return
+	}
+	if err := lm.RestoreLocks(persisted); err != nil {
+		logger.Error("lock recovery: failed to restore persisted locks", "share", shareName, "error", err)
+		return
+	}
+	logger.Info("lock recovery: restored persisted locks", "share", shareName, "count", len(persisted), "epoch", epoch)
 }
 
 // GetStoreForShare returns the metadata store for a specific share.
