@@ -729,12 +729,21 @@ func validateAndRestore(
 		CreateOptions:  types.CreateOptions(handle.CreateOptions),
 		OplockLevel:    handle.OplockLevel,
 		LeaseKey:       handle.LeaseKey,
-		OpenTime:       handle.CreatedAt,
-		DeletePending:  handle.DeletePending,
-		ParentHandle:   handle.ParentHandle,
-		FileName:       handle.FileName,
-		IsDirectory:    handle.IsDirectory,
-		PositionInfo:   handle.PositionInfo,
+		// Restore the V2 CreateGuid recorded at the original CREATE so a
+		// chained disconnect→reconnect→disconnect cycle keeps the handle's
+		// V2 identity. Without this, the reconnected OpenFile carries a zero
+		// CreateGuid, so the next buildPersistedDurableHandle records IsV2=false
+		// with a zero guid, and the subsequent DH2C reconnect's
+		// GetDurableHandleByCreateGuid lookup fails — breaking the multi-cycle
+		// reconnect that smbtorture durable-v2-open.reopen2* exercises. V1
+		// handles persist CreateGuid == 0, so this is a no-op for them.
+		CreateGuid:    handle.CreateGuid,
+		OpenTime:      handle.CreatedAt,
+		DeletePending: handle.DeletePending,
+		ParentHandle:  handle.ParentHandle,
+		FileName:      handle.FileName,
+		IsDirectory:   handle.IsDirectory,
+		PositionInfo:  handle.PositionInfo,
 		// Restore the ClientGUID recorded at the original CREATE so a
 		// chained disconnect→reconnect→disconnect cycle preserves the
 		// per-(ClientGuid, LeaseKey) lease scoping check on the next

@@ -747,8 +747,15 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		fullFilename = filename + streamSuffix
 	}
 
-	// Handle root directory case
-	if filename == "" && streamSuffix == "" {
+	// Handle root directory case. A durable-reconnect request (DHnC/DH2C) that
+	// carries an empty filename must NOT open the share root — it has to fall
+	// through to Step 4b so the reconnect path rejects it with
+	// OBJECT_NAME_NOT_FOUND. smbtorture durable-open.reopen2_lease / _lease_v2
+	// and the V2 reopen2 family send an empty-fname reconnect as a negative case.
+	hasReconnectCtx := h.DurableStore != nil &&
+		(FindCreateContext(req.CreateContexts, DurableHandleV1ReconnectTag) != nil ||
+			FindCreateContext(req.CreateContexts, DurableHandleV2ReconnectTag) != nil)
+	if filename == "" && streamSuffix == "" && !hasReconnectCtx {
 		resp, err := h.handleOpenRootCreate(ctx, req, authCtx, rootHandle, tree)
 		h.storeCreateReplayIfApplicable(ctx, req, resp)
 		return resp, err
