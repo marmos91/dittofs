@@ -192,7 +192,6 @@ to the DH state machine — tracked under #792 / #793.
 | smb2.durable-open.reopen2 | Durable handles V1 | Durable reopen not fully working | #738 |
 | smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | #738 |
 | smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | #738 |
-| smb2.durable-open.reopen4 | Durable handles V1 | Durable reopen not fully working | #738 |
 | smb2.durable-open.alloc-size | CREATE allocation | Pre-existing non-DH bug: out.alloc_size=0 on CREATE with in.alloc_size set (fails before any reconnect) | #792 |
 | smb2.durable-open.oplock | Disconnected-DH purge | Intervening conflicting open should purge disconnected DH; surfaced after V1 DHnC FileID lookup fix | #808 |
 | smb2.durable-open.open2-lease | Disconnected-DH purge | Intervening conflicting open should purge disconnected DH; surfaced after V1 DHnC FileID lookup fix | #808 |
@@ -205,34 +204,15 @@ still fail due to incomplete reconnect, lease coordination, and persistence.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-v2-open.create-blob | Durable handles V2 | DH2Q create context blob validation | #739 |
-| smb2.durable-v2-open.open-oplock | Durable handles V2 | DH2 open with oplock not fully working | #739 |
-| smb2.durable-v2-open.open-lease | Durable handles V2 | DH2 open with lease not fully working | #739 |
 | smb2.durable-v2-open.reopen1 | Durable handles V2 | DH2 reopen not fully working | #739 |
 | smb2.durable-v2-open.reopen1a | Durable handles V2 | DH2 reopen not fully working | #739 |
-| smb2.durable-v2-open.reopen1a-lease | Durable handles V2 | DH2 reopen with lease not fully working | #739 |
 | smb2.durable-v2-open.reopen2 | Durable handles V2 | DH2 reopen not fully working | #739 |
-| smb2.durable-v2-open.reopen2b | Durable handles V2 | DH2 reopen not fully working | #739 |
 | smb2.durable-v2-open.reopen2-lease | Durable handles V2 | DH2 reopen with lease not fully working | #739 |
 | smb2.durable-v2-open.reopen2-lease-v2 | Durable handles V2 | DH2 reopen with lease V2 not fully working | #739 |
-| smb2.durable-v2-open.durable-v2-setinfo | Durable handles V2 | DH2 setinfo not fully working | #739 |
 | smb2.durable-v2-open.lock-oplock | Durable handles V2 | DH2 lock with oplock not fully working | #739 |
 | smb2.durable-v2-open.lock-lease | Durable handles V2 | DH2 lock with lease not fully working | #739 |
-| smb2.durable-v2-open.lock-noW-lease | Durable handles V2 | DH2 lock without write lease not fully working | #739 |
-| smb2.durable-v2-open.stat-and-lease | Durable handles V2 | DH2 stat + lease interaction not fully working | #739 |
 | smb2.durable-v2-open.nonstat-and-lease | Durable handles V2 | DH2 non-stat + lease interaction not fully working | #739 |
-| smb2.durable-v2-open.statRH-and-lease | Durable handles V2 | DH2 stat-RH + lease interaction not fully working | #739 |
-| smb2.durable-v2-open.two-same-lease | Durable handles V2 | DH2 two handles same lease not fully working | #739 |
-| smb2.durable-v2-open.two-different-lease | Durable handles V2 | DH2 two handles different leases not fully working | #739 |
-| smb2.durable-v2-open.keep-disconnected-rh-with-stat-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #739 |
-| smb2.durable-v2-open.keep-disconnected-rh-with-rh-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #739 |
 | smb2.durable-v2-open.keep-disconnected-rh-with-rwh-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #739 |
-| smb2.durable-v2-open.keep-disconnected-rwh-with-stat-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #739 |
-| smb2.durable-v2-open.purge-disconnected-rwh-with-rwh-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #739 |
-| smb2.durable-v2-open.purge-disconnected-rwh-with-rh-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #739 |
-| smb2.durable-v2-open.purge-disconnected-rh-with-share-none-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #739 |
-| smb2.durable-v2-open.purge-disconnected-rh-with-write | Durable handles V2 | DH2 disconnected handle purge not fully working | #739 |
-| smb2.durable-v2-open.purge-disconnected-rh-with-rename | Durable handles V2 | DH2 disconnected handle purge not fully working | #739 |
 | smb2.durable-v2-open.app-instance | Durable handles V2 | App instance ID not fully working | #739 |
 | smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Persistent handles not implemented | #739 |
 | smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Persistent handles not implemented | #739 |
@@ -384,6 +364,26 @@ The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag an
 
 ## Changelog
 
+### 2026-05-30 — #738/#739 durable walkback: 20 rows removed
+
+Durable-handle V1+V2 Fix-Candidate rows confirmed PASS and walked back after
+two independent smbtorture runs (PR #853 + PR #854, both memory backend) showed
+the same deterministic result. `smb2.durable-v2-open.reopen1` was *excluded* —
+it passed in only one of the two runs (flaky), so it stays a Fix Candidate.
+
+- **V1 (#738):** `reopen4` (reconnect-survives-LOGOFF, fixed by #850).
+- **V2 (#739):** `create-blob`, `open-oplock`, `open-lease`, `reopen1a-lease`,
+  `reopen2b`, `durable-v2-setinfo`, `lock-noW-lease`, `stat-and-lease`,
+  `statRH-and-lease`, `two-same-lease`, `two-different-lease`, the three
+  `keep-disconnected-*` rows, and the five `purge-disconnected-*` rows — the
+  keep/purge-disconnected family was implemented under the #808 disconnected-DH
+  work and #854's `reopen2b` CreateGuid-restore fix; KF was never reconciled.
+
+Still failing and retained: V1 `reopen2`/`reopen2-lease`/`reopen2-lease-v2`,
+V2 `reopen1`/`reopen1a`/`reopen2`/`reopen2-lease`/`reopen2-lease-v2`,
+`lock-oplock`/`lock-lease`/`nonstat-and-lease`/`keep-disconnected-rh-with-rwh-open`/
+`app-instance`/`persistent-open-*`/`durable_v2_reconnect_delay`.
+
 ### 2026-05-30 — #738: `delete_on_close2` → Permanently Unimplementable
 
 `smb2.durable-open.delete_on_close2` promoted from the Durable Handles V1
@@ -394,8 +394,7 @@ file-backed share. DittoFS intentionally fully closes (does not persist) a
 durable handle carrying delete-on-close, so the DOC-survives-reconnect
 ordering the test asserts has no spec mapping. Doc reclassification only —
 the test still fails, just expected. The remaining #738 rows (reopen2,
-reopen1a-lease, reopen2-lease, reopen2-lease-v2) stay as Fix Candidates;
-reopen4 remains referencing #738.
+reopen2-lease, reopen2-lease-v2) stay as Fix Candidates.
 
 ### 2026-05-29 — #771 closed: 4 `smb2.create.*` residuals walked back
 
