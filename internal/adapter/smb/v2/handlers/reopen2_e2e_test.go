@@ -669,3 +669,228 @@ func TestReopen2_V1Lease_NegativeLadder(t *testing.T) {
 	}
 	assertLeaseReconnect(t, rcResp, leaseKey, true)
 }
+
+// ----------------------------------------------------------------------------
+// reopen2 junk-fields cross-connection repro (the core #738/#739 fix).
+//
+// smbtorture's reopen2 family reconnects from a FRESH connection+session+tree
+// and, BY DESIGN, fills every CREATE request field except the reconnect blob
+// with junk (security_flags=0x78, oplock_level=0x78, impersonation=0x12345678,
+// create_flags=0x12345678, desired_access=0x12345678, share_access=0x12345678,
+// create_disposition=0x12345678; for the oplock case also a junk fname) — to
+// prove the server consults ONLY the reconnect context. The reconnect must
+// return NT_STATUS_OK, EXISTED, size==0, and the ORIGINAL granted access.
+//
+// These drive the REAL Create() entrypoint with those junk values. Before the
+// fix, validateAndRestore re-validated DesiredAccess/ShareAccess (-> ACCESS_DENIED)
+// and processV2Reconnect always path-checked (-> INVALID_PARAMETER for the V2
+// junk-fname oplock case). Confirmed against Samba source3/smbd/smb2_create.c:
+// the durable reconnect path performs NO desired_access/share_access compare.
+const (
+	reopen2JunkAccess uint32 = 0x12345678 // smbtorture reopen2 garbage value
+	reopen2JunkShare  uint32 = 0x12345678
+	reopen2JunkFname         = "__non_existing_fname__"
+	reopen2OrigAccess uint32 = 0x001F01FF // access granted at the initial open
+)
+
+// assertReopen2Restored asserts a successful junk-field reconnect: SUCCESS,
+// EXISTED, size==0, and that the reconnected OpenFile carries the ORIGINAL
+// granted access (never the junk requested on the reconnect CREATE).
+func (e *reopen2Env) assertReopen2Restored(t *testing.T, resp *CreateResponse) {
+	t.Helper()
+	if resp.Status != types.StatusSuccess {
+		t.Fatalf("junk-field reconnect: status=0x%08x, want SUCCESS (junk request fields must be ignored)", uint32(resp.Status))
+	}
+	if resp.CreateAction != types.FileOpened {
+		t.Errorf("reconnect CreateAction = %d, want FileOpened (EXISTED)", resp.CreateAction)
+	}
+	if resp.EndOfFile != 0 {
+		t.Errorf("reconnect EndOfFile = %d, want 0 (size==0)", resp.EndOfFile)
+	}
+	rof, ok := e.h.GetOpenFile(resp.FileID)
+	if !ok {
+		t.Fatal("reconnect: OpenFile not registered")
+	}
+	if rof.GrantedAccess != reopen2OrigAccess {
+		t.Errorf("reconnect GrantedAccess = 0x%x, want original 0x%x (junk 0x%x must NOT be applied)",
+			rof.GrantedAccess, reopen2OrigAccess, reopen2JunkAccess)
+	}
+}
+
+// rwhLeaseCtx builds an RWH lease request context for the reconnect.
+func rwhLeaseCtx(leaseKey [16]byte) CreateContext {
+	return CreateContext{Name: LeaseContextTagRequest, Data: encodeV2LeaseContext(leaseKey,
+		lock.LeaseStateRead|lock.LeaseStateWrite|lock.LeaseStateHandle, 0)}
+}
+
+// TestReopen2_V1Oplock_JunkFields_E2E — smb2.durable-open.reopen2 (ACCESS_DENIED
+// pre-fix). V1 (DHnC) batch-oplock reconnect with junk access + junk fname.
+func TestReopen2_V1Oplock_JunkFields_E2E(t *testing.T) {
+	e := setupReopen2Env(t)
+	metaSvc := e.h.Registry.GetMetadataService()
+	rootHandle, _ := e.h.Registry.GetRootHandle(e.tree.ShareName)
+	file, _, _ := e.h.lookupCaseInsensitive(rootAuthCtx(), metaSvc, rootHandle, "durable.txt")
+	existingHandle, _ := metadata.EncodeFileHandle(file)
+
+	const sid = uint64(70)
+	e.h.CreateSessionWithID(sid, "127.0.0.1:1", false, "alice", "WORKGROUP")
+	resp := e.h.completeCreateAfterBreak(e.makeSMBCtx(sid), &createDraft{
+		req: &CreateRequest{
+			FileName:          "durable.txt",
+			DesiredAccess:     reopen2OrigAccess,
+			ShareAccess:       0x07,
+			CreateDisposition: types.FileOpen,
+			OplockLevel:       OplockLevelBatch,
+			CreateContexts:    []CreateContext{dhnqContext()},
+		},
+		tree: e.tree, authCtx: rootAuthCtx(), filename: "durable.txt", baseName: "durable.txt",
+		parentHandle: rootHandle, existingFile: file, existingHandle: existingHandle,
+		fileExists: true, createAction: types.FileOpened,
+	})
+	if resp.Status != types.StatusSuccess {
+		t.Fatalf("initial V1 oplock open: status=0x%08x", uint32(resp.Status))
+	}
+	of, _ := e.h.GetOpenFile(resp.FileID)
+	fid := of.FileID
+	e.disconnect(sid)
+
+	e.h.CreateSessionWithID(71, "127.0.0.1:2", false, "alice", "WORKGROUP")
+	rcResp, err := e.h.Create(e.makeSMBCtx(71), &CreateRequest{
+		FileName:          reopen2JunkFname, // junk fname — ignored for oplock reconnect
+		DesiredAccess:     reopen2JunkAccess,
+		ShareAccess:       reopen2JunkShare,
+		CreateDisposition: 0x12345678,
+		OplockLevel:       0x78,
+		CreateContexts:    []CreateContext{dhncContext(fid)},
+	})
+	if err != nil {
+		t.Fatalf("reconnect Create error: %v", err)
+	}
+	e.assertReopen2Restored(t, rcResp)
+	if rcResp.OplockLevel != OplockLevelBatch {
+		t.Errorf("reconnect OplockLevel = 0x%02x, want Batch", rcResp.OplockLevel)
+	}
+}
+
+// initJunkLeaseReconnect runs the shared body of the lease-backed junk reconnect
+// tests: initial RWH lease + durable open, disconnect, then a fresh reconnect
+// with junk access but the CORRECT lease key + fname (a lease reconnect
+// path-checks; the lease key is the identity). durableReq builds the initial
+// durable request (DHnQ or DH2Q); reconnectCtx builds the reconnect contexts.
+func initJunkLeaseReconnect(t *testing.T, durableReq func(cg [16]byte) []CreateContext,
+	reconnectCtx func(fid, cg, lk [16]byte) []CreateContext) {
+	t.Helper()
+	e := setupReopen2Env(t)
+	leaseKey := [16]byte{0x5A, 0x5B, 0x5C, 0x5D}
+	createGuid := [16]byte{0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF, 0xB0}
+
+	const sid = uint64(80)
+	_, of := e.initialLeaseDurableOpen(t, sid, leaseKey, durableReq(createGuid))
+	fid := of.FileID
+	e.disconnect(sid)
+
+	const sid2 = uint64(81)
+	e.h.CreateSessionWithID(sid2, "127.0.0.1:2", false, "alice", "WORKGROUP")
+	resp, err := e.h.Create(e.makeSMBCtx(sid2), &CreateRequest{
+		FileName:          "durable.txt", // correct fname (lease reconnect path-checks)
+		DesiredAccess:     reopen2JunkAccess,
+		ShareAccess:       reopen2JunkShare,
+		CreateDisposition: types.FileOpen,
+		OplockLevel:       OplockLevelLease,
+		CreateContexts:    reconnectCtx(fid, createGuid, leaseKey),
+	})
+	if err != nil {
+		t.Fatalf("reconnect Create error: %v", err)
+	}
+	e.assertReopen2Restored(t, resp)
+	assertLeaseReconnect(t, resp, leaseKey, true)
+}
+
+// TestReopen2_V1Lease_JunkAccess_E2E — smb2.durable-open.reopen2-lease.
+func TestReopen2_V1Lease_JunkAccess_E2E(t *testing.T) {
+	initJunkLeaseReconnect(t,
+		func(cg [16]byte) []CreateContext { return []CreateContext{dhnqContext()} },
+		func(fid, cg, lk [16]byte) []CreateContext {
+			return []CreateContext{dhncContext(fid), rwhLeaseCtx(lk)}
+		})
+}
+
+// TestReopen2_V1LeaseV2_JunkAccess_E2E — smb2.durable-open.reopen2-lease-v2.
+func TestReopen2_V1LeaseV2_JunkAccess_E2E(t *testing.T) {
+	initJunkLeaseReconnect(t,
+		func(cg [16]byte) []CreateContext { return []CreateContext{dhnqContext()} },
+		func(fid, cg, lk [16]byte) []CreateContext {
+			return []CreateContext{dhncContext(fid), rwhLeaseCtx(lk)}
+		})
+}
+
+// TestReopen2_V2Oplock_JunkFields_E2E — smb2.durable-v2-open.reopen2
+// (INVALID_PARAMETER pre-fix). V2 (DH2C) batch-oplock reconnect with junk
+// access + JUNK fname — the V2-specific trap the always-path-check bug hit.
+func TestReopen2_V2Oplock_JunkFields_E2E(t *testing.T) {
+	e := setupReopen2Env(t)
+	metaSvc := e.h.Registry.GetMetadataService()
+	rootHandle, _ := e.h.Registry.GetRootHandle(e.tree.ShareName)
+	file, _, _ := e.h.lookupCaseInsensitive(rootAuthCtx(), metaSvc, rootHandle, "durable.txt")
+	existingHandle, _ := metadata.EncodeFileHandle(file)
+	createGuid := [16]byte{0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF, 0xD0}
+
+	const sid = uint64(90)
+	e.h.CreateSessionWithID(sid, "127.0.0.1:1", false, "alice", "WORKGROUP")
+	resp := e.h.completeCreateAfterBreak(e.makeSMBCtx(sid), &createDraft{
+		req: &CreateRequest{
+			FileName:          "durable.txt",
+			DesiredAccess:     reopen2OrigAccess,
+			ShareAccess:       0x07,
+			CreateDisposition: types.FileOpen,
+			OplockLevel:       OplockLevelBatch,
+			CreateContexts:    []CreateContext{dh2qContext(createGuid, 60000)},
+		},
+		tree: e.tree, authCtx: rootAuthCtx(), filename: "durable.txt", baseName: "durable.txt",
+		parentHandle: rootHandle, existingFile: file, existingHandle: existingHandle,
+		fileExists: true, createAction: types.FileOpened,
+	})
+	if resp.Status != types.StatusSuccess {
+		t.Fatalf("initial V2 oplock open: status=0x%08x", uint32(resp.Status))
+	}
+	of, _ := e.h.GetOpenFile(resp.FileID)
+	if !of.IsDurable || of.CreateGuid != createGuid {
+		t.Fatalf("initial open: V2 durability not granted (durable=%v guid=%x)", of.IsDurable, of.CreateGuid)
+	}
+	fid := of.FileID
+	e.disconnect(sid)
+
+	e.h.CreateSessionWithID(91, "127.0.0.1:2", false, "alice", "WORKGROUP")
+	rcResp, err := e.h.Create(e.makeSMBCtx(91), &CreateRequest{
+		FileName:          reopen2JunkFname, // junk fname — ignored for non-lease V2 reconnect
+		DesiredAccess:     reopen2JunkAccess,
+		ShareAccess:       reopen2JunkShare,
+		CreateDisposition: 0x12345678,
+		OplockLevel:       0x78,
+		CreateContexts:    []CreateContext{dh2cContext(fid, createGuid)},
+	})
+	if err != nil {
+		t.Fatalf("reconnect Create error: %v", err)
+	}
+	e.assertReopen2Restored(t, rcResp)
+}
+
+// TestReopen2_V2Lease_JunkAccess_E2E — smb2.durable-v2-open.reopen2-lease
+// (ACCESS_DENIED pre-fix). V2 (DH2C) lease reconnect with junk access.
+func TestReopen2_V2Lease_JunkAccess_E2E(t *testing.T) {
+	initJunkLeaseReconnect(t,
+		func(cg [16]byte) []CreateContext { return []CreateContext{dh2qContext(cg, 60000)} },
+		func(fid, cg, lk [16]byte) []CreateContext {
+			return []CreateContext{dh2cContext(fid, cg), rwhLeaseCtx(lk)}
+		})
+}
+
+// TestReopen2_V2LeaseV2_JunkAccess_E2E — smb2.durable-v2-open.reopen2-lease-v2
+// (ACCESS_DENIED pre-fix). Same as above with the V2 lease wire shape.
+func TestReopen2_V2LeaseV2_JunkAccess_E2E(t *testing.T) {
+	initJunkLeaseReconnect(t,
+		func(cg [16]byte) []CreateContext { return []CreateContext{dh2qContext(cg, 60000)} },
+		func(fid, cg, lk [16]byte) []CreateContext {
+			return []CreateContext{dh2cContext(fid, cg), rwhLeaseCtx(lk)}
+		})
+}

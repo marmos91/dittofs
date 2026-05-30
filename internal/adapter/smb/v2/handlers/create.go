@@ -526,14 +526,16 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// MS-SMB2 §3.3.5.9.7/12: a DHnC/DH2C reconnect is keyed solely by the
 	// reconnect blob (FileId / CreateGuid). The server ignores the wire-format
 	// CREATE fields validated below — ImpersonationLevel, CreateOptions reserved
-	// bits, FileAttributes. (DesiredAccess / ShareAccess are NOT ignored: the
-	// reconnect path re-validates them against the persisted handle in
-	// validateAndRestore per §3.3.5.9.9 privilege-escalation checks.) smbtorture
-	// smb2.durable-open.reopen2 reconnects a third time with every such field
-	// set to garbage (0x12345678 / 0x78) to prove the wire gates are skipped;
-	// running them against that garbage would wrongly return
-	// STATUS_INVALID_PARAMETER / STATUS_BAD_IMPERSONATION_LEVEL /
-	// STATUS_NOT_SUPPORTED before the reconnect path (Step 4b) is reached.
+	// bits, FileAttributes — AND ignores DesiredAccess / ShareAccess: the
+	// reconnect path restores the ORIGINAL granted access from the persisted
+	// handle and never re-validates the requested access (confirmed against
+	// Samba source3/smbd/smb2_create.c — no desired/share-access compare on
+	// reconnect), so no privilege escalation is possible. smbtorture
+	// smb2.durable-open.reopen2 reconnects with every such field set to garbage
+	// (0x12345678 / 0x78) to prove the wire gates are skipped; running them
+	// against that garbage would wrongly return STATUS_INVALID_PARAMETER /
+	// STATUS_ACCESS_DENIED / STATUS_BAD_IMPERSONATION_LEVEL / STATUS_NOT_SUPPORTED
+	// before the reconnect path (Step 4b) is reached.
 	//
 	// Gated on a configured DurableStore so the bypass only applies on the path
 	// that reaches the reconnect handler, and excluded on IPC$ — durable handles
@@ -784,7 +786,6 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 				authCtx.Context, h.DurableStore, metaSvc, req.CreateContexts,
 				ctx.SessionID, sess.Username, sessionKeyHash,
 				tree.ShareName, fullFilename, connClientGUID(ctx),
-				req.DesiredAccess, req.ShareAccess,
 			)
 			if reconnErr != nil {
 				logger.Warn("CREATE: durable reconnect error", "error", reconnErr)
