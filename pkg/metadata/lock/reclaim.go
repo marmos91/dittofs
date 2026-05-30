@@ -87,12 +87,19 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 				existing.Lease.LeaseState = requestedState
 				existing.Reclaim = true
 				lm.mu.Unlock()
+				// Record the reclaim so grace can exit early once every expected
+				// client has recovered (X/Open NLMv4 / RFC 7530 §9.6.2).
+				lm.MarkReclaimed(pl.ClientID)
 				logger.Debug("ReclaimLease: lease already in memory, updated",
 					"leaseKey", fmt.Sprintf("%x", leaseKey))
 				return existing.Clone(), nil
 			}
 			lm.unifiedLocks[handleKey] = append(lm.unifiedLocks[handleKey], lock)
 			lm.mu.Unlock()
+
+			// Record the reclaim so grace can exit early once every expected
+			// client has recovered (X/Open NLMv4 / RFC 7530 §9.6.2).
+			lm.MarkReclaimed(pl.ClientID)
 
 			logger.Debug("ReclaimLease: lease reclaimed",
 				"leaseKey", fmt.Sprintf("%x", leaseKey),

@@ -90,9 +90,26 @@ func (s *nlmService) LockFileNLM(
 	unifiedLock := lock.NewUnifiedLock(owner, lock.FileHandle(handle), offset, length, lockTypeFromExclusive(exclusive))
 	unifiedLock.Reclaim = reclaim
 
+	// Grace period gating: during the post-restart grace window the server only
+	// admits reclaims so a prior owner can recover before a third party steals
+	// the range (X/Open NLMv4, RFC 7530 §9.6.2). A non-reclaim request is
+	// rejected with ErrGracePeriod, which the handler maps to NLM4_DENIED_GRACE_PERIOD.
+	allowed, graceErr := s.lockMgr.IsOperationAllowed(lock.Operation{
+		IsNew:     !reclaim,
+		IsReclaim: reclaim,
+	})
+	if !allowed {
+		return nil, graceErr
+	}
+
 	handleKey := string(handle)
 	err := s.lockMgr.AddUnifiedLock(handleKey, unifiedLock)
 	if err == nil {
+		// A successful reclaim records the client so grace can exit early once
+		// every expected client has recovered its locks.
+		if reclaim {
+			s.lockMgr.MarkReclaimed(owner.ClientID)
+		}
 		return &lock.LockResult{
 			Success: true,
 			Lock:    unifiedLock,

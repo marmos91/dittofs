@@ -2620,6 +2620,24 @@ func (lm *Manager) IsInGracePeriod() bool {
 	return false
 }
 
+// GetExpectedClients returns the client IDs the grace period is waiting on to
+// reclaim. Returns nil if no grace period manager is configured.
+func (lm *Manager) GetExpectedClients() []string {
+	if lm.gracePeriod != nil {
+		return lm.gracePeriod.GetExpectedClients()
+	}
+	return nil
+}
+
+// GetReclaimedClients returns the client IDs that have reclaimed during the
+// current grace period. Returns nil if no grace period manager is configured.
+func (lm *Manager) GetReclaimedClients() []string {
+	if lm.gracePeriod != nil {
+		return lm.gracePeriod.GetReclaimedClients()
+	}
+	return nil
+}
+
 // ============================================================================
 // Break Callback Registration
 // ============================================================================

@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
 	nlm_xdr "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
+	metaerrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -120,6 +121,17 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 	)
 
 	if err != nil {
+		// Grace period: a non-reclaim lock attempted during the post-restart
+		// grace window is rejected so a prior owner can reclaim first.
+		if metaerrors.IsGracePeriodError(err) {
+			logger.Debug("NLM LOCK denied: grace period",
+				"client", ctx.ClientAddr,
+				"owner", ownerID)
+			return &LockResponse{
+				Cookie: req.Cookie,
+				Status: types.NLM4DeniedGrace,
+			}, nil
+		}
 		// System error
 		logger.Warn("NLM LOCK failed",
 			"client", ctx.ClientAddr,
