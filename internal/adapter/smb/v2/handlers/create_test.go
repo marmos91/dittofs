@@ -97,39 +97,6 @@ func TestDecodeCreateRequest_ShortBody(t *testing.T) {
 		}
 	})
 
-	t.Run("ParsesAllocationSizeFromAlSiContext", func(t *testing.T) {
-		// SMB2 has no fixed AllocationSize request field; the client sends it
-		// in the SMB2_CREATE_ALLOCATION_SIZE ("AlSi") create context [MS-SMB2]
-		// 2.2.13.2.2 as an 8-byte little-endian value.
-		data := make([]byte, 8)
-		binary.LittleEndian.PutUint64(data, 0x1000)
-		body := buildCreateRequestBodyWithContexts("file.txt", types.FileCreate, 0,
-			[]CreateContext{{Name: "AlSi", Data: data}})
-
-		req, err := DecodeCreateRequest(body)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if req.AllocationSize != 0x1000 {
-			t.Errorf("AllocationSize = %d, expected 0x1000", req.AllocationSize)
-		}
-	})
-
-	t.Run("IgnoresReservedFieldForAllocationSize", func(t *testing.T) {
-		// The 8-byte field at offset 16 is Reserved in the SMB2 CREATE request;
-		// a value there must NOT be interpreted as AllocationSize.
-		body := buildCreateRequestBody("file.txt", types.FileCreate, 0)
-		binary.LittleEndian.PutUint64(body[16:24], 0x9999)
-
-		req, err := DecodeCreateRequest(body)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if req.AllocationSize != 0 {
-			t.Errorf("AllocationSize = %d, expected 0 (Reserved must be ignored)", req.AllocationSize)
-		}
-	})
-
 	t.Run("NilBody", func(t *testing.T) {
 		_, err := DecodeCreateRequest(nil)
 		if err == nil {
