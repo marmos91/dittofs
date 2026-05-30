@@ -116,6 +116,13 @@ func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata
 	// CreateRootDirectory afterward; it is idempotent and updates the
 	// existing root in place (no orphaned inode).
 
+	// Validate the block layout BEFORE creating any rows so an invalid value
+	// can't leave a half-created share (root inode materialized, options
+	// rejected). UpdateShareOptions re-parses it; this is the early guard.
+	if _, err := metadata.ParseBlockLayout(string(share.Options.BlockLayout)); err != nil {
+		return fmt.Errorf("create share %q: %w", share.Name, err)
+	}
+
 	// Duplicate detection: a share is "created" once its root inode exists.
 	// This read is the common-case fast path; it is not the integrity
 	// authority. Two creators racing the same name both pass this check and
@@ -124,7 +131,11 @@ func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata
 	// only one root inode at path "/" — the loser's insert fails rather than
 	// silently orphaning an inode. (Production also serializes share creation
 	// upstream in the control plane.)
-	if existing, err := s.getExistingRootDirectory(ctx, share.Name); err == nil && existing != nil {
+	existing, err := s.getExistingRootDirectory(ctx, share.Name)
+	if err != nil {
+		return fmt.Errorf("create share %q: check existing: %w", share.Name, err)
+	}
+	if existing != nil {
 		return &metadata.StoreError{
 			Code:    metadata.ErrAlreadyExists,
 			Message: "share already exists",
