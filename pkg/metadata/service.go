@@ -86,11 +86,14 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	s.stores[shareName] = store
 
-	// Create a lock manager for this share if it doesn't exist
+	// Create a lock manager for this share if it doesn't exist. Lock recovery
+	// (epoch bump + ListLocks + replay) issues backend IO, so it is deferred
+	// until after s.mu is released — holding s.mu across that IO would block
+	// every other MetadataService operation on a slow store.
+	var runRecovery func()
 	if _, exists := s.lockManagers[shareName]; !exists {
 		lm := NewLockManager()
 		s.lockManagers[shareName] = lm
@@ -103,8 +106,14 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 		if ls, ok := store.(lock.LockStore); ok {
 			lm.SetLockStore(ls)
 			lm.SetShareName(shareName)
-			initLockManagerFromStore(lm, ls, shareName)
+			runRecovery = func() { initLockManagerFromStore(lm, ls, shareName) }
 		}
+	}
+
+	s.mu.Unlock()
+
+	if runRecovery != nil {
+		runRecovery()
 	}
 
 	return nil

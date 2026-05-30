@@ -40,7 +40,9 @@ func TestLock_PersistsAndReloads(t *testing.T) {
 	fresh.SetLockStore(store)
 	require.NoError(t, fresh.RestoreLocks(persisted))
 
-	restored := fresh.ListUnifiedLocks(handleKey)
+	// SMB byte-range locks restore into the legacy locks map (consulted by
+	// Lock/Unlock/TestLock/CheckForIO), not the unified-lock map.
+	restored := fresh.ListLocks(handleKey)
 	require.Len(t, restored, 1, "lock should be present after restore")
 	require.Equal(t, uint64(100), restored[0].Offset)
 	require.Equal(t, uint64(50), restored[0].Length)
@@ -128,7 +130,7 @@ func TestRemoveUnifiedLock_DeletesPersisted(t *testing.T) {
 	ul := &UnifiedLock{
 		ID:         "unified-lock-2",
 		Owner:      owner,
-		FileHandle: FileHandle("file-4"),
+		FileHandle: FileHandle(handleKey),
 		Offset:     0,
 		Length:     0,
 		Type:       LockTypeExclusive,
@@ -144,4 +146,135 @@ func TestRemoveUnifiedLock_DeletesPersisted(t *testing.T) {
 	persisted, err = store.ListLocks(ctx, LockQuery{})
 	require.NoError(t, err)
 	require.Empty(t, persisted, "unified lock should be deleted from store")
+}
+
+// TestLock_StackedSMBLocksPersistIndependently verifies HIGH-3: SMB2 permits
+// stacking multiple identical (same open/offset/length/type) byte-range locks,
+// each requiring its own Unlock. The persisted identity must match this
+// stacking so unlocking ONE stacked entry does not drop the persisted record
+// while another in-memory entry survives.
+func TestLock_StackedSMBLocksPersistIndependently(t *testing.T) {
+	ctx := context.Background()
+	store := newMockLockStore()
+
+	mgr := NewManager()
+	mgr.SetLockStore(store)
+	mgr.SetShareName("share-a")
+
+	const handleKey = "share-a:file-stack"
+	// SMB stacks identical SHARED locks from the same open (Samba
+	// brl_lock_windows); exclusive re-locks on the same range are rejected.
+	fl := FileLock{
+		SessionID: 7,
+		OpenID:    "open-1", // SMB per-open => stacking semantics
+		Offset:    100,
+		Length:    50,
+		Exclusive: false,
+	}
+	// Stack two identical locks.
+	require.NoError(t, mgr.Lock(handleKey, fl))
+	require.NoError(t, mgr.Lock(handleKey, fl))
+
+	require.Len(t, mgr.ListLocks(handleKey), 2, "two stacked locks held in memory")
+
+	persisted, err := store.ListLocks(ctx, LockQuery{ShareName: "share-a"})
+	require.NoError(t, err)
+	require.Len(t, persisted, 2, "each stacked lock must persist as a distinct record")
+
+	// Unlock once: one in-memory entry remains, so a persisted record must too.
+	require.NoError(t, mgr.Unlock(handleKey, "open-1", 7, 100, 50))
+	require.Len(t, mgr.ListLocks(handleKey), 1, "one stacked lock remains in memory")
+
+	persisted, err = store.ListLocks(ctx, LockQuery{ShareName: "share-a"})
+	require.NoError(t, err)
+	require.Len(t, persisted, 1, "one persisted record must survive partial unlock")
+
+	// Unlock the last entry: now the store is empty.
+	require.NoError(t, mgr.Unlock(handleKey, "open-1", 7, 100, 50))
+	persisted, err = store.ListLocks(ctx, LockQuery{ShareName: "share-a"})
+	require.NoError(t, err)
+	require.Empty(t, persisted, "store empty after both stacked locks released")
+}
+
+// TestLock_ZeroByteLockPreservesIsZeroByte verifies HIGH-4: an SMB2 zero-byte
+// lock (Length==0 but IsZeroByte) must NOT be restored as an unbounded
+// (to-EOF) lock — that would produce wrong conflict checks after restart.
+func TestLock_ZeroByteLockPreservesIsZeroByte(t *testing.T) {
+	store := newMockLockStore()
+
+	mgr := NewManager()
+	mgr.SetLockStore(store)
+	mgr.SetShareName("share-a")
+
+	const handleKey = "share-a:file-zb"
+	zb := FileLock{
+		SessionID:  7,
+		OpenID:     "open-1",
+		Offset:     10,
+		Length:     0,
+		IsZeroByte: true,
+		Exclusive:  true,
+	}
+	require.NoError(t, mgr.Lock(handleKey, zb))
+
+	persisted, err := store.ListLocks(context.Background(), LockQuery{ShareName: "share-a"})
+	require.NoError(t, err)
+	require.Len(t, persisted, 1)
+	require.True(t, persisted[0].IsZeroByte, "zero-byte flag must be persisted")
+
+	// Restore into a fresh manager and verify the restored byte-range lock is
+	// still zero-byte (does not block an overlapping I/O / lock to EOF).
+	fresh := NewManager()
+	fresh.SetLockStore(store)
+	require.NoError(t, fresh.RestoreLocks(persisted))
+
+	restored := fresh.ListLocks(handleKey)
+	require.Len(t, restored, 1, "zero-byte lock must restore into legacy locks map")
+	require.True(t, restored[0].IsZeroByte, "restored lock must remain zero-byte, not to-EOF")
+}
+
+// TestRestoreLocks_ByteRangeEnforcedAfterRestart verifies HIGH-5: byte-range
+// locks restored after a restart must be enforced by the legacy byte-range ops
+// (TestLock / CheckForIO), which consult lm.locks — not lm.unifiedLocks.
+func TestRestoreLocks_ByteRangeEnforcedAfterRestart(t *testing.T) {
+	store := newMockLockStore()
+
+	mgr := NewManager()
+	mgr.SetLockStore(store)
+	mgr.SetShareName("share-a")
+
+	const handleKey = "share-a:file-br"
+	held := FileLock{
+		SessionID: 7,
+		OpenID:    "open-1",
+		Offset:    0,
+		Length:    100,
+		Exclusive: true,
+	}
+	require.NoError(t, mgr.Lock(handleKey, held))
+
+	persisted, err := store.ListLocks(context.Background(), LockQuery{ShareName: "share-a"})
+	require.NoError(t, err)
+	require.Len(t, persisted, 1)
+
+	// Simulate restart.
+	fresh := NewManager()
+	fresh.SetLockStore(store)
+	require.NoError(t, fresh.RestoreLocks(persisted))
+
+	// A conflicting lock from a different open must be denied.
+	conflicting := FileLock{
+		SessionID: 8,
+		OpenID:    "open-2",
+		Offset:    50,
+		Length:    20,
+		Exclusive: true,
+	}
+	conflict, err := fresh.TestLock(handleKey, conflicting)
+	require.NoError(t, err)
+	require.NotNil(t, conflict, "restored byte-range lock must be enforced by TestLock")
+
+	// CheckForIO from a different open must see the conflict too.
+	ioConflict := fresh.CheckForIO(handleKey, "open-2", 8, 50, 20, true)
+	require.NotNil(t, ioConflict, "restored byte-range lock must be enforced by CheckForIO")
 }

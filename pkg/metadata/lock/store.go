@@ -49,6 +49,20 @@ type PersistedLock struct {
 	// Length is the number of bytes locked (0 = to EOF).
 	Length uint64 `json:"length"`
 
+	// IsZeroByte marks an SMB2 zero-byte byte-range lock (Length==0 but NOT
+	// to-EOF). Without this flag a restored zero-byte lock would be treated as
+	// unbounded (NFS to-EOF semantics) and produce wrong conflict checks.
+	// Always false for leases, delegations, and NFS/NLM locks.
+	IsZeroByte bool `json:"is_zero_byte,omitempty"`
+
+	// IsLegacyByteRange marks a record persisted via the legacy SMB byte-range
+	// path (Manager.Lock), whose in-memory home is the legacy `locks` map
+	// consulted by Lock/Unlock/TestLock/CheckForIO. NLM/NFSv4 locks go through
+	// AddUnifiedLock and live in `unifiedLocks`; both are byte-range with no
+	// LeaseKey/DelegationID, so this flag is the discriminator that lets
+	// RestoreLocks route each record back to the correct map after restart.
+	IsLegacyByteRange bool `json:"is_legacy_byte_range,omitempty"`
+
 	// AccessMode is the SMB share mode (0=none, 1=deny-read, 2=deny-write, 3=deny-all).
 	AccessMode int `json:"share_reservation"`
 
