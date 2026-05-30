@@ -66,9 +66,10 @@ type CreateRequest struct {
 	CreateOptions types.CreateOptions
 
 	// AllocationSize is the client-requested initial allocation size in bytes
-	// [MS-SMB2] 2.2.13. The server SHOULD reserve at least this much space and
-	// reflect the (cluster-aligned) reservation in the CREATE response's
-	// AllocationSize field and in FileStandardInformation.
+	// [MS-SMB2] 2.2.13. We do not preallocate backing storage; the value only
+	// raises the (cluster-aligned) AllocationSize reported in the CREATE
+	// response so a freshly-created empty file reports a non-zero allocation.
+	// The QueryInfo FileStandardInformation path is unaffected.
 	AllocationSize uint64
 
 	// FileName is the name/path of the file to create or open.

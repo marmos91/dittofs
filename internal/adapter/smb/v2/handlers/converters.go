@@ -79,7 +79,14 @@ func isFiletimeSentinel(ft uint64) bool {
 }
 
 // calculateAllocationSize returns the size rounded up to the nearest cluster boundary.
+// The round-up addition is saturated: a client-controlled requested allocation
+// [MS-SMB2] 2.2.13 within clusterSize-1 of the uint64 max would otherwise wrap
+// to a small value, so such inputs clamp to the largest cluster-aligned uint64.
 func calculateAllocationSize(size uint64) uint64 {
+	const maxAligned = (^uint64(0) / clusterSize) * clusterSize
+	if size > maxAligned {
+		return maxAligned
+	}
 	return ((size + clusterSize - 1) / clusterSize) * clusterSize
 }
 

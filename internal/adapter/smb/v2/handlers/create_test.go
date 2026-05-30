@@ -99,7 +99,8 @@ func TestDecodeCreateRequest_ShortBody(t *testing.T) {
 
 	t.Run("ParsesAllocationSize", func(t *testing.T) {
 		body := buildCreateRequestBody("file.txt", types.FileCreate, 0)
-		// AllocationSize occupies offset 16-23 [MS-SMB2] 2.2.13.
+		// The 8-byte field at offset 16 (traditionally Reserved in
+		// buildCreateRequestBody) carries the AllocationSize hint [MS-SMB2] 2.2.13.
 		binary.LittleEndian.PutUint64(body[16:24], 0x1000)
 
 		req, err := DecodeCreateRequest(body)
