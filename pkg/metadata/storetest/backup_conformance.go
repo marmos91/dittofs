@@ -289,6 +289,7 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 		}
 		f := &metadata.File{
 			ShareName: shareName,
+			Path:      "/concurrent-new.bin",
 			FileAttr: metadata.FileAttr{
 				Type: metadata.FileTypeRegular,
 				Mode: 0o644,

@@ -68,6 +68,7 @@ func testDirectoryPermissionAttributes(t *testing.T, factory StoreFactory) {
 
 	dir := &metadata.File{
 		ShareName: "/test",
+		Path:      "/restricted",
 		FileAttr: metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0700,

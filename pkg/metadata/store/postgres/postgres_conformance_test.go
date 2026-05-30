@@ -15,10 +15,14 @@ import (
 // postgresTestConfig returns the config + capabilities every Postgres test
 // store is opened with. Centralized so the connection params stay consistent.
 func postgresTestConfig() (*postgres.PostgresMetadataStoreConfig, metadata.FilesystemCapabilities) {
+	dbName := os.Getenv("DITTOFS_TEST_PG_DBNAME")
+	if dbName == "" {
+		dbName = "dittofs_test"
+	}
 	cfg := &postgres.PostgresMetadataStoreConfig{
 		Host:        "localhost",
 		Port:        5432,
-		Database:    "dittofs_test",
+		Database:    dbName,
 		User:        "postgres",
 		Password:    "postgres",
 		SSLMode:     "disable",

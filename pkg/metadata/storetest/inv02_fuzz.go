@@ -291,6 +291,7 @@ func fuzzCreateFile(ctx context.Context, store metadata.MetadataStore, shareName
 	file := &metadata.File{
 		ID:        fileID,
 		ShareName: shareName,
+		Path:      "/" + name,
 		FileAttr: metadata.FileAttr{
 			Type:   metadata.FileTypeRegular,
 			Mode:   0o644,
@@ -397,6 +398,7 @@ func fuzzCopyFile(ctx context.Context, store metadata.MetadataStore, shareName s
 	dst := &metadata.File{
 		ID:        fileID,
 		ShareName: shareName,
+		Path:      "/" + name,
 		FileAttr: metadata.FileAttr{
 			Type:   metadata.FileTypeRegular,
 			Mode:   0o644,
