@@ -675,6 +675,14 @@ func TestProcessDurableReconnectContext_V2Success(t *testing.T) {
 	if !restored.IsV2 {
 		t.Error("Expected IsV2=true for V2 reconnect")
 	}
+	// The restored OpenFile must carry the original CreateGuid so a chained
+	// disconnect→reconnect→disconnect cycle keeps the handle's V2 identity:
+	// without it the next buildPersistedDurableHandle records IsV2=false with a
+	// zero guid and the following DH2C by-CreateGuid lookup fails (the
+	// reopen2-family multi-cycle regression this fix addresses).
+	if restored.OpenFile.CreateGuid != createGuid {
+		t.Errorf("restored CreateGuid = %x, want %x", restored.OpenFile.CreateGuid, createGuid)
+	}
 
 	// Verify handle was deleted from store
 	h, _ := store.GetDurableHandle(ctx, "dh-002")
