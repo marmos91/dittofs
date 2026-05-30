@@ -97,6 +97,20 @@ func TestDecodeCreateRequest_ShortBody(t *testing.T) {
 		}
 	})
 
+	t.Run("ParsesAllocationSize", func(t *testing.T) {
+		body := buildCreateRequestBody("file.txt", types.FileCreate, 0)
+		// AllocationSize occupies offset 16-23 [MS-SMB2] 2.2.13.
+		binary.LittleEndian.PutUint64(body[16:24], 0x1000)
+
+		req, err := DecodeCreateRequest(body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if req.AllocationSize != 0x1000 {
+			t.Errorf("AllocationSize = %d, expected 0x1000", req.AllocationSize)
+		}
+	})
+
 	t.Run("NilBody", func(t *testing.T) {
 		_, err := DecodeCreateRequest(nil)
 		if err == nil {

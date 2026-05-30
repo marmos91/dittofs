@@ -83,6 +83,19 @@ func calculateAllocationSize(size uint64) uint64 {
 	return ((size + clusterSize - 1) / clusterSize) * clusterSize
 }
 
+// effectiveAllocationSize returns the allocation size to report for a file,
+// honouring a client-requested reservation [MS-SMB2] 2.2.13. It is the larger
+// of the file's own cluster-aligned size and the cluster-aligned requested
+// allocation, so an empty file opened with a non-zero requested allocation
+// reports a non-zero AllocationSize.
+func effectiveAllocationSize(size, requested uint64) uint64 {
+	alloc := calculateAllocationSize(size)
+	if reqAlloc := calculateAllocationSize(requested); reqAlloc > alloc {
+		return reqAlloc
+	}
+	return alloc
+}
+
 // getSMBSize returns the appropriate size for SMB reporting.
 // For symlinks, this returns the MFsymlink size (1067 bytes) since SMB clients
 // expect symlinks to be stored as MFsymlink files.

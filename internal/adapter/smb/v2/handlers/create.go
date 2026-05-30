@@ -65,6 +65,12 @@ type CreateRequest struct {
 	// See types.CreateOptions for bit flags.
 	CreateOptions types.CreateOptions
 
+	// AllocationSize is the client-requested initial allocation size in bytes
+	// [MS-SMB2] 2.2.13. The server SHOULD reserve at least this much space and
+	// reflect the (cluster-aligned) reservation in the CREATE response's
+	// AllocationSize field and in FileStandardInformation.
+	AllocationSize uint64
+
 	// FileName is the name/path of the file to create or open.
 	// Uses backslash separators (Windows-style).
 	FileName string
@@ -181,7 +187,7 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 	oplockLevel := r.ReadUint8()         // OplockLevel (1)
 	impersonationLevel := r.ReadUint32() // ImpersonationLevel (4)
 	r.Skip(8)                            // SmbCreateFlags (8)
-	r.Skip(8)                            // Reserved (8)
+	allocationSize := r.ReadUint64()     // AllocationSize (8) [MS-SMB2] 2.2.13
 	desiredAccess := r.ReadUint32()      // DesiredAccess (4)
 	// Per MS-DTYP §2.4.3 / §2.5.3, GENERIC_* bits in DesiredAccess MUST be
 	// expanded to file-object-specific rights before access-check
@@ -207,6 +213,7 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 		ShareAccess:        shareAccess,
 		CreateDisposition:  createDisposition,
 		CreateOptions:      createOptions,
+		AllocationSize:     allocationSize,
 	}
 
 	// Extract filename (UTF-16LE encoded)
