@@ -12,44 +12,79 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/storetest"
 )
 
-// newPostgresStoreFactory returns a factory that creates a fresh
-// PostgresMetadataStore for each subtest. Shared by both conformance
-// suites so the config and capabilities stay consistent.
+// postgresTestConfig returns the config + capabilities every Postgres test
+// store is opened with. Centralized so the connection params stay consistent.
+func postgresTestConfig() (*postgres.PostgresMetadataStoreConfig, metadata.FilesystemCapabilities) {
+	cfg := &postgres.PostgresMetadataStoreConfig{
+		Host:        "localhost",
+		Port:        5432,
+		Database:    "dittofs_test",
+		User:        "postgres",
+		Password:    "postgres",
+		SSLMode:     "disable",
+		AutoMigrate: true,
+	}
+	caps := metadata.FilesystemCapabilities{
+		MaxReadSize:         1048576,
+		PreferredReadSize:   1048576,
+		MaxWriteSize:        1048576,
+		PreferredWriteSize:  1048576,
+		MaxFileSize:         9223372036854775807,
+		MaxFilenameLen:      255,
+		MaxPathLen:          4096,
+		MaxHardLinkCount:    32767,
+		SupportsHardLinks:   true,
+		SupportsSymlinks:    true,
+		CaseSensitive:       true,
+		CasePreserving:      true,
+		TimestampResolution: 1,
+	}
+	return cfg, caps
+}
+
+// newPostgresStore opens a Postgres store WITHOUT resetting it. Used by
+// dedicated tests that manage their own data lifecycle (store_id stability,
+// CreateShare contract). The store is closed via t.Cleanup.
+func newPostgresStore(t *testing.T) *postgres.PostgresMetadataStore {
+	t.Helper()
+	cfg, caps := postgresTestConfig()
+	store, err := postgres.NewPostgresMetadataStore(context.Background(), cfg, caps)
+	if err != nil {
+		t.Fatalf("NewPostgresMetadataStore() failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return store
+}
+
+// newPostgresStoreFactory returns a factory that hands each conformance
+// subtest a CLEAN store. The conformance subtests share one database and
+// reuse fixed share names ("/test"), so per-subtest isolation is mandatory:
+// open to ensure the schema is migrated, Reset to truncate any data a prior
+// subtest left behind, then re-open. The re-open re-seeds
+// filesystem_capabilities and server_config (store_id) on the now-empty
+// singleton tables, exercising the post-reset reopen path the restore
+// orchestration depends on.
 func newPostgresStoreFactory() func(t *testing.T) metadata.MetadataStore {
 	return func(t *testing.T) metadata.MetadataStore {
-		cfg := &postgres.PostgresMetadataStoreConfig{
-			Host:        "localhost",
-			Port:        5432,
-			Database:    "dittofs_test",
-			User:        "postgres",
-			Password:    "postgres",
-			SSLMode:     "disable",
-			AutoMigrate: true,
-		}
+		t.Helper()
+		cfg, caps := postgresTestConfig()
+		ctx := context.Background()
 
-		caps := metadata.FilesystemCapabilities{
-			MaxReadSize:         1048576,
-			PreferredReadSize:   1048576,
-			MaxWriteSize:        1048576,
-			PreferredWriteSize:  1048576,
-			MaxFileSize:         9223372036854775807,
-			MaxFilenameLen:      255,
-			MaxPathLen:          4096,
-			MaxHardLinkCount:    32767,
-			SupportsHardLinks:   true,
-			SupportsSymlinks:    true,
-			CaseSensitive:       true,
-			CasePreserving:      true,
-			TimestampResolution: 1,
-		}
-
-		store, err := postgres.NewPostgresMetadataStore(context.Background(), cfg, caps)
+		seed, err := postgres.NewPostgresMetadataStore(ctx, cfg, caps)
 		if err != nil {
 			t.Fatalf("NewPostgresMetadataStore() failed: %v", err)
 		}
-		t.Cleanup(func() {
-			store.Close()
-		})
+		if err := seed.Reset(ctx); err != nil {
+			seed.Close()
+			t.Fatalf("Reset() failed: %v", err)
+		}
+		seed.Close()
+
+		store, err := postgres.NewPostgresMetadataStore(ctx, cfg, caps)
+		if err != nil {
+			t.Fatalf("NewPostgresMetadataStore() reopen failed: %v", err)
+		}
+		t.Cleanup(func() { store.Close() })
 		return store
 	}
 }
