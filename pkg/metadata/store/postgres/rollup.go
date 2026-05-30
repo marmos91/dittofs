@@ -16,10 +16,10 @@ import (
 // ============================================================================
 //
 // Persists the per-file rollup_offset for the hybrid append-log tier. The
-// atomic-monotone contract is enforced at the DATABASE layer via
-// a conditional WHERE predicate on the ON CONFLICT DO UPDATE branch — no
-// read-modify-write race window exists application-side, because the
-// engine itself rejects regressions.
+// atomic-monotone contract is enforced by reading the prior value under a
+// FOR UPDATE row lock and rejecting a strictly-lower offset before the
+// upsert commits — the lock closes the read-modify-write race window, so a
+// concurrent writer cannot interleave between the check and the write.
 //
 // Schema lives in migration 000009 (rollup_offsets table). The migration
 // is idempotent (`CREATE TABLE IF NOT EXISTS`), so a re-run on an
@@ -78,19 +78,16 @@ func (s *PostgresMetadataStore) SetRollupOffset(ctx context.Context, payloadID s
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Lock + read the prior value. ErrNoRows means no row yet (prev == 0).
+	var prev uint64
 	var prevSigned int64
-	hasPrev := true
 	switch err := tx.QueryRow(ctx,
 		`SELECT rollup_offset FROM rollup_offsets WHERE payload_id = $1 FOR UPDATE`,
 		payloadID).Scan(&prevSigned); {
 	case errors.Is(err, pgx.ErrNoRows):
-		hasPrev = false
+		// No prior row: prev stays 0, fall through to the insert path.
 	case err != nil:
 		return 0, fmt.Errorf("postgres rollup select-for-update: %w", err)
-	}
-
-	var prev uint64
-	if hasPrev {
+	default:
 		v, verr := validateStoredOffset(prevSigned)
 		if verr != nil {
 			return 0, verr

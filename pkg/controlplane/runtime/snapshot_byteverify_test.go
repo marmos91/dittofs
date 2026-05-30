@@ -424,7 +424,6 @@ func runByteVerifyCycle(t *testing.T, fx *byteVerifyFixture) {
 	if enabled, _ := fx.rt.sharesSvc.IsShareEnabled(fx.shareName); enabled {
 		t.Fatal("share enabled after restore — must stay disabled")
 	}
-	_ = pidC
 }
 
 // TestSnapshotByteVerify_Matrix is the table-driven matrix over metadata-store
