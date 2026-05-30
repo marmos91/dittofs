@@ -188,7 +188,7 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 	oplockLevel := r.ReadUint8()         // OplockLevel (1)
 	impersonationLevel := r.ReadUint32() // ImpersonationLevel (4)
 	r.Skip(8)                            // SmbCreateFlags (8)
-	allocationSize := r.ReadUint64()     // AllocationSize (8) [MS-SMB2] 2.2.13
+	r.Skip(8)                            // Reserved (8) — SMB2 has no fixed AllocationSize field
 	desiredAccess := r.ReadUint32()      // DesiredAccess (4)
 	// Per MS-DTYP §2.4.3 / §2.5.3, GENERIC_* bits in DesiredAccess MUST be
 	// expanded to file-object-specific rights before access-check
@@ -214,7 +214,6 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 		ShareAccess:        shareAccess,
 		CreateDisposition:  createDisposition,
 		CreateOptions:      createOptions,
-		AllocationSize:     allocationSize,
 	}
 
 	// Extract filename (UTF-16LE encoded)
@@ -270,6 +269,15 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 				req.CreateContexts = ctxs
 			}
 		}
+	}
+
+	// SMB2_CREATE_ALLOCATION_SIZE ("AlSi") create context [MS-SMB2] 2.2.13.2.2:
+	// SMB2 has no fixed AllocationSize request field, so the client conveys the
+	// requested initial allocation as an 8-byte little-endian value in this
+	// context's Data. The server reflects it (cluster-aligned) in the CREATE
+	// response AllocationSize. Required by smbtorture smb2.durable-open.alloc-size.
+	if alsi := FindCreateContext(req.CreateContexts, "AlSi"); alsi != nil && len(alsi.Data) >= 8 {
+		req.AllocationSize = smbenc.NewReader(alsi.Data).ReadUint64()
 	}
 
 	return req, nil
