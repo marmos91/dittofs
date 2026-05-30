@@ -27,6 +27,24 @@ jobs:
       matrix:
         go-version: ["1.25.x"]
 
+    # PostgreSQL service so the metadata-store integration + conformance
+    # suites actually run in CI. The postgres test factory connects to
+    # localhost:5432, database dittofs_test, postgres/postgres.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dittofs_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -40,8 +58,14 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      # -p 1 serializes package test binaries: several packages (metadata
+      # store conformance, blockstore engine drain) share the single
+      # dittofs_test database, and the conformance suite truncates it
+      # between subtests — running their binaries concurrently would race.
       - name: Run all integration tests
-        run: go test -tags=integration -v -timeout=15m ./...
+        env:
+          DITTOFS_TEST_POSTGRES_DSN: "host=localhost port=5432 dbname=dittofs_test user=postgres password=postgres sslmode=disable"
+        run: go test -tags=integration -v -timeout=20m -p 1 ./...
 
       - name: Install and start rpcbind
         run: |

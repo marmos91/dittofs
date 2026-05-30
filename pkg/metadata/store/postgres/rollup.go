@@ -47,17 +47,16 @@ func validateStoredOffset(v int64) (uint64, error) {
 // On monotone violation (newOffset < stored), returns (storedOffset,
 // metadata.ErrRollupOffsetRegression); the stored value is UNCHANGED.
 //
-// Atomicity: a single CTE-wrapped statement captures the prior row under
-// FOR UPDATE (row lock) BEFORE the conditional upsert fires. The
-// row-level lock excludes any concurrent writer for the duration of the
-// statement, so the returned `prev` always reflects the value the upsert
-// observed — never a stale snapshot from a parallel transaction.
+// Atomicity: a transaction reads the prior row under FOR UPDATE (row lock)
+// and then conditionally upserts under that same lock, so the returned
+// `prev` always reflects the value the upsert observed — never a stale
+// snapshot from a parallel transaction.
 //
-// The conflict branch's WHERE predicate
-// (rollup_offsets.rollup_offset <= EXCLUDED.rollup_offset) enforces the
-// monotone invariant: if it rejects, neither INSERT nor UPDATE fires and
-// the RETURNING clause yields no rows — we surface that as the
-// regression sentinel and return the locked prior value.
+// The prior value is read explicitly rather than projected out of an
+// INSERT ... ON CONFLICT ... RETURNING (SELECT rollup_offset FROM cte):
+// the CTE and the conflict target are the same row, and the RETURNING
+// subquery resolves to NULL there, so that single-statement form always
+// reported prev=0 on the update path (it only worked on first insert).
 func (s *PostgresMetadataStore) SetRollupOffset(ctx context.Context, payloadID string, newOffset uint64) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -72,63 +71,50 @@ func (s *PostgresMetadataStore) SetRollupOffset(ctx context.Context, payloadID s
 		return 0, fmt.Errorf("postgres: rollup offset %d exceeds BIGINT range", newOffset)
 	}
 
-	// Single-statement atomic upsert: the `prev` CTE locks the existing
-	// row (if any) with FOR UPDATE, then the INSERT ... ON CONFLICT runs
-	// in the same statement under that lock. RETURNING yields the prior
-	// value (or NULL on first insert) alongside the new value when the
-	// monotone guard accepts the write.
-	//
-	// On regression (WHERE predicate false on the conflict branch),
-	// neither INSERT nor UPDATE fires, RETURNING yields zero rows, and
-	// the row-lock release exposes the unchanged prior value to the
-	// follow-up read below.
-	const upsertSQL = `
-		WITH prev AS (
-			SELECT rollup_offset FROM rollup_offsets
-			WHERE payload_id = $1
-			FOR UPDATE
-		)
-		INSERT INTO rollup_offsets (payload_id, rollup_offset)
-		VALUES ($1, $2)
-		ON CONFLICT (payload_id) DO UPDATE
-			SET rollup_offset = EXCLUDED.rollup_offset
-			WHERE rollup_offsets.rollup_offset <= EXCLUDED.rollup_offset
-		RETURNING (SELECT rollup_offset FROM prev), rollup_offset
-	`
+	tx, err := s.beginTx(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("postgres rollup begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 
-	var (
-		prevSigned    *int64 // nullable: NULL on first insert
-		currentSigned int64
-	)
-	row := s.queryRow(ctx, upsertSQL, payloadID, int64(newOffset))
-	switch err := row.Scan(&prevSigned, &currentSigned); {
+	// Lock + read the prior value. ErrNoRows means no row yet (prev == 0).
+	var prevSigned int64
+	hasPrev := true
+	switch err := tx.QueryRow(ctx,
+		`SELECT rollup_offset FROM rollup_offsets WHERE payload_id = $1 FOR UPDATE`,
+		payloadID).Scan(&prevSigned); {
 	case errors.Is(err, pgx.ErrNoRows):
-		// Regression: monotone guard rejected the update. Read the
-		// locked-and-released prior value to surface in the sentinel
-		// error. The lock from the CTE has been released by the time
-		// this query runs, but a concurrent writer at this point would
-		// only ever advance the value monotonically — the regression
-		// sentinel remains correct (newOffset < stored holds).
-		var stored int64
-		row2 := s.queryRow(ctx,
-			`SELECT rollup_offset FROM rollup_offsets WHERE payload_id = $1`,
-			payloadID)
-		if err2 := row2.Scan(&stored); err2 != nil {
-			return 0, fmt.Errorf("postgres rollup read after regression: %w", err2)
-		}
-		v, verr := validateStoredOffset(stored)
+		hasPrev = false
+	case err != nil:
+		return 0, fmt.Errorf("postgres rollup select-for-update: %w", err)
+	}
+
+	var prev uint64
+	if hasPrev {
+		v, verr := validateStoredOffset(prevSigned)
 		if verr != nil {
 			return 0, verr
 		}
-		return v, metadata.ErrRollupOffsetRegression
-	case err != nil:
-		return 0, fmt.Errorf("postgres rollup upsert: %w", err)
+		prev = v
+		// Monotone guard: a strictly-lower offset is a regression. Leave the
+		// stored value untouched (deferred Rollback releases the lock) and
+		// surface the sentinel with the unchanged prior value.
+		if newOffset < prev {
+			return prev, metadata.ErrRollupOffsetRegression
+		}
 	}
 
-	if prevSigned == nil {
-		return 0, nil
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO rollup_offsets (payload_id, rollup_offset)
+		 VALUES ($1, $2)
+		 ON CONFLICT (payload_id) DO UPDATE SET rollup_offset = EXCLUDED.rollup_offset`,
+		payloadID, int64(newOffset)); err != nil {
+		return 0, fmt.Errorf("postgres rollup upsert: %w", err)
 	}
-	return validateStoredOffset(*prevSigned)
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("postgres rollup commit: %w", err)
+	}
+	return prev, nil
 }
 
 // GetRollupOffset returns the persisted rollup_offset for payloadID, or
