@@ -183,10 +183,14 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 	logger.Debug("Logoff: partial cleanup (session kept for response signing)",
 		"sessionID", ctx.SessionID)
 
-	// Close files FIRST to release held byte-range locks. This lets
-	// pending blocking LOCKs from other handles retry and potentially
-	// succeed before we cancel them. Matches Samba's brl_close_fnum
-	// ordering where lock release precedes waiter cancellation.
+	// Close files FIRST to release held byte-range locks for the opens that
+	// are actually closing. This lets pending blocking LOCKs from other
+	// handles retry and potentially succeed before we cancel them. Matches
+	// Samba's brl_close_fnum ordering where lock release precedes waiter
+	// cancellation. Opens that persist as durable reconnectable handles
+	// (see below) intentionally RETAIN their byte-range locks — the locks
+	// travel with the handle and are restored on reconnect, so they are not
+	// released here.
 	//
 	// isDisconnect=true: a durable handle MUST survive an explicit LOGOFF
 	// and remain reconnectable on a fresh session via DHnC/DH2C. Per the
