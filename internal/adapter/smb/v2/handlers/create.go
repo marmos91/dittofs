@@ -523,12 +523,33 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameNotFound}}, nil
 	}
 
+	// MS-SMB2 §3.3.5.9.7/12: a DHnC/DH2C reconnect is keyed solely by the
+	// reconnect blob (FileId / CreateGuid). The server ignores the wire-format
+	// CREATE fields validated below — ImpersonationLevel, CreateOptions reserved
+	// bits, FileAttributes. (DesiredAccess / ShareAccess are NOT ignored: the
+	// reconnect path re-validates them against the persisted handle in
+	// validateAndRestore per §3.3.5.9.9 privilege-escalation checks.) smbtorture
+	// smb2.durable-open.reopen2 reconnects a third time with every such field
+	// set to garbage (0x12345678 / 0x78) to prove the wire gates are skipped;
+	// running them against that garbage would wrongly return
+	// STATUS_INVALID_PARAMETER / STATUS_BAD_IMPERSONATION_LEVEL /
+	// STATUS_NOT_SUPPORTED before the reconnect path (Step 4b) is reached.
+	//
+	// Gated on a configured DurableStore so the bypass only applies on the path
+	// that reaches the reconnect handler, and excluded on IPC$ — durable handles
+	// are disk-share only, so a stray reconnect blob on a named pipe must still
+	// run full wire validation rather than fall into handlePipeCreate unchecked.
+	isDurableReconnect := h.DurableStore != nil &&
+		tree.ShareName != "/ipc$" &&
+		(FindCreateContext(req.CreateContexts, DurableHandleV1ReconnectTag) != nil ||
+			FindCreateContext(req.CreateContexts, DurableHandleV2ReconnectTag) != nil)
+
 	// Validate ImpersonationLevel per MS-SMB2 §2.2.13: only the four defined
 	// values are accepted (0=Anonymous, 1=Identification, 2=Impersonation,
 	// 3=Delegate). Anything else MUST be rejected with
 	// STATUS_BAD_IMPERSONATION_LEVEL. Required by smbtorture
 	// smb2.create.impersonation.
-	if req.ImpersonationLevel > 3 {
+	if !isDurableReconnect && req.ImpersonationLevel > 3 {
 		logger.Debug("CREATE: invalid impersonation level",
 			"level", fmt.Sprintf("0x%08x", req.ImpersonationLevel))
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBadImpersonationLevel}}, nil
@@ -539,7 +560,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// bit returns STATUS_INVALID_PARAMETER. Samba sets `invalid_parameter_mask
 	// = 0xff000000` in source3/smbd/smb2_create.c for these probes (smbtorture
 	// smb2.create.gentest).
-	if uint32(req.CreateOptions)&0xff000000 != 0 {
+	if !isDurableReconnect && uint32(req.CreateOptions)&0xff000000 != 0 {
 		logger.Debug("CREATE: reserved CreateOptions bits set",
 			"options", fmt.Sprintf("0x%08x", uint32(req.CreateOptions)))
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
@@ -560,7 +581,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	const unsupportedCreateOptionsMask uint32 = 0x00000080 | // bit 7  (TREE_CONNECTION)
 		uint32(types.FileOpenByFileId) | // bit 13 (0x00002000)
 		0x00100000 // bit 20 (OPFILTER)
-	if uint32(req.CreateOptions)&unsupportedCreateOptionsMask != 0 {
+	if !isDurableReconnect && uint32(req.CreateOptions)&unsupportedCreateOptionsMask != 0 {
 		logger.Debug("CREATE: unsupported CreateOptions bits set",
 			"options", fmt.Sprintf("0x%08x", uint32(req.CreateOptions)))
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported}}, nil
@@ -582,7 +603,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// accepted (no-op on DittoFS) — WPTS FSA tests probe basic-info on a file
 	// created with that attribute and require CREATE to succeed.
 	const validFileAttributesMask uint32 = 0x0000FFB7
-	if uint32(req.FileAttributes)&^validFileAttributesMask != 0 {
+	if !isDurableReconnect && uint32(req.FileAttributes)&^validFileAttributesMask != 0 {
 		logger.Debug("CREATE: invalid FileAttributes bits set",
 			"attrs", fmt.Sprintf("0x%08x", uint32(req.FileAttributes)))
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil

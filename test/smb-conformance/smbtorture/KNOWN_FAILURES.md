@@ -194,7 +194,6 @@ to the DH state machine — tracked under #792 / #793.
 | smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | #738 |
 | smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | #738 |
 | smb2.durable-open.reopen4 | Durable handles V1 | Durable reopen not fully working | #738 |
-| smb2.durable-open.delete_on_close2 | Durable handles V1 | Durable DOC not fully working | #738 |
 | smb2.durable-open.alloc-size | CREATE allocation | Pre-existing non-DH bug: out.alloc_size=0 on CREATE with in.alloc_size set (fails before any reconnect) | #792 |
 | smb2.durable-open.oplock | Disconnected-DH purge | Intervening conflicting open should purge disconnected DH; surfaced after V1 DHnC FileID lookup fix | #808 |
 | smb2.durable-open.open2-lease | Disconnected-DH purge | Intervening conflicting open should purge disconnected DH; surfaced after V1 DHnC FileID lookup fix | #808 |
@@ -374,16 +373,30 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.timestamp_resolution.resolution1 | Timing-dependent (upstream-skipped) | Test source documents `~15ms` Windows timestamp resolution and warns of a `1/15` false-fail rate even on a low-latency reference SMB connection. Explicitly skipped by Samba's own selftest (`selftest/skip:69-70`: `^samba3.smb2.timestamp_resolution` / `^samba4.smb2.timestamp_resolution`) "preserved here for future SMB2 timestamps behaviour archaeologists". DittoFS classifies the same way upstream does. |
 | smb2.create.blob | Create-context coverage (upstream-skipped) | Walks 20+ adversarial CreateContext tag/length combinations against a file-backed share. Explicitly listed in Samba's own selftest knownfail (`selftest/knownfail`: `^samba3.smb2.create.blob`) — fails against Samba's own smb3-file backend, not just DittoFS. Implementing all variants requires duplicating Samba's smb1-derived create-context corner cases that have no MS-SMB2 spec mapping. |
 | smb2.create.gentest | Generative impersonation matrix (upstream-skipped) | Brute-forces hundreds of `(create_disposition × create_options × ImpersonationLevel × attribute)` combinations expecting Windows-exact status codes. Explicitly listed in Samba's own selftest knownfail (`selftest/knownfail`: `^samba3.smb2.create.gentest`) — fails on Samba file-backed shares. The status-code surface mirrors Windows-internal IRP_MJ_CREATE behaviour, not MS-FSA. |
+| smb2.durable-open.delete_on_close2 | Durable DOC (upstream-skipped) | Reopens a durable handle that was opened with FILE_DELETE_ON_CLOSE, then asserts the post-reconnect delete-on-close + truncate-on-overwrite interaction matches Windows verbatim. Explicitly listed in Samba's own selftest knownfail (`selftest/knownfail`: `^samba3.smb2.durable-open.delete_on_close2`) — fails against Samba's own file-backed share, not just DittoFS. The disconnect path intentionally does NOT persist a durable handle carrying delete-on-close (the open is fully closed instead, so the stored content is not resurrected on reconnect); reproducing the exact Windows ordering of DOC-survives-reconnect has no MS-SMB2 spec mapping and is upstream-skipped. |
 | smb2.maxfid | smbtorture wall-clock budget | Test issues up to 65520 sequential synchronous CREATEs (Samba `source4/torture/smb2/maxfid.c:100`, controlled by `torture:maxopenfiles`). Total RTT-bound runtime exceeds the 60s per-test wall set by `run.sh` (STANDALONE_TESTS). DittoFS keeps CREATE succeeding throughout (no protocol-level handle-table cap), so the suite is killed mid-loop before reaching the cleanup phase. Raising the per-test wall to accommodate one stress test inflates full-suite runtime substantially without exercising a protocol gap. |
 | smb2.notify.mask-change | Samba notify-mask quirk | Asserts that, once a CHANGE_NOTIFY completion-filter mask has been armed on a directory handle, re-issuing CHANGE_NOTIFY with a different mask MUST observe the original mask only until the handle is closed (test source: `source4/torture/smb2/notify.c:771-772` — "Now try and change the mask to include other events. This should not work - once the mask is set on a directory h1 it seems to be fixed until the fnum is closed"). MS-SMB2 §3.3.5.19 does not specify mask-coalescing across separate CHANGE_NOTIFY requests on the same handle, and the test has a long-standing "never passed individually" history against DittoFS independent of test order. Surrounding scenarios (cross-tree dir/file rename plumbing, recursion-flag-mixed reqs on the same FID) are also Samba implementation conventions. |
 
-**Total: 24 tests permanently out of scope.**
+**Total: 25 tests permanently out of scope.**
 
 ### Kerberos
 
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-30 — #738: `delete_on_close2` → Permanently Unimplementable
+
+`smb2.durable-open.delete_on_close2` promoted from the Durable Handles V1
+(Fix Candidate) table to the Permanently Unimplementable appendix. The test
+is explicitly listed in Samba's own `selftest/knownfail`
+(`^samba3.smb2.durable-open.delete_on_close2`) and fails against Samba's
+file-backed share. DittoFS intentionally fully closes (does not persist) a
+durable handle carrying delete-on-close, so the DOC-survives-reconnect
+ordering the test asserts has no spec mapping. Doc reclassification only —
+the test still fails, just expected. The remaining #738 rows (reopen2,
+reopen1a-lease, reopen2-lease, reopen2-lease-v2) stay as Fix Candidates;
+reopen4 remains referencing #738.
 
 ### 2026-05-29 — #771 closed: 4 `smb2.create.*` residuals walked back
 

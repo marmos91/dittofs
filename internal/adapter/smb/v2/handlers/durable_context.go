@@ -293,12 +293,13 @@ type ReconnectResult struct {
 // and on success returns a ReconnectResult. On failure, returns a specific NTSTATUS code.
 //
 // connClientGUID is the ClientGuid of the reconnecting connection (from
-// NEGOTIATE). It is matched against the persisted handle's ClientGUID only on
-// V2 *lease-backed* reconnect — see reopen1a-lease in
-// `source4/torture/smb2/durable_v2_open.c`. Pass [16]byte{} from contexts that
-// have no notion of ClientGuid; lease reconnect with a zero ClientGuid will
-// fail OBJECT_NAME_NOT_FOUND, mirroring Samba's strict per-client-GUID lease
-// key scoping.
+// NEGOTIATE). It is matched against the persisted handle's ClientGUID on both
+// V1 (DHnC) and V2 (DH2C) *lease-backed* reconnect — see reopen1a-lease in
+// `source4/torture/smb2/durable_open.c` (V1) and `durable_v2_open.c` (V2).
+// Per-(ClientGuid, LeaseKey) lease scoping means a lease-backed durable open
+// must be reconnected from the ClientGuid that established it; a mismatch
+// fails OBJECT_NAME_NOT_FOUND. Persisted handles written before ClientGUID
+// was captured carry the zero value and skip the check (forward compat).
 func ProcessDurableReconnectContext(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
@@ -326,7 +327,7 @@ func ProcessDurableReconnectContext(
 
 	if dhnCCtx := FindCreateContext(contexts, DurableHandleV1ReconnectTag); dhnCCtx != nil {
 		openFile, leaseState, origID, status, err := processV1Reconnect(ctx, durableStore, metaSvc, contexts, dhnCCtx,
-			sessionID, username, sessionKeyHash, shareName, filename, desiredAccess, shareAccess)
+			sessionID, username, sessionKeyHash, shareName, filename, connClientGUID, desiredAccess, shareAccess)
 		if err != nil || status != types.StatusSuccess {
 			return nil, status, err
 		}
@@ -335,6 +336,20 @@ func ProcessDurableReconnectContext(
 
 	// No reconnect context found
 	return nil, types.StatusInvalidParameter, fmt.Errorf("no reconnect context found")
+}
+
+// leaseReconnectClientGUIDMismatch reports whether a lease-backed durable
+// reconnect must be rejected because it arrives on a different ClientGuid than
+// the one that established the open. Per MS-SMB2 §3.3.5.9.7/12 and Samba
+// per-(ClientGuid, LeaseKey) lease scoping, a lease-backed handle (non-zero
+// LeaseKey) MUST be reconnected from its originating ClientGuid. A persisted
+// handle written before ClientGUID was captured carries the zero value and is
+// treated as "no recorded ClientGuid" (forward compat with pre-#432 binaries).
+// Shared by the V1 (DHnC) and V2 (DH2C) reconnect paths.
+func leaseReconnectClientGUIDMismatch(handle *lock.PersistedDurableHandle, connClientGUID [16]byte) bool {
+	return handle.LeaseKey != ([16]byte{}) &&
+		handle.ClientGUID != ([16]byte{}) &&
+		handle.ClientGUID != connClientGUID
 }
 
 // processV1Reconnect handles V1 (DHnC) reconnect validation and restoration.
@@ -350,6 +365,7 @@ func processV1Reconnect(
 	sessionKeyHash [32]byte,
 	shareName string,
 	filename string,
+	connClientGUID [16]byte,
 	desiredAccess uint32,
 	shareAccess uint32,
 ) (*OpenFile, uint32, [16]byte, types.Status, error) {
@@ -446,6 +462,17 @@ func processV1Reconnect(
 				"actual", fmt.Sprintf("%x", leaseReq.LeaseKey))
 			return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
 		}
+
+		// Reject a lease reconnect arriving on a different ClientGuid than the
+		// one that established the open. smbtorture
+		// smb2.durable-open.reopen1a-lease attempts a lease reconnect from a
+		// fresh ClientGuid and expects OBJECT_NAME_NOT_FOUND.
+		if leaseReconnectClientGUIDMismatch(handle, connClientGUID) {
+			logger.Debug("processV1Reconnect: ClientGuid mismatch on lease-backed reconnect",
+				"persisted", fmt.Sprintf("%x", handle.ClientGUID),
+				"connecting", fmt.Sprintf("%x", connClientGUID))
+			return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
+		}
 	}
 
 	openFile, status, restoreErr := validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
@@ -521,17 +548,10 @@ func processV2Reconnect(
 		return nil, 0, [16]byte{}, types.StatusInvalidParameter, nil
 	}
 
-	// Per MS-SMB2 §3.3.5.9.12 and Samba lease-key scoping (per-(ClientGuid,
-	// LeaseKey)), a V2 *lease-backed* durable open MUST be reconnected from
-	// the same ClientGuid that established it. A non-zero LeaseKey on the
-	// persisted handle is our marker for "lease-backed". An older persisted
-	// handle written before ClientGUID was captured carries the zero value;
-	// treat that as "no recorded ClientGuid" and skip the check to preserve
-	// forward compatibility with handles written by pre-#432 binaries
-	// (matches the fall-back pattern already used for GrantedAccess in
-	// validateAndRestore). smbtorture smb2.durable-v2-open.reopen1a-lease.
-	if handle.LeaseKey != ([16]byte{}) && handle.ClientGUID != ([16]byte{}) &&
-		handle.ClientGUID != connClientGUID {
+	// Reject a V2 lease reconnect arriving on a different ClientGuid than the
+	// one that established the open. smbtorture
+	// smb2.durable-v2-open.reopen1a-lease.
+	if leaseReconnectClientGUIDMismatch(handle, connClientGUID) {
 		logger.Debug("processV2Reconnect: ClientGuid mismatch on lease-backed reconnect",
 			"persisted", fmt.Sprintf("%x", handle.ClientGUID),
 			"connecting", fmt.Sprintf("%x", connClientGUID))
