@@ -1092,7 +1092,17 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	// allocation is the larger of the file's own cluster-aligned size and the
 	// (cluster-aligned) requested reservation. This lets a freshly-created empty
 	// file report a non-zero out.alloc_size when the client asked for one.
-	allocationSize := effectiveAllocationSize(size, req.AllocationSize)
+	//
+	// Directories MUST ignore the client-requested reservation and report only
+	// their own cluster-aligned size (0 for an empty directory). The "AlSi"
+	// create context applies to data files only — smbtorture
+	// smb2.create.dir_alloc_size (source4/torture/smb2/create.c:2064) creates a
+	// directory with alloc_size=1GB and asserts out.alloc_size <= 1MB.
+	requestedAlloc := req.AllocationSize
+	if openFile.IsDirectory {
+		requestedAlloc = 0
+	}
+	allocationSize := effectiveAllocationSize(size, requestedAlloc)
 
 	resp := &CreateResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
