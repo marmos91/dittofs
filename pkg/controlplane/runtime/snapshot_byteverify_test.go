@@ -31,12 +31,27 @@ type byteVerifyFixture struct {
 	bs            *engine.Store
 	shareName     string
 	localStoreDir string
+
+	// Captured so simulateRestart can rebuild the Runtime over the SAME
+	// control-plane store and re-register the reopened metadata store.
+	metaStoreName string
+	localID       string
+	remoteID      string
 }
 
 // newByteVerifyFixture builds the fixture for the given metadata store. The
 // metaType is the engine label recorded in the cpstore ("memory" | "badger" |
 // "postgres") — it drives snapshot/restore's per-engine Restoreable dispatch.
 func newByteVerifyFixture(t *testing.T, meta metadata.MetadataStore, metaType string) *byteVerifyFixture {
+	return newByteVerifyFixtureOpts(t, meta, metaType, nil)
+}
+
+// newByteVerifyFixtureOpts is newByteVerifyFixture with an optional remote
+// block store. When remoteCfg is non-nil it is persisted as a remote
+// BlockStoreConfig and wired onto the share (RemoteBlockStoreID), so the
+// engine gets a real syncer + remote target and snapshot create runs the
+// full drain -> VerifyRemoteDurability gate. nil keeps the share local-only.
+func newByteVerifyFixtureOpts(t *testing.T, meta metadata.MetadataStore, metaType string, remoteCfg *models.BlockStoreConfig) *byteVerifyFixture {
 	t.Helper()
 
 	cp, err := cpstore.New(&cpstore.Config{
@@ -83,6 +98,17 @@ func newByteVerifyFixture(t *testing.T, meta metadata.MetadataStore, metaType st
 		t.Fatalf("CreateBlockStore: %v", err)
 	}
 
+	// Optional remote block store: persist it and capture its ID so the
+	// share is wired with a real syncer + remote target.
+	var remoteID string
+	if remoteCfg != nil {
+		rid, rerr := cp.CreateBlockStore(context.Background(), remoteCfg)
+		if rerr != nil {
+			t.Fatalf("CreateBlockStore(remote): %v", rerr)
+		}
+		remoteID = rid
+	}
+
 	shareName := "/bv-share"
 	// AddShare creates the root directory but not the Share record itself;
 	// the metadata store needs the Share row so GetRootHandle can resolve it.
@@ -92,19 +118,24 @@ func newByteVerifyFixture(t *testing.T, meta metadata.MetadataStore, metaType st
 	// Persist the cpstore Share row so DisableShare (which writes
 	// shares.enabled in the DB) resolves it. AddShare only populates the
 	// runtime registry, not this row.
-	if _, err := cp.CreateShare(context.Background(), &models.Share{
+	cpShare := &models.Share{
 		Name:              shareName,
 		MetadataStoreID:   metaID,
 		LocalBlockStoreID: localID,
 		Enabled:           true,
-	}); err != nil {
+	}
+	if remoteID != "" {
+		cpShare.RemoteBlockStoreID = &remoteID
+	}
+	if _, err := cp.CreateShare(context.Background(), cpShare); err != nil {
 		t.Fatalf("cpstore CreateShare: %v", err)
 	}
 	if err := rt.AddShare(context.Background(), &shares.ShareConfig{
-		Name:              shareName,
-		MetadataStore:     metaStoreName,
-		LocalBlockStoreID: localID,
-		Enabled:           true,
+		Name:               shareName,
+		MetadataStore:      metaStoreName,
+		LocalBlockStoreID:  localID,
+		RemoteBlockStoreID: remoteID,
+		Enabled:            true,
 	}); err != nil {
 		t.Fatalf("AddShare: %v", err)
 	}
@@ -130,7 +161,56 @@ func newByteVerifyFixture(t *testing.T, meta metadata.MetadataStore, metaType st
 		bs:            share.BlockStore,
 		shareName:     shareName,
 		localStoreDir: localStoreDir,
+		metaStoreName: metaStoreName,
+		localID:       localID,
+		remoteID:      remoteID,
 	}
+}
+
+// simulateRestart models a process restart for an on-disk metadata backend:
+// it shuts the current Runtime down, closes the old metadata store, reopens it
+// from its durable location via reopen(), and builds a FRESH Runtime over the
+// SAME control-plane store (where the restore marker lives) with the share
+// re-added. Used by the crash-recovery test to prove startup recovery rolls
+// back after a genuine reopen — not just an in-memory re-register. The cp
+// store is intentionally NOT closed (it is the durable marker home).
+func (f *byteVerifyFixture) simulateRestart(reopen func(*testing.T) metadata.MetadataStore) {
+	f.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	_ = f.rt.Shutdown(ctx)
+	cancel()
+
+	// Close the old store before reopening: an on-disk backend (badger) holds
+	// an exclusive lock on its directory, so the reopen would fail until the
+	// prior handle is released. The first open()'s t.Cleanup will later call
+	// Close() again on this now-closed handle at test teardown — harmless: the
+	// error is ignored here and there, and neither badger nor postgres
+	// corrupts state on a double Close.
+	_ = f.meta.Close()
+
+	meta := reopen(f.t)
+
+	rt := New(f.store)
+	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{MaxSize: 0})
+	if err := rt.RegisterMetadataStore(f.metaStoreName, meta); err != nil {
+		f.t.Fatalf("simulateRestart RegisterMetadataStore: %v", err)
+	}
+	if err := rt.AddShare(context.Background(), &shares.ShareConfig{
+		Name:               f.shareName,
+		MetadataStore:      f.metaStoreName,
+		LocalBlockStoreID:  f.localID,
+		RemoteBlockStoreID: f.remoteID,
+		Enabled:            false, // restore requires the share disabled
+	}); err != nil {
+		f.t.Fatalf("simulateRestart AddShare: %v", err)
+	}
+	share, err := rt.GetShare(f.shareName)
+	if err != nil {
+		f.t.Fatalf("simulateRestart GetShare: %v", err)
+	}
+	f.rt = rt
+	f.meta = meta
+	f.bs = share.BlockStore
 }
 
 func (f *byteVerifyFixture) close() {
@@ -450,6 +530,10 @@ type byteVerifyBackend struct {
 	name string
 	// open constructs the metadata store and returns it + its engine label.
 	open func(t *testing.T) (metadata.MetadataStore, string)
+	// reopen re-opens the SAME durable store (badger dir / postgres DSN)
+	// after a simulated restart. nil for backends that cannot survive a
+	// restart (memory) — the crash-recovery-reopen test skips those.
+	reopen func(t *testing.T) metadata.MetadataStore
 	// skip, when non-empty, marks the case as skipped with this reason.
 	skip string
 }
@@ -471,17 +555,7 @@ func byteVerifyBackends(t *testing.T) []byteVerifyBackend {
 				return metadatamemory.NewMemoryMetadataStoreWithDefaults(), "memory"
 			},
 		},
-		{
-			name: "badger",
-			open: func(t *testing.T) (metadata.MetadataStore, string) {
-				store, err := metadatabadger.NewBadgerMetadataStoreWithDefaults(context.Background(), t.TempDir())
-				if err != nil {
-					t.Fatalf("NewBadgerMetadataStoreWithDefaults: %v", err)
-				}
-				t.Cleanup(func() { _ = store.Close() })
-				return store, "badger"
-			},
-		},
+		newBadgerByteVerifyBackend(t),
 	}
 	if postgresByteVerifyBackend != nil {
 		backends = append(backends, *postgresByteVerifyBackend)
@@ -492,6 +566,28 @@ func byteVerifyBackends(t *testing.T) []byteVerifyBackend {
 		})
 	}
 	return backends
+}
+
+// newBadgerByteVerifyBackend builds the badger matrix entry with reopen
+// support: open and reopen both target the SAME captured directory, so a
+// simulateRestart reopens the persisted KV state (badger replays its WAL),
+// modeling a real process restart rather than an in-memory re-register.
+func newBadgerByteVerifyBackend(t *testing.T) byteVerifyBackend {
+	t.Helper()
+	dir := t.TempDir()
+	openAt := func(t *testing.T) metadata.MetadataStore {
+		store, err := metadatabadger.NewBadgerMetadataStoreWithDefaults(context.Background(), dir)
+		if err != nil {
+			t.Fatalf("NewBadgerMetadataStoreWithDefaults: %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		return store
+	}
+	return byteVerifyBackend{
+		name:   "badger",
+		open:   func(t *testing.T) (metadata.MetadataStore, string) { return openAt(t), "badger" },
+		reopen: openAt,
+	}
 }
 
 // firstDiff returns a human-readable description of the first differing byte

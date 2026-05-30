@@ -20,9 +20,30 @@ import (
 // runnable without a database.
 func init() {
 	postgresByteVerifyBackend = &byteVerifyBackend{
-		name: "postgres",
-		open: openPostgresByteVerify,
+		name:   "postgres",
+		open:   openPostgresByteVerify,
+		reopen: reopenPostgresByteVerify,
 	}
+}
+
+// reopenPostgresByteVerify reopens the postgres store from the same DSN
+// WITHOUT a Reset, so the persisted schema + data survive the simulated
+// restart. This also re-exercises the ensureStoreID self-heal on reopen
+// (the singleton store_id row must round-trip, not deadlock the open).
+func reopenPostgresByteVerify(t *testing.T) metadata.MetadataStore {
+	t.Helper()
+	dsn := os.Getenv("DITTOFS_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("DITTOFS_TEST_POSTGRES_DSN not set, skipping postgres reopen")
+	}
+	cfg := parsePostgresDSN(t, dsn)
+	cfg.AutoMigrate = true
+	store, err := metadatapostgres.NewPostgresMetadataStore(context.Background(), cfg, byteVerifyPostgresCaps())
+	if err != nil {
+		t.Fatalf("NewPostgresMetadataStore (restart reopen): %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }
 
 func openPostgresByteVerify(t *testing.T) (metadata.MetadataStore, string) {
