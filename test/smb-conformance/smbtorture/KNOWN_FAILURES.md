@@ -189,7 +189,6 @@ to the DH state machine — tracked under #792 / #793.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-open.reopen2 | Durable handles V1 | Durable reopen not fully working | #738 |
 | smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | #738 |
 | smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | #738 |
 | smb2.durable-open.alloc-size | CREATE allocation | Pre-existing non-DH bug: out.alloc_size=0 on CREATE with in.alloc_size set (fails before any reconnect) | #792 |
@@ -206,9 +205,6 @@ still fail due to incomplete reconnect, lease coordination, and persistence.
 |-----------|----------|--------|-------|
 | smb2.durable-v2-open.reopen1 | Durable handles V2 | DH2 reopen not fully working | #739 |
 | smb2.durable-v2-open.reopen1a | Durable handles V2 | DH2 reopen not fully working | #739 |
-| smb2.durable-v2-open.reopen2 | Durable handles V2 | DH2 reopen not fully working | #739 |
-| smb2.durable-v2-open.reopen2-lease | Durable handles V2 | DH2 reopen with lease not fully working | #739 |
-| smb2.durable-v2-open.reopen2-lease-v2 | Durable handles V2 | DH2 reopen with lease V2 not fully working | #739 |
 | smb2.durable-v2-open.lock-oplock | Durable handles V2 | DH2 lock with oplock not fully working | #739 |
 | smb2.durable-v2-open.lock-lease | Durable handles V2 | DH2 lock with lease not fully working | #739 |
 | smb2.durable-v2-open.nonstat-and-lease | Durable handles V2 | DH2 non-stat + lease interaction not fully working | #739 |
@@ -363,6 +359,26 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-30 — #738/#739 reopen2: 4 rows flipped by access-revalidation fix
+
+PR #861 removed the spurious DesiredAccess/ShareAccess re-validation in the
+durable reconnect path (`validateAndRestore`) — confirmed against Samba
+`source3/smbd/smb2_create.c`, which validates only lease key, filename
+(lease/path-checked opens), create_guid, and user identity on reconnect, never
+the request access mask. reopen2 deliberately sends junk request fields, so the
+gate wrongly returned ACCESS_DENIED. The V2 reconnect path-check was also made
+symmetric with V1 (`checkPath=persistedHasLease`). CI smbtorture confirmed
+`success:` for:
+
+- `smb2.durable-open.reopen2` (V1 oplock)
+- `smb2.durable-v2-open.reopen2` (V2 oplock)
+- `smb2.durable-v2-open.reopen2-lease` (V2 lease)
+- `smb2.durable-v2-open.reopen2-lease-v2` (V2 lease-v2)
+
+Still failing and retained: `smb2.durable-open.reopen2-lease` /
+`reopen2-lease-v2` (V1 lease variants still return OBJECT_NAME_NOT_FOUND on the
+positive reconnect — V1 lease reconnect path needs separate work, #738).
 
 ### 2026-05-30 — #738/#739 durable walkback: 20 rows removed
 
