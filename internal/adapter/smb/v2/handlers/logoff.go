@@ -183,11 +183,27 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 	logger.Debug("Logoff: partial cleanup (session kept for response signing)",
 		"sessionID", ctx.SessionID)
 
-	// Close files FIRST to release held byte-range locks. This lets
-	// pending blocking LOCKs from other handles retry and potentially
-	// succeed before we cancel them. Matches Samba's brl_close_fnum
-	// ordering where lock release precedes waiter cancellation.
-	filesClosed := h.CloseAllFilesForSession(ctx.Context, ctx.SessionID, false)
+	// Close files FIRST to release held byte-range locks for the opens that
+	// are actually closing. This lets pending blocking LOCKs from other
+	// handles retry and potentially succeed before we cancel them. Matches
+	// Samba's brl_close_fnum ordering where lock release precedes waiter
+	// cancellation. Opens that persist as durable reconnectable handles
+	// (see below) intentionally RETAIN their byte-range locks — the locks
+	// travel with the handle and are restored on reconnect, so they are not
+	// released here.
+	//
+	// isDisconnect=true: a durable handle MUST survive an explicit LOGOFF
+	// and remain reconnectable on a fresh session via DHnC/DH2C. Per the
+	// MS-SMB2 durable-handle model the open is owned by the durable scope,
+	// not the session — Samba preserves it across logoff exactly as across a
+	// transport drop. smb2.durable-open.reopen4 logs off, sets up a new
+	// session on the same transport, and asserts the V1 reconnect succeeds
+	// (EXISTED, oplock_level=BATCH). A plain TREE_DISCONNECT (reopen3) still
+	// destroys the handle — that path keeps isDisconnect=false in
+	// CloseAllFilesForTree. Non-durable opens, and durable opens carrying
+	// delete-on-close, are unaffected: closeFilesWithFilter only diverges for
+	// IsDurable && !hasDeleteOnClose, fully closing everything else as before.
+	filesClosed := h.CloseAllFilesForSession(ctx.Context, ctx.SessionID, true)
 
 	// Drain any remaining pending blocking LOCKs for this session.
 	// After file close, most pending locks on this session's handles are

@@ -954,9 +954,16 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 }
 
 // CloseAllFilesForSession closes all open files for a session.
-// This releases locks, flushes caches, handles delete-on-close, and removes file handles.
-// When isDisconnect is true (transport drop), durable handles are persisted for reconnection.
-// When isDisconnect is false (explicit LOGOFF), durable handles are fully closed.
+// For non-persisted opens this releases locks, flushes caches, handles delete-on-close,
+// and removes file handles. When isDisconnect is true, eligible durable handles are
+// instead persisted for reconnection (locks retained, caches NOT flushed, delete-on-close
+// NOT executed). Both a transport drop and an explicit LOGOFF pass true: a durable handle
+// is owned by the durable scope, not the session, so it survives logoff and stays
+// reconnectable via DHnC/DH2C (smb2.durable-open.reopen4). Callers that pass
+// isDisconnect=false — a TREE_DISCONNECT (CloseAllFilesForTree) or a session teardown
+// that is not a reconnectable drop — fully close durable handles instead. Eligibility is
+// further gated inside closeFilesWithFilter: delete-on-close opens and BR-lock-without-W
+// opens are closed, not persisted.
 // Returns the number of files closed.
 func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64, isDisconnect bool) int {
 	filter := func(f *OpenFile) bool {
