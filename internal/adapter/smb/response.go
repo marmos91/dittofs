@@ -113,6 +113,16 @@ func ProcessSingleRequest(
 		return SendErrorResponse(reqHeader, errStatus, connInfo)
 	}
 
+	// SMB3 channel-sequence verification (MS-SMB2 §3.3.5.2.10): reject a
+	// modifying op (WRITE/SET_INFO/IOCTL) that resends on a stale
+	// ChannelSequence after a channel failover.
+	if errStatus := verifyChannelSequence(reqHeader, body, connInfo); errStatus != 0 {
+		logger.Debug("Channel-sequence verification rejected request",
+			"command", reqHeader.Command.String(),
+			"messageID", reqHeader.MessageID)
+		return SendErrorResponse(reqHeader, errStatus, connInfo)
+	}
+
 	// Wire async slot accounting for max_async_credits enforcement (MS-SMB2 §3.3.5.2.5).
 	handlerCtx.TryReserveAsync = connInfo.TryReserveAsync
 	handlerCtx.ReleaseAsync = connInfo.ReleaseAsync
@@ -381,6 +391,15 @@ func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.
 
 	// Per MS-SMB2 3.3.5.2.1: enforce encryption requirements.
 	if errStatus := checkEncryptionRequired(reqHeader, connInfo, isEncrypted); errStatus != 0 {
+		return &HandlerResult{Status: errStatus, Data: MakeErrorBody()}, fileID, handlerCtx
+	}
+
+	// SMB3 channel-sequence verification (MS-SMB2 §3.3.5.2.10), same as the
+	// non-compound path: reject a stale modifying replay before dispatch.
+	if errStatus := verifyChannelSequence(reqHeader, body, connInfo); errStatus != 0 {
+		logger.Debug("Channel-sequence verification rejected compound request",
+			"command", reqHeader.Command.String(),
+			"messageID", reqHeader.MessageID)
 		return &HandlerResult{Status: errStatus, Data: MakeErrorBody()}, fileID, handlerCtx
 	}
 

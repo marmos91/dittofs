@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"path"
@@ -489,26 +490,15 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
 	}
 
-	// SMB3 replay protection (MS-SMB2 §3.3.5.9 step 5; §2.2.1.2 REPLAY_OPERATION).
-	// When FLAGS_REPLAY_OPERATION is set on a CREATE carrying a
-	// DH2Q with a non-zero CreateGuid, the client is retransmitting
-	// a request whose original response was lost. The server MUST
-	// return the cached response — otherwise the legitimate retry
-	// trips STATUS_SHARING_VIOLATION (the original open is still
-	// alive on the server) and the DH2Q CREATE pattern is unusable
-	// over flaky multichannel topologies (smbtorture
-	// smb2.replay.replay-dhv2-*).
-	//
-	// The cache is scoped per-session and bounded by a short TTL; a
-	// miss falls through to the normal CREATE path, which on
-	// success records the response into the cache for the next
-	// replay window.
-	if cached := h.lookupCreateReplay(ctx, req); cached != nil {
-		// Return a shallow copy so the caller can stamp per-response
-		// fields without mutating the cache entry (the encoder reads
-		// fields verbatim).
-		resp := *cached
-		return &resp, nil
+	// SMB3 DH2Q replay protection (MS-SMB2 §3.3.5.9; §2.2.1.2
+	// REPLAY_OPERATION). A CREATE whose DH2Q CreateGuid matches a live
+	// open is resolved here — replayed (with the original FileId and the
+	// open's current lease/oplock state), rejected as a duplicate, or
+	// failed fast while the original is still parked. A miss falls through
+	// to the normal CREATE path, which records the response on success.
+	// See resolveCreateReplay for the full per-case contract.
+	if resp, handled := h.resolveCreateReplay(ctx, req); handled {
+		return resp, nil
 	}
 
 	// TWrp (SMB2_CREATE_TIMEWARP_TOKEN, MS-SMB2 §2.2.13.2.7) requests a
@@ -1499,22 +1489,168 @@ func (h *Handler) storeCreateReplayIfApplicable(ctx *SMBHandlerContext, req *Cre
 	if createGuid == ([16]byte{}) {
 		return
 	}
-	h.CreateReplayCache.Store(ctx.SessionID, createGuid, resp)
+	// These bypass paths (pipe / open-root) have no lease- or oplock-bearing
+	// Open to refresh on replay, so the cached snapshot is replayed verbatim.
+	h.CreateReplayCache.Store(ctx.SessionID, createGuid, resp, nil)
 }
 
-// lookupCreateReplay returns a cached CREATE response when the request
-// carries SMB2_FLAGS_REPLAY_OPERATION and a matching DH2Q CreateGuid is
-// still in the per-session cache (MS-SMB2 §3.3.5.9 replay handling).
-// Returns nil on miss; caller falls through to the normal CREATE path.
-func (h *Handler) lookupCreateReplay(ctx *SMBHandlerContext, req *CreateRequest) *CreateResponse {
-	if !ctx.IsReplay || h.CreateReplayCache == nil {
-		return nil
+// resolveCreateReplay applies the SMB3 DH2Q CreateGuid de-duplication
+// contract (MS-SMB2 §3.3.5.9; Samba smb2srv_open_lookup_replay_cache +
+// the replay block in source3/smbd/smb2_create.c). It returns
+// (resp, true) when the CREATE has been handled by the replay path and
+// the caller must return resp verbatim; (nil, false) when the request
+// should fall through to the normal CREATE path.
+//
+// Three outcomes for a CREATE whose DH2Q CreateGuid matches a live open
+// in the per-session cache:
+//
+//   - FLAGS_REPLAY_OPERATION set → replay. The original open is returned
+//     (same FileId). The lease/oplock state in the response is rebuilt
+//     from the CURRENT open state, not the create-time snapshot, so a
+//     lease upgraded after the original CREATE replays back the upgraded
+//     state (replay-dhv2-lease1/2). Lease replays additionally validate
+//     against the live open: a replay request carrying a lease whose key
+//     differs from the open's, or replaying a lease over an open that is
+//     not lease-backed, returns ACCESS_DENIED (replay-dhv2-lease3 /
+//     oplock-lease).
+//
+//   - FLAGS_REPLAY_OPERATION clear but CreateGuid matches a cached open →
+//     DUPLICATE_OBJECTID. A second non-replay CREATE for an in-flight
+//     CreateGuid is a protocol violation.
+//
+//   - No cache match → fall through.
+func (h *Handler) resolveCreateReplay(ctx *SMBHandlerContext, req *CreateRequest) (*CreateResponse, bool) {
+	if h.CreateReplayCache == nil {
+		return nil, false
 	}
 	createGuid := dh2qCreateGuid(req)
 	if createGuid == ([16]byte{}) {
-		return nil
+		return nil, false
 	}
-	return h.CreateReplayCache.Lookup(ctx.SessionID, createGuid)
+
+	entry := h.CreateReplayCache.LookupEntry(ctx.SessionID, createGuid)
+	if entry == nil {
+		// No completed entry yet. A replay that arrives while the original
+		// CREATE for this CreateGuid is still parked on a pending
+		// oplock/lease break must fail fast with STATUS_FILE_NOT_AVAILABLE
+		// rather than block on the same break (Samba FWP_RESERVED /
+		// FILE_NOT_AVAILABLE slot states). The original parked request keeps
+		// running and completes on its own timeline. Checked after the
+		// completed-entry lookup so a parked CREATE that has just finished
+		// (entry present, reservation not yet cleared) replays the open
+		// rather than returning FILE_NOT_AVAILABLE.
+		if ctx.IsReplay && h.CreateReplayCache.IsReserved(ctx.SessionID, createGuid) {
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileNotAvailable}}, true
+		}
+		return nil, false
+	}
+
+	// A duplicate CreateGuid without the replay flag is rejected
+	// (MS-SMB2 §3.3.5.9.12 / Samba NT_STATUS_DUPLICATE_OBJECTID).
+	if !ctx.IsReplay {
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDuplicateObjectid}}, true
+	}
+
+	// Shallow copy so per-response stamping never mutates the cache entry.
+	resp := *entry.Response
+
+	// Lease replays are validated and state-refreshed against the live
+	// open. Non-lease (plain oplock) replays return the cached response
+	// verbatim: Samba echoes the request's oplock level back on replay
+	// without touching the held oplock, which the cached snapshot already
+	// reflects (replay-dhv2-oplock1/2/3).
+	if status := h.refreshReplayLease(ctx, req, entry, &resp); status != types.StatusSuccess {
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, true
+	}
+	return &resp, true
+}
+
+// refreshReplayLease applies Samba's replay-with-lease rules to a DH2Q
+// CREATE replay (the `if (state->rqls != NULL)` block in
+// source3/smbd/smb2_create.c). When the replay request carries an RqLs
+// (lease) context it:
+//
+//   - requires the live open to be lease-backed (else ACCESS_DENIED);
+//   - requires the replay's lease key to equal the open's (else
+//     ACCESS_DENIED);
+//   - rewrites the lease response context to the CURRENT lease state and
+//     epoch read from the LeaseManager, so an upgrade applied after the
+//     original CREATE is reflected on replay.
+//
+// It returns StatusSuccess when the response may be returned (possibly
+// mutated) or the ACCESS_DENIED status to reject with. A replay request
+// without a lease context, or an entry with no associated open, is a
+// no-op success — the cached snapshot stands.
+func (h *Handler) refreshReplayLease(ctx *SMBHandlerContext, req *CreateRequest, entry *CachedCreateResponse, resp *CreateResponse) types.Status {
+	leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest)
+	if leaseCtx == nil || entry.OpenFile == nil {
+		return types.StatusSuccess
+	}
+	lcc, err := DecodeLeaseCreateContext(leaseCtx.Data)
+	if err != nil {
+		// Malformed lease context on a replay is treated like the
+		// non-lease path (the cached snapshot stands); the original
+		// CREATE already validated the lease.
+		return types.StatusSuccess
+	}
+
+	open := entry.OpenFile
+
+	// Samba: replay with a lease is only allowed against an open that
+	// itself holds a lease, and only with the same lease key.
+	if open.OplockLevel != OplockLevelLease || open.LeaseKey != lcc.LeaseKey {
+		return types.StatusAccessDenied
+	}
+
+	// Refresh the RqLs response context to the open's CURRENT lease state
+	// (e.g. RH→RWH after a later upgrading CREATE on the same key).
+	if h.LeaseManager == nil {
+		return types.StatusSuccess
+	}
+	state, epoch, found := h.LeaseManager.GetLeaseState(ctx.Context, open.LeaseKey)
+	if !found {
+		return types.StatusSuccess
+	}
+	// resp is a shallow copy of the cached response, so resp.CreateContexts
+	// still shares the cached entry's backing array. Clone the slice before
+	// rewriting an element so we never mutate (or race another replay on)
+	// the cached entry. rewriteLeaseResponseState itself returns fresh bytes.
+	for i := range resp.CreateContexts {
+		if resp.CreateContexts[i].Name != LeaseContextTagResponse {
+			continue
+		}
+		contexts := make([]CreateContext, len(resp.CreateContexts))
+		copy(contexts, resp.CreateContexts)
+		contexts[i].Data = rewriteLeaseResponseState(contexts[i].Data, state, epoch)
+		resp.CreateContexts = contexts
+		break
+	}
+	return types.StatusSuccess
+}
+
+// rewriteLeaseResponseState patches the LeaseState (and, for a V2
+// response, the Epoch) of an already-encoded RqLs response context in
+// place without disturbing the lease key, flags, parent key, or wire
+// version. Both the V1 (32-byte) and V2 (52-byte) layouts place the
+// 32-bit LeaseState at offset 16; the V2 layout places the 16-bit Epoch
+// at offset 48 (MS-SMB2 §2.2.14.2.10). A buffer too short for either
+// layout is returned unchanged. It returns a fresh slice so the cached
+// entry's bytes are never mutated.
+func rewriteLeaseResponseState(data []byte, state uint32, epoch uint16) []byte {
+	const (
+		leaseStateOff = 16
+		v2EpochOff    = 48
+	)
+	if len(data) < leaseStateOff+4 {
+		return data
+	}
+	out := make([]byte, len(data))
+	copy(out, data)
+	binary.LittleEndian.PutUint32(out[leaseStateOff:leaseStateOff+4], state)
+	if len(out) >= v2EpochOff+2 {
+		binary.LittleEndian.PutUint16(out[v2EpochOff:v2EpochOff+2], epoch)
+	}
+	return out
 }
 
 // dh2qCreateGuid extracts the CreateGuid from a CREATE request's

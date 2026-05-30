@@ -1156,7 +1156,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	// durable opens carry a CreateGuid — V1 / non-durable CREATEs
 	// rely on the in-flight MessageID dedup at the framing layer.
 	if h.CreateReplayCache != nil && openFile != nil && openFile.CreateGuid != ([16]byte{}) {
-		h.CreateReplayCache.Store(openFile.SessionID, openFile.CreateGuid, resp)
+		h.CreateReplayCache.Store(openFile.SessionID, openFile.CreateGuid, resp, openFile)
 	}
 
 	return resp
@@ -1229,8 +1229,24 @@ func (h *Handler) parkCreateOnLeaseBreak(
 	shareName := d.tree.ShareName
 	messageID := ctx.MessageID
 
+	// Reserve the DH2Q CreateGuid for the lifetime of the parked CREATE so a
+	// replayed CREATE on the same CreateGuid fails fast with
+	// STATUS_FILE_NOT_AVAILABLE instead of blocking on the same break
+	// (smbtorture replay-dhv2-pending* / *-vs-{oplock,lease}). Released by
+	// the resume goroutine when the original reaches a terminal state. A
+	// zero CreateGuid (non-V2 / no DH2Q) is a no-op in Reserve/Release.
+	replayGuid := dh2qCreateGuid(d.req)
+	if h.CreateReplayCache != nil {
+		h.CreateReplayCache.Reserve(ctx.SessionID, replayGuid)
+	}
+
 	go func() {
 		defer cancel()
+		defer func() {
+			if h.CreateReplayCache != nil {
+				h.CreateReplayCache.Release(ctx.SessionID, replayGuid)
+			}
+		}()
 
 		// Wait for the other-key break to drain (or timeout auto-downgrade).
 		// Errors here are logged but not propagated: on timeout the lease

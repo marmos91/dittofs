@@ -11,7 +11,7 @@ func TestCreateReplayCache_StoreLookup(t *testing.T) {
 	c := NewCreateReplayCache()
 	guid := [16]byte{1, 2, 3, 4}
 	resp := &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}
-	c.Store(42, guid, resp)
+	c.Store(42, guid, resp, nil)
 	if got := c.Lookup(42, guid); got != resp {
 		t.Fatalf("Lookup returned %v, want %v", got, resp)
 	}
@@ -20,7 +20,7 @@ func TestCreateReplayCache_StoreLookup(t *testing.T) {
 func TestCreateReplayCache_LookupWrongSession(t *testing.T) {
 	c := NewCreateReplayCache()
 	guid := [16]byte{1}
-	c.Store(1, guid, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}})
+	c.Store(1, guid, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil)
 	if c.Lookup(2, guid) != nil {
 		t.Fatal("Lookup across sessions must miss")
 	}
@@ -29,7 +29,7 @@ func TestCreateReplayCache_LookupWrongSession(t *testing.T) {
 func TestCreateReplayCache_ZeroGuidIgnored(t *testing.T) {
 	c := NewCreateReplayCache()
 	zero := [16]byte{}
-	c.Store(1, zero, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}})
+	c.Store(1, zero, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil)
 	if c.Len() != 0 {
 		t.Fatal("zero CreateGuid must not be stored")
 	}
@@ -41,7 +41,7 @@ func TestCreateReplayCache_ZeroGuidIgnored(t *testing.T) {
 func TestCreateReplayCache_NonSuccessNotCached(t *testing.T) {
 	c := NewCreateReplayCache()
 	guid := [16]byte{7}
-	c.Store(1, guid, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}})
+	c.Store(1, guid, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil)
 	if c.Len() != 0 {
 		t.Fatal("non-success response must not be cached")
 	}
@@ -50,7 +50,7 @@ func TestCreateReplayCache_NonSuccessNotCached(t *testing.T) {
 func TestCreateReplayCache_TTLExpiry(t *testing.T) {
 	c := NewCreateReplayCache()
 	guid := [16]byte{9}
-	c.Store(1, guid, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}})
+	c.Store(1, guid, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil)
 	// Force expiry by rewriting StoredAt
 	c.mu.Lock()
 	c.entries[guid].StoredAt = time.Now().Add(-2 * replayCacheTTL)
@@ -63,7 +63,7 @@ func TestCreateReplayCache_TTLExpiry(t *testing.T) {
 func TestCreateReplayCache_Forget(t *testing.T) {
 	c := NewCreateReplayCache()
 	guid := [16]byte{3}
-	c.Store(1, guid, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}})
+	c.Store(1, guid, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil)
 	c.Forget(guid)
 	if c.Len() != 0 {
 		t.Fatal("Forget must drop entry")
@@ -73,14 +73,58 @@ func TestCreateReplayCache_Forget(t *testing.T) {
 func TestCreateReplayCache_ForgetSession(t *testing.T) {
 	c := NewCreateReplayCache()
 	g1, g2 := [16]byte{1}, [16]byte{2}
-	c.Store(10, g1, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}})
-	c.Store(20, g2, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}})
+	c.Store(10, g1, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil)
+	c.Store(20, g2, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil)
 	c.ForgetSession(10)
 	if c.Lookup(10, g1) != nil {
 		t.Fatal("ForgetSession should drop session 10 entry")
 	}
 	if c.Lookup(20, g2) == nil {
 		t.Fatal("ForgetSession should leave other session entries")
+	}
+}
+
+func TestCreateReplayCache_Reservation(t *testing.T) {
+	c := NewCreateReplayCache()
+	guid := [16]byte{0x5A}
+
+	if c.IsReserved(1, guid) {
+		t.Fatal("fresh cache must not report a reservation")
+	}
+	c.Reserve(1, guid)
+	if !c.IsReserved(1, guid) {
+		t.Fatal("Reserve must make IsReserved true")
+	}
+	// Reservation is per-session.
+	if c.IsReserved(2, guid) {
+		t.Fatal("reservation must be scoped to its session")
+	}
+	c.Release(1, guid)
+	if c.IsReserved(1, guid) {
+		t.Fatal("Release must clear the reservation")
+	}
+}
+
+func TestCreateReplayCache_ZeroGuidReservationIgnored(t *testing.T) {
+	c := NewCreateReplayCache()
+	zero := [16]byte{}
+	c.Reserve(1, zero)
+	if c.IsReserved(1, zero) {
+		t.Fatal("zero CreateGuid must never be reserved")
+	}
+}
+
+func TestCreateReplayCache_ForgetSessionClearsReservations(t *testing.T) {
+	c := NewCreateReplayCache()
+	g1, g2 := [16]byte{1}, [16]byte{2}
+	c.Reserve(10, g1)
+	c.Reserve(20, g2)
+	c.ForgetSession(10)
+	if c.IsReserved(10, g1) {
+		t.Fatal("ForgetSession must clear reservations for that session")
+	}
+	if !c.IsReserved(20, g2) {
+		t.Fatal("ForgetSession must leave other sessions' reservations")
 	}
 }
 
