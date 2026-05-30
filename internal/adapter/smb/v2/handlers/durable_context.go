@@ -311,14 +311,12 @@ func ProcessDurableReconnectContext(
 	shareName string,
 	filename string,
 	connClientGUID [16]byte,
-	desiredAccess uint32,
-	shareAccess uint32,
 ) (*ReconnectResult, types.Status, error) {
 
 	// Determine V2 (DH2C) or V1 (DHnC) reconnect
 	if dh2cCtx := FindCreateContext(contexts, DurableHandleV2ReconnectTag); dh2cCtx != nil {
 		openFile, leaseState, origID, status, err := processV2Reconnect(ctx, durableStore, metaSvc, contexts, dh2cCtx,
-			sessionID, username, sessionKeyHash, shareName, filename, connClientGUID, desiredAccess, shareAccess)
+			sessionID, username, sessionKeyHash, shareName, filename, connClientGUID)
 		if err != nil || status != types.StatusSuccess {
 			return nil, status, err
 		}
@@ -327,7 +325,7 @@ func ProcessDurableReconnectContext(
 
 	if dhnCCtx := FindCreateContext(contexts, DurableHandleV1ReconnectTag); dhnCCtx != nil {
 		openFile, leaseState, origID, status, err := processV1Reconnect(ctx, durableStore, metaSvc, contexts, dhnCCtx,
-			sessionID, username, sessionKeyHash, shareName, filename, connClientGUID, desiredAccess, shareAccess)
+			sessionID, username, sessionKeyHash, shareName, filename, connClientGUID)
 		if err != nil || status != types.StatusSuccess {
 			return nil, status, err
 		}
@@ -429,8 +427,6 @@ func processV1Reconnect(
 	shareName string,
 	filename string,
 	connClientGUID [16]byte,
-	desiredAccess uint32,
-	shareAccess uint32,
 ) (*OpenFile, uint32, [16]byte, types.Status, error) {
 	// Parse V1 reconnect context
 	wireFileID, err := DecodeDHnCReconnect(dhnCCtx.Data)
@@ -508,7 +504,7 @@ func processV1Reconnect(
 	checkPath := persistedHasLease
 
 	openFile, status, restoreErr := validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
-		sessionKeyHash, shareName, filename, desiredAccess, shareAccess, checkPath,
+		sessionKeyHash, shareName, filename, checkPath,
 		func(ctx context.Context) (*lock.PersistedDurableHandle, error) {
 			return durableStore.ConsumeDurableHandleByFileID(ctx, fileID)
 		})
@@ -529,8 +525,6 @@ func processV2Reconnect(
 	shareName string,
 	filename string,
 	connClientGUID [16]byte,
-	desiredAccess uint32,
-	shareAccess uint32,
 ) (*OpenFile, uint32, [16]byte, types.Status, error) {
 	// Parse V2 reconnect context
 	fileID, createGuid, flags, err := DecodeDH2CReconnect(dh2cCtx.Data)
@@ -585,16 +579,21 @@ func processV2Reconnect(
 	// the path check so the reopen2-lease{,-v2} negative ladder produces
 	// OBJECT_NAME_NOT_FOUND for the no-lease cases rather than the
 	// INVALID_PARAMETER a path mismatch would yield).
-	if gateStatus, _ := checkLeaseReconnectGate(contexts, handle, connClientGUID, "processV2Reconnect"); gateStatus != types.StatusSuccess {
+	gateStatus, persistedHasLease := checkLeaseReconnectGate(contexts, handle, connClientGUID, "processV2Reconnect")
+	if gateStatus != types.StatusSuccess {
 		return nil, 0, [16]byte{}, gateStatus, nil
 	}
 
-	// V2 always checks the path against the persisted handle (no Samba-style
-	// oplock-only fallthrough). The CreateGuid is the primary identifier; the
-	// path check is an extra integrity gate that turns a wrong-fname-with-lease
-	// reconnect into INVALID_PARAMETER (the final negative-ladder rung).
+	// Symmetric with V1: a non-lease (oplock-backed) V2 reconnect IGNORES the
+	// filename per MS-SMB2 §3.3.5.9.12 — Samba's smbd_smb2_create_durable_lease_check
+	// returns NT_STATUS_OK early when lease_ptr==NULL && oplock_type!=LEASE_OPLOCK,
+	// never reaching the strequal(base_name) path compare. The CreateGuid is the
+	// primary identifier, so smbtorture smb2.durable-v2-open.reopen2 (batch-oplock
+	// open, junk fname on reconnect) MUST succeed. The path check stays on only for
+	// lease-backed reconnects, where a wrong-fname-with-lease reconnect is the final
+	// negative-ladder rung that yields INVALID_PARAMETER.
 	openFile, status, restoreErr := validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
-		sessionKeyHash, shareName, filename, desiredAccess, shareAccess, true,
+		sessionKeyHash, shareName, filename, persistedHasLease,
 		func(ctx context.Context) (*lock.PersistedDurableHandle, error) {
 			return durableStore.ConsumeDurableHandleByCreateGuid(ctx, createGuid)
 		})
@@ -604,9 +603,13 @@ func processV2Reconnect(
 // validateAndRestore runs the shared reconnect validation checks and restores
 // the OpenFile. These checks apply to both V1 and V2 reconnects.
 //
-// desiredAccess and shareAccess are from the CREATE request; zero means
-// "not provided" (used during the in-flight upgrade window when older CREATE
-// paths did not thread the values through).
+// Per Samba's durable reconnect contract (source3/smbd/smb2_create.c), the
+// reconnect CREATE's DesiredAccess and ShareAccess are NOT validated here:
+// reconnect restores the original granted access verbatim and never the access
+// requested in the reconnect CREATE, so there is no privilege-escalation vector
+// to guard. Validated fields are share name, user identity, path (lease/path-
+// checked reopens only, via checkPath), handle expiry, and backing-file
+// existence.
 //
 // consume is invoked on the success path to atomically remove the persisted
 // record. If consume returns nil, another goroutine has already claimed the
@@ -614,10 +617,9 @@ func processV2Reconnect(
 // place that mutates the durable store on reconnect, which is what makes the
 // path safe against the V1/V2 reconnect TOCTOU window.
 //
-// TODO: per CLAUDE.md invariant 1 the identity / access checks (username,
-// DesiredAccess, ShareAccess) belong in pkg/metadata/lock — e.g. inside the
-// Consume* call returning a typed mismatch error. Left in the handler for
-// this iteration to keep the scope of the TOCTOU fix small.
+// TODO: per CLAUDE.md invariant 1 the identity check (username) belongs in
+// pkg/metadata/lock — e.g. inside the Consume* call returning a typed mismatch
+// error. Left in the handler for this iteration to keep the scope small.
 func validateAndRestore(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
@@ -628,8 +630,6 @@ func validateAndRestore(
 	sessionKeyHash [32]byte,
 	shareName string,
 	filename string,
-	desiredAccess uint32,
-	shareAccess uint32,
 	checkPath bool,
 	consume func(ctx context.Context) (*lock.PersistedDurableHandle, error),
 ) (*OpenFile, types.Status, error) {
@@ -664,20 +664,19 @@ func validateAndRestore(
 	// key hash will differ between the original and reconnect sessions
 	// even for the same user with the same credentials.
 
-	// Per [MS-SMB2] 3.3.5.9.9: reject reconnect if DesiredAccess or ShareAccess
-	// differs from the persisted values to prevent privilege escalation.
-	if desiredAccess != 0 && handle.DesiredAccess != 0 && desiredAccess != handle.DesiredAccess {
-		logger.Debug("validateAndRestore: desired access mismatch",
-			"persisted", fmt.Sprintf("0x%08x", handle.DesiredAccess),
-			"requested", fmt.Sprintf("0x%08x", desiredAccess))
-		return nil, types.StatusAccessDenied, nil
-	}
-	if shareAccess != 0 && handle.ShareAccess != 0 && shareAccess != handle.ShareAccess {
-		logger.Debug("validateAndRestore: share access mismatch",
-			"persisted", fmt.Sprintf("0x%08x", handle.ShareAccess),
-			"requested", fmt.Sprintf("0x%08x", shareAccess))
-		return nil, types.StatusAccessDenied, nil
-	}
+	// DesiredAccess and ShareAccess are intentionally NOT re-validated on
+	// reconnect. Samba's durable reconnect path (source3/smbd/smb2_create.c,
+	// smbd_smb2_create_durable_lease_check + smb2srv_open_recreate) compares
+	// only the lease key, the filename (lease/path-checked opens only), the
+	// create_guid (replay-cache lookup), and the user/session identity. There
+	// is no desired_access / share_access comparison: reconnect restores the
+	// ORIGINAL granted access (handle.GrantedAccess), never the access
+	// requested in the reconnect CREATE, so no privilege escalation is
+	// possible. By design the smbtorture reopen2 family fills every CREATE
+	// request field except the reconnect blob with junk — including
+	// desired_access/share_access — and expects NT_STATUS_OK, proving the
+	// server consults only the reconnect context. A comparison here wrongly
+	// rejects those junk-field reconnects with STATUS_ACCESS_DENIED.
 
 	expiresAt := handle.DisconnectedAt.Add(time.Duration(handle.TimeoutMs) * time.Millisecond)
 	if !expiresAt.After(time.Now()) {
