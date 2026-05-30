@@ -314,14 +314,6 @@ func ToPersistedLock(lock *UnifiedLock, epoch uint64) *PersistedLock {
 		ServerEpoch: epoch,
 	}
 
-	// Invariant: a UnifiedLock should have at most one of Lease or Delegation set.
-	// If both are set, prefer lease fields and skip delegation to avoid inconsistent
-	// IsDirectory values.
-	if lock.Lease != nil && lock.Delegation != nil {
-		logger.Warn("ToPersistedLock: UnifiedLock has both Lease and Delegation set, persisting lease only",
-			"lockID", lock.ID, "owner", lock.Owner.ClientID)
-	}
-
 	// Persist lease fields if this is a lease
 	if lock.Lease != nil {
 		pl.LeaseKey = lock.Lease.LeaseKey[:]

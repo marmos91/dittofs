@@ -588,6 +588,7 @@ type Manager struct {
 	gracePeriod    *GracePeriodManager       // grace period state (may be nil)
 	handleChecker  HandleChecker             // checks if file handles still exist (for reclaim)
 	lockStore      LockStore                 // persistent lock store (optional)
+	epoch          uint64                    // current server epoch (stamped on persisted locks)
 	recentlyBroken *recentlyBrokenCache      // prevents directory lease storms
 
 	// Delegation-related fields
@@ -664,6 +665,7 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 				existing[i].Exclusive = lock.Exclusive
 				existing[i].AcquiredAt = time.Now()
 				existing[i].ID = lock.ID
+				lm.persistFileLockLocked(handleKey, &existing[i])
 				return nil
 			}
 		}
@@ -676,6 +678,7 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 
 	// Add new lock
 	lm.locks[handleKey] = append(existing, lock)
+	lm.persistFileLockLocked(handleKey, &lock)
 	return nil
 }
 
@@ -700,6 +703,7 @@ func (lm *Manager) Unlock(handleKey string, openID string, sessionID uint64, off
 		if lockOwnerID(&existing[i]) == owner &&
 			existing[i].Offset == offset &&
 			existing[i].Length == length {
+			lm.deleteFileLockLocked(handleKey, &existing[i])
 			// Remove this lock
 			lm.locks[handleKey] = append(existing[:i], existing[i+1:]...)
 
@@ -734,6 +738,7 @@ func (lm *Manager) UnlockAllForOpen(handleKey string, openID string) int {
 	removed := 0
 	for i := range existing {
 		if existing[i].OpenID == openID {
+			lm.deleteFileLockLocked(handleKey, &existing[i])
 			removed++
 		} else {
 			remaining = append(remaining, existing[i])
@@ -767,6 +772,7 @@ func (lm *Manager) UnlockAllForSession(handleKey string, sessionID uint64) int {
 	removed := 0
 	for i := range existing {
 		if existing[i].SessionID == sessionID {
+			lm.deleteFileLockLocked(handleKey, &existing[i])
 			removed++
 		} else {
 			remaining = append(remaining, existing[i])
@@ -890,6 +896,97 @@ func (lm *Manager) SetLockStore(store LockStore) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 	lm.lockStore = store
+}
+
+// SetEpoch records the current server epoch stamped on persisted locks.
+func (lm *Manager) SetEpoch(epoch uint64) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	lm.epoch = epoch
+}
+
+// byteRangeLockID derives a stable persistent ID for a byte-range FileLock.
+// FileLock.ID is client-provided and not unique, so the ID is derived from the
+// owner identity and range. The same formula is used on persist and delete.
+func byteRangeLockID(handleKey string, fl *FileLock) string {
+	return fmt.Sprintf("%s:%d:%s:%d:%d", handleKey, fl.SessionID, fl.OpenID, fl.Offset, fl.Length)
+}
+
+// fileLockToPersisted builds a PersistedLock from a byte-range FileLock.
+func (lm *Manager) fileLockToPersisted(handleKey string, fl *FileLock) *PersistedLock {
+	lockType := LockTypeShared
+	if fl.Exclusive {
+		lockType = LockTypeExclusive
+	}
+	return &PersistedLock{
+		ID:          byteRangeLockID(handleKey, fl),
+		FileID:      handleKey,
+		OwnerID:     lockOwnerID(fl),
+		LockType:    int(lockType),
+		Offset:      fl.Offset,
+		Length:      fl.Length,
+		AcquiredAt:  fl.AcquiredAt,
+		ServerEpoch: lm.epoch,
+	}
+}
+
+// persistFileLockLocked persists a byte-range lock. Caller must hold lm.mu.
+func (lm *Manager) persistFileLockLocked(handleKey string, fl *FileLock) {
+	if lm.lockStore == nil {
+		return
+	}
+	pl := lm.fileLockToPersisted(handleKey, fl)
+	if err := lm.lockStore.PutLock(context.Background(), pl); err != nil {
+		logger.Error("failed to persist byte-range lock", "lockID", pl.ID, "error", err)
+	}
+}
+
+// deleteFileLockLocked removes a persisted byte-range lock. Caller must hold lm.mu.
+func (lm *Manager) deleteFileLockLocked(handleKey string, fl *FileLock) {
+	if lm.lockStore == nil {
+		return
+	}
+	id := byteRangeLockID(handleKey, fl)
+	if err := lm.lockStore.DeleteLock(context.Background(), id); err != nil {
+		logger.Error("failed to delete persisted byte-range lock", "lockID", id, "error", err)
+	}
+}
+
+// persistUnifiedLockLocked persists a unified lock. Caller must hold lm.mu.
+func (lm *Manager) persistUnifiedLockLocked(ul *UnifiedLock) {
+	if lm.lockStore == nil {
+		return
+	}
+	pl := ToPersistedLock(ul, lm.epoch)
+	if err := lm.lockStore.PutLock(context.Background(), pl); err != nil {
+		logger.Error("failed to persist unified lock", "lockID", pl.ID, "error", err)
+	}
+}
+
+// deleteUnifiedLockLocked removes a persisted unified lock. Caller must hold lm.mu.
+func (lm *Manager) deleteUnifiedLockLocked(ul *UnifiedLock) {
+	if lm.lockStore == nil {
+		return
+	}
+	if err := lm.lockStore.DeleteLock(context.Background(), ul.ID); err != nil {
+		logger.Error("failed to delete persisted unified lock", "lockID", ul.ID, "error", err)
+	}
+}
+
+// RestoreLocks loads previously-persisted locks back into the in-memory lock
+// maps after a restart. Locks are reconstructed via FromPersistedLock and
+// inserted directly into the unified-lock map without conflict checking —
+// prior-run locks are by definition conflict-free with each other.
+func (lm *Manager) RestoreLocks(persisted []*PersistedLock) error {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	for _, pl := range persisted {
+		ul := FromPersistedLock(pl)
+		handleKey := pl.FileID
+		lm.unifiedLocks[handleKey] = append(lm.unifiedLocks[handleKey], ul)
+	}
+	return nil
 }
 
 // ============================================================================
@@ -1298,6 +1395,7 @@ func (lm *Manager) AddUnifiedLock(handleKey string, lock *UnifiedLock) error {
 			// Update existing lock in place
 			existing[i].Type = lock.Type
 			existing[i].AcquiredAt = time.Now()
+			lm.persistUnifiedLockLocked(existing[i])
 			return nil
 		}
 	}
@@ -1309,6 +1407,7 @@ func (lm *Manager) AddUnifiedLock(handleKey string, lock *UnifiedLock) error {
 
 	// Add new lock
 	lm.unifiedLocks[handleKey] = append(existing, lock)
+	lm.persistUnifiedLockLocked(lock)
 	return nil
 }
 
@@ -1341,7 +1440,11 @@ func (lm *Manager) RemoveUnifiedLock(handleKey string, owner LockOwner, offset, 
 
 		// Overlaps - split the lock
 		found = true
+		lm.deleteUnifiedLockLocked(lock)
 		splitResult := SplitLock(lock, offset, length)
+		for _, frag := range splitResult {
+			lm.persistUnifiedLockLocked(frag)
+		}
 		newLocks = append(newLocks, splitResult...)
 	}
 
@@ -2342,6 +2445,13 @@ func (lm *Manager) RegisterBreakCallbacks(callbacks BreakCallbacks) {
 func (lm *Manager) RemoveAllLocks(handleKey string) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
+	// Best-effort: drop all persisted locks for this file. handleKey is the
+	// FileID used when persisting (see persist helpers).
+	if lm.lockStore != nil {
+		if _, err := lm.lockStore.DeleteLocksByFile(context.Background(), handleKey); err != nil {
+			logger.Error("RemoveAllLocks: failed to delete persisted locks", "handleKey", handleKey, "error", err)
+		}
+	}
 	delete(lm.locks, handleKey)
 	delete(lm.unifiedLocks, handleKey)
 	delete(lm.breakWaitChans, handleKey)
@@ -2351,6 +2461,12 @@ func (lm *Manager) RemoveAllLocks(handleKey string) {
 func (lm *Manager) RemoveClientLocks(clientID string) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
+
+	if lm.lockStore != nil {
+		if _, err := lm.lockStore.DeleteLocksByClient(context.Background(), clientID); err != nil {
+			logger.Error("RemoveClientLocks: failed to delete persisted locks", "clientID", clientID, "error", err)
+		}
+	}
 
 	for handleKey, locks := range lm.unifiedLocks {
 		var remaining []*UnifiedLock

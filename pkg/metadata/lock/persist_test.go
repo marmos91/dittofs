@@ -61,7 +61,7 @@ func TestAddUnifiedLock_PersistsAndReloads(t *testing.T) {
 			ClientID:  "client-x",
 			ShareName: "share-a",
 		},
-		FileHandle: FileHandle("file-2"),
+		FileHandle: FileHandle(handleKey),
 		Offset:     0,
 		Length:     0,
 		Type:       LockTypeExclusive,
