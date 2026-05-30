@@ -239,6 +239,16 @@ const (
 	// its ChannelSequence — the server rejects the stale write rather than
 	// re-applying it out of order.
 	StatusFileNotAvailable Status = 0xC0000467
+
+	// StatusDuplicateObjectid indicates a CREATE arrived carrying a
+	// DH2Q CreateGuid that matches an open the server is still tracking
+	// in its CREATE replay cache, but WITHOUT SMB2_FLAGS_REPLAY_OPERATION
+	// set. A second non-replay CREATE for an in-flight CreateGuid is a
+	// protocol violation (MS-SMB2 §3.3.5.9.12; Samba returns
+	// NT_STATUS_DUPLICATE_OBJECTID from smb2srv_open_lookup_replay_cache
+	// in source3/smbd/smb2_create.c). Required by smbtorture
+	// smb2.replay.replay-dhv2-* duplicate-CreateGuid coverage.
+	StatusDuplicateObjectid Status = 0xC000022A
 )
 
 // String returns a human-readable name for the status code.
@@ -268,6 +278,8 @@ func (s Status) String() string {
 		return "STATUS_BUFFER_OVERFLOW"
 	case StatusFileNotAvailable:
 		return "STATUS_FILE_NOT_AVAILABLE"
+	case StatusDuplicateObjectid:
+		return "STATUS_DUPLICATE_OBJECTID"
 	case StatusObjectNameInvalid:
 		return "STATUS_OBJECT_NAME_INVALID"
 	case StatusObjectNameNotFound:

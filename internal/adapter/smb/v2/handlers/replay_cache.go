@@ -55,33 +55,101 @@ const maxCreateReplayEntries = 4096
 // access FileID for compound-chain FileID propagation. SessionID is
 // recorded so session teardown can flush related entries and so a
 // CreateGuid collision across sessions cannot hijack another open.
+//
+// OpenFile references the live Open established by the original CREATE.
+// A replayed DH2Q CREATE must reflect the CURRENT state of that Open,
+// not a create-time snapshot — Samba rebuilds the lease response from
+// op->compat->lease->lease (source3/smbd/smb2_create.c). In particular
+// a lease that was upgraded (RH→RWH) by a later CREATE on the same key
+// must replay back the upgraded state (smbtorture replay-dhv2-lease1/2).
+// The reference also carries the original oplock type and lease key so
+// the replay path can apply Samba's lease/oplock-mismatch ACCESS_DENIED
+// gates (replay-dhv2-lease3 / oplock-lease).
 type CachedCreateResponse struct {
 	SessionID uint64
 	Response  *CreateResponse
+	OpenFile  *OpenFile
 	StoredAt  time.Time
+}
+
+// reserveKey scopes an in-progress CreateGuid reservation per session,
+// so a CreateGuid collision across sessions cannot make one session's
+// parked CREATE shadow another's.
+type reserveKey struct {
+	SessionID  uint64
+	CreateGuid [16]byte
 }
 
 // CreateReplayCache stores CREATE responses keyed by DH2Q CreateGuid
 // so a replayed CREATE (FLAGS_REPLAY_OPERATION) returns the original
 // result instead of re-executing. CreateGuid is client-generated and
 // globally unique per durable open, so it is sufficient as the key.
+//
+// It also tracks CreateGuids whose original CREATE is still in progress
+// — parked on a pending oplock/lease break (MS-SMB2 §3.3.5.9). A replay
+// that arrives while the original is still parked must return
+// STATUS_FILE_NOT_AVAILABLE immediately rather than block or time out
+// (smbtorture smb2.replay.replay-dhv2-pending* / *-vs-{oplock,lease}).
+// Samba models this with the FWP_RESERVED / FILE_NOT_AVAILABLE slot
+// states in smb2srv_open_lookup_replay_cache.
 type CreateReplayCache struct {
-	mu      sync.Mutex
-	entries map[[16]byte]*CachedCreateResponse
+	mu       sync.Mutex
+	entries  map[[16]byte]*CachedCreateResponse
+	reserved map[reserveKey]struct{}
 }
 
 // NewCreateReplayCache builds an empty cache.
 func NewCreateReplayCache() *CreateReplayCache {
 	return &CreateReplayCache{
-		entries: make(map[[16]byte]*CachedCreateResponse),
+		entries:  make(map[[16]byte]*CachedCreateResponse),
+		reserved: make(map[reserveKey]struct{}),
 	}
+}
+
+// Reserve marks a CreateGuid as having an in-progress (parked) original
+// CREATE for the given session. While reserved, a replayed CREATE for
+// the same CreateGuid resolves to STATUS_FILE_NOT_AVAILABLE. A zero
+// CreateGuid is ignored.
+func (c *CreateReplayCache) Reserve(sessionID uint64, createGuid [16]byte) {
+	if createGuid == ([16]byte{}) {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reserved[reserveKey{SessionID: sessionID, CreateGuid: createGuid}] = struct{}{}
+}
+
+// Release clears an in-progress reservation once the parked CREATE has
+// reached a terminal state (success stored, or failed). Idempotent.
+func (c *CreateReplayCache) Release(sessionID uint64, createGuid [16]byte) {
+	if createGuid == ([16]byte{}) {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.reserved, reserveKey{SessionID: sessionID, CreateGuid: createGuid})
+}
+
+// IsReserved reports whether a CreateGuid's original CREATE is currently
+// parked for the given session.
+func (c *CreateReplayCache) IsReserved(sessionID uint64, createGuid [16]byte) bool {
+	if createGuid == ([16]byte{}) {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.reserved[reserveKey{SessionID: sessionID, CreateGuid: createGuid}]
+	return ok
 }
 
 // Store records the response for a successful V2 CREATE keyed by
 // CreateGuid. Only success responses are cached — a replayed failed
 // CREATE should run through the normal handler path and may even
-// succeed the second time.
-func (c *CreateReplayCache) Store(sessionID uint64, createGuid [16]byte, resp *CreateResponse) {
+// succeed the second time. openFile is the live Open the CREATE
+// established; it is consulted on replay to rebuild the current
+// lease/oplock state (may be nil for paths that have no Open, in which
+// case the cached snapshot is replayed verbatim).
+func (c *CreateReplayCache) Store(sessionID uint64, createGuid [16]byte, resp *CreateResponse, openFile *OpenFile) {
 	if createGuid == ([16]byte{}) || resp == nil || resp.Status != types.StatusSuccess {
 		return
 	}
@@ -91,6 +159,7 @@ func (c *CreateReplayCache) Store(sessionID uint64, createGuid [16]byte, resp *C
 	c.entries[createGuid] = &CachedCreateResponse{
 		SessionID: sessionID,
 		Response:  resp,
+		OpenFile:  openFile,
 		StoredAt:  time.Now(),
 	}
 }
@@ -100,6 +169,18 @@ func (c *CreateReplayCache) Store(sessionID uint64, createGuid [16]byte, resp *C
 // session — a different session's CreateGuid collision (vanishingly
 // unlikely but possible) must not hijack another session's open.
 func (c *CreateReplayCache) Lookup(sessionID uint64, createGuid [16]byte) *CreateResponse {
+	if e := c.LookupEntry(sessionID, createGuid); e != nil {
+		return e.Response
+	}
+	return nil
+}
+
+// LookupEntry returns the full cache entry (response + live Open) for
+// the given CreateGuid + session, or nil on miss/expiry. The create
+// path uses this to rebuild the current lease/oplock state on replay
+// and to distinguish a replay (FLAGS_REPLAY_OPERATION set) from a
+// duplicate non-replay CREATE (→ DUPLICATE_OBJECTID).
+func (c *CreateReplayCache) LookupEntry(sessionID uint64, createGuid [16]byte) *CachedCreateResponse {
 	if createGuid == ([16]byte{}) {
 		return nil
 	}
@@ -113,7 +194,7 @@ func (c *CreateReplayCache) Lookup(sessionID uint64, createGuid [16]byte) *Creat
 		delete(c.entries, createGuid)
 		return nil
 	}
-	return entry.Response
+	return entry
 }
 
 // Forget drops the cached entry for CreateGuid. Called when the open
@@ -137,6 +218,11 @@ func (c *CreateReplayCache) ForgetSession(sessionID uint64) {
 	for k, e := range c.entries {
 		if e.SessionID == sessionID {
 			delete(c.entries, k)
+		}
+	}
+	for k := range c.reserved {
+		if k.SessionID == sessionID {
+			delete(c.reserved, k)
 		}
 	}
 }
