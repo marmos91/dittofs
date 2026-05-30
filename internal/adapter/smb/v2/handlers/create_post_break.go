@@ -1088,11 +1088,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	}
 	creation, access, write, change := FileAttrToSMBTimes(respAttr)
 	size := getSMBSize(&file.FileAttr)
-	// Honour the client-requested AllocationSize [MS-SMB2] 2.2.13: the reported
-	// allocation is the larger of the file's own cluster-aligned size and the
-	// (cluster-aligned) requested reservation. This lets a freshly-created empty
-	// file report a non-zero out.alloc_size when the client asked for one.
-	allocationSize := effectiveAllocationSize(size, req.AllocationSize)
+	allocationSize := calculateAllocationSize(size)
 
 	resp := &CreateResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
