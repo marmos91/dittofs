@@ -189,7 +189,6 @@ to the DH state machine — tracked under #792 / #793.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-open.reopen1a-lease | Durable handles V1 | Durable reopen with lease not fully working | #738 |
 | smb2.durable-open.reopen2 | Durable handles V1 | Durable reopen not fully working | #738 |
 | smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | #738 |
 | smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | #738 |
