@@ -16,6 +16,7 @@ func TestLock_PersistsAndReloads(t *testing.T) {
 
 	mgr := NewManager()
 	mgr.SetLockStore(store)
+	mgr.SetShareName("share-a")
 
 	const handleKey = "share-a:file-1"
 	fl := FileLock{
@@ -28,10 +29,11 @@ func TestLock_PersistsAndReloads(t *testing.T) {
 	}
 	require.NoError(t, mgr.Lock(handleKey, fl))
 
-	// The lock must have been persisted.
-	persisted, err := store.ListLocks(ctx, LockQuery{})
+	// The lock must be persisted with its share name so the per-share
+	// recovery query (LockQuery{ShareName}) matches it on restart.
+	persisted, err := store.ListLocks(ctx, LockQuery{ShareName: "share-a"})
 	require.NoError(t, err)
-	require.Len(t, persisted, 1, "byte-range lock should be persisted")
+	require.Len(t, persisted, 1, "byte-range lock should be persisted under its share")
 
 	// Simulate restart: fresh manager, restore from the store.
 	fresh := NewManager()

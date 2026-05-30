@@ -102,6 +102,7 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 		// the lock manager persists lock state and recovers it across restart.
 		if ls, ok := store.(lock.LockStore); ok {
 			lm.SetLockStore(ls)
+			lm.SetShareName(shareName)
 			initLockManagerFromStore(lm, ls, shareName)
 		}
 	}

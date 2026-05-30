@@ -589,6 +589,7 @@ type Manager struct {
 	handleChecker  HandleChecker             // checks if file handles still exist (for reclaim)
 	lockStore      LockStore                 // persistent lock store (optional)
 	epoch          uint64                    // current server epoch (stamped on persisted locks)
+	shareName      string                    // share this manager serves (stamped on persisted byte-range locks)
 	recentlyBroken *recentlyBrokenCache      // prevents directory lease storms
 
 	// Delegation-related fields
@@ -905,6 +906,15 @@ func (lm *Manager) SetEpoch(epoch uint64) {
 	lm.epoch = epoch
 }
 
+// SetShareName records the share this manager serves. The share name is
+// stamped on persisted byte-range locks so they can be recovered by the
+// per-share ListLocks query at startup.
+func (lm *Manager) SetShareName(shareName string) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	lm.shareName = shareName
+}
+
 // byteRangeLockID derives a stable persistent ID for a byte-range FileLock.
 // FileLock.ID is client-provided and not unique, so the ID is derived from the
 // owner identity and range. The same formula is used on persist and delete.
@@ -920,6 +930,7 @@ func (lm *Manager) fileLockToPersisted(handleKey string, fl *FileLock) *Persiste
 	}
 	return &PersistedLock{
 		ID:          byteRangeLockID(handleKey, fl),
+		ShareName:   lm.shareName,
 		FileID:      handleKey,
 		OwnerID:     lockOwnerID(fl),
 		LockType:    int(lockType),
@@ -982,9 +993,8 @@ func (lm *Manager) RestoreLocks(persisted []*PersistedLock) error {
 	defer lm.mu.Unlock()
 
 	for _, pl := range persisted {
-		ul := FromPersistedLock(pl)
-		handleKey := pl.FileID
-		lm.unifiedLocks[handleKey] = append(lm.unifiedLocks[handleKey], ul)
+		// pl.FileID is the handle key used when persisting (see persist helpers).
+		lm.unifiedLocks[pl.FileID] = append(lm.unifiedLocks[pl.FileID], FromPersistedLock(pl))
 	}
 	return nil
 }
