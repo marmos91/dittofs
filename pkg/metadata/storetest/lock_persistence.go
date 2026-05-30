@@ -65,6 +65,60 @@ func RunLockPersistenceSuite(t *testing.T, factory LockStoreFactory) {
 	t.Run("ZeroByteVsEOFSemantics", func(t *testing.T) {
 		testLock_ZeroByteVsEOFSemantics(t, factory)
 	})
+
+	t.Run("MaxUint64OffsetLength", func(t *testing.T) {
+		testLock_MaxUint64OffsetLength(t, factory)
+	})
+}
+
+// testLock_MaxUint64OffsetLength pins R3-4: NFSv4 expresses an unbounded range
+// as Offset/Length = 0xFFFFFFFFFFFFFFFF and SMB allows high-bit offsets. A
+// backend storing these in a signed 64-bit column (postgres BIGINT) rejects any
+// uint64 > MaxInt64 at PutLock, silently dropping the lock so it is never
+// persisted nor recovered. The store must round-trip the full uint64 range.
+func testLock_MaxUint64OffsetLength(t *testing.T, factory LockStoreFactory) {
+	store := factory(t)
+	ctx := context.Background()
+
+	const maxU64 = ^uint64(0) // 0xFFFFFFFFFFFFFFFF, > math.MaxInt64
+
+	lk := &lock.PersistedLock{
+		ID:                "max-u64",
+		ShareName:         shapeShareName,
+		FileID:            shapeFileID,
+		OwnerID:           "nfs4:1:deadbeef",
+		ClientID:          "nfs4:1",
+		LockType:          int(lock.LockTypeExclusive),
+		Offset:            maxU64,
+		Length:            maxU64,
+		IsLegacyByteRange: false,
+		AcquiredAt:        time.Unix(1, 0).UTC(),
+		ServerEpoch:       1,
+	}
+
+	if err := store.PutLock(ctx, lk); err != nil {
+		t.Fatalf("PutLock with uint64 max Offset/Length failed (signed-column overflow class): %v", err)
+	}
+
+	got, err := store.GetLock(ctx, lk.ID)
+	if err != nil {
+		t.Fatalf("GetLock: %v", err)
+	}
+	if got.Offset != maxU64 {
+		t.Errorf("Offset round-trip: got %d, want %d (uint64 max)", got.Offset, maxU64)
+	}
+	if got.Length != maxU64 {
+		t.Errorf("Length round-trip: got %d, want %d (uint64 max)", got.Length, maxU64)
+	}
+
+	// The per-share recovery query must also recover it.
+	byShare, err := store.ListLocks(ctx, lock.LockQuery{ShareName: shapeShareName})
+	if err != nil {
+		t.Fatalf("ListLocks{ShareName}: %v", err)
+	}
+	if findByID(byShare, lk.ID) == nil {
+		t.Fatalf("max-uint64 lock not recovered by per-share query (dropped on persist)")
+	}
 }
 
 // lockShape is one entry in the persist matrix: a fully-formed PersistedLock

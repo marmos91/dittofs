@@ -1,8 +1,21 @@
 package lock
 
 import (
+	stderrors "errors"
+
 	"github.com/marmos91/dittofs/pkg/metadata/errors"
 )
+
+// isLockNotFound reports whether err is a store "lock not found" error. Used by
+// the synchronous delete path to ignore an already-absent record (idempotent
+// delete) without logging a spurious durability alarm.
+func isLockNotFound(err error) bool {
+	var se *errors.StoreError
+	if stderrors.As(err, &se) {
+		return se.Code == errors.ErrLockNotFound
+	}
+	return false
+}
 
 // NewLockedError creates error for lock conflicts (legacy FileLock).
 func NewLockedError(path string, conflict *LockConflict) *errors.StoreError {
