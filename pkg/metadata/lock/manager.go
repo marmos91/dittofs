@@ -1485,6 +1485,18 @@ func mergeTwoLocks(a, b *UnifiedLock) *UnifiedLock {
 // Returns:
 //   - *UnifiedLock: The upgraded lock on success
 //   - error: ErrLockConflict if other readers exist, ErrLockNotFound if no lock to upgrade
+//
+// PRECONDITION — whole-lock upgrade only. Step 3 flips the ENTIRE matched
+// shared lock to exclusive, not just the [offset,length) sub-range, and that
+// whole-range promotion is what gets persisted. This is correct ONLY because
+// every caller upgrades a lock at exactly the range it was granted at: the
+// NFSv4 LOCK upgrade path promotes the lock-owner's existing lock as a whole,
+// never a strict sub-range of a larger shared lock. If a caller ever passes a
+// sub-range of a wider shared lock, the surrounding bytes would be silently
+// promoted to exclusive (and persisted that way) — split the matched lock into
+// the upgraded sub-range plus shared remainder(s) before changing this. There
+// are currently no production callers (NFSv4/NLM upgrade is not yet wired); the
+// invariant is enforced by TestUpgradeLock_WholeLockOnly.
 func (lm *Manager) UpgradeLock(handleKey string, owner LockOwner, offset, length uint64) (*UnifiedLock, error) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
