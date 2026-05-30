@@ -151,12 +151,11 @@ func (s *nlmService) TestLockNLM(
 
 	testLock := lock.NewUnifiedLock(owner, lock.FileHandle(handle), offset, length, lockTypeFromExclusive(exclusive))
 
+	// TestUnifiedLock cross-checks the SMB byte-range map too, so NLM TEST
+	// reports the same conflict LockFileNLM would enforce (xproto H1).
 	handleKey := string(handle)
-	existing := s.lockMgr.ListUnifiedLocks(handleKey)
-	for _, el := range existing {
-		if lock.IsUnifiedLockConflicting(el, testLock) {
-			return false, &lock.UnifiedLockConflict{Lock: el, Reason: "conflict"}, nil
-		}
+	if conflict := s.lockMgr.TestUnifiedLock(handleKey, testLock); conflict != nil {
+		return false, conflict, nil
 	}
 	return true, nil, nil
 }
