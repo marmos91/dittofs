@@ -1208,6 +1208,11 @@ func TestProcessDurableReconnectContext_V2LeaseClientGUIDMismatch(t *testing.T) 
 		Username:       "alice",
 		SessionKeyHash: keyHash,
 		CreateGuid:     createGuid,
+		// A lease-backed durable handle persists OplockLevel=Lease (mirrors
+		// buildPersistedDurableHandle for an SMB lease open). The V2 lease gate
+		// keys "persisted handle has a lease" on (OplockLevel==Lease && LeaseKey
+		// != 0), so both must be set for this to model a real lease open.
+		OplockLevel:    OplockLevelLease,
 		LeaseKey:       leaseKey,
 		ClientGUID:     originalGUID,
 		IsV2:           true,
@@ -1217,12 +1222,19 @@ func TestProcessDurableReconnectContext_V2LeaseClientGUIDMismatch(t *testing.T) 
 		MetadataHandle: []byte{0xAA},
 	})
 
-	// Build DH2C reconnect (FileID + CreateGuid + zero flags).
+	// Build DH2C reconnect (FileID + CreateGuid + zero flags) plus the matching
+	// lease context. A lease-backed V2 reconnect MUST carry its RqLs lease
+	// context (MS-SMB2 §3.3.5.9.12 / Samba reopen1a-lease) — the V2 lease gate
+	// in processV2Reconnect rejects a lease-backed handle reconnected without
+	// one (OBJECT_NAME_NOT_FOUND) before it reaches the ClientGuid scoping
+	// check, so the lease key must match here to actually exercise the GUID
+	// branch under test.
 	dh2cData := make([]byte, 36)
 	copy(dh2cData[:16], fileID[:])
 	copy(dh2cData[16:32], createGuid[:])
 	contexts := []CreateContext{
 		{Name: DurableHandleV2ReconnectTag, Data: dh2cData},
+		{Name: LeaseContextTagRequest, Data: encodeV1LeaseRequestContext(leaseKey, 0)},
 	}
 
 	// Wrong ClientGuid → OBJECT_NAME_NOT_FOUND
