@@ -230,6 +230,15 @@ const (
 	// connection's signing algorithm is not GMAC (MS-SMB2 §3.3.5.5.2; Samba
 	// source3/smbd/smb2_sesssetup.c:724-729).
 	StatusRequestOutOfSequence Status = 0xC000042A
+
+	// StatusFileNotAvailable indicates a modifying operation (WRITE,
+	// SET_INFO, IOCTL) carried a stale ChannelSequence number relative to
+	// the one the server tracks for the target Open. Returned during SMB3
+	// channel-sequence verification (MS-SMB2 §3.3.5.2.10) when the client
+	// resends an operation on a previously-failed channel without advancing
+	// its ChannelSequence — the server rejects the stale write rather than
+	// re-applying it out of order.
+	StatusFileNotAvailable Status = 0xC0000467
 )
 
 // String returns a human-readable name for the status code.
@@ -257,6 +266,8 @@ func (s Status) String() string {
 		return "STATUS_ACCESS_DENIED"
 	case StatusBufferOverflow:
 		return "STATUS_BUFFER_OVERFLOW"
+	case StatusFileNotAvailable:
+		return "STATUS_FILE_NOT_AVAILABLE"
 	case StatusObjectNameInvalid:
 		return "STATUS_OBJECT_NAME_INVALID"
 	case StatusObjectNameNotFound:

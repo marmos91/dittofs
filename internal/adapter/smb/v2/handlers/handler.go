@@ -511,6 +511,23 @@ type OpenFile struct {
 	// does NOT consult this — those tests reconnect with a fresh ClientGuid.
 	ClientGUID [16]byte
 
+	// csMu guards the SMB3 channel-sequence tracking fields below. It is a
+	// dedicated lock (not the struct mu) so the verification step in the
+	// dispatch hot path never contends with QUERY_INFO/enumeration R-M-W.
+	csMu sync.Mutex
+
+	// channelSeq is the ChannelSequence number the server currently tracks
+	// for this Open (MS-SMB2 §3.3.5.2.10 Open.ChannelSequence). Advanced when
+	// a request arrives with a strictly newer ChannelSequence (a channel
+	// failover), used to reject stale modifying replays.
+	channelSeq uint16
+
+	// channelSeqSet records whether channelSeq has been initialized from a
+	// request yet. The first request on the Open seeds channelSeq with its
+	// own ChannelSequence so an initial nonzero CSN is not mistaken for a
+	// failover.
+	channelSeqSet bool
+
 	// PositionInfo is the FILE_POSITION_INFORMATION CurrentByteOffset
 	// (MS-FSCC 2.4.32). Servers track this per-handle so SET/GET via
 	// FilePositionInformation round-trips even though network filesystems
