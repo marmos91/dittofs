@@ -28,7 +28,10 @@ This REVIEW.md consolidates and triages all five.
 | C — RPC / GSS / auth | 3¹ | 6 | 5 |
 | D — NLM / NSM / portmap | 4 | 9 | 7 |
 | E — v4 attrs/types/XDR | 0 | 2 | 10 |
-| **Total (post-triage)** | **17** | **30** | **30** |
+| H — handlers 2nd pass | 2 | 2 | 3 |
+| **Total (post-triage)** | **19** | **32** | **33** |
+
+Batch-3 design/perf/bloat/versions passes (DESIGN-AUDIT.md + `_partial-f/g/i/j`) are structural — summarized in §9 below, not in this correctness tally.
 
 ¹ C originally reported 4 HIGH; the AUTH_SYS-squash-bypass HIGH was **downgraded to RESOLVED** during triage (see §3).
 
@@ -69,6 +72,11 @@ This REVIEW.md consolidates and triages all five.
 - **H11 — READDIRPLUS ignores client `maxcount` byte budget.** `readdirplus.go:279`, `readdirplus_codec.go:155`. Encodes all entries+fattr3+filehandle with no running tally vs `MaxCount` (RFC 1813 §3.3.17) → oversized reply the client truncates/rejects → large-dir listing breaks. Fix: track encoded bytes, stop at budget, set `eof=false`.
 - **H12 — No duplicate-request cache (DRC) for non-idempotent v3 ops.** No XID/reply cache anywhere in dispatch. Retried CREATE-excl/REMOVE/RENAME/LINK/MKDIR re-executes → spurious `EEXIST`/`ENOENT` to client (Linux `fs/nfsd/nfscache.c` exists for this). Fix: XID+checksum+srcaddr reply cache, or document the limitation.
 - **H13 — Default `MaxConnections = 0` (unlimited).** `pkg/adapter/nfs/adapter.go:236`. Each conn = a `Serve` goroutine + up to 1.25 MB fragment buffer + 100 in-flight → memory-exhaustion DoS. Fix: ship a sane default cap (e.g. 1024) + global in-flight-bytes budget.
+
+### v4 stateid validation gaps (batch 3, 2nd-pass handlers — sub-area H, both NEW)
+
+- **H18 — v4 SETATTR stateid decoded but `ValidateStateid` NEVER called.** `v4/handlers/setattr.go:46-49`. Stateid decoded, then `_ = stateid` + logged only — no validation anywhere in the file (verified). A bogus/expired/revoked-delegation stateid silently succeeds on SETATTR; no implicit lease renewal; no open-mode guard on size-reduce. Any client that observes a stateid can SETATTR files after the real holder closed. Compare WRITE (`write.go:129`). Fix: `ValidateStateid` after decode → `NFS4ERR_BAD_STATEID` on error + write-access check on size change. **Confidence 100.**
+- **H19 — v4 READ discards `openState` from `ValidateStateid` → no `SHARE_ACCESS_READ` check.** `v4/handlers/read.go:71` (`if _, stateErr := ...ValidateStateid(...)`). A write-only open can READ via its stateid (RFC 7530 §16.25.4 violation; symmetric to H3 on the READ side for ANY open stateid). Fix: capture openState; `if openState != nil && openState.ShareAccess&OPEN4_SHARE_ACCESS_READ == 0 { return NFS4ERR_OPENMODE }`. **Confidence 100.**
 
 ### NLM/NSM lock recovery + statd security (batch 2, sub-area D)
 
@@ -127,4 +135,38 @@ Each PR-B: apply HIGH → `code-simplifier` → `code-reviewer` → `go test -ra
 
 ## 8. Audit coverage — COMPLETE
 
-All of area #4 covered across 2 batches: v3 handlers + mount, v4 state machine + OPEN/LOCK handlers, v4.1 session handlers, RPC/RPCSEC_GSS/auth/dispatch, NLM (lockd), NSM (statd), portmap (rpcbind), v4 attrs/types/XDR, pseudofs. No remaining unaudited NFS surface. Cross-cutting follow-up flagged for the **metadata/permissions sub-audit (area #6)**: confirm every mutating v3 handler routes through `BuildAuthContextWithMapping` (§3).
+All of area #4 covered across 3 batches: v3 handlers + mount, v4 state machine + OPEN/LOCK handlers, v4.1 session handlers, RPC/RPCSEC_GSS/auth/dispatch, NLM (lockd), NSM (statd), portmap (rpcbind), v4 attrs/types/XDR, pseudofs, + 2nd-pass handlers + design/perf/bloat/versions/interface structural passes. No remaining unaudited NFS surface. Cross-cutting follow-up flagged for the **metadata/permissions sub-audit (area #6)**: confirm every mutating v3 handler routes through `BuildAuthContextWithMapping` (§3).
+
+## 9. Structural / design / perf / bloat (batch 3 — see DESIGN-AUDIT.md + `_partial-f/g/i/j`)
+
+Separate from the correctness tally; drives PR-B0 + Option-B restructure.
+
+**Design (DESIGN-AUDIT.md)** — top structural findings:
+- **SF-1 dual dispatch entry point** (HIGH-design): live `pkg/adapter/nfs/handlers.go` vs test-only `internal/adapter/nfs/dispatch.go:Dispatch()` — parallel routing, silent divergence, NLM/NSM auth only in live path.
+- **SF-4 four auth-context builders** (HIGH-design): `buildV4AuthContext` silently falls back to UNMAPPED identity on mapping error (`v4/handlers/helpers.go:62`) while v3 propagates — security divergence. All funnel to `ApplyIdentityMapping` (squash NOT bypassable — confirms §3).
+- **SF-6 `NeedsAuth` dead field**: 42 declarations, **0 consumers** (verified) — abandoned dispatch-auth gate.
+- **SF-2/SF-3** 5 dispatch tables / 6 signatures / 3 result types; 5 context types with identical credential fields.
+- **Recommendation**: Option A (auth unify, PR-B0) now + Option B (collapse dual dispatch + `RPCHandlerBase`) next sprint. Option C (rewrite) NOT warranted — handlers disciplined, only dispatch layer is accidentally complex.
+
+**Perf (`_partial-g-perf.md`)** — measured M1 Max, Go 1.26:
+- v4.1 COMPOUND **1556 ns/op, 1208 B/op, 62 allocs/op**; v4.0 **483 ns/op, 25 allocs** (v4.1 slot machinery ~3.2× slower).
+- Allocation-bound. Top hotspot: unsized `bytes.Buffer` in `encodeCompoundResponse` (`compound.go:600`) = **27% / 2.92 GB** of allocation — pure `buf.Grow(estimate)` fix.
+- Auth-context rebuilt UNCACHED on 7/10 v3 ops (lookup/readdir/readdirplus etc.) + all v4 — caching saves 1 GetShare + 1 ApplyIdentityMapping + 1 identity lookup per hot RPC.
+- READDIRPLUS per-entry fan-out = O(n) round-trips (~4095→1 for a 4096-entry dir).
+- **Gap**: only 3 benchmarks exist (all v4.1 SEQUENCE); v3 data path (READ/WRITE/LOOKUP/READDIRPLUS) has zero benchmarks. 5 micro-benchmarks to add. Mutex/block profiling never wired (baseline B3).
+
+**Bloat (`_partial-f-bloat.md`)** — ~1,300–2,400 removable LOC, ~−53 files (≈205→152):
+- Fold 22 `v3/handlers/*_codec.go` into handlers (−22 files); collapse `v4/types` 32→~6 op-families + drop unreferenced leaf `String()`s (−26 files); merge 4 auth builders; `compoundErr`/`compoundOK` helpers kill ~150 repeated `CompoundResult{}` literals; split 2,871-LOC `v4/state/manager.go`.
+- Genuinely dead: `GroupResolver` (no impl), `ApplySetAttrs` (0 callers), `handleClientCrash` (no-op = H14). NFS comments are planning-ref CLEAN. The 4 `*Dispatcher` interfaces are load-bearing import-cycle breaks — KEEP.
+
+**Versions/coexistence (`_partial-i-versions.md`)** — 3 HIGH (all already in REVIEW: grace/durability/share_deny) / 2 MED / 4 LOW:
+- v3/v4.0/v4.1 only, no v2. v2-client → clean `PROG_MISMATCH[3,4]`; v4.2 → `NFS4ERR_MINOR_VERS_MISMATCH`. **Zero negotiation-correctness defects.**
+- Cross-version lock visibility CORRECT (NLM + v4 LOCK both → unified `pkg/metadata/lock`, cross-protocol conflict detection) — NOT siloed. Recovery half broken (H7/H8/H15).
+- MED: dual dispatcher (= SF-1) + `v4/types` over-fragmentation (= bloat).
+
+**Interface audit (`_partial-j-interfaces.md`)** — 24 interfaces; **21 load-bearing, 1 dead, 1 over-fat, 4 cycle-break artifacts**:
+- `GroupResolver` (`identity/mapper.go:75`) — **0 impls, 0 real callers → DELETE** (only dead interface found).
+- `LockManager` (`lock/manager.go:27`) — 48 methods, 1 impl, 107 refs → fat (ISP smell); SPLIT into role interfaces, low priority, not v1.0-blocking.
+- **Key positive**: NLM + v4-state + SMB all share ONE `LockManager` — NO siloed/parallel lock interfaces. This is what makes cross-protocol conflict detection work. The 4 `*Dispatcher` interfaces are `pkg`↔`internal` import-cycle breaks (resolve via Option B / SF-1, not deletion). `IdentityMapper`/`Verifier`/lock-store seams all genuine. Interface surface is healthy — the real fragmentation is at the *function* level (4 auth builders), not interfaces.
+
+**Net area-4 PR-B picture**: REVIEW §7 correctness PRs (now incl. H18/H19 in a `nfs-v4-stateid` slice) + PR-B0 auth-unify (DESIGN Option A) + perf quick-wins (`buf.Grow` + auth cache) + a separate bloat/restructure track (Option B).
