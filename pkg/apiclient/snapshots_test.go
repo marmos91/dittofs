@@ -198,6 +198,44 @@ func TestRestoreSnapshot(t *testing.T) {
 	assert.True(t, sent.AllowNonDurable)
 }
 
+// TestRestoreSnapshot_UsesRestoreTimeoutNotBaseClient is the behavioral
+// regression for #842: a remote-backed restore whose server-side
+// safety-snapshot drain runs longer than the base 30s http.Client timeout
+// must NOT be killed client-side. The fix routes RestoreSnapshot through a
+// per-call client whose Timeout is restoreHTTPTimeout (30m default), not the
+// 30s base client.
+//
+// We prove the restore call is governed by restoreHTTPTimeout — not the base
+// 30s client — without waiting 30s: point a SHORT restore timeout at a server
+// that delays slightly longer and assert it times out. If restore wrongly
+// used the 30s base client, the short delay would succeed; the timeout error
+// proves restoreHTTPTimeout is the authority.
+func TestRestoreSnapshot_UsesRestoreTimeoutNotBaseClient(t *testing.T) {
+	const serverDelay = 250 * time.Millisecond
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(serverDelay)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(RestoreSnapshotResponse{SnapshotID: "s", Share: "/a"})
+	}))
+	defer srv.Close()
+
+	// (a) Restore timeout SHORTER than the server delay -> must fail. This is
+	// only possible because the restore call honors restoreHTTPTimeout; the
+	// 30s base client would have waited out the 250ms delay and succeeded.
+	cShort := New(srv.URL, WithRestoreTimeout(40*time.Millisecond))
+	_, err := cShort.RestoreSnapshot("/a", "s", RestoreSnapshotRequest{})
+	require.Error(t, err, "restore must honor the short restoreHTTPTimeout, not the 30s base client")
+
+	// (b) Restore timeout LONGER than the server delay -> must succeed,
+	// confirming the per-call client is wired and not capped at the base 30s
+	// in a way that would matter here.
+	cLong := New(srv.URL, WithRestoreTimeout(10*time.Second))
+	resp, err := cLong.RestoreSnapshot("/a", "s", RestoreSnapshotRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+}
+
 func TestRestoreSnapshot_PreconditionFailed(t *testing.T) {
 	s := newStubServer(t)
 	defer s.Close()
