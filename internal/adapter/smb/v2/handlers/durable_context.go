@@ -338,6 +338,69 @@ func ProcessDurableReconnectContext(
 	return nil, types.StatusInvalidParameter, fmt.Errorf("no reconnect context found")
 }
 
+// checkLeaseReconnectGate runs the MS-SMB2 §3.3.5.9.7/12 lease-context gate
+// that is shared by the V1 (DHnC) and V2 (DH2C) reconnect paths and exercised
+// by smbtorture's reopen2-lease{,-v2} negative ladders. It MUST run before the
+// path check so the empty/non-existing-fname-without-lease cases resolve to
+// OBJECT_NAME_NOT_FOUND rather than the INVALID_PARAMETER a path mismatch would
+// yield. The mapping is:
+//
+//	lease ctx absent,  persisted lease     -> OBJECT_NAME_NOT_FOUND
+//	lease ctx present, persisted no-lease  -> OBJECT_NAME_NOT_FOUND
+//	lease ctx present, persisted lease, undecodable lease ctx -> INVALID_PARAMETER
+//	lease ctx present, persisted lease, lease key mismatch    -> OBJECT_NAME_NOT_FOUND
+//	lease ctx present, persisted lease, ClientGuid mismatch   -> OBJECT_NAME_NOT_FOUND
+//	otherwise                              -> StatusSuccess (proceed)
+//
+// It returns (StatusSuccess, persistedHasLease) when the gate passes (or does
+// not apply because neither a lease ctx nor a persisted lease is present); the
+// caller proceeds to validateAndRestore. The persistedHasLease flag lets the V1
+// caller suppress the path check for an oplock-backed reopen (filename ignored
+// per §3.3.5.9.7); the V2 caller always path-checks.
+func checkLeaseReconnectGate(
+	contexts []CreateContext,
+	handle *lock.PersistedDurableHandle,
+	connClientGUID [16]byte,
+	logPrefix string,
+) (status types.Status, persistedHasLease bool) {
+	leaseCtx := FindCreateContext(contexts, LeaseContextTagRequest)
+	persistedHasLease = handle.OplockLevel == OplockLevelLease && handle.LeaseKey != ([16]byte{})
+
+	if leaseCtx == nil {
+		if persistedHasLease {
+			logger.Debug(logPrefix + ": persisted handle has lease but request omits lease ctx")
+			return types.StatusObjectNameNotFound, persistedHasLease
+		}
+		// Oplock-backed reconnect: no lease gate applies.
+		return types.StatusSuccess, persistedHasLease
+	}
+
+	if !persistedHasLease {
+		logger.Debug(logPrefix + ": lease ctx provided but persisted handle has no lease")
+		return types.StatusObjectNameNotFound, persistedHasLease
+	}
+	leaseReq, decErr := DecodeLeaseCreateContext(leaseCtx.Data)
+	if decErr != nil || leaseReq == nil {
+		logger.Debug(logPrefix+": invalid lease ctx", "error", decErr)
+		return types.StatusInvalidParameter, persistedHasLease
+	}
+	if leaseReq.LeaseKey != handle.LeaseKey {
+		logger.Debug(logPrefix+": lease key mismatch",
+			"expected", fmt.Sprintf("%x", handle.LeaseKey),
+			"actual", fmt.Sprintf("%x", leaseReq.LeaseKey))
+		return types.StatusObjectNameNotFound, persistedHasLease
+	}
+	// Reject a lease reconnect arriving on a different ClientGuid than the one
+	// that established the open. smbtorture reopen1a-lease (V1 + V2).
+	if leaseReconnectClientGUIDMismatch(handle, connClientGUID) {
+		logger.Debug(logPrefix+": ClientGuid mismatch on lease-backed reconnect",
+			"persisted", fmt.Sprintf("%x", handle.ClientGUID),
+			"connecting", fmt.Sprintf("%x", connClientGUID))
+		return types.StatusObjectNameNotFound, persistedHasLease
+	}
+	return types.StatusSuccess, persistedHasLease
+}
+
 // leaseReconnectClientGUIDMismatch reports whether a lease-backed durable
 // reconnect must be rejected because it arrives on a different ClientGuid than
 // the one that established the open. Per MS-SMB2 §3.3.5.9.7/12 and Samba
@@ -436,44 +499,13 @@ func processV1Reconnect(
 	//       * lease key mismatch              → OBJECT_NAME_NOT_FOUND
 	//       * path mismatch                   → INVALID_PARAMETER
 	//       * else                            → proceed
-	leaseCtx := FindCreateContext(contexts, LeaseContextTagRequest)
-	persistedHasLease := handle.OplockLevel == OplockLevelLease && handle.LeaseKey != ([16]byte{})
-	checkPath := true
-	if leaseCtx == nil {
-		if persistedHasLease {
-			logger.Debug("processV1Reconnect: persisted handle has lease but request omits lease ctx")
-			return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
-		}
-		// Oplock-backed reopen: filename is ignored by the server.
-		checkPath = false
-	} else {
-		if !persistedHasLease {
-			logger.Debug("processV1Reconnect: lease ctx provided but persisted handle has no lease")
-			return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
-		}
-		leaseReq, decErr := DecodeLeaseCreateContext(leaseCtx.Data)
-		if decErr != nil || leaseReq == nil {
-			logger.Debug("processV1Reconnect: invalid lease ctx", "error", decErr)
-			return nil, 0, [16]byte{}, types.StatusInvalidParameter, nil
-		}
-		if leaseReq.LeaseKey != handle.LeaseKey {
-			logger.Debug("processV1Reconnect: lease key mismatch",
-				"expected", fmt.Sprintf("%x", handle.LeaseKey),
-				"actual", fmt.Sprintf("%x", leaseReq.LeaseKey))
-			return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
-		}
-
-		// Reject a lease reconnect arriving on a different ClientGuid than the
-		// one that established the open. smbtorture
-		// smb2.durable-open.reopen1a-lease attempts a lease reconnect from a
-		// fresh ClientGuid and expects OBJECT_NAME_NOT_FOUND.
-		if leaseReconnectClientGUIDMismatch(handle, connClientGUID) {
-			logger.Debug("processV1Reconnect: ClientGuid mismatch on lease-backed reconnect",
-				"persisted", fmt.Sprintf("%x", handle.ClientGUID),
-				"connecting", fmt.Sprintf("%x", connClientGUID))
-			return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
-		}
+	gateStatus, persistedHasLease := checkLeaseReconnectGate(contexts, handle, connClientGUID, "processV1Reconnect")
+	if gateStatus != types.StatusSuccess {
+		return nil, 0, [16]byte{}, gateStatus, nil
 	}
+	// V1 oplock-backed reconnect ignores the filename (MS-SMB2 §3.3.5.9.7); a
+	// lease-backed reconnect path-checks via validateAndRestore.
+	checkPath := persistedHasLease
 
 	openFile, status, restoreErr := validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
 		sessionKeyHash, shareName, filename, desiredAccess, shareAccess, checkPath,
@@ -548,19 +580,19 @@ func processV2Reconnect(
 		return nil, 0, [16]byte{}, types.StatusInvalidParameter, nil
 	}
 
-	// Reject a V2 lease reconnect arriving on a different ClientGuid than the
-	// one that established the open. smbtorture
-	// smb2.durable-v2-open.reopen1a-lease.
-	if leaseReconnectClientGUIDMismatch(handle, connClientGUID) {
-		logger.Debug("processV2Reconnect: ClientGuid mismatch on lease-backed reconnect",
-			"persisted", fmt.Sprintf("%x", handle.ClientGUID),
-			"connecting", fmt.Sprintf("%x", connClientGUID))
-		return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
+	// MS-SMB2 §3.3.5.9.12 / Samba `smbd_smb2_create_durable_lease_check`: the V2
+	// (DH2C) reconnect runs the same lease-context gate as V1 (it must precede
+	// the path check so the reopen2-lease{,-v2} negative ladder produces
+	// OBJECT_NAME_NOT_FOUND for the no-lease cases rather than the
+	// INVALID_PARAMETER a path mismatch would yield).
+	if gateStatus, _ := checkLeaseReconnectGate(contexts, handle, connClientGUID, "processV2Reconnect"); gateStatus != types.StatusSuccess {
+		return nil, 0, [16]byte{}, gateStatus, nil
 	}
 
-	// V2 reconnect always checks the path against the persisted handle
-	// (no Samba-style oplock-only fallthrough). The CreateGuid is the
-	// primary identifier; the path check is an extra integrity gate.
+	// V2 always checks the path against the persisted handle (no Samba-style
+	// oplock-only fallthrough). The CreateGuid is the primary identifier; the
+	// path check is an extra integrity gate that turns a wrong-fname-with-lease
+	// reconnect into INVALID_PARAMETER (the final negative-ladder rung).
 	openFile, status, restoreErr := validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
 		sessionKeyHash, shareName, filename, desiredAccess, shareAccess, true,
 		func(ctx context.Context) (*lock.PersistedDurableHandle, error) {
