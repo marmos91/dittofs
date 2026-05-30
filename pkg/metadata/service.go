@@ -86,35 +86,38 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 	}
 
 	s.mu.Lock()
-
 	s.stores[shareName] = store
-
-	// Create a lock manager for this share if it doesn't exist. Lock recovery
-	// (epoch bump + ListLocks + replay) issues backend IO, so it is deferred
-	// until after s.mu is released — holding s.mu across that IO would block
-	// every other MetadataService operation on a slow store.
-	var runRecovery func()
-	if _, exists := s.lockManagers[shareName]; !exists {
-		lm := NewLockManager()
-		s.lockManagers[shareName] = lm
-		// Wire LockManager as DirChangeNotifier: mutations on this share
-		// will dispatch directory lease breaks via the lock manager.
-		s.dirChangeNotifiers[shareName] = lm
-
-		// Wire lock persistence: if the backend store implements LockStore,
-		// the lock manager persists lock state and recovers it across restart.
-		if ls, ok := store.(lock.LockStore); ok {
-			lm.SetLockStore(ls)
-			lm.SetShareName(shareName)
-			runRecovery = func() { initLockManagerFromStore(lm, ls, shareName) }
-		}
-	}
-
+	_, exists := s.lockManagers[shareName]
 	s.mu.Unlock()
 
-	if runRecovery != nil {
-		runRecovery()
+	if exists {
+		return nil
 	}
+
+	// Build and fully recover the lock manager on a local var BEFORE publishing
+	// it into s.lockManagers. Recovery (epoch bump + ListLocks + replay) issues
+	// backend IO, so it runs outside s.mu — but it must complete before the
+	// manager is observable: a concurrent GetLockManagerForShare that saw an
+	// empty, unrecovered manager could grant a lock conflicting with a
+	// not-yet-restored one. Publishing only after recovery closes that window.
+	lm := NewLockManager()
+	if ls, ok := store.(lock.LockStore); ok {
+		lm.SetLockStore(ls)
+		lm.SetShareName(shareName)
+		initLockManagerFromStore(lm, ls, shareName)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Re-check: another caller may have raced us to register this share while
+	// we recovered outside the lock. First publisher wins; drop our manager.
+	if _, exists := s.lockManagers[shareName]; exists {
+		return nil
+	}
+	s.lockManagers[shareName] = lm
+	// Wire LockManager as DirChangeNotifier: mutations on this share will
+	// dispatch directory lease breaks via the lock manager.
+	s.dirChangeNotifiers[shareName] = lm
 
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
@@ -361,6 +362,14 @@ type FileLock struct {
 	// ClientAddr is the network address of the client holding the lock.
 	// Used for debugging and logging.
 	ClientAddr string
+
+	// ClientID is the connection-tracker client identifier (e.g. "smb:7").
+	// Used to purge a client's persisted locks on disconnect via
+	// RemoveClientLocks → DeleteLocksByClient. The legacy byte-range path
+	// (Manager.Lock) is SMB-only; SMB producers stamp "smb:{SessionID}" to
+	// match the identity SMB session teardown passes to RemoveClientLocks.
+	// Empty for locks that never need per-client cleanup.
+	ClientID string
 
 	// IsZeroByte marks this as a zero-byte lock (SMB2 Length=0).
 	// Zero-byte locks never conflict with any other lock. They are stored
@@ -1001,6 +1010,7 @@ func (lm *Manager) fileLockToPersisted(handleKey string, fl *FileLock) *Persiste
 		ShareName:         lm.shareName,
 		FileID:            handleKey,
 		OwnerID:           lockOwnerID(fl),
+		ClientID:          fl.ClientID,
 		LockType:          int(lockType),
 		Offset:            fl.Offset,
 		Length:            fl.Length,
@@ -1031,11 +1041,25 @@ func (lm *Manager) deleteFileLockLocked(fl *FileLock) *persistOp {
 
 // persistUnifiedLockLocked returns the deferred op that persists a unified
 // lock, or nil if persistence is disabled. Caller must hold lm.mu.
+//
+// The share name is stamped from lm.shareName rather than trusting the
+// producer's Owner.ShareName: NFSv4/NLM byte-range producers build LockOwner
+// with ShareName="" (the byte-range path never carries it), which would make
+// the lock invisible to the per-share recovery query (ListLocks{ShareName})
+// and silently drop it on restart. Since each Manager serves exactly one
+// share, lm.shareName is authoritative for every lock it holds; this matches
+// how the legacy byte-range path (fileLockToPersisted) already stamps it. The
+// override is skipped when lm.shareName is empty so a directly-constructed
+// manager preserves a producer-set Owner.ShareName.
 func (lm *Manager) persistUnifiedLockLocked(ul *UnifiedLock) *persistOp {
 	if lm.lockStore == nil {
 		return nil
 	}
-	return &persistOp{put: ToPersistedLock(ul, lm.epoch)}
+	pl := ToPersistedLock(ul, lm.epoch)
+	if lm.shareName != "" {
+		pl.ShareName = lm.shareName
+	}
+	return &persistOp{put: pl}
 }
 
 // deleteUnifiedLockLocked returns the deferred op that removes a persisted
@@ -1049,8 +1073,20 @@ func (lm *Manager) deleteUnifiedLockLocked(ul *UnifiedLock) *persistOp {
 
 // runPersistOp executes a single deferred lock-store mutation. MUST be called
 // AFTER lm.mu is released so backend IO never blocks the in-memory critical
-// section. Errors are logged and swallowed: an IO failure must not fail the
-// lock op, whose in-memory state is already authoritative.
+// section (MS-SMB2 lock paths are latency-sensitive; blocking Lock() on store
+// IO was the bug this deferral fixed).
+//
+// Persistence is BEST-EFFORT. The in-memory lock map is authoritative for the
+// running server, so a failed PutLock/DeleteLock must NOT fail the lock op —
+// the client is told the (advisory) lock is held and it is, in this process.
+// The only consequence of a failed persist is durability across restart:
+//   - failed PutLock  → the lock survives in memory but is lost on restart,
+//     after which a conflicting lock could be granted. The operator MUST treat
+//     these ERROR logs as a durability alarm.
+//   - failed DeleteLock → a released lock may resurrect on restart until the
+//     next successful overwrite/cleanup.
+//
+// Errors are logged at ERROR with file/owner context so they are observable.
 func (lm *Manager) runPersistOp(op *persistOp) {
 	if lm.lockStore == nil || op == nil {
 		return
@@ -1059,11 +1095,18 @@ func (lm *Manager) runPersistOp(op *persistOp) {
 	switch {
 	case op.put != nil:
 		if err := lm.lockStore.PutLock(ctx, op.put); err != nil {
-			logger.Error("failed to persist lock", "lockID", op.put.ID, "error", err)
+			logger.Error("lock persistence failed: lock held in memory but NOT durable across restart",
+				"lockID", op.put.ID,
+				"share", op.put.ShareName,
+				"fileID", op.put.FileID,
+				"ownerID", op.put.OwnerID,
+				"error", err)
 		}
 	case op.del != "":
 		if err := lm.lockStore.DeleteLock(ctx, op.del); err != nil {
-			logger.Error("failed to delete persisted lock", "lockID", op.del, "error", err)
+			logger.Error("lock-delete persistence failed: released lock may resurrect on restart",
+				"lockID", op.del,
+				"error", err)
 		}
 	}
 }
@@ -1113,6 +1156,7 @@ func fileLockFromPersisted(pl *PersistedLock) FileLock {
 		Exclusive:  LockType(pl.LockType) == LockTypeExclusive,
 		IsZeroByte: pl.IsZeroByte,
 		AcquiredAt: pl.AcquiredAt,
+		ClientID:   pl.ClientID,
 		persistID:  pl.ID,
 	}
 	if sid, ok := sessionIDFromOwnerID(pl.OwnerID); ok {
@@ -1278,9 +1322,14 @@ func SplitLock(existing *UnifiedLock, unlockOffset, unlockLength uint64) []*Unif
 
 	var result []*UnifiedLock
 
+	// Each fragment is a distinct lock and MUST get a fresh ID. Clone() copies
+	// the original's ID verbatim, so two fragments would otherwise share one
+	// persist identity — the second PutLock would overwrite the first (the
+	// store is keyed by ID), silently losing one byte-range across a restart.
 	// Check if there's a portion before the unlock range
 	if unlockOffset > existing.Offset {
 		beforeLock := existing.Clone()
+		beforeLock.ID = uuid.New().String()
 		beforeLock.Length = unlockOffset - existing.Offset
 		result = append(result, beforeLock)
 	}
@@ -1288,6 +1337,7 @@ func SplitLock(existing *UnifiedLock, unlockOffset, unlockLength uint64) []*Unif
 	// Check if there's a portion after the unlock range
 	if unlockEnd < lockEnd {
 		afterLock := existing.Clone()
+		afterLock.ID = uuid.New().String()
 		afterLock.Offset = unlockEnd
 		if existing.Length == 0 {
 			// Original was unbounded, after portion is also unbounded

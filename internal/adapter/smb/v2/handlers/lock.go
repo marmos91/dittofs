@@ -460,9 +460,14 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			failImmediately := (lockElem.Flags & SMB2LockFlagFailImmediately) != 0
 
 			fileLock := metadata.FileLock{
-				ID:         0, // SMB doesn't use lock IDs in this implementation
-				SessionID:  ctx.SessionID,
-				OpenID:     openID,
+				ID:        0, // SMB doesn't use lock IDs in this implementation
+				SessionID: ctx.SessionID,
+				OpenID:    openID,
+				// ClientID matches the identity SMB session teardown passes to
+				// RemoveClientLocks ("smb:{SessionID}") so a disconnecting
+				// client's persisted byte-range locks are purged rather than
+				// resurrected on the next restart.
+				ClientID:   fmt.Sprintf("smb:%d", ctx.SessionID),
 				Offset:     lockElem.Offset,
 				Length:     lockElem.Length,
 				Exclusive:  isExclusive,

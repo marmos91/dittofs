@@ -233,6 +233,141 @@ func TestLock_ZeroByteLockPreservesIsZeroByte(t *testing.T) {
 	require.True(t, restored[0].IsZeroByte, "restored lock must remain zero-byte, not to-EOF")
 }
 
+// TestRemoveUnifiedLock_SplitFragmentsPersistIndependently pins R1: when a
+// partial unlock splits a unified byte-range lock into two fragments, each
+// fragment must persist under a DISTINCT id. SplitLock previously cloned the
+// original ID verbatim into both fragments, so the second PutLock overwrote
+// the first (store keyed by ID) and one byte-range was silently lost on
+// restart — allowing a conflicting write.
+func TestRemoveUnifiedLock_SplitFragmentsPersistIndependently(t *testing.T) {
+	ctx := context.Background()
+	store := newMockLockStore()
+
+	mgr := NewManager()
+	mgr.SetLockStore(store)
+	mgr.SetShareName("share-a")
+
+	const handleKey = "share-a:file-split"
+	owner := LockOwner{OwnerID: "nlm:client-z", ClientID: "client-z", ShareName: "share-a"}
+	ul := &UnifiedLock{
+		ID:         "unified-split",
+		Owner:      owner,
+		FileHandle: FileHandle(handleKey),
+		Offset:     0,
+		Length:     100,
+		Type:       LockTypeExclusive,
+	}
+	require.NoError(t, mgr.AddUnifiedLock(handleKey, ul))
+
+	// Unlock the middle [40,60) -> fragments [0,40) and [60,100).
+	require.NoError(t, mgr.RemoveUnifiedLock(handleKey, owner, 40, 20))
+
+	// Both fragments must survive in memory and in the store as DISTINCT records.
+	require.Len(t, mgr.ListUnifiedLocks(handleKey), 2, "split must yield two in-memory fragments")
+
+	persisted, err := store.ListLocks(ctx, LockQuery{ShareName: "share-a"})
+	require.NoError(t, err)
+	require.Len(t, persisted, 2, "both split fragments must persist under distinct ids")
+
+	ids := map[string]bool{}
+	for _, pl := range persisted {
+		ids[pl.ID] = true
+	}
+	require.Len(t, ids, 2, "fragment ids must be distinct")
+
+	// After restart, both byte-ranges must still conflict-check.
+	fresh := NewManager()
+	fresh.SetLockStore(store)
+	require.NoError(t, fresh.RestoreLocks(persisted))
+	restored := fresh.ListUnifiedLocks(handleKey)
+	require.Len(t, restored, 2, "both fragments must restore after a restart")
+
+	var ranges [][2]uint64
+	for _, r := range restored {
+		ranges = append(ranges, [2]uint64{r.Offset, r.Length})
+	}
+	require.ElementsMatch(t, [][2]uint64{{0, 40}, {60, 40}}, ranges,
+		"restored fragments must be [0,40) and [60,100)")
+}
+
+// TestAddUnifiedLock_StampsManagerShareName pins R2: NFSv4/NLM producers build
+// LockOwner with ShareName="" (the byte-range path never carries it). The
+// manager must stamp its own share name at persist time so the per-share
+// recovery query (ListLocks{ShareName}) finds the lock on restart. Without
+// this, NFSv4 byte-range locks were silently dropped after a restart.
+func TestAddUnifiedLock_StampsManagerShareName(t *testing.T) {
+	ctx := context.Background()
+	store := newMockLockStore()
+
+	mgr := NewManager()
+	mgr.SetLockStore(store)
+	mgr.SetShareName("share-x")
+
+	const handleKey = "share-x:file-nfs4"
+	// Mimic the NFSv4 acquireLock producer: ShareName intentionally empty.
+	ul := &UnifiedLock{
+		ID: "nfs4-lock-1",
+		Owner: LockOwner{
+			OwnerID:   "nfs4:1:deadbeef",
+			ClientID:  "nfs4:1",
+			ShareName: "",
+		},
+		FileHandle: FileHandle(handleKey),
+		Offset:     0,
+		Length:     0,
+		Type:       LockTypeExclusive,
+	}
+	require.NoError(t, mgr.AddUnifiedLock(handleKey, ul))
+
+	// The per-share recovery query must find it.
+	persisted, err := store.ListLocks(ctx, LockQuery{ShareName: "share-x"})
+	require.NoError(t, err)
+	require.Len(t, persisted, 1, "lock must be persisted under the manager's share name")
+	require.Equal(t, "share-x", persisted[0].ShareName)
+
+	// End-to-end restore via the per-share query finds and restores it.
+	fresh := NewManager()
+	fresh.SetLockStore(store)
+	require.NoError(t, fresh.RestoreLocks(persisted))
+	require.Len(t, fresh.ListUnifiedLocks(handleKey), 1, "lock must restore after restart")
+}
+
+// TestLock_StampsClientIDForCleanup pins R3: SMB byte-range locks must persist
+// a ClientID that DeleteLocksByClient (RemoveClientLocks) will match. Without
+// it, a disconnecting client's persisted byte-range rows survived forever and
+// resurrected on the next restart, blocking legitimate IO.
+func TestLock_StampsClientIDForCleanup(t *testing.T) {
+	ctx := context.Background()
+	store := newMockLockStore()
+
+	mgr := NewManager()
+	mgr.SetLockStore(store)
+	mgr.SetShareName("share-a")
+
+	const handleKey = "share-a:file-client"
+	fl := FileLock{
+		SessionID: 7,
+		OpenID:    "open-1",
+		ClientID:  "smb:7",
+		Offset:    0,
+		Length:    10,
+		Exclusive: true,
+	}
+	require.NoError(t, mgr.Lock(handleKey, fl))
+
+	persisted, err := store.ListLocks(ctx, LockQuery{ShareName: "share-a"})
+	require.NoError(t, err)
+	require.Len(t, persisted, 1)
+	require.Equal(t, "smb:7", persisted[0].ClientID, "byte-range lock must persist its client id")
+
+	// Client disconnect: RemoveClientLocks must purge the persisted row.
+	mgr.RemoveClientLocks("smb:7")
+
+	persisted, err = store.ListLocks(ctx, LockQuery{})
+	require.NoError(t, err)
+	require.Empty(t, persisted, "DeleteLocksByClient must match and remove the byte-range lock")
+}
+
 // TestRestoreLocks_ByteRangeEnforcedAfterRestart verifies HIGH-5: byte-range
 // locks restored after a restart must be enforced by the legacy byte-range ops
 // (TestLock / CheckForIO), which consult lm.locks — not lm.unifiedLocks.
