@@ -117,6 +117,13 @@ func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata
 	// existing root in place (no orphaned inode).
 
 	// Duplicate detection: a share is "created" once its root inode exists.
+	// This read is the common-case fast path; it is not the integrity
+	// authority. Two creators racing the same name both pass this check and
+	// reach CreateRootDirectory, but the partial unique index
+	// unique_share_path_hash_active on files(share_name, path_hash) admits
+	// only one root inode at path "/" — the loser's insert fails rather than
+	// silently orphaning an inode. (Production also serializes share creation
+	// upstream in the control plane.)
 	if existing, err := s.getExistingRootDirectory(ctx, share.Name); err == nil && existing != nil {
 		return &metadata.StoreError{
 			Code:    metadata.ErrAlreadyExists,
