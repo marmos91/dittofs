@@ -103,10 +103,13 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 	// Convert file handle
 	handle := req.Lock.FH
 
-	// Build lock owner
+	// Build lock owner. ClientID is the NSM caller_name (stable client hostname),
+	// NOT the transport address: it is the identity key for grace-period reclaim
+	// tracking and for NSM crash cleanup (FREE_ALL / SM_NOTIFY carry caller_name,
+	// and a reconnecting client's transport port differs after a restart).
 	owner := lock.LockOwner{
 		OwnerID:  ownerID,
-		ClientID: ctx.ClientAddr,
+		ClientID: req.Lock.CallerName,
 	}
 
 	// Call NLMService to acquire lock (cross-protocol lease checks happen at lock manager level)

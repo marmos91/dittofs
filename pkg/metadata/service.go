@@ -185,6 +185,11 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 	// Re-check: another caller may have raced us to register this share while
 	// we recovered outside the lock. First publisher wins; drop our manager.
 	if _, exists := s.lockManagers[shareName]; exists {
+		// Our manager may have armed a grace timer above. It was never
+		// published, so abort that timer without firing onGraceEnd — letting it
+		// run would sweep the surviving manager's locks from the shared store
+		// and prematurely end the NFSv4 grace machine.
+		lm.AbortGracePeriod()
 		return nil
 	}
 	s.lockManagers[shareName] = lm

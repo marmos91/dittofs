@@ -244,7 +244,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Write PID file if specified
 	if pidFile != "" {
-		if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
+		if err := os.WriteFile(pidFile, fmt.Appendf(nil, "%d", os.Getpid()), 0644); err != nil {
 			return fmt.Errorf("failed to write PID file: %w", err)
 		}
 		defer func() { _ = os.Remove(pidFile) }()

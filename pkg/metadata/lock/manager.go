@@ -2595,6 +2595,18 @@ func (lm *Manager) ExitGracePeriod() {
 	}
 }
 
+// AbortGracePeriod cancels a pending grace timer WITHOUT firing the onGraceEnd
+// callback. Used to discard a manager that lost a registration race: its
+// orphaned timer must never run, because onGraceEnd sweeps the shared lock
+// store (RemoveClientLocks) and ends the surviving NFSv4 grace machine — both
+// would corrupt the published manager's state. If no grace period manager is
+// configured, this is a no-op.
+func (lm *Manager) AbortGracePeriod() {
+	if lm.gracePeriod != nil {
+		lm.gracePeriod.Close()
+	}
+}
+
 // IsOperationAllowed checks if a lock operation is allowed in the current state.
 // If no grace period manager is configured, all operations are allowed.
 func (lm *Manager) IsOperationAllowed(op Operation) (bool, error) {

@@ -32,6 +32,31 @@ func TestGracePeriod_EarlyExitWhenAllReclaim(t *testing.T) {
 	}
 }
 
+// TestAbortGracePeriod_StopsTimerWithoutCallback pins the dropped-loser fix: a
+// manager that loses a registration race must abort its armed grace timer
+// WITHOUT firing onGraceEnd. If onGraceEnd ran on the orphan it would sweep the
+// shared lock store (RemoveClientLocks) and end the surviving NFSv4 grace
+// machine. AbortGracePeriod must leave the manager in normal state and never
+// invoke the callback even after the original duration elapses.
+func TestAbortGracePeriod_StopsTimerWithoutCallback(t *testing.T) {
+	fired := make(chan struct{}, 1)
+	gpm := NewGracePeriodManager(20*time.Millisecond, func() { fired <- struct{}{} })
+	lm := NewManagerWithGracePeriod(gpm)
+
+	lm.EnterGracePeriod([]string{"client-1"})
+	require.True(t, lm.IsInGracePeriod(), "grace must be active after EnterGracePeriod")
+
+	lm.AbortGracePeriod()
+	require.False(t, lm.IsInGracePeriod(), "AbortGracePeriod must leave the manager out of grace")
+
+	select {
+	case <-fired:
+		t.Fatal("onGraceEnd fired after AbortGracePeriod; orphan timer would corrupt the surviving manager")
+	case <-time.After(80 * time.Millisecond):
+		// Timer never fired the callback — correct.
+	}
+}
+
 // TestReclaimLease_MarksClientReclaimed pins Phase-2 item 4 (SMB side): a
 // successful lease reclaim during grace must MarkReclaimed the owning client so
 // grace can exit early once every expected client has recovered.
