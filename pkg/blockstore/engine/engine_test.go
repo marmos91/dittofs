@@ -61,6 +61,9 @@ func (s *stubFileBlockStore) IncrementRefCount(_ context.Context, _ string) erro
 func (s *stubFileBlockStore) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
+func (s *stubFileBlockStore) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
+	return 0, nil
+}
 func (s *stubFileBlockStore) AddRef(_ context.Context, h blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
 	// bump RefCount on any row indexed by hash. The stub
 	// holds blocks keyed by id but each row carries a Hash field, so

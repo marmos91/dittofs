@@ -44,6 +44,11 @@ func (f *fakeCoordinator) DecrementRefCount(_ context.Context, hash blockstore.C
 	return 0, nil
 }
 
+func (f *fakeCoordinator) DecrementRefCountAndReap(_ context.Context, hash blockstore.ContentHash) (uint32, error) {
+	f.decrementCalls = append(f.decrementCalls, hash)
+	return 0, nil
+}
+
 func (f *fakeCoordinator) PersistFileBlocks(_ context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error {
 	f.persistCalls = append(f.persistCalls, persistCall{payloadID: payloadID, blocks: blocks, objectID: objectID})
 	return nil

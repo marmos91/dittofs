@@ -127,9 +127,12 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 		kept = make([]blockstore.BlockRef, 0, len(currentBlocks))
 		for _, b := range currentBlocks {
 			if b.Offset >= newSize {
-				// Block fully past newSize — drop it.
+				// Block fully past newSize — drop it. Reap at RefCount 0 so
+				// the hash leaves EnumerateFileBlocks and the GC sweep can
+				// reclaim the remote chunk (otherwise truncated tail chunks
+				// leak on the remote forever — #832).
 				if bs.coordinator != nil {
-					if _, err := bs.coordinator.DecrementRefCount(ctx, b.Hash); err != nil {
+					if _, err := bs.coordinator.DecrementRefCountAndReap(ctx, b.Hash); err != nil {
 						return currentBlocks, fmt.Errorf("decrement refcount on truncate-drop %s: %w", b.Hash.String(), err)
 					}
 				}
@@ -217,7 +220,10 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []blocksto
 	var coordErr error
 	if len(blocks) > 0 && bs.coordinator != nil {
 		for _, b := range blocks {
-			newCount, err := bs.coordinator.DecrementRefCount(ctx, b.Hash)
+			// Reap at RefCount 0 so the hash leaves EnumerateFileBlocks and
+			// the GC sweep can reclaim the remote chunk (#832). Dedup-shared
+			// hashes (RefCount > 1) survive — only the last reference reaps.
+			newCount, err := bs.coordinator.DecrementRefCountAndReap(ctx, b.Hash)
 			if err != nil {
 				if coordErr == nil {
 					coordErr = fmt.Errorf("decrement refcount on delete %s: %w", b.Hash.String(), err)

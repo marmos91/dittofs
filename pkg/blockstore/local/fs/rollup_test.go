@@ -635,6 +635,9 @@ func (p *programmableFBS) IncrementRefCount(ctx context.Context, id string) erro
 func (p *programmableFBS) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
 	return p.inner.DecrementRefCount(ctx, id)
 }
+func (p *programmableFBS) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
+	return p.inner.DecrementRefCountAndReap(ctx, id)
+}
 func (p *programmableFBS) AddRef(ctx context.Context, h blockstore.ContentHash, payloadID string, ref blockstore.BlockRef) error {
 	p.addRefCalls.Add(1)
 	if p.addRefOverride != nil {

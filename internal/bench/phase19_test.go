@@ -232,6 +232,9 @@ func (s *aggregateStubFileBlockStore) IncrementRefCount(_ context.Context, _ str
 func (s *aggregateStubFileBlockStore) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
+func (s *aggregateStubFileBlockStore) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
+	return 0, nil
+}
 func (s *aggregateStubFileBlockStore) AddRef(_ context.Context, h blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

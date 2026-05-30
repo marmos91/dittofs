@@ -12,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -110,6 +111,26 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		}
 	}
 
+	// 7a. On a size-down, capture the file's PRE-truncate FileAttr.Blocks so
+	// the block store can reap RefCount on dropped chunks after the metadata
+	// write (#832). Fetched BEFORE SetFileAttributes prunes FileAttr.Blocks.
+	// preTruncateBlocks stays nil unless this is a genuine shrink, so the
+	// reclaim below is skipped for grows / no-ops.
+	var (
+		preTruncateBlocks []blockstore.BlockRef
+		preTruncatePID    metadata.PayloadID
+		newSize           uint64
+	)
+	if setAttrs.Size != nil {
+		if cur, getErr := metaSvc.GetFile(ctx.Context, metadata.FileHandle(ctx.CurrentFH)); getErr == nil && cur != nil {
+			if *setAttrs.Size < cur.Size && cur.PayloadID != "" {
+				preTruncateBlocks = cur.Blocks
+				preTruncatePID = cur.PayloadID
+				newSize = *setAttrs.Size
+			}
+		}
+	}
+
 	// 7. Apply attributes via MetadataService (all-or-nothing semantics)
 	if err := metaSvc.SetFileAttributes(authCtx, metadata.FileHandle(ctx.CurrentFH), setAttrs); err != nil {
 		nfsStatus := common.MapToNFS4(err)
@@ -124,6 +145,23 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 			Status: nfsStatus,
 			OpCode: types.OP_SETATTR,
 			Data:   encodeSetAttrError(nfsStatus),
+		}
+	}
+
+	// 7b. Reclaim block-store space on size-down truncation. Mirror the v3
+	// SETATTR / CREATE-with-truncate path: drive blockStore.Truncate with the
+	// pre-truncate FileAttr.Blocks snapshot so the engine reaps RefCount on
+	// every dropped block and the GC sweep can reclaim the remote chunks
+	// (#832). Best-effort: a failure is logged but does not fail the
+	// already-committed metadata update. Handler coordinates metaSvc +
+	// blockStore exactly as the WRITE path does (invariants #1/#5).
+	if preTruncateBlocks != nil {
+		if blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH)); bsErr != nil {
+			logger.Warn("NFSv4 SETATTR: cannot resolve block store for truncate reclaim",
+				"handle", string(ctx.CurrentFH), "error", bsErr)
+		} else if _, tErr := blockStore.Truncate(ctx.Context, string(preTruncatePID), preTruncateBlocks, newSize); tErr != nil {
+			logger.Warn("NFSv4 SETATTR: block store truncate reclaim failed",
+				"handle", string(ctx.CurrentFH), "size", newSize, "error", tErr)
 		}
 	}
 

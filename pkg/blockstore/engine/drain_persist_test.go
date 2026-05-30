@@ -54,6 +54,17 @@ func (c *testCoordinator) DecrementRefCount(ctx context.Context, hash blockstore
 	return c.store.DecrementRefCount(ctx, fb.ID)
 }
 
+func (c *testCoordinator) DecrementRefCountAndReap(ctx context.Context, hash blockstore.ContentHash) (uint32, error) {
+	fb, err := c.store.GetByHash(ctx, hash)
+	if err != nil {
+		return 0, err
+	}
+	if fb == nil {
+		return 0, nil
+	}
+	return c.store.DecrementRefCountAndReap(ctx, fb.ID)
+}
+
 func (c *testCoordinator) PersistFileBlocks(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error {
 	return c.store.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		file, err := tx.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))

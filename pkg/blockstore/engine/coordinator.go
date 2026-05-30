@@ -35,9 +35,17 @@ type MetadataCoordinator interface {
 	IncrementRefCount(ctx context.Context, hash blockstore.ContentHash) error
 
 	// DecrementRefCount atomically decrements; returns the new count.
-	// Engine invokes this from Delete (per hash in the BlockRef list)
-	// and Truncate (per hash dropped past the new size).
+	// Engine invokes this from dedup/rollback bookkeeping. Plain decrement
+	// — the FileBlock index row survives at RefCount 0.
 	DecrementRefCount(ctx context.Context, hash blockstore.ContentHash) (uint32, error)
+
+	// DecrementRefCountAndReap atomically decrements and, when the new count
+	// is 0, deletes the FileBlock index row so its hash leaves
+	// EnumerateFileBlocks and the GC mark-sweep can reclaim the remote chunk.
+	// Engine invokes this from Delete (per hash in the BlockRef list) and
+	// Truncate (per hash dropped past the new size) — the reclaim path.
+	// Returns the new count (0 when reaped or when the hash had no row).
+	DecrementRefCountAndReap(ctx context.Context, hash blockstore.ContentHash) (uint32, error)
 
 	// PersistFileBlocks updates FileAttr.Blocks AND FileAttr.ObjectID
 	// for a given file in a single metadata txn. Engine invokes this

@@ -62,6 +62,31 @@ func (c *refcountCoordinator) DecrementRefCount(_ context.Context, hash blocksto
 	return cur, nil
 }
 
+// DecrementRefCountAndReap mirrors DecrementRefCount (including the
+// single-shot error injection) and reaps the map entry when the count hits 0,
+// matching the backend reap semantics the engine reclaim path now relies on.
+func (c *refcountCoordinator) DecrementRefCountAndReap(_ context.Context, hash blockstore.ContentHash) (uint32, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.decrementErr != nil && c.decrementErrHash == hash {
+		err := c.decrementErr
+		c.decrementErr = nil
+		return 0, err
+	}
+	cur := c.counts[hash]
+	if cur == 0 {
+		delete(c.counts, hash)
+		return 0, nil
+	}
+	cur--
+	if cur == 0 {
+		delete(c.counts, hash)
+		return 0, nil
+	}
+	c.counts[hash] = cur
+	return cur, nil
+}
+
 func (c *refcountCoordinator) PersistFileBlocks(_ context.Context, _ string, _ []blockstore.BlockRef, _ blockstore.ObjectID) error {
 	return nil
 }

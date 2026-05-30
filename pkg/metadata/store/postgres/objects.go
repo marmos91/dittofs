@@ -160,6 +160,55 @@ func (s *PostgresMetadataStore) DecrementRefCount(ctx context.Context, id string
 	return newCount, nil
 }
 
+// DecrementRefCountAndReap atomically decrements ref_count and, when it hits 0,
+// deletes the row — both statements run inside ONE transaction so the
+// decrement-and-reap is atomic and TOCTOU-free against a concurrent AddRef
+// (which takes the same row lock). The conditional `ref_count = 0` predicate on
+// the DELETE means a concurrent bump that landed between the two statements
+// (impossible within the row lock, but defended anyway) leaves the row alive.
+// Returns (0, nil) when the row is already absent — a swept row is not a caller
+// error.
+func (s *PostgresMetadataStore) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
+	tx, err := s.beginTx(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("decrement-and-reap begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	newCount, err := decrementAndReapTx(ctx, tx, id)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("decrement-and-reap commit: %w", err)
+	}
+	return newCount, nil
+}
+
+// decrementAndReapTx runs the -1 UPDATE then a conditional DELETE on the given
+// pgx.Tx. Shared by the pool-backed store method and the postgresTransaction
+// method so both surfaces behave identically. Returns ErrFileBlockNotFound
+// mapped to (0, nil) — i.e. a missing row is tolerated.
+func decrementAndReapTx(ctx context.Context, tx pgx.Tx, id string) (uint32, error) {
+	var newCount uint32
+	err := tx.QueryRow(ctx,
+		`UPDATE file_blocks SET ref_count = GREATEST(ref_count - 1, 0) WHERE id = $1 RETURNING ref_count`,
+		id).Scan(&newCount)
+	if err == pgx.ErrNoRows {
+		return 0, nil // tolerate already-swept row
+	}
+	if err != nil {
+		return 0, fmt.Errorf("decrement ref count: %w", err)
+	}
+	if newCount == 0 {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM file_blocks WHERE id = $1 AND ref_count = 0`, id); err != nil {
+			return 0, fmt.Errorf("reap zero-ref block: %w", err)
+		}
+	}
+	return newCount, nil
+}
+
 // AddRef atomically bumps RefCount on the FileBlock row(s) indexed by
 // the given content hash. Implements the FileBlockStore.AddRef contract
 // used by the in-memory hash dedup LRU hit path to
@@ -526,6 +575,16 @@ func (tx *postgresTransaction) DecrementRefCount(ctx context.Context, id string)
 		return 0, fmt.Errorf("decrement ref count: %w", err)
 	}
 	return newCount, nil
+}
+
+// DecrementRefCountAndReap runs the -1 UPDATE + reap-at-zero DELETE on the
+// active pgx.Tx so a subsequent rollback undoes both. Returns (0, nil) when the
+// row is already absent.
+func (tx *postgresTransaction) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return decrementAndReapTx(ctx, tx.tx, id)
 }
 
 // AddRef runs the +1 UPDATE keyed by hash on the active pgx.Tx so a

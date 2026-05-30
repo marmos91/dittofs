@@ -174,6 +174,132 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("PutGet_PendingHashRoundTrips", func(t *testing.T) {
 		testPutGet_PendingHashRoundTrips(t, factory)
 	})
+
+	// DecrementRefCountAndReap is the engine Delete/Truncate reclaim path
+	// (#832): once a hash has no live references its FileBlock index row is
+	// deleted in the same critical section as the decrement, so the hash
+	// leaves EnumerateFileBlocks and the GC sweep can collect the remote
+	// chunk. Three cases pin the contract across all backends: reap-at-zero
+	// (row + hash index gone), survive-when-still-referenced, and
+	// tolerate-missing-row.
+	t.Run("DecrementRefCountAndReap", func(t *testing.T) {
+		testDecrementRefCountAndReap(t, factory)
+	})
+}
+
+// testDecrementRefCountAndReap pins the DecrementRefCountAndReap contract:
+//
+//	(a) refcount 1 → reap: returns 0, GetByHash==nil, GetFileBlock→NotFound.
+//	(b) refcount 2 → no reap: returns 1, row + hash index still present.
+//	(c) non-existent id → returns 0, nil (a swept row is not a caller error).
+func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
+	t.Helper()
+
+	// (a) refcount 1: the decrement drops to 0 → the row is reaped.
+	t.Run("ReapsAtZero", func(t *testing.T) {
+		store := factory(t)
+		ctx := t.Context()
+		legacy := asLegacy(t, store)
+
+		hash := hashOfSeed("reap-at-zero")
+		fb := &blockstore.FileBlock{
+			ID:            "file-reap/0",
+			Hash:          hash,
+			State:         blockstore.BlockStateRemote,
+			BlockStoreKey: blockstore.FormatCASKey(hash),
+			LocalPath:     "/cache/reap0",
+			DataSize:      4096,
+			RefCount:      1,
+			LastAccess:    time.Now(),
+			CreatedAt:     time.Now(),
+		}
+		if err := store.Put(ctx, fb); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+
+		got, err := store.DecrementRefCountAndReap(ctx, fb.ID)
+		if err != nil {
+			t.Fatalf("DecrementRefCountAndReap: %v", err)
+		}
+		if got != 0 {
+			t.Errorf("new count = %d, want 0 (reaped)", got)
+		}
+
+		// Hash index entry must be gone: GetByHash returns (nil, nil).
+		byHash, err := store.GetByHash(ctx, hash)
+		if err != nil {
+			t.Fatalf("GetByHash post-reap: %v", err)
+		}
+		if byHash != nil {
+			t.Errorf("GetByHash returned %+v after reap; want nil (hash index entry must be gone so the hash leaves EnumerateFileBlocks)", byHash)
+		}
+
+		// The row itself must be gone: GetFileBlock → ErrFileBlockNotFound.
+		if _, err := legacy.GetFileBlock(ctx, fb.ID); !errors.Is(err, metadata.ErrFileBlockNotFound) {
+			t.Errorf("GetFileBlock post-reap err = %v; want ErrFileBlockNotFound (row reaped)", err)
+		}
+	})
+
+	// (b) refcount 2: the decrement leaves 1 → the row survives.
+	t.Run("SurvivesWhenStillReferenced", func(t *testing.T) {
+		store := factory(t)
+		ctx := t.Context()
+		legacy := asLegacy(t, store)
+
+		hash := hashOfSeed("reap-survives")
+		fb := &blockstore.FileBlock{
+			ID:            "file-survive/0",
+			Hash:          hash,
+			State:         blockstore.BlockStateRemote,
+			BlockStoreKey: blockstore.FormatCASKey(hash),
+			LocalPath:     "/cache/survive0",
+			DataSize:      4096,
+			RefCount:      1,
+			LastAccess:    time.Now(),
+			CreatedAt:     time.Now(),
+		}
+		if err := store.Put(ctx, fb); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		// Second reference (refcount 1 → 2).
+		if err := store.IncrementRefCount(ctx, fb.ID); err != nil {
+			t.Fatalf("IncrementRefCount: %v", err)
+		}
+
+		got, err := store.DecrementRefCountAndReap(ctx, fb.ID)
+		if err != nil {
+			t.Fatalf("DecrementRefCountAndReap: %v", err)
+		}
+		if got != 1 {
+			t.Errorf("new count = %d, want 1 (still referenced — no reap)", got)
+		}
+
+		// Row + hash index must survive.
+		if _, err := legacy.GetFileBlock(ctx, fb.ID); err != nil {
+			t.Errorf("GetFileBlock after non-reap decrement: %v; want row still present", err)
+		}
+		byHash, err := store.GetByHash(ctx, hash)
+		if err != nil {
+			t.Fatalf("GetByHash after non-reap decrement: %v", err)
+		}
+		if byHash == nil {
+			t.Error("GetByHash returned nil after non-reap decrement; want the still-referenced row")
+		}
+	})
+
+	// (c) non-existent id: a swept row is not a caller error.
+	t.Run("ToleratesMissingRow", func(t *testing.T) {
+		store := factory(t)
+		ctx := t.Context()
+
+		got, err := store.DecrementRefCountAndReap(ctx, "file-never-existed/0")
+		if err != nil {
+			t.Fatalf("DecrementRefCountAndReap(missing) err = %v; want nil (tolerated)", err)
+		}
+		if got != 0 {
+			t.Errorf("DecrementRefCountAndReap(missing) count = %d, want 0", got)
+		}
+	})
 }
 
 // ============================================================================

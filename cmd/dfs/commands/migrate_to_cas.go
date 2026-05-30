@@ -384,6 +384,9 @@ func (nopFileBlockStore) IncrementRefCount(_ context.Context, _ string) error { 
 func (nopFileBlockStore) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
+func (nopFileBlockStore) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
+	return 0, nil
+}
 func (nopFileBlockStore) AddRef(_ context.Context, _ blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
 	// Migration path doesn't exercise the LRU hit path, so always
 	// returning ErrUnknownHash is safe — production callers fall back to

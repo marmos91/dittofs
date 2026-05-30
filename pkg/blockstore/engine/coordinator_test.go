@@ -18,6 +18,7 @@ type fakeCoordinator struct {
 
 	incHashes    []blockstore.ContentHash
 	decHashes    []blockstore.ContentHash
+	reapHashes   []blockstore.ContentHash
 	persistCalls []persistRecord
 
 	// Optional: failOnNthIncrement returns an error on the Nth (1-based)
@@ -109,6 +110,21 @@ func (f *fakeCoordinator) DecrementRefCount(_ context.Context, hash blockstore.C
 		return 0, errInducedDecrement
 	}
 	f.decHashes = append(f.decHashes, hash)
+	return 0, nil
+}
+
+// DecrementRefCountAndReap records reap-path invocations (engine Delete /
+// Truncate reclaim) separately from plain DecrementRefCount (dedup / rollback
+// bookkeeping) so tests can assert which path the engine took. Honours the same
+// failOnNthDecrement injection so rollback-on-error tests still fire.
+func (f *fakeCoordinator) DecrementRefCountAndReap(_ context.Context, hash blockstore.ContentHash) (uint32, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.decCallCount++
+	if f.failOnNthDecrement > 0 && f.decCallCount == f.failOnNthDecrement {
+		return 0, errInducedDecrement
+	}
+	f.reapHashes = append(f.reapHashes, hash)
 	return 0, nil
 }
 

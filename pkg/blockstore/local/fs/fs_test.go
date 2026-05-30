@@ -67,6 +67,11 @@ func (c *countingFileBlockStore) DecrementRefCount(ctx context.Context, id strin
 	return c.inner.DecrementRefCount(ctx, id)
 }
 
+func (c *countingFileBlockStore) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
+	c.decrementRefCount.Add(1)
+	return c.inner.DecrementRefCountAndReap(ctx, id)
+}
+
 func (c *countingFileBlockStore) AddRef(ctx context.Context, hash blockstore.ContentHash, payloadID string, blockRef blockstore.BlockRef) error {
 	c.addRef.Add(1)
 	return c.inner.AddRef(ctx, hash, payloadID, blockRef)

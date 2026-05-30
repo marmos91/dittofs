@@ -937,6 +937,23 @@ func (c *cascadeCoordinator) DecrementRefCount(_ context.Context, hash blockstor
 	return cur, nil
 }
 
+func (c *cascadeCoordinator) DecrementRefCountAndReap(_ context.Context, hash blockstore.ContentHash) (uint32, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cur := c.counts[hash]
+	if cur == 0 {
+		delete(c.counts, hash)
+		return 0, nil
+	}
+	cur--
+	if cur == 0 {
+		delete(c.counts, hash)
+		return 0, nil
+	}
+	c.counts[hash] = cur
+	return cur, nil
+}
+
 func (c *cascadeCoordinator) PersistFileBlocks(_ context.Context, _ string, _ []blockstore.BlockRef, _ blockstore.ObjectID) error {
 	return nil
 }

@@ -31,6 +31,9 @@ func (nopFBS) IncrementRefCount(_ context.Context, _ string) error { return nil 
 func (nopFBS) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
+func (nopFBS) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
+	return 0, nil
+}
 func (nopFBS) AddRef(_ context.Context, _ blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
 	// tests don't exercise the LRU hit path, so always
 	// returning ErrUnknownHash matches "hash never Put" — production
