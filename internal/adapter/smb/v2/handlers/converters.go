@@ -79,8 +79,28 @@ func isFiletimeSentinel(ft uint64) bool {
 }
 
 // calculateAllocationSize returns the size rounded up to the nearest cluster boundary.
+// The round-up addition is saturated: a client-controlled requested allocation
+// [MS-SMB2] 2.2.13 within clusterSize-1 of the uint64 max would otherwise wrap
+// to a small value, so such inputs clamp to the largest cluster-aligned uint64.
 func calculateAllocationSize(size uint64) uint64 {
+	const maxAligned = (^uint64(0) / clusterSize) * clusterSize
+	if size > maxAligned {
+		return maxAligned
+	}
 	return ((size + clusterSize - 1) / clusterSize) * clusterSize
+}
+
+// effectiveAllocationSize returns the allocation size to report for a file,
+// honouring a client-requested reservation [MS-SMB2] 2.2.13. It is the larger
+// of the file's own cluster-aligned size and the cluster-aligned requested
+// allocation, so an empty file opened with a non-zero requested allocation
+// reports a non-zero AllocationSize.
+func effectiveAllocationSize(size, requested uint64) uint64 {
+	alloc := calculateAllocationSize(size)
+	if reqAlloc := calculateAllocationSize(requested); reqAlloc > alloc {
+		return reqAlloc
+	}
+	return alloc
 }
 
 // getSMBSize returns the appropriate size for SMB reporting.
