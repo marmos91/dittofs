@@ -6,14 +6,16 @@
 **Scope**: `internal/adapter/nfs/`, `pkg/adapter/nfs/` — ~56K src LOC (measured; PLAN headline 52.9K was the Wave-0 estimate).
 **Cross-check refs**: RFC 1813 (v3), RFC 7530 (v4.0), RFC 8881 (v4.1), RFC 5531 (ONC RPC), RFC 2203 (RPCSEC_GSS), RFC 2623 (AUTH_SYS over NFS); Linux `fs/nfsd/`, `net/sunrpc/`.
 
-**Method**: 3 parallel read-only sub-audits on the highest-value, independent surfaces. Aux protocols (NLM/NSM/portmap/mount handlers ~6K) and v4 attrs/types (~8K) deferred to a 2nd batch.
+**Method**: 5 parallel read-only sub-audits across 2 batches. Batch 1: v3 handlers, v4 state machine, RPC/GSS. Batch 2: aux protocols (NLM/NSM/portmap) + v4 attrs/types/XDR. **Area #4 PR-A coverage now complete.**
 
 **Agent outputs** (raw findings, kept for provenance):
 - `_partial-a-v3.md` — NFSv3 handlers (12.5K) + mount handlers
 - `_partial-b-v4state.md` — NFSv4 state machine (7.7K) + v4/v4.1 OPEN/LOCK handlers
 - `_partial-c-rpcgss.md` — RPC framing + RPCSEC_GSS + AUTH_SYS + dispatch (3.9K)
+- `_partial-d-aux.md` — NLM (lockd 3.4K) + NSM (statd 1.7K) + portmap (1K)
+- `_partial-e-v4types.md` — v4 attrs/types/XDR wire encoding (~8K)
 
-This REVIEW.md consolidates and triages the three.
+This REVIEW.md consolidates and triages all five.
 
 ---
 
@@ -24,13 +26,17 @@ This REVIEW.md consolidates and triages the three.
 | A — v3 handlers | 3 | 6 | 4 |
 | B — v4 state machine | 7 | 7 | 4 |
 | C — RPC / GSS / auth | 3¹ | 6 | 5 |
-| **Total (post-triage)** | **13** | **19** | **13** |
+| D — NLM / NSM / portmap | 4 | 9 | 7 |
+| E — v4 attrs/types/XDR | 0 | 2 | 10 |
+| **Total (post-triage)** | **17** | **30** | **30** |
 
 ¹ C originally reported 4 HIGH; the AUTH_SYS-squash-bypass HIGH was **downgraded to RESOLVED** during triage (see §3).
 
 **Architecture invariants: clean.** All three sub-audits confirm handlers respect CLAUDE.md rules — business logic stays in `pkg/metadata`, `*metadata.AuthContext` is threaded everywhere, file handles are opaque (decode only for routing), WRITE follows Prepare→BlockStore→Commit. **Every HIGH is correctness / interop / security drift, not an invariant break.** The code is well-commented and cites RFCs heavily.
 
-**Verdict**: the NFSv4 **state machine** carries real v1.0-blocking integrity holes (share reservations are a silent no-op; a special stateid bypasses WRITE checks; both v4.0/v4.1 replay caches are broken). The **RPCSEC_GSS** path has a complete krb5 auth bypass. NFSv3 is the healthiest layer (interop/WCC drift only). Grade: **NEEDS-FIX** before tag — heavier than blockstore's PATCH.
+**Verdict**: the NFSv4 **state machine** carries real v1.0-blocking integrity holes (share reservations are a silent no-op; a special stateid bypasses WRITE checks; both v4.0/v4.1 replay caches are broken). The **RPCSEC_GSS** path has a complete krb5 auth bypass. The **NLM/NSM lock-recovery** half is unfinished (crashed-client locks held forever; grace plumbed but never enforced; statd SM_NOTIFY is an unauthenticated stub). The **v4 wire/XDR layer (E) is the healthiest sub-area** — zero HIGH, every alloc bounded, no short-read; only consolidation + idmap-symmetry work. Grade: **NEEDS-FIX** before tag — heavier than blockstore's PATCH.
+
+**Theme**: correctness *backbone* is sound (logic delegated to `pkg/metadata`, NLM uses the unified lock manager, wire decoding is DoS-safe). The holes cluster in (1) **security gates** (GSS header MIC, statd auth) and (2) **recovery/exactly-once** (v4 replay caches, v4/NLM grace + reclaim, crash cleanup, durable state). Both are exactly what "tests pass" misses.
 
 ---
 
@@ -64,6 +70,13 @@ This REVIEW.md consolidates and triages the three.
 - **H12 — No duplicate-request cache (DRC) for non-idempotent v3 ops.** No XID/reply cache anywhere in dispatch. Retried CREATE-excl/REMOVE/RENAME/LINK/MKDIR re-executes → spurious `EEXIST`/`ENOENT` to client (Linux `fs/nfsd/nfscache.c` exists for this). Fix: XID+checksum+srcaddr reply cache, or document the limitation.
 - **H13 — Default `MaxConnections = 0` (unlimited).** `pkg/adapter/nfs/adapter.go:236`. Each conn = a `Serve` goroutine + up to 1.25 MB fragment buffer + 100 in-flight → memory-exhaustion DoS. Fix: ship a sane default cap (e.g. 1024) + global in-flight-bytes budget.
 
+### NLM/NSM lock recovery + statd security (batch 2, sub-area D)
+
+- **H14 — NLM `handleClientCrash` is a no-op stub → crashed-client locks held forever.** `pkg/adapter/nfs/nlm.go:479`. Wired into both the NSM crash detector and FREE_ALL, but the body does nothing (`totalReleased` hard-coded 0; comment admits it). A crashed client's byte-range locks are never released → permanent deadlock of those ranges. Fix: prefix-scoped release (`nlm:{clientID}:`) across each share's lock manager + drain the blocking queue for affected files. **Boot-side own-reboot notify IS wired** — only the release side is missing.
+- **H15 — NLM grace built but never entered; `LockFileNLM` never consults it → `NLM4_DENIED_GRACE_PERIOD` unreachable, reclaim a no-op.** `pkg/adapter/nfs/nlm.go:74`, `pkg/metadata/lock/manager.go:2282`, `lock/grace.go`. Every lock Manager is constructed with `gracePeriod==nil` (no `NewGracePeriodManager`/`EnterGracePeriod` caller), AND `LockFileNLM` goes straight to `AddUnifiedLock` without `IsOperationAllowed`. So restart drops/strands every lock (compounds H14). Fix: construct managers with grace, `EnterGracePeriod` on boot seeded from persisted locks, gate `LockFileNLM` on `IsOperationAllowed`. **Interlocks with H8 (no durable v4 state) — same durable-lock-state gap spans v4 + NLM.**
+- **H16 — NSM SM_NOTIFY is an inert TODO stub with no sender authentication.** `nsm/handlers/notify.go:14`. Relay unimplemented (peer-reboot lock recovery broken today) AND no source-addr / monitored-host / privileged-port check (NSM procs are `NeedsAuth:false`). When the relay ships as-written this becomes the **classic statd spoofing primitive**: any reachable host forges `SM_NOTIFY mon_name=<victim>` → server drops victim's NLM locks → another client grabs the range → silent corruption. Fix: gate on monitored-list membership + source-addr match (or trusted-network bind) **before** implementing the relay; enforce monotonicity (H17).
+- **H17 — No SM_NOTIFY state-number monotonicity → replays re-trigger lock release.** `nsm/handlers/notify.go`, `nsm/handlers/mon.go:71`. No per-monitored-host last-seen state stored or compared; `Mon` records the *server's own* state, not the peer's. Replayed/duplicate NOTIFY re-fires release every time. Fix: store last-seen state per `mon_name`; act only when `incoming > stored`.
+
 ---
 
 ## 3. Triage downgrades / resolved during this pass
@@ -80,28 +93,38 @@ This REVIEW.md consolidates and triages the three.
 
 **C (RPC/GSS):** `ReadData` unchecked length→panic (`parser.go:129`); `reader.Read` instead of `io.ReadFull` in GSS decoders → silent short-read/zero-fill (`types.go:249`, `integrity.go:155`); multi-fragment RPC records not reassembled, `IsLast` never consulted (`connection.go:187`); krb5 mech OID skipped without validation (`framework.go:201`); AUTH_NULL verifier fallback on INIT MIC-compute failure (`dispatch.go:110`); per-call service downgrade logged not enforced (`framework.go:589`).
 
+**D (NLM/NSM/portmap):** blocking-grant drain races queue mutex + waiter starvation (`nlm.go:300`); NLM_GRANTED callback no retransmit/ack → single loss strands lock (`callback/client.go:53`); TEST/GRANTED holder drops svid/oh (`test.go:146`); CANCEL/GRANT cross-mutex race (`cancel.go:73`); callback port hard-coded 12049 ignores client-advertised port (`lock.go:234`); NSM server state in-memory only, resets to 1 each boot → cross-restart monotonicity broken (`nlm.go:438`); SM_MON/UNMON/UNMON_ALL accept any remote caller, not loopback-gated (`mon.go:18`); PMAP_DUMP unrestricted info-disclosure (`dump.go:9`); UDP DUMP unauthenticated amplification surface (`server.go:249`).
+
+**E (v4 types/XDR):** single global 1 MB opaque cap is right defense / wrong granularity — should be per-field (handle ≤128, owner ≤1024, token, payload) (`xdr/core/decode.go:33`); `v4/types` 32 files (~20 sub-100-LoC single-DTO) → collapse to ~6 op-family files, halves count, zero behavior change (`v4/types/`).
+
 ## 5. LOW findings
 
 **v3:** `truncateExistingFile` swallows truncate error → size/content divergence (`create.go:543`); READ doesn't clamp Count to rtmax (benign, file-size clamp covers it); WRITE always returns UNSTABLE (documented); cookieverf mismatch intentionally ignored (macOS Finder, documented).
 **v4:** downgrade/confirm replay synthesizes stateid; predictable time-based verifier fallback on crypto/rand fail (`manager.go:263`); 24-bit boot-epoch aliasing (`stateid.go:74`); missing v4.1 current-stateid sentinel (`types.go:193`).
 **C:** duplicate AUTH_UNIX parsers (`auth.go:117` vs `unix.go:123`); `ReadData` always-nil error contract; AUTH_SHORT/AUTH_DES advertised but unhandled → silent anonymous; GSS handle not connection-scoped; PROG vs PROC_UNAVAIL nit (`pkg/adapter/nfs/dispatch.go:194`).
+**D:** NLM `fh`/`oh`/`cookie` opaque not capped (`MaxOpaqueLen` defined unused, `nlm/xdr/decode.go:44`); NM_LOCK + async _MSG/_RES procs unimplemented (PROC_UNAVAIL); SHARE/UNSHARE always grant untracked (`share.go:89`); NSM callback `encodeStatus` hand-rolls padding (`nsm/callback/client.go:148`); portmap decoder accepts trailing garbage + no `prot` validation (`portmap/xdr/decode.go:14`).
+**E:** two bitmap impls / two caps (8 vs 256, `attrs/bitmap.go` vs `v4/types/session_common.go`); `resolveGroupString` skips idmap (asymmetric vs owner, `encode.go:718`); CHANGE attr from ctime nanos (`encode.go:511`); XDR padding-zero not validated (`xdr/core/decode.go:53`); trivial 1-line helper files (`xdr/utils.go`, `pointers.go`); missing supported_attrs↔encoder drift test + adversarial-length tests; pseudofs READDIR-encoding seam unverified.
 
 ## 6. Verified-correct (checked, no finding)
 
 RPC fragment-size bound (1.25 MB pre-alloc); AUTH_UNIX name/gid caps (≤255/≤16); all GSS opaque length caps (≤64K/≤1M); RPCSEC_GSS sequence-window replay bitmap (RFC 2203 §5.3.3.1); MAXSEQ → CTXPROBLEM; context Store-before-reply (Ganesha race avoided); krb5i/krb5p body MIC/Wrap + embedded seq_num dual-validate; program/version dispatch codes; v4 stale-stateid on boot-epoch change. v3 handlers respect all architecture invariants. v4.1 unaffected by the v4.0 replay bugs (uses slot table).
+**D positives**: portmap SET/UNSET localhost-gated (`IsLocalhost` threaded through dispatch); PMAP_CALLIT omitted (no reflection/amplification, test-pinned); NLM byte-range locking delegates to the unified `pkg/metadata/lock` manager with cross-protocol conflict detection; NLM owner identity uses full `caller_name+svid+oh` triple; blocking-grant queue + drain + GRANTED callback wired end-to-end; NSM `priv` fixed-16 + str caps; boot-side own-reboot notify wired.
+**E positives**: the **entire v4 wire/XDR layer is DoS-clean** — every `make([]T, count)` bounded before alloc (verified site-by-site); `io.ReadFull` throughout (no silent short-read); fattr4 SETATTR walks bits ascending + rejects non-writable; pseudofs fsid `(0,1)` + RWMutex concurrency correct; `nfs/types` is a proper protocol-DTO package (not a domain mirror).
 
 ## 7. Recommended PR-B shape
 
-Split into focused fix PRs (do **not** one-shot 13 HIGHs):
+Split into focused fix PRs (do **not** one-shot 17 HIGHs):
 1. **`v1.0/nfs-gss-fix`** — H1 (header MIC verify) + C-MED service-downgrade enforce + C-LOW handle scoping. **Security; highest priority.**
 2. **`v1.0/nfs-v4-shareres`** — H2 (share_deny) + H3 (all-ones stateid). Self-contained integrity fixes.
 3. **`v1.0/nfs-v4-replay`** — H4 + H5 + H6 (the three replay caches; shared mechanism).
 4. **`v1.0/nfs-v3-interop`** — H9 (WCC, store-contract change) + H10 (wtmax) + H11 (READDIRPLUS maxcount).
 5. **`v1.0/nfs-dos`** — H12 (DRC) + H13 (MaxConnections default).
-6. **H7 + H8 (grace/durability)** — file as a design issue (`v1.0-nfs-state-durability`); needs the persistence decision, not a quick fix.
+6. **`v1.0/nlm-crash-cleanup`** — H14 (crashed-client lock release). Self-contained; pairs with the durability issue below.
+7. **`v1.0/nsm-statd-auth`** — H16 (SM_NOTIFY sender auth + monitored-list gate) + H17 (state-number monotonicity). **Security; must land before the SM_NOTIFY relay is implemented.**
+8. **H7 + H8 + H15 (grace / durable lock state)** — file as ONE design issue (`v1.0-nfs-lock-durability`): v4 open/lock state + NLM grace/reclaim share the same root gap (no durable lock journal). Needs the persistence decision, not a quick fix.
 
 Each PR-B: apply HIGH → `code-simplifier` → `code-reviewer` → `go test -race` → verify. MED/LOW → backlog issues per area.
 
-## 8. Remaining audit gap (2nd batch)
+## 8. Audit coverage — COMPLETE
 
-Not yet audited: aux protocols (`nlm/`, `nsm/`, `portmap/`, `mount/handlers/` ~6K), v4 `attrs/` + `types/` (~8K), `pseudofs/`. Schedule a follow-up sub-audit before declaring area #4 PR-A fully complete.
+All of area #4 covered across 2 batches: v3 handlers + mount, v4 state machine + OPEN/LOCK handlers, v4.1 session handlers, RPC/RPCSEC_GSS/auth/dispatch, NLM (lockd), NSM (statd), portmap (rpcbind), v4 attrs/types/XDR, pseudofs. No remaining unaudited NFS surface. Cross-cutting follow-up flagged for the **metadata/permissions sub-audit (area #6)**: confirm every mutating v3 handler routes through `BuildAuthContextWithMapping` (§3).
