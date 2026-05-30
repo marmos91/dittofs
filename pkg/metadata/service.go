@@ -108,8 +108,10 @@ func (s *MetadataService) SetLockGracePeriod(d time.Duration) {
 }
 
 // SetGraceCoordinator registers the coordinator that couples lock-manager grace
-// with the NFSv4 StateManager grace machine. Must be called before
-// RegisterStoreForShare to participate in a given share's recovery.
+// with the NFSv4 StateManager grace machine. It may be installed after shares
+// register (the NFS adapter does so during SetRuntime): the grace-end callback
+// reads the coordinator live, and the adapter catches up the start side for
+// shares already in grace, so registration order does not matter.
 func (s *MetadataService) SetGraceCoordinator(c GraceCoordinator) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -164,7 +166,7 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 	// locks but not yet entered grace (it would admit a stealing new lock).
 	var lm *LockManager
 	if ls, ok := store.(lock.LockStore); ok {
-		lm = newGraceAwareLockManager(graceDuration, graceCoordinator)
+		lm = s.newGraceAwareLockManager(graceDuration)
 		lm.SetLockStore(ls)
 		lm.SetShareName(shareName)
 		expectedClients := initLockManagerFromStore(lm, ls, shareName)
@@ -261,14 +263,20 @@ func initLockManagerFromStore(lm *LockManager, ls lock.LockStore, shareName stri
 }
 
 // newGraceAwareLockManager builds a lock manager whose grace period sweeps any
-// locks left unreclaimed when the grace window ends and notifies the optional
+// locks left unreclaimed when the grace window ends and notifies the grace
 // coordinator so the NFSv4 StateManager grace machine exits in lockstep.
 //
 // The onGraceEnd callback is best-effort: a client that did not reclaim within
 // the window has its stale persisted+in-memory locks dropped (RemoveClientLocks),
 // matching the X/Open NLMv4 contract that unreclaimed state is forfeited once
 // grace ends.
-func newGraceAwareLockManager(duration time.Duration, coordinator GraceCoordinator) *LockManager {
+//
+// The coordinator is read LIVE from the service when the window ends, not
+// captured at construction: the NFS adapter installs it (SetGraceCoordinator)
+// during SetRuntime, which runs AFTER shares register at startup. A manager
+// built before the adapter exists must still notify the coordinator once it is
+// installed, or the v4 grace machine would never be ended in lockstep.
+func (s *MetadataService) newGraceAwareLockManager(duration time.Duration) *LockManager {
 	// lm and gpm are captured by the onGraceEnd closure below. The closure only
 	// runs after EnterGracePeriod arms the timer, by which point both are set.
 	var lm *LockManager
@@ -287,6 +295,9 @@ func newGraceAwareLockManager(duration time.Duration, coordinator GraceCoordinat
 				lm.RemoveClientLocks(c)
 			}
 		}
+		s.mu.RLock()
+		coordinator := s.graceCoordinator
+		s.mu.RUnlock()
 		if coordinator != nil {
 			coordinator.OnLockGraceEnd()
 		}

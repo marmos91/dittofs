@@ -133,3 +133,40 @@ func TestGracePeriod_BothMachinesEnterTogether(t *testing.T) {
 	require.True(t, secondMachineActive,
 		"the second grace machine must enter grace together with the lock manager")
 }
+
+// TestGracePeriod_EndNotifiesCoordinatorInstalledAfterRegistration pins the
+// production wiring order: shares register at startup BEFORE the NFS adapter
+// installs the grace coordinator (during SetRuntime). A lock manager built with
+// no coordinator must still notify the coordinator when its grace window ends,
+// or the NFSv4 grace machine would never be ended in lockstep. The grace-end
+// callback therefore reads the coordinator live rather than capturing it at
+// construction.
+func TestGracePeriod_EndNotifiesCoordinatorInstalledAfterRegistration(t *testing.T) {
+	const shareName = "/coord-late"
+	store := memory.NewMemoryMetadataStoreWithDefaults()
+	persistNLMLock(t, store, shareName, "client-1")
+
+	// Register the store FIRST — no coordinator installed yet (startup order).
+	svc := metadata.New()
+	require.NoError(t, svc.RegisterStoreForShare(shareName, store))
+
+	lm := svc.GetLockManagerForShare(shareName)
+	require.NotNil(t, lm)
+	require.True(t, lm.IsInGracePeriod(), "lock-manager grace must be active")
+
+	// Install the coordinator AFTER the manager was built (adapter SetRuntime).
+	coord := &graceSpyCoordinator{
+		started: make(chan []string, 1),
+		ended:   make(chan struct{}, 1),
+	}
+	svc.SetGraceCoordinator(coord)
+
+	// End grace by reclaiming the sole expected client (synchronous early exit).
+	lm.MarkReclaimed("client-1")
+
+	select {
+	case <-coord.ended:
+	case <-time.After(time.Second):
+		t.Fatal("OnLockGraceEnd was not fired for a coordinator installed after the manager was built")
+	}
+}
