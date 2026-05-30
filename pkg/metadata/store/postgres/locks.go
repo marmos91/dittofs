@@ -41,8 +41,9 @@ func newPostgresLockStore(pool *pgxpool.Pool) *postgresLockStore {
 func (s *postgresLockStore) PutLock(ctx context.Context, lk *lock.PersistedLock) error {
 	query := `
 		INSERT INTO locks (id, share_name, file_id, owner_id, client_id, lock_type,
-		                   byte_offset, byte_length, share_reservation, acquired_at, server_epoch)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		                   byte_offset, byte_length, is_zero_byte, is_legacy_byte_range,
+		                   share_reservation, acquired_at, server_epoch)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (id) DO UPDATE SET
 			share_name = EXCLUDED.share_name,
 			file_id = EXCLUDED.file_id,
@@ -51,6 +52,8 @@ func (s *postgresLockStore) PutLock(ctx context.Context, lk *lock.PersistedLock)
 			lock_type = EXCLUDED.lock_type,
 			byte_offset = EXCLUDED.byte_offset,
 			byte_length = EXCLUDED.byte_length,
+			is_zero_byte = EXCLUDED.is_zero_byte,
+			is_legacy_byte_range = EXCLUDED.is_legacy_byte_range,
 			share_reservation = EXCLUDED.share_reservation,
 			acquired_at = EXCLUDED.acquired_at,
 			server_epoch = EXCLUDED.server_epoch
@@ -65,6 +68,8 @@ func (s *postgresLockStore) PutLock(ctx context.Context, lk *lock.PersistedLock)
 		lk.LockType,
 		lk.Offset,
 		lk.Length,
+		lk.IsZeroByte,
+		lk.IsLegacyByteRange,
 		lk.AccessMode,
 		lk.AcquiredAt,
 		lk.ServerEpoch,
@@ -76,8 +81,9 @@ func (s *postgresLockStore) PutLock(ctx context.Context, lk *lock.PersistedLock)
 func (s *postgresLockStore) putLockTx(ctx context.Context, tx pgx.Tx, lk *lock.PersistedLock) error {
 	query := `
 		INSERT INTO locks (id, share_name, file_id, owner_id, client_id, lock_type,
-		                   byte_offset, byte_length, share_reservation, acquired_at, server_epoch)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		                   byte_offset, byte_length, is_zero_byte, is_legacy_byte_range,
+		                   share_reservation, acquired_at, server_epoch)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (id) DO UPDATE SET
 			share_name = EXCLUDED.share_name,
 			file_id = EXCLUDED.file_id,
@@ -86,6 +92,8 @@ func (s *postgresLockStore) putLockTx(ctx context.Context, tx pgx.Tx, lk *lock.P
 			lock_type = EXCLUDED.lock_type,
 			byte_offset = EXCLUDED.byte_offset,
 			byte_length = EXCLUDED.byte_length,
+			is_zero_byte = EXCLUDED.is_zero_byte,
+			is_legacy_byte_range = EXCLUDED.is_legacy_byte_range,
 			share_reservation = EXCLUDED.share_reservation,
 			acquired_at = EXCLUDED.acquired_at,
 			server_epoch = EXCLUDED.server_epoch
@@ -100,6 +108,8 @@ func (s *postgresLockStore) putLockTx(ctx context.Context, tx pgx.Tx, lk *lock.P
 		lk.LockType,
 		lk.Offset,
 		lk.Length,
+		lk.IsZeroByte,
+		lk.IsLegacyByteRange,
 		lk.AccessMode,
 		lk.AcquiredAt,
 		lk.ServerEpoch,
@@ -111,7 +121,8 @@ func (s *postgresLockStore) putLockTx(ctx context.Context, tx pgx.Tx, lk *lock.P
 func (s *postgresLockStore) GetLock(ctx context.Context, lockID string) (*lock.PersistedLock, error) {
 	query := `
 		SELECT id, share_name, file_id, owner_id, client_id, lock_type,
-		       byte_offset, byte_length, share_reservation, acquired_at, server_epoch
+		       byte_offset, byte_length, is_zero_byte, is_legacy_byte_range,
+		       share_reservation, acquired_at, server_epoch
 		FROM locks
 		WHERE id = $1
 	`
@@ -126,6 +137,8 @@ func (s *postgresLockStore) GetLock(ctx context.Context, lockID string) (*lock.P
 		&lk.LockType,
 		&lk.Offset,
 		&lk.Length,
+		&lk.IsZeroByte,
+		&lk.IsLegacyByteRange,
 		&lk.AccessMode,
 		&lk.AcquiredAt,
 		&lk.ServerEpoch,
@@ -148,7 +161,8 @@ func (s *postgresLockStore) GetLock(ctx context.Context, lockID string) (*lock.P
 func (s *postgresLockStore) getLockTx(ctx context.Context, tx pgx.Tx, lockID string) (*lock.PersistedLock, error) {
 	query := `
 		SELECT id, share_name, file_id, owner_id, client_id, lock_type,
-		       byte_offset, byte_length, share_reservation, acquired_at, server_epoch
+		       byte_offset, byte_length, is_zero_byte, is_legacy_byte_range,
+		       share_reservation, acquired_at, server_epoch
 		FROM locks
 		WHERE id = $1
 	`
@@ -163,6 +177,8 @@ func (s *postgresLockStore) getLockTx(ctx context.Context, tx pgx.Tx, lockID str
 		&lk.LockType,
 		&lk.Offset,
 		&lk.Length,
+		&lk.IsZeroByte,
+		&lk.IsLegacyByteRange,
 		&lk.AccessMode,
 		&lk.AcquiredAt,
 		&lk.ServerEpoch,
@@ -224,7 +240,8 @@ func (s *postgresLockStore) ListLocks(ctx context.Context, query lock.LockQuery)
 	// Build dynamic query
 	baseQuery := `
 		SELECT id, share_name, file_id, owner_id, client_id, lock_type,
-		       byte_offset, byte_length, share_reservation, acquired_at, server_epoch
+		       byte_offset, byte_length, is_zero_byte, is_legacy_byte_range,
+		       share_reservation, acquired_at, server_epoch
 		FROM locks
 		WHERE 1=1
 	`
@@ -270,6 +287,8 @@ func (s *postgresLockStore) ListLocks(ctx context.Context, query lock.LockQuery)
 			&lk.LockType,
 			&lk.Offset,
 			&lk.Length,
+			&lk.IsZeroByte,
+			&lk.IsLegacyByteRange,
 			&lk.AccessMode,
 			&lk.AcquiredAt,
 			&lk.ServerEpoch,
@@ -288,7 +307,8 @@ func (s *postgresLockStore) listLocksTx(ctx context.Context, tx pgx.Tx, query lo
 	// Build dynamic query
 	baseQuery := `
 		SELECT id, share_name, file_id, owner_id, client_id, lock_type,
-		       byte_offset, byte_length, share_reservation, acquired_at, server_epoch
+		       byte_offset, byte_length, is_zero_byte, is_legacy_byte_range,
+		       share_reservation, acquired_at, server_epoch
 		FROM locks
 		WHERE 1=1
 	`
@@ -334,6 +354,8 @@ func (s *postgresLockStore) listLocksTx(ctx context.Context, tx pgx.Tx, query lo
 			&lk.LockType,
 			&lk.Offset,
 			&lk.Length,
+			&lk.IsZeroByte,
+			&lk.IsLegacyByteRange,
 			&lk.AccessMode,
 			&lk.AcquiredAt,
 			&lk.ServerEpoch,
