@@ -490,20 +490,13 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
 	}
 
-	// SMB3 replay protection (MS-SMB2 §3.3.5.9 step 5; §2.2.1.2 REPLAY_OPERATION).
-	// When FLAGS_REPLAY_OPERATION is set on a CREATE carrying a
-	// DH2Q with a non-zero CreateGuid, the client is retransmitting
-	// a request whose original response was lost. The server MUST
-	// return the cached response — otherwise the legitimate retry
-	// trips STATUS_SHARING_VIOLATION (the original open is still
-	// alive on the server) and the DH2Q CREATE pattern is unusable
-	// over flaky multichannel topologies (smbtorture
-	// smb2.replay.replay-dhv2-*).
-	//
-	// The cache is scoped per-session and bounded by a short TTL; a
-	// miss falls through to the normal CREATE path, which on
-	// success records the response into the cache for the next
-	// replay window.
+	// SMB3 DH2Q replay protection (MS-SMB2 §3.3.5.9; §2.2.1.2
+	// REPLAY_OPERATION). A CREATE whose DH2Q CreateGuid matches a live
+	// open is resolved here — replayed (with the original FileId and the
+	// open's current lease/oplock state), rejected as a duplicate, or
+	// failed fast while the original is still parked. A miss falls through
+	// to the normal CREATE path, which records the response on success.
+	// See resolveCreateReplay for the full per-case contract.
 	if resp, handled := h.resolveCreateReplay(ctx, req); handled {
 		return resp, nil
 	}
@@ -1535,17 +1528,20 @@ func (h *Handler) resolveCreateReplay(ctx *SMBHandlerContext, req *CreateRequest
 		return nil, false
 	}
 
-	// A replay that arrives while the original CREATE for this CreateGuid
-	// is still parked on a pending oplock/lease break must fail fast with
-	// STATUS_FILE_NOT_AVAILABLE rather than block on the same break (Samba
-	// FWP_RESERVED/FILE_NOT_AVAILABLE slot states). The original (parked)
-	// request keeps running and completes on its own timeline.
-	if ctx.IsReplay && h.CreateReplayCache.IsReserved(ctx.SessionID, createGuid) {
-		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileNotAvailable}}, true
-	}
-
 	entry := h.CreateReplayCache.LookupEntry(ctx.SessionID, createGuid)
 	if entry == nil {
+		// No completed entry yet. A replay that arrives while the original
+		// CREATE for this CreateGuid is still parked on a pending
+		// oplock/lease break must fail fast with STATUS_FILE_NOT_AVAILABLE
+		// rather than block on the same break (Samba FWP_RESERVED /
+		// FILE_NOT_AVAILABLE slot states). The original parked request keeps
+		// running and completes on its own timeline. Checked after the
+		// completed-entry lookup so a parked CREATE that has just finished
+		// (entry present, reservation not yet cleared) replays the open
+		// rather than returning FILE_NOT_AVAILABLE.
+		if ctx.IsReplay && h.CreateReplayCache.IsReserved(ctx.SessionID, createGuid) {
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileNotAvailable}}, true
+		}
 		return nil, false
 	}
 
@@ -1615,11 +1611,18 @@ func (h *Handler) refreshReplayLease(ctx *SMBHandlerContext, req *CreateRequest,
 	if !found {
 		return types.StatusSuccess
 	}
+	// resp is a shallow copy of the cached response, so resp.CreateContexts
+	// still shares the cached entry's backing array. Clone the slice before
+	// rewriting an element so we never mutate (or race another replay on)
+	// the cached entry. rewriteLeaseResponseState itself returns fresh bytes.
 	for i := range resp.CreateContexts {
 		if resp.CreateContexts[i].Name != LeaseContextTagResponse {
 			continue
 		}
-		resp.CreateContexts[i].Data = rewriteLeaseResponseState(resp.CreateContexts[i].Data, state, epoch)
+		contexts := make([]CreateContext, len(resp.CreateContexts))
+		copy(contexts, resp.CreateContexts)
+		contexts[i].Data = rewriteLeaseResponseState(contexts[i].Data, state, epoch)
+		resp.CreateContexts = contexts
 		break
 	}
 	return types.StatusSuccess

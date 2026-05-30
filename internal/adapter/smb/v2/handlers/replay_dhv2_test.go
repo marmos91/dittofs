@@ -256,6 +256,51 @@ func TestResolveCreateReplay_LeaseReturnsCurrentState(t *testing.T) {
 	}
 }
 
+// TestResolveCreateReplay_LeaseReplayDoesNotMutateCache: a lease replay that
+// refreshes the response state must not mutate the cached entry's stored
+// bytes (the shallow-copy shares the CreateContexts backing array). A second
+// replay must still observe the original cached snapshot as its starting point
+// and re-derive the current state.
+func TestResolveCreateReplay_LeaseReplayDoesNotMutateCache(t *testing.T) {
+	h, _, leaseMgr := newReplayTestHandler()
+	const sessionID = uint64(7)
+	leaseKey := [16]byte{0xAA, 0xBB, 0xCC}
+	open := grantRWHLease(t, leaseMgr, leaseKey, sessionID)
+
+	origData := (&LeaseResponseContext{
+		LeaseKey:   leaseKey,
+		LeaseState: lock.LeaseStateRead | lock.LeaseStateHandle, // RH 0x3
+		Epoch:      1,
+	}).Encode()
+	cached := &CreateResponse{
+		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+		OplockLevel:     OplockLevelLease,
+		CreateContexts:  []CreateContext{{Name: LeaseContextTagResponse, Data: origData}},
+	}
+	guid := leaseKey16Guid(leaseKey)
+	h.CreateReplayCache.Store(sessionID, guid, cached, open)
+
+	rhReq := encodeV2LeaseContext(leaseKey, lock.LeaseStateRead|lock.LeaseStateHandle, 1)
+	for i := 0; i < 2; i++ {
+		resp, handled := h.resolveCreateReplay(newReplayCtx(sessionID, true), dh2qCreateReq(guid, rhReq))
+		if !handled {
+			t.Fatalf("replay %d not handled", i)
+		}
+		state, ok := leaseResponseStateFromResp(resp)
+		if !ok || state != lock.LeaseStateRead|lock.LeaseStateWrite|lock.LeaseStateHandle {
+			t.Fatalf("replay %d state = 0x%x, want RWH (0x7)", i, state)
+		}
+	}
+
+	// Cached snapshot bytes must be untouched (still RH 0x3).
+	if got := binary.LittleEndian.Uint32(origData[16:20]); got != 0x3 {
+		t.Fatalf("cached response bytes mutated: state = 0x%x, want RH (0x3)", got)
+	}
+	if cached.CreateContexts[0].Data[16] != origData[16] {
+		t.Fatal("cached entry's context Data was swapped")
+	}
+}
+
 // TestResolveCreateReplay_LeaseKeyMismatch: a replay carrying a different
 // lease key than the open returns ACCESS_DENIED (replay-dhv2-lease3).
 func TestResolveCreateReplay_LeaseKeyMismatch(t *testing.T) {
