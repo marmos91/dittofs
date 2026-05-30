@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
 	"github.com/marmos91/dittofs/pkg/metadata/storetest"
 )
@@ -76,4 +77,15 @@ func TestResetThenRestoreConformance(t *testing.T) {
 	}
 
 	storetest.ResetThenRestoreConformance(t, newPostgresStoreFactory())
+}
+
+func TestLockPersistenceConformance(t *testing.T) {
+	if os.Getenv("DITTOFS_TEST_POSTGRES_DSN") == "" {
+		t.Skip("DITTOFS_TEST_POSTGRES_DSN not set, skipping PostgreSQL lock persistence conformance tests")
+	}
+
+	factory := newPostgresStoreFactory()
+	storetest.RunLockPersistenceSuite(t, func(t *testing.T) lock.LockStore {
+		return factory(t).(lock.LockStore)
+	})
 }
