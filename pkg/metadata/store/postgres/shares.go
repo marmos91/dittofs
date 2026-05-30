@@ -104,28 +104,59 @@ func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata
 		return err
 	}
 
-	query := `
-		INSERT INTO shares (share_name, options, block_layout)
-		VALUES ($1, $2, $3)
-	`
+	// The shares.root_file_id column is NOT NULL with an FK to files(id), so
+	// a share row cannot exist before its root inode — a bare
+	// INSERT INTO shares (share_name, options, ...) is structurally
+	// impossible (it raises a not_null_violation on root_file_id) and never
+	// once succeeded. Honour the documented contract ("Also creates the root
+	// directory for the share", matching the memory/badger backends) by
+	// materializing a default root directory, which inserts the shares row
+	// via CreateRootDirectory's ON CONFLICT upsert, then persisting the
+	// caller's options. Callers wanting specific root attrs invoke
+	// CreateRootDirectory afterward; it is idempotent and updates the
+	// existing root in place (no orphaned inode).
 
-	optionsData, err := json.Marshal(share.Options)
-	if err != nil {
-		return err
+	// Validate the block layout BEFORE creating any rows so an invalid value
+	// can't leave a half-created share (root inode materialized, options
+	// rejected). UpdateShareOptions re-parses it; this is the early guard.
+	if _, err := metadata.ParseBlockLayout(string(share.Options.BlockLayout)); err != nil {
+		return fmt.Errorf("create share %q: %w", share.Name, err)
 	}
 
-	// Normalize on write so a caller passing an empty-string zero
-	// value lands as 'legacy' in the column, not an empty TEXT (which
-	// the NOT NULL DEFAULT would catch but only if the column is
-	// omitted entirely from the INSERT).
-	layout, err := metadata.ParseBlockLayout(string(share.Options.BlockLayout))
+	// Duplicate detection: a share is "created" once its root inode exists.
+	// This read is the common-case fast path; it is not the integrity
+	// authority. Two creators racing the same name both pass this check and
+	// reach CreateRootDirectory, but the partial unique index
+	// unique_share_path_hash_active on files(share_name, path_hash) admits
+	// only one root inode at path "/" — the loser's insert fails rather than
+	// silently orphaning an inode. (Production also serializes share creation
+	// upstream in the control plane.)
+	existing, err := s.getExistingRootDirectory(ctx, share.Name)
 	if err != nil {
-		return fmt.Errorf("share %q: %w", share.Name, err)
+		return fmt.Errorf("create share %q: check existing: %w", share.Name, err)
+	}
+	if existing != nil {
+		return &metadata.StoreError{
+			Code:    metadata.ErrAlreadyExists,
+			Message: "share already exists",
+			Path:    share.Name,
+		}
 	}
 
-	_, err = s.exec(ctx, query, share.Name, optionsData, string(layout))
-	if err != nil {
-		return err
+	rootAttr := &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0o755,
+	}
+	if _, err := s.CreateRootDirectory(ctx, share.Name, rootAttr); err != nil {
+		return fmt.Errorf("create share %q root directory: %w", share.Name, err)
+	}
+
+	// Persist the requested options + block layout on the freshly-inserted
+	// row (CreateRootDirectory seeds only share_name + root_file_id, leaving
+	// options/block_layout at their column defaults). UpdateShareOptions
+	// applies the same ParseBlockLayout normalization the old INSERT did.
+	if err := s.UpdateShareOptions(ctx, share.Name, &share.Options); err != nil {
+		return fmt.Errorf("create share %q options: %w", share.Name, err)
 	}
 
 	return nil

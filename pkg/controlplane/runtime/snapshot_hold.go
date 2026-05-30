@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"runtime"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
@@ -99,6 +102,12 @@ func (p *SnapshotHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID 
 			}
 			count, err := streamManifest(manifestPath, fn)
 			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					// TOCTOU: the manifest passed the Stat above but was
+					// removed (snapshot delete) before the open. Same
+					// "no manifest = no hold" outcome as the Stat miss.
+					continue
+				}
 				return fmt.Errorf("snapshot hold: stream manifest for share %q snapshot %q at %q: %w",
 					shareName, snap.ID, manifestPath, err)
 			}
@@ -115,9 +124,13 @@ func (p *SnapshotHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID 
 }
 
 // streamManifest opens the manifest at path, parses it, and forwards
-// every hash through fn. Returns the count for logging.
+// every hash through fn. Returns the count for logging. A Windows
+// sharing violation (another handle/rename mid-flight, or a real-world
+// AV/indexer transiently locking the file) is retried before failing;
+// fs.ErrNotExist propagates unchanged so the caller can treat a TOCTOU
+// delete as "no hold".
 func streamManifest(path string, fn func(blockstore.ContentHash) error) (int, error) {
-	f, err := os.Open(path)
+	f, err := openManifestWithRetry(path)
 	if err != nil {
 		return 0, err
 	}
@@ -131,6 +144,48 @@ func streamManifest(path string, fn func(blockstore.ContentHash) error) (int, er
 		return 0, err
 	}
 	return hs.Len(), nil
+}
+
+// openManifestWithRetry opens path, retrying briefly on a Windows sharing
+// violation. The GC mark phase RLocks out concurrent snapshot deletes, but a
+// concurrent create's atomic rename — or, on real Windows deployments, an
+// antivirus / search-indexer momentarily holding the file — can surface
+// ERROR_SHARING_VIOLATION on open. That is transient: a short bounded retry
+// lets it clear rather than aborting the whole GC pass (which would skip
+// every later share's holds and risk deleting a still-held block).
+// fs.ErrNotExist is returned immediately (a TOCTOU delete is the caller's to
+// interpret, and is not resolved by waiting).
+func openManifestWithRetry(path string) (*os.File, error) {
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		f, err := os.Open(path)
+		if err == nil {
+			return f, nil
+		}
+		if errors.Is(err, fs.ErrNotExist) || !isTransientSharingViolation(err) {
+			return nil, err
+		}
+		lastErr = err
+		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+	}
+	return nil, lastErr
+}
+
+// isTransientSharingViolation reports whether err is a Windows
+// ERROR_SHARING_VIOLATION (32) or ERROR_LOCK_VIOLATION (33) — a transient
+// "file in use by another process" condition. Guarded by GOOS so the same
+// numeric errnos on Unix (EPIPE/...) are never misread; on non-Windows this
+// is always false.
+func isTransientSharingViolation(err error) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return errno == 32 || errno == 33
+	}
+	return false
 }
 
 // AcquireDeleteLock is the write-side counterpart used by the snapshot
@@ -191,6 +246,26 @@ func (r *Runtime) snapshotDeleteLock(shareName string) *sync.RWMutex {
 	if !ok {
 		lock = &sync.RWMutex{}
 		r.snapDeleteLocks[shareName] = lock
+	}
+	return lock
+}
+
+// restoreLock returns the shared per-share mutex that serializes
+// RestoreSnapshot. Allocated on first lookup and reused thereafter so every
+// restore for the same share contends on the SAME pointer. Held for the
+// whole restore (via TryLock in restoreSnapshot); a second concurrent
+// restore fails fast with models.ErrRestoreInProgress rather than
+// interleaving the destructive metadata Reset + dump replay.
+func (r *Runtime) restoreLock(shareName string) *sync.Mutex {
+	r.restoreLocksMu.Lock()
+	defer r.restoreLocksMu.Unlock()
+	if r.restoreLocks == nil {
+		r.restoreLocks = make(map[string]*sync.Mutex)
+	}
+	lock, ok := r.restoreLocks[shareName]
+	if !ok {
+		lock = &sync.Mutex{}
+		r.restoreLocks[shareName] = lock
 	}
 	return lock
 }

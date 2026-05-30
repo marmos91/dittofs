@@ -6,6 +6,28 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
+// childFullPath derives the full share-relative path for a child entry,
+// joining the parent directory's stored Path with the child name. Root
+// children become "/name"; nested entries become "/parent/.../name". This
+// mirrors production (file_create.go) so path-keyed backends (Postgres) see
+// a unique, non-empty path per entry instead of all-"" collisions.
+func childFullPath(t *testing.T, store metadata.MetadataStore, parentHandle metadata.FileHandle, name string) string {
+	t.Helper()
+
+	parent, err := store.GetFile(t.Context(), parentHandle)
+	if err != nil {
+		t.Fatalf("GetFile(parent) failed: %v", err)
+	}
+	parentPath := parent.Path
+	if parentPath == "" {
+		parentPath = "/"
+	}
+	if parentPath == "/" {
+		return "/" + name
+	}
+	return parentPath + "/" + name
+}
+
 // StoreFactory creates a fresh MetadataStore instance for each test.
 // The factory receives *testing.T so it can use t.TempDir() for stores
 // that need filesystem paths and t.Cleanup() for teardown.
@@ -124,8 +146,14 @@ func createTestFile(t *testing.T, store metadata.MetadataStore, shareName string
 
 	ctx := t.Context()
 
+	// Derive the full path from the parent directory, mirroring production
+	// (file_create.go), so path-keyed backends (Postgres) get a unique,
+	// non-empty path per entry. Root children are "/name"; nested entries
+	// join the parent's path.
+	fullPath := childFullPath(t, store, dirHandle, name)
+
 	// Generate handle
-	handle, err := store.GenerateHandle(ctx, shareName, "/"+name)
+	handle, err := store.GenerateHandle(ctx, shareName, fullPath)
 	if err != nil {
 		t.Fatalf("GenerateHandle() failed: %v", err)
 	}
@@ -133,6 +161,7 @@ func createTestFile(t *testing.T, store metadata.MetadataStore, shareName string
 	// Create file entry
 	file := &metadata.File{
 		ShareName: shareName,
+		Path:      fullPath,
 		FileAttr: metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: mode,
@@ -177,8 +206,12 @@ func createTestDir(t *testing.T, store metadata.MetadataStore, shareName string,
 
 	ctx := t.Context()
 
+	// Derive the full path from the parent directory so path-keyed backends
+	// (Postgres) get a unique, non-empty path per entry.
+	fullPath := childFullPath(t, store, parentHandle, name)
+
 	// Generate handle
-	handle, err := store.GenerateHandle(ctx, shareName, "/"+name)
+	handle, err := store.GenerateHandle(ctx, shareName, fullPath)
 	if err != nil {
 		t.Fatalf("GenerateHandle() failed: %v", err)
 	}
@@ -186,6 +219,7 @@ func createTestDir(t *testing.T, store metadata.MetadataStore, shareName string,
 	// Create dir entry
 	dir := &metadata.File{
 		ShareName: shareName,
+		Path:      fullPath,
 		FileAttr: metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0755,

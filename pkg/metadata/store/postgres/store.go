@@ -178,24 +178,34 @@ func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error 
 }
 
 // ensureStoreID reads the engine-persistent store_id from server_config; if
-// empty (migration 000008 default or a hand-cleared row), writes a fresh
-// ULID atomically and returns it. Safe to call on every open — idempotent
-// after bootstrap.
+// the row is missing or carries the empty sentinel, writes a fresh ULID
+// atomically and returns it. Safe to call on every open — idempotent after
+// bootstrap.
 //
-// The UPDATE ... RETURNING form performs the check-and-set in a single
-// round-trip: COALESCE + NULLIF treats an empty string as NULL and then
-// substitutes the fresh ULID; any existing non-empty value is preserved.
+// The INSERT ... ON CONFLICT ... RETURNING form performs the check-and-set
+// in a single round-trip AND recreates the singleton row when it is absent.
+// The row can be absent legitimately: truncateAllTables (Reset and the
+// pre-COPY phase of Restore) clears server_config, and AutoMigrate does not
+// re-seed it on a reopen (migration 000001 already recorded). An UPDATE-only
+// form matched zero rows in that state and failed store open with
+// "no rows in result set" — bricking the store after a Reset/restore crash,
+// which in turn prevents the boot-time restore-marker recovery from ever
+// running. ON CONFLICT preserves any existing non-empty store_id (COALESCE +
+// NULLIF treat an empty string as NULL); config and updated_at fall back to
+// their column defaults on the insert path and are left untouched on
+// conflict. Concurrency-safe: two racing opens converge on one row.
 func (s *PostgresMetadataStore) ensureStoreID(ctx context.Context) (string, error) {
 	fresh := ulid.Make().String()
 	var existing string
 	err := s.pool.QueryRow(ctx, `
-		UPDATE server_config
-		SET store_id = COALESCE(NULLIF(store_id, ''), $1)
-		WHERE id = 1
+		INSERT INTO server_config (id, store_id)
+		VALUES (1, $1)
+		ON CONFLICT (id) DO UPDATE
+		SET store_id = COALESCE(NULLIF(server_config.store_id, ''), EXCLUDED.store_id)
 		RETURNING store_id
 	`, fresh).Scan(&existing)
 	if err != nil {
-		return "", fmt.Errorf("ensure store_id: %w", err)
+		return "", fmt.Errorf("upsert store_id row: %w", err)
 	}
 	return existing, nil
 }
