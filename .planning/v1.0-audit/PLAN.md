@@ -69,6 +69,18 @@ Each area gets PR-A (REVIEW.md) → triage → PR-B (fixes + simplifier + review
 
 **Area count dropped 12 → 11** (2026-05-28): area #8 GC bundled into area #1 — `engine/gc*.go` lives in the same package, splitting wastes audit context. Numbering shifted: backup/snapshot is now #8.
 
+### Wave 1 — Progress tracker (updated 2026-05-29)
+
+| # | Area | PR-A (audit) | PR-B (fix) | Notes |
+|---|---|---|---|---|
+| 1 | Block stores + CAS + engine + GC | ✅ `#677` (REVIEW.md) | ✅ B-A/B-B/B-C/B-D waves + perf B1/B2/B3 (`#834`/`#835`/`#840`) | Most-worked area. Perf followups (#829) effectively complete; remaining = rollupFile per-pass slices (MED). |
+| 2 | Syncer | ✅ folded into #1 | ✅ folded into #1 | "subset of #1"; engine+syncer covered by #677 PR-A + I-1/2/3 (`#713`/`#723`/`#735`) + B1 (`#840`). No standalone pass — covered. |
+| 4 | NFS handlers | ✅ **#844** (REVIEW.md, COMPLETE) | — | 5 sub-audits/2 batches: v3 (A), v4 state (B), RPC/GSS (C), NLM/NSM/portmap (D), v4 attrs/types/XDR (E). **17 HIGH/30 MED/30 LOW.** Invariants clean; v4 wire layer DoS-clean. PR-B split + lock-durability design issue in REVIEW §7. |
+| 3 | SMB handlers | ⏸ deferred | — | Active parallel conformance track (#843 + roadmap-v2 waves) collides with an audit pass; audit after conformance settles. |
+| 5–11 | Lock/ACL, Metadata, Runtime, Snapshot, Config, CLI, Operator | ⏳ queued | — | Per perf-leverage order. |
+
+Real NFS LOC measured 2026-05-29 ≈ 56K (table's 52.9K was the Wave-0 estimate).
+
 **Each PR-A (audit) checks** (9 dimensions):
 
 1. **Bloat**: unused funcs/types, single-impl interfaces, overlong files, dead branches.
