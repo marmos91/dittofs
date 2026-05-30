@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/sysinfo"
@@ -198,6 +199,22 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if cfg.GC.Interval > 0 {
 		logger.Warn("gc.interval is configured but no periodic-GC scheduler ships in v0.15.0 — the value is ignored. Trigger GC on demand via `dfsctl store block gc <share>` (or schedule via cron). Periodic scheduling is tracked for a follow-up phase.",
 			"configured_interval", cfg.GC.Interval)
+	}
+
+	// Thread the operator-configured lock-manager grace period into the
+	// MetadataService BEFORE loading shares: AddShare registers each share's
+	// lock manager and enters the post-restart grace window, so the duration
+	// must be set first. LoadInitial is idempotent (the lifecycle Serve loop
+	// loads settings again); a nil/zero value falls back to the 90s default,
+	// which matches the DB default for grace_period.
+	if sw := rt.GetSettingsWatcher(); sw != nil {
+		if err := sw.LoadInitial(ctx); err != nil {
+			logger.Warn("Failed to load initial adapter settings for lock grace period", "error", err)
+		}
+		if nfsSettings := rt.GetNFSSettings(); nfsSettings != nil && nfsSettings.GracePeriod > 0 {
+			rt.GetMetadataService().SetLockGracePeriod(
+				time.Duration(nfsSettings.GracePeriod) * time.Second)
+		}
 	}
 
 	// Load shares (per-share BlockStores are created during AddShare).

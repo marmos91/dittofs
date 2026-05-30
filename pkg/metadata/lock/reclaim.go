@@ -75,6 +75,13 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 					LeaseStateToString(pl.LeaseState))
 			}
 
+			// Record the reclaim so grace can exit early once every expected
+			// client has recovered (X/Open NLMv4 / RFC 7530 §9.6.2). Both the
+			// fresh-restore and already-in-memory branches below are successful
+			// reclaims, so mark here once for both. MarkReclaimed takes the grace
+			// manager's own mutex, not lm.mu, so it is safe outside lm.mu.
+			lm.MarkReclaimed(pl.ClientID)
+
 			// Step 5: Restore in memory (idempotent: skip if already reclaimed)
 			lock := FromPersistedLock(pl)
 			lock.Lease.LeaseState = requestedState
@@ -87,19 +94,12 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 				existing.Lease.LeaseState = requestedState
 				existing.Reclaim = true
 				lm.mu.Unlock()
-				// Record the reclaim so grace can exit early once every expected
-				// client has recovered (X/Open NLMv4 / RFC 7530 §9.6.2).
-				lm.MarkReclaimed(pl.ClientID)
 				logger.Debug("ReclaimLease: lease already in memory, updated",
 					"leaseKey", fmt.Sprintf("%x", leaseKey))
 				return existing.Clone(), nil
 			}
 			lm.unifiedLocks[handleKey] = append(lm.unifiedLocks[handleKey], lock)
 			lm.mu.Unlock()
-
-			// Record the reclaim so grace can exit early once every expected
-			// client has recovered (X/Open NLMv4 / RFC 7530 §9.6.2).
-			lm.MarkReclaimed(pl.ClientID)
 
 			logger.Debug("ReclaimLease: lease reclaimed",
 				"leaseKey", fmt.Sprintf("%x", leaseKey),

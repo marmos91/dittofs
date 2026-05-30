@@ -28,6 +28,18 @@ import (
 // v4 client persistence lands, both machines enter and exit together with no
 // further change here. The lock-manager + NLM grace window (the area-5 H-1 /
 // NFS H15 fix) is fully live regardless.
+//
+// Per-share vs global asymmetry (documented seam): lock-manager grace is
+// per-share, while the NFSv4 StateManager grace machine is global (one per
+// server). The coordinator couples them with a "first share in starts v4
+// grace, first share out ends it" policy: OnLockGraceStart is a no-op once v4
+// grace is already active, and OnLockGraceEnd ends v4 grace outright. With the
+// conventional boot flow all shares load together and enter the same ~90s
+// window, so this approximation holds; a per-share early-exit could end v4
+// grace while another share's window is still open. Because v4 grace is a no-op
+// today (see above), this is latent and becomes relevant only alongside v4
+// client persistence, at which point the coupling should refcount active
+// lock-manager grace windows before ending v4 grace.
 type nfsGraceCoordinator struct {
 	sm *v4state.StateManager
 }
