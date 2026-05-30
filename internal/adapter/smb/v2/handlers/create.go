@@ -524,20 +524,23 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	}
 
 	// MS-SMB2 §3.3.5.9.7/12: a DHnC/DH2C reconnect is keyed solely by the
-	// reconnect blob (FileId / CreateGuid). The server MUST ignore the other
-	// CREATE fields — ImpersonationLevel, CreateOptions, FileAttributes,
-	// DesiredAccess, ShareAccess, CreateDisposition. smbtorture
+	// reconnect blob (FileId / CreateGuid). The server ignores the wire-format
+	// CREATE fields validated below — ImpersonationLevel, CreateOptions reserved
+	// bits, FileAttributes. (DesiredAccess / ShareAccess are NOT ignored: the
+	// reconnect path re-validates them against the persisted handle in
+	// validateAndRestore per §3.3.5.9.9 privilege-escalation checks.) smbtorture
 	// smb2.durable-open.reopen2 reconnects a third time with every such field
-	// set to garbage (0x12345678 / 0x78) to prove they are ignored; running
-	// the standard wire-validation gates below against that garbage would
-	// wrongly return STATUS_INVALID_PARAMETER / STATUS_BAD_IMPERSONATION_LEVEL
-	// / STATUS_NOT_SUPPORTED before the reconnect path (Step 4b) is reached.
-	// Skip those gates when a reconnect context is present. Gated on a
-	// configured DurableStore so the bypass only applies on the path that
-	// actually reaches the reconnect handler (Step 4b) — without a durable
-	// store a stray reconnect blob falls through to normal CREATE and the
-	// standard wire validation must still apply.
+	// set to garbage (0x12345678 / 0x78) to prove the wire gates are skipped;
+	// running them against that garbage would wrongly return
+	// STATUS_INVALID_PARAMETER / STATUS_BAD_IMPERSONATION_LEVEL /
+	// STATUS_NOT_SUPPORTED before the reconnect path (Step 4b) is reached.
+	//
+	// Gated on a configured DurableStore so the bypass only applies on the path
+	// that reaches the reconnect handler, and excluded on IPC$ — durable handles
+	// are disk-share only, so a stray reconnect blob on a named pipe must still
+	// run full wire validation rather than fall into handlePipeCreate unchecked.
 	isDurableReconnect := h.DurableStore != nil &&
+		tree.ShareName != "/ipc$" &&
 		(FindCreateContext(req.CreateContexts, DurableHandleV1ReconnectTag) != nil ||
 			FindCreateContext(req.CreateContexts, DurableHandleV2ReconnectTag) != nil)
 
