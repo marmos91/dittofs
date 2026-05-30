@@ -90,6 +90,17 @@ type Runtime struct {
 	snapDeleteLocks   map[string]*sync.RWMutex
 	snapDeleteLocksMu sync.Mutex
 
+	// restoreLocks serializes RestoreSnapshot per share. Restore requires
+	// the share be disabled, but two concurrent restore calls both observe
+	// "disabled" and would otherwise interleave their destructive metadata
+	// Reset + dump-replay (the single-`creating`-slot DB index only
+	// serializes the safety-snap create, which frees between steps). A
+	// per-share mutex held for the whole restore makes a second concurrent
+	// restore fail fast with models.ErrRestoreInProgress. Keyed by share
+	// name; the same pointer is reused per share via restoreLock().
+	restoreLocks   map[string]*sync.Mutex
+	restoreLocksMu sync.Mutex
+
 	// runtimeCtx is a long-lived ctx cancelled by Runtime.Shutdown
 	// (plan 23-05). Snapshot orchestration goroutines derive their
 	// child ctx from this so they outlive any caller request ctx
@@ -117,6 +128,7 @@ func New(s store.Store) *Runtime {
 		adapterProviders: make(map[string]any),
 		snapInFlight:     make(map[string]*snapInFlight),
 		snapDeleteLocks:  make(map[string]*sync.RWMutex),
+		restoreLocks:     make(map[string]*sync.Mutex),
 		storesSvc:        stores.New(),
 		sharesSvc:        shares.New(),
 		lifecycleSvc:     lifecycle.New(DefaultShutdownTimeout),

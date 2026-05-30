@@ -59,6 +59,7 @@ var (
 	ErrRestoreAborted              = errors.New("restore aborted; safety snapshot retained for rollback")
 	ErrRestoreVerifyFailed         = errors.New("restore verify failed: missing hashes on remote")
 	ErrRestoreMarkerNotFound       = errors.New("restore marker not found")
+	ErrRestoreInProgress           = errors.New("a restore is already in progress for this share")
 
 	// Setting errors
 	ErrSettingNotFound = errors.New("setting not found")

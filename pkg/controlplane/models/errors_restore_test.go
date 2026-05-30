@@ -23,6 +23,7 @@ func restoreSentinels() []struct {
 		{"ErrRestoreSafetySnapFailed", models.ErrRestoreSafetySnapFailed},
 		{"ErrRestoreAborted", models.ErrRestoreAborted},
 		{"ErrRestoreVerifyFailed", models.ErrRestoreVerifyFailed},
+		{"ErrRestoreInProgress", models.ErrRestoreInProgress},
 	}
 }
 

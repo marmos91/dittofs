@@ -194,3 +194,23 @@ func (r *Runtime) snapshotDeleteLock(shareName string) *sync.RWMutex {
 	}
 	return lock
 }
+
+// restoreLock returns the shared per-share mutex that serializes
+// RestoreSnapshot. Allocated on first lookup and reused thereafter so every
+// restore for the same share contends on the SAME pointer. Held for the
+// whole restore (via TryLock in restoreSnapshot); a second concurrent
+// restore fails fast with models.ErrRestoreInProgress rather than
+// interleaving the destructive metadata Reset + dump replay.
+func (r *Runtime) restoreLock(shareName string) *sync.Mutex {
+	r.restoreLocksMu.Lock()
+	defer r.restoreLocksMu.Unlock()
+	if r.restoreLocks == nil {
+		r.restoreLocks = make(map[string]*sync.Mutex)
+	}
+	lock, ok := r.restoreLocks[shareName]
+	if !ok {
+		lock = &sync.Mutex{}
+		r.restoreLocks[shareName] = lock
+	}
+	return lock
+}

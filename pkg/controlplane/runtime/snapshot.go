@@ -1131,6 +1131,20 @@ func (r *Runtime) restoreSnapshot(
 		return "", errors.New("runtime: nil store")
 	}
 
+	// --- serialize restores per share ---
+	// Two concurrent restores both pass the share-disabled precheck below
+	// and would otherwise interleave their destructive metadata Reset +
+	// dump replay (corrupting both). Hold a per-share mutex for the whole
+	// restore; a second concurrent restore fails fast. TryLock (not Lock)
+	// so the caller gets an immediate, actionable error instead of blocking
+	// behind a multi-minute restore.
+	rlock := r.restoreLock(shareName)
+	if !rlock.TryLock() {
+		return "", fmt.Errorf("restore snapshot %q on share %q: %w",
+			snapID, shareName, models.ErrRestoreInProgress)
+	}
+	defer rlock.Unlock()
+
 	// --- precheck ---
 	enabled, err := r.sharesSvc.IsShareEnabled(shareName)
 	if err != nil {
