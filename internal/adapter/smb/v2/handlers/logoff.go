@@ -187,7 +187,19 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 	// pending blocking LOCKs from other handles retry and potentially
 	// succeed before we cancel them. Matches Samba's brl_close_fnum
 	// ordering where lock release precedes waiter cancellation.
-	filesClosed := h.CloseAllFilesForSession(ctx.Context, ctx.SessionID, false)
+	//
+	// isDisconnect=true: a durable handle MUST survive an explicit LOGOFF
+	// and remain reconnectable on a fresh session via DHnC/DH2C. Per the
+	// MS-SMB2 durable-handle model the open is owned by the durable scope,
+	// not the session — Samba preserves it across logoff exactly as across a
+	// transport drop. smb2.durable-open.reopen4 logs off, sets up a new
+	// session on the same transport, and asserts the V1 reconnect succeeds
+	// (EXISTED, oplock_level=BATCH). A plain TREE_DISCONNECT (reopen3) still
+	// destroys the handle — that path keeps isDisconnect=false in
+	// CloseAllFilesForTree. Non-durable opens, and durable opens carrying
+	// delete-on-close, are unaffected: closeFilesWithFilter only diverges for
+	// IsDurable && !hasDeleteOnClose, fully closing everything else as before.
+	filesClosed := h.CloseAllFilesForSession(ctx.Context, ctx.SessionID, true)
 
 	// Drain any remaining pending blocking LOCKs for this session.
 	// After file close, most pending locks on this session's handles are
