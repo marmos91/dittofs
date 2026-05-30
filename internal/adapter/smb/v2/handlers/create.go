@@ -523,12 +523,30 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameNotFound}}, nil
 	}
 
+	// MS-SMB2 §3.3.5.9.7/12: a DHnC/DH2C reconnect is keyed solely by the
+	// reconnect blob (FileId / CreateGuid). The server MUST ignore the other
+	// CREATE fields — ImpersonationLevel, CreateOptions, FileAttributes,
+	// DesiredAccess, ShareAccess, CreateDisposition. smbtorture
+	// smb2.durable-open.reopen2 reconnects a third time with every such field
+	// set to garbage (0x12345678 / 0x78) to prove they are ignored; running
+	// the standard wire-validation gates below against that garbage would
+	// wrongly return STATUS_INVALID_PARAMETER / STATUS_BAD_IMPERSONATION_LEVEL
+	// / STATUS_NOT_SUPPORTED before the reconnect path (Step 4b) is reached.
+	// Skip those gates when a reconnect context is present. Gated on a
+	// configured DurableStore so the bypass only applies on the path that
+	// actually reaches the reconnect handler (Step 4b) — without a durable
+	// store a stray reconnect blob falls through to normal CREATE and the
+	// standard wire validation must still apply.
+	isDurableReconnect := h.DurableStore != nil &&
+		(FindCreateContext(req.CreateContexts, DurableHandleV1ReconnectTag) != nil ||
+			FindCreateContext(req.CreateContexts, DurableHandleV2ReconnectTag) != nil)
+
 	// Validate ImpersonationLevel per MS-SMB2 §2.2.13: only the four defined
 	// values are accepted (0=Anonymous, 1=Identification, 2=Impersonation,
 	// 3=Delegate). Anything else MUST be rejected with
 	// STATUS_BAD_IMPERSONATION_LEVEL. Required by smbtorture
 	// smb2.create.impersonation.
-	if req.ImpersonationLevel > 3 {
+	if !isDurableReconnect && req.ImpersonationLevel > 3 {
 		logger.Debug("CREATE: invalid impersonation level",
 			"level", fmt.Sprintf("0x%08x", req.ImpersonationLevel))
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBadImpersonationLevel}}, nil
@@ -539,7 +557,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// bit returns STATUS_INVALID_PARAMETER. Samba sets `invalid_parameter_mask
 	// = 0xff000000` in source3/smbd/smb2_create.c for these probes (smbtorture
 	// smb2.create.gentest).
-	if uint32(req.CreateOptions)&0xff000000 != 0 {
+	if !isDurableReconnect && uint32(req.CreateOptions)&0xff000000 != 0 {
 		logger.Debug("CREATE: reserved CreateOptions bits set",
 			"options", fmt.Sprintf("0x%08x", uint32(req.CreateOptions)))
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
@@ -560,7 +578,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	const unsupportedCreateOptionsMask uint32 = 0x00000080 | // bit 7  (TREE_CONNECTION)
 		uint32(types.FileOpenByFileId) | // bit 13 (0x00002000)
 		0x00100000 // bit 20 (OPFILTER)
-	if uint32(req.CreateOptions)&unsupportedCreateOptionsMask != 0 {
+	if !isDurableReconnect && uint32(req.CreateOptions)&unsupportedCreateOptionsMask != 0 {
 		logger.Debug("CREATE: unsupported CreateOptions bits set",
 			"options", fmt.Sprintf("0x%08x", uint32(req.CreateOptions)))
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported}}, nil
@@ -582,7 +600,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// accepted (no-op on DittoFS) — WPTS FSA tests probe basic-info on a file
 	// created with that attribute and require CREATE to succeed.
 	const validFileAttributesMask uint32 = 0x0000FFB7
-	if uint32(req.FileAttributes)&^validFileAttributesMask != 0 {
+	if !isDurableReconnect && uint32(req.FileAttributes)&^validFileAttributesMask != 0 {
 		logger.Debug("CREATE: invalid FileAttributes bits set",
 			"attrs", fmt.Sprintf("0x%08x", uint32(req.FileAttributes)))
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil

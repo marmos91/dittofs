@@ -537,6 +537,85 @@ func TestProcessDurableReconnectContext_V1Success(t *testing.T) {
 	}
 }
 
+// encodeV1LeaseRequestContext builds a minimal 32-byte SMB2_CREATE_REQUEST_LEASE
+// (V1) context carrying leaseKey + leaseState.
+func encodeV1LeaseRequestContext(leaseKey [16]byte, leaseState uint32) []byte {
+	data := make([]byte, LeaseV1ContextSize)
+	copy(data[:16], leaseKey[:])
+	binary.LittleEndian.PutUint32(data[16:20], leaseState)
+	return data
+}
+
+// TestProcessDurableReconnectContext_V1LeaseClientGuidMismatch verifies that a
+// V1 (DHnC) lease-backed reconnect from a different ClientGuid than the one
+// that established the durable open fails OBJECT_NAME_NOT_FOUND, mirroring
+// Samba per-(ClientGuid, LeaseKey) lease scoping. smbtorture
+// smb2.durable-open.reopen1a-lease.
+func TestProcessDurableReconnectContext_V1LeaseClientGuidMismatch(t *testing.T) {
+	store := newMockDurableStore()
+	ctx := context.Background()
+
+	fileID := [16]byte{9, 8, 7, 6, 5, 4, 3, 2, 0, 0, 0, 0, 0, 0, 0, 0}
+	leaseKey := [16]byte{0xAA, 0xBB, 0xCC, 0xDD}
+	origClientGUID := [16]byte{0x11, 0x22, 0x33, 0x44}
+	keyHash := makeSessionKeyHash("session-key-lease")
+
+	_ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:             "dh-lease-001",
+		FileID:         fileID,
+		Path:           "leased.txt",
+		ShareName:      "/share1",
+		MetadataHandle: []byte{0xDE, 0xAD},
+		OplockLevel:    OplockLevelLease,
+		LeaseKey:       leaseKey,
+		LeaseState:     uint32(lock.LeaseStateRead | lock.LeaseStateWrite | lock.LeaseStateHandle),
+		ClientGUID:     origClientGUID,
+		Username:       "alice",
+		SessionKeyHash: keyHash,
+		CreatedAt:      time.Now().Add(-5 * time.Minute),
+		DisconnectedAt: time.Now().Add(-10 * time.Second),
+		TimeoutMs:      60000,
+	})
+
+	dhnCData := make([]byte, 16)
+	copy(dhnCData[:], fileID[:])
+	contexts := []CreateContext{
+		{Name: DurableHandleV1ReconnectTag, Data: dhnCData},
+		{Name: LeaseContextTagRequest, Data: encodeV1LeaseRequestContext(leaseKey, 0)},
+	}
+
+	// Reconnect with a DIFFERENT ClientGuid → OBJECT_NAME_NOT_FOUND.
+	wrongClientGUID := [16]byte{0x99, 0x88, 0x77, 0x66}
+	_, status, err := ProcessDurableReconnectContext(
+		ctx, store, nil, contexts, 999, "alice", keyHash, "/share1", "leased.txt", wrongClientGUID, 0, 0,
+	)
+	if err != nil {
+		t.Fatalf("ProcessDurableReconnectContext error: %v", err)
+	}
+	if status != types.StatusObjectNameNotFound {
+		t.Fatalf("wrong ClientGuid: expected OBJECT_NAME_NOT_FOUND, got %s", status)
+	}
+
+	// Handle must survive a failed (non-destructive) reconnect attempt.
+	if h, _ := store.GetDurableHandle(ctx, "dh-lease-001"); h == nil {
+		t.Fatal("handle should remain after failed ClientGuid-mismatch reconnect")
+	}
+
+	// Reconnect with the ORIGINAL ClientGuid → success.
+	restored, status, err := ProcessDurableReconnectContext(
+		ctx, store, nil, contexts, 999, "alice", keyHash, "/share1", "leased.txt", origClientGUID, 0, 0,
+	)
+	if err != nil {
+		t.Fatalf("ProcessDurableReconnectContext (correct GUID) error: %v", err)
+	}
+	if status != types.StatusSuccess {
+		t.Fatalf("correct ClientGuid: expected STATUS_SUCCESS, got %s", status)
+	}
+	if restored == nil || restored.OpenFile.LeaseKey != leaseKey {
+		t.Fatal("expected restored lease-backed open with matching lease key")
+	}
+}
+
 func TestProcessDurableReconnectContext_V2Success(t *testing.T) {
 	store := newMockDurableStore()
 	ctx := context.Background()
