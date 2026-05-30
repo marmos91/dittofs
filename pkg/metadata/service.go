@@ -125,6 +125,16 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 // initLockManagerFromStore stamps a fresh server epoch and replays any locks
 // persisted by a previous run back into the lock manager. Errors are logged
 // and swallowed so a recovery failure never blocks share registration.
+//
+// Epoch double-bump on a lost-publish race (R3-5): RegisterStoreForShare runs
+// this on a local manager before publishing under s.mu, and the loser of a
+// concurrent registration drops its manager. The loser still incremented the
+// store epoch here, so two concurrent registrations of the same share advance
+// the persisted epoch by 2 instead of 1. This is harmless: the epoch is only a
+// monotonic split-brain/stale-lock marker, the surviving manager uses whatever
+// epoch it observed, and every lock it restores predates that epoch regardless
+// of the gap. Moving IncrementServerEpoch under s.mu would serialize backend IO
+// inside the service lock for no correctness gain, so the increment stays here.
 func initLockManagerFromStore(lm *LockManager, ls lock.LockStore, shareName string) {
 	ctx := context.Background()
 

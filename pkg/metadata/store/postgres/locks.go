@@ -97,8 +97,12 @@ func putLockArgs(lk *lock.PersistedLock) []interface{} {
 		lk.OwnerID,
 		lk.ClientID,
 		lk.LockType,
-		lk.Offset,
-		lk.Length,
+		// byte_offset/byte_length are NUMERIC(20) to hold the full uint64 range
+		// (NFSv4 unbounded = 0xFFFFFFFFFFFFFFFF > MaxInt64). pgx cannot encode a
+		// Go uint64 above MaxInt64 into a numeric param directly, so pass the
+		// decimal string form; postgres parses it into NUMERIC losslessly.
+		strconv.FormatUint(lk.Offset, 10),
+		strconv.FormatUint(lk.Length, 10),
 		lk.IsZeroByte,
 		lk.IsLegacyByteRange,
 		lk.AccessMode,
@@ -146,9 +150,39 @@ func (s *postgresLockStore) putLockTx(ctx context.Context, tx pgx.Tx, lk *lock.P
 // shares the scanLock destination layout.
 const selectByID = `SELECT ` + lockColumns + ` FROM locks WHERE id = $1`
 
-// scanArgs returns the Scan destination pointers for lk in lockColumns order.
-// Shared by every read path so a new column is wired in exactly one place.
-func scanArgs(lk *lock.PersistedLock) []interface{} {
+// rowScanner is satisfied by both pgx.Row (QueryRow) and pgx.Rows so a single
+// scanLock helper serves every read path.
+type rowScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+// scanLock scans one row into a PersistedLock. byte_offset/byte_length are
+// NUMERIC(20) (full uint64 range) and are scanned as decimal strings, then
+// parsed: pgx cannot scan a numeric above MaxInt64 into a Go uint64 directly.
+func scanLock(row rowScanner) (*lock.PersistedLock, error) {
+	var lk lock.PersistedLock
+	var offsetStr, lengthStr string
+	if err := row.Scan(scanArgs(&lk, &offsetStr, &lengthStr)...); err != nil {
+		return nil, err
+	}
+	off, err := strconv.ParseUint(offsetStr, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+	length, err := strconv.ParseUint(lengthStr, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+	lk.Offset = off
+	lk.Length = length
+	return &lk, nil
+}
+
+// scanArgs returns the Scan destination pointers in lockColumns order. The
+// byte_offset/byte_length NUMERIC columns scan into the caller's string holders
+// (offsetStr/lengthStr); scanLock parses them into lk.Offset/lk.Length. A new
+// column is wired in exactly one place here.
+func scanArgs(lk *lock.PersistedLock, offsetStr, lengthStr *string) []interface{} {
 	return []interface{}{
 		&lk.ID,
 		&lk.ShareName,
@@ -156,8 +190,8 @@ func scanArgs(lk *lock.PersistedLock) []interface{} {
 		&lk.OwnerID,
 		&lk.ClientID,
 		&lk.LockType,
-		&lk.Offset,
-		&lk.Length,
+		offsetStr,
+		lengthStr,
 		&lk.IsZeroByte,
 		&lk.IsLegacyByteRange,
 		&lk.AccessMode,
@@ -183,8 +217,7 @@ func scanArgs(lk *lock.PersistedLock) []interface{} {
 
 // GetLock retrieves a lock by ID.
 func (s *postgresLockStore) GetLock(ctx context.Context, lockID string) (*lock.PersistedLock, error) {
-	var lk lock.PersistedLock
-	err := s.pool.QueryRow(ctx, selectByID, lockID).Scan(scanArgs(&lk)...)
+	lk, err := scanLock(s.pool.QueryRow(ctx, selectByID, lockID))
 	if err == pgx.ErrNoRows {
 		return nil, &errors.StoreError{
 			Code:    errors.ErrLockNotFound,
@@ -196,13 +229,12 @@ func (s *postgresLockStore) GetLock(ctx context.Context, lockID string) (*lock.P
 		return nil, err
 	}
 
-	return &lk, nil
+	return lk, nil
 }
 
 // getLockTx retrieves a lock within an existing transaction.
 func (s *postgresLockStore) getLockTx(ctx context.Context, tx pgx.Tx, lockID string) (*lock.PersistedLock, error) {
-	var lk lock.PersistedLock
-	err := tx.QueryRow(ctx, selectByID, lockID).Scan(scanArgs(&lk)...)
+	lk, err := scanLock(tx.QueryRow(ctx, selectByID, lockID))
 	if err == pgx.ErrNoRows {
 		return nil, &errors.StoreError{
 			Code:    errors.ErrLockNotFound,
@@ -214,7 +246,7 @@ func (s *postgresLockStore) getLockTx(ctx context.Context, tx pgx.Tx, lockID str
 		return nil, err
 	}
 
-	return &lk, nil
+	return lk, nil
 }
 
 // DeleteLock removes a lock by ID.
@@ -298,11 +330,11 @@ func (s *postgresLockStore) ListLocks(ctx context.Context, query lock.LockQuery)
 
 	var locks []*lock.PersistedLock
 	for rows.Next() {
-		var lk lock.PersistedLock
-		if err := rows.Scan(scanArgs(&lk)...); err != nil {
+		lk, err := scanLock(rows)
+		if err != nil {
 			return nil, err
 		}
-		locks = append(locks, &lk)
+		locks = append(locks, lk)
 	}
 
 	return locks, rows.Err()
@@ -320,11 +352,11 @@ func (s *postgresLockStore) listLocksTx(ctx context.Context, tx pgx.Tx, query lo
 
 	var locks []*lock.PersistedLock
 	for rows.Next() {
-		var lk lock.PersistedLock
-		if err := rows.Scan(scanArgs(&lk)...); err != nil {
+		lk, err := scanLock(rows)
+		if err != nil {
 			return nil, err
 		}
-		locks = append(locks, &lk)
+		locks = append(locks, lk)
 	}
 
 	return locks, rows.Err()

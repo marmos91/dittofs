@@ -2,6 +2,9 @@ package lock
 
 import (
 	"context"
+	"fmt"
+	"math/rand"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -366,6 +369,251 @@ func TestLock_StampsClientIDForCleanup(t *testing.T) {
 	persisted, err = store.ListLocks(ctx, LockQuery{})
 	require.NoError(t, err)
 	require.Empty(t, persisted, "DeleteLocksByClient must match and remove the byte-range lock")
+}
+
+// TestLock_StackedAfterRestart_NoPersistIDCollision pins R3-2: lockSeq reset
+// to 0 on a fresh Manager and RestoreLocks never restored it, so a new stacked
+// lock regenerated a persistID identical to a restored one. The id-keyed
+// PutLock upsert then overwrote the restored record, resurrecting the
+// stacked-unlock data-loss bug. With UUID persist IDs there is no collision
+// surface across restarts.
+//
+// Scenario: stack 2 identical SMB shared locks pre-restart, restore into a
+// fresh manager, stack a 3rd identical lock, then unlock one — the store must
+// hold 3 distinct records before the unlock and exactly 2 after.
+func TestLock_StackedAfterRestart_NoPersistIDCollision(t *testing.T) {
+	ctx := context.Background()
+	store := newMockLockStore()
+
+	mgr := NewManager()
+	mgr.SetLockStore(store)
+	mgr.SetShareName("share-a")
+
+	const handleKey = "share-a:file-stack-restart"
+	fl := FileLock{
+		SessionID: 7,
+		OpenID:    "open-1", // SMB per-open => stacking semantics
+		Offset:    100,
+		Length:    50,
+		Exclusive: false, // shared locks stack
+	}
+	// Pre-restart: stack two identical shared locks.
+	require.NoError(t, mgr.Lock(handleKey, fl))
+	require.NoError(t, mgr.Lock(handleKey, fl))
+
+	persisted, err := store.ListLocks(ctx, LockQuery{ShareName: "share-a"})
+	require.NoError(t, err)
+	require.Len(t, persisted, 2, "two stacked records pre-restart")
+
+	// Simulate restart: fresh manager (lockSeq would reset to 0), restore.
+	fresh := NewManager()
+	fresh.SetLockStore(store)
+	fresh.SetShareName("share-a")
+	require.NoError(t, fresh.RestoreLocks(persisted))
+	require.Len(t, fresh.ListLocks(handleKey), 2, "two restored stacked locks")
+
+	// Stack a 3rd identical lock post-restart. A deterministic seq-based
+	// persistID would collide with a restored record here and overwrite it.
+	require.NoError(t, fresh.Lock(handleKey, fl))
+	require.Len(t, fresh.ListLocks(handleKey), 3, "three stacked locks in memory")
+
+	persisted, err = store.ListLocks(ctx, LockQuery{ShareName: "share-a"})
+	require.NoError(t, err)
+	require.Len(t, persisted, 3, "all three stacked locks must persist as DISTINCT records (no collision)")
+
+	ids := map[string]bool{}
+	for _, pl := range persisted {
+		ids[pl.ID] = true
+	}
+	require.Len(t, ids, 3, "persist IDs must be distinct across the restart boundary")
+
+	// Unlock ONE: two in-memory entries remain, so exactly two persisted too.
+	require.NoError(t, fresh.Unlock(handleKey, "open-1", 7, 100, 50))
+	require.Len(t, fresh.ListLocks(handleKey), 2, "two stacked locks remain in memory")
+
+	persisted, err = store.ListLocks(ctx, LockQuery{ShareName: "share-a"})
+	require.NoError(t, err)
+	require.Len(t, persisted, 2, "exactly two persisted records survive the partial unlock")
+}
+
+// TestUpgradeLock_PersistsAndReloads pins R3-3: UpgradeLock flipped a shared
+// lock to exclusive in memory but emitted no persist, so the upgrade was lost
+// on restart — the lock reverted to shared and a reader could be wrongly
+// granted against an intended-exclusive lock.
+func TestUpgradeLock_PersistsAndReloads(t *testing.T) {
+	ctx := context.Background()
+	store := newMockLockStore()
+
+	mgr := NewManager()
+	mgr.SetLockStore(store)
+	mgr.SetShareName("share-a")
+
+	const handleKey = "share-a:file-upgrade"
+	owner := LockOwner{OwnerID: "nlm:client-u", ClientID: "client-u", ShareName: "share-a"}
+	ul := &UnifiedLock{
+		ID:         "upgrade-lock-1",
+		Owner:      owner,
+		FileHandle: FileHandle(handleKey),
+		Offset:     0,
+		Length:     100,
+		Type:       LockTypeShared,
+	}
+	require.NoError(t, mgr.AddUnifiedLock(handleKey, ul))
+
+	// Upgrade shared -> exclusive.
+	upgraded, err := mgr.UpgradeLock(handleKey, owner, 0, 100)
+	require.NoError(t, err)
+	require.Equal(t, LockTypeExclusive, upgraded.Type)
+
+	// The persisted record must reflect the upgraded (exclusive) type.
+	persisted, err := store.ListLocks(ctx, LockQuery{ShareName: "share-a"})
+	require.NoError(t, err)
+	require.Len(t, persisted, 1)
+	require.Equal(t, int(LockTypeExclusive), persisted[0].LockType,
+		"persisted lock must reflect the upgrade, not the pre-upgrade shared type")
+
+	// After restart the lock must still be exclusive.
+	fresh := NewManager()
+	fresh.SetLockStore(store)
+	require.NoError(t, fresh.RestoreLocks(persisted))
+	restored := fresh.ListUnifiedLocks(handleKey)
+	require.Len(t, restored, 1)
+	require.Equal(t, LockTypeExclusive, restored[0].Type,
+		"upgraded lock must restore as exclusive, not revert to shared")
+}
+
+// TestLockManager_ConcurrentStorm_StoreMatchesMemory is the permanent net for
+// the ordering bug class (R3-1). N goroutines concurrently Lock/Unlock/Upgrade/
+// AddUnifiedLock/RemoveUnifiedLock on overlapping ranges of the same handle
+// through a Manager backed by a real (mock) LockStore. A restart is then
+// simulated (snapshot store -> fresh Manager -> RestoreLocks) and the invariant
+// is asserted: for every in-memory lock there is exactly one matching store
+// record and vice versa (no orphans, no resurrections).
+//
+// Run under -race repeatedly. Because persistence is synchronous under lm.mu,
+// the store can never diverge from memory by reorder.
+func TestLockManager_ConcurrentStorm_StoreMatchesMemory(t *testing.T) {
+	store := newMockLockStore()
+
+	mgr := NewManager()
+	mgr.SetLockStore(store)
+	mgr.SetShareName("share-storm")
+
+	const handleKey = "share-storm:file-storm"
+
+	const (
+		goroutines = 12
+		iterations = 200
+	)
+
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(seed int) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(int64(seed)))
+			openID := fmt.Sprintf("open-%d", seed)
+			owner := LockOwner{
+				OwnerID:   fmt.Sprintf("nlm:client-%d", seed),
+				ClientID:  fmt.Sprintf("client-%d", seed),
+				ShareName: "share-storm",
+			}
+			for i := 0; i < iterations; i++ {
+				off := uint64(rng.Intn(8)) * 10
+				length := uint64(rng.Intn(4)+1) * 10
+				switch rng.Intn(5) {
+				case 0:
+					_ = mgr.Lock(handleKey, FileLock{
+						SessionID: uint64(seed),
+						OpenID:    openID,
+						Offset:    off,
+						Length:    length,
+						Exclusive: rng.Intn(2) == 0,
+						ClientID:  owner.ClientID,
+					})
+				case 1:
+					_ = mgr.Unlock(handleKey, openID, uint64(seed), off, length)
+				case 2:
+					_ = mgr.AddUnifiedLock(handleKey, &UnifiedLock{
+						ID:         fmt.Sprintf("ul-%d-%d", seed, i),
+						Owner:      owner,
+						FileHandle: FileHandle(handleKey),
+						Offset:     off,
+						Length:     length,
+						Type:       LockTypeShared,
+					})
+				case 3:
+					_ = mgr.RemoveUnifiedLock(handleKey, owner, off, length)
+				case 4:
+					_, _ = mgr.UpgradeLock(handleKey, owner, off, length)
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	// Simulate a restart: snapshot the store, restore into a fresh manager,
+	// and assert the restored in-memory state matches the store exactly.
+	ctx := context.Background()
+	snapshot, err := store.ListLocks(ctx, LockQuery{ShareName: "share-storm"})
+	require.NoError(t, err)
+
+	fresh := NewManager()
+	fresh.SetLockStore(store)
+	fresh.SetShareName("share-storm")
+	require.NoError(t, fresh.RestoreLocks(snapshot))
+
+	// Collect persist IDs from the store snapshot.
+	storeIDs := map[string]bool{}
+	for _, pl := range snapshot {
+		require.False(t, storeIDs[pl.ID], "store must not hold duplicate persist IDs")
+		storeIDs[pl.ID] = true
+	}
+
+	// Collect persist IDs the live manager currently holds in memory. Each
+	// in-memory lock must have exactly one matching store record (no orphans),
+	// and every store record must map to an in-memory lock (no resurrections).
+	memIDs := liveManagerPersistIDs(mgr, handleKey)
+
+	for id := range memIDs {
+		require.True(t, storeIDs[id],
+			"in-memory lock %s has no store record (lost persist / reorder)", id)
+	}
+	for id := range storeIDs {
+		require.True(t, memIDs[id],
+			"store record %s has no in-memory lock (orphan / resurrection)", id)
+	}
+	require.Equal(t, len(memIDs), len(storeIDs),
+		"store record count must equal in-memory lock count after the storm")
+}
+
+// legacyPersistIDsForTest returns the persist IDs of the legacy byte-range
+// locks held for handleKey. Same-package test accessor for the unexported
+// persistID field, used by the concurrency-storm invariant check.
+func (lm *Manager) legacyPersistIDsForTest(handleKey string) []string {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	var ids []string
+	for i := range lm.locks[handleKey] {
+		ids = append(ids, lm.locks[handleKey][i].persistID)
+	}
+	return ids
+}
+
+// liveManagerPersistIDs returns the set of persist IDs the manager currently
+// holds in memory for handleKey, across both the legacy byte-range map and the
+// unified-lock map. Byte-range entries expose their persist ID via the
+// unexported persistID field, which this same-package test can read through a
+// helper on Manager.
+func liveManagerPersistIDs(mgr *Manager, handleKey string) map[string]bool {
+	ids := map[string]bool{}
+	for _, id := range mgr.legacyPersistIDsForTest(handleKey) {
+		ids[id] = true
+	}
+	for _, ul := range mgr.ListUnifiedLocks(handleKey) {
+		ids[ul.ID] = true
+	}
+	return ids
 }
 
 // TestRestoreLocks_ByteRangeEnforcedAfterRestart verifies HIGH-5: byte-range
