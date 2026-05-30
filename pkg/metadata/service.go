@@ -4,10 +4,15 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
+
+// DefaultLockGracePeriod is the fallback lock-manager grace period applied when
+// no duration is configured. Mirrors the conventional NLM/NFSv4 grace window.
+const DefaultLockGracePeriod = 90 * time.Second
 
 // MetadataService provides all metadata operations for the filesystem.
 //
@@ -41,6 +46,30 @@ type MetadataService struct {
 	deferredCommit     bool                              // if true, use deferred commits (default: true)
 	cookies            *CookieManager                    // NFS/SMB cookie to store token translation
 	quotas             map[string]int64                  // shareName -> quota in bytes (0 = unlimited)
+
+	// graceDuration is the lock-manager grace period applied to shares whose
+	// stores carry persisted locks at registration. Zero means use the default.
+	graceDuration time.Duration
+
+	// graceCoordinator, if set, is invoked when a share's lock-manager grace
+	// period starts and ends. It lets the NFS adapter drive the SEPARATE NFSv4
+	// StateManager grace machine in lockstep with the lock-manager grace machine
+	// so both enter and exit together. Registered via SetGraceCoordinator.
+	graceCoordinator GraceCoordinator
+}
+
+// GraceCoordinator couples the lock-manager grace period with another grace
+// machine (the NFSv4 StateManager). When a share recovers persisted locks at
+// registration the lock manager enters grace and OnLockGraceStart fires; when
+// that grace window ends (timer, early-exit, or sweep) OnLockGraceEnd fires.
+// Implementations must be safe for concurrent use and must not block.
+type GraceCoordinator interface {
+	// OnLockGraceStart is called when a share's lock-manager grace period begins.
+	// expectedClients are the client IDs recovered from persisted locks.
+	OnLockGraceStart(expectedClients []string)
+
+	// OnLockGraceEnd is called when a share's lock-manager grace period ends.
+	OnLockGraceEnd()
 }
 
 // New creates a new empty MetadataService instance.
@@ -66,6 +95,27 @@ func (s *MetadataService) SetDeferredCommit(enabled bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.deferredCommit = enabled
+}
+
+// SetLockGracePeriod sets the grace period applied to per-share lock managers
+// that recover persisted locks at registration. A non-positive duration falls
+// back to DefaultLockGracePeriod. Must be called before RegisterStoreForShare
+// to affect a given share.
+func (s *MetadataService) SetLockGracePeriod(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.graceDuration = d
+}
+
+// SetGraceCoordinator registers the coordinator that couples lock-manager grace
+// with the NFSv4 StateManager grace machine. It may be installed after shares
+// register (the NFS adapter does so during SetRuntime): the grace-end callback
+// reads the coordinator live, and the adapter catches up the start side for
+// shares already in grace, so registration order does not matter.
+func (s *MetadataService) SetGraceCoordinator(c GraceCoordinator) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.graceCoordinator = c
 }
 
 // RegisterStoreForShare associates a metadata store with a share.
@@ -94,17 +144,42 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 		return nil
 	}
 
+	// Snapshot grace config under s.mu (read once; both fields are set before
+	// any RegisterStoreForShare call per their doc contract).
+	s.mu.Lock()
+	graceDuration := s.graceDuration
+	graceCoordinator := s.graceCoordinator
+	s.mu.Unlock()
+	if graceDuration <= 0 {
+		graceDuration = DefaultLockGracePeriod
+	}
+
 	// Build and fully recover the lock manager on a local var BEFORE publishing
 	// it into s.lockManagers. Recovery (epoch bump + ListLocks + replay) issues
 	// backend IO, so it runs outside s.mu — but it must complete before the
 	// manager is observable: a concurrent GetLockManagerForShare that saw an
 	// empty, unrecovered manager could grant a lock conflicting with a
 	// not-yet-restored one. Publishing only after recovery closes that window.
-	lm := NewLockManager()
+	//
+	// Grace is built on this same local manager before publishing: a manager
+	// must never be observable in a window where it has restored conflicting
+	// locks but not yet entered grace (it would admit a stealing new lock).
+	var lm *LockManager
 	if ls, ok := store.(lock.LockStore); ok {
+		lm = s.newGraceAwareLockManager(graceDuration)
 		lm.SetLockStore(ls)
 		lm.SetShareName(shareName)
-		initLockManagerFromStore(lm, ls, shareName)
+		expectedClients := initLockManagerFromStore(lm, ls, shareName)
+		// Only enter grace if a previous run left locks to reclaim. A fresh
+		// server (no persisted locks) starts in normal operation.
+		if len(expectedClients) > 0 {
+			lm.EnterGracePeriod(expectedClients)
+			if graceCoordinator != nil {
+				graceCoordinator.OnLockGraceStart(expectedClients)
+			}
+		}
+	} else {
+		lm = NewLockManager()
 	}
 
 	s.mu.Lock()
@@ -112,6 +187,11 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 	// Re-check: another caller may have raced us to register this share while
 	// we recovered outside the lock. First publisher wins; drop our manager.
 	if _, exists := s.lockManagers[shareName]; exists {
+		// Our manager may have armed a grace timer above. It was never
+		// published, so abort that timer without firing onGraceEnd — letting it
+		// run would sweep the surviving manager's locks from the shared store
+		// and prematurely end the NFSv4 grace machine.
+		lm.AbortGracePeriod()
 		return nil
 	}
 	s.lockManagers[shareName] = lm
@@ -135,7 +215,11 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 // epoch it observed, and every lock it restores predates that epoch regardless
 // of the gap. Moving IncrementServerEpoch under s.mu would serialize backend IO
 // inside the service lock for no correctness gain, so the increment stays here.
-func initLockManagerFromStore(lm *LockManager, ls lock.LockStore, shareName string) {
+//
+// It returns the unique set of client IDs recovered from the persisted locks.
+// The caller uses this set as the grace period's expected-reclaim roster: grace
+// is entered only when it is non-empty (a previous run left locks to reclaim).
+func initLockManagerFromStore(lm *LockManager, ls lock.LockStore, shareName string) []string {
 	ctx := context.Background()
 
 	epoch, err := ls.IncrementServerEpoch(ctx)
@@ -148,16 +232,79 @@ func initLockManagerFromStore(lm *LockManager, ls lock.LockStore, shareName stri
 	persisted, err := ls.ListLocks(ctx, lock.LockQuery{ShareName: shareName})
 	if err != nil {
 		logger.Error("lock recovery: failed to list persisted locks", "share", shareName, "error", err)
-		return
+		return nil
 	}
 	if len(persisted) == 0 {
-		return
+		return nil
 	}
 	if err := lm.RestoreLocks(persisted); err != nil {
 		logger.Error("lock recovery: failed to restore persisted locks", "share", shareName, "error", err)
-		return
+		return nil
 	}
-	logger.Info("lock recovery: restored persisted locks", "share", shareName, "count", len(persisted), "epoch", epoch)
+
+	// Collect the unique client IDs that held locks before the restart; these
+	// are the clients the grace period waits on for reclaim.
+	seen := make(map[string]struct{}, len(persisted))
+	clients := make([]string, 0, len(persisted))
+	for _, pl := range persisted {
+		if pl.ClientID == "" {
+			continue
+		}
+		if _, dup := seen[pl.ClientID]; dup {
+			continue
+		}
+		seen[pl.ClientID] = struct{}{}
+		clients = append(clients, pl.ClientID)
+	}
+
+	logger.Info("lock recovery: restored persisted locks",
+		"share", shareName, "count", len(persisted), "epoch", epoch, "clients", len(clients))
+	return clients
+}
+
+// newGraceAwareLockManager builds a lock manager whose grace period sweeps any
+// locks left unreclaimed when the grace window ends and notifies the grace
+// coordinator so the NFSv4 StateManager grace machine exits in lockstep.
+//
+// The onGraceEnd callback is best-effort: a client that did not reclaim within
+// the window has its stale persisted+in-memory locks dropped (RemoveClientLocks),
+// matching the X/Open NLMv4 contract that unreclaimed state is forfeited once
+// grace ends.
+//
+// The coordinator is read LIVE from the service when the window ends, not
+// captured at construction: the NFS adapter installs it (SetGraceCoordinator)
+// during SetRuntime, which runs AFTER shares register at startup. A manager
+// built before the adapter exists must still notify the coordinator once it is
+// installed, or the v4 grace machine would never be ended in lockstep.
+func (s *MetadataService) newGraceAwareLockManager(duration time.Duration) *LockManager {
+	// lm and gpm are captured by the onGraceEnd closure below. The closure only
+	// runs after EnterGracePeriod arms the timer, by which point both are set.
+	var lm *LockManager
+
+	gpm := lock.NewGracePeriodManager(duration, func() {
+		if lm != nil {
+			reclaimed := make(map[string]struct{})
+			for _, c := range lm.GetReclaimedClients() {
+				reclaimed[c] = struct{}{}
+			}
+			for _, c := range lm.GetExpectedClients() {
+				if _, ok := reclaimed[c]; ok {
+					continue
+				}
+				logger.Info("grace period: sweeping unreclaimed locks", "client", c)
+				lm.RemoveClientLocks(c)
+			}
+		}
+		s.mu.RLock()
+		coordinator := s.graceCoordinator
+		s.mu.RUnlock()
+		if coordinator != nil {
+			coordinator.OnLockGraceEnd()
+		}
+	})
+
+	lm = lock.NewManagerWithGracePeriod(gpm)
+	return lm
 }
 
 // GetStoreForShare returns the metadata store for a specific share.

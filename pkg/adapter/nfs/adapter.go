@@ -389,6 +389,20 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	nlmSvc := s.createRoutingNLMService(metadataService)
 	s.nlmHandler = nlm_handlers.NewHandler(nlmSvc, s.blockingQueue)
 
+	// Couple the NFSv4 StateManager grace machine to the per-share lock-manager
+	// grace machine so both enter/exit the post-restart window together. Shares
+	// loaded at boot are registered BEFORE this adapter exists, so the lock
+	// manager may already be in grace; we both (a) register the coordinator for
+	// any share added later and (b) catch up the v4 machine for shares already
+	// in grace at startup.
+	graceCoord := &nfsGraceCoordinator{sm: v4StateManager}
+	metadataService.SetGraceCoordinator(graceCoord)
+	for _, shareName := range rt.ListShares() {
+		if lm := metadataService.GetLockManagerForShare(shareName); lm != nil && lm.IsInGracePeriod() {
+			graceCoord.OnLockGraceStart(lm.GetExpectedClients())
+		}
+	}
+
 	// Initialize NSM handler for crash recovery
 	// NSM uses the ConnectionTracker from the MetadataService and ClientRegistrationStore
 	s.initNSMHandler(rt, metadataService)
