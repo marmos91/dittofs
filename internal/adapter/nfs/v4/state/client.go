@@ -59,6 +59,12 @@ type ClientRecord struct {
 	// ClientAddr is the network address of the client (for logging/debugging).
 	ClientAddr string
 
+	// Principal is the RPCSEC_GSS / AUTH_SYS principal that established this
+	// client (best-effort; "uid:N" for AUTH_SYS, the GSS principal otherwise,
+	// "" when unknown). Captured at SETCLIENTID and persisted into the durable
+	// client-recovery record at confirm time as a lease-stealing guard.
+	Principal string
+
 	// CreatedAt is when this record was created.
 	CreatedAt time.Time
 

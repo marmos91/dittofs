@@ -372,6 +372,32 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	// Expose StateManager to REST API via runtime (for /clients endpoint and /health server info)
 	rt.SetNFSClientProvider(v4StateManager)
 
+	// Designate a server-global durable client-recovery store (area-4 H8): the
+	// first share's metadata store implementing lock.ClientRecoveryStore,
+	// mirroring the NSM ClientRegistrationStore designation. NFSv4 clientids are
+	// not owned by any one share, so the chosen store backs the whole server.
+	var recoveryStore lock.ClientRecoveryStore
+	for _, shareName := range rt.ListShares() {
+		store, err := rt.GetMetadataStoreForShare(shareName)
+		if err != nil {
+			continue
+		}
+		if crs, ok := store.(lock.ClientRecoveryStore); ok {
+			recoveryStore = crs
+			break
+		}
+	}
+	if recoveryStore != nil {
+		v4StateManager.SetClientRecoveryStore(recoveryStore, uint64(v4StateManager.BootEpoch()))
+		// On boot, load the durable prior-client set and seed the v4 grace
+		// expected-reclaim roster (records already reclaim-complete are excluded).
+		// This is what gives the previously-no-op v4 grace a real expected set
+		// after an ungraceful restart. With an empty/fresh store the roster is
+		// empty and grace is skipped, exactly as on develop today.
+		n := v4StateManager.LoadClientRecovery(context.Background())
+		logger.Debug("NFSv4 client-recovery store designated", "boot_loaded_clients", n)
+	}
+
 	// Register callback to rebuild pseudo-fs when shares change (add/remove).
 	// Registered before the initial share loop so no share created between the
 	// loop and subscription is missed.
