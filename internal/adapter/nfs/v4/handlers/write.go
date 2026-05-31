@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -122,11 +123,13 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 		}
 	}
 
-	// Validate stateid via StateManager
-	// Special stateids (all-zeros, all-ones) bypass validation.
-	// Real stateids are validated for correctness (seqid, epoch, filehandle match).
-	// Implicit lease renewal happens inside ValidateStateid for real stateids.
-	openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH)
+	// Validate stateid via StateManager for a write-family operation.
+	// The anonymous (all-zeros) special stateid is permitted; the READ-bypass
+	// (all-ones) special stateid is rejected with NFS4ERR_BAD_STATEID because it
+	// is READ-only (RFC 7530 Section 9.1.4.3). Real stateids are validated for
+	// correctness (seqid, epoch, filehandle match); implicit lease renewal
+	// happens inside ValidateStateid for real stateids.
+	openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpWrite)
 	if stateErr != nil {
 		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 WRITE stateid validation failed",
