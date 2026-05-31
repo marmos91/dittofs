@@ -234,9 +234,6 @@ shape that reauth4 actually exercises.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.session.reauth5 | Sessions | Upstream Samba knownfail (`selftest/knownfail:213`): smb2_util_unlink(nonexistent) asserts NT_STATUS_OK, server returns OBJECT_NAME_NOT_FOUND. Beyond #772's handle-identity binding scope | #772 |
-| smb2.session.anon-encryption1 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #773 |
-| smb2.session.anon-encryption2 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #773 |
-| smb2.session.anon-encryption3 | Sessions | Pre-existing: anonymous SESSION_SETUP returns INVALID_PARAMETER instead of OK | #773 |
 
 ### Replay Protection (Not Implemented)
 
@@ -323,7 +320,6 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.dosmode | Samba server-config | Exercises Samba `smb.conf` `hide files = /*hidefile*/` glob-pattern hiding alongside HIDDEN-attribute round-trip. DittoFS supports the MS-FSCC HIDDEN attribute end-to-end (SET_INFO/GET_INFO round-trip, OVERWRITE_IF attribute-mismatch → ACCESS_DENIED, dot-prefix auto-hide) but does not implement Samba's `hide files` filename-glob config knob — that is a Samba server-side filter, not part of MS-FSCC/MS-SMB2. The test's `hidefile` subcase requires this glob. |
 | smb2.setinfo | EA persistence | Drives SET_INFO BasicInfo / DispositionInfo / AllocationInfo / EndOfFile / PositionInfo / ModeInfo / SecurityDescriptor (all working in DittoFS) and then asserts SET_INFO `FileFullEaInformation` writes survive a GET_INFO `SMB2_ALL_EAS` round-trip. DittoFS does not persist extended attributes; the SET returns SUCCESS as a no-op for ChangeNotify-EA wiring. Persistent EA storage is a separate design item from the SET_INFO surface this test otherwise covers, and is not tracked under a dedicated open issue today. |
 | smb2.timestamp_resolution.resolution1 | Timing-dependent (upstream-skipped) | Test source documents `~15ms` Windows timestamp resolution and warns of a `1/15` false-fail rate even on a low-latency reference SMB connection. Explicitly skipped by Samba's own selftest (`selftest/skip:69-70`: `^samba3.smb2.timestamp_resolution` / `^samba4.smb2.timestamp_resolution`) "preserved here for future SMB2 timestamps behaviour archaeologists". DittoFS classifies the same way upstream does. |
-| smb2.create.blob | Create-context coverage (upstream-skipped) | Walks 20+ adversarial CreateContext tag/length combinations against a file-backed share. Explicitly listed in Samba's own selftest knownfail (`selftest/knownfail`: `^samba3.smb2.create.blob`) — fails against Samba's own smb3-file backend, not just DittoFS. Implementing all variants requires duplicating Samba's smb1-derived create-context corner cases that have no MS-SMB2 spec mapping. |
 | smb2.create.gentest | Generative impersonation matrix (upstream-skipped) | Brute-forces hundreds of `(create_disposition × create_options × ImpersonationLevel × attribute)` combinations expecting Windows-exact status codes. Explicitly listed in Samba's own selftest knownfail (`selftest/knownfail`: `^samba3.smb2.create.gentest`) — fails on Samba file-backed shares. The status-code surface mirrors Windows-internal IRP_MJ_CREATE behaviour, not MS-FSA. |
 | smb2.durable-open.delete_on_close2 | Durable DOC (upstream-skipped) | Reopens a durable handle that was opened with FILE_DELETE_ON_CLOSE, then asserts the post-reconnect delete-on-close + truncate-on-overwrite interaction matches Windows verbatim. Explicitly listed in Samba's own selftest knownfail (`selftest/knownfail`: `^samba3.smb2.durable-open.delete_on_close2`) — fails against Samba's own file-backed share, not just DittoFS. The disconnect path intentionally does NOT persist a durable handle carrying delete-on-close (the open is fully closed instead, so the stored content is not resurrected on reconnect); reproducing the exact Windows ordering of DOC-survives-reconnect has no MS-SMB2 spec mapping and is upstream-skipped. |
 | smb2.maxfid | smbtorture wall-clock budget | Test issues up to 65520 sequential synchronous CREATEs (Samba `source4/torture/smb2/maxfid.c:100`, controlled by `torture:maxopenfiles`). Total RTT-bound runtime exceeds the 60s per-test wall set by `run.sh` (STANDALONE_TESTS). DittoFS keeps CREATE succeeding throughout (no protocol-level handle-table cap), so the suite is killed mid-loop before reaching the cleanup phase. Raising the per-test wall to accommodate one stress test inflates full-suite runtime substantially without exercising a protocol gap. |
@@ -336,6 +332,19 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-31 — stale-row harvest: 4 rows already passing
+
+CI smbtorture confirmed `success:` across two consecutive runs (#908 + #910) for
+tests still listed as expected-fail — their fixes shipped earlier but the rows
+were never walked back:
+
+- `smb2.session.anon-encryption1` / `2` / `3` (#773 — closed; anon SESSION_SETUP now returns OK)
+- `smb2.create.blob` (#739 create-context coverage — now passes against DittoFS)
+
+`smb2.kernel-oplocks.kernel_oplocks4` also passed both runs but is left in place —
+the kernel-oplocks family is environment-dependent and removing it risks a future
+flake registering as a new failure.
 
 ### 2026-05-31 — #739 nonstat-and-lease: 1 row flipped
 
