@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -893,4 +894,257 @@ func TestReopen2_V2LeaseV2_JunkAccess_E2E(t *testing.T) {
 		func(fid, cg, lk [16]byte) []CreateContext {
 			return []CreateContext{dh2cContext(fid, cg), rwhLeaseCtx(lk)}
 		})
+}
+
+// takeExclusiveLock records an exclusive byte-range lock on the open's backing
+// file under the open's OpenID, exactly as the LOCK handler does. Used to model
+// the held byte-range lock in smb2.durable-v2-open.lock-{oplock,lease}.
+func (e *reopen2Env) takeExclusiveLock(t *testing.T, of *OpenFile, sessionID uint64, offset, length uint64) {
+	t.Helper()
+	metaSvc := e.h.Registry.GetMetadataService()
+	fl := metadata.FileLock{
+		SessionID:  sessionID,
+		OpenID:     of.OpenID(),
+		ClientID:   "smb:lock-test",
+		Offset:     offset,
+		Length:     length,
+		Exclusive:  true,
+		AcquiredAt: time.Now(),
+	}
+	if err := metaSvc.LockFile(rootAuthCtx(), of.MetadataHandle, fl); err != nil {
+		t.Fatalf("LockFile: %v", err)
+	}
+	of.HasByteRangeLocks.Store(true)
+}
+
+// lockHeldUnderOpenID reports whether a byte-range lock exists on the file under
+// the given OpenID — i.e. the lock survived disconnect and the reconnect restored
+// the same OpenID (so a subsequent UNLOCK can find it).
+func (e *reopen2Env) lockHeldUnderOpenID(metaHandle []byte, openID string) bool {
+	lm, err := e.h.Registry.GetMetadataService().GetLockManagerForHandle(metaHandle)
+	if err != nil || lm == nil {
+		return false
+	}
+	for _, fl := range lm.ListLocks(string(metaHandle)) {
+		if fl.OpenID == openID {
+			return true
+		}
+	}
+	return false
+}
+
+// TestReopen2_LockLease_RestoresLeaseAndKeepsLock covers
+// smb2.durable-v2-open.lock-lease: open(RWH lease, durable-v2), take an
+// exclusive byte-range lock, disconnect, reconnect. The reconnect MUST restore
+// the lease at RWH (the lease re-grant must NOT be suppressed by the still-held
+// byte-range lock) AND the lock must survive under the restored OpenID so the
+// client's subsequent UNLOCK succeeds.
+func TestReopen2_LockLease_RestoresLeaseAndKeepsLock(t *testing.T) {
+	e := setupReopen2Env(t)
+
+	leaseKey := [16]byte{0x4C, 0x4B, 0x4C, 0x4C} // "LKLL"
+	createGuid := [16]byte{0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF}
+
+	const sessionID = uint64(50)
+	_, of := e.initialLeaseDurableOpen(t, sessionID, leaseKey, []CreateContext{dh2qContext(createGuid, 60000)})
+	persistedFileID := of.FileID
+	origOpenID := of.OpenID()
+
+	// Hold an exclusive BRL [0,1), as the test does before disconnect.
+	e.takeExclusiveLock(t, of, sessionID, 0, 1)
+	if !e.lockHeldUnderOpenID(of.MetadataHandle, origOpenID) {
+		t.Fatal("setup: lock not recorded under original OpenID")
+	}
+
+	e.disconnect(sessionID)
+
+	const sessionID2 = uint64(51)
+	e.h.CreateSessionWithID(sessionID2, "127.0.0.1:2", false, "alice", "WORKGROUP")
+	rcCtx := e.makeSMBCtx(sessionID2)
+	rcResp, err := e.h.Create(rcCtx, &CreateRequest{
+		FileName:          "durable.txt",
+		DesiredAccess:     0x001F01FF,
+		ShareAccess:       0x07,
+		CreateDisposition: types.FileOpen,
+		OplockLevel:       OplockLevelLease,
+		CreateContexts: []CreateContext{
+			dh2cContext(persistedFileID, createGuid),
+			rwhLeaseCtx(leaseKey),
+		},
+	})
+	if err != nil {
+		t.Fatalf("reconnect Create error: %v", err)
+	}
+	assertLeaseReconnect(t, rcResp, leaseKey, true)
+
+	// The lock must still be present under the restored OpenID (FileID), or the
+	// client's UNLOCK on the reconnected handle would fail RANGE_NOT_LOCKED.
+	rof, ok := e.h.GetOpenFile(rcResp.FileID)
+	if !ok {
+		t.Fatal("reconnect: OpenFile not registered")
+	}
+	if !e.lockHeldUnderOpenID(rof.MetadataHandle, rof.OpenID()) {
+		t.Errorf("reconnect: byte-range lock lost (OpenID %s) — UNLOCK would fail", rof.OpenID())
+	}
+}
+
+// TestReopen2_LockOplock_RestoresBatchAndKeepsLock covers
+// smb2.durable-v2-open.lock-oplock: open(BATCH oplock, durable-v2), take an
+// exclusive byte-range lock, disconnect, reconnect. The reconnect MUST restore
+// OplockLevel=Batch (not None) and keep the byte-range lock under the restored
+// OpenID.
+func TestReopen2_LockOplock_RestoresBatchAndKeepsLock(t *testing.T) {
+	e := setupReopen2Env(t)
+
+	createGuid := [16]byte{0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF}
+
+	metaSvc := e.h.Registry.GetMetadataService()
+	rootHandle, _ := e.h.Registry.GetRootHandle(e.tree.ShareName)
+	file, _, _ := e.h.lookupCaseInsensitive(rootAuthCtx(), metaSvc, rootHandle, "durable.txt")
+	existingHandle, _ := metadata.EncodeFileHandle(file)
+
+	const sessionID = uint64(60)
+	e.h.CreateSessionWithID(sessionID, "127.0.0.1:1", false, "alice", "WORKGROUP")
+	smbCtx := e.makeSMBCtx(sessionID)
+
+	draft := &createDraft{
+		req: &CreateRequest{
+			FileName:          "durable.txt",
+			DesiredAccess:     0x001F01FF,
+			ShareAccess:       0x07,
+			CreateDisposition: types.FileOpen,
+			OplockLevel:       OplockLevelBatch,
+			CreateContexts:    []CreateContext{dh2qContext(createGuid, 60000)},
+		},
+		tree:           e.tree,
+		authCtx:        rootAuthCtx(),
+		filename:       "durable.txt",
+		baseName:       "durable.txt",
+		parentHandle:   rootHandle,
+		existingFile:   file,
+		existingHandle: existingHandle,
+		fileExists:     true,
+		createAction:   types.FileOpened,
+	}
+	resp := e.h.completeCreateAfterBreak(smbCtx, draft)
+	if resp.Status != types.StatusSuccess {
+		t.Fatalf("initial open: status=0x%08x", uint32(resp.Status))
+	}
+	of, ok := e.h.GetOpenFile(resp.FileID)
+	if !ok {
+		t.Fatal("initial open: OpenFile not registered")
+	}
+	if of.OplockLevel != OplockLevelBatch {
+		t.Fatalf("initial open: OplockLevel = 0x%02x, want Batch", of.OplockLevel)
+	}
+	persistedFileID := of.FileID
+	origOpenID := of.OpenID()
+
+	e.takeExclusiveLock(t, of, sessionID, 0, 1)
+
+	e.disconnect(sessionID)
+
+	const sessionID2 = uint64(61)
+	e.h.CreateSessionWithID(sessionID2, "127.0.0.1:2", false, "alice", "WORKGROUP")
+	rcCtx := e.makeSMBCtx(sessionID2)
+	rcResp, err := e.h.Create(rcCtx, &CreateRequest{
+		FileName:          "durable.txt",
+		DesiredAccess:     0x001F01FF,
+		ShareAccess:       0x07,
+		CreateDisposition: types.FileOpen,
+		CreateContexts:    []CreateContext{dh2cContext(persistedFileID, createGuid)},
+	})
+	if err != nil {
+		t.Fatalf("reconnect Create error: %v", err)
+	}
+	if rcResp.Status != types.StatusSuccess {
+		t.Fatalf("reconnect: status=0x%08x, want SUCCESS", uint32(rcResp.Status))
+	}
+	if rcResp.OplockLevel != OplockLevelBatch {
+		t.Errorf("reconnect OplockLevel = 0x%02x, want Batch (0x%02x)", rcResp.OplockLevel, OplockLevelBatch)
+	}
+	rof, ok := e.h.GetOpenFile(rcResp.FileID)
+	if !ok {
+		t.Fatal("reconnect: OpenFile not registered")
+	}
+	if rof.OpenID() != origOpenID {
+		t.Errorf("reconnect OpenID = %s, want original %s (BRL would be orphaned)", rof.OpenID(), origOpenID)
+	}
+	if !e.lockHeldUnderOpenID(rof.MetadataHandle, rof.OpenID()) {
+		t.Errorf("reconnect: byte-range lock lost (OpenID %s) — UNLOCK would fail", rof.OpenID())
+	}
+}
+
+// recordingBreakNotifier counts SendLeaseBreak calls so a test can assert that
+// an AppInstanceId failover does NOT emit any oplock/lease break.
+type recordingBreakNotifier struct{ count int }
+
+func (n *recordingBreakNotifier) SendLeaseBreak(_ uint64, _ [16]byte, _, _ uint32, _ uint16) error {
+	n.count++
+	return nil
+}
+
+// appInstanceIdCtx builds an SMB2_CREATE_APP_INSTANCE_ID create context.
+func appInstanceIdCtx(appID [16]byte) CreateContext {
+	data := make([]byte, 20)
+	binary.LittleEndian.PutUint16(data[0:2], 20) // StructureSize
+	copy(data[4:20], appID[:])
+	return CreateContext{Name: AppInstanceIdTag, Data: data}
+}
+
+// TestAppInstance_SilentFailover covers smb2.durable-v2-open.app-instance: a
+// second open of the same file carrying the same AppInstanceId (but a different
+// CreateGuid) while the first open is still live MUST force-close the first open
+// WITHOUT emitting an oplock break (break_info.count == 0), and the displaced
+// handle must no longer be registered. The AppInstanceId force-close runs before
+// the oplock-break dispatch in the CREATE path; if it ran after, the second
+// batch-oplock open would break the first's batch oplock first (count == 1).
+func TestAppInstance_SilentFailover(t *testing.T) {
+	e := setupReopen2Env(t)
+	notifier := &recordingBreakNotifier{}
+	e.h.LeaseManager.SetNotifier(notifier)
+
+	appID := [16]byte{0xA9, 0x91, 0x01, 0xFF, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0, 0xB0, 0xC0}
+	createGuid1 := [16]byte{0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x10}
+	createGuid2 := [16]byte{0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x20}
+
+	open := func(sessionID uint64, createGuid [16]byte) *CreateResponse {
+		e.h.CreateSessionWithID(sessionID, "127.0.0.1:1", false, "alice", "WORKGROUP")
+		rcCtx := e.makeSMBCtx(sessionID)
+		resp, err := e.h.Create(rcCtx, &CreateRequest{
+			FileName:          "durable.txt",
+			DesiredAccess:     0x001F01FF,
+			ShareAccess:       0, // share_access("") — no sharing
+			CreateDisposition: types.FileOpen,
+			OplockLevel:       OplockLevelBatch,
+			CreateContexts: []CreateContext{
+				dh2qContext(createGuid, 60000),
+				appInstanceIdCtx(appID),
+			},
+		})
+		if err != nil {
+			t.Fatalf("session %d open: %v", sessionID, err)
+		}
+		if resp.Status != types.StatusSuccess {
+			t.Fatalf("session %d open: status=0x%08x, want SUCCESS", sessionID, uint32(resp.Status))
+		}
+		return resp
+	}
+
+	resp1 := open(70, createGuid1)
+	of1ID := resp1.FileID
+
+	// Second open: same file, same AppInstanceId, different CreateGuid, on a
+	// distinct session — must force-close open #1 silently.
+	resp2 := open(71, createGuid2)
+
+	if notifier.count != 0 {
+		t.Errorf("break_info.count = %d, want 0 (AppInstanceId failover must be silent)", notifier.count)
+	}
+	if _, ok := e.h.GetOpenFile(of1ID); ok {
+		t.Error("first open still registered after same-AppInstanceId failover (should be force-closed)")
+	}
+	if resp2.OplockLevel != OplockLevelBatch {
+		t.Errorf("second open OplockLevel = 0x%02x, want Batch (no conflicting open remains)", resp2.OplockLevel)
+	}
 }

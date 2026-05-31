@@ -38,6 +38,15 @@ type createDraft struct {
 	// excludeOwner scopes lease-break exclusions to the opener's own key. Used
 	// for parent-directory breaks (Step 7c) and post-break oplock/lease work.
 	excludeOwner *lock.LockOwner
+	// appInstanceProcessed records that ProcessAppInstanceId already ran in the
+	// pre-break CREATE path (so any conflicting open carrying the same
+	// AppInstanceId was force-closed BEFORE the oplock/lease break dispatch).
+	// completeCreateAfterBreak reuses appInstanceId rather than re-running the
+	// force-close. Per MS-SMB2 §3.3.5.9.13 the AppInstanceId failover MUST NOT
+	// generate an oplock break on the displaced open (smbtorture
+	// smb2.durable-v2-open.app-instance asserts break_info.count == 0).
+	appInstanceProcessed bool
+	appInstanceId        [16]byte
 }
 
 // finalize computes the opaque file handle for the existing file (if any) and
@@ -1035,9 +1044,19 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	}
 
 	// Step 8c: Process App Instance ID and durable handle grant.
+	//
+	// The AppInstanceId force-close normally runs in the pre-break CREATE path
+	// (Create, before breakAndMaybeParkCreate) so a conflicting open carrying
+	// the same AppInstanceId is displaced BEFORE any oplock/lease break is
+	// computed — MS-SMB2 §3.3.5.9.13 requires the failover to be silent (no
+	// break on the displaced open; smbtorture smb2.durable-v2-open.app-instance
+	// asserts break_info.count == 0). When that ran, reuse its result. Only
+	// fall back to processing here for callers that bypass the pre-break path.
 	var durableResponseCtx *CreateContext
 	var appInstanceId [16]byte
-	if h.DurableStore != nil {
+	if d.appInstanceProcessed {
+		appInstanceId = d.appInstanceId
+	} else if h.DurableStore != nil {
 		appInstanceId = ProcessAppInstanceId(
 			authCtx.Context, h.DurableStore, h, req.CreateContexts,
 		)

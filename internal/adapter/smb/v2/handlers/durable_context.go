@@ -46,6 +46,19 @@ func DecodeDHnCReconnect(data []byte) ([16]byte, error) {
 	return fileID, nil
 }
 
+// zeroVolatileHalf returns fileID with the volatile half (bytes 8-15) cleared.
+// Durable handles are persisted keyed on the persistent half only (MS-SMB2
+// §3.2.4.4: the client sends Data.Volatile=0 on reconnect), but smbtorture
+// replays the full original FileID — so the reconnect lookup must zero the
+// volatile half to match the stored key. Shared by the V1 (DHnC) and the
+// V1-via-DH2C zero-CreateGuid reconnect paths.
+func zeroVolatileHalf(fileID [16]byte) [16]byte {
+	for i := 8; i < 16; i++ {
+		fileID[i] = 0
+	}
+	return fileID
+}
+
 // ValidateDurableContexts checks the durable-handle context combination rules
 // from MS-SMB2 §3.3.5.9.6/7/11/12 (mirrors Samba `source3/smbd/smb2_create.c`
 // `smbd_smb2_create_send` ~lines 775-846). Returns a non-success status when
@@ -445,10 +458,7 @@ func processV1Reconnect(
 	// V2 (DH2C) path which already compares persistent-half only — zero the
 	// volatile half here before delegating to the store. smbtorture
 	// smb2.durable-open.reopen2 step 1 (and every other DHnC reopen test).
-	fileID := wireFileID
-	for i := 8; i < 16; i++ {
-		fileID[i] = 0
-	}
+	fileID := zeroVolatileHalf(wireFileID)
 
 	logger.Debug("processV1Reconnect: starting validation",
 		"fileID", fmt.Sprintf("%x", fileID),
@@ -545,17 +555,58 @@ func processV2Reconnect(
 		"shareName", shareName,
 		"filename", filename)
 
+	// A V1 durable handle (opened via durable_open=true, never DH2Q) carries
+	// CreateGuid=0. smbtorture reopen2-lease{,-v2} reconnect such a handle via
+	// the DH2C *context* with a zero CreateGuid (smb2_create sets
+	// io.in.durable_handle_v2 = h while h is a V1 handle), so the open is keyed
+	// only by FileID. Mirror Samba `smbd_smb2_create_durable_v2_reconnect`,
+	// which looks the open up by its persistent FileId and treats CreateGuid as
+	// a secondary check: when the DH2C CreateGuid is zero, look up (and later
+	// consume) by FileID rather than by the unusable zero CreateGuid — a
+	// CreateGuid-keyed lookup would miss every legitimate V1-via-DH2C reconnect
+	// and wrongly return OBJECT_NAME_NOT_FOUND (durable_open.c:1068 / :1305).
+	zeroCreateGuid := createGuid == ([16]byte{})
+
+	// The store keys V1 handles by the volatile-zeroed persistent FileID
+	// (buildPersistedDurableHandle stores only bytes 0-7); smbtorture replays
+	// the full original FileID. Zero the volatile half before the FileID lookup
+	// so it matches, mirroring processV1Reconnect.
+	lookupFileID := zeroVolatileHalf(fileID)
+
 	// Non-destructive lookup: see processV1Reconnect comment. The
 	// TOCTOU-closing Consume runs on the success path inside
 	// validateAndRestore.
-	handle, err := durableStore.GetDurableHandleByCreateGuid(ctx, createGuid)
+	var handle *lock.PersistedDurableHandle
+	if zeroCreateGuid {
+		handle, err = durableStore.GetDurableHandleByFileID(ctx, lookupFileID)
+	} else {
+		handle, err = durableStore.GetDurableHandleByCreateGuid(ctx, createGuid)
+	}
 	if err != nil {
 		logger.Warn("processV2Reconnect: store error", "error", err)
 		return nil, 0, [16]byte{}, types.StatusInternalError, err
 	}
 	if handle == nil {
-		logger.Debug("processV2Reconnect: handle not found by CreateGuid",
-			"createGuid", fmt.Sprintf("%x", createGuid))
+		logger.Debug("processV2Reconnect: handle not found",
+			"createGuid", fmt.Sprintf("%x", createGuid),
+			"fileID", fmt.Sprintf("%x", fileID),
+			"byFileID", zeroCreateGuid)
+		return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
+	}
+
+	// The zero-CreateGuid FileID fallback is ONLY for reconnecting a V1 handle
+	// (stored CreateGuid == 0) via the DH2C context. A V2 handle (stored
+	// CreateGuid != 0) requires the reconnect to carry that exact CreateGuid;
+	// Samba `smbd_smb2_create_durable_v2_reconnect` rejects a CreateGuid
+	// mismatch with OBJECT_NAME_NOT_FOUND. smbtorture smb2.durable-v2-open.reopen2
+	// /reopen2b reconnect a V2 (durable_open_v2) handle via durable_handle_v2
+	// with a zeroed (or non-matching) create_guid and expect failure
+	// (durable_v2_open.c:1070-1090 / reopen2b:1157). Without this guard the
+	// FileID match would wrongly succeed.
+	if zeroCreateGuid && handle.CreateGuid != ([16]byte{}) {
+		logger.Debug("processV2Reconnect: zero CreateGuid cannot reconnect a V2 handle",
+			"handleCreateGuid", fmt.Sprintf("%x", handle.CreateGuid),
+			"fileID", fmt.Sprintf("%x", fileID))
 		return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
 	}
 
@@ -592,11 +643,16 @@ func processV2Reconnect(
 	// open, junk fname on reconnect) MUST succeed. The path check stays on only for
 	// lease-backed reconnects, where a wrong-fname-with-lease reconnect is the final
 	// negative-ladder rung that yields INVALID_PARAMETER.
+	consume := func(ctx context.Context) (*lock.PersistedDurableHandle, error) {
+		if zeroCreateGuid {
+			// V1-via-DH2C reconnect: consume by FileID (the CreateGuid is
+			// zero and unusable as a key — see the lookup branch above).
+			return durableStore.ConsumeDurableHandleByFileID(ctx, lookupFileID)
+		}
+		return durableStore.ConsumeDurableHandleByCreateGuid(ctx, createGuid)
+	}
 	openFile, status, restoreErr := validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
-		sessionKeyHash, shareName, filename, persistedHasLease,
-		func(ctx context.Context) (*lock.PersistedDurableHandle, error) {
-			return durableStore.ConsumeDurableHandleByCreateGuid(ctx, createGuid)
-		})
+		sessionKeyHash, shareName, filename, persistedHasLease, consume)
 	return openFile, handle.LeaseState, handle.OriginalFileID, status, restoreErr
 }
 
@@ -834,6 +890,39 @@ func ProcessAppInstanceId(
 	// Handler.files) — NOT persisted into the durable store, since the new
 	// AppInstanceId open is claiming this handle.
 	if handler != nil {
+		// Snapshot the lease/oplock identity of each displaced open BEFORE the
+		// force-close so we can release its LeaseManager record afterwards.
+		// closeFilesWithFilter removes the open from Handler.files but does NOT
+		// release the per-open lease/oplock (that is the session-wide
+		// releaseSessionLeasesAndNotifies path, which the AppInstanceId failover
+		// does not run). Without this release, the synthetic batch-oplock record
+		// of the displaced open lingers in the LeaseManager, and the *new* open
+		// (which immediately follows in the CREATE path) parks on a break of that
+		// orphaned oplock until the oplock timeout — and the AppInstanceId
+		// failover must be silent anyway (MS-SMB2 §3.3.5.9.13; smbtorture
+		// smb2.durable-v2-open.app-instance asserts break_info.count == 0).
+		type displacedLease struct {
+			fileHandle lock.FileHandle
+			leaseKey   [16]byte
+			shareName  string
+			isLease    bool
+		}
+		var displaced []displacedLease
+		if handler.LeaseManager != nil {
+			handler.files.Range(func(_, value any) bool {
+				f := value.(*OpenFile)
+				if f.AppInstanceId == appId && f.LeaseKey != ([16]byte{}) && len(f.MetadataHandle) > 0 {
+					displaced = append(displaced, displacedLease{
+						fileHandle: lock.FileHandle(f.MetadataHandle),
+						leaseKey:   f.LeaseKey,
+						shareName:  f.ShareName,
+						isLease:    f.OplockLevel == OplockLevelLease,
+					})
+				}
+				return true
+			})
+		}
+
 		liveClosed := handler.closeFilesWithFilter(
 			ctx,
 			0, // no specific sessionID — match across sessions
@@ -845,6 +934,20 @@ func ProcessAppInstanceId(
 			logger.Debug("ProcessAppInstanceId: force-closed live opens",
 				"appInstanceId", fmt.Sprintf("%x", appId),
 				"count", liveClosed)
+		}
+
+		// Release the displaced opens' LeaseManager records (mirrors the
+		// explicit CLOSE path in close.go) so no orphaned oplock/lease lingers
+		// to break the claiming open.
+		for _, d := range displaced {
+			if err := handler.LeaseManager.ReleaseLeaseForHandle(ctx, d.fileHandle, d.leaseKey, d.shareName); err != nil {
+				logger.Debug("ProcessAppInstanceId: failed to release displaced lease",
+					"leaseKey", fmt.Sprintf("%x", d.leaseKey), "error", err)
+			}
+			if !d.isLease {
+				handler.LeaseManager.UnregisterOplockFileID(d.leaseKey)
+			}
+			handler.LeaseManager.SignalParkedCreates(d.fileHandle, d.shareName)
 		}
 	}
 
