@@ -129,30 +129,31 @@ func makeDurableHandle(id string, shareName string) *lock.PersistedDurableHandle
 	copy(originalFileID[:], []byte("origfid-"+id))
 
 	return &lock.PersistedDurableHandle{
-		ID:              id,
-		FileID:          fileID,
-		Path:            "/test/" + id + ".txt",
-		ShareName:       shareName,
-		DesiredAccess:   0x12019F,
-		GrantedAccess:   0x100081,
-		ShareAccess:     0x07,
-		CreateOptions:   0x40,
-		MetadataHandle:  []byte("handle-" + id),
-		PayloadID:       "payload-" + id,
-		OplockLevel:     0x09,
-		LeaseKey:        leaseKey,
-		LeaseState:      0x07,
-		CreateGuid:      createGuid,
-		AppInstanceId:   appInstanceId,
-		Username:        "user-" + id,
-		SessionKeyHash:  sessionKeyHash,
-		IsV2:            true,
-		CreatedAt:       now.Add(-10 * time.Minute),
-		DisconnectedAt:  now,
-		TimeoutMs:       60000,
-		ServerStartTime: now.Add(-1 * time.Hour),
-		PositionInfo:    0xDEADBEEFCAFE,
-		OriginalFileID:  originalFileID,
+		ID:                 id,
+		FileID:             fileID,
+		Path:               "/test/" + id + ".txt",
+		ShareName:          shareName,
+		DesiredAccess:      0x12019F,
+		GrantedAccess:      0x100081,
+		ShareAccess:        0x07,
+		CreateOptions:      0x40,
+		MetadataHandle:     []byte("handle-" + id),
+		PayloadID:          "payload-" + id,
+		OplockLevel:        0x09,
+		LeaseKey:           leaseKey,
+		LeaseState:         0x07,
+		CreateGuid:         createGuid,
+		AppInstanceId:      appInstanceId,
+		Username:           "user-" + id,
+		SessionKeyHash:     sessionKeyHash,
+		IsV2:               true,
+		CreatedAt:          now.Add(-10 * time.Minute),
+		DisconnectedAt:     now,
+		TimeoutMs:          60000,
+		ServerStartTime:    now.Add(-1 * time.Hour),
+		PositionInfo:       0xDEADBEEFCAFE,
+		OriginalFileID:     originalFileID,
+		RequestedAllocSize: 0x1000,
 	}
 }
 
@@ -234,6 +235,9 @@ func assertDurableHandleEqual(t *testing.T, expected, actual *lock.PersistedDura
 	}
 	if expected.OriginalFileID != actual.OriginalFileID {
 		t.Errorf("OriginalFileID: got %x, want %x", actual.OriginalFileID, expected.OriginalFileID)
+	}
+	if expected.RequestedAllocSize != actual.RequestedAllocSize {
+		t.Errorf("RequestedAllocSize: got %d, want %d", actual.RequestedAllocSize, expected.RequestedAllocSize)
 	}
 }
 

@@ -56,6 +56,18 @@ type PersistedDurableHandle struct {
 	// the disconnect (smb2.durable-open.file-position).
 	PositionInfo uint64
 
+	// RequestedAllocSize is the client-requested initial allocation in bytes
+	// from the original CREATE's SMB2_CREATE_ALLOCATION_SIZE ("AlSi") create
+	// context ([MS-SMB2] 2.2.13.2.2), or a later SET_INFO
+	// FileAllocationInformation. DittoFS does not preallocate; the value only
+	// raises the (cluster-aligned) AllocationSize reported in the CREATE
+	// response. It is per-handle in-memory state lost on disconnect, so it is
+	// persisted here and restored on durable reconnect — otherwise the
+	// reconnect CREATE response would drop back to the file's bare size and
+	// report a smaller AllocationSize than the original open
+	// (smb2.durable-open.alloc-size reopen checks).
+	RequestedAllocSize uint64
+
 	// OriginalFileID is the full 16-byte FileID (persistent + volatile)
 	// from the original CREATE response. FileID above zeros the volatile
 	// half so DHnC lookup matches the spec ([MS-SMB2] 3.2.4.4: client

@@ -27,13 +27,13 @@ const durableHandleColumns = `
 	username, session_key_hash, is_v2, created_at, disconnected_at,
 	timeout_ms, server_start_time,
 	delete_pending, parent_handle, file_name, is_directory,
-	position_info, original_file_id
+	position_info, original_file_id, requested_alloc_size
 `
 
 func scanDurableHandle(row pgx.Row) (*lock.PersistedDurableHandle, error) {
 	var h lock.PersistedDurableHandle
 	var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, originalFileIDBytes []byte
-	var positionInfoSigned int64
+	var positionInfoSigned, requestedAllocSizeSigned int64
 
 	err := row.Scan(
 		&h.ID,
@@ -64,6 +64,7 @@ func scanDurableHandle(row pgx.Row) (*lock.PersistedDurableHandle, error) {
 		&h.IsDirectory,
 		&positionInfoSigned,
 		&originalFileIDBytes,
+		&requestedAllocSizeSigned,
 	)
 
 	if err == pgx.ErrNoRows {
@@ -74,6 +75,7 @@ func scanDurableHandle(row pgx.Row) (*lock.PersistedDurableHandle, error) {
 	}
 
 	h.PositionInfo = uint64(positionInfoSigned)
+	h.RequestedAllocSize = uint64(requestedAllocSizeSigned)
 	copyFixedByteArrays(&h, fileIDBytes, leaseKeyBytes, createGuidBytes,
 		appInstanceIdBytes, sessionKeyHashBytes)
 	if len(originalFileIDBytes) == 16 {
@@ -89,7 +91,7 @@ func scanDurableHandleRows(rows pgx.Rows) ([]*lock.PersistedDurableHandle, error
 	for rows.Next() {
 		var h lock.PersistedDurableHandle
 		var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, originalFileIDBytes []byte
-		var positionInfoSigned int64
+		var positionInfoSigned, requestedAllocSizeSigned int64
 
 		err := rows.Scan(
 			&h.ID,
@@ -120,12 +122,14 @@ func scanDurableHandleRows(rows pgx.Rows) ([]*lock.PersistedDurableHandle, error
 			&h.IsDirectory,
 			&positionInfoSigned,
 			&originalFileIDBytes,
+			&requestedAllocSizeSigned,
 		)
 		if err != nil {
 			return nil, err
 		}
 
 		h.PositionInfo = uint64(positionInfoSigned)
+		h.RequestedAllocSize = uint64(requestedAllocSizeSigned)
 		copyFixedByteArrays(&h, fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes)
 		if len(originalFileIDBytes) == 16 {
 			copy(h.OriginalFileID[:], originalFileIDBytes)
@@ -176,9 +180,9 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 			username, session_key_hash, is_v2, created_at, disconnected_at,
 			timeout_ms, server_start_time,
 			delete_pending, parent_handle, file_name, is_directory,
-			position_info, original_file_id
+			position_info, original_file_id, requested_alloc_size
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
 		ON CONFLICT (id) DO UPDATE SET
 			file_id = EXCLUDED.file_id,
 			path = EXCLUDED.path,
@@ -206,7 +210,8 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 			file_name = EXCLUDED.file_name,
 			is_directory = EXCLUDED.is_directory,
 			position_info = EXCLUDED.position_info,
-			original_file_id = EXCLUDED.original_file_id
+			original_file_id = EXCLUDED.original_file_id,
+			requested_alloc_size = EXCLUDED.requested_alloc_size
 	`
 
 	_, err := s.pool.Exec(ctx, query,
@@ -242,6 +247,11 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 		// value. The scan path mirrors this with uint64(int64) on read.
 		int64(handle.PositionInfo),
 		handle.OriginalFileID[:],
+		// RequestedAllocSize is a client-requested allocation reservation
+		// ([MS-SMB2] 2.2.13.2.2) stored as BIGINT (signed int64), reinterpreting
+		// the bit pattern like PositionInfo. The scan path mirrors this with
+		// uint64(int64) on read.
+		int64(handle.RequestedAllocSize),
 	)
 	return err
 }
