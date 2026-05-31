@@ -59,6 +59,15 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		RunDurableHandleStoreTests(t, factory)
 	})
 
+	// ClientRecovery covers the server-global NFSv4 client-recovery store
+	// (Put/List round-trip incl. BootVerifier bytes, upsert, Delete,
+	// RecordReclaimComplete, empty-list). Cross-backend parity is the point:
+	// the shared suite catches divergence (e.g. upsert producing dup rows,
+	// or List erroring on empty). Stores lacking ClientRecoveryStore skip.
+	t.Run("ClientRecovery", func(t *testing.T) {
+		RunClientRecoveryStoreTests(t, factory)
+	})
+
 	// ACLAliasing asserts both directions of FileAttr.ACL deep-copy
 	// discipline: PutFile must not alias the caller's ACE slice, and
 	// GetFile must not hand back the store's backing slice. Pins the
