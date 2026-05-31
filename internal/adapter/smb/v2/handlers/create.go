@@ -1392,9 +1392,39 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	resp := h.completeCreateAfterBreak(ctx, draft)
 	if reservedReplay {
-		h.CreateReplayCache.Release(ctx.SessionID, replayGuid)
+		h.resolveCreateReplayReservation(ctx.SessionID, replayGuid, resp.GetStatus())
 	}
 	return resp, nil
+}
+
+// resolveCreateReplayReservation closes out a CreateGuid reservation taken for
+// a conflicting (pending) original CREATE once that CREATE reaches a terminal
+// state, applying the two-phase MS-SMB2 §3.3.5.9 rule (Samba bug 14449
+// smb2.replay.dhv2-pending1*):
+//
+//   - success: the success response was just cached via Store, so the
+//     reservation is released; a later replay returns the cached open.
+//   - terminal share-mode failure (STATUS_SHARING_VIOLATION / ACCESS_DENIED):
+//     the reservation transitions to Phase B carrying that status, so a later
+//     replay returns the SAME terminal status instead of re-running CREATE and
+//     re-parking (replay.dhv2-pending1n-vs-violation-lease-ack-* replay23). The
+//     Phase-B reservation is reaped by session teardown / the TTL backstop.
+//   - any other failure (transient / internal): released, matching the prior
+//     behaviour so a genuine retry can re-run the CREATE fresh.
+//
+// It is the single seam shared by the inline-completion path (Create) and the
+// async-park resume goroutine (parkCreateOnLeaseBreak) so the reservation
+// lifetime is identical on both. A zero CreateGuid is a no-op throughout.
+func (h *Handler) resolveCreateReplayReservation(sessionID uint64, createGuid [16]byte, status types.Status) {
+	if h.CreateReplayCache == nil {
+		return
+	}
+	switch status {
+	case types.StatusSharingViolation, types.StatusAccessDenied:
+		h.CreateReplayCache.UpdateReservedStatus(sessionID, createGuid, status)
+	default:
+		h.CreateReplayCache.Release(sessionID, createGuid)
+	}
 }
 
 // computeMaximalAccess computes the maximal access mask for a file used in
@@ -1607,17 +1637,25 @@ func (h *Handler) resolveCreateReplay(ctx *SMBHandlerContext, req *CreateRequest
 
 	entry := h.CreateReplayCache.LookupEntry(ctx.SessionID, createGuid)
 	if entry == nil {
-		// No completed entry yet. A replay that arrives while the original
-		// CREATE for this CreateGuid is still parked on a pending
-		// oplock/lease break must fail fast with STATUS_FILE_NOT_AVAILABLE
-		// rather than block on the same break (Samba FWP_RESERVED /
-		// FILE_NOT_AVAILABLE slot states). The original parked request keeps
-		// running and completes on its own timeline. Checked after the
-		// completed-entry lookup so a parked CREATE that has just finished
-		// (entry present, reservation not yet cleared) replays the open
-		// rather than returning FILE_NOT_AVAILABLE.
-		if ctx.IsReplay && h.CreateReplayCache.IsReserved(ctx.SessionID, createGuid) {
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileNotAvailable}}, true
+		// No completed (success) entry yet. A replay that arrives while the
+		// original conflicting CREATE for this CreateGuid is still unresolved
+		// returns the reservation's two-phase status (MS-SMB2 §3.3.5.9; Samba
+		// FWP_RESERVED / FILE_NOT_AVAILABLE slot states, bug 14449):
+		//   - Phase A (original still pending on a share-mode conflict) →
+		//     STATUS_FILE_NOT_AVAILABLE. The original keeps running and
+		//     completes on its own timeline.
+		//   - Phase B (original resolved to a terminal share-mode violation but
+		//     the holder kept the file open via break-ack) → the stored
+		//     terminal status (STATUS_SHARING_VIOLATION). Returned from the
+		//     reservation so the replay does not re-run CREATE and re-park
+		//     (smbtorture replay.dhv2-pending1n-vs-violation-lease-ack-sane
+		//     replay23). Checked after the completed-entry lookup so a CREATE
+		//     that just succeeded (entry present, reservation released)
+		//     replays the open rather than a stale pending status.
+		if ctx.IsReplay {
+			if status, reserved := h.CreateReplayCache.ReservedStatus(ctx.SessionID, createGuid); reserved {
+				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, true
+			}
 		}
 		return nil, false
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -430,6 +431,169 @@ func TestCreateReplayCache_ReserveReleaseSingleReservation(t *testing.T) {
 	if c.IsReserved(sessionID, [16]byte{}) {
 		t.Fatal("zero CreateGuid must never be reserved")
 	}
+}
+
+// TestResolveCreateReplay_TwoPhase_ViolationAckSurvivesAcrossRequests models the
+// smbtorture replay.dhv2-pending1n-vs-violation-lease-ack-sane sequence: client1
+// holds an RWH lease with share_access=0; client2's conflicting CREATE
+// (create_guid2, share_access=0) parks on the handle-lease break. The reservation
+// must SURVIVE across requests:
+//
+//	Phase A (parked)            → replay22 returns STATUS_FILE_NOT_AVAILABLE
+//	orig21 resolves to SHARING_VIOLATION (holder acked break, kept file open)
+//	Phase B (violation, pre-completion) → replay23 returns STATUS_SHARING_VIOLATION
+//
+// The prior single-phase reservation released on the original's failure, so
+// replay23 fell through to a fresh CREATE (wrong status / re-park). #749.
+func TestResolveCreateReplay_TwoPhase_ViolationAckSurvivesAcrossRequests(t *testing.T) {
+	h, _, _ := newReplayTestHandler()
+	const sessionID = uint64(7)
+	guid := [16]byte{0x21, 0x22}
+
+	// Phase A: Create reserves the guid for the parked conflicting open.
+	h.CreateReplayCache.Reserve(sessionID, guid)
+
+	// replay22 while parked → FILE_NOT_AVAILABLE.
+	resp, handled := h.resolveCreateReplay(newReplayCtx(sessionID, true), dh2qCreateReq(guid, nil))
+	if !handled || resp.Status != types.StatusFileNotAvailable {
+		t.Fatalf("Phase-A replay = (%v, %s), want (true, FILE_NOT_AVAILABLE)", handled, resp.Status)
+	}
+
+	// Original conflicting CREATE resolves to a terminal SHARING_VIOLATION
+	// (holder kept the file open after the break-ack). The terminal resolver
+	// transitions the reservation to Phase B rather than releasing it.
+	h.resolveCreateReplayReservation(sessionID, guid, types.StatusSharingViolation)
+
+	// replay23 after the violation → the SAME cached terminal status, NOT a
+	// fall-through to a fresh CREATE.
+	resp, handled = h.resolveCreateReplay(newReplayCtx(sessionID, true), dh2qCreateReq(guid, nil))
+	if !handled || resp.Status != types.StatusSharingViolation {
+		t.Fatalf("Phase-B replay = (%v, %s), want (true, SHARING_VIOLATION)", handled, resp.Status)
+	}
+
+	// The reservation is still held (Phase B) — proven by IsReserved — until
+	// session teardown / TTL backstop clears it. It does not leak into a stuck
+	// FILE_NOT_AVAILABLE: it carries the resolved terminal status.
+	if status, ok := h.CreateReplayCache.ReservedStatus(sessionID, guid); !ok || status != types.StatusSharingViolation {
+		t.Fatalf("Phase-B ReservedStatus = (%s, %v), want (SHARING_VIOLATION, true)", status, ok)
+	}
+
+	// Session teardown clears it (no permanent leak of the guid).
+	h.CreateReplayCache.ForgetSession(sessionID)
+	if h.CreateReplayCache.IsReserved(sessionID, guid) {
+		t.Fatal("Phase-B reservation must be cleared by session teardown (no leak)")
+	}
+}
+
+// TestResolveCreateReplay_TwoPhase_SuccessReleasesReservation models the close
+// variant and the -vs-{oplock,lease} hold variants: the parked original CREATE
+// ultimately SUCCEEDS once the holder releases. The terminal resolver must
+// Release the reservation (the success response is what serves later replays via
+// the cached entry), never transition it to a Phase-B failure status.
+func TestResolveCreateReplay_TwoPhase_SuccessReleasesReservation(t *testing.T) {
+	h, _, _ := newReplayTestHandler()
+	const sessionID = uint64(7)
+	guid := [16]byte{0x33}
+
+	h.CreateReplayCache.Reserve(sessionID, guid)
+	if !h.CreateReplayCache.IsReserved(sessionID, guid) {
+		t.Fatal("guid must be reserved in Phase A")
+	}
+
+	// Original completes successfully → reservation released.
+	h.resolveCreateReplayReservation(sessionID, guid, types.StatusSuccess)
+	if h.CreateReplayCache.IsReserved(sessionID, guid) {
+		t.Fatal("a successful original CREATE must release the reservation (no Phase-B)")
+	}
+}
+
+// TestResolveCreateReplay_TwoPhase_TransientFailureReleases proves a non-share
+// terminal failure (e.g. internal error / cancelled — the async early-return
+// default) releases the reservation rather than wedging it in Phase B. This is
+// the leak-proof guarantee for the resume goroutine's preemption / tree-deleted
+// early returns.
+func TestResolveCreateReplay_TwoPhase_TransientFailureReleases(t *testing.T) {
+	h, _, _ := newReplayTestHandler()
+	const sessionID = uint64(7)
+	guid := [16]byte{0x44}
+
+	for _, st := range []types.Status{types.StatusCancelled, types.StatusInternalError, types.StatusNetworkNameDeleted} {
+		h.CreateReplayCache.Reserve(sessionID, guid)
+		h.resolveCreateReplayReservation(sessionID, guid, st)
+		if h.CreateReplayCache.IsReserved(sessionID, guid) {
+			t.Fatalf("terminal status %s must release the reservation (no leak)", st)
+		}
+	}
+}
+
+// TestUpdateReservedStatus_NoResurrect proves UpdateReservedStatus never creates
+// a reservation for a guid that was already released (e.g. a success path that
+// released first, followed by a stale terminal resolution). A stuck reservation
+// would brick all future opens of the guid.
+func TestUpdateReservedStatus_NoResurrect(t *testing.T) {
+	c := NewCreateReplayCache()
+	const sessionID = uint64(11)
+	guid := [16]byte{0x55}
+
+	// No prior Reserve → UpdateReservedStatus must be a no-op.
+	c.UpdateReservedStatus(sessionID, guid, types.StatusSharingViolation)
+	if c.IsReserved(sessionID, guid) {
+		t.Fatal("UpdateReservedStatus must not resurrect an unreserved guid")
+	}
+
+	// Reserve, release, then a late Update must not resurrect either.
+	c.Reserve(sessionID, guid)
+	c.Release(sessionID, guid)
+	c.UpdateReservedStatus(sessionID, guid, types.StatusSharingViolation)
+	if c.IsReserved(sessionID, guid) {
+		t.Fatal("UpdateReservedStatus after Release must not resurrect the reservation")
+	}
+}
+
+// TestReservedStatus_TTLBackstop proves a Phase-B reservation that is never
+// explicitly cleared still cannot brick the guid forever: once it ages past the
+// TTL it is reaped on the next ReservedStatus access and treated as absent.
+func TestReservedStatus_TTLBackstop(t *testing.T) {
+	c := NewCreateReplayCache()
+	const sessionID = uint64(11)
+	guid := [16]byte{0x66}
+
+	c.Reserve(sessionID, guid)
+	c.UpdateReservedStatus(sessionID, guid, types.StatusSharingViolation)
+
+	// Force the reservation's age past the TTL.
+	c.mu.Lock()
+	st := c.reserved[reserveKey{SessionID: sessionID, CreateGuid: guid}]
+	st.At = time.Now().Add(-replayCacheTTL - time.Second)
+	c.reserved[reserveKey{SessionID: sessionID, CreateGuid: guid}] = st
+	c.mu.Unlock()
+
+	if _, ok := c.ReservedStatus(sessionID, guid); ok {
+		t.Fatal("a reservation older than the TTL must be reaped and treated as absent")
+	}
+}
+
+// TestReservedStatus_ConcurrentSameGuid exercises concurrent Reserve / Update /
+// ReservedStatus / Release on the same guid for the race detector. The cache
+// must not panic or corrupt its map under contention.
+func TestReservedStatus_ConcurrentSameGuid(t *testing.T) {
+	c := NewCreateReplayCache()
+	const sessionID = uint64(11)
+	guid := [16]byte{0x77}
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 1000; i++ {
+			c.Reserve(sessionID, guid)
+			c.UpdateReservedStatus(sessionID, guid, types.StatusSharingViolation)
+		}
+		close(done)
+	}()
+	for i := 0; i < 1000; i++ {
+		_, _ = c.ReservedStatus(sessionID, guid)
+		c.Release(sessionID, guid)
+	}
+	<-done
 }
 
 // leaseKey16Guid reuses a lease key's bytes as a distinct CreateGuid for tests

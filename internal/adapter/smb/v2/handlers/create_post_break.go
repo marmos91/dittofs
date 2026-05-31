@@ -1338,20 +1338,26 @@ func (h *Handler) parkCreateOnLeaseBreak(
 
 	// The DH2Q CreateGuid was already Reserved by the caller (Create, before the
 	// breakAndMaybeParkCreate dispatch) so a replayed CREATE fails fast with
-	// STATUS_FILE_NOT_AVAILABLE instead of blocking on the same break (smbtorture
-	// replay-dhv2-pending* / *-vs-{oplock,lease}). Since this CREATE is parking
-	// async, ownership of the matching Release transfers to the resume goroutine
-	// below: the caller returns STATUS_PENDING immediately and does NOT release.
-	// This keeps exactly one Reserve (in Create) and one Release (here for the
-	// parked path) per CREATE attempt. A zero CreateGuid is a no-op in Release.
+	// STATUS_FILE_NOT_AVAILABLE while the original is still parked (Phase A;
+	// smbtorture replay-dhv2-pending* / *-vs-{oplock,lease}). Since this CREATE
+	// is parking async, ownership of resolving the reservation transfers to the
+	// resume goroutine below: the caller returns STATUS_PENDING immediately and
+	// does NOT touch it. The reservation is resolved exactly once here, keyed by
+	// the CREATE's terminal status (resolveCreateReplayReservation): SUCCESS /
+	// transient → Release; a terminal share-mode violation → Phase B so a later
+	// replay returns that status (replay.dhv2-pending1n-vs-violation-lease-ack-*
+	// replay23). A zero CreateGuid is a no-op throughout.
+	//
+	// finalStatus defaults to StatusCancelled so EVERY early-return path below
+	// (dispatcher preemption, tree disconnect) still resolves to a plain Release
+	// — a reservation can never leak out of this goroutine.
 	replayGuid := dh2qCreateGuid(d.req)
 
 	go func() {
+		finalStatus := types.StatusCancelled
 		defer cancel()
 		defer func() {
-			if h.CreateReplayCache != nil {
-				h.CreateReplayCache.Release(ctx.SessionID, replayGuid)
-			}
+			h.resolveCreateReplayReservation(ctx.SessionID, replayGuid, finalStatus)
 		}()
 
 		// Wait for the other-key break to drain (or timeout auto-downgrade).
@@ -1395,6 +1401,9 @@ func (h *Handler) parkCreateOnLeaseBreak(
 
 		resp := h.completeCreateAfterBreak(ctx, d)
 		status := resp.GetStatus()
+		// Resolve the reservation against the CREATE's real terminal status
+		// (the deferred resolveCreateReplayReservation reads finalStatus).
+		finalStatus = status
 		var body []byte
 		if status == types.StatusSuccess {
 			encoded, err := resp.Encode()

@@ -80,6 +80,33 @@ type reserveKey struct {
 	CreateGuid [16]byte
 }
 
+// reservedState is the per-reservation phase status returned to a replay
+// (FLAGS_REPLAY_OPERATION) that arrives while the original conflicting CREATE
+// for the same CreateGuid has not yet established a cached open. The
+// reservation is two-phase (MS-SMB2 §3.3.5.9; Samba bug 14449
+// smb2.replay.dhv2-pending1*):
+//
+//   - Phase A — the original CREATE is still pending on a share-mode conflict
+//     (parked on a lease/oplock break, or waiting inline). A replay returns
+//     Status = STATUS_FILE_NOT_AVAILABLE.
+//
+//   - Phase B — the conflict resolved to a terminal *failure* (the holder
+//     released the cached handle via a break-ack but kept the file open, so the
+//     share-mode violation stands). The original CREATE returned
+//     STATUS_SHARING_VIOLATION. A replay must keep returning that SAME terminal
+//     status from the reservation rather than re-running the full CREATE (which
+//     would re-park and time out). UpdateReservedStatus performs the A→B
+//     transition; the reservation is then cleared at session teardown
+//     (ForgetSession) or by the TTL backstop below, never leaking.
+//
+// At is the time the reservation was taken or last transitioned, used by the
+// TTL backstop so a Phase-B reservation that is somehow never explicitly
+// cleared cannot brick all future opens of that CreateGuid indefinitely.
+type reservedState struct {
+	Status types.Status
+	At     time.Time
+}
+
 // CreateReplayCache stores CREATE responses keyed by DH2Q CreateGuid
 // so a replayed CREATE (FLAGS_REPLAY_OPERATION) returns the original
 // result instead of re-executing. CreateGuid is client-generated and
@@ -95,32 +122,61 @@ type reserveKey struct {
 type CreateReplayCache struct {
 	mu       sync.Mutex
 	entries  map[[16]byte]*CachedCreateResponse
-	reserved map[reserveKey]struct{}
+	reserved map[reserveKey]reservedState
 }
 
 // NewCreateReplayCache builds an empty cache.
 func NewCreateReplayCache() *CreateReplayCache {
 	return &CreateReplayCache{
 		entries:  make(map[[16]byte]*CachedCreateResponse),
-		reserved: make(map[reserveKey]struct{}),
+		reserved: make(map[reserveKey]reservedState),
 	}
 }
 
-// Reserve marks a CreateGuid as having an in-progress (parked) original
-// CREATE for the given session. While reserved, a replayed CREATE for
-// the same CreateGuid resolves to STATUS_FILE_NOT_AVAILABLE. A zero
-// CreateGuid is ignored.
+// Reserve marks a CreateGuid as having an in-progress (Phase A, pending)
+// original CREATE for the given session. While reserved in Phase A, a replayed
+// CREATE for the same CreateGuid resolves to STATUS_FILE_NOT_AVAILABLE. A zero
+// CreateGuid is ignored. Reserve is idempotent: re-reserving an already-reserved
+// guid resets it to Phase A (it never clobbers a Phase-B terminal status into
+// existence, but a fresh original CREATE attempt legitimately restarts Phase A).
 func (c *CreateReplayCache) Reserve(sessionID uint64, createGuid [16]byte) {
 	if createGuid == ([16]byte{}) {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.reserved[reserveKey{SessionID: sessionID, CreateGuid: createGuid}] = struct{}{}
+	c.reserved[reserveKey{SessionID: sessionID, CreateGuid: createGuid}] = reservedState{
+		Status: types.StatusFileNotAvailable,
+		At:     time.Now(),
+	}
+}
+
+// UpdateReservedStatus transitions an existing reservation from Phase A
+// (pending → STATUS_FILE_NOT_AVAILABLE) to Phase B (the original conflicting
+// CREATE resolved to a terminal failure status, e.g. STATUS_SHARING_VIOLATION).
+// A subsequent replay then returns that terminal status from the reservation
+// instead of re-running CREATE. It is a no-op when the guid is not currently
+// reserved (the reservation was already released on a success path), so it can
+// never resurrect a cleared reservation. The timestamp is refreshed so the TTL
+// backstop applies to the Phase-B window from its start.
+func (c *CreateReplayCache) UpdateReservedStatus(sessionID uint64, createGuid [16]byte, status types.Status) {
+	if createGuid == ([16]byte{}) {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := reserveKey{SessionID: sessionID, CreateGuid: createGuid}
+	if _, ok := c.reserved[key]; !ok {
+		return
+	}
+	c.reserved[key] = reservedState{Status: status, At: time.Now()}
 }
 
 // Release clears an in-progress reservation once the parked CREATE has
-// reached a terminal state (success stored, or failed). Idempotent.
+// reached a terminal SUCCESS state (response stored). Idempotent. Phase-B
+// (terminal-failure) reservations are NOT released here — they persist so a
+// later replay returns the cached terminal status — and are reaped instead by
+// ForgetSession (session teardown) or the TTL backstop.
 func (c *CreateReplayCache) Release(sessionID uint64, createGuid [16]byte) {
 	if createGuid == ([16]byte{}) {
 		return
@@ -131,15 +187,34 @@ func (c *CreateReplayCache) Release(sessionID uint64, createGuid [16]byte) {
 }
 
 // IsReserved reports whether a CreateGuid's original CREATE is currently
-// parked for the given session.
+// reserved (Phase A or B) for the given session and has not aged past the TTL
+// backstop. Expired reservations are reaped on access.
 func (c *CreateReplayCache) IsReserved(sessionID uint64, createGuid [16]byte) bool {
+	_, ok := c.ReservedStatus(sessionID, createGuid)
+	return ok
+}
+
+// ReservedStatus returns the phase status a replay must receive while the
+// CreateGuid is reserved (STATUS_FILE_NOT_AVAILABLE in Phase A, the stored
+// terminal status in Phase B), or ok=false on no/expired reservation. A
+// reservation older than replayCacheTTL is reaped and treated as absent so a
+// Phase-B reservation can never brick the guid indefinitely.
+func (c *CreateReplayCache) ReservedStatus(sessionID uint64, createGuid [16]byte) (types.Status, bool) {
 	if createGuid == ([16]byte{}) {
-		return false
+		return 0, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, ok := c.reserved[reserveKey{SessionID: sessionID, CreateGuid: createGuid}]
-	return ok
+	key := reserveKey{SessionID: sessionID, CreateGuid: createGuid}
+	st, ok := c.reserved[key]
+	if !ok {
+		return 0, false
+	}
+	if time.Since(st.At) > replayCacheTTL {
+		delete(c.reserved, key)
+		return 0, false
+	}
+	return st.Status, true
 }
 
 // Store records the response for a successful V2 CREATE keyed by
