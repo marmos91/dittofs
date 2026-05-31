@@ -123,19 +123,21 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 		pgCfg.AutoMigrate = true
 
 		capabilities := metadata.FilesystemCapabilities{
-			MaxReadSize:         1024 * 1024,
-			PreferredReadSize:   64 * 1024,
-			MaxWriteSize:        1024 * 1024,
-			PreferredWriteSize:  64 * 1024,
-			MaxFileSize:         1024 * 1024 * 1024 * 100, // 100 GB
-			MaxFilenameLen:      255,
-			MaxPathLen:          4096,
-			MaxHardLinkCount:    32767,
-			SupportsHardLinks:   true,
-			SupportsSymlinks:    true,
-			CaseSensitive:       true,
-			CasePreserving:      true,
-			SupportsACLs:        false,
+			MaxReadSize:        1024 * 1024,
+			PreferredReadSize:  64 * 1024,
+			MaxWriteSize:       1024 * 1024,
+			PreferredWriteSize: 64 * 1024,
+			MaxFileSize:        1024 * 1024 * 1024 * 100, // 100 GB
+			MaxFilenameLen:     255,
+			MaxPathLen:         4096,
+			MaxHardLinkCount:   32767,
+			SupportsHardLinks:  true,
+			SupportsSymlinks:   true,
+			CaseSensitive:      true,
+			CasePreserving:     true,
+			SupportsACLs:       false,
+			// File timestamps are stored as BIGINT unix nanoseconds (lossless),
+			// so nanosecond resolution is accurate for the postgres backend.
 			TimestampResolution: time.Nanosecond,
 		}
 

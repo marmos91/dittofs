@@ -33,6 +33,33 @@ func encodeFileHandle(shareName string, idStr string) (metadata.FileHandle, erro
 }
 
 // ============================================================================
+// Timestamp Encoding (BIGINT nanoseconds, lossless FILETIME parity)
+// ============================================================================
+//
+// File timestamps are stored as BIGINT unix nanoseconds rather than TIMESTAMPTZ
+// (microsecond) so sub-microsecond FILETIME values round-trip losslessly, on
+// par with the memory/badger backends (#882). A zero time.Time maps to 0 and
+// back, matching the zero-value semantics those backends use.
+
+// timeToPGNanos converts a time.Time to the BIGINT unix-nanosecond value stored
+// in the files timestamp columns. The zero time maps to 0.
+func timeToPGNanos(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixNano()
+}
+
+// pgNanosToTime converts a stored BIGINT unix-nanosecond value back to a UTC
+// time.Time. 0 maps to the zero time.Time.
+func pgNanosToTime(n int64) time.Time {
+	if n == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, n).UTC()
+}
+
+// ============================================================================
 // Database Row Serialization
 // ============================================================================
 
@@ -49,10 +76,10 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		uid          int32
 		gid          int32
 		size         int64
-		atime        time.Time
-		mtime        time.Time
-		ctime        time.Time
-		creationTime time.Time
+		atime        int64
+		mtime        int64
+		ctime        int64
+		creationTime int64
 		payloadID    sql.NullString
 		linkTarget   sql.NullString
 		deviceMajor  sql.NullInt32
@@ -106,10 +133,10 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 			GID:          uint32(gid),
 			Nlink:        nlink,
 			Size:         uint64(size),
-			Atime:        atime,
-			Mtime:        mtime,
-			Ctime:        ctime,
-			CreationTime: creationTime,
+			Atime:        pgNanosToTime(atime),
+			Mtime:        pgNanosToTime(mtime),
+			Ctime:        pgNanosToTime(ctime),
+			CreationTime: pgNanosToTime(creationTime),
 			Hidden:       hidden,
 		},
 	}
