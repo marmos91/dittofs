@@ -91,6 +91,7 @@ func TestDirectoryLeaseRequest_RWH_DowngradesToRH(t *testing.T) {
 		ctx, leaseMgr, data, fileHandle,
 		sessionID, [16]byte{}, clientID, "share1",
 		true, // isDirectory
+		false,
 	)
 	if err != nil {
 		t.Fatalf("ProcessLeaseCreateContext returned error: %v", err)
@@ -132,6 +133,7 @@ func TestDirectoryLeaseRequest_RW_DowngradesToR(t *testing.T) {
 		ctx, leaseMgr, data, fileHandle,
 		sessionID, [16]byte{}, clientID, "share1",
 		true,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("ProcessLeaseCreateContext returned error: %v", err)
@@ -186,6 +188,7 @@ func TestDirectoryLeaseRequest_ParentLeaseKeyEcho(t *testing.T) {
 			ctx, leaseMgr, data, fileHandle,
 			sessionID, [16]byte{}, clientID, "share1",
 			true,
+			false,
 		)
 		if err != nil {
 			t.Fatalf("ProcessLeaseCreateContext returned error: %v", err)
@@ -236,6 +239,7 @@ func TestDirectoryLeaseRequest_ParentLeaseKeyEcho(t *testing.T) {
 			ctx, leaseMgr, data, fileHandle2,
 			sessionID, [16]byte{}, clientID, "share1",
 			true,
+			false,
 		)
 		if err != nil {
 			t.Fatalf("ProcessLeaseCreateContext returned error: %v", err)

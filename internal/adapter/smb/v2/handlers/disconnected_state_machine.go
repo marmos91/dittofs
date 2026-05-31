@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -389,4 +390,142 @@ func shouldPersistDurableOnDisconnect(
 		return false
 	}
 	return true
+}
+
+// disallowWriteLeaseForFile mirrors Samba's `disallow_write_lease` accumulator
+// (source3/smbd/open.c::delay_for_oplock_fn, lines 2390-2403). It reports
+// whether a new lease grant on the file identified by metaHandle must have its
+// Write (SMB2_LEASE_WRITE) caching bit stripped because a *conflicting* other
+// open exists.
+//
+// Samba sets disallow_write_lease for an existing share-mode entry e when ALL
+// of the following hold:
+//
+//   - e holds an oplock/lease, OR e is NOT an oplock-stat-open
+//     (e->op_type != NO_OPLOCK || !is_oplock_stat_open(e->access_mask)); AND
+//   - e is not the requestor's own lease (same lease key); AND
+//   - e is not stale.
+//
+// Then `granted &= ~SMB2_LEASE_WRITE`. A pure write lease can only be granted
+// when the file has no other leases and no other non-stat opens.
+//
+// DittoFS tracks live opens in h.files (with no per-open share-mode db entry)
+// and the lock manager's lease records separately. The lock manager's
+// bestGrantableState already strips W when another *lease* record exists
+// (hasOtherActiveHolder). This predicate covers the two cases bestGrantableState
+// cannot see:
+//
+//  1. A live non-stat open that holds NO lease (h1 in
+//     smb2.durable-v2-open.nonstat-and-lease — opened with READ_CONTROL so it
+//     is a non-oplock-stat open with NO_OPLOCK; W must be stripped from the
+//     RWH lease the second handle requests, yielding RH).
+//  2. A DISCONNECTED durable handle that still holds a lease (h1a/h1b in
+//     smb2.durable-v2-open.keep-disconnected-rh-with-rwh-open — their lease
+//     records were released from the lock manager at disconnect, but the
+//     persisted handle keeps the file effectively leased; a new RWH open from
+//     another connection must be downgraded to RH with NO break sent, because a
+//     disconnected handle cannot ack one).
+//
+// The cap fires ONLY for a genuinely conflicting open by a DIFFERENT lease key
+// owned by a DIFFERENT client. It is bypassed for the non-conflicting cases that
+// Samba's `delay_for_oplock` / `is_same_lease` treat as upgrades rather than
+// conflicts:
+//
+//   - excludeLeaseKey is the requestor's own lease key (zero if none); any
+//     open/handle holding that key is the requestor's own lease being upgraded
+//     on the same key (Samba `is_same_lease`) — never a conflict
+//     (smb2.lease.upgrade2).
+//   - excludeClientGUID is the requestor's SMB2 NEGOTIATE ClientGuid; any
+//     open/handle owned by the SAME client cannot conflict with a new lease from
+//     that same client — a second lease key on the same connection is the
+//     contended-upgrade case the lock manager's bestGrantableState already
+//     resolves per-lease, and the holder of an ordinary break is the same client
+//     downgrading its own lease (smb2.lease.upgrade3, smb2.lease.break). Samba
+//     keys conflict on the share entry's connection identity; we approximate via
+//     ClientGuid equality, the same approximation used by
+//     hasSameClientNonStatOpenForFile.
+//
+// Pipes, directories, and the requestor's own opens (same SMB FileID) never
+// contribute. The decision only strips W — it never blocks the grant or sends a
+// break.
+func (h *Handler) disallowWriteLeaseForFile(
+	ctx context.Context,
+	metaHandle []byte,
+	excludeLeaseKey [16]byte,
+	excludeFileID [16]byte,
+	excludeClientGUID [16]byte,
+) bool {
+	if len(metaHandle) == 0 {
+		return false
+	}
+
+	// (1) Live opens. Any other open on the same metadata handle that is not an
+	// oplock-stat-open (or that holds a lease/oplock) disallows W. Stat-only
+	// opens neither break caching nor impose share-mode constraints, so they do
+	// not contribute (Samba is_oplock_stat_open carve-out).
+	disallow := false
+	h.files.Range(func(_, value any) bool {
+		existing, ok := value.(*OpenFile)
+		if !ok || existing.IsPipe || existing.IsDirectory {
+			return true
+		}
+		if len(existing.MetadataHandle) == 0 || !bytes.Equal(existing.MetadataHandle, metaHandle) {
+			return true
+		}
+		// Skip the requestor's own open(s) and same-client opens: same lease key
+		// (upgrade on the same key), same SMB FileID, or same ClientGuid (a
+		// second lease key on the same client is an upgrade/own-break, not a
+		// cross-client conflict — smb2.lease.upgrade2/upgrade3/break).
+		if excludeLeaseKey != ([16]byte{}) && existing.LeaseKey == excludeLeaseKey {
+			return true
+		}
+		if existing.FileID == excludeFileID {
+			return true
+		}
+		if excludeClientGUID != ([16]byte{}) && existing.ClientGUID == excludeClientGUID {
+			return true
+		}
+		// e contributes when it holds an oplock/lease OR is a non-stat open.
+		holdsOplock := existing.OplockLevel != OplockLevelNone
+		if holdsOplock || !isOplockStatOpen(existing.DesiredAccess) {
+			disallow = true
+			return false // stop iterating; one is enough
+		}
+		return true
+	})
+	if disallow {
+		return true
+	}
+
+	// (2) Disconnected durable handles. A handle persisted across a transport
+	// disconnect still holds its lease as far as conflict accounting goes — the
+	// reconnecting client expects to resume it. Any disconnected handle holding
+	// a Read-bearing lease (RH/RWH) with a different lease key disallows W on a
+	// fresh grant from another opener. The new opener gets RH (W stripped) and
+	// NO break is sent — the disconnected client could not ack one.
+	if h.DurableStore == nil {
+		return false
+	}
+	handles, err := h.DurableStore.GetDurableHandlesByFileHandle(ctx, metaHandle)
+	if err != nil || len(handles) == 0 {
+		return false
+	}
+	for _, d := range handles {
+		if d.DisconnectedAt.IsZero() {
+			continue
+		}
+		if excludeLeaseKey != ([16]byte{}) && d.LeaseKey == excludeLeaseKey {
+			continue
+		}
+		if excludeClientGUID != ([16]byte{}) && d.ClientGUID == excludeClientGUID {
+			continue
+		}
+		// A disconnected handle with a Read-bearing lease holds caching that a
+		// new W grant would conflict with. A handle persisted with LeaseState=0
+		// (no caching) does not contend for W.
+		if d.LeaseState&smbLeaseRead != 0 {
+			return true
+		}
+	}
+	return false
 }
