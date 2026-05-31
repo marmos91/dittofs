@@ -200,8 +200,8 @@ still fail due to incomplete reconnect, lease coordination, and persistence.
 | smb2.durable-v2-open.lock-oplock | Durable handles V2 | DH2 lock with oplock not fully working | #739 |
 | smb2.durable-v2-open.lock-lease | Durable handles V2 | DH2 lock with lease not fully working | #739 |
 | smb2.durable-v2-open.app-instance | Durable handles V2 | App instance ID not fully working | #739 |
-| smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Persistent handles not implemented | #739 |
-| smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Persistent handles not implemented | #739 |
+| smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Deferred past v1.0: needs continuous-availability share (SMB2_SHARE_CAP_CA) + per-share CA config + a CA-share CI harness — disproportionate plumbing for 2 tests; persisted-handle storage already exists, only the CA-share surface is missing | #739 |
+| smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Deferred past v1.0: needs continuous-availability share (SMB2_SHARE_CAP_CA) + per-share CA config + a CA-share CI harness — disproportionate plumbing for 2 tests; persisted-handle storage already exists, only the CA-share surface is missing | #739 |
 
 ### Leases (Fix Candidate)
 
@@ -332,6 +332,16 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-31 — #739 persistent-open: deferred past v1.0 (CA-share infra)
+
+The 2 `persistent-open-{oplock,lease}` rows are deferred. Persistent handles
+require the share to advertise `SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY`, a
+per-share CA config knob, and a CA-share CI harness — threading a CA flag through
+the full share stack (CLI → API → models → store → runtime → bootstrap) is
+disproportionate plumbing for 2 conformance tests. The persisted-handle storage
+(badger/postgres) that persistent handles would reuse already exists; only the
+CA-share surface is missing. Reason documented inline; rows stay suppressed.
 
 ### 2026-05-31 — stale-row harvest: 4 rows already passing
 
