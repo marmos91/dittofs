@@ -237,7 +237,7 @@ func (c *NFSConnection) processRequest(ctx context.Context, call *rpc.RPCCallMes
 		return fmt.Errorf("extract procedure data: %w", err)
 	}
 
-	return c.handleRPCCall(ctx, call, procedureData)
+	return c.handleRPCCall(ctx, call, rawMessage, procedureData)
 }
 
 // handleUnsupportedVersion sends an RFC 5531 PROG_MISMATCH reply for

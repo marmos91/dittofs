@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jcmturner/gokrb5/v8/gssapi"
 	"github.com/jcmturner/gokrb5/v8/types"
 
 	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
@@ -389,7 +390,11 @@ func NewGSSProcessor(verifier Verifier, mapper nfsidentity.IdentityMapper, maxCo
 //
 // It decodes the credential, determines the GSS procedure type, and routes
 // to the appropriate handler (INIT, DATA, or DESTROY).
-func (p *GSSProcessor) Process(ctx context.Context, credBody []byte, verifBody []byte, requestBody []byte) *GSSProcessResult {
+//
+// headerPreimage is the marshalled RPC call header (XID..end-of-credential)
+// over which the client computed the call verifier MIC for DATA requests
+// (RFC 2203 Section 5.3.3.2). It is unused for INIT/DESTROY control messages.
+func (p *GSSProcessor) Process(ctx context.Context, credBody []byte, verifBody []byte, headerPreimage []byte, requestBody []byte) *GSSProcessResult {
 	// Decode the RPCSEC_GSS credential
 	cred, err := DecodeGSSCred(credBody)
 	if err != nil {
@@ -403,7 +408,7 @@ func (p *GSSProcessor) Process(ctx context.Context, credBody []byte, verifBody [
 	case RPCGSSInit, RPCGSSContinueInit:
 		return p.handleInit(cred, requestBody)
 	case RPCGSSData:
-		return p.handleData(ctx, cred, verifBody, requestBody)
+		return p.handleData(ctx, cred, verifBody, headerPreimage, requestBody)
 	case RPCGSSDestroy:
 		return p.handleDestroy(cred)
 	default:
@@ -565,13 +570,15 @@ func lastN(b []byte, n int) []byte {
 // handleData processes RPCSEC_GSS_DATA calls.
 //
 // DATA handling:
-// 1. Look up the context by handle (RPCSEC_GSS_CREDPROBLEM if not found)
-// 2. Validate the sequence number (silent discard if invalid per RFC 2203 Section 5.3.3.1)
-// 3. Check for MAXSEQ exceeded (context must be destroyed per RFC 2203)
-// 4. Unwrap based on service level (svc_none / svc_integrity / svc_privacy)
-// 5. Map principal to Unix identity via IdentityMapper
-// 6. Return unwrapped procedure arguments and identity
-func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verifBody []byte, requestBody []byte) *GSSProcessResult {
+//  1. Look up the context by handle (RPCSEC_GSS_CREDPROBLEM if not found)
+//  2. Verify the call-header MIC (RPCSEC_GSS_CREDPROBLEM on failure)
+//  3. Enforce the negotiated service level (no downgrade)
+//  4. Check for MAXSEQ exceeded (context must be destroyed per RFC 2203)
+//  5. Validate the sequence number (silent discard if invalid per RFC 2203 Section 5.3.3.1)
+//  6. Unwrap based on service level (svc_none / svc_integrity / svc_privacy)
+//  7. Map principal to Unix identity via IdentityMapper
+//  8. Return unwrapped procedure arguments and identity
+func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verifBody []byte, headerPreimage []byte, requestBody []byte) *GSSProcessResult {
 	// 1. Look up context by handle
 	gssCtx, found := p.contexts.Lookup(cred.Handle)
 	if !found {
@@ -585,13 +592,49 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		}
 	}
 
-	// Log service level comparison for debugging krb5i issues
-	if cred.Service != gssCtx.Service {
-		logger.Warn("GSS DATA: service level mismatch",
+	// 2. Verify the RPCSEC_GSS call-header MIC.
+	//
+	// Per RFC 2203 Section 5.3.3.2 the client signs the marshalled RPC call
+	// header (XID..end-of-credential) with a GSS MIC token using the context
+	// session key. The server MUST verify it before trusting ANY field in the
+	// credential (gss_proc/service/seq_num/handle) or processing the body.
+	//
+	// This is the authentication gate for svc_none (krb5), which performs no
+	// body crypto; without it a stolen 16-byte context handle would let an
+	// attacker forge requests under the victim principal. For svc_integrity /
+	// svc_privacy it additionally authenticates the header, complementing the
+	// body MIC/Wrap. Mirrors Linux sunrpc svcauth_gss_verify_header /
+	// gss_verify_mic. On failure return RPCSEC_GSS_CREDPROBLEM.
+	if err := verifyHeaderMIC(gssCtx.SessionKey, headerPreimage, verifBody); err != nil {
+		logger.Debug("GSS DATA: call-header MIC verification failed",
+			"principal", gssCtx.Principal,
+			"cred_service", cred.Service,
+			"error", err,
+		)
+		return &GSSProcessResult{
+			Err:      fmt.Errorf("RPCSEC_GSS_CREDPROBLEM: call-header MIC verification failed: %w", err),
+			AuthStat: AuthStatCredProblem,
+		}
+	}
+
+	// 3. Enforce the negotiated service level (no downgrade).
+	//
+	// RFC 2203 Section 5.3.3.4 permits per-call service selection, but a
+	// context established at a stronger level (e.g. krb5p privacy) must not
+	// accept a weaker per-call service (e.g. svc_none), which would be a
+	// confidentiality/integrity downgrade. Reject any call requesting a
+	// service weaker than the one negotiated at context establishment.
+	// Service ordering: none(1) < integrity(2) < privacy(3).
+	if cred.Service < gssCtx.Service {
+		logger.Warn("GSS DATA: rejecting service downgrade",
 			"cred_service", cred.Service,
 			"ctx_service", gssCtx.Service,
 			"principal", gssCtx.Principal,
 		)
+		return &GSSProcessResult{
+			Err:      fmt.Errorf("RPCSEC_GSS_CREDPROBLEM: service downgrade from %d to %d not permitted", gssCtx.Service, cred.Service),
+			AuthStat: AuthStatCredProblem,
+		}
 	}
 	logger.Debug("GSS DATA: credential and context info",
 		"cred_service", cred.Service,
@@ -600,7 +643,7 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		"principal", gssCtx.Principal,
 	)
 
-	// 2. Check for MAXSEQ exceeded -- context must be destroyed per RFC 2203
+	// 4. Check for MAXSEQ exceeded -- context must be destroyed per RFC 2203
 	if cred.SeqNum >= MAXSEQ {
 		logger.Debug("GSS DATA: sequence number exceeds MAXSEQ, destroying context",
 			"seq_num", cred.SeqNum,
@@ -613,7 +656,7 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		}
 	}
 
-	// 3. Validate sequence number via sliding window
+	// 5. Validate sequence number via sliding window
 	if !gssCtx.SeqWindow.Accept(cred.SeqNum) {
 		// Per RFC 2203 Section 5.3.3.1: silent discard for sequence violations
 		logger.Debug("GSS DATA: sequence number rejected (duplicate or out of window)",
@@ -625,7 +668,7 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		}
 	}
 
-	// 4. Unwrap based on credential's service level (per-call, per RFC 2203 Section 5.3.3.4).
+	// 6. Unwrap based on credential's service level (per-call, per RFC 2203 Section 5.3.3.4).
 	// The session key from the context is used for cryptographic operations.
 	var processedData []byte
 	switch cred.Service {
@@ -666,7 +709,7 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		}
 	}
 
-	// 5. Map principal to Unix identity via centralized resolver or legacy mapper.
+	// 7. Map principal to Unix identity via centralized resolver or legacy mapper.
 	ident, identErr := p.resolveIdentity(ctx, gssCtx.Principal, gssCtx.Realm)
 	if identErr != nil {
 		return &GSSProcessResult{Err: identErr}
@@ -687,6 +730,49 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		Service:       cred.Service,
 		SessionKey:    gssCtx.SessionKey,
 	}
+}
+
+// verifyHeaderMIC verifies the RPCSEC_GSS call-header verifier.
+//
+// Per RFC 2203 Section 5.3.3.2, the verifier on a DATA request is a GSS-API
+// MIC token (RFC 4121) the client computed over the marshalled RPC call header
+// (XID..end-of-credential) using the context session key with initiator-sign
+// key usage. The server recomputes the checksum and compares it constant-time
+// (gokrb5 MICToken.Verify uses hmac.Equal). Any mismatch — including a forged
+// gss_proc/service/seq_num/handle — fails verification.
+//
+// A non-RPCSEC_GSS verifier flavor, a missing/empty MIC, or a nil preimage are
+// all rejected: a DATA request MUST carry a header MIC.
+func verifyHeaderMIC(sessionKey types.EncryptionKey, headerPreimage []byte, verifBody []byte) error {
+	if len(headerPreimage) == 0 {
+		return fmt.Errorf("missing RPC header preimage for MIC verification")
+	}
+	if len(verifBody) == 0 {
+		return fmt.Errorf("missing RPCSEC_GSS call verifier")
+	}
+	if len(sessionKey.KeyValue) == 0 {
+		return fmt.Errorf("context has no session key")
+	}
+
+	// Unmarshal the verifier as a MIC token emitted by the initiator (client).
+	var micToken gssapi.MICToken
+	if err := micToken.Unmarshal(verifBody, false /* expectFromAcceptor */); err != nil {
+		return fmt.Errorf("unmarshal call verifier MIC token: %w", err)
+	}
+
+	// The payload is the call header the client signed.
+	micToken.Payload = headerPreimage
+
+	// Verify with initiator-sign key usage (RFC 4121). MICToken.Verify uses a
+	// constant-time HMAC comparison internally.
+	ok, err := micToken.Verify(sessionKey, KeyUsageInitiatorSign)
+	if err != nil {
+		return fmt.Errorf("verify call verifier MIC: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("call verifier MIC mismatch")
+	}
+	return nil
 }
 
 // resolveIdentity maps a Kerberos principal to a Unix identity using the

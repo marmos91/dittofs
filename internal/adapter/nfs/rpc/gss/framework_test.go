@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jcmturner/gokrb5/v8/gssapi"
 	"github.com/jcmturner/gokrb5/v8/types"
 	identity "github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -105,6 +106,46 @@ func extractContextHandle(t *testing.T, proc *GSSProcessor) []byte {
 	return handle
 }
 
+// mockVerifierSessionKey is the session key the mock verifier installs into every
+// context it establishes. Tests sign header MICs with this key so the
+// processor's verifyHeaderMIC check passes. aes128-cts-hmac-sha1-96 (etype 17)
+// requires a 16-byte key; "test-session-key" is exactly 16 bytes.
+var mockVerifierSessionKey = types.EncryptionKey{
+	KeyType:  17,
+	KeyValue: []byte("test-session-key"),
+}
+
+// signHeaderMIC produces an RPCSEC_GSS call verifier: a GSS-API MIC token
+// (RFC 4121) computed by the initiator (client) over the given RPC call-header
+// preimage using the context session key with initiator-sign key usage. This
+// is what verifyHeaderMIC expects on every DATA request.
+func signHeaderMIC(t *testing.T, sessionKey types.EncryptionKey, preimage []byte) []byte {
+	t.Helper()
+	tok := gssapi.MICToken{
+		Flags:     0x00, // sent by initiator (acceptor flag clear)
+		SndSeqNum: 0,
+		Payload:   preimage,
+	}
+	if err := tok.SetChecksum(sessionKey, KeyUsageInitiatorSign); err != nil {
+		t.Fatalf("sign header MIC: %v", err)
+	}
+	mic, err := tok.Marshal()
+	if err != nil {
+		t.Fatalf("marshal header MIC: %v", err)
+	}
+	return mic
+}
+
+// processDATA establishes a valid header MIC over credBody (used as the
+// header preimage for test purposes) and runs a DATA request through the
+// processor. Using credBody as the preimage is sufficient for unit tests:
+// verifyHeaderMIC only requires the MIC to match whatever preimage is supplied.
+func processDATA(t *testing.T, proc *GSSProcessor, sessionKey types.EncryptionKey, credBody, requestBody []byte) *GSSProcessResult {
+	t.Helper()
+	mic := signHeaderMIC(t, sessionKey, credBody)
+	return proc.Process(context.Background(), credBody, mic, credBody, requestBody)
+}
+
 // encodeOpaqueToken wraps raw bytes as XDR opaque data (length-prefixed with padding).
 func encodeOpaqueToken(data []byte) []byte {
 	length := uint32(len(data))
@@ -128,7 +169,7 @@ func TestProcessINITReturnsControl(t *testing.T) {
 	credBody := buildINITCredBody(t)
 	gssToken := encodeOpaqueToken([]byte("mock-ap-req-token"))
 
-	result := proc.Process(context.Background(), credBody, nil, gssToken)
+	result := proc.Process(context.Background(), credBody, nil, nil, gssToken)
 
 	if result.Err != nil {
 		t.Fatalf("unexpected error: %v", result.Err)
@@ -150,7 +191,7 @@ func TestProcessINITStoresContextBeforeReply(t *testing.T) {
 	credBody := buildINITCredBody(t)
 	gssToken := encodeOpaqueToken([]byte("mock-ap-req-token"))
 
-	result := proc.Process(context.Background(), credBody, nil, gssToken)
+	result := proc.Process(context.Background(), credBody, nil, nil, gssToken)
 	if result.Err != nil {
 		t.Fatalf("unexpected error: %v", result.Err)
 	}
@@ -171,7 +212,7 @@ func TestProcessINITCreatesContextWithCorrectFields(t *testing.T) {
 	credBody := buildINITCredBody(t)
 	gssToken := encodeOpaqueToken([]byte("mock-ap-req-token"))
 
-	result := proc.Process(context.Background(), credBody, nil, gssToken)
+	result := proc.Process(context.Background(), credBody, nil, nil, gssToken)
 	if result.Err != nil {
 		t.Fatalf("unexpected error: %v", result.Err)
 	}
@@ -216,7 +257,7 @@ func TestProcessINITVerificationFailure(t *testing.T) {
 	credBody := buildINITCredBody(t)
 	gssToken := encodeOpaqueToken([]byte("bad-token"))
 
-	result := proc.Process(context.Background(), credBody, nil, gssToken)
+	result := proc.Process(context.Background(), credBody, nil, nil, gssToken)
 
 	// Should have an error
 	if result.Err == nil {
@@ -247,7 +288,7 @@ func TestProcessDESTROYRemovesContext(t *testing.T) {
 
 	// First, establish a context via INIT
 	credBody := buildINITCredBody(t)
-	initResult := proc.Process(context.Background(), credBody, nil, encodeOpaqueToken([]byte("mock-ap-req-token")))
+	initResult := proc.Process(context.Background(), credBody, nil, nil, encodeOpaqueToken([]byte("mock-ap-req-token")))
 	if initResult.Err != nil {
 		t.Fatalf("INIT failed: %v", initResult.Err)
 	}
@@ -261,7 +302,7 @@ func TestProcessDESTROYRemovesContext(t *testing.T) {
 
 	// Send DESTROY
 	destroyCredBody := buildDESTROYCredBody(t, handle, 1)
-	destroyResult := proc.Process(context.Background(), destroyCredBody, nil, nil)
+	destroyResult := proc.Process(context.Background(), destroyCredBody, nil, nil, nil)
 
 	if destroyResult.Err != nil {
 		t.Fatalf("DESTROY failed: %v", destroyResult.Err)
@@ -287,7 +328,7 @@ func TestProcessDESTROYUnknownContext(t *testing.T) {
 
 	// DESTROY a context that doesn't exist -- should still succeed per RFC
 	destroyCredBody := buildDESTROYCredBody(t, []byte("nonexistent-handle"), 1)
-	result := proc.Process(context.Background(), destroyCredBody, nil, nil)
+	result := proc.Process(context.Background(), destroyCredBody, nil, nil, nil)
 
 	if result.Err != nil {
 		t.Fatalf("DESTROY of unknown context should succeed, got error: %v", result.Err)
@@ -303,9 +344,19 @@ func TestProcessDATAWithValidContext(t *testing.T) {
 	proc := NewGSSProcessor(verifier, mapper, 100, 10*time.Minute)
 	defer proc.Stop()
 
-	// Establish a context via INIT
-	credBody := buildINITCredBody(t)
-	initResult := proc.Process(context.Background(), credBody, nil, encodeOpaqueToken([]byte("mock-ap-req-token")))
+	// Establish a context via INIT at svc_none so a svc_none DATA call below
+	// is not treated as a service downgrade.
+	initCred := &RPCGSSCredV1{
+		GSSProc: RPCGSSInit,
+		SeqNum:  0,
+		Service: RPCGSSSvcNone,
+		Handle:  nil,
+	}
+	credBody, err := EncodeGSSCred(initCred)
+	if err != nil {
+		t.Fatalf("encode INIT cred: %v", err)
+	}
+	initResult := proc.Process(context.Background(), credBody, nil, nil, encodeOpaqueToken([]byte("mock-ap-req-token")))
 	if initResult.Err != nil {
 		t.Fatalf("INIT failed: %v", initResult.Err)
 	}
@@ -325,7 +376,7 @@ func TestProcessDATAWithValidContext(t *testing.T) {
 	}
 
 	procedureArgs := []byte("test-procedure-arguments")
-	result := proc.Process(context.Background(), dataCredBody, nil, procedureArgs)
+	result := processDATA(t, proc, mockVerifierSessionKey, dataCredBody, procedureArgs)
 
 	if result.Err != nil {
 		t.Fatalf("DATA failed: %v", result.Err)
@@ -353,6 +404,184 @@ func TestProcessDATAWithValidContext(t *testing.T) {
 	}
 }
 
+// establishContext runs an INIT at the given service level and returns the
+// resulting context handle. Used by the call-header MIC security tests.
+func establishContext(t *testing.T, proc *GSSProcessor, service uint32) []byte {
+	t.Helper()
+	initCred := &RPCGSSCredV1{
+		GSSProc: RPCGSSInit,
+		SeqNum:  0,
+		Service: service,
+		Handle:  nil,
+	}
+	initCredBody, err := EncodeGSSCred(initCred)
+	if err != nil {
+		t.Fatalf("encode INIT cred: %v", err)
+	}
+	res := proc.Process(context.Background(), initCredBody, nil, nil, encodeOpaqueToken([]byte("mock-token")))
+	if res.Err != nil {
+		t.Fatalf("INIT failed: %v", res.Err)
+	}
+	return extractContextHandle(t, proc)
+}
+
+// TestProcessDATAForgedHeaderRejected is the core H1 regression: an attacker
+// who learns a valid context handle but cannot produce a correct call-header
+// MIC must be rejected with CREDPROBLEM. This covers svc_none (krb5), where no
+// body crypto exists and the header MIC is the ONLY authentication gate.
+func TestProcessDATAForgedHeaderRejected(t *testing.T) {
+	verifier := newMockVerifier("alice", "EXAMPLE.COM")
+	proc := NewGSSProcessor(verifier, newTestMapper(), 100, 10*time.Minute)
+	defer proc.Stop()
+
+	handle := establishContext(t, proc, RPCGSSSvcNone)
+
+	dataCred := &RPCGSSCredV1{
+		GSSProc: RPCGSSData,
+		SeqNum:  1,
+		Service: RPCGSSSvcNone,
+		Handle:  handle,
+	}
+	dataCredBody, err := EncodeGSSCred(dataCred)
+	if err != nil {
+		t.Fatalf("encode DATA cred: %v", err)
+	}
+
+	t.Run("no verifier", func(t *testing.T) {
+		// Stolen handle, no MIC at all: the old code accepted this for svc_none.
+		res := proc.Process(context.Background(), dataCredBody, nil, dataCredBody, []byte("forged-args"))
+		if res.Err == nil {
+			t.Fatal("expected rejection for missing call-header MIC")
+		}
+		if res.AuthStat != AuthStatCredProblem {
+			t.Fatalf("expected AuthStatCredProblem (%d), got %d", AuthStatCredProblem, res.AuthStat)
+		}
+		if res.ProcessedData != nil || res.Identity != nil {
+			t.Fatal("rejected DATA must not yield processed data or identity")
+		}
+	})
+
+	t.Run("MIC over different header", func(t *testing.T) {
+		// Attacker forges the header (e.g. a different seq_num / handle) but can
+		// only sign a DIFFERENT preimage — the MIC will not match the real header.
+		mic := signHeaderMIC(t, mockVerifierSessionKey, []byte("attacker-chosen-preimage"))
+		res := proc.Process(context.Background(), dataCredBody, mic, dataCredBody, []byte("forged-args"))
+		if res.Err == nil {
+			t.Fatal("expected rejection for MIC over a different header preimage")
+		}
+		if res.AuthStat != AuthStatCredProblem {
+			t.Fatalf("expected AuthStatCredProblem (%d), got %d", AuthStatCredProblem, res.AuthStat)
+		}
+	})
+
+	t.Run("MIC under wrong key", func(t *testing.T) {
+		// Attacker signs the correct preimage but with a key they do not hold.
+		wrongKey := types.EncryptionKey{KeyType: 17, KeyValue: []byte("WRONG-session-ky")}
+		mic := signHeaderMIC(t, wrongKey, dataCredBody)
+		res := proc.Process(context.Background(), dataCredBody, mic, dataCredBody, []byte("forged-args"))
+		if res.Err == nil {
+			t.Fatal("expected rejection for MIC computed under the wrong key")
+		}
+		if res.AuthStat != AuthStatCredProblem {
+			t.Fatalf("expected AuthStatCredProblem (%d), got %d", AuthStatCredProblem, res.AuthStat)
+		}
+	})
+
+	t.Run("missing preimage", func(t *testing.T) {
+		// A malformed RPC header yields a nil preimage; DATA must be rejected.
+		mic := signHeaderMIC(t, mockVerifierSessionKey, dataCredBody)
+		res := proc.Process(context.Background(), dataCredBody, mic, nil, []byte("forged-args"))
+		if res.Err == nil {
+			t.Fatal("expected rejection when header preimage is missing")
+		}
+		if res.AuthStat != AuthStatCredProblem {
+			t.Fatalf("expected AuthStatCredProblem (%d), got %d", AuthStatCredProblem, res.AuthStat)
+		}
+	})
+}
+
+// TestProcessDATAGenuineMICAccepted confirms a correctly-signed header MIC
+// passes for svc_none (the previously-unauthenticated path).
+func TestProcessDATAGenuineMICAccepted(t *testing.T) {
+	verifier := newMockVerifier("alice", "EXAMPLE.COM")
+	proc := NewGSSProcessor(verifier, newTestMapper(), 100, 10*time.Minute)
+	defer proc.Stop()
+
+	handle := establishContext(t, proc, RPCGSSSvcNone)
+	dataCred := &RPCGSSCredV1{
+		GSSProc: RPCGSSData,
+		SeqNum:  1,
+		Service: RPCGSSSvcNone,
+		Handle:  handle,
+	}
+	dataCredBody, err := EncodeGSSCred(dataCred)
+	if err != nil {
+		t.Fatalf("encode DATA cred: %v", err)
+	}
+
+	res := processDATA(t, proc, mockVerifierSessionKey, dataCredBody, []byte("genuine-args"))
+	if res.Err != nil {
+		t.Fatalf("genuine MIC should pass: %v", res.Err)
+	}
+	if string(res.ProcessedData) != "genuine-args" {
+		t.Fatalf("unexpected processed data: %q", res.ProcessedData)
+	}
+	if res.Identity == nil || res.Identity.UID == nil || *res.Identity.UID != 1000 {
+		t.Fatalf("expected resolved identity uid=1000, got %+v", res.Identity)
+	}
+}
+
+// TestProcessDATAServiceDowngradeRejected covers C-MED: a context established
+// at a stronger service (privacy/integrity) must not accept a weaker per-call
+// service. A valid header MIC is supplied so the rejection is attributable to
+// the downgrade, not the MIC.
+func TestProcessDATAServiceDowngradeRejected(t *testing.T) {
+	cases := []struct {
+		name      string
+		ctxSvc    uint32
+		callSvc   uint32
+		wantError bool
+	}{
+		{"privacy->none", RPCGSSSvcPrivacy, RPCGSSSvcNone, true},
+		{"privacy->integrity", RPCGSSSvcPrivacy, RPCGSSSvcIntegrity, true},
+		{"integrity->none", RPCGSSSvcIntegrity, RPCGSSSvcNone, true},
+		{"none->none (no downgrade)", RPCGSSSvcNone, RPCGSSSvcNone, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			verifier := newMockVerifier("alice", "EXAMPLE.COM")
+			proc := NewGSSProcessor(verifier, newTestMapper(), 100, 10*time.Minute)
+			defer proc.Stop()
+
+			handle := establishContext(t, proc, tc.ctxSvc)
+			dataCred := &RPCGSSCredV1{
+				GSSProc: RPCGSSData,
+				SeqNum:  1,
+				Service: tc.callSvc,
+				Handle:  handle,
+			}
+			dataCredBody, err := EncodeGSSCred(dataCred)
+			if err != nil {
+				t.Fatalf("encode DATA cred: %v", err)
+			}
+
+			mic := signHeaderMIC(t, mockVerifierSessionKey, dataCredBody)
+			res := proc.Process(context.Background(), dataCredBody, mic, dataCredBody, []byte("args"))
+
+			if tc.wantError {
+				if res.Err == nil {
+					t.Fatalf("expected service-downgrade rejection (ctx=%d call=%d)", tc.ctxSvc, tc.callSvc)
+				}
+				if res.AuthStat != AuthStatCredProblem {
+					t.Fatalf("expected AuthStatCredProblem (%d), got %d", AuthStatCredProblem, res.AuthStat)
+				}
+			} else if res.Err != nil {
+				t.Fatalf("unexpected error for equal service level: %v", res.Err)
+			}
+		})
+	}
+}
+
 func TestProcessDATAUnknownContext(t *testing.T) {
 	verifier := newMockVerifier("alice", "EXAMPLE.COM")
 	mapper := newTestMapper()
@@ -372,7 +601,8 @@ func TestProcessDATAUnknownContext(t *testing.T) {
 		t.Fatalf("encode cred: %v", err)
 	}
 
-	result := proc.Process(context.Background(), credBody, nil, []byte("args"))
+	// Context lookup fails before the MIC check, so no verifier is needed.
+	result := proc.Process(context.Background(), credBody, nil, nil, []byte("args"))
 
 	if result.Err == nil {
 		t.Fatal("expected error for unknown context")
@@ -393,7 +623,7 @@ func TestProcessDATASilentDiscardForDuplicate(t *testing.T) {
 		Handle:  nil,
 	}
 	initCredBody, _ := EncodeGSSCred(initCred)
-	initResult := proc.Process(context.Background(), initCredBody, nil, encodeOpaqueToken([]byte("mock-token")))
+	initResult := proc.Process(context.Background(), initCredBody, nil, nil, encodeOpaqueToken([]byte("mock-token")))
 	if initResult.Err != nil {
 		t.Fatalf("INIT failed: %v", initResult.Err)
 	}
@@ -408,13 +638,14 @@ func TestProcessDATASilentDiscardForDuplicate(t *testing.T) {
 		Handle:  handle,
 	}
 	dataCredBody, _ := EncodeGSSCred(dataCred)
-	result1 := proc.Process(context.Background(), dataCredBody, nil, []byte("args"))
+	result1 := processDATA(t, proc, mockVerifierSessionKey, dataCredBody, []byte("args"))
 	if result1.Err != nil {
 		t.Fatalf("first DATA failed: %v", result1.Err)
 	}
 
-	// Second DATA with same seq_num=1 should be silently discarded (duplicate)
-	result2 := proc.Process(context.Background(), dataCredBody, nil, []byte("args"))
+	// Second DATA with same seq_num=1 should be silently discarded (duplicate).
+	// The header MIC still verifies; the duplicate is caught by the seq window.
+	result2 := processDATA(t, proc, mockVerifierSessionKey, dataCredBody, []byte("args"))
 	if !result2.SilentDiscard {
 		t.Fatal("expected SilentDiscard=true for duplicate sequence number")
 	}
@@ -434,7 +665,7 @@ func TestProcessDATAMaxSeqDestroysContext(t *testing.T) {
 		Handle:  nil,
 	}
 	initCredBody, _ := EncodeGSSCred(initCred)
-	initResult := proc.Process(context.Background(), initCredBody, nil, encodeOpaqueToken([]byte("mock-token")))
+	initResult := proc.Process(context.Background(), initCredBody, nil, nil, encodeOpaqueToken([]byte("mock-token")))
 	if initResult.Err != nil {
 		t.Fatalf("INIT failed: %v", initResult.Err)
 	}
@@ -449,7 +680,7 @@ func TestProcessDATAMaxSeqDestroysContext(t *testing.T) {
 		Handle:  handle,
 	}
 	dataCredBody, _ := EncodeGSSCred(dataCred)
-	result := proc.Process(context.Background(), dataCredBody, nil, []byte("args"))
+	result := processDATA(t, proc, mockVerifierSessionKey, dataCredBody, []byte("args"))
 
 	if result.Err == nil {
 		t.Fatal("expected error for MAXSEQ exceeded")
@@ -475,7 +706,7 @@ func TestProcessDATASvcIntegrityRequiresValidIntegData(t *testing.T) {
 		Handle:  nil,
 	}
 	initCredBody, _ := EncodeGSSCred(initCred)
-	initResult := proc.Process(context.Background(), initCredBody, nil, encodeOpaqueToken([]byte("mock-token")))
+	initResult := proc.Process(context.Background(), initCredBody, nil, nil, encodeOpaqueToken([]byte("mock-token")))
 	if initResult.Err != nil {
 		t.Fatalf("INIT failed: %v", initResult.Err)
 	}
@@ -491,7 +722,8 @@ func TestProcessDATASvcIntegrityRequiresValidIntegData(t *testing.T) {
 		Handle:  handle,
 	}
 	dataCredBody, _ := EncodeGSSCred(dataCred)
-	result := proc.Process(context.Background(), dataCredBody, nil, []byte("raw-args-not-integ-format"))
+	// Header MIC passes; integrity body unwrap fails on the raw (non-integ) args.
+	result := processDATA(t, proc, mockVerifierSessionKey, dataCredBody, []byte("raw-args-not-integ-format"))
 
 	if result.Err == nil {
 		t.Fatal("expected error for svc_integrity with invalid integ data format")
@@ -515,7 +747,7 @@ func TestProcessInvalidCredentialVersion(t *testing.T) {
 	badCredBody[15] = 1
 	// handle_len = 0 (bytes 16-19)
 
-	result := proc.Process(context.Background(), badCredBody, nil, nil)
+	result := proc.Process(context.Background(), badCredBody, nil, nil, nil)
 
 	if result.Err == nil {
 		t.Fatal("expected error for invalid credential version")
@@ -540,7 +772,7 @@ func TestProcessUnknownGSSProc(t *testing.T) {
 		t.Fatalf("encode cred: %v", err)
 	}
 
-	result := proc.Process(context.Background(), credBody, nil, nil)
+	result := proc.Process(context.Background(), credBody, nil, nil, nil)
 
 	if result.Err == nil {
 		t.Fatal("expected error for unknown GSS procedure")
@@ -553,7 +785,7 @@ func TestProcessINITNoVerifier(t *testing.T) {
 	defer proc.Stop()
 
 	credBody := buildINITCredBody(t)
-	result := proc.Process(context.Background(), credBody, nil, encodeOpaqueToken([]byte("mock-token")))
+	result := proc.Process(context.Background(), credBody, nil, nil, encodeOpaqueToken([]byte("mock-token")))
 
 	if result.Err == nil {
 		t.Fatal("expected error when no verifier configured")
@@ -569,7 +801,7 @@ func TestProcessINITMultipleContexts(t *testing.T) {
 	// Create 5 contexts
 	for i := 0; i < 5; i++ {
 		credBody := buildINITCredBody(t)
-		result := proc.Process(context.Background(), credBody, nil, encodeOpaqueToken([]byte("mock-ap-req-token")))
+		result := proc.Process(context.Background(), credBody, nil, nil, encodeOpaqueToken([]byte("mock-ap-req-token")))
 		if result.Err != nil {
 			t.Fatalf("INIT %d failed: %v", i, result.Err)
 		}
@@ -588,7 +820,7 @@ func TestProcessSetVerifier(t *testing.T) {
 
 	// First INIT with original verifier
 	credBody := buildINITCredBody(t)
-	result := proc.Process(context.Background(), credBody, nil, encodeOpaqueToken([]byte("mock-token")))
+	result := proc.Process(context.Background(), credBody, nil, nil, encodeOpaqueToken([]byte("mock-token")))
 	if result.Err != nil {
 		t.Fatalf("INIT with verifier1 failed: %v", result.Err)
 	}
@@ -599,7 +831,7 @@ func TestProcessSetVerifier(t *testing.T) {
 
 	// Second INIT with new verifier
 	credBody2 := buildINITCredBody(t)
-	result2 := proc.Process(context.Background(), credBody2, nil, encodeOpaqueToken([]byte("mock-token")))
+	result2 := proc.Process(context.Background(), credBody2, nil, nil, encodeOpaqueToken([]byte("mock-token")))
 	if result2.Err != nil {
 		t.Fatalf("INIT with verifier2 failed: %v", result2.Err)
 	}
@@ -640,7 +872,7 @@ func TestProcessContinueInitRoutesToInit(t *testing.T) {
 		t.Fatalf("encode cred: %v", err)
 	}
 
-	result := proc.Process(context.Background(), credBody, nil, encodeOpaqueToken([]byte("continue-token")))
+	result := proc.Process(context.Background(), credBody, nil, nil, encodeOpaqueToken([]byte("continue-token")))
 
 	// Should succeed (routes to handleInit)
 	if result.Err != nil {
@@ -703,7 +935,7 @@ func TestGSSProcessResultIdentityNilForControl(t *testing.T) {
 	defer proc.Stop()
 
 	credBody := buildINITCredBody(t)
-	result := proc.Process(context.Background(), credBody, nil, encodeOpaqueToken([]byte("mock-token")))
+	result := proc.Process(context.Background(), credBody, nil, nil, encodeOpaqueToken([]byte("mock-token")))
 
 	if result.Err != nil {
 		t.Fatalf("unexpected error: %v", result.Err)
@@ -785,7 +1017,7 @@ func TestGSSLifecycle_Full(t *testing.T) {
 		t.Fatalf("encode INIT cred: %v", err)
 	}
 
-	initResult := proc.Process(context.Background(), initCredBody, nil, encodeOpaqueToken([]byte("mock-ap-req-token")))
+	initResult := proc.Process(context.Background(), initCredBody, nil, nil, encodeOpaqueToken([]byte("mock-ap-req-token")))
 
 	// Verify INIT result
 	if initResult.Err != nil {
@@ -813,7 +1045,7 @@ func TestGSSLifecycle_Full(t *testing.T) {
 	}
 	dataCredBody1, _ := EncodeGSSCred(dataCred1)
 	procedureArgs1 := []byte("GETATTR-request-args")
-	dataResult1 := proc.Process(context.Background(), dataCredBody1, nil, procedureArgs1)
+	dataResult1 := processDATA(t, proc, mockVerifierSessionKey, dataCredBody1, procedureArgs1)
 
 	if dataResult1.Err != nil {
 		t.Fatalf("Step 2: DATA(seq=1) failed: %v", dataResult1.Err)
@@ -849,7 +1081,7 @@ func TestGSSLifecycle_Full(t *testing.T) {
 	}
 	dataCredBody2, _ := EncodeGSSCred(dataCred2)
 	procedureArgs2 := []byte("READ-request-args")
-	dataResult2 := proc.Process(context.Background(), dataCredBody2, nil, procedureArgs2)
+	dataResult2 := processDATA(t, proc, mockVerifierSessionKey, dataCredBody2, procedureArgs2)
 
 	if dataResult2.Err != nil {
 		t.Fatalf("Step 3: DATA(seq=2) failed: %v", dataResult2.Err)
@@ -862,7 +1094,7 @@ func TestGSSLifecycle_Full(t *testing.T) {
 	}
 
 	// ---- Step 4: Duplicate DATA with SeqNum=1 (should be silently discarded) ----
-	dupResult := proc.Process(context.Background(), dataCredBody1, nil, procedureArgs1)
+	dupResult := processDATA(t, proc, mockVerifierSessionKey, dataCredBody1, procedureArgs1)
 
 	if !dupResult.SilentDiscard {
 		t.Fatal("Step 4: expected SilentDiscard=true for duplicate seq_num=1")
@@ -876,7 +1108,7 @@ func TestGSSLifecycle_Full(t *testing.T) {
 		Handle:  handle,
 	}
 	destroyCredBody, _ := EncodeGSSCred(destroyCred)
-	destroyResult := proc.Process(context.Background(), destroyCredBody, nil, nil)
+	destroyResult := proc.Process(context.Background(), destroyCredBody, nil, nil, nil)
 
 	if destroyResult.Err != nil {
 		t.Fatalf("Step 5: DESTROY failed: %v", destroyResult.Err)
@@ -899,7 +1131,8 @@ func TestGSSLifecycle_Full(t *testing.T) {
 		Handle:  handle,
 	}
 	dataCredBody3, _ := EncodeGSSCred(dataCred3)
-	staleResult := proc.Process(context.Background(), dataCredBody3, nil, []byte("stale-request"))
+	// Context was destroyed; lookup fails before the MIC check.
+	staleResult := proc.Process(context.Background(), dataCredBody3, nil, nil, []byte("stale-request"))
 
 	if staleResult.Err == nil {
 		t.Fatal("Step 6: expected error for stale context handle after DESTROY")

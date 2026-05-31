@@ -106,7 +106,8 @@ func ReadCall(data []byte) (*RPCCallMessage, error) {
 //
 // Returns:
 //   - []byte: Procedure-specific parameter bytes (empty if none)
-//   - error: Always returns nil (kept for interface compatibility)
+//   - error: Non-nil if the credential/verifier lengths are malformed and
+//     would run past the end of the message (a truncated/forged header)
 //
 // Example usage:
 //
@@ -127,43 +128,81 @@ func ReadCall(data []byte) (*RPCCallMessage, error) {
 //	    xdr.Unmarshal(bytes.NewReader(params), &req)
 //	}
 func ReadData(message []byte, call *RPCCallMessage) ([]byte, error) {
-	// Start after the fixed RPC header
-	// XID, MsgType, RPCVersion, Program, Version, Procedure = 6 × 4 bytes = 24 bytes
-	offset := 24
+	// The credential (XID..end-of-credential) is exactly the call-header MIC
+	// preimage; reuse the bounds-checked helper to find where the verifier
+	// begins, then skip the verifier to reach the procedure arguments.
+	header, err := HeaderMICPreimage(message)
+	if err != nil {
+		return nil, err
+	}
+	offset := len(header)
 
-	// Skip credentials (flavor + length + data + padding)
-	// Read the credential flavor and length to know how much to skip
-	offset += 4 // Skip flavor field
-	credLen := binary.BigEndian.Uint32(message[offset : offset+4])
-	offset += 4            // Skip length field
-	offset += int(credLen) // Skip credential body
-
-	// Add XDR padding for credential body (align to 4-byte boundary)
-	// Formula: padding = (4 - (length % 4)) % 4
-	// Examples: length=5 -> padding=3, length=8 -> padding=0
-	padding := (4 - (credLen % 4)) % 4
-	offset += int(padding)
-
-	// Skip verifier (flavor + length + data + padding)
-	// Same structure as credentials
+	// Skip verifier (flavor + length + data + padding), same structure as the
+	// credential. Bounds-check each field read against the buffer.
+	if offset+8 > len(message) {
+		return nil, fmt.Errorf("rpc message too short for verifier: %d bytes", len(message))
+	}
 	offset += 4 // Skip flavor field
 	verfLen := binary.BigEndian.Uint32(message[offset : offset+4])
-	offset += 4            // Skip length field
-	offset += int(verfLen) // Skip verifier body
+	offset += 4 // Skip length field
 
-	// Add XDR padding for verifier body
-	padding = (4 - (verfLen % 4)) % 4
-	offset += int(padding)
+	padding := (4 - (verfLen % 4)) % 4
+	end := offset + int(verfLen) + int(padding)
+	if verfLen > uint32(len(message)) || end < offset || end > len(message) {
+		return nil, fmt.Errorf("rpc verifier length %d overruns message of %d bytes", verfLen, len(message))
+	}
+	offset = end
 
-	// If we've consumed the entire message, return empty data
-	// This can happen for procedures that take no parameters (like NULL)
+	// If we've consumed the entire message, return empty data.
+	// This can happen for procedures that take no parameters (like NULL).
 	if offset >= len(message) {
 		return []byte{}, nil
 	}
 
-	// Return the remaining bytes, which contain procedure-specific parameters
-	remaining := message[offset:]
-	return remaining, nil
+	// Return the remaining bytes, which contain procedure-specific parameters.
+	return message[offset:], nil
+}
+
+// HeaderMICPreimage returns the RPC call-header bytes over which an
+// RPCSEC_GSS call verifier MIC is computed.
+//
+// Per RFC 2203 Section 5.3.3.2, the call verifier for an RPCSEC_GSS DATA
+// request is a GSS MIC token computed by the client over the marshalled RPC
+// call header through the credential — i.e. the XDR stream from the XID up to
+// and including the credential (flavor + length + body + padding), but NOT
+// including the verifier. This mirrors Linux sunrpc
+// svcauth_gss_verify_header, which verifies the MIC over the buffer spanning
+// xid..end-of-credential.
+//
+// The returned slice aliases the underlying message bytes; callers must not
+// mutate it.
+//
+// Returns an error if the message is too short or its embedded credential
+// length runs past the end of the buffer (i.e. a malformed/truncated header).
+func HeaderMICPreimage(message []byte) ([]byte, error) {
+	// Fixed RPC header: XID, MsgType, RPCVersion, Program, Version, Procedure
+	// = 6 × 4 bytes = 24 bytes, followed by the credential.
+	const fixedHeaderLen = 24
+
+	// Need at least the fixed header + credential flavor (4) + length (4).
+	if len(message) < fixedHeaderLen+8 {
+		return nil, fmt.Errorf("rpc message too short for credential: %d bytes", len(message))
+	}
+
+	offset := fixedHeaderLen
+	offset += 4 // credential flavor
+	credLen := binary.BigEndian.Uint32(message[offset : offset+4])
+	offset += 4 // credential length field
+
+	// Bound the credential body length against the actual buffer to avoid a
+	// slice-out-of-range and to reject truncated/forged headers.
+	padding := (4 - (credLen % 4)) % 4
+	end := offset + int(credLen) + int(padding)
+	if credLen > uint32(len(message)) || end < offset || end > len(message) {
+		return nil, fmt.Errorf("rpc credential length %d overruns message of %d bytes", credLen, len(message))
+	}
+
+	return message[:end], nil
 }
 
 // MakeSuccessReply constructs an RPC success reply message.
