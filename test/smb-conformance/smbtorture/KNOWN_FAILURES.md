@@ -189,7 +189,6 @@ to the DH state machine — tracked under #792 / #793.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-open.alloc-size | CREATE allocation | Pre-existing non-DH bug: out.alloc_size=0 on CREATE with in.alloc_size set (fails before any reconnect) | #792 |
 
 ### Durable Handles V2 (Fix Candidate)
 
@@ -340,6 +339,18 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-31 — #792 durable-create alloc-size: 1 row flipped
+
+PR #887 fixes `out.alloc_size` on the durable-**reconnect** CREATE branch. #875
+had echoed the requested allocation on the initial-CREATE and post-break paths,
+but the reconnect branch rebuilt its response from `calculateAllocationSize(file
+size)` (→ 0 for an empty file) and the in-memory reservation was lost on
+disconnect. The reservation is now persisted in `PersistedDurableHandle`
+(memory/badger/postgres + migration `000021`), restored on reconnect, and echoed
+via `effectiveAllocationSize`. CI smbtorture confirmed `success:` for:
+
+- `smb2.durable-open.alloc-size`
 
 ### 2026-05-31 — #738/#739 durable reconnect: 4 rows flipped
 
