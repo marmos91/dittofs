@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"sync"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -65,6 +66,14 @@ type Slot struct {
 	// CachedReply holds the full XDR-encoded COMPOUND4res for replay.
 	// nil if no reply has been cached (e.g., sa_cachethis was false).
 	CachedReply []byte
+
+	// RequestDigest is a fingerprint of the COMPOUND request that produced
+	// SeqID, used to detect a false retry: a client that reuses slot+seqid
+	// with a DIFFERENT request (RFC 8881 Section 2.10.6.1.3). On a retry whose
+	// digest differs, ValidateSequence returns NFS4ERR_SEQ_FALSE_RETRY rather
+	// than the stale cached reply (confused-deputy / data-exposure guard).
+	// nil when no request has been recorded for this slot yet.
+	RequestDigest []byte
 }
 
 // ============================================================================
@@ -127,14 +136,22 @@ func NewSlotTable(numSlots uint32) *SlotTable {
 // validation algorithm.
 //
 // Returns the validation result, a pointer to the slot (for SeqNew/SeqRetry),
-// and an error (for BADSLOT, SEQ_MISORDERED, DELAY, RETRY_UNCACHED_REP).
+// and an error (for BADSLOT, SEQ_MISORDERED, DELAY, RETRY_UNCACHED_REP,
+// SEQ_FALSE_RETRY).
+//
+// requestDigest is a fingerprint of the COMPOUND request body. On a retry
+// (seqid == cached) whose digest differs from the digest recorded for the
+// cached reply, ValidateSequence returns NFS4ERR_SEQ_FALSE_RETRY per RFC 8881
+// Section 2.10.6.1.3, instead of replaying a reply that belonged to a
+// different request. A nil/empty digest on either side disables the compare
+// (best-effort), preserving prior behavior when no fingerprint is available.
 //
 // For a SeqNew result, also marks the slot as in-use while
 // holding st.mu, making validation and reservation atomic. The caller must
 // call CompleteSlotRequest when the request is finished.
 //
 // Thread-safe: acquires st.mu for the duration of validation.
-func (st *SlotTable) ValidateSequence(slotID, seqID uint32) (SequenceValidation, *Slot, error) {
+func (st *SlotTable) ValidateSequence(slotID, seqID uint32, requestDigest []byte) (SequenceValidation, *Slot, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
@@ -182,6 +199,18 @@ func (st *SlotTable) ValidateSequence(slotID, seqID uint32) (SequenceValidation,
 				Message: "retry while original request in flight",
 			}
 		}
+		// False-retry detection (RFC 8881 Section 2.10.6.1.3): a retry must
+		// carry the SAME request as the one that produced the cached reply.
+		// If the digests differ, the client reused slot+seqid for a different
+		// request -- never replay the stale reply (it could leak another
+		// operation's result), return NFS4ERR_SEQ_FALSE_RETRY instead.
+		if len(slot.RequestDigest) > 0 && len(requestDigest) > 0 &&
+			!bytes.Equal(slot.RequestDigest, requestDigest) {
+			return SeqMisordered, nil, &NFS4StateError{
+				Status:  types.NFS4ERR_SEQ_FALSE_RETRY,
+				Message: "retry with different request on same slot+seqid",
+			}
+		}
 		if slot.CachedReply == nil {
 			// No cached reply available (sa_cachethis was false).
 			return SeqMisordered, nil, &NFS4StateError{
@@ -199,8 +228,8 @@ func (st *SlotTable) ValidateSequence(slotID, seqID uint32) (SequenceValidation,
 	}
 }
 
-// CompleteSlotRequest marks a slot as completed, stores the sequence ID,
-// and optionally caches the reply bytes.
+// CompleteSlotRequest marks a slot as completed, stores the sequence ID and
+// the request digest, and optionally caches the reply bytes.
 //
 // Called after the full COMPOUND response has been encoded and is ready
 // to send to the client.
@@ -208,8 +237,12 @@ func (st *SlotTable) ValidateSequence(slotID, seqID uint32) (SequenceValidation,
 // If cacheThis is true, reply bytes are copied into the slot's CachedReply.
 // If false, CachedReply is set to nil.
 //
+// requestDigest is recorded regardless of cacheThis so that a subsequent retry
+// on this slot+seqid can be checked for a false retry (RFC 8881
+// Section 2.10.6.1.3) before the cached reply (if any) is replayed.
+//
 // Thread-safe: acquires st.mu.
-func (st *SlotTable) CompleteSlotRequest(slotID, seqID uint32, cacheThis bool, reply []byte) {
+func (st *SlotTable) CompleteSlotRequest(slotID, seqID uint32, cacheThis bool, reply, requestDigest []byte) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
@@ -220,6 +253,13 @@ func (st *SlotTable) CompleteSlotRequest(slotID, seqID uint32, cacheThis bool, r
 	slot := &st.slots[slotID]
 	slot.SeqID = seqID
 	slot.InUse = false
+
+	if len(requestDigest) > 0 {
+		slot.RequestDigest = make([]byte, len(requestDigest))
+		copy(slot.RequestDigest, requestDigest)
+	} else {
+		slot.RequestDigest = nil
+	}
 
 	if cacheThis && reply != nil {
 		// Copy reply bytes to avoid holding references to caller's buffer.

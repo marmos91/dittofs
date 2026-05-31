@@ -49,6 +49,14 @@ type StateManager struct {
 	// Key is composite of clientID + hex(ownerData).
 	openOwners map[openOwnerKey]*OpenOwner
 
+	// closedOwnerByOther maps the "other" of a now-closed open stateid to the
+	// retained open-owner. CLOSE deletes the OpenState, so a retransmitted
+	// CLOSE can no longer resolve the owner via openStateByOther; this map lets
+	// the CLOSE replay path find the owner (and its cached reply) to satisfy
+	// the NFSv4.0 exactly-once contract (RFC 7530 §9.1.7). Entries are cleared
+	// when the owner is reaped (lease expiry) or the stateid is reused.
+	closedOwnerByOther map[[types.NFS4_OTHER_SIZE]byte]*OpenOwner
+
 	// lockOwners maps lock-owner keys to LockOwner records.
 	// Key is composite of clientID + hex(ownerData), same pattern as openOwners.
 	lockOwners map[lockOwnerKey]*LockOwner
@@ -202,6 +210,7 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		unconfirmedByName:   make(map[string]*ClientRecord),
 		openStateByOther:    make(map[[types.NFS4_OTHER_SIZE]byte]*OpenState),
 		openOwners:          make(map[openOwnerKey]*OpenOwner),
+		closedOwnerByOther:  make(map[[types.NFS4_OTHER_SIZE]byte]*OpenOwner),
 		lockOwners:          make(map[lockOwnerKey]*LockOwner),
 		lockStateByOther:    make(map[[types.NFS4_OTHER_SIZE]byte]*LockState),
 		delegByOther:        make(map[[types.NFS4_OTHER_SIZE]byte]*DelegationState),
@@ -678,6 +687,13 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 		delete(sm.openOwners, ownerKey)
 	}
 
+	// Drop any retained closed-stateid -> owner replay entries for this client.
+	for other, owner := range sm.closedOwnerByOther {
+		if owner.ClientID == clientID {
+			delete(sm.closedOwnerByOther, other)
+		}
+	}
+
 	// Clean up delegations for the expired client
 	for other, deleg := range sm.delegByOther {
 		if deleg.ClientID != clientID {
@@ -1137,10 +1153,16 @@ func (sm *StateManager) shareConflictLocked(
 	return false
 }
 
-// CacheOpenResult stores the cached result for an open-owner so that
-// replay detection returns the correct response. Called by the handler
-// after encoding the OPEN response.
-func (sm *StateManager) CacheOpenResult(clientID uint64, ownerData []byte, status uint32, data []byte) {
+// CacheOpenOwnerResult stores the encoded reply for an open-owner so that a
+// replay (retransmit at the same seqid) returns the exact original response.
+//
+// It must be called by the handler after encoding the reply of EVERY
+// owner-seqid-advancing op (OPEN/CLOSE/OPEN_DOWNGRADE/OPEN_CONFIRM), not just
+// OPEN — otherwise a retransmit of a CLOSE/DOWNGRADE/CONFIRM would replay stale
+// OPEN bytes (or none), causing NFS4ERR_BAD_SEQID storms (RFC 7530 §9.1.7,
+// mirrors Linux nfsd so_replay). data must be a caller-owned copy; it is
+// retained until the next op or lease expiry.
+func (sm *StateManager) CacheOpenOwnerResult(clientID uint64, ownerData []byte, status uint32, data []byte) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -1156,6 +1178,27 @@ func (sm *StateManager) CacheOpenResult(clientID uint64, ownerData []byte, statu
 	}
 }
 
+// CacheLockOwnerResult stores the encoded reply for a lock-owner so that a
+// replayed LOCK/LOCKU at the same lock-owner seqid returns the exact original
+// response instead of NFS4ERR_BAD_SEQID (which the Linux client treats as
+// fatal, dropping the lock-owner and silently losing locks). Symmetric to
+// CacheOpenOwnerResult; see RFC 7530 §9.1.7 / §8.20.
+func (sm *StateManager) CacheLockOwnerResult(clientID uint64, ownerData []byte, status uint32, data []byte) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	loKey := makeLockOwnerKey(clientID, ownerData)
+	lockOwner, exists := sm.lockOwners[loKey]
+	if !exists {
+		return
+	}
+
+	lockOwner.LastResult = &CachedResult{
+		Status: status,
+		Data:   data,
+	}
+}
+
 // ConfirmOpen implements the OPEN_CONFIRM operation's state management.
 //
 // Per RFC 7530 Section 16.20:
@@ -1165,7 +1208,7 @@ func (sm *StateManager) CacheOpenResult(clientID uint64, ownerData []byte, statu
 //   - Increments the stateid seqid
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (*types.Stateid4, error) {
+func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (*OpenSeqResult, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -1186,10 +1229,9 @@ func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (*typ
 		validation := owner.ValidateSeqID(seqid)
 		switch validation {
 		case SeqIDReplay:
+			// Replay the exact cached reply of the original op at this seqid.
 			if owner.LastResult != nil {
-				// For OPEN_CONFIRM replay, return the confirmed stateid
-				resultStateid := openState.Stateid
-				return &resultStateid, nil
+				return nil, &ReplayError{Status: owner.LastResult.Status, Data: owner.LastResult.Data}
 			}
 			return nil, ErrBadSeqid
 		case SeqIDBad:
@@ -1215,7 +1257,11 @@ func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (*typ
 		"client_id", owner.ClientID,
 		"stateid_seqid", resultStateid.Seqid)
 
-	return &resultStateid, nil
+	return &OpenSeqResult{
+		Stateid:       resultStateid,
+		OwnerClientID: owner.ClientID,
+		OwnerData:     owner.OwnerData,
+	}, nil
 }
 
 // ConfirmOpenV41 confirms an open-owner for NFSv4.1 without incrementing
@@ -1252,11 +1298,10 @@ func (sm *StateManager) ConfirmOpenV41(stateid *types.Stateid4) error {
 //   - Returns a zeroed stateid
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*types.Stateid4, error) {
+func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*OpenSeqResult, error) {
 	// Handle special stateids (all-zeros, all-ones): no state to clean up
 	if stateid.IsSpecialStateid() {
-		var zeroed types.Stateid4
-		return &zeroed, nil
+		return &OpenSeqResult{}, nil
 	}
 
 	sm.mu.Lock()
@@ -1265,6 +1310,14 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*types
 	// Look up the open state
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
+		// The state was already removed by a prior CLOSE. If this is a
+		// retransmit of that CLOSE (same owner-seqid), replay its cached reply
+		// (RFC 7530 §9.1.7) rather than returning NFS4ERR_BAD_STATEID.
+		if owner, ok := sm.closedOwnerByOther[stateid.Other]; ok && seqid != 0 {
+			if owner.ValidateSeqID(seqid) == SeqIDReplay && owner.LastResult != nil {
+				return nil, &ReplayError{Status: owner.LastResult.Status, Data: owner.LastResult.Data}
+			}
+		}
 		return nil, &NFS4StateError{
 			Status:  types.NFS4ERR_BAD_STATEID,
 			Message: "stateid not found for CLOSE",
@@ -1279,9 +1332,11 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*types
 		validation := owner.ValidateSeqID(seqid)
 		switch validation {
 		case SeqIDReplay:
-			// CLOSE replay: return zeroed stateid
-			var zeroed types.Stateid4
-			return &zeroed, nil
+			// Replay the exact cached CLOSE reply rather than re-deriving it.
+			if owner.LastResult != nil {
+				return nil, &ReplayError{Status: owner.LastResult.Status, Data: owner.LastResult.Data}
+			}
+			return nil, ErrBadSeqid
 		case SeqIDBad:
 			return nil, ErrBadSeqid
 		case SeqIDOK:
@@ -1302,6 +1357,10 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*types
 	// Remove the open state from the "other" map
 	delete(sm.openStateByOther, stateid.Other)
 
+	// Remember which retained owner this now-closed stateid belonged to so a
+	// retransmitted CLOSE can still resolve the owner's cached reply.
+	sm.closedOwnerByOther[stateid.Other] = owner
+
 	// Remove from owner's OpenStates list
 	for i, os := range owner.OpenStates {
 		if os == openState {
@@ -1313,27 +1372,21 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*types
 	// Update owner seqid
 	owner.LastSeqID = seqid
 
-	// If owner has no more open states, clean up
-	if len(owner.OpenStates) == 0 {
-		ownerKey := makeOwnerKey(owner.ClientID, owner.OwnerData)
-		delete(sm.openOwners, ownerKey)
-
-		// Remove from client record
-		if owner.ClientRecord != nil {
-			delete(owner.ClientRecord.OpenOwners, string(owner.OwnerData))
-		}
-
-		logger.Debug("CloseFile: owner removed (no more open states)",
-			"client_id", owner.ClientID)
-	}
+	// NOTE: the open-owner is intentionally retained even when it has no
+	// remaining open states, so its LastResult stays available to replay a
+	// retransmitted CLOSE (RFC 7530 §9.1.7, mirrors Linux nfsd so_replay where
+	// stateowners live until lease expiry). The lease reaper (onLeaseExpired)
+	// walks ClientRecord.OpenOwners and removes these stale-but-cached owners.
 
 	logger.Debug("CloseFile: state removed",
 		"client_id", owner.ClientID,
 		"seqid", seqid)
 
-	// Return zeroed stateid
-	var zeroed types.Stateid4
-	return &zeroed, nil
+	// Return zeroed stateid plus owner identity for reply caching.
+	return &OpenSeqResult{
+		OwnerClientID: owner.ClientID,
+		OwnerData:     owner.OwnerData,
+	}, nil
 }
 
 // DowngradeOpen implements the OPEN_DOWNGRADE operation's state management.
@@ -1346,7 +1399,7 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*types
 //   - Increments the stateid seqid
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, newShareAccess, newShareDeny uint32) (*types.Stateid4, error) {
+func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, newShareAccess, newShareDeny uint32) (*OpenSeqResult, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -1367,8 +1420,12 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 		validation := owner.ValidateSeqID(seqid)
 		switch validation {
 		case SeqIDReplay:
-			resultStateid := openState.Stateid
-			return &resultStateid, nil
+			// Replay the exact cached reply (original stateid bytes), not the
+			// current stateid which a later DOWNGRADE may have advanced.
+			if owner.LastResult != nil {
+				return nil, &ReplayError{Status: owner.LastResult.Status, Data: owner.LastResult.Data}
+			}
+			return nil, ErrBadSeqid
 		case SeqIDBad:
 			return nil, ErrBadSeqid
 		case SeqIDOK:
@@ -1416,7 +1473,11 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 		"new_deny", newShareDeny,
 		"stateid_seqid", resultStateid.Seqid)
 
-	return &resultStateid, nil
+	return &OpenSeqResult{
+		Stateid:       resultStateid,
+		OwnerClientID: owner.ClientID,
+		OwnerData:     owner.OwnerData,
+	}, nil
 }
 
 // GetOpenState returns the OpenState for a given stateid "other" field,
@@ -1552,17 +1613,21 @@ func (sm *StateManager) LockNew(
 		return nil, ErrBadStateid
 	}
 
-	// 2. Validate open-owner seqid
+	// 2. Validate open-owner seqid.
+	// In the open_to_lock_owner4 (LockNew) path the LOCK advances BOTH the
+	// open-owner and lock-owner seqids, so a retransmit is a replay against
+	// both. The authoritative cached reply lives on the lock-owner (it is the
+	// LOCK reply), so on an open-owner replay we do not fail here; we resolve
+	// the lock-owner below (step 6) and return its cached result.
 	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
+	openSeqIsReplay := false
 	if openSeqid != 0 {
 		validation := openState.Owner.ValidateSeqID(openSeqid)
 		switch validation {
 		case SeqIDBad:
 			return nil, ErrBadSeqid
 		case SeqIDReplay:
-			// For replay on a lock-new, we don't have a cached lock result
-			// on the open-owner (those belong to OPEN operations).
-			return nil, ErrBadSeqid
+			openSeqIsReplay = true
 		case SeqIDOK:
 			// Continue
 		}
@@ -1624,14 +1689,24 @@ func (sm *StateManager) LockNew(
 		case SeqIDBad:
 			return nil, ErrBadSeqid
 		case SeqIDReplay:
-			// Return cached result if available
+			// Replay the exact cached LOCK reply. Returning NFS4ERR_BAD_SEQID
+			// here (the previous behavior) is treated as fatal by the Linux
+			// client and drops the lock-owner -> silent lock loss.
 			if lockOwner.LastResult != nil {
-				return nil, ErrBadSeqid
+				return nil, &ReplayError{Status: lockOwner.LastResult.Status, Data: lockOwner.LastResult.Data}
 			}
 			return nil, ErrBadSeqid
 		case SeqIDOK:
-			// Continue
+			// A fresh lock seqid alongside a replayed open seqid is an
+			// inconsistent retransmit; treat as bad seqid.
+			if openSeqIsReplay {
+				return nil, ErrBadSeqid
+			}
 		}
+	} else if openSeqIsReplay {
+		// Open seqid replayed but the lock-owner is brand new / not yet
+		// seqid-tracked: nothing consistent to replay.
+		return nil, ErrBadSeqid
 	}
 
 	// 7. Acquire the lock via unified lock manager
@@ -1640,7 +1715,15 @@ func (sm *StateManager) LockNew(
 		return nil, err
 	}
 	if denied != nil {
-		return &LockResult{Denied: denied}, nil
+		// A DENIED LOCK still advances the lock-owner seqid, so the encoded
+		// LOCK4denied reply must also be cached for replay.
+		lockOwner.LastSeqID = lockSeqid
+		openState.Owner.LastSeqID = openSeqid
+		return &LockResult{
+			Denied:        denied,
+			OwnerClientID: lockOwner.ClientID,
+			OwnerData:     lockOwner.OwnerData,
+		}, nil
 	}
 
 	// 8. Success: update state
@@ -1648,7 +1731,11 @@ func (sm *StateManager) LockNew(
 	lockOwner.LastSeqID = lockSeqid
 	openState.Owner.LastSeqID = openSeqid
 
-	return &LockResult{Stateid: lockState.Stateid}, nil
+	return &LockResult{
+		Stateid:       lockState.Stateid,
+		OwnerClientID: lockOwner.ClientID,
+		OwnerData:     lockOwner.OwnerData,
+	}, nil
 }
 
 // LockExisting implements the LOCK operation for an existing lock-owner.
@@ -1680,7 +1767,31 @@ func (sm *StateManager) LockExisting(
 		return nil, ErrBadStateid
 	}
 
-	// Validate seqid: old vs bad
+	lockOwner := lockState.LockOwner
+
+	// 2. Validate lock seqid on lock-owner FIRST.
+	// A LOCK replay resends the original (pre-LOCK) lock stateid, whose seqid is
+	// now one behind lockState.Stateid.Seqid; the strict stateid-seqid check
+	// below would otherwise reject it as NFS4ERR_OLD_STATEID before the replay
+	// is detected (RFC 7530 §9.1.7).
+	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
+	if lockSeqid != 0 {
+		lockValidation := lockOwner.ValidateSeqID(lockSeqid)
+		switch lockValidation {
+		case SeqIDBad:
+			return nil, ErrBadSeqid
+		case SeqIDReplay:
+			// Replay the exact cached LOCK reply (see LockNew step 6).
+			if lockOwner.LastResult != nil {
+				return nil, &ReplayError{Status: lockOwner.LastResult.Status, Data: lockOwner.LastResult.Data}
+			}
+			return nil, ErrBadSeqid
+		case SeqIDOK:
+			// Continue
+		}
+	}
+
+	// 3. Validate stateid seqid (only for non-replay LOCK)
 	if lockStateid.Seqid < lockState.Stateid.Seqid {
 		return nil, ErrOldStateid
 	}
@@ -1688,24 +1799,9 @@ func (sm *StateManager) LockExisting(
 		return nil, ErrBadStateid
 	}
 
-	// 2. Validate open mode for lock type
+	// 4. Validate open mode for lock type
 	if err := validateOpenModeForLock(lockState.OpenState, lockType); err != nil {
 		return nil, err
-	}
-
-	// 3. Validate lock seqid on lock-owner
-	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
-	lockOwner := lockState.LockOwner
-	if lockSeqid != 0 {
-		lockValidation := lockOwner.ValidateSeqID(lockSeqid)
-		switch lockValidation {
-		case SeqIDBad:
-			return nil, ErrBadSeqid
-		case SeqIDReplay:
-			return nil, ErrBadSeqid
-		case SeqIDOK:
-			// Continue
-		}
 	}
 
 	// 4. Acquire the lock
@@ -1714,14 +1810,24 @@ func (sm *StateManager) LockExisting(
 		return nil, err
 	}
 	if denied != nil {
-		return &LockResult{Denied: denied}, nil
+		// A DENIED LOCK still advances the lock-owner seqid; cache its reply.
+		lockOwner.LastSeqID = lockSeqid
+		return &LockResult{
+			Denied:        denied,
+			OwnerClientID: lockOwner.ClientID,
+			OwnerData:     lockOwner.OwnerData,
+		}, nil
 	}
 
 	// 5. Success: update state
 	lockState.Stateid.Seqid = nextSeqID(lockState.Stateid.Seqid)
 	lockOwner.LastSeqID = lockSeqid
 
-	return &LockResult{Stateid: lockState.Stateid}, nil
+	return &LockResult{
+		Stateid:       lockState.Stateid,
+		OwnerClientID: lockOwner.ClientID,
+		OwnerData:     lockOwner.OwnerData,
+	}, nil
 }
 
 // acquireLock attempts to acquire a byte-range lock via the unified lock manager.
@@ -1899,7 +2005,7 @@ func (sm *StateManager) TestLock(
 func (sm *StateManager) UnlockFile(
 	lockStateid *types.Stateid4, seqid uint32,
 	lockType uint32, offset, length uint64,
-) (*types.Stateid4, error) {
+) (*LockResult, error) {
 	// Special stateids cannot be used with LOCKU
 	if lockStateid.IsSpecialStateid() {
 		return nil, ErrBadStateid
@@ -1918,29 +2024,37 @@ func (sm *StateManager) UnlockFile(
 		return nil, ErrBadStateid
 	}
 
-	// 2. Validate stateid seqid
-	if lockStateid.Seqid < lockState.Stateid.Seqid {
-		return nil, ErrOldStateid
-	}
-	if lockStateid.Seqid > lockState.Stateid.Seqid {
-		return nil, ErrBadStateid
-	}
-
-	// 3. Validate seqid on lock-owner
-	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
 	lockOwner := lockState.LockOwner
+
+	// 2. Validate seqid on lock-owner FIRST.
+	// A LOCKU replay resends the original (pre-LOCKU) lock stateid, whose seqid
+	// is now one behind lockState.Stateid.Seqid. The strict stateid-seqid check
+	// below would reject that as NFS4ERR_OLD_STATEID, so the lock-owner replay
+	// must be detected before it (RFC 7530 §9.1.7: exactly-once wins).
+	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
 	if seqid != 0 {
 		validation := lockOwner.ValidateSeqID(seqid)
 		switch validation {
 		case SeqIDBad:
 			return nil, ErrBadSeqid
 		case SeqIDReplay:
-			// For LOCKU replay, return current stateid (idempotent)
-			resultStateid := lockState.Stateid
-			return &resultStateid, nil
+			// Replay the exact cached LOCKU reply (the original stateid bytes),
+			// not the current stateid which a later LOCKU may have advanced.
+			if lockOwner.LastResult != nil {
+				return nil, &ReplayError{Status: lockOwner.LastResult.Status, Data: lockOwner.LastResult.Data}
+			}
+			return nil, ErrBadSeqid
 		case SeqIDOK:
 			// Continue
 		}
+	}
+
+	// 3. Validate stateid seqid (only for non-replay LOCKU)
+	if lockStateid.Seqid < lockState.Stateid.Seqid {
+		return nil, ErrOldStateid
+	}
+	if lockStateid.Seqid > lockState.Stateid.Seqid {
+		return nil, ErrBadStateid
 	}
 
 	// 4. Release the lock via unified lock manager
@@ -1970,8 +2084,11 @@ func (sm *StateManager) UnlockFile(
 	lockState.Stateid.Seqid = nextSeqID(lockState.Stateid.Seqid)
 	lockOwner.LastSeqID = seqid
 
-	resultStateid := lockState.Stateid
-	return &resultStateid, nil
+	return &LockResult{
+		Stateid:       lockState.Stateid,
+		OwnerClientID: lockOwner.ClientID,
+		OwnerData:     lockOwner.OwnerData,
+	}, nil
 }
 
 // ============================================================================

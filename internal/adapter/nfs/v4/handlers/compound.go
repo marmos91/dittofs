@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -133,6 +134,13 @@ func rejectV40OnlyOp(opCode uint32, reader io.Reader, clientAddr string) *types.
 //	numresults:    uint32   (count of results)
 //	results[]:     each result is opcode (uint32) followed by op-specific result
 func (h *Handler) ProcessCompound(compCtx *types.CompoundContext, data []byte) ([]byte, error) {
+	// Fingerprint the full COMPOUND request body. The v4.1 SEQUENCE path uses
+	// this as the slot request digest for false-retry detection (RFC 8881
+	// Section 2.10.6.1.3). SHA-256 over the request avoids collisions a weaker
+	// hash could allow a malicious client to engineer.
+	digest := sha256.Sum256(data)
+	compCtx.RequestDigest = digest[:]
+
 	reader := bytes.NewReader(data)
 
 	// Decode tag (XDR opaque: length + bytes + padding)
@@ -375,6 +383,7 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 				v41ctx.SequenceID,
 				v41ctx.CacheThis,
 				responseBytes,
+				v41ctx.RequestDigest,
 			)
 		}
 	}()

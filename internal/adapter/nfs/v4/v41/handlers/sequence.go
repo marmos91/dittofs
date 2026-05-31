@@ -47,8 +47,11 @@ func HandleSequenceOp(d *Deps, compCtx *types.CompoundContext, reader io.Reader)
 		}, nil, nil, nil, nil
 	}
 
-	// Validate slot sequence ID
-	validation, slot, validationErr := sess.ForeChannelSlots.ValidateSequence(args.SlotID, args.SequenceID)
+	// Validate slot sequence ID. compCtx.RequestDigest fingerprints this
+	// COMPOUND so a slot+seqid reused for a different request is rejected with
+	// NFS4ERR_SEQ_FALSE_RETRY rather than replaying a stale reply.
+	validation, slot, validationErr := sess.ForeChannelSlots.ValidateSequence(
+		args.SlotID, args.SequenceID, compCtx.RequestDigest)
 
 	switch validation {
 	case state.SeqRetry:
@@ -122,11 +125,12 @@ func HandleSequenceOp(d *Deps, compCtx *types.CompoundContext, reader io.Reader)
 
 		// Build V41RequestContext
 		ctx := &types.V41RequestContext{
-			SessionID:   args.SessionID,
-			SlotID:      args.SlotID,
-			SequenceID:  args.SequenceID,
-			HighestSlot: args.HighestSlotID,
-			CacheThis:   args.CacheThis,
+			SessionID:     args.SessionID,
+			SlotID:        args.SlotID,
+			SequenceID:    args.SequenceID,
+			HighestSlot:   args.HighestSlotID,
+			CacheThis:     args.CacheThis,
+			RequestDigest: compCtx.RequestDigest,
 		}
 
 		logger.Debug("SEQUENCE: validated successfully",

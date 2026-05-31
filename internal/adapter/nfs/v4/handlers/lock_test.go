@@ -155,12 +155,12 @@ func setupHandlerLockClient(t *testing.T, h *Handler) (clientID uint64, openStat
 
 	// OPEN_CONFIRM
 	confirmOpenSeqid := openSeqid + 1
-	confirmedStateid, err := h.StateManager.ConfirmOpen(&openResult.Stateid, confirmOpenSeqid)
+	confirmRes, err := h.StateManager.ConfirmOpen(&openResult.Stateid, confirmOpenSeqid)
 	if err != nil {
 		t.Fatalf("ConfirmOpen failed: %v", err)
 	}
 
-	return clientID, confirmedStateid, confirmOpenSeqid
+	return clientID, &confirmRes.Stateid, confirmOpenSeqid
 }
 
 func TestHandleLock_NewLockOwner_Success(t *testing.T) {

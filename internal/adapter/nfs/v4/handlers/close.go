@@ -64,8 +64,11 @@ func (h *Handler) handleClose(ctx *types.CompoundContext, reader io.Reader) *typ
 		"client", ctx.ClientAddr)
 
 	// Delegate to StateManager for state cleanup
-	closedStateid, stateErr := h.StateManager.CloseFile(stateid, closeSeqid)
+	closeResult, stateErr := h.StateManager.CloseFile(stateid, closeSeqid)
 	if stateErr != nil {
+		if replay := asReplay(types.OP_CLOSE, stateErr); replay != nil {
+			return replay
+		}
 		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 CLOSE failed",
 			"error", stateErr,
@@ -102,7 +105,13 @@ func (h *Handler) handleClose(ctx *types.CompoundContext, reader io.Reader) *typ
 
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
-	types.EncodeStateid4(&buf, closedStateid)
+	types.EncodeStateid4(&buf, &closeResult.Stateid)
+
+	// Cache the encoded reply on the open-owner so a retransmitted CLOSE at the
+	// same seqid replays these exact bytes instead of failing NFS4ERR_BAD_SEQID.
+	if closeResult.OwnerData != nil {
+		h.StateManager.CacheOpenOwnerResult(closeResult.OwnerClientID, closeResult.OwnerData, types.NFS4_OK, buf.Bytes())
+	}
 
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,

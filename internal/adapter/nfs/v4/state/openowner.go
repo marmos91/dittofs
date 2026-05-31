@@ -86,9 +86,14 @@ func (oo *OpenOwner) ValidateSeqID(seqid uint32) SeqIDValidation {
 // CachedResult
 // ============================================================================
 
-// CachedResult holds the result of the last operation on an open-owner.
-// When a replay is detected (same seqid), this cached result is returned
-// instead of re-executing the operation.
+// CachedResult holds the result of the last operation on an open- or
+// lock-owner. When a replay is detected (same seqid), this cached result is
+// returned instead of re-executing the operation.
+//
+// Per RFC 7530 Section 9.1.7 the cache must hold the result of the *last*
+// owner-seqid-advancing operation (OPEN/CLOSE/OPEN_DOWNGRADE/OPEN_CONFIRM for
+// open-owners; LOCK/LOCKU for lock-owners), not just OPEN. This mirrors the
+// Linux nfsd per-stateowner `so_replay` buffer.
 type CachedResult struct {
 	// Status is the NFS4 status code of the cached operation.
 	Status uint32
@@ -96,6 +101,25 @@ type CachedResult struct {
 	// Data is the XDR-encoded operation-specific result data.
 	Data []byte
 }
+
+// ReplayError is returned by owner-seqid-advancing StateManager methods when a
+// client retransmits the operation at the last-processed seqid. It carries the
+// exact encoded reply bytes (and status) of the original operation so the
+// handler can return them verbatim, satisfying the NFSv4.0 exactly-once
+// (replay) contract (RFC 7530 Section 9.1.7).
+//
+// It implements error so it can flow through the existing
+// `(*types.Stateid4, error)` / `(*LockResult, error)` return paths without
+// changing signatures; handlers type-assert it before mapping to a status.
+type ReplayError struct {
+	// Status is the NFS4 status code of the cached operation.
+	Status uint32
+
+	// Data is the XDR-encoded operation-specific result data to replay.
+	Data []byte
+}
+
+func (e *ReplayError) Error() string { return "replay of cached owner-seqid result" }
 
 // ============================================================================
 // OpenState
@@ -153,6 +177,20 @@ type OpenFileResult struct {
 
 	// CachedData is the XDR data from the replayed operation (only if IsReplay).
 	CachedData []byte
+}
+
+// OpenSeqResult is returned by the open-owner-seqid-advancing StateManager
+// methods that yield a single stateid (CLOSE / OPEN_CONFIRM / OPEN_DOWNGRADE).
+// It carries the resulting stateid plus the open-owner identity so the handler
+// can cache the encoded reply for replay detection (CacheOpenOwnerResult).
+type OpenSeqResult struct {
+	// Stateid is the stateid to return to the client.
+	Stateid types.Stateid4
+
+	// OwnerClientID and OwnerData identify the open-owner whose seqid this op
+	// advanced.
+	OwnerClientID uint64
+	OwnerData     []byte
 }
 
 // ============================================================================

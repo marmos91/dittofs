@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"io"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
@@ -162,4 +163,21 @@ func (h *Handler) handleSetClientIDConfirm(ctx *types.CompoundContext, reader io
 // Delegates to v41handlers.MapStateError to avoid duplicating the error mapping logic.
 func mapStateError(err error) uint32 {
 	return v41handlers.MapStateError(err)
+}
+
+// asReplay returns the cached COMPOUND op result to replay if err is a
+// state.ReplayError (a retransmit of an owner-seqid op at the last-processed
+// seqid). The returned bytes are the exact original reply, satisfying the
+// NFSv4.0 exactly-once contract (RFC 7530 §9.1.7). Returns nil when err is not
+// a replay, so callers fall through to normal error mapping.
+func asReplay(opCode uint32, err error) *types.CompoundResult {
+	var re *state.ReplayError
+	if errors.As(err, &re) {
+		return &types.CompoundResult{
+			Status: re.Status,
+			OpCode: opCode,
+			Data:   re.Data,
+		}
+	}
+	return nil
 }

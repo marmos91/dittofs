@@ -197,6 +197,9 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 
 	// Handle errors
 	if stateErr != nil {
+		if replay := asReplay(types.OP_LOCK, stateErr); replay != nil {
+			return replay
+		}
 		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 LOCK failed",
 			"error", stateErr,
@@ -209,11 +212,16 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 		}
 	}
 
-	// Handle conflict (NFS4ERR_DENIED with LOCK4denied)
+	// Handle conflict (NFS4ERR_DENIED with LOCK4denied). A DENIED LOCK still
+	// advanced the lock-owner seqid, so its reply is cached for replay too.
 	if result.Denied != nil {
 		var buf bytes.Buffer
 		_ = xdr.WriteUint32(&buf, types.NFS4ERR_DENIED)
 		state.EncodeLOCK4denied(&buf, result.Denied)
+
+		if result.OwnerData != nil {
+			h.StateManager.CacheLockOwnerResult(result.OwnerClientID, result.OwnerData, types.NFS4ERR_DENIED, buf.Bytes())
+		}
 
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_DENIED,
@@ -226,6 +234,13 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
 	types.EncodeStateid4(&buf, &result.Stateid)
+
+	// Cache the encoded reply so a retransmitted LOCK at the same lock-owner
+	// seqid replays these exact bytes instead of failing NFS4ERR_BAD_SEQID
+	// (which the Linux client treats as fatal -> silent lock loss).
+	if result.OwnerData != nil {
+		h.StateManager.CacheLockOwnerResult(result.OwnerClientID, result.OwnerData, types.NFS4_OK, buf.Bytes())
+	}
 
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,
@@ -431,10 +446,13 @@ func (h *Handler) handleLockU(ctx *types.CompoundContext, reader io.Reader) *typ
 		"client", ctx.ClientAddr)
 
 	// Delegate to StateManager
-	resultStateid, stateErr := h.StateManager.UnlockFile(
+	unlockResult, stateErr := h.StateManager.UnlockFile(
 		lockStateid, seqid, lockType, offset, length,
 	)
 	if stateErr != nil {
+		if replay := asReplay(types.OP_LOCKU, stateErr); replay != nil {
+			return replay
+		}
 		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 LOCKU failed",
 			"error", stateErr,
@@ -450,7 +468,12 @@ func (h *Handler) handleLockU(ctx *types.CompoundContext, reader io.Reader) *typ
 	// Success: encode updated lock stateid
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
-	types.EncodeStateid4(&buf, resultStateid)
+	types.EncodeStateid4(&buf, &unlockResult.Stateid)
+
+	// Cache the encoded reply for replay of a retransmitted LOCKU.
+	if unlockResult.OwnerData != nil {
+		h.StateManager.CacheLockOwnerResult(unlockResult.OwnerClientID, unlockResult.OwnerData, types.NFS4_OK, buf.Bytes())
+	}
 
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,

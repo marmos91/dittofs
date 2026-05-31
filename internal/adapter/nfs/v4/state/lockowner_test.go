@@ -164,12 +164,12 @@ func setupClientAndOpenState(t *testing.T, sm *StateManager) (clientID uint64, f
 
 	// Confirm the open
 	confirmSeqid := openSeqid + 1
-	confirmedStateid, err := sm.ConfirmOpen(&openResult.Stateid, confirmSeqid)
+	confirmRes, err := sm.ConfirmOpen(&openResult.Stateid, confirmSeqid)
 	if err != nil {
 		t.Fatalf("ConfirmOpen failed: %v", err)
 	}
 
-	return clientID, fileHandle, confirmedStateid, confirmSeqid
+	return clientID, fileHandle, &confirmRes.Stateid, confirmSeqid
 }
 
 // ============================================================================
@@ -313,10 +313,11 @@ func TestLockNew_OpenModeViolation(t *testing.T) {
 		t.Fatalf("OpenFile failed: %v", err)
 	}
 
-	confirmedStateid, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+	confirmedRes, err := sm.ConfirmOpen(&openResult.Stateid, 2)
 	if err != nil {
 		t.Fatalf("ConfirmOpen failed: %v", err)
 	}
+	confirmedStateid := &confirmedRes.Stateid
 
 	// Try to get a write lock on a read-only open
 	_, lockErr := sm.LockNew(
@@ -509,10 +510,11 @@ func TestLockNew_Conflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFile 1 failed: %v", err)
 	}
-	confirmed1, err := sm.ConfirmOpen(&open1.Stateid, 2)
+	confirmed1Res, err := sm.ConfirmOpen(&open1.Stateid, 2)
 	if err != nil {
 		t.Fatalf("ConfirmOpen 1 failed: %v", err)
 	}
+	confirmed1 := &confirmed1Res.Stateid
 
 	// Client 2
 	res2, err := sm.SetClientID("client-2", verifier2, callback, "10.0.0.2:1234")
@@ -526,10 +528,11 @@ func TestLockNew_Conflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFile 2 failed: %v", err)
 	}
-	confirmed2, err := sm.ConfirmOpen(&open2.Stateid, 2)
+	confirmed2Res, err := sm.ConfirmOpen(&open2.Stateid, 2)
 	if err != nil {
 		t.Fatalf("ConfirmOpen 2 failed: %v", err)
 	}
+	confirmed2 := &confirmed2Res.Stateid
 
 	// Client 1 acquires exclusive lock on range [0, 100)
 	lockResult1, err := sm.LockNew(
@@ -580,13 +583,15 @@ func TestLockNew_SharedNoConflict(t *testing.T) {
 	res1, _ := sm.SetClientID("client-shared-1", verifier1, callback, "10.0.0.1:1234")
 	_ = sm.ConfirmClientID(res1.ClientID, res1.ConfirmVerifier)
 	open1, _ := sm.OpenFile(res1.ClientID, []byte("owner-1"), 1, fh, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
-	confirmed1, _ := sm.ConfirmOpen(&open1.Stateid, 2)
+	confirmed1Res, _ := sm.ConfirmOpen(&open1.Stateid, 2)
+	confirmed1 := &confirmed1Res.Stateid
 
 	// Client 2
 	res2, _ := sm.SetClientID("client-shared-2", verifier2, callback, "10.0.0.2:1234")
 	_ = sm.ConfirmClientID(res2.ClientID, res2.ConfirmVerifier)
 	open2, _ := sm.OpenFile(res2.ClientID, []byte("owner-2"), 1, fh, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
-	confirmed2, _ := sm.ConfirmOpen(&open2.Stateid, 2)
+	confirmed2Res, _ := sm.ConfirmOpen(&open2.Stateid, 2)
+	confirmed2 := &confirmed2Res.Stateid
 
 	// Client 1 acquires shared lock
 	lockResult1, err := sm.LockNew(
@@ -667,12 +672,12 @@ func TestCloseFile_LocksHeld(t *testing.T) {
 	}
 
 	// Now CLOSE should succeed
-	closedStateid, closeErr := sm.CloseFile(openStateid, openSeqid+2)
+	closedRes, closeErr := sm.CloseFile(openStateid, openSeqid+2)
 	if closeErr != nil {
 		t.Fatalf("CloseFile after unlock+release failed: %v", closeErr)
 	}
-	if closedStateid.Seqid != 0 {
-		t.Errorf("closed stateid seqid = %d, want 0 (zeroed)", closedStateid.Seqid)
+	if closedRes.Stateid.Seqid != 0 {
+		t.Errorf("closed stateid seqid = %d, want 0 (zeroed)", closedRes.Stateid.Seqid)
 	}
 }
 
@@ -850,10 +855,11 @@ func TestLeaseExpiry_CleansLockManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFile for client 2 failed: %v", err)
 	}
-	confirmed2, err := sm.ConfirmOpen(&openResult2.Stateid, 2)
+	confirmed2Res, err := sm.ConfirmOpen(&openResult2.Stateid, 2)
 	if err != nil {
 		t.Fatalf("ConfirmOpen for client 2 failed: %v", err)
 	}
+	confirmed2 := &confirmed2Res.Stateid
 
 	// Client 2 should be able to acquire a lock on the same range
 	// (previously held by expired client 1)
@@ -887,12 +893,14 @@ func TestLockNew_BlockingType(t *testing.T) {
 	res1, _ := sm.SetClientID("client-block-1", verifier1, callback, "10.0.0.1:1234")
 	_ = sm.ConfirmClientID(res1.ClientID, res1.ConfirmVerifier)
 	open1, _ := sm.OpenFile(res1.ClientID, []byte("owner-1"), 1, fh, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
-	confirmed1, _ := sm.ConfirmOpen(&open1.Stateid, 2)
+	confirmed1Res, _ := sm.ConfirmOpen(&open1.Stateid, 2)
+	confirmed1 := &confirmed1Res.Stateid
 
 	res2, _ := sm.SetClientID("client-block-2", verifier2, callback, "10.0.0.2:1234")
 	_ = sm.ConfirmClientID(res2.ClientID, res2.ConfirmVerifier)
 	open2, _ := sm.OpenFile(res2.ClientID, []byte("owner-2"), 1, fh, types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
-	confirmed2, _ := sm.ConfirmOpen(&open2.Stateid, 2)
+	confirmed2Res, _ := sm.ConfirmOpen(&open2.Stateid, 2)
+	confirmed2 := &confirmed2Res.Stateid
 
 	// Client 1 acquires exclusive lock
 	_, err := sm.LockNew(
@@ -917,10 +925,13 @@ func TestLockNew_BlockingType(t *testing.T) {
 		t.Fatal("expected LOCK4denied for WRITEW_LT on conflicting range (should not block)")
 	}
 
-	// Also test READW_LT with a new lock-owner (seqids not advanced from denied)
+	// Also test READW_LT with a new lock-owner. A DENIED LOCK still advances
+	// the open-owner seqid (RFC 7530 §8.1.5: NFS4ERR_DENIED is not a
+	// seqid-exempt error), so this reuse of the same open-owner uses the next
+	// open seqid (4), not 3.
 	lockResult2, err := sm.LockNew(
 		res2.ClientID, []byte("lock-owner-2b"), 1,
-		confirmed2, 3,
+		confirmed2, 4,
 		fh, types.READW_LT, 0, 100, false,
 	)
 	if err != nil {
