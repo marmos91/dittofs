@@ -1602,10 +1602,17 @@ func (h *Handler) resolveCreateReplay(ctx *SMBHandlerContext, req *CreateRequest
 	resp := *entry.Response
 
 	// Lease replays are validated and state-refreshed against the live
-	// open. Non-lease (plain oplock) replays return the cached response
-	// verbatim: Samba echoes the request's oplock level back on replay
-	// without touching the held oplock, which the cached snapshot already
-	// reflects (replay-dhv2-oplock1/2/3).
+	// open (refreshReplayLease). Non-lease (plain oplock) replays echo the
+	// REPLAY REQUEST's requested oplock level back in the response — Samba
+	// sets io.out.oplock_level = io.in.oplock_level on the replay path
+	// (source3/smbd/smb2_create.c; MS-SMB2 §3.3.5.9) — without touching the
+	// open's actually-held oplock. The replay request may request a
+	// different level than the original grant (replay-dhv2-oplock2). resp is
+	// a shallow copy, so this stamps only the returned response, never the
+	// cache entry (entry.Response) or the live open.
+	if req.OplockLevel != OplockLevelLease {
+		resp.OplockLevel = req.OplockLevel
+	}
 	if status := h.refreshReplayLease(ctx, req, entry, &resp); status != types.StatusSuccess {
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, true
 	}

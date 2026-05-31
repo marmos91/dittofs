@@ -174,7 +174,12 @@ func TestResolveCreateReplay_OplockSnapshot(t *testing.T) {
 	h.CreateReplayCache.Store(sessionID, guid, cached,
 		&OpenFile{OplockLevel: OplockLevelBatch})
 
-	resp, handled := h.resolveCreateReplay(newReplayCtx(sessionID, true), dh2qCreateReq(guid, nil))
+	// Replay request asks for the same level it was originally granted, so the
+	// echoed level matches the cached snapshot.
+	req := dh2qCreateReq(guid, nil)
+	req.OplockLevel = OplockLevelBatch
+
+	resp, handled := h.resolveCreateReplay(newReplayCtx(sessionID, true), req)
 	if !handled {
 		t.Fatal("oplock replay must be handled")
 	}
@@ -183,6 +188,51 @@ func TestResolveCreateReplay_OplockSnapshot(t *testing.T) {
 	}
 	if resp.FileID != cached.FileID {
 		t.Fatal("oplock replay must return the original FileID")
+	}
+}
+
+// TestResolveCreateReplay_OplockEchoesRequestedLevel: a non-lease replay whose
+// request carries a DIFFERENT requested oplock level than the original grant
+// must echo the REQUEST's level in the response (Samba sets
+// io.out.oplock_level = io.in.oplock_level on the replay path; MS-SMB2
+// §3.3.5.9) while leaving the cached entry and the live open untouched — covers
+// replay-dhv2-oplock2.
+func TestResolveCreateReplay_OplockEchoesRequestedLevel(t *testing.T) {
+	h, _, _ := newReplayTestHandler()
+	const sessionID = uint64(7)
+	guid := [16]byte{0x0A}
+
+	cached := &CreateResponse{
+		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+		OplockLevel:     OplockLevelBatch,
+		FileID:          [16]byte{0xBE, 0xEF},
+	}
+	h.CreateReplayCache.Store(sessionID, guid, cached,
+		&OpenFile{OplockLevel: OplockLevelBatch})
+
+	// Replay request asks for None instead of the originally granted Batch.
+	req := dh2qCreateReq(guid, nil)
+	req.OplockLevel = OplockLevelNone
+
+	resp, handled := h.resolveCreateReplay(newReplayCtx(sessionID, true), req)
+	if !handled {
+		t.Fatal("oplock replay must be handled")
+	}
+	if resp.OplockLevel != OplockLevelNone {
+		t.Fatalf("replay response oplock = 0x%x, want NONE (echoes request)", resp.OplockLevel)
+	}
+
+	// The cached entry must be left unmodified so a subsequent replay still
+	// reflects the original grant.
+	if cached.OplockLevel != OplockLevelBatch {
+		t.Fatalf("cached entry oplock mutated to 0x%x, want BATCH (cache must not be touched)", cached.OplockLevel)
+	}
+	entry := h.CreateReplayCache.LookupEntry(sessionID, guid)
+	if entry == nil || entry.Response.OplockLevel != OplockLevelBatch {
+		t.Fatal("cached entry response oplock must remain BATCH")
+	}
+	if entry.OpenFile == nil || entry.OpenFile.OplockLevel != OplockLevelBatch {
+		t.Fatal("live open's held oplock must remain BATCH")
 	}
 }
 
