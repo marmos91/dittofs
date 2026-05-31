@@ -1,5 +1,3 @@
-//go:build integration
-
 package badger_test
 
 import (
@@ -26,7 +24,9 @@ func TestConformance(t *testing.T) {
 			t.Fatalf("NewBadgerMetadataStoreWithDefaults() failed: %v", err)
 		}
 		t.Cleanup(func() {
-			store.Close()
+			if err := store.Close(); err != nil {
+				t.Errorf("store.Close() failed: %v", err)
+			}
 		})
 		return store
 	})
@@ -40,7 +40,9 @@ func TestBackupConformance(t *testing.T) {
 			t.Fatalf("NewBadgerMetadataStoreWithDefaults() failed: %v", err)
 		}
 		t.Cleanup(func() {
-			store.Close()
+			if err := store.Close(); err != nil {
+				t.Errorf("store.Close() failed: %v", err)
+			}
 		})
 		return store
 	})
@@ -54,7 +56,9 @@ func TestResetThenRestoreConformance(t *testing.T) {
 			t.Fatalf("NewBadgerMetadataStoreWithDefaults() failed: %v", err)
 		}
 		t.Cleanup(func() {
-			store.Close()
+			if err := store.Close(); err != nil {
+				t.Errorf("store.Close() failed: %v", err)
+			}
 		})
 		return store
 	})
@@ -68,7 +72,9 @@ func TestLockPersistenceConformance(t *testing.T) {
 			t.Fatalf("NewBadgerMetadataStoreWithDefaults() failed: %v", err)
 		}
 		t.Cleanup(func() {
-			store.Close()
+			if err := store.Close(); err != nil {
+				t.Errorf("store.Close() failed: %v", err)
+			}
 		})
 		return store
 	})
@@ -79,7 +85,7 @@ func TestBadgerStore_PutGetFile_BlocksRoundTrip(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "metadata.db")
 	store, err := badger.NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
 	require.NoError(t, err)
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
 
 	// Set up share + root.
 	shareName := "/blocks-test"

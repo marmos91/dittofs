@@ -2,7 +2,9 @@ package postgres
 
 import (
 	"context"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -16,6 +18,11 @@ func (s *PostgresMetadataStore) GetServerConfig(ctx context.Context) (metadata.M
 
 	var customSettings map[string]any
 	err := s.queryRow(ctx, query).Scan(&customSettings)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A fresh store has no persisted config row. Match the memory and
+		// badger backends: report an empty config, not a not-found error.
+		return metadata.MetadataServerConfig{}, nil
+	}
 	if err != nil {
 		return metadata.MetadataServerConfig{}, mapPgError(err, "GetServerConfig", "")
 	}

@@ -201,26 +201,17 @@ func (s *PostgresMetadataStore) UpdateShareOptions(ctx context.Context, shareNam
 	return nil
 }
 
-// DeleteShare removes a share and all its metadata.
+// DeleteShare removes a share and all its metadata. Runs inside a
+// transaction so the share row and its file rows are dropped atomically
+// (see the tx-path for the cascade rationale).
 func (s *PostgresMetadataStore) DeleteShare(ctx context.Context, shareName string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	result, err := s.exec(ctx, `DELETE FROM shares WHERE share_name = $1`, shareName)
-	if err != nil {
-		return err
-	}
-
-	if result.RowsAffected() == 0 {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "share not found",
-			Path:    shareName,
-		}
-	}
-
-	return nil
+	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return tx.DeleteShare(ctx, shareName)
+	})
 }
 
 // ListShares returns the names of all shares.

@@ -1,0 +1,412 @@
+package storetest
+
+import (
+	"errors"
+	"fmt"
+	"sort"
+	"testing"
+
+	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/marmos91/dittofs/pkg/metadata"
+)
+
+// runStoreSurfaceTests covers MetadataStore interface methods that previously
+// had ZERO cross-backend conformance coverage (area-6 audit H1): DeleteShare,
+// GetUsedBytes, GetFileByPayloadID, filesystem meta/stats/caps, server config,
+// and Healthcheck. These surfaces are production-consumed (share removal,
+// statfs/quota, the background flusher) yet each backend implemented them
+// independently, so divergence or regression could pass the full suite green
+// — the exact CI-blind class that hid the postgres #853 bugs. Each scenario
+// runs identically against memory, badger, and postgres via the factory.
+func runStoreSurfaceTests(t *testing.T, factory StoreFactory) {
+	t.Run("DeleteShare", func(t *testing.T) { testDeleteShare(t, factory) })
+	t.Run("DuplicateCreateShare", func(t *testing.T) { testDuplicateCreateShare(t, factory) })
+	t.Run("GetUsedBytes", func(t *testing.T) { testGetUsedBytes(t, factory) })
+	t.Run("GetFileByPayloadID", func(t *testing.T) { testGetFileByPayloadID(t, factory) })
+	t.Run("FilesystemMetaStatsCaps", func(t *testing.T) { testFilesystemMetaStatsCaps(t, factory) })
+	t.Run("ServerConfigRoundTrip", func(t *testing.T) { testServerConfigRoundTrip(t, factory) })
+	t.Run("Healthcheck", func(t *testing.T) { testHealthcheck(t, factory) })
+	t.Run("Pagination", func(t *testing.T) { testListChildrenPagination(t, factory) })
+}
+
+// setFileSize reads a file, sets its logical Size, and writes it back. Used to
+// drive the per-backend usedBytes counter (it tracks size deltas on PutFile).
+func setFileSize(t *testing.T, store metadata.MetadataStore, handle metadata.FileHandle, size uint64) {
+	t.Helper()
+	ctx := t.Context()
+
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() failed: %v", err)
+	}
+	file.Size = size
+	if err := store.PutFile(ctx, file); err != nil {
+		t.Fatalf("PutFile() failed: %v", err)
+	}
+}
+
+// testDeleteShare verifies that DeleteShare removes the share AND its file
+// metadata: ListShares must exclude it and the share-root must no longer
+// resolve. The store.go:161 contract is "removes a share and all its
+// metadata"; a backend that drops only the share row orphans every file and
+// leaves the root inode occupying the unique root-path index, breaking
+// same-name recreation.
+func testDeleteShare(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareName = "/del-share"
+	rootHandle := createTestShare(t, store, shareName)
+
+	// Populate the share with a file and a subdirectory so DeleteShare has
+	// metadata to reclaim, not just the bare root.
+	createTestFile(t, store, shareName, rootHandle, "keep.txt", 0o644)
+	subdir := createTestDir(t, store, shareName, rootHandle, "sub")
+	createTestFile(t, store, shareName, subdir, "nested.txt", 0o644)
+
+	if err := store.DeleteShare(ctx, shareName); err != nil {
+		t.Fatalf("DeleteShare() failed: %v", err)
+	}
+
+	// ListShares must no longer report the deleted share.
+	shares, err := store.ListShares(ctx)
+	if err != nil {
+		t.Fatalf("ListShares() failed: %v", err)
+	}
+	for _, s := range shares {
+		if s == shareName {
+			t.Fatalf("ListShares() still includes deleted share %q: %v", shareName, shares)
+		}
+	}
+
+	// The share root must no longer resolve.
+	if _, err := store.GetRootHandle(ctx, shareName); err == nil {
+		t.Error("GetRootHandle() should fail after DeleteShare")
+	} else if !metadata.IsNotFoundError(err) {
+		t.Errorf("GetRootHandle() after delete: got %v, want not-found", err)
+	}
+
+	// The file rows must be gone too — a backend that only drops the share
+	// row leaves these resolvable (orphaned metadata).
+	if _, err := store.GetFile(ctx, rootHandle); err == nil {
+		t.Error("GetFile(root) should fail after DeleteShare — root inode orphaned")
+	}
+
+	// Recreating a share with the same name must succeed: the orphaned root
+	// inode must not keep the unique root-path index occupied.
+	if root2 := createTestShare(t, store, shareName); root2 == nil {
+		t.Fatal("re-CreateShare after DeleteShare returned nil root handle")
+	}
+
+	// Deleting a share that does not exist returns not-found.
+	if err := store.DeleteShare(ctx, "/never-existed"); err == nil {
+		t.Error("DeleteShare(missing) should fail")
+	} else if !metadata.IsNotFoundError(err) {
+		t.Errorf("DeleteShare(missing): got %v, want not-found", err)
+	}
+}
+
+// testDuplicateCreateShare verifies the store.go:154 clause "Returns
+// ErrAlreadyExists if share already exists" across backends. All three guard
+// this individually; this is the missing shared-suite assertion.
+func testDuplicateCreateShare(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareName = "/dup-share"
+	if err := store.CreateShare(ctx, &metadata.Share{Name: shareName}); err != nil {
+		t.Fatalf("first CreateShare() failed: %v", err)
+	}
+
+	err := store.CreateShare(ctx, &metadata.Share{Name: shareName})
+	if err == nil {
+		t.Fatal("duplicate CreateShare() should fail")
+	}
+	var se *metadata.StoreError
+	if !errors.As(err, &se) || se.Code != metadata.ErrAlreadyExists {
+		t.Fatalf("duplicate CreateShare: got %v, want StoreError{Code: ErrAlreadyExists}", err)
+	}
+}
+
+// testGetUsedBytes verifies the incremental usedBytes counter (an O(1) atomic
+// per backend, store.go:376) tracks a deterministic create→grow→truncate-down
+// →delete sequence identically on every backend. Directories must never count.
+func testGetUsedBytes(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+
+	const shareName = "/used-bytes"
+	rootHandle := createTestShare(t, store, shareName)
+
+	if got := store.GetUsedBytes(); got != 0 {
+		t.Fatalf("GetUsedBytes() = %d, want 0 on a fresh share", got)
+	}
+
+	// Create a regular file and grow it to 1000 bytes.
+	fileHandle := createTestFile(t, store, shareName, rootHandle, "data.bin", 0o644)
+	setFileSize(t, store, fileHandle, 1000)
+	if got := store.GetUsedBytes(); got != 1000 {
+		t.Fatalf("GetUsedBytes() = %d, want 1000 after a 1000-byte write", got)
+	}
+
+	// A directory must not move the counter.
+	createTestDir(t, store, shareName, rootHandle, "subdir")
+	if got := store.GetUsedBytes(); got != 1000 {
+		t.Fatalf("GetUsedBytes() = %d, want 1000 — directories must not count", got)
+	}
+
+	// Truncate the file down to 250 bytes.
+	setFileSize(t, store, fileHandle, 250)
+	if got := store.GetUsedBytes(); got != 250 {
+		t.Fatalf("GetUsedBytes() = %d, want 250 after truncate-down", got)
+	}
+
+	// Delete the file: the counter must return to 0.
+	ctx := t.Context()
+	if err := store.DeleteChild(ctx, rootHandle, "data.bin"); err != nil {
+		t.Fatalf("DeleteChild() failed: %v", err)
+	}
+	if err := store.DeleteFile(ctx, fileHandle); err != nil {
+		t.Fatalf("DeleteFile() failed: %v", err)
+	}
+	if got := store.GetUsedBytes(); got != 0 {
+		t.Fatalf("GetUsedBytes() = %d, want 0 after deleting the only file", got)
+	}
+}
+
+// testGetFileByPayloadID verifies the flusher's content-id lookup: a file
+// stored with a known PayloadID round-trips, and an unknown id returns
+// not-found.
+func testGetFileByPayloadID(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareName = "/payload"
+	rootHandle := createTestShare(t, store, shareName)
+	handle := createTestFile(t, store, shareName, rootHandle, "blob.dat", 0o644)
+
+	const payloadID = metadata.PayloadID("payload-roundtrip-id")
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() failed: %v", err)
+	}
+	file.PayloadID = payloadID
+	if err := store.PutFile(ctx, file); err != nil {
+		t.Fatalf("PutFile() with PayloadID failed: %v", err)
+	}
+
+	got, err := store.GetFileByPayloadID(ctx, payloadID)
+	if err != nil {
+		t.Fatalf("GetFileByPayloadID(known) failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetFileByPayloadID(known) returned nil file")
+	}
+	if got.PayloadID != payloadID {
+		t.Errorf("GetFileByPayloadID returned PayloadID %q, want %q", got.PayloadID, payloadID)
+	}
+
+	// Miss: an unknown PayloadID returns not-found.
+	if _, err := store.GetFileByPayloadID(ctx, metadata.PayloadID("does-not-exist")); err == nil {
+		t.Error("GetFileByPayloadID(unknown) should fail")
+	} else if !metadata.IsNotFoundError(err) {
+		t.Errorf("GetFileByPayloadID(unknown): got %v, want not-found", err)
+	}
+}
+
+// testFilesystemMetaStatsCaps verifies the filesystem metadata / statistics /
+// capabilities surfaces.
+//
+// Note: GetFilesystemMeta does NOT round-trip a prior PutFilesystemMeta on the
+// memory backend (memory always recomputes from store.capabilities + live
+// statistics rather than reading back a persisted blob), so the cross-backend
+// contract asserted here is the one every backend honors: GetFilesystemMeta
+// returns a populated struct, and SetFilesystemCapabilities is observable via
+// GetFilesystemCapabilities. Both capabilities and statistics resolve against
+// a live root handle.
+func testFilesystemMetaStatsCaps(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareName = "/fsmeta"
+	rootHandle := createTestShare(t, store, shareName)
+
+	// GetFilesystemMeta returns a non-nil struct with sane capabilities on
+	// every backend.
+	meta, err := store.GetFilesystemMeta(ctx, shareName)
+	if err != nil {
+		t.Fatalf("GetFilesystemMeta() failed: %v", err)
+	}
+	if meta == nil {
+		t.Fatal("GetFilesystemMeta() returned nil")
+	}
+	if meta.Capabilities.MaxFilenameLen == 0 {
+		t.Error("GetFilesystemMeta() Capabilities.MaxFilenameLen = 0, want a sane non-zero limit")
+	}
+
+	// Statistics resolve against the root handle and report a non-zero total.
+	stats, err := store.GetFilesystemStatistics(ctx, rootHandle)
+	if err != nil {
+		t.Fatalf("GetFilesystemStatistics() failed: %v", err)
+	}
+	if stats == nil {
+		t.Fatal("GetFilesystemStatistics() returned nil")
+	}
+	if stats.TotalBytes == 0 {
+		t.Error("GetFilesystemStatistics() TotalBytes = 0, want a non-zero total")
+	}
+
+	// SetFilesystemCapabilities must be observable through
+	// GetFilesystemCapabilities (resolved against the root handle).
+	caps, err := store.GetFilesystemCapabilities(ctx, rootHandle)
+	if err != nil {
+		t.Fatalf("GetFilesystemCapabilities() failed: %v", err)
+	}
+	if caps == nil {
+		t.Fatal("GetFilesystemCapabilities() returned nil")
+	}
+	updated := *caps
+	updated.MaxFilenameLen = caps.MaxFilenameLen + 7
+	store.SetFilesystemCapabilities(updated)
+
+	after, err := store.GetFilesystemCapabilities(ctx, rootHandle)
+	if err != nil {
+		t.Fatalf("GetFilesystemCapabilities() after Set failed: %v", err)
+	}
+	if after.MaxFilenameLen != updated.MaxFilenameLen {
+		t.Errorf("GetFilesystemCapabilities after Set: MaxFilenameLen = %d, want %d",
+			after.MaxFilenameLen, updated.MaxFilenameLen)
+	}
+}
+
+// testServerConfigRoundTrip verifies SetServerConfig is observable through
+// GetServerConfig across backends.
+func testServerConfigRoundTrip(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	// A fresh store reports an empty (or at least readable) config.
+	if _, err := store.GetServerConfig(ctx); err != nil {
+		t.Fatalf("GetServerConfig() on fresh store failed: %v", err)
+	}
+
+	want := metadata.MetadataServerConfig{
+		CustomSettings: map[string]any{
+			"smb.signing_required": true,
+			"nfs.mount.allowed":    "192.168.1.0/24",
+		},
+	}
+	if err := store.SetServerConfig(ctx, want); err != nil {
+		t.Fatalf("SetServerConfig() failed: %v", err)
+	}
+
+	got, err := store.GetServerConfig(ctx)
+	if err != nil {
+		t.Fatalf("GetServerConfig() failed: %v", err)
+	}
+	if len(got.CustomSettings) != len(want.CustomSettings) {
+		t.Fatalf("GetServerConfig CustomSettings len = %d, want %d (%v)",
+			len(got.CustomSettings), len(want.CustomSettings), got.CustomSettings)
+	}
+	if got.CustomSettings["nfs.mount.allowed"] != "192.168.1.0/24" {
+		t.Errorf("GetServerConfig nfs.mount.allowed = %v, want 192.168.1.0/24",
+			got.CustomSettings["nfs.mount.allowed"])
+	}
+}
+
+// testHealthcheck verifies a live store reports StatusHealthy.
+func testHealthcheck(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	rep := store.Healthcheck(ctx)
+	if rep.Status != health.StatusHealthy {
+		t.Fatalf("Healthcheck() Status = %q (message %q), want %q",
+			rep.Status, rep.Message, health.StatusHealthy)
+	}
+}
+
+// testListChildrenPagination exercises the backend-divergent pagination path
+// (postgres keyset vs badger iterator-prefix vs memory map). It creates more
+// children than the page limit, threads nextCursor with a small limit until
+// exhausted, and asserts the union equals the full set with no duplicates and
+// no missing entries. It also asserts limit==0 selects the default page size
+// (large enough to return everything in one page).
+func testListChildrenPagination(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareName = "/paged"
+	rootHandle := createTestShare(t, store, shareName)
+
+	// Create N children, N > the small page size K used below.
+	const total = 25
+	want := make(map[string]bool, total)
+	for i := 0; i < total; i++ {
+		name := fmt.Sprintf("entry-%02d.txt", i)
+		createTestFile(t, store, shareName, rootHandle, name, 0o644)
+		want[name] = true
+	}
+
+	// Page with a small limit, threading nextCursor until empty. Assert the
+	// union equals the full set with no dup and no missing entry.
+	const pageSize = 4
+	seen := make(map[string]int, total)
+	cursor := ""
+	pages := 0
+	for {
+		pages++
+		if pages > total+5 {
+			t.Fatalf("pagination did not terminate after %d pages — cursor likely not advancing", pages)
+		}
+		entries, next, err := store.ListChildren(ctx, rootHandle, cursor, pageSize)
+		if err != nil {
+			t.Fatalf("ListChildren(cursor=%q) failed: %v", cursor, err)
+		}
+		if len(entries) > pageSize {
+			t.Fatalf("page returned %d entries, exceeds limit %d", len(entries), pageSize)
+		}
+		for _, e := range entries {
+			seen[e.Name]++
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+
+	// No duplicates.
+	for name, count := range seen {
+		if count != 1 {
+			t.Errorf("entry %q returned %d times across pages, want exactly 1", name, count)
+		}
+	}
+	// No missing entries / no extras.
+	if len(seen) != total {
+		missing := make([]string, 0)
+		for name := range want {
+			if seen[name] == 0 {
+				missing = append(missing, name)
+			}
+		}
+		sort.Strings(missing)
+		t.Fatalf("paged union has %d distinct entries, want %d (missing: %v)", len(seen), total, missing)
+	}
+	for name := range seen {
+		if !want[name] {
+			t.Errorf("paged union contains unexpected entry %q", name)
+		}
+	}
+
+	// limit==0 selects the default page size, which is large enough to return
+	// every child in a single page (no continuation cursor).
+	entries, next, err := store.ListChildren(ctx, rootHandle, "", 0)
+	if err != nil {
+		t.Fatalf("ListChildren(limit=0) failed: %v", err)
+	}
+	if len(entries) != total {
+		t.Fatalf("ListChildren(limit=0) returned %d entries, want %d (default page size)", len(entries), total)
+	}
+	if next != "" {
+		t.Errorf("ListChildren(limit=0) nextCursor = %q, want empty (default page fits all)", next)
+	}
+}

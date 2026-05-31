@@ -88,6 +88,15 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		runObjectIDOpsTests(t, factory)
 	})
 
+	// StoreSurface covers MetadataStore interface methods that previously
+	// had ZERO cross-backend conformance coverage (area-6 audit H1):
+	// DeleteShare, GetUsedBytes, GetFileByPayloadID, filesystem
+	// meta/stats/caps, server config, Healthcheck, plus a pagination
+	// scenario and a duplicate-CreateShare scenario.
+	t.Run("StoreSurface", func(t *testing.T) {
+		runStoreSurfaceTests(t, factory)
+	})
+
 	// INV02Fuzz property-based fuzzer for the global
 	// invariant ∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks). Runs
 	// 10 concurrent goroutines × 10 ops each (create/delete/copy mix)
