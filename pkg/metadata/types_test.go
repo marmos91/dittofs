@@ -94,54 +94,48 @@ func TestDecodeFileHandle(t *testing.T) {
 		assert.Equal(t, uuid.MustParse("550e8400-e29b-41d4-a716-446655440000"), id)
 	})
 
+	// Malformed handles must surface a *StoreError with code ErrInvalidHandle
+	// so protocol error mappers translate to NFS BADHANDLE / SMB
+	// STATUS_INVALID_HANDLE instead of a generic server fault.
+	assertInvalidHandle := func(t *testing.T, shareName string, id uuid.UUID, err error) {
+		t.Helper()
+		require.Error(t, err)
+		var storeErr *StoreError
+		require.True(t, errors.As(err, &storeErr), "want *StoreError, got %T", err)
+		assert.Equal(t, ErrInvalidHandle, storeErr.Code)
+		assert.True(t, IsInvalidHandleError(err))
+		assert.Empty(t, shareName)
+		assert.Equal(t, uuid.Nil, id)
+	}
+
 	t.Run("rejects missing colon separator", func(t *testing.T) {
 		t.Parallel()
 		handle := FileHandle("export550e8400-e29b-41d4-a716-446655440000")
-
 		shareName, id, err := DecodeFileHandle(handle)
-
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "missing ':' separator")
-		assert.Empty(t, shareName)
-		assert.Equal(t, uuid.Nil, id)
+		assertInvalidHandle(t, shareName, id, err)
 	})
 
 	t.Run("rejects empty share name", func(t *testing.T) {
 		t.Parallel()
 		handle := FileHandle(":550e8400-e29b-41d4-a716-446655440000")
-
 		shareName, id, err := DecodeFileHandle(handle)
-
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "empty share name")
-		assert.Empty(t, shareName)
-		assert.Equal(t, uuid.Nil, id)
+		assertInvalidHandle(t, shareName, id, err)
 	})
 
 	t.Run("rejects invalid UUID", func(t *testing.T) {
 		t.Parallel()
 		handle := FileHandle("/export:not-a-valid-uuid")
-
 		shareName, id, err := DecodeFileHandle(handle)
-
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "malformed UUID")
-		assert.Empty(t, shareName)
-		assert.Equal(t, uuid.Nil, id)
+		assertInvalidHandle(t, shareName, id, err)
 	})
 
 	t.Run("handles share name with colon", func(t *testing.T) {
 		t.Parallel()
-		// Only first colon is used as separator
+		// Only first colon is used as separator, so "path:550e..." is not a
+		// valid UUID and decoding fails with ErrInvalidHandle.
 		handle := FileHandle("/export:path:550e8400-e29b-41d4-a716-446655440000")
-
 		shareName, id, err := DecodeFileHandle(handle)
-
-		// This should fail because "path:550e..." is not a valid UUID
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "malformed UUID")
-		assert.Empty(t, shareName)
-		assert.Equal(t, uuid.Nil, id)
+		assertInvalidHandle(t, shareName, id, err)
 	})
 }
 

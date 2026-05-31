@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -124,10 +125,17 @@ const (
 )
 
 // ValidateName validates a filename for creation/move operations.
-// Returns ErrInvalidArgument if name is empty, ".", or "..".
+//
+// Returns ErrInvalidArgument if name is empty, ".", "..", or contains a path
+// separator '/' or NUL byte. Per architecture invariant 1, the slash/NUL
+// guard is centralized here rather than left to per-protocol handlers: a
+// caller reaching CreateFile/Move/CreateHardLink without the protocol filter
+// would otherwise concatenate "a/b" or "../x" into File.Path via buildPath,
+// corrupting the Path-keyed namespace used by the snapshot/restore manifest.
 // Returns ErrNameTooLong if name exceeds MaxNameLen (255 bytes).
 func ValidateName(name string) error {
-	if name == "" || name == "." || name == ".." {
+	if name == "" || name == "." || name == ".." ||
+		strings.ContainsAny(name, "/\x00") {
 		return &StoreError{
 			Code:    ErrInvalidArgument,
 			Message: "invalid name",

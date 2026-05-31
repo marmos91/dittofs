@@ -57,24 +57,31 @@ func EncodeShareHandle(shareName string, id uuid.UUID) (FileHandle, error) {
 }
 
 // DecodeFileHandle decodes a FileHandle into its share name and UUID components.
+//
+// Malformed handles (missing ':' separator, empty share name, unparseable
+// UUID) return a *StoreError with code ErrInvalidHandle so protocol error
+// mappers translate them to NFS BADHANDLE / SMB STATUS_INVALID_HANDLE rather
+// than a generic server fault. A hostile client sending garbage handles
+// therefore gets a precise, client-actionable status and the event is logged
+// at Debug (expected error), not Error.
 func DecodeFileHandle(handle FileHandle) (shareName string, id uuid.UUID, err error) {
 	handleStr := string(handle)
 
 	idx := strings.Index(handleStr, ":")
 	if idx == -1 {
-		return "", uuid.Nil, fmt.Errorf("invalid file handle format: missing ':' separator")
+		return "", uuid.Nil, NewInvalidHandleError()
 	}
 
 	shareName = handleStr[:idx]
 	uuidStr := handleStr[idx+1:]
 
 	if shareName == "" {
-		return "", uuid.Nil, fmt.Errorf("invalid file handle: empty share name")
+		return "", uuid.Nil, NewInvalidHandleError()
 	}
 
 	id, err = uuid.Parse(uuidStr)
 	if err != nil {
-		return "", uuid.Nil, fmt.Errorf("invalid file handle: malformed UUID: %w", err)
+		return "", uuid.Nil, NewInvalidHandleError()
 	}
 
 	return shareName, id, nil

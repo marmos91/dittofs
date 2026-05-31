@@ -126,6 +126,36 @@ func TestMapToSMB(t *testing.T) {
 	}
 }
 
+// TestHandleErrorFactoriesMapToHandleStatuses asserts the end-to-end contract
+// for area-6 PR-B4: the StoreError values produced by the handle decode/routing
+// path (NewInvalidHandleError / NewStaleHandleError) map to the correct
+// per-protocol handle statuses, NOT the generic server-fault fallback. A
+// regression that reverted these paths to fmt.Errorf would fall through to
+// defaultCodes and this test would catch it.
+func TestHandleErrorFactoriesMapToHandleStatuses(t *testing.T) {
+	invalid := merrs.NewInvalidHandleError()
+	if got := MapToNFS3(invalid); got != nfs3types.NFS3ErrBadHandle {
+		t.Errorf("MapToNFS3(NewInvalidHandleError) = %d, want NFS3ErrBadHandle", got)
+	}
+	if got := MapToNFS4(invalid); got != nfs4types.NFS4ERR_BADHANDLE {
+		t.Errorf("MapToNFS4(NewInvalidHandleError) = %d, want NFS4ERR_BADHANDLE", got)
+	}
+	if got := MapToSMB(invalid); got != smbtypes.StatusInvalidHandle {
+		t.Errorf("MapToSMB(NewInvalidHandleError) = %v, want StatusInvalidHandle", got)
+	}
+
+	stale := merrs.NewStaleHandleError("/removed")
+	if got := MapToNFS3(stale); got != nfs3types.NFS3ErrStale {
+		t.Errorf("MapToNFS3(NewStaleHandleError) = %d, want NFS3ErrStale", got)
+	}
+	if got := MapToNFS4(stale); got != nfs4types.NFS4ERR_STALE {
+		t.Errorf("MapToNFS4(NewStaleHandleError) = %d, want NFS4ERR_STALE", got)
+	}
+	if got := MapToSMB(stale); got != smbtypes.StatusFileClosed {
+		t.Errorf("MapToSMB(NewStaleHandleError) = %v, want StatusFileClosed", got)
+	}
+}
+
 // TestMapContentToNFS3 exercises nil + ErrRemoteUnavailable + unknown.
 func TestMapContentToNFS3(t *testing.T) {
 	if got := MapContentToNFS3(nil); got != nfs3types.NFS3OK {

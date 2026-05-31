@@ -318,15 +318,24 @@ func (s *MetadataService) GetStoreForShare(shareName string) (MetadataStore, err
 		return store, nil
 	}
 
-	return nil, fmt.Errorf("no store configured for share %q", shareName)
+	// The handle decoded but names a share that no longer exists (e.g. held
+	// across a RemoveShare). Return a stale-handle StoreError so protocol
+	// mappers translate to NFS *STALE / SMB STATUS_FILE_CLOSED instead of a
+	// generic server fault.
+	return nil, NewStaleHandleError(shareName)
 }
 
 // storeForHandle returns the appropriate store for a file handle.
 // It extracts the share name from the handle and looks up the store.
+//
+// A malformed handle propagates DecodeFileHandle's ErrInvalidHandle
+// StoreError; a well-formed handle naming an unknown share propagates
+// GetStoreForShare's ErrStaleHandle StoreError. Both are *StoreError so the
+// protocol error mappers classify them as BADHANDLE/STALE.
 func (s *MetadataService) storeForHandle(handle FileHandle) (MetadataStore, error) {
 	shareName, _, err := DecodeFileHandle(handle)
 	if err != nil {
-		return nil, fmt.Errorf("invalid file handle: %w", err)
+		return nil, err
 	}
 
 	return s.GetStoreForShare(shareName)
@@ -346,7 +355,7 @@ func shareNameForHandle(handle FileHandle) string {
 func (s *MetadataService) lockManagerForHandle(handle FileHandle) (*LockManager, error) {
 	shareName, _, err := DecodeFileHandle(handle)
 	if err != nil {
-		return nil, fmt.Errorf("invalid file handle: %w", err)
+		return nil, err
 	}
 
 	s.mu.RLock()
@@ -356,7 +365,9 @@ func (s *MetadataService) lockManagerForHandle(handle FileHandle) (*LockManager,
 		return lm, nil
 	}
 
-	return nil, fmt.Errorf("no lock manager for share %q", shareName)
+	// Decoded handle names a share with no lock manager (removed share):
+	// stale-handle StoreError so callers map to *STALE.
+	return nil, NewStaleHandleError(shareName)
 }
 
 // GetLockManagerForHandle returns the lock manager for the share that owns
