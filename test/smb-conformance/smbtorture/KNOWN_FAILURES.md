@@ -189,8 +189,6 @@ to the DH state machine — tracked under #792 / #793.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | #738 |
-| smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | #738 |
 | smb2.durable-open.alloc-size | CREATE allocation | Pre-existing non-DH bug: out.alloc_size=0 on CREATE with in.alloc_size set (fails before any reconnect) | #792 |
 
 ### Durable Handles V2 (Fix Candidate)
@@ -200,8 +198,6 @@ still fail due to incomplete reconnect, lease coordination, and persistence.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-v2-open.reopen1 | Durable handles V2 | DH2 reopen not fully working | #739 |
-| smb2.durable-v2-open.reopen1a | Durable handles V2 | DH2 reopen not fully working | #739 |
 | smb2.durable-v2-open.lock-oplock | Durable handles V2 | DH2 lock with oplock not fully working | #739 |
 | smb2.durable-v2-open.lock-lease | Durable handles V2 | DH2 lock with lease not fully working | #739 |
 | smb2.durable-v2-open.nonstat-and-lease | Durable handles V2 | DH2 non-stat + lease interaction not fully working | #739 |
@@ -344,6 +340,23 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-31 — #738/#739 durable reconnect: 4 rows flipped
+
+PR #877 lands the V1-via-DH2C durable reconnect path (a V2 reconnect blob on a
+file that was opened durable-V1 now resolves through the same handle-restore
+logic) plus durable-V2 reopen handling. CI smbtorture confirmed `success:` for:
+
+- `smb2.durable-open.reopen2-lease`     (#738)
+- `smb2.durable-open.reopen2-lease-v2`  (#738)
+- `smb2.durable-v2-open.reopen1`        (#739)
+- `smb2.durable-v2-open.reopen1a`       (#739)
+
+This clears #738's last actionable rows (its remaining `alloc-size` is tracked
+under #792 and `delete_on_close2` is upstream-unimplementable), so #738 closes.
+#739 stays open: `lock-oplock`, `lock-lease`, `nonstat-and-lease`,
+`keep-disconnected-rh-with-rwh-open`, `app-instance`, and the persistent-handle
+rows still fail.
 
 ### 2026-05-31 — stale-row cleanup: 5 replay rows not in the pinned smbtorture binary
 
