@@ -352,11 +352,17 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 	targetName := encodeUTF16LE(strings.ToUpper(hostname))
 
 	// Flags for server capabilities.
-	// Note: Flag128, Flag56, and FlagSeal are intentionally NOT set.
-	// NTLM-level sealing (RC4) will not be implemented — SMB3 AES
-	// transport encryption is the only confidentiality path.
-	// If a client requests FlagSeal in Type 1, we silently omit it
-	// from Type 2; the client falls back to SMB3 transport encryption.
+	//
+	// Flag128/Flag56 advertise the key strength of the negotiated session key.
+	// They are mandatory for native clients: the Linux kernel CIFS client
+	// refuses a CHALLENGE that lacks NTLMSSP_NEGOTIATE_128 and aborts the mount
+	// with EINVAL, and Windows/Samba always set both. They describe key
+	// strength only — they do not require NTLM-level RC4 sealing.
+	//
+	// FlagSeal is intentionally NOT set: NTLM-level sealing (RC4 over message
+	// data) is not implemented; SMB3 AES transport encryption is the only
+	// confidentiality path. If a client requests FlagSeal in Type 1, we omit
+	// it from Type 2 and the client falls back to SMB3 transport encryption.
 	flags := FlagUnicode | // Support UTF-16LE strings
 		FlagRequestTarget | // We can provide target info
 		FlagNTLM | // Support NTLM authentication
@@ -365,6 +371,8 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 		FlagTargetTypeServer | // We are a server (not domain controller)
 		FlagExtendedSecurity | // Support NTLMv2 session security
 		FlagTargetInfo | // Include AV_PAIR list
+		Flag128 | // 128-bit session key strength (required by Linux CIFS client)
+		Flag56 | // 56-bit session key strength (set alongside 128 like Windows/Samba)
 		FlagKeyExch // Support session key exchange (required for signing)
 
 	// Build target info with required AV_PAIRs for Windows compatibility.
