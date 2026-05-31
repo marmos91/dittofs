@@ -47,7 +47,7 @@ jobs:
       - name: Start DittoFS and bootstrap SMB
         run: |
           # Initialize and start server in background
-          ./dfs config init --force
+          ./dfs init --force
           ./dfs start &
           DFS_PID=$!
           echo "DFS_PID=$DFS_PID" >> "$GITHUB_ENV"
@@ -61,11 +61,17 @@ jobs:
             sleep 1
           done
 
-          # Extract admin password from logs
-          ADMIN_PASS=$(./dfs logs 2>&1 | grep -oP 'admin password: \K\S+' || echo "admin")
+          # Extract admin password from logs (format: "password=<pass>" / "password: <pass>")
+          ADMIN_PASS=$(./dfs logs 2>&1 | grep -oP 'password[=:] *\K[^ *]+' | head -1)
 
-          # Login
+          # Login as admin (initial credentials)
           ./dfsctl login --server http://localhost:8080 --username admin --password "$ADMIN_PASS"
+
+          # The server requires a password change before any privileged operation.
+          # change-password invalidates the session token, so re-login afterwards.
+          NEW_ADMIN_PASS='adminpass123'
+          ./dfsctl user change-password --current "$ADMIN_PASS" --new "$NEW_ADMIN_PASS"
+          ./dfsctl login --server http://localhost:8080 --username admin --password "$NEW_ADMIN_PASS"
 
           # Create stores
           ./dfsctl store metadata add --name mem-meta --type memory
@@ -74,14 +80,19 @@ jobs:
           # Create share
           ./dfsctl share create --name /smbbasic --metadata mem-meta --local mem-payload
 
-          # Create test user
-          ./dfsctl user create --username test --password test123
+          # Create test user (password must be >= 8 chars)
+          ./dfsctl user create --username test --password 'testpass123'
 
           # Grant permissions
           ./dfsctl share permission grant /smbbasic --user test --level read-write
 
-          # Create SMB adapter
-          ./dfsctl adapter create --type smb --port 12445
+          # Enable SMB adapter. Cap the negotiated dialect at SMB 2.1 — the
+          # adapter advertises up to 3.1.1 but its SMB3 session-setup/signing
+          # path is incomplete, so native clients (mount.cifs vers=3.1.1, the
+          # Windows redirector) fail to authenticate. 2.1 is the dialect the
+          # e2e suite mounts with successfully.
+          ./dfsctl adapter enable smb --port 12445
+          ./dfsctl adapter settings smb update --max-dialect SMB2.1
 
           sleep 3
 
@@ -89,9 +100,9 @@ jobs:
         run: |
           sudo mkdir -p /mnt/smbtest
 
-          # Mount with SMB3
+          # Mount with SMB 2.1 (server's max supported dialect)
           sudo mount -t cifs //localhost/smbbasic /mnt/smbtest \
-            -o port=12445,username=test,password=test123,vers=3.1.1,cache=none
+            -o port=12445,username=test,password='testpass123',vers=2.1,cache=none
 
           # Create file
           echo "hello from linux" | sudo tee /mnt/smbtest/linux-test.txt
@@ -122,7 +133,7 @@ jobs:
 
       - name: Verify dialect with smbclient
         run: |
-          DIALECT_INFO=$(smbclient --debuglevel=1 //localhost/smbbasic -p 12445 -U test%test123 -c exit 2>&1 || true)
+          DIALECT_INFO=$(smbclient --debuglevel=1 //localhost/smbbasic -p 12445 -U 'test%testpass123' -c exit 2>&1 || true)
           echo "$DIALECT_INFO"
           echo "PASS: smbclient connection verified"
 
@@ -171,7 +182,7 @@ jobs:
 
       - name: Start DittoFS and bootstrap SMB
         run: |
-          ./dfs config init --force
+          ./dfs init --force
           ./dfs start &
           DFS_PID=$!
           echo "DFS_PID=$DFS_PID" >> "$GITHUB_ENV"
@@ -184,15 +195,27 @@ jobs:
             sleep 1
           done
 
-          ADMIN_PASS=$(./dfs logs 2>&1 | grep -oE 'admin password: [^ ]+' | head -1 | sed 's/admin password: //' || echo "admin")
+          # Extract admin password (format: "password=<pass>" / "password: <pass>").
+          # BSD grep has no -P, so use -oE + sed.
+          ADMIN_PASS=$(./dfs logs 2>&1 | grep -oE 'password[=:] *[^ *]+' | head -1 | sed -E 's/password[=:] *//')
 
+          # Login as admin (initial credentials)
           ./dfsctl login --server http://localhost:8080 --username admin --password "$ADMIN_PASS"
+
+          # The server requires a password change before any privileged operation.
+          # change-password invalidates the session token, so re-login afterwards.
+          NEW_ADMIN_PASS='adminpass123'
+          ./dfsctl user change-password --current "$ADMIN_PASS" --new "$NEW_ADMIN_PASS"
+          ./dfsctl login --server http://localhost:8080 --username admin --password "$NEW_ADMIN_PASS"
+
           ./dfsctl store metadata add --name mem-meta --type memory
           ./dfsctl store block local add --name mem-payload --type memory
           ./dfsctl share create --name /smbbasic --metadata mem-meta --local mem-payload
-          ./dfsctl user create --username test --password test123
+          ./dfsctl user create --username test --password 'testpass123'
           ./dfsctl share permission grant /smbbasic --user test --level read-write
-          ./dfsctl adapter create --type smb --port 12445
+          # Cap negotiated dialect at SMB 2.1 (SMB3 session/signing is incomplete).
+          ./dfsctl adapter enable smb --port 12445
+          ./dfsctl adapter settings smb update --max-dialect SMB2.1
 
           sleep 3
 
@@ -201,7 +224,7 @@ jobs:
           mkdir -p /tmp/smbtest
 
           # Mount via mount_smbfs
-          mount_smbfs //test:test123@localhost:12445/smbbasic /tmp/smbtest
+          mount_smbfs //test:testpass123@localhost:12445/smbbasic /tmp/smbtest
 
           # Create and read file
           echo "hello from macos" > /tmp/smbtest/macos-test.txt
@@ -270,26 +293,38 @@ jobs:
         shell: pwsh
         run: |
           # Initialize config
-          .\dfs.exe config init --force
+          .\dfs.exe init --force
 
           # Start server in background
           $proc = Start-Process -FilePath .\dfs.exe -ArgumentList "start" -PassThru -NoNewWindow -RedirectStandardOutput dfs-stdout.log -RedirectStandardError dfs-stderr.log
           echo "DFS_PID=$($proc.Id)" >> $env:GITHUB_ENV
           Start-Sleep -Seconds 10
 
-          # Extract admin password
-          $logContent = Get-Content dfs-stdout.log, dfs-stderr.log -ErrorAction SilentlyContinue | Out-String
-          $match = [regex]::Match($logContent, 'admin password: (\S+)')
-          $adminPass = if ($match.Success) { $match.Groups[1].Value } else { "admin" }
+          # Extract admin password. `dfs start` daemonizes and writes to its state
+          # log; fall back to the redirected stdout/stderr if needed.
+          $logContent = (& .\dfs.exe logs 2>&1 | Out-String)
+          $logContent += (Get-Content dfs-stdout.log, dfs-stderr.log -ErrorAction SilentlyContinue | Out-String)
+          $match = [regex]::Match($logContent, 'password[=:]\s*(\S+)')
+          $adminPass = $match.Groups[1].Value.TrimEnd('*')
 
-          # Login and bootstrap
+          # Login as admin (initial credentials)
           .\dfsctl.exe login --server http://localhost:8080 --username admin --password $adminPass
+
+          # The server requires a password change before any privileged operation.
+          # change-password invalidates the session token, so re-login afterwards.
+          $newAdminPass = 'adminpass123'
+          .\dfsctl.exe user change-password --current $adminPass --new $newAdminPass
+          .\dfsctl.exe login --server http://localhost:8080 --username admin --password $newAdminPass
+
           .\dfsctl.exe store metadata add --name mem-meta --type memory
           .\dfsctl.exe store block local add --name mem-payload --type memory
           .\dfsctl.exe share create --name /smbbasic --metadata mem-meta --local mem-payload
-          .\dfsctl.exe user create --username test --password test123
+          .\dfsctl.exe user create --username test --password 'testpass123'
           .\dfsctl.exe share permission grant /smbbasic --user test --level read-write
-          .\dfsctl.exe adapter create --type smb --port 12445
+          # Cap negotiated dialect at SMB 2.1 (SMB3 session/signing is incomplete);
+          # the Windows redirector otherwise negotiates 3.1.1 and fails auth.
+          .\dfsctl.exe adapter enable smb --port 12445
+          .\dfsctl.exe adapter settings smb update --max-dialect SMB2.1
 
           Start-Sleep -Seconds 3
 
@@ -297,7 +332,7 @@ jobs:
         shell: pwsh
         run: |
           # Mount SMB share
-          net use Z: \\localhost\smbbasic /user:test test123
+          net use Z: \\localhost\smbbasic /user:test 'testpass123'
 
           # Create and read file
           "hello from windows" | Out-File -FilePath Z:\win-test.txt -Encoding ascii -NoNewline
