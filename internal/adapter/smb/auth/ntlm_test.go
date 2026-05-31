@@ -204,6 +204,11 @@ func TestBuildChallenge(t *testing.T) {
 			{FlagExtendedSecurity, "ExtendedSecurity"},
 			{FlagTargetInfo, "TargetInfo"},
 			{FlagKeyExch, "KeyExch"},
+			// Key-strength flags. The Linux kernel CIFS client refuses a
+			// CHALLENGE lacking NTLMSSP_NEGOTIATE_128 and aborts the mount
+			// with EINVAL; Windows and Samba always set both.
+			{Flag128, "128-bit"},
+			{Flag56, "56-bit"},
 		}
 
 		for _, ef := range expectedFlags {
@@ -213,25 +218,15 @@ func TestBuildChallenge(t *testing.T) {
 		}
 	})
 
-	t.Run("DoesNotAdvertiseEncryptionFlags", func(t *testing.T) {
+	t.Run("DoesNotAdvertiseSealFlag", func(t *testing.T) {
 		flags := binary.LittleEndian.Uint32(msg[20:24])
 
-		// NTLM-level sealing (RC4) is not implemented.
-		// SMB3 AES transport encryption is the confidentiality path.
-		// These flags MUST NOT be advertised to avoid capability mismatch.
-		absentFlags := []struct {
-			flag NegotiateFlag
-			name string
-		}{
-			{FlagSeal, "Seal"},
-			{Flag128, "128-bit"},
-			{Flag56, "56-bit"},
-		}
-
-		for _, af := range absentFlags {
-			if flags&uint32(af.flag) != 0 {
-				t.Errorf("Flag %s (0x%x) MUST NOT be set — NTLM encryption not implemented", af.name, af.flag)
-			}
+		// NTLM-level sealing (RC4 over message data) is not implemented.
+		// SMB3 AES transport encryption is the confidentiality path, so
+		// FlagSeal MUST NOT be advertised. Flag128/Flag56 are key-strength
+		// indicators (asserted present above) and are unrelated to sealing.
+		if flags&uint32(FlagSeal) != 0 {
+			t.Errorf("Flag Seal (0x%x) MUST NOT be set — NTLM sealing not implemented", FlagSeal)
 		}
 	})
 }
