@@ -1306,3 +1306,94 @@ func TestLock_NFS_SameSession_ExclusiveRelock_OK(t *testing.T) {
 		t.Fatal("NFS same-session exclusive re-lock should succeed (POSIX semantics)")
 	}
 }
+
+// ============================================================================
+// ReleaseByOwnerPrefix (NSM crash cleanup, area-4 H14)
+// ============================================================================
+
+func TestManager_ReleaseByOwnerPrefix(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+
+	// Client A (caller_name "clientA") holds two locks across two files.
+	addLock := func(id, ownerID, file string, off uint64) {
+		l := &UnifiedLock{
+			ID:         id,
+			Owner:      LockOwner{OwnerID: ownerID, ClientID: "ignored"},
+			FileHandle: FileHandle(file),
+			Offset:     off,
+			Length:     10,
+			Type:       LockTypeExclusive,
+		}
+		if err := lm.AddUnifiedLock(file, l); err != nil {
+			t.Fatalf("AddUnifiedLock(%s) failed: %v", id, err)
+		}
+	}
+
+	addLock("a1", "nlm:clientA:1:aa", "file1", 0)
+	addLock("a2", "nlm:clientA:2:bb", "file2", 0)
+	// Client B and a same-prefix-collision client must NOT be released.
+	addLock("b1", "nlm:clientB:1:cc", "file1", 100)
+	addLock("a10", "nlm:clientA10:1:dd", "file1", 200) // "nlm:clientA" prefix WITHOUT trailing ':' would wrongly match
+	// A non-NLM (SMB) lock that happens to share the bare token must be untouched.
+	addLock("smb1", "smb:clientA:5:ee", "file2", 100)
+
+	// Prove the locks are held before release.
+	if got := len(lm.ListUnifiedLocks("file1")); got != 3 {
+		t.Fatalf("file1: want 3 locks before release, got %d", got)
+	}
+	if got := len(lm.ListUnifiedLocks("file2")); got != 2 {
+		t.Fatalf("file2: want 2 locks before release, got %d", got)
+	}
+
+	released := lm.ReleaseByOwnerPrefix("nlm:clientA:")
+	if released != 2 {
+		t.Fatalf("want 2 locks released, got %d", released)
+	}
+
+	// clientA's locks gone; clientB, clientA10, and the SMB lock remain.
+	remainingF1 := lm.ListUnifiedLocks("file1")
+	if len(remainingF1) != 2 {
+		t.Fatalf("file1: want 2 locks after release, got %d", len(remainingF1))
+	}
+	for _, l := range remainingF1 {
+		if l.Owner.OwnerID == "nlm:clientA:1:aa" {
+			t.Fatalf("file1: clientA lock was not released")
+		}
+	}
+	remainingF2 := lm.ListUnifiedLocks("file2")
+	if len(remainingF2) != 1 || remainingF2[0].Owner.OwnerID != "smb:clientA:5:ee" {
+		t.Fatalf("file2: want only the SMB lock to remain, got %+v", remainingF2)
+	}
+}
+
+func TestManager_ReleaseByOwnerPrefix_NoMatchIsSafe(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	l := &UnifiedLock{
+		ID:         "x",
+		Owner:      LockOwner{OwnerID: "nlm:other:1:aa"},
+		FileHandle: "file1",
+		Offset:     0,
+		Length:     10,
+		Type:       LockTypeExclusive,
+	}
+	if err := lm.AddUnifiedLock("file1", l); err != nil {
+		t.Fatal(err)
+	}
+
+	// No-match prefix and empty-manager both return 0 without disturbing state.
+	if released := lm.ReleaseByOwnerPrefix("nlm:ghost:"); released != 0 {
+		t.Fatalf("want 0 released for non-matching prefix, got %d", released)
+	}
+	if got := len(lm.ListUnifiedLocks("file1")); got != 1 {
+		t.Fatalf("untouched lock should remain, got %d", got)
+	}
+
+	empty := NewManager()
+	if released := empty.ReleaseByOwnerPrefix("nlm:anyone:"); released != 0 {
+		t.Fatalf("want 0 released on empty manager, got %d", released)
+	}
+}

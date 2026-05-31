@@ -157,6 +157,45 @@ func (bq *BlockingQueue) RemoveWaiter(fileHandle string, waiter *Waiter) {
 	}
 }
 
+// RemoveClientWaiters drains every queued waiter whose CallerName matches the
+// given client and returns the number removed.
+//
+// This is used for NSM crash cleanup: when a client crashes, any blocking-lock
+// requests it left queued must be dropped so the server never fires an
+// NLM_GRANTED callback to a dead client. Each matching waiter is marked
+// cancelled (so an in-flight grant goroutine observing IsCancelled() bails)
+// before removal.
+//
+// CallerName is the NSM caller_name (client hostname), the same identity NSM
+// uses for SM_NOTIFY. Calling with a clientID that has no queued waiters is
+// safe and returns 0.
+//
+// Thread safety: Safe to call concurrently.
+func (bq *BlockingQueue) RemoveClientWaiters(clientID string) int {
+	bq.mu.Lock()
+	defer bq.mu.Unlock()
+
+	removed := 0
+	for fileHandle, queue := range bq.queues {
+		remaining := queue[:0:0] // new backing array; never alias the original
+		for _, w := range queue {
+			if w.CallerName == clientID {
+				w.Cancel()
+				removed++
+				continue
+			}
+			remaining = append(remaining, w)
+		}
+		if len(remaining) == 0 {
+			delete(bq.queues, fileHandle)
+		} else {
+			bq.queues[fileHandle] = remaining
+		}
+	}
+
+	return removed
+}
+
 // TotalWaiters returns the total number of waiters across all files.
 //
 // This is used for metrics (nlm_blocking_queue_size gauge).

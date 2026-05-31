@@ -2862,6 +2862,45 @@ func (lm *Manager) RemoveClientLocks(clientID string) {
 	}
 }
 
+// ReleaseByOwnerPrefix removes every unified lock whose Owner.OwnerID begins
+// with the given prefix and returns the number of locks released.
+//
+// This is used for NSM crash cleanup: when a client crashes, NLM must release
+// all locks it held. NLM owner IDs are formatted as
+// "nlm:{caller_name}:{svid}:{oh_hex}", so passing "nlm:{caller_name}:" releases
+// every byte-range lock the crashed client held across all files in this share
+// without touching locks from other protocols (SMB/NFSv4 use different prefixes)
+// or other NLM clients. The trailing ":" in the caller-supplied prefix prevents
+// "nlm:client1:" from matching "nlm:client10:".
+//
+// The persisted bulk-delete runs synchronously under lm.mu for the same
+// ordering reason as RemoveClientLocks. Calling with a prefix that matches no
+// locks is safe and returns 0.
+func (lm *Manager) ReleaseByOwnerPrefix(prefix string) int {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	released := 0
+	for handleKey, locks := range lm.unifiedLocks {
+		var remaining []*UnifiedLock
+		for _, lock := range locks {
+			if strings.HasPrefix(lock.Owner.OwnerID, prefix) {
+				lm.deleteUnifiedLockLocked(lock)
+				released++
+				continue
+			}
+			remaining = append(remaining, lock)
+		}
+		if len(remaining) == 0 {
+			delete(lm.unifiedLocks, handleKey)
+		} else {
+			lm.unifiedLocks[handleKey] = remaining
+		}
+	}
+
+	return released
+}
+
 // GetStats returns current lock manager statistics.
 func (lm *Manager) GetStats() ManagerStats {
 	lm.mu.RLock()
