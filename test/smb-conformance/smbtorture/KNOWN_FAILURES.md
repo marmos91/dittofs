@@ -10,7 +10,7 @@ Only NEW failures (not in this list) will cause CI to fail.
 - The [Permanently Unimplementable](#permanently-unimplementable-out-of-scope) appendix at the bottom is the **only** place new entries may be added without an accompanying GH sub-issue.
 - Every entry above the appendix MUST either (a) reference an open GH sub-issue under the `v1.0.0` milestone, or (b) be promoted into the appendix with a documented architectural reason.
 - Walking a test back (removing from this file) is encouraged whenever it starts passing on develop. Do not re-add a passing test to silence a transient flake — fix the flake.
-- Goal: every non-appendix entry resolved before tagging v1.0.
+- Goal: every non-appendix entry resolved before tagging v1.0 — **except** the explicitly-deferred [Replay Protection (#749)](#replay-protection--deferred-past-v10-749) block, which (like the Kerberos suite, #686) is tracked to a post-v1.0 milestone and does not gate the tag.
 
 The `parse-results.sh` script reads test names from the first column of the
 table below. Lines starting with `#`, `|---`, empty lines, and the header row
@@ -235,10 +235,22 @@ shape that reauth4 actually exercises.
 |-----------|----------|--------|-------|
 | smb2.session.reauth5 | Sessions | Upstream Samba knownfail (`selftest/knownfail:213`): smb2_util_unlink(nonexistent) asserts NT_STATUS_OK, server returns OBJECT_NAME_NOT_FOUND. Beyond #772's handle-identity binding scope | #772 |
 
-### Replay Protection (Not Implemented)
+### Replay Protection — Deferred past v1.0 (#749)
 
-Replay protection requires tracking channel sequences and detecting replayed
-requests with durable handles. Newly reachable after GMAC signing fix.
+**These rows do not gate the v1.0 tag.** The channel-sequence + create-replay
+infrastructure is implemented (#864/#866/#908); what remains is the *replay
+pending-oplock state machine* — a deep, multi-stage feature exercised by the
+`dhv2-pending{1,2,3}*` matrix. Each test drives a precise per-stage status
+sequence (e.g. `ACCESS_DENIED` while a conflicting open is pending, `OK` after
+it resolves, an oplock-level echo on the replayed create, and exact data-offset
+continuity). Modelling this correctly is a self-contained effort comparable to
+the Kerberos work (#686) and is **deferred to a post-v1.0 milestone, tracked
+under #749**. The rows below remain documented known-failures so CI stays green;
+they are no longer a v1.0 conformance blocker.
+
+Note: the `*-windows` variants additionally expect Windows-policy statuses that
+are mutually exclusive with the Samba-sane statuses DittoFS returns, so they are
+not flippable without a separate Windows-status mode regardless of #749.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
@@ -332,6 +344,18 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-31 — #749 replay pending-oplock matrix deferred past v1.0
+
+The 39 `### Replay Protection` rows are deferred to a post-v1.0 milestone under
+#749 (like the Kerberos suite under #686). The channel-sequence + create-replay
+infrastructure shipped (#864/#866/#908); the remaining `dhv2-pending{1,2,3}*`
+matrix is a deep multi-stage replay-pending-oplock state machine (precise
+per-stage `ACCESS_DENIED`/`OK`/oplock-echo/data-offset sequencing) whose correct
+modelling is a self-contained effort not worth blocking the v1.0 tag. The rows
+stay as documented known-failures (CI green); the Policy goal is amended to
+exempt this block. The `*-windows` subset is additionally not flippable without
+a Windows-status mode (DittoFS returns Samba-sane statuses).
 
 ### 2026-05-31 — stale-row harvest: 4 rows already passing
 
