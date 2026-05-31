@@ -482,7 +482,15 @@ func (h *Handler) disallowWriteLeaseForFile(
 		if existing.FileID == excludeFileID {
 			return true
 		}
-		if excludeClientGUID != ([16]byte{}) && existing.ClientGUID == excludeClientGUID {
+		// Mirror Samba is_same_lease: only LEASE_OPLOCK entries are same-client
+		// bypassed. A NO_OPLOCK same-client open (e.g. a non-stat handle) still
+		// disallows W — this is what nonstat-and-lease requires. Bypassing it would
+		// wrongly grant RWH instead of RH. (upgrade2/upgrade3/break holders are
+		// leases, so they remain bypassed and do not regress.)
+		isSameClientLease := excludeClientGUID != ([16]byte{}) &&
+			existing.ClientGUID == excludeClientGUID &&
+			existing.OplockLevel == OplockLevelLease
+		if isSameClientLease {
 			return true
 		}
 		// e contributes when it holds an oplock/lease OR is a non-stat open.

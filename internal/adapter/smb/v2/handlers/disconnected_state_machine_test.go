@@ -889,6 +889,29 @@ func TestDisallowWriteLeaseForFile(t *testing.T) {
 		}
 	})
 
+	// nonstat-and-lease (#739): a same-client NO_OPLOCK non-stat open (the h1
+	// handle: READ_CONTROL-style access, no lease) must STILL disallow W, even
+	// though it shares the requestor's ClientGuid. Samba is_same_lease bypasses
+	// only LEASE_OPLOCK entries; a NO_OPLOCK entry is never same-client bypassed.
+	// Bypassing it would wrongly grant the h2 lease RWH instead of RH.
+	t.Run("same-client NO_OPLOCK non-stat open disallows W", func(t *testing.T) {
+		h := &Handler{}
+		addOpen(h, [16]byte{0x07}, metaHandle, accessReadCtl, [16]byte{}, OplockLevelNone, false, selfClientGUID)
+		if !h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID, selfClientGUID) {
+			t.Fatal("expected disallow=true for a same-client NO_OPLOCK non-stat open (nonstat-and-lease)")
+		}
+	})
+
+	// Contrast / regression guard: the same-client open holding a LEASE is still
+	// bypassed (is_same_lease) — this preserves smb2.lease.upgrade2/upgrade3/break.
+	t.Run("same-client LEASE open on a different key does not disallow W", func(t *testing.T) {
+		h := &Handler{}
+		addOpen(h, [16]byte{0x08}, metaHandle, accessReadData, [16]byte{0xDC}, OplockLevelLease, false, selfClientGUID)
+		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID, selfClientGUID) {
+			t.Fatal("expected disallow=false for a same-client LEASE open (still is_same_lease bypassed)")
+		}
+	})
+
 	t.Run("same-client disconnected handle on a different key does not disallow W", func(t *testing.T) {
 		store := newMockDurableStore()
 		_ = store.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
