@@ -191,7 +191,6 @@ to the DH state machine — tracked under #792 / #793.
 |-----------|----------|--------|-------|
 | smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | #738 |
 | smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | #738 |
-| smb2.durable-open.alloc-size | CREATE allocation | Pre-existing non-DH bug: out.alloc_size=0 on CREATE with in.alloc_size set (fails before any reconnect) | #792 |
 
 ### Durable Handles V2 (Fix Candidate)
 
@@ -344,6 +343,18 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-31 — #792 CREATE allocation size: 1 row flipped
+
+PR #875 makes a CREATE that requests `in.alloc_size` report a consistent
+allocation back to the client. The requested size is tracked per open handle
+(`OpenFile.RequestedAllocSize`) and reported via `effectiveAllocationSize`
+across the CREATE response, QUERY_INFO (`FILE_STANDARD` / `FILE_ALL` /
+`FILE_NETWORK_OPEN`), and SET_INFO `FileAllocationInformation` — preserving the
+CREATE↔QUERY consistency that the reverted #845 attempt broke. Directories drop
+the reservation. Flips:
+
+- `smb2.durable-open.alloc-size`
 
 ### 2026-05-31 — stale-row cleanup: 5 replay rows not in the pinned smbtorture binary
 
