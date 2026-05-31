@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	xdr "github.com/rasky/go-xdr/xdr2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -333,5 +334,84 @@ func TestMakeProgMismatchReply(t *testing.T) {
 		// So AcceptStat is at bytes 24-27
 		acceptStat := binary.BigEndian.Uint32(reply[24:28])
 		assert.Equal(t, uint32(RPCProgMismatch), acceptStat, "AcceptStat should be PROG_MISMATCH")
+	})
+}
+
+// marshalCall encodes a complete RPC call message (XID..Verf) plus procedure
+// data, the way a client would put it on the wire.
+func marshalCall(t *testing.T, call *RPCCallMessage, procData []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if _, err := xdr.Marshal(&buf, call); err != nil {
+		t.Fatalf("marshal call: %v", err)
+	}
+	buf.Write(procData)
+	return buf.Bytes()
+}
+
+func TestHeaderMICPreimage(t *testing.T) {
+	// The MIC preimage must be XID..end-of-credential, NOT including the
+	// verifier or the procedure data (RFC 2203 Section 5.3.3.2).
+	t.Run("excludes verifier and body", func(t *testing.T) {
+		call := &RPCCallMessage{
+			XID:        0xdeadbeef,
+			MsgType:    RPCCall,
+			RPCVersion: 2,
+			Program:    100003,
+			Version:    3,
+			Procedure:  1,
+			Cred:       OpaqueAuth{Flavor: AuthRPCSECGSS, Body: []byte("the-gss-credential!")}, // 19 bytes -> 1 pad
+			Verf:       OpaqueAuth{Flavor: AuthRPCSECGSS, Body: []byte("the-mic-token")},
+		}
+		message := marshalCall(t, call, []byte("procedure-arguments"))
+
+		preimage, err := HeaderMICPreimage(message)
+		require.NoError(t, err)
+
+		// Expected end: 24 (fixed header) + 4 (cred flavor) + 4 (cred len) +
+		// 19 (cred body) + 1 (XDR pad) = 52.
+		require.Equal(t, 52, len(preimage))
+		// Preimage must be a prefix of the message.
+		require.Equal(t, message[:52], preimage)
+		// Must contain the credential body...
+		require.Contains(t, string(preimage), "the-gss-credential!")
+		// ...but NOT the verifier MIC or the procedure args.
+		require.NotContains(t, string(preimage), "the-mic-token")
+		require.NotContains(t, string(preimage), "procedure-arguments")
+	})
+
+	t.Run("matches ReadData boundary", func(t *testing.T) {
+		// The preimage end must equal where ReadData starts the procedure body
+		// minus the verifier, i.e. preimage covers exactly through the cred.
+		call := &RPCCallMessage{
+			XID:        1,
+			MsgType:    RPCCall,
+			RPCVersion: 2,
+			Program:    100003,
+			Version:    3,
+			Procedure:  8,
+			Cred:       OpaqueAuth{Flavor: AuthUnix, Body: []byte{1, 2, 3, 4}}, // aligned
+			Verf:       OpaqueAuth{Flavor: AuthNull, Body: nil},
+		}
+		message := marshalCall(t, call, []byte("WRITE-args"))
+
+		preimage, err := HeaderMICPreimage(message)
+		require.NoError(t, err)
+		// 24 + 4 + 4 + 4 = 36.
+		require.Equal(t, 36, len(preimage))
+		require.Equal(t, message[:36], preimage)
+	})
+
+	t.Run("rejects truncated message", func(t *testing.T) {
+		_, err := HeaderMICPreimage([]byte{0, 0, 0, 1})
+		require.Error(t, err)
+	})
+
+	t.Run("rejects overrunning credential length", func(t *testing.T) {
+		// Fixed header (24) + cred flavor (4) + a bogus huge cred length.
+		msg := make([]byte, 32)
+		binary.BigEndian.PutUint32(msg[28:32], 0xffffffff) // cred len overruns
+		_, err := HeaderMICPreimage(msg)
+		require.Error(t, err)
 	})
 }

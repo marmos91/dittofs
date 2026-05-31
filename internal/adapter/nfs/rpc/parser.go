@@ -166,6 +166,48 @@ func ReadData(message []byte, call *RPCCallMessage) ([]byte, error) {
 	return remaining, nil
 }
 
+// HeaderMICPreimage returns the RPC call-header bytes over which an
+// RPCSEC_GSS call verifier MIC is computed.
+//
+// Per RFC 2203 Section 5.3.3.2, the call verifier for an RPCSEC_GSS DATA
+// request is a GSS MIC token computed by the client over the marshalled RPC
+// call header through the credential — i.e. the XDR stream from the XID up to
+// and including the credential (flavor + length + body + padding), but NOT
+// including the verifier. This mirrors Linux sunrpc
+// svcauth_gss_verify_header, which verifies the MIC over the buffer spanning
+// xid..end-of-credential.
+//
+// The returned slice aliases the underlying message bytes; callers must not
+// mutate it.
+//
+// Returns an error if the message is too short or its embedded credential
+// length runs past the end of the buffer (i.e. a malformed/truncated header).
+func HeaderMICPreimage(message []byte) ([]byte, error) {
+	// Fixed RPC header: XID, MsgType, RPCVersion, Program, Version, Procedure
+	// = 6 × 4 bytes = 24 bytes, followed by the credential.
+	const fixedHeaderLen = 24
+
+	// Need at least the fixed header + credential flavor (4) + length (4).
+	if len(message) < fixedHeaderLen+8 {
+		return nil, fmt.Errorf("rpc message too short for credential: %d bytes", len(message))
+	}
+
+	offset := fixedHeaderLen
+	offset += 4 // credential flavor
+	credLen := binary.BigEndian.Uint32(message[offset : offset+4])
+	offset += 4 // credential length field
+
+	// Bound the credential body length against the actual buffer to avoid a
+	// slice-out-of-range and to reject truncated/forged headers.
+	padding := (4 - (credLen % 4)) % 4
+	end := offset + int(credLen) + int(padding)
+	if credLen > uint32(len(message)) || end < offset || end > len(message) {
+		return nil, fmt.Errorf("rpc credential length %d overruns message of %d bytes", credLen, len(message))
+	}
+
+	return message[:end], nil
+}
+
 // MakeSuccessReply constructs an RPC success reply message.
 //
 // Builds a complete RPC reply indicating successful execution

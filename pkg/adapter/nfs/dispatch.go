@@ -24,7 +24,7 @@ import (
 // - Context is cancelled during processing
 // - Handler returns an error
 // - Reply cannot be sent
-func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMessage, procedureData []byte) error {
+func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMessage, rawMessage []byte, procedureData []byte) error {
 	var replyData []byte
 	var err error
 
@@ -50,7 +50,19 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 	// GSS DATA messages have their procedureData replaced with the unwrapped
 	// arguments and GSS identity injected into the context.
 	if call.GetAuthFlavor() == rpc.AuthRPCSECGSS && c.server.gssProcessor != nil {
-		gssResult := c.server.gssProcessor.Process(ctx, call.GetAuthBody(), call.GetVerifierBody(), procedureData)
+		// The RPCSEC_GSS DATA call verifier is a MIC over the marshalled RPC
+		// call header (XID..end-of-credential). Capture that exact byte range
+		// so the GSS processor can verify it (RFC 2203 Section 5.3.3.2). A
+		// malformed header yields an empty preimage, which the processor
+		// rejects with CREDPROBLEM for DATA requests.
+		headerPreimage, preimageErr := rpc.HeaderMICPreimage(rawMessage)
+		if preimageErr != nil {
+			logger.Debug("GSS: failed to extract call-header MIC preimage",
+				"xid", fmt.Sprintf("0x%x", call.XID),
+				"error", preimageErr)
+			headerPreimage = nil
+		}
+		gssResult := c.server.gssProcessor.Process(ctx, call.GetAuthBody(), call.GetVerifierBody(), headerPreimage, procedureData)
 
 		// Handle GSS processing errors (CREDPROBLEM / CTXPROBLEM)
 		if gssResult.Err != nil {

@@ -337,7 +337,7 @@ func TestHandleDataWithIntegrity(t *testing.T) {
 		t.Fatalf("encode INIT cred: %v", err)
 	}
 
-	initResult := proc.Process(context.Background(), initCredBody, nil, encodeOpaqueToken([]byte("mock-token")))
+	initResult := proc.Process(context.Background(), initCredBody, nil, nil, encodeOpaqueToken([]byte("mock-token")))
 	if initResult.Err != nil {
 		t.Fatalf("INIT failed: %v", initResult.Err)
 	}
@@ -362,7 +362,9 @@ func TestHandleDataWithIntegrity(t *testing.T) {
 		t.Fatalf("encode DATA cred: %v", err)
 	}
 
-	result := proc.Process(context.Background(), dataCredBody, nil, requestBody)
+	// Sign the call-header MIC (the credBody stands in as the header preimage).
+	mic := signHeaderMIC(t, key, dataCredBody)
+	result := proc.Process(context.Background(), dataCredBody, mic, dataCredBody, requestBody)
 
 	if result.Err != nil {
 		t.Fatalf("DATA with integrity failed: %v", result.Err)
@@ -405,7 +407,7 @@ func TestHandleDataWithIntegrityAfterAuthOnlyInit(t *testing.T) {
 		t.Fatalf("encode INIT cred: %v", err)
 	}
 
-	initResult := proc.Process(context.Background(), initCredBody, nil, encodeOpaqueToken([]byte("mock-token")))
+	initResult := proc.Process(context.Background(), initCredBody, nil, nil, encodeOpaqueToken([]byte("mock-token")))
 	if initResult.Err != nil {
 		t.Fatalf("INIT failed: %v", initResult.Err)
 	}
@@ -437,7 +439,9 @@ func TestHandleDataWithIntegrityAfterAuthOnlyInit(t *testing.T) {
 		t.Fatalf("encode DATA cred: %v", err)
 	}
 
-	result := proc.Process(context.Background(), dataCredBody, nil, requestBody)
+	// Sign the call-header MIC (the credBody stands in as the header preimage).
+	mic := signHeaderMIC(t, key, dataCredBody)
+	result := proc.Process(context.Background(), dataCredBody, mic, dataCredBody, requestBody)
 
 	// This is the key assertion: should succeed even though INIT was svc_none
 	if result.Err != nil {
