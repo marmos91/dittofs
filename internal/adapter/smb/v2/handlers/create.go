@@ -855,6 +855,22 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			if h.LeaseManager != nil && len(restored.MetadataHandle) > 0 {
 				lockFileHandle := lock.FileHandle(restored.MetadataHandle)
 
+				// Capture the oplock/lease level persisted with the durable
+				// handle BEFORE re-registration mutates restored.OplockLevel.
+				// MS-SMB2 §3.3.5.9.7/§3.3.5.9.12: a successful reconnect re-grants
+				// the SAME oplock/lease the client held before disconnect — the
+				// FileID/OpenID continuity keeps any byte-range locks valid. If
+				// LeaseManager re-registration under-delivers (returns a weaker or
+				// zero state because the prior synthetic key wasn't fully cleared
+				// or best-grantable transiently returns 0), reporting the degraded
+				// level would make the client believe its oplock/lease was lost,
+				// failing the io.out.oplock_level assertion in
+				// smb2.durable-v2-open.lock-{oplock,lease}. Fall back to the
+				// persisted level so the reconnect response always reflects what
+				// the handle actually still holds.
+				persistedOplockLevel := restored.OplockLevel
+				persistedLeaseState := reconnResult.PersistedLease
+
 				if restored.OplockLevel == OplockLevelLease && restored.LeaseKey != ([16]byte{}) {
 					// Use persisted lease state for re-request. This preserves the
 					// exact lease state the client had before disconnect rather than
@@ -880,15 +896,28 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 						requestedState,
 						restored.IsDirectory,
 					)
+					// The reconnected handle still holds the lease it had before
+					// disconnect (OpenID continuity preserves its byte-range
+					// locks). If re-registration under-delivers (re-request error
+					// or a granted state weaker than what was persisted), report
+					// the persisted lease state rather than the degraded grant so
+					// the client sees its lease preserved
+					// (smb2.durable-v2-open.lock-lease io.out.lease.lease_state).
+					reportedLeaseState := grantedState
+					if persistedLeaseState != lock.LeaseStateNone &&
+						leaseStateRank(persistedLeaseState) > leaseStateRank(reportedLeaseState) {
+						reportedLeaseState = persistedLeaseState
+					}
 					if leaseErr != nil {
 						logger.Debug("CREATE: durable reconnect lease re-request failed", "error", leaseErr)
-					} else {
+					}
+					if reportedLeaseState != lock.LeaseStateNone {
 						// Build lease response context
 						if leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest); leaseCtx != nil {
 							isV1 := len(leaseCtx.Data) < LeaseV2ContextSize
 							leaseResp := &LeaseResponseContext{
 								LeaseKey:   restored.LeaseKey,
-								LeaseState: grantedState,
+								LeaseState: reportedLeaseState,
 								Epoch:      epoch,
 								IsV1:       isV1,
 							}
@@ -904,16 +933,19 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 						// this, an omitted-RqLs reconnect would leave the
 						// lease untracked and subsequent breaks would send
 						// NewEpoch = 0 even though the lease is V2 (#417).
-						if grantedState != lock.LeaseStateNone {
-							// Lease-backed durable handles require SMB 3.0+, so the
-							// reconnect path always re-establishes a V2 lease.
-							// MarkLeaseVersionIfUnset preserves any pre-existing
-							// version recorded by the original grant; an absent
-							// mark (e.g. cleared by intervening release) is set to
-							// V2 here.
-							h.LeaseManager.MarkLeaseVersionIfUnset(restored.LeaseKey, true)
-							restored.OplockLevel = OplockLevelLease
-						}
+						//
+						// Keyed on reportedLeaseState (not grantedState): when the
+						// re-register under-delivers but the handle still holds a
+						// persisted lease, the open remains lease-backed and must be
+						// re-marked V2 so its OplockLevel stays OplockLevelLease.
+						// Lease-backed durable handles require SMB 3.0+, so the
+						// reconnect path always re-establishes a V2 lease.
+						// MarkLeaseVersionIfUnset preserves any pre-existing
+						// version recorded by the original grant; an absent
+						// mark (e.g. cleared by intervening release) is set to
+						// V2 here.
+						h.LeaseManager.MarkLeaseVersionIfUnset(restored.LeaseKey, true)
+						restored.OplockLevel = OplockLevelLease
 					}
 
 					// Update session mapping for break notification routing
@@ -952,14 +984,27 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 							requestedState,
 							false,
 						)
+						restored.LeaseKey = syntheticKey
+						regrantedLevel := leaseStateToOplockLevel(grantedState)
 						if leaseErr != nil {
 							logger.Debug("CREATE: durable reconnect oplock re-request failed", "error", leaseErr)
+						}
+						// MS-SMB2 §3.3.5.9.7: the reconnect re-grants the SAME
+						// oplock the handle held before disconnect. If the
+						// re-register under-delivers (error, or a weaker level
+						// because best-grantable transiently returns 0 / the prior
+						// synthetic key wasn't fully cleared), report the persisted
+						// level rather than the degraded one — the FileID/OpenID
+						// continuity keeps the handle's byte-range locks valid, so
+						// the client must still see its Batch/Exclusive/II oplock
+						// (smb2.durable-v2-open.lock-oplock io.out.oplock_level).
+						if oplockLevelRank(regrantedLevel) >= oplockLevelRank(persistedOplockLevel) {
+							restored.OplockLevel = regrantedLevel
 						} else {
-							restored.OplockLevel = leaseStateToOplockLevel(grantedState)
-							restored.LeaseKey = syntheticKey
-							if restored.OplockLevel != OplockLevelNone {
-								h.LeaseManager.RegisterOplockFileID(syntheticKey, smbFileID)
-							}
+							restored.OplockLevel = persistedOplockLevel
+						}
+						if restored.OplockLevel != OplockLevelNone {
+							h.LeaseManager.RegisterOplockFileID(syntheticKey, smbFileID)
 						}
 					}
 				}
