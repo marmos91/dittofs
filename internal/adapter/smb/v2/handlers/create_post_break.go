@@ -1002,6 +1002,12 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		CreateOptions:        req.CreateOptions,
 		InitialDeleteOnClose: req.CreateOptions&types.FileDeleteOnClose != 0,
 		ClientGUID:           connClientGUID(ctx),
+		// Honour the client-requested AllocationSize [MS-SMB2] 2.2.13.2.2 for
+		// regular files only. Directories never report the requested reservation
+		// (smb2.create.dir-alloc-size), so leave it zero for them. Tracked
+		// per-handle so the CREATE response and a later QUERY_INFO on this handle
+		// agree (smb2.create.open).
+		RequestedAllocSize: allocReservationFor(file.Type == metadata.FileTypeDirectory, req.RequestedAllocSize),
 	}
 
 	if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
@@ -1089,7 +1095,11 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	}
 	creation, access, write, change := FileAttrToSMBTimes(respAttr)
 	size := getSMBSize(&file.FileAttr)
-	allocationSize := calculateAllocationSize(size)
+	// Report the larger of the file's cluster-aligned size and the per-handle
+	// requested reservation [MS-SMB2] 2.2.13.2.2 (zero for directories), so a
+	// freshly-created empty file opened with in.alloc_size reports a non-zero
+	// out.alloc_size (smb2.durable-open.alloc-size).
+	allocationSize := effectiveAllocationSize(size, openFile.RequestedAllocSize)
 
 	resp := &CreateResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},

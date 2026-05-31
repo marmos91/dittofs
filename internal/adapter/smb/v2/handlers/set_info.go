@@ -1328,6 +1328,15 @@ func (h *Handler) setFileInfoFromStore(
 				logger.Debug("SET_INFO: oplock break on allocation set failed (non-fatal)", "path", openFile.Path, "error", breakErr)
 			}
 		}
+		// Record the requested reservation per-handle so a later QUERY_INFO on
+		// this handle reports a consistent AllocationSize. We do not preallocate;
+		// this only raises the reported allocation, never the file's EndOfFile.
+		// AllocationSize is an 8-byte LE value at offset 0 [MS-FSCC] 2.4.4.
+		// allocReservationFor drops the request for directories.
+		if len(buffer) >= 8 {
+			requested := smbenc.NewReader(buffer[:8]).ReadUint64()
+			openFile.RequestedAllocSize = allocReservationFor(openFile.IsDirectory, requested)
+		}
 		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FileLinkInformation:

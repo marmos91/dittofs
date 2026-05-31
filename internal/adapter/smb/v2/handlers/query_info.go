@@ -661,6 +661,7 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		// querying STANDARD / ALL_INFORMATION after setting delete disposition
 		// surfaces delete_pending = 1.
 		standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, openFile.DeletePending)
+		standardInfo.AllocationSize = effectiveAllocationSize(standardInfo.EndOfFile, openFile.RequestedAllocSize)
 		return EncodeFileStandardInfo(standardInfo), nil
 
 	case types.FileInternalInformation:
@@ -702,13 +703,14 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 				LastAccessTime: access,
 				LastWriteTime:  write,
 				ChangeTime:     change,
-				AllocationSize: calculateAllocationSize(size),
+				AllocationSize: effectiveAllocationSize(size, openFile.RequestedAllocSize),
 				EndOfFile:      size,
 				FileAttributes: FileAttrToSMBAttributesWithName(baseAttr, basenameForHidden(openFile)),
 			}
 			return EncodeFileNetworkOpenInfo(networkInfo), nil
 		}
 		networkInfo := FileAttrToFileNetworkOpenInfoWithName(&file.FileAttr, basenameForHidden(openFile))
+		networkInfo.AllocationSize = effectiveAllocationSize(networkInfo.EndOfFile, openFile.RequestedAllocSize)
 		return EncodeFileNetworkOpenInfo(networkInfo), nil
 
 	case types.FilePositionInformation:
@@ -884,6 +886,7 @@ func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext
 	}
 	basicInfo := FileAttrToFileBasicInfoWithName(attr, basenameForHidden(openFile))
 	standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, openFile.DeletePending)
+	standardInfo.AllocationSize = effectiveAllocationSize(standardInfo.EndOfFile, openFile.RequestedAllocSize)
 	nameBytes := encodeUTF16LE(toSMBPath(openFile.Path))
 
 	// Fixed part: 96 bytes + NameInformation header (4 bytes for length) + name data

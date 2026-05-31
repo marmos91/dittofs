@@ -78,9 +78,49 @@ func isFiletimeSentinel(ft uint64) bool {
 	return ft == filetimeFreeze || ft == filetimeUnfreeze
 }
 
-// calculateAllocationSize returns the size rounded up to the nearest cluster boundary.
+// calculateAllocationSize returns the size rounded up to the nearest cluster
+// boundary. The round-up addition saturates: a size within clusterSize-1 of the
+// uint64 max (e.g. a client-supplied AllocationSize reservation [MS-SMB2]
+// 2.2.13.2.2) would otherwise wrap to a small value, so such inputs clamp to the
+// largest cluster-aligned uint64.
 func calculateAllocationSize(size uint64) uint64 {
+	const maxAligned = (^uint64(0) / clusterSize) * clusterSize
+	if size > maxAligned {
+		return maxAligned
+	}
 	return ((size + clusterSize - 1) / clusterSize) * clusterSize
+}
+
+// effectiveAllocationSize returns the AllocationSize to report for a file,
+// honouring a client-requested initial allocation [MS-SMB2] 2.2.13.2.2. It is
+// the larger of the file's own cluster-aligned size and the cluster-aligned
+// requested reservation, so an empty file opened with a non-zero requested
+// allocation reports a non-zero AllocationSize (smb2.durable-open.alloc-size).
+//
+// DittoFS does not preallocate backing storage; the reservation is tracked
+// per-open-handle (OpenFile.RequestedAllocSize) so the CREATE response and a
+// subsequent QUERY_INFO on the same handle report a consistent value
+// (smb2.create.open asserts CREATE out.alloc_size == QUERY alloc_size).
+// Directories ignore the request — callers pass requested=0 for them
+// (smb2.create.dir-alloc-size).
+func effectiveAllocationSize(size, requested uint64) uint64 {
+	alloc := calculateAllocationSize(size)
+	if reqAlloc := calculateAllocationSize(requested); reqAlloc > alloc {
+		return reqAlloc
+	}
+	return alloc
+}
+
+// allocReservationFor returns the per-handle allocation reservation to record
+// for a file. Directories never honour a client-requested AllocationSize
+// (smb2.create.dir-alloc-size, which sets a 1 GiB request on a directory and
+// asserts the reported allocation stays small), so the request is dropped for
+// them; regular files keep it.
+func allocReservationFor(isDirectory bool, requested uint64) uint64 {
+	if isDirectory {
+		return 0
+	}
+	return requested
 }
 
 // getSMBSize returns the appropriate size for SMB reporting.
