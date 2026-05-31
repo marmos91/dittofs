@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -247,7 +246,7 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 		var fileType int16
 		var mode, uid, gid int32
 		var size int64
-		var atime, mtime, ctime, creationTime time.Time
+		var atime, mtime, ctime, creationTime int64
 		var hidden bool
 		var aclJSON []byte
 		var objectIDRaw []byte
@@ -301,10 +300,10 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 			UID:          uint32(uid),
 			GID:          uint32(gid),
 			Size:         uint64(size),
-			Atime:        atime,
-			Mtime:        mtime,
-			Ctime:        ctime,
-			CreationTime: creationTime,
+			Atime:        pgNanosToTime(atime),
+			Mtime:        pgNanosToTime(mtime),
+			Ctime:        pgNanosToTime(ctime),
+			CreationTime: pgNanosToTime(creationTime),
 			Hidden:       hidden,
 		}
 		if len(objectIDRaw) > 0 {

@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -16,6 +17,94 @@ func runFileOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("Rename", func(t *testing.T) { testRename(t, factory) })
 	t.Run("GetFileNotFound", func(t *testing.T) { testGetFileNotFound(t, factory) })
 	t.Run("GetChildNotFound", func(t *testing.T) { testGetChildNotFound(t, factory) })
+	t.Run("TimestampPrecision", func(t *testing.T) { testTimestampPrecision(t, factory) })
+	t.Run("HighModeBits", func(t *testing.T) { testHighModeBits(t, factory) })
+}
+
+// testTimestampPrecision verifies file timestamps round-trip with full
+// nanosecond (sub-microsecond) fidelity through PutFile/GetFile on every
+// backend. SMB FILETIME carries 100ns granularity; a backend that truncates to
+// microseconds (the postgres TIMESTAMPTZ default) returns a different FILETIME
+// on QUERY than was set, failing WPTS BVT_SMB2Basic_QueryAndSet_FileInfo
+// while memory/badger pass (#882). This is the deterministic CI replacement for
+// that WPTS assertion's precision class (#869).
+func testTimestampPrecision(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	rootHandle := createTestShare(t, store, "/test")
+	handle := createTestFile(t, store, "/test", rootHandle, "ts.txt", 0644)
+	ctx := t.Context()
+
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() failed: %v", err)
+	}
+
+	// 100ns-granular, sub-microsecond components (123456700ns has a 700ns
+	// remainder a microsecond column would truncate). Use UTC so the
+	// comparison is location-independent.
+	mtime := time.Unix(1700000000, 123456700).UTC()
+	atime := time.Unix(1699999999, 987654300).UTC()
+	ctime := time.Unix(1700000001, 100).UTC()
+	creation := time.Unix(1699999998, 999999900).UTC()
+
+	file.Mtime = mtime
+	file.Atime = atime
+	file.Ctime = ctime
+	file.CreationTime = creation
+
+	if err := store.PutFile(ctx, file); err != nil {
+		t.Fatalf("PutFile() failed: %v", err)
+	}
+
+	got, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() after put failed: %v", err)
+	}
+
+	check := func(name string, want, have time.Time) {
+		if !have.Equal(want) {
+			t.Errorf("%s = %d ns, want %d ns (delta %d ns) — backend truncates sub-microsecond precision",
+				name, have.UnixNano(), want.UnixNano(), want.UnixNano()-have.UnixNano())
+		}
+	}
+	check("Mtime", mtime, got.Mtime)
+	check("Atime", atime, got.Atime)
+	check("Ctime", ctime, got.Ctime)
+	check("CreationTime", creation, got.CreationTime)
+}
+
+// testHighModeBits verifies a file mode carrying high bits above the POSIX
+// permission range round-trips through PutFile/GetFile on every backend. The
+// SMB adapter stores DOS attributes (e.g. modeDOSExplicit = 0x10000) in high
+// mode bits; a backend that range-checks mode to <= 0o7777 rejects a SET_INFO
+// FILE_BASIC_INFORMATION with attributes as STATUS_INVALID_PARAMETER, failing
+// the WPTS BVT ChangeNotify tests on postgres while memory/badger pass (#882).
+func testHighModeBits(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	rootHandle := createTestShare(t, store, "/test")
+	handle := createTestFile(t, store, "/test", rootHandle, "mode.txt", 0644)
+	ctx := t.Context()
+
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() failed: %v", err)
+	}
+
+	// 0x10000 | 0o644: modeDOSExplicit set plus POSIX rw-r--r--, the shape
+	// SMBModeFromAttrs produces for a SET_INFO with FileAttributes.
+	const highMode = uint32(0x10000 | 0o644)
+	file.Mode = highMode
+	if err := store.PutFile(ctx, file); err != nil {
+		t.Fatalf("PutFile() with high mode bits 0x%X failed: %v", highMode, err)
+	}
+
+	got, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() after put failed: %v", err)
+	}
+	if got.Mode != highMode {
+		t.Errorf("Mode = 0x%X, want 0x%X — backend dropped high mode bits", got.Mode, highMode)
+	}
 }
 
 // testCreateFile verifies that creating a file results in a retrievable entry with correct attributes.

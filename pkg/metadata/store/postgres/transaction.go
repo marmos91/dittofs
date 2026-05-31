@@ -270,7 +270,8 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	// Try UPDATE first (most common case for existing files)
 	result, err := tx.tx.Exec(ctx, updateQuery,
 		file.Type, file.Mode, file.UID, file.GID, file.Size,
-		file.Atime, file.Mtime, file.Ctime, file.CreationTime,
+		timeToPGNanos(file.Atime), timeToPGNanos(file.Mtime),
+		timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
 		payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 		file.Hidden, aclJSON, objectIDArg,
 		file.ID, file.ShareName,
@@ -303,7 +304,8 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		_, err = tx.tx.Exec(ctx, insertQuery,
 			file.ID, file.ShareName, file.Path,
 			file.Type, file.Mode, file.UID, file.GID, file.Size,
-			file.Atime, file.Mtime, file.Ctime, file.CreationTime,
+			timeToPGNanos(file.Atime), timeToPGNanos(file.Mtime),
+			timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
 			payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 			file.Hidden, aclJSON, objectIDArg,
 		)
@@ -525,7 +527,7 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 		var fileType int16
 		var mode, uid, gid int32
 		var size int64
-		var atime, mtime, ctime, creationTime time.Time
+		var atime, mtime, ctime, creationTime int64
 		var hidden bool
 		var aclJSON []byte
 		var objectIDRaw []byte
@@ -564,10 +566,10 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 			UID:          uint32(uid),
 			GID:          uint32(gid),
 			Size:         uint64(size),
-			Atime:        atime,
-			Mtime:        mtime,
-			Ctime:        ctime,
-			CreationTime: creationTime,
+			Atime:        pgNanosToTime(atime),
+			Mtime:        pgNanosToTime(mtime),
+			Ctime:        pgNanosToTime(ctime),
+			CreationTime: pgNanosToTime(creationTime),
 			Hidden:       hidden,
 		}
 		if len(objectIDRaw) > 0 {
@@ -978,10 +980,10 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 		existingUID  int32
 		existingGID  int32
 		size         int64
-		atime        time.Time
-		mtime        time.Time
-		ctime        time.Time
-		creationTime time.Time
+		atime        int64
+		mtime        int64
+		ctime        int64
+		creationTime int64
 		hidden       bool
 		linkCount    sql.NullInt32
 	)
@@ -1013,10 +1015,10 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 				UID:          uint32(existingUID),
 				GID:          uint32(existingGID),
 				Size:         uint64(size),
-				Atime:        atime,
-				Mtime:        mtime,
-				Ctime:        ctime,
-				CreationTime: creationTime,
+				Atime:        pgNanosToTime(atime),
+				Mtime:        pgNanosToTime(mtime),
+				Ctime:        pgNanosToTime(ctime),
+				CreationTime: pgNanosToTime(creationTime),
 				Hidden:       hidden,
 			},
 		}, nil
@@ -1052,10 +1054,10 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 		int32(uid),                        // uid
 		int32(gid),                        // gid
 		int64(0),                          // size
-		now,                               // atime
-		now,                               // mtime
-		now,                               // ctime
-		now,                               // creation_time
+		timeToPGNanos(now),                // atime
+		timeToPGNanos(now),                // mtime
+		timeToPGNanos(now),                // ctime
+		timeToPGNanos(now),                // creation_time
 		nil,                               // content_id (NULL for directories)
 		nil,                               // link_target (NULL)
 		nil,                               // device_major (NULL)
