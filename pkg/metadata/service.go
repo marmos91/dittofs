@@ -169,10 +169,16 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 		lm = s.newGraceAwareLockManager(graceDuration)
 		lm.SetLockStore(ls)
 		lm.SetShareName(shareName)
-		expectedClients := initLockManagerFromStore(lm, ls, shareName)
-		// Only enter grace if a previous run left locks to reclaim. A fresh
-		// server (no persisted locks) starts in normal operation.
-		if len(expectedClients) > 0 {
+		expectedClients, enterGrace := initLockManagerFromStore(lm, ls, shareName)
+		// Enter grace whenever the prior run MAY have left orphaned client state:
+		// either the previous shutdown was not verified-clean (kill -9 / crash /
+		// power-loss → unclean marker) OR persisted locks were recovered. A
+		// genuinely fresh / cleanly-drained store with no locks skips grace and
+		// starts in normal operation (the fast path). expectedClients may be
+		// empty on an unclean restart with no recovered locks — that is correct:
+		// grace still arms its hard timer backstop and lifts after graceDuration,
+		// never wedging new-state creation.
+		if enterGrace {
 			lm.EnterGracePeriod(expectedClients)
 			if graceCoordinator != nil {
 				graceCoordinator.OnLockGraceStart(expectedClients)
@@ -251,11 +257,45 @@ func (s *MetadataService) RemoveStoreForShare(shareName string) {
 // of the gap. Moving IncrementServerEpoch under s.mu would serialize backend IO
 // inside the service lock for no correctness gain, so the increment stays here.
 //
-// It returns the unique set of client IDs recovered from the persisted locks.
-// The caller uses this set as the grace period's expected-reclaim roster: grace
-// is entered only when it is non-empty (a previous run left locks to reclaim).
-func initLockManagerFromStore(lm *LockManager, ls lock.LockStore, shareName string) []string {
+// It returns the unique set of client IDs recovered from the persisted locks
+// (the grace period's expected-reclaim roster) and a boolean reporting whether
+// grace should be entered for this share.
+//
+// Grace-entry decision (area-4 H7): grace is entered when the previous run MAY
+// have orphaned client state — i.e. the prior shutdown was NOT verified-clean
+// (unclean marker: kill -9 / crash / power-loss, or a fresh store whose marker
+// defaults to false) OR persisted locks were recovered. This replaces the old
+// "enter grace only if persisted locks exist" predicate, which silently skipped
+// grace after a crash that left no recoverable byte-range lock (e.g. a client
+// holding only NFSv4 opens, or a best-effort persist that never landed),
+// letting a conflicting new lock be granted before the prior owner reclaimed.
+//
+// The clean-shutdown marker is read first to make the decision, then
+// immediately set FALSE for the running session: if this process is killed
+// without a graceful Close() (which is the only writer of true), the NEXT boot
+// reads false and conservatively enters grace. The flag is set false as early
+// as possible — before any traffic can be served — so the crash window in which
+// a kill would be misread as clean is effectively zero.
+func initLockManagerFromStore(lm *LockManager, ls lock.LockStore, shareName string) (clients []string, enterGrace bool) {
 	ctx := context.Background()
+
+	// Read the clean-shutdown marker, then immediately clear it for this run.
+	// A read error is treated as unclean (fail-safe): we would rather impose a
+	// grace window than risk granting a stealing lock.
+	clean, err := ls.GetCleanShutdown(ctx)
+	if err != nil {
+		logger.Error("lock recovery: failed to read clean-shutdown marker (treating as unclean)",
+			"share", shareName, "error", err)
+		clean = false
+	}
+	unclean := !clean
+	if err := ls.SetCleanShutdown(ctx, false); err != nil {
+		// Could not arm the unclean marker for this session. Logged but not
+		// fatal: durability of the marker is best-effort, mirroring the lock
+		// persistence contract.
+		logger.Error("lock recovery: failed to clear clean-shutdown marker",
+			"share", shareName, "error", err)
+	}
 
 	epoch, err := ls.IncrementServerEpoch(ctx)
 	if err != nil {
@@ -267,20 +307,20 @@ func initLockManagerFromStore(lm *LockManager, ls lock.LockStore, shareName stri
 	persisted, err := ls.ListLocks(ctx, lock.LockQuery{ShareName: shareName})
 	if err != nil {
 		logger.Error("lock recovery: failed to list persisted locks", "share", shareName, "error", err)
-		return nil
+		// We could not enumerate locks; if the prior shutdown was unclean still
+		// enter grace (empty roster, timer backstop) rather than risk a steal.
+		return nil, unclean
 	}
-	if len(persisted) == 0 {
-		return nil
-	}
-	if err := lm.RestoreLocks(persisted); err != nil {
-		logger.Error("lock recovery: failed to restore persisted locks", "share", shareName, "error", err)
-		return nil
+	if len(persisted) > 0 {
+		if err := lm.RestoreLocks(persisted); err != nil {
+			logger.Error("lock recovery: failed to restore persisted locks", "share", shareName, "error", err)
+			return nil, unclean
+		}
 	}
 
 	// Collect the unique client IDs that held locks before the restart; these
 	// are the clients the grace period waits on for reclaim.
 	seen := make(map[string]struct{}, len(persisted))
-	clients := make([]string, 0, len(persisted))
 	for _, pl := range persisted {
 		if pl.ClientID == "" {
 			continue
@@ -292,9 +332,11 @@ func initLockManagerFromStore(lm *LockManager, ls lock.LockStore, shareName stri
 		clients = append(clients, pl.ClientID)
 	}
 
-	logger.Info("lock recovery: restored persisted locks",
-		"share", shareName, "count", len(persisted), "epoch", epoch, "clients", len(clients))
-	return clients
+	enterGrace = unclean || len(persisted) > 0
+	logger.Info("lock recovery: completed",
+		"share", shareName, "restored_locks", len(persisted), "epoch", epoch,
+		"clients", len(clients), "prior_shutdown_clean", clean, "enter_grace", enterGrace)
+	return clients, enterGrace
 }
 
 // newGraceAwareLockManager builds a lock manager whose grace period sweeps any

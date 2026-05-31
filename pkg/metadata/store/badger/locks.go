@@ -22,6 +22,7 @@ const (
 	prefixLockByOwner  = "lkowner:"  // Index: lkowner:{ownerID}:{lockID}
 	prefixLockByClient = "lkclient:" // Index: lkclient:{clientID}:{lockID}
 	prefixServerEpoch  = "srvepoch"  // Single key for epoch
+	keyCleanShutdown   = "srvclean"  // Single key for clean-shutdown marker
 )
 
 // badgerLockStore implements lock.LockStore using BadgerDB.
@@ -414,6 +415,46 @@ func (s *badgerLockStore) IncrementServerEpoch(ctx context.Context) (uint64, err
 	return newEpoch, err
 }
 
+// GetCleanShutdown reports whether the previous run shut down gracefully.
+// A missing key (fresh store, or a crash before SetCleanShutdown ran) is
+// reported as false (unclean) — the fail-safe default.
+func (s *badgerLockStore) GetCleanShutdown(ctx context.Context) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+
+	var clean bool
+	err := s.db.View(func(txn *badgerdb.Txn) error {
+		item, err := txn.Get([]byte(keyCleanShutdown))
+		if err == badgerdb.ErrKeyNotFound {
+			return nil // absent -> unclean (clean stays false)
+		}
+		if err != nil {
+			return err
+		}
+		return item.Value(func(val []byte) error {
+			clean = len(val) == 1 && val[0] == 1
+			return nil
+		})
+	})
+	return clean, err
+}
+
+// SetCleanShutdown records the clean-shutdown marker durably.
+func (s *badgerLockStore) SetCleanShutdown(ctx context.Context, clean bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	return s.db.Update(func(txn *badgerdb.Txn) error {
+		val := []byte{0}
+		if clean {
+			val = []byte{1}
+		}
+		return txn.Set([]byte(keyCleanShutdown), val)
+	})
+}
+
 // ReclaimLease reclaims an existing lease during grace period.
 // Searches for a persisted lease with matching file handle and lease key.
 func (s *badgerLockStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
@@ -524,6 +565,18 @@ func (s *BadgerMetadataStore) IncrementServerEpoch(ctx context.Context) (uint64,
 	return s.lockStore.IncrementServerEpoch(ctx)
 }
 
+// GetCleanShutdown reports whether the previous run shut down gracefully.
+func (s *BadgerMetadataStore) GetCleanShutdown(ctx context.Context) (bool, error) {
+	s.initLockStore()
+	return s.lockStore.GetCleanShutdown(ctx)
+}
+
+// SetCleanShutdown records the clean-shutdown marker durably.
+func (s *BadgerMetadataStore) SetCleanShutdown(ctx context.Context, clean bool) error {
+	s.initLockStore()
+	return s.lockStore.SetCleanShutdown(ctx, clean)
+}
+
 // ReclaimLease reclaims an existing lease during grace period.
 func (s *BadgerMetadataStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
 	s.initLockStore()
@@ -601,6 +654,22 @@ func (tx *badgerTransaction) IncrementServerEpoch(ctx context.Context) (uint64, 
 	}
 	tx.store.initLockStore()
 	return tx.store.lockStore.IncrementServerEpoch(ctx)
+}
+
+func (tx *badgerTransaction) GetCleanShutdown(ctx context.Context) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	tx.store.initLockStore()
+	return tx.store.lockStore.GetCleanShutdown(ctx)
+}
+
+func (tx *badgerTransaction) SetCleanShutdown(ctx context.Context, clean bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	tx.store.initLockStore()
+	return tx.store.lockStore.SetCleanShutdown(ctx, clean)
 }
 
 func (tx *badgerTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {

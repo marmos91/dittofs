@@ -128,3 +128,56 @@ func TestLockPersistenceConformance(t *testing.T) {
 		return factory(t).(lock.LockStore)
 	})
 }
+
+// TestPostgres_CleanShutdownMarkerDurable pins the area-4 H7 marker on the real
+// database across a close+reopen: a freshly-Reset store defaults to unclean
+// (clean_shutdown column DEFAULT FALSE on the server_epoch singleton); a
+// graceful Close records clean=true and that value SURVIVES reopening a NEW
+// store against the same database (the durable property the in-memory store
+// cannot exercise).
+func TestPostgres_CleanShutdownMarkerDurable(t *testing.T) {
+	if os.Getenv("DITTOFS_TEST_POSTGRES_DSN") == "" {
+		t.Skip("DITTOFS_TEST_POSTGRES_DSN not set, skipping PostgreSQL clean-shutdown durability test")
+	}
+
+	cfg, caps := postgresTestConfig()
+	ctx := context.Background()
+
+	// Reset to a known-empty database, then close (Close records clean=true).
+	seed, err := postgres.NewPostgresMetadataStore(ctx, cfg, caps)
+	if err != nil {
+		t.Fatalf("open seed: %v", err)
+	}
+	if err := seed.Reset(ctx); err != nil {
+		seed.Close()
+		t.Fatalf("Reset: %v", err)
+	}
+	// After Reset the marker must be unclean (fresh singleton, DEFAULT FALSE).
+	clean, err := seed.GetCleanShutdown(ctx)
+	if err != nil {
+		seed.Close()
+		t.Fatalf("GetCleanShutdown (post-reset): %v", err)
+	}
+	if clean {
+		seed.Close()
+		t.Fatalf("post-reset store reported clean=true; the DEFAULT FALSE column must read unclean")
+	}
+	// Graceful Close records clean=true.
+	if err := seed.Close(); err != nil {
+		t.Fatalf("seed Close: %v", err)
+	}
+
+	// Reopen a fresh store against the same DB: the clean marker must persist.
+	store, err := postgres.NewPostgresMetadataStore(ctx, cfg, caps)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	clean, err = store.GetCleanShutdown(ctx)
+	if err != nil {
+		t.Fatalf("GetCleanShutdown (reopen): %v", err)
+	}
+	if !clean {
+		t.Fatalf("graceful Close must durably record clean=true across reopen; got false")
+	}
+}

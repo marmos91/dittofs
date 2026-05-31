@@ -396,6 +396,38 @@ func TestMemoryLockStore_ServerEpoch(t *testing.T) {
 	}
 }
 
+// TestMemoryLockStore_CleanShutdownDefaultsUnclean pins the fail-safe default
+// (area-4 H7): a fresh store that never had SetCleanShutdown(true) written must
+// report false (unclean), so the boot grace decision treats an unknown/absent
+// marker as a crash. The shared lock-persistence conformance suite cannot assert
+// the never-written default for all backends (some factories gracefully Close a
+// seed store, persisting clean=true), so the absent-default property is pinned
+// here per backend.
+func TestMemoryLockStore_CleanShutdownDefaultsUnclean(t *testing.T) {
+	store := NewMemoryMetadataStoreWithDefaults()
+	ctx := context.Background()
+
+	clean, err := store.GetCleanShutdown(ctx)
+	if err != nil {
+		t.Fatalf("GetCleanShutdown failed: %v", err)
+	}
+	if clean {
+		t.Fatalf("fresh store reported clean shutdown=true; absent marker must default to false (unclean / fail-safe)")
+	}
+
+	// A graceful Close records the clean marker.
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	clean, err = store.GetCleanShutdown(ctx)
+	if err != nil {
+		t.Fatalf("GetCleanShutdown after Close failed: %v", err)
+	}
+	if !clean {
+		t.Fatalf("after graceful Close, clean shutdown marker = false; Close must record clean=true")
+	}
+}
+
 func TestMemoryLockStore_PutOverwrites(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()

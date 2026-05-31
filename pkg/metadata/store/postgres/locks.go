@@ -464,6 +464,64 @@ func (s *postgresLockStore) incrementServerEpochTx(ctx context.Context, tx pgx.T
 	return newEpoch, err
 }
 
+// GetCleanShutdown reports whether the previous run shut down gracefully.
+// An absent singleton row (fresh store) is reported as false (unclean) — the
+// fail-safe default.
+func (s *postgresLockStore) GetCleanShutdown(ctx context.Context) (bool, error) {
+	query := `SELECT clean_shutdown FROM server_epoch WHERE id = 1`
+	var clean bool
+	err := s.pool.QueryRow(ctx, query).Scan(&clean)
+	if err == pgx.ErrNoRows {
+		return false, nil // fresh start -> unclean
+	}
+	if err != nil {
+		return false, err
+	}
+	return clean, nil
+}
+
+// SetCleanShutdown records the clean-shutdown marker on the server_epoch
+// singleton row. It upserts so the marker can be written before any
+// IncrementServerEpoch has created the row.
+func (s *postgresLockStore) SetCleanShutdown(ctx context.Context, clean bool) error {
+	query := `
+		INSERT INTO server_epoch (id, epoch, clean_shutdown, updated_at)
+		VALUES (1, 0, $1, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			clean_shutdown = EXCLUDED.clean_shutdown,
+			updated_at = NOW()
+	`
+	_, err := s.pool.Exec(ctx, query, clean)
+	return err
+}
+
+// getCleanShutdownTx reads the marker within an existing transaction.
+func (s *postgresLockStore) getCleanShutdownTx(ctx context.Context, tx pgx.Tx) (bool, error) {
+	query := `SELECT clean_shutdown FROM server_epoch WHERE id = 1`
+	var clean bool
+	err := tx.QueryRow(ctx, query).Scan(&clean)
+	if err == pgx.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return clean, nil
+}
+
+// setCleanShutdownTx writes the marker within an existing transaction.
+func (s *postgresLockStore) setCleanShutdownTx(ctx context.Context, tx pgx.Tx, clean bool) error {
+	query := `
+		INSERT INTO server_epoch (id, epoch, clean_shutdown, updated_at)
+		VALUES (1, 0, $1, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			clean_shutdown = EXCLUDED.clean_shutdown,
+			updated_at = NOW()
+	`
+	_, err := tx.Exec(ctx, query, clean)
+	return err
+}
+
 // ReclaimLease reclaims an existing lease during grace period.
 // Searches for a persisted lease with matching file handle and lease key.
 func (s *postgresLockStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, _ string) (*lock.UnifiedLock, error) {
@@ -599,6 +657,18 @@ func (s *PostgresMetadataStore) IncrementServerEpoch(ctx context.Context) (uint6
 	return s.lockStore.IncrementServerEpoch(ctx)
 }
 
+// GetCleanShutdown reports whether the previous run shut down gracefully.
+func (s *PostgresMetadataStore) GetCleanShutdown(ctx context.Context) (bool, error) {
+	s.initLockStore()
+	return s.lockStore.GetCleanShutdown(ctx)
+}
+
+// SetCleanShutdown records the clean-shutdown marker durably.
+func (s *PostgresMetadataStore) SetCleanShutdown(ctx context.Context, clean bool) error {
+	s.initLockStore()
+	return s.lockStore.SetCleanShutdown(ctx, clean)
+}
+
 // ReclaimLease reclaims an existing lease during grace period.
 func (s *PostgresMetadataStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
 	s.initLockStore()
@@ -650,6 +720,16 @@ func (ptx *postgresTransaction) GetServerEpoch(ctx context.Context) (uint64, err
 func (ptx *postgresTransaction) IncrementServerEpoch(ctx context.Context) (uint64, error) {
 	ptx.store.initLockStore()
 	return ptx.store.lockStore.incrementServerEpochTx(ctx, ptx.tx)
+}
+
+func (ptx *postgresTransaction) GetCleanShutdown(ctx context.Context) (bool, error) {
+	ptx.store.initLockStore()
+	return ptx.store.lockStore.getCleanShutdownTx(ctx, ptx.tx)
+}
+
+func (ptx *postgresTransaction) SetCleanShutdown(ctx context.Context, clean bool) error {
+	ptx.store.initLockStore()
+	return ptx.store.lockStore.setCleanShutdownTx(ctx, ptx.tx, clean)
 }
 
 func (ptx *postgresTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {

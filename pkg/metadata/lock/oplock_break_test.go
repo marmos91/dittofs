@@ -123,6 +123,14 @@ func (s *mockLockStore) IncrementServerEpoch(ctx context.Context) (uint64, error
 	return 2, nil
 }
 
+func (s *mockLockStore) GetCleanShutdown(_ context.Context) (bool, error) {
+	return false, nil
+}
+
+func (s *mockLockStore) SetCleanShutdown(_ context.Context, _ bool) error {
+	return nil
+}
+
 func (s *mockLockStore) ReclaimLease(_ context.Context, _ FileHandle, _ [16]byte, _ string) (*UnifiedLock, error) {
 	// Mock implementation returns not found - reclaim not supported in mock
 	return nil, nil

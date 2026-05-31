@@ -69,6 +69,80 @@ func RunLockPersistenceSuite(t *testing.T, factory LockStoreFactory) {
 	t.Run("MaxUint64OffsetLength", func(t *testing.T) {
 		testLock_MaxUint64OffsetLength(t, factory)
 	})
+
+	t.Run("CleanShutdownMarker", func(t *testing.T) {
+		testLock_CleanShutdownMarker(t, factory)
+	})
+}
+
+// testLock_CleanShutdownMarker pins the clean-shutdown marker round-trip across
+// every backend (area-4 H7). The marker drives the grace-entry decision on
+// boot, so a backend that fails to round-trip it would either never enter grace
+// after a crash (lock-steal window) or always enter grace (90s wedge on every
+// restart). The contract this suite enforces on all three backends:
+//
+//   - SetCleanShutdown(false) then GetCleanShutdown reports false (the boot path
+//     clears the marker for the running session immediately after reading it;
+//     this also establishes the fail-safe unclean baseline a fresh store has).
+//   - SetCleanShutdown(true) then GetCleanShutdown reports true (graceful Close).
+//   - Toggling back to false reads false again.
+//   - The marker is INDEPENDENT of the server epoch: bumping the epoch must not
+//     flip it (a real divergence risk on backends — like postgres — that store
+//     both on one singleton row).
+//
+// The "absent marker defaults to false" property is asserted by the per-backend
+// unit tests rather than here, because some backend conformance factories open,
+// reset, then gracefully Close() a seed store before handing back a reopened
+// one — which legitimately leaves a persisted clean=true marker, not an absent
+// one.
+func testLock_CleanShutdownMarker(t *testing.T, factory LockStoreFactory) {
+	store := factory(t)
+	ctx := context.Background()
+
+	// Boot clears the marker for the running session -> false (unclean baseline).
+	if err := store.SetCleanShutdown(ctx, false); err != nil {
+		t.Fatalf("SetCleanShutdown(false): %v", err)
+	}
+	got, err := store.GetCleanShutdown(ctx)
+	if err != nil {
+		t.Fatalf("GetCleanShutdown (after false): %v", err)
+	}
+	if got {
+		t.Fatalf("after SetCleanShutdown(false), GetCleanShutdown = true; unclean marker not persisted")
+	}
+
+	// Mark clean (graceful Close) -> true.
+	if err := store.SetCleanShutdown(ctx, true); err != nil {
+		t.Fatalf("SetCleanShutdown(true): %v", err)
+	}
+	got, err = store.GetCleanShutdown(ctx)
+	if err != nil {
+		t.Fatalf("GetCleanShutdown (after true): %v", err)
+	}
+	if !got {
+		t.Fatalf("after SetCleanShutdown(true), GetCleanShutdown = false; clean marker not persisted")
+	}
+
+	// Toggle back -> false.
+	if err := store.SetCleanShutdown(ctx, false); err != nil {
+		t.Fatalf("SetCleanShutdown(false) #2: %v", err)
+	}
+
+	// Marker must be independent of the server epoch on backends that share a
+	// singleton row (postgres): bumping the epoch must not flip the marker.
+	if err := store.SetCleanShutdown(ctx, true); err != nil {
+		t.Fatalf("SetCleanShutdown(true) pre-epoch: %v", err)
+	}
+	if _, err := store.IncrementServerEpoch(ctx); err != nil {
+		t.Fatalf("IncrementServerEpoch: %v", err)
+	}
+	got, err = store.GetCleanShutdown(ctx)
+	if err != nil {
+		t.Fatalf("GetCleanShutdown (after epoch bump): %v", err)
+	}
+	if !got {
+		t.Fatalf("IncrementServerEpoch cleared the clean-shutdown marker; marker and epoch must be independent")
+	}
 }
 
 // testLock_MaxUint64OffsetLength pins R3-4: NFSv4 expresses an unbounded range

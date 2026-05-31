@@ -10,8 +10,9 @@ import (
 
 // mockLockStore implements lock.LockStore for testing UnifiedLockView.
 type mockLockStore struct {
-	locks []*lock.PersistedLock
-	epoch uint64
+	locks         []*lock.PersistedLock
+	epoch         uint64
+	cleanShutdown bool
 }
 
 func newMockLockStore() *mockLockStore {
@@ -97,6 +98,15 @@ func (m *mockLockStore) GetServerEpoch(_ context.Context) (uint64, error) {
 func (m *mockLockStore) IncrementServerEpoch(_ context.Context) (uint64, error) {
 	m.epoch++
 	return m.epoch, nil
+}
+
+func (m *mockLockStore) GetCleanShutdown(_ context.Context) (bool, error) {
+	return m.cleanShutdown, nil
+}
+
+func (m *mockLockStore) SetCleanShutdown(_ context.Context, clean bool) error {
+	m.cleanShutdown = clean
+	return nil
 }
 
 func (m *mockLockStore) ReclaimLease(_ context.Context, _ lock.FileHandle, _ [16]byte, _ string) (*lock.UnifiedLock, error) {

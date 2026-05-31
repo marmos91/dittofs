@@ -565,6 +565,15 @@ func (s *BadgerMetadataStore) Close() error {
 		})
 		s.gcWG.Wait()
 
+		// Record a clean-shutdown marker LAST, after the GC goroutine has
+		// drained and before closing the DB, so the lock-recovery boot path can
+		// distinguish a graceful drain from a kill -9 / crash. Close is the
+		// single graceful teardown site for the store. A persist failure is
+		// intentionally swallowed: leaving the marker unwritten makes the next
+		// boot conservatively treat the start as unclean and enter grace, which
+		// is the fail-safe direction.
+		_ = s.SetCleanShutdown(context.Background(), true)
+
 		if err := s.db.Close(); err != nil {
 			s.closeErr = fmt.Errorf("failed to close BadgerDB: %w", err)
 		}
