@@ -64,8 +64,11 @@ func (h *Handler) handleClose(ctx *types.CompoundContext, reader io.Reader) *typ
 		"client", ctx.ClientAddr)
 
 	// Delegate to StateManager for state cleanup
-	closedStateid, stateErr := h.StateManager.CloseFile(stateid, closeSeqid)
+	closeResult, stateErr := h.StateManager.CloseFile(stateid, closeSeqid)
 	if stateErr != nil {
+		if replay := asReplay(types.OP_CLOSE, stateErr); replay != nil {
+			return replay
+		}
 		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 CLOSE failed",
 			"error", stateErr,
@@ -76,6 +79,19 @@ func (h *Handler) handleClose(ctx *types.CompoundContext, reader io.Reader) *typ
 			OpCode: types.OP_CLOSE,
 			Data:   encodeStatusOnly(nfsStatus),
 		}
+	}
+
+	// Encode and cache the CLOSE reply BEFORE the (potentially slow) metadata
+	// flush. CloseFile has already advanced the open-owner seqid and installed
+	// the closed-owner entry, so a retransmitted CLOSE arriving while the flush
+	// below is still running would be classified as a replay; caching here (not
+	// after the flush) ensures it replays the CLOSE bytes rather than the
+	// owner's previous LastResult (e.g. OPEN_CONFIRM).
+	var buf bytes.Buffer
+	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
+	types.EncodeStateid4(&buf, &closeResult.Stateid)
+	if closeResult.OwnerData != nil {
+		h.StateManager.CacheOpenOwnerResult(closeResult.OwnerClientID, closeResult.OwnerData, types.NFS4_OK, buf.Bytes())
 	}
 
 	// Flush pending metadata writes to persist file size and other changes,
@@ -99,10 +115,6 @@ func (h *Handler) handleClose(ctx *types.CompoundContext, reader io.Reader) *typ
 	}
 
 	// NOTE: CLOSE does NOT clear ctx.CurrentFH per RFC 7530
-
-	var buf bytes.Buffer
-	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
-	types.EncodeStateid4(&buf, closedStateid)
 
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,

@@ -237,15 +237,9 @@ func TestSequence_ReplayWithCache(t *testing.T) {
 		t.Fatalf("first request status = %d, want NFS4_OK", decoded1.Status)
 	}
 
-	// Second request: same slot+seqid (replay)
-	seqArgs2 := encodeSequenceArgs(sessionID, 0, 1, 0, true)
-	ops2 := []compoundOp{
-		{opCode: types.OP_SEQUENCE, data: seqArgs2},
-		{opCode: types.OP_PUTROOTFH},
-	}
-	data2 := buildCompoundArgsWithOps([]byte("replay2"), 1, ops2)
-
-	resp2, err := h.ProcessCompound(ctx, data2)
+	// Second request: a genuine retransmit is byte-identical (same tag, slot,
+	// seqid, and ops), so reuse the exact same request bytes.
+	resp2, err := h.ProcessCompound(ctx, data)
 	if err != nil {
 		t.Fatalf("ProcessCompound #2 error: %v", err)
 	}
@@ -278,14 +272,8 @@ func TestSequence_ReplayWithoutCache(t *testing.T) {
 		t.Fatalf("first request status = %d, want NFS4_OK", decoded1.Status)
 	}
 
-	// Second request: same slot+seqid (retry of uncached)
-	seqArgs2 := encodeSequenceArgs(sessionID, 0, 1, 0, false)
-	ops2 := []compoundOp{
-		{opCode: types.OP_SEQUENCE, data: seqArgs2},
-	}
-	data2 := buildCompoundArgsWithOps([]byte("uncached2"), 1, ops2)
-
-	resp2, err := h.ProcessCompound(ctx, data2)
+	// Second request: byte-identical retransmit of the same (uncached) request.
+	resp2, err := h.ProcessCompound(ctx, data)
 	if err != nil {
 		t.Fatalf("ProcessCompound #2 error: %v", err)
 	}
@@ -295,6 +283,59 @@ func TestSequence_ReplayWithoutCache(t *testing.T) {
 	if decoded2.Status != types.NFS4ERR_RETRY_UNCACHED_REP {
 		t.Errorf("uncached retry status = %d, want NFS4ERR_RETRY_UNCACHED_REP (%d)",
 			decoded2.Status, types.NFS4ERR_RETRY_UNCACHED_REP)
+	}
+}
+
+// TestSequence_FalseRetry_DifferentOps verifies H6: a slot+seqid reused with a
+// DIFFERENT request must be rejected with NFS4ERR_SEQ_FALSE_RETRY instead of
+// silently replaying the stale cached reply (RFC 8881 Section 2.10.6.1.3).
+func TestSequence_FalseRetry_DifferentOps(t *testing.T) {
+	h, sessionID := createTestSession(t)
+	ctx := newTestCompoundContext()
+
+	// First request on slot 0 seqid 1: SEQUENCE + PUTROOTFH, cached.
+	seqArgs := encodeSequenceArgs(sessionID, 0, 1, 0, true)
+	opsA := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: seqArgs},
+		{opCode: types.OP_PUTROOTFH},
+	}
+	dataA := buildCompoundArgsWithOps([]byte("fr"), 1, opsA)
+
+	respA, err := h.ProcessCompound(ctx, dataA)
+	if err != nil {
+		t.Fatalf("ProcessCompound A error: %v", err)
+	}
+	decodedA, _ := decodeSequenceRes(t, respA)
+	if decodedA.Status != types.NFS4_OK {
+		t.Fatalf("request A status = %d, want NFS4_OK", decodedA.Status)
+	}
+
+	// Retry slot 0 seqid 1 with a DIFFERENT op-list (drop PUTROOTFH). Same
+	// session/slot/seqid but a different request body.
+	seqArgsB := encodeSequenceArgs(sessionID, 0, 1, 0, true)
+	opsB := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: seqArgsB},
+	}
+	dataB := buildCompoundArgsWithOps([]byte("fr"), 1, opsB)
+
+	respB, err := h.ProcessCompound(ctx, dataB)
+	if err != nil {
+		t.Fatalf("ProcessCompound B error: %v", err)
+	}
+	decodedB, _ := decodeSequenceRes(t, respB)
+	if decodedB.Status != types.NFS4ERR_SEQ_FALSE_RETRY {
+		t.Errorf("false retry status = %d, want NFS4ERR_SEQ_FALSE_RETRY (%d)",
+			decodedB.Status, types.NFS4ERR_SEQ_FALSE_RETRY)
+	}
+
+	// A byte-identical (true) retry of A must still replay the cached reply.
+	respC, err := h.ProcessCompound(ctx, dataA)
+	if err != nil {
+		t.Fatalf("ProcessCompound C error: %v", err)
+	}
+	if !bytes.Equal(respA, respC) {
+		t.Errorf("identical retry did not replay cached reply (len %d vs %d)",
+			len(respA), len(respC))
 	}
 }
 

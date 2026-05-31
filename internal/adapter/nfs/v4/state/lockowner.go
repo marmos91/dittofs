@@ -105,6 +105,12 @@ type LockResult struct {
 	// Denied is the conflict information (set on NFS4ERR_DENIED).
 	// Nil on success.
 	Denied *LOCK4denied
+
+	// OwnerClientID and OwnerData identify the lock-owner whose seqid this op
+	// advanced. The handler uses them to cache the encoded reply for replay
+	// detection (CacheLockOwnerResult) on both success and DENIED outcomes.
+	OwnerClientID uint64
+	OwnerData     []byte
 }
 
 // LOCK4denied describes a conflicting lock for NFS4ERR_DENIED responses.

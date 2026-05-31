@@ -107,10 +107,13 @@ func (h *Handler) handleOpenDowngrade(ctx *types.CompoundContext, reader io.Read
 		"client", ctx.ClientAddr)
 
 	// Delegate to StateManager
-	resultStateid, stateErr := h.StateManager.DowngradeOpen(
+	downgradeResult, stateErr := h.StateManager.DowngradeOpen(
 		stateid, downgradeSeqid, newShareAccess, newShareDeny,
 	)
 	if stateErr != nil {
+		if replay := asReplay(types.OP_OPEN_DOWNGRADE, stateErr); replay != nil {
+			return replay
+		}
 		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 OPEN_DOWNGRADE failed",
 			"error", stateErr,
@@ -125,7 +128,12 @@ func (h *Handler) handleOpenDowngrade(ctx *types.CompoundContext, reader io.Read
 
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
-	types.EncodeStateid4(&buf, resultStateid)
+	types.EncodeStateid4(&buf, &downgradeResult.Stateid)
+
+	// Cache the encoded reply for replay of a retransmitted OPEN_DOWNGRADE.
+	if downgradeResult.OwnerData != nil {
+		h.StateManager.CacheOpenOwnerResult(downgradeResult.OwnerClientID, downgradeResult.OwnerData, types.NFS4_OK, buf.Bytes())
+	}
 
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,

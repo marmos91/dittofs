@@ -1,6 +1,8 @@
 package state
 
 import (
+	"bytes"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -603,7 +605,7 @@ func TestOpenFile_SeqidReplay(t *testing.T) {
 	}
 
 	// Cache a result
-	sm.CacheOpenResult(0, []byte("owner1"), types.NFS4_OK, []byte("cached-data"))
+	sm.CacheOpenOwnerResult(0, []byte("owner1"), types.NFS4_OK, []byte("cached-data"))
 
 	// Replay with same seqid=1
 	replay, err := sm.OpenFile(0, []byte("owner1"), 1,
@@ -671,8 +673,8 @@ func TestConfirmOpen_Success(t *testing.T) {
 	}
 
 	// Seqid should be incremented
-	if confirmed.Seqid != result.Stateid.Seqid+1 {
-		t.Errorf("confirmed seqid = %d, want %d", confirmed.Seqid, result.Stateid.Seqid+1)
+	if confirmed.Stateid.Seqid != result.Stateid.Seqid+1 {
+		t.Errorf("confirmed seqid = %d, want %d", confirmed.Stateid.Seqid, result.Stateid.Seqid+1)
 	}
 }
 
@@ -717,22 +719,22 @@ func TestCloseFile_Success(t *testing.T) {
 	}
 
 	// Confirm
-	confirmedStateid, err := sm.ConfirmOpen(&result.Stateid, 2)
+	confirmed, err := sm.ConfirmOpen(&result.Stateid, 2)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
 
 	// Close
-	closedStateid, err := sm.CloseFile(confirmedStateid, 3)
+	closed, err := sm.CloseFile(&confirmed.Stateid, 3)
 	if err != nil {
 		t.Fatalf("CloseFile: %v", err)
 	}
 
 	// Should return zeroed stateid
-	if closedStateid.Seqid != 0 {
-		t.Errorf("closed seqid = %d, want 0", closedStateid.Seqid)
+	if closed.Stateid.Seqid != 0 {
+		t.Errorf("closed seqid = %d, want 0", closed.Stateid.Seqid)
 	}
-	for i, b := range closedStateid.Other {
+	for i, b := range closed.Stateid.Other {
 		if b != 0 {
 			t.Errorf("closed other[%d] = %d, want 0", i, b)
 		}
@@ -749,12 +751,12 @@ func TestCloseFile_SpecialStateid(t *testing.T) {
 
 	// Close with anonymous (all-zeros) stateid
 	zeroed := &types.Stateid4{Seqid: 0}
-	closedStateid, err := sm.CloseFile(zeroed, 1)
+	closed, err := sm.CloseFile(zeroed, 1)
 	if err != nil {
 		t.Fatalf("CloseFile with special stateid: %v", err)
 	}
-	if closedStateid.Seqid != 0 {
-		t.Errorf("closed seqid = %d, want 0", closedStateid.Seqid)
+	if closed.Stateid.Seqid != 0 {
+		t.Errorf("closed seqid = %d, want 0", closed.Stateid.Seqid)
 	}
 }
 
@@ -775,19 +777,39 @@ func TestCloseFile_CleansUpOwner(t *testing.T) {
 	}
 
 	// Close
-	_, err = sm.CloseFile(confirmed, 3)
+	closed, err := sm.CloseFile(&confirmed.Stateid, 3)
 	if err != nil {
 		t.Fatalf("CloseFile: %v", err)
 	}
+	// Cache the CLOSE reply as the handler would.
+	sm.CacheOpenOwnerResult(closed.OwnerClientID, closed.OwnerData, types.NFS4_OK, []byte("close-reply"))
 
-	// Owner should be removed (no more open states)
+	// After the last close the open-owner is removed from the LIVE owner table
+	// so a subsequent OPEN by the same name is treated as brand-new (and not
+	// rejected/replayed against this now-stale seqid). The owner object is still
+	// reachable via closedOwnerByOther so a retransmitted CLOSE can replay its
+	// cached reply (RFC 7530 §9.1.7); that entry is reaped on lease expiry.
 	sm.mu.RLock()
 	ownerKey := makeOwnerKey(0, []byte("owner1"))
-	_, ownerExists := sm.openOwners[ownerKey]
+	_, liveExists := sm.openOwners[ownerKey]
+	_, retainedExists := sm.closedOwnerByOther[confirmed.Stateid.Other]
 	sm.mu.RUnlock()
 
-	if ownerExists {
-		t.Error("owner should be removed when last open state is closed")
+	if liveExists {
+		t.Error("owner should be removed from the live table after last close")
+	}
+	if !retainedExists {
+		t.Error("owner should be retained in closedOwnerByOther for CLOSE replay")
+	}
+
+	// A retransmitted CLOSE at the same seqid must replay the cached reply.
+	_, replayErr := sm.CloseFile(&confirmed.Stateid, 3)
+	var re *ReplayError
+	if !errors.As(replayErr, &re) {
+		t.Fatalf("retransmitted CLOSE should replay, got %T: %v", replayErr, replayErr)
+	}
+	if !bytes.Equal(re.Data, []byte("close-reply")) {
+		t.Errorf("replayed CLOSE data = %x, want cached reply", re.Data)
 	}
 }
 
@@ -833,7 +855,7 @@ func TestDowngradeOpen_Success(t *testing.T) {
 	}
 
 	// Downgrade to READ only
-	downgraded, err := sm.DowngradeOpen(confirmed, 3,
+	downgraded, err := sm.DowngradeOpen(&confirmed.Stateid, 3,
 		types.OPEN4_SHARE_ACCESS_READ,
 		types.OPEN4_SHARE_DENY_NONE,
 	)
@@ -842,8 +864,8 @@ func TestDowngradeOpen_Success(t *testing.T) {
 	}
 
 	// Seqid should be incremented
-	if downgraded.Seqid != confirmed.Seqid+1 {
-		t.Errorf("downgraded seqid = %d, want %d", downgraded.Seqid, confirmed.Seqid+1)
+	if downgraded.Stateid.Seqid != confirmed.Stateid.Seqid+1 {
+		t.Errorf("downgraded seqid = %d, want %d", downgraded.Stateid.Seqid, confirmed.Stateid.Seqid+1)
 	}
 
 	// Verify share_access was updated
@@ -875,7 +897,7 @@ func TestDowngradeOpen_CannotAddBits(t *testing.T) {
 	}
 
 	// Try to "downgrade" to BOTH (adds WRITE bit) - should fail
-	_, err = sm.DowngradeOpen(confirmed, 3,
+	_, err = sm.DowngradeOpen(&confirmed.Stateid, 3,
 		types.OPEN4_SHARE_ACCESS_BOTH,
 		types.OPEN4_SHARE_DENY_NONE,
 	)
@@ -913,7 +935,7 @@ func TestDowngradeOpen_ZeroAccess(t *testing.T) {
 	}
 
 	// Downgrade to zero access - should fail
-	_, err = sm.DowngradeOpen(confirmed, 3, 0, 0)
+	_, err = sm.DowngradeOpen(&confirmed.Stateid, 3, 0, 0)
 	if err == nil {
 		t.Fatal("DowngradeOpen should fail with zero share_access")
 	}
@@ -1051,10 +1073,11 @@ func TestFullLifecycle_OpenConfirmClose(t *testing.T) {
 	}
 
 	// OPEN_CONFIRM (seqid=2)
-	confirmedStateid, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+	confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
+	confirmedStateid := &confirmed.Stateid
 
 	// Validate the confirmed stateid
 	openState, err := sm.ValidateStateid(confirmedStateid, []byte("file-handle-test"), StateidOpRead)
@@ -1069,14 +1092,14 @@ func TestFullLifecycle_OpenConfirmClose(t *testing.T) {
 	}
 
 	// CLOSE (seqid=3)
-	closedStateid, err := sm.CloseFile(confirmedStateid, 3)
+	closed, err := sm.CloseFile(confirmedStateid, 3)
 	if err != nil {
 		t.Fatalf("CloseFile: %v", err)
 	}
 
 	// Verify closed
-	if closedStateid.Seqid != 0 {
-		t.Errorf("closed seqid = %d, want 0", closedStateid.Seqid)
+	if closed.Stateid.Seqid != 0 {
+		t.Errorf("closed seqid = %d, want 0", closed.Stateid.Seqid)
 	}
 
 	// State should be gone
@@ -1105,10 +1128,11 @@ func TestFreeStateid(t *testing.T) {
 		}
 
 		// Confirm open
-		confirmedStateid, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+		confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2)
 		if err != nil {
 			t.Fatalf("ConfirmOpen: %v", err)
 		}
+		confirmedStateid := &confirmed.Stateid
 
 		// Create lock state
 		lockResult, err := sm.LockNew(
@@ -1178,10 +1202,11 @@ func TestFreeStateid(t *testing.T) {
 			t.Fatalf("OpenFile: %v", err)
 		}
 
-		confirmedStateid, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+		confirmed, err := sm.ConfirmOpen(&openResult.Stateid, 2)
 		if err != nil {
 			t.Fatalf("ConfirmOpen: %v", err)
 		}
+		confirmedStateid := &confirmed.Stateid
 
 		// Create a lock
 		_, err = sm.LockNew(

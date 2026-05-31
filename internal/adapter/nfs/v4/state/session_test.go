@@ -186,7 +186,7 @@ func TestNewSession_ForeChannelSlotTableWorks(t *testing.T) {
 	st := sess.ForeChannelSlots
 
 	// First request: slot 0, seqID 1
-	result, _, err := st.ValidateSequence(0, 1)
+	result, _, err := st.ValidateSequence(0, 1, nil)
 	if err != nil {
 		t.Fatalf("ValidateSequence(0, 1) error = %v", err)
 	}
@@ -195,10 +195,10 @@ func TestNewSession_ForeChannelSlotTableWorks(t *testing.T) {
 	}
 
 	// ValidateSequence atomically marks slot in-use; complete with cached reply
-	st.CompleteSlotRequest(0, 1, true, []byte("test-reply"))
+	st.CompleteSlotRequest(0, 1, true, []byte("test-reply"), nil)
 
 	// Retry: same seqID should return SeqRetry with cached reply
-	result, slot, err := st.ValidateSequence(0, 1)
+	result, slot, err := st.ValidateSequence(0, 1, nil)
 	if err != nil {
 		t.Fatalf("ValidateSequence(0, 1) retry error = %v", err)
 	}
@@ -210,7 +210,7 @@ func TestNewSession_ForeChannelSlotTableWorks(t *testing.T) {
 	}
 
 	// Next request: seqID 2
-	result, _, err = st.ValidateSequence(0, 2)
+	result, _, err = st.ValidateSequence(0, 2, nil)
 	if err != nil {
 		t.Fatalf("ValidateSequence(0, 2) error = %v", err)
 	}

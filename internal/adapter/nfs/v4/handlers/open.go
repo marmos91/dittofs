@@ -501,7 +501,7 @@ func (h *Handler) encodeOpenResult(
 	state.EncodeDelegation(&buf, deleg)
 
 	// Cache the result for replay detection
-	h.StateManager.CacheOpenResult(clientID, ownerData, types.NFS4_OK, buf.Bytes())
+	h.StateManager.CacheOpenOwnerResult(clientID, ownerData, types.NFS4_OK, buf.Bytes())
 
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,
@@ -550,8 +550,11 @@ func (h *Handler) handleOpenConfirm(ctx *types.CompoundContext, reader io.Reader
 		"client", ctx.ClientAddr)
 
 	// Delegate to StateManager
-	resultStateid, stateErr := h.StateManager.ConfirmOpen(stateid, confirmSeqid)
+	confirmResult, stateErr := h.StateManager.ConfirmOpen(stateid, confirmSeqid)
 	if stateErr != nil {
+		if replay := asReplay(types.OP_OPEN_CONFIRM, stateErr); replay != nil {
+			return replay
+		}
 		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 OPEN_CONFIRM failed",
 			"error", stateErr,
@@ -566,7 +569,12 @@ func (h *Handler) handleOpenConfirm(ctx *types.CompoundContext, reader io.Reader
 
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
-	types.EncodeStateid4(&buf, resultStateid)
+	types.EncodeStateid4(&buf, &confirmResult.Stateid)
+
+	// Cache the encoded reply for replay of a retransmitted OPEN_CONFIRM.
+	if confirmResult.OwnerData != nil {
+		h.StateManager.CacheOpenOwnerResult(confirmResult.OwnerClientID, confirmResult.OwnerData, types.NFS4_OK, buf.Bytes())
+	}
 
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,

@@ -213,10 +213,11 @@ func TestImplicitRenewal_ViaValidateStateid(t *testing.T) {
 	}
 
 	// Confirm the open
-	confirmedStateid, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+	confirmedRes, err := sm.ConfirmOpen(&openResult.Stateid, 2)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
+	confirmedStateid := &confirmedRes.Stateid
 
 	// Record the lease LastRenew before validation
 	record := sm.GetClient(result.ClientID)
@@ -270,10 +271,11 @@ func TestLeaseExpired_ReturnsError(t *testing.T) {
 	}
 
 	// Confirm the open
-	confirmedStateid, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+	confirmedRes, err := sm.ConfirmOpen(&openResult.Stateid, 2)
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
+	confirmedStateid := &confirmedRes.Stateid
 
 	// Stop the lease timer to prevent cleanup callback from removing state
 	// (we want to test the ValidateStateid check, not the cleanup)

@@ -129,6 +129,12 @@ type CompoundContext struct {
 	// at accept() time and threaded through dispatch. Used by
 	// BIND_CONN_TO_SESSION and connection draining checks.
 	ConnectionID uint64
+
+	// RequestDigest is a fingerprint of the full COMPOUND request body,
+	// computed once in ProcessCompound. The v4.1 SEQUENCE path uses it as the
+	// slot request fingerprint to detect false retries (RFC 8881
+	// Section 2.10.6.1.3 -- a slot+seqid reused for a different request).
+	RequestDigest []byte
 }
 
 // V4ClientState holds NFSv4 client state associated with a connection.
@@ -306,6 +312,11 @@ type V41RequestContext struct {
 
 	// CacheThis indicates whether the server should cache the reply.
 	CacheThis bool
+
+	// RequestDigest is the fingerprint of the COMPOUND request recorded with
+	// the slot on completion, so a later retry can be checked for a false retry
+	// (RFC 8881 Section 2.10.6.1.3).
+	RequestDigest []byte
 }
 
 // String returns a human-readable representation of the V41RequestContext.
