@@ -211,69 +211,84 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 			return err
 		}
 
-		// Remove all file metadata belonging to this share. The store.go:161
-		// contract is "removes a share and all its metadata"; dropping only
-		// the share key would orphan every file/parent/linkcount/child/
-		// objectID entry. Mirror DeleteFile's per-file key cleanup. Collect
-		// the matching files first, then mutate, so we never delete keys out
-		// from under the active iterator.
-		type doomed struct {
-			id       uuid.UUID
-			objectID metadata.ContentHash
-			isDir    bool
-			size     uint64
-			isReg    bool
-		}
-		var victims []doomed
-
-		opts := badgerdb.DefaultIteratorOptions
-		opts.PrefetchValues = true
-		it := txn.NewIterator(opts)
-		filePrefix := []byte(prefixFile)
-		for it.Seek(filePrefix); it.ValidForPrefix(filePrefix); it.Next() {
-			item := it.Item()
-			val, vErr := item.ValueCopy(nil)
-			if vErr != nil {
-				it.Close()
-				return fmt.Errorf("badger DeleteShare: copy file value: %w", vErr)
-			}
-			file, decErr := decodeFile(val)
-			if decErr != nil {
-				// Skip undecodable rows rather than wedge the whole delete;
-				// they cannot be attributed to this share anyway.
-				continue
-			}
-			if file.ShareName != shareName {
-				continue
-			}
-			victims = append(victims, doomed{
-				id:       file.ID,
-				objectID: file.ObjectID,
-				isDir:    file.Type == metadata.FileTypeDirectory,
-				size:     file.Size,
-				isReg:    file.Type == metadata.FileTypeRegular,
-			})
-		}
-		it.Close()
-
-		for _, v := range victims {
-			if delErr := deleteFileKeys(txn, v.id, v.objectID); delErr != nil {
-				return delErr
-			}
-			// Directories own c:<uuid>:<name> child entries; prefix-scan and
-			// delete them so no dangling mapping survives the share.
-			if v.isDir {
-				if delErr := deleteChildEntries(txn, v.id); delErr != nil {
-					return delErr
-				}
-			}
-			if v.isReg && v.size > 0 {
-				s.usedBytes.Add(-int64(v.size))
-			}
+		if err := s.deleteShareFiles(txn, shareName); err != nil {
+			return err
 		}
 
 		return txn.Delete(keyShare(shareName))
 	})
+}
+
+// deleteShareFiles removes every file inode and its dependent keys (parent,
+// link-count, child-map, objectID index) for a share, decrementing usedBytes
+// for regular files. Shared by the pool-path (BadgerMetadataStore.DeleteShare)
+// and the transaction-path (badgerTransaction.DeleteShare) so both honor the
+// store.go:161 contract ("removes a share and all its metadata") identically;
+// dropping only the share key would orphan every file/parent/linkcount/child/
+// objectID entry. Files are collected first, then mutated, so keys are never
+// deleted out from under the active iterator.
+//
+// usedBytes is adjusted inline; like PutFile/DeleteFile this shares the known
+// tx-retry double-count class (a conflict/serialization retry re-runs the
+// enclosing Update and re-applies the delta), tracked for the
+// metadata-tx-integrity fix PR. The counter is statfs-only, not quota-enforcing.
+func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName string) error {
+	type doomed struct {
+		id       uuid.UUID
+		objectID metadata.ContentHash
+		isDir    bool
+		size     uint64
+		isReg    bool
+	}
+	var victims []doomed
+
+	opts := badgerdb.DefaultIteratorOptions
+	opts.PrefetchValues = true
+	it := txn.NewIterator(opts)
+	filePrefix := []byte(prefixFile)
+	for it.Seek(filePrefix); it.ValidForPrefix(filePrefix); it.Next() {
+		item := it.Item()
+		val, vErr := item.ValueCopy(nil)
+		if vErr != nil {
+			it.Close()
+			return fmt.Errorf("badger DeleteShare: copy file value: %w", vErr)
+		}
+		file, decErr := decodeFile(val)
+		if decErr != nil {
+			// Skip undecodable rows rather than wedge the whole delete;
+			// they cannot be attributed to this share anyway.
+			continue
+		}
+		if file.ShareName != shareName {
+			continue
+		}
+		victims = append(victims, doomed{
+			id:       file.ID,
+			objectID: file.ObjectID,
+			isDir:    file.Type == metadata.FileTypeDirectory,
+			size:     file.Size,
+			isReg:    file.Type == metadata.FileTypeRegular,
+		})
+	}
+	it.Close()
+
+	for _, v := range victims {
+		if delErr := deleteFileKeys(txn, v.id, v.objectID); delErr != nil {
+			return delErr
+		}
+		// Directories own c:<uuid>:<name> child entries; prefix-scan and
+		// delete them so no dangling mapping survives the share.
+		if v.isDir {
+			if delErr := deleteChildEntries(txn, v.id); delErr != nil {
+				return delErr
+			}
+		}
+		if v.isReg && v.size > 0 {
+			s.usedBytes.Add(-int64(v.size))
+		}
+	}
+
+	return nil
 }
 
 // deleteFileKeys removes the primary file row plus its parent, link-count, and

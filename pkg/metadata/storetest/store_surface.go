@@ -20,6 +20,7 @@ import (
 // runs identically against memory, badger, and postgres via the factory.
 func runStoreSurfaceTests(t *testing.T, factory StoreFactory) {
 	t.Run("DeleteShare", func(t *testing.T) { testDeleteShare(t, factory) })
+	t.Run("DeleteShareViaTransaction", func(t *testing.T) { testDeleteShareViaTransaction(t, factory) })
 	t.Run("DuplicateCreateShare", func(t *testing.T) { testDuplicateCreateShare(t, factory) })
 	t.Run("GetUsedBytes", func(t *testing.T) { testGetUsedBytes(t, factory) })
 	t.Run("GetFileByPayloadID", func(t *testing.T) { testGetFileByPayloadID(t, factory) })
@@ -103,6 +104,43 @@ func testDeleteShare(t *testing.T, factory StoreFactory) {
 		t.Error("DeleteShare(missing) should fail")
 	} else if !metadata.IsNotFoundError(err) {
 		t.Errorf("DeleteShare(missing): got %v, want not-found", err)
+	}
+}
+
+// testDeleteShareViaTransaction exercises DeleteShare through WithTransaction.
+// The transaction-path and pool-path are independent implementations, so the
+// tx path must tear down all file metadata too — dropping only the share row
+// orphans every file inode (the bug this pins for the badger/postgres tx path).
+func testDeleteShareViaTransaction(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareName = "/del-share-tx"
+	rootHandle := createTestShare(t, store, shareName)
+	createTestFile(t, store, shareName, rootHandle, "keep.txt", 0o644)
+	subdir := createTestDir(t, store, shareName, rootHandle, "sub")
+	createTestFile(t, store, shareName, subdir, "nested.txt", 0o644)
+
+	if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return tx.DeleteShare(ctx, shareName)
+	}); err != nil {
+		t.Fatalf("WithTransaction(DeleteShare) failed: %v", err)
+	}
+
+	// The share root must no longer resolve.
+	if _, err := store.GetRootHandle(ctx, shareName); err == nil {
+		t.Error("GetRootHandle() should fail after tx DeleteShare")
+	}
+
+	// File rows must be gone — a tx path that only drops the share row leaves
+	// the root inode resolvable (orphaned metadata).
+	if _, err := store.GetFile(ctx, rootHandle); err == nil {
+		t.Error("GetFile(root) should fail after tx DeleteShare — root inode orphaned")
+	}
+
+	// Same-name recreation must succeed (no stale root inode in the index).
+	if root2 := createTestShare(t, store, shareName); root2 == nil {
+		t.Fatal("re-CreateShare after tx DeleteShare returned nil root handle")
 	}
 }
 

@@ -806,6 +806,13 @@ func (tx *badgerTransaction) DeleteShare(ctx context.Context, shareName string) 
 		return err
 	}
 
+	// Tear down all file metadata on the active txn, identical to the pool
+	// path — deleting only the share key would orphan every file/parent/
+	// linkcount/child/objectID entry (store.go:161 contract).
+	if err := tx.store.deleteShareFiles(tx.txn, shareName); err != nil {
+		return err
+	}
+
 	return tx.txn.Delete(keyShare(shareName))
 }
 

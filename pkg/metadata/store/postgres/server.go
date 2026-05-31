@@ -20,13 +20,19 @@ func (s *PostgresMetadataStore) GetServerConfig(ctx context.Context) (metadata.M
 	err := s.queryRow(ctx, query).Scan(&customSettings)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// A fresh store has no persisted config row. Match the memory and
-		// badger backends: report an empty config, not a not-found error.
-		return metadata.MetadataServerConfig{}, nil
+		// badger backends: report an empty (non-nil) config, not a
+		// not-found error, so callers can write to CustomSettings.
+		return metadata.MetadataServerConfig{CustomSettings: map[string]any{}}, nil
 	}
 	if err != nil {
 		return metadata.MetadataServerConfig{}, mapPgError(err, "GetServerConfig", "")
 	}
 
+	// A JSON null/empty column scans to a nil map; hand back a non-nil map so
+	// callers can index/write it without a panic (badger parity).
+	if customSettings == nil {
+		customSettings = map[string]any{}
+	}
 	return metadata.MetadataServerConfig{
 		CustomSettings: customSettings,
 	}, nil
