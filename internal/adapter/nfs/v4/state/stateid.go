@@ -50,6 +50,23 @@ var (
 	ErrStaleStateid = &NFS4StateError{Status: types.NFS4ERR_STALE_STATEID, Message: "stale stateid"}
 	ErrExpired      = &NFS4StateError{Status: types.NFS4ERR_EXPIRED, Message: "lease expired"}
 	ErrBadSeqid     = &NFS4StateError{Status: types.NFS4ERR_BAD_SEQID, Message: "bad seqid"}
+	ErrShareDenied  = &NFS4StateError{Status: types.NFS4ERR_SHARE_DENIED, Message: "share reservation conflict"}
+)
+
+// StateidOp identifies the operation family using a stateid. It controls which
+// special stateids are accepted: per RFC 7530 Section 9.1.4.3 the all-ones
+// "READ bypass" stateid is valid only on READ; using it on a write-family
+// operation (WRITE / SETATTR-size / LOCK) MUST yield NFS4ERR_BAD_STATEID.
+type StateidOp uint8
+
+const (
+	// StateidOpRead is a READ-family operation. Both the anonymous (all-zeros)
+	// and the READ-bypass (all-ones) special stateids are permitted.
+	StateidOpRead StateidOp = iota
+
+	// StateidOpWrite is a write-family operation (WRITE, SETATTR size change,
+	// LOCK). The anonymous stateid is permitted; the READ-bypass stateid is not.
+	StateidOpWrite
 )
 
 // ============================================================================
@@ -107,10 +124,14 @@ func (sm *StateManager) isCurrentEpoch(other [types.NFS4_OTHER_SIZE]byte) bool {
 // Stateid Validation
 // ============================================================================
 
-// ValidateStateid validates a stateid and returns the associated OpenState.
+// ValidateStateid validates a stateid for the given operation family and
+// returns the associated OpenState.
 //
 // Per RFC 7530 Section 9.1.4, validation checks:
-//  1. Special stateids bypass validation (return nil, nil)
+//  1. Special stateids: the anonymous (all-zeros) stateid bypasses validation
+//     on any op; the READ-bypass (all-ones) stateid is accepted ONLY when
+//     op == StateidOpRead and otherwise rejected with NFS4ERR_BAD_STATEID
+//     (RFC 7530 Section 9.1.4.3). Both return (nil, nil) when accepted.
 //  2. Route by type tag: open stateids -> openStateByOther, delegation -> delegByOther
 //  3. If not found -> NFS4ERR_BAD_STATEID (or NFS4ERR_STALE_STATEID for wrong epoch)
 //  4. Compare seqid: < current -> NFS4ERR_OLD_STATEID; > current -> NFS4ERR_BAD_STATEID
@@ -122,9 +143,19 @@ func (sm *StateManager) isCurrentEpoch(other [types.NFS4_OTHER_SIZE]byte) bool {
 // layer (PrepareWrite) still apply.
 //
 // Caller must NOT hold sm.mu.
-func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byte) (*OpenState, error) {
-	// Step 1: Special stateids bypass validation
-	if stateid.IsSpecialStateid() {
+func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byte, op StateidOp) (*OpenState, error) {
+	// Step 1: Special stateids.
+	// The READ-bypass (all-ones) stateid is READ-only: reject it on
+	// write-family operations so a client cannot use it to bypass share-mode
+	// enforcement and byte-range locks (RFC 7530 Section 9.1.4.3).
+	if stateid.IsReadBypassStateid() {
+		if op != StateidOpRead {
+			return nil, ErrBadStateid
+		}
+		return nil, nil
+	}
+	// The anonymous (all-zeros) stateid is permitted on READ and WRITE.
+	if stateid.IsAnonymousStateid() {
 		return nil, nil
 	}
 

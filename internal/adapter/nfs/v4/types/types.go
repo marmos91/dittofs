@@ -194,6 +194,22 @@ func (s *Stateid4) IsSpecialStateid() bool {
 	return s.isAnonymous() || s.isReadBypass()
 }
 
+// IsAnonymousStateid reports whether the stateid is the anonymous special
+// stateid (seqid=0, other=all-zeros). Per RFC 7530 Section 9.1.4.3 it requests
+// a standard access check with no associated open/lock state and is permitted
+// on both READ and WRITE.
+func (s *Stateid4) IsAnonymousStateid() bool {
+	return s.isAnonymous()
+}
+
+// IsReadBypassStateid reports whether the stateid is the READ-bypass special
+// stateid (seqid=0xFFFFFFFF, other=all-ones). Per RFC 7530 Section 9.1.4.3 it
+// bypasses share-mode and byte-range-lock checks and is valid ONLY on READ;
+// callers MUST reject it on write-family operations with NFS4ERR_BAD_STATEID.
+func (s *Stateid4) IsReadBypassStateid() bool {
+	return s.isReadBypass()
+}
+
 // isAnonymous returns true if the stateid is the anonymous stateid
 // (seqid=0, other=all-zeros).
 func (s *Stateid4) isAnonymous() bool {

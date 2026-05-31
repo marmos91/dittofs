@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -65,10 +66,13 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 		}
 	}
 
-	// Validate stateid via StateManager
-	// Special stateids (all-zeros, all-ones) bypass validation.
-	// Real stateids are validated for correctness (seqid, epoch, filehandle match).
-	if _, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH); stateErr != nil {
+	// Validate stateid via StateManager.
+	// The anonymous (all-zeros) and READ-bypass (all-ones) special stateids are
+	// permitted on READ and return a nil openState. Real open stateids are
+	// validated for correctness (seqid, epoch, filehandle match) and carry the
+	// open's share-access bits.
+	openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, state.StateidOpRead)
+	if stateErr != nil {
 		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 READ stateid validation failed",
 			"error", stateErr,
@@ -78,6 +82,21 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 			Status: nfsStatus,
 			OpCode: types.OP_READ,
 			Data:   encodeStatusOnly(nfsStatus),
+		}
+	}
+
+	// Enforce the open's share-access mode: a regular open stateid must have
+	// been opened with OPEN4_SHARE_ACCESS_READ to be usable on READ
+	// (RFC 7530 Section 16.25.4). Special stateids (openState == nil) bypass
+	// this check.
+	if openState != nil && openState.ShareAccess&types.OPEN4_SHARE_ACCESS_READ == 0 {
+		logger.Debug("NFSv4 READ rejected: write-only open",
+			"share_access", openState.ShareAccess,
+			"client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_OPENMODE,
+			OpCode: types.OP_READ,
+			Data:   encodeStatusOnly(types.NFS4ERR_OPENMODE),
 		}
 	}
 

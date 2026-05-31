@@ -228,7 +228,7 @@ func TestImplicitRenewal_ViaValidateStateid(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	// ValidateStateid should implicitly renew the lease
-	openState, err := sm.ValidateStateid(confirmedStateid, []byte("fh-implicit-renew"))
+	openState, err := sm.ValidateStateid(confirmedStateid, []byte("fh-implicit-renew"), StateidOpRead)
 	if err != nil {
 		t.Fatalf("ValidateStateid: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestLeaseExpired_ReturnsError(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// ValidateStateid should return NFS4ERR_EXPIRED
-	_, err = sm.ValidateStateid(confirmedStateid, []byte("fh-expired"))
+	_, err = sm.ValidateStateid(confirmedStateid, []byte("fh-expired"), StateidOpRead)
 	if err == nil {
 		t.Fatal("ValidateStateid should fail for expired lease")
 	}

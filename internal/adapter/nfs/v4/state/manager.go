@@ -1020,6 +1020,26 @@ func (sm *StateManager) OpenFile(
 		}
 	}
 
+	// Enforce share reservations across open-owners (RFC 7530 Section 9.7 /
+	// Section 16.16.5; Linux nfsd nfs4_share_conflict). This runs AFTER the
+	// owner seqid/replay gate above: a replayed OPEN must return its cached
+	// result and a bad seqid must return NFS4ERR_BAD_SEQID — neither may be
+	// turned into NFS4ERR_SHARE_DENIED by a conflict that arose after the
+	// original request. Reclaim (CLAIM_PREVIOUS) re-establishes prior state and
+	// is exempt. The scan runs under sm.mu so it observes a consistent snapshot
+	// of every live open; opens by THIS owner are skipped (share bits
+	// accumulate per owner).
+	if claimType != types.CLAIM_PREVIOUS {
+		if conflict := sm.shareConflictLocked(ownerKey, fileHandle, shareAccess, shareDeny); conflict {
+			logger.Debug("OpenFile: share reservation conflict",
+				"client_id", clientID,
+				"owner", string(ownerData),
+				"req_access", shareAccess,
+				"req_deny", shareDeny)
+			return nil, ErrShareDenied
+		}
+	}
+
 	// Check if this owner already has an open on this file
 	var existingState *OpenState
 	for _, os := range owner.OpenStates {
@@ -1086,6 +1106,35 @@ func (sm *StateManager) OpenFile(
 		Stateid: resultStateid,
 		RFlags:  rflags,
 	}, nil
+}
+
+// shareConflictLocked reports whether granting an OPEN with the requested
+// share_access / share_deny on fileHandle would conflict with an open held by a
+// DIFFERENT open-owner. A conflict exists when the requested access is denied by
+// an existing open, or the requested deny would exclude an existing open's
+// access (RFC 7530 Section 9.7; mirrors Linux nfsd nfs4_share_conflict /
+// test_share). Opens by the requesting owner (ownerKey) are skipped because
+// share bits accumulate per owner on the same file.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) shareConflictLocked(
+	ownerKey openOwnerKey,
+	fileHandle []byte,
+	reqAccess, reqDeny uint32,
+) bool {
+	for _, os := range sm.openStateByOther {
+		if !bytes.Equal(os.FileHandle, fileHandle) {
+			continue
+		}
+		// Same owner: bits are OR-merged, never in conflict with themselves.
+		if os.Owner != nil && makeOwnerKey(os.Owner.ClientID, os.Owner.OwnerData) == ownerKey {
+			continue
+		}
+		if reqAccess&os.ShareDeny != 0 || reqDeny&os.ShareAccess != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // CacheOpenResult stores the cached result for an open-owner so that

@@ -51,7 +51,9 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		}
 	}
 
-	// Log stateid at debug level (StateManager validates separately)
+	// Log stateid at debug level (full open-mode/lease validation is handled by
+	// the dedicated stateid slice; this slice enforces only the special-stateid
+	// rule below).
 	logger.Debug("NFSv4 SETATTR stateid",
 		"seqid", stateid.Seqid,
 		"special", stateid.IsSpecialStateid(),
@@ -77,6 +79,22 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_SETATTR,
 			Data:   encodeSetAttrError(types.NFS4ERR_BADXDR),
+		}
+	}
+
+	// 4b. A SETATTR that changes the file size is a write-family operation:
+	// reject the READ-bypass (all-ones) special stateid with NFS4ERR_BAD_STATEID
+	// (RFC 7530 Section 9.1.4.3). Without this, a client could truncate/extend a
+	// file using the READ-only special stateid, bypassing share-mode and lock
+	// enforcement.
+	if setAttrs.Size != nil && stateid.IsReadBypassStateid() {
+		logger.Debug("NFSv4 SETATTR rejected: READ-bypass stateid on size change",
+			"handle", string(ctx.CurrentFH),
+			"client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_BAD_STATEID,
+			OpCode: types.OP_SETATTR,
+			Data:   encodeSetAttrError(types.NFS4ERR_BAD_STATEID),
 		}
 	}
 
