@@ -269,7 +269,16 @@ func TestCompaction_HeaderFlagSetAndPreservesCAS(t *testing.T) {
 		}
 	}
 	waitForLogBytesBelow(t, bc, 16*1024, 10*time.Second)
-	time.Sleep(300 * time.Millisecond)
+
+	// Quiesce the rollup loop before inspecting on-disk state. Compaction
+	// rewrites the header via a temp file + rename; reading logPath while a
+	// background compaction pass races that rename yields a torn read
+	// (bad header CRC) — Windows-prone, since the replaced handle lingers.
+	// Close() joins the rollup workers, leaving the header stable. Close is
+	// idempotent, so the test helper's cleanup Close is a harmless no-op.
+	if err := bc.Close(); err != nil {
+		t.Fatalf("Close (quiesce rollup): %v", err)
+	}
 
 	chunksBefore := countChunksInBlocks(t, bc.baseDir)
 	if chunksBefore == 0 {
