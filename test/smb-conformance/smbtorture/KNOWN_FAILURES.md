@@ -199,7 +199,6 @@ still fail due to incomplete reconnect, lease coordination, and persistence.
 |-----------|----------|--------|-------|
 | smb2.durable-v2-open.lock-oplock | Durable handles V2 | DH2 lock with oplock not fully working | #739 |
 | smb2.durable-v2-open.lock-lease | Durable handles V2 | DH2 lock with lease not fully working | #739 |
-| smb2.durable-v2-open.nonstat-and-lease | Durable handles V2 | DH2 non-stat + lease interaction not fully working | #739 |
 | smb2.durable-v2-open.app-instance | Durable handles V2 | App instance ID not fully working | #739 |
 | smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Persistent handles not implemented | #739 |
 | smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Persistent handles not implemented | #739 |
@@ -337,6 +336,20 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-31 — #739 nonstat-and-lease: 1 row flipped
+
+PR #903 scopes the same-client `disallow_write_lease` bypass to lease-holding
+opens only (mirrors Samba `is_same_lease`, which never bypasses `NO_OPLOCK`
+entries). A non-stat `NO_OPLOCK` open on the same client now correctly disallows
+W on a conflicting durable lease, so `nonstat-and-lease` is granted RH not RWH.
+`lease.upgrade2/upgrade3/break` still bypass (their same-client holder is a
+lease) — no regression. CI smbtorture confirmed `success:` for:
+
+- `smb2.durable-v2-open.nonstat-and-lease`
+
+#739 stays open: `lock-oplock`, `lock-lease`, `app-instance`, and the
+persistent-handle rows still fail.
 
 ### 2026-05-31 — #739 durable-V2 lease/disconnect: 2 rows flipped
 
