@@ -1355,16 +1355,46 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		appInstanceId:        appInstanceId,
 	}).finalize()
 
+	// SMB3 replay protection (MS-SMB2 §3.3.5.9): reserve the DH2Q CreateGuid for
+	// the entire window during which this second open is blocked/pending on a
+	// share-mode conflict — covering BOTH the async lease-park path AND the
+	// inline no-oplock sharing-violation/sync-wait path. A replay
+	// (FLAGS_REPLAY_OPERATION) arriving while the original is still in this
+	// window must return STATUS_FILE_NOT_AVAILABLE (resolveCreateReplay), which
+	// requires the guid to be reserved. The no-oplock "n" variant (conflicting
+	// holder with no Write/Handle lease bits) takes the inline path and so was
+	// previously never reserved (smbtorture replay-dhv2-pending1n-*-sane). The
+	// reservation is held only across the break+complete window below and is
+	// always released:
+	//   - async park (asyncId != 0): the parked resume goroutine owns the
+	//     Release (parkCreateOnLeaseBreak), so we MUST NOT release here.
+	//   - inline (asyncId == 0): released after completeCreateAfterBreak.
+	// Reserve is the single site (parkCreateOnLeaseBreak no longer reserves); a
+	// zero CreateGuid or no share conflict is left unreserved (Reserve is a
+	// no-op on a zero guid). Gated on fileExists since a conflict requires a
+	// pre-existing open to contend with.
+	replayGuid := dh2qCreateGuid(req)
+	reservedReplay := false
+	if h.CreateReplayCache != nil && fileExists && replayGuid != ([16]byte{}) {
+		h.CreateReplayCache.Reserve(ctx.SessionID, replayGuid)
+		reservedReplay = true
+	}
+
 	// Dispatch lease break and either park the CREATE async (emit interim
 	// STATUS_PENDING) or wait for the break to drain inline.
 	if asyncId := h.breakAndMaybeParkCreate(ctx, draft); asyncId != 0 {
+		// Parked: the resume goroutine releases the reservation on completion.
 		return &CreateResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusPending},
 			AsyncId:         asyncId,
 		}, nil
 	}
 
-	return h.completeCreateAfterBreak(ctx, draft), nil
+	resp := h.completeCreateAfterBreak(ctx, draft)
+	if reservedReplay {
+		h.CreateReplayCache.Release(ctx.SessionID, replayGuid)
+	}
+	return resp, nil
 }
 
 // computeMaximalAccess computes the maximal access mask for a file used in
