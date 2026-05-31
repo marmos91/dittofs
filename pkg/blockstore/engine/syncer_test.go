@@ -351,6 +351,13 @@ func (s *stubFBS) DecrementRefCount(_ context.Context, _ string) (uint32, error)
 	return 0, nil
 }
 
+func (s *stubFBS) DecrementRefCountAndReap(_ context.Context, id string) (uint32, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.blocks, id)
+	return 0, nil
+}
+
 func (s *stubFBS) AddRef(_ context.Context, h blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
 	// bump RefCount on any row indexed by hash.
 	s.mu.Lock()
