@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/callback"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm"
 	nsm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nsm/handlers"
@@ -492,9 +493,37 @@ func (s *NFSAdapter) initNSMHandler(rt *runtime.Runtime, metadataService *metada
 //   - ctx: Context for cancellation
 //   - clientID: The NSM client hostname (mon_name from SM_MON)
 //   - metadataService: Access to lock managers for all shares
-func (s *NFSAdapter) handleClientCrash(ctx context.Context, clientID string, metadataService *metadata.MetadataService) error {
-	// Build NLM owner ID prefix pattern
-	// NLM locks have owner IDs formatted as nlm:{caller_name}:{svid}:{oh_hex}
+func (s *NFSAdapter) handleClientCrash(_ context.Context, clientID string, metadataService *metadata.MetadataService) error {
+	releaseCrashedClientLocks(
+		clientID,
+		s.Registry.ListShares(),
+		metadataService.GetLockManagerForShare,
+		s.blockingQueue,
+	)
+	return nil
+}
+
+// releaseCrashedClientLocks performs the actual NSM crash cleanup, decoupled
+// from the Runtime so it is unit-testable. It releases every NLM byte-range
+// lock held by the crashed client across all shares and drains any blocking
+// waiters it left queued.
+//
+//   - clientID: the NSM caller_name (mon_name) of the crashed client.
+//   - shares: every share name to scan (lock managers are per-share).
+//   - lockMgrFor: resolves a share name to its lock manager (may return nil).
+//   - blockingQueue: the adapter-wide NLM blocking queue (may be nil).
+//
+// NLM locks have owner IDs formatted as "nlm:{caller_name}:{svid}:{oh_hex}", so
+// the prefix "nlm:{clientID}:" releases exactly this client's NLM locks: SMB and
+// NFSv4 use different OwnerID prefixes, and the trailing ":" prevents
+// "nlm:client1:" from matching "nlm:client10:". Idempotent and safe when the
+// client held no locks.
+func releaseCrashedClientLocks(
+	clientID string,
+	shares []string,
+	lockMgrFor func(string) *metadata.LockManager,
+	blockingQueue *blocking.BlockingQueue,
+) {
 	clientPrefix := "nlm:" + clientID + ":"
 	totalReleased := 0
 
@@ -502,37 +531,37 @@ func (s *NFSAdapter) handleClientCrash(ctx context.Context, clientID string, met
 		"client", clientID,
 		"prefix", clientPrefix)
 
-	// Iterate all shares and release matching locks
-	shares := s.Registry.ListShares()
+	// Iterate ALL shares and release every byte-range lock the crashed client
+	// held. A single client can hold locks across multiple shares.
 	for _, shareName := range shares {
-		lockMgr := metadataService.GetLockManagerForShare(shareName)
+		lockMgr := lockMgrFor(shareName)
 		if lockMgr == nil {
 			continue
 		}
 
-		// Get all locks and release those matching the client prefix
-		// Note: This is a simplified implementation. A more efficient approach
-		// would be to add a ReleaseByOwnerPrefix method to the LockManager.
-		// For now, we use best-effort cleanup via the existing infrastructure.
-		//
-		// The actual lock cleanup happens when:
-		// 1. NSM notifier detects crash and calls this callback
-		// 2. This callback logs the event for audit
-		// 3. The grace period mechanism from handles reclaims
-		//
-		// A production enhancement would be to iterate the LockStore
-		// and explicitly release all locks matching the prefix.
+		released := lockMgr.ReleaseByOwnerPrefix(clientPrefix)
+		totalReleased += released
+		if released > 0 {
+			logger.Debug("NSM: released crashed-client locks on share",
+				"share", shareName,
+				"client", clientID,
+				"released", released)
+		}
+	}
 
-		logger.Debug("NSM: checking share for crashed client locks",
-			"share", shareName,
-			"client", clientID)
+	// Drain any blocking-lock waiters the crashed client left queued so we never
+	// fire an NLM_GRANTED callback to a dead client. The blocking queue is a
+	// single adapter-wide structure keyed by file handle (which already encodes
+	// share identity), so this one call covers all shares.
+	drainedWaiters := 0
+	if blockingQueue != nil {
+		drainedWaiters = blockingQueue.RemoveClientWaiters(clientID)
 	}
 
 	logger.Info("NSM: completed lock cleanup for crashed client",
 		"client", clientID,
-		"total_released", totalReleased)
-
-	return nil
+		"locks_released", totalReleased,
+		"waiters_drained", drainedWaiters)
 }
 
 // performNSMStartup handles NSM-related startup tasks.
