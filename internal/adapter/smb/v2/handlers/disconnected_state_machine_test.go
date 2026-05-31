@@ -748,8 +748,16 @@ func TestDisallowWriteLeaseForFile(t *testing.T) {
 	otherHandle := []byte("file-B")
 	selfKey := [16]byte{0xAA}
 	selfFileID := [16]byte{0xA1}
+	selfClientGUID := [16]byte{0xC1}
+	otherClientGUID := [16]byte{0xC2}
 
-	addOpen := func(h *Handler, fileID [16]byte, mh []byte, access uint32, leaseKey [16]byte, oplock uint8, dir bool) {
+	// addOpen registers a live open. clientGUID defaults to otherClientGUID when
+	// zero so the existing conflict cases (which leave it unset) keep modelling a
+	// DIFFERENT client than the requestor.
+	addOpen := func(h *Handler, fileID [16]byte, mh []byte, access uint32, leaseKey [16]byte, oplock uint8, dir bool, clientGUID [16]byte) {
+		if clientGUID == ([16]byte{}) {
+			clientGUID = otherClientGUID
+		}
 		h.StoreOpenFile(&OpenFile{
 			FileID:         fileID,
 			MetadataHandle: mh,
@@ -757,54 +765,55 @@ func TestDisallowWriteLeaseForFile(t *testing.T) {
 			LeaseKey:       leaseKey,
 			OplockLevel:    oplock,
 			IsDirectory:    dir,
+			ClientGUID:     clientGUID,
 		})
 	}
 
 	t.Run("non-stat live open of another opener disallows W", func(t *testing.T) {
 		h := &Handler{}
 		// h1: READ_CONTROL-bearing open, no lease (the nonstat-and-lease shape).
-		addOpen(h, [16]byte{0x01}, metaHandle, accessReadCtl, [16]byte{}, OplockLevelNone, false)
-		if !h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID) {
+		addOpen(h, [16]byte{0x01}, metaHandle, accessReadCtl, [16]byte{}, OplockLevelNone, false, [16]byte{})
+		if !h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID, selfClientGUID) {
 			t.Fatal("expected disallow=true for conflicting non-oplock-stat open")
 		}
 	})
 
 	t.Run("stat-only live open does not disallow W", func(t *testing.T) {
 		h := &Handler{}
-		addOpen(h, [16]byte{0x02}, metaHandle, accessStatOnly, [16]byte{}, OplockLevelNone, false)
-		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID) {
+		addOpen(h, [16]byte{0x02}, metaHandle, accessStatOnly, [16]byte{}, OplockLevelNone, false, [16]byte{})
+		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID, selfClientGUID) {
 			t.Fatal("expected disallow=false for oplock-stat-only open")
 		}
 	})
 
 	t.Run("own open by same lease key does not disallow W", func(t *testing.T) {
 		h := &Handler{}
-		addOpen(h, [16]byte{0x03}, metaHandle, accessReadData, selfKey, OplockLevelLease, false)
-		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID) {
+		addOpen(h, [16]byte{0x03}, metaHandle, accessReadData, selfKey, OplockLevelLease, false, [16]byte{})
+		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID, selfClientGUID) {
 			t.Fatal("expected disallow=false for requestor's own lease key (reopen/upgrade)")
 		}
 	})
 
 	t.Run("own open by same FileID does not disallow W", func(t *testing.T) {
 		h := &Handler{}
-		addOpen(h, selfFileID, metaHandle, accessReadData, [16]byte{}, OplockLevelNone, false)
-		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID) {
+		addOpen(h, selfFileID, metaHandle, accessReadData, [16]byte{}, OplockLevelNone, false, [16]byte{})
+		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID, selfClientGUID) {
 			t.Fatal("expected disallow=false when the only other open is the requestor's own FileID")
 		}
 	})
 
 	t.Run("open on a different file does not disallow W", func(t *testing.T) {
 		h := &Handler{}
-		addOpen(h, [16]byte{0x04}, otherHandle, accessReadData, [16]byte{}, OplockLevelNone, false)
-		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID) {
+		addOpen(h, [16]byte{0x04}, otherHandle, accessReadData, [16]byte{}, OplockLevelNone, false, [16]byte{})
+		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID, selfClientGUID) {
 			t.Fatal("expected disallow=false for non-stat open on a DIFFERENT file")
 		}
 	})
 
 	t.Run("directory open does not disallow W", func(t *testing.T) {
 		h := &Handler{}
-		addOpen(h, [16]byte{0x05}, metaHandle, accessReadData, [16]byte{}, OplockLevelNone, true)
-		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID) {
+		addOpen(h, [16]byte{0x05}, metaHandle, accessReadData, [16]byte{}, OplockLevelNone, true, [16]byte{})
+		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID, selfClientGUID) {
 			t.Fatal("expected disallow=false for a directory open")
 		}
 	})
@@ -822,7 +831,7 @@ func TestDisallowWriteLeaseForFile(t *testing.T) {
 		h := &Handler{DurableStore: store}
 		// keep-disconnected-rh-with-rwh-open: new RWH open (selfKey) must be
 		// capped to RH by the disconnected RH handle, with no break.
-		if !h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID) {
+		if !h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID, selfClientGUID) {
 			t.Fatal("expected disallow=true for a disconnected RH durable handle")
 		}
 	})
@@ -839,7 +848,7 @@ func TestDisallowWriteLeaseForFile(t *testing.T) {
 		})
 		h := &Handler{DurableStore: store}
 		// The requestor reconnecting its own durable handle must not self-cap.
-		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID) {
+		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID, selfClientGUID) {
 			t.Fatal("expected disallow=false for the requestor's own disconnected handle")
 		}
 	})
@@ -855,15 +864,64 @@ func TestDisallowWriteLeaseForFile(t *testing.T) {
 			DisconnectedAt: time.Time{}, // never disconnected
 		})
 		h := &Handler{DurableStore: store}
-		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID) {
+		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID, selfClientGUID) {
 			t.Fatal("expected disallow=false for a not-yet-disconnected durable row")
 		}
 	})
 
 	t.Run("no opens and no handles does not disallow W", func(t *testing.T) {
 		h := &Handler{DurableStore: newMockDurableStore()}
-		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID) {
+		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID, selfClientGUID) {
 			t.Fatal("expected disallow=false on an idle file")
+		}
+	})
+
+	// Same-client guard: a second lease on a DIFFERENT key but the SAME client
+	// is the contended-upgrade / own-break case (smb2.lease.upgrade3,
+	// smb2.lease.break). It must NOT cap W — the lock manager's
+	// bestGrantableState already resolves the per-lease downgrade.
+	t.Run("same-client non-stat open on a different key does not disallow W", func(t *testing.T) {
+		h := &Handler{}
+		// Different lease key, but owned by the requestor's own ClientGuid.
+		addOpen(h, [16]byte{0x06}, metaHandle, accessReadData, [16]byte{0xDD}, OplockLevelLease, false, selfClientGUID)
+		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID, selfClientGUID) {
+			t.Fatal("expected disallow=false for a same-client open on a different lease key")
+		}
+	})
+
+	t.Run("same-client disconnected handle on a different key does not disallow W", func(t *testing.T) {
+		store := newMockDurableStore()
+		_ = store.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
+			ID:             "disc-same-client",
+			MetadataHandle: metaHandle,
+			LeaseKey:       [16]byte{0xEE},
+			LeaseState:     rh,
+			ShareAccess:    shareAll,
+			ClientGUID:     selfClientGUID,
+			DisconnectedAt: time.Now().Add(-time.Second),
+		})
+		h := &Handler{DurableStore: store}
+		if h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID, selfClientGUID) {
+			t.Fatal("expected disallow=false for a same-client disconnected durable handle")
+		}
+	})
+
+	// Cross-client negative control: the existing disconnected-RH conflict case
+	// must STILL fire when the holder is a different client.
+	t.Run("cross-client disconnected RH still disallows W", func(t *testing.T) {
+		store := newMockDurableStore()
+		_ = store.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
+			ID:             "disc-cross-client",
+			MetadataHandle: metaHandle,
+			LeaseKey:       [16]byte{0xBB},
+			LeaseState:     rh,
+			ShareAccess:    shareAll,
+			ClientGUID:     otherClientGUID,
+			DisconnectedAt: time.Now().Add(-time.Second),
+		})
+		h := &Handler{DurableStore: store}
+		if !h.disallowWriteLeaseForFile(context.Background(), metaHandle, selfKey, selfFileID, selfClientGUID) {
+			t.Fatal("expected disallow=true for a cross-client disconnected RH handle")
 		}
 	})
 }

@@ -426,15 +426,34 @@ func shouldPersistDurableOnDisconnect(
 //     another connection must be downgraded to RH with NO break sent, because a
 //     disconnected handle cannot ack one).
 //
-// excludeLeaseKey is the requestor's own lease key (zero if none); opens/handles
-// matching it are ignored (Samba `is_same_lease`). Pipes, directories, and the
-// requestor's own opens never contribute. The decision only strips W — it never
-// blocks the grant or sends a break.
+// The cap fires ONLY for a genuinely conflicting open by a DIFFERENT lease key
+// owned by a DIFFERENT client. It is bypassed for the non-conflicting cases that
+// Samba's `delay_for_oplock` / `is_same_lease` treat as upgrades rather than
+// conflicts:
+//
+//   - excludeLeaseKey is the requestor's own lease key (zero if none); any
+//     open/handle holding that key is the requestor's own lease being upgraded
+//     on the same key (Samba `is_same_lease`) — never a conflict
+//     (smb2.lease.upgrade2).
+//   - excludeClientGUID is the requestor's SMB2 NEGOTIATE ClientGuid; any
+//     open/handle owned by the SAME client cannot conflict with a new lease from
+//     that same client — a second lease key on the same connection is the
+//     contended-upgrade case the lock manager's bestGrantableState already
+//     resolves per-lease, and the holder of an ordinary break is the same client
+//     downgrading its own lease (smb2.lease.upgrade3, smb2.lease.break). Samba
+//     keys conflict on the share entry's connection identity; we approximate via
+//     ClientGuid equality, the same approximation used by
+//     hasSameClientNonStatOpenForFile.
+//
+// Pipes, directories, and the requestor's own opens (same SMB FileID) never
+// contribute. The decision only strips W — it never blocks the grant or sends a
+// break.
 func (h *Handler) disallowWriteLeaseForFile(
 	ctx context.Context,
 	metaHandle []byte,
 	excludeLeaseKey [16]byte,
 	excludeFileID [16]byte,
+	excludeClientGUID [16]byte,
 ) bool {
 	if len(metaHandle) == 0 {
 		return false
@@ -453,11 +472,17 @@ func (h *Handler) disallowWriteLeaseForFile(
 		if len(existing.MetadataHandle) == 0 || !bytes.Equal(existing.MetadataHandle, metaHandle) {
 			return true
 		}
-		// Skip the requestor's own open(s): same lease key, or same SMB FileID.
+		// Skip the requestor's own open(s) and same-client opens: same lease key
+		// (upgrade on the same key), same SMB FileID, or same ClientGuid (a
+		// second lease key on the same client is an upgrade/own-break, not a
+		// cross-client conflict — smb2.lease.upgrade2/upgrade3/break).
 		if excludeLeaseKey != ([16]byte{}) && existing.LeaseKey == excludeLeaseKey {
 			return true
 		}
 		if existing.FileID == excludeFileID {
+			return true
+		}
+		if excludeClientGUID != ([16]byte{}) && existing.ClientGUID == excludeClientGUID {
 			return true
 		}
 		// e contributes when it holds an oplock/lease OR is a non-stat open.
@@ -490,6 +515,9 @@ func (h *Handler) disallowWriteLeaseForFile(
 			continue
 		}
 		if excludeLeaseKey != ([16]byte{}) && d.LeaseKey == excludeLeaseKey {
+			continue
+		}
+		if excludeClientGUID != ([16]byte{}) && d.ClientGUID == excludeClientGUID {
 			continue
 		}
 		// A disconnected handle with a Read-bearing lease holds caching that a

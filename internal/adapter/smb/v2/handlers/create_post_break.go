@@ -856,7 +856,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 				newLeaseKey = parsed.LeaseKey
 			}
 			disallowWriteLease := h.disallowWriteLeaseForFile(
-				authCtx.Context, fileHandle, newLeaseKey, smbFileID,
+				authCtx.Context, fileHandle, newLeaseKey, smbFileID, connClientGUID(ctx),
 			)
 			leaseResponse, err = ProcessLeaseCreateContext(
 				authCtx.Context,
