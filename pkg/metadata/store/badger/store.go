@@ -59,6 +59,14 @@ type BadgerMetadataStore struct {
 	// db is the BadgerDB database handle (thread-safe, uses internal MVCC)
 	db *badger.DB
 
+	// gcStop signals the value-log GC goroutine to exit. Closed once by
+	// Close() (guarded by gcStopOnce); gcWG waits for the goroutine to
+	// drain before Close() shuts the DB so the GC never runs against a
+	// closed database.
+	gcStop     chan struct{}
+	gcStopOnce sync.Once
+	gcWG       sync.WaitGroup
+
 	// capabilities stores static filesystem capabilities and limits.
 	// These are set at creation time and define what the filesystem supports.
 	capabilities metadata.FilesystemCapabilities
@@ -262,6 +270,7 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 
 	store := &BadgerMetadataStore{
 		db:              db,
+		gcStop:          make(chan struct{}),
 		capabilities:    config.Capabilities,
 		maxStorageBytes: config.MaxStorageBytes,
 		maxFiles:        config.MaxFiles,
@@ -285,7 +294,61 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		return nil, fmt.Errorf("failed to initialize used bytes counter: %w", err)
 	}
 
+	// Start the background value-log GC loop. Badger reclaims value-log
+	// space only when RunValueLogGC is called explicitly; without it the
+	// value log grows without bound (unbounded disk growth). The loop is
+	// stopped in Close().
+	store.gcWG.Add(1)
+	go store.runValueLogGC()
+
 	return store, nil
+}
+
+// valueLogGCInterval is how often the background loop attempts a Badger
+// value-log GC pass. Badger's docs recommend running GC periodically
+// (e.g. on a several-minute ticker); this cadence reclaims space without
+// adding meaningful background load to the metadata workload.
+const valueLogGCInterval = 5 * time.Minute
+
+// valueLogGCDiscardRatio is the fraction of stale data a value-log file
+// must contain before Badger will rewrite it. 0.5 is Badger's commonly
+// recommended starting point — rewrite files at least half garbage.
+const valueLogGCDiscardRatio = 0.5
+
+// runValueLogGC periodically reclaims Badger value-log space. On each
+// tick it drains all rewritable value-log files (RunValueLogGC returns
+// nil after a successful rewrite, so we loop until it reports
+// badger.ErrNoRewrite or any other error). The goroutine exits promptly
+// when gcStop is closed by Close().
+func (s *BadgerMetadataStore) runValueLogGC() {
+	defer s.gcWG.Done()
+
+	ticker := time.NewTicker(valueLogGCInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.gcStop:
+			return
+		case <-ticker.C:
+			// Reclaim every rewritable file this cycle. RunValueLogGC
+			// rewrites at most one file per call and returns nil on
+			// success, so loop until there is nothing left to rewrite.
+			for {
+				select {
+				case <-s.gcStop:
+					return
+				default:
+				}
+				if err := s.db.RunValueLogGC(valueLogGCDiscardRatio); err != nil {
+					// ErrNoRewrite (nothing to reclaim) is the normal
+					// stop condition; any other error (e.g. DB closing)
+					// also ends this cycle.
+					break
+				}
+			}
+		}
+	}
 }
 
 // storeIDKey is the BadgerDB key for the engine-persistent store identifier.
@@ -481,6 +544,14 @@ func (s *BadgerMetadataStore) initializeSingletons(ctx context.Context) error {
 // Returns:
 //   - error: Error if closing the database fails
 func (s *BadgerMetadataStore) Close() error {
+	// Stop the value-log GC goroutine and wait for it to drain before
+	// closing the DB, so no GC pass runs against a closed database.
+	// gcStopOnce makes Close idempotent.
+	s.gcStopOnce.Do(func() {
+		close(s.gcStop)
+	})
+	s.gcWG.Wait()
+
 	if err := s.db.Close(); err != nil {
 		return fmt.Errorf("failed to close BadgerDB: %w", err)
 	}

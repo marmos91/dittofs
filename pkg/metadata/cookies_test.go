@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -144,6 +145,73 @@ func TestCookieManager_Concurrent(t *testing.T) {
 		for i := 0; i < 100; i++ {
 			<-done
 		}
+	})
+}
+
+func TestCookieManager_Bounded(t *testing.T) {
+	t.Parallel()
+
+	t.Run("map stays bounded past cap and forward/reverse stay consistent", func(t *testing.T) {
+		t.Parallel()
+		cm := NewCookieManager()
+		dirHandle := FileHandle("export/bigdir")
+
+		// Generate well past the cap to force eviction.
+		const n = defaultCookieCap * 3
+		for i := 0; i < n; i++ {
+			cookie := cm.GenerateCookie(dirHandle, fmt.Sprintf("file-%d.txt", i))
+			require.NotEqual(t, uint64(0), cookie)
+		}
+
+		cm.mu.Lock()
+		idxLen := len(cm.index)
+		orderLen := cm.order.Len()
+		// Forward map and recency list must agree exactly — eviction
+		// removes from both atomically.
+		require.Equal(t, idxLen, orderLen, "index and order length diverged")
+		for cookie, el := range cm.index {
+			entry := el.Value.(*cookieEntry)
+			require.Equal(t, cookie, entry.cookie, "index key vs entry cookie mismatch")
+		}
+		cm.mu.Unlock()
+
+		// Bounded: never exceeds the cap.
+		assert.LessOrEqual(t, idxLen, defaultCookieCap, "cookie count exceeded cap")
+		// And it actually filled to the cap (eviction kicked in, not a leak the other way).
+		assert.Equal(t, defaultCookieCap, idxLen, "expected the LRU to be full at the cap")
+	})
+
+	t.Run("recently used cookies survive eviction", func(t *testing.T) {
+		t.Parallel()
+		cm := NewCookieManager()
+		dirHandle := FileHandle("export/hot")
+
+		// A hot cookie generated first, kept alive by repeated GetToken.
+		hot := cm.GenerateCookie(dirHandle, "hot.txt")
+
+		for i := 0; i < defaultCookieCap*2; i++ {
+			cm.GenerateCookie(dirHandle, fmt.Sprintf("cold-%d.txt", i))
+			// Touch the hot cookie so it stays MRU and is never evicted.
+			require.Equal(t, "hot.txt", cm.GetToken(hot))
+		}
+
+		assert.Equal(t, "hot.txt", cm.GetToken(hot), "actively-used cookie was evicted")
+	})
+
+	t.Run("clear empties forward and reverse state", func(t *testing.T) {
+		t.Parallel()
+		cm := NewCookieManager()
+		dirHandle := FileHandle("export/d")
+
+		for i := 0; i < 100; i++ {
+			cm.GenerateCookie(dirHandle, fmt.Sprintf("f-%d", i))
+		}
+		cm.Clear()
+
+		cm.mu.Lock()
+		require.Equal(t, 0, len(cm.index))
+		require.Equal(t, 0, cm.order.Len())
+		cm.mu.Unlock()
 	})
 }
 

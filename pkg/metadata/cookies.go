@@ -1,9 +1,23 @@
 package metadata
 
 import (
+	"container/list"
 	"hash/fnv"
 	"sync"
 )
+
+// defaultCookieCap bounds the number of cookie→token mappings the
+// CookieManager retains. Directory pagination only needs the cookies
+// from recently served READDIR pages to be resolvable; older cookies are
+// safe to drop because a stale cookie simply restarts the directory scan
+// from the beginning per RFC 1813 (cookie-verifier mismatch semantics).
+//
+// Without a bound the reverse map grew once per (directory, entry) pair
+// for the lifetime of the process — a slow OOM under sustained READDIR
+// traffic over large/changing directory trees. A few thousand entries
+// covers many concurrent in-flight directory scans while keeping the
+// footprint trivial. Not a user-facing knob (pre-1.0, less-is-more).
+const defaultCookieCap = 8192
 
 // CookieManager handles NFS cookie ↔ store token translation.
 //
@@ -15,20 +29,41 @@ import (
 // ensuring uniqueness per directory. A reverse mapping is maintained
 // to convert cookies back to tokens for subsequent requests.
 //
-// Thread-safe: uses sync.Map for concurrent access.
+// The reverse map is a bounded LRU (see defaultCookieCap): the least
+// recently generated/resolved cookies are evicted once the cap is hit,
+// so the manager's memory footprint stays constant under unbounded
+// READDIR traffic. Forward and reverse state evict atomically under the
+// lock, so they never diverge.
+//
+// Thread-safe: a single mutex guards the map and the recency list.
 type CookieManager struct {
-	// cookieToToken maps cookie → token for reverse lookup
-	cookieToToken sync.Map // map[uint64]string
+	mu      sync.Mutex
+	index   map[uint64]*list.Element // cookie → recency-list element
+	order   *list.List               // MRU front, LRU back; values are cookieEntry
+	maxSize int
 }
 
-// NewCookieManager creates a new cookie manager.
+// cookieEntry is the value stored in the recency list.
+type cookieEntry struct {
+	cookie uint64
+	token  string
+}
+
+// NewCookieManager creates a new cookie manager with the default bound.
 func NewCookieManager() *CookieManager {
-	return &CookieManager{}
+	return &CookieManager{
+		index:   make(map[uint64]*list.Element),
+		order:   list.New(),
+		maxSize: defaultCookieCap,
+	}
 }
 
 // GenerateCookie creates a unique cookie for a directory entry.
 // The cookie is based on the directory handle and entry name.
 // Returns 0 if the name is empty (indicating end of directory).
+//
+// The cookie→token mapping is recorded in the bounded LRU; generating
+// past the cap evicts the least recently used mapping.
 func (cm *CookieManager) GenerateCookie(dirHandle FileHandle, name string) uint64 {
 	if name == "" {
 		return 0
@@ -45,21 +80,54 @@ func (cm *CookieManager) GenerateCookie(dirHandle FileHandle, name string) uint6
 		cookie = 1
 	}
 
-	// Store reverse mapping
-	cm.cookieToToken.Store(cookie, name)
+	// Store reverse mapping in the bounded LRU.
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	if el, found := cm.index[cookie]; found {
+		// Refresh token (handles handle/name hash collisions deterministically)
+		// and promote to MRU.
+		el.Value.(*cookieEntry).token = name
+		cm.order.MoveToFront(el)
+		return cookie
+	}
+
+	// Evict LRU entries until we have room. Forward (index) and reverse
+	// (order) state are removed together so they cannot diverge.
+	for cm.order.Len() >= cm.maxSize {
+		back := cm.order.Back()
+		if back == nil {
+			break
+		}
+		victim := back.Value.(*cookieEntry)
+		delete(cm.index, victim.cookie)
+		cm.order.Remove(back)
+	}
+
+	el := cm.order.PushFront(&cookieEntry{cookie: cookie, token: name})
+	cm.index[cookie] = el
 
 	return cookie
 }
 
 // GetToken retrieves the token (entry name) for a cookie.
-// Returns empty string if cookie is 0 (start of directory) or unknown.
+// Returns empty string if cookie is 0 (start of directory) or unknown
+// (never generated, or already evicted from the bounded LRU).
+//
+// A successful lookup promotes the cookie to most-recently-used so that
+// active pagination scans are not evicted out from under an in-flight
+// client.
 func (cm *CookieManager) GetToken(cookie uint64) string {
 	if cookie == 0 {
 		return ""
 	}
 
-	if token, ok := cm.cookieToToken.Load(cookie); ok {
-		return token.(string)
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	if el, ok := cm.index[cookie]; ok {
+		cm.order.MoveToFront(el)
+		return el.Value.(*cookieEntry).token
 	}
 
 	return ""
@@ -68,10 +136,11 @@ func (cm *CookieManager) GetToken(cookie uint64) string {
 // Clear removes all stored cookie mappings.
 // Useful for cache invalidation when directories change significantly.
 func (cm *CookieManager) Clear() {
-	cm.cookieToToken.Range(func(key, _ any) bool {
-		cm.cookieToToken.Delete(key)
-		return true
-	})
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	cm.index = make(map[uint64]*list.Element)
+	cm.order.Init()
 }
 
 // ClearForDirectory removes cookie mappings for a specific directory.
