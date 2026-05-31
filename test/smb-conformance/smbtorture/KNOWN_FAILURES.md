@@ -256,7 +256,6 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.replay.replay3 | Replay | Flaky in CI (replay detection race) | #749 |
 | smb2.replay.replay-dhv2-oplock2 | Replay | Replay with durable handles not implemented | #749 |
 | smb2.replay.dhv2-pending1n-vs-violation-lease-close-sane | Replay | Replay pending violation handling not implemented | #749 |
 | smb2.replay.dhv2-pending1n-vs-violation-lease-ack-sane | Replay | Replay pending violation handling not implemented | #749 |
@@ -296,10 +295,6 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 | smb2.replay.dhv2-pending3o-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | #749 |
 | smb2.replay.dhv2-pending3o-vs-lease-sane | Replay | Replay pending lease handling not implemented | #749 |
 | smb2.replay.dhv2-pending3o-vs-lease-windows | Replay | Replay pending lease handling not implemented | #749 |
-| smb2.replay.channel-sequence | Replay | Channel sequence tracking not implemented | #749 |
-| smb2.replay.replay4 | Replay | Replay detection not implemented | #749 |
-| smb2.replay.replay5 | Replay | Replay detection not implemented | #749 |
-| smb2.replay.replay6 | Replay | Replay detection not implemented | #749 |
 
 ## Permanently Unimplementable (Out of Scope)
 
@@ -352,6 +347,18 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-31 — stale-row cleanup: 5 replay rows not in the pinned smbtorture binary
+
+Removed `smb2.replay.replay3`, `replay4`, `replay5`, `replay6`, and
+`channel-sequence`. The `smb2.replay` suite IS invoked by `run.sh` and runs to
+completion, but these 5 test names do not exist in the pinned Samba smbtorture
+binary (the suite enumerates only `replay-commands`, `replay-regular`,
+`replay-dhv2-*`, and `dhv2-pending*`). Because they never execute, they can
+never produce a failure to match against — the KF rows were dead entries
+inflating the apparent count. If a future Samba bump introduces these tests,
+they will resurface as New Failures and can be re-added with a fix plan. The
+channel-sequence mechanism itself (MS-SMB2 §3.3.5.2.10) shipped in #866.
 
 ### 2026-05-31 — #749 durable-V2 replay: 7 rows flipped
 
