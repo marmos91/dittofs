@@ -1,6 +1,8 @@
 package state
 
 import (
+	"bytes"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -775,28 +777,39 @@ func TestCloseFile_CleansUpOwner(t *testing.T) {
 	}
 
 	// Close
-	_, err = sm.CloseFile(&confirmed.Stateid, 3)
+	closed, err := sm.CloseFile(&confirmed.Stateid, 3)
 	if err != nil {
 		t.Fatalf("CloseFile: %v", err)
 	}
+	// Cache the CLOSE reply as the handler would.
+	sm.CacheOpenOwnerResult(closed.OwnerClientID, closed.OwnerData, types.NFS4_OK, []byte("close-reply"))
 
-	// The open-owner is intentionally RETAINED after the last close so its
-	// cached reply remains available to replay a retransmitted CLOSE (RFC 7530
-	// §9.1.7; reaped later by lease expiry). Its open-state list must be empty.
+	// After the last close the open-owner is removed from the LIVE owner table
+	// so a subsequent OPEN by the same name is treated as brand-new (and not
+	// rejected/replayed against this now-stale seqid). The owner object is still
+	// reachable via closedOwnerByOther so a retransmitted CLOSE can replay its
+	// cached reply (RFC 7530 §9.1.7); that entry is reaped on lease expiry.
 	sm.mu.RLock()
 	ownerKey := makeOwnerKey(0, []byte("owner1"))
-	owner, ownerExists := sm.openOwners[ownerKey]
-	var remainingOpens int
-	if owner != nil {
-		remainingOpens = len(owner.OpenStates)
-	}
+	_, liveExists := sm.openOwners[ownerKey]
+	_, retainedExists := sm.closedOwnerByOther[confirmed.Stateid.Other]
 	sm.mu.RUnlock()
 
-	if !ownerExists {
-		t.Error("owner should be retained after last close for replay caching")
+	if liveExists {
+		t.Error("owner should be removed from the live table after last close")
 	}
-	if remainingOpens != 0 {
-		t.Errorf("owner should have no open states after close, got %d", remainingOpens)
+	if !retainedExists {
+		t.Error("owner should be retained in closedOwnerByOther for CLOSE replay")
+	}
+
+	// A retransmitted CLOSE at the same seqid must replay the cached reply.
+	_, replayErr := sm.CloseFile(&confirmed.Stateid, 3)
+	var re *ReplayError
+	if !errors.As(replayErr, &re) {
+		t.Fatalf("retransmitted CLOSE should replay, got %T: %v", replayErr, replayErr)
+	}
+	if !bytes.Equal(re.Data, []byte("close-reply")) {
+		t.Errorf("replayed CLOSE data = %x, want cached reply", re.Data)
 	}
 }
 

@@ -1167,14 +1167,19 @@ func (sm *StateManager) CacheOpenOwnerResult(clientID uint64, ownerData []byte, 
 	defer sm.mu.Unlock()
 
 	ownerKey := makeOwnerKey(clientID, ownerData)
-	owner, exists := sm.openOwners[ownerKey]
-	if !exists {
+	if owner, exists := sm.openOwners[ownerKey]; exists {
+		owner.LastResult = &CachedResult{Status: status, Data: data}
 		return
 	}
 
-	owner.LastResult = &CachedResult{
-		Status: status,
-		Data:   data,
+	// The owner may have just been removed from the live table by CLOSE (its
+	// last open state went away). It is still reachable via closedOwnerByOther
+	// so the CLOSE reply can be cached for a retransmitted CLOSE replay.
+	for _, owner := range sm.closedOwnerByOther {
+		if owner.ClientID == clientID && bytes.Equal(owner.OwnerData, ownerData) {
+			owner.LastResult = &CachedResult{Status: status, Data: data}
+			return
+		}
 	}
 }
 
@@ -1372,11 +1377,24 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*OpenS
 	// Update owner seqid
 	owner.LastSeqID = seqid
 
-	// NOTE: the open-owner is intentionally retained even when it has no
-	// remaining open states, so its LastResult stays available to replay a
-	// retransmitted CLOSE (RFC 7530 §9.1.7, mirrors Linux nfsd so_replay where
-	// stateowners live until lease expiry). The lease reaper (onLeaseExpired)
-	// walks ClientRecord.OpenOwners and removes these stale-but-cached owners.
+	// If the owner has no more open states, drop it from the LIVE owner table
+	// (openOwners + client record) so a subsequent OPEN by the same owner name
+	// is treated as a brand-new owner — NOT subjected to this now-stale seqid,
+	// which would otherwise mis-classify a genuinely new OPEN as a replay (and
+	// return the cached CLOSE reply) or as NFS4ERR_BAD_SEQID. This matches the
+	// pre-retention behavior. The owner object itself stays reachable via
+	// closedOwnerByOther (installed above), so a retransmitted CLOSE can still
+	// replay its cached reply (RFC 7530 §9.1.7); that entry is reaped on lease
+	// expiry.
+	if len(owner.OpenStates) == 0 {
+		ownerKey := makeOwnerKey(owner.ClientID, owner.OwnerData)
+		delete(sm.openOwners, ownerKey)
+		if owner.ClientRecord != nil {
+			delete(owner.ClientRecord.OpenOwners, string(owner.OwnerData))
+		}
+		logger.Debug("CloseFile: owner removed from live table (no more open states), retained for CLOSE replay",
+			"client_id", owner.ClientID)
+	}
 
 	logger.Debug("CloseFile: state removed",
 		"client_id", owner.ClientID,
