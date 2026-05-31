@@ -325,6 +325,11 @@ jobs:
           }
           Write-Host "TCP 445 freed for DittoFS: $freed (false => hosted-runner kernel listener; net use cannot reach DittoFS without a reboot)"
           (Get-NetTCPConnection -LocalPort 445 -State Listen -ErrorAction SilentlyContinue) | Format-Table -AutoSize
+          # sc.exe returns nonzero when a service is already stopped, which pwsh
+          # would otherwise propagate as a step failure. This step is
+          # best-effort — clear the residual exit code so the job proceeds to
+          # the bootstrap (which binds DittoFS to 445 if it is now free).
+          $global:LASTEXITCODE = 0
 
       - name: Start packet capture (pktmon, #879 diagnosis)
         shell: pwsh
