@@ -628,20 +628,89 @@ func (tx *postgresTransaction) GetByHash(ctx context.Context, hash metadata.Cont
 	return block, nil
 }
 
-// ListPending and ListFileBlocks are read-only helpers; no caller
-// mutates state through them, so they keep the pool path. Same for
-// EnumerateFileBlocks — the GC mark phase audit don't require
-// txn binding (they tolerate concurrent mutation).
+// ListPending / ListFileBlocks / EnumerateFileBlocks run on the active
+// transaction (tx.tx), NOT the pool. Delegating to the pool opens a separate
+// connection that cannot see this transaction's uncommitted writes, so a Put
+// followed by a List in the same WithTransaction would miss the pending row
+// (read-after-write violation; the SQL is otherwise identical to the
+// store-level methods).
 func (tx *postgresTransaction) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	return tx.store.ListPending(ctx, olderThan, limit)
+	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+		FROM file_blocks
+		WHERE state = 0 /* Pending */ AND cache_path IS NOT NULL`
+	args := make([]any, 0, 2)
+	if olderThan > 0 {
+		args = append(args, time.Now().Add(-olderThan))
+		query += fmt.Sprintf(" AND created_at < $%d", len(args))
+	}
+	query += " ORDER BY created_at ASC"
+	if limit > 0 {
+		args = append(args, limit)
+		query += fmt.Sprintf(" LIMIT $%d", len(args))
+	}
+	rows, err := tx.tx.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list pending blocks: %w", err)
+	}
+	defer rows.Close()
+	return scanFileBlockRows(rows)
 }
 
 func (tx *postgresTransaction) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
-	return tx.store.ListFileBlocks(ctx, payloadID)
+	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+		FROM file_blocks
+		WHERE id LIKE $1
+		ORDER BY id ASC`
+	rows, err := tx.tx.Query(ctx, query, payloadID+"/%")
+	if err != nil {
+		return nil, fmt.Errorf("list file blocks: %w", err)
+	}
+	defer rows.Close()
+	result, err := scanFileBlockRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	// Lexicographic SQL order mis-sorts multi-digit indices ("10" < "2");
+	// sort by parsed numeric index, matching the store-level method.
+	sort.Slice(result, func(i, j int) bool {
+		return pgParseBlockIdx(result[i].ID) < pgParseBlockIdx(result[j].ID)
+	})
+	if result == nil {
+		return []*metadata.FileBlock{}, nil
+	}
+	return result, nil
 }
 
 func (tx *postgresTransaction) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
-	return tx.store.EnumerateFileBlocks(ctx, fn)
+	rows, err := tx.tx.Query(ctx, `SELECT hash FROM file_blocks ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("enumerate file blocks: query: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("enumerate file blocks: %w", err)
+		}
+		var hashStr sql.NullString
+		if err := rows.Scan(&hashStr); err != nil {
+			return fmt.Errorf("enumerate file blocks: scan: %w", err)
+		}
+		var h blockstore.ContentHash
+		if hashStr.Valid {
+			parsed, perr := metadata.ParseContentHash(hashStr.String)
+			if perr != nil {
+				return fmt.Errorf("enumerate file blocks: parse hash %q: %w", hashStr.String, perr)
+			}
+			h = parsed
+		}
+		if err := fn(h); err != nil {
+			return err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("enumerate file blocks: rows: %w", err)
+	}
+	return nil
 }
 
 // The file_blocks table schema lives in
