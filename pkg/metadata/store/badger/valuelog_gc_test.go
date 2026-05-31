@@ -38,4 +38,21 @@ func TestValueLogGC_CloseDoesNotHang(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("Close did not return promptly — GC goroutine likely leaked or Close blocked")
 	}
+
+	// Close is idempotent: a second Close must be a safe no-op — return nil
+	// promptly without erroring, hanging, or panicking (badger's db.Close()
+	// is not safe to call twice, so the second call must not reach it).
+	done2 := make(chan error, 1)
+	go func() {
+		done2 <- store.Close()
+	}()
+
+	select {
+	case err := <-done2:
+		if err != nil {
+			t.Fatalf("second Close returned error, want nil: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("second Close did not return promptly — not a safe no-op")
+	}
 }

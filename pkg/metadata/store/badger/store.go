@@ -67,6 +67,12 @@ type BadgerMetadataStore struct {
 	gcStopOnce sync.Once
 	gcWG       sync.WaitGroup
 
+	// closeOnce makes the whole Close() idempotent: GC is stopped+waited
+	// and the underlying DB is closed exactly once. Second and later calls
+	// are a safe no-op returning the first call's result (closeErr).
+	closeOnce sync.Once
+	closeErr  error
+
 	// capabilities stores static filesystem capabilities and limits.
 	// These are set at creation time and define what the filesystem supports.
 	capabilities metadata.FilesystemCapabilities
@@ -541,22 +547,30 @@ func (s *BadgerMetadataStore) initializeSingletons(ctx context.Context) error {
 // The close operation waits for all pending transactions to complete and
 // flushes all data to disk.
 //
+// Close is idempotent: the GC goroutine is stopped and waited, and the
+// underlying BadgerDB is closed, exactly once. A second (or later) call is a
+// safe no-op that returns the first call's result without touching the DB
+// again — badger's db.Close() is not safe to call twice.
+//
 // Returns:
-//   - error: Error if closing the database fails
+//   - error: Error if closing the database fails (on the first call)
 func (s *BadgerMetadataStore) Close() error {
-	// Stop the value-log GC goroutine and wait for it to drain before
-	// closing the DB, so no GC pass runs against a closed database.
-	// gcStopOnce makes Close idempotent.
-	s.gcStopOnce.Do(func() {
-		close(s.gcStop)
+	s.closeOnce.Do(func() {
+		// Stop the value-log GC goroutine and wait for it to drain before
+		// closing the DB, so no GC pass runs against a closed database.
+		// gcStopOnce guards the channel close in case the GC stop is ever
+		// signalled from another path.
+		s.gcStopOnce.Do(func() {
+			close(s.gcStop)
+		})
+		s.gcWG.Wait()
+
+		if err := s.db.Close(); err != nil {
+			s.closeErr = fmt.Errorf("failed to close BadgerDB: %w", err)
+		}
 	})
-	s.gcWG.Wait()
 
-	if err := s.db.Close(); err != nil {
-		return fmt.Errorf("failed to close BadgerDB: %w", err)
-	}
-
-	return nil
+	return s.closeErr
 }
 
 // GetStoreID returns the Badger-persistent store identifier (stored at key
