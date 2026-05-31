@@ -977,22 +977,6 @@ func (sm *StateManager) OpenFile(
 	ownerKey := makeOwnerKey(clientID, ownerData)
 	owner, ownerExists := sm.openOwners[ownerKey]
 
-	// Enforce share reservations across open-owners (RFC 7530 Section 9.7 /
-	// Section 16.16.5; Linux nfsd nfs4_share_conflict). Reclaim (CLAIM_PREVIOUS)
-	// re-establishes state the client previously held and is exempt. The scan
-	// runs under sm.mu so it observes a consistent snapshot of every live open;
-	// opens by THIS owner are skipped because share bits accumulate per owner.
-	if claimType != types.CLAIM_PREVIOUS {
-		if conflict := sm.shareConflictLocked(ownerKey, fileHandle, shareAccess, shareDeny); conflict {
-			logger.Debug("OpenFile: share reservation conflict",
-				"client_id", clientID,
-				"owner", string(ownerData),
-				"req_access", shareAccess,
-				"req_deny", shareDeny)
-			return nil, ErrShareDenied
-		}
-	}
-
 	if ownerExists {
 		// Existing owner: validate seqid
 		// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
@@ -1033,6 +1017,26 @@ func (sm *StateManager) OpenFile(
 		// Register with client record if available
 		if clientRecord != nil {
 			clientRecord.OpenOwners[string(ownerData)] = owner
+		}
+	}
+
+	// Enforce share reservations across open-owners (RFC 7530 Section 9.7 /
+	// Section 16.16.5; Linux nfsd nfs4_share_conflict). This runs AFTER the
+	// owner seqid/replay gate above: a replayed OPEN must return its cached
+	// result and a bad seqid must return NFS4ERR_BAD_SEQID — neither may be
+	// turned into NFS4ERR_SHARE_DENIED by a conflict that arose after the
+	// original request. Reclaim (CLAIM_PREVIOUS) re-establishes prior state and
+	// is exempt. The scan runs under sm.mu so it observes a consistent snapshot
+	// of every live open; opens by THIS owner are skipped (share bits
+	// accumulate per owner).
+	if claimType != types.CLAIM_PREVIOUS {
+		if conflict := sm.shareConflictLocked(ownerKey, fileHandle, shareAccess, shareDeny); conflict {
+			logger.Debug("OpenFile: share reservation conflict",
+				"client_id", clientID,
+				"owner", string(ownerData),
+				"req_access", shareAccess,
+				"req_deny", shareDeny)
+			return nil, ErrShareDenied
 		}
 	}
 
