@@ -364,6 +364,13 @@ run_compose() {
         *-s3)
             PROFILE="$PROFILE" docker compose "${profiles[@]}" up -d localstack
             wait_until "docker compose exec localstack curl -sf http://localhost:4566/_localstack/health" 30 "Localstack"
+            # The S3 remote block store never auto-creates its bucket, so the
+            # CAS bucket must exist before DittoFS issues its first PUT.
+            # awslocal ships in the localstack image and targets the local
+            # endpoint with throwaway credentials.
+            log_step "Creating S3 bucket dittofs-test in Localstack..."
+            docker compose exec -T localstack \
+                awslocal s3api create-bucket --bucket dittofs-test >/dev/null 2>&1 || true
             ;;
     esac
     case "$PROFILE" in
