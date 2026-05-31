@@ -192,9 +192,6 @@ to the DH state machine — tracked under #792 / #793.
 | smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | #738 |
 | smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | #738 |
 | smb2.durable-open.alloc-size | CREATE allocation | Pre-existing non-DH bug: out.alloc_size=0 on CREATE with in.alloc_size set (fails before any reconnect) | #792 |
-| smb2.durable-open.oplock | Disconnected-DH purge | Intervening conflicting open should purge disconnected DH; surfaced after V1 DHnC FileID lookup fix | #808 |
-| smb2.durable-open.open2-lease | Disconnected-DH purge | Intervening conflicting open should purge disconnected DH; surfaced after V1 DHnC FileID lookup fix | #808 |
-| smb2.durable-open.open2-oplock | Disconnected-DH purge | Intervening conflicting open should purge disconnected DH; surfaced after V1 DHnC FileID lookup fix | #808 |
 
 ### Durable Handles V2 (Fix Candidate)
 
@@ -359,6 +356,22 @@ never produce a failure to match against — the KF rows were dead entries
 inflating the apparent count. If a future Samba bump introduces these tests,
 they will resurface as New Failures and can be re-added with a fix plan. The
 channel-sequence mechanism itself (MS-SMB2 §3.3.5.2.10) shipped in #866.
+
+### 2026-05-31 — #808 disconnected-DH purge: 3 rows flipped
+
+PR #871 implements purge of a disconnected durable handle when an intervening
+conflicting open arrives (incompatible share/oplock/lease), so a subsequent
+DHnC reconnect of the original handle correctly fails OBJECT_NAME_NOT_FOUND
+(mirrors Samba's conflicting-open invalidation of a disconnected durable open).
+Previously the disconnected handle survived and the reconnect wrongly returned
+OK. CI smbtorture confirmed `success:` for:
+
+- `smb2.durable-open.oplock`
+- `smb2.durable-open.open2-lease`
+- `smb2.durable-open.open2-oplock`
+
+Non-conflicting `keep-disconnected-*` cases still preserve the handle (no
+over-purge).
 
 ### 2026-05-31 — #749 durable-V2 replay: 7 rows flipped
 
