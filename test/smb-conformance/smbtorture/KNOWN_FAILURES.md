@@ -258,11 +258,6 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 |-----------|----------|--------|-------|
 | smb2.replay.replay3 | Replay | Flaky in CI (replay detection race) | #749 |
 | smb2.replay.replay-dhv2-oplock2 | Replay | Replay with durable handles not implemented | #749 |
-| smb2.replay.replay-dhv2-oplock-lease | Replay | Replay with durable handles not implemented | #749 |
-| smb2.replay.replay-dhv2-lease1 | Replay | Replay with durable handles not implemented | #749 |
-| smb2.replay.replay-dhv2-lease2 | Replay | Replay with durable handles not implemented | #749 |
-| smb2.replay.replay-dhv2-lease3 | Replay | Replay with durable handles not implemented | #749 |
-| smb2.replay.replay-dhv2-lease-oplock | Replay | Replay with durable handles not implemented | #749 |
 | smb2.replay.dhv2-pending1n-vs-violation-lease-close-sane | Replay | Replay pending violation handling not implemented | #749 |
 | smb2.replay.dhv2-pending1n-vs-violation-lease-ack-sane | Replay | Replay pending violation handling not implemented | #749 |
 | smb2.replay.dhv2-pending1n-vs-violation-lease-close-windows | Replay | Replay pending violation handling not implemented | #749 |
@@ -271,9 +266,7 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 | smb2.replay.dhv2-pending1n-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | #749 |
 | smb2.replay.dhv2-pending1n-vs-lease-sane | Replay | Replay pending lease handling not implemented | #749 |
 | smb2.replay.dhv2-pending1n-vs-lease-windows | Replay | Replay pending lease handling not implemented | #749 |
-| smb2.replay.dhv2-pending1l-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | #749 |
 | smb2.replay.dhv2-pending1l-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | #749 |
-| smb2.replay.dhv2-pending1l-vs-lease-sane | Replay | Replay pending lease handling not implemented | #749 |
 | smb2.replay.dhv2-pending1l-vs-lease-windows | Replay | Replay pending lease handling not implemented | #749 |
 | smb2.replay.dhv2-pending1o-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | #749 |
 | smb2.replay.dhv2-pending1o-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | #749 |
@@ -359,6 +352,22 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-31 — #749 durable-V2 replay: 7 rows flipped
+
+PR #866 added DH2Q durable-V2 create-replay protection (state-restoring replay
+cache rebuilding lease/oplock state from the live open + a pending-break
+reservation returning FILE_NOT_AVAILABLE), built on the #864 channel-sequence
+foundation (MS-SMB2 §3.3.5.2.10). CI smbtorture confirmed `success:` for:
+
+- `smb2.replay.replay-dhv2-lease1` / `lease2` / `lease3`
+- `smb2.replay.replay-dhv2-lease-oplock` / `oplock-lease`
+- `smb2.replay.dhv2-pending1l-vs-lease-sane` / `dhv2-pending1l-vs-oplock-sane`
+
+(`replay-dhv2-oplock1` / `oplock3` also pass but were not KF rows.) The
+remaining `replay-dhv2-oplock2`, the `*-windows` pending variants, and the
+`dhv2-pending2*/3*` multichannel-disconnect variants stay as Fix Candidates
+under #749.
 
 ### 2026-05-30 — #738/#739 reopen2: 4 rows flipped by access-revalidation fix
 
