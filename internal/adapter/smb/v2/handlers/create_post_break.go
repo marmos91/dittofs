@@ -384,6 +384,147 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	return 0
 }
 
+// recheckExistingFileGates runs the share-mode conflict check, the DACL
+// access-rights gate, and the delete-on-close (read-only) checks against the
+// CURRENT draft view (d.existingFile / d.existingHandle / d.fileExists /
+// d.createAction). It is intentionally view-driven rather than closing over
+// the caller's local snapshot so it can be re-run after the draft is resynced
+// to the winner of a metadata-store TOCTOU create race (completeCreateAfterBreak
+// ErrAlreadyExists branch): the pre-break invocation evaluated these gates
+// against the (nil) draft view, so a race winner must be re-gated before the
+// overwrite/open path proceeds (#765).
+//
+// Returns:
+//   - grantedAccess / grantedComputed: the effective rights for the open,
+//     computed from the existing file's DACL (per MS-SMB2 §3.3.5.9 paragraph 8).
+//     grantedComputed is false on the new-file path where no existing DACL gate
+//     runs; the caller falls back to resolveAccessFlags(DesiredAccess).
+//   - failResp: non-nil when a gate denies the open; the caller returns it
+//     verbatim. nil on success.
+func (h *Handler) recheckExistingFileGates(d *createDraft, effectiveAccess uint32) (grantedAccess uint32, grantedComputed bool, failResp *CreateResponse) {
+	req := d.req
+	authCtx := d.authCtx
+	filename := d.filename
+	parentHandle := d.parentHandle
+	existingFile := d.existingFile
+	fileExists := d.fileExists
+	createAction := d.createAction
+	metaSvc := h.Registry.GetMetadataService()
+
+	// Share-mode recheck (fileExists path) after any lease breaks have drained.
+	// A pre-break violation selected the Handle-strip break mask so the holder
+	// could close cached handles on ack; the recheck runs against the post-break
+	// open table to decide the final CREATE outcome.
+	//
+	// Uses effectiveAccess (not raw req.DesiredAccess) so a destructive
+	// disposition with a read-only DesiredAccess (e.g. SUPERSEDE+READ_DATA)
+	// still trips the SHARE_WRITE deny check against an existing SHARE_READ-only
+	// holder, returning STATUS_SHARING_VIOLATION. Covers
+	// smb2.acls.OVERWRITE_READ_ONLY_FILE sharing_tcases arm (#575).
+	if fileExists && d.existingHandle != nil {
+		if shareConflict := h.checkShareModeConflict(d.existingHandle, effectiveAccess, req.ShareAccess, filename); shareConflict {
+			logger.Debug("CREATE: sharing violation",
+				"path", filename,
+				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
+				"effectiveAccess", fmt.Sprintf("0x%x", effectiveAccess),
+				"shareAccess", fmt.Sprintf("0x%x", req.ShareAccess),
+				"disposition", req.CreateDisposition)
+			return 0, false, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSharingViolation}}
+		}
+	}
+
+	// Step 6c-bis: Enforce DesiredAccess against the existing file's DACL.
+	//
+	// Per MS-SMB2 §3.3.5.9 and MS-FSA §2.1.5.1.2.1, the server MUST evaluate
+	// the requested access bits against the object's security descriptor and
+	// fail the open with STATUS_ACCESS_DENIED when any non-MAXIMUM_ALLOWED bit
+	// is denied. New files (createAction == FileCreated) inherit their ACL from
+	// the parent at create time and don't need this check — parent write was
+	// already gated via CheckParentWriteAccess in Create(). Tracking #529.
+	//
+	// grantedAccess captures the effective rights for the open per
+	// MS-SMB2 §3.3.5.9 paragraph 8: the per-bit intersection of the
+	// requested mask with the file's DACL. Carried onto OpenFile.GrantedAccess
+	// below and consumed by FileAccessInformation (#548, MS-FSCC §2.4.1) and
+	// the QUERY_INFO open-level access gate (MS-SMB2 §3.3.5.20.1).
+	if fileExists && existingFile != nil {
+		// Fetch parent so CheckFileAccessWithParent can apply the
+		// FILE_DELETE_CHILD override per MS-FSA §2.1.4.13 (Samba
+		// parent_override_delete). Best-effort: a parent-lookup failure
+		// falls back to file-only DACL evaluation (nil parent is safe).
+		var parentFile *metadata.File
+		if parentHandle != nil {
+			if pf, err := metaSvc.GetFile(authCtx.Context, parentHandle); err == nil {
+				parentFile = pf
+			}
+		}
+
+		// effectiveAccess (computed by the caller) folds the
+		// disposition-implied FILE_WRITE_DATA into the mask. The DACL check
+		// uses the same augmented mask Samba's smbd_check_access_rights_fsp
+		// receives, so a DACL that grants only READ_DATA fails OVERWRITE /
+		// OVERWRITE_IF / SUPERSEDE with STATUS_ACCESS_DENIED. Covers
+		// smb2.acls.OVERWRITE_READ_ONLY_FILE fs_tcases arm (#565).
+		granted, err := metaSvc.CheckFileAccessWithParent(existingFile, parentFile, authCtx, effectiveAccess)
+		if err != nil {
+			logger.Debug("CREATE: DesiredAccess denied by DACL",
+				"path", filename,
+				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
+				"effectiveAccess", fmt.Sprintf("0x%x", effectiveAccess),
+				"granted", fmt.Sprintf("0x%x", granted),
+				"disposition", req.CreateDisposition,
+				"error", err)
+			return 0, false, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}
+		}
+		// Preserve the client-visible grant: clear the disposition-implied
+		// bit before propagating so QUERY_INFO / FileAccessInformation report
+		// only what was actually requested (Samba `fsp->access_mask` mirrors
+		// the original DesiredAccess after the open succeeds — see
+		// open_file_ntcreate line where access_mask is restored).
+		if effectiveAccess != req.DesiredAccess {
+			granted &^= (effectiveAccess &^ req.DesiredAccess)
+		}
+		grantedAccess = granted
+		grantedComputed = true
+	}
+
+	// Step 6d: Validate delete-on-close requirements per MS-FSA 2.1.5.1.2.1.
+	if req.CreateOptions&types.FileDeleteOnClose != 0 {
+		if !hasDeleteAccess(req.DesiredAccess) {
+			logger.Debug("CREATE: delete-on-close without DELETE access",
+				"path", filename,
+				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess))
+			return 0, false, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}
+		}
+		if fileExists && existingFile.Type != metadata.FileTypeDirectory {
+			attrs := FileAttrToSMBAttributes(&existingFile.FileAttr)
+			if attrs&types.FileAttributeReadonly != 0 {
+				logger.Debug("CREATE: delete-on-close on read-only file", "path", filename)
+				return 0, false, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusCannotDelete}}
+			}
+		}
+		// READONLY+DOC is forbidden per MS-FSA 2.1.5.1.2.1: the resulting file
+		// would be marked DOC and READONLY simultaneously, but READONLY blocks
+		// the eventual unlink. Only fires when req.FileAttributes actually
+		// propagates to the resulting file — dispositions that create or
+		// rewrite (CREATE/CREATE_IF/SUPERSEDE/OVERWRITE/OVERWRITE_IF). For
+		// FILE_OPEN / FILE_OPEN_IF on an existing file the request attrs are
+		// ignored and the disk attrs apply; that path is covered by the
+		// existing-file arm above.
+		propagatesReqAttrs := createAction == types.FileCreated ||
+			createAction == types.FileOverwritten ||
+			createAction == types.FileSuperseded
+		if propagatesReqAttrs && req.FileAttributes&types.FileAttributeReadonly != 0 {
+			logger.Debug("CREATE: delete-on-close with read-only attribute in request",
+				"path", filename,
+				"createAction", createAction)
+			return 0, false, &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusCannotDelete}}
+		}
+	}
+
+	return grantedAccess, grantedComputed, nil
+}
+
 // completeCreateAfterBreak runs the CREATE flow from the share-mode recheck
 // through the final response build. Split out of Create() so the same code
 // path serves both the synchronous break-wait path and the async-park resume
@@ -407,118 +548,15 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	// augmented mask for BOTH checks. See effectiveAccessForOpen for spec refs.
 	effectiveAccess := effectiveAccessForOpen(req.DesiredAccess, req.CreateDisposition)
 
-	// Share-mode recheck (fileExists path) after any lease breaks have drained.
-	// A pre-break violation selected the Handle-strip break mask so the holder
-	// could close cached handles on ack; the recheck runs against the post-break
-	// open table to decide the final CREATE outcome.
-	//
-	// Uses effectiveAccess (not raw req.DesiredAccess) so a destructive
-	// disposition with a read-only DesiredAccess (e.g. SUPERSEDE+READ_DATA)
-	// still trips the SHARE_WRITE deny check against an existing SHARE_READ-only
-	// holder, returning STATUS_SHARING_VIOLATION. Covers
-	// smb2.acls.OVERWRITE_READ_ONLY_FILE sharing_tcases arm (#575).
-	if fileExists && d.existingHandle != nil {
-		if shareConflict := h.checkShareModeConflict(d.existingHandle, effectiveAccess, req.ShareAccess, filename); shareConflict {
-			logger.Debug("CREATE: sharing violation",
-				"path", filename,
-				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
-				"effectiveAccess", fmt.Sprintf("0x%x", effectiveAccess),
-				"shareAccess", fmt.Sprintf("0x%x", req.ShareAccess),
-				"disposition", req.CreateDisposition)
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSharingViolation}}
-		}
-	}
-
-	// Step 6c-bis: Enforce DesiredAccess against the existing file's DACL.
-	//
-	// Per MS-SMB2 §3.3.5.9 and MS-FSA §2.1.5.1.2.1, the server MUST evaluate
-	// the requested access bits against the object's security descriptor and
-	// fail the open with STATUS_ACCESS_DENIED when any non-MAXIMUM_ALLOWED bit
-	// is denied. New files (createAction == FileCreated) inherit their ACL from
-	// the parent at create time and don't need this check — parent write was
-	// already gated via CheckParentWriteAccess in Create(). Tracking #529.
-	//
-	// grantedAccess captures the effective rights for the open per
-	// MS-SMB2 §3.3.5.9 paragraph 8: the per-bit intersection of the
-	// requested mask with the file's DACL. Carried onto OpenFile.GrantedAccess
-	// below and consumed by FileAccessInformation (#548, MS-FSCC §2.4.1) and
-	// the QUERY_INFO open-level access gate (MS-SMB2 §3.3.5.20.1).
+	// Share-mode recheck + DACL access gate + delete-on-close (read-only)
+	// checks, evaluated against the existing-file draft view after any lease
+	// breaks have drained. Lifted into a helper so the race-recovery branch
+	// (ErrAlreadyExists resync below) can replay the SAME gates against the
+	// winner's view before the overwrite/open path proceeds (#765).
 	metaSvc := h.Registry.GetMetadataService()
-	var grantedAccess uint32
-	var grantedComputed bool
-	if fileExists && existingFile != nil {
-		// Fetch parent so CheckFileAccessWithParent can apply the
-		// FILE_DELETE_CHILD override per MS-FSA §2.1.4.13 (Samba
-		// parent_override_delete). Best-effort: a parent-lookup failure
-		// falls back to file-only DACL evaluation (nil parent is safe).
-		var parentFile *metadata.File
-		if parentHandle != nil {
-			if pf, err := metaSvc.GetFile(authCtx.Context, parentHandle); err == nil {
-				parentFile = pf
-			}
-		}
-
-		// effectiveAccess (computed above the share-mode check) folds the
-		// disposition-implied FILE_WRITE_DATA into the mask. The DACL check
-		// uses the same augmented mask Samba's smbd_check_access_rights_fsp
-		// receives, so a DACL that grants only READ_DATA fails OVERWRITE /
-		// OVERWRITE_IF / SUPERSEDE with STATUS_ACCESS_DENIED. Covers
-		// smb2.acls.OVERWRITE_READ_ONLY_FILE fs_tcases arm (#565).
-		granted, err := metaSvc.CheckFileAccessWithParent(existingFile, parentFile, authCtx, effectiveAccess)
-		if err != nil {
-			logger.Debug("CREATE: DesiredAccess denied by DACL",
-				"path", filename,
-				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
-				"effectiveAccess", fmt.Sprintf("0x%x", effectiveAccess),
-				"granted", fmt.Sprintf("0x%x", granted),
-				"disposition", req.CreateDisposition,
-				"error", err)
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}
-		}
-		// Preserve the client-visible grant: clear the disposition-implied
-		// bit before propagating so QUERY_INFO / FileAccessInformation report
-		// only what was actually requested (Samba `fsp->access_mask` mirrors
-		// the original DesiredAccess after the open succeeds — see
-		// open_file_ntcreate line where access_mask is restored).
-		if effectiveAccess != req.DesiredAccess {
-			granted &^= (effectiveAccess &^ req.DesiredAccess)
-		}
-		grantedAccess = granted
-		grantedComputed = true
-	}
-
-	// Step 6d: Validate delete-on-close requirements per MS-FSA 2.1.5.1.2.1.
-	if req.CreateOptions&types.FileDeleteOnClose != 0 {
-		if !hasDeleteAccess(req.DesiredAccess) {
-			logger.Debug("CREATE: delete-on-close without DELETE access",
-				"path", filename,
-				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess))
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}
-		}
-		if fileExists && existingFile.Type != metadata.FileTypeDirectory {
-			attrs := FileAttrToSMBAttributes(&existingFile.FileAttr)
-			if attrs&types.FileAttributeReadonly != 0 {
-				logger.Debug("CREATE: delete-on-close on read-only file", "path", filename)
-				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusCannotDelete}}
-			}
-		}
-		// READONLY+DOC is forbidden per MS-FSA 2.1.5.1.2.1: the resulting file
-		// would be marked DOC and READONLY simultaneously, but READONLY blocks
-		// the eventual unlink. Only fires when req.FileAttributes actually
-		// propagates to the resulting file — dispositions that create or
-		// rewrite (CREATE/CREATE_IF/SUPERSEDE/OVERWRITE/OVERWRITE_IF). For
-		// FILE_OPEN / FILE_OPEN_IF on an existing file the request attrs are
-		// ignored and the disk attrs apply; that path is covered by the
-		// existing-file arm above.
-		propagatesReqAttrs := createAction == types.FileCreated ||
-			createAction == types.FileOverwritten ||
-			createAction == types.FileSuperseded
-		if propagatesReqAttrs && req.FileAttributes&types.FileAttributeReadonly != 0 {
-			logger.Debug("CREATE: delete-on-close with read-only attribute in request",
-				"path", filename,
-				"createAction", createAction)
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusCannotDelete}}
-		}
+	grantedAccess, grantedComputed, failResp := h.recheckExistingFileGates(d, effectiveAccess)
+	if failResp != nil {
+		return failResp
 	}
 
 	// Step 6e: Break parent directory leases on create/overwrite/supersede
@@ -595,8 +633,10 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 						// share-mode + DACL gates and the lease/open
 						// bookkeeping run against the real file. The
 						// original pre-break share-mode recheck ran on
-						// our stale (nil) view; rerun it now.
-						existingFile = winner
+						// our stale (nil) view; rerun it now. The local
+						// existingFile snapshot is not touched: from here the
+						// race branch drives file/fileHandle directly and the
+						// replayed gates read the winner from d.existingFile.
 						fileExists = true
 						d.existingFile = winner
 						d.fileExists = true
@@ -611,6 +651,26 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 							return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(dispErr)}}
 						}
 						createAction = newAction
+						d.createAction = newAction
+						// Replay the share-mode + DACL + delete-on-close
+						// gates against the winner BEFORE the overwrite/open
+						// proceeds. The first invocation (top of
+						// completeCreateAfterBreak) ran against the stale nil
+						// draft, so a winner with an incompatible share-mode
+						// or denying DACL — surfaced only under real path
+						// contention on OVERWRITE_IF / SUPERSEDE — would
+						// otherwise slip past every access gate (#765). On the
+						// OPEN_IF dir-mkdir-dup path the winner is a fresh
+						// share-compatible directory, so this is a no-op there.
+						// effectiveAccess is immutable across the resync
+						// (DesiredAccess / CreateDisposition don't change), so
+						// the value computed at the top still applies.
+						rg, rc, raceFail := h.recheckExistingFileGates(d, effectiveAccess)
+						if raceFail != nil {
+							return raceFail
+						}
+						grantedAccess = rg
+						grantedComputed = rc
 						if createAction == types.FileOpened {
 							file = winner
 							fileHandle = d.existingHandle
