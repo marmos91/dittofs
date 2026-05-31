@@ -209,12 +209,28 @@ func TestBuildChallenge(t *testing.T) {
 			// with EINVAL; Windows and Samba always set both.
 			{Flag128, "128-bit"},
 			{Flag56, "56-bit"},
+			// Version must be advertised — the native Windows redirector
+			// rejects a CHALLENGE without it (issue #879).
+			{FlagVersion, "Version"},
 		}
 
 		for _, ef := range expectedFlags {
 			if flags&uint32(ef.flag) == 0 {
 				t.Errorf("Expected flag %s (0x%x) to be set", ef.name, ef.flag)
 			}
+		}
+	})
+
+	t.Run("HasNonZeroVersion", func(t *testing.T) {
+		// When FlagVersion is set, the 8-byte Version structure at offset 48
+		// (MS-NLMP §2.2.2.10) must be non-zero with NTLMRevisionCurrent=0x0F.
+		// A zero Version is what the Windows redirector rejects (#879).
+		version := msg[48:56]
+		if bytes.Equal(version, make([]byte, 8)) {
+			t.Error("Version structure must be non-zero when FlagVersion is set")
+		}
+		if version[7] != 0x0F {
+			t.Errorf("NTLMRevisionCurrent = 0x%02x, expected 0x0F", version[7])
 		}
 	})
 
