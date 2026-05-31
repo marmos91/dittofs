@@ -347,6 +347,91 @@ func TestResolveCreateReplay_OplockReplayedAsLease(t *testing.T) {
 	}
 }
 
+// TestResolveCreateReplay_NoOplockPendingReserved models the no-oplock
+// share-conflict "n" variant (smbtorture replay-dhv2-pending1n-*-sane): the
+// conflicting first open holds NO oplock/lease, so the second CREATE takes the
+// inline (non-park) path. Create now reserves the DH2Q CreateGuid across that
+// inline break+complete window. While reserved, a concurrent replay
+// (FLAGS_REPLAY_OPERATION) must return STATUS_FILE_NOT_AVAILABLE rather than
+// fall through the full CREATE path (the bug fixed for #749). After the original
+// finishes (reservation released) and with no cached entry, a fresh replay must
+// fall through cleanly — proving the reservation was not leaked.
+func TestResolveCreateReplay_NoOplockPendingReserved(t *testing.T) {
+	h, _, _ := newReplayTestHandler()
+	const sessionID = uint64(7)
+	guid := [16]byte{0x4E, 0x4F} // "NO"
+
+	// Create's inline-conflict path reserves the guid (no async park, no cached
+	// entry yet — the original open has not completed).
+	h.CreateReplayCache.Reserve(sessionID, guid)
+
+	// Concurrent replay while reserved → FILE_NOT_AVAILABLE.
+	resp, handled := h.resolveCreateReplay(newReplayCtx(sessionID, true), dh2qCreateReq(guid, nil))
+	if !handled {
+		t.Fatal("replay against a reserved no-oplock CREATE must be handled")
+	}
+	if resp.Status != types.StatusFileNotAvailable {
+		t.Fatalf("status = %s, want STATUS_FILE_NOT_AVAILABLE", resp.Status)
+	}
+
+	// A non-replay duplicate while reserved must NOT be hijacked into
+	// FILE_NOT_AVAILABLE: with no cached entry it simply falls through to the
+	// normal CREATE path (IsReserved is gated on ctx.IsReplay).
+	if _, handled := h.resolveCreateReplay(newReplayCtx(sessionID, false), dh2qCreateReq(guid, nil)); handled {
+		t.Fatal("non-replay CREATE on a reserved-but-uncached guid must fall through")
+	}
+
+	// Original completes: Create releases the reservation. A fresh replay now
+	// finds neither a reservation nor a cached entry and falls through — no leak.
+	h.CreateReplayCache.Release(sessionID, guid)
+	if h.CreateReplayCache.IsReserved(sessionID, guid) {
+		t.Fatal("reservation leaked after Release")
+	}
+	if _, handled := h.resolveCreateReplay(newReplayCtx(sessionID, true), dh2qCreateReq(guid, nil)); handled {
+		t.Fatal("after release with no cached entry the replay must fall through")
+	}
+}
+
+// TestCreateReplayCache_ReserveReleaseSingleReservation proves the
+// single-logical-reservation invariant the #749 fix relies on: Reserve is
+// idempotent (set semantics) and one Release clears the guid regardless of how
+// many Reserves preceded it. This guards the design where Create reserves the
+// guid before dispatch and — on the async-park path — parkCreateOnLeaseBreak's
+// resume goroutine performs the single Release. Even if both sites were to
+// Reserve, a single Release must fully clear the guid (no stuck reservation
+// that would wrongly FILE_NOT_AVAILABLE all future opens) and an extra Release
+// must be a harmless no-op (no panic / no negative refcount).
+func TestCreateReplayCache_ReserveReleaseSingleReservation(t *testing.T) {
+	c := NewCreateReplayCache()
+	const sessionID = uint64(11)
+	guid := [16]byte{0xC0, 0xDE}
+
+	// Idempotent Reserve: two reserves still collapse to one logical entry.
+	c.Reserve(sessionID, guid)
+	c.Reserve(sessionID, guid)
+	if !c.IsReserved(sessionID, guid) {
+		t.Fatal("guid must be reserved after Reserve")
+	}
+
+	// A single Release clears it.
+	c.Release(sessionID, guid)
+	if c.IsReserved(sessionID, guid) {
+		t.Fatal("a single Release must fully clear the reservation (no stuck reservation)")
+	}
+
+	// An extra Release is a harmless no-op.
+	c.Release(sessionID, guid)
+	if c.IsReserved(sessionID, guid) {
+		t.Fatal("double Release must not resurrect the reservation")
+	}
+
+	// A zero CreateGuid is never tracked (non-V2 / no DH2Q creates).
+	c.Reserve(sessionID, [16]byte{})
+	if c.IsReserved(sessionID, [16]byte{}) {
+		t.Fatal("zero CreateGuid must never be reserved")
+	}
+}
+
 // leaseKey16Guid reuses a lease key's bytes as a distinct CreateGuid for tests
 // (the two are independent identifiers; reusing keeps the fixtures compact).
 func leaseKey16Guid(leaseKey [16]byte) [16]byte {

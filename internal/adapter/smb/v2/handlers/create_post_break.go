@@ -1336,16 +1336,15 @@ func (h *Handler) parkCreateOnLeaseBreak(
 	shareName := d.tree.ShareName
 	messageID := ctx.MessageID
 
-	// Reserve the DH2Q CreateGuid for the lifetime of the parked CREATE so a
-	// replayed CREATE on the same CreateGuid fails fast with
-	// STATUS_FILE_NOT_AVAILABLE instead of blocking on the same break
-	// (smbtorture replay-dhv2-pending* / *-vs-{oplock,lease}). Released by
-	// the resume goroutine when the original reaches a terminal state. A
-	// zero CreateGuid (non-V2 / no DH2Q) is a no-op in Reserve/Release.
+	// The DH2Q CreateGuid was already Reserved by the caller (Create, before the
+	// breakAndMaybeParkCreate dispatch) so a replayed CREATE fails fast with
+	// STATUS_FILE_NOT_AVAILABLE instead of blocking on the same break (smbtorture
+	// replay-dhv2-pending* / *-vs-{oplock,lease}). Since this CREATE is parking
+	// async, ownership of the matching Release transfers to the resume goroutine
+	// below: the caller returns STATUS_PENDING immediately and does NOT release.
+	// This keeps exactly one Reserve (in Create) and one Release (here for the
+	// parked path) per CREATE attempt. A zero CreateGuid is a no-op in Release.
 	replayGuid := dh2qCreateGuid(d.req)
-	if h.CreateReplayCache != nil {
-		h.CreateReplayCache.Reserve(ctx.SessionID, replayGuid)
-	}
 
 	go func() {
 		defer cancel()
