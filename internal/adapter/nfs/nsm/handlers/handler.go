@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"sync"
 	"sync/atomic"
 
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -43,6 +44,19 @@ type Handler struct {
 	// maxClients is the maximum number of monitored clients.
 	// SM_MON returns STAT_FAIL if this limit is reached.
 	maxClients int
+
+	// peerStateMu guards peerState.
+	peerStateMu sync.Mutex
+
+	// peerState records the last-seen NSM state number for each monitored
+	// host (keyed by mon_name). NSM state numbers are monotonically
+	// increasing per the protocol, so an SM_NOTIFY is acted on only when its
+	// state strictly exceeds the stored value; equal-or-lower states are
+	// replays/stale and are ignored. This is the H17 monotonicity gate.
+	//
+	// Note: this is the last-seen state of the *peer* (the host that
+	// rebooted), distinct from the server's own serverState counter.
+	peerState map[string]int32
 }
 
 // HandlerConfig configures the NSM handler.
@@ -93,6 +107,7 @@ func NewHandler(config HandlerConfig) *Handler {
 		clientStore: config.ClientStore,
 		serverName:  config.ServerName,
 		maxClients:  config.MaxClients,
+		peerState:   make(map[string]int32),
 	}
 	h.serverState.Store(config.InitialState)
 	return h
@@ -145,4 +160,23 @@ func (h *Handler) GetClientStore() lock.ClientRegistrationStore {
 // GetServerName returns the configured server hostname.
 func (h *Handler) GetServerName() string {
 	return h.serverName
+}
+
+// admitPeerState enforces SM_NOTIFY state-number monotonicity for a monitored
+// host (H17). It returns true and records incoming as the new last-seen state
+// only when incoming strictly exceeds the previously stored state for monName.
+// An equal-or-lower state is a replay/stale notification and returns false
+// without mutating stored state.
+//
+// The first NOTIFY ever seen for a monName is admitted (any positive state is
+// greater than the zero-value default), then recorded.
+func (h *Handler) admitPeerState(monName string, incoming int32) bool {
+	h.peerStateMu.Lock()
+	defer h.peerStateMu.Unlock()
+
+	if incoming <= h.peerState[monName] {
+		return false
+	}
+	h.peerState[monName] = incoming
+	return true
 }
