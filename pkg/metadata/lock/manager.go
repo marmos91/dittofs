@@ -41,6 +41,9 @@ type LockManager interface {
 
 	// ListUnifiedLocks returns all unified locks on a file.
 	ListUnifiedLocks(handleKey string) []*UnifiedLock
+	// TestUnifiedLock previews whether a prospective NLM/NFSv4 byte-range lock
+	// would conflict, checking BOTH the unified and SMB byte-range maps.
+	TestUnifiedLock(handleKey string, want *UnifiedLock) *UnifiedLockConflict
 
 	// RemoveFileUnifiedLocks removes all unified locks for a file.
 	RemoveFileUnifiedLocks(handleKey string)
@@ -588,6 +591,80 @@ func conflictFrom(fl *FileLock) *LockConflict {
 	}
 }
 
+// Byte-range locks live in two maps that the protocol adapters populate
+// separately: SMB byte-range locks in lm.locks (Manager.Lock) and NLM/NFSv4
+// byte-range locks in lm.unifiedLocks (Manager.AddUnifiedLock). The helpers
+// below let each acquisition/IO path cross-check the OTHER map so a lock taken
+// via one protocol blocks a conflicting lock or write via the other
+// (MS-FSA §2.1.5 cross-protocol byte-range conflict). Without this an NFS lock
+// and an SMB lock on the same overlapping range could both be granted.
+
+// fileLockConflictsWithUnified reports whether an SMB byte-range FileLock and a
+// byte-range UnifiedLock on the same file conflict. Cross-protocol byte-range
+// locks are always different owners, so the test reduces to range overlap plus
+// exclusivity. Whole-file leases and delegations are caching primitives
+// resolved through the break path, not byte-range conflicts, so they never
+// participate; SMB2 zero-byte locks never conflict.
+func fileLockConflictsWithUnified(fl *FileLock, ul *UnifiedLock) bool {
+	if ul.IsLease() || ul.IsDelegation() {
+		return false
+	}
+	if fl.IsZeroByte {
+		return false
+	}
+	if !RangesOverlap(fl.Offset, fl.Length, ul.Offset, ul.Length) {
+		return false
+	}
+	// Two shared (read) locks coexist; an exclusive on either side conflicts.
+	return fl.Exclusive || ul.IsExclusive()
+}
+
+// unifiedLockBlocksIO reports whether a byte-range UnifiedLock held by another
+// protocol blocks an SMB I/O at [offset, length). Cross-protocol I/O is always
+// a different owner: a write is blocked by any overlapping lock; a read is
+// blocked only by an overlapping exclusive lock (MS-FSA §2.1.4.10).
+func unifiedLockBlocksIO(ul *UnifiedLock, offset, length uint64, isWrite bool) bool {
+	if ul.IsLease() || ul.IsDelegation() {
+		return false
+	}
+	if !ul.Overlaps(offset, length) {
+		return false
+	}
+	if isWrite {
+		return true
+	}
+	return ul.IsExclusive()
+}
+
+// conflictFromUnified renders a byte-range UnifiedLock as the LockConflict the
+// SMB byte-range path reports.
+func conflictFromUnified(ul *UnifiedLock) *LockConflict {
+	return &LockConflict{
+		Offset:    ul.Offset,
+		Length:    ul.Length,
+		Exclusive: ul.IsExclusive(),
+		OwnerID:   ul.Owner.OwnerID,
+	}
+}
+
+// unifiedConflictFromFileLock renders a conflicting SMB FileLock as the
+// UnifiedLockConflict the NLM/NFSv4 byte-range path reports.
+func unifiedConflictFromFileLock(fl *FileLock) *UnifiedLockConflict {
+	lt := LockTypeShared
+	if fl.Exclusive {
+		lt = LockTypeExclusive
+	}
+	return &UnifiedLockConflict{
+		Lock: &UnifiedLock{
+			Owner:  LockOwner{OwnerID: lockOwnerID(fl)},
+			Offset: fl.Offset,
+			Length: fl.Length,
+			Type:   lt,
+		},
+		Reason: "cross-protocol byte-range conflict",
+	}
+}
+
 // Manager manages byte-range file locks for SMB/NLM protocols.
 //
 // This is a shared, in-memory implementation that can be embedded in any
@@ -678,6 +755,14 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 	for i := range existing {
 		if IsLockConflicting(&existing[i], &lock) {
 			return NewLockedError("", conflictFrom(&existing[i]))
+		}
+	}
+
+	// Cross-protocol: an overlapping NLM/NFSv4 byte-range lock must also block
+	// this SMB lock (area-5 H-3 / xproto H1).
+	for _, ul := range lm.unifiedLocks[handleKey] {
+		if fileLockConflictsWithUnified(&lock, ul) {
+			return NewLockedError("", conflictFromUnified(ul))
 		}
 	}
 
@@ -840,6 +925,13 @@ func (lm *Manager) TestLock(handleKey string, lock FileLock) (*LockConflict, err
 		}
 	}
 
+	// Mirror Lock()'s cross-protocol check so the preview agrees with acquire.
+	for _, ul := range lm.unifiedLocks[handleKey] {
+		if fileLockConflictsWithUnified(&lock, ul) {
+			return conflictFromUnified(ul), nil
+		}
+	}
+
 	return nil, nil
 }
 
@@ -873,6 +965,15 @@ func (lm *Manager) CheckForIO(handleKey string, openID string, sessionID uint64,
 	for i := range existing {
 		if CheckIOConflict(&existing[i], openID, sessionID, offset, length, isWrite) {
 			return conflictFrom(&existing[i])
+		}
+	}
+
+	// Cross-protocol: a byte-range lock held via NLM/NFSv4 must also gate SMB
+	// I/O (xproto H2). Without this an NFS exclusive lock never blocks an SMB
+	// write to the same range.
+	for _, ul := range lm.unifiedLocks[handleKey] {
+		if unifiedLockBlocksIO(ul, offset, length, isWrite) {
+			return conflictFromUnified(ul)
 		}
 	}
 
@@ -1581,6 +1682,18 @@ func (lm *Manager) AddUnifiedLock(handleKey string, lock *UnifiedLock) error {
 		}
 	}
 
+	// Cross-protocol: an overlapping SMB byte-range lock must also block this
+	// NLM/NFSv4 lock (area-5 H-3 / xproto H1). Skip for whole-file leases and
+	// delegations, which are not byte-range locks.
+	if !lock.IsLease() && !lock.IsDelegation() {
+		smbLocks := lm.locks[handleKey]
+		for i := range smbLocks {
+			if fileLockConflictsWithUnified(&smbLocks[i], lock) {
+				return NewLockConflictError("", unifiedConflictFromFileLock(&smbLocks[i]))
+			}
+		}
+	}
+
 	// Check if this exact lock already exists (same owner, offset, length)
 	// If so, update it (allows changing lock type)
 	for i, el := range existing {
@@ -1603,6 +1716,35 @@ func (lm *Manager) AddUnifiedLock(handleKey string, lock *UnifiedLock) error {
 	// Add new lock
 	lm.unifiedLocks[handleKey] = append(existing, lock)
 	lm.persistUnifiedLockLocked(lock)
+	return nil
+}
+
+// TestUnifiedLock previews whether a prospective NLM/NFSv4 byte-range lock would
+// conflict, checking BOTH the unified lock map and the SMB byte-range map
+// (lm.locks). Returns the conflicting lock, or nil if grantable. This keeps the
+// NLM/NFSv4 TEST/LOCKT preview consistent with AddUnifiedLock enforcement: a
+// preview that only scanned unifiedLocks would report a range grantable while
+// an overlapping SMB byte-range lock in lm.locks would deny the acquire
+// (area-5 H-3 / xproto H1).
+func (lm *Manager) TestUnifiedLock(handleKey string, want *UnifiedLock) *UnifiedLockConflict {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	for _, el := range lm.unifiedLocks[handleKey] {
+		if want.ConflictsWith(el) {
+			return &UnifiedLockConflict{Lock: el, Reason: "lock conflict"}
+		}
+	}
+
+	if !want.IsLease() && !want.IsDelegation() {
+		smbLocks := lm.locks[handleKey]
+		for i := range smbLocks {
+			if fileLockConflictsWithUnified(&smbLocks[i], want) {
+				return unifiedConflictFromFileLock(&smbLocks[i])
+			}
+		}
+	}
+
 	return nil
 }
 

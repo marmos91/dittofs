@@ -77,7 +77,8 @@ Each area gets PR-A (REVIEW.md) → triage → PR-B (fixes + simplifier + review
 | 2 | Syncer | ✅ folded into #1 | ✅ folded into #1 | "subset of #1"; engine+syncer covered by #677 PR-A + I-1/2/3 (`#713`/`#723`/`#735`) + B1 (`#840`). No standalone pass — covered. |
 | 4 | NFS handlers | ✅ **#844 MERGED** `2dd0e8b5` | — | 8 agents/3 batches: v3, v4-state, RPC/GSS, NLM/NSM/portmap, v4-types/XDR, 2nd-pass handlers, + DESIGN/perf/bloat/versions/interfaces. **19 HIGH/32 MED/33 LOW** + DESIGN-AUDIT.md. Invariants clean. Design rec: Option A auth-unify (PR-B0) → Option B collapse-dispatch; rewrite NOT warranted. Perf: top hotspot unsized bytes.Buffer compound.go:600 (27%). Bloat: ~1.3-2.4k LOC/~53 files removable. PR-B split in REVIEW §7. |
 | 3 | SMB handlers | ⏸ deferred | — | Active parallel conformance track (#843 + roadmap-v2 waves) collides with an audit pass; audit after conformance settles. |
-| 5–11 | Lock/ACL, Metadata, Runtime, Snapshot, Config, CLI, Operator | ⏳ queued | — | Per perf-leverage order. |
+| 5 | Lock manager + ACL | ✅ **#851 MERGED** `e302663d` | 🔄 PR-B1 `#852`+`#856` (persistence) + PR-B2 **`#860 MERGED`** `cfc2f7d1` (grace/reclaim) done; **PR-B3 two-store cross-scan in progress** | 3 HIGH/4 MED/12 LOW; ACL clean (0 HIGH). H-2 persistence + H-1 grace CLOSED. PR-B1: 4 review rounds/14 bugs/0 stayed-buggy (field-drop + ordering generators sealed). PR-B2: 3 HIGH found post-impl (orphan grace timer, NLM ClientID ephemeral-port, coordinator capture-vs-live) all fixed. PR-B3 closes H-3 (`lm.locks` vs `lm.unifiedLocks` never cross-checked) + xproto H1/H2. |
+| 6–11 | Metadata, Runtime, Snapshot, Config, CLI, Operator | ⏳ queued | — | Per perf-leverage order. |
 
 Real NFS LOC measured 2026-05-29 ≈ 56K (table's 52.9K was the Wave-0 estimate).
 

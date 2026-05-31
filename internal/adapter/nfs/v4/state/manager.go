@@ -1798,35 +1798,34 @@ func (sm *StateManager) TestLock(
 		Type:   mappedType,
 	}
 
-	// Query existing locks on this file
+	// TestUnifiedLock cross-checks the SMB byte-range map (lm.locks) too, so
+	// NFSv4 LOCKT reports the same conflict an actual LOCK would be denied by
+	// when an overlapping SMB byte-range lock exists (xproto H1).
 	handleKey := string(fileHandle)
-	existingLocks := sm.lockManager.ListUnifiedLocks(handleKey)
-
-	// Check each existing lock for conflict
-	for _, el := range existingLocks {
-		if lock.IsUnifiedLockConflicting(el, testLock) {
-			// Build LOCK4denied from the conflicting lock
-			var conflictType uint32
-			if el.Type == lock.LockTypeExclusive {
-				conflictType = types.WRITE_LT
-			} else {
-				conflictType = types.READ_LT
-			}
-
-			denied := &LOCK4denied{
-				Offset:   el.Offset,
-				Length:   el.Length,
-				LockType: conflictType,
-			}
-
-			// Parse OwnerID to extract clientID and ownerData
-			// Format: "nfs4:{clientid}:{owner_hex}"
-			denied.Owner.ClientID = 0    // Default
-			denied.Owner.OwnerData = nil // Default
-			parseConflictOwner(el.Owner.OwnerID, denied)
-
-			return denied, nil
+	conflict := sm.lockManager.TestUnifiedLock(handleKey, testLock)
+	if conflict != nil {
+		el := conflict.Lock
+		// Build LOCK4denied from the conflicting lock
+		var conflictType uint32
+		if el.Type == lock.LockTypeExclusive {
+			conflictType = types.WRITE_LT
+		} else {
+			conflictType = types.READ_LT
 		}
+
+		denied := &LOCK4denied{
+			Offset:   el.Offset,
+			Length:   el.Length,
+			LockType: conflictType,
+		}
+
+		// Parse OwnerID to extract clientID and ownerData
+		// Format: "nfs4:{clientid}:{owner_hex}"
+		denied.Owner.ClientID = 0    // Default
+		denied.Owner.OwnerData = nil // Default
+		parseConflictOwner(el.Owner.OwnerID, denied)
+
+		return denied, nil
 	}
 
 	return nil, nil
