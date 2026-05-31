@@ -66,7 +66,11 @@ type txSnapshot struct {
 // leak through a shared inner map or pointer.
 func (store *MemoryMetadataStore) snapshotLocked() *txSnapshot {
 	snap := &txSnapshot{
-		shares:        maps.Clone(store.shares),
+		// shares holds *shareData mutated in place (UpdateShareOptions,
+		// CreateRootDirectory set RootHandle) — a shallow map clone would share
+		// those pointers and let the mutation leak into the snapshot, defeating
+		// rollback. Copy each struct (same discipline as fileBlockData.blocks).
+		shares:        make(map[string]*shareData, len(store.shares)),
 		files:         maps.Clone(store.files),
 		parents:       maps.Clone(store.parents),
 		children:      make(map[string]map[string]metadata.FileHandle, len(store.children)),
@@ -76,6 +80,10 @@ func (store *MemoryMetadataStore) snapshotLocked() *txSnapshot {
 		objectIndex:   maps.Clone(store.objectIndex),
 		serverConfig:  store.serverConfig,
 		capabilities:  store.capabilities,
+	}
+	for k, v := range store.shares {
+		sc := *v
+		snap.shares[k] = &sc
 	}
 	for k, inner := range store.children {
 		snap.children[k] = maps.Clone(inner)

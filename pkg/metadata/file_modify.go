@@ -563,8 +563,14 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 				}
 			} else {
 				// For files, decrement link count or set to 0
-				// POSIX: ctime must be updated when link count changes
-				linkCount, _ := tx.GetLinkCount(ctx.Context, dstHandle)
+				// POSIX: ctime must be updated when link count changes.
+				// The read is tx-critical: a failed GetLinkCount must roll the
+				// rename back, not fall through with count 0 and commit a wrong
+				// link count.
+				linkCount, err := tx.GetLinkCount(ctx.Context, dstHandle)
+				if err != nil {
+					return err
+				}
 				now := time.Now()
 				newCount := uint32(0)
 				if linkCount > 1 {
@@ -608,15 +614,23 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 
 			// Update link counts for directory moves
 			if srcFile.Type == FileTypeDirectory {
-				// Decrement source parent's link count
-				srcLinkCount, _ := tx.GetLinkCount(ctx.Context, fromDir)
+				// Decrement source parent's link count. The read is tx-critical
+				// (a failed GetLinkCount must abort the rename, not silently
+				// skip the parent-nlink update).
+				srcLinkCount, err := tx.GetLinkCount(ctx.Context, fromDir)
+				if err != nil {
+					return err
+				}
 				if srcLinkCount > 0 {
 					if err := tx.SetLinkCount(ctx.Context, fromDir, srcLinkCount-1); err != nil {
 						return err
 					}
 				}
-				// Increment destination parent's link count
-				dstLinkCount, _ := tx.GetLinkCount(ctx.Context, toDir)
+				// Increment destination parent's link count.
+				dstLinkCount, err := tx.GetLinkCount(ctx.Context, toDir)
+				if err != nil {
+					return err
+				}
 				if err := tx.SetLinkCount(ctx.Context, toDir, dstLinkCount+1); err != nil {
 					return err
 				}
