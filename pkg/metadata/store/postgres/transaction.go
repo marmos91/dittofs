@@ -860,17 +860,51 @@ func (tx *postgresTransaction) DeleteShare(ctx context.Context, shareName string
 		return err
 	}
 
+	// Sum the regular-file bytes about to be removed so the usedBytes
+	// counter stays accurate without a full recompute. A failed Scan must not
+	// be swallowed: silently proceeding with freedBytes=0 would delete the
+	// files but never decrement the counter, drifting statfs for the process
+	// lifetime.
+	var freedBytes int64
+	if err := tx.tx.QueryRow(ctx,
+		`SELECT COALESCE(SUM(size), 0) FROM files
+		 WHERE share_name = $1 AND file_type = $2 AND size > 0`,
+		shareName, int(metadata.FileTypeRegular),
+	).Scan(&freedBytes); err != nil {
+		return mapPgError(err, "DeleteShare", shareName)
+	}
+
+	// Drop the share row first: shares.root_file_id references files(id)
+	// WITHOUT ON DELETE CASCADE, so the files rows cannot be removed while
+	// the share still points at the root inode.
 	result, err := tx.tx.Exec(ctx, `DELETE FROM shares WHERE share_name = $1`, shareName)
 	if err != nil {
 		return mapPgError(err, "DeleteShare", shareName)
 	}
-
 	if result.RowsAffected() == 0 {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
 			Message: "share not found",
 			Path:    shareName,
 		}
+	}
+
+	// Delete all file rows for the share. The store.go:161 contract is
+	// "removes a share and all its metadata"; dropping only the share row
+	// orphans every files/parent_child_map/link_counts/file_block_refs row
+	// and leaves the root inode occupying the unique root-path index, so a
+	// same-name recreation fails with ErrAlreadyExists. parent_child_map,
+	// link_counts, and file_block_refs all cascade from files(id).
+	if _, err := tx.tx.Exec(ctx, `DELETE FROM files WHERE share_name = $1`, shareName); err != nil {
+		return mapPgError(err, "DeleteShare", shareName)
+	}
+
+	// Inline decrement shares the known tx-retry double-count class with
+	// PutFile/DeleteFile (a serialization retry re-runs this closure and
+	// re-applies the delta); unified post-commit fix tracked for the
+	// metadata-tx-integrity PR. The counter is statfs-only, not quota-enforcing.
+	if freedBytes > 0 {
+		tx.store.usedBytes.Add(-freedBytes)
 	}
 
 	return nil
@@ -1098,10 +1132,18 @@ func (tx *postgresTransaction) GetServerConfig(ctx context.Context) (metadata.Me
 
 	var customSettings map[string]any
 	err := tx.tx.QueryRow(ctx, query).Scan(&customSettings)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Match the pool-path and the memory/badger backends: a missing
+		// config row is an empty (non-nil) config, not a not-found error.
+		return metadata.MetadataServerConfig{CustomSettings: map[string]any{}}, nil
+	}
 	if err != nil {
 		return metadata.MetadataServerConfig{}, mapPgError(err, "GetServerConfig", "")
 	}
 
+	if customSettings == nil {
+		customSettings = map[string]any{}
+	}
 	return metadata.MetadataServerConfig{
 		CustomSettings: customSettings,
 	}, nil

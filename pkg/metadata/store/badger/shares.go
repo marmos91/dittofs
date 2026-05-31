@@ -211,12 +211,128 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 			return err
 		}
 
-		if err := txn.Delete(keyShare(shareName)); err != nil {
+		if err := s.deleteShareFiles(txn, shareName); err != nil {
 			return err
 		}
 
-		return nil
+		return txn.Delete(keyShare(shareName))
 	})
+}
+
+// deleteShareFiles removes every file inode and its dependent keys (parent,
+// link-count, child-map, objectID index) for a share, decrementing usedBytes
+// for regular files. Shared by the pool-path (BadgerMetadataStore.DeleteShare)
+// and the transaction-path (badgerTransaction.DeleteShare) so both honor the
+// store.go:161 contract ("removes a share and all its metadata") identically;
+// dropping only the share key would orphan every file/parent/linkcount/child/
+// objectID entry. Files are collected first, then mutated, so keys are never
+// deleted out from under the active iterator.
+//
+// usedBytes is adjusted inline; like PutFile/DeleteFile this shares the known
+// tx-retry double-count class (a conflict/serialization retry re-runs the
+// enclosing Update and re-applies the delta), tracked for the
+// metadata-tx-integrity fix PR. The counter is statfs-only, not quota-enforcing.
+func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName string) error {
+	type doomed struct {
+		id       uuid.UUID
+		objectID metadata.ContentHash
+		isDir    bool
+		size     uint64
+		isReg    bool
+	}
+	var victims []doomed
+
+	opts := badgerdb.DefaultIteratorOptions
+	opts.PrefetchValues = true
+	it := txn.NewIterator(opts)
+	filePrefix := []byte(prefixFile)
+	for it.Seek(filePrefix); it.ValidForPrefix(filePrefix); it.Next() {
+		item := it.Item()
+		val, vErr := item.ValueCopy(nil)
+		if vErr != nil {
+			it.Close()
+			return fmt.Errorf("badger DeleteShare: copy file value: %w", vErr)
+		}
+		file, decErr := decodeFile(val)
+		if decErr != nil {
+			// Skip undecodable rows rather than wedge the whole delete;
+			// they cannot be attributed to this share anyway.
+			continue
+		}
+		if file.ShareName != shareName {
+			continue
+		}
+		victims = append(victims, doomed{
+			id:       file.ID,
+			objectID: file.ObjectID,
+			isDir:    file.Type == metadata.FileTypeDirectory,
+			size:     file.Size,
+			isReg:    file.Type == metadata.FileTypeRegular,
+		})
+	}
+	it.Close()
+
+	for _, v := range victims {
+		if delErr := deleteFileKeys(txn, v.id, v.objectID); delErr != nil {
+			return delErr
+		}
+		// Directories own c:<uuid>:<name> child entries; prefix-scan and
+		// delete them so no dangling mapping survives the share.
+		if v.isDir {
+			if delErr := deleteChildEntries(txn, v.id); delErr != nil {
+				return delErr
+			}
+		}
+		if v.isReg && v.size > 0 {
+			s.usedBytes.Add(-int64(v.size))
+		}
+	}
+
+	return nil
+}
+
+// deleteFileKeys removes the primary file row plus its parent, link-count, and
+// (when present) ObjectID secondary-index keys. Shared by DeleteFile and
+// DeleteShare so the per-file teardown lives in one place. Missing keys are
+// tolerated; the caller owns child-entry and usedBytes cleanup.
+func deleteFileKeys(txn *badgerdb.Txn, id uuid.UUID, objectID metadata.ContentHash) error {
+	keys := [][]byte{
+		keyFile(id),
+		keyParent(id),
+		keyLinkCount(id),
+	}
+	for _, key := range keys {
+		if err := txn.Delete(key); err != nil && err != badgerdb.ErrKeyNotFound {
+			return err
+		}
+	}
+	if !objectID.IsZero() {
+		if err := txn.Delete(keyObjectID(objectID)); err != nil && err != badgerdb.ErrKeyNotFound {
+			return fmt.Errorf("badger: delete obj index: %w", err)
+		}
+	}
+	return nil
+}
+
+// deleteChildEntries removes every c:<parentID>:<name> mapping under a
+// directory. Collects keys under the held txn iterator first, then deletes,
+// to avoid mutating keys out from under the iterator.
+func deleteChildEntries(txn *badgerdb.Txn, parentID uuid.UUID) error {
+	prefix := keyChildPrefix(parentID)
+	opts := badgerdb.DefaultIteratorOptions
+	opts.PrefetchValues = false
+	it := txn.NewIterator(opts)
+	var keys [][]byte
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		keys = append(keys, it.Item().KeyCopy(nil))
+	}
+	it.Close()
+	for _, k := range keys {
+		if err := txn.Delete(k); err != nil && err != badgerdb.ErrKeyNotFound {
+			return err
+		}
+	}
+	return nil
 }
 
 // ListShares returns the names of all shares.

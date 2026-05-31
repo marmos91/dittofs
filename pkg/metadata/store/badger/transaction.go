@@ -251,24 +251,10 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		return nil
 	})
 
-	// Delete all related keys
-	keys := [][]byte{
-		keyFile(fileID),
-		keyParent(fileID),
-		keyLinkCount(fileID),
-	}
-
-	for _, key := range keys {
-		if err := tx.txn.Delete(key); err != nil && err != badgerdb.ErrKeyNotFound {
-			return err
-		}
-	}
-
-	// drop ObjectID secondary entry if present.
-	if !existingObjectID.IsZero() {
-		if err := tx.txn.Delete(keyObjectID(existingObjectID)); err != nil && !goerrors.Is(err, badgerdb.ErrKeyNotFound) {
-			return fmt.Errorf("badger DeleteFile: delete obj index: %w", err)
-		}
+	// Delete the primary file row plus parent/link-count/ObjectID keys via
+	// the shared per-file teardown (also used by DeleteShare).
+	if err := deleteFileKeys(tx.txn, fileID, existingObjectID); err != nil {
+		return err
 	}
 
 	return nil
@@ -817,6 +803,13 @@ func (tx *badgerTransaction) DeleteShare(ctx context.Context, shareName string) 
 		}
 	}
 	if err != nil {
+		return err
+	}
+
+	// Tear down all file metadata on the active txn, identical to the pool
+	// path — deleting only the share key would orphan every file/parent/
+	// linkcount/child/objectID entry (store.go:161 contract).
+	if err := tx.store.deleteShareFiles(tx.txn, shareName); err != nil {
 		return err
 	}
 
