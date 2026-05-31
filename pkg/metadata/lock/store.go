@@ -270,6 +270,30 @@ type LockStore interface {
 	IncrementServerEpoch(ctx context.Context) (uint64, error)
 
 	// ========================================================================
+	// Clean-Shutdown Marker
+	// ========================================================================
+
+	// GetCleanShutdown reports whether the previous run terminated through a
+	// fully-graceful shutdown.
+	//
+	// It returns false whenever the marker is absent or has never been written
+	// (fresh store, or a store that crashed before SetCleanShutdown(true) ran).
+	// This is the fail-safe default: an unknown shutdown state is treated as
+	// UNCLEAN so the boot path enters the lock-recovery grace period rather than
+	// risk granting a conflicting lock before a prior owner can reclaim.
+	//
+	// Called once per share on boot, before deciding whether to enter grace.
+	GetCleanShutdown(ctx context.Context) (bool, error)
+
+	// SetCleanShutdown records the clean-shutdown marker durably.
+	//
+	// The boot path sets it false immediately after reading it (so a kill -9
+	// before the next graceful Stop leaves the marker false = unclean for the
+	// following boot). A fully-graceful Close() of the store sets it true, last,
+	// after every other flush, so only a clean drain is observed as clean.
+	SetCleanShutdown(ctx context.Context, clean bool) error
+
+	// ========================================================================
 	// Lease Reclaim Operations
 	// ========================================================================
 

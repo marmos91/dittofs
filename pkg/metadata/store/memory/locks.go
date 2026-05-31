@@ -29,6 +29,14 @@ type memoryLockStore struct {
 
 	// serverEpoch tracks server restarts
 	serverEpoch uint64
+
+	// cleanShutdown records whether the previous Close() completed gracefully.
+	// It defaults to false (unclean) so a fresh store is treated as
+	// uncertain-on-boot, matching the fail-safe contract of GetCleanShutdown.
+	// The memory store is non-durable across processes, so this only ever
+	// reflects state within the current process — correct for the conformance
+	// semantics, which exercise the marker entirely in-process.
+	cleanShutdown bool
 }
 
 // newMemoryLockStore creates a new in-memory lock store.
@@ -179,6 +187,31 @@ func (s *memoryLockStore) IncrementServerEpoch(ctx context.Context) (uint64, err
 
 	s.serverEpoch++
 	return s.serverEpoch, nil
+}
+
+// GetCleanShutdown reports whether the previous run shut down gracefully.
+func (s *memoryLockStore) GetCleanShutdown(ctx context.Context) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.cleanShutdown, nil
+}
+
+// SetCleanShutdown records the clean-shutdown marker.
+func (s *memoryLockStore) SetCleanShutdown(ctx context.Context, clean bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.cleanShutdown = clean
+	return nil
 }
 
 // ============================================================================
@@ -359,6 +392,31 @@ func (s *MemoryMetadataStore) IncrementServerEpoch(ctx context.Context) (uint64,
 	defer s.mu.Unlock()
 	s.initLockStore()
 	return s.incrementServerEpochLocked(ctx)
+}
+
+// GetCleanShutdown reports whether the previous run shut down gracefully.
+func (s *MemoryMetadataStore) GetCleanShutdown(ctx context.Context) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.lockStore == nil {
+		return false, nil
+	}
+	return s.lockStore.cleanShutdown, nil
+}
+
+// SetCleanShutdown records the clean-shutdown marker.
+func (s *MemoryMetadataStore) SetCleanShutdown(ctx context.Context, clean bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.initLockStore()
+	s.lockStore.cleanShutdown = clean
+	return nil
 }
 
 // ReclaimLease reclaims an existing lease during grace period.
@@ -556,6 +614,19 @@ func (tx *memoryTransaction) GetServerEpoch(ctx context.Context) (uint64, error)
 func (tx *memoryTransaction) IncrementServerEpoch(ctx context.Context) (uint64, error) {
 	tx.store.initLockStore()
 	return tx.store.incrementServerEpochLocked(ctx)
+}
+
+func (tx *memoryTransaction) GetCleanShutdown(_ context.Context) (bool, error) {
+	if tx.store.lockStore == nil {
+		return false, nil
+	}
+	return tx.store.lockStore.cleanShutdown, nil
+}
+
+func (tx *memoryTransaction) SetCleanShutdown(_ context.Context, clean bool) error {
+	tx.store.initLockStore()
+	tx.store.lockStore.cleanShutdown = clean
+	return nil
 }
 
 func (tx *memoryTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {

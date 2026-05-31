@@ -223,6 +223,19 @@ var _ interface{ GetStoreID() string } = (*PostgresMetadataStore)(nil)
 func (s *PostgresMetadataStore) Close() error {
 	s.logger.Info("Closing PostgreSQL metadata store...")
 
+	// Record a clean-shutdown marker BEFORE cancelling the store context and
+	// closing the pool, so the lock-recovery boot path can distinguish a
+	// graceful drain from a kill -9 / crash. Close is the single graceful
+	// teardown site for the store. A dedicated short-lived context is used
+	// because s.cancel() below tears down s.ctx. A persist failure is logged but
+	// does not block close — the next boot then conservatively treats the start
+	// as unclean and enters grace, which is the fail-safe direction.
+	markCtx, markCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	if err := s.SetCleanShutdown(markCtx, true); err != nil {
+		s.logger.Error("failed to persist clean-shutdown marker on close", "error", err)
+	}
+	markCancel()
+
 	// Cancel context
 	s.cancel()
 

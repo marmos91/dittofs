@@ -312,7 +312,16 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 }
 
 // Close releases any resources held by the store.
-// For memory store, this is a no-op.
+//
+// For the memory store there are no OS resources to release, but Close is the
+// graceful-shutdown site for the lock subsystem: it records the clean-shutdown
+// marker so the lock-recovery boot path treats this drain as clean. The marker
+// is in-process only (memory is non-durable across restarts), which is correct
+// — a new process always starts with a fresh, unclean-by-default store.
 func (store *MemoryMetadataStore) Close() error {
+	store.mu.Lock()
+	store.initLockStore()
+	store.lockStore.cleanShutdown = true
+	store.mu.Unlock()
 	return nil
 }
