@@ -25,6 +25,11 @@ import (
 // Request and Response Structures
 // ============================================================================
 
+// CreateContextTagAllocationSize is the SMB2_CREATE_ALLOCATION_SIZE create
+// context tag ("AlSi") [MS-SMB2] 2.2.13.2.2. Its 8-byte little-endian Data is
+// the client-requested initial allocation size for the file.
+const CreateContextTagAllocationSize = "AlSi"
+
 // CreateRequest represents an SMB2 CREATE request from a client [MS-SMB2] 2.2.13.
 //
 // CREATE is the primary mechanism for clients to open existing files or
@@ -65,6 +70,15 @@ type CreateRequest struct {
 	// CreateOptions specifies options for the create operation.
 	// See types.CreateOptions for bit flags.
 	CreateOptions types.CreateOptions
+
+	// RequestedAllocSize is the client-requested initial allocation size in
+	// bytes, decoded from the SMB2_CREATE_ALLOCATION_SIZE ("AlSi") create
+	// context [MS-SMB2] 2.2.13.2.2. SMB2 CREATE has no fixed AllocationSize
+	// request field — the 8-byte field at request offset 16 is Reserved — so
+	// the client conveys the reservation via this context. DittoFS does not
+	// preallocate; the value only raises the (cluster-aligned) AllocationSize
+	// reported in the CREATE response (smb2.durable-open.alloc-size).
+	RequestedAllocSize uint64
 
 	// FileName is the name/path of the file to create or open.
 	// Uses backslash separators (Windows-style).
@@ -263,6 +277,15 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 				req.CreateContexts = ctxs
 			}
 		}
+	}
+
+	// SMB2_CREATE_ALLOCATION_SIZE ("AlSi") create context [MS-SMB2] 2.2.13.2.2:
+	// the client conveys its requested initial allocation as an 8-byte
+	// little-endian value in the context Data. SMB2 has no fixed AllocationSize
+	// request field (request offset 16 is Reserved), so this is the only place
+	// the reservation is carried. Required by smb2.durable-open.alloc-size.
+	if alsi := FindCreateContext(req.CreateContexts, CreateContextTagAllocationSize); alsi != nil && len(alsi.Data) >= 8 {
+		req.RequestedAllocSize = smbenc.NewReader(alsi.Data).ReadUint64()
 	}
 
 	return req, nil

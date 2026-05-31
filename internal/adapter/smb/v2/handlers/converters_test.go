@@ -8,6 +8,51 @@ import (
 )
 
 // =============================================================================
+// effectiveAllocationSize / allocReservationFor Tests
+// =============================================================================
+
+func TestEffectiveAllocationSize(t *testing.T) {
+	cases := []struct {
+		name      string
+		size      uint64
+		requested uint64
+		want      uint64
+	}{
+		{"empty file no request", 0, 0, 0},
+		// An empty file opened with a requested allocation must report a
+		// non-zero, cluster-aligned AllocationSize (smb2.durable-open.alloc-size
+		// sets in.alloc_size=0x1000 and asserts out.alloc_size != 0).
+		{"empty file requested 0x1000", 0, 0x1000, 0x1000},
+		{"requested rounds up to cluster", 0, 0x1001, 0x2000},
+		{"file size exceeds request", 0x3000, 0x1000, 0x3000},
+		{"request exceeds file size", 0x1000, 0x5000, 0x5000},
+		// A client-controlled requested allocation within clusterSize-1 of the
+		// uint64 max must saturate, not wrap to a small value.
+		{"requested near-max saturates", 0, ^uint64(0), 0xFFFFFFFFFFFFF000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := effectiveAllocationSize(tc.size, tc.requested); got != tc.want {
+				t.Errorf("effectiveAllocationSize(%d, %d) = %d, want %d",
+					tc.size, tc.requested, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAllocReservationFor(t *testing.T) {
+	// Directories ignore the requested reservation (smb2.create.dir-alloc-size
+	// sets a 1 GiB request on a directory and asserts the reported allocation
+	// stays small); regular files keep it.
+	if got := allocReservationFor(true, 1<<30); got != 0 {
+		t.Errorf("directory reservation = %d, want 0", got)
+	}
+	if got := allocReservationFor(false, 0x1000); got != 0x1000 {
+		t.Errorf("regular-file reservation = %d, want 0x1000", got)
+	}
+}
+
+// =============================================================================
 // FileAttrToFileStandardInfo Tests
 // =============================================================================
 

@@ -416,6 +416,17 @@ type OpenFile struct {
 	// used to populate FileModeInformation (FILE_WRITE_THROUGH, FILE_SEQUENTIAL_ONLY, etc.)
 	CreateOptions types.CreateOptions
 
+	// RequestedAllocSize is the client-requested initial allocation in bytes
+	// from the CREATE SMB2_CREATE_ALLOCATION_SIZE ("AlSi") create context
+	// [MS-SMB2] 2.2.13.2.2, or from a later SET_INFO FileAllocationInformation
+	// [MS-FSCC] 2.4.4. DittoFS does not preallocate backing storage; this value
+	// only raises the (cluster-aligned) AllocationSize reported in the CREATE
+	// response and subsequent QUERY_INFO on this handle, keeping the two
+	// consistent (smb2.create.open, smb2.durable-open.alloc-size). Always 0 for
+	// directories — directories never honour the request
+	// (smb2.create.dir-alloc-size). Per-handle, in-memory, lost on close.
+	RequestedAllocSize uint64
+
 	// Timestamp freeze/unfreeze state per MS-FSA 2.1.5.14.2.
 	// When a client sends SET_INFO with FILETIME -1, the corresponding timestamp
 	// is "frozen" and MUST NOT be auto-updated by subsequent operations (WRITE, etc.).
