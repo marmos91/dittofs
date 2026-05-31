@@ -118,7 +118,7 @@ create_block_stores() {
         *-s3)
             $DFSCTL store block local add --name default --type memory
             $DFSCTL store block remote add --name default --type s3 \
-                --config '{"bucket":"dittofs-test","region":"us-east-1","endpoint":"http://localstack:4566","force_path_style":true}'
+                --config '{"bucket":"dittofs-test","region":"us-east-1","endpoint":"http://localstack:4566","force_path_style":true,"access_key_id":"test","secret_access_key":"test"}'
             ;;
         *)
             log_error "Unknown profile payload pattern: ${PROFILE}"
