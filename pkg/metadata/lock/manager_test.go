@@ -138,6 +138,74 @@ func TestManager_Unlock_Success(t *testing.T) {
 	}
 }
 
+// TestManager_Unlock_ReconnectNewSessionSameOpenID verifies that an SMB
+// durable-handle reconnect can release a byte-range lock taken before
+// disconnect. The lock is recorded under OpenID=hex(OriginalFileID) with the
+// OLD session, then unlocked using the SAME OpenID but a NEW session (the
+// reconnect establishes a fresh session). Ownership keys on OpenID for SMB, so
+// the differing SessionID must NOT prevent the unlock
+// (smb2.durable-v2-open.lock-{oplock,lease}).
+func TestManager_Unlock_ReconnectNewSessionSameOpenID(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+
+	const openID = "a1b2c3d4e5f60718" // hex(OriginalFileID), stable across reconnect
+	const oldSession = uint64(100)
+	const newSession = uint64(200)
+
+	lock := FileLock{
+		ID:        1,
+		SessionID: oldSession,
+		OpenID:    openID,
+		Offset:    0,
+		Length:    100,
+		Exclusive: true,
+	}
+	if err := lm.Lock("file1", lock); err != nil {
+		t.Fatalf("Lock failed: %v", err)
+	}
+
+	// Reconnect: same OpenID, NEW session id.
+	if err := lm.Unlock("file1", openID, newSession, 0, 100); err != nil {
+		t.Fatalf("Unlock on reconnect (new session, same openID) failed: %v", err)
+	}
+
+	if locks := lm.ListLocks("file1"); len(locks) != 0 {
+		t.Fatalf("Expected 0 locks after reconnect unlock, got %d", len(locks))
+	}
+}
+
+// TestManager_Unlock_DoesNotMatchOnSessionWhenOpenIDSet guards the converse:
+// when an SMB lock carries an OpenID, an unlock that supplies a DIFFERENT
+// OpenID must NOT match it even if the sessionID coincides. This pins ownership
+// to OpenID (not SessionID) for per-open SMB locking.
+func TestManager_Unlock_DoesNotMatchOnSessionWhenOpenIDSet(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+
+	lock := FileLock{
+		ID:        1,
+		SessionID: 100,
+		OpenID:    "open-A",
+		Offset:    0,
+		Length:    100,
+		Exclusive: true,
+	}
+	if err := lm.Lock("file1", lock); err != nil {
+		t.Fatalf("Lock failed: %v", err)
+	}
+
+	// Same session, different open: must not unlock.
+	if err := lm.Unlock("file1", "open-B", 100, 0, 100); err == nil {
+		t.Fatal("Unlock with a different OpenID unexpectedly succeeded")
+	}
+	if locks := lm.ListLocks("file1"); len(locks) != 1 {
+		t.Fatalf("Expected lock to remain, got %d locks", len(locks))
+	}
+}
+
 func TestManager_Unlock_NotFound(t *testing.T) {
 	t.Parallel()
 

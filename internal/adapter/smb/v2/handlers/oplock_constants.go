@@ -186,6 +186,43 @@ func leaseStateToOplockLevel(state uint32) uint8 {
 	}
 }
 
+// oplockLevelRank orders the traditional oplock levels by strength so a
+// re-granted level can be compared against the level persisted with a durable
+// handle. The raw constants are not monotonic (Batch=0x09 > Exclusive=0x08 but
+// II=0x01), and OplockLevelLease (0xFF) is not a traditional level — this
+// helper is only meaningful for None/II/Exclusive/Batch, which is the exact set
+// handled on the durable-reconnect oplock path.
+func oplockLevelRank(level uint8) int {
+	switch level {
+	case OplockLevelBatch:
+		return 3
+	case OplockLevelExclusive:
+		return 2
+	case OplockLevelII:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// leaseStateRank orders lease states by caching strength (R < RW < RWH) so a
+// re-granted lease state can be compared against the state persisted with a
+// durable handle. Handle caching (H) is ranked above plain write caching to
+// match the RH/RWH levels that durable lease handles carry.
+func leaseStateRank(state uint32) int {
+	rank := 0
+	if state&lock.LeaseStateRead != 0 {
+		rank++
+	}
+	if state&lock.LeaseStateWrite != 0 {
+		rank++
+	}
+	if state&lock.LeaseStateHandle != 0 {
+		rank++
+	}
+	return rank
+}
+
 // clampDirectoryOplockLevel returns the wire OplockLevel a directory CREATE
 // response must carry, plus a flag indicating whether any synthetic-lease
 // bookkeeping (FileID tagging, synthetic key store) should be torn down.
