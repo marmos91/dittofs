@@ -85,6 +85,9 @@ func (m *memFBS) IncrementRefCount(_ context.Context, _ string) error { return n
 func (m *memFBS) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
+func (m *memFBS) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
+	return 0, nil
+}
 func (m *memFBS) AddRef(_ context.Context, _ blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
 	return blockstore.ErrUnknownHash
 }

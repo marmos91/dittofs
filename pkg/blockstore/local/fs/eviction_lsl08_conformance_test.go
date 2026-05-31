@@ -223,6 +223,10 @@ func (c *countingFBSWrapper) DecrementRefCount(ctx context.Context, id string) (
 	c.counter++
 	return c.inner.DecrementRefCount(ctx, id)
 }
+func (c *countingFBSWrapper) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
+	c.counter++
+	return c.inner.DecrementRefCountAndReap(ctx, id)
+}
 func (c *countingFBSWrapper) AddRef(ctx context.Context, h blockstore.ContentHash, payloadID string, ref blockstore.BlockRef) error {
 	c.counter++
 	return c.inner.AddRef(ctx, h, payloadID, ref)

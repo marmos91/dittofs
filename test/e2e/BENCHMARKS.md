@@ -410,9 +410,11 @@ insert).
   gob-encodes its entire snapshot into one buffer during Backup (expected
   for an in-RAM backend) — the create-path `B/op` for the memory engine
   reflects that buffer, not the dump stream. **Use the badger engine for
-  large shares; it streams the dump KV-by-KV.** (Badger restore still
-  buffers all KV entries in RAM before the integrity CRC is verified — a
-  known restore-path ceiling, orthogonal to create, tracked separately.)
+  large shares; it streams the dump KV-by-KV.** Badger restore also
+  streams: KV entries apply via a bounded `WriteBatch`, the integrity CRC
+  is verified last, and any failure triggers `DropAll` to leave the store
+  empty/retryable — so neither badger create nor badger restore buffers
+  the whole dump.
 
 ## End-to-end performance reports
 

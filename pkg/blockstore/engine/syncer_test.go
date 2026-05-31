@@ -351,6 +351,13 @@ func (s *stubFBS) DecrementRefCount(_ context.Context, _ string) (uint32, error)
 	return 0, nil
 }
 
+func (s *stubFBS) DecrementRefCountAndReap(_ context.Context, id string) (uint32, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.blocks, id)
+	return 0, nil
+}
+
 func (s *stubFBS) AddRef(_ context.Context, h blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
 	// bump RefCount on any row indexed by hash.
 	s.mu.Lock()
@@ -933,6 +940,23 @@ func (c *cascadeCoordinator) DecrementRefCount(_ context.Context, hash blockstor
 		return 0, nil
 	}
 	cur--
+	c.counts[hash] = cur
+	return cur, nil
+}
+
+func (c *cascadeCoordinator) DecrementRefCountAndReap(_ context.Context, hash blockstore.ContentHash) (uint32, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cur := c.counts[hash]
+	if cur == 0 {
+		delete(c.counts, hash)
+		return 0, nil
+	}
+	cur--
+	if cur == 0 {
+		delete(c.counts, hash)
+		return 0, nil
+	}
 	c.counts[hash] = cur
 	return cur, nil
 }

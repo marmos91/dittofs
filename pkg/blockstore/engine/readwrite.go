@@ -125,19 +125,46 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 	var kept []blockstore.BlockRef
 	if len(currentBlocks) > 0 {
 		kept = make([]blockstore.BlockRef, 0, len(currentBlocks))
+		var dropped []blockstore.BlockRef
 		for _, b := range currentBlocks {
 			if b.Offset >= newSize {
 				// Block fully past newSize — drop it.
-				if bs.coordinator != nil {
-					if _, err := bs.coordinator.DecrementRefCount(ctx, b.Hash); err != nil {
-						return currentBlocks, fmt.Errorf("decrement refcount on truncate-drop %s: %w", b.Hash.String(), err)
-					}
-				}
+				dropped = append(dropped, b)
 				continue
 			}
-			// Block fully or partially before newSize — keep. will
-			// re-chunk the partial-tail block; keeps it as-is.
+			// Block fully or partially before newSize — keep. WriteAt will
+			// re-chunk the partial-tail block; keep it as-is.
 			kept = append(kept, b)
+		}
+
+		// Reap each dropped tail hash so it leaves EnumerateFileBlocks and the
+		// GC sweep can reclaim the remote chunk (otherwise truncated tail
+		// chunks leak on the remote forever — #832).
+		//
+		// RefCount is incremented ONCE per DISTINCT hash per file (file-level
+		// dedup uses a seen-set in applyFileLevelDedupHit / CopyPayload), so
+		// decrement at most once per distinct dropped hash — and never for a
+		// hash still referenced by a KEPT block (the same content can sit on
+		// both sides of newSize). A per-BlockRef decrement would over-drop a
+		// shared row to zero and let GC delete data another reference needs.
+		if bs.coordinator != nil {
+			keptHashes := make(map[blockstore.ContentHash]struct{}, len(kept))
+			for _, b := range kept {
+				keptHashes[b.Hash] = struct{}{}
+			}
+			reaped := make(map[blockstore.ContentHash]struct{}, len(dropped))
+			for _, b := range dropped {
+				if _, stillKept := keptHashes[b.Hash]; stillKept {
+					continue
+				}
+				if _, done := reaped[b.Hash]; done {
+					continue
+				}
+				reaped[b.Hash] = struct{}{}
+				if _, err := bs.coordinator.DecrementRefCountAndReap(ctx, b.Hash); err != nil {
+					return currentBlocks, fmt.Errorf("decrement refcount on truncate-drop %s: %w", b.Hash.String(), err)
+				}
+			}
 		}
 	}
 
@@ -216,8 +243,22 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []blocksto
 	// picture.
 	var coordErr error
 	if len(blocks) > 0 && bs.coordinator != nil {
+		// RefCount is incremented ONCE per DISTINCT hash per file (file-level
+		// dedup uses a seen-set in applyFileLevelDedupHit / CopyPayload), so
+		// reap at most once per distinct hash. A per-BlockRef decrement would
+		// over-drop a hash that appears at multiple offsets in this file and,
+		// when another file shares it, take the shared row to zero and let GC
+		// delete data the other reference still needs.
+		reaped := make(map[blockstore.ContentHash]struct{}, len(blocks))
 		for _, b := range blocks {
-			newCount, err := bs.coordinator.DecrementRefCount(ctx, b.Hash)
+			if _, done := reaped[b.Hash]; done {
+				continue
+			}
+			reaped[b.Hash] = struct{}{}
+			// Reap at RefCount 0 so the hash leaves EnumerateFileBlocks and
+			// the GC sweep can reclaim the remote chunk (#832). Dedup-shared
+			// hashes (RefCount > 1) survive — only the last reference reaps.
+			newCount, err := bs.coordinator.DecrementRefCountAndReap(ctx, b.Hash)
 			if err != nil {
 				if coordErr == nil {
 					coordErr = fmt.Errorf("decrement refcount on delete %s: %w", b.Hash.String(), err)

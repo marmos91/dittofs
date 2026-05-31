@@ -54,6 +54,22 @@ namespace. The trade-off is that snapshots are intra-cluster — they
 protect against accidental writes or deletes, not against losing the
 underlying storage.
 
+### Metadata backend at scale
+
+Snapshot create and restore stream the metadata dump backend-by-backend.
+**Use the badger metadata engine for large (TB / millions-of-files)
+shares:** badger streams the dump KV-by-KV on create and applies it via
+bounded `WriteBatch` on restore, so its snapshot RAM is governed by the
+resident hash manifest (~25 MB per 1 M unique blocks), not by share size.
+
+The **memory metadata engine is for development and small shares only.**
+It holds the entire filesystem resident by design and serializes the
+whole snapshot into a single buffer during create, so snapshotting a
+multi-GB memory-engine share can exhaust RAM. This is an inherent
+property of an in-RAM store, not a tunable; pick badger before a share
+grows large. See `test/e2e/BENCHMARKS.md` for measured dump sizes and
+the per-backend RAM budget.
+
 ## 2. Snapshot model
 
 Each snapshot is three artifacts on disk:

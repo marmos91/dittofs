@@ -392,6 +392,16 @@ func testBackup_Corruption(t *testing.T, factory BackupableStoreFactory) {
 		if !errors.Is(err, metadata.ErrRestoreCorrupt) {
 			t.Fatalf("expected ErrRestoreCorrupt, got: %v", err)
 		}
+
+		// A failed restore must leave the destination empty and retryable.
+		// The streaming badger path wipes partially-applied data via DropAll;
+		// the buffer-then-write backends never apply at all. Either way a
+		// subsequent VALID restore into the SAME store must succeed — if the
+		// corrupt attempt left rows behind, Restore's empty-destination guard
+		// would reject this with ErrRestoreDestinationNotEmpty (#831).
+		if err := dstB.Restore(ctx, bytes.NewReader(validData)); err != nil {
+			t.Fatalf("valid restore after corrupt(truncated) restore must succeed (store left empty/retryable), got: %v", err)
+		}
 	})
 
 	t.Run("BitFlip", func(t *testing.T) {
@@ -413,6 +423,12 @@ func testBackup_Corruption(t *testing.T, factory BackupableStoreFactory) {
 		}
 		if !errors.Is(err, metadata.ErrRestoreCorrupt) {
 			t.Fatalf("expected ErrRestoreCorrupt, got: %v", err)
+		}
+
+		// Same retryability contract as Truncated: a corrupt payload must
+		// leave the destination empty so a valid restore still succeeds (#831).
+		if err := dstB.Restore(ctx, bytes.NewReader(validData)); err != nil {
+			t.Fatalf("valid restore after corrupt(bit-flip) restore must succeed (store left empty/retryable), got: %v", err)
 		}
 	})
 

@@ -81,6 +81,17 @@ type FileBlockStore interface {
 	// count. RefCount=0 marks the block as a GC candidate.
 	DecrementRefCount(ctx context.Context, id string) (uint32, error)
 
+	// DecrementRefCountAndReap atomically decrements RefCount for the FileBlock
+	// id and, IF the new count is 0, deletes the row (and its hash index entry)
+	// in the SAME critical section as the decrement — TOCTOU-free against a
+	// concurrent AddRef the same way IncrementRefCount/AddRef are. Returns the
+	// new count (0 when reaped or when the row was already absent).
+	// ErrFileBlockNotFound is tolerated and reported as count 0 (a row already
+	// swept is not a caller error). Used by the engine Delete/Truncate reclaim
+	// path so that, once a hash has no live references, it leaves
+	// EnumerateFileBlocks and the GC sweep can collect the remote chunk.
+	DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error)
+
 	// AddRef atomically increments RefCount on the FileBlock row
 	// indexed by hash. Used by the in-memory hash dedup LRU hit path.
 	//

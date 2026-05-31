@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/blockstore/local/memory"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
 	"github.com/marmos91/dittofs/pkg/health"
@@ -234,6 +235,284 @@ func TestGCMarkSweep_SweepHappyPath(t *testing.T) {
 		if _, err := rs.Get(ctx, h); err == nil {
 			t.Errorf("orphan %x not deleted", h[:8])
 		}
+	}
+}
+
+// reapCoordinator is the GC-reclaim test's MetadataCoordinator: it binds the
+// engine's hash-keyed refcount surface to a real metadata.MetadataStore exactly
+// like the production runtime coordinator (GetByHash → id → reap). Only the
+// refcount methods are exercised by Truncate/Delete; the rest are no-ops.
+type reapCoordinator struct {
+	store metadata.MetadataStore
+}
+
+func (c *reapCoordinator) IncrementRefCount(ctx context.Context, hash blockstore.ContentHash) error {
+	fb, err := c.store.GetByHash(ctx, hash)
+	if err != nil || fb == nil {
+		return err
+	}
+	return c.store.IncrementRefCount(ctx, fb.ID)
+}
+
+func (c *reapCoordinator) DecrementRefCount(ctx context.Context, hash blockstore.ContentHash) (uint32, error) {
+	fb, err := c.store.GetByHash(ctx, hash)
+	if err != nil || fb == nil {
+		return 0, err
+	}
+	return c.store.DecrementRefCount(ctx, fb.ID)
+}
+
+func (c *reapCoordinator) DecrementRefCountAndReap(ctx context.Context, hash blockstore.ContentHash) (uint32, error) {
+	fb, err := c.store.GetByHash(ctx, hash)
+	if err != nil || fb == nil {
+		return 0, err
+	}
+	return c.store.DecrementRefCountAndReap(ctx, fb.ID)
+}
+
+func (c *reapCoordinator) PersistFileBlocks(_ context.Context, _ string, _ []blockstore.BlockRef, _ blockstore.ObjectID) error {
+	return nil
+}
+
+func (c *reapCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]blockstore.BlockRef, error) {
+	return nil, nil
+}
+
+func (c *reapCoordinator) FindByObjectID(_ context.Context, _ blockstore.ObjectID) ([]blockstore.BlockRef, error) {
+	return nil, nil
+}
+
+func (c *reapCoordinator) GetFileObjectID(_ context.Context, _ string) (blockstore.ObjectID, error) {
+	return blockstore.ObjectID{}, nil
+}
+
+var _ MetadataCoordinator = (*reapCoordinator)(nil)
+
+// newReapEngine builds an engine.Store whose coordinator reaps RefCount-0
+// FileBlock rows from the supplied metadata store, so a Truncate/Delete that
+// drops a hash's last reference removes it from EnumerateFileBlocks and the GC
+// sweep can reclaim the remote chunk. The engine's own local store / syncer are
+// memory-only (no remote) — the GC sweep runs directly against the test's
+// separate remote store via CollectGarbage.
+func newReapEngine(t *testing.T, st metadata.MetadataStore) *Store {
+	t.Helper()
+	localStore := memory.New()
+	fbs := newStubFileBlockStore()
+	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
+	bs, err := New(BlockStoreConfig{
+		Local:          localStore,
+		Remote:         nil,
+		Syncer:         syncer,
+		FileBlockStore: fbs,
+		Coordinator:    &reapCoordinator{store: st},
+	})
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+	if err := bs.Start(context.Background()); err != nil {
+		t.Fatalf("engine.Start: %v", err)
+	}
+	t.Cleanup(func() { _ = bs.Close() })
+	return bs
+}
+
+// TestGCMarkSweep_TruncateReclaimsRemoteChunk (#832): a Truncate that drops a
+// tail block's LAST reference must reap its FileBlock index row so the hash
+// leaves the GC live set and the sweep reclaims the remote chunk. The retained
+// block's chunk survives. This test FAILS on develop — where Truncate only
+// decremented RefCount (leaving the row at RefCount 0 but still emitted by
+// EnumerateFileBlocks), so the dropped chunk stayed in the live set forever.
+func TestGCMarkSweep_TruncateReclaimsRemoteChunk(t *testing.T) {
+	ctx := t.Context()
+	rs := remotememory.New()
+	defer func() { _ = rs.Close() }()
+
+	// Age every remote object past the grace window so the sweep is eligible.
+	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
+
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-a")
+	bs := newReapEngine(t, st)
+
+	const mib = uint64(1 << 20)
+	h1 := hashFromString("trunc-keep-h1")
+	h2 := hashFromString("trunc-drop-h2")
+
+	// Two CAS objects: H1 @ offset 0 (kept), H2 @ offset 4MiB (dropped). Both
+	// have FileBlock index rows at RefCount 1 and live CAS objects on remote.
+	putBlock(t, st, "file-trunc/0", h1)
+	putBlock(t, st, "file-trunc/1", h2)
+	writeCASObject(t, ctx, rs, h1, []byte("keep-chunk-data"))
+	writeCASObject(t, ctx, rs, h2, []byte("drop-chunk-data-longer"))
+
+	// Truncate to 4MiB: H2 (offset 4MiB) is dropped, H1 (offset 0) kept.
+	blocks := []blockstore.BlockRef{
+		{Hash: h1, Offset: 0, Size: uint32(mib)},
+		{Hash: h2, Offset: 4 * mib, Size: uint32(mib)},
+	}
+	if _, err := bs.Truncate(ctx, "file-trunc", blocks, 4*mib); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+
+	stats := CollectGarbage(ctx, rs, rec, &Options{
+		GCStateRoot: t.TempDir(),
+		GracePeriod: time.Minute,
+	})
+	if stats.ErrorCount != 0 {
+		t.Fatalf("ErrorCount = %d, want 0; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
+	}
+
+	// H2's chunk MUST be swept (its row was reaped → left the live set).
+	if _, err := rs.Get(ctx, h2); err == nil {
+		t.Errorf("dropped chunk H2 still present on remote after Truncate+GC; want swept (#832 leak)")
+	}
+	// H1's chunk MUST survive (still referenced).
+	if _, err := rs.Get(ctx, h1); err != nil {
+		t.Errorf("retained chunk H1 swept after Truncate+GC: %v; want retained", err)
+	}
+	if stats.ObjectsSwept != 1 {
+		t.Errorf("ObjectsSwept = %d, want 1 (only the dropped H2)", stats.ObjectsSwept)
+	}
+}
+
+// TestGCMarkSweep_TruncateDedupSafety (#832 data-loss guard): when two files
+// reference the same hash (RefCount 2), truncating ONE file dropping that hash
+// must NOT sweep the chunk — the other file still references it. Reaping is
+// safe only at RefCount 0.
+func TestGCMarkSweep_TruncateDedupSafety(t *testing.T) {
+	ctx := t.Context()
+	rs := remotememory.New()
+	defer func() { _ = rs.Close() }()
+
+	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
+
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-a")
+	bs := newReapEngine(t, st)
+
+	const mib = uint64(1 << 20)
+	shared := hashFromString("dedup-shared-hash")
+
+	// One FileBlock index row for the shared hash, RefCount 2 (two files
+	// reference it via file-level dedup). One CAS object on the remote.
+	putBlock(t, st, "file-A/1", shared)
+	if err := st.IncrementRefCount(ctx, "file-A/1"); err != nil {
+		t.Fatalf("IncrementRefCount: %v", err) // RefCount 1 → 2
+	}
+	writeCASObject(t, ctx, rs, shared, []byte("shared-dedup-chunk"))
+
+	// Truncate file-A dropping the shared block: RefCount 2 → 1, row survives.
+	blocks := []blockstore.BlockRef{{Hash: shared, Offset: 4 * mib, Size: uint32(mib)}}
+	if _, err := bs.Truncate(ctx, "file-A", blocks, 0); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+
+	stats := CollectGarbage(ctx, rs, rec, &Options{
+		GCStateRoot: t.TempDir(),
+		GracePeriod: time.Minute,
+	})
+	if stats.ErrorCount != 0 {
+		t.Fatalf("ErrorCount = %d, want 0; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
+	}
+
+	// The shared chunk MUST survive: file-B (the second reference) still needs it.
+	if _, err := rs.Get(ctx, shared); err != nil {
+		t.Errorf("shared chunk swept after truncating ONE of two referencing files: %v; want retained (reap only at RefCount 0)", err)
+	}
+	if stats.ObjectsSwept != 0 {
+		t.Errorf("ObjectsSwept = %d, want 0 (shared chunk still referenced)", stats.ObjectsSwept)
+	}
+}
+
+// TestGCMarkSweep_DeleteDuplicateHashNoOverReap (#832 data-loss guard): a
+// single file may reference the SAME hash at multiple offsets, but file-level
+// dedup increments its RefCount only ONCE (seen-set). Deleting that file must
+// reap the hash at most once — a per-BlockRef decrement would drive a shared
+// row (RefCount 2: this file + another) to zero and let GC delete a chunk the
+// other file still needs.
+func TestGCMarkSweep_DeleteDuplicateHashNoOverReap(t *testing.T) {
+	ctx := t.Context()
+	rs := remotememory.New()
+	defer func() { _ = rs.Close() }()
+	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
+
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-a")
+	bs := newReapEngine(t, st)
+
+	const mib = uint64(1 << 20)
+	shared := hashFromString("dup-and-shared-hash")
+
+	// RefCount 2: file-A references it (once, despite two offsets) + file-B.
+	putBlock(t, st, "file-A/0", shared)
+	if err := st.IncrementRefCount(ctx, "file-A/0"); err != nil {
+		t.Fatalf("IncrementRefCount: %v", err) // 1 → 2
+	}
+	writeCASObject(t, ctx, rs, shared, []byte("dup-shared-chunk"))
+
+	// Delete file-A, whose block list carries the SAME hash at two offsets.
+	// Correct reap = once → RefCount 2 → 1 (file-B's reference survives).
+	dupBlocks := []blockstore.BlockRef{
+		{Hash: shared, Offset: 0, Size: uint32(mib)},
+		{Hash: shared, Offset: 4 * mib, Size: uint32(mib)},
+	}
+	if err := bs.Delete(ctx, "file-A", dupBlocks); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	if stats.ErrorCount != 0 {
+		t.Fatalf("ErrorCount = %d; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
+	}
+	if _, err := rs.Get(ctx, shared); err != nil {
+		t.Errorf("shared chunk swept after deleting a file that referenced it twice: %v; want retained (file-B still refs it)", err)
+	}
+	if stats.ObjectsSwept != 0 {
+		t.Errorf("ObjectsSwept = %d, want 0 (shared chunk still referenced by file-B)", stats.ObjectsSwept)
+	}
+}
+
+// TestGCMarkSweep_TruncateStraddleHashNoOverReap (#832 data-loss guard): when
+// the same hash sits on BOTH sides of newSize within one file (kept AND
+// dropped), truncate must NOT reap it — the file still references it below
+// newSize. RefCount was incremented once for the file, so a per-dropped-BlockRef
+// decrement would zero the row and let GC delete a chunk the kept block needs.
+func TestGCMarkSweep_TruncateStraddleHashNoOverReap(t *testing.T) {
+	ctx := t.Context()
+	rs := remotememory.New()
+	defer func() { _ = rs.Close() }()
+	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
+
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-a")
+	bs := newReapEngine(t, st)
+
+	const mib = uint64(1 << 20)
+	shared := hashFromString("straddle-hash")
+
+	// RefCount 1: a single file references this hash (at two offsets, dedup
+	// increments once). One CAS object.
+	putBlock(t, st, "file-S/0", shared)
+	writeCASObject(t, ctx, rs, shared, []byte("straddle-chunk"))
+
+	// Same hash kept (offset 0) and dropped (offset 4 MiB). Truncate to 1 MiB.
+	blocks := []blockstore.BlockRef{
+		{Hash: shared, Offset: 0, Size: uint32(mib)},
+		{Hash: shared, Offset: 4 * mib, Size: uint32(mib)},
+	}
+	if _, err := bs.Truncate(ctx, "file-S", blocks, mib); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+
+	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	if stats.ErrorCount != 0 {
+		t.Fatalf("ErrorCount = %d; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
+	}
+	if _, err := rs.Get(ctx, shared); err != nil {
+		t.Errorf("straddling chunk swept after truncate: %v; want retained (still referenced below newSize)", err)
+	}
+	if stats.ObjectsSwept != 0 {
+		t.Errorf("ObjectsSwept = %d, want 0 (hash still kept below newSize)", stats.ObjectsSwept)
 	}
 }
 

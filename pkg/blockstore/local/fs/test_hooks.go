@@ -239,6 +239,9 @@ func (nopFBSForTest) IncrementRefCount(_ context.Context, _ string) error { retu
 func (nopFBSForTest) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
+func (nopFBSForTest) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
+	return 0, nil
+}
 func (nopFBSForTest) AddRef(_ context.Context, _ blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
 	// no-op test stub. Every hash is "unknown" so the
 	// LRU hit path in production would always fall back to the full

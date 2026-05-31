@@ -45,6 +45,24 @@ const (
 // Ensure BadgerMetadataStore implements FileBlockStore
 var _ blockstore.FileBlockStore = (*BadgerMetadataStore)(nil)
 
+// reapBlockTxn deletes a FileBlock's primary key plus every secondary index
+// (local, file, hash) inside the supplied transaction. Shared by Delete and
+// the decrement-and-reap paths so the teardown stays in one place. The caller
+// has already loaded `block` (its Hash drives the hash-index cleanup).
+func reapBlockTxn(txn *badger.Txn, id string, block *metadata.FileBlock) error {
+	if err := txn.Delete([]byte(fileBlockPrefix + id)); err != nil {
+		return err
+	}
+	_ = txn.Delete([]byte(fileBlockLocalPrefix + id))
+	if pid, idx, ok := splitBlockID(id); ok {
+		_ = txn.Delete([]byte(fileBlockFilePrefix + pid + ":" + idx))
+	}
+	if block.IsFinalized() {
+		_ = txn.Delete([]byte(fileBlockHashPrefix + block.Hash.String()))
+	}
+	return nil
+}
+
 // ============================================================================
 // FileBlock Operations
 // ============================================================================
@@ -136,25 +154,7 @@ func (s *BadgerMetadataStore) Delete(ctx context.Context, id string) error {
 			return err
 		}
 
-		// Delete block
-		if err := txn.Delete(key); err != nil {
-			return err
-		}
-
-		// Remove local index
-		_ = txn.Delete([]byte(fileBlockLocalPrefix + id))
-
-		// Remove file index
-		if pid, idx, ok := splitBlockID(id); ok {
-			_ = txn.Delete([]byte(fileBlockFilePrefix + pid + ":" + idx))
-		}
-
-		// Remove hash index
-		if block.IsFinalized() {
-			hashKey := []byte(fileBlockHashPrefix + block.Hash.String())
-			_ = txn.Delete(hashKey) // Ignore if not exists
-		}
-		return nil
+		return reapBlockTxn(txn, id, &block)
 	})
 }
 
@@ -238,6 +238,46 @@ func (s *BadgerMetadataStore) DecrementRefCount(ctx context.Context, id string) 
 			block.RefCount--
 		}
 		newCount = block.RefCount
+		val, err := json.Marshal(&block)
+		if err != nil {
+			return err
+		}
+		return txn.Set(key, val)
+	})
+	return newCount, err
+}
+
+// DecrementRefCountAndReap atomically decrements a block's RefCount and, when
+// the new count is 0, deletes the fb:{id} row plus its secondary indexes
+// (local, file, hash) inside the SAME db.Update transaction as the decrement —
+// TOCTOU-free against a concurrent AddRef (same retry-on-conflict idiom as
+// DecrementRefCount). Returns (0, nil) when the row is already absent.
+func (s *BadgerMetadataStore) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
+	var newCount uint32
+	err := s.updateWithConflictRetry(ctx, func(txn *badger.Txn) error {
+		key := []byte(fileBlockPrefix + id)
+		item, err := txn.Get(key)
+		if err == badger.ErrKeyNotFound {
+			newCount = 0
+			return nil // tolerate already-swept row
+		}
+		if err != nil {
+			return err
+		}
+		var block metadata.FileBlock
+		if err := item.Value(func(val []byte) error {
+			return json.Unmarshal(val, &block)
+		}); err != nil {
+			return err
+		}
+		if block.RefCount > 0 {
+			block.RefCount--
+		}
+		newCount = block.RefCount
+		if block.RefCount == 0 {
+			// Reap so the hash leaves GetByHash / the GC live set.
+			return reapBlockTxn(txn, id, &block)
+		}
 		val, err := json.Marshal(&block)
 		if err != nil {
 			return err
@@ -620,18 +660,7 @@ func (tx *badgerTransaction) Delete(ctx context.Context, id string) error {
 	}); err != nil {
 		return err
 	}
-	if err := tx.txn.Delete(key); err != nil {
-		return err
-	}
-	_ = tx.txn.Delete([]byte(fileBlockLocalPrefix + id))
-	if pid, idx, ok := splitBlockID(id); ok {
-		_ = tx.txn.Delete([]byte(fileBlockFilePrefix + pid + ":" + idx))
-	}
-	if block.IsFinalized() {
-		hashKey := []byte(fileBlockHashPrefix + block.Hash.String())
-		_ = tx.txn.Delete(hashKey)
-	}
-	return nil
+	return reapBlockTxn(tx.txn, id, &block)
 }
 
 // IncrementRefCount runs the +1 read-modify-write under the active
@@ -686,6 +715,44 @@ func (tx *badgerTransaction) DecrementRefCount(ctx context.Context, id string) (
 		block.RefCount--
 	}
 	newCount := block.RefCount
+	val, err := json.Marshal(&block)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.txn.Set(key, val); err != nil {
+		return 0, err
+	}
+	return newCount, nil
+}
+
+// DecrementRefCountAndReap runs the -1 read-modify-write + reap-at-zero under
+// the active badger.Txn so a subsequent rollback discards both the decrement
+// and the row deletion. Returns (0, nil) when the row is already absent.
+func (tx *badgerTransaction) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	key := []byte(fileBlockPrefix + id)
+	item, err := tx.txn.Get(key)
+	if err == badger.ErrKeyNotFound {
+		return 0, nil // tolerate already-swept row
+	}
+	if err != nil {
+		return 0, err
+	}
+	var block metadata.FileBlock
+	if err := item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &block)
+	}); err != nil {
+		return 0, err
+	}
+	if block.RefCount > 0 {
+		block.RefCount--
+	}
+	newCount := block.RefCount
+	if block.RefCount == 0 {
+		return 0, reapBlockTxn(tx.txn, id, &block)
+	}
 	val, err := json.Marshal(&block)
 	if err != nil {
 		return 0, err

@@ -539,12 +539,16 @@ func truncateExistingFile(
 		return nil, fmt.Errorf("update file metadata: %w", err)
 	}
 
-	// Truncate content if file has content
+	// Truncate content if file has content.
 	if existingFile.PayloadID != "" {
-		// Nil currentBlocks triggers the legacy/dual-read truncate path;
-		// returned []BlockRef is discarded. A later refactor will thread
-		// the file's FileAttr.Blocks snapshot here.
-		if _, err := blockStore.Truncate(authCtx.Context, string(existingFile.PayloadID), nil, targetSize); err != nil {
+		// Thread the file's pre-truncate FileAttr.Blocks snapshot so the
+		// engine reaps RefCount on every block dropped past targetSize —
+		// without it the truncated tail chunks leak on the remote forever
+		// (#832). existingFile was fetched (via Lookup → GetFile) BEFORE
+		// SetFileAttributes pruned the store copy, so its Blocks list still
+		// reflects the full pre-truncate extent. Returned []BlockRef is
+		// discarded — the canonical FileAttr.Blocks is reconciled at flush.
+		if _, err := blockStore.Truncate(authCtx.Context, string(existingFile.PayloadID), existingFile.Blocks, targetSize); err != nil {
 			logger.Warn("Failed to truncate content", "size", targetSize, "error", err)
 			// Non-fatal: metadata is already updated
 		}

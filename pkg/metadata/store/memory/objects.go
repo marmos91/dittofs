@@ -92,6 +92,17 @@ func (s *MemoryMetadataStore) DecrementRefCount(ctx context.Context, id string) 
 	return s.decrementRefCountLocked(ctx, id)
 }
 
+// DecrementRefCountAndReap atomically decrements RefCount and reaps the row
+// (and its hash index entry) when the new count is 0, all under the single
+// s.mu Write lock so the decrement-and-delete is TOCTOU-free against a
+// concurrent AddRef. Implements the FileBlockStore.DecrementRefCountAndReap
+// contract: ErrFileBlockNotFound is tolerated and reported as count 0.
+func (s *MemoryMetadataStore) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.decrementAndReapLocked(ctx, id)
+}
+
 // AddRef atomically increments RefCount on the FileBlock row indexed by
 // the given content hash. Implements the FileBlockStore.AddRef contract
 // used by the in-memory hash dedup LRU hit path to
@@ -227,6 +238,10 @@ func (tx *memoryTransaction) DecrementRefCount(ctx context.Context, id string) (
 	return tx.store.decrementRefCountLocked(ctx, id)
 }
 
+func (tx *memoryTransaction) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
+	return tx.store.decrementAndReapLocked(ctx, id)
+}
+
 func (tx *memoryTransaction) AddRef(ctx context.Context, hash metadata.ContentHash, payloadID string, blockRef blockstore.BlockRef) error {
 	return tx.store.addRefLocked(ctx, hash, payloadID, blockRef)
 }
@@ -342,6 +357,32 @@ func (s *MemoryMetadataStore) decrementRefCountLocked(_ context.Context, id stri
 	}
 	if block.RefCount > 0 {
 		block.RefCount--
+	}
+	return block.RefCount, nil
+}
+
+// decrementAndReapLocked decrements RefCount and, when the new count is 0,
+// deletes the row plus its hash-index entry. Caller MUST hold s.mu Write lock
+// so the decrement-and-delete is a single atomic critical section. Returns
+// (0, nil) when the row is already absent (a swept row is not a caller error).
+func (s *MemoryMetadataStore) decrementAndReapLocked(ctx context.Context, id string) (uint32, error) {
+	if s.fileBlockData == nil {
+		return 0, nil
+	}
+	block, ok := s.fileBlockData.blocks[id]
+	if !ok {
+		return 0, nil
+	}
+	if block.RefCount > 0 {
+		block.RefCount--
+	}
+	if block.RefCount == 0 {
+		// Reap via the shared teardown (drops the row and, when finalized,
+		// its hash-index entry) — runs in this same lock region so the
+		// decrement-and-delete is TOCTOU-free vs AddRef. The row exists
+		// (looked up above), so the NotFound branch cannot fire here.
+		_ = s.deleteFileBlockLocked(ctx, id)
+		return 0, nil
 	}
 	return block.RefCount, nil
 }
