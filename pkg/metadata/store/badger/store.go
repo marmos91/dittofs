@@ -109,6 +109,10 @@ type BadgerMetadataStore struct {
 	durableStore   *badgerDurableStore
 	durableStoreMu sync.Mutex
 
+	// recoveryStore provides NFSv4 client-recovery persistence
+	recoveryStore   *badgerRecoveryStore
+	recoveryStoreMu sync.Mutex
+
 	// usedBytes tracks the total logical bytes used by regular files.
 	// Updated atomically on every size-changing operation (create, update, truncate, delete).
 	// Initialized from a full file scan on startup.

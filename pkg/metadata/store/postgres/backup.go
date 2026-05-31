@@ -26,7 +26,8 @@ const (
 	// postgresSchemaVersion is the backup payload schema version.
 	// Increment when the payload layout changes (new table, changed
 	// framing, etc.) and add a migration path in Restore.
-	postgresSchemaVersion = uint32(1)
+	// v2 adds the v4_client_recovery table section.
+	postgresSchemaVersion = uint32(2)
 )
 
 // backupTables lists every metadata table in FK-safe dependency order
@@ -50,6 +51,7 @@ var backupTables = []string{
 	"server_epoch",
 	"nsm_client_registrations",
 	"durable_handles",
+	"v4_client_recovery",
 	"rollup_offsets",
 	"synced_hashes",
 }

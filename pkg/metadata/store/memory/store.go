@@ -223,6 +223,10 @@ type MemoryMetadataStore struct {
 	// Initialized lazily on first use.
 	durableStore *memoryDurableStore
 
+	// recoveryStore holds NFSv4 client-recovery records for reboot/grace
+	// recovery. Initialized lazily on first use.
+	recoveryStore *memoryRecoveryStore
+
 	// usedBytes tracks the total logical bytes used by regular files.
 	// Updated atomically on every size-changing operation (create, update, truncate, delete).
 	// Only regular files count toward usage; directories, symlinks, etc. do not.

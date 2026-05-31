@@ -41,6 +41,7 @@ func (s *MemoryMetadataStore) Reset(ctx context.Context) error {
 	s.lockStore = nil
 	s.clientStore = nil
 	s.durableStore = nil
+	s.recoveryStore = nil
 
 	s.usedBytes.Store(0)
 

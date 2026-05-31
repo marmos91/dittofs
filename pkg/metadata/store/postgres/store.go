@@ -53,6 +53,11 @@ type PostgresMetadataStore struct {
 	durableStore   *postgresDurableStore
 	durableStoreMu sync.Mutex
 
+	// recoveryStore holds NFSv4 client-recovery persistence.
+	// Initialized lazily via getRecoveryStore().
+	recoveryStore   *postgresRecoveryStore
+	recoveryStoreMu sync.Mutex
+
 	// usedBytes tracks the total logical bytes used by regular files.
 	// Updated atomically on every size-changing operation (create, update, truncate, delete).
 	// Initialized from a SQL SUM query on startup.
