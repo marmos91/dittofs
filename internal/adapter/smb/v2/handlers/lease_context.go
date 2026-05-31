@@ -336,6 +336,16 @@ func FindCreateContext(contexts []CreateContext, name string) *CreateContext {
 //   - clientID: The connection tracker client ID
 //   - shareName: The share name
 //   - isDirectory: Whether the target is a directory
+//   - disallowWriteLease: when true, the Write (SMB2_LEASE_WRITE) bit is stripped
+//     from the requested lease state before the grant. Mirrors Samba's
+//     `disallow_write_lease` (source3/smbd/open.c::delay_for_oplock): a pure write
+//     lease can only be granted when the file has no other leases and no other
+//     non-stat opens. The caller (CREATE handler) computes this via
+//     Handler.disallowWriteLeaseForFile, which sees both the live OpenFile table
+//     and disconnected durable handles that the lock manager's bestGrantableState
+//     cannot. Stripping W from the request (rather than the grant) is equivalent:
+//     the downgrade candidate chain and R/H conflict checks produce the same
+//     R/H bits, and the lock manager persists the correct post-strip state.
 //
 // Returns:
 //   - *LeaseResponseContext: Response context to add to CREATE response (nil if not processing)
@@ -350,6 +360,7 @@ func ProcessLeaseCreateContext(
 	clientID string,
 	shareName string,
 	isDirectory bool,
+	disallowWriteLease bool,
 ) (*LeaseResponseContext, error) {
 	if leaseMgr == nil {
 		logger.Debug("ProcessLeaseCreateContext: no lease manager")
@@ -377,6 +388,17 @@ func ProcessLeaseCreateContext(
 	// Build owner ID for cross-protocol visibility
 	ownerID := fmt.Sprintf("smb:lease:%x", leaseReq.LeaseKey)
 
+	// Apply Samba's `disallow_write_lease` cap: when a conflicting other open
+	// or a disconnected durable handle exists, a Write-caching lease cannot be
+	// granted. Strip W from the request so the grant downgrades to RH (or lower)
+	// without sending a break. Stripping the request — rather than the grant —
+	// is equivalent because the conflict downgrade chain only removes bits; the
+	// resulting R/H bits and persisted lock-manager state are identical.
+	requestedState := leaseReq.LeaseState
+	if disallowWriteLease {
+		requestedState &^= lock.LeaseStateWrite
+	}
+
 	// Request the lease through LeaseManager (delegates to shared LockManager)
 	grantedState, epoch, err := leaseMgr.RequestLease(
 		ctx,
@@ -388,7 +410,7 @@ func ProcessLeaseCreateContext(
 		ownerID,
 		clientID,
 		shareName,
-		leaseReq.LeaseState,
+		requestedState,
 		isDirectory,
 	)
 	// Per MS-SMB2 3.3.5.9.8: If the same-key lease is in Breaking state,

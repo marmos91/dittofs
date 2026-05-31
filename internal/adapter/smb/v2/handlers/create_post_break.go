@@ -842,6 +842,22 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		if leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest); leaseCtx != nil {
 			lockFileHandle := lock.FileHandle(fileHandle)
 			var err error
+			// Samba `disallow_write_lease`: strip W from this lease grant when a
+			// conflicting other open or a disconnected durable handle exists.
+			// The new open's own lease key (parsed from the RqLs blob) and SMB
+			// FileID are excluded so a same-handle reopen/upgrade is never
+			// self-capped (mirrors Samba `is_same_lease`). bestGrantableState in
+			// the lock manager already caps W against live *lease* records; this
+			// predicate adds the cases it cannot see — non-lease live opens and
+			// disconnected durable handles (smb2.durable-v2-open.nonstat-and-lease
+			// and keep-disconnected-rh-with-rwh-open).
+			var newLeaseKey [16]byte
+			if parsed, decErr := DecodeLeaseCreateContext(leaseCtx.Data); decErr == nil && parsed != nil {
+				newLeaseKey = parsed.LeaseKey
+			}
+			disallowWriteLease := h.disallowWriteLeaseForFile(
+				authCtx.Context, fileHandle, newLeaseKey, smbFileID,
+			)
 			leaseResponse, err = ProcessLeaseCreateContext(
 				authCtx.Context,
 				h.LeaseManager,
@@ -852,6 +868,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 				fmt.Sprintf("smb:%d", ctx.SessionID),
 				tree.ShareName,
 				file.Type == metadata.FileTypeDirectory,
+				disallowWriteLease,
 			)
 			if err != nil {
 				if errors.Is(err, lock.ErrLeaseKeyInUse) {
