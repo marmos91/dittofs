@@ -332,6 +332,14 @@ func (s *Service) AddShare(
 	if config.Name == "" {
 		return errors.New("cannot add share with empty name")
 	}
+	// File handles are encoded as "<shareName>:<uuid>" and decoded by
+	// splitting on the FIRST ':'. A share name containing ':' yields handles
+	// whose UUID component fails to parse, silently bricking every file in the
+	// share. Reject it up front with an ErrInvalidArgument StoreError.
+	if strings.Contains(config.Name, ":") {
+		return metadata.NewInvalidArgumentError(
+			fmt.Sprintf("share name %q must not contain ':'", config.Name))
+	}
 
 	if config.LocalBlockStoreID != "" && blockStoreProvider == nil {
 		return fmt.Errorf("block store provider is required when LocalBlockStoreID is set for share %q", config.Name)

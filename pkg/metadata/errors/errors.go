@@ -225,10 +225,25 @@ func NewNotDirectoryError(path string) *StoreError {
 }
 
 // NewInvalidHandleError creates an InvalidHandle error.
+//
+// Maps to NFS BADHANDLE / SMB STATUS_INVALID_HANDLE. Use for handles that are
+// structurally malformed (cannot be decoded into a share + UUID).
 func NewInvalidHandleError() *StoreError {
 	return &StoreError{
 		Code:    ErrInvalidHandle,
 		Message: "invalid file handle",
+	}
+}
+
+// NewStaleHandleError creates a StaleHandle error.
+//
+// Maps to NFS *STALE / SMB STATUS_FILE_CLOSED. Use for handles that decode
+// correctly but name a share that no longer exists (e.g. a handle held across
+// a RemoveShare).
+func NewStaleHandleError(shareName string) *StoreError {
+	return &StoreError{
+		Code:    ErrStaleHandle,
+		Message: fmt.Sprintf("no store configured for share %q", shareName),
 	}
 }
 
@@ -369,6 +384,28 @@ func IsConflictError(err error) bool {
 	var storeErr *StoreError
 	if goerrors.As(err, &storeErr) {
 		return storeErr.Code == ErrConflict
+	}
+	return false
+}
+
+// IsInvalidHandleError returns true if the error is a StoreError with
+// ErrInvalidHandle code. Unwraps via errors.As so wrapped StoreErrors
+// classify correctly.
+func IsInvalidHandleError(err error) bool {
+	var storeErr *StoreError
+	if goerrors.As(err, &storeErr) {
+		return storeErr.Code == ErrInvalidHandle
+	}
+	return false
+}
+
+// IsStaleHandleError returns true if the error is a StoreError with
+// ErrStaleHandle code. Unwraps via errors.As so wrapped StoreErrors
+// classify correctly.
+func IsStaleHandleError(err error) bool {
+	var storeErr *StoreError
+	if goerrors.As(err, &storeErr) {
+		return storeErr.Code == ErrStaleHandle
 	}
 	return false
 }

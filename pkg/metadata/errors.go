@@ -88,10 +88,17 @@ func NewNotDirectoryError(path string) *StoreError {
 	return errors.NewNotDirectoryError(path)
 }
 
-// NewInvalidHandleError creates a StoreError for invalid file handles.
+// NewInvalidHandleError creates a StoreError for malformed file handles.
 // Deprecated: Use errors.NewInvalidHandleError directly.
 func NewInvalidHandleError() *StoreError {
 	return errors.NewInvalidHandleError()
+}
+
+// NewStaleHandleError creates a StoreError for handles that decode but name a
+// share that no longer exists.
+// Deprecated: Use errors.NewStaleHandleError directly.
+func NewStaleHandleError(shareName string) *StoreError {
+	return errors.NewStaleHandleError(shareName)
 }
 
 // NewNotEmptyError creates a StoreError for when a directory is not empty.
@@ -204,4 +211,16 @@ func IsDeadlockError(err error) bool {
 // Deprecated: Use errors.IsConflictError directly.
 func IsConflictError(err error) bool {
 	return errors.IsConflictError(err)
+}
+
+// IsInvalidHandleError checks if an error is a StoreError with ErrInvalidHandle code.
+// Deprecated: Use errors.IsInvalidHandleError directly.
+func IsInvalidHandleError(err error) bool {
+	return errors.IsInvalidHandleError(err)
+}
+
+// IsStaleHandleError checks if an error is a StoreError with ErrStaleHandle code.
+// Deprecated: Use errors.IsStaleHandleError directly.
+func IsStaleHandleError(err error) bool {
+	return errors.IsStaleHandleError(err)
 }

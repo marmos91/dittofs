@@ -154,6 +154,54 @@ func TestMetadataService_GetStoreForShare(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no store configured")
+		// Must be a typed stale-handle StoreError so protocol mappers
+		// translate to NFS *STALE / SMB STATUS_FILE_CLOSED, not a generic
+		// server fault.
+		assert.True(t, metadata.IsStaleHandleError(err), "want ErrStaleHandle, got %v", err)
+	})
+}
+
+// TestMetadataService_HandleRouting_TypedErrors verifies that handle-routing
+// lookups surface typed StoreErrors: malformed handles -> ErrInvalidHandle
+// (BADHANDLE), well-formed handles naming an unknown share -> ErrStaleHandle
+// (*STALE). A generic error here would fall through the protocol error maps to
+// NFS3ERR_IO / NFS4ERR_SERVERFAULT / STATUS_INTERNAL_ERROR.
+func TestMetadataService_HandleRouting_TypedErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("malformed handle -> ErrInvalidHandle", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		// Truncated/garbage handle with no ':' separator.
+		_, err := fx.service.GetLockManagerForHandle(metadata.FileHandle("garbage-no-colon"))
+
+		require.Error(t, err)
+		assert.True(t, metadata.IsInvalidHandleError(err), "want ErrInvalidHandle, got %v", err)
+	})
+
+	t.Run("well-formed handle, unknown share -> ErrStaleHandle", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		// Valid encoding but a share that was never registered (e.g. removed).
+		handle, err := metadata.GenerateNewHandle("/removed-share")
+		require.NoError(t, err)
+
+		_, err = fx.service.GetLockManagerForHandle(handle)
+
+		require.Error(t, err)
+		assert.True(t, metadata.IsStaleHandleError(err), "want ErrStaleHandle, got %v", err)
+	})
+
+	t.Run("registered-share handle round-trips", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		lm, err := fx.service.GetLockManagerForHandle(fx.rootHandle)
+
+		require.NoError(t, err)
+		assert.NotNil(t, lm)
 	})
 }
 
