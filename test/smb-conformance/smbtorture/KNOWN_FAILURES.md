@@ -198,8 +198,8 @@ still fail due to incomplete reconnect, lease coordination, and persistence.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.durable-v2-open.lock-oplock | Durable handles V2 | DH2 lock with oplock not fully working | #739 |
-| smb2.durable-v2-open.lock-lease | Durable handles V2 | DH2 lock with lease not fully working | #739 |
-| smb2.durable-v2-open.app-instance | Durable handles V2 | App instance ID not fully working | #739 |
+| smb2.durable-v2-open.lock-lease | Durable handles V2 | Deferred past v1.0: needs lease-v2 epoch persistence across reconnect (the sibling lock-oplock flipped via #913; lock-lease additionally asserts `lease_epoch==1` on reconnect, which requires threading the epoch through the durable store across memory/badger/postgres + suppressing a spurious break) — disproportionate multi-backend plumbing for 1 test | #739 |
+| smb2.durable-v2-open.app-instance | Durable handles V2 | Deferred past v1.0: AppInstanceId force-close handler exists (ProcessAppInstanceId) but still emits one spurious lease break (`break_info.count==1`, expected 0); pinning the exact break-routing timing needs live-server debug not justified by 1 test at v1.0 | #739 |
 | smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Persistent handles not implemented | #739 |
 | smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Persistent handles not implemented | #739 |
 
@@ -332,6 +332,18 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-31 — #739 lock-lease + app-instance: deferred past v1.0
+
+The last two DH2 residuals are deferred (documented reasons inline). `lock-lease`
+needs lease-v2 epoch persistence across reconnect (the oplock sibling flipped via
+#913; the lease variant additionally asserts `lease_epoch==1`, requiring the
+epoch threaded through the durable store across all three backends + a spurious
+break suppressed) — disproportionate multi-backend plumbing for one test.
+`app-instance` still emits one spurious lease break (`break_info.count==1`);
+pinning the break-routing timing needs live-server debug not justified by one
+test at v1.0. #739's tractable rows already landed (nonstat-and-lease, lock-oplock,
+keep-disconnected, reconnect-delay, reopen1/1a); the remainder is post-v1.0.
 
 ### 2026-05-31 — stale-row harvest: 4 rows already passing
 
