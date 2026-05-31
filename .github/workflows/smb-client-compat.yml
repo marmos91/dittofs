@@ -295,7 +295,9 @@ jobs:
           # Initialize config
           .\dfs.exe init --force
 
-          # Start server in background
+          # Start server in background with DEBUG logging so the SMB/NTLM
+          # session-setup trace is captured for #879 diagnosis.
+          $env:DITTOFS_LOGGING_LEVEL = "DEBUG"
           $proc = Start-Process -FilePath .\dfs.exe -ArgumentList "start" -PassThru -NoNewWindow -RedirectStandardOutput dfs-stdout.log -RedirectStandardError dfs-stderr.log
           echo "DFS_PID=$($proc.Id)" >> $env:GITHUB_ENV
           Start-Sleep -Seconds 10
@@ -333,6 +335,7 @@ jobs:
         run: |
           # Mount SMB share
           net use Z: \\localhost\smbbasic /user:test 'testpass123'
+          if ($LASTEXITCODE -ne 0) { throw "net use failed with exit code $LASTEXITCODE" }
 
           # Create and read file
           "hello from windows" | Out-File -FilePath Z:\win-test.txt -Encoding ascii -NoNewline
@@ -364,7 +367,19 @@ jobs:
           # Disconnect
           net use Z: /delete /yes
 
+      - name: Dump DittoFS server log (NTLM diagnosis)
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "===== dfs logs (state) ====="
+          & .\dfs.exe logs 2>&1 | Select-String -Pattern 'SESSION_SETUP|NTLM|CHALLENGE|negotiateFlags|NTLMv2|Derived|crypto|Signed|SPNEGO|mechList|AUTHENTICATE|dialect|securityBuffer|domainsToTry|validation' | Select-Object -Last 80
+          Write-Host "===== dfs-stdout.log ====="
+          Get-Content dfs-stdout.log -ErrorAction SilentlyContinue | Select-Object -Last 40
+          Write-Host "===== dfs-stderr.log ====="
+          Get-Content dfs-stderr.log -ErrorAction SilentlyContinue | Select-Object -Last 40
+
       - name: Verify dialect
+        if: always()
         shell: pwsh
         run: |
           $conn = Get-SmbConnection -ErrorAction SilentlyContinue
