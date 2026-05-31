@@ -2115,6 +2115,115 @@ func TestReopen2_V2_LeaseV2_JunkAccess(t *testing.T) {
 	assertReopen2OK(t, res, status, err, 0x120089)
 }
 
+// Mode 7: smb2.durable-open.reopen2-lease{,-v2} SECOND CYCLE — a V1
+// (durable_open=true, CreateGuid=0) lease handle reconnected via the *DH2C*
+// context with a ZERO CreateGuid. smbtorture's smb2_create sets
+// io.in.durable_handle_v2 = h while h is a V1 handle, so the wire carries a
+// DH2C blob whose CreateGuid is zero and whose FileID is the original handle.
+// processV2Reconnect must fall back to a FileID-keyed lookup (the zero
+// CreateGuid is unusable) — mirroring Samba's persistent-FileId-keyed
+// smbd_smb2_create_durable_v2_reconnect. Pre-fix failure:
+// OBJECT_NAME_NOT_FOUND (durable_open.c:1068 / reopen2-lease-v2:1305).
+// Expected: OK with the original granted access restored.
+func TestReopen2_V1ViaDH2C_ZeroCreateGuid(t *testing.T) {
+	store := newMockDurableStore()
+	freshKey := makeSessionKeyHash("fresh-session-B")
+	// Full original FileID (persistent + volatile) as the client replays it.
+	fileID := [16]byte{7, 8, 9, 10, 11, 12, 13, 14, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22}
+	leaseKey := [16]byte{0x5A, 0x6B, 0x7C, 0x8D}
+
+	// V1 handle: CreateGuid is zero, lease-backed. persistReopen2Handle stores
+	// the volatile-zeroed FileID, matching buildPersistedDurableHandle.
+	persistedFileID := fileID
+	for i := 8; i < 16; i++ {
+		persistedFileID[i] = 0
+	}
+	persistReopen2Handle(t, store, "dh-r2-v1-via-dh2c", persistedFileID, [16]byte{}, leaseKey,
+		OplockLevelLease, 0x12019F, 0x07, 0x12019F)
+
+	// DH2C blob: full original FileID, ZERO CreateGuid.
+	dh2cData := make([]byte, 36)
+	copy(dh2cData[0:16], fileID[:])
+	// bytes 16:32 (CreateGuid) stay zero
+	contexts := []CreateContext{
+		{Name: DurableHandleV2ReconnectTag, Data: dh2cData},
+		{Name: LeaseContextTagRequest, Data: encodeV1LeaseRequestContext(leaseKey, 0)},
+	}
+
+	res, status, err := ProcessDurableReconnectContext(
+		context.Background(), store, nil, contexts,
+		freshSessionID, "alice", freshKey, "/share1", "reopen2.dat", [16]byte{})
+	assertReopen2OK(t, res, status, err, 0x12019F)
+	if !res.IsV2 {
+		t.Errorf("IsV2 = false, want true (reconnect arrived via DH2C context)")
+	}
+
+	// The handle must have been consumed by FileID — a second reconnect fails.
+	res2, status2, _ := ProcessDurableReconnectContext(
+		context.Background(), store, nil, contexts,
+		freshSessionID, "alice", freshKey, "/share1", "reopen2.dat", [16]byte{})
+	if status2 != types.StatusObjectNameNotFound || res2 != nil {
+		t.Errorf("second reconnect status = %s (res=%v), want OBJECT_NAME_NOT_FOUND (handle consumed)",
+			status2, res2)
+	}
+}
+
+// TestReopen2_V2ZeroCreateGuid_WrongFileID confirms the zero-CreateGuid FileID
+// fallback still rejects a reconnect whose replayed FileID does not match any
+// persisted handle (so the fallback cannot resurrect an unrelated open).
+func TestReopen2_V2ZeroCreateGuid_WrongFileID(t *testing.T) {
+	store := newMockDurableStore()
+	freshKey := makeSessionKeyHash("fresh-session-B")
+	fileID := [16]byte{8, 9, 10, 11, 12, 13, 14, 15, 0, 0, 0, 0, 0, 0, 0, 0}
+	leaseKey := [16]byte{0x6A, 0x7B, 0x8C, 0x9D}
+	persistReopen2Handle(t, store, "dh-r2-wrongfid", fileID, [16]byte{}, leaseKey,
+		OplockLevelLease, 0x12019F, 0x07, 0x12019F)
+
+	wrongFileID := [16]byte{0xDE, 0xAD, 0xBE, 0xEF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	dh2cData := make([]byte, 36)
+	copy(dh2cData[0:16], wrongFileID[:])
+	contexts := []CreateContext{
+		{Name: DurableHandleV2ReconnectTag, Data: dh2cData},
+		{Name: LeaseContextTagRequest, Data: encodeV1LeaseRequestContext(leaseKey, 0)},
+	}
+
+	res, status, _ := ProcessDurableReconnectContext(
+		context.Background(), store, nil, contexts,
+		freshSessionID, "alice", freshKey, "/share1", "reopen2.dat", [16]byte{})
+	if status != types.StatusObjectNameNotFound || res != nil {
+		t.Errorf("status = %s (res=%v), want OBJECT_NAME_NOT_FOUND for unmatched FileID", status, res)
+	}
+}
+
+// TestReopen2_V2ZeroCreateGuid_RejectsV2Handle guards the reopen2/reopen2b
+// negative ladder: a DH2C reconnect with a ZERO CreateGuid against a V2 handle
+// (stored CreateGuid != 0) MUST fail OBJECT_NAME_NOT_FOUND. The zero-CreateGuid
+// FileID fallback is only for V1 handles; matching a V2 handle by FileID alone
+// would wrongly resurrect it (durable_v2_open.c:1070-1090 / reopen2b:1157).
+func TestReopen2_V2ZeroCreateGuid_RejectsV2Handle(t *testing.T) {
+	store := newMockDurableStore()
+	freshKey := makeSessionKeyHash("fresh-session-B")
+	fileID := [16]byte{9, 10, 11, 12, 13, 14, 15, 16, 0, 0, 0, 0, 0, 0, 0, 0}
+	createGuid := [16]byte{0xAB, 0xAC, 0xAD, 0xAE, 0xAF, 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA}
+
+	// V2 handle: stored CreateGuid is non-zero, batch-oplock (no lease).
+	persistReopen2Handle(t, store, "dh-r2-v2-zeroguid", fileID, createGuid, [16]byte{},
+		OplockLevelBatch, 0x120089, 0x01, 0x120089)
+
+	// DH2C blob with the correct FileID but a ZERO CreateGuid.
+	dh2cData := make([]byte, 36)
+	copy(dh2cData[0:16], fileID[:])
+	contexts := []CreateContext{{Name: DurableHandleV2ReconnectTag, Data: dh2cData}}
+
+	res, status, _ := ProcessDurableReconnectContext(
+		context.Background(), store, nil, contexts,
+		freshSessionID, "alice", freshKey, "/share1", junkFname, [16]byte{})
+	if status != types.StatusObjectNameNotFound || res != nil {
+		t.Errorf("status = %s (res=%v), want OBJECT_NAME_NOT_FOUND (zero CreateGuid cannot reconnect a V2 handle)",
+			status, res)
+	}
+}
+
 // TestReopen2_NegativeLadder_Preserved guards the negative reconnect rungs the
 // reopen2-lease tests also exercise, so the access-gate removal does not relax
 // them: wrong lease key -> ONF, wrong-fname-WITH-lease -> INVALID_PARAMETER,

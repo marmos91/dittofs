@@ -1317,18 +1317,34 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
+	// Step 6d: AppInstanceId failover (MS-SMB2 §3.3.5.9.13). When this CREATE
+	// carries an AppInstanceId matching an existing open (live or disconnected),
+	// the existing open MUST be force-closed to claim the file. This runs BEFORE
+	// the oplock/lease break dispatch below so the displaced open is gone before
+	// any break is computed — the failover is silent (no oplock break on the
+	// old open). smbtorture smb2.durable-v2-open.app-instance asserts
+	// break_info.count == 0 after a same-AppInstanceId open on a second tree.
+	var appInstanceId [16]byte
+	if h.DurableStore != nil {
+		appInstanceId = ProcessAppInstanceId(
+			authCtx.Context, h.DurableStore, h, req.CreateContexts,
+		)
+	}
+
 	draft := (&createDraft{
-		req:                req,
-		tree:               tree,
-		authCtx:            authCtx,
-		filename:           filename,
-		baseName:           baseName,
-		parentHandle:       parentHandle,
-		existingFile:       existingFile,
-		fileExists:         fileExists,
-		createAction:       createAction,
-		isDirectoryRequest: isDirectoryRequest,
-		excludeOwner:       excludeOwner,
+		req:                  req,
+		tree:                 tree,
+		authCtx:              authCtx,
+		filename:             filename,
+		baseName:             baseName,
+		parentHandle:         parentHandle,
+		existingFile:         existingFile,
+		fileExists:           fileExists,
+		createAction:         createAction,
+		isDirectoryRequest:   isDirectoryRequest,
+		excludeOwner:         excludeOwner,
+		appInstanceProcessed: true,
+		appInstanceId:        appInstanceId,
 	}).finalize()
 
 	// Dispatch lease break and either park the CREATE async (emit interim
