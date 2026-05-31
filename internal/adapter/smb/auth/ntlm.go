@@ -81,6 +81,13 @@ const (
 	challengeBaseSize            = 56 // Minimum size without payload
 )
 
+// ntlmVersion is the NTLM VERSION structure (MS-NLMP §2.2.2.10) emitted in
+// the Type 2 CHALLENGE when FlagVersion is set. ProductMajor=6, ProductMinor=1,
+// ProductBuild=0, Reserved=0, NTLMRevisionCurrent=0x0F (NTLMSSP_REVISION_W2K3).
+// Matches Samba's server-side value; the native Windows redirector requires a
+// non-zero Version to accept the challenge.
+var ntlmVersion = [8]byte{0x06, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F}
+
 // NTLM Type 3 (AUTHENTICATE) message offsets
 // [MS-NLMP] Section 2.2.1.3
 const (
@@ -359,6 +366,13 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 	// with EINVAL, and Windows/Samba always set both. They describe key
 	// strength only — they do not require NTLM-level RC4 sealing.
 	//
+	// FlagVersion is set and a real Version structure is emitted below. The
+	// native Windows redirector (unlike mount_smbfs / Samba's smbclient /
+	// pyspnego, which tolerate its absence) rejects a CHALLENGE whose Version
+	// is absent/zero, failing SESSION_SETUP with "wrong password" (System
+	// error 86) even though credentials are correct. Samba's server always
+	// emits a Version here for the same reason (MS-NLMP §2.2.1.2 / §2.2.2.10).
+	//
 	// FlagSeal is intentionally NOT set: NTLM-level sealing (RC4 over message
 	// data) is not implemented; SMB3 AES transport encryption is the only
 	// confidentiality path. If a client requests FlagSeal in Type 1, we omit
@@ -373,6 +387,7 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 		FlagTargetInfo | // Include AV_PAIR list
 		Flag128 | // 128-bit session key strength (required by Linux CIFS client)
 		Flag56 | // 56-bit session key strength (set alongside 128 like Windows/Samba)
+		FlagVersion | // Advertise the OS Version structure (Windows requires it)
 		FlagKeyExch // Support session key exchange (required for signing)
 
 	// Build target info with required AV_PAIRs for Windows compatibility.
@@ -423,6 +438,14 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 	copy(msg[challengeServerChalOffset:challengeServerChalOffset+8], serverChallenge[:])
 
 	// Reserved at offset 32: already zero (from make())
+
+	// Version at offset 48 (MS-NLMP §2.2.2.10). Required by the native
+	// Windows redirector when FlagVersion is advertised. Layout:
+	//   ProductMajorVersion (1), ProductMinorVersion (1),
+	//   ProductBuild (2, LE), Reserved (3, zero),
+	//   NTLMRevisionCurrent (1) = NTLMSSP_REVISION_W2K3 (0x0F).
+	// Values mirror Samba's server emission (6.1.0).
+	copy(msg[challengeVersionOffset:challengeVersionOffset+8], ntlmVersion[:])
 
 	// TargetInfoFields at offset 40
 	binary.LittleEndian.PutUint16(

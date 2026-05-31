@@ -289,13 +289,68 @@ jobs:
           go build -o dfs.exe cmd/dfs/main.go
           go build -o dfsctl.exe cmd/dfsctl/main.go
 
+      - name: Free TCP 445 for DittoFS (best-effort)
+        shell: pwsh
+        run: |
+          # #879 ROOT CAUSE: the Windows redirector (`net use \\host\share`)
+          # ALWAYS connects to TCP 445 — the UNC syntax has no port field, so a
+          # custom port like 12445 is unreachable from `net use`. The earlier
+          # "System error 86" was returned by the in-box Windows SMB server on
+          # 445 (which has no `test` account), NOT by DittoFS — no client byte
+          # ever reached the adapter (confirmed: empty pktmon capture on 12445,
+          # zero SESSION_SETUP lines in dittofs.log). DittoFS's own SMB 3.1.1 +
+          # AES-128-GMAC + NTLMv2 + KEY_EXCH signing path is correct: it
+          # authenticates macOS mount_smbfs and Samba smbclient 4.19 (both
+          # negotiate identically to the Windows redirector — GMAC, KEY_EXCH).
+          #
+          # To actually exercise DittoFS over `net use`, DittoFS must own 445.
+          # That requires releasing the kernel SMB listener (srvnet.sys, bound on
+          # [::]:445 under PID 4). On hosted windows runners srvnet cannot be
+          # unloaded without a reboot, so this is best-effort: we try, log
+          # whether 445 freed, and let the job continue to capture diagnostics.
+          try { Set-SmbServerConfiguration -EnableSMB2Protocol $false -Force -ErrorAction Stop } catch { Write-Host "Set-SmbServerConfiguration: $_" }
+          Get-Service LanmanServer -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue
+          sc.exe config LanmanServer start= disabled | Out-Null
+          sc.exe config srv2 start= disabled | Out-Null
+          sc.exe config srvnet start= disabled | Out-Null
+          foreach ($svc in 'LanmanServer','srv2','srvnet') {
+            sc.exe stop $svc 2>&1 | Out-String | Write-Host
+          }
+          $freed = $false
+          for ($i = 0; $i -lt 15; $i++) {
+            if (-not (Get-NetTCPConnection -LocalPort 445 -State Listen -ErrorAction SilentlyContinue)) { $freed = $true; break }
+            sc.exe stop srv2 2>&1 | Out-Null
+            sc.exe stop srvnet 2>&1 | Out-Null
+            Start-Sleep -Seconds 2
+          }
+          Write-Host "TCP 445 freed for DittoFS: $freed (false => hosted-runner kernel listener; net use cannot reach DittoFS without a reboot)"
+          (Get-NetTCPConnection -LocalPort 445 -State Listen -ErrorAction SilentlyContinue) | Format-Table -AutoSize
+          # sc.exe returns nonzero when a service is already stopped, which pwsh
+          # would otherwise propagate as a step failure. This step is
+          # best-effort — clear the residual exit code so the job proceeds to
+          # the bootstrap (which binds DittoFS to 445 if it is now free).
+          $global:LASTEXITCODE = 0
+
+      - name: Start packet capture (pktmon, #879 diagnosis)
+        shell: pwsh
+        run: |
+          # Capture the loopback SMB handshake at the byte level so any
+          # Windows-specific SESSION_SETUP divergence (#879) can be diffed
+          # against the macOS/Linux flows. pktmon is built into the runner.
+          pktmon filter remove | Out-Null
+          pktmon filter add SMB879 -p 445 | Out-Null
+          pktmon start --capture --pkt-size 0 --file-name pktmon879.etl 2>&1 | Out-String | Write-Host
+          Write-Host "pktmon capture started"
+
       - name: Start DittoFS and bootstrap SMB
         shell: pwsh
         run: |
           # Initialize config
           .\dfs.exe init --force
 
-          # Start server in background
+          # Start server in background with DEBUG logging so the SMB/NTLM
+          # session-setup trace is captured for #879 diagnosis.
+          $env:DITTOFS_LOGGING_LEVEL = "DEBUG"
           $proc = Start-Process -FilePath .\dfs.exe -ArgumentList "start" -PassThru -NoNewWindow -RedirectStandardOutput dfs-stdout.log -RedirectStandardError dfs-stderr.log
           echo "DFS_PID=$($proc.Id)" >> $env:GITHUB_ENV
           Start-Sleep -Seconds 10
@@ -321,18 +376,20 @@ jobs:
           .\dfsctl.exe share create --name /smbbasic --metadata mem-meta --local mem-payload
           .\dfsctl.exe user create --username test --password 'testpass123'
           .\dfsctl.exe share permission grant /smbbasic --user test --level read-write
-          # Cap negotiated dialect at SMB 2.1 (SMB3 session/signing is incomplete);
-          # the Windows redirector otherwise negotiates 3.1.1 and fails auth.
-          .\dfsctl.exe adapter enable smb --port 12445
-          .\dfsctl.exe adapter settings smb update --max-dialect SMB2.1
+          # Bind DittoFS to 445 — the only port `net use` can reach (445 was
+          # freed above by stopping the in-box SMB server).
+          .\dfsctl.exe adapter enable smb --port 445
 
           Start-Sleep -Seconds 3
+          Write-Host "DittoFS SMB listener:"
+          (Get-NetTCPConnection -LocalPort 445 -State Listen -ErrorAction SilentlyContinue) | Format-Table -AutoSize
 
       - name: Test net use operations
         shell: pwsh
         run: |
           # Mount SMB share
           net use Z: \\localhost\smbbasic /user:test 'testpass123'
+          if ($LASTEXITCODE -ne 0) { throw "net use failed with exit code $LASTEXITCODE" }
 
           # Create and read file
           "hello from windows" | Out-File -FilePath Z:\win-test.txt -Encoding ascii -NoNewline
@@ -364,7 +421,54 @@ jobs:
           # Disconnect
           net use Z: /delete /yes
 
+      - name: Stop packet capture (#879 diagnosis)
+        if: always()
+        shell: pwsh
+        run: |
+          pktmon stop 2>&1 | Out-String | Write-Host
+          # Convert the ETL to a pcapng so it can be opened in Wireshark/tshark.
+          pktmon pcapng pktmon879.etl -o pktmon879.pcapng 2>&1 | Out-String | Write-Host
+          Get-ChildItem pktmon879.* -ErrorAction SilentlyContinue | Format-Table Name, Length -AutoSize
+
+      - name: Dump DittoFS server log (NTLM diagnosis)
+        if: always()
+        shell: pwsh
+        run: |
+          # The SMB/NTLM DEBUG trace lands in the state log file, NOT in
+          # `dfs logs` (which only shows the rotating state summary) nor in the
+          # redirected stdout/stderr. Read the real file directly.
+          $logFile = Join-Path $env:LOCALAPPDATA 'dittofs\dittofs.log'
+          Write-Host "===== dittofs.log path: $logFile (exists=$(Test-Path $logFile)) ====="
+          if (Test-Path $logFile) {
+            Copy-Item $logFile -Destination dittofs-full.log -Force
+            Write-Host "----- SESSION_SETUP / NTLM / signing trace (last 150) -----"
+            Get-Content $logFile |
+              Select-String -Pattern 'SESSION_SETUP|NTLM|CHALLENGE|negotiateFlags|NTLMv2|Derived|crypto|Signed|SPNEGO|mechList|AUTHENTICATE|dialect|securityBuffer|domainsToTry|validation|signingAlg|cipherId|preauth|Verified|signature' |
+              Select-Object -Last 150
+          } else {
+            Write-Host "state log not found; falling back to dfs logs + stdout/stderr"
+            & .\dfs.exe logs 2>&1 | Select-Object -Last 80
+          }
+          Write-Host "===== dfs-stdout.log ====="
+          Get-Content dfs-stdout.log -ErrorAction SilentlyContinue | Select-Object -Last 40
+          Write-Host "===== dfs-stderr.log ====="
+          Get-Content dfs-stderr.log -ErrorAction SilentlyContinue | Select-Object -Last 40
+
+      - name: Upload #879 diagnosis artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: win879-diagnosis
+          path: |
+            dittofs-full.log
+            pktmon879.pcapng
+            dfs-stdout.log
+            dfs-stderr.log
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Verify dialect
+        if: always()
         shell: pwsh
         run: |
           $conn = Get-SmbConnection -ErrorAction SilentlyContinue
