@@ -30,6 +30,17 @@ import (
 //   - A new open with FILE_SHARE_NONE on a file with a disconnected handle
 //     purges the disconnected handle (share-mode conflict, MS-FSA 2.1.5.1.2).
 //
+//   - A new data-access open whose access the disconnected handle's OWN deny
+//     mode excludes (e.g. D opened FILE_SHARE_NONE, new open wants read/write)
+//     purges D — the new open breaks D's lease/oplock and the disconnected
+//     client cannot ack (durable_open.open2-lease).
+//
+//   - A new data-access open on a file with a disconnected EXCLUSIVE/BATCH
+//     oplock holder (persisted as an RWH synthetic lease) purges D: the
+//     exclusive oplock breaks on any second opener and the disconnected client
+//     cannot ack (durable_open.oplock / open2-oplock). A stat-only second open
+//     does NOT break it (Samba is_stat_open) and does NOT purge.
+//
 //   - A WRITE from a live handle breaks Level-II (Read) leases on the same
 //     file to None per MS-SMB2 §3.3.5.16; any disconnected RH lease on the
 //     file with a different lease-key is purged (it would break to None).
@@ -86,26 +97,42 @@ const (
 // Inputs:
 //   - dLeaseState: the lease state persisted at disconnect (R/RH/RWH bits or None).
 //   - dLeaseKey: D's lease key.
+//   - dShareAccess: share-mode bits D was originally opened with (its deny mode).
 //   - newLeaseState: lease state requested by the new open (zero if no lease).
 //   - newLeaseKey: lease key of the new open's lease (zero if no lease).
 //   - newShareAccess: share-mode bits from the new CREATE.
+//   - newDesiredAccess: desired-access mask from the new CREATE.
+//   - newIsStatOnly: true when the new open is stat-only (no data access). A
+//     stat-only open neither breaks an oplock/lease nor triggers a share-mode
+//     conflict (MS-SMB2 §3.3.5.9; Samba is_stat_open), so it never purges.
 //
 // Decision rules (see file-level comment for spec mapping):
 //
 //   - newShareAccess excludes all of {READ, WRITE, DELETE} (SHARE_NONE) →
-//     purge (MS-FSA 2.1.5.1.2 share-mode conflict).
-//   - D holds W (RWH) AND new open requests any non-None lease with a
-//     DIFFERENT lease key → purge (two W-capable cachers on different keys
-//     cannot coexist; the break_to value strips W and, per Samba's
-//     delay_for_oplock_fn lease-strip cascade, leaves W-only which is an
-//     invalid lease state → effectively break to NONE → lose H).
+//     purge (MS-FSA 2.1.5.1.2 share-mode conflict on the NEW open's deny mode).
+//   - D was opened with a deny mode that excludes the new open's access
+//     (D.ShareAccess denies new.DesiredAccess) → purge. This is the V1
+//     durable_open.open2-lease case: D held an RH lease with FILE_SHARE_NONE,
+//     a later read/write open conflicts with D's deny mode, breaks D's lease,
+//     and D's disconnected client cannot ack → durable lost.
+//   - D holds W (RWH / exclusive / batch caching) AND the new open carries
+//     real data access → purge. An exclusive/batch caching open breaks on ANY
+//     conflicting data-access open regardless of whether the new open itself
+//     requests a lease (V1 durable_open.oplock / open2-oplock: D held a BATCH
+//     oplock — persisted as an RWH synthetic lease — and a plain second open
+//     with no oplock breaks it). The same-lease-key carve-out preserves an
+//     identical-key open (which is reconnect-equivalent and never reaches this
+//     predicate in practice); a zero D-key is "no key" and never matches.
 //   - Otherwise → preserve.
 func disconnectedConflictOnNewOpen(
 	dLeaseState uint32,
 	dLeaseKey [16]byte,
+	dShareAccess uint32,
 	newLeaseState uint32,
 	newLeaseKey [16]byte,
 	newShareAccess uint32,
+	newDesiredAccess uint32,
+	newIsStatOnly bool,
 ) disconnectedHandleAction {
 	// SHARE_NONE conflict: any disconnected handle is purged because the
 	// disconnected open held shared access and the new open denies it.
@@ -113,23 +140,63 @@ func disconnectedConflictOnNewOpen(
 		return disconnectedActionPurge
 	}
 
-	// W-on-W conflict on different keys: the disconnected handle held W,
-	// new open requests any non-None lease (W or RH). Even an RH request
-	// from a different key forces the W-holder to lose W; in Samba this
-	// cascades through the candidate downgrade chain (RWH → RH → R → NONE)
-	// and lands on a state lacking H because the disconnected holder cannot
-	// ack the in-flight break. Purge.
+	// Stat-only opens impose no oplock-break or share-mode constraint — they
+	// neither break D's caching nor violate D's deny mode. Preserve. Mirrors
+	// keep-disconnected-{rh,rwh}-with-stat-open.
+	if newIsStatOnly {
+		return disconnectedActionPreserve
+	}
+
+	// D's own deny mode excludes the new open: D was opened with a share mode
+	// that does not permit the new open's data access. The new open breaks D's
+	// lease/oplock to honour the access; D's disconnected client cannot ack →
+	// purge. Covers durable_open.open2-lease (D: RH lease + FILE_SHARE_NONE,
+	// new: read/write open).
+	if disconnectedShareDeniesNewOpen(dShareAccess, newDesiredAccess) {
+		return disconnectedActionPurge
+	}
+
+	// W-on-W / exclusive-caching conflict: the disconnected handle held W
+	// (RWH — exclusive or batch caching). A conflicting data-access open
+	// forces the W-holder to break; in Samba this cascades through the
+	// candidate downgrade chain (RWH → RH → R → NONE) and lands on a state
+	// lacking H because the disconnected holder cannot ack the in-flight
+	// break. Purge regardless of whether the new open requests a lease — an
+	// exclusive/batch oplock breaks on any second opener's access.
 	//
 	// Key comparison treats a zero lease key as "no key" — distinct from any
-	// other key, including another zero. This matters for oplock-V2 / no-lease
-	// opens on both sides: they cannot coexist with a W-holder either.
-	if dLeaseState&smbLeaseWrite != 0 && newLeaseState != 0 {
-		if dLeaseKey != newLeaseKey || dLeaseKey == ([16]byte{}) {
+	// other key, including another zero. The same-key carve-out only spares an
+	// open that shares D's exact lease key (reconnect-equivalent).
+	if dLeaseState&smbLeaseWrite != 0 {
+		if newLeaseKey != dLeaseKey || dLeaseKey == ([16]byte{}) {
 			return disconnectedActionPurge
 		}
 	}
 
 	return disconnectedActionPreserve
+}
+
+// disconnectedShareDeniesNewOpen reports whether a disconnected durable
+// handle's original share-access mode (dShareAccess) denies the data access
+// requested by a new open (newDesiredAccess). Mirrors the D-side half of
+// checkShareModeConflict (handler.go) but operates on a persisted record
+// rather than a live OpenFile, reusing the same access-mask classifiers
+// (hasReadAccess / hasWriteAccess / hasDeleteAccess).
+//
+// A disconnected handle that shared nothing (FILE_SHARE_NONE) denies any
+// read/write/delete-bearing open. A handle that shared READ still denies a
+// WRITE-bearing open, etc. Stat-only new opens are filtered by the caller.
+func disconnectedShareDeniesNewOpen(dShareAccess, newDesiredAccess uint32) bool {
+	if hasReadAccess(newDesiredAccess) && dShareAccess&smbShareRead == 0 {
+		return true
+	}
+	if hasWriteAccess(newDesiredAccess) && dShareAccess&smbShareWrite == 0 {
+		return true
+	}
+	if hasDeleteAccess(newDesiredAccess) && dShareAccess&smbShareDelete == 0 {
+		return true
+	}
+	return false
 }
 
 // disconnectedConflictOnDataChange evaluates whether a WRITE or RENAME from a
@@ -185,10 +252,12 @@ func (h *Handler) purgeConflictingDisconnectedHandlesForOpen(
 	newLeaseState uint32,
 	newLeaseKey [16]byte,
 	newShareAccess uint32,
+	newDesiredAccess uint32,
 ) int {
 	if h.DurableStore == nil || len(metaHandle) == 0 {
 		return 0
 	}
+	newIsStatOnly := isStatOnlyOpen(newDesiredAccess)
 	h.durablePurgeMu.Lock()
 	defer h.durablePurgeMu.Unlock()
 	handles, err := h.DurableStore.GetDurableHandlesByFileHandle(ctx, metaHandle)
@@ -208,9 +277,9 @@ func (h *Handler) purgeConflictingDisconnectedHandlesForOpen(
 			continue
 		}
 		action := disconnectedConflictOnNewOpen(
-			d.LeaseState, d.LeaseKey,
+			d.LeaseState, d.LeaseKey, d.ShareAccess,
 			newLeaseState, newLeaseKey,
-			newShareAccess,
+			newShareAccess, newDesiredAccess, newIsStatOnly,
 		)
 		if action != disconnectedActionPurge {
 			continue

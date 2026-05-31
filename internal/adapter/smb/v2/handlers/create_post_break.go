@@ -756,6 +756,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			newLeaseState,
 			newLeaseKey,
 			req.ShareAccess,
+			req.DesiredAccess,
 		); purged > 0 {
 			logger.Debug("CREATE: purged disconnected handles on conflicting open",
 				"path", filename,

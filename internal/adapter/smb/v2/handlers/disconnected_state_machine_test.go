@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -25,102 +26,125 @@ func TestDisconnectedConflictOnNewOpen(t *testing.T) {
 
 		shareAll         = smbShareRead | smbShareWrite | smbShareDelete
 		shareNone uint32 = 0
+
+		// New-open desired-access masks.
+		accessReadWrite uint32 = 0x00000001 | 0x00000002 // FILE_READ_DATA | FILE_WRITE_DATA
+		accessStatOnly  uint32 = 0x00000080              // FILE_READ_ATTRIBUTES only
 	)
 
 	leaseA := [16]byte{0x01}
 	leaseB := [16]byte{0x02}
 
 	tests := []struct {
-		name           string
-		dLeaseState    uint32
-		dLeaseKey      [16]byte
-		newLeaseState  uint32
-		newLeaseKey    [16]byte
-		newShareAccess uint32
-		want           disconnectedHandleAction
+		name             string
+		dLeaseState      uint32
+		dLeaseKey        [16]byte
+		dShareAccess     uint32
+		newLeaseState    uint32
+		newLeaseKey      [16]byte
+		newShareAccess   uint32
+		newDesiredAccess uint32
+		newIsStatOnly    bool
+		want             disconnectedHandleAction
 	}{
 		{
 			// keep-disconnected-rh-with-stat-open: stat open carries no lease
 			// and default share-all. Disconnected RH must be preserved.
-			name:           "keep_RH_with_stat",
-			dLeaseState:    rh,
-			dLeaseKey:      leaseA,
-			newLeaseState:  none,
-			newLeaseKey:    [16]byte{},
-			newShareAccess: shareAll,
-			want:           disconnectedActionPreserve,
+			name:             "keep_RH_with_stat",
+			dLeaseState:      rh,
+			dLeaseKey:        leaseA,
+			dShareAccess:     shareAll,
+			newLeaseState:    none,
+			newLeaseKey:      [16]byte{},
+			newShareAccess:   shareAll,
+			newDesiredAccess: accessStatOnly,
+			newIsStatOnly:    true,
+			want:             disconnectedActionPreserve,
 		},
 		{
 			// keep-disconnected-rwh-with-stat-open mirrors keep_RH_with_stat:
 			// disconnected RWH with stat open from a different connection
 			// must also be preserved (stat open does not break leases).
-			name:           "keep_RWH_with_stat",
-			dLeaseState:    rwh,
-			dLeaseKey:      leaseA,
-			newLeaseState:  none,
-			newLeaseKey:    [16]byte{},
-			newShareAccess: shareAll,
-			want:           disconnectedActionPreserve,
+			name:             "keep_RWH_with_stat",
+			dLeaseState:      rwh,
+			dLeaseKey:        leaseA,
+			dShareAccess:     shareAll,
+			newLeaseState:    none,
+			newLeaseKey:      [16]byte{},
+			newShareAccess:   shareAll,
+			newDesiredAccess: accessStatOnly,
+			newIsStatOnly:    true,
+			want:             disconnectedActionPreserve,
 		},
 		{
 			// keep-disconnected-rh-with-rh-open: two RH leases on different
-			// keys can coexist — disconnected stays. Reaches the W-on-W rule
-			// but D doesn't hold W, so falls through to preserve.
-			name:           "keep_RH_with_RH_diff_key",
-			dLeaseState:    rh,
-			dLeaseKey:      leaseA,
-			newLeaseState:  rh,
-			newLeaseKey:    leaseB,
-			newShareAccess: shareAll,
-			want:           disconnectedActionPreserve,
+			// keys can coexist — disconnected stays. D doesn't hold W and its
+			// share mode is share-all, so falls through to preserve.
+			name:             "keep_RH_with_RH_diff_key",
+			dLeaseState:      rh,
+			dLeaseKey:        leaseA,
+			dShareAccess:     shareAll,
+			newLeaseState:    rh,
+			newLeaseKey:      leaseB,
+			newShareAccess:   shareAll,
+			newDesiredAccess: accessReadWrite,
+			want:             disconnectedActionPreserve,
 		},
 		{
 			// keep-disconnected-rh-with-rwh-open: disconnected RH stays
 			// even when the new open requests RWH — the new open just gets
 			// downgraded to RH (W denied by the H-holder), no break needed.
 			// D doesn't hold W, so the W-on-W rule doesn't fire.
-			name:           "keep_RH_with_RWH_diff_key",
-			dLeaseState:    rh,
-			dLeaseKey:      leaseA,
-			newLeaseState:  rwh,
-			newLeaseKey:    leaseB,
-			newShareAccess: shareAll,
-			want:           disconnectedActionPreserve,
+			name:             "keep_RH_with_RWH_diff_key",
+			dLeaseState:      rh,
+			dLeaseKey:        leaseA,
+			dShareAccess:     shareAll,
+			newLeaseState:    rwh,
+			newLeaseKey:      leaseB,
+			newShareAccess:   shareAll,
+			newDesiredAccess: accessReadWrite,
+			want:             disconnectedActionPreserve,
 		},
 		{
 			// purge-disconnected-rwh-with-rwh-open: disconnected RWH and a
 			// new RWH on a different key cannot coexist; the disconnected
 			// loses W → loses H → purge.
-			name:           "purge_RWH_with_RWH_diff_key",
-			dLeaseState:    rwh,
-			dLeaseKey:      leaseA,
-			newLeaseState:  rwh,
-			newLeaseKey:    leaseB,
-			newShareAccess: shareAll,
-			want:           disconnectedActionPurge,
+			name:             "purge_RWH_with_RWH_diff_key",
+			dLeaseState:      rwh,
+			dLeaseKey:        leaseA,
+			dShareAccess:     shareAll,
+			newLeaseState:    rwh,
+			newLeaseKey:      leaseB,
+			newShareAccess:   shareAll,
+			newDesiredAccess: accessReadWrite,
+			want:             disconnectedActionPurge,
 		},
 		{
 			// purge-disconnected-rwh-with-rh-open: disconnected RWH and a
 			// new RH on a different key. The W must be broken; cascade
 			// strips H → purge.
-			name:           "purge_RWH_with_RH_diff_key",
-			dLeaseState:    rwh,
-			dLeaseKey:      leaseA,
-			newLeaseState:  rh,
-			newLeaseKey:    leaseB,
-			newShareAccess: shareAll,
-			want:           disconnectedActionPurge,
+			name:             "purge_RWH_with_RH_diff_key",
+			dLeaseState:      rwh,
+			dLeaseKey:        leaseA,
+			dShareAccess:     shareAll,
+			newLeaseState:    rh,
+			newLeaseKey:      leaseB,
+			newShareAccess:   shareAll,
+			newDesiredAccess: accessReadWrite,
+			want:             disconnectedActionPurge,
 		},
 		{
 			// purge-disconnected-rh-with-share-none-open: SHARE_NONE open on
 			// a file with a disconnected RH must purge.
-			name:           "purge_RH_with_share_none",
-			dLeaseState:    rh,
-			dLeaseKey:      leaseA,
-			newLeaseState:  none,
-			newLeaseKey:    [16]byte{},
-			newShareAccess: shareNone,
-			want:           disconnectedActionPurge,
+			name:             "purge_RH_with_share_none",
+			dLeaseState:      rh,
+			dLeaseKey:        leaseA,
+			dShareAccess:     shareAll,
+			newLeaseState:    none,
+			newLeaseKey:      [16]byte{},
+			newShareAccess:   shareNone,
+			newDesiredAccess: accessReadWrite,
+			want:             disconnectedActionPurge,
 		},
 		{
 			// Zero-key W-holder vs new lease (any key): zero key is "no key"
@@ -128,22 +152,70 @@ func TestDisconnectedConflictOnNewOpen(t *testing.T) {
 			// with empty lease keys cannot coexist on a W lease. This pins
 			// the finding-#4 behaviour where oplock-V2 (no lease) reconnect
 			// no longer accidentally hides behind the old reconnect-guard.
-			name:           "purge_RWH_zero_key_vs_RH",
-			dLeaseState:    rwh,
-			dLeaseKey:      [16]byte{},
-			newLeaseState:  rh,
-			newLeaseKey:    leaseB,
-			newShareAccess: shareAll,
-			want:           disconnectedActionPurge,
+			name:             "purge_RWH_zero_key_vs_RH",
+			dLeaseState:      rwh,
+			dLeaseKey:        [16]byte{},
+			dShareAccess:     shareAll,
+			newLeaseState:    rh,
+			newLeaseKey:      leaseB,
+			newShareAccess:   shareAll,
+			newDesiredAccess: accessReadWrite,
+			want:             disconnectedActionPurge,
+		},
+		{
+			// durable_open.open2-lease (V1): D held an RH lease opened with
+			// FILE_SHARE_NONE; a later read/write open with share-all
+			// conflicts with D's own deny mode → purge. D holds no W, so this
+			// fires via the share-deny rule, not the W-on-W rule.
+			name:             "purge_RH_shareNone_D_vs_readwrite_open",
+			dLeaseState:      rh,
+			dLeaseKey:        leaseA,
+			dShareAccess:     shareNone,
+			newLeaseState:    none,
+			newLeaseKey:      [16]byte{},
+			newShareAccess:   shareAll,
+			newDesiredAccess: accessReadWrite,
+			want:             disconnectedActionPurge,
+		},
+		{
+			// durable_open.oplock / open2-oplock (V1): D held a BATCH oplock,
+			// persisted as an RWH synthetic lease (zero/synthetic key), opened
+			// share-all. A plain second open with no lease and real data access
+			// breaks the exclusive oplock → purge. Exercises the W-holder rule
+			// firing even though newLeaseState == 0.
+			name:             "purge_batch_oplock_D_vs_no_lease_open",
+			dLeaseState:      rwh,
+			dLeaseKey:        leaseA,
+			dShareAccess:     shareAll,
+			newLeaseState:    none,
+			newLeaseKey:      [16]byte{},
+			newShareAccess:   shareAll,
+			newDesiredAccess: accessReadWrite,
+			want:             disconnectedActionPurge,
+		},
+		{
+			// Negative control for the oplock rule: same as above but the
+			// second open is stat-only — an exclusive oplock does NOT break on
+			// a stat open (Samba is_stat_open), so D must be preserved.
+			name:             "keep_batch_oplock_D_vs_stat_open",
+			dLeaseState:      rwh,
+			dLeaseKey:        leaseA,
+			dShareAccess:     shareAll,
+			newLeaseState:    none,
+			newLeaseKey:      [16]byte{},
+			newShareAccess:   shareAll,
+			newDesiredAccess: accessStatOnly,
+			newIsStatOnly:    true,
+			want:             disconnectedActionPreserve,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := disconnectedConflictOnNewOpen(
-				tc.dLeaseState, tc.dLeaseKey,
+				tc.dLeaseState, tc.dLeaseKey, tc.dShareAccess,
 				tc.newLeaseState, tc.newLeaseKey,
-				tc.newShareAccess,
+				tc.newShareAccess, tc.newDesiredAccess, tc.newIsStatOnly,
 			)
 			if got != tc.want {
 				t.Fatalf("got=%v want=%v", got, tc.want)
@@ -326,12 +398,15 @@ func TestPurgeConflictingDisconnectedHandlesForOpen(t *testing.T) {
 	now := time.Now()
 	metaHandle := []byte("file-handle-2")
 
+	const accessReadWrite uint32 = 0x00000001 | 0x00000002 // FILE_READ_DATA | FILE_WRITE_DATA
+
 	store := newMockDurableStore()
 	_ = store.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
 		ID:             "disconnected-rwh",
 		MetadataHandle: metaHandle,
 		LeaseKey:       [16]byte{0x01},
 		LeaseState:     rwh,
+		ShareAccess:    shareAll,
 		DisconnectedAt: now.Add(-time.Second),
 	})
 	_ = store.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
@@ -339,6 +414,7 @@ func TestPurgeConflictingDisconnectedHandlesForOpen(t *testing.T) {
 		MetadataHandle: metaHandle,
 		LeaseKey:       [16]byte{0x02},
 		LeaseState:     rwh,
+		ShareAccess:    shareAll,
 		// Not disconnected — must be skipped.
 		DisconnectedAt: time.Time{},
 	})
@@ -348,7 +424,7 @@ func TestPurgeConflictingDisconnectedHandlesForOpen(t *testing.T) {
 	// must be broken; cascade strips H), leaves the live handle alone.
 	got := h.purgeConflictingDisconnectedHandlesForOpen(
 		context.Background(), metaHandle,
-		rh, [16]byte{0x99}, shareAll,
+		rh, [16]byte{0x99}, shareAll, accessReadWrite,
 	)
 	if got != 1 {
 		t.Fatalf("purged=%d want=1", got)
@@ -391,7 +467,7 @@ func TestDurablePurgeMuSerializesPersistAndPurge(t *testing.T) {
 		for i := 0; i < iterations; i++ {
 			// SHARE_NONE forces purge of any disconnected handle on the file.
 			h.purgeConflictingDisconnectedHandlesForOpen(
-				context.Background(), metaHandle, 0, [16]byte{}, 0,
+				context.Background(), metaHandle, 0, [16]byte{}, 0, 0,
 			)
 		}
 	}()
@@ -470,4 +546,183 @@ func TestOpenHasLocksFailClosed(t *testing.T) {
 			t.Fatal("lock manager lookup failure must fail closed (return true)")
 		}
 	})
+}
+
+// TestDurableOpenConflictingOpenPurgesAcrossConnections is the cross-connection
+// repro for issue #808: it drives the SAME entrypoints the live SMB CREATE path
+// uses — purgeConflictingDisconnectedHandlesForOpen (the Step 8a-bis purge
+// wrapper invoked on every fresh CREATE) and ProcessDurableReconnectContext
+// (the DHnC reconnect entrypoint) — across two connections sharing one durable
+// store.
+//
+// Sequence per mode:
+//  1. Session A opens a durable handle and transport-disconnects → persisted.
+//  2. Session B issues a CONFLICTING fresh CREATE on the same file → the purge
+//     wrapper must delete A's disconnected handle.
+//  3. Session A reconnects via DHnC → must fail OBJECT_NAME_NOT_FOUND because
+//     the handle is gone.
+//
+// Modes mirror the three smbtorture failures the issue targets:
+//   - oplock / open2-oplock: A held a BATCH oplock (persisted RWH synthetic
+//     lease), B opens with no oplock and real data access → break → purge.
+//   - open2-lease: A held an RH lease with FILE_SHARE_NONE, B opens read/write
+//     with share-all → A's own deny mode is violated → break → purge.
+//
+// The negative control (keep-disconnected) proves a NON-conflicting open
+// (stat-only second open against the same RWH/RH holder) leaves the handle
+// reconnectable — guarding against over-purge regression.
+func TestDurableOpenConflictingOpenPurgesAcrossConnections(t *testing.T) {
+	const (
+		rh  = smbLeaseRead | smbLeaseHandle
+		rwh = smbLeaseRead | smbLeaseHandle | smbLeaseWrite
+
+		shareAll  uint32 = smbShareRead | smbShareWrite | smbShareDelete
+		shareNone uint32 = 0
+
+		accessReadWrite uint32 = 0x00000001 | 0x00000002 // FILE_READ_DATA | FILE_WRITE_DATA
+		accessStatOnly  uint32 = 0x00000080              // FILE_READ_ATTRIBUTES only
+	)
+
+	keyHash := makeSessionKeyHash("session-A-key")
+	metaHandle := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+	// Persisted FileIDs zero the volatile half — see buildPersistedDurableHandle.
+	fileID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0}
+
+	// seedSessionA persists session A's disconnected durable handle. leaseKey
+	// is zero for an oplock-backed (traditional) holder and non-zero for a
+	// lease-backed holder; the V1 DHnC reconnect harness only re-establishes
+	// oplock-backed handles without a lease-request context, so the keep
+	// controls (which assert reconnect success) use leaseKey=zero.
+	seedSessionA := func(store *mockDurableStore, dLeaseState, dShareAccess uint32, oplock uint8, leaseKey [16]byte) {
+		_ = store.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
+			ID:             "session-A",
+			FileID:         fileID,
+			Path:           "conflict.dat",
+			ShareName:      "/share1",
+			DesiredAccess:  accessReadWrite,
+			ShareAccess:    dShareAccess,
+			MetadataHandle: metaHandle,
+			OplockLevel:    oplock,
+			LeaseKey:       leaseKey,
+			LeaseState:     dLeaseState,
+			Username:       "alice",
+			SessionKeyHash: keyHash,
+			IsV2:           false,
+			CreatedAt:      time.Now().Add(-time.Minute),
+			DisconnectedAt: time.Now().Add(-10 * time.Second),
+			TimeoutMs:      60000,
+		})
+	}
+
+	// reconnectA models session A's DHnC reconnect through the real entrypoint
+	// and returns the resulting status.
+	reconnectA := func(store *mockDurableStore) types.Status {
+		dhnCData := make([]byte, 16)
+		copy(dhnCData, fileID[:])
+		_, status, err := ProcessDurableReconnectContext(
+			context.Background(), store, nil,
+			[]CreateContext{{Name: DurableHandleV1ReconnectTag, Data: dhnCData}},
+			777, "alice", keyHash, "/share1", "conflict.dat", [16]byte{},
+		)
+		if err != nil {
+			t.Fatalf("reconnect error: %v", err)
+		}
+		return status
+	}
+
+	conflictCases := []struct {
+		name         string
+		dLeaseState  uint32
+		dShareAccess uint32
+		dOplock      uint8
+		dLeaseKey    [16]byte
+		// session B's conflicting fresh open
+		bLeaseState    uint32
+		bLeaseKey      [16]byte
+		bShareAccess   uint32
+		bDesiredAccess uint32
+	}{
+		{
+			// durable_open.oplock + open2-oplock: BATCH oplock holder
+			// (oplock-backed, zero lease key), non-stat second open with no
+			// lease breaks the exclusive oplock.
+			name:           "oplock_batch_holder_broken_by_plain_open",
+			dLeaseState:    rwh,
+			dShareAccess:   shareAll,
+			dOplock:        OplockLevelBatch,
+			dLeaseKey:      [16]byte{},
+			bLeaseState:    0,
+			bLeaseKey:      [16]byte{},
+			bShareAccess:   shareAll,
+			bDesiredAccess: accessReadWrite,
+		},
+		{
+			// durable_open.open2-lease: RH lease holder opened FILE_SHARE_NONE;
+			// a read/write open violates A's own deny mode.
+			name:           "rh_lease_shareNone_holder_broken_by_readwrite",
+			dLeaseState:    rh,
+			dShareAccess:   shareNone,
+			dOplock:        OplockLevelLease,
+			dLeaseKey:      [16]byte{0xA1},
+			bLeaseState:    0,
+			bLeaseKey:      [16]byte{},
+			bShareAccess:   shareAll,
+			bDesiredAccess: accessReadWrite,
+		},
+	}
+
+	for _, tc := range conflictCases {
+		t.Run("purge/"+tc.name, func(t *testing.T) {
+			store := newMockDurableStore()
+			h := &Handler{DurableStore: store}
+			seedSessionA(store, tc.dLeaseState, tc.dShareAccess, tc.dOplock, tc.dLeaseKey)
+
+			// BEFORE the fix this purge was a no-op and reconnect returned
+			// SUCCESS. Assert the conflicting open purges exactly one handle.
+			purged := h.purgeConflictingDisconnectedHandlesForOpen(
+				context.Background(), metaHandle,
+				tc.bLeaseState, tc.bLeaseKey, tc.bShareAccess, tc.bDesiredAccess,
+			)
+			if purged != 1 {
+				t.Fatalf("conflicting open purged=%d, want 1", purged)
+			}
+			if status := reconnectA(store); status != types.StatusObjectNameNotFound {
+				t.Fatalf("reconnect after conflicting open: got %s, want OBJECT_NAME_NOT_FOUND", status)
+			}
+		})
+	}
+
+	// Negative control: a stat-only second open must NOT purge the disconnected
+	// handle, so reconnect still succeeds. Covers keep-disconnected-* and guards
+	// against over-purge.
+	keepCases := []struct {
+		name         string
+		dLeaseState  uint32
+		dShareAccess uint32
+		dOplock      uint8
+	}{
+		// Both oplock-backed (zero lease key) so the V1 DHnC harness can
+		// re-establish them without a lease-request context. rwh exercises the
+		// W-holder preserve-on-stat path; rh the non-W preserve path.
+		{"keep/rwh_holder_with_stat_open", rwh, shareAll, OplockLevelBatch},
+		{"keep/rh_holder_with_stat_open", rh, shareAll, OplockLevelII},
+	}
+	for _, tc := range keepCases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockDurableStore()
+			h := &Handler{DurableStore: store}
+			seedSessionA(store, tc.dLeaseState, tc.dShareAccess, tc.dOplock, [16]byte{})
+
+			purged := h.purgeConflictingDisconnectedHandlesForOpen(
+				context.Background(), metaHandle,
+				0, [16]byte{}, shareAll, accessStatOnly,
+			)
+			if purged != 0 {
+				t.Fatalf("stat-only open purged=%d, want 0 (no over-purge)", purged)
+			}
+			if status := reconnectA(store); status != types.StatusSuccess {
+				t.Fatalf("reconnect after non-conflicting stat open: got %s, want SUCCESS", status)
+			}
+		})
+	}
 }
