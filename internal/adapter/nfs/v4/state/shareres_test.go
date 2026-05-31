@@ -24,7 +24,7 @@ func openConfirmed(t *testing.T, sm *StateManager, clientID uint64, owner, fileH
 	if err != nil {
 		t.Fatalf("ConfirmOpen(%s): %v", owner, err)
 	}
-	return *confirmed
+	return confirmed.Stateid
 }
 
 func expectShareDenied(t *testing.T, err error) {
