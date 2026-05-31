@@ -993,11 +993,19 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 					LastAccessTime:  access,
 					LastWriteTime:   write,
 					ChangeTime:      change,
-					AllocationSize:  calculateAllocationSize(size),
-					EndOfFile:       size,
-					FileAttributes:  FileAttrToSMBAttributes(&respFile.FileAttr),
-					FileID:          smbFileID,
-					CreateContexts:  reconnectContexts,
+					// Echo the per-handle requested AllocationSize restored
+					// from the persisted durable handle so the reconnect
+					// response reports the same cluster-aligned reservation as
+					// the original open ([MS-SMB2] 2.2.13.2.2). Directories
+					// never carry a reservation (dropped at grant via
+					// allocReservationFor), so this collapses to the file's
+					// cluster-aligned size for them
+					// (smb2.durable-open.alloc-size).
+					AllocationSize: effectiveAllocationSize(size, restored.RequestedAllocSize),
+					EndOfFile:      size,
+					FileAttributes: FileAttrToSMBAttributes(&respFile.FileAttr),
+					FileID:         smbFileID,
+					CreateContexts: reconnectContexts,
 				}, nil
 			}
 

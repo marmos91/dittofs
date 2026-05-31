@@ -839,6 +839,13 @@ func validateAndRestore(
 		// processV2Reconnect would silently no-op (handle.ClientGUID == 0
 		// is the "pre-#432 forward-compat" branch).
 		ClientGUID: handle.ClientGUID,
+		// Restore the requested AllocationSize so the reconnect CREATE
+		// response reports the same cluster-aligned reservation as the
+		// original open ([MS-SMB2] 2.2.13.2.2). The reservation is
+		// in-memory per-handle and would otherwise be lost across the
+		// disconnect, dropping the reconnect out.alloc_size back to the
+		// file's bare size (smb2.durable-open.alloc-size reopen checks).
+		RequestedAllocSize: handle.RequestedAllocSize,
 		// IsDurable is NOT set on restore -- client must re-request durability
 	}
 
@@ -1053,5 +1060,10 @@ func buildPersistedDurableHandle(
 		PositionInfo:    openFile.PositionInfo,
 		OriginalFileID:  openFile.FileID,
 		ClientGUID:      openFile.ClientGUID,
+		// Persist the per-handle requested AllocationSize so the durable
+		// reconnect response echoes the same (cluster-aligned) value the
+		// original CREATE reported, not the file's bare size
+		// (smb2.durable-open.alloc-size).
+		RequestedAllocSize: openFile.RequestedAllocSize,
 	}
 }
