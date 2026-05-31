@@ -424,6 +424,98 @@ func TestGCMarkSweep_TruncateDedupSafety(t *testing.T) {
 	}
 }
 
+// TestGCMarkSweep_DeleteDuplicateHashNoOverReap (#832 data-loss guard): a
+// single file may reference the SAME hash at multiple offsets, but file-level
+// dedup increments its RefCount only ONCE (seen-set). Deleting that file must
+// reap the hash at most once — a per-BlockRef decrement would drive a shared
+// row (RefCount 2: this file + another) to zero and let GC delete a chunk the
+// other file still needs.
+func TestGCMarkSweep_DeleteDuplicateHashNoOverReap(t *testing.T) {
+	ctx := t.Context()
+	rs := remotememory.New()
+	defer func() { _ = rs.Close() }()
+	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
+
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-a")
+	bs := newReapEngine(t, st)
+
+	const mib = uint64(1 << 20)
+	shared := hashFromString("dup-and-shared-hash")
+
+	// RefCount 2: file-A references it (once, despite two offsets) + file-B.
+	putBlock(t, st, "file-A/0", shared)
+	if err := st.IncrementRefCount(ctx, "file-A/0"); err != nil {
+		t.Fatalf("IncrementRefCount: %v", err) // 1 → 2
+	}
+	writeCASObject(t, ctx, rs, shared, []byte("dup-shared-chunk"))
+
+	// Delete file-A, whose block list carries the SAME hash at two offsets.
+	// Correct reap = once → RefCount 2 → 1 (file-B's reference survives).
+	dupBlocks := []blockstore.BlockRef{
+		{Hash: shared, Offset: 0, Size: uint32(mib)},
+		{Hash: shared, Offset: 4 * mib, Size: uint32(mib)},
+	}
+	if err := bs.Delete(ctx, "file-A", dupBlocks); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	if stats.ErrorCount != 0 {
+		t.Fatalf("ErrorCount = %d; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
+	}
+	if _, err := rs.Get(ctx, shared); err != nil {
+		t.Errorf("shared chunk swept after deleting a file that referenced it twice: %v; want retained (file-B still refs it)", err)
+	}
+	if stats.ObjectsSwept != 0 {
+		t.Errorf("ObjectsSwept = %d, want 0 (shared chunk still referenced by file-B)", stats.ObjectsSwept)
+	}
+}
+
+// TestGCMarkSweep_TruncateStraddleHashNoOverReap (#832 data-loss guard): when
+// the same hash sits on BOTH sides of newSize within one file (kept AND
+// dropped), truncate must NOT reap it — the file still references it below
+// newSize. RefCount was incremented once for the file, so a per-dropped-BlockRef
+// decrement would zero the row and let GC delete a chunk the kept block needs.
+func TestGCMarkSweep_TruncateStraddleHashNoOverReap(t *testing.T) {
+	ctx := t.Context()
+	rs := remotememory.New()
+	defer func() { _ = rs.Close() }()
+	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
+
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-a")
+	bs := newReapEngine(t, st)
+
+	const mib = uint64(1 << 20)
+	shared := hashFromString("straddle-hash")
+
+	// RefCount 1: a single file references this hash (at two offsets, dedup
+	// increments once). One CAS object.
+	putBlock(t, st, "file-S/0", shared)
+	writeCASObject(t, ctx, rs, shared, []byte("straddle-chunk"))
+
+	// Same hash kept (offset 0) and dropped (offset 4 MiB). Truncate to 1 MiB.
+	blocks := []blockstore.BlockRef{
+		{Hash: shared, Offset: 0, Size: uint32(mib)},
+		{Hash: shared, Offset: 4 * mib, Size: uint32(mib)},
+	}
+	if _, err := bs.Truncate(ctx, "file-S", blocks, mib); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+
+	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	if stats.ErrorCount != 0 {
+		t.Fatalf("ErrorCount = %d; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
+	}
+	if _, err := rs.Get(ctx, shared); err != nil {
+		t.Errorf("straddling chunk swept after truncate: %v; want retained (still referenced below newSize)", err)
+	}
+	if stats.ObjectsSwept != 0 {
+		t.Errorf("ObjectsSwept = %d, want 0 (hash still kept below newSize)", stats.ObjectsSwept)
+	}
+}
+
 // TestGCMarkSweep_GraceTTLPreserves (behavior 3): an orphan with
 // LastModified > snapshot - GracePeriod is NOT deleted (within the grace
 // window).
