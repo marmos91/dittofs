@@ -200,11 +200,9 @@ still fail due to incomplete reconnect, lease coordination, and persistence.
 | smb2.durable-v2-open.lock-oplock | Durable handles V2 | DH2 lock with oplock not fully working | #739 |
 | smb2.durable-v2-open.lock-lease | Durable handles V2 | DH2 lock with lease not fully working | #739 |
 | smb2.durable-v2-open.nonstat-and-lease | Durable handles V2 | DH2 non-stat + lease interaction not fully working | #739 |
-| smb2.durable-v2-open.keep-disconnected-rh-with-rwh-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #739 |
 | smb2.durable-v2-open.app-instance | Durable handles V2 | App instance ID not fully working | #739 |
 | smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Persistent handles not implemented | #739 |
 | smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Persistent handles not implemented | #739 |
-| smb2.durable-v2-delay.durable_v2_reconnect_delay | Durable handles V2 | DH2 reconnect delay not fully working | #739 |
 
 ### Leases (Fix Candidate)
 
@@ -339,6 +337,20 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-05-31 — #739 durable-V2 lease/disconnect: 2 rows flipped
+
+PR #894 adds a `disallow_write_lease` cap for conflicting non-stat opens and
+disconnected durable handles, narrowed (vs the rejected #891) to exclude
+same-lease-key / same-client lease upgrades and own-lease breaks so it does not
+disturb `lease.upgrade2/upgrade3/break`. CI smbtorture confirmed `success:` for:
+
+- `smb2.durable-v2-open.keep-disconnected-rh-with-rwh-open`
+- `smb2.durable-v2-delay.durable_v2_reconnect_delay`
+
+#739 stays open: `lock-oplock`, `lock-lease`, `nonstat-and-lease` (traded back
+to keep the lease tests green), `app-instance` (cross-connection break routing),
+and the persistent-handle rows still fail.
 
 ### 2026-05-31 — #792 durable-create alloc-size: 1 row flipped
 
