@@ -125,6 +125,30 @@ type StateManager struct {
 	// Defaults to leaseDuration if not explicitly set.
 	graceDuration time.Duration
 
+	// recoveryStore provides server-global durable persistence of confirmed
+	// client identities for reboot/grace recovery (area-4 H8). Optional: when
+	// nil the StateManager behaves exactly as before (no durable recovery),
+	// which keeps bare test constructions working. Set via
+	// SetClientRecoveryStore, wired by the NFS adapter to the first share's
+	// metadata store implementing lock.ClientRecoveryStore (mirroring the NSM
+	// ClientRegistrationStore designation).
+	recoveryStore lock.ClientRecoveryStore
+
+	// serverEpoch is the epoch under which this server instance is running.
+	// Stamped into every client-recovery record so stale records from prior
+	// instances can be GC'd. Set alongside recoveryStore.
+	serverEpoch uint64
+
+	// bootRecoveryVerifiers snapshots, at boot-load time, the BootVerifier of
+	// every prior-instance recovery record keyed by ClientIDString. CLAIM_PREVIOUS
+	// is validated against THIS snapshot (RFC 7530 §9.1.4): a reclaiming client
+	// whose verifier differs from its pre-restart durable verifier rebooted and
+	// must not reclaim. Validating against the snapshot (not the live store) is
+	// essential — a rebooting client's SETCLIENTID_CONFIRM overwrites its live
+	// record with the new verifier before it reaches CLAIM_PREVIOUS. Populated
+	// only by LoadClientRecovery; nil/empty otherwise (reclaim ungated).
+	bootRecoveryVerifiers map[string][8]byte
+
 	// ============================================================================
 	// NFSv4.1 State
 	// ============================================================================
@@ -290,47 +314,59 @@ func (sm *StateManager) generateConfirmVerifier() [8]byte {
 //   - Case 5: Confirmed exists, same verifier -- re-SETCLIENTID (callback update)
 //
 // Returns the client ID and confirm verifier on success, or an error.
-func (sm *StateManager) SetClientID(clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr string) (*SetClientIDResult, error) {
+// The trailing principal is variadic so existing callers/tests that do not
+// thread an auth principal keep compiling; production passes ctx.Principal().
+func (sm *StateManager) SetClientID(clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr string, principal ...string) (*SetClientIDResult, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	princ := firstOrEmpty(principal)
 	confirmed := sm.clientsByName[clientIDStr]
 	unconfirmed := sm.unconfirmedByName[clientIDStr]
 
 	switch {
 	case confirmed == nil && unconfirmed == nil:
 		// Case 1: Completely new client
-		return sm.createNewClient(clientIDStr, verifier, callback, clientAddr)
+		return sm.createNewClient(clientIDStr, verifier, callback, clientAddr, princ)
 
 	case confirmed != nil && confirmed.VerifierMatches(verifier):
 		// Case 5: Same client, same verifier (re-SETCLIENTID, maybe callback update)
 		// This handles the case where the client sends SETCLIENTID again with
 		// the same verifier. We update the callback and return a new unconfirmed
 		// record that, when confirmed, will replace the existing confirmed record.
-		return sm.reuseConfirmedClient(confirmed, clientIDStr, verifier, callback, clientAddr)
+		return sm.reuseConfirmedClient(confirmed, clientIDStr, verifier, callback, clientAddr, princ)
 
 	case confirmed != nil && !confirmed.VerifierMatches(verifier):
 		// Case 3: Same client ID string, different verifier (client reboot)
 		// The client has restarted. Create a new unconfirmed record.
 		// The old confirmed record is NOT removed yet -- it gets replaced
 		// when the new record is confirmed.
-		return sm.handleClientReboot(clientIDStr, verifier, callback, clientAddr)
+		return sm.handleClientReboot(clientIDStr, verifier, callback, clientAddr, princ)
 
 	case confirmed == nil && unconfirmed != nil:
 		// Case 4: No confirmed record, unconfirmed exists -- replace unconfirmed
-		return sm.replaceUnconfirmed(unconfirmed, clientIDStr, verifier, callback, clientAddr)
+		return sm.replaceUnconfirmed(unconfirmed, clientIDStr, verifier, callback, clientAddr, princ)
 
 	default:
 		// Case 2: Confirmed exists AND unconfirmed exists -- replace unconfirmed
 		// This is a retransmit or new SETCLIENTID while another is pending.
-		return sm.replaceUnconfirmed(unconfirmed, clientIDStr, verifier, callback, clientAddr)
+		return sm.replaceUnconfirmed(unconfirmed, clientIDStr, verifier, callback, clientAddr, princ)
 	}
+}
+
+// firstOrEmpty returns the first element of ss, or "" if ss is empty. Helper
+// for the variadic principal parameter on SetClientID / ExchangeID.
+func firstOrEmpty(ss []string) string {
+	if len(ss) > 0 {
+		return ss[0]
+	}
+	return ""
 }
 
 // createNewClient handles Case 1: completely new client.
 // Creates a new unconfirmed record with a fresh client ID and confirm verifier.
 // Caller must hold sm.mu.
-func (sm *StateManager) createNewClient(clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr string) (*SetClientIDResult, error) {
+func (sm *StateManager) createNewClient(clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr, principal string) (*SetClientIDResult, error) {
 	clientID := sm.generateClientID()
 	confirmVerf := sm.generateConfirmVerifier()
 
@@ -342,6 +378,7 @@ func (sm *StateManager) createNewClient(clientIDStr string, verifier [8]byte, ca
 		Confirmed:       false,
 		Callback:        callback,
 		ClientAddr:      clientAddr,
+		Principal:       principal,
 		CreatedAt:       time.Now(),
 		OpenOwners:      make(map[string]*OpenOwner),
 	}
@@ -365,7 +402,7 @@ func (sm *StateManager) createNewClient(clientIDStr string, verifier [8]byte, ca
 // The confirmed record exists with a matching verifier. Create a new
 // unconfirmed record that will replace the confirmed one when confirmed.
 // Caller must hold sm.mu.
-func (sm *StateManager) reuseConfirmedClient(confirmed *ClientRecord, clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr string) (*SetClientIDResult, error) {
+func (sm *StateManager) reuseConfirmedClient(confirmed *ClientRecord, clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr, principal string) (*SetClientIDResult, error) {
 	// Remove any existing unconfirmed record for this name
 	if old := sm.unconfirmedByName[clientIDStr]; old != nil {
 		// Only delete from clientsByID if it's a different ID than the confirmed client.
@@ -389,6 +426,7 @@ func (sm *StateManager) reuseConfirmedClient(confirmed *ClientRecord, clientIDSt
 		Confirmed:       false,
 		Callback:        callback,
 		ClientAddr:      clientAddr,
+		Principal:       principal,
 		CreatedAt:       time.Now(),
 		OpenOwners:      make(map[string]*OpenOwner),
 	}
@@ -412,7 +450,7 @@ func (sm *StateManager) reuseConfirmedClient(confirmed *ClientRecord, clientIDSt
 // Creates a new unconfirmed record. The old confirmed record stays until
 // the new one is confirmed in SETCLIENTID_CONFIRM.
 // Caller must hold sm.mu.
-func (sm *StateManager) handleClientReboot(clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr string) (*SetClientIDResult, error) {
+func (sm *StateManager) handleClientReboot(clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr, principal string) (*SetClientIDResult, error) {
 	// Remove any existing unconfirmed record for this name
 	if old := sm.unconfirmedByName[clientIDStr]; old != nil {
 		delete(sm.clientsByID, old.ClientID)
@@ -431,6 +469,7 @@ func (sm *StateManager) handleClientReboot(clientIDStr string, verifier [8]byte,
 		Confirmed:       false,
 		Callback:        callback,
 		ClientAddr:      clientAddr,
+		Principal:       principal,
 		CreatedAt:       time.Now(),
 		OpenOwners:      make(map[string]*OpenOwner),
 	}
@@ -452,7 +491,7 @@ func (sm *StateManager) handleClientReboot(clientIDStr string, verifier [8]byte,
 // replaceUnconfirmed handles Case 2 and Case 4: replace existing unconfirmed.
 // Removes the old unconfirmed record and creates a new one.
 // Caller must hold sm.mu.
-func (sm *StateManager) replaceUnconfirmed(old *ClientRecord, clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr string) (*SetClientIDResult, error) {
+func (sm *StateManager) replaceUnconfirmed(old *ClientRecord, clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr, principal string) (*SetClientIDResult, error) {
 	// Remove old unconfirmed record
 	delete(sm.clientsByID, old.ClientID)
 	delete(sm.unconfirmedByName, clientIDStr)
@@ -469,6 +508,7 @@ func (sm *StateManager) replaceUnconfirmed(old *ClientRecord, clientIDStr string
 		Confirmed:       false,
 		Callback:        callback,
 		ClientAddr:      clientAddr,
+		Principal:       principal,
 		CreatedAt:       time.Now(),
 		OpenOwners:      make(map[string]*OpenOwner),
 	}
@@ -560,6 +600,13 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 		"client_id_str", record.ClientIDString,
 		"client_addr", record.ClientAddr)
 
+	// Persist a durable client-recovery record so this client can reclaim its
+	// state after an ungraceful server restart (area-4 H8). Best-effort under
+	// sm.mu: a persist failure logs a durability alarm but the confirm STILL
+	// succeeds (the in-memory record is authoritative for this process). No-op
+	// when no recovery store is wired.
+	sm.persistClientRecoveryLocked(record.ClientID, record.ClientIDString, record.Verifier, record.Principal)
+
 	// Verify callback path asynchronously via CB_NULL.
 	// This runs in a goroutine so SETCLIENTID_CONFIRM returns immediately.
 	if record.Callback.Addr != "" {
@@ -648,6 +695,11 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 		"client_id", clientID,
 		"client_id_str", record.ClientIDString,
 		"client_addr", record.ClientAddr)
+
+	// The client's lease lapsed without renewal: it no longer holds reclaimable
+	// state, so drop its durable recovery record (area-4 H8). Best-effort; no-op
+	// when no recovery store is wired.
+	sm.deleteClientRecoveryLocked(record.ClientIDString)
 
 	// Remove all open states AND lock states for all owners
 	for _, owner := range record.OpenOwners {
@@ -872,7 +924,20 @@ func (sm *StateManager) ForceEndGrace() {
 func (sm *StateManager) ReclaimComplete(clientID uint64) error {
 	sm.mu.RLock()
 	gp := sm.gracePeriod
+	// Resolve the durable recovery key for this client (v4.1 = co_ownerid,
+	// v4.0 = nfs_client_id4 string) so the boot-loaded string roster early-exits
+	// and the reclaim-done marker is persisted.
+	recoveryKey := sm.recoveryKeyForClientLocked(clientID)
 	sm.mu.RUnlock()
+
+	if recoveryKey != "" {
+		if gp != nil {
+			gp.ClientReclaimedByString(recoveryKey)
+		}
+		sm.mu.Lock()
+		sm.recordReclaimCompleteLocked(recoveryKey)
+		sm.mu.Unlock()
+	}
 
 	if gp == nil {
 		// Not in grace period, but RECLAIM_COMPLETE outside grace is OK per RFC 8881
@@ -977,12 +1042,37 @@ func (sm *StateManager) OpenFile(
 		if !sm.IsInGrace() {
 			return nil, ErrNoGrace
 		}
-		// Notify the grace period that this client has reclaimed
+		// Verifier-gated reclaim (RFC 7530 §9.1.4, area-4 H8 §3.4): a reclaiming
+		// client whose ClientIDString matches a pre-restart record but whose
+		// BootVerifier changed rebooted and must NOT reclaim prior state.
+		// validateReclaimVerifier self-gates on the boot-load snapshot, so it is
+		// a no-op when no durable prior record exists (reclaim allowed as before).
 		sm.mu.RLock()
 		gp := sm.gracePeriod
+		rec := sm.clientsByID[clientID]
 		sm.mu.RUnlock()
+		if rec != nil {
+			if err := sm.validateReclaimVerifier(rec.ClientIDString, rec.Verifier); err != nil {
+				return nil, err
+			}
+		}
+		// Notify the grace period that this client has reclaimed. Mark both by
+		// numeric clientID (same-epoch reclaim) and by ClientIDString (the
+		// boot-loaded roster is keyed by string since reclaiming clients get a
+		// fresh clientID after restart).
 		if gp != nil {
 			gp.ClientReclaimed(clientID)
+			if rec != nil {
+				gp.ClientReclaimedByString(rec.ClientIDString)
+			}
+		}
+		// v4.0 has no RECLAIM_COMPLETE; the first successful CLAIM_PREVIOUS is
+		// the analog reclaim marker (area-4 H8 §3.3). Persist it so a second
+		// restart inside one grace window does not wait on this client again.
+		if rec != nil {
+			sm.mu.Lock()
+			sm.recordReclaimCompleteLocked(rec.ClientIDString)
+			sm.mu.Unlock()
 		}
 	}
 
@@ -2368,6 +2458,11 @@ func (sm *StateManager) CreateSession(
 		record.Confirmed = true
 		record.Lease = NewLeaseState(record.ClientID, sm.leaseDuration, nil)
 		record.LastRenewal = time.Now()
+
+		// Persist a durable client-recovery record (area-4 H8). v4.1 has no
+		// nfs_client_id4 string; the stable identity is co_ownerid, so the
+		// record is keyed by its string form. Best-effort under sm.mu.
+		sm.persistClientRecoveryLocked(record.ClientID, v41RecoveryKey(record.OwnerID), record.Verifier, record.Principal)
 	}
 
 	// Increment sequence ID

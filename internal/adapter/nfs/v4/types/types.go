@@ -137,6 +137,17 @@ type CompoundContext struct {
 	RequestDigest []byte
 }
 
+// Principal returns a best-effort string identity of the authenticated caller,
+// used as a lease-stealing guard in durable client-recovery records. For
+// AUTH_UNIX it is "uid:N"; otherwise "" (the GSS principal is not threaded onto
+// the compound context today). It is informational, not an authorization input.
+func (c *CompoundContext) Principal() string {
+	if c.UID != nil {
+		return fmt.Sprintf("uid:%d", *c.UID)
+	}
+	return ""
+}
+
 // V4ClientState holds NFSv4 client state associated with a connection.
 // Carries the client ID for state lookups.
 type V4ClientState struct {

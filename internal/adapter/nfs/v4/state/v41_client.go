@@ -56,6 +56,11 @@ type V41ClientRecord struct {
 	// ClientAddr is the network address of the client (for logging/debugging).
 	ClientAddr string
 
+	// Principal is the RPCSEC_GSS / AUTH_SYS principal that established this
+	// client (best-effort). Persisted into the durable client-recovery record
+	// at CREATE_SESSION confirm time as a lease-stealing guard.
+	Principal string
+
 	// CreatedAt is when this record was created.
 	CreatedAt time.Time
 
@@ -165,16 +170,20 @@ type ExchangeIDResult struct {
 // if the record has been confirmed via CREATE_SESSION.
 //
 // Caller must NOT hold sm.mu.
+// The trailing principal is variadic so existing callers/tests that do not
+// thread an auth principal keep compiling; production passes ctx.Principal().
 func (sm *StateManager) ExchangeID(
 	ownerID []byte,
 	verifier [8]byte,
 	_ uint32,
 	clientImplId []types.NfsImplId4,
 	clientAddr string,
+	principal ...string,
 ) (*ExchangeIDResult, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	princ := firstOrEmpty(principal)
 	existing := sm.v41ClientsByOwner[string(ownerID)]
 
 	var record *V41ClientRecord
@@ -182,7 +191,7 @@ func (sm *StateManager) ExchangeID(
 	switch {
 	case existing == nil:
 		// Case 1: New client -- no existing record for this owner
-		record = sm.createV41Client(ownerID, verifier, clientImplId, clientAddr)
+		record = sm.createV41Client(ownerID, verifier, clientImplId, clientAddr, princ)
 		logger.Info("EXCHANGE_ID: new v4.1 client registered",
 			"client_id", record.ClientID,
 			"client_addr", clientAddr)
@@ -190,6 +199,7 @@ func (sm *StateManager) ExchangeID(
 	case existing.Verifier == verifier:
 		// Case 2: Same owner + same verifier -- idempotent (update impl info)
 		existing.ClientAddr = clientAddr
+		existing.Principal = princ
 		existing.LastRenewal = time.Now()
 		applyImplInfo(existing, clientImplId)
 		record = existing
@@ -206,7 +216,7 @@ func (sm *StateManager) ExchangeID(
 			reason = "replaced unconfirmed"
 		}
 		sm.purgeV41Client(existing)
-		record = sm.createV41Client(ownerID, verifier, clientImplId, clientAddr)
+		record = sm.createV41Client(ownerID, verifier, clientImplId, clientAddr, princ)
 		logger.Info("EXCHANGE_ID: new v4.1 client",
 			"reason", reason,
 			"old_client_id", existing.ClientID,
@@ -241,6 +251,7 @@ func (sm *StateManager) createV41Client(
 	verifier [8]byte,
 	clientImplId []types.NfsImplId4,
 	clientAddr string,
+	principal string,
 ) *V41ClientRecord {
 	now := time.Now()
 
@@ -250,6 +261,7 @@ func (sm *StateManager) createV41Client(
 		Verifier:    verifier,
 		SequenceID:  0,
 		ClientAddr:  clientAddr,
+		Principal:   principal,
 		CreatedAt:   now,
 		LastRenewal: now,
 	}
@@ -284,6 +296,13 @@ func applyImplInfo(record *V41ClientRecord, clientImplId []types.NfsImplId4) {
 // record (guards against a concurrent createV41Client having already replaced it).
 // Caller must hold sm.mu.
 func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
+	// Drop the durable recovery record: a purged client (eviction, DESTROY_CLIENTID,
+	// or reboot-replace) cannot reclaim under this identity. Best-effort; no-op when
+	// the client was never confirmed (no record was ever persisted) or no store wired.
+	if record.Confirmed {
+		sm.deleteClientRecoveryLocked(v41RecoveryKey(record.OwnerID))
+	}
+
 	if record.Lease != nil {
 		record.Lease.Stop()
 	}
@@ -421,6 +440,9 @@ func (sm *StateManager) EvictV40Client(clientID uint64) error {
 	if !exists {
 		return fmt.Errorf("v4.0 client %d not found", clientID)
 	}
+
+	// Drop the durable recovery record: an evicted client cannot reclaim.
+	sm.deleteClientRecoveryLocked(record.ClientIDString)
 
 	// Stop lease timer
 	if record.Lease != nil {

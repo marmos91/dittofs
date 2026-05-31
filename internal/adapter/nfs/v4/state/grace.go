@@ -66,6 +66,17 @@ type GracePeriodState struct {
 	// reclaimedClients maps clients that have completed reclaim.
 	reclaimedClients map[uint64]bool
 
+	// expectedClientStrings is the durable boot-loaded reclaim roster keyed by
+	// stable client identity (nfs_client_id4 string for v4.0, co_ownerid for
+	// v4.1). After an ungraceful restart the reclaiming clients are assigned
+	// FRESH numeric clientIDs, so the numeric expectedClients set cannot match
+	// them; the string roster is the one that early-exits on real reclaim.
+	// Empty when grace was started from the legacy numeric-only path.
+	expectedClientStrings map[string]bool
+
+	// reclaimedClientStrings tracks which expected client strings have reclaimed.
+	reclaimedClientStrings map[string]bool
+
 	// reclaimCompleted tracks per-client RECLAIM_COMPLETE tracking (RFC 8881).
 	// Separate from reclaimedClients which tracks grace period early-exit.
 	reclaimCompleted map[uint64]bool
@@ -79,11 +90,13 @@ type GracePeriodState struct {
 // and end callback. The grace period starts inactive; call StartGrace() to begin.
 func NewGracePeriodState(duration time.Duration, onGraceEnd func()) *GracePeriodState {
 	return &GracePeriodState{
-		duration:         duration,
-		expectedClients:  make(map[uint64]bool),
-		reclaimedClients: make(map[uint64]bool),
-		reclaimCompleted: make(map[uint64]bool),
-		onGraceEnd:       onGraceEnd,
+		duration:               duration,
+		expectedClients:        make(map[uint64]bool),
+		reclaimedClients:       make(map[uint64]bool),
+		reclaimCompleted:       make(map[uint64]bool),
+		expectedClientStrings:  make(map[string]bool),
+		reclaimedClientStrings: make(map[string]bool),
+		onGraceEnd:             onGraceEnd,
 	}
 }
 
@@ -93,6 +106,23 @@ func NewGracePeriodState(duration time.Duration, onGraceEnd func()) *GracePeriod
 // to reclaim state from). Otherwise, sets active=true and starts a timer for
 // automatic grace period exit after duration.
 func (g *GracePeriodState) StartGrace(expectedClientIDs []uint64) {
+	g.startGrace(expectedClientIDs, nil)
+}
+
+// StartGraceWithRoster begins the grace period with a durable boot-loaded
+// reclaim roster keyed by stable client identity string (the area-4 H8 path),
+// optionally alongside any same-epoch numeric client IDs.
+//
+// The string roster is authoritative for early-exit after an ungraceful restart:
+// reclaiming clients get fresh numeric clientIDs, so only the string keys can be
+// matched back to the expected set. If BOTH expected sets are empty the grace
+// period is skipped (preserves the fresh-boot fast path — behaves exactly like
+// develop today, where the v4 roster is empty and grace is a no-op).
+func (g *GracePeriodState) StartGraceWithRoster(expectedClientIDs []uint64, expectedClientStrings []string) {
+	g.startGrace(expectedClientIDs, expectedClientStrings)
+}
+
+func (g *GracePeriodState) startGrace(expectedClientIDs []uint64, expectedClientStrings []string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -100,8 +130,8 @@ func (g *GracePeriodState) StartGrace(expectedClientIDs []uint64) {
 		return // Already active
 	}
 
-	// No expected clients: skip grace period entirely
-	if len(expectedClientIDs) == 0 {
+	// No expected clients (numeric OR string): skip grace period entirely.
+	if len(expectedClientIDs) == 0 && len(expectedClientStrings) == 0 {
 		logger.Info("NFSv4 grace period skipped: no previous clients to reclaim")
 		return
 	}
@@ -117,14 +147,35 @@ func (g *GracePeriodState) StartGrace(expectedClientIDs []uint64) {
 	g.reclaimedClients = make(map[uint64]bool)
 	g.reclaimCompleted = make(map[uint64]bool)
 
+	g.expectedClientStrings = make(map[string]bool, len(expectedClientStrings))
+	for _, s := range expectedClientStrings {
+		g.expectedClientStrings[s] = true
+	}
+	g.reclaimedClientStrings = make(map[string]bool)
+
 	logger.Info("NFSv4 grace period started",
 		"duration", g.duration,
-		"expected_clients", len(expectedClientIDs))
+		"expected_clients", len(expectedClientIDs),
+		"expected_client_strings", len(expectedClientStrings))
 
-	// Start timer for automatic exit
+	// Start timer for automatic exit. This hard timer is the backstop: grace
+	// ALWAYS lifts at g.duration regardless of roster state, so a bug in the
+	// reclaim accounting can never wedge new-state creation indefinitely.
 	g.timer = time.AfterFunc(g.duration, func() {
 		g.endGraceWithReason("ended")
 	})
+}
+
+// allReclaimedLocked reports whether every expected client (numeric AND string)
+// has reclaimed. Caller must hold g.mu.
+func (g *GracePeriodState) allReclaimedLocked() bool {
+	if len(g.reclaimedClients) < len(g.expectedClients) {
+		return false
+	}
+	if len(g.reclaimedClientStrings) < len(g.expectedClientStrings) {
+		return false
+	}
+	return true
 }
 
 // IsInGrace returns true if the grace period is currently active.
@@ -158,27 +209,61 @@ func (g *GracePeriodState) ClientReclaimed(clientID uint64) {
 		"reclaimed", len(g.reclaimedClients),
 		"expected", len(g.expectedClients))
 
-	// Check if all expected clients have reclaimed
-	if len(g.reclaimedClients) >= len(g.expectedClients) {
-		logger.Info("NFSv4 grace period ending early: all expected clients reclaimed",
-			"reclaimed", len(g.reclaimedClients))
+	g.maybeEndEarlyLocked() // unlocks g.mu
+}
 
-		// Stop timer, set inactive, and call callback outside lock
-		if g.timer != nil {
-			g.timer.Stop()
-			g.timer = nil
-		}
-		g.active = false
-		callback := g.onGraceEnd
+// ClientReclaimedByString marks an expected client (identified by stable
+// identity string from the durable boot-loaded roster) as having reclaimed.
+// This is the post-restart early-exit path: a reclaiming client carries a fresh
+// numeric clientID, so only its stable string maps back to the expected set.
+// If ALL expected clients have now reclaimed, the grace period ends early.
+func (g *GracePeriodState) ClientReclaimedByString(clientIDString string) {
+	g.mu.Lock()
+
+	if !g.active {
 		g.mu.Unlock()
-
-		if callback != nil {
-			callback()
-		}
 		return
 	}
 
+	if !g.expectedClientStrings[clientIDString] {
+		g.mu.Unlock()
+		return
+	}
+
+	g.reclaimedClientStrings[clientIDString] = true
+
+	logger.Debug("NFSv4 grace period: client reclaimed (by identity)",
+		"client_id_str", clientIDString,
+		"reclaimed_strings", len(g.reclaimedClientStrings),
+		"expected_strings", len(g.expectedClientStrings))
+
+	g.maybeEndEarlyLocked() // unlocks g.mu
+}
+
+// maybeEndEarlyLocked ends the grace period early when every expected client
+// (numeric AND string) has reclaimed. It always releases g.mu before returning,
+// invoking the end callback outside the lock. Caller must hold g.mu.
+func (g *GracePeriodState) maybeEndEarlyLocked() {
+	if !g.allReclaimedLocked() {
+		g.mu.Unlock()
+		return
+	}
+
+	logger.Info("NFSv4 grace period ending early: all expected clients reclaimed",
+		"reclaimed", len(g.reclaimedClients),
+		"reclaimed_strings", len(g.reclaimedClientStrings))
+
+	if g.timer != nil {
+		g.timer.Stop()
+		g.timer = nil
+	}
+	g.active = false
+	callback := g.onGraceEnd
 	g.mu.Unlock()
+
+	if callback != nil {
+		callback()
+	}
 }
 
 // Stop cleanly shuts down the grace period state, stopping any pending timer.

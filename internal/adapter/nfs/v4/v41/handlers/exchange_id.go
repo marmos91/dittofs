@@ -50,6 +50,7 @@ func HandleExchangeID(d *Deps, ctx *types.CompoundContext, _ *types.V41RequestCo
 		args.Flags,
 		args.ClientImplId,
 		ctx.ClientAddr,
+		ctx.Principal(),
 	)
 	if err != nil {
 		nfsStatus := MapStateError(err)

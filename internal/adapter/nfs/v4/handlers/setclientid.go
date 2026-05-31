@@ -82,7 +82,7 @@ func (h *Handler) handleSetClientID(ctx *types.CompoundContext, reader io.Reader
 	}
 
 	// Delegate to StateManager for the five-case algorithm
-	result, err := h.StateManager.SetClientID(clientIDStr, verifier, callback, ctx.ClientAddr)
+	result, err := h.StateManager.SetClientID(clientIDStr, verifier, callback, ctx.ClientAddr, ctx.Principal())
 	if err != nil {
 		// Map state errors to NFS4 error codes
 		nfsStatus := mapStateError(err)
