@@ -202,6 +202,41 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 	return nil
 }
 
+// RemoveStoreForShare deregisters a share from the MetadataService, deleting
+// its entry from every per-share map populated by RegisterStoreForShare and the
+// AddShare path (stores, lockManagers, unifiedViews, dirChangeNotifiers,
+// quotas). Without this, those maps grow unbounded across AddShare/RemoveShare
+// churn and leave stale routing: a removed-share handle would still resolve to a
+// live store, and re-adding a same-name share would silently reuse the stale
+// lock manager (RegisterStoreForShare early-returns when one already exists).
+//
+// Before dropping the lock manager its grace timer is aborted so the orphaned
+// timer never fires onGraceEnd against a now-removed share. Idempotent: removing
+// a share that was never registered (or already removed) is a no-op.
+//
+// This is the symmetric counterpart of RegisterStoreForShare and must be called
+// from the control-plane RemoveShare path after the share's stores are torn
+// down.
+//
+// Thread safety: Safe to call concurrently.
+func (s *MetadataService) RemoveStoreForShare(shareName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if lm, ok := s.lockManagers[shareName]; ok && lm != nil {
+		// Abort the grace timer (if armed) so it never fires onGraceEnd against
+		// a removed share. AbortGracePeriod stops the timer synchronously and
+		// does not block, so holding s.mu across it is safe.
+		lm.AbortGracePeriod()
+	}
+
+	delete(s.stores, shareName)
+	delete(s.lockManagers, shareName)
+	delete(s.unifiedViews, shareName)
+	delete(s.dirChangeNotifiers, shareName)
+	delete(s.quotas, shareName)
+}
+
 // initLockManagerFromStore stamps a fresh server epoch and replays any locks
 // persisted by a previous run back into the lock manager. Errors are logged
 // and swallowed so a recovery failure never blocks share registration.
