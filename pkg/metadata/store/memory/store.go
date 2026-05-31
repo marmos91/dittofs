@@ -495,9 +495,11 @@ func (store *MemoryMetadataStore) buildFileWithNlink(
 	// Copy attributes and set Nlink
 	attr := *fileData.Attr
 	attr.Nlink = nlink
-	// Deep-copy slice fields so a caller-side mutation of the returned
-	// slice cannot leak into the stored view (T-12-09).
+	// Deep-copy reference-bearing fields (Blocks, ACL) so a caller-side
+	// in-place mutation of the returned value cannot leak into the
+	// stored view.
 	attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
+	attr.ACL = cloneACL(fileData.Attr.ACL)
 
 	return &metadata.File{
 		ID:        id,

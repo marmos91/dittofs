@@ -6,6 +6,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
 // cloneBlocks returns a deep copy of a []blockstore.BlockRef. BlockRef is a
@@ -24,6 +25,31 @@ func cloneBlocks(in []blockstore.BlockRef) []blockstore.BlockRef {
 	out := make([]blockstore.BlockRef, len(in))
 	copy(out, in)
 	return out
+}
+
+// cloneACL returns a deep copy of a *acl.ACL, including a fresh copy of its
+// ACEs slice. acl.ACL holds a single reference-bearing field (the ACEs slice);
+// acl.ACE is a flat value type (uint32 fields + a string Who), so an
+// element-wise slice copy fully detaches the clone — no nested pointers remain.
+//
+// Used by PutFile/GetFile/ListChildren in the Memory backend to prevent ACL
+// aliasing between the caller's view and the stored view. Without this, an
+// in-place edit of an ACE by either side silently corrupts the other (the
+// Badger backend round-trips through JSON and never aliases, so this restores
+// cross-backend parity).
+//
+// Returns nil if the input is nil so the round-trip preserves the
+// "no ACL set" semantics (json:"acl,omitempty" on FileAttr.ACL).
+func cloneACL(in *acl.ACL) *acl.ACL {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.ACEs != nil {
+		out.ACEs = make([]acl.ACE, len(in.ACEs))
+		copy(out.ACEs, in.ACEs)
+	}
+	return &out
 }
 
 // ============================================================================
@@ -295,8 +321,10 @@ func (store *MemoryMetadataStore) ListChildren(ctx context.Context, dirHandle me
 			} else {
 				attr.Nlink = 1
 			}
-			// Deep-copy slice fields (T-12-09).
+			// Deep-copy reference-bearing fields (Blocks, ACL) so a
+			// caller-side in-place mutation cannot leak into the stored view.
 			attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
+			attr.ACL = cloneACL(fileData.Attr.ACL)
 			entry.Attr = &attr
 		}
 
@@ -359,6 +387,7 @@ func (store *MemoryMetadataStore) GetFileByPayloadID(
 			// ID and Path aren't needed by the flusher (only Size is used)
 			attr := *fileData.Attr
 			attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
+			attr.ACL = cloneACL(fileData.Attr.ACL)
 			return &metadata.File{
 				ShareName: fileData.ShareName,
 				FileAttr:  attr,
