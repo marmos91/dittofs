@@ -190,13 +190,51 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Re-check: another caller may have raced us to register this share while
-	// we recovered outside the lock. First publisher wins; drop our manager.
-	if _, exists := s.lockManagers[shareName]; exists {
+	// Re-check under the SAME s.mu acquisition that performs the publish, so the
+	// decision-to-publish and the publish itself are atomic. Two distinct races
+	// can land between our initial store-publish and this point:
+	//
+	//  1. Another caller raced us to register this same share. First publisher
+	//     wins; drop our manager.
+	//  2. A concurrent RemoveStoreForShare deleted this share while we recovered
+	//     outside the lock (TOCTOU). If we published our lock manager + notifier
+	//     now, we would RESURRECT entries for a removed share — the store map
+	//     stays deleted but lockManagers/dirChangeNotifiers come back, leaving
+	//     stale routing and a lock manager that is never torn down (leak).
+	//
+	// We detect a removal-mid-flight by checking that OUR store is still the one
+	// registered for this share. RemoveStoreForShare deletes s.stores[shareName];
+	// a same-name re-register installs a DIFFERENT store value. Either way, if
+	// the entry is gone or no longer ours, we must abort the publish.
+	cur, stillOurs := s.stores[shareName]
+	_, lmExists := s.lockManagers[shareName]
+	removedMidFlight := !lmExists && (!stillOurs || cur != store)
+	if lmExists || removedMidFlight {
 		// Our manager may have armed a grace timer above. It was never
 		// published, so abort that timer without firing onGraceEnd — letting it
-		// run would sweep the surviving manager's locks from the shared store
-		// and prematurely end the NFSv4 grace machine.
+		// run would sweep a surviving manager's locks from the shared store and
+		// prematurely end the NFSv4 grace machine. We hold s.mu here, and
+		// AbortGracePeriod (Close) does not block, so this is deadlock-free.
+		//
+		// Grace-coordinator balance is asymmetric between the two abort cases:
+		//
+		//   lmExists (lost a concurrent register for the SAME share): the WINNER
+		//   published its manager and, if it entered grace, signalled
+		//   OnLockGraceStart. The global NFSv4 grace machine is now coupled to
+		//   the WINNER. We must NOT signal OnLockGraceEnd here — doing so would
+		//   prematurely end the surviving manager's grace window. Our own
+		//   (redundant) start signal was a no-op at the coordinator because v4
+		//   grace was already active (first-in-wins policy).
+		//
+		//   removedMidFlight (a concurrent RemoveStoreForShare deleted this share
+		//   while we recovered outside the lock): Remove ran BEFORE we published,
+		//   so it never saw our lock manager and never fired OnLockGraceEnd for
+		//   the OnLockGraceStart we signalled. If we entered grace, the
+		//   coordinator is now wedged in grace for a share that no longer exists;
+		//   we must balance it with exactly one OnLockGraceEnd.
+		if removedMidFlight && lm.IsInGracePeriod() && graceCoordinator != nil {
+			graceCoordinator.OnLockGraceEnd()
+		}
 		lm.AbortGracePeriod()
 		return nil
 	}
@@ -230,6 +268,24 @@ func (s *MetadataService) RemoveStoreForShare(shareName string) {
 	defer s.mu.Unlock()
 
 	if lm, ok := s.lockManagers[shareName]; ok && lm != nil {
+		// If the manager is still in grace, it had signalled OnLockGraceStart to
+		// the grace coordinator at registration. AbortGracePeriod (below) stops
+		// the timer WITHOUT firing onGraceEnd, which is exactly what suppresses
+		// the coordinator's balancing OnLockGraceEnd. Left unbalanced, the
+		// coordinator (NFSv4 StateManager) would stay wedged in grace
+		// indefinitely after this share is removed. Fire the balancing end here,
+		// mirroring how the normal timer/early-exit path ends grace.
+		//
+		// Capturing IsInGracePeriod before AbortGracePeriod is required: Abort
+		// transitions the state to Normal, after which IsInGracePeriod would read
+		// false. The coordinator is read under the s.mu we already hold, and
+		// OnLockGraceEnd must not block (interface contract), so this is
+		// deadlock-free. Exactly-once: if grace had already lifted naturally the
+		// onGraceEnd closure already fired OnLockGraceEnd and IsInGracePeriod is
+		// false here, so we do not double-fire.
+		if lm.IsInGracePeriod() && s.graceCoordinator != nil {
+			s.graceCoordinator.OnLockGraceEnd()
+		}
 		// Abort the grace timer (if armed) so it never fires onGraceEnd against
 		// a removed share. AbortGracePeriod stops the timer synchronously and
 		// does not block, so holding s.mu across it is safe.
