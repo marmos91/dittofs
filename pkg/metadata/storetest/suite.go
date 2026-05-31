@@ -59,6 +59,14 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		RunDurableHandleStoreTests(t, factory)
 	})
 
+	// ACLAliasing asserts both directions of FileAttr.ACL deep-copy
+	// discipline: PutFile must not alias the caller's ACE slice, and
+	// GetFile must not hand back the store's backing slice. Pins the
+	// cross-backend parity gap the area-6 audit found in the memory backend.
+	t.Run("ACLAliasing", func(t *testing.T) {
+		runACLAliasingTests(t, factory)
+	})
+
 	t.Run("FileBlockOps", func(t *testing.T) {
 		runFileBlockOpsTests(t, factory)
 	})
