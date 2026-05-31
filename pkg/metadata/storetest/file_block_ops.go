@@ -135,14 +135,21 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 		testEnumerateFileBlocks_CorruptHashFailsClosed(t, factory)
 	})
 
-	// (review iteration 1): IncrementRefCount /
-	// DecrementRefCount called via a metadata.Transaction MUST roll back
-	// when the wrapping WithTransaction returns an error. Memory backend
-	// has documented best-effort semantics (single mutex, no rollback
-	// buffer) so its expected behavior differs; Postgres + Badger MUST
-	// honor durable rollback.
+	// IncrementRefCount / DecrementRefCount called via a
+	// metadata.Transaction MUST roll back when the wrapping WithTransaction
+	// returns an error. All backends — memory, badger, postgres — honor the
+	// unconditional all-or-nothing contract (interface.go: error → roll
+	// back); memory does so via a snapshot/restore buffer.
 	t.Run("Tx_IncrementRefCount_RollsBack", func(t *testing.T) {
 		testTx_IncrementRefCount_RollsBack(t, factory)
+	})
+
+	// A tx.Put followed by tx.ListFileBlocks / tx.EnumerateFileBlocks in the
+	// SAME WithTransaction MUST observe the uncommitted write (read-after-write
+	// within the tx). Badger previously delegated these list methods to a fresh
+	// db.View snapshot taken at call time, so the pending Put was invisible.
+	t.Run("Tx_ListReadAfterWrite", func(t *testing.T) {
+		testTx_ListReadAfterWrite(t, factory)
 	})
 
 	// AddRef is the LRU-hit refcount path for the
@@ -1152,19 +1159,12 @@ func testEnumerateFileBlocks_CorruptHashFailsClosed(t *testing.T, factory StoreF
 // the same property that pkg/controlplane/runtime/shares/coordinator_test
 // exercises at the coordinator layer.
 //
-// Memory backend documented limitation: the memory tx has no rollback
-// buffer (see memory/transaction.go). The test detects this and adjusts
-// expectations — memory leaves the increments stuck on rollback (best-
-// effort txn). Postgres and Badger must roll back durably.
+// All backends are held to the same all-or-nothing contract: memory rolls
+// back via a snapshot/restore buffer in WithTransaction, badger and postgres
+// via native transaction rollback.
 func testTx_IncrementRefCount_RollsBack(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
-
-	// Detect best-effort txn backends (memory) by name. The memory store
-	// has WithTransaction that holds a global mutex but does not maintain
-	// a rollback buffer; durable rollback is impossible by construction.
-	storeType := fmt.Sprintf("%T", store)
-	bestEffortTxn := storeType == "*memory.MemoryMetadataStore"
 
 	// Seed three FileBlocks with RefCount=1 each.
 	type seed struct {
@@ -1205,9 +1205,8 @@ func testTx_IncrementRefCount_RollsBack(t *testing.T, factory StoreFactory) {
 		t.Fatalf("WithTransaction returned %v, want injected %v", err, injected)
 	}
 
-	// Post-rollback: every refcount MUST equal its seeded value (1) on
-	// durable backends. Memory tolerates the documented best-effort
-	// semantics.
+	// Post-rollback: every refcount MUST equal its seeded value (1) on all
+	// backends — the transaction must undo the increment.
 	for _, s := range seeds {
 		got, err := store.GetByHash(ctx, s.hash)
 		if err != nil {
@@ -1216,19 +1215,89 @@ func testTx_IncrementRefCount_RollsBack(t *testing.T, factory StoreFactory) {
 		if got == nil {
 			t.Fatalf("GetByHash(%x) returned nil after rollback", s.hash[:4])
 		}
-		if bestEffortTxn {
-			// Memory: increment stuck (no rollback). RefCount=2.
-			if got.RefCount != 2 {
-				t.Errorf("memory backend: RefCount(%s)=%d, want 2 (best-effort txn leaves the increment in place)", s.id, got.RefCount)
-			}
-			continue
-		}
-		// Durable backends MUST roll back.
 		if got.RefCount != 1 {
 			t.Errorf("RefCount(%s)=%d after rollback; want 1 (txn must undo IncrementRefCount)", s.id, got.RefCount)
 		}
 	}
 }
+
+// testTx_ListReadAfterWrite pins read-after-write within a transaction: a
+// FileBlock Put through the tx MUST be visible to ListFileBlocks and
+// EnumerateFileBlocks issued later in the same WithTransaction. Backends that
+// open a fresh snapshot per list call (the original badger behavior) miss the
+// pending write and fail here.
+func testTx_ListReadAfterWrite(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const payloadID = "raw-tx-file"
+	hash := blockstore.ContentHash{0xa1, 0xb2, 0xc3, 0xd4}
+
+	err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		// ListFileBlocks / EnumerateFileBlocks live on each backend's tx
+		// struct but not on the narrowed metadata.Transaction interface; the
+		// engine-internal callers reach them via the concrete type. Assert to
+		// a local interface so the conformance test can drive them.
+		lister, ok := tx.(interface {
+			ListFileBlocks(ctx context.Context, payloadID string) ([]*blockstore.FileBlock, error)
+			EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error
+		})
+		if !ok {
+			return errTxListUnsupported
+		}
+
+		block := &blockstore.FileBlock{
+			ID:            payloadID + "/0",
+			Hash:          hash,
+			State:         blockstore.BlockStateRemote,
+			LocalPath:     "/cache/raw",
+			BlockStoreKey: "cas/a1/b2/" + hash.String(),
+			DataSize:      4096,
+			RefCount:      1,
+			LastAccess:    time.Now(),
+			CreatedAt:     time.Now(),
+		}
+		if putErr := tx.Put(ctx, block); putErr != nil {
+			return fmt.Errorf("tx.Put: %w", putErr)
+		}
+
+		// ListFileBlocks must see the just-Put block.
+		listed, listErr := lister.ListFileBlocks(ctx, payloadID)
+		if listErr != nil {
+			return fmt.Errorf("tx.ListFileBlocks: %w", listErr)
+		}
+		if len(listed) != 1 {
+			return fmt.Errorf("tx.ListFileBlocks returned %d blocks; want 1 (uncommitted write invisible)", len(listed))
+		}
+
+		// EnumerateFileBlocks must also see it.
+		var seen bool
+		enumErr := lister.EnumerateFileBlocks(ctx, func(h blockstore.ContentHash) error {
+			if h == hash {
+				seen = true
+			}
+			return nil
+		})
+		if enumErr != nil {
+			return fmt.Errorf("tx.EnumerateFileBlocks: %w", enumErr)
+		}
+		if !seen {
+			return fmt.Errorf("tx.EnumerateFileBlocks did not yield the uncommitted block hash")
+		}
+		return nil
+	})
+	if errors.Is(err, errTxListUnsupported) {
+		t.Skip("backend tx does not expose ListFileBlocks/EnumerateFileBlocks")
+	}
+	if err != nil {
+		t.Fatalf("read-after-write within tx failed: %v", err)
+	}
+}
+
+// errTxListUnsupported signals testTx_ListReadAfterWrite that the backend's
+// transaction does not expose the engine-internal ListFileBlocks /
+// EnumerateFileBlocks methods, so the scenario is skipped rather than failed.
+var errTxListUnsupported = errors.New("backend tx does not expose ListFileBlocks/EnumerateFileBlocks")
 
 // ============================================================================
 // AddRef Tests

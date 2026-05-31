@@ -563,17 +563,27 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 				}
 			} else {
 				// For files, decrement link count or set to 0
-				// POSIX: ctime must be updated when link count changes
-				linkCount, _ := tx.GetLinkCount(ctx.Context, dstHandle)
+				// POSIX: ctime must be updated when link count changes.
+				// The read is tx-critical: a failed GetLinkCount must roll the
+				// rename back, not fall through with count 0 and commit a wrong
+				// link count.
+				linkCount, err := tx.GetLinkCount(ctx.Context, dstHandle)
+				if err != nil {
+					return err
+				}
 				now := time.Now()
-				if linkCount <= 1 {
-					_ = tx.SetLinkCount(ctx.Context, dstHandle, 0)
-				} else {
-					_ = tx.SetLinkCount(ctx.Context, dstHandle, linkCount-1)
+				newCount := uint32(0)
+				if linkCount > 1 {
+					newCount = linkCount - 1
+				}
+				if err := tx.SetLinkCount(ctx.Context, dstHandle, newCount); err != nil {
+					return err
 				}
 				// Update ctime on the file being unlinked (affects remaining hard links)
 				dstFile.Ctime = now
-				_ = tx.PutFile(ctx.Context, dstFile)
+				if err := tx.PutFile(ctx.Context, dstFile); err != nil {
+					return err
+				}
 			}
 
 			// Remove destination from children
@@ -592,48 +602,76 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 			return err
 		}
 
-		// Update parent reference if directories are different
+		// Update parent reference if directories are different. These are
+		// tx-critical: a failed SetParent/SetLinkCount leaves the entry
+		// relinked but the parent pointer or directory nlink wrong, which a
+		// dir move can skew permanently. Return the error so the whole rename
+		// rolls back atomically.
 		if string(fromDir) != string(toDir) {
-			// Non-fatal error, ignore
-			_ = tx.SetParent(ctx.Context, srcHandle, toDir)
+			if err := tx.SetParent(ctx.Context, srcHandle, toDir); err != nil {
+				return err
+			}
 
 			// Update link counts for directory moves
 			if srcFile.Type == FileTypeDirectory {
-				// Decrement source parent's link count
-				srcLinkCount, _ := tx.GetLinkCount(ctx.Context, fromDir)
-				if srcLinkCount > 0 {
-					_ = tx.SetLinkCount(ctx.Context, fromDir, srcLinkCount-1)
+				// Decrement source parent's link count. The read is tx-critical
+				// (a failed GetLinkCount must abort the rename, not silently
+				// skip the parent-nlink update).
+				srcLinkCount, err := tx.GetLinkCount(ctx.Context, fromDir)
+				if err != nil {
+					return err
 				}
-				// Increment destination parent's link count
-				dstLinkCount, _ := tx.GetLinkCount(ctx.Context, toDir)
-				_ = tx.SetLinkCount(ctx.Context, toDir, dstLinkCount+1)
+				if srcLinkCount > 0 {
+					if err := tx.SetLinkCount(ctx.Context, fromDir, srcLinkCount-1); err != nil {
+						return err
+					}
+				}
+				// Increment destination parent's link count.
+				dstLinkCount, err := tx.GetLinkCount(ctx.Context, toDir)
+				if err != nil {
+					return err
+				}
+				if err := tx.SetLinkCount(ctx.Context, toDir, dstLinkCount+1); err != nil {
+					return err
+				}
 			}
 		}
 
-		// Update path and timestamps (non-fatal errors, ignore)
+		// Update path and timestamps. PutFile(srcFile) is tx-critical: a stale
+		// File.Path breaks the Path-keyed postgres snapshot/restore and the
+		// descendant-path rewrite below. Return the error so a failure rolls
+		// the whole rename back rather than committing a relinked entry with
+		// the old Path.
 		now := time.Now()
 		oldPath := srcFile.Path
 		srcFile.Path = destPath
 		srcFile.Ctime = now
-		_ = tx.PutFile(ctx.Context, srcFile)
+		if err := tx.PutFile(ctx.Context, srcFile); err != nil {
+			return err
+		}
 
-		// For directory renames, recursively update all descendants' paths
+		// For directory renames, recursively update all descendants' paths.
+		// Propagate the error: a partial descendant rewrite leaves stale
+		// child Paths that diverge from the parent, corrupting the Path-keyed
+		// postgres namespace. Roll the rename back instead.
 		if srcFile.Type == FileTypeDirectory {
 			if err := s.updateDescendantPaths(ctx.Context, tx, srcHandle, oldPath, destPath); err != nil {
-				logger.Debug("Move: failed to update descendant paths (non-fatal)",
-					"error", err, "oldPrefix", oldPath, "newPrefix", destPath)
+				return err
 			}
 		}
 
 		srcDir.Mtime = now
 		srcDir.Ctime = now
-		_ = tx.PutFile(ctx.Context, srcDir)
+		if err := tx.PutFile(ctx.Context, srcDir); err != nil {
+			return err
+		}
 
 		if string(fromDir) != string(toDir) {
 			dstDir.Mtime = now
 			dstDir.Ctime = now
-			// Non-fatal error, ignore
-			_ = tx.PutFile(ctx.Context, dstDir)
+			if err := tx.PutFile(ctx.Context, dstDir); err != nil {
+				return err
+			}
 		}
 
 		return nil

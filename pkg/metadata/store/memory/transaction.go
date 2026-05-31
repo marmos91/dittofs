@@ -3,8 +3,10 @@ package memory
 import (
 	"context"
 	"fmt"
+	"maps"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
@@ -16,20 +18,140 @@ import (
 // memoryTransaction wraps the store for transactional operations.
 // Since the memory store uses a global mutex, the transaction
 // holds the lock for the duration of all operations.
+//
+// pendingDelta accumulates the usedBytes change made by mutations inside
+// the closure. It is applied to the store's atomic counter exactly once
+// after a successful commit (see WithTransaction), so a rolled-back
+// closure never touches the counter and a retried closure cannot
+// double-count.
 type memoryTransaction struct {
-	store *MemoryMetadataStore
+	store        *MemoryMetadataStore
+	pendingDelta int64
+}
+
+// txSnapshot captures the mutable state of the memory store so a failed
+// transaction can be rolled back to all-or-nothing. The memory store mutates
+// its maps directly under the global write lock; without a snapshot a closure
+// that fails midway leaves partial mutations behind, violating the
+// WithTransaction contract (interface.go: error → roll back).
+//
+// Map entries are cloned one level deep. fileData / FileBlock pointer values
+// are copied because incrementRefCountLocked mutates *FileBlock in place;
+// the rest are replaced (not mutated) by the tx methods, but copying keeps
+// the snapshot robust against future in-place edits.
+type txSnapshot struct {
+	shares        map[string]*shareData
+	files         map[string]*fileData
+	parents       map[string]metadata.FileHandle
+	children      map[string]map[string]metadata.FileHandle
+	linkCounts    map[string]uint32
+	deviceNumbers map[string]*deviceNumber
+	sortedDirs    map[string][]string
+	objectIndex   map[blockstore.ContentHash]string
+	// hadFileBlockData records whether fileBlockData was allocated at snapshot
+	// time. If the closure lazily allocated it (initFileBlockData) and then
+	// failed, restore must reset the struct's maps to non-nil empties (or it
+	// would leave fileBlockData non-nil with nil maps → a later Put panics on
+	// a nil-map write).
+	hadFileBlockData bool
+	blocks           map[string]*metadata.FileBlock
+	hashIndex        map[metadata.ContentHash]string
+	serverConfig     metadata.MetadataServerConfig
+	capabilities     metadata.FilesystemCapabilities
+}
+
+// snapshotLocked captures the store's mutable maps. Caller MUST hold the
+// write lock. Top-level maps are shallow-cloned; nested children maps and the
+// in-place-mutated FileBlock values are copied so a rolled-back closure cannot
+// leak through a shared inner map or pointer.
+func (store *MemoryMetadataStore) snapshotLocked() *txSnapshot {
+	snap := &txSnapshot{
+		// shares holds *shareData mutated in place (UpdateShareOptions,
+		// CreateRootDirectory set RootHandle) — a shallow map clone would share
+		// those pointers and let the mutation leak into the snapshot, defeating
+		// rollback. Copy each struct (same discipline as fileBlockData.blocks).
+		shares:        make(map[string]*shareData, len(store.shares)),
+		files:         maps.Clone(store.files),
+		parents:       maps.Clone(store.parents),
+		children:      make(map[string]map[string]metadata.FileHandle, len(store.children)),
+		linkCounts:    maps.Clone(store.linkCounts),
+		deviceNumbers: maps.Clone(store.deviceNumbers),
+		sortedDirs:    maps.Clone(store.sortedDirCache),
+		objectIndex:   maps.Clone(store.objectIndex),
+		serverConfig:  store.serverConfig,
+		capabilities:  store.capabilities,
+	}
+	for k, v := range store.shares {
+		sc := *v
+		snap.shares[k] = &sc
+	}
+	for k, inner := range store.children {
+		snap.children[k] = maps.Clone(inner)
+	}
+	if store.fileBlockData != nil {
+		snap.hadFileBlockData = true
+		snap.blocks = make(map[string]*metadata.FileBlock, len(store.fileBlockData.blocks))
+		snap.hashIndex = maps.Clone(store.fileBlockData.hashIndex)
+		for k, v := range store.fileBlockData.blocks {
+			// Copy the struct so an in-place RefCount mutation inside the
+			// closure does not leak into the snapshot.
+			bc := *v
+			snap.blocks[k] = &bc
+		}
+	}
+	return snap
+}
+
+// restoreLocked reverts the store's mutable maps to the snapshot. Caller MUST
+// hold the write lock.
+func (store *MemoryMetadataStore) restoreLocked(snap *txSnapshot) {
+	store.shares = snap.shares
+	store.files = snap.files
+	store.parents = snap.parents
+	store.children = snap.children
+	store.linkCounts = snap.linkCounts
+	store.deviceNumbers = snap.deviceNumbers
+	store.sortedDirCache = snap.sortedDirs
+	store.objectIndex = snap.objectIndex
+	store.serverConfig = snap.serverConfig
+	store.capabilities = snap.capabilities
+	switch {
+	case snap.hadFileBlockData:
+		// fileBlockData existed at snapshot time — restore its maps to the
+		// captured copies (snap.blocks/hashIndex are non-nil).
+		store.fileBlockData.blocks = snap.blocks
+		store.fileBlockData.hashIndex = snap.hashIndex
+	case store.fileBlockData != nil:
+		// The closure lazily allocated fileBlockData then failed. Drop it back
+		// to its pre-tx (nil) state so it is re-initialized cleanly on the next
+		// use — never left non-nil with nil maps.
+		store.fileBlockData = nil
+	}
 }
 
 // WithTransaction executes fn within a transaction.
 //
 // For the memory store, this acquires the write lock and holds it for the
-// entire duration of fn. If fn returns an error, no rollback is needed since
-// operations are performed directly on the maps (no separate transaction buffer).
+// entire duration of fn. The store mutates its maps directly under the lock;
+// to honor the all-or-nothing contract a snapshot of every mutable map is
+// taken before fn runs and restored if fn returns an error, so a failed
+// closure leaves no partial mutations behind.
 //
-// Note: The memory store doesn't support true transaction rollback. If fn
-// performs multiple operations and fails midway, partial changes will persist.
-// This is acceptable for testing but not for production use with strict
-// atomicity requirements.
+// usedBytes is tracked as a pending delta on the transaction and applied to
+// the atomic counter only after the closure succeeds, so a rollback never
+// drifts the counter.
+//
+// The snapshot shallow-clones the top-level maps, so a transaction is O(store
+// size) rather than O(keys touched). The memory store is the
+// testing/development/ephemeral backend (badger and postgres are the
+// persistent backends with native rollback), where correctness and simplicity
+// outweigh the clone cost; a write-heavy production workload uses a durable
+// backend.
+//
+// Scope: the snapshot covers the file/directory/share/fileblock metadata maps.
+// The separately-mutexed lock store (memoryLockStore, area-5) is NOT snapshotted
+// — lock persistence runs in its own transactions and is not mixed with
+// file-metadata mutations in a single WithTransaction.
 func (store *MemoryMetadataStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -38,8 +160,18 @@ func (store *MemoryMetadataStore) WithTransaction(ctx context.Context, fn func(t
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
+	snap := store.snapshotLocked()
 	tx := &memoryTransaction{store: store}
-	return fn(tx)
+	if err := fn(tx); err != nil {
+		store.restoreLocked(snap)
+		return err
+	}
+
+	// Commit succeeded — apply the accumulated usedBytes delta once.
+	if tx.pendingDelta != 0 {
+		store.usedBytes.Add(tx.pendingDelta)
+	}
+	return nil
 }
 
 // ============================================================================
@@ -90,10 +222,9 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		if existing, exists := tx.store.files[key]; exists && existing.Attr.Type == metadata.FileTypeRegular {
 			oldSize = existing.Attr.Size
 		}
-		delta := int64(file.Size) - int64(oldSize)
-		if delta != 0 {
-			tx.store.usedBytes.Add(delta)
-		}
+		// Accumulate into the tx-scoped pending delta; applied once after a
+		// successful commit so a rollback/retry never drifts the counter.
+		tx.pendingDelta += int64(file.Size) - int64(oldSize)
 	}
 
 	// Maintain ObjectID secondary index BEFORE overwriting
@@ -168,9 +299,9 @@ func (tx *memoryTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		}
 	}
 
-	// Subtract size from counter for regular files.
+	// Subtract size from the pending delta for regular files.
 	if existing.Attr.Type == metadata.FileTypeRegular && existing.Attr.Size > 0 {
-		tx.store.usedBytes.Add(-int64(existing.Attr.Size))
+		tx.pendingDelta -= int64(existing.Attr.Size)
 	}
 
 	// drop ObjectID secondary entry. The "only if mapped
@@ -526,9 +657,9 @@ func (tx *memoryTransaction) DeleteShare(ctx context.Context, shareName string) 
 	// Remove all files belonging to this share
 	for key, fd := range tx.store.files {
 		if fd.ShareName == shareName {
-			// Subtract size from counter for regular files.
+			// Subtract size from the pending delta for regular files.
 			if fd.Attr.Type == metadata.FileTypeRegular && fd.Attr.Size > 0 {
-				tx.store.usedBytes.Add(-int64(fd.Attr.Size))
+				tx.pendingDelta -= int64(fd.Attr.Size)
 			}
 			// drop ObjectID secondary entry too.
 			if fd.Attr != nil && !fd.Attr.ObjectID.IsZero() {

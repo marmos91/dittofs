@@ -414,50 +414,10 @@ func (s *BadgerMetadataStore) GetByHash(ctx context.Context, hash metadata.Conte
 // Uses the fb-local: secondary index for O(local) iteration instead of
 // scanning all fb: entries. This eliminates the BadgerDB full-table scan
 // that was the root cause of sequential write throughput degradation.
-func (s *BadgerMetadataStore) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	// olderThan <= 0 means "no age filter" — return every local block.
-	var cutoff time.Time
-	filterByAge := olderThan > 0
-	if filterByAge {
-		cutoff = time.Now().Add(-olderThan)
-	}
+func (s *BadgerMetadataStore) ListPending(_ context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
 	var result []*metadata.FileBlock
 	err := s.db.View(func(txn *badger.Txn) error {
-		prefix := []byte(fileBlockLocalPrefix)
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = prefix
-		opts.PrefetchValues = false // Keys only — values are empty
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			// Extract block ID from key: "fb-local:{id}" → "{id}"
-			id := string(it.Item().Key()[len(prefix):])
-
-			// Look up the actual FileBlock
-			fbItem, err := txn.Get([]byte(fileBlockPrefix + id))
-			if err != nil {
-				continue // Index stale, block deleted
-			}
-
-			var block metadata.FileBlock
-			if err := fbItem.Value(func(val []byte) error {
-				return json.Unmarshal(val, &block)
-			}); err != nil {
-				continue
-			}
-
-			if !block.HasLocalFile() {
-				continue
-			}
-			if filterByAge && !block.LastAccess.Before(cutoff) {
-				continue
-			}
-			result = append(result, &block)
-			if limit > 0 && len(result) >= limit {
-				break
-			}
-		}
+		result = listPendingTxn(txn, olderThan, limit)
 		return nil
 	})
 	return result, err
@@ -467,52 +427,14 @@ func (s *BadgerMetadataStore) ListPending(ctx context.Context, olderThan time.Du
 // Uses the fb-file:{payloadID}: secondary index for efficient O(file_blocks) queries.
 // Not on the narrowed FileBlockStore interface;
 // kept as a backend method for engine-internal callers.
-func (s *BadgerMetadataStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
+func (s *BadgerMetadataStore) ListFileBlocks(_ context.Context, payloadID string) ([]*metadata.FileBlock, error) {
 	var result []*metadata.FileBlock
 	err := s.db.View(func(txn *badger.Txn) error {
-		prefix := []byte(fileBlockFilePrefix + payloadID + ":")
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = prefix
-		opts.PrefetchValues = true
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			// Value is the block ID
-			var blockID string
-			if err := it.Item().Value(func(val []byte) error {
-				blockID = string(val)
-				return nil
-			}); err != nil {
-				continue
-			}
-
-			// Fetch the actual FileBlock
-			fbItem, err := txn.Get([]byte(fileBlockPrefix + blockID))
-			if err != nil {
-				continue // Index stale, block deleted
-			}
-
-			var block metadata.FileBlock
-			if err := fbItem.Value(func(val []byte) error {
-				return json.Unmarshal(val, &block)
-			}); err != nil {
-				continue
-			}
-			result = append(result, &block)
-		}
+		result = listFileBlocksTxn(txn, payloadID)
 		return nil
 	})
 	if err != nil {
 		return nil, err
-	}
-	// Keys are lexicographically sorted (fb-file:{payloadID}:0, :1, :10, :2...)
-	// which gives wrong numeric order for multi-digit indices. Sort by parsed index.
-	sort.Slice(result, func(i, j int) bool {
-		return parseBlockIdx(result[i].ID) < parseBlockIdx(result[j].ID)
-	})
-	if result == nil {
-		return []*metadata.FileBlock{}, nil
 	}
 	return result, nil
 }
@@ -524,30 +446,120 @@ func (s *BadgerMetadataStore) ListFileBlocks(ctx context.Context, payloadID stri
 // implementation unchanged.
 func (s *BadgerMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
 	return s.db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.PrefetchValues = true
-		opts.PrefetchSize = 256
-		prefix := []byte(fileBlockPrefix)
-		opts.Prefix = prefix
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("enumerate file blocks: %w", err)
-			}
-			var block metadata.FileBlock
-			if err := it.Item().Value(func(val []byte) error {
-				return json.Unmarshal(val, &block)
-			}); err != nil {
-				return fmt.Errorf("decode file block: %w", err)
-			}
-			if err := fn(block.Hash); err != nil {
-				return err
-			}
-		}
-		return nil
+		return enumerateFileBlocksTxn(ctx, txn, fn)
 	})
+}
+
+// listPendingTxn / listFileBlocksTxn / enumerateFileBlocksTxn iterate a given
+// *badger.Txn so the store-level methods (over a db.View snapshot) and the
+// transaction-level methods (over the active write txn, for read-after-write)
+// share one implementation. Binding to the caller's txn is what lets a
+// tx.Put be observed by a later tx.ListFileBlocks in the same WithTransaction.
+func listPendingTxn(txn *badger.Txn, olderThan time.Duration, limit int) []*metadata.FileBlock {
+	// olderThan <= 0 means "no age filter" — return every local block.
+	var cutoff time.Time
+	filterByAge := olderThan > 0
+	if filterByAge {
+		cutoff = time.Now().Add(-olderThan)
+	}
+	var result []*metadata.FileBlock
+	prefix := []byte(fileBlockLocalPrefix)
+	opts := badger.DefaultIteratorOptions
+	opts.Prefix = prefix
+	opts.PrefetchValues = false // Keys only — values are empty
+	it := txn.NewIterator(opts)
+	defer it.Close()
+
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		id := string(it.Item().Key()[len(prefix):])
+		fbItem, err := txn.Get([]byte(fileBlockPrefix + id))
+		if err != nil {
+			continue // Index stale, block deleted
+		}
+		var block metadata.FileBlock
+		if err := fbItem.Value(func(val []byte) error {
+			return json.Unmarshal(val, &block)
+		}); err != nil {
+			continue
+		}
+		if !block.HasLocalFile() {
+			continue
+		}
+		if filterByAge && !block.LastAccess.Before(cutoff) {
+			continue
+		}
+		result = append(result, &block)
+		if limit > 0 && len(result) >= limit {
+			break
+		}
+	}
+	return result
+}
+
+func listFileBlocksTxn(txn *badger.Txn, payloadID string) []*metadata.FileBlock {
+	var result []*metadata.FileBlock
+	prefix := []byte(fileBlockFilePrefix + payloadID + ":")
+	opts := badger.DefaultIteratorOptions
+	opts.Prefix = prefix
+	opts.PrefetchValues = true
+	it := txn.NewIterator(opts)
+	defer it.Close()
+
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		var blockID string
+		if err := it.Item().Value(func(val []byte) error {
+			blockID = string(val)
+			return nil
+		}); err != nil {
+			continue
+		}
+		fbItem, err := txn.Get([]byte(fileBlockPrefix + blockID))
+		if err != nil {
+			continue // Index stale, block deleted
+		}
+		var block metadata.FileBlock
+		if err := fbItem.Value(func(val []byte) error {
+			return json.Unmarshal(val, &block)
+		}); err != nil {
+			continue
+		}
+		result = append(result, &block)
+	}
+	// Keys are lexicographically sorted (fb-file:{payloadID}:0, :1, :10, :2...)
+	// which gives wrong numeric order for multi-digit indices. Sort by parsed index.
+	sort.Slice(result, func(i, j int) bool {
+		return parseBlockIdx(result[i].ID) < parseBlockIdx(result[j].ID)
+	})
+	if result == nil {
+		return []*metadata.FileBlock{}
+	}
+	return result
+}
+
+func enumerateFileBlocksTxn(ctx context.Context, txn *badger.Txn, fn func(blockstore.ContentHash) error) error {
+	opts := badger.DefaultIteratorOptions
+	opts.PrefetchValues = true
+	opts.PrefetchSize = 256
+	prefix := []byte(fileBlockPrefix)
+	opts.Prefix = prefix
+	it := txn.NewIterator(opts)
+	defer it.Close()
+
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("enumerate file blocks: %w", err)
+		}
+		var block metadata.FileBlock
+		if err := it.Item().Value(func(val []byte) error {
+			return json.Unmarshal(val, &block)
+		}); err != nil {
+			return fmt.Errorf("decode file block: %w", err)
+		}
+		if err := fn(block.Hash); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // splitBlockID splits a block ID into (payloadID, blockIdx) on the LAST
@@ -854,17 +866,27 @@ func (tx *badgerTransaction) GetByHash(ctx context.Context, hash metadata.Conten
 	return &block, nil
 }
 
-// ListPending, ListFileBlocks, EnumerateFileBlocks are read-only and
-// don't require tx-binding for correctness; keep them on the public
-// store path.
+// ListPending, ListFileBlocks, EnumerateFileBlocks iterate the active txn
+// (tx.txn) rather than opening a fresh db.View snapshot. Delegating to the
+// store path took a snapshot at call time, so a tx.Put followed by
+// tx.ListFileBlocks in the same WithTransaction missed the uncommitted write —
+// a cross-backend divergence vs memory, whose list helpers read live maps
+// under the held lock. Binding to tx.txn gives read-after-write within the tx
+// (BadgerDB transactions see their own pending writes).
 func (tx *badgerTransaction) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	return tx.store.ListPending(ctx, olderThan, limit)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return listPendingTxn(tx.txn, olderThan, limit), nil
 }
 
 func (tx *badgerTransaction) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
-	return tx.store.ListFileBlocks(ctx, payloadID)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return listFileBlocksTxn(tx.txn, payloadID), nil
 }
 
 func (tx *badgerTransaction) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
-	return tx.store.EnumerateFileBlocks(ctx, fn)
+	return enumerateFileBlocksTxn(ctx, tx.txn, fn)
 }

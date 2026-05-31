@@ -81,13 +81,6 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 		return nil, err
 	}
 
-	// Get current link count
-	linkCount, err := store.GetLinkCount(ctx.Context, fileHandle)
-	if err != nil {
-		// If we can't get link count, assume 1
-		linkCount = 1
-	}
-
 	now := time.Now()
 
 	// Prepare return value
@@ -100,6 +93,20 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 
 	// Execute all write operations in a single transaction for better performance.
 	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Read the link count INSIDE the transaction so the read, the
+		// branch decision, and the write are atomic. Reading it outside the
+		// tx is a TOCTOU race with CreateHardLink: a concurrent link bump in
+		// the window would leave us writing a stale (decremented) count and
+		// dropping nlink to 0 while a valid link still references the file,
+		// making the content eligible for deletion. Reading via tx.GetLinkCount
+		// also registers the key for the backend's read-write conflict
+		// detection so a racing writer triggers an automatic retry.
+		linkCount, lcErr := tx.GetLinkCount(ctx.Context, fileHandle)
+		if lcErr != nil {
+			// If we can't get link count, assume 1.
+			linkCount = 1
+		}
+
 		// Handle link count
 		if linkCount > 1 {
 			// File has other hard links, just decrement count
