@@ -198,7 +198,8 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 		return err
 	}
 
-	return s.db.Update(func(txn *badgerdb.Txn) error {
+	var freedBytes int64
+	err := s.db.Update(func(txn *badgerdb.Txn) error {
 		_, err := txn.Get(keyShare(shareName))
 		if err == badgerdb.ErrKeyNotFound {
 			return &metadata.StoreError{
@@ -211,12 +212,22 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 			return err
 		}
 
-		if err := s.deleteShareFiles(txn, shareName); err != nil {
+		freed, err := s.deleteShareFiles(txn, shareName)
+		if err != nil {
 			return err
 		}
+		freedBytes = freed
 
 		return txn.Delete(keyShare(shareName))
 	})
+	if err != nil {
+		return err
+	}
+	// Apply the usedBytes decrement once, after a successful commit.
+	if freedBytes > 0 {
+		s.usedBytes.Add(-freedBytes)
+	}
+	return nil
 }
 
 // deleteShareFiles removes every file inode and its dependent keys (parent,
@@ -228,11 +239,13 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 // objectID entry. Files are collected first, then mutated, so keys are never
 // deleted out from under the active iterator.
 //
-// usedBytes is adjusted inline; like PutFile/DeleteFile this shares the known
-// tx-retry double-count class (a conflict/serialization retry re-runs the
-// enclosing Update and re-applies the delta), tracked for the
-// metadata-tx-integrity fix PR. The counter is statfs-only, not quota-enforcing.
-func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName string) error {
+// deleteShareFiles returns the total regular-file bytes it removed (freedBytes)
+// rather than mutating usedBytes inline. The caller applies the decrement once
+// after a successful commit — the tx-path accumulates it into the transaction's
+// pendingDelta and the pool-path applies it after db.Update returns nil — so a
+// conflict/serialization retry that re-runs the enclosing Update never
+// double-counts. The counter is statfs-only, not quota-enforcing.
+func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName string) (freedBytes int64, err error) {
 	type doomed struct {
 		id       uuid.UUID
 		objectID metadata.ContentHash
@@ -251,7 +264,7 @@ func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName stri
 		val, vErr := item.ValueCopy(nil)
 		if vErr != nil {
 			it.Close()
-			return fmt.Errorf("badger DeleteShare: copy file value: %w", vErr)
+			return 0, fmt.Errorf("badger DeleteShare: copy file value: %w", vErr)
 		}
 		file, decErr := decodeFile(val)
 		if decErr != nil {
@@ -274,21 +287,21 @@ func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName stri
 
 	for _, v := range victims {
 		if delErr := deleteFileKeys(txn, v.id, v.objectID); delErr != nil {
-			return delErr
+			return 0, delErr
 		}
 		// Directories own c:<uuid>:<name> child entries; prefix-scan and
 		// delete them so no dangling mapping survives the share.
 		if v.isDir {
 			if delErr := deleteChildEntries(txn, v.id); delErr != nil {
-				return delErr
+				return 0, delErr
 			}
 		}
 		if v.isReg && v.size > 0 {
-			s.usedBytes.Add(-int64(v.size))
+			freedBytes += int64(v.size)
 		}
 	}
 
-	return nil
+	return freedBytes, nil
 }
 
 // deleteFileKeys removes the primary file row plus its parent, link-count, and

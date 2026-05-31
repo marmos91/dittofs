@@ -18,9 +18,16 @@ import (
 // ============================================================================
 
 // badgerTransaction wraps a BadgerDB transaction for the Base interface.
+//
+// pendingDelta accumulates the usedBytes change made by mutations inside the
+// closure. It is applied to the store's atomic counter exactly once after a
+// successful commit (see WithTransaction). BadgerDB retries the closure on
+// ErrConflict; accumulating per-attempt and applying post-commit prevents the
+// counter from double-counting across retries.
 type badgerTransaction struct {
-	store *BadgerMetadataStore
-	txn   *badgerdb.Txn
+	store        *BadgerMetadataStore
+	txn          *badgerdb.Txn
+	pendingDelta int64
 }
 
 // Maximum number of retries for conflict errors
@@ -39,12 +46,24 @@ func (s *BadgerMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 
 	var lastErr error
 	for attempt := 0; attempt < maxTransactionRetries; attempt++ {
+		// pendingDelta is captured outside db.Update so it is read after a
+		// successful commit and reset per attempt (a retried attempt starts
+		// from zero, so a conflict-retry cannot double-count usedBytes).
+		var pendingDelta int64
 		err := s.db.Update(func(txn *badgerdb.Txn) error {
 			tx := &badgerTransaction{store: s, txn: txn}
-			return fn(tx)
+			if fnErr := fn(tx); fnErr != nil {
+				return fnErr
+			}
+			pendingDelta = tx.pendingDelta
+			return nil
 		})
 
 		if err == nil {
+			// Apply the accumulated usedBytes delta exactly once, after commit.
+			if pendingDelta != 0 {
+				s.usedBytes.Add(pendingDelta)
+			}
 			return nil // Success
 		}
 
@@ -155,12 +174,10 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		})
 	}
 
-	// Track size delta for regular files.
+	// Track size delta for regular files. Accumulated on the tx and applied
+	// once after a successful commit so a conflict-retry never double-counts.
 	if file.Type == metadata.FileTypeRegular {
-		delta := int64(file.Size) - int64(oldSize)
-		if delta != 0 {
-			tx.store.usedBytes.Add(delta)
-		}
+		tx.pendingDelta += int64(file.Size) - int64(oldSize)
 	}
 
 	data, err := encodeFile(file)
@@ -244,7 +261,7 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		file, decErr := decodeFile(val)
 		if decErr == nil {
 			if file.Type == metadata.FileTypeRegular && file.Size > 0 {
-				tx.store.usedBytes.Add(-int64(file.Size))
+				tx.pendingDelta -= int64(file.Size)
 			}
 			existingObjectID = file.ObjectID
 		}
@@ -809,9 +826,13 @@ func (tx *badgerTransaction) DeleteShare(ctx context.Context, shareName string) 
 	// Tear down all file metadata on the active txn, identical to the pool
 	// path — deleting only the share key would orphan every file/parent/
 	// linkcount/child/objectID entry (store.go:161 contract).
-	if err := tx.store.deleteShareFiles(tx.txn, shareName); err != nil {
+	freed, err := tx.store.deleteShareFiles(tx.txn, shareName)
+	if err != nil {
 		return err
 	}
+	// Accumulate into the tx pending delta; applied once after a successful
+	// commit so a conflict-retry never double-counts.
+	tx.pendingDelta -= freed
 
 	return tx.txn.Delete(keyShare(shareName))
 }

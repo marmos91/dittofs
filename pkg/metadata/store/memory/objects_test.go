@@ -16,6 +16,40 @@ import (
 // FileBlock Reference Counting Tests
 // ============================================================================
 
+// TestWithTransaction_RollbackReinitsLazyFileBlockData regresses a snapshot
+// restore edge: when fileBlockData is nil at the start of a transaction and the
+// closure lazily allocates it (via Put) then fails, the rollback must reset
+// fileBlockData to nil rather than leaving it non-nil with nil maps — otherwise
+// a subsequent Put panics writing to a nil map.
+func TestWithTransaction_RollbackReinitsLazyFileBlockData(t *testing.T) {
+	store := NewMemoryMetadataStoreWithDefaults()
+	ctx := context.Background()
+
+	// fileBlockData starts nil. Put a block inside a tx that then fails.
+	injected := errAlways
+	err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		blk := &metadata.FileBlock{ID: uuid.New().String(), DataSize: 1024, RefCount: 1}
+		if putErr := tx.Put(ctx, blk); putErr != nil {
+			return putErr
+		}
+		return injected
+	})
+	require.ErrorIs(t, err, injected)
+
+	// A subsequent committed Put must succeed (no nil-map panic) and persist.
+	id := uuid.New().String()
+	require.NoError(t, store.Put(ctx, &metadata.FileBlock{ID: id, DataSize: 1024, RefCount: 1}))
+	got, err := store.GetFileBlock(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, uint32(1), got.RefCount)
+}
+
+var errAlways = errTest("synthetic failure")
+
+type errTest string
+
+func (e errTest) Error() string { return string(e) }
+
 func TestFileBlockStore_RefCount_Basic(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()

@@ -159,14 +159,28 @@ func (s *MemoryMetadataStore) ListFileBlocks(ctx context.Context, payloadID stri
 // implementation unchanged.
 func (s *MemoryMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
 	s.mu.RLock()
-	var snapshot []blockstore.ContentHash
-	if s.fileBlockData != nil {
-		snapshot = make([]blockstore.ContentHash, 0, len(s.fileBlockData.blocks))
-		for _, b := range s.fileBlockData.blocks {
-			snapshot = append(snapshot, b.Hash)
-		}
-	}
+	snapshot := s.snapshotBlockHashesLocked()
 	s.mu.RUnlock()
+	return enumerateBlockHashes(ctx, snapshot, fn)
+}
+
+// snapshotBlockHashesLocked copies every FileBlock hash. Caller MUST hold at
+// least the read lock.
+func (s *MemoryMetadataStore) snapshotBlockHashesLocked() []blockstore.ContentHash {
+	if s.fileBlockData == nil {
+		return nil
+	}
+	snapshot := make([]blockstore.ContentHash, 0, len(s.fileBlockData.blocks))
+	for _, b := range s.fileBlockData.blocks {
+		snapshot = append(snapshot, b.Hash)
+	}
+	return snapshot
+}
+
+// enumerateBlockHashes streams the snapshot through fn, honoring ctx
+// cancellation. Shared by the public store method and the transaction method
+// so the latter does not re-lock (WithTransaction already holds the lock).
+func enumerateBlockHashes(ctx context.Context, snapshot []blockstore.ContentHash, fn func(blockstore.ContentHash) error) error {
 	for _, h := range snapshot {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("enumerate file blocks: %w", err)
@@ -259,7 +273,11 @@ func (tx *memoryTransaction) ListFileBlocks(ctx context.Context, payloadID strin
 }
 
 func (tx *memoryTransaction) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
-	return tx.store.EnumerateFileBlocks(ctx, fn)
+	// WithTransaction already holds the write lock; snapshot without
+	// re-locking (the public method's RLock would deadlock) so the enumerate
+	// observes uncommitted tx writes.
+	snapshot := tx.store.snapshotBlockHashesLocked()
+	return enumerateBlockHashes(ctx, snapshot, fn)
 }
 
 // ============================================================================

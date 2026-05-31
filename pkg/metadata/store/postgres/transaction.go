@@ -24,9 +24,16 @@ const maxTransactionRetries = 3
 // ============================================================================
 
 // postgresTransaction wraps a PostgreSQL transaction for the Transaction interface.
+//
+// pendingDelta accumulates the usedBytes change made by mutations inside the
+// closure. It is applied to the store's atomic counter exactly once after a
+// successful Commit (see WithTransaction). WithTransaction retries the closure
+// on 40P01/40001; accumulating per-attempt and applying post-commit prevents
+// the counter from double-counting across retries.
 type postgresTransaction struct {
-	store *PostgresMetadataStore
-	tx    pgx.Tx
+	store        *PostgresMetadataStore
+	tx           pgx.Tx
+	pendingDelta int64
 }
 
 // isRetryableError checks if a PostgreSQL error is retryable (deadlock or serialization failure)
@@ -110,6 +117,10 @@ func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx 
 		}
 		commitCancel()
 
+		// Apply the accumulated usedBytes delta exactly once, after commit.
+		if ptx.pendingDelta != 0 {
+			s.usedBytes.Add(ptx.pendingDelta)
+		}
 		return nil // Success
 	}
 
@@ -269,12 +280,11 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	}
 
 	// Track size delta for regular files after successful update/insert.
+	// Accumulated on the tx and applied once after a successful commit so a
+	// serialization/deadlock retry never double-counts.
 	if file.Type == metadata.FileTypeRegular {
 		if result.RowsAffected() > 0 {
-			delta := int64(file.Size) - int64(oldSize)
-			if delta != 0 {
-				tx.store.usedBytes.Add(delta)
-			}
+			tx.pendingDelta += int64(file.Size) - int64(oldSize)
 		}
 	}
 
@@ -303,7 +313,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 
 		// Track new regular file size.
 		if file.Type == metadata.FileTypeRegular && file.Size > 0 {
-			tx.store.usedBytes.Add(int64(file.Size))
+			tx.pendingDelta += int64(file.Size)
 		}
 
 		// Debug logging for new file inserts
@@ -370,9 +380,9 @@ func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.F
 		}
 	}
 
-	// Subtract size from counter for regular files.
+	// Subtract size from the pending delta for regular files.
 	if metadata.FileType(fileType) == metadata.FileTypeRegular && fileSize > 0 {
-		tx.store.usedBytes.Add(-fileSize)
+		tx.pendingDelta -= fileSize
 	}
 
 	return nil
@@ -899,12 +909,11 @@ func (tx *postgresTransaction) DeleteShare(ctx context.Context, shareName string
 		return mapPgError(err, "DeleteShare", shareName)
 	}
 
-	// Inline decrement shares the known tx-retry double-count class with
-	// PutFile/DeleteFile (a serialization retry re-runs this closure and
-	// re-applies the delta); unified post-commit fix tracked for the
-	// metadata-tx-integrity PR. The counter is statfs-only, not quota-enforcing.
+	// Accumulate the decrement on the tx and apply it once after a successful
+	// commit so a serialization/deadlock retry never double-counts. The
+	// counter is statfs-only, not quota-enforcing.
 	if freedBytes > 0 {
-		tx.store.usedBytes.Add(-freedBytes)
+		tx.pendingDelta -= freedBytes
 	}
 
 	return nil

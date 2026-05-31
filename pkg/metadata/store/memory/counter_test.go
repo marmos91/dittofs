@@ -2,6 +2,7 @@ package memory_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -95,6 +96,59 @@ func TestCounter_CreateFile(t *testing.T) {
 
 	if got := store.GetUsedBytes(); got != 1000 {
 		t.Fatalf("expected usedBytes == 1000 after creating 1000-byte file, got %d", got)
+	}
+}
+
+// TestCounter_RolledBackTxDoesNotDrift verifies the usedBytes counter is only
+// applied after a successful commit. A transaction that PutFiles a regular file
+// then returns an error must leave usedBytes unchanged — the delta is staged on
+// the tx (pendingDelta) and applied once post-commit, so a rolled-back (or
+// conflict-retried) closure never drifts or double-counts the counter.
+func TestCounter_RolledBackTxDoesNotDrift(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	injected := errors.New("rollback trigger")
+	err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		h, err := tx.GenerateHandle(ctx, "/test", "/ghost.txt")
+		if err != nil {
+			return err
+		}
+		_, id, err := metadata.DecodeFileHandle(h)
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		if err := tx.PutFile(ctx, &metadata.File{
+			ID:        id,
+			ShareName: "/test",
+			Path:      "/ghost.txt",
+			FileAttr: metadata.FileAttr{
+				Type: metadata.FileTypeRegular, Mode: 0o644, Size: 4096,
+				Atime: now, Mtime: now, Ctime: now,
+			},
+		}); err != nil {
+			return err
+		}
+		// Abort: the 4096-byte delta must NOT reach the counter.
+		return injected
+	})
+	if !errors.Is(err, injected) {
+		t.Fatalf("WithTransaction returned %v, want injected error", err)
+	}
+
+	if got := store.GetUsedBytes(); got != 0 {
+		t.Fatalf("usedBytes drifted on rolled-back tx: got %d, want 0", got)
+	}
+
+	// And the file itself must be rolled back (snapshot/restore buffer).
+	rootHandle, err := store.GetRootHandle(ctx, "/test")
+	if err != nil {
+		t.Fatalf("GetRootHandle: %v", err)
+	}
+	if _, err := store.GetChild(ctx, rootHandle, "ghost.txt"); err == nil {
+		t.Fatalf("ghost.txt survived a rolled-back transaction")
 	}
 }
 
