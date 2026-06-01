@@ -608,6 +608,26 @@ func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupReq
 		return h.completeNTLMAuth(ctx, req.SecurityBuffer)
 	}
 
+	// Kerberos bind is single-shot: the SPNEGO AP-REQ is presented directly on
+	// the binding SESSION_SETUP (no TYPE_1/TYPE_2/TYPE_3 challenge handshake).
+	// Detect it and complete the bind in one response, mirroring the primary
+	// session-setup Kerberos routing. NTLM falls through to the negotiate
+	// handshake below. smbtorture smb2.session.bind1/bind2/bind_invalid_auth.
+	if len(req.SecurityBuffer) >= 2 &&
+		(req.SecurityBuffer[0] == 0x60 || req.SecurityBuffer[0] == 0xa0 || req.SecurityBuffer[0] == 0xa1) {
+		if parsed, perr := auth.Parse(req.SecurityBuffer); perr == nil &&
+			parsed.Type == auth.TokenTypeInit && parsed.HasKerberos() && len(parsed.MechToken) > 0 {
+			// Seed the per-channel preauth hash for SMB 3.1.1 key derivation
+			// before completing the bind (the single AP-REQ is the final auth
+			// message, so the hash up to this request is the channel-key KDF
+			// context). For 3.0/3.0.2 the hash is unused (fixed KDF context).
+			if connDialect >= types.Dialect0300 && ctx.ConnCryptoState != nil {
+				ctx.ConnCryptoState.InitSessionPreauthHash(ctx.SessionID, ctx.RawRequest)
+			}
+			return h.completeKerberosBind(ctx, sess, parsed)
+		}
+	}
+
 	// First binding request (TYPE_1). For SMB 3.1.1, initialize a per-
 	// channel preauth integrity hash chain on THIS connection keyed by
 	// the bound SessionID (MS-SMB2 §3.3.5.5.2 + §3.1.4.2). The
