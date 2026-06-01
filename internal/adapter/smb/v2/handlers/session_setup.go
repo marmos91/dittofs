@@ -375,11 +375,19 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 //   - the connection owns a registered bound channel for the session with a
 //     valid signer — origin-connection re-auth (no Channel entry) is excluded
 //     so the existing reauth1-6 path is untouched;
-//   - the inbound request is signed OR the session requires signing (mirroring
-//     Samba's `signing_required || (flags & SIGNED)` condition at
-//     smb2_server.c:3189 — a session where signing is merely enabled but not
-//     required must not have an unsigned re-auth rejected);
 //   - the raw request bytes are available to verify.
+//
+// A registered bound channel always carries a valid signing key (a channel is
+// only added after the bind derived one), so the channel's existence is itself
+// proof that signing is established for the session — equivalent to Samba's
+// has_channel == true path, where smbd_smb2_signing_key returns a valid key and
+// smb2_signing_check_pdu enforces the signature unconditionally. The signature
+// is therefore verified whether or not the inbound request set
+// SMB2_FLAGS_SIGNED: an UNSIGNED re-auth on a bound channel (the smbtorture
+// fresh-init client with no session keys at session.c:2842) must be rejected
+// with ACCESS_DENIED, not let through. Keying this off the per-request SIGNED
+// flag or sess.CryptoState.SigningRequired missed that case on the Kerberos
+// path (bind_negative_smb3sign{CtoH,HtoC}{s,d}).
 func (h *Handler) verifyReauthChannelSignature(ctx *SMBHandlerContext, sess *session.Session) *HandlerResult {
 	if ctx.RequestEncrypted {
 		return nil
@@ -398,16 +406,10 @@ func (h *Handler) verifyReauthChannelSignature(ctx *SMBHandlerContext, sess *ses
 	// chained ahead of other subcommands is not rejected over its trailing
 	// bytes.
 	verifyBytes := ctx.RawRequest
-	requestSigned := false
 	if hdr, err := header.Parse(ctx.RawRequest); err == nil {
-		requestSigned = hdr.IsSigned()
 		if hdr.NextCommand > 0 && int(hdr.NextCommand) <= len(verifyBytes) {
 			verifyBytes = verifyBytes[:hdr.NextCommand]
 		}
-	}
-	signingRequired := sess.CryptoState != nil && sess.CryptoState.SigningRequired
-	if !requestSigned && !signingRequired {
-		return nil
 	}
 
 	if sess.VerifyMessageOnChannel(ctx.ConnID, verifyBytes) {
