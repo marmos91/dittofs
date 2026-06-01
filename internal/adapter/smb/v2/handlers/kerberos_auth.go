@@ -267,6 +267,17 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 
+	// Verify the client's SPNEGO mechListMIC (downgrade protection, RFC 4178)
+	// BEFORE registering any channel state. A bad MIC rejects the bind, so it
+	// must be checked before AddChannel — otherwise a live signing channel
+	// would be left attached to the session on a rejected bind.
+	if len(parsedToken.MechListBytes) > 0 && len(parsedToken.MechListMIC) > 0 {
+		if vErr := auth.VerifyMechListMIC(authResult.SessionKey, parsedToken.MechListBytes, parsedToken.MechListMIC); vErr != nil {
+			logger.Debug("Kerberos bind: client mechListMIC verification failed", "error", vErr)
+			return NewErrorResult(types.StatusLogonFailure), nil
+		}
+	}
+
 	// Per MS-SMB2 §3.3.5.5.2 the channel signing key is derived from THIS
 	// bind's session key (not the original session's). Mirrors the NTLM
 	// completeSessionBind derivation.
@@ -320,14 +331,10 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 	}
 	responseOID := clientKerberosOID(parsedToken)
 
+	// Compute the server-side mechListMIC for the response (the client MIC was
+	// already verified above, before any channel state was registered).
 	var serverMIC []byte
 	if len(parsedToken.MechListBytes) > 0 {
-		if len(parsedToken.MechListMIC) > 0 {
-			if vErr := auth.VerifyMechListMIC(authResult.SessionKey, parsedToken.MechListBytes, parsedToken.MechListMIC); vErr != nil {
-				logger.Debug("Kerberos bind: client mechListMIC verification failed", "error", vErr)
-				return NewErrorResult(types.StatusLogonFailure), nil
-			}
-		}
 		serverMIC, _ = auth.ComputeMechListMIC(authResult.SessionKey, parsedToken.MechListBytes)
 	}
 
@@ -338,11 +345,7 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 
 	// Binding response matches the existing session's encrypt-data state per
 	// §3.3.5.5; the BINDING flag is request-only and not echoed.
-	var sessionFlags uint16
-	if sess.ShouldEncrypt() {
-		sessionFlags |= types.SMB2SessionFlagEncryptData
-	}
-	result := h.buildSessionSetupResponse(types.StatusSuccess, sessionFlags, spnegoResp)
+	result := h.buildSessionSetupResponse(types.StatusSuccess, sessionEncryptFlag(sess), spnegoResp)
 	result.IsBinding = true
 	return result, nil
 }
