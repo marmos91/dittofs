@@ -3,8 +3,10 @@ package share
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/cli/output"
 	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
@@ -85,6 +87,30 @@ func (sd ShareDetail) Rows() [][]string {
 	}
 	if s.ReadBufferSize != "" {
 		rows = append(rows, []string{"Read Buffer Size", s.ReadBufferSize})
+	}
+
+	// Recycle-bin policy (#190). Always show the enabled state; only show
+	// the detail rows when trash is enabled to keep the output clean.
+	rows = append(rows, []string{"Trash Enabled", fmt.Sprintf("%v", s.TrashEnabled)})
+	if s.TrashEnabled {
+		retention := "keep forever"
+		if s.TrashRetentionDays > 0 {
+			retention = fmt.Sprintf("%d", s.TrashRetentionDays)
+		}
+		maxSize := "unbounded"
+		if s.TrashMaxBytes > 0 {
+			maxSize = bytesize.ByteSize(s.TrashMaxBytes).String()
+		}
+		exclude := "-"
+		if len(s.TrashExcludePatterns) > 0 {
+			exclude = strings.Join(s.TrashExcludePatterns, ", ")
+		}
+		rows = append(rows,
+			[]string{"Trash Retention (days)", retention},
+			[]string{"Trash Restrict Empty To Admin", fmt.Sprintf("%v", s.TrashRestrictToAdmin)},
+			[]string{"Trash Max Size", maxSize},
+			[]string{"Trash Exclude", exclude},
+		)
 	}
 
 	rows = append(rows,

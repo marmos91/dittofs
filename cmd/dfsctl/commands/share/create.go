@@ -28,6 +28,11 @@ var (
 	createAccessBasedEnum   bool
 	createChangeNotifyOff   bool
 	createStreamsDisabled   bool
+	createEnableTrash       bool
+	createTrashRetention    int
+	createTrashRestrictAdm  bool
+	createTrashMaxSize      int64
+	createTrashExclude      []string
 )
 
 var createCmd = &cobra.Command{
@@ -86,6 +91,11 @@ func init() {
 	createCmd.Flags().BoolVar(&createAccessBasedEnum, "access-based-enumeration", false, "Enable Windows access-based enumeration (SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM). When true, SMB clients only see directory entries they can read.")
 	createCmd.Flags().BoolVar(&createChangeNotifyOff, "change-notify-disabled", false, "Reject SMB2 CHANGE_NOTIFY with STATUS_NOT_IMPLEMENTED on this share (mirrors Samba 'kernel change notify = no').")
 	createCmd.Flags().BoolVar(&createStreamsDisabled, "streams-disabled", false, "Reject SMB2 Alternate Data Stream opens with STATUS_OBJECT_NAME_INVALID on this share (mirrors Samba 'smbd:streams = no').")
+	createCmd.Flags().BoolVar(&createEnableTrash, "enable-trash", false, "Enable the per-share recycle bin so deletes move to #recycle instead of being permanent.")
+	createCmd.Flags().IntVar(&createTrashRetention, "trash-retention-days", 0, "Days to retain recycled items before the reaper purges them (0 = keep forever).")
+	createCmd.Flags().BoolVar(&createTrashRestrictAdm, "trash-restrict-empty-to-admin", false, "Restrict emptying the recycle bin to admins.")
+	createCmd.Flags().Int64Var(&createTrashMaxSize, "trash-max-size", 0, "Max bytes the recycle bin may hold before the reaper evicts oldest items (0 = unbounded).")
+	createCmd.Flags().StringSliceVar(&createTrashExclude, "trash-exclude", nil, "Glob patterns whose deletions bypass the recycle bin (repeatable).")
 	_ = createCmd.MarkFlagRequired("local")
 }
 
@@ -184,6 +194,28 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("streams-disabled") {
 		v := createStreamsDisabled
 		req.StreamsDisabled = &v
+	}
+	// Per-share recycle-bin policy (#190): only forward flags the operator
+	// set so the server applies its own defaults (trash disabled, zero
+	// limits) on unset.
+	if cmd.Flags().Changed("enable-trash") {
+		v := createEnableTrash
+		req.TrashEnabled = &v
+	}
+	if cmd.Flags().Changed("trash-retention-days") {
+		v := createTrashRetention
+		req.TrashRetentionDays = &v
+	}
+	if cmd.Flags().Changed("trash-restrict-empty-to-admin") {
+		v := createTrashRestrictAdm
+		req.TrashRestrictToAdmin = &v
+	}
+	if cmd.Flags().Changed("trash-max-size") {
+		v := createTrashMaxSize
+		req.TrashMaxBytes = &v
+	}
+	if cmd.Flags().Changed("trash-exclude") {
+		req.TrashExcludePatterns = createTrashExclude
 	}
 
 	share, err := client.CreateShare(req)

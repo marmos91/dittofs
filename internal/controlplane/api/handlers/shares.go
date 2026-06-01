@@ -173,9 +173,17 @@ type ShareResponse struct {
 	// reason.
 	ChangeNotifyDisabled bool `json:"change_notify_disabled"`
 	// StreamsDisabled mirrors models.Share. No omitempty for the same reason.
-	StreamsDisabled bool      `json:"streams_disabled"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	StreamsDisabled bool `json:"streams_disabled"`
+	// Per-share recycle-bin policy (#190). No omitempty: these are
+	// operator-meaningful state that consumers (dfsctl share show) render
+	// explicitly.
+	TrashEnabled         bool      `json:"trash_enabled"`
+	TrashRetentionDays   int       `json:"trash_retention_days"`
+	TrashRestrictToAdmin bool      `json:"trash_restrict_to_admin"`
+	TrashMaxBytes        int64     `json:"trash_max_bytes"`
+	TrashExcludePatterns []string  `json:"trash_exclude_patterns,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 
 	// Status is the worst-of health report derived from the share's
 	// metadata store and block store engine. Non-omitempty so
@@ -1119,6 +1127,11 @@ func shareToResponse(s *models.Share) ShareResponse {
 		AccessBasedEnumeration:           s.AccessBasedEnumeration,
 		ChangeNotifyDisabled:             s.ChangeNotifyDisabled,
 		StreamsDisabled:                  s.StreamsDisabled,
+		TrashEnabled:                     s.TrashEnabled,
+		TrashRetentionDays:               s.TrashRetentionDays,
+		TrashRestrictToAdmin:             s.TrashRestrictToAdmin,
+		TrashMaxBytes:                    s.TrashMaxBytes,
+		TrashExcludePatterns:             s.GetTrashExcludePatterns(),
 		CreatedAt:                        s.CreatedAt,
 		UpdatedAt:                        s.UpdatedAt,
 	}

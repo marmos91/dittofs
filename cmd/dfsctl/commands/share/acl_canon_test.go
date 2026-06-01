@@ -76,6 +76,11 @@ func resetCreateFlags() {
 	createReadBufferSize = ""
 	createQuotaBytes = ""
 	createAclCanonicalize = true
+	createEnableTrash = false
+	createTrashRetention = 0
+	createTrashRestrictAdm = false
+	createTrashMaxSize = 0
+	createTrashExclude = nil
 	createCmd.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
 }
 
@@ -93,6 +98,11 @@ func resetEditFlags() {
 	editReadBufferSize = ""
 	editQuotaBytes = ""
 	editAclCanonicalize = ""
+	editEnableTrash = ""
+	editTrashRetention = -1
+	editTrashRestrictAdm = ""
+	editTrashMaxSize = -1
+	editTrashExclude = nil
 	editCmd.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
 }
 

@@ -50,9 +50,16 @@ type Share struct {
 	ChangeNotifyDisabled bool `json:"change_notify_disabled"`
 	// StreamsDisabled mirrors models.Share. No omitempty for the same
 	// reason as ChangeNotifyDisabled.
-	StreamsDisabled bool      `json:"streams_disabled"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	StreamsDisabled bool `json:"streams_disabled"`
+	// Per-share recycle-bin policy (#190). Mirrors the server
+	// ShareResponse so dfsctl share show can render the trash config.
+	TrashEnabled         bool      `json:"trash_enabled"`
+	TrashRetentionDays   int       `json:"trash_retention_days"`
+	TrashRestrictToAdmin bool      `json:"trash_restrict_to_admin"`
+	TrashMaxBytes        int64     `json:"trash_max_bytes"`
+	TrashExcludePatterns []string  `json:"trash_exclude_patterns,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // CreateShareRequest is the request to create a share.
