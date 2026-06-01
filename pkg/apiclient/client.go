@@ -126,7 +126,7 @@ func (c *Client) doVia(ctx context.Context, hc *http.Client, method, path string
 	if resp.StatusCode >= 400 {
 		var apiErr APIError
 		if json.Unmarshal(respBody, &apiErr) == nil &&
-			(apiErr.Title != "" || apiErr.Status != 0 || apiErr.Code != "") {
+			(apiErr.Title != "" || apiErr.Status != 0 || apiErr.Code != "" || apiErr.Detail != "") {
 			apiErr.StatusCode = resp.StatusCode
 			return &apiErr
 		}

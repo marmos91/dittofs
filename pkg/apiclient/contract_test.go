@@ -83,3 +83,26 @@ func TestContract_DecodesRealServerProblemJSON(t *testing.T) {
 		})
 	}
 }
+
+// TestContract_DetailOnlyBodyIsParsed guards the accept-gate edge case: an error
+// body carrying only "detail" (no title/status) must still be decoded into the
+// typed *APIError with Detail parsed — NOT routed to the raw-body fallback,
+// which would surface the JSON blob verbatim via Error().
+func TestContract_DetailOnlyBodyIsParsed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"detail":"user is locked"}`))
+	}))
+	defer server.Close()
+
+	err := New(server.URL).get("/test", nil)
+	require.Error(t, err)
+
+	apiErr, ok := err.(*APIError)
+	require.True(t, ok, "expected *APIError, got %T", err)
+	assert.Equal(t, http.StatusForbidden, apiErr.StatusCode)
+	assert.Equal(t, "user is locked", apiErr.Detail, "detail-only body must be parsed, not left as raw JSON")
+	assert.Equal(t, "user is locked", apiErr.Error(), "Error() must not return the raw JSON blob")
+	assert.True(t, apiErr.IsAuthError(), "403 must classify as auth error")
+}

@@ -90,7 +90,7 @@ func (c *DittoFSClient) do(ctx context.Context, method, path string, body, resul
 	if resp.StatusCode >= 400 {
 		var apiErr DittoFSAPIError
 		if json.Unmarshal(respBody, &apiErr) == nil &&
-			(apiErr.Title != "" || apiErr.Status != 0 || apiErr.Code != "") {
+			(apiErr.Title != "" || apiErr.Status != 0 || apiErr.Code != "" || apiErr.Detail != "") {
 			apiErr.StatusCode = resp.StatusCode
 			return &apiErr
 		}
