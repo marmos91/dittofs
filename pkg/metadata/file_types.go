@@ -108,7 +108,8 @@ type FileAttr struct {
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 
 	// OriginalPath is the share-relative path the node occupied before being
-	// recycled. Used as the default restore destination. Empty for live nodes.
+	// recycled, WITHOUT a leading slash (e.g. "documents/report.pdf"). Used as
+	// the default restore destination. Empty for live nodes.
 	OriginalPath string `json:"original_path,omitempty"`
 
 	// DeletedBy is the principal (AuthContext Identity.Username, or its UID as

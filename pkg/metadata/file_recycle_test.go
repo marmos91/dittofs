@@ -2,6 +2,7 @@ package metadata_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -120,6 +121,44 @@ func TestRemoveFile_RecyclesWhenTrashEnabled(t *testing.T) {
 		// No bin created, file permanently gone.
 		_, err = fx.service.GetChild(fx.rootContext().Context, fx.rootHandle, metadata.RecycleDirName)
 		assert.Error(t, err)
+	})
+
+	t.Run("recycling the same name twice keeps both copies", func(t *testing.T) {
+		t.Parallel()
+		fx := newRecycleFixture(t)
+		fx.service.SetTrashPolicy(stubTrashPolicy{cfg: metadata.TrashConfig{Enabled: true}})
+
+		// Create + delete "dup.txt" twice with no sleep between, so both deletes
+		// land in the same wall-clock second. The collision must NOT overwrite
+		// the first recycled copy.
+		for i := 0; i < 2; i++ {
+			_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "dup.txt", &metadata.FileAttr{Mode: 0644})
+			require.NoError(t, err)
+			_, err = fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "dup.txt")
+			require.NoError(t, err)
+		}
+
+		binHandle, err := fx.service.GetChild(fx.rootContext().Context, fx.rootHandle, metadata.RecycleDirName)
+		require.NoError(t, err)
+
+		// Both copies must exist in the bin as two distinct entries.
+		page, err := fx.service.ReadDirectory(fx.rootContext(), binHandle, 0, 0)
+		require.NoError(t, err)
+		var dupCount int
+		for _, e := range page.Entries {
+			// The first copy keeps the plain name; the collided copy carries a
+			// suffix. Both retain OriginalPath = "dup.txt" and a DeletedAt stamp.
+			if e.Name == "dup.txt" || strings.HasPrefix(e.Name, "dup.txt (") {
+				dupCount++
+				child, err := fx.service.GetChild(fx.rootContext().Context, binHandle, e.Name)
+				require.NoError(t, err)
+				f, err := fx.service.GetFile(fx.rootContext().Context, child)
+				require.NoError(t, err)
+				require.NotNil(t, f.DeletedAt, "recycled entry %q missing DeletedAt", e.Name)
+				assert.Equal(t, "dup.txt", f.OriginalPath)
+			}
+		}
+		assert.Equal(t, 2, dupCount, "both recycled copies should survive the collision")
 	})
 
 	t.Run("non-empty directory recycles as a single subtree", func(t *testing.T) {
