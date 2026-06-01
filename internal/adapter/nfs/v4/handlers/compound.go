@@ -608,6 +608,17 @@ func (h *Handler) dispatchV41Ops(compCtx *types.CompoundContext, tag []byte, fir
 func encodeCompoundResponse(status uint32, tag []byte, results []types.CompoundResult) ([]byte, error) {
 	var buf bytes.Buffer
 
+	// Presize the buffer to the exact encoded length so the hot COMPOUND reply
+	// path performs a single allocation instead of repeated grow-and-copy. The
+	// wire output is byte-identical; this only reserves capacity up front.
+	//   status(4) + tag opaque(4 + len + pad) + numresults(4)
+	//   + per result: opcode(4) + len(Data)
+	size := 4 + 4 + len(tag) + ((4 - (len(tag) % 4)) % 4) + 4
+	for i := range results {
+		size += 4 + len(results[i].Data)
+	}
+	buf.Grow(size)
+
 	// Write overall status
 	if err := xdr.WriteUint32(&buf, status); err != nil {
 		return nil, fmt.Errorf("encode COMPOUND status: %w", err)

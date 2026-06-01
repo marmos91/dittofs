@@ -10,9 +10,6 @@
 //   - TableMapper: Resolves explicit mappings from a MappingStore
 //   - StaticMapper: Maps from a static config map (migrated from pkg/auth/kerberos)
 //   - CachedMapper: TTL-based caching wrapper for any IdentityMapper
-//
-// GroupResolver is a separate interface for group membership queries, used during
-// ACL evaluation of group@domain principals.
 package identity
 
 import (
@@ -66,18 +63,6 @@ type ResolvedIdentity struct {
 	// Found indicates whether the principal was successfully resolved.
 	// false means the mapper could not resolve this principal (not an error).
 	Found bool
-}
-
-// GroupResolver provides group membership queries for ACL evaluation.
-//
-// When evaluating group@domain ACE principals, the ACL engine needs to check
-// whether the requesting user is a member of the specified group.
-type GroupResolver interface {
-	// GetGroupMembers returns all usernames that are members of the given group.
-	GetGroupMembers(ctx context.Context, groupName string) ([]string, error)
-
-	// IsGroupMember checks whether a username is a member of the given group.
-	IsGroupMember(ctx context.Context, username string, groupName string) (bool, error)
 }
 
 // ParsePrincipal splits an NFSv4 principal string into name and domain parts.

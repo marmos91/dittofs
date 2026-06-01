@@ -716,8 +716,8 @@ func resolveOwnerString(uid uint32) string {
 // This is compatible with the Linux kernel NFS client's default
 // nfs4_disable_idmapping=Y mode. See resolveOwnerString for details.
 func resolveGroupString(gid uint32) string {
-	// Note: Identity mapper does not currently support group reverse resolution.
-	// This can be extended when GroupResolver implements reverse lookup.
+	// Note: the identity mapper does not currently support group reverse
+	// resolution. This can be extended when reverse group lookup is added.
 	return fmt.Sprintf("%d", gid)
 }
 

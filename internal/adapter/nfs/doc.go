@@ -100,7 +100,7 @@
 // # Configuration Recommendations
 //
 // Development:
-//   - MaxConnections: 0 (unlimited)
+//   - MaxConnections: 1024 (default; 0 in config falls back to this)
 //   - Timeouts: 30s-60s
 //
 // Production (moderate load):

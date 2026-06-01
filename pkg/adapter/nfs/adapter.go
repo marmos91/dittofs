@@ -29,6 +29,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
+// DefaultMaxConnections is the connection cap applied when MaxConnections is
+// left at its zero value. A non-zero default ensures the accept-loop semaphore
+// is always built, preventing unauthenticated connection-exhaustion DoS.
+// Operators can raise it for high-load deployments.
+const DefaultMaxConnections = 1024
+
 // NFSAdapter implements the adapter.Adapter interface for NFS protocol.
 //
 // This adapter provides a production-ready NFS server supporting both
@@ -160,7 +166,7 @@ type NFSTimeoutsConfig struct {
 //
 // Default values (applied by New if zero):
 //   - Port: 2049 (standard NFS port)
-//   - MaxConnections: 0 (unlimited)
+//   - MaxConnections: 1024 (DefaultMaxConnections)
 //   - Timeouts.Read: 5m
 //   - Timeouts.Write: 30s
 //   - Timeouts.Idle: 5m
@@ -184,8 +190,8 @@ type NFSConfig struct {
 
 	// MaxConnections limits the number of concurrent client connections.
 	// When reached, new connections are rejected until existing ones close.
-	// 0 means unlimited (not recommended for production).
-	// Recommended: 1000-5000 for production servers.
+	// If 0, defaults to DefaultMaxConnections (1024) so the accept loop is
+	// always bounded. Raise to 1000-5000 for busy production servers.
 	MaxConnections int `mapstructure:"max_connections" validate:"min=0"`
 
 	// MaxRequestsPerConnection limits the number of concurrent RPC requests
@@ -236,6 +242,12 @@ func (c *NFSConfig) applyDefaults() {
 	}
 	if c.MaxRequestsPerConnection == 0 {
 		c.MaxRequestsPerConnection = 100
+	}
+	if c.MaxConnections == 0 {
+		// A sane default cap so the accept loop's connSemaphore is always
+		// built. Leaving this at 0 (unlimited) lets unauthenticated clients
+		// exhaust memory/goroutines. Operators can raise it for busy servers.
+		c.MaxConnections = DefaultMaxConnections
 	}
 	if c.Timeouts.Read == 0 {
 		c.Timeouts.Read = 5 * time.Minute
