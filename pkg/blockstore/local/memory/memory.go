@@ -202,7 +202,9 @@ func (s *MemoryStore) GetRange(_ context.Context, hash blockstore.ContentHash, o
 	if offset >= size {
 		return nil, fmt.Errorf("blockstore.memory: GetRange: offset %d beyond size %d", offset, size)
 	}
-	if offset+length > size {
+	// offset < size is guaranteed above, so size-offset is positive; compare
+	// against it instead of offset+length (which can overflow int64).
+	if length > size-offset {
 		length = size - offset
 	}
 	out := make([]byte, length)

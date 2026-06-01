@@ -160,9 +160,13 @@ func (s *Store) GetRange(_ context.Context, hash blockstore.ContentHash, offset,
 		return nil, blockstore.ErrInvalidSize
 	}
 
-	end := offset + length
-	if end > int64(len(mb.data)) {
-		end = int64(len(mb.data))
+	// Clamp past-EOF length without computing offset+length (which can
+	// overflow int64 for a hostile length). offset < len is guaranteed above,
+	// so len-offset is positive.
+	size := int64(len(mb.data))
+	end := size
+	if length <= size-offset {
+		end = offset + length
 	}
 
 	result := make([]byte, end-offset)

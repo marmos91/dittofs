@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 
 	"lukechampine.com/blake3"
@@ -149,6 +150,18 @@ func TestStore_GetRange_InvalidBounds(t *testing.T) {
 			}
 		})
 	}
+
+	// A valid in-range offset with a length so large that offset+length would
+	// overflow int64 must clamp to the remaining bytes, not panic or wrap.
+	t.Run("length overflow clamps", func(t *testing.T) {
+		got, err := s.GetRange(ctx, hash, 6, math.MaxInt64)
+		if err != nil {
+			t.Fatalf("GetRange(6, MaxInt64): unexpected error %v", err)
+		}
+		if string(got) != "world" {
+			t.Fatalf("GetRange(6, MaxInt64): want clamped %q, got %q", "world", got)
+		}
+	})
 }
 
 func TestStore_Delete(t *testing.T) {

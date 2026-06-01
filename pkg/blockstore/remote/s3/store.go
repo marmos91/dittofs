@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -353,6 +354,12 @@ func (s *Store) GetRange(ctx context.Context, hash blockstore.ContentHash, offse
 		return nil, blockstore.ErrInvalidOffset
 	}
 	if length <= 0 {
+		return nil, blockstore.ErrInvalidSize
+	}
+
+	// Guard against offset+length-1 overflowing int64 (which would emit a
+	// negative, malformed Range header). offset >= 0 and length > 0 here.
+	if length > math.MaxInt64-offset {
 		return nil, blockstore.ErrInvalidSize
 	}
 
