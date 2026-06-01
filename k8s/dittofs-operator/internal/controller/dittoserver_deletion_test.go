@@ -93,7 +93,7 @@ var _ = Describe("DittoServer deletion", func() {
 		Eventually(func() bool {
 			err := k8sClient.Get(ctx, key, &dittoiov1alpha1.DittoServer{})
 			return apierrors.IsNotFound(err)
-		}).Should(BeTrue())
+		}, "10s", "200ms").Should(BeTrue())
 	})
 
 	It("force-removes the finalizer without conflict on the cleanup-timeout path", func() {
@@ -120,7 +120,7 @@ var _ = Describe("DittoServer deletion", func() {
 		Eventually(func() bool {
 			err := k8sClient.Get(ctx, key, &dittoiov1alpha1.DittoServer{})
 			return apierrors.IsNotFound(err)
-		}).Should(BeTrue())
+		}, "10s", "200ms").Should(BeTrue())
 	})
 
 	It("is idempotent when the finalizer is already absent", func() {

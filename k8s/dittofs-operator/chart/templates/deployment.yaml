@@ -26,6 +26,8 @@ spec:
             - /manager
           args:
             {{- toYaml .Values.controllerManager.manager.args | nindent 12 }}
+            # Appended last so the chart-managed default wins over any
+            # --enable-webhooks the user may have set in .args (Go flag last-wins).
             - --enable-webhooks={{ .Values.controllerManager.manager.enableWebhooks | default false }}
           env:
             - name: KUBERNETES_CLUSTER_DOMAIN

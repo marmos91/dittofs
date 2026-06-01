@@ -347,7 +347,7 @@ configuration environment variables.
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--enable-webhooks` | Enable admission webhooks. Requires a webhook TLS certificate (e.g. cert-manager); the chart does not provision one yet, so this defaults to `false` in the deployed manifests to avoid a startup crash-loop. | `false` (deployed) |
-| `--metrics-bind-address` | Metrics endpoint address | `:8443` |
+| `--metrics-bind-address` | Metrics endpoint address (`0` disables; use `:8443` for HTTPS or `:8080` for HTTP) | `0` (disabled) |
 | `--health-probe-bind-address` | Health probe endpoint | `:8081` |
 | `--leader-elect` | Enable leader election | `false` |
 
