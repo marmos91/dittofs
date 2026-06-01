@@ -195,28 +195,38 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	// The unique constraint on (share_name, path_hash) WHERE nlink > 0 can cause
 	// spurious "already exists" errors when using INSERT ... ON CONFLICT (id)
 	// because that clause doesn't handle conflicts on the path_hash constraint.
+	//
+	// path MUST be in the SET list: Move relocates a node by setting File.Path
+	// to its new location and calling PutFile. The memory/badger backends persist
+	// the whole File, so their path moves; if this UPDATE omitted path, the
+	// relocated row would keep its old path (and trigger-derived path_hash),
+	// leaving the original path occupied under unique_share_path_hash_active. A
+	// recycle (Move into #recycle) followed by recreating the original name would
+	// then fail "already exists" on postgres only (#190). path_hash is maintained
+	// by the files_path_hash_trigger, so updating path refreshes it.
 	updateQuery := `
 		UPDATE files SET
-			file_type = $1,
-			mode = $2,
-			uid = $3,
-			gid = $4,
-			size = $5,
-			atime = $6,
-			mtime = $7,
-			ctime = $8,
-			creation_time = $9,
-			content_id = $10,
-			link_target = $11,
-			device_major = $12,
-			device_minor = $13,
-			hidden = $14,
-			acl = $15,
-			object_id = $16,
-			deleted_at = $17,
-			original_path = $18,
-			deleted_by = $19
-		WHERE id = $20 AND share_name = $21
+			path = $1,
+			file_type = $2,
+			mode = $3,
+			uid = $4,
+			gid = $5,
+			size = $6,
+			atime = $7,
+			mtime = $8,
+			ctime = $9,
+			creation_time = $10,
+			content_id = $11,
+			link_target = $12,
+			device_major = $13,
+			device_minor = $14,
+			hidden = $15,
+			acl = $16,
+			object_id = $17,
+			deleted_at = $18,
+			original_path = $19,
+			deleted_by = $20
+		WHERE id = $21 AND share_name = $22
 	`
 
 	var deviceMajor, deviceMinor *int32
@@ -282,6 +292,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 
 	// Try UPDATE first (most common case for existing files)
 	result, err := tx.tx.Exec(ctx, updateQuery,
+		file.Path,
 		file.Type, file.Mode, file.UID, file.GID, file.Size,
 		timeToPGNanos(file.Atime), timeToPGNanos(file.Mtime),
 		timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
