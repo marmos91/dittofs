@@ -268,16 +268,15 @@ func TestCompaction_HeaderFlagSetAndPreservesCAS(t *testing.T) {
 			t.Fatalf("AppendWrite[%d]: %v", i, err)
 		}
 	}
-	waitForLogBytesBelow(t, bc, 16*1024, 10*time.Second)
-
-	// Quiesce the rollup loop before inspecting on-disk state. Compaction
-	// rewrites the header via a temp file + rename; reading logPath while a
-	// background compaction pass races that rename yields a torn read
-	// (bad header CRC) — Windows-prone, since the replaced handle lingers.
-	// Close() joins the rollup workers, leaving the header stable. Close is
-	// idempotent, so the test helper's cleanup Close is a harmless no-op.
-	if err := bc.Close(); err != nil {
-		t.Fatalf("Close (quiesce rollup): %v", err)
+	// Drain all rollup work to completion. This rolls up every record and
+	// triggers the post-rollup compaction pass, leaving a deterministic
+	// end-state: the log is compacted (LogFlagCompacted set) with no
+	// surviving records, so RollupOffset settles at logHeaderSize and the
+	// idle background loop has nothing left to advance it with. Waiting on
+	// log size alone left un-rolled survivors that a later pass kept rolling
+	// up, racily pushing RollupOffset past logHeaderSize again.
+	if err := bc.DrainRollups(context.Background()); err != nil {
+		t.Fatalf("DrainRollups: %v", err)
 	}
 
 	chunksBefore := countChunksInBlocks(t, bc.baseDir)
@@ -285,15 +284,29 @@ func TestCompaction_HeaderFlagSetAndPreservesCAS(t *testing.T) {
 		t.Fatalf("no chunks emitted; cannot validate CAS-preservation invariant")
 	}
 
-	// Peek at the on-disk header.
-	f, err := os.Open(bc.logPath("fileH"))
-	if err != nil {
-		t.Fatalf("open log: %v", err)
-	}
-	hdr, err := readLogHeader(f)
-	_ = f.Close()
-	if err != nil {
-		t.Fatalf("readLogHeader: %v", err)
+	// Poll the on-disk header until compaction has stamped LogFlagCompacted.
+	// Compaction runs inside the background rollup loop and rewrites the
+	// header via a temp file + rename, so a single read can race that rename
+	// and catch a torn header (bad CRC) — Windows-prone, where the replaced
+	// handle lingers — or simply observe a pre-compaction state on a fast
+	// runner. Retry on both until we read a valid, compacted header. This is
+	// read-only, so it never perturbs the store the way an early Close would.
+	var hdr logHeader
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		f, openErr := os.Open(bc.logPath("fileH"))
+		if openErr == nil {
+			h, readErr := readLogHeader(f)
+			_ = f.Close()
+			if readErr == nil && h.Flags&LogFlagCompacted != 0 {
+				hdr = h
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for compacted on-disk header (flags not set / torn read)")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if hdr.Flags&LogFlagCompacted == 0 {
 		t.Fatalf("expected LogFlagCompacted bit in header.Flags (got 0x%x); compaction may not have run",

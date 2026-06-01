@@ -65,6 +65,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Full history so dorny/paths-filter can resolve the
+          # merge-base against main on push events. A shallow clone
+          # intermittently fails to reach it (git exit 128) when develop
+          # has diverged far from main.
+          fetch-depth: 0
 
       - name: Check for .sh file changes
         uses: dorny/paths-filter@v3
