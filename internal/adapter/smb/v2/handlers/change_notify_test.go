@@ -19,8 +19,24 @@ func mustRegister(t *testing.T, r *NotifyRegistry, n *PendingNotify) {
 	}
 }
 
+// newTestNotifyRegistry builds a NotifyRegistry whose background flush timer
+// is effectively disabled (flushDelay set far past any test's runtime). These
+// tests deliver buffered events synchronously and deterministically via
+// FlushAll; with the production 100µs timer left armed, the time.AfterFunc
+// goroutine could fire BEFORE FlushAll stops it, delivering the callback on
+// the timer goroutine with no happens-before edge to the test's assertion.
+// On a fast machine FlushAll always wins, so the race is invisible; on the
+// contended Windows CI runner the timer wins often enough to flake (#714,
+// TestNotifyChange_ExactPath). Pushing flushDelay out of reach makes FlushAll
+// the sole, synchronous delivery path on every platform.
+func newTestNotifyRegistry() *NotifyRegistry {
+	reg := NewNotifyRegistry()
+	reg.flushDelay = time.Hour
+	return reg
+}
+
 func TestNotifyRegistry_RegisterAndUnregister(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	fileID := [16]byte{1, 2, 3}
 	notify := &PendingNotify{
@@ -69,7 +85,7 @@ func TestNotifyRegistry_RegisterAndUnregister(t *testing.T) {
 // — no final response, CANCEL couldn't find the entry, connection
 // eventually dropped. After the fix, (ConnID, MessageID) is the key.
 func TestNotifyRegistry_Register_CrossConnectionMessageIDNoEvict(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	a := &PendingNotify{
 		FileID:           [16]byte{0xA},
@@ -108,7 +124,7 @@ func TestNotifyRegistry_Register_CrossConnectionMessageIDNoEvict(t *testing.T) {
 // so two pending notifies sharing a MessageID across two TCP connections
 // can each be cancelled independently.
 func TestNotifyRegistry_UnregisterByMessageID_DisambiguatesByConnID(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	a := &PendingNotify{
 		FileID:           [16]byte{0xA},
@@ -144,7 +160,7 @@ func TestNotifyRegistry_UnregisterByMessageID_DisambiguatesByConnID(t *testing.T
 }
 
 func TestNotifyRegistry_UnregisterByMessageID(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	notify := &PendingNotify{
 		FileID:           [16]byte{1},
@@ -175,7 +191,7 @@ func TestNotifyRegistry_UnregisterByMessageID(t *testing.T) {
 }
 
 func TestNotifyRegistry_UnregisterByAsyncId(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	notify := &PendingNotify{
 		FileID:           [16]byte{2},
@@ -205,7 +221,7 @@ func TestNotifyRegistry_UnregisterByAsyncId(t *testing.T) {
 }
 
 func TestNotifyRegistry_ReplaceExisting(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	fileID := [16]byte{5}
 
@@ -248,7 +264,7 @@ func TestNotifyRegistry_ReplaceExisting(t *testing.T) {
 }
 
 func TestNotifyRegistry_MultipleWatchers(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	mustRegister(t, r, &PendingNotify{
 		FileID:           [16]byte{1},
@@ -274,7 +290,7 @@ func TestNotifyRegistry_MultipleWatchers(t *testing.T) {
 }
 
 func TestNotifyChange_ExactPath(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	notified := false
 	mustRegister(t, r, &PendingNotify{
@@ -308,7 +324,7 @@ func TestNotifyChange_ExactPath(t *testing.T) {
 }
 
 func TestNotifyChange_NoMatchDifferentShare(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	notified := false
 	mustRegister(t, r, &PendingNotify{
@@ -336,7 +352,7 @@ func TestNotifyChange_NoMatchDifferentShare(t *testing.T) {
 }
 
 func TestNotifyChange_RecursiveWatchTree(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	notified := false
 	mustRegister(t, r, &PendingNotify{
@@ -365,7 +381,7 @@ func TestNotifyChange_RecursiveWatchTree(t *testing.T) {
 }
 
 func TestNotifyChange_NonRecursiveNoMatch(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	notified := false
 	mustRegister(t, r, &PendingNotify{
@@ -394,7 +410,7 @@ func TestNotifyChange_NonRecursiveNoMatch(t *testing.T) {
 }
 
 func TestNotifyRename_PairedNotification(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	notified := false
 	mustRegister(t, r, &PendingNotify{
@@ -431,7 +447,7 @@ func TestNotifyRename_PairedNotification(t *testing.T) {
 }
 
 func TestNotifyRename_CrossDirectory(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	notified := false
 	mustRegister(t, r, &PendingNotify{
@@ -463,7 +479,7 @@ func TestNotifyRename_CrossDirectory(t *testing.T) {
 }
 
 func TestNotifyChange_MaxOutputLengthExceeded_SendsEnumDir(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	var receivedStatus types.Status
 	mustRegister(t, r, &PendingNotify{
@@ -497,7 +513,7 @@ func TestNotifyChange_MaxOutputLengthExceeded_SendsEnumDir(t *testing.T) {
 }
 
 func TestNotifyChange_ConcurrentDoubleFire(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	var callbackCount atomic.Int32
 	mustRegister(t, r, &PendingNotify{
@@ -537,7 +553,7 @@ func TestNotifyChange_ConcurrentDoubleFire(t *testing.T) {
 }
 
 func TestNotifyRegistry_MaxWatchesLimit(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	// Fill up to the limit
 	for i := 0; i < MaxPendingWatches; i++ {
@@ -689,7 +705,7 @@ func TestRelativePathFromWatch_CrossPath(t *testing.T) {
 }
 
 func TestNotifyChange_StreamNameOnADSCreate(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	var notified bool
 	mustRegister(t, r, &PendingNotify{
@@ -717,7 +733,7 @@ func TestNotifyChange_StreamNameOnADSCreate(t *testing.T) {
 }
 
 func TestNotifyChange_StreamWriteOnADSWrite(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	var notified bool
 	mustRegister(t, r, &PendingNotify{
@@ -745,7 +761,7 @@ func TestNotifyChange_StreamWriteOnADSWrite(t *testing.T) {
 }
 
 func TestNotifyChange_StreamSizeOnADSWrite(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	var notified bool
 	mustRegister(t, r, &PendingNotify{
@@ -773,7 +789,7 @@ func TestNotifyChange_StreamSizeOnADSWrite(t *testing.T) {
 }
 
 func TestNotifyChange_SecurityDescriptorChange(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	var notified bool
 	mustRegister(t, r, &PendingNotify{
@@ -828,7 +844,7 @@ func TestMatchesFilter_StreamFilters(t *testing.T) {
 }
 
 func TestNotifyChange_DoubleWatchers_BothNotified(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	var count1, count2 atomic.Int32
 	mustRegister(t, r, &PendingNotify{
@@ -929,7 +945,7 @@ func TestIsValidCompletionFilter(t *testing.T) {
 }
 
 func TestNotifyRmdir_SendsCleanupToWatchersOnRemovedDir(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	var receivedStatus types.Status
 	mustRegister(t, r, &PendingNotify{
@@ -958,7 +974,7 @@ func TestNotifyRmdir_SendsCleanupToWatchersOnRemovedDir(t *testing.T) {
 }
 
 func TestNotifyRmdir_NotifiesParentWatcher(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	var parentNotified bool
 	mustRegister(t, r, &PendingNotify{
@@ -985,7 +1001,7 @@ func TestNotifyRmdir_NotifiesParentWatcher(t *testing.T) {
 }
 
 func TestUnregisterAllForSession(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	mustRegister(t, r, &PendingNotify{
 		FileID:           [16]byte{1},
@@ -1143,7 +1159,7 @@ func TestIsValidCompletionFilter_AllBits(t *testing.T) {
 func TestNotifyChange_OverflowWithMultipleChanges(t *testing.T) {
 	// Verify that when we manually build a notification that would exceed
 	// MaxOutputLength, the registry sends STATUS_NOTIFY_ENUM_DIR.
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	var receivedStatus types.Status
 	mustRegister(t, r, &PendingNotify{
@@ -1174,7 +1190,7 @@ func TestNotifyChange_OverflowWithMultipleChanges(t *testing.T) {
 func TestUnregisterAllForSession_PreservesOtherSessions(t *testing.T) {
 	// Verify that UnregisterAllForSession does NOT affect other sessions.
 	// This is critical for session reconnect/re-auth scenarios.
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	// Session 100: two watches
 	mustRegister(t, r, &PendingNotify{
@@ -1223,7 +1239,7 @@ func TestUnregisterAllForSession_PreservesOtherSessions(t *testing.T) {
 // NOTIFY_ENUM_DIR, all do" sticky property is enforced one layer up at the
 // handler via OpenFile.NotifyMaxBufferSize, not by the registry.
 func TestSendAndUnregister_UndersizedBufferYieldsEnumDir(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	var deliveredStatus types.Status
 	fileID := [16]byte{0xAA}
@@ -1256,7 +1272,7 @@ func TestSendAndUnregister_UndersizedBufferYieldsEnumDir(t *testing.T) {
 // so the caller can fire STATUS_NOTIFY_CLEANUP per MS-SMB2 3.3.5.5.2
 // (smb2.notify.invalid-reauth / session-reconnect / .tcon / .dir).
 func TestUnregisterAllForSession_ReturnedNotifiesPreserveAsyncCallback(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	var calledWithStatus types.Status
 	mustRegister(t, r, &PendingNotify{
@@ -1299,7 +1315,7 @@ func TestUnregisterAllForSession_ReturnedNotifiesPreserveAsyncCallback(t *testin
 // so events accumulated in the gap were never counted and the handle's
 // sticky overflow was never set.
 func TestArmedBuffer_OverflowsAfterCancelWithNoLiveWatcher(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	fileID := [16]byte{0xCC}
 	var overflowFireCount int32
@@ -1368,7 +1384,7 @@ func TestArmedBuffer_OverflowsAfterCancelWithNoLiveWatcher(t *testing.T) {
 // the next batch of events accumulates against the freshly advertised
 // MaxOutputLength rather than re-tripping immediately.
 func TestArmedBuffer_ResetClearsOverflowForNextWindow(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	fileID := [16]byte{0xDD}
 	var overflowFireCount int32
@@ -1423,7 +1439,7 @@ func TestArmedBuffer_ResetClearsOverflowForNextWindow(t *testing.T) {
 // on unrelated shares/paths/filters must not charge against an armed
 // handle. Guards against false-positive overflows on unrelated buckets.
 func TestArmedBuffer_ScopedByShareAndPath(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	fileID := [16]byte{0xEE}
 	var overflowFireCount int32
@@ -1473,7 +1489,7 @@ func TestArmedBuffer_ScopedByShareAndPath(t *testing.T) {
 // delivers the event, so the armed accounting must skip handles that just
 // fired (the armed entry will be torn down/replaced on the next Register).
 func TestArmedBuffer_NotChargedWhenLiveWatcherServesEvent(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	fileID := [16]byte{0xEF}
 	var overflowFireCount int32
@@ -1513,7 +1529,7 @@ func TestArmedBuffer_NotChargedWhenLiveWatcherServesEvent(t *testing.T) {
 // systematically undercounted recursive watchers and let overflow latch
 // later than a real marshal (or Samba notify_marshall_changes) would.
 func TestArmedBuffer_RecursiveWatcherChargesRelativePath(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	fileID := [16]byte{0xF0}
 	var overflowFireCount int32
@@ -1670,7 +1686,7 @@ func TestReleaseSessionLeasesAndNotifies_FiresCleanupSynchronously(t *testing.T)
 }
 
 func TestUnregisterAllForTree_PreservesOtherTrees(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	// Same session and share, different tree IDs (two tree connects to same share)
 	mustRegister(t, r, &PendingNotify{
@@ -2048,7 +2064,7 @@ func TestChangeNotify_FirstZeroBuffer_StickyAtZero(t *testing.T) {
 // tombstone and returns ErrAlreadyCancelled so the handler can answer
 // STATUS_CANCELLED synchronously.
 func TestNotifyRegistry_PreArrivalCancel_TombstoneShortCircuitsRegister(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 
 	const connID, messageID uint64 = 7, 42
 
@@ -2089,7 +2105,7 @@ func TestNotifyRegistry_PreArrivalCancel_TombstoneShortCircuitsRegister(t *testi
 // future CHANGE_NOTIFY with a different MessageID (or different ConnID).
 // Without this guard, the tombstone would be a global blocker.
 func TestNotifyRegistry_CancelTombstoneNoCrossMessageIDLeak(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 	r.MarkPendingCancel(1, 10)
 
 	otherMsg := &PendingNotify{
@@ -2116,7 +2132,7 @@ func TestNotifyRegistry_CancelTombstoneNoCrossMessageIDLeak(t *testing.T) {
 // (ConnID, MessageID). This uses the public surface — direct map-poking
 // would couple the test to the internal layout.
 func TestNotifyRegistry_CancelTombstoneExpires(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 	r.MarkPendingCancel(1, 99)
 
 	// Manually age the tombstone by rewriting it past the TTL. Going through
@@ -2192,7 +2208,7 @@ func TestChangeNotify_PreArrivalCancel_HandlerReturnsCancelledSync(t *testing.T)
 func TestNotifyRegistry_ConcurrentCancelBeforeRegister(t *testing.T) {
 	const iters = 200
 	for i := 0; i < iters; i++ {
-		r := NewNotifyRegistry()
+		r := newTestNotifyRegistry()
 		connID := uint64(i)
 		messageID := uint64(i*2 + 1)
 		fileID := [16]byte{byte(i), byte(i >> 8)}
@@ -2228,7 +2244,7 @@ func TestNotifyRegistry_ConcurrentCancelBeforeRegister(t *testing.T) {
 // re-registered yet. The event must buffer on the armed handle and be
 // replayed on the next Register so the client doesn't miss it.
 func TestArmedBuffer_ReplayDeliversBufferedEventsOnReregister(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 	fileID := [16]byte{0xAA, 0xBB}
 
 	// First Register — arms the handle — then UnregisterByAsyncId to leave
@@ -2291,7 +2307,7 @@ func TestArmedBuffer_ReplayDeliversBufferedEventsOnReregister(t *testing.T) {
 // handle must be discarded so a subsequent register does not replay stale
 // state into a fresh request with a different filter.
 func TestArmedBuffer_CancelClearsBufferedEvents(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 	fileID := [16]byte{0xCD}
 
 	first := &PendingNotify{
@@ -2347,7 +2363,7 @@ func TestArmedBuffer_CancelClearsBufferedEvents(t *testing.T) {
 // buffered events on the armed handle are dropped — the client has been
 // told to re-enumerate, so the stale buffer must not replay.
 func TestArmedBuffer_OverflowClearsBufferedEvents(t *testing.T) {
-	r := NewNotifyRegistry()
+	r := newTestNotifyRegistry()
 	fileID := [16]byte{0xEE}
 
 	first := &PendingNotify{
