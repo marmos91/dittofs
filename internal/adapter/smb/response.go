@@ -354,6 +354,12 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 				"sessionID", reqHeader.SessionID,
 				"username", sess.Username,
 				"expiresAt", sess.ExpiresAt)
+			// Complete any async CHANGE_NOTIFY armed before the ticket expired
+			// so the client's smb2_notify_recv unblocks (MS-SMB2 §3.3.5.2.9;
+			// smbtorture smb2.session.expire2s/expire2e). The session survives —
+			// it may still reauthenticate. Idempotent across the several expired
+			// requests the test fires in this window.
+			connInfo.Handler.ExpireSessionNotifies(reqHeader.SessionID)
 			return nil, nil, types.StatusNetworkSessionExpired
 		}
 		// MS-SMB2 §3.3.5.2.9: for SMB 3.x sessions, a session-gated

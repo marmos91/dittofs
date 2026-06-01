@@ -1292,10 +1292,38 @@ func (r *NotifyRegistry) NotifyRmdir(shareName, parentPath, dirName string) {
 	r.NotifyChange(shareName, parentPath, dirName, FileActionRemoved, FileNotifyChangeDirName)
 }
 
-// UnregisterAllForSession unregisters all pending watchers for a session.
-// Sends STATUS_NOTIFY_CLEANUP for each. Called during LOGOFF or session cleanup.
+// UnregisterAllForSession unregisters all pending watchers for a session AND
+// disarms any handles armed by it, so buffered-event accounting does not
+// outlive the session. Called during permanent teardown (LOGOFF, transport
+// disconnect, re-auth failure) where the handles are gone for good.
 func (r *NotifyRegistry) UnregisterAllForSession(sessionID uint64) []*PendingNotify {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	toRemove := r.unregisterLiveForSessionLocked(sessionID)
+	// Disarm any handles armed by this session so their buffered-event
+	// accounting doesn't outlive the session that opened them.
+	for key, a := range r.armed {
+		if a.SessionID == sessionID {
+			delete(r.armed, key)
+		}
+	}
+	return toRemove
+}
+
+// ExpirePendingForSession unregisters only the live pending watchers for a
+// session and returns them, WITHOUT disarming the handles. Used on Kerberos
+// ticket expiry, where the session survives and may re-authenticate: the open
+// directory handles stay armed so buffered-event accounting (sticky overflow,
+// replay) carries across the expiry window into the re-issued CHANGE_NOTIFY.
+func (r *NotifyRegistry) ExpirePendingForSession(sessionID uint64) []*PendingNotify {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.unregisterLiveForSessionLocked(sessionID)
+}
+
+// unregisterLiveForSessionLocked removes (and returns) every live pending
+// watcher for the session. Must hold r.mu. Leaves the armed map untouched.
+func (r *NotifyRegistry) unregisterLiveForSessionLocked(sessionID uint64) []*PendingNotify {
 	var toRemove []*PendingNotify
 	for _, watchers := range r.pending {
 		for _, w := range watchers {
@@ -1307,14 +1335,6 @@ func (r *NotifyRegistry) UnregisterAllForSession(sessionID uint64) []*PendingNot
 	for _, w := range toRemove {
 		r.unregisterLocked(w)
 	}
-	// Disarm any handles armed by this session so their buffered-event
-	// accounting doesn't outlive the session that opened them.
-	for key, a := range r.armed {
-		if a.SessionID == sessionID {
-			delete(r.armed, key)
-		}
-	}
-	r.mu.Unlock()
 	return toRemove
 }
 

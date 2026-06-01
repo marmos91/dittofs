@@ -1435,6 +1435,44 @@ func (h *Handler) SignalCleanupDone() {
 	h.cleanupWg.Done()
 }
 
+// ExpireSessionNotifies completes any pending CHANGE_NOTIFY requests for a
+// session whose Kerberos ticket has expired, WITHOUT tearing the session down
+// (it may still re-authenticate via SESSION_SETUP). Per MS-SMB2 §3.3.5.2.9 an
+// expired session rejects most commands with STATUS_NETWORK_SESSION_EXPIRED; an
+// outstanding async CHANGE_NOTIFY armed before expiry must also be completed so
+// the client's smb2_notify_recv unblocks instead of hanging forever
+// (smbtorture smb2.session.expire2s / expire2e assert "smb2_notify (1st) not
+// finished"). Unlike releaseSessionLeasesAndNotifies this touches ONLY the
+// notify registry — leases, locks and the session itself survive so the client
+// can reauthenticate and keep using its open handles. Idempotent:
+// UnregisterAllForSession removes the watchers, so repeated calls on the
+// subsequent expired requests of the same window are no-ops.
+func (h *Handler) ExpireSessionNotifies(sessionID uint64) {
+	if h.NotifyRegistry == nil {
+		return
+	}
+	// ExpirePendingForSession (not UnregisterAllForSession): the session
+	// survives the ticket expiry and may re-authenticate, so its handles stay
+	// armed and buffered-event accounting carries into the re-issued NOTIFY.
+	for _, notify := range h.NotifyRegistry.ExpirePendingForSession(sessionID) {
+		if notify.AsyncCallback == nil {
+			continue
+		}
+		resp := &ChangeNotifyResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusNetworkSessionExpired},
+		}
+		n := notify
+		h.NotifyRegistry.QueueFinalAfterInterim(n, func() {
+			if err := n.AsyncCallback(n.SessionID, n.MessageID, n.AsyncId, resp); err != nil {
+				logger.Debug("expired session: failed to complete pending CHANGE_NOTIFY",
+					"sessionID", n.SessionID,
+					"messageID", n.MessageID,
+					"error", err)
+			}
+		})
+	}
+}
+
 // releaseSessionLeasesAndNotifies releases all leases and unregisters all
 // CHANGE_NOTIFY watchers for the given session. This is factored out because
 // it is needed in three places: explicit LOGOFF, re-auth failure, and
