@@ -4,10 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
-	"runtime"
-	"runtime/pprof"
-	"time"
 
 	bsbench "github.com/marmos91/dittofs/bench/blockstore"
 	"github.com/spf13/cobra"
@@ -21,6 +17,7 @@ var (
 	bsSeed           uint64
 	bsRemote         string
 	bsGCGarbageRatio float64
+	bsFullProfiles   bool
 )
 
 var blockstoreCmd = &cobra.Command{
@@ -31,8 +28,10 @@ Syncer and drives one of:
   sequential-write | random-write | dedup-heavy | mixed-rw | flush-churn
   walk | delete | gc | raw-s3-put
 
-Captures wall-clock, throughput, and CPU + heap pprof to
-<profile-dir>/blockstore/<workload>-<timestamp>/.`,
+Captures wall-clock, throughput, and CPU + heap + goroutine pprof to
+<profile-dir>/blockstore/<workload>-<timestamp>/. Add --full-profiles to
+also enable the runtime mutex + block profilers and emit mutex.pprof +
+block.pprof (off by default — they add per-event accounting overhead).`,
 	RunE: runBlockstore,
 }
 
@@ -45,6 +44,7 @@ func init() {
 	flags.Uint64Var(&bsSeed, "seed", 1, "PRNG seed for randomized workloads")
 	flags.StringVar(&bsRemote, "remote", bsbench.RemoteMemory, "remote backend: memory | s3")
 	flags.Float64Var(&bsGCGarbageRatio, "gc-garbage-ratio", bsbench.DefaultGCGarbage, "fraction of seeded chunks left unreferenced for the gc workload")
+	flags.BoolVar(&bsFullProfiles, "full-profiles", false, "also capture mutex + block profiles (enables runtime mutex/block profilers; adds overhead)")
 	_ = blockstoreCmd.MarkFlagRequired("workload")
 }
 
@@ -101,27 +101,23 @@ func runEngineWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opt
 	}
 	defer engineClose()
 
-	profDir, cpuStop, err := startProfiles(opts.ProfileDir, opts.Workload)
+	sess, err := startProfileSession(opts.ProfileDir, opts.Workload, bsFullProfiles)
 	if err != nil {
 		return err
 	}
-	cpuStopped := false
-	defer func() {
-		if !cpuStopped {
-			cpuStop()
-		}
-	}()
+	defer func() { _ = sess.stop() }()
+	if err := sess.writeSeed(opts); err != nil {
+		return err
+	}
 
 	res, err := bsbench.RunWorkload(ctx, bs, opts)
-	cpuStop()
-	cpuStopped = true
+	if stopErr := sess.stop(); err == nil {
+		err = stopErr
+	}
 	if err != nil {
 		return err
 	}
-	if err := writeHeapProfile(profDir); err != nil {
-		return err
-	}
-	printResult(cmd, opts, res, profDir, true)
+	printResult(cmd, opts, res, sess.dir, true)
 	return nil
 }
 
@@ -132,16 +128,14 @@ func runLocalWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts
 	}
 	defer closeFn()
 
-	profDir, cpuStop, err := startProfiles(opts.ProfileDir, opts.Workload)
+	sess, err := startProfileSession(opts.ProfileDir, opts.Workload, bsFullProfiles)
 	if err != nil {
 		return err
 	}
-	cpuStopped := false
-	defer func() {
-		if !cpuStopped {
-			cpuStop()
-		}
-	}()
+	defer func() { _ = sess.stop() }()
+	if err := sess.writeSeed(opts); err != nil {
+		return err
+	}
 
 	var res bsbench.Result
 	switch opts.Workload {
@@ -150,15 +144,13 @@ func runLocalWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts
 	case bsbench.WorkloadDelete:
 		res, err = bsbench.RunDelete(ctx, local, opts)
 	}
-	cpuStop()
-	cpuStopped = true
+	if stopErr := sess.stop(); err == nil {
+		err = stopErr
+	}
 	if err != nil {
 		return err
 	}
-	if err := writeHeapProfile(profDir); err != nil {
-		return err
-	}
-	printResult(cmd, opts, res, profDir, false)
+	printResult(cmd, opts, res, sess.dir, false)
 	return nil
 }
 
@@ -169,27 +161,23 @@ func runGCWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts) e
 	}
 	defer remoteClose()
 
-	profDir, cpuStop, err := startProfiles(opts.ProfileDir, opts.Workload)
+	sess, err := startProfileSession(opts.ProfileDir, opts.Workload, bsFullProfiles)
 	if err != nil {
 		return err
 	}
-	cpuStopped := false
-	defer func() {
-		if !cpuStopped {
-			cpuStop()
-		}
-	}()
+	defer func() { _ = sess.stop() }()
+	if err := sess.writeSeed(opts); err != nil {
+		return err
+	}
 
 	res, err := bsbench.RunGC(ctx, remoteStore, opts, bsGCGarbageRatio)
-	cpuStop()
-	cpuStopped = true
+	if stopErr := sess.stop(); err == nil {
+		err = stopErr
+	}
 	if err != nil {
 		return err
 	}
-	if err := writeHeapProfile(profDir); err != nil {
-		return err
-	}
-	printResult(cmd, opts, res, profDir, false)
+	printResult(cmd, opts, res, sess.dir, false)
 	return nil
 }
 
@@ -200,27 +188,23 @@ func runRawS3Workload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts
 	}
 	defer remoteClose()
 
-	profDir, cpuStop, err := startProfiles(opts.ProfileDir, opts.Workload)
+	sess, err := startProfileSession(opts.ProfileDir, opts.Workload, bsFullProfiles)
 	if err != nil {
 		return err
 	}
-	cpuStopped := false
-	defer func() {
-		if !cpuStopped {
-			cpuStop()
-		}
-	}()
+	defer func() { _ = sess.stop() }()
+	if err := sess.writeSeed(opts); err != nil {
+		return err
+	}
 
 	res, err := bsbench.RunRawS3Put(ctx, remoteStore, opts)
-	cpuStop()
-	cpuStopped = true
+	if stopErr := sess.stop(); err == nil {
+		err = stopErr
+	}
 	if err != nil {
 		return err
 	}
-	if err := writeHeapProfile(profDir); err != nil {
-		return err
-	}
-	printResult(cmd, opts, res, profDir, false)
+	printResult(cmd, opts, res, sess.dir, false)
 	return nil
 }
 
@@ -237,39 +221,6 @@ func resolveBlockSize(workload string, requested int) int {
 	default:
 		return bsbench.DefaultRandomBlockSize
 	}
-}
-
-// startProfiles creates <root>/blockstore/<workload>-<ts>/ and begins
-// CPU profiling. The returned closure stops the profile and closes
-// the file; safe to call exactly once.
-func startProfiles(rootDir, workload string) (string, func(), error) {
-	ts := time.Now().UTC().Format("20060102T150405Z")
-	dir := filepath.Join(rootDir, "blockstore", fmt.Sprintf("%s-%s", workload, ts))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", func() {}, fmt.Errorf("mkdir profiles: %w", err)
-	}
-	f, err := os.Create(filepath.Join(dir, "cpu.pprof"))
-	if err != nil {
-		return "", func() {}, fmt.Errorf("create cpu.pprof: %w", err)
-	}
-	if err := pprof.StartCPUProfile(f); err != nil {
-		_ = f.Close()
-		return "", func() {}, fmt.Errorf("StartCPUProfile: %w", err)
-	}
-	return dir, func() { pprof.StopCPUProfile(); _ = f.Close() }, nil
-}
-
-func writeHeapProfile(dir string) error {
-	runtime.GC()
-	f, err := os.Create(filepath.Join(dir, "heap.pprof"))
-	if err != nil {
-		return fmt.Errorf("create heap.pprof: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	if err := pprof.WriteHeapProfile(f); err != nil {
-		return fmt.Errorf("WriteHeapProfile: %w", err)
-	}
-	return nil
 }
 
 // printResult emits the canonical one-line summary, optionally
