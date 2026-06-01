@@ -52,6 +52,25 @@ func cloneACL(in *acl.ACL) *acl.ACL {
 	return &out
 }
 
+// cloneEAs returns a deep copy of a FileAttr.EAs map, copying each value slice
+// so neither the caller nor the store can mutate the other's EA bytes in place.
+// Returns nil for a nil/empty input so the round-trip preserves the omitempty
+// wire form (json:"eas,omitempty" on FileAttr.EAs). Mirrors cloneACL: the
+// Badger/Postgres backends round-trip through JSON and never alias, so the
+// memory backend must copy to keep cross-backend parity.
+func cloneEAs(in map[string][]byte) map[string][]byte {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]byte, len(in))
+	for k, v := range in {
+		vc := make([]byte, len(v))
+		copy(vc, v)
+		out[k] = vc
+	}
+	return out
+}
+
 // ============================================================================
 // FindByObjectID
 // ============================================================================
@@ -325,6 +344,7 @@ func (store *MemoryMetadataStore) ListChildren(ctx context.Context, dirHandle me
 			// caller-side in-place mutation cannot leak into the stored view.
 			attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
 			attr.ACL = cloneACL(fileData.Attr.ACL)
+			attr.EAs = cloneEAs(fileData.Attr.EAs)
 			entry.Attr = &attr
 		}
 
@@ -388,6 +408,7 @@ func (store *MemoryMetadataStore) GetFileByPayloadID(
 			attr := *fileData.Attr
 			attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
 			attr.ACL = cloneACL(fileData.Attr.ACL)
+			attr.EAs = cloneEAs(fileData.Attr.EAs)
 			return &metadata.File{
 				ShareName: fileData.ShareName,
 				FileAttr:  attr,

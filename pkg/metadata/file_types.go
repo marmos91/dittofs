@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -73,6 +74,19 @@ type FileAttr struct {
 	// Non-nil with empty ACEs means an explicit empty ACL (denies all access).
 	ACL *acl.ACL `json:"acl,omitempty"`
 
+	// EAs holds the file's extended attributes (SMB FILE_FULL_EA_INFORMATION,
+	// MS-FSCC §2.4.15). Keys are EA names stored in the casing supplied by the
+	// client; per MS-FSCC EA names are case-insensitive, so callers MUST resolve
+	// names case-insensitively (helpers on this type do so). Values are raw
+	// bytes (may be empty but non-nil to distinguish a zero-length EA from an
+	// absent one). nil means no EAs are set.
+	//
+	// Storage:
+	//   - Postgres: eas JSONB column on files.
+	//   - Badger: rides the JSON-encoded FileAttr blob.
+	//   - Memory: typed map held directly (deep-copied on Put/Get).
+	EAs map[string][]byte `json:"eas,omitempty"`
+
 	// IdempotencyToken for detecting duplicate creation requests.
 	IdempotencyToken uint64 `json:"idempotency_token,omitempty"`
 
@@ -134,6 +148,86 @@ type SetAttrs struct {
 	// ACL sets the NFSv4 ACL on the file.
 	// When non-nil, the ACL is validated (canonical ordering, max ACEs) before applying.
 	ACL *acl.ACL
+
+	// EAMutations applies extended-attribute set/delete operations to the
+	// file's EA map. Each mutation either upserts (Delete=false) or removes
+	// (Delete=true) a single EA name, resolved case-insensitively. nil/empty
+	// leaves the EA map untouched. Applied atomically with the rest of the
+	// SetAttrs under the store transaction.
+	EAMutations []EAMutation
+}
+
+// EAMutation is a single extended-attribute upsert or delete, applied via
+// SetAttrs.EAMutations. Name is matched case-insensitively against existing
+// EA names (MS-FSCC §2.4.15); a set with a new name records that name's casing.
+type EAMutation struct {
+	// Name is the EA name (canonical NT form, no domain prefix).
+	Name string
+	// Value is the EA value bytes for an upsert. Ignored when Delete is true.
+	Value []byte
+	// Delete removes the named EA instead of upserting it.
+	Delete bool
+}
+
+// LookupEA returns the value of the named extended attribute and whether it is
+// present, resolving the name case-insensitively per MS-FSCC §2.4.15.
+func (a *FileAttr) LookupEA(name string) ([]byte, bool) {
+	key, found := a.findEAKey(name)
+	if !found {
+		return nil, false
+	}
+	return a.EAs[key], true
+}
+
+// ApplyEAMutations applies the supplied set/delete mutations to the file's EA
+// map in place, resolving names case-insensitively. An upsert preserves the
+// casing of an existing same-name EA (NTFS keeps the original casing); a brand
+// new EA records the supplied casing. A delete removes any case-insensitive
+// match. Deleting the last EA leaves the map nil so the omitempty wire form is
+// preserved.
+func (a *FileAttr) ApplyEAMutations(muts []EAMutation) {
+	for _, m := range muts {
+		existingKey, found := a.findEAKey(m.Name)
+		if m.Delete {
+			if found {
+				delete(a.EAs, existingKey)
+			}
+			continue
+		}
+		if a.EAs == nil {
+			a.EAs = make(map[string][]byte)
+		}
+		key := m.Name
+		if found {
+			key = existingKey
+		}
+		// Store a defensive copy so the caller's buffer cannot mutate the
+		// stored value later. A nil value is normalised to a non-nil empty
+		// slice so a zero-length EA round-trips as "present".
+		val := make([]byte, len(m.Value))
+		copy(val, m.Value)
+		a.EAs[key] = val
+	}
+	if len(a.EAs) == 0 {
+		a.EAs = nil
+	}
+}
+
+// findEAKey returns the stored EA key matching name case-insensitively, and
+// whether a match exists.
+func (a *FileAttr) findEAKey(name string) (string, bool) {
+	if a.EAs == nil {
+		return "", false
+	}
+	if _, ok := a.EAs[name]; ok {
+		return name, true
+	}
+	for k := range a.EAs {
+		if strings.EqualFold(k, name) {
+			return k, true
+		}
+	}
+	return "", false
 }
 
 // FileType represents the type of a filesystem object.

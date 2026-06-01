@@ -504,6 +504,7 @@ func (store *MemoryMetadataStore) buildFileWithNlink(
 	// stored view.
 	attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
 	attr.ACL = cloneACL(fileData.Attr.ACL)
+	attr.EAs = cloneEAs(fileData.Attr.EAs)
 
 	return &metadata.File{
 		ID:        id,

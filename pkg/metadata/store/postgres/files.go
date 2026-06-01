@@ -44,7 +44,7 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, f.object_id,
+			f.hidden, f.acl, f.eas, f.object_id,
 			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
@@ -226,7 +226,7 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 	// versus the per-entry GetFile() round trip it avoids.
 	query := `
 		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
-		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.object_id,
+		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.eas, f.object_id,
 		       f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM parent_child_map dc
 		LEFT JOIN files f ON dc.child_id = f.id
@@ -251,6 +251,7 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 		var atime, mtime, ctime, creationTime int64
 		var hidden bool
 		var aclJSON []byte
+		var easJSON []byte
 		var objectIDRaw []byte
 		var deletedAt sql.NullInt64
 		var originalPath string
@@ -258,7 +259,7 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 		var linkCount sql.NullInt32
 
 		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size,
-			&atime, &mtime, &ctime, &creationTime, &hidden, &aclJSON, &objectIDRaw,
+			&atime, &mtime, &ctime, &creationTime, &hidden, &aclJSON, &easJSON, &objectIDRaw,
 			&deletedAt, &originalPath, &deletedBy, &linkCount)
 		if err != nil {
 			return nil, "", err
@@ -340,6 +341,14 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 			var fileACL acl.ACL
 			if err := json.Unmarshal(aclJSON, &fileACL); err == nil {
 				attr.ACL = &fileACL
+			}
+		}
+
+		// Hydrate EAs for directory entries (same lenient unmarshal as ACL).
+		if len(easJSON) > 0 {
+			var eas map[string][]byte
+			if err := json.Unmarshal(easJSON, &eas); err == nil && len(eas) > 0 {
+				attr.EAs = eas
 			}
 		}
 
@@ -446,7 +455,7 @@ func (s *PostgresMetadataStore) GetFileByPayloadID(ctx context.Context, payloadI
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, f.object_id,
+			f.hidden, f.acl, f.eas, f.object_id,
 			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id

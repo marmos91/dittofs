@@ -86,6 +86,7 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		deviceMinor  sql.NullInt32
 		hidden       bool
 		aclJSON      []byte
+		easJSON      []byte
 		objectIDRaw  []byte
 		deletedAt    sql.NullInt64
 		originalPath string
@@ -112,6 +113,7 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		&deviceMinor,
 		&hidden,
 		&aclJSON,
+		&easJSON,
 		&objectIDRaw,
 		&deletedAt,
 		&originalPath,
@@ -166,6 +168,15 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		var fileACL acl.ACL
 		if err := json.Unmarshal(aclJSON, &fileACL); err == nil {
 			file.ACL = &fileACL
+		}
+	}
+
+	// Unmarshal extended attributes from JSONB if present. A malformed row is
+	// treated as "no EAs" rather than failing the whole read.
+	if len(easJSON) > 0 {
+		var eas map[string][]byte
+		if err := json.Unmarshal(easJSON, &eas); err == nil && len(eas) > 0 {
+			file.EAs = eas
 		}
 	}
 

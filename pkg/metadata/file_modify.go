@@ -413,6 +413,20 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		modified = true
 	}
 
+	// Apply extended-attribute set/delete mutations. EA writes require write
+	// access to the file (the SMB layer additionally gates on FILE_WRITE_EA at
+	// CREATE time); owner/root already passed the ownership gate above, a
+	// non-owner must hold write permission.
+	if len(attrs.EAMutations) > 0 {
+		if !isOwner && !isRoot {
+			if err := s.checkWritePermission(ctx, handle); err != nil {
+				return err
+			}
+		}
+		file.ApplyEAMutations(attrs.EAMutations)
+		modified = true
+	}
+
 	// Auto-update ctime when attributes change, unless explicitly set
 	if modified {
 		if attrs.Ctime == nil {

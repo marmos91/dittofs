@@ -672,8 +672,16 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		return w.Bytes(), nil
 
 	case types.FileEaInformation:
-		// FILE_EA_INFORMATION [MS-FSCC] 2.4.12 (4 bytes)
-		return make([]byte, 4), nil // EaSize = 0
+		// FILE_EA_INFORMATION [MS-FSCC] 2.4.12 (4 bytes): total size of the
+		// file's extended attributes on the wire. ADS share the base file's
+		// EAs.
+		eaSrc := &file.FileAttr
+		if baseAttr := h.resolveBaseFileAttrForADS(authCtx, openFile); baseAttr != nil {
+			eaSrc = baseAttr
+		}
+		w := smbenc.NewWriter(4)
+		w.WriteUint32(fullEaInformationSize(eaSrc.EAs))
+		return w.Bytes(), nil
 
 	case types.FileAccessInformation:
 		// FILE_ACCESS_INFORMATION [MS-FSCC] 2.4.1 (4 bytes)
@@ -721,18 +729,11 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		return w.Bytes(), nil
 
 	case types.FileModeInformation:
-		// FILE_MODE_INFORMATION [MS-FSCC] 2.4.24 (4 bytes)
-		// Mode is derived from CreateOptions passed during the CREATE request.
-		// Per MS-FSCC, the Mode field is a combination of:
-		//   FILE_WRITE_THROUGH (0x02), FILE_SEQUENTIAL_ONLY (0x04),
-		//   FILE_NO_INTERMEDIATE_BUFFERING (0x08), FILE_SYNCHRONOUS_IO_ALERT (0x10),
-		//   FILE_SYNCHRONOUS_IO_NONALERT (0x20), FILE_DELETE_ON_CLOSE (0x1000)
-		modeMask := types.FileWriteThrough | types.FileSequentialOnly |
-			types.FileNoIntermediateBuffering | types.FileSynchronousIoAlert |
-			types.FileSynchronousIoNonalert | types.FileDeleteOnClose
-		mode := openFile.CreateOptions & modeMask
+		// FILE_MODE_INFORMATION [MS-FSCC] 2.4.24 (4 bytes). Mode is the open's
+		// settable mode flags, seeded from CreateOptions at CREATE and updated
+		// by SET_INFO FileModeInformation.
 		w := smbenc.NewWriter(4)
-		w.WriteUint32(uint32(mode))
+		w.WriteUint32(fileModeInformationValue(openFile))
 		return w.Bytes(), nil
 
 	case types.FileAlignmentInformation:
@@ -840,23 +841,25 @@ func (h *Handler) buildFileInfoFromStore(authCtx *metadata.AuthContext, file *me
 		return h.buildFileAllInformationFromStore(authCtx, file, openFile), nil
 
 	case types.FileFullEaInformation:
-		// We don't persist extended attributes (#220 tracks adapter EA support).
-		// Samba returns NO_EAS_ON_FILE when the list is empty, but smbtorture
-		// (`smb2.getinfo.complex` and `getinfo_access`) asserts NT_STATUS_OK
-		// against the reference implementation because its setup paths
-		// create the file with two EAs via the SMB2 CREATE EA context.
-		//
-		// We must therefore return OK with a buffer that survives the
-		// Samba client parser `ea_pull_list_chained`
-		// (source4/libcli/raw/raweas.c:218). That parser requires the buffer
-		// to be at least 4 bytes AND for each iteration the per-entry
-		// sub-blob to satisfy `ea_pull_struct` (>= 6 bytes for the fixed
-		// header). A 4-byte all-zero sentinel falls into the loop and trips
-		// the inner length check with NT_STATUS_INVALID_PARAMETER (see the
-		// commented-out behaviour we replaced).
-		//
-		// Emit one well-formed empty-name / empty-value entry with
-		// NextEntryOffset = 0:
+		// Enumerate the file's persisted extended attributes as a
+		// FILE_FULL_EA_INFORMATION chain (MS-FSCC §2.4.15). Per NTFS, ADS
+		// share the base file's EAs, so resolve to the base attr when this
+		// open targets a stream.
+		eaSrc := &file.FileAttr
+		if baseAttr := h.resolveBaseFileAttrForADS(authCtx, openFile); baseAttr != nil {
+			eaSrc = baseAttr
+		}
+		encoded := encodeFullEaInformation(eaSrc.EAs)
+		if len(encoded) > 0 {
+			return encoded, nil
+		}
+		// Empty list: emit one well-formed empty-name / empty-value entry
+		// with NextEntryOffset = 0. Samba's `ea_pull_list_chained`
+		// (source4/libcli/raw/raweas.c:218) requires the buffer to be at
+		// least 4 bytes and each per-entry sub-blob to satisfy
+		// `ea_pull_struct` (>= 6 bytes for the fixed header). A bare 4-byte
+		// zero sentinel trips the inner length check with
+		// NT_STATUS_INVALID_PARAMETER, so we emit a padded 10-byte entry:
 		//   bytes 0..3 NextEntryOffset = 0
 		//   byte  4    Flags = 0
 		//   byte  5    EaNameLength = 0
@@ -907,13 +910,13 @@ func (h *Handler) buildFileAllInformationFromStore(authCtx *metadata.AuthContext
 	fileIndex := binary.LittleEndian.Uint64(internalFileID[:8])
 
 	w := smbenc.NewWriter(36)
-	w.WriteUint64(fileIndex)              // InternalInformation (8 bytes) at offset 64
-	w.WriteUint32(0)                      // EaInformation (4 bytes) at offset 72
-	w.WriteUint32(openFile.GrantedAccess) // AccessInformation (4 bytes) at offset 76 — see FileAccessInformation
-	w.WriteUint64(openFile.PositionInfo)  // PositionInformation (8 bytes) at offset 80
-	w.WriteUint32(0)                      // ModeInformation (4 bytes) at offset 88
-	w.WriteUint32(0)                      // AlignmentInformation (4 bytes) at offset 92
-	w.WriteUint32(uint32(len(nameBytes))) // NameInformation length at offset 96
+	w.WriteUint64(fileIndex)                          // InternalInformation (8 bytes) at offset 64
+	w.WriteUint32(fullEaInformationSize(attr.EAs))    // EaInformation (4 bytes) at offset 72: total EA buffer size
+	w.WriteUint32(openFile.GrantedAccess)             // AccessInformation (4 bytes) at offset 76 — see FileAccessInformation
+	w.WriteUint64(openFile.PositionInfo)              // PositionInformation (8 bytes) at offset 80
+	w.WriteUint32(fileModeInformationValue(openFile)) // ModeInformation (4 bytes) at offset 88
+	w.WriteUint32(0)                                  // AlignmentInformation (4 bytes) at offset 92
+	w.WriteUint32(uint32(len(nameBytes)))             // NameInformation length at offset 96
 	copy(info[64:100], w.Bytes())
 
 	copy(info[100:], nameBytes)
@@ -1322,6 +1325,23 @@ func fileInfoClassRequiredAccess(class types.FileInfoClass) (uint32, bool) {
 		return uint32(types.FileReadEA), true
 	}
 	return 0, false
+}
+
+// fileModeInformationModeMask is the set of CreateOptions bits surfaced as the
+// FILE_MODE_INFORMATION Mode field (MS-FSCC §2.4.24): FILE_WRITE_THROUGH,
+// FILE_SEQUENTIAL_ONLY, FILE_NO_INTERMEDIATE_BUFFERING, FILE_SYNCHRONOUS_IO_*,
+// and FILE_DELETE_ON_CLOSE.
+const fileModeInformationModeMask = types.FileWriteThrough | types.FileSequentialOnly |
+	types.FileNoIntermediateBuffering | types.FileSynchronousIoAlert |
+	types.FileSynchronousIoNonalert | types.FileDeleteOnClose
+
+// fileModeInformationValue returns the open's FILE_MODE_INFORMATION Mode value:
+// the mode-relevant CreateOptions bits seeded at CREATE and updated by SET_INFO
+// FileModeInformation. Shared by the FileModeInformation query and the
+// FILE_ALL_INFORMATION ModeInformation field so the two always agree
+// (smbtorture smb2.setinfo asserts the SET round-trips through all_info2).
+func fileModeInformationValue(openFile *OpenFile) uint32 {
+	return uint32(openFile.CreateOptions & fileModeInformationModeMask)
 }
 
 // basenameForHidden returns the basename used for IsHiddenFile's dot-prefix

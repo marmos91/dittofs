@@ -76,6 +76,15 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		runACLAliasingTests(t, factory)
 	})
 
+	// EAOps covers FileAttr.EAs (SMB extended attributes, MS-FSCC §2.4.15):
+	// PutFile/GetFile round-trip, zero-length values, deletion, case-
+	// insensitive name resolution with set-case preservation, deep-copy
+	// (aliasing) discipline, and persistence across unrelated writes. Pins
+	// cross-backend parity the same way ACLAliasing does for ACLs.
+	t.Run("EAOps", func(t *testing.T) {
+		runEAOpsTests(t, factory)
+	})
+
 	t.Run("FileBlockOps", func(t *testing.T) {
 		runFileBlockOpsTests(t, factory)
 	})

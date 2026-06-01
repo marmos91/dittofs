@@ -309,10 +309,21 @@ func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *
 	// Allocation size is typically rounded up to cluster size (4KB typical)
 	allocationSize := calculateAllocationSize(size)
 
+	// NumberOfLinks reflects the open's delete-on-close disposition. Per Windows
+	// / MS-FSA §2.1.5.11.6, once a handle marks the file for deletion the file is
+	// on its way out and FILE_STANDARD_INFORMATION reports NumberOfLinks = 0;
+	// clearing the disposition restores it to the real link count (>= 1).
+	// smbtorture smb2.setinfo (setinfo.c:229) asserts nlink == 0 with
+	// delete_pending == 1 and nlink == 1 with delete_pending == 0.
+	numberOfLinks := max(attr.Nlink, 1) // actual link count, minimum 1 for safety
+	if isDeletePending {
+		numberOfLinks = 0
+	}
+
 	return &FileStandardInfo{
 		AllocationSize: allocationSize,
 		EndOfFile:      size,
-		NumberOfLinks:  max(attr.Nlink, 1), // Use actual link count, minimum 1 for safety
+		NumberOfLinks:  numberOfLinks,
 		DeletePending:  isDeletePending,
 		Directory:      attr.Type == metadata.FileTypeDirectory,
 	}

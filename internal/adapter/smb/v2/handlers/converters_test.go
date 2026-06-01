@@ -122,6 +122,22 @@ func TestFileAttrToFileStandardInfo_DeletePending(t *testing.T) {
 			t.Error("DeletePending should be true")
 		}
 	})
+
+	// smbtorture smb2.setinfo (setinfo.c:229) asserts NumberOfLinks tracks the
+	// delete-on-close disposition: 0 when delete_pending, the real count
+	// (>= 1) otherwise.
+	t.Run("nlink zero when delete pending", func(t *testing.T) {
+		info := FileAttrToFileStandardInfo(attr, true)
+		if info.NumberOfLinks != 0 {
+			t.Errorf("NumberOfLinks = %d, want 0 when delete pending", info.NumberOfLinks)
+		}
+	})
+	t.Run("nlink one when not delete pending", func(t *testing.T) {
+		info := FileAttrToFileStandardInfo(attr, false)
+		if info.NumberOfLinks != 1 {
+			t.Errorf("NumberOfLinks = %d, want 1 when not delete pending", info.NumberOfLinks)
+		}
+	})
 }
 
 func TestFileAttrToFileStandardInfo_Sizes(t *testing.T) {

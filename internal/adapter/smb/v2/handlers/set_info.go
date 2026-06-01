@@ -1365,7 +1365,66 @@ func (h *Handler) setFileInfoFromStore(
 		if len(buffer) >= 8 {
 			requested := smbenc.NewReader(buffer[:8]).ReadUint64()
 			openFile.RequestedAllocSize = allocReservationFor(openFile.IsDirectory, requested)
+
+			// Per MS-FSA 2.1.5.14.1: when the requested AllocationSize is
+			// smaller than the file's current EndOfFile, the EndOfFile is
+			// truncated down to the allocation size (allocation can never be
+			// less than the valid data length). smbtorture smb2.setinfo
+			// (setinfo.c:239) sets AllocationInformation = 0 on a 7-byte file
+			// and asserts the subsequent all_info2 reports size == 0. Only
+			// applies to regular files. Reuse the EOF truncation path so the
+			// block list is pruned and Mtime/Ctime update consistently.
+			if !openFile.IsDirectory {
+				metaSvc := h.Registry.GetMetadataService()
+				if curFile, getErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); getErr == nil &&
+					requested < curFile.Size {
+					if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
+						Size: &requested,
+					}); err != nil {
+						logger.Debug("SET_INFO: allocation-driven truncate failed",
+							"path", openFile.Path, "error", err)
+						return setInfoStatus(common.MapToSMB(err)), nil
+					}
+					h.restoreFrozenTimestamps(authCtx, openFile)
+					flushSmbDelayedWrite(openFile)
+					h.StoreOpenFile(openFile)
+					h.breakParentDirLeasesForContentChange(ctx, authCtx, openFile)
+					if h.NotifyRegistry != nil {
+						h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeSize)
+					}
+				}
+			}
 		}
+		return setInfoStatus(types.StatusSuccess), nil
+
+	case types.FileModeInformation:
+		// FILE_MODE_INFORMATION [MS-FSCC] 2.4.24 (4 bytes). SET adjusts the
+		// open's mode flags (FILE_WRITE_THROUGH, FILE_SEQUENTIAL_ONLY,
+		// FILE_NO_INTERMEDIATE_BUFFERING, FILE_SYNCHRONOUS_IO_*,
+		// FILE_DELETE_ON_CLOSE). DittoFS does not change I/O behaviour based on
+		// these advisory flags, but the value must round-trip through QUERY_INFO
+		// FileModeInformation and the request must succeed. smbtorture
+		// smb2.setinfo (setinfo.c:264) sets this level and asserts NT_STATUS_OK.
+		if len(buffer) < 4 {
+			return setInfoStatus(types.StatusInfoLengthMismatch), nil
+		}
+		modeMask := fileModeInformationModeMask
+		mode := types.CreateOptions(smbenc.NewReader(buffer[:4]).ReadUint32())
+		// Per MS-FSA 2.1.5.14.13: any bit set outside the valid FILE_MODE_*
+		// set is invalid and the server MUST return STATUS_INVALID_PARAMETER.
+		// smbtorture smb2.setinfo (setinfo.c:269) sets a reserved-bit value
+		// (e.g. FILE_DIRECTORY_FILE, 0x1) and asserts the rejection.
+		if mode&^modeMask != 0 {
+			return setInfoStatus(types.StatusInvalidParameter), nil
+		}
+		// Overlay only the mode-information bits onto the open's CreateOptions so
+		// a later QUERY_INFO FileModeInformation reflects the SET; preserve all
+		// other create-option bits. We intentionally do NOT flip delete-on-close
+		// here — that disposition is owned by FileDispositionInformation, which
+		// carries its own DELETE-access gate (Samba's setinfo mode handler is
+		// likewise advisory-only).
+		openFile.CreateOptions = (openFile.CreateOptions &^ modeMask) | (mode & modeMask)
+		h.StoreOpenFile(openFile)
 		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FileLinkInformation:
@@ -1382,22 +1441,35 @@ func (h *Handler) setFileInfoFromStore(
 		// EA API): smbtorture smb2.ea.acl_xattr asserts ACCESS_DENIED when a
 		// client tries to overwrite the reserved name. The reserved name is
 		// surfaced to the torture client via the `--option=acl_xattr_name=...`
-		// torture setting and listed in the EA enumeration response as absent
-		// (FileFullEaInformation in query_info.go returns no real entries).
-		if eaNames, err := decodeFullEaNames(buffer); err == nil {
-			for _, name := range eaNames {
-				if isReservedACLXattrName(name) {
-					logger.Debug("SET_INFO: FileFullEaInformation reserved name rejected",
-						"path", openFile.Path,
-						"name", name)
-					return setInfoStatus(types.StatusAccessDenied), nil
-				}
+		// torture setting and omitted from the QUERY_INFO EA enumeration.
+		entries, decErr := decodeFullEaEntries(buffer)
+		if decErr != nil {
+			logger.Debug("SET_INFO: FileFullEaInformation decode failed",
+				"path", openFile.Path, "error", decErr)
+			return setInfoStatus(types.StatusInvalidParameter), nil
+		}
+		for _, e := range entries {
+			if isReservedACLXattrName(e.name) {
+				logger.Debug("SET_INFO: FileFullEaInformation reserved name rejected",
+					"path", openFile.Path, "name", e.name)
+				return setInfoStatus(types.StatusAccessDenied), nil
 			}
 		}
-		// Otherwise accept EA writes as a no-op. DittoFS does not persist
-		// extended attributes but returning SUCCESS allows ChangeNotify EA
-		// tests to proceed.
-		logger.Debug("SET_INFO: FileFullEaInformation (no-op)", "path", openFile.Path)
+
+		// Persist the EA set/delete mutations through the metadata layer.
+		// A zero-length value deletes the named EA; a non-empty value upserts
+		// it (MS-FSCC §2.4.15). EA names are case-insensitive and the metadata
+		// layer resolves them so casing round-trips.
+		metaSvc := h.Registry.GetMetadataService()
+		setAttrs := &metadata.SetAttrs{EAMutations: eaMutationsFromEntries(entries)}
+		if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
+			logger.Debug("SET_INFO: FileFullEaInformation persist failed",
+				"path", openFile.Path, "error", err)
+			return setInfoStatus(common.MapToSMB(err)), nil
+		}
+
+		logger.Debug("SET_INFO: FileFullEaInformation persisted",
+			"path", openFile.Path, "count", len(entries))
 		if h.NotifyRegistry != nil {
 			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), notifyStreamName(openFile.FileName), FileActionModified, FileNotifyChangeEa)
 		}
@@ -2101,56 +2173,4 @@ const reservedACLXattrName = "security.NTACL"
 // are case-insensitive, so the comparison is folded.
 func isReservedACLXattrName(name string) bool {
 	return strings.EqualFold(name, reservedACLXattrName)
-}
-
-// decodeFullEaNames extracts the EA names from a FILE_FULL_EA_INFORMATION
-// chain (MS-FSCC §2.4.15). Returns an error if any entry is malformed.
-//
-// Wire layout per entry, aligned at 4 bytes:
-//
-//	+0  4B NextEntryOffset (LE) — 0 ⇒ last
-//	+4  1B Flags
-//	+5  1B EaNameLength (without NUL terminator)
-//	+6  2B EaValueLength
-//	+8  N  EaName (ASCII, NUL-terminated)
-//	+8+N+1 M EaValue (raw bytes)
-//
-// Callers only need the names so we skip the value bytes.
-func decodeFullEaNames(buffer []byte) ([]string, error) {
-	var names []string
-	offset := 0
-	for {
-		if offset+8 > len(buffer) {
-			if offset == len(buffer) {
-				return names, nil
-			}
-			return nil, fmt.Errorf("FILE_FULL_EA_INFORMATION: entry header at offset %d truncated", offset)
-		}
-		nextEntryOffset := uint32(buffer[offset]) |
-			uint32(buffer[offset+1])<<8 |
-			uint32(buffer[offset+2])<<16 |
-			uint32(buffer[offset+3])<<24
-		nameLen := int(buffer[offset+5])
-		valueLen := int(uint16(buffer[offset+6]) | uint16(buffer[offset+7])<<8)
-		nameStart := offset + 8
-		nameEnd := nameStart + nameLen
-		// +1 for the trailing NUL byte mandated by MS-FSCC §2.4.15.
-		if nameEnd+1 > len(buffer) {
-			return nil, fmt.Errorf("FILE_FULL_EA_INFORMATION: name at offset %d truncated", offset)
-		}
-		valueEnd := nameEnd + 1 + valueLen
-		if valueEnd > len(buffer) {
-			return nil, fmt.Errorf("FILE_FULL_EA_INFORMATION: value at offset %d truncated", offset)
-		}
-		names = append(names, string(buffer[nameStart:nameEnd]))
-		if nextEntryOffset == 0 {
-			return names, nil
-		}
-		// NextEntryOffset is measured from the start of the current entry.
-		newOffset := offset + int(nextEntryOffset)
-		if newOffset <= offset || newOffset > len(buffer) {
-			return nil, fmt.Errorf("FILE_FULL_EA_INFORMATION: invalid NextEntryOffset %d at %d", nextEntryOffset, offset)
-		}
-		offset = newOffset
-	}
 }
