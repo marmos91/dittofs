@@ -1437,15 +1437,18 @@ func (h *Handler) SignalCleanupDone() {
 
 // ExpireSessionNotifies completes any pending CHANGE_NOTIFY requests for a
 // session whose Kerberos ticket has expired, WITHOUT tearing the session down
-// (it may still re-authenticate via SESSION_SETUP). Per MS-SMB2 §3.3.5.2.9 an
-// expired session rejects most commands with STATUS_NETWORK_SESSION_EXPIRED; an
+// (it may still re-authenticate via SESSION_SETUP). An expired session rejects
+// most commands with STATUS_NETWORK_SESSION_EXPIRED (MS-SMB2 §3.3.5.2.9); an
 // outstanding async CHANGE_NOTIFY armed before expiry must also be completed so
-// the client's smb2_notify_recv unblocks instead of hanging forever
-// (smbtorture smb2.session.expire2s / expire2e assert "smb2_notify (1st) not
-// finished"). Unlike releaseSessionLeasesAndNotifies this touches ONLY the
-// notify registry — leases, locks and the session itself survive so the client
-// can reauthenticate and keep using its open handles. Idempotent:
-// UnregisterAllForSession removes the watchers, so repeated calls on the
+// the client's smb2_notify_recv unblocks instead of hanging forever. The final
+// response carries STATUS_CANCELLED: the request is being cancelled because the
+// session can no longer serve it, which is exactly what smbtorture
+// smb2.session.expire2s / expire2e assert (session.c:1641 expects
+// NT_STATUS_CANCELLED for the cancelled notify). Unlike
+// releaseSessionLeasesAndNotifies this touches ONLY the notify registry —
+// leases, locks and the session itself survive so the client can
+// reauthenticate and keep using its open handles. Idempotent:
+// ExpirePendingForSession removes the watchers, so repeated calls on the
 // subsequent expired requests of the same window are no-ops.
 func (h *Handler) ExpireSessionNotifies(sessionID uint64) {
 	if h.NotifyRegistry == nil {
@@ -1459,7 +1462,7 @@ func (h *Handler) ExpireSessionNotifies(sessionID uint64) {
 			continue
 		}
 		resp := &ChangeNotifyResponse{
-			SMBResponseBase: SMBResponseBase{Status: types.StatusNetworkSessionExpired},
+			SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled},
 		}
 		n := notify
 		h.NotifyRegistry.QueueFinalAfterInterim(n, func() {
