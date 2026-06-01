@@ -1,0 +1,461 @@
+// Package trash implements the runtime recycle-bin service: listing, restoring,
+// and emptying the per-share #recycle bin populated by the metadata layer when
+// trash is enabled.
+//
+// Bin membership is defined by LOCATION: a node under a share's #recycle
+// directory carrying a non-nil FileAttr.DeletedAt is a recycled root. The
+// metadata layer recycles a deletion by moving the victim (a file, or a whole
+// directory subtree as one entry) under #recycle and stamping DeletedAt /
+// OriginalPath / DeletedBy on it. This service is the inverse: it walks the bin
+// to enumerate those roots, moves an entry back out and clears its stamp on
+// restore, and permanently destroys entries (freeing their CAS blocks) on empty.
+package trash
+
+import (
+	"context"
+	"strings"
+	"time"
+
+	"github.com/marmos91/dittofs/pkg/metadata"
+)
+
+// defaultReapInterval is the reaper cadence used when New is given a zero
+// interval. The reaper itself lands in a later task; the interval and stopCh
+// are wired here so the service shape is stable.
+const defaultReapInterval = time.Hour
+
+// Entry describes one recycled root in a share's #recycle bin.
+type Entry struct {
+	// BinPath is the entry's path under #recycle (e.g. "doc.txt" or "a/b/c.txt").
+	BinPath string `json:"bin_path"`
+	// OriginalPath is the share-relative path the node occupied before deletion.
+	OriginalPath string `json:"original_path"`
+	// DeletedBy is the principal that recycled the node (display only).
+	DeletedBy string `json:"deleted_by"`
+	// DeletedAt is when the node was recycled.
+	DeletedAt time.Time `json:"deleted_at"`
+	// Size is the file size in bytes (0 for directories).
+	Size uint64 `json:"size"`
+	// IsDir reports whether the entry is a directory subtree.
+	IsDir bool `json:"is_dir"`
+}
+
+// Config is the per-share recycle-bin policy the service operates under. The
+// runtime derives it from share configuration; the service uses it for
+// retention/size reaping (later tasks) and to gate listing on Enabled.
+type Config struct {
+	Enabled         bool
+	RetentionDays   int
+	RestrictToAdmin bool
+	MaxBytes        int64
+	ExcludePatterns []string
+}
+
+// Deps is the narrow runtime surface the service needs, kept as an interface so
+// the service is testable without a full Runtime.
+type Deps interface {
+	// MetadataServiceForShare resolves the per-share metadata service and its
+	// root handle. ok=false when the share is unknown.
+	MetadataServiceForShare(shareName string) (svc *metadata.MetadataService, root metadata.FileHandle, ok bool)
+	// TrashConfigForShare returns the trash policy for the share. ok=false when
+	// the share is unknown.
+	TrashConfigForShare(shareName string) (Config, bool)
+	// EnabledTrashShares lists the shares with trash enabled.
+	EnabledTrashShares() []string
+	// FreeBlocks frees the CAS blocks for a permanently-deleted file (payloadID
+	// from RemoveFile). Implemented by the runtime via GetBlockStoreForHandle +
+	// blockStore.Delete. A no-op when payloadID is empty.
+	FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string) error
+}
+
+// Service lists, restores, and empties per-share recycle bins.
+type Service struct {
+	deps     Deps
+	interval time.Duration
+	stopCh   chan struct{}
+}
+
+// New constructs a trash Service. A zero reapInterval defaults to one hour. The
+// stopCh is created here for the reaper wired in a later task.
+func New(deps Deps, reapInterval time.Duration) *Service {
+	if reapInterval <= 0 {
+		reapInterval = defaultReapInterval
+	}
+	return &Service{
+		deps:     deps,
+		interval: reapInterval,
+		stopCh:   make(chan struct{}),
+	}
+}
+
+// resolve returns the share's metadata service and root handle, or a NotFound
+// StoreError when the share is unknown to the runtime.
+func (s *Service) resolve(shareName string) (*metadata.MetadataService, metadata.FileHandle, error) {
+	svc, root, ok := s.deps.MetadataServiceForShare(shareName)
+	if !ok {
+		return nil, nil, &metadata.StoreError{
+			Code:    metadata.ErrNotFound,
+			Message: "unknown share",
+			Path:    shareName,
+		}
+	}
+	return svc, root, nil
+}
+
+// List walks the share's #recycle bin and returns its recycled roots: nodes
+// whose DeletedAt is set. A recycled directory is reported once as a subtree
+// root; its children are not listed as separate entries.
+func (s *Service) List(ctx *metadata.AuthContext, shareName string) ([]Entry, error) {
+	svc, root, err := s.resolve(shareName)
+	if err != nil {
+		return nil, err
+	}
+
+	binHandle, err := svc.GetChild(ctx.Context, root, metadata.RecycleDirName)
+	if err != nil {
+		// No bin yet means nothing has ever been recycled: an empty list, not
+		// an error.
+		if metadata.IsNotFoundError(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var entries []Entry
+	if err := s.walkBin(ctx, svc, binHandle, "", &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// walkBin recursively descends the bin starting at dirHandle (whose path under
+// #recycle is binPrefix). It appends an Entry for every recycled root it finds
+// (a node with DeletedAt set) and, crucially, does NOT descend into a recycled
+// subtree: the root is listed once and its children stay hidden. Non-recycled
+// intermediary directories (the recreated original parent chain, e.g. the "a/b"
+// under #recycle/a/b/c.txt) are descended into but not themselves listed.
+func (s *Service) walkBin(ctx *metadata.AuthContext, svc *metadata.MetadataService, dirHandle metadata.FileHandle, binPrefix string, out *[]Entry) error {
+	var cookie uint64
+	for {
+		page, err := svc.ReadDirectory(ctx, dirHandle, cookie, 0)
+		if err != nil {
+			return err
+		}
+		for i := range page.Entries {
+			e := &page.Entries[i]
+			attr, err := s.entryAttr(ctx, svc, dirHandle, e)
+			if err != nil {
+				return err
+			}
+			childBinPath := joinBin(binPrefix, e.Name)
+			if attr.DeletedAt != nil {
+				// Recycled root: list it once, do not descend.
+				*out = append(*out, Entry{
+					BinPath:      childBinPath,
+					OriginalPath: attr.OriginalPath,
+					DeletedBy:    attr.DeletedBy,
+					DeletedAt:    attr.DeletedAt.UTC(),
+					Size:         attr.Size,
+					IsDir:        attr.Type == metadata.FileTypeDirectory,
+				})
+				continue
+			}
+			// Non-recycled node. Descend into intermediary directories (the
+			// recreated original parent chain) looking for deeper roots.
+			if attr.Type == metadata.FileTypeDirectory {
+				childHandle, err := svc.GetChild(ctx.Context, dirHandle, e.Name)
+				if err != nil {
+					return err
+				}
+				if err := s.walkBin(ctx, svc, childHandle, childBinPath, out); err != nil {
+					return err
+				}
+			}
+		}
+		if !page.HasMore {
+			return nil
+		}
+		cookie = page.NextCookie
+	}
+}
+
+// entryAttr returns a directory entry's FileAttr, using the READDIRPLUS-style
+// inline attrs when present and falling back to GetFile otherwise.
+func (s *Service) entryAttr(ctx *metadata.AuthContext, svc *metadata.MetadataService, dirHandle metadata.FileHandle, e *metadata.DirEntry) (*metadata.FileAttr, error) {
+	if e.Attr != nil {
+		return e.Attr, nil
+	}
+	handle := e.Handle
+	if len(handle) == 0 {
+		h, err := svc.GetChild(ctx.Context, dirHandle, e.Name)
+		if err != nil {
+			return nil, err
+		}
+		handle = h
+	}
+	file, err := svc.GetFile(ctx.Context, handle)
+	if err != nil {
+		return nil, err
+	}
+	return &file.FileAttr, nil
+}
+
+// Restore moves the bin entry at binPath back to dest (defaulting to the
+// entry's OriginalPath when dest is empty) and clears its deletion metadata.
+// Returns an AlreadyExists StoreError when the destination is already occupied;
+// recreates the destination's parent chain when missing.
+func (s *Service) Restore(ctx *metadata.AuthContext, shareName, binPath, dest string) error {
+	svc, root, err := s.resolve(shareName)
+	if err != nil {
+		return err
+	}
+
+	binHandle, err := svc.GetChild(ctx.Context, root, metadata.RecycleDirName)
+	if err != nil {
+		return err
+	}
+
+	// Locate the entry's parent directory and leaf name within the bin.
+	binSrcParent, binSrcName, err := resolveParent(ctx, svc, binHandle, binPath)
+	if err != nil {
+		return err
+	}
+
+	// The node must actually be a recycled root.
+	srcHandle, err := svc.GetChild(ctx.Context, binSrcParent, binSrcName)
+	if err != nil {
+		return err
+	}
+	srcFile, err := svc.GetFile(ctx.Context, srcHandle)
+	if err != nil {
+		return err
+	}
+	if srcFile.DeletedAt == nil {
+		return &metadata.StoreError{
+			Code:    metadata.ErrNotFound,
+			Message: "not a recycled entry",
+			Path:    binPath,
+		}
+	}
+
+	// Default the restore destination to the entry's original location.
+	relDest := strings.TrimPrefix(dest, "/")
+	if relDest == "" {
+		relDest = strings.TrimPrefix(srcFile.OriginalPath, "/")
+	}
+	if relDest == "" {
+		return &metadata.StoreError{
+			Code:    metadata.ErrInvalidArgument,
+			Message: "no restore destination and entry has no original path",
+			Path:    binPath,
+		}
+	}
+
+	// Recreate the destination parent chain under the share root and reject a
+	// restore onto an existing node rather than clobbering it.
+	destParent, destName, err := ensureParent(ctx, svc, root, relDest)
+	if err != nil {
+		return err
+	}
+	if _, err := svc.GetChild(ctx.Context, destParent, destName); err == nil {
+		return &metadata.StoreError{
+			Code:    metadata.ErrAlreadyExists,
+			Message: "restore destination already exists",
+			Path:    relDest,
+		}
+	} else if !metadata.IsNotFoundError(err) {
+		return err
+	}
+
+	// Move the entry out of the bin, then clear its deletion stamp in place.
+	if err := svc.Move(ctx, binSrcParent, binSrcName, destParent, destName); err != nil {
+		return err
+	}
+	return clearStamp(ctx, svc, shareName, destParent, destName)
+}
+
+// clearStamp loads the restored node and nils its DeletedAt / OriginalPath /
+// DeletedBy so it reads as live again. It writes through the share's metadata
+// store directly: these three fields are not exposed by SetFileAttributes.
+func clearStamp(ctx *metadata.AuthContext, svc *metadata.MetadataService, shareName string, parent metadata.FileHandle, name string) error {
+	handle, err := svc.GetChild(ctx.Context, parent, name)
+	if err != nil {
+		return err
+	}
+	store, err := svc.GetStoreForShare(shareName)
+	if err != nil {
+		return err
+	}
+	file, err := store.GetFile(ctx.Context, handle)
+	if err != nil {
+		return err
+	}
+	file.DeletedAt = nil
+	file.OriginalPath = ""
+	file.DeletedBy = ""
+	return store.PutFile(ctx.Context, file)
+}
+
+// Empty permanently removes every recycled root from the share's bin, freeing
+// each removed file's CAS blocks, and returns the count of top-level entries
+// removed. force is accepted for API symmetry but carries no behavior here: the
+// REST layer enforces the admin gate, this layer just executes.
+func (s *Service) Empty(ctx *metadata.AuthContext, shareName string, force bool) (int, error) {
+	_ = force // advisory; admin gate is enforced at the REST layer.
+
+	svc, root, err := s.resolve(shareName)
+	if err != nil {
+		return 0, err
+	}
+
+	binHandle, err := svc.GetChild(ctx.Context, root, metadata.RecycleDirName)
+	if err != nil {
+		if metadata.IsNotFoundError(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	// Collect the recycled roots first so we are not enumerating the bin while
+	// mutating it.
+	var roots []Entry
+	if err := s.walkBin(ctx, svc, binHandle, "", &roots); err != nil {
+		return 0, err
+	}
+
+	for _, e := range roots {
+		parent, name, err := resolveParent(ctx, svc, binHandle, e.BinPath)
+		if err != nil {
+			return 0, err
+		}
+		if err := s.purgeEntry(ctx, svc, shareName, root, parent, name); err != nil {
+			return 0, err
+		}
+	}
+	return len(roots), nil
+}
+
+// purgeEntry permanently deletes a single bin entry (a file or a whole subtree)
+// from under parent, freeing CAS blocks for every removed file. A file is
+// RemoveFile'd directly (it lives inside #recycle, so the metadata layer does a
+// real delete returning the file's PayloadID). A directory is emptied
+// depth-first — RemoveDirectory refuses a non-empty directory — then itself
+// removed.
+func (s *Service) purgeEntry(ctx *metadata.AuthContext, svc *metadata.MetadataService, shareName string, root, parent metadata.FileHandle, name string) error {
+	handle, err := svc.GetChild(ctx.Context, parent, name)
+	if err != nil {
+		return err
+	}
+	file, err := svc.GetFile(ctx.Context, handle)
+	if err != nil {
+		return err
+	}
+
+	if file.Type == metadata.FileTypeDirectory {
+		if err := s.purgeChildren(ctx, svc, shareName, root, handle); err != nil {
+			return err
+		}
+		return svc.RemoveDirectory(ctx, parent, name)
+	}
+
+	removed, err := svc.RemoveFile(ctx, parent, name)
+	if err != nil {
+		return err
+	}
+	return s.deps.FreeBlocks(ctx.Context, shareName, root, string(removed.PayloadID))
+}
+
+// purgeChildren empties a directory inside the bin by recursively purging every
+// child, leaving the directory empty so its caller can RemoveDirectory it.
+func (s *Service) purgeChildren(ctx *metadata.AuthContext, svc *metadata.MetadataService, shareName string, root, dirHandle metadata.FileHandle) error {
+	for {
+		page, err := svc.ReadDirectory(ctx, dirHandle, 0, 0)
+		if err != nil {
+			return err
+		}
+		if len(page.Entries) == 0 {
+			return nil
+		}
+		for i := range page.Entries {
+			name := page.Entries[i].Name
+			if err := s.purgeEntry(ctx, svc, shareName, root, dirHandle, name); err != nil {
+				return err
+			}
+		}
+		// Always restart from the beginning: removals invalidate cookies, and the
+		// directory shrinks each pass until ReadDirectory returns empty.
+	}
+}
+
+// resolveParent walks a bin-relative path (e.g. "a/b/c.txt") under binHandle and
+// returns the handle of the leaf's parent directory plus the leaf name.
+func resolveParent(ctx *metadata.AuthContext, svc *metadata.MetadataService, binHandle metadata.FileHandle, relPath string) (metadata.FileHandle, string, error) {
+	parts := splitPath(relPath)
+	if len(parts) == 0 {
+		return nil, "", &metadata.StoreError{
+			Code:    metadata.ErrInvalidArgument,
+			Message: "empty bin path",
+		}
+	}
+	parent := binHandle
+	for _, dir := range parts[:len(parts)-1] {
+		child, err := svc.GetChild(ctx.Context, parent, dir)
+		if err != nil {
+			return nil, "", err
+		}
+		parent = child
+	}
+	return parent, parts[len(parts)-1], nil
+}
+
+// ensureParent walks a share-relative destination path under root, creating any
+// missing intermediary directories, and returns the leaf's parent handle plus
+// the leaf name.
+func ensureParent(ctx *metadata.AuthContext, svc *metadata.MetadataService, root metadata.FileHandle, relPath string) (metadata.FileHandle, string, error) {
+	parts := splitPath(relPath)
+	if len(parts) == 0 {
+		return nil, "", &metadata.StoreError{
+			Code:    metadata.ErrInvalidArgument,
+			Message: "empty restore destination",
+		}
+	}
+	parent := root
+	for _, dir := range parts[:len(parts)-1] {
+		child, err := svc.GetChild(ctx.Context, parent, dir)
+		if err != nil {
+			if !metadata.IsNotFoundError(err) {
+				return nil, "", err
+			}
+			created, cErr := svc.CreateDirectory(ctx, parent, dir, &metadata.FileAttr{
+				Type: metadata.FileTypeDirectory,
+				Mode: 0o755,
+			})
+			if cErr != nil {
+				return nil, "", cErr
+			}
+			child, cErr = metadata.EncodeFileHandle(created)
+			if cErr != nil {
+				return nil, "", cErr
+			}
+		}
+		parent = child
+	}
+	return parent, parts[len(parts)-1], nil
+}
+
+// splitPath splits a slash-separated relative path into non-empty components.
+func splitPath(rel string) []string {
+	rel = strings.Trim(rel, "/")
+	if rel == "" {
+		return nil
+	}
+	return strings.Split(rel, "/")
+}
+
+// joinBin joins a bin path prefix with a child name.
+func joinBin(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+	return prefix + "/" + name
+}
