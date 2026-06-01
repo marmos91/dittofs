@@ -691,6 +691,16 @@ type Manager struct {
 	// Delegation-related fields
 	breakWaitChans          map[string]chan struct{} // per-handleKey channel for break wait
 	delegationRecallTimeout time.Duration            // default 90s, configurable
+
+	// onByteRangeRelease is a protocol-agnostic notification fired after a
+	// byte-range lock is released on handleKey, so a different protocol's
+	// blocked waiters can be re-driven. It exists because NLM uses a
+	// server-driven GRANTED-callback model (it does not poll): when an SMB
+	// UNLOCK frees a range an NLM waiter is blocked on, that waiter must be
+	// actively woken. The NFS adapter wires this to its processNLMWaiters
+	// drain, mirroring the NLM-side onUnlock callback. May be nil. Fired
+	// outside lm.mu so the subscriber can call back into the Manager.
+	onByteRangeRelease func(handleKey string)
 }
 
 // DefaultDelegationRecallTimeout is the default delegation recall timeout.
@@ -731,6 +741,28 @@ func NewManagerWithGracePeriod(gracePeriod *GracePeriodManager) *Manager {
 	m := newBaseManager(defaultRecentlyBrokenTTL)
 	m.gracePeriod = gracePeriod
 	return m
+}
+
+// SetByteRangeReleaseCallback registers a protocol-agnostic notification that
+// fires after a byte-range lock is released on a handle (see the field doc on
+// onByteRangeRelease). Used by the NFS adapter to re-drive blocked NLM waiters
+// when an SMB UNLOCK frees a contended range. Safe to call once at wiring time.
+func (lm *Manager) SetByteRangeReleaseCallback(fn func(handleKey string)) {
+	lm.mu.Lock()
+	lm.onByteRangeRelease = fn
+	lm.mu.Unlock()
+}
+
+// notifyByteRangeReleased fires the release callback (if registered) for
+// handleKey. MUST be called WITHOUT lm.mu held: the subscriber (e.g. the NLM
+// waiter drain) calls back into the Manager to re-attempt blocked locks.
+func (lm *Manager) notifyByteRangeReleased(handleKey string) {
+	lm.mu.RLock()
+	fn := lm.onByteRangeRelease
+	lm.mu.RUnlock()
+	if fn != nil {
+		fn(handleKey)
+	}
 }
 
 // Lock attempts to acquire a byte-range lock on a file.
@@ -808,12 +840,22 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 //
 // Returns nil on success, or ErrLockNotFound if the lock wasn't found.
 func (lm *Manager) Unlock(handleKey string, openID string, sessionID uint64, offset, length uint64) error {
+	released, err := lm.unlockLocked(handleKey, openID, sessionID, offset, length)
+	if released {
+		// A freed byte-range may unblock a cross-protocol waiter (e.g. an NLM
+		// F_SETLKW blocked on this SMB lock). Notify outside lm.mu.
+		lm.notifyByteRangeReleased(handleKey)
+	}
+	return err
+}
+
+func (lm *Manager) unlockLocked(handleKey string, openID string, sessionID uint64, offset, length uint64) (bool, error) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
 	existing := lm.locks[handleKey]
 	if len(existing) == 0 {
-		return NewLockNotFoundError("")
+		return false, NewLockNotFoundError("")
 	}
 
 	// Find and remove the matching lock. For stacked identical SMB shared
@@ -832,11 +874,11 @@ func (lm *Manager) Unlock(handleKey string, openID string, sessionID uint64, off
 			if len(lm.locks[handleKey]) == 0 {
 				delete(lm.locks, handleKey)
 			}
-			return nil
+			return true, nil
 		}
 	}
 
-	return NewLockNotFoundError("")
+	return false, NewLockNotFoundError("")
 }
 
 // UnlockAllForOpen releases all locks held by a specific open on a file.
@@ -846,6 +888,15 @@ func (lm *Manager) UnlockAllForOpen(handleKey string, openID string) int {
 	if openID == "" {
 		return 0 // empty openID would match all unset locks — guard against misuse
 	}
+	removed := lm.unlockAllForOpenLocked(handleKey, openID)
+	if removed > 0 {
+		// Freed ranges may unblock cross-protocol waiters; notify outside lm.mu.
+		lm.notifyByteRangeReleased(handleKey)
+	}
+	return removed
+}
+
+func (lm *Manager) unlockAllForOpenLocked(handleKey string, openID string) int {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
@@ -880,6 +931,15 @@ func (lm *Manager) UnlockAllForOpen(handleKey string, openID string) int {
 //
 // Returns the number of locks released.
 func (lm *Manager) UnlockAllForSession(handleKey string, sessionID uint64) int {
+	removed := lm.unlockAllForSessionLocked(handleKey, sessionID)
+	if removed > 0 {
+		// Freed ranges may unblock cross-protocol waiters; notify outside lm.mu.
+		lm.notifyByteRangeReleased(handleKey)
+	}
+	return removed
+}
+
+func (lm *Manager) unlockAllForSessionLocked(handleKey string, sessionID uint64) int {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 

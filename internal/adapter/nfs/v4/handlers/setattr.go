@@ -51,9 +51,6 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		}
 	}
 
-	// Log stateid at debug level (full open-mode/lease validation is handled by
-	// the dedicated stateid slice; this slice enforces only the special-stateid
-	// rule below).
 	logger.Debug("NFSv4 SETATTR stateid",
 		"seqid", stateid.Seqid,
 		"special", stateid.IsSpecialStateid(),
@@ -82,12 +79,54 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		}
 	}
 
-	// 4b. A SETATTR that changes the file size is a write-family operation:
-	// reject the READ-bypass (all-ones) special stateid with NFS4ERR_BAD_STATEID
-	// (RFC 7530 Section 9.1.4.3). Without this, a client could truncate/extend a
-	// file using the READ-only special stateid, bypassing share-mode and lock
-	// enforcement.
-	if setAttrs.Size != nil && stateid.IsReadBypassStateid() {
+	// 4b. Validate the stateid via StateManager (RFC 7530 Section 16.32). A
+	// SETATTR that changes the file size is a write-family operation and is
+	// validated as such; any other SETATTR is read-family (the stateid is only
+	// meaningful for size, per RFC 7530 Section 5.11). This mirrors the
+	// WRITE/READ handlers so a bogus/expired/revoked/wrong-filehandle stateid is
+	// rejected, the READ-bypass (all-ones) special stateid cannot truncate, and
+	// a real open stateid renews its lease.
+	//
+	// StateManager may be nil in unit fixtures that exercise only the metadata
+	// path; in that case fall back to the special-stateid guard so a READ-bypass
+	// stateid still cannot drive a size change.
+	sizeChange := setAttrs.Size != nil
+	if h.StateManager != nil {
+		op := state.StateidOpRead
+		if sizeChange {
+			op = state.StateidOpWrite
+		}
+		openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH, op)
+		if stateErr != nil {
+			nfsStatus := mapStateError(stateErr)
+			logger.Debug("NFSv4 SETATTR stateid validation failed",
+				"error", stateErr,
+				"nfs_status", nfsStatus,
+				"size_change", sizeChange,
+				"handle", string(ctx.CurrentFH),
+				"client", ctx.ClientAddr)
+			return &types.CompoundResult{
+				Status: nfsStatus,
+				OpCode: types.OP_SETATTR,
+				Data:   encodeSetAttrError(nfsStatus),
+			}
+		}
+		// A size change requires the open to carry WRITE access. Special
+		// stateids (openState == nil) bypass this check; the READ-bypass
+		// stateid was already rejected by ValidateStateid for the write op.
+		if sizeChange && openState != nil &&
+			openState.ShareAccess&types.OPEN4_SHARE_ACCESS_WRITE == 0 {
+			logger.Debug("NFSv4 SETATTR rejected: size change on read-only open",
+				"share_access", openState.ShareAccess,
+				"handle", string(ctx.CurrentFH),
+				"client", ctx.ClientAddr)
+			return &types.CompoundResult{
+				Status: types.NFS4ERR_OPENMODE,
+				OpCode: types.OP_SETATTR,
+				Data:   encodeSetAttrError(types.NFS4ERR_OPENMODE),
+			}
+		}
+	} else if sizeChange && stateid.IsReadBypassStateid() {
 		logger.Debug("NFSv4 SETATTR rejected: READ-bypass stateid on size change",
 			"handle", string(ctx.CurrentFH),
 			"client", ctx.ClientAddr)

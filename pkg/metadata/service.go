@@ -56,6 +56,16 @@ type MetadataService struct {
 	// StateManager grace machine in lockstep with the lock-manager grace machine
 	// so both enter and exit together. Registered via SetGraceCoordinator.
 	graceCoordinator GraceCoordinator
+
+	// byteRangeReleaseHook, if set, is stamped onto every per-share lock manager
+	// at creation so a byte-range UNLOCK on ANY protocol re-drives blocked
+	// waiters on the OTHER protocol. The NFS adapter wires this to its
+	// processNLMWaiters drain: an NLM F_SETLKW waiter blocked on an SMB lock is
+	// woken when the SMB holder unlocks (NLM uses a server-driven GRANTED
+	// callback, not poll-retry). Registered via SetByteRangeReleaseHook before
+	// RegisterStoreForShare to affect a given share. The hook receives the
+	// handle key (string-encoded FileHandle).
+	byteRangeReleaseHook func(handleKey string)
 }
 
 // GraceCoordinator couples the lock-manager grace period with another grace
@@ -118,6 +128,17 @@ func (s *MetadataService) SetGraceCoordinator(c GraceCoordinator) {
 	s.graceCoordinator = c
 }
 
+// SetByteRangeReleaseHook registers a protocol-agnostic notification that every
+// per-share lock manager fires after a byte-range UNLOCK, so a release on one
+// protocol re-drives blocked waiters on another (e.g. an SMB UNLOCK waking an
+// NLM F_SETLKW waiter). Must be called before RegisterStoreForShare to affect a
+// given share. The hook receives the string-encoded FileHandle (handle key).
+func (s *MetadataService) SetByteRangeReleaseHook(fn func(handleKey string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byteRangeReleaseHook = fn
+}
+
 // RegisterStoreForShare associates a metadata store with a share.
 // Each share must have exactly one store. Calling this again for the same
 // share will replace the previous store.
@@ -149,6 +170,7 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 	s.mu.Lock()
 	graceDuration := s.graceDuration
 	graceCoordinator := s.graceCoordinator
+	byteRangeReleaseHook := s.byteRangeReleaseHook
 	s.mu.Unlock()
 	if graceDuration <= 0 {
 		graceDuration = DefaultLockGracePeriod
@@ -186,6 +208,14 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 		}
 	} else {
 		lm = NewLockManager()
+	}
+
+	// Stamp the cross-protocol byte-range release notification so an UNLOCK on
+	// this share wakes blocked waiters on another protocol (e.g. NLM F_SETLKW
+	// blocked on an SMB lock). Set before publishing so no UNLOCK can race past
+	// the manager becoming observable without the hook.
+	if byteRangeReleaseHook != nil {
+		lm.SetByteRangeReleaseCallback(byteRangeReleaseHook)
 	}
 
 	s.mu.Lock()

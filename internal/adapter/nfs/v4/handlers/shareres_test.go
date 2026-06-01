@@ -119,6 +119,84 @@ func TestSetAttr_ReadBypassStateid_OnSizeChange_ReturnsBadStateid(t *testing.T) 
 	}
 }
 
+// encodeSetAttrSizeArgs builds SETATTR4args with a FATTR4_SIZE change to the
+// given size using the supplied stateid.
+func encodeSetAttrSizeArgs(t *testing.T, stateid *types.Stateid4, size uint64) []byte {
+	t.Helper()
+	var attrVals bytes.Buffer
+	_ = xdr.WriteUint64(&attrVals, size)
+	var bitmap []uint32
+	attrs.SetBit(&bitmap, attrs.FATTR4_SIZE)
+	return encodeSetAttrArgs(t, stateid, bitmap, attrVals.Bytes())
+}
+
+// TestSetAttr_BogusStateid_OnSizeChange_ReturnsBadStateid verifies a SETATTR
+// that changes size with an unknown (never-OPENed) real stateid is rejected by
+// ValidateStateid (RFC 7530 Section 16.32), mirroring WRITE.
+func TestSetAttr_BogusStateid_OnSizeChange_ReturnsBadStateid(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "bogus.txt", 0o644, 0, 0)
+	fx.writeContent(t, fileHandle, []byte("0123456789"))
+
+	ctx := newRealFSContext(0, 0)
+	setCurrentFH(ctx, fileHandle)
+
+	// A non-special stateid that was never issued by the server.
+	bogus := &types.Stateid4{Seqid: 1}
+	bogus.Other[0] = 0xDE
+	bogus.Other[1] = 0xAD
+
+	args := encodeSetAttrSizeArgs(t, bogus, 0)
+	result := fx.handler.handleSetAttr(ctx, bytes.NewReader(args))
+	// A never-issued stateid is rejected as BAD_STATEID (current epoch) or
+	// STALE_STATEID (prior-epoch byte pattern) — either is a valid rejection;
+	// the point is the size change is NOT silently accepted.
+	if result.Status != types.NFS4ERR_BAD_STATEID && result.Status != types.NFS4ERR_STALE_STATEID {
+		t.Errorf("SETATTR(size) with bogus stateid status = %d, want NFS4ERR_BAD_STATEID (%d) or NFS4ERR_STALE_STATEID (%d)",
+			result.Status, types.NFS4ERR_BAD_STATEID, types.NFS4ERR_STALE_STATEID)
+	}
+}
+
+// TestSetAttr_ReadOnlyOpenStateid_OnSizeChange_ReturnsOpenMode verifies a
+// SETATTR truncate using a READ-only open's real stateid is rejected with
+// NFS4ERR_OPENMODE — the open-mode gate WRITE enforces must also apply to a
+// size-changing SETATTR (round-1 H18).
+func TestSetAttr_ReadOnlyOpenStateid_OnSizeChange_ReturnsOpenMode(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+
+	fileHandle, stateid := openFileAndGetStateid(t, fx, "rdonly", types.OPEN4_SHARE_ACCESS_READ)
+	fx.writeContent(t, fileHandle, []byte("content"))
+
+	ctx := newRealFSContext(0, 0)
+	setCurrentFH(ctx, fileHandle)
+
+	args := encodeSetAttrSizeArgs(t, stateid, 0)
+	result := fx.handler.handleSetAttr(ctx, bytes.NewReader(args))
+	if result.Status != types.NFS4ERR_OPENMODE {
+		t.Errorf("SETATTR(size) with read-only open stateid status = %d, want NFS4ERR_OPENMODE (%d)",
+			result.Status, types.NFS4ERR_OPENMODE)
+	}
+}
+
+// TestSetAttr_WriteOpenStateid_OnSizeChange_Allowed verifies a SETATTR truncate
+// with a valid read-write open stateid succeeds (regression guard for the
+// stateid validation added for H18 not being over-strict).
+func TestSetAttr_WriteOpenStateid_OnSizeChange_Allowed(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+
+	fileHandle, stateid := openFileAndGetStateid(t, fx, "rdwr", types.OPEN4_SHARE_ACCESS_BOTH)
+	fx.writeContent(t, fileHandle, []byte("content"))
+
+	ctx := newRealFSContext(0, 0)
+	setCurrentFH(ctx, fileHandle)
+
+	args := encodeSetAttrSizeArgs(t, stateid, 0)
+	result := fx.handler.handleSetAttr(ctx, bytes.NewReader(args))
+	if result.Status != types.NFS4_OK {
+		t.Errorf("SETATTR(size) with read-write open stateid status = %d, want NFS4_OK", result.Status)
+	}
+}
+
 func TestRead_ReadBypassStateid_Allowed(t *testing.T) {
 	fx := newIOTestFixture(t, "/export")
 	fileHandle := fx.createRegularFile(t, fx.rootHandle, "rbypass.txt", 0o644, 0, 0)
