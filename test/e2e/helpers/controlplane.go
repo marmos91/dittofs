@@ -155,6 +155,19 @@ func CleanupShare(client *apiclient.Client, name string) {
 	_ = client.DeleteShare(name)
 }
 
+// AssociateNetgroup associates a netgroup with a share's NFS adapter config via
+// the per-share adapter config API. Returns the updated config.
+func AssociateNetgroup(t *testing.T, client *apiclient.Client, shareName, netgroupName string) *apiclient.ShareNFSConfig {
+	t.Helper()
+
+	cfg, err := client.PatchShareNFSConfig(shareName, &apiclient.PatchShareNFSConfigRequest{
+		Netgroup: &netgroupName,
+	})
+	require.NoError(t, err, "Failed to associate netgroup %s with share %s", netgroupName, shareName)
+
+	return cfg
+}
+
 // =============================================================================
 // Wait Helpers
 // =============================================================================

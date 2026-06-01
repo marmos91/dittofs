@@ -63,4 +63,6 @@ func init() {
 
 	Cmd.AddCommand(disableCmd)
 	Cmd.AddCommand(enableCmd)
+
+	Cmd.AddCommand(nfsConfigCmd) // per-share NFS adapter config (squash, netgroup, auth)
 }

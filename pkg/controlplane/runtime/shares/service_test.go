@@ -169,6 +169,43 @@ func TestDisableShare_DBWriteFails_RuntimeUnchanged(t *testing.T) {
 	}
 }
 
+func TestSetShareNetgroup(t *testing.T) {
+	svc, _ := makeService(t, &Share{
+		Name:          "/export",
+		MetadataStore: "meta-a",
+		Enabled:       true,
+	})
+
+	if err := svc.SetShareNetgroup("/export", "office"); err != nil {
+		t.Fatalf("SetShareNetgroup: %v", err)
+	}
+	sh, err := svc.GetShare("/export")
+	if err != nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+	if sh.NetgroupName != "office" {
+		t.Errorf("NetgroupName = %q, want office", sh.NetgroupName)
+	}
+
+	// Empty name clears the association.
+	if err := svc.SetShareNetgroup("/export", ""); err != nil {
+		t.Fatalf("SetShareNetgroup(clear): %v", err)
+	}
+	sh, _ = svc.GetShare("/export")
+	if sh.NetgroupName != "" {
+		t.Errorf("NetgroupName = %q, want empty after clear", sh.NetgroupName)
+	}
+}
+
+func TestSetShareNetgroup_UnknownShare(t *testing.T) {
+	svc, _ := makeService(t)
+
+	err := svc.SetShareNetgroup("/missing", "office")
+	if !errors.Is(err, ErrShareNotFound) {
+		t.Errorf("expected ErrShareNotFound, got %v", err)
+	}
+}
+
 func TestEnableShare_Idempotent(t *testing.T) {
 	svc, store := makeService(t, &Share{
 		Name:          "/export",

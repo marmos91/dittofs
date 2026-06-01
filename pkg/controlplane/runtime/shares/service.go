@@ -1080,6 +1080,23 @@ func (s *Service) SetShareTrashConfig(store ShareStore, name string, cfg TrashSe
 	return nil
 }
 
+// SetShareNetgroup updates the live netgroup association for a share's NFS
+// export. An empty netgroupName clears the association (allow-all). The change
+// takes effect immediately: CheckNetgroupAccess reads NetgroupName from this
+// runtime registry, so subsequent NFS operations honour the new allowlist
+// without an adapter restart. Returns an error if the share is unknown.
+func (s *Service) SetShareNetgroup(name, netgroupName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	share, exists := s.registry[name]
+	if !exists {
+		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
+	}
+	share.NetgroupName = netgroupName
+	return nil
+}
+
 // DisableShare sets enabled=false on the share's DB row and runtime Share
 // struct, then invokes notifyShareChange so adapters drop active sessions.
 // DB-first-then-runtime ordering is crash-consistent: if the process dies

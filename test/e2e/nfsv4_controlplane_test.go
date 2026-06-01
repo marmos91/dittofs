@@ -198,8 +198,10 @@ func TestNFSv4ControlPlaneNetgroup(t *testing.T) {
 			assert.Equal(t, shareName, share.Name)
 			t.Log("Step 2: Share created")
 
-			// TODO: Associate netgroup with share's NFS adapter config when adapter config API exists.
-			t.Skip("Netgroup-share association requires adapter config API (not yet implemented)")
+			// Associate the netgroup with the share's NFS adapter config.
+			cfg := helpers.AssociateNetgroup(t, client, shareName, ngName)
+			assert.Equal(t, ngName, cfg.Netgroup, "NFS config should reflect the associated netgroup")
+			t.Log("Step 2b: Netgroup associated with share NFS config")
 
 			// Enable NFS adapter
 			nfsPort := helpers.FindFreePort(t)

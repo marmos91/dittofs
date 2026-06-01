@@ -135,6 +135,33 @@ type UpdateShareRequest struct {
 	TrashExcludePatterns []string `json:"trash_exclude_patterns,omitempty"`
 }
 
+// ShareNFSConfig represents the per-share NFS adapter configuration. Netgroup
+// is exposed by name (empty = no association).
+type ShareNFSConfig struct {
+	Squash             string  `json:"squash"`
+	AnonymousUID       *uint32 `json:"anonymous_uid,omitempty"`
+	AnonymousGID       *uint32 `json:"anonymous_gid,omitempty"`
+	AllowAuthSys       bool    `json:"allow_auth_sys"`
+	RequireKerberos    bool    `json:"require_kerberos"`
+	MinKerberosLevel   string  `json:"min_kerberos_level"`
+	Netgroup           string  `json:"netgroup"`
+	DisableReaddirplus bool    `json:"disable_readdirplus"`
+}
+
+// PatchShareNFSConfigRequest is the request to update a share's NFS adapter
+// config. All fields are optional; nil leaves the field unchanged. Netgroup is
+// a pointer-to-string: a non-nil empty string clears the association.
+type PatchShareNFSConfigRequest struct {
+	Squash             *string `json:"squash,omitempty"`
+	AnonymousUID       *uint32 `json:"anonymous_uid,omitempty"`
+	AnonymousGID       *uint32 `json:"anonymous_gid,omitempty"`
+	AllowAuthSys       *bool   `json:"allow_auth_sys,omitempty"`
+	RequireKerberos    *bool   `json:"require_kerberos,omitempty"`
+	MinKerberosLevel   *string `json:"min_kerberos_level,omitempty"`
+	Netgroup           *string `json:"netgroup,omitempty"`
+	DisableReaddirplus *bool   `json:"disable_readdirplus,omitempty"`
+}
+
 // SharePermission represents a permission on a share.
 type SharePermission struct {
 	Type  string `json:"type"`  // "user" or "group"
@@ -177,6 +204,24 @@ func (c *Client) UpdateShare(name string, req *UpdateShareRequest) (*Share, erro
 // DeleteShare deletes a share.
 func (c *Client) DeleteShare(name string) error {
 	return deleteResource(c, fmt.Sprintf("/api/v1/shares/%s", url.PathEscape(normalizeShareNameForAPI(name))))
+}
+
+// GetShareNFSConfig returns the per-share NFS adapter configuration.
+func (c *Client) GetShareNFSConfig(name string) (*ShareNFSConfig, error) {
+	var cfg ShareNFSConfig
+	if err := c.get(fmt.Sprintf("/api/v1/shares/%s/adapters/nfs/config", url.PathEscape(normalizeShareNameForAPI(name))), &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// PatchShareNFSConfig updates the per-share NFS adapter configuration.
+func (c *Client) PatchShareNFSConfig(name string, req *PatchShareNFSConfigRequest) (*ShareNFSConfig, error) {
+	var cfg ShareNFSConfig
+	if err := c.patch(fmt.Sprintf("/api/v1/shares/%s/adapters/nfs/config", url.PathEscape(normalizeShareNameForAPI(name))), req, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
 }
 
 // ListSharePermissions returns permissions for a share.

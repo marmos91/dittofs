@@ -340,9 +340,9 @@ func TestControlPlaneV2_NetgroupInUse(t *testing.T) {
 	assert.Equal(t, shareName, share.Name)
 	t.Log("Step 2: Share created")
 
-	// TODO: Once adapter config API exists, associate netgroup with share's NFS config here.
-	// For now, skip the netgroup-in-use check since we can't set it via the current API.
-	t.Skip("Netgroup-share association requires adapter config API (not yet implemented)")
+	// Associate the netgroup with the share's NFS adapter config so it is in-use.
+	helpers.AssociateNetgroup(t, client, shareName, ngName)
+	t.Log("Step 2b: Netgroup associated with share NFS config")
 
 	// 3. Try delete netgroup -> expect 409 Conflict
 	err = helpers.DeleteNetgroupExpectError(t, client, ngName)
