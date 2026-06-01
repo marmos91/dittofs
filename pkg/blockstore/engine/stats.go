@@ -39,6 +39,10 @@ type BlockStoreStats struct {
 
 // Stats returns storage statistics from the local store.
 func (bs *Store) Stats() (*blockstore.Stats, error) {
+	if err := bs.enter(); err != nil {
+		return nil, err
+	}
+	defer bs.closeMu.RUnlock()
 	localStats := bs.local.Stats()
 	files := bs.local.ListFiles()
 	used := uint64(localStats.DiskUsed)
@@ -63,6 +67,15 @@ func (bs *Store) Stats() (*blockstore.Stats, error) {
 
 // GetStats returns comprehensive block store statistics.
 func (bs *Store) GetStats() BlockStoreStats {
+	// Pin against Close teardown. This method has no error return, so a
+	// closed store reports empty stats rather than racing the
+	// local/syncer/cache teardown Close performs under closeMu.Lock.
+	bs.closeMu.RLock()
+	defer bs.closeMu.RUnlock()
+	if bs.closed {
+		return BlockStoreStats{}
+	}
+
 	localStats := bs.local.Stats()
 	files := bs.local.ListFiles()
 
@@ -134,5 +147,14 @@ func (bs *Store) populateBlockCounts(stats *BlockStoreStats, files []string) {
 	}
 }
 
-// LocalStats returns a snapshot of local store statistics.
-func (bs *Store) LocalStats() local.Stats { return bs.local.Stats() }
+// LocalStats returns a snapshot of local store statistics. A closed store
+// reports empty stats rather than racing the local teardown Close performs
+// under closeMu.Lock (no error return to surface ErrStoreClosed).
+func (bs *Store) LocalStats() local.Stats {
+	bs.closeMu.RLock()
+	defer bs.closeMu.RUnlock()
+	if bs.closed {
+		return local.Stats{}
+	}
+	return bs.local.Stats()
+}

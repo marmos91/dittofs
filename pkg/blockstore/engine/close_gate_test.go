@@ -54,9 +54,13 @@ func TestStore_CloseDrainsInFlightReadAt(t *testing.T) {
 		bs := newTestEngine(t, 0, 0)
 		ctx := context.Background()
 		payloadID := "race-read-file"
-		// Seed some data so ReadAt has something to walk (best-effort; the
-		// race is on the lifecycle, not on the content).
-		_, _ = bs.WriteAt(ctx, payloadID, nil, []byte("0123456789"), 0)
+		// Seed some data so ReadAt has something to walk. Assert the seed
+		// succeeds so a seed failure can't make the lifecycle assertion
+		// below pass/fail for the wrong reason — the seed runs before any
+		// Close, so it must never error.
+		if _, err := bs.WriteAt(ctx, payloadID, nil, []byte("0123456789"), 0); err != nil {
+			t.Fatalf("iter %d: seed WriteAt failed: %v", i, err)
+		}
 
 		var wg sync.WaitGroup
 		wg.Add(2)
@@ -74,11 +78,16 @@ func TestStore_CloseDrainsInFlightReadAt(t *testing.T) {
 
 		wg.Wait()
 
-		// A read may legitimately miss (closed store, or content not yet
-		// durable) — we only assert it never panics/races and that any
-		// lifecycle error is the typed ErrStoreClosed. Content-level read
-		// misses surface their own errors and are out of scope here.
-		_ = readErr
+		// The in-flight ReadAt either completed before Close drained (nil
+		// error — it ran fully against a live store) or arrived after
+		// closed=true and was refused with the typed ErrStoreClosed. Any
+		// other error is a lifecycle bug: the gate must convert a
+		// raced-Close into ErrStoreClosed, never a torn read or untyped
+		// failure. (The seed above guarantees the content is present, so a
+		// successful read can't be a spurious miss.)
+		if readErr != nil && !errors.Is(readErr, ErrStoreClosed) {
+			t.Fatalf("iter %d: unexpected ReadAt error: %v", i, readErr)
+		}
 	}
 }
 

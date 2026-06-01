@@ -530,6 +530,16 @@ func (bs *Store) EvictLocal(ctx context.Context, payloadID string) error {
 // and for the REST evict path that drops the read buffer wholesale.
 // Returns the number of entries that were present before destruction.
 func (bs *Store) DestroyCache() int {
+	// Pin against Close teardown. No error return to surface ErrStoreClosed,
+	// so a closed store reports 0 destroyed entries rather than racing the
+	// cache teardown Close performs under closeMu.Lock — Close already closed
+	// the cache, so there is nothing to destroy.
+	bs.closeMu.RLock()
+	defer bs.closeMu.RUnlock()
+	if bs.closed {
+		return 0
+	}
+
 	entries := bs.cache.Stats().Entries
 	_ = bs.cache.Close()
 	// Replace closed cache with the Null Object so subsequent operations
