@@ -47,9 +47,11 @@ type ControlPlaneConfig struct {
 	JWT  JWTConfig `yaml:"jwt"`
 }
 
-// JWTConfig configures JWT authentication
+// JWTConfig configures JWT authentication.
+// Note: the server hardcodes the JWT issuer ("dittofs") and exposes no issuer
+// config key, so this type deliberately omits Issuer to avoid emitting a key
+// the server silently discards.
 type JWTConfig struct {
-	Issuer               string `yaml:"issuer,omitempty"`
 	AccessTokenDuration  string `yaml:"access_token_duration"`
 	RefreshTokenDuration string `yaml:"refresh_token_duration"`
 }

@@ -187,11 +187,6 @@ type JWTConfig struct {
 	// +kubebuilder:default="168h"
 	// +optional
 	RefreshTokenDuration string `json:"refreshTokenDuration,omitempty"`
-
-	// Token issuer claim
-	// +kubebuilder:default="dittofs"
-	// +optional
-	Issuer string `json:"issuer,omitempty"`
 }
 
 // AdminConfig defines the initial admin user configuration

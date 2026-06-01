@@ -70,3 +70,30 @@ jobs:
 
       - name: Run linter
         run: make lint
+
+  manifests:
+    name: Manifests in sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: k8s/dittofs-operator/go.mod
+          cache: true
+
+      # Regenerates CRDs/RBAC/deepcopy from kubebuilder markers, syncs the Helm
+      # chart CRDs, and fails on any non-empty git diff so config/crd, api, and
+      # chart/crds can never drift from the source markers.
+      - name: Verify generated manifests
+        run: make manifests-verify
+
+      # The documented "kubectl kustomize config/default | kubectl apply -f -"
+      # install path must render from a clean checkout — guards against a
+      # kustomization referencing a file that is missing from the repo.
+      - name: Verify kustomize build
+        run: kubectl kustomize config/default > /dev/null

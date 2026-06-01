@@ -204,10 +204,6 @@ spec:
                         default: 15m
                         description: Access token duration (e.g., "15m", "1h")
                         type: string
-                      issuer:
-                        default: dittofs
-                        description: Token issuer claim
-                        type: string
                       refreshTokenDuration:
                         default: 168h
                         description: Refresh token duration (e.g., "168h" for 7 days)
