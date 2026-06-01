@@ -381,8 +381,9 @@
               inherit version;
               src = ./.;
 
-              # To update: set to "", run `nix build`, copy hash from error
-              vendorHash = "sha256-IbW/a0aI3/qnTT44eX3mIAnLfQmyFcHs3cebiBHrQ38=";
+              # Auto-updated by .github/workflows/nix-update-hash.yml on go.mod/go.sum changes.
+              # Manual: go run scripts/update-nix-hash.go
+              vendorHash = "sha256-GlGTkoYjjie3hh6ViJ7oMLery1Lv+dBXxnbjmqKLXPg=";
 
               ldflags = [
                 "-s"
