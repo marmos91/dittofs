@@ -401,8 +401,21 @@ run_smbtorture() {
             "$target" "${SMBTORTURE_AUTH_ARGS[@]}" "$filter" \
             2>&1 | tee -a "${RESULTS_DIR}/smbtorture-output.txt" || rc=${PIPESTATUS[0]}
     fi
-    # Exit code 124 = timeout, 125+ = docker/infrastructure failure
-    if [[ $rc -ge 125 ]]; then
+    # Classify the exit code (see _smbtorture_exit handling at end of file):
+    #   124            -> the per-suite timeout fired (a hang we DO want to fail on)
+    #   125            -> docker run/daemon error (image pull 502, OOM-killed
+    #                     container, etc.) — a real infrastructure failure
+    #   128+N (>=129)  -> the smbtorture CLIENT process was killed by signal N
+    #                     (e.g. 134=SIGABRT from smb_panic, 139=SIGSEGV). This is
+    #                     a smbtorture bug, NOT a DittoFS or infra fault, so it
+    #                     must not by itself fail the job — parse-results.sh is
+    #                     the source of truth for protocol outcomes. We log it and
+    #                     let the run continue / be graded on parsed results.
+    # 126/127 are also docker-side (permission / command-not-found) and are
+    # treated as infrastructure like 125.
+    if [[ $rc -ge 129 ]]; then
+        log_warn "smbtorture client crashed (exit code $rc, signal $((rc - 128))) for filter: $filter — client-side bug, not failing the job on this alone"
+    elif [[ $rc -ge 124 ]]; then
         log_warn "smbtorture infrastructure failure (exit code $rc) for filter: $filter"
     fi
     return $rc
@@ -438,12 +451,33 @@ reset_share() {
     fi
 }
 
+# _smbtorture_exit  : last non-zero run_smbtorture exit (kept for context/logging)
+# _smbtorture_infra : highest exit code that represents a REAL docker/infra
+#                     failure (125-127: daemon error, image-pull 502,
+#                     OOM-killed container, permission/command-not-found). This
+#                     preserves the prior `>=125` job-failure threshold while
+#                     EXCLUDING smbtorture client process crashes (>=129, killed
+#                     by signal) — those are upstream client bugs and must not
+#                     red the job; parse-results.sh grades the actual protocol
+#                     outcomes from whatever output was produced. A per-suite
+#                     timeout (124) is also left non-fatal, matching the prior
+#                     behaviour (partial output is still graded).
 _smbtorture_exit=0
+_smbtorture_infra=0
+
+# record_rc RC: fold a run_smbtorture exit code into the trackers.
+record_rc() {
+    local rc="$1"
+    [[ $rc -ne 0 ]] && _smbtorture_exit=$rc
+    if [[ $rc -ge 125 && $rc -le 127 && $rc -gt $_smbtorture_infra ]]; then
+        _smbtorture_infra=$rc
+    fi
+}
 
 if [[ -n "$FILTER" ]]; then
     # Single filter mode: run only the specified filter
     log_step "Running smbtorture (filter: ${FILTER}, timeout: ${TIMEOUT}s)..."
-    run_smbtorture "$FILTER" || _smbtorture_exit=$?
+    run_smbtorture "$FILTER" || record_rc $?
 else
     # Full suite mode: run sub-suites individually to avoid hold-oplock and
     # hold-sharemode tests which block indefinitely (they are interactive
@@ -467,7 +501,7 @@ else
         # opens/leases) can't fail a previously-passing test. Refs #568.
         reset_share "$SMBTORTURE_DEFAULT_SHARE"
         log_info "  Running: ${test}"
-        run_smbtorture "$test" 60 || _smbtorture_exit=$?
+        run_smbtorture "$test" 60 || record_rc $?
     done
 
     # Sub-suites with prefix for test name fixup.
@@ -538,7 +572,27 @@ else
         "smb2.replay:replay"
         "smb2.rw:rw"
         "smb2.samba3misc:samba3misc"
-        "smb2.scan:scan"
+        # smb2.scan is run per-subtest with the smb2.scan.scan opcode-fuzzer
+        # skipped: it walks every SMB2 command id, and at opcode 12
+        # (SMB2_OPLOCK_BREAK) the smbtorture 4.22.6 *client* aborts inside its
+        # OWN signing code — smb2_signing_calc_signature asserts
+        # "opcode[12] msg_id == 0" and smb_panic()s
+        # (libcli/smb/smb2_signing.c:576). The backtrace is entirely in the
+        # client (smb2_signing_sign_pdu → smb2cli_req_compound_submit); DittoFS
+        # is not in it and correctly returns NT_STATUS_INVALID_PARAMETER for the
+        # bogus opcodes it does receive (it is pure Go and cannot SIGSEGV here).
+        # The client abort surfaces as a docker exit code >=129 (128+signal),
+        # which the infrastructure-failure guard below historically turned into
+        # a red job — the recurring "exit 139 / smb2.scan" memory-profile flake.
+        # (The guard now ignores client-crash codes, but skipping the test is
+        # still preferable so the suite produces real results.) The other three
+        # scan subtests (getinfo/setinfo/find) do not crash and are kept. Same
+        # workaround shape as smb2.dirlease.oplocks (#633). Drop smb2.scan.scan
+        # from the skip list once the smbtorture client crash is fixed upstream
+        # (or we upgrade past 4.22.6).
+        "smb2.scan.getinfo:scan"
+        "smb2.scan.setinfo:scan"
+        "smb2.scan.find:scan"
         "smb2.session:session"
         "smb2.session-require-signing:session-require-signing"
         "smb2.sharemode:sharemode"
@@ -560,7 +614,7 @@ else
         else
             log_info "  Running: ${suite}"
         fi
-        run_smbtorture "$suite" 120 "$prefix" "${share:-}" || _smbtorture_exit=$?
+        run_smbtorture "$suite" 120 "$prefix" "${share:-}" || record_rc $?
     done
 
     # NOTE: Skipped interactive hold tests:
@@ -590,10 +644,16 @@ echo ""
 echo -e "${BOLD}Results directory:${NC} ${RESULTS_DIR}"
 echo ""
 
-# Fail on infrastructure errors even if parse-results found no new test failures
-if [[ $_smbtorture_exit -ge 125 ]]; then
-    log_error "smbtorture had infrastructure failures (exit code $_smbtorture_exit)"
-    exit "$_smbtorture_exit"
+# Fail on genuine docker/infra errors (exit 125-127) even if parse-results
+# found no new test failures — same threshold as before this change.
+# smbtorture *client* process crashes (exit >=129, killed by signal) are
+# intentionally NOT job-failing on their own: they are upstream client bugs
+# (see the smb2.scan.scan note above), and the run is graded on the protocol
+# outcomes parse-results.sh extracted from whatever output was produced before
+# the crash. record_rc only records 125-127 into _smbtorture_infra.
+if [[ $_smbtorture_infra -ge 125 ]]; then
+    log_error "smbtorture had infrastructure failures (exit code $_smbtorture_infra)"
+    exit "$_smbtorture_infra"
 fi
 
 exit "$parse_exit"

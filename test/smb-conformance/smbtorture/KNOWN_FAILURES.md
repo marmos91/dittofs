@@ -297,6 +297,7 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.multichannel.oplocks.test2 | Multi-channel | Requires `FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT` (Samba test-harness FSCTL) |
 | smb2.multichannel.oplocks.test3_windows | Multi-channel | Requires `FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT` (Samba test-harness FSCTL) |
 | smb2.multichannel.oplocks.test3_specification | Multi-channel | Requires `FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT` + 32-channel coordination (Samba-internal) |
+| smb2.scan.scan | smbtorture client crash | Opcode-fuzzer that walks every SMB2 command id. At opcode 12 (SMB2_OPLOCK_BREAK) the smbtorture 4.22.6 **client** aborts inside its own signing code — `smb2_signing_calc_signature` asserts `opcode[12] msg_id == 0` and `smb_panic()`s (`libcli/smb/smb2_signing.c:576`). The backtrace is entirely client-side (`smb2_signing_sign_pdu` → `smb2cli_req_compound_submit`); DittoFS is pure Go, is not in the backtrace, and correctly returns `NT_STATUS_INVALID_PARAMETER` for the bogus opcodes it does receive. The crash surfaces as docker exit ≥129 and previously red'd the whole `smbtorture / memory` job (the recurring "exit 139 / smb2.scan" flake). Skipped by `run.sh` per-subtest split; the other three scan subtests (getinfo/setinfo/find) pass. Drop once the upstream client crash is fixed (or we move past smbtorture 4.22.6). |
 | smb2.kernel-oplocks.kernel_oplocks2 | Kernel oplocks | Requires Linux kernel `F_SETLEASE` on underlying fd — userspace VFS cannot |
 | smb2.kernel-oplocks.kernel_oplocks4 | Kernel oplocks | Requires Linux kernel `F_SETLEASE` on underlying fd — userspace VFS cannot |
 | smb2.kernel-oplocks.kernel_oplocks5 | Kernel oplocks | Kernel oplock vs lease downgrade semantics — DittoFS has no kernel oplock layer |
@@ -317,13 +318,33 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.maxfid | smbtorture wall-clock budget | Test issues up to 65520 sequential synchronous CREATEs (Samba `source4/torture/smb2/maxfid.c:100`, controlled by `torture:maxopenfiles`). Total RTT-bound runtime exceeds the 60s per-test wall set by `run.sh` (STANDALONE_TESTS). DittoFS keeps CREATE succeeding throughout (no protocol-level handle-table cap), so the suite is killed mid-loop before reaching the cleanup phase. Raising the per-test wall to accommodate one stress test inflates full-suite runtime substantially without exercising a protocol gap. |
 | smb2.notify.mask-change | Samba notify-mask quirk | Asserts that, once a CHANGE_NOTIFY completion-filter mask has been armed on a directory handle, re-issuing CHANGE_NOTIFY with a different mask MUST observe the original mask only until the handle is closed (test source: `source4/torture/smb2/notify.c:771-772` — "Now try and change the mask to include other events. This should not work - once the mask is set on a directory h1 it seems to be fixed until the fnum is closed"). MS-SMB2 §3.3.5.19 does not specify mask-coalescing across separate CHANGE_NOTIFY requests on the same handle, and the test has a long-standing "never passed individually" history against DittoFS independent of test order. Surrounding scenarios (cross-tree dir/file rename plumbing, recursion-flag-mixed reqs on the same FID) are also Samba implementation conventions. |
 
-**Total: 25 tests permanently out of scope.**
+**Total: 26 tests permanently out of scope.**
 
 ### Kerberos
 
 The 70 entries in `KNOWN_FAILURES_KERBEROS.md` are deferred past the v1.0 tag and tracked under #686 (v1.0+kerberos). They do not gate v1.0 because `parse-results.sh` only loads them when smbtorture is run with `--kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`).
 
 ## Changelog
+
+### 2026-06-01 — Fix recurring `smbtorture / memory` exit-139 flake (smb2.scan client crash)
+
+Root-caused the intermittent `smbtorture / memory` red as a **smbtorture 4.22.6
+client crash**, not a DittoFS fault. `smb2.scan.scan` walks every SMB2 opcode;
+at opcode 12 the client aborts in its own signing assertion
+(`smb2_signing.c:576`, `opcode[12] msg_id == 0`) — reproduced deterministically
+locally. The client abort surfaces as a docker exit code ≥129, which `run.sh`'s
+infrastructure-failure guard (`>=125`) turned into a red job regardless of how
+the actual protocol tests fared; intermittency came from whether that exit code
+survived as the final `_smbtorture_exit` across the ~70-suite full run. Two
+fixes in `run.sh`: (1) split `smb2.scan` per-subtest and skip the crashing
+`scan.scan` (getinfo/setinfo/find still run and pass — same shape as the
+`smb2.dirlease.oplocks` #633 workaround); (2) the final job-failure guard now
+keys off `_smbtorture_infra`, which records only genuine docker/infra exit codes
+(125-127: daemon error, image-pull 502, OOM) and excludes smbtorture client
+process crashes (≥129, killed by signal) — the latter is logged but no longer
+reds the job on its own, so the run is graded on `parse-results.sh` outcomes.
+A per-suite timeout (124) stays non-fatal, matching the prior threshold.
+`smb2.scan.scan` added to the Permanently Unimplementable appendix.
 
 ### 2026-06-01 — #739 lock-lease: 1 row flipped (lease-V2 epoch persistence)
 
