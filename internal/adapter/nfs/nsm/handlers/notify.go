@@ -2,10 +2,13 @@ package handlers
 
 import (
 	"net"
+	"sync"
+	"sync/atomic"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // Notify handles NSM NOTIFY (X/Open NSM, SM procedure 6).
@@ -80,18 +83,112 @@ func (h *Handler) Notify(ctx *NSMHandlerContext, data []byte) (*HandlerResult, e
 		"mon_name", statChge.MonName,
 		"new_state", statChge.State)
 
-	// Relay / lock-recovery dispatch is intentionally NOT implemented here.
-	//
-	// This PR establishes the security gates (above) so that a future relay is
-	// safe by construction: any relay implementation MUST run only after BOTH
-	// gates have passed. When the relay ships it should, for the validated
-	// mon_name:
-	//   1. find local registrations monitoring this host,
-	//   2. send SM_NOTIFY callbacks to those clients, and
-	//   3. release the rebooted host's stale NLM locks,
-	// all gated by the checks performed above.
+	// Both gates passed: relay the state change to every local monitor that
+	// registered (via SM_MON) for this mon_name. Each callback carries the
+	// monitor's own stored priv data so its lock manager (lockd/NLM) can
+	// reclaim or release the rebooted host's locks. Lock release proper is the
+	// callback recipient's responsibility, not ours.
+	h.dispatchNotify(ctx, statChge.MonName, statChge.State)
 
 	return ack, nil
+}
+
+// dispatchNotify sends an SM_NOTIFY callback to every local registration that
+// monitors monName. It runs ONLY after both H16 and H17 gates have passed.
+//
+// For each matching registration it builds a status carrying:
+//   - mon_name = the rebooted peer (monName), so the recipient knows whose
+//     locks to reclaim;
+//   - state    = the new peer state from the notification;
+//   - priv     = the registration's own 16-byte priv from SM_MON, returned
+//     unchanged so the recipient can correlate recovery context.
+//
+// The callback uses the prog/vers/proc the monitor supplied at SM_MON time.
+// Success and failure are counted and logged for observability; a failed
+// callback never aborts the remaining ones. With no dispatcher configured the
+// relay is a no-op (gates already enforced).
+func (h *Handler) dispatchNotify(ctx *NSMHandlerContext, monName string, state int32) {
+	if h.dispatcher == nil {
+		logger.Debug("NSM NOTIFY relay skipped: no dispatcher configured",
+			"mon_name", monName)
+		return
+	}
+
+	targets := h.monitorsFor(monName)
+	if len(targets) == 0 {
+		// Gate 1 guaranteed at least one registration matched mon_name; a zero
+		// count here means it was unregistered between the gate and now.
+		logger.Debug("NSM NOTIFY relay: no current monitors", "mon_name", monName)
+		return
+	}
+
+	// Fire callbacks in parallel: each Send carries its own (up to 5s) timeout,
+	// so serial dispatch would let one slow monitor stall the rest. This
+	// mirrors Notifier.NotifyAllClients.
+	var (
+		wg           sync.WaitGroup
+		sent, failed atomic.Int64
+		attempted    int
+	)
+	for _, reg := range targets {
+		if reg.CallbackInfo == nil {
+			// No callback target recorded; nothing to send to.
+			continue
+		}
+		attempted++
+		wg.Add(1)
+		go func(reg *lock.ClientRegistration) {
+			defer wg.Done()
+			status := &types.Status{
+				MonName: monName,
+				State:   state,
+				Priv:    reg.Priv,
+			}
+			err := h.dispatcher.Send(
+				ctx.Context,
+				reg.CallbackInfo.Hostname,
+				status,
+				reg.CallbackInfo.Proc,
+				reg.CallbackInfo.Program,
+				reg.CallbackInfo.Version,
+			)
+			if err != nil {
+				failed.Add(1)
+				logger.Warn("NSM NOTIFY callback failed",
+					"mon_name", monName,
+					"client_id", reg.ClientID,
+					"callback_host", reg.CallbackInfo.Hostname,
+					"error", err)
+				return
+			}
+			sent.Add(1)
+			logger.Debug("NSM NOTIFY callback sent",
+				"mon_name", monName,
+				"client_id", reg.ClientID,
+				"callback_host", reg.CallbackInfo.Hostname)
+		}(reg)
+	}
+	wg.Wait()
+
+	logger.Info("NSM NOTIFY relayed",
+		"mon_name", monName,
+		"new_state", state,
+		"monitors", attempted,
+		"sent", sent.Load(),
+		"failed", failed.Load())
+}
+
+// monitorsFor returns all local registrations monitoring monName. It mirrors
+// the membership half of the H16 gate (mon_name match) over the tracker's
+// snapshot of NSM clients.
+func (h *Handler) monitorsFor(monName string) []*lock.ClientRegistration {
+	var matches []*lock.ClientRegistration
+	for _, reg := range h.tracker.GetNSMClients() {
+		if reg.MonName == monName {
+			matches = append(matches, reg)
+		}
+	}
+	return matches
 }
 
 // isMonitoredFromSource enforces the H16 gate. It returns true only when:
