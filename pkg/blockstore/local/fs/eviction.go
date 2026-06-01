@@ -54,7 +54,7 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 	deadline := time.Now().Add(maxWait)
 
 	for bc.diskUsed.Load()+needed > bc.maxDisk {
-		freed, err := bc.lruEvictOne()
+		freed, err := bc.lruEvictOne(ctx)
 		if errors.Is(err, errLRUEmpty) {
 			// No more LRU candidates. Wait briefly for new chunks to land
 			// (e.g., async StoreChunk in the rollup pool) up to the

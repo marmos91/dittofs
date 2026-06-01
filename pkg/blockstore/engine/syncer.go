@@ -387,14 +387,18 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 	for _, hash := range snapshot {
 		data, err := m.local.Get(ctx, hash)
 		if errors.Is(err, blockstore.ErrChunkNotFound) {
-			// Evicted before upload. Eviction only runs on already-synced
-			// chunks, so this is benign drift — drop it from the set and
-			// move on rather than failing the whole pass.
-			logger.Debug("mirrorOnce: pending hash evicted before upload, skipping",
+			// The local chunk is gone before we could mirror it. With the
+			// LRU eviction fix (lruEvictOne refuses to evict unsynced
+			// chunks) this should no longer occur for a chunk that is
+			// genuinely pending upload. Retain the hash for the next tick
+			// rather than dropping it — dropping silently destroyed the
+			// only copy of never-mirrored data. If the chunk is truly gone
+			// (e.g. an external delete), the next seedPendingFromDisk /
+			// ListUnsynced drift reconcile walks disk, finds the chunk
+			// absent, and stops re-seeding it, so the retry loop terminates
+			// naturally instead of spinning forever.
+			logger.Error("mirrorOnce: chunk evicted before mirror — retained for retry",
 				"hash", hash.String())
-			m.pendingMu.Lock()
-			delete(m.pendingHashes, hash)
-			m.pendingMu.Unlock()
 			continue
 		}
 		if err != nil {

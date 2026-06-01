@@ -16,6 +16,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -577,31 +578,83 @@ func (bc *FSStore) lruTouch(h blockstore.ContentHash, size int64, path string) {
 	bc.lruIndex[h] = el
 }
 
-// lruEvictOne removes the least-recently-used chunk from the LRU and
-// unlinks its on-disk file. Returns the freed byte count, or 0 + sentinel
-// when the LRU is empty. Concurrent ReadChunk that races an evict surfaces
-// as blockstore.ErrChunkNotFound (T-11-B-08, accept/refetch posture).
-func (bc *FSStore) lruEvictOne() (int64, error) {
+// lruEvictOne removes the least-recently-used EVICTABLE chunk from the
+// LRU and unlinks its on-disk file. Returns the freed byte count, or 0 +
+// sentinel when there are no evictable candidates left. Concurrent
+// ReadChunk that races an evict surfaces as blockstore.ErrChunkNotFound
+// (T-11-B-08, accept/refetch posture).
+//
+// A chunk is NOT evictable until it has been mirrored to remote: evicting
+// an unsynced chunk before its first upload silently destroys the only
+// copy. When a SyncedHashStore is wired, each candidate is consulted via
+// IsSynced; an unsynced candidate is re-queued at the FRONT of the LRU
+// (the most-recent end, away from the eviction tail) so the scan advances
+// to the next-oldest candidate instead of re-popping the same chunk. To
+// avoid spinning forever when every candidate is unsynced, the scan visits
+// at most a one-shot snapshot of the LRU length before giving up with
+// errLRUEmpty (ensureSpace then waits/back-pressures with ErrDiskFull).
+// When no SyncedHashStore is wired (local-only, no remote), every chunk is
+// evictable and the IsSynced step is skipped.
+//
+// IsSynced is called OUTSIDE lruMu: the SyncedHashStore has its own
+// internal mutex, so holding lruMu across the call would invert lock
+// ordering against the StoreChunk/touch path. lruMu is held only for the
+// pop and the re-queue.
+func (bc *FSStore) lruEvictOne(ctx context.Context) (int64, error) {
+	// Snapshot the candidate budget under lruMu: at most this many
+	// unsynced-skips before declaring "no evictable candidates".
 	bc.lruMu.Lock()
-	el := bc.lruList.Back()
-	if el == nil {
-		bc.lruMu.Unlock()
-		return 0, errLRUEmpty
-	}
-	entry := el.Value.(*lruEntry)
-	bc.lruList.Remove(el)
-	delete(bc.lruIndex, entry.hash)
+	budget := bc.lruList.Len()
 	bc.lruMu.Unlock()
 
-	if err := os.Remove(entry.path); err != nil && !os.IsNotExist(err) {
-		// File system error: re-insert to avoid losing the bookkeeping
-		// (the chunk is still on disk, it just couldn't be unlinked).
+	for attempts := 0; attempts < budget; attempts++ {
 		bc.lruMu.Lock()
-		bc.lruIndex[entry.hash] = bc.lruList.PushBack(entry)
+		el := bc.lruList.Back()
+		if el == nil {
+			bc.lruMu.Unlock()
+			return 0, errLRUEmpty
+		}
+		entry := el.Value.(*lruEntry)
+		bc.lruList.Remove(el)
+		delete(bc.lruIndex, entry.hash)
 		bc.lruMu.Unlock()
-		return 0, fmt.Errorf("evict %s: %w", entry.path, err)
+
+		// Protect unsynced chunks: never evict a chunk that has not yet
+		// been mirrored to remote. Skip the lookup entirely for
+		// local-only stores (no SyncedHashStore wired).
+		if bc.syncedHashStore != nil {
+			synced, err := bc.syncedHashStore.IsSynced(ctx, entry.hash)
+			if err != nil {
+				// Treat lookup failures as unsynced: refuse to evict on
+				// uncertainty rather than risk destroying the only copy.
+				logger.Warn("lruEvictOne: IsSynced lookup failed, treating chunk as unsynced",
+					"hash", entry.hash.String(), "error", err)
+			}
+			if err != nil || !synced {
+				// Re-queue at the FRONT (most-recent end) so the scan
+				// advances to the next-oldest candidate instead of
+				// re-popping this same unsynced chunk off the tail.
+				bc.lruMu.Lock()
+				bc.lruIndex[entry.hash] = bc.lruList.PushFront(entry)
+				bc.lruMu.Unlock()
+				continue
+			}
+		}
+
+		if err := os.Remove(entry.path); err != nil && !os.IsNotExist(err) {
+			// File system error: re-insert to avoid losing the bookkeeping
+			// (the chunk is still on disk, it just couldn't be unlinked).
+			bc.lruMu.Lock()
+			bc.lruIndex[entry.hash] = bc.lruList.PushBack(entry)
+			bc.lruMu.Unlock()
+			return 0, fmt.Errorf("evict %s: %w", entry.path, err)
+		}
+		return entry.size, nil
 	}
-	return entry.size, nil
+
+	// Every candidate within the snapshot budget was unsynced (or the LRU
+	// was empty to begin with): no evictable chunk available.
+	return 0, errLRUEmpty
 }
 
 // seedLRUFromDisk walks <baseDir>/blocks/ at startup and registers every
