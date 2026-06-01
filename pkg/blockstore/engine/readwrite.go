@@ -383,3 +383,64 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 
 	return dst, nil
 }
+
+// reapSupersededFileBlocks deletes the per-file FileBlock rows that a
+// rollup pass's re-chunk superseded (#953). A row is superseded when its
+// chunk offset falls inside the byte region this pass rewrote
+// (newBlocks span) but is NOT one of the new chunk offsets — i.e. an
+// old-generation chunk that an in-place overwrite re-chunked onto
+// different FastCDC boundaries. Left behind, such rows accumulate in the
+// CAS manifest (ListFileBlocks) and the cold read path mixes generations,
+// returning stale bytes after log compaction or local-state eviction.
+//
+// Region-scoped + by-exact-ID, mirroring the engine Delete/Truncate reap
+// contract:
+//   - Only rows whose offset is in [regionStart, regionEnd) are eligible —
+//     a row strictly before the region (a straddling predecessor the FS
+//     rollup could not boundary-align because its chunk was not locally
+//     readable) is KEPT so its non-overwritten head still serves bytes.
+//   - Rows whose offset is reused by a new chunk (overwritten in place by
+//     FileBlock.Put above) are skipped — they are the current generation.
+//   - Reap by EXACT ID "{payloadID}/{offset}" via DecrementRefCountAndReap.
+//     Each {payloadID}/offset row is independent; reaping this file's own
+//     row never touches another file's row. Cross-file dedup keep-alive is
+//     by-hash in the GC live set (EnumerateFileBlocks): the chunk is
+//     reclaimed only when no row anywhere references the hash, so a hash a
+//     sibling file still uses stays alive even after this row is reaped.
+//
+// No-ops when the coordinator is unwired (tests/fixtures) or when nothing
+// was superseded (pure append, first write).
+func (bs *Store) reapSupersededFileBlocks(ctx context.Context, payloadID string, priorOffsets []uint64, newBlocks []blockstore.BlockRef) error {
+	if bs.coordinator == nil || len(priorOffsets) == 0 || len(newBlocks) == 0 {
+		return nil
+	}
+	regionStart := newBlocks[0].Offset
+	var regionEnd uint64
+	newOffsets := make(map[uint64]struct{}, len(newBlocks))
+	for _, b := range newBlocks {
+		if b.Offset < regionStart {
+			regionStart = b.Offset
+		}
+		if end := b.Offset + uint64(b.Size); end > regionEnd {
+			regionEnd = end
+		}
+		newOffsets[b.Offset] = struct{}{}
+	}
+	reaped := make(map[uint64]struct{}, len(priorOffsets))
+	for _, off := range priorOffsets {
+		if off < regionStart || off >= regionEnd {
+			continue // outside the rewritten region — untouched, keep.
+		}
+		if _, isNew := newOffsets[off]; isNew {
+			continue // reused offset — current generation (overwritten in place).
+		}
+		if _, done := reaped[off]; done {
+			continue
+		}
+		reaped[off] = struct{}{}
+		if _, err := bs.coordinator.DecrementRefCountAndReap(ctx, payloadID, off); err != nil {
+			return fmt.Errorf("reap superseded block %s/%d: %w", payloadID, off, err)
+		}
+	}
+	return nil
+}

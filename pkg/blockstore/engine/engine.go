@@ -187,6 +187,34 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 			//     locate which chunk covers a given byte range under
 			//     FastCDC's variable chunk geometry. The trailing
 			//     numeric component is the chunk Offset in bytes.
+			// #953: snapshot the per-file FileBlock row offsets that exist
+			// BEFORE this pass writes its new rows. After the new rows are
+			// durable we reap any prior row that this pass's re-chunk
+			// SUPERSEDED — a row whose offset falls inside the byte region
+			// this pass rewrote but is NOT one of the new chunk offsets.
+			// Without this the per-file CAS manifest accumulates stale,
+			// overlapping rows from multiple write generations; the cold
+			// read path (fillFromCASManifest / readLocalByHash) then mixes
+			// generations and a stale row clobbers freshly-written bytes
+			// (silent corruption after log compaction / local-state
+			// eviction). Snapshot now, reap after PersistFileBlocks below.
+			var priorOffsets []uint64
+			if bs.fileBlockStore != nil {
+				priorRows, lerr := bs.fileBlockStore.ListFileBlocks(ctx, payloadID)
+				if lerr != nil {
+					return fmt.Errorf("ObjectIDPersister: list prior blocks for %s: %w", payloadID, lerr)
+				}
+				priorOffsets = make([]uint64, 0, len(priorRows))
+				for _, pr := range priorRows {
+					if pr == nil {
+						continue
+					}
+					if off, ok := blockstore.ParseChunkOffset(pr.ID); ok {
+						priorOffsets = append(priorOffsets, off)
+					}
+				}
+			}
+
 			if fbs != nil {
 				for _, b := range blocks {
 					if b.Hash.IsZero() {
@@ -269,11 +297,11 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 					if rerr := bs.coordinator.PersistFileBlocks(ctx, payloadID, persistBlocks, zeroObjectID); rerr != nil {
 						return fmt.Errorf("rollup persist: retry without object_id after dedup conflict: %w", rerr)
 					}
-					return nil
+					return bs.reapSupersededFileBlocks(ctx, payloadID, priorOffsets, blocks)
 				}
 				return err
 			}
-			return nil
+			return bs.reapSupersededFileBlocks(ctx, payloadID, priorOffsets, blocks)
 		})
 
 		// (2) Install the chunk-completion callback (production
