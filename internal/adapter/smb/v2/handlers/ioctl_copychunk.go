@@ -456,8 +456,15 @@ func (h *Handler) executeCopyChunks(
 		if err != nil {
 			logger.Warn("COPYCHUNK: source read failed",
 				"chunk", i, "srcPath", srcOpen.Path, "error", err)
+			// Route through common.MapToSMB so a closed-store error (source
+			// share removed mid-copy, area-7 H-A) surfaces as
+			// STATUS_FILE_CLOSED; other errors keep the I/O-class default.
+			status := common.MapToSMB(err)
+			if status == types.StatusInternalError {
+				status = types.StatusUnexpectedIOError
+			}
 			return copyChunkPartialResponse(ctlCode, dstFileID,
-				types.StatusInternalError, chunksWritten, totalBytesWritten), nil
+				status, chunksWritten, totalBytesWritten), nil
 		}
 
 		// Reject short reads (TOCTOU: source may have been truncated concurrently)
@@ -488,8 +495,15 @@ func (h *Handler) executeCopyChunks(
 		if _, err := dstBlockStore.WriteAt(ctx.Context, string(writeOp.PayloadID), nil, data, chunk.TargetOffset); err != nil {
 			logger.Warn("COPYCHUNK: destination write failed",
 				"chunk", i, "dstPath", dstOpen.Path, "error", err)
+			// Route through common.MapToSMB so a closed-store error (dest
+			// share removed mid-copy, area-7 H-A) surfaces as
+			// STATUS_FILE_CLOSED; other errors keep the I/O-class default.
+			status := common.MapToSMB(err)
+			if status == types.StatusInternalError {
+				status = types.StatusUnexpectedIOError
+			}
 			return copyChunkPartialResponse(ctlCode, dstFileID,
-				types.StatusInternalError, chunksWritten, totalBytesWritten), nil
+				status, chunksWritten, totalBytesWritten), nil
 		}
 
 		// Commit write metadata

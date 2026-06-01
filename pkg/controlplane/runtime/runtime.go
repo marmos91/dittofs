@@ -379,15 +379,18 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 // (D-23-02) returns false once the snapshots/ tree is gone. D-23-17.
 func (r *Runtime) RemoveShare(name string) error {
 	r.cancelAndWaitInFlightSnaps(name) // D-23-17: drain BEFORE tree wipe
-	if err := r.sharesSvc.RemoveShare(name); err != nil {
-		return err
-	}
+	// sharesSvc.RemoveShare now performs ordered best-effort teardown and may
+	// return an aggregated error (REVIEW M4). We must NOT early-return on it:
+	// the metadata deregistration below is what prevents the unbounded
+	// service-map growth #897/#907 fixed, and it has to run even when the
+	// block-store Close or snapshot-dir wipe failed. Aggregate instead.
+	rmErr := r.sharesSvc.RemoveShare(name)
 	// Deregister the share's per-share store / lock manager / unified view /
 	// notifier / quota from the metadata service, mirroring the AddShare
 	// registration above. Without this the service maps grow unbounded across
 	// add/remove churn and a same-name re-add reuses the stale lock manager.
 	r.metadataService.RemoveStoreForShare(name)
-	return nil
+	return rmErr
 }
 
 func (r *Runtime) UpdateShare(name string, readOnly *bool, defaultPermission *string, retentionPolicy *blockstore.RetentionPolicy, retentionTTL *time.Duration) error {

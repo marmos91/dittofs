@@ -23,6 +23,10 @@ import (
 // the Cache is CAS-keyed and Flush has no BlockRef snapshot at this
 // layer to translate flushed bytes into hash-keyed cache entries.
 func (bs *Store) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
+	if err := bs.enter(); err != nil {
+		return nil, err
+	}
+	defer bs.closeMu.RUnlock()
 	// Both pre-rollup dedup hooks require a coordinator; gate them
 	// jointly so the nil-check isn't repeated.
 	if bs.coordinator != nil {
@@ -97,6 +101,10 @@ func (bs *Store) Flush(ctx context.Context, payloadID string) (*blockstore.Flush
 
 // DrainAllUploads waits for all pending uploads to complete.
 func (bs *Store) DrainAllUploads(ctx context.Context) error {
+	if err := bs.enter(); err != nil {
+		return err
+	}
+	defer bs.closeMu.RUnlock()
 	return bs.syncer.DrainAllUploads(ctx)
 }
 
@@ -108,6 +116,10 @@ func (bs *Store) DrainAllUploads(ctx context.Context) error {
 // run before DrainAllUploads — rollup is what produces the CAS chunks the
 // syncer then mirrors to the remote.
 func (bs *Store) DrainRollups(ctx context.Context) error {
+	if err := bs.enter(); err != nil {
+		return err
+	}
+	defer bs.closeMu.RUnlock()
 	return bs.local.DrainRollups(ctx)
 }
 
@@ -117,5 +129,9 @@ func (bs *Store) DrainRollups(ctx context.Context) error {
 // Restore() so a file modified in place after the snapshot is not served
 // from a stale append-log record overlaid on the restored CAS bytes.
 func (bs *Store) ResetLocalState(ctx context.Context) error {
+	if err := bs.enter(); err != nil {
+		return err
+	}
+	defer bs.closeMu.RUnlock()
 	return bs.local.ResetLocalState(ctx)
 }

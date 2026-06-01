@@ -9,6 +9,7 @@ import (
 	nfs4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	smbtypes "github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
@@ -413,5 +414,43 @@ func TestCrossProtocolUnitConformance(t *testing.T) {
 		if inE2E && inUnit {
 			t.Errorf("code %v is listed in BOTH e2eTriggerableCodes and exoticCodes() — pick one tier so coverage drift is detectable", code)
 		}
+	}
+}
+
+// TestErrStoreClosedMapsToStale verifies engine.ErrStoreClosed (block store
+// Closed under an in-flight op — area-7 H-A) maps to a stale-handle status on
+// every adapter path: NFS *_STALE and SMB STATUS_FILE_CLOSED. Both the
+// general (errmap.go) and content (content_errmap.go) tables are covered,
+// plus wrapped forms via fmt.Errorf, since the data path returns wrapped
+// errors from the engine.
+func TestErrStoreClosedMapsToStale(t *testing.T) {
+	wrapped := fmt.Errorf("write content: %w", engine.ErrStoreClosed)
+
+	for name, err := range map[string]error{
+		"direct":  engine.ErrStoreClosed,
+		"wrapped": wrapped,
+	} {
+		t.Run(name, func(t *testing.T) {
+			// General table (MapTo*).
+			if got := MapToNFS3(err); got != nfs3types.NFS3ErrStale {
+				t.Errorf("MapToNFS3 = %d, want NFS3ErrStale", got)
+			}
+			if got := MapToNFS4(err); got != nfs4types.NFS4ERR_STALE {
+				t.Errorf("MapToNFS4 = %d, want NFS4ERR_STALE", got)
+			}
+			if got := MapToSMB(err); got != smbtypes.StatusFileClosed {
+				t.Errorf("MapToSMB = %v, want StatusFileClosed", got)
+			}
+			// Content table (MapContentTo*) — the data-path WRITE/READ seam.
+			if got := MapContentToNFS3(err); got != nfs3types.NFS3ErrStale {
+				t.Errorf("MapContentToNFS3 = %d, want NFS3ErrStale", got)
+			}
+			if got := MapContentToNFS4(err); got != nfs4types.NFS4ERR_STALE {
+				t.Errorf("MapContentToNFS4 = %d, want NFS4ERR_STALE", got)
+			}
+			if got := MapContentToSMB(err); got != smbtypes.StatusFileClosed {
+				t.Errorf("MapContentToSMB = %v, want StatusFileClosed", got)
+			}
+		})
 	}
 }

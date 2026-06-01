@@ -237,7 +237,15 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	_, flushErr := blockStore.Flush(ctx.Context, string(file.PayloadID))
 	if flushErr != nil {
 		logger.Warn("FLUSH: failed", "path", openFile.Path, "error", flushErr)
-		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUnexpectedIOError}}, nil
+		// Route through common.MapToSMB so a closed-store error (the share
+		// was removed/hot-reloaded mid-flush, area-7 H-A) surfaces as
+		// STATUS_FILE_CLOSED rather than a generic I/O error. Non-mapped
+		// errors still fall back to the I/O-class default.
+		status := common.MapToSMB(flushErr)
+		if status == types.StatusInternalError {
+			status = types.StatusUnexpectedIOError
+		}
+		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
 	}
 
 	// ========================================================================

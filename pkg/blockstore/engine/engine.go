@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
@@ -99,6 +100,23 @@ type Store struct {
 
 	readBufferBytes int64 // budget for the cache (0 = disabled / Null Object)
 	prefetchWorkers int   // stored from config, used in Start()
+
+	// closeMu is the lifecycle gate. Every public data op (WriteAt,
+	// ReadAt, Flush, Truncate, Delete, …) takes closeMu.RLock() at entry
+	// and holds it for the op's full duration. Close takes closeMu.Lock(),
+	// which blocks until all in-flight ops drop their RLocks, then performs
+	// teardown. This makes Store.Close safe to call concurrently with
+	// in-flight ops (area-7 H-A use-after-close): an op either runs fully
+	// against a live store, or — if it arrives after closed is set — fails
+	// fast with ErrStoreClosed. The RLock side is shared, so concurrent
+	// data ops still run in parallel; only Close serializes.
+	//
+	// Re-entrancy: public ops never call another RLock-gated public op on
+	// the same Store (internal helpers in read_internal.go / the syncer are
+	// ungated), so the non-reentrant Go RWMutex read side is safe here.
+	closeMu  sync.RWMutex
+	closed   bool  // guarded by closeMu; true once teardown has run
+	closeErr error // memoized result of the first Close (idempotent)
 }
 
 // New creates a new Store from the given configuration.
@@ -400,10 +418,55 @@ func (bs *Store) loadByHash(ctx context.Context, hash blockstore.ContentHash) ([
 	return bs.local.Get(ctx, hash)
 }
 
-// Close releases resources held by the store. Closes the cache (stops
-// prefetch workers and drops entries), then syncer (drains uploads)
-// local store, and remote store.
+// enter is the lifecycle-gate entry every public data op calls before
+// touching local/remote/syncer state. It pins the store open for the op's
+// duration by taking closeMu.RLock(); if the store is already closed it
+// releases the lock and returns ErrStoreClosed. On success the caller MUST
+// defer bs.closeMu.RUnlock() so Close (which takes the write lock) can drain.
+//
+// Callers use it as:
+//
+//	if err := bs.enter(); err != nil {
+//	    return …, err
+//	}
+//	defer bs.closeMu.RUnlock()
+//
+// The RLock is held for the WHOLE op (not released early) — that is what
+// keeps the underlying local/remote/syncer alive while the op runs and what
+// Close blocks on. RLock is shared, so concurrent ops still run in parallel.
+func (bs *Store) enter() error {
+	bs.closeMu.RLock()
+	if bs.closed {
+		bs.closeMu.RUnlock()
+		return ErrStoreClosed
+	}
+	return nil
+}
+
+// Close releases resources held by the store. It first drains all in-flight
+// data ops (closeMu.Lock blocks until every enter()'s RLock is released),
+// marks the store closed so new ops fail fast with ErrStoreClosed, then
+// tears down cache → syncer → local → remote. Close is idempotent: a second
+// call is a no-op that returns the first call's result.
+//
+// area-7 H-A: by draining under closeMu, an admin RemoveShare → Close can no
+// longer run concurrently with a client WriteAt/ReadAt on the same *Store —
+// the op either completes fully or never starts (ErrStoreClosed). The drain
+// makes it safe for RemoveShare to keep calling Close() outside the shares
+// service lock.
 func (bs *Store) Close() error {
+	// Acquire the write lock: this blocks until all in-flight data ops
+	// (which hold closeMu.RLock via enter) have finished, giving us the
+	// in-flight drain. New ops arriving after closed=true fail in enter().
+	bs.closeMu.Lock()
+	defer bs.closeMu.Unlock()
+
+	if bs.closed {
+		// Idempotent: return the memoized result of the first teardown.
+		return bs.closeErr
+	}
+	bs.closed = true
+
 	// Cache is never nil thanks to the Null Object pattern.
 	_ = bs.cache.Close()
 
@@ -420,7 +483,8 @@ func (bs *Store) Close() error {
 		}
 	}
 
-	return errors.Join(errs...)
+	bs.closeErr = errors.Join(errs...)
+	return bs.closeErr
 }
 
 // --- Test helpers ---
@@ -451,6 +515,10 @@ func (bs *Store) ListFiles() []string { return bs.local.ListFiles() }
 // dedup and are reclaimed via the refcount → GC path (engine.Delete
 // decrements per dropped hash and the mark-sweep GC reaps orphans).
 func (bs *Store) EvictLocal(ctx context.Context, payloadID string) error {
+	if err := bs.enter(); err != nil {
+		return err
+	}
+	defer bs.closeMu.RUnlock()
 	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
 		return err
 	}
