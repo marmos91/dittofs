@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"sync"
+	"sync/atomic"
 
 	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -44,8 +45,30 @@ import (
 // grace can never wedge regardless. The coordinator only force-ends v4 grace
 // when IT started it (coupled, no independent roster); then refcount-zero is
 // the correct lockstep lift.
+//
+// Boot-vs-runtime arming gate (round-2 #7 H-1): the GLOBAL NFSv4 reboot-grace
+// machine exists to let PRE-RESTART clients reclaim their state, so it is only
+// legitimate to arm at server boot/recovery. A share ADDED AT RUNTIME, while the
+// server is already serving live clients, has no pre-existing v4 clients to
+// reclaim — yet a fresh share's lock store reports an unclean (zero-value)
+// shutdown marker, so initLockManagerFromStore returns enterGrace=true and fires
+// OnLockGraceStart. Without a gate that drove c.sm.StartGracePeriod with the LIVE
+// confirmed-client set, freezing every connected client's OPEN(CLAIM_NULL)/LOCK
+// with NFS4ERR_GRACE until the hard timer (~90s) — pure self-harm on a routine
+// AddShare. The bootComplete latch is set once boot/initial-recovery finishes
+// (right after the adapter's boot wiring, see adapter.SetRuntime): while serving,
+// OnLockGraceStart still maintains the refcount but does NOT arm v4 grace. The
+// boot path is unaffected — boot shares couple in before the latch is set, and
+// the durable reclaim roster (LoadClientRecovery → StartGraceWithRoster) arms v4
+// grace independently of this coordinator either way.
 type nfsGraceCoordinator struct {
 	sm *v4state.StateManager
+
+	// bootComplete latches true once the server has finished boot/initial
+	// recovery and is serving. While true, OnLockGraceStart will not arm the
+	// global v4 reboot-grace machine for a runtime-added share (it has no
+	// pre-existing v4 clients to reclaim); the refcount is still maintained.
+	bootComplete atomic.Bool
 
 	mu sync.Mutex
 	// active counts open per-share lock-manager grace windows coupled through
@@ -57,6 +80,16 @@ type nfsGraceCoordinator struct {
 	// was boot-seeded with a roster the coordinator defers to the v4 machine's
 	// own timer/reclaim lift.
 	startedByCoordinator bool
+}
+
+// MarkServing latches the coordinator into the serving phase. It must be called
+// once the server has finished boot and initial client recovery (after the
+// adapter has caught up shares already in grace at startup and after
+// LoadClientRecovery has armed any boot reclaim roster). After this point a
+// runtime-added share's OnLockGraceStart will not arm the global v4 reboot-grace
+// machine.
+func (c *nfsGraceCoordinator) MarkServing() {
+	c.bootComplete.Store(true)
 }
 
 // OnLockGraceStart drives the NFSv4 StateManager into its grace period when a
@@ -87,6 +120,18 @@ func (c *nfsGraceCoordinator) OnLockGraceStart(expectedClients []string) {
 		// durable roster, or coupled in by a prior cycle. We do NOT own it, so
 		// at refcount zero we will leave the lift to the v4 machine's own
 		// timer/reclaim governance rather than force-ending.
+		c.startedByCoordinator = false
+		return
+	}
+
+	if c.bootComplete.Load() {
+		// Server is already serving: this is a runtime-added share, which has no
+		// pre-existing v4 clients to reclaim. Arming global v4 reboot grace here
+		// would freeze every live client's OPEN(CLAIM_NULL)/LOCK with
+		// NFS4ERR_GRACE for no benefit. Keep the refcount (so OnLockGraceEnd
+		// stays balanced) but do NOT arm v4 grace and do NOT claim ownership.
+		logger.Info("NFSv4 grace NOT armed for runtime-added share (server already serving)",
+			"lock_clients", len(expectedClients))
 		c.startedByCoordinator = false
 		return
 	}
