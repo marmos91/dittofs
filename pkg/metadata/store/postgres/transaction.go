@@ -151,7 +151,8 @@ func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.File
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, f.object_id, lc.link_count
+			f.hidden, f.acl, f.object_id,
+			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.id = $1 AND f.share_name = $2
@@ -194,25 +195,38 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	// The unique constraint on (share_name, path_hash) WHERE nlink > 0 can cause
 	// spurious "already exists" errors when using INSERT ... ON CONFLICT (id)
 	// because that clause doesn't handle conflicts on the path_hash constraint.
+	//
+	// path MUST be in the SET list: Move relocates a node by setting File.Path
+	// to its new location and calling PutFile. The memory/badger backends persist
+	// the whole File, so their path moves; if this UPDATE omitted path, the
+	// relocated row would keep its old path (and trigger-derived path_hash),
+	// leaving the original path occupied under unique_share_path_hash_active. A
+	// recycle (Move into #recycle) followed by recreating the original name would
+	// then fail "already exists" on postgres only (#190). path_hash is maintained
+	// by the files_path_hash_trigger, so updating path refreshes it.
 	updateQuery := `
 		UPDATE files SET
-			file_type = $1,
-			mode = $2,
-			uid = $3,
-			gid = $4,
-			size = $5,
-			atime = $6,
-			mtime = $7,
-			ctime = $8,
-			creation_time = $9,
-			content_id = $10,
-			link_target = $11,
-			device_major = $12,
-			device_minor = $13,
-			hidden = $14,
-			acl = $15,
-			object_id = $16
-		WHERE id = $17 AND share_name = $18
+			path = $1,
+			file_type = $2,
+			mode = $3,
+			uid = $4,
+			gid = $5,
+			size = $6,
+			atime = $7,
+			mtime = $8,
+			ctime = $9,
+			creation_time = $10,
+			content_id = $11,
+			link_target = $12,
+			device_major = $13,
+			device_minor = $14,
+			hidden = $15,
+			acl = $16,
+			object_id = $17,
+			deleted_at = $18,
+			original_path = $19,
+			deleted_by = $20
+		WHERE id = $21 AND share_name = $22
 	`
 
 	var deviceMajor, deviceMinor *int32
@@ -254,6 +268,15 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		objectIDArg = file.ObjectID[:]
 	}
 
+	// deleted_at is a BIGINT unix-nanoseconds column (#190), nullable: NULL marks
+	// a live node, a value records the recycle instant losslessly (like the other
+	// file timestamps). Pass *int64 so a nil DeletedAt writes SQL NULL.
+	var deletedAtArg *int64
+	if file.DeletedAt != nil {
+		n := file.DeletedAt.UnixNano()
+		deletedAtArg = &n
+	}
+
 	// Query old size for delta tracking (only for regular files).
 	var oldSize uint64
 	if file.Type == metadata.FileTypeRegular {
@@ -269,11 +292,13 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 
 	// Try UPDATE first (most common case for existing files)
 	result, err := tx.tx.Exec(ctx, updateQuery,
+		file.Path,
 		file.Type, file.Mode, file.UID, file.GID, file.Size,
 		timeToPGNanos(file.Atime), timeToPGNanos(file.Mtime),
 		timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
 		payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 		file.Hidden, aclJSON, objectIDArg,
+		deletedAtArg, file.OriginalPath, file.DeletedBy,
 		file.ID, file.ShareName,
 	)
 	if err != nil {
@@ -295,9 +320,11 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			INSERT INTO files (
 				id, share_name, path, file_type, mode, uid, gid, size,
 				atime, mtime, ctime, creation_time, content_id, link_target,
-				device_major, device_minor, hidden, acl, object_id
+				device_major, device_minor, hidden, acl, object_id,
+				deleted_at, original_path, deleted_by
 			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+				$20, $21, $22
 			)
 		`
 
@@ -308,6 +335,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
 			payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 			file.Hidden, aclJSON, objectIDArg,
+			deletedAtArg, file.OriginalPath, file.DeletedBy,
 		)
 		if err != nil {
 			return mapPgError(err, "PutFile", "")
@@ -506,7 +534,8 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 	// pool-query ListChildren above. See files.go for rationale.
 	query := `
 		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
-		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.object_id, lc.link_count
+		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.object_id,
+		       f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM parent_child_map dc
 		LEFT JOIN files f ON dc.child_id = f.id
 		LEFT JOIN link_counts lc ON dc.child_id = lc.file_id
@@ -531,10 +560,14 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 		var hidden bool
 		var aclJSON []byte
 		var objectIDRaw []byte
+		var deletedAt sql.NullInt64
+		var originalPath string
+		var deletedBy string
 		var linkCount sql.NullInt32
 
 		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size,
-			&atime, &mtime, &ctime, &creationTime, &hidden, &aclJSON, &objectIDRaw, &linkCount)
+			&atime, &mtime, &ctime, &creationTime, &hidden, &aclJSON, &objectIDRaw,
+			&deletedAt, &originalPath, &deletedBy, &linkCount)
 		if err != nil {
 			return nil, "", err
 		}
@@ -581,6 +614,17 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 			}
 			copy(attr.ObjectID[:], objectIDRaw)
 		}
+
+		// Recycle-bin metadata (#190): carried on DirEntry.Attr so trash
+		// enumeration via listing reflects recycle state without a re-read,
+		// matching the pool-query path. deleted_at is BIGINT unix-nanoseconds;
+		// decode via pgNanosToTime.
+		if deletedAt.Valid {
+			t := pgNanosToTime(deletedAt.Int64)
+			attr.DeletedAt = &t
+		}
+		attr.OriginalPath = originalPath
+		attr.DeletedBy = deletedBy
 
 		// Refs #532 (PR #536 review): mirror fileRowToFileWithNlink — soft
 		// failure on malformed ACL JSON, same as the pool-query path.
@@ -1229,7 +1273,8 @@ func (tx *postgresTransaction) GetFileByPayloadID(ctx context.Context, payloadID
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, f.object_id, lc.link_count
+			f.hidden, f.acl, f.object_id,
+			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.content_id_hash = md5($1)

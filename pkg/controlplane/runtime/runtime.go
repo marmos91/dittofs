@@ -15,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/lifecycle"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/stores"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/trash"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -63,6 +64,11 @@ type Runtime struct {
 	identitySvc    *identity.Service
 	mountTracker   *MountTracker
 	clientRegistry *ClientRegistry
+
+	// trashSvc is the recycle-bin service (list/restore/empty + reaper),
+	// constructed lazily by Trash() and started/stopped by the lifecycle
+	// Serve/shutdown path. Guarded by mu.
+	trashSvc *trash.Service
 
 	localStoreDefaults *shares.LocalStoreDefaults
 	syncerDefaults     *shares.SyncerDefaults
@@ -141,6 +147,15 @@ func New(s store.Store) *Runtime {
 	// Cancelled by Runtime shutdown in plan 23-05.
 	rt.runtimeCtx, rt.runtimeCancel = context.WithCancel(context.Background())
 
+	// Install the recycle-bin policy on the shared metadata service. The
+	// runtime owns a single MetadataService into which AddShare registers every
+	// per-share store, so a single share-aware policy installed here makes the
+	// recycle-on-delete decision live for ALL shares — present and future —
+	// without per-share wiring. The policy reads the shares service's locked
+	// TrashSettings snapshot per delete, so live SetShareTrashConfig changes
+	// take effect immediately.
+	rt.metadataService.SetTrashPolicy(&trashPolicy{sharesSvc: rt.sharesSvc})
+
 	rt.adaptersSvc = adapters.New(s, DefaultShutdownTimeout)
 	rt.adaptersSvc.SetRuntime(rt)
 
@@ -193,6 +208,16 @@ func (r *Runtime) SetShutdownTimeout(d time.Duration) {
 // CloseMetadataStores) which remain public for tests that need to
 // drive the steps individually.
 func (r *Runtime) Shutdown(ctx context.Context) error {
+	// Stop the recycle-bin reaper if it was ever started. Guarded so a Runtime
+	// that never served does not construct the service just to stop it; Stop is
+	// idempotent so a double-stop (this + ctx cancellation) is harmless.
+	r.mu.RLock()
+	ts := r.trashSvc
+	r.mu.RUnlock()
+	if ts != nil {
+		ts.Stop()
+	}
+
 	r.shutdownSnapshots(ctx)
 	if err := r.StopAllAdapters(); err != nil {
 		// Continue: snapshot drain already succeeded; the metadata-store
@@ -397,6 +422,14 @@ func (r *Runtime) UpdateShare(name string, readOnly *bool, defaultPermission *st
 	return r.sharesSvc.UpdateShare(name, readOnly, defaultPermission, retentionPolicy, retentionTTL)
 }
 
+// SetShareTrashConfig applies recycle-bin settings to a live share under the
+// shares-service write lock and persists them via the runtime's store (#190).
+// Thin passthrough so API handlers, which only hold *Runtime, can hot-update
+// trash policy without reaching into sharesSvc/store directly.
+func (r *Runtime) SetShareTrashConfig(name string, cfg shares.TrashSettings) error {
+	return r.sharesSvc.SetShareTrashConfig(r.store, name, cfg)
+}
+
 // DisableShare sets enabled=false on the share's DB row and runtime
 // registry, then notifies adapters so active sessions drop.
 // Idempotent on already-disabled shares (returns shares.ErrShareAlreadyDisabled
@@ -478,6 +511,11 @@ func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
 
 func (r *Runtime) Serve(ctx context.Context) error {
 	r.clientRegistry.StartSweeper(ctx)
+
+	// Launch the recycle-bin reaper alongside the client sweeper. Like the
+	// sweeper it exits on ctx cancellation (the lifecycle shutdown path) or on
+	// an explicit Trash().Stop() from Runtime.Shutdown.
+	r.Trash().Start(ctx)
 
 	// D-23-18: Reconcile snapshot rows abandoned by a prior crash BEFORE
 	// adapters start serving. Metadata stores and shares are already

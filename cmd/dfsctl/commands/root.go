@@ -17,6 +17,7 @@ import (
 	sharecmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/share"
 	storecmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/store"
 	systemcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/system"
+	trashcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/trash"
 	usercmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/user"
 	"github.com/spf13/cobra"
 )
@@ -76,6 +77,7 @@ func init() {
 	rootCmd.AddCommand(usercmd.Cmd)
 	rootCmd.AddCommand(groupcmd.Cmd)
 	rootCmd.AddCommand(sharecmd.Cmd)
+	rootCmd.AddCommand(trashcmd.Cmd)
 	rootCmd.AddCommand(storecmd.Cmd)
 	rootCmd.AddCommand(adaptercmd.Cmd)
 	rootCmd.AddCommand(clientcmd.Cmd)

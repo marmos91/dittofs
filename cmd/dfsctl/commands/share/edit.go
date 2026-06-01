@@ -25,6 +25,11 @@ var (
 	editQuotaBytes        string
 	editAclCanonicalize   string
 	editAccessBasedEnum   string
+	editEnableTrash       string
+	editTrashRetention    int
+	editTrashRestrictAdm  string
+	editTrashMaxSize      int64
+	editTrashExclude      []string
 )
 
 var editCmd = &cobra.Command{
@@ -92,6 +97,11 @@ func init() {
 	editCmd.Flags().StringVar(&editQuotaBytes, "quota-bytes", "", "Per-share byte quota (e.g., '10GiB'). 0 = remove quota")
 	editCmd.Flags().StringVar(&editAclCanonicalize, "acl-canonicalize-inherited", "", "When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba \"acl flag inherited canonicalization = no\"). Default true matches Windows. Takes effect on adapter restart.")
 	editCmd.Flags().StringVar(&editAccessBasedEnum, "access-based-enumeration", "", "Enable/disable Windows access-based enumeration (true|false). Takes effect on adapter restart.")
+	editCmd.Flags().StringVar(&editEnableTrash, "enable-trash", "", "Enable/disable the per-share recycle bin (true|false). Applied live; disabling auto-empties the bin.")
+	editCmd.Flags().IntVar(&editTrashRetention, "trash-retention-days", -1, "Days to retain recycled items before the reaper purges them (0 = keep forever). -1 leaves unchanged.")
+	editCmd.Flags().StringVar(&editTrashRestrictAdm, "trash-restrict-empty-to-admin", "", "Restrict emptying the recycle bin to admins (true|false).")
+	editCmd.Flags().Int64Var(&editTrashMaxSize, "trash-max-size", -1, "Max bytes the recycle bin may hold before the reaper evicts oldest items (0 = unbounded). -1 leaves unchanged.")
+	editCmd.Flags().StringSliceVar(&editTrashExclude, "trash-exclude", nil, "Glob patterns whose deletions bypass the recycle bin (repeatable).")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -110,7 +120,12 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		cmd.Flags().Changed("retention-ttl") || cmd.Flags().Changed("local-store-size") ||
 		cmd.Flags().Changed("read-buffer-size") || cmd.Flags().Changed("quota-bytes") ||
 		cmd.Flags().Changed("acl-canonicalize-inherited") ||
-		cmd.Flags().Changed("access-based-enumeration")
+		cmd.Flags().Changed("access-based-enumeration") ||
+		cmd.Flags().Changed("enable-trash") ||
+		cmd.Flags().Changed("trash-retention-days") ||
+		cmd.Flags().Changed("trash-restrict-empty-to-admin") ||
+		cmd.Flags().Changed("trash-max-size") ||
+		cmd.Flags().Changed("trash-exclude")
 
 	// If no flags provided, run interactive mode
 	if !hasFlags {
@@ -198,8 +213,51 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		hasUpdate = true
 	}
 
+	if editEnableTrash != "" {
+		val := strings.ToLower(strings.TrimSpace(editEnableTrash))
+		if val != "true" && val != "false" {
+			return fmt.Errorf("--enable-trash: invalid value %q, must be true or false", editEnableTrash)
+		}
+		enabled := val == "true"
+		req.TrashEnabled = &enabled
+		hasUpdate = true
+	}
+
+	if cmd.Flags().Changed("trash-retention-days") {
+		if editTrashRetention < 0 {
+			return fmt.Errorf("--trash-retention-days: must be >= 0 (0 = keep forever)")
+		}
+		v := editTrashRetention
+		req.TrashRetentionDays = &v
+		hasUpdate = true
+	}
+
+	if editTrashRestrictAdm != "" {
+		val := strings.ToLower(strings.TrimSpace(editTrashRestrictAdm))
+		if val != "true" && val != "false" {
+			return fmt.Errorf("--trash-restrict-empty-to-admin: invalid value %q, must be true or false", editTrashRestrictAdm)
+		}
+		restrict := val == "true"
+		req.TrashRestrictToAdmin = &restrict
+		hasUpdate = true
+	}
+
+	if cmd.Flags().Changed("trash-max-size") {
+		if editTrashMaxSize < 0 {
+			return fmt.Errorf("--trash-max-size: must be >= 0 (0 = unbounded)")
+		}
+		v := editTrashMaxSize
+		req.TrashMaxBytes = &v
+		hasUpdate = true
+	}
+
+	if cmd.Flags().Changed("trash-exclude") {
+		req.TrashExcludePatterns = editTrashExclude
+		hasUpdate = true
+	}
+
 	if !hasUpdate {
-		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, --description, --retention, --retention-ttl, --local-store-size, --read-buffer-size, --quota-bytes, --acl-canonicalize-inherited, or --access-based-enumeration")
+		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, --description, --retention, --retention-ttl, --local-store-size, --read-buffer-size, --quota-bytes, --acl-canonicalize-inherited, --access-based-enumeration, --enable-trash, --trash-retention-days, --trash-restrict-empty-to-admin, --trash-max-size, or --trash-exclude")
 	}
 
 	share, err := client.UpdateShare(name, req)

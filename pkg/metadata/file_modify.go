@@ -567,6 +567,40 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 					Message: "cannot overwrite directory with non-directory",
 				}
 			}
+
+			// Replace-overwrite: the destination file genuinely exists and is
+			// about to be clobbered by the rename below. When the destination
+			// share has trash enabled, recycle the victim first so it is
+			// preserved instead of being silently destroyed. Reached ONLY in
+			// the dest-exists file branch, so a non-clobbering rename never
+			// recycles.
+			//
+			// No recursion: recycleNode performs its own s.Move of the victim
+			// into #recycle, but that internal move's destination name is picked
+			// by freeBinName to be guaranteed-absent, so its dest-exists branch
+			// (and this recycle block) does not fire. inRecycle(victimRel) also
+			// keeps us from recycling when the destination already lives in the
+			// bin.
+			if s.trashPolicy != nil {
+				shareName := shareNameForHandle(toDir)
+				if cfg, ok := s.trashPolicy.TrashConfigForShare(shareName); ok && cfg.Enabled {
+					victimRel := strings.TrimPrefix(buildPath(dstDir.Path, toName), "/")
+					if !inRecycle(victimRel) && !cfg.Excluded(toName) {
+						// Discard the recycled node: Move only relocates the victim
+						// into #recycle (the reaper frees its blocks later), so we
+						// have no blocks to release here.
+						if _, err := s.recycleNode(ctx, shareName, toDir, toName, victimRel); err != nil {
+							return err // never silently clobber
+						}
+						// The victim has moved into #recycle, so the destination
+						// name is now free. Drop the cached dest-exists state so
+						// the transaction below CREATEs toName fresh instead of
+						// trying to remove an entry that no longer exists.
+						dstFile = nil
+						dstHandle = nil
+					}
+				}
+			}
 		}
 	} else if !IsNotFoundError(err) {
 		return err

@@ -411,6 +411,42 @@ See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep-v0150-phase-
 for the full mark-sweep design and [CLI.md](CLI.md) for the on-demand
 `dfsctl store block gc` command.
 
+#### Recycle bin (trash)
+
+The recycle bin is configured **per share** via `dfsctl share create` /
+`dfsctl share edit` (or the REST share create/update body), not the
+server config file. When enabled, deleting a file or directory moves it
+into a visible `#recycle` directory at the share root instead of
+destroying it; it can be restored over the mount or with `dfsctl trash`.
+
+| Setting (`dfsctl` flag) | REST field | Type | Default | Meaning |
+|---|---|---|---|---|
+| `--enable-trash` | `trash_enabled` | bool | `false` | Turn the per-share recycle bin on or off. Disabling it auto-empties the bin (permanently deletes its contents). |
+| `--trash-retention-days` | `trash_retention_days` | int | `0` | Auto-purge bin entries older than N days. `0` = keep forever. |
+| `--trash-restrict-empty-to-admin` | `trash_restrict_to_admin` | bool | `false` | Restrict emptying the bin to admins. Users may still restore. |
+| `--trash-max-size` | `trash_max_bytes` | int64 (bytes) | `0` | Cap total bytes held in the bin; over-cap evicts oldest-first. `0` = unbounded. |
+| `--trash-exclude` | `trash_exclude_patterns` | glob (repeatable) | (none) | Deletions matching any glob bypass the bin and are removed immediately. |
+
+A background reaper enforces `trash_retention_days` and
+`trash_max_bytes` on an hourly interval. Deletes of items already
+*inside* `#recycle` are permanent, and in-place truncate/overwrite of a
+file's content is not recycled (only unlink and replace-overwrite are).
+`dfsctl share show <name>` displays the active trash configuration.
+
+```bash
+# Enable the bin with a 30-day retention and a 10 GiB cap
+./dfsctl share create --name /docs --metadata badger-main --local local-cache \
+  --enable-trash --trash-retention-days 30 --trash-max-size 10737418240
+
+# Change settings on an existing share (applied live)
+./dfsctl share edit /docs --trash-retention-days 7 \
+  --trash-exclude '*.tmp' --trash-exclude '*.cache'
+```
+
+See [CLI.md](CLI.md#recycle-bin-trash) for the `dfsctl trash`
+management commands and [ARCHITECTURE.md](ARCHITECTURE.md#metadataservice)
+for the recycle-trap design.
+
 #### Remote block-level compression (opt-in)
 
 A remote block store may compress block payloads before upload and

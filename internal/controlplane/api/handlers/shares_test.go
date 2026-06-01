@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -214,5 +215,62 @@ func TestShareHandler_Get_IncludesEnabledField(t *testing.T) {
 	}
 	if _, ok := raw["enabled"]; !ok {
 		t.Errorf("ShareResponse JSON missing `enabled` key: %v", raw)
+	}
+}
+
+// TestShareHandler_Update_TrashConfig verifies that a PUT carrying the
+// per-share recycle-bin knobs (#190) returns 200 and that the new policy is
+// persisted to the DB row. The share is DB-only here (not loaded into the
+// runtime), so the live SetShareTrashConfig path logs a benign warning and
+// the handler still succeeds — exactly the not-yet-loaded contract the other
+// share tests rely on.
+func TestShareHandler_Update_TrashConfig(t *testing.T) {
+	cpStore, _, handler := setupShareTestWithRuntime(t)
+	seedShare(t, cpStore, "s-trash")
+
+	body := []byte(`{"trash_enabled":true,"trash_retention_days":7,"trash_exclude_patterns":["*.tmp"]}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/shares/s-trash", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withShareName(req, "s-trash")
+	w := httptest.NewRecorder()
+
+	handler.Update(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Update = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	// Assert the policy was persisted to the DB row.
+	got, err := cpStore.GetShare(context.Background(), "/s-trash")
+	if err != nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+	if !got.TrashEnabled {
+		t.Errorf("TrashEnabled = false, want true")
+	}
+	if got.TrashRetentionDays != 7 {
+		t.Errorf("TrashRetentionDays = %d, want 7", got.TrashRetentionDays)
+	}
+	patterns := got.GetTrashExcludePatterns()
+	if len(patterns) != 1 || patterns[0] != "*.tmp" {
+		t.Errorf("TrashExcludePatterns = %v, want [*.tmp]", patterns)
+	}
+}
+
+// TestShareHandler_Update_TrashRejectsNegative verifies that negative
+// retention/limits are rejected with 400 (problem+json) per the handler's
+// standard validation style.
+func TestShareHandler_Update_TrashRejectsNegative(t *testing.T) {
+	cpStore, _, handler := setupShareTestWithRuntime(t)
+	seedShare(t, cpStore, "s-trash-neg")
+
+	body := []byte(`{"trash_retention_days":-1}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/shares/s-trash-neg", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withShareName(req, "s-trash-neg")
+	w := httptest.NewRecorder()
+
+	handler.Update(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("Update(negative retention) = %d, want 400; body=%s", w.Code, w.Body.String())
 	}
 }

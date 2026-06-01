@@ -50,9 +50,16 @@ type Share struct {
 	ChangeNotifyDisabled bool `json:"change_notify_disabled"`
 	// StreamsDisabled mirrors models.Share. No omitempty for the same
 	// reason as ChangeNotifyDisabled.
-	StreamsDisabled bool      `json:"streams_disabled"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	StreamsDisabled bool `json:"streams_disabled"`
+	// Per-share recycle-bin policy (#190). Mirrors the server
+	// ShareResponse so dfsctl share show can render the trash config.
+	TrashEnabled         bool      `json:"trash_enabled"`
+	TrashRetentionDays   int       `json:"trash_retention_days"`
+	TrashRestrictToAdmin bool      `json:"trash_restrict_to_admin"`
+	TrashMaxBytes        int64     `json:"trash_max_bytes"`
+	TrashExcludePatterns []string  `json:"trash_exclude_patterns,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // CreateShareRequest is the request to create a share.
@@ -83,6 +90,13 @@ type CreateShareRequest struct {
 	// StreamsDisabled — pointer so callers can distinguish "unset →
 	// server default (false)" from "explicit true".
 	StreamsDisabled *bool `json:"streams_disabled,omitempty"`
+	// Per-share recycle-bin policy (#190). Pointers so nil keeps the
+	// server default (trash disabled, zero limits).
+	TrashEnabled         *bool    `json:"trash_enabled,omitempty"`
+	TrashRetentionDays   *int     `json:"trash_retention_days,omitempty"`
+	TrashRestrictToAdmin *bool    `json:"trash_restrict_to_admin,omitempty"`
+	TrashMaxBytes        *int64   `json:"trash_max_bytes,omitempty"`
+	TrashExcludePatterns []string `json:"trash_exclude_patterns,omitempty"`
 }
 
 // UpdateShareRequest is the request to update a share.
@@ -111,6 +125,14 @@ type UpdateShareRequest struct {
 	// StreamsDisabled — nil = no change; non-nil = explicit set. Takes
 	// effect on adapter restart.
 	StreamsDisabled *bool `json:"streams_disabled,omitempty"`
+	// Per-share recycle-bin policy (#190). nil = no change; non-nil =
+	// explicit set. Applied live by the server; turning trash off
+	// auto-empties the bin.
+	TrashEnabled         *bool    `json:"trash_enabled,omitempty"`
+	TrashRetentionDays   *int     `json:"trash_retention_days,omitempty"`
+	TrashRestrictToAdmin *bool    `json:"trash_restrict_to_admin,omitempty"`
+	TrashMaxBytes        *int64   `json:"trash_max_bytes,omitempty"`
+	TrashExcludePatterns []string `json:"trash_exclude_patterns,omitempty"`
 }
 
 // SharePermission represents a permission on a share.

@@ -66,6 +66,11 @@ type MetadataService struct {
 	// RegisterStoreForShare to affect a given share. The hook receives the
 	// handle key (string-encoded FileHandle).
 	byteRangeReleaseHook func(handleKey string)
+
+	// trashPolicy, if set, supplies the per-share recycle-bin policy consulted
+	// on delete. Nil (the default) disables trash entirely: deletes destroy
+	// content as before. Installed via SetTrashPolicy.
+	trashPolicy TrashPolicy
 }
 
 // GraceCoordinator couples the lock-manager grace period with another grace
@@ -138,6 +143,10 @@ func (s *MetadataService) SetByteRangeReleaseHook(fn func(handleKey string)) {
 	defer s.mu.Unlock()
 	s.byteRangeReleaseHook = fn
 }
+
+// SetTrashPolicy installs the per-share recycle-bin policy. A nil policy
+// (the default) disables trash: deletes destroy content as before.
+func (s *MetadataService) SetTrashPolicy(p TrashPolicy) { s.trashPolicy = p }
 
 // RegisterStoreForShare associates a metadata store with a share.
 // Each share must have exactly one store. Calling this again for the same

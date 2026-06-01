@@ -129,6 +129,8 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 - Protocol handlers should use this instead of stores directly
 - `storetest/`: Metadata store conformance test suite (all implementations must pass)
 
+**Recycle bin (trash).** The recycle trap lives inside `MetadataService.RemoveFile`, `RemoveDirectory`, and `Move`, gated by a per-share `TrashPolicy` read through a locked accessor. When the policy enables the bin, an unlink (NFS REMOVE/RMDIR, SMB delete-on-close) or a replace-overwrite (a `Move` whose destination clobbers an existing node) moves the victim into a single shared `#recycle` directory at the share root instead of destroying it, preserving the original path subtree and owner. Block deletion is deferred: recycling returns an empty `PayloadID` so protocol adapters skip the block-deletion step, and a recycled node keeps its content blocks until it is reaped or the bin is emptied. The runtime's `trash.Service` (`pkg/controlplane/runtime/trash/`) owns list/restore/empty and runs a background reaper that enforces the per-share retention-days and max-size policy on an hourly interval (oldest-first eviction). Disabling trash auto-empties the bin.
+
 **6. BlockStore** (`pkg/blockstore/`)
 - Per-share block storage orchestrator. Each share gets its own `*engine.BlockStore` instance.
 - `engine.BlockStore` composes `local.LocalStore + remote.RemoteStore + engine.Syncer`

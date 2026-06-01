@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -167,6 +168,24 @@ func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHan
 	// Check sticky bit restriction
 	if err := CheckStickyBitRestriction(ctx, &parent.FileAttr, &dir.FileAttr); err != nil {
 		return err
+	}
+
+	// Recycle instead of destroying when the share has trash enabled. A
+	// non-empty directory moves as a single subtree with one DeletedAt on its
+	// root, so this guard precedes the empty-directory check. Deletes already
+	// inside #recycle, and excluded names, fall through to permanent removal.
+	if s.trashPolicy != nil {
+		shareName := shareNameForHandle(parentHandle)
+		if cfg, ok := s.trashPolicy.TrashConfigForShare(shareName); ok && cfg.Enabled {
+			origRel := strings.TrimPrefix(buildPath(parent.Path, name), "/")
+			if !inRecycle(origRel) && !cfg.Excluded(name) {
+				if _, rErr := s.recycleNode(ctx, shareName, parentHandle, name, origRel); rErr != nil {
+					return rErr
+				}
+				s.notifyDirChange(shareName, parentHandle, lock.DirChangeRemoveEntry, ctx)
+				return nil
+			}
+		}
 	}
 
 	// Check if directory is empty

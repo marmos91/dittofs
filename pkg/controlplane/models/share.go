@@ -50,17 +50,28 @@ type Share struct {
 	// Mirrors Samba `smbd:streams = no` and the
 	// smb2.create_no_streams.no_stream torture test. Default false leaves
 	// stream support enabled.
-	StreamsDisabled   bool      `gorm:"default:false;not null" json:"streams_disabled"`
-	DefaultPermission string    `gorm:"default:read-write;size:50" json:"default_permission"`      // none, read, read-write, admin
-	Config            string    `gorm:"type:text" json:"-"`                                        // JSON blob for additional share config
-	BlockedOperations string    `gorm:"type:text" json:"-"`                                        // JSON array of blocked operations
-	RetentionPolicy   string    `gorm:"size:10;default:''" json:"retention_policy"`                // pin, ttl, lru (empty = LRU default)
-	RetentionTTL      int64     `gorm:"default:0" json:"retention_ttl"`                            // TTL in seconds (0 = not set)
-	LocalStoreSize    int64     `gorm:"default:0" json:"local_store_size"`                         // Per-share disk size override in bytes (0 = system default)
-	ReadBufferSize    int64     `gorm:"default:0;column:read_buffer_size" json:"read_buffer_size"` // Read buffer override in bytes (0 = system default)
-	QuotaBytes        int64     `gorm:"default:0;column:quota_bytes" json:"quota_bytes"`           // Per-share byte quota (0 = unlimited)
-	CreatedAt         time.Time `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt         time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+	StreamsDisabled bool `gorm:"default:false;not null" json:"streams_disabled"`
+	// TrashEnabled turns on the per-share recycle bin (#190). Default false.
+	TrashEnabled bool `gorm:"default:false;not null" json:"trash_enabled"`
+	// TrashRetentionDays auto-empties bin entries older than N days (0 = keep forever).
+	TrashRetentionDays int `gorm:"default:0;not null" json:"trash_retention_days"`
+	// TrashRestrictToAdmin limits empty/force-delete to admins (users may still restore).
+	TrashRestrictToAdmin bool `gorm:"default:false;not null" json:"trash_restrict_to_admin"`
+	// TrashMaxBytes caps total bin bytes (0 = unbounded); over-cap evicts oldest.
+	TrashMaxBytes int64 `gorm:"default:0;not null" json:"trash_max_bytes"`
+	// TrashExcludePatterns are globs that bypass the bin (immediate delete),
+	// stored as a JSON array string (same encoding as BlockedOperations).
+	TrashExcludePatterns string    `gorm:"type:text" json:"-"`
+	DefaultPermission    string    `gorm:"default:read-write;size:50" json:"default_permission"`      // none, read, read-write, admin
+	Config               string    `gorm:"type:text" json:"-"`                                        // JSON blob for additional share config
+	BlockedOperations    string    `gorm:"type:text" json:"-"`                                        // JSON array of blocked operations
+	RetentionPolicy      string    `gorm:"size:10;default:''" json:"retention_policy"`                // pin, ttl, lru (empty = LRU default)
+	RetentionTTL         int64     `gorm:"default:0" json:"retention_ttl"`                            // TTL in seconds (0 = not set)
+	LocalStoreSize       int64     `gorm:"default:0" json:"local_store_size"`                         // Per-share disk size override in bytes (0 = system default)
+	ReadBufferSize       int64     `gorm:"default:0;column:read_buffer_size" json:"read_buffer_size"` // Read buffer override in bytes (0 = system default)
+	QuotaBytes           int64     `gorm:"default:0;column:quota_bytes" json:"quota_bytes"`           // Per-share byte quota (0 = unlimited)
+	CreatedAt            time.Time `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt            time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 
 	// Relationships
 	MetadataStore    MetadataStoreConfig    `gorm:"foreignKey:MetadataStoreID" json:"metadata_store,omitempty"`
@@ -147,4 +158,15 @@ func (s *Share) GetBlockedOps() []string {
 // SetBlockedOps serializes the blocked operations from a string slice.
 func (s *Share) SetBlockedOps(ops []string) {
 	s.BlockedOperations = marshalStringSlice(ops)
+}
+
+// GetTrashExcludePatterns returns the recycle-bin exclude globs as a string slice.
+func (s *Share) GetTrashExcludePatterns() []string {
+	return parseStringSlice(s.TrashExcludePatterns)
+}
+
+// SetTrashExcludePatterns serializes the recycle-bin exclude globs to a JSON
+// string for storage (same encoding as BlockedOperations).
+func (s *Share) SetTrashExcludePatterns(patterns []string) {
+	s.TrashExcludePatterns = marshalStringSlice(patterns)
 }

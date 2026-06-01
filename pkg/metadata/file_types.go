@@ -102,6 +102,19 @@ type FileAttr struct {
 	//     obj/{hex} -> file_id maintained on Put/Delete.
 	//   - Memory: typed field; map[ContentHash]uuid index in store.
 	ObjectID blockstore.ObjectID `json:"object_id,omitempty"`
+
+	// DeletedAt is set when this node was recycled (moved into #recycle).
+	// nil means the node is live. Drives retention reaping and trash listing.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+
+	// OriginalPath is the share-relative path the node occupied before being
+	// recycled, WITHOUT a leading slash (e.g. "documents/report.pdf"). Used as
+	// the default restore destination. Empty for live nodes.
+	OriginalPath string `json:"original_path,omitempty"`
+
+	// DeletedBy is the principal (AuthContext Identity.Username, or its UID as
+	// a string when no username is known) that recycled the node. Display only.
+	DeletedBy string `json:"deleted_by,omitempty"`
 }
 
 // SetAttrs specifies which attributes to update in a SetFileAttributes call.

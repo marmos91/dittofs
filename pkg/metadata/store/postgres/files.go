@@ -44,7 +44,8 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, f.object_id, lc.link_count
+			f.hidden, f.acl, f.object_id,
+			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.id = $1 AND f.share_name = $2
@@ -225,7 +226,8 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 	// versus the per-entry GetFile() round trip it avoids.
 	query := `
 		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
-		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.object_id, lc.link_count
+		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.object_id,
+		       f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM parent_child_map dc
 		LEFT JOIN files f ON dc.child_id = f.id
 		LEFT JOIN link_counts lc ON dc.child_id = lc.file_id
@@ -250,10 +252,14 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 		var hidden bool
 		var aclJSON []byte
 		var objectIDRaw []byte
+		var deletedAt sql.NullInt64
+		var originalPath string
+		var deletedBy string
 		var linkCount sql.NullInt32
 
 		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size,
-			&atime, &mtime, &ctime, &creationTime, &hidden, &aclJSON, &objectIDRaw, &linkCount)
+			&atime, &mtime, &ctime, &creationTime, &hidden, &aclJSON, &objectIDRaw,
+			&deletedAt, &originalPath, &deletedBy, &linkCount)
 		if err != nil {
 			return nil, "", err
 		}
@@ -315,6 +321,16 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 			}
 			copy(attr.ObjectID[:], objectIDRaw)
 		}
+
+		// Recycle-bin metadata (#190): carried on DirEntry.Attr so trash
+		// enumeration via listing reflects recycle state without a re-read.
+		// deleted_at is BIGINT unix-nanoseconds; decode via pgNanosToTime.
+		if deletedAt.Valid {
+			t := pgNanosToTime(deletedAt.Int64)
+			attr.DeletedAt = &t
+		}
+		attr.OriginalPath = originalPath
+		attr.DeletedBy = deletedBy
 
 		// Refs #532 (PR #536 review): mirror fileRowToFileWithNlink. A
 		// malformed ACL row is treated as "no ACL" rather than failing the
@@ -430,7 +446,8 @@ func (s *PostgresMetadataStore) GetFileByPayloadID(ctx context.Context, payloadI
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, f.object_id, lc.link_count
+			f.hidden, f.acl, f.object_id,
+			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.content_id_hash = md5($1)

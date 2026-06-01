@@ -90,6 +90,11 @@ func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error 
 		"access_based_enumeration":            share.AccessBasedEnumeration,
 		"change_notify_disabled":              share.ChangeNotifyDisabled,
 		"streams_disabled":                    share.StreamsDisabled,
+		"trash_enabled":                       share.TrashEnabled,
+		"trash_retention_days":                share.TrashRetentionDays,
+		"trash_restrict_to_admin":             share.TrashRestrictToAdmin,
+		"trash_max_bytes":                     share.TrashMaxBytes,
+		"trash_exclude_patterns":              share.TrashExcludePatterns,
 		"updated_at":                          share.UpdatedAt,
 	}
 	// Handle remote_block_store_id explicitly: GORM map-based Updates may skip
