@@ -56,12 +56,17 @@ dfsctl
 │   ├── add       Add identity mapping
 │   ├── list      List identity mappings
 │   └── remove    Remove identity mapping
-└── netgroup      Netgroup management
-    ├── create    Create a netgroup
-    ├── delete    Delete a netgroup
-    ├── list      List netgroups
-    ├── show      Show netgroup details
-    └── members   Manage netgroup members
+├── netgroup      Netgroup management
+│   ├── create    Create a netgroup
+│   ├── delete    Delete a netgroup
+│   ├── list      List netgroups
+│   ├── show      Show netgroup details
+│   └── members   Manage netgroup members
+└── trash         Recycle-bin management
+    ├── list      List recycle-bin entries for a share
+    ├── restore   Restore a recycled file or directory
+    ├── empty     Empty a share's recycle bin
+    └── status    Show recycle-bin status for a share
 ```
 
 ## Package Structure
@@ -740,6 +745,116 @@ dfsctl share snapshot restore /photos 9f2dab17 --force --yes
 [SNAPSHOTS.md — Restore runbook](SNAPSHOTS.md#7-restore-runbook)
 for the complete step-by-step procedure, safety-snap recovery, and
 the failure-mode taxonomy.
+
+### Recycle Bin (trash)
+
+The recycle bin is an opt-in, per-share feature. When enabled, deleting
+a file or directory moves it into a visible `#recycle` directory at the
+share root instead of destroying it. The bin can be browsed and
+restored over the mount (NFS or SMB — just drag the item back out) or
+managed with the `dfsctl trash` command group below.
+
+#### Configuring the bin (`share create` / `share edit`)
+
+The bin is configured on `dfsctl share create` and `dfsctl share edit`,
+and the active configuration is displayed by `dfsctl share show`. The
+five trash flags are accepted by both commands:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enable-trash` | `false` | Enable the per-share recycle bin so deletes move to `#recycle` instead of being permanent. On `share create` this is a boolean flag; on `share edit` it takes `true\|false` and is applied live (disabling auto-empties the bin). |
+| `--trash-retention-days N` | `0` | Days to retain recycled items before the reaper purges them. `0` = keep forever. |
+| `--trash-restrict-empty-to-admin` | `false` | Restrict emptying the bin to admins (`true\|false` on `share edit`). Users may still restore. |
+| `--trash-max-size BYTES` | `0` | Max bytes the bin may hold before the reaper evicts oldest items first. `0` = unbounded. |
+| `--trash-exclude GLOB` | (none) | Glob patterns whose deletions bypass the bin (repeatable). |
+
+On `share edit`, omitting a flag leaves the setting unchanged
+(numeric flags default to `-1` = unchanged; the boolean flags take an
+explicit `true\|false`).
+
+```bash
+# Enable the bin at create time with a 30-day retention
+dfsctl share create --name /docs --metadata badger-main --local local-cache \
+  --enable-trash --trash-retention-days 30
+
+# Tune an existing share's bin (applied live)
+dfsctl share edit /docs --trash-max-size 10737418240 \
+  --trash-exclude '*.tmp' --trash-exclude '*.cache'
+
+# Inspect the current trash configuration
+dfsctl share show /docs
+```
+
+For the per-share settings, REST field names, and defaults see
+[CONFIGURATION.md](CONFIGURATION.md#recycle-bin-trash).
+
+All four management subcommands take the share name as the first
+argument and honour the global `-o table|json|yaml` flag.
+
+#### `dfsctl trash list <share>`
+
+List the recycle-bin entries for a share.
+
+```bash
+dfsctl trash list /docs
+dfsctl trash list /docs -o json
+```
+
+**Table columns:** `PATH` (the entry's path under `#recycle`),
+`ORIGINAL` (the share-relative path the node occupied before deletion),
+`DELETED BY` (recycling owner), `DELETED AT` (RFC3339), `SIZE`, and
+`TYPE` (file or directory).
+
+#### `dfsctl trash restore <share> <bin-path> [--to PATH]`
+
+Restore a recycled file or directory. Without `--to`, the entry is
+restored to the path it occupied before deletion; if that destination
+now exists the command refuses and hints to use `--to`. `--to` restores
+the entry to an alternate share-relative path.
+
+```bash
+# Restore to the original location
+dfsctl trash restore /docs "#recycle/report.txt"
+
+# Restore elsewhere
+dfsctl trash restore /docs "#recycle/report.txt" --to /restored/report.txt
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--to PATH` | `""` | Restore to this share-relative path instead of the original location. |
+
+#### `dfsctl trash empty <share> [--force]`
+
+Permanently delete every entry in the share's recycle bin. This cannot
+be undone. If the share restricts emptying to admins, this command is
+admin-only. On success it reports the number of items removed.
+
+```bash
+dfsctl trash empty /docs
+dfsctl trash empty /docs --force
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--force` | `false` | Force empty, skipping server-side safety checks. |
+
+#### `dfsctl trash status <share>`
+
+Show recycle-bin status for a share.
+
+```bash
+dfsctl trash status /docs
+dfsctl trash status /docs -o json
+```
+
+**Output fields:** `Enabled` (whether the bin is on), `Items` (entry
+count), `Total Size` (summed bytes across recycled roots), and `Oldest`
+(earliest deletion timestamp, blank when the bin is empty).
 
 ### Block Store Migration
 

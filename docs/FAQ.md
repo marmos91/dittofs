@@ -463,6 +463,50 @@ Yes! Multiple shares can reference the same store instance for resource efficien
   --local shared-local --remote s3-archive
 ```
 
+### Is there a recycle bin / can I recover deleted files?
+
+Yes, on an opt-in, per-share basis. When a share has the recycle bin
+enabled, deleting a file or directory moves it into a visible
+`#recycle` directory at the share root instead of destroying it. You
+can browse and restore from `#recycle` over NFS or SMB like any other
+folder (just drag the item back out), or manage it with
+`dfsctl trash`:
+
+```bash
+# Enable the bin on a new or existing share
+dfsctl share create --name /docs ... --enable-trash
+dfsctl share edit /docs --enable-trash true
+
+# List, restore, inspect, and empty the bin
+dfsctl trash list /docs
+dfsctl trash restore /docs "#recycle/report.txt"
+dfsctl trash status /docs
+dfsctl trash empty /docs --force
+```
+
+Retention is configurable per share: `--trash-retention-days N`
+auto-purges entries older than N days (`0` = keep forever), and
+`--trash-max-size BYTES` caps the bin and evicts oldest-first when
+exceeded (`0` = unbounded). A background reaper enforces both hourly.
+
+Caveats:
+
+- The bin is a **single shared `#recycle` per share** — not per-user.
+- Triggers are **unlink** (NFS REMOVE/RMDIR, SMB delete-on-close) and
+  **replace-overwrite** (a rename/copy that clobbers an existing file
+  recycles the victim). In-place truncate/overwrite of a file's
+  *content* is **not** recycled.
+- Deleting an item that is already inside `#recycle` is **permanent**.
+- **Disabling trash auto-empties the bin**, permanently deleting its
+  contents.
+- Exclude globs (`--trash-exclude GLOB`, repeatable) cause matching
+  deletions to bypass the bin entirely.
+
+See [CLI.md](CLI.md#recycle-bin-trash) for the full command reference,
+[CONFIGURATION.md](CONFIGURATION.md#recycle-bin-trash) for the
+per-share settings, and [ARCHITECTURE.md](ARCHITECTURE.md#metadataservice)
+for the recycle-trap design.
+
 ### How do I enable debug logging?
 
 **Via environment variable:**
