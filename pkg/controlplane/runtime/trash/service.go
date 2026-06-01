@@ -344,6 +344,40 @@ func (s *Service) Empty(ctx *metadata.AuthContext, shareName string, force bool)
 	return len(roots), nil
 }
 
+// OnDisable is invoked when a share's trash policy transitions to disabled. It
+// permanently empties the bin (freeing every recycled file's CAS blocks) and
+// then removes the #recycle root directory from the share root entirely, so a
+// re-enable starts from a clean slate. A share that never used trash (no
+// #recycle dir) is a no-op.
+//
+// Empty's prune pass leaves #recycle empty, so RemoveDirectory on the bin root
+// succeeds. Because the bin path "#recycle" satisfies metadata.inRecycle, that
+// RemoveDirectory is a PERMANENT delete (the metadata layer does not re-recycle
+// a deletion that is already inside the bin) rather than recycling the bin into
+// itself.
+func (s *Service) OnDisable(ctx *metadata.AuthContext, shareName string) error {
+	if _, err := s.Empty(ctx, shareName, true); err != nil {
+		return err
+	}
+
+	svc, root, err := s.resolve(shareName)
+	if err != nil {
+		return err
+	}
+
+	if _, err := svc.GetChild(ctx.Context, root, metadata.RecycleDirName); err != nil {
+		// No bin means trash was never used: nothing to remove.
+		if metadata.IsNotFoundError(err) {
+			return nil
+		}
+		return err
+	}
+
+	// Empty left the bin logically empty; remove the now-empty #recycle root.
+	// A surviving non-empty / other error is surfaced, not swallowed.
+	return svc.RemoveDirectory(ctx, root, metadata.RecycleDirName)
+}
+
 // pruneEmptyDirs removes now-empty intermediary directories under dirHandle
 // depth-first, returning whether dirHandle itself is empty afterwards. The
 // caller removes a returned-empty child; dirHandle (the #recycle root passed by
