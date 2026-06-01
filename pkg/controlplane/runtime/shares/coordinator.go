@@ -127,39 +127,35 @@ func (c *metadataCoordinator) DecrementRefCount(ctx context.Context, hash blocks
 	return count, nil
 }
 
-// DecrementRefCountAndReap looks up the FileBlock by hash and decrements its
-// RefCount, reaping the row (and its hash index entry) atomically when the new
-// count reaches 0. The hash then leaves EnumerateFileBlocks so the GC sweep can
-// reclaim the remote chunk. ErrFileBlockNotFound on a hash with no row is
-// tolerated (returns count=0, nil) — a Truncate/Delete on an already-swept hash
-// is not a caller error.
+// DecrementRefCountAndReap decrements the FileBlock row identified by the EXACT
+// ID "{payloadID}/{offset}" and reaps it (row + hash index entry) atomically
+// when the new count reaches 0. The hash then leaves EnumerateFileBlocks once no
+// row anywhere references it, so the GC sweep can reclaim the remote chunk.
+// ErrFileBlockNotFound on a missing row is tolerated (returns count=0, nil) — a
+// Truncate/Delete on an already-reaped row, or a row a dedup-miss fallback never
+// created, is not a caller error.
 //
-// The GetByHash → reap is two store calls, but the reap itself is atomic at the
-// row level (the backend decrements and deletes in one critical section) and
-// GetByHash returns a stable id. A concurrent AddRef bumps the SAME row, so the
-// in-lock decrement reads the current count — no data loss: the row is reaped
-// ONLY when its count is genuinely 0.
+// By-ID, NOT by-hash: the engine rollup creates per-chunk rows keyed
+// "{payloadID}/{offset}" in BlockStatePending and never finalizes them, so
+// RefCount stays 0 and GetByHash (Remote-gated) returns nil for them. Resolving
+// the row by hash would pick an INDETERMINATE row when two files share the same
+// content hash and could reap the wrong file's row (leak or over-reap → data
+// loss). Removing THIS file's own row by ID is unambiguous; cross-file dedup
+// keep-alive is provided by SIBLING rows keeping the hash in EnumerateFileBlocks
+// (the GC live set), not by RefCount.
 //
 // Same txn-binding rule as DecrementRefCount: when ctx carries an active
-// metadata.Transaction via metadata.WithTx, both GetByHash and the reap route
-// through that tx; the engine Truncate/Delete reclaim path does not bind a tx.
-func (c *metadataCoordinator) DecrementRefCountAndReap(ctx context.Context, hash blockstore.ContentHash) (uint32, error) {
+// metadata.Transaction via metadata.WithTx the reap routes through that tx; the
+// engine Truncate/Delete reclaim path does not bind a tx.
+func (c *metadataCoordinator) DecrementRefCountAndReap(ctx context.Context, payloadID string, offset uint64) (uint32, error) {
 	store := c.resolveStore(ctx)
-	fb, err := store.GetByHash(ctx, hash)
-	if err != nil {
-		return 0, fmt.Errorf("coordinator: GetByHash(%s): %w", hash.String(), err)
-	}
-	if fb == nil {
-		// Already swept / never existed — the requested decrement-and-reap
-		// effectively succeeded (count is zero).
-		return 0, nil
-	}
-	count, err := store.DecrementRefCountAndReap(ctx, fb.ID)
+	id := fmt.Sprintf("%s/%d", payloadID, offset)
+	count, err := store.DecrementRefCountAndReap(ctx, id)
 	if err != nil {
 		if errors.Is(err, metadata.ErrFileBlockNotFound) {
 			return 0, nil
 		}
-		return 0, fmt.Errorf("coordinator: DecrementRefCountAndReap(%s): %w", fb.ID, err)
+		return 0, fmt.Errorf("coordinator: DecrementRefCountAndReap(%s): %w", id, err)
 	}
 	return count, nil
 }

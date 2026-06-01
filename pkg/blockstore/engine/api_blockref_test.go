@@ -124,7 +124,7 @@ func TestDelete_DecrementsRefCounts(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	if got := len(fc.reapHashes); got != 3 {
+	if got := len(fc.reapIDs); got != 3 {
 		t.Errorf("DecrementRefCountAndReap calls = %d, want 3", got)
 	}
 }
@@ -139,8 +139,8 @@ func TestDelete_EmptyBlocksSkipsCoordinator(t *testing.T) {
 	if err := bs.Delete(ctx, "delete-legacy", nil); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if len(fc.reapHashes) != 0 {
-		t.Errorf("DecrementRefCountAndReap called %d times on legacy delete (want 0)", len(fc.reapHashes))
+	if len(fc.reapIDs) != 0 {
+		t.Errorf("DecrementRefCountAndReap called %d times on legacy delete (want 0)", len(fc.reapIDs))
 	}
 }
 
@@ -167,8 +167,8 @@ func TestTruncate_DropsBlocksPastNewSize(t *testing.T) {
 	if len(kept) != 2 {
 		t.Errorf("kept = %d blocks, want 2", len(kept))
 	}
-	if len(fc.reapHashes) != 2 {
-		t.Errorf("DecrementRefCountAndReap calls = %d, want 2 (one per dropped block)", len(fc.reapHashes))
+	if len(fc.reapIDs) != 2 {
+		t.Errorf("DecrementRefCountAndReap calls = %d, want 2 (one per dropped block)", len(fc.reapIDs))
 	}
 }
 
@@ -186,8 +186,8 @@ func TestTruncate_EmptyBlocksLegacyPath(t *testing.T) {
 	if kept != nil {
 		t.Errorf("kept = %v, want nil for legacy path", kept)
 	}
-	if len(fc.reapHashes) != 0 {
-		t.Errorf("DecrementRefCountAndReap called %d times on legacy path (want 0)", len(fc.reapHashes))
+	if len(fc.reapIDs) != 0 {
+		t.Errorf("DecrementRefCountAndReap called %d times on legacy path (want 0)", len(fc.reapIDs))
 	}
 }
 

@@ -341,13 +341,28 @@ func (s *PostgresMetadataStore) ListFileBlocks(ctx context.Context, payloadID st
 	return result, nil
 }
 
-// EnumerateFileBlocks streams every FileBlock's ContentHash through fn
-// using a row cursor over the file_blocks table. NULL hashes (legacy
-// rows pre-CAS) are emitted as the zero ContentHash so the GC mark
-// phase can skip them explicitly. Lifted from FileBlockStore to
-// MetadataStore — implementation unchanged.
+// enumerateHashesQuery is the GC mark live-set query. It UNIONs the CAS index
+// (file_blocks.hash, VARCHAR hex) with the per-file manifest
+// (file_block_refs.hash, BYTEA → encode hex) so the live set is a strict
+// SUPERSET of both structures. The snapshot Backup HashSet is built from
+// file_block_refs alone (File.Blocks); without the union a hash present only in
+// file_block_refs (e.g. a manifest row whose CAS index row was never written or
+// already reaped) would be absent from the live set and the GC sweep would reap
+// the still-live remote chunk once a snapshot hold lapsed (data loss). NULL
+// hashes (legacy pre-CAS file_blocks rows) are emitted as the zero ContentHash
+// and skipped by the mark phase; file_block_refs.hash is NOT NULL.
+//
+// UNION ALL, not UNION: the consumer (GC mark phase) dedupes hashes into a set,
+// so cross-source and intra-source duplicates are harmless. UNION would force an
+// expensive sort/hash-aggregate to dedupe at the query layer for no benefit.
+const enumerateHashesQuery = `SELECT hash FROM file_blocks
+UNION ALL
+SELECT encode(hash, 'hex') FROM file_block_refs`
+
+// EnumerateFileBlocks streams every live-set ContentHash through fn, unioning
+// the CAS index with the per-file manifest (see enumerateHashesQuery).
 func (s *PostgresMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
-	rows, err := s.query(ctx, `SELECT hash FROM file_blocks ORDER BY id`)
+	rows, err := s.query(ctx, enumerateHashesQuery)
 	if err != nil {
 		return fmt.Errorf("enumerate file blocks: query: %w", err)
 	}
@@ -682,7 +697,7 @@ func (tx *postgresTransaction) ListFileBlocks(ctx context.Context, payloadID str
 }
 
 func (tx *postgresTransaction) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
-	rows, err := tx.tx.Query(ctx, `SELECT hash FROM file_blocks ORDER BY id`)
+	rows, err := tx.tx.Query(ctx, enumerateHashesQuery)
 	if err != nil {
 		return fmt.Errorf("enumerate file blocks: query: %w", err)
 	}

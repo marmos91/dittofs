@@ -536,11 +536,43 @@ func listFileBlocksTxn(txn *badger.Txn, payloadID string) []*metadata.FileBlock 
 	return result
 }
 
+// enumerateFileBlocksTxn streams the GC mark live set: the UNION of the CAS
+// index (fb: entries) and the per-file manifest (f: File.Blocks). Unioning both
+// makes the live set a strict SUPERSET of both structures — the snapshot Backup
+// HashSet is built from f: File.Blocks alone, so a hash present only there
+// (manifest row without a fb: CAS row, or one already reaped) would otherwise be
+// missed by the mark phase and the sweep would reap a still-live chunk once a
+// snapshot hold lapsed (data loss). Duplicates across the two passes are
+// harmless — GCState.Add deduplicates the live set.
 func enumerateFileBlocksTxn(ctx context.Context, txn *badger.Txn, fn func(blockstore.ContentHash) error) error {
+	// Each pass is scoped so its iterator is released before the next opens.
+	if err := enumeratePrefixHashes(ctx, txn, fileBlockPrefix, func(val []byte) (blockstore.ContentHash, error) {
+		var block metadata.FileBlock
+		if err := json.Unmarshal(val, &block); err != nil {
+			return blockstore.ContentHash{}, fmt.Errorf("decode file block: %w", err)
+		}
+		return block.Hash, nil
+	}, fn); err != nil {
+		return err
+	}
+	// Per-file manifest (f: File.Blocks). A file carries multiple hashes, so
+	// this pass emits each block ref individually.
+	return enumeratePrefixFileBlocks(ctx, txn, fn)
+}
+
+// enumeratePrefixHashes iterates a key prefix, decoding one hash per entry via
+// decodeHash and streaming it through fn. Used by the fb: (CAS index) pass.
+func enumeratePrefixHashes(
+	ctx context.Context,
+	txn *badger.Txn,
+	prefixStr string,
+	decodeHash func([]byte) (blockstore.ContentHash, error),
+	fn func(blockstore.ContentHash) error,
+) error {
 	opts := badger.DefaultIteratorOptions
 	opts.PrefetchValues = true
 	opts.PrefetchSize = 256
-	prefix := []byte(fileBlockPrefix)
+	prefix := []byte(prefixStr)
 	opts.Prefix = prefix
 	it := txn.NewIterator(opts)
 	defer it.Close()
@@ -549,14 +581,53 @@ func enumerateFileBlocksTxn(ctx context.Context, txn *badger.Txn, fn func(blocks
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("enumerate file blocks: %w", err)
 		}
-		var block metadata.FileBlock
+		var h blockstore.ContentHash
 		if err := it.Item().Value(func(val []byte) error {
-			return json.Unmarshal(val, &block)
+			var derr error
+			h, derr = decodeHash(val)
+			return derr
 		}); err != nil {
-			return fmt.Errorf("decode file block: %w", err)
-		}
-		if err := fn(block.Hash); err != nil {
 			return err
+		}
+		if err := fn(h); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// enumeratePrefixFileBlocks iterates the f: (File) prefix and streams every
+// File.Blocks hash through fn. Decode failures are fatal (fail-closed): a
+// dropped file entry would shrink the GC live set and let the sweep reap a
+// still-live chunk.
+func enumeratePrefixFileBlocks(ctx context.Context, txn *badger.Txn, fn func(blockstore.ContentHash) error) error {
+	opts := badger.DefaultIteratorOptions
+	opts.PrefetchValues = true
+	opts.PrefetchSize = 256
+	prefix := []byte(prefixFile)
+	opts.Prefix = prefix
+	it := txn.NewIterator(opts)
+	defer it.Close()
+
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("enumerate file blocks: %w", err)
+		}
+		var file *metadata.File
+		if err := it.Item().Value(func(val []byte) error {
+			f, derr := decodeFile(val)
+			if derr != nil {
+				return derr
+			}
+			file = f
+			return nil
+		}); err != nil {
+			return fmt.Errorf("enumerate file blocks: decode file: %w", err)
+		}
+		for _, br := range file.Blocks {
+			if err := fn(br.Hash); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

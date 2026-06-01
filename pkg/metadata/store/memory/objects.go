@@ -164,15 +164,30 @@ func (s *MemoryMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(b
 	return enumerateBlockHashes(ctx, snapshot, fn)
 }
 
-// snapshotBlockHashesLocked copies every FileBlock hash. Caller MUST hold at
-// least the read lock.
+// snapshotBlockHashesLocked copies every live-set hash, unioning the CAS index
+// (fileBlockData.blocks) with the per-file manifest (files[].Attr.Blocks) so
+// the GC mark live set is a strict SUPERSET of both structures. The snapshot
+// Backup HashSet is built from File.Blocks alone; a hash present only there
+// (manifest row without a CAS index row) would otherwise be missed by the mark
+// phase and the sweep would reap a still-live chunk (data loss). Caller MUST
+// hold at least the read lock.
 func (s *MemoryMetadataStore) snapshotBlockHashesLocked() []blockstore.ContentHash {
-	if s.fileBlockData == nil {
-		return nil
+	var snapshot []blockstore.ContentHash
+	if s.fileBlockData != nil {
+		snapshot = make([]blockstore.ContentHash, 0, len(s.fileBlockData.blocks))
+		for _, b := range s.fileBlockData.blocks {
+			snapshot = append(snapshot, b.Hash)
+		}
 	}
-	snapshot := make([]blockstore.ContentHash, 0, len(s.fileBlockData.blocks))
-	for _, b := range s.fileBlockData.blocks {
-		snapshot = append(snapshot, b.Hash)
+	// Union the per-file manifest (File.Blocks). Duplicates across the two
+	// structures are harmless — GCState.Add deduplicates the live set.
+	for _, fd := range s.files {
+		if fd == nil || fd.Attr == nil {
+			continue
+		}
+		for _, br := range fd.Attr.Blocks {
+			snapshot = append(snapshot, br.Hash)
+		}
 	}
 	return snapshot
 }

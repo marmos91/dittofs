@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 type fakeCoordinator struct {
 	incrementCalls    []blockstore.ContentHash
 	decrementCalls    []blockstore.ContentHash
+	reapIDs           []string
 	persistCalls      []persistCall
 	failOnNthIncrErr  error
 	failOnNthIncrTrip int // 1-based; 0 = never fail
@@ -44,8 +46,11 @@ func (f *fakeCoordinator) DecrementRefCount(_ context.Context, hash blockstore.C
 	return 0, nil
 }
 
-func (f *fakeCoordinator) DecrementRefCountAndReap(_ context.Context, hash blockstore.ContentHash) (uint32, error) {
-	f.decrementCalls = append(f.decrementCalls, hash)
+// DecrementRefCountAndReap is the engine Delete/Truncate reclaim path, keyed by
+// EXACT ID "{payloadID}/{offset}" (never by hash). CopyPayload — the only path
+// these tests exercise — never reaps, so this just satisfies the interface.
+func (f *fakeCoordinator) DecrementRefCountAndReap(_ context.Context, payloadID string, offset uint64) (uint32, error) {
+	f.reapIDs = append(f.reapIDs, fmt.Sprintf("%s/%d", payloadID, offset))
 	return 0, nil
 }
 

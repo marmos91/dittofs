@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -18,7 +19,7 @@ type fakeCoordinator struct {
 
 	incHashes    []blockstore.ContentHash
 	decHashes    []blockstore.ContentHash
-	reapHashes   []blockstore.ContentHash
+	reapIDs      []string
 	persistCalls []persistRecord
 
 	// Optional: failOnNthIncrement returns an error on the Nth (1-based)
@@ -115,16 +116,18 @@ func (f *fakeCoordinator) DecrementRefCount(_ context.Context, hash blockstore.C
 
 // DecrementRefCountAndReap records reap-path invocations (engine Delete /
 // Truncate reclaim) separately from plain DecrementRefCount (dedup / rollback
-// bookkeeping) so tests can assert which path the engine took. Honours the same
+// bookkeeping) so tests can assert which path the engine took. The reap path is
+// keyed by EXACT ID "{payloadID}/{offset}" (never by hash), so the recorded
+// reapIDs reflect the unambiguous per-file row identity. Honours the same
 // failOnNthDecrement injection so rollback-on-error tests still fire.
-func (f *fakeCoordinator) DecrementRefCountAndReap(_ context.Context, hash blockstore.ContentHash) (uint32, error) {
+func (f *fakeCoordinator) DecrementRefCountAndReap(_ context.Context, payloadID string, offset uint64) (uint32, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.decCallCount++
 	if f.failOnNthDecrement > 0 && f.decCallCount == f.failOnNthDecrement {
 		return 0, errInducedDecrement
 	}
-	f.reapHashes = append(f.reapHashes, hash)
+	f.reapIDs = append(f.reapIDs, fmt.Sprintf("%s/%d", payloadID, offset))
 	return 0, nil
 }
 
