@@ -92,22 +92,59 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 		return NewErrorResult(types.StatusLogonFailure), nil
 	}
 
-	// Create authenticated session with the Kerberos ticket end-time as the
-	// session expiry. The helper sets ExpiresAt before StoreSession to avoid
-	// a data race window where a concurrent reader could observe a zero
-	// ExpiresAt on the published session and skip the per-request expiry
-	// check in prepareDispatch (see #341 A1).
-	sessionID := h.GenerateSessionID()
-	sess := h.CreateSessionWithUserAndExpiry(
-		sessionID,
-		ctx.ClientAddr,
-		user,
-		authResult.Realm,
-		authResult.APReq.Ticket.DecryptedEncPart.EndTime,
-	)
-	sess.OriginConnID = ctx.ConnID
-	recordSessionBindIdentity(sess, ctx)
-	ctx.SessionID = sessionID
+	// Kerberos ticket end-time becomes the session expiry. prepareDispatch
+	// rejects requests on a session past this time with
+	// STATUS_NETWORK_SESSION_EXPIRED (MS-SMB2 §3.3.5.2.9), prompting the
+	// client to re-authenticate via another SESSION_SETUP on the same
+	// session id.
+	ticketEndTime := authResult.APReq.Ticket.DecryptedEncPart.EndTime
+
+	// Re-authentication vs. fresh session: a non-binding SESSION_SETUP that
+	// targets an existing, non-LoggedOff session id (ctx.SessionID was already
+	// validated as origin/bound by handleSessionSetup) re-authenticates that
+	// session in place rather than minting a new id. Kerberos is single-shot
+	// (the AP-REQ both negotiates and completes), so there is no PendingAuth to
+	// carry an IsReauth flag — we detect reauth directly here. Reusing the id is
+	// what smbtorture smb2.session.expire1/2 requires: after the ticket expires
+	// the client re-runs SESSION_SETUP with previous_session_id=0 (same id) and
+	// expects its prior open files / tree connects to keep working.
+	var sess *session.Session
+	isReauth := false
+	if ctx.SessionID != 0 {
+		if existing, ok := h.GetSession(ctx.SessionID); ok && !existing.LoggedOff.Load() {
+			isReauth = true
+			sess = existing
+			// Refresh identity and lifetime. Updating ExpiresAt to the fresh
+			// ticket end-time clears the expired state so prepareDispatch lets
+			// subsequent requests through again. Keys are re-derived below from
+			// the new ticket session key (Kerberos reauth always yields a new
+			// session key, unlike NTLM reauth which retains keys).
+			sess.User = user
+			sess.Username = user.Username
+			sess.Domain = authResult.Realm
+			sess.IsGuest = false
+			sess.IsNull = false
+			sess.ExpiresAt = ticketEndTime
+		}
+	}
+
+	if !isReauth {
+		// Fresh session. CreateSessionWithUserAndExpiry sets ExpiresAt before
+		// StoreSession to avoid a data race window where a concurrent reader
+		// could observe a zero ExpiresAt on the published session and skip the
+		// per-request expiry check in prepareDispatch (see #341 A1).
+		sessionID := h.GenerateSessionID()
+		sess = h.CreateSessionWithUserAndExpiry(
+			sessionID,
+			ctx.ClientAddr,
+			user,
+			authResult.Realm,
+			ticketEndTime,
+		)
+		sess.OriginConnID = ctx.ConnID
+		recordSessionBindIdentity(sess, ctx)
+		ctx.SessionID = sessionID
+	}
 	ctx.IsGuest = false
 
 	// Initialize per-session preauth hash for SMB 3.1.1 key derivation.
@@ -117,8 +154,13 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 	// back to the connection-level hash and produces wrong signing/encryption
 	// keys, causing the client to reject the signed SESSION_SETUP response.
 	// The NTLM path does the equivalent in handleSessionSetup.
-	if ctx.ConnCryptoState != nil {
-		ctx.ConnCryptoState.InitSessionPreauthHash(sessionID, ctx.RawRequest)
+	//
+	// On reauth the preauth hash MUST stay frozen at the original setup's value
+	// (MS-SMB2 §3.3.5.5.3): configureSessionSigningWithKey re-derives keys from
+	// sess.PreauthIntegrityHash when it is non-zero, and re-seeding here would
+	// diverge from the client. So we only seed for a fresh session.
+	if !isReauth && ctx.ConnCryptoState != nil {
+		ctx.ConnCryptoState.InitSessionPreauthHash(ctx.SessionID, ctx.RawRequest)
 	}
 
 	// Configure session signing with normalized 16-byte key.

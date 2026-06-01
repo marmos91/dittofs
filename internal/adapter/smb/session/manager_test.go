@@ -56,6 +56,21 @@ func TestSession_IsExpired(t *testing.T) {
 			t.Error("Session with past ExpiresAt should be expired")
 		}
 	})
+	t.Run("RefreshedExpiresAt_ClearsExpiry", func(t *testing.T) {
+		// Kerberos re-authentication refreshes ExpiresAt in place from the
+		// fresh ticket end-time (handleKerberosAuth reauth path). Bumping the
+		// expiry forward must clear the expired state so prepareDispatch lets
+		// subsequent requests through again (smb2.session.expire1/2).
+		s := NewSession(1, "client", false, "user", "DOMAIN")
+		s.ExpiresAt = time.Now().Add(-1 * time.Second)
+		if !s.IsExpired() {
+			t.Fatal("precondition: session should start expired")
+		}
+		s.ExpiresAt = time.Now().Add(1 * time.Hour)
+		if s.IsExpired() {
+			t.Error("Session with refreshed future ExpiresAt should no longer be expired")
+		}
+	})
 }
 
 func TestManager_DeleteSession(t *testing.T) {
