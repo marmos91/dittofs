@@ -694,6 +694,27 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 //  2. For lease (36 bytes): decode lease key + state, delegate to LeaseManager
 //  3. For traditional (24 bytes): look up open file, derive synthetic lease key, delegate
 func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
+	// Session-state gate (MS-SMB2 §3.3.5.22 step 1: locate the session).
+	// OPLOCK_BREAK is dispatched with NeedsSession=false (a break ack is keyed
+	// by lease/FileID, not the session table), so prepareDispatch's expiry /
+	// logged-off gate at response.go does not run for it. Re-apply it here so a
+	// break ack on an expired Kerberos session returns
+	// STATUS_NETWORK_SESSION_EXPIRED — before the oplock-protocol validation
+	// below, which would otherwise answer STATUS_INVALID_OPLOCK_PROTOCOL.
+	// smbtorture smb2.session.expire2s/expire2e drive a break on the expired
+	// session and assert the expired status. SessionID==0 (no session context)
+	// falls through unchanged.
+	if ctx.SessionID != 0 {
+		if sess, ok := h.GetSession(ctx.SessionID); ok {
+			if sess.LoggedOff.Load() {
+				return NewErrorResult(types.StatusUserSessionDeleted), nil
+			}
+			if sess.IsExpired() {
+				return NewErrorResult(types.StatusNetworkSessionExpired), nil
+			}
+		}
+	}
+
 	if len(body) < 2 {
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
