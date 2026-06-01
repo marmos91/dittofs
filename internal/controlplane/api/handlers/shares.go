@@ -18,6 +18,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // normalizeShareName ensures a share name has exactly one leading slash.
@@ -90,6 +91,13 @@ type CreateShareRequest struct {
 	// StreamsDisabled — pointer so nil keeps default false (streams
 	// supported).
 	StreamsDisabled *bool `json:"streams_disabled,omitempty"`
+	// Per-share recycle-bin policy (#190). Pointers so nil keeps the
+	// server default (trash disabled, zero limits).
+	TrashEnabled         *bool    `json:"trash_enabled,omitempty"`
+	TrashRetentionDays   *int     `json:"trash_retention_days,omitempty"`
+	TrashRestrictToAdmin *bool    `json:"trash_restrict_to_admin,omitempty"`
+	TrashMaxBytes        *int64   `json:"trash_max_bytes,omitempty"`
+	TrashExcludePatterns []string `json:"trash_exclude_patterns,omitempty"`
 }
 
 // UpdateShareRequest is the request body for PUT /api/v1/shares/{name}.
@@ -120,6 +128,15 @@ type UpdateShareRequest struct {
 	// StreamsDisabled — nil = no change; non-nil = explicit set.
 	// Persisted on UpdateShare; takes effect on adapter restart.
 	StreamsDisabled *bool `json:"streams_disabled,omitempty"`
+	// Per-share recycle-bin policy (#190). nil = no change; non-nil =
+	// explicit set. Unlike the adapter-restart fields above, these apply
+	// LIVE via the runtime (SetShareTrashConfig); turning trash off also
+	// auto-empties the bin.
+	TrashEnabled         *bool    `json:"trash_enabled,omitempty"`
+	TrashRetentionDays   *int     `json:"trash_retention_days,omitempty"`
+	TrashRestrictToAdmin *bool    `json:"trash_restrict_to_admin,omitempty"`
+	TrashMaxBytes        *int64   `json:"trash_max_bytes,omitempty"`
+	TrashExcludePatterns []string `json:"trash_exclude_patterns,omitempty"`
 }
 
 // ShareResponse is the response body for share endpoints.
@@ -315,6 +332,33 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		streamsDisabled = *req.StreamsDisabled
 	}
 
+	// Per-share recycle bin (#190). All knobs default to the disabled/zero
+	// state; non-nil pointers are explicit sets.
+	trashEnabled := false
+	if req.TrashEnabled != nil {
+		trashEnabled = *req.TrashEnabled
+	}
+	trashRetentionDays := 0
+	if req.TrashRetentionDays != nil {
+		if *req.TrashRetentionDays < 0 {
+			BadRequest(w, "trash_retention_days must be >= 0")
+			return
+		}
+		trashRetentionDays = *req.TrashRetentionDays
+	}
+	trashRestrictToAdmin := false
+	if req.TrashRestrictToAdmin != nil {
+		trashRestrictToAdmin = *req.TrashRestrictToAdmin
+	}
+	var trashMaxBytes int64
+	if req.TrashMaxBytes != nil {
+		if *req.TrashMaxBytes < 0 {
+			BadRequest(w, "trash_max_bytes must be >= 0")
+			return
+		}
+		trashMaxBytes = *req.TrashMaxBytes
+	}
+
 	now := time.Now()
 	share := &models.Share{
 		ID:                               uuid.New().String(),
@@ -335,9 +379,14 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		AccessBasedEnumeration:           abe,
 		ChangeNotifyDisabled:             cnDisabled,
 		StreamsDisabled:                  streamsDisabled,
+		TrashEnabled:                     trashEnabled,
+		TrashRetentionDays:               trashRetentionDays,
+		TrashRestrictToAdmin:             trashRestrictToAdmin,
+		TrashMaxBytes:                    trashMaxBytes,
 		CreatedAt:                        now,
 		UpdatedAt:                        now,
 	}
+	share.SetTrashExcludePatterns(req.TrashExcludePatterns)
 
 	// Set blocked operations
 	if req.BlockedOperations != nil {
@@ -378,6 +427,11 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			AccessBasedEnumeration:           share.AccessBasedEnumeration,
 			ChangeNotifyDisabled:             share.ChangeNotifyDisabled,
 			StreamsDisabled:                  share.StreamsDisabled,
+			TrashEnabled:                     share.TrashEnabled,
+			TrashRetentionDays:               share.TrashRetentionDays,
+			TrashRestrictToAdmin:             share.TrashRestrictToAdmin,
+			TrashMaxBytes:                    share.TrashMaxBytes,
+			TrashExcludePatterns:             share.GetTrashExcludePatterns(),
 			DefaultPermission:                defaultPerm,
 			Squash:                           nfsOpts.GetSquashMode(),
 			AnonymousUID:                     nfsOpts.GetAnonymousUID(),
@@ -517,6 +571,31 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		// Persisted to DB; takes effect on adapter restart.
 		share.StreamsDisabled = *req.StreamsDisabled
 	}
+	// Per-share recycle bin (#190). Persisted here, then applied LIVE via the
+	// runtime below (with auto-empty on disable).
+	if req.TrashEnabled != nil {
+		share.TrashEnabled = *req.TrashEnabled
+	}
+	if req.TrashRetentionDays != nil {
+		if *req.TrashRetentionDays < 0 {
+			BadRequest(w, "trash_retention_days must be >= 0")
+			return
+		}
+		share.TrashRetentionDays = *req.TrashRetentionDays
+	}
+	if req.TrashRestrictToAdmin != nil {
+		share.TrashRestrictToAdmin = *req.TrashRestrictToAdmin
+	}
+	if req.TrashMaxBytes != nil {
+		if *req.TrashMaxBytes < 0 {
+			BadRequest(w, "trash_max_bytes must be >= 0")
+			return
+		}
+		share.TrashMaxBytes = *req.TrashMaxBytes
+	}
+	if req.TrashExcludePatterns != nil {
+		share.SetTrashExcludePatterns(req.TrashExcludePatterns)
+	}
 	if req.DefaultPermission != nil {
 		share.DefaultPermission = *req.DefaultPermission
 	}
@@ -631,6 +710,30 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		// Hot-update quota if changed
 		if req.QuotaBytes != nil {
 			h.runtime.UpdateShareQuota(share.Name, share.QuotaBytes)
+		}
+		// Recycle-bin policy applies LIVE (#190): push the new settings into
+		// the runtime registry so per-delete decisions and the reaper see them
+		// immediately, then auto-empty the bin if trash was turned off.
+		if req.TrashEnabled != nil || req.TrashRetentionDays != nil ||
+			req.TrashRestrictToAdmin != nil || req.TrashMaxBytes != nil ||
+			req.TrashExcludePatterns != nil {
+			cfg := shares.TrashSettings{
+				Enabled:         share.TrashEnabled,
+				RetentionDays:   share.TrashRetentionDays,
+				RestrictToAdmin: share.TrashRestrictToAdmin,
+				MaxBytes:        share.TrashMaxBytes,
+				ExcludePatterns: share.GetTrashExcludePatterns(),
+			}
+			if err := h.runtime.SetShareTrashConfig(share.Name, cfg); err != nil {
+				logger.Warn("Failed to apply trash config to runtime",
+					"share", share.Name, "error", err)
+			} else if !cfg.Enabled {
+				actx := metadata.NewSystemAuthContext(r.Context())
+				if err := h.runtime.Trash().OnDisable(actx, share.Name); err != nil {
+					logger.Warn("Failed to auto-empty trash on disable",
+						"share", share.Name, "error", err)
+				}
+			}
 		}
 	}
 

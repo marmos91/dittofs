@@ -422,6 +422,14 @@ func (r *Runtime) UpdateShare(name string, readOnly *bool, defaultPermission *st
 	return r.sharesSvc.UpdateShare(name, readOnly, defaultPermission, retentionPolicy, retentionTTL)
 }
 
+// SetShareTrashConfig applies recycle-bin settings to a live share under the
+// shares-service write lock and persists them via the runtime's store (#190).
+// Thin passthrough so API handlers, which only hold *Runtime, can hot-update
+// trash policy without reaching into sharesSvc/store directly.
+func (r *Runtime) SetShareTrashConfig(name string, cfg shares.TrashSettings) error {
+	return r.sharesSvc.SetShareTrashConfig(r.store, name, cfg)
+}
+
 // DisableShare sets enabled=false on the share's DB row and runtime
 // registry, then notifies adapters so active sessions drop.
 // Idempotent on already-disabled shares (returns shares.ErrShareAlreadyDisabled

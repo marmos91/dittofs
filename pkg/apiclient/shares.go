@@ -83,6 +83,13 @@ type CreateShareRequest struct {
 	// StreamsDisabled — pointer so callers can distinguish "unset →
 	// server default (false)" from "explicit true".
 	StreamsDisabled *bool `json:"streams_disabled,omitempty"`
+	// Per-share recycle-bin policy (#190). Pointers so nil keeps the
+	// server default (trash disabled, zero limits).
+	TrashEnabled         *bool    `json:"trash_enabled,omitempty"`
+	TrashRetentionDays   *int     `json:"trash_retention_days,omitempty"`
+	TrashRestrictToAdmin *bool    `json:"trash_restrict_to_admin,omitempty"`
+	TrashMaxBytes        *int64   `json:"trash_max_bytes,omitempty"`
+	TrashExcludePatterns []string `json:"trash_exclude_patterns,omitempty"`
 }
 
 // UpdateShareRequest is the request to update a share.
@@ -111,6 +118,14 @@ type UpdateShareRequest struct {
 	// StreamsDisabled — nil = no change; non-nil = explicit set. Takes
 	// effect on adapter restart.
 	StreamsDisabled *bool `json:"streams_disabled,omitempty"`
+	// Per-share recycle-bin policy (#190). nil = no change; non-nil =
+	// explicit set. Applied live by the server; turning trash off
+	// auto-empties the bin.
+	TrashEnabled         *bool    `json:"trash_enabled,omitempty"`
+	TrashRetentionDays   *int     `json:"trash_retention_days,omitempty"`
+	TrashRestrictToAdmin *bool    `json:"trash_restrict_to_admin,omitempty"`
+	TrashMaxBytes        *int64   `json:"trash_max_bytes,omitempty"`
+	TrashExcludePatterns []string `json:"trash_exclude_patterns,omitempty"`
 }
 
 // SharePermission represents a permission on a share.
