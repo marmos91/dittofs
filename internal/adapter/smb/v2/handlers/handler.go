@@ -1026,6 +1026,13 @@ func (h *Handler) closeFilesWithFilter(
 ) int {
 	var closed int
 	var toDelete [][16]byte
+	// leaseReleases holds the opens whose per-handle lease/oplock record must be
+	// released AFTER the open-file table has been shrunk (second pass). Releasing
+	// in the first pass would let two opens of the SAME file with the SAME lease
+	// key (still both present in h.files) each observe the other as a surviving
+	// sibling and skip release, leaking the record. Pipes (no lease) and durable
+	// handles persisted for reconnect (lease intentionally retained) are excluded.
+	var leaseReleases []*OpenFile
 
 	// Get session for auth context (may be nil if session already deleted)
 	sess, _ := h.GetSession(sessionID)
@@ -1225,6 +1232,17 @@ func (h *Handler) closeFilesWithFilter(
 			h.handleDeleteOnClose(ctx, sess, openFile, caller)
 		}
 
+		// Queue this handle's per-open lease/oplock record for release in the
+		// second pass (after the open-file table is shrunk). The explicit CLOSE
+		// handler releases inline in close.go step 9, but LOGOFF /
+		// tree-disconnect / transport-drop bypass that handler. Relying solely
+		// on the later LeaseManager.ReleaseSessionLeases (a sessionMap scan
+		// keyed by lease key) leaks the record whenever a later session reused
+		// the same numeric lease key on another file and overwrote the
+		// sessionMap entry — the root cause of the #568 rotating cross-test
+		// lease flake. See releaseHandleLeaseRecord for the full rationale.
+		leaseReleases = append(leaseReleases, openFile)
+
 		toDelete = append(toDelete, openFile.FileID)
 		closed++
 		return true
@@ -1262,6 +1280,15 @@ func (h *Handler) closeFilesWithFilter(
 			}
 		}
 		h.DeleteOpenFile(fileID)
+	}
+
+	// Third pass: release per-handle lease/oplock records. Runs after every
+	// DeleteOpenFile above so releaseHandleLeaseRecord's "any other open on the
+	// same file shares this key" scan sees the shrunk table — otherwise sibling
+	// opens of the same file/key (all still present in the first pass) would
+	// each defer to the other and the record would leak.
+	for _, openFile := range leaseReleases {
+		h.releaseHandleLeaseRecord(ctx, openFile, caller)
 	}
 
 	if closed > 0 {

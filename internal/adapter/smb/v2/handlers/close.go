@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -572,54 +573,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// smbtorture smb2.oplock.exclusive9 (multi-iter EXCLUSIVE+SUPERSEDE loop
 	// where each iter's tree1 ack-to-None must clean up before the next
 	// iter's tree1 EXCLUSIVE request).
-	if h.LeaseManager != nil {
-		leaseKey := openFile.LeaseKey
-
-		if leaseKey != ([16]byte{}) {
-			// Check if any other open on the SAME FILE shares this lease key.
-			// Two opens on the same file share one lease record (requestLeaseImpl
-			// upgrades in place). Different files with the same key are separate
-			// records in distinct handleKey buckets and must not be disturbed.
-			hasOtherOpenSameFile := false
-			h.files.Range(func(key, value any) bool {
-				other := value.(*OpenFile)
-				if other.FileID == openFile.FileID {
-					return true // skip self
-				}
-				if other.LeaseKey != leaseKey {
-					return true
-				}
-				if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
-					hasOtherOpenSameFile = true
-					return false
-				}
-				return true
-			})
-
-			if !hasOtherOpenSameFile {
-				// Last open on this file with this lease key — release only
-				// this handle's lease record. Other files sharing the key
-				// (smbtorture reuses LEASE1/LEASE2 across tests) keep theirs.
-				if err := h.LeaseManager.ReleaseLeaseForHandle(ctx.Context, lock.FileHandle(openFile.MetadataHandle), leaseKey, openFile.ShareName); err != nil {
-					logger.Debug("CLOSE: failed to release lease",
-						"path", openFile.Path,
-						"leaseKey", fmt.Sprintf("%x", leaseKey),
-						"error", err)
-				} else {
-					logger.Debug("CLOSE: released lease (last open on this file)",
-						"path", openFile.Path,
-						"leaseKey", fmt.Sprintf("%x", leaseKey))
-				}
-				// Unregister oplock FileID mapping if this was a traditional oplock
-				if openFile.OplockLevel != OplockLevelLease {
-					h.LeaseManager.UnregisterOplockFileID(leaseKey)
-				}
-			} else {
-				logger.Debug("CLOSE: lease handle closed (other opens share lease key on same file)",
-					"path", openFile.Path)
-			}
-		}
-	}
+	h.releaseHandleLeaseRecord(ctx.Context, openFile, "CLOSE")
 
 	// ========================================================================
 	// Step 10: Unregister any pending CHANGE_NOTIFY watches
@@ -715,6 +669,80 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// ========================================================================
 
 	return resp, nil
+}
+
+// releaseHandleLeaseRecord releases the per-handle lease/oplock record held by
+// openFile, and (for traditional oplocks) unregisters the synthetic lease key →
+// FileID mapping from the notifier. It is the single release point shared by the
+// explicit CLOSE handler (close.go step 9) and the session/tree/transport
+// teardown path (closeFilesWithFilter) so both clean up lease state identically.
+//
+// Why teardown can't rely on LeaseManager.ReleaseSessionLeases alone:
+// ReleaseSessionLeases scans the LeaseManager's sessionMap (leaseKey → sessionID)
+// for entries whose value equals the disconnecting session. That map is keyed by
+// lease key only, so when a LATER session reuses the same numeric lease key on a
+// DIFFERENT file (smbtorture reuses fixed LEASE1/LEASE2 macros across tests on
+// fresh connections), the map entry is overwritten to point at the later session.
+// The disconnecting session's own lock-manager record on its file then never
+// matches and leaks — a stale lease holder that poisons the next test's CREATE
+// (#568 rotating cross-test flake). Releasing by the open's OWN MetadataHandle +
+// LeaseKey here is immune to that overwrite. Likewise the oplock FileID registry
+// is server-global and was only ever unregistered on explicit CLOSE; teardown
+// left stale entries behind.
+//
+// Release is scoped per-handle (ReleaseLeaseForHandle) so opens of OTHER files
+// that legitimately share the same numeric lease key keep their records.
+func (h *Handler) releaseHandleLeaseRecord(ctx context.Context, openFile *OpenFile, caller string) {
+	if h.LeaseManager == nil {
+		return
+	}
+	leaseKey := openFile.LeaseKey
+	if leaseKey == ([16]byte{}) {
+		return
+	}
+
+	// Check if any other open on the SAME FILE shares this lease key.
+	// Two opens on the same file share one lease record (requestLeaseImpl
+	// upgrades in place). Different files with the same key are separate
+	// records in distinct handleKey buckets and must not be disturbed.
+	hasOtherOpenSameFile := false
+	h.files.Range(func(_, value any) bool {
+		other := value.(*OpenFile)
+		if other.FileID == openFile.FileID {
+			return true // skip self
+		}
+		if other.LeaseKey != leaseKey {
+			return true
+		}
+		if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
+			hasOtherOpenSameFile = true
+			return false
+		}
+		return true
+	})
+
+	if hasOtherOpenSameFile {
+		logger.Debug(caller+": lease handle closed (other opens share lease key on same file)",
+			"path", openFile.Path)
+		return
+	}
+
+	// Last open on this file with this lease key — release only this handle's
+	// lease record. Other files sharing the key keep theirs.
+	if err := h.LeaseManager.ReleaseLeaseForHandle(ctx, lock.FileHandle(openFile.MetadataHandle), leaseKey, openFile.ShareName); err != nil {
+		logger.Debug(caller+": failed to release lease",
+			"path", openFile.Path,
+			"leaseKey", fmt.Sprintf("%x", leaseKey),
+			"error", err)
+	} else {
+		logger.Debug(caller+": released lease (last open on this file)",
+			"path", openFile.Path,
+			"leaseKey", fmt.Sprintf("%x", leaseKey))
+	}
+	// Unregister oplock FileID mapping if this was a traditional oplock.
+	if openFile.OplockLevel != OplockLevelLease {
+		h.LeaseManager.UnregisterOplockFileID(leaseKey)
+	}
 }
 
 // ============================================================================
