@@ -352,3 +352,48 @@ func TestEmptyPrunesOrphanIntermediaryDirs(t *testing.T) {
 	_, err = tt.deps.svc.GetChild(tt.ctx.Context, tt.deps.rootHandle, metadata.RecycleDirName)
 	assert.NoError(t, err, "#recycle root must survive Empty")
 }
+
+func TestStatusReportsCountsSizesAndOldest(t *testing.T) {
+	t.Parallel()
+	tt := newTestTrash(t)
+
+	// Empty bin: enabled, zero counts, no oldest.
+	st, err := tt.svc.Status(tt.ctx, tt.deps.shareName)
+	require.NoError(t, err)
+	assert.True(t, st.Enabled)
+	assert.Equal(t, 0, st.ItemCount)
+	assert.Equal(t, uint64(0), st.TotalBytes)
+	assert.Nil(t, st.Oldest)
+
+	// Recycle two sized files; the first recycled is the oldest.
+	tt.recycleSized("first.txt", 100)
+	tt.recycleSized("second.txt", 250)
+
+	st, err = tt.svc.Status(tt.ctx, tt.deps.shareName)
+	require.NoError(t, err)
+	assert.True(t, st.Enabled)
+	assert.Equal(t, 2, st.ItemCount)
+	assert.Equal(t, uint64(350), st.TotalBytes)
+	require.NotNil(t, st.Oldest)
+
+	// Oldest must equal the minimum DeletedAt across the listed entries.
+	entries, err := tt.svc.List(tt.ctx, tt.deps.shareName)
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+	min := entries[0].DeletedAt
+	for i := range entries {
+		if entries[i].DeletedAt.Before(min) {
+			min = entries[i].DeletedAt
+		}
+	}
+	assert.True(t, st.Oldest.Equal(min), "Oldest %v should equal min DeletedAt %v", *st.Oldest, min)
+}
+
+func TestStatusUnknownShareReturnsNotFound(t *testing.T) {
+	t.Parallel()
+	tt := newTestTrash(t)
+
+	_, err := tt.svc.Status(tt.ctx, "/nope")
+	require.Error(t, err)
+	assert.True(t, metadata.IsNotFoundError(err))
+}

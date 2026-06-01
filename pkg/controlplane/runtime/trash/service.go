@@ -201,6 +201,53 @@ func (s *Service) entryAttr(ctx *metadata.AuthContext, svc *metadata.MetadataSer
 	return &file.FileAttr, nil
 }
 
+// Status summarizes a share's recycle bin: whether trash is enabled, the
+// number of recycled roots, their total size in bytes, and the oldest
+// deletion time (nil when the bin is empty). It is a thin read-only roll-up
+// over List and the share's trash config; it deliberately does NOT report
+// reaper run-state.
+func (s *Service) Status(ctx *metadata.AuthContext, shareName string) (*Status, error) {
+	cfg, ok := s.deps.TrashConfigForShare(shareName)
+	if !ok {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrNotFound,
+			Message: "unknown share",
+			Path:    shareName,
+		}
+	}
+
+	entries, err := s.List(ctx, shareName)
+	if err != nil {
+		return nil, err
+	}
+
+	status := &Status{
+		Enabled:   cfg.Enabled,
+		ItemCount: len(entries),
+	}
+	for i := range entries {
+		status.TotalBytes += entries[i].Size
+		t := entries[i].DeletedAt
+		if status.Oldest == nil || t.Before(*status.Oldest) {
+			oldest := t
+			status.Oldest = &oldest
+		}
+	}
+	return status, nil
+}
+
+// Status is the read-only roll-up returned by Service.Status.
+type Status struct {
+	// Enabled reports whether the share's trash policy is enabled.
+	Enabled bool `json:"enabled"`
+	// ItemCount is the number of recycled roots in the bin.
+	ItemCount int `json:"item_count"`
+	// TotalBytes is the summed Size of every recycled root.
+	TotalBytes uint64 `json:"total_bytes"`
+	// Oldest is the earliest DeletedAt across the bin, nil when empty.
+	Oldest *time.Time `json:"oldest,omitempty"`
+}
+
 // Restore moves the bin entry at binPath back to dest (defaulting to the
 // entry's OriginalPath when dest is empty) and clears its deletion metadata.
 // Returns an AlreadyExists StoreError when the destination is already occupied;

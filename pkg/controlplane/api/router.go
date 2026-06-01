@@ -208,6 +208,18 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					r.Post("/{id}/restore", snapshotHandler.Restore)
 				})
 
+				// Per-share recycle-bin (trash) lifecycle. RequireAdmin is
+				// inherited from the parent /shares group, so Empty and the
+				// rest are admin-only by construction; end-user restore happens
+				// over the mount.
+				trashHandler := handlers.NewTrashHandler(rt)
+				r.Route("/{name}/trash", func(r chi.Router) {
+					r.Get("/", trashHandler.List)
+					r.Post("/restore", trashHandler.Restore)
+					r.Post("/empty", trashHandler.Empty)
+					r.Get("/status", trashHandler.Status)
+				})
+
 				// Share permissions
 				r.Get("/{name}/permissions", shareHandler.ListPermissions)
 				r.Put("/{name}/permissions/users/{username}", shareHandler.SetUserPermission)
