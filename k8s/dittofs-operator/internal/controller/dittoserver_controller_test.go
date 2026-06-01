@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
+	"github.com/marmos91/dittofs/k8s/dittofs-operator/internal/controller/config"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/conditions"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -386,6 +387,24 @@ func verifyStatefulSet(t *testing.T, ctx context.Context, r *DittoServerReconcil
 		return
 	}
 
+	// The pod must carry a TerminationGracePeriodSeconds large enough to survive the
+	// dfs server's serial multi-stage graceful shutdown plus the PreStop delay. Without
+	// it, k8s applies its 30s default and SIGKILLs the server mid-flush on rollout/drain,
+	// losing metadata.
+	tgps := statefulSet.Spec.Template.Spec.TerminationGracePeriodSeconds
+	if tgps == nil {
+		t.Errorf("StatefulSet pod template missing TerminationGracePeriodSeconds")
+	} else {
+		minRequired := int64(preStopSleepSeconds + config.DefaultShutdownTimeoutSeconds)
+		if *tgps <= minRequired {
+			t.Errorf("TerminationGracePeriodSeconds %d does not comfortably exceed preStop+shutdownTimeout (%d)", *tgps, minRequired)
+		}
+		expected := getTerminationGracePeriodSeconds(dittoServer)
+		if *tgps != expected {
+			t.Errorf("Expected TerminationGracePeriodSeconds %d, got %d", expected, *tgps)
+		}
+	}
+
 	container := statefulSet.Spec.Template.Spec.Containers[0]
 	if container.Name != "dittofs" {
 		t.Errorf("Expected container name 'dittofs', got %s", container.Name)
@@ -477,6 +496,36 @@ func collectObjects(f fields) []runtime.Object {
 		}
 	}
 	return objs
+}
+
+func TestGetTerminationGracePeriodSeconds(t *testing.T) {
+	derivedDefault := int64(preStopSleepSeconds +
+		shutdownStageMultiplier*config.DefaultShutdownTimeoutSeconds +
+		terminationGraceBufferSeconds)
+
+	// Sanity: the derived default must comfortably exceed preStop + shutdown_timeout.
+	if minRequired := int64(preStopSleepSeconds + config.DefaultShutdownTimeoutSeconds); derivedDefault <= minRequired {
+		t.Fatalf("derived default %d does not exceed preStop+shutdownTimeout %d", derivedDefault, minRequired)
+	}
+
+	t.Run("unset uses derived default", func(t *testing.T) {
+		ds := &v1alpha1.DittoServer{}
+		if got := getTerminationGracePeriodSeconds(ds); got != derivedDefault {
+			t.Errorf("expected derived default %d, got %d", derivedDefault, got)
+		}
+	})
+
+	t.Run("explicit override is honored", func(t *testing.T) {
+		override := int64(300)
+		ds := &v1alpha1.DittoServer{
+			Spec: v1alpha1.DittoServerSpec{
+				TerminationGracePeriodSeconds: &override,
+			},
+		}
+		if got := getTerminationGracePeriodSeconds(ds); got != override {
+			t.Errorf("expected override %d, got %d", override, got)
+		}
+	})
 }
 
 func setupDittoServerReconciler(t *testing.T, f fields) *DittoServerReconciler {

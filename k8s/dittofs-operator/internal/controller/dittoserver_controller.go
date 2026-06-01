@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -732,6 +733,35 @@ func getAPIPort(dittoServer *dittoiov1alpha1.DittoServer) int32 {
 	return defaultAPIPort
 }
 
+// PreStop hook delay (seconds) applied to the dfs container before SIGTERM.
+const preStopSleepSeconds = 5
+
+// Shutdown-budget multiplier: the dfs server runs shutdown stages serially,
+// each bounded by shutdown_timeout. Cover the worst-case multi-stage path (~3x).
+const shutdownStageMultiplier = 3
+
+// Extra headroom (seconds) above the computed shutdown budget.
+const terminationGraceBufferSeconds = 10
+
+// getTerminationGracePeriodSeconds returns the pod TerminationGracePeriodSeconds for
+// the dfs server. When the user sets it explicitly on the spec, that value is honored.
+// Otherwise it is derived from the configured shutdown_timeout so the grace period and
+// the server's per-stage shutdown budget stay coupled:
+//
+//	TGPS = preStop + shutdownStageMultiplier*shutdownTimeout + buffer
+//
+// With the default 30s shutdown_timeout this is 5 + 3*30 + 10 = 105s, which
+// comfortably exceeds preStop + shutdown_timeout and avoids a SIGKILL mid-flush
+// (metadata loss) on rollout, drain, or scale-down.
+func getTerminationGracePeriodSeconds(dittoServer *dittoiov1alpha1.DittoServer) int64 {
+	if dittoServer.Spec.TerminationGracePeriodSeconds != nil {
+		return *dittoServer.Spec.TerminationGracePeriodSeconds
+	}
+	return preStopSleepSeconds +
+		shutdownStageMultiplier*config.DefaultShutdownTimeoutSeconds +
+		terminationGraceBufferSeconds
+}
+
 // createOrUpdateService is a helper that creates or updates a Service with retry logic.
 // It handles owner reference setting and merges service specs to preserve cloud controller fields.
 func (r *DittoServerReconciler) createOrUpdateService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer, svc *corev1.Service) error {
@@ -941,8 +971,9 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 						},
 					},
 					Spec: corev1.PodSpec{
-						SecurityContext: getPodSecurityContext(dittoServer),
-						InitContainers:  initContainers,
+						SecurityContext:               getPodSecurityContext(dittoServer),
+						TerminationGracePeriodSeconds: ptr.To(getTerminationGracePeriodSeconds(dittoServer)),
+						InitContainers:                initContainers,
 						Containers: []corev1.Container{
 							{
 								Name:            "dittofs",
@@ -996,7 +1027,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 								Lifecycle: &corev1.Lifecycle{
 									PreStop: &corev1.LifecycleHandler{
 										Exec: &corev1.ExecAction{
-											Command: []string{"/bin/sh", "-c", "sleep 5"},
+											Command: []string{"/bin/sh", "-c", fmt.Sprintf("sleep %d", preStopSleepSeconds)},
 										},
 									},
 								},

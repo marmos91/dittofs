@@ -13,14 +13,19 @@ const (
 	DefaultLoggingFormat   = "json"
 	DefaultLoggingOutput   = "stdout"
 	DefaultShutdownTimeout = "30s"
-	DefaultSQLitePath      = "/data/controlplane/controlplane.db"
-	DefaultAPIPort         = 8080
-	DefaultAccessDuration  = "15m"
-	DefaultRefreshDuration = "168h" // 7 days
-	DefaultJWTIssuer       = "dittofs"
-	DefaultCachePath       = "/data/cache"
-	DefaultCacheSize       = "1GB"
-	DefaultAdminUsername   = "admin"
+	// DefaultShutdownTimeoutSeconds is the numeric form of DefaultShutdownTimeout.
+	// Keep this in sync with DefaultShutdownTimeout; the controller derives the pod's
+	// TerminationGracePeriodSeconds from it so the grace period and the server's
+	// per-stage shutdown budget stay coupled.
+	DefaultShutdownTimeoutSeconds = 30
+	DefaultSQLitePath             = "/data/controlplane/controlplane.db"
+	DefaultAPIPort                = 8080
+	DefaultAccessDuration         = "15m"
+	DefaultRefreshDuration        = "168h" // 7 days
+	DefaultJWTIssuer              = "dittofs"
+	DefaultCachePath              = "/data/cache"
+	DefaultCacheSize              = "1GB"
+	DefaultAdminUsername          = "admin"
 )
 
 // GenerateDittoFSConfig generates DittoFS configuration YAML from the CRD spec.
