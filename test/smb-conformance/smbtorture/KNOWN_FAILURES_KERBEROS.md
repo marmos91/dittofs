@@ -27,30 +27,21 @@ These are genuine Kerberos-specific bugs tracked in #340 / #686.
 Multi-channel session bind is implemented (#361). These `bind_negative_*`
 tests assert that a *second* channel bind which changes the signing or
 encryption algorithm relative to the first channel is rejected (MS-SMB2
-§3.3.5.5.2). The remaining combinations are not yet enforced correctly on the
-Kerberos path — DittoFS does not reject (or returns the wrong status for) the
-specific sign/encrypt algorithm transitions below.
+§3.3.5.5.2). The cross-algorithm transition matrix (GMAC↔CMAC↔HMAC, GCM↔CCM)
+is already enforced correctly on the Kerberos path — all of those variants
+pass. The four rows below are the CMAC↔HMAC case, where the bind itself is
+accepted (correct) and the follow-up *unsigned re-auth* on the bound channel
+must be rejected. The server now returns ACCESS_DENIED for that re-auth, but the
+signed error reply is mis-decoded as STATUS_OK by the smbtorture client under an
+encrypt-required/keyless fresh-init — a wire-level response-encoding follow-up
+that needs a byte-level pcap diff.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.bind_negative_smb3sneGtoGs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3sneGtoGd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3sneCtoCs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3sneCtoCd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3signGtoGs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3signGtoGd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3signCtoCs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3signCtoCd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3signCtoHs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3signCtoHd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3signHtoCs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3signHtoCd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3encGtoGs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3encGtoGd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3encCtoCs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3encCtoCd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3encCtoGs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
-| smb2.bind_negative_smb3encCtoGd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3signCtoHs | Session bind | CMAC→HMAC re-auth: server rejects (ACCESS_DENIED) but signed error reply mis-decoded as OK by client (wire-encoding follow-up) | #686 |
+| smb2.bind_negative_smb3signCtoHd | Session bind | CMAC→HMAC re-auth: server rejects (ACCESS_DENIED) but signed error reply mis-decoded as OK by client (wire-encoding follow-up) | #686 |
+| smb2.bind_negative_smb3signHtoCs | Session bind | HMAC→CMAC re-auth: server rejects (ACCESS_DENIED) but signed error reply mis-decoded as OK by client (wire-encoding follow-up) | #686 |
+| smb2.bind_negative_smb3signHtoCd | Session bind | HMAC→CMAC re-auth: server rejects (ACCESS_DENIED) but signed error reply mis-decoded as OK by client (wire-encoding follow-up) | #686 |
 
 ## AES-256 Session Encryption (Not Implemented)
 
