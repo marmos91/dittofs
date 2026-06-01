@@ -90,7 +90,16 @@ func ProcessSingleRequest(
 
 	cmd, handlerCtx, errStatus := prepareDispatch(ctx, reqHeader, connInfo)
 	if errStatus != 0 {
-		return SendErrorResponse(reqHeader, errStatus, connInfo)
+		// Encrypt the dispatch error (e.g. STATUS_NETWORK_SESSION_EXPIRED from
+		// the expiry gate) when the inbound request was encrypted — a client
+		// with encryption on rejects an unencrypted error as ACCESS_DENIED
+		// (smb2.session.expire1e). See sendDispatchError.
+		//
+		// CANCEL never reaches this branch: prepareDispatch exempts it from the
+		// session/expiry gate so it always dispatches to its handler, which
+		// cancels the pending op and returns nil (no response), per MS-SMB2
+		// §3.3.5.16.
+		return sendDispatchError(reqHeader, errStatus, connInfo, isEncrypted)
 	}
 
 	handlerCtx.RequestEncrypted = isEncrypted
@@ -110,7 +119,7 @@ func ProcessSingleRequest(
 
 	// Per MS-SMB2 3.3.5.2.1: enforce encryption requirements.
 	if errStatus := checkEncryptionRequired(reqHeader, connInfo, isEncrypted); errStatus != 0 {
-		return SendErrorResponse(reqHeader, errStatus, connInfo)
+		return sendDispatchError(reqHeader, errStatus, connInfo, isEncrypted)
 	}
 
 	// SMB3 channel-sequence verification (MS-SMB2 §3.3.5.2.10): reject a
@@ -120,7 +129,7 @@ func ProcessSingleRequest(
 		logger.Debug("Channel-sequence verification rejected request",
 			"command", reqHeader.Command.String(),
 			"messageID", reqHeader.MessageID)
-		return SendErrorResponse(reqHeader, errStatus, connInfo)
+		return sendDispatchError(reqHeader, errStatus, connInfo, isEncrypted)
 	}
 
 	// Wire async slot accounting for max_async_credits enforcement (MS-SMB2 §3.3.5.2.5).
@@ -258,6 +267,21 @@ func ProcessSingleRequest(
 	return nil
 }
 
+// isExpiryExemptCommand reports whether a command MUST still be processed on an
+// Expired session per MS-SMB2 §3.3.5.2.9 — LOGOFF, CLOSE, and LOCK. These let a
+// client cleanly tear down after its Kerberos ticket expires (release locks,
+// close handles, log off). Every other command on an expired session is
+// rejected with STATUS_NETWORK_SESSION_EXPIRED. The LOCK handler additionally
+// re-checks expiry so a NEW lock is still refused while UNLOCK proceeds.
+func isExpiryExemptCommand(cmd types.Command) bool {
+	switch cmd {
+	case types.SMB2Logoff, types.SMB2Close, types.SMB2Lock:
+		return true
+	default:
+		return false
+	}
+}
+
 // prepareDispatch looks up the command in the dispatch table, builds the handler context,
 // and validates session/tree requirements. Returns the command, context, and an error
 // status (0 on success). This consolidates the shared setup logic used by both
@@ -302,12 +326,30 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 	// (MS-SMB2 §3.3.4.7) to fan out across bound secondary channels.
 	handlerCtx.ConnTransport = connInfo
 
-	if cmd.NeedsSession && reqHeader.SessionID != 0 {
+	// CANCEL is exempt from the session/expiry/channel gate. Per MS-SMB2
+	// §3.3.5.16 it is keyed by MessageID/AsyncId — not the session table — and
+	// MUST NOT generate a response, so returning a session-level error here
+	// would inject a spurious CANCEL reply that desyncs the client's framing
+	// (smbtorture smb2.session.expire2s/expire2e — the spurious CANCEL reply on
+	// the expired session mis-framed the following CHANGE_NOTIFY response into
+	// INVALID_NETWORK_RESPONSE). CANCEL dispatches to its handler regardless of
+	// expiry; the handler cancels the pending op and returns nil. NeedsSession
+	// stays true so handlerCtx still carries the session identity below.
+	if cmd.NeedsSession && reqHeader.SessionID != 0 && reqHeader.Command != types.CommandCancel {
 		sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID)
 		if !ok || sess.LoggedOff.Load() {
 			return nil, nil, types.StatusUserSessionDeleted
 		}
-		if sess.IsExpired() {
+		// MS-SMB2 §3.3.5.2.9: on an Expired session the server MUST still
+		// process LOGOFF, CLOSE, and LOCK so the client can release locks,
+		// close handles, and log off after the Kerberos ticket expires
+		// (smbtorture smb2.session.expire2s/expire2e: "1st unlock => OK",
+		// "close => OK", "logoff => OK"). All other commands get
+		// STATUS_NETWORK_SESSION_EXPIRED. A NEW lock on an expired session is
+		// still refused inside the LOCK handler (which re-checks expiry and
+		// lets only UNLOCK through). The LoggedOff / channel-bind checks above
+		// and below still apply to these exempt commands.
+		if sess.IsExpired() && !isExpiryExemptCommand(reqHeader.Command) {
 			logger.Debug("Kerberos ticket expired",
 				"sessionID", reqHeader.SessionID,
 				"username", sess.Username,
@@ -707,6 +749,62 @@ func SendErrorResponse(reqHeader *header.SMB2Header, status types.Status, connIn
 		}
 	}
 	return SendMessage(respHeader, MakeErrorBody(), connInfo)
+}
+
+// sendDispatchError emits an SMB2 error reply for a request that failed before
+// (or during) handler dispatch. When the inbound request arrived inside an SMB3
+// Transform Header (requestEncrypted) the reply MUST be encrypted too: per
+// MS-SMB2 §3.3.4.1.4 a server that received an encrypted request encrypts its
+// response, and a client that turned encryption on for the session
+// (smb2cli_session_encryption_on) treats an unencrypted reply as a security
+// violation and surfaces STATUS_ACCESS_DENIED instead of the real status.
+//
+// This is what smbtorture smb2.session.expire1e / expire2e exercise: after the
+// Kerberos ticket expires the client sends an ENCRYPTED getinfo / oplock-break,
+// and the per-request expiry gate (prepareDispatch / OplockBreak) answers
+// STATUS_NETWORK_SESSION_EXPIRED. Sending that error plaintext makes the client
+// report ACCESS_DENIED (expire1e) / INVALID_OPLOCK_PROTOCOL (expire2e). The
+// expired session still holds its encryption keys, so we can — and must —
+// encrypt the error using the existing session keys.
+//
+// Falls back to the plaintext SendErrorResponse path when the request was not
+// encrypted, when no encryption middleware is configured, or when the session
+// has no encryptor (e.g. SessionID==0 or a session without derived keys).
+func sendDispatchError(reqHeader *header.SMB2Header, status types.Status, connInfo *ConnInfo, requestEncrypted bool) error {
+	// Plaintext path: not encrypted, no middleware, or no session/encryptor.
+	// SendErrorResponse owns its own credit grant in this branch.
+	if !requestEncrypted || connInfo.EncryptionMiddleware == nil || reqHeader.SessionID == 0 {
+		return SendErrorResponse(reqHeader, status, connInfo)
+	}
+	sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID)
+	if !ok || sess.CryptoState == nil || sess.CryptoState.Encryptor == nil {
+		return SendErrorResponse(reqHeader, status, connInfo)
+	}
+
+	// Encrypted path: grant credits exactly once and encrypt the error reply.
+	credits := grantConnectionCredits(connInfo, reqHeader.SessionID, reqHeader.Credits, reqHeader.CreditCharge)
+	respHeader := header.NewResponseHeaderWithCredits(reqHeader, status, credits)
+	plaintext := append(respHeader.Encode(), MakeErrorBody()...)
+	encrypted, err := connInfo.EncryptionMiddleware.EncryptResponse(reqHeader.SessionID, plaintext)
+	if err != nil {
+		// Encryptor is present but failed — emit the (already credit-granted)
+		// plaintext error directly rather than re-entering SendErrorResponse,
+		// which would grant credits a second time and over-extend the sequence
+		// window (#378). A client with encryption on will reject this, but
+		// there is no key with which to encrypt, so plaintext is the only
+		// option left.
+		logger.Warn("Failed to encrypt dispatch error response; sending plaintext",
+			"command", reqHeader.Command.String(),
+			"status", status.String(),
+			"sessionID", reqHeader.SessionID,
+			"error", err)
+		return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, plaintext)
+	}
+	logger.Debug("Encrypted dispatch error response",
+		"command", reqHeader.Command.String(),
+		"status", status.String(),
+		"sessionID", reqHeader.SessionID)
+	return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, encrypted)
 }
 
 // SendSignatureFailureResponse sends an STATUS_ACCESS_DENIED reply after a

@@ -222,7 +222,7 @@ func TestReleaseData_CompoundPathFiresAllAfterWrite(t *testing.T) {
 		})
 	}
 
-	if err := sendCompoundResponses(responses, ci); err != nil {
+	if err := sendCompoundResponses(responses, ci, false); err != nil {
 		t.Fatalf("sendCompoundResponses returned error: %v", err)
 	}
 
