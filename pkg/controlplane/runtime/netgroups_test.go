@@ -4,12 +4,14 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
@@ -60,16 +62,25 @@ func TestCheckNetgroupAccess_NoNetgroup_AllowAll(t *testing.T) {
 	}
 }
 
+// TestCheckNetgroupAccess_ShareNotFound is the REVIEW M3 regression. A share
+// lookup miss (unknown / renamed / partially-loaded share) must be a fail-CLOSED
+// deny that is also OBSERVABLE: it returns a wrapped shares.ErrShareNotFound so
+// config drift is diagnosable, instead of the old silent (false, nil) that was
+// indistinguishable from a legitimate netgroup deny. The mount handler already
+// treats any non-nil error as fail-closed, so the deny semantics are preserved.
 func TestCheckNetgroupAccess_ShareNotFound(t *testing.T) {
 	rt, _, _ := createTestRuntimeWithStore(t)
 	ctx := context.Background()
 
 	allowed, err := rt.CheckNetgroupAccess(ctx, "/nonexistent", net.ParseIP("10.0.0.1"))
-	if err != nil {
-		t.Fatalf("Expected no error for missing share, got: %v", err)
-	}
 	if allowed {
 		t.Error("Expected access denied for nonexistent share")
+	}
+	if err == nil {
+		t.Fatal("Expected an observable error for missing share, got nil (silent deny)")
+	}
+	if !errors.Is(err, shares.ErrShareNotFound) {
+		t.Fatalf("Expected error to wrap shares.ErrShareNotFound, got: %v", err)
 	}
 }
 

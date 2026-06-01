@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
@@ -117,10 +118,19 @@ func (c *dnsCache) cleanExpiredLocked(now time.Time) {
 // 5-minute positive TTL and 1-minute negative TTL. Falls back to IP matching
 // if DNS lookup fails (does not block).
 func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, clientIP net.IP) (bool, error) {
-	// 1. Get share from runtime state
+	// 1. Get share from runtime state.
+	//
+	// A lookup miss here (unknown / renamed / partially-loaded share) is NOT a
+	// legitimate netgroup deny: it signals config drift between the requested
+	// share and the runtime registry. Returning a bare (false, nil) would be
+	// indistinguishable from "client not in allowlist" and silently invisible.
+	// Surface it as a wrapped ErrShareNotFound so it is diagnosable while still
+	// denying access (the mount handler treats any error as fail-closed).
 	share, err := r.sharesSvc.GetShare(shareName)
 	if err != nil {
-		return false, nil
+		logger.Warn("Netgroup access denied: share not found in runtime registry",
+			"share", shareName, "error", err)
+		return false, fmt.Errorf("%w: %q", shares.ErrShareNotFound, shareName)
 	}
 
 	// 2. If share has no netgroup -> allow all
