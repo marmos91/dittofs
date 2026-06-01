@@ -65,7 +65,7 @@ func pgNanosToTime(n int64) time.Time {
 
 // fileRowToFileWithNlink converts a database row to a File struct, including link count.
 // Expected columns: id, share_name, path, file_type, mode, uid, gid, size,
-// atime, mtime, ctime, creation_time, content_id, link_target, device_major, device_minor, hidden, acl, object_id, link_count
+// atime, mtime, ctime, creation_time, content_id, link_target, device_major, device_minor, hidden, acl, object_id, deleted_at, original_path, deleted_by, link_count
 func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 	var (
 		id           uuid.UUID
@@ -87,6 +87,9 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		hidden       bool
 		aclJSON      []byte
 		objectIDRaw  []byte
+		deletedAt    sql.NullTime
+		originalPath string
+		deletedBy    string
 		linkCount    sql.NullInt32
 	)
 
@@ -110,6 +113,9 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		&hidden,
 		&aclJSON,
 		&objectIDRaw,
+		&deletedAt,
+		&originalPath,
+		&deletedBy,
 		&linkCount,
 	)
 	if err != nil {
@@ -174,6 +180,15 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		}
 		copy(file.ObjectID[:], objectIDRaw)
 	}
+
+	// Recycle-bin metadata (#190). deleted_at NULL -> live node (nil pointer);
+	// original_path / deleted_by default to '' for live nodes.
+	if deletedAt.Valid {
+		t := deletedAt.Time
+		file.DeletedAt = &t
+	}
+	file.OriginalPath = originalPath
+	file.DeletedBy = deletedBy
 
 	return file, nil
 }

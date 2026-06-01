@@ -151,7 +151,8 @@ func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.File
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, f.object_id, lc.link_count
+			f.hidden, f.acl, f.object_id,
+			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.id = $1 AND f.share_name = $2
@@ -211,8 +212,11 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			device_minor = $13,
 			hidden = $14,
 			acl = $15,
-			object_id = $16
-		WHERE id = $17 AND share_name = $18
+			object_id = $16,
+			deleted_at = $17,
+			original_path = $18,
+			deleted_by = $19
+		WHERE id = $20 AND share_name = $21
 	`
 
 	var deviceMajor, deviceMinor *int32
@@ -274,6 +278,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
 		payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 		file.Hidden, aclJSON, objectIDArg,
+		file.DeletedAt, file.OriginalPath, file.DeletedBy,
 		file.ID, file.ShareName,
 	)
 	if err != nil {
@@ -295,9 +300,11 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			INSERT INTO files (
 				id, share_name, path, file_type, mode, uid, gid, size,
 				atime, mtime, ctime, creation_time, content_id, link_target,
-				device_major, device_minor, hidden, acl, object_id
+				device_major, device_minor, hidden, acl, object_id,
+				deleted_at, original_path, deleted_by
 			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+				$20, $21, $22
 			)
 		`
 
@@ -308,6 +315,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
 			payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 			file.Hidden, aclJSON, objectIDArg,
+			file.DeletedAt, file.OriginalPath, file.DeletedBy,
 		)
 		if err != nil {
 			return mapPgError(err, "PutFile", "")
@@ -1229,7 +1237,8 @@ func (tx *postgresTransaction) GetFileByPayloadID(ctx context.Context, payloadID
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, f.object_id, lc.link_count
+			f.hidden, f.acl, f.object_id,
+			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.content_id_hash = md5($1)
