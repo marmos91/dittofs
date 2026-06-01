@@ -207,8 +207,36 @@ func (h *SnapshotHandler) Restore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), h.restoreHTTPTimeout)
+	// Restore is a long, destructive operation: it creates a pre-restore
+	// safety snapshot whose drain to a remote can take minutes on a
+	// remote-backed share. The router applies a short global request timeout
+	// (chi middleware.Timeout) to every route; if the restore inherited that
+	// deadline the pre-restore safety-snapshot drain would be cancelled
+	// mid-flight and the restore would spuriously 500 even though the drain
+	// later completes (issue #842). Detach from the inherited (short) HTTP
+	// deadline with WithoutCancel and apply the dedicated, operator-tunable
+	// restore budget instead. Client disconnect is still honoured below so a
+	// genuinely abandoned request does not pin a restore forever.
+	//
+	// chi's middleware.Timeout only cancels the *request* context and, in a
+	// deferred check that runs AFTER this handler returns, writes a 504 iff
+	// that context hit DeadlineExceeded. Because the restore runs on the
+	// detached ctx it completes regardless, and this handler writes its real
+	// 200/4xx/5xx response before returning — so the middleware's later 504
+	// WriteHeader is a no-op (first write wins), the client gets the genuine
+	// result. (Covered by TestSnapshotHandler_Restore_DecoupledFromGlobalTimeout.)
+	base := context.WithoutCancel(r.Context())
+	ctx, cancel := context.WithTimeout(base, h.restoreHTTPTimeout)
 	defer cancel()
+
+	// Propagate a real client disconnect (not the middleware timeout) so the
+	// restore is cancelled if the caller goes away.
+	stop := context.AfterFunc(r.Context(), func() {
+		if r.Context().Err() == context.Canceled {
+			cancel()
+		}
+	})
+	defer stop()
 
 	safetyID, err := h.runtime.RestoreSnapshot(ctx, name, snapID,
 		runtime.RestoreSnapshotOpts{AllowNonDurable: body.AllowNonDurable})
@@ -304,6 +332,9 @@ func mapSnapshotError(w http.ResponseWriter, err error) bool {
 		return true
 	case errors.Is(err, models.ErrSnapshotInFlight):
 		Conflict(w, "snapshot operation is in progress; retry once it completes")
+		return true
+	case errors.Is(err, models.ErrSnapshotMarkerProtected):
+		Conflict(w, "snapshot is protected by an in-progress restore; retry once it completes")
 		return true
 	case errors.Is(err, models.ErrSnapshotStateConflict):
 		Conflict(w, "snapshot is not in a state that allows this operation")

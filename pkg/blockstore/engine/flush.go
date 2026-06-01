@@ -125,9 +125,11 @@ func (bs *Store) DrainRollups(ctx context.Context) error {
 
 // ResetLocalState clears the local store's per-payload append-log state so
 // post-restore reads resolve purely through the restored CAS manifest.
-// The snapshot-restore orchestration calls this AFTER the metadata
-// Restore() so a file modified in place after the snapshot is not served
-// from a stale append-log record overlaid on the restored CAS bytes.
+// The snapshot-restore orchestration calls this BEFORE the metadata Reset()
+// + Restore() (not after): clearing the overlay first leaves no dirty
+// intervals for a background rollup worker to flush into the freshly-restored
+// metadata, so a file modified in place after the snapshot is not served from
+// a stale append-log record overlaid on the restored CAS bytes.
 func (bs *Store) ResetLocalState(ctx context.Context) error {
 	if err := bs.enter(); err != nil {
 		return err

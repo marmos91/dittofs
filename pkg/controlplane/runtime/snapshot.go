@@ -1236,6 +1236,32 @@ func (r *Runtime) restoreSnapshot(
 		)
 	}
 
+	// --- quiesce rollup workers on the rollback path ---
+	// On the normal (operator) restore path the pre-restore safety snapshot's
+	// CreateSnapshot runs DrainRollups synchronously below, which blocks on
+	// in-flight rollups via the per-file mutex and leaves no dirty intervals
+	// behind before ResetLocalState — the fs rollup workers are quiesced.
+	//
+	// The rollback path (startup recovery) SKIPS the safety snapshot, so it
+	// would otherwise reach ResetLocalState with the fs rollup worker pool
+	// already running on boot-recovered dirty intervals (StartRollup runs in
+	// AddShare, before Serve→recoverInterruptedRestores). A worker mid-rollup
+	// could persist post-snapshot FileBlock refs over the just-restored
+	// FileAttr.Blocks (#8 H3, silent corruption of the rolled-back share).
+	// Drain rollups here so the rollback gets the same quiesce guarantee:
+	// DrainRollups waits on the per-file mutex for any in-flight pass to
+	// finish and, with the share disabled, leaves no dirty intervals for the
+	// ticker to pick up afterwards. No-op on memory local stores (inline
+	// rollup, nothing to drain).
+	if internal.isRollback {
+		if derr := bs.DrainRollups(ctx); derr != nil {
+			return "", fmt.Errorf("restore snapshot %q: drain rollups before rollback: %w: %v",
+				snapID, models.ErrRestoreAborted, derr)
+		}
+		logger.Info("snapshot restore: rollback drained rollups before reset",
+			"snapshot_id", snapID, "share", shareName)
+	}
+
 	// --- safety snapshot ---
 	// Default opts (NoVerify=false) keep the safety snap drained and
 	// verified — it is the rollback primitive if any step below fails. On a
@@ -1546,6 +1572,30 @@ func (r *Runtime) DeleteSnapshot(ctx context.Context, share, snapID string) erro
 	if r.isSnapInFlight(share, snapID) {
 		return fmt.Errorf("delete snapshot %q on share %q: %w",
 			snapID, share, models.ErrSnapshotInFlight)
+	}
+
+	// Fence against the per-share restore marker. While a restore is in
+	// flight (or crash-interrupted and awaiting startup rollback), the marker
+	// names the pre-restore safety snapshot — the SOLE rollback primitive —
+	// and the target snapshot it restores from. Deleting either out from
+	// under the restore destroys the only recoverable pre-restore state and
+	// permanently wedges the share (the next boot's recoverInterruptedRestores
+	// cannot find the safety snap, so the marker re-fails every reboot).
+	//
+	// isSnapInFlight covers only create/retry orchestration; the safety snap
+	// reaches StateReady and deregisters from that tracker BEFORE the marker
+	// is written, so it is not in-flight by that measure. Consult the durable
+	// marker explicitly. Runs under the already-held snapshotDeleteLock.
+	if marker, merr := r.store.GetRestoreMarker(ctx, share); merr == nil && marker != nil {
+		if snapID == marker.SafetySnapshotID || snapID == marker.TargetSnapshotID {
+			return fmt.Errorf("delete snapshot %q on share %q: %w",
+				snapID, share, models.ErrSnapshotMarkerProtected)
+		}
+	} else if merr != nil && !errors.Is(merr, models.ErrRestoreMarkerNotFound) {
+		// A marker read failure is not authoritative that no restore is in
+		// progress; fail closed rather than risk deleting a protected snap.
+		return fmt.Errorf("delete snapshot %q on share %q: check restore marker: %w",
+			snapID, share, merr)
 	}
 
 	if err := r.store.DeleteSnapshot(ctx, share, snapID); err != nil {

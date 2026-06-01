@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/api/dto"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -83,6 +84,75 @@ func newSnapshotRouter(h *SnapshotHandler) http.Handler {
 		})
 	})
 	return r
+}
+
+// newSnapshotRouterWithGlobalTimeout mirrors the production router's global
+// short request timeout (middleware.Timeout) applied to every route, so a
+// test can assert the restore handler is not cancelled by it (issue #842).
+func newSnapshotRouterWithGlobalTimeout(h *SnapshotHandler, d time.Duration) http.Handler {
+	r := chi.NewRouter()
+	r.Use(middleware.Timeout(d))
+	r.Route("/api/v1/shares", func(r chi.Router) {
+		r.Route("/{name}/snapshots", func(r chi.Router) {
+			r.Post("/{id}/restore", h.Restore)
+		})
+	})
+	return r
+}
+
+// TestSnapshotHandler_Restore_DecoupledFromGlobalTimeout asserts that the
+// router's short global request timeout does not abort a restore whose own
+// budget is larger — the pre-restore safety-snapshot drain must be allowed to
+// run past the global handler deadline AND the client must still receive the
+// real 200 success response, not the middleware's 504 (issue #842).
+func TestSnapshotHandler_Restore_DecoupledFromGlobalTimeout(t *testing.T) {
+	gotCtxErr := make(chan error, 1)
+	fake := &fakeSnapshotRuntime{
+		restoreFn: func(ctx context.Context, _, _ string, _ runtime.RestoreSnapshotOpts) (string, error) {
+			// Simulate work that outlasts the global 20ms timeout but
+			// finishes well inside the restore budget.
+			select {
+			case <-ctx.Done():
+				gotCtxErr <- ctx.Err()
+				return "", ctx.Err()
+			case <-time.After(80 * time.Millisecond):
+				gotCtxErr <- nil
+				return "safety-1", nil
+			}
+		},
+	}
+	// Generous restore budget; tiny global request timeout.
+	h := NewSnapshotHandler(fake, 5*time.Second, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares/data/snapshots/snap-1/restore", nil)
+	rr := httptest.NewRecorder()
+	newSnapshotRouterWithGlobalTimeout(h, 20*time.Millisecond).ServeHTTP(rr, req)
+
+	select {
+	case err := <-gotCtxErr:
+		if err != nil {
+			t.Fatalf("restore was cancelled by the global request timeout: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("restoreFn never returned")
+	}
+
+	// The decoupling is only real if the client gets the genuine success
+	// response. The chi middleware.Timeout fires its deferred 504 WriteHeader
+	// after the handler returns (the request context's deadline elapsed during
+	// the 80ms restore); the handler must have already written 200 + body so
+	// that stale 504 is a no-op. Asserting only the inner ctx error would pass
+	// even if the response had been clobbered to 504.
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (middleware 504 must not clobber the success response): body=%s",
+			rr.Code, rr.Body.String())
+	}
+	var got dto.RestoreSnapshotResponse
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode body: %v (body=%s)", err, rr.Body.String())
+	}
+	if got.SafetySnapshotID != "safety-1" || got.SnapshotID != "snap-1" || got.Share != "/data" {
+		t.Fatalf("body = %+v, want {snap-1, /data, safety-1}", got)
+	}
 }
 
 func TestSnapshotHandler_Create_HappyPath(t *testing.T) {
@@ -361,6 +431,7 @@ func TestMapSnapshotError_SentinelTable(t *testing.T) {
 		{"RetryTargetNotFailed", models.ErrSnapshotRetryTargetNotFailed, http.StatusConflict},
 		{"StateConflict", models.ErrSnapshotStateConflict, http.StatusConflict},
 		{"InFlight", models.ErrSnapshotInFlight, http.StatusConflict},
+		{"MarkerProtected", models.ErrSnapshotMarkerProtected, http.StatusConflict},
 		{"DrainTimeout", models.ErrSnapshotDrainTimeout, http.StatusGatewayTimeout},
 		{"MetadataDumpMissing", models.ErrSnapshotMetadataDumpMissing, http.StatusInternalServerError},
 		{"MetadataStoreNotResetable", models.ErrMetadataStoreNotResetable, http.StatusInternalServerError},
