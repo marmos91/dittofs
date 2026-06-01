@@ -586,6 +586,9 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 				if cfg, ok := s.trashPolicy.TrashConfigForShare(shareName); ok && cfg.Enabled {
 					victimRel := strings.TrimPrefix(buildPath(dstDir.Path, toName), "/")
 					if !inRecycle(victimRel) && !cfg.Excluded(toName) {
+						// Discard the recycled node: Move only relocates the victim
+						// into #recycle (the reaper frees its blocks later), so we
+						// have no blocks to release here.
 						if _, err := s.recycleNode(ctx, shareName, toDir, toName, victimRel); err != nil {
 							return err // never silently clobber
 						}

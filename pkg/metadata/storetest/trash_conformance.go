@@ -238,10 +238,8 @@ func testExcludePatternBypassesBin(t *testing.T, factory StoreFactory) {
 		t.Error("excluded-name delete returned empty PayloadID, want permanent (non-empty)")
 	}
 
-	// File is not in the bin (the bin may not even exist).
-	if bin, err := fx.svc.GetChild(fx.ctx.Context, fx.rootHandle, metadata.RecycleDirName); err == nil {
-		fx.trashLookupMissing(t, bin, "scratch.tmp")
-	}
+	// An excluded-only delete never touches the bin, so it must not exist.
+	fx.trashBinMissing(t)
 }
 
 func testCollisionGetsUniqueName(t *testing.T, factory StoreFactory) {
