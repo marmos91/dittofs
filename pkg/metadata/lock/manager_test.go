@@ -4,6 +4,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // ============================================================================
@@ -17,6 +19,66 @@ func TestManager_ImplementsLockManager(t *testing.T) {
 	// Runtime verification that NewManager returns a usable LockManager:
 	var lm LockManager = NewManager()
 	_ = lm // interface assignment confirms compliance
+}
+
+// ============================================================================
+// Cross-protocol byte-range release callback
+// ============================================================================
+
+// TestManager_ByteRangeReleaseCallback_FiresOnUnlock proves the protocol-
+// agnostic release notification fires once per SMB-style byte-range release path
+// (Unlock / UnlockAllForOpen / UnlockAllForSession) so a blocked cross-protocol
+// waiter (e.g. an NLM F_SETLKW waiter) can be re-driven. A no-op unlock (nothing
+// removed) must NOT fire.
+func TestManager_ByteRangeReleaseCallback_FiresOnUnlock(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Unlock fires once", func(t *testing.T) {
+		t.Parallel()
+		lm := NewManager()
+		var fired []string
+		lm.SetByteRangeReleaseCallback(func(h string) { fired = append(fired, h) })
+
+		require.NoError(t, lm.Lock("file1", FileLock{ID: 1, OpenID: "open-a", Offset: 0, Length: 10, Exclusive: true}))
+		require.NoError(t, lm.Unlock("file1", "open-a", 0, 0, 10))
+		require.Equal(t, []string{"file1"}, fired)
+	})
+
+	t.Run("no-op Unlock does not fire", func(t *testing.T) {
+		t.Parallel()
+		lm := NewManager()
+		var count int
+		lm.SetByteRangeReleaseCallback(func(string) { count++ })
+
+		// Nothing held -> LockNotFound -> no release notification.
+		_ = lm.Unlock("file1", "open-a", 0, 0, 10)
+		require.Equal(t, 0, count)
+	})
+
+	t.Run("UnlockAllForOpen fires when locks removed", func(t *testing.T) {
+		t.Parallel()
+		lm := NewManager()
+		var count int
+		lm.SetByteRangeReleaseCallback(func(string) { count++ })
+
+		require.NoError(t, lm.Lock("file1", FileLock{ID: 1, OpenID: "open-a", Offset: 0, Length: 10, Exclusive: true}))
+		require.Equal(t, 1, lm.UnlockAllForOpen("file1", "open-a"))
+		require.Equal(t, 1, count)
+		// Removing nothing must not fire again.
+		require.Equal(t, 0, lm.UnlockAllForOpen("file1", "open-a"))
+		require.Equal(t, 1, count)
+	})
+
+	t.Run("UnlockAllForSession fires when locks removed", func(t *testing.T) {
+		t.Parallel()
+		lm := NewManager()
+		var count int
+		lm.SetByteRangeReleaseCallback(func(string) { count++ })
+
+		require.NoError(t, lm.Lock("file1", FileLock{ID: 1, SessionID: 42, Offset: 0, Length: 10, Exclusive: true}))
+		require.Equal(t, 1, lm.UnlockAllForSession("file1", 42))
+		require.Equal(t, 1, count)
+	})
 }
 
 // ============================================================================

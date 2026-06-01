@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -97,6 +98,49 @@ func TestReleaseCrashedClientLocks(t *testing.T) {
 		Type:       lock.LockTypeExclusive,
 	})
 	require.NoError(t, err, "B must be able to acquire the freed range after A's crash")
+}
+
+// TestReleaseCrashedClientLocks_SkipsDuringGrace proves crash cleanup does NOT
+// release a client's persisted locks while the share is in its reclaim grace
+// window: a momentarily-unreachable client may still reconnect and reclaim, so
+// wiping its locks inside grace would defeat the grace fix (NFS H-D / NSM
+// grace regression). The grace timer's onGraceEnd sweep is the only path that
+// ages out genuinely-unreclaimed locks.
+func TestReleaseCrashedClientLocks_SkipsDuringGrace(t *testing.T) {
+	t.Parallel()
+
+	// Manager with a grace period manager, placed into its grace window.
+	gpm := lock.NewGracePeriodManager(time.Hour, func() {})
+	lmGrace := lock.NewManagerWithGracePeriod(gpm)
+	lmGrace.EnterGracePeriod([]string{"clientA"})
+	require.True(t, lmGrace.IsInGracePeriod(), "manager must be in grace for this test")
+
+	// A second share NOT in grace, to prove the gate is per-share.
+	lmNormal := lock.NewManager()
+	require.False(t, lmNormal.IsInGracePeriod())
+
+	lockMgrFor := func(share string) *metadata.LockManager {
+		switch share {
+		case "share-grace":
+			return lmGrace
+		case "share-normal":
+			return lmNormal
+		default:
+			return nil
+		}
+	}
+
+	addNLMLock(t, lmGrace, "share-grace:file1", "nlm:clientA:1:aa", 0)
+	addNLMLock(t, lmNormal, "share-normal:file1", "nlm:clientA:2:bb", 0)
+
+	releaseCrashedClientLocks("clientA", []string{"share-grace", "share-normal"}, lockMgrFor, nil)
+
+	// In-grace share keeps the lock (deferred to reclaim/onGraceEnd).
+	require.Len(t, lmGrace.ListUnifiedLocks("share-grace:file1"), 1,
+		"locks on an in-grace share must survive crash cleanup")
+	// Non-grace share is cleaned up normally.
+	require.Empty(t, lmNormal.ListUnifiedLocks("share-normal:file1"),
+		"locks on a non-grace share must still be released")
 }
 
 // TestReleaseCrashedClientLocks_NoLocksHeld proves idempotency / safety when the

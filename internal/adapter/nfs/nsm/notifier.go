@@ -162,13 +162,20 @@ func (n *Notifier) NotifyAllClients(ctx context.Context) []NotifyResult {
 		allResults = append(allResults, result)
 
 		if result.Error != nil {
-			// Per CONTEXT.md: Failed notification = client crashed, cleanup locks
-			logger.Warn("NSM: SM_NOTIFY failed, treating client as crashed",
+			// A failed OUTBOUND SM_NOTIFY on server restart means the
+			// notification did not reach the client (client temporarily down,
+			// network blip, firewall, changed ephemeral port) — it does NOT
+			// mean the client crashed. Canonical rpc.statd / Linux fs/lockd
+			// treat restart-notify as best-effort and release a host's locks
+			// only on INBOUND crash evidence (a peer SM_NOTIFY / FREE_ALL from
+			// the rebooted client). Releasing here would wipe a momentarily
+			// unreachable client's locks DURING the reclaim grace window,
+			// defeating grace for exactly the clients it protects. Leave the
+			// locks intact: the per-share grace timer and its onGraceEnd sweep
+			// age out genuinely-unreclaimed locks once grace expires.
+			logger.Warn("NSM: SM_NOTIFY delivery failed; leaving locks intact for grace/reclaim",
 				"client", result.ClientID,
 				"error", result.Error)
-
-			// Trigger crash handling (lock cleanup)
-			n.handleClientCrash(ctx, result.ClientID)
 		} else {
 			logger.Debug("NSM: SM_NOTIFY succeeded", "client", result.ClientID)
 		}

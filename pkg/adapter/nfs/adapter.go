@@ -25,6 +25,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -414,6 +415,22 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	metadataService := rt.GetMetadataService()
 	nlmSvc := s.createRoutingNLMService(metadataService)
 	s.nlmHandler = nlm_handlers.NewHandler(nlmSvc, s.blockingQueue)
+
+	// Cross-protocol blocked-waiter wakeup: a byte-range UNLOCK on ANY protocol
+	// (notably an SMB UNLOCK) must re-drive blocked NLM waiters on the freed
+	// range, because NLM uses a server-driven NLM_GRANTED callback rather than
+	// poll-retry. Register the hook on the service for shares added later AND
+	// stamp it onto lock managers already created at boot (shares loaded before
+	// this adapter existed), mirroring the grace-coordinator catch-up below.
+	byteRangeReleaseHook := func(handleKey string) {
+		go s.processNLMWaiters(metadata.FileHandle(handleKey))
+	}
+	metadataService.SetByteRangeReleaseHook(byteRangeReleaseHook)
+	for _, shareName := range rt.ListShares() {
+		if lm := metadataService.GetLockManagerForShare(shareName); lm != nil {
+			lm.SetByteRangeReleaseCallback(byteRangeReleaseHook)
+		}
+	}
 
 	// Couple the NFSv4 StateManager grace machine to the per-share lock-manager
 	// grace machine so both enter/exit the post-restart window together. Shares

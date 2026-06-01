@@ -539,6 +539,20 @@ func releaseCrashedClientLocks(
 			continue
 		}
 
+		// Defense in depth against grace-defeating cleanup: never release a
+		// client's persisted locks while the share is in its reclaim grace
+		// window. During grace a momentarily-unreachable client may still
+		// reconnect and reclaim; the grace timer's onGraceEnd sweep ages out
+		// any locks that genuinely go unreclaimed. Crash cleanup that fired
+		// inside grace would hand a held byte-range to a third party before the
+		// rightful client got its reclaim chance.
+		if lockMgr.IsInGracePeriod() {
+			logger.Info("NSM: skipping crash cleanup during grace; deferring to reclaim/onGraceEnd",
+				"share", shareName,
+				"client", clientID)
+			continue
+		}
+
 		released := lockMgr.ReleaseByOwnerPrefix(clientPrefix)
 		totalReleased += released
 		if released > 0 {
