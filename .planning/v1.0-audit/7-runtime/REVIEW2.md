@@ -9,15 +9,13 @@
 **Date**: 2026-06-01.
 **Scope**: `pkg/controlplane/runtime/` (core facade + six sub-services `adapters/ stores/ shares/ mounts/ lifecycle/ identity/`) + control-plane surface `pkg/controlplane/{api,store,models}` + `internal/controlplane/api/` + the integration seams into `pkg/metadata.MetadataService`, `pkg/adapter/nfs` grace coordinator, `pkg/blockstore/engine`, and the REST authz layer.
 **Method**: `area-audit` workflow, round-2 lens — 4 parallel read-only sub-audits focused on (1) cross-area/cross-component CONTRACT seams, (2) error & failure paths, (3) concurrency under load, (4) re-verification of round-1 HIGHs on current `develop`. Every HIGH adversarially verified; refute-by-default.
-**Cross-check refs**: Round-1 `REVIEW.md` (all round-1 findings treated as KNOWN, not re-reported). Canonical impls consulted where protocol-relevant (Linux `fs/nfs` grace semantics, Samba grace/reclaim). Re-verified against `develop` HEAD `e16f0b01`.
+**Cross-check refs**: Round-1 `REVIEW.md` (all round-1 findings treated as KNOWN, not re-reported). Canonical impls consulted where protocol-relevant (Linux `fs/nfs` grace semantics, Samba grace/reclaim). Findings below corrected against real `origin/develop` (`db4328b4`) — see banner.
 
 ---
 
 ## ⚠️ Provenance correction (READ FIRST)
 
-The audit context handed to round-2 asserted **"Round-1 H-A fixed #918 (engine close-gate)."** This is **incorrect for `develop`.** Two independent sub-audits verified via `git merge-base --is-ancestor 8188a08b HEAD` (exit 1) that **#918 (commit `8188a08b`) lives only on branch `v1.0/runtime-lifecycle-races` and is NOT in `develop`'s ancestry.** Round-1 H-A (BlockStore use-after-Close TOCTOU) **STILL REPRODUCES unchanged on `develop`** — the close-gate fix has not landed. This is re-raised below as a verified HIGH so any release cut from `develop` is not falsely believed clean.
-
-One round-1 sub-audit's `verifiedCorrect` list claimed H-A was "real-fixed on develop" (engine.go closeMu). That claim was made against a checkout that included `v1.0/runtime-lifecycle-races`, not `develop`. The `develop`-anchored verification (HEAD `e16f0b01`) supersedes it.
+This pass executed against a stale checkout (`e16f0b01`) that had **diverged** from `origin/develop` and was missing merged PRs #918/#919/#920/#921. Its `git merge-base --is-ancestor 8188a08b HEAD → exit 1` therefore reported #918 as absent — **this is wrong.** Verified against real `origin/develop` (`db4328b4`): **#918 (`8188a08b`) IS in develop's ancestry; the engine close-gate (`closeMu` RWMutex + `enter()`/`ErrStoreClosed`, `Close` drains in-flight ops) exists and works.** Consequently **H-2 (= round-1 H-A) is REFUTED** — already fixed. The round-1 sub-audit that listed H-A as real-fixed was CORRECT. Only **H-1** (grace-coordinator liveness) is a genuine HIGH on develop.
 
 ---
 
@@ -28,12 +26,12 @@ One round-1 sub-audit's `verifiedCorrect` list claimed H-A was "real-fixed on de
 | share-lifecycle-races | 0 | 1 | 0 | 0 |
 | grace / REST integration | 1 | 1 | 0 | 0 |
 | REST authz (deep) | 0 | 1 | 0 | 0 |
-| DTO + sub-service seams | 1* | 2 | 3 | 0 |
-| **Total (round-2 net, on develop)** | **2** | **5** | **3** | **0** |
+| DTO + sub-service seams | 0* | 2 | 3 | 0 |
+| **Total (round-2 net, on develop)** | **1** | **5** | **3** | **0** |
 
-\* The DTO-seam HIGH is the **re-verified round-1 H-A** (BlockStore use-after-Close), confirmed still-open on `develop`. It is counted once as a HIGH here because the round-2 context wrongly assumed it shipped; the genuinely *new* round-2 HIGH is the grace-coordinator liveness block (H-1 below).
+\* The DTO-seam slot was the round-1 H-A re-raise (BlockStore use-after-Close); on real `origin/develop` it is **REFUTED** (fixed by #918) and not counted. The one genuine round-2 HIGH is the grace-coordinator liveness block (H-1 below).
 
-**Verdict: NEEDS-FIX (narrow but real).** Two HIGH integrity holes: (H-1) a routine admin action (runtime `AddShare`) freezes NFSv4 new-state creation server-wide for ~90s — a self-inflicted liveness block; and (H-2, ex round-1 H-A) an unmitigated BlockStore use-after-Close data-corruption/crash path that the fix has not yet reached `develop`. Everything else is PATCH-grade (operability, error-shape drift, dead surface).
+**Verdict: PATCH-grade after correction.** One HIGH integrity hole on real develop: (H-1) a routine admin action (runtime `AddShare`) freezes NFSv4 new-state creation server-wide for ~90s — a self-inflicted liveness block. The H-2 (ex round-1 H-A) use-after-Close path is already closed by #918 on develop. Everything else is PATCH-grade (operability, error-shape drift, dead surface).
 
 **Architecture invariants HOLD.** Single-entrypoint composition, opaque-handle routing, per-share block stores, WRITE ordering, REST fails-closed authz, lossless DTO mapping — all re-confirmed clean on the integration seams. The defects are at lifecycle/grace boundaries and error-mapping seams, exactly the cross-component class round-1 (auditing each area in isolation) could not see.
 
@@ -52,22 +50,15 @@ One round-1 sub-audit's `verifiedCorrect` list claimed H-A was "real-fixed on de
 
 *Verifier rationale (HIGH retained):* the full 6-step chain was confirmed at every cited location; the coordinator is wired at runtime (`adapter.go:424-425`), not just boot; no guard elsewhere neutralizes it. The boot path is correctly a no-op (`clientsByName` empty), which is exactly why round-1 missed it.
 
-### H-2 (= round-1 H-A) — BlockStore engine.Store use-after-Close TOCTOU, STILL OPEN on `develop` (#918 not merged)
-`pkg/controlplane/runtime/shares/service.go:809-813` (`RemoveShare` `bs.Close()` outside lock) vs `:1129-1146` (`GetBlockStoreForHandle`); `pkg/blockstore/engine/engine.go:406-424` (`Store.Close`, no drain).
+### H-2 (= round-1 H-A) — BlockStore engine.Store use-after-Close TOCTOU — REFUTED on real develop (fixed by #918)
 
-**What:** The round-2 context claimed this was fixed by #918. It is not: `git merge-base --is-ancestor 8188a08b HEAD` → exit 1; #918 exists only on `v1.0/runtime-lifecycle-races`. On `develop` HEAD `e16f0b01` there is **no `closeMu` / `closed` flag / `enter()` gate anywhere in `pkg/blockstore/engine`** (grep for `enter()`/`closeMu` → zero non-test hits; the `engine.Store` struct `engine.go:69-102` has no lifecycle-gate field). `GetBlockStoreForHandle` (`service.go:1135-1136`) returns `share.BlockStore` and its `defer s.mu.RUnlock()` releases the lock **before** the WRITE/READ data path touches the store. `RemoveShare` (`service.go:791-795`) captures `bs` under `Lock`, `Unlock`s at `:795`, then calls `bs.Close()` at `:810` with **no in-flight drain**; `Runtime.RemoveShare` (`runtime.go:380`) only drains snapshot goroutines (`cancelAndWaitInFlightSnaps`), not client WRITE/READ. `engine.Store.Close` tears down syncer/local/remote unconditionally. A concurrent `WriteAt`/`ReadAt` on the just-returned `*engine.Store` can race a `Close` → torn/partial write, torn read, or panic.
-
-**Why:** Real, unmitigated data-loss/corruption + crash + liveness path on the shipping branch, triggered whenever an admin removes/hot-reloads a share (or restore's `ResetLocalState`/teardown runs) mid-transfer. The fix exists but has not landed, so any release cut from `develop` ships the bug.
-
-**Note — the `ErrStoreClosed` red herring:** the `ErrStoreClosed` gate that exists in `pkg/blockstore` is on the LOCAL stores (`memory`/`fs`) and the `Syncer.closed` flag (`syncer.go:79`) — it does **not** protect the `engine.Store` lifecycle that H-A is about. The local `FSStore.closedFlag` (`fs.go:836`) is only partial: `FSStore.Close` (`fs.go:855`) acquires only `logsMu`, never the per-file `mu` an in-flight `AppendWrite` holds across `writeRecord`/`lf.f.Close` (`appendwrite.go:329,365`), so a concurrent write can still hit a closing fd; syncer/remote `Close` have no in-flight protection at all.
-
-**Fix:** Merge #918 into `develop`, or re-apply the engine-internal close-gate: `closeMu sync.RWMutex` + `closed` flag, `enter()`/`RUnlock` around every public data op (`WriteAt`/`ReadAt`/`Flush`/`Truncate`/`Delete`/`CopyPayload`/`GetSize`/`Exists`/`Drain*`/`ResetLocalState`/`EvictLocal`); `Close` takes the write lock to drain; return `ErrStoreClosed` mapped to NFS `*_STALE` / SMB `STATUS_FILE_CLOSED`. Add the `-race` reproducer (`WriteAt` vs `RemoveShare`/`Close`). **Verify with `git merge-base --is-ancestor` before declaring fixed.**
+**REFUTED.** This was reported as still-open because the stale checkout (`e16f0b01`) lacked #918. On real `origin/develop` (`db4328b4`) the engine close-gate is present and working: `*Store` has `closeMu sync.RWMutex` + `closed` + `closeErr` (`engine.go`), `enter()` takes `closeMu.RLock` and returns `ErrStoreClosed` if closed, every public data op (`ReadAt`/`WriteAt`/`Truncate`/`Delete`/`CopyPayload`/`GetSize`/`Exists`/`EvictLocal` + all `Flush`-family) gates through it, and `Close` takes `closeMu.Lock()` to drain in-flight ops before teardown. `ErrStoreClosed` is mapped to NFS `*_STALE` / SMB `STATUS_FILE_CLOSED` via the content err-map. The original round-1 verification that listed H-A as real-fixed was correct. No action — already shipped.
 
 ---
 
 ## 3. Triage downgrades / RESOLVED
 
-No round-2 HIGH was refuted — both were adversarially verified and retained. The single triage correction is **the audit-context premise itself**: "Round-1 H-A fixed #918" is RESOLVED-as-FALSE (see Provenance correction + H-2). #918's close-gate is correct and complete *on its branch*; it is simply not in `develop`.
+**H-2 (= round-1 H-A) was REFUTED** on real `origin/develop` — #918's close-gate IS merged and working (see Provenance correction + H-2). The stale-checkout `git merge-base` result that drove the "not merged" claim was wrong. H-1 (grace liveness) is the one retained HIGH.
 
 Round-1 refutations (carried forward, not re-litigated): "Unauthenticated REST API" (refuted — fails-closed), "DTO clone-field-drop/aliasing" (refuted — lossless), stale-H1 RemoveShare-leaks-5-maps (resolved by #897/#907). Round-2 re-verified the REST authz refutation in depth and confirms it still holds (see §6).
 
@@ -128,7 +119,7 @@ Round-1 refutations (carried forward, not re-litigated): "Unauthenticated REST A
 ## 7. Recommended PR-B shape
 
 - **PR-B1 — grace-coordinator liveness (HIGH H-1).** Gate `OnLockGraceStart` so runtime-added shares don't arm v4 grace; refcount active lock-manager grace windows in the coordinator (per its own `grace_coordinator.go:42` doc) so `RemoveShare` can't end grace early either. `-race` test: live confirmed-client + `AddShare` ⇒ `CheckGraceForNewState` stays nil. Co-fix **M-1** (`/grace/end` only ends v4) in the same PR since both touch the v4↔lock-manager grace seam, and reconcile `GraceStatus` to surface both machines.
-- **PR-B2 — blockstore-lifecycle close-gate (HIGH H-2 = round-1 H-A).** Merge #918 into `develop` (preferred — the fix is already reviewed on `v1.0/runtime-lifecycle-races`) or re-apply the engine-internal `closeMu`/`enter()` gate + drain-on-`Close`. Fold in **M-3** (route the registry-miss resolve branch through the typed stale-handle mapper so STALE is uniform across both the `Close` and the registry-miss timings). `-race` reproducer; verify with `git merge-base --is-ancestor`.
+- **~~PR-B2 — blockstore-lifecycle close-gate (H-2)~~ — DROPPED: already shipped by #918 on develop.** Only the leftover **M-3** is actionable (route the registry-miss resolve branch through the typed stale-handle mapper so STALE is uniform across both the `Close` and the registry-miss timings) — fold into PR-B3.
 - **PR-B3 — API↔runtime contract hygiene (MED).** **M-4** (`ErrRestoreInProgress` → 409 + audit unmapped sentinels) and **M-5** (`CreateShare` lying-201 → 202/rollback + stop swallowing adapter-config errors). Small, boundary-local, no concurrency surface.
 - **PR-B4 — authz consistency (MED M-2).** Drop `operator` from the `/adapters` List gate or ship a redacted list DTO.
 - **Backlog issues (LOW):** L-1 (`ManifestCount` drop), L-2 (`RetryOf` dead field), L-3 (dead `metadata.ApplyIdentityMapping` — delete-eagerly). Quick, independent.
@@ -137,8 +128,8 @@ Round-1 refutations (carried forward, not re-litigated): "Unauthenticated REST A
 
 ## 8. Coverage
 
-**Audited (round-2, integration lens):** the grace-coordinator ↔ mount-tracker ↔ `/api/v1/grace` boundary; the share-churn (runtime `AddShare`/`RemoveShare`) path through `MetadataService.RegisterStoreForShare`/`initLockManagerFromStore`/`RemoveStoreForShare`; REST authz depth (JWT validation, role gates, refresh/login/password/self-or-admin, every mutating route's gate, capability subroutes); the DTO + 6-sub-service integration seams (snapshot wire object, error-shape mapping, `CreateShare` transactionality, identity-mapping live vs dead path); and **re-verification of round-1 H-A on `develop` HEAD `e16f0b01`** (via `git merge-base --is-ancestor`).
+**Audited (round-2, integration lens):** the grace-coordinator ↔ mount-tracker ↔ `/api/v1/grace` boundary; the share-churn (runtime `AddShare`/`RemoveShare`) path through `MetadataService.RegisterStoreForShare`/`initLockManagerFromStore`/`RemoveStoreForShare`; REST authz depth (JWT validation, role gates, refresh/login/password/self-or-admin, every mutating route's gate, capability subroutes); the DTO + 6-sub-service integration seams (snapshot wire object, error-shape mapping, `CreateShare` transactionality, identity-mapping live vs dead path); and re-verification of round-1 H-A — **REFUTED on real `origin/develop` `db4328b4`** (#918 close-gate present; the stale-tree `git merge-base` claim was wrong).
 
-**Confirmed still-reproducing on develop:** round-1 H-A (now H-2 here) — #918 is NOT merged. **Confirmed benign:** SMB-never-records-mounts (round-1 LOW), `RegisterStoreForShare` grace-balancing asymmetry, mount-tracker locking.
+**Confirmed still-reproducing on develop:** H-1 (grace liveness). **Already fixed on develop:** round-1 H-A / H-2 (#918 close-gate). **Confirmed benign:** SMB-never-records-mounts (round-1 LOW), `RegisterStoreForShare` grace-balancing asymmetry, mount-tracker locking.
 
 **NOT separately audited / NOT load-tested:** the concurrency findings (H-1, H-2, M-3, M-5) are static-analysis + code-read on `develop`; each calls for a `-race` reproducer in PR-B. Protocol wire correctness (NFS/SMB encoding) is out of area-7 scope and covered by areas #4/#6. `metadata.ApplyIdentityMapping`'s Windows-SID path (L-3) was confirmed unreachable on the live path but not exhaustively traced through all test callers. M-3's third call site (`smb write.go:303`) was confirmed by read, not by an SMB-mid-remove integration run.
