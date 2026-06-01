@@ -60,6 +60,100 @@ func RunBackupConformanceSuite(t *testing.T, factory BackupableStoreFactory) {
 	t.Run("HashSetCorrectness", func(t *testing.T) {
 		testBackup_HashSetCorrectness(t, factory)
 	})
+
+	t.Run("LiveSetSupersetOfBackup", func(t *testing.T) {
+		testBackup_LiveSetSupersetOfBackup(t, factory)
+	})
+
+	t.Run("LiveSetUnionsManifestNegativeControl", func(t *testing.T) {
+		testBackup_LiveSetUnionsManifestNegativeControl(t, factory)
+	})
+}
+
+// testBackup_LiveSetSupersetOfBackup pins the GC-vs-snapshot invariant fixed in
+// this change: the GC mark live set (EnumerateFileBlocks) MUST be a SUPERSET of
+// the snapshot Backup HashSet (built from File.Blocks / file_block_refs). Before
+// EnumerateFileBlocks unioned the manifest, a hash present only in the manifest
+// (the common case — populateTestData writes hashes via PutFile, never to the
+// CAS index) was MISSED by the mark phase and the sweep would reap the still-
+// live remote chunk once a snapshot hold lapsed (data loss). After the union the
+// two sets are equal here; the assertion is the weaker superset to stay robust
+// against CAS rows the engine adds independently of File.Blocks.
+func testBackup_LiveSetSupersetOfBackup(t *testing.T, factory BackupableStoreFactory) {
+	store := factory(t)
+	b := asBackupable(t, store)
+	ctx := t.Context()
+
+	populateTestData(t, store, "superset")
+
+	var buf bytes.Buffer
+	backupHashes, err := b.Backup(ctx, &buf)
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+
+	liveSet := make(map[blockstore.ContentHash]struct{})
+	if err := store.EnumerateFileBlocks(ctx, func(h blockstore.ContentHash) error {
+		liveSet[h] = struct{}{}
+		return nil
+	}); err != nil {
+		t.Fatalf("EnumerateFileBlocks: %v", err)
+	}
+
+	missing := 0
+	if err := backupHashes.ForEach(func(h blockstore.ContentHash) error {
+		if _, ok := liveSet[h]; !ok {
+			missing++
+			t.Errorf("hash %s in Backup HashSet but ABSENT from EnumerateFileBlocks (GC mark live set) — GC would reap a live chunk (data loss)", h)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("HashSet.ForEach: %v", err)
+	}
+	if missing == 0 && backupHashes.Len() == 0 {
+		t.Fatal("Backup HashSet empty — fixture wrote no block hashes; the superset assertion is vacuous")
+	}
+}
+
+// testBackup_LiveSetUnionsManifestNegativeControl is the demonstrable negative
+// control mandated by the plan: write a hash to File.Blocks (the manifest) WITHOUT
+// a corresponding CAS index (file_blocks) row, then prove the union picks it up.
+// Before the union the hash would be absent from EnumerateFileBlocks (the CAS
+// index has no row for it); after, it is present. This is exactly the gap that
+// let GC reap a live block.
+func testBackup_LiveSetUnionsManifestNegativeControl(t *testing.T, factory BackupableStoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	shareName := "negctl-bkp"
+	rootHandle := createTestShare(t, store, shareName)
+	fileH := createTestFile(t, store, shareName, rootHandle, "manifest-only.bin", 0o644)
+
+	manifestOnly := hashOfSeed("negctl-manifest-only")
+	f, err := store.GetFile(ctx, fileH)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	// Manifest carries the hash; NO FileBlockStore.Put is issued, so the CAS
+	// index (file_blocks / fb: / fileBlockData.blocks) has no row for it.
+	f.Blocks = []blockstore.BlockRef{{Hash: manifestOnly, Offset: 0, Size: 4 << 20}}
+	f.Size = 4 << 20
+	if err := store.PutFile(ctx, f); err != nil {
+		t.Fatalf("PutFile: %v", err)
+	}
+
+	found := false
+	if err := store.EnumerateFileBlocks(ctx, func(h blockstore.ContentHash) error {
+		if h == manifestOnly {
+			found = true
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("EnumerateFileBlocks: %v", err)
+	}
+	if !found {
+		t.Errorf("manifest-only hash %s absent from EnumerateFileBlocks; the live set must UNION File.Blocks with the CAS index, else GC reaps the chunk", manifestOnly)
+	}
 }
 
 // asBackupable is a helper that type-asserts a MetadataStore to Backupable,
