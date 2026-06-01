@@ -202,6 +202,14 @@ type MetadataServiceRegistrar interface {
 	RegisterStoreForShare(shareName string, store metadata.MetadataStore) error
 }
 
+// MetadataServiceDeregistrar deregisters a metadata store for a share. The
+// concrete *metadata.MetadataService satisfies it. AddShare's defensive
+// finalize-failure path uses it to avoid leaking a metadata registration for a
+// share it refuses to finalize.
+type MetadataServiceDeregistrar interface {
+	RemoveStoreForShare(shareName string)
+}
+
 // BlockStoreConfigProvider resolves block store configurations from the control plane DB.
 type BlockStoreConfigProvider interface {
 	GetBlockStoreByID(ctx context.Context, id string) (*models.BlockStoreConfig, error)
@@ -262,8 +270,17 @@ func (n *nonClosingRemote) Close() error { return nil }
 
 // Service manages share registration, lookup, and configuration.
 type Service struct {
-	mu              sync.RWMutex
-	registry        map[string]*Share
+	mu       sync.RWMutex
+	registry map[string]*Share
+	// reservations holds share names that an in-flight AddShare has claimed but
+	// not yet finalized into registry. It closes the AddShare(sameName) race
+	// (REVIEW M2): the name is reserved under s.mu BEFORE any side-effecting
+	// metadata/block-store init, so a concurrent AddShare for the same name
+	// fails early — before it can RegisterStoreForShare and leave a
+	// metadata-store/registry mismatch when it later loses the registry recheck.
+	// A reserved name is NOT yet in registry, so handlers never observe a
+	// half-built share.
+	reservations    map[string]struct{}
 	remoteStores    map[string]*sharedRemote // configID -> shared remote
 	nextCallbackID  int
 	changeCallbacks map[int]func(shares []string)
@@ -272,6 +289,7 @@ type Service struct {
 func New() *Service {
 	return &Service{
 		registry:        make(map[string]*Share),
+		reservations:    make(map[string]struct{}),
 		remoteStores:    make(map[string]*sharedRemote),
 		changeCallbacks: make(map[int]func(shares []string)),
 	}
@@ -349,6 +367,32 @@ func (s *Service) AddShare(
 		return fmt.Errorf("metadata service registrar is required for share %q", config.Name)
 	}
 
+	// Phase 0: Reserve the share name under s.mu BEFORE any side-effecting init
+	// (root-dir create, block-store start, metadata RegisterStoreForShare). This
+	// closes the AddShare(sameName) race (REVIEW M2): the OLD ordering let two
+	// racing callers both run RegisterStoreForShare (last writer wins on the
+	// MetadataService store map) and only THEN recheck the registry under the
+	// lock — so the loser would tear down its block store yet leave its metadata
+	// store registered, pointing the MetadataService at a different store than
+	// the registry exposes. Reserving here serializes on the name first: the
+	// loser fails before touching any shared store, so no mismatch can form.
+	//
+	// The reservation is NOT inserted into registry, so a half-built share is
+	// never visible to handlers; it is converted to a registry entry only in
+	// Phase 4 after all init succeeds.
+	if err := s.reserveShareName(config.Name); err != nil {
+		return err
+	}
+	// Track whether the reservation still needs releasing. Phase 4 hands the
+	// reservation off to the registry entry (under the same lock) and clears
+	// this flag; every failure path releases it.
+	reservationHeld := true
+	defer func() {
+		if reservationHeld {
+			s.releaseShareName(config.Name)
+		}
+	}()
+
 	// Phase 1: Build share struct (resolves metadata store, creates root dir).
 	// Does NOT insert into registry yet -- share is invisible to handlers.
 	share, metadataStore, err := s.prepareShare(ctx, config, storeProvider)
@@ -373,26 +417,62 @@ func (s *Service) AddShare(
 		}
 	}
 
-	// Phase 3: Register metadata store.
+	// Phase 3: Register metadata store. Safe to call unconditionally now: the
+	// Phase-0 reservation guarantees no other AddShare for this name is in
+	// flight, so this RegisterStoreForShare cannot be raced into a
+	// last-writer-wins mismatch.
 	if err := metadataSvc.RegisterStoreForShare(config.Name, metadataStore); err != nil {
 		cleanupShare()
 		return fmt.Errorf("failed to configure metadata for share: %w", err)
 	}
 
-	// Phase 4: Insert fully-initialized share into registry.
-	// Only now is the share visible to protocol handlers.
+	// Phase 4: Convert the reservation into a registry entry under s.mu.
+	// Only now is the share visible to protocol handlers. The reservation has
+	// held the name exclusively since Phase 0, so registry[name] cannot already
+	// exist here; we assert it defensively and hand off the reservation.
 	s.mu.Lock()
 	if _, exists := s.registry[config.Name]; exists {
+		// Should be unreachable while the reservation is held, but stay
+		// fail-safe: tear down rather than overwrite an existing share.
 		s.mu.Unlock()
 		cleanupShare()
+		// Deregister the metadata store we just published so we do not leak a
+		// registration for a share we are refusing to finalize.
+		if remover, ok := metadataSvc.(MetadataServiceDeregistrar); ok {
+			remover.RemoveStoreForShare(config.Name)
+		}
 		return fmt.Errorf("share %q already exists", config.Name)
 	}
 	s.registry[config.Name] = share
+	delete(s.reservations, config.Name)
+	reservationHeld = false
 	s.mu.Unlock()
 
 	s.notifyShareChange()
 
 	return nil
+}
+
+// reserveShareName claims a share name for an in-flight AddShare. It fails if
+// the name is already registered or already reserved by a concurrent AddShare.
+func (s *Service) reserveShareName(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.registry[name]; exists {
+		return fmt.Errorf("share %q already exists", name)
+	}
+	if _, reserved := s.reservations[name]; reserved {
+		return fmt.Errorf("share %q is already being added", name)
+	}
+	s.reservations[name] = struct{}{}
+	return nil
+}
+
+// releaseShareName drops an in-flight AddShare reservation. Idempotent.
+func (s *Service) releaseShareName(name string) {
+	s.mu.Lock()
+	delete(s.reservations, name)
+	s.mu.Unlock()
 }
 
 // prepareShare validates config, resolves the metadata store, and creates the
