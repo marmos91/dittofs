@@ -33,34 +33,41 @@ kubectl get storageclass
 
 ## Installation Methods
 
-### Method 1: kubectl (Recommended)
+### Method 1: kubectl + kustomize
 
-The simplest installation method using raw Kubernetes manifests.
+Install directly from the source tree using kustomize. This renders the CRD,
+RBAC, and the operator Deployment from `config/default` and applies them in one
+step — no published release artifact is required.
 
 ```mermaid
 graph LR
-    A[Apply CRD] --> B[Apply Operator]
-    B --> C[Create DittoServer]
-    C --> D[Operator Creates Resources]
+    A[Clone repo] --> B[kustomize build]
+    B --> C[Apply Operator + CRD]
+    C --> D[Create DittoServer]
+    D --> E[Operator Creates Resources]
 ```
-
-**Step 1: Install the CRD**
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/marmos91/dittofs/main/k8s/dittofs-operator/config/crd/bases/dittofs.dittofs.com_dittoservers.yaml
+# Clone the repository (the kustomize bases live in the source tree)
+git clone https://github.com/marmos91/dittofs.git
+cd dittofs/k8s/dittofs-operator
+
+# Render and apply the operator (CRD, RBAC, and Deployment)
+kubectl kustomize config/default | kubectl apply -f -
+
+# kubectl 1.14+ has kustomize built in; you can also use:
+#   kustomize build config/default | kubectl apply -f -
 ```
 
-**Step 2: Install the operator**
+The operator is installed in the `dittofs` namespace by default. `config/default`
+is the canonical overlay (it composes `config/crd`, `config/rbac`, and
+`config/manager`), so a single apply installs everything.
 
-```bash
-kubectl apply -f https://raw.githubusercontent.com/marmos91/dittofs/main/k8s/dittofs-operator/dist/install.yaml
-```
+### Method 2: Helm (Recommended)
 
-The operator is installed in the `dittofs` namespace by default.
-
-### Method 2: Helm
-
-For more customization options, use the Helm chart.
+The Helm chart is self-contained — it bundles the CRD under `chart/crds/` and
+templates all RBAC and the operator Deployment — so it installs cleanly from a
+fresh clone without any extra steps.
 
 **Option A: Install from local chart**
 
@@ -279,8 +286,8 @@ kubectl delete pvc -l app.kubernetes.io/instance=my-dittofs
 ### Uninstall operator via kubectl
 
 ```bash
-kubectl delete -f https://raw.githubusercontent.com/marmos91/dittofs/main/k8s/dittofs-operator/dist/install.yaml
-kubectl delete -f https://raw.githubusercontent.com/marmos91/dittofs/main/k8s/dittofs-operator/config/crd/bases/dittofs.dittofs.com_dittoservers.yaml
+# From a clone of the repository (k8s/dittofs-operator)
+kubectl kustomize config/default | kubectl delete -f -
 ```
 
 ### Uninstall operator via Helm
@@ -300,9 +307,10 @@ kubectl delete crd dittoservers.dittofs.dittofs.com
 ### Upgrade via kubectl
 
 ```bash
-# Re-apply the latest manifests
-kubectl apply -f https://raw.githubusercontent.com/marmos91/dittofs/main/k8s/dittofs-operator/config/crd/bases/dittofs.dittofs.com_dittoservers.yaml
-kubectl apply -f https://raw.githubusercontent.com/marmos91/dittofs/main/k8s/dittofs-operator/dist/install.yaml
+# Pull the latest source, then re-render and re-apply
+cd dittofs/k8s/dittofs-operator
+git pull
+kubectl kustomize config/default | kubectl apply -f -
 ```
 
 ### Upgrade via Helm

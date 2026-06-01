@@ -154,9 +154,6 @@ server:
       # Required: 32+ character secret for signing tokens
       secret: "your-32-character-secret-key-here"
 
-      # Optional: Token issuer claim
-      issuer: "dittofs"
-
       # Optional: Access token duration (default: 15m)
       access_token_duration: "15m"
 
