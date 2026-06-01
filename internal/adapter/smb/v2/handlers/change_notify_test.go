@@ -2453,3 +2453,73 @@ func decodeFileNotifyInfos(buf []byte) []FileNotifyInformation {
 	}
 	return out
 }
+
+// TestExpireSessionNotifies_CompletesPendingNotify verifies that an expired
+// Kerberos session completes its outstanding async CHANGE_NOTIFY with
+// STATUS_CANCELLED so the client's smb2_notify_recv unblocks (smbtorture
+// smb2.session.expire2s / expire2e: session.c:1641 expects NT_STATUS_CANCELLED
+// for the cancelled notify). The flush must be idempotent (the test fires
+// several expired requests in the same window) and must not touch other
+// sessions' watchers.
+func TestExpireSessionNotifies_CompletesPendingNotify(t *testing.T) {
+	r := NewNotifyRegistry()
+	h := &Handler{NotifyRegistry: r}
+
+	var calls int
+	var gotStatus types.Status
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{7},
+		SessionID:        42,
+		ConnID:           1,
+		MessageID:        9,
+		AsyncId:          900,
+		WatchPath:        "/d",
+		ShareName:        "s",
+		CompletionFilter: FileNotifyChangeFileName,
+		// GateInterim false → final response runs inline (no dispatcher to
+		// signal interim in a unit test).
+		AsyncCallback: func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+			calls++
+			gotStatus = resp.GetStatus()
+			return nil
+		},
+	})
+
+	// A watcher on a different session must survive the flush.
+	var otherCalls int
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{8},
+		SessionID:        99,
+		ConnID:           2,
+		MessageID:        9,
+		AsyncId:          901,
+		WatchPath:        "/other",
+		ShareName:        "s",
+		CompletionFilter: FileNotifyChangeFileName,
+		AsyncCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+			otherCalls++
+			return nil
+		},
+	})
+
+	h.ExpireSessionNotifies(42)
+
+	if calls != 1 {
+		t.Fatalf("expected pending notify completed once, got %d calls", calls)
+	}
+	if gotStatus != types.StatusCancelled {
+		t.Errorf("expected STATUS_CANCELLED, got 0x%08X", uint32(gotStatus))
+	}
+	if otherCalls != 0 {
+		t.Errorf("session 99 watcher must not be completed, got %d calls", otherCalls)
+	}
+	if r.WatcherCount() != 1 {
+		t.Errorf("expected 1 surviving watcher (session 99), got %d", r.WatcherCount())
+	}
+
+	// Idempotent: the subsequent expired requests in the same window are no-ops.
+	h.ExpireSessionNotifies(42)
+	if calls != 1 {
+		t.Errorf("ExpireSessionNotifies must be idempotent, got %d calls", calls)
+	}
+}

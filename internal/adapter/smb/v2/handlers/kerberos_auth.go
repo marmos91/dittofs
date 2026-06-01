@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
 
@@ -13,6 +14,7 @@ import (
 	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
 	pkgkerberos "github.com/marmos91/dittofs/pkg/auth/kerberos"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/identity"
 )
 
@@ -92,18 +94,40 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 		return NewErrorResult(types.StatusLogonFailure), nil
 	}
 
-	// Create authenticated session with the Kerberos ticket end-time as the
-	// session expiry. The helper sets ExpiresAt before StoreSession to avoid
-	// a data race window where a concurrent reader could observe a zero
-	// ExpiresAt on the published session and skip the per-request expiry
-	// check in prepareDispatch (see #341 A1).
+	// Kerberos ticket end-time becomes the session expiry. prepareDispatch
+	// rejects requests on a session past this time with
+	// STATUS_NETWORK_SESSION_EXPIRED (MS-SMB2 §3.3.5.2.9), prompting the
+	// client to re-authenticate via another SESSION_SETUP on the same
+	// session id.
+	ticketEndTime := authResult.APReq.Ticket.DecryptedEncPart.EndTime
+
+	// Re-authentication vs. fresh session: a non-binding SESSION_SETUP that
+	// targets an existing, non-LoggedOff session id (ctx.SessionID was already
+	// validated as origin/bound by handleSessionSetup) re-authenticates that
+	// session in place rather than minting a new id. Kerberos is single-shot
+	// (the AP-REQ both negotiates and completes), so there is no PendingAuth to
+	// carry an IsReauth flag — we detect reauth directly here. Reusing the id is
+	// what smbtorture smb2.session.reauth1-5 and expire1/2 require: file opens
+	// and tree connects established before the reauth must keep working
+	// afterwards, and after the ticket expires the client re-runs SESSION_SETUP
+	// on the same session id to recover from STATUS_NETWORK_SESSION_EXPIRED.
+	if ctx.SessionID != 0 {
+		if sess, ok := h.GetSession(ctx.SessionID); ok && !sess.LoggedOff.Load() {
+			return h.reauthKerberosSession(ctx, sess, user, authResult, parsedToken, ticketEndTime)
+		}
+	}
+
+	// Fresh session. CreateSessionWithUserAndExpiry sets ExpiresAt before
+	// StoreSession to avoid a data race window where a concurrent reader
+	// could observe a zero ExpiresAt on the published session and skip the
+	// per-request expiry check in prepareDispatch (see #341 A1).
 	sessionID := h.GenerateSessionID()
 	sess := h.CreateSessionWithUserAndExpiry(
 		sessionID,
 		ctx.ClientAddr,
 		user,
 		authResult.Realm,
-		authResult.APReq.Ticket.DecryptedEncPart.EndTime,
+		ticketEndTime,
 	)
 	sess.OriginConnID = ctx.ConnID
 	recordSessionBindIdentity(sess, ctx)
@@ -118,7 +142,7 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 	// keys, causing the client to reject the signed SESSION_SETUP response.
 	// The NTLM path does the equivalent in handleSessionSetup.
 	if ctx.ConnCryptoState != nil {
-		ctx.ConnCryptoState.InitSessionPreauthHash(sessionID, ctx.RawRequest)
+		ctx.ConnCryptoState.InitSessionPreauthHash(ctx.SessionID, ctx.RawRequest)
 	}
 
 	// Configure session signing with normalized 16-byte key.
@@ -136,6 +160,65 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 		"signingEnabled", sess.ShouldSign(),
 		"encryptData", sess.ShouldEncrypt())
 
+	return h.buildKerberosAcceptResponse(sess, authResult, parsedToken)
+}
+
+// reauthKerberosSession re-authenticates an existing, non-LoggedOff session in
+// place from a fresh Kerberos AP-REQ (smbtorture smb2.session.reauth1-5 and the
+// expire1/2 recovery setup). It updates the security context and refreshes the
+// ticket lifetime, then returns a signed AP-REP accept-complete response.
+//
+// Keys are deliberately NOT re-derived. Per MS-SMB2 §3.3.5.5.3 a successful
+// re-authentication updates Session.SecurityContext only; the established
+// SigningKey / EncryptionKey / DecryptionKey and the frozen
+// PreauthIntegrityHash are retained. Samba does the same — its
+// smbd_smb2_reauth_generic_return copies the existing application_key_blob over
+// the new gensec session key and omits every signing/encryption-key derivation
+// call (source3/smbd/smb2_sesssetup.c). Re-deriving from the new ticket session
+// key would make the SUCCESS response's signature diverge from what the client
+// computes with its unchanged key, and the client rejects the response with
+// STATUS_ACCESS_DENIED (the reauth1-4 regression this guards against). The
+// per-session preauth hash entry was already deleted after the original setup,
+// so the SESSION_SETUP before/after hooks are no-ops on this request and the
+// frozen hash survives untouched. Open files and tree connects are preserved
+// because the session record itself is reused (reauth5).
+func (h *Handler) reauthKerberosSession(
+	ctx *SMBHandlerContext,
+	sess *session.Session,
+	user *models.User,
+	authResult *kerbauth.AuthResult,
+	parsedToken *auth.ParsedToken,
+	ticketEndTime time.Time,
+) (*HandlerResult, error) {
+	// Refresh identity and lifetime. Updating ExpiresAt to the fresh ticket
+	// end-time clears the expired state so prepareDispatch lets subsequent
+	// requests through again (expire1/2 recovery).
+	sess.User = user
+	sess.Username = user.Username
+	sess.Domain = authResult.Realm
+	sess.IsGuest = false
+	sess.IsNull = false
+	sess.ExpiresAt = ticketEndTime
+	ctx.IsGuest = false
+
+	logger.Info("Kerberos session re-authenticated (identity updated, keys retained)",
+		"sessionID", sess.SessionID,
+		"username", sess.Username,
+		"domain", sess.Domain,
+		"signingEnabled", sess.ShouldSign(),
+		"encryptData", sess.ShouldEncrypt())
+
+	return h.buildKerberosAcceptResponse(sess, authResult, parsedToken)
+}
+
+// buildKerberosAcceptResponse builds the SPNEGO accept-complete SESSION_SETUP
+// response (mutual-auth AP-REP + optional mechListMIC) shared by the fresh and
+// re-authentication Kerberos paths.
+func (h *Handler) buildKerberosAcceptResponse(
+	sess *session.Session,
+	authResult *kerbauth.AuthResult,
+	parsedToken *auth.ParsedToken,
+) (*HandlerResult, error) {
 	// Build mutual auth AP-REP and wrap it in a GSS-API InitialContextToken
 	// (RFC 2743 Section 3.1) for the SPNEGO accept-complete response:
 	//

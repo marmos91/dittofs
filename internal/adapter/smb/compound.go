@@ -74,7 +74,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 			erh, erb := buildErrorResponseHeaderAndBody(hdr, status, connInfo)
 			errResponses = append(errResponses, compoundResponse{respHeader: erh, body: erb})
 		}
-		if err := sendCompoundResponses(errResponses, connInfo); err != nil {
+		if err := sendCompoundResponses(errResponses, connInfo, isEncrypted); err != nil {
 			logger.Debug("Error sending compound error responses", "error", err)
 		}
 		return
@@ -92,7 +92,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 				"command", firstHeader.Command.String(),
 				"creditCharge", firstHeader.CreditCharge,
 				"error", err)
-			failEntireCompound(firstHeader, compoundData, types.StatusInvalidParameter, connInfo)
+			failEntireCompound(firstHeader, compoundData, types.StatusInvalidParameter, connInfo, isEncrypted)
 			return
 		}
 	}
@@ -104,7 +104,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 				"messageID", firstHeader.MessageID,
 				"creditCharge", charge,
 				"exempt", exempt)
-			failEntireCompound(firstHeader, compoundData, types.StatusInvalidParameter, connInfo)
+			failEntireCompound(firstHeader, compoundData, types.StatusInvalidParameter, connInfo, isEncrypted)
 			return
 		}
 	}
@@ -285,13 +285,27 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		// Per MS-SMB2 3.3.5.2.7.2: if a related command follows a predecessor
 		// that failed at the session/tree validation level, return INVALID_PARAMETER
 		// because there is no valid session/tree context to inherit.
+		//
+		// Exception — session expiry (STATUS_NETWORK_SESSION_EXPIRED): the
+		// session itself is expired, so every command in the compound would
+		// independently fail the per-command expiry gate (prepareDispatch,
+		// response.go) with the SAME status. Samba processes each compound
+		// member through smb2_validate_sequence_number / session lookup before
+		// FileID resolution, so all members of a compound on an expired session
+		// return STATUS_NETWORK_SESSION_EXPIRED — not INVALID_PARAMETER. The
+		// CREATE+QUERY_DIRECTORY+CLOSE compound in smbtorture
+		// smb2.session.expire2s/expire2e asserts this: each recv must surface
+		// SESSION_EXPIRED. Propagate the expired status to the related
+		// followers instead of masking it as INVALID_PARAMETER.
 		if hdr.IsRelated() && lastCmdSessionFailed {
-			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, types.StatusInvalidParameter, connInfo)
+			sessFailStatus := relatedSessionFailureStatus(lastCmdStatus)
+			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, sessFailStatus, connInfo)
 			errHeader.Flags |= types.FlagRelated
 			responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
 			// This command also failed at the session level for the next command
 			lastCmdSessionFailed = true
 			lastCmdFailed = true
+			lastCmdStatus = sessFailStatus
 			continue
 		}
 
@@ -443,7 +457,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	}
 
 	// Send all responses as a single compound response frame.
-	sendErr := sendCompoundResponses(responses, connInfo)
+	sendErr := sendCompoundResponses(responses, connInfo, isEncrypted)
 	if sendErr != nil {
 		logger.Debug("Error sending compound responses", "error", sendErr)
 	}
@@ -469,7 +483,16 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 //     bytes (header + body + padding) before concatenation
 //   - Per MS-SMB2 3.3.4.1.3: the entire compound may be encrypted as one message
 //     (AEAD replaces signing when encryption is active)
-func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) error {
+//
+// requestEncrypted indicates the compound request arrived inside an SMB3
+// Transform Header. Per MS-SMB2 §3.3.4.1.4 the response MUST then be encrypted
+// too, even when the session's standing encryption policy (Session.ShouldEncrypt)
+// is off — a client that turned encryption on per-connection
+// (smb2cli_session_encryption_on) rejects an unencrypted compound reply as a
+// security violation. smbtorture smb2.session.expire2e drives an ENCRYPTED
+// CREATE+QUERY_DIRECTORY+CLOSE compound on an expired session and requires the
+// STATUS_NETWORK_SESSION_EXPIRED compound reply to come back encrypted.
+func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo, requestEncrypted bool) error {
 	if len(responses) == 0 {
 		return nil
 	}
@@ -489,9 +512,21 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) err
 		}
 	}()
 
-	// Single response - no compound framing needed
+	// Single response - no compound framing needed. SendMessage already
+	// encrypts when the session's standing policy requires it; the inbound-
+	// encrypted hint additionally covers a per-connection encrypt-on session
+	// (preferred mode) so it still gets an encrypted reply (MS-SMB2 §3.3.4.1.4).
 	if len(responses) == 1 {
-		return SendMessage(responses[0].respHeader, responses[0].body, connInfo)
+		hdr := responses[0].respHeader
+		if requestEncrypted && compoundShouldEncrypt(connInfo, hdr, requestEncrypted) {
+			plaintext := append(hdr.Encode(), responses[0].body...)
+			encrypted, err := connInfo.EncryptionMiddleware.EncryptResponse(hdr.SessionID, plaintext)
+			if err != nil {
+				return fmt.Errorf("encrypt single compound response: %w", err)
+			}
+			return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, encrypted)
+		}
+		return SendMessage(hdr, responses[0].body, connInfo)
 	}
 
 	// Per MS-SMB2 3.2.4.1.4: middle compound responses grant 0 credits;
@@ -514,6 +549,10 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) err
 			firstSession = s
 		}
 	}
+
+	// Decide up-front whether the composed frame will be encrypted (AEAD
+	// replaces per-command signing).
+	willEncrypt := compoundShouldEncrypt(connInfo, responses[0].respHeader, requestEncrypted)
 
 	var payload []byte
 	for i := range responses {
@@ -545,7 +584,8 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) err
 				sess = firstSession
 				ok = true
 			}
-			if ok && sess.ShouldSign() && !sess.ShouldEncrypt() {
+			// Skip per-command signing when the whole frame will be AEAD-encrypted.
+			if ok && sess.ShouldSign() && !willEncrypt {
 				sess.SignMessageOnChannel(connInfo.ConnID, cmdBytes)
 			}
 		}
@@ -553,28 +593,23 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) err
 		payload = append(payload, cmdBytes...)
 	}
 
-	// Handle encryption for the whole compound
-	sessionID := responses[0].respHeader.SessionID
-	if sessionID != 0 {
-		if sess, ok := connInfo.Handler.GetSession(sessionID); ok {
-			isSessionSetupSuccess := responses[0].respHeader.Command == types.SMB2SessionSetup &&
-				responses[0].respHeader.Status == types.StatusSuccess
-			if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil && !isSessionSetupSuccess {
-				encrypted, err := connInfo.EncryptionMiddleware.EncryptResponse(sessionID, payload)
-				if err != nil {
-					return fmt.Errorf("encrypt compound response: %w", err)
-				}
-				logger.Debug("Encrypted compound response",
-					"sessionID", sessionID,
-					"commands", len(responses))
-				writeErr := WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, encrypted)
-				// NOTE: each sub-response's credit grant was extended on the
-				// sequence window synchronously during buildResponseHeaderAndBody;
-				// applyCompoundCreditZeroing reclaimed the now-zeroed middle
-				// responses. No post-write Grant is needed here (#378).
-				return writeErr
-			}
+	// Handle encryption for the whole compound (decision computed above).
+	if willEncrypt {
+		sessionID := responses[0].respHeader.SessionID
+		encrypted, err := connInfo.EncryptionMiddleware.EncryptResponse(sessionID, payload)
+		if err != nil {
+			return fmt.Errorf("encrypt compound response: %w", err)
 		}
+		logger.Debug("Encrypted compound response",
+			"sessionID", sessionID,
+			"commands", len(responses),
+			"requestEncrypted", requestEncrypted)
+		writeErr := WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, encrypted)
+		// NOTE: each sub-response's credit grant was extended on the
+		// sequence window synchronously during buildResponseHeaderAndBody;
+		// applyCompoundCreditZeroing reclaimed the now-zeroed middle
+		// responses. No post-write Grant is needed here (#378).
+		return writeErr
 	}
 
 	logger.Debug("Sending compound response",
@@ -590,7 +625,7 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) err
 // failEntireCompound generates error responses for all commands in the compound
 // (first + remaining) and sends them via sendCompoundResponses.
 // Used when compound-level credit validation fails.
-func failEntireCompound(firstHeader *header.SMB2Header, compoundData []byte, status types.Status, connInfo *ConnInfo) {
+func failEntireCompound(firstHeader *header.SMB2Header, compoundData []byte, status types.Status, connInfo *ConnInfo, requestEncrypted bool) {
 	var errResponses []compoundResponse
 
 	// Error for the first command
@@ -609,7 +644,7 @@ func failEntireCompound(firstHeader *header.SMB2Header, compoundData []byte, sta
 		errResponses = append(errResponses, compoundResponse{respHeader: erh, body: erb})
 	}
 
-	if err := sendCompoundResponses(errResponses, connInfo); err != nil {
+	if err := sendCompoundResponses(errResponses, connInfo, requestEncrypted); err != nil {
 		logger.Debug("Error sending compound error responses", "error", err)
 	}
 }
@@ -636,6 +671,47 @@ func applyCompoundCreditZeroing(responses []compoundResponse, connInfo *ConnInfo
 			connInfo.SequenceWindow.Reclaim(credits)
 		}
 	}
+}
+
+// compoundShouldEncrypt reports whether a compound response (or its single-
+// command shortcut) must be AEAD-encrypted. Encrypt when the session's standing
+// policy requires it (Session.ShouldEncrypt) OR the inbound compound was itself
+// encrypted (requestEncrypted — MS-SMB2 §3.3.4.1.4, smbtorture
+// smb2.session.expire2e), provided the session resolves and holds an encryptor.
+// SESSION_SETUP SUCCESS is never encrypted here: the peer has no derivable keys
+// for the channel yet.
+func compoundShouldEncrypt(connInfo *ConnInfo, hdr *header.SMB2Header, requestEncrypted bool) bool {
+	if hdr.SessionID == 0 || connInfo.EncryptionMiddleware == nil {
+		return false
+	}
+	if hdr.Command == types.SMB2SessionSetup && hdr.Status == types.StatusSuccess {
+		return false
+	}
+	sess, ok := connInfo.Handler.GetSession(hdr.SessionID)
+	if !ok || sess.CryptoState == nil || sess.CryptoState.Encryptor == nil {
+		return false
+	}
+	return sess.ShouldEncrypt() || requestEncrypted
+}
+
+// relatedSessionFailureStatus picks the status returned to a related compound
+// command whose predecessor failed at the session/tree validation level.
+//
+// Default is STATUS_INVALID_PARAMETER: a NETWORK_NAME_DELETED / USER_SESSION_
+// DELETED predecessor leaves no valid session/tree context for the follower to
+// inherit (MS-SMB2 §3.3.5.2.7.2).
+//
+// Session expiry is the exception: when the predecessor failed with
+// STATUS_NETWORK_SESSION_EXPIRED the whole session is expired, so every command
+// in the compound would independently hit the per-command expiry gate with the
+// same status. Samba returns SESSION_EXPIRED for each member; propagate it
+// instead of masking it as INVALID_PARAMETER (smbtorture
+// smb2.session.expire2s/expire2e).
+func relatedSessionFailureStatus(prevStatus types.Status) types.Status {
+	if prevStatus == types.StatusNetworkSessionExpired {
+		return types.StatusNetworkSessionExpired
+	}
+	return types.StatusInvalidParameter
 }
 
 // isSessionLevelError returns true if the status indicates a session or tree
@@ -1037,7 +1113,7 @@ func completeCompoundAfterAsyncCreate(
 		}
 	}
 
-	sendErr := sendCompoundResponses(responses, connInfo)
+	sendErr := sendCompoundResponses(responses, connInfo, isEncrypted)
 	if sendErr != nil {
 		logger.Debug("Error sending compound async completion responses", "error", sendErr)
 	}

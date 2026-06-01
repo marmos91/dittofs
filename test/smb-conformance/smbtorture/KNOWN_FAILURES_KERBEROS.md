@@ -20,12 +20,7 @@ These are genuine Kerberos-specific bugs tracked in #340 / #686.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.reauth5 | Reauth | Signing keys wrong after Kerberos reauth | #340-A2 |
-| smb2.expire1n | Expire | Ticket expiration not enforced correctly | #340-A1 |
-| smb2.expire1s | Expire | Ticket expiration not enforced correctly | #340-A1 |
-| smb2.expire1e | Expire | Ticket expiration not enforced correctly | #340-A1 |
-| smb2.expire2s | Expire | Ticket expiration not enforced correctly | #340-A1 |
-| smb2.expire2e | Expire | Ticket expiration not enforced correctly | #340-A1 |
+| smb2.reauth5 | Reauth | Upstream Samba selftest known-fail (selftest/knownfail.d/ line 213): the test asserts `smb2_util_unlink` of a nonexistent file returns OK, but a correct server returns OBJECT_NAME_NOT_FOUND. Not a DittoFS bug — reauth1-4 (key retention across reauth) pass. | #340-A2 |
 
 ## Session-Bind Crypto Negotiation (Fix In Progress)
 

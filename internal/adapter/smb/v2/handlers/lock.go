@@ -308,6 +308,20 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 		}
 	}
 
+	// Session-expiry gate for new lock acquisition (MS-SMB2 §3.3.5.2.9). LOCK
+	// is exempt from the dispatch-level expiry gate (prepareDispatch) so an
+	// expired session can still release its held locks — smbtorture
+	// smb2.session.expire2s/expire2e: "1st unlock => OK". A NEW lock on an
+	// expired session must still be refused with STATUS_NETWORK_SESSION_EXPIRED
+	// ("lock => EXPIRED"). UNLOCK requests proceed regardless of expiry.
+	if !isUnlockRequest && ctx.SessionID != 0 {
+		if sess, ok := h.GetSession(ctx.SessionID); ok && sess.IsExpired() {
+			logger.Debug("LOCK: new lock on expired session refused",
+				"sessionID", ctx.SessionID, "fileID", fmt.Sprintf("%x", req.FileID))
+			return NewErrorResult(types.StatusNetworkSessionExpired), nil
+		}
+	}
+
 	// ========================================================================
 	// Break read-caching leases on other clients before acquiring locks
 	// ========================================================================
