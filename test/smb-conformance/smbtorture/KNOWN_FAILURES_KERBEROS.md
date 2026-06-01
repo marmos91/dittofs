@@ -21,8 +21,6 @@ These are genuine Kerberos-specific bugs tracked in #340 / #686.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.reauth5 | Reauth | Signing keys wrong after Kerberos reauth | #340-A2 |
-| smb2.expire1n | Expire | Ticket expiration not enforced correctly | #340-A1 |
-| smb2.expire1s | Expire | Ticket expiration not enforced correctly | #340-A1 |
 | smb2.expire1e | Expire | Ticket expiration not enforced correctly | #340-A1 |
 | smb2.expire2s | Expire | Ticket expiration not enforced correctly | #340-A1 |
 | smb2.expire2e | Expire | Ticket expiration not enforced correctly | #340-A1 |
