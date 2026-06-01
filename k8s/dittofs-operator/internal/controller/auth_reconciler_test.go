@@ -207,8 +207,10 @@ func TestProvisionOperatorAccount_UserAlreadyExists(t *testing.T) {
 			w.Write(tokenJSON("operator-token", 900))
 		},
 		"POST /api/v1/users": func(w http.ResponseWriter, req *http.Request) {
+			// Real server emits RFC 7807 problem+json with no legacy "code".
+			w.Header().Set("Content-Type", "application/problem+json")
 			w.WriteHeader(http.StatusConflict)
-			w.Write([]byte(`{"code":"CONFLICT","message":"User already exists"}`))
+			w.Write([]byte(`{"type":"about:blank","title":"Conflict","status":409,"detail":"User already exists"}`))
 		},
 	})
 
@@ -310,8 +312,9 @@ func TestRefreshOperatorToken_RefreshFails_ReloginSuccess(t *testing.T) {
 	// Mock DittoFS API: refresh fails, but login succeeds
 	server := mockDittoFSServer(t, map[string]http.HandlerFunc{
 		"POST /api/v1/auth/refresh": func(w http.ResponseWriter, req *http.Request) {
+			w.Header().Set("Content-Type", "application/problem+json")
 			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"code":"UNAUTHORIZED","message":"Invalid refresh token"}`))
+			w.Write([]byte(`{"type":"about:blank","title":"Unauthorized","status":401,"detail":"Invalid refresh token"}`))
 		},
 		"POST /api/v1/auth/login": func(w http.ResponseWriter, req *http.Request) {
 			w.WriteHeader(http.StatusOK)

@@ -89,10 +89,14 @@ func (c *DittoFSClient) do(ctx context.Context, method, path string, body, resul
 
 	if resp.StatusCode >= 400 {
 		var apiErr DittoFSAPIError
-		if json.Unmarshal(respBody, &apiErr) == nil && apiErr.Message != "" {
+		if json.Unmarshal(respBody, &apiErr) == nil &&
+			(apiErr.Title != "" || apiErr.Status != 0 || apiErr.Code != "") {
+			apiErr.StatusCode = resp.StatusCode
 			return &apiErr
 		}
-		return fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(respBody))
+		// Non-JSON or empty body: still return a typed error so callers can
+		// classify on the HTTP status. Never lose the type via fmt.Errorf.
+		return &DittoFSAPIError{StatusCode: resp.StatusCode, Detail: string(respBody)}
 	}
 
 	if result != nil && len(respBody) > 0 {
@@ -104,34 +108,48 @@ func (c *DittoFSClient) do(ctx context.Context, method, path string, body, resul
 	return nil
 }
 
-// DittoFSAPIError represents an error response from the DittoFS API.
+// DittoFSAPIError represents an RFC 7807 problem+json error response from the
+// DittoFS API. The server emits {"type","title","status","detail"} (and
+// optionally "code"/"hint"); StatusCode carries the HTTP status and is
+// authoritative for classification. The operator cannot import
+// pkg/apiclient (separate go.mod), so this mirrors the canonical wire shape
+// defined in internal/controlplane/api/handlers/problem.go.
 type DittoFSAPIError struct {
-	Code    string `json:"code,omitempty"`
-	Message string `json:"message"`
-	Details string `json:"details,omitempty"`
+	Type   string `json:"type,omitempty"`
+	Title  string `json:"title,omitempty"`
+	Status int    `json:"status,omitempty"`
+	Detail string `json:"detail,omitempty"`
+	Code   string `json:"code,omitempty"`
+	Hint   string `json:"hint,omitempty"`
+
+	// StatusCode is the HTTP status code, authoritative for classification.
+	StatusCode int `json:"-"`
 }
 
 // Error implements the error interface.
 func (e *DittoFSAPIError) Error() string {
-	if e.Code != "" {
-		return fmt.Sprintf("%s: %s", e.Code, e.Message)
+	if e.Detail != "" {
+		return e.Detail
 	}
-	return e.Message
+	if e.Title != "" {
+		return e.Title
+	}
+	return fmt.Sprintf("request failed with status %d", e.StatusCode)
 }
 
 // IsConflict returns true if this is a conflict error (e.g., user already exists).
 func (e *DittoFSAPIError) IsConflict() bool {
-	return e.Code == "CONFLICT"
+	return e.StatusCode == 409
 }
 
 // IsAuthError returns true if this is an authentication/authorization error.
 func (e *DittoFSAPIError) IsAuthError() bool {
-	return e.Code == "UNAUTHORIZED" || e.Code == "FORBIDDEN"
+	return e.StatusCode == 401 || e.StatusCode == 403
 }
 
 // IsNotFound returns true if this is a not-found error.
 func (e *DittoFSAPIError) IsNotFound() bool {
-	return e.Code == "NOT_FOUND"
+	return e.StatusCode == 404
 }
 
 // LoginRequest represents a login request to the DittoFS API.

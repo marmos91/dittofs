@@ -444,12 +444,15 @@ func isTransientError(err error) bool {
 		}
 	}
 
-	// Check for DittoFS API errors that indicate transient issues
+	// Check for DittoFS API errors that indicate transient issues. 5xx means
+	// the server is reachable but failing transiently, so the reconcile may
+	// succeed on retry; 4xx is a terminal client error.
 	var apiErr *DittoFSAPIError
 	if errors.As(err, &apiErr) {
-		// 502, 503, 504 are transient gateway errors
-		// The API error code won't directly have status codes, but the message might
-		return false // API errors mean the server is reachable, not transient
+		return apiErr.StatusCode == 500 ||
+			apiErr.StatusCode == 502 ||
+			apiErr.StatusCode == 503 ||
+			apiErr.StatusCode == 504
 	}
 
 	return false
