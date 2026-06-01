@@ -137,15 +137,12 @@ create_block_stores() {
 # Canonical list of WPTS/smbtorture shares. The smbtorture runner (run.sh)
 # resets these between sub-suites via `reset-share`, so the create flags must
 # live in exactly one place. Keep this in sync with create_shares() below.
-SHARE_NAMES=(
-    /smbbasic
-    /smbencrypted
-    /fileshare
-    /hideunread
-    /change_notify_disabled
-    /smbnoncanon
-    /create_no_streams
-)
+#
+# NOTE: bootstrap.sh is invoked as `sh /app/bootstrap.sh` inside the container
+# (run.sh / smbtorture/run.sh), so it must stay POSIX-sh-compatible — no bash
+# arrays. Share names contain no whitespace, so a space-separated list with
+# unquoted word-splitting (`for name in $SHARE_NAMES`) is safe.
+SHARE_NAMES="/smbbasic /smbencrypted /fileshare /hideunread /change_notify_disabled /smbnoncanon /create_no_streams"
 
 # share_create_args NAME — echo the per-share `dfsctl share create` flags
 # (without the common --metadata/--local/--remote flags, which the caller
@@ -201,8 +198,8 @@ create_one_share() {
 # create_shares — create every WPTS/smbtorture share from the canonical map.
 create_shares() {
     log_info "Creating WPTS shares..."
-    local name
-    for name in "${SHARE_NAMES[@]}"; do
+    # POSIX word-splitting over the space-separated SHARE_NAMES (no bash arrays).
+    for name in $SHARE_NAMES; do
         create_one_share "$name"
     done
 }
