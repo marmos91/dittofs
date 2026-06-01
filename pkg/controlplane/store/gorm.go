@@ -207,7 +207,17 @@ func New(config *Config) (*GORMStore, error) {
 		// SQLite pragmas for better concurrent access:
 		// - journal_mode(WAL): Write-Ahead Logging for concurrent readers/single writer
 		// - busy_timeout(5000): Wait up to 5 seconds when database is locked
-		dsn := config.SQLite.Path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+		// - synchronous(NORMAL): the canonical WAL pairing. With WAL, NORMAL is
+		//   crash-safe for application/process failures (a checkpoint still
+		//   fsyncs); only an OS crash or power loss in the window between a
+		//   commit and the next checkpoint can lose the most recent
+		//   transactions. That tradeoff is acceptable for this single-node
+		//   metadata store and removes a per-commit fsync, which is the
+		//   dominant cost under write-heavy churn (e.g. concurrent snapshot
+		//   create/delete) — without it, that churn serializes on fsync long
+		//   enough to starve readers and blow test/operation timeouts.
+		dsn := config.SQLite.Path +
+			"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
 		dialector = sqlite.Open(dsn)
 
 	case DatabaseTypePostgres:
@@ -228,14 +238,42 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	// Configure connection pool for PostgreSQL
-	if config.Type == DatabaseTypePostgres {
+	// Configure the connection pool.
+	switch config.Type {
+	case DatabaseTypePostgres:
 		sqlDB, err := db.DB()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get underlying database: %w", err)
 		}
 		sqlDB.SetMaxOpenConns(config.Postgres.MaxOpenConns)
 		sqlDB.SetMaxIdleConns(config.Postgres.MaxIdleConns)
+
+	case DatabaseTypeSQLite:
+		// Pin SQLite to a single database/sql connection.
+		//
+		// SQLite is a single-writer store. With the default unbounded pool
+		// each concurrent goroutine opens its own connection, and N writers
+		// then fight over the WAL write lock through SQLite's busy-handler
+		// retry loop. Under sustained churn (e.g. many concurrent snapshot
+		// create/delete operations) that degenerates into writer starvation
+		// and busy-loop thrash: a writer can repeatedly lose the race, hold
+		// its higher-level lock far longer than expected, and eventually
+		// exhaust busy_timeout and surface SQLITE_BUSY ("database is
+		// locked"). Both the latency spikes and the spurious lock errors are
+		// observed as intermittent failures on slow/loaded CI runners.
+		//
+		// One connection makes Go's connection pool the single, FIFO point
+		// of serialization, so writes queue in order instead of thrashing
+		// the SQLite lock. Transactions all use the closure form
+		// (db.Transaction(func(tx)...)), which never needs a second
+		// connection, so a single connection cannot self-deadlock. No
+		// behavior change for the single-node SQLite deployment — just
+		// orderly serialization instead of contention.
+		sqlDB, err := db.DB()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get underlying database: %w", err)
+		}
+		sqlDB.SetMaxOpenConns(1)
 	}
 
 	// --- Pre-AutoMigrate migrations ---
