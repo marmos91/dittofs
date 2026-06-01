@@ -269,9 +269,13 @@ dfsctl store block gc /archive --dry-run
 |------|---------|-------------|
 | `--dry-run` | `false` | Skip DELETEs; print up to `gc.dry_run_sample_size` candidate keys (default 1000). Critical for first-time deployment confidence. |
 
-**Output:** A `GCStats` record with `hashes_marked`, `objects_swept`,
-`bytes_freed`, `duration_ms`, and `error_count` plus a sample of the
-first errors when `error_count > 0`.
+**Output:** the default table shows `Hashes Marked` (live blocks
+referenced), `Objects Found` (total CAS objects walked), `Objects
+Swept` (orphans deleted, or would-be-deleted under `--dry-run`), `Bytes
+Freed`, `Duration`, and `Errors`, plus a sample of the first errors
+when there are any. With `-o json`/`-o yaml` the raw `GCStats` struct is
+emitted; it carries no json tags, so fields serialize under their Go
+names (e.g. `HashesMarked`, `ObjectsScanned`, `ObjectsSwept`).
 
 **Fail-closed posture:** any mark-phase error aborts the sweep entirely
 (no objects are deleted). Sweep-side per-prefix DELETE errors are
@@ -289,10 +293,10 @@ output.
 dfsctl store block gc-status /archive
 ```
 
-**Output:** the `GCRunSummary` JSON: `run_id`, `started_at`,
-`finished_at`, `hashes_marked`, `objects_swept`, `bytes_freed`,
-`duration_ms`, `error_count`, `error_samples`, plus the
-configuration snapshot (`grace_period`, `dry_run`) used for the run.
+**Output:** the `GCRunSummary` JSON (snake_case tags): `run_id`,
+`started_at`, `completed_at`, `hashes_marked`, `objects_scanned`,
+`objects_swept`, `bytes_freed`, `duration_ms`, `error_count`,
+`first_errors`, `dry_run`, and `dry_run_candidates`.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep-v0150-phase-11)
 for the full mark-sweep design and [CONFIGURATION.md](CONFIGURATION.md)

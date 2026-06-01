@@ -209,6 +209,7 @@ func accumulateGCStats(total, stats *engine.GCStats, includeDryRunMeta bool) eng
 	}
 	s := *stats
 	total.HashesMarked += s.HashesMarked
+	total.ObjectsScanned += s.ObjectsScanned
 	total.ObjectsSwept += s.ObjectsSwept
 	total.BytesFreed += s.BytesFreed
 	total.ErrorCount += s.ErrorCount

@@ -75,6 +75,7 @@ func runBlockStoreGCStatus(cmd *cobra.Command, args []string) error {
 			{"Completed At", summary.CompletedAt.Format("2006-01-02T15:04:05Z07:00")},
 			{"Duration", fmt.Sprintf("%dms", summary.DurationMs)},
 			{"Hashes Marked", fmt.Sprintf("%d", summary.HashesMarked)},
+			{"Objects Found", fmt.Sprintf("%d", summary.ObjectsScanned)},
 			{"Objects Swept", fmt.Sprintf("%d", summary.ObjectsSwept)},
 			{"Bytes Freed", formatBytes(summary.BytesFreed)},
 			{"Errors", fmt.Sprintf("%d", summary.ErrorCount)},

@@ -82,6 +82,7 @@ func printGCStatsTable(res *apiclient.BlockStoreGCResult, dryRun bool) error {
 	pairs := [][2]string{
 		{"Run ID", s.RunID},
 		{"Hashes Marked", fmt.Sprintf("%d", s.HashesMarked)},
+		{"Objects Found", fmt.Sprintf("%d", s.ObjectsScanned)},
 		{"Objects Swept", fmt.Sprintf("%d", s.ObjectsSwept)},
 		{"Bytes Freed", formatBytes(s.BytesFreed)},
 		{"Duration", fmt.Sprintf("%dms", s.DurationMs)},

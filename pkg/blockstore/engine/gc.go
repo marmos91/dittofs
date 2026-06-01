@@ -134,6 +134,7 @@ func releaseGCRootLock(root string, entry *gcRootLock) {
 type GCStats struct {
 	RunID            string
 	HashesMarked     int64
+	ObjectsScanned   int64
 	ObjectsSwept     int64
 	BytesFreed       int64
 	DurationMs       int64
@@ -353,6 +354,7 @@ func CollectGarbage(
 	slog.Info("GC: complete",
 		"run_id", runID,
 		"hashes_marked", stats.HashesMarked,
+		"objects_scanned", stats.ObjectsScanned,
 		"objects_swept", stats.ObjectsSwept,
 		"bytes_freed", stats.BytesFreed,
 		"duration_ms", stats.DurationMs,
@@ -487,11 +489,18 @@ func sweepPhase(
 	// future re-sharding extension belongs at the backend Walk layer
 	// (per-prefix fan-out), not here.
 	runSweep := func() {
+		// Count every object the backend reports — before any grace /
+		// zero-LastModified / live-set filtering — so ObjectsScanned is the
+		// total CAS objects present in the store ("blocks found"). Walk
+		// invokes the callback sequentially, so a local counter folded into
+		// stats once after the walk avoids a mutex round-trip per object.
+		var scanned int64
 		walkErr := remoteStore.Walk(ctx, func(h blockstore.ContentHash, meta blockstore.Meta) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			casKey := blockstore.FormatCASKey(h)
+			scanned++
 			// — fail-closed on missing LastModified.
 			// A zero LastModified means the backend did not report
 			// per-object age; we cannot evaluate the snapshot - grace
@@ -536,6 +545,9 @@ func sweepPhase(
 		if walkErr != nil {
 			addError("walk: " + walkErr.Error())
 		}
+		statsMu.Lock()
+		stats.ObjectsScanned += scanned
+		statsMu.Unlock()
 		if options.ProgressCallback != nil {
 			statsMu.Lock()
 			snap := *stats
@@ -630,6 +642,7 @@ func gcRunSummaryFromStats(stats *GCStats, started, completed time.Time) GCRunSu
 		StartedAt:        started,
 		CompletedAt:      completed,
 		HashesMarked:     stats.HashesMarked,
+		ObjectsScanned:   stats.ObjectsScanned,
 		ObjectsSwept:     stats.ObjectsSwept,
 		BytesFreed:       stats.BytesFreed,
 		DurationMs:       stats.DurationMs,
