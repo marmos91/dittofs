@@ -447,6 +447,72 @@ func TestRuntimeDeleteSnapshot_RefusesInFlight(t *testing.T) {
 	}
 }
 
+// TestRuntimeDeleteSnapshot_RefusesMarkerProtected asserts DeleteSnapshot
+// refuses to delete a snapshot that an in-progress restore depends on as its
+// rollback target — the safety snapshot (and the target snapshot) named by the
+// per-share restore marker. Deleting the safety snap mid-restore would destroy
+// the sole rollback primitive (#8 H2). Once the marker is cleared (restore
+// done), the delete succeeds.
+func TestRuntimeDeleteSnapshot_RefusesMarkerProtected(t *testing.T) {
+	rt := newTestRuntime(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	const shareName = "alpha"
+	localStoreDir := t.TempDir()
+	rt.sharesSvc.InjectShareForTesting(&shares.Share{Name: shareName})
+	if err := rt.sharesSvc.SetLocalStoreDirForTesting(shareName, localStoreDir); err != nil {
+		t.Fatalf("SetLocalStoreDirForTesting: %v", err)
+	}
+
+	// Seed two ready snapshots: the safety snap and the target snap.
+	safetySnap := &models.Snapshot{ShareName: shareName, State: models.StateReady, MetadataEngine: "memory"}
+	safetyID, err := rt.store.CreateSnapshot(ctx, safetySnap)
+	if err != nil {
+		t.Fatalf("CreateSnapshot(safety): %v", err)
+	}
+	targetSnap := &models.Snapshot{ShareName: shareName, State: models.StateReady, MetadataEngine: "memory"}
+	targetID, err := rt.store.CreateSnapshot(ctx, targetSnap)
+	if err != nil {
+		t.Fatalf("CreateSnapshot(target): %v", err)
+	}
+
+	// Plant a restore marker naming both (mimics an in-flight restore).
+	if merr := rt.store.PutRestoreMarker(ctx, &models.RestoreMarker{
+		ShareName:        shareName,
+		TargetSnapshotID: targetID,
+		SafetySnapshotID: safetyID,
+		Step:             models.RestoreStepStarted,
+	}); merr != nil {
+		t.Fatalf("PutRestoreMarker: %v", merr)
+	}
+
+	// Deleting the safety snap is refused with the typed sentinel.
+	if derr := rt.DeleteSnapshot(ctx, shareName, safetyID); !errors.Is(derr, models.ErrSnapshotMarkerProtected) {
+		t.Fatalf("DeleteSnapshot(safety) err = %v, want errors.Is(ErrSnapshotMarkerProtected)", derr)
+	}
+	// Deleting the target snap is refused too.
+	if derr := rt.DeleteSnapshot(ctx, shareName, targetID); !errors.Is(derr, models.ErrSnapshotMarkerProtected) {
+		t.Fatalf("DeleteSnapshot(target) err = %v, want errors.Is(ErrSnapshotMarkerProtected)", derr)
+	}
+
+	// Both rows must still exist (deletes refused) — rollback still possible.
+	if _, gerr := rt.store.GetSnapshot(ctx, shareName, safetyID); gerr != nil {
+		t.Fatalf("safety row deleted despite marker protection: %v", gerr)
+	}
+	if _, gerr := rt.store.GetSnapshot(ctx, shareName, targetID); gerr != nil {
+		t.Fatalf("target row deleted despite marker protection: %v", gerr)
+	}
+
+	// Clearing the marker (restore complete) releases protection.
+	if derr := rt.store.DeleteRestoreMarker(ctx, shareName); derr != nil {
+		t.Fatalf("DeleteRestoreMarker: %v", derr)
+	}
+	if derr := rt.DeleteSnapshot(ctx, shareName, safetyID); derr != nil {
+		t.Fatalf("DeleteSnapshot(safety) after marker cleared: %v", derr)
+	}
+}
+
 // TestRuntimeDeleteSnapshot_NotFound asserts ErrSnapshotNotFound from the
 // store propagates verbatim and the on-disk wipe step is NOT attempted.
 func TestRuntimeDeleteSnapshot_NotFound(t *testing.T) {

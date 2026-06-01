@@ -43,6 +43,16 @@ var (
 	// orchestration reaches a terminal state.
 	ErrSnapshotInFlight = errors.New("snapshot operation is in progress")
 
+	// ErrSnapshotMarkerProtected is returned when a delete is attempted on a
+	// snapshot that an in-flight (or crash-interrupted) restore depends on as
+	// its rollback target — i.e. the snapshot is named by the per-share
+	// restore marker as the safety snapshot (or the target snapshot). The
+	// safety snapshot is the sole rollback primitive, so deleting it would
+	// destroy the only recoverable pre-restore state and permanently wedge the
+	// share. Mapped to 409 — the caller may retry once the restore completes
+	// and clears its marker.
+	ErrSnapshotMarkerProtected = errors.New("snapshot is protected by an in-progress restore and cannot be deleted")
+
 	// ErrSnapshotLocalStoreUnsupported is returned when a snapshot is
 	// requested on a share whose local block store has no on-disk root
 	// (the in-memory backend), so the metadata.dump + manifest.hashes
