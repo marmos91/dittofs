@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -79,6 +80,19 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 	// Check sticky bit restriction
 	if err := CheckStickyBitRestriction(ctx, &parent.FileAttr, &file.FileAttr); err != nil {
 		return nil, err
+	}
+
+	// Recycle instead of destroying when the share has trash enabled. Deletes
+	// already inside #recycle, and names matching an exclude glob, fall through
+	// to the permanent delete below.
+	if s.trashPolicy != nil {
+		shareName := shareNameForHandle(parentHandle)
+		if cfg, ok := s.trashPolicy.TrashConfigForShare(shareName); ok && cfg.Enabled {
+			origRel := strings.TrimPrefix(buildPath(parent.Path, name), "/")
+			if !inRecycle(origRel) && !cfg.Excluded(name) {
+				return s.recycleNode(ctx, shareName, parentHandle, name, origRel)
+			}
+		}
 	}
 
 	now := time.Now()
