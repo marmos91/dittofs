@@ -19,6 +19,21 @@ func (s *GORMStore) GetNetgroupByID(ctx context.Context, id string) (*models.Net
 	return getByField[models.Netgroup](s.db, ctx, "id", id, models.ErrNetgroupNotFound, "Members")
 }
 
+// GetNetgroupIDByName resolves a netgroup name to its ID, selecting only the id
+// column and skipping the Members preload that GetNetgroup performs.
+func (s *GORMStore) GetNetgroupIDByName(ctx context.Context, name string) (string, error) {
+	var id string
+	err := s.db.WithContext(ctx).
+		Model(&models.Netgroup{}).
+		Select("id").
+		Where("name = ?", name).
+		First(&id).Error
+	if err != nil {
+		return "", convertNotFoundError(err, models.ErrNetgroupNotFound)
+	}
+	return id, nil
+}
+
 func (s *GORMStore) ListNetgroups(ctx context.Context) ([]*models.Netgroup, error) {
 	return listAll[models.Netgroup](s.db, ctx, "Members")
 }

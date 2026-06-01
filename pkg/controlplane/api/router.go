@@ -220,6 +220,20 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					r.Get("/status", trashHandler.Status)
 				})
 
+				// Per-share NFS adapter config (squash, netgroup association,
+				// auth flavor). Requires NetgroupStore capability for
+				// name<->ID resolution.
+				if ns, ok := cpStore.(store.NetgroupStore); ok {
+					nfsCfgHandler := handlers.NewShareNFSConfigHandler(struct {
+						store.ShareStore
+						store.NetgroupStore
+					}{cpStore, ns}, rt)
+					r.Route("/{name}/adapters/nfs/config", func(r chi.Router) {
+						r.Get("/", nfsCfgHandler.Get)
+						r.Patch("/", nfsCfgHandler.Patch)
+					})
+				}
+
 				// Share permissions
 				r.Get("/{name}/permissions", shareHandler.ListPermissions)
 				r.Put("/{name}/permissions/users/{username}", shareHandler.SetUserPermission)

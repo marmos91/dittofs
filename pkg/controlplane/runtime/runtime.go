@@ -430,6 +430,13 @@ func (r *Runtime) SetShareTrashConfig(name string, cfg shares.TrashSettings) err
 	return r.sharesSvc.SetShareTrashConfig(r.store, name, cfg)
 }
 
+// SetShareNetgroup updates the live netgroup association for a share's NFS
+// export. An empty netgroupName clears the association (allow-all). Takes
+// effect immediately for subsequent CheckNetgroupAccess calls.
+func (r *Runtime) SetShareNetgroup(name, netgroupName string) error {
+	return r.sharesSvc.SetShareNetgroup(name, netgroupName)
+}
+
 // DisableShare sets enabled=false on the share's DB row and runtime
 // registry, then notifies adapters so active sessions drop.
 // Idempotent on already-disabled shares (returns shares.ErrShareAlreadyDisabled
