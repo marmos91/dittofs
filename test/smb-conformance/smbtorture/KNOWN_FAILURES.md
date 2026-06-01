@@ -142,12 +142,6 @@ maximum_allowed works but full computation does not.
 |-----------|----------|--------|-------|
 | smb2.maximum_allowed.maximum_allowed | Access checks | Full maximum allowed computation not implemented | #750 |
 
-### Intermittent / Flaky
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.lease.statopen4 | Leases | Flaky stat-open lease test - passes intermittently | #751 |
-
 ### Character Set (Edge Cases)
 
 Unicode and character set edge cases (partial surrogates, wide-A collision) are
