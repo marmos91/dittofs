@@ -32,6 +32,11 @@ const (
 	rightReadControl uint32 = 0x00020000
 	rightSynchronize uint32 = 0x00100000
 	rightMaxAllowed  uint32 = 0x02000000
+
+	// MS-DTYP §2.4.3 GENERIC_* bits (pre-expansion form a client may send).
+	rightGenericRead    uint32 = 0x80000000
+	rightGenericWrite   uint32 = 0x40000000
+	rightGenericExecute uint32 = 0x20000000
 )
 
 // TestCheckFileAccess_DenyACEOnOwnerDeniesWrite covers smbtorture acls.OWNER /
@@ -697,4 +702,143 @@ func TestCheckFileAccess_ReadAttributesAlwaysGrantedFromParent(t *testing.T) {
 	var storeErr *metadata.StoreError
 	require.ErrorAs(t, err, &storeErr)
 	require.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+}
+
+// createSpecificRightsFile is a helper for the GENERIC_* expansion tests: it
+// creates a file whose DACL grants exactly `mask` to `sid` and nothing else,
+// owned by an unrelated UID so only the DACL (not the POSIX owner fallback)
+// governs access.
+func createSpecificRightsFile(t *testing.T, f *testFixture, name, sid string, mask uint32) *metadata.File {
+	t.Helper()
+	a := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Who:        "sid:" + sid,
+				AccessMask: mask,
+			},
+		},
+	}
+	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, name,
+		&metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o777,
+			UID:  9999, // not the requester
+			GID:  9999,
+			ACL:  a,
+		})
+	require.NoError(t, err)
+	return created
+}
+
+// TestCheckFileAccess_MaximumAllowedPlusGenericReadGranted covers smbtorture
+// smb2.maximum_allowed (max_allowed.c:162). A request of
+// MAXIMUM_ALLOWED | GENERIC_READ against a DACL that grants only the specific
+// READ rights (FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES |
+// READ_CONTROL | SYNCHRONIZE) must be GRANTED with STATUS_OK.
+//
+// Regression guard: before expanding GENERIC_* in `explicit`, the raw
+// GENERIC_READ bit (0x80000000) survived into the subset check while the DACL
+// evaluation produced only specific rights, so effective&explicit could never
+// equal explicit and the open was wrongly denied STATUS_ACCESS_DENIED.
+func TestCheckFileAccess_MaximumAllowedPlusGenericReadGranted(t *testing.T) {
+	f := newTestFixture(t)
+
+	requesterSID := "S-1-5-21-1-2-3-2001"
+	// FILE_GENERIC_READ specific-rights set (MS-DTYP §2.4.3 file mapping).
+	readMask := uint32(acl.ACE4_READ_DATA | acl.ACE4_READ_NAMED_ATTRS |
+		acl.ACE4_READ_ATTRIBUTES | acl.ACE4_READ_ACL | acl.ACE4_SYNCHRONIZE)
+	created := createSpecificRightsFile(t, f, "max_generic_read.txt", requesterSID, readMask)
+
+	authCtx := f.authContext(1001, 1001)
+	authCtx.Identity.SID = strPtr(requesterSID)
+
+	granted, err := f.service.CheckFileAccess(created, authCtx, rightMaxAllowed|rightGenericRead)
+	require.NoError(t, err, "MAXIMUM_ALLOWED|GENERIC_READ against a READ-granting DACL must succeed")
+	require.NotZero(t, granted&acl.ACE4_READ_DATA, "expected READ_DATA in granted mask, got 0x%x", granted)
+	require.Zero(t, granted&uint32(0xF0000000), "granted mask must not retain raw GENERIC_* bits, got 0x%x", granted)
+}
+
+// TestCheckFileAccess_MaximumAllowedPlusGenericWriteGranted is the WRITE
+// symmetric case of the smb2.maximum_allowed fix.
+func TestCheckFileAccess_MaximumAllowedPlusGenericWriteGranted(t *testing.T) {
+	f := newTestFixture(t)
+
+	requesterSID := "S-1-5-21-1-2-3-2001"
+	// FILE_GENERIC_WRITE specific-rights set.
+	writeMask := uint32(acl.ACE4_WRITE_DATA | acl.ACE4_APPEND_DATA |
+		acl.ACE4_WRITE_NAMED_ATTRS | acl.ACE4_WRITE_ATTRIBUTES |
+		acl.ACE4_READ_ACL | acl.ACE4_SYNCHRONIZE)
+	created := createSpecificRightsFile(t, f, "max_generic_write.txt", requesterSID, writeMask)
+
+	authCtx := f.authContext(1001, 1001)
+	authCtx.Identity.SID = strPtr(requesterSID)
+
+	granted, err := f.service.CheckFileAccess(created, authCtx, rightMaxAllowed|rightGenericWrite)
+	require.NoError(t, err, "MAXIMUM_ALLOWED|GENERIC_WRITE against a WRITE-granting DACL must succeed")
+	require.NotZero(t, granted&acl.ACE4_WRITE_DATA, "expected WRITE_DATA in granted mask, got 0x%x", granted)
+	require.Zero(t, granted&uint32(0xF0000000), "granted mask must not retain raw GENERIC_* bits, got 0x%x", granted)
+}
+
+// TestCheckFileAccess_MaximumAllowedPlusGenericExecuteGranted is the EXECUTE
+// symmetric case of the smb2.maximum_allowed fix.
+func TestCheckFileAccess_MaximumAllowedPlusGenericExecuteGranted(t *testing.T) {
+	f := newTestFixture(t)
+
+	requesterSID := "S-1-5-21-1-2-3-2001"
+	// FILE_GENERIC_EXECUTE specific-rights set.
+	execMask := uint32(acl.ACE4_READ_ATTRIBUTES | acl.ACE4_EXECUTE |
+		acl.ACE4_READ_ACL | acl.ACE4_SYNCHRONIZE)
+	created := createSpecificRightsFile(t, f, "max_generic_exec.txt", requesterSID, execMask)
+
+	authCtx := f.authContext(1001, 1001)
+	authCtx.Identity.SID = strPtr(requesterSID)
+
+	granted, err := f.service.CheckFileAccess(created, authCtx, rightMaxAllowed|rightGenericExecute)
+	require.NoError(t, err, "MAXIMUM_ALLOWED|GENERIC_EXECUTE against an EXECUTE-granting DACL must succeed")
+	require.NotZero(t, granted&acl.ACE4_EXECUTE, "expected EXECUTE in granted mask, got 0x%x", granted)
+	require.Zero(t, granted&uint32(0xF0000000), "granted mask must not retain raw GENERIC_* bits, got 0x%x", granted)
+}
+
+// TestCheckFileAccess_MaximumAllowedPlusGenericReadDeniedTrueControl is the
+// true-deny control for the GENERIC_* expansion fix: GENERIC_READ expands to a
+// set that includes specific READ rights, but the DACL here grants only
+// WRITE_DATA. The expanded explicit READ bits are not in the DACL, so the open
+// MUST still be denied — proving the expansion does not blanket-grant.
+func TestCheckFileAccess_MaximumAllowedPlusGenericReadDeniedTrueControl(t *testing.T) {
+	f := newTestFixture(t)
+
+	requesterSID := "S-1-5-21-1-2-3-2001"
+	// DACL grants ONLY WRITE_DATA — none of the GENERIC_READ specific rights
+	// (other than the always-granted READ_ATTRIBUTES from the parent).
+	created := createSpecificRightsFile(t, f, "max_generic_read_deny.txt", requesterSID, acl.ACE4_WRITE_DATA)
+
+	authCtx := f.authContext(1001, 1001)
+	authCtx.Identity.SID = strPtr(requesterSID)
+
+	_, err := f.service.CheckFileAccess(created, authCtx, rightMaxAllowed|rightGenericRead)
+	require.Error(t, err, "MAXIMUM_ALLOWED|GENERIC_READ against a WRITE-only DACL must deny")
+	var storeErr *metadata.StoreError
+	require.ErrorAs(t, err, &storeErr)
+	require.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+}
+
+// TestCheckFileAccess_StrictGenericReadGranted exercises the strict (non-MAX)
+// branch: a bare GENERIC_READ request (no MAXIMUM_ALLOWED) against a
+// READ-granting DACL must succeed once the generic bit is expanded.
+func TestCheckFileAccess_StrictGenericReadGranted(t *testing.T) {
+	f := newTestFixture(t)
+
+	requesterSID := "S-1-5-21-1-2-3-2001"
+	readMask := uint32(acl.ACE4_READ_DATA | acl.ACE4_READ_NAMED_ATTRS |
+		acl.ACE4_READ_ATTRIBUTES | acl.ACE4_READ_ACL | acl.ACE4_SYNCHRONIZE)
+	created := createSpecificRightsFile(t, f, "strict_generic_read.txt", requesterSID, readMask)
+
+	authCtx := f.authContext(1001, 1001)
+	authCtx.Identity.SID = strPtr(requesterSID)
+
+	granted, err := f.service.CheckFileAccess(created, authCtx, rightGenericRead)
+	require.NoError(t, err, "GENERIC_READ against a READ-granting DACL must succeed in strict mode")
+	require.NotZero(t, granted&acl.ACE4_READ_DATA, "expected READ_DATA in granted mask, got 0x%x", granted)
+	require.Zero(t, granted&uint32(0xF0000000), "granted mask must not retain raw GENERIC_* bits, got 0x%x", granted)
 }

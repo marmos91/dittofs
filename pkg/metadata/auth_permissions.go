@@ -671,8 +671,9 @@ const (
 // parent's FILE_DELETE_CHILD can override a DELETE denial on the file's own
 // DACL — see that function's documentation for the spec citation.
 //
-// GENERIC_*, OWNER_RIGHTS, and ACCESSBASED enumeration are intentionally
-// out of scope here — those are tracked separately under #530/#531/#532.
+// GENERIC_* bits in desiredAccess are expanded to their file-object-specific
+// rights before evaluation (see CheckFileAccessWithParent). OWNER_RIGHTS and
+// ACCESSBASED enumeration remain out of scope here — tracked under #531/#532.
 func (s *MetadataService) CheckFileAccess(file *File, authCtx *AuthContext, desiredAccess uint32) (uint32, error) {
 	return s.CheckFileAccessWithParent(file, nil, authCtx, desiredAccess)
 }
@@ -701,7 +702,16 @@ func (s *MetadataService) CheckFileAccess(file *File, authCtx *AuthContext, desi
 // When parent is nil, behavior is identical to CheckFileAccess.
 func (s *MetadataService) CheckFileAccessWithParent(file *File, parent *File, authCtx *AuthContext, desiredAccess uint32) (uint32, error) {
 	maximumAllowed := desiredAccess&accessMaskMaximumAllowed != 0
-	explicit := desiredAccess &^ accessMaskMaximumAllowed
+	// Expand MS-DTYP §2.4.3 GENERIC_* bits to their file-object-specific
+	// rights before the subset checks below (MS-DTYP §2.5.3 / MS-FSA
+	// §2.1.5.1.2.1). Without this, a request such as MAXIMUM_ALLOWED |
+	// GENERIC_READ leaves the raw GENERIC_READ bit (0x80000000) in `explicit`
+	// while the DACL evaluation produces only the specific READ rights — the
+	// `effective&explicit == explicit` / `granted&explicit == explicit`
+	// subset checks could then never be satisfied, denying an open the DACL
+	// actually permits (smb2.maximum_allowed). ExpandGenericMask strips the
+	// generic bits and leaves MAXIMUM_ALLOWED untouched.
+	explicit := acl.ExpandGenericMask(desiredAccess &^ accessMaskMaximumAllowed)
 
 	// Root bypass: identical semantics to computeMaximalAccess and
 	// evaluateACLPermissions. UID 0 gets everything; MAXIMUM_ALLOWED resolves
