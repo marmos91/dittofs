@@ -861,9 +861,9 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			// A stat-open-only, non-destructive CREATE must not break an
 			// existing holder when it requests its own lease — the same
 			// carve-out breakAndMaybeParkCreate applies to the CREATE-layer
-			// break (create_post_break.go ~L253). Routing the lease grant
-			// through the break-suppressing variant closes the timing window
-			// that produced the intermittent break in smb2.lease.statopen4 (#751).
+			// break. Routing the lease grant through the break-suppressing
+			// variant closes the timing window that produced the intermittent
+			// break in smb2.lease.statopen4 (#751).
 			statOpenLease := isStatOnlyOpen(req.DesiredAccess) &&
 				!isDestructiveDisposition(req.CreateDisposition)
 			leaseResponse, err = ProcessLeaseCreateContext(

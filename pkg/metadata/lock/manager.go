@@ -1290,7 +1290,7 @@ func (lm *Manager) RequestLeaseAsOplock(ctx context.Context, fileHandle FileHand
 
 // RequestLeaseStatOpen is the stat-open variant of RequestLease. The SMB
 // adapter calls this when a CREATE's DesiredAccess is stat-open-only
-// (FILE_READ_ATTRIBUTES / WRITE_ATTRIBUTES / READ_CONTROL / SYNCHRONIZE) and
+// (FILE_READ_ATTRIBUTES / FILE_WRITE_ATTRIBUTES / READ_CONTROL / SYNCHRONIZE) and
 // the disposition is non-destructive. The grant proceeds normally except that
 // a cross-key conflict with an existing holder MUST NOT dispatch a break: a
 // stat-opener caches attributes alongside existing holders without forcing

@@ -246,7 +246,7 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 //
 // `suppressConflictBreak` carves out the stat-open case (MS-SMB2 §3.3.5.9.8 /
 // Samba `is_lease_stat_open` in source3/smbd/open.c). A stat-open requester
-// (FILE_READ_ATTRIBUTES / WRITE_ATTRIBUTES / READ_CONTROL / SYNCHRONIZE only)
+// (FILE_READ_ATTRIBUTES / FILE_WRITE_ATTRIBUTES / READ_CONTROL / SYNCHRONIZE only)
 // wants to cache attributes alongside existing holders without forcing them to
 // drop their caches — so a cross-key conflict must NOT dispatch a break against
 // the existing holder. The stat-opener instead receives the best state it can

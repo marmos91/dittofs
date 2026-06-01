@@ -246,7 +246,7 @@ func TestRequestLease_CrossKeyConflict(t *testing.T) {
 
 // TestRequestLeaseStatOpen_NoBreakOnCrossKeyConflict pins the #751
 // smb2.lease.statopen4 fix. A stat-open requester (FILE_READ_ATTRIBUTES /
-// WRITE_ATTRIBUTES / READ_CONTROL / SYNCHRONIZE only) requesting its own lease
+// FILE_WRITE_ATTRIBUTES / READ_CONTROL / SYNCHRONIZE only) requesting its own lease
 // must NOT break an existing holder, even when OpLocksConflict would otherwise
 // report a conflict (existing has Write, requester wants Read). The stat-opener
 // receives the best coexisting state instead.
@@ -306,8 +306,10 @@ func TestRequestLeaseStatOpen_NoBreakOnCrossKeyConflict(t *testing.T) {
 	// since the holder keeps Write, Read caching cannot be granted, so the
 	// stat-opener gets None — but crucially WITHOUT having broken the holder.
 	// (The observable contract statopen4 asserts is CHECK_NO_BREAK, verified
-	// by breakCount==0 above; the grant value is secondary.)
-	t.Logf("stat-open grant against RWH holder = %s", LeaseStateToString(state))
+	// by breakCount==0 above; the grant value is pinned here as a guard against
+	// accidentally granting R/RH without a break.)
+	assert.Equal(t, LeaseStateNone, state,
+		"stat-open against an RWH holder must grant None (no Read caching while the holder keeps Write), without breaking the holder")
 }
 
 // TestRequestLeaseStatOpen_CoexistsWithReadHandleHolder pins the positive case:
