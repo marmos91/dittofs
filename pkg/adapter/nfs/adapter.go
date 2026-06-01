@@ -476,6 +476,15 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	// for thread-safe reads. Settings are consumed here at startup and on
 	// each new connection (grandfathering per locked decision).
 	s.applyNFSSettings(rt)
+
+	// Boot/initial-recovery wiring is complete: boot shares already in
+	// lock-manager grace have been caught up above and the durable v4 reclaim
+	// roster (LoadClientRecovery) has been armed. Latch the coordinator into the
+	// serving phase so a subsequent RUNTIME AddShare does not arm server-wide
+	// NFSv4 reboot grace (round-2 #7 H-1): a runtime-added share has no
+	// pre-existing v4 clients to reclaim, and arming grace with the LIVE client
+	// set would freeze every connected client's OPEN/LOCK for the grace window.
+	graceCoord.MarkServing()
 }
 
 // Serve starts the NFS server and blocks until the context is cancelled

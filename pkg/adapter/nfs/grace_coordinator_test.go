@@ -125,6 +125,67 @@ func TestGraceCoordinator_EndUnderflowIgnored(t *testing.T) {
 	}
 }
 
+// TestGraceCoordinator_RuntimeAddShareDoesNotArmV4Grace is the round-2 #7 H-1
+// regression. Once the server is serving (MarkServing latched) with a LIVE
+// confirmed v4 client, a routine runtime AddShare drives the new share's
+// lock-manager into grace and fires OnLockGraceStart. This must NOT arm the
+// global v4 reboot-grace machine: a runtime-added share has no pre-existing v4
+// clients to reclaim, and arming grace would freeze every connected client's
+// OPEN(CLAIM_NULL)/LOCK with NFS4ERR_GRACE. On the unfixed code OnLockGraceStart
+// called StartGracePeriod with GetConfirmedClientIDs() (the live set), arming
+// grace; this test fails there.
+func TestGraceCoordinator_RuntimeAddShareDoesNotArmV4Grace(t *testing.T) {
+	sm := newConfirmedSM(t)
+	c := &nfsGraceCoordinator{sm: sm}
+
+	// Server has finished boot/recovery and is serving live clients.
+	c.MarkServing()
+
+	// A routine runtime AddShare: the fresh share's lock-manager enters grace
+	// (unclean zero-value shutdown marker) and couples through the coordinator.
+	c.OnLockGraceStart([]string{"nlm-runtime"})
+
+	if sm.IsInGrace() {
+		t.Fatal("runtime AddShare armed server-wide NFSv4 reboot grace (self-inflicted freeze)")
+	}
+	if err := sm.CheckGraceForNewState(); err != nil {
+		t.Fatalf("OPEN(CLAIM_NULL)/LOCK rejected with NFS4ERR_GRACE after runtime AddShare: %v", err)
+	}
+
+	// The refcount must still be maintained so OnLockGraceEnd stays balanced and
+	// does not underflow.
+	c.OnLockGraceEnd()
+	if sm.IsInGrace() {
+		t.Fatal("v4 grace must remain off after balanced runtime grace-end")
+	}
+}
+
+// TestGraceCoordinator_BootArmsGraceBeforeServing asserts the LEGITIMATE boot
+// case is preserved: before MarkServing (boot/initial-recovery phase), a share
+// entering lock-manager grace DOES arm the global v4 reboot grace so pre-restart
+// clients can reclaim (CLAIM_PREVIOUS). This is the catch-up path the adapter
+// runs at startup for boot shares already in grace.
+func TestGraceCoordinator_BootArmsGraceBeforeServing(t *testing.T) {
+	sm := newConfirmedSM(t)
+	c := &nfsGraceCoordinator{sm: sm}
+
+	// Boot phase: MarkServing has NOT been called yet.
+	c.OnLockGraceStart([]string{"nlm-boot"})
+
+	if !sm.IsInGrace() {
+		t.Fatal("boot-time share grace must arm v4 reboot grace for reclaim")
+	}
+	if err := sm.CheckGraceForNewState(); err == nil {
+		t.Fatal("boot grace must reject new state (NFS4ERR_GRACE) so prior owners reclaim first")
+	}
+
+	// Coordinator owns this window, so the last grace-end lifts v4 grace.
+	c.OnLockGraceEnd()
+	if sm.IsInGrace() {
+		t.Fatal("coordinator-owned boot grace must lift at refcount zero")
+	}
+}
+
 // TestGraceCoordinator_NilStateManagerNoPanic confirms the coordinator is a
 // safe no-op when no StateManager is wired (defensive).
 func TestGraceCoordinator_NilStateManagerNoPanic(t *testing.T) {
