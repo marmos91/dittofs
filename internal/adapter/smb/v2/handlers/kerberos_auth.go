@@ -340,7 +340,9 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 
 	spnegoResp, err := auth.BuildAcceptCompleteWithMIC(responseOID, apRepToken, serverMIC)
 	if err != nil {
-		spnegoResp, _ = auth.BuildAcceptComplete(responseOID, nil)
+		// Keep the AP-REP token on fallback (only the MIC is dropped) so
+		// Kerberos mutual authentication still completes.
+		spnegoResp, _ = auth.BuildAcceptComplete(responseOID, apRepToken)
 	}
 
 	// Binding response matches the existing session's encrypt-data state per

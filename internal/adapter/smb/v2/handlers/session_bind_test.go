@@ -285,3 +285,32 @@ func TestSessionSetup_Bind_InvalidWithoutNTLM(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionSetup_BindRoutesKerberosToken verifies that a SPNEGO/Kerberos
+// AP-REQ presented on a binding SESSION_SETUP is routed to the Kerberos bind
+// path (completeKerberosBind), not the NTLM negotiate handshake that rejected
+// any non-NTLM token before #686. With no KerberosService configured the krb
+// path returns STATUS_LOGON_FAILURE — distinct from the NTLM-path
+// STATUS_INVALID_PARAMETER, which is what proves the routing. The full
+// authenticated bind and the identity-mismatch ACCESS_DENIED path require a
+// live KDC and are covered by smbtorture smb2.session.bind1/bind2/bind_invalid_auth.
+func TestSessionSetup_BindRoutesKerberosToken(t *testing.T) {
+	h := NewHandler()
+	// No KerberosService configured -> completeKerberosBind returns logon failure.
+	sess := h.CreateSession("127.0.0.1:1", false, "alice", "WORKGROUP")
+	ctx := newTestContext(sess.SessionID)
+	ctx.ConnCryptoState = &mockCryptoState{dialect: types.Dialect0311}
+
+	dummyAPReq := []byte{0x30, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05}
+	body := buildSessionSetupRequestBody(wrapKerberosInSPNEGO(dummyAPReq))
+	body[sessionSetupFlagsOffset] = SMB2_SESSION_FLAG_BINDING
+	binary.LittleEndian.PutUint64(body[16:24], 0)
+
+	result, err := h.SessionSetup(ctx, body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != types.StatusLogonFailure {
+		t.Fatalf("status=0x%x, want StatusLogonFailure (Kerberos bind routing; NTLM path would return InvalidParameter)", result.Status)
+	}
+}
