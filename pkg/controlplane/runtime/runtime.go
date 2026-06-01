@@ -114,8 +114,6 @@ type Runtime struct {
 	runtimeCtx    context.Context
 	runtimeCancel context.CancelFunc
 
-	snapshotCfg SnapshotDefaults
-
 	identityChangeCallbacks []func()
 
 	// statusCheckers is the lazy per-entity cached health-checker
@@ -140,7 +138,6 @@ func New(s store.Store) *Runtime {
 		lifecycleSvc:     lifecycle.New(DefaultShutdownTimeout),
 		identitySvc:      identity.New(),
 		statusCheckers:   newCheckerCache(StatusCacheTTL),
-		snapshotCfg:      SnapshotDefaults{},
 	}
 
 	// Long-lived ctx for snapshot orchestration goroutines (D-23-17).
@@ -775,22 +772,6 @@ func (r *Runtime) SetNFSClientProvider(p any) { r.SetAdapterProvider("nfs", p) }
 
 // NFSClientProvider is deprecated; use GetAdapterProvider("nfs").
 func (r *Runtime) NFSClientProvider() any { return r.GetAdapterProvider("nfs") }
-
-// --- Snapshot Defaults ---
-
-// SnapshotDefaults captures operator-configured knobs the Runtime threads
-// into snapshot orchestration. cmd/dfs/start.go calls SetSnapshotDefaults
-// from the parsed config at boot. Currently empty; future operator knobs
-// will be added here.
-type SnapshotDefaults struct{}
-
-// SetSnapshotDefaults sets the operator-configured snapshot knobs the
-// runtime threads into Runtime.CreateSnapshot orchestration.
-func (r *Runtime) SetSnapshotDefaults(d SnapshotDefaults) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.snapshotCfg = d
-}
 
 // snapInFlight tracks the per-share orchestration goroutines launched
 // by Runtime.CreateSnapshot. See pkg/controlplane/runtime/snapshot.go

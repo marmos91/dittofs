@@ -39,6 +39,12 @@ func runSchema(cmd *cobra.Command, args []string) error {
 	reflector := jsonschema.Reflector{
 		AllowAdditionalProperties: false,
 		DoNotReference:            true,
+		// The Config structs carry only mapstructure/yaml tags (no json
+		// tags). Without this, the reflector falls back to Go field names
+		// (PascalCase) and the emitted schema rejects every valid
+		// lowercase-keyed config.yaml. Drive field names from the yaml
+		// tags so the schema matches the real config namespace.
+		FieldNameTag: "yaml",
 	}
 
 	schema := reflector.Reflect(&config.Config{})

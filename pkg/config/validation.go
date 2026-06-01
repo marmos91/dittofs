@@ -23,11 +23,15 @@ func Validate(cfg *Config) error {
 		return formatValidationError(err)
 	}
 
+	if err := cfg.Database.Validate(); err != nil {
+		return err
+	}
+
 	if err := cfg.Blockstore.Validate(); err != nil {
 		return err
 	}
 
-	if err := cfg.Syncer.Validate(); err != nil {
+	if err := cfg.Kerberos.Validate(); err != nil {
 		return err
 	}
 
