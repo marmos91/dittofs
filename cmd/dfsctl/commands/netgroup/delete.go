@@ -50,7 +50,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 			if apiErr, ok := err.(*apiclient.APIError); ok && apiErr.IsConflict() {
 				msg := fmt.Sprintf("failed to delete netgroup: %s", apiErr.Error())
 				if apiErr.Hint != "" {
-					msg += fmt.Sprintf("\n  Shares using this netgroup: %s", strings.TrimSpace(apiErr.Hint))
+					msg += fmt.Sprintf("\n  Hint: %s", strings.TrimSpace(apiErr.Hint))
 				}
 				return fmt.Errorf("%s", msg)
 			}
