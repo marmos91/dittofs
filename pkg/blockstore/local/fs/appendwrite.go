@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -599,14 +600,18 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 //
 // On Windows we retry with a short backoff so the unlink lands once the
 // kernel drains the closed handle; on POSIX the first os.Remove is
-// authoritative and the loop never iterates. The retry budget is small and
-// bounded — a handle the OS will never release indicates a genuine error
-// (another live handle, EACCES, EROFS), which we surface after the last
-// attempt for the caller to log and for recovery's boot-time orphan sweep
-// to reconcile.
+// authoritative and the loop never iterates. The retry is gated on a
+// transient ERROR_SHARING_VIOLATION (32) / ERROR_LOCK_VIOLATION (33) — a
+// genuine non-transient error (EACCES, EROFS, invalid path) is surfaced
+// immediately rather than stalling the delete path for ~500ms first. After
+// the bounded retry budget a still-held handle is returned for the caller to
+// log and for recovery's boot-time orphan sweep to reconcile.
 func removeLogFile(path string) error {
 	err := os.Remove(path)
 	if runtime.GOOS != "windows" || err == nil || errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if !isTransientUnlinkError(err) {
 		return err
 	}
 	// Windows-only: back off and retry the unlink while the closed handle
@@ -618,8 +623,27 @@ func removeLogFile(path string) error {
 		if err == nil || errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		if !isTransientUnlinkError(err) {
+			return err
+		}
 	}
 	return err
+}
+
+// isTransientUnlinkError reports whether err is a Windows
+// ERROR_SHARING_VIOLATION (32) or ERROR_LOCK_VIOLATION (33) — the transient
+// "file in use" condition a just-closed handle produces before the kernel
+// drains it. On non-Windows it is always false so the same numeric errnos on
+// Unix are never misread.
+func isTransientUnlinkError(err error) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return errno == 32 || errno == 33
+	}
+	return false
 }
 
 // TruncateAppendLog records a truncation boundary for payloadID.
