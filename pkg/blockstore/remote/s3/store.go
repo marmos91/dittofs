@@ -344,6 +344,18 @@ func (s *Store) GetRange(ctx context.Context, hash blockstore.ContentHash, offse
 		return nil, err
 	}
 
+	// Validate bounds before issuing the range request so callers get a
+	// stable sentinel instead of an opaque S3 protocol error from a
+	// malformed Range header. A past-EOF offset cannot be detected here
+	// without a HEAD, so S3 surfaces its native 416 for that case (the
+	// conformance suite only requires "any error" for offset >= EOF).
+	if offset < 0 {
+		return nil, blockstore.ErrInvalidOffset
+	}
+	if length <= 0 {
+		return nil, blockstore.ErrInvalidSize
+	}
+
 	key := s.hashKey(hash)
 	rangeHeader := fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)
 

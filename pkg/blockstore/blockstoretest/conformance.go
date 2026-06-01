@@ -76,6 +76,7 @@ func BlockStoreConformance(t *testing.T, factory Factory) {
 	t.Run("Put_Concurrent_SameHash", func(t *testing.T) { testPutConcurrent(t, factory) })
 	t.Run("Put_ZeroByte", func(t *testing.T) { testPutZeroByte(t, factory) })
 	t.Run("GetRange_PastEOF", func(t *testing.T) { testGetRangePastEOF(t, factory) })
+	t.Run("GetRange_InvalidBounds", func(t *testing.T) { testGetRangeInvalidBounds(t, factory) })
 	t.Run("Concurrent_Put_Walk_NoDuplicates", func(t *testing.T) { testConcurrentPutWalkNoDuplicates(t, factory) })
 	t.Run("Put_WrongHash_NoVerify", func(t *testing.T) { testPutWrongHashNoVerify(t, factory) })
 }
@@ -486,6 +487,39 @@ func testGetRangePastEOF(t *testing.T, factory Factory) {
 	want := stored[8:]
 	if !bytes.Equal(got, want) {
 		t.Fatalf("GetRange partial-past-EOF returned %q, want %q", got, want)
+	}
+}
+
+// testGetRangeInvalidBounds pins the malformed-argument sentinels on the
+// BlockStore.GetRange contract: a negative offset MUST surface
+// blockstore.ErrInvalidOffset and a non-positive length MUST surface
+// blockstore.ErrInvalidSize. Unlike the offset-past-EOF case (which the
+// godoc permits backends to report with any error), these two arguments
+// are unconditionally invalid regardless of object size, so every
+// backend can detect them before touching storage and report the exact
+// sentinel via errors.Is.
+func testGetRangeInvalidBounds(t *testing.T, factory Factory) {
+	bs, cleanup := factory(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	stored := []byte("0123456789abcdef") // exactly 16 bytes
+	h := blake3Sum(stored)
+	if err := bs.Put(ctx, h, stored); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	// Negative offset is ErrInvalidOffset.
+	if _, err := bs.GetRange(ctx, h, -1, 4); !errors.Is(err, blockstore.ErrInvalidOffset) {
+		t.Fatalf("GetRange offset=-1: want ErrInvalidOffset, got %v", err)
+	}
+
+	// Zero and negative length are ErrInvalidSize.
+	if _, err := bs.GetRange(ctx, h, 0, 0); !errors.Is(err, blockstore.ErrInvalidSize) {
+		t.Fatalf("GetRange length=0: want ErrInvalidSize, got %v", err)
+	}
+	if _, err := bs.GetRange(ctx, h, 0, -4); !errors.Is(err, blockstore.ErrInvalidSize) {
+		t.Fatalf("GetRange length=-4: want ErrInvalidSize, got %v", err)
 	}
 }
 
