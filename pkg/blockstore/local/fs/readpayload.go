@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"sort"
 
@@ -93,27 +92,65 @@ func allCovered(covered []bool) bool {
 	return true
 }
 
-// replayLogIntoDest opens the payload's append log (if any) and replays
-// every record, copying the portions that intersect [reqStart, reqEnd)
-// into dest. Records are applied in log order so later writes at the
-// same offset overwrite earlier ones.
+// replayLogIntoDest fills the portions of dest that intersect
+// [reqStart, reqEnd) from the payload's in-flight append-log records.
 //
-// Returns nil when no log exists for payloadID (treated as "nothing to
-// fill from the log") OR after a successful replay. Returns a non-nil
-// error only for genuine I/O failures.
+// Instead of replaying the FULL on-disk log (O(log-size) per read), it
+// consults the per-payload logIndex to translate the requested file-offset
+// window into the exact set of record frames that intersect it, then preads
+// each one directly via readRecordAt. The index is trimmed at the
+// compaction fence (logindex.go), so it holds only records NOT yet rolled
+// into CAS — exactly the records that live ONLY in the log. Bytes whose
+// records have already been consumed by the rollup are served from the CAS
+// manifest in step 2 of ReadPayloadAt.
+//
+// Last-write-wins is preserved: EntriesForInterval returns entries in
+// logPos (== arrival) order, and we copy each intersecting record into dest
+// unconditionally in that order, so a later overwrite at the same offset
+// supersedes an earlier record exactly as the previous full-log replay did.
+//
+// Concurrency: the logIndex entries carry ABSOLUTE log-byte positions
+// (logPos). A concurrent rollup compaction (compaction.go) atomically
+// rewrites the on-disk log AND rebases idx.entries[].logPos under the
+// per-file mutex. To read a logPos and pread at it safely we therefore hold
+// the SAME per-file mutex across both the index lookup and the preads — a
+// snapshot taken without the lock could pread a stale (pre-rebase) logPos
+// and decode a garbage frame. readRecordAt cross-checks the frame's
+// declared payload_len and file_offset against the index entry, so any
+// residual divergence surfaces as a hard error rather than wrong bytes.
+//
+// Returns nil when no log/index exists for payloadID (treated as "nothing
+// to fill from the log") OR after a successful fill. Returns a non-nil
+// error only for genuine I/O failures or log/index divergence.
 func (bc *FSStore) replayLogIntoDest(_ context.Context, payloadID string, dest []byte, reqStart, reqEnd uint64, covered []bool) error {
 	bc.logsMu.RLock()
 	lf := bc.logFDs[payloadID]
 	mu := bc.logLocks[payloadID]
+	idx := bc.logIndices[payloadID]
 	bc.logsMu.RUnlock()
-	if lf == nil || mu == nil {
+	if lf == nil || mu == nil || idx == nil {
+		return nil
+	}
+
+	// Hold the per-file mutex across the index lookup AND every pread so a
+	// concurrent rollup compaction cannot rebase idx.entries[].logPos (and
+	// rewrite the on-disk log) underneath us. AppendWrite also holds this
+	// mutex, so we observe a consistent log/index pair.
+	mu.Lock()
+	defer mu.Unlock()
+
+	if reqEnd <= reqStart {
+		return nil
+	}
+	entries := idx.EntriesForInterval(reqStart, reqEnd-reqStart, nil)
+	if len(entries) == 0 {
 		return nil
 	}
 
 	// Open a separate read-only fd so we don't disturb the append fd's
-	// EOF position (writers seek to EOF on getOrCreateLog and we must
-	// not race the append cursor). The path is captured at logFile
-	// construction time and stable across reopens.
+	// EOF position. The path is captured at logFile construction time and
+	// stable across reopens; compaction renames a fresh file into place
+	// under the mutex we hold, so the path still resolves.
 	rf, err := os.Open(lf.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -124,36 +161,41 @@ func (bc *FSStore) replayLogIntoDest(_ context.Context, payloadID string, dest [
 	}
 	defer func() { _ = rf.Close() }()
 
-	// We do NOT take the per-file mutex here. Writers append at EOF and
-	// fsync each record before returning; the on-disk log is monotonic
-	// (records only grow upward) so a concurrent reader sees either a
-	// committed record or hits EOF/short-read mid-frame. readRecord
-	// returns (_, _, false, nil) on torn-tail / EOF, terminating the
-	// loop cleanly. The post-record CRC catches torn writes that
-	// reached the platter but were not yet fsynced — those are skipped
-	// as if the record did not exist (consistent with what the writer
-	// thinks: a fsync that has not returned has not yet acknowledged
-	// the write).
-
-	// Seek past the 64-byte header.
-	if _, err := rf.Seek(int64(logHeaderSize), io.SeekStart); err != nil {
-		return fmt.Errorf("ReadPayloadAt: seek past header: %w", err)
-	}
-
-	for {
-		recOff, payload, ok, rerr := readRecord(rf)
-		if rerr != nil {
-			return fmt.Errorf("ReadPayloadAt: readRecord: %w", rerr)
+	for _, e := range entries {
+		// A single AppendWrite may legitimately exceed maxRecordPayload (the
+		// writer's only ceiling is uint32; the engine appends whole writes —
+		// e.g. a 32 MiB seed write lands as one frame). readRecordAt and the
+		// sequential readRecord both REJECT frames above maxRecordPayload as a
+		// torn/hostile-length DoS guard, so neither can decode such a record.
+		// The pre-index full-log replay used readRecord, which skipped these
+		// frames and let the byte coverage fall through to the CAS manifest /
+		// remote-fetch miss path. We preserve that EXACT behavior: skip the
+		// over-cap record rather than erroring. The bytes stay uncovered and
+		// the caller resolves them downstream — byte-identical to the prior
+		// replay. This is the case whose mishandling (a hard error) broke the
+		// previous attempt's mixed-rw read of the 32 MiB seed at logPos=64.
+		if e.payloadLen > maxRecordPayload {
+			continue
 		}
-		if !ok {
-			break
+		recOff, payload, rerr := readRecordAt(rf, e.logPos, e.payloadLen)
+		if rerr != nil {
+			// A CRC mismatch or pread failure at a record the logIndex
+			// claims is valid implies log-fd corruption or a logIndex/log
+			// divergence bug. Surface it rather than silently serving wrong
+			// bytes — a wrong read is data corruption.
+			return fmt.Errorf("ReadPayloadAt: readRecordAt(logPos=%d): %w", e.logPos, rerr)
+		}
+		if recOff != e.fileOff {
+			return fmt.Errorf("ReadPayloadAt: logIndex fileOff divergence at logPos=%d (indexed=%d frame=%d)",
+				e.logPos, e.fileOff, recOff)
 		}
 		recEnd := recOff + uint64(len(payload))
-		// Skip records that do not intersect the requested window.
+		// EntriesForInterval already filtered to intersecting records, but
+		// clamp defensively in case a record's tail extends past reqEnd or
+		// its head sits below reqStart.
 		if recEnd <= reqStart || recOff >= reqEnd {
 			continue
 		}
-		// Compute intersection [hi, lo) and copy into dest.
 		copyStart := recOff
 		if copyStart < reqStart {
 			copyStart = reqStart
@@ -257,9 +299,21 @@ func (bc *FSStore) fillFromCASManifest(ctx context.Context, payloadID string, de
 		destIdx := copyStart - reqStart
 		srcIdx := copyStart - chunkStart
 		n := copyEnd - copyStart
-		copy(dest[destIdx:destIdx+n], data[srcIdx:srcIdx+n])
-		for i := destIdx; i < destIdx+n; i++ {
-			covered[i] = true
+		// Fill ONLY bytes the append-log step (step 1) did not already
+		// cover. The log holds the freshest, not-yet-rolled-up overwrites;
+		// a CAS chunk may still span a file region whose latest bytes live
+		// only in the log (a partial in-place overwrite of a rolled-up
+		// extent). Stamping the chunk over a log-covered byte would discard
+		// that overwrite — the data-loss class the partial-overwrite
+		// regression test guards. Per-byte gating preserves last-write-wins
+		// regardless of how the read window straddles the chunk boundary.
+		for k := uint64(0); k < n; k++ {
+			di := destIdx + k
+			if covered[di] {
+				continue
+			}
+			dest[di] = data[srcIdx+k]
+			covered[di] = true
 		}
 		if allCovered(covered) {
 			return nil
