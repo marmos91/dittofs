@@ -1,11 +1,31 @@
 package handlers
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/callback"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/types"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
+
+// notifyDispatcher sends a single SM_NOTIFY callback to one local monitor.
+//
+// It is satisfied by *callback.Client. The handler depends on this narrow
+// interface (rather than the concrete client) so the relay can be exercised
+// without real sockets in tests. A nil dispatcher disables relay: the security
+// gates still run, but no callback is sent.
+type notifyDispatcher interface {
+	Send(
+		ctx context.Context,
+		addr string,
+		status *types.Status,
+		proc uint32,
+		prog uint32,
+		vers uint32,
+	) error
+}
 
 // DefaultMaxClients is the default maximum number of monitored clients.
 const DefaultMaxClients = 10000
@@ -45,6 +65,11 @@ type Handler struct {
 	// SM_MON returns STAT_FAIL if this limit is reached.
 	maxClients int
 
+	// dispatcher relays inbound SM_NOTIFY to local monitors. If nil, the
+	// relay is disabled (security gates still run) — useful for tests and for
+	// deployments that do not consume inbound notifications.
+	dispatcher notifyDispatcher
+
 	// peerStateMu guards peerState.
 	peerStateMu sync.Mutex
 
@@ -80,6 +105,11 @@ type HandlerConfig struct {
 	// MaxClients limits monitored clients (default: 10000).
 	// SM_MON returns STAT_FAIL when this limit is exceeded.
 	MaxClients int
+
+	// Dispatcher relays inbound SM_NOTIFY callbacks to local monitors
+	// (optional). If nil, inbound NOTIFY is validated but not relayed.
+	// Normally a *callback.Client.
+	Dispatcher notifyDispatcher
 }
 
 // NewHandler creates a new NSM handler.
@@ -101,12 +131,18 @@ func NewHandler(config HandlerConfig) *Handler {
 	if config.InitialState == 0 {
 		config.InitialState = 1 // Default: odd = up
 	}
+	if config.Dispatcher == nil {
+		// Default to a real callback client so the inbound NOTIFY relay works
+		// out of the box. Tests inject a fake dispatcher via config.
+		config.Dispatcher = callback.NewClient(0)
+	}
 
 	h := &Handler{
 		tracker:     config.Tracker,
 		clientStore: config.ClientStore,
 		serverName:  config.ServerName,
 		maxClients:  config.MaxClients,
+		dispatcher:  config.Dispatcher,
 		peerState:   make(map[string]int32),
 	}
 	h.serverState.Store(config.InitialState)
