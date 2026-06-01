@@ -78,6 +78,19 @@ type Share struct {
 	// smb2.create_no_streams.no_stream torture test.
 	StreamsDisabled bool
 
+	// TrashEnabled turns on the per-share recycle bin (#190). Default false.
+	// Read per-delete via the locked TrashSettingsForShare accessor (NOT off a
+	// shared *Share pointer) so it is concurrency-safe and takes effect live.
+	TrashEnabled bool
+	// TrashRetentionDays auto-empties bin entries older than N days (0 = keep forever).
+	TrashRetentionDays int
+	// TrashRestrictToAdmin limits empty/force-delete to admins (users may still restore).
+	TrashRestrictToAdmin bool
+	// TrashMaxBytes caps total bin bytes (0 = unbounded); over-cap evicts oldest.
+	TrashMaxBytes int64
+	// TrashExcludePatterns are globs that bypass the bin (immediate delete).
+	TrashExcludePatterns []string
+
 	// NFS-specific options
 	DisableReaddirplus bool
 
@@ -157,6 +170,19 @@ type ShareConfig struct {
 	// FileFsAttributeInformation FileSystemAttributes mask so the
 	// filesystem advertises no ADS support.
 	StreamsDisabled bool
+
+	// TrashEnabled turns on the per-share recycle bin (#190). Default false.
+	// Read per-delete via the locked TrashSettingsForShare accessor (NOT off a
+	// shared *Share pointer) so it is concurrency-safe and takes effect live.
+	TrashEnabled bool
+	// TrashRetentionDays auto-empties bin entries older than N days (0 = keep forever).
+	TrashRetentionDays int
+	// TrashRestrictToAdmin limits empty/force-delete to admins (users may still restore).
+	TrashRestrictToAdmin bool
+	// TrashMaxBytes caps total bin bytes (0 = unbounded); over-cap evicts oldest.
+	TrashMaxBytes int64
+	// TrashExcludePatterns are globs that bypass the bin (immediate delete).
+	TrashExcludePatterns []string
 
 	RootAttr *metadata.FileAttr
 
@@ -544,6 +570,11 @@ func (s *Service) prepareShare(
 		AccessBasedEnumeration:           config.AccessBasedEnumeration,
 		ChangeNotifyDisabled:             config.ChangeNotifyDisabled,
 		StreamsDisabled:                  config.StreamsDisabled,
+		TrashEnabled:                     config.TrashEnabled,
+		TrashRetentionDays:               config.TrashRetentionDays,
+		TrashRestrictToAdmin:             config.TrashRestrictToAdmin,
+		TrashMaxBytes:                    config.TrashMaxBytes,
+		TrashExcludePatterns:             config.TrashExcludePatterns,
 		DefaultPermission:                config.DefaultPermission,
 		Squash:                           config.Squash,
 		AnonymousUID:                     config.AnonymousUID,
@@ -955,6 +986,97 @@ func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *st
 		}
 	}
 
+	return nil
+}
+
+// TrashSettings is a per-share recycle-bin policy snapshot, returned by value
+// under the service lock so callers never read a mutating shared pointer.
+type TrashSettings struct {
+	Enabled         bool
+	RetentionDays   int
+	RestrictToAdmin bool
+	MaxBytes        int64
+	ExcludePatterns []string
+}
+
+// TrashSettingsForShare returns the recycle-bin policy for a share, read under
+// the service lock. Returns ok=false if the share is unknown. Never hands out
+// the *Share; the ExcludePatterns slice is copied so callers cannot observe a
+// concurrent SetShareTrashConfig mutation.
+//
+// The recycle decision is read per-delete from many protocol goroutines while
+// config can be updated live, so this accessor returns a VALUE under the lock
+// (refs #190, #936 race lesson).
+func (s *Service) TrashSettingsForShare(name string) (TrashSettings, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	share, exists := s.registry[name]
+	if !exists {
+		return TrashSettings{}, false
+	}
+	return TrashSettings{
+		Enabled:         share.TrashEnabled,
+		RetentionDays:   share.TrashRetentionDays,
+		RestrictToAdmin: share.TrashRestrictToAdmin,
+		MaxBytes:        share.TrashMaxBytes,
+		ExcludePatterns: append([]string(nil), share.TrashExcludePatterns...),
+	}, true
+}
+
+// EnabledTrashShares returns the names of all shares with trash enabled, read
+// under the service lock. Used by the reaper loop to enumerate bins to sweep.
+func (s *Service) EnabledTrashShares() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []string
+	for name, share := range s.registry {
+		if share.TrashEnabled {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// SetShareTrashConfig updates a live share's recycle-bin settings under the
+// write lock and persists them to the DB. Pairs safely with the RLock
+// TrashSettingsForShare accessor: the exact fields the reader copies are the
+// ones this mutates while holding the write lock.
+//
+// Returns ErrShareNotFound if the share name is unknown in the runtime
+// registry. The optional store argument persists the change; pass nil to
+// update runtime state only (used by tests that bypass the DB).
+func (s *Service) SetShareTrashConfig(store ShareStore, name string, cfg TrashSettings) error {
+	excludes := append([]string(nil), cfg.ExcludePatterns...)
+
+	s.mu.Lock()
+	share, exists := s.registry[name]
+	if !exists {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
+	}
+	share.TrashEnabled = cfg.Enabled
+	share.TrashRetentionDays = cfg.RetentionDays
+	share.TrashRestrictToAdmin = cfg.RestrictToAdmin
+	share.TrashMaxBytes = cfg.MaxBytes
+	share.TrashExcludePatterns = excludes
+	s.mu.Unlock()
+
+	if store == nil {
+		return nil
+	}
+
+	dbShare, err := store.GetShare(context.Background(), name)
+	if err != nil {
+		return fmt.Errorf("load share %q: %w", name, err)
+	}
+	dbShare.TrashEnabled = cfg.Enabled
+	dbShare.TrashRetentionDays = cfg.RetentionDays
+	dbShare.TrashRestrictToAdmin = cfg.RestrictToAdmin
+	dbShare.TrashMaxBytes = cfg.MaxBytes
+	dbShare.SetTrashExcludePatterns(excludes)
+	if err := store.UpdateShare(context.Background(), dbShare); err != nil {
+		return fmt.Errorf("persist trash config for share %q: %w", name, err)
+	}
 	return nil
 }
 

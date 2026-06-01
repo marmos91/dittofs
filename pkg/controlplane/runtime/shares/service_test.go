@@ -247,3 +247,131 @@ func TestListEnabledSharesForStore_FiltersCorrectly(t *testing.T) {
 		t.Errorf("expected empty for meta-c, got %v", gotC)
 	}
 }
+
+// TestTrashSettingsForShare_NoRace runs concurrent writers (SetShareTrashConfig)
+// against concurrent readers (TrashSettingsForShare) to prove the locked
+// accessor + setter never race (refs #190, #936). The writer mutates the exact
+// fields the reader copies, so `go test -race` would flag an unlocked read.
+func TestTrashSettingsForShare_NoRace(t *testing.T) {
+	const name = "/export"
+	svc, _ := makeService(t, &Share{
+		Name:          name,
+		MetadataStore: "meta-a",
+		Enabled:       true,
+		TrashEnabled:  true,
+	})
+
+	const iters = 5000
+	var wg sync.WaitGroup
+
+	// One writer goroutine mutating the exact fields the readers copy.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			// store=nil: exercise the runtime-only path so the test does not
+			// depend on DB persistence semantics.
+			_ = svc.SetShareTrashConfig(nil, name, TrashSettings{
+				Enabled:         i%2 == 0,
+				RetentionDays:   i,
+				RestrictToAdmin: i%3 == 0,
+				MaxBytes:        int64(i) * 1024,
+				ExcludePatterns: []string{fmt.Sprintf("*.tmp%d", i)},
+			})
+		}
+	}()
+
+	// Several concurrent readers to maximize overlap with the writer; without
+	// the RLock in TrashSettingsForShare, `go test -race` flags these.
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				_, _ = svc.TrashSettingsForShare(name)
+				_ = svc.EnabledTrashShares()
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// TestSetShareTrashConfig_RoundTrip verifies SetShareTrashConfig then
+// TrashSettingsForShare returns the set values, including a deep-copied
+// ExcludePatterns slice (mutating the returned slice must not affect state).
+func TestSetShareTrashConfig_RoundTrip(t *testing.T) {
+	const name = "/export"
+	svc, store := makeService(t, &Share{
+		Name:          name,
+		MetadataStore: "meta-a",
+		Enabled:       true,
+	})
+
+	want := TrashSettings{
+		Enabled:         true,
+		RetentionDays:   30,
+		RestrictToAdmin: true,
+		MaxBytes:        5 << 30,
+		ExcludePatterns: []string{"*.tmp", "~$*"},
+	}
+	if err := svc.SetShareTrashConfig(store, name, want); err != nil {
+		t.Fatalf("SetShareTrashConfig: %v", err)
+	}
+
+	got, ok := svc.TrashSettingsForShare(name)
+	if !ok {
+		t.Fatal("TrashSettingsForShare: share not found")
+	}
+	if got.Enabled != want.Enabled ||
+		got.RetentionDays != want.RetentionDays ||
+		got.RestrictToAdmin != want.RestrictToAdmin ||
+		got.MaxBytes != want.MaxBytes {
+		t.Errorf("scalar mismatch: got %+v want %+v", got, want)
+	}
+	if len(got.ExcludePatterns) != 2 || got.ExcludePatterns[0] != "*.tmp" || got.ExcludePatterns[1] != "~$*" {
+		t.Errorf("ExcludePatterns mismatch: got %v", got.ExcludePatterns)
+	}
+
+	// Mutating the returned slice must not corrupt the share's stored slice.
+	got.ExcludePatterns[0] = "MUTATED"
+	again, _ := svc.TrashSettingsForShare(name)
+	if again.ExcludePatterns[0] != "*.tmp" {
+		t.Errorf("returned slice aliases internal state: %v", again.ExcludePatterns)
+	}
+
+	// DB persistence round-trip.
+	dbShare, err := store.GetShare(context.Background(), name)
+	if err != nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+	if !dbShare.TrashEnabled || dbShare.TrashRetentionDays != 30 ||
+		!dbShare.TrashRestrictToAdmin || dbShare.TrashMaxBytes != (5<<30) {
+		t.Errorf("DB scalar mismatch: %+v", dbShare)
+	}
+	if pats := dbShare.GetTrashExcludePatterns(); len(pats) != 2 || pats[0] != "*.tmp" {
+		t.Errorf("DB ExcludePatterns mismatch: %v", pats)
+	}
+}
+
+// TestSetShareTrashConfig_UnknownShare verifies the setter returns
+// ErrShareNotFound for an unregistered share.
+func TestSetShareTrashConfig_UnknownShare(t *testing.T) {
+	svc := New()
+	err := svc.SetShareTrashConfig(nil, "/nope", TrashSettings{Enabled: true})
+	if !errors.Is(err, ErrShareNotFound) {
+		t.Errorf("expected ErrShareNotFound, got %v", err)
+	}
+}
+
+// TestEnabledTrashShares_FiltersByFlag verifies only trash-enabled shares are
+// returned.
+func TestEnabledTrashShares_FiltersByFlag(t *testing.T) {
+	svc, _ := makeService(t,
+		&Share{Name: "/on", MetadataStore: "m", Enabled: true, TrashEnabled: true},
+		&Share{Name: "/off", MetadataStore: "m", Enabled: true, TrashEnabled: false},
+	)
+	got := svc.EnabledTrashShares()
+	if len(got) != 1 || got[0] != "/on" {
+		t.Errorf("expected [/on], got %v", got)
+	}
+}
