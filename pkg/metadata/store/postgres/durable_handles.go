@@ -23,7 +23,7 @@ func newPostgresDurableStore(pool *pgxpool.Pool) *postgresDurableStore {
 const durableHandleColumns = `
 	id, file_id, path, share_name, desired_access, granted_access, share_access,
 	create_options, metadata_handle, payload_id, oplock_level,
-	lease_key, lease_state, create_guid, app_instance_id,
+	lease_key, lease_state, lease_epoch, create_guid, app_instance_id,
 	username, session_key_hash, is_v2, created_at, disconnected_at,
 	timeout_ms, server_start_time,
 	delete_pending, parent_handle, file_name, is_directory,
@@ -34,6 +34,7 @@ func scanDurableHandle(row pgx.Row) (*lock.PersistedDurableHandle, error) {
 	var h lock.PersistedDurableHandle
 	var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, originalFileIDBytes []byte
 	var positionInfoSigned, requestedAllocSizeSigned int64
+	var leaseEpochSigned int32
 
 	err := row.Scan(
 		&h.ID,
@@ -49,6 +50,7 @@ func scanDurableHandle(row pgx.Row) (*lock.PersistedDurableHandle, error) {
 		&h.OplockLevel,
 		&leaseKeyBytes,
 		&h.LeaseState,
+		&leaseEpochSigned,
 		&createGuidBytes,
 		&appInstanceIdBytes,
 		&h.Username,
@@ -74,6 +76,7 @@ func scanDurableHandle(row pgx.Row) (*lock.PersistedDurableHandle, error) {
 		return nil, err
 	}
 
+	h.LeaseEpoch = uint16(leaseEpochSigned)
 	h.PositionInfo = uint64(positionInfoSigned)
 	h.RequestedAllocSize = uint64(requestedAllocSizeSigned)
 	copyFixedByteArrays(&h, fileIDBytes, leaseKeyBytes, createGuidBytes,
@@ -92,6 +95,7 @@ func scanDurableHandleRows(rows pgx.Rows) ([]*lock.PersistedDurableHandle, error
 		var h lock.PersistedDurableHandle
 		var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, originalFileIDBytes []byte
 		var positionInfoSigned, requestedAllocSizeSigned int64
+		var leaseEpochSigned int32
 
 		err := rows.Scan(
 			&h.ID,
@@ -107,6 +111,7 @@ func scanDurableHandleRows(rows pgx.Rows) ([]*lock.PersistedDurableHandle, error
 			&h.OplockLevel,
 			&leaseKeyBytes,
 			&h.LeaseState,
+			&leaseEpochSigned,
 			&createGuidBytes,
 			&appInstanceIdBytes,
 			&h.Username,
@@ -128,6 +133,7 @@ func scanDurableHandleRows(rows pgx.Rows) ([]*lock.PersistedDurableHandle, error
 			return nil, err
 		}
 
+		h.LeaseEpoch = uint16(leaseEpochSigned)
 		h.PositionInfo = uint64(positionInfoSigned)
 		h.RequestedAllocSize = uint64(requestedAllocSizeSigned)
 		copyFixedByteArrays(&h, fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes)
@@ -180,9 +186,10 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 			username, session_key_hash, is_v2, created_at, disconnected_at,
 			timeout_ms, server_start_time,
 			delete_pending, parent_handle, file_name, is_directory,
-			position_info, original_file_id, requested_alloc_size
+			position_info, original_file_id, requested_alloc_size,
+			lease_epoch
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
 		ON CONFLICT (id) DO UPDATE SET
 			file_id = EXCLUDED.file_id,
 			path = EXCLUDED.path,
@@ -211,7 +218,8 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 			is_directory = EXCLUDED.is_directory,
 			position_info = EXCLUDED.position_info,
 			original_file_id = EXCLUDED.original_file_id,
-			requested_alloc_size = EXCLUDED.requested_alloc_size
+			requested_alloc_size = EXCLUDED.requested_alloc_size,
+			lease_epoch = EXCLUDED.lease_epoch
 	`
 
 	_, err := s.pool.Exec(ctx, query,
@@ -252,6 +260,9 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 		// the bit pattern like PositionInfo. The scan path mirrors this with
 		// uint64(int64) on read.
 		int64(handle.RequestedAllocSize),
+		// LeaseEpoch is the SMB3 lease-V2 epoch (uint16) stored as INTEGER.
+		// The scan path mirrors this with uint16(int32) on read.
+		int32(handle.LeaseEpoch),
 	)
 	return err
 }

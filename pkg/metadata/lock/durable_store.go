@@ -24,14 +24,25 @@ type PersistedDurableHandle struct {
 	// the file's DACL has changed since open. Mirrors Samba's
 	// smbXsrv_open_global semantics where the access_mask field is
 	// preserved verbatim across reconnect.
-	GrantedAccess   uint32
-	ShareAccess     uint32
-	CreateOptions   uint32
-	MetadataHandle  []byte
-	PayloadID       string
-	OplockLevel     uint8
-	LeaseKey        [16]byte
-	LeaseState      uint32
+	GrantedAccess  uint32
+	ShareAccess    uint32
+	CreateOptions  uint32
+	MetadataHandle []byte
+	PayloadID      string
+	OplockLevel    uint8
+	LeaseKey       [16]byte
+	LeaseState     uint32
+	// LeaseEpoch is the SMB3 lease-V2 epoch (state-change counter,
+	// MS-SMB2 2.2.13.2.8 / 2.2.23.2) captured at disconnect. Lives in the
+	// protocol-agnostic lock layer as the durable counterpart to the live
+	// OpLock.Lease.Epoch; persisted so a durable reconnect restores the
+	// exact epoch the client last saw rather than resetting to 0. Without
+	// it, the lease-response context on reconnect reports Epoch=0 and the
+	// next break notification leaks a stale NewEpoch
+	// (smb2.durable-v2-open.lock-lease asserts lease_epoch==1 on reconnect).
+	// Pre-existing rows carry 0, which the reconnect handler treats as
+	// "no persisted epoch" and falls back to the re-granted value.
+	LeaseEpoch      uint16
 	CreateGuid      [16]byte // V2 only; zero for V1
 	AppInstanceId   [16]byte // Zero if not set
 	Username        string

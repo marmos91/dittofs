@@ -1082,11 +1082,16 @@ func (h *Handler) closeFilesWithFilter(
 				sessionKeyHash = computeSessionKeyHash(sess)
 			}
 
-			// Capture current lease state from LeaseManager for reconnect restoration
+			// Capture current lease state + epoch from LeaseManager for reconnect
+			// restoration. The epoch is the live OpLock.Lease.Epoch (lock layer);
+			// persisting it lets the reconnect CREATE response restore the exact
+			// epoch the client last saw (smb2.durable-v2-open.lock-lease).
 			var leaseState uint32
+			var leaseEpoch uint16
 			if h.LeaseManager != nil && openFile.LeaseKey != ([16]byte{}) {
-				if state, _, found := h.LeaseManager.GetLeaseState(ctx, openFile.LeaseKey); found {
+				if state, epoch, found := h.LeaseManager.GetLeaseState(ctx, openFile.LeaseKey); found {
 					leaseState = state
+					leaseEpoch = epoch
 				}
 			}
 
@@ -1114,7 +1119,7 @@ func (h *Handler) closeFilesWithFilter(
 				// Serialize the persist against concurrent create-time
 				// purge windows; see durablePurgeMu comment.
 				h.durablePurgeMu.Lock()
-				persisted := buildPersistedDurableHandle(openFile, username, sessionKeyHash, h.StartTime, leaseState)
+				persisted := buildPersistedDurableHandle(openFile, username, sessionKeyHash, h.StartTime, leaseState, leaseEpoch)
 				err := h.DurableStore.PutDurableHandle(ctx, persisted)
 				h.durablePurgeMu.Unlock()
 				if err != nil {
