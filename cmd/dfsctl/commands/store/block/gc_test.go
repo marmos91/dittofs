@@ -171,6 +171,43 @@ func TestGCCmd_DryRunFlag(t *testing.T) {
 	}
 }
 
+// TestGCCmd_SweepErrorsExitNonZeroAcrossFormats asserts a GC run that hit
+// sweep errors (ErrorCount > 0 — orphan objects left unreclaimed) returns a
+// non-nil error in EVERY output format, so `gc -o json || alert` fires. The
+// stats body is still emitted for observability. Exit-0-on-failure class fix.
+func TestGCCmd_SweepErrorsExitNonZeroAcrossFormats(t *testing.T) {
+	for _, format := range []string{"json", "yaml", "table"} {
+		t.Run(format, func(t *testing.T) {
+			s := newGCServer(t)
+			defer s.Close()
+			s.gcStats = &engine.GCStats{
+				RunID:       "run-err",
+				ErrorCount:  2,
+				FirstErrors: []string{"delete cas/aa/bb: timeout"},
+			}
+			withGCTestServer(t, s.URL)
+			cmdutil.Flags.Output = format
+			t.Cleanup(func() { cmdutil.Flags.Output = "table" })
+
+			var runErr error
+			out := captureStdoutBlock(t, func() {
+				_ = gcCmd.Flags().Set("dry-run", "false")
+				runErr = runBlockStoreGC(gcCmd, []string{"myshare"})
+			})
+
+			if runErr == nil {
+				t.Fatalf("%s: ErrorCount>0 must return a non-nil error", format)
+			}
+			if !strings.Contains(runErr.Error(), "2 sweep error") {
+				t.Errorf("%s: error must report the sweep error count; got %v", format, runErr)
+			}
+			if !strings.Contains(out, "run-err") {
+				t.Errorf("%s: stats body must still be emitted; got %q", format, out)
+			}
+		})
+	}
+}
+
 // TestGCCmd_NoArg_Errors confirms cobra.ExactArgs(1) rejects bare
 // invocations before RunE runs.
 func TestGCCmd_NoArg_Errors(t *testing.T) {

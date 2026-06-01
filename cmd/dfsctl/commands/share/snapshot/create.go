@@ -119,26 +119,37 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("wait for snapshot: %w", err)
 	}
 
+	// Emit the result body first so observability is identical across
+	// formats, then inspect snap.State independently of the output format.
+	// A server-reported `failed` snapshot must exit non-zero in EVERY
+	// format (including -o json/-o yaml) so scripts/CI can gate on the
+	// exit code — not only the table branch.
 	switch format {
 	case output.FormatJSON:
-		return output.PrintJSON(os.Stdout, snap)
+		if err := output.PrintJSON(os.Stdout, snap); err != nil {
+			return err
+		}
 	case output.FormatYAML:
-		return output.PrintYAML(os.Stdout, snap)
+		if err := output.PrintYAML(os.Stdout, snap); err != nil {
+			return err
+		}
 	default:
 		switch snap.State {
 		case "ready":
 			fmt.Printf("Snapshot %s -> ready\n", snap.ID)
-			return nil
 		case "failed":
-			msg := snap.Error
-			if msg == "" {
-				msg = "(no error message)"
-			}
-			fmt.Fprintf(os.Stderr, "Snapshot %s failed: %s\n", snap.ID, msg)
-			return fmt.Errorf("snapshot failed")
+			// The returned error below is printed to stderr by main.go.
 		default:
 			fmt.Printf("Snapshot %s in state %q\n", snap.ID, snap.State)
-			return nil
 		}
 	}
+
+	if snap.State == "failed" {
+		msg := snap.Error
+		if msg == "" {
+			msg = "(no error message)"
+		}
+		return fmt.Errorf("snapshot %s failed: %s", snap.ID, msg)
+	}
+	return nil
 }

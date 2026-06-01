@@ -54,14 +54,30 @@ func runAuditRefcounts(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Emit the audit body first so observability is identical across
+	// formats, then surface a detected refcount drift as a non-zero exit
+	// independently of the output format. A non-zero Delta is a real
+	// INV-02 violation (leaked block / dedup bug) — `audit-refcounts || alert`
+	// must fire in -o json/-o yaml too, not only the table branch.
 	switch format {
 	case output.FormatJSON:
-		return output.PrintJSON(os.Stdout, res)
+		if err := output.PrintJSON(os.Stdout, res); err != nil {
+			return err
+		}
 	case output.FormatYAML:
-		return output.PrintYAML(os.Stdout, res)
+		if err := output.PrintYAML(os.Stdout, res); err != nil {
+			return err
+		}
 	default:
-		return printAuditTable(res)
+		if err := printAuditTable(res); err != nil {
+			return err
+		}
 	}
+
+	if res.Result.Delta != 0 {
+		return fmt.Errorf("INV-02 violation: refcount delta=%d", res.Result.Delta)
+	}
+	return nil
 }
 
 // printAuditTable renders the audit summary as a key/value table mirroring
