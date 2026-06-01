@@ -408,6 +408,36 @@ run_smbtorture() {
     return $rc
 }
 
+# reset_share SHARE
+# Returns a share to clean state between sub-suites by delegating to
+# bootstrap.sh's reset-share subcommand inside the DittoFS container, which
+# deletes and recreates the share via the admin REST API. Refs #568.
+#
+# smbtorture sub-suites run sequentially against the same shares; a suite that
+# fails mid-test (notably the ACL suites) can leave restrictive DACLs on files,
+# non-empty directories, and dangling opens/lease records. The next suite then
+# sees that leftover state and a previously-passing test fails — a rotating,
+# scheduling-dependent spurious "new failure". Delete+recreate clears file/dir
+# state AND drops server-side opens + lease records bound to the share, without
+# disturbing users, identity mappings, or the SMB adapter config.
+#
+# bootstrap.sh rotates the admin password to TEST_PASSWORD on first login, so
+# reset-share authenticates with TEST_PASSWORD (not the original log-scraped
+# admin_password). Failures are logged but non-fatal: a reset hiccup must not
+# abort the run — at worst it reintroduces the flake for one suite rather than
+# corrupting results.
+reset_share() {
+    local share="$1"
+    if ! docker compose exec \
+        -e DFSCTL="/app/dfsctl" \
+        -e API_URL="http://localhost:8080" \
+        -e TEST_PASSWORD="TestPassword01!" \
+        -e PROFILE="${PROFILE}" \
+        dittofs sh /app/bootstrap.sh reset-share "/${share}" >/dev/null 2>&1; then
+        log_warn "  Share reset failed for /${share}; continuing"
+    fi
+}
+
 _smbtorture_exit=0
 
 if [[ -n "$FILTER" ]]; then
@@ -432,6 +462,10 @@ else
         smb2.sdread smb2.secleak smb2.session-id smb2.tcon smb2.mkdir
     )
     for test in "${STANDALONE_TESTS[@]}"; do
+        # Reset the default share before each suite so leftover state from a
+        # prior failed suite (restrictive DACLs, non-empty dirs, dangling
+        # opens/leases) can't fail a previously-passing test. Refs #568.
+        reset_share "$SMBTORTURE_DEFAULT_SHARE"
         log_info "  Running: ${test}"
         run_smbtorture "$test" 60 || _smbtorture_exit=$?
     done
@@ -516,6 +550,11 @@ else
     for entry in "${SUITES[@]}"; do
         # Split "suite:prefix" or "suite:prefix:share" using IFS=:.
         IFS=':' read -r suite prefix share <<< "$entry"
+        # Reset the share this suite targets before running it, so leftover
+        # state from a prior failed suite can't fail a previously-passing test.
+        # Refs #568. Multiple dirlease sub-suites share /smbbasic, so this also
+        # isolates them from one another.
+        reset_share "${share:-$SMBTORTURE_DEFAULT_SHARE}"
         if [[ -n "${share:-}" ]]; then
             log_info "  Running: ${suite} (share: ${share})"
         else
