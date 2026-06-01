@@ -57,16 +57,10 @@ not advertised — they consume no failure slots and are not listed below.
 The compress_notsup_get/set tests correctly SKIP because FILE_FILE_COMPRESSION
 is advertised.
 
-Most IOCTL sparse-family entries walked back under #718. The remaining residual
-failure is a real feature gap: SRV_COPYCHUNK on a sparse destination must surface
-zeros for the unwritten hole between the old EOF and the chunk's target offset
-(see Samba `test_ioctl_copy_chunk_sparse_dest`). DittoFS's copychunk path grows
-the destination file via `WriteAt` at the target offset but does not advertise
-or materialize the [old EOF, target offset) hole as zero-reading bytes.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.ioctl.copy_chunk_sparse_dest | IOCTL | SRV_COPYCHUNK to a 0-byte destination at offset 4096 must surface the [0, 4096) gap as zeros on subsequent reads. The block-store sparse-hole zero-fill path does not run for copychunk-extended files. | #750 |
+All IOCTL sparse-family entries are walked back (sparse-hole zero-fill on
+WriteAt-extend covers the SRV_COPYCHUNK-to-sparse-destination case; verified by
+`pkg/blockstore/engine/copychunk_sparse_dest_test.go` and the smbtorture
+`smb2.ioctl.copy_chunk_sparse_dest` test passing on the memory backend).
 
 Note: the standalone `smb2.set-sparse-ioctl` and `smb2.zero-data-ioctl` driver
 tests require `--option=torture:filename=` / `--option=torture:offset=` runtime
