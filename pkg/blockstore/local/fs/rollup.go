@@ -357,6 +357,36 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 		return nil
 	}
 
+	// #953: align the reconstruction window to existing CAS chunk
+	// boundaries. An in-place overwrite whose dirty interval starts/ends
+	// INSIDE a previously-rolled-up chunk would otherwise re-chunk only
+	// [baseOff, maxEnd) and emit new FileBlock rows that OVERLAP the old
+	// straddling chunks. The CAS read path (fillFromCASManifest /
+	// readLocalByHash) then mixes generations: a stale row sorted after a
+	// new row clobbers the freshly-written bytes (silent corruption on the
+	// cold read), and naively reaping the straddling chunk instead would
+	// leave its non-overwritten head/tail uncovered (zero-fill data loss).
+	//
+	// Expand the window to whole straddling-chunk boundaries by prepending
+	// synthetic records carrying the straddling neighbors' CAS bytes, so
+	// the re-chunk produces boundary-aligned chunks and every superseded
+	// row is FULLY contained in the new region (cleanly reapable by the
+	// ObjectIDPersister). The straddling bytes that the overwrite did not
+	// touch are preserved because the overwrite records, applied later in
+	// reconstructStream's "last record wins" order, overlay only the bytes
+	// the client actually rewrote.
+	//
+	// Best-effort: a straddling neighbor whose chunk is not locally
+	// readable (post-eviction) cannot be spliced; we skip expansion on
+	// that side and the persister's reap stays conservative (it only
+	// reaps rows fully inside the unexpanded region), leaving the existing
+	// behaviour on that edge rather than risking a gap.
+	//
+	// trunc/hasTrunc are threaded through so a straddling neighbor is
+	// never spliced past the truncation boundary — re-emitting bytes the
+	// truncate just removed would resurrect truncated tail data.
+	recs = bc.alignRecsToChunkBoundaries(ctx, payloadID, recs, trunc, hasTrunc)
+
 	// Reconstruct contiguous byte stream ("later record wins") + chunk
 	// + store. Chunker is stateless across calls; we feed it the whole
 	// reconstructed buffer and slice out chunks by the returned boundaries.
@@ -669,6 +699,99 @@ func reconstructStream(recs []rec) ([]byte, uint64, error) {
 		copy(buf[r.off-baseOff:], r.payload)
 	}
 	return buf, baseOff, nil
+}
+
+// alignRecsToChunkBoundaries expands the record set so the reconstructed
+// window covers WHOLE existing CAS chunks at its edges (#953). It finds
+// the existing FileBlock rows that straddle the dirty window's start or
+// end — i.e. a chunk [off, off+size) with off < windowStart < off+size or
+// off < windowEnd < off+size — reads those chunks from the local CAS, and
+// prepends them as synthetic records at their original offset. Prepending
+// (rather than appending) keeps the real overwrite records LAST so
+// reconstructStream's "last record wins" rule still lets the overwrite
+// overlay the bytes the client actually rewrote, while the straddling
+// chunk supplies its non-overwritten head/tail.
+//
+// Returns recs unchanged when there is no FileBlock store, no rows, or no
+// straddling chunk is locally readable. The function never returns an
+// error: an unreadable straddling chunk is a benign best-effort miss (the
+// caller's reap stays conservative on that edge).
+func (bc *FSStore) alignRecsToChunkBoundaries(ctx context.Context, payloadID string, recs []rec, trunc uint64, hasTrunc bool) []rec {
+	if bc.blockStore == nil || len(recs) == 0 {
+		return recs
+	}
+	var windowStart, windowEnd uint64
+	windowStart = recs[0].off
+	for _, r := range recs {
+		if r.off < windowStart {
+			windowStart = r.off
+		}
+		end := r.off + uint64(len(r.payload))
+		if end > windowEnd {
+			windowEnd = end
+		}
+	}
+
+	rows, err := bc.blockStore.ListFileBlocks(ctx, payloadID)
+	if err != nil || len(rows) == 0 {
+		return recs
+	}
+
+	var prepend []rec
+	for _, fb := range rows {
+		if fb == nil || fb.Hash.IsZero() || fb.DataSize == 0 {
+			continue
+		}
+		off, ok := blockstore.ParseChunkOffset(fb.ID)
+		if !ok {
+			continue
+		}
+		// A pending truncation already removed bytes at/after trunc this
+		// pass. A neighbor chunk starting at/after trunc is gone; one that
+		// straddles trunc must only contribute its surviving head [off,
+		// trunc). Splicing past trunc would re-emit truncated tail data.
+		dataSize := uint64(fb.DataSize)
+		if hasTrunc {
+			if off >= trunc {
+				continue
+			}
+			if off+dataSize > trunc {
+				dataSize = trunc - off
+			}
+		}
+		end := off + dataSize
+		// Only chunks that STRADDLE an edge of the window need splicing.
+		// A chunk fully inside the window is superseded (reaped later); a
+		// chunk fully outside is untouched and must NOT be rewritten.
+		straddlesStart := off < windowStart && windowStart < end
+		straddlesEnd := off < windowEnd && windowEnd < end
+		if !straddlesStart && !straddlesEnd {
+			continue
+		}
+		data, gerr := bc.Get(ctx, fb.Hash)
+		if gerr != nil {
+			// Not locally readable (evicted) — skip; reap stays
+			// conservative on this edge.
+			continue
+		}
+		// Clamp to the surviving byte count so a padded on-disk surface
+		// (or a truncation boundary) never injects bytes past it.
+		if dataSize < uint64(len(data)) {
+			data = data[:dataSize]
+		}
+		// Copy: bc.Get may return an LRU-owned/shared buffer; the
+		// reconstruction buffer must not alias it.
+		buf := make([]byte, len(data))
+		copy(buf, data)
+		prepend = append(prepend, rec{off: off, payload: buf})
+	}
+	if len(prepend) == 0 {
+		return recs
+	}
+	// Synthetic straddling-chunk records FIRST, real overwrite records
+	// LAST — preserves "last record wins" so the overwrite overlays only
+	// the bytes it actually rewrote.
+	return append(prepend, recs...)
 }
 
 // blake3ContentHash returns the 32-byte BLAKE3 hash of data as a
