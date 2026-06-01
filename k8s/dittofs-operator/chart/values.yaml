@@ -8,6 +8,10 @@ controllerManager:
       - --metrics-bind-address=:8443
       - --leader-elect
       - --health-probe-bind-address=:8081
+    # Enable admission webhooks. Disabled by default: the chart does not yet
+    # provision a webhook TLS certificate, and enabling webhooks without one
+    # crash-loops the manager. Set to true only once cert wiring is in place.
+    enableWebhooks: false
     containerSecurityContext:
       allowPrivilegeEscalation: false
       capabilities:

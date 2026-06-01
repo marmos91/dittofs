@@ -465,12 +465,17 @@ func (r *DittoServerReconciler) handleDeletion(ctx context.Context, dittoServer 
 
 	logger.Info("Processing DittoServer deletion", "name", dittoServer.Name)
 
-	// Update phase to Deleting
-	dittoServerCopy := dittoServer.DeepCopy()
-	dittoServerCopy.Status.Phase = "Deleting"
-	if err := r.Status().Update(ctx, dittoServerCopy); err != nil {
-		logger.Error(err, "Failed to update phase to Deleting")
-		// Continue with cleanup even if status update fails
+	// Update phase to Deleting (only once - re-writing on every reconcile bumps
+	// resourceVersion needlessly and is wasteful). The status write must not be
+	// allowed to poison the in-memory object used for the finalizer-removal Update
+	// below, so it operates on a copy and any RV refresh is discarded.
+	if dittoServer.Status.Phase != "Deleting" {
+		dittoServerCopy := dittoServer.DeepCopy()
+		dittoServerCopy.Status.Phase = "Deleting"
+		if err := r.Status().Update(ctx, dittoServerCopy); err != nil {
+			logger.Error(err, "Failed to update phase to Deleting")
+			// Continue with cleanup even if status update fails
+		}
 	}
 	r.Recorder.Event(dittoServer, corev1.EventTypeNormal, "Deleting",
 		"DittoServer is being deleted, cleaning up resources")
@@ -485,8 +490,7 @@ func (r *DittoServerReconciler) handleDeletion(ctx context.Context, dittoServer 
 		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "CleanupTimeout",
 			"Cleanup timeout exceeded (%v), forcing finalizer removal", cleanupTimeout)
 		// Force remove finalizer after timeout
-		controllerutil.RemoveFinalizer(dittoServer, finalizerName)
-		if err := r.Update(ctx, dittoServer); err != nil {
+		if err := r.removeFinalizer(ctx, dittoServer); err != nil {
 			return false, err
 		}
 		return false, nil
@@ -501,12 +505,31 @@ func (r *DittoServerReconciler) handleDeletion(ctx context.Context, dittoServer 
 
 	// Cleanup successful, remove finalizer
 	logger.Info("Cleanup complete, removing finalizer")
-	controllerutil.RemoveFinalizer(dittoServer, finalizerName)
-	if err := r.Update(ctx, dittoServer); err != nil {
+	if err := r.removeFinalizer(ctx, dittoServer); err != nil {
 		return false, err
 	}
 
 	return false, nil
+}
+
+// removeFinalizer removes the DittoServer finalizer, re-fetching the object on
+// each attempt so the Update never carries a stale resourceVersion (e.g. one
+// invalidated by the earlier Phase=Deleting status write). Wrapping in
+// retryOnConflict makes it resilient to concurrent writers.
+func (r *DittoServerReconciler) removeFinalizer(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
+	key := client.ObjectKeyFromObject(dittoServer)
+	return retryOnConflict(func() error {
+		current := &dittoiov1alpha1.DittoServer{}
+		if err := r.Get(ctx, key, current); err != nil {
+			// Object already gone: finalizer effectively removed.
+			return client.IgnoreNotFound(err)
+		}
+		if !controllerutil.ContainsFinalizer(current, finalizerName) {
+			return nil
+		}
+		controllerutil.RemoveFinalizer(current, finalizerName)
+		return r.Update(ctx, current)
+	})
 }
 
 // performCleanup handles cleanup of resources that need special handling beyond owner references.

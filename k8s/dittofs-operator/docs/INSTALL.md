@@ -338,15 +338,26 @@ kubectl apply -f config/crd/bases/dittofs.dittofs.com_dittoservers.yaml
 | `serviceAccount.create` | Create service account | `true` |
 | `serviceAccount.name` | Service account name | `""` (auto-generated) |
 
-### Environment Variables
+### Manager Flags
 
-The operator supports the following environment variables:
+The operator is configured via command-line flags on the manager container
+(set through the Deployment `args`, or the chart values below). There are no
+configuration environment variables.
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `ENABLE_WEBHOOKS` | Enable admission webhooks | `true` |
-| `METRICS_BIND_ADDRESS` | Metrics endpoint address | `:8443` |
-| `HEALTH_PROBE_BIND_ADDRESS` | Health probe endpoint | `:8081` |
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--enable-webhooks` | Enable admission webhooks. Requires a webhook TLS certificate (e.g. cert-manager); the chart does not provision one yet, so this defaults to `false` in the deployed manifests to avoid a startup crash-loop. | `false` (deployed) |
+| `--metrics-bind-address` | Metrics endpoint address (`0` disables; use `:8443` for HTTPS or `:8080` for HTTP) | `0` (disabled) |
+| `--health-probe-bind-address` | Health probe endpoint | `:8081` |
+| `--leader-elect` | Enable leader election | `false` |
+
+The Helm chart exposes webhook enablement as a value:
+
+```yaml
+controllerManager:
+  manager:
+    enableWebhooks: false  # set to true only once a webhook cert is wired
+```
 
 ## Troubleshooting
 
