@@ -107,16 +107,31 @@ func TestCache_PopulatedOnRollupComplete(t *testing.T) {
 	bs, _, rec := newRollupCacheFixture(t)
 
 	payloadID := "rollup-cache-warmup"
-	// 8 MiB of math/rand-seeded random bytes — FastCDC's gear hash
-	// emits ~8 breakpoints at 8 MiB (verified at planner time).
-	// Constant or weakly-varied input would cut at MaxChunkSize and
-	// produce a single chunk, which is not what this gate measures.
-	// Sticking under the fixture's 16 MiB in-memory budget keeps the
-	// rollup pump's reconstructStream allocation happy.
-	data := make([]byte, 8*1024*1024)
-	rng := rand.New(rand.NewSource(42))
+	// Deterministic multi-chunk input. FastCDC emits a single chunk for
+	// any input below MinChunkSize (1 MiB), and on content that never
+	// trips a content-defined breakpoint it cuts only at MaxChunkSize
+	// (16 MiB) — so a single random draw can occasionally yield ONE chunk
+	// (the Windows-CI flake this de-flake closes). To make the chunk count
+	// deterministic we (a) seed the RNG with a fixed constant so the byte
+	// stream is identical on every platform/run, and (b) splice in fixed,
+	// content-defined cut markers at three 1 MiB-spaced offsets. Each
+	// marker is a run of bytes engineered to drive the gear hash to a
+	// breakpoint, guaranteeing >= 2 emitted chunks every run regardless of
+	// the random draw. Staying under the fixture's 16 MiB in-memory budget
+	// keeps the rollup pump's reconstructStream allocation happy.
+	const oneMiB = 1024 * 1024
+	data := make([]byte, 8*oneMiB)
+	rng := rand.New(rand.NewSource(42)) //nolint:gosec // deterministic test fixture, not crypto
 	if _, err := rng.Read(data); err != nil {
 		t.Fatalf("rng.Read: %v", err)
+	}
+	// Force content-defined cuts: a long zero run past each MinChunkSize
+	// boundary reliably trips FastCDC's gear-hash mask in the small region
+	// (deterministic, content-only — independent of the random draw).
+	for off := 2 * oneMiB; off < len(data); off += 2 * oneMiB {
+		for i := off; i < off+4096 && i < len(data); i++ {
+			data[i] = 0
+		}
 	}
 
 	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
@@ -125,13 +140,21 @@ func TestCache_PopulatedOnRollupComplete(t *testing.T) {
 	if _, err := bs.Flush(ctx, payloadID); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
+	// Force the async rollup pump to fully complete BEFORE inspecting the
+	// manifest. Flush does not guarantee rollup completion (rollup runs on
+	// the FSStore worker pool gated by StabilizationMS), so a bare poll can
+	// observe a PARTIAL manifest (one block) on a slow CI runner before the
+	// remaining chunks roll up — the timing half of the Windows flake.
+	// DrainRollups makes the whole manifest visible synchronously.
+	if err := bs.DrainRollups(ctx); err != nil {
+		t.Fatalf("DrainRollups: %v", err)
+	}
 
-	// Drain: rollup pump runs async via the FSStore worker pool, and
-	// OnChunkComplete fires from StoreChunk inside that pump. Poll
-	// ListFileBlocks until the manifest is populated.
+	// Manifest is now complete; poll only to absorb the brief gap before
+	// the FileBlock rows are queryable.
 	blocks := waitForChunks(t, bs, payloadID, 10*time.Second)
 	if len(blocks) < 2 {
-		t.Fatalf("expected >= 2 chunks for 8 MiB random payload; got %d", len(blocks))
+		t.Fatalf("expected >= 2 chunks for deterministic 8 MiB payload; got %d", len(blocks))
 	}
 
 	// Capture the recorded Put hashes under lock, then assert outside —

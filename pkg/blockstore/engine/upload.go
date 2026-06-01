@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
 // syncLocalBlocks runs one mirror-loop pass for the periodic uploader
@@ -23,14 +24,21 @@ func (m *Syncer) syncLocalBlocks(ctx context.Context) {
 	m.local.SyncFileBlocks(ctx)
 
 	if err := m.mirrorOnce(ctx); err != nil {
-		// Shutdown paths (context cancelled, syncer closed) are expected
-		// during graceful Close and stay at Debug. A genuine remote
-		// upload failure (network, auth, quota, S3 5xx, local bitrot) is
-		// unexpected: log at Warn so it is visible before the next
-		// health-check interval rather than silent for a tick.
-		if ctx.Err() != nil || errors.Is(err, ErrClosed) {
+		switch {
+		case ctx.Err() != nil || errors.Is(err, ErrClosed):
+			// Shutdown paths (context cancelled, syncer closed) are
+			// expected during graceful Close and stay at Debug.
 			logger.Debug("Periodic mirror pass aborted during shutdown", "error", err)
-		} else {
+		case errors.Is(err, blockstore.ErrChunkLostBeforeMirror):
+			// One or more pending hashes had no local bytes and were
+			// retained for the next tick. mirrorOnce already drained every
+			// healthy hash this pass, so this is non-fatal — swallow it as
+			// an expected retry condition rather than a failure.
+			logger.Info("Periodic mirror pass retained chunk(s) with missing local bytes for retry", "error", err)
+		default:
+			// A genuine remote upload failure (network, auth, quota, S3
+			// 5xx, local bitrot) is unexpected: log at Warn so it is
+			// visible before the next health-check interval.
 			logger.Warn("Periodic mirror pass failed", "error", err)
 		}
 	}
@@ -58,6 +66,11 @@ func (m *Syncer) uploadBlock(ctx context.Context, payloadID string, blockIdx uin
 	}
 	defer m.uploading.Store(false)
 	if err := m.mirrorOnce(ctx); err != nil {
+		if errors.Is(err, blockstore.ErrChunkLostBeforeMirror) {
+			// Opportunistic drive-by drain: a retained-for-retry hash is
+			// non-fatal here (the healthy hashes were still uploaded).
+			return nil
+		}
 		return fmt.Errorf("upload block (payload=%s, idx=%d): %w", payloadID, blockIdx, err)
 	}
 	return nil

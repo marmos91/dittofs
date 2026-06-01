@@ -120,6 +120,17 @@ var (
 	// does not exist in the store (local or remote).
 	ErrChunkNotFound = errors.New("chunk not found")
 
+	// ErrChunkLostBeforeMirror is returned by the mirror loop when a
+	// pending hash could not be uploaded to remote because its local
+	// bytes were gone (ErrChunkNotFound) before the first mirror. The
+	// hash is RETAINED in the pending set for a later retry — it is not
+	// dropped — but Flush/SyncNow must surface this sentinel so callers
+	// do NOT report the payload as durable on remote. The periodic
+	// uploader treats it as a non-fatal, retry-next-tick condition: it
+	// continues draining the other pending hashes and swallows the
+	// sentinel rather than aborting the whole pass.
+	ErrChunkLostBeforeMirror = errors.New("chunk lost locally before mirror to remote")
+
 	// ErrStoreClosed is returned when operations are attempted on a closed store.
 	ErrStoreClosed = errors.New("store is closed")
 

@@ -15,9 +15,11 @@ import (
 // TestMirrorOnce_EvictedUnsyncedHash_NotSilentlyDropped proves that when
 // a pending hash has no backing bytes in the local store (the chunk was
 // evicted/lost before its first mirror), mirrorOnce retains the hash in
-// the pending set for a later retry rather than silently deleting it.
-// Dropping it would permanently lose the only copy of never-mirrored
-// data — the data-loss bug this fix closes.
+// the pending set for a later retry rather than silently deleting it,
+// AND surfaces ErrChunkLostBeforeMirror so Flush/SyncNow do not report
+// the payload as durable on remote. Dropping it would permanently lose
+// the only copy of never-mirrored data — the data-loss bug this fix
+// closes.
 func TestMirrorOnce_EvictedUnsyncedHash_NotSilentlyDropped(t *testing.T) {
 	ctx := context.Background()
 
@@ -53,8 +55,8 @@ func TestMirrorOnce_EvictedUnsyncedHash_NotSilentlyDropped(t *testing.T) {
 		t.Fatalf("precondition: local.Get should miss, got err=%v", err)
 	}
 
-	if err := syncer.mirrorOnce(ctx); err != nil {
-		t.Fatalf("mirrorOnce returned error, want nil (logged-not-propagated): %v", err)
+	if err := syncer.mirrorOnce(ctx); !errors.Is(err, blockstore.ErrChunkLostBeforeMirror) {
+		t.Fatalf("mirrorOnce err = %v, want ErrChunkLostBeforeMirror (not durable, retained for retry)", err)
 	}
 
 	if got := syncer.pendingLen(); got != 1 {

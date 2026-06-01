@@ -384,21 +384,32 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 	}
 	m.pendingMu.Unlock()
 
+	// Tracks whether at least one pending hash was retained-but-not-mirrored
+	// because its local bytes were gone. The loop continues draining the
+	// other hashes (one bad hash must not stall the rest), and reports this
+	// via ErrChunkLostBeforeMirror AFTER the loop so Flush/SyncNow do not
+	// claim durability while the periodic uploader can treat it as a
+	// non-fatal retry-next-tick condition.
+	var lostBeforeMirror bool
+
 	for _, hash := range snapshot {
 		data, err := m.local.Get(ctx, hash)
 		if errors.Is(err, blockstore.ErrChunkNotFound) {
-			// The local chunk is gone before we could mirror it. With the
-			// LRU eviction fix (lruEvictOne refuses to evict unsynced
-			// chunks) this should no longer occur for a chunk that is
-			// genuinely pending upload. Retain the hash for the next tick
-			// rather than dropping it — dropping silently destroyed the
-			// only copy of never-mirrored data. If the chunk is truly gone
-			// (e.g. an external delete), the next seedPendingFromDisk /
-			// ListUnsynced drift reconcile walks disk, finds the chunk
-			// absent, and stops re-seeding it, so the retry loop terminates
-			// naturally instead of spinning forever.
-			logger.Error("mirrorOnce: chunk evicted before mirror — retained for retry",
+			// The local chunk is gone before we could mirror it. Retain the
+			// hash for the next tick rather than dropping it — dropping
+			// silently destroyed the only copy of never-mirrored data. If
+			// the chunk is truly gone (e.g. an external delete), the next
+			// seedPendingFromDisk / ListUnsynced drift reconcile walks disk,
+			// finds the chunk absent, and stops re-seeding it, so the retry
+			// loop terminates naturally instead of spinning forever.
+			//
+			// Record the failure: this pass did NOT make the payload durable
+			// on remote, so an explicit Flush/SyncNow must not report
+			// success. The periodic uploader continues draining the rest of
+			// the snapshot and may swallow the resulting sentinel.
+			logger.Error("mirrorOnce: chunk lost locally before mirror — retained for retry",
 				"hash", hash.String())
+			lostBeforeMirror = true
 			continue
 		}
 		if err != nil {
@@ -428,6 +439,13 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 		m.pendingMu.Lock()
 		delete(m.pendingHashes, hash)
 		m.pendingMu.Unlock()
+	}
+	if lostBeforeMirror {
+		// At least one pending hash was retained-but-not-mirrored: the
+		// payload is not durable on remote. Flush/SyncNow propagate this;
+		// the periodic uploader logs+swallows it (non-fatal, retry next
+		// tick — the good hashes were still drained above).
+		return blockstore.ErrChunkLostBeforeMirror
 	}
 	return nil
 }
