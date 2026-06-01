@@ -373,7 +373,7 @@ func TestProcessLeaseCreateContext_NoneProbeDoesNotAdvanceEpoch(t *testing.T) {
 
 	// First CREATE: grant RWH with requested epoch 0x4711 → response epoch 0x4712.
 	initial := encodeV2LeaseContext(leaseKey, lock.LeaseStateRead|lock.LeaseStateWrite|lock.LeaseStateHandle, initialEpoch)
-	resp1, err := ProcessLeaseCreateContext(ctx, leaseMgr, initial, fileHandle, sessionID, [16]byte{}, clientID, shareName, false, false)
+	resp1, err := ProcessLeaseCreateContext(ctx, leaseMgr, initial, fileHandle, sessionID, [16]byte{}, clientID, shareName, false, false, false)
 	if err != nil {
 		t.Fatalf("first CREATE returned error: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestProcessLeaseCreateContext_NoneProbeDoesNotAdvanceEpoch(t *testing.T) {
 	// Same-key None-state probe at the granted epoch — must echo the lease's
 	// current epoch verbatim (no state change → no advance).
 	probe := encodeV2LeaseContext(leaseKey, lock.LeaseStateNone, grantedEpoch)
-	resp2, err := ProcessLeaseCreateContext(ctx, leaseMgr, probe, fileHandle, sessionID, [16]byte{}, clientID, shareName, false, false)
+	resp2, err := ProcessLeaseCreateContext(ctx, leaseMgr, probe, fileHandle, sessionID, [16]byte{}, clientID, shareName, false, false, false)
 	if err != nil {
 		t.Fatalf("None-probe returned error: %v", err)
 	}

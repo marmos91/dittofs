@@ -194,7 +194,30 @@ func (lm *LeaseManager) RequestLease(
 	isDirectory bool,
 ) (grantedState uint32, epoch uint16, err error) {
 	return lm.requestLeaseInternal(ctx, fileHandle, leaseKey, parentLeaseKey,
-		sessionID, clientGUID, ownerID, clientID, shareName, requestedState, isDirectory, false)
+		sessionID, clientGUID, ownerID, clientID, shareName, requestedState, isDirectory, false, false)
+}
+
+// RequestLeaseStatOpen is the stat-open variant of RequestLease. The CREATE
+// handler routes a lease request through this method when the CREATE's
+// DesiredAccess is stat-open-only and the disposition is non-destructive
+// (MS-SMB2 §3.3.5.9.8 / Samba `is_lease_stat_open`). The underlying lock
+// manager grants the best coexisting state WITHOUT breaking existing holders
+// (#751 smb2.lease.statopen4 CHECK_NO_BREAK).
+func (lm *LeaseManager) RequestLeaseStatOpen(
+	ctx context.Context,
+	fileHandle lock.FileHandle,
+	leaseKey [16]byte,
+	parentLeaseKey [16]byte,
+	sessionID uint64,
+	clientGUID [16]byte,
+	ownerID string,
+	clientID string,
+	shareName string,
+	requestedState uint32,
+	isDirectory bool,
+) (grantedState uint32, epoch uint16, err error) {
+	return lm.requestLeaseInternal(ctx, fileHandle, leaseKey, parentLeaseKey,
+		sessionID, clientGUID, ownerID, clientID, shareName, requestedState, isDirectory, false, true)
 }
 
 // RequestLeaseAsOplock is the traditional-oplock variant of RequestLease.
@@ -217,14 +240,16 @@ func (lm *LeaseManager) RequestLeaseAsOplock(
 	isDirectory bool,
 ) (grantedState uint32, epoch uint16, err error) {
 	return lm.requestLeaseInternal(ctx, fileHandle, leaseKey, parentLeaseKey,
-		sessionID, clientGUID, ownerID, clientID, shareName, requestedState, isDirectory, true)
+		sessionID, clientGUID, ownerID, clientID, shareName, requestedState, isDirectory, true, false)
 }
 
 // requestLeaseInternal is the shared body of RequestLease /
-// RequestLeaseAsOplock; the only behavior change between the two is which
-// underlying Manager method we dispatch to so the new record gets the
-// correct IsTraditionalOplock tag and the cross-tier rules in
-// bestGrantableState see the right requestor tier.
+// RequestLeaseAsOplock / RequestLeaseStatOpen; the behavior change between them
+// is which underlying Manager method we dispatch to so the new record gets the
+// correct IsTraditionalOplock tag (cross-tier rules in bestGrantableState) and
+// whether a cross-key conflict suppresses the break (stat-open carve-out).
+// isTraditionalOplock and statOpen are mutually exclusive (a traditional oplock
+// is never a stat-open lease request).
 func (lm *LeaseManager) requestLeaseInternal(
 	ctx context.Context,
 	fileHandle lock.FileHandle,
@@ -238,6 +263,7 @@ func (lm *LeaseManager) requestLeaseInternal(
 	requestedState uint32,
 	isDirectory bool,
 	isTraditionalOplock bool,
+	statOpen bool,
 ) (grantedState uint32, epoch uint16, err error) {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
@@ -283,18 +309,27 @@ func (lm *LeaseManager) requestLeaseInternal(
 	lm.mu.Unlock()
 
 	// Dispatch to the appropriate Manager method so the new record's
-	// IsTraditionalOplock tag is set correctly. The LockManager interface
-	// deliberately stays narrow (no oplock variant): when the configured
-	// store is a *lock.Manager (the only production impl) and this is a
-	// traditional-oplock request, call the tagged method; otherwise fall
-	// through to the plain interface call so test doubles keep working.
-	if mgr, ok := lockMgr.(*lock.Manager); ok && isTraditionalOplock {
+	// IsTraditionalOplock tag and stat-open break-suppression are set
+	// correctly. The LockManager interface deliberately stays narrow (no
+	// oplock / stat-open variants): when the configured store is a
+	// *lock.Manager (the only production impl) call the tagged method;
+	// otherwise fall through to the plain interface call so test doubles keep
+	// working.
+	mgr, isConcrete := lockMgr.(*lock.Manager)
+	switch {
+	case isConcrete && isTraditionalOplock:
 		grantedState, epoch, err = mgr.RequestLeaseAsOplock(
 			ctx, fileHandle, leaseKey, parentLeaseKey,
 			ownerID, clientID, shareName,
 			requestedState, isDirectory,
 		)
-	} else {
+	case isConcrete && statOpen:
+		grantedState, epoch, err = mgr.RequestLeaseStatOpen(
+			ctx, fileHandle, leaseKey, parentLeaseKey,
+			ownerID, clientID, shareName,
+			requestedState, isDirectory,
+		)
+	default:
 		grantedState, epoch, err = lockMgr.RequestLease(
 			ctx, fileHandle, leaseKey, parentLeaseKey,
 			ownerID, clientID, shareName,

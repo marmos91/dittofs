@@ -244,6 +244,109 @@ func TestRequestLease_CrossKeyConflict(t *testing.T) {
 	assert.Equal(t, LeaseStateRead, state, "should grant R lease after break reduces existing to R")
 }
 
+// TestRequestLeaseStatOpen_NoBreakOnCrossKeyConflict pins the #751
+// smb2.lease.statopen4 fix. A stat-open requester (FILE_READ_ATTRIBUTES /
+// WRITE_ATTRIBUTES / READ_CONTROL / SYNCHRONIZE only) requesting its own lease
+// must NOT break an existing holder, even when OpLocksConflict would otherwise
+// report a conflict (existing has Write, requester wants Read). The stat-opener
+// receives the best coexisting state instead.
+//
+// Pre-fix, RequestLease dispatched a break against the existing RWH holder
+// whenever the holder still carried its Write bit at evaluation time — a
+// timing-dependent spurious break that statopen4's CHECK_NO_BREAK observes.
+// The negative control (TestRequestLease_CrossKeyConflict above) proves a
+// non-stat requester on the same shape DOES break, so this is not a blanket
+// suppression.
+func TestRequestLeaseStatOpen_NoBreakOnCrossKeyConflict(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	key1 := [16]byte{1, 0, 0, 0}
+	key2 := [16]byte{2, 0, 0, 0}
+	parentKey := [16]byte{}
+
+	var breakCount atomic.Int32
+	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(_ string, _ *UnifiedLock, _ uint32) {
+			breakCount.Add(1)
+		},
+	})
+
+	// Holder acquires RWH on file1.
+	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), key1, parentKey,
+		"owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state)
+
+	_, holderEpoch, ok := mgr.GetLeaseState(ctx, key1)
+	require.True(t, ok)
+
+	// A stat-open requester asks for RH on the same file with a different key.
+	// OpLocksConflict(existing=RWH, requested=RH) reports a conflict (Write vs
+	// Read), but the stat-open carve-out must suppress the break.
+	state, _, err = mgr.RequestLeaseStatOpen(ctx, FileHandle("file1"), key2, parentKey,
+		"owner2", "client2", "/share",
+		LeaseStateRead|LeaseStateHandle, false)
+	require.NoError(t, err)
+
+	assert.EqualValues(t, 0, breakCount.Load(),
+		"stat-open requester must NOT break the existing holder (#751)")
+
+	// The holder is untouched: state and epoch unchanged, not Breaking.
+	holderState, postEpoch, ok := mgr.GetLeaseState(ctx, key1)
+	require.True(t, ok)
+	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, holderState,
+		"holder lease state must be unchanged")
+	assert.Equal(t, holderEpoch, postEpoch,
+		"holder epoch must not advance when no break is dispatched")
+
+	// The stat-opener's grant is whatever coexists with the still-held RWH:
+	// since the holder keeps Write, Read caching cannot be granted, so the
+	// stat-opener gets None — but crucially WITHOUT having broken the holder.
+	// (The observable contract statopen4 asserts is CHECK_NO_BREAK, verified
+	// by breakCount==0 above; the grant value is secondary.)
+	t.Logf("stat-open grant against RWH holder = %s", LeaseStateToString(state))
+}
+
+// TestRequestLeaseStatOpen_CoexistsWithReadHandleHolder pins the positive case:
+// a stat-open requester against a non-Write holder (RH) both avoids the break
+// AND receives a coexisting RH grant — the common smb2.lease.statopen4 shape.
+func TestRequestLeaseStatOpen_CoexistsWithReadHandleHolder(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	key1 := [16]byte{1, 0, 0, 0}
+	key2 := [16]byte{2, 0, 0, 0}
+	parentKey := [16]byte{}
+
+	var breakCount atomic.Int32
+	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(_ string, _ *UnifiedLock, _ uint32) {
+			breakCount.Add(1)
+		},
+	})
+
+	// Holder acquires RH on file1 (no Write bit).
+	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), key1, parentKey,
+		"owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateHandle, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state)
+
+	// Stat-open requester asks for RH — coexists with the holder's RH.
+	state, _, err = mgr.RequestLeaseStatOpen(ctx, FileHandle("file1"), key2, parentKey,
+		"owner2", "client2", "/share",
+		LeaseStateRead|LeaseStateHandle, false)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, breakCount.Load(),
+		"stat-open requester must not break a coexisting RH holder (#751)")
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state,
+		"stat-opener should receive a coexisting RH grant")
+}
+
 // TestRequestLease_CrossKeyConflictOnAlreadyBreakingLease pins the
 // multichannel.leases.test3 fix (#436): when a lease is already in Breaking
 // state from a prior break path (the SMB CREATE handler dispatches

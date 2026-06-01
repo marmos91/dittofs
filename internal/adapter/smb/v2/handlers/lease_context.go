@@ -361,6 +361,7 @@ func ProcessLeaseCreateContext(
 	shareName string,
 	isDirectory bool,
 	disallowWriteLease bool,
+	statOpen bool,
 ) (*LeaseResponseContext, error) {
 	if leaseMgr == nil {
 		logger.Debug("ProcessLeaseCreateContext: no lease manager")
@@ -399,8 +400,15 @@ func ProcessLeaseCreateContext(
 		requestedState &^= lock.LeaseStateWrite
 	}
 
-	// Request the lease through LeaseManager (delegates to shared LockManager)
-	grantedState, epoch, err := leaseMgr.RequestLease(
+	// Request the lease through LeaseManager (delegates to shared LockManager).
+	// A stat-open requester routes through the break-suppressing variant so a
+	// cross-key conflict grants the best coexisting state without breaking the
+	// existing holder (MS-SMB2 §3.3.5.9.8 / Samba `is_lease_stat_open`, #751).
+	requestLease := leaseMgr.RequestLease
+	if statOpen {
+		requestLease = leaseMgr.RequestLeaseStatOpen
+	}
+	grantedState, epoch, err := requestLease(
 		ctx,
 		fileHandle,
 		leaseReq.LeaseKey,

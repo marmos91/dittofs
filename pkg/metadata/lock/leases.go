@@ -227,7 +227,7 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
 	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
 	return lm.requestLeaseImplWithMode(ctx, fileHandle, leaseKey, parentLeaseKey,
-		ownerID, clientID, shareName, requestedState, isDirectory, false)
+		ownerID, clientID, shareName, requestedState, isDirectory, false, false)
 }
 
 // requestLeaseImplWithMode is the underlying lease-grant implementation with
@@ -243,9 +243,22 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 //
 // And it propagates the flag onto the new record via `createAndGrantLease`
 // so subsequent grants can detect it.
+//
+// `suppressConflictBreak` carves out the stat-open case (MS-SMB2 §3.3.5.9.8 /
+// Samba `is_lease_stat_open` in source3/smbd/open.c). A stat-open requester
+// (FILE_READ_ATTRIBUTES / WRITE_ATTRIBUTES / READ_CONTROL / SYNCHRONIZE only)
+// wants to cache attributes alongside existing holders without forcing them to
+// drop their caches — so a cross-key conflict must NOT dispatch a break against
+// the existing holder. The stat-opener instead receives the best state it can
+// coexist with (`bestGrantableState`). Without this carve-out the break is
+// timing-dependent: it fires only while the existing holder still carries the
+// Write bit that the stat-opener's Read "conflicts" with, producing the
+// intermittent spurious break that smb2.lease.statopen4's CHECK_NO_BREAK
+// observes (#751).
 func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
 	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
-	requestedState uint32, isDirectory bool, isTraditionalOplock bool) (grantedState uint32, epoch uint16, err error) {
+	requestedState uint32, isDirectory bool, isTraditionalOplock bool,
+	suppressConflictBreak bool) (grantedState uint32, epoch uint16, err error) {
 
 	// Coerce no-Read caching combinations (W=0x04, H=0x02, HW=0x06) to
 	// LeaseState=None and grant successfully. Per Samba
@@ -493,6 +506,23 @@ func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle File
 		}
 
 		if OpLocksConflict(lock.Lease, requested) {
+			// Stat-open carve-out (Samba `is_lease_stat_open`): the requester
+			// only wants to cache attributes and must NOT force the existing
+			// holder to drop its caches. Skip the break entirely; the
+			// stat-opener falls through to bestGrantableState and receives the
+			// best state it can coexist with. Suppressing dispatch here (rather
+			// than at the CREATE layer alone) closes the timing window that made
+			// the break depend on whether the holder still carried its Write bit
+			// (#751 smb2.lease.statopen4 CHECK_NO_BREAK).
+			if suppressConflictBreak {
+				logger.Debug("RequestLease: stat-open requester, suppressing cross-key break",
+					"fileHandle", handleKey,
+					"existingKey", fmt.Sprintf("%x", lock.Lease.LeaseKey),
+					"existingState", LeaseStateToString(lock.Lease.LeaseState),
+					"requestedState", LeaseStateToString(requestedState))
+				continue
+			}
+
 			// CREATE-time SMB share-mode/disposition checks run before
 			// RqLs processing, so the cross-key conflicts that reach this
 			// path are non-violating, non-destructive lease conflicts —
