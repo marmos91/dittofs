@@ -557,26 +557,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 9: Release oplock/lease if held
-	// ========================================================================
-
-	// Release any lease/oplock record associated with this open. The gate
-	// previously checked openFile.OplockLevel != None, but an oplock that was
-	// broken-to-None has its OplockLevel updated to None on ACK (see
-	// handleOplockBreakAck) — gating on the demoted level would leave the
-	// synthetic-key lease record alive past CLOSE. Per Samba ack-to-None
-	// semantics the record IS kept alive at LeaseState=None until CLOSE
-	// removes it (Samba `share_mode_cleanup_disconnected`); CLOSE is the
-	// release point. Gate on LeaseKey instead so the same release runs for
-	// real leases (OplockLevelLease) and for traditional oplocks (LEVEL_II
-	// / Exclusive / Batch and their broken-to-None descendants). Required by
-	// smbtorture smb2.oplock.exclusive9 (multi-iter EXCLUSIVE+SUPERSEDE loop
-	// where each iter's tree1 ack-to-None must clean up before the next
-	// iter's tree1 EXCLUSIVE request).
-	h.releaseHandleLeaseRecord(ctx.Context, openFile, "CLOSE")
-
-	// ========================================================================
-	// Step 10: Unregister any pending CHANGE_NOTIFY watches
+	// Step 9: Unregister any pending CHANGE_NOTIFY watches
 	// ========================================================================
 	//
 	// If this is a directory with pending CHANGE_NOTIFY requests, unregister them.
@@ -628,7 +609,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 11: Remove the open file handle
+	// Step 10: Remove the open file handle
 	// ========================================================================
 
 	// WaitAndDeleteOpenFile drains in-flight operations (e.g., a concurrent
@@ -637,6 +618,38 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// goroutine on the same connection and causing a spurious FILE_CLOSED
 	// (smbtorture compound_find.compound_find_close).
 	h.WaitAndDeleteOpenFile(req.FileID)
+
+	// ========================================================================
+	// Step 11: Release oplock/lease if held
+	// ========================================================================
+
+	// Release any lease/oplock record associated with this open. The gate
+	// previously checked openFile.OplockLevel != None, but an oplock that was
+	// broken-to-None has its OplockLevel updated to None on ACK (see
+	// handleOplockBreakAck) — gating on the demoted level would leave the
+	// synthetic-key lease record alive past CLOSE. Per Samba ack-to-None
+	// semantics the record IS kept alive at LeaseState=None until CLOSE
+	// removes it (Samba `share_mode_cleanup_disconnected`); CLOSE is the
+	// release point. Gate on LeaseKey instead so the same release runs for
+	// real leases (OplockLevelLease) and for traditional oplocks (LEVEL_II
+	// / Exclusive / Batch and their broken-to-None descendants). Required by
+	// smbtorture smb2.oplock.exclusive9 (multi-iter EXCLUSIVE+SUPERSEDE loop
+	// where each iter's tree1 ack-to-None must clean up before the next
+	// iter's tree1 EXCLUSIVE request).
+	//
+	// MUST run AFTER WaitAndDeleteOpenFile (step 10), not before: when this
+	// holder closes its conflicting directory handle in response to a dir-lease
+	// break, ReleaseLeaseForHandle signals WaitForBreakCompletion waiters (the
+	// SET_INFO-rename dst-parent Handle-break wait). That waiter wakes and
+	// re-runs checkParentDirRenameConflict against h.files. If the lease
+	// release (and its signal) fired while this OpenFile were still in h.files,
+	// the woken rename would observe the stale holder and return a spurious
+	// STATUS_SHARING_VIOLATION instead of STATUS_OK — the intermittent
+	// smbtorture smb2.dirlease.rename_dst_parent phase-2 failure. Removing the
+	// OpenFile first makes the post-wait recheck see the shrunk table. This
+	// mirrors the SignalParkedCreates ordering below, which was already moved
+	// after the open-file removal for the dir-CREATE park path (v2_request).
+	h.releaseHandleLeaseRecord(ctx.Context, openFile, "CLOSE")
 
 	// Wake any parked dir-CREATE on this handle so it can re-evaluate
 	// share-mode against the now-shrunk open-file table. The signal MUST
