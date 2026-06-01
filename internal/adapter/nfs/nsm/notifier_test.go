@@ -23,9 +23,11 @@ func TestNotifyAllClients_OutboundFailure_DoesNotReleaseLocks(t *testing.T) {
 	tracker := lock.NewConnectionTracker(lock.ConnectionTrackerConfig{})
 	require.NoError(t, tracker.RegisterClient("clientA", "nlm", "10.0.0.1:0", 0))
 	// Mark the client as NSM-monitored with a callback target that cannot be
-	// reached, so SendNotify fails.
+	// reached, so SendNotify fails. Use a localhost port with no listener so the
+	// dial is refused immediately rather than blocking the full CallbackTimeout
+	// against an unroutable host (which made the test slow/flaky in CI).
 	tracker.UpdateNSMInfo("clientA", "clientA", [16]byte{}, &lock.NSMCallback{
-		Hostname: "192.0.2.1:0", // TEST-NET-1, guaranteed unroutable
+		Hostname: "127.0.0.1:1", // no listener — connection refused immediately
 		Program:  100021,
 		Version:  4,
 		Proc:     1,
