@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -313,6 +314,35 @@ type AdminConfig struct {
 	PasswordHash string `mapstructure:"password_hash" yaml:"password_hash,omitempty"`
 }
 
+// redactedSecret is the sentinel substituted for sensitive fields when the
+// config is serialized for display (e.g. `dfs config show`). It is never
+// parsed back on the load path, which uses mapstructure/viper rather than
+// json/yaml Unmarshal of these types.
+const redactedSecret = "********"
+
+// MarshalYAML redacts the admin password hash when the config is serialized
+// for display. An empty hash stays empty so "unset" is distinguishable from a
+// redacted value.
+func (c AdminConfig) MarshalYAML() (interface{}, error) {
+	type alias AdminConfig // avoid infinite recursion
+	out := alias(c)
+	if out.PasswordHash != "" {
+		out.PasswordHash = redactedSecret
+	}
+	return out, nil
+}
+
+// MarshalJSON redacts the admin password hash when the config is serialized
+// for display. See MarshalYAML.
+func (c AdminConfig) MarshalJSON() ([]byte, error) {
+	type alias AdminConfig // avoid infinite recursion
+	out := alias(c)
+	if out.PasswordHash != "" {
+		out.PasswordHash = redactedSecret
+	}
+	return json.Marshal(out)
+}
+
 // KerberosConfig contains Kerberos/RPCSEC_GSS authentication configuration.
 //
 // When Enabled is true, the NFS server supports Kerberos authentication
@@ -544,17 +574,34 @@ func setupViper(v *viper.Viper, configPath string) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
-	// Explicitly bind env vars for nested struct fields.
-	// Viper's AutomaticEnv + Unmarshal doesn't resolve env vars for nested keys
-	// unless they are explicitly bound or accessed via Get().
-	_ = v.BindEnv("database.postgres.host")
-	_ = v.BindEnv("database.postgres.port")
-	_ = v.BindEnv("database.postgres.database")
-	_ = v.BindEnv("database.postgres.user")
-	_ = v.BindEnv("database.postgres.password")
-	_ = v.BindEnv("database.postgres.sslmode")
-	_ = v.BindEnv("controlplane.secret")
-	_ = v.BindEnv("controlplane.pprof")
+	// Bind every config key for AutomaticEnv resolution.
+	//
+	// Viper's AutomaticEnv + Unmarshal only honours an env var for a key
+	// that is already known to viper (present in the config file, a
+	// SetDefault, or an explicit BindEnv). Any key absent from the file
+	// is otherwise silently dropped from the env — so e.g. a container
+	// setting DITTOFS_DATABASE_TYPE=postgres with `type` omitted from the
+	// file would be ignored and the server would silently boot on SQLite.
+	//
+	// To make env precedence reliable for the whole config surface we
+	// reflect over the default Config struct and BindEnv every nested
+	// mapstructure key path (dot-separated; the key replacer above maps
+	// "." -> "_" so database.postgres.ssl_root_cert binds
+	// DITTOFS_DATABASE_POSTGRES_SSL_ROOT_CERT).
+	for _, key := range configEnvKeys() {
+		_ = v.BindEnv(key)
+	}
+
+	// DITTOFS_CONTROLPLANE_SECRET is documented as a first-class override
+	// for the JWT signing key. The struct field is JWTConfig.Secret nested
+	// under controlplane.jwt, i.e. viper key controlplane.jwt.secret — so the
+	// documented short form must bind to THAT key, not controlplane.secret
+	// (which no struct field reads). Pass both the documented short form and
+	// the auto long form explicitly: a second BindEnv overwrites the env-var
+	// list set by the reflective configEnvKeys() walk (which bound the long
+	// form DITTOFS_CONTROLPLANE_JWT_SECRET), so we must re-list it here to
+	// keep both forms working.
+	_ = v.BindEnv("controlplane.jwt.secret", "DITTOFS_CONTROLPLANE_SECRET", "DITTOFS_CONTROLPLANE_JWT_SECRET")
 
 	// Configure config file search
 	if configPath != "" {
@@ -567,6 +614,79 @@ func setupViper(v *viper.Viper, configPath string) {
 		v.SetConfigName("config")
 		v.SetConfigType("yaml") // Primary format
 	}
+}
+
+// configEnvKeys returns every dot-separated mapstructure key path in the
+// Config struct, so each can be bound for AutomaticEnv resolution. Nested
+// structs are walked recursively; leaf fields (including maps and slices)
+// contribute their own key. Maps with dynamic keys (e.g. the Kerberos
+// static_map) bind at the container level only — env cannot address
+// arbitrary map entries.
+func configEnvKeys() []string {
+	var keys []string
+	collectMapstructureKeys(reflect.TypeOf(Config{}), "", &keys)
+	return keys
+}
+
+// collectMapstructureKeys recursively appends the mapstructure key paths of t
+// (rooted at prefix) to out.
+func collectMapstructureKeys(t reflect.Type, prefix string, out *[]string) {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return
+	}
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+
+		tag := field.Tag.Get("mapstructure")
+		// Strip mapstructure options like ",squash"/",omitempty".
+		name := tag
+		if comma := strings.IndexByte(name, ','); comma >= 0 {
+			name = name[:comma]
+		}
+		if name == "" {
+			// Untagged exported field: skip — it has no stable key.
+			continue
+		}
+
+		key := name
+		if prefix != "" {
+			key = prefix + "." + name
+		}
+
+		ft := field.Type
+		for ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
+
+		// Recurse into nested structs (but not time.Duration, which is a
+		// named int64, nor stdlib structs we treat as leaves). A struct
+		// with mapstructure-tagged fields is a nested namespace.
+		if ft.Kind() == reflect.Struct && ft != reflect.TypeOf(time.Duration(0)) && hasMapstructureFields(ft) {
+			collectMapstructureKeys(ft, key, out)
+			continue
+		}
+
+		*out = append(*out, key)
+	}
+}
+
+// hasMapstructureFields reports whether t has at least one exported field with
+// a mapstructure tag, i.e. it is a config namespace worth recursing into.
+func hasMapstructureFields(t reflect.Type) bool {
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.IsExported() && f.Tag.Get("mapstructure") != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // readConfigFile reads the configuration file if it exists.

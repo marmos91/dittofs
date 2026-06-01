@@ -1,11 +1,18 @@
 package api
 
 import (
+	"encoding/json"
 	"os"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 )
+
+// redactedSecret is the sentinel substituted for sensitive fields when a
+// config struct is serialized for display (e.g. `dfs config show`). It is
+// never parsed back on the load path, which uses mapstructure/viper rather
+// than json/yaml Unmarshal of these types.
+const redactedSecret = "********"
 
 // EnvControlPlaneSecret is the name of the environment variable for the control plane's JWT authentication signing secret.
 const EnvControlPlaneSecret = "DITTOFS_CONTROLPLANE_SECRET"
@@ -59,6 +66,29 @@ type JWTConfig struct {
 	// RefreshTokenDuration is the lifetime of refresh tokens.
 	// Default: 168h (7 days)
 	RefreshTokenDuration time.Duration `mapstructure:"refresh_token_duration" yaml:"refresh_token_duration"`
+}
+
+// MarshalYAML redacts the JWT signing secret when the config is serialized
+// for display. Only the secret is masked; an empty secret stays empty so
+// "no secret configured" is distinguishable from a redacted one.
+func (c JWTConfig) MarshalYAML() (interface{}, error) {
+	type alias JWTConfig // avoid infinite recursion
+	out := alias(c)
+	if out.Secret != "" {
+		out.Secret = redactedSecret
+	}
+	return out, nil
+}
+
+// MarshalJSON redacts the JWT signing secret when the config is serialized
+// for display. See MarshalYAML.
+func (c JWTConfig) MarshalJSON() ([]byte, error) {
+	type alias JWTConfig // avoid infinite recursion
+	out := alias(c)
+	if out.Secret != "" {
+		out.Secret = redactedSecret
+	}
+	return json.Marshal(out)
 }
 
 // applyDefaults fills in zero values with sensible defaults.

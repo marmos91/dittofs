@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -35,20 +36,49 @@ const (
 type SQLiteConfig struct {
 	// Path is the path to the SQLite database file.
 	// Default: $XDG_CONFIG_HOME/dittofs/controlplane.db
-	Path string
+	Path string `mapstructure:"path" yaml:"path"`
 }
 
 // PostgresConfig contains PostgreSQL-specific configuration.
 type PostgresConfig struct {
-	Host         string
-	Port         int
-	Database     string
-	User         string
-	Password     string
-	SSLMode      string // disable, require, verify-ca, verify-full
-	SSLRootCert  string
-	MaxOpenConns int
-	MaxIdleConns int
+	Host         string `mapstructure:"host" yaml:"host"`
+	Port         int    `mapstructure:"port" yaml:"port"`
+	Database     string `mapstructure:"database" yaml:"database"`
+	User         string `mapstructure:"user" yaml:"user"`
+	Password     string `mapstructure:"password" yaml:"password"`
+	SSLMode      string `mapstructure:"sslmode" yaml:"sslmode"` // disable, require, verify-ca, verify-full
+	SSLRootCert  string `mapstructure:"ssl_root_cert" yaml:"ssl_root_cert"`
+	MaxOpenConns int    `mapstructure:"max_open_conns" yaml:"max_open_conns"`
+	MaxIdleConns int    `mapstructure:"max_idle_conns" yaml:"max_idle_conns"`
+}
+
+// redactedSecret is the sentinel substituted for the postgres password when
+// the config is serialized for display (e.g. `dfs config show`). It is never
+// parsed back on the load path, which uses mapstructure/viper rather than
+// json/yaml Unmarshal of this type.
+const redactedSecret = "********"
+
+// MarshalYAML redacts the postgres password when the config is serialized for
+// display. An empty password stays empty so "unset" is distinguishable from a
+// redacted value.
+func (c PostgresConfig) MarshalYAML() (interface{}, error) {
+	type alias PostgresConfig // avoid infinite recursion
+	out := alias(c)
+	if out.Password != "" {
+		out.Password = redactedSecret
+	}
+	return out, nil
+}
+
+// MarshalJSON redacts the postgres password when the config is serialized for
+// display. See MarshalYAML.
+func (c PostgresConfig) MarshalJSON() ([]byte, error) {
+	type alias PostgresConfig // avoid infinite recursion
+	out := alias(c)
+	if out.Password != "" {
+		out.Password = redactedSecret
+	}
+	return json.Marshal(out)
 }
 
 // DSN returns the PostgreSQL connection string.
@@ -68,9 +98,9 @@ func (c *PostgresConfig) DSN() string {
 
 // Config contains database configuration.
 type Config struct {
-	Type     DatabaseType
-	SQLite   SQLiteConfig
-	Postgres PostgresConfig
+	Type     DatabaseType   `mapstructure:"type" yaml:"type"`
+	SQLite   SQLiteConfig   `mapstructure:"sqlite" yaml:"sqlite"`
+	Postgres PostgresConfig `mapstructure:"postgres" yaml:"postgres"`
 }
 
 // ApplyDefaults fills in missing configuration with default values.
