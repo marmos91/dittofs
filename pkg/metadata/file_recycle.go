@@ -133,6 +133,22 @@ func (s *MetadataService) recycleNode(ctx *AuthContext, shareName string, parent
 // treated as success followed by a re-lookup. Returns the child's handle.
 func (s *MetadataService) ensureChildDir(ctx *AuthContext, parentHandle FileHandle, name string, perm uint32) (FileHandle, error) {
 	if h, err := s.GetChild(ctx.Context, parentHandle, name); err == nil {
+		// An existing child must actually be a directory. A regular file (or
+		// other non-dir) squatting at the expected path would otherwise be
+		// returned as a "bin" subtree, and the subsequent Move/CreateDirectory
+		// against it would fail later with a confusing error. Surface a clear
+		// ErrNotDirectory at the point of detection instead.
+		existing, getErr := s.GetFile(ctx.Context, h)
+		if getErr != nil {
+			return nil, getErr
+		}
+		if existing.Type != FileTypeDirectory {
+			return nil, &StoreError{
+				Code:    ErrNotDirectory,
+				Message: "recycle path component is not a directory: " + name,
+				Path:    existing.Path,
+			}
+		}
 		return h, nil
 	}
 	attr := &FileAttr{Type: FileTypeDirectory, Mode: perm}

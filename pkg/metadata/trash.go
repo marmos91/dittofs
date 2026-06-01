@@ -1,6 +1,26 @@
 package metadata
 
-import "path"
+import (
+	"fmt"
+	"path"
+)
+
+// ValidateExcludePatterns reports the first malformed glob in patterns, or nil
+// when every pattern is a valid path.Match glob. Excluded() is deliberately
+// tolerant at match time (a bad glob simply never matches), so invalid patterns
+// must be rejected at the point they are SET — otherwise a typo'd exclude
+// (e.g. "[") silently never matches and the operator's intent is lost. The
+// share create/update handlers call this before persisting TrashExcludePatterns.
+func ValidateExcludePatterns(patterns []string) error {
+	for _, pat := range patterns {
+		// path.Match only ever returns ErrBadPattern; the probe target is
+		// irrelevant — we just need Match to parse the pattern.
+		if _, err := path.Match(pat, "probe"); err != nil {
+			return fmt.Errorf("invalid exclude pattern %q: %w", pat, err)
+		}
+	}
+	return nil
+}
 
 // RecycleDirName is the reserved per-share recycle-bin directory (Synology
 // convention). Created lazily at the share root when trash is enabled.

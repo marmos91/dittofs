@@ -394,6 +394,10 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:                        now,
 		UpdatedAt:                        now,
 	}
+	if err := metadata.ValidateExcludePatterns(req.TrashExcludePatterns); err != nil {
+		BadRequest(w, err.Error())
+		return
+	}
 	share.SetTrashExcludePatterns(req.TrashExcludePatterns)
 
 	// Set blocked operations
@@ -602,6 +606,10 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		share.TrashMaxBytes = *req.TrashMaxBytes
 	}
 	if req.TrashExcludePatterns != nil {
+		if err := metadata.ValidateExcludePatterns(req.TrashExcludePatterns); err != nil {
+			BadRequest(w, err.Error())
+			return
+		}
 		share.SetTrashExcludePatterns(req.TrashExcludePatterns)
 	}
 	if req.DefaultPermission != nil {
