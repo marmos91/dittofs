@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
+	vipermapstructure "github.com/go-viper/mapstructure/v2"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
@@ -57,10 +59,6 @@ type Config struct {
 	// This is used by 'dittofs init' to set up the first admin user
 	Admin AdminConfig `mapstructure:"admin" yaml:"admin"`
 
-	// Lock contains lock manager configuration
-	// Controls lock limits, timeouts, and behavior
-	Lock LockConfig `mapstructure:"lock" yaml:"lock"`
-
 	// Kerberos contains Kerberos/RPCSEC_GSS authentication configuration.
 	// When enabled, NFS clients can authenticate using Kerberos tickets
 	// via the RPCSEC_GSS protocol (RFC 2203).
@@ -68,10 +66,6 @@ type Config struct {
 	//   DITTOFS_KERBEROS_KEYTAB overrides KeytabPath (DITTOFS_KERBEROS_KEYTAB_PATH for compat)
 	//   DITTOFS_KERBEROS_PRINCIPAL overrides ServicePrincipal (DITTOFS_KERBEROS_SERVICE_PRINCIPAL for compat)
 	Kerberos KerberosConfig `mapstructure:"kerberos" yaml:"kerberos"`
-
-	// Syncer configures the engine.Syncer claim/upload cycle.
-	// These knobs apply globally to every share's *engine.Store syncer.
-	Syncer SyncerConfig `mapstructure:"syncer" yaml:"syncer"`
 
 	// Blockstore configures local/remote blockstore tunables.
 	Blockstore BlockstoreConfig `mapstructure:"blockstore" yaml:"blockstore"`
@@ -83,53 +77,6 @@ type Config struct {
 	// Snapshot configures the snapshot create orchestration. Knobs apply
 	// to every Runtime.CreateSnapshot invocation.
 	Snapshot SnapshotConfig `mapstructure:"snapshot" yaml:"snapshot"`
-}
-
-// SyncerConfig configures the engine.Syncer claim/upload cycle. Knobs
-// cover the restart-recovery janitor, the periodic-only sync trigger,
-// and the bounded share-wide upload pool.
-//
-// The `claim_batch_size` mapstructure/yaml tag has been removed; viper
-// silently ignores it on existing config files (unknown keys do not
-// error).
-type SyncerConfig struct {
-	// UploadConcurrency is the per-share upload goroutine pool size.
-	// Caps S3 connections per share; predictable throughput.
-	// Default: 8.
-	UploadConcurrency int `mapstructure:"upload_concurrency" yaml:"upload_concurrency"`
-
-	// ClaimTimeout bounds how long a row may remain in Syncing before the
-	// restart-recovery janitor requeues it back to Pending. CAS
-	// idempotency makes a duplicate re-upload a benign no-op.
-	// Default: 10 minutes.
-	ClaimTimeout time.Duration `mapstructure:"claim_timeout" yaml:"claim_timeout"`
-
-	// Tick is the periodic uploader cadence. The local-store pressure
-	// channel also drives sync drains independently.
-	// Default: 30 seconds.
-	Tick time.Duration `mapstructure:"tick" yaml:"tick"`
-}
-
-// ApplyDefaults fills any zero-valued field with the defaults.
-func (c *SyncerConfig) ApplyDefaults() {
-	if c.UploadConcurrency <= 0 {
-		c.UploadConcurrency = 8
-	}
-	if c.ClaimTimeout <= 0 {
-		c.ClaimTimeout = 10 * time.Minute
-	}
-	if c.Tick <= 0 {
-		c.Tick = 30 * time.Second
-	}
-}
-
-// Validate returns an error if the SyncerConfig has invalid values. Negative
-// or zero concurrency is nonsensical.
-func (c *SyncerConfig) Validate() error {
-	if c.UploadConcurrency <= 0 {
-		return fmt.Errorf("syncer.upload_concurrency must be > 0 (got %d)", c.UploadConcurrency)
-	}
-	return nil
 }
 
 // GCConfig configures the engine.CollectGarbage mark-sweep run. Knobs
@@ -219,42 +166,6 @@ func (c *SnapshotConfig) Validate() error {
 		return fmt.Errorf("snapshot.restore_http_timeout must be >= 0 (got %s)", c.RestoreHTTPTimeout)
 	}
 	return nil
-}
-
-// LockConfig contains lock manager configuration.
-// These settings control lock limits, timeouts, and behavior across
-// all protocols (NLM, SMB, NFSv4).
-type LockConfig struct {
-	// MaxLocksPerFile is the maximum number of locks allowed on a single file.
-	// Default: 1000
-	MaxLocksPerFile int `mapstructure:"max_locks_per_file" yaml:"max_locks_per_file"`
-
-	// MaxLocksPerClient is the maximum number of locks a single client can hold.
-	// Default: 10000
-	MaxLocksPerClient int `mapstructure:"max_locks_per_client" yaml:"max_locks_per_client"`
-
-	// MaxTotalLocks is the maximum total locks across all files and clients.
-	// Default: 100000
-	MaxTotalLocks int `mapstructure:"max_total_locks" yaml:"max_total_locks"`
-
-	// BlockingTimeout is the server-side timeout for blocking lock requests.
-	// Default: 60s
-	BlockingTimeout time.Duration `mapstructure:"blocking_timeout" yaml:"blocking_timeout"`
-
-	// GracePeriodDuration is the duration of the grace period after server restart.
-	// Default: 90s
-	GracePeriodDuration time.Duration `mapstructure:"grace_period" yaml:"grace_period"`
-
-	// MandatoryLocking controls whether locks are mandatory or advisory.
-	// Default: false (advisory)
-	MandatoryLocking bool `mapstructure:"mandatory_locking" yaml:"mandatory_locking"`
-
-	// LeaseBreakTimeout is how long to wait for SMB lease breaks before proceeding.
-	// This is the maximum time NFS/NLM operations will wait for an SMB client to
-	// acknowledge a lease break and flush cached data.
-	// Default: 35s (SMB2 spec maximum, MS-SMB2 2.2.23)
-	// Set to 5s for faster CI tests via: DITTOFS_LOCK_LEASE_BREAK_TIMEOUT=5s
-	LeaseBreakTimeout time.Duration `mapstructure:"lease_break_timeout" yaml:"lease_break_timeout"`
 }
 
 // LoggingConfig controls logging behavior.
@@ -390,6 +301,34 @@ type KerberosConfig struct {
 	IdentityMapping IdentityMappingConfig `mapstructure:"identity_mapping" yaml:"identity_mapping"`
 }
 
+// Validate returns an error if the KerberosConfig has invalid values.
+//
+// Negative durations/counts are rejected (0 means "use the default", applied
+// in ApplyDefaults): a negative ContextTTL would expire every live GSS context
+// on each cleanup sweep (auth-availability churn), and a negative MaxClockSkew
+// would reject otherwise-valid tickets. The identity-mapping Strategy is
+// validated against the supported set (only "static" is implemented;
+// BuildStaticMapper ignores any other value, so an unvalidated typo silently
+// degrades to static mapping).
+func (c *KerberosConfig) Validate() error {
+	if c.ContextTTL < 0 {
+		return fmt.Errorf("kerberos.context_ttl must be >= 0 (got %v); 0 uses the default", c.ContextTTL)
+	}
+	if c.MaxClockSkew < 0 {
+		return fmt.Errorf("kerberos.max_clock_skew must be >= 0 (got %v); 0 uses the default", c.MaxClockSkew)
+	}
+	if c.MaxContexts < 0 {
+		return fmt.Errorf("kerberos.max_contexts must be >= 0 (got %d); 0 uses the default", c.MaxContexts)
+	}
+	switch c.IdentityMapping.Strategy {
+	case "", "static":
+		// "" is normalized to "static" in ApplyDefaults.
+	default:
+		return fmt.Errorf("kerberos.identity_mapping.strategy %q is not supported (only \"static\")", c.IdentityMapping.Strategy)
+	}
+	return nil
+}
+
 // IdentityMappingConfig controls how Kerberos principals are mapped to Unix UID/GID.
 //
 // The mapping strategy determines how authenticated Kerberos principals
@@ -485,10 +424,24 @@ func Load(configPath string) (*Config, error) {
 		return GetDefaultConfig(), nil
 	}
 
-	// Unmarshal into config struct with custom decode hooks
+	// Unmarshal into config struct with custom decode hooks.
+	//
+	// Capture unknown keys via decoder Metadata and log them as a warning
+	// rather than silently dropping them — this surfaces typos and stale keys
+	// from removed config trees (e.g. the deleted `lock:`/`syncer:` sections or
+	// a `cache:` block) without hard-failing boot on an otherwise-valid config
+	// that still carries a legacy key (upgrade safety).
+	var md vipermapstructure.Metadata
 	var cfg Config
-	if err := v.Unmarshal(&cfg, viper.DecodeHook(configDecodeHooks())); err != nil {
+	if err := v.Unmarshal(&cfg,
+		viper.DecodeHook(configDecodeHooks()),
+		func(dc *vipermapstructure.DecoderConfig) { dc.Metadata = &md },
+	); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	}
+	if len(md.Unused) > 0 {
+		sort.Strings(md.Unused)
+		fmt.Fprintf(os.Stderr, "WARNING: config contains unknown keys (ignored): %s\n", strings.Join(md.Unused, ", "))
 	}
 
 	// Apply defaults for any missing values

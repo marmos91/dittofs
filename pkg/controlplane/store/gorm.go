@@ -163,6 +163,16 @@ func (c *Config) Validate() error {
 		if c.Postgres.User == "" {
 			return fmt.Errorf("postgres user is required")
 		}
+		// A negative pool size is silently treated by database/sql as
+		// "unlimited" (SetMaxOpenConns(n<=0)), which removes the
+		// connection-count safety cap entirely. Reject negative values; 0
+		// means "use the default" (applied in ApplyDefaults).
+		if c.Postgres.MaxOpenConns < 0 {
+			return fmt.Errorf("postgres max_open_conns must be >= 0 (got %d); 0 uses the default", c.Postgres.MaxOpenConns)
+		}
+		if c.Postgres.MaxIdleConns < 0 {
+			return fmt.Errorf("postgres max_idle_conns must be >= 0 (got %d); 0 uses the default", c.Postgres.MaxIdleConns)
+		}
 	default:
 		return fmt.Errorf("unsupported database type: %s", c.Type)
 	}

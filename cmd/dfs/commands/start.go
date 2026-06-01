@@ -188,9 +188,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 		GracePeriod:      cfg.GC.GracePeriod,
 		DryRunSampleSize: cfg.GC.DryRunSampleSize,
 	})
-	// Wire operator-configured snapshot knobs into the runtime so
-	// Runtime.CreateSnapshot picks up the validated values from config.
-	rt.SetSnapshotDefaults(runtime.SnapshotDefaults{})
 	// gc.interval is parsed and validated but no periodic-GC scheduler is
 	// wired in v0.15.0 — the docs were updated to reflect the deferred
 	// status, and any operator who configured a non-zero value gets a

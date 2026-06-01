@@ -106,10 +106,10 @@ format = "json"
 [database]
 type = "sqlite"
 
-[api]
+[controlplane]
 port = 8080
 
-[api.jwt]
+[controlplane.jwt]
 secret = "test-secret-key-for-testing-minimum-32-chars"
 `
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
@@ -126,6 +126,33 @@ secret = "test-secret-key-for-testing-minimum-32-chars"
 	}
 	if cfg.Logging.Format != "json" {
 		t.Errorf("Expected format 'json', got %q", cfg.Logging.Format)
+	}
+}
+
+func TestLoad_IgnoresUnknownKey(t *testing.T) {
+	// An unknown top-level key (a typo or a stale section from a removed
+	// config tree like the deleted `lock:`/`syncer:` blocks or a `cache:`
+	// block) must NOT hard-fail boot — it is logged as a warning and
+	// ignored, so an otherwise-valid config from an older version still
+	// loads (upgrade safety).
+	cases := map[string]string{
+		"cache":  "cache:\n  size: 100\n",
+		"lock":   "lock:\n  lease_break_timeout: 5s\n",
+		"syncer": "syncer:\n  upload_concurrency: 4\n",
+		"typo":   "loging:\n  level: DEBUG\n",
+	}
+	for name, extra := range cases {
+		t.Run(name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			configPath := filepath.Join(tmpDir, "config.yaml")
+			content := "logging:\n  level: INFO\n  format: text\n  output: stdout\ndatabase:\n  type: sqlite\n" + extra
+			if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			if _, err := Load(configPath); err != nil {
+				t.Fatalf("Load must tolerate unknown key %q (warn, not fail), got %v", name, err)
+			}
+		})
 	}
 }
 

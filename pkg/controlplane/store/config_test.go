@@ -70,6 +70,44 @@ func TestApplyDefaults_SQLitePath(t *testing.T) {
 	}
 }
 
+func TestValidate_PostgresPoolSize(t *testing.T) {
+	base := func() *Config {
+		return &Config{
+			Type: DatabaseTypePostgres,
+			Postgres: PostgresConfig{
+				Host:     "db.example.com",
+				Database: "dittofs",
+				User:     "dittofs",
+			},
+		}
+	}
+
+	t.Run("NegativeMaxOpenConnsRejected", func(t *testing.T) {
+		cfg := base()
+		cfg.Postgres.MaxOpenConns = -1
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected negative max_open_conns to be rejected (negative disables the connection cap)")
+		}
+	})
+
+	t.Run("NegativeMaxIdleConnsRejected", func(t *testing.T) {
+		cfg := base()
+		cfg.Postgres.MaxIdleConns = -1
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected negative max_idle_conns to be rejected")
+		}
+	})
+
+	t.Run("ZeroAndPositiveAccepted", func(t *testing.T) {
+		cfg := base()
+		cfg.Postgres.MaxOpenConns = 0 // 0 = use default
+		cfg.Postgres.MaxIdleConns = 10
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("expected zero/positive pool sizes to validate, got %v", err)
+		}
+	})
+}
+
 func TestApplyDefaults_PreservesExplicitPath(t *testing.T) {
 	customPath := "/custom/path/to/db.sqlite"
 	cfg := &Config{

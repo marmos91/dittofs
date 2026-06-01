@@ -3,6 +3,9 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
 func TestValidate_ValidConfig(t *testing.T) {
@@ -85,4 +88,78 @@ func TestValidate_LogLevelNormalization(t *testing.T) {
 	if cfg.Logging.Level != "INFO" {
 		t.Errorf("Expected ApplyDefaults to normalize 'info' to 'INFO', got %q", cfg.Logging.Level)
 	}
+}
+
+func TestValidate_DatabaseInFanOut(t *testing.T) {
+	t.Run("UnsupportedType", func(t *testing.T) {
+		cfg := GetDefaultConfig()
+		cfg.Database.Type = "mysql"
+		if err := Validate(cfg); err == nil {
+			t.Fatal("expected Validate to reject unsupported database.type via Database.Validate fan-out")
+		}
+	})
+
+	t.Run("PostgresMissingHost", func(t *testing.T) {
+		cfg := GetDefaultConfig()
+		cfg.Database = store.Config{
+			Type: store.DatabaseTypePostgres,
+			Postgres: store.PostgresConfig{
+				// Host omitted on purpose.
+				Database: "dittofs",
+				User:     "dittofs",
+			},
+		}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("expected Validate to reject postgres config missing host")
+		}
+		if !strings.Contains(err.Error(), "host") {
+			t.Errorf("expected host error, got %v", err)
+		}
+	})
+}
+
+func TestValidate_KerberosInFanOut(t *testing.T) {
+	t.Run("NegativeContextTTL", func(t *testing.T) {
+		cfg := GetDefaultConfig()
+		cfg.Kerberos.ContextTTL = -1 * time.Second
+		if err := Validate(cfg); err == nil {
+			t.Fatal("expected Validate to reject negative kerberos.context_ttl")
+		}
+	})
+
+	t.Run("NegativeMaxClockSkew", func(t *testing.T) {
+		cfg := GetDefaultConfig()
+		cfg.Kerberos.MaxClockSkew = -1 * time.Second
+		if err := Validate(cfg); err == nil {
+			t.Fatal("expected Validate to reject negative kerberos.max_clock_skew")
+		}
+	})
+
+	t.Run("NegativeMaxContexts", func(t *testing.T) {
+		cfg := GetDefaultConfig()
+		cfg.Kerberos.MaxContexts = -1
+		if err := Validate(cfg); err == nil {
+			t.Fatal("expected Validate to reject negative kerberos.max_contexts")
+		}
+	})
+
+	t.Run("UnsupportedStrategy", func(t *testing.T) {
+		cfg := GetDefaultConfig()
+		cfg.Kerberos.IdentityMapping.Strategy = "ldap"
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("expected Validate to reject unsupported identity-mapping strategy")
+		}
+		if !strings.Contains(err.Error(), "strategy") {
+			t.Errorf("expected strategy error, got %v", err)
+		}
+	})
+
+	t.Run("DefaultStrategyPasses", func(t *testing.T) {
+		cfg := GetDefaultConfig() // strategy defaulted to "static"
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("expected default (static) strategy to pass, got %v", err)
+		}
+	})
 }
