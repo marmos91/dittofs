@@ -270,7 +270,6 @@ Configures JWT authentication and admin user.
 | `identity.jwt.secretRef` | SecretKeySelector | - | **Yes** (if jwt configured) | Reference to Secret containing JWT signing secret (at least 32 characters) |
 | `identity.jwt.accessTokenDuration` | string | `15m` | No | Access token duration (e.g., `15m`, `1h`) |
 | `identity.jwt.refreshTokenDuration` | string | `168h` | No | Refresh token duration (e.g., `168h` for 7 days) |
-| `identity.jwt.issuer` | string | `dittofs` | No | Token issuer claim |
 
 **Admin Configuration (`identity.admin`):**
 

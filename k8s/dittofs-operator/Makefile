@@ -56,10 +56,10 @@ sync-chart-crds: ## Copy generated CRDs into the Helm chart crds/ dir (Helm crds
 
 .PHONY: manifests-verify
 manifests-verify: manifests generate sync-chart-crds ## Verify generated CRDs/deepcopy/chart-CRDs are in sync with the source markers (CI no-diff gate).
-	@if [ -n "$$(git status --porcelain config/crd api chart/crds)" ]; then \
+	@if [ -n "$$(git status --porcelain config/crd config/rbac api chart/crds)" ]; then \
 		echo "ERROR: generated manifests are out of date. Run 'make manifests generate sync-chart-crds' and commit the result."; \
-		git --no-pager diff config/crd api chart/crds; \
-		git status --porcelain config/crd api chart/crds; \
+		git --no-pager diff config/crd config/rbac api chart/crds; \
+		git status --porcelain config/crd config/rbac api chart/crds; \
 		exit 1; \
 	fi
 	@echo "Generated manifests are in sync."
