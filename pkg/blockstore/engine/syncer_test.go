@@ -930,12 +930,6 @@ func newCascadeCoordinator() *cascadeCoordinator {
 	}
 }
 
-func (c *cascadeCoordinator) seed(hash blockstore.ContentHash, count uint32) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.counts[hash] = count
-}
-
 // seedBlock binds the reap-path row ID "{payloadID}/{offset}" to hash and seeds
 // the hash's count, so a by-ID reap can resolve and decrement it.
 func (c *cascadeCoordinator) seedBlock(payloadID string, offset uint64, hash blockstore.ContentHash, count uint32) {

@@ -41,12 +41,6 @@ func newRefcountCoordinator() *refcountCoordinator {
 	}
 }
 
-func (c *refcountCoordinator) seed(hash blockstore.ContentHash, count uint32) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.counts[hash] = count
-}
-
 // seedBlock seeds a hash count AND binds the reap-path row ID
 // "{payloadID}/{offset}" to that hash, so a by-ID reap can resolve and
 // decrement the hash's count.

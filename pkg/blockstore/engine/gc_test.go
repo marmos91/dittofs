@@ -683,6 +683,95 @@ func TestGCMarkSweep_CrossFileDedupKeepAlive(t *testing.T) {
 	if stats.ObjectsSwept != 0 {
 		t.Errorf("ObjectsSwept = %d, want 0 (shared chunk still referenced by file-B)", stats.ObjectsSwept)
 	}
+
+	// Second phase: delete file B too. Now NO row anywhere carries H, so the
+	// hash leaves the live set and the next sweep reclaims the chunk. This
+	// completes the keep-alive proof — the chunk dies only when the LAST
+	// referencing row is reaped.
+	if err := bs.Delete(ctx, "file-B", []blockstore.BlockRef{{Hash: shared, Offset: 0, Size: uint32(mib)}}); err != nil {
+		t.Fatalf("Delete file-B: %v", err)
+	}
+	if hashInLiveSet(t, ctx, st, shared) {
+		t.Fatalf("shared hash still in EnumerateFileBlocks after deleting BOTH files; want gone (last row reaped)")
+	}
+	stats2 := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	if stats2.ErrorCount != 0 {
+		t.Fatalf("phase-2 ErrorCount = %d; FirstErrors=%v", stats2.ErrorCount, stats2.FirstErrors)
+	}
+	if _, err := rs.Get(ctx, shared); err == nil {
+		t.Errorf("shared chunk still present after deleting BOTH referencing files; want swept (no row references it)")
+	}
+	if stats2.ObjectsSwept != 1 {
+		t.Errorf("phase-2 ObjectsSwept = %d, want 1 (the now-unreferenced chunk)", stats2.ObjectsSwept)
+	}
+}
+
+// TestGCMarkSweep_SameHashTwoOffsetsBothReaped (#832 + by-ID regression): one
+// file holds IDENTICAL content at TWO offsets — TWO independent FileBlock rows
+// keyed file-X/0 and file-X/<off>, both carrying the same hash H. Deleting the
+// file must reap BOTH rows so H leaves EnumerateFileBlocks and the chunk is
+// swept. This is the exact edge the prior by-hash reap leaked: resolving by hash
+// reaped only ONE row (an indeterminate one), leaving the other row stranded —
+// the hash stayed live forever and the chunk never reclaimed. By-ID reap removes
+// each offset's row independently, so both go. Rows are Pending (the rollup
+// shape) to exercise the realistic path.
+func TestGCMarkSweep_SameHashTwoOffsetsBothReaped(t *testing.T) {
+	ctx := t.Context()
+	rs := remotememory.New()
+	defer func() { _ = rs.Close() }()
+	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
+
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-a")
+	bs := newReapEngine(t, st)
+
+	const mib = uint64(1 << 20)
+	dup := hashFromString("same-hash-two-offsets")
+
+	// One file, same hash at offset 0 and offset 1MiB: two distinct rows.
+	id0 := "file-dup/0"
+	id1 := fmt.Sprintf("file-dup/%d", mib)
+	putPendingBlock(t, st, id0, dup)
+	putPendingBlock(t, st, id1, dup)
+	writeCASObject(t, ctx, rs, dup, []byte("identical-content-chunk"))
+
+	// Both rows exist before the delete.
+	if fb, _ := st.GetFileBlock(ctx, id0); fb == nil {
+		t.Fatalf("fixture: row %s missing before delete", id0)
+	}
+	if fb, _ := st.GetFileBlock(ctx, id1); fb == nil {
+		t.Fatalf("fixture: row %s missing before delete", id1)
+	}
+
+	// Delete the file: its block list carries the SAME hash at both offsets.
+	if err := bs.Delete(ctx, "file-dup", []blockstore.BlockRef{
+		{Hash: dup, Offset: 0, Size: uint32(mib)},
+		{Hash: dup, Offset: mib, Size: uint32(mib)},
+	}); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	// BOTH rows must be gone (the by-hash approach left one stranded).
+	if fb, _ := st.GetFileBlock(ctx, id0); fb != nil {
+		t.Errorf("row %s survived delete; want reaped", id0)
+	}
+	if fb, _ := st.GetFileBlock(ctx, id1); fb != nil {
+		t.Errorf("row %s survived delete (the by-hash leak); want reaped", id1)
+	}
+	if hashInLiveSet(t, ctx, st, dup) {
+		t.Fatalf("dup hash still in EnumerateFileBlocks after deleting both rows; want gone (#832 by-hash leak)")
+	}
+
+	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	if stats.ErrorCount != 0 {
+		t.Fatalf("ErrorCount = %d; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
+	}
+	if _, err := rs.Get(ctx, dup); err == nil {
+		t.Errorf("dup chunk still present after deleting both offsets; want swept")
+	}
+	if stats.ObjectsSwept != 1 {
+		t.Errorf("ObjectsSwept = %d, want 1 (the now-unreferenced chunk)", stats.ObjectsSwept)
+	}
 }
 
 // hashInLiveSet reports whether h appears in the store's EnumerateFileBlocks
