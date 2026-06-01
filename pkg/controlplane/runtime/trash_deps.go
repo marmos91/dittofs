@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/trash"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -72,12 +73,16 @@ func (d *trashDeps) EnabledTrashShares() []string {
 }
 
 // FreeBlocks frees the CAS blocks backing a permanently-deleted file. payloadID
-// is the value RemoveFile returned for the purged node; an empty payloadID
-// (hard links still reference the content, or a directory) is a no-op. The
-// per-share block store is resolved from the share root handle, and Delete is
-// invoked with a nil []BlockRef so the engine takes its legacy by-payload
-// delete path — mirroring the NFS v3 / SMB close call convention.
-func (d *trashDeps) FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string) error {
+// and blocks are the values RemoveFile returned for the purged node; an empty
+// payloadID (hard links still reference the content, or a directory) is a
+// no-op. The per-share block store is resolved from the share root handle, and
+// Delete is invoked WITH the file's BlockRef list so the engine decrements each
+// block's CAS RefCount and lets the GC reclaim chunks no other file references.
+// Passing nil here would skip the per-block decrement and leak the refcounts
+// (#832); unlike the NFS v3 / SMB close path (which deletes a still-live file
+// whose blocks it does not have on hand), the reaper holds the removed file's
+// blocks and must thread them through.
+func (d *trashDeps) FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string, blocks []blockstore.BlockRef) error {
 	if payloadID == "" {
 		return nil
 	}
@@ -85,7 +90,7 @@ func (d *trashDeps) FreeBlocks(ctx context.Context, shareName string, root metad
 	if err != nil {
 		return err
 	}
-	return bs.Delete(ctx, payloadID, nil)
+	return bs.Delete(ctx, payloadID, blocks)
 }
 
 // trashPolicy adapts the shares service into a metadata.TrashPolicy. A single

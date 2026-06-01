@@ -5,6 +5,7 @@ import (
 	stderrors "errors"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/stretchr/testify/assert"
@@ -34,6 +35,11 @@ type testDeps struct {
 	rootHandle metadata.FileHandle
 	cfg        Config
 	freed      []string
+	// freedBlocks records the BlockRef count threaded into each FreeBlocks call,
+	// keyed by payloadID, so tests can assert the purge path passes the file's
+	// blocks (not nil) — the CAS RefCounts are only decremented when blocks flow
+	// through, so a regression to nil would leak them (#832).
+	freedBlocks map[string]int
 }
 
 func (d *testDeps) MetadataServiceForShare(shareName string) (*metadata.MetadataService, metadata.FileHandle, bool) {
@@ -54,11 +60,15 @@ func (d *testDeps) EnabledTrashShares() []string {
 	return []string{d.shareName}
 }
 
-func (d *testDeps) FreeBlocks(_ context.Context, _ string, _ metadata.FileHandle, payloadID string) error {
+func (d *testDeps) FreeBlocks(_ context.Context, _ string, _ metadata.FileHandle, payloadID string, blocks []blockstore.BlockRef) error {
 	if payloadID == "" {
 		return nil
 	}
 	d.freed = append(d.freed, payloadID)
+	if d.freedBlocks == nil {
+		d.freedBlocks = make(map[string]int)
+	}
+	d.freedBlocks[payloadID] = len(blocks)
 	return nil
 }
 
@@ -280,6 +290,43 @@ func TestEmptyRemovesAllBinEntries(t *testing.T) {
 
 	// FreeBlocks was invoked once per permanently-removed file.
 	assert.Len(t, tt.deps.freed, 2, "each emptied file should free its blocks")
+}
+
+// TestEmptyThreadsBlocksToFreeBlocks guards the purge path against regressing to
+// a nil BlockRef list: blockStore.Delete only decrements per-block CAS RefCounts
+// (so GC can reclaim now-unreferenced chunks) when handed the file's blocks.
+// Passing nil would leak the refcounts (#832). The test recycles a file carrying
+// blocks and asserts the count threaded into FreeBlocks matches.
+func TestEmptyThreadsBlocksToFreeBlocks(t *testing.T) {
+	t.Parallel()
+	tt := newTestTrash(t)
+
+	// Create a file and stamp two blocks + a payloadID directly through the
+	// store (the in-memory service has no write path that synthesizes blocks).
+	tt.createFile(tt.deps.rootHandle, "withblocks.txt")
+	store, err := tt.deps.svc.GetStoreForShare(tt.deps.shareName)
+	require.NoError(t, err)
+	handle, err := tt.deps.svc.GetChild(tt.ctx.Context, tt.deps.rootHandle, "withblocks.txt")
+	require.NoError(t, err)
+	file, err := store.GetFile(tt.ctx.Context, handle)
+	require.NoError(t, err)
+	file.PayloadID = "payload-withblocks"
+	file.Blocks = []blockstore.BlockRef{
+		{Offset: 0, Size: 4096},
+		{Offset: 4096, Size: 4096},
+	}
+	require.NoError(t, store.PutFile(tt.ctx.Context, file))
+
+	// Recycle it, then empty the bin.
+	_, err = tt.deps.svc.RemoveFile(tt.ctx, tt.deps.rootHandle, "withblocks.txt")
+	require.NoError(t, err)
+	n, err := tt.svc.Empty(tt.ctx, tt.deps.shareName, false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	// The purge must thread the file's two blocks into FreeBlocks, not nil.
+	assert.Equal(t, 2, tt.deps.freedBlocks["payload-withblocks"],
+		"purge must pass the removed file's BlockRefs so CAS refcounts are decremented")
 }
 
 func TestListUnknownShareReturnsNotFound(t *testing.T) {

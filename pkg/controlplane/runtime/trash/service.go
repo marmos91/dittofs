@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -63,10 +64,13 @@ type Deps interface {
 	TrashConfigForShare(shareName string) (Config, bool)
 	// EnabledTrashShares lists the shares with trash enabled.
 	EnabledTrashShares() []string
-	// FreeBlocks frees the CAS blocks for a permanently-deleted file (payloadID
-	// from RemoveFile). Implemented by the runtime via GetBlockStoreForHandle +
-	// blockStore.Delete. A no-op when payloadID is empty.
-	FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string) error
+	// FreeBlocks frees the CAS blocks for a permanently-deleted file (the
+	// payloadID and BlockRef list RemoveFile returned). Implemented by the
+	// runtime via GetBlockStoreForHandle + blockStore.Delete. The blocks list is
+	// required: blockStore.Delete only decrements per-block CAS RefCounts (so the
+	// GC can reclaim now-unreferenced chunks) when it is given the file's blocks
+	// — passing nil leaks the refcounts. A no-op when payloadID is empty.
+	FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string, blocks []blockstore.BlockRef) error
 }
 
 // Service lists, restores, and empties per-share recycle bins.
@@ -498,7 +502,10 @@ func (s *Service) purgeEntry(ctx *metadata.AuthContext, svc *metadata.MetadataSe
 	if err != nil {
 		return err
 	}
-	return s.deps.FreeBlocks(ctx.Context, shareName, root, string(removed.PayloadID))
+	// Pass the removed file's BlockRef list, not just its payloadID: Delete only
+	// decrements per-block CAS RefCounts (freeing now-unreferenced chunks for GC)
+	// when given the blocks. Dropping them here would leak the refcounts (#832).
+	return s.deps.FreeBlocks(ctx.Context, shareName, root, string(removed.PayloadID), removed.Blocks)
 }
 
 // purgeChildren empties a directory inside the bin by recursively purging every

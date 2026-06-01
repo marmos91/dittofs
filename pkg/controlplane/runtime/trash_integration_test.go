@@ -114,21 +114,19 @@ func TestRuntimeTrash_RecycleListEmpty_EndToEnd(t *testing.T) {
 		t.Fatalf("expected empty bin after Empty, got %d entries", len(after))
 	}
 
-	// Empty drives FreeBlocks through the REAL Deps adapter
-	// (GetBlockStoreForHandle + engine.Store.Delete). Delete with the legacy
-	// nil-blocks convention (matching NFS v3 remove / SMB close) evicts the
-	// append-log + RAM for the payload and leaves rolled-up CAS chunks for GC
-	// to reclaim — so the deterministic, engine-agnostic assertion is that the
-	// FreeBlocks call itself succeeds against the resolved per-share store, not
-	// that the content-addressed bytes are instantly unreadable. Invoke the
-	// adapter directly with the same arguments Empty used to prove the wiring
-	// resolves and Delete returns cleanly.
+	// Empty (above) already drove FreeBlocks through the REAL Deps adapter
+	// (GetBlockStoreForHandle + engine.Store.Delete) with the recycled file's
+	// BlockRef list. Re-invoke the adapter directly here as a wiring smoke test:
+	// it must resolve the per-share store and return cleanly. The payload was
+	// already purged by Empty, so a nil block list suffices to prove the path
+	// resolves (unit coverage of block-threading lives in the trash package's
+	// TestEmptyThreadsBlocksToFreeBlocks).
 	d := &trashDeps{rt: fx.rt}
-	if err := d.FreeBlocks(ctx, fx.shareName, root, string(payloadID)); err != nil {
+	if err := d.FreeBlocks(ctx, fx.shareName, root, string(payloadID), nil); err != nil {
 		t.Fatalf("FreeBlocks (real GetBlockStoreForHandle+Delete path): %v", err)
 	}
 	// And an empty payloadID is a no-op (no store resolution, no error).
-	if err := d.FreeBlocks(ctx, fx.shareName, root, ""); err != nil {
+	if err := d.FreeBlocks(ctx, fx.shareName, root, "", nil); err != nil {
 		t.Fatalf("FreeBlocks(empty payload) should be a no-op: %v", err)
 	}
 }
