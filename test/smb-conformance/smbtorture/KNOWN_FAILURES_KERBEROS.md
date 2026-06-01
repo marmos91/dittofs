@@ -1,24 +1,25 @@
 # smbtorture Known Failures — Kerberos (smb2.session)
 
-Last updated: 2026-04-13
+Last updated: 2026-06-01
 
 Tests listed here are expected to fail when running `smb2.session` with
 `--use-kerberos=required`. Only NEW failures (not in this list) will cause
 CI to fail. The `parse-results.sh` script reads test names from the first
 column of the table below.
 
+History: this list once carried 65 rows. After multi-channel session bind
+shipped (#361) the bulk of them began passing under Kerberos; 36 stale rows
+were harvested on 2026-06-01 (reconnect1/2, reauth1-4, the anonymous and
+AES-128 signing/encryption tests, ntlmssp_bug14932, and 18 multi-channel
+`bind_negative_*` rows). The remaining rows are the genuine Kerberos-path
+bugs under #686 (v1.0 Kerberos sweep).
+
 ## Kerberos Session Bugs (Fix In Progress)
 
-These are genuine Kerberos-specific bugs tracked in #340.
+These are genuine Kerberos-specific bugs tracked in #340 / #686.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.reconnect1 | Reconnect | STATUS_ACCESS_DENIED instead of STATUS_USER_SESSION_DELETED | #340-A3 |
-| smb2.reconnect2 | Reconnect | STATUS_ACCESS_DENIED instead of STATUS_USER_SESSION_DELETED | #340-A3 |
-| smb2.reauth1 | Reauth | Kerberos reauth path returns ACCESS_DENIED on SESSION_SETUP (Kerberos-specific, unblocked after reauth5 hang fix #388) | #340-A2 |
-| smb2.reauth2 | Reauth | Kerberos reauth path returns ACCESS_DENIED on SESSION_SETUP (Kerberos-specific, unblocked after reauth5 hang fix #388) | #340-A2 |
-| smb2.reauth3 | Reauth | Kerberos reauth path returns ACCESS_DENIED on SESSION_SETUP (Kerberos-specific, unblocked after reauth5 hang fix #388) | #340-A2 |
-| smb2.reauth4 | Reauth | Signing keys wrong after Kerberos reauth | #340-A2 |
 | smb2.reauth5 | Reauth | Signing keys wrong after Kerberos reauth | #340-A2 |
 | smb2.bind1 | Bind | Kerberos session bind not wired — Phase 1 of #361 implements NTLM bind only | #361 |
 | smb2.bind2 | Bind | Kerberos session bind not wired — Phase 1 of #361 implements NTLM bind only | #361 |
@@ -29,69 +30,35 @@ These are genuine Kerberos-specific bugs tracked in #340.
 | smb2.expire2s | Expire | Ticket expiration not enforced correctly | #340-A1 |
 | smb2.expire2e | Expire | Ticket expiration not enforced correctly | #340-A1 |
 
-## Multi-Channel Session Bind (Not Implemented)
+## Session-Bind Crypto Negotiation (Fix In Progress)
 
-Multi-channel session binding requires establishing multiple TCP connections
-to the same session (MS-SMB2 3.3.5.5.10). DittoFS does not implement
-multi-channel. These fail identically on the NTLM path.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.bind_negative_smb3to3s | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3to3d | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3sneGtoCs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3sneGtoCd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3sneGtoGs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3sneGtoGd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3sneGtoHs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3sneGtoHd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3sneCtoCs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3sneCtoCd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3sneCtoGs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3sneCtoGd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signGtoCs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signGtoCd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signGtoGs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signGtoGd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signGtoHs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signGtoHd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signCtoCs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signCtoCd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signCtoGs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signCtoGd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signCtoHs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signCtoHd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signHtoCs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signHtoCd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signHtoGs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3signHtoGd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3encGtoCs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3encGtoCd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3encGtoGs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3encGtoGd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3encCtoCs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3encCtoCd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3encCtoGs | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3encCtoGd | Multi-channel | Multi-channel not implemented | - |
-| smb2.bind_negative_smb3sneHtoGs | Multi-channel | Multi-channel not implemented | #361 |
-| smb2.bind_negative_smb3sneHtoGd | Multi-channel | Multi-channel not implemented | #361 |
-| smb2.bind_negative_smb3signC30toGs | Multi-channel | Multi-channel not implemented | #361 |
-| smb2.bind_negative_smb3signC30toGd | Multi-channel | Multi-channel not implemented | #361 |
-| smb2.bind_negative_smb3signGtoC30s | Multi-channel | Multi-channel not implemented | #361 |
-| smb2.bind_negative_smb3signGtoC30d | Multi-channel | Multi-channel not implemented | #361 |
-
-## Anonymous Authentication (Not Supported)
-
-DittoFS does not support anonymous (null) sessions with signing/encryption.
-These fail identically on the NTLM path.
+Multi-channel session bind is implemented (#361). These `bind_negative_*`
+tests assert that a *second* channel bind which changes the signing or
+encryption algorithm relative to the first channel is rejected (MS-SMB2
+§3.3.5.5.2). The remaining combinations are not yet enforced correctly on the
+Kerberos path — DittoFS does not reject (or returns the wrong status for) the
+specific sign/encrypt algorithm transitions below.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.anon-encryption1 | Anonymous | Anonymous sessions not supported | - |
-| smb2.anon-encryption2 | Anonymous | Anonymous sessions not supported | - |
-| smb2.anon-encryption3 | Anonymous | Anonymous sessions not supported | - |
-| smb2.anon-signing1 | Anonymous | Anonymous sessions not supported | - |
-| smb2.anon-signing2 | Anonymous | Anonymous sessions not supported | - |
+| smb2.bind_negative_smb3sneGtoGs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3sneGtoGd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3sneCtoCs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3sneCtoCd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3signGtoGs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3signGtoGd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3signCtoCs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3signCtoCd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3signCtoHs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3signCtoHd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3signHtoCs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3signHtoCd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3encGtoGs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3encGtoGd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3encCtoCs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3encCtoCd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3encCtoGs | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
+| smb2.bind_negative_smb3encCtoGd | Session bind | Bind crypto-negotiation enforcement incomplete (Kerberos path) | #361 |
 
 ## AES-256 Session Encryption (Not Implemented)
 
@@ -100,14 +67,5 @@ The 128-bit variants pass. These fail identically on the NTLM path.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.encryption-aes-256-ccm | AES-256 | AES-256 encryption not implemented | - |
-| smb2.encryption-aes-256-gcm | AES-256 | AES-256 encryption not implemented | - |
-
-## NTLMSSP Bug Compatibility (Not Kerberos)
-
-This test exercises NTLM-specific bug compatibility behavior. Not applicable
-to Kerberos auth path.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.ntlmssp_bug14932 | NTLM | NTLM-specific test, not applicable to Kerberos | - |
+| smb2.encryption-aes-256-ccm | AES-256 | AES-256 encryption not implemented | #340 |
+| smb2.encryption-aes-256-gcm | AES-256 | AES-256 encryption not implemented | #340 |
