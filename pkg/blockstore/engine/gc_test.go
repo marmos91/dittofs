@@ -52,6 +52,27 @@ func (r *gcMSReconciler) GetMetadataStoreForShare(name string) (metadata.Metadat
 
 func (r *gcMSReconciler) SharesForGC() []string { return append([]string(nil), r.order...) }
 
+// putPendingBlock seeds a FileBlock in BlockStatePending (RefCount 1) — the
+// exact shape the engine rollup creates and never transitions to Remote. The
+// Remote-gated GetByHash returns nil for these; only GetByHashAllStates finds
+// them. Used by the #832-regression tests that exercise the real reap path.
+func putPendingBlock(t *testing.T, st metadata.MetadataStore, id string, h blockstore.ContentHash) {
+	t.Helper()
+	if err := st.Put(t.Context(), &blockstore.FileBlock{
+		ID:            id,
+		Hash:          h,
+		State:         blockstore.BlockStatePending,
+		BlockStoreKey: blockstore.FormatCASKey(h),
+		LocalPath:     "/cache/" + id,
+		DataSize:      64,
+		RefCount:      1,
+		LastAccess:    time.Now(),
+		CreatedAt:     time.Now(),
+	}); err != nil {
+		t.Fatalf("PutFileBlock(%s): %v", id, err)
+	}
+}
+
 // putBlock seeds a FileBlock with a non-zero hash on the given metadata store.
 func putBlock(t *testing.T, st metadata.MetadataStore, id string, h blockstore.ContentHash) {
 	t.Helper()
@@ -263,7 +284,9 @@ func (c *reapCoordinator) DecrementRefCount(ctx context.Context, hash blockstore
 }
 
 func (c *reapCoordinator) DecrementRefCountAndReap(ctx context.Context, hash blockstore.ContentHash) (uint32, error) {
-	fb, err := c.store.GetByHash(ctx, hash)
+	// Mirrors the production coordinator: resolve all states so a Pending row
+	// (the engine rollup never finalizes FileBlock rows) is reapable.
+	fb, err := c.store.GetByHashAllStates(ctx, hash)
 	if err != nil || fb == nil {
 		return 0, err
 	}
@@ -514,6 +537,143 @@ func TestGCMarkSweep_TruncateStraddleHashNoOverReap(t *testing.T) {
 	if stats.ObjectsSwept != 0 {
 		t.Errorf("ObjectsSwept = %d, want 0 (hash still kept below newSize)", stats.ObjectsSwept)
 	}
+}
+
+// TestGCMarkSweep_PendingReclaimsRemoteChunk (#832, the real-world gap): the
+// engine rollup creates per-chunk FileBlock rows in BlockStatePending and never
+// transitions them to Remote. On develop, Delete/Truncate routed the reap
+// through the Remote-gated GetByHash, which returns nil for a Pending row — so
+// the reap was a no-op: the row stayed at RefCount 0 but still in
+// EnumerateFileBlocks, and the remote chunk leaked forever.
+//
+// This test seeds Pending rows (NOT pre-finalized Remote rows like the other
+// GC tests, which is why they could not catch this) and asserts that, after
+// dropping the last reference, the hash leaves the GC live set AND the sweep
+// reclaims the remote chunk.
+func TestGCMarkSweep_PendingReclaimsRemoteChunk(t *testing.T) {
+	ctx := t.Context()
+	rs := remotememory.New()
+	defer func() { _ = rs.Close() }()
+	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
+
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-a")
+	bs := newReapEngine(t, st)
+
+	const mib = uint64(1 << 20)
+	h1 := hashFromString("pending-keep-h1")
+	h2 := hashFromString("pending-drop-h2")
+
+	// Pending rows (the rollup never finalizes them). GetByHash returns nil for
+	// these; only GetByHashAllStates resolves them on the reap path.
+	putPendingBlock(t, st, "file-pend/0", h1)
+	putPendingBlock(t, st, "file-pend/1048576", h2)
+	writeCASObject(t, ctx, rs, h1, []byte("keep-chunk-data"))
+	writeCASObject(t, ctx, rs, h2, []byte("drop-chunk-data-longer"))
+
+	// Sanity: GetByHash (Remote-gated) cannot see the Pending rows.
+	if fb, _ := st.GetByHash(ctx, h2); fb != nil {
+		t.Fatalf("GetByHash resolved a Pending row; the leak this test guards cannot occur — fixture wrong")
+	}
+
+	// Truncate to 1MiB: H2 (offset 1MiB) dropped, H1 (offset 0) kept.
+	blocks := []blockstore.BlockRef{
+		{Hash: h1, Offset: 0, Size: uint32(mib)},
+		{Hash: h2, Offset: mib, Size: uint32(mib)},
+	}
+	if _, err := bs.Truncate(ctx, "file-pend", blocks, mib); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+
+	// H2's Pending row must have been reaped → it leaves EnumerateFileBlocks.
+	if hashInLiveSet(t, ctx, st, h2) {
+		t.Errorf("dropped Pending hash H2 still in EnumerateFileBlocks after reap; want gone (#832 no-op reap)")
+	}
+	if !hashInLiveSet(t, ctx, st, h1) {
+		t.Errorf("retained hash H1 missing from EnumerateFileBlocks; want present")
+	}
+
+	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	if stats.ErrorCount != 0 {
+		t.Fatalf("ErrorCount = %d, want 0; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
+	}
+	if _, err := rs.Get(ctx, h2); err == nil {
+		t.Errorf("dropped chunk H2 still present on remote after Truncate+GC; want swept (#832 leak)")
+	}
+	if _, err := rs.Get(ctx, h1); err != nil {
+		t.Errorf("retained chunk H1 swept: %v; want retained", err)
+	}
+	if stats.ObjectsSwept != 1 {
+		t.Errorf("ObjectsSwept = %d, want 1 (only the dropped H2)", stats.ObjectsSwept)
+	}
+}
+
+// TestGCMarkSweep_CrossFileDedupKeepAlive is the mandated characterization
+// test: it proves the GetByHashAllStates reap fix does NOT break cross-file
+// dedup keep-alive. File A writes hash H as a Remote row; file B dedups H via
+// AddRef (RefCount 1→2). Deleting file A must NOT sweep the chunk — file B
+// still references it. If reaping by hash ever drove a still-referenced chunk
+// to deletion, this test fails (and the whole approach would be wrong).
+func TestGCMarkSweep_CrossFileDedupKeepAlive(t *testing.T) {
+	ctx := t.Context()
+	rs := remotememory.New()
+	defer func() { _ = rs.Close() }()
+	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
+
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-a")
+	bs := newReapEngine(t, st)
+
+	const mib = uint64(1 << 20)
+	shared := hashFromString("xfile-dedup-keepalive")
+
+	// File A: a Remote (finalized) row for the shared hash. Only Remote rows are
+	// dedup donors — that is the contract AddRef relies on.
+	putBlock(t, st, "file-A/0", shared)
+	writeCASObject(t, ctx, rs, shared, []byte("shared-dedup-chunk"))
+
+	// File B dedups the same hash via the Remote-gated AddRef path (RefCount 2).
+	if err := st.AddRef(ctx, shared, "file-B", blockstore.BlockRef{Hash: shared, Offset: 0, Size: uint32(mib)}); err != nil {
+		t.Fatalf("AddRef (file-B dedup): %v", err)
+	}
+
+	// Delete file A: its single reference drops (RefCount 2→1). The reap path
+	// uses GetByHashAllStates, but RefCount is still 1 so the row is NOT reaped.
+	if err := bs.Delete(ctx, "file-A", []blockstore.BlockRef{{Hash: shared, Offset: 0, Size: uint32(mib)}}); err != nil {
+		t.Fatalf("Delete file-A: %v", err)
+	}
+
+	// The shared row must survive in the live set (file B still references it).
+	if !hashInLiveSet(t, ctx, st, shared) {
+		t.Fatalf("shared hash left EnumerateFileBlocks after deleting one of two referencing files; data-loss — GetByHashAllStates reaped a still-referenced row")
+	}
+
+	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	if stats.ErrorCount != 0 {
+		t.Fatalf("ErrorCount = %d; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
+	}
+	if _, err := rs.Get(ctx, shared); err != nil {
+		t.Errorf("shared chunk swept after deleting ONE of two referencing files: %v; want retained (file-B still refs it)", err)
+	}
+	if stats.ObjectsSwept != 0 {
+		t.Errorf("ObjectsSwept = %d, want 0 (shared chunk still referenced by file-B)", stats.ObjectsSwept)
+	}
+}
+
+// hashInLiveSet reports whether h appears in the store's EnumerateFileBlocks
+// (the GC mark live set).
+func hashInLiveSet(t *testing.T, ctx context.Context, st metadata.MetadataStore, h blockstore.ContentHash) bool {
+	t.Helper()
+	found := false
+	if err := st.EnumerateFileBlocks(ctx, func(got blockstore.ContentHash) error {
+		if got == h {
+			found = true
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("EnumerateFileBlocks: %v", err)
+	}
+	return found
 }
 
 // TestGCMarkSweep_GraceTTLPreserves (behavior 3): an orphan with

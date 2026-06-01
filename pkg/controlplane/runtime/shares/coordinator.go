@@ -145,9 +145,18 @@ func (c *metadataCoordinator) DecrementRefCount(ctx context.Context, hash blocks
 // through that tx; the engine Truncate/Delete reclaim path does not bind a tx.
 func (c *metadataCoordinator) DecrementRefCountAndReap(ctx context.Context, hash blockstore.ContentHash) (uint32, error) {
 	store := c.resolveStore(ctx)
-	fb, err := store.GetByHash(ctx, hash)
+	// GetByHashAllStates (NOT GetByHash): the engine rollup creates per-chunk
+	// FileBlock rows in BlockStatePending and never transitions them to Remote
+	// (durability lives in synced_hashes, not file_blocks.state). GetByHash is
+	// Remote-gated for dedup safety and would return nil for those rows — the
+	// reap would be a no-op and the row + remote chunk + synced marker would
+	// leak forever (#832). The all-states resolver finds the Pending row so the
+	// reap drops it; a Pending row is never a cross-file dedup donor (AddRef and
+	// GetByHash both route through the Remote-only index), so reaping it by hash
+	// strands nothing another file still references.
+	fb, err := store.GetByHashAllStates(ctx, hash)
 	if err != nil {
-		return 0, fmt.Errorf("coordinator: GetByHash(%s): %w", hash.String(), err)
+		return 0, fmt.Errorf("coordinator: GetByHashAllStates(%s): %w", hash.String(), err)
 	}
 	if fb == nil {
 		// Already swept / never existed — the requested decrement-and-reap
