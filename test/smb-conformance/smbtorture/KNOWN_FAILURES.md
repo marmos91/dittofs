@@ -199,8 +199,8 @@ still fail due to incomplete reconnect, lease coordination, and persistence.
 |-----------|----------|--------|-------|
 | smb2.durable-v2-open.lock-lease | Durable handles V2 | Deferred past v1.0: needs lease-v2 epoch persistence across reconnect (the sibling lock-oplock flipped via #913; lock-lease additionally asserts `lease_epoch==1` on reconnect, which requires threading the epoch through the durable store across memory/badger/postgres + suppressing a spurious break) — disproportionate multi-backend plumbing for 1 test | #739 |
 | smb2.durable-v2-open.app-instance | Durable handles V2 | Deferred past v1.0: AppInstanceId force-close handler exists (ProcessAppInstanceId) but still emits one spurious lease break (`break_info.count==1`, expected 0); pinning the exact break-routing timing needs live-server debug not justified by 1 test at v1.0 | #739 |
-| smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Persistent handles not implemented | #739 |
-| smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Persistent handles not implemented | #739 |
+| smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Deferred past v1.0: needs continuous-availability share (SMB2_SHARE_CAP_CA) + per-share CA config + a CA-share CI harness — disproportionate plumbing for 2 tests; persisted-handle storage already exists, only the CA-share surface is missing | #739 |
+| smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Deferred past v1.0: needs continuous-availability share (SMB2_SHARE_CAP_CA) + per-share CA config + a CA-share CI harness — disproportionate plumbing for 2 tests; persisted-handle storage already exists, only the CA-share surface is missing | #739 |
 
 ### Leases (Fix Candidate)
 
@@ -343,6 +343,16 @@ break suppressed) — disproportionate multi-backend plumbing for one test.
 pinning the break-routing timing needs live-server debug not justified by one
 test at v1.0. #739's tractable rows already landed (nonstat-and-lease, lock-oplock,
 keep-disconnected, reconnect-delay, reopen1/1a); the remainder is post-v1.0.
+
+### 2026-05-31 — #739 persistent-open: deferred past v1.0 (CA-share infra)
+
+The 2 `persistent-open-{oplock,lease}` rows are deferred. Persistent handles
+require the share to advertise `SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY`, a
+per-share CA config knob, and a CA-share CI harness — threading a CA flag through
+the full share stack (CLI → API → models → store → runtime → bootstrap) is
+disproportionate plumbing for 2 conformance tests. The persisted-handle storage
+(badger/postgres) that persistent handles would reuse already exists; only the
+CA-share surface is missing. Reason documented inline; rows stay suppressed.
 
 ### 2026-05-31 — #739 lock-oplock: 1 row flipped
 

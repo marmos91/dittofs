@@ -7,6 +7,7 @@ import (
 	nfs4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	smbtypes "github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 )
 
 // Content-error mapping.
@@ -27,6 +28,12 @@ import (
 func MapContentToNFS3(err error) uint32 {
 	if err == nil {
 		return nfs3types.NFS3OK
+	}
+	// The block store was Closed under the in-flight op — the share was
+	// removed/hot-reloaded mid-transfer (area-7 H-A). STALE tells the
+	// client the handle no longer refers to a live object.
+	if goerrors.Is(err, engine.ErrStoreClosed) {
+		return nfs3types.NFS3ErrStale
 	}
 	// CAS key parse failure indicates corrupted metadata; surfaced as
 	// invalid argument.
@@ -58,6 +65,10 @@ func MapContentToNFS4(err error) uint32 {
 	if err == nil {
 		return nfs4types.NFS4_OK
 	}
+	// Closed store under an in-flight op (area-7 H-A) → STALE.
+	if goerrors.Is(err, engine.ErrStoreClosed) {
+		return nfs4types.NFS4ERR_STALE
+	}
 	if goerrors.Is(err, blockstore.ErrCASKeyMalformed) {
 		return nfs4types.NFS4ERR_INVAL
 	}
@@ -78,6 +89,12 @@ func MapContentToNFS4(err error) uint32 {
 func MapContentToSMB(err error) smbtypes.Status {
 	if err == nil {
 		return smbtypes.StatusSuccess
+	}
+	// Closed store under an in-flight op (area-7 H-A): the share went away
+	// mid-transfer. STATUS_FILE_CLOSED is the closest SMB stale-handle
+	// signal (matches the merrs.ErrStaleHandle row in errmap.go).
+	if goerrors.Is(err, engine.ErrStoreClosed) {
+		return smbtypes.StatusFileClosed
 	}
 	if goerrors.Is(err, blockstore.ErrCASKeyMalformed) {
 		return smbtypes.StatusInvalidParameter
