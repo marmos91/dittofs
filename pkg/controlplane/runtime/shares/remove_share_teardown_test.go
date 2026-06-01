@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
@@ -82,6 +83,9 @@ func TestRemoveShare_OrderedTeardown_ClosesStoreAndWipesSnapshots(t *testing.T) 
 // store and returns a non-nil aggregated error (rather than early-returning
 // and leaking the store).
 func TestRemoveShare_ContinuesPastSnapshotError_AggregatesAndClosesStore(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0o555 does not block os.RemoveAll on Windows (dir mode bits are not enforced); RemoveAll-failure injection only bites on Unix")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("chmod-based RemoveAll-failure injection does not bite as root")
 	}
