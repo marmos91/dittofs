@@ -7,6 +7,8 @@ import (
 	"github.com/jcmturner/gofork/encoding/asn1"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
+	"github.com/marmos91/dittofs/internal/adapter/smb/session"
+	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -202,6 +204,147 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 		sessionEncryptFlag(sess),
 		spnegoResp,
 	), nil
+}
+
+// completeKerberosBind authenticates a Kerberos AP-REQ presented on a
+// SMB2_SESSION_FLAG_BINDING SESSION_SETUP and, on success, registers a new
+// signing channel on the existing session. Unlike NTLM bind (a TYPE_1/TYPE_2/
+// TYPE_3 challenge handshake), Kerberos bind is single-shot: the AP-REQ arrives
+// directly, so this both authenticates and completes the bind in one response —
+// mirroring the primary Kerberos session-setup path (handleKerberosAuth) for
+// authentication and the NTLM bind completion (completeSessionBind) for channel
+// registration. The caller (handleSessionBind) has already validated the bind
+// matrix (dialect / signing-algo / cipher) and seeded the per-channel preauth
+// hash. smbtorture smb2.session.bind1 / bind2 / bind_invalid_auth.
+func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Session, parsedToken *auth.ParsedToken) (*HandlerResult, error) {
+	if h.KerberosService == nil {
+		logger.Debug("Kerberos bind attempted but no KerberosService configured")
+		return NewErrorResult(types.StatusLogonFailure), nil
+	}
+
+	var basePrincipal string
+	if h.KerberosService.Provider() != nil {
+		basePrincipal = h.KerberosService.Provider().ServicePrincipal()
+	}
+	smbPrincipal := deriveSMBPrincipal(basePrincipal, h.SMBServicePrincipal)
+
+	apReqBytes, err := extractAPReqFromGSSToken(parsedToken.MechToken)
+	if err != nil {
+		logger.Info("Kerberos bind: failed to extract AP-REQ from GSS token", "error", err)
+		return NewErrorResult(types.StatusLogonFailure), nil
+	}
+
+	authResult, err := h.KerberosService.Authenticate(apReqBytes, smbPrincipal)
+	if err != nil {
+		logger.Info("Kerberos bind: authentication failed", "error", err)
+		return NewErrorResult(types.StatusLogonFailure), nil
+	}
+	sessionKey := normalizeSessionKey(authResult.SessionKey.KeyValue)
+	username := h.resolveKerberosPrincipal(ctx, authResult.Principal, authResult.Realm)
+
+	userStore := h.Registry.GetUserStore()
+	if userStore == nil {
+		logger.Debug("Kerberos bind: no UserStore configured")
+		return NewErrorResult(types.StatusLogonFailure), nil
+	}
+	user, err := userStore.GetUser(ctx.Context, username)
+	if err != nil || user == nil || !user.Enabled {
+		logger.Info("Kerberos bind: user lookup failed",
+			"username", username, "principal", authResult.Principal, "found", user != nil, "error", err)
+		return NewErrorResult(types.StatusLogonFailure), nil
+	}
+
+	// MS-SMB2 §3.3.5.5.2: the bound channel must authenticate the SAME user as
+	// the existing session. A valid ticket for a different principal must be
+	// rejected with STATUS_ACCESS_DENIED (smb2.session.bind_invalid_auth).
+	if sess.User == nil || user.Username != sess.User.Username {
+		sessUser := "<nil>"
+		if sess.User != nil {
+			sessUser = sess.User.Username
+		}
+		logger.Info("Kerberos bind: identity mismatch",
+			"sessionID", ctx.SessionID, "sessionUser", sessUser, "bindUser", user.Username)
+		return NewErrorResult(types.StatusAccessDenied), nil
+	}
+
+	// Per MS-SMB2 §3.3.5.5.2 the channel signing key is derived from THIS
+	// bind's session key (not the original session's). Mirrors the NTLM
+	// completeSessionBind derivation.
+	connDialect := types.Dialect0300
+	var signingAlgId uint16
+	var signingAlgExplicit bool
+	if ctx.ConnCryptoState != nil {
+		connDialect = ctx.ConnCryptoState.GetDialect()
+		signingAlgId, signingAlgExplicit = ctx.ConnCryptoState.GetSigningAlgorithmId()
+	}
+	var preauthHash [64]byte
+	if connDialect == types.Dialect0311 && ctx.ConnCryptoState != nil {
+		preauthHash = ctx.ConnCryptoState.GetSessionPreauthHash(ctx.SessionID)
+	}
+	channelSigningKey, err := session.DeriveChannelSigningKey(sessionKey, connDialect, preauthHash)
+	if err != nil {
+		logger.Warn("Kerberos bind: channel key derivation failed", "sessionID", ctx.SessionID, "error", err)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+	channelSigner := signing.NewSigner(connDialect, signingAlgId, signingAlgExplicit, channelSigningKey)
+
+	channel := &session.Channel{
+		ConnID:      ctx.ConnID,
+		RemoteAddr:  ctx.ClientAddr,
+		Dialect:     connDialect,
+		SigningAlgo: signingAlgId,
+		SigningKey:  channelSigningKey,
+		Signer:      channelSigner,
+		PreauthHash: preauthHash,
+		Transport:   ctx.ConnTransport,
+	}
+	if !sess.AddChannel(channel) {
+		logger.Info("Kerberos bind rejected: channel cap reached",
+			"sessionID", ctx.SessionID, "cap", session.MaxChannelsPerSession)
+		return NewErrorResult(types.StatusInsufficientResources), nil
+	}
+	if ctx.ConnCryptoState != nil {
+		ctx.ConnCryptoState.DeleteSessionPreauthHash(ctx.SessionID)
+	}
+
+	logger.Info("Kerberos bind: channel registered",
+		"sessionID", ctx.SessionID, "connID", ctx.ConnID, "user", user.Username,
+		"totalChannels", len(sess.ListChannels()))
+
+	// Build the AP-REP accept-complete response (mutual auth + mechListMIC),
+	// mirroring the primary Kerberos path.
+	ticketSessionKey := authResult.APReq.Ticket.DecryptedEncPart.Key
+	var apRepToken []byte
+	if rawAPRep, mErr := h.KerberosService.BuildMutualAuth(&authResult.APReq, ticketSessionKey); mErr == nil {
+		apRepToken = kerbauth.WrapGSSToken(rawAPRep, kerbauth.KerberosV5OIDBytes, kerbauth.GSSTokenIDAPRep)
+	}
+	responseOID := clientKerberosOID(parsedToken)
+
+	var serverMIC []byte
+	if len(parsedToken.MechListBytes) > 0 {
+		if len(parsedToken.MechListMIC) > 0 {
+			if vErr := auth.VerifyMechListMIC(authResult.SessionKey, parsedToken.MechListBytes, parsedToken.MechListMIC); vErr != nil {
+				logger.Debug("Kerberos bind: client mechListMIC verification failed", "error", vErr)
+				return NewErrorResult(types.StatusLogonFailure), nil
+			}
+		}
+		serverMIC, _ = auth.ComputeMechListMIC(authResult.SessionKey, parsedToken.MechListBytes)
+	}
+
+	spnegoResp, err := auth.BuildAcceptCompleteWithMIC(responseOID, apRepToken, serverMIC)
+	if err != nil {
+		spnegoResp, _ = auth.BuildAcceptComplete(responseOID, nil)
+	}
+
+	// Binding response matches the existing session's encrypt-data state per
+	// §3.3.5.5; the BINDING flag is request-only and not echoed.
+	var sessionFlags uint16
+	if sess.ShouldEncrypt() {
+		sessionFlags |= types.SMB2SessionFlagEncryptData
+	}
+	result := h.buildSessionSetupResponse(types.StatusSuccess, sessionFlags, spnegoResp)
+	result.IsBinding = true
+	return result, nil
 }
 
 // smbSessionKeyLen is the fixed session key size for SMB3 key derivation.
