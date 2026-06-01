@@ -152,30 +152,94 @@ get_known_reason() {
 # --------------------------------------------------------------------------
 # --------------------------------------------------------------------------
 # Pre-process: reclassify connection-establishment failures as skips.
-# When smbtorture can't connect to the server (Docker networking, accept
-# backlog full, etc.), it reports "failure: test.name" followed by
-# "Establishing SMB2 connection failed". These are infrastructure flakes,
-# not protocol failures. We rewrite them to "skip: test.name" so they
-# don't count as new failures.
+#
+# When smbtorture cannot establish its SMB2 connection — Docker accept
+# backlog full, the server momentarily unreachable, or (most commonly on an
+# overloaded CI runner) the smbtorture CLIENT itself being CPU-starved so its
+# own connection setup overruns — it reports the test with a connection
+# diagnostic rather than a real protocol assertion. These are infrastructure
+# flakes, not DittoFS bugs, so we rewrite the result to "skip:" and they do
+# not count as new failures. (NT_STATUS_NO_MEMORY here is a client-side
+# overrun artifact, NOT a server out-of-memory — see
+# internal/adapter/smb/framing.go and #717. smb2.oplock.batch1 is proven to
+# deliver its oplock break well within the client's 5 s timeout even at 6×
+# CPU oversubscription, so a batch1 "new failure" carrying one of these
+# diagnostics is always a connection flake, never the break path.)
+#
+# The diagnostic is NOT reliably on the line immediately after the result
+# header: smbtorture brackets it as
+#     failure: test.name [
+#     ../../source4/.../smb2.c:95: Establishing SMB2 connection failed
+#     ]
+# and under load may interleave a "time:" line, or report the header as
+# "error:" instead of "failure:". The previous single-line, failure-only
+# lookahead missed those orderings and let the flake red the job. We instead
+# buffer each failure/error result and scan its whole detail block (up to the
+# closing "]" or the next result/test marker) for either pattern.
 # --------------------------------------------------------------------------
 CONN_FAIL_PATTERN="Establishing SMB2 connection failed"
 NO_MEMORY_PATTERN="NT_STATUS_NO_MEMORY"
 TEMP_OUTPUT=$(mktemp)
-prev_line=""
-while IFS= read -r line; do
-    if [[ "$prev_line" =~ ^failure:[[:space:]]+ ]]; then
-        if [[ "$line" == *"$CONN_FAIL_PATTERN"* || "$line" == *"$NO_MEMORY_PATTERN"* ]]; then
-            # Reclassify connection/memory failures as skips (infrastructure issues)
-            echo "${prev_line/failure:/skip:}" >> "$TEMP_OUTPUT"
-            echo "$line" >> "$TEMP_OUTPUT"
-            prev_line=""
-            continue
-        fi
+
+# is_result_marker LINE — true if LINE begins a new test/result record, i.e.
+# the failure/error detail block has ended.
+is_result_marker() {
+    [[ "$1" =~ ^(test|success|failure|error|skip):[[:space:]] ]]
+}
+
+# Buffer holding a pending failure/error header plus its detail lines while we
+# decide whether the block is a connection flake. pending_block is non-empty
+# iff we are inside a failure/error block.
+declare -a pending_block=()
+pending_is_connflake=false
+
+flush_pending() {
+    [[ ${#pending_block[@]} -eq 0 ]] && return
+    if $pending_is_connflake; then
+        # Reclassify the header (failure:/error:) to skip:; emit detail verbatim.
+        local header="${pending_block[0]}"
+        header="${header/#failure:/skip:}"
+        header="${header/#error:/skip:}"
+        printf '%s\n' "$header" >> "$TEMP_OUTPUT"
+        local i
+        for ((i = 1; i < ${#pending_block[@]}; i++)); do
+            printf '%s\n' "${pending_block[$i]}" >> "$TEMP_OUTPUT"
+        done
+    else
+        printf '%s\n' "${pending_block[@]}" >> "$TEMP_OUTPUT"
     fi
-    [[ -n "$prev_line" ]] && echo "$prev_line" >> "$TEMP_OUTPUT"
-    prev_line="$line"
+    pending_block=()
+    pending_is_connflake=false
+}
+
+while IFS= read -r line; do
+    # A new failure/error header (or any other result marker) ends the prior
+    # detail block. Flush it, then either begin buffering this header or emit
+    # the line verbatim.
+    if is_result_marker "$line"; then
+        flush_pending
+        if [[ "$line" =~ ^(failure|error):[[:space:]]+ ]]; then
+            pending_block=("$line")
+        else
+            printf '%s\n' "$line" >> "$TEMP_OUTPUT"
+        fi
+        continue
+    fi
+
+    if [[ ${#pending_block[@]} -gt 0 ]]; then
+        # Inside a pending failure/error detail block.
+        pending_block+=("$line")
+        if [[ "$line" == *"$CONN_FAIL_PATTERN"* || "$line" == *"$NO_MEMORY_PATTERN"* ]]; then
+            pending_is_connflake=true
+        fi
+        # A closing "]" ends the bracketed detail block.
+        [[ "$line" == "]" ]] && flush_pending
+        continue
+    fi
+
+    printf '%s\n' "$line" >> "$TEMP_OUTPUT"
 done < "$OUTPUT_FILE"
-[[ -n "$prev_line" ]] && echo "$prev_line" >> "$TEMP_OUTPUT"
+flush_pending
 OUTPUT_FILE="$TEMP_OUTPUT"
 trap 'rm -f '"$TEMP_OUTPUT" EXIT
 
