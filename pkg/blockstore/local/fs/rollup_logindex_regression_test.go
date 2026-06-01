@@ -146,28 +146,33 @@ func TestRollup_StalledFence_ChunksStillCommitted(t *testing.T) {
 		}
 	}
 
-	// Wait long enough for the later regions to stabilize and roll
-	// up. The head region keeps getting refreshed during this loop
-	// (via the refresh writes above already issued); after the refresh
-	// loop completes, wait one stabilization window for the later
-	// regions.
-	time.Sleep(200 * time.Millisecond)
-
-	if n := countChunksInBlocks(t, bc.baseDir); n < 3 {
-		t.Fatalf("expected ≥3 chunks for later regions while head stalls, got %d", n)
+	// Wait for the later regions to stabilize and roll up. The three
+	// non-overlapping regions each clear the 50 ms stabilization window
+	// and produce at least one chunk. POLL for the chunk count rather
+	// than sleeping a fixed interval and asserting once: the rollup pool
+	// is driven by a wall-clock ticker plus fsync, and Windows fsync is
+	// markedly slower than POSIX, so a fixed 200 ms sleep raced the
+	// chunk commit on the Windows CI runner (#697). Polling to a generous
+	// deadline keeps the test fast on POSIX while removing the timing
+	// dependency that made it Windows-only flaky.
+	deadline := time.Now().Add(8 * time.Second)
+	var chunks int
+	for time.Now().Before(deadline) {
+		chunks = countChunksInBlocks(t, bc.baseDir)
+		if chunks >= 3 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if chunks < 3 {
+		t.Fatalf("expected ≥3 chunks for later regions while head stalls, got %d", chunks)
 	}
 
-	// Now stop refreshing head and let it stabilize too. Then the
-	// full file should roll up and rollup_offset advance to (or past)
-	// the end of all records we appended.
-	time.Sleep(300 * time.Millisecond)
-	off, err := rs.GetRollupOffset(ctx, "file-stall")
-	if err != nil {
-		t.Fatalf("GetRollupOffset: %v", err)
-	}
-	if off <= uint64(logHeaderSize) {
-		t.Fatalf("rollup_offset did not advance after head stabilization: got %d", off)
-	}
+	// Now stop refreshing head and let it stabilize too. Then the full
+	// file should roll up and rollup_offset advance past the log header.
+	// waitForRollup polls for that advance (same rationale as the chunk
+	// poll above — no fixed sleep) and fails the test if it never lands.
+	waitForRollup(t, rs, "file-stall", 8*time.Second)
 }
 
 // TestRollup_R7_OverwriteReclaimsHeadBytes is the R-7 (#580) acceptance

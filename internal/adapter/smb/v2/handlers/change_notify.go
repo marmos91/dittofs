@@ -279,6 +279,15 @@ type NotifyRegistry struct {
 	// (smb2.notify.mask). MarkInterimSent fires the deferred response after
 	// writing interim and clears this map entry. Keyed by (ConnID, MessageID).
 	pendingInterim map[notifyMsgKey]*PendingNotify
+
+	// flushDelay is the per-registry accumulation window for buffered events.
+	// Defaults to notifyFlushDelay (100µs) in production. Tests that drive
+	// delivery synchronously via FlushAll set this to a large value so the
+	// background time.AfterFunc timer never fires before FlushAll stops it —
+	// otherwise the two delivery paths race on slow/contended schedulers
+	// (the Windows CI runner in particular), letting a callback run on the
+	// timer goroutine with no happens-before edge to the test's assertion.
+	flushDelay time.Duration
 }
 
 // cancelTombstoneTTL bounds how long a pre-arrival SMB2_CANCEL is remembered
@@ -336,6 +345,7 @@ func NewNotifyRegistry() *NotifyRegistry {
 		armed:            make(map[string]*armedHandle),
 		cancelTombstones: make(map[notifyMsgKey]time.Time),
 		pendingInterim:   make(map[notifyMsgKey]*PendingNotify),
+		flushDelay:       notifyFlushDelay,
 	}
 }
 
@@ -1157,7 +1167,7 @@ func (r *NotifyRegistry) bufferEventLocked(notify *PendingNotify, change FileNot
 	notify.bufferedChanges = append(notify.bufferedChanges, change)
 	if notify.flushTimer == nil {
 		fileID := notify.FileID
-		notify.flushTimer = time.AfterFunc(notifyFlushDelay, func() {
+		notify.flushTimer = time.AfterFunc(r.flushDelay, func() {
 			r.flushWatcher(fileID)
 		})
 	}
