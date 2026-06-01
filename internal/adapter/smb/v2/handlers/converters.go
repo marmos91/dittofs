@@ -4,6 +4,8 @@ package handlers
 import (
 	"strings"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -591,4 +593,145 @@ func SMBModeFromAttrs(attrs types.FileAttributes, isDirectory bool) uint32 {
 	}
 
 	return mode
+}
+
+// ============================================================================
+// UTF-16LE <-> string conversion for SMB filenames (surrogate-safe)
+// ============================================================================
+//
+// SMB2 transmits all string data — filenames in particular — as UTF-16LE
+// ([MS-SMB2] 2.1). A Windows filename is an *arbitrary* sequence of 16-bit code
+// units; it is NOT required to be well-formed UTF-16. NTFS happily stores names
+// containing unpaired surrogates (U+D800–U+DFFF on their own), and the
+// smbtorture smb2.charset.Testing suite (source4/torture/smb2/charset.c)
+// asserts exactly this: it CREATEs three names — {0xD800}, {0xDC00}, and the
+// well-formed pair {0xD800,0xDC00} — and every one must succeed with
+// NT_STATUS_OK. The two lone surrogates are *distinct* names and must not
+// collide with each other.
+//
+// Go's stdlib utf16.Decode replaces every unpaired surrogate with U+FFFD, so
+// {0xD800} and {0xDC00} both decode to the same "�" string and collapse
+// into one name — the second CREATE then fails with a spurious collision. To
+// preserve the distinction we decode into WTF-8 (the superset of UTF-8 that
+// permits surrogate code points), giving each lone surrogate its own 3-byte
+// encoding. encodeUTF16LESurrogateSafe is the exact inverse: it re-splits
+// supplementary runes into surrogate pairs and re-emits any preserved lone
+// surrogate as a single code unit, so a name round-trips byte-for-byte.
+//
+// (The wide-A case — fullwidth 'Ａ' U+FF21 colliding with fullwidth 'ａ'
+// U+FF41 but not with ASCII 'a' — is handled by case-insensitive name matching
+// in the metadata layer, whose strings.EqualFold already simple-case-folds
+// U+FF21 to U+FF41. No special handling is required here.)
+//
+// WIRING: these are the canonical filename converters. The handlers-package
+// decodeUTF16LE / encodeUTF16LE in encoding.go delegate here, so every live
+// SMB string path (CREATE, QUERY_DIRECTORY, SET_INFO rename, path lookup, …)
+// is surrogate-safe. The surrogate-safe codec is a strict superset of the
+// previous lossy stdlib path: well-formed UTF-16 (and plain ASCII control
+// strings like the share path or the "DittoFS"/"NTFS" labels) round-trips
+// byte-for-byte, while two distinct lone surrogates no longer alias — which is
+// what makes smb2.charset.Testing's test_surrogate pass against the running
+// server.
+
+// decodeUTF16LESurrogateSafe converts UTF-16LE bytes to a Go string without
+// losing information for malformed input. Well-formed surrogate pairs combine
+// into their supplementary code point; unpaired surrogates are preserved as
+// distinct WTF-8 sequences rather than being collapsed to U+FFFD. An odd
+// trailing byte is dropped (it cannot form a code unit).
+func decodeUTF16LESurrogateSafe(b []byte) string {
+	if len(b)%2 != 0 {
+		b = b[:len(b)-1] // drop dangling byte; it can't form a code unit
+	}
+
+	r := smbenc.NewReader(b)
+	units := make([]uint16, len(b)/2)
+	for i := range units {
+		units[i] = r.ReadUint16()
+	}
+
+	var sb strings.Builder
+	sb.Grow(len(units) * 3)
+	var buf [3]byte
+	for i := 0; i < len(units); i++ {
+		u := units[i]
+		switch {
+		case u >= 0xD800 && u <= 0xDBFF && i+1 < len(units):
+			// High surrogate with a following code unit: try to pair it.
+			if dec := utf16.DecodeRune(rune(u), rune(units[i+1])); dec != utf8.RuneError {
+				sb.WriteString(string(dec))
+				i++ // consumed the trailing low surrogate
+				continue
+			}
+			sb.WriteString(encodeLoneSurrogate(buf[:], u))
+		case u >= 0xD800 && u <= 0xDFFF:
+			// Lone surrogate (high without a low, or a low on its own):
+			// preserve as a distinct WTF-8 sequence.
+			sb.WriteString(encodeLoneSurrogate(buf[:], u))
+		default:
+			sb.WriteRune(rune(u))
+		}
+	}
+	return sb.String()
+}
+
+// encodeLoneSurrogate writes the WTF-8 (3-byte) encoding of a surrogate code
+// unit into buf and returns it as a string. utf8.EncodeRune cannot be used —
+// it rejects surrogates and substitutes U+FFFD — so the bytes are emitted
+// directly. The surrogate code points D800–DFFF all fall in the 3-byte UTF-8
+// range, so this is a fixed 3-byte form.
+func encodeLoneSurrogate(buf []byte, u uint16) string {
+	cp := uint32(u)
+	buf[0] = byte(0xE0 | (cp >> 12))
+	buf[1] = byte(0x80 | ((cp >> 6) & 0x3F))
+	buf[2] = byte(0x80 | (cp & 0x3F))
+	return string(buf[:3])
+}
+
+// encodeUTF16LESurrogateSafe converts a Go string to UTF-16LE bytes, acting as
+// the exact inverse of decodeUTF16LESurrogateSafe. Runes in the surrogate range
+// (decoded from WTF-8) are emitted as a single code unit; supplementary runes
+// are split into a high/low surrogate pair via the stdlib. This guarantees a
+// name produced by decodeUTF16LESurrogateSafe re-encodes to its original bytes.
+func encodeUTF16LESurrogateSafe(s string) []byte {
+	w := smbenc.NewWriter(len(s) * 2)
+	for _, r := range decodeWTF8Runes(s) {
+		switch {
+		case r >= 0xD800 && r <= 0xDFFF:
+			// Preserved lone surrogate: emit the single code unit verbatim.
+			w.WriteUint16(uint16(r))
+		case r > 0xFFFF:
+			hi, lo := utf16.EncodeRune(r)
+			w.WriteUint16(uint16(hi))
+			w.WriteUint16(uint16(lo))
+		default:
+			w.WriteUint16(uint16(r))
+		}
+	}
+	return w.Bytes()
+}
+
+// decodeWTF8Runes walks a (possibly WTF-8) string and yields its code points,
+// recovering surrogate code points that range-over-string would otherwise hide.
+// Ranging a Go string with `for _, r := range s` decodes invalid sequences to
+// U+FFFD, which would discard the lone surrogates decodeUTF16LESurrogateSafe
+// took care to preserve; this hand walk keeps them intact.
+func decodeWTF8Runes(s string) []rune {
+	runes := make([]rune, 0, len(s))
+	for i := 0; i < len(s); {
+		// Detect a raw 3-byte surrogate sequence ED A0..BF 80..BF.
+		if i+3 <= len(s) && s[i] == 0xED && s[i+1] >= 0xA0 && s[i+1] <= 0xBF &&
+			s[i+2] >= 0x80 && s[i+2] <= 0xBF {
+			cp := (rune(s[i]&0x0F) << 12) | (rune(s[i+1]&0x3F) << 6) | rune(s[i+2]&0x3F)
+			runes = append(runes, cp)
+			i += 3
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		runes = append(runes, r)
+		if size == 0 {
+			size = 1 // never stall on an empty decode
+		}
+		i += size
+	}
+	return runes
 }

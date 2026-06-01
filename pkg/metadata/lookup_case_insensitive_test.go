@@ -116,6 +116,58 @@ func TestLookupCaseInsensitive_SpecialNames(t *testing.T) {
 	assert.Equal(t, metadata.FileTypeDirectory, parent.Type)
 }
 
+// loneSurrogate returns the WTF-8 (3-byte) encoding of a surrogate code unit,
+// matching how the SMB filename codec preserves unpaired UTF-16 surrogates.
+func loneSurrogate(u uint16) string {
+	cp := uint32(u)
+	return string([]byte{
+		byte(0xE0 | (cp >> 12)),
+		byte(0x80 | ((cp >> 6) & 0x3F)),
+		byte(0x80 | (cp & 0x3F)),
+	})
+}
+
+// TestLookupCaseInsensitive_LoneSurrogatesDoNotFold guards the smb2.charset
+// .Testing invariant at the metadata layer: the unpaired surrogates {U+D800}
+// and {U+DC00} are distinct SMB filenames and must not alias. The case-
+// insensitive scan fallback uses strings.EqualFold, which decodes both
+// (invalid-UTF-8) WTF-8 sequences to U+FFFD and would report them equal —
+// causing the second CREATE to collide with the first. The fold guard must
+// fall back to byte-exact comparison for malformed names so they stay distinct.
+func TestLookupCaseInsensitive_LoneSurrogatesDoNotFold(t *testing.T) {
+	t.Parallel()
+	fx := newTestFixture(t)
+
+	hi := loneSurrogate(0xD800)
+	lo := loneSurrogate(0xDC00)
+	require.NotEqual(t, hi, lo)
+
+	// Create only the high surrogate. An exact Lookup of {U+D800} succeeds,
+	// but a Lookup of {U+DC00} misses and drops into the EqualFold scan.
+	hiFile, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, hi, &metadata.FileAttr{Mode: 0644})
+	require.NoError(t, err)
+
+	// The fallback scan must NOT fold {U+DC00} onto the stored {U+D800}.
+	loFound, _, err := fx.service.LookupCaseInsensitive(fx.rootContext(), fx.rootHandle, lo)
+	require.NoError(t, err)
+	assert.Nil(t, loFound, "lone low surrogate must not fold onto the stored lone high surrogate")
+
+	// Now create the low surrogate too; both must resolve to distinct files.
+	loFile, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, lo, &metadata.FileAttr{Mode: 0644})
+	require.NoError(t, err, "second CREATE must not collide with the first")
+
+	hiResolved, _, err := fx.service.LookupCaseInsensitive(fx.rootContext(), fx.rootHandle, hi)
+	require.NoError(t, err)
+	require.NotNil(t, hiResolved)
+	loResolved, _, err := fx.service.LookupCaseInsensitive(fx.rootContext(), fx.rootHandle, lo)
+	require.NoError(t, err)
+	require.NotNil(t, loResolved)
+
+	assert.Equal(t, hiFile.ID, hiResolved.ID)
+	assert.Equal(t, loFile.ID, loResolved.ID)
+	assert.NotEqual(t, hiResolved.ID, loResolved.ID, "lone surrogates must resolve to distinct files")
+}
+
 // TestLookupCaseInsensitive_PreservesCaseAcrossMultipleEntries makes sure the
 // scan picks the actual on-disk match when the directory contains sibling
 // entries that differ only by case-equivalent characters at the same offset.
