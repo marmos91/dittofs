@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
@@ -77,6 +78,25 @@ func (s *MetadataService) Lookup(ctx *AuthContext, dirHandle FileHandle, name st
 	return store.GetFile(ctx.Context, childHandle)
 }
 
+// equalFoldName reports whether two directory entry names match under SMB's
+// case-insensitive rules. It is strings.EqualFold for well-formed UTF-8, but
+// falls back to byte-exact comparison when either name is not valid UTF-8.
+//
+// SMB filenames are arbitrary 16-bit code-unit sequences and may contain
+// unpaired surrogates ([MS-SMB2] 2.1); DittoFS preserves those as WTF-8 (e.g.
+// the lone surrogates {U+D800} and {U+DC00} the smb2.charset.Testing suite
+// CREATEs as two distinct names). strings.EqualFold decodes every invalid byte
+// sequence to U+FFFD before folding, so it would report those two distinct
+// names as equal and make the second CREATE collide with the first. Requiring
+// both sides to be valid UTF-8 before folding keeps malformed names distinct
+// while leaving ordinary case-insensitive matching unchanged.
+func equalFoldName(a, b string) bool {
+	if !utf8.ValidString(a) || !utf8.ValidString(b) {
+		return a == b
+	}
+	return strings.EqualFold(a, b)
+}
+
 // LookupCaseInsensitive resolves a name within a directory like Lookup, but
 // falls back to a case-insensitive scan of the directory's children when the
 // exact-case lookup returns ErrNotFound. It is intended for SMB callers, which
@@ -121,7 +141,7 @@ func (s *MetadataService) LookupCaseInsensitive(ctx *AuthContext, dirHandle File
 			return nil, "", listErr
 		}
 		for _, entry := range entries {
-			if strings.EqualFold(entry.Name, name) {
+			if equalFoldName(entry.Name, name) {
 				match, matchErr := s.Lookup(ctx, dirHandle, entry.Name)
 				if matchErr != nil {
 					if IsNotFoundError(matchErr) {

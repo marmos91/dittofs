@@ -623,12 +623,15 @@ func SMBModeFromAttrs(attrs types.FileAttributes, isDirectory bool) uint32 {
 // in the metadata layer, whose strings.EqualFold already simple-case-folds
 // U+FF21 to U+FF41. No special handling is required here.)
 //
-// WIRING: these are the canonical filename converters. The live CREATE /
-// QUERY_DIRECTORY paths still call the legacy decodeUTF16LE/encodeUTF16LE in
-// encoding.go, which use the lossy stdlib utf16.Decode/Encode. Point those two
-// helpers (or their filename callers) at decodeUTF16LESurrogateSafe /
-// encodeUTF16LESurrogateSafe to make smb2.charset.Testing's test_surrogate pass
-// against the running server.
+// WIRING: these are the canonical filename converters. The handlers-package
+// decodeUTF16LE / encodeUTF16LE in encoding.go delegate here, so every live
+// SMB string path (CREATE, QUERY_DIRECTORY, SET_INFO rename, path lookup, …)
+// is surrogate-safe. The surrogate-safe codec is a strict superset of the
+// previous lossy stdlib path: well-formed UTF-16 (and plain ASCII control
+// strings like the share path or the "DittoFS"/"NTFS" labels) round-trips
+// byte-for-byte, while two distinct lone surrogates no longer alias — which is
+// what makes smb2.charset.Testing's test_surrogate pass against the running
+// server.
 
 // decodeUTF16LESurrogateSafe converts UTF-16LE bytes to a Go string without
 // losing information for malformed input. Well-formed surrogate pairs combine
