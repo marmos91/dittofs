@@ -153,6 +153,24 @@ func (tt *trashTest) recycle(name string) {
 	require.NoError(tt.t, err)
 }
 
+// recycleAt creates a file at share-relative dir/name (creating dir if needed)
+// and RemoveFile's it so it lands in the bin under #recycle/dir/name, exercising
+// the recreated intermediary-parent chain.
+func (tt *trashTest) recycleAt(dir, name string) {
+	tt.t.Helper()
+	parent := tt.deps.rootHandle
+	if dir != "" {
+		if h, err := tt.deps.svc.GetChild(tt.ctx.Context, tt.deps.rootHandle, dir); err == nil {
+			parent = h
+		} else {
+			parent = tt.mkdir(tt.deps.rootHandle, dir)
+		}
+	}
+	tt.createFile(parent, name)
+	_, err := tt.deps.svc.RemoveFile(tt.ctx, parent, name)
+	require.NoError(tt.t, err)
+}
+
 // binHandle resolves the share's #recycle directory handle.
 func (tt *trashTest) binHandle() metadata.FileHandle {
 	tt.t.Helper()
@@ -270,4 +288,67 @@ func TestListUnknownShareReturnsNotFound(t *testing.T) {
 
 	_, err := tt.svc.List(tt.ctx, "/nope")
 	assert.True(t, metadata.IsNotFoundError(err))
+}
+
+// TestListReturnsNestedEntries covers two files recycled from a shared original
+// subdir: they land under #recycle/a/file1.txt and #recycle/a/file2.txt. List
+// must return BOTH as entries (with the nested BinPath) and must NOT report the
+// recreated intermediary "a" dir as its own entry.
+func TestListReturnsNestedEntries(t *testing.T) {
+	t.Parallel()
+	tt := newTestTrash(t)
+
+	tt.recycleAt("a", "file1.txt")
+	tt.recycleAt("a", "file2.txt")
+
+	entries, err := tt.svc.List(tt.ctx, tt.deps.shareName)
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "expected both nested files, got %+v", entries)
+
+	byBin := make(map[string]Entry, len(entries))
+	for _, e := range entries {
+		byBin[e.BinPath] = e
+	}
+	require.Contains(t, byBin, "a/file1.txt")
+	require.Contains(t, byBin, "a/file2.txt")
+	assert.Equal(t, "a/file1.txt", byBin["a/file1.txt"].OriginalPath)
+	assert.Equal(t, "a/file2.txt", byBin["a/file2.txt"].OriginalPath)
+
+	// The intermediary "a" directory must never be listed as an entry.
+	for _, e := range entries {
+		assert.NotEqual(t, "a", e.BinPath, "intermediary dir must not be an entry")
+		assert.False(t, e.IsDir, "nested entries are files, not the parent dir")
+	}
+}
+
+// TestEmptyPrunesOrphanIntermediaryDirs verifies that after recycling a file
+// from a deep original path and then Empty, the recreated intermediary "a"
+// directory is swept out of #recycle (no orphan left behind), while #recycle
+// itself remains.
+func TestEmptyPrunesOrphanIntermediaryDirs(t *testing.T) {
+	t.Parallel()
+	tt := newTestTrash(t)
+
+	tt.recycleAt("a", "b.txt")
+
+	// Sanity: the intermediary "a" dir exists under #recycle before Empty.
+	_, err := tt.deps.svc.GetChild(tt.ctx.Context, tt.binHandle(), "a")
+	require.NoError(t, err, "intermediary dir should exist before Empty")
+
+	n, err := tt.svc.Empty(tt.ctx, tt.deps.shareName, false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	// No orphan "a" dir remains under #recycle.
+	_, err = tt.deps.svc.GetChild(tt.ctx.Context, tt.binHandle(), "a")
+	assert.True(t, metadata.IsNotFoundError(err), "orphan intermediary dir must be pruned")
+
+	// The bin is logically empty.
+	entries, err := tt.svc.List(tt.ctx, tt.deps.shareName)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+
+	// #recycle root itself survives (only OnDisable removes it).
+	_, err = tt.deps.svc.GetChild(tt.ctx.Context, tt.deps.rootHandle, metadata.RecycleDirName)
+	assert.NoError(t, err, "#recycle root must survive Empty")
 }

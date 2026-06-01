@@ -13,6 +13,7 @@ package trash
 
 import (
 	"context"
+	stderrors "errors"
 	"strings"
 	"time"
 
@@ -20,8 +21,8 @@ import (
 )
 
 // defaultReapInterval is the reaper cadence used when New is given a zero
-// interval. The reaper itself lands in a later task; the interval and stopCh
-// are wired here so the service shape is stable.
+// interval. The reaper goroutine (see reaper.go) ticks at this interval to
+// enforce per-share retention and max-size policy.
 const defaultReapInterval = time.Hour
 
 // Entry describes one recycled root in a share's #recycle bin.
@@ -76,7 +77,7 @@ type Service struct {
 }
 
 // New constructs a trash Service. A zero reapInterval defaults to one hour. The
-// stopCh is created here for the reaper wired in a later task.
+// stopCh backs Stop; call Start to launch the background reaper.
 func New(deps Deps, reapInterval time.Duration) *Service {
 	if reapInterval <= 0 {
 		reapInterval = defaultReapInterval
@@ -332,7 +333,61 @@ func (s *Service) Empty(ctx *metadata.AuthContext, shareName string, force bool)
 			return 0, err
 		}
 	}
+
+	// Purging recycled roots leaves behind the recreated original parent chain
+	// (e.g. the "a/b" under #recycle/a/b/c.txt). Sweep those now-empty
+	// intermediary directories out depth-first. The #recycle root itself is
+	// left in place — only OnDisable removes it.
+	if err := s.pruneEmptyDirs(ctx, svc, binHandle); err != nil {
+		return 0, err
+	}
 	return len(roots), nil
+}
+
+// pruneEmptyDirs removes now-empty intermediary directories under dirHandle
+// depth-first, returning whether dirHandle itself is empty afterwards. The
+// caller removes a returned-empty child; dirHandle (the #recycle root passed by
+// Empty) is never removed here. Not-empty / already-gone removals are ignored
+// so a concurrent recycle racing the sweep cannot fail an Empty.
+func (s *Service) pruneEmptyDirs(ctx *metadata.AuthContext, svc *metadata.MetadataService, dirHandle metadata.FileHandle) error {
+	page, err := svc.ReadDirectory(ctx, dirHandle, 0, 0)
+	if err != nil {
+		return err
+	}
+	for i := range page.Entries {
+		e := &page.Entries[i]
+		attr, err := s.entryAttr(ctx, svc, dirHandle, e)
+		if err != nil {
+			return err
+		}
+		if attr.Type != metadata.FileTypeDirectory {
+			continue
+		}
+		childHandle, err := svc.GetChild(ctx.Context, dirHandle, e.Name)
+		if err != nil {
+			if metadata.IsNotFoundError(err) {
+				continue
+			}
+			return err
+		}
+		// Recurse first so the deepest empties are removed before their parent
+		// is reconsidered.
+		if err := s.pruneEmptyDirs(ctx, svc, childHandle); err != nil {
+			return err
+		}
+		// Attempt removal; a non-empty or already-gone directory is fine.
+		if err := svc.RemoveDirectory(ctx, dirHandle, e.Name); err != nil &&
+			!metadata.IsNotFoundError(err) && !isNotEmpty(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// isNotEmpty reports whether err is a StoreError for a non-empty directory.
+func isNotEmpty(err error) bool {
+	var se *metadata.StoreError
+	return stderrors.As(err, &se) && se.Code == metadata.ErrNotEmpty
 }
 
 // purgeEntry permanently deletes a single bin entry (a file or a whole subtree)
@@ -431,7 +486,19 @@ func ensureParent(ctx *metadata.AuthContext, svc *metadata.MetadataService, root
 				Mode: 0o755,
 			})
 			if cErr != nil {
-				return nil, "", cErr
+				// A racing creator may have won between the GetChild miss and
+				// our CreateDirectory; treat AlreadyExists as success and
+				// re-resolve, mirroring metadata.ensureChildDir.
+				var se *metadata.StoreError
+				if !stderrors.As(cErr, &se) || se.Code != metadata.ErrAlreadyExists {
+					return nil, "", cErr
+				}
+				child, cErr = svc.GetChild(ctx.Context, parent, dir)
+				if cErr != nil {
+					return nil, "", cErr
+				}
+				parent = child
+				continue
 			}
 			child, cErr = metadata.EncodeFileHandle(created)
 			if cErr != nil {
