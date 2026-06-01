@@ -130,7 +130,7 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 	if err != nil {
 		logger.Warn("Netgroup access denied: share not found in runtime registry",
 			"share", shareName, "error", err)
-		return false, fmt.Errorf("%w: %q", shares.ErrShareNotFound, shareName)
+		return false, fmt.Errorf("%w: %q: %w", shares.ErrShareNotFound, shareName, err)
 	}
 
 	// 2. If share has no netgroup -> allow all
