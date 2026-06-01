@@ -129,11 +129,12 @@ secret = "test-secret-key-for-testing-minimum-32-chars"
 	}
 }
 
-func TestLoad_RejectsUnknownKey(t *testing.T) {
-	// An unknown top-level key (e.g. a typo or a stale section from a
-	// removed config tree like the deleted `lock:`/`syncer:` blocks or a
-	// `cache:` block) must surface as a hard error rather than being
-	// silently ignored.
+func TestLoad_IgnoresUnknownKey(t *testing.T) {
+	// An unknown top-level key (a typo or a stale section from a removed
+	// config tree like the deleted `lock:`/`syncer:` blocks or a `cache:`
+	// block) must NOT hard-fail boot — it is logged as a warning and
+	// ignored, so an otherwise-valid config from an older version still
+	// loads (upgrade safety).
 	cases := map[string]string{
 		"cache":  "cache:\n  size: 100\n",
 		"lock":   "lock:\n  lease_break_timeout: 5s\n",
@@ -148,9 +149,8 @@ func TestLoad_RejectsUnknownKey(t *testing.T) {
 			if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
 				t.Fatalf("write config: %v", err)
 			}
-			_, err := Load(configPath)
-			if err == nil {
-				t.Fatalf("expected Load to reject unknown key %q, got nil", name)
+			if _, err := Load(configPath); err != nil {
+				t.Fatalf("Load must tolerate unknown key %q (warn, not fail), got %v", name, err)
 			}
 		})
 	}

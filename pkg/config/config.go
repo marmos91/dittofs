@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -425,17 +426,22 @@ func Load(configPath string) (*Config, error) {
 
 	// Unmarshal into config struct with custom decode hooks.
 	//
-	// ErrorUnused makes an unknown top-level/nested key in the config file a
-	// hard error rather than a silent no-op. This catches typos and stale keys
+	// Capture unknown keys via decoder Metadata and log them as a warning
+	// rather than silently dropping them — this surfaces typos and stale keys
 	// from removed config trees (e.g. the deleted `lock:`/`syncer:` sections or
-	// a `cache:` block) instead of letting them be silently ignored — the
-	// failure mode that previously hid dead config behind a clean boot.
+	// a `cache:` block) without hard-failing boot on an otherwise-valid config
+	// that still carries a legacy key (upgrade safety).
+	var md vipermapstructure.Metadata
 	var cfg Config
 	if err := v.Unmarshal(&cfg,
 		viper.DecodeHook(configDecodeHooks()),
-		func(dc *vipermapstructure.DecoderConfig) { dc.ErrorUnused = true },
+		func(dc *vipermapstructure.DecoderConfig) { dc.Metadata = &md },
 	); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	}
+	if len(md.Unused) > 0 {
+		sort.Strings(md.Unused)
+		fmt.Fprintf(os.Stderr, "WARNING: config contains unknown keys (ignored): %s\n", strings.Join(md.Unused, ", "))
 	}
 
 	// Apply defaults for any missing values
