@@ -49,6 +49,21 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	"$(CONTROLLER_GEN)" object:headerFile="hack/boilerplate.go.txt" paths="./..."
 
+.PHONY: sync-chart-crds
+sync-chart-crds: ## Copy generated CRDs into the Helm chart crds/ dir (Helm crds/ does not support templating).
+	@mkdir -p chart/crds
+	@cp config/crd/bases/dittofs.dittofs.com_dittoservers.yaml chart/crds/dittoservers.yaml
+
+.PHONY: manifests-verify
+manifests-verify: manifests generate sync-chart-crds ## Verify generated CRDs/deepcopy/chart-CRDs are in sync with the source markers (CI no-diff gate).
+	@if [ -n "$$(git status --porcelain config/crd api chart/crds)" ]; then \
+		echo "ERROR: generated manifests are out of date. Run 'make manifests generate sync-chart-crds' and commit the result."; \
+		git --no-pager diff config/crd api chart/crds; \
+		git status --porcelain config/crd api chart/crds; \
+		exit 1; \
+	fi
+	@echo "Generated manifests are in sync."
+
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...
@@ -262,9 +277,7 @@ $(HELMIFY): $(LOCALBIN)
 .PHONY: helm
 helm: manifests kustomize helmify ## Generate Helm chart from kustomize manifests.
 	"$(KUSTOMIZE)" build config/default | "$(HELMIFY)" chart
-	@# Copy raw CRD to crds/ (Helm crds/ doesn't support templating)
-	@mkdir -p chart/crds
-	@cp config/crd/bases/dittofs.dittofs.com_dittoservers.yaml chart/crds/dittoservers.yaml
+	@$(MAKE) sync-chart-crds
 	@# Remove templated CRD from templates/ if it exists
 	@rm -f chart/templates/dittoserver-crd.yaml
 	@echo "Helm chart generated in chart/"

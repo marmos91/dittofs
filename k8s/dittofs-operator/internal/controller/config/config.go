@@ -22,7 +22,6 @@ const (
 	DefaultAPIPort                = 8080
 	DefaultAccessDuration         = "15m"
 	DefaultRefreshDuration        = "168h" // 7 days
-	DefaultJWTIssuer              = "dittofs"
 	DefaultCachePath              = "/data/cache"
 	DefaultCacheSize              = "1GB"
 	DefaultAdminUsername          = "admin"
@@ -121,7 +120,6 @@ func buildControlPlaneConfig(ds *dittoiov1alpha1.DittoServer) ControlPlaneConfig
 	return ControlPlaneConfig{
 		Port: port,
 		JWT: JWTConfig{
-			Issuer:               stringOrDefault(jwtCfg.Issuer, DefaultJWTIssuer),
 			AccessTokenDuration:  stringOrDefault(jwtCfg.AccessTokenDuration, DefaultAccessDuration),
 			RefreshTokenDuration: stringOrDefault(jwtCfg.RefreshTokenDuration, DefaultRefreshDuration),
 		},
