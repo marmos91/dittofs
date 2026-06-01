@@ -161,6 +161,64 @@ func TestRemoveFile_RecyclesWhenTrashEnabled(t *testing.T) {
 		assert.Equal(t, 2, dupCount, "both recycled copies should survive the collision")
 	})
 
+	t.Run("replace-overwrite rename recycles the victim", func(t *testing.T) {
+		t.Parallel()
+		fx := newRecycleFixture(t)
+		fx.service.SetTrashPolicy(stubTrashPolicy{cfg: metadata.TrashConfig{Enabled: true}})
+
+		// Distinct modes stand in for distinct content: Move preserves FileAttr,
+		// so the surviving file's Mode tells us whose identity won.
+		const modeA = uint32(0640)
+		const modeB = uint32(0600)
+		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "a", &metadata.FileAttr{Mode: modeA})
+		require.NoError(t, err)
+		_, err = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "b", &metadata.FileAttr{Mode: modeB})
+		require.NoError(t, err)
+
+		// Rename "b" onto "a" — an overwrite. The old "a" must be recycled.
+		require.NoError(t, fx.service.Move(fx.rootContext(), fx.rootHandle, "b", fx.rootHandle, "a"))
+
+		// Source "b" is gone.
+		_, err = fx.service.Lookup(fx.rootContext(), fx.rootHandle, "b")
+		assert.True(t, metadata.IsNotFoundError(err))
+
+		// Live "a" now carries b's content (size) and is NOT stamped deleted.
+		liveA, err := fx.service.Lookup(fx.rootContext(), fx.rootHandle, "a")
+		require.NoError(t, err)
+		assert.Equal(t, modeB, liveA.Mode&0777, "destination should hold b's content")
+		assert.Nil(t, liveA.DeletedAt, "live destination must not be stamped deleted")
+
+		// The old "a" lives under #recycle, stamped, with its original size.
+		binHandle, err := fx.service.GetChild(fx.rootContext().Context, fx.rootHandle, metadata.RecycleDirName)
+		require.NoError(t, err)
+		recycledA, err := fx.service.Lookup(fx.rootContext(), binHandle, "a")
+		require.NoError(t, err)
+		require.NotNil(t, recycledA.DeletedAt)
+		assert.Equal(t, "a", recycledA.OriginalPath)
+		assert.Equal(t, modeA, recycledA.Mode&0777, "recycled victim should keep a's content")
+	})
+
+	t.Run("non-clobbering rename creates no recycle entry", func(t *testing.T) {
+		t.Parallel()
+		fx := newRecycleFixture(t)
+		fx.service.SetTrashPolicy(stubTrashPolicy{cfg: metadata.TrashConfig{Enabled: true}})
+
+		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "b", &metadata.FileAttr{Mode: 0644})
+		require.NoError(t, err)
+
+		// "c" does not exist: a plain rename must not touch the bin.
+		require.NoError(t, fx.service.Move(fx.rootContext(), fx.rootHandle, "b", fx.rootHandle, "c"))
+
+		_, err = fx.service.Lookup(fx.rootContext(), fx.rootHandle, "c")
+		require.NoError(t, err)
+		_, err = fx.service.Lookup(fx.rootContext(), fx.rootHandle, "b")
+		assert.True(t, metadata.IsNotFoundError(err))
+
+		// No #recycle bin was ever created.
+		_, err = fx.service.GetChild(fx.rootContext().Context, fx.rootHandle, metadata.RecycleDirName)
+		assert.Error(t, err)
+	})
+
 	t.Run("non-empty directory recycles as a single subtree", func(t *testing.T) {
 		t.Parallel()
 		fx := newRecycleFixture(t)
