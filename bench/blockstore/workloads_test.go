@@ -37,8 +37,8 @@ func newBenchEngine(tb testing.TB) *engine.Store {
 func seedFile(tb testing.TB, bs *engine.Store, payloadID string, size int) {
 	tb.Helper()
 	data := seededBytes(0x9E3779B97F4A7C15, size)
-	if _, err := bs.WriteAt(context.Background(), payloadID, nil, data, 0); err != nil {
-		tb.Fatalf("seed %s: %v", payloadID, err)
+	if err := seedPayload(context.Background(), bs, payloadID, data); err != nil {
+		tb.Fatalf("%v", err)
 	}
 }
 

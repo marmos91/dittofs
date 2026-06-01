@@ -36,6 +36,14 @@ const (
 	MixedRWFileSize     = 32 * 1024 * 1024
 )
 
+// seedChunkSize bounds each seed WriteAt so a single record never
+// exceeds the local store's per-record cap (maxRecordPayload, 17 MiB,
+// just above the chunker's 16 MiB hard ceiling). Production protocol
+// callers (NFS WRITE, SMB write) already arrive in sub-MiB segments;
+// only the bench seed would otherwise emit one multi-MiB record. 8 MiB
+// keeps the seed fast while staying well under the cap.
+const seedChunkSize = 8 * 1024 * 1024
+
 // Opts is the unified workload configuration. Shared by cmd/bench
 // blockstore (CLI flags), Go Benchmark* tests, and any future caller.
 // Zero values are valid only for fields explicitly documented as
@@ -221,11 +229,29 @@ func seedAndOffsetCap(ctx context.Context, bs *engine.Store, files int, prefix s
 	data := seededBytes(opts.Seed^0x9E3779B97F4A7C15, size)
 	for i := 0; i < files; i++ {
 		pid := fmt.Sprintf("%s/%d", prefix, i)
-		if _, err := bs.WriteAt(ctx, pid, nil, data, 0); err != nil {
-			return 0, fmt.Errorf("seed %s: %w", pid, err)
+		if err := seedPayload(ctx, bs, pid, data); err != nil {
+			return 0, err
 		}
 	}
 	return uint64(size - opts.BlockSize), nil
+}
+
+// seedPayload writes data into payloadID at offset 0 in segments of at
+// most seedChunkSize bytes. A single WriteAt becomes one append-log
+// record, so seeding a multi-MiB working-set file in one call would
+// exceed the local store's per-record cap; splitting mirrors the
+// bounded segments real protocol callers emit.
+func seedPayload(ctx context.Context, bs *engine.Store, payloadID string, data []byte) error {
+	for off := 0; off < len(data); off += seedChunkSize {
+		end := off + seedChunkSize
+		if end > len(data) {
+			end = len(data)
+		}
+		if _, err := bs.WriteAt(ctx, payloadID, nil, data[off:end], uint64(off)); err != nil {
+			return fmt.Errorf("seed %s: %w", payloadID, err)
+		}
+	}
+	return nil
 }
 
 // seededBytes returns `size` deterministic PRNG bytes for the given seed.
