@@ -623,6 +623,9 @@ func newProgrammableFBS(inner blockstore.EngineFileBlockStore) *programmableFBS 
 func (p *programmableFBS) GetByHash(ctx context.Context, h blockstore.ContentHash) (*blockstore.FileBlock, error) {
 	return p.inner.GetByHash(ctx, h)
 }
+func (p *programmableFBS) GetByHashAllStates(ctx context.Context, h blockstore.ContentHash) (*blockstore.FileBlock, error) {
+	return p.inner.GetByHashAllStates(ctx, h)
+}
 func (p *programmableFBS) Put(ctx context.Context, b *blockstore.FileBlock) error {
 	return p.inner.Put(ctx, b)
 }

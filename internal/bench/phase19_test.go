@@ -213,6 +213,16 @@ func (s *aggregateStubFileBlockStore) GetByHash(_ context.Context, h blockstore.
 	}
 	return nil, nil
 }
+func (s *aggregateStubFileBlockStore) GetByHashAllStates(_ context.Context, h blockstore.ContentHash) (*blockstore.FileBlock, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, fb := range s.blocks {
+		if fb.Hash == h {
+			return fb, nil
+		}
+	}
+	return nil, nil
+}
 func (s *aggregateStubFileBlockStore) Put(_ context.Context, block *blockstore.FileBlock) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -38,6 +38,16 @@ func (s *stubFileBlockStore) GetByHash(_ context.Context, h blockstore.ContentHa
 	}
 	return nil, nil
 }
+func (s *stubFileBlockStore) GetByHashAllStates(_ context.Context, h blockstore.ContentHash) (*blockstore.FileBlock, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, fb := range s.blocks {
+		if fb.Hash == h {
+			return fb, nil
+		}
+	}
+	return nil, nil
+}
 func (s *stubFileBlockStore) Put(_ context.Context, block *blockstore.FileBlock) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

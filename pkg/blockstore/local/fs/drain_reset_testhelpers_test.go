@@ -77,6 +77,9 @@ func (m *memFBS) GetFileBlock(_ context.Context, blockID string) (*blockstore.Fi
 func (m *memFBS) GetByHash(_ context.Context, _ blockstore.ContentHash) (*blockstore.FileBlock, error) {
 	return nil, nil
 }
+func (m *memFBS) GetByHashAllStates(_ context.Context, _ blockstore.ContentHash) (*blockstore.FileBlock, error) {
+	return nil, nil
+}
 func (m *memFBS) Put(_ context.Context, _ *blockstore.FileBlock) error { return nil }
 func (m *memFBS) Delete(_ context.Context, _ string) error {
 	return blockstore.ErrFileBlockNotFound
