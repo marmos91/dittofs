@@ -890,7 +890,7 @@ spec:
                   shutdown_timeout (preStop + 3*shutdownTimeout + buffer). Override only if you
                   understand your shutdown budget; it must comfortably exceed the shutdown_timeout.
                 format: int64
-                minimum: 31
+                minimum: 36
                 type: integer
             required:
             - storage

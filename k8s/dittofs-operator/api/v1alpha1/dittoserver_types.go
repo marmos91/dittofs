@@ -67,7 +67,7 @@ type DittoServerSpec struct {
 	// metadata. When unset, the operator derives a safe value from the configured
 	// shutdown_timeout (preStop + 3*shutdownTimeout + buffer). Override only if you
 	// understand your shutdown budget; it must comfortably exceed the shutdown_timeout.
-	// +kubebuilder:validation:Minimum=31
+	// +kubebuilder:validation:Minimum=36
 	// +optional
 	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
 
