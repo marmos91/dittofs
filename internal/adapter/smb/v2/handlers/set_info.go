@@ -591,6 +591,35 @@ func (h *Handler) setFileInfoFromStore(
 			h.StoreOpenFile(openFile)
 		}
 
+		// Per MS-FSA 2.1.5.14.2: an explicit (non-zero, non-sentinel) timestamp
+		// set suppresses the automatic update of that field until the next
+		// explicit handle operation that would update it. smbtorture
+		// `smb2.setinfo` sets all four timestamps in one BasicInfo call, then a
+		// follow-up BasicInfo call mutates only FileAttributes (attrib=NORMAL)
+		// while sending zero timestamps, and asserts the previously-set values
+		// survive. Without sticky state the attribute-change path auto-bumps
+		// LastWriteTime (set_info.go) and ChangeTime (metadata file_modify.go),
+		// clobbering the explicit values. We reuse the existing freeze mechanism
+		// (Frozen* flags + Frozen* pointers): an explicit set freezes the field
+		// to the value just written, so the field==0 re-pin block above and the
+		// auto-bump guards (mtimeFT==0 && !MtimeFrozen / ctimeFT==0 &&
+		// !CtimeFrozen) suppress the bump on the next operation. A subsequent
+		// sentinel (-1/-2) or explicit value on the same field overrides this,
+		// exactly as the sentinel switch above does.
+		freezeOnExplicitSet := func(ft uint64, frozen *bool, frozenVal **time.Time, val *time.Time, label string) {
+			if val == nil || ft == 0 || isFiletimeSentinel(ft) {
+				return
+			}
+			v := *val
+			*frozen = true
+			*frozenVal = &v
+			logger.Debug("SET_INFO: explicit set pins timestamp", "field", label, "path", openFile.Path, "value", v)
+		}
+		freezeOnExplicitSet(creationFT, &openFile.BtimeFrozen, &openFile.FrozenBtime, setAttrs.CreationTime, "CreationTime")
+		freezeOnExplicitSet(mtimeFT, &openFile.MtimeFrozen, &openFile.FrozenMtime, setAttrs.Mtime, "LastWriteTime")
+		freezeOnExplicitSet(ctimeFT, &openFile.CtimeFrozen, &openFile.FrozenCtime, setAttrs.Ctime, "ChangeTime")
+		freezeOnExplicitSet(atimeFT, &openFile.AtimeFrozen, &openFile.FrozenAtime, setAttrs.Atime, "LastAccessTime")
+
 		// Samba parity (fileio.c): any SET_INFO BasicInfo — even with all
 		// zero timestamps — collapses the pending delayed-write window so
 		// the post-write Mtime becomes visible. An explicit, non-sentinel
