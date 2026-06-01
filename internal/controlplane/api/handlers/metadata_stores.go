@@ -236,7 +236,10 @@ func (h *MetadataStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 		store.Type = *req.Type
 	}
 	if req.Config != nil {
-		store.Config = *req.Config
+		// Read paths redact secrets to "********"; reconcile any sentinel
+		// the client echoed back so we never overwrite a real credential
+		// with the redaction marker.
+		store.Config = mergeRedactedSecrets(store.Config, *req.Config)
 	}
 
 	if err := h.store.UpdateMetadataStore(r.Context(), store); err != nil {
@@ -289,7 +292,7 @@ func metadataStoreToResponse(s *models.MetadataStoreConfig) MetadataStoreRespons
 		ID:        s.ID,
 		Name:      s.Name,
 		Type:      s.Type,
-		Config:    s.Config,
+		Config:    redactSecretJSON(s.Config),
 		CreatedAt: s.CreatedAt,
 	}
 }

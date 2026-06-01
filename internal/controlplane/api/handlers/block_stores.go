@@ -246,7 +246,10 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 		bs.Type = *req.Type
 	}
 	if req.Config != nil {
-		bs.Config = *req.Config
+		// Read paths redact secrets to "********"; reconcile any sentinel
+		// the client echoed back so we never overwrite a real credential
+		// with the redaction marker.
+		bs.Config = mergeRedactedSecrets(bs.Config, *req.Config)
 		bs.ParsedConfig = nil
 	}
 
@@ -321,7 +324,7 @@ func blockStoreToResponse(s *models.BlockStoreConfig) BlockStoreResponse {
 		Name:      s.Name,
 		Kind:      s.Kind,
 		Type:      s.Type,
-		Config:    s.Config,
+		Config:    redactSecretJSON(s.Config),
 		CreatedAt: s.CreatedAt,
 	}
 }
