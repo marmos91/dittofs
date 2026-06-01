@@ -252,7 +252,7 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 		var hidden bool
 		var aclJSON []byte
 		var objectIDRaw []byte
-		var deletedAt sql.NullTime
+		var deletedAt sql.NullInt64
 		var originalPath string
 		var deletedBy string
 		var linkCount sql.NullInt32
@@ -324,8 +324,9 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 
 		// Recycle-bin metadata (#190): carried on DirEntry.Attr so trash
 		// enumeration via listing reflects recycle state without a re-read.
+		// deleted_at is BIGINT unix-nanoseconds; decode via pgNanosToTime.
 		if deletedAt.Valid {
-			t := deletedAt.Time
+			t := pgNanosToTime(deletedAt.Int64)
 			attr.DeletedAt = &t
 		}
 		attr.OriginalPath = originalPath

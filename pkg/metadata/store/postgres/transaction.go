@@ -258,6 +258,15 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		objectIDArg = file.ObjectID[:]
 	}
 
+	// deleted_at is a BIGINT unix-nanoseconds column (#190), nullable: NULL marks
+	// a live node, a value records the recycle instant losslessly (like the other
+	// file timestamps). Pass *int64 so a nil DeletedAt writes SQL NULL.
+	var deletedAtArg *int64
+	if file.DeletedAt != nil {
+		n := file.DeletedAt.UnixNano()
+		deletedAtArg = &n
+	}
+
 	// Query old size for delta tracking (only for regular files).
 	var oldSize uint64
 	if file.Type == metadata.FileTypeRegular {
@@ -278,7 +287,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
 		payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 		file.Hidden, aclJSON, objectIDArg,
-		file.DeletedAt, file.OriginalPath, file.DeletedBy,
+		deletedAtArg, file.OriginalPath, file.DeletedBy,
 		file.ID, file.ShareName,
 	)
 	if err != nil {
@@ -315,7 +324,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
 			payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 			file.Hidden, aclJSON, objectIDArg,
-			file.DeletedAt, file.OriginalPath, file.DeletedBy,
+			deletedAtArg, file.OriginalPath, file.DeletedBy,
 		)
 		if err != nil {
 			return mapPgError(err, "PutFile", "")
@@ -514,7 +523,8 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 	// pool-query ListChildren above. See files.go for rationale.
 	query := `
 		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
-		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.object_id, lc.link_count
+		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.object_id,
+		       f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM parent_child_map dc
 		LEFT JOIN files f ON dc.child_id = f.id
 		LEFT JOIN link_counts lc ON dc.child_id = lc.file_id
@@ -539,10 +549,14 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 		var hidden bool
 		var aclJSON []byte
 		var objectIDRaw []byte
+		var deletedAt sql.NullInt64
+		var originalPath string
+		var deletedBy string
 		var linkCount sql.NullInt32
 
 		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size,
-			&atime, &mtime, &ctime, &creationTime, &hidden, &aclJSON, &objectIDRaw, &linkCount)
+			&atime, &mtime, &ctime, &creationTime, &hidden, &aclJSON, &objectIDRaw,
+			&deletedAt, &originalPath, &deletedBy, &linkCount)
 		if err != nil {
 			return nil, "", err
 		}
@@ -589,6 +603,17 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 			}
 			copy(attr.ObjectID[:], objectIDRaw)
 		}
+
+		// Recycle-bin metadata (#190): carried on DirEntry.Attr so trash
+		// enumeration via listing reflects recycle state without a re-read,
+		// matching the pool-query path. deleted_at is BIGINT unix-nanoseconds;
+		// decode via pgNanosToTime.
+		if deletedAt.Valid {
+			t := pgNanosToTime(deletedAt.Int64)
+			attr.DeletedAt = &t
+		}
+		attr.OriginalPath = originalPath
+		attr.DeletedBy = deletedBy
 
 		// Refs #532 (PR #536 review): mirror fileRowToFileWithNlink — soft
 		// failure on malformed ACL JSON, same as the pool-query path.

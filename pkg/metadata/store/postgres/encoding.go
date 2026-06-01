@@ -87,7 +87,7 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		hidden       bool
 		aclJSON      []byte
 		objectIDRaw  []byte
-		deletedAt    sql.NullTime
+		deletedAt    sql.NullInt64
 		originalPath string
 		deletedBy    string
 		linkCount    sql.NullInt32
@@ -181,10 +181,12 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		copy(file.ObjectID[:], objectIDRaw)
 	}
 
-	// Recycle-bin metadata (#190). deleted_at NULL -> live node (nil pointer);
+	// Recycle-bin metadata (#190). deleted_at is BIGINT unix-nanoseconds (like
+	// the other file timestamps): NULL -> live node (nil pointer); a valid value
+	// decodes via pgNanosToTime for lossless nanosecond round-trip.
 	// original_path / deleted_by default to '' for live nodes.
 	if deletedAt.Valid {
-		t := deletedAt.Time
+		t := pgNanosToTime(deletedAt.Int64)
 		file.DeletedAt = &t
 	}
 	file.OriginalPath = originalPath
