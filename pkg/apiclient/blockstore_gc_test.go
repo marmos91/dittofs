@@ -111,11 +111,13 @@ func TestBlockStoreGCStatus_RoundTrip(t *testing.T) {
 // the "no run yet" state without string matching.
 func TestBlockStoreGCStatus_NotFound(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(APIError{
-			Code:    "NOT_FOUND",
-			Message: "no GC run recorded for share myshare",
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":   "about:blank",
+			"title":  "Not Found",
+			"status": http.StatusNotFound,
+			"detail": "no GC run recorded for share myshare",
 		})
 	}))
 	defer server.Close()

@@ -123,7 +123,7 @@ func TestRestore_PreconditionFailedHint(t *testing.T) {
 	fc := &fakeClient{
 		share:      &apiclient.Share{Name: "/archive", Enabled: false},
 		snapshots:  map[string]*apiclient.Snapshot{"snap-1": {ID: "snap-1"}},
-		restoreErr: &apiclient.APIError{Code: "PRECONDITION_FAILED", Message: "not durable", StatusCode: 412},
+		restoreErr: &apiclient.APIError{Title: "Precondition Failed", Detail: "not durable", StatusCode: 412},
 	}
 	withFakeClient(t, fc)
 

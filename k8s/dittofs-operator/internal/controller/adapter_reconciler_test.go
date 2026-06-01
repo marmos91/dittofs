@@ -125,8 +125,9 @@ func TestReconcileAdapters_APIError_PreservesState(t *testing.T) {
 	// Mock DittoFS API returning 500
 	server := mockDittoFSServer(t, map[string]http.HandlerFunc{
 		"GET /api/v1/adapters": func(w http.ResponseWriter, req *http.Request) {
+			w.Header().Set("Content-Type", "application/problem+json")
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`{"code":"INTERNAL","message":"Server error"}`))
+			w.Write([]byte(`{"type":"about:blank","title":"Internal Server Error","status":500,"detail":"Server error"}`))
 		},
 	})
 

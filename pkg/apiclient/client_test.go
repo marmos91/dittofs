@@ -69,10 +69,13 @@ func TestDoWithAuthHeader(t *testing.T) {
 
 func TestDoWithAPIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(APIError{
-			Code:    "UNAUTHORIZED",
-			Message: "Invalid credentials",
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":   "about:blank",
+			"title":  "Unauthorized",
+			"status": http.StatusUnauthorized,
+			"detail": "Invalid credentials",
 		})
 	}))
 	defer server.Close()
@@ -83,8 +86,8 @@ func TestDoWithAPIError(t *testing.T) {
 
 	apiErr, ok := err.(*APIError)
 	require.True(t, ok)
-	assert.Equal(t, "UNAUTHORIZED", apiErr.Code)
-	assert.Equal(t, "Invalid credentials", apiErr.Message)
+	assert.Equal(t, http.StatusUnauthorized, apiErr.StatusCode)
+	assert.Equal(t, "Invalid credentials", apiErr.Detail)
 	assert.True(t, apiErr.IsAuthError())
 }
 

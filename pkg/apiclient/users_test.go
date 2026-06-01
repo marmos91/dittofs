@@ -60,10 +60,13 @@ func TestGetUser(t *testing.T) {
 
 func TestGetUser_NotFound(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(APIError{
-			Code:    "NOT_FOUND",
-			Message: "User not found",
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":   "about:blank",
+			"title":  "Not Found",
+			"status": http.StatusNotFound,
+			"detail": "User not found",
 		})
 	}))
 	defer server.Close()
@@ -76,7 +79,7 @@ func TestGetUser_NotFound(t *testing.T) {
 
 	apiErr, ok := err.(*APIError)
 	require.True(t, ok)
-	assert.Equal(t, "NOT_FOUND", apiErr.Code)
+	assert.Equal(t, http.StatusNotFound, apiErr.StatusCode)
 	assert.True(t, apiErr.IsNotFound())
 }
 
@@ -119,10 +122,13 @@ func TestCreateUser(t *testing.T) {
 
 func TestCreateUser_Duplicate(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(APIError{
-			Code:    "CONFLICT",
-			Message: "User already exists",
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":   "about:blank",
+			"title":  "Conflict",
+			"status": http.StatusConflict,
+			"detail": "User already exists",
 		})
 	}))
 	defer server.Close()
@@ -138,7 +144,8 @@ func TestCreateUser_Duplicate(t *testing.T) {
 
 	apiErr, ok := err.(*APIError)
 	require.True(t, ok)
-	assert.Equal(t, "CONFLICT", apiErr.Code)
+	assert.True(t, apiErr.IsConflict())
+	assert.Equal(t, http.StatusConflict, apiErr.StatusCode)
 }
 
 func TestUpdateUser(t *testing.T) {

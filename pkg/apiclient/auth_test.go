@@ -45,10 +45,13 @@ func TestLogin(t *testing.T) {
 
 func TestLogin_InvalidCredentials(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(APIError{
-			Code:    "UNAUTHORIZED",
-			Message: "Invalid username or password",
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":   "about:blank",
+			"title":  "Unauthorized",
+			"status": http.StatusUnauthorized,
+			"detail": "Invalid username or password",
 		})
 	}))
 	defer server.Close()
@@ -61,7 +64,7 @@ func TestLogin_InvalidCredentials(t *testing.T) {
 
 	apiErr, ok := err.(*APIError)
 	require.True(t, ok)
-	assert.Equal(t, "UNAUTHORIZED", apiErr.Code)
+	assert.Equal(t, http.StatusUnauthorized, apiErr.StatusCode)
 	assert.True(t, apiErr.IsAuthError())
 }
 
@@ -97,10 +100,13 @@ func TestRefreshToken(t *testing.T) {
 
 func TestRefreshToken_Expired(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(APIError{
-			Code:    "TOKEN_EXPIRED",
-			Message: "Refresh token has expired",
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":   "about:blank",
+			"title":  "Unauthorized",
+			"status": http.StatusUnauthorized,
+			"detail": "Refresh token has expired",
 		})
 	}))
 	defer server.Close()
@@ -113,7 +119,8 @@ func TestRefreshToken_Expired(t *testing.T) {
 
 	apiErr, ok := err.(*APIError)
 	require.True(t, ok)
-	assert.Equal(t, "TOKEN_EXPIRED", apiErr.Code)
+	assert.True(t, apiErr.IsAuthError())
+	assert.Equal(t, http.StatusUnauthorized, apiErr.StatusCode)
 }
 
 func TestLogout(t *testing.T) {
