@@ -128,6 +128,16 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 			testINV02_LeakInjection(t, factory)
 		})
 	})
+
+	// Trash exercises the recycle behavior (unlink-into-bin, in-bin permanent
+	// delete, exclude-pattern bypass, collision uniquing, subtree-as-one-entry,
+	// and overwrite-victim recycling) against every backend. The in-package
+	// unit tests cover memory only; this is the cross-backend parity gate that
+	// catches a backend dropping DeletedAt/OriginalPath or overwriting on a
+	// name collision.
+	t.Run("Trash", func(t *testing.T) {
+		runTrashConformanceTests(t, factory)
+	})
 }
 
 // createTestShare is a helper that creates a share and root directory for testing.
