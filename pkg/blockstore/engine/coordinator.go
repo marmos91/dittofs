@@ -40,12 +40,29 @@ type MetadataCoordinator interface {
 	DecrementRefCount(ctx context.Context, hash blockstore.ContentHash) (uint32, error)
 
 	// DecrementRefCountAndReap atomically decrements and, when the new count
-	// is 0, deletes the FileBlock index row so its hash leaves
-	// EnumerateFileBlocks and the GC mark-sweep can reclaim the remote chunk.
-	// Engine invokes this from Delete (per hash in the BlockRef list) and
-	// Truncate (per hash dropped past the new size) — the reclaim path.
-	// Returns the new count (0 when reaped or when the hash had no row).
-	DecrementRefCountAndReap(ctx context.Context, hash blockstore.ContentHash) (uint32, error)
+	// is 0, deletes the FileBlock index row identified by the exact block ID
+	// "{payloadID}/{offset}" so its hash leaves EnumerateFileBlocks once no
+	// row anywhere references it and the GC mark-sweep can reclaim the remote
+	// chunk. Engine invokes this from Delete (per BlockRef in the list) and
+	// Truncate (per BlockRef dropped past the new size) — the reclaim path.
+	//
+	// Reaping by EXACT ID (not by hash) is load-bearing for correctness: the
+	// engine rollup creates per-chunk rows keyed "{payloadID}/{offset}" in
+	// BlockStatePending and never finalizes them, so RefCount stays 0 and
+	// GetByHash (Remote-gated) returns nil for them. A hash-resolved reap
+	// would pick an INDETERMINATE row when two files share the same content
+	// hash (memory hashIndex, badger scan order, postgres LIMIT 1) and could
+	// reap the wrong file's row — leaking the creator's row or over-reaping a
+	// still-referenced one (data loss). Removing THIS file's own row by ID
+	// is unambiguous; cross-file dedup keep-alive is provided by SIBLING rows
+	// keeping the hash in EnumerateFileBlocks (the GC live set), NOT by
+	// RefCount, so GC sweeps the chunk only when no row anywhere references it.
+	//
+	// Returns the new count (0 when reaped or when the row was already
+	// absent). ErrFileBlockNotFound is tolerated and reported as count 0 — a
+	// row already reaped (or a dedup-miss fallback that never created one) is
+	// not a caller error.
+	DecrementRefCountAndReap(ctx context.Context, payloadID string, offset uint64) (uint32, error)
 
 	// PersistFileBlocks updates FileAttr.Blocks AND FileAttr.ObjectID
 	// for a given file in a single metadata txn. Engine invokes this

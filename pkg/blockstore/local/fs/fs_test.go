@@ -82,11 +82,6 @@ func (c *countingFileBlockStore) GetByHash(ctx context.Context, hash blockstore.
 	return c.inner.GetByHash(ctx, hash)
 }
 
-func (c *countingFileBlockStore) GetByHashAllStates(ctx context.Context, hash blockstore.ContentHash) (*blockstore.FileBlock, error) {
-	c.getByHash.Add(1)
-	return c.inner.GetByHashAllStates(ctx, hash)
-}
-
 func (c *countingFileBlockStore) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*blockstore.FileBlock, error) {
 	c.listPending.Add(1)
 	return c.inner.ListPending(ctx, olderThan, limit)

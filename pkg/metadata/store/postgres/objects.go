@@ -278,25 +278,6 @@ func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.Con
 	return block, nil
 }
 
-// GetByHashAllStates resolves a block by content hash with NO state filter
-// (Pending/Syncing/Remote all match). Implements the
-// FileBlockStore.GetByHashAllStates contract used by the reap path so a
-// Pending row — which the engine rollup never transitions to Remote — can
-// still be reaped. Returns (nil, nil) when no row carries the hash.
-func (s *PostgresMetadataStore) GetByHashAllStates(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
-	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
-		FROM file_blocks WHERE hash = $1 LIMIT 1`
-	row := s.queryRow(ctx, query, hash.String())
-	block, err := scanFileBlock(row)
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("find file block by hash (all states): %w", err)
-	}
-	return block, nil
-}
-
 // ListPending returns blocks in Pending state (RefCount>=1, not yet
 // uploaded) older than the given duration. Renamed from
 // ListLocalBlocks; the underlying semantics already match ("Local"
@@ -370,8 +351,12 @@ func (s *PostgresMetadataStore) ListFileBlocks(ctx context.Context, payloadID st
 // the still-live remote chunk once a snapshot hold lapsed (data loss). NULL
 // hashes (legacy pre-CAS file_blocks rows) are emitted as the zero ContentHash
 // and skipped by the mark phase; file_block_refs.hash is NOT NULL.
+//
+// UNION ALL, not UNION: the consumer (GC mark phase) dedupes hashes into a set,
+// so cross-source and intra-source duplicates are harmless. UNION would force an
+// expensive sort/hash-aggregate to dedupe at the query layer for no benefit.
 const enumerateHashesQuery = `SELECT hash FROM file_blocks
-UNION
+UNION ALL
 SELECT encode(hash, 'hex') FROM file_block_refs`
 
 // EnumerateFileBlocks streams every live-set ContentHash through fn, unioning
@@ -654,23 +639,6 @@ func (tx *postgresTransaction) GetByHash(ctx context.Context, hash metadata.Cont
 	}
 	if err != nil {
 		return nil, fmt.Errorf("find file block by hash: %w", err)
-	}
-	return block, nil
-}
-
-func (tx *postgresTransaction) GetByHashAllStates(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
-		FROM file_blocks WHERE hash = $1 LIMIT 1`
-	row := tx.tx.QueryRow(ctx, query, hash.String())
-	block, err := scanFileBlock(row)
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("find file block by hash (all states): %w", err)
 	}
 	return block, nil
 }

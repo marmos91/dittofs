@@ -23,9 +23,6 @@ type nopFBS struct{}
 func (nopFBS) GetByHash(_ context.Context, _ blockstore.ContentHash) (*blockstore.FileBlock, error) {
 	return nil, nil
 }
-func (nopFBS) GetByHashAllStates(_ context.Context, _ blockstore.ContentHash) (*blockstore.FileBlock, error) {
-	return nil, nil
-}
 func (nopFBS) Put(_ context.Context, _ *blockstore.FileBlock) error { return nil }
 func (nopFBS) Delete(_ context.Context, _ string) error {
 	return blockstore.ErrFileBlockNotFound

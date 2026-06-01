@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -20,6 +21,13 @@ type refcountCoordinator struct {
 	mu     sync.Mutex
 	counts map[blockstore.ContentHash]uint32
 
+	// idHash maps the reap-path key "{payloadID}/{offset}" to the hash whose
+	// count it decrements. The reap path is keyed by EXACT ID (never by hash),
+	// so the coordinator translates the row identity back to the hash it needs
+	// to bookkeep — exactly what the production runtime does by reading the row
+	// before decrementing. seedBlock populates this alongside the hash count.
+	idHash map[string]blockstore.ContentHash
+
 	// decrementErr, when non-nil and matching hash, is returned on the
 	// matching DecrementRefCount call (and the count is NOT mutated).
 	decrementErr     error
@@ -27,13 +35,26 @@ type refcountCoordinator struct {
 }
 
 func newRefcountCoordinator() *refcountCoordinator {
-	return &refcountCoordinator{counts: make(map[blockstore.ContentHash]uint32)}
+	return &refcountCoordinator{
+		counts: make(map[blockstore.ContentHash]uint32),
+		idHash: make(map[string]blockstore.ContentHash),
+	}
 }
 
 func (c *refcountCoordinator) seed(hash blockstore.ContentHash, count uint32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.counts[hash] = count
+}
+
+// seedBlock seeds a hash count AND binds the reap-path row ID
+// "{payloadID}/{offset}" to that hash, so a by-ID reap can resolve and
+// decrement the hash's count.
+func (c *refcountCoordinator) seedBlock(payloadID string, offset uint64, hash blockstore.ContentHash, count uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.counts[hash] = count
+	c.idHash[fmt.Sprintf("%s/%d", payloadID, offset)] = hash
 }
 
 func (c *refcountCoordinator) IncrementRefCount(_ context.Context, hash blockstore.ContentHash) error {
@@ -62,12 +83,21 @@ func (c *refcountCoordinator) DecrementRefCount(_ context.Context, hash blocksto
 	return cur, nil
 }
 
-// DecrementRefCountAndReap mirrors DecrementRefCount (including the
-// single-shot error injection) and reaps the map entry when the count hits 0,
-// matching the backend reap semantics the engine reclaim path now relies on.
-func (c *refcountCoordinator) DecrementRefCountAndReap(_ context.Context, hash blockstore.ContentHash) (uint32, error) {
+// DecrementRefCountAndReap is keyed by EXACT ID "{payloadID}/{offset}" (the
+// production reap-path contract). It resolves the ID to the hash it bookkeeps,
+// then mirrors DecrementRefCount (including the single-shot error injection) and
+// reaps the map entry when the count hits 0, matching the backend reap semantics
+// the engine reclaim path relies on. An ID with no seeded row is a tolerated
+// no-op (count 0) — the production coordinator maps ErrFileBlockNotFound the
+// same way.
+func (c *refcountCoordinator) DecrementRefCountAndReap(_ context.Context, payloadID string, offset uint64) (uint32, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	id := fmt.Sprintf("%s/%d", payloadID, offset)
+	hash, ok := c.idHash[id]
+	if !ok {
+		return 0, nil
+	}
 	if c.decrementErr != nil && c.decrementErrHash == hash {
 		err := c.decrementErr
 		c.decrementErr = nil
@@ -76,11 +106,13 @@ func (c *refcountCoordinator) DecrementRefCountAndReap(_ context.Context, hash b
 	cur := c.counts[hash]
 	if cur == 0 {
 		delete(c.counts, hash)
+		delete(c.idHash, id)
 		return 0, nil
 	}
 	cur--
 	if cur == 0 {
 		delete(c.counts, hash)
+		delete(c.idHash, id)
 		return 0, nil
 	}
 	c.counts[hash] = cur
@@ -213,7 +245,7 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 		hash[0] = 0xC0
 
 		coord := newRefcountCoordinator()
-		coord.seed(hash, 1) // last reference → Delete decrements to 0
+		coord.seedBlock("pid-cascade-zero", 0, hash, 1) // last reference → Delete reaps to 0
 
 		syncedStore := newRecordingSyncedHashStore()
 		syncedStore.markSyncedForTest(hash)
@@ -242,7 +274,7 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 		hash[0] = 0xC1
 
 		coord := newRefcountCoordinator()
-		coord.seed(hash, 2) // two refs; Delete drops one → newCount == 1
+		coord.seedBlock("pid-cascade-nonzero", 0, hash, 2) // two refs; Delete drops one → newCount == 1
 
 		syncedStore := newRecordingSyncedHashStore()
 		syncedStore.markSyncedForTest(hash)
@@ -271,7 +303,7 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 		hash[0] = 0xC2
 
 		coord := newRefcountCoordinator()
-		coord.seed(hash, 1)
+		coord.seedBlock("pid-cascade-nil", 0, hash, 1)
 
 		// SyncedHashStore intentionally nil — exercises the bs.syncedHashStore
 		// nil-guard. Delete must not panic and must still drive the
@@ -297,7 +329,7 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 		hash[0] = 0xC3
 
 		coord := newRefcountCoordinator()
-		coord.seed(hash, 1)
+		coord.seedBlock("pid-cascade-benign", 0, hash, 1)
 
 		syncedStore := newRecordingSyncedHashStore()
 		syncedStore.markSyncedForTest(hash)

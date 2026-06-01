@@ -65,32 +65,6 @@ type FileBlockStore interface {
 	// PutFileBlock.
 	Put(ctx context.Context, block *FileBlock) error
 
-	// GetByHashAllStates returns ANY FileBlock row carrying the given
-	// content hash REGARDLESS of its BlockState (Pending, Syncing, or
-	// Remote), or (nil, nil) when no row exists. This is the deliberate
-	// opposite of GetByHash, which is Remote-gated for dedup safety.
-	//
-	// It exists for ONE caller: the engine Delete/Truncate reclaim path
-	// in the runtime coordinator (DecrementRefCountAndReap). The engine
-	// rollup creates per-chunk FileBlock rows in BlockStatePending and
-	// never transitions them to Remote (durability is tracked separately
-	// in synced_hashes via MarkSynced, not file_blocks.state). When the
-	// last reference to such a chunk is dropped, the reap path must be
-	// able to resolve the hash → id to decrement-and-reap the row even
-	// though it is still Pending; GetByHash would return nil for it and
-	// the row + remote chunk + synced marker would leak forever.
-	//
-	// Safety: a Pending row is never a cross-file dedup donor. AddRef and
-	// GetByHash both resolve through the Remote-only hash index, so the
-	// dedup hit path can never bump a Pending row's RefCount — the only
-	// reference to a Pending row is the file that created it. Reaping a
-	// Pending row by hash therefore removes only the creator's row and
-	// cannot strand a chunk another file still references.
-	//
-	// MUST NOT be used on the dedup path. Dedup keep-alive correctness
-	// depends on GetByHash staying Remote-gated.
-	GetByHashAllStates(ctx context.Context, hash ContentHash) (*FileBlock, error)
-
 	// Delete removes a FileBlock by ID. Returns ErrFileBlockNotFound
 	// if not found. Renamed from DeleteFileBlock.
 	//

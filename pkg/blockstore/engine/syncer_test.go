@@ -855,10 +855,12 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 			t.Fatalf("WriteAt produced zero CAS chunks")
 		}
 
-		// Seed coord with refcount=1 per hash so Delete drops to 0
-		// and triggers the cascade.
-		for _, h := range hashes {
-			coord.seed(h, 1)
+		// Seed coord with refcount=1 per block ID so the by-ID reap on
+		// Delete drops each to 0 and triggers the cascade. The reap is
+		// keyed by EXACT ID "{payloadID}/{offset}"; the offsets here match
+		// the blockRefs the Delete below passes (i*4096).
+		for i, h := range hashes {
+			coord.seedBlock(payloadID, uint64(i)*4096, h, 1)
 		}
 
 		if _, err := bs.Flush(ctx, payloadID); err != nil {
@@ -877,9 +879,10 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 			}
 		}
 
-		// Build BlockRef list matching the produced hashes (Size and
-		// Offset are not material for the cascade — engine.Delete
-		// drives DecrementRefCount keyed by Hash alone).
+		// Build BlockRef list matching the produced hashes. Offset IS
+		// material: engine.Delete reaps by EXACT ID "{payloadID}/{offset}",
+		// and these offsets (i*4096) match the seedBlock bindings above so
+		// the by-ID reap resolves each hash and fires the cascade.
 		blockRefs := make([]blockstore.BlockRef, 0, len(hashes))
 		for i, h := range hashes {
 			blockRefs = append(blockRefs, blockstore.BlockRef{
@@ -913,16 +916,33 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 type cascadeCoordinator struct {
 	mu     sync.Mutex
 	counts map[blockstore.ContentHash]uint32
+	// idHash binds the reap-path row ID "{payloadID}/{offset}" to the hash it
+	// bookkeeps. The reap path is keyed by EXACT ID (never by hash), so the
+	// coordinator translates the row identity back to the hash — exactly what
+	// the production runtime does by reading the row before decrementing.
+	idHash map[string]blockstore.ContentHash
 }
 
 func newCascadeCoordinator() *cascadeCoordinator {
-	return &cascadeCoordinator{counts: make(map[blockstore.ContentHash]uint32)}
+	return &cascadeCoordinator{
+		counts: make(map[blockstore.ContentHash]uint32),
+		idHash: make(map[string]blockstore.ContentHash),
+	}
 }
 
 func (c *cascadeCoordinator) seed(hash blockstore.ContentHash, count uint32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.counts[hash] = count
+}
+
+// seedBlock binds the reap-path row ID "{payloadID}/{offset}" to hash and seeds
+// the hash's count, so a by-ID reap can resolve and decrement it.
+func (c *cascadeCoordinator) seedBlock(payloadID string, offset uint64, hash blockstore.ContentHash, count uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.counts[hash] = count
+	c.idHash[fmt.Sprintf("%s/%d", payloadID, offset)] = hash
 }
 
 func (c *cascadeCoordinator) IncrementRefCount(_ context.Context, hash blockstore.ContentHash) error {
@@ -944,9 +964,13 @@ func (c *cascadeCoordinator) DecrementRefCount(_ context.Context, hash blockstor
 	return cur, nil
 }
 
-func (c *cascadeCoordinator) DecrementRefCountAndReap(_ context.Context, hash blockstore.ContentHash) (uint32, error) {
+func (c *cascadeCoordinator) DecrementRefCountAndReap(_ context.Context, payloadID string, offset uint64) (uint32, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	hash, ok := c.idHash[fmt.Sprintf("%s/%d", payloadID, offset)]
+	if !ok {
+		return 0, nil
+	}
 	cur := c.counts[hash]
 	if cur == 0 {
 		delete(c.counts, hash)

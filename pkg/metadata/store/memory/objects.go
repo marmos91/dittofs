@@ -132,15 +132,6 @@ func (s *MemoryMetadataStore) GetByHash(ctx context.Context, hash metadata.Conte
 	return s.findFileBlockByHashLocked(ctx, hash)
 }
 
-// GetByHashAllStates resolves a block by content hash regardless of state.
-// Implements the FileBlockStore.GetByHashAllStates contract used by the
-// reap path. Returns (nil, nil) when no row carries the hash.
-func (s *MemoryMetadataStore) GetByHashAllStates(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.findFileBlockByHashAllStatesLocked(ctx, hash)
-}
-
 // ListPending returns blocks in Pending state (complete, on disk, not yet
 // synced to remote) older than the given duration. Renamed from
 // ListLocalBlocks; the underlying semantics already match ("Local" was
@@ -286,10 +277,6 @@ func (tx *memoryTransaction) AddRef(ctx context.Context, hash metadata.ContentHa
 
 func (tx *memoryTransaction) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
 	return tx.store.findFileBlockByHashLocked(ctx, hash)
-}
-
-func (tx *memoryTransaction) GetByHashAllStates(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
-	return tx.store.findFileBlockByHashAllStatesLocked(ctx, hash)
 }
 
 func (tx *memoryTransaction) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
@@ -452,31 +439,6 @@ func (s *MemoryMetadataStore) findFileBlockByHashLocked(_ context.Context, hash 
 	}
 	result := *block
 	return &result, nil
-}
-
-// findFileBlockByHashAllStatesLocked resolves a block by hash with NO state
-// filter. Tries the Remote-only hash index first (the common case once a chunk
-// has synced), then falls back to a linear scan of all blocks for a matching
-// non-zero hash so Pending/Syncing rows are also found. Caller MUST hold at
-// least the read lock.
-func (s *MemoryMetadataStore) findFileBlockByHashAllStatesLocked(_ context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
-	if s.fileBlockData == nil || hash.IsZero() {
-		return nil, nil
-	}
-	if id, ok := s.fileBlockData.hashIndex[hash]; ok {
-		if block, ok := s.fileBlockData.blocks[id]; ok {
-			result := *block
-			return &result, nil
-		}
-	}
-	// Index miss (Pending/Syncing rows are not indexed) — linear scan.
-	for _, block := range s.fileBlockData.blocks {
-		if block.Hash == hash {
-			result := *block
-			return &result, nil
-		}
-	}
-	return nil, nil
 }
 
 func (s *MemoryMetadataStore) listLocalBlocksLocked(_ context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {

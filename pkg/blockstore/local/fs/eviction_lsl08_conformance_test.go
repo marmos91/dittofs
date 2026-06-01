@@ -235,10 +235,6 @@ func (c *countingFBSWrapper) GetByHash(ctx context.Context, h blockstore.Content
 	c.counter++
 	return c.inner.GetByHash(ctx, h)
 }
-func (c *countingFBSWrapper) GetByHashAllStates(ctx context.Context, h blockstore.ContentHash) (*blockstore.FileBlock, error) {
-	c.counter++
-	return c.inner.GetByHashAllStates(ctx, h)
-}
 func (c *countingFBSWrapper) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*blockstore.FileBlock, error) {
 	c.counter++
 	return c.inner.ListPending(ctx, olderThan, limit)

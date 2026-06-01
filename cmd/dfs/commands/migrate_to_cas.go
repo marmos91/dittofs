@@ -376,9 +376,6 @@ type nopFileBlockStore struct{}
 func (nopFileBlockStore) GetByHash(_ context.Context, _ blockstore.ContentHash) (*blockstore.FileBlock, error) {
 	return nil, nil
 }
-func (nopFileBlockStore) GetByHashAllStates(_ context.Context, _ blockstore.ContentHash) (*blockstore.FileBlock, error) {
-	return nil, nil
-}
 func (nopFileBlockStore) Put(_ context.Context, _ *blockstore.FileBlock) error { return nil }
 func (nopFileBlockStore) Delete(_ context.Context, _ string) error {
 	return blockstore.ErrFileBlockNotFound

@@ -405,57 +405,6 @@ func (s *BadgerMetadataStore) GetByHash(ctx context.Context, hash metadata.Conte
 	return &block, nil
 }
 
-// GetByHashAllStates resolves a block by content hash regardless of state.
-// The fb-hash: secondary index only carries finalized (Remote) rows, so a
-// Pending/Syncing row cannot be found through it — this scans the fb: prefix
-// for the first row whose Hash matches. Returns (nil, nil) when none match.
-// Implements the FileBlockStore.GetByHashAllStates contract (reap path only).
-func (s *BadgerMetadataStore) GetByHashAllStates(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
-	var result *metadata.FileBlock
-	err := s.db.View(func(txn *badger.Txn) error {
-		var ferr error
-		result, ferr = getByHashAllStatesTxn(ctx, txn, hash)
-		return ferr
-	})
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-// getByHashAllStatesTxn scans the fb: prefix in the supplied txn for the first
-// FileBlock whose Hash equals the target (any state). Shared by the store-level
-// View path and the transaction path so a tx-bound Put is visible to a later
-// reap in the same WithTransaction.
-func getByHashAllStatesTxn(ctx context.Context, txn *badger.Txn, hash metadata.ContentHash) (*metadata.FileBlock, error) {
-	if hash.IsZero() {
-		return nil, nil
-	}
-	opts := badger.DefaultIteratorOptions
-	opts.PrefetchValues = true
-	opts.PrefetchSize = 256
-	prefix := []byte(fileBlockPrefix)
-	opts.Prefix = prefix
-	it := txn.NewIterator(opts)
-	defer it.Close()
-	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("get by hash all states: %w", err)
-		}
-		var block metadata.FileBlock
-		if err := it.Item().Value(func(val []byte) error {
-			return json.Unmarshal(val, &block)
-		}); err != nil {
-			return nil, fmt.Errorf("decode file block: %w", err)
-		}
-		if block.Hash == hash {
-			b := block
-			return &b, nil
-		}
-	}
-	return nil, nil
-}
-
 // ListPending returns blocks in Pending state (complete, on disk, not yet
 // synced to remote) older than the given duration. Renamed from
 // ListLocalBlocks; the underlying semantics already match ("Local" was
@@ -986,15 +935,6 @@ func (tx *badgerTransaction) GetByHash(ctx context.Context, hash metadata.Conten
 		return nil, nil
 	}
 	return &block, nil
-}
-
-// GetByHashAllStates runs against the active badger.Txn so a tx-bound Put is
-// observed (snapshot-isolated reads see the tx's own pending writes).
-func (tx *badgerTransaction) GetByHashAllStates(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return getByHashAllStatesTxn(ctx, tx.txn, hash)
 }
 
 // ListPending, ListFileBlocks, EnumerateFileBlocks iterate the active txn

@@ -157,32 +157,31 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 			kept = append(kept, b)
 		}
 
-		// Reap each dropped tail hash so it leaves EnumerateFileBlocks and the
-		// GC sweep can reclaim the remote chunk (otherwise truncated tail
-		// chunks leak on the remote forever — #832).
+		// Reap each dropped tail block's OWN row (by exact ID
+		// "{payloadID}/{offset}") so its hash leaves EnumerateFileBlocks once
+		// no row anywhere references it and the GC sweep can reclaim the remote
+		// chunk (otherwise truncated tail chunks leak on the remote forever —
+		// #832).
 		//
-		// RefCount is incremented ONCE per DISTINCT hash per file (file-level
-		// dedup uses a seen-set in applyFileLevelDedupHit / CopyPayload), so
-		// decrement at most once per distinct dropped hash — and never for a
-		// hash still referenced by a KEPT block (the same content can sit on
-		// both sides of newSize). A per-BlockRef decrement would over-drop a
-		// shared row to zero and let GC delete data another reference needs.
+		// By-ID, not by-hash: each {payloadID}/offset row is independent and
+		// unique per offset. Dropped blocks are strictly past newSize, so their
+		// offsets never collide with KEPT blocks' offsets — removing a dropped
+		// block's row can never touch a kept block's row. Dedupe by OFFSET (a
+		// defensive guard against a malformed duplicate-offset block list); two
+		// different offsets carrying the SAME content hash are TWO rows and BOTH
+		// must be reaped. Cross-file dedup keep-alive is provided by sibling
+		// rows in other files keeping the hash in the GC live set — GC sweeps
+		// the chunk only when no row anywhere references it — so reaping this
+		// file's own rows by ID strands nothing another file still references.
 		if bs.coordinator != nil {
-			keptHashes := make(map[blockstore.ContentHash]struct{}, len(kept))
-			for _, b := range kept {
-				keptHashes[b.Hash] = struct{}{}
-			}
-			reaped := make(map[blockstore.ContentHash]struct{}, len(dropped))
+			reaped := make(map[uint64]struct{}, len(dropped))
 			for _, b := range dropped {
-				if _, stillKept := keptHashes[b.Hash]; stillKept {
+				if _, done := reaped[b.Offset]; done {
 					continue
 				}
-				if _, done := reaped[b.Hash]; done {
-					continue
-				}
-				reaped[b.Hash] = struct{}{}
-				if _, err := bs.coordinator.DecrementRefCountAndReap(ctx, b.Hash); err != nil {
-					return currentBlocks, fmt.Errorf("decrement refcount on truncate-drop %s: %w", b.Hash.String(), err)
+				reaped[b.Offset] = struct{}{}
+				if _, err := bs.coordinator.DecrementRefCountAndReap(ctx, payloadID, b.Offset); err != nil {
+					return currentBlocks, fmt.Errorf("reap block on truncate-drop %s/%d: %w", payloadID, b.Offset, err)
 				}
 			}
 		}
@@ -267,37 +266,43 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []blocksto
 	// picture.
 	var coordErr error
 	if len(blocks) > 0 && bs.coordinator != nil {
-		// RefCount is incremented ONCE per DISTINCT hash per file (file-level
-		// dedup uses a seen-set in applyFileLevelDedupHit / CopyPayload), so
-		// reap at most once per distinct hash. A per-BlockRef decrement would
-		// over-drop a hash that appears at multiple offsets in this file and,
-		// when another file shares it, take the shared row to zero and let GC
-		// delete data the other reference still needs.
-		reaped := make(map[blockstore.ContentHash]struct{}, len(blocks))
+		// Reap each block's OWN row by exact ID "{payloadID}/{offset}". Each
+		// {payloadID}/offset row is independent and unique per offset, so reap
+		// each block once, deduped by OFFSET (a defensive guard against a
+		// malformed duplicate-offset list). The SAME content hash at TWO
+		// offsets in this file is TWO rows and BOTH must be reaped.
+		//
+		// By-ID, not by-hash: cross-file dedup keep-alive is provided by
+		// SIBLING rows in other files keeping the hash in EnumerateFileBlocks
+		// (the GC live set). GC sweeps the chunk only when no row anywhere
+		// references the hash, so removing this file's own rows by ID strands
+		// nothing another file still references.
+		reaped := make(map[uint64]struct{}, len(blocks))
 		for _, b := range blocks {
-			if _, done := reaped[b.Hash]; done {
+			if _, done := reaped[b.Offset]; done {
 				continue
 			}
-			reaped[b.Hash] = struct{}{}
-			// Reap at RefCount 0 so the hash leaves EnumerateFileBlocks and
-			// the GC sweep can reclaim the remote chunk (#832). Dedup-shared
-			// hashes (RefCount > 1) survive — only the last reference reaps.
-			newCount, err := bs.coordinator.DecrementRefCountAndReap(ctx, b.Hash)
+			reaped[b.Offset] = struct{}{}
+			// Reap at RefCount 0 so the row leaves EnumerateFileBlocks once no
+			// sibling references the hash, letting the GC sweep reclaim the
+			// remote chunk (#832).
+			newCount, err := bs.coordinator.DecrementRefCountAndReap(ctx, payloadID, b.Offset)
 			if err != nil {
 				if coordErr == nil {
-					coordErr = fmt.Errorf("decrement refcount on delete %s: %w", b.Hash.String(), err)
+					coordErr = fmt.Errorf("reap block on delete %s/%d: %w", payloadID, b.Offset, err)
 				}
 				continue
 			}
-			// Refcount hit zero: the local CAS chunk is being reclaimed
-			// so drop the synced marker too. Without this cascade the
-			// synced set would drift out of strict-subset relationship
-			// with local CAS contents — a future re-Put of the same hash
-			// would skip remote upload because the marker is stale.
-			// Failure here is benign (the marker becomes an orphan, but
-			// a stale marker only causes a single skipped upload on a
-			// re-Put; the bytes are already remote-resident from the
-			// original Mark). Logged at Warn for operator visibility.
+			// Row reaped (count hit zero): the local CAS chunk for this hash
+			// may be reclaimed, so drop the synced marker too. Without this
+			// cascade the synced set would drift out of strict-subset
+			// relationship with local CAS contents — a future re-Put of the
+			// same hash would skip remote upload because the marker is stale.
+			// Failure here is benign (the marker becomes an orphan, but a stale
+			// marker only causes a single skipped upload on a re-Put; the bytes
+			// are already remote-resident from the original Mark). A sibling
+			// file still referencing this hash would likewise re-upload on its
+			// next flush — also benign. Logged at Warn for operator visibility.
 			if newCount == 0 && bs.syncedHashStore != nil {
 				if derr := bs.syncedHashStore.DeleteSynced(ctx, b.Hash); derr != nil {
 					logger.Warn("delete synced marker (orphan; benign)",
