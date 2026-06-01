@@ -799,7 +799,7 @@ adapters:
   nfs:
     enabled: true
     port: 2049
-    max_connections: 0           # 0 = unlimited
+    max_connections: 0           # 0 falls back to 1024 (default cap)
 
     # Grouped timeout configuration
     timeouts:
