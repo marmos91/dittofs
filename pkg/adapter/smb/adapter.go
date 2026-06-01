@@ -623,13 +623,30 @@ type metadataServiceResolver struct {
 	metaSvc *metadata.MetadataService
 }
 
-// GetLockManagerForShare returns the LockManager for the given share.
-// Returns nil if no LockManager exists for the share.
-func (r *metadataServiceResolver) GetLockManagerForShare(shareName string) lock.LockManager {
+// lockManagerForShare resolves the per-share LockManager and returns it as a
+// true nil interface when the share has no manager.
+//
+// metaSvc.GetLockManagerForShare returns a concrete *metadata.LockManager that
+// is nil when the share has been removed (e.g. a CREATE races a DeleteShare in
+// the conformance battery). Returning that nil pointer directly through the
+// lock.LockManager interface would box it into a non-nil interface (a typed
+// nil), so every downstream `lockMgr == nil` guard would evaluate false and the
+// first method call would nil-deref the receiver. Collapse the typed nil to a
+// real nil interface here, at the single boxing boundary.
+func (r *metadataServiceResolver) lockManagerForShare(shareName string) lock.LockManager {
 	if r.metaSvc == nil {
 		return nil
 	}
-	return r.metaSvc.GetLockManagerForShare(shareName)
+	if lm := r.metaSvc.GetLockManagerForShare(shareName); lm != nil {
+		return lm
+	}
+	return nil
+}
+
+// GetLockManagerForShare returns the LockManager for the given share.
+// Returns nil if no LockManager exists for the share.
+func (r *metadataServiceResolver) GetLockManagerForShare(shareName string) lock.LockManager {
+	return r.lockManagerForShare(shareName)
 }
 
 // GetLockManagerForHandle attempts to resolve the LockManager from a file handle.
@@ -647,5 +664,5 @@ func (r *metadataServiceResolver) GetLockManagerForHandle(handleKey string) lock
 	if err != nil || shareName == "" {
 		return nil
 	}
-	return r.metaSvc.GetLockManagerForShare(shareName)
+	return r.lockManagerForShare(shareName)
 }
