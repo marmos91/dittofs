@@ -129,7 +129,12 @@ func TestGetSnapshot_NotFound(t *testing.T) {
 
 	s.reset()
 	s.status = http.StatusNotFound
-	s.body, _ = json.Marshal(APIError{Code: "NOT_FOUND", Message: "snapshot not found"})
+	s.body, _ = json.Marshal(map[string]any{
+		"type":   "about:blank",
+		"title":  "Not Found",
+		"status": http.StatusNotFound,
+		"detail": "snapshot not found",
+	})
 
 	c := newTestClient(s)
 	snap, err := c.GetSnapshot("/archive", "missing")
@@ -163,7 +168,12 @@ func TestDeleteSnapshot_NotFound(t *testing.T) {
 
 	s.reset()
 	s.status = http.StatusNotFound
-	s.body, _ = json.Marshal(APIError{Code: "NOT_FOUND", Message: "snapshot not found"})
+	s.body, _ = json.Marshal(map[string]any{
+		"type":   "about:blank",
+		"title":  "Not Found",
+		"status": http.StatusNotFound,
+		"detail": "snapshot not found",
+	})
 
 	c := newTestClient(s)
 	err := c.DeleteSnapshot("/archive", "missing")
@@ -242,7 +252,12 @@ func TestRestoreSnapshot_PreconditionFailed(t *testing.T) {
 
 	s.reset()
 	s.status = http.StatusPreconditionFailed
-	s.body, _ = json.Marshal(APIError{Code: "PRECONDITION_FAILED", Message: "snapshot is not remotely durable"})
+	s.body, _ = json.Marshal(map[string]any{
+		"type":   "about:blank",
+		"title":  "Precondition Failed",
+		"status": http.StatusPreconditionFailed,
+		"detail": "snapshot is not remotely durable",
+	})
 
 	c := newTestClient(s)
 	resp, err := c.RestoreSnapshot("/archive", "snap-x", RestoreSnapshotRequest{})

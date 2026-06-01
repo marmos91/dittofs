@@ -33,8 +33,9 @@ func newAuditServer(t *testing.T) *auditServer {
 
 		w.Header().Set("Content-Type", "application/json")
 		if s.status >= 400 {
+			w.Header().Set("Content-Type", "application/problem+json")
 			w.WriteHeader(s.status)
-			_, _ = io.WriteString(w, `{"code":"NOT_FOUND","message":"share not found"}`)
+			_, _ = io.WriteString(w, `{"type":"about:blank","title":"Not Found","status":404,"detail":"share not found"}`)
 			return
 		}
 		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/audit/refcounts") {

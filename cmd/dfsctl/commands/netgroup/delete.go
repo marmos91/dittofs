@@ -48,9 +48,9 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		if err := client.DeleteNetgroup(name); err != nil {
 			// Check for conflict (in-use by shares)
 			if apiErr, ok := err.(*apiclient.APIError); ok && apiErr.IsConflict() {
-				msg := fmt.Sprintf("failed to delete netgroup: %s", apiErr.Message)
-				if apiErr.Details != "" {
-					msg += fmt.Sprintf("\n  Shares using this netgroup: %s", strings.TrimSpace(apiErr.Details))
+				msg := fmt.Sprintf("failed to delete netgroup: %s", apiErr.Error())
+				if apiErr.Hint != "" {
+					msg += fmt.Sprintf("\n  Shares using this netgroup: %s", strings.TrimSpace(apiErr.Hint))
 				}
 				return fmt.Errorf("%s", msg)
 			}

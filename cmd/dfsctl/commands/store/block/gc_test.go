@@ -38,8 +38,9 @@ func newGCServer(t *testing.T) *gcServer {
 
 		w.Header().Set("Content-Type", "application/json")
 		if s.status >= 400 {
+			w.Header().Set("Content-Type", "application/problem+json")
 			w.WriteHeader(s.status)
-			body := `{"code":"NOT_FOUND","message":"no GC run recorded"}`
+			body := `{"type":"about:blank","title":"Not Found","status":404,"detail":"no GC run recorded"}`
 			_, _ = io.WriteString(w, body)
 			return
 		}

@@ -53,7 +53,7 @@ func (f *fakeClient) GetSnapshot(share, id string) (*apiclient.Snapshot, error) 
 	if s, ok := f.snapshots[id]; ok {
 		return s, nil
 	}
-	return nil, &apiclient.APIError{Code: "NOT_FOUND", Message: "snapshot not found", StatusCode: 404}
+	return nil, &apiclient.APIError{Title: "Not Found", Detail: "snapshot not found", StatusCode: 404}
 }
 
 func (f *fakeClient) DeleteSnapshot(share, id string) error {
