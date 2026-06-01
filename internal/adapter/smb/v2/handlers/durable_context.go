@@ -293,6 +293,7 @@ func ProcessDurableHandleContext(
 type ReconnectResult struct {
 	OpenFile       *OpenFile // Restored open file state
 	PersistedLease uint32    // Lease state at disconnect time (for re-granting)
+	PersistedEpoch uint16    // Lease-V2 epoch at disconnect time (lock layer); 0 if none
 	IsV2           bool      // True if DH2C (V2), false if DHnC (V1)
 	// OriginalFileID is the full 16-byte FileID captured at first CREATE
 	// (zero for handles persisted before the field was introduced). Callers
@@ -328,21 +329,21 @@ func ProcessDurableReconnectContext(
 
 	// Determine V2 (DH2C) or V1 (DHnC) reconnect
 	if dh2cCtx := FindCreateContext(contexts, DurableHandleV2ReconnectTag); dh2cCtx != nil {
-		openFile, leaseState, origID, status, err := processV2Reconnect(ctx, durableStore, metaSvc, contexts, dh2cCtx,
+		openFile, leaseState, leaseEpoch, origID, status, err := processV2Reconnect(ctx, durableStore, metaSvc, contexts, dh2cCtx,
 			sessionID, username, sessionKeyHash, shareName, filename, connClientGUID)
 		if err != nil || status != types.StatusSuccess {
 			return nil, status, err
 		}
-		return &ReconnectResult{OpenFile: openFile, PersistedLease: leaseState, IsV2: true, OriginalFileID: origID}, types.StatusSuccess, nil
+		return &ReconnectResult{OpenFile: openFile, PersistedLease: leaseState, PersistedEpoch: leaseEpoch, IsV2: true, OriginalFileID: origID}, types.StatusSuccess, nil
 	}
 
 	if dhnCCtx := FindCreateContext(contexts, DurableHandleV1ReconnectTag); dhnCCtx != nil {
-		openFile, leaseState, origID, status, err := processV1Reconnect(ctx, durableStore, metaSvc, contexts, dhnCCtx,
+		openFile, leaseState, leaseEpoch, origID, status, err := processV1Reconnect(ctx, durableStore, metaSvc, contexts, dhnCCtx,
 			sessionID, username, sessionKeyHash, shareName, filename, connClientGUID)
 		if err != nil || status != types.StatusSuccess {
 			return nil, status, err
 		}
-		return &ReconnectResult{OpenFile: openFile, PersistedLease: leaseState, IsV2: false, OriginalFileID: origID}, types.StatusSuccess, nil
+		return &ReconnectResult{OpenFile: openFile, PersistedLease: leaseState, PersistedEpoch: leaseEpoch, IsV2: false, OriginalFileID: origID}, types.StatusSuccess, nil
 	}
 
 	// No reconnect context found
@@ -440,12 +441,12 @@ func processV1Reconnect(
 	shareName string,
 	filename string,
 	connClientGUID [16]byte,
-) (*OpenFile, uint32, [16]byte, types.Status, error) {
+) (*OpenFile, uint32, uint16, [16]byte, types.Status, error) {
 	// Parse V1 reconnect context
 	wireFileID, err := DecodeDHnCReconnect(dhnCCtx.Data)
 	if err != nil {
 		logger.Debug("processV1Reconnect: invalid DHnC data", "error", err)
-		return nil, 0, [16]byte{}, types.StatusInvalidParameter, nil
+		return nil, 0, 0, [16]byte{}, types.StatusInvalidParameter, nil
 	}
 
 	// MS-SMB2 §3.2.4.4 mandates Data.Volatile=0 on DHnC, but smbtorture's
@@ -470,7 +471,7 @@ func processV1Reconnect(
 	if FindCreateContext(contexts, DurableHandleV2RequestTag) != nil ||
 		FindCreateContext(contexts, DurableHandleV2ReconnectTag) != nil {
 		logger.Debug("processV1Reconnect: check 2 FAIL - conflicting V2 context present")
-		return nil, 0, [16]byte{}, types.StatusInvalidParameter, nil
+		return nil, 0, 0, [16]byte{}, types.StatusInvalidParameter, nil
 	}
 
 	// Non-destructive lookup: validation-failure paths (share/path/username/
@@ -483,12 +484,12 @@ func processV1Reconnect(
 	handle, err := durableStore.GetDurableHandleByFileID(ctx, fileID)
 	if err != nil {
 		logger.Warn("processV1Reconnect: store error", "error", err)
-		return nil, 0, [16]byte{}, types.StatusInternalError, err
+		return nil, 0, 0, [16]byte{}, types.StatusInternalError, err
 	}
 	if handle == nil {
 		logger.Debug("processV1Reconnect: check 3 FAIL - handle not found by FileID",
 			"fileID", fmt.Sprintf("%x", fileID))
-		return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
+		return nil, 0, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
 	}
 
 	// MS-SMB2 §3.3.5.9.7 / Samba `smbd_smb2_create_durable_lease_check`
@@ -507,7 +508,7 @@ func processV1Reconnect(
 	//       * else                            → proceed
 	gateStatus, persistedHasLease := checkLeaseReconnectGate(contexts, handle, connClientGUID, "processV1Reconnect")
 	if gateStatus != types.StatusSuccess {
-		return nil, 0, [16]byte{}, gateStatus, nil
+		return nil, 0, 0, [16]byte{}, gateStatus, nil
 	}
 	// V1 oplock-backed reconnect ignores the filename (MS-SMB2 §3.3.5.9.7); a
 	// lease-backed reconnect path-checks via validateAndRestore.
@@ -518,7 +519,7 @@ func processV1Reconnect(
 		func(ctx context.Context) (*lock.PersistedDurableHandle, error) {
 			return durableStore.ConsumeDurableHandleByFileID(ctx, fileID)
 		})
-	return openFile, handle.LeaseState, handle.OriginalFileID, status, restoreErr
+	return openFile, handle.LeaseState, handle.LeaseEpoch, handle.OriginalFileID, status, restoreErr
 }
 
 // processV2Reconnect handles V2 (DH2C) reconnect validation and restoration.
@@ -535,18 +536,18 @@ func processV2Reconnect(
 	shareName string,
 	filename string,
 	connClientGUID [16]byte,
-) (*OpenFile, uint32, [16]byte, types.Status, error) {
+) (*OpenFile, uint32, uint16, [16]byte, types.Status, error) {
 	// Parse V2 reconnect context
 	fileID, createGuid, flags, err := DecodeDH2CReconnect(dh2cCtx.Data)
 	if err != nil {
 		logger.Debug("processV2Reconnect: invalid DH2C data", "error", err)
-		return nil, 0, [16]byte{}, types.StatusInvalidParameter, nil
+		return nil, 0, 0, [16]byte{}, types.StatusInvalidParameter, nil
 	}
 
 	// Reject persistent flag
 	if flags&DH2FlagPersistent != 0 {
 		logger.Debug("processV2Reconnect: persistent flag rejected")
-		return nil, 0, [16]byte{}, types.StatusInvalidParameter, nil
+		return nil, 0, 0, [16]byte{}, types.StatusInvalidParameter, nil
 	}
 
 	logger.Debug("processV2Reconnect: starting validation",
@@ -584,14 +585,14 @@ func processV2Reconnect(
 	}
 	if err != nil {
 		logger.Warn("processV2Reconnect: store error", "error", err)
-		return nil, 0, [16]byte{}, types.StatusInternalError, err
+		return nil, 0, 0, [16]byte{}, types.StatusInternalError, err
 	}
 	if handle == nil {
 		logger.Debug("processV2Reconnect: handle not found",
 			"createGuid", fmt.Sprintf("%x", createGuid),
 			"fileID", fmt.Sprintf("%x", fileID),
 			"byFileID", zeroCreateGuid)
-		return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
+		return nil, 0, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
 	}
 
 	// The zero-CreateGuid FileID fallback is ONLY for reconnecting a V1 handle
@@ -607,7 +608,7 @@ func processV2Reconnect(
 		logger.Debug("processV2Reconnect: zero CreateGuid cannot reconnect a V2 handle",
 			"handleCreateGuid", fmt.Sprintf("%x", handle.CreateGuid),
 			"fileID", fmt.Sprintf("%x", fileID))
-		return nil, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
+		return nil, 0, 0, [16]byte{}, types.StatusObjectNameNotFound, nil
 	}
 
 	// Validate FileID from DH2C against persisted handle to prevent wrong-
@@ -622,7 +623,7 @@ func processV2Reconnect(
 		logger.Debug("processV2Reconnect: persistent FileID mismatch",
 			"expected", fmt.Sprintf("%x", handle.FileID[:8]),
 			"actual", fmt.Sprintf("%x", fileID[:8]))
-		return nil, 0, [16]byte{}, types.StatusInvalidParameter, nil
+		return nil, 0, 0, [16]byte{}, types.StatusInvalidParameter, nil
 	}
 
 	// MS-SMB2 §3.3.5.9.12 / Samba `smbd_smb2_create_durable_lease_check`: the V2
@@ -632,7 +633,7 @@ func processV2Reconnect(
 	// INVALID_PARAMETER a path mismatch would yield).
 	gateStatus, persistedHasLease := checkLeaseReconnectGate(contexts, handle, connClientGUID, "processV2Reconnect")
 	if gateStatus != types.StatusSuccess {
-		return nil, 0, [16]byte{}, gateStatus, nil
+		return nil, 0, 0, [16]byte{}, gateStatus, nil
 	}
 
 	// Symmetric with V1: a non-lease (oplock-backed) V2 reconnect IGNORES the
@@ -653,7 +654,7 @@ func processV2Reconnect(
 	}
 	openFile, status, restoreErr := validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
 		sessionKeyHash, shareName, filename, persistedHasLease, consume)
-	return openFile, handle.LeaseState, handle.OriginalFileID, status, restoreErr
+	return openFile, handle.LeaseState, handle.LeaseEpoch, handle.OriginalFileID, status, restoreErr
 }
 
 // validateAndRestore runs the shared reconnect validation checks and restores
@@ -1003,14 +1004,16 @@ func ProcessAppInstanceId(
 
 // buildPersistedDurableHandle creates a PersistedDurableHandle from an OpenFile
 // and session information. Used when persisting durable handles during disconnect.
-// leaseState is the current lease state (R/W/H flags) at disconnect time,
-// used to restore the lease on reconnect.
+// leaseState is the current lease state (R/W/H flags) at disconnect time, and
+// leaseEpoch the live lease-V2 epoch (lock layer), both used to restore the
+// lease on reconnect.
 func buildPersistedDurableHandle(
 	openFile *OpenFile,
 	username string,
 	sessionKeyHash [32]byte,
 	serverStartTime time.Time,
 	leaseState uint32,
+	leaseEpoch uint16,
 ) *lock.PersistedDurableHandle {
 	// Clone MetadataHandle to avoid aliasing the live OpenFile's slice
 	metaHandle := make([]byte, len(openFile.MetadataHandle))
@@ -1044,6 +1047,7 @@ func buildPersistedDurableHandle(
 		OplockLevel:     openFile.OplockLevel,
 		LeaseKey:        openFile.LeaseKey,
 		LeaseState:      leaseState,
+		LeaseEpoch:      leaseEpoch,
 		CreateGuid:      openFile.CreateGuid,
 		AppInstanceId:   openFile.AppInstanceId,
 		Username:        username,

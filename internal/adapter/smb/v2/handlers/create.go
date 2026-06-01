@@ -870,6 +870,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 				// the handle actually still holds.
 				persistedOplockLevel := restored.OplockLevel
 				persistedLeaseState := reconnResult.PersistedLease
+				persistedLeaseEpoch := reconnResult.PersistedEpoch
 
 				if restored.OplockLevel == OplockLevelLease && restored.LeaseKey != ([16]byte{}) {
 					// Use persisted lease state for re-request. This preserves the
@@ -908,17 +909,34 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 						leaseStateRank(persistedLeaseState) > leaseStateRank(reportedLeaseState) {
 						reportedLeaseState = persistedLeaseState
 					}
+					// Mirror the lease-state fallback for the epoch. The lease-V2
+					// epoch is monotonic across the handle's life; a fresh
+					// re-registration on reconnect restarts it at 0, which would
+					// make the reconnect response report Epoch=0 and leak a stale
+					// NewEpoch on the next break. Restore the persisted epoch when
+					// the re-grant under-delivers (returns 0 or an older value)
+					// (smb2.durable-v2-open.lock-lease asserts lease_epoch==1).
+					reportedLeaseEpoch := epoch
+					if persistedLeaseEpoch > reportedLeaseEpoch {
+						reportedLeaseEpoch = persistedLeaseEpoch
+					}
 					if leaseErr != nil {
 						logger.Debug("CREATE: durable reconnect lease re-request failed", "error", leaseErr)
 					}
 					if reportedLeaseState != lock.LeaseStateNone {
+						// Push the restored epoch back into the lock layer so
+						// subsequent break notifications carry the correct
+						// NewEpoch rather than the re-registration's reset value.
+						if reportedLeaseEpoch != epoch {
+							h.LeaseManager.SetLeaseEpoch(restored.LeaseKey, reportedLeaseEpoch)
+						}
 						// Build lease response context
 						if leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest); leaseCtx != nil {
 							isV1 := len(leaseCtx.Data) < LeaseV2ContextSize
 							leaseResp := &LeaseResponseContext{
 								LeaseKey:   restored.LeaseKey,
 								LeaseState: reportedLeaseState,
-								Epoch:      epoch,
+								Epoch:      reportedLeaseEpoch,
 								IsV1:       isV1,
 							}
 							reconnectContexts = append(reconnectContexts, CreateContext{

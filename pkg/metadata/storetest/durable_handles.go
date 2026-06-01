@@ -142,6 +142,7 @@ func makeDurableHandle(id string, shareName string) *lock.PersistedDurableHandle
 		OplockLevel:        0x09,
 		LeaseKey:           leaseKey,
 		LeaseState:         0x07,
+		LeaseEpoch:         0x2a,
 		CreateGuid:         createGuid,
 		AppInstanceId:      appInstanceId,
 		Username:           "user-" + id,
@@ -199,6 +200,9 @@ func assertDurableHandleEqual(t *testing.T, expected, actual *lock.PersistedDura
 	}
 	if expected.LeaseKey != actual.LeaseKey {
 		t.Errorf("LeaseKey: got %x, want %x", actual.LeaseKey, expected.LeaseKey)
+	}
+	if expected.LeaseEpoch != actual.LeaseEpoch {
+		t.Errorf("LeaseEpoch: got %d, want %d", actual.LeaseEpoch, expected.LeaseEpoch)
 	}
 	if expected.LeaseState != actual.LeaseState {
 		t.Errorf("LeaseState: got %d, want %d", actual.LeaseState, expected.LeaseState)
