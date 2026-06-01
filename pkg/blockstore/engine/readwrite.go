@@ -18,6 +18,10 @@ import (
 // machine can fire prefetch on upcoming hashes. The cache is hint-only
 // here; reads always go through local/remote stores.
 func (bs *Store) ReadAt(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, data []byte, offset uint64) (int, error) {
+	if err := bs.enter(); err != nil {
+		return 0, err
+	}
+	defer bs.closeMu.RUnlock()
 	n, err := bs.readAtInternal(ctx, payloadID, data, offset)
 	if err != nil {
 		return n, err
@@ -35,6 +39,10 @@ func (bs *Store) ReadAt(ctx context.Context, payloadID string, blocks []blocksto
 // GetSize returns the stored size of a payload.
 // Checks local store first, falls back to syncer (remote).
 func (bs *Store) GetSize(ctx context.Context, payloadID string) (uint64, error) {
+	if err := bs.enter(); err != nil {
+		return 0, err
+	}
+	defer bs.closeMu.RUnlock()
 	if size, found := bs.local.GetFileSize(ctx, payloadID); found {
 		return size, nil
 	}
@@ -44,6 +52,10 @@ func (bs *Store) GetSize(ctx context.Context, payloadID string) (uint64, error) 
 // Exists checks whether a payload exists.
 // Checks local store first, falls back to syncer (remote).
 func (bs *Store) Exists(ctx context.Context, payloadID string) (bool, error) {
+	if err := bs.enter(); err != nil {
+		return false, err
+	}
+	defer bs.closeMu.RUnlock()
 	if _, found := bs.local.GetFileSize(ctx, payloadID); found {
 		return true, nil
 	}
@@ -72,6 +84,10 @@ func (bs *Store) Exists(ctx context.Context, payloadID string) (bool, error) {
 // Returns currentBlocks unchanged — the canonical projection happens
 // at Flush time, not WriteAt time.
 func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []blockstore.BlockRef, data []byte, offset uint64) ([]blockstore.BlockRef, error) {
+	if err := bs.enter(); err != nil {
+		return currentBlocks, err
+	}
+	defer bs.closeMu.RUnlock()
 	if len(data) == 0 {
 		return currentBlocks, nil
 	}
@@ -110,6 +126,10 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 // via PutFile. When currentBlocks is empty the legacy path runs and
 // the returned slice is empty (dual-read shim semantics).
 func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks []blockstore.BlockRef, newSize uint64) ([]blockstore.BlockRef, error) {
+	if err := bs.enter(); err != nil {
+		return currentBlocks, err
+	}
+	defer bs.closeMu.RUnlock()
 	// coordinator decrements run FIRST so a refcount-bookkeeping
 	// failure leaves the file untouched on disk and remote. Previous
 	// order (local → cache → syncer → coordinator) could leave 4-of-5
@@ -209,6 +229,10 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 // Subsequent steps (cache invalidate, coordinator refcount decrements
 // optional remote sweep) are unchanged.
 func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []blockstore.BlockRef) error {
+	if err := bs.enter(); err != nil {
+		return err
+	}
+	defer bs.closeMu.RUnlock()
 	bs.local.SyncFileBlocksForFile(ctx, payloadID)
 	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
 		return fmt.Errorf("local evict memory failed: %w", err)
@@ -314,6 +338,10 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []blocksto
 // The destination's []BlockRef preserves the original sequence so
 // subsequent reads still resolve every offset correctly.
 func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID string, srcBlocks []blockstore.BlockRef) ([]blockstore.BlockRef, error) {
+	if err := bs.enter(); err != nil {
+		return nil, err
+	}
+	defer bs.closeMu.RUnlock()
 	// Empty src => no work, nothing to coordinate.
 	if len(srcBlocks) == 0 {
 		return nil, nil

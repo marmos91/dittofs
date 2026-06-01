@@ -16,6 +16,10 @@ import (
 // and satisfies [health.Checker]. This method only collapses the structured
 // state into a single error and is retained for backward compatibility.
 func (bs *Store) HealthCheck(ctx context.Context) error {
+	if err := bs.enter(); err != nil {
+		return err
+	}
+	defer bs.closeMu.RUnlock()
 	return bs.syncer.HealthCheck(ctx)
 }
 
@@ -37,6 +41,15 @@ func (bs *Store) HealthCheck(ctx context.Context) error {
 // so operators can see exactly which subsystem is at fault.
 func (bs *Store) Healthcheck(ctx context.Context) health.Report {
 	start := time.Now()
+
+	// Pin against Close teardown. This method has no error return, so a
+	// closed store reports unhealthy rather than racing the local/remote
+	// teardown that Close performs under closeMu.Lock.
+	bs.closeMu.RLock()
+	defer bs.closeMu.RUnlock()
+	if bs.closed {
+		return health.NewUnhealthyReport(ErrStoreClosed.Error(), time.Since(start))
+	}
 
 	if err := ctx.Err(); err != nil {
 		return health.NewUnknownReport(err.Error(), time.Since(start))

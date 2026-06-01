@@ -6,6 +6,7 @@ import (
 	nfs3types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	nfs4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	smbtypes "github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
@@ -258,6 +259,15 @@ var errorMap = map[merrs.ErrorCode]protoCodes{
 // accessor so each protocol returns its own SUCCESS constant (NFS3OK / NFS4_OK
 // / StatusSuccess) instead of defaultCodes.
 func lookupErrorRow(err error) protoCodes {
+	// engine.ErrStoreClosed is a block-store-lifecycle sentinel (not a
+	// merrs.StoreError) returned when a data op hits a Store that an admin
+	// removed/hot-reloaded mid-transfer (area-7 H-A). Map it to the same
+	// stale-handle row as merrs.ErrStaleHandle so the client observes the
+	// share going away (NFS *_STALE / SMB STATUS_FILE_CLOSED) rather than a
+	// generic I/O / server fault.
+	if goerrors.Is(err, engine.ErrStoreClosed) {
+		return errorMap[merrs.ErrStaleHandle]
+	}
 	var storeErr *merrs.StoreError
 	if !goerrors.As(err, &storeErr) {
 		return defaultCodes

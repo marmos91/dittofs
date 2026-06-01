@@ -456,8 +456,13 @@ func (h *Handler) executeCopyChunks(
 		if err != nil {
 			logger.Warn("COPYCHUNK: source read failed",
 				"chunk", i, "srcPath", srcOpen.Path, "error", err)
+			// COPYCHUNK source read is a content-path op: MapContentToSMB
+			// maps a closed-store error (source share removed mid-copy,
+			// area-7 H-A) to STATUS_FILE_CLOSED and preserves the
+			// CAS-corruption / remote-unavailable mappings, defaulting to
+			// the I/O-class status for opaque failures.
 			return copyChunkPartialResponse(ctlCode, dstFileID,
-				types.StatusInternalError, chunksWritten, totalBytesWritten), nil
+				common.MapContentToSMB(err), chunksWritten, totalBytesWritten), nil
 		}
 
 		// Reject short reads (TOCTOU: source may have been truncated concurrently)
@@ -488,8 +493,13 @@ func (h *Handler) executeCopyChunks(
 		if _, err := dstBlockStore.WriteAt(ctx.Context, string(writeOp.PayloadID), nil, data, chunk.TargetOffset); err != nil {
 			logger.Warn("COPYCHUNK: destination write failed",
 				"chunk", i, "dstPath", dstOpen.Path, "error", err)
+			// COPYCHUNK destination write is a content-path op:
+			// MapContentToSMB maps a closed-store error (dest share removed
+			// mid-copy, area-7 H-A) to STATUS_FILE_CLOSED and preserves the
+			// CAS-corruption / remote-unavailable mappings, defaulting to
+			// the I/O-class status for opaque failures.
 			return copyChunkPartialResponse(ctlCode, dstFileID,
-				types.StatusInternalError, chunksWritten, totalBytesWritten), nil
+				common.MapContentToSMB(err), chunksWritten, totalBytesWritten), nil
 		}
 
 		// Commit write metadata

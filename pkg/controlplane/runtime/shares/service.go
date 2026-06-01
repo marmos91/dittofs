@@ -781,6 +781,18 @@ func (s *Service) releaseRemoteStore(configID string) {
 
 // RemoveShare removes a share from the registry and closes its BlockStore.
 // Does not close the underlying metadata store.
+//
+// Teardown is ordered best-effort (REVIEW M4): every step runs even if an
+// earlier one fails, and the per-step errors are aggregated into the returned
+// error so the registry / snapshot-dir / block-store / remote-ref state is
+// never left half-removed by an early return. The registry entry is dropped
+// first (under the lock) so the share disappears from routing immediately;
+// the remaining steps are pure resource teardown.
+//
+// bs.Close() is now drain-safe (area-7 H-A): it takes the engine's lifecycle
+// write lock, which blocks until all in-flight WriteAt/ReadAt/Flush ops on the
+// store have completed, so calling it here outside s.mu can no longer race a
+// client mid-transfer into a torn op or panic.
 func (s *Service) RemoveShare(name string) error {
 	s.mu.Lock()
 	share, exists := s.registry[name]
@@ -794,31 +806,37 @@ func (s *Service) RemoveShare(name string) error {
 	delete(s.registry, name)
 	s.mu.Unlock()
 
+	var errs []error
+
 	// Cleanup per-share snapshot directories alongside registry removal.
 	// The DB row is the source of truth; orphaned files left behind on a
-	// removal error are operationally harmless and must not abort the
-	// removal sequence.
+	// removal error are operationally harmless, so we log + aggregate but
+	// continue with the rest of the teardown.
 	if localStoreDir != "" {
 		snapsDir := filepath.Join(localStoreDir, "snapshots")
 		if err := os.RemoveAll(snapsDir); err != nil {
 			logger.Warn("RemoveShare: failed to remove snapshots dir",
 				"share", name, "dir", snapsDir, "error", err)
+			errs = append(errs, fmt.Errorf("remove snapshots dir %q: %w", snapsDir, err))
 		}
 	}
 
 	if bs != nil {
 		if err := bs.Close(); err != nil {
 			logger.Warn("Failed to close BlockStore for share", "share", name, "error", err)
+			errs = append(errs, fmt.Errorf("close block store for share %q: %w", name, err))
 		}
 	}
 
+	// Always release the remote-store reference even if a prior step errored,
+	// otherwise a Close failure would leak the shared remote ref-count.
 	if remoteConfigID != "" {
 		s.releaseRemoteStore(remoteConfigID)
 	}
 
 	s.notifyShareChange()
 
-	return nil
+	return errors.Join(errs...)
 }
 
 func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *string, retentionPolicy *blockstore.RetentionPolicy, retentionTTL *time.Duration) error {
