@@ -237,6 +237,10 @@ func TestBadgerColdRead_CrossFileDedupKeepAlive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBadgerMetadataStoreWithDefaults: %v", err)
 	}
+	// Close badger before the function returns so its value-log file is
+	// released before t.TempDir's RemoveAll cleanup runs — Windows cannot
+	// unlink a file that is still open.
+	defer func() { _ = ms.Close() }()
 	runCrossFileDedupKeepAlive(t, ms, "badger")
 }
 
@@ -245,5 +249,9 @@ func TestBadgerColdRead_InPlaceOverwrite_ReturnsNewestBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBadgerMetadataStoreWithDefaults: %v", err)
 	}
+	// Close badger before the function returns so its value-log file is
+	// released before t.TempDir's RemoveAll cleanup runs — Windows cannot
+	// unlink a file that is still open.
+	defer func() { _ = ms.Close() }()
 	runColdReadInPlaceOverwrite(t, ms, "badger")
 }
