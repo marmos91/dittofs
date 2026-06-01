@@ -104,11 +104,12 @@ func TestGCCmd_CallsClient_AndPrintsSummary(t *testing.T) {
 	s := newGCServer(t)
 	defer s.Close()
 	s.gcStats = &engine.GCStats{
-		RunID:        "run-1",
-		HashesMarked: 11,
-		ObjectsSwept: 3,
-		BytesFreed:   2048,
-		DurationMs:   500,
+		RunID:          "run-1",
+		HashesMarked:   11,
+		ObjectsScanned: 14,
+		ObjectsSwept:   3,
+		BytesFreed:     2048,
+		DurationMs:     500,
 	}
 	withGCTestServer(t, s.URL)
 
@@ -129,7 +130,7 @@ func TestGCCmd_CallsClient_AndPrintsSummary(t *testing.T) {
 	if s.lastDryRun {
 		t.Error("dry_run flag should be false by default")
 	}
-	for _, frag := range []string{"Hashes Marked", "11", "Objects Swept", "3", "Bytes Freed", "Run ID", "run-1"} {
+	for _, frag := range []string{"Hashes Marked", "11", "Objects Found", "14", "Objects Swept", "3", "Bytes Freed", "Run ID", "run-1"} {
 		if !strings.Contains(out, frag) {
 			t.Errorf("stdout missing %q, got %q", frag, out)
 		}
@@ -188,13 +189,14 @@ func TestGCStatusCmd_PrintsSummary(t *testing.T) {
 	s := newGCServer(t)
 	defer s.Close()
 	s.summary = engine.GCRunSummary{
-		RunID:        "run-7",
-		StartedAt:    time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC),
-		CompletedAt:  time.Date(2026, 4, 25, 10, 0, 1, 0, time.UTC),
-		HashesMarked: 99,
-		ObjectsSwept: 5,
-		BytesFreed:   8192,
-		DurationMs:   1100,
+		RunID:          "run-7",
+		StartedAt:      time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC),
+		CompletedAt:    time.Date(2026, 4, 25, 10, 0, 1, 0, time.UTC),
+		HashesMarked:   99,
+		ObjectsScanned: 120,
+		ObjectsSwept:   5,
+		BytesFreed:     8192,
+		DurationMs:     1100,
 	}
 	withGCTestServer(t, s.URL)
 
@@ -210,7 +212,7 @@ func TestGCStatusCmd_PrintsSummary(t *testing.T) {
 	if s.lastPath != "/api/v1/shares/myshare/blockstore/gc-status" {
 		t.Errorf("path = %q, want /api/v1/shares/myshare/blockstore/gc-status", s.lastPath)
 	}
-	for _, frag := range []string{"run-7", "Hashes Marked", "99", "Objects Swept", "5"} {
+	for _, frag := range []string{"run-7", "Hashes Marked", "99", "Objects Found", "120", "Objects Swept", "5"} {
 		if !strings.Contains(out, frag) {
 			t.Errorf("stdout missing %q, got %q", frag, out)
 		}

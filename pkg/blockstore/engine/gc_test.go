@@ -216,6 +216,14 @@ func TestGCMarkSweep_SweepHappyPath(t *testing.T) {
 	if stats.ObjectsSwept != 2 {
 		t.Errorf("ObjectsSwept = %d, want 2", stats.ObjectsSwept)
 	}
+	// ObjectsScanned counts every CAS object the sweep walked: the 3 live
+	// blocks plus the 2 orphans = 5, regardless of how many were deleted.
+	if stats.ObjectsScanned != 5 {
+		t.Errorf("ObjectsScanned = %d, want 5 (3 live + 2 orphans)", stats.ObjectsScanned)
+	}
+	if stats.ObjectsScanned < stats.ObjectsSwept {
+		t.Errorf("ObjectsScanned (%d) must be >= ObjectsSwept (%d)", stats.ObjectsScanned, stats.ObjectsSwept)
+	}
 	wantBytes := int64(len(orphan1Data) + len(orphan2Data))
 	if stats.BytesFreed != wantBytes {
 		t.Errorf("BytesFreed = %d, want %d", stats.BytesFreed, wantBytes)

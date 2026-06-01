@@ -240,6 +240,7 @@ type GCRunSummary struct {
 	StartedAt        time.Time `json:"started_at"`
 	CompletedAt      time.Time `json:"completed_at"`
 	HashesMarked     int64     `json:"hashes_marked"`
+	ObjectsScanned   int64     `json:"objects_scanned"`
 	ObjectsSwept     int64     `json:"objects_swept"`
 	BytesFreed       int64     `json:"bytes_freed"`
 	DurationMs       int64     `json:"duration_ms"`

@@ -269,9 +269,11 @@ dfsctl store block gc /archive --dry-run
 |------|---------|-------------|
 | `--dry-run` | `false` | Skip DELETEs; print up to `gc.dry_run_sample_size` candidate keys (default 1000). Critical for first-time deployment confidence. |
 
-**Output:** A `GCStats` record with `hashes_marked`, `objects_swept`,
-`bytes_freed`, `duration_ms`, and `error_count` plus a sample of the
-first errors when `error_count > 0`.
+**Output:** A `GCStats` record with `hashes_marked` (live blocks
+referenced), `objects_scanned` (total CAS objects found in the store),
+`objects_swept` (orphans deleted, or would-be-deleted under
+`--dry-run`), `bytes_freed`, `duration_ms`, and `error_count` plus a
+sample of the first errors when `error_count > 0`.
 
 **Fail-closed posture:** any mark-phase error aborts the sweep entirely
 (no objects are deleted). Sweep-side per-prefix DELETE errors are
@@ -290,8 +292,8 @@ dfsctl store block gc-status /archive
 ```
 
 **Output:** the `GCRunSummary` JSON: `run_id`, `started_at`,
-`finished_at`, `hashes_marked`, `objects_swept`, `bytes_freed`,
-`duration_ms`, `error_count`, `error_samples`, plus the
+`finished_at`, `hashes_marked`, `objects_scanned`, `objects_swept`,
+`bytes_freed`, `duration_ms`, `error_count`, `error_samples`, plus the
 configuration snapshot (`grace_period`, `dry_run`) used for the run.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep-v0150-phase-11)
