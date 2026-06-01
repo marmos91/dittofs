@@ -30,6 +30,7 @@ type shareOptions struct {
 	defaultPermission string
 	description       string
 	remoteBlockStore  string
+	trashEnabled      *bool
 }
 
 // WithShareReadOnly sets the read-only flag for the share.
@@ -51,6 +52,15 @@ func WithShareDefaultPermission(permission string) ShareOption {
 func WithShareDescription(desc string) ShareOption {
 	return func(o *shareOptions) {
 		o.description = desc
+	}
+}
+
+// WithShareTrashEnabled enables the per-share recycle bin so deletes move to
+// #recycle instead of being permanent.
+func WithShareTrashEnabled() ShareOption {
+	return func(o *shareOptions) {
+		enabled := true
+		o.trashEnabled = &enabled
 	}
 }
 
@@ -88,6 +98,9 @@ func (r *CLIRunner) CreateShare(name, metadataStore, localBlockStore string, opt
 	}
 	if options.description != "" {
 		args = append(args, "--description", options.description)
+	}
+	if options.trashEnabled != nil && *options.trashEnabled {
+		args = append(args, "--enable-trash")
 	}
 
 	output, err := r.Run(args...)
