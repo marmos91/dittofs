@@ -593,10 +593,15 @@ func setupViper(v *viper.Viper, configPath string) {
 	}
 
 	// DITTOFS_CONTROLPLANE_SECRET is documented as a first-class override
-	// for the JWT signing key (controlplane.jwt.secret). Bind the
-	// documented short form explicitly in addition to the reflected
-	// nested path.
-	_ = v.BindEnv("controlplane.secret")
+	// for the JWT signing key. The struct field is JWTConfig.Secret nested
+	// under controlplane.jwt, i.e. viper key controlplane.jwt.secret — so the
+	// documented short form must bind to THAT key, not controlplane.secret
+	// (which no struct field reads). Pass both the documented short form and
+	// the auto long form explicitly: a second BindEnv overwrites the env-var
+	// list set by the reflective configEnvKeys() walk (which bound the long
+	// form DITTOFS_CONTROLPLANE_JWT_SECRET), so we must re-list it here to
+	// keep both forms working.
+	_ = v.BindEnv("controlplane.jwt.secret", "DITTOFS_CONTROLPLANE_SECRET", "DITTOFS_CONTROLPLANE_JWT_SECRET")
 
 	// Configure config file search
 	if configPath != "" {

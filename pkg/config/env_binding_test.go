@@ -156,6 +156,54 @@ controlplane:
 	}
 }
 
+// TestLoad_JWTSecretFromShortEnv verifies the documented short-form override
+// DITTOFS_CONTROLPLANE_SECRET lands in cfg.ControlPlane.JWT.Secret when the
+// key is omitted from the file. Before the fix this bound to controlplane.secret
+// (a key no struct field reads), so the documented override was dead.
+func TestLoad_JWTSecretFromShortEnv(t *testing.T) {
+	content := `
+database:
+  type: sqlite
+`
+	path := writeConfigFile(t, content)
+
+	const want = "short-form-secret-key-minimum-32-characters!"
+	t.Setenv("DITTOFS_CONTROLPLANE_SECRET", want)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.ControlPlane.JWT.Secret != want {
+		t.Errorf("controlplane.jwt.secret: short-form env override dropped, got %q want %q", cfg.ControlPlane.JWT.Secret, want)
+	}
+}
+
+// TestLoad_JWTSecretFromLongEnv verifies the auto long form
+// DITTOFS_CONTROLPLANE_JWT_SECRET still resolves after the explicit BindEnv for
+// the short form (a second BindEnv overwrites the env-var list, so both forms
+// must be listed).
+func TestLoad_JWTSecretFromLongEnv(t *testing.T) {
+	content := `
+database:
+  type: sqlite
+`
+	path := writeConfigFile(t, content)
+
+	const want = "long-form-secret-key-minimum-32-characters!"
+	t.Setenv("DITTOFS_CONTROLPLANE_JWT_SECRET", want)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.ControlPlane.JWT.Secret != want {
+		t.Errorf("controlplane.jwt.secret: long-form env override dropped, got %q want %q", cfg.ControlPlane.JWT.Secret, want)
+	}
+}
+
 // TestConfigEnvKeys_CoversKnownKeys asserts the reflective key walk produces
 // the load-bearing nested key paths. Guards against a refactor that drops a
 // nested namespace from the BindEnv walk (which would silently reintroduce the

@@ -117,7 +117,10 @@ func mergeRedactedSecrets(oldBlob, newBlob string) string {
 }
 
 // restoreRedactedValues walks newObj, replacing any sentinel value with the
-// value at the same key in oldObj. Returns true if any substitution was made.
+// value at the same key in oldObj. It descends into both nested objects
+// (map[string]any) and arrays ([]any), so a redacted secret nested inside an
+// array is restored rather than clobbering a real secret. Returns true if any
+// substitution was made.
 func restoreRedactedValues(oldObj, newObj map[string]any) bool {
 	changed := false
 	for k, nv := range newObj {
@@ -131,6 +134,45 @@ func restoreRedactedValues(oldObj, newObj map[string]any) bool {
 		case map[string]any:
 			if ovm, isMap := ov.(map[string]any); isMap {
 				if restoreRedactedValues(ovm, nvt) {
+					changed = true
+				}
+			}
+		case []any:
+			if ova, isArr := ov.([]any); isArr {
+				if restoreRedactedArray(ova, nvt) {
+					changed = true
+				}
+			}
+		}
+	}
+	return changed
+}
+
+// restoreRedactedArray walks newArr positionally against oldArr, restoring
+// sentinel values nested inside array elements. Returns true if any
+// substitution was made.
+func restoreRedactedArray(oldArr, newArr []any) bool {
+	changed := false
+	for i, nv := range newArr {
+		if i >= len(oldArr) {
+			break
+		}
+		ov := oldArr[i]
+		switch nvt := nv.(type) {
+		case string:
+			if nvt == redactedSecret {
+				newArr[i] = ov
+				changed = true
+			}
+		case map[string]any:
+			if ovm, isMap := ov.(map[string]any); isMap {
+				if restoreRedactedValues(ovm, nvt) {
+					changed = true
+				}
+			}
+		case []any:
+			if ova, isArr := ov.([]any); isArr {
+				if restoreRedactedArray(ova, nvt) {
 					changed = true
 				}
 			}

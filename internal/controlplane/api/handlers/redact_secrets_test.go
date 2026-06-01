@@ -156,6 +156,20 @@ func TestMergeRedactedSecrets(t *testing.T) {
 			mustHave: []string{"REAL"},
 		},
 		{
+			name:     "array-nested object sentinel preserved",
+			old:      `{"endpoints":[{"password":"REAL1"},{"password":"REAL2"}]}`,
+			new:      `{"endpoints":[{"password":"********"},{"password":"********"}]}`,
+			mustHave: []string{"REAL1", "REAL2"},
+			mustHide: []string{"********"},
+		},
+		{
+			name:     "array-of-strings sentinel preserved",
+			old:      `{"keys":["REALKEY","plain"]}`,
+			new:      `{"keys":["********","plain"]}`,
+			mustHave: []string{"REALKEY", "plain"},
+			mustHide: []string{"********"},
+		},
+		{
 			name:     "empty old returns new",
 			old:      "",
 			new:      `{"password":"********"}`,
