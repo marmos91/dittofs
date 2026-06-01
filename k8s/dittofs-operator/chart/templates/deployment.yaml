@@ -26,6 +26,7 @@ spec:
             - /manager
           args:
             {{- toYaml .Values.controllerManager.manager.args | nindent 12 }}
+            - --enable-webhooks={{ .Values.controllerManager.manager.enableWebhooks | default false }}
           env:
             - name: KUBERNETES_CLUSTER_DOMAIN
               value: {{ quote .Values.kubernetesClusterDomain }}
