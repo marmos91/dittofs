@@ -1136,6 +1136,11 @@ func getContainerSecurityContext(dittoServer *dittoiov1alpha1.DittoServer) *core
 	}
 	if sc.Capabilities == nil {
 		sc.Capabilities = &corev1.Capabilities{Drop: []corev1.Capability{capabilityAll}}
+	} else if len(sc.Capabilities.Drop) == 0 {
+		// User set Capabilities (e.g. to Add one) but left Drop unset; backfill
+		// the drop-ALL baseline so the pod still satisfies the restricted
+		// Pod-Security-Standard while preserving the user's Add list.
+		sc.Capabilities.Drop = []corev1.Capability{capabilityAll}
 	}
 	if sc.SeccompProfile == nil {
 		sc.SeccompProfile = &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}

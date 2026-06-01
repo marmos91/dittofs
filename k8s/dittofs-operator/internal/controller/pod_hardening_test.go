@@ -95,6 +95,33 @@ func TestGetContainerSecurityContext_UserOverrideMerge(t *testing.T) {
 	}
 }
 
+// TestGetContainerSecurityContext_UserAddsCapabilityKeepsDropBaseline asserts
+// that when the user sets Capabilities only to Add a capability (leaving Drop
+// unset), the operator still backfills Drop=[ALL] so the pod satisfies the
+// restricted Pod-Security-Standard, while preserving the user's Add list.
+func TestGetContainerSecurityContext_UserAddsCapabilityKeepsDropBaseline(t *testing.T) {
+	ds := &v1alpha1.DittoServer{
+		Spec: v1alpha1.DittoServerSpec{
+			SecurityContext: &corev1.SecurityContext{
+				Capabilities: &corev1.Capabilities{
+					Add: []corev1.Capability{"NET_BIND_SERVICE"},
+				},
+			},
+		},
+	}
+
+	sc := getContainerSecurityContext(ds)
+	if sc == nil || sc.Capabilities == nil {
+		t.Fatalf("expected a non-nil SecurityContext with Capabilities")
+	}
+	if len(sc.Capabilities.Add) != 1 || sc.Capabilities.Add[0] != "NET_BIND_SERVICE" {
+		t.Errorf("expected user Capabilities.Add=[NET_BIND_SERVICE] to be preserved, got %+v", sc.Capabilities.Add)
+	}
+	if len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != capabilityAll {
+		t.Errorf("expected backfilled Capabilities.Drop=[ALL], got %+v", sc.Capabilities.Drop)
+	}
+}
+
 // TestGetContainerSecurityContext_UserDisablesHardening asserts the merge does
 // not clobber a user that explicitly relaxes a default (e.g. allows privilege
 // escalation) — user always wins, even when relaxing.
