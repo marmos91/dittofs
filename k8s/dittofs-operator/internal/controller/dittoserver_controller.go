@@ -59,6 +59,9 @@ const (
 	defaultAPIPort = 8080
 	// defaultFSGroup is the default fsGroup for pod security context (nonroot user)
 	defaultFSGroup = 65532
+	// capabilityAll is the special capability value that drops all Linux
+	// capabilities from the managed dfs container.
+	capabilityAll corev1.Capability = "ALL"
 )
 
 // retryOnConflict wraps an operation with retry logic for optimistic locking conflicts.
@@ -994,6 +997,11 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 						},
 					},
 					Spec: corev1.PodSpec{
+						// dfs imports no client-go and never calls the K8s API,
+						// so it has no legitimate consumer for a ServiceAccount
+						// token. Disabling automount keeps the unused namespace
+						// default SA token off the network-exposed container.
+						AutomountServiceAccountToken:  ptr.To(false),
 						SecurityContext:               getPodSecurityContext(dittoServer),
 						TerminationGracePeriodSeconds: ptr.To(getTerminationGracePeriodSeconds(dittoServer)),
 						InitContainers:                initContainers,
@@ -1005,7 +1013,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 								Args:            []string{"start", "--foreground", "--config", "/config/config.yaml"},
 								VolumeMounts:    volumeMounts,
 								Resources:       dittoServer.Spec.Resources,
-								SecurityContext: dittoServer.Spec.SecurityContext,
+								SecurityContext: getContainerSecurityContext(dittoServer),
 								Ports:           buildContainerPorts(dittoServer, existingAdapterPorts(statefulSet)),
 								Env:             envVars,
 								LivenessProbe: &corev1.Probe{
@@ -1096,6 +1104,52 @@ func getPodSecurityContext(dittoServer *dittoiov1alpha1.DittoServer) *corev1.Pod
 	return &corev1.PodSecurityContext{
 		FSGroup: &fsGroup,
 	}
+}
+
+// getContainerSecurityContext returns the SecurityContext for the managed dfs
+// container. It applies a secure-by-default posture (drop ALL capabilities, no
+// privilege escalation, run as non-root, RuntimeDefault seccomp) so the
+// operator-generated StatefulSet is admitted by Pod-Security-Standards
+// "restricted" namespaces and matches the hardened operator pod. The dfs image
+// already ships USER 65532, so non-root is consistent.
+//
+// readOnlyRootFilesystem is intentionally NOT set: dfs writes to os.TempDir()
+// (the block-store GC engine and config default-dir fallback) outside its
+// mounted volumes, which a read-only root filesystem would break.
+//
+// When the user supplies Spec.SecurityContext, those fields override the
+// secure defaults (user wins on conflicts).
+func getContainerSecurityContext(dittoServer *dittoiov1alpha1.DittoServer) *corev1.SecurityContext {
+	// Start from the user's context (if any) so all user-set fields — including
+	// any added in future API versions — are preserved, then backfill the
+	// secure defaults only where the user left a field unset (user wins).
+	sc := dittoServer.Spec.SecurityContext.DeepCopy()
+	if sc == nil {
+		sc = &corev1.SecurityContext{}
+	}
+
+	if sc.AllowPrivilegeEscalation == nil {
+		sc.AllowPrivilegeEscalation = ptr.To(false)
+	}
+	if sc.RunAsNonRoot == nil {
+		sc.RunAsNonRoot = ptr.To(true)
+	}
+	if sc.Capabilities == nil {
+		sc.Capabilities = &corev1.Capabilities{Drop: []corev1.Capability{capabilityAll}}
+	} else if len(sc.Capabilities.Drop) == 0 {
+		// User set Capabilities (e.g. to Add one) but left Drop unset; backfill
+		// the drop-ALL baseline so the pod still satisfies the restricted
+		// Pod-Security-Standard while preserving the user's Add list.
+		sc.Capabilities.Drop = []corev1.Capability{capabilityAll}
+	}
+	if sc.SeccompProfile == nil {
+		sc.SeccompProfile = &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}
+	}
+	// readOnlyRootFilesystem is intentionally left as the user set it (default
+	// unset): dfs writes to os.TempDir() outside its mounted volumes, which a
+	// read-only root filesystem would break.
+
+	return sc
 }
 
 // existingAdapterPorts extracts existing container ports from the StatefulSet.
