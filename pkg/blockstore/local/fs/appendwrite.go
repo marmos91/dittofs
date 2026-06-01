@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -544,7 +545,7 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 			}
 		}
 		if lf.path != "" {
-			if rerr := os.Remove(lf.path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			if rerr := removeLogFile(lf.path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
 				// FIX-25: do NOT include the absolute on-disk path in
 				// the error returned to the caller — protocol error
 				// responses (NFS/SMB) propagate this string and would
@@ -580,6 +581,45 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 	// in-memory FSStore is left consistent regardless of whether the
 	// on-disk file was successfully removed.
 	return stepFourErr
+}
+
+// removeLogFile unlinks path, tolerating Windows' delayed handle release.
+//
+// On POSIX a file can be unlinked while a handle is still open and Close()
+// synchronously releases the descriptor, so a single os.Remove always
+// succeeds (or fails for a real reason). Windows is different on both counts:
+// it refuses to delete a file that has ANY open handle, and the kernel may
+// not have fully released a handle by the time Close() returns. The result
+// is a transient ERROR_SHARING_VIOLATION ("The process cannot access the
+// file because it is being used by another process") on the os.Remove that
+// immediately follows the log fd's Close() — even though no goroutine is
+// logically using the file anymore. This surfaced as a Windows-CI-only flake
+// in the AppendWrite/DeleteAppendLog delete race (#714) and would equally
+// break real unlink-after-write workflows on a Windows host.
+//
+// On Windows we retry with a short backoff so the unlink lands once the
+// kernel drains the closed handle; on POSIX the first os.Remove is
+// authoritative and the loop never iterates. The retry budget is small and
+// bounded — a handle the OS will never release indicates a genuine error
+// (another live handle, EACCES, EROFS), which we surface after the last
+// attempt for the caller to log and for recovery's boot-time orphan sweep
+// to reconcile.
+func removeLogFile(path string) error {
+	err := os.Remove(path)
+	if runtime.GOOS != "windows" || err == nil || errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	// Windows-only: back off and retry the unlink while the closed handle
+	// drains. Total worst-case wait ~500ms (10 × 50ms) — long enough for the
+	// kernel's lazy release, short enough not to stall a delete-heavy caller.
+	for i := 0; i < 10; i++ {
+		time.Sleep(50 * time.Millisecond)
+		err = os.Remove(path)
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return err
 }
 
 // TruncateAppendLog records a truncation boundary for payloadID.
