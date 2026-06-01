@@ -118,7 +118,12 @@ func (c *dnsCache) cleanExpiredLocked(now time.Time) {
 // 5-minute positive TTL and 1-minute negative TTL. Falls back to IP matching
 // if DNS lookup fails (does not block).
 func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, clientIP net.IP) (bool, error) {
-	// 1. Get share from runtime state.
+	// 1. Get the share's netgroup association from runtime state.
+	//
+	// Read NetgroupName via the locked accessor rather than off a *Share
+	// returned by GetShare: GetShare hands back the shared registry pointer
+	// with the lock already dropped, so reading the field there would race
+	// SetShareNetgroup's write under the same lock.
 	//
 	// A lookup miss here (unknown / renamed / partially-loaded share) is NOT a
 	// legitimate netgroup deny: it signals config drift between the requested
@@ -126,15 +131,16 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 	// indistinguishable from "client not in allowlist" and silently invisible.
 	// Surface it as a wrapped ErrShareNotFound so it is diagnosable while still
 	// denying access (the mount handler treats any error as fail-closed).
-	share, err := r.sharesSvc.GetShare(shareName)
-	if err != nil {
+	netgroupName, exists := r.sharesSvc.GetShareNetgroupName(shareName)
+	if !exists {
+		err := fmt.Errorf("%w: %q", shares.ErrShareNotFound, shareName)
 		logger.Warn("Netgroup access denied: share not found in runtime registry",
 			"share", shareName, "error", err)
-		return false, fmt.Errorf("%w: %q: %w", shares.ErrShareNotFound, shareName, err)
+		return false, err
 	}
 
 	// 2. If share has no netgroup -> allow all
-	if share.NetgroupName == "" {
+	if netgroupName == "" {
 		return true, nil
 	}
 
@@ -143,15 +149,15 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 	if !ok {
 		logger.Warn("Store does not implement NetgroupStore, denying access",
 			"share", shareName,
-			"netgroup", share.NetgroupName)
+			"netgroup", netgroupName)
 		return false, fmt.Errorf("store does not support netgroup operations")
 	}
 
-	members, err := ns.GetNetgroupMembers(ctx, share.NetgroupName)
+	members, err := ns.GetNetgroupMembers(ctx, netgroupName)
 	if err != nil {
 		logger.Warn("Failed to get netgroup members, denying access",
 			"share", shareName,
-			"netgroup", share.NetgroupName,
+			"netgroup", netgroupName,
 			"error", err)
 		return false, err
 	}

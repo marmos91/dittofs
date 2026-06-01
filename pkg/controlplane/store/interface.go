@@ -561,6 +561,12 @@ type NetgroupStore interface {
 	// Returns models.ErrNetgroupNotFound if the netgroup doesn't exist.
 	GetNetgroupByID(ctx context.Context, id string) (*models.Netgroup, error)
 
+	// GetNetgroupIDByName resolves a netgroup name to its ID without preloading
+	// members. Callers that only need the ID (e.g. validating + associating a
+	// netgroup) should prefer this over GetNetgroup to avoid loading members.
+	// Returns models.ErrNetgroupNotFound if the netgroup doesn't exist.
+	GetNetgroupIDByName(ctx context.Context, name string) (string, error)
+
 	// ListNetgroups returns all netgroups with members preloaded.
 	ListNetgroups(ctx context.Context) ([]*models.Netgroup, error)
 

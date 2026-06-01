@@ -313,6 +313,47 @@ func TestCheckNetgroupAccess_NetgroupNotFound(t *testing.T) {
 	}
 }
 
+// TestCheckNetgroupAccess_ConcurrentSetShareNetgroup is the Copilot data-race
+// regression. SetShareNetgroup writes share.NetgroupName under the shares
+// service lock, while CheckNetgroupAccess previously read the same field off a
+// pointer returned by GetShare with the lock already dropped. The two ran
+// concurrently on every NFS request that overlapped a PATCH, a genuine
+// read/write race. Run with -race to detect it; the fix routes the read
+// through the locked GetShareNetgroupName accessor.
+func TestCheckNetgroupAccess_ConcurrentSetShareNetgroup(t *testing.T) {
+	rt, _, _ := createTestRuntimeWithStore(t)
+	ctx := context.Background()
+
+	addShareDirect(rt, "/export", "")
+
+	const iterations = 200
+	done := make(chan struct{})
+
+	// Writer: flip the netgroup association back and forth.
+	go func() {
+		defer close(done)
+		for i := 0; i < iterations; i++ {
+			ng := ""
+			if i%2 == 0 {
+				ng = "office"
+			}
+			if err := rt.SetShareNetgroup("/export", ng); err != nil {
+				t.Errorf("SetShareNetgroup: %v", err)
+				return
+			}
+		}
+	}()
+
+	// Reader: hammer CheckNetgroupAccess concurrently. The netgroup name may
+	// or may not resolve to a stored group; we only care that the field read
+	// is race-free, so errors here are expected and ignored.
+	for i := 0; i < iterations; i++ {
+		_, _ = rt.CheckNetgroupAccess(ctx, "/export", net.ParseIP("192.168.1.100"))
+	}
+
+	<-done
+}
+
 // --- matchHostname tests ---
 // matchHostname is now a package-level function that uses the package-level DNS cache.
 // We test it by pre-populating the DNS cache to avoid real DNS lookups.

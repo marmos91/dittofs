@@ -107,7 +107,7 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		if netgroupName == "" {
 			opts.NetgroupID = nil
 		} else {
-			ng, err := h.store.GetNetgroup(r.Context(), netgroupName)
+			id, err := h.store.GetNetgroupIDByName(r.Context(), netgroupName)
 			if err != nil {
 				if errors.Is(err, models.ErrNetgroupNotFound) {
 					BadRequest(w, "Netgroup not found: "+netgroupName)
@@ -116,7 +116,6 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 				InternalServerError(w, "Failed to resolve netgroup")
 				return
 			}
-			id := ng.ID
 			opts.NetgroupID = &id
 		}
 	}

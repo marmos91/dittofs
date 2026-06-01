@@ -126,7 +126,9 @@ func TestShareNFSConfig_PatchAssociatesNetgroup(t *testing.T) {
 	}
 
 	var resp ShareNFSConfigResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if resp.Netgroup != "office" {
 		t.Errorf("Netgroup = %q, want office", resp.Netgroup)
 	}
@@ -149,12 +151,19 @@ func TestShareNFSConfig_PatchClearsNetgroup(t *testing.T) {
 	cpStore, handler, shareID := setupShareNFSConfigTest(t)
 	ctx := context.Background()
 
-	ngID, _ := cpStore.CreateNetgroup(ctx, &models.Netgroup{Name: "office"})
+	ngID, err := cpStore.CreateNetgroup(ctx, &models.Netgroup{Name: "office"})
+	if err != nil {
+		t.Fatalf("CreateNetgroup: %v", err)
+	}
 	opts := models.DefaultNFSExportOptions()
 	opts.NetgroupID = &ngID
 	cfg := &models.ShareAdapterConfig{ShareID: shareID, AdapterType: "nfs"}
-	cfg.SetConfig(opts)
-	cpStore.SetShareAdapterConfig(ctx, cfg)
+	if err := cfg.SetConfig(opts); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	if err := cpStore.SetShareAdapterConfig(ctx, cfg); err != nil {
+		t.Fatalf("SetShareAdapterConfig: %v", err)
+	}
 
 	// Clear via explicit empty string.
 	w := doRequest(t, handler.Patch, http.MethodPatch, `{"netgroup":""}`)
@@ -163,14 +172,21 @@ func TestShareNFSConfig_PatchClearsNetgroup(t *testing.T) {
 	}
 
 	var resp ShareNFSConfigResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if resp.Netgroup != "" {
 		t.Errorf("Netgroup = %q, want empty after clear", resp.Netgroup)
 	}
 
-	stored, _ := cpStore.GetShareAdapterConfig(ctx, shareID, "nfs")
+	stored, err := cpStore.GetShareAdapterConfig(ctx, shareID, "nfs")
+	if err != nil || stored == nil {
+		t.Fatalf("GetShareAdapterConfig: cfg=%v err=%v", stored, err)
+	}
 	var storedOpts models.NFSExportOptions
-	stored.ParseConfig(&storedOpts)
+	if err := stored.ParseConfig(&storedOpts); err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
 	if storedOpts.NetgroupID != nil {
 		t.Errorf("persisted NetgroupID = %v, want nil after clear", storedOpts.NetgroupID)
 	}
@@ -194,9 +210,14 @@ func TestShareNFSConfig_PatchOtherFields(t *testing.T) {
 		t.Fatalf("Patch() status = %d, want 200, body = %s", w.Code, w.Body.String())
 	}
 
-	cfg, _ := cpStore.GetShareAdapterConfig(ctx, shareID, "nfs")
+	cfg, err := cpStore.GetShareAdapterConfig(ctx, shareID, "nfs")
+	if err != nil || cfg == nil {
+		t.Fatalf("GetShareAdapterConfig: cfg=%v err=%v", cfg, err)
+	}
 	var opts models.NFSExportOptions
-	cfg.ParseConfig(&opts)
+	if err := cfg.ParseConfig(&opts); err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
 	if opts.Squash != "all" {
 		t.Errorf("Squash = %q, want all", opts.Squash)
 	}
