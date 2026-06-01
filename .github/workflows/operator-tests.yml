@@ -91,3 +91,9 @@ jobs:
       # chart/crds can never drift from the source markers.
       - name: Verify generated manifests
         run: make manifests-verify
+
+      # The documented "kubectl kustomize config/default | kubectl apply -f -"
+      # install path must render from a clean checkout — guards against a
+      # kustomization referencing a file that is missing from the repo.
+      - name: Verify kustomize build
+        run: kubectl kustomize config/default > /dev/null
