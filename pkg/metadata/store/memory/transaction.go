@@ -215,6 +215,7 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	// cannot be mutated by a later caller-side in-place mutation of the input.
 	attrCopy.Blocks = cloneBlocks(file.Blocks)
 	attrCopy.ACL = cloneACL(file.ACL)
+	attrCopy.EAs = cloneEAs(file.EAs)
 
 	// Track size delta for regular files.
 	if file.Type == metadata.FileTypeRegular {

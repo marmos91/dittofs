@@ -151,7 +151,7 @@ func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.File
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, f.object_id,
+			f.hidden, f.acl, f.eas, f.object_id,
 			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
@@ -222,11 +222,12 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			device_minor = $14,
 			hidden = $15,
 			acl = $16,
-			object_id = $17,
-			deleted_at = $18,
-			original_path = $19,
-			deleted_by = $20
-		WHERE id = $21 AND share_name = $22
+			eas = $17,
+			object_id = $18,
+			deleted_at = $19,
+			original_path = $20,
+			deleted_by = $21
+		WHERE id = $22 AND share_name = $23
 	`
 
 	var deviceMajor, deviceMinor *int32
@@ -255,6 +256,17 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		aclJSON, marshalErr = json.Marshal(file.ACL)
 		if marshalErr != nil {
 			return mapPgError(marshalErr, "PutFile", "marshal ACL")
+		}
+	}
+
+	// Marshal extended attributes to JSON for JSONB storage. Empty/nil EAs
+	// write SQL NULL so a file that never had EAs stores nothing.
+	var easJSON []byte
+	if len(file.EAs) > 0 {
+		var marshalErr error
+		easJSON, marshalErr = json.Marshal(file.EAs)
+		if marshalErr != nil {
+			return mapPgError(marshalErr, "PutFile", "marshal EAs")
 		}
 	}
 
@@ -297,7 +309,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		timeToPGNanos(file.Atime), timeToPGNanos(file.Mtime),
 		timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
 		payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
-		file.Hidden, aclJSON, objectIDArg,
+		file.Hidden, aclJSON, easJSON, objectIDArg,
 		deletedAtArg, file.OriginalPath, file.DeletedBy,
 		file.ID, file.ShareName,
 	)
@@ -320,11 +332,11 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			INSERT INTO files (
 				id, share_name, path, file_type, mode, uid, gid, size,
 				atime, mtime, ctime, creation_time, content_id, link_target,
-				device_major, device_minor, hidden, acl, object_id,
+				device_major, device_minor, hidden, acl, eas, object_id,
 				deleted_at, original_path, deleted_by
 			) VALUES (
 				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
-				$20, $21, $22
+				$20, $21, $22, $23
 			)
 		`
 
@@ -334,7 +346,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			timeToPGNanos(file.Atime), timeToPGNanos(file.Mtime),
 			timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
 			payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
-			file.Hidden, aclJSON, objectIDArg,
+			file.Hidden, aclJSON, easJSON, objectIDArg,
 			deletedAtArg, file.OriginalPath, file.DeletedBy,
 		)
 		if err != nil {
@@ -534,7 +546,7 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 	// pool-query ListChildren above. See files.go for rationale.
 	query := `
 		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
-		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.object_id,
+		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.eas, f.object_id,
 		       f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM parent_child_map dc
 		LEFT JOIN files f ON dc.child_id = f.id
@@ -559,6 +571,7 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 		var atime, mtime, ctime, creationTime int64
 		var hidden bool
 		var aclJSON []byte
+		var easJSON []byte
 		var objectIDRaw []byte
 		var deletedAt sql.NullInt64
 		var originalPath string
@@ -566,7 +579,7 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 		var linkCount sql.NullInt32
 
 		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size,
-			&atime, &mtime, &ctime, &creationTime, &hidden, &aclJSON, &objectIDRaw,
+			&atime, &mtime, &ctime, &creationTime, &hidden, &aclJSON, &easJSON, &objectIDRaw,
 			&deletedAt, &originalPath, &deletedBy, &linkCount)
 		if err != nil {
 			return nil, "", err
@@ -632,6 +645,14 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 			var fileACL acl.ACL
 			if err := json.Unmarshal(aclJSON, &fileACL); err == nil {
 				attr.ACL = &fileACL
+			}
+		}
+
+		// Hydrate EAs for directory entries (same lenient unmarshal as ACL).
+		if len(easJSON) > 0 {
+			var eas map[string][]byte
+			if err := json.Unmarshal(easJSON, &eas); err == nil && len(eas) > 0 {
+				attr.EAs = eas
 			}
 		}
 
@@ -1273,7 +1294,7 @@ func (tx *postgresTransaction) GetFileByPayloadID(ctx context.Context, payloadID
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, f.acl, f.object_id,
+			f.hidden, f.acl, f.eas, f.object_id,
 			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id

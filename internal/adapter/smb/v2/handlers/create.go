@@ -30,6 +30,12 @@ import (
 // the client-requested initial allocation size for the file.
 const CreateContextTagAllocationSize = "AlSi"
 
+// CreateContextTagExtendedAttributes is the SMB2_CREATE_EA_BUFFER create
+// context tag ("ExtA") [MS-SMB2] 2.2.13.2.1. Its Data is a
+// FILE_FULL_EA_INFORMATION chain (MS-FSCC §2.4.15) of extended attributes the
+// client wants attached to the file at creation time.
+const CreateContextTagExtendedAttributes = "ExtA"
+
 // CreateRequest represents an SMB2 CREATE request from a client [MS-SMB2] 2.2.13.
 //
 // CREATE is the primary mechanism for clients to open existing files or

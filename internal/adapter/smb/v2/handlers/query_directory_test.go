@@ -632,3 +632,40 @@ func TestNormalizeSearchPattern(t *testing.T) {
 		}
 	}
 }
+
+// TestDirEntryEaSize_MatchesFullEaInformationSize verifies that the EaSize
+// field (offset 64) of EA-bearing directory-info entries reports the same
+// value QUERY_INFO FILE_ALL_INFORMATION does, so smb2.dir.one's
+// id_both_directory_info/ea_size == all_info2/ea_size assertion holds
+// (dir.c:673).
+func TestDirEntryEaSize_MatchesFullEaInformationSize(t *testing.T) {
+	attr := &metadata.FileAttr{
+		EAs: map[string][]byte{"NewEA": []byte("testme")},
+	}
+	want := fullEaInformationSize(attr.EAs)
+	if want == 0 {
+		t.Fatal("expected non-zero EaSize for a file with one EA")
+	}
+
+	readEaSize := func(entry []byte) uint32 {
+		return uint32(entry[64]) | uint32(entry[65])<<8 | uint32(entry[66])<<16 | uint32(entry[67])<<24
+	}
+
+	cases := map[string][]byte{
+		"both":   encodeBothDirEntry("f", attr, 1),
+		"idboth": encodeIdBothDirEntry("f", attr, 1, 0x1234),
+		"full":   encodeFullDirEntry("f", attr, 1),
+		"idfull": encodeIdFullDirEntry("f", attr, 1, 0x1234),
+	}
+	for name, entry := range cases {
+		if got := readEaSize(entry); got != want {
+			t.Errorf("%s: EaSize = %d, want %d", name, got, want)
+		}
+	}
+
+	// A file with no EAs must report EaSize 0.
+	empty := encodeIdBothDirEntry("f", &metadata.FileAttr{}, 1, 0x1234)
+	if got := readEaSize(empty); got != 0 {
+		t.Errorf("no-EA entry: EaSize = %d, want 0", got)
+	}
+}

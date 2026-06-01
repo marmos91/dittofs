@@ -723,6 +723,21 @@ func isSupportedDirInfoClass(c types.FileInfoClass) bool {
 	return false
 }
 
+// writeDirEntryEaSize writes the EaSize field (4 bytes at offset 64) of a
+// directory-info entry that carries one (FILE_BOTH / FILE_ID_BOTH / FILE_FULL /
+// FILE_ID_FULL). It must match the EaSize reported by QUERY_INFO
+// FILE_ALL_INFORMATION for the same file — smb2.dir.one asserts
+// id_both_directory_info/ea_size == all_info2/ea_size (dir.c:673).
+func writeDirEntryEaSize(entry []byte, attr *metadata.FileAttr) {
+	eaSize := fullEaInformationSize(attr.EAs)
+	if eaSize == 0 {
+		return
+	}
+	w := smbenc.NewWriter(4)
+	w.WriteUint32(eaSize)
+	copy(entry[64:68], w.Bytes())
+}
+
 // encodeBothDirEntry encodes a single FILE_BOTH_DIR_INFORMATION entry (94-byte base + filename).
 func encodeBothDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64) []byte {
 	nameBytes := encodeUTF16LE(name)
@@ -734,7 +749,7 @@ func encodeBothDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64) 
 	w.WriteUint32(uint32(fileIndex))
 	copy(entry[4:8], w.Bytes()) // FileIndex
 	writeCommonDirFields(entry, 8, f, len(nameBytes))
-	// EaSize (4 bytes at 64) left as zero
+	writeDirEntryEaSize(entry, attr)
 	shortNameBytes := generate83ShortName(name)
 	shortNameLen := len(shortNameBytes)
 	if shortNameLen > 24 {
@@ -761,7 +776,7 @@ func encodeIdBothDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64
 	w.WriteUint32(uint32(fileIndex))
 	copy(entry[4:8], w.Bytes()) // FileIndex
 	writeCommonDirFields(entry, 8, f, len(nameBytes))
-	// EaSize (4 bytes at 64) left as zero
+	writeDirEntryEaSize(entry, attr)
 	shortNameBytes := generate83ShortName(name)
 	shortNameLen := len(shortNameBytes)
 	if shortNameLen > 24 {
@@ -792,7 +807,8 @@ func encodeIdFullDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64
 	w.WriteUint32(uint32(fileIndex))
 	copy(entry[4:8], w.Bytes()) // FileIndex
 	writeCommonDirFields(entry, 8, f, len(nameBytes))
-	// EaSize (4 bytes at 64), Reserved (4 bytes at 68) are left as zero
+	writeDirEntryEaSize(entry, attr)
+	// Reserved (4 bytes at 68) left as zero
 	wID := smbenc.NewWriter(8)
 	wID.WriteUint64(fileID)
 	copy(entry[72:80], wID.Bytes()) // FileId
@@ -812,7 +828,7 @@ func encodeFullDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64) 
 	w.WriteUint32(uint32(fileIndex))
 	copy(entry[4:8], w.Bytes()) // FileIndex
 	writeCommonDirFields(entry, 8, f, len(nameBytes))
-	// EaSize (4 bytes at 64) is left as zero
+	writeDirEntryEaSize(entry, attr)
 	copy(entry[68:], nameBytes)
 
 	return entry
