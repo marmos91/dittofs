@@ -1,4 +1,4 @@
-.PHONY: setup-hooks check-hooks fmt lint vet build bench-phase12 build-bench bench-blockstore bench-all
+.PHONY: setup-hooks check-hooks fmt lint vet build bench-phase12 build-bench bench-blockstore bench-all test-unit test-e2e test-posix test-smb-conformance test-all
 
 # Configure git to use the project's hooks directory and make hooks
 # executable. Safe to re-run.
@@ -68,3 +68,25 @@ bench-blockstore:
 # Umbrella target — only blockstore is wired today. As gc / snapshots /
 # metadata / adapters / e2e land, append their bench-<area> targets.
 bench-all: bench-blockstore
+
+# Run unit + integration tests with the race detector, matching CI.
+test-unit:
+	go test -race ./...
+
+# E2E suite. Requires sudo + a kernel NFS client. Pass script flags via
+# ARGS, e.g. `make test-e2e ARGS="--verbose --s3"`.
+test-e2e:
+	test/e2e/run-e2e.sh $(ARGS)
+
+# POSIX compliance suite. Requires a mounted DittoFS export (see the
+# script header). Pass flags/patterns via ARGS, e.g. `make test-posix ARGS=chmod`.
+test-posix:
+	test/posix/run-posix.sh $(ARGS)
+
+# SMB conformance suite (WPTS FileServer BVT). Pass flags via ARGS,
+# e.g. `make test-smb-conformance ARGS="--profile badger-fs"`.
+test-smb-conformance:
+	test/smb-conformance/run.sh $(ARGS)
+
+# Run unit tests followed by all three protocol suites.
+test-all: test-unit test-e2e test-posix test-smb-conformance
