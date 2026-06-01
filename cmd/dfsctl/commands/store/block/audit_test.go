@@ -124,7 +124,8 @@ func TestAuditCmd_CallsClient_AndPrintsSummary(t *testing.T) {
 }
 
 // TestAuditCmd_DriftSurfacesViolation asserts a non-zero delta appends
-// the violation banner to the table output.
+// the violation banner to the table output AND returns a non-nil error so
+// cobra exits non-zero (scripts can gate on `audit-refcounts || alert`).
 func TestAuditCmd_DriftSurfacesViolation(t *testing.T) {
 	s := newAuditServer(t)
 	defer s.Close()
@@ -140,17 +141,59 @@ func TestAuditCmd_DriftSurfacesViolation(t *testing.T) {
 	}
 	withAuditTestServer(t, s.URL)
 
+	var runErr error
 	out := captureStdoutAudit(t, func() {
-		if err := runAuditRefcounts(auditRefcountsCmd, []string{"myshare"}); err != nil {
-			t.Fatalf("runAuditRefcounts: %v", err)
-		}
+		runErr = runAuditRefcounts(auditRefcountsCmd, []string{"myshare"})
 	})
 
+	if runErr == nil {
+		t.Fatal("non-zero delta must return a non-nil error (non-zero exit)")
+	}
+	if !strings.Contains(runErr.Error(), "delta=-5") {
+		t.Errorf("error must include the delta value; got %v", runErr)
+	}
 	if !strings.Contains(out, "INV-02 violation") {
 		t.Errorf("non-zero delta must surface INV-02 violation banner; got %q", out)
 	}
 	if !strings.Contains(out, "delta=-5") {
 		t.Errorf("violation banner must include delta value; got %q", out)
+	}
+}
+
+// TestAuditCmd_DriftExitsNonZeroAcrossFormats asserts a non-zero delta
+// returns a non-nil error in EVERY output format — the exit-0-on-failure
+// class fix. Without it, `audit-refcounts -o json || alert` never fires on
+// detected corruption. The JSON/YAML body is still emitted for observability.
+func TestAuditCmd_DriftExitsNonZeroAcrossFormats(t *testing.T) {
+	for _, format := range []string{"json", "yaml"} {
+		t.Run(format, func(t *testing.T) {
+			s := newAuditServer(t)
+			defer s.Close()
+			s.result = &engine.AuditRefcountsResult{
+				Share:         "myshare",
+				TotalRefs:     10,
+				TotalRefCount: 7,
+				Delta:         3,
+			}
+			withAuditTestServer(t, s.URL)
+			cmdutil.Flags.Output = format
+
+			var runErr error
+			out := captureStdoutAudit(t, func() {
+				runErr = runAuditRefcounts(auditRefcountsCmd, []string{"myshare"})
+			})
+
+			if runErr == nil {
+				t.Fatalf("%s: non-zero delta must return a non-nil error", format)
+			}
+			if !strings.Contains(runErr.Error(), "delta=3") {
+				t.Errorf("%s: error must include the delta value; got %v", format, runErr)
+			}
+			// Body is still emitted so machine consumers get the full result.
+			if !strings.Contains(out, "myshare") {
+				t.Errorf("%s: result body must still be emitted; got %q", format, out)
+			}
+		})
 	}
 }
 

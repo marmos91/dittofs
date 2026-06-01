@@ -65,14 +65,30 @@ func runBlockStoreGC(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Emit the stats body first so observability is identical across
+	// formats, then surface sweep errors as a non-zero exit independently
+	// of the output format. A GC run that hit Delete/list errors left
+	// orphan objects unreclaimed (storage/cost leak) — scripts gating on
+	// the exit code must see that in -o json/-o yaml too, not only table.
 	switch format {
 	case output.FormatJSON:
-		return output.PrintJSON(os.Stdout, res)
+		if err := output.PrintJSON(os.Stdout, res); err != nil {
+			return err
+		}
 	case output.FormatYAML:
-		return output.PrintYAML(os.Stdout, res)
+		if err := output.PrintYAML(os.Stdout, res); err != nil {
+			return err
+		}
 	default:
-		return printGCStatsTable(res, dryRun)
+		if err := printGCStatsTable(res, dryRun); err != nil {
+			return err
+		}
 	}
+
+	if res.Stats.ErrorCount > 0 {
+		return fmt.Errorf("GC completed with %d sweep error(s)", res.Stats.ErrorCount)
+	}
+	return nil
 }
 
 // printGCStatsTable renders the GC summary as a key/value table plus an
