@@ -162,12 +162,12 @@ func TestSetInfo_BasicInfo_ExplicitTimestampsSurviveAttributeChange(t *testing.T
 	checkTime("Ctime", file.Ctime, wantChange)
 }
 
-// TestSetInfo_BasicInfo_ExplicitLastWriteTimeUnbumpedAfterWrite confirms the
+// TestSetInfo_BasicInfo_ExplicitLastWriteTimeUnbumpedByAttributeSet confirms the
 // targeted regression: an explicit LastWriteTime set, followed by an
 // attribute-change SET_INFO, leaves the explicit Mtime in metadata rather
 // than the auto-bumped "now". This isolates the LastWriteTime field that the
 // pre-fix code clobbered via the attribute-change Mtime auto-bump.
-func TestSetInfo_BasicInfo_ExplicitLastWriteTimeUnbumpedAfterWrite(t *testing.T) {
+func TestSetInfo_BasicInfo_ExplicitLastWriteTimeUnbumpedByAttributeSet(t *testing.T) {
 	h, authCtx, fileHandle, open := setupBasicInfoTimestampTest(t)
 	metaSvc := h.Registry.GetMetadataService()
 
