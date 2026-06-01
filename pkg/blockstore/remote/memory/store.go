@@ -149,14 +149,24 @@ func (s *Store) GetRange(_ context.Context, hash blockstore.ContentHash, offset,
 		return nil, blockstore.ErrChunkNotFound
 	}
 
-	// Bounds checking
+	// Bounds checking. Per the BlockStore.GetRange contract, a negative
+	// or past-EOF offset is ErrInvalidOffset and a non-positive length is
+	// ErrInvalidSize; an in-range offset whose length runs past EOF is
+	// clamped to the chunk's remaining bytes (no error).
 	if offset < 0 || offset >= int64(len(mb.data)) {
-		return nil, blockstore.ErrChunkNotFound
+		return nil, blockstore.ErrInvalidOffset
+	}
+	if length <= 0 {
+		return nil, blockstore.ErrInvalidSize
 	}
 
-	end := offset + length
-	if end > int64(len(mb.data)) {
-		end = int64(len(mb.data))
+	// Clamp past-EOF length without computing offset+length (which can
+	// overflow int64 for a hostile length). offset < len is guaranteed above,
+	// so len-offset is positive.
+	size := int64(len(mb.data))
+	end := size
+	if length <= size-offset {
+		end = offset + length
 	}
 
 	result := make([]byte, end-offset)

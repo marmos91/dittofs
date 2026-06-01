@@ -189,10 +189,10 @@ func (s *MemoryStore) GetRange(_ context.Context, hash blockstore.ContentHash, o
 		return nil, ErrStoreClosed
 	}
 	if offset < 0 {
-		return nil, fmt.Errorf("blockstore.memory: GetRange: negative offset %d", offset)
+		return nil, fmt.Errorf("blockstore.memory: GetRange: %w: offset %d", blockstore.ErrInvalidOffset, offset)
 	}
 	if length <= 0 {
-		return nil, fmt.Errorf("blockstore.memory: GetRange: non-positive length %d", length)
+		return nil, fmt.Errorf("blockstore.memory: GetRange: %w: length %d", blockstore.ErrInvalidSize, length)
 	}
 	entry, ok := s.cas[hash]
 	if !ok {
@@ -202,7 +202,9 @@ func (s *MemoryStore) GetRange(_ context.Context, hash blockstore.ContentHash, o
 	if offset >= size {
 		return nil, fmt.Errorf("blockstore.memory: GetRange: offset %d beyond size %d", offset, size)
 	}
-	if offset+length > size {
+	// offset < size is guaranteed above, so size-offset is positive; compare
+	// against it instead of offset+length (which can overflow int64).
+	if length > size-offset {
 		length = size - offset
 	}
 	out := make([]byte, length)

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -342,6 +343,24 @@ func (s *Store) ReadBlockVerified(ctx context.Context, hash blockstore.ContentHa
 func (s *Store) GetRange(ctx context.Context, hash blockstore.ContentHash, offset, length int64) ([]byte, error) {
 	if err := s.checkClosed(); err != nil {
 		return nil, err
+	}
+
+	// Validate bounds before issuing the range request so callers get a
+	// stable sentinel instead of an opaque S3 protocol error from a
+	// malformed Range header. A past-EOF offset cannot be detected here
+	// without a HEAD, so S3 surfaces its native 416 for that case (the
+	// conformance suite only requires "any error" for offset >= EOF).
+	if offset < 0 {
+		return nil, blockstore.ErrInvalidOffset
+	}
+	if length <= 0 {
+		return nil, blockstore.ErrInvalidSize
+	}
+
+	// Guard against offset+length-1 overflowing int64 (which would emit a
+	// negative, malformed Range header). offset >= 0 and length > 0 here.
+	if length > math.MaxInt64-offset {
+		return nil, blockstore.ErrInvalidSize
 	}
 
 	key := s.hashKey(hash)

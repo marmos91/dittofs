@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 
 	"lukechampine.com/blake3"
@@ -113,6 +114,54 @@ func TestStore_GetRange(t *testing.T) {
 	if string(read) != "world" {
 		t.Errorf("GetRange returned %q, want %q", read, "world")
 	}
+}
+
+// TestStore_GetRange_InvalidBounds pins the malformed-bounds sentinels:
+// an offset at or beyond the chunk size is ErrInvalidOffset (not
+// ErrChunkNotFound, the historical regression) and a non-positive length
+// is ErrInvalidSize.
+func TestStore_GetRange_InvalidBounds(t *testing.T) {
+	ctx := context.Background()
+	s := New()
+	defer func() { _ = s.Close() }()
+
+	data := []byte("hello world") // 11 bytes
+	hash := hashOf(t, data)
+	if err := s.Put(ctx, hash, data); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	cases := []struct {
+		name           string
+		offset, length int64
+		want           error
+	}{
+		{"negative offset", -1, 4, blockstore.ErrInvalidOffset},
+		{"offset at size", 11, 4, blockstore.ErrInvalidOffset},
+		{"offset beyond size", 12, 4, blockstore.ErrInvalidOffset},
+		{"zero length", 0, 0, blockstore.ErrInvalidSize},
+		{"negative length", 0, -1, blockstore.ErrInvalidSize},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := s.GetRange(ctx, hash, tc.offset, tc.length)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("GetRange(offset=%d,length=%d): want %v, got %v", tc.offset, tc.length, tc.want, err)
+			}
+		})
+	}
+
+	// A valid in-range offset with a length so large that offset+length would
+	// overflow int64 must clamp to the remaining bytes, not panic or wrap.
+	t.Run("length overflow clamps", func(t *testing.T) {
+		got, err := s.GetRange(ctx, hash, 6, math.MaxInt64)
+		if err != nil {
+			t.Fatalf("GetRange(6, MaxInt64): unexpected error %v", err)
+		}
+		if string(got) != "world" {
+			t.Fatalf("GetRange(6, MaxInt64): want clamped %q, got %q", "world", got)
+		}
+	})
 }
 
 func TestStore_Delete(t *testing.T) {
