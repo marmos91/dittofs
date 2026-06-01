@@ -1285,7 +1285,26 @@ func (lm *Manager) RequestLeaseAsOplock(ctx context.Context, fileHandle FileHand
 	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
 	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
 	return lm.requestLeaseImplWithMode(ctx, fileHandle, leaseKey, parentLeaseKey,
-		ownerID, clientID, shareName, requestedState, isDirectory, true)
+		ownerID, clientID, shareName, requestedState, isDirectory, true, false)
+}
+
+// RequestLeaseStatOpen is the stat-open variant of RequestLease. The SMB
+// adapter calls this when a CREATE's DesiredAccess is stat-open-only
+// (FILE_READ_ATTRIBUTES / FILE_WRITE_ATTRIBUTES / READ_CONTROL / SYNCHRONIZE) and
+// the disposition is non-destructive. The grant proceeds normally except that
+// a cross-key conflict with an existing holder MUST NOT dispatch a break: a
+// stat-opener caches attributes alongside existing holders without forcing
+// them to drop their caches. It instead receives the best state it can coexist
+// with (`bestGrantableState`).
+//
+// Reference: MS-SMB2 §3.3.5.9.8 / Samba `is_lease_stat_open`
+// (source3/smbd/open.c). Closes the timing-dependent spurious break that
+// smb2.lease.statopen4 CHECK_NO_BREAK observes (#751).
+func (lm *Manager) RequestLeaseStatOpen(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
+	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
+	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
+	return lm.requestLeaseImplWithMode(ctx, fileHandle, leaseKey, parentLeaseKey,
+		ownerID, clientID, shareName, requestedState, isDirectory, false, true)
 }
 
 // AcknowledgeLeaseBreak processes a client's lease break acknowledgment.

@@ -194,7 +194,7 @@ func grantRWHLease(t *testing.T, leaseMgr *lease.LeaseManager, leaseKey [16]byte
 	fh := lock.FileHandle("file-1")
 	rwh := lock.LeaseStateRead | lock.LeaseStateWrite | lock.LeaseStateHandle
 	reqCtx := encodeV2LeaseContext(leaseKey, rwh, 1)
-	resp, err := ProcessLeaseCreateContext(ctx, leaseMgr, reqCtx, fh, sessionID, [16]byte{}, "smb:7", "share1", false, false)
+	resp, err := ProcessLeaseCreateContext(ctx, leaseMgr, reqCtx, fh, sessionID, [16]byte{}, "smb:7", "share1", false, false, false)
 	if err != nil {
 		t.Fatalf("granting RWH lease failed: %v", err)
 	}

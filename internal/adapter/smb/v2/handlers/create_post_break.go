@@ -858,6 +858,14 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			disallowWriteLease := h.disallowWriteLeaseForFile(
 				authCtx.Context, fileHandle, newLeaseKey, smbFileID, connClientGUID(ctx),
 			)
+			// A stat-open-only, non-destructive CREATE must not break an
+			// existing holder when it requests its own lease — the same
+			// carve-out breakAndMaybeParkCreate applies to the CREATE-layer
+			// break. Routing the lease grant through the break-suppressing
+			// variant closes the timing window that produced the intermittent
+			// break in smb2.lease.statopen4 (#751).
+			statOpenLease := isStatOnlyOpen(req.DesiredAccess) &&
+				!isDestructiveDisposition(req.CreateDisposition)
 			leaseResponse, err = ProcessLeaseCreateContext(
 				authCtx.Context,
 				h.LeaseManager,
@@ -869,6 +877,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 				tree.ShareName,
 				file.Type == metadata.FileTypeDirectory,
 				disallowWriteLease,
+				statOpenLease,
 			)
 			if err != nil {
 				if errors.Is(err, lock.ErrLeaseKeyInUse) {
