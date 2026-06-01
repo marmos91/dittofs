@@ -58,6 +58,19 @@ type DittoServerSpec struct {
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 
+	// TerminationGracePeriodSeconds is the pod's grace period for the dfs server
+	// to complete its graceful shutdown on rollout, drain, or scale-down.
+	//
+	// The dfs server runs shutdown stages serially, each bounded by its configured
+	// shutdown_timeout (30s). Combined with the PreStop hook delay, the Kubernetes
+	// default of 30s is too short and causes a SIGKILL mid-flush, which can lose
+	// metadata. When unset, the operator derives a safe value from the configured
+	// shutdown_timeout (preStop + 3*shutdownTimeout + buffer). Override only if you
+	// understand your shutdown budget; it must comfortably exceed the shutdown_timeout.
+	// +kubebuilder:validation:Minimum=31
+	// +optional
+	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
+
 	// SecurityContext for the container
 	// +optional
 	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
