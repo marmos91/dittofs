@@ -75,12 +75,35 @@ caller wraps it for pprof or `b.N` timing as needed.
 
 ## Profile output
 
+Every CLI run writes a seeded-workload profile set under a timestamped
+directory. `cpu`, `heap`, and `goroutine` are always captured. Add
+`--full-profiles` to also enable the runtime mutex + block profilers and
+emit `mutex.pprof` + `block.pprof` — without that flag those two
+profiles would be empty, since `runtime.SetMutexProfileFraction` /
+`SetBlockProfileRate` default to off (see #671). The flag is opt-in
+because the extra per-event accounting skews throughput.
+
+`seed.txt` records the exact parameters (workload, ops, block size,
+working set, seed, remote) for deterministic replay.
+
 ```
 _profiles/blockstore/<workload>-<UTC-timestamp>/
   cpu.pprof
   heap.pprof
+  goroutine.pprof
+  mutex.pprof        # only with --full-profiles
+  block.pprof        # only with --full-profiles
+  seed.txt
 ```
 
 ```sh
-go tool pprof -http :8080 _profiles/blockstore/random-write-*/cpu.pprof
+# Full set under the seeded sequential-write workload:
+./dfsbench blockstore --workload sequential-write --ops 2000 \
+    --block-size 65536 --working-set 4 --full-profiles
+
+go tool pprof -http :8080 _profiles/blockstore/sequential-write-*/cpu.pprof
+go tool pprof -top         _profiles/blockstore/sequential-write-*/mutex.pprof
 ```
+
+These captures are run on demand only — the `go test` suite never
+constructs a profile session, so normal CI is unaffected.
