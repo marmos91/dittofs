@@ -107,10 +107,7 @@ func TestQueryDirectory_LoneSurrogate_WireEncode(t *testing.T) {
 func queryDirNames(buf []byte) map[string]bool {
 	out := map[string]bool{}
 	off := 0
-	for {
-		if off+104 > len(buf) {
-			break
-		}
+	for off+104 <= len(buf) {
 		next := binary.LittleEndian.Uint32(buf[off : off+4])
 		nameLen := int(binary.LittleEndian.Uint32(buf[off+60 : off+64]))
 		start := off + 104
