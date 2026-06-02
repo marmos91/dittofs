@@ -161,14 +161,6 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 				)
 				return nil
 			})
-			// Release the resume goroutine NOW that the callback has been
-			// swapped. The goroutine was parked on PendingCreate.started
-			// (initialized in parkCreateOnLeaseBreak) precisely so this
-			// ReplaceCallback could land before the original standalone
-			// callback fired. Skipping the release would deadlock the CREATE
-			// after the wait drains (smbtorture compound.compound-break
-			// IO_TIMEOUT race).
-			connInfo.Handler.PendingCreateRegistry.MarkStarted(result.AsyncId)
 		}
 
 		// Send interim STATUS_PENDING as a standalone async response.
@@ -179,17 +171,30 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		if err := SendMessage(interimHeader, MakeErrorBody(), connInfo); err != nil {
 			logger.Debug("Error sending compound async interim response", "error", err)
 		}
+
+		// Release the resume goroutine only AFTER the interim STATUS_PENDING is
+		// on the wire. The callback was swapped above (ReplaceCallback) so the
+		// goroutine picks up the continue-compound wrapper, and MarkStarted runs
+		// post-interim so the final compound response can never overtake the
+		// interim (MS-SMB2 §3.3.4.4 ordering; same class as the standalone path
+		// in response.go that smb2.bench.oplock1 trips). Skipping the release
+		// would deadlock the CREATE after the wait drains (smbtorture
+		// compound.compound-break IO_TIMEOUT race).
+		if connInfo.Handler.PendingCreateRegistry != nil {
+			connInfo.Handler.PendingCreateRegistry.MarkStarted(result.AsyncId)
+		}
 		return
 	}
 
 	// Fall-through path: the first command returned STATUS_PENDING + AsyncId
-	// AND there were no more commands in the compound. The interim is sent
-	// as part of the compound response below; the resume goroutine fires the
-	// original (standalone-completion) callback with the final response, so
-	// release its started gate now.
+	// AND there were no more commands in the compound. The interim is buffered
+	// into the compound response below; the resume goroutine fires the original
+	// (standalone-completion) callback with the final response. Defer releasing
+	// its started gate until AFTER the compound frame is on the wire so the
+	// final response can never overtake the interim.
 	if result != nil && result.Status == types.StatusPending && result.AsyncId != 0 &&
 		connInfo.Handler.PendingCreateRegistry != nil {
-		connInfo.Handler.PendingCreateRegistry.MarkStarted(result.AsyncId)
+		state.markStartedAsyncIDs = append(state.markStartedAsyncIDs, result.AsyncId)
 	}
 
 	if fileID != [16]byte{} {
@@ -242,6 +247,10 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	if sendErr != nil {
 		logger.Debug("Error sending compound responses", "error", sendErr)
 	}
+
+	// Release any parked-CREATE resume goroutines now that the interim
+	// STATUS_PENDING is on the wire (see compoundLoopState.markStartedAsyncIDs).
+	state.releaseStartedGates(connInfo.Handler.PendingCreateRegistry)
 
 	// Per MS-SMB2 3.3.4.1: run deferred post-send hooks (e.g.
 	// STATUS_NOTIFY_CLEANUP after CLOSE) only after the compound response
@@ -731,6 +740,27 @@ type compoundLoopState struct {
 	// Accumulated responses + deferred post-send hooks.
 	responses     []compoundResponse
 	postSendHooks []func()
+
+	// AsyncIds of parked CREATEs whose interim STATUS_PENDING is buffered into
+	// responses (not yet on the wire). MarkStarted MUST fire only after the
+	// compound frame is written, so the resume goroutine's final response can
+	// never overtake the interim (MS-SMB2 §3.3.4.4; same ordering class as the
+	// standalone path that smb2.bench.oplock1 trips).
+	markStartedAsyncIDs []uint64
+}
+
+// releaseStartedGates unblocks the resume goroutines for every parked CREATE
+// whose interim STATUS_PENDING was buffered into this compound frame. It MUST
+// be called only after the frame is on the wire so the final responses cannot
+// overtake the interims. Fired unconditionally (even on a write error) so a
+// resume goroutine is never left blocked on PendingCreate.started.
+func (s *compoundLoopState) releaseStartedGates(reg *handlers.PendingCreateRegistry) {
+	if reg == nil {
+		return
+	}
+	for _, asyncID := range s.markStartedAsyncIDs {
+		reg.MarkStarted(asyncID)
+	}
 }
 
 // processRemaining processes every command after the first in a compound,
@@ -922,14 +952,14 @@ func (s *compoundLoopState) processRemaining(
 		// A tail-of-chain compound subcommand that returns STATUS_PENDING + AsyncId
 		// (parked CREATE) inherits the original standalone-completion callback —
 		// no ReplaceCallback redirect happens here, since the subcommand is
-		// already the tail of the chain. Release its resume-goroutine gate so
-		// the deferred completion is not blocked waiting for a swap that will
-		// never arrive. Non-tail parked CREATEs MUST NOT be released here:
-		// trailing related commands still need to defer behind the CREATE
-		// completion, so the chain is not split.
+		// already the tail of the chain. Defer releasing its resume-goroutine gate
+		// until AFTER the compound frame is written (markStartedAsyncIDs) so the
+		// final response cannot overtake the buffered interim. Non-tail parked
+		// CREATEs MUST NOT be released here: trailing related commands still need
+		// to defer behind the CREATE completion, so the chain is not split.
 		if isLastCommand && cmdResult != nil && cmdResult.Status == types.StatusPending && cmdResult.AsyncId != 0 &&
 			connInfo.Handler.PendingCreateRegistry != nil {
-			connInfo.Handler.PendingCreateRegistry.MarkStarted(cmdResult.AsyncId)
+			s.markStartedAsyncIDs = append(s.markStartedAsyncIDs, cmdResult.AsyncId)
 		}
 
 		rh, rb := buildResponseHeaderAndBody(hdr, cmdCtx, cmdResult, connInfo)
@@ -1018,6 +1048,10 @@ func completeCompoundAfterAsyncCreate(
 	if sendErr != nil {
 		logger.Debug("Error sending compound async completion responses", "error", sendErr)
 	}
+
+	// Release any parked-CREATE resume goroutines whose interim was buffered
+	// into this completion frame, only after it is on the wire.
+	state.releaseStartedGates(connInfo.Handler.PendingCreateRegistry)
 
 	if sendErr == nil {
 		for _, hook := range state.postSendHooks {
