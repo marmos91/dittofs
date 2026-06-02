@@ -64,8 +64,8 @@ sentinel exists (it exits with code 78 otherwise).
 
    ```bash
    dfs migrate-to-cas \
-     --storage-dir /var/lib/dfs/storage \
-     --metadata-dir /var/lib/dfs/metadata \
+     --storage-dir /var/lib/dittofs/storage \
+     --metadata-dir /var/lib/dittofs/metadata \
      --share myshare \
      --dry-run
    ```
@@ -78,8 +78,8 @@ sentinel exists (it exits with code 78 otherwise).
 
    ```bash
    dfs migrate-to-cas \
-     --storage-dir /var/lib/dfs/storage \
-     --metadata-dir /var/lib/dfs/metadata \
+     --storage-dir /var/lib/dittofs/storage \
+     --metadata-dir /var/lib/dittofs/metadata \
      --share myshare
    ```
 

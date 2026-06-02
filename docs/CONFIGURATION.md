@@ -2,6 +2,9 @@
 
 DittoFS uses a flexible configuration system with support for YAML/TOML files and environment variable overrides.
 
+> Unfamiliar with terms like CAS, AUTH_UNIX, NTLM, or root-squash? See the
+> [Glossary](GLOSSARY.md) for plain-language definitions.
+
 ## Table of Contents
 
 - [Configuration Files](#configuration-files)
@@ -25,7 +28,23 @@ DittoFS uses a flexible configuration system with support for YAML/TOML files an
 
 ### Default Location
 
-`$XDG_CONFIG_HOME/dittofs/config.yaml` (typically `~/.config/dittofs/config.yaml`)
+The config file is resolved per platform:
+
+| Platform | Default config file |
+| --- | --- |
+| Linux / macOS | `$XDG_CONFIG_HOME/dittofs/config.yaml` (typically `~/.config/dittofs/config.yaml`) |
+| Windows | `%APPDATA%\dittofs\config.yaml` (typically `...\AppData\Roaming\dittofs\config.yaml`) |
+
+Pass `--config <path>` to any `dfs` command to override the location.
+
+### State Directory
+
+Runtime state — the log file (`dittofs.log`) and PID file — lives in a separate state directory, also resolved per platform:
+
+| Platform | Default state directory |
+| --- | --- |
+| Linux / macOS | `$XDG_STATE_HOME/dittofs` (typically `~/.local/state/dittofs`); falls back to the system temp directory if no home is resolvable |
+| Windows | `%LOCALAPPDATA%\dittofs` |
 
 ### Initialization
 
@@ -143,7 +162,7 @@ database:
   sqlite:
     # Path to the SQLite database file
     # Default: $XDG_CONFIG_HOME/dittofs/controlplane.db
-    path: /var/lib/dfs/controlplane.db
+    path: /var/lib/dittofs/controlplane.db
 
   # PostgreSQL configuration (for HA deployments)
   postgres:
@@ -1280,7 +1299,7 @@ export DITTOFS_SERVER_SHUTDOWN_TIMEOUT=60s
 
 # Database (Control Plane)
 export DITTOFS_DATABASE_TYPE=sqlite
-export DITTOFS_DATABASE_SQLITE_PATH=/var/lib/dfs/controlplane.db
+export DITTOFS_DATABASE_SQLITE_PATH=/var/lib/dittofs/controlplane.db
 # PostgreSQL
 export DITTOFS_DATABASE_TYPE=postgres
 export DITTOFS_DATABASE_POSTGRES_HOST=localhost
@@ -1395,7 +1414,7 @@ Persistent storage with access control, structured logging, and telemetry:
 logging:
   level: WARN
   format: json
-  output: /var/log/dfs/server.log
+  output: /var/log/dittofs/server.log
 
 telemetry:
   enabled: true
@@ -1420,9 +1439,9 @@ Then create stores, shares, and enable adapters via CLI:
 ```bash
 # Create stores
 ./dfsctl store metadata add --name prod-badger --type badger \
-  --config '{"path":"/var/lib/dfs/metadata"}'
+  --config '{"path":"/var/lib/dittofs/metadata"}'
 ./dfsctl store block add --kind local --name prod-local --type fs \
-  --config '{"path":"/var/lib/dfs/blocks"}'
+  --config '{"path":"/var/lib/dittofs/blocks"}'
 ./dfsctl store block add --kind remote --name prod-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"dfs-production"}'
 
@@ -1443,11 +1462,11 @@ Different shares using different storage backends:
 # Create metadata stores
 ./dfsctl store metadata add --name fast-memory --type memory
 ./dfsctl store metadata add --name persistent-badger --type badger \
-  --config '{"path":"/var/lib/dfs/metadata"}'
+  --config '{"path":"/var/lib/dittofs/metadata"}'
 
 # Create block stores
 ./dfsctl store block add --kind local --name local-cache --type fs \
-  --config '{"path":"/var/lib/dfs/blocks"}'
+  --config '{"path":"/var/lib/dittofs/blocks"}'
 ./dfsctl store block add --kind remote --name cloud-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"my-dfs-bucket"}'
 
@@ -1472,11 +1491,11 @@ Multiple shares sharing the same metadata database:
 ```bash
 # Create shared metadata store
 ./dfsctl store metadata add --name shared-badger --type badger \
-  --config '{"path":"/var/lib/dfs/shared-metadata"}'
+  --config '{"path":"/var/lib/dittofs/shared-metadata"}'
 
 # Create block stores
 ./dfsctl store block add --kind local --name local-cache --type fs \
-  --config '{"path":"/var/lib/dfs/blocks"}'
+  --config '{"path":"/var/lib/dittofs/blocks"}'
 ./dfsctl store block add --kind remote --name s3-production --type s3 \
   --config '{"region":"us-east-1","bucket":"prod-bucket"}'
 ./dfsctl store block add --kind remote --name s3-archive --type s3 \

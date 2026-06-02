@@ -287,7 +287,7 @@ ls: cannot access 'file.txt': Stale file handle
 2. **For persistent handles, use BadgerDB metadata:**
    ```bash
    ./dfsctl store metadata add --name persistent --type badger \
-     --config '{"path":"/var/lib/dfs/metadata"}'
+     --config '{"path":"/var/lib/dittofs/metadata"}'
    ./dfsctl store block add --kind local --name default --type memory
    ./dfsctl share create --name /export --metadata persistent --local default
    ```

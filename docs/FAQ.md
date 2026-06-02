@@ -110,7 +110,7 @@ Configure your metadata store accordingly:
 
 ```bash
 ./dfsctl store metadata add --name persistent --type badger \
-  --config '{"path":"/var/lib/dfs/metadata"}'
+  --config '{"path":"/var/lib/dittofs/metadata"}'
 ```
 
 ### Can I import an existing filesystem into DittoFS?
@@ -304,10 +304,10 @@ refuses to start a store still on the older `.blk` layout.
 ```bash
 sudo systemctl stop dfs
 # --storage-dir and --metadata-dir are both required
-dfs migrate-to-cas --storage-dir /var/lib/dfs/storage \
-  --metadata-dir /var/lib/dfs/metadata                          # all shares
-dfs migrate-to-cas --storage-dir /var/lib/dfs/storage \
-  --metadata-dir /var/lib/dfs/metadata --share myshare
+dfs migrate-to-cas --storage-dir /var/lib/dittofs/storage \
+  --metadata-dir /var/lib/dittofs/metadata                          # all shares
+dfs migrate-to-cas --storage-dir /var/lib/dittofs/storage \
+  --metadata-dir /var/lib/dittofs/metadata --share myshare
 sudo systemctl start dfs
 ```
 
@@ -352,11 +352,11 @@ Yes! This is a core feature. Create stores and shares via CLI:
 # Create metadata stores
 ./dfsctl store metadata add --name fast-memory --type memory
 ./dfsctl store metadata add --name persistent-db --type badger \
-  --config '{"path":"/var/lib/dfs/metadata"}'
+  --config '{"path":"/var/lib/dittofs/metadata"}'
 
 # Create block stores (local for fast access, remote for durability)
 ./dfsctl store block local add --name local-disk --type fs \
-  --config '{"path":"/var/lib/dfs/blocks"}'
+  --config '{"path":"/var/lib/dittofs/blocks"}'
 ./dfsctl store block remote add --name cloud-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
@@ -375,11 +375,11 @@ Yes! Multiple shares can reference the same store instance for resource efficien
 ```bash
 # Create one shared metadata store
 ./dfsctl store metadata add --name shared-meta --type badger \
-  --config '{"path":"/var/lib/dfs/shared-metadata"}'
+  --config '{"path":"/var/lib/dittofs/shared-metadata"}'
 
 # Create separate remote block stores
 ./dfsctl store block add --kind local --name shared-local --type fs \
-  --config '{"path":"/var/lib/dfs/blocks"}'
+  --config '{"path":"/var/lib/dittofs/blocks"}'
 ./dfsctl store block add --kind remote --name s3-prod --type s3 \
   --config '{"region":"us-east-1","bucket":"prod-bucket"}'
 ./dfsctl store block add --kind remote --name s3-archive --type s3 \
