@@ -823,6 +823,23 @@ func (lm *LeaseManager) WaitForOtherKeyBreaks(ctx context.Context, fileHandle lo
 	return lockMgr.WaitForBreakCompletionExceptKey(ctx, string(fileHandle), excludeKey)
 }
 
+// WaitForShareConflictClear waits on ctx until conflictPresent() reports false,
+// re-evaluating it on every break-wait signal for fileHandle. Used by the SMB
+// CREATE share-violation park path: the parked opener resumes when the
+// conflicting holder CLOSEs (conflict clears → CREATE proceeds) and otherwise
+// waits out the deadline so a holder that only ACKs the break (keeping its
+// open) yields a deterministic SHARING_VIOLATION on the caller's final
+// re-check. Unlike WaitForOtherKeyBreaks this never force-completes the
+// holder's lease on timeout, so the holder's deferred ACK still succeeds
+// (smbtorture replay dhv2-pending1n-vs-violation-lease-{close,ack}-sane).
+func (lm *LeaseManager) WaitForShareConflictClear(ctx context.Context, fileHandle lock.FileHandle, shareName string, conflictPresent func() bool) error {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return nil
+	}
+	return lockMgr.WaitForShareConflictClear(ctx, string(fileHandle), conflictPresent)
+}
+
 // AsyncCreateBreakWaitTimeout bounds the server-side wait for a parked CREATE.
 // Matches handleLeaseBreakWaitTimeout so sync and async paths have identical
 // auto-downgrade timing — the difference is that async emits an interim

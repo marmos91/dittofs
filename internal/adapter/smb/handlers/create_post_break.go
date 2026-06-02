@@ -330,7 +330,7 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		if !h.LeaseManager.HasOtherBreakingLeases(lockFileHandle, shareName, waitExceptKey) {
 			return 0
 		}
-		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey, lease.AsyncCreateBreakWaitTimeout); asyncId != 0 {
+		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey, lease.AsyncCreateBreakWaitTimeout, false); asyncId != 0 {
 			return asyncId
 		}
 		// Park failed (no slots / registry full): fall through to sync
@@ -369,6 +369,20 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		breakWaitTimeout = lease.TraditionalOplockBreakWaitTimeout
 	}
 
+	// Deferred-open resume for the share-violation case: the parked CREATE
+	// waits for the live share-mode conflict to clear (holder CLOSE) rather
+	// than force-completing the holder's lease on timeout. The holder may
+	// release at any time within the deferred-open window, so the ceiling is
+	// the longer ~35 s grace (Samba defer_open retry window); ack-sane exits
+	// early when the holder's break drains without the conflict clearing, so
+	// it does not actually wait the full ceiling. The non-violation paths
+	// (default / destructive break-to-Write, smbtorture breaking3 /
+	// timeout-disconnect / batch22) keep the existing force-complete wait.
+	shareConflictWait := reason == lock.BreakReasonSharingViolation
+	if shareConflictWait {
+		breakWaitTimeout = lease.TraditionalOplockBreakWaitTimeout
+	}
+
 	// Per MS-SMB2 §3.3.4.4 and smbtorture compound_async.getinfo_middle:
 	// When a compound CREATE needs to wait for a lease break, it MUST go async
 	// (STATUS_PENDING) even if it is not the last command in the compound.
@@ -378,7 +392,7 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	// the test (and real clients) cannot ACK the lease break until they
 	// receive the STATUS_PENDING interim response.
 	if h.LeaseManager.HasOtherBreakingLeases(lockFileHandle, shareName, waitExceptKey) {
-		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey, breakWaitTimeout); asyncId != 0 {
+		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey, breakWaitTimeout, shareConflictWait); asyncId != 0 {
 			return asyncId
 		}
 	}
@@ -1335,12 +1349,23 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 // auto-downgrade on expiry). Callers pass TraditionalOplockBreakWaitTimeout
 // (~35 s, MS-SMB2 §3.3.4.6) when the holder is a traditional oplock and
 // AsyncCreateBreakWaitTimeout (~5 s) otherwise.
+//
+// shareConflictWait selects the deferred-open resume semantics for the
+// share-violation case (reason == BreakReasonSharingViolation): instead of
+// force-completing the holder's lease on timeout and rechecking once, the
+// resume goroutine waits for the live share-mode conflict to clear — the holder
+// CLOSEs (conflict gone → CREATE proceeds) or only ACKs the break (open kept →
+// SHARING_VIOLATION on the final recheck), and the holder's deferred ACK still
+// succeeds because the lease is never tombstoned here (smbtorture replay
+// dhv2-pending1n-vs-violation-lease-{close,ack}-sane, MS-SMB2 §3.3.5.9 /
+// Samba defer_open→retry_open).
 func (h *Handler) parkCreateOnLeaseBreak(
 	ctx *SMBHandlerContext,
 	d *createDraft,
 	lockFileHandle lock.FileHandle,
 	waitExceptKey [16]byte,
 	breakWaitTimeout time.Duration,
+	shareConflictWait bool,
 ) uint64 {
 	if h.PendingCreateRegistry == nil || ctx.AsyncCreateCompleteCallback == nil ||
 		ctx.TryReserveAsync == nil || ctx.ReleaseAsync == nil {
@@ -1410,15 +1435,35 @@ func (h *Handler) parkCreateOnLeaseBreak(
 			}
 		}()
 
-		// Wait for the other-key break to drain (or timeout auto-downgrade).
-		// Errors here are logged but not propagated: on timeout the lease
-		// manager has auto-downgraded other-key leases, so the CREATE can
-		// still proceed (same semantics as the sync wait path).
-		if err := h.LeaseManager.WaitForOtherKeyBreaks(waitCtx, lockFileHandle, shareName, waitExceptKey); err != nil {
-			logger.Debug("CREATE async: break wait completed",
-				"messageID", messageID,
-				"asyncId", asyncId,
-				"error", err)
+		if shareConflictWait {
+			// Deferred-open resume: wait for the live share-mode conflict to
+			// clear (holder CLOSE) rather than force-completing the holder's
+			// lease. On timeout the conflict is still live (holder only ACKed,
+			// keeping its open) and completeCreateAfterBreak's recheck returns
+			// SHARING_VIOLATION — but the holder's lease is left intact so its
+			// deferred ACK still succeeds. See parkCreateOnLeaseBreak doc.
+			effectiveAccess := effectiveAccessForOpen(d.req.DesiredAccess, d.req.CreateDisposition)
+			conflictPresent := func() bool {
+				return d.existingHandle != nil &&
+					h.checkShareModeConflict(d.existingHandle, effectiveAccess, d.req.ShareAccess, d.filename)
+			}
+			if err := h.LeaseManager.WaitForShareConflictClear(waitCtx, lockFileHandle, shareName, conflictPresent); err != nil {
+				logger.Debug("CREATE async: share-conflict wait completed",
+					"messageID", messageID,
+					"asyncId", asyncId,
+					"error", err)
+			}
+		} else {
+			// Wait for the other-key break to drain (or timeout auto-downgrade).
+			// Errors here are logged but not propagated: on timeout the lease
+			// manager has auto-downgraded other-key leases, so the CREATE can
+			// still proceed (same semantics as the sync wait path).
+			if err := h.LeaseManager.WaitForOtherKeyBreaks(waitCtx, lockFileHandle, shareName, waitExceptKey); err != nil {
+				logger.Debug("CREATE async: break wait completed",
+					"messageID", messageID,
+					"asyncId", asyncId,
+					"error", err)
+			}
 		}
 
 		// Wait for the dispatcher to finalize the callback assignment before
