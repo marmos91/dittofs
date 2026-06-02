@@ -14,10 +14,13 @@ var (
 	bsOps            int
 	bsBlockSize      int
 	bsWorkingSet     int
+	bsWorkers        int
 	bsSeed           uint64
 	bsRemote         string
 	bsGCGarbageRatio float64
 	bsFullProfiles   bool
+	bsPhase          string
+	bsReplay         string
 )
 
 var blockstoreCmd = &cobra.Command{
@@ -26,12 +29,16 @@ var blockstoreCmd = &cobra.Command{
 	Long: `Composes FSStore local + remote (memory or s3) + in-memory metadata +
 Syncer and drives one of:
   sequential-write | random-write | dedup-heavy | mixed-rw | flush-churn
+  mixed-ops-storm (concurrent WRITE/READ/LIST/DELETE; use --workers)
   walk | delete | gc | raw-s3-put
 
 Captures wall-clock, throughput, and CPU + heap + goroutine pprof to
-<profile-dir>/blockstore/<workload>-<timestamp>/. Add --full-profiles to
-also enable the runtime mutex + block profilers and emit mutex.pprof +
-block.pprof (off by default — they add per-event accounting overhead).`,
+<profile-dir>/blockstore/[<phase>/]<workload>-<timestamp>/. Add
+--full-profiles to also enable the runtime mutex + block profilers and emit
+mutex.pprof + block.pprof (off by default — they add per-event accounting
+overhead). --phase baseline|post-fix nests the capture so before/after runs
+sit side by side. --replay <dir> reproduces a recorded run from its
+seed.txt.`,
 	RunE: runBlockstore,
 }
 
@@ -42,22 +49,41 @@ func init() {
 	flags.IntVar(&bsBlockSize, "block-size", 0, "per-op block size in bytes (default: 8 MiB for sequential/dedup, 4 KiB otherwise)")
 	flags.IntVar(&bsWorkingSet, "working-set", 1, "number of files in the working set")
 	flags.Uint64Var(&bsSeed, "seed", 1, "PRNG seed for randomized workloads")
+	flags.IntVar(&bsWorkers, "workers", 1, "concurrent worker goroutines (mixed-ops-storm only)")
 	flags.StringVar(&bsRemote, "remote", bsbench.RemoteMemory, "remote backend: memory | s3")
 	flags.Float64Var(&bsGCGarbageRatio, "gc-garbage-ratio", bsbench.DefaultGCGarbage, "fraction of seeded chunks left unreferenced for the gc workload")
 	flags.BoolVar(&bsFullProfiles, "full-profiles", false, "also capture mutex + block profiles (enables runtime mutex/block profilers; adds overhead)")
-	_ = blockstoreCmd.MarkFlagRequired("workload")
+	flags.StringVar(&bsPhase, "phase", "", "optional capture phase subdir under <profile-dir>/blockstore/ (e.g. baseline | post-fix)")
+	flags.StringVar(&bsReplay, "replay", "", "replay a recorded run: load workload params from <dir>/seed.txt (overrides other flags except --phase/--profile-dir)")
+	// --workload is required unless replaying, where it comes from seed.txt.
 }
 
 func runBlockstore(cmd *cobra.Command, _ []string) error {
-	blockSize := resolveBlockSize(bsWorkload, bsBlockSize)
-	opts := bsbench.Opts{
-		Workload:   bsWorkload,
-		Ops:        bsOps,
-		BlockSize:  blockSize,
-		WorkingSet: bsWorkingSet,
-		Seed:       bsSeed,
-		Remote:     bsRemote,
-		ProfileDir: flagProfileDir,
+	var opts bsbench.Opts
+	if bsReplay != "" {
+		// Reproduce a recorded run from its seed.txt. --profile-dir and --phase
+		// still apply so the replay lands in a fresh capture dir.
+		loaded, full, err := loadSeed(bsReplay)
+		if err != nil {
+			return fmt.Errorf("replay: %w", err)
+		}
+		opts = loaded
+		opts.ProfileDir = flagProfileDir
+		bsFullProfiles = full
+	} else {
+		if bsWorkload == "" {
+			return fmt.Errorf("--workload is required (or use --replay <dir>)")
+		}
+		opts = bsbench.Opts{
+			Workload:   bsWorkload,
+			Ops:        bsOps,
+			BlockSize:  resolveBlockSize(bsWorkload, bsBlockSize),
+			WorkingSet: bsWorkingSet,
+			Workers:    bsWorkers,
+			Seed:       bsSeed,
+			Remote:     bsRemote,
+			ProfileDir: flagProfileDir,
+		}
 	}
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -80,10 +106,51 @@ func runBlockstore(cmd *cobra.Command, _ []string) error {
 		return runGCWorkload(ctx, cmd, opts)
 	case bsbench.WorkloadRawS3Put:
 		return runRawS3Workload(ctx, cmd, opts)
+	case bsbench.WorkloadMixedOpStorm:
+		return runStormWorkload(ctx, cmd, opts, tmpDir)
 	default:
 		// Engine-backed workloads (sequential-write, random-write, ...).
 		return runEngineWorkload(ctx, cmd, opts, tmpDir)
 	}
+}
+
+// runStormWorkload wires the engine like runEngineWorkload but drives the
+// concurrent mixed-ops-storm via RunStorm and prints the per-op-type tallies.
+func runStormWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts, tmpDir string) error {
+	remoteStore, remoteClose, err := bsbench.SetupRemote(ctx, opts)
+	if err != nil {
+		return err
+	}
+	bs, engineClose, err := bsbench.NewEngine(tmpDir, remoteStore)
+	if err != nil {
+		remoteClose()
+		return err
+	}
+	defer engineClose()
+
+	sess, err := startProfileSession(opts.ProfileDir, bsPhase, opts.Workload, bsFullProfiles)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sess.stop() }()
+	if err := sess.writeSeed(opts); err != nil {
+		return err
+	}
+
+	res, err := bsbench.RunStorm(ctx, bs, opts)
+	if stopErr := sess.stop(); err == nil {
+		err = stopErr
+	}
+	if err != nil {
+		return err
+	}
+	printResult(cmd, opts, res, sess.dir, true)
+	if res.Storm != nil {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+			"storm ops: workers=%d writes=%d reads=%d lists=%d deletes=%d\n",
+			opts.Workers, res.Storm.Writes, res.Storm.Reads, res.Storm.Lists, res.Storm.Deletes)
+	}
+	return nil
 }
 
 func runEngineWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts, tmpDir string) error {
@@ -101,7 +168,7 @@ func runEngineWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opt
 	}
 	defer engineClose()
 
-	sess, err := startProfileSession(opts.ProfileDir, opts.Workload, bsFullProfiles)
+	sess, err := startProfileSession(opts.ProfileDir, bsPhase, opts.Workload, bsFullProfiles)
 	if err != nil {
 		return err
 	}
@@ -128,7 +195,7 @@ func runLocalWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts
 	}
 	defer closeFn()
 
-	sess, err := startProfileSession(opts.ProfileDir, opts.Workload, bsFullProfiles)
+	sess, err := startProfileSession(opts.ProfileDir, bsPhase, opts.Workload, bsFullProfiles)
 	if err != nil {
 		return err
 	}
@@ -161,7 +228,7 @@ func runGCWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts) e
 	}
 	defer remoteClose()
 
-	sess, err := startProfileSession(opts.ProfileDir, opts.Workload, bsFullProfiles)
+	sess, err := startProfileSession(opts.ProfileDir, bsPhase, opts.Workload, bsFullProfiles)
 	if err != nil {
 		return err
 	}
@@ -188,7 +255,7 @@ func runRawS3Workload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts
 	}
 	defer remoteClose()
 
-	sess, err := startProfileSession(opts.ProfileDir, opts.Workload, bsFullProfiles)
+	sess, err := startProfileSession(opts.ProfileDir, bsPhase, opts.Workload, bsFullProfiles)
 	if err != nil {
 		return err
 	}

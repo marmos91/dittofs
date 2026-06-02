@@ -13,9 +13,37 @@ power both the `dfsbench blockstore` CLI subcommand and the Go
 | `dedup-heavy`      | 8 MiB      | N distinct payloadIDs  | same bytes across files; flush per op so rollup → CAS runs             |
 | `mixed-rw`         | 4 KiB      | seeded 32 MiB file/N   | 50/50 read/write at random offsets                                     |
 | `flush-churn`      | 4 KiB      | monotonic offset       | write→flush→write tight loop                                           |
+| `mixed-ops-storm`  | 4 KiB      | 1 MiB files, ≥4/worker | concurrent WRITE/READ/LIST/DELETE (50/30/15/5); `--workers N`           |
 
 Defaults match the legacy `cmd/blockstore-perf` shape so historical
 results stay comparable. Override per-op size with `--block-size`.
+
+`mixed-ops-storm` is the only concurrent workload. It partitions its
+keyspace — a fixed stable set (pre-seeded, never deleted) backs READs and
+WRITE-overwrites, while WRITE-create/DELETE churn a separate pool — so no
+op ever races a concurrent delete of its own file. Each worker uses a PRNG
+seeded from `(--seed, worker)`, so a given `(seed, workers)` reproduces the
+same *multiset* of ops; goroutine interleaving (and thus the exact per-type
+tally) is not deterministic at `--workers > 1`.
+
+## Profiles & replay
+
+Each run writes `cpu/heap/goroutine.pprof` + `seed.txt` to
+`<profile-dir>/blockstore/[<phase>/]<workload>-<UTC-ts>/`. Add
+`--full-profiles` to also enable the runtime mutex/block profilers and emit
+`mutex.pprof` + `block.pprof` (full-fidelity sampling; off by default — it
+adds per-event accounting overhead). `--phase baseline|post-fix` inserts a
+parent dir so before/after captures sit side by side. `--replay <dir>`
+reloads a recorded run's `seed.txt` (workload, ops, sizes, workers, seed,
+remote, full-profiles) so a regression can be re-captured without retyping
+flags; `--phase`/`--profile-dir` still pick the fresh output location.
+
+```sh
+./dfsbench blockstore --workload mixed-ops-storm --ops 50000 --workers 8 \
+    --full-profiles --phase baseline --profile-dir .planning/v1.0-audit/blockstore/_profiles
+./dfsbench blockstore --replay <baseline-run-dir> --phase post-fix \
+    --profile-dir .planning/v1.0-audit/blockstore/_profiles
+```
 
 ## Running
 
@@ -84,7 +112,8 @@ profiles would be empty, since `runtime.SetMutexProfileFraction` /
 because the extra per-event accounting skews throughput.
 
 `seed.txt` records the exact parameters (workload, ops, block size,
-working set, seed, remote) for deterministic replay.
+working set, workers, seed, remote, full-profiles) for deterministic
+replay via `--replay <dir>`.
 
 ```
 _profiles/blockstore/<workload>-<UTC-timestamp>/

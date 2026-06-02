@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"strconv"
+	"strings"
 	"time"
 
 	bsbench "github.com/marmos91/dittofs/bench/blockstore"
@@ -40,14 +42,21 @@ const (
 	blockProfileRate = 1
 )
 
-// startProfileSession creates <root>/blockstore/<workload>-<UTC-ts>/ and
-// begins CPU profiling. When full is set it also turns on the mutex and
-// block profilers. The caller must invoke stop() exactly once, after the
-// timed region, to flush every profile and restore runtime profiler
-// state. On error the partially-started session is rolled back.
-func startProfileSession(rootDir, workload string, full bool) (*profileSession, error) {
+// startProfileSession creates <root>/blockstore/[<phase>/]<workload>-<UTC-ts>/
+// and begins CPU profiling. When phase is non-empty (e.g. "baseline" or
+// "post-fix") it is inserted as a parent directory so before/after captures
+// sit side by side. When full is set it also turns on the mutex and block
+// profilers. The caller must invoke stop() exactly once, after the timed
+// region, to flush every profile and restore runtime profiler state. On error
+// the partially-started session is rolled back.
+func startProfileSession(rootDir, phase, workload string, full bool) (*profileSession, error) {
 	ts := time.Now().UTC().Format("20060102T150405Z")
-	dir := filepath.Join(rootDir, "blockstore", fmt.Sprintf("%s-%s", workload, ts))
+	parts := []string{rootDir, "blockstore"}
+	if phase != "" {
+		parts = append(parts, phase)
+	}
+	parts = append(parts, fmt.Sprintf("%s-%s", workload, ts))
+	dir := filepath.Join(parts...)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir profiles: %w", err)
 	}
@@ -102,20 +111,70 @@ func (s *profileSession) stop() error {
 }
 
 // writeSeed records the exact replay parameters next to the profiles as
-// seed.txt — workload, ops, block size, working set, seed, remote. Re-run
-// with the same values to reproduce the captured profile set.
+// seed.txt — workload, ops, block size, working set, workers, seed, remote,
+// full-profiles. Re-run via --replay to reproduce the captured profile set.
 func (s *profileSession) writeSeed(opts bsbench.Opts) error {
 	if s == nil {
 		return nil
 	}
 	body := fmt.Sprintf(
-		"workload=%s\nops=%d\nblock_size=%d\nworking_set=%d\nseed=%d\nremote=%s\nfull_profiles=%t\n",
-		opts.Workload, opts.Ops, opts.BlockSize, opts.WorkingSet, opts.Seed, opts.Remote, s.full,
+		"workload=%s\nops=%d\nblock_size=%d\nworking_set=%d\nworkers=%d\nseed=%d\nremote=%s\nfull_profiles=%t\n",
+		opts.Workload, opts.Ops, opts.BlockSize, opts.WorkingSet, opts.Workers, opts.Seed, opts.Remote, s.full,
 	)
 	if err := os.WriteFile(filepath.Join(s.dir, "seed.txt"), []byte(body), 0o644); err != nil {
 		return fmt.Errorf("write seed.txt: %w", err)
 	}
 	return nil
+}
+
+// loadSeed reads a seed.txt written by writeSeed and reconstructs the workload
+// Opts plus the full-profiles flag, so `--replay <dir>` reproduces a recorded
+// run exactly. ProfileDir is left to the caller (the replay writes a fresh
+// capture dir). Unknown keys are ignored so older/newer seed files still load.
+func loadSeed(dir string) (bsbench.Opts, bool, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, "seed.txt"))
+	if err != nil {
+		return bsbench.Opts{}, false, fmt.Errorf("read seed.txt: %w", err)
+	}
+	kv := map[string]string{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if ok {
+			kv[k] = v
+		}
+	}
+	opts := bsbench.Opts{
+		Workload:   kv["workload"],
+		Ops:        atoiDefault(kv["ops"], 0),
+		BlockSize:  atoiDefault(kv["block_size"], 0),
+		WorkingSet: atoiDefault(kv["working_set"], 1),
+		Workers:    atoiDefault(kv["workers"], 1),
+		// Seed is a uint64 — parse the full range, not via Atoi (which is
+		// signed and would silently drop any seed > math.MaxInt64 to 0,
+		// reproducing the wrong PRNG stream on replay).
+		Seed:   parseUintDefault(kv["seed"], 0),
+		Remote: kv["remote"],
+	}
+	if opts.Workload == "" || opts.Ops <= 0 {
+		return bsbench.Opts{}, false, fmt.Errorf("seed.txt missing required workload/ops")
+	}
+	return opts, kv["full_profiles"] == "true", nil
+}
+
+// atoiDefault parses s as an int, returning def on any parse failure.
+func atoiDefault(s string, def int) int {
+	if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+		return n
+	}
+	return def
+}
+
+// parseUintDefault parses s as a uint64, returning def on any parse failure.
+func parseUintDefault(s string, def uint64) uint64 {
+	if n, err := strconv.ParseUint(strings.TrimSpace(s), 10, 64); err == nil {
+		return n
+	}
+	return def
 }
 
 // writeNamedProfile writes the named runtime profile to <dir>/<file>.pprof.

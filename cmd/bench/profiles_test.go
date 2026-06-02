@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +16,7 @@ import (
 // does NOT write mutex/block.
 func TestProfileSession_BasicProfilesNonEmpty(t *testing.T) {
 	root := t.TempDir()
-	sess, err := startProfileSession(root, "unit", false)
+	sess, err := startProfileSession(root, "", "unit", false)
 	if err != nil {
 		t.Fatalf("startProfileSession: %v", err)
 	}
@@ -50,7 +51,7 @@ func TestProfileSession_BasicProfilesNonEmpty(t *testing.T) {
 // contention here proves the session enables them.
 func TestProfileSession_FullProfilesNonEmpty(t *testing.T) {
 	root := t.TempDir()
-	sess, err := startProfileSession(root, "unit-full", true)
+	sess, err := startProfileSession(root, "", "unit-full", true)
 	if err != nil {
 		t.Fatalf("startProfileSession: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestProfileSession_FullProfilesNonEmpty(t *testing.T) {
 // TestProfileSession_StopIdempotent confirms the deferred safety stop is
 // a no-op once the happy-path stop has run.
 func TestProfileSession_StopIdempotent(t *testing.T) {
-	sess, err := startProfileSession(t.TempDir(), "unit-idem", false)
+	sess, err := startProfileSession(t.TempDir(), "", "unit-idem", false)
 	if err != nil {
 		t.Fatalf("startProfileSession: %v", err)
 	}
@@ -130,4 +131,84 @@ func contendMutexAndBlock() {
 		<-ch
 	}
 	wg.Wait()
+}
+
+// TestStartProfileSession_PhaseSubdir verifies a non-empty phase is inserted
+// as a parent dir so baseline/post-fix captures sit side by side, and that an
+// empty phase preserves the original flat layout.
+func TestStartProfileSession_PhaseSubdir(t *testing.T) {
+	root := t.TempDir()
+	// Only one CPU profile can be active per process, so each session is
+	// stopped before the next starts.
+	sess, err := startProfileSession(root, "baseline", "wl", false)
+	if err != nil {
+		t.Fatalf("startProfileSession: %v", err)
+	}
+	sessDir := sess.dir
+	_ = sess.stop()
+	if !strings.Contains(sessDir, filepath.Join("blockstore", "baseline")+string(filepath.Separator)+"wl-") {
+		t.Errorf("phase not in path: %s", sessDir)
+	}
+
+	flat, err := startProfileSession(root, "", "wl", false)
+	if err != nil {
+		t.Fatalf("startProfileSession (flat): %v", err)
+	}
+	flatDir := flat.dir
+	_ = flat.stop()
+	if !strings.Contains(flatDir, filepath.Join("blockstore", "wl-")) || strings.Contains(flatDir, "baseline") {
+		t.Errorf("empty phase should keep flat layout: %s", flatDir)
+	}
+}
+
+// TestLoadSeed_RoundTrip writes a seed.txt via the session and reloads it,
+// asserting every replay-relevant field (including workers) round-trips so
+// --replay reproduces a recorded run.
+func TestLoadSeed_RoundTrip(t *testing.T) {
+	// The large-seed case guards the uint64 parse: a seed above math.MaxInt64
+	// must survive the round-trip (signed Atoi would silently drop it to 0).
+	cases := []struct {
+		name string
+		want bsbench.Opts
+	}{
+		{"small-seed", bsbench.Opts{
+			Workload: "mixed-ops-storm", Ops: 1234, BlockSize: 8192,
+			WorkingSet: 16, Workers: 8, Seed: 99, Remote: "memory",
+		}},
+		{"max-uint64-seed", bsbench.Opts{
+			Workload: "mixed-ops-storm", Ops: 10, BlockSize: 4096,
+			WorkingSet: 1, Workers: 2, Seed: math.MaxUint64, Remote: "memory",
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sess, err := startProfileSession(t.TempDir(), "", "mixed-ops-storm", true)
+			if err != nil {
+				t.Fatalf("startProfileSession: %v", err)
+			}
+			defer func() { _ = sess.stop() }()
+			if err := sess.writeSeed(tc.want); err != nil {
+				t.Fatalf("writeSeed: %v", err)
+			}
+			got, full, err := loadSeed(sess.dir)
+			if err != nil {
+				t.Fatalf("loadSeed: %v", err)
+			}
+			if !full {
+				t.Error("full_profiles should round-trip as true")
+			}
+			if got.Workload != tc.want.Workload || got.Ops != tc.want.Ops || got.BlockSize != tc.want.BlockSize ||
+				got.WorkingSet != tc.want.WorkingSet || got.Workers != tc.want.Workers || got.Seed != tc.want.Seed ||
+				got.Remote != tc.want.Remote {
+				t.Errorf("round-trip mismatch:\n got %+v\nwant %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadSeed_Missing surfaces a clear error when the dir has no seed.txt.
+func TestLoadSeed_Missing(t *testing.T) {
+	if _, _, err := loadSeed(t.TempDir()); err == nil {
+		t.Fatal("expected error for missing seed.txt")
+	}
 }
