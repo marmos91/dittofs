@@ -1714,14 +1714,73 @@ func (h *Handler) resolveCreateReplay(ctx *SMBHandlerContext, req *CreateRequest
 	resp := *entry.Response
 
 	// Lease replays are validated and state-refreshed against the live
-	// open. Non-lease (plain oplock) replays return the cached response
-	// verbatim: Samba echoes the request's oplock level back on replay
-	// without touching the held oplock, which the cached snapshot already
-	// reflects (replay-dhv2-oplock1/2/3).
-	if status := h.refreshReplayLease(ctx, req, entry, &resp); status != types.StatusSuccess {
-		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, true
+	// open. A replay carrying an RqLs context goes through the lease path;
+	// a replay requesting a plain oplock (or none) echoes the REQUESTED
+	// oplock level and re-derives durability for it (replay-dhv2-oplock2).
+	if FindCreateContext(req.CreateContexts, LeaseContextTagRequest) != nil {
+		if status := h.refreshReplayLease(ctx, req, entry, &resp); status != types.StatusSuccess {
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, true
+		}
+	} else {
+		refreshReplayOplock(req, &resp)
 	}
 	return &resp, true
+}
+
+// refreshReplayOplock applies Samba's plain-oplock replay rule
+// (smbd_smb2_create_replay): the replay response echoes the REQUESTED
+// oplock level of the replay request and only carries a DH2Q durable
+// grant blob if that requested oplock would itself qualify for V2
+// durability (Batch). The original open's held oplock is untouched.
+//
+// For replay-dhv2-oplock1/3 the replay re-requests the same Batch oplock
+// so the cached snapshot already matches and this is a no-op. For
+// replay-dhv2-oplock2 the replay requests NONE over a Batch open: the
+// response must report oplock_level=NONE, durable_open_v2=false, and drop
+// the DH2Q response context (smbtorture asserts exactly these).
+func refreshReplayOplock(req *CreateRequest, resp *CreateResponse) {
+	// A lease-backed cached response (the open holds a lease, OplockLevel
+	// 0xFF) is left untouched here: an oplock-less replay against a
+	// lease-backed open does not re-key the open's lease, and the lease
+	// response context stands. Only plain-oplock cached responses echo the
+	// requested level.
+	if resp.OplockLevel == OplockLevelLease {
+		return
+	}
+
+	resp.OplockLevel = req.OplockLevel
+
+	// Re-derive V2 durability for the requested oplock. Only a Batch oplock
+	// qualifies a non-lease open for V2 durability (MS-SMB2 §3.3.5.9.10).
+	// A weaker/none requested oplock drops the durable grant: strip the
+	// DH2Q response context so out.durable_open_v2 reads false and timeout 0.
+	if req.OplockLevel != OplockLevelBatch {
+		resp.CreateContexts = stripCreateContext(resp.CreateContexts, DurableHandleV2RequestTag)
+	}
+}
+
+// stripCreateContext returns a copy of contexts with every entry named
+// tag removed. Returns the original slice when nothing matches (no
+// allocation on the common path). Never mutates the input backing array,
+// so a cached response shared across replays is safe.
+func stripCreateContext(contexts []CreateContext, tag string) []CreateContext {
+	hasTag := false
+	for i := range contexts {
+		if contexts[i].Name == tag {
+			hasTag = true
+			break
+		}
+	}
+	if !hasTag {
+		return contexts
+	}
+	out := make([]CreateContext, 0, len(contexts))
+	for i := range contexts {
+		if contexts[i].Name != tag {
+			out = append(out, contexts[i])
+		}
+	}
+	return out
 }
 
 // refreshReplayLease applies Samba's replay-with-lease rules to a DH2Q

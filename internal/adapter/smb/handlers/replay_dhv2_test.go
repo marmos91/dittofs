@@ -174,7 +174,11 @@ func TestResolveCreateReplay_OplockSnapshot(t *testing.T) {
 	h.CreateReplayCache.Store(sessionID, guid, cached,
 		&OpenFile{OplockLevel: OplockLevelBatch})
 
-	resp, handled := h.resolveCreateReplay(newReplayCtx(sessionID, true), dh2qCreateReq(guid, nil))
+	// A replay that re-requests the SAME Batch oplock echoes Batch back and
+	// returns the original FileID (replay-dhv2-oplock1/3).
+	req := dh2qCreateReq(guid, nil)
+	req.OplockLevel = OplockLevelBatch
+	resp, handled := h.resolveCreateReplay(newReplayCtx(sessionID, true), req)
 	if !handled {
 		t.Fatal("oplock replay must be handled")
 	}
@@ -183,6 +187,49 @@ func TestResolveCreateReplay_OplockSnapshot(t *testing.T) {
 	}
 	if resp.FileID != cached.FileID {
 		t.Fatal("oplock replay must return the original FileID")
+	}
+}
+
+// TestResolveCreateReplay_OplockReplayEchoesRequestedNone reproduces
+// smb2.replay.replay-dhv2-oplock2: the original CREATE held a Batch oplock
+// with V2 durability, but the replay requests OplockLevel=NONE. The replay
+// response must echo NONE and drop the DH2Q durable grant blob (so
+// durable_open_v2 reads false) while still returning the original FileID.
+func TestResolveCreateReplay_OplockReplayEchoesRequestedNone(t *testing.T) {
+	h, _, _ := newReplayTestHandler()
+	const sessionID = uint64(7)
+	guid := [16]byte{0x09}
+
+	cached := &CreateResponse{
+		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+		OplockLevel:     OplockLevelBatch,
+		FileID:          [16]byte{0xDE, 0xAD},
+		CreateContexts: []CreateContext{
+			{Name: DurableHandleV2RequestTag, Data: EncodeDH2QResponse(300000, 0).Data},
+		},
+	}
+	h.CreateReplayCache.Store(sessionID, guid, cached,
+		&OpenFile{OplockLevel: OplockLevelBatch})
+
+	// Replay with OplockLevel=NONE (oplock2 second CREATE).
+	req := dh2qCreateReq(guid, nil)
+	req.OplockLevel = OplockLevelNone
+	resp, handled := h.resolveCreateReplay(newReplayCtx(sessionID, true), req)
+	if !handled {
+		t.Fatal("oplock replay must be handled")
+	}
+	if resp.OplockLevel != OplockLevelNone {
+		t.Fatalf("replay oplock = 0x%x, want NONE (0x0)", resp.OplockLevel)
+	}
+	if FindCreateContext(resp.CreateContexts, DurableHandleV2RequestTag) != nil {
+		t.Fatal("replay requesting NONE must drop the DH2Q durable grant blob")
+	}
+	if resp.FileID != cached.FileID {
+		t.Fatal("oplock replay must return the original FileID")
+	}
+	// The cached entry must be untouched for a subsequent replay.
+	if FindCreateContext(cached.CreateContexts, DurableHandleV2RequestTag) == nil {
+		t.Fatal("cached entry's DH2Q blob must not be mutated by the replay")
 	}
 }
 

@@ -1149,6 +1149,11 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		// per-handle so the CREATE response and a later QUERY_INFO on this handle
 		// agree (smb2.create.open).
 		RequestedAllocSize: allocReservationFor(file.Type == metadata.FileTypeDirectory, req.RequestedAllocSize),
+		// Record the requested DH2Q CreateGuid for replay-cache keying,
+		// independent of whether V2 durability is granted below. A no-oplock
+		// open never sets CreateGuid (durability requires Batch/Handle lease),
+		// but its CREATE must still be replay-cacheable (MS-SMB2 §3.3.5.9).
+		ReplayCreateGuid: dh2qCreateGuid(req),
 	}
 
 	if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
@@ -1301,14 +1306,16 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			"diskFileId", fmt.Sprintf("%x", qfidFileID[:16]))
 	}
 
-	// SMB3 replay protection (MS-SMB2 §3.3.5.9): record the
-	// freshly-built success response keyed by DH2Q CreateGuid so a
-	// FLAGS_REPLAY_OPERATION retry within the replay window returns
-	// the cached result instead of re-running CREATE. Only V2
-	// durable opens carry a CreateGuid — V1 / non-durable CREATEs
-	// rely on the in-flight MessageID dedup at the framing layer.
-	if h.CreateReplayCache != nil && openFile != nil && openFile.CreateGuid != ([16]byte{}) {
-		h.CreateReplayCache.Store(openFile.SessionID, openFile.CreateGuid, resp, openFile)
+	// SMB3 replay protection (MS-SMB2 §3.3.5.9): record the freshly-built
+	// success response keyed by the REQUESTED DH2Q CreateGuid so a
+	// FLAGS_REPLAY_OPERATION retry within the replay window returns the
+	// cached result (same FileId) instead of re-running CREATE. Keyed on
+	// ReplayCreateGuid, not the durability-granting CreateGuid: a no-oplock
+	// open never gets V2 durability (Batch/Handle lease required) yet its
+	// CREATE must still be replay-cacheable, and the replay must echo the
+	// same handle (smb2.replay.dhv2-pending1n-vs-{oplock,lease}-sane io24).
+	if h.CreateReplayCache != nil && openFile != nil && openFile.ReplayCreateGuid != ([16]byte{}) {
+		h.CreateReplayCache.Store(openFile.SessionID, openFile.ReplayCreateGuid, resp, openFile)
 	}
 
 	return resp

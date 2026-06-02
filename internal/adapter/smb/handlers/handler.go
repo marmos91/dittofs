@@ -504,6 +504,17 @@ type OpenFile struct {
 	// Zero value for V1 durable handles or non-durable handles.
 	CreateGuid [16]byte
 
+	// ReplayCreateGuid is the DH2Q CreateGuid carried by the originating
+	// CREATE request, recorded whenever a DH2Q request context is present —
+	// independent of whether V2 durability was actually granted. A replayed
+	// CREATE (FLAGS_REPLAY_OPERATION) is keyed solely on the requested
+	// CreateGuid per MS-SMB2 §3.3.5.9 (Samba smb2srv_open_lookup_replay_cache),
+	// so a no-oplock / non-durable open (which never sets CreateGuid above)
+	// must still be replay-cacheable. smbtorture
+	// smb2.replay.dhv2-pending1n-vs-{oplock,lease}-sane replay io24 against an
+	// open created with oplock_level=NONE and assert the same FileId comes back.
+	ReplayCreateGuid [16]byte
+
 	// AppInstanceId is the application instance ID for Hyper-V failover.
 	// Zero value if not set.
 	AppInstanceId [16]byte
@@ -941,8 +952,16 @@ func (h *Handler) DeleteOpenFile(fileID [16]byte) {
 func (h *Handler) forgetReplayState(fileID [16]byte) {
 	if h.CreateReplayCache != nil {
 		if v, ok := h.files.Load(string(fileID[:])); ok {
-			if of := v.(*OpenFile); of.CreateGuid != ([16]byte{}) {
-				h.CreateReplayCache.Forget(of.CreateGuid)
+			// Forget by the replay-cache key (the requested CreateGuid),
+			// which is set even for non-durable opens that never populate
+			// CreateGuid. Falls back to CreateGuid for older code paths.
+			of := v.(*OpenFile)
+			guid := of.ReplayCreateGuid
+			if guid == ([16]byte{}) {
+				guid = of.CreateGuid
+			}
+			if guid != ([16]byte{}) {
+				h.CreateReplayCache.Forget(guid)
 			}
 		}
 	}
