@@ -177,7 +177,7 @@ func (h *Handler) Remove(
 	// We don't check for cancellation inside RemoveFile to maintain atomicity.
 	// The store should respect context internally for its operations.
 
-	removedFileAttr, err := metaSvc.RemoveFile(authCtx, dirHandle, req.Filename)
+	removedFileAttr, dirWcc, err := metaSvc.RemoveFile(authCtx, dirHandle, req.Filename)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -242,15 +242,9 @@ func (h *Handler) Remove(
 	// Step 6: Build success response with updated directory attributes
 	// ========================================================================
 
-	// Get updated directory attributes for WCC data
-	dirFile, err = metaSvc.GetFile(ctx.Context, dirHandle)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "REMOVE: file removed but cannot get updated directory attributes", "handle", fmt.Sprintf("%x", req.DirHandle), "error", err)
-		// Continue with nil WccAfter rather than failing the entire operation
-		wccAfter = nil
-	} else {
-		wccAfter = h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
-	}
+	// H9: use the parent attributes captured atomically with the removal,
+	// falling back to a fresh read only if the store did not return them.
+	wccBefore, wccAfter = h.dirWccPair(ctx, metaSvc, dirHandle, dirWcc, wccBefore)
 
 	logger.InfoCtx(ctx.Context, "REMOVE successful", "name", req.Filename, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 

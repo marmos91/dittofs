@@ -443,7 +443,7 @@ func setupWalkPathTest(t *testing.T) (*Handler, *metadata.AuthContext, metadata.
 	dirAttr := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0755}
 
 	// Create /a
-	dirA, err := metaSvc.CreateDirectory(authCtx, rootHandle, "a", dirAttr)
+	dirA, _, err := metaSvc.CreateDirectory(authCtx, rootHandle, "a", dirAttr)
 	if err != nil {
 		t.Fatalf("Failed to create dir 'a': %v", err)
 	}
@@ -453,13 +453,13 @@ func setupWalkPathTest(t *testing.T) (*Handler, *metadata.AuthContext, metadata.
 	if err != nil {
 		t.Fatalf("Failed to encode handle for dir 'a': %v", err)
 	}
-	_, err = metaSvc.CreateDirectory(authCtx, handleA, "b", dirAttr)
+	_, _, err = metaSvc.CreateDirectory(authCtx, handleA, "b", dirAttr)
 	if err != nil {
 		t.Fatalf("Failed to create dir 'b': %v", err)
 	}
 
 	// Create /c
-	_, err = metaSvc.CreateDirectory(authCtx, rootHandle, "c", dirAttr)
+	_, _, err = metaSvc.CreateDirectory(authCtx, rootHandle, "c", dirAttr)
 	if err != nil {
 		t.Fatalf("Failed to create dir 'c': %v", err)
 	}

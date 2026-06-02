@@ -109,7 +109,7 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 		newMode &^= modeDOSSparse
 	}
 	if newMode != file.Mode {
-		if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
+		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
 			Mode: &newMode,
 		}); err != nil {
 			logger.Warn("IOCTL FSCTL_SET_SPARSE: failed to persist mode",

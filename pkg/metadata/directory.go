@@ -112,27 +112,29 @@ func (s *MetadataService) ReadDirectory(ctx *AuthContext, dirHandle FileHandle, 
 	}, nil
 }
 
-// RemoveDirectory removes an empty directory from its parent.
-func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, name string) error {
+// RemoveDirectory removes an empty directory from its parent. The returned
+// DirWcc carries the parent directory's pre/post attributes captured atomically
+// with the mutation for protocol weak-cache-consistency data (H9).
+func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, name string) (*DirWcc, error) {
 	store, err := s.storeForHandle(parentHandle)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Validate name
 	if err := ValidateName(name); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Get parent entry
 	parent, err := store.GetFile(ctx.Context, parentHandle)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Verify parent is a directory
 	if parent.Type != FileTypeDirectory {
-		return &StoreError{
+		return nil, &StoreError{
 			Code:    ErrNotDirectory,
 			Message: "parent is not a directory",
 			Path:    parent.Path,
@@ -142,18 +144,18 @@ func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHan
 	// Get child handle
 	dirHandle, err := store.GetChild(ctx.Context, parentHandle, name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Get directory entry
 	dir, err := store.GetFile(ctx.Context, dirHandle)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Verify it's a directory
 	if dir.Type != FileTypeDirectory {
-		return &StoreError{
+		return nil, &StoreError{
 			Code:    ErrNotDirectory,
 			Message: "not a directory",
 			Path:    name,
@@ -162,12 +164,12 @@ func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHan
 
 	// Check delete permission: WRITE on parent (POSIX) or owner-of-dir (Windows DELETE).
 	if err := s.checkDeletePermission(ctx, parentHandle, dir); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Check sticky bit restriction
 	if err := CheckStickyBitRestriction(ctx, &parent.FileAttr, &dir.FileAttr); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Recycle instead of destroying when the share has trash enabled. A
@@ -179,11 +181,17 @@ func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHan
 		if cfg, ok := s.trashPolicy.TrashConfigForShare(shareName); ok && cfg.Enabled {
 			origRel := strings.TrimPrefix(buildPath(parent.Path, name), "/")
 			if !inRecycle(origRel) && !cfg.Excluded(name) {
+				// Best-effort pre/post WCC around the recycle Move (rare path).
+				wccBefore := CopyFileAttr(&parent.FileAttr)
 				if _, rErr := s.recycleNode(ctx, shareName, parentHandle, name, origRel); rErr != nil {
-					return rErr
+					return nil, rErr
+				}
+				wcc := &DirWcc{Before: wccBefore}
+				if after, aErr := store.GetFile(ctx.Context, parentHandle); aErr == nil {
+					wcc.After = CopyFileAttr(&after.FileAttr)
 				}
 				s.notifyDirChange(shareName, parentHandle, lock.DirChangeRemoveEntry, ctx)
-				return nil
+				return wcc, nil
 			}
 		}
 	}
@@ -191,15 +199,26 @@ func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHan
 	// Check if directory is empty
 	entries, _, err := store.ListChildren(ctx.Context, dirHandle, "", 1)
 	if err == nil && len(entries) > 0 {
-		return &StoreError{
+		return nil, &StoreError{
 			Code:    ErrNotEmpty,
 			Message: "directory not empty",
 			Path:    name,
 		}
 	}
 
+	// wcc brackets the parent attributes around the mutation, captured inside
+	// the transaction below (H9).
+	wcc := &DirWcc{}
+
 	// Execute all write operations in a single transaction for better performance.
 	txErr := store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Re-read the parent inside the transaction so the pre-op snapshot and
+		// the timestamp mutation derive from the same committed state.
+		if txParent, pErr := tx.GetFile(ctx.Context, parentHandle); pErr == nil && txParent != nil {
+			parent = txParent
+		}
+		wcc.Before = CopyFileAttr(&parent.FileAttr)
+
 		// Remove directory entry
 		if err := tx.DeleteFile(ctx.Context, dirHandle); err != nil {
 			return err
@@ -223,23 +242,25 @@ func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHan
 		parent.Mtime = now
 		parent.Ctime = now
 		parent.Atime = now
+		wcc.After = CopyFileAttr(&parent.FileAttr)
 		return tx.PutFile(ctx.Context, parent)
 	})
 
 	if txErr != nil {
-		return txErr
+		return nil, txErr
 	}
 
 	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeRemoveEntry, ctx)
-	return nil
+	return wcc, nil
 }
 
-// CreateDirectory creates a new directory in a parent directory.
-func (s *MetadataService) CreateDirectory(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, error) {
-	file, err := s.createEntry(ctx, parentHandle, name, attr, FileTypeDirectory, "", 0, 0)
+// CreateDirectory creates a new directory in a parent directory. The returned
+// DirWcc carries the parent's pre/post attributes captured atomically (H9).
+func (s *MetadataService) CreateDirectory(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, *DirWcc, error) {
+	file, wcc, err := s.createEntry(ctx, parentHandle, name, attr, FileTypeDirectory, "", 0, 0)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeAddEntry, ctx)
-	return file, nil
+	return file, wcc, nil
 }

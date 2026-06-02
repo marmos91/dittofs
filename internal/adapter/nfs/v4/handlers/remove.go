@@ -108,13 +108,13 @@ func (h *Handler) handleRemove(ctx *types.CompoundContext, reader io.Reader) *ty
 	}
 
 	// Try RemoveFile first (works for regular files, symlinks, etc.)
-	_, removeErr := metaSvc.RemoveFile(authCtx, parentHandle, target)
+	_, _, removeErr := metaSvc.RemoveFile(authCtx, parentHandle, target)
 	if removeErr != nil {
 		// Check if the error indicates this is a directory (ErrIsDirectory)
 		var storeErr *metaerrors.StoreError
 		if goerrors.As(removeErr, &storeErr) && storeErr.Code == metaerrors.ErrIsDirectory {
 			// It's a directory -- try RemoveDirectory instead
-			removeErr = metaSvc.RemoveDirectory(authCtx, parentHandle, target)
+			_, removeErr = metaSvc.RemoveDirectory(authCtx, parentHandle, target)
 		}
 	}
 

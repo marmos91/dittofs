@@ -78,6 +78,35 @@ func (h *Handler) convertFileAttrToNFS(fileHandle metadata.FileHandle, fileAttr 
 	return xdr.MetadataToNFS(fileAttr, fileid)
 }
 
+// dirWccPair derives the WCC before/after attributes for a directory (or, for
+// SETATTR, a file) from the atomic *metadata.DirWcc a mutation returned (H9).
+//
+// When the store captured the pre/post attributes atomically with the mutation,
+// they are used directly — these are guaranteed to bracket the operation. The
+// fallbackBefore (a pre-op snapshot the handler read at entry) is used only when
+// the atomic Before is absent, and a fresh GetFile supplies the After only when
+// the atomic After is absent. handle identifies the WCC subject.
+func (h *Handler) dirWccPair(
+	ctx *NFSHandlerContext,
+	metaSvc *metadata.MetadataService,
+	handle metadata.FileHandle,
+	wcc *metadata.DirWcc,
+	fallbackBefore *types.WccAttr,
+) (before *types.WccAttr, after *types.NFSFileAttr) {
+	before = fallbackBefore
+	if wcc != nil && wcc.Before != nil {
+		before = xdr.CaptureWccAttr(wcc.Before)
+	}
+	if wcc != nil && wcc.After != nil {
+		after = h.convertFileAttrToNFS(handle, wcc.After)
+		return before, after
+	}
+	if file, err := metaSvc.GetFile(ctx.Context, handle); err == nil {
+		after = h.convertFileAttrToNFS(handle, &file.FileAttr)
+	}
+	return before, after
+}
+
 // getFileOrError retrieves a file from the metadata store with error handling.
 // Checks for context cancellation and returns appropriate NFS status codes.
 //

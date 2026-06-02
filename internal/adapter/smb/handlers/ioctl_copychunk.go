@@ -533,13 +533,13 @@ func (h *Handler) executeCopyChunks(
 	now := time.Now()
 	// IsAtimeFrozen takes the per-OpenFile read lock; see #606.
 	if !srcOpen.IsAtimeFrozen() {
-		_ = metaSvc.SetFileAttributes(authCtx, srcOpen.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+		_, _ = metaSvc.SetFileAttributes(authCtx, srcOpen.MetadataHandle, &metadata.SetAttrs{Atime: &now})
 	}
 	if !dstOpen.IsAtimeFrozen() {
-		_ = metaSvc.SetFileAttributes(authCtx, dstOpen.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+		_, _ = metaSvc.SetFileAttributes(authCtx, dstOpen.MetadataHandle, &metadata.SetAttrs{Atime: &now})
 	}
 	if len(dstOpen.ParentHandle) > 0 {
-		_ = metaSvc.SetFileAttributes(authCtx, dstOpen.ParentHandle, &metadata.SetAttrs{Atime: &now})
+		_, _ = metaSvc.SetFileAttributes(authCtx, dstOpen.ParentHandle, &metadata.SetAttrs{Atime: &now})
 		h.restoreParentDirFrozenTimestamps(authCtx, dstOpen.ParentHandle)
 	}
 

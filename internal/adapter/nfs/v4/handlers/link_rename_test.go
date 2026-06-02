@@ -543,7 +543,7 @@ func TestHandleLink_CompoundSequence(t *testing.T) {
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
 	}
-	createdFile, err := fx.metaSvc.CreateFile(authCtx, fx.rootHandle, "source.txt", fileAttr)
+	createdFile, _, err := fx.metaSvc.CreateFile(authCtx, fx.rootHandle, "source.txt", fileAttr)
 	if err != nil {
 		t.Fatalf("create test file: %v", err)
 	}
@@ -581,21 +581,21 @@ func TestHandleRename_CompoundSequence(t *testing.T) {
 	// Create source dir, target dir, and a file in source dir
 	authCtx := newTestAuthCtx(0, 0)
 	srcDirAttr := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755}
-	srcDir, err := fx.metaSvc.CreateDirectory(authCtx, fx.rootHandle, "srcdir", srcDirAttr)
+	srcDir, _, err := fx.metaSvc.CreateDirectory(authCtx, fx.rootHandle, "srcdir", srcDirAttr)
 	if err != nil {
 		t.Fatalf("create src dir: %v", err)
 	}
 	srcDirHandle, _ := metadata.EncodeFileHandle(srcDir)
 
 	tgtDirAttr := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755}
-	tgtDir, err := fx.metaSvc.CreateDirectory(authCtx, fx.rootHandle, "tgtdir", tgtDirAttr)
+	tgtDir, _, err := fx.metaSvc.CreateDirectory(authCtx, fx.rootHandle, "tgtdir", tgtDirAttr)
 	if err != nil {
 		t.Fatalf("create tgt dir: %v", err)
 	}
 	tgtDirHandle, _ := metadata.EncodeFileHandle(tgtDir)
 
 	fileAttr := &metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644}
-	_, err = fx.metaSvc.CreateFile(authCtx, metadata.FileHandle(srcDirHandle), "myfile.txt", fileAttr)
+	_, _, err = fx.metaSvc.CreateFile(authCtx, metadata.FileHandle(srcDirHandle), "myfile.txt", fileAttr)
 	if err != nil {
 		t.Fatalf("create file in src dir: %v", err)
 	}

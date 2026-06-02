@@ -15,7 +15,7 @@ func TestLookupCaseInsensitive_ExactMatch(t *testing.T) {
 	t.Parallel()
 	fx := newTestFixture(t)
 
-	_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "ExactCase.txt", &metadata.FileAttr{Mode: 0644})
+	_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "ExactCase.txt", &metadata.FileAttr{Mode: 0644})
 	require.NoError(t, err)
 
 	file, matched, err := fx.service.LookupCaseInsensitive(fx.rootContext(), fx.rootHandle, "ExactCase.txt")
@@ -32,7 +32,7 @@ func TestLookupCaseInsensitive_FallbackMatch(t *testing.T) {
 	t.Parallel()
 	fx := newTestFixture(t)
 
-	_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "TestFile.TXT", &metadata.FileAttr{Mode: 0644})
+	_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "TestFile.TXT", &metadata.FileAttr{Mode: 0644})
 	require.NoError(t, err)
 
 	file, matched, err := fx.service.LookupCaseInsensitive(fx.rootContext(), fx.rootHandle, "TESTFILE.TXT")
@@ -60,7 +60,7 @@ func TestLookupCaseInsensitive_DirectoryEntry(t *testing.T) {
 	t.Parallel()
 	fx := newTestFixture(t)
 
-	_, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "MyDir", &metadata.FileAttr{Mode: 0755})
+	_, _, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "MyDir", &metadata.FileAttr{Mode: 0755})
 	require.NoError(t, err)
 
 	file, matched, err := fx.service.LookupCaseInsensitive(fx.rootContext(), fx.rootHandle, "MYDIR")
@@ -77,7 +77,7 @@ func TestLookupCaseInsensitive_NotADirectory(t *testing.T) {
 	t.Parallel()
 	fx := newTestFixture(t)
 
-	fileEntry, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "regular.txt", &metadata.FileAttr{Mode: 0644})
+	fileEntry, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "regular.txt", &metadata.FileAttr{Mode: 0644})
 	require.NoError(t, err)
 
 	fileHandle, err := metadata.EncodeFileHandle(fileEntry)
@@ -144,7 +144,7 @@ func TestLookupCaseInsensitive_LoneSurrogatesDoNotFold(t *testing.T) {
 
 	// Create only the high surrogate. An exact Lookup of {U+D800} succeeds,
 	// but a Lookup of {U+DC00} misses and drops into the EqualFold scan.
-	hiFile, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, hi, &metadata.FileAttr{Mode: 0644})
+	hiFile, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, hi, &metadata.FileAttr{Mode: 0644})
 	require.NoError(t, err)
 
 	// The fallback scan must NOT fold {U+DC00} onto the stored {U+D800}.
@@ -153,7 +153,7 @@ func TestLookupCaseInsensitive_LoneSurrogatesDoNotFold(t *testing.T) {
 	assert.Nil(t, loFound, "lone low surrogate must not fold onto the stored lone high surrogate")
 
 	// Now create the low surrogate too; both must resolve to distinct files.
-	loFile, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, lo, &metadata.FileAttr{Mode: 0644})
+	loFile, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, lo, &metadata.FileAttr{Mode: 0644})
 	require.NoError(t, err, "second CREATE must not collide with the first")
 
 	hiResolved, _, err := fx.service.LookupCaseInsensitive(fx.rootContext(), fx.rootHandle, hi)
@@ -176,7 +176,7 @@ func TestLookupCaseInsensitive_PreservesCaseAcrossMultipleEntries(t *testing.T) 
 	fx := newTestFixture(t)
 
 	for _, name := range []string{"alpha.txt", "Beta.TXT", "gamma.txt"} {
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, name, &metadata.FileAttr{Mode: 0644})
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, name, &metadata.FileAttr{Mode: 0644})
 		require.NoError(t, err)
 	}
 

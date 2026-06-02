@@ -216,7 +216,7 @@ func TestMetadataService_CreateFile(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
 
-		file, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		file, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 
@@ -231,7 +231,7 @@ func TestMetadataService_CreateFile(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
 
-		file, err := fx.service.CreateFile(fx.userContext(), fx.rootHandle, "userfile.txt", &metadata.FileAttr{
+		file, _, err := fx.service.CreateFile(fx.userContext(), fx.rootHandle, "userfile.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 
@@ -244,7 +244,7 @@ func TestMetadataService_CreateFile(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
 
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "..", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "..", &metadata.FileAttr{
 			Mode: 0644,
 		})
 
@@ -255,7 +255,7 @@ func TestMetadataService_CreateFile(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
 
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "", &metadata.FileAttr{
 			Mode: 0644,
 		})
 
@@ -267,13 +267,13 @@ func TestMetadataService_CreateFile(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create first file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
 
 		// Try to create again
-		_, err = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 
@@ -297,7 +297,7 @@ func TestMetadataService_CreateFile(t *testing.T) {
 
 			for i := 0; i < numWorkers; i++ {
 				go func() {
-					_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "race.txt", &metadata.FileAttr{
+					_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "race.txt", &metadata.FileAttr{
 						Mode: 0644,
 					})
 					results <- result{err: err}
@@ -327,7 +327,7 @@ func TestMetadataService_CreateFile(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create a subdirectory owned by root with mode 0755
-		_, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "restricted", &metadata.FileAttr{
+		_, _, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "restricted", &metadata.FileAttr{
 			Mode: 0755,
 			UID:  0,
 			GID:  0,
@@ -339,7 +339,7 @@ func TestMetadataService_CreateFile(t *testing.T) {
 		require.NoError(t, err)
 
 		// User should be denied (write permission not available to others on 0755 dir)
-		_, err = fx.service.CreateFile(fx.userContext(), restrictedHandle, "test.txt", &metadata.FileAttr{
+		_, _, err = fx.service.CreateFile(fx.userContext(), restrictedHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 
@@ -359,7 +359,7 @@ func TestMetadataService_Lookup(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create a file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -417,7 +417,7 @@ func TestMetadataService_CreateDirectory(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
 
-		dir, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "subdir", &metadata.FileAttr{
+		dir, _, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "subdir", &metadata.FileAttr{
 			Mode: 0755,
 		})
 
@@ -433,7 +433,7 @@ func TestMetadataService_CreateDirectory(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create parent
-		parent, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "parent", &metadata.FileAttr{
+		parent, _, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "parent", &metadata.FileAttr{
 			Mode: 0755,
 		})
 		require.NoError(t, err)
@@ -443,7 +443,7 @@ func TestMetadataService_CreateDirectory(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create child
-		child, err := fx.service.CreateDirectory(fx.rootContext(), parentHandle, "child", &metadata.FileAttr{
+		child, _, err := fx.service.CreateDirectory(fx.rootContext(), parentHandle, "child", &metadata.FileAttr{
 			Mode: 0755,
 		})
 
@@ -471,13 +471,13 @@ func TestMetadataService_RemoveFile(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create a file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
 
 		// Remove it
-		removed, err := fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "test.txt")
+		removed, _, err := fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "test.txt")
 
 		require.NoError(t, err)
 		assert.NotNil(t, removed)
@@ -493,13 +493,13 @@ func TestMetadataService_RemoveFile(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create a directory
-		_, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "subdir", &metadata.FileAttr{
+		_, _, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "subdir", &metadata.FileAttr{
 			Mode: 0755,
 		})
 		require.NoError(t, err)
 
 		// Try to remove with RemoveFile
-		_, err = fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "subdir")
+		_, _, err = fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "subdir")
 
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
@@ -511,7 +511,7 @@ func TestMetadataService_RemoveFile(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
 
-		_, err := fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "nonexistent.txt")
+		_, _, err := fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "nonexistent.txt")
 
 		require.Error(t, err)
 	})
@@ -529,13 +529,13 @@ func TestMetadataService_RemoveDirectory(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create a directory
-		_, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "subdir", &metadata.FileAttr{
+		_, _, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "subdir", &metadata.FileAttr{
 			Mode: 0755,
 		})
 		require.NoError(t, err)
 
 		// Remove it
-		err = fx.service.RemoveDirectory(fx.rootContext(), fx.rootHandle, "subdir")
+		_, err = fx.service.RemoveDirectory(fx.rootContext(), fx.rootHandle, "subdir")
 
 		require.NoError(t, err)
 
@@ -549,7 +549,7 @@ func TestMetadataService_RemoveDirectory(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create a directory
-		_, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "subdir", &metadata.FileAttr{
+		_, _, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "subdir", &metadata.FileAttr{
 			Mode: 0755,
 		})
 		require.NoError(t, err)
@@ -559,13 +559,13 @@ func TestMetadataService_RemoveDirectory(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create a file inside
-		_, err = fx.service.CreateFile(fx.rootContext(), dirHandle, "file.txt", &metadata.FileAttr{
+		_, _, err = fx.service.CreateFile(fx.rootContext(), dirHandle, "file.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
 
 		// Try to remove directory
-		err = fx.service.RemoveDirectory(fx.rootContext(), fx.rootHandle, "subdir")
+		_, err = fx.service.RemoveDirectory(fx.rootContext(), fx.rootHandle, "subdir")
 
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
@@ -578,13 +578,13 @@ func TestMetadataService_RemoveDirectory(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create a file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
 
 		// Try to remove with RemoveDirectory
-		err = fx.service.RemoveDirectory(fx.rootContext(), fx.rootHandle, "test.txt")
+		_, err = fx.service.RemoveDirectory(fx.rootContext(), fx.rootHandle, "test.txt")
 
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
@@ -612,7 +612,7 @@ func prepareDeletePermTest(t *testing.T, fx *testFixture, dirMode uint32, dirOwn
 
 	// 1) Create parent as root with mode 0777 so we can then create children in
 	//    it regardless of the final dirOwner/dirMode we're configuring.
-	_, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "parent", &metadata.FileAttr{
+	_, _, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "parent", &metadata.FileAttr{
 		Mode: 0777,
 	})
 	require.NoError(t, err)
@@ -621,7 +621,7 @@ func prepareDeletePermTest(t *testing.T, fx *testFixture, dirMode uint32, dirOwn
 	require.NoError(t, err)
 
 	// 2) Create the file as root so we don't need write on parent for fileOwner.
-	_, err = fx.service.CreateFile(fx.rootContext(), parentHandle, "target.txt", &metadata.FileAttr{
+	_, _, err = fx.service.CreateFile(fx.rootContext(), parentHandle, "target.txt", &metadata.FileAttr{
 		Mode: 0644,
 	})
 	require.NoError(t, err)
@@ -630,7 +630,7 @@ func prepareDeletePermTest(t *testing.T, fx *testFixture, dirMode uint32, dirOwn
 	require.NoError(t, err)
 
 	// 3) Chown the file to its intended owner.
-	err = fx.service.SetFileAttributes(fx.rootContext(), fileHandle, &metadata.SetAttrs{
+	_, err = fx.service.SetFileAttributes(fx.rootContext(), fileHandle, &metadata.SetAttrs{
 		UID: metadata.Uint32Ptr(fileOwner),
 		GID: metadata.Uint32Ptr(fileOwner),
 	})
@@ -638,7 +638,7 @@ func prepareDeletePermTest(t *testing.T, fx *testFixture, dirMode uint32, dirOwn
 
 	// 4) Apply the desired parent ownership/mode last so the mode isn't masked
 	//    by earlier operations.
-	err = fx.service.SetFileAttributes(fx.rootContext(), parentHandle, &metadata.SetAttrs{
+	_, err = fx.service.SetFileAttributes(fx.rootContext(), parentHandle, &metadata.SetAttrs{
 		Mode: metadata.Uint32Ptr(dirMode),
 		UID:  metadata.Uint32Ptr(dirOwner),
 		GID:  metadata.Uint32Ptr(dirOwner),
@@ -660,7 +660,7 @@ func TestMetadataService_RemoveFile_DeletePermission(t *testing.T) {
 		parentHandle, name := prepareDeletePermTest(t, fx, 0777, 1000, 2000)
 
 		// Caller 3000 has neither ownership nor anything special — only world WRITE.
-		_, err := fx.service.RemoveFile(fx.authContext(3000, 3000), parentHandle, name)
+		_, _, err := fx.service.RemoveFile(fx.authContext(3000, 3000), parentHandle, name)
 		require.NoError(t, err)
 	})
 
@@ -677,7 +677,7 @@ func TestMetadataService_RemoveFile_DeletePermission(t *testing.T) {
 		// Caller 3000 is neither owner nor has parent-WRITE. The SMB CREATE
 		// handler already verified DELETE access at open, so HasDeleteAccess
 		// is sufficient — this is the reauth5 scenario.
-		_, err := fx.service.RemoveFile(fx.smbDeleteContext(3000, 3000), parentHandle, name)
+		_, _, err := fx.service.RemoveFile(fx.smbDeleteContext(3000, 3000), parentHandle, name)
 		require.NoError(t, err)
 	})
 
@@ -690,7 +690,7 @@ func TestMetadataService_RemoveFile_DeletePermission(t *testing.T) {
 		parentHandle, name := prepareDeletePermTest(t, fx, 0755, 1000, 2000)
 
 		// Caller 2000 owns the file but HasDeleteAccess is not set (NFS path).
-		_, err := fx.service.RemoveFile(fx.authContext(2000, 2000), parentHandle, name)
+		_, _, err := fx.service.RemoveFile(fx.authContext(2000, 2000), parentHandle, name)
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
 		require.ErrorAs(t, err, &storeErr)
@@ -707,7 +707,7 @@ func TestMetadataService_RemoveFile_DeletePermission(t *testing.T) {
 		ctx := fx.smbDeleteContext(2000, 2000)
 		ctx.ShareReadOnly = true
 
-		_, err := fx.service.RemoveFile(ctx, parentHandle, name)
+		_, _, err := fx.service.RemoveFile(ctx, parentHandle, name)
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
 		require.ErrorAs(t, err, &storeErr)
@@ -725,7 +725,7 @@ func TestMetadataService_RemoveFile_DeletePermission(t *testing.T) {
 
 		// Caller 3000 has WRITE via world bit, but sticky restricts to
 		// root / file-owner / dir-owner.
-		_, err := fx.service.RemoveFile(fx.authContext(3000, 3000), parentHandle, name)
+		_, _, err := fx.service.RemoveFile(fx.authContext(3000, 3000), parentHandle, name)
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
 		require.ErrorAs(t, err, &storeErr)
@@ -742,7 +742,7 @@ func TestMetadataService_RemoveFile_DeletePermission(t *testing.T) {
 		parentHandle, name := prepareDeletePermTest(t, fx, 01777, 1000, 2000)
 
 		// Caller owns the file; sticky rule explicitly permits this.
-		_, err := fx.service.RemoveFile(fx.authContext(2000, 2000), parentHandle, name)
+		_, _, err := fx.service.RemoveFile(fx.authContext(2000, 2000), parentHandle, name)
 		require.NoError(t, err)
 	})
 }
@@ -753,7 +753,7 @@ func TestMetadataService_RemoveFile_DeletePermission(t *testing.T) {
 func prepareDeletePermDirTest(t *testing.T, fx *testFixture, parentMode uint32, parentOwner, dirTargetOwner uint32) (metadata.FileHandle, string) {
 	t.Helper()
 
-	_, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "parent", &metadata.FileAttr{
+	_, _, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "parent", &metadata.FileAttr{
 		Mode: 0777,
 	})
 	require.NoError(t, err)
@@ -761,7 +761,7 @@ func prepareDeletePermDirTest(t *testing.T, fx *testFixture, parentMode uint32, 
 	parentHandle, err := fx.store.GetChild(t.Context(), fx.rootHandle, "parent")
 	require.NoError(t, err)
 
-	_, err = fx.service.CreateDirectory(fx.rootContext(), parentHandle, "target", &metadata.FileAttr{
+	_, _, err = fx.service.CreateDirectory(fx.rootContext(), parentHandle, "target", &metadata.FileAttr{
 		Mode: 0755,
 	})
 	require.NoError(t, err)
@@ -769,13 +769,13 @@ func prepareDeletePermDirTest(t *testing.T, fx *testFixture, parentMode uint32, 
 	targetHandle, err := fx.store.GetChild(t.Context(), parentHandle, "target")
 	require.NoError(t, err)
 
-	err = fx.service.SetFileAttributes(fx.rootContext(), targetHandle, &metadata.SetAttrs{
+	_, err = fx.service.SetFileAttributes(fx.rootContext(), targetHandle, &metadata.SetAttrs{
 		UID: metadata.Uint32Ptr(dirTargetOwner),
 		GID: metadata.Uint32Ptr(dirTargetOwner),
 	})
 	require.NoError(t, err)
 
-	err = fx.service.SetFileAttributes(fx.rootContext(), parentHandle, &metadata.SetAttrs{
+	_, err = fx.service.SetFileAttributes(fx.rootContext(), parentHandle, &metadata.SetAttrs{
 		Mode: metadata.Uint32Ptr(parentMode),
 		UID:  metadata.Uint32Ptr(parentOwner),
 		GID:  metadata.Uint32Ptr(parentOwner),
@@ -795,7 +795,7 @@ func TestMetadataService_RemoveDirectory_DeletePermission(t *testing.T) {
 
 		parentHandle, name := prepareDeletePermDirTest(t, fx, 0777, 1000, 2000)
 
-		err := fx.service.RemoveDirectory(fx.authContext(3000, 3000), parentHandle, name)
+		_, err := fx.service.RemoveDirectory(fx.authContext(3000, 3000), parentHandle, name)
 		require.NoError(t, err)
 	})
 
@@ -806,7 +806,7 @@ func TestMetadataService_RemoveDirectory_DeletePermission(t *testing.T) {
 
 		parentHandle, name := prepareDeletePermDirTest(t, fx, 0755, 1000, 2000)
 
-		err := fx.service.RemoveDirectory(fx.smbDeleteContext(3000, 3000), parentHandle, name)
+		_, err := fx.service.RemoveDirectory(fx.smbDeleteContext(3000, 3000), parentHandle, name)
 		require.NoError(t, err)
 	})
 
@@ -817,7 +817,7 @@ func TestMetadataService_RemoveDirectory_DeletePermission(t *testing.T) {
 
 		parentHandle, name := prepareDeletePermDirTest(t, fx, 0755, 1000, 2000)
 
-		err := fx.service.RemoveDirectory(fx.authContext(2000, 2000), parentHandle, name)
+		_, err := fx.service.RemoveDirectory(fx.authContext(2000, 2000), parentHandle, name)
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
 		require.ErrorAs(t, err, &storeErr)
@@ -834,7 +834,7 @@ func TestMetadataService_RemoveDirectory_DeletePermission(t *testing.T) {
 		ctx := fx.smbDeleteContext(2000, 2000)
 		ctx.ShareReadOnly = true
 
-		err := fx.service.RemoveDirectory(ctx, parentHandle, name)
+		_, err := fx.service.RemoveDirectory(ctx, parentHandle, name)
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
 		require.ErrorAs(t, err, &storeErr)
@@ -854,13 +854,13 @@ func TestMetadataService_Move(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create a file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "old.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "old.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
 
 		// Rename it
-		err = fx.service.Move(fx.rootContext(), fx.rootHandle, "old.txt", fx.rootHandle, "new.txt")
+		_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "old.txt", fx.rootHandle, "new.txt")
 
 		require.NoError(t, err)
 
@@ -878,13 +878,13 @@ func TestMetadataService_Move(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create a file
-		original, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		original, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
 
 		// Move to same name
-		err = fx.service.Move(fx.rootContext(), fx.rootHandle, "test.txt", fx.rootHandle, "test.txt")
+		_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "test.txt", fx.rootHandle, "test.txt")
 
 		require.NoError(t, err)
 
@@ -899,27 +899,27 @@ func TestMetadataService_Move(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create source directory
-		_, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "src", &metadata.FileAttr{
+		_, _, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "src", &metadata.FileAttr{
 			Mode: 0755,
 		})
 		require.NoError(t, err)
 		srcDir, _ := fx.store.GetChild(context.Background(), fx.rootHandle, "src")
 
 		// Create destination directory
-		_, err = fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "dst", &metadata.FileAttr{
+		_, _, err = fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "dst", &metadata.FileAttr{
 			Mode: 0755,
 		})
 		require.NoError(t, err)
 		dstDir, _ := fx.store.GetChild(context.Background(), fx.rootHandle, "dst")
 
 		// Create a file in source
-		_, err = fx.service.CreateFile(fx.rootContext(), srcDir, "test.txt", &metadata.FileAttr{
+		_, _, err = fx.service.CreateFile(fx.rootContext(), srcDir, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
 
 		// Move to destination
-		err = fx.service.Move(fx.rootContext(), srcDir, "test.txt", dstDir, "test.txt")
+		_, err = fx.service.Move(fx.rootContext(), srcDir, "test.txt", dstDir, "test.txt")
 
 		require.NoError(t, err)
 
@@ -936,19 +936,19 @@ func TestMetadataService_Move(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create a directory
-		_, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "dir", &metadata.FileAttr{
+		_, _, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "dir", &metadata.FileAttr{
 			Mode: 0755,
 		})
 		require.NoError(t, err)
 
 		// Create a file
-		_, err = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "file.txt", &metadata.FileAttr{
+		_, _, err = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "file.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
 
 		// Try to move directory over file
-		err = fx.service.Move(fx.rootContext(), fx.rootHandle, "dir", fx.rootHandle, "file.txt")
+		_, err = fx.service.Move(fx.rootContext(), fx.rootHandle, "dir", fx.rootHandle, "file.txt")
 
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
@@ -961,7 +961,7 @@ func TestMetadataService_Move(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create a directory with sticky bit (mode 01777), owned by root
-		stickyDir, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "sticky", &metadata.FileAttr{
+		stickyDir, _, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "sticky", &metadata.FileAttr{
 			Mode: 0o1777, // Sticky bit + rwxrwxrwx
 			UID:  0,      // Owned by root
 			GID:  0,
@@ -974,7 +974,7 @@ func TestMetadataService_Move(t *testing.T) {
 		require.Equal(t, uint32(0o1777), stickyDir.Mode, "sticky bit should be set")
 
 		// Create destination directory (no sticky bit), owned by root, world-writable
-		_, err = fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "dest", &metadata.FileAttr{
+		_, _, err = fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "dest", &metadata.FileAttr{
 			Mode: 0o0777, // World-writable so user 65534 can write to it
 			UID:  0,
 			GID:  0,
@@ -983,7 +983,7 @@ func TestMetadataService_Move(t *testing.T) {
 		destDirHandle, _ := fx.store.GetChild(context.Background(), fx.rootHandle, "dest")
 
 		// Create a file in sticky dir, owned by root
-		file, err := fx.service.CreateFile(fx.rootContext(), stickyDirHandle, "rootfile.txt", &metadata.FileAttr{
+		file, _, err := fx.service.CreateFile(fx.rootContext(), stickyDirHandle, "rootfile.txt", &metadata.FileAttr{
 			Mode: 0o0644,
 			UID:  0, // Owned by root
 			GID:  0,
@@ -997,7 +997,7 @@ func TestMetadataService_Move(t *testing.T) {
 		// - User 65534 does not own the file (file owned by UID 0)
 		// - User 65534 does not own the directory (dir owned by UID 0)
 		nobodyCtx := fx.authContext(65534, 65534)
-		err = fx.service.Move(nobodyCtx, stickyDirHandle, "rootfile.txt", destDirHandle, "renamed.txt")
+		_, err = fx.service.Move(nobodyCtx, stickyDirHandle, "rootfile.txt", destDirHandle, "renamed.txt")
 
 		// Should return ErrAccessDenied
 		require.Error(t, err, "rename should fail due to sticky bit restriction")
@@ -1020,7 +1020,7 @@ func TestMetadataService_Move(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create a sticky directory owned by root
-		_, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "sticky2", &metadata.FileAttr{
+		_, _, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "sticky2", &metadata.FileAttr{
 			Mode: 0o1777,
 			UID:  0,
 			GID:  0,
@@ -1029,7 +1029,7 @@ func TestMetadataService_Move(t *testing.T) {
 		stickyDirHandle, _ := fx.store.GetChild(context.Background(), fx.rootHandle, "sticky2")
 
 		// Create destination directory (world-writable)
-		_, err = fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "dest2", &metadata.FileAttr{
+		_, _, err = fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "dest2", &metadata.FileAttr{
 			Mode: 0o0777,
 		})
 		require.NoError(t, err)
@@ -1037,7 +1037,7 @@ func TestMetadataService_Move(t *testing.T) {
 
 		// Create a file in sticky dir, owned by user 65534
 		userCtx := fx.authContext(65534, 65534)
-		_, err = fx.service.CreateFile(userCtx, stickyDirHandle, "myfile.txt", &metadata.FileAttr{
+		_, _, err = fx.service.CreateFile(userCtx, stickyDirHandle, "myfile.txt", &metadata.FileAttr{
 			Mode: 0o0644,
 			UID:  65534, // Owned by user 65534
 			GID:  65534,
@@ -1045,7 +1045,7 @@ func TestMetadataService_Move(t *testing.T) {
 		require.NoError(t, err)
 
 		// User 65534 should be able to rename their own file
-		err = fx.service.Move(userCtx, stickyDirHandle, "myfile.txt", destDirHandle, "renamed.txt")
+		_, err = fx.service.Move(userCtx, stickyDirHandle, "myfile.txt", destDirHandle, "renamed.txt")
 		require.NoError(t, err, "owner should be able to rename their own file despite sticky bit")
 	})
 }
@@ -1061,7 +1061,7 @@ func TestMetadataService_CreateSymlink(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
 
-		symlink, err := fx.service.CreateSymlink(fx.rootContext(), fx.rootHandle, "link", "/target/path", &metadata.FileAttr{})
+		symlink, _, err := fx.service.CreateSymlink(fx.rootContext(), fx.rootHandle, "link", "/target/path", &metadata.FileAttr{})
 
 		require.NoError(t, err)
 		assert.Equal(t, metadata.FileTypeSymlink, symlink.Type)
@@ -1073,7 +1073,7 @@ func TestMetadataService_CreateSymlink(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
 
-		_, err := fx.service.CreateSymlink(fx.rootContext(), fx.rootHandle, "link", "", &metadata.FileAttr{})
+		_, _, err := fx.service.CreateSymlink(fx.rootContext(), fx.rootHandle, "link", "", &metadata.FileAttr{})
 
 		require.Error(t, err)
 	})
@@ -1087,7 +1087,7 @@ func TestMetadataService_ReadSymlink(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create symlink
-		_, err := fx.service.CreateSymlink(fx.rootContext(), fx.rootHandle, "link", "/target/path", &metadata.FileAttr{})
+		_, _, err := fx.service.CreateSymlink(fx.rootContext(), fx.rootHandle, "link", "/target/path", &metadata.FileAttr{})
 		require.NoError(t, err)
 
 		// Get handle
@@ -1107,7 +1107,7 @@ func TestMetadataService_ReadSymlink(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create regular file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1135,7 +1135,7 @@ func TestMetadataService_CreateHardLink(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create target file
-		target, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "target.txt", &metadata.FileAttr{
+		target, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "target.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1146,7 +1146,7 @@ func TestMetadataService_CreateHardLink(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create hard link
-		err = fx.service.CreateHardLink(fx.rootContext(), fx.rootHandle, "link.txt", targetHandle)
+		_, err = fx.service.CreateHardLink(fx.rootContext(), fx.rootHandle, "link.txt", targetHandle)
 
 		require.NoError(t, err)
 
@@ -1161,7 +1161,7 @@ func TestMetadataService_CreateHardLink(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create directory
-		_, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "dir", &metadata.FileAttr{
+		_, _, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "dir", &metadata.FileAttr{
 			Mode: 0755,
 		})
 		require.NoError(t, err)
@@ -1171,7 +1171,7 @@ func TestMetadataService_CreateHardLink(t *testing.T) {
 		require.NoError(t, err)
 
 		// Try to create hard link to directory
-		err = fx.service.CreateHardLink(fx.rootContext(), fx.rootHandle, "link", dirHandle)
+		_, err = fx.service.CreateHardLink(fx.rootContext(), fx.rootHandle, "link", dirHandle)
 
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
@@ -1184,12 +1184,12 @@ func TestMetadataService_CreateHardLink(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create two files
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "target.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "target.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
 
-		_, err = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "existing.txt", &metadata.FileAttr{
+		_, _, err = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "existing.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1199,7 +1199,7 @@ func TestMetadataService_CreateHardLink(t *testing.T) {
 		require.NoError(t, err)
 
 		// Try to create link with existing name
-		err = fx.service.CreateHardLink(fx.rootContext(), fx.rootHandle, "existing.txt", targetHandle)
+		_, err = fx.service.CreateHardLink(fx.rootContext(), fx.rootHandle, "existing.txt", targetHandle)
 
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
@@ -1220,7 +1220,7 @@ func TestMetadataService_SetFileAttributes(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file as root
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 			UID:  1000,
 			GID:  1000,
@@ -1233,7 +1233,7 @@ func TestMetadataService_SetFileAttributes(t *testing.T) {
 
 		// Change mode as owner
 		newMode := uint32(0600)
-		err = fx.service.SetFileAttributes(fx.userContext(), handle, &metadata.SetAttrs{
+		_, err = fx.service.SetFileAttributes(fx.userContext(), handle, &metadata.SetAttrs{
 			Mode: &newMode,
 		})
 
@@ -1250,7 +1250,7 @@ func TestMetadataService_SetFileAttributes(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 			UID:  1000,
 			GID:  1000,
@@ -1263,7 +1263,7 @@ func TestMetadataService_SetFileAttributes(t *testing.T) {
 
 		// Try to change owner as non-root
 		newUID := uint32(2000)
-		err = fx.service.SetFileAttributes(fx.userContext(), handle, &metadata.SetAttrs{
+		_, err = fx.service.SetFileAttributes(fx.userContext(), handle, &metadata.SetAttrs{
 			UID: &newUID,
 		})
 
@@ -1278,7 +1278,7 @@ func TestMetadataService_SetFileAttributes(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1289,7 +1289,7 @@ func TestMetadataService_SetFileAttributes(t *testing.T) {
 
 		// Change owner as root
 		newUID := uint32(2000)
-		err = fx.service.SetFileAttributes(fx.rootContext(), handle, &metadata.SetAttrs{
+		_, err = fx.service.SetFileAttributes(fx.rootContext(), handle, &metadata.SetAttrs{
 			UID: &newUID,
 		})
 
@@ -1306,7 +1306,7 @@ func TestMetadataService_SetFileAttributes(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file owned by different user
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 			UID:  2000,
 			GID:  2000,
@@ -1319,7 +1319,7 @@ func TestMetadataService_SetFileAttributes(t *testing.T) {
 
 		// Try to change mode as different user
 		newMode := uint32(0600)
-		err = fx.service.SetFileAttributes(fx.userContext(), handle, &metadata.SetAttrs{
+		_, err = fx.service.SetFileAttributes(fx.userContext(), handle, &metadata.SetAttrs{
 			Mode: &newMode,
 		})
 
@@ -1339,7 +1339,7 @@ func TestMetadataService_PrepareWrite(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1379,7 +1379,7 @@ func TestMetadataService_CommitWrite(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1403,7 +1403,7 @@ func TestMetadataService_CommitWrite(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create setuid file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0o4755, // setuid
 			UID:  1000,
 			GID:  1000,
@@ -1429,7 +1429,7 @@ func TestMetadataService_CommitWrite(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "frozen.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "frozen.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1488,7 +1488,7 @@ func TestMetadataService_PrepareRead(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1542,9 +1542,9 @@ func TestMetadataService_ReadDirectory(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create some files
-		_, _ = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "file1.txt", &metadata.FileAttr{Mode: 0644})
-		_, _ = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "file2.txt", &metadata.FileAttr{Mode: 0644})
-		_, _ = fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "subdir", &metadata.FileAttr{Mode: 0755})
+		_, _, _ = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "file1.txt", &metadata.FileAttr{Mode: 0644})
+		_, _, _ = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "file2.txt", &metadata.FileAttr{Mode: 0644})
+		_, _, _ = fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "subdir", &metadata.FileAttr{Mode: 0755})
 
 		page, err := fx.service.ReadDirectory(fx.rootContext(), fx.rootHandle, 0, 0)
 
@@ -1557,7 +1557,7 @@ func TestMetadataService_ReadDirectory(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create a file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1588,7 +1588,7 @@ func TestMetadataService_LockFile(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1629,7 +1629,7 @@ func TestMetadataService_LockFile(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1669,7 +1669,7 @@ func TestMetadataService_UnlockFile(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1702,7 +1702,7 @@ func TestMetadataService_TestLock(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1724,7 +1724,7 @@ func TestMetadataService_TestLock(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1760,7 +1760,7 @@ func TestMetadataService_CheckLockForIO(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1780,7 +1780,7 @@ func TestMetadataService_CheckLockForIO(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1818,7 +1818,7 @@ func TestMetadataService_ContextCancellation(t *testing.T) {
 		fx := newTestFixture(t)
 
 		// Create file
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)
@@ -1949,7 +1949,7 @@ func TestTimestampUpdates(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 
 		// Create file
-		_, err = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
+		_, _, err = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "test.txt", &metadata.FileAttr{
 			Mode: 0644,
 		})
 		require.NoError(t, err)

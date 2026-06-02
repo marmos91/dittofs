@@ -58,10 +58,10 @@ func TestRemoveFile_RecyclesWhenTrashEnabled(t *testing.T) {
 		fx := newRecycleFixture(t)
 		fx.service.SetTrashPolicy(stubTrashPolicy{cfg: metadata.TrashConfig{Enabled: true}})
 
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "report.pdf", &metadata.FileAttr{Mode: 0644})
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "report.pdf", &metadata.FileAttr{Mode: 0644})
 		require.NoError(t, err)
 
-		removed, err := fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "report.pdf")
+		removed, _, err := fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "report.pdf")
 		require.NoError(t, err)
 		require.NotNil(t, removed)
 		// Cleared PayloadID makes adapters skip block deletion (deferred reaping).
@@ -86,9 +86,9 @@ func TestRemoveFile_RecyclesWhenTrashEnabled(t *testing.T) {
 		fx.service.SetTrashPolicy(stubTrashPolicy{cfg: metadata.TrashConfig{Enabled: true}})
 
 		// Recycle once so #recycle exists with an entry.
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "a.txt", &metadata.FileAttr{Mode: 0644})
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "a.txt", &metadata.FileAttr{Mode: 0644})
 		require.NoError(t, err)
-		_, err = fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "a.txt")
+		_, _, err = fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "a.txt")
 		require.NoError(t, err)
 
 		binHandle, err := fx.service.GetChild(fx.rootContext().Context, fx.rootHandle, metadata.RecycleDirName)
@@ -96,7 +96,7 @@ func TestRemoveFile_RecyclesWhenTrashEnabled(t *testing.T) {
 
 		// Deleting the file already in the bin must be permanent: it does not
 		// get re-recycled into a nested #recycle, it is removed.
-		_, err = fx.service.RemoveFile(fx.rootContext(), binHandle, "a.txt")
+		_, _, err = fx.service.RemoveFile(fx.rootContext(), binHandle, "a.txt")
 		require.NoError(t, err)
 		_, err = fx.service.Lookup(fx.rootContext(), binHandle, "a.txt")
 		assert.True(t, metadata.IsNotFoundError(err))
@@ -113,9 +113,9 @@ func TestRemoveFile_RecyclesWhenTrashEnabled(t *testing.T) {
 			ExcludePatterns: []string{"*.tmp"},
 		}})
 
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "scratch.tmp", &metadata.FileAttr{Mode: 0644})
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "scratch.tmp", &metadata.FileAttr{Mode: 0644})
 		require.NoError(t, err)
-		_, err = fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "scratch.tmp")
+		_, _, err = fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "scratch.tmp")
 		require.NoError(t, err)
 
 		// No bin created, file permanently gone.
@@ -132,9 +132,9 @@ func TestRemoveFile_RecyclesWhenTrashEnabled(t *testing.T) {
 		// land in the same wall-clock second. The collision must NOT overwrite
 		// the first recycled copy.
 		for i := 0; i < 2; i++ {
-			_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "dup.txt", &metadata.FileAttr{Mode: 0644})
+			_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "dup.txt", &metadata.FileAttr{Mode: 0644})
 			require.NoError(t, err)
-			_, err = fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "dup.txt")
+			_, _, err = fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "dup.txt")
 			require.NoError(t, err)
 		}
 
@@ -170,13 +170,14 @@ func TestRemoveFile_RecyclesWhenTrashEnabled(t *testing.T) {
 		// so the surviving file's Mode tells us whose identity won.
 		const modeA = uint32(0640)
 		const modeB = uint32(0600)
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "a", &metadata.FileAttr{Mode: modeA})
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "a", &metadata.FileAttr{Mode: modeA})
 		require.NoError(t, err)
-		_, err = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "b", &metadata.FileAttr{Mode: modeB})
+		_, _, err = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "b", &metadata.FileAttr{Mode: modeB})
 		require.NoError(t, err)
 
 		// Rename "b" onto "a" — an overwrite. The old "a" must be recycled.
-		require.NoError(t, fx.service.Move(fx.rootContext(), fx.rootHandle, "b", fx.rootHandle, "a"))
+		_, mvErr := fx.service.Move(fx.rootContext(), fx.rootHandle, "b", fx.rootHandle, "a")
+		require.NoError(t, mvErr)
 
 		// Source "b" is gone.
 		_, err = fx.service.Lookup(fx.rootContext(), fx.rootHandle, "b")
@@ -203,11 +204,12 @@ func TestRemoveFile_RecyclesWhenTrashEnabled(t *testing.T) {
 		fx := newRecycleFixture(t)
 		fx.service.SetTrashPolicy(stubTrashPolicy{cfg: metadata.TrashConfig{Enabled: true}})
 
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "b", &metadata.FileAttr{Mode: 0644})
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "b", &metadata.FileAttr{Mode: 0644})
 		require.NoError(t, err)
 
 		// "c" does not exist: a plain rename must not touch the bin.
-		require.NoError(t, fx.service.Move(fx.rootContext(), fx.rootHandle, "b", fx.rootHandle, "c"))
+		_, mvErr := fx.service.Move(fx.rootContext(), fx.rootHandle, "b", fx.rootHandle, "c")
+		require.NoError(t, mvErr)
 
 		_, err = fx.service.Lookup(fx.rootContext(), fx.rootHandle, "c")
 		require.NoError(t, err)
@@ -224,15 +226,15 @@ func TestRemoveFile_RecyclesWhenTrashEnabled(t *testing.T) {
 		fx := newRecycleFixture(t)
 		fx.service.SetTrashPolicy(stubTrashPolicy{cfg: metadata.TrashConfig{Enabled: true}})
 
-		dir, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "docs", &metadata.FileAttr{Mode: 0755})
+		dir, _, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "docs", &metadata.FileAttr{Mode: 0755})
 		require.NoError(t, err)
 		dirHandle, err := metadata.EncodeFileHandle(dir)
 		require.NoError(t, err)
-		_, err = fx.service.CreateFile(fx.rootContext(), dirHandle, "inner.txt", &metadata.FileAttr{Mode: 0644})
+		_, _, err = fx.service.CreateFile(fx.rootContext(), dirHandle, "inner.txt", &metadata.FileAttr{Mode: 0644})
 		require.NoError(t, err)
 
 		// RemoveDirectory on a non-empty dir succeeds (recycled, not ErrNotEmpty).
-		err = fx.service.RemoveDirectory(fx.rootContext(), fx.rootHandle, "docs")
+		_, err = fx.service.RemoveDirectory(fx.rootContext(), fx.rootHandle, "docs")
 		require.NoError(t, err)
 
 		_, err = fx.service.Lookup(fx.rootContext(), fx.rootHandle, "docs")

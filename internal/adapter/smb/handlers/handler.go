@@ -1398,14 +1398,14 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 
 	var deleted bool
 	if openFile.IsDirectory {
-		if err := metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
+		if _, err := metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
 			logger.Debug(caller+": failed to delete directory", "path", openFile.Path, "error", err)
 		} else {
 			logger.Debug(caller+": directory deleted", "path", openFile.Path)
 			deleted = true
 		}
 	} else {
-		removed, err := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName)
+		removed, _, err := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName)
 		if err != nil {
 			logger.Debug(caller+": failed to delete file", "path", openFile.Path, "error", err)
 		} else {

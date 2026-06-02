@@ -60,7 +60,7 @@ func TestNotifyDirChange_ThreadsParentLeaseKey(t *testing.T) {
 	}
 
 	// CreateFile triggers notifyDirChange(DirChangeAddEntry, ctx).
-	_, err := fx.service.CreateFile(ctx, fx.rootHandle, "foo.txt", &metadata.FileAttr{
+	_, _, err := fx.service.CreateFile(ctx, fx.rootHandle, "foo.txt", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0644,
 		UID:  0,
@@ -99,7 +99,7 @@ func TestRemoveFile_UnlinkSameSetAndClose(t *testing.T) {
 
 	// Pre-create the victim file under root so RemoveFile has something to unlink.
 	rootCtx := fx.rootContext()
-	_, err := fx.service.CreateFile(rootCtx, fx.rootHandle, "victim.txt", &metadata.FileAttr{
+	_, _, err := fx.service.CreateFile(rootCtx, fx.rootHandle, "victim.txt", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular, Mode: 0644, UID: 0, GID: 0,
 	})
 	if err != nil {
@@ -118,7 +118,7 @@ func TestRemoveFile_UnlinkSameSetAndClose(t *testing.T) {
 		HasParentLeaseKey: true,
 		HasDeleteAccess:   true,
 	}
-	if _, err := fx.service.RemoveFile(closeCtx, fx.rootHandle, "victim.txt"); err != nil {
+	if _, _, err := fx.service.RemoveFile(closeCtx, fx.rootHandle, "victim.txt"); err != nil {
 		t.Fatalf("RemoveFile failed: %v", err)
 	}
 
@@ -157,7 +157,7 @@ func TestRemoveFile_UnlinkDifferentSetAndClose(t *testing.T) {
 	fx.service.SetDirChangeNotifier(fx.shareName, notifier)
 
 	rootCtx := fx.rootContext()
-	_, err := fx.service.CreateFile(rootCtx, fx.rootHandle, "victim.txt", &metadata.FileAttr{
+	_, _, err := fx.service.CreateFile(rootCtx, fx.rootHandle, "victim.txt", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular, Mode: 0644, UID: 0, GID: 0,
 	})
 	if err != nil {
@@ -174,7 +174,7 @@ func TestRemoveFile_UnlinkDifferentSetAndClose(t *testing.T) {
 		HasParentLeaseKey: false,
 		HasDeleteAccess:   true,
 	}
-	if _, err := fx.service.RemoveFile(closeCtx, fx.rootHandle, "victim.txt"); err != nil {
+	if _, _, err := fx.service.RemoveFile(closeCtx, fx.rootHandle, "victim.txt"); err != nil {
 		t.Fatalf("RemoveFile failed: %v", err)
 	}
 
@@ -211,7 +211,7 @@ func TestRemoveFile_UnlinkSameInitialAndClose(t *testing.T) {
 	fx.service.SetDirChangeNotifier(fx.shareName, notifier)
 
 	rootCtx := fx.rootContext()
-	_, err := fx.service.CreateFile(rootCtx, fx.rootHandle, "victim.txt", &metadata.FileAttr{
+	_, _, err := fx.service.CreateFile(rootCtx, fx.rootHandle, "victim.txt", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular, Mode: 0644, UID: 0, GID: 0,
 	})
 	if err != nil {
@@ -230,7 +230,7 @@ func TestRemoveFile_UnlinkSameInitialAndClose(t *testing.T) {
 		HasParentLeaseKey: true,
 		HasDeleteAccess:   true,
 	}
-	if _, err := fx.service.RemoveFile(closeCtx, fx.rootHandle, "victim.txt"); err != nil {
+	if _, _, err := fx.service.RemoveFile(closeCtx, fx.rootHandle, "victim.txt"); err != nil {
 		t.Fatalf("RemoveFile failed: %v", err)
 	}
 
@@ -266,7 +266,7 @@ func TestRemoveFile_UnlinkDifferentInitialAndClose(t *testing.T) {
 	fx.service.SetDirChangeNotifier(fx.shareName, notifier)
 
 	rootCtx := fx.rootContext()
-	_, err := fx.service.CreateFile(rootCtx, fx.rootHandle, "victim.txt", &metadata.FileAttr{
+	_, _, err := fx.service.CreateFile(rootCtx, fx.rootHandle, "victim.txt", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular, Mode: 0644, UID: 0, GID: 0,
 	})
 	if err != nil {
@@ -280,7 +280,7 @@ func TestRemoveFile_UnlinkDifferentInitialAndClose(t *testing.T) {
 		HasParentLeaseKey: false,
 		HasDeleteAccess:   true,
 	}
-	if _, err := fx.service.RemoveFile(closeCtx, fx.rootHandle, "victim.txt"); err != nil {
+	if _, _, err := fx.service.RemoveFile(closeCtx, fx.rootHandle, "victim.txt"); err != nil {
 		t.Fatalf("RemoveFile failed: %v", err)
 	}
 
@@ -325,7 +325,7 @@ func TestNotifyDirChange_NFSCallerHasNoParentKey(t *testing.T) {
 		HasParentLeaseKey: false,
 	}
 
-	_, err := fx.service.CreateFile(ctx, fx.rootHandle, "foo.txt", &metadata.FileAttr{
+	_, _, err := fx.service.CreateFile(ctx, fx.rootHandle, "foo.txt", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0644,
 		UID:  0,

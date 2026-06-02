@@ -285,7 +285,7 @@ func (h *Handler) Rename(
 	// We don't check for cancellation inside RenameFile to maintain atomicity.
 	// The store should respect context internally for its operations.
 
-	err = metaSvc.Move(authCtx, fromDirHandle, req.FromName, toDirHandle, req.ToName)
+	renameWcc, err := metaSvc.Move(authCtx, fromDirHandle, req.FromName, toDirHandle, req.ToName)
 	if err == nil {
 		// ====================================================================
 		// NFS-specific: Handle silly rename (.nfs* pattern)
@@ -362,22 +362,16 @@ func (h *Handler) Rename(
 	// Step 6: Build success response with updated WCC data
 	// ========================================================================
 
-	// Get updated source directory attributes
-	if updatedFromDirFile, getErr := metaSvc.GetFile(ctx.Context, fromDirHandle); getErr != nil {
-		logger.WarnCtx(ctx.Context, "RENAME: successful but cannot get updated source directory attributes", "dir", fmt.Sprintf("0x%x", req.FromDirHandle), "error", getErr)
-		fromDirWccAfter = nil
-	} else {
-		fromDirWccAfter = h.convertFileAttrToNFS(fromDirHandle, &updatedFromDirFile.FileAttr)
+	// H9: use the source/destination directory attributes captured atomically
+	// inside the Move transaction. The pre-op snapshots read at handler entry
+	// can race a concurrent mutation in the window; the in-transaction captures
+	// are guaranteed to bracket the rename.
+	var fromWcc, toWcc *metadata.DirWcc
+	if renameWcc != nil {
+		fromWcc, toWcc = renameWcc.FromDir, renameWcc.ToDir
 	}
-
-	// Get updated destination directory attributes
-	var toDirWccAfter *types.NFSFileAttr
-	if updatedToDirFile, getErr := metaSvc.GetFile(ctx.Context, toDirHandle); getErr != nil {
-		logger.WarnCtx(ctx.Context, "RENAME: successful but cannot get updated destination directory attributes", "dir", fmt.Sprintf("0x%x", req.ToDirHandle), "error", getErr)
-		// toDirWccAfter will be nil
-	} else {
-		toDirWccAfter = h.convertFileAttrToNFS(toDirHandle, &updatedToDirFile.FileAttr)
-	}
+	fromDirWccBefore, fromDirWccAfter = h.dirWccPair(ctx, metaSvc, fromDirHandle, fromWcc, fromDirWccBefore)
+	toDirWccBefore, toDirWccAfter := h.dirWccPair(ctx, metaSvc, toDirHandle, toWcc, toDirWccBefore)
 
 	logger.InfoCtx(ctx.Context, "RENAME successful", "from", req.FromName, "to", req.ToName, "client", clientIP)
 

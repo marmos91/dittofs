@@ -86,7 +86,7 @@ func TestCopyChunk_SparseDest_LeadingGapReadsZeros(t *testing.T) {
 	metaSvc := rt.GetMetadataService()
 
 	// --- Source file: create + write 4096 bytes of a non-zero pattern. ---
-	srcFile, err := metaSvc.CreateFile(authCtx, rootHandle, "src", &metadata.FileAttr{
+	srcFile, _, err := metaSvc.CreateFile(authCtx, rootHandle, "src", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular, Mode: 0o644,
 	})
 	if err != nil {
@@ -121,7 +121,7 @@ func TestCopyChunk_SparseDest_LeadingGapReadsZeros(t *testing.T) {
 	}
 
 	// --- Destination file: create 0-byte. ---
-	dstFile, err := metaSvc.CreateFile(authCtx, rootHandle, "dst", &metadata.FileAttr{
+	dstFile, _, err := metaSvc.CreateFile(authCtx, rootHandle, "dst", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular, Mode: 0o644,
 	})
 	if err != nil {
@@ -298,7 +298,7 @@ func TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse(t *testing.T) {
 	metaSvc := rt.GetMetadataService()
 
 	// --- Source file: 4096 bytes of a non-zero pattern. ---
-	srcFile, err := metaSvc.CreateFile(authCtx, rootHandle, "src", &metadata.FileAttr{
+	srcFile, _, err := metaSvc.CreateFile(authCtx, rootHandle, "src", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular, Mode: 0o644,
 	})
 	if err != nil {
@@ -361,7 +361,7 @@ func TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse(t *testing.T) {
 	// PayloadID — exactly the reuse the smbtorture battery exercises.
 	openDst := func(fileID [16]byte) (*OpenFile, metadata.FileHandle) {
 		t.Helper()
-		dstFile, err := metaSvc.CreateFile(authCtx, rootHandle, "dst", &metadata.FileAttr{
+		dstFile, _, err := metaSvc.CreateFile(authCtx, rootHandle, "dst", &metadata.FileAttr{
 			Type: metadata.FileTypeRegular, Mode: 0o644,
 		})
 		if err != nil {
@@ -509,7 +509,7 @@ func TestPurgeBlockStorePayload_PreservesHardLinkedContent(t *testing.T) {
 	metaSvc := rt.GetMetadataService()
 
 	// Create "a", write a non-zero pattern, then hard-link it as "b".
-	file, err := metaSvc.CreateFile(authCtx, rootHandle, "a", &metadata.FileAttr{
+	file, _, err := metaSvc.CreateFile(authCtx, rootHandle, "a", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular, Mode: 0o644,
 	})
 	if err != nil {
@@ -540,7 +540,7 @@ func TestPurgeBlockStorePayload_PreservesHardLinkedContent(t *testing.T) {
 	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, handle); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	if err := metaSvc.CreateHardLink(authCtx, rootHandle, "b", handle); err != nil {
+	if _, err := metaSvc.CreateHardLink(authCtx, rootHandle, "b", handle); err != nil {
 		t.Fatalf("CreateHardLink b: %v", err)
 	}
 
@@ -549,7 +549,7 @@ func TestPurgeBlockStorePayload_PreservesHardLinkedContent(t *testing.T) {
 
 	// Delete the "a" link: RemoveFile decrements nlink (2 -> 1) and returns an
 	// empty PayloadID. The purge must therefore NOT touch the block store.
-	removed, err := metaSvc.RemoveFile(authCtx, rootHandle, "a")
+	removed, _, err := metaSvc.RemoveFile(authCtx, rootHandle, "a")
 	if err != nil {
 		t.Fatalf("RemoveFile a: %v", err)
 	}

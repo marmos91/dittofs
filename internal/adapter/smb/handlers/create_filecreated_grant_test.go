@@ -58,7 +58,7 @@ func TestCreate_FileCreated_GrantsResolvedDesiredAccess(t *testing.T) {
 			},
 		},
 	}
-	parentDir, err := metaSvc.CreateDirectory(rootAuth, rootHandle, "testdir",
+	parentDir, _, err := metaSvc.CreateDirectory(rootAuth, rootHandle, "testdir",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o777,
@@ -135,7 +135,7 @@ func TestCreate_FileCreated_ExpandsGenericAll(t *testing.T) {
 	creatorUID := uint32(1000)
 	creatorGID := uint32(1000)
 
-	parentDir, err := metaSvc.CreateDirectory(rootAuth, rootHandle, "gendir",
+	parentDir, _, err := metaSvc.CreateDirectory(rootAuth, rootHandle, "gendir",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o777,

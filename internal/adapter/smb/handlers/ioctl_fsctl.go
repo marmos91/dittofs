@@ -123,7 +123,7 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 		authCtx, authErr := BuildAuthContext(ctx)
 		if authErr != nil {
 			logger.Warn("FSCTL_SET_COMPRESSION: failed to build auth context", "error", authErr)
-		} else if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
+		} else if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
 			Mode: &newMode,
 		}); err != nil {
 			logger.Warn("FSCTL_SET_COMPRESSION: failed to persist mode", "error", err)

@@ -17,18 +17,19 @@ import (
 //   - File handle is not empty and within limits
 //   - File handle is long enough for file ID extraction
 //   - Count matches actual data length
-//   - Count doesn't exceed server's maximum write size
 //   - Offset + Count doesn't overflow uint64
 //   - Stability level is valid
 //
-// Parameters:
-//   - req: The write request to validate
-//   - maxWriteSize: Maximum write size from store configuration
+// An over-large request (data exceeding the advertised wtmax) is NOT rejected
+// here. Per RFC 1813 Section 3.3.7 the server may write fewer bytes than
+// requested; the WRITE handler short-writes by capping the data to the value
+// advertised in FSINFO (GetFilesystemCapabilities().MaxWriteSize), mirroring
+// Linux nfsd which clamps to svc_max_payload rather than returning NFS3ERR_FBIG.
 //
 // Returns:
 //   - nil if valid
 //   - *validationError with NFS status if invalid
-func validateWriteRequest(req *WriteRequest, maxWriteSize uint32) *validationError {
+func validateWriteRequest(req *WriteRequest) *validationError {
 	// Validate file handle
 	if len(req.Handle) == 0 {
 		return &validationError{
@@ -59,16 +60,6 @@ func validateWriteRequest(req *WriteRequest, maxWriteSize uint32) *validationErr
 	if dataLen != req.Count {
 		logger.Warn("WRITE: count mismatch (proceeding with actual data length)", "count", req.Count, "data_len", dataLen)
 		// Not fatal - we'll use actual data length
-	}
-
-	// Validate count doesn't exceed maximum write size configured by store
-	// The store can configure this based on its constraints and the
-	// wtmax value advertised in FSINFO.
-	if dataLen > maxWriteSize {
-		return &validationError{
-			message:   fmt.Sprintf("write data too large: %d bytes (max %d)", dataLen, maxWriteSize),
-			nfsStatus: types.NFS3ErrFBig,
-		}
 	}
 
 	// Validate offset + count doesn't overflow

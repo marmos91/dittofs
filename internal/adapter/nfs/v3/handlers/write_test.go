@@ -566,3 +566,78 @@ func TestWrite_CountMismatch(t *testing.T) {
 		assert.EqualValues(t, 5, resp.Count)
 	}
 }
+
+// TestWrite_ShortWriteToAdvertisedWtmax verifies H10: a request larger than the
+// advertised wtmax (FSINFO MaxWriteSize) is short-written rather than rejected
+// with NFS3ERR_FBIG. Per RFC 1813 Section 3.3.7 the server may write fewer bytes
+// than requested; the reply Count must reflect the actual (capped) bytes written.
+func TestWrite_ShortWriteToAdvertisedWtmax(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	// Shrink the advertised write cap to a small value. The WRITE handler must
+	// derive its cap from this same value (not a hardcoded 1MB).
+	caps, err := fx.MetaStore.GetFilesystemCapabilities(fx.Context().Context, fx.RootHandle)
+	require.NoError(t, err)
+	const wtmax = uint32(16)
+	caps.MaxWriteSize = wtmax
+	fx.MetaStore.SetFilesystemCapabilities(*caps)
+
+	fileHandle := fx.CreateFile("short.txt", []byte{})
+
+	// Request 64 bytes — 4x the advertised cap.
+	data := make([]byte, 64)
+	for i := range data {
+		data[i] = byte('A' + (i % 26))
+	}
+	req := &handlers.WriteRequest{
+		Handle: fileHandle,
+		Offset: 0,
+		Count:  uint32(len(data)),
+		Stable: 2,
+		Data:   data,
+	}
+	resp, err := fx.Handler.Write(fx.ContextWithUID(0, 0), req)
+	require.NoError(t, err)
+
+	// Must NOT be NFS3ERR_FBIG — that is the wrong code for an over-large request.
+	assert.NotEqualValues(t, types.NFS3ErrFBig, resp.Status, "over-large WRITE must not return FBIG")
+	require.EqualValues(t, types.NFS3OK, resp.Status, "over-large WRITE should short-write, not error")
+
+	// Reply Count must equal the advertised cap (short write).
+	assert.EqualValues(t, wtmax, resp.Count, "Count must reflect the short-written byte total")
+
+	// Exactly wtmax bytes must be persisted.
+	readResp, err := fx.Handler.Read(fx.Context(), &handlers.ReadRequest{
+		Handle: fileHandle,
+		Offset: 0,
+		Count:  100,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, data[:wtmax], readResp.Data, "only the capped prefix should be written")
+}
+
+// TestWrite_WithinWtmaxNotTruncated verifies a request at exactly the advertised
+// wtmax is written in full (boundary case for H10).
+func TestWrite_WithinWtmaxNotTruncated(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	caps, err := fx.MetaStore.GetFilesystemCapabilities(fx.Context().Context, fx.RootHandle)
+	require.NoError(t, err)
+	const wtmax = uint32(32)
+	caps.MaxWriteSize = wtmax
+	fx.MetaStore.SetFilesystemCapabilities(*caps)
+
+	fileHandle := fx.CreateFile("exact.txt", []byte{})
+	data := make([]byte, wtmax)
+	req := &handlers.WriteRequest{
+		Handle: fileHandle,
+		Offset: 0,
+		Count:  wtmax,
+		Stable: 2,
+		Data:   data,
+	}
+	resp, err := fx.Handler.Write(fx.ContextWithUID(0, 0), req)
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp.Status)
+	assert.EqualValues(t, wtmax, resp.Count, "exact-wtmax WRITE must not be truncated")
+}

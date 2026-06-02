@@ -285,7 +285,7 @@ func (h *Handler) Mkdir(
 
 	// Call store.Create() with Type = FileTypeDirectory
 	// The store will complete the attributes with timestamps, size, etc.
-	newDirFile, err := metaSvc.CreateDirectory(authCtx, parentHandle, req.Name, dirAttr)
+	newDirFile, dirWcc, err := metaSvc.CreateDirectory(authCtx, parentHandle, req.Name, dirAttr)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -332,9 +332,8 @@ func (h *Handler) Mkdir(
 	// Generate file ID from handle for NFS attributes
 	nfsAttr := h.convertFileAttrToNFS(newHandle, &newDirFile.FileAttr)
 
-	// Get updated parent attributes for WCC data
-	updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
-	wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
+	// H9: use the parent attributes captured atomically with the create.
+	wccBefore, wccAfter = h.dirWccPair(ctx, metaSvc, parentHandle, dirWcc, wccBefore)
 
 	logger.InfoCtx(ctx.Context, "MKDIR successful", "name", req.Name, "handle", fmt.Sprintf("%x", newHandle), "mode", fmt.Sprintf("%o", newDirFile.Mode), "size", newDirFile.Size, "client", clientIP)
 

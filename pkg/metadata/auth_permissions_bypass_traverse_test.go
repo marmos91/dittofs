@@ -33,7 +33,7 @@ func TestLookup_BypassTraverseChecking_GrantsAccess(t *testing.T) {
 	// restrict the parent's DACL so callers without bypass cannot traverse.
 	rootCtx := fx.rootContext()
 	rootCtx.BypassTraverseChecking = true
-	_, err := fx.service.CreateDirectory(rootCtx, fx.rootHandle, "restricted", &metadata.FileAttr{
+	_, _, err := fx.service.CreateDirectory(rootCtx, fx.rootHandle, "restricted", &metadata.FileAttr{
 		Mode: 0700,
 		UID:  1000,
 		GID:  1000,
@@ -43,7 +43,7 @@ func TestLookup_BypassTraverseChecking_GrantsAccess(t *testing.T) {
 	subHandle, err := fx.store.GetChild(ctx, fx.rootHandle, "restricted")
 	require.NoError(t, err)
 
-	_, err = fx.service.CreateFile(rootCtx, subHandle, "child.txt", &metadata.FileAttr{
+	_, _, err = fx.service.CreateFile(rootCtx, subHandle, "child.txt", &metadata.FileAttr{
 		Mode: 0644,
 		UID:  1000,
 		GID:  1000,
@@ -62,7 +62,7 @@ func TestLookup_BypassTraverseChecking_GrantsAccess(t *testing.T) {
 			},
 		},
 	}
-	err = fx.service.SetFileAttributes(rootCtx, subHandle, &metadata.SetAttrs{
+	_, err = fx.service.SetFileAttributes(rootCtx, subHandle, &metadata.SetAttrs{
 		ACL: restrictedACL,
 	})
 	require.NoError(t, err)
@@ -100,7 +100,7 @@ func TestLookup_BypassTraverseChecking_NFSStrict(t *testing.T) {
 
 	rootCtx := fx.rootContext()
 	rootCtx.BypassTraverseChecking = true
-	_, err := fx.service.CreateDirectory(rootCtx, fx.rootHandle, "nfs-dir", &metadata.FileAttr{
+	_, _, err := fx.service.CreateDirectory(rootCtx, fx.rootHandle, "nfs-dir", &metadata.FileAttr{
 		Mode: 0700,
 		UID:  1000,
 		GID:  1000,
@@ -110,7 +110,7 @@ func TestLookup_BypassTraverseChecking_NFSStrict(t *testing.T) {
 	subHandle, err := fx.store.GetChild(ctx, fx.rootHandle, "nfs-dir")
 	require.NoError(t, err)
 
-	_, err = fx.service.CreateFile(rootCtx, subHandle, "file", &metadata.FileAttr{
+	_, _, err = fx.service.CreateFile(rootCtx, subHandle, "file", &metadata.FileAttr{
 		Mode: 0644,
 		UID:  1000,
 		GID:  1000,

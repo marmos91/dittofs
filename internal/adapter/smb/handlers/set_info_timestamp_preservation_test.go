@@ -61,7 +61,7 @@ func setupBasicInfoTimestampTest(t *testing.T) (
 	}
 
 	metaSvc := rt.GetMetadataService()
-	file, err := metaSvc.CreateFile(authCtx, rootHandle, "ts.txt", &metadata.FileAttr{
+	file, _, err := metaSvc.CreateFile(authCtx, rootHandle, "ts.txt", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
 	})

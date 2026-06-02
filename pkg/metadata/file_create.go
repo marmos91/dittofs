@@ -7,72 +7,79 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// CreateFile creates a new regular file in a directory.
-func (s *MetadataService) CreateFile(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, error) {
-	file, err := s.createEntry(ctx, parentHandle, name, attr, FileTypeRegular, "", 0, 0)
+// CreateFile creates a new regular file in a directory. The returned DirWcc
+// carries the parent's pre/post attributes captured atomically with the create
+// (H9).
+func (s *MetadataService) CreateFile(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, *DirWcc, error) {
+	file, wcc, err := s.createEntry(ctx, parentHandle, name, attr, FileTypeRegular, "", 0, 0)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeAddEntry, ctx)
-	return file, nil
+	return file, wcc, nil
 }
 
-// CreateSymlink creates a new symbolic link in a directory.
-func (s *MetadataService) CreateSymlink(ctx *AuthContext, parentHandle FileHandle, name string, target string, attr *FileAttr) (*File, error) {
+// CreateSymlink creates a new symbolic link in a directory. The returned DirWcc
+// carries the parent's pre/post attributes captured atomically (H9).
+func (s *MetadataService) CreateSymlink(ctx *AuthContext, parentHandle FileHandle, name string, target string, attr *FileAttr) (*File, *DirWcc, error) {
 	// Validate symlink target
 	if err := ValidateSymlinkTarget(target); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	file, err := s.createEntry(ctx, parentHandle, name, attr, FileTypeSymlink, target, 0, 0)
+	file, wcc, err := s.createEntry(ctx, parentHandle, name, attr, FileTypeSymlink, target, 0, 0)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeAddEntry, ctx)
-	return file, nil
+	return file, wcc, nil
 }
 
-// CreateSpecialFile creates a special file (device, socket, or FIFO).
-func (s *MetadataService) CreateSpecialFile(ctx *AuthContext, parentHandle FileHandle, name string, fileType FileType, attr *FileAttr, deviceMajor, deviceMinor uint32) (*File, error) {
+// CreateSpecialFile creates a special file (device, socket, or FIFO). The
+// returned DirWcc carries the parent's pre/post attributes captured
+// atomically (H9).
+func (s *MetadataService) CreateSpecialFile(ctx *AuthContext, parentHandle FileHandle, name string, fileType FileType, attr *FileAttr, deviceMajor, deviceMinor uint32) (*File, *DirWcc, error) {
 	// Validate special file type
 	if err := ValidateSpecialFileType(fileType); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Check if user is root (required for device files)
 	if fileType == FileTypeBlockDevice || fileType == FileTypeCharDevice {
 		if err := RequiresRoot(ctx); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
-	file, err := s.createEntry(ctx, parentHandle, name, attr, fileType, "", deviceMajor, deviceMinor)
+	file, wcc, err := s.createEntry(ctx, parentHandle, name, attr, fileType, "", deviceMajor, deviceMinor)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeAddEntry, ctx)
-	return file, nil
+	return file, wcc, nil
 }
 
-// CreateHardLink creates a hard link to an existing file.
-func (s *MetadataService) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name string, targetHandle FileHandle) error {
+// CreateHardLink creates a hard link to an existing file. The returned DirWcc
+// carries the link directory's pre/post attributes captured atomically with the
+// mutation (H9).
+func (s *MetadataService) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name string, targetHandle FileHandle) (*DirWcc, error) {
 	store, err := s.storeForHandle(dirHandle)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Validate name
 	if err := ValidateName(name); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Get directory entry
 	dir, err := store.GetFile(ctx.Context, dirHandle)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if dir.Type != FileTypeDirectory {
-		return &StoreError{
+		return nil, &StoreError{
 			Code:    ErrNotDirectory,
 			Message: "not a directory",
 		}
@@ -81,23 +88,23 @@ func (s *MetadataService) CreateHardLink(ctx *AuthContext, dirHandle FileHandle,
 	// Validate full path length (POSIX PATH_MAX compliance)
 	fullPath := buildPath(dir.Path, name)
 	if err := ValidatePath(fullPath); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Check write permission on directory
 	if err := s.checkWritePermission(ctx, dirHandle); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Get target file
 	target, err := store.GetFile(ctx.Context, targetHandle)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Cannot hard link directories
 	if target.Type == FileTypeDirectory {
-		return &StoreError{
+		return nil, &StoreError{
 			Code:    ErrIsDirectory,
 			Message: "cannot create hard link to directory",
 		}
@@ -106,18 +113,29 @@ func (s *MetadataService) CreateHardLink(ctx *AuthContext, dirHandle FileHandle,
 	// Check if name already exists
 	_, err = store.GetChild(ctx.Context, dirHandle, name)
 	if err == nil {
-		return &StoreError{
+		return nil, &StoreError{
 			Code:    ErrAlreadyExists,
 			Message: "file already exists",
 			Path:    name,
 		}
 	}
 	if !IsNotFoundError(err) {
-		return err
+		return nil, err
 	}
+
+	// wcc brackets the link directory attributes around the mutation, both
+	// captured inside the transaction below (H9).
+	wcc := &DirWcc{}
 
 	// Execute all write operations in a single transaction for better performance.
 	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Re-read the directory inside the transaction so the pre-op snapshot and
+		// the timestamp mutation derive from the same committed state.
+		if txDir, dErr := tx.GetFile(ctx.Context, dirHandle); dErr == nil && txDir != nil {
+			dir = txDir
+		}
+		wcc.Before = CopyFileAttr(&dir.FileAttr)
+
 		// Re-check existence inside the transaction to close the TOCTOU race
 		// between the outer GetChild and this SetChild (same pattern as
 		// createEntry).
@@ -149,14 +167,15 @@ func (s *MetadataService) CreateHardLink(ctx *AuthContext, dirHandle FileHandle,
 
 		dir.Mtime = now
 		dir.Ctime = now
+		wcc.After = CopyFileAttr(&dir.FileAttr)
 		return tx.PutFile(ctx.Context, dir)
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	s.notifyDirChange(shareNameForHandle(dirHandle), dirHandle, lock.DirChangeAddEntry, ctx)
-	return nil
+	return wcc, nil
 }
 
 // createEntry is the internal implementation for creating files, directories, symlinks, and special files.
@@ -168,26 +187,26 @@ func (s *MetadataService) createEntry(
 	fileType FileType,
 	linkTarget string,
 	deviceMajor, deviceMinor uint32,
-) (*File, error) {
+) (*File, *DirWcc, error) {
 	store, err := s.storeForHandle(parentHandle)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Validate name
 	if err := ValidateName(name); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Get parent entry
 	parent, err := store.GetFile(ctx.Context, parentHandle)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Verify parent is a directory
 	if parent.Type != FileTypeDirectory {
-		return nil, &StoreError{
+		return nil, nil, &StoreError{
 			Code:    ErrNotDirectory,
 			Message: "parent is not a directory",
 			Path:    parent.Path,
@@ -197,7 +216,7 @@ func (s *MetadataService) createEntry(
 	// Validate full path length (POSIX PATH_MAX compliance)
 	fullPath := buildPath(parent.Path, name)
 	if err := ValidatePath(fullPath); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Check create permission on parent. Use the precise NFSv4 mask for the
@@ -205,13 +224,13 @@ func (s *MetadataService) createEntry(
 	// denies only one variant does not also block the other — required by
 	// MS-FSA 2.1.5.1.1 and smbtorture smb2.create.mkdir-visible.
 	if err := s.CheckParentCreateAccess(ctx, parentHandle, fileType == FileTypeDirectory); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Check if name already exists
 	_, err = store.GetChild(ctx.Context, parentHandle, name)
 	if err == nil {
-		return nil, &StoreError{
+		return nil, nil, &StoreError{
 			Code:    ErrAlreadyExists,
 			Message: "file already exists",
 			Path:    name,
@@ -219,19 +238,19 @@ func (s *MetadataService) createEntry(
 	}
 	// If error is not ErrNotFound, it's a real error
 	if !IsNotFoundError(err) {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Generate new handle
 	newHandle, err := store.GenerateHandle(ctx.Context, parent.ShareName, fullPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Decode handle to get ID
 	_, id, err := DecodeFileHandle(newHandle)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Prepare attributes
@@ -318,9 +337,22 @@ func (s *MetadataService) createEntry(
 		newFile.ACL = inherited
 	}
 
+	// wcc brackets the parent directory attributes around the mutation, both
+	// captured inside the transaction below so they atomically describe the
+	// state immediately before and after the create (H9).
+	wcc := &DirWcc{}
+
 	// Execute all write operations in a single transaction for better performance.
 	// This reduces PostgreSQL round-trips from 6+ to 2 (BEGIN + COMMIT).
 	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Re-read the parent inside the transaction so the pre-op snapshot and
+		// the timestamp mutation derive from the same committed state (After is
+		// then guaranteed monotonic w.r.t. Before).
+		if txParent, pErr := tx.GetFile(ctx.Context, parentHandle); pErr == nil && txParent != nil {
+			parent = txParent
+		}
+		wcc.Before = CopyFileAttr(&parent.FileAttr)
+
 		// TOCTOU guard: re-check inside transaction.
 		if _, innerErr := tx.GetChild(ctx.Context, parentHandle, name); innerErr == nil {
 			return &StoreError{
@@ -367,12 +399,13 @@ func (s *MetadataService) createEntry(
 		parent.Mtime = now
 		parent.Ctime = now
 		parent.Atime = now
+		wcc.After = CopyFileAttr(&parent.FileAttr)
 		return tx.PutFile(ctx.Context, parent)
 	})
 
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return newFile, nil
+	return newFile, wcc, nil
 }

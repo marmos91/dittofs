@@ -558,7 +558,7 @@ doneLoop:
 	// LastAccessTime to the current system time, unless frozen via SET_INFO -1.
 	if !openFile.AtimeFrozen {
 		now := time.Now()
-		_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+		_, _ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
 	}
 
 	logger.Debug("QUERY_DIRECTORY successful",

@@ -286,7 +286,7 @@ func (h *Handler) Mknod(
 	}
 
 	// Create the special file
-	newFile, err := metaSvc.CreateSpecialFile(
+	newFile, dirWcc, err := metaSvc.CreateSpecialFile(
 		authCtx,
 		parentHandle,
 		req.Name,
@@ -332,9 +332,8 @@ func (h *Handler) Mknod(
 	// Generate file ID from handle for NFS attributes
 	nfsAttr := h.convertFileAttrToNFS(newHandle, &newFile.FileAttr)
 
-	// Get updated parent attributes for WCC data
-	updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
-	wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
+	// H9: use the parent attributes captured atomically with the create.
+	wccBefore, wccAfter = h.dirWccPair(ctx, metaSvc, parentHandle, dirWcc, wccBefore)
 
 	logger.InfoCtx(ctx.Context, "MKNOD successful", "name", req.Name, "type", specialFileTypeName(req.Type), "handle", fmt.Sprintf("%x", newHandle), "mode", fmt.Sprintf("%o", newFile.Mode), "major", req.Spec.SpecData1, "minor", req.Spec.SpecData2, "client", clientIP)
 

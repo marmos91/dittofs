@@ -61,7 +61,7 @@ func setupReopen2Env(t *testing.T) *reopen2Env {
 	metaSvc := rt.GetMetadataService()
 
 	// Create the file that the durable handle will reference.
-	_, err := metaSvc.CreateFile(rootAuth, rootHandle, "durable.txt", &metadata.FileAttr{
+	_, _, err := metaSvc.CreateFile(rootAuth, rootHandle, "durable.txt", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
 	})

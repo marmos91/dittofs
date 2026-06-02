@@ -109,7 +109,7 @@ func runTrashConformanceTests(t *testing.T, factory StoreFactory) {
 // trashCreateFile creates a regular file with the given mode under parent.
 func (fx *trashFixture) trashCreateFile(t *testing.T, parent metadata.FileHandle, name string, mode uint32) {
 	t.Helper()
-	if _, err := fx.svc.CreateFile(fx.ctx, parent, name, &metadata.FileAttr{Mode: mode}); err != nil {
+	if _, _, err := fx.svc.CreateFile(fx.ctx, parent, name, &metadata.FileAttr{Mode: mode}); err != nil {
 		t.Fatalf("CreateFile(%q) failed: %v", name, err)
 	}
 }
@@ -117,7 +117,7 @@ func (fx *trashFixture) trashCreateFile(t *testing.T, parent metadata.FileHandle
 // trashMkdir creates a directory under parent and returns its handle.
 func (fx *trashFixture) trashMkdir(t *testing.T, parent metadata.FileHandle, name string, mode uint32) metadata.FileHandle {
 	t.Helper()
-	dir, err := fx.svc.CreateDirectory(fx.ctx, parent, name, &metadata.FileAttr{Mode: mode})
+	dir, _, err := fx.svc.CreateDirectory(fx.ctx, parent, name, &metadata.FileAttr{Mode: mode})
 	if err != nil {
 		t.Fatalf("CreateDirectory(%q) failed: %v", name, err)
 	}
@@ -161,7 +161,7 @@ func testUnlinkRecyclesIntoBin(t *testing.T, factory StoreFactory) {
 	fx := newTrashService(t, factory, nil)
 	fx.trashCreateFile(t, fx.rootHandle, "doc.txt", 0644)
 
-	removed, err := fx.svc.RemoveFile(fx.ctx, fx.rootHandle, "doc.txt")
+	removed, _, err := fx.svc.RemoveFile(fx.ctx, fx.rootHandle, "doc.txt")
 	if err != nil {
 		t.Fatalf("RemoveFile(doc.txt) failed: %v", err)
 	}
@@ -195,14 +195,14 @@ func testDeleteInsideBinIsPermanent(t *testing.T, factory StoreFactory) {
 	fx := newTrashService(t, factory, nil)
 	fx.trashCreateFile(t, fx.rootHandle, "doc.txt", 0644)
 
-	if _, err := fx.svc.RemoveFile(fx.ctx, fx.rootHandle, "doc.txt"); err != nil {
+	if _, _, err := fx.svc.RemoveFile(fx.ctx, fx.rootHandle, "doc.txt"); err != nil {
 		t.Fatalf("RemoveFile(doc.txt) failed: %v", err)
 	}
 	bin := fx.trashBinHandle(t)
 
 	// Deleting the entry already inside #recycle must be permanent: a real
 	// PayloadID is returned (so blocks are reaped) and no nested bin is made.
-	removed, err := fx.svc.RemoveFile(fx.ctx, bin, "doc.txt")
+	removed, _, err := fx.svc.RemoveFile(fx.ctx, bin, "doc.txt")
 	if err != nil {
 		t.Fatalf("RemoveFile(#recycle/doc.txt) failed: %v", err)
 	}
@@ -226,7 +226,7 @@ func testExcludePatternBypassesBin(t *testing.T, factory StoreFactory) {
 	fx := newTrashService(t, factory, []string{"*.tmp"})
 	fx.trashCreateFile(t, fx.rootHandle, "scratch.tmp", 0644)
 
-	removed, err := fx.svc.RemoveFile(fx.ctx, fx.rootHandle, "scratch.tmp")
+	removed, _, err := fx.svc.RemoveFile(fx.ctx, fx.rootHandle, "scratch.tmp")
 	if err != nil {
 		t.Fatalf("RemoveFile(scratch.tmp) failed: %v", err)
 	}
@@ -249,7 +249,7 @@ func testCollisionGetsUniqueName(t *testing.T, factory StoreFactory) {
 	// the same name. The second must NOT overwrite the first.
 	for i := 0; i < 2; i++ {
 		fx.trashCreateFile(t, fx.rootHandle, "a.txt", 0644)
-		if _, err := fx.svc.RemoveFile(fx.ctx, fx.rootHandle, "a.txt"); err != nil {
+		if _, _, err := fx.svc.RemoveFile(fx.ctx, fx.rootHandle, "a.txt"); err != nil {
 			t.Fatalf("RemoveFile(a.txt) iteration %d failed: %v", i, err)
 		}
 	}
@@ -294,7 +294,7 @@ func testSubtreeRecycledAsOneEntry(t *testing.T, factory StoreFactory) {
 
 	// RemoveDirectory on a non-empty dir recycles the whole subtree (no
 	// ErrNotEmpty).
-	if err := fx.svc.RemoveDirectory(fx.ctx, fx.rootHandle, "project"); err != nil {
+	if _, err := fx.svc.RemoveDirectory(fx.ctx, fx.rootHandle, "project"); err != nil {
 		t.Fatalf("RemoveDirectory(project) failed: %v", err)
 	}
 	fx.trashLookupMissing(t, fx.rootHandle, "project")
@@ -329,7 +329,7 @@ func testOverwriteRecyclesVictim(t *testing.T, factory StoreFactory) {
 	fx.trashCreateFile(t, fx.rootHandle, "b", modeB)
 
 	// Rename "b" onto "a" — an overwrite that recycles the old "a".
-	if err := fx.svc.Move(fx.ctx, fx.rootHandle, "b", fx.rootHandle, "a"); err != nil {
+	if _, err := fx.svc.Move(fx.ctx, fx.rootHandle, "b", fx.rootHandle, "a"); err != nil {
 		t.Fatalf("Move(b -> a) failed: %v", err)
 	}
 

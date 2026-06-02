@@ -43,7 +43,7 @@ func setupTimestampTest(t *testing.T) (*Handler, *metadata.AuthContext, metadata
 	}
 
 	metaSvc := rt.GetMetadataService()
-	file, err := metaSvc.CreateFile(authCtx, rootHandle, "f.dat", &metadata.FileAttr{
+	file, _, err := metaSvc.CreateFile(authCtx, rootHandle, "f.dat", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
 	})
@@ -95,7 +95,7 @@ func TestSetFileInfo_FreezeThaw(t *testing.T) {
 
 	// Step 1: explicit set of CreationTime + Mtime to nttime.
 	pinned := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	if err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{
+	if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{
 		CreationTime: &pinned,
 		Mtime:        &pinned,
 	}); err != nil {
@@ -162,7 +162,7 @@ func TestSetFileInfo_FreezeThaw_AllFields(t *testing.T) {
 	metaSvc := h.Registry.GetMetadataService()
 
 	pinned := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-	if err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{
+	if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{
 		CreationTime: &pinned,
 		Atime:        &pinned,
 		Mtime:        &pinned,
@@ -318,7 +318,7 @@ func TestDelayedWrite_VsSetEOF(t *testing.T) {
 	}
 	preMtime := pre.Mtime
 	time.Sleep(20 * time.Millisecond)
-	if err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{Size: &zero}); err != nil {
+	if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{Size: &zero}); err != nil {
 		t.Fatalf("SetEOF #1: %v", err)
 	}
 	post, err := metaSvc.GetFile(authCtx.Context, fileHandle)
@@ -347,7 +347,7 @@ func TestDelayedWrite_VsSetEOF(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	one := uint64(1)
-	if err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{Size: &one}); err != nil {
+	if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{Size: &one}); err != nil {
 		t.Fatalf("SetEOF #2: %v", err)
 	}
 	postWrite2, err := metaSvc.GetFile(authCtx.Context, fileHandle)
@@ -362,7 +362,7 @@ func TestDelayedWrite_VsSetEOF(t *testing.T) {
 	// SetBasic with explicit future write_time. SetFileAttributes pins
 	// file.Mtime to the explicit value regardless of which handle issues it.
 	setTime := time.Now().UTC().Add(86400 * time.Second).Truncate(time.Microsecond)
-	if err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{Mtime: &setTime}); err != nil {
+	if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{Mtime: &setTime}); err != nil {
 		t.Fatalf("SetBasic h2: %v", err)
 	}
 
@@ -395,7 +395,7 @@ func TestSetFileInfo_DelayedWriteVsSetbasic(t *testing.T) {
 
 	// Simulate a WRITE: drive mtime to a known recent value.
 	writeTime := time.Now().Add(-time.Hour).UTC()
-	if err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{
+	if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{
 		Mtime: &writeTime,
 	}); err != nil {
 		t.Fatalf("seed Mtime: %v", err)
@@ -485,7 +485,7 @@ func TestDirFreezeTimestamps_ChildCreate_AllFrozen(t *testing.T) {
 	metaSvc := rt.GetMetadataService()
 
 	// Step 1: Create a subdirectory.
-	dir, err := metaSvc.CreateDirectory(authCtx, rootHandle, "testdir", &metadata.FileAttr{
+	dir, _, err := metaSvc.CreateDirectory(authCtx, rootHandle, "testdir", &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o755,
 	})
@@ -499,7 +499,7 @@ func TestDirFreezeTimestamps_ChildCreate_AllFrozen(t *testing.T) {
 
 	// Pin timestamps to a well-known value so assertions are deterministic.
 	pinned := time.Date(2026, 1, 2, 13, 40, 49, 0, time.UTC)
-	if err := metaSvc.SetFileAttributes(authCtx, dirHandle, &metadata.SetAttrs{
+	if _, err := metaSvc.SetFileAttributes(authCtx, dirHandle, &metadata.SetAttrs{
 		CreationTime: &pinned,
 		Mtime:        &pinned,
 		Atime:        &pinned,
@@ -547,7 +547,7 @@ func TestDirFreezeTimestamps_ChildCreate_AllFrozen(t *testing.T) {
 
 	// Step 4: Create a child file -- this updates the directory's
 	// Mtime/Ctime/Atime in the metadata store.
-	if _, createErr := metaSvc.CreateFile(authCtx, dirHandle, "child.dat", &metadata.FileAttr{
+	if _, _, createErr := metaSvc.CreateFile(authCtx, dirHandle, "child.dat", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
 	}); createErr != nil {
@@ -635,7 +635,7 @@ func TestDirFreezeTimestamps_ChildCreate_WalkPath(t *testing.T) {
 	metaSvc := rt.GetMetadataService()
 
 	// Create subdirectory.
-	dir, err := metaSvc.CreateDirectory(authCtx, rootHandle, "testdir", &metadata.FileAttr{
+	dir, _, err := metaSvc.CreateDirectory(authCtx, rootHandle, "testdir", &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o755,
 	})
@@ -649,7 +649,7 @@ func TestDirFreezeTimestamps_ChildCreate_WalkPath(t *testing.T) {
 
 	// Pin and freeze all timestamps.
 	pinned := time.Date(2026, 1, 2, 13, 40, 49, 0, time.UTC)
-	if err := metaSvc.SetFileAttributes(authCtx, dirHandle, &metadata.SetAttrs{
+	if _, err := metaSvc.SetFileAttributes(authCtx, dirHandle, &metadata.SetAttrs{
 		CreationTime: &pinned, Mtime: &pinned, Atime: &pinned, Ctime: &pinned,
 	}); err != nil {
 		t.Fatalf("pin: %v", err)
@@ -688,7 +688,7 @@ func TestDirFreezeTimestamps_ChildCreate_WalkPath(t *testing.T) {
 	}
 
 	// Create child and restore (using walked handle as the CREATE handler would).
-	if _, createErr := metaSvc.CreateFile(authCtx, walkedHandle, "child.dat", &metadata.FileAttr{
+	if _, _, createErr := metaSvc.CreateFile(authCtx, walkedHandle, "child.dat", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular, Mode: 0o644,
 	}); createErr != nil {
 		t.Fatalf("CreateFile: %v", createErr)
@@ -792,7 +792,7 @@ func TestDirFreezeTimestamps_ChildCreate_SingleField(t *testing.T) {
 			metaSvc := rt.GetMetadataService()
 
 			// Create subdirectory and pin all timestamps.
-			dir, err := metaSvc.CreateDirectory(authCtx, rootHandle, "testdir", &metadata.FileAttr{
+			dir, _, err := metaSvc.CreateDirectory(authCtx, rootHandle, "testdir", &metadata.FileAttr{
 				Type: metadata.FileTypeDirectory,
 				Mode: 0o755,
 			})
@@ -804,7 +804,7 @@ func TestDirFreezeTimestamps_ChildCreate_SingleField(t *testing.T) {
 				t.Fatalf("EncodeFileHandle: %v", err)
 			}
 			pinned := time.Date(2026, 1, 2, 13, 40, 49, 0, time.UTC)
-			if err := metaSvc.SetFileAttributes(authCtx, dirHandle, &metadata.SetAttrs{
+			if _, err := metaSvc.SetFileAttributes(authCtx, dirHandle, &metadata.SetAttrs{
 				CreationTime: &pinned,
 				Mtime:        &pinned,
 				Atime:        &pinned,
@@ -834,7 +834,7 @@ func TestDirFreezeTimestamps_ChildCreate_SingleField(t *testing.T) {
 			}
 
 			// Create child file (updates dir Mtime/Ctime/Atime).
-			if _, createErr := metaSvc.CreateFile(authCtx, dirHandle, "child.dat", &metadata.FileAttr{
+			if _, _, createErr := metaSvc.CreateFile(authCtx, dirHandle, "child.dat", &metadata.FileAttr{
 				Type: metadata.FileTypeRegular,
 				Mode: 0o644,
 			}); createErr != nil {
@@ -898,7 +898,7 @@ func TestUpdateBaseObjectTimestampsForADSWrite_PreservesBaseCtimeWhenFrozen(t *t
 	metaSvc := rt.GetMetadataService()
 
 	// Create the base directory (mirrors WPTS test: directory hosts the ADS).
-	baseDir, err := metaSvc.CreateDirectory(authCtx, rootHandle, "basedir", &metadata.FileAttr{
+	baseDir, _, err := metaSvc.CreateDirectory(authCtx, rootHandle, "basedir", &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o755,
 	})
@@ -912,7 +912,7 @@ func TestUpdateBaseObjectTimestampsForADSWrite_PreservesBaseCtimeWhenFrozen(t *t
 
 	// Create the ADS as a sibling entry under root (matches CREATE handler's
 	// stream-entry layout: stream `basedir:streamname` is a root child).
-	streamFile, err := metaSvc.CreateFile(authCtx, rootHandle, "basedir:streamname", &metadata.FileAttr{
+	streamFile, _, err := metaSvc.CreateFile(authCtx, rootHandle, "basedir:streamname", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
 	})
@@ -926,7 +926,7 @@ func TestUpdateBaseObjectTimestampsForADSWrite_PreservesBaseCtimeWhenFrozen(t *t
 
 	// Pin the base directory's Ctime to a known value.
 	pinned := time.Date(2026, 1, 2, 13, 40, 49, 0, time.UTC)
-	if err := metaSvc.SetFileAttributes(authCtx, baseHandle, &metadata.SetAttrs{
+	if _, err := metaSvc.SetFileAttributes(authCtx, baseHandle, &metadata.SetAttrs{
 		Ctime: &pinned, Mtime: &pinned, CreationTime: &pinned, Atime: &pinned,
 	}); err != nil {
 		t.Fatalf("pin base: %v", err)

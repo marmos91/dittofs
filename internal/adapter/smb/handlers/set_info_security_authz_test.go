@@ -56,7 +56,7 @@ func setupSecurityAuthzTest(t *testing.T) (*Handler, *OpenFile, *metadata.AuthCo
 	}
 
 	metaSvc := rt.GetMetadataService()
-	file, err := metaSvc.CreateFile(authCtx, rootHandle, "g.dat", &metadata.FileAttr{
+	file, _, err := metaSvc.CreateFile(authCtx, rootHandle, "g.dat", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
 	})

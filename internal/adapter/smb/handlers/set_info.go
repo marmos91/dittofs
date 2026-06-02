@@ -472,7 +472,7 @@ func (h *Handler) setFileInfoFromStore(
 			setAttrs.Mtime = &now
 		}
 
-		if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
+		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			openFile.mu.Unlock() // release before returning; refs #606.
 			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Path, "error", err)
 			return setInfoStatus(common.MapToSMB(err)), nil
@@ -533,7 +533,7 @@ func (h *Handler) setFileInfoFromStore(
 					basePropagate.Atime != nil || basePropagate.CreationTime != nil ||
 					basePropagate.Mode != nil || basePropagate.Hidden != nil {
 					if baseHandle, encErr := metadata.EncodeFileHandle(baseFile); encErr == nil {
-						_ = metaSvc.SetFileAttributes(authCtx, baseHandle, basePropagate)
+						_, _ = metaSvc.SetFileAttributes(authCtx, baseHandle, basePropagate)
 					}
 				}
 			}
@@ -729,7 +729,7 @@ func (h *Handler) setFileInfoFromStore(
 
 			// Perform the rename
 			metaSvc := h.Registry.GetMetadataService()
-			err = metaSvc.Move(authCtx, toDir, openFile.FileName, toDir, toName)
+			_, err = metaSvc.Move(authCtx, toDir, openFile.FileName, toDir, toName)
 			if err != nil {
 				logger.Debug("SET_INFO: stream rename failed",
 					"from", openFile.FileName,
@@ -1052,7 +1052,7 @@ func (h *Handler) setFileInfoFromStore(
 		// sibling entry. Remove the matched-case destination upfront so Move
 		// inserts the source under the client-requested casing.
 		if isOverwrite && dstMatchedName != "" && dstMatchedName != toName {
-			if _, rmErr := metaSvc.RemoveFile(authCtx, toDir, dstMatchedName); rmErr != nil {
+			if _, _, rmErr := metaSvc.RemoveFile(authCtx, toDir, dstMatchedName); rmErr != nil {
 				logger.Debug("SET_INFO: rename overwrite pre-remove failed",
 					"name", dstMatchedName, "error", rmErr)
 				return setInfoStatus(common.MapToSMB(rmErr)), nil
@@ -1060,7 +1060,7 @@ func (h *Handler) setFileInfoFromStore(
 		}
 
 		// Perform the rename/move
-		err = metaSvc.Move(authCtx, openFile.ParentHandle, openFile.FileName, toDir, toName)
+		_, err = metaSvc.Move(authCtx, openFile.ParentHandle, openFile.FileName, toDir, toName)
 		if err != nil {
 			logger.Debug("SET_INFO: rename failed",
 				"from", openFile.Path,
@@ -1299,7 +1299,7 @@ func (h *Handler) setFileInfoFromStore(
 			Size: &newSize,
 		}
 
-		err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
+		_, err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 		if err != nil {
 			logger.Debug("SET_INFO: failed to set EOF", "path", openFile.Path, "error", err)
 			return setInfoStatus(common.MapToSMB(err)), nil
@@ -1378,7 +1378,7 @@ func (h *Handler) setFileInfoFromStore(
 				metaSvc := h.Registry.GetMetadataService()
 				if curFile, getErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); getErr == nil &&
 					requested < curFile.Size {
-					if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
+					if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
 						Size: &requested,
 					}); err != nil {
 						logger.Debug("SET_INFO: allocation-driven truncate failed",
@@ -1462,7 +1462,7 @@ func (h *Handler) setFileInfoFromStore(
 		// layer resolves them so casing round-trips.
 		metaSvc := h.Registry.GetMetadataService()
 		setAttrs := &metadata.SetAttrs{EAMutations: eaMutationsFromEntries(entries)}
-		if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
+		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			logger.Debug("SET_INFO: FileFullEaInformation persist failed",
 				"path", openFile.Path, "error", err)
 			return setInfoStatus(common.MapToSMB(err)), nil
@@ -1519,7 +1519,7 @@ func (h *Handler) saveTimestamps(authCtx *metadata.AuthContext, handle metadata.
 	mtime := file.Mtime
 	ctime := file.Ctime
 	return func() {
-		_ = metaSvc.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{
+		_, _ = metaSvc.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{
 			Mtime: &mtime,
 			Ctime: &ctime,
 		})
@@ -1571,7 +1571,7 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 		"frozenAtime", frozenAtime)
 
 	metaSvc := h.Registry.GetMetadataService()
-	if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, restoreAttrs); err != nil {
+	if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, restoreAttrs); err != nil {
 		logger.Debug("restoreFrozenTimestamps: failed", "path", openFile.Path, "error", err)
 		return
 	}
@@ -1615,7 +1615,7 @@ func (h *Handler) restoreParentDirFrozenTimestamps(authCtx *metadata.AuthContext
 		}
 
 		metaSvc := h.Registry.GetMetadataService()
-		if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, restoreAttrs); err != nil {
+		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, restoreAttrs); err != nil {
 			logger.Debug("restoreParentDirFrozenTimestamps: failed",
 				"path", openFile.Path, "error", err)
 		} else {
@@ -1779,7 +1779,7 @@ func (h *Handler) setSecurityInfo(
 	}
 
 	metaSvc := h.Registry.GetMetadataService()
-	err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
+	_, err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 	if err != nil {
 		logger.Debug("SET_INFO: failed to set security info", "path", openFile.Path, "error", err)
 		return setInfoStatus(common.MapToSMB(err)), nil
@@ -2074,7 +2074,7 @@ func (h *Handler) handleFileLinkInformation(
 	metaSvc := h.Registry.GetMetadataService()
 	if linkInfo.ReplaceIfExists {
 		if existing, matchedName, lookupErr := metaSvc.LookupCaseInsensitive(authCtx, dstDir, linkName); lookupErr == nil && existing != nil {
-			if _, rmErr := metaSvc.RemoveFile(authCtx, dstDir, matchedName); rmErr != nil {
+			if _, _, rmErr := metaSvc.RemoveFile(authCtx, dstDir, matchedName); rmErr != nil {
 				logger.Debug("SET_INFO: hardlink replace failed to remove existing",
 					"name", matchedName, "error", rmErr)
 				return setInfoStatus(common.MapToSMB(rmErr)), nil
@@ -2088,7 +2088,7 @@ func (h *Handler) handleFileLinkInformation(
 	// matching parent dir lease (same-key holder does not get broken).
 	PropagateOpenFileParentLeaseKey(authCtx, openFile)
 
-	if err := metaSvc.CreateHardLink(authCtx, dstDir, linkName, openFile.MetadataHandle); err != nil {
+	if _, err := metaSvc.CreateHardLink(authCtx, dstDir, linkName, openFile.MetadataHandle); err != nil {
 		logger.Debug("SET_INFO: CreateHardLink failed",
 			"src", openFile.Path, "dst", newPath, "error", err)
 		return setInfoStatus(common.MapToSMB(err)), nil

@@ -63,7 +63,7 @@ func TestRuntimeTrash_RecycleListEmpty_EndToEnd(t *testing.T) {
 	// RemoveFile through the metadata service: the installed TrashPolicy must
 	// RECYCLE (not destroy). The returned File carries an empty PayloadID
 	// because the content was moved, not deleted.
-	removed, err := svc.RemoveFile(actx, root, fileName)
+	removed, _, err := svc.RemoveFile(actx, root, fileName)
 	if err != nil {
 		t.Fatalf("RemoveFile (recycle): %v", err)
 	}

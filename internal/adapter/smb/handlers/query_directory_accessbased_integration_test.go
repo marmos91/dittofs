@@ -201,7 +201,7 @@ func TestSetSecurityInfoThenQueryDirectory_AccessBasedHidesPartialMask(t *testin
 			// subdirectory, `testfile` is the regular file inside it whose
 			// SD we will set. Enumeration is then on the BASEDIR.
 			metaSvc := rt.GetMetadataService()
-			baseDir, err := metaSvc.CreateDirectory(authCtx, rootHandle, "smb2-testsd",
+			baseDir, _, err := metaSvc.CreateDirectory(authCtx, rootHandle, "smb2-testsd",
 				&metadata.FileAttr{
 					Mode: 0o755,
 				})
@@ -213,7 +213,7 @@ func TestSetSecurityInfoThenQueryDirectory_AccessBasedHidesPartialMask(t *testin
 				t.Fatalf("EncodeFileHandle (BASEDIR): %v", err)
 			}
 
-			child, err := metaSvc.CreateFile(authCtx, baseDirHandle, "testfile",
+			child, _, err := metaSvc.CreateFile(authCtx, baseDirHandle, "testfile",
 				&metadata.FileAttr{
 					Type: metadata.FileTypeRegular,
 					Mode: 0o644,

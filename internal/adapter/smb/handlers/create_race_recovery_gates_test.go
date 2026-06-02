@@ -36,7 +36,7 @@ func raceParentDir(
 	name string,
 ) (metadata.FileHandle, *metadata.File) {
 	t.Helper()
-	dir, err := metaSvc.CreateDirectory(rootAuth, rootHandle, name,
+	dir, _, err := metaSvc.CreateDirectory(rootAuth, rootHandle, name,
 		&metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o777,
@@ -128,7 +128,7 @@ func TestCreate_RaceRecovery_SupersedeDeniedByWinnerDACL(t *testing.T) {
 			},
 		},
 	}
-	winner, err := metaSvc.CreateFile(rootAuth, parentHandle, "winner.txt",
+	winner, _, err := metaSvc.CreateFile(rootAuth, parentHandle, "winner.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o700,
@@ -146,7 +146,7 @@ func TestCreate_RaceRecovery_SupersedeDeniedByWinnerDACL(t *testing.T) {
 	// CreateFile forces Size=0 (ApplyCreateDefaults); set a non-zero size as
 	// root so a successful supersede would be observable as truncation to zero.
 	winnerSize := uint64(4096)
-	if err := metaSvc.SetFileAttributes(rootAuth, winnerHandle, &metadata.SetAttrs{Size: &winnerSize}); err != nil {
+	if _, err := metaSvc.SetFileAttributes(rootAuth, winnerHandle, &metadata.SetAttrs{Size: &winnerSize}); err != nil {
 		t.Fatalf("seed winner size: %v", err)
 	}
 
@@ -199,7 +199,7 @@ func TestCreate_RaceRecovery_OverwriteIfDeniedByShareMode(t *testing.T) {
 
 	// Pre-seed a permissive winner (nil DACL → no DACL denial) so the rejection
 	// is unambiguously from the share-mode gate, not the DACL gate.
-	winner, err := metaSvc.CreateFile(rootAuth, parentHandle, "winner.txt",
+	winner, _, err := metaSvc.CreateFile(rootAuth, parentHandle, "winner.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o777,
@@ -265,7 +265,7 @@ func TestCreate_RaceRecovery_OpenIfMkdirDupStillSucceeds(t *testing.T) {
 	parentHandle, _ := raceParentDir(t, metaSvc, rootAuth, rootHandle, "race-mkdir")
 
 	// Pre-seed the winning directory (the "other" parallel OPEN_IF that won).
-	if _, err := metaSvc.CreateDirectory(rootAuth, parentHandle, "dup-dir",
+	if _, _, err := metaSvc.CreateDirectory(rootAuth, parentHandle, "dup-dir",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o777,
@@ -331,7 +331,7 @@ func TestCreate_RaceRecovery_OpenIfNonRootInheritedACLSucceeds(t *testing.T) {
 			},
 		},
 	}
-	parentDir, err := metaSvc.CreateDirectory(rootAuth, rootHandle, "race-inherit",
+	parentDir, _, err := metaSvc.CreateDirectory(rootAuth, rootHandle, "race-inherit",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o777,
@@ -362,7 +362,7 @@ func TestCreate_RaceRecovery_OpenIfNonRootInheritedACLSucceeds(t *testing.T) {
 
 	// Pre-seed the winning directory as the requester so it inherits the
 	// parent's ACL granting the requester full access.
-	if _, err := metaSvc.CreateDirectory(requesterAuth, parentHandle, "dup-dir",
+	if _, _, err := metaSvc.CreateDirectory(requesterAuth, parentHandle, "dup-dir",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o755,

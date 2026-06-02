@@ -24,17 +24,18 @@ func TestRemoveFile_HardLinkSurvives(t *testing.T) {
 	fx := newTestFixture(t)
 	ctx := context.Background()
 
-	_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "a.txt", &metadata.FileAttr{Mode: 0644})
+	_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "a.txt", &metadata.FileAttr{Mode: 0644})
 	require.NoError(t, err)
 
 	target, err := fx.store.GetChild(ctx, fx.rootHandle, "a.txt")
 	require.NoError(t, err)
 
 	// Add a second link → nlink=2.
-	require.NoError(t, fx.service.CreateHardLink(fx.rootContext(), fx.rootHandle, "b.txt", target))
+	_, hlErr := fx.service.CreateHardLink(fx.rootContext(), fx.rootHandle, "b.txt", target)
+	require.NoError(t, hlErr)
 
 	// Removing one link drops nlink to 1, content stays referenced.
-	removed, err := fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "a.txt")
+	removed, _, err := fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "a.txt")
 	require.NoError(t, err)
 	assert.Equal(t, uint32(1), removed.Nlink, "one surviving link expected")
 	assert.Empty(t, removed.PayloadID, "content must not be eligible for deletion while a link remains")
@@ -62,25 +63,26 @@ func TestRemoveFile_ConcurrentCreateHardLink(t *testing.T) {
 		fx := newTestFixture(t)
 		ctx := context.Background()
 
-		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "orig.txt", &metadata.FileAttr{Mode: 0644})
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "orig.txt", &metadata.FileAttr{Mode: 0644})
 		require.NoError(t, err)
 		target, err := fx.store.GetChild(ctx, fx.rootHandle, "orig.txt")
 		require.NoError(t, err)
 
 		// Pre-create a second link so the file starts at nlink=2.
-		require.NoError(t, fx.service.CreateHardLink(fx.rootContext(), fx.rootHandle, "link1.txt", target))
+		_, hlErr := fx.service.CreateHardLink(fx.rootContext(), fx.rootHandle, "link1.txt", target)
+		require.NoError(t, hlErr)
 
 		var wg sync.WaitGroup
 		wg.Add(2)
 		// Goroutine A: add a third link concurrently.
 		go func() {
 			defer wg.Done()
-			_ = fx.service.CreateHardLink(fx.rootContext(), fx.rootHandle, "link2.txt", target)
+			_, _ = fx.service.CreateHardLink(fx.rootContext(), fx.rootHandle, "link2.txt", target)
 		}()
 		// Goroutine B: remove the original link concurrently.
 		go func() {
 			defer wg.Done()
-			_, _ = fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "orig.txt")
+			_, _, _ = fx.service.RemoveFile(fx.rootContext(), fx.rootHandle, "orig.txt")
 		}()
 		wg.Wait()
 
@@ -174,9 +176,9 @@ func TestMove_RollsBackOnPutFileFailure(t *testing.T) {
 		ClientAddr: "127.0.0.1",
 	}
 
-	_, err = svc.CreateFile(rootCtx, rootHandle, "myfile.txt", &metadata.FileAttr{Mode: 0644})
+	_, _, err = svc.CreateFile(rootCtx, rootHandle, "myfile.txt", &metadata.FileAttr{Mode: 0644})
 	require.NoError(t, err)
-	_, err = svc.CreateDirectory(rootCtx, rootHandle, "dest", &metadata.FileAttr{Mode: 0755})
+	_, _, err = svc.CreateDirectory(rootCtx, rootHandle, "dest", &metadata.FileAttr{Mode: 0755})
 	require.NoError(t, err)
 	destHandle, err := store.GetChild(ctx, rootHandle, "dest")
 	require.NoError(t, err)
@@ -185,7 +187,7 @@ func TestMove_RollsBackOnPutFileFailure(t *testing.T) {
 	require.NoError(t, err)
 
 	// The move must fail with the injected error.
-	err = svc.Move(rootCtx, rootHandle, "myfile.txt", destHandle, "moved.txt")
+	_, err = svc.Move(rootCtx, rootHandle, "myfile.txt", destHandle, "moved.txt")
 	require.Error(t, err, "Move must surface the injected PutFile failure, not swallow it")
 	require.ErrorIs(t, err, errPutFileInjected)
 

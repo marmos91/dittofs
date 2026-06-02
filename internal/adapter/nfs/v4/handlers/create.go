@@ -216,7 +216,7 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 		if setAttrs.GID != nil {
 			dirAttr.GID = *setAttrs.GID
 		}
-		newFile, createErr = metaSvc.CreateDirectory(authCtx, parentHandle, objName, dirAttr)
+		newFile, _, createErr = metaSvc.CreateDirectory(authCtx, parentHandle, objName, dirAttr)
 
 	case types.NF4LNK:
 		symlinkAttr := &metadata.FileAttr{
@@ -234,7 +234,7 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 		if setAttrs.GID != nil {
 			symlinkAttr.GID = *setAttrs.GID
 		}
-		newFile, createErr = metaSvc.CreateSymlink(authCtx, parentHandle, objName, linkTarget, symlinkAttr)
+		newFile, _, createErr = metaSvc.CreateSymlink(authCtx, parentHandle, objName, linkTarget, symlinkAttr)
 
 	case types.NF4BLK:
 		blkAttr := &metadata.FileAttr{
@@ -252,7 +252,7 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 		if setAttrs.GID != nil {
 			blkAttr.GID = *setAttrs.GID
 		}
-		newFile, createErr = metaSvc.CreateSpecialFile(authCtx, parentHandle, objName,
+		newFile, _, createErr = metaSvc.CreateSpecialFile(authCtx, parentHandle, objName,
 			metadata.FileTypeBlockDevice, blkAttr, specMajor, specMinor)
 
 	case types.NF4CHR:
@@ -271,7 +271,7 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 		if setAttrs.GID != nil {
 			chrAttr.GID = *setAttrs.GID
 		}
-		newFile, createErr = metaSvc.CreateSpecialFile(authCtx, parentHandle, objName,
+		newFile, _, createErr = metaSvc.CreateSpecialFile(authCtx, parentHandle, objName,
 			metadata.FileTypeCharDevice, chrAttr, specMajor, specMinor)
 
 	case types.NF4SOCK:
@@ -290,7 +290,7 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 		if setAttrs.GID != nil {
 			sockAttr.GID = *setAttrs.GID
 		}
-		newFile, createErr = metaSvc.CreateSpecialFile(authCtx, parentHandle, objName,
+		newFile, _, createErr = metaSvc.CreateSpecialFile(authCtx, parentHandle, objName,
 			metadata.FileTypeSocket, sockAttr, 0, 0)
 
 	case types.NF4FIFO:
@@ -309,7 +309,7 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 		if setAttrs.GID != nil {
 			fifoAttr.GID = *setAttrs.GID
 		}
-		newFile, createErr = metaSvc.CreateSpecialFile(authCtx, parentHandle, objName,
+		newFile, _, createErr = metaSvc.CreateSpecialFile(authCtx, parentHandle, objName,
 			metadata.FileTypeFIFO, fifoAttr, 0, 0)
 	}
 

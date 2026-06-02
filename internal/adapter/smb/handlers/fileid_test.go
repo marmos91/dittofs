@@ -28,7 +28,7 @@ func TestFileID_StableAcrossViews(t *testing.T) {
 	h, authCtx, rootHandle := setupFileIDTest(t)
 	metaSvc := h.Registry.GetMetadataService()
 
-	file, err := metaSvc.CreateFile(authCtx, rootHandle, "foo", &metadata.FileAttr{
+	file, _, err := metaSvc.CreateFile(authCtx, rootHandle, "foo", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
 	})
@@ -115,7 +115,7 @@ func TestFileID_StreamMatchesBase(t *testing.T) {
 	h, authCtx, rootHandle := setupFileIDTest(t)
 	metaSvc := h.Registry.GetMetadataService()
 
-	base, err := metaSvc.CreateFile(authCtx, rootHandle, "foo", &metadata.FileAttr{
+	base, _, err := metaSvc.CreateFile(authCtx, rootHandle, "foo", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
 	})
@@ -126,7 +126,7 @@ func TestFileID_StreamMatchesBase(t *testing.T) {
 
 	// ADS streams are stored as siblings in the parent directory under names
 	// containing a colon (see internal/adapter/smb/handlers/close.go).
-	stream, err := metaSvc.CreateFile(authCtx, rootHandle, "foo:bar", &metadata.FileAttr{
+	stream, _, err := metaSvc.CreateFile(authCtx, rootHandle, "foo:bar", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
 	})
@@ -189,12 +189,12 @@ func TestFileID_UniqueAcrossSiblings(t *testing.T) {
 				err error
 			)
 			if kind == metadata.FileTypeDirectory {
-				f, err = metaSvc.CreateDirectory(authCtx, rootHandle, name, &metadata.FileAttr{
+				f, _, err = metaSvc.CreateDirectory(authCtx, rootHandle, name, &metadata.FileAttr{
 					Type: metadata.FileTypeDirectory,
 					Mode: 0o755,
 				})
 			} else {
-				f, err = metaSvc.CreateFile(authCtx, rootHandle, name, &metadata.FileAttr{
+				f, _, err = metaSvc.CreateFile(authCtx, rootHandle, name, &metadata.FileAttr{
 					Type: metadata.FileTypeRegular,
 					Mode: 0o644,
 				})

@@ -762,7 +762,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 				}
 				if apply {
 					metaSvc := h.Registry.GetMetadataService()
-					if setErr := metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs); setErr != nil {
+					if _, setErr := metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs); setErr != nil {
 						logger.Debug("CREATE: failed to apply SD_BUFFER", "path", baseName, "error", setErr)
 					} else {
 						if updated, getErr := metaSvc.GetFile(authCtx.Context, fileHandle); getErr == nil {
@@ -801,7 +801,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			}
 			if muts := eaMutationsFromEntries(entries); len(muts) > 0 {
 				metaSvc := h.Registry.GetMetadataService()
-				if setErr := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{EAMutations: muts}); setErr != nil {
+				if _, setErr := metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{EAMutations: muts}); setErr != nil {
 					logger.Debug("CREATE: failed to apply EA_BUFFER", "path", baseName, "error", setErr)
 				} else if updated, getErr := metaSvc.GetFile(authCtx.Context, fileHandle); getErr == nil {
 					file = updated
@@ -961,7 +961,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 					//   - FileOpened: nothing destructive happened, fail safely.
 					switch createAction {
 					case types.FileCreated:
-						if _, delErr := metaSvc.RemoveFile(authCtx, parentHandle, baseName); delErr != nil {
+						if _, _, delErr := metaSvc.RemoveFile(authCtx, parentHandle, baseName); delErr != nil {
 							logger.Warn("CREATE: failed to roll back orphaned file after lease rejection",
 								"name", baseName, "error", delErr)
 						}

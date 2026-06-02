@@ -75,7 +75,7 @@ func testTruncateDownPrunesBlockRefs(t *testing.T, factory StoreFactory) {
 		Identity: &metadata.Identity{UID: &rootUID, GID: &rootUID},
 	}
 	newSize := mib
-	if err := svc.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{Size: &newSize}); err != nil {
+	if _, err := svc.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{Size: &newSize}); err != nil {
 		t.Fatalf("SetFileAttributes(size=1MiB) failed: %v", err)
 	}
 

@@ -73,7 +73,7 @@ func (f *quotaFixture) createFileWithSize(name string, size uint64) metadata.Fil
 	f.t.Helper()
 	ctx := f.rootContext()
 
-	file, err := f.service.CreateFile(ctx, f.rootHandle, name, &metadata.FileAttr{
+	file, _, err := f.service.CreateFile(ctx, f.rootHandle, name, &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
 		UID:  0,

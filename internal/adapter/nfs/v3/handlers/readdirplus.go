@@ -11,6 +11,40 @@ import (
 )
 
 // ============================================================================
+// XDR size accounting (RFC 1813 Section 3.3.17 maxcount / dircount budgets)
+// ============================================================================
+
+// readDirPlusFattr3Size is the fixed XDR-encoded size of an fattr3 structure
+// (RFC 1813 Section 2.3.1): 5×uint32 + 2×uint64 + specdata3(2×uint32) +
+// 2×uint64 + 3×nfstime3(2×uint32) = 84 bytes.
+const readDirPlusFattr3Size = 84
+
+// xdrOpaqueLen returns the XDR-encoded length of an opaque/string payload of
+// n bytes: a 4-byte length prefix followed by the data padded up to a 4-byte
+// boundary.
+func xdrOpaqueLen(n int) uint32 {
+	return uint32(4 + (n+3)&^3)
+}
+
+// readDirPlusEntryDirSize returns the "directory information" cost of an entry
+// (the fields a plain READDIR3 entry would carry): fileid(8) + name(opaque) +
+// cookie(8), plus the leading value_follows flag(4). This is what dircount
+// bounds.
+func readDirPlusEntryDirSize(name string) uint32 {
+	return 4 + 8 + xdrOpaqueLen(len(name)) + 8
+}
+
+// readDirPlusEntryExtraSize returns the per-entry cost beyond the directory
+// information: the optional post-op attributes (present flag + fattr3) and the
+// optional file handle (present flag + opaque). This counts only against
+// maxcount.
+func readDirPlusEntryExtraSize(handleLen int) uint32 {
+	// name_attributes: present flag(4) + fattr3(84) — we always include attrs.
+	// name_handle: present flag(4) + opaque handle.
+	return 4 + readDirPlusFattr3Size + 4 + xdrOpaqueLen(handleLen)
+}
+
+// ============================================================================
 // Request and Response Structures
 // ============================================================================
 
@@ -301,6 +335,25 @@ func (h *Handler) ReadDirPlus(
 	// Build entries list - look up each entry to get handle and full attributes
 	entries := make([]*DirPlusEntry, 0, len(page.Entries))
 
+	// ========================================================================
+	// Byte-budget accounting (RFC 1813 Section 3.3.17)
+	// ========================================================================
+	// maxcount bounds the total READDIRPLUS3resok reply size; dircount bounds
+	// the "directory information" portion (the fields READDIR would have
+	// returned: fileid + name + cookie), excluding the per-entry attributes and
+	// file handle. We track both as we append entries and stop before either
+	// budget is exceeded, setting eof=false so the client resumes from the last
+	// emitted cookie. Without this, a large directory produces an oversized
+	// reply the client truncates or rejects.
+	//
+	// Fixed reply overhead consumed before any entry:
+	//   status(4) + post-op dir attr (present flag 4 + fattr3 84) +
+	//   cookieverf(8) + trailing value_follows=FALSE(4) + eof(4).
+	const replyFixedOverhead = 4 + (4 + readDirPlusFattr3Size) + 8 + 4 + 4
+	totalBudget := uint32(replyFixedOverhead)
+	dirBudget := uint32(0)
+	budgetExhausted := false
+
 	for i, entry := range page.Entries {
 		// Check context periodically (every 50 entries) for large directories
 		if i%50 == 0 {
@@ -350,6 +403,27 @@ func (h *Handler) ReadDirPlus(
 		// Convert attributes to NFS format
 		nfsEntryAttr := h.convertFileAttrToNFS(entryHandle, entryAttr)
 
+		// Enforce the maxcount/dircount budgets before committing this entry.
+		// entryDirSize is the directory-info cost (counts against dircount and
+		// maxcount); entryExtraSize is the per-entry attributes + handle cost
+		// (counts only against maxcount).
+		entryDirSize := readDirPlusEntryDirSize(entry.Name)
+		entryTotalSize := entryDirSize + readDirPlusEntryExtraSize(len(entryHandle))
+
+		// Always emit at least one entry to guarantee forward progress, even if
+		// a single entry exceeds the client's budget (the client will then have
+		// to raise maxcount, but never deadlocks).
+		if len(entries) > 0 {
+			if totalBudget+entryTotalSize > req.MaxCount ||
+				dirBudget+entryDirSize > req.DirCount {
+				budgetExhausted = true
+				break
+			}
+		}
+
+		totalBudget += entryTotalSize
+		dirBudget += entryDirSize
+
 		// Use cookie from entry (set by MetadataService.ReadDirectory)
 		plusEntry := &DirPlusEntry{
 			Fileid:     entry.ID,
@@ -368,8 +442,11 @@ func (h *Handler) ReadDirPlus(
 	// Step 7: Build success response
 	// ========================================================================
 
-	// EOF is true when there are no more pages
-	eof := !page.HasMore
+	// EOF is true only when there are no more pages AND we did not stop early
+	// due to the maxcount/dircount budget. If the budget was exhausted (or we
+	// emitted fewer entries than the page contained), eof MUST be false so the
+	// client resumes from the last emitted cookie (RFC 1813 Section 3.3.17).
+	eof := !page.HasMore && !budgetExhausted && len(entries) == len(page.Entries)
 
 	logger.InfoCtx(ctx.Context, "READDIRPLUS successful", "handle", fmt.Sprintf("%x", req.DirHandle), "entries", len(entries), "eof", eof, "client", clientIP)
 
