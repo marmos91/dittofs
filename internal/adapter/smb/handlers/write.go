@@ -244,6 +244,17 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		}
 	}
 
+	// Per MS-SMB2 3.3.5.13: the server MUST fail a WRITE whose payload exceeds
+	// the MaxWriteSize advertised in NEGOTIATE with STATUS_INVALID_PARAMETER —
+	// the symmetric contract to the READ MaxReadSize clamp above. MaxWriteSize is
+	// non-zero after NEGOTIATE (default 1 MB, handler.go); guard against a zero
+	// value so the clamp never rejects every write.
+	if h.MaxWriteSize > 0 && uint32(len(req.Data)) > h.MaxWriteSize {
+		logger.Debug("WRITE: length exceeds negotiated MaxWriteSize",
+			"path", openFile.Path, "length", len(req.Data), "maxWriteSize", h.MaxWriteSize)
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+	}
+
 	// ========================================================================
 	// Step 4: Get session and tree connection
 	// ========================================================================

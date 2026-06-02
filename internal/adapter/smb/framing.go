@@ -397,6 +397,12 @@ func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message 
 		return nil
 	}
 
+	// Unknown SessionID: skip verification here and let prepareDispatch reject
+	// the command with STATUS_USER_SESSION_DELETED. Safe ONLY because
+	// prepareDispatch independently rejects every NeedsSession command on an
+	// unknown SessionID before the handler runs (M-A2). INVARIANT: any new
+	// command touching session-bound state MUST set NeedsSession=true so this
+	// skip cannot become a bypass.
 	sess, ok := sv.handler.GetSession(hdr.SessionID)
 	if !ok {
 		return nil
