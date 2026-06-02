@@ -11,9 +11,9 @@ Every remaining entry is justified and falls into exactly one bucket. No
 UNJUSTIFIED entries remain — the #673 acceptance criterion is met.
 
 - **Upstream Samba known-fail** (fails on the reference Samba server too; cited) — **2**: `charset.Testing`, `session.reauth5`
-- **Deferred past v1.0 with a tracking issue** (justified by deferral) — **8**: the 6 `dhv2-pending2*-sane` replay rows (#749, parked-CREATE finalize-on-holder-release) and the 2 `dhv2-pending1n-vs-violation-*-sane` replay rows (#749, deferred-open dependency)
+- **Deferred past v1.0 with a tracking issue** (justified by deferral) — **6**: the 6 `dhv2-pending2*-sane` replay rows (#749, parked-CREATE finalize-on-holder-release)
 - **Permanently Unimplementable / harness-only** (see [appendix](#permanently-unimplementable-out-of-scope)) — **47**
-- **Total (non-Kerberos): 57**
+- **Total (non-Kerberos): 55**
 
 (Rendered as a list, not a markdown table, so `parse-results.sh` — which ingests every line beginning with `|` — does not mistake these tally lines for known-failure rows.)
 
@@ -24,7 +24,7 @@ Bucket movements in this pass (all CI-safe — `parse-results.sh` keys off the
 test name, which is preserved in its new location):
 
 - `smb2.dirlease.oplocks` — moved Expected→appendix (smbtorture 4.22.6 **client** SIGSEGV, same class as `scan.scan`; not a DittoFS gap).
-- The 20 replay `*-windows` rows — moved Expected→appendix (architecturally Samba-incompatible; Samba's own source does not reproduce the Windows variants — see appendix bucket 10). The 14 remaining `*-sane` rows stay deferred under #749.
+- The 20 replay `*-windows` rows — moved Expected→appendix (architecturally Samba-incompatible; Samba's own source does not reproduce the Windows variants — see appendix bucket 10). The `*-sane` rows stay deferred under #749 (12 remaining after the 2026-06-02 #749 deferred-open flip, below).
 - `smb2.timestamp_resolution.resolution1` — removed its stale duplicate Expected row; the appendix already carries it (upstream-skipped, `selftest/skip:69-70`).
 
 ## Policy (v1.0 conformance gate, #673)
@@ -236,14 +236,15 @@ requested CreateGuid and echoed the requested oplock level on replay, flipping
 survival (MS-SMB2 §3.3.7.1): closing a channel of a multichannel session now
 removes only that channel and the session — with its parked CREATE and durable
 reservation — survives until its last channel closes, so the replayed CREATE on
-a surviving channel still finds the reservation. The remaining rows are:
-(a) the 6 `pending2*-sane` cases, which additionally disconnect the parked
-CREATE's *originating* channel and then race to the replay before the parked
-CREATE's break-wait timer fires — these need the parked CREATE to finalize and
-clear its reservation the moment the holder *releases* its oplock/lease, not
-only on timeout; and (b) the deferred-open `pending1n-vs-violation-*-sane` pair
-(parked share-violation CREATE must wait for the holder to release; plus a
-lease-break-ack state-match bug). All tracked under **#749**.
+a surviving channel still finds the reservation. The deferred-open
+`pending1n-vs-violation-*-sane` pair then flipped via a wait-for-conflict-clear
+retry (the parked share-violation CREATE waits for the holder to CLOSE/ACK
+instead of force-completing the lease, which also fixed the lease-break-ack
+STATUS_UNSUCCESSFUL bug). The remaining rows are the 6 `pending2*-sane` cases,
+which additionally disconnect the parked CREATE's *originating* channel and then
+race to the replay before the parked CREATE's break-wait timer fires — these
+need the parked CREATE to finalize and clear its reservation the moment the
+holder *releases* its oplock/lease, not only on timeout. All tracked under **#749**.
 
 **Bucketing note (#673):** only the `*-sane` variants are listed below as
 deferred. The 20 `*-windows` variants were moved
@@ -256,8 +257,6 @@ DittoFS to hit. The `*-sane` rows remain genuinely fixable under #749.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.replay.dhv2-pending1n-vs-violation-lease-close-sane | Replay | Deferred: replay-vs-pending-break (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending1n-vs-violation-lease-ack-sane | Replay | Deferred: replay-vs-pending-break (sane variant) state machine not yet implemented | #749 |
 | smb2.replay.dhv2-pending2n-vs-oplock-sane | Replay | Deferred: parked CREATE must finalize + clear its replay reservation when the holder *releases* the conflicting oplock/lease, not only on the break-wait timeout — its originating channel is dropped so the test races to the replay before the timer fires (the surviving-channel half is done; needs break-wake finalization) | #749 |
 | smb2.replay.dhv2-pending2n-vs-lease-sane | Replay | Deferred: parked CREATE must finalize on holder release, not break-wait timeout (originating channel dropped); see pending2n-vs-oplock-sane | #749 |
 | smb2.replay.dhv2-pending2l-vs-oplock-sane | Replay | Deferred: parked CREATE must finalize on holder release, not break-wait timeout (originating channel dropped); see pending2n-vs-oplock-sane | #749 |
@@ -363,8 +362,25 @@ parked CREATE's *originating* channel and then race to the replay before the
 5 s break-wait timer fires (replay.c:3119 returns FILE_NOT_AVAILABLE, should be
 OK). They need the parked CREATE to finalize and clear its reservation the
 moment the holder *releases* its oplock/lease — a deeper break-completion change
-on top of session survival. The 2 `dhv2-pending1n-vs-violation-*-sane` rows
-remain deferred (separate deferred-open dependency). All under #749.
+on top of session survival. (The 2 `dhv2-pending1n-vs-violation-*-sane` rows
+flipped separately — see the next entry.) All under #749.
+
+### 2026-06-02 — #749 replay-vs-pending-break: 2 rows flipped (deferred-open retry)
+
+Flipped `smb2.replay.dhv2-pending1n-vs-violation-lease-close-sane` and
+`smb2.replay.dhv2-pending1n-vs-violation-lease-ack-sane`. Root cause: the parked
+share-violation CREATE force-completed (tombstoned) the conflicting holder's
+lease on its 5 s break-wait timeout, then rechecked once — racing the holder's
+~5 s release. For close-sane that produced a spurious SHARING_VIOLATION; for
+ack-sane the tombstoned lease made the holder's deferred LEASE_BREAK_ACK fail
+STATUS_UNSUCCESSFUL. Fix: a deferred-open `WaitForShareConflictClear` retry
+(MS-SMB2 §3.3.5.9, Samba `defer_open`→`retry_open`) — the parked CREATE waits
+for the live share-mode conflict to clear (holder CLOSE → CREATE OK) or for the
+break to drain with the conflict intact (holder ACK → SHARING_VIOLATION), and
+never force-completes the holder's lease, so its ACK succeeds. Scoped to the
+share-violation lease park; the non-violation paths (breaking3 /
+timeout-disconnect / batch22) keep the existing force-complete wait. Deferred
+tally 8→6; total 57→55 (relative to the post-#992 baseline).
 
 ### 2026-06-02 — #673 rationalization: bucket + justify every entry (docs only)
 

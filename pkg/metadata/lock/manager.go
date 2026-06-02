@@ -264,6 +264,18 @@ type LockManager interface {
 	// even when no waiter exists.
 	SignalParkedCreates(handleKey string)
 
+	// WaitForShareConflictClear blocks until the parked CREATE should stop
+	// waiting and recheck the share mode, returning when ANY of: conflictPresent()
+	// reports false (holder CLOSEd → conflict cleared), the holder's break drained
+	// while the conflict persists (holder ACKed but kept its open), or ctx is
+	// cancelled. It re-evaluates conflictPresent on every break-wait signal and on
+	// a short poll. A nil return means "recheck", NOT "conflict cleared" — the
+	// caller MUST re-run the share-mode check. Unlike WaitForBreakCompletion it
+	// NEVER force-completes breaking leases, so the holder's deferred ACK still
+	// succeeds (smbtorture replay dhv2-pending1n-vs-violation-lease-{close,ack}-sane,
+	// MS-SMB2 §3.3.5.9 deferred open / Samba defer_open→retry_open).
+	WaitForShareConflictClear(ctx context.Context, handleKey string, conflictPresent func() bool) error
+
 	// ========================================================================
 	// Break Callbacks
 	// ========================================================================
@@ -2266,6 +2278,94 @@ func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string)
 			continue
 		}
 	}
+}
+
+// WaitForShareConflictClear blocks until one of three conditions, whichever
+// comes first, then returns. It re-evaluates conflictPresent on every break-wait
+// signal AND on a short poll:
+//
+//   - conflictPresent() reports false → the holder CLOSEd (its open-table entry
+//     is gone), the conflict cleared → returns nil; the caller's CREATE proceeds.
+//   - the holder's break drained but the conflict is still present → the holder
+//     ACKed the break while keeping its open (e.g. RWH→RW) → returns nil; the
+//     caller's final recheck then yields SHARING_VIOLATION. This early exit is
+//     deterministic, so ack-sane does not stall to the deadline.
+//   - ctx is cancelled (genuine never-released conflict) → returns ctx.Err();
+//     the caller's recheck yields SHARING_VIOLATION against the still-live holder.
+//
+// A nil return therefore means "stop waiting and recheck", NOT "conflict
+// cleared" — the caller MUST re-run the share-mode check to decide the outcome.
+//
+// Crucially, unlike WaitForBreakCompletion, NONE of these paths force-complete
+// (tombstone) the holder's breaking lease: the deferred-open contract
+// (MS-SMB2 §3.3.5.9, Samba defer_open→retry_open) lets the holder ack on its own
+// schedule, and forcing the lease to None here would make a later ACK fail
+// STATUS_UNSUCCESSFUL (smbtorture dhv2-pending1n-vs-violation-lease-ack-sane).
+func (lm *Manager) WaitForShareConflictClear(ctx context.Context, handleKey string, conflictPresent func() bool) error {
+	// Poll interval. A holder CLOSE that resolves the conflict does NOT signal
+	// the breakWaitChans channel for file leases (that signal is scoped to
+	// directory leases so a file-lease holder closing without ACKing cannot
+	// prematurely wake a regular parked CREATE — smbtorture
+	// smb2.kernel-oplocks.kernel_oplocks7). The deferred-open resume instead
+	// re-evaluates the live share-mode predicate on a short poll, plus on every
+	// break-wait signal, so it wakes promptly on either a CLOSE or an ACK
+	// without disturbing the regular break-completion wait path.
+	const pollInterval = 100 * time.Millisecond
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		if !conflictPresent() {
+			return nil
+		}
+
+		lm.mu.Lock()
+		// Early deterministic exit: the conflict is still present but no break
+		// is in flight any more. The holder resolved its break by ACKing
+		// (keeping its open, e.g. RWH→RW) rather than CLOSEing, so the share
+		// conflict will never clear on its own. Return now so the caller's
+		// final recheck yields SHARING_VIOLATION promptly instead of stalling
+		// until the deadline (smbtorture dhv2-pending1n-vs-violation-lease-ack-sane).
+		if !lm.hasBreakingLeaseLocked(handleKey) {
+			lm.mu.Unlock()
+			return nil
+		}
+		ch, ok := lm.breakWaitChans[handleKey]
+		if !ok {
+			ch = make(chan struct{})
+			lm.breakWaitChans[handleKey] = ch
+		}
+		lm.mu.Unlock()
+
+		// Re-check after subscribing so a signal racing between the predicate
+		// evaluation above and channel registration is not missed.
+		if !conflictPresent() {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ch:
+			continue
+		case <-ticker.C:
+			continue
+		}
+	}
+}
+
+// hasBreakingLeaseLocked reports whether any lease or delegation on handleKey is
+// currently in the Breaking state. Caller holds lm.mu.
+func (lm *Manager) hasBreakingLeaseLocked(handleKey string) bool {
+	for _, l := range lm.unifiedLocks[handleKey] {
+		if l.Lease != nil && l.Lease.Breaking {
+			return true
+		}
+		if l.Delegation != nil && l.Delegation.Breaking {
+			return true
+		}
+	}
+	return false
 }
 
 // forceCompleteBreaks force-revokes all breaking leases on a file to None when
