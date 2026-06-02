@@ -39,7 +39,7 @@ type ReadDirPage struct {
 // Each returned entry includes a Cookie field that can be used to resume
 // listing from that point. The NextCookie field indicates the cookie to
 // use for the next page (0 if no more entries).
-func (s *MetadataService) ReadDirectory(ctx *AuthContext, dirHandle FileHandle, cookie uint64, maxBytes uint32) (*ReadDirPage, error) {
+func (s *Service) ReadDirectory(ctx *AuthContext, dirHandle FileHandle, cookie uint64, maxBytes uint32) (*ReadDirPage, error) {
 	store, err := s.storeForHandle(dirHandle)
 	if err != nil {
 		return nil, err
@@ -115,7 +115,7 @@ func (s *MetadataService) ReadDirectory(ctx *AuthContext, dirHandle FileHandle, 
 // RemoveDirectory removes an empty directory from its parent. The returned
 // DirWcc carries the parent directory's pre/post attributes captured atomically
 // with the mutation for protocol weak-cache-consistency data (H9).
-func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, name string) (*DirWcc, error) {
+func (s *Service) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, name string) (*DirWcc, error) {
 	store, err := s.storeForHandle(parentHandle)
 	if err != nil {
 		return nil, err
@@ -256,7 +256,7 @@ func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHan
 
 // CreateDirectory creates a new directory in a parent directory. The returned
 // DirWcc carries the parent's pre/post attributes captured atomically (H9).
-func (s *MetadataService) CreateDirectory(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, *DirWcc, error) {
+func (s *Service) CreateDirectory(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, *DirWcc, error) {
 	file, wcc, err := s.createEntry(ctx, parentHandle, name, attr, FileTypeDirectory, "", 0, 0)
 	if err != nil {
 		return nil, nil, err

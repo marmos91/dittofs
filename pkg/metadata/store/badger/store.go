@@ -15,7 +15,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// BadgerMetadataStore implements metadata.MetadataStore using BadgerDB for persistence.
+// BadgerMetadataStore implements metadata.Store using BadgerDB for persistence.
 //
 // This implementation provides a persistent metadata repository backed by BadgerDB,
 // a fast embedded key-value store. It is suitable for:

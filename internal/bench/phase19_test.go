@@ -28,9 +28,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	"github.com/marmos91/dittofs/pkg/blockstore/local/memory"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/block/local/memory"
 )
 
 // phase11BaselineRandWriteNsPerOp is the baseline ns/op for the
@@ -196,14 +196,14 @@ func newPhase19BlockStore(t *testing.T) *engine.Store {
 // runner doesn't depend on engine-package test-only symbols.
 type aggregateStubFileBlockStore struct {
 	mu     sync.Mutex
-	blocks map[string]*blockstore.FileBlock
+	blocks map[string]*block.FileBlock
 }
 
 func newAggregateStubFileBlockStore() *aggregateStubFileBlockStore {
-	return &aggregateStubFileBlockStore{blocks: make(map[string]*blockstore.FileBlock)}
+	return &aggregateStubFileBlockStore{blocks: make(map[string]*block.FileBlock)}
 }
 
-func (s *aggregateStubFileBlockStore) GetByHash(_ context.Context, h blockstore.ContentHash) (*blockstore.FileBlock, error) {
+func (s *aggregateStubFileBlockStore) GetByHash(_ context.Context, h block.ContentHash) (*block.FileBlock, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, fb := range s.blocks {
@@ -213,7 +213,7 @@ func (s *aggregateStubFileBlockStore) GetByHash(_ context.Context, h blockstore.
 	}
 	return nil, nil
 }
-func (s *aggregateStubFileBlockStore) Put(_ context.Context, block *blockstore.FileBlock) error {
+func (s *aggregateStubFileBlockStore) Put(_ context.Context, block *block.FileBlock) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := *block
@@ -235,7 +235,7 @@ func (s *aggregateStubFileBlockStore) DecrementRefCount(_ context.Context, _ str
 func (s *aggregateStubFileBlockStore) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
-func (s *aggregateStubFileBlockStore) AddRef(_ context.Context, h blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
+func (s *aggregateStubFileBlockStore) AddRef(_ context.Context, h block.ContentHash, _ string, _ block.BlockRef) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, fb := range s.blocks {
@@ -244,25 +244,25 @@ func (s *aggregateStubFileBlockStore) AddRef(_ context.Context, h blockstore.Con
 			return nil
 		}
 	}
-	return blockstore.ErrUnknownHash
+	return block.ErrUnknownHash
 }
-func (s *aggregateStubFileBlockStore) ListPending(_ context.Context, _ time.Duration, _ int) ([]*blockstore.FileBlock, error) {
+func (s *aggregateStubFileBlockStore) ListPending(_ context.Context, _ time.Duration, _ int) ([]*block.FileBlock, error) {
 	return nil, nil
 }
-func (s *aggregateStubFileBlockStore) GetFileBlock(_ context.Context, id string) (*blockstore.FileBlock, error) {
+func (s *aggregateStubFileBlockStore) GetFileBlock(_ context.Context, id string) (*block.FileBlock, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fb, ok := s.blocks[id]
 	if !ok {
-		return nil, blockstore.ErrFileBlockNotFound
+		return nil, block.ErrFileBlockNotFound
 	}
 	return fb, nil
 }
-func (s *aggregateStubFileBlockStore) ListFileBlocks(_ context.Context, payloadID string) ([]*blockstore.FileBlock, error) {
+func (s *aggregateStubFileBlockStore) ListFileBlocks(_ context.Context, payloadID string) ([]*block.FileBlock, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	prefix := payloadID + "/"
-	var out []*blockstore.FileBlock
+	var out []*block.FileBlock
 	for id, fb := range s.blocks {
 		if len(id) >= len(prefix) && id[:len(prefix)] == prefix {
 			out = append(out, fb)

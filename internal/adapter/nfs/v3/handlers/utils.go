@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -30,7 +30,7 @@ var ErrMetadataServiceNotInitialized = errors.New("metadata service not initiali
 // getServicesForHandle returns both the metadata service and the per-share block store
 // resolved from the given file handle.
 // Returns an error if either service is not initialized or handle resolution fails.
-func getServicesForHandle(reg *runtime.Runtime, ctx context.Context, handle metadata.FileHandle) (*metadata.MetadataService, *engine.Store, error) {
+func getServicesForHandle(reg *runtime.Runtime, ctx context.Context, handle metadata.FileHandle) (*metadata.Service, *engine.Store, error) {
 	metaSvc := reg.GetMetadataService()
 	if metaSvc == nil {
 		return nil, nil, ErrMetadataServiceNotInitialized
@@ -46,7 +46,7 @@ func getServicesForHandle(reg *runtime.Runtime, ctx context.Context, handle meta
 
 // getMetadataService returns the metadata service from the runtime.
 // Returns an error if the service is not initialized.
-func getMetadataService(reg *runtime.Runtime) (*metadata.MetadataService, error) {
+func getMetadataService(reg *runtime.Runtime) (*metadata.Service, error) {
 	metaSvc := reg.GetMetadataService()
 	if metaSvc == nil {
 		return nil, ErrMetadataServiceNotInitialized

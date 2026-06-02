@@ -7,11 +7,11 @@ import (
 
 	"lukechampine.com/blake3"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
-	"github.com/marmos91/dittofs/pkg/blockstore/remote"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/remote"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -62,14 +62,14 @@ func NewLocalStore(baseDir string) (*fs.FSStore, func(), error) {
 // SeedLocalChunks Puts opts.Ops unique CAS chunks into local and
 // returns their hashes. Used by RunWalk / RunDelete to set up a
 // known working set before the timed region.
-func SeedLocalChunks(ctx context.Context, local *fs.FSStore, opts Opts) ([]blockstore.ContentHash, error) {
-	hashes := make([]blockstore.ContentHash, opts.Ops)
+func SeedLocalChunks(ctx context.Context, local *fs.FSStore, opts Opts) ([]block.ContentHash, error) {
+	hashes := make([]block.ContentHash, opts.Ops)
 	data := make([]byte, opts.BlockSize)
 	for i := 0; i < opts.Ops; i++ {
 		// Per-iteration prefix makes every chunk unique even when
 		// BlockSize is small — the hash is content-derived.
 		copy(data, fmt.Sprintf("perf-seed-%016x", uint64(i)))
-		h := blockstore.ContentHash(blake3.Sum256(data))
+		h := block.ContentHash(blake3.Sum256(data))
 		if err := local.Put(ctx, h, data); err != nil {
 			return nil, fmt.Errorf("seed put %d: %w", i, err)
 		}
@@ -86,7 +86,7 @@ func RunWalk(ctx context.Context, local *fs.FSStore, opts Opts) (Result, error) 
 	}
 	start := time.Now()
 	var visited int64
-	if err := local.Walk(ctx, func(_ blockstore.ContentHash, _ blockstore.Meta) error {
+	if err := local.Walk(ctx, func(_ block.ContentHash, _ block.Meta) error {
 		visited++
 		return nil
 	}); err != nil {
@@ -115,10 +115,10 @@ func RunDelete(ctx context.Context, local *fs.FSStore, opts Opts) (Result, error
 // when a remote points at exactly one share.
 type gcReconciler struct {
 	share string
-	store metadata.MetadataStore
+	store metadata.Store
 }
 
-func (g *gcReconciler) GetMetadataStoreForShare(name string) (metadata.MetadataStore, error) {
+func (g *gcReconciler) GetMetadataStoreForShare(name string) (metadata.Store, error) {
 	if name != g.share {
 		return nil, fmt.Errorf("unknown share %q", name)
 	}
@@ -147,16 +147,16 @@ func RunGC(ctx context.Context, remoteStore remote.RemoteStore, opts Opts, garba
 	data := make([]byte, opts.BlockSize)
 	for i := 0; i < opts.Ops; i++ {
 		copy(data, fmt.Sprintf("perf-gc-%016x", uint64(i)))
-		h := blockstore.ContentHash(blake3.Sum256(data))
+		h := block.ContentHash(blake3.Sum256(data))
 		if err := remoteStore.Put(ctx, h, data); err != nil {
 			return Result{}, fmt.Errorf("seed remote %d: %w", i, err)
 		}
 		if i < totalRefs {
-			if err := ms.Put(ctx, &blockstore.FileBlock{
+			if err := ms.Put(ctx, &block.FileBlock{
 				ID:            fmt.Sprintf("perf-gc/%d", i),
 				Hash:          h,
-				State:         blockstore.BlockStateRemote,
-				BlockStoreKey: blockstore.FormatCASKey(h),
+				State:         block.BlockStateRemote,
+				BlockStoreKey: block.FormatCASKey(h),
 				DataSize:      uint32(len(data)),
 				RefCount:      1,
 				LastAccess:    time.Now(),
@@ -193,7 +193,7 @@ func RunRawS3Put(ctx context.Context, remoteStore remote.RemoteStore, opts Opts)
 	var total int64
 	for i := 0; i < opts.Ops; i++ {
 		copy(buf, fmt.Sprintf("perf-raws3-%016x", uint64(i)))
-		h := blockstore.ContentHash(blake3.Sum256(buf))
+		h := block.ContentHash(blake3.Sum256(buf))
 		if err := remoteStore.Put(ctx, h, buf); err != nil {
 			return Result{}, fmt.Errorf("put %d: %w", i, err)
 		}

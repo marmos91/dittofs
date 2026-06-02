@@ -3,7 +3,7 @@ package common
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -15,10 +15,10 @@ type recordingInvalidator struct {
 
 type invalidatorCall struct {
 	payloadID metadata.PayloadID
-	removed   []blockstore.ContentHash
+	removed   []block.ContentHash
 }
 
-func (r *recordingInvalidator) InvalidateFile(payloadID metadata.PayloadID, removed []blockstore.ContentHash) {
+func (r *recordingInvalidator) InvalidateFile(payloadID metadata.PayloadID, removed []block.ContentHash) {
 	r.calls = append(r.calls, invalidatorCall{payloadID: payloadID, removed: removed})
 }
 
@@ -29,7 +29,7 @@ func (r *recordingInvalidator) InvalidateFile(payloadID metadata.PayloadID, remo
 // engine.Cache type implements it; this plan defines the surface.
 func TestCacheInvalidatorInterface_Compiles(t *testing.T) {
 	var inv CacheInvalidator = &recordingInvalidator{}
-	hashes := []blockstore.ContentHash{{0x01}, {0x02}}
+	hashes := []block.ContentHash{{0x01}, {0x02}}
 	inv.InvalidateFile(metadata.PayloadID("test"), hashes)
 
 	got := inv.(*recordingInvalidator)
@@ -49,12 +49,12 @@ func TestCacheInvalidatorInterface_Compiles(t *testing.T) {
 // helper backs surgical CACHE-05 invalidation contract — only
 // hashes present in old but absent from new are reported.
 func TestDiffRemovedHashes_SubsetRemoved(t *testing.T) {
-	h1 := blockstore.ContentHash{0x01}
-	h2 := blockstore.ContentHash{0x02}
-	h3 := blockstore.ContentHash{0x03}
+	h1 := block.ContentHash{0x01}
+	h2 := block.ContentHash{0x02}
+	h3 := block.ContentHash{0x03}
 
-	oldBlocks := []blockstore.BlockRef{{Hash: h1}, {Hash: h2}, {Hash: h3}}
-	newBlocks := []blockstore.BlockRef{{Hash: h1}, {Hash: h3}} // h2 dropped
+	oldBlocks := []block.BlockRef{{Hash: h1}, {Hash: h2}, {Hash: h3}}
+	newBlocks := []block.BlockRef{{Hash: h1}, {Hash: h3}} // h2 dropped
 
 	got := diffRemovedHashes(oldBlocks, newBlocks)
 	if len(got) != 1 {
@@ -67,10 +67,10 @@ func TestDiffRemovedHashes_SubsetRemoved(t *testing.T) {
 
 // TestDiffRemovedHashes_AllRemoved exercises the legacy → empty case.
 func TestDiffRemovedHashes_AllRemoved(t *testing.T) {
-	h1 := blockstore.ContentHash{0x01}
-	h2 := blockstore.ContentHash{0x02}
-	oldBlocks := []blockstore.BlockRef{{Hash: h1}, {Hash: h2}}
-	newBlocks := []blockstore.BlockRef{} // empty
+	h1 := block.ContentHash{0x01}
+	h2 := block.ContentHash{0x02}
+	oldBlocks := []block.BlockRef{{Hash: h1}, {Hash: h2}}
+	newBlocks := []block.BlockRef{} // empty
 
 	got := diffRemovedHashes(oldBlocks, newBlocks)
 	if len(got) != 2 {
@@ -80,9 +80,9 @@ func TestDiffRemovedHashes_AllRemoved(t *testing.T) {
 
 // TestDiffRemovedHashes_NothingRemoved exercises the no-op case.
 func TestDiffRemovedHashes_NothingRemoved(t *testing.T) {
-	h1 := blockstore.ContentHash{0x01}
-	oldBlocks := []blockstore.BlockRef{{Hash: h1}}
-	newBlocks := []blockstore.BlockRef{{Hash: h1}}
+	h1 := block.ContentHash{0x01}
+	oldBlocks := []block.BlockRef{{Hash: h1}}
+	newBlocks := []block.BlockRef{{Hash: h1}}
 
 	got := diffRemovedHashes(oldBlocks, newBlocks)
 	if len(got) != 0 {
@@ -94,12 +94,12 @@ func TestDiffRemovedHashes_NothingRemoved(t *testing.T) {
 // times in oldBlocks (legitimate when the same chunk repeats in the file)
 // reports each removal only when the hash is fully absent from newBlocks.
 func TestDiffRemovedHashes_DuplicateOldHash(t *testing.T) {
-	h1 := blockstore.ContentHash{0x01}
-	h2 := blockstore.ContentHash{0x02}
+	h1 := block.ContentHash{0x01}
+	h2 := block.ContentHash{0x02}
 
 	// h1 appears twice in old; in new it disappears entirely.
-	oldBlocks := []blockstore.BlockRef{{Hash: h1}, {Hash: h2}, {Hash: h1}}
-	newBlocks := []blockstore.BlockRef{{Hash: h2}}
+	oldBlocks := []block.BlockRef{{Hash: h1}, {Hash: h2}, {Hash: h1}}
+	newBlocks := []block.BlockRef{{Hash: h2}}
 
 	got := diffRemovedHashes(oldBlocks, newBlocks)
 	// Both occurrences of h1 reported (caller treats this as multiplicity

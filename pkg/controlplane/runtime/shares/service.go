@@ -15,17 +15,17 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/pathutil"
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/compression"
-	"github.com/marmos91/dittofs/pkg/blockstore/encryption"
-	"github.com/marmos91/dittofs/pkg/blockstore/encryption/keyprovider"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	"github.com/marmos91/dittofs/pkg/blockstore/local"
-	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
-	localmemory "github.com/marmos91/dittofs/pkg/blockstore/local/memory"
-	"github.com/marmos91/dittofs/pkg/blockstore/remote"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
-	remotes3 "github.com/marmos91/dittofs/pkg/blockstore/remote/s3"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/compression"
+	"github.com/marmos91/dittofs/pkg/block/encryption"
+	"github.com/marmos91/dittofs/pkg/block/encryption/keyprovider"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/block/local"
+	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	localmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/remote"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	remotes3 "github.com/marmos91/dittofs/pkg/block/remote/s3"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -108,7 +108,7 @@ type Share struct {
 	BlockedOperations []string
 
 	// Retention policy for local blocks.
-	RetentionPolicy blockstore.RetentionPolicy
+	RetentionPolicy block.RetentionPolicy
 	RetentionTTL    time.Duration
 
 	// BlockStore is the per-share block store orchestrator.
@@ -207,7 +207,7 @@ type ShareConfig struct {
 	BlockedOperations []string
 
 	// Retention policy for local blocks.
-	RetentionPolicy blockstore.RetentionPolicy
+	RetentionPolicy block.RetentionPolicy
 	RetentionTTL    time.Duration
 
 	// Per-share block store size overrides (0 = use system default).
@@ -231,16 +231,16 @@ type LegacyMountInfo struct {
 
 // MetadataStoreProvider looks up metadata stores by name.
 type MetadataStoreProvider interface {
-	GetMetadataStore(name string) (metadata.MetadataStore, error)
+	GetMetadataStore(name string) (metadata.Store, error)
 }
 
 // MetadataServiceRegistrar registers metadata stores for shares.
 type MetadataServiceRegistrar interface {
-	RegisterStoreForShare(shareName string, store metadata.MetadataStore) error
+	RegisterStoreForShare(shareName string, store metadata.Store) error
 }
 
 // MetadataServiceDeregistrar deregisters a metadata store for a share. The
-// concrete *metadata.MetadataService satisfies it. AddShare's defensive
+// concrete *metadata.Service satisfies it. AddShare's defensive
 // finalize-failure path uses it to avoid leaking a metadata registration for a
 // share it refuses to finalize.
 type MetadataServiceDeregistrar interface {
@@ -520,7 +520,7 @@ func (s *Service) prepareShare(
 	ctx context.Context,
 	config *ShareConfig,
 	storeProvider MetadataStoreProvider,
-) (*Share, metadata.MetadataStore, error) {
+) (*Share, metadata.Store, error) {
 	// Early duplicate check (optimistic -- AddShare rechecks under write lock).
 	s.mu.RLock()
 	if _, exists := s.registry[config.Name]; exists {
@@ -626,7 +626,7 @@ func (s *Service) createBlockStoreForShare(
 	share *Share,
 	config *ShareConfig,
 	blockStoreProvider BlockStoreConfigProvider,
-	fileBlockStore blockstore.EngineFileBlockStore,
+	fileBlockStore block.EngineFileBlockStore,
 	localStoreDefaults *LocalStoreDefaults,
 	syncerDefaults *SyncerDefaults,
 ) error {
@@ -659,7 +659,7 @@ func (s *Service) createBlockStoreForShare(
 
 	// Eviction requires a remote store (so evicted blocks can be re-fetched) and
 	// must not be pin mode (pin keeps blocks stored locally indefinitely).
-	localStore.SetEvictionEnabled(remoteStore != nil && config.RetentionPolicy != blockstore.RetentionPin)
+	localStore.SetEvictionEnabled(remoteStore != nil && config.RetentionPolicy != block.RetentionPin)
 	// Note: SetSkipFsync was removed. Local-disk durability is now
 	// unconditional (the syncer will refetch from S3 on the rare crash path).
 	localStore.SetRetentionPolicy(config.RetentionPolicy, config.RetentionTTL)
@@ -687,10 +687,10 @@ func (s *Service) createBlockStoreForShare(
 	// mutations + FileAttr.Blocks persistence without importing
 	// pkg/metadata on its hot paths. The fileBlockStore on the engine
 	// seam is the per-share metadata store cast to EngineFileBlockStore;
-	// the coordinator wraps the same store as a metadata.MetadataStore
+	// the coordinator wraps the same store as a metadata.Store
 	// for the typed operations.
 	var coordinator engine.MetadataCoordinator
-	if metadataStore, ok := fileBlockStore.(metadata.MetadataStore); ok {
+	if metadataStore, ok := fileBlockStore.(metadata.Store); ok {
 		coordinator = newMetadataCoordinator(metadataStore)
 	}
 
@@ -962,7 +962,7 @@ func (s *Service) RemoveShare(name string) error {
 	return errors.Join(errs...)
 }
 
-func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *string, retentionPolicy *blockstore.RetentionPolicy, retentionTTL *time.Duration) error {
+func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *string, retentionPolicy *block.RetentionPolicy, retentionTTL *time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -991,7 +991,7 @@ func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *st
 
 		// Pin mode disables eviction; switching away from pin re-enables it
 		// (unless the share is local-only, in which case eviction stays disabled).
-		if share.RetentionPolicy == blockstore.RetentionPin {
+		if share.RetentionPolicy == block.RetentionPin {
 			share.BlockStore.SetEvictionEnabled(false)
 		} else if share.BlockStore.HasRemoteStore() {
 			share.BlockStore.SetEvictionEnabled(true)
@@ -1810,7 +1810,7 @@ func CreateLocalStoreFromConfig(
 	},
 	shareName string,
 	defaults *LocalStoreDefaults,
-	fileBlockStore blockstore.EngineFileBlockStore,
+	fileBlockStore block.EngineFileBlockStore,
 ) (local.LocalStore, error) {
 	config, err := cfg.GetConfig()
 	if err != nil {

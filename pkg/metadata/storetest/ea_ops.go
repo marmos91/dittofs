@@ -28,7 +28,7 @@ func runEAOpsTests(t *testing.T, factory StoreFactory) {
 }
 
 // putFileWithEAs sets the supplied EA map on the file and stores it.
-func putFileWithEAs(t *testing.T, store metadata.MetadataStore, handle metadata.FileHandle, eas map[string][]byte) {
+func putFileWithEAs(t *testing.T, store metadata.Store, handle metadata.FileHandle, eas map[string][]byte) {
 	t.Helper()
 	ctx := t.Context()
 	file, err := store.GetFile(ctx, handle)
@@ -42,7 +42,7 @@ func putFileWithEAs(t *testing.T, store metadata.MetadataStore, handle metadata.
 }
 
 // getEAs returns the stored EA map for a handle.
-func getEAs(t *testing.T, store metadata.MetadataStore, handle metadata.FileHandle) map[string][]byte {
+func getEAs(t *testing.T, store metadata.Store, handle metadata.FileHandle) map[string][]byte {
 	t.Helper()
 	file, err := store.GetFile(t.Context(), handle)
 	if err != nil {

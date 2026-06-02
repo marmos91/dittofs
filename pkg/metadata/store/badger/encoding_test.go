@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -20,7 +20,7 @@ import (
 // (encodeFile/decodeFile) without loss, including ContentHash bytes.
 func TestBadgerEncodeFile_BlocksRoundTrip(t *testing.T) {
 	// Build three deterministic content hashes.
-	var h1, h2, h3 blockstore.ContentHash
+	var h1, h2, h3 block.ContentHash
 	for i := range h1 {
 		h1[i] = byte(i)
 		h2[i] = byte(0xff - i)
@@ -41,7 +41,7 @@ func TestBadgerEncodeFile_BlocksRoundTrip(t *testing.T) {
 			Ctime:        time.Unix(1700000000, 0).UTC(),
 			Atime:        time.Unix(1700000000, 0).UTC(),
 			CreationTime: time.Unix(1700000000, 0).UTC(),
-			Blocks: []blockstore.BlockRef{
+			Blocks: []block.BlockRef{
 				{Hash: h1, Offset: 0, Size: 4 * 1024 * 1024},
 				{Hash: h2, Offset: 4 * 1024 * 1024, Size: 4 * 1024 * 1024},
 				{Hash: h3, Offset: 8 * 1024 * 1024, Size: 4 * 1024 * 1024},

@@ -35,7 +35,7 @@ type AccessDecision struct {
 //   - Authentication method validation
 //   - IP-based access control (allowed/denied clients)
 //   - Identity mapping (squashing, anonymous access)
-func (s *MetadataService) CheckShareAccess(ctx context.Context, shareName, clientAddr, authMethod string, identity *Identity) (*AccessDecision, *AuthContext, error) {
+func (s *Service) CheckShareAccess(ctx context.Context, shareName, clientAddr, authMethod string, identity *Identity) (*AccessDecision, *AuthContext, error) {
 	store, err := s.GetStoreForShare(shareName)
 	if err != nil {
 		return nil, nil, err
@@ -217,7 +217,7 @@ func CheckOtherPermissions(mode uint32, requested Permission) Permission {
 //   - Group member: Check group permission bits (mode >> 3 & 0x7)
 //   - Other: Check other permission bits (mode & 0x7)
 //   - Anonymous: Only world permissions
-func (s *MetadataService) checkFilePermissions(ctx *AuthContext, handle FileHandle, requested Permission) (Permission, error) {
+func (s *Service) checkFilePermissions(ctx *AuthContext, handle FileHandle, requested Permission) (Permission, error) {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return 0, err
@@ -452,7 +452,7 @@ func evaluateWithACL(fileACL *acl.ACL, evalCtx *acl.EvaluateContext, requested P
 }
 
 // checkPermission checks a single permission flag on a file.
-func (s *MetadataService) checkPermission(ctx *AuthContext, handle FileHandle, perm Permission, msg string) error {
+func (s *Service) checkPermission(ctx *AuthContext, handle FileHandle, perm Permission, msg string) error {
 	granted, err := s.checkFilePermissions(ctx, handle, perm)
 	if err != nil {
 		return err
@@ -467,7 +467,7 @@ func (s *MetadataService) checkPermission(ctx *AuthContext, handle FileHandle, p
 }
 
 // checkWritePermission checks write permission on a file.
-func (s *MetadataService) checkWritePermission(ctx *AuthContext, handle FileHandle) error {
+func (s *Service) checkWritePermission(ctx *AuthContext, handle FileHandle) error {
 	return s.checkPermission(ctx, handle, PermissionWrite, "write permission denied")
 }
 
@@ -482,7 +482,7 @@ func (s *MetadataService) checkWritePermission(ctx *AuthContext, handle FileHand
 // CheckParentCreateAccess when the caller knows whether a file or
 // subdirectory is being created so the precise ACL bit (ADD_FILE vs
 // ADD_SUBDIRECTORY) can be evaluated.
-func (s *MetadataService) CheckParentWriteAccess(ctx *AuthContext, parentHandle FileHandle) error {
+func (s *Service) CheckParentWriteAccess(ctx *AuthContext, parentHandle FileHandle) error {
 	return s.checkWritePermission(ctx, parentHandle)
 }
 
@@ -502,7 +502,7 @@ func (s *MetadataService) CheckParentWriteAccess(ctx *AuthContext, parentHandle 
 // For files that do not carry an ACL we fall back to the generic
 // PermissionWrite path so POSIX mode bits, share-level overrides, and
 // DOS-READONLY enforcement are honored.
-func (s *MetadataService) CheckParentCreateAccess(ctx *AuthContext, parentHandle FileHandle, isDirectory bool) error {
+func (s *Service) CheckParentCreateAccess(ctx *AuthContext, parentHandle FileHandle, isDirectory bool) error {
 	store, err := s.storeForHandle(parentHandle)
 	if err != nil {
 		return err
@@ -580,7 +580,7 @@ func (s *MetadataService) CheckParentCreateAccess(ctx *AuthContext, parentHandle
 // The `file` parameter is currently unused but reserved for future rule
 // extensions (e.g. explicit DELETE ACE evaluation) and kept for signature
 // stability across call sites.
-func (s *MetadataService) checkDeletePermission(ctx *AuthContext, parentHandle FileHandle, _ *File) error {
+func (s *Service) checkDeletePermission(ctx *AuthContext, parentHandle FileHandle, _ *File) error {
 	// Rule 1: upstream DELETE-access grant.
 	if ctx.HasDeleteAccess && !ctx.ShareReadOnly {
 		return nil
@@ -601,12 +601,12 @@ func (s *MetadataService) checkDeletePermission(ctx *AuthContext, parentHandle F
 }
 
 // checkReadPermission checks read permission on a file.
-func (s *MetadataService) checkReadPermission(ctx *AuthContext, handle FileHandle) error {
+func (s *Service) checkReadPermission(ctx *AuthContext, handle FileHandle) error {
 	return s.checkPermission(ctx, handle, PermissionRead, "read permission denied")
 }
 
 // checkExecutePermission checks execute/traverse permission on a file.
-func (s *MetadataService) checkExecutePermission(ctx *AuthContext, handle FileHandle) error {
+func (s *Service) checkExecutePermission(ctx *AuthContext, handle FileHandle) error {
 	return s.checkPermission(ctx, handle, PermissionExecute, "execute permission denied")
 }
 
@@ -674,7 +674,7 @@ const (
 // GENERIC_* bits in desiredAccess are expanded to their file-object-specific
 // rights before evaluation (see CheckFileAccessWithParent). OWNER_RIGHTS and
 // ACCESSBASED enumeration remain out of scope here — tracked under #531/#532.
-func (s *MetadataService) CheckFileAccess(file *File, authCtx *AuthContext, desiredAccess uint32) (uint32, error) {
+func (s *Service) CheckFileAccess(file *File, authCtx *AuthContext, desiredAccess uint32) (uint32, error) {
 	return s.CheckFileAccessWithParent(file, nil, authCtx, desiredAccess)
 }
 
@@ -700,7 +700,7 @@ func (s *MetadataService) CheckFileAccess(file *File, authCtx *AuthContext, desi
 // gated by the file's own DACL.
 //
 // When parent is nil, behavior is identical to CheckFileAccess.
-func (s *MetadataService) CheckFileAccessWithParent(file *File, parent *File, authCtx *AuthContext, desiredAccess uint32) (uint32, error) {
+func (s *Service) CheckFileAccessWithParent(file *File, parent *File, authCtx *AuthContext, desiredAccess uint32) (uint32, error) {
 	return s.CheckFileAccessWithParentGeneric(file, parent, authCtx, desiredAccess, 0)
 }
 
@@ -715,7 +715,7 @@ func (s *MetadataService) CheckFileAccessWithParent(file *File, parent *File, au
 //
 // genericDerived is expected to already be in file-object-specific terms (see
 // acl.GenericDerivedBits). Pass 0 when the caller has no generic bits to expand.
-func (s *MetadataService) CheckFileAccessWithParentGeneric(file *File, parent *File, authCtx *AuthContext, desiredAccess, genericDerived uint32) (uint32, error) {
+func (s *Service) CheckFileAccessWithParentGeneric(file *File, parent *File, authCtx *AuthContext, desiredAccess, genericDerived uint32) (uint32, error) {
 	maximumAllowed := desiredAccess&accessMaskMaximumAllowed != 0
 	// Expand MS-DTYP §2.4.3 GENERIC_* bits to their file-object-specific
 	// rights before the subset checks below (MS-DTYP §2.5.3 / MS-FSA

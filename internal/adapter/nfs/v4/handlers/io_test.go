@@ -11,8 +11,8 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -25,9 +25,9 @@ import (
 // ioTestFixture extends realFSTestFixture with block store support.
 type ioTestFixture struct {
 	handler    *Handler
-	metaSvc    *metadata.MetadataService
+	metaSvc    *metadata.Service
 	blockStore *engine.Store
-	store      metadata.MetadataStore
+	store      metadata.Store
 	rootHandle metadata.FileHandle
 	shareName  string
 }

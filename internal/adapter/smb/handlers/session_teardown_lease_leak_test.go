@@ -69,7 +69,7 @@ type teardownLeakEnv struct {
 	tree     *TreeConnection
 	root     metadata.FileHandle
 	rootAuth *metadata.AuthContext
-	metaSvc  *metadata.MetadataService
+	metaSvc  *metadata.Service
 }
 
 func setupTeardownLeakEnv(t *testing.T) *teardownLeakEnv {

@@ -12,7 +12,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -174,7 +174,7 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 	// preTruncateBlocks stays nil unless this is a genuine shrink, so the
 	// reclaim below is skipped for grows / no-ops.
 	var (
-		preTruncateBlocks []blockstore.BlockRef
+		preTruncateBlocks []block.BlockRef
 		preTruncatePID    metadata.PayloadID
 		newSize           uint64
 	)

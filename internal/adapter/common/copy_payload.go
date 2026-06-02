@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -41,7 +41,7 @@ import (
 func CopyPayload(
 	ctx context.Context,
 	blockStore *engine.Store,
-	metadataStore metadata.MetadataStore,
+	metadataStore metadata.Store,
 	cache CacheInvalidator,
 	srcFileHandle, dstFileHandle metadata.FileHandle,
 	srcPayloadID, dstPayloadID metadata.PayloadID,

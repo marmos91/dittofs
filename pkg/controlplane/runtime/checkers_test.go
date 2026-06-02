@@ -40,19 +40,19 @@ func newRuntimeForChecks(t *testing.T) (*Runtime, store.Store) {
 // counts calls to Healthcheck. It embeds the real store to inherit
 // every other method of the large MetadataStore interface.
 type countingMetaStore struct {
-	metadata.MetadataStore
+	metadata.Store
 	calls int64
 }
 
 func newCountingMetaStore() *countingMetaStore {
 	return &countingMetaStore{
-		MetadataStore: memoryMeta.NewMemoryMetadataStoreWithDefaults(),
+		Store: memoryMeta.NewMemoryMetadataStoreWithDefaults(),
 	}
 }
 
 func (c *countingMetaStore) Healthcheck(ctx context.Context) health.Report {
 	atomic.AddInt64(&c.calls, 1)
-	return c.MetadataStore.Healthcheck(ctx)
+	return c.Store.Healthcheck(ctx)
 }
 
 func (c *countingMetaStore) Count() int64 { return atomic.LoadInt64(&c.calls) }

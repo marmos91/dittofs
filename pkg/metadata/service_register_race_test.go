@@ -119,7 +119,7 @@ func TestRemoveStoreForShare_NoDoubleEndWhenGraceLiftedNaturally(t *testing.T) {
 // OnLockGraceStart) before the re-check observes the removal and must balance it.
 type removeMidFlightStore struct {
 	*memory.MemoryMetadataStore
-	svc       *metadata.MetadataService
+	svc       *metadata.Service
 	shareName string
 	fired     bool
 }

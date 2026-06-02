@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	blockpkg "github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -43,7 +43,7 @@ const (
 )
 
 // Ensure BadgerMetadataStore implements FileBlockStore
-var _ blockstore.FileBlockStore = (*BadgerMetadataStore)(nil)
+var _ blockpkg.FileBlockStore = (*BadgerMetadataStore)(nil)
 
 // reapBlockTxn deletes a FileBlock's primary key plus every secondary index
 // (local, file, hash) inside the supplied transaction. Shared by Delete and
@@ -306,7 +306,7 @@ func (s *BadgerMetadataStore) DecrementRefCountAndReap(ctx context.Context, id s
 // RefCount is the ONLY field mutated. BlockState is preserved
 // across the read-modify-write (Pending stays Pending, Remote stays
 // Remote — no transition is fired by the hit path).
-func (s *BadgerMetadataStore) AddRef(ctx context.Context, hash blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
+func (s *BadgerMetadataStore) AddRef(ctx context.Context, hash blockpkg.ContentHash, _ string, _ blockpkg.BlockRef) error {
 	// payloadID + blockRef accepted for future GC traceability;
 	// badger backend records ref count only — parameters intentionally
 	// blanked.
@@ -444,7 +444,7 @@ func (s *BadgerMetadataStore) ListFileBlocks(_ context.Context, payloadID string
 // (no allocation of a full slice in application memory)..
 // lifted from FileBlockStore to MetadataStore
 // implementation unchanged.
-func (s *BadgerMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
+func (s *BadgerMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(blockpkg.ContentHash) error) error {
 	return s.db.View(func(txn *badger.Txn) error {
 		return enumerateFileBlocksTxn(ctx, txn, fn)
 	})
@@ -544,12 +544,12 @@ func listFileBlocksTxn(txn *badger.Txn, payloadID string) []*metadata.FileBlock 
 // missed by the mark phase and the sweep would reap a still-live chunk once a
 // snapshot hold lapsed (data loss). Duplicates across the two passes are
 // harmless — GCState.Add deduplicates the live set.
-func enumerateFileBlocksTxn(ctx context.Context, txn *badger.Txn, fn func(blockstore.ContentHash) error) error {
+func enumerateFileBlocksTxn(ctx context.Context, txn *badger.Txn, fn func(blockpkg.ContentHash) error) error {
 	// Each pass is scoped so its iterator is released before the next opens.
-	if err := enumeratePrefixHashes(ctx, txn, fileBlockPrefix, func(val []byte) (blockstore.ContentHash, error) {
+	if err := enumeratePrefixHashes(ctx, txn, fileBlockPrefix, func(val []byte) (blockpkg.ContentHash, error) {
 		var block metadata.FileBlock
 		if err := json.Unmarshal(val, &block); err != nil {
-			return blockstore.ContentHash{}, fmt.Errorf("decode file block: %w", err)
+			return blockpkg.ContentHash{}, fmt.Errorf("decode file block: %w", err)
 		}
 		return block.Hash, nil
 	}, fn); err != nil {
@@ -566,8 +566,8 @@ func enumeratePrefixHashes(
 	ctx context.Context,
 	txn *badger.Txn,
 	prefixStr string,
-	decodeHash func([]byte) (blockstore.ContentHash, error),
-	fn func(blockstore.ContentHash) error,
+	decodeHash func([]byte) (blockpkg.ContentHash, error),
+	fn func(blockpkg.ContentHash) error,
 ) error {
 	opts := badger.DefaultIteratorOptions
 	opts.PrefetchValues = true
@@ -581,7 +581,7 @@ func enumeratePrefixHashes(
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("enumerate file blocks: %w", err)
 		}
-		var h blockstore.ContentHash
+		var h blockpkg.ContentHash
 		if err := it.Item().Value(func(val []byte) error {
 			var derr error
 			h, derr = decodeHash(val)
@@ -600,7 +600,7 @@ func enumeratePrefixHashes(
 // File.Blocks hash through fn. Decode failures are fatal (fail-closed): a
 // dropped file entry would shrink the GC live set and let the sweep reap a
 // still-live chunk.
-func enumeratePrefixFileBlocks(ctx context.Context, txn *badger.Txn, fn func(blockstore.ContentHash) error) error {
+func enumeratePrefixFileBlocks(ctx context.Context, txn *badger.Txn, fn func(blockpkg.ContentHash) error) error {
 	opts := badger.DefaultIteratorOptions
 	opts.PrefetchValues = true
 	opts.PrefetchSize = 256
@@ -661,7 +661,7 @@ func parseBlockIdx(id string) int {
 // ============================================================================
 
 // Ensure badgerTransaction implements FileBlockStore
-var _ blockstore.FileBlockStore = (*badgerTransaction)(nil)
+var _ blockpkg.FileBlockStore = (*badgerTransaction)(nil)
 
 // (review iteration 1): FileBlockStore methods on
 // badgerTransaction MUST run against the txn's *badger.Txn so a
@@ -850,7 +850,7 @@ func (tx *badgerTransaction) DecrementRefCountAndReap(ctx context.Context, id st
 // the active badger.Txn so a subsequent rollback discards the mutation
 // (mirrors the fix applied to IncrementRefCount). Returns
 // metadata.ErrUnknownHash on index miss or value miss.
-func (tx *badgerTransaction) AddRef(ctx context.Context, hash metadata.ContentHash, _ string, _ blockstore.BlockRef) error {
+func (tx *badgerTransaction) AddRef(ctx context.Context, hash metadata.ContentHash, _ string, _ blockpkg.BlockRef) error {
 	// payloadID + blockRef accepted for future GC traceability;
 	// badger backend records ref count only — parameters intentionally
 	// blanked.
@@ -958,6 +958,6 @@ func (tx *badgerTransaction) ListFileBlocks(ctx context.Context, payloadID strin
 	return listFileBlocksTxn(tx.txn, payloadID), nil
 }
 
-func (tx *badgerTransaction) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
+func (tx *badgerTransaction) EnumerateFileBlocks(ctx context.Context, fn func(blockpkg.ContentHash) error) error {
 	return enumerateFileBlocksTxn(ctx, tx.txn, fn)
 }

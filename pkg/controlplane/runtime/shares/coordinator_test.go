@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -26,15 +26,15 @@ func TestMetadataCoordinator_RoutesThroughContextTx(t *testing.T) {
 	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
 	// Seed a finalized FileBlock so GetByHash returns a real row.
-	hash := blockstore.ContentHash{0xAB}
-	fb := &blockstore.FileBlock{
+	hash := block.ContentHash{0xAB}
+	fb := &block.FileBlock{
 		ID:         "share/0",
 		Hash:       hash,
 		DataSize:   4096,
 		RefCount:   1,
 		LastAccess: time.Now(),
 		CreatedAt:  time.Now(),
-		State:      blockstore.BlockStateRemote,
+		State:      block.BlockStateRemote,
 	}
 	if err := store.Put(ctx, fb); err != nil {
 		t.Fatalf("seed: Put: %v", err)
@@ -82,15 +82,15 @@ func TestMetadataCoordinator_FallsBackToPublicStoreWithoutTx(t *testing.T) {
 	ctx := context.Background()
 	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
-	hash := blockstore.ContentHash{0xCD}
-	fb := &blockstore.FileBlock{
+	hash := block.ContentHash{0xCD}
+	fb := &block.FileBlock{
 		ID:         "share/1",
 		Hash:       hash,
 		DataSize:   4096,
 		RefCount:   2,
 		LastAccess: time.Now(),
 		CreatedAt:  time.Now(),
-		State:      blockstore.BlockStateRemote,
+		State:      block.BlockStateRemote,
 	}
 	if err := store.Put(ctx, fb); err != nil {
 		t.Fatalf("seed: Put: %v", err)
@@ -140,16 +140,16 @@ func TestMetadataCoordinator_RollsBackOnDownstreamPutFileFailure(t *testing.T) {
 	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
 	// Seed three finalized FileBlocks with RefCount=1 each.
-	hashes := []blockstore.ContentHash{{0x10}, {0x20}, {0x30}}
+	hashes := []block.ContentHash{{0x10}, {0x20}, {0x30}}
 	for i, h := range hashes {
-		fb := &blockstore.FileBlock{
+		fb := &block.FileBlock{
 			ID:         "share/" + string(rune('0'+i)),
 			Hash:       h,
 			DataSize:   4096,
 			RefCount:   1,
 			LastAccess: time.Now(),
 			CreatedAt:  time.Now(),
-			State:      blockstore.BlockStateRemote,
+			State:      block.BlockStateRemote,
 		}
 		if err := store.Put(ctx, fb); err != nil {
 			t.Fatalf("seed Put: %v", err)
@@ -215,7 +215,7 @@ type recordingTx struct {
 	decrementCalls int
 }
 
-func (r *recordingTx) GetByHash(ctx context.Context, hash blockstore.ContentHash) (*blockstore.FileBlock, error) {
+func (r *recordingTx) GetByHash(ctx context.Context, hash block.ContentHash) (*block.FileBlock, error) {
 	r.getByHashCalls++
 	return r.Transaction.GetByHash(ctx, hash)
 }

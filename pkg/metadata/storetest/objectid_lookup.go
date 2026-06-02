@@ -3,7 +3,7 @@ package storetest
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -19,17 +19,17 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 	fileA := createTestFile(t, store, "objid-find", rootHandle, "a.bin", 0o644)
 	fileB := createTestFile(t, store, "objid-find", rootHandle, "b.bin", 0o644)
 
-	blocksA := []blockstore.BlockRef{
+	blocksA := []block.BlockRef{
 		{Hash: hashOfSeed("oid-find-a-0"), Offset: 0, Size: 4096},
 		{Hash: hashOfSeed("oid-find-a-1"), Offset: 4096, Size: 4096},
 	}
-	blocksB := []blockstore.BlockRef{
+	blocksB := []block.BlockRef{
 		{Hash: hashOfSeed("oid-find-b-0"), Offset: 0, Size: 4096},
 		{Hash: hashOfSeed("oid-find-b-1"), Offset: 4096, Size: 4096},
 		{Hash: hashOfSeed("oid-find-b-2"), Offset: 8192, Size: 4096},
 	}
-	oidA := blockstore.ComputeObjectID(blocksA)
-	oidB := blockstore.ComputeObjectID(blocksB)
+	oidA := block.ComputeObjectID(blocksA)
+	oidB := block.ComputeObjectID(blocksB)
 	if oidA == oidB {
 		t.Fatalf("fixture broken: distinct block fixtures produced equal ObjectID %s", oidA.String())
 	}
@@ -37,8 +37,8 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 	// PutFile A + B with their respective ObjectIDs.
 	for _, pair := range []struct {
 		handle metadata.FileHandle
-		blocks []blockstore.BlockRef
-		oid    blockstore.ObjectID
+		blocks []block.BlockRef
+		oid    block.ObjectID
 		label  string
 	}{
 		{fileA, blocksA, oidA, "A"},
@@ -79,7 +79,7 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 	}
 
 	// Miss: an ObjectID nobody indexed.
-	missOID := blockstore.ComputeObjectID([]blockstore.BlockRef{
+	missOID := block.ComputeObjectID([]block.BlockRef{
 		{Hash: hashOfSeed("oid-find-miss"), Offset: 0, Size: 1},
 	})
 	gotMiss, err := store.FindByObjectID(ctx, missOID)
@@ -110,12 +110,12 @@ func testObjectID_RestartStability(t *testing.T, factory StoreFactory) {
 	rootHandle := createTestShare(t, store, "objid-restart")
 	fileHandle := createTestFile(t, store, "objid-restart", rootHandle, "restart.bin", 0o644)
 
-	blocks := []blockstore.BlockRef{
+	blocks := []block.BlockRef{
 		{Hash: hashOfSeed("oid-rst-0"), Offset: 0, Size: 4 << 20},
 		{Hash: hashOfSeed("oid-rst-1"), Offset: 4 << 20, Size: 4 << 20},
 		{Hash: hashOfSeed("oid-rst-2"), Offset: 8 << 20, Size: 1 << 20},
 	}
-	wantOID := blockstore.ComputeObjectID(blocks)
+	wantOID := block.ComputeObjectID(blocks)
 
 	file, err := store.GetFile(ctx, fileHandle)
 	if err != nil {
@@ -131,7 +131,7 @@ func testObjectID_RestartStability(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (post-put): %v", err)
 	}
-	recomputed := blockstore.ComputeObjectID(got.Blocks)
+	recomputed := block.ComputeObjectID(got.Blocks)
 	if recomputed != got.ObjectID {
 		t.Errorf("recompute(stored Blocks) != stored ObjectID: %s vs %s",
 			recomputed.String(), got.ObjectID.String())
@@ -177,7 +177,7 @@ func testObjectID_ConcurrentQuiesceRace(t *testing.T, factory StoreFactory) {
 	handleB := createTestFile(t, store, shareName, rootHandle, "race-b.bin", 0o644)
 
 	// Both files target the same contested ObjectID.
-	contested := blockstore.ComputeObjectID([]blockstore.BlockRef{
+	contested := block.ComputeObjectID([]block.BlockRef{
 		{Hash: hashOfSeed("oid-race-contest"), Offset: 0, Size: 4096},
 	})
 
@@ -189,7 +189,7 @@ func testObjectID_ConcurrentQuiesceRace(t *testing.T, factory StoreFactory) {
 		if err != nil {
 			t.Fatalf("GetFile (stage %s): %v", seed, err)
 		}
-		f.Blocks = []blockstore.BlockRef{
+		f.Blocks = []block.BlockRef{
 			{Hash: hashOfSeed(seed), Offset: 0, Size: 4096},
 		}
 		f.ObjectID = contested
@@ -256,17 +256,17 @@ func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 	fileA := createTestFile(t, store, "objid-cross-a", rootA, "shared.bin", 0o644)
 	fileB := createTestFile(t, store, "objid-cross-b", rootB, "other.bin", 0o644)
 
-	blocksA := []blockstore.BlockRef{
+	blocksA := []block.BlockRef{
 		{Hash: hashOfSeed("oid-cross-a-0"), Offset: 0, Size: 4096},
 		{Hash: hashOfSeed("oid-cross-a-1"), Offset: 4096, Size: 4096},
 	}
-	blocksB := []blockstore.BlockRef{
+	blocksB := []block.BlockRef{
 		{Hash: hashOfSeed("oid-cross-b-0"), Offset: 0, Size: 8192},
 		{Hash: hashOfSeed("oid-cross-b-1"), Offset: 8192, Size: 4096},
 		{Hash: hashOfSeed("oid-cross-b-2"), Offset: 12288, Size: 1024},
 	}
-	oidA := blockstore.ComputeObjectID(blocksA)
-	oidB := blockstore.ComputeObjectID(blocksB)
+	oidA := block.ComputeObjectID(blocksA)
+	oidB := block.ComputeObjectID(blocksB)
 	if oidA == oidB {
 		t.Fatalf("fixture broken: distinct block fixtures produced equal ObjectID %s", oidA.String())
 	}
@@ -274,8 +274,8 @@ func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 	// PutFile each share's file with its respective ObjectID.
 	for _, pair := range []struct {
 		handle metadata.FileHandle
-		blocks []blockstore.BlockRef
-		oid    blockstore.ObjectID
+		blocks []block.BlockRef
+		oid    block.ObjectID
 		label  string
 	}{
 		{fileA, blocksA, oidA, "share-A"},
@@ -317,7 +317,7 @@ func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 	}
 
 	// Negative: an ObjectID never persisted by either share returns nil.
-	missOID := blockstore.ComputeObjectID([]blockstore.BlockRef{
+	missOID := block.ComputeObjectID([]block.BlockRef{
 		{Hash: hashOfSeed("oid-cross-miss"), Offset: 0, Size: 1},
 	})
 	if missOID == oidA || missOID == oidB {
@@ -335,7 +335,7 @@ func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 // blockRefSlicesEqual returns true if a and b have identical BlockRef
 // fields (Hash, Offset, Size) in order. Defined as a local helper so
 // objectid_lookup.go scenarios stay self-contained.
-func blockRefSlicesEqual(a, b []blockstore.BlockRef) bool {
+func blockRefSlicesEqual(a, b []block.BlockRef) bool {
 	if len(a) != len(b) {
 		return false
 	}

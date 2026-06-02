@@ -80,7 +80,7 @@ func (h *MetadataStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// Validate store can be created before persisting configuration
 	// This prevents inconsistent state where config exists but store cannot be instantiated
-	var metaStore metadata.MetadataStore
+	var metaStore metadata.Store
 	if h.runtime != nil {
 		var err error
 		metaStore, err = runtime.CreateMetadataStoreFromConfig(r.Context(), storeCfg.Type, storeCfg)

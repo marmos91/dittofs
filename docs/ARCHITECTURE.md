@@ -61,7 +61,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
         ▼                   ▼
 ┌────────────────┐  ┌──────────────────────┐
 │   Metadata     │  │ Per-Share BlockStore │
-│     Stores     │  │  pkg/blockstore/     │
+│     Stores     │  │  pkg/block/     │
 │                │  │                      │
 │  - Memory      │  │  ┌──────────────┐    │
 │  - BadgerDB    │  │  │ Local Store  │    │
@@ -137,13 +137,13 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 
 **Recycle bin (trash).** The recycle trap lives inside `MetadataService.RemoveFile`, `RemoveDirectory`, and `Move`, gated by a per-share `TrashPolicy` read through a locked accessor. When the policy enables the bin, an unlink (NFS REMOVE/RMDIR, SMB delete-on-close) or a replace-overwrite (a `Move` whose destination clobbers an existing node) moves the victim into a single shared `#recycle` directory at the share root instead of destroying it, preserving the original path subtree and owner. Block deletion is deferred: recycling returns an empty `PayloadID` so protocol adapters skip the block-deletion step, and a recycled node keeps its content blocks until it is reaped or the bin is emptied. The runtime's `trash.Service` (`pkg/controlplane/runtime/trash/`) owns list/restore/empty and runs a background reaper that enforces the per-share retention-days and max-size policy on an hourly interval (oldest-first eviction). Disabling trash auto-empties the bin.
 
-**6. BlockStore** (`pkg/blockstore/`)
+**6. BlockStore** (`pkg/block/`)
 - Per-share block storage orchestrator. Each share gets its own `*engine.BlockStore` instance.
 - `engine.BlockStore` composes `local.LocalStore + remote.RemoteStore + engine.Syncer`
 - Each share gets an isolated local storage directory; remote stores can be shared across shares (ref counted)
 - `shares.Service` owns the lifecycle (create on AddShare, close on RemoveShare)
 - Sub-packages:
-  - `engine/`: BlockStore orchestrator — composes local + remote stores and owns the unified CAS-keyed `Cache` (read buffering + prefetch), the syncer, and the garbage collector. See `pkg/blockstore/engine/cache.go` for the Cache type.
+  - `engine/`: BlockStore orchestrator — composes local + remote stores and owns the unified CAS-keyed `Cache` (read buffering + prefetch), the syncer, and the garbage collector. See `pkg/block/engine/cache.go` for the Cache type.
   - `local/`: Local store interface and implementations (`fs/` filesystem, `memory/` in-memory)
   - `remote/`: Remote store interface and implementations (`s3/` production, `memory/` testing)
   - `storetest/`: Conformance test helpers for new backend implementations
@@ -191,7 +191,7 @@ DittoFS uses a three-tier storage model for block data:
 ```
 ┌─────────────────────────────────────┐
 │  Cache (In-Memory, CAS-keyed)       │
-│  pkg/blockstore/engine/cache.go     │
+│  pkg/block/engine/cache.go     │
 │  - Single type, keyed by ContentHash│
 │  - LRU eviction                     │
 │  - Internal sequential prefetch     │
@@ -205,7 +205,7 @@ DittoFS uses a three-tier storage model for block data:
                ▼
 ┌─────────────────────────────────────┐
 │  Local Block Store                  │
-│  pkg/blockstore/local/fs/           │
+│  pkg/block/local/fs/           │
 │  - Filesystem-backed                │
 │  - Fast access (disk I/O)           │
 │  - Persistent across restarts       │
@@ -215,7 +215,7 @@ DittoFS uses a three-tier storage model for block data:
                ▼
 ┌─────────────────────────────────────┐
 │  Remote Store                       │
-│  pkg/blockstore/remote/s3/          │
+│  pkg/block/remote/s3/          │
 │  - S3 or compatible object store    │
 │  - Slowest (network I/O)            │
 │  - Durable (survives node loss)     │
@@ -241,7 +241,7 @@ Pending FileBlocks to remote CAS.
 
 ## Block Store -- Local Append-Log Tier
 
-The local filesystem store (`pkg/blockstore/local/fs/`) writes through an
+The local filesystem store (`pkg/block/local/fs/`) writes through an
 append-only log per file. A rollup pool chunks the log via FastCDC, hashes
 each chunk with BLAKE3, and persists the chunks under a content-addressable
 `blocks/{hh}/{hh}/{hex}` directory. The syncer then uploads those chunks to
@@ -308,7 +308,7 @@ payload.
 
 ### Crash recovery
 
-Recovery (`pkg/blockstore/local/fs/recovery.go`) scans logs from
+Recovery (`pkg/block/local/fs/recovery.go`) scans logs from
 `rollup_offset`, truncates at first bad CRC, and rebuilds per-file interval
 trees. Orphan logs (no metadata referrer, no live FileBlock, mtime older
 than `orphan_log_min_age_seconds`) are swept. Orphan chunks under
@@ -778,8 +778,8 @@ No custom code required - configure via CLI:
 ### Implementing Custom Store Backends
 
 See [docs/IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for detailed implementation guides for:
-- **Local Store**: Implement `pkg/blockstore/local.LocalStore` interface
-- **Remote Store**: Implement `pkg/blockstore/remote.RemoteStore` interface
+- **Local Store**: Implement `pkg/block/local.LocalStore` interface
+- **Remote Store**: Implement `pkg/block/remote.RemoteStore` interface
 - **Metadata Store**: Implement `pkg/metadata/Store` interface
 
 ## Directory Structure
@@ -1067,11 +1067,11 @@ authoritative content list for every file.
 ### BlockRef — the content unit
 
 `BlockRef` is the 3-tuple `(Hash ContentHash, Offset uint64, Size uint32)`
-defined in `pkg/blockstore/types.go`. `FileAttr.Blocks []BlockRef` (in
+defined in `pkg/block/types.go`. `FileAttr.Blocks []BlockRef` (in
 `pkg/metadata/file_types.go`) is the authoritative, offset-sorted list of
 every chunk that composes a file. It is populated on every sync
 finalization; the engine binary-searches it via `findBlocksForRange`
-(`pkg/blockstore/engine/range.go`).
+(`pkg/block/engine/range.go`).
 
 Storage encodings differ per backend:
 
@@ -1085,7 +1085,7 @@ Storage encodings differ per backend:
 ### Engine API
 
 ```go
-// pkg/blockstore/engine/engine.go
+// pkg/block/engine/engine.go
 ReadAt(ctx, payloadID, blocks []BlockRef, dest []byte, offset uint64) (int, error)
 WriteAt(ctx, payloadID, currentBlocks []BlockRef, data []byte, offset uint64) ([]BlockRef, error)
 Truncate(ctx, payloadID, currentBlocks []BlockRef, newSize uint64) ([]BlockRef, error)
@@ -1105,22 +1105,22 @@ EOF.
 the dst rows. No data copy. This is the file-level dedup primitive the
 ObjectID layer (below) builds on.
 
-`MetadataCoordinator` (`pkg/blockstore/engine/coordinator.go`) is the
+`MetadataCoordinator` (`pkg/block/engine/coordinator.go`) is the
 narrow interface the engine uses to mutate refcounts and persist
 `FileAttr.Blocks`. The engine never opens a metadata txn itself — a
 strict-grep build gate enforces zero `pkg/metadata` imports under
-`pkg/blockstore/engine/*.go` production files except a single justified
+`pkg/block/engine/*.go` production files except a single justified
 exception in `gc.go`.
 
 ### Cache
 
-The `Cache` type (`pkg/blockstore/engine/cache.go`) is keyed solely by
+The `Cache` type (`pkg/block/engine/cache.go`) is keyed solely by
 `ContentHash`. It combines read buffering and prefetch into a single
 per-share type with a single budget (`cache.size_mib`, default 256 MiB).
 Two files reading the same chunk hit the same entry (cross-file dedup).
 
 ```go
-// pkg/blockstore/engine/cache.go (hint API)
+// pkg/block/engine/cache.go (hint API)
 OnRead(payloadID PayloadID, hashes []ContentHash, fileSize uint64)
 InvalidateFile(payloadID PayloadID, removedHashes []ContentHash)  // surgical
 ```
@@ -1170,7 +1170,7 @@ Merkle root computed over the file's `BlockRef.Hash` values sorted by
     ObjectID = BLAKE3("dittofs:objectid:v1\x00" || h0 || h1 || ... || hN-1)
 
 Implemented in `blockstore.ComputeObjectID`
-(`pkg/blockstore/objectid.go`). Stable across rename and engine restart
+(`pkg/block/objectid.go`). Stable across rename and engine restart
 by construction (BLAKE3 + FastCDC are both deterministic; the prefix
 protects the output space from per-chunk hash collisions and reserves
 room for future input-shape changes via `v2`/`v3`).
@@ -1257,12 +1257,12 @@ then runs the post-Flush hook.
 
 Source-of-truth file:line anchors:
 
-- `pkg/blockstore/engine/syncer.go::Flush` — entry point + branch
+- `pkg/block/engine/syncer.go::Flush` — entry point + branch
   selection; `snapshotPendingBlockRefs` (short-circuit input) and
   `snapshotBlockRefs` (post-Flush input) helpers.
-- `pkg/blockstore/engine/dedup.go::TrySpeculativeFileLevelDedup` and
+- `pkg/block/engine/dedup.go::TrySpeculativeFileLevelDedup` and
   `applyFileLevelDedupHit` — the metadata-side swap.
-- `pkg/blockstore/engine/dedup.go::persistFileBlocksAfterFlush` — the
+- `pkg/block/engine/dedup.go::persistFileBlocksAfterFlush` — the
   post-Flush coordinator hook.
 - `pkg/controlplane/runtime/shares/coordinator.go::PersistFileBlocks` /
   `GetFileObjectID` — runtime forwarders.
@@ -1308,7 +1308,7 @@ The dedup path emits slog-only signals:
 ### Performance gate
 
 A CI perf lane gates random-write regression against a baseline
-(`pkg/blockstore/engine/perf_bench_test.go`). ObjectID compute is one
+(`pkg/block/engine/perf_bench_test.go`). ObjectID compute is one
 BLAKE3 pass over `32×N` bytes per quiesce (sub-millisecond at N=16K
 BlockRefs); the short-circuit lookup is one indexed query per quiesce.
 Both fire off the random-write hot path.

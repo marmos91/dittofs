@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
@@ -26,7 +26,7 @@ type ObjectIDIndexAccessor interface {
 	//
 	// Zero-valued objectID inputs MUST return (0, nil) without backend
 	// access — the partial/skip-zero discipline mirrors FindByObjectID.
-	CountObjectIDIndexRows(ctx context.Context, objectID blockstore.ObjectID) (int, error)
+	CountObjectIDIndexRows(ctx context.Context, objectID block.ObjectID) (int, error)
 }
 
 // runObjectIDOpsTests dispatches the ObjectID conformance scenarios
@@ -60,12 +60,12 @@ func testObjectID_RoundTripBasic(t *testing.T, factory StoreFactory) {
 	rootHandle := createTestShare(t, store, "objid-roundtrip")
 	fileHandle := createTestFile(t, store, "objid-roundtrip", rootHandle, "round.bin", 0o644)
 
-	blocks := []blockstore.BlockRef{
+	blocks := []block.BlockRef{
 		{Hash: hashOfSeed("oid-rt-0"), Offset: 0, Size: 4 << 20},
 		{Hash: hashOfSeed("oid-rt-1"), Offset: 4 << 20, Size: 4 << 20},
 		{Hash: hashOfSeed("oid-rt-2"), Offset: 8 << 20, Size: 1 << 20},
 	}
-	wantOID := blockstore.ComputeObjectID(blocks)
+	wantOID := block.ComputeObjectID(blocks)
 	if wantOID.IsZero() {
 		t.Fatalf("ComputeObjectID returned zero — fixture is broken")
 	}
@@ -114,7 +114,7 @@ func testObjectID_ZeroSentinel(t *testing.T, factory StoreFactory) {
 
 	// Explicit PutFile with the zero sentinel.
 	got.Blocks = nil
-	got.ObjectID = blockstore.ObjectID{}
+	got.ObjectID = block.ObjectID{}
 	if err := store.PutFile(ctx, got); err != nil {
 		t.Fatalf("PutFile (zero ObjectID): %v", err)
 	}
@@ -128,7 +128,7 @@ func testObjectID_ZeroSentinel(t *testing.T, factory StoreFactory) {
 	}
 
 	// FindByObjectID(zero) MUST return (nil, nil) without indexing.
-	refs, err := store.FindByObjectID(ctx, blockstore.ObjectID{})
+	refs, err := store.FindByObjectID(ctx, block.ObjectID{})
 	if err != nil {
 		t.Errorf("FindByObjectID(zero): unexpected error: %v", err)
 	}
@@ -148,11 +148,11 @@ func testObjectID_MutationLifecycle(t *testing.T, factory StoreFactory) {
 	rootHandle := createTestShare(t, store, "objid-mutate")
 	fileHandle := createTestFile(t, store, "objid-mutate", rootHandle, "mutate.bin", 0o644)
 
-	blocks := []blockstore.BlockRef{
+	blocks := []block.BlockRef{
 		{Hash: hashOfSeed("oid-mut-0"), Offset: 0, Size: 4 << 20},
 		{Hash: hashOfSeed("oid-mut-1"), Offset: 4 << 20, Size: 4 << 20},
 	}
-	wantOID := blockstore.ComputeObjectID(blocks)
+	wantOID := block.ComputeObjectID(blocks)
 
 	file, err := store.GetFile(ctx, fileHandle)
 	if err != nil {
@@ -179,7 +179,7 @@ func testObjectID_MutationLifecycle(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (pre-mutate): %v", err)
 	}
-	mutated.ObjectID = blockstore.ObjectID{}
+	mutated.ObjectID = block.ObjectID{}
 	if err := store.PutFile(ctx, mutated); err != nil {
 		t.Fatalf("PutFile (mutation): %v", err)
 	}
@@ -215,7 +215,7 @@ func testObjectID_SortStability(t *testing.T, factory StoreFactory) {
 	fileHandle := createTestFile(t, store, "objid-sort", rootHandle, "sort.bin", 0o644)
 
 	// Five blocks already in canonical sorted-by-offset order.
-	blocks := []blockstore.BlockRef{
+	blocks := []block.BlockRef{
 		{Hash: hashOfSeed("oid-srt-0"), Offset: 0, Size: 1 << 20},
 		{Hash: hashOfSeed("oid-srt-1"), Offset: 1 << 20, Size: 1 << 20},
 		{Hash: hashOfSeed("oid-srt-2"), Offset: 2 << 20, Size: 1 << 20},
@@ -225,8 +225,8 @@ func testObjectID_SortStability(t *testing.T, factory StoreFactory) {
 
 	// Determinism: independent ComputeObjectID calls over the same input
 	// produce byte-identical outputs.
-	a := blockstore.ComputeObjectID(blocks)
-	b := blockstore.ComputeObjectID(blocks)
+	a := block.ComputeObjectID(blocks)
+	b := block.ComputeObjectID(blocks)
 	if a != b {
 		t.Fatalf("ComputeObjectID determinism violated: %s vs %s", a.String(), b.String())
 	}
@@ -246,7 +246,7 @@ func testObjectID_SortStability(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile (round-trip): %v", err)
 	}
-	recomputed := blockstore.ComputeObjectID(got.Blocks)
+	recomputed := block.ComputeObjectID(got.Blocks)
 	if recomputed != got.ObjectID {
 		t.Errorf("recompute(stored Blocks) != stored ObjectID: %s vs %s",
 			recomputed.String(), got.ObjectID.String())
@@ -290,7 +290,7 @@ type raceWorkerResult struct {
 // they race rather than serialize.
 func runConcurrentQuiesceRace(
 	ctx context.Context,
-	store metadata.MetadataStore,
+	store metadata.Store,
 	files [2]*metadata.File,
 ) (raceWorkerResult, raceWorkerResult) {
 	var wg sync.WaitGroup

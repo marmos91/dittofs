@@ -30,7 +30,7 @@ func init() {
 // WITHOUT a Reset, so the persisted schema + data survive the simulated
 // restart. This also re-exercises the ensureStoreID self-heal on reopen
 // (the singleton store_id row must round-trip, not deadlock the open).
-func reopenPostgresByteVerify(t *testing.T) metadata.MetadataStore {
+func reopenPostgresByteVerify(t *testing.T) metadata.Store {
 	t.Helper()
 	dsn := os.Getenv("DITTOFS_TEST_POSTGRES_DSN")
 	if dsn == "" {
@@ -46,7 +46,7 @@ func reopenPostgresByteVerify(t *testing.T) metadata.MetadataStore {
 	return store
 }
 
-func openPostgresByteVerify(t *testing.T) (metadata.MetadataStore, string) {
+func openPostgresByteVerify(t *testing.T) (metadata.Store, string) {
 	t.Helper()
 	dsn := os.Getenv("DITTOFS_TEST_POSTGRES_DSN")
 	if dsn == "" {

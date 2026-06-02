@@ -18,7 +18,7 @@ import (
 // testFixture provides a configured MetadataService with a memory store for testing.
 type testFixture struct {
 	t          *testing.T
-	service    *metadata.MetadataService
+	service    *metadata.Service
 	store      *memory.MemoryMetadataStore
 	shareName  string
 	rootHandle metadata.FileHandle

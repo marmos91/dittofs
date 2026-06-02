@@ -6,14 +6,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // ============================================================================
 // file_block_refs CRUD
 // ============================================================================
 //
-// Stores FileAttr.Blocks []blockstore.BlockRef rows for files. Per
+// Stores FileAttr.Blocks []block.BlockRef rows for files. Per
 // we use a separate table (not JSONB on files) to avoid TOAST write
 // amplification on the VM-primary workload.
 //
@@ -29,7 +29,7 @@ import (
 // (file_id, "offset") PK — a duplicate offset would be rejected. The
 // DELETE first ensures stale offsets from a prior list are not left
 // behind when the new list is shorter.
-func putFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks []blockstore.BlockRef) error {
+func putFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks []block.BlockRef) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM file_block_refs WHERE file_id = $1`, fileID); err != nil {
 		return fmt.Errorf("delete file_block_refs for %s: %w", fileID, err)
 	}
@@ -59,7 +59,7 @@ func putFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks [
 // Used by GetFile to populate FileAttr.Blocks. The covering index
 // (PRIMARY KEY ... INCLUDE(size, hash)) means this is index-only; no
 // heap fetch on the cold-cache read path.
-func getFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID) ([]blockstore.BlockRef, error) {
+func getFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID) ([]block.BlockRef, error) {
 	rows, err := tx.Query(ctx,
 		`SELECT "offset", size, hash FROM file_block_refs WHERE file_id = $1 ORDER BY "offset" ASC`,
 		fileID,
@@ -69,7 +69,7 @@ func getFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID) ([]block
 	}
 	defer rows.Close()
 
-	var out []blockstore.BlockRef
+	var out []block.BlockRef
 	for rows.Next() {
 		var off int64
 		var sz int32
@@ -79,13 +79,13 @@ func getFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID) ([]block
 		}
 		// T-12-06 mitigation: never coerce a malformed BYTEA hash to a
 		// half-decoded BlockRef — surface the error explicitly.
-		if len(raw) != blockstore.HashSize {
+		if len(raw) != block.HashSize {
 			return nil, fmt.Errorf(
 				"file_block_refs.hash for %s/%d has unexpected length %d (want %d)",
-				fileID, off, len(raw), blockstore.HashSize,
+				fileID, off, len(raw), block.HashSize,
 			)
 		}
-		var br blockstore.BlockRef
+		var br block.BlockRef
 		copy(br.Hash[:], raw)
 		br.Offset = uint64(off)
 		br.Size = uint32(sz)
@@ -115,7 +115,7 @@ func deleteFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID) error
 // loadFileBlockRefs loads all rows for fileID via the pool (not a tx).
 // Used by GetFile, which intentionally avoids a tx for read performance.
 // Same SQL as getFileBlockRefs but routed through the store's pool helper.
-func (s *PostgresMetadataStore) loadFileBlockRefs(ctx context.Context, fileID uuid.UUID) ([]blockstore.BlockRef, error) {
+func (s *PostgresMetadataStore) loadFileBlockRefs(ctx context.Context, fileID uuid.UUID) ([]block.BlockRef, error) {
 	rows, err := s.query(ctx,
 		`SELECT "offset", size, hash FROM file_block_refs WHERE file_id = $1 ORDER BY "offset" ASC`,
 		fileID,
@@ -125,7 +125,7 @@ func (s *PostgresMetadataStore) loadFileBlockRefs(ctx context.Context, fileID uu
 	}
 	defer rows.Close()
 
-	var out []blockstore.BlockRef
+	var out []block.BlockRef
 	for rows.Next() {
 		var off int64
 		var sz int32
@@ -133,13 +133,13 @@ func (s *PostgresMetadataStore) loadFileBlockRefs(ctx context.Context, fileID uu
 		if err := rows.Scan(&off, &sz, &raw); err != nil {
 			return nil, fmt.Errorf("scan file_block_ref: %w", err)
 		}
-		if len(raw) != blockstore.HashSize {
+		if len(raw) != block.HashSize {
 			return nil, fmt.Errorf(
 				"file_block_refs.hash for %s/%d has unexpected length %d (want %d)",
-				fileID, off, len(raw), blockstore.HashSize,
+				fileID, off, len(raw), block.HashSize,
 			)
 		}
-		var br blockstore.BlockRef
+		var br block.BlockRef
 		copy(br.Hash[:], raw)
 		br.Offset = uint64(off)
 		br.Size = uint32(sz)

@@ -5,8 +5,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/remote"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/snapshot"
 )
@@ -27,7 +27,7 @@ type BackupResult struct {
 
 	// HashSet is the engine-returned set, reused by the manifest + verify
 	// workloads so a benchmark can chain them without re-running Backup.
-	HashSet *blockstore.HashSet
+	HashSet *block.HashSet
 }
 
 // countingDiscard counts bytes written to it and drops them. Used so the
@@ -50,7 +50,7 @@ func (c *countingDiscard) Write(p []byte) (int, error) {
 // around), whereas the memory engine gob-encodes its whole snapshot into
 // one internal buffer before writing (so its B/op reflects that buffer,
 // not a stream).
-func RunBackup(ctx context.Context, store metadata.MetadataStore) (BackupResult, error) {
+func RunBackup(ctx context.Context, store metadata.Store) (BackupResult, error) {
 	backupable, ok := store.(metadata.Backupable)
 	if !ok {
 		return BackupResult{}, fmt.Errorf("snapshots bench: store is not Backupable")
@@ -64,7 +64,7 @@ func RunBackup(ctx context.Context, store metadata.MetadataStore) (BackupResult,
 	if hs != nil {
 		count = hs.Len()
 	} else {
-		hs = blockstore.NewHashSet(0)
+		hs = block.NewHashSet(0)
 	}
 	return BackupResult{DumpBytes: cd.n, ManifestHashes: count, HashSet: hs}, nil
 }
@@ -72,7 +72,7 @@ func RunBackup(ctx context.Context, store metadata.MetadataStore) (BackupResult,
 // RunWriteManifest serializes hs to a counting discard writer and returns
 // the manifest's on-disk byte size. WriteManifest streams sorted hex lines,
 // so this measures the sort + encode cost, not a buffer allocation.
-func RunWriteManifest(hs *blockstore.HashSet) (int64, error) {
+func RunWriteManifest(hs *block.HashSet) (int64, error) {
 	cd := &countingDiscard{}
 	if err := snapshot.WriteManifest(cd, hs); err != nil {
 		return 0, fmt.Errorf("snapshots bench: write manifest: %w", err)
@@ -84,9 +84,9 @@ func RunWriteManifest(hs *blockstore.HashSet) (int64, error) {
 // subsequent RunVerify finds every probe present (the all-durable happy
 // path, which is also the most expensive: it never short-circuits on a
 // miss). Returns the number of objects seeded.
-func SeedRemote(ctx context.Context, rs remote.RemoteStore, hs *blockstore.HashSet) (int, error) {
+func SeedRemote(ctx context.Context, rs remote.RemoteStore, hs *block.HashSet) (int, error) {
 	n := 0
-	err := hs.ForEach(func(h blockstore.ContentHash) error {
+	err := hs.ForEach(func(h block.ContentHash) error {
 		if err := rs.Put(ctx, h, nil); err != nil {
 			return fmt.Errorf("snapshots bench: seed remote put: %w", err)
 		}
@@ -103,7 +103,7 @@ func SeedRemote(ctx context.Context, rs remote.RemoteStore, hs *blockstore.HashS
 // and returns the number of hashes probed. The caller times the call. With
 // an all-present remote (see SeedRemote) every probe runs, giving the
 // worst-case verify wall time for the manifest size.
-func RunVerify(ctx context.Context, rs remote.RemoteStore, hs *blockstore.HashSet) (int, error) {
+func RunVerify(ctx context.Context, rs remote.RemoteStore, hs *block.HashSet) (int, error) {
 	if err := snapshot.VerifyRemoteDurability(ctx, rs, hs, VerifyConcurrency); err != nil {
 		return 0, fmt.Errorf("snapshots bench: verify: %w", err)
 	}
@@ -113,7 +113,7 @@ func RunVerify(ctx context.Context, rs remote.RemoteStore, hs *blockstore.HashSe
 // SerializeManifest renders hs to its on-disk byte form via the production
 // WriteManifest encoder. Benchmarks call it once, outside the timed loop,
 // then feed the bytes to RunReadManifest so only the parse is measured.
-func SerializeManifest(hs *blockstore.HashSet) ([]byte, error) {
+func SerializeManifest(hs *block.HashSet) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := snapshot.WriteManifest(&buf, hs); err != nil {
 		return nil, fmt.Errorf("snapshots bench: serialize manifest: %w", err)

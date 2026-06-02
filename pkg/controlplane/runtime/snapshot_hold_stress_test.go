@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -39,11 +39,11 @@ func newConcurrentSnapshotRuntime(t *testing.T) *Runtime {
 // writeManifestForStress is the goroutine-safe (no *testing.T) manifest
 // writer used by the churn workers — require.* must not run off the test
 // goroutine, so errors are returned for the caller to record.
-func writeManifestForStress(path string, hashes []blockstore.ContentHash) error {
+func writeManifestForStress(path string, hashes []block.ContentHash) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	hs := blockstore.NewHashSet(len(hashes))
+	hs := block.NewHashSet(len(hashes))
 	for _, h := range hashes {
 		hs.Add(h)
 	}
@@ -87,14 +87,14 @@ func TestSnapshotHoldProvider_StressGCvsDeleteUnderChurn(t *testing.T) {
 	require.NoError(t, rt.sharesSvc.SetLocalStoreDirForTesting(pinnedShare, pinnedDir))
 
 	const pinnedCount = 8
-	pinnedSet := make(map[blockstore.ContentHash]struct{}, pinnedCount)
-	pinnedHashes := make([]blockstore.ContentHash, 0, pinnedCount)
+	pinnedSet := make(map[block.ContentHash]struct{}, pinnedCount)
+	pinnedHashes := make([]block.ContentHash, 0, pinnedCount)
 	for i := 0; i < pinnedCount; i++ {
 		h := hashAll(byte(0x10 + i))
 		id := snapshotHoldCreateReady(t, rt, pinnedShare)
 		snapshotHoldWriteManifest(t,
 			(&models.Snapshot{ID: id}).ManifestPath(pinnedDir),
-			[]blockstore.ContentHash{h})
+			[]block.ContentHash{h})
 		pinnedHashes = append(pinnedHashes, h)
 		pinnedSet[h] = struct{}{}
 	}
@@ -146,9 +146,9 @@ func TestSnapshotHoldProvider_StressGCvsDeleteUnderChurn(t *testing.T) {
 			defer markWg.Done()
 			for !stop.Load() {
 				provider := rt.snapshotHoldForRemote(allShares)
-				seen := make(map[blockstore.ContentHash]struct{}, pinnedCount*2)
+				seen := make(map[block.ContentHash]struct{}, pinnedCount*2)
 				err := provider.HeldHashes(context.Background(), "remote-1", allShares,
-					func(h blockstore.ContentHash) error {
+					func(h block.ContentHash) error {
 						seen[h] = struct{}{}
 						return nil
 					})
@@ -194,7 +194,7 @@ func TestSnapshotHoldProvider_StressGCvsDeleteUnderChurn(t *testing.T) {
 					return
 				}
 				manifestPath := (&models.Snapshot{ID: id}).ManifestPath(dir)
-				if err := writeManifestForStress(manifestPath, []blockstore.ContentHash{h}); err != nil {
+				if err := writeManifestForStress(manifestPath, []block.ContentHash{h}); err != nil {
 					recordErr("write manifest: " + err.Error())
 					return
 				}
@@ -221,9 +221,9 @@ func TestSnapshotHoldProvider_StressGCvsDeleteUnderChurn(t *testing.T) {
 	// No leaked holds: every transient snapshot deleted, so a final mark
 	// across all shares returns EXACTLY the pinned set.
 	provider := rt.snapshotHoldForRemote(allShares)
-	final := make(map[blockstore.ContentHash]struct{})
+	final := make(map[block.ContentHash]struct{})
 	require.NoError(t, provider.HeldHashes(context.Background(), "remote-1", allShares,
-		func(h blockstore.ContentHash) error {
+		func(h block.ContentHash) error {
 			final[h] = struct{}{}
 			return nil
 		}))
@@ -262,7 +262,7 @@ func TestSnapshotHoldProvider_DeleteLockSerializesAcrossInstances(t *testing.T) 
 	id := snapshotHoldCreateReady(t, rt, shareName)
 	snapshotHoldWriteManifest(t,
 		(&models.Snapshot{ID: id}).ManifestPath(localStoreDir),
-		[]blockstore.ContentHash{hashAll(0x42)})
+		[]block.ContentHash{hashAll(0x42)})
 
 	// Provider A acquires the delete lock (write side).
 	providerA := rt.snapshotHoldForRemote([]string{shareName}).(*SnapshotHoldProvider)
@@ -275,7 +275,7 @@ func TestSnapshotHoldProvider_DeleteLockSerializesAcrossInstances(t *testing.T) 
 	markDone := make(chan error, 1)
 	go func() {
 		markDone <- providerB.HeldHashes(context.Background(), "remote-1", []string{shareName},
-			func(blockstore.ContentHash) error { return nil })
+			func(block.ContentHash) error { return nil })
 	}()
 
 	select {

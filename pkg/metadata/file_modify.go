@@ -8,7 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -19,7 +19,7 @@ import (
 //   - Special names: "." (current dir), ".." (parent dir)
 //   - Permission checking (execute on directory for search)
 //   - Name resolution in directory
-func (s *MetadataService) Lookup(ctx *AuthContext, dirHandle FileHandle, name string) (*File, error) {
+func (s *Service) Lookup(ctx *AuthContext, dirHandle FileHandle, name string) (*File, error) {
 	store, err := s.storeForHandle(dirHandle)
 	if err != nil {
 		return nil, err
@@ -114,7 +114,7 @@ func equalFoldName(a, b string) bool {
 //
 // Note: NFS callers must keep using Lookup directly — POSIX paths are
 // case-sensitive.
-func (s *MetadataService) LookupCaseInsensitive(ctx *AuthContext, dirHandle FileHandle, name string) (*File, string, error) {
+func (s *Service) LookupCaseInsensitive(ctx *AuthContext, dirHandle FileHandle, name string) (*File, string, error) {
 	f, err := s.Lookup(ctx, dirHandle, name)
 	if err == nil {
 		return f, name, nil
@@ -160,7 +160,7 @@ func (s *MetadataService) LookupCaseInsensitive(ctx *AuthContext, dirHandle File
 }
 
 // ReadSymlink reads the target path of a symbolic link.
-func (s *MetadataService) ReadSymlink(ctx *AuthContext, handle FileHandle) (string, *File, error) {
+func (s *Service) ReadSymlink(ctx *AuthContext, handle FileHandle) (string, *File, error) {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return "", nil, err
@@ -191,7 +191,7 @@ func (s *MetadataService) ReadSymlink(ctx *AuthContext, handle FileHandle) (stri
 // data: Before is the state the operation transitioned from (the attributes the
 // mutation observed), After is the resulting state (H9). For SETATTR the WCC
 // subject is the file itself, not a parent directory.
-func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *SetAttrs) (*DirWcc, error) {
+func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *SetAttrs) (*DirWcc, error) {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return nil, err
@@ -357,15 +357,15 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		// GC, the same as RemoveFile, which drops a file's entire block list
 		// without inline decrements.
 		if *attrs.Size < file.Size && len(file.Blocks) > 0 {
-			file.Blocks = blockstore.PruneBlockRefsToSize(file.Blocks, *attrs.Size)
+			file.Blocks = block.PruneBlockRefsToSize(file.Blocks, *attrs.Size)
 			// Keep ObjectID (the Merkle root over Blocks) consistent with the
 			// trimmed list, or zero it when no blocks remain so the file reads
 			// as "never quiesced" instead of carrying a stale dedup pointer.
 			if !file.ObjectID.IsZero() {
 				if len(file.Blocks) == 0 {
-					file.ObjectID = blockstore.ObjectID{}
+					file.ObjectID = block.ObjectID{}
 				} else {
-					file.ObjectID = blockstore.ComputeObjectID(file.Blocks)
+					file.ObjectID = block.ComputeObjectID(file.Blocks)
 				}
 			}
 		}
@@ -457,7 +457,7 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 }
 
 // Move moves or renames a file or directory atomically.
-func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName string, toDir FileHandle, toName string) (*RenameWcc, error) {
+func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, toDir FileHandle, toName string) (*RenameWcc, error) {
 	store, err := s.storeForHandle(fromDir)
 	if err != nil {
 		return nil, err
@@ -801,7 +801,7 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 // updateDescendantPaths recursively updates the Path field of all descendants
 // of a renamed directory. Uses iterative (queue-based) traversal to avoid
 // stack overflow on deep trees.
-func (s *MetadataService) updateDescendantPaths(ctx context.Context, tx Transaction, dirHandle FileHandle, oldPrefix, newPrefix string) error {
+func (s *Service) updateDescendantPaths(ctx context.Context, tx Transaction, dirHandle FileHandle, oldPrefix, newPrefix string) error {
 	queue := []FileHandle{dirHandle}
 
 	for len(queue) > 0 {
@@ -848,7 +848,7 @@ func (s *MetadataService) updateDescendantPaths(ctx context.Context, tx Transact
 // MarkFileAsOrphaned sets a file's link count to 0, marking it as orphaned.
 //
 // This is used by NFS handlers for "silly rename" behavior.
-func (s *MetadataService) MarkFileAsOrphaned(ctx *AuthContext, handle FileHandle) error {
+func (s *Service) MarkFileAsOrphaned(ctx *AuthContext, handle FileHandle) error {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return err

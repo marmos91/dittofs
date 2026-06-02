@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -24,7 +24,7 @@ func putFileForBlocksTest(
 	store *MemoryMetadataStore,
 	shareName string,
 	name string,
-	blocks []blockstore.BlockRef,
+	blocks []block.BlockRef,
 ) (metadata.FileHandle, *metadata.File) {
 	t.Helper()
 
@@ -67,10 +67,10 @@ func putFileForBlocksTest(
 
 // makeBlock returns a BlockRef with a deterministic ContentHash whose first
 // byte is `seed` and offset/size pegged to the block index.
-func makeBlock(seed byte, idx int) blockstore.BlockRef {
-	var h blockstore.ContentHash
+func makeBlock(seed byte, idx int) block.BlockRef {
+	var h block.ContentHash
 	h[0] = seed
-	return blockstore.BlockRef{
+	return block.BlockRef{
 		Hash:   h,
 		Offset: uint64(idx) * 4 * 1024 * 1024,
 		Size:   4 * 1024 * 1024,
@@ -84,7 +84,7 @@ func TestMemoryStore_PutFile_BlocksDeepCopy(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
-	original := []blockstore.BlockRef{
+	original := []block.BlockRef{
 		makeBlock(0xAA, 0),
 		makeBlock(0xBB, 1),
 		makeBlock(0xCC, 2),
@@ -117,7 +117,7 @@ func TestMemoryStore_GetFile_BlocksDeepCopy(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
-	original := []blockstore.BlockRef{
+	original := []block.BlockRef{
 		makeBlock(0x11, 0),
 		makeBlock(0x22, 1),
 	}

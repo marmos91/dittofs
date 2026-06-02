@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -27,7 +27,7 @@ type byteVerifyFixture struct {
 	t             *testing.T
 	rt            *Runtime
 	store         cpstore.Store
-	meta          metadata.MetadataStore
+	meta          metadata.Store
 	bs            *engine.Store
 	shareName     string
 	localStoreDir string
@@ -42,7 +42,7 @@ type byteVerifyFixture struct {
 // newByteVerifyFixture builds the fixture for the given metadata store. The
 // metaType is the engine label recorded in the cpstore ("memory" | "badger" |
 // "postgres") — it drives snapshot/restore's per-engine Restoreable dispatch.
-func newByteVerifyFixture(t *testing.T, meta metadata.MetadataStore, metaType string) *byteVerifyFixture {
+func newByteVerifyFixture(t *testing.T, meta metadata.Store, metaType string) *byteVerifyFixture {
 	return newByteVerifyFixtureOpts(t, meta, metaType, nil)
 }
 
@@ -51,7 +51,7 @@ func newByteVerifyFixture(t *testing.T, meta metadata.MetadataStore, metaType st
 // BlockStoreConfig and wired onto the share (RemoteBlockStoreID), so the
 // engine gets a real syncer + remote target and snapshot create runs the
 // full drain -> VerifyRemoteDurability gate. nil keeps the share local-only.
-func newByteVerifyFixtureOpts(t *testing.T, meta metadata.MetadataStore, metaType string, remoteCfg *models.BlockStoreConfig) *byteVerifyFixture {
+func newByteVerifyFixtureOpts(t *testing.T, meta metadata.Store, metaType string, remoteCfg *models.BlockStoreConfig) *byteVerifyFixture {
 	t.Helper()
 
 	cp, err := cpstore.New(&cpstore.Config{
@@ -174,7 +174,7 @@ func newByteVerifyFixtureOpts(t *testing.T, meta metadata.MetadataStore, metaTyp
 // re-added. Used by the crash-recovery test to prove startup recovery rolls
 // back after a genuine reopen — not just an in-memory re-register. The cp
 // store is intentionally NOT closed (it is the durable marker home).
-func (f *byteVerifyFixture) simulateRestart(reopen func(*testing.T) metadata.MetadataStore) {
+func (f *byteVerifyFixture) simulateRestart(reopen func(*testing.T) metadata.Store) {
 	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	_ = f.rt.Shutdown(ctx)
@@ -529,11 +529,11 @@ func TestSnapshotByteVerify_Matrix(t *testing.T) {
 type byteVerifyBackend struct {
 	name string
 	// open constructs the metadata store and returns it + its engine label.
-	open func(t *testing.T) (metadata.MetadataStore, string)
+	open func(t *testing.T) (metadata.Store, string)
 	// reopen re-opens the SAME durable store (badger dir / postgres DSN)
 	// after a simulated restart. nil for backends that cannot survive a
 	// restart (memory) — the crash-recovery-reopen test skips those.
-	reopen func(t *testing.T) metadata.MetadataStore
+	reopen func(t *testing.T) metadata.Store
 	// skip, when non-empty, marks the case as skipped with this reason.
 	skip string
 }
@@ -551,7 +551,7 @@ func byteVerifyBackends(t *testing.T) []byteVerifyBackend {
 	backends := []byteVerifyBackend{
 		{
 			name: "memory",
-			open: func(t *testing.T) (metadata.MetadataStore, string) {
+			open: func(t *testing.T) (metadata.Store, string) {
 				return metadatamemory.NewMemoryMetadataStoreWithDefaults(), "memory"
 			},
 		},
@@ -575,7 +575,7 @@ func byteVerifyBackends(t *testing.T) []byteVerifyBackend {
 func newBadgerByteVerifyBackend(t *testing.T) byteVerifyBackend {
 	t.Helper()
 	dir := t.TempDir()
-	openAt := func(t *testing.T) metadata.MetadataStore {
+	openAt := func(t *testing.T) metadata.Store {
 		store, err := metadatabadger.NewBadgerMetadataStoreWithDefaults(context.Background(), dir)
 		if err != nil {
 			t.Fatalf("NewBadgerMetadataStoreWithDefaults: %v", err)
@@ -585,7 +585,7 @@ func newBadgerByteVerifyBackend(t *testing.T) byteVerifyBackend {
 	}
 	return byteVerifyBackend{
 		name:   "badger",
-		open:   func(t *testing.T) (metadata.MetadataStore, string) { return openAt(t), "badger" },
+		open:   func(t *testing.T) (metadata.Store, string) { return openAt(t), "badger" },
 		reopen: openAt,
 	}
 }

@@ -620,7 +620,7 @@ func (s *Adapter) Stop(ctx context.Context) error {
 // between the MetadataService (which owns per-share LockManagers) and the
 // lease package (which needs to resolve them by share name).
 type metadataServiceResolver struct {
-	metaSvc *metadata.MetadataService
+	metaSvc *metadata.Service
 }
 
 // lockManagerForShare resolves the per-share LockManager and returns it as a

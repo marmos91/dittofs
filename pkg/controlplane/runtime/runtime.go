@@ -7,8 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/sid"
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/adapters"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/identity"
@@ -55,7 +55,7 @@ type Runtime struct {
 	mu    sync.RWMutex
 	store store.Store
 
-	metadataService *metadata.MetadataService
+	metadataService *metadata.Service
 
 	adaptersSvc    *adapters.Service
 	storesSvc      *stores.Service
@@ -268,15 +268,15 @@ func (r *Runtime) AddAdapter(adapter ProtocolAdapter) error {
 
 // --- Metadata Store Management (delegated to stores.Service) ---
 
-func (r *Runtime) RegisterMetadataStore(name string, metaStore metadata.MetadataStore) error {
+func (r *Runtime) RegisterMetadataStore(name string, metaStore metadata.Store) error {
 	return r.storesSvc.RegisterMetadataStore(name, metaStore)
 }
 
-func (r *Runtime) GetMetadataStore(name string) (metadata.MetadataStore, error) {
+func (r *Runtime) GetMetadataStore(name string) (metadata.Store, error) {
 	return r.storesSvc.GetMetadataStore(name)
 }
 
-func (r *Runtime) GetMetadataStoreForShare(shareName string) (metadata.MetadataStore, error) {
+func (r *Runtime) GetMetadataStoreForShare(shareName string) (metadata.Store, error) {
 	share, err := r.sharesSvc.GetShare(shareName)
 	if err != nil {
 		return nil, err
@@ -423,7 +423,7 @@ func (r *Runtime) RemoveShare(name string) error {
 	return rmErr
 }
 
-func (r *Runtime) UpdateShare(name string, readOnly *bool, defaultPermission *string, retentionPolicy *blockstore.RetentionPolicy, retentionTTL *time.Duration) error {
+func (r *Runtime) UpdateShare(name string, readOnly *bool, defaultPermission *string, retentionPolicy *block.RetentionPolicy, retentionTTL *time.Duration) error {
 	return r.sharesSvc.UpdateShare(name, readOnly, defaultPermission, retentionPolicy, retentionTTL)
 }
 
@@ -656,8 +656,8 @@ func (r *Runtime) DisconnectClient(clientID string) *ClientRecord {
 
 // --- Service Access ---
 
-func (r *Runtime) Store() store.Store                            { return r.store }
-func (r *Runtime) GetMetadataService() *metadata.MetadataService { return r.metadataService }
+func (r *Runtime) Store() store.Store                    { return r.store }
+func (r *Runtime) GetMetadataService() *metadata.Service { return r.metadataService }
 
 // SIDMapper returns the machine SID mapper for Windows identity mapping.
 // Returns nil if the runtime has not been started yet (Serve not called).

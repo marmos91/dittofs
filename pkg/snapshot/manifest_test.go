@@ -10,14 +10,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/snapshot"
 )
 
 // mustHash returns a deterministic ContentHash seeded by byteSeed so
 // every test gets unique, sortable hashes without RNG flakiness.
-func mustHash(byteSeed byte) blockstore.ContentHash {
-	var h blockstore.ContentHash
+func mustHash(byteSeed byte) block.ContentHash {
+	var h block.ContentHash
 	for i := range h {
 		h[i] = byteSeed + byte(i)
 	}
@@ -34,8 +34,8 @@ func TestWriteRead_RoundTrip(t *testing.T) {
 	for _, n := range []int{0, 1, 1000} {
 		n := n
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
-			hs := blockstore.NewHashSet(n)
-			originals := make([]blockstore.ContentHash, 0, n)
+			hs := block.NewHashSet(n)
+			originals := make([]block.ContentHash, 0, n)
 			for i := 0; i < n; i++ {
 				h := mustHash(byte(i))
 				// disambiguate beyond 256 seeds
@@ -67,7 +67,7 @@ func TestWriteRead_RoundTrip(t *testing.T) {
 }
 
 func TestWriteRead_SortedAscending(t *testing.T) {
-	hs := blockstore.NewHashSet(5)
+	hs := block.NewHashSet(5)
 	// Insert in non-ascending seed order to prove the writer re-sorts via
 	// HashSet.Sorted (the map iteration order is unspecified anyway).
 	for _, seed := range []byte{0x40, 0x10, 0x80, 0x20, 0x60} {
@@ -168,9 +168,9 @@ func TestRead_ToleratesCRLF(t *testing.T) {
 // snapshot scale pins behaviour against future input-shape regressions.
 func TestRead_LargeBuffer_Handles100k(t *testing.T) {
 	const N = 100_000
-	hs := blockstore.NewHashSet(N)
+	hs := block.NewHashSet(N)
 	for i := 0; i < N; i++ {
-		var h blockstore.ContentHash
+		var h block.ContentHash
 		// Distribute uniquely across 100k by mixing in 3 byte positions.
 		h[0] = byte(i)
 		h[1] = byte(i >> 8)
@@ -191,7 +191,7 @@ func TestRead_LargeBuffer_Handles100k(t *testing.T) {
 		t.Fatalf("Len mismatch: got %d want %d", got.Len(), N)
 	}
 	for _, idx := range []int{0, N / 2, N - 1} {
-		var h blockstore.ContentHash
+		var h block.ContentHash
 		h[0] = byte(idx)
 		h[1] = byte(idx >> 8)
 		h[2] = byte(idx >> 16)
@@ -205,7 +205,7 @@ func TestWriteAtomic_CompleteFileOnly(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "snap.hashes")
 
-	hs := blockstore.NewHashSet(3)
+	hs := block.NewHashSet(3)
 	for _, s := range []byte{0x01, 0x02, 0x03} {
 		hs.Add(mustHash(s))
 	}
@@ -253,7 +253,7 @@ func TestWriteAtomic_NoPartialOnError(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(roDir, 0o700) })
 
 	path := filepath.Join(roDir, "snap.hashes")
-	hs := blockstore.NewHashSet(1)
+	hs := block.NewHashSet(1)
 	hs.Add(mustHash(0x77))
 
 	err := snapshot.WriteManifestAtomic(path, hs)
@@ -270,13 +270,13 @@ func TestWriteAtomic_OverwritesExisting(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "snap.hashes")
 
-	first := blockstore.NewHashSet(1)
+	first := block.NewHashSet(1)
 	first.Add(mustHash(0x10))
 	if err := snapshot.WriteManifestAtomic(path, first); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 
-	second := blockstore.NewHashSet(2)
+	second := block.NewHashSet(2)
 	second.Add(mustHash(0x20))
 	second.Add(mustHash(0x30))
 	if err := snapshot.WriteManifestAtomic(path, second); err != nil {

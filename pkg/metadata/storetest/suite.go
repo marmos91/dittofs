@@ -11,7 +11,7 @@ import (
 // children become "/name"; nested entries become "/parent/.../name". This
 // mirrors production (file_create.go) so path-keyed backends (Postgres) see
 // a unique, non-empty path per entry instead of all-"" collisions.
-func childFullPath(t *testing.T, store metadata.MetadataStore, parentHandle metadata.FileHandle, name string) string {
+func childFullPath(t *testing.T, store metadata.Store, parentHandle metadata.FileHandle, name string) string {
 	t.Helper()
 
 	parent, err := store.GetFile(t.Context(), parentHandle)
@@ -31,7 +31,7 @@ func childFullPath(t *testing.T, store metadata.MetadataStore, parentHandle meta
 // StoreFactory creates a fresh MetadataStore instance for each test.
 // The factory receives *testing.T so it can use t.TempDir() for stores
 // that need filesystem paths and t.Cleanup() for teardown.
-type StoreFactory func(t *testing.T) metadata.MetadataStore
+type StoreFactory func(t *testing.T) metadata.Store
 
 // RunConformanceSuite runs the full conformance test suite against the provided
 // store factory. Each test gets a fresh store instance to ensure isolation.
@@ -151,7 +151,7 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 
 // createTestShare is a helper that creates a share and root directory for testing.
 // Returns the root handle.
-func createTestShare(t *testing.T, store metadata.MetadataStore, shareName string) metadata.FileHandle {
+func createTestShare(t *testing.T, store metadata.Store, shareName string) metadata.FileHandle {
 	t.Helper()
 
 	ctx := t.Context()
@@ -186,7 +186,7 @@ func createTestShare(t *testing.T, store metadata.MetadataStore, shareName strin
 
 // createTestFile is a helper that creates a regular file in a directory.
 // Returns the file handle.
-func createTestFile(t *testing.T, store metadata.MetadataStore, shareName string, dirHandle metadata.FileHandle, name string, mode uint32) metadata.FileHandle {
+func createTestFile(t *testing.T, store metadata.Store, shareName string, dirHandle metadata.FileHandle, name string, mode uint32) metadata.FileHandle {
 	t.Helper()
 
 	ctx := t.Context()
@@ -246,7 +246,7 @@ func createTestFile(t *testing.T, store metadata.MetadataStore, shareName string
 
 // createTestDir is a helper that creates a directory within a parent directory.
 // Returns the directory handle.
-func createTestDir(t *testing.T, store metadata.MetadataStore, shareName string, parentHandle metadata.FileHandle, name string) metadata.FileHandle {
+func createTestDir(t *testing.T, store metadata.Store, shareName string, parentHandle metadata.FileHandle, name string) metadata.FileHandle {
 	t.Helper()
 
 	ctx := t.Context()

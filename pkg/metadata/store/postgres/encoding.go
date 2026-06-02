@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
@@ -183,10 +183,10 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 	// object_id BYTEA -> FileAttr.ObjectID.
 	// NULL or empty -> ObjectID stays zero (sentinel: never quiesced).
 	if len(objectIDRaw) > 0 {
-		if len(objectIDRaw) != blockstore.HashSize {
+		if len(objectIDRaw) != block.HashSize {
 			return nil, fmt.Errorf(
 				"postgres fileRowToFileWithNlink: object_id has invalid length %d (want %d)",
-				len(objectIDRaw), blockstore.HashSize,
+				len(objectIDRaw), block.HashSize,
 			)
 		}
 		copy(file.ObjectID[:], objectIDRaw)

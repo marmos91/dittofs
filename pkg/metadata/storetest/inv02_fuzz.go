@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -148,7 +148,7 @@ func testINV02_PropertyFuzz(t *testing.T, factory StoreFactory) {
 // that ComputeObjectID(file.FileAttr.Blocks) == file.FileAttr.ObjectID
 // for every non-zero stored ObjectID. Zero ObjectIDs (never quiesced or
 // post-mutation pre-quiesce) are tolerated and left unchecked.
-func assertObjectIDDrift(ctx context.Context, store metadata.MetadataStore, shareName string) error {
+func assertObjectIDDrift(ctx context.Context, store metadata.Store, shareName string) error {
 	rootHandle, err := store.GetRootHandle(ctx, shareName)
 	if err != nil {
 		return fmt.Errorf("GetRootHandle: %w", err)
@@ -157,7 +157,7 @@ func assertObjectIDDrift(ctx context.Context, store metadata.MetadataStore, shar
 		if f.ObjectID.IsZero() {
 			return nil
 		}
-		recomputed := blockstore.ComputeObjectID(f.Blocks)
+		recomputed := block.ComputeObjectID(f.Blocks)
 		if recomputed != f.ObjectID {
 			return fmt.Errorf("file %s: stored ObjectID %s != recompute(Blocks) %s",
 				f.ID, f.ObjectID.String(), recomputed.String())
@@ -246,7 +246,7 @@ type workerState struct {
 // opID, blockIdx) so independent workers never collide. Hashes are
 // derived from a worker-relative seed so dedup-aware backends see
 // genuinely distinct content.
-func fuzzCreateFile(ctx context.Context, store metadata.MetadataStore, shareName string, rootHandle metadata.FileHandle, workerID, opID int, rng *rand.Rand, ws *workerState) error {
+func fuzzCreateFile(ctx context.Context, store metadata.Store, shareName string, rootHandle metadata.FileHandle, workerID, opID int, rng *rand.Rand, ws *workerState) error {
 	nBlocks := rng.Intn(3) + 1 // 1, 2, or 3
 	name := fmt.Sprintf("w%d-op%d.bin", workerID, opID)
 
@@ -260,16 +260,16 @@ func fuzzCreateFile(ctx context.Context, store metadata.MetadataStore, shareName
 	}
 
 	blockIDs := make([]string, 0, nBlocks)
-	refs := make([]blockstore.BlockRef, 0, nBlocks)
+	refs := make([]block.BlockRef, 0, nBlocks)
 	now := time.Now()
 	for i := 0; i < nBlocks; i++ {
 		hashSeed := fmt.Sprintf("inv02-w%d-op%d-blk%d", workerID, opID, i)
 		h := hashOfSeed(hashSeed)
 		blockID := fmt.Sprintf("inv02/%d/%d/%d", workerID, opID, i)
-		fb := &blockstore.FileBlock{
+		fb := &block.FileBlock{
 			ID:            blockID,
 			Hash:          h,
-			State:         blockstore.BlockStateRemote,
+			State:         block.BlockStateRemote,
 			LocalPath:     "/cache/" + blockID,
 			BlockStoreKey: "cas/" + h.String()[0:2] + "/" + h.String()[2:4] + "/" + h.String(),
 			DataSize:      4096,
@@ -281,7 +281,7 @@ func fuzzCreateFile(ctx context.Context, store metadata.MetadataStore, shareName
 			return fmt.Errorf("put block %s: %w", blockID, err)
 		}
 		blockIDs = append(blockIDs, blockID)
-		refs = append(refs, blockstore.BlockRef{
+		refs = append(refs, block.BlockRef{
 			Hash:   h,
 			Offset: uint64(i) * 4096,
 			Size:   4096,
@@ -324,7 +324,7 @@ func fuzzCreateFile(ctx context.Context, store metadata.MetadataStore, shareName
 // each FileBlock's RefCount. When RefCount drops to 0 the block is
 // deleted to keep the audit math correct (a RefCount=0 block contributes
 // 0 to ∑RefCount; dropping the row keeps ∑RefCount cleanly bounded).
-func fuzzDeleteFile(ctx context.Context, store metadata.MetadataStore, rootHandle metadata.FileHandle, rng *rand.Rand, ws *workerState) error {
+func fuzzDeleteFile(ctx context.Context, store metadata.Store, rootHandle metadata.FileHandle, rng *rand.Rand, ws *workerState) error {
 	if len(ws.files) == 0 {
 		return nil // nothing to delete; not an error
 	}
@@ -364,7 +364,7 @@ func fuzzDeleteFile(ctx context.Context, store metadata.MetadataStore, rootHandl
 // each source block's RefCount, and creates a new destination file with
 // the same FileAttr.Blocks list. Mirrors engine.CopyPayload's O(1)
 // semantics at the metadata level.
-func fuzzCopyFile(ctx context.Context, store metadata.MetadataStore, shareName string, rootHandle metadata.FileHandle, workerID, opID int, rng *rand.Rand, ws *workerState) error {
+func fuzzCopyFile(ctx context.Context, store metadata.Store, shareName string, rootHandle metadata.FileHandle, workerID, opID int, rng *rand.Rand, ws *workerState) error {
 	if len(ws.files) == 0 {
 		return nil // nothing to copy from; promote to a create
 	}
@@ -375,7 +375,7 @@ func fuzzCopyFile(ctx context.Context, store metadata.MetadataStore, shareName s
 	if err != nil {
 		return fmt.Errorf("GetFile src: %w", err)
 	}
-	srcBlocks := append([]blockstore.BlockRef(nil), srcFile.Blocks...)
+	srcBlocks := append([]block.BlockRef(nil), srcFile.Blocks...)
 
 	// Increment RefCount on each source FileBlock — one bump per BlockRef
 	// so multiple refs to the same hash are accounted for explicitly.
@@ -442,7 +442,7 @@ func fuzzCopyFile(ctx context.Context, store metadata.MetadataStore, shareName s
 // workers may ship distinct hashes (the create helper seeds per-worker)
 // but the test harness still treats ErrConflict / ErrAlreadyExists as a
 // non-fatal signal so the fuzzer doesn't false-fail.
-func fuzzMutateObjectID(ctx context.Context, store metadata.MetadataStore, rng *rand.Rand, ws *workerState) error {
+func fuzzMutateObjectID(ctx context.Context, store metadata.Store, rng *rand.Rand, ws *workerState) error {
 	if len(ws.files) == 0 {
 		return nil // nothing to mutate; not an error
 	}
@@ -461,7 +461,7 @@ func fuzzMutateObjectID(ctx context.Context, store metadata.MetadataStore, rng *
 		return fmt.Errorf("GetFile: %w", err)
 	}
 
-	f.ObjectID = blockstore.ComputeObjectID(f.Blocks)
+	f.ObjectID = block.ComputeObjectID(f.Blocks)
 	if err := store.PutFile(ctx, f); err != nil {
 		// first-committer-wins: another worker may have claimed
 		// the same ObjectID (improbable for distinct seed-derived
@@ -506,10 +506,10 @@ func isConcurrentQuiesceConflict(err error) bool {
 // post-fix world: one FileBlock row per hash. Legacy multi-row data is
 // tolerated because GetByHash returns ANY one row per the contract,
 // and all rows with the same hash carry the same RefCount semantics.
-func reconcileINV02(ctx context.Context, store metadata.MetadataStore, shareName string) (totalRefs, totalRefCount uint64, err error) {
+func reconcileINV02(ctx context.Context, store metadata.Store, shareName string) (totalRefs, totalRefCount uint64, err error) {
 	// 1) ∑ FileBlock.RefCount across distinct hashes via EnumerateFileBlocks.
-	seen := make(map[blockstore.ContentHash]struct{})
-	enumErr := store.EnumerateFileBlocks(ctx, func(h blockstore.ContentHash) error {
+	seen := make(map[block.ContentHash]struct{})
+	enumErr := store.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
 		if _, ok := seen[h]; ok {
 			return nil
 		}
@@ -547,7 +547,7 @@ func reconcileINV02(ctx context.Context, store metadata.MetadataStore, shareName
 // handled via the existing ListChildren cursor; depth is unbounded but
 // the fuzzer creates files only at the share root so the recursive
 // path is exercised lightly here.
-func walkShareFiles(ctx context.Context, store metadata.MetadataStore, dirHandle metadata.FileHandle, fn func(*metadata.File) error) error {
+func walkShareFiles(ctx context.Context, store metadata.Store, dirHandle metadata.FileHandle, fn func(*metadata.File) error) error {
 	cursor := ""
 	for {
 		entries, next, err := store.ListChildren(ctx, dirHandle, cursor, 0)

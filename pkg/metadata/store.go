@@ -3,7 +3,7 @@ package metadata
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -213,8 +213,8 @@ type ServerConfig interface {
 // ============================================================================
 
 // FileBlockStore defines operations for content-addressed file block management.
-// Type alias to blockstore.FileBlockStore -- all definitions live in pkg/blockstore.
-type FileBlockStore = blockstore.FileBlockStore
+// Type alias to block.FileBlockStore -- all definitions live in pkg/blockstore.
+type FileBlockStore = block.FileBlockStore
 
 // ============================================================================
 // Transaction Interface
@@ -289,7 +289,7 @@ type FilesystemMeta struct {
 // MetadataStore Interface
 // ============================================================================
 
-// MetadataStore is the main interface for metadata operations.
+// Store is the main interface for metadata operations.
 //
 // It combines five interfaces:
 //   - Files: File CRUD operations (for non-transactional use and within transactions)
@@ -310,7 +310,7 @@ type FilesystemMeta struct {
 //
 // Thread Safety:
 // Implementations must be safe for concurrent use by multiple goroutines.
-type MetadataStore interface {
+type Store interface {
 	Files          // File CRUD operations (non-transactional calls)
 	Shares         // Share lifecycle and handle management
 	ServerConfig   // Server configuration and capabilities
@@ -327,7 +327,7 @@ type MetadataStore interface {
 	// per-block, and belongs at the MetadataStore tier. Used by the GC
 	// mark phase and the refcount audit. Zero-valued ContentHashes
 	// (legacy rows pre-CAS) are emitted; callers skip them as needed.
-	EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error
+	EnumerateFileBlocks(ctx context.Context, fn func(block.ContentHash) error) error
 
 	// FindByObjectID looks up a file by its Merkle-root ObjectID.
 	// Returns (nil, nil) on miss (no row matches); non-nil result
@@ -349,7 +349,7 @@ type MetadataStore interface {
 	// a non-zero provisional ObjectID.
 	//
 	// Conformance scenarios live in pkg/metadata/storetest/objectid_*.go.
-	FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error)
+	FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.BlockRef, error)
 
 	// GetFileBlock retrieves a FileBlock by its ID. Engine-internal
 	// surface narrowed the public
@@ -357,8 +357,8 @@ type MetadataStore interface {
 	// (engine.fetch.resolveFileBlock), the dedup-delete path
 	// (engine.dedup.DeleteWithRefCount), and the recovery scan
 	// (local/fs/recovery.go) still need a by-ID lookup until 14
-	// reroutes reads through FileAttr.Blocks. See blockstore.EngineFileBlockStore.
-	GetFileBlock(ctx context.Context, id string) (*blockstore.FileBlock, error)
+	// reroutes reads through FileAttr.Blocks. See block.EngineFileBlockStore.
+	GetFileBlock(ctx context.Context, id string) (*block.FileBlock, error)
 
 	// ListFileBlocks returns every FileBlock whose ID begins with
 	// "{payloadID}/", sorted by parsed numeric block index. Returns an
@@ -366,7 +366,7 @@ type MetadataStore interface {
 	// surface: used by syncer GetFileSize/Exists, BlockStore stats fan-
 	// out, and local/fs eviction. Same 14 deprecation timeline
 	// as GetFileBlock above.
-	ListFileBlocks(ctx context.Context, payloadID string) ([]*blockstore.FileBlock, error)
+	ListFileBlocks(ctx context.Context, payloadID string) ([]*block.FileBlock, error)
 
 	// ========================================================================
 	// Usage Tracking

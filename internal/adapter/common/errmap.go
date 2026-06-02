@@ -6,7 +6,7 @@ import (
 	nfs3types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	nfs4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	smbtypes "github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 

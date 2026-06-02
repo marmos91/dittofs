@@ -11,7 +11,7 @@ import (
 	badgerdb "github.com/dgraph-io/badger/v4"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/backup"
 )
@@ -48,12 +48,12 @@ var _ metadata.Backupable = (*BadgerMetadataStore)(nil)
 //   - value     [value_len]byte
 //
 // Stream terminated by sentinel key_len = 0 (4 zero bytes).
-func (s *BadgerMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockstore.HashSet, error) {
+func (s *BadgerMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.HashSet, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("%w: %v", metadata.ErrBackupAborted, err)
 	}
 
-	hs := blockstore.NewHashSet(0)
+	hs := block.NewHashSet(0)
 
 	// Declare envW outside the callback so Finish() can be called after
 	// the View returns.

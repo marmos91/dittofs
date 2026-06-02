@@ -25,7 +25,7 @@ import (
 // POSIX Compliance:
 //   - When last link is removed, nlink is set to 0 (not deleted)
 //   - This allows fstat() on open file descriptors to return nlink=0
-func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name string) (*File, *DirWcc, error) {
+func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name string) (*File, *DirWcc, error) {
 	store, err := s.storeForHandle(parentHandle)
 	if err != nil {
 		return nil, nil, err

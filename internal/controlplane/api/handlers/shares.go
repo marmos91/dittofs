@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
@@ -279,7 +279,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse and validate retention policy
-	retPolicy, err := blockstore.ParseRetentionPolicy(req.RetentionPolicy)
+	retPolicy, err := block.ParseRetentionPolicy(req.RetentionPolicy)
 	if err != nil {
 		BadRequest(w, err.Error())
 		return
@@ -292,7 +292,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err = blockstore.ValidateRetentionPolicy(retPolicy, retTTL); err != nil {
+	if err = block.ValidateRetentionPolicy(retPolicy, retTTL); err != nil {
 		BadRequest(w, err.Error())
 		return
 	}
@@ -653,10 +653,10 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Handle retention policy updates
-	var rtRetPolicy *blockstore.RetentionPolicy
+	var rtRetPolicy *block.RetentionPolicy
 	var rtRetTTL *time.Duration
 	if req.RetentionPolicy != nil {
-		retPolicy, err := blockstore.ParseRetentionPolicy(*req.RetentionPolicy)
+		retPolicy, err := block.ParseRetentionPolicy(*req.RetentionPolicy)
 		if err != nil {
 			BadRequest(w, err.Error())
 			return
@@ -672,7 +672,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		} else {
 			retTTL = share.GetRetentionTTL()
 		}
-		if err = blockstore.ValidateRetentionPolicy(retPolicy, retTTL); err != nil {
+		if err = block.ValidateRetentionPolicy(retPolicy, retTTL); err != nil {
 			BadRequest(w, err.Error())
 			return
 		}
@@ -688,7 +688,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		currentPolicy := share.GetRetentionPolicy()
-		if err = blockstore.ValidateRetentionPolicy(currentPolicy, retTTL); err != nil {
+		if err = block.ValidateRetentionPolicy(currentPolicy, retTTL); err != nil {
 			BadRequest(w, err.Error())
 			return
 		}

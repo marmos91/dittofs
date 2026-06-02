@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -35,10 +35,10 @@ func newSnapshotHoldRuntime(t *testing.T) *Runtime {
 
 // snapshotHoldWriteManifest builds a manifest with the supplied hashes
 // and atomically writes it to path, creating parent directories as needed.
-func snapshotHoldWriteManifest(t *testing.T, path string, hashes []blockstore.ContentHash) {
+func snapshotHoldWriteManifest(t *testing.T, path string, hashes []block.ContentHash) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-	hs := blockstore.NewHashSet(len(hashes))
+	hs := block.NewHashSet(len(hashes))
 	for _, h := range hashes {
 		hs.Add(h)
 	}
@@ -100,7 +100,7 @@ func TestSnapshotHoldProvider_NilStore_NoOp(t *testing.T) {
 
 	called := 0
 	err := provider.HeldHashes(context.Background(), "remote-1", []string{"alpha"},
-		func(h blockstore.ContentHash) error {
+		func(h block.ContentHash) error {
 			called++
 			return nil
 		})
@@ -161,14 +161,14 @@ func TestSnapshotHoldProvider_FilterByManifestOnDisk(t *testing.T) {
 			hash := hashAll(tc.row.seed)
 			if tc.row.writeManifest {
 				manifestPath := (&models.Snapshot{ID: id}).ManifestPath(localStoreDir)
-				snapshotHoldWriteManifest(t, manifestPath, []blockstore.ContentHash{hash})
+				snapshotHoldWriteManifest(t, manifestPath, []block.ContentHash{hash})
 			}
 
 			provider := rt.snapshotHoldForRemote([]string{shareName})
 
-			var got []blockstore.ContentHash
+			var got []block.ContentHash
 			err := provider.HeldHashes(context.Background(), "remote-1", []string{shareName},
-				func(h blockstore.ContentHash) error {
+				func(h block.ContentHash) error {
 					got = append(got, h)
 					return nil
 				})
@@ -218,7 +218,7 @@ func TestSnapshotHoldProvider_FailClosed_OnManifestStatError(t *testing.T) {
 	provider := rt.snapshotHoldForRemote([]string{"alpha"})
 
 	err := provider.HeldHashes(context.Background(), "remote-1", []string{"alpha"},
-		func(h blockstore.ContentHash) error {
+		func(h block.ContentHash) error {
 			t.Fatalf("callback must not be invoked when stat errors out")
 			return nil
 		})
@@ -245,7 +245,7 @@ func TestSnapshotHoldProvider_MemoryShare_Skipped(t *testing.T) {
 
 	called := 0
 	err := provider.HeldHashes(context.Background(), "remote-1", []string{"memshare"},
-		func(h blockstore.ContentHash) error {
+		func(h block.ContentHash) error {
 			called++
 			return nil
 		})
@@ -270,22 +270,22 @@ func TestSnapshotHoldProvider_MultipleSharesUnion(t *testing.T) {
 	idA := snapshotHoldCreateReady(t, rt, "alpha")
 	idB := snapshotHoldCreateReady(t, rt, "beta")
 
-	wantA := []blockstore.ContentHash{hashAll(0xAA), hashAll(0xAB)}
-	wantB := []blockstore.ContentHash{hashAll(0xBA), hashAll(0xBB)}
+	wantA := []block.ContentHash{hashAll(0xAA), hashAll(0xAB)}
+	wantB := []block.ContentHash{hashAll(0xBA), hashAll(0xBB)}
 	snapshotHoldWriteManifest(t, (&models.Snapshot{ID: idA}).ManifestPath(dirA), wantA)
 	snapshotHoldWriteManifest(t, (&models.Snapshot{ID: idB}).ManifestPath(dirB), wantB)
 
 	provider := rt.snapshotHoldForRemote([]string{"alpha", "beta"})
 
-	var got []blockstore.ContentHash
+	var got []block.ContentHash
 	err := provider.HeldHashes(context.Background(), "remote-1", []string{"alpha", "beta"},
-		func(h blockstore.ContentHash) error {
+		func(h block.ContentHash) error {
 			got = append(got, h)
 			return nil
 		})
 	require.NoError(t, err)
 
-	want := append([]blockstore.ContentHash{}, wantA...)
+	want := append([]block.ContentHash{}, wantA...)
 	want = append(want, wantB...)
 	sortHashes(got)
 	sortHashes(want)
@@ -294,7 +294,7 @@ func TestSnapshotHoldProvider_MultipleSharesUnion(t *testing.T) {
 
 // sortHashes sorts a ContentHash slice in lexicographic byte order so
 // per-share ordering does not destabilize assertions.
-func sortHashes(hs []blockstore.ContentHash) {
+func sortHashes(hs []block.ContentHash) {
 	sort.Slice(hs, func(i, j int) bool {
 		for k := range hs[i] {
 			if hs[i][k] != hs[j][k] {

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	snapbench "github.com/marmos91/dittofs/bench/snapshots"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/spf13/cobra"
 )
 

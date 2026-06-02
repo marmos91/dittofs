@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	bsmemory "github.com/marmos91/dittofs/pkg/blockstore/local/memory"
-	"github.com/marmos91/dittofs/pkg/blockstore/remote"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	bsmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/remote"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -247,9 +247,9 @@ func testNoVerify(t *testing.T) {
 	if !ok {
 		t.Fatal("snapshotHoldForRemote did not return *SnapshotHoldProvider")
 	}
-	heldSet := make(map[blockstore.ContentHash]struct{}, len(hashes))
+	heldSet := make(map[block.ContentHash]struct{}, len(hashes))
 	if err := provider.HeldHashes(ctx, "remote-nv", []string{fx.shareName},
-		func(h blockstore.ContentHash) error {
+		func(h block.ContentHash) error {
 			heldSet[h] = struct{}{}
 			return nil
 		}); err != nil {
@@ -541,11 +541,11 @@ func (f *orchestrationFixture) ctx() context.Context {
 	return ctx
 }
 
-func (f *orchestrationFixture) setBackupHashes(h []blockstore.ContentHash) {
+func (f *orchestrationFixture) setBackupHashes(h []block.ContentHash) {
 	f.backup.setHashes(h)
 }
 
-func (f *orchestrationFixture) seedRemoteAll(hashes []blockstore.ContentHash) {
+func (f *orchestrationFixture) seedRemoteAll(hashes []block.ContentHash) {
 	f.t.Helper()
 	for _, h := range hashes {
 		if err := f.remote.inner.Put(context.Background(), h, []byte("payload-"+h.String())); err != nil {
@@ -554,7 +554,7 @@ func (f *orchestrationFixture) seedRemoteAll(hashes []blockstore.ContentHash) {
 	}
 }
 
-func (f *orchestrationFixture) seedRemoteSubset(hashes []blockstore.ContentHash) {
+func (f *orchestrationFixture) seedRemoteSubset(hashes []block.ContentHash) {
 	f.t.Helper()
 	for _, h := range hashes {
 		if err := f.remote.inner.Put(context.Background(), h, []byte("payload-"+h.String())); err != nil {
@@ -566,7 +566,7 @@ func (f *orchestrationFixture) seedRemoteSubset(hashes []blockstore.ContentHash)
 // ----- controlledBackupable -----
 
 // controlledBackupable wraps a real MemoryMetadataStore so it still
-// satisfies the full metadata.MetadataStore interface (via embedded
+// satisfies the full metadata.Store interface (via embedded
 // pointer method promotion) but overrides Backup so the test can:
 //   - return a deterministic HashSet without seeding files through the
 //     real Put/transaction path
@@ -579,13 +579,13 @@ type controlledBackupable struct {
 	*metadatamemory.MemoryMetadataStore
 
 	mu     sync.Mutex
-	hashes []blockstore.ContentHash
+	hashes []block.ContentHash
 	hook   func(ctx context.Context) error
 }
 
-func (c *controlledBackupable) setHashes(h []blockstore.ContentHash) {
+func (c *controlledBackupable) setHashes(h []block.ContentHash) {
 	c.mu.Lock()
-	c.hashes = append([]blockstore.ContentHash(nil), h...)
+	c.hashes = append([]block.ContentHash(nil), h...)
 	c.mu.Unlock()
 }
 
@@ -595,10 +595,10 @@ func (c *controlledBackupable) setHook(fn func(ctx context.Context) error) {
 	c.mu.Unlock()
 }
 
-func (c *controlledBackupable) Backup(ctx context.Context, w io.Writer) (*blockstore.HashSet, error) {
+func (c *controlledBackupable) Backup(ctx context.Context, w io.Writer) (*block.HashSet, error) {
 	c.mu.Lock()
 	hook := c.hook
-	hashes := append([]blockstore.ContentHash(nil), c.hashes...)
+	hashes := append([]block.ContentHash(nil), c.hashes...)
 	c.mu.Unlock()
 
 	if hook != nil {
@@ -609,7 +609,7 @@ func (c *controlledBackupable) Backup(ctx context.Context, w io.Writer) (*blocks
 	if _, err := w.Write([]byte("controlled-backup-payload")); err != nil {
 		return nil, err
 	}
-	hs := blockstore.NewHashSet(len(hashes))
+	hs := block.NewHashSet(len(hashes))
 	for _, h := range hashes {
 		hs.Add(h)
 	}
@@ -632,35 +632,35 @@ func newInterceptingRemote(inner *remotememory.Store) *interceptingRemote {
 	return &interceptingRemote{inner: inner}
 }
 
-func (r *interceptingRemote) Put(ctx context.Context, hash blockstore.ContentHash, data []byte) error {
+func (r *interceptingRemote) Put(ctx context.Context, hash block.ContentHash, data []byte) error {
 	return r.inner.Put(ctx, hash, data)
 }
 
-func (r *interceptingRemote) Get(ctx context.Context, hash blockstore.ContentHash) ([]byte, error) {
+func (r *interceptingRemote) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
 	return r.inner.Get(ctx, hash)
 }
 
-func (r *interceptingRemote) GetRange(ctx context.Context, hash blockstore.ContentHash, offset, length int64) ([]byte, error) {
+func (r *interceptingRemote) GetRange(ctx context.Context, hash block.ContentHash, offset, length int64) ([]byte, error) {
 	return r.inner.GetRange(ctx, hash, offset, length)
 }
 
-func (r *interceptingRemote) Delete(ctx context.Context, hash blockstore.ContentHash) error {
+func (r *interceptingRemote) Delete(ctx context.Context, hash block.ContentHash) error {
 	return r.inner.Delete(ctx, hash)
 }
 
-func (r *interceptingRemote) Has(ctx context.Context, hash blockstore.ContentHash) (bool, error) {
+func (r *interceptingRemote) Has(ctx context.Context, hash block.ContentHash) (bool, error) {
 	return r.inner.Has(ctx, hash)
 }
 
-func (r *interceptingRemote) Head(ctx context.Context, hash blockstore.ContentHash) (blockstore.Meta, error) {
+func (r *interceptingRemote) Head(ctx context.Context, hash block.ContentHash) (block.Meta, error) {
 	return r.inner.Head(ctx, hash)
 }
 
-func (r *interceptingRemote) Walk(ctx context.Context, fn func(hash blockstore.ContentHash, meta blockstore.Meta) error) error {
+func (r *interceptingRemote) Walk(ctx context.Context, fn func(hash block.ContentHash, meta block.Meta) error) error {
 	return r.inner.Walk(ctx, fn)
 }
 
-func (r *interceptingRemote) ReadBlockVerified(ctx context.Context, hash, expected blockstore.ContentHash) ([]byte, error) {
+func (r *interceptingRemote) ReadBlockVerified(ctx context.Context, hash, expected block.ContentHash) ([]byte, error) {
 	return r.inner.ReadBlockVerified(ctx, hash, expected)
 }
 
@@ -677,8 +677,8 @@ var _ remote.RemoteStore = (*interceptingRemote)(nil)
 
 // ----- small helpers -----
 
-func makeHashes(n int, seed byte) []blockstore.ContentHash {
-	out := make([]blockstore.ContentHash, n)
+func makeHashes(n int, seed byte) []block.ContentHash {
+	out := make([]block.ContentHash, n)
 	for i := 0; i < n; i++ {
 		out[i] = hashAllByte(seed + byte(i))
 	}
@@ -688,8 +688,8 @@ func makeHashes(n int, seed byte) []blockstore.ContentHash {
 // hashAllByte fills every byte of a ContentHash with the seed. Distinct
 // from hashAll in snapshot_lifecycle_test.go only in name to avoid
 // per-file collision; tests in the same package share the symbol space.
-func hashAllByte(seed byte) blockstore.ContentHash {
-	var h blockstore.ContentHash
+func hashAllByte(seed byte) block.ContentHash {
+	var h block.ContentHash
 	for i := range h {
 		h[i] = seed
 	}

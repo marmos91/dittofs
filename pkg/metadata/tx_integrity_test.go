@@ -118,12 +118,12 @@ var errPutFileInjected = errors.New("injected PutFile failure")
 // delegates to the real store so the rest of the rename runs normally up to
 // the injected failure.
 type faultyStore struct {
-	metadata.MetadataStore
+	metadata.Store
 	failPath string // File.Path that should fail PutFile
 }
 
 func (f *faultyStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
-	return f.MetadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
+	return f.Store.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		return fn(&faultyTx{Transaction: tx, failPath: f.failPath})
 	})
 }
@@ -162,7 +162,7 @@ func TestMove_RollsBackOnPutFileFailure(t *testing.T) {
 
 	svc := metadata.New()
 	// Register a store that fails PutFile for the moved file's NEW path.
-	faulty := &faultyStore{MetadataStore: store, failPath: "/dest/moved.txt"}
+	faulty := &faultyStore{Store: store, failPath: "/dest/moved.txt"}
 	require.NoError(t, svc.RegisterStoreForShare(shareName, faulty))
 
 	rootCtx := &metadata.AuthContext{

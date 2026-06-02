@@ -4,8 +4,8 @@ import (
 	"context"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	"github.com/marmos91/dittofs/pkg/blockstore/remote"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -100,7 +100,7 @@ func (p *perRemoteReconciler) SharesForGC() []string { return p.shares }
 
 // GetMetadataStoreForShare delegates to the wrapped Runtime so the engine
 // receives the per-share metadata store.
-func (p *perRemoteReconciler) GetMetadataStoreForShare(shareName string) (metadata.MetadataStore, error) {
+func (p *perRemoteReconciler) GetMetadataStoreForShare(shareName string) (metadata.Store, error) {
 	return p.rt.GetMetadataStoreForShare(shareName)
 }
 

@@ -32,7 +32,7 @@ func runStoreSurfaceTests(t *testing.T, factory StoreFactory) {
 
 // setFileSize reads a file, sets its logical Size, and writes it back. Used to
 // drive the per-backend usedBytes counter (it tracks size deltas on PutFile).
-func setFileSize(t *testing.T, store metadata.MetadataStore, handle metadata.FileHandle, size uint64) {
+func setFileSize(t *testing.T, store metadata.Store, handle metadata.FileHandle, size uint64) {
 	t.Helper()
 	ctx := t.Context()
 

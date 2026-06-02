@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -19,14 +19,14 @@ import (
 // MetadataStore to this interface so the existing tests can still drive
 // the methods without depending on a concrete backend type.
 type fileBlockStoreLegacy interface {
-	GetFileBlock(ctx context.Context, id string) (*blockstore.FileBlock, error)
-	ListFileBlocks(ctx context.Context, payloadID string) ([]*blockstore.FileBlock, error)
+	GetFileBlock(ctx context.Context, id string) (*block.FileBlock, error)
+	ListFileBlocks(ctx context.Context, payloadID string) ([]*block.FileBlock, error)
 }
 
 // asLegacy returns the legacy backend interface for a MetadataStore, or
 // fails the test with a clear message when the backend does not provide
 // the kept-but-not-on-interface methods.
-func asLegacy(t *testing.T, store metadata.MetadataStore) fileBlockStoreLegacy {
+func asLegacy(t *testing.T, store metadata.Store) fileBlockStoreLegacy {
 	t.Helper()
 	legacy, ok := store.(fileBlockStoreLegacy)
 	if !ok {
@@ -209,11 +209,11 @@ func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
 		legacy := asLegacy(t, store)
 
 		hash := hashOfSeed("reap-at-zero")
-		fb := &blockstore.FileBlock{
+		fb := &block.FileBlock{
 			ID:            "file-reap/0",
 			Hash:          hash,
-			State:         blockstore.BlockStateRemote,
-			BlockStoreKey: blockstore.FormatCASKey(hash),
+			State:         block.BlockStateRemote,
+			BlockStoreKey: block.FormatCASKey(hash),
 			LocalPath:     "/cache/reap0",
 			DataSize:      4096,
 			RefCount:      1,
@@ -254,11 +254,11 @@ func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
 		legacy := asLegacy(t, store)
 
 		hash := hashOfSeed("reap-survives")
-		fb := &blockstore.FileBlock{
+		fb := &block.FileBlock{
 			ID:            "file-survive/0",
 			Hash:          hash,
-			State:         blockstore.BlockStateRemote,
-			BlockStoreKey: blockstore.FormatCASKey(hash),
+			State:         block.BlockStateRemote,
+			BlockStoreKey: block.FormatCASKey(hash),
 			LocalPath:     "/cache/survive0",
 			DataSize:      4096,
 			RefCount:      1,
@@ -318,12 +318,12 @@ func testListPending(t *testing.T, factory StoreFactory) {
 	ctx := t.Context()
 
 	// Create 5 blocks with different states
-	blocks := []*blockstore.FileBlock{
-		{ID: "file-a/0", State: blockstore.BlockStatePending, LocalPath: "/cache/a0", DataSize: 100, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
-		{ID: "file-a/1", State: blockstore.BlockStatePending, LocalPath: "/cache/a1", DataSize: 200, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
-		{ID: "file-b/0", State: blockstore.BlockStatePending, LocalPath: "/cache/b0", DataSize: 300, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
-		{ID: "file-c/0", State: blockstore.BlockStateRemote, LocalPath: "/cache/c0", BlockStoreKey: "s3://c0", DataSize: 400, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
-		{ID: "file-d/0", State: blockstore.BlockStateSyncing, LocalPath: "/cache/d0", DataSize: 500, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
+	blocks := []*block.FileBlock{
+		{ID: "file-a/0", State: block.BlockStatePending, LocalPath: "/cache/a0", DataSize: 100, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
+		{ID: "file-a/1", State: block.BlockStatePending, LocalPath: "/cache/a1", DataSize: 200, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
+		{ID: "file-b/0", State: block.BlockStatePending, LocalPath: "/cache/b0", DataSize: 300, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
+		{ID: "file-c/0", State: block.BlockStateRemote, LocalPath: "/cache/c0", BlockStoreKey: "s3://c0", DataSize: 400, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
+		{ID: "file-d/0", State: block.BlockStateSyncing, LocalPath: "/cache/d0", DataSize: 500, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
 	}
 	for _, b := range blocks {
 		if err := store.Put(ctx, b); err != nil {
@@ -344,7 +344,7 @@ func testListPending(t *testing.T, factory StoreFactory) {
 	}
 
 	for _, b := range result {
-		if b.State != blockstore.BlockStatePending {
+		if b.State != block.BlockStatePending {
 			t.Errorf("ListPending() returned block %s with state %v, want Pending", b.ID, b.State)
 		}
 	}
@@ -356,8 +356,8 @@ func testListPendingLimit(t *testing.T, factory StoreFactory) {
 
 	// Create 3 Local blocks
 	for i := 0; i < 3; i++ {
-		b := &blockstore.FileBlock{
-			ID: fmt.Sprintf("file-x/%d", i), State: blockstore.BlockStatePending,
+		b := &block.FileBlock{
+			ID: fmt.Sprintf("file-x/%d", i), State: block.BlockStatePending,
 			LocalPath: fmt.Sprintf("/cache/x%d", i), DataSize: 100, RefCount: 1,
 			LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour),
 		}
@@ -380,13 +380,13 @@ func testListPendingOlderThan(t *testing.T, factory StoreFactory) {
 	ctx := t.Context()
 
 	// Create 2 blocks: one old, one recent
-	old := &blockstore.FileBlock{
-		ID: "file-old/0", State: blockstore.BlockStatePending, LocalPath: "/cache/old",
+	old := &block.FileBlock{
+		ID: "file-old/0", State: block.BlockStatePending, LocalPath: "/cache/old",
 		DataSize: 100, RefCount: 1,
 		LastAccess: time.Now().Add(-2 * time.Hour), CreatedAt: time.Now().Add(-2 * time.Hour),
 	}
-	recent := &blockstore.FileBlock{
-		ID: "file-recent/0", State: blockstore.BlockStatePending, LocalPath: "/cache/recent",
+	recent := &block.FileBlock{
+		ID: "file-recent/0", State: block.BlockStatePending, LocalPath: "/cache/recent",
 		DataSize: 100, RefCount: 1,
 		LastAccess: time.Now(), CreatedAt: time.Now(),
 	}
@@ -438,12 +438,12 @@ func testListFileBlocks(t *testing.T, factory StoreFactory) {
 	ctx := t.Context()
 
 	// Create blocks for 2 different files
-	blocks := []*blockstore.FileBlock{
-		{ID: "file-A/0", State: blockstore.BlockStatePending, LocalPath: "/cache/a0", DataSize: 100, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
-		{ID: "file-A/1", State: blockstore.BlockStatePending, LocalPath: "/cache/a1", DataSize: 200, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
-		{ID: "file-A/2", State: blockstore.BlockStateRemote, LocalPath: "/cache/a2", BlockStoreKey: "s3://a2", DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
-		{ID: "file-B/0", State: blockstore.BlockStatePending, LocalPath: "/cache/b0", DataSize: 400, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
-		{ID: "file-B/1", State: blockstore.BlockStatePending, LocalPath: "/cache/b1", DataSize: 500, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+	blocks := []*block.FileBlock{
+		{ID: "file-A/0", State: block.BlockStatePending, LocalPath: "/cache/a0", DataSize: 100, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-A/1", State: block.BlockStatePending, LocalPath: "/cache/a1", DataSize: 200, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-A/2", State: block.BlockStateRemote, LocalPath: "/cache/a2", BlockStoreKey: "s3://a2", DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-B/0", State: block.BlockStatePending, LocalPath: "/cache/b0", DataSize: 400, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-B/1", State: block.BlockStatePending, LocalPath: "/cache/b1", DataSize: 500, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
 	}
 	for _, b := range blocks {
 		if err := store.Put(ctx, b); err != nil {
@@ -490,7 +490,7 @@ func testListFileBlocks(t *testing.T, factory StoreFactory) {
 	if resultA[0].DataSize != 100 {
 		t.Errorf("ListFileBlocks(file-A)[0].DataSize = %d, want 100", resultA[0].DataSize)
 	}
-	if resultA[2].State != blockstore.BlockStateRemote {
+	if resultA[2].State != block.BlockStateRemote {
 		t.Errorf("ListFileBlocks(file-A)[2].State = %v, want Remote", resultA[2].State)
 	}
 }
@@ -502,8 +502,8 @@ func testListFileBlocksOrdering(t *testing.T, factory StoreFactory) {
 	// Create blocks for one file with out-of-order indices
 	indices := []int{0, 5, 10, 2, 7}
 	for _, idx := range indices {
-		b := &blockstore.FileBlock{
-			ID: fmt.Sprintf("file-sort/%d", idx), State: blockstore.BlockStatePending,
+		b := &block.FileBlock{
+			ID: fmt.Sprintf("file-sort/%d", idx), State: block.BlockStatePending,
 			LocalPath: fmt.Sprintf("/cache/s%d", idx), DataSize: uint32(idx * 100),
 			RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now(),
 		}
@@ -535,19 +535,19 @@ func testListFileBlocksMixedStates(t *testing.T, factory StoreFactory) {
 	ctx := t.Context()
 
 	// Create blocks in all 4 states for same file
-	states := []blockstore.BlockState{
-		blockstore.BlockStatePending,
-		blockstore.BlockStatePending,
-		blockstore.BlockStateSyncing,
-		blockstore.BlockStateRemote,
+	states := []block.BlockState{
+		block.BlockStatePending,
+		block.BlockStatePending,
+		block.BlockStateSyncing,
+		block.BlockStateRemote,
 	}
 	for i, state := range states {
-		b := &blockstore.FileBlock{
+		b := &block.FileBlock{
 			ID: fmt.Sprintf("file-mix/%d", i), State: state,
 			LocalPath: fmt.Sprintf("/cache/m%d", i), DataSize: uint32((i + 1) * 100),
 			RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now(),
 		}
-		if state == blockstore.BlockStateRemote {
+		if state == block.BlockStateRemote {
 			b.BlockStoreKey = "s3://mix"
 		}
 		if err := store.Put(ctx, b); err != nil {
@@ -565,7 +565,7 @@ func testListFileBlocksMixedStates(t *testing.T, factory StoreFactory) {
 	}
 
 	// Verify each state is present
-	statesSeen := make(map[blockstore.BlockState]bool)
+	statesSeen := make(map[block.BlockState]bool)
 	for _, b := range result {
 		statesSeen[b.State] = true
 	}
@@ -603,9 +603,9 @@ func testPutGet_LastSyncAttemptAt(t *testing.T, factory StoreFactory) {
 	ctx := t.Context()
 
 	stamp := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
-	in := &blockstore.FileBlock{
+	in := &block.FileBlock{
 		ID:                "file-sync-attempt/0",
-		State:             blockstore.BlockStateSyncing,
+		State:             block.BlockStateSyncing,
 		LocalPath:         "/cache/sa0",
 		DataSize:          128,
 		RefCount:          1,
@@ -638,9 +638,9 @@ func testPutGet_LastSyncAttemptAt_Zero(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
-	in := &blockstore.FileBlock{
+	in := &block.FileBlock{
 		ID:         "file-sync-zero/0",
-		State:      blockstore.BlockStatePending,
+		State:      block.BlockStatePending,
 		LocalPath:  "/cache/sz0",
 		DataSize:   64,
 		RefCount:   1,
@@ -685,10 +685,10 @@ func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 	keyA := "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String()
 	keyB := keyA // CAS keys are identical for the same hash; that's the point
 
-	a := &blockstore.FileBlock{
+	a := &block.FileBlock{
 		ID:            "file-A/0",
 		Hash:          hash,
-		State:         blockstore.BlockStateRemote,
+		State:         block.BlockStateRemote,
 		LocalPath:     "/cache/A0",
 		BlockStoreKey: keyA,
 		DataSize:      4096,
@@ -696,10 +696,10 @@ func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}
-	b := &blockstore.FileBlock{
+	b := &block.FileBlock{
 		ID:            "file-B/0",
 		Hash:          hash, // SAME content hash, different ID
-		State:         blockstore.BlockStateRemote,
+		State:         block.BlockStateRemote,
 		LocalPath:     "/cache/B0",
 		BlockStoreKey: keyB,
 		DataSize:      4096,
@@ -760,10 +760,10 @@ func testPutGet_PendingHashRoundTrips(t *testing.T, factory StoreFactory) {
 	ctx := t.Context()
 
 	hash := hashOfSeed("pending-hash-roundtrip")
-	fb := &blockstore.FileBlock{
+	fb := &block.FileBlock{
 		ID:         "file-pending/0",
 		Hash:       hash,
-		State:      blockstore.BlockStatePending,
+		State:      block.BlockStatePending,
 		DataSize:   4096,
 		RefCount:   1,
 		LastAccess: time.Now(),
@@ -805,11 +805,11 @@ func testPutGet_PendingHashRoundTrips(t *testing.T, factory StoreFactory) {
 
 // hashOf returns a deterministic non-zero ContentHash from a seed string.
 // Used by enumerate tests to seed unique hashes per block.
-func hashOfSeed(seed string) blockstore.ContentHash {
-	var h blockstore.ContentHash
+func hashOfSeed(seed string) block.ContentHash {
+	var h block.ContentHash
 	src := []byte(seed)
 	// Spread bytes into the 32-byte hash deterministically.
-	for i := 0; i < blockstore.HashSize; i++ {
+	for i := 0; i < block.HashSize; i++ {
 		h[i] = src[i%len(src)] ^ byte(i)
 	}
 	return h
@@ -821,7 +821,7 @@ func testEnumerateFileBlocks_Empty(t *testing.T, factory StoreFactory) {
 	ctx := t.Context()
 
 	count := 0
-	err := store.EnumerateFileBlocks(ctx, func(_ blockstore.ContentHash) error {
+	err := store.EnumerateFileBlocks(ctx, func(_ block.ContentHash) error {
 		count++
 		return nil
 	})
@@ -840,14 +840,14 @@ func testEnumerateFileBlocks_SingleFile(t *testing.T, factory StoreFactory) {
 	ctx := t.Context()
 
 	const n = 5
-	want := make(map[blockstore.ContentHash]bool, n)
+	want := make(map[block.ContentHash]bool, n)
 	for i := 0; i < n; i++ {
 		h := hashOfSeed(fmt.Sprintf("single-%d", i))
 		want[h] = true
-		b := &blockstore.FileBlock{
+		b := &block.FileBlock{
 			ID:            fmt.Sprintf("file-single/%d", i),
 			Hash:          h,
-			State:         blockstore.BlockStateRemote,
+			State:         block.BlockStateRemote,
 			LocalPath:     fmt.Sprintf("/cache/single-%d", i),
 			BlockStoreKey: "cas/" + h.String()[0:2] + "/" + h.String()[2:4] + "/" + h.String(),
 			DataSize:      128,
@@ -860,8 +860,8 @@ func testEnumerateFileBlocks_SingleFile(t *testing.T, factory StoreFactory) {
 		}
 	}
 
-	got := make(map[blockstore.ContentHash]bool, n)
-	err := store.EnumerateFileBlocks(ctx, func(h blockstore.ContentHash) error {
+	got := make(map[block.ContentHash]bool, n)
+	err := store.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
 		got[h] = true
 		return nil
 	})
@@ -887,15 +887,15 @@ func testEnumerateFileBlocks_LargeFanout(t *testing.T, factory StoreFactory) {
 
 	const files = 50
 	const perFile = 20
-	want := make(map[blockstore.ContentHash]int, files*perFile)
+	want := make(map[block.ContentHash]int, files*perFile)
 	for f := 0; f < files; f++ {
 		for i := 0; i < perFile; i++ {
 			h := hashOfSeed(fmt.Sprintf("fanout-%d-%d", f, i))
 			want[h]++
-			b := &blockstore.FileBlock{
+			b := &block.FileBlock{
 				ID:            fmt.Sprintf("file-fan-%d/%d", f, i),
 				Hash:          h,
-				State:         blockstore.BlockStateRemote,
+				State:         block.BlockStateRemote,
 				LocalPath:     fmt.Sprintf("/cache/fan-%d-%d", f, i),
 				BlockStoreKey: "cas/" + h.String()[0:2] + "/" + h.String()[2:4] + "/" + h.String(),
 				DataSize:      64,
@@ -911,8 +911,8 @@ func testEnumerateFileBlocks_LargeFanout(t *testing.T, factory StoreFactory) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	got := 0
-	seen := make(map[blockstore.ContentHash]int, files*perFile)
-	err := store.EnumerateFileBlocks(ctx, func(h blockstore.ContentHash) error {
+	seen := make(map[block.ContentHash]int, files*perFile)
+	err := store.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
 		got++
 		seen[h]++
 		return nil
@@ -947,10 +947,10 @@ func testEnumerateFileBlocks_FnErrorAborts(t *testing.T, factory StoreFactory) {
 	const n = 50
 	for i := 0; i < n; i++ {
 		h := hashOfSeed(fmt.Sprintf("fn-err-%d", i))
-		b := &blockstore.FileBlock{
+		b := &block.FileBlock{
 			ID:         fmt.Sprintf("file-fnerr/%d", i),
 			Hash:       h,
-			State:      blockstore.BlockStateRemote,
+			State:      block.BlockStateRemote,
 			LocalPath:  fmt.Sprintf("/cache/fnerr-%d", i),
 			DataSize:   64,
 			RefCount:   1,
@@ -964,7 +964,7 @@ func testEnumerateFileBlocks_FnErrorAborts(t *testing.T, factory StoreFactory) {
 
 	sentinel := errors.New("sentinel error from fn")
 	calls := 0
-	err := store.EnumerateFileBlocks(ctx, func(_ blockstore.ContentHash) error {
+	err := store.EnumerateFileBlocks(ctx, func(_ block.ContentHash) error {
 		calls++
 		if calls == 7 {
 			return sentinel
@@ -999,10 +999,10 @@ func testEnumerateFileBlocks_ContextCancellation(t *testing.T, factory StoreFact
 	const n = 50
 	for i := 0; i < n; i++ {
 		h := hashOfSeed(fmt.Sprintf("ctx-cancel-%d", i))
-		b := &blockstore.FileBlock{
+		b := &block.FileBlock{
 			ID:         fmt.Sprintf("file-ctx/%d", i),
 			Hash:       h,
-			State:      blockstore.BlockStateRemote,
+			State:      block.BlockStateRemote,
 			LocalPath:  fmt.Sprintf("/cache/ctx-%d", i),
 			DataSize:   64,
 			RefCount:   1,
@@ -1015,7 +1015,7 @@ func testEnumerateFileBlocks_ContextCancellation(t *testing.T, factory StoreFact
 	}
 
 	calls := 0
-	err := store.EnumerateFileBlocks(ctx, func(_ blockstore.ContentHash) error {
+	err := store.EnumerateFileBlocks(ctx, func(_ block.ContentHash) error {
 		calls++
 		if calls == 3 {
 			cancel()
@@ -1040,9 +1040,9 @@ func testEnumerateFileBlocks_ZeroHashEmitted(t *testing.T, factory StoreFactory)
 	ctx := t.Context()
 
 	// Seed one zero-hash legacy block + one finalized block.
-	legacy := &blockstore.FileBlock{
+	legacy := &block.FileBlock{
 		ID:         "file-zero/0",
-		State:      blockstore.BlockStatePending,
+		State:      block.BlockStatePending,
 		LocalPath:  "/cache/zero",
 		DataSize:   64,
 		RefCount:   1,
@@ -1053,10 +1053,10 @@ func testEnumerateFileBlocks_ZeroHashEmitted(t *testing.T, factory StoreFactory)
 	if err := store.Put(ctx, legacy); err != nil {
 		t.Fatalf("Put(zero) failed: %v", err)
 	}
-	finalized := &blockstore.FileBlock{
+	finalized := &block.FileBlock{
 		ID:            "file-zero/1",
 		Hash:          hashOfSeed("non-zero"),
-		State:         blockstore.BlockStateRemote,
+		State:         block.BlockStateRemote,
 		LocalPath:     "/cache/nz",
 		BlockStoreKey: "cas/12/34/" + hashOfSeed("non-zero").String(),
 		DataSize:      64,
@@ -1069,7 +1069,7 @@ func testEnumerateFileBlocks_ZeroHashEmitted(t *testing.T, factory StoreFactory)
 	}
 
 	zeroSeen, finalizedSeen := false, false
-	err := store.EnumerateFileBlocks(ctx, func(h blockstore.ContentHash) error {
+	err := store.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
 		if h.IsZero() {
 			zeroSeen = true
 		} else {
@@ -1115,10 +1115,10 @@ func testEnumerateFileBlocks_CorruptHashFailsClosed(t *testing.T, factory StoreF
 
 	// Seed one well-formed Remote block so enumeration has something to walk
 	// past before reaching the corrupt row.
-	good := &blockstore.FileBlock{
+	good := &block.FileBlock{
 		ID:            "file-corrupt/0",
 		Hash:          hashOfSeed("good"),
-		State:         blockstore.BlockStateRemote,
+		State:         block.BlockStateRemote,
 		LocalPath:     "/cache/good",
 		BlockStoreKey: "cas/aa/bb/" + hashOfSeed("good").String(),
 		DataSize:      64,
@@ -1137,7 +1137,7 @@ func testEnumerateFileBlocks_CorruptHashFailsClosed(t *testing.T, factory StoreF
 	}
 
 	calls := 0
-	err := store.EnumerateFileBlocks(ctx, func(_ blockstore.ContentHash) error {
+	err := store.EnumerateFileBlocks(ctx, func(_ block.ContentHash) error {
 		calls++
 		return nil
 	})
@@ -1169,22 +1169,22 @@ func testTx_IncrementRefCount_RollsBack(t *testing.T, factory StoreFactory) {
 	// Seed three FileBlocks with RefCount=1 each.
 	type seed struct {
 		id   string
-		hash blockstore.ContentHash
+		hash block.ContentHash
 	}
 	seeds := []seed{
-		{id: "tx-rollback/0", hash: blockstore.ContentHash{0x10, 0x11, 0x12}},
-		{id: "tx-rollback/1", hash: blockstore.ContentHash{0x20, 0x21, 0x22}},
-		{id: "tx-rollback/2", hash: blockstore.ContentHash{0x30, 0x31, 0x32}},
+		{id: "tx-rollback/0", hash: block.ContentHash{0x10, 0x11, 0x12}},
+		{id: "tx-rollback/1", hash: block.ContentHash{0x20, 0x21, 0x22}},
+		{id: "tx-rollback/2", hash: block.ContentHash{0x30, 0x31, 0x32}},
 	}
 	for _, s := range seeds {
-		fb := &blockstore.FileBlock{
+		fb := &block.FileBlock{
 			ID:         s.id,
 			Hash:       s.hash,
 			DataSize:   4096,
 			RefCount:   1,
 			LastAccess: time.Now(),
 			CreatedAt:  time.Now(),
-			State:      blockstore.BlockStateRemote,
+			State:      block.BlockStateRemote,
 		}
 		if err := store.Put(ctx, fb); err != nil {
 			t.Fatalf("seed Put(%s): %v", s.id, err)
@@ -1231,7 +1231,7 @@ func testTx_ListReadAfterWrite(t *testing.T, factory StoreFactory) {
 	ctx := t.Context()
 
 	const payloadID = "raw-tx-file"
-	hash := blockstore.ContentHash{0xa1, 0xb2, 0xc3, 0xd4}
+	hash := block.ContentHash{0xa1, 0xb2, 0xc3, 0xd4}
 
 	err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		// ListFileBlocks / EnumerateFileBlocks live on each backend's tx
@@ -1239,17 +1239,17 @@ func testTx_ListReadAfterWrite(t *testing.T, factory StoreFactory) {
 		// engine-internal callers reach them via the concrete type. Assert to
 		// a local interface so the conformance test can drive them.
 		lister, ok := tx.(interface {
-			ListFileBlocks(ctx context.Context, payloadID string) ([]*blockstore.FileBlock, error)
-			EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error
+			ListFileBlocks(ctx context.Context, payloadID string) ([]*block.FileBlock, error)
+			EnumerateFileBlocks(ctx context.Context, fn func(block.ContentHash) error) error
 		})
 		if !ok {
 			return errTxListUnsupported
 		}
 
-		block := &blockstore.FileBlock{
+		fb := &block.FileBlock{
 			ID:            payloadID + "/0",
 			Hash:          hash,
-			State:         blockstore.BlockStateRemote,
+			State:         block.BlockStateRemote,
 			LocalPath:     "/cache/raw",
 			BlockStoreKey: "cas/a1/b2/" + hash.String(),
 			DataSize:      4096,
@@ -1257,7 +1257,7 @@ func testTx_ListReadAfterWrite(t *testing.T, factory StoreFactory) {
 			LastAccess:    time.Now(),
 			CreatedAt:     time.Now(),
 		}
-		if putErr := tx.Put(ctx, block); putErr != nil {
+		if putErr := tx.Put(ctx, fb); putErr != nil {
 			return fmt.Errorf("tx.Put: %w", putErr)
 		}
 
@@ -1272,7 +1272,7 @@ func testTx_ListReadAfterWrite(t *testing.T, factory StoreFactory) {
 
 		// EnumerateFileBlocks must also see it.
 		var seen bool
-		enumErr := lister.EnumerateFileBlocks(ctx, func(h blockstore.ContentHash) error {
+		enumErr := lister.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
 			if h == hash {
 				seen = true
 			}
@@ -1321,10 +1321,10 @@ func testAddRef_ExistingHash_BumpsRefCount(t *testing.T, factory StoreFactory) {
 
 	hash := hashOfSeed("addref-existing-hash")
 	casKey := "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String()
-	seed := &blockstore.FileBlock{
+	seed := &block.FileBlock{
 		ID:            "file-addref/0",
 		Hash:          hash,
-		State:         blockstore.BlockStateRemote,
+		State:         block.BlockStateRemote,
 		LocalPath:     "/cache/addref0",
 		BlockStoreKey: casKey,
 		DataSize:      4096,
@@ -1336,7 +1336,7 @@ func testAddRef_ExistingHash_BumpsRefCount(t *testing.T, factory StoreFactory) {
 		t.Fatalf("seed Put: %v", err)
 	}
 
-	blockRef := blockstore.BlockRef{Hash: hash, Offset: 0, Size: 4096}
+	blockRef := block.BlockRef{Hash: hash, Offset: 0, Size: 4096}
 	if err := store.AddRef(ctx, hash, "file-addref", blockRef); err != nil {
 		t.Fatalf("AddRef(existing hash): %v", err)
 	}
@@ -1354,13 +1354,13 @@ func testAddRef_ExistingHash_BumpsRefCount(t *testing.T, factory StoreFactory) {
 	// BlockState UNCHANGED. AddRef MUST NOT fire any
 	// Pending→Syncing→Remote transition; the hit path references an
 	// existing block, it never creates one.
-	if got.State != blockstore.BlockStateRemote {
+	if got.State != block.BlockStateRemote {
 		t.Errorf("BlockState = %v after AddRef; want Remote (D-27: state preserved across AddRef)", got.State)
 	}
 }
 
 // testAddRef_MissingHash_ReturnsErrUnknownHash: AddRef on a hash that
-// has never been Put must return blockstore.ErrUnknownHash (also
+// has never been Put must return block.ErrUnknownHash (also
 // re-exported as metadata.ErrUnknownHash) AND must NOT materialize a
 // row for that hash. caller falls back to the full Put path on
 // this sentinel.
@@ -1370,7 +1370,7 @@ func testAddRef_MissingHash_ReturnsErrUnknownHash(t *testing.T, factory StoreFac
 	ctx := t.Context()
 
 	hash := hashOfSeed("addref-missing-hash-never-put")
-	blockRef := blockstore.BlockRef{Hash: hash, Offset: 0, Size: 1024}
+	blockRef := block.BlockRef{Hash: hash, Offset: 0, Size: 1024}
 
 	err := store.AddRef(ctx, hash, "file-missing", blockRef)
 	if err == nil {
@@ -1405,10 +1405,10 @@ func testAddRef_Concurrent_With_DecrementRefCountCascade(t *testing.T, factory S
 
 	hash := hashOfSeed("addref-concurrent-cascade")
 	casKey := "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String()
-	seed := &blockstore.FileBlock{
+	seed := &block.FileBlock{
 		ID:            "file-addref-conc/0",
 		Hash:          hash,
-		State:         blockstore.BlockStateRemote,
+		State:         block.BlockStateRemote,
 		LocalPath:     "/cache/addref-conc0",
 		BlockStoreKey: casKey,
 		DataSize:      4096,
@@ -1433,7 +1433,7 @@ func testAddRef_Concurrent_With_DecrementRefCountCascade(t *testing.T, factory S
 	rowID := resolved.ID
 
 	const halfN = 8
-	blockRef := blockstore.BlockRef{Hash: hash, Offset: 0, Size: 4096}
+	blockRef := block.BlockRef{Hash: hash, Offset: 0, Size: 4096}
 
 	var wg sync.WaitGroup
 	wg.Add(2 * halfN)

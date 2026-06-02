@@ -947,7 +947,7 @@ func (h *Handler) rangeStreamsOfBase(selfFileID [16]byte, parentHandle metadata.
 // base file that was just deleted. ADS streams are stored as sibling entries
 // in the parent directory with names like "baseFile:streamName:$DATA".
 // Per MS-FSA 2.1.5.9.7, deleting a file deletes all its streams.
-func (h *Handler) cascadeDeleteADSStreams(authCtx *metadata.AuthContext, metaSvc *metadata.MetadataService, openFile *OpenFile) {
+func (h *Handler) cascadeDeleteADSStreams(authCtx *metadata.AuthContext, metaSvc *metadata.Service, openFile *OpenFile) {
 	prefix := openFile.FileName + ":"
 
 	// Enumerate parent directory children to find ADS entries.

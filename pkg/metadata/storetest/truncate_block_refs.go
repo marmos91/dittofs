@@ -3,7 +3,7 @@ package storetest
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -47,11 +47,11 @@ func testTruncateDownPrunesBlockRefs(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile() failed: %v", err)
 	}
 	file.Size = 4 * mib
-	file.Blocks = make([]blockstore.BlockRef, 4)
+	file.Blocks = make([]block.BlockRef, 4)
 	for i := range file.Blocks {
-		var h blockstore.ContentHash
+		var h block.ContentHash
 		h[0] = byte(i + 1)
-		file.Blocks[i] = blockstore.BlockRef{
+		file.Blocks[i] = block.BlockRef{
 			Hash:   h,
 			Offset: uint64(i) * mib,
 			Size:   uint32(mib),
@@ -59,7 +59,7 @@ func testTruncateDownPrunesBlockRefs(t *testing.T, factory StoreFactory) {
 	}
 	// Quiesce the file: a non-zero ObjectID (Merkle root over Blocks) means the
 	// truncate must keep it consistent with the trimmed list, not leave it stale.
-	file.ObjectID = blockstore.ComputeObjectID(file.Blocks)
+	file.ObjectID = block.ComputeObjectID(file.Blocks)
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile() with 4 MiB block list failed: %v", err)
 	}
@@ -103,7 +103,7 @@ func testTruncateDownPrunesBlockRefs(t *testing.T, factory StoreFactory) {
 	// The snapshot manifest is the union of every file's FileAttr.Blocks
 	// hashes (see each backend's Backup implementation). The pruned-away tail
 	// blocks must therefore no longer be referenced by the file.
-	referenced := make(map[blockstore.ContentHash]struct{}, len(got.Blocks))
+	referenced := make(map[block.ContentHash]struct{}, len(got.Blocks))
 	for _, b := range got.Blocks {
 		referenced[b.Hash] = struct{}{}
 	}
@@ -115,7 +115,7 @@ func testTruncateDownPrunesBlockRefs(t *testing.T, factory StoreFactory) {
 
 	// ObjectID must stay consistent with the trimmed block list (the dedup
 	// invariant: a non-zero ObjectID equals ComputeObjectID(Blocks)).
-	if want := blockstore.ComputeObjectID(got.Blocks); got.ObjectID != want {
+	if want := block.ComputeObjectID(got.Blocks); got.ObjectID != want {
 		t.Errorf("ObjectID = %s, want recompute(Blocks) %s after truncate",
 			got.ObjectID.String(), want.String())
 	}

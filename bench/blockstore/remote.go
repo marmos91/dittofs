@@ -6,9 +6,9 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/marmos91/dittofs/pkg/blockstore/remote"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
-	remotes3 "github.com/marmos91/dittofs/pkg/blockstore/remote/s3"
+	"github.com/marmos91/dittofs/pkg/block/remote"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	remotes3 "github.com/marmos91/dittofs/pkg/block/remote/s3"
 )
 
 // Remote selectors. "memory" is the default (in-process); "s3"

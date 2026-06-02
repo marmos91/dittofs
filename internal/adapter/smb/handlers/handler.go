@@ -672,7 +672,7 @@ func (f *OpenFile) OpenID() string {
 // on any uncertainty preserves the lock-noW-lease gate at the cost of
 // occasionally declining to persist a genuinely lock-free handle whose
 // lock-manager is transiently unreachable.
-func openHasLocks(metaSvc *metadata.MetadataService, openFile *OpenFile) bool {
+func openHasLocks(metaSvc *metadata.Service, openFile *OpenFile) bool {
 	if openFile == nil {
 		// No open to gate; nothing to persist. Caller short-circuits.
 		return false
@@ -2111,7 +2111,7 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 // original on-disk casing and returns it via the second result.
 func (h *Handler) lookupCaseInsensitive(
 	authCtx *metadata.AuthContext,
-	metaSvc *metadata.MetadataService,
+	metaSvc *metadata.Service,
 	parentHandle metadata.FileHandle,
 	name string,
 ) (*metadata.File, string, error) {

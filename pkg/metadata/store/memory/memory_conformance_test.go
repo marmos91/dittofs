@@ -10,19 +10,19 @@ import (
 )
 
 func TestConformance(t *testing.T) {
-	storetest.RunConformanceSuite(t, func(t *testing.T) metadata.MetadataStore {
+	storetest.RunConformanceSuite(t, func(t *testing.T) metadata.Store {
 		return memory.NewMemoryMetadataStoreWithDefaults()
 	})
 }
 
 func TestBackupConformance(t *testing.T) {
-	storetest.RunBackupConformanceSuite(t, func(t *testing.T) metadata.MetadataStore {
+	storetest.RunBackupConformanceSuite(t, func(t *testing.T) metadata.Store {
 		return memory.NewMemoryMetadataStoreWithDefaults()
 	})
 }
 
 func TestResetThenRestoreConformance(t *testing.T) {
-	storetest.ResetThenRestoreConformance(t, func(t *testing.T) metadata.MetadataStore {
+	storetest.ResetThenRestoreConformance(t, func(t *testing.T) metadata.Store {
 		return memory.NewMemoryMetadataStoreWithDefaults()
 	})
 }

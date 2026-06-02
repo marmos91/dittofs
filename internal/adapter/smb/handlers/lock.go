@@ -623,7 +623,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 // requiring changes to the metadata store interface.
 func (h *Handler) acquireLockWithRetry(
 	authCtx *metadata.AuthContext,
-	metaSvc *metadata.MetadataService,
+	metaSvc *metadata.Service,
 	handle metadata.FileHandle,
 	lock metadata.FileLock,
 	failImmediately bool,
@@ -712,7 +712,7 @@ func (h *Handler) acquireLockWithRetry(
 //  3. The client can re-acquire the lock with the desired type if needed
 func rollbackLocks(
 	ctx context.Context,
-	metaSvc *metadata.MetadataService,
+	metaSvc *metadata.Service,
 	handle metadata.FileHandle,
 	openID string,
 	sessionID uint64,

@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -58,7 +58,7 @@ type SeedOpts struct {
 // + SetChild — the same surface the metadata conformance suite uses — so
 // the seed exercises the real Backup hash-extraction path (File.Blocks on
 // the f: prefix) without routing through CreateFile permission checks.
-func NewStore(ctx context.Context, opts SeedOpts) (metadata.MetadataStore, int, func(), error) {
+func NewStore(ctx context.Context, opts SeedOpts) (metadata.Store, int, func(), error) {
 	store, cleanup, err := newEngine(ctx, opts)
 	if err != nil {
 		return nil, 0, nil, err
@@ -72,7 +72,7 @@ func NewStore(ctx context.Context, opts SeedOpts) (metadata.MetadataStore, int, 
 	return store, uniqueHashes, cleanup, nil
 }
 
-func newEngine(ctx context.Context, opts SeedOpts) (metadata.MetadataStore, func(), error) {
+func newEngine(ctx context.Context, opts SeedOpts) (metadata.Store, func(), error) {
 	switch opts.Engine {
 	case "", EngineMemory:
 		s := metadatamemory.NewMemoryMetadataStoreWithDefaults()
@@ -92,7 +92,7 @@ func newEngine(ctx context.Context, opts SeedOpts) (metadata.MetadataStore, func
 	}
 }
 
-func seed(ctx context.Context, store metadata.MetadataStore, opts SeedOpts) (int, error) {
+func seed(ctx context.Context, store metadata.Store, opts SeedOpts) (int, error) {
 	if err := store.CreateShare(ctx, &metadata.Share{Name: shareName}); err != nil {
 		return 0, fmt.Errorf("snapshots bench: create share: %w", err)
 	}
@@ -139,12 +139,12 @@ func seed(ctx context.Context, store metadata.MetadataStore, opts SeedOpts) (int
 			return 0, fmt.Errorf("snapshots bench: decode handle: %w", err)
 		}
 
-		refs := make([]blockstore.BlockRef, blocksPerFile)
+		refs := make([]block.BlockRef, blocksPerFile)
 		for b := 0; b < blocksPerFile; b++ {
 			// One distinct hash per (dedup-bucketed) block. blockSeq/dedup
 			// collapses every dedup-th block onto a shared hash.
 			h := hashFromSeq(blockSeq / uint64(dedup))
-			refs[b] = blockstore.BlockRef{
+			refs[b] = block.BlockRef{
 				Hash:   h,
 				Offset: uint64(b) * uint64(blockSize),
 				Size:   blockSize,
@@ -189,8 +189,8 @@ func seed(ctx context.Context, store metadata.MetadataStore, opts SeedOpts) (int
 // number. The first 8 bytes carry the big-endian counter; the rest stay
 // zero. Distinct counters yield distinct hashes, which is all the snapshot
 // pipeline (set membership + sort + HEAD-probe by key) depends on.
-func hashFromSeq(seq uint64) blockstore.ContentHash {
-	var h blockstore.ContentHash
+func hashFromSeq(seq uint64) block.ContentHash {
+	var h block.ContentHash
 	binary.BigEndian.PutUint64(h[:8], seq)
 	return h
 }

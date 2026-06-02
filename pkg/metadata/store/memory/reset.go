@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -33,7 +33,7 @@ func (s *MemoryMetadataStore) Reset(ctx context.Context) error {
 	s.deviceNumbers = make(map[string]*deviceNumber)
 	s.pendingWrites = make(map[string]*metadata.WriteOperation)
 	s.sessions = make(map[string]*metadata.ShareSession)
-	s.objectIndex = make(map[blockstore.ContentHash]string)
+	s.objectIndex = make(map[block.ContentHash]string)
 	s.serverConfig = metadata.MetadataServerConfig{}
 
 	s.fileBlockData = nil
@@ -49,7 +49,7 @@ func (s *MemoryMetadataStore) Reset(ctx context.Context) error {
 	s.rollupMu.Unlock()
 
 	s.syncedMu.Lock()
-	s.synced = make(map[blockstore.ContentHash]time.Time)
+	s.synced = make(map[block.ContentHash]time.Time)
 	s.syncedMu.Unlock()
 
 	return nil

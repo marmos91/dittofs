@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -21,13 +21,13 @@ import (
 // Legacy pre-CAS rows emit the zero ContentHash per the interface
 // contract; they correspond to no remote object and are skipped to avoid
 // spurious verify failures.
-func HashSetFromMetadataStore(ctx context.Context, store metadata.MetadataStore) (*blockstore.HashSet, error) {
+func HashSetFromMetadataStore(ctx context.Context, store metadata.Store) (*block.HashSet, error) {
 	if store == nil {
 		return nil, fmt.Errorf("snapshot: hashset from metadata: nil store")
 	}
-	hs := blockstore.NewHashSet(0)
-	var zero blockstore.ContentHash
-	err := store.EnumerateFileBlocks(ctx, func(h blockstore.ContentHash) error {
+	hs := block.NewHashSet(0)
+	var zero block.ContentHash
+	err := store.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
 		if h != zero {
 			hs.Add(h)
 		}

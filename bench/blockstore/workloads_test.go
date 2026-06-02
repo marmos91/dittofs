@@ -17,8 +17,8 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 
 func newBenchEngine(tb testing.TB) *engine.Store {

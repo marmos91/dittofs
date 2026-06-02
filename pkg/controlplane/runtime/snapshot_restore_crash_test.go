@@ -138,7 +138,7 @@ func (f *restoreFixture) simulateRestart() *Runtime {
 
 	rt := New(f.store)
 
-	var registered metadata.MetadataStore = f.meta
+	var registered metadata.Store = f.meta
 	if f.failable != nil {
 		registered = f.failable
 	}

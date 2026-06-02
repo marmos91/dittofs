@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // TestFileAttr_BlocksRoundTrip exercises the reintroduction of
-// FileAttr.Blocks []blockstore.BlockRef. Asserts:
+// FileAttr.Blocks []block.BlockRef. Asserts:
 //
 //  1. omitempty: zero-value FileAttr does not emit a "blocks" key.
 //  2. Round trip preserves order and all fields of every BlockRef.
@@ -36,14 +36,14 @@ func TestFileAttr_BlocksRoundTrip(t *testing.T) {
 	})
 
 	t.Run("round trip preserves order", func(t *testing.T) {
-		mkHash := func(seed byte) blockstore.ContentHash {
-			var h blockstore.ContentHash
+		mkHash := func(seed byte) block.ContentHash {
+			var h block.ContentHash
 			for i := range h {
 				h[i] = seed
 			}
 			return h
 		}
-		want := []blockstore.BlockRef{
+		want := []block.BlockRef{
 			{Hash: mkHash(0xAA), Offset: 0, Size: 4 << 20},
 			{Hash: mkHash(0xBB), Offset: 4 << 20, Size: 4 << 20},
 			{Hash: mkHash(0xCC), Offset: 8 << 20, Size: 1 << 20},
@@ -97,7 +97,7 @@ func TestFileAttr_BlocksRoundTrip(t *testing.T) {
 
 	t.Run("blocks field omits when explicitly empty slice", func(t *testing.T) {
 		// omitempty omits both nil AND zero-length slices.
-		fa := FileAttr{Blocks: []blockstore.BlockRef{}}
+		fa := FileAttr{Blocks: []block.BlockRef{}}
 		raw, err := json.Marshal(fa)
 		if err != nil {
 			t.Fatalf("json.Marshal: %v", err)

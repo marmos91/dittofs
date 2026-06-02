@@ -93,7 +93,7 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 
 // getMetadataServiceForCtx returns the MetadataService from the handler's registry.
 // Returns an error if the registry is nil.
-func getMetadataServiceForCtx(h *Handler) (*metadata.MetadataService, error) {
+func getMetadataServiceForCtx(h *Handler) (*metadata.Service, error) {
 	if h.Registry == nil {
 		return nil, fmt.Errorf("no registry configured")
 	}

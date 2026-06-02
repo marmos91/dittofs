@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // WriteMetadataDumpAtomic invokes write against a temp file (path + ".tmp"),
@@ -28,8 +28,8 @@ import (
 // HashSet for the subsequent WriteManifestAtomic step.
 func WriteMetadataDumpAtomic(
 	path string,
-	write func(io.Writer) (*blockstore.HashSet, error),
-) (*blockstore.HashSet, error) {
+	write func(io.Writer) (*block.HashSet, error),
+) (*block.HashSet, error) {
 	tmpPath := path + ".tmp"
 
 	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)

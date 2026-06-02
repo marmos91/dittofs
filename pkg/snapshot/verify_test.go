@@ -8,17 +8,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/remote"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/remote"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/snapshot"
 )
 
 // gateHash returns a deterministic ContentHash seeded by seed so each
 // test gets unique, sortable hashes without RNG flakiness.
-func gateHash(seed byte) blockstore.ContentHash {
-	var h blockstore.ContentHash
+func gateHash(seed byte) block.ContentHash {
+	var h block.ContentHash
 	for i := range h {
 		h[i] = seed + byte(i)
 	}
@@ -26,9 +26,9 @@ func gateHash(seed byte) blockstore.ContentHash {
 }
 
 // seedManifest returns a HashSet pre-populated with n deterministic hashes.
-func seedManifest(t *testing.T, n int) *blockstore.HashSet {
+func seedManifest(t *testing.T, n int) *block.HashSet {
 	t.Helper()
-	hs := blockstore.NewHashSet(n)
+	hs := block.NewHashSet(n)
 	for i := 0; i < n; i++ {
 		hs.Add(gateHash(byte(i + 1)))
 	}
@@ -36,7 +36,7 @@ func seedManifest(t *testing.T, n int) *blockstore.HashSet {
 }
 
 // putAll Puts every manifest hash with a one-byte body into rs.
-func putAll(t *testing.T, rs *remotememory.Store, hs *blockstore.HashSet) {
+func putAll(t *testing.T, rs *remotememory.Store, hs *block.HashSet) {
 	t.Helper()
 	ctx := context.Background()
 	for _, h := range hs.Sorted() {
@@ -66,7 +66,7 @@ func TestVerifyRemoteDurability_EmptyManifest(t *testing.T) {
 	rs := remotememory.New()
 	t.Cleanup(func() { _ = rs.Close() })
 
-	hs := blockstore.NewHashSet(0)
+	hs := block.NewHashSet(0)
 	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, hs, 4); err != nil {
 		t.Fatalf("empty manifest: got %v, want nil", err)
 	}
@@ -102,7 +102,7 @@ func TestVerifyRemoteDurability_MissingHashFailFast(t *testing.T) {
 	if err == nil {
 		t.Fatal("missing hash: got nil err, want wrapped ErrChunkNotFound")
 	}
-	if !errors.Is(err, blockstore.ErrChunkNotFound) {
+	if !errors.Is(err, block.ErrChunkNotFound) {
 		t.Fatalf("errors.Is(err, ErrChunkNotFound) = false; err = %v", err)
 	}
 	if !contains(err.Error(), missing.String()) {
@@ -125,7 +125,7 @@ func TestVerifyRemoteDurability_IOErrorPropagates(t *testing.T) {
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("errors.Is(err, sentinel) = false; err = %v", err)
 	}
-	if errors.Is(err, blockstore.ErrChunkNotFound) {
+	if errors.Is(err, block.ErrChunkNotFound) {
 		t.Fatalf("err should NOT wrap ErrChunkNotFound; got %v", err)
 	}
 }
@@ -225,7 +225,7 @@ func TestVerifyRemoteDurability_FailFastCancelsSiblings(t *testing.T) {
 	}
 
 	err := snapshot.VerifyRemoteDurability(context.Background(), sm, hs, concurrency)
-	if !errors.Is(err, blockstore.ErrChunkNotFound) {
+	if !errors.Is(err, block.ErrChunkNotFound) {
 		t.Fatalf("got %v, want wrapped ErrChunkNotFound", err)
 	}
 
@@ -258,26 +258,26 @@ type errRemote struct {
 
 var _ remote.RemoteStore = (*errRemote)(nil)
 
-func (e *errRemote) Put(context.Context, blockstore.ContentHash, []byte) error {
+func (e *errRemote) Put(context.Context, block.ContentHash, []byte) error {
 	return e.err
 }
-func (e *errRemote) Get(context.Context, blockstore.ContentHash) ([]byte, error) {
+func (e *errRemote) Get(context.Context, block.ContentHash) ([]byte, error) {
 	return nil, e.err
 }
-func (e *errRemote) GetRange(context.Context, blockstore.ContentHash, int64, int64) ([]byte, error) {
+func (e *errRemote) GetRange(context.Context, block.ContentHash, int64, int64) ([]byte, error) {
 	return nil, e.err
 }
-func (e *errRemote) Has(context.Context, blockstore.ContentHash) (bool, error) {
+func (e *errRemote) Has(context.Context, block.ContentHash) (bool, error) {
 	return false, e.err
 }
-func (e *errRemote) Delete(context.Context, blockstore.ContentHash) error { return e.err }
-func (e *errRemote) Head(context.Context, blockstore.ContentHash) (blockstore.Meta, error) {
-	return blockstore.Meta{}, e.err
+func (e *errRemote) Delete(context.Context, block.ContentHash) error { return e.err }
+func (e *errRemote) Head(context.Context, block.ContentHash) (block.Meta, error) {
+	return block.Meta{}, e.err
 }
-func (e *errRemote) Walk(context.Context, func(blockstore.ContentHash, blockstore.Meta) error) error {
+func (e *errRemote) Walk(context.Context, func(block.ContentHash, block.Meta) error) error {
 	return e.err
 }
-func (e *errRemote) ReadBlockVerified(context.Context, blockstore.ContentHash, blockstore.ContentHash) ([]byte, error) {
+func (e *errRemote) ReadBlockVerified(context.Context, block.ContentHash, block.ContentHash) ([]byte, error) {
 	return nil, e.err
 }
 func (e *errRemote) Close() error                              { return nil }
@@ -299,32 +299,32 @@ func newBlockingRemote() *blockingRemote {
 func (b *blockingRemote) inFlight() int64 { return b.flying.Load() }
 func (b *blockingRemote) releaseAll()     { close(b.release) }
 
-func (b *blockingRemote) Head(ctx context.Context, _ blockstore.ContentHash) (blockstore.Meta, error) {
+func (b *blockingRemote) Head(ctx context.Context, _ block.ContentHash) (block.Meta, error) {
 	b.flying.Add(1)
 	defer b.flying.Add(-1)
 	select {
 	case <-b.release:
-		return blockstore.Meta{}, nil
+		return block.Meta{}, nil
 	case <-ctx.Done():
-		return blockstore.Meta{}, ctx.Err()
+		return block.Meta{}, ctx.Err()
 	}
 }
 
-func (b *blockingRemote) Put(context.Context, blockstore.ContentHash, []byte) error { return nil }
-func (b *blockingRemote) Get(context.Context, blockstore.ContentHash) ([]byte, error) {
+func (b *blockingRemote) Put(context.Context, block.ContentHash, []byte) error { return nil }
+func (b *blockingRemote) Get(context.Context, block.ContentHash) ([]byte, error) {
 	return nil, nil
 }
-func (b *blockingRemote) GetRange(context.Context, blockstore.ContentHash, int64, int64) ([]byte, error) {
+func (b *blockingRemote) GetRange(context.Context, block.ContentHash, int64, int64) ([]byte, error) {
 	return nil, nil
 }
-func (b *blockingRemote) Has(context.Context, blockstore.ContentHash) (bool, error) {
+func (b *blockingRemote) Has(context.Context, block.ContentHash) (bool, error) {
 	return false, nil
 }
-func (b *blockingRemote) Delete(context.Context, blockstore.ContentHash) error { return nil }
-func (b *blockingRemote) Walk(context.Context, func(blockstore.ContentHash, blockstore.Meta) error) error {
+func (b *blockingRemote) Delete(context.Context, block.ContentHash) error { return nil }
+func (b *blockingRemote) Walk(context.Context, func(block.ContentHash, block.Meta) error) error {
 	return nil
 }
-func (b *blockingRemote) ReadBlockVerified(context.Context, blockstore.ContentHash, blockstore.ContentHash) ([]byte, error) {
+func (b *blockingRemote) ReadBlockVerified(context.Context, block.ContentHash, block.ContentHash) ([]byte, error) {
 	return nil, nil
 }
 func (b *blockingRemote) Close() error                              { return nil }
@@ -349,7 +349,7 @@ func newCountingRemote(delay time.Duration) *countingRemote {
 func (c *countingRemote) maxInFlight() int64 { return c.maxFly.Load() }
 func (c *countingRemote) totalCalls() int64  { return c.calls.Load() }
 
-func (c *countingRemote) Head(ctx context.Context, _ blockstore.ContentHash) (blockstore.Meta, error) {
+func (c *countingRemote) Head(ctx context.Context, _ block.ContentHash) (block.Meta, error) {
 	c.calls.Add(1)
 	now := c.flying.Add(1)
 	defer c.flying.Add(-1)
@@ -365,27 +365,27 @@ func (c *countingRemote) Head(ctx context.Context, _ blockstore.ContentHash) (bl
 	}
 	select {
 	case <-time.After(c.delay):
-		return blockstore.Meta{}, nil
+		return block.Meta{}, nil
 	case <-ctx.Done():
-		return blockstore.Meta{}, ctx.Err()
+		return block.Meta{}, ctx.Err()
 	}
 }
 
-func (c *countingRemote) Put(context.Context, blockstore.ContentHash, []byte) error { return nil }
-func (c *countingRemote) Get(context.Context, blockstore.ContentHash) ([]byte, error) {
+func (c *countingRemote) Put(context.Context, block.ContentHash, []byte) error { return nil }
+func (c *countingRemote) Get(context.Context, block.ContentHash) ([]byte, error) {
 	return nil, nil
 }
-func (c *countingRemote) GetRange(context.Context, blockstore.ContentHash, int64, int64) ([]byte, error) {
+func (c *countingRemote) GetRange(context.Context, block.ContentHash, int64, int64) ([]byte, error) {
 	return nil, nil
 }
-func (c *countingRemote) Has(context.Context, blockstore.ContentHash) (bool, error) {
+func (c *countingRemote) Has(context.Context, block.ContentHash) (bool, error) {
 	return false, nil
 }
-func (c *countingRemote) Delete(context.Context, blockstore.ContentHash) error { return nil }
-func (c *countingRemote) Walk(context.Context, func(blockstore.ContentHash, blockstore.Meta) error) error {
+func (c *countingRemote) Delete(context.Context, block.ContentHash) error { return nil }
+func (c *countingRemote) Walk(context.Context, func(block.ContentHash, block.Meta) error) error {
 	return nil
 }
-func (c *countingRemote) ReadBlockVerified(context.Context, blockstore.ContentHash, blockstore.ContentHash) ([]byte, error) {
+func (c *countingRemote) ReadBlockVerified(context.Context, block.ContentHash, block.ContentHash) ([]byte, error) {
 	return nil, nil
 }
 func (c *countingRemote) Close() error                              { return nil }
@@ -396,7 +396,7 @@ func (c *countingRemote) Healthcheck(context.Context) health.Report { return hea
 // nominated hash, nil for everything else, with a small delay per call
 // so the fail-fast cancellation is observable.
 type slowMissingRemote struct {
-	missing   blockstore.ContentHash
+	missing   block.ContentHash
 	delay     time.Duration
 	completed atomic.Int64
 }
@@ -405,34 +405,34 @@ var _ remote.RemoteStore = (*slowMissingRemote)(nil)
 
 func (s *slowMissingRemote) completedCalls() int64 { return s.completed.Load() }
 
-func (s *slowMissingRemote) Head(ctx context.Context, h blockstore.ContentHash) (blockstore.Meta, error) {
+func (s *slowMissingRemote) Head(ctx context.Context, h block.ContentHash) (block.Meta, error) {
 	select {
 	case <-time.After(s.delay):
 	case <-ctx.Done():
-		return blockstore.Meta{}, ctx.Err()
+		return block.Meta{}, ctx.Err()
 	}
 	s.completed.Add(1)
 	if h == s.missing {
-		return blockstore.Meta{}, blockstore.ErrChunkNotFound
+		return block.Meta{}, block.ErrChunkNotFound
 	}
-	return blockstore.Meta{}, nil
+	return block.Meta{}, nil
 }
 
-func (s *slowMissingRemote) Put(context.Context, blockstore.ContentHash, []byte) error { return nil }
-func (s *slowMissingRemote) Get(context.Context, blockstore.ContentHash) ([]byte, error) {
+func (s *slowMissingRemote) Put(context.Context, block.ContentHash, []byte) error { return nil }
+func (s *slowMissingRemote) Get(context.Context, block.ContentHash) ([]byte, error) {
 	return nil, nil
 }
-func (s *slowMissingRemote) GetRange(context.Context, blockstore.ContentHash, int64, int64) ([]byte, error) {
+func (s *slowMissingRemote) GetRange(context.Context, block.ContentHash, int64, int64) ([]byte, error) {
 	return nil, nil
 }
-func (s *slowMissingRemote) Has(context.Context, blockstore.ContentHash) (bool, error) {
+func (s *slowMissingRemote) Has(context.Context, block.ContentHash) (bool, error) {
 	return false, nil
 }
-func (s *slowMissingRemote) Delete(context.Context, blockstore.ContentHash) error { return nil }
-func (s *slowMissingRemote) Walk(context.Context, func(blockstore.ContentHash, blockstore.Meta) error) error {
+func (s *slowMissingRemote) Delete(context.Context, block.ContentHash) error { return nil }
+func (s *slowMissingRemote) Walk(context.Context, func(block.ContentHash, block.Meta) error) error {
 	return nil
 }
-func (s *slowMissingRemote) ReadBlockVerified(context.Context, blockstore.ContentHash, blockstore.ContentHash) ([]byte, error) {
+func (s *slowMissingRemote) ReadBlockVerified(context.Context, block.ContentHash, block.ContentHash) ([]byte, error) {
 	return nil, nil
 }
 func (s *slowMissingRemote) Close() error                              { return nil }

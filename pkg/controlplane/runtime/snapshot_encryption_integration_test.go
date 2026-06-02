@@ -10,12 +10,12 @@ import (
 
 	"lukechampine.com/blake3"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/encryption"
-	"github.com/marmos91/dittofs/pkg/blockstore/encryption/keyprovider"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	bsmemory "github.com/marmos91/dittofs/pkg/blockstore/local/memory"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/encryption"
+	"github.com/marmos91/dittofs/pkg/block/encryption/keyprovider"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	bsmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -177,11 +177,11 @@ func newEncryptedRemote(t *testing.T, inner *remotememory.Store) *encryption.Enc
 // seedEncrypted Puts each payload through the encryption decorator under
 // its plaintext content hash and drives the orchestration's backup
 // HashSet to exactly those hashes.
-func (f *encryptedFixture) seedEncrypted(payloads [][]byte) []blockstore.ContentHash {
+func (f *encryptedFixture) seedEncrypted(payloads [][]byte) []block.ContentHash {
 	f.t.Helper()
-	hashes := make([]blockstore.ContentHash, 0, len(payloads))
+	hashes := make([]block.ContentHash, 0, len(payloads))
 	for _, p := range payloads {
-		h := blockstore.ContentHash(blake3.Sum256(p))
+		h := block.ContentHash(blake3.Sum256(p))
 		if err := f.enc.Put(context.Background(), h, p); err != nil {
 			f.t.Fatalf("encrypted Put: %v", err)
 		}
@@ -315,13 +315,13 @@ func testEncryptionUnframedFailsVerify(t *testing.T) {
 	hashes := fx.seedEncrypted(good)
 
 	unframed := bytes.Repeat([]byte{0xc3}, 2048)
-	unframedHash := blockstore.ContentHash(blake3.Sum256(unframed))
+	unframedHash := block.ContentHash(blake3.Sum256(unframed))
 	if err := fx.inner.Put(context.Background(), unframedHash, unframed); err != nil {
 		t.Fatalf("inner Put (unframed): %v", err)
 	}
 
 	// Manifest = two framed blocks + the unframed one.
-	allHashes := append(append([]blockstore.ContentHash{}, hashes...), unframedHash)
+	allHashes := append(append([]block.ContentHash{}, hashes...), unframedHash)
 	fx.setBackupHashes(allHashes)
 
 	ctx := fx.ctx()

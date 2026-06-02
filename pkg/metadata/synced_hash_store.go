@@ -17,7 +17,7 @@ package metadata
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // SyncedHashStore persists a single bit of per-hash state: "has this CAS
@@ -34,16 +34,16 @@ type SyncedHashStore interface {
 	// the remote store at least once. Returns (false, nil) when no
 	// entry exists for hash — an unset hash is treated as "not yet
 	// synced", not as an error.
-	IsSynced(ctx context.Context, hash blockstore.ContentHash) (bool, error)
+	IsSynced(ctx context.Context, hash block.ContentHash) (bool, error)
 
 	// MarkSynced records that hash has been mirrored to remote.
 	// Idempotent: re-applying the same hash is a no-op and returns
 	// nil. Callers do not need to check IsSynced before MarkSynced.
-	MarkSynced(ctx context.Context, hash blockstore.ContentHash) error
+	MarkSynced(ctx context.Context, hash block.ContentHash) error
 
 	// DeleteSynced removes the synced marker for hash. Idempotent:
 	// deleting an absent hash returns nil. Used by the refcount cascade
 	// when the last reference to a hash is dropped, so the synced set
 	// stays a strict subset of local CAS contents.
-	DeleteSynced(ctx context.Context, hash blockstore.ContentHash) error
+	DeleteSynced(ctx context.Context, hash block.ContentHash) error
 }

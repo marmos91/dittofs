@@ -88,7 +88,7 @@ func (h *Handler) convertFileAttrToNFS(fileHandle metadata.FileHandle, fileAttr 
 // the atomic After is absent. handle identifies the WCC subject.
 func (h *Handler) dirWccPair(
 	ctx *NFSHandlerContext,
-	metaSvc *metadata.MetadataService,
+	metaSvc *metadata.Service,
 	handle metadata.FileHandle,
 	wcc *metadata.DirWcc,
 	fallbackBefore *types.WccAttr,

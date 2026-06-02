@@ -25,8 +25,8 @@ import (
 // realFSTestFixture holds state for real-FS handler tests.
 type realFSTestFixture struct {
 	handler    *Handler
-	metaSvc    *metadata.MetadataService
-	store      metadata.MetadataStore
+	metaSvc    *metadata.Service
+	store      metadata.Store
 	rootHandle metadata.FileHandle
 	shareName  string
 }

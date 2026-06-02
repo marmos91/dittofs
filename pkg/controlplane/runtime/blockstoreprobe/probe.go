@@ -32,7 +32,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/pathutil"
-	"github.com/marmos91/dittofs/pkg/blockstore/remote/s3"
+	"github.com/marmos91/dittofs/pkg/block/remote/s3"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/health"
 )

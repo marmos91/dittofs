@@ -709,7 +709,7 @@ func openError(status uint32) *types.CompoundResult {
 // checkOpenAccess verifies that the caller has appropriate file-level permissions
 // for the requested share_access mode. This is required by NFSv4 OPEN to enforce
 // POSIX access control -- without it, any user can open any file regardless of mode bits.
-func checkOpenAccess(metaSvc *metadata.MetadataService, authCtx *metadata.AuthContext, handle metadata.FileHandle, shareAccess uint32) error {
+func checkOpenAccess(metaSvc *metadata.Service, authCtx *metadata.AuthContext, handle metadata.FileHandle, shareAccess uint32) error {
 	var requiredPerm metadata.Permission
 	if shareAccess&types.OPEN4_SHARE_ACCESS_READ != 0 {
 		requiredPerm |= metadata.PermissionRead

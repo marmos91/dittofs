@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -33,7 +33,7 @@ import (
 // ============================================================================
 
 // Ensure PostgresMetadataStore implements FileBlockStore
-var _ blockstore.FileBlockStore = (*PostgresMetadataStore)(nil)
+var _ block.FileBlockStore = (*PostgresMetadataStore)(nil)
 
 // ============================================================================
 // FileBlock Operations
@@ -235,7 +235,7 @@ func decrementAndReapTx(ctx context.Context, tx pgx.Tx, id string) (uint32, erro
 // Only ref_count is mutated. block_state is never touched: AddRef
 // references an existing block, and the LRU hit path never creates
 // or transitions one.
-func (s *PostgresMetadataStore) AddRef(ctx context.Context, hash blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
+func (s *PostgresMetadataStore) AddRef(ctx context.Context, hash block.ContentHash, _ string, _ block.BlockRef) error {
 	// payloadID + blockRef accepted for future GC traceability;
 	// postgres backend records ref count only — parameters intentionally
 	// blanked.
@@ -287,7 +287,7 @@ func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.Con
 //
 // The legacy four-state machine collapsed to three; "Pending"
 // replaces both "Dirty" and "Local". The state literal here is 0,
-// matching blockstore.BlockStatePending.
+// matching block.BlockStatePending.
 func (s *PostgresMetadataStore) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
 	// olderThan <= 0 means "no age filter" — return every local block. The
 	// age predicate is omitted entirely in that case to avoid the corner
@@ -362,7 +362,7 @@ SELECT encode(hash, 'hex') FROM file_block_refs`
 
 // EnumerateFileBlocks streams every live-set ContentHash through fn, unioning
 // the CAS index with the per-file manifest (see enumerateHashesQuery).
-func (s *PostgresMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
+func (s *PostgresMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(block.ContentHash) error) error {
 	rows, err := s.query(ctx, enumerateHashesQuery)
 	if err != nil {
 		return fmt.Errorf("enumerate file blocks: query: %w", err)
@@ -376,7 +376,7 @@ func (s *PostgresMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func
 		if err := rows.Scan(&hashStr); err != nil {
 			return fmt.Errorf("enumerate file blocks: scan: %w", err)
 		}
-		var h blockstore.ContentHash
+		var h block.ContentHash
 		if hashStr.Valid {
 			parsed, perr := metadata.ParseContentHash(hashStr.String)
 			if perr != nil {
@@ -469,7 +469,7 @@ func scanFileBlockRows(rows pgx.Rows) ([]*metadata.FileBlock, error) {
 // ============================================================================
 
 // Ensure postgresTransaction implements FileBlockStore
-var _ blockstore.FileBlockStore = (*postgresTransaction)(nil)
+var _ block.FileBlockStore = (*postgresTransaction)(nil)
 
 // The FileBlockStore methods on
 // postgresTransaction MUST execute against the txn's own pgx.Tx, not the
@@ -607,7 +607,7 @@ func (tx *postgresTransaction) DecrementRefCountAndReap(ctx context.Context, id 
 // AddRef runs the +1 UPDATE keyed by hash on the active pgx.Tx so a
 // subsequent rollback undoes the bump (parity for the
 // LRU hit path). Returns metadata.ErrUnknownHash when no row matches.
-func (tx *postgresTransaction) AddRef(ctx context.Context, hash blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
+func (tx *postgresTransaction) AddRef(ctx context.Context, hash block.ContentHash, _ string, _ block.BlockRef) error {
 	// payloadID + blockRef accepted for future GC traceability;
 	// postgres backend records ref count only — parameters intentionally
 	// blanked.
@@ -698,7 +698,7 @@ func (tx *postgresTransaction) ListFileBlocks(ctx context.Context, payloadID str
 	return result, nil
 }
 
-func (tx *postgresTransaction) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
+func (tx *postgresTransaction) EnumerateFileBlocks(ctx context.Context, fn func(block.ContentHash) error) error {
 	rows, err := tx.tx.Query(ctx, enumerateHashesQuery)
 	if err != nil {
 		return fmt.Errorf("enumerate file blocks: query: %w", err)
@@ -712,7 +712,7 @@ func (tx *postgresTransaction) EnumerateFileBlocks(ctx context.Context, fn func(
 		if err := rows.Scan(&hashStr); err != nil {
 			return fmt.Errorf("enumerate file blocks: scan: %w", err)
 		}
-		var h blockstore.ContentHash
+		var h block.ContentHash
 		if hashStr.Valid {
 			parsed, perr := metadata.ParseContentHash(hashStr.String)
 			if perr != nil {
@@ -744,7 +744,7 @@ func (s *PostgresMetadataStore) InjectCorruptHashRow(ctx context.Context, blockI
 		INSERT INTO file_blocks (id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (id) DO UPDATE SET hash = EXCLUDED.hash`,
-		blockID, badHash, uint32(64), nil, nil, uint32(1), now, now, int(blockstore.BlockStateRemote), nil,
+		blockID, badHash, uint32(64), nil, nil, uint32(1), now, now, int(block.BlockStateRemote), nil,
 	)
 	if err != nil {
 		return fmt.Errorf("inject corrupt hash row: %w", err)

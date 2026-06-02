@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/migrate"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/migrate"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -22,13 +22,13 @@ import (
 // fakeMigrateStatusRuntime is a recording stand-in for MigrateStatusRuntime.
 // Tests assert on captured arguments and feed canned responses.
 type fakeMigrateStatusRuntime struct {
-	mds         metadata.MetadataStore
+	mds         metadata.Store
 	mdsErr      error
 	localDir    string
 	localDirErr error
 }
 
-func (f *fakeMigrateStatusRuntime) GetMetadataStoreForShare(_ string) (metadata.MetadataStore, error) {
+func (f *fakeMigrateStatusRuntime) GetMetadataStoreForShare(_ string) (metadata.Store, error) {
 	if f.mdsErr != nil {
 		return nil, f.mdsErr
 	}
@@ -44,7 +44,7 @@ func (f *fakeMigrateStatusRuntime) LocalStoreDir(_ string) (string, error) {
 
 // memoryMDSWithShare creates a memory metadata store with a registered
 // share that has the given BlockLayout configured.
-func memoryMDSWithShare(t *testing.T, share string, layout metadata.BlockLayout) metadata.MetadataStore {
+func memoryMDSWithShare(t *testing.T, share string, layout metadata.BlockLayout) metadata.Store {
 	t.Helper()
 	mds := memory.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = mds.Close() })
@@ -143,7 +143,7 @@ func TestMigrateStatus_WithJournal(t *testing.T) {
 		FileHandle:    "h1",
 		BytesUploaded: 1024,
 		BytesDeduped:  256,
-		Blocks:        []blockstore.BlockRef{},
+		Blocks:        []block.BlockRef{},
 	}))
 	require.NoError(t, j.Append(migrate.JournalEntry{
 		Kind:          "file_done",
@@ -151,7 +151,7 @@ func TestMigrateStatus_WithJournal(t *testing.T) {
 		FileHandle:    "h2",
 		BytesUploaded: 2048,
 		BytesDeduped:  0,
-		Blocks:        []blockstore.BlockRef{},
+		Blocks:        []block.BlockRef{},
 	}))
 	require.NoError(t, j.Close())
 

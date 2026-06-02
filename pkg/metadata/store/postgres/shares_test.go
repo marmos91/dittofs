@@ -24,7 +24,7 @@ func TestBlockLayoutConformance(t *testing.T) {
 
 	// Per-subtest clean store: the suite uses fixed share names and this
 	// package's tests share one database, so reset each store on open.
-	storetest.RunBlockLayoutSuite(t, func(t *testing.T) metadata.MetadataStore {
+	storetest.RunBlockLayoutSuite(t, func(t *testing.T) metadata.Store {
 		store := newPostgresStore(t)
 		if err := store.Reset(context.Background()); err != nil {
 			t.Fatalf("Reset: %v", err)

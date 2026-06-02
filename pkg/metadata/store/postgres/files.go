@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
@@ -314,10 +314,10 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 			Hidden:       hidden,
 		}
 		if len(objectIDRaw) > 0 {
-			if len(objectIDRaw) != blockstore.HashSize {
+			if len(objectIDRaw) != block.HashSize {
 				return nil, "", fmt.Errorf(
 					"postgres ListChildren: object_id has invalid length %d (want %d)",
-					len(objectIDRaw), blockstore.HashSize,
+					len(objectIDRaw), block.HashSize,
 				)
 			}
 			copy(attr.ObjectID[:], objectIDRaw)
@@ -414,7 +414,7 @@ func (s *PostgresMetadataStore) PutFilesystemMeta(ctx context.Context, shareName
 // Uses the partial UNIQUE index files_object_id_idx; the LIMIT 1 is defensive
 // (the partial UNIQUE constraint already enforces single-row matches for
 // non-NULL object_id values).
-func (s *PostgresMetadataStore) FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error) {
+func (s *PostgresMetadataStore) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.BlockRef, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -482,7 +482,7 @@ func (s *PostgresMetadataStore) GetFileByPayloadID(ctx context.Context, payloadI
 //
 // Zero-valued objectID inputs short-circuit to (0, nil) without backend
 // access, mirroring FindByObjectID's partial/skip-zero discipline.
-func (s *PostgresMetadataStore) CountObjectIDIndexRows(ctx context.Context, objectID blockstore.ObjectID) (int, error) {
+func (s *PostgresMetadataStore) CountObjectIDIndexRows(ctx context.Context, objectID block.ObjectID) (int, error) {
 	if objectID.IsZero() {
 		return 0, nil
 	}

@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
@@ -18,7 +18,7 @@ import (
 // metadataCoordinator is the per-share implementation of
 // engine.MetadataCoordinator. It binds the engine's metadata-coordination
 // surface (RefCount mutations, FileAttr.Blocks persistence) to a concrete
-// metadata.MetadataStore so the engine package itself can satisfy the
+// metadata.Store so the engine package itself can satisfy the
 // strict-grep boundary (zero pkg/metadata imports under
 // pkg/blockstore/engine/*.go).
 //
@@ -31,7 +31,7 @@ import (
 // IncrementRefCount calls (e.g. CopyPayload) MUST drive this from inside
 // a metadataStore.WithTransaction wrapper.
 type metadataCoordinator struct {
-	metadataStore metadata.MetadataStore
+	metadataStore metadata.Store
 }
 
 // Compile-time assertion: metadataCoordinator satisfies engine.MetadataCoordinator.
@@ -41,7 +41,7 @@ var _ engine.MetadataCoordinator = (*metadataCoordinator)(nil)
 // engine.MetadataCoordinator contract. Returns nil when metadataStore is
 // nil so the caller can skip injection cleanly in degenerate test
 // fixtures (production callers always pass a non-nil store).
-func newMetadataCoordinator(metadataStore metadata.MetadataStore) engine.MetadataCoordinator {
+func newMetadataCoordinator(metadataStore metadata.Store) engine.MetadataCoordinator {
 	if metadataStore == nil {
 		return nil
 	}
@@ -50,7 +50,7 @@ func newMetadataCoordinator(metadataStore metadata.MetadataStore) engine.Metadat
 
 // resolveStore picks between a context-bound metadata.Transaction (when
 // the caller used metadata.WithTx, e.g. common.CopyPayload) and the
-// public metadata.MetadataStore surface (Truncate/Delete which do not
+// public metadata.Store surface (Truncate/Delete which do not
 // run inside a metadata txn). The Transaction interface embeds the
 // FileBlockStore, so GetByHash / IncrementRefCount / DecrementRefCount
 // are available on both surfaces with identical signatures.
@@ -59,9 +59,9 @@ func newMetadataCoordinator(metadataStore metadata.MetadataStore) engine.Metadat
 // connection pool and commits immediately on its own connection —
 // defeating the BLOCKER-2 atomic rollback contract documented in
 // copy_payload.go and engine.go. The returned
-// blockstore.FileBlockStore-shaped surface is the narrow set of methods
+// block.FileBlockStore-shaped surface is the narrow set of methods
 // the coordinator needs.
-func (c *metadataCoordinator) resolveStore(ctx context.Context) blockstore.FileBlockStore {
+func (c *metadataCoordinator) resolveStore(ctx context.Context) block.FileBlockStore {
 	if tx := metadata.TxFromContext(ctx); tx != nil {
 		return tx
 	}
@@ -78,7 +78,7 @@ func (c *metadataCoordinator) resolveStore(ctx context.Context) blockstore.FileB
 // through that tx — keeping the per-row UPDATE inside the caller's
 // txn so a downstream PutFile failure rolls back BOTH the file attrs
 // AND every increment.
-func (c *metadataCoordinator) IncrementRefCount(ctx context.Context, hash blockstore.ContentHash) error {
+func (c *metadataCoordinator) IncrementRefCount(ctx context.Context, hash block.ContentHash) error {
 	store := c.resolveStore(ctx)
 	fb, err := store.GetByHash(ctx, hash)
 	if err != nil {
@@ -106,7 +106,7 @@ func (c *metadataCoordinator) IncrementRefCount(ctx context.Context, hash blocks
 // route through the public store — Truncate/Delete are non-atomic at
 // the cross-store level by design and the refcount audit reconciles
 // drift.
-func (c *metadataCoordinator) DecrementRefCount(ctx context.Context, hash blockstore.ContentHash) (uint32, error) {
+func (c *metadataCoordinator) DecrementRefCount(ctx context.Context, hash block.ContentHash) (uint32, error) {
 	store := c.resolveStore(ctx)
 	fb, err := store.GetByHash(ctx, hash)
 	if err != nil {
@@ -171,7 +171,7 @@ func (c *metadataCoordinator) DecrementRefCountAndReap(ctx context.Context, payl
 // Remote BlockRef the engine has produced.
 //
 // The syncer computes the BLAKE3 Merkle-root ObjectID over `blocks`
-// (via blockstore.ComputeObjectID) and threads it through this hook so
+// (via block.ComputeObjectID) and threads it through this hook so
 // the metadata write atomically updates both Blocks AND ObjectID in the
 // same PutFile transaction.
 //
@@ -181,7 +181,7 @@ func (c *metadataCoordinator) DecrementRefCountAndReap(ctx context.Context, payl
 // mapObjectIDConflict so the file-level dedup short-circuit retry path
 // in Syncer.applyFileLevelDedupHit detects the race uniformly across
 // backends.
-func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error {
+func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
 	return c.metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		file, err := tx.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
 		if err != nil {
@@ -208,7 +208,7 @@ func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID s
 // read-cost optimization), so we fall back to GetFile-by-handle which loads
 // file_block_refs. Returns an empty slice (nil) when the file has no blocks
 // yet or does not exist.
-func (c *metadataCoordinator) GetPersistedBlocks(ctx context.Context, payloadID string) ([]blockstore.BlockRef, error) {
+func (c *metadataCoordinator) GetPersistedBlocks(ctx context.Context, payloadID string) ([]block.BlockRef, error) {
 	file, err := c.metadataStore.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
 	if err != nil {
 		// File deleted between WriteAt and rollup commit: no blocks to
@@ -307,7 +307,7 @@ func mapObjectIDConflict(err error) error {
 // Callers use this to detect whether a provisional ObjectID matches a
 // previously-quiesced file's BlockRef list, enabling file-level dedup
 // at write time.
-func (c *metadataCoordinator) FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error) {
+func (c *metadataCoordinator) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.BlockRef, error) {
 	if objectID.IsZero() {
 		return nil, nil
 	}
@@ -330,7 +330,7 @@ func (c *metadataCoordinator) FindByObjectID(ctx context.Context, objectID block
 // to (zero ObjectID, nil) here so the caller's trigger evaluation does
 // not see a transient error during the very first quiesce of a fresh
 // file.
-func (c *metadataCoordinator) GetFileObjectID(ctx context.Context, payloadID string) (blockstore.ObjectID, error) {
+func (c *metadataCoordinator) GetFileObjectID(ctx context.Context, payloadID string) (block.ObjectID, error) {
 	file, err := c.metadataStore.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
 	if err != nil {
 		// NotFound is the steady state for a never-quiesced file. The
@@ -338,14 +338,14 @@ func (c *metadataCoordinator) GetFileObjectID(ctx context.Context, payloadID str
 		// (the file has no prior Merkle root), so this is the correct
 		// disposition — not a real backend error.
 		if metadata.IsNotFoundError(err) {
-			return blockstore.ObjectID{}, nil
+			return block.ObjectID{}, nil
 		}
-		return blockstore.ObjectID{}, fmt.Errorf("coordinator: GetFileObjectID(%s): %w", payloadID, err)
+		return block.ObjectID{}, fmt.Errorf("coordinator: GetFileObjectID(%s): %w", payloadID, err)
 	}
 	if file == nil {
 		// Defense-in-depth: some backends return (nil, nil) for "no row"
 		// rather than an error. Treat the same as NotFound.
-		return blockstore.ObjectID{}, nil
+		return block.ObjectID{}, nil
 	}
 	return file.ObjectID, nil
 }

@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	bsmemory "github.com/marmos91/dittofs/pkg/blockstore/local/memory"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	bsmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -519,7 +519,7 @@ func recoverInto(counter *atomic.Int64) {
 
 // seedConcRemoteForShare seeds the share's remote so the verify gate passes
 // and CreateSnapshot can reach state=ready.
-func seedConcRemoteForShare(t *testing.T, rt *Runtime, shareName string, hashes []blockstore.ContentHash) {
+func seedConcRemoteForShare(t *testing.T, rt *Runtime, shareName string, hashes []block.ContentHash) {
 	t.Helper()
 	bs, err := rt.sharesSvc.GetBlockStoreForShare(shareName)
 	if err != nil {

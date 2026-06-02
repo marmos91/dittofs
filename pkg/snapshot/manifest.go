@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // ErrInvalidManifestLine is returned by ReadManifest when a line in the
@@ -26,7 +26,7 @@ const maxManifestLine = 1 << 20
 // hex-encoded ContentHash per line, sorted ascending, LF-terminated.
 // The internal bufio.Writer is flushed before returning. Empty input
 // produces zero bytes of output.
-func WriteManifest(w io.Writer, hs *blockstore.HashSet) error {
+func WriteManifest(w io.Writer, hs *block.HashSet) error {
 	bw := bufio.NewWriter(w)
 	for _, h := range hs.Sorted() {
 		if _, err := bw.WriteString(h.String()); err != nil {
@@ -46,7 +46,7 @@ func WriteManifest(w io.Writer, hs *blockstore.HashSet) error {
 // in the same directory so the rename is atomic on the same filesystem.
 // On error before rename, the temp file is removed and path is left
 // untouched.
-func WriteManifestAtomic(path string, hs *blockstore.HashSet) error {
+func WriteManifestAtomic(path string, hs *block.HashSet) error {
 	tmpPath := path + ".tmp"
 
 	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
@@ -80,8 +80,8 @@ func WriteManifestAtomic(path string, hs *blockstore.HashSet) error {
 // other shape returns an error wrapping ErrInvalidManifestLine with
 // the offending 1-based line number. Trailing CR (CRLF input) is
 // tolerated. Duplicate lines collapse silently.
-func ReadManifest(r io.Reader) (*blockstore.HashSet, error) {
-	hs := blockstore.NewHashSet(0)
+func ReadManifest(r io.Reader) (*block.HashSet, error) {
+	hs := block.NewHashSet(0)
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 128), maxManifestLine)
 
@@ -89,7 +89,7 @@ func ReadManifest(r io.Reader) (*blockstore.HashSet, error) {
 	for sc.Scan() {
 		lineNum++
 		line := strings.TrimRight(sc.Text(), "\r")
-		h, err := blockstore.ParseContentHash(line)
+		h, err := block.ParseContentHash(line)
 		if err != nil {
 			return nil, fmt.Errorf("%w: line %d: %v", ErrInvalidManifestLine, lineNum, err)
 		}

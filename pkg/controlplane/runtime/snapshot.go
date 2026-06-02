@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -486,7 +486,7 @@ func (r *Runtime) runSnapshotOrchestration(
 		"share", shareName,
 		"dump_path", dumpPath,
 	)
-	hashSet, err := snapshot.WriteMetadataDumpAtomic(dumpPath, func(w io.Writer) (*blockstore.HashSet, error) {
+	hashSet, err := snapshot.WriteMetadataDumpAtomic(dumpPath, func(w io.Writer) (*block.HashSet, error) {
 		return backupable.Backup(ctx, w)
 	})
 	if err != nil {
@@ -517,7 +517,7 @@ func (r *Runtime) runSnapshotOrchestration(
 		// file exists. WriteManifestAtomic handles empty input as zero
 		// bytes; the hold filter still recognizes an empty manifest as
 		// present.
-		hashSet = blockstore.NewHashSet(0)
+		hashSet = block.NewHashSet(0)
 	}
 	if err := snapshot.WriteManifestAtomic(manifestPath, hashSet); err != nil {
 		terminalErr = fmt.Errorf("snapshot create %s: write manifest: %w: %v",
@@ -651,7 +651,7 @@ func (r *Runtime) runSnapshotOrchestration(
 		"snapshot_id", snapID, "share", shareName,
 		"verify_concurrency", concurrency)
 	verr := snapshot.VerifyRemoteDurability(ctx, remoteStore, hashSet, concurrency)
-	if verr != nil && errors.Is(verr, blockstore.ErrChunkNotFound) {
+	if verr != nil && errors.Is(verr, block.ErrChunkNotFound) {
 		// One drain + re-verify retry. Common cause: syncer was behind
 		// during the first verify; a fresh drain catches up.
 		logger.Debug("snapshot create: verify miss, retrying drain+verify",

@@ -13,9 +13,9 @@ import (
 // racing AddShare calls each get their OWN provider+store so we can detect a
 // metadata-store/registry mismatch: if the loser's store ends up registered
 // while the winner's share is in the registry, the two layers disagree.
-type fixedStoreProvider struct{ store metadata.MetadataStore }
+type fixedStoreProvider struct{ store metadata.Store }
 
-func (p fixedStoreProvider) GetMetadataStore(string) (metadata.MetadataStore, error) {
+func (p fixedStoreProvider) GetMetadataStore(string) (metadata.Store, error) {
 	return p.store, nil
 }
 
@@ -45,9 +45,9 @@ func TestAddShare_ConcurrentSameName_NoMetadataMismatch(t *testing.T) {
 		var wg sync.WaitGroup
 		var mu sync.Mutex
 		winners := 0
-		var winnerStore metadata.MetadataStore
+		var winnerStore metadata.Store
 
-		run := func(store metadata.MetadataStore) {
+		run := func(store metadata.Store) {
 			defer wg.Done()
 			cfg := &ShareConfig{Name: name, MetadataStore: "m", Enabled: true}
 			err := svc.AddShare(ctx, cfg, fixedStoreProvider{store: store}, metaSvc, nil, nil, nil)

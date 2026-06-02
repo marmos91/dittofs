@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	bsmemory "github.com/marmos91/dittofs/pkg/blockstore/local/memory"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	bsmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -170,7 +170,7 @@ func (f *realBackupFixture) assertSnapshotConsistent(t *testing.T, snap *models.
 	// the manifest. A failure here means the dump captured a file whose
 	// blocks are absent from the manifest — the snapshot would restore a
 	// file pointing at blocks no hold protects.
-	_ = dumpHashes.ForEach(func(h blockstore.ContentHash) error {
+	_ = dumpHashes.ForEach(func(h block.ContentHash) error {
 		if !manifestHashes.Contains(h) {
 			t.Errorf("snapshot %d: dump references hash %x absent from manifest (metadata/block skew)", n, h[:8])
 		}
@@ -180,7 +180,7 @@ func (f *realBackupFixture) assertSnapshotConsistent(t *testing.T, snap *models.
 	// Direction 2: every manifest hash must be referenced by the restored
 	// metadata. A phantom manifest hash means the manifest was captured
 	// from a later view than the dump.
-	_ = manifestHashes.ForEach(func(h blockstore.ContentHash) error {
+	_ = manifestHashes.ForEach(func(h block.ContentHash) error {
 		if !dumpHashes.Contains(h) {
 			t.Errorf("snapshot %d: manifest carries hash %x not referenced by dump (manifest/metadata skew)", n, h[:8])
 		}
@@ -195,7 +195,7 @@ func (f *realBackupFixture) assertSnapshotConsistent(t *testing.T, snap *models.
 // assertNoTornFiles walks the share's directory tree in the restored store
 // and verifies each regular file's BlockRefs form a contiguous,
 // non-overlapping tiling of [0, size).
-func (f *realBackupFixture) assertNoTornFiles(t *testing.T, store metadata.MetadataStore, n int) {
+func (f *realBackupFixture) assertNoTornFiles(t *testing.T, store metadata.Store, n int) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -375,10 +375,10 @@ func (f *realBackupFixture) tryPutMultiChunkFile(ctx context.Context, name strin
 	}
 
 	const chunkSize = uint32(1 << 20)
-	blocks := make([]blockstore.BlockRef, chunks)
+	blocks := make([]block.BlockRef, chunks)
 	for i := 0; i < chunks; i++ {
 		ctr := atomic.AddUint64(&f.hctr, 1)
-		blocks[i] = blockstore.BlockRef{
+		blocks[i] = block.BlockRef{
 			Hash:   mintHash(ctr),
 			Offset: uint64(i) * uint64(chunkSize),
 			Size:   chunkSize,
@@ -415,12 +415,12 @@ func (f *realBackupFixture) tryPutMultiChunkFile(ctx context.Context, name strin
 
 // mintHash deterministically derives a unique ContentHash from a counter so
 // every chunk across the whole test references a distinct block.
-func mintHash(ctr uint64) blockstore.ContentHash {
-	var h blockstore.ContentHash
+func mintHash(ctr uint64) block.ContentHash {
+	var h block.ContentHash
 	for i := 0; i < 8; i++ {
 		h[i] = byte(ctr >> (8 * i))
 	}
 	// Tag the tail so two counters that share low bytes still differ.
-	h[blockstore.HashSize-1] = 0xA5
+	h[block.HashSize-1] = 0xA5
 	return h
 }

@@ -14,7 +14,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -144,17 +144,17 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Auto-deduce block store defaults from system resources
 	detector := sysinfo.NewDetector()
-	deduced := blockstore.DeduceDefaults(detector)
+	deduced := block.DeduceDefaults(detector)
 
 	logger.Info("System resources detected",
-		"memory", blockstore.FormatBytes(detector.AvailableMemory()),
+		"memory", block.FormatBytes(detector.AvailableMemory()),
 		"memory_source", detector.MemorySource(),
 		"cpus", detector.AvailableCPUs(),
 	)
 	logger.Info("Auto-deduced block store defaults",
-		"local_store_size", blockstore.FormatBytes(deduced.LocalStoreSize),
-		"read_buffer_size", blockstore.FormatBytes(uint64(deduced.ReadBufferSize)),
-		"max_pending_size", blockstore.FormatBytes(deduced.MaxPendingSize),
+		"local_store_size", block.FormatBytes(deduced.LocalStoreSize),
+		"read_buffer_size", block.FormatBytes(uint64(deduced.ReadBufferSize)),
+		"max_pending_size", block.FormatBytes(deduced.MaxPendingSize),
 		"parallel_syncs", deduced.ParallelSyncs,
 		"parallel_fetches", deduced.ParallelFetches,
 		"prefetch_workers", deduced.PrefetchWorkers,
@@ -163,7 +163,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if floors := deduced.HitFloors(); len(floors) > 0 {
 		logger.Warn("Some deduced values hit minimum floors; system may be resource-constrained",
 			"floors", floors,
-			"system_memory", blockstore.FormatBytes(detector.AvailableMemory()),
+			"system_memory", block.FormatBytes(detector.AvailableMemory()),
 			"system_cpus", detector.AvailableCPUs(),
 		)
 	}
@@ -171,7 +171,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Set per-share defaults BEFORE loading shares (AddShare creates BlockStores).
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{
 		MaxSize:         deduced.LocalStoreSize,
-		MaxMemory:       blockstore.ClampToInt64(deduced.MaxPendingSize),
+		MaxMemory:       block.ClampToInt64(deduced.MaxPendingSize),
 		ReadBufferBytes: deduced.ReadBufferSize,
 		DedupLRUSize:    cfg.Blockstore.Local.DedupLRUSize,
 	})
@@ -370,7 +370,7 @@ func handleLoadSharesError(err error, stderr *os.File) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, blockstore.ErrLegacyLayoutDetected) {
+	if errors.Is(err, block.ErrLegacyLayoutDetected) {
 		_, _ = fmt.Fprintln(stderr, formatLegacyLayoutDirective(err))
 		exitFn(EX_CONFIG)
 		// Unreachable in production (exitFn == os.Exit terminates).

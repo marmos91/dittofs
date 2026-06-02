@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -46,7 +46,7 @@ type HandlerTestFixture struct {
 
 	// MetadataService provides high-level metadata operations.
 	// It owns the memory-backed metadata store.
-	MetadataService *metadata.MetadataService
+	MetadataService *metadata.Service
 
 	// MetaStore is the underlying memory-backed metadata store. Exposed so
 	// tests can adjust static capabilities (e.g. MaxWriteSize) directly.

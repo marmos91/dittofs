@@ -10,7 +10,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/backup"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -49,8 +49,8 @@ type memoryBackupSnapshot struct {
 	Capabilities  metadata.FilesystemCapabilities
 	StoreID       string
 	RollupOffsets map[string]uint64
-	Synced        map[blockstore.ContentHash]time.Time
-	ObjectIndex   map[blockstore.ContentHash]string
+	Synced        map[block.ContentHash]time.Time
+	ObjectIndex   map[block.ContentHash]string
 
 	// ServerConfigCustomSettingsJSON holds the JSON-encoded form of
 	// ServerConfig.CustomSettings. Gob cannot encode map[string]any
@@ -93,7 +93,7 @@ var _ metadata.Backupable = (*MemoryMetadataStore)(nil)
 // writes it into w using the shared envelope format. The returned
 // HashSet contains every unique content-addressed block hash referenced
 // by the snapshot (extracted inline during serialization).
-func (s *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockstore.HashSet, error) {
+func (s *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.HashSet, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("%w: %v", metadata.ErrBackupAborted, err)
 	}
@@ -134,7 +134,7 @@ func (s *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockst
 
 	s.syncedMu.RLock()
 	if s.synced != nil {
-		sy := make(map[blockstore.ContentHash]time.Time, len(s.synced))
+		sy := make(map[block.ContentHash]time.Time, len(s.synced))
 		for k, v := range s.synced {
 			sy[k] = v
 		}
@@ -180,7 +180,7 @@ func (s *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockst
 	}
 
 	// Extract every unique block hash into a HashSet.
-	hs := blockstore.NewHashSet(len(s.files))
+	hs := block.NewHashSet(len(s.files))
 	for _, fd := range s.files {
 		if fd.Attr == nil {
 			continue
@@ -361,7 +361,7 @@ func (s *MemoryMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 		s.rollupOffsets = make(map[string]uint64)
 	}
 	if s.objectIndex == nil {
-		s.objectIndex = make(map[blockstore.ContentHash]string)
+		s.objectIndex = make(map[block.ContentHash]string)
 	}
 
 	// Restore lazy sub-stores (nil snapshot = never initialized).

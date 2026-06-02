@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
@@ -100,7 +100,7 @@ type FileAttr struct {
 	// Postgres: separate file_block_refs join table.
 	// Badger: rides existing JSON-encoded FileAttr blob.
 	// Memory: typed slice held directly.
-	Blocks []blockstore.BlockRef `json:"blocks,omitempty"`
+	Blocks []block.BlockRef `json:"blocks,omitempty"`
 
 	// ObjectID is the BLAKE3 Merkle root over BlockRef.Hash values sorted
 	// by Offset, populated lazily at the post-Flush coordinator hook
@@ -115,7 +115,7 @@ type FileAttr struct {
 	//   - Badger: rides existing JSON FileAttr blob; secondary key
 	//     obj/{hex} -> file_id maintained on Put/Delete.
 	//   - Memory: typed field; map[ContentHash]uuid index in store.
-	ObjectID blockstore.ObjectID `json:"object_id,omitempty"`
+	ObjectID block.ObjectID `json:"object_id,omitempty"`
 
 	// DeletedAt is set when this node was recycled (moved into #recycle).
 	// nil means the node is live. Drives retention reaping and trash listing.

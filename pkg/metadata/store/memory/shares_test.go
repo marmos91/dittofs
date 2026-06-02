@@ -11,7 +11,7 @@ import (
 // TestBlockLayoutConformance runs the per-share BlockLayout conformance
 // scenarios against the in-memory metadata store.
 func TestBlockLayoutConformance(t *testing.T) {
-	storetest.RunBlockLayoutSuite(t, func(t *testing.T) metadata.MetadataStore {
+	storetest.RunBlockLayoutSuite(t, func(t *testing.T) metadata.Store {
 		return memory.NewMemoryMetadataStoreWithDefaults()
 	})
 }

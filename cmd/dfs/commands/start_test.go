@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // TestStart_LegacyLayoutExitCode asserts the boot-guard contract:
 // when LoadSharesFromStore surfaces an error wrapping
-// blockstore.ErrLegacyLayoutDetected, the start command must
+// block.ErrLegacyLayoutDetected, the start command must
 // (1) print the multi-line operator directive to stderr,
 // (2) exit with code 78 (EX_CONFIG).
 //
@@ -58,9 +58,9 @@ func TestStart_LegacyLayoutExitCode(t *testing.T) {
 
 	// Synthesize the exact wrap shape runtime.LoadSharesFromStore
 	// produces: `share %q: %w` around the fs.NewWithOptions output, which
-	// is itself `share %s: %w` around blockstore.ErrLegacyLayoutDetected.
+	// is itself `share %s: %w` around block.ErrLegacyLayoutDetected.
 	sharePath := filepath.Join(t.TempDir(), "share-A")
-	innerErr := fmt.Errorf("share %s: %w", sharePath, blockstore.ErrLegacyLayoutDetected)
+	innerErr := fmt.Errorf("share %s: %w", sharePath, block.ErrLegacyLayoutDetected)
 	loadErr := fmt.Errorf("share %q: %w", "share-A", innerErr)
 
 	stop := handleLoadSharesError(loadErr, w)

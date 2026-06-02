@@ -12,7 +12,7 @@ import (
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/pkg/apiclient"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 )
 
 // auditServer is a recording stub for the refcount audit endpoint.
