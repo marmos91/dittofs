@@ -42,13 +42,3 @@ that needs a byte-level pcap diff.
 | smb2.bind_negative_smb3signCtoHd | Session bind | CMAC→HMAC re-auth: server rejects (ACCESS_DENIED) but signed error reply mis-decoded as OK by client (wire-encoding follow-up) | #686 |
 | smb2.bind_negative_smb3signHtoCs | Session bind | HMAC→CMAC re-auth: server rejects (ACCESS_DENIED) but signed error reply mis-decoded as OK by client (wire-encoding follow-up) | #686 |
 | smb2.bind_negative_smb3signHtoCd | Session bind | HMAC→CMAC re-auth: server rejects (ACCESS_DENIED) but signed error reply mis-decoded as OK by client (wire-encoding follow-up) | #686 |
-
-## AES-256 Session Encryption (Not Implemented)
-
-DittoFS implements AES-128-CCM and AES-128-GCM but not the AES-256 variants.
-The 128-bit variants pass. These fail identically on the NTLM path.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.encryption-aes-256-ccm | AES-256 | AES-256 encryption not implemented | #340 |
-| smb2.encryption-aes-256-gcm | AES-256 | AES-256 encryption not implemented | #340 |

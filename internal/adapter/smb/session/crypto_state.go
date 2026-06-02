@@ -86,8 +86,24 @@ type SessionCryptoState struct {
 // for AES-256 ciphers, 128 bits otherwise. The Signer is created via the
 // NewSigner factory based on dialect and signing algorithm ID.
 //
+// Session-key (KDF input) length, matching Samba smb2_signing_key_create
+// (libcli/smb/smb2_signing.c):
+//   - Signing, application, and AES-128 encryption/decryption keys derive from
+//     a 16-byte input: the session key truncated or zero-padded to 16 bytes.
+//   - AES-256 encryption/decryption keys derive from the FULL session key. For
+//     a Kerberos AES-256 ticket this is the 32-byte ticket session key; only
+//     these two keys see more than 16 bytes of input.
+//
+// This split is why AES-256 fails under Kerberos if the session key is
+// pre-truncated to 16 bytes: the client (Windows/Samba) derives the AES-256
+// cipher keys from the full Kerberos key, so a server that truncated first
+// produces non-matching keys and the client cannot decrypt the response
+// (NT_STATUS_IO_TIMEOUT). NTLM always yields a 16-byte session key, so the
+// full key and the truncated key are identical there.
+//
 // Parameters:
-//   - sessionKey: the raw session key from NTLM/Kerberos authentication
+//   - sessionKey: the raw session key from NTLM/Kerberos authentication.
+//     Pass the FULL key (do not pre-truncate); normalization happens here.
 //   - dialect: the negotiated SMB dialect
 //   - preauthHash: the preauth integrity hash (only used for 3.1.1)
 //   - cipherId: the negotiated cipher ID (determines encryption key length)
@@ -100,35 +116,53 @@ func DeriveAllKeys(sessionKey []byte, dialect types.Dialect, preauthHash [64]byt
 	cs.SessionKey = make([]byte, len(sessionKey))
 	copy(cs.SessionKey, sessionKey)
 
+	// 16-byte normalized key: session key truncated or zero-padded to 16 bytes.
+	// Used for signing, application, and AES-128 cipher key derivation.
+	key16 := normalizeTo16(sessionKey)
+
 	if dialect < types.Dialect0300 {
-		// SMB 2.x: direct HMAC-SHA256 from session key, no KDF
-		cs.Signer = signing.NewHMACSigner(sessionKey)
+		// SMB 2.x: direct HMAC-SHA256 from the 16-byte session key, no KDF.
+		cs.Signer = signing.NewHMACSigner(key16)
 		// Store a copy of the signing key
-		cs.SigningKey = make([]byte, len(sessionKey))
-		copy(cs.SigningKey, sessionKey)
+		cs.SigningKey = make([]byte, len(key16))
+		copy(cs.SigningKey, key16)
 		return cs
 	}
 
-	// SMB 3.x: derive all 4 keys via SP800-108 KDF
+	// SMB 3.x: derive all 4 keys via SP800-108 KDF.
+	// Signing and application keys always derive from the 16-byte key.
 	sigLabel, sigCtx := kdf.LabelAndContext(kdf.SigningKeyPurpose, dialect, preauthHash)
-	cs.SigningKey = kdf.DeriveKey(sessionKey, sigLabel, sigCtx, 128)
+	cs.SigningKey = kdf.DeriveKey(key16, sigLabel, sigCtx, 128)
 	cs.Signer = signing.NewSigner(dialect, signingAlgId, signingAlgExplicit, cs.SigningKey)
 
+	// AES-256 cipher keys use the FULL session key as KDF input; AES-128 keys
+	// (and the default) use the 16-byte key.
 	encKeyBits := uint32(128)
+	encInput := key16
 	if cipherId == types.CipherAES256CCM || cipherId == types.CipherAES256GCM {
 		encKeyBits = 256
+		encInput = sessionKey
 	}
 
 	encLabel, encCtx := kdf.LabelAndContext(kdf.EncryptionKeyPurpose, dialect, preauthHash)
-	cs.EncryptionKey = kdf.DeriveKey(sessionKey, encLabel, encCtx, encKeyBits)
+	cs.EncryptionKey = kdf.DeriveKey(encInput, encLabel, encCtx, encKeyBits)
 
 	decLabel, decCtx := kdf.LabelAndContext(kdf.DecryptionKeyPurpose, dialect, preauthHash)
-	cs.DecryptionKey = kdf.DeriveKey(sessionKey, decLabel, decCtx, encKeyBits)
+	cs.DecryptionKey = kdf.DeriveKey(encInput, decLabel, decCtx, encKeyBits)
 
 	appLabel, appCtx := kdf.LabelAndContext(kdf.ApplicationKeyPurpose, dialect, preauthHash)
-	cs.ApplicationKey = kdf.DeriveKey(sessionKey, appLabel, appCtx, 128)
+	cs.ApplicationKey = kdf.DeriveKey(key16, appLabel, appCtx, 128)
 
 	return cs
+}
+
+// normalizeTo16 returns the session key truncated or zero-padded to exactly
+// 16 bytes, per MS-SMB2 §3.1.4.2 (signing, application, and AES-128 cipher key
+// derivation use a 16-byte KDF input).
+func normalizeTo16(key []byte) []byte {
+	out := make([]byte, 16)
+	copy(out, key) // truncates if longer, zero-pads if shorter
+	return out
 }
 
 // DeriveChannelSigningKey derives a per-channel signing key for a connection
@@ -156,8 +190,11 @@ func DeriveChannelSigningKey(sessionKey []byte, dialect types.Dialect, preauthHa
 	if len(sessionKey) == 0 {
 		return nil, errors.New("empty session key")
 	}
+	// Signing keys always derive from a 16-byte KDF input (Samba
+	// smb2_signing_key_create). A Kerberos AES-256 bind passes a 32-byte key;
+	// normalize it here so the channel signing key matches the client's.
 	label, context := kdf.LabelAndContext(kdf.SigningKeyPurpose, dialect, preauthHash)
-	return kdf.DeriveKey(sessionKey, label, context, 128), nil
+	return kdf.DeriveKey(normalizeTo16(sessionKey), label, context, 128), nil
 }
 
 // CreateEncryptors creates Encryptor and Decryptor instances from the derived keys.

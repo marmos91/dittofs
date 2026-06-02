@@ -58,13 +58,13 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 		return NewErrorResult(types.StatusLogonFailure), nil
 	}
 
-	// Normalize session key to exactly 16 bytes for SMB3 KDF.
-	// Per MS-SMB2 3.3.5.5.3, the session key is truncated or zero-padded to 16 bytes
-	// regardless of the Kerberos encryption type:
-	//   - AES-256 (32 bytes) -> truncate to 16
-	//   - AES-128 (16 bytes) -> pass through
-	//   - DES (8 bytes) -> zero-pad to 16
-	sessionKey := normalizeSessionKey(authResult.SessionKey.KeyValue)
+	// Pass the FULL Kerberos session key to key derivation. SMB3 key
+	// normalization is cipher-aware and happens inside DeriveAllKeys: signing,
+	// application, and AES-128 cipher keys use the first 16 bytes, while
+	// AES-256 cipher keys use the full key (e.g. a 32-byte AES-256 ticket
+	// key). Pre-truncating here would starve the AES-256 derivation and break
+	// smb2.session.encryption-aes-256-{ccm,gcm} under Kerberos (#686).
+	sessionKey := authResult.SessionKey.KeyValue
 
 	// Resolve principal to DittoFS username via centralized identity resolver
 	// (DB-backed mapping + convention fallback), or legacy IdentityConfig.
@@ -75,8 +75,7 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 		"realm", authResult.Realm,
 		"username", username,
 		"keyType", authResult.SessionKey.KeyType,
-		"rawKeyLen", len(authResult.SessionKey.KeyValue),
-		"normalizedKeyLen", len(sessionKey))
+		"sessionKeyLen", len(authResult.SessionKey.KeyValue))
 
 	// Look up user in control plane.
 	// A valid Kerberos ticket from an unknown principal is a hard failure (not guest).
@@ -322,7 +321,10 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 		logger.Info("Kerberos bind: authentication failed", "error", err)
 		return NewErrorResult(types.StatusLogonFailure), nil
 	}
-	sessionKey := normalizeSessionKey(authResult.SessionKey.KeyValue)
+	// Full Kerberos session key; DeriveChannelSigningKey normalizes to 16 bytes
+	// for the signing key, and a future AES-256 cipher derivation would use the
+	// full key. See handleKerberosAuth for the rationale (#686).
+	sessionKey := authResult.SessionKey.KeyValue
 	username := h.resolveKerberosPrincipal(ctx, authResult.Principal, authResult.Realm)
 
 	userStore := h.Registry.GetUserStore()
@@ -433,21 +435,6 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 	result := h.buildSessionSetupResponse(types.StatusSuccess, sessionEncryptFlag(sess), spnegoResp)
 	result.IsBinding = true
 	return result, nil
-}
-
-// smbSessionKeyLen is the fixed session key size for SMB3 key derivation.
-// Per MS-SMB2 Section 3.3.5.5.3, session keys are normalized to 16 bytes.
-const smbSessionKeyLen = 16
-
-// normalizeSessionKey normalizes a Kerberos session key to exactly 16 bytes
-// for use in SMB3 key derivation (KDF). Per MS-SMB2 Section 3.3.5.5.3:
-//   - Keys longer than 16 bytes are truncated (e.g., AES-256 -> 16 bytes)
-//   - Keys shorter than 16 bytes are zero-padded (e.g., DES 8 bytes -> 16 bytes)
-//   - Keys exactly 16 bytes pass through unchanged
-func normalizeSessionKey(key []byte) []byte {
-	normalized := make([]byte, smbSessionKeyLen)
-	copy(normalized, key) // truncates if longer, zero-pads if shorter
-	return normalized
 }
 
 // deriveSMBPrincipal derives the CIFS service principal from the base principal.
