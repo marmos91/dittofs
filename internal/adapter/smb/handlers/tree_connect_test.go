@@ -558,6 +558,114 @@ func TestTreeConnect_AccessBasedEnumerationShareFlag(t *testing.T) {
 	})
 }
 
+// Refs #739: SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY must be 0x00000010 in the
+// Capabilities field per MS-SMB2 §2.2.10 (NOT ShareFlags). smbtorture
+// persistent-open-{oplock,lease} reads it via smb2cli_tcon_capabilities.
+func TestTreeConnect_ShareCapContinuousAvailabilityConstant(t *testing.T) {
+	if SMB2ShareCapContinuousAvailability != 0x00000010 {
+		t.Errorf("SMB2ShareCapContinuousAvailability = 0x%08x, expected 0x00000010", SMB2ShareCapContinuousAvailability)
+	}
+}
+
+// newTreeConnectCAHandler builds an SMB handler with a single share whose
+// ContinuousAvailability flag is configurable.
+func newTreeConnectCAHandler(t *testing.T, shareName string, ca bool) (*Handler, uint64) {
+	t.Helper()
+
+	rt := runtime.New(nil)
+	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
+	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
+		t.Fatalf("RegisterMetadataStore: %v", err)
+	}
+
+	cfg := &runtime.ShareConfig{
+		Name:                   shareName,
+		MetadataStore:          "test-meta",
+		Enabled:                true,
+		ContinuousAvailability: ca,
+		RootAttr: &metadata.FileAttr{
+			Type: metadata.FileTypeDirectory,
+			Mode: 0o755,
+		},
+	}
+	if err := rt.AddShare(context.Background(), cfg); err != nil {
+		t.Fatalf("AddShare: %v", err)
+	}
+
+	h := NewHandler()
+	h.Registry = rt
+
+	sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "")
+	return h, sess.SessionID
+}
+
+// TestTreeConnect_ContinuousAvailabilityCapability verifies the wire-level
+// TREE_CONNECT response advertises SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY
+// (0x10) in the Capabilities field (offset 8) when the share is CA-enabled,
+// and the tree's ContinuousAvailability flag is set so persistent handle
+// grants can gate on it (refs #739).
+func TestTreeConnect_ContinuousAvailabilityCapability(t *testing.T) {
+	t.Run("CASharesetsCapabilityBit", func(t *testing.T) {
+		h, sessionID := newTreeConnectCAHandler(t, "/ca", true)
+		ctx := newTreeConnectTestContext(sessionID)
+
+		body := buildTreeConnectRequestBody("\\\\server\\ca")
+		result, err := h.TreeConnect(ctx, body)
+		if err != nil {
+			t.Fatalf("TreeConnect returned unexpected error: %v", err)
+		}
+		if result.Status != types.StatusSuccess {
+			t.Fatalf("Status = 0x%x, want StatusSuccess", result.Status)
+		}
+		if len(result.Data) != 16 {
+			t.Fatalf("Response should be 16 bytes, got %d", len(result.Data))
+		}
+
+		// Capabilities at offset 8..12 must carry the CA bit (0x10).
+		capabilities := binary.LittleEndian.Uint32(result.Data[8:12])
+		if capabilities&SMB2ShareCapContinuousAvailability == 0 {
+			t.Errorf("Capabilities = 0x%08x, expected SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY (0x10) set", capabilities)
+		}
+
+		// The tree stored for this connection must carry the flag so the CREATE
+		// persistent-handle path can gate on it.
+		tree, ok := h.GetTree(ctx.TreeID)
+		if !ok || tree == nil {
+			t.Fatal("expected a stored tree connection after TREE_CONNECT")
+		}
+		if !tree.ContinuousAvailability {
+			t.Error("stored TreeConnection.ContinuousAvailability = false, want true")
+		}
+	})
+
+	t.Run("NonCAShareDoesNotSetCapabilityBit", func(t *testing.T) {
+		h, sessionID := newTreeConnectCAHandler(t, "/no-ca", false)
+		ctx := newTreeConnectTestContext(sessionID)
+
+		body := buildTreeConnectRequestBody("\\\\server\\no-ca")
+		result, err := h.TreeConnect(ctx, body)
+		if err != nil {
+			t.Fatalf("TreeConnect returned unexpected error: %v", err)
+		}
+		if result.Status != types.StatusSuccess {
+			t.Fatalf("Status = 0x%x, want StatusSuccess", result.Status)
+		}
+
+		capabilities := binary.LittleEndian.Uint32(result.Data[8:12])
+		if capabilities&SMB2ShareCapContinuousAvailability != 0 {
+			t.Errorf("Capabilities = 0x%08x, should NOT have CA bit when share is not CA-enabled", capabilities)
+		}
+
+		tree, ok := h.GetTree(ctx.TreeID)
+		if !ok || tree == nil {
+			t.Fatal("expected a stored tree connection after TREE_CONNECT")
+		}
+		if tree.ContinuousAvailability {
+			t.Error("stored TreeConnection.ContinuousAvailability = true, want false")
+		}
+	})
+}
+
 func TestTreeConnect_EncryptedShareFlagsInResponse(t *testing.T) {
 	// Test that building a tree connect response with share flags at offset 4
 	// correctly encodes the ENCRYPT_DATA flag.

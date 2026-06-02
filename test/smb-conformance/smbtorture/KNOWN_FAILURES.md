@@ -198,13 +198,11 @@ to the DH state machine — tracked under #792 / #793.
 
 ### Durable Handles V2 (Fix Candidate)
 
-Durable handle V2 open/reopen operations partially implemented but tests
-still fail due to incomplete reconnect, lease coordination, and persistence.
+Durable handle V2 open/reopen and persistent-handle operations pass; no
+outstanding known failures in this category.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Deferred past v1.0: needs continuous-availability share (SMB2_SHARE_CAP_CA) + per-share CA config + a CA-share CI harness — disproportionate plumbing for 2 tests; persisted-handle storage already exists, only the CA-share surface is missing | #739 |
-| smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Deferred past v1.0: needs continuous-availability share (SMB2_SHARE_CAP_CA) + per-share CA config + a CA-share CI harness — disproportionate plumbing for 2 tests; persisted-handle storage already exists, only the CA-share surface is missing | #739 |
 
 ### Leases (Fix Candidate)
 

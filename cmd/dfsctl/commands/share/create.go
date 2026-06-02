@@ -28,6 +28,7 @@ var (
 	createAccessBasedEnum   bool
 	createChangeNotifyOff   bool
 	createStreamsDisabled   bool
+	createContinuousAvail   bool
 	createEnableTrash       bool
 	createTrashRetention    int
 	createTrashRestrictAdm  bool
@@ -91,6 +92,7 @@ func init() {
 	createCmd.Flags().BoolVar(&createAccessBasedEnum, "access-based-enumeration", false, "Enable Windows access-based enumeration (SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM). When true, SMB clients only see directory entries they can read.")
 	createCmd.Flags().BoolVar(&createChangeNotifyOff, "change-notify-disabled", false, "Reject SMB2 CHANGE_NOTIFY with STATUS_NOT_IMPLEMENTED on this share (mirrors Samba 'kernel change notify = no').")
 	createCmd.Flags().BoolVar(&createStreamsDisabled, "streams-disabled", false, "Reject SMB2 Alternate Data Stream opens with STATUS_OBJECT_NAME_INVALID on this share (mirrors Samba 'smbd:streams = no').")
+	createCmd.Flags().BoolVar(&createContinuousAvail, "continuous-availability", false, "Advertise SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY and allow SMB3 persistent durable handles on this share.")
 	createCmd.Flags().BoolVar(&createEnableTrash, "enable-trash", false, "Enable the per-share recycle bin so deletes move to #recycle instead of being permanent.")
 	createCmd.Flags().IntVar(&createTrashRetention, "trash-retention-days", 0, "Days to retain recycled items before the reaper purges them (0 = keep forever).")
 	createCmd.Flags().BoolVar(&createTrashRestrictAdm, "trash-restrict-empty-to-admin", false, "Restrict emptying the recycle bin to admins.")
@@ -194,6 +196,10 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("streams-disabled") {
 		v := createStreamsDisabled
 		req.StreamsDisabled = &v
+	}
+	if cmd.Flags().Changed("continuous-availability") {
+		v := createContinuousAvail
+		req.ContinuousAvailability = &v
 	}
 	// Per-share recycle-bin policy (#190): only forward flags the operator
 	// set so the server applies its own defaults (trash disabled, zero

@@ -1191,7 +1191,11 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	if h.DurableStore != nil {
 		hasHandleLease := leaseResponse != nil && leaseResponse.LeaseState&lock.LeaseStateHandle != 0
 		if respCtx := ProcessDurableHandleContext(
-			req.CreateContexts, openFile, h.DurableTimeoutMs, hasHandleLease,
+			req.CreateContexts, openFile, DurableGrantOptions{
+				ConfiguredTimeoutMs:    h.DurableTimeoutMs,
+				LeaseIncludesHandle:    hasHandleLease,
+				ContinuousAvailability: tree.ContinuousAvailability,
+			},
 		); respCtx != nil {
 			durableResponseCtx = respCtx
 		}

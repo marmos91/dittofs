@@ -78,6 +78,12 @@ type Share struct {
 	// smb2.create_no_streams.no_stream torture test.
 	StreamsDisabled bool
 
+	// ContinuousAvailability advertises SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY
+	// in TREE_CONNECT and allows SMB3 persistent durable handles (DH2Q
+	// SMB2_DHANDLE_FLAG_PERSISTENT) on this share. See the models.Share field
+	// for semantics (refs #739).
+	ContinuousAvailability bool
+
 	// TrashEnabled turns on the per-share recycle bin (#190). Default false.
 	// Read per-delete via the locked TrashSettingsForShare accessor (NOT off a
 	// shared *Share pointer) so it is concurrency-safe and takes effect live.
@@ -170,6 +176,11 @@ type ShareConfig struct {
 	// FileFsAttributeInformation FileSystemAttributes mask so the
 	// filesystem advertises no ADS support.
 	StreamsDisabled bool
+
+	// ContinuousAvailability mirrors models.Share's per-share toggle that
+	// advertises SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY and enables SMB3
+	// persistent durable handles (refs #739).
+	ContinuousAvailability bool
 
 	// TrashEnabled turns on the per-share recycle bin (#190). Default false.
 	// Read per-delete via the locked TrashSettingsForShare accessor (NOT off a
@@ -570,6 +581,7 @@ func (s *Service) prepareShare(
 		AccessBasedEnumeration:           config.AccessBasedEnumeration,
 		ChangeNotifyDisabled:             config.ChangeNotifyDisabled,
 		StreamsDisabled:                  config.StreamsDisabled,
+		ContinuousAvailability:           config.ContinuousAvailability,
 		TrashEnabled:                     config.TrashEnabled,
 		TrashRetentionDays:               config.TrashRetentionDays,
 		TrashRestrictToAdmin:             config.TrashRestrictToAdmin,

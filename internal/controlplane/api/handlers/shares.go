@@ -91,6 +91,9 @@ type CreateShareRequest struct {
 	// StreamsDisabled — pointer so nil keeps default false (streams
 	// supported).
 	StreamsDisabled *bool `json:"streams_disabled,omitempty"`
+	// ContinuousAvailability — Refs #739. Pointer so nil keeps default false
+	// (no CA / persistent handles); a non-nil pointer is an explicit set.
+	ContinuousAvailability *bool `json:"continuous_availability,omitempty"`
 	// Per-share recycle-bin policy (#190). Pointers so nil keeps the
 	// server default (trash disabled, zero limits).
 	TrashEnabled         *bool    `json:"trash_enabled,omitempty"`
@@ -128,6 +131,9 @@ type UpdateShareRequest struct {
 	// StreamsDisabled — nil = no change; non-nil = explicit set.
 	// Persisted on UpdateShare; takes effect on adapter restart.
 	StreamsDisabled *bool `json:"streams_disabled,omitempty"`
+	// ContinuousAvailability — Refs #739. nil = no change; non-nil = explicit
+	// set. Persisted on UpdateShare; takes effect on adapter restart.
+	ContinuousAvailability *bool `json:"continuous_availability,omitempty"`
 	// Per-share recycle-bin policy (#190). nil = no change; non-nil =
 	// explicit set. Unlike the adapter-restart fields above, these apply
 	// LIVE via the runtime (SetShareTrashConfig); turning trash off also
@@ -174,6 +180,9 @@ type ShareResponse struct {
 	ChangeNotifyDisabled bool `json:"change_notify_disabled"`
 	// StreamsDisabled mirrors models.Share. No omitempty for the same reason.
 	StreamsDisabled bool `json:"streams_disabled"`
+	// ContinuousAvailability mirrors models.Share — Refs #739. No omitempty:
+	// operators render the explicit CA state.
+	ContinuousAvailability bool `json:"continuous_availability"`
 	// Per-share recycle-bin policy (#190). No omitempty: these are
 	// operator-meaningful state that consumers (dfsctl share show) render
 	// explicitly.
@@ -340,6 +349,12 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		streamsDisabled = *req.StreamsDisabled
 	}
 
+	// Continuous availability defaults off (no persistent handles). Refs #739.
+	continuousAvailability := false
+	if req.ContinuousAvailability != nil {
+		continuousAvailability = *req.ContinuousAvailability
+	}
+
 	// Per-share recycle bin (#190). All knobs default to the disabled/zero
 	// state; non-nil pointers are explicit sets.
 	trashEnabled := false
@@ -387,6 +402,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		AccessBasedEnumeration:           abe,
 		ChangeNotifyDisabled:             cnDisabled,
 		StreamsDisabled:                  streamsDisabled,
+		ContinuousAvailability:           continuousAvailability,
 		TrashEnabled:                     trashEnabled,
 		TrashRetentionDays:               trashRetentionDays,
 		TrashRestrictToAdmin:             trashRestrictToAdmin,
@@ -439,6 +455,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			AccessBasedEnumeration:           share.AccessBasedEnumeration,
 			ChangeNotifyDisabled:             share.ChangeNotifyDisabled,
 			StreamsDisabled:                  share.StreamsDisabled,
+			ContinuousAvailability:           share.ContinuousAvailability,
 			TrashEnabled:                     share.TrashEnabled,
 			TrashRetentionDays:               share.TrashRetentionDays,
 			TrashRestrictToAdmin:             share.TrashRestrictToAdmin,
@@ -582,6 +599,10 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.StreamsDisabled != nil {
 		// Persisted to DB; takes effect on adapter restart.
 		share.StreamsDisabled = *req.StreamsDisabled
+	}
+	if req.ContinuousAvailability != nil {
+		// Refs #739. Persisted to DB; takes effect on adapter restart.
+		share.ContinuousAvailability = *req.ContinuousAvailability
 	}
 	// Per-share recycle bin (#190). Persisted here, then applied LIVE via the
 	// runtime below (with auto-empty on disable).
@@ -1135,6 +1156,7 @@ func shareToResponse(s *models.Share) ShareResponse {
 		AccessBasedEnumeration:           s.AccessBasedEnumeration,
 		ChangeNotifyDisabled:             s.ChangeNotifyDisabled,
 		StreamsDisabled:                  s.StreamsDisabled,
+		ContinuousAvailability:           s.ContinuousAvailability,
 		TrashEnabled:                     s.TrashEnabled,
 		TrashRetentionDays:               s.TrashRetentionDays,
 		TrashRestrictToAdmin:             s.TrashRestrictToAdmin,

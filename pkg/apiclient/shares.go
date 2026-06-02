@@ -51,6 +51,9 @@ type Share struct {
 	// StreamsDisabled mirrors models.Share. No omitempty for the same
 	// reason as ChangeNotifyDisabled.
 	StreamsDisabled bool `json:"streams_disabled"`
+	// ContinuousAvailability mirrors models.Share — Refs #739. No omitempty:
+	// operators need to render the explicit CA state.
+	ContinuousAvailability bool `json:"continuous_availability"`
 	// Per-share recycle-bin policy (#190). Mirrors the server
 	// ShareResponse so dfsctl share show can render the trash config.
 	TrashEnabled         bool      `json:"trash_enabled"`
@@ -90,6 +93,9 @@ type CreateShareRequest struct {
 	// StreamsDisabled — pointer so callers can distinguish "unset →
 	// server default (false)" from "explicit true".
 	StreamsDisabled *bool `json:"streams_disabled,omitempty"`
+	// ContinuousAvailability — Refs #739. Pointer so callers can distinguish
+	// "unset → server default (false)" from "explicit true".
+	ContinuousAvailability *bool `json:"continuous_availability,omitempty"`
 	// Per-share recycle-bin policy (#190). Pointers so nil keeps the
 	// server default (trash disabled, zero limits).
 	TrashEnabled         *bool    `json:"trash_enabled,omitempty"`
@@ -125,6 +131,9 @@ type UpdateShareRequest struct {
 	// StreamsDisabled — nil = no change; non-nil = explicit set. Takes
 	// effect on adapter restart.
 	StreamsDisabled *bool `json:"streams_disabled,omitempty"`
+	// ContinuousAvailability — Refs #739. nil = no change; non-nil = explicit
+	// set. Takes effect on adapter restart.
+	ContinuousAvailability *bool `json:"continuous_availability,omitempty"`
 	// Per-share recycle-bin policy (#190). nil = no change; non-nil =
 	// explicit set. Applied live by the server; turning trash off
 	// auto-empties the bin.

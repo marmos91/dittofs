@@ -73,6 +73,7 @@ func (sd ShareDetail) Rows() [][]string {
 		{"Access-Based Enumeration", fmt.Sprintf("%v", s.AccessBasedEnumeration)},
 		{"Change Notify Disabled", fmt.Sprintf("%v", s.ChangeNotifyDisabled)},
 		{"Streams Disabled", fmt.Sprintf("%v", s.StreamsDisabled)},
+		{"Continuous Availability", fmt.Sprintf("%v", s.ContinuousAvailability)},
 		{"Retention", retPolicy},
 	}
 
