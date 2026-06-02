@@ -271,27 +271,20 @@ func Evaluate(a *ACL, evalCtx *EvaluateContext, requestedMask uint32) bool {
 	return (allowedBits & requestedMask) == requestedMask
 }
 
-// aceMatchesWho checks if an ACE applies to the given evaluation context,
-// with OWNER_RIGHTS treated as an ordinary owner-matching arm. Callers that
-// need MS-DTYP §2.5.3 OWNER_RIGHTS-vs-OWNER@ arbitration should use
-// aceMatchesWhoWithOwnerRights instead.
+// aceMatchesWhoWithOwnerRights checks if an ACE applies to the given
+// evaluation context. When ownerRightsPresent is true AND the requester is the
+// file owner, OWNER@ ACEs are made to not-match and OWNER_RIGHTS ACEs are
+// made to match — implementing MS-DTYP §2.5.3 / §2.4.10 (S-1-3-4): an
+// explicit OWNER_RIGHTS entry supersedes the implicit owner grants and
+// becomes the sole authority for the owner's effective rights. Pass false to
+// treat OWNER_RIGHTS as an ordinary owner-matching arm.
 //
-// Resolution rules for special identifiers (Pitfall 3 - dynamic resolution):
+// Resolution rules for special identifiers (dynamic resolution):
 //   - "OWNER@": matches when requestor UID == file owner UID
 //   - "GROUP@": matches when requestor primary GID == file group GID,
 //     or file group GID is in requestor's supplementary GIDs
 //   - "EVERYONE@": always matches
 //   - Otherwise: exact string match on named principal
-func aceMatchesWho(ace *ACE, evalCtx *EvaluateContext) bool {
-	return aceMatchesWhoWithOwnerRights(ace, evalCtx, false)
-}
-
-// aceMatchesWhoWithOwnerRights is the OWNER_RIGHTS-aware variant of
-// aceMatchesWho. When ownerRightsPresent is true AND the requester is the
-// file owner, OWNER@ ACEs are made to not-match and OWNER_RIGHTS ACEs are
-// made to match — implementing MS-DTYP §2.5.3 / §2.4.10 (S-1-3-4): an
-// explicit OWNER_RIGHTS entry supersedes the implicit owner grants and
-// becomes the sole authority for the owner's effective rights.
 //
 // Mirrors Samba `libcli/security/access_check.c::se_access_check` handling
 // of `SID_OWNER_RIGHTS` / `SEC_RIGHTS_OWNER_RIGHTS`.

@@ -93,6 +93,34 @@ func TestValidateACL_MaxACECount(t *testing.T) {
 	}
 }
 
+func TestValidateACL_MaxDACLSize(t *testing.T) {
+	// A handful of ACEs with very large Who strings stays under the 128-ACE
+	// count cap but blows past the 64KB serialized-size bound. The size check
+	// must reject it (the count check alone would not).
+	bigWho := make([]byte, MaxDACLSize) // 64KB single Who string
+	for i := range bigWho {
+		bigWho[i] = 'a'
+	}
+	a := &ACL{ACEs: []ACE{
+		{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: string(bigWho)},
+	}}
+	err := ValidateACL(a)
+	if err == nil {
+		t.Fatal("expected ErrACLTooLarge for an oversized DACL")
+	}
+	if !errors.Is(err, ErrACLTooLarge) {
+		t.Errorf("expected ErrACLTooLarge, got: %v", err)
+	}
+
+	// A small ACL is well under the bound.
+	small := &ACL{ACEs: []ACE{
+		{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialOwner},
+	}}
+	if err := ValidateACL(small); err != nil {
+		t.Errorf("expected small ACL to be valid, got: %v", err)
+	}
+}
+
 func TestValidateACL_EmptyACL(t *testing.T) {
 	a := &ACL{ACEs: []ACE{}}
 	if err := ValidateACL(a); err != nil {

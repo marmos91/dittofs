@@ -388,7 +388,7 @@ func TestAceMatchesWho_SIDForm(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ace := &ACE{Who: tc.aceWho, Type: ACE4_ACCESS_ALLOWED_ACE_TYPE}
 			ctx := &EvaluateContext{SID: tc.ctxSID, GroupSIDs: tc.ctxGSIDs}
-			got := aceMatchesWho(ace, ctx)
+			got := aceMatchesWhoWithOwnerRights(ace, ctx, false)
 			if got != tc.want {
 				t.Errorf("aceMatchesWho(%q, SID=%q, GroupSIDs=%v) = %v, want %v",
 					tc.aceWho, tc.ctxSID, tc.ctxGSIDs, got, tc.want)
@@ -451,7 +451,7 @@ func TestAceMatchesWho_LocalDomain(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ace := &ACE{Who: tc.aceWho, Type: ACE4_ACCESS_ALLOWED_ACE_TYPE}
 			ctx := &EvaluateContext{UID: tc.ctxUID, GID: tc.ctxGID, GIDs: tc.ctxGIDs}
-			got := aceMatchesWho(ace, ctx)
+			got := aceMatchesWhoWithOwnerRights(ace, ctx, false)
 			if got != tc.want {
 				t.Errorf("aceMatchesWho(%q, UID=%d, GID=%d, GIDs=%v) = %v, want %v",
 					tc.aceWho, tc.ctxUID, tc.ctxGID, tc.ctxGIDs, got, tc.want)
@@ -542,7 +542,7 @@ func TestAceMatchesWho_OwnerRights(t *testing.T) {
 				UID:          tc.requesterUID,
 				FileOwnerUID: tc.fileOwnerUID,
 			}
-			if got := aceMatchesWho(ace, ctx); got != tc.want {
+			if got := aceMatchesWhoWithOwnerRights(ace, ctx, false); got != tc.want {
 				t.Errorf("aceMatchesWho(OwnerRights@, requester=%d, owner=%d) = %v, want %v",
 					tc.requesterUID, tc.fileOwnerUID, got, tc.want)
 			}

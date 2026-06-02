@@ -1,6 +1,7 @@
 package lock
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -1171,6 +1172,49 @@ func TestSplitLock_UnlockMiddle(t *testing.T) {
 	}
 }
 
+// TestSplitLock_UnlockOverflow guards the partial-unlock arithmetic against a
+// uint64 wrap: unlockOffset + unlockLength is wire-controlled and can overflow.
+// A wrap must be treated as "covers to EOF", not silently fabricate a fragment
+// at a wrapped-around offset or drop a lock.
+func TestSplitLock_UnlockOverflow(t *testing.T) {
+	t.Parallel()
+
+	// Unbounded lock starting at offset 10. An unlock from offset 20 with a
+	// length that overflows when added (maxUint64) must fully cover the tail,
+	// leaving only the [10,20) head fragment.
+	lock := &UnifiedLock{
+		ID:     "lock1",
+		Offset: 10,
+		Length: 0, // unbounded (to EOF)
+		Type:   LockTypeExclusive,
+	}
+
+	// unlockOffset=20, unlockLength=maxUint64 → 20 + maxUint64 wraps to 19.
+	result := SplitLock(lock, 20, ^uint64(0))
+	if len(result) != 1 {
+		t.Fatalf("Expected 1 lock (head fragment) after overflowing unlock, got %d", len(result))
+	}
+	if result[0].Offset != 10 || result[0].Length != 10 {
+		t.Fatalf("Expected head fragment [10-20], got [%d, len %d]", result[0].Offset, result[0].Length)
+	}
+}
+
+// TestUnifiedLock_EndUnbounded asserts End() reports maxUint64 (not 0) for an
+// unbounded lock so byte-range math never treats it as ending before offset 0.
+func TestUnifiedLock_EndUnbounded(t *testing.T) {
+	t.Parallel()
+
+	unbounded := &UnifiedLock{Offset: 100, Length: 0}
+	if got := unbounded.End(); got != ^uint64(0) {
+		t.Fatalf("End() for unbounded lock = %d, want maxUint64", got)
+	}
+
+	bounded := &UnifiedLock{Offset: 100, Length: 50}
+	if got := bounded.End(); got != 150 {
+		t.Fatalf("End() for bounded lock = %d, want 150", got)
+	}
+}
+
 // ============================================================================
 // Merge Lock Tests
 // ============================================================================
@@ -1268,6 +1312,68 @@ func TestSetLeaseEpoch_ReturnsFalseForUnknownKey(t *testing.T) {
 	if lm.SetLeaseEpoch([16]byte{0xff, 0xee}, 5) {
 		t.Fatalf("SetLeaseEpoch returned true for unknown key")
 	}
+}
+
+// TestSetLeaseEpoch_ConvergesDivergentRecords asserts that sibling records
+// sharing a lease key but starting at DIFFERENT epochs all converge to a
+// single epoch — the max of the requested epoch and every record's current
+// epoch. A per-record `if requested >= current` guard would leave the higher
+// record untouched while raising the lower one, so break dispatch could read a
+// non-deterministic NewEpoch depending on map-iteration order.
+func TestSetLeaseEpoch_ConvergesDivergentRecords(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	leaseKey := [16]byte{0x11, 0x22, 0x33}
+
+	lm.mu.Lock()
+	lm.unifiedLocks["/share:fileA"] = []*UnifiedLock{
+		{Owner: LockOwner{OwnerID: "oA"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 5}},
+	}
+	lm.unifiedLocks["/share:fileB"] = []*UnifiedLock{
+		{Owner: LockOwner{OwnerID: "oB"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
+	}
+	lm.mu.Unlock()
+
+	// Request a lower epoch (4) than the highest existing record (5). All
+	// records must converge to 5 (the max), not split into 5 and 4.
+	if !lm.SetLeaseEpoch(leaseKey, 4) {
+		t.Fatalf("SetLeaseEpoch returned false, expected true when records exist")
+	}
+
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	for _, handle := range []string{"/share:fileA", "/share:fileB"} {
+		if got := lm.unifiedLocks[handle][0].Lease.Epoch; got != 5 {
+			t.Errorf("%s: Epoch = %d, want 5 (all records converge to the max)", handle, got)
+		}
+	}
+}
+
+// TestSetLeaseEpoch_Persists asserts the client-derived epoch is written
+// through to the lock store so RestoreLocks rebuilds the lease at the higher
+// epoch after a restart (MS-SMB2 epoch monotonicity).
+func TestSetLeaseEpoch_Persists(t *testing.T) {
+	ctx := context.Background()
+	store := newMockLockStore()
+
+	lm := NewManager()
+	lm.SetLockStore(store)
+	leaseKey := [16]byte{0x44, 0x55, 0x66}
+
+	lm.mu.Lock()
+	lm.unifiedLocks["/share:fileA"] = []*UnifiedLock{
+		{ID: "lease-1", Owner: LockOwner{OwnerID: "oA"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
+	}
+	lm.mu.Unlock()
+
+	if !lm.SetLeaseEpoch(leaseKey, 9) {
+		t.Fatalf("SetLeaseEpoch returned false, expected true")
+	}
+
+	pl, err := store.GetLock(ctx, "lease-1")
+	require.NoError(t, err)
+	require.Equal(t, uint16(9), pl.LeaseEpoch, "epoch must be persisted for restart monotonicity")
 }
 
 // ============================================================================
