@@ -1,6 +1,6 @@
 # Known Failures - SMB Conformance (WPTS BVT)
 
-Last updated: 2026-06-02 (#673 rationalization pass — Final Tally added, every entry confirmed bucketed and justified; docs-only)
+Last updated: 2026-06-02 (#673 — removed BVT_DirectoryLeasing_ReadWriteHandleCaching: it passes deterministically; docs-only)
 
 Tests listed here are expected to fail. CI will pass (exit 0) as long as
 all failures are in this list. New failures not listed here will cause CI to fail.
@@ -10,14 +10,13 @@ all failures are in this list. New failures not listed here will cause CI to fai
 Every remaining entry is justified and falls into exactly one bucket. No
 UNJUSTIFIED entries remain.
 
-- **Flaky** (justified — identical wire trace to the passing develop run; outcome hinges on WPTS-framework cleanup-phase exception handling) — **1**: `BVT_DirectoryLeasing_ReadWriteHandleCaching`
 - **Permanently Unimplementable / out-of-scope** (appendix) — **39**: VHD/RSVD ×26, SWN ×6, SQoS ×3, DFS ×2, NamedPipe ×2
-- **Total: 40**
+- **Total: 39**
 
 (Rendered as a list, not a markdown table, so `parse-results.sh` — which ingests every line beginning with `|` — does not mistake these tally lines for known-failure rows.)
 
-No WPTS entry is deferred-with-issue: every fixable BVT test has already been
-flipped, leaving one flaky row and the architecturally out-of-scope appendix.
+No WPTS entry is deferred-with-issue and no entry is "flaky": every fixable BVT
+test passes, leaving only the architecturally out-of-scope appendix.
 
 The `parse-results.sh` script reads test names from the first column of the
 table below. Lines starting with `#`, `|---`, empty lines, and the header
@@ -32,17 +31,14 @@ row (`Test Name`) are ignored.
 ## Baseline Status
 
 - **Initial baseline (Phase 29.8):** 133/240 BVT tests passing
-- **Current baseline (Wave 4):** 225/265 PASS, 40 known failures (39 permanent + 1 expected)
+- **Current baseline (#673):** 226/265 PASS, 39 known failures (all permanent / out-of-scope)
 - **Target:** All BVT tests pass except genuinely unimplemented features
 
 ## Expected Failures
 
-Tests below fail today on develop and are fixable in DittoFS. Each must
-either be flipped or promoted into the appendix with a reason.
-
-| Test Name | Category | Reason | Status | Issue |
-|-----------|----------|--------|--------|-------|
-| BVT_DirectoryLeasing_ReadWriteHandleCaching | Leasing | Flaky in CI: identical SMB wire trace as develop (which passes) including the same DIRECTORY_NOT_EMPTY in cleanup; outcome depends on WPTS-framework-internal cleanup-phase exception handling. | Expected | - |
+None. Every fixable BVT test passes on develop. New failures reported by
+`parse-results.sh` must be investigated and fixed, not added here — see
+"How to Add New Entries" below.
 
 ## Status Legend
 
@@ -170,7 +166,8 @@ Format for Permanently Unimplementable:
 
 ## Changelog
 
-- **#673 (2026-06-02):** Docs-only rationalization. Added a Final Tally header block (1 flaky + 39 appendix = 40). Confirmed every entry is bucketed and justified; the lone Expected row (`BVT_DirectoryLeasing_ReadWriteHandleCaching`) is explicitly classified Flaky. No rows added or removed — CI pass/fail unaffected.
+- **#673 (2026-06-02, dirlease removal):** Removed `BVT_DirectoryLeasing_ReadWriteHandleCaching` from the known-failure list. Verified by running the WPTS FileServer suite against current develop (memory profile) with a byte-level pcap on the SMB wire: the test PASSES deterministically (4/4 — once in the full DirectoryLeasing class, three more in isolation). The "Flaky" classification was refuted. The wire trace is fully MS-SMB2 conformant: the directory lease is granted as Read|Handle (the Write bit is correctly dropped on a directory grant, matching the passing `RWGrantedAsR` / `RWHGrantedAsRH` cases); on a conflicting child create the server sends a Lease Break Notification (Flags=Break Ack Required, Current=0x03 Read|Handle, New=0x00) and processes the client's signed Lease Break Acknowledgment with STATUS_SUCCESS — the canonical §2.2.23.2/§2.2.24.1 handshake. The only error seen in the capture, STATUS_DIRECTORY_NOT_EMPTY (0xc0000101), occurs exclusively on framework cleanup CLOSE operations, which `CommonTestBase.TestCleanup()` wraps in an exception-swallowing `try { } catch { }` and therefore cannot affect the test outcome. Tally: Flaky 1→0, Total 40→39. CI: since `parse-results.sh` only counts `Failed`/`Error` outcomes, a passing test that was previously listed had no gate effect; removing it makes any genuine future regression register as a New Failure.
+- **#673 (2026-06-02):** Docs-only rationalization. Added a Final Tally header block. Confirmed every entry is bucketed and justified.
 - **Wave 4 (2026-05-28):** Walk back 4 confirmed PASS. Three were already passing on develop: `Algorithm_NotingFileModified_Dir_LastAccessTime`, `FileInfo_Set_FileBasicInformation_Timestamp_MinusTwo_Dir_LastWriteTime`, `BVT_DirectoryLeasing_LeaseBreakOnMultiClients`. The fourth, `FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_ChangeTime`, was flipped by an ADS-write fix that preserves the base object's frozen ChangeTime — previously, file_modify.go auto-bumped Ctime to NOW whenever `modified=true && attrs.Ctime==nil`, clobbering the freeze even when only the ADS handle's Mtime was unfrozen. Restructure with Permanently Unimplementable appendix mirroring the smbtorture file layout.
 - **v0.10.0 Phase 73 (2026-03-24):** SMB Conformance Deep-Dive. Plan 01: ChangeNotify ADS stream notifications wired (5 tests). Plan 02: ADS share access + timestamp conformance (9 ADS + 3 timestamp tests removed). Plan 03: ChangeNotify completion, session re-auth, anonymous encryption (~25 smbtorture tests). Plan 04: DH/lease state machine fixes (~26 smbtorture tests). Plan 05: Per-field CreationTime freeze/unfreeze, ChangeEa reclassified as Permanent. Total: 56 (53 permanent + 3 expected).
 - **v0.10.0 Phase 72 (2026-03-23):** ChangeNotify fully implemented with async responses, CANCEL support, and all MS-SMB2 completion filter events (Plan 01, 16 tests fixed). Client-preference cipher/signing selection, DH V1 volatile FileID regeneration, TREE_DISCONNECT signing exemption, lease V1/V2 state transitions fixed (Plan 02, 12 tests fixed). Timestamp freeze/unfreeze per MS-FSA 2.1.5.14.2, parent directory atime on file write (Plan 03, 3 tests fixed). Total removed: 31. New total: 65 (52 permanent + 13 expected).
