@@ -145,9 +145,31 @@ func (bc *FSStore) ReadChunk(ctx context.Context, h blockstore.ContentHash) ([]b
 		return nil, fmt.Errorf("chunkstore: open: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	data, err := io.ReadAll(f)
+	// .blk chunk files are immutable content-addressed blobs: StoreChunk
+	// writes the full slice then atomically renames into place, so the
+	// on-disk size equals the content size and never changes afterward.
+	// Stat the open fd (not the path) so a concurrent lruEvictOne unlink
+	// can't change the size out from under us — the open fd still reads on
+	// POSIX. A single stat-sized allocation + io.ReadFull avoids the
+	// repeated doubling+copy that io.ReadAll incurs on the big-read path.
+	var data []byte
+	fi, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("chunkstore: read: %w", err)
+	}
+	if size := fi.Size(); size > 0 {
+		buf := make([]byte, size)
+		if _, err := io.ReadFull(f, buf); err != nil {
+			return nil, fmt.Errorf("chunkstore: read: %w", err)
+		}
+		data = buf
+	} else {
+		// Zero-byte stat (or an unexpected non-regular file): fall back to
+		// io.ReadAll, which correctly handles a size we can't trust.
+		data, err = io.ReadAll(f)
+		if err != nil {
+			return nil, fmt.Errorf("chunkstore: read: %w", err)
+		}
 	}
 	// promote on cache hit so frequently-read chunks survive
 	// eviction. A concurrent lruEvictOne may have unlinked the file

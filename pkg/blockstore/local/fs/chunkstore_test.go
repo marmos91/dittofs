@@ -49,6 +49,45 @@ func TestChunkStore_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestChunkStore_RoundTrip_OddSize exercises the stat-sized read path with a
+// chunk whose length is odd and not a power of two (so a single make()+ReadFull
+// must size the buffer exactly from the on-disk stat). The in-RAM LRU index is
+// cleared before the read to force a cold disk read and exercise the
+// re-stat-after-read LRU promote. Bytes must be returned byte-identical.
+func TestChunkStore_RoundTrip_OddSize(t *testing.T) {
+	bc := newFSStoreForTest(t, FSStoreOptions{})
+	h := hashFromHex(t, strings.Repeat("3e", 32))
+	// 7919 is prime: odd, not a power of two, larger than any round buffer.
+	data := make([]byte, 7919)
+	for i := range data {
+		data[i] = byte(i*31 + 7)
+	}
+	ctx := context.Background()
+
+	if err := bc.StoreChunk(ctx, h, data); err != nil {
+		t.Fatalf("StoreChunk: %v", err)
+	}
+	// Drop the LRU index so the read can't be served from a warm entry and
+	// the stat-sized cold-read path is exercised end to end.
+	bc.lruMu.Lock()
+	bc.lruList.Init()
+	for k := range bc.lruIndex {
+		delete(bc.lruIndex, k)
+	}
+	bc.lruMu.Unlock()
+
+	got, err := bc.ReadChunk(ctx, h)
+	if err != nil {
+		t.Fatalf("ReadChunk: %v", err)
+	}
+	if len(got) != len(data) {
+		t.Fatalf("odd-size read length: got %d want %d", len(got), len(data))
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("odd-size round-trip data mismatch")
+	}
+}
+
 func TestChunkStore_Idempotent(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{})
 	h := hashFromHex(t, strings.Repeat("cd", 32))
