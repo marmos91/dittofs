@@ -434,13 +434,19 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	nfsOpts := models.DefaultNFSExportOptions()
 	nfsCfg := &models.ShareAdapterConfig{ShareID: share.ID, AdapterType: "nfs"}
 	if err := nfsCfg.SetConfig(nfsOpts); err == nil {
-		_ = h.store.SetShareAdapterConfig(r.Context(), nfsCfg)
+		if err := h.store.SetShareAdapterConfig(r.Context(), nfsCfg); err != nil {
+			logger.Warn("Failed to persist default NFS adapter config for new share",
+				"share", req.Name, "error", err)
+		}
 	}
 
 	smbOpts := models.DefaultSMBShareOptions()
 	smbCfg := &models.ShareAdapterConfig{ShareID: share.ID, AdapterType: "smb"}
 	if err := smbCfg.SetConfig(smbOpts); err == nil {
-		_ = h.store.SetShareAdapterConfig(r.Context(), smbCfg)
+		if err := h.store.SetShareAdapterConfig(r.Context(), smbCfg); err != nil {
+			logger.Warn("Failed to persist default SMB adapter config for new share",
+				"share", req.Name, "error", err)
+		}
 	}
 
 	// Add share to runtime if runtime is available
