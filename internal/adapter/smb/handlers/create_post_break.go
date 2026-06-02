@@ -1079,6 +1079,36 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		if (!onlyTimeoutTombstone && (hasActiveRecord || hasNonStatOpen)) ||
 			(onlyTimeoutTombstone && hasSameClientOpen) {
 			requestedState &^= (lock.LeaseStateWrite | lock.LeaseStateHandle)
+
+			// A coexisting handle forced the EXCLUSIVE/BATCH request down off
+			// its write-caching grant. What remains (LeaseStateRead) would map
+			// to LEVEL_II, but MS-SMB2 §3.3.5.9 only permits a read-caching
+			// (LEVEL_II) grant when a coexisting handle is itself a read-cache
+			// participant — i.e. it holds an oplock/lease the server can break.
+			// A plain NO-oplock opener (e.g. tree2 in
+			// smb2.kernel-oplocks.kernel_oplocks7, opened with oplock_level
+			// NONE) is not such a participant: it caches nothing the server
+			// tracks, so granting the requester LEVEL_II would hand out a
+			// read-cache the spec does not back. When the strip is driven
+			// SOLELY by a non-oplock opener (no active read-cache record), an
+			// EXCLUSIVE request must collapse to NONE rather than LEVEL_II.
+			//
+			// A BATCH request still lands at LEVEL_II in this case: the
+			// surviving HANDLE bit qualifies it for the read-caching grant
+			// (Samba `disallow_write_lease` only strips WRITE, leaving R|H →
+			// LEVEL_II). This preserves smb2.oplock.batch10 (tree1 NO-oplock
+			// open → tree2 BATCH → LEVEL_II) while fixing kernel_oplocks7
+			// (tree2 NO-oplock open → tree1 EXCLUSIVE reopen → NONE, the
+			// userspace-deterministic one of its two spec-valid outcomes).
+			// When a read-cache record IS present (smb2.oplock.exclusive9:
+			// tree1 holds EXCLUSIVE → tree2 EXCLUSIVE → LEVEL_II) the grant
+			// stays LEVEL_II via hasActiveRecord.
+			grantDrivenOnlyByNonOplockOpen := !onlyTimeoutTombstone &&
+				hasNonStatOpen && !hasActiveRecord
+			requesterCarriesHandleBit := req.OplockLevel == OplockLevelBatch
+			if grantDrivenOnlyByNonOplockOpen && !requesterCarriesHandleBit {
+				requestedState = 0
+			}
 		}
 		if requestedState != 0 {
 			syntheticKey := generateSyntheticLeaseKey(smbFileID)

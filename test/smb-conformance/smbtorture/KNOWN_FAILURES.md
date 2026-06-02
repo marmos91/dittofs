@@ -12,8 +12,8 @@ UNJUSTIFIED entries remain — the #673 acceptance criterion is met.
 
 - **Upstream Samba known-fail** (fails on the reference Samba server too; cited) — **2**: `charset.Testing`, `session.reauth5`
 - **Deferred past v1.0 with a tracking issue** (justified by deferral) — **0**: the last deferred rows (the 6 `dhv2-pending2*-sane` replay rows) flipped under #749 (parked-CREATE finalize-on-holder-release)
-- **Permanently Unimplementable / harness-only** (see [appendix](#permanently-unimplementable-out-of-scope)) — **47**
-- **Total (non-Kerberos): 49**
+- **Permanently Unimplementable / harness-only** (see [appendix](#permanently-unimplementable-out-of-scope)) — **46**
+- **Total (non-Kerberos): 48**
 
 (Rendered as a list, not a markdown table, so `parse-results.sh` — which ingests every line beginning with `|` — does not mistake these tally lines for known-failure rows.)
 
@@ -332,21 +332,39 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 
 ## Changelog
 
-### 2026-06-02 — #996 remove `kernel_oplocks7`: mislabeled, passes deterministically
+### 2026-06-02 — #996 fix oplock re-grant: EXCLUSIVE vs conflicting NO-oplock handle must yield NONE, not LEVEL_II
 
-`smb2.kernel-oplocks.kernel_oplocks7` was carrying a factually wrong appendix
-reason ("Requires Linux kernel `F_SETLEASE` on underlying fd"). Reading the test
-body (`source4/torture/smb2/oplock.c`) shows it contains **zero `F_SETLEASE`
-calls** — it is pure SMB2 protocol (open with EXCLUSIVE oplock on tree1 →
-conflicting open on tree2 → break handler closes → reopen accepting EXCLUSIVE
-*or* NONE). The `F_SETLEASE` calls belong to `do_child_process`, used only by
-`kernel_oplocks8` (the localdir test, which legitimately stays). The row was a
-flaky pass mislabeled as architecturally impossible; the earlier "New Failure on
-a CPU-starved runner" was infra noise (connection-disconnect class), not a server
-gap. Verified `success:` on the local docker smbtorture battery 3/3
-(`--filter smb2.kernel-oplocks.kernel_oplocks7`). Removed from the appendix
-(47→46). DittoFS already passes the equivalent `smb2.oplock.*` break tests that
-exercise the identical server behaviour.
+`smb2.kernel-oplocks.kernel_oplocks7` was a real server bug, not the
+architectural impossibility its old appendix row claimed ("Requires Linux kernel
+`F_SETLEASE`"). The test body (`source4/torture/smb2/oplock.c`) makes **zero
+`F_SETLEASE` calls** — it is pure SMB2 protocol: tree1 opens with an EXCLUSIVE
+oplock → tree2 opens the same file with `oplock_level = NONE` (a plain
+non-caching opener) → the break handler closes tree1's handle → tree1 re-opens
+requesting EXCLUSIVE. The test accepts EITHER `SMB2_OPLOCK_LEVEL_EXCLUSIVE` (the
+re-open is processed before tree2's pending create) OR `SMB2_OPLOCK_LEVEL_NONE`
+(tree2's no-oplock create lands first) — any other value fails.
+
+DittoFS returned `SMB2_OPLOCK_LEVEL_II` on the re-open. Root cause
+(`internal/adapter/smb/handlers/create_post_break.go`): when an EXCLUSIVE/BATCH
+request is stripped of its write-caching bits by a coexisting handle, the
+remainder (`LeaseStateRead`) always mapped to LEVEL_II. But MS-SMB2 §3.3.5.9
+only backs a read-caching (LEVEL_II) grant when a coexisting handle is itself a
+read-cache participant (holds an oplock/lease the server can break). tree2's
+plain NO-oplock open caches nothing, so LEVEL_II hands out a read-cache the spec
+does not back. The fix collapses the grant to NONE when the strip is driven
+SOLELY by a non-oplock opener (`!hasActiveRecord`) and the request did not carry
+the HANDLE bit (i.e. EXCLUSIVE/LEVEL_II, not BATCH). This makes BOTH timing
+orderings spec-valid: EXCLUSIVE when tree1 reopens alone, NONE when tree2's
+no-oplock open is present — never LEVEL_II.
+
+The HANDLE-bit carve-out preserves `smb2.oplock.batch10` (tree1 NO-oplock open →
+tree2 BATCH → LEVEL_II, since BATCH's surviving HANDLE bit qualifies for the
+read-caching grant per Samba `disallow_write_lease`, which strips only WRITE).
+`hasActiveRecord` preserves `smb2.oplock.exclusive9` (tree1 holds EXCLUSIVE →
+tree2 EXCLUSIVE → LEVEL_II). Verified `success:` on the local docker smbtorture
+battery 5/5 (`--filter smb2.kernel-oplocks.kernel_oplocks7`) and no regression in
+the `smb2.oplock` / `smb2.lease` / `kernel_oplocks5` families. Removed from the
+appendix (47→46).
 
 ### 2026-06-02 — #749 finalize parked CREATE on holder release: 6 rows flipped
 
