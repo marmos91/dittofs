@@ -211,6 +211,13 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 	}
 
 	if err != nil {
+		// Duplicate of an in-flight request (DRC): write nothing. The original
+		// request owns the XID and will send the single authoritative reply.
+		if errors.Is(err, errDropReply) {
+			logger.Debug("Dropping duplicate request without reply", "program", call.Program, "procedure", call.Procedure, "xid", fmt.Sprintf("0x%x", call.XID), "client", clientAddr)
+			return nil
+		}
+
 		// Check if error was due to context cancellation
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			logger.Debug("Handler cancelled", "program", call.Program, "procedure", call.Procedure, "xid", fmt.Sprintf("0x%x", call.XID), "client", clientAddr, "error", err)

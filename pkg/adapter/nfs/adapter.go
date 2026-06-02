@@ -128,6 +128,12 @@ type NFSAdapter struct {
 	// shareUnsubscribers holds unsubscribe functions returned by rt.OnShareChange.
 	// Called during Stop to prevent stale callbacks from accumulating across restarts.
 	shareUnsubscribers []func()
+
+	// drc is the server-wide duplicate-request cache for non-idempotent NFSv3
+	// procedures. It replays the recorded reply of a completed op when a client
+	// retransmits the same request (RPC-timeout retry on a hard mount), so the
+	// retry does not re-execute and return a spurious EEXIST/ENOENT/NOT_SYNC.
+	drc *duplicateRequestCache
 }
 
 // NFSTimeoutsConfig groups all timeout-related configuration.
@@ -334,6 +340,7 @@ func New(
 		config:       nfsConfig,
 		nfsHandler:   &v3.Handler{},
 		mountHandler: &mount.Handler{},
+		drc:          newDuplicateRequestCache(),
 	}
 }
 
