@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,15 +28,52 @@ const (
 	stormCreateOdds = 16
 )
 
-// Op-type weights (out of stormWeightTotal). WRITE/READ dominate; LIST and
-// DELETE are rarer, matching a read-mostly mutating workload.
+// Default op-type weights. WRITE/READ dominate; LIST and DELETE are rarer,
+// matching a read-mostly mutating workload. Override via Opts.Mix.
 const (
 	stormWeightWrite  = 50
 	stormWeightRead   = 30
 	stormWeightList   = 15
 	stormWeightDelete = 5
-	stormWeightTotal  = stormWeightWrite + stormWeightRead + stormWeightList + stormWeightDelete
 )
+
+// stormWeights is the resolved WRITE/READ/LIST/DELETE op-type mix for a storm
+// run. Total is their sum (the modulus for pickStormOp).
+type stormWeights struct {
+	write, read, list, delete int
+}
+
+func (w stormWeights) total() int { return w.write + w.read + w.list + w.delete }
+
+func defaultStormWeights() stormWeights {
+	return stormWeights{write: stormWeightWrite, read: stormWeightRead, list: stormWeightList, delete: stormWeightDelete}
+}
+
+// parseStormMix parses a "W,R,L,D" weight string (e.g. "50,30,15,5"). An empty
+// string yields the default mix. All four weights are required, must be
+// non-negative, and must not all be zero.
+func parseStormMix(mix string) (stormWeights, error) {
+	if strings.TrimSpace(mix) == "" {
+		return defaultStormWeights(), nil
+	}
+	parts := strings.Split(mix, ",")
+	if len(parts) != 4 {
+		return stormWeights{}, fmt.Errorf("mix %q: want four comma-separated weights W,R,L,D", mix)
+	}
+	vals := make([]int, 4)
+	for i, p := range parts {
+		n, err := strconv.Atoi(strings.TrimSpace(p))
+		if err != nil || n < 0 {
+			return stormWeights{}, fmt.Errorf("mix %q: weight %d (%q) must be a non-negative integer", mix, i, p)
+		}
+		vals[i] = n
+	}
+	w := stormWeights{write: vals[0], read: vals[1], list: vals[2], delete: vals[3]}
+	if w.total() == 0 {
+		return stormWeights{}, fmt.Errorf("mix %q: weights must not all be zero", mix)
+	}
+	return w, nil
+}
 
 // churnPool is the storm's concurrency-safe pool of deletable payload IDs.
 //
@@ -103,6 +142,10 @@ func RunStorm(ctx context.Context, bs *engine.Store, opts Opts) (Result, error) 
 	if workers < 1 {
 		workers = 1
 	}
+	weights, err := parseStormMix(opts.Mix)
+	if err != nil {
+		return Result{}, err
+	}
 
 	// Stable set: at least four files per worker, so readers always have live
 	// targets even at high concurrency.
@@ -128,7 +171,7 @@ func RunStorm(ctx context.Context, bs *engine.Store, opts Opts) (Result, error) 
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
-			if err := runStormWorker(gctx, bs, opts, stable, churn, worker, workers, &counts); err != nil {
+			if err := runStormWorker(gctx, bs, opts, weights, stable, churn, worker, workers, &counts); err != nil {
 				errOnce.Do(func() {
 					firstErr = err
 					cancel()
@@ -163,8 +206,8 @@ func RunStorm(ctx context.Context, bs *engine.Store, opts Opts) (Result, error) 
 // indices i where i%workers == worker. The worker owns a private PRNG and
 // scratch buffers; only the stable set, churn pool, and atomic counters are
 // shared.
-func runStormWorker(ctx context.Context, bs *engine.Store, opts Opts, stable []string, churn *churnPool, worker, workers int, counts *StormCounts) error {
-	rng := rand.New(rand.NewPCG(opts.Seed, uint64(worker)+1))
+func runStormWorker(ctx context.Context, bs *engine.Store, opts Opts, weights stormWeights, stable []string, churn *churnPool, worker, workers int, counts *StormCounts) error {
+	rng := workerRNG(opts.Seed, worker)
 	wbuf := make([]byte, opts.BlockSize)
 	rbuf := make([]byte, opts.BlockSize)
 	maxOff := uint64(StormFileSize - opts.BlockSize)
@@ -173,7 +216,7 @@ func runStormWorker(ctx context.Context, bs *engine.Store, opts Opts, stable []s
 		if ctx.Err() != nil {
 			return nil // another worker failed; stop quietly
 		}
-		switch pickStormOp(rng) {
+		switch pickStormOp(rng, weights) {
 		case opWrite:
 			if rng.IntN(stormCreateOdds) == 0 {
 				// Create a new churn file: seed it fully, then publish it as
@@ -240,14 +283,14 @@ const (
 )
 
 // pickStormOp draws an op type by the configured weights.
-func pickStormOp(rng *rand.Rand) stormOp {
-	r := rng.IntN(stormWeightTotal)
+func pickStormOp(rng *rand.Rand, w stormWeights) stormOp {
+	r := rng.IntN(w.total())
 	switch {
-	case r < stormWeightWrite:
+	case r < w.write:
 		return opWrite
-	case r < stormWeightWrite+stormWeightRead:
+	case r < w.write+w.read:
 		return opRead
-	case r < stormWeightWrite+stormWeightRead+stormWeightList:
+	case r < w.write+w.read+w.list:
 		return opList
 	default:
 		return opDelete

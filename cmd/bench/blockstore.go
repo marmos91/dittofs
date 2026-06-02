@@ -21,6 +21,7 @@ var (
 	bsFullProfiles   bool
 	bsPhase          string
 	bsReplay         string
+	bsMix            string
 )
 
 var blockstoreCmd = &cobra.Command{
@@ -29,7 +30,9 @@ var blockstoreCmd = &cobra.Command{
 	Long: `Composes FSStore local + remote (memory or s3) + in-memory metadata +
 Syncer and drives one of:
   sequential-write | random-write | dedup-heavy | mixed-rw | flush-churn
-  mixed-ops-storm (concurrent WRITE/READ/LIST/DELETE; use --workers)
+  mixed-ops-storm (concurrent WRITE/READ/LIST/DELETE; use --workers, --mix)
+  concurrent-small-write | concurrent-small-read (4-64 KiB, --workers)
+  concurrent-big-write   | concurrent-big-read   (64-256 MiB, --workers)
   walk | delete | gc | raw-s3-put
 
 Captures wall-clock, throughput, and CPU + heap + goroutine pprof to
@@ -55,6 +58,7 @@ func init() {
 	flags.BoolVar(&bsFullProfiles, "full-profiles", false, "also capture mutex + block profiles (enables runtime mutex/block profilers; adds overhead)")
 	flags.StringVar(&bsPhase, "phase", "", "optional capture phase subdir under <profile-dir>/blockstore/ (e.g. baseline | post-fix)")
 	flags.StringVar(&bsReplay, "replay", "", "replay a recorded run: load workload params from <dir>/seed.txt (overrides other flags except --phase/--profile-dir)")
+	flags.StringVar(&bsMix, "mix", "", "mixed-ops-storm op weights as W,R,L,D (e.g. 50,30,15,5); default 50/30/15/5")
 	// --workload is required unless replaying, where it comes from seed.txt.
 }
 
@@ -82,6 +86,7 @@ func runBlockstore(cmd *cobra.Command, _ []string) error {
 			Workers:    bsWorkers,
 			Seed:       bsSeed,
 			Remote:     bsRemote,
+			Mix:        bsMix,
 			ProfileDir: flagProfileDir,
 		}
 	}
@@ -109,6 +114,9 @@ func runBlockstore(cmd *cobra.Command, _ []string) error {
 	case bsbench.WorkloadMixedOpStorm:
 		return runStormWorkload(ctx, cmd, opts, tmpDir)
 	default:
+		if bsbench.IsConcurrentWorkload(opts.Workload) {
+			return runConcurrentWorkload(ctx, cmd, opts, tmpDir)
+		}
 		// Engine-backed workloads (sequential-write, random-write, ...).
 		return runEngineWorkload(ctx, cmd, opts, tmpDir)
 	}
@@ -150,6 +158,40 @@ func runStormWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts
 			"storm ops: workers=%d writes=%d reads=%d lists=%d deletes=%d\n",
 			opts.Workers, res.Storm.Writes, res.Storm.Reads, res.Storm.Lists, res.Storm.Deletes)
 	}
+	return nil
+}
+
+// runConcurrentWorkload wires the engine like runEngineWorkload but drives one
+// of the concurrent (a)–(d) workloads via RunConcurrent across opts.Workers.
+func runConcurrentWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts, tmpDir string) error {
+	remoteStore, remoteClose, err := bsbench.SetupRemote(ctx, opts)
+	if err != nil {
+		return err
+	}
+	bs, engineClose, err := bsbench.NewEngine(tmpDir, remoteStore)
+	if err != nil {
+		remoteClose()
+		return err
+	}
+	defer engineClose()
+
+	sess, err := startProfileSession(opts.ProfileDir, bsPhase, opts.Workload, bsFullProfiles)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sess.stop() }()
+	if err := sess.writeSeed(opts); err != nil {
+		return err
+	}
+
+	res, err := bsbench.RunConcurrent(ctx, bs, opts)
+	if stopErr := sess.stop(); err == nil {
+		err = stopErr
+	}
+	if err != nil {
+		return err
+	}
+	printResult(cmd, opts, res, sess.dir, true)
 	return nil
 }
 
