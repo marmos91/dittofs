@@ -250,6 +250,7 @@ func (bc *FSStore) ResetLocalState(_ context.Context) error {
 	// fresh log and a subsequent ReadPayloadAt finds no log to replay.
 	clear(bc.logFDs)
 	clear(bc.logLocks)
+	clear(bc.rollupLocks) // C1: keep rollupLocks 1:1 with logLocks across reset
 	clear(bc.dirtyIntervals)
 	clear(bc.logIndices)
 	clear(bc.truncations)

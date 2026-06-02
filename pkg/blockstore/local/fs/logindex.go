@@ -249,10 +249,33 @@ func (idx *logIndex) MarkConsumed(fileOff uint64, payloadLen uint32) {
 // commit; the returned fence is what advanceRollupOffset eventually
 // writes to disk.
 func (idx *logIndex) AdvanceFence() uint64 {
+	return idx.AdvanceFenceUpTo(^uint64(0))
+}
+
+// AdvanceFenceUpTo is AdvanceFence bounded to entries whose logPos is <=
+// maxLogPos. It stops the forward walk at the first entry that is either not
+// fully covered by consumedCoverage OR has a logPos greater than maxLogPos,
+// whichever comes first.
+//
+// C1: the rollup releases the per-file append mutex during its CAS-store phase
+// (Phase B), so a racing AppendWrite can append a record at the SAME file
+// extent as one this pass is consuming, and that record is already present in
+// `entries` by the time Phase C runs. Its bytes were NOT chunked by this pass;
+// fencing past it — which plain AdvanceFence would do, because the older
+// record's coverage spans the same file extent — would mark it dead and lose
+// the write. Bounding the walk to the max logPos this pass actually read in
+// Phase A excludes any record that arrived after the snapshot (log positions
+// are monotonic in arrival order), so a racing same-extent write keeps its
+// entry and is rolled up by a later pass. AdvanceFence (no ceiling) preserves
+// the original behavior for every other caller.
+func (idx *logIndex) AdvanceFenceUpTo(maxLogPos uint64) uint64 {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	for idx.fenceCursor < len(idx.entries) {
 		e := idx.entries[idx.fenceCursor]
+		if e.logPos > maxLogPos {
+			break
+		}
 		if !idx.consumedCoverage.covers(e.fileOff, e.fileEnd()) {
 			break
 		}

@@ -156,6 +156,12 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 		mu = &sync.Mutex{}
 		bc.logLocks[payloadID] = mu
 	}
+	// C1: pair every payload's append mutex with a rollup mutex, allocated
+	// under the same bc.logsMu write lock so rollupFile always observes a
+	// non-nil rollup lock whenever the append mutex exists.
+	if _, rmuOk := bc.rollupLocks[payloadID]; !rmuOk {
+		bc.rollupLocks[payloadID] = &sync.Mutex{}
+	}
 	if !treeOk {
 		tree = newIntervalTree()
 		bc.dirtyIntervals[payloadID] = tree
@@ -502,11 +508,26 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 	}
 	bc.tombstones[payloadID] = struct{}{}
 	mu := bc.logLocks[payloadID]
+	rmu := bc.rollupLocks[payloadID]
 	lf := bc.logFDs[payloadID]
 	bc.logsMu.Unlock()
 
 	// Step 2: wait for any in-flight AppendWrite / rollupFile to drain.
 	// When mu is nil the payload never had a log — no race to wait for.
+	//
+	// C1: rollupFile now releases the append mutex (mu) during its CAS-store
+	// phase, so draining mu alone no longer guarantees a rollup has finished.
+	// Drain the rollup mutex (rmu) FIRST — rollupFile holds it across its
+	// entire pass, so this blocks until any in-flight rollup completes its
+	// metadata commit, preventing the ObjectIDPersister from writing manifest
+	// rows for a payload we are about to delete. Lock order is rmu (outer) ->
+	// mu (inner), matching rollupFile's acquisition order; the two barriers
+	// are sequential here (not nested) so there is no AB/BA hazard either way.
+	if rmu != nil {
+		//nolint:staticcheck // SA2001: intentional in-flight rollup drain barrier
+		rmu.Lock()
+		rmu.Unlock() //nolint:staticcheck // SA2001: see above
+	}
 	if mu != nil {
 		// Lock+Unlock sequence is the in-flight barrier — staticcheck SA2001
 		// would flag this as an "empty critical section" if naively written
@@ -572,6 +593,7 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 	bc.logsMu.Lock()
 	delete(bc.logFDs, payloadID)
 	delete(bc.logLocks, payloadID)
+	delete(bc.rollupLocks, payloadID)
 	delete(bc.dirtyIntervals, payloadID)
 	delete(bc.logIndices, payloadID)
 	delete(bc.truncations, payloadID)
