@@ -17,6 +17,17 @@ connection that already owns a bound channel is now rejected with ACCESS_DENIED
 instead of silently replacing the channel. The remaining row is the genuine
 Kerberos-path expectation under #686 (v1.0 Kerberos sweep).
 
+## Final Tally (#673)
+
+- **Upstream Samba known-fail** (cited) — **1**: `smb2.reauth5` (`selftest/knownfail.d` line 213)
+- **Total: 1**
+
+(Rendered as a list, not a markdown table, so `parse-results.sh` — which ingests every line beginning with `|` — does not mistake these tally lines for known-failure rows.)
+
+Zero UNJUSTIFIED entries. This list is loaded only under `--use-kerberos`, which
+the non-Kerberos v1.0 CI job (`.github/workflows/smb-conformance.yml`, running
+`./run.sh` without `--kerberos`) does not pass, so it does not gate v1.0.
+
 ## Kerberos Session Bugs (Fix In Progress)
 
 These are genuine Kerberos-specific bugs tracked in #340 / #686.

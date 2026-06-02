@@ -1,9 +1,23 @@
 # Known Failures - SMB Conformance (WPTS BVT)
 
-Last updated: 2026-05-28 (Wave 4 WPTS sweep: walk back 4 confirmed PASS — 3 on develop + 1 from ADS base ChangeTime freeze fix — and add Permanently Unimplementable appendix)
+Last updated: 2026-06-02 (#673 rationalization pass — Final Tally added, every entry confirmed bucketed and justified; docs-only)
 
 Tests listed here are expected to fail. CI will pass (exit 0) as long as
 all failures are in this list. New failures not listed here will cause CI to fail.
+
+## Final Tally (#673 v1.0 conformance gate)
+
+Every remaining entry is justified and falls into exactly one bucket. No
+UNJUSTIFIED entries remain.
+
+- **Flaky** (justified — identical wire trace to the passing develop run; outcome hinges on WPTS-framework cleanup-phase exception handling) — **1**: `BVT_DirectoryLeasing_ReadWriteHandleCaching`
+- **Permanently Unimplementable / out-of-scope** (appendix) — **39**: VHD/RSVD ×26, SWN ×6, SQoS ×3, DFS ×2, NamedPipe ×2
+- **Total: 40**
+
+(Rendered as a list, not a markdown table, so `parse-results.sh` — which ingests every line beginning with `|` — does not mistake these tally lines for known-failure rows.)
+
+No WPTS entry is deferred-with-issue: every fixable BVT test has already been
+flipped, leaving one flaky row and the architecturally out-of-scope appendix.
 
 The `parse-results.sh` script reads test names from the first column of the
 table below. Lines starting with `#`, `|---`, empty lines, and the header
@@ -156,6 +170,7 @@ Format for Permanently Unimplementable:
 
 ## Changelog
 
+- **#673 (2026-06-02):** Docs-only rationalization. Added a Final Tally header block (1 flaky + 39 appendix = 40). Confirmed every entry is bucketed and justified; the lone Expected row (`BVT_DirectoryLeasing_ReadWriteHandleCaching`) is explicitly classified Flaky. No rows added or removed — CI pass/fail unaffected.
 - **Wave 4 (2026-05-28):** Walk back 4 confirmed PASS. Three were already passing on develop: `Algorithm_NotingFileModified_Dir_LastAccessTime`, `FileInfo_Set_FileBasicInformation_Timestamp_MinusTwo_Dir_LastWriteTime`, `BVT_DirectoryLeasing_LeaseBreakOnMultiClients`. The fourth, `FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_ChangeTime`, was flipped by an ADS-write fix that preserves the base object's frozen ChangeTime — previously, file_modify.go auto-bumped Ctime to NOW whenever `modified=true && attrs.Ctime==nil`, clobbering the freeze even when only the ADS handle's Mtime was unfrozen. Restructure with Permanently Unimplementable appendix mirroring the smbtorture file layout.
 - **v0.10.0 Phase 73 (2026-03-24):** SMB Conformance Deep-Dive. Plan 01: ChangeNotify ADS stream notifications wired (5 tests). Plan 02: ADS share access + timestamp conformance (9 ADS + 3 timestamp tests removed). Plan 03: ChangeNotify completion, session re-auth, anonymous encryption (~25 smbtorture tests). Plan 04: DH/lease state machine fixes (~26 smbtorture tests). Plan 05: Per-field CreationTime freeze/unfreeze, ChangeEa reclassified as Permanent. Total: 56 (53 permanent + 3 expected).
 - **v0.10.0 Phase 72 (2026-03-23):** ChangeNotify fully implemented with async responses, CANCEL support, and all MS-SMB2 completion filter events (Plan 01, 16 tests fixed). Client-preference cipher/signing selection, DH V1 volatile FileID regeneration, TREE_DISCONNECT signing exemption, lease V1/V2 state transitions fixed (Plan 02, 12 tests fixed). Timestamp freeze/unfreeze per MS-FSA 2.1.5.14.2, parent directory atime on file write (Plan 03, 3 tests fixed). Total removed: 31. New total: 65 (52 permanent + 13 expected).
