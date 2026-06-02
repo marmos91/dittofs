@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	goruntime "runtime"
 	"sync"
 	"time"
 
@@ -55,7 +56,7 @@ type Server struct {
 //
 // Returns a configured but not yet started Server, or an error if JWT configuration is invalid.
 func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store, restoreHTTPTimeout time.Duration) (*Server, error) {
-	config.applyDefaults()
+	config.ApplyDefaults()
 
 	// Get JWT secret from config (prefers env var)
 	jwtSecret := config.GetJWTSecret()
@@ -73,6 +74,23 @@ func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store, resto
 	jwtService, err := auth.NewJWTService(jwtConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWT service: %w", err)
+	}
+
+	// Set mutex/block sampling so /debug/pprof/{mutex,block} return non-empty
+	// profiles. The HTTP handlers only read the runtime's sampled data; without
+	// these calls the sampling rate stays 0 and the profiles are header-only.
+	// These are process-global runtime knobs, so NewServer is authoritative in
+	// both directions: when Pprof is off we reset them to 0 rather than leaving
+	// whatever a prior caller (another server, bench tooling) set — that keeps
+	// "no sampling overhead when pprof is off" true regardless of call order.
+	if config.Pprof {
+		goruntime.SetMutexProfileFraction(config.PprofMutexRate)
+		goruntime.SetBlockProfileRate(config.PprofBlockRateNs)
+		logger.Info("pprof mutex/block sampling enabled",
+			"mutex_rate", config.PprofMutexRate, "block_rate_ns", config.PprofBlockRateNs)
+	} else {
+		goruntime.SetMutexProfileFraction(0)
+		goruntime.SetBlockProfileRate(0)
 	}
 
 	// cpStore implements both IdentityStore and Store

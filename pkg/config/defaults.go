@@ -67,19 +67,10 @@ func applyDatabaseDefaults(cfg *store.Config) {
 
 // applyControlPlaneDefaults sets control plane API server defaults.
 // API is always enabled (mandatory for managing shares and users).
+// Delegates to APIConfig.ApplyDefaults so this path and NewServer share one
+// source of truth and cannot drift as fields are added.
 func applyControlPlaneDefaults(cfg *api.APIConfig) {
-	if cfg.Port == 0 {
-		cfg.Port = 8080
-	}
-	if cfg.ReadTimeout == 0 {
-		cfg.ReadTimeout = 10 * time.Second
-	}
-	if cfg.WriteTimeout == 0 {
-		cfg.WriteTimeout = 10 * time.Second
-	}
-	if cfg.IdleTimeout == 0 {
-		cfg.IdleTimeout = 60 * time.Second
-	}
+	cfg.ApplyDefaults()
 }
 
 // applyAdminDefaults sets admin user defaults.

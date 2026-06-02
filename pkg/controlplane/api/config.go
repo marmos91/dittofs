@@ -49,6 +49,24 @@ type APIConfig struct {
 	// Useful for CPU, memory, and goroutine profiling during benchmarks.
 	// Default: false
 	Pprof bool `mapstructure:"pprof" yaml:"pprof"`
+
+	// PprofMutexRate is the sampling fraction passed to
+	// runtime.SetMutexProfileFraction (one mutex contention event sampled per N
+	// events). Without it, /debug/pprof/mutex is an empty (header-only) profile
+	// even when Pprof is enabled. Only applied when Pprof is true; when Pprof is
+	// false it is forced to 0 (sampling off). A zero/unset value with Pprof on
+	// falls back to the default 100 — to turn profiling off entirely, set Pprof
+	// to false rather than zeroing this.
+	PprofMutexRate int `mapstructure:"pprof_mutex_rate" validate:"omitempty,min=0" yaml:"pprof_mutex_rate"`
+
+	// PprofBlockRateNs is the rate (in nanoseconds) passed to
+	// runtime.SetBlockProfileRate (one blocking event sampled per N ns blocked).
+	// Without it, /debug/pprof/block is an empty (header-only) profile even when
+	// Pprof is enabled. Only applied when Pprof is true; when Pprof is false it
+	// is forced to 0 (sampling off). A zero/unset value with Pprof on falls back
+	// to the default 1_000_000 — to turn profiling off entirely, set Pprof to
+	// false rather than zeroing this.
+	PprofBlockRateNs int `mapstructure:"pprof_block_rate_ns" validate:"omitempty,min=0" yaml:"pprof_block_rate_ns"`
 }
 
 // JWTConfig configures JWT token generation and validation.
@@ -91,8 +109,11 @@ func (c JWTConfig) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// applyDefaults fills in zero values with sensible defaults.
-func (c *APIConfig) applyDefaults() {
+// ApplyDefaults fills in zero values with sensible defaults. It is the single
+// source of truth for API config defaults — both NewServer and the global
+// config.ApplyDefaults path call it, so a new field defaulted here cannot drift
+// between the two entry points.
+func (c *APIConfig) ApplyDefaults() {
 	if c.Port == 0 {
 		c.Port = 8080
 	}
@@ -104,6 +125,17 @@ func (c *APIConfig) applyDefaults() {
 	}
 	if c.IdleTimeout == 0 {
 		c.IdleTimeout = 60 * time.Second
+	}
+	// When pprof is on but the sampling rates are left unset, fall back to
+	// sensible defaults so /debug/pprof/{mutex,block} return non-empty profiles
+	// out of the box. Left at zero (disabled) when pprof is off.
+	if c.Pprof {
+		if c.PprofMutexRate == 0 {
+			c.PprofMutexRate = 100
+		}
+		if c.PprofBlockRateNs == 0 {
+			c.PprofBlockRateNs = 1_000_000
+		}
 	}
 	// JWT defaults
 	if c.JWT.AccessTokenDuration == 0 {
