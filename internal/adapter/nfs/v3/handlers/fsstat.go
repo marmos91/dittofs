@@ -184,10 +184,14 @@ func (h *Handler) FsStat(
 
 	logger.InfoCtx(ctx.Context, "FSSTAT successful", "client", ctx.ClientAddr, "total", bytesize.ByteSize(stats.TotalBytes), "used", bytesize.ByteSize(stats.UsedBytes), "avail", bytesize.ByteSize(stats.AvailableBytes), "tfiles", stats.TotalFiles, "ffiles", stats.UsedFiles, "afiles", stats.AvailableFiles)
 
-	// Build response with data from store
-	// Note: NFS uses "free bytes" while the interface tracks "used bytes"
-	// Calculate free bytes as: total - used
-	freeBytes := stats.TotalBytes - stats.UsedBytes
+	// Build response with data from store.
+	// Note: NFS uses "free bytes" while the interface tracks "used bytes".
+	// Clamp the subtractions at zero: if a store ever reports used > total
+	// (e.g. over-quota or a transient accounting skew) an unsigned underflow
+	// would otherwise wrap to a near-2^64 value and the client would believe
+	// the filesystem has effectively unlimited free space.
+	freeBytes := satSub(stats.TotalBytes, stats.UsedBytes)
+	freeFiles := satSub(stats.TotalFiles, stats.UsedFiles)
 
 	return &FsStatResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -196,8 +200,16 @@ func (h *Handler) FsStat(
 		Fbytes:          freeBytes,
 		Abytes:          stats.AvailableBytes,
 		Tfiles:          stats.TotalFiles,
-		Ffiles:          stats.TotalFiles - stats.UsedFiles, // Free = Total - Used
+		Ffiles:          freeFiles, // Free = Total - Used (clamped at 0)
 		Afiles:          stats.AvailableFiles,
 		Invarsec:        invarsec,
 	}, nil
+}
+
+// satSub returns a - b, saturating at 0 instead of wrapping on underflow.
+func satSub(a, b uint64) uint64 {
+	if b > a {
+		return 0
+	}
+	return a - b
 }

@@ -56,15 +56,20 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 		}, shareName, nil
 	}
 
-	// Apply share-level identity mapping (all_squash, root_squash)
+	// Apply share-level identity mapping (all_squash, root_squash).
+	//
+	// Fail closed on mapping failure (parity with the v3 path,
+	// BuildAuthContextWithMapping). A mapping failure means the share could
+	// not be resolved (e.g. a stale handle for a deleted/renamed share); the
+	// previous behaviour of falling back to the original, UNMAPPED identity
+	// silently bypassed squash rules (a root client would have stayed root).
 	effectiveIdentity, err := h.Registry.ApplyIdentityMapping(shareName, originalIdentity)
 	if err != nil {
 		logger.Debug("NFSv4 identity mapping failed",
 			"share", shareName,
 			"error", err,
 			"client", ctx.ClientAddr)
-		// Fall back to original identity if mapping fails (share may not exist yet)
-		effectiveIdentity = originalIdentity
+		return nil, "", fmt.Errorf("apply identity mapping: %w", err)
 	}
 
 	// Get share for read-only flag
