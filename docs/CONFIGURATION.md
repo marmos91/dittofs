@@ -198,10 +198,13 @@ controlplane:
   write_timeout: 10s         # Max time to write response
   idle_timeout: 60s          # Max idle time for keep-alive
 
-  # Profiling (disabled by default; for benchmarks/diagnostics only)
+  # Profiling (disabled by default; for benchmarks/diagnostics only).
+  # The rate keys only take effect when pprof is true; with pprof off all
+  # sampling stays off regardless of their values. When pprof is on and a rate
+  # is unset/0 it falls back to the default shown below.
   pprof: false                 # Expose /debug/pprof/* endpoints
-  pprof_mutex_rate: 100        # runtime.SetMutexProfileFraction; 0 disables mutex profile
-  pprof_block_rate_ns: 1000000 # runtime.SetBlockProfileRate (ns); 0 disables block profile
+  # pprof_mutex_rate: 100        # runtime.SetMutexProfileFraction (default 100 when pprof on)
+  # pprof_block_rate_ns: 1000000 # runtime.SetBlockProfileRate ns (default 1000000 when pprof on)
 
   # JWT authentication configuration
   jwt:
@@ -222,8 +225,8 @@ controlplane:
 | `write_timeout` | `10s` | Maximum duration to write response |
 | `idle_timeout` | `60s` | Maximum idle time for keep-alive |
 | `pprof` | `false` | Expose Go `/debug/pprof/*` profiling endpoints |
-| `pprof_mutex_rate` | `100` | Mutex contention sampling (1 per N events); `0` disables. Only applied when `pprof: true`. Without it, `/debug/pprof/mutex` is header-only |
-| `pprof_block_rate_ns` | `1000000` | Block profiling rate in ns (1 sample per N ns blocked); `0` disables. Only applied when `pprof: true`. Without it, `/debug/pprof/block` is header-only |
+| `pprof_mutex_rate` | `100` (when `pprof: true`; else `0`) | Mutex contention sampling, 1 per N events. Applied only when `pprof: true`; unset/`0` then falls back to `100`. Without it `/debug/pprof/mutex` is header-only. Disable profiling via `pprof: false`, not by zeroing this |
+| `pprof_block_rate_ns` | `1000000` (when `pprof: true`; else `0`) | Block profiling rate in ns, 1 sample per N ns blocked. Applied only when `pprof: true`; unset/`0` then falls back to `1000000`. Without it `/debug/pprof/block` is header-only. Disable profiling via `pprof: false`, not by zeroing this |
 
 **JWT Configuration Options:**
 

@@ -51,17 +51,21 @@ type APIConfig struct {
 	Pprof bool `mapstructure:"pprof" yaml:"pprof"`
 
 	// PprofMutexRate is the sampling fraction passed to
-	// runtime.SetMutexProfileFraction. One mutex contention event is sampled
-	// per N events; 0 disables mutex profiling. Without this, /debug/pprof/mutex
-	// returns an empty (header-only) profile even when Pprof is enabled.
-	// Only applied when Pprof is true. Default when Pprof on: 100.
+	// runtime.SetMutexProfileFraction (one mutex contention event sampled per N
+	// events). Without it, /debug/pprof/mutex is an empty (header-only) profile
+	// even when Pprof is enabled. Only applied when Pprof is true; when Pprof is
+	// false it is forced to 0 (sampling off). A zero/unset value with Pprof on
+	// falls back to the default 100 — to turn profiling off entirely, set Pprof
+	// to false rather than zeroing this.
 	PprofMutexRate int `mapstructure:"pprof_mutex_rate" validate:"omitempty,min=0" yaml:"pprof_mutex_rate"`
 
 	// PprofBlockRateNs is the rate (in nanoseconds) passed to
-	// runtime.SetBlockProfileRate. One blocking event is sampled per N
-	// nanoseconds blocked; 0 disables block profiling. Without this,
-	// /debug/pprof/block returns an empty (header-only) profile even when
-	// Pprof is enabled. Only applied when Pprof is true. Default when Pprof on: 1_000_000.
+	// runtime.SetBlockProfileRate (one blocking event sampled per N ns blocked).
+	// Without it, /debug/pprof/block is an empty (header-only) profile even when
+	// Pprof is enabled. Only applied when Pprof is true; when Pprof is false it
+	// is forced to 0 (sampling off). A zero/unset value with Pprof on falls back
+	// to the default 1_000_000 — to turn profiling off entirely, set Pprof to
+	// false rather than zeroing this.
 	PprofBlockRateNs int `mapstructure:"pprof_block_rate_ns" validate:"omitempty,min=0" yaml:"pprof_block_rate_ns"`
 }
 
