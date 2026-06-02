@@ -3,7 +3,7 @@
 -- The SMB adapter stores DOS file attributes (ARCHIVE, SYSTEM, READONLY,
 -- COMPRESSED, SPARSE, plus the "DOS attributes were explicitly set" marker) in
 -- high bits of the Unix mode field rather than mutating POSIX permission bits.
--- See internal/adapter/smb/v2/handlers/converters.go: modeDOSExplicit (0x10000),
+-- See internal/adapter/smb/handlers/converters.go: modeDOSExplicit (0x10000),
 -- modeDOSArchive (0x20000), modeDOSCompressed (0x40000), modeDOSSystem
 -- (0x80000), modeDOSReadonly (0x100000), modeDOSSparse (0x200000).
 --

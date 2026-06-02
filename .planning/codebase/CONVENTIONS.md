@@ -6,7 +6,7 @@
 
 **Files:**
 - All lowercase, underscores allowed (`file_create.go`, `auth_permissions.go`).
-- One file per RPC/SMB procedure under `internal/adapter/{nfs/v3,smb/v2}/handlers/`.
+- One file per RPC/SMB procedure under `internal/adapter/{nfs/v3,smb}/handlers/`.
 - Codec / wire helpers next to handler: `read.go` + `read_codec.go`.
 - Tests co-located: `foo.go` + `foo_test.go`.
 - Per-OS suffixes: `*_unix.go`, `*_windows.go`, `*_darwin.go`, `*_linux.go`.

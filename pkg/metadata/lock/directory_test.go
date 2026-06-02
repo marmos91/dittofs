@@ -431,7 +431,7 @@ func TestRecentlyBrokenCache_Expiry(t *testing.T) {
 //
 // These tests mirror the Samba `dlt_renames` matrix
 // (source4/torture/smb2/lease.c:7028) at the lock-manager layer. The C3 rename
-// branch in internal/adapter/smb/v2/handlers/set_info.go invokes
+// branch in internal/adapter/smb/handlers/set_info.go invokes
 // BreakLeasesOnOpenConflict + BreakReadLeasesForParentDir on BOTH src-parent
 // and dst-parent (RH → ""), each honoring the renamer's ClientID + parent-key
 // suppression. We verify the underlying break path produces the right per-key
@@ -443,7 +443,7 @@ func TestRecentlyBrokenCache_Expiry(t *testing.T) {
 
 // breakBothParentsAsRename simulates the C3 post-rename break invocation:
 // strip H then R on a parent handle, with parent-key suppression. Mirrors
-// internal/adapter/smb/v2/handlers/set_info.go::breakParentDirLeasesForContentChangeOn
+// internal/adapter/smb/handlers/set_info.go::breakParentDirLeasesForContentChangeOn
 // composed twice (src and dst).
 func breakBothParentsAsRename(t *testing.T, mgr *Manager, srcParent, dstParent string, excludeClientID string, excludeKey [16]byte, hasKey bool) {
 	t.Helper()

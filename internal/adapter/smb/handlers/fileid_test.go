@@ -125,7 +125,7 @@ func TestFileID_StreamMatchesBase(t *testing.T) {
 	expected := binary.LittleEndian.Uint64(base.ID[:8])
 
 	// ADS streams are stored as siblings in the parent directory under names
-	// containing a colon (see internal/adapter/smb/v2/handlers/close.go).
+	// containing a colon (see internal/adapter/smb/handlers/close.go).
 	stream, err := metaSvc.CreateFile(authCtx, rootHandle, "foo:bar", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,

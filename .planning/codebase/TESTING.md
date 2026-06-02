@@ -23,7 +23,7 @@ go test -coverprofile=coverage.out ./...
 
 # Specific package
 go test ./pkg/metadata/...
-go test ./internal/adapter/smb/v2/handlers/...
+go test ./internal/adapter/smb/handlers/...
 
 # E2E suite (kernel mounts, sudo, Docker)
 cd test/e2e && sudo ./run-e2e.sh
@@ -41,7 +41,7 @@ golangci-lint run
 **Co-located tests:**
 - `pkg/blockstore/engine/engine.go` ↔ `engine_test.go`
 - `pkg/metadata/file_modify.go` ↔ `file_modify_test.go`
-- `internal/adapter/smb/v2/handlers/create.go` ↔ `create_test.go` + many feature-specific tests (e.g. `create_dacl_enforcement_test.go`)
+- `internal/adapter/smb/handlers/create.go` ↔ `create_test.go` + many feature-specific tests (e.g. `create_dacl_enforcement_test.go`)
 
 **Cross-backend conformance suites:**
 - `pkg/metadata/storetest/` — every `MetadataStore` backend must pass (CLAUDE.md invariant 7).
@@ -114,7 +114,7 @@ t.Run("permission denied", func(t *testing.T) { ... })
 
 **Handler fixtures:**
 - `internal/adapter/nfs/v3/handlers/testing/` — full NFSv3 handler env (store, blockstore, engine, runtime).
-- `internal/adapter/smb/v2/handlers/handler_test.go` — SMB handler fixtures.
+- `internal/adapter/smb/handlers/handler_test.go` — SMB handler fixtures.
 
 **E2E helpers (`test/e2e/helpers/`):**
 - `StartServerProcess(t, cfg)` — spawns a real `dfs` server.

@@ -21,7 +21,7 @@ import (
 //     STATUS_FILE_LOCK_CONFLICT (SMB) — see errorMap in errmap.go.
 //
 // Sources (consolidated during ADAPT-03):
-//   - SMB column: internal/adapter/smb/v2/handlers/lock.go:532-549
+//   - SMB column: internal/adapter/smb/handlers/lock.go:532-549
 //     (lockErrorToStatus — authoritative).
 //   - NFS3 column: internal/adapter/nfs/xdr/errors.go:140-146 (ErrLocked
 //     only; other lock-context codes did not have NFSv3 entries and fall

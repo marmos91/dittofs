@@ -43,7 +43,7 @@ var defaultCodes = protoCodes{
 //     lock codes (ErrLocked → NFS4ERR_LOCKED, ErrDeadlock → NFS4ERR_DEADLOCK,
 //     ErrGracePeriod → NFS4ERR_GRACE) that NFSv3 had to fall back on
 //     NFS3ErrJukebox for.
-//   - SMB column: internal/adapter/smb/v2/handlers/converters.go:354-395 for
+//   - SMB column: internal/adapter/smb/handlers/converters.go:354-395 for
 //     general (non-lock) context. Lock-context deltas go in lock_errmap.go.
 //
 // Three-way drift surfaced during consolidation (see PATTERNS.md

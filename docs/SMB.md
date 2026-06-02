@@ -334,12 +334,12 @@ for {
 
 ### Critical Commands
 
-**Session Management** (`internal/adapter/smb/v2/handlers/`)
+**Session Management** (`internal/adapter/smb/handlers/`)
 - `NEGOTIATE`: Multi-dialect negotiation with negotiate contexts (cipher, signing, preauth)
 - `SESSION_SETUP`: NTLM or Kerberos authentication via SPNEGO, key derivation
 - `TREE_CONNECT`: Share access with permission validation, per-share encryption enforcement
 
-**File Operations** (`internal/adapter/smb/v2/handlers/`)
+**File Operations** (`internal/adapter/smb/handlers/`)
 - `CREATE`: Create/open files and directories, lease V2 grants, durable handle create contexts
 - `READ`: Read file content (with cache support)
 - `WRITE`: Write file content (with cache support)

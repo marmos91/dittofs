@@ -299,7 +299,7 @@ dittofs-v10-plan/
 **Protocol dispatch:**
 - `internal/adapter/nfs/dispatch.go` — NFS RPC routing + AUTH_UNIX extraction
 - `internal/adapter/smb/dispatch.go` — SMB2 command routing
-- `internal/adapter/smb/v2/handlers/` — 88 handler files
+- `internal/adapter/smb/handlers/` — 88 handler files
 
 **Locks / leases / delegations:**
 - `pkg/metadata/lock/` — byte-range, leases, oplocks, delegations, grace, reclaim
@@ -313,7 +313,7 @@ dittofs-v10-plan/
 **Files:**
 - Co-located tests: `foo.go` + `foo_test.go`
 - Codec / serialization helpers next to handler: e.g. `read.go` + `read_codec.go`
-- One file per RPC/SMB procedure in `internal/adapter/{nfs/v3,smb/v2}/handlers/`
+- One file per RPC/SMB procedure in `internal/adapter/{nfs/v3,smb}/handlers/`
 - Per-OS suffixes: `_unix.go`, `_windows.go`, `_darwin.go`, `_linux.go`
 
 **Packages:**
@@ -344,7 +344,7 @@ dittofs-v10-plan/
 - Wire into compound dispatcher in `internal/adapter/nfs/v4/`
 
 **New SMB2/3 command:**
-- `internal/adapter/smb/v2/handlers/{cmd}.go` + `{cmd}_test.go`
+- `internal/adapter/smb/handlers/{cmd}.go` + `{cmd}_test.go`
 - Register in `internal/adapter/smb/dispatch.go`
 
 **New metadata backend:**
