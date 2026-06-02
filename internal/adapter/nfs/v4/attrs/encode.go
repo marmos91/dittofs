@@ -260,6 +260,20 @@ func EncodePseudoFSAttrs(buf *bytes.Buffer, requested []uint32, node PseudoFSAtt
 	return nil
 }
 
+// nonZeroFileID guards against ever emitting a fileid of 0 on the wire.
+//
+// A fileid of 0 is illegal per RFC 7530: clients treat it as a "no such entry"
+// sentinel. The Linux client merely logs a buggy-server warning, but the macOS
+// NFS client builds its vnode keyed on the fileid and dereferences a NULL vnode
+// for fileid 0, kernel-panicking the machine. This is a cheap belt-and-suspenders
+// clamp covering any source (pseudo-fs root, HandleToINode edge) that yields 0.
+func nonZeroFileID(id uint64) uint64 {
+	if id == 0 {
+		return 1
+	}
+	return id
+}
+
 // encodeSingleAttr encodes a single attribute value into the buffer.
 func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) error {
 	switch bit {
@@ -328,8 +342,8 @@ func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) er
 		return xdr.WriteXDROpaque(buf, node.GetHandle())
 
 	case FATTR4_FILEID:
-		// uint64: unique file identifier
-		return xdr.WriteUint64(buf, node.GetFileID())
+		// uint64: unique file identifier (never 0; see nonZeroFileID)
+		return xdr.WriteUint64(buf, nonZeroFileID(node.GetFileID()))
 
 	case FATTR4_MAXFILESIZE:
 		// uint64: maximum file size in bytes
@@ -404,8 +418,8 @@ func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) er
 		return xdr.WriteUint32(buf, 0)
 
 	case FATTR4_MOUNTED_ON_FILEID:
-		// uint64: same as fileid for pseudo-fs nodes
-		return xdr.WriteUint64(buf, node.GetFileID())
+		// uint64: same as fileid for pseudo-fs nodes (never 0; see nonZeroFileID)
+		return xdr.WriteUint64(buf, nonZeroFileID(node.GetFileID()))
 
 	case FATTR4_SUPPATTR_EXCLCREAT:
 		// bitmap4: attributes that can be set atomically during EXCLUSIVE4_1 create.
@@ -554,7 +568,7 @@ func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, hand
 		return xdr.WriteXDROpaque(buf, []byte(handle))
 
 	case FATTR4_FILEID:
-		return xdr.WriteUint64(buf, metadata.HandleToINode(handle))
+		return xdr.WriteUint64(buf, nonZeroFileID(metadata.HandleToINode(handle)))
 
 	case FATTR4_MAXFILESIZE:
 		return xdr.WriteUint64(buf, fsMaxFileSize.Load())
@@ -635,7 +649,7 @@ func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, hand
 		return xdr.WriteUint32(buf, uint32(file.Mtime.Nanosecond()))
 
 	case FATTR4_MOUNTED_ON_FILEID:
-		return xdr.WriteUint64(buf, metadata.HandleToINode(handle))
+		return xdr.WriteUint64(buf, nonZeroFileID(metadata.HandleToINode(handle)))
 
 	case FATTR4_SUPPATTR_EXCLCREAT:
 		return EncodeBitmap4(buf, exclcreatAttrs())
