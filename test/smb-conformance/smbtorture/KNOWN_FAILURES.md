@@ -104,7 +104,6 @@ overflow, rec, rmdir1-4, tcon, tdis, tdis1, tcp, tree.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.notify.valid-req | Change Notify | Upstream-class / timing: asserts a `FILE_NOTIFY_CHANGE` MODIFIED event on WRITE that, without kernel inotify under the Docker harness, also fails against the **reference Samba** server in the same environment. Not a DittoFS-specific gap; kept tracked under #750. | #750 |
 
 ### Oplocks
 
