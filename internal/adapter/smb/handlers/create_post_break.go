@@ -397,11 +397,25 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		}
 	}
 
-	// Sync fallback: bounded wait. On timeout forceCompleteBreaks auto-downgrades
-	// other-key leases so the post-break recheck runs against deterministic state.
+	// Sync fallback (async park unavailable — no slots / registry full): bounded
+	// wait, then let the caller's post-break recheck run. The share-violation
+	// case uses the same deferred-open wait-for-conflict-clear as the async
+	// resume so a CLOSE wakes it promptly and the holder's lease is never
+	// force-completed (otherwise its ACK would fail STATUS_UNSUCCESSFUL). The
+	// non-violation case keeps WaitForOtherKeyBreaks, whose timeout
+	// auto-downgrades other-key leases for a deterministic post-break recheck.
 	waitCtx, cancelWait := context.WithTimeout(d.authCtx.Context, breakWaitTimeout)
 	defer cancelWait()
-	if err := h.LeaseManager.WaitForOtherKeyBreaks(waitCtx, lockFileHandle, shareName, waitExceptKey); err != nil {
+	if shareConflictWait {
+		effectiveAccess := effectiveAccessForOpen(d.req.DesiredAccess, d.req.CreateDisposition)
+		conflictPresent := func() bool {
+			return d.existingHandle != nil &&
+				h.checkShareModeConflict(d.existingHandle, effectiveAccess, d.req.ShareAccess, d.filename)
+		}
+		if err := h.LeaseManager.WaitForShareConflictClear(waitCtx, lockFileHandle, shareName, conflictPresent); err != nil {
+			logger.Debug("CREATE: sync share-conflict wait completed", "error", err)
+		}
+	} else if err := h.LeaseManager.WaitForOtherKeyBreaks(waitCtx, lockFileHandle, shareName, waitExceptKey); err != nil {
 		logger.Debug("CREATE: sync break wait completed", "error", err)
 	}
 	return 0

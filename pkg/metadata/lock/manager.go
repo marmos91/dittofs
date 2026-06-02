@@ -264,16 +264,16 @@ type LockManager interface {
 	// even when no waiter exists.
 	SignalParkedCreates(handleKey string)
 
-	// WaitForShareConflictClear blocks until conflictPresent() reports false or
-	// ctx is cancelled, re-evaluating conflictPresent on every break-wait
-	// signal (a holder CLOSE removes its open-table entry; a LEASE_BREAK_ACK
-	// downgrades but keeps it). Unlike WaitForBreakCompletion it does NOT
-	// force-complete breaking leases on ctx timeout: the holder is expected to
-	// release on its own schedule and its later ACK must still succeed
-	// (smbtorture replay dhv2-pending1n-vs-violation-lease-{close,ack}-sane,
-	// MS-SMB2 §3.3.5.9 deferred open / Samba defer_open→retry_open). On timeout
-	// returns ctx.Err() with the lease left intact so the caller does a final
-	// share-mode re-check against the still-live holder.
+	// WaitForShareConflictClear blocks until the parked CREATE should stop
+	// waiting and recheck the share mode, returning when ANY of: conflictPresent()
+	// reports false (holder CLOSEd → conflict cleared), the holder's break drained
+	// while the conflict persists (holder ACKed but kept its open), or ctx is
+	// cancelled. It re-evaluates conflictPresent on every break-wait signal and on
+	// a short poll. A nil return means "recheck", NOT "conflict cleared" — the
+	// caller MUST re-run the share-mode check. Unlike WaitForBreakCompletion it
+	// NEVER force-completes breaking leases, so the holder's deferred ACK still
+	// succeeds (smbtorture replay dhv2-pending1n-vs-violation-lease-{close,ack}-sane,
+	// MS-SMB2 §3.3.5.9 deferred open / Samba defer_open→retry_open).
 	WaitForShareConflictClear(ctx context.Context, handleKey string, conflictPresent func() bool) error
 
 	// ========================================================================
@@ -2280,20 +2280,27 @@ func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string)
 	}
 }
 
-// WaitForShareConflictClear blocks until conflictPresent() reports false or ctx
-// is cancelled. It re-evaluates conflictPresent on every break-wait signal so a
-// parked CREATE wakes when the conflicting holder either CLOSEs (open-table
-// entry removed → conflict clears → proceed) or ACKs the lease break (holder
-// kept, share conflict persists → keep waiting until the deadline → caller
-// re-checks and returns SHARING_VIOLATION).
+// WaitForShareConflictClear blocks until one of three conditions, whichever
+// comes first, then returns. It re-evaluates conflictPresent on every break-wait
+// signal AND on a short poll:
 //
-// Crucially, unlike WaitForBreakCompletion, the ctx-timeout path here does NOT
-// force-complete (tombstone) the holder's breaking lease: the deferred-open
-// contract (MS-SMB2 §3.3.5.9, Samba defer_open→retry_open) lets the holder ack
-// on its own schedule, and forcing the lease to None here would make that later
-// ACK fail STATUS_UNSUCCESSFUL (smbtorture
-// dhv2-pending1n-vs-violation-lease-ack-sane). The lease is left intact and the
-// caller does a final share-mode recheck against the still-live holder.
+//   - conflictPresent() reports false → the holder CLOSEd (its open-table entry
+//     is gone), the conflict cleared → returns nil; the caller's CREATE proceeds.
+//   - the holder's break drained but the conflict is still present → the holder
+//     ACKed the break while keeping its open (e.g. RWH→RW) → returns nil; the
+//     caller's final recheck then yields SHARING_VIOLATION. This early exit is
+//     deterministic, so ack-sane does not stall to the deadline.
+//   - ctx is cancelled (genuine never-released conflict) → returns ctx.Err();
+//     the caller's recheck yields SHARING_VIOLATION against the still-live holder.
+//
+// A nil return therefore means "stop waiting and recheck", NOT "conflict
+// cleared" — the caller MUST re-run the share-mode check to decide the outcome.
+//
+// Crucially, unlike WaitForBreakCompletion, NONE of these paths force-complete
+// (tombstone) the holder's breaking lease: the deferred-open contract
+// (MS-SMB2 §3.3.5.9, Samba defer_open→retry_open) lets the holder ack on its own
+// schedule, and forcing the lease to None here would make a later ACK fail
+// STATUS_UNSUCCESSFUL (smbtorture dhv2-pending1n-vs-violation-lease-ack-sane).
 func (lm *Manager) WaitForShareConflictClear(ctx context.Context, handleKey string, conflictPresent func() bool) error {
 	// Poll interval. A holder CLOSE that resolves the conflict does NOT signal
 	// the breakWaitChans channel for file leases (that signal is scoped to

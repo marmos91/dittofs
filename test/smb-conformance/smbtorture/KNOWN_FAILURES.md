@@ -24,7 +24,7 @@ Bucket movements in this pass (all CI-safe — `parse-results.sh` keys off the
 test name, which is preserved in its new location):
 
 - `smb2.dirlease.oplocks` — moved Expected→appendix (smbtorture 4.22.6 **client** SIGSEGV, same class as `scan.scan`; not a DittoFS gap).
-- The 20 replay `*-windows` rows — moved Expected→appendix (architecturally Samba-incompatible; Samba's own source does not reproduce the Windows variants — see appendix bucket 10). The 14 remaining `*-sane` rows stay deferred under #749.
+- The 20 replay `*-windows` rows — moved Expected→appendix (architecturally Samba-incompatible; Samba's own source does not reproduce the Windows variants — see appendix bucket 10). The `*-sane` rows stay deferred under #749 (12 remaining after the 2026-06-02 #749 deferred-open flip, below).
 - `smb2.timestamp_resolution.resolution1` — removed its stale duplicate Expected row; the appendix already carries it (upstream-skipped, `selftest/skip:69-70`).
 
 ## Policy (v1.0 conformance gate, #673)
