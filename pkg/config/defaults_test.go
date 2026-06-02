@@ -45,6 +45,26 @@ func TestApplyDefaults_ControlPlane(t *testing.T) {
 	if cfg.ControlPlane.IdleTimeout != 60*time.Second {
 		t.Errorf("Expected default idle timeout 60s, got %v", cfg.ControlPlane.IdleTimeout)
 	}
+	// pprof off by default → sampling rates stay disabled (0). The global Load
+	// path must reach APIConfig.ApplyDefaults; a regression that bypasses it
+	// would silently drop pprof rate defaults.
+	if cfg.ControlPlane.PprofMutexRate != 0 || cfg.ControlPlane.PprofBlockRateNs != 0 {
+		t.Errorf("Expected pprof rates 0 when pprof off, got mutex=%d block=%d",
+			cfg.ControlPlane.PprofMutexRate, cfg.ControlPlane.PprofBlockRateNs)
+	}
+}
+
+func TestApplyDefaults_ControlPlanePprofRates(t *testing.T) {
+	cfg := &Config{}
+	cfg.ControlPlane.Pprof = true
+	ApplyDefaults(cfg)
+
+	if cfg.ControlPlane.PprofMutexRate != 100 {
+		t.Errorf("Expected default pprof mutex rate 100 when pprof on, got %d", cfg.ControlPlane.PprofMutexRate)
+	}
+	if cfg.ControlPlane.PprofBlockRateNs != 1_000_000 {
+		t.Errorf("Expected default pprof block rate 1_000_000ns when pprof on, got %d", cfg.ControlPlane.PprofBlockRateNs)
+	}
 }
 
 func TestApplyDefaults_Admin(t *testing.T) {

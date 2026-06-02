@@ -198,6 +198,11 @@ controlplane:
   write_timeout: 10s         # Max time to write response
   idle_timeout: 60s          # Max idle time for keep-alive
 
+  # Profiling (disabled by default; for benchmarks/diagnostics only)
+  pprof: false                 # Expose /debug/pprof/* endpoints
+  pprof_mutex_rate: 100        # runtime.SetMutexProfileFraction; 0 disables mutex profile
+  pprof_block_rate_ns: 1000000 # runtime.SetBlockProfileRate (ns); 0 disables block profile
+
   # JWT authentication configuration
   jwt:
     # HMAC signing key for JWT tokens (min 32 characters)
@@ -216,6 +221,9 @@ controlplane:
 | `read_timeout` | `10s` | Maximum duration to read request |
 | `write_timeout` | `10s` | Maximum duration to write response |
 | `idle_timeout` | `60s` | Maximum idle time for keep-alive |
+| `pprof` | `false` | Expose Go `/debug/pprof/*` profiling endpoints |
+| `pprof_mutex_rate` | `100` | Mutex contention sampling (1 per N events); `0` disables. Only applied when `pprof: true`. Without it, `/debug/pprof/mutex` is header-only |
+| `pprof_block_rate_ns` | `1000000` | Block profiling rate in ns (1 sample per N ns blocked); `0` disables. Only applied when `pprof: true`. Without it, `/debug/pprof/block` is header-only |
 
 **JWT Configuration Options:**
 
@@ -1306,6 +1314,9 @@ export DITTOFS_DATABASE_POSTGRES_SSLMODE=require
 # Control Plane API Server
 export DITTOFS_CONTROLPLANE_PORT=8080
 export DITTOFS_CONTROLPLANE_SECRET=your-secret-key-at-least-32-characters
+export DITTOFS_CONTROLPLANE_PPROF=false
+export DITTOFS_CONTROLPLANE_PPROF_MUTEX_RATE=100
+export DITTOFS_CONTROLPLANE_PPROF_BLOCK_RATE_NS=1000000
 # Server-level configuration
 export DITTOFS_SERVER_SHUTDOWN_TIMEOUT=60s
 

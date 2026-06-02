@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	goruntime "runtime"
 	"testing"
 	"time"
 
@@ -255,5 +256,69 @@ func TestAPIServer_InvalidJWTSecret(t *testing.T) {
 	_, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
 	if err == nil {
 		t.Fatal("Expected error for invalid JWT secret, got nil")
+	}
+}
+
+func TestAPIConfig_PprofRateDefaults(t *testing.T) {
+	tests := []struct {
+		name          string
+		in            APIConfig
+		wantMutexRate int
+		wantBlockRate int
+	}{
+		{
+			name:          "pprof off leaves rates at zero",
+			in:            APIConfig{Pprof: false},
+			wantMutexRate: 0,
+			wantBlockRate: 0,
+		},
+		{
+			name:          "pprof on fills sensible defaults",
+			in:            APIConfig{Pprof: true},
+			wantMutexRate: 100,
+			wantBlockRate: 1_000_000,
+		},
+		{
+			name:          "explicit rates preserved when pprof on",
+			in:            APIConfig{Pprof: true, PprofMutexRate: 5, PprofBlockRateNs: 250},
+			wantMutexRate: 5,
+			wantBlockRate: 250,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.in
+			cfg.ApplyDefaults()
+			if cfg.PprofMutexRate != tt.wantMutexRate {
+				t.Errorf("PprofMutexRate = %d, want %d", cfg.PprofMutexRate, tt.wantMutexRate)
+			}
+			if cfg.PprofBlockRateNs != tt.wantBlockRate {
+				t.Errorf("PprofBlockRateNs = %d, want %d", cfg.PprofBlockRateNs, tt.wantBlockRate)
+			}
+		})
+	}
+}
+
+// TestNewServer_PprofSamplingWired verifies NewServer actually applies the
+// mutex sampling fraction to the Go runtime when Pprof is enabled — the gap
+// that left /debug/pprof/mutex header-only. SetMutexProfileFraction(-1) leaves
+// the rate unchanged and returns the value currently in effect, so we read the
+// prior value, restore it on cleanup, and never write a transient 0 that a
+// concurrent test could observe. Mutates global runtime state — do not add
+// t.Parallel().
+func TestNewServer_PprofSamplingWired(t *testing.T) {
+	prev := goruntime.SetMutexProfileFraction(-1) // read without changing
+	t.Cleanup(func() { goruntime.SetMutexProfileFraction(prev) })
+
+	cpStore, cfg := testSetup(t, 18099)
+	cfg.Pprof = true
+	cfg.PprofMutexRate = 137 // distinctive, non-default value
+
+	if _, err := NewServer(cfg, nil, cpStore, 30*time.Minute); err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	if got := goruntime.SetMutexProfileFraction(-1); got != 137 {
+		t.Errorf("mutex profile fraction = %d, want 137", got)
 	}
 }
