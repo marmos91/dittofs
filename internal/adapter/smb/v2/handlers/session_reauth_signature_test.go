@@ -143,3 +143,71 @@ func TestSessionSetup_ReauthOnOriginConnection_NoChannel_NotGated(t *testing.T) 
 		t.Fatalf("status=StatusAccessDenied, origin-connection re-auth must not be signature-gated")
 	}
 }
+
+// buildBindingRequest builds the raw wire bytes of a SESSION_SETUP request with
+// the SMB2_SESSION_FLAG_BINDING flag set, carrying a Kerberos AP-REQ so it would
+// route to completeKerberosBind if it passed the bind gates.
+func buildBindingRequest(t *testing.T, sessionID uint64) []byte {
+	t.Helper()
+	dummyAPReq := []byte{0x30, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05}
+	body := buildSessionSetupRequestBody(wrapKerberosInSPNEGO(dummyAPReq))
+	body[sessionSetupFlagsOffset] = SMB2_SESSION_FLAG_BINDING
+	hdr := &header.SMB2Header{
+		Command:   types.SMB2SessionSetup,
+		MessageID: 5,
+		SessionID: sessionID,
+	}
+	return append(hdr.Encode(), body...)
+}
+
+// TestSessionSetup_RebindOnBoundConnection_AccessDenied verifies that a second
+// SESSION_SETUP_BINDING on a connection that already owns a bound channel is
+// rejected with STATUS_ACCESS_DENIED — the smbtorture re-bind at session.c:2839
+// (the final rejection in test_session_bind_negative_smb3sign{CtoH,HtoC}{s,d}).
+// Without the gate, AddChannel silently replaces the live channel and answers
+// STATUS_SUCCESS.
+func TestSessionSetup_RebindOnBoundConnection_AccessDenied(t *testing.T) {
+	channelKey := make([]byte, 16)
+	for i := range channelKey {
+		channelKey[i] = 0x66
+	}
+
+	h := NewHandler()
+	sess := h.CreateSession("127.0.0.1:1", false, "alice", "WORKGROUP")
+	sess.OriginConnID = 1
+	addSignedChannel(sess, 2, channelKey) // connection 2 already bound
+
+	raw := buildBindingRequest(t, sess.SessionID)
+	ctx := newReauthContext(sess.SessionID, 2, raw)
+
+	result, err := h.SessionSetup(ctx, raw[64:])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != types.StatusAccessDenied {
+		t.Fatalf("status=0x%x, want StatusAccessDenied (0x%x)", result.Status, types.StatusAccessDenied)
+	}
+}
+
+// TestSessionSetup_FirstBindOnUnboundConnection_NotRejectedByRebindGate verifies
+// the re-bind gate is scoped to connections that ALREADY have a channel: the
+// normal first bind (no channel yet on the connection) must not be rejected by
+// this gate. With no KerberosService configured the bind proceeds and fails
+// later with LOGON_FAILURE — the point is only that it is NOT ACCESS_DENIED from
+// the re-bind gate.
+func TestSessionSetup_FirstBindOnUnboundConnection_NotRejectedByRebindGate(t *testing.T) {
+	h := NewHandler() // no KerberosService
+	sess := h.CreateSession("127.0.0.1:1", false, "alice", "WORKGROUP")
+	sess.OriginConnID = 1 // no channel registered on connection 2
+
+	raw := buildBindingRequest(t, sess.SessionID)
+	ctx := newReauthContext(sess.SessionID, 2, raw)
+
+	result, err := h.SessionSetup(ctx, raw[64:])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status == types.StatusAccessDenied {
+		t.Fatalf("status=StatusAccessDenied, a first bind on an unbound connection must not be rejected by the re-bind gate")
+	}
+}
