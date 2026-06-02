@@ -42,9 +42,9 @@ type PersistedDurableHandle struct {
 	// (smb2.durable-v2-open.lock-lease asserts lease_epoch==1 on reconnect).
 	// Pre-existing rows carry 0, which the reconnect handler treats as
 	// "no persisted epoch" and falls back to the re-granted value.
-	LeaseEpoch      uint16
-	CreateGuid      [16]byte // V2 only; zero for V1
-	AppInstanceId   [16]byte // Zero if not set
+	LeaseEpoch    uint16
+	CreateGuid    [16]byte // V2 only; zero for V1
+	AppInstanceId [16]byte // Zero if not set
 	// IsPersistent records whether the durable open was granted as a
 	// persistent handle (DH2Q SMB2_DHANDLE_FLAG_PERSISTENT) on a
 	// continuous-availability share. Persisted so a reconnect re-echoes the
@@ -53,7 +53,7 @@ type PersistedDurableHandle struct {
 	// handler treats as a plain durable handle. The memory backend round-trips
 	// this via struct copy and badger via JSON; postgres needs an explicit
 	// column.
-	IsPersistent bool
+	IsPersistent    bool
 	Username        string
 	SessionKeyHash  [32]byte // SHA-256 hash, not raw key
 	IsV2            bool
