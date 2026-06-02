@@ -1,6 +1,7 @@
 package handlers_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
@@ -135,4 +136,88 @@ func TestReadDirPlus_StaleVerifierContinues(t *testing.T) {
 	assert.Contains(t, names, "file3.txt", "second page should include newly created file")
 	assert.NotContains(t, names, "file1.txt", "second page should not repeat earlier entries")
 	assert.NotContains(t, names, "file2.txt", "second page should not repeat earlier entries")
+}
+
+// TestReadDirPlus_MaxCountTruncation verifies H11: when the client's maxcount
+// byte budget is smaller than the encoded reply for all entries, READDIRPLUS
+// returns a partial list with eof=false so the client resumes from the last
+// emitted cookie (RFC 1813 Section 3.3.17).
+func TestReadDirPlus_MaxCountTruncation(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	const numFiles = 40
+	for i := 0; i < numFiles; i++ {
+		fx.CreateFile(fmt.Sprintf("budgetdir/file%02d.txt", i), []byte("x"))
+	}
+	dirHandle := fx.MustGetHandle("budgetdir")
+
+	// Each READDIRPLUS entry costs ~140+ bytes (value_follows + fileid + name +
+	// cookie + fattr3 + handle). A tiny maxcount must force truncation. DirCount
+	// is kept large so only the maxcount (total reply) budget bites.
+	// maxcount must be >= dircount per RFC 1813 / request validation. Keep both
+	// small and equal so the total-reply (maxcount) budget bites first: each
+	// entry's total cost (~140 B incl. fattr3+handle) far exceeds its dir-info
+	// cost (~32 B), so maxcount truncates before dircount does.
+	req := &handlers.ReadDirPlusRequest{
+		DirHandle:  dirHandle,
+		Cookie:     0,
+		CookieVerf: 0,
+		DirCount:   512,
+		MaxCount:   512, // far smaller than the full reply
+	}
+	resp, err := fx.Handler.ReadDirPlus(fx.Context(), req)
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp.Status)
+
+	// Must be a partial reply.
+	assert.Greater(t, len(resp.Entries), 0, "should emit at least one entry")
+	assert.Less(t, len(resp.Entries), numFiles, "should not emit all entries under a tiny maxcount")
+	assert.False(t, resp.Eof, "eof must be false when the reply was truncated by maxcount")
+
+	// The encoded reply must actually fit within the advertised maxcount.
+	encoded, err := resp.Encode()
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(encoded), int(req.MaxCount),
+		"encoded reply (%d bytes) must not exceed maxcount (%d)", len(encoded), req.MaxCount)
+
+	// Resuming from the last cookie must make forward progress (no infinite loop).
+	lastCookie := resp.Entries[len(resp.Entries)-1].Cookie
+	resp2, err := fx.Handler.ReadDirPlus(fx.Context(), &handlers.ReadDirPlusRequest{
+		DirHandle:  dirHandle,
+		Cookie:     lastCookie,
+		CookieVerf: resp.CookieVerf,
+		DirCount:   512,
+		MaxCount:   512,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp2.Status)
+	assert.Greater(t, len(resp2.Entries), 0, "second page should make progress")
+}
+
+// TestReadDirPlus_DirCountTruncation verifies the dircount (directory-info)
+// budget is honored independently of maxcount.
+func TestReadDirPlus_DirCountTruncation(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	const numFiles = 40
+	for i := 0; i < numFiles; i++ {
+		fx.CreateFile(fmt.Sprintf("dircountdir/file%02d.txt", i), []byte("x"))
+	}
+	dirHandle := fx.MustGetHandle("dircountdir")
+
+	// Large maxcount but tiny dircount: each entry's dir-info (~32 bytes) must
+	// bound the result.
+	req := &handlers.ReadDirPlusRequest{
+		DirHandle:  dirHandle,
+		Cookie:     0,
+		CookieVerf: 0,
+		DirCount:   128,
+		MaxCount:   1 << 20,
+	}
+	resp, err := fx.Handler.ReadDirPlus(fx.Context(), req)
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp.Status)
+	assert.Greater(t, len(resp.Entries), 0, "should emit at least one entry")
+	assert.Less(t, len(resp.Entries), numFiles, "dircount should bound the entry count")
+	assert.False(t, resp.Eof, "eof must be false when truncated by dircount")
 }
