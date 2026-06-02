@@ -28,10 +28,15 @@ var (
 
 // aceWireOverhead is the fixed per-ACE NFSv4 wire footprint preceding the
 // variable-length Who string: type(4) + flag(4) + access_mask(4) +
-// who-length(4). The Who string itself is added on top. This is a lower-bound
-// estimate (it ignores 4-byte Who padding), which is the safe direction for a
-// DoS bound: a real serialization is never smaller.
+// who-length(4). The Who string itself (4-byte aligned) is added on top.
 const aceWireOverhead = 16
+
+// xdrPad rounds n up to the next 4-byte XDR boundary. NFSv4 opaque/string
+// fields are zero-padded to a multiple of 4, so the on-wire footprint of a
+// Who string is len rounded up — accounting for it makes the size estimate an
+// accurate upper bound rather than an undershoot that could let a >64KB ACL
+// pass (per Copilot review).
+func xdrPad(n int) int { return (n + 3) &^ 3 }
 
 // ValidateACL validates an entire ACL, checking:
 //  1. ACE count does not exceed MaxACECount (128)
@@ -58,10 +63,12 @@ func ValidateACL(a *ACL) error {
 
 	// Enforce MaxDACLSize. ACE.Who is an unbounded Go string, so the 128-ACE
 	// count cap alone does not bound the serialized size — large Who strings
-	// can blow past 64KB. Estimate the serialized footprint and reject early.
-	size := 0
+	// can blow past 64KB. The per-ACE footprint is the fixed header plus the
+	// 4-byte-aligned Who string; the leading 4 bytes account for the ACE-array
+	// length prefix so the estimate is an upper bound on the wire size.
+	size := 4
 	for i := range a.ACEs {
-		size += aceWireOverhead + len(a.ACEs[i].Who)
+		size += aceWireOverhead + xdrPad(len(a.ACEs[i].Who))
 		if size > MaxDACLSize {
 			return fmt.Errorf("%w: exceeds %d bytes", ErrACLTooLarge, MaxDACLSize)
 		}
