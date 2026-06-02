@@ -15,15 +15,15 @@ import (
 // is left untouched. The HashSet returned by write is propagated to the
 // caller unchanged.
 //
-// This mirrors the temp+fsync+rename pattern used by WriteManifestAtomic
-// (Phase 22 D-19): any concurrent stat of path sees either the previous
+// This mirrors the temp+fsync+rename pattern used by WriteManifestAtomic:
+// any concurrent stat of path sees either the previous
 // content (or absence) or the fully-written new content — never the
 // half-written intermediate.
 //
 // Empty writes are valid: a zero-byte file at path is the expected
 // outcome when the supplied callback writes nothing.
 //
-// The runtime snapshot orchestration (Phase 23 plan 23-04) uses this to
+// The runtime snapshot orchestration uses this to
 // invoke Backupable.Backup against the temp file, capturing the returned
 // HashSet for the subsequent WriteManifestAtomic step.
 func WriteMetadataDumpAtomic(

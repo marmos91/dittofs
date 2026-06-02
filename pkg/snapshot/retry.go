@@ -9,7 +9,7 @@ import (
 // ValidateRetryTarget checks that snap is eligible as a retry target for
 // CreateSnapshot(..., CreateSnapshotOpts{RetryOf: snap.ID}).
 //
-// Semantics (Phase 23 D-23-10):
+// Semantics:
 //   - snap == nil → ErrSnapshotRetryTargetNotFound (the orchestration
 //     caller has already looked up the row; nil means "no such ID").
 //   - snap.State == StateFailed → eligible, returns nil.

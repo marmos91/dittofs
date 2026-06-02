@@ -50,13 +50,19 @@ func runConfigValidate(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Printf("Configuration file: %s\n", displayPath)
-	fmt.Println("Validation: OK")
-
 	if len(warnings) > 0 {
+		// Do not print a bare "OK" when warnings are present: a warning
+		// such as "JWT secret not configured - API authentication will
+		// fail" means the config loads but cannot serve authenticated
+		// requests. Surfacing the count keeps `config validate` honest
+		// for an operator eyeballing the output before `dfs start`.
+		fmt.Printf("Validation: OK (with %d warning(s))\n", len(warnings))
 		fmt.Println("\nWarnings:")
 		for _, w := range warnings {
 			fmt.Printf("  - %s\n", w)
 		}
+	} else {
+		fmt.Println("Validation: OK")
 	}
 
 	fmt.Printf("\nConfiguration summary:\n")
