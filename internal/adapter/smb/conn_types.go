@@ -143,6 +143,14 @@ type SessionTracker interface {
 	TrackSession(sessionID uint64)
 	UntrackSession(sessionID uint64)
 
+	// BindSession records that a channel of sessionID was bound on this
+	// connection (MS-SMB2 §3.3.5.5.2). The session's lifecycle is owned by its
+	// originating connection, not this one; recording the bind lets this
+	// connection's close remove only its channel from the session rather than
+	// tearing the whole session down — the session survives as long as any
+	// channel remains live (multichannel session survival, §3.3.7.1).
+	BindSession(sessionID uint64)
+
 	// AnyTrackedSession returns one of the session IDs currently tracked on
 	// this connection (zero if none). Used by SendErrorResponse for the
 	// wrong-SessionId path so a STATUS_USER_SESSION_DELETED reply can still

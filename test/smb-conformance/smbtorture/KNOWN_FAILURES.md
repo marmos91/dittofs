@@ -11,9 +11,9 @@ Every remaining entry is justified and falls into exactly one bucket. No
 UNJUSTIFIED entries remain — the #673 acceptance criterion is met.
 
 - **Upstream Samba known-fail** (fails on the reference Samba server too; cited) — **2**: `charset.Testing`, `session.reauth5`
-- **Deferred past v1.0 with a tracking issue** (justified by deferral) — **14**: the 14 remaining replay `*-sane` rows (#749)
+- **Deferred past v1.0 with a tracking issue** (justified by deferral) — **8**: the 6 `dhv2-pending2*-sane` replay rows (#749, parked-CREATE finalize-on-holder-release) and the 2 `dhv2-pending1n-vs-violation-*-sane` replay rows (#749, deferred-open dependency)
 - **Permanently Unimplementable / harness-only** (see [appendix](#permanently-unimplementable-out-of-scope)) — **47**
-- **Total (non-Kerberos): 63**
+- **Total (non-Kerberos): 57**
 
 (Rendered as a list, not a markdown table, so `parse-results.sh` — which ingests every line beginning with `|` — does not mistake these tally lines for known-failure rows.)
 
@@ -232,11 +232,18 @@ DH2Q durable-V2 create-replay protection landed in #866 (the `replay-dhv2-lease*
 and `pending1l-*-sane` rows flipped); #749 then keyed the replay cache on the
 requested CreateGuid and echoed the requested oplock level on replay, flipping
 `replay-dhv2-oplock2` and the `pending1{n,o}-vs-{oplock,lease}-sane` rows. The
-remaining rows are the deferred-open replay-vs-pending-break variants — the
-`pending1n-vs-violation-*-sane` pair (parked share-violation CREATE must wait
-for the holder to release; plus a lease-break-ack state-match bug) and the
-`pending2*/3*-sane` multichannel cases (require session survival across the
-originating-channel disconnect) — tracked under **#749**.
+6 `pending3*-sane` multichannel cases then flipped via multichannel session
+survival (MS-SMB2 §3.3.7.1): closing a channel of a multichannel session now
+removes only that channel and the session — with its parked CREATE and durable
+reservation — survives until its last channel closes, so the replayed CREATE on
+a surviving channel still finds the reservation. The remaining rows are:
+(a) the 6 `pending2*-sane` cases, which additionally disconnect the parked
+CREATE's *originating* channel and then race to the replay before the parked
+CREATE's break-wait timer fires — these need the parked CREATE to finalize and
+clear its reservation the moment the holder *releases* its oplock/lease, not
+only on timeout; and (b) the deferred-open `pending1n-vs-violation-*-sane` pair
+(parked share-violation CREATE must wait for the holder to release; plus a
+lease-break-ack state-match bug). All tracked under **#749**.
 
 **Bucketing note (#673):** only the `*-sane` variants are listed below as
 deferred. The 20 `*-windows` variants were moved
@@ -251,18 +258,12 @@ DittoFS to hit. The `*-sane` rows remain genuinely fixable under #749.
 |-----------|----------|--------|-------|
 | smb2.replay.dhv2-pending1n-vs-violation-lease-close-sane | Replay | Deferred: replay-vs-pending-break (sane variant) state machine not yet implemented | #749 |
 | smb2.replay.dhv2-pending1n-vs-violation-lease-ack-sane | Replay | Deferred: replay-vs-pending-break (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending2n-vs-oplock-sane | Replay | Deferred: replay-vs-pending-oplock (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending2n-vs-lease-sane | Replay | Deferred: replay-vs-pending-lease (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending2l-vs-oplock-sane | Replay | Deferred: replay-vs-pending-oplock (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending2l-vs-lease-sane | Replay | Deferred: replay-vs-pending-lease (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending2o-vs-oplock-sane | Replay | Deferred: replay-vs-pending-oplock (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending2o-vs-lease-sane | Replay | Deferred: replay-vs-pending-lease (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending3n-vs-oplock-sane | Replay | Deferred: replay-vs-pending-oplock (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending3n-vs-lease-sane | Replay | Deferred: replay-vs-pending-lease (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending3l-vs-oplock-sane | Replay | Deferred: replay-vs-pending-oplock (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending3l-vs-lease-sane | Replay | Deferred: replay-vs-pending-lease (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending3o-vs-oplock-sane | Replay | Deferred: replay-vs-pending-oplock (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending3o-vs-lease-sane | Replay | Deferred: replay-vs-pending-lease (sane variant) state machine not yet implemented | #749 |
+| smb2.replay.dhv2-pending2n-vs-oplock-sane | Replay | Deferred: parked CREATE must finalize + clear its replay reservation when the holder *releases* the conflicting oplock/lease, not only on the break-wait timeout — its originating channel is dropped so the test races to the replay before the timer fires (the surviving-channel half is done; needs break-wake finalization) | #749 |
+| smb2.replay.dhv2-pending2n-vs-lease-sane | Replay | Deferred: parked CREATE must finalize on holder release, not break-wait timeout (originating channel dropped); see pending2n-vs-oplock-sane | #749 |
+| smb2.replay.dhv2-pending2l-vs-oplock-sane | Replay | Deferred: parked CREATE must finalize on holder release, not break-wait timeout (originating channel dropped); see pending2n-vs-oplock-sane | #749 |
+| smb2.replay.dhv2-pending2l-vs-lease-sane | Replay | Deferred: parked CREATE must finalize on holder release, not break-wait timeout (originating channel dropped); see pending2n-vs-oplock-sane | #749 |
+| smb2.replay.dhv2-pending2o-vs-oplock-sane | Replay | Deferred: parked CREATE must finalize on holder release, not break-wait timeout (originating channel dropped); see pending2n-vs-oplock-sane | #749 |
+| smb2.replay.dhv2-pending2o-vs-lease-sane | Replay | Deferred: parked CREATE must finalize on holder release, not break-wait timeout (originating channel dropped); see pending2n-vs-oplock-sane | #749 |
 
 ## Permanently Unimplementable (Out of Scope)
 
@@ -338,6 +339,32 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 `KNOWN_FAILURES_KERBEROS.md` now carries a single row (`smb2.reauth5`, an upstream Samba selftest knownfail) after the #686 Kerberos sweep harvested the stale multi-channel rows. It is loaded only when smbtorture runs with `--use-kerberos`, which the non-Kerberos v1.0 CI job (`.github/workflows/smb-conformance.yml`, running `./run.sh` without `--kerberos`) does not pass, so it does not gate v1.0.
 
 ## Changelog
+
+### 2026-06-02 — #749 multichannel session survival: 6 rows flipped
+
+Implemented multichannel session survival (MS-SMB2 §3.3.7.1, part of #361):
+closing one connection of a multichannel session now removes only that
+connection's channel from the session rather than tearing the whole session
+down. The session — and any operation parked on it, including a pending
+durable-handle break reservation — survives until its LAST channel closes,
+mirroring Samba's `smbXsrv_session_remove_channel` (destroy only when
+`num_channels == 0`). Single-channel sessions (the common case) reach a zero
+channel count on close and tear down exactly as before.
+
+This flips the 6 `dhv2-pending3*-sane` rows (verified `success:` on the local
+docker smbtorture battery, `samba-toolbox:v0.8`):
+
+- `smb2.replay.dhv2-pending3n-vs-oplock-sane` / `dhv2-pending3n-vs-lease-sane`
+- `smb2.replay.dhv2-pending3l-vs-oplock-sane` / `dhv2-pending3l-vs-lease-sane`
+- `smb2.replay.dhv2-pending3o-vs-oplock-sane` / `dhv2-pending3o-vs-lease-sane`
+
+The 6 `dhv2-pending2*-sane` rows stay deferred: they additionally disconnect the
+parked CREATE's *originating* channel and then race to the replay before the
+5 s break-wait timer fires (replay.c:3119 returns FILE_NOT_AVAILABLE, should be
+OK). They need the parked CREATE to finalize and clear its reservation the
+moment the holder *releases* its oplock/lease — a deeper break-completion change
+on top of session survival. The 2 `dhv2-pending1n-vs-violation-*-sane` rows
+remain deferred (separate deferred-open dependency). All under #749.
 
 ### 2026-06-02 — #673 rationalization: bucket + justify every entry (docs only)
 
