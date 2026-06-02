@@ -83,6 +83,68 @@ func ReadRPCMessage(r io.Reader, length uint32) ([]byte, error) {
 	return message, nil
 }
 
+// ReadRPCRecord reads a complete RPC record from the reader, reassembling
+// multiple record-marking fragments (RFC 5531 §11) until the last-fragment
+// flag is set.
+//
+// firstHeader is the already-read header of the first fragment (whose size the
+// caller has validated). Subsequent fragment headers are read and validated
+// here, with the running total bounded by MaxFragmentSize so a stream of
+// not-last fragments cannot exhaust memory.
+//
+// The common case — a single last fragment — returns a single pooled buffer
+// with no extra copy. The returned buffer is from the pool; the caller must
+// return it via pool.Put() after processing.
+func ReadRPCRecord(r io.Reader, firstHeader *FragmentHeader, clientAddr string) ([]byte, error) {
+	// Fast path: a single, final fragment (the overwhelmingly common case).
+	if firstHeader.IsLast {
+		return ReadRPCMessage(r, firstHeader.Length)
+	}
+
+	// Slow path: accumulate fragments until the last-fragment flag is seen.
+	// The first fragment's buffer is pooled; subsequent fragments are read into
+	// scratch buffers and appended.
+	message, err := ReadRPCMessage(r, firstHeader.Length)
+	if err != nil {
+		return nil, err
+	}
+
+	total := uint32(len(message))
+	for {
+		header, herr := ReadFragmentHeader(r)
+		if herr != nil {
+			pool.Put(message)
+			return nil, fmt.Errorf("read continuation fragment header: %w", herr)
+		}
+
+		// Bound the cumulative record size, not just each fragment, so a flood
+		// of not-last fragments cannot drive unbounded growth.
+		if header.Length > MaxFragmentSize-total {
+			pool.Put(message)
+			logger.Warn("RPC record exceeds maximum after reassembly",
+				"accumulated", bytesize.ByteSize(total),
+				"fragment", bytesize.ByteSize(header.Length),
+				"max", bytesize.ByteSize(MaxFragmentSize),
+				"address", clientAddr)
+			return nil, fmt.Errorf("reassembled RPC record too large: %d + %d bytes", total, header.Length)
+		}
+
+		if header.Length > 0 {
+			frag := make([]byte, header.Length)
+			if _, rerr := io.ReadFull(r, frag); rerr != nil {
+				pool.Put(message)
+				return nil, fmt.Errorf("read continuation fragment: %w", rerr)
+			}
+			message = append(message, frag...)
+			total += header.Length
+		}
+
+		if header.IsLast {
+			return message, nil
+		}
+	}
+}
+
 // DemuxBackchannelReply checks if an RPC message is a backchannel REPLY (msg_type=1)
 // rather than a CALL, and routes it to the pending callback replies handler.
 //

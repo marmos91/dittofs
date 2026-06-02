@@ -275,3 +275,21 @@ func TestSafeAddPatterns(t *testing.T) {
 		assert.Equal(t, uint64(1<<32), sum)
 	})
 }
+
+// TestSatSub verifies the saturating subtraction used by FSSTAT so an
+// over-quota store (used > total) cannot wrap to a near-2^64 free-space value.
+func TestSatSub(t *testing.T) {
+	t.Run("NormalSubtraction", func(t *testing.T) {
+		assert.Equal(t, uint64(40), satSub(100, 60))
+	})
+	t.Run("EqualOperandsYieldsZero", func(t *testing.T) {
+		assert.Equal(t, uint64(0), satSub(100, 100))
+	})
+	t.Run("UnderflowSaturatesAtZero", func(t *testing.T) {
+		// Without saturation this would wrap to 2^64-1.
+		assert.Equal(t, uint64(0), satSub(60, 100))
+	})
+	t.Run("MaxUsedZeroTotalSaturates", func(t *testing.T) {
+		assert.Equal(t, uint64(0), satSub(0, math.MaxUint64))
+	})
+}

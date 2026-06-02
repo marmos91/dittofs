@@ -50,6 +50,12 @@ func newRealFSTestFixture(t *testing.T, shareName string) *realFSTestFixture {
 		t.Fatalf("register store: %v", err)
 	}
 
+	// Also register the share in the share service so identity mapping and
+	// permission lookups resolve (production invariant: every share with a
+	// metadata store is a registered share). Without this, buildV4AuthContext
+	// now fails closed on the identity-mapping step (G1).
+	rt.RegisterShareForTesting(shareName)
+
 	// Create root directory handle
 	rootID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
 	rootHandle, err := metadata.EncodeShareHandle(shareName, rootID)

@@ -1285,6 +1285,27 @@ func (s *Service) LocalStoreDir(name string) (string, error) {
 	return share.localStoreDir, nil
 }
 
+// RegisterShareForTesting inserts a minimal enabled Share into the registry
+// without the full AddShare composition (no block/remote stores, no DB row).
+// Test-only — used by handler unit tests that register a metadata store via
+// MetadataService.RegisterStoreForShare and need the share to also resolve in
+// identity mapping and permission lookups (the production invariant: every
+// share with a metadata store is a registered share). If the share already
+// exists it is left untouched.
+func (s *Service) RegisterShareForTesting(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.registry[name]; exists {
+		return
+	}
+	s.registry[name] = &Share{
+		Name:              name,
+		Enabled:           true,
+		DefaultPermission: "read-write",
+		Squash:            models.SquashNone,
+	}
+}
+
 // SetLocalStoreDirForTesting overrides the per-share localStoreDir field.
 // Test-only — used by handler unit tests that bypass the full
 // AddShare composition path (which requires a DB-backed

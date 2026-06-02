@@ -112,6 +112,40 @@ func TestBuildV4AuthContext_NilRegistry(t *testing.T) {
 	}
 }
 
+// TestBuildV4AuthContext_FailsClosedOnMappingFailure verifies the G1 security
+// fix: when a registry is present but identity mapping fails (e.g. the handle
+// decodes to a share that is not registered), buildV4AuthContext must fail
+// closed with an error rather than silently falling back to the original,
+// UNMAPPED identity. This mirrors the v3 BuildAuthContextWithMapping behaviour
+// and prevents a stale handle for a deleted/renamed share from bypassing
+// squash rules (a root client must not remain root).
+func TestBuildV4AuthContext_FailsClosedOnMappingFailure(t *testing.T) {
+	// The fixture registers share "/export". We hand the handler a valid-format
+	// handle for a DIFFERENT share that is NOT registered (e.g. a stale handle
+	// for a deleted/renamed share), so ApplyIdentityMapping fails for it.
+	fixture := newRealFSTestFixture(t, "/export")
+
+	staleHandle := []byte("/deleted-share:00000000-0000-0000-0000-000000000001")
+
+	uid := uint32(0) // root -- squash is meant to map this away
+	gid := uint32(0)
+	ctx := &types.CompoundContext{
+		Context:    context.Background(),
+		ClientAddr: "192.168.1.100:9999",
+		AuthFlavor: 1, // AUTH_UNIX
+		UID:        &uid,
+		GID:        &gid,
+	}
+
+	authCtx, _, err := fixture.handler.buildV4AuthContext(ctx, staleHandle)
+	if err == nil {
+		t.Fatal("expected fail-closed error on identity mapping failure, got nil")
+	}
+	if authCtx != nil {
+		t.Errorf("expected nil authCtx on mapping failure, got %+v", authCtx)
+	}
+}
+
 func TestEncodeChangeInfo4(t *testing.T) {
 	t.Run("atomic true", func(t *testing.T) {
 		var buf bytes.Buffer

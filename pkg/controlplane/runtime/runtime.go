@@ -387,6 +387,14 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	return nil
 }
 
+// RegisterShareForTesting registers a minimal enabled share in the share
+// service, bypassing the full AddShare store-composition path. Test-only:
+// used by protocol handler unit tests that register a metadata store directly
+// and need the share to resolve in identity mapping / permission lookups.
+func (r *Runtime) RegisterShareForTesting(name string) {
+	r.sharesSvc.RegisterShareForTesting(name)
+}
+
 // RemoveShare removes a share. Snapshot orchestration goroutines for the
 // share are cancelled and drained BEFORE the per-share snapshots/ tree is
 // wiped (Phase 22 D-15 hook inside sharesSvc.RemoveShare) — without this

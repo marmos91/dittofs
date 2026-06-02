@@ -210,7 +210,10 @@ func (c *NFSConnection) readRequest(ctx context.Context) (*rpc.RPCCallMessage, [
 	default:
 	}
 
-	message, err := nfs_internal.ReadRPCMessage(c.conn, header.Length)
+	// Reassemble all record-marking fragments (RFC 5531 §11) until the
+	// last-fragment flag is set. The common single-fragment case is a direct
+	// pooled read with no extra copy.
+	message, err := nfs_internal.ReadRPCRecord(c.conn, header, c.conn.RemoteAddr().String())
 	if err != nil {
 		return nil, nil, fmt.Errorf("read RPC message: %w", err)
 	}
