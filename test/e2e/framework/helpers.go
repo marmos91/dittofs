@@ -3,6 +3,7 @@
 package framework
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,7 +12,116 @@ import (
 	"os/exec"
 	"runtime"
 	"testing"
+	"time"
 )
+
+// defaultPollInterval is the cadence used by WaitFor and its wrappers when
+// polling for an observable condition.
+const defaultPollInterval = 50 * time.Millisecond
+
+// WaitFor polls cond until it returns true or timeout elapses. It returns true
+// if the condition was observed, false on timeout. The condition is checked
+// immediately and then every defaultPollInterval.
+//
+// Prefer this over a fixed time.Sleep whenever the test is waiting for an
+// observable state change (a file appearing, content settling, a size
+// stabilizing). It removes the timing flakiness of guessing a sleep duration:
+// fast machines stop waiting early, slow machines get the full timeout budget.
+func WaitFor(timeout time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if cond() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(defaultPollInterval)
+	}
+}
+
+// WaitForFile polls until path exists or timeout elapses, then fails the test.
+func WaitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	if !WaitFor(timeout, func() bool { return FileExists(path) }) {
+		t.Fatalf("Timed out after %v waiting for file to appear: %s", timeout, path)
+	}
+}
+
+// WaitForNoFile polls until path no longer exists or timeout elapses, then
+// fails the test. Useful for cross-protocol delete propagation.
+func WaitForNoFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	if !WaitFor(timeout, func() bool { return !FileExists(path) }) {
+		t.Fatalf("Timed out after %v waiting for file to disappear: %s", timeout, path)
+	}
+}
+
+// WaitForAllFiles polls until every path in paths exists or timeout elapses,
+// then fails the test. Useful after concurrent writes when every produced file
+// must become visible before verification.
+func WaitForAllFiles(t *testing.T, paths []string, timeout time.Duration) {
+	t.Helper()
+	missing := ""
+	if WaitFor(timeout, func() bool {
+		for _, p := range paths {
+			if !FileExists(p) {
+				missing = p
+				return false
+			}
+		}
+		return true
+	}) {
+		return
+	}
+	t.Fatalf("Timed out after %v waiting for %d files to appear (still missing: %s)", timeout, len(paths), missing)
+}
+
+// WaitForDir polls until path exists and is a directory or timeout elapses,
+// then fails the test.
+func WaitForDir(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	if !WaitFor(timeout, func() bool { return DirExists(path) }) {
+		t.Fatalf("Timed out after %v waiting for directory to appear: %s", timeout, path)
+	}
+}
+
+// WaitForDirEntryCount polls until the directory at path is readable and
+// contains exactly want entries, or timeout elapses, then fails the test.
+// Useful for cross-version/cross-protocol directory propagation.
+func WaitForDirEntryCount(t *testing.T, path string, want int, timeout time.Duration) {
+	t.Helper()
+	got := -1
+	if WaitFor(timeout, func() bool {
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return false
+		}
+		got = len(entries)
+		return got == want
+	}) {
+		return
+	}
+	t.Fatalf("Timed out after %v waiting for %s to contain %d entries (last count: %d)", timeout, path, want, got)
+}
+
+// WaitForContent polls until path is readable with exactly the expected
+// content or timeout elapses, then fails the test. This replaces fixed sleeps
+// that wait for cross-protocol metadata/content to sync before a read.
+func WaitForContent(t *testing.T, path string, expected []byte, timeout time.Duration) {
+	t.Helper()
+	if WaitFor(timeout, func() bool {
+		data, err := os.ReadFile(path)
+		return err == nil && bytes.Equal(data, expected)
+	}) {
+		return
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("Timed out after %v waiting for content at %s (last read error: %v)", timeout, path, err)
+	}
+	t.Fatalf("Timed out after %v waiting for content at %s: got %d bytes, want %d bytes", timeout, path, len(got), len(expected))
+}
 
 // IsLargeFile returns true if the file size is considered "large" (>5MB).
 func IsLargeFile(sizeBytes int64) bool {

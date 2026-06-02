@@ -55,11 +55,11 @@ func TestNFSv41v40Coexistence(t *testing.T) {
 		framework.WriteFile(t, filePath40, content)
 		t.Cleanup(func() { _ = os.Remove(filePath40) })
 
-		// Allow NFS attribute cache to settle between versions
-		time.Sleep(500 * time.Millisecond)
+		// Wait for the write to be visible from the v4.1 mount
+		filePath41 := mountV41.FilePath("coexist_v40_write.txt")
+		framework.WaitForContent(t, filePath41, content, 5*time.Second)
 
 		// Read from v4.1 mount
-		filePath41 := mountV41.FilePath("coexist_v40_write.txt")
 		readContent := framework.ReadFile(t, filePath41)
 		assert.Equal(t, content, readContent,
 			"v4.1 should read file written by v4.0")
@@ -72,11 +72,11 @@ func TestNFSv41v40Coexistence(t *testing.T) {
 		framework.WriteFile(t, filePath41, content)
 		t.Cleanup(func() { _ = os.Remove(filePath41) })
 
-		// Allow NFS attribute cache to settle between versions
-		time.Sleep(500 * time.Millisecond)
+		// Wait for the write to be visible from the v4.0 mount
+		filePath40 := mountV40.FilePath("coexist_v41_write.txt")
+		framework.WaitForContent(t, filePath40, content, 5*time.Second)
 
 		// Read from v4.0 mount
-		filePath40 := mountV40.FilePath("coexist_v41_write.txt")
 		readContent := framework.ReadFile(t, filePath40)
 		assert.Equal(t, content, readContent,
 			"v4.0 should read file written by v4.1")
@@ -91,11 +91,11 @@ func TestNFSv41v40Coexistence(t *testing.T) {
 		framework.WriteFile(t, filepath.Join(dirPath40, "file1.txt"), []byte("from v4.0"))
 		framework.WriteFile(t, filepath.Join(dirPath40, "file2.txt"), []byte("from v4.0"))
 
-		// Allow cache to settle
-		time.Sleep(500 * time.Millisecond)
+		// Wait for the directory and its files to be visible from v4.1
+		dirPath41 := mountV41.FilePath("coexist_dir_v40")
+		framework.WaitForDirEntryCount(t, dirPath41, 2, 5*time.Second)
 
 		// List from v4.1 mount
-		dirPath41 := mountV41.FilePath("coexist_dir_v40")
 		assert.True(t, framework.DirExists(dirPath41),
 			"v4.1 should see directory created by v4.0")
 
@@ -113,11 +113,11 @@ func TestNFSv41v40Coexistence(t *testing.T) {
 		framework.WriteFile(t, filepath.Join(dirPath41, "fileA.txt"), []byte("from v4.1"))
 		framework.WriteFile(t, filepath.Join(dirPath41, "fileB.txt"), []byte("from v4.1"))
 
-		// Allow cache to settle
-		time.Sleep(500 * time.Millisecond)
+		// Wait for the directory and its files to be visible from v4.0
+		dirPath40 := mountV40.FilePath("coexist_dir_v41")
+		framework.WaitForDirEntryCount(t, dirPath40, 2, 5*time.Second)
 
 		// List from v4.0 mount
-		dirPath40 := mountV40.FilePath("coexist_dir_v41")
 		assert.True(t, framework.DirExists(dirPath40),
 			"v4.0 should see directory created by v4.1")
 
@@ -140,13 +140,13 @@ func TestNFSv41v40Coexistence(t *testing.T) {
 		require.NoError(t, err, "Should rename file from v4.0")
 		t.Cleanup(func() { _ = os.Remove(dstPath40) })
 
-		// Allow cache to settle
-		time.Sleep(500 * time.Millisecond)
-
-		// Verify from v4.1: source gone, destination present with correct content
+		// Wait for the rename to be visible from v4.1
 		srcPath41 := mountV41.FilePath("coexist_rename_src.txt")
 		dstPath41 := mountV41.FilePath(dstName)
+		framework.WaitForFile(t, dstPath41, 5*time.Second)
+		framework.WaitForNoFile(t, srcPath41, 5*time.Second)
 
+		// Verify from v4.1: source gone, destination present with correct content
 		assert.False(t, framework.FileExists(srcPath41),
 			"v4.1 should NOT see old filename after rename by v4.0")
 		assert.True(t, framework.FileExists(dstPath41),
@@ -163,10 +163,9 @@ func TestNFSv41v40Coexistence(t *testing.T) {
 		filePath40 := mountV40.FilePath(fileName)
 		framework.WriteFile(t, filePath40, []byte("to be deleted by v4.1"))
 
-		// Verify it exists from both
-		time.Sleep(500 * time.Millisecond)
-
+		// Wait for the file to be visible from v4.1
 		filePath41 := mountV41.FilePath(fileName)
+		framework.WaitForFile(t, filePath41, 5*time.Second)
 		assert.True(t, framework.FileExists(filePath41),
 			"v4.1 should see file created by v4.0")
 
@@ -174,8 +173,8 @@ func TestNFSv41v40Coexistence(t *testing.T) {
 		err := os.Remove(filePath41)
 		require.NoError(t, err, "Should delete file from v4.1")
 
-		// Allow cache to settle
-		time.Sleep(500 * time.Millisecond)
+		// Wait for the deletion to be visible from v4.0
+		framework.WaitForNoFile(t, filePath40, 5*time.Second)
 
 		// Verify gone from v4.0
 		assert.False(t, framework.FileExists(filePath40),
@@ -214,10 +213,10 @@ func TestNFSv41v3Coexistence(t *testing.T) {
 		framework.WriteFile(t, filePath3, content)
 		t.Cleanup(func() { _ = os.Remove(filePath3) })
 
-		// Allow NFS attribute cache to settle
-		time.Sleep(500 * time.Millisecond)
-
+		// Wait for the write to be visible from the v4.1 mount
 		filePath41 := mountV41.FilePath("v3v41_from_v3.txt")
+		framework.WaitForContent(t, filePath41, content, 5*time.Second)
+
 		readContent := framework.ReadFile(t, filePath41)
 		assert.Equal(t, content, readContent,
 			"v4.1 should read file written by v3")
@@ -230,10 +229,10 @@ func TestNFSv41v3Coexistence(t *testing.T) {
 		framework.WriteFile(t, filePath41, content)
 		t.Cleanup(func() { _ = os.Remove(filePath41) })
 
-		// Allow NFS attribute cache to settle
-		time.Sleep(500 * time.Millisecond)
-
+		// Wait for the write to be visible from the v3 mount
 		filePath3 := mountV3.FilePath("v3v41_from_v41.txt")
+		framework.WaitForContent(t, filePath3, content, 5*time.Second)
+
 		readContent := framework.ReadFile(t, filePath3)
 		assert.Equal(t, content, readContent,
 			"v3 should read file written by v4.1")
@@ -250,9 +249,10 @@ func TestNFSv41v3Coexistence(t *testing.T) {
 				[]byte(fmt.Sprintf("content %d from v3", i)))
 		}
 
-		time.Sleep(500 * time.Millisecond)
-
+		// Wait for the directory and its files to be visible from v4.1
 		dirPath41 := mountV41.FilePath("v3v41_dir_from_v3")
+		framework.WaitForDirEntryCount(t, dirPath41, 3, 5*time.Second)
+
 		assert.True(t, framework.DirExists(dirPath41),
 			"v4.1 should see directory created by v3")
 
@@ -272,9 +272,10 @@ func TestNFSv41v3Coexistence(t *testing.T) {
 				[]byte(fmt.Sprintf("content %d from v4.1", i)))
 		}
 
-		time.Sleep(500 * time.Millisecond)
-
+		// Wait for the directory and its files to be visible from v3
 		dirPath3 := mountV3.FilePath("v3v41_dir_from_v41")
+		framework.WaitForDirEntryCount(t, dirPath3, 3, 5*time.Second)
+
 		assert.True(t, framework.DirExists(dirPath3),
 			"v3 should see directory created by v4.1")
 
@@ -288,9 +289,10 @@ func TestNFSv41v3Coexistence(t *testing.T) {
 		checksum := framework.WriteRandomFile(t, filePath41, 1*1024*1024) // 1MB
 		t.Cleanup(func() { _ = os.Remove(filePath41) })
 
-		time.Sleep(500 * time.Millisecond)
-
+		// Wait for the large file to be visible from the v3 mount
 		filePath3 := mountV3.FilePath("v3v41_large.bin")
+		framework.WaitForFile(t, filePath3, 5*time.Second)
+
 		framework.VerifyFileChecksum(t, filePath3, checksum)
 		t.Log("v3 read 1MB file written by v4.1 with matching checksum")
 	})

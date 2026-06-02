@@ -548,11 +548,11 @@ func testSMB3_Kerberos_CrossProtocol(t *testing.T, kdc *framework.KDCHelper, nfs
 	require.NoError(t, err, "Should write file via NFS Kerberos mount")
 	t.Log("SMBKRB3-07: File created via NFS Kerberos")
 
-	// Wait for metadata sync
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the file to be visible via SMB
+	smbPath := filepath.Join(smbMountPoint, testFile)
+	framework.WaitForContent(t, smbPath, []byte(testData), 5*time.Second)
 
 	// Step 2: Read file via SMB with same alice Kerberos credentials
-	smbPath := filepath.Join(smbMountPoint, testFile)
 	content, err := os.ReadFile(smbPath)
 	require.NoError(t, err, "Should read NFS-created file from SMB Kerberos mount")
 	assert.Equal(t, testData, string(content),
@@ -566,9 +566,8 @@ func testSMB3_Kerberos_CrossProtocol(t *testing.T, kdc *framework.KDCHelper, nfs
 	err = os.WriteFile(smbFilePath, []byte(smbData), 0644)
 	require.NoError(t, err, "Should write file via SMB Kerberos mount")
 
-	time.Sleep(200 * time.Millisecond)
-
 	nfsReadPath := nfsMount.FilePath(smbFile)
+	framework.WaitForContent(t, nfsReadPath, []byte(smbData), 5*time.Second)
 	nfsContent, err := os.ReadFile(nfsReadPath)
 	require.NoError(t, err, "Should read SMB-created file from NFS Kerberos mount")
 	assert.Equal(t, smbData, string(nfsContent),

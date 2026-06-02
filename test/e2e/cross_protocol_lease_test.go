@@ -154,8 +154,8 @@ func testCrossProtocol_SMBLeaseBreakOnNFSWrite(t *testing.T, nfsMount, smbMount 
 		_ = os.Remove(nfsPath)
 	})
 
-	// Wait for metadata sync
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the initial content to be visible via SMB
+	framework.WaitForContent(t, smbPath, initialContent, 5*time.Second)
 
 	// Step 2: Open file via SMB for reading (go-smb2 or mount.cifs requests lease automatically)
 	smbReadData := framework.ReadFile(t, smbPath)
@@ -169,7 +169,7 @@ func testCrossProtocol_SMBLeaseBreakOnNFSWrite(t *testing.T, nfsMount, smbMount 
 	t.Log("NFS write completed (should have triggered SMB lease break)")
 
 	// Step 4: Wait for lease break propagation
-	time.Sleep(500 * time.Millisecond)
+	framework.WaitForContent(t, smbPath, nfsContent, 5*time.Second)
 
 	// Step 5: Read file via SMB, verify content matches NFS-written data
 	smbReadAfter := framework.ReadFile(t, smbPath)
@@ -199,8 +199,8 @@ func testCrossProtocol_NFSDelegationRecallOnSMBOpen(t *testing.T, nfsMount, smbM
 		_ = os.Remove(nfsPath)
 	})
 
-	// Wait for metadata sync
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the initial content to be visible via NFS
+	framework.WaitForContent(t, nfsPath, initialContent, 5*time.Second)
 
 	// Step 2: Open and read file via NFS (read delegation may be granted)
 	nfsReadData := framework.ReadFile(t, nfsPath)
@@ -214,7 +214,7 @@ func testCrossProtocol_NFSDelegationRecallOnSMBOpen(t *testing.T, nfsMount, smbM
 	t.Log("SMB write completed (should have triggered NFS delegation recall)")
 
 	// Step 4: Wait for delegation recall propagation
-	time.Sleep(500 * time.Millisecond)
+	framework.WaitForContent(t, nfsPath, smbContent, 5*time.Second)
 
 	// Step 5: Read via NFS, verify content matches SMB-written data
 	nfsReadAfter := framework.ReadFile(t, nfsPath)
@@ -240,8 +240,8 @@ func testCrossProtocol_SMBDirLeaseBreakOnNFSCreate(t *testing.T, nfsMount, smbMo
 		_ = os.RemoveAll(nfsDirPath)
 	})
 
-	// Wait for metadata sync
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the directory to be visible via SMB
+	framework.WaitForDir(t, smbDirPath, 5*time.Second)
 
 	// Step 2: Open directory via SMB (triggers directory lease)
 	smbEntries := framework.ListDir(t, smbDirPath)
@@ -254,8 +254,8 @@ func testCrossProtocol_SMBDirLeaseBreakOnNFSCreate(t *testing.T, nfsMount, smbMo
 	framework.WriteFile(t, nfsNewFilePath, []byte("created via NFS"))
 	t.Log("NFS file creation completed (should have triggered SMB directory lease break)")
 
-	// Step 4: Wait for break propagation
-	time.Sleep(500 * time.Millisecond)
+	// Step 4: Wait for the lease break to propagate the new file to SMB
+	framework.WaitForFile(t, smbMount.FilePath(fmt.Sprintf("%s/%s", dirName, newFileName)), 5*time.Second)
 
 	// Step 5: ReadDir via SMB, verify new file is visible
 	smbEntriesAfter := framework.ListDir(t, smbDirPath)
@@ -291,8 +291,8 @@ func testCrossProtocol_SMBDirLeaseBreakOnNFSDelete(t *testing.T, nfsMount, smbMo
 	nfsFilePath := nfsMount.FilePath(fmt.Sprintf("%s/%s", dirName, fileToDelete))
 	framework.WriteFile(t, nfsFilePath, []byte("this file will be deleted via NFS"))
 
-	// Wait for metadata sync
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the file to be visible via SMB
+	framework.WaitForFile(t, smbMount.FilePath(fmt.Sprintf("%s/%s", dirName, fileToDelete)), 5*time.Second)
 
 	// Step 2: List directory via SMB (triggers directory lease)
 	smbEntries := framework.ListDir(t, smbDirPath)
@@ -304,8 +304,8 @@ func testCrossProtocol_SMBDirLeaseBreakOnNFSDelete(t *testing.T, nfsMount, smbMo
 	require.NoError(t, err, "Should delete file via NFS")
 	t.Log("NFS file deletion completed (should have triggered SMB directory lease break)")
 
-	// Step 4: Wait for break propagation
-	time.Sleep(500 * time.Millisecond)
+	// Step 4: Wait for the lease break to propagate the deletion to SMB
+	framework.WaitForNoFile(t, smbMount.FilePath(fmt.Sprintf("%s/%s", dirName, fileToDelete)), 5*time.Second)
 
 	// Step 5: ReadDir via SMB, verify file is gone
 	smbEntriesAfter := framework.ListDir(t, smbDirPath)
@@ -338,8 +338,8 @@ func testCrossProtocol_SMBDirLeaseBreakOnNFSRename(t *testing.T, nfsMount, smbMo
 	nfsRenamedPath := nfsMount.FilePath(fmt.Sprintf("%s/%s", dirName, renamedName))
 	framework.WriteFile(t, nfsOrigPath, []byte("this file will be renamed via NFS"))
 
-	// Wait for metadata sync
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the original file to be visible via SMB
+	framework.WaitForFile(t, smbMount.FilePath(fmt.Sprintf("%s/%s", dirName, origName)), 5*time.Second)
 
 	// Step 2: List directory via SMB (triggers directory lease)
 	smbEntries := framework.ListDir(t, smbDirPath)
@@ -358,8 +358,8 @@ func testCrossProtocol_SMBDirLeaseBreakOnNFSRename(t *testing.T, nfsMount, smbMo
 	require.NoError(t, err, "Should rename file via NFS")
 	t.Log("NFS file rename completed (should have triggered SMB directory lease break)")
 
-	// Step 4: Wait for break propagation
-	time.Sleep(500 * time.Millisecond)
+	// Step 4: Wait for the rename to propagate to SMB
+	framework.WaitForFile(t, smbMount.FilePath(fmt.Sprintf("%s/%s", dirName, renamedName)), 5*time.Second)
 
 	// Step 5: ReadDir via SMB, verify renamed file visible
 	smbEntriesAfter := framework.ListDir(t, smbDirPath)
@@ -399,8 +399,12 @@ func testCrossProtocol_ConcurrentLeaseConflicts(t *testing.T, nfsMount, smbMount
 		framework.WriteFile(t, nfsPath, []byte(fmt.Sprintf("initial-content-%d", i)))
 	}
 
-	// Wait for metadata sync
-	time.Sleep(500 * time.Millisecond)
+	// Wait for all initial files to be visible via SMB
+	smbPaths := make([]string, len(fileNames))
+	for i, fileName := range fileNames {
+		smbPaths[i] = smbMount.FilePath(fileName)
+	}
+	framework.WaitForAllFiles(t, smbPaths, 5*time.Second)
 
 	// Step 2: Launch concurrent goroutines
 	var wg sync.WaitGroup
@@ -426,8 +430,14 @@ func testCrossProtocol_ConcurrentLeaseConflicts(t *testing.T, nfsMount, smbMount
 					return
 				}
 
-				// Brief pause for sync
-				time.Sleep(100 * time.Millisecond)
+				// Wait for the write to be readable via SMB
+				if !framework.WaitFor(5*time.Second, func() bool {
+					_, err := os.ReadFile(smbPath)
+					return err == nil
+				}) {
+					errChan <- fmt.Errorf("NFS goroutine %d: SMB read not visible within timeout", goroutineID)
+					return
+				}
 
 				// Read via SMB (verify cross-protocol visibility)
 				readData, err := os.ReadFile(smbPath)
@@ -459,8 +469,14 @@ func testCrossProtocol_ConcurrentLeaseConflicts(t *testing.T, nfsMount, smbMount
 					return
 				}
 
-				// Brief pause for sync
-				time.Sleep(100 * time.Millisecond)
+				// Wait for the write to be readable via NFS
+				if !framework.WaitFor(5*time.Second, func() bool {
+					_, err := os.ReadFile(nfsPath)
+					return err == nil
+				}) {
+					errChan <- fmt.Errorf("SMB goroutine %d: NFS read not visible within timeout", goroutineID)
+					return
+				}
 
 				// Read via NFS (verify cross-protocol visibility)
 				readData, err := os.ReadFile(nfsPath)
@@ -502,10 +518,16 @@ func testCrossProtocol_ConcurrentLeaseConflicts(t *testing.T, nfsMount, smbMount
 	}
 
 	// Step 3: Verify final file contents are consistent (each file is readable from both protocols)
-	time.Sleep(500 * time.Millisecond) // Allow final sync
 	for _, fileName := range fileNames {
 		nfsPath := nfsMount.FilePath(fileName)
 		smbPath := smbMount.FilePath(fileName)
+
+		// Wait for the two protocols to converge on identical content
+		require.True(t, framework.WaitFor(5*time.Second, func() bool {
+			nfs, errN := os.ReadFile(nfsPath)
+			smb, errS := os.ReadFile(smbPath)
+			return errN == nil && errS == nil && bytes.Equal(nfs, smb)
+		}), "File %s did not converge to identical content across protocols within timeout", fileName)
 
 		nfsData := framework.ReadFile(t, nfsPath)
 		smbData := framework.ReadFile(t, smbPath)
@@ -540,7 +562,8 @@ func testCrossProtocol_DataConsistencyAfterBreak(t *testing.T, nfsMount, smbMoun
 		_ = os.Remove(nfsPath)
 	})
 
-	time.Sleep(200 * time.Millisecond)
+	// Wait for version1 to be visible via NFS
+	framework.WaitForContent(t, nfsPath, version1, 5*time.Second)
 
 	// Verify via NFS
 	nfsRead1 := framework.ReadFile(t, nfsPath)
@@ -554,7 +577,7 @@ func testCrossProtocol_DataConsistencyAfterBreak(t *testing.T, nfsMount, smbMoun
 	t.Log("Step 2: NFS wrote version2 (should trigger SMB lease break)")
 
 	// Wait for lease break propagation
-	time.Sleep(500 * time.Millisecond)
+	framework.WaitForContent(t, smbPath, version2, 5*time.Second)
 
 	// Step 3: SMB client re-reads file, must see "version2"
 	smbRead2 := framework.ReadFile(t, smbPath)
@@ -567,8 +590,8 @@ func testCrossProtocol_DataConsistencyAfterBreak(t *testing.T, nfsMount, smbMoun
 	framework.WriteFile(t, smbPath, version3)
 	t.Log("Step 4: SMB wrote version3")
 
-	// Wait for sync
-	time.Sleep(500 * time.Millisecond)
+	// Wait for version3 to be visible via NFS
+	framework.WaitForContent(t, nfsPath, version3, 5*time.Second)
 
 	// Step 5: NFS client reads file, must see "version3"
 	nfsRead3 := framework.ReadFile(t, nfsPath)

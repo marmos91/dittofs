@@ -148,8 +148,8 @@ func testFileNFSToSMB(t *testing.T, nfsMount, smbMount *framework.Mount) {
 		_ = os.Remove(nfsPath)
 	})
 
-	// Wait for metadata to sync across protocols
-	time.Sleep(200 * time.Millisecond)
+	// Wait for content to sync across protocols
+	framework.WaitForContent(t, smbPath, testContent, 5*time.Second)
 
 	// Read file via SMB and verify content
 	readContent := framework.ReadFile(t, smbPath)
@@ -180,8 +180,8 @@ func testFileSMBToNFS(t *testing.T, nfsMount, smbMount *framework.Mount) {
 		_ = os.Remove(smbPath)
 	})
 
-	// Wait for metadata to sync across protocols
-	time.Sleep(200 * time.Millisecond)
+	// Wait for content to sync across protocols
+	framework.WaitForContent(t, nfsPath, testContent, 5*time.Second)
 
 	// Read file via NFS and verify content
 	readContent := framework.ReadFile(t, nfsPath)
@@ -209,18 +209,16 @@ func testDeleteNFSViaSMB(t *testing.T, nfsMount, smbMount *framework.Mount) {
 	// Create file via NFS
 	framework.WriteFile(t, nfsPath, testContent)
 
-	// Wait for metadata sync
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify file exists via SMB before deletion
+	// Wait for the file to become visible via SMB
+	framework.WaitForFile(t, smbPath, 5*time.Second)
 	require.True(t, framework.FileExists(smbPath), "File should exist via SMB before deletion")
 
 	// Delete file via SMB
 	err := os.Remove(smbPath)
 	require.NoError(t, err, "Should delete file via SMB")
 
-	// Allow time for cross-protocol cache invalidation
-	time.Sleep(500 * time.Millisecond)
+	// Wait for cross-protocol cache invalidation
+	framework.WaitForNoFile(t, nfsPath, 5*time.Second)
 
 	// Verify file is deleted via NFS
 	assert.False(t, framework.FileExists(nfsPath),
@@ -242,19 +240,16 @@ func testDeleteSMBViaNFS(t *testing.T, nfsMount, smbMount *framework.Mount) {
 	// Create file via SMB
 	framework.WriteFile(t, smbPath, testContent)
 
-	// Wait for metadata sync
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify file exists via NFS before deletion
+	// Wait for the file to become visible via NFS
+	framework.WaitForFile(t, nfsPath, 5*time.Second)
 	require.True(t, framework.FileExists(nfsPath), "File should exist via NFS before deletion")
 
 	// Delete file via NFS
 	err := os.Remove(nfsPath)
 	require.NoError(t, err, "Should delete file via NFS")
 
-	// Allow time for cross-protocol cache invalidation
-	// SMB client caching can be aggressive, use longer delay
-	time.Sleep(1 * time.Second)
+	// Wait for the deletion to be observable via NFS
+	framework.WaitForNoFile(t, nfsPath, 5*time.Second)
 
 	// Verify file is deleted via SMB
 	// Note: SMB client caching may cause this to appear present briefly
@@ -290,10 +285,8 @@ func testDirNFSToSMB(t *testing.T, nfsMount, smbMount *framework.Mount) {
 	subDir := filepath.Join(nfsDirPath, "subdir")
 	framework.CreateDir(t, subDir)
 
-	// Wait for metadata sync
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify directory exists via SMB
+	// Wait for the directory to become visible via SMB
+	framework.WaitForDir(t, smbDirPath, 5*time.Second)
 	require.True(t, framework.DirExists(smbDirPath),
 		"Directory created via NFS should exist via SMB")
 
@@ -348,10 +341,8 @@ func testDirSMBToNFS(t *testing.T, nfsMount, smbMount *framework.Mount) {
 	subDir := filepath.Join(smbDirPath, "nested")
 	framework.CreateDir(t, subDir)
 
-	// Wait for metadata sync
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify directory exists via NFS
+	// Wait for the directory to become visible via NFS
+	framework.WaitForDir(t, nfsDirPath, 5*time.Second)
 	require.True(t, framework.DirExists(nfsDirPath),
 		"Directory created via SMB should exist via NFS")
 
