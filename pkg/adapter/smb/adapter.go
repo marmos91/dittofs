@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
 	smblease "github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	smbrpc "github.com/marmos91/dittofs/internal/adapter/smb/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/adapter/smb/v2/handlers"
 	authkerberos "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter"

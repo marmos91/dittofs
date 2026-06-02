@@ -256,7 +256,7 @@ main() {
     create_shares
 
     # Create test users with DISTINCT UIDs. Without --uid each user falls back
-    # to defaultUID=1000 in internal/adapter/smb/v2/handlers/auth_helper.go,
+    # to defaultUID=1000 in internal/adapter/smb/handlers/auth_helper.go,
     # which collapses both identities onto the same POSIX UID. That collision
     # makes the second user match OWNER@ on files created by the first via
     # acl.Evaluate's UID == FileOwnerUID arm, leaking access to a "non-owner"

@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/adapter/smb/v2/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
 )
 

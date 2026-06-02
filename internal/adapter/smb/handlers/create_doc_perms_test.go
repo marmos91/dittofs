@@ -124,7 +124,7 @@ func makeDocDraft(
 // regardless of whether the caller holds DELETE on the file's DACL.
 //
 // The mode-synthesis path here mirrors what
-// internal/adapter/smb/v2/handlers/SMBModeFromAttrs(FileAttributeReadonly,
+// internal/adapter/smb/handlers/SMBModeFromAttrs(FileAttributeReadonly,
 // false) produces after metadata.ApplyModeDefault strips the
 // modeDOSExplicit bit (0o444). The owner-write-clear leg of
 // fileAttrToSMBAttributesInternal restores FILE_ATTRIBUTE_READONLY on

@@ -131,7 +131,7 @@
 
 **Wire entry points:**
 - NFS: `internal/adapter/nfs/dispatch.go` (NFS), `dispatch_mount.go` (Mount), plus NLM/NSM/portmap handlers.
-- SMB: `internal/adapter/smb/dispatch.go` then `internal/adapter/smb/v2/handlers/`.
+- SMB: `internal/adapter/smb/dispatch.go` then `internal/adapter/smb/handlers/`.
 
 **REST API:**
 - `pkg/controlplane/api/router.go` mounts handlers in `internal/controlplane/api/handlers/`.

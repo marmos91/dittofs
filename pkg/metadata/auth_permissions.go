@@ -632,7 +632,7 @@ const (
 	// accessMaskPosixGenericAll is the Windows GENERIC_ALL bundle used for
 	// MAXIMUM_ALLOWED on the no-DACL path (root bypass + nil-ACL case). The
 	// numeric value is the same one computeMaximalAccess emits for an owner
-	// on the POSIX fallback in internal/adapter/smb/v2/handlers/create.go.
+	// on the POSIX fallback in internal/adapter/smb/handlers/create.go.
 	accessMaskPosixGenericAll uint32 = 0x001F01FF
 )
 
