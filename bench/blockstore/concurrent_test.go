@@ -50,10 +50,11 @@ func TestWorkerRNG_DeterministicAndDistinct(t *testing.T) {
 		}
 		return out
 	}
-	if draw(42, 0) != draw(42, 0) {
+	w0a, w0b, w1 := draw(42, 0), draw(42, 0), draw(42, 1)
+	if w0a != w0b {
 		t.Error("same (seed, worker) must reproduce the same stream")
 	}
-	if draw(42, 0) == draw(42, 1) {
+	if w0a == w1 {
 		t.Error("distinct workers must draw distinct streams")
 	}
 }
