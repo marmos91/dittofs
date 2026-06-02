@@ -228,7 +228,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create API server: %w", err)
 	}
 	rt.SetAPIServer(apiServer)
-	logger.Info("API server configured", "port", cfg.ControlPlane.Port)
+	logger.Info("API server configured",
+		"host", cfg.ControlPlane.Host,
+		"port", cfg.ControlPlane.Port,
+		"tls", apiServer.TLSEnabled())
 
 	// Write PID file if specified
 	if pidFile != "" {

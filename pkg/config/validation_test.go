@@ -53,6 +53,33 @@ func TestValidate_InvalidAPIPort(t *testing.T) {
 	}
 }
 
+func TestValidate_TLSCertWithoutKey(t *testing.T) {
+	cfg := GetDefaultConfig()
+	cfg.ControlPlane.TLS.CertFile = "/etc/dittofs/tls.crt"
+	// KeyFile intentionally left unset.
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("Expected validation error for TLS cert without key")
+	}
+	if !strings.Contains(err.Error(), "key_file") {
+		t.Errorf("Expected error to mention key_file, got: %v", err)
+	}
+}
+
+func TestValidate_TLSClientCAWithoutCert(t *testing.T) {
+	cfg := GetDefaultConfig()
+	cfg.ControlPlane.TLS.ClientCA = "/etc/dittofs/ca.crt"
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("Expected validation error for client_ca without server cert/key")
+	}
+	if !strings.Contains(err.Error(), "client_ca") {
+		t.Errorf("Expected error to mention client_ca, got: %v", err)
+	}
+}
+
 func TestValidate_NegativePort(t *testing.T) {
 	cfg := GetDefaultConfig()
 	cfg.ControlPlane.Port = -1

@@ -45,6 +45,7 @@ var serverKnownKeys = map[string]bool{
 	"database.postgres.password": true,
 	"database.postgres.sslmode":  true,
 
+	"controlplane.host":                       true,
 	"controlplane.port":                       true,
 	"controlplane.jwt.access_token_duration":  true,
 	"controlplane.jwt.refresh_token_duration": true,

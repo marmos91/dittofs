@@ -55,6 +55,8 @@ also live in [NFS.md](NFS.md#glossary) and [SMB.md](SMB.md#glossary).
 | **NTLM / NTLMSSP** | Microsoft's challenge/response authentication scheme, used by SMB when Kerberos isn't available. NTLMSSP is the GSS-API wrapping of NTLM. [MS-NLMP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/) |
 | **RPCSEC_GSS** | The NFS/RPC security flavor that carries GSS-API (Kerberos) authentication and optional integrity/privacy. [RFC 2203](https://www.rfc-editor.org/rfc/rfc2203) |
 | **AUTH_UNIX** | The basic NFS authentication flavor that simply asserts a UID/GID — trusted only on a trusted network. |
+| **TLS** (Transport Layer Security) | Encrypts and authenticates a network connection. DittoFS can serve the control plane API over TLS by loading a certificate/key pair from disk; certificate lifecycle is left to the platform. [RFC 8446](https://www.rfc-editor.org/rfc/rfc8446) |
+| **mTLS** (mutual TLS) | TLS where both the server *and* the client present certificates, so the server authenticates the caller by its certificate. Enabled on the control plane API by configuring `controlplane.tls.client_ca`. |
 
 ## Storage internals
 

@@ -43,6 +43,11 @@ type PostgresConfig struct {
 
 // ControlPlaneConfig configures the control plane REST API
 type ControlPlaneConfig struct {
+	// Host binds the API server. The server defaults to 127.0.0.1 (loopback
+	// only), which is unreachable from other pods; in-cluster the operator
+	// always renders 0.0.0.0 so the API Service can route to it. Edge TLS is
+	// terminated by the Service/ingress/mesh.
+	Host string    `yaml:"host"`
 	Port int       `yaml:"port"`
 	JWT  JWTConfig `yaml:"jwt"`
 }

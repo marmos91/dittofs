@@ -2,9 +2,12 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	goruntime "runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -35,6 +38,7 @@ const DefaultRestoreHTTPTimeout = 30 * time.Minute
 // The server supports graceful shutdown with configurable timeout.
 type Server struct {
 	server       *http.Server
+	tlsConfig    *tls.Config // non-nil when TLS is configured; nil = plain HTTP
 	runtime      *runtime.Runtime
 	jwtService   *auth.JWTService
 	cpStore      store.Store
@@ -57,6 +61,19 @@ type Server struct {
 // Returns a configured but not yet started Server, or an error if JWT configuration is invalid.
 func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store, restoreHTTPTimeout time.Duration) (*Server, error) {
 	config.ApplyDefaults()
+
+	// Fail fast on internally inconsistent TLS settings (cert without key, etc.).
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Build the TLS config (loads + parses the cert files now, so a bad cert
+	// path fails at startup rather than on the first handshake). nil when TLS
+	// is not configured, in which case the server serves plain HTTP.
+	tlsConfig, err := buildTLSConfig(config.TLS)
+	if err != nil {
+		return nil, fmt.Errorf("failed to configure TLS: %w", err)
+	}
 
 	// Get JWT secret from config (prefers env var)
 	jwtSecret := config.GetJWTSecret()
@@ -102,15 +119,17 @@ func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store, resto
 	}
 
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":%d", config.Port),
+		Addr:         net.JoinHostPort(config.Host, strconv.Itoa(config.Port)),
 		Handler:      router,
 		ReadTimeout:  config.ReadTimeout,
 		WriteTimeout: writeTimeout,
 		IdleTimeout:  config.IdleTimeout,
+		TLSConfig:    tlsConfig,
 	}
 
 	return &Server{
 		server:     server,
+		tlsConfig:  tlsConfig,
 		runtime:    rt,
 		jwtService: jwtService,
 		cpStore:    cpStore,
@@ -135,13 +154,28 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start server in goroutine
 	errChan := make(chan error, 1)
 	go func() {
-		logger.Info("API server listening", "port", s.config.Port)
+		scheme := "http"
+		if s.tlsConfig != nil {
+			scheme = "https"
+		}
+		logger.Info("API server listening", "addr", s.server.Addr, "scheme", scheme, "mtls", s.mTLSEnabled())
+		// Build a routable base for the example URLs: a wildcard bind
+		// (0.0.0.0 / ::) is not a destination, so show localhost there.
+		urlBase := displayAddr(s.config.Host, s.config.Port)
 		logger.Debug("API endpoints available",
-			"health", fmt.Sprintf("http://localhost:%d/health", s.config.Port),
-			"ready", fmt.Sprintf("http://localhost:%d/health/ready", s.config.Port),
+			"health", fmt.Sprintf("%s://%s/health", scheme, urlBase),
+			"ready", fmt.Sprintf("%s://%s/health/ready", scheme, urlBase),
 		)
 
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if s.tlsConfig != nil {
+			// Certificates are supplied via tlsConfig.GetCertificate, so the
+			// cert/key path arguments are intentionally empty here.
+			err = s.server.ListenAndServeTLS("", "")
+		} else {
+			err = s.server.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			select {
 			case errChan <- err:
 			default:
@@ -201,4 +235,25 @@ func (s *Server) Handler() http.Handler {
 // Port returns the TCP port the server is listening on.
 func (s *Server) Port() int {
 	return s.config.Port
+}
+
+// TLSEnabled reports whether the server is serving HTTPS.
+func (s *Server) TLSEnabled() bool {
+	return s.tlsConfig != nil
+}
+
+// mTLSEnabled reports whether the server requires verified client certificates.
+func (s *Server) mTLSEnabled() bool {
+	return s.tlsConfig != nil && s.tlsConfig.ClientAuth == tls.RequireAndVerifyClientCert
+}
+
+// displayAddr returns a host:port that is routable for example/log URLs. A
+// wildcard bind (0.0.0.0, ::, or empty) is a listen address, not a
+// destination, so it is shown as localhost.
+func displayAddr(host string, port int) string {
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		host = "localhost"
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }
