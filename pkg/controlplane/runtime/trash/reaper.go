@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -40,8 +41,9 @@ func (s *Service) Stop() {
 }
 
 // reapAll runs one reap pass over every trash-enabled share, applying retention
-// (RetentionDays) then max-size (MaxBytes) eviction. Per-share errors are
-// swallowed so one bad share cannot stall the others; the next tick retries.
+// (RetentionDays) then max-size (MaxBytes) eviction. Per-share errors are logged
+// but not propagated so one bad share cannot stall the others; the next tick
+// retries.
 func (s *Service) reapAll(ctx context.Context) {
 	now := time.Now().UTC()
 	for _, share := range s.deps.EnabledTrashShares() {
@@ -51,10 +53,14 @@ func (s *Service) reapAll(ctx context.Context) {
 		}
 		actx := metadata.NewSystemAuthContext(ctx)
 		if cfg.RetentionDays > 0 {
-			_, _ = s.reapShareAt(actx, share, cfg, now)
+			if _, err := s.reapShareAt(actx, share, cfg, now); err != nil {
+				logger.Warn("Trash retention reap failed", "share", share, "error", err)
+			}
 		}
 		if cfg.MaxBytes > 0 {
-			_, _ = s.evictToCap(actx, share, cfg.MaxBytes)
+			if _, err := s.evictToCap(actx, share, cfg.MaxBytes); err != nil {
+				logger.Warn("Trash max-size eviction failed", "share", share, "error", err)
+			}
 		}
 	}
 }
