@@ -152,6 +152,18 @@ type ControlPlaneAPIConfig struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port,omitempty"`
+
+	// TLS controls the URL scheme the operator uses to reach the control plane
+	// API. When true the operator connects over https:// so the admin and
+	// operator service-account credentials it sends are not transmitted in
+	// cleartext over the pod network. This requires the dfs control plane API to
+	// be served over TLS (terminated at the server or by an in-cluster mesh/
+	// sidecar that exposes the API service on https). Defaults to false (http://)
+	// for backward compatibility; in-cluster credentialed deployments should
+	// enable it once TLS termination is in place.
+	// +kubebuilder:default=false
+	// +optional
+	TLS bool `json:"tls,omitempty"`
 }
 
 // IdentityConfig defines identity store and JWT authentication configuration

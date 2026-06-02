@@ -658,12 +658,11 @@ func (r *DittoServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // in a managed Kubernetes Secret.
 func (r *DittoServerReconciler) reconcileJWTSecret(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
 	// If user has explicitly provided a JWT secret reference, use that
-	if dittoServer.Spec.Identity != nil && dittoServer.Spec.Identity.JWT != nil &&
-		dittoServer.Spec.Identity.JWT.SecretRef.Name != "" {
+	if dittoServer.HasUserProvidedJWTSecret() {
 		return nil
 	}
 
-	secretName := dittoServer.Name + "-jwt-secret"
+	secretName := dittoServer.GetManagedJWTSecretName()
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,

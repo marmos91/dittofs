@@ -113,6 +113,18 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
+                  tls:
+                    default: false
+                    description: |-
+                      TLS controls the URL scheme the operator uses to reach the control plane
+                      API. When true the operator connects over https:// so the admin and
+                      operator service-account credentials it sends are not transmitted in
+                      cleartext over the pod network. This requires the dfs control plane API to
+                      be served over TLS (terminated at the server or by an in-cluster mesh/
+                      sidecar that exposes the API service on https). Defaults to false (http://)
+                      for backward compatibility; in-cluster credentialed deployments should
+                      enable it once TLS termination is in place.
+                    type: boolean
                 type: object
               database:
                 description: Database configures the control plane database

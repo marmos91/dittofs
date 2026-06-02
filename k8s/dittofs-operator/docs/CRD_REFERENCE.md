@@ -251,9 +251,20 @@ Configures the REST API server.
 | Field | Type | Default | Required | Description |
 |-------|------|---------|----------|-------------|
 | `controlPlane.port` | int32 | `8080` | No | API server port |
+| `controlPlane.tls` | bool | `false` | No | Connect to the control plane API over `https://` instead of `http://` |
 
 **Validation Rules:**
 - `port` must be between 1 and 65535
+
+**Credential transport:** the operator authenticates to the control plane API
+with the admin bootstrap password and the operator service-account password,
+and carries bearer tokens on every subsequent call. By default (`tls: false`)
+these travel over `http://` on the in-cluster pod network. Set
+`controlPlane.tls: true` to use `https://` so the credentials are not sent in
+cleartext. This requires the `dfs` control plane API to be served over TLS —
+either terminated by the server itself or by an in-cluster mesh/sidecar that
+exposes the `*-api` Service on HTTPS. Enable it for any deployment where the pod
+network is not trusted.
 
 ### Identity Configuration (`identity`)
 
