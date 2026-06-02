@@ -1,9 +1,7 @@
 # Windows Testing Guide
 
-**Version:** 1.0 (v3.6 milestone)
 **Last validated:** 2026-02-28
 **Windows version tested:** Windows 11 24H2
-**DittoFS version:** v0.7.1-42-ga6c59f39
 
 This document provides a comprehensive guide for setting up a Windows 11 VM to test DittoFS, along with a formal validation checklist covering SMB file operations, NFS client testing, and application compatibility.
 
@@ -276,19 +274,19 @@ Windows NFS client support is best-effort. The Windows Services for NFS client h
 
 ## Known Limitations
 
-The following features are **not supported** in DittoFS v3.6. These are architectural decisions, not bugs.
+The following features are **not supported**. Most are deliberate scope decisions, not bugs.
 
-| Limitation | Impact | Workaround | Future Phase |
-|-----------|--------|------------|-------------|
-| **No Alternate Data Streams (ADS)** | NTFS named streams (`:Zone.Identifier`, etc.) not available | None -- files from Internet may lack "Unblock" option | v3.8 Phase 43 |
-| **No Change Notify** | Windows Explorer does not auto-refresh when files change externally | Press **F5** to manually refresh | v3.8 Phase 40.5 |
-| **No SMB3 encryption/signing upgrade** | SMB 2.0.2/2.1 only -- no AES-CCM/GCM encryption | Traffic is unencrypted; use VPN for untrusted networks | v3.8 Phase 39 |
-| **No durable handles** | Reconnection after network interruption not supported; open files lost on disconnect | Save frequently; expect re-authentication after disconnects | v3.8 Phase 42 |
-| **No server-side copy** | `FSCTL_SRV_COPYCHUNK` not implemented; copies go through client | Large file copies may be slower than native SMB servers | v3.8 Phase 43 |
-| **No multi-channel** | Single TCP connection per session | Performance limited to single connection throughput | v3.8 |
+| Limitation | Impact | Workaround | Status |
+|-----------|--------|------------|--------|
+| **No Alternate Data Streams (ADS)** | NTFS named streams (`:Zone.Identifier`, etc.) not available | None -- files from Internet may lack "Unblock" option | Not planned |
+| **No multi-channel** | Single TCP connection per session | Performance limited to single connection throughput | Future |
 | **NFS from Windows** | Windows NFS client (Services for NFS) has limited functionality | Use SMB for primary Windows file access; NFS is best-effort | -- |
 | **No NTFS object IDs** | `FSCTL_CREATE_OR_GET_OBJECT_ID` not supported | No impact for typical workflows | Not planned |
 | **No DFS referrals** | Distributed File System namespace not supported | Access shares directly by server IP/hostname | Not planned |
+
+SMB3 encryption and signing, change notifications, durable handles, and
+server-side copy (`FSCTL_SRV_COPYCHUNK`) **are** supported — see
+[SMB.md](SMB.md).
 
 ---
 
@@ -307,7 +305,7 @@ The following features are **not supported** in DittoFS v3.6. These are architec
 
 | Symptom | Cause | Solution |
 |---------|-------|----------|
-| Explorer shows blank Security tab | SD query failed or returned malformed data | Check DittoFS logs for SD synthesis errors; ensure Phase 31 ACL support is active |
+| Explorer shows blank Security tab | SD query failed or returned malformed data | Check DittoFS logs for SD synthesis errors |
 | Explorer shows "Everyone: Full Control" | SD synthesis not returning proper owner/DACL | Verify machine SID is initialized (`dfsctl settings list`); ensure share has assigned user |
 | `icacls` shows unexpected permissions | POSIX-to-DACL translation differs from NTFS semantics | This is expected behavior; DittoFS synthesizes DACLs from Unix mode bits |
 | `Set-Acl` returns error | Best-effort ACL mapping failed | DittoFS translates SMB SET_INFO ACL changes to Unix mode bits; complex ACLs may not map cleanly |
@@ -316,8 +314,8 @@ The following features are **not supported** in DittoFS v3.6. These are architec
 
 | Symptom | Cause | Solution |
 |---------|-------|----------|
-| Slow large file copies | No server-side copy; data traverses client | Expected for v3.6; server-side copy planned for v3.8 |
-| Explorer feels sluggish | No Change Notify; Explorer polls for changes | Press F5 to refresh; reduce auto-refresh extensions |
+| Slow large file copies | Throughput limited to a single TCP connection (no multi-channel) | Ensure sufficient network bandwidth |
+| Explorer feels sluggish | Many small SMB round-trips | Reduce auto-refresh extensions |
 | Office save takes long | Office uses multiple SMB operations (create temp, write, rename) | Expected behavior; ensure sufficient network bandwidth |
 
 ### NFS-Specific Issues
@@ -337,8 +335,6 @@ DittoFS is validated against two industry-standard conformance test suites.
 ### WPTS (Microsoft WindowsProtocolTestSuites)
 
 - **Suite:** MS-SMB2 BVT (Build Verification Tests)
-- **Baseline:** 133/240 tests passing (Phase 29.8 initial baseline)
-- **Expected improvements:** Phases 30-32 fixes (sparse READ, directory listing, ACL support, MxAc, QFid) should increase pass count
 - **Known failures:** See [test/smb-conformance/KNOWN_FAILURES.md](../test/smb-conformance/KNOWN_FAILURES.md)
 - **Run locally:**
   ```bash
@@ -372,11 +368,7 @@ Both test suites run in CI via `.github/workflows/smb-conformance.yml` on every 
 
 ## Checklist Version History
 
-| Version | Date | Milestone | Changes |
-|---------|------|-----------|---------|
-| 1.0 | 2026-02-28 | v3.6 | Initial checklist with Explorer, cmd.exe, PowerShell, Office, VS Code, NFS, file size tests |
-
----
-*Document: docs/WINDOWS_TESTING.md*
-*Phase: 32-windows-integration-testing*
+| Date | Changes |
+|------|---------|
+| 2026-02-28 | Initial checklist with Explorer, cmd.exe, PowerShell, Office, VS Code, NFS, file size tests |
 *Created: 2026-02-28*

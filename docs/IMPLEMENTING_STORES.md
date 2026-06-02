@@ -110,20 +110,17 @@ The metadata store interface and implementation guide remains the same as before
 
 Conformance tests: `pkg/metadata/storetest/`
 
-### MetadataStore.EnumerateFileBlocks (v0.15.0 Phase 11; lifted from FileBlockStore in Phase 12)
+### MetadataStore.EnumerateFileBlocks
 
-v0.15.0 (Phase 11 / A2) added a mandatory cursor method that the
-mark-sweep garbage collector uses to enumerate every live block hash
-without loading the full file/block set into application memory.
+`MetadataStore` carries a mandatory cursor method that the mark-sweep
+garbage collector uses to enumerate every live block hash without loading
+the full file/block set into application memory.
 
-> **Phase 12 / META-03 / D-08 note:** `EnumerateFileBlocks` now lives on
-> `MetadataStore`, not `FileBlockStore`. Conceptually it iterates across
-> files for the GC mark phase — a metadata-store-wide concern — so it
-> moved up the stack when `FileBlockStore` was narrowed to its
-> 6-method spec surface (see [FileBlockStore narrowing
-> (v0.15.0 Phase 12)](#fileblockstore-narrowing-v0150-phase-12) below).
-> Backends that already implemented it on the FileBlockStore in Phase 11
-> need only re-attach the same code to the `MetadataStore` interface.
+> **Note:** `EnumerateFileBlocks` lives on `MetadataStore`, not
+> `FileBlockStore`. Conceptually it iterates across files for the GC mark
+> phase — a metadata-store-wide concern — so it sits above the narrow
+> `FileBlockStore` surface (see [FileBlockStore narrowing](#fileblockstore-narrowing)
+> below).
 
 ```go
 // EnumerateFileBlocks streams every FileBlock's ContentHash to fn.
@@ -133,8 +130,8 @@ without loading the full file/block set into application memory.
 //     iteration) -- no full-set load.
 //   - Honor ctx.Done(): return ctx.Err() promptly when the context is
 //     cancelled.
-//   - Emit zero-hash FileBlocks (legacy pre-Phase-11 data) the same way
-//     as non-zero-hash blocks; the GC live-set ignores zero hashes.
+//   - Emit zero-hash FileBlocks the same way as non-zero-hash blocks;
+//     the GC live-set ignores zero hashes.
 //   - Abort iteration and return the fn error verbatim if fn returns
 //     non-nil; do NOT swallow it.
 //   - Be safe under concurrent writes: it is acceptable for the cursor
@@ -160,15 +157,14 @@ Badger-store reference: `txn.NewIterator` over the FileBlock prefix.
 Postgres-store reference: server-side cursor (`DECLARE` + `FETCH`)
 with batches of 1000 rows.
 
-### FileBlockStore narrowing (v0.15.0 Phase 12)
+### FileBlockStore narrowing
 
-v0.15.0 (Phase 12 / A3) narrows `pkg/blockstore.FileBlockStore` to
-exactly **6 hash-keyed CRUD methods** per the META-03 spec (D-09).
-Backend implementations are simpler; engine-internal helpers move to a
+`pkg/blockstore.FileBlockStore` is exactly **6 hash-keyed CRUD methods**.
+Backend implementations are simpler; engine-internal helpers live on a
 separate wider interface.
 
 ```go
-// pkg/blockstore/store.go (Phase 12 spec-literal surface)
+// pkg/blockstore/store.go
 type FileBlockStore interface {
     // GetByHash looks up the FileBlock with the given content hash.
     // Returns ErrFileBlockNotFound when no row matches.
@@ -202,17 +198,14 @@ restriction. Custom backends implementing `FileBlockStore` SHOULD also
 implement the engine-internal helpers if they intend to slot into the
 `*engine.BlockStore`.
 
-**Internal storage shape is up to the backend.** The Phase 11 schema
-(`id VARCHAR PRIMARY KEY` + `hash` non-unique index) stays in place to
-honor the WR-4-01 multiple-rows-per-hash contract for legacy data;
-the public `GetByHash` surface hides that detail. Phase 15 will
-collapse to hash-PK once Phase 14 migrates legacy data.
+**Internal storage shape is up to the backend.** The built-in schema
+(`id VARCHAR PRIMARY KEY` + `hash` non-unique index) permits multiple rows
+per hash for older data; the public `GetByHash` surface hides that detail.
 
-### FileAttr.Blocks []BlockRef (v0.15.0 Phase 12)
+### FileAttr.Blocks []BlockRef
 
-Phase 12 reintroduces `FileAttr.Blocks []blockstore.BlockRef` as the
-authoritative content list for every file (META-01 / META-04 / D-01..D-05).
-`BlockRef` is the 3-tuple of `(Hash, Offset, Size)` — see
+`FileAttr.Blocks []blockstore.BlockRef` is the authoritative content list
+for every file. `BlockRef` is the 3-tuple `(Hash, Offset, Size)` — see
 `pkg/blockstore/types.go`. The list MUST be sorted by `Offset` and is
 populated on every sync finalization.
 
@@ -224,24 +217,23 @@ Encoding requirements per backend:
   DELETE CASCADE` provides a safety net — the engine still decrements
   `file_blocks.RefCount` for every BlockRef BEFORE deleting the file;
   cascade catches engine-bug paths that miss the explicit decrement.
-  Hash column is `BYTEA` (32 bytes), not hex `TEXT`. Migration:
-  `pkg/metadata/store/postgres/migrations/000012_file_block_refs.up.sql`.
+  Hash column is `BYTEA` (32 bytes), not hex `TEXT`.
 - **Badger** and **Memory**: inline-encode `Blocks []BlockRef` inside
   the existing `FileAttr` blob. Badger goes through
   `pkg/metadata/store/badger/encoding.go` (gob); Memory holds typed
-  structs directly. Use `omitempty` so legacy pre-Phase-12 blobs
-  decode cleanly with an empty `Blocks` slice (D-06 dual-read trigger).
+  structs directly. Use `omitempty` so older blobs decode cleanly with an
+  empty `Blocks` slice.
 
 A new metadata-store method persists the list; in the built-in
 backends this is `MetadataStore.SetFileBlocks(ctx, handle, []BlockRef,
 authCtx) error`. Custom metadata backends MUST persist atomically
 with the same transaction that updates `Size`/`Mtime`/`Ctime` — the
 engine relies on caller-side metadata-txn isolation rather than a
-per-chunk metadata roundtrip (D-22 caller-snapshot semantics).
+per-chunk metadata roundtrip.
 
 #### Conformance scenarios
 
-The `pkg/metadata/storetest/` suite extends the Phase 11 tests with:
+The `pkg/metadata/storetest/` suite includes:
 
 1. **BlockRef round-trip**: `SetFileBlocks` followed by `GetFileAttr`
    returns the same offset-sorted slice, byte-for-byte.
@@ -249,23 +241,22 @@ The `pkg/metadata/storetest/` suite extends the Phase 11 tests with:
    field decode to an empty slice without errors.
 3. **FK cascade (Postgres-only)**: deleting a file removes all
    matching `file_block_refs` rows.
-4. **INV-02 reconcile**: `∑ FileBlock.RefCount` over the FileBlockStore
+4. **Refcount reconcile**: `∑ FileBlock.RefCount` over the FileBlockStore
    equals `∑ len(FileAttr.Blocks)` over the MetadataStore at every
    quiescent point.
-5. **INV-02 concurrent fuzz** (`pkg/metadata/storetest/inv02_fuzz_test.go`):
+5. **Refcount concurrent fuzz** (`pkg/metadata/storetest/inv02_fuzz_test.go`):
    100-iteration property-based fuzzer creating, deleting, and copying
    files concurrently; asserts the invariant after each operation
-   batch. Runs against all 3 built-in backends and any custom backend
+   batch. Runs against all three built-in backends and any custom backend
    wired into the conformance harness.
 
-### FileAttr.ObjectID + FindByObjectID (v0.15.0 Phase 13)
+### FileAttr.ObjectID + FindByObjectID
 
-Phase 13 adds `FileAttr.ObjectID` — a BLAKE3 Merkle root over
-`BlockRef.Hash` values sorted by `Offset`, prefixed by the
-domain-separation tag `dittofs:objectid:v1\x00`. Computed by
-`blockstore.ComputeObjectID` and persisted at every full quiesce in the
-same metadata transaction that updates `Blocks`/`Size`/`Mtime` (META-02
-/ BSCAS-04 / D-05..D-07).
+`FileAttr.ObjectID` is a BLAKE3 Merkle root over `BlockRef.Hash` values
+sorted by `Offset`, prefixed by the domain-separation tag
+`dittofs:objectid:v1\x00`. Computed by `blockstore.ComputeObjectID` and
+persisted at every full quiesce in the same metadata transaction that
+updates `Blocks`/`Size`/`Mtime`.
 
 Lifecycle: cleared (zeroed) on first dirty write that mutates `Blocks`,
 recomputed at next full quiesce (every block transitioned to `Remote`).
@@ -274,24 +265,24 @@ returns a half-quiesced file.
 
 #### `FindByObjectID(ctx, ObjectID) ([]BlockRef, error)`
 
-The Phase 13 BSCAS-05 short-circuit primitive. Looks up a file by its
-Merkle-root ObjectID. Returns `(nil, nil)` on miss; non-nil result
+The file-level dedup short-circuit primitive. Looks up a file by its
+Merkle-root ObjectID. Returns `(nil, nil)` on miss; a non-nil result
 carries the canonical BlockRef list of the matching file (per-metadata-
-store scope, NOT per-share — D-13).
+store scope, NOT per-share).
 
 Backends MUST maintain a secondary index from ObjectID to file row:
 
 | Backend  | Index                                                                       |
 |----------|-----------------------------------------------------------------------------|
-| Postgres | Partial unique: `files_object_id_idx ON files(object_id) WHERE object_id IS NOT NULL` (migration `000013_object_id.up.sql`) |
+| Postgres | Partial unique: `files_object_id_idx ON files(object_id) WHERE object_id IS NOT NULL` |
 | Badger   | Secondary key `obj:{hex} -> file_id`, maintained inside each `Put`/`Delete` write batch |
 | Memory   | `map[ContentHash]uuid`, guarded by the existing store mutex                 |
 
 Zero-valued ObjectID (legacy / pre-quiesce) MUST NOT match any row —
 implementations short-circuit and return `(nil, nil)` on zero input.
 
-The unique constraint enforces concurrent-quiesce conflict (D-14
-first-committer-wins). On race, the loser surfaces a backend-specific
+The unique constraint enforces first-committer-wins on a concurrent
+quiesce. On race, the loser surfaces a backend-specific
 unique-violation error that the runtime coordinator wraps into the
 shared `metadata.ErrConflict` sentinel.
 
@@ -308,20 +299,18 @@ without per-backend `t.Skip` (the `ObjectIDIndexAccessor` capability is
 the only legitimate type-assertion-skip; backends without that accessor
 are still required to pass the functional scenarios).
 
-### Block layout flag (v0.15+)
+### Block layout flag
 
 Metadata backends MUST persist a `block_layout` field on the share
 record. The field is a `metadata.BlockLayout` enum (string-shaped on
-the wire) with values `legacy` or `cas-only`. Plan 14-01 introduced
-the field as part of the v0.15.0 milestone (Phase 14 / A5;
-[#425](https://github.com/marmos91/dittofs/issues/425)).
+the wire) with values `legacy` or `cas-only`.
 
 ```go
 // pkg/metadata/types.go
 type BlockLayout uint8
 
 const (
-    BlockLayoutLegacy   BlockLayout = iota   // dual-read: legacy + CAS coexist
+    BlockLayoutLegacy   BlockLayout = iota   // pre-migration on-disk layout
     BlockLayoutCASOnly                       // CAS-only: legacy reads fail loud
 )
 
@@ -373,23 +362,23 @@ The suite asserts:
 
 | Backend  | Recommended layout                                                   |
 |----------|----------------------------------------------------------------------|
-| Postgres | Dedicated `block_layout TEXT NOT NULL DEFAULT 'legacy'` column on `shares` (migration `000014_block_layout.up.sql` is the reference). Authoritative over the legacy options JSON blob. |
-| Badger   | Inline-encoded inside the existing `ShareOptions` blob (gob; `omitempty` on the new field for forward-compat with pre-Phase-14 rows). |
+| Postgres | Dedicated `block_layout TEXT NOT NULL DEFAULT 'legacy'` column on `shares`. Authoritative over the options JSON blob. |
+| Badger   | Inline-encoded inside the existing `ShareOptions` blob (gob; `omitempty` on the field for forward-compat with older rows). |
 | Memory   | Direct field on the in-process struct; no persistence layer.         |
 
 Cross-references:
 
-- [ARCHITECTURE.md — Migration & Block-Layout Routing](ARCHITECTURE.md#migration--block-layout-routing-v015x-a5)
+- [ARCHITECTURE.md — Migration & Block-Layout Routing](ARCHITECTURE.md#migration--block-layout-routing)
   for how the engine consumes the flag.
-- [BLOCKSTORE_MIGRATION.md — Phase 14 runbook](BLOCKSTORE_MIGRATION.md#phase-14-v015x-a5--dfsctl-blockstore-migrate-runbook)
+- [BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md)
   for the operator-facing migration story.
 
-### Engine API surface (Phase 12 / API-01..04)
+### Engine API surface
 
 Custom block-store implementations that compose into `*engine.BlockStore`
 do not see the engine API directly — that surface is consumed by
-adapters via `internal/adapter/common/`. For reference, the Phase 12
-signatures are:
+adapters via `internal/adapter/common/`. For reference, the signatures
+are:
 
 ```go
 ReadAt(ctx, payloadID, blocks []BlockRef, dest []byte, offset uint64) (int, error)
@@ -399,10 +388,7 @@ Delete(ctx, payloadID, blocks []BlockRef) error
 CopyPayload(ctx, srcPayloadID, srcBlocks []BlockRef, dstPayloadID) ([]BlockRef, error)
 ```
 
-`nil` or empty `blocks` triggers the Phase 11 dual-read shim (D-20)
-for legacy files that have no populated `FileAttr.Blocks` yet.
-Non-empty `blocks` is the CAS path with end-to-end BLAKE3 verification
-(INV-06).
+`blocks` is the CAS path with end-to-end BLAKE3 verification.
 
 ## Implementing a Local Store
 
@@ -476,30 +462,20 @@ See `pkg/blockstore/local/fs/` for a complete filesystem-backed local store impl
 - Atomic writes
 - Block listing for sync operations
 
-### Phase 10 additions (flag-gated, experimental)
+### Append-log + CAS chunk tier
 
-v0.15.0 Phase 10 adds a hybrid append-log + content-addressed (CAS) chunk
-tier inside `*fs.FSStore`, gated by the `use_append_log` config flag
-(defaults to `false`; see `docs/CONFIGURATION.md`). New methods on
-`*fs.FSStore` (NOT yet on the `LocalStore` interface): `AppendWrite`,
-`StoreChunk`, `ReadChunk`, `HasChunk`, `DeleteChunk`, `DeleteAppendLog`,
-`TruncateAppendLog`, `StartRollup`. The `LocalStore` interface is
-deliberately unchanged in v0.15.0 Phase 10 -- LSL-07 narrows it in Phase
-11 (A2). Existing `LocalStore` implementations in v0.15.0 Phase 10 do NOT
-need to change to stay compatible.
+The local filesystem store (`*fs.FSStore`) writes through an append-only
+log per file and rolls it up into content-addressed (CAS) chunks. The
+chunk-tier methods on `*fs.FSStore` are: `AppendWrite`, `StoreChunk`,
+`ReadChunk`, `HasChunk`, `DeleteChunk`, `DeleteAppendLog`,
+`TruncateAppendLog`, and `StartRollup`.
 
-A new per-file metadata surface `metadata.RollupStore` (two methods:
-`SetRollupOffset`, `GetRollupOffset`) is required only when
-`use_append_log=true`. The built-in memory, Badger, and Postgres backends
-all implement it. New metadata backends targeting the hybrid tier must add
-equivalent persistence keyed by `payloadID`, backed by an atomic upsert
-(metadata is source of truth for the log's `rollup_offset`; see
-`docs/ARCHITECTURE.md` INV-03). Backends that stay on the legacy write
-path need not implement `RollupStore`.
-
-**Experimental:** Do not enable `use_append_log` in production before
-v0.15.0 Phase 11 lands -- the `blocks/` directory grows unbounded without
-Phase 11's mark-sweep GC.
+A per-file metadata surface `metadata.RollupStore` (two methods:
+`SetRollupOffset`, `GetRollupOffset`) persists the log's `rollup_offset`.
+The built-in memory, Badger, and Postgres backends all implement it. New
+metadata backends must add equivalent persistence keyed by `payloadID`,
+backed by an atomic upsert (metadata is the source of truth for
+`rollup_offset`; see `docs/ARCHITECTURE.md`).
 
 ### Conformance Tests
 
@@ -614,15 +590,13 @@ See `pkg/blockstore/remote/s3/` for a production S3 remote store implementation 
 - Health check via HEAD bucket
 - Efficient multipart uploads for large blocks
 
-### CAS contracts (v0.15.0 Phase 11)
+### CAS contracts
 
-v0.15.0 (Phase 11 / A2) routes all new uploads through a
-content-addressable keyspace `cas/{hh}/{hh}/{hex}` and verifies every
-byte downloaded from the remote against the expected BLAKE3 hash. Two
-new contract methods are required for any RemoteStore implementation
-that wants to participate in the v0.15.0 write path; backends remaining
-on the legacy `{payloadID}/block-{N}` keyspace continue to work via
-the dual-read shim until Phase 14 (A5).
+All uploads go through a content-addressable keyspace
+`cas/{hh}/{hh}/{hex}`, and every byte downloaded from the remote is
+verified against the expected BLAKE3 hash. Two contract methods are
+required for any RemoteStore implementation that participates in the write
+path.
 
 #### RemoteStore.WriteBlockWithHash
 
@@ -649,8 +623,7 @@ WriteBlockWithHash(ctx context.Context, blockKey string, hash ContentHash, data 
 ```
 
 External tooling (e.g. `aws s3api head-object`) MUST be able to verify
-the header without DittoFS metadata — this is the BSCAS-06 external
-verifier criterion.
+the header without DittoFS-specific tooling.
 
 #### RemoteStore.ReadBlockVerified
 
@@ -669,8 +642,7 @@ verifier criterion.
 //     the call returns ErrCASContentMismatch and the buffer is
 //     discarded -- corrupt bytes MUST NOT be surfaced upstream.
 //   - The streaming verifier sees bytes once (zero extra allocation).
-//   - Verification is hard-required (INV-06): there is no opt-out
-//     knob.
+//   - Verification is hard-required: there is no opt-out knob.
 ReadBlockVerified(ctx context.Context, blockKey string, expected ContentHash) ([]byte, error)
 ```
 
@@ -698,7 +670,7 @@ func TestMyRemoteStore(t *testing.T) {
 }
 ```
 
-The v0.15.0 conformance suite extends `remotetest` with scenarios for
+The conformance suite (`remotetest`) includes scenarios for
 `WriteBlockWithHash` (header is set; key shape matches `cas/...`;
 re-PUT is idempotent) and `ReadBlockVerified` (round-trip succeeds;
 header-mismatch returns `ErrCASContentMismatch`; body-mismatch returns

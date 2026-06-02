@@ -14,9 +14,9 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 - [Directory Structure](#directory-structure)
 - [Horizontal Scaling with PostgreSQL](#horizontal-scaling-with-postgresql)
 - [Durable Handle State Flow](#durable-handle-state-flow)
-- [Phase 12 Engine API + BlockRef + Cache (v0.15.0 A3)](#phase-12-engine-api--blockref--cache-v0150-a3)
-- [Phase 13 File-Level Dedup: ObjectID + Merkle Root (v0.15.0 A4)](#phase-13-file-level-dedup-objectid--merkle-root-v0150-a4)
-- [Migration & Block-Layout Routing (v0.15.x A5)](#migration--block-layout-routing-v015x-a5)
+- [Engine API + BlockRef + Cache](#engine-api--blockref--cache)
+- [File-Level Dedup: ObjectID + Merkle Root](#file-level-dedup-objectid--merkle-root)
+- [Migration & Block-Layout Routing](#migration--block-layout-routing)
 
 ## Core Abstraction Layers
 
@@ -137,7 +137,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 - Each share gets an isolated local storage directory; remote stores can be shared across shares (ref counted)
 - `shares.Service` owns the lifecycle (create on AddShare, close on RemoveShare)
 - Sub-packages:
-  - `engine/`: BlockStore orchestrator — composes local + remote stores and owns the unified `Cache` (single CAS-keyed type that absorbed the former `readbuffer/` + `prefetch.go` pair per Phase 12 / CACHE-01), the syncer, and the garbage collector (merged from former `readbuffer/`, `sync/`, `gc/` packages per TD-01). See `pkg/blockstore/engine/cache.go` for the Cache type.
+  - `engine/`: BlockStore orchestrator — composes local + remote stores and owns the unified CAS-keyed `Cache` (read buffering + prefetch), the syncer, and the garbage collector. See `pkg/blockstore/engine/cache.go` for the Cache type.
   - `local/`: Local store interface and implementations (`fs/` filesystem, `memory/` in-memory)
   - `remote/`: Remote store interface and implementations (`s3/` production, `memory/` testing)
   - `storetest/`: Conformance test helpers for new backend implementations
@@ -174,7 +174,7 @@ Each share in DittoFS gets its own `*engine.BlockStore` instance, providing comp
 ### Isolation Properties
 
 - **Data Isolation**: Each share's local blocks are stored in separate directories
-- **Cache Independence**: The unified `Cache` is per-share (eviction in one share does not affect others). Inside a share, the cache is keyed by `ContentHash`, so two files referencing the same chunk via dedup share one cache entry (CACHE-02).
+- **Cache Independence**: The unified `Cache` is per-share (eviction in one share does not affect others). Inside a share, the cache is keyed by `ContentHash`, so two files referencing the same chunk via dedup share one cache entry.
 - **Remote Sharing**: Multiple shares can reference the same remote store (e.g., same S3 bucket) -- blocks are namespaced by share to prevent collisions
 - **Lifecycle Independence**: Block stores are created/closed with share lifecycle
 
@@ -187,10 +187,10 @@ DittoFS uses a three-tier storage model for block data:
 │  Cache (In-Memory, CAS-keyed)       │
 │  pkg/blockstore/engine/cache.go     │
 │  - Single type, keyed by ContentHash│
-│  - LRU eviction (D-30)              │
+│  - LRU eviction                     │
 │  - Internal sequential prefetch     │
-│    (3-trigger threshold, D-29)      │
-│  - Cross-file dedup (CACHE-02)      │
+│    (3-trigger threshold)            │
+│  - Cross-file dedup                 │
 │  - Configurable budget per share    │
 │    (cache.size_mib, default 256)    │
 │  - Volatile (lost on restart)       │
@@ -219,8 +219,8 @@ DittoFS uses a three-tier storage model for block data:
 
 **Read Path**: Engine.ReadAt receives `[]BlockRef` from caller, locates the
 covering blocks via `findBlocksForRange` (binary search), serves bytes
-from local CAS (mmap on linux/darwin, ReadFile on windows — CACHE-06)
-or remote CAS (BLAKE3-verified end-to-end, INV-06), calls `Cache.OnRead`
+from local CAS (mmap on linux/darwin, ReadFile on windows)
+or remote CAS (BLAKE3-verified end-to-end), calls `Cache.OnRead`
 to update the per-payload sequential tracker for prefetch hints.
 
 **Write Path**: Engine.WriteAt receives `(currentBlocks []BlockRef, data,
@@ -230,26 +230,25 @@ metadata transaction (Mtime, Size, etc.). Syncer asynchronously uploads
 Pending FileBlocks to remote CAS.
 
 **Eviction**:
-- Cache: LRU eviction when budget reached. No data loss (local CAS has the data). Cache is per-share but cross-file inside a share (CACHE-02 — same hash referenced by two files shares one entry).
+- Cache: LRU eviction when budget reached. No data loss (local CAS has the data). Cache is per-share but cross-file inside a share — the same hash referenced by two files shares one entry.
 - Local store: Manual eviction via `dfsctl store block evict`. Only blocks already synced to remote can be evicted (safety check prevents data loss).
 
-## Block Store -- Hybrid Local Tier (experimental, v0.15.0 Phase 10)
+## Block Store -- Local Append-Log Tier
 
-The hybrid local tier is a second write path inside `pkg/blockstore/local/fs/`,
-gated by the `use_append_log` flag (defaults to `false` through v0.15.0
-Phase 10; flipped to `true` in Phase 11). When enabled, writes flow through
-an append-only log per file; a rollup pool chunks the log via FastCDC,
-hashes each chunk with BLAKE3, and persists the chunks under a
-content-addressable `blocks/{hh}/{hh}/{hex}` directory.
+The local filesystem store (`pkg/blockstore/local/fs/`) writes through an
+append-only log per file. A rollup pool chunks the log via FastCDC, hashes
+each chunk with BLAKE3, and persists the chunks under a content-addressable
+`blocks/{hh}/{hh}/{hex}` directory. The syncer then uploads those chunks to
+the remote content-addressable keyspace (`cas/{hh}/{hh}/{hex}`), and a
+mark-sweep GC reclaims the remote `cas/` prefix.
 
-**Phase 10 is plumbing-only.** No existing write path consumes the chunker
-or the log in v0.15.0 Phase 10; the engine keeps using the legacy
-`tryDirectDiskWrite` / `.blk` path. Phase 11 (A2) flips the default,
-rewires the syncer to write to the remote CAS keyspace
-(`cas/{hh}/{hh}/{hex}`), and adds mark-sweep GC for the remote `cas/`
-prefix. See [Garbage Collection (mark-sweep)](#garbage-collection-mark-sweep-v0150-phase-11)
-and [Block Lifecycle (three-state)](#block-lifecycle-three-state-v0150-phase-11)
-below for the v0.15.0 Phase 11 design that consumes this tier.
+This is the only local write path. Servers from v0.16 on require the CAS
+layout; a store directory still holding the older `.blk` layout is detected
+on open and the operator is told to run `dfs migrate-to-cas` (see
+[Migration & Block-Layout Routing](#migration--block-layout-routing)).
+
+See [Block Lifecycle (three-state)](#block-lifecycle-three-state) and
+[Garbage Collection (mark-sweep)](#garbage-collection-mark-sweep) below.
 
 ### Pipeline
 
@@ -294,10 +293,10 @@ payload.
 
 ### Invariants
 
-- **INV-03** (`rollup_offset` monotone): metadata is source of truth; the
-  filesystem header is idempotent derived state. Recovery reconciles header
-  from metadata on boot.
-- **INV-05** (log length bounded): `logBytesTotal <= max_log_bytes` per
+- **`rollup_offset` is monotone:** metadata is the source of truth; the
+  filesystem header is idempotent derived state. Recovery reconciles the
+  header from metadata on boot.
+- **Log length is bounded:** `logBytesTotal <= max_log_bytes` per
   `FSStore`. Writers block on `pressureCh` when the budget is exceeded;
   rollup drains and non-blocking signals when bytes are reclaimed.
 
@@ -307,31 +306,25 @@ Recovery (`pkg/blockstore/local/fs/recovery.go`) scans logs from
 `rollup_offset`, truncates at first bad CRC, and rebuilds per-file interval
 trees. Orphan logs (no metadata referrer, no live FileBlock, mtime older
 than `orphan_log_min_age_seconds`) are swept. Orphan chunks under
-`blocks/{hh}/{hh}/{hex}` are left intact; Phase 11's mark-sweep GC is what
-reclaims them.
+`blocks/{hh}/{hh}/{hex}` are reclaimed by the mark-sweep GC.
 
 ### Per-`FSStore` surface
 
-Per CLAUDE.md Rule 4 (block stores are per-share), every hybrid-tier field
--- log-fd map, per-file mutex map, interval-tree map, rollup worker pool,
-pressure channel, `maxLogBytes` budget, stabilization window -- lives
-inside `*FSStore`. No global state across shares.
+Because block stores are per-share (see the invariants in `CLAUDE.md`),
+every local-tier field -- log-fd map, per-file mutex map, interval-tree
+map, rollup worker pool, pressure channel, `maxLogBytes` budget,
+stabilization window -- lives inside `*FSStore`. No global state across
+shares.
 
-**Experimental:** Do not enable `use_append_log` in production before
-v0.15.0 Phase 11 (A2). Without Phase 11's mark-sweep GC, the `blocks/`
-directory grows unbounded. See `docs/CONFIGURATION.md` (`use_append_log`,
-`max_log_bytes`, `rollup_workers`, `stabilization_ms`,
-`orphan_log_min_age_seconds`) and
-`.planning/phases/10-fastcdc-chunker-hybrid-local-store-a1/10-CONTEXT.md`
-for full design detail.
+See `docs/CONFIGURATION.md` (`max_log_bytes`, `rollup_workers`,
+`stabilization_ms`, `orphan_log_min_age_seconds`) for the tunables.
 
-## Block Lifecycle (three-state, v0.15.0 Phase 11)
+## Block Lifecycle (three-state)
 
-Phase 11 (A2) collapses the block lifecycle to three persisted states held
-on `FileBlock.State` indexed by `ContentHash`. There is no parallel state
-in memory, in fd pools, or anywhere else (STATE-03): the metadata store
-is the single source of truth, and `engine.Syncer` is the sole owner of
-state transitions (D-15).
+The block lifecycle has three persisted states held on `FileBlock.State`
+indexed by `ContentHash`. There is no parallel state in memory, in fd
+pools, or anywhere else: the metadata store is the single source of truth,
+and `engine.Syncer` is the sole owner of state transitions.
 
 ```
    Pending ──claim batch──▶ Syncing ──PUT success + meta txn──▶ Remote
@@ -347,10 +340,10 @@ state transitions (D-15).
 - **Syncing**: a syncer goroutine has claimed the block; the upload is in
   flight.
 - **Remote**: PUT to the remote CAS keyspace returned 200 AND the
-  metadata transaction setting `State=Remote` committed (INV-03 — no
-  orphan flag without metadata-txn success).
+  metadata transaction setting `State=Remote` committed (no orphan flag
+  without metadata-txn success).
 
-**Restart recovery (D-14):** at syncer Start, a one-shot janitor pass
+**Restart recovery:** at syncer Start, a one-shot janitor pass
 requeues any `Syncing` row whose `last_sync_attempt_at` is older than
 `syncer.claim_timeout` (default 10m) back to `Pending`. CAS keys are
 content-defined so a duplicate re-upload writes the same bytes to the
@@ -362,35 +355,31 @@ syncer instances. The batched-claim cost is one txn per tick, in exchange
 for exact restart recovery and a single-query introspection of stuck
 blocks (`State=Syncing AND last_sync_attempt_at < now − 1h`).
 
-## Garbage Collection (mark-sweep, v0.15.0 Phase 11)
+## Garbage Collection (mark-sweep)
 
-Phase 11 replaces the previous path-prefix GC with a fail-closed
-mark-sweep over the union of every live `FileBlock.ContentHash` across
-shares pointing at the same remote.
+The block-store GC is a fail-closed mark-sweep over the union of every live
+`FileBlock.ContentHash` across all shares pointing at the same remote.
 
 ### Algorithm
 
-1. **Mark phase.** Stream every `FileBlock`'s `ContentHash` via the new
-   `MetadataStore.EnumerateFileBlocks(ctx, fn)` cursor (D-02). The cursor
+1. **Mark phase.** Stream every `FileBlock`'s `ContentHash` via the
+   `MetadataStore.EnumerateFileBlocks(ctx, fn)` cursor. The cursor
    is implemented natively per backend (memory, Badger, Postgres) and
    never loads the full set into application memory. Hashes are appended
    to an on-disk live set under `<localStore>/gc-state/<runID>/db/`
-   (Badger temp store; D-01). Snapshot time `T` is captured at the
-   start of the run. Cross-share aggregation keys on **remote-store
-   identity** (`bucket+endpoint+prefix`), not share name (D-03), so an
-   object reachable from any share that targets the same remote is
-   considered live.
+   (a Badger temp store). Snapshot time `T` is captured at the start of
+   the run. Cross-share aggregation keys on **remote-store identity**
+   (`bucket+endpoint+prefix`), not share name, so an object reachable from
+   any share that targets the same remote is considered live.
 2. **Sweep phase.** A single `RemoteStore.Walk` enumerates every CAS
    object cluster-wide; the backend (e.g. S3) paginates internally. For
    each key, the engine keeps the object iff the hash is present in the
    live set OR the object's `LastModified` is newer than
-   `T − gc.grace_period` (default 1h, D-05). Otherwise the engine issues
-   a DELETE.
+   `T − gc.grace_period` (default 1h). Otherwise the engine issues a DELETE.
 
-### Fail-closed posture (INV-04)
+### Fail-closed posture
 
-Mark-phase and sweep-phase failures are treated asymmetrically (D-06,
-D-07):
+Mark-phase and sweep-phase failures are treated asymmetrically:
 
 - **Mark errors abort the sweep entirely.** Any uncertainty about the
   live set could lead to deleting referenced data. Sweep workers do not
@@ -415,24 +404,23 @@ D-07):
 
 Each run writes `incomplete.flag` at start; the next run detects stale
 directories (by leftover flag) and deletes them before starting fresh.
-Mark is idempotent so resume-on-restart is intentionally not built —
-simpler test surface (D-01).
+Mark is idempotent, so resume-on-restart is intentionally not built.
 
 ### Triggers and observability
 
-- **Periodic GC is deferred to a follow-up phase.** `gc.interval` is
-  parsed and validated but unwired in v0.15.0; any non-zero value emits
-  a startup WARN and is otherwise ignored. Schedule via cron until the
-  scheduler ships.
-- **On-demand** via `dfsctl store block gc <share> [--dry-run]`
-  (D-08, D-09); `--dry-run` skips DELETEs and prints up to
-  `gc.dry_run_sample_size` candidate keys (default 1000).
+- **Periodic GC is not yet wired.** `gc.interval` is parsed and validated;
+  any non-zero value emits a startup WARN and is otherwise ignored.
+  Schedule via cron until the scheduler ships.
+- **On-demand** via `dfsctl store block gc <share> [--dry-run]`;
+  `--dry-run` skips DELETEs and prints up to `gc.dry_run_sample_size`
+  candidate keys (default 1000). The mark-sweep is global across every
+  share that targets the same remote, so the `<share>` argument selects
+  which remote(s) to scan rather than scoping the live set to one share.
 - **Observability** via structured slog INFO at start/end with `run_id`,
-  `hashes_marked`, `objects_swept`, `bytes_freed`, `duration_ms`,
+  `hashes_marked`, `objects_swept`, `bytes_freed`, `duration_ms`, and
   `error_count`, plus a persisted summary at
-  `<localStore>/gc-state/last-run.json` (D-10). Inspect via
-  `dfsctl store block gc-status <share>`. Prometheus metrics are
-  intentionally deferred to a metrics phase (D-35).
+  `<localStore>/gc-state/last-run.json`. Inspect with
+  `dfsctl store block gc-status <share>`.
 
 GC coordinates with the share-snapshots subsystem through a single
 rule: **manifest-on-disk = block held**. Snapshots register a hold
@@ -581,28 +569,19 @@ call only (`WithRestoreTimeout`).
 For the full operator runbook see
 [SNAPSHOTS.md](SNAPSHOTS.md).
 
-## Dual-Read Window (Phase 11 → Phase 14)
+## Block Reads (content-addressable)
 
-During the v0.15.0 → v0.15.x window, the engine resolves block reads
-from two coexisting key spaces (D-21, D-22):
+The engine resolves every block read from the content-addressable keyspace:
+read from `cas/{hh}/{hh}/{hex}`, BLAKE3-verified end-to-end (a header
+pre-check on `x-amz-meta-content-hash` plus a streaming verifier over the
+body). Resolution is by metadata key — one DB lookup per block — not by
+remote trial-and-error, so there is no doubled GET cost.
 
-- **`FileBlock.Hash` non-zero** → CAS path: read from
-  `cas/{hh}/{hh}/{hex}`, BLAKE3-verified end-to-end (header pre-check
-  on `x-amz-meta-content-hash` + streaming verifier over the body,
-  INV-06).
-- **`FileBlock.Hash` zero** → legacy path: read from
-  `{payloadID}/block-{N}` (`FormatStoreKey`/`ParseStoreKey`) with no
-  verification (verification cannot be retroactively applied to data
-  written before BSCAS-06).
-
-Resolution is by metadata key shape (one DB lookup per block), NOT by
-S3 trial-and-error — there is no doubled GET cost.
-
-The legacy code path lives Phase 11 → Phase 14 (A5). Phase 14 ships
-`dfsctl blockstore migrate` to re-chunk all legacy data to CAS; Phase
-15 (A6) deletes the legacy path entirely. The dual-read code is
-intentionally on a deletion clock — anyone touching it should know
-its lifespan.
+The older non-CAS layout (`{payloadID}/block-{N}`) is no longer read at
+runtime. A store directory still on that layout is detected on open and the
+operator is directed to run `dfs migrate-to-cas`, which re-chunks all data
+into the CAS keyspace. See
+[Migration & Block-Layout Routing](#migration--block-layout-routing).
 
 ## Adapter Pattern
 
@@ -631,10 +610,9 @@ type NFSAdapter struct {
 func (a *NFSAdapter) handleRead(ctx context.Context, req *ReadRequest) {
     // Resolve per-share block store from file handle
     blockStore, err := a.runtime.GetBlockStoreForHandle(ctx, handle)
-    // Phase 12: read data via block store with caller-snapshot []BlockRef.
-    // Engine binary-searches blocks for the requested range; sparse holes
-    // outside any BlockRef are zero-filled (D-21). nil/empty []BlockRef
-    // triggers the legacy dual-read shim (D-20).
+    // Read data via the block store with a caller-snapshot []BlockRef.
+    // The engine binary-searches blocks for the requested range; sparse
+    // holes outside any BlockRef are zero-filled.
     n, err := blockStore.ReadAt(ctx, payloadID, attr.Blocks, dest, offset)
     // ...
 }
@@ -660,11 +638,11 @@ private copy of the same logic. The package exposes:
   which invokes it after the wire write completes. NFSv3, NFSv4, and SMB
   regular-file READ all adopt the pool; pipe/symlink READ paths stay on
   heap allocations by design (documented in SMB.md).
-- **Phase-12 `[]BlockRef` seam**: `common.ReadFromBlockStore`,
+- **`[]BlockRef` seam**: `common.ReadFromBlockStore`,
   `common.WriteToBlockStore`, and `common.CommitBlockStore` are the single
-  edit points where Phase 12 (v0.15.0 A3 / META-01 + API-01) will feed
-  resolved `[]BlockRef` into the engine. Handler code stays untouched;
-  Phase 12's blast radius is confined to `common/`.
+  edit points that feed resolved `[]BlockRef` into the engine. Handler code
+  stays untouched; changes to the block-ref threading stay confined to
+  `common/`.
 - **Metadata error translation**: a struct-per-code table (`errorMap` in
   `common/errmap.go`) with NFS3/NFS4/SMB columns; `common.MapToNFS3`,
   `common.MapToNFS4`, and `common.MapToSMB` are thin accessors. Lock-
@@ -765,11 +743,11 @@ blockStore, err := rt.GetBlockStoreForHandle(ctx, handle)
 newBlocks, err := blockStore.WriteAt(ctx, string(attr.PayloadID), currentBlocks, data, offset)
 
 // 4. Persist newBlocks in the same metadata txn that updates Size/Mtime.
-//    Engine never opens the metadata txn itself (API-02).
+//    The engine never opens the metadata txn itself.
 err = metadataStore.SetFileBlocks(handle, newBlocks, authCtx)
 
 // 5. Post-txn surgical cache invalidation: drop only the hashes that
-//    disappeared, preserving warm dedup entries (CACHE-05 / D-35).
+//    disappeared, preserving warm dedup entries.
 removed := diffRemovedHashes(currentBlocks, newBlocks)
 blockStore.Cache().InvalidateFile(string(attr.PayloadID), removed)
 
@@ -854,14 +832,13 @@ dittofs/
 │   │   ├── store.go              # FileBlockStore interface
 │   │   ├── types.go              # FileBlock, BlockState types
 │   │   ├── errors.go             # BlockStore error types
-│   │   ├── chunker/              # FastCDC content-defined chunker (Phase 10 A1)
+│   │   ├── chunker/              # FastCDC content-defined chunker
 │   │   │                         # min=1 MiB / avg=4 MiB / max=16 MiB, lvl 2;
 │   │   │                         # BLAKE3 hashing; consumed by local rollup pool
 │   │   ├── engine/               # BlockStore orchestrator + read cache + syncer + GC
 │   │   ├── local/                # Local store interface
 │   │   │   ├── fs/               # Filesystem-backed local store
-│   │   │   │                     # (+ hybrid append-log + CAS blocks/ tier,
-│   │   │   │                     #  gated by use_append_log, Phase 10 A1)
+│   │   │   │                     # (append-log + CAS blocks/ tier)
 │   │   │   └── memory/           # In-memory local store (testing)
 │   │   └── remote/               # Remote store interface
 │   │       ├── s3/               # S3-backed remote store
@@ -900,18 +877,16 @@ dittofs/
 │   ├── adapter/common/           # Shared NFS/SMB adapter helpers: block-store
 │   │   │                         # resolution (ResolveForRead/Write), pooled
 │   │   │                         # ReadFromBlockStore + WriteToBlockStore +
-│   │   │                         # CommitBlockStore seams (Phase 12 entry
-│   │   │                         # point for []BlockRef), consolidated
-│   │   │                         # metadata.ErrorCode -> NFS3/NFS4/SMB
-│   │   │                         # mapping table (errmap + content_errmap +
-│   │   │                         # lock_errmap).
+│   │   │                         # CommitBlockStore ([]BlockRef seam), and the
+│   │   │                         # consolidated metadata.ErrorCode ->
+│   │   │                         # NFS3/NFS4/SMB mapping tables.
 │   │   ├── resolve.go            # BlockStoreRegistry narrow interface +
 │   │   │                         # ResolveForRead/Write
 │   │   ├── read_payload.go       # Pooled BlockReadResult + ReadFromBlockStore
 │   │   ├── write_payload.go      # WriteToBlockStore + CommitBlockStore seams
 │   │   ├── errmap.go             # Struct-per-code table (NFS3/NFS4/SMB columns)
-│   │   ├── content_errmap.go     # Block-store content error table (D-08 §2)
-│   │   └── lock_errmap.go        # Lock-context error table (D-08 §3)
+│   │   ├── content_errmap.go     # Block-store content error table
+│   │   └── lock_errmap.go        # Lock-context error table
 │   ├── adapter/nfs/              # NFS protocol implementation
 │   │   ├── dispatch.go           # RPC procedure routing
 │   │   ├── rpc/                  # RPC layer (call/reply handling)
@@ -1078,36 +1053,34 @@ OPEN -[disconnect]-> ORPHANED -[scavenger timeout]-> EXPIRED -[cleanup]-> CLOSED
 
 **Admin API**: `GET /api/v1/durable-handles` lists all active handles with remaining timeout. `DELETE /api/v1/durable-handles/{id}` force-closes a specific handle.
 
-## Phase 12 Engine API + BlockRef + Cache (v0.15.0 A3)
+## Engine API + BlockRef + Cache
 
-Phase 12 (v0.15.0 A3) reshapes the read path so the engine never imports
-`pkg/metadata` on hot paths and consumes a caller-supplied
-`[]BlockRef` snapshot as the authoritative content list for every file.
+The read path is structured so the engine never imports `pkg/metadata` on
+hot paths; it consumes a caller-supplied `[]BlockRef` snapshot as the
+authoritative content list for every file.
 
-### BlockRef — the on-the-wire content unit
+### BlockRef — the content unit
 
-`BlockRef` is the 3-tuple of `(Hash ContentHash, Offset uint64, Size uint32)`
-defined in `pkg/blockstore/types.go` (D-10/D-19). `FileAttr.Blocks
-[]BlockRef` (in `pkg/metadata/file_types.go`) is the authoritative,
-offset-sorted list of every chunk that composes a file. It is populated
-on every sync finalization; the engine binary-searches it via
-`findBlocksForRange` (`pkg/blockstore/engine/range.go`, D-12).
+`BlockRef` is the 3-tuple `(Hash ContentHash, Offset uint64, Size uint32)`
+defined in `pkg/blockstore/types.go`. `FileAttr.Blocks []BlockRef` (in
+`pkg/metadata/file_types.go`) is the authoritative, offset-sorted list of
+every chunk that composes a file. It is populated on every sync
+finalization; the engine binary-searches it via `findBlocksForRange`
+(`pkg/blockstore/engine/range.go`).
 
 Storage encodings differ per backend:
 
-- **Postgres** uses a separate `file_block_refs` table (D-01..D-04;
-  migration `000012_file_block_refs.up.sql`) with PK `(file_id, offset)
-  INCLUDE (size, hash)`, FK `ON DELETE CASCADE`, hash column `BYTEA`.
-  Random 4 KiB writes touch 1–2 rows instead of rewriting a ~1.5 MB
-  TOAST blob — the VM-workload decision driver.
-- **Badger** and **Memory** inline-encode `Blocks []BlockRef` inside
-  the existing `FileAttr` blob (gob for Badger, typed structs for
-  Memory) via the same `omitempty` tag for legacy tolerance (D-05).
+- **Postgres** uses a separate `file_block_refs` table with PK
+  `(file_id, offset) INCLUDE (size, hash)`, FK `ON DELETE CASCADE`, hash
+  column `BYTEA`. Random 4 KiB writes touch 1–2 rows instead of rewriting a
+  ~1.5 MB TOAST blob.
+- **Badger** and **Memory** inline-encode `Blocks []BlockRef` inside the
+  existing `FileAttr` blob (gob for Badger, typed structs for Memory).
 
-### Engine API (API-01..04)
+### Engine API
 
 ```go
-// pkg/blockstore/engine/engine.go (Phase 12 signatures)
+// pkg/blockstore/engine/engine.go
 ReadAt(ctx, payloadID, blocks []BlockRef, dest []byte, offset uint64) (int, error)
 WriteAt(ctx, payloadID, currentBlocks []BlockRef, data []byte, offset uint64) ([]BlockRef, error)
 Truncate(ctx, payloadID, currentBlocks []BlockRef, newSize uint64) ([]BlockRef, error)
@@ -1118,65 +1091,60 @@ CopyPayload(ctx, srcPayloadID, srcBlocks []BlockRef, dstPayloadID) ([]BlockRef, 
 Range-coverage semantics: `findBlocksForRange(blocks, offset, size)`
 returns `[start, end)` of the BlockRef slice that overlaps the requested
 range using binary search on the offset-sorted slice; sparse holes
-inside `FileAttr.Size` are zero-filled (D-21) — `no BlockRef for this
-range` is a documented behavior, not a bug. Past `FileAttr.Size`
-returns short-read or EOF.
+inside `FileAttr.Size` are zero-filled — `no BlockRef for this range` is
+documented behavior, not a bug. Past `FileAttr.Size` returns short-read or
+EOF.
 
 `CopyPayload` is **O(1)** — a single metadata transaction increments
 `FileBlock.RefCount` for every distinct hash in `srcBlocks` and inserts
-the dst rows (D-11). No data copy. This is the file-level dedup
-primitive Phase 13 (META-02 / BSCAS-04/05) consumes.
+the dst rows. No data copy. This is the file-level dedup primitive the
+ObjectID layer (below) builds on.
 
 `MetadataCoordinator` (`pkg/blockstore/engine/coordinator.go`) is the
 narrow interface the engine uses to mutate refcounts and persist
-`FileAttr.Blocks`. The engine never opens a metadata txn itself —
-the API-02 strict-grep gate enforces zero `pkg/metadata` imports under
+`FileAttr.Blocks`. The engine never opens a metadata txn itself — a
+strict-grep build gate enforces zero `pkg/metadata` imports under
 `pkg/blockstore/engine/*.go` production files except a single justified
 exception in `gc.go`.
 
-### Cache (CACHE-01..06)
+### Cache
 
 The `Cache` type (`pkg/blockstore/engine/cache.go`) is keyed solely by
-`ContentHash`. It absorbs the former `readbuffer/cache.go` + standalone
-`prefetch.go` worker pool into a single per-share type with a single
-budget (`cache.size_mib`, default 256 MiB; D-31). Two files reading the
-same chunk hit the same entry (CACHE-02 cross-file dedup).
+`ContentHash`. It combines read buffering and prefetch into a single
+per-share type with a single budget (`cache.size_mib`, default 256 MiB).
+Two files reading the same chunk hit the same entry (cross-file dedup).
 
 ```go
-// pkg/blockstore/engine/cache.go (CACHE-04 hint API)
+// pkg/blockstore/engine/cache.go (hint API)
 OnRead(payloadID PayloadID, hashes []ContentHash, fileSize uint64)
-InvalidateFile(payloadID PayloadID, removedHashes []ContentHash)  // CACHE-05 surgical
+InvalidateFile(payloadID PayloadID, removedHashes []ContentHash)  // surgical
 ```
 
-Sequential prefetch triggers after 3 consecutive sequential reads (D-29
-/ CACHE-03; raised from Phase 11's threshold of 2 to suppress
-speculative prefetch on accidental two-block runs in random-IO
-workloads). Bounded concurrency: 4 worker goroutines per cache by
-default. LRU eviction (D-30; ARC/LFU rejected as overkill for v0.15.0).
+Sequential prefetch triggers after 3 consecutive sequential reads (to
+suppress speculative prefetch on accidental two-block runs in random-IO
+workloads). Bounded concurrency: 4 worker goroutines per cache by default.
+LRU eviction.
 
-Single-copy reads: on Linux/Darwin, `readFromCAS`
-(`cache_mmap_unix.go`) `mmap`s the local CAS chunk and `copy(dest,
-mapped[offset:])` once (CACHE-06 / D-33). Chunks below 64 KiB use
-`os.ReadFile` (mmap setup overhead dominates tiny reads). Windows uses
-`os.ReadFile` only.
+Single-copy reads: on Linux/Darwin, `readFromCAS` (`cache_mmap_unix.go`)
+`mmap`s the local CAS chunk and `copy(dest, mapped[offset:])` once. Chunks
+below 64 KiB use `os.ReadFile` (mmap setup overhead dominates tiny reads).
+Windows uses `os.ReadFile` only.
 
-`InvalidateFile` is **surgical** (CACHE-05): the caller passes only the
-hashes that disappeared from the file, so other files still referencing
-those hashes via dedup keep them warm. Invalidation happens
-**post-txn** (D-35) — caller commits new `[]BlockRef` first, then drops
-cache entries.
+`InvalidateFile` is **surgical**: the caller passes only the hashes that
+disappeared from the file, so other files still referencing those hashes
+via dedup keep them warm. Invalidation happens **post-txn** — the caller
+commits the new `[]BlockRef` first, then drops cache entries.
 
 ### Adapter call sites unchanged
 
-All NFS v3/v4 + SMB v2 protocol handlers stay untouched (D-26). The
+All NFS v3/v4 + SMB v2 protocol handlers stay untouched. The
 `internal/adapter/common/{ResolveForRead, ResolveForWrite,
-WriteToBlockStore, ReadFromBlockStore}` helpers absorb the new
-`[]BlockRef` threading. Phase 09 (ADAPT-04) seam pays off here:
-Phase 12's adapter diff is confined to the helpers.
+WriteToBlockStore, ReadFromBlockStore}` helpers absorb the `[]BlockRef`
+threading, so changes to the read/write path stay confined to the helpers.
 
 ### Operator surfaces
 
-- `dfsctl blockstore audit-refcounts <share>` runs the INV-02
+- `dfsctl blockstore audit-refcounts <share>` runs the refcount
   reconciliation audit (`∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks)`),
   emits aggregate counts as structured slog INFO, and persists the
   last-run summary at `<localStore>/audit-state/last-inv02.json`. See
@@ -1186,21 +1154,10 @@ Phase 12's adapter diff is confined to the helpers.
   `cache.prefetch_max_depth`, `cache.prefetch_workers`) are documented
   in `docs/CONFIGURATION.md`.
 
-### Migration window
+## File-Level Dedup: ObjectID + Merkle Root
 
-Phase 12 ships **forward-only** Postgres migration
-`000012_file_block_refs.up.sql`. Legacy files written before Phase 12
-keep using the Phase 11 dual-read shim (D-20: empty/nil `[]BlockRef`
-triggers the metadata-driven legacy resolver). Phase 14 ships
-`dfsctl blockstore migrate` to backfill `[]BlockRef` and CAS-keys
-atomically; Phase 15 retires the dual-read shim. See
-`docs/BLOCKSTORE_MIGRATION.md` for the operator-facing migration
-guide.
-
-## Phase 13 File-Level Dedup: ObjectID + Merkle Root (v0.15.0 A4)
-
-Phase 13 (v0.15.0 A4) layers **file-level dedup** on top of the Phase 12
-chunk-level CAS path. Each `FileAttr` carries an `ObjectID` — a BLAKE3
+File-level dedup layers on top of the chunk-level CAS path. Each
+`FileAttr` carries an `ObjectID` — a BLAKE3
 Merkle root computed over the file's `BlockRef.Hash` values sorted by
 `Offset`, prefixed by the domain-separation tag
 `dittofs:objectid:v1\x00`:
@@ -1216,20 +1173,20 @@ room for future input-shape changes via `v2`/`v3`).
 ### Lifecycle
 
 - **Cleared (zeroed)** on first dirty write that mutates `FileAttr.Blocks`,
-  in the same metadata transaction (D-07).
+  in the same metadata transaction.
 - **Recomputed and persisted** at the post-Flush coordinator hook
   (`Syncer.persistFileBlocksAfterFlush` → `MetadataCoordinator.PersistFileBlocks`),
-  in the same metadata transaction that updates `FileAttr.Blocks`/`Size`/`Mtime` (D-05).
-- **Persisted ONLY on full quiesce** — every block in `Remote` state
-  (D-06). Partial flushes leave `ObjectID` at zero.
+  in the same metadata transaction that updates `FileAttr.Blocks`/`Size`/`Mtime`.
+- **Persisted ONLY on full quiesce** — every block in `Remote` state.
+  Partial flushes leave `ObjectID` at zero.
 
-A non-zero `ObjectID` always reflects a fully-`Remote` consistent
-state. Lookups (BSCAS-05 short-circuit) trust this without checking
-per-block states. Empty files dedup to one canonical constant
-`BLAKE3("dittofs:objectid:v1\x00")`; legacy pre-Phase-13 files keep
-the all-zero sentinel until Phase 14 backfills.
+A non-zero `ObjectID` always reflects a fully-`Remote` consistent state.
+The dedup short-circuit trusts this without checking per-block states.
+Empty files dedup to one canonical constant
+`BLAKE3("dittofs:objectid:v1\x00")`; files written before ObjectID existed
+keep the all-zero sentinel until the migration tool backfills them.
 
-### File-level dedup short-circuit (BSCAS-05)
+### File-level dedup short-circuit
 
 When a file's BlockRef list is fully `Pending` (newly chunked, nothing
 uploaded yet) and the file has no prior ObjectID, the syncer:
@@ -1244,18 +1201,16 @@ uploaded yet) and the file has no prior ObjectID, the syncer:
 4. **On miss:** continues per-block GetByHash + PUT path; ObjectID is
    finalized at the post-Flush coordinator hook.
 
-Trigger condition (D-09): `len(Blocks) > 0 AND every block.State ==
-Pending AND file.ObjectID == zero`. This captures fresh-file-create
-(VM image clone — primary target) and full-overwrite (`cp -f`,
-`dd`-overwrite, restore-from-backup). It intentionally excludes the
-running-VM hot path (incremental writes already get chunk-level dedup
-via Phase 11 `GetByHash` and would not benefit from file-level
-fingerprinting that requires a quiesce).
+Trigger condition: `len(Blocks) > 0 AND every block.State == Pending AND
+file.ObjectID == zero`. This captures fresh-file-create (VM image clone —
+the primary target) and full-overwrite (`cp -f`, `dd`-overwrite,
+restore-from-backup). It intentionally excludes the running-VM hot path:
+incremental writes already get chunk-level dedup via `GetByHash` and would
+not benefit from file-level fingerprinting that requires a quiesce.
 
-### Production call chain (post-Plans 13-12 / 13-13)
+### Production call chain
 
-The end-to-end wiring as of v0.15.0 (Plans 13-12 + 13-13 closed the
-Phase 13 chain). Reads bottom-up; arrows show synchronous dispatch:
+The end-to-end wiring. Reads bottom-up; arrows show synchronous dispatch:
 
 ```
 Production call chain (per-write, on quiesce):
@@ -1264,7 +1219,7 @@ Production call chain (per-write, on quiesce):
     → internal/adapter/common.CommitBlockStore
     → engine.BlockStore.Flush
     → engine.Syncer.Flush
-        ├─[BSCAS-05 short-circuit]
+        ├─[file-level dedup short-circuit]
         │   ├─ snapshotPendingBlockRefs(payloadID)         // ListFileBlocks projection
         │   ├─ coordinator.GetFileObjectID(payloadID)      // trigger-condition check
         │   ├─ TrySpeculativeFileLevelDedup
@@ -1278,7 +1233,7 @@ Production call chain (per-write, on quiesce):
         │   │       └─ local.DeleteAppendLog(payloadID)
         │   └─[hit] return Finalized:true (zero new CAS PUTs)
         │
-        └─[BSCAS-04 post-Flush hook (on miss OR no trigger)]
+        └─[post-Flush hook (on miss OR no trigger)]
             ├─ drainPayloadToRemote (uploadOne per Pending block)
             ├─ snapshotBlockRefs (every block now Remote)
             └─ persistFileBlocksAfterFlush
@@ -1286,11 +1241,11 @@ Production call chain (per-write, on quiesce):
                 └─ coordinator.PersistFileBlocks(blocks, objectID)
                     └─ runtime coordinator: WithTransaction(GetFileByPayloadID + PutFile)
                         // FileAttr.Blocks AND FileAttr.ObjectID
-                        // written in one metadata txn (CR-01)
+                        // written in one metadata txn
 ```
 
 Both branches finalize `FileAttr.ObjectID` inside the same metadata
-transaction that persists `FileAttr.Blocks` (D-05). The hit branch
+transaction that persists `FileAttr.Blocks`. The hit branch
 performs zero new CAS PUTs (donor blocks already exist remotely);
 the miss branch uploads each Pending block once via `uploadOne` and
 then runs the post-Flush hook.
@@ -1298,8 +1253,8 @@ then runs the post-Flush hook.
 Source-of-truth file:line anchors:
 
 - `pkg/blockstore/engine/syncer.go::Flush` — entry point + branch
-  selection; `snapshotPendingBlockRefs` (BSCAS-05 input) and
-  `snapshotBlockRefs` (BSCAS-04 input) helpers.
+  selection; `snapshotPendingBlockRefs` (short-circuit input) and
+  `snapshotBlockRefs` (post-Flush input) helpers.
 - `pkg/blockstore/engine/dedup.go::TrySpeculativeFileLevelDedup` and
   `applyFileLevelDedupHit` — the metadata-side swap.
 - `pkg/blockstore/engine/dedup.go::persistFileBlocksAfterFlush` — the
@@ -1323,8 +1278,8 @@ race conformance scenarios.
 
 `MetadataStore.FindByObjectID(ctx, ObjectID) ([]BlockRef, error)`
 returns `(nil, nil)` on miss; on hit returns the canonical BlockRef
-list of the matching file (per-metadata-store scope, NOT per-share —
-D-13). Backends maintain a secondary index:
+list of the matching file (per-metadata-store scope, NOT per-share).
+Backends maintain a secondary index:
 
 | Backend  | Index                                                                       |
 |----------|-----------------------------------------------------------------------------|
@@ -1338,49 +1293,40 @@ so partial states never trigger a false short-circuit.
 
 ### Observability
 
-Phase 13 emits slog-only signals (D-20; matches Phase 11 D-35 / Phase
-12 D-42 deferral):
+The dedup path emits slog-only signals:
 
 - **DEBUG**: post-Flush ObjectID persisted; short-circuit hit/miss
   with `payloadID`, `objectID`, `donor_blocks`.
 - **INFO**: cross-VM dedup ratio emitted by the e2e fixture
   (`test/e2e/dedup_vmfleet_test.go`, nightly).
 
-No new Prometheus surface; metrics roll into the dedicated
-observability phase.
+### Performance gate
 
-### Performance gate (D-21)
+A CI perf lane gates random-write regression against a baseline
+(`pkg/blockstore/engine/perf_bench_test.go`). ObjectID compute is one
+BLAKE3 pass over `32×N` bytes per quiesce (sub-millisecond at N=16K
+BlockRefs); the short-circuit lookup is one indexed query per quiesce.
+Both fire off the random-write hot path.
 
-Hard gate: ≤2% rand-write regression vs `BenchmarkRandWriteCAS`
-baseline. The microbench
-(`pkg/blockstore/engine/perf_bench_test.go::BenchmarkRandWrite_Phase13Baseline`)
-mirrors the Phase 12 D-43 paired-bench pattern and is gated by the CI
-perf lane (`D21_STRICT_GATE=1`). ObjectID compute is one BLAKE3 pass
-over `32×N` bytes per quiesce (sub-millisecond at N=16K BlockRefs);
-short-circuit lookup is one indexed query per quiesce. Both fire off
-the random-write hot path.
+## Migration & Block-Layout Routing
 
-## Migration & Block-Layout Routing (v0.15.x A5)
-
-Phase 14 (#425) ships `dfsctl blockstore migrate` — the offline tool
-that converts a v0.13/v0.14 share's block layout from path-indexed
-legacy keys (`{payloadID}/block-{idx}`) to the v0.15 CAS layout
-(`cas/{hh}/{hh}/{hex}`). Two ARCHITECTURE-level pieces ship alongside
-the tool: the per-share **`block_layout`** flag, and the engine-level
-gate that routes reads through the dual-read shim or the CAS-only
-fast path based on that flag.
+`dfs migrate-to-cas` is the offline tool that converts a share's block
+layout from the older path-indexed keys (`{payloadID}/block-{idx}`) to the
+content-addressable layout (`cas/{hh}/{hh}/{hex}`). Two pieces support it:
+a per-share **`block_layout`** flag, and an engine-level gate that fails
+loud on legacy reads once a share is marked CAS-only.
 
 ### Per-share `block_layout` flag
 
-A new field `block_layout` on `metadata.ShareOptions` carries the
-share's authoritative layout state (Plan 14-01, D-A6):
+A field `block_layout` on `metadata.ShareOptions` carries the share's
+authoritative layout state:
 
 ```go
 // pkg/metadata/types.go
 type BlockLayout uint8
 
 const (
-    BlockLayoutLegacy   BlockLayout = iota   // dual-read: shim + CAS
+    BlockLayoutLegacy   BlockLayout = iota   // pre-migration on-disk layout
     BlockLayoutCASOnly                       // CAS-only: legacy reads fail loud
 )
 
@@ -1394,14 +1340,13 @@ Storage:
 
 | Backend  | Layout                                                               |
 |----------|----------------------------------------------------------------------|
-| Postgres | Dedicated `block_layout TEXT NOT NULL DEFAULT 'legacy'` column on `shares` (migration `000014_block_layout.up.sql`, reversible). Authoritative over the legacy options JSON blob. |
-| Badger   | Inline-encoded inside the existing `ShareOptions` blob (gob; `omitempty` on the new field for forward-compat with pre-Phase-14 rows). |
+| Postgres | Dedicated `block_layout TEXT NOT NULL DEFAULT 'legacy'` column on `shares` (reversible migration). Authoritative over the options JSON blob. |
+| Badger   | Inline-encoded inside the existing `ShareOptions` blob (gob; `omitempty` on the field for forward-compat with older rows). |
 | Memory   | Direct field on the in-process struct.                               |
 
 `ParseBlockLayout("")` coerces empty / missing values to
-`BlockLayoutLegacy` so pre-Phase-14 metadata rows decode cleanly
-(forward-compat). Unknown values surface
-`metadata.ErrInvalidBlockLayout` rather than silently coercing.
+`BlockLayoutLegacy` so older metadata rows decode cleanly. Unknown values
+surface `metadata.ErrInvalidBlockLayout` rather than silently coercing.
 
 The flag is read **once** by `shares.Service.createBlockStoreForShare`
 when the share's per-share `*engine.BlockStore` is constructed, then
@@ -1410,13 +1355,11 @@ re-reads it during normal operation; the migration tool's cutover
 runs while the daemon is offline so a stale in-memory copy is
 impossible.
 
-### Dual-read shim and the CAS-only gate
+### The CAS-only gate
 
-The dual-read shim is the engine code path that resolves block reads
-from two coexisting key spaces (see
-[Dual-Read Window](#dual-read-window-phase-11--phase-14) for the
-per-block resolution rules). The Phase 14 gate sits one level above
-the shim, in `engine.Syncer.dispatchRemoteFetch`:
+A share marked `block_layout=cas-only` must never read from the older
+key space. The gate that enforces this sits in
+`engine.Syncer.dispatchRemoteFetch`:
 
 ```text
         ┌───────────────────────────────────────────┐
@@ -1436,70 +1379,44 @@ the shim, in `engine.Syncer.dispatchRemoteFetch`:
                 │                │                  │
                 ▼                ▼                  ▼
           (CAS path)     remote.ReadBlock    ErrLegacyReadOnCASOnly
-                         (dual-read shim)    (fail loud, slog Error)
+                                             (fail loud, slog Error)
 ```
 
-Concretely:
+On a `cas-only` share, a legacy-shaped FileBlock surfaces
+`engine.ErrLegacyReadOnCASOnly`: the function logs at Error with
+`block_id` + `store_key` and returns the wrapped sentinel rather than
+silently falling through to `ReadBlock`. This guards against a
+freshly-migrated share encountering a forgotten legacy FileBlock — the
+engine fails loud rather than reading from a key the migration already
+deleted.
 
-- **`block_layout=legacy`** (the default for upgraded shares before
-  migration): the engine resolves CAS-shaped FileBlocks via the CAS
-  path AND legacy-shaped FileBlocks via the dual-read shim. Both key
-  spaces coexist. This is exactly the Phase 11 → Phase 14 dual-read
-  window described above.
-- **`block_layout=cas-only`** (set by the migration tool's cutover
-  txn after integrity passes): legacy-shaped FileBlocks surface
-  `engine.ErrLegacyReadOnCASOnly` as a fail-loud signal. The function
-  logs at Error with `block_id` + `store_key` and returns the wrapped
-  sentinel rather than silently falling through to `ReadBlock`. This
-  guards against the case where a freshly-cutover share encounters a
-  forgotten legacy FileBlock — the engine fails loud rather than
-  reading from a key that the migration tool already deleted.
+The gate is defense-in-depth: the migration's atomic per-file `PutFile`
+already updates every legacy FileBlock to the CAS shape before flipping
+`block_layout`. A legacy-shaped block post-cutover indicates a migration
+bug, metadata corruption, or a hand-edited row — all of which demand
+operator attention rather than a silent legacy read.
 
-The gate is defense-in-depth: the migration tool's atomic per-file
-`PutFile` already updates every legacy FileBlock to the CAS shape
-before flipping `block_layout`. Encountering a legacy-shaped block
-post-cutover indicates either a migration-tool bug, a metadata-store
-corruption, or a hand-edited row — all of which are operationally
-distinct from a normal dual-read fallback and demand operator
-attention rather than a silent legacy read.
+### The migration tool
 
-### Migration tool boundary
+`dfs migrate-to-cas` is intentionally **offline-only** and runs against the
+stopped server's storage root:
 
-The migration tool itself is intentionally **offline-only** (D-A5)
-and lives outside the daemon:
+- It requires `--storage-dir <root>`, expected to contain a
+  `shares/<name>/blocks/` subtree per share.
+- It refuses to run while a daemon is serving the target share.
+- It is idempotent: a per-share journal at
+  `<storage-dir>/shares/<name>/.dittofs-migrate-to-cas.state` lets a run
+  resume after a crash without re-uploading already-migrated chunks.
+- The pipeline is: walk → FastCDC re-chunk → `GetByHash` dedup probe →
+  upload (or `IncrementRefCount`) → `PutFile` Blocks + ObjectID → journal
+  append → integrity HEAD-per-ref → cutover (`block_layout` flip) → legacy
+  delete sweep.
+- On success it writes `<storage-dir>/shares/<name>/.cas-migrated-v1` via
+  atomic rename; the server's boot guard refuses to start until that
+  sentinel exists.
 
-- Tool entrypoint: `cmd/dfsctl/commands/blockstore/migrate.go`,
-  invoked via `dfsctl blockstore migrate --share NAME`.
-- Tool composition root: `openOfflineRuntime` in
-  `cmd/dfsctl/commands/blockstore/migrate_runtime.go`. It composes
-  per-share metadata + remote stores directly from the controlplane
-  DB, deliberately bypassing `pkg/controlplane/runtime.Runtime` so
-  the tool cannot accidentally race a live daemon.
-- Tool refuses to run if a daemon is serving the target share — the
-  `ensureDaemonOffline` PID-file probe is run before any work.
-- The tool's pipeline is: walk → FastCDC re-chunk → `GetByHash` dedup
-  probe → upload (or `IncrementRefCount`) → `PutFile` Blocks +
-  ObjectID → journal Append → integrity HEAD-per-ref → cutover
-  (`block_layout` flip) → legacy delete sweep. See
-  [BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md#phase-14-v015x-a5--dfsctl-blockstore-migrate-runbook)
-  for the full operator-facing runbook.
-
-### Phase 15 (A6) removes the dual-read shim
-
-Phase 15 is intentionally deferred until Phase 14's migration tool has
-been rolled out across production workloads (per-share verification
-via `dfsctl blockstore migrate status`). Once every production share
-is `block_layout=cas-only`, Phase 15 deletes:
-
-- The `engine.Syncer.dispatchRemoteFetch` legacy fallback branch.
-- The Phase 11 D-21 metadata-driven legacy resolver.
-- The `block_layout=legacy` enum variant (collapsed to a single
-  CAS-only routing).
-- Every `{payloadID}/block-{idx}` key-handling code path.
-
-Until Phase 15 ships, anyone touching the dual-read shim should be
-aware it is on a deletion clock — no new behavior should accumulate
-there.
+See [BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md) for the full
+operator runbook.
 
 ## Performance Characteristics
 
@@ -1509,7 +1426,7 @@ DittoFS is designed for high performance through several architectural choices:
 - **Goroutine-per-connection model**: Leverages Go's lightweight concurrency
 - **Buffer pooling**: Reduces GC pressure for large I/O operations
 - **Streaming I/O**: Efficient handling of large files without full buffering
-- **Three-tier storage**: Unified CAS-keyed `Cache` + local disk + remote store for optimal read latency (Phase 12 collapsed Phase 11's `readbuffer + prefetcher` pair into a single `Cache` type)
+- **Three-tier storage**: Unified CAS-keyed `Cache` + local disk + remote store for optimal read latency
 - **Zero-copy aspirations**: Working toward minimal data copying in hot paths
 
 ## Why Pure Go?

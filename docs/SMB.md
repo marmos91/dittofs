@@ -432,14 +432,13 @@ err := common.CommitBlockStore(ctx.Context, blockStore, payloadID)
 ```
 
 These three helpers (`ReadFromBlockStore`, `WriteToBlockStore`,
-`CommitBlockStore`) are the Phase-12 seam where v0.15.0 A3 (META-01 +
-API-01) will plumb `[]BlockRef` into the engine — handler code does not
-change.
+`CommitBlockStore`) are the seam that plumbs `[]BlockRef` into the engine —
+handler code does not change.
 
 ### Error mapping
 
-As of v0.15.0 (Phase 09 ADAPT-03), every `metadata.ErrorCode` is
-translated to an `NTSTATUS` via `internal/adapter/common.MapToSMB`, which
+Every `metadata.ErrorCode` is translated to an `NTSTATUS` via
+`internal/adapter/common.MapToSMB`, which
 consumes the same shared table as NFSv3 / NFSv4
 (`internal/adapter/common/errmap.go`). Examples:
 

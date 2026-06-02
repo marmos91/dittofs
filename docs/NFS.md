@@ -321,9 +321,9 @@ Internal errors are mapped to NFS status codes in `pkg/metadata/errors.go`.
 
 #### Canonical translation table
 
-As of v0.15.0 (Phase 09 ADAPT-03), every `metadata.ErrorCode` value is
-translated to an NFSv3 or NFSv4 status code by a single shared table in
-`internal/adapter/common/errmap.go`. The accessors are:
+Every `metadata.ErrorCode` value is translated to an NFSv3 or NFSv4 status
+code by a single shared table in `internal/adapter/common/errmap.go`. The
+accessors are:
 
 - `common.MapToNFS3(err) uint32` — NFSv3 status (e.g., `NFS3ERR_NOENT`)
 - `common.MapToNFS4(err) uint32` — NFSv4 status (e.g., `NFS4ERR_NOENT`)
