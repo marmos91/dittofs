@@ -10,12 +10,12 @@ Only NEW failures (not in this list) will cause CI to fail.
 Every remaining entry is justified and falls into exactly one bucket. No
 UNJUSTIFIED entries remain — the #673 acceptance criterion is met.
 
-| Bucket | Count | Where |
-|--------|-------|-------|
-| **Upstream Samba known-fail** (fails on the reference Samba server too; cited) | 3 | `charset.Testing`, `notify.valid-req`, `session.reauth5` |
-| **Deferred past v1.0 with a tracking issue** (justified by deferral) | 22 | `ioctl.copy_chunk_sparse_dest` (#750), `durable-v2-open.persistent-open-{oplock,lease}` (#739), the 19 replay `*-sane` / `replay-dhv2-oplock2` rows (#749) |
-| **Permanently Unimplementable / harness-only** (appendix) | 46 | see [appendix](#permanently-unimplementable-out-of-scope) |
-| **Total (non-Kerberos)** | **71** | |
+- **Upstream Samba known-fail** (fails on the reference Samba server too; cited) — **3**: `charset.Testing`, `notify.valid-req`, `session.reauth5`
+- **Deferred past v1.0 with a tracking issue** (justified by deferral) — **22**: `ioctl.copy_chunk_sparse_dest` (#750), `durable-v2-open.persistent-open-{oplock,lease}` (#739), the 19 replay `*-sane` / `replay-dhv2-oplock2` rows (#749)
+- **Permanently Unimplementable / harness-only** (see [appendix](#permanently-unimplementable-out-of-scope)) — **46**
+- **Total (non-Kerberos): 71**
+
+(Rendered as a list, not a markdown table, so `parse-results.sh` — which ingests every line beginning with `|` — does not mistake these tally lines for known-failure rows.)
 
 Kerberos: 1 row in `KNOWN_FAILURES_KERBEROS.md` (`reauth5`, upstream knownfail),
 loaded only under `--use-kerberos` (excluded from the v1.0 CI gate).
@@ -346,7 +346,7 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 
 ### Kerberos
 
-`KNOWN_FAILURES_KERBEROS.md` now carries a single row (`smb2.reauth5`, an upstream Samba selftest knownfail) after the #686 Kerberos sweep harvested the stale multi-channel rows. It is loaded only when smbtorture runs with `--use-kerberos`, which is excluded from the v1.0 CI matrix (`run.sh:533`), so it does not gate v1.0.
+`KNOWN_FAILURES_KERBEROS.md` now carries a single row (`smb2.reauth5`, an upstream Samba selftest knownfail) after the #686 Kerberos sweep harvested the stale multi-channel rows. It is loaded only when smbtorture runs with `--use-kerberos`, which the non-Kerberos v1.0 CI job (`.github/workflows/smb-conformance.yml`, running `./run.sh` without `--kerberos`) does not pass, so it does not gate v1.0.
 
 ## Changelog
 

@@ -10,11 +10,11 @@ all failures are in this list. New failures not listed here will cause CI to fai
 Every remaining entry is justified and falls into exactly one bucket. No
 UNJUSTIFIED entries remain.
 
-| Bucket | Count | Where |
-|--------|-------|-------|
-| **Flaky** (justified — identical wire trace to the passing develop run; outcome hinges on WPTS-framework cleanup-phase exception handling) | 1 | `BVT_DirectoryLeasing_ReadWriteHandleCaching` |
-| **Permanently Unimplementable / out-of-scope** (appendix) | 39 | VHD/RSVD ×26, SWN ×6, SQoS ×3, DFS ×2, NamedPipe ×2 |
-| **Total** | **40** | |
+- **Flaky** (justified — identical wire trace to the passing develop run; outcome hinges on WPTS-framework cleanup-phase exception handling) — **1**: `BVT_DirectoryLeasing_ReadWriteHandleCaching`
+- **Permanently Unimplementable / out-of-scope** (appendix) — **39**: VHD/RSVD ×26, SWN ×6, SQoS ×3, DFS ×2, NamedPipe ×2
+- **Total: 40**
+
+(Rendered as a list, not a markdown table, so `parse-results.sh` — which ingests every line beginning with `|` — does not mistake these tally lines for known-failure rows.)
 
 No WPTS entry is deferred-with-issue: every fixable BVT test has already been
 flipped, leaving one flaky row and the architecturally out-of-scope appendix.
