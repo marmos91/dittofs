@@ -41,8 +41,14 @@ type Connection struct {
 	writeMu    smb.LockedWriter // Protects connection writes (replies must be serialized)
 
 	// Session tracking for cleanup on disconnect
-	sessionsMu sync.Mutex          // Protects sessions map
+	sessionsMu sync.Mutex          // Protects sessions and boundSessions
 	sessions   map[uint64]struct{} // Sessions created on this connection
+
+	// boundSessions are sessions whose channel was bound on this connection
+	// (MS-SMB2 §3.3.5.5.2) but whose lifecycle is owned by another connection.
+	// On close, this connection removes only its channel from each such session;
+	// the session survives until its last channel closes (§3.3.7.1).
+	boundSessions map[uint64]struct{}
 
 	// CryptoState holds per-connection cryptographic negotiation state
 	// including the preauth integrity hash chain for SMB 3.1.1.
@@ -55,12 +61,13 @@ type Connection struct {
 // preauth integrity hash computation from the very first message.
 func NewConnection(server *Adapter, conn net.Conn) *Connection {
 	return &Connection{
-		ID:          nextConnID.Add(1),
-		server:      server,
-		conn:        conn,
-		requestSem:  make(chan struct{}, server.config.MaxRequestsPerConnection),
-		sessions:    make(map[uint64]struct{}),
-		CryptoState: smb.NewConnectionCryptoState(),
+		ID:            nextConnID.Add(1),
+		server:        server,
+		conn:          conn,
+		requestSem:    make(chan struct{}, server.config.MaxRequestsPerConnection),
+		sessions:      make(map[uint64]struct{}),
+		boundSessions: make(map[uint64]struct{}),
+		CryptoState:   smb.NewConnectionCryptoState(),
 	}
 }
 
@@ -88,6 +95,25 @@ func (c *Connection) TrackSession(sessionID uint64) {
 			SMB:      &clients.SmbDetails{SessionID: sessionID},
 		})
 	}
+}
+
+// BindSession records that a channel of sessionID was bound on this connection
+// (MS-SMB2 §3.3.5.5.2). Unlike TrackSession, this connection does not own the
+// session's lifecycle — it merely carries one of its channels. On connection
+// close, cleanupSessions removes this connection's channel from the session and
+// only tears the session down once its last channel is gone (§3.3.7.1).
+func (c *Connection) BindSession(sessionID uint64) {
+	c.sessionsMu.Lock()
+	defer c.sessionsMu.Unlock()
+	// A session created here (TrackSession) already owns its lifecycle on this
+	// connection; don't downgrade it to a mere bound channel.
+	if _, owned := c.sessions[sessionID]; owned {
+		return
+	}
+	c.boundSessions[sessionID] = struct{}{}
+	logger.Debug("Binding session channel on connection",
+		"sessionID", sessionID,
+		"address", c.conn.RemoteAddr().String())
 }
 
 // UntrackSession removes a session from this connection's tracking.
@@ -399,32 +425,55 @@ func (c *Connection) handleConnectionClose() {
 		"cleanupDuration", cleanupDur)
 }
 
-// cleanupSessions cleans up all sessions that were created on this connection.
+// cleanupSessions cleans up the sessions this connection participated in when
+// the connection closes.
+//
+// Multichannel session survival (MS-SMB2 §3.3.7.1): a session may span several
+// connections (its originating connection plus channels bound via
+// SMB2_SESSION_FLAG_BINDING, §3.3.5.5.2). Closing ONE connection removes only
+// that connection's channel from each session it touched. The session — and any
+// operation parked on it, such as a pending durable-handle reservation — is
+// fully torn down only once its LAST channel is gone. This mirrors Samba's
+// smbXsrv_session_remove_channel, which destroys the session only when
+// num_channels reaches 0.
+//
+// Single-channel sessions (the common case) always reach a zero channel count
+// on close and tear down exactly as before.
 func (c *Connection) cleanupSessions() {
 	clientAddr := c.conn.RemoteAddr().String()
 
 	c.sessionsMu.Lock()
-	sessions := make([]uint64, 0, len(c.sessions))
+	touched := make([]uint64, 0, len(c.sessions)+len(c.boundSessions))
 	for sessionID := range c.sessions {
-		sessions = append(sessions, sessionID)
+		touched = append(touched, sessionID)
+	}
+	for sessionID := range c.boundSessions {
+		if _, owned := c.sessions[sessionID]; !owned {
+			touched = append(touched, sessionID)
+		}
 	}
 	c.sessions = make(map[uint64]struct{})
+	c.boundSessions = make(map[uint64]struct{})
 	c.sessionsMu.Unlock()
 
-	if len(sessions) == 0 {
+	if len(touched) == 0 {
+		return
+	}
+
+	// Remove this connection's channel from each session, then keep only the
+	// sessions whose last channel just closed — those are the ones to tear down.
+	dying := c.removeChannelsAndPartition(touched, clientAddr)
+	if len(dying) == 0 {
 		return
 	}
 
 	logger.Debug("Cleaning up sessions on connection close",
 		"address", clientAddr,
-		"sessionCount", len(sessions))
+		"sessionCount", len(dying))
 
-	// Clean up session→ConnInfo mapping so lease break notifications
-	// are no longer routed to this (now-closed) connection.
-	// Also deregister from the client registry.
+	// Deregister fully-closed sessions from the client registry.
 	rt := c.server.Registry
-	for _, sessionID := range sessions {
-		c.server.sessionConns.Delete(sessionID)
+	for _, sessionID := range dying {
 		if rt != nil {
 			rt.Clients().Deregister(smbClientID(sessionID))
 		}
@@ -439,7 +488,7 @@ func (c *Connection) cleanupSessions() {
 	// enter CleanupSession. Without this pre-increment, there is a race window
 	// where cleanupWg is 0 (Add hasn't been called yet) and WaitForCleanup
 	// returns immediately, allowing the new session to access stale state.
-	c.server.handler.SignalPendingCleanup(len(sessions))
+	c.server.handler.SignalPendingCleanup(len(dying))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -450,7 +499,7 @@ func (c *Connection) cleanupSessions() {
 	cleaned := 0
 	defer func() {
 		if r := recover(); r != nil {
-			remaining := len(sessions) - cleaned
+			remaining := len(dying) - cleaned
 			for i := 0; i < remaining; i++ {
 				c.server.handler.SignalCleanupDone()
 			}
@@ -458,7 +507,7 @@ func (c *Connection) cleanupSessions() {
 		}
 	}()
 
-	for _, sessionID := range sessions {
+	for _, sessionID := range dying {
 		c.server.handler.CleanupSession(ctx, sessionID, true /* transport disconnect */)
 		cleaned++
 	}
@@ -468,7 +517,60 @@ func (c *Connection) cleanupSessions() {
 
 	logger.Debug("Session cleanup complete",
 		"address", clientAddr,
-		"sessionCount", len(sessions))
+		"sessionCount", len(dying))
+}
+
+// removeChannelsAndPartition unbinds this connection's channel from each of the
+// given sessions and returns the subset whose LAST channel just closed (and so
+// must be fully torn down). Sessions that still have a live channel survive
+// (MS-SMB2 §3.3.7.1) — only their break-routing entry is cleaned up when it
+// pointed at this connection. This is the pure channel-survival decision,
+// separated from the runtime-backed teardown so it can be tested in isolation.
+func (c *Connection) removeChannelsAndPartition(sessions []uint64, clientAddr string) []uint64 {
+	var dying []uint64
+	for _, sessionID := range sessions {
+		sess, ok := c.server.handler.GetSession(sessionID)
+		if !ok {
+			// Session already gone (e.g. concurrent LOGOFF / supersession).
+			// Drop any stale break-routing entry pointing at this connection
+			// and move on; there is nothing left to tear down.
+			c.deleteOwnSessionConn(sessionID)
+			continue
+		}
+		sess.RemoveChannel(c.ID)
+		// Reap any half-finished bind auth state for THIS connection. Pending
+		// auth is keyed by (SessionID, ConnID), so this drops only this
+		// channel's entry and leaves other channels' binds intact. For dying
+		// sessions, CleanupSession's DeleteAllPendingAuthForSession is a
+		// superset, so doing it here too is harmless.
+		c.server.handler.DeletePendingAuth(sessionID, c.ID)
+		// Drop the break-routing entry only if it still points at THIS
+		// (now-closed) connection — otherwise it belongs to a surviving
+		// channel and break fan-out must keep using it.
+		c.deleteOwnSessionConn(sessionID)
+		if sess.ChannelCount() > 0 {
+			logger.Debug("Connection close: session survives on remaining channels",
+				"address", clientAddr,
+				"sessionID", sessionID,
+				"remainingChannels", sess.ChannelCount())
+			continue
+		}
+		dying = append(dying, sessionID)
+	}
+	return dying
+}
+
+// deleteOwnSessionConn removes the session→ConnInfo break-routing entry for
+// sessionID only when it currently points at THIS connection. When a surviving
+// channel on another connection owns the entry, it is left intact so break
+// fan-out continues to reach the client (MS-SMB2 §3.3.4.7).
+func (c *Connection) deleteOwnSessionConn(sessionID uint64) {
+	if v, ok := c.server.sessionConns.Load(sessionID); ok {
+		if ci, ok := v.(*smb.ConnInfo); ok && ci != nil && ci.ConnID != c.ID {
+			return
+		}
+	}
+	c.server.sessionConns.Delete(sessionID)
 }
 
 // handleRequestPanic handles cleanup and panic recovery for individual requests.

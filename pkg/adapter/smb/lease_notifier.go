@@ -254,6 +254,15 @@ func (t *connRegistryTracker) TrackSession(sessionID uint64) {
 	}
 }
 
+// BindSession records a bound channel on the connection. The channel itself is
+// registered on the session by the SESSION_SETUP bind path (AddChannel); this
+// only records the bind for connection-close accounting so the session survives
+// until its last channel closes. No sessionConns entry is created — break
+// fan-out reaches bound channels via the session's channel registry.
+func (t *connRegistryTracker) BindSession(sessionID uint64) {
+	t.inner.BindSession(sessionID)
+}
+
 // UntrackSession removes a session from the connection, deregisters its
 // ConnInfo from the break fallback, and unbinds the channel from the
 // session registry.

@@ -567,11 +567,15 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		smb.TrackSessionLifecycle(types.SMB2SessionSetup, 55, 55, types.StatusSuccess, true, c)
 
 		c.sessionsMu.Lock()
-		_, exists := c.sessions[55]
+		_, owned := c.sessions[55]
+		_, bound := c.boundSessions[55]
 		c.sessionsMu.Unlock()
 
-		if exists {
-			t.Error("Channel bind must not track bound session on this connection")
+		if owned {
+			t.Error("Channel bind must not own the session lifecycle on this connection")
+		}
+		if !bound {
+			t.Error("Channel bind must record the bound session for channel accounting")
 		}
 	})
 

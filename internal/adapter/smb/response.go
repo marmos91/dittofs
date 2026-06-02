@@ -1273,11 +1273,12 @@ func HandleSMB1Negotiate(connInfo *ConnInfo, message []byte) error {
 // TrackSessionLifecycle tracks session creation/deletion for connection cleanup.
 // This ensures proper cleanup when connections close ungracefully.
 //
-// Channel-bind responses (isBinding==true) are explicitly skipped: a
-// successful bind does not create a session on this connection — the
-// session lives on a different connection, and tracking it here would
-// cause this connection's close to delete the original session via
-// cleanupSessions() (MS-SMB2 §3.3.5.5.2).
+// Channel-bind responses (isBinding==true) are recorded via BindSession rather
+// than TrackSession: a successful bind does not create a session on this
+// connection — the session lives on its originating connection. The bound
+// channel is tracked so this connection's close removes only THIS channel; the
+// session is fully torn down only once its last channel is gone (MS-SMB2
+// §3.3.7.1, multichannel session survival). See cleanupSessions().
 func TrackSessionLifecycle(command types.Command, reqSessionID, ctxSessionID uint64, status types.Status, isBinding bool, tracker SessionTracker) {
 	if tracker == nil {
 		return
@@ -1285,16 +1286,27 @@ func TrackSessionLifecycle(command types.Command, reqSessionID, ctxSessionID uin
 
 	switch command {
 	case types.SMB2SessionSetup:
-		if status != types.StatusSuccess || isBinding {
+		if status != types.StatusSuccess {
 			return
 		}
 		sessionIDToTrack := ctxSessionID
 		if sessionIDToTrack == 0 {
 			sessionIDToTrack = reqSessionID
 		}
-		if sessionIDToTrack != 0 {
-			tracker.TrackSession(sessionIDToTrack)
+		if sessionIDToTrack == 0 {
+			return
 		}
+		if isBinding {
+			// A successful channel bind does not create a session on this
+			// connection — the session lives on its originating connection.
+			// Record it as a bound channel so this connection's close removes
+			// just THIS channel; the session itself is torn down only when its
+			// last channel is gone (MS-SMB2 §3.3.7.1, multichannel session
+			// survival). See cleanupSessions().
+			tracker.BindSession(sessionIDToTrack)
+			return
+		}
+		tracker.TrackSession(sessionIDToTrack)
 	case types.SMB2Logoff:
 		if status == types.StatusSuccess && reqSessionID != 0 {
 			tracker.UntrackSession(reqSessionID)
