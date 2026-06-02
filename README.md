@@ -35,9 +35,9 @@ Traditional file servers are welded to one storage layer and one access protocol
 DittoFS separates the two. A single server process can:
 
 - Speak **NFSv3, NFSv4.0, NFSv4.1, and SMB2/3** at the same time, over the same data.
-- Store metadata in **memory, BadgerDB, or PostgreSQL** — chosen per share.
+- Store metadata in **memory, [BadgerDB](https://github.com/dgraph-io/badger), or [PostgreSQL](https://www.postgresql.org/docs/)** — chosen per share.
 - Store file content in a two-tier **block store**: a fast local tier (filesystem or
-  memory) backed by a durable remote tier (S3 or memory), with an async syncer between them.
+  memory) backed by a durable remote tier ([S3](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html) or memory), with an async syncer between them.
 - Run **entirely in userspace** — no FUSE, no kernel modules, no special privileges.
 
 Everything is built from **named, reusable stores** wired together into **shares**.

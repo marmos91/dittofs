@@ -63,8 +63,26 @@ also live in [NFS.md](NFS.md#glossary) and [SMB.md](SMB.md#glossary).
 | **CAS** (Content-Addressed Storage) | Storage that names each block by the hash of its contents rather than by location, so identical data is stored once and deduplicated automatically. |
 | **FastCDC** | A content-defined chunking algorithm that splits file data into variable-size chunks at content-based boundaries, so small edits only re-chunk the affected region. [FastCDC paper (USENIX ATC '16)](https://www.usenix.org/conference/atc16/technical-sessions/presentation/xia) |
 | **BLAKE3** | The fast cryptographic hash DittoFS uses to address CAS blocks and verify them end-to-end. [BLAKE3 specification](https://github.com/BLAKE3-team/BLAKE3-specs) |
-| **Block store** | The per-share content layer: a fast local tier (filesystem or memory) backed by a durable remote tier (S3 or memory), with an async syncer between them. |
-| **Metadata store** | The pluggable backend that holds the directory tree, file attributes, and ACLs — memory, BadgerDB, or PostgreSQL, chosen per share. |
+| **Block store** | The per-share content layer: a fast local tier (filesystem or memory) backed by a durable remote tier ([S3](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html) or memory), with an async syncer between them. |
+| **Metadata store** | The pluggable backend that holds the directory tree, file attributes, and ACLs — memory, [BadgerDB](https://github.com/dgraph-io/badger), or [PostgreSQL](https://www.postgresql.org/docs/), chosen per share. |
+
+## Implementation and tooling
+
+External components and standards DittoFS builds on. Links go to each project's
+own documentation for readers who want to go deeper.
+
+| Term | What it is |
+|------|------------|
+| **S3 API** | The HTTP object-storage API used for the durable remote block tier; works against Amazon S3 and S3-compatible stores (MinIO, Ceph, …). [S3 API reference](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html) |
+| **BadgerDB** | An embedded key/value store (pure Go) — one of the metadata-store backends. [Badger](https://github.com/dgraph-io/badger) |
+| **PostgreSQL** | A relational database — the production-grade metadata-store backend. [PostgreSQL docs](https://www.postgresql.org/docs/) |
+| **SQLite** | The embedded SQL database used for the control-plane store by default. [SQLite](https://www.sqlite.org/docs.html) |
+| **Cobra** | The Go library that builds the `dfs`/`dfsctl` command trees (subcommands, flags, help). [Cobra](https://github.com/spf13/cobra) |
+| **Viper** | The configuration library that layers the config file, environment variables, and flags. [Viper](https://github.com/spf13/viper) |
+| **XDG Base Directory Specification** | The Unix convention that places config under `~/.config` and state under `~/.local/state`; DittoFS follows it for its config and state directories. [XDG spec](https://specifications.freedesktop.org/basedir-spec/latest/) |
+| **JWT** (JSON Web Token) | The signed token format the REST API uses for authenticated sessions. [RFC 7519](https://www.rfc-editor.org/rfc/rfc7519) |
+| **pprof** | Go's built-in CPU/memory/blocking profiler; DittoFS can expose it for performance debugging. [pprof](https://pkg.go.dev/net/http/pprof) |
+| **Prometheus** | The metrics format/scraper DittoFS exposes operational metrics in. [Prometheus](https://prometheus.io/docs/) |
 
 ## See also
 
