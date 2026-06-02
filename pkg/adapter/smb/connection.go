@@ -129,6 +129,10 @@ func (c *Connection) UntrackSession(sessionID uint64) {
 	c.sessionsMu.Lock()
 	defer c.sessionsMu.Unlock()
 	delete(c.sessions, sessionID)
+	// A LOGOFF may arrive on a bound multichannel channel rather than the
+	// owning connection. Clear the bound entry too so connection-close no
+	// longer treats this session as participating on this transport.
+	delete(c.boundSessions, sessionID)
 	logger.Debug("Untracking session from connection",
 		"sessionID", sessionID,
 		"address", c.conn.RemoteAddr().String())
@@ -142,10 +146,18 @@ func (c *Connection) UntrackSession(sessionID uint64) {
 // AnyTrackedSession returns one of the session IDs currently tracked on this
 // connection (zero if none). Used by SendErrorResponse on the wrong-
 // SessionId path — see SessionTracker docstring.
+//
+// A connection that carries ONLY bound multichannel channels (boundSessions
+// populated via BindSession, with no owned session) must still be able to
+// surface a SessionID so the wrong-SessionId error can be signed on this
+// transport. Fall back to a bound session when no owned session exists.
 func (c *Connection) AnyTrackedSession() uint64 {
 	c.sessionsMu.Lock()
 	defer c.sessionsMu.Unlock()
 	for id := range c.sessions {
+		return id
+	}
+	for id := range c.boundSessions {
 		return id
 	}
 	return 0
