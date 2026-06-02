@@ -15,9 +15,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
-	"github.com/marmos91/dittofs/pkg/blockstore/migrate"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/migrate"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	badgerstore "github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
@@ -328,7 +328,7 @@ func (a *cliMetadataAdapter) walkDir(ctx context.Context, dirHandle metadata.Fil
 				Path:      prefix + e.Name,
 				PayloadID: file.PayloadID,
 				Size:      int64(file.Size),
-				BlockSize: blockstore.BlockSize,
+				BlockSize: block.BlockSize,
 			})
 		}
 		if nextCursor == "" {
@@ -339,7 +339,7 @@ func (a *cliMetadataAdapter) walkDir(ctx context.Context, dirHandle metadata.Fil
 	return nil
 }
 
-func (a *cliMetadataAdapter) UpdateFileBlocks(ctx context.Context, handle metadata.FileHandle, blocks []blockstore.BlockRef) error {
+func (a *cliMetadataAdapter) UpdateFileBlocks(ctx context.Context, handle metadata.FileHandle, blocks []block.BlockRef) error {
 	file, err := a.store.GetFile(ctx, handle)
 	if err != nil {
 		return fmt.Errorf("get file for update: %w", err)
@@ -351,11 +351,11 @@ func (a *cliMetadataAdapter) UpdateFileBlocks(ctx context.Context, handle metada
 			return err
 		}
 		for _, br := range blocks {
-			fb := &blockstore.FileBlock{
+			fb := &block.FileBlock{
 				ID:       fmt.Sprintf("%s/%d", pid, br.Offset),
 				Hash:     br.Hash,
 				DataSize: br.Size,
-				State:    blockstore.BlockStateRemote,
+				State:    block.BlockStateRemote,
 				RefCount: 1,
 			}
 			if err := tx.Put(ctx, fb); err != nil {
@@ -366,19 +366,19 @@ func (a *cliMetadataAdapter) UpdateFileBlocks(ctx context.Context, handle metada
 	})
 }
 
-// nopFileBlockStore satisfies blockstore.EngineFileBlockStore without
+// nopFileBlockStore satisfies block.EngineFileBlockStore without
 // touching any persistent store. The migration path only writes CAS
 // chunks (which fs.FSStore handles through its own chunk store on
 // blocks/{hh}/{hh}/{hex}), so the FileBlock metadata surface is unused
 // during migration.
 type nopFileBlockStore struct{}
 
-func (nopFileBlockStore) GetByHash(_ context.Context, _ blockstore.ContentHash) (*blockstore.FileBlock, error) {
+func (nopFileBlockStore) GetByHash(_ context.Context, _ block.ContentHash) (*block.FileBlock, error) {
 	return nil, nil
 }
-func (nopFileBlockStore) Put(_ context.Context, _ *blockstore.FileBlock) error { return nil }
+func (nopFileBlockStore) Put(_ context.Context, _ *block.FileBlock) error { return nil }
 func (nopFileBlockStore) Delete(_ context.Context, _ string) error {
-	return blockstore.ErrFileBlockNotFound
+	return block.ErrFileBlockNotFound
 }
 func (nopFileBlockStore) IncrementRefCount(_ context.Context, _ string) error { return nil }
 func (nopFileBlockStore) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
@@ -387,18 +387,18 @@ func (nopFileBlockStore) DecrementRefCount(_ context.Context, _ string) (uint32,
 func (nopFileBlockStore) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
-func (nopFileBlockStore) AddRef(_ context.Context, _ blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
+func (nopFileBlockStore) AddRef(_ context.Context, _ block.ContentHash, _ string, _ block.BlockRef) error {
 	// Migration path doesn't exercise the LRU hit path, so always
 	// returning ErrUnknownHash is safe — production callers fall back to
 	// the full Put path on this sentinel.
-	return blockstore.ErrUnknownHash
+	return block.ErrUnknownHash
 }
-func (nopFileBlockStore) ListPending(_ context.Context, _ time.Duration, _ int) ([]*blockstore.FileBlock, error) {
+func (nopFileBlockStore) ListPending(_ context.Context, _ time.Duration, _ int) ([]*block.FileBlock, error) {
 	return nil, nil
 }
-func (nopFileBlockStore) GetFileBlock(_ context.Context, _ string) (*blockstore.FileBlock, error) {
-	return nil, blockstore.ErrFileBlockNotFound
+func (nopFileBlockStore) GetFileBlock(_ context.Context, _ string) (*block.FileBlock, error) {
+	return nil, block.ErrFileBlockNotFound
 }
-func (nopFileBlockStore) ListFileBlocks(_ context.Context, _ string) ([]*blockstore.FileBlock, error) {
+func (nopFileBlockStore) ListFileBlocks(_ context.Context, _ string) ([]*block.FileBlock, error) {
 	return nil, nil
 }

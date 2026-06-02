@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // Backupable is an optional capability that metadata store backends may
@@ -46,7 +46,7 @@ type Backupable interface {
 	// Backup serializes all metadata into w and returns the set of
 	// content-addressed block hashes referenced by the snapshot, both
 	// captured from a single consistent read-view (see contract above).
-	Backup(ctx context.Context, w io.Writer) (*blockstore.HashSet, error)
+	Backup(ctx context.Context, w io.Writer) (*block.HashSet, error)
 
 	// Restore reads a backup stream from r and rebuilds metadata state.
 	// The store must be empty; returns ErrRestoreDestinationNotEmpty otherwise.

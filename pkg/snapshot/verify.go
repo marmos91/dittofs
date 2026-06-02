@@ -7,15 +7,15 @@ import (
 	"sync"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/remote"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/remote"
 )
 
 // VerifyRemoteDurability probes the remote store for every hash in the
 // manifest and reports the first miss. It dispatches up to concurrency
 // parallel Head() probes; the first probe to return ErrChunkNotFound
 // cancels in-flight siblings and the call returns a wrapped
-// blockstore.ErrChunkNotFound naming the missing hash. Non-NotFound
+// block.ErrChunkNotFound naming the missing hash. Non-NotFound
 // I/O errors propagate unchanged (not wrapped as ErrChunkNotFound) so
 // callers can distinguish "block is genuinely absent on remote" from
 // "remote was unreachable mid-verify."
@@ -41,7 +41,7 @@ import (
 func VerifyRemoteDurability(
 	ctx context.Context,
 	rs remote.RemoteStore,
-	manifest *blockstore.HashSet,
+	manifest *block.HashSet,
 	concurrency int,
 ) error {
 	if manifest == nil || manifest.Len() == 0 {
@@ -78,7 +78,7 @@ loop:
 		}
 
 		wg.Add(1)
-		go func(hash blockstore.ContentHash) {
+		go func(hash block.ContentHash) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
@@ -86,11 +86,11 @@ loop:
 			switch {
 			case err == nil:
 				return
-			case errors.Is(err, blockstore.ErrChunkNotFound):
+			case errors.Is(err, block.ErrChunkNotFound):
 				logger.Debug("snapshot verify: missing hash on remote", "hash", hash.String())
 				recordErr(fmt.Errorf(
 					"snapshot: remote durability verify: missing hash %s: %w",
-					hash, blockstore.ErrChunkNotFound,
+					hash, block.ErrChunkNotFound,
 				))
 			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 				// Distinguish "sibling probe cancelled us" (safe to drop)

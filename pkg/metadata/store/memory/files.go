@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
-// cloneBlocks returns a deep copy of a []blockstore.BlockRef. BlockRef is a
+// cloneBlocks returns a deep copy of a []block.BlockRef. BlockRef is a
 // value type (Hash is a [32]byte array, Offset and Size are scalars), so a
 // flat element-wise copy is sufficient — there are no shared pointer fields.
 //
@@ -18,11 +18,11 @@ import (
 //
 // Returns nil if the input is nil or empty so the round-trip preserves
 // the omitempty wire form (json:"blocks,omitempty" on FileAttr.Blocks).
-func cloneBlocks(in []blockstore.BlockRef) []blockstore.BlockRef {
+func cloneBlocks(in []block.BlockRef) []block.BlockRef {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]blockstore.BlockRef, len(in))
+	out := make([]block.BlockRef, len(in))
 	copy(out, in)
 	return out
 }
@@ -83,7 +83,7 @@ func cloneEAs(in map[string][]byte) map[string][]byte {
 // The objectIndex value is the handle-key string (the same key used in
 // store.files); fileData has no separate UUID identifier. Block list is
 // returned via cloneBlocks to enforce slice-aliasing discipline
-func (store *MemoryMetadataStore) FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error) {
+func (store *MemoryMetadataStore) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.BlockRef, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -117,7 +117,7 @@ func (store *MemoryMetadataStore) FindByObjectID(ctx context.Context, objectID b
 //
 // Zero-valued objectID inputs short-circuit to (0, nil) without map
 // access, mirroring FindByObjectID's partial/skip-zero discipline.
-func (store *MemoryMetadataStore) CountObjectIDIndexRows(ctx context.Context, objectID blockstore.ObjectID) (int, error) {
+func (store *MemoryMetadataStore) CountObjectIDIndexRows(ctx context.Context, objectID block.ObjectID) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}

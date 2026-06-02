@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/snapshot"
 )
@@ -50,7 +50,7 @@ type SnapshotHoldProvider struct {
 // HeldHashes implements engine.HoldProvider. The engine-passed shares
 // argument is informational only; iteration uses the closure-captured
 // per-remote share list set at construction time.
-func (p *SnapshotHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID string, _ []string, fn func(blockstore.ContentHash) error) error {
+func (p *SnapshotHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID string, _ []string, fn func(block.ContentHash) error) error {
 	if p == nil || p.rt == nil || p.rt.store == nil {
 		return nil
 	}
@@ -129,7 +129,7 @@ func (p *SnapshotHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID 
 // AV/indexer transiently locking the file) is retried before failing;
 // fs.ErrNotExist propagates unchanged so the caller can treat a TOCTOU
 // delete as "no hold".
-func streamManifest(path string, fn func(blockstore.ContentHash) error) (int, error) {
+func streamManifest(path string, fn func(block.ContentHash) error) (int, error) {
 	f, err := openManifestWithRetry(path)
 	if err != nil {
 		return 0, err

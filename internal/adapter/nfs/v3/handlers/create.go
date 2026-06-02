@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -397,7 +397,7 @@ func (h *Handler) Create(
 //   - File handle, file attributes, and error
 func createNewFile(
 	authCtx *metadata.AuthContext,
-	metaSvc *metadata.MetadataService,
+	metaSvc *metadata.Service,
 	parentHandle metadata.FileHandle,
 	req *CreateRequest,
 ) (metadata.FileHandle, *metadata.FileAttr, *metadata.DirWcc, error) {
@@ -504,7 +504,7 @@ func createNewFile(
 func truncateExistingFile(
 	authCtx *metadata.AuthContext,
 	blockStore *engine.Store,
-	metaSvc *metadata.MetadataService,
+	metaSvc *metadata.Service,
 	existingFile *metadata.File,
 	req *CreateRequest,
 ) (*metadata.FileAttr, error) {

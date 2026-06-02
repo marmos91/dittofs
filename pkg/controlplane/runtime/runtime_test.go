@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	localmemory "github.com/marmos91/dittofs/pkg/blockstore/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	localmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"

@@ -12,7 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -22,7 +22,7 @@ var _ metadata.SyncedHashStore = (*PostgresMetadataStore)(nil)
 // IsSynced reports whether hash has been MarkSynced'd at least once.
 // Returns (false, nil) when no row exists for hash — an absent hash is
 // treated as "not yet synced", not as an error.
-func (s *PostgresMetadataStore) IsSynced(ctx context.Context, hash blockstore.ContentHash) (bool, error) {
+func (s *PostgresMetadataStore) IsSynced(ctx context.Context, hash block.ContentHash) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -44,7 +44,7 @@ func (s *PostgresMetadataStore) IsSynced(ctx context.Context, hash blockstore.Co
 // MarkSynced records that hash has been mirrored to remote. Idempotent
 // via ON CONFLICT (hash) DO NOTHING — re-applying the same hash is a
 // no-op.
-func (s *PostgresMetadataStore) MarkSynced(ctx context.Context, hash blockstore.ContentHash) error {
+func (s *PostgresMetadataStore) MarkSynced(ctx context.Context, hash block.ContentHash) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -61,7 +61,7 @@ func (s *PostgresMetadataStore) MarkSynced(ctx context.Context, hash blockstore.
 // DeleteSynced removes the synced marker for hash. Idempotent: DELETE
 // returns no error when the row does not exist (zero rows affected is
 // not an error condition).
-func (s *PostgresMetadataStore) DeleteSynced(ctx context.Context, hash blockstore.ContentHash) error {
+func (s *PostgresMetadataStore) DeleteSynced(ctx context.Context, hash block.ContentHash) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
 )
@@ -18,9 +18,9 @@ import (
 // hashOfSeed returns a deterministic ContentHash for the given seed string.
 // (Mirrors the storetest helper of the same name; duplicated here because
 // integration tests live in package postgres_test, not storetest.)
-func hashOfSeed(seed string) blockstore.ContentHash {
+func hashOfSeed(seed string) block.ContentHash {
 	sum := sha256.Sum256([]byte(seed))
-	var h blockstore.ContentHash
+	var h block.ContentHash
 	copy(h[:], sum[:])
 	return h
 }
@@ -133,7 +133,7 @@ func TestPostgres_FileBlockRefs_BlocksRoundTrip(t *testing.T) {
 
 	handle := createShareAndFile(t, store, "/blockref-roundtrip", "vm.img")
 
-	want := []blockstore.BlockRef{
+	want := []block.BlockRef{
 		{Hash: hashOfSeed("ref-0"), Offset: 0, Size: 4 << 20},
 		{Hash: hashOfSeed("ref-1"), Offset: 4 << 20, Size: 4 << 20},
 		{Hash: hashOfSeed("ref-2"), Offset: 8 << 20, Size: 1 << 20},
@@ -177,7 +177,7 @@ func TestPostgres_FileBlockRefs_ReplaceFully(t *testing.T) {
 
 	handle := createShareAndFile(t, store, "/blockref-replace", "vm.img")
 
-	first := []blockstore.BlockRef{
+	first := []block.BlockRef{
 		{Hash: hashOfSeed("first-0"), Offset: 0, Size: 4 << 20},
 		{Hash: hashOfSeed("first-1"), Offset: 4 << 20, Size: 4 << 20},
 		{Hash: hashOfSeed("first-2"), Offset: 8 << 20, Size: 4 << 20},
@@ -192,7 +192,7 @@ func TestPostgres_FileBlockRefs_ReplaceFully(t *testing.T) {
 	}
 
 	// Second write with a different (and shorter) list.
-	second := []blockstore.BlockRef{
+	second := []block.BlockRef{
 		{Hash: hashOfSeed("second-0"), Offset: 0, Size: 2 << 20},
 		{Hash: hashOfSeed("second-1"), Offset: 2 << 20, Size: 2 << 20},
 	}
@@ -230,7 +230,7 @@ func TestPostgres_FileBlockRefs_CascadeDelete(t *testing.T) {
 	handle := createShareAndFile(t, store, "/blockref-cascade", "vm.img")
 
 	// Persist Blocks.
-	blocks := []blockstore.BlockRef{
+	blocks := []block.BlockRef{
 		{Hash: hashOfSeed("cas-0"), Offset: 0, Size: 4 << 20},
 		{Hash: hashOfSeed("cas-1"), Offset: 4 << 20, Size: 4 << 20},
 	}
@@ -299,11 +299,11 @@ func TestPostgres_FileBlockRefs_ConcurrentPutFile(t *testing.T) {
 
 	handle := createShareAndFile(t, store, "/blockref-concurrent", "vm.img")
 
-	a := []blockstore.BlockRef{
+	a := []block.BlockRef{
 		{Hash: hashOfSeed("a-0"), Offset: 0, Size: 4 << 20},
 		{Hash: hashOfSeed("a-1"), Offset: 4 << 20, Size: 4 << 20},
 	}
-	b := []blockstore.BlockRef{
+	b := []block.BlockRef{
 		{Hash: hashOfSeed("b-0"), Offset: 0, Size: 2 << 20},
 		{Hash: hashOfSeed("b-1"), Offset: 2 << 20, Size: 2 << 20},
 		{Hash: hashOfSeed("b-2"), Offset: 4 << 20, Size: 2 << 20},
@@ -311,9 +311,9 @@ func TestPostgres_FileBlockRefs_ConcurrentPutFile(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
-	for i, blocks := range [][]blockstore.BlockRef{a, b} {
+	for i, blocks := range [][]block.BlockRef{a, b} {
 		wg.Add(1)
-		go func(idx int, blocks []blockstore.BlockRef) {
+		go func(idx int, blocks []block.BlockRef) {
 			defer wg.Done()
 			file, err := store.GetFile(ctx, handle)
 			if err != nil {
@@ -345,7 +345,7 @@ func TestPostgres_FileBlockRefs_ConcurrentPutFile(t *testing.T) {
 	}
 }
 
-func blockRefsEqual(x, y []blockstore.BlockRef) bool {
+func blockRefsEqual(x, y []block.BlockRef) bool {
 	if len(x) != len(y) {
 		return false
 	}
@@ -382,7 +382,7 @@ func TestPostgres_Restore_ReconcilesNullHashFileBlocks(t *testing.T) {
 	// reconcile join (file_blocks.id = content_id || '/' || offset) lands.
 	payloadID := "restore-reconcile/vm.img"
 	file.PayloadID = metadata.PayloadID(payloadID)
-	file.Blocks = []blockstore.BlockRef{
+	file.Blocks = []block.BlockRef{
 		{Hash: want, Offset: 0, Size: 4 << 20},
 	}
 	if err := store.PutFile(ctx, file); err != nil {

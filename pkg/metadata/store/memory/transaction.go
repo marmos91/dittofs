@@ -6,7 +6,7 @@ import (
 	"maps"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
@@ -46,7 +46,7 @@ type txSnapshot struct {
 	children      map[string]map[string]metadata.FileHandle
 	linkCounts    map[string]uint32
 	deviceNumbers map[string]*deviceNumber
-	objectIndex   map[blockstore.ContentHash]string
+	objectIndex   map[block.ContentHash]string
 	// hadFileBlockData records whether fileBlockData was allocated at snapshot
 	// time. If the closure lazily allocated it (initFileBlockData) and then
 	// failed, restore must reset the struct's maps to non-nil empties (or it

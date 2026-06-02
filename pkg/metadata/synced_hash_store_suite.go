@@ -19,13 +19,13 @@ import (
 
 	"lukechampine.com/blake3"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // mustHash derives a deterministic ContentHash from a string. Used to
 // scope subtests on a shared store instance — each subtest picks a
 // distinct seed so its state cannot collide with another subtest's.
-func mustHash(seed string) blockstore.ContentHash {
+func mustHash(seed string) block.ContentHash {
 	return blake3.Sum256([]byte(seed))
 }
 

@@ -7,7 +7,7 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -40,13 +40,13 @@ const syncedHashPrefix = "synced:"
 var _ metadata.SyncedHashStore = (*BadgerMetadataStore)(nil)
 
 // keySyncedHash generates the key for a hash's synced marker.
-func keySyncedHash(hash blockstore.ContentHash) []byte {
+func keySyncedHash(hash block.ContentHash) []byte {
 	return append([]byte(syncedHashPrefix), hash[:]...)
 }
 
 // IsSynced reports whether hash has been mirrored to remote. Returns
 // (false, nil) when no entry exists for hash.
-func (s *BadgerMetadataStore) IsSynced(ctx context.Context, hash blockstore.ContentHash) (bool, error) {
+func (s *BadgerMetadataStore) IsSynced(ctx context.Context, hash block.ContentHash) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -72,7 +72,7 @@ func (s *BadgerMetadataStore) IsSynced(ctx context.Context, hash blockstore.Cont
 // MarkSynced records that hash has been mirrored to remote. Idempotent:
 // re-applying the same hash is a no-op and returns nil (Badger Set
 // overwrites the existing empty value).
-func (s *BadgerMetadataStore) MarkSynced(ctx context.Context, hash blockstore.ContentHash) error {
+func (s *BadgerMetadataStore) MarkSynced(ctx context.Context, hash block.ContentHash) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -89,7 +89,7 @@ func (s *BadgerMetadataStore) MarkSynced(ctx context.Context, hash blockstore.Co
 // DeleteSynced removes the synced marker for hash. Idempotent: deleting
 // an absent hash returns nil (Badger's txn.Delete does not error on
 // missing keys).
-func (s *BadgerMetadataStore) DeleteSynced(ctx context.Context, hash blockstore.ContentHash) error {
+func (s *BadgerMetadataStore) DeleteSynced(ctx context.Context, hash block.ContentHash) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}

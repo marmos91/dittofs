@@ -348,7 +348,7 @@ type ReconnectResult struct {
 func ProcessDurableReconnectContext(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
-	metaSvc *metadata.MetadataService,
+	metaSvc *metadata.Service,
 	contexts []CreateContext,
 	sessionID uint64,
 	username string,
@@ -463,7 +463,7 @@ func leaseReconnectClientGUIDMismatch(handle *lock.PersistedDurableHandle, connC
 func processV1Reconnect(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
-	metaSvc *metadata.MetadataService,
+	metaSvc *metadata.Service,
 	contexts []CreateContext,
 	dhnCCtx *CreateContext,
 	sessionID uint64,
@@ -558,7 +558,7 @@ func processV1Reconnect(
 func processV2Reconnect(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
-	metaSvc *metadata.MetadataService,
+	metaSvc *metadata.Service,
 	contexts []CreateContext,
 	dh2cCtx *CreateContext,
 	sessionID uint64,
@@ -711,7 +711,7 @@ func processV2Reconnect(
 func validateAndRestore(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
-	metaSvc *metadata.MetadataService,
+	metaSvc *metadata.Service,
 	handle *lock.PersistedDurableHandle,
 	sessionID uint64,
 	username string,

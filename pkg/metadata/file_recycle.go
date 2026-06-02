@@ -47,7 +47,7 @@ func principalOf(ctx *AuthContext) string {
 // Move is metadata-only and preserves FileAttr, so the moved node carries the
 // stamp. If the move fails after stamping, the three fields are cleared on the
 // source (best-effort) so a live file is not left marked-deleted.
-func (s *MetadataService) recycleNode(ctx *AuthContext, shareName string, parentHandle FileHandle, name string, origRel string) (*File, error) {
+func (s *Service) recycleNode(ctx *AuthContext, shareName string, parentHandle FileHandle, name string, origRel string) (*File, error) {
 	// 1. Capture the victim's pre-move identity/attrs so we can return a copy
 	//    with PayloadID cleared even after the move relocates it.
 	victimHandle, err := s.GetChild(ctx.Context, parentHandle, name)
@@ -131,7 +131,7 @@ func (s *MetadataService) recycleNode(ctx *AuthContext, shareName string, parent
 // ensureChildDir resolves a child directory by name under parentHandle,
 // creating it (mode perm) if absent. ErrAlreadyExists from a racing creator is
 // treated as success followed by a re-lookup. Returns the child's handle.
-func (s *MetadataService) ensureChildDir(ctx *AuthContext, parentHandle FileHandle, name string, perm uint32) (FileHandle, error) {
+func (s *Service) ensureChildDir(ctx *AuthContext, parentHandle FileHandle, name string, perm uint32) (FileHandle, error) {
 	if h, err := s.GetChild(ctx.Context, parentHandle, name); err == nil {
 		// An existing child must actually be a directory. A regular file (or
 		// other non-dir) squatting at the expected path would otherwise be
@@ -162,7 +162,7 @@ func (s *MetadataService) ensureChildDir(ctx *AuthContext, parentHandle FileHand
 }
 
 // stampRecycled loads the node, sets the three trash fields, and persists it.
-func (s *MetadataService) stampRecycled(ctx *AuthContext, handle FileHandle, deletedAt time.Time, origRel, deletedBy string) error {
+func (s *Service) stampRecycled(ctx *AuthContext, handle FileHandle, deletedAt time.Time, origRel, deletedBy string) error {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return err
@@ -180,7 +180,7 @@ func (s *MetadataService) stampRecycled(ctx *AuthContext, handle FileHandle, del
 
 // clearRecycleStamp reverts the three trash fields on a node, used to roll back
 // a pre-move stamp when the subsequent Move into the bin fails.
-func (s *MetadataService) clearRecycleStamp(ctx *AuthContext, handle FileHandle) error {
+func (s *Service) clearRecycleStamp(ctx *AuthContext, handle FileHandle) error {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return err
@@ -205,7 +205,7 @@ const maxBinNameAttempts = 1000
 // previously recycled node. It tries name first, then " (<unixNanos>)", then
 // " (<unixNanos>-<n>)" for increasing n. The returned name only disambiguates
 // placement in the bin; OriginalPath stays the pre-collision original path.
-func (s *MetadataService) freeBinName(ctx *AuthContext, destParent FileHandle, name string) (string, error) {
+func (s *Service) freeBinName(ctx *AuthContext, destParent FileHandle, name string) (string, error) {
 	candidate := name
 	nanos := strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
 	for attempt := 0; attempt < maxBinNameAttempts; attempt++ {

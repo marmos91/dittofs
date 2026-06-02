@@ -30,7 +30,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
 	"github.com/marmos91/dittofs/test/e2e/framework"
@@ -196,7 +196,7 @@ func TestObjectIDPopulation_NFSWriteQuiesce(t *testing.T) {
 		objectIDPopulationPayloadSize)
 
 	// ---- REQUIRED CORRECTNESS ASSERT (regression catcher) ----
-	expected := blockstore.ComputeObjectID(file.FileAttr.Blocks)
+	expected := block.ComputeObjectID(file.FileAttr.Blocks)
 	require.Equalf(t, expected, file.FileAttr.ObjectID,
 		"ObjectID is non-zero but does NOT equal ComputeObjectID(Blocks) — "+
 			"D-01 Merkle-root reproducibility broken. blocks=%d expected=%s got=%s",

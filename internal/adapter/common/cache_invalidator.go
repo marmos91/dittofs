@@ -1,7 +1,7 @@
 package common
 
 import (
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -24,7 +24,7 @@ import (
 //     referenced by other files (single-entry-per-hash sharing).
 //     Surgical invalidation is the mechanism that preserves that warmth.
 type CacheInvalidator interface {
-	InvalidateFile(payloadID metadata.PayloadID, removedHashes []blockstore.ContentHash)
+	InvalidateFile(payloadID metadata.PayloadID, removedHashes []block.ContentHash)
 }
 
 // diffRemovedHashes returns hashes present in oldBlocks but absent from
@@ -36,15 +36,15 @@ type CacheInvalidator interface {
 // Used by the WriteToBlockStore + CopyPayload helpers to compute
 // the surgical invalidation payload. For the "drop-all" case (CopyPayload
 // destination), callers pass nil rather than a precomputed diff.
-func diffRemovedHashes(oldBlocks, newBlocks []blockstore.BlockRef) []blockstore.ContentHash {
+func diffRemovedHashes(oldBlocks, newBlocks []block.BlockRef) []block.ContentHash {
 	if len(oldBlocks) == 0 {
 		return nil
 	}
-	newSet := make(map[blockstore.ContentHash]struct{}, len(newBlocks))
+	newSet := make(map[block.ContentHash]struct{}, len(newBlocks))
 	for _, b := range newBlocks {
 		newSet[b.Hash] = struct{}{}
 	}
-	var removed []blockstore.ContentHash
+	var removed []block.ContentHash
 	for _, b := range oldBlocks {
 		if _, ok := newSet[b.Hash]; !ok {
 			removed = append(removed, b.Hash)

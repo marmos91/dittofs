@@ -6,7 +6,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/cli/output"
 	"github.com/marmos91/dittofs/internal/sysinfo"
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -103,9 +103,9 @@ func yamlKeyedView(cfg *config.Config) (interface{}, error) {
 // runShowDeduced displays auto-deduced block store defaults with system info.
 func runShowDeduced() error {
 	detector := sysinfo.NewDetector()
-	deduced := blockstore.DeduceDefaults(detector)
+	deduced := block.DeduceDefaults(detector)
 
-	mem := blockstore.FormatBytes(detector.AvailableMemory())
+	mem := block.FormatBytes(detector.AvailableMemory())
 
 	fmt.Printf("# System Resources\n")
 	fmt.Printf("# CPUs: %d (source: runtime.GOMAXPROCS)\n", detector.AvailableCPUs())
@@ -115,11 +115,11 @@ func runShowDeduced() error {
 	fmt.Printf("# These values are used when shares don't specify explicit overrides.\n\n")
 
 	fmt.Printf("local_store_size: %s  # 25%% of %s\n",
-		blockstore.FormatBytes(deduced.LocalStoreSize), mem)
+		block.FormatBytes(deduced.LocalStoreSize), mem)
 	fmt.Printf("read_buffer_size: %s  # 12.5%% of %s\n",
-		blockstore.FormatBytes(uint64(deduced.ReadBufferSize)), mem)
+		block.FormatBytes(uint64(deduced.ReadBufferSize)), mem)
 	fmt.Printf("max_pending_size: %s  # 50%% of local_store_size\n",
-		blockstore.FormatBytes(deduced.MaxPendingSize))
+		block.FormatBytes(deduced.MaxPendingSize))
 	fmt.Printf("parallel_syncs: %d  # max(4, %d CPUs)\n",
 		deduced.ParallelSyncs, detector.AvailableCPUs())
 	fmt.Printf("parallel_fetches: %d  # max(8, %d CPUs * 2)\n",

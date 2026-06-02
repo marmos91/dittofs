@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 
 // TestRunStorm_Concurrent exercises the storm at single- and multi-worker

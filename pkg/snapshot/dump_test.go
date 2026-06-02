@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/snapshot"
 )
 
@@ -19,11 +19,11 @@ func TestWriteMetadataDumpAtomic_HappyPath(t *testing.T) {
 	path := filepath.Join(dir, "metadata.dump")
 
 	payload := []byte("hello-engine-backup-payload")
-	wantHS := blockstore.NewHashSet(2)
+	wantHS := block.NewHashSet(2)
 	wantHS.Add(mustHash(1))
 	wantHS.Add(mustHash(2))
 
-	gotHS, err := snapshot.WriteMetadataDumpAtomic(path, func(w io.Writer) (*blockstore.HashSet, error) {
+	gotHS, err := snapshot.WriteMetadataDumpAtomic(path, func(w io.Writer) (*block.HashSet, error) {
 		if _, err := w.Write(payload); err != nil {
 			return nil, err
 		}
@@ -62,7 +62,7 @@ func TestWriteMetadataDumpAtomic_CallbackError(t *testing.T) {
 	path := filepath.Join(dir, "metadata.dump")
 
 	sentinel := errors.New("backup-blew-up")
-	gotHS, err := snapshot.WriteMetadataDumpAtomic(path, func(w io.Writer) (*blockstore.HashSet, error) {
+	gotHS, err := snapshot.WriteMetadataDumpAtomic(path, func(w io.Writer) (*block.HashSet, error) {
 		// Even write some bytes — they should be discarded on rollback.
 		_, _ = w.Write([]byte("partial"))
 		return nil, sentinel
@@ -91,7 +91,7 @@ func TestWriteMetadataDumpAtomic_EmptyWrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "metadata.dump")
 
-	gotHS, err := snapshot.WriteMetadataDumpAtomic(path, func(w io.Writer) (*blockstore.HashSet, error) {
+	gotHS, err := snapshot.WriteMetadataDumpAtomic(path, func(w io.Writer) (*block.HashSet, error) {
 		// Zero bytes, nil HashSet (a memory engine with no blocks).
 		return nil, nil
 	})
@@ -122,10 +122,10 @@ func TestWriteMetadataDumpAtomic_NoIntermediateVisibility(t *testing.T) {
 	for i := range payload {
 		payload[i] = byte(i)
 	}
-	hs := blockstore.NewHashSet(1)
+	hs := block.NewHashSet(1)
 	hs.Add(mustHash(7))
 
-	_, err := snapshot.WriteMetadataDumpAtomic(path, func(w io.Writer) (*blockstore.HashSet, error) {
+	_, err := snapshot.WriteMetadataDumpAtomic(path, func(w io.Writer) (*block.HashSet, error) {
 		_, werr := w.Write(payload)
 		return hs, werr
 	})

@@ -13,7 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/backup"
 )
@@ -63,7 +63,7 @@ var _ metadata.Backupable = (*PostgresMetadataStore)(nil)
 // STDOUT inside a single REPEATABLE READ transaction for snapshot
 // isolation. Returns the set of unique block hashes referenced by the
 // snapshot (extracted from file_block_refs via a dedicated COPY query).
-func (s *PostgresMetadataStore) Backup(ctx context.Context, w io.Writer) (*blockstore.HashSet, error) {
+func (s *PostgresMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.HashSet, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("%w: %v", metadata.ErrBackupAborted, err)
 	}
@@ -184,14 +184,14 @@ func backupTable(ctx context.Context, raw *pgconn.PgConn, envW io.Writer, table 
 //
 // Uses CSV format: Postgres hex-encodes BYTEA columns as \x followed
 // by hex digits. Each line is one hash value.
-func extractHashes(ctx context.Context, raw *pgconn.PgConn) (*blockstore.HashSet, error) {
+func extractHashes(ctx context.Context, raw *pgconn.PgConn) (*block.HashSet, error) {
 	var hashBuf bytes.Buffer
 	sql := `COPY (SELECT DISTINCT hash FROM file_block_refs) TO STDOUT WITH (FORMAT csv)`
 	if _, err := raw.CopyTo(ctx, &hashBuf, sql); err != nil {
 		return nil, fmt.Errorf("COPY hash query: %w", err)
 	}
 
-	hs := blockstore.NewHashSet(0)
+	hs := block.NewHashSet(0)
 
 	data := hashBuf.String()
 	if data == "" {
@@ -210,11 +210,11 @@ func extractHashes(ctx context.Context, raw *pgconn.PgConn) (*blockstore.HashSet
 		if err != nil {
 			return nil, fmt.Errorf("decode hash hex %q: %w", line, err)
 		}
-		if len(rawBytes) != blockstore.HashSize {
-			return nil, fmt.Errorf("hash has unexpected length %d (want %d)", len(rawBytes), blockstore.HashSize)
+		if len(rawBytes) != block.HashSize {
+			return nil, fmt.Errorf("hash has unexpected length %d (want %d)", len(rawBytes), block.HashSize)
 		}
 
-		var ch blockstore.ContentHash
+		var ch block.ContentHash
 		copy(ch[:], rawBytes)
 		hs.Add(ch)
 	}

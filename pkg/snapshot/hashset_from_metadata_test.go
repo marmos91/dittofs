@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memorystore "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/snapshot"
@@ -15,8 +15,8 @@ import (
 // unique, ordered hashes without RNG flakiness. Mirrors gateHash in
 // syncgate_test.go but lives in a separate file to avoid cross-file
 // dependencies.
-func fbHash(seed byte) blockstore.ContentHash {
-	var h blockstore.ContentHash
+func fbHash(seed byte) block.ContentHash {
+	var h block.ContentHash
 	for i := range h {
 		h[i] = seed + byte(i)
 	}
@@ -28,7 +28,7 @@ func fbHash(seed byte) blockstore.ContentHash {
 // interface and is the canonical fixture used elsewhere in this package
 // for surface tests that don't depend on a specific backend's storage
 // shape.
-func newMemStore(t *testing.T) metadata.MetadataStore {
+func newMemStore(t *testing.T) metadata.Store {
 	t.Helper()
 	return memorystore.NewMemoryMetadataStoreWithDefaults()
 }
@@ -37,12 +37,12 @@ func newMemStore(t *testing.T) metadata.MetadataStore {
 // store via the FileBlockStore.Put interface, which is the same surface
 // the engine uses on the write path. Test data goes in via the same door
 // as production data so the EnumerateFileBlocks invariants apply.
-func putBlock(t *testing.T, store metadata.MetadataStore, id string, hash blockstore.ContentHash) {
+func putBlock(t *testing.T, store metadata.Store, id string, hash block.ContentHash) {
 	t.Helper()
 	block := &metadata.FileBlock{
 		ID:    id,
 		Hash:  hash,
-		State: blockstore.BlockStateRemote, // finalized so EnumerateFileBlocks emits it
+		State: block.BlockStateRemote, // finalized so EnumerateFileBlocks emits it
 	}
 	if err := store.Put(context.Background(), block); err != nil {
 		t.Fatalf("Put block %s: %v", id, err)
@@ -89,7 +89,7 @@ func TestHashSetFromMetadataStore_ThreeUniqueHashes(t *testing.T) {
 	if hs.Len() != 3 {
 		t.Fatalf("HashSetFromMetadataStore: Len()=%d, want 3", hs.Len())
 	}
-	for _, want := range []blockstore.ContentHash{hA, hB, hC} {
+	for _, want := range []block.ContentHash{hA, hB, hC} {
 		if !hs.Contains(want) {
 			t.Errorf("HashSetFromMetadataStore: missing hash %x", want[:8])
 		}
@@ -117,7 +117,7 @@ func TestHashSetFromMetadataStore_Deduplication(t *testing.T) {
 	if hs.Len() != 3 {
 		t.Fatalf("HashSetFromMetadataStore: Len()=%d, want 3 (dedup)", hs.Len())
 	}
-	for _, want := range []blockstore.ContentHash{shared, unique1, unique2} {
+	for _, want := range []block.ContentHash{shared, unique1, unique2} {
 		if !hs.Contains(want) {
 			t.Errorf("HashSetFromMetadataStore: missing hash %x", want[:8])
 		}
@@ -164,7 +164,7 @@ func TestHashSetFromMetadataStore_SkipsZeroHash(t *testing.T) {
 	// state — Put allows the zero hash but the memory backend's hash
 	// index only tracks finalized rows. EnumerateFileBlocks emits every
 	// row regardless of state per the interface contract.
-	var zero blockstore.ContentHash
+	var zero block.ContentHash
 	zeroBlock := &metadata.FileBlock{
 		ID:   "blk-legacy-zero",
 		Hash: zero,

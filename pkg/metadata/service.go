@@ -14,14 +14,14 @@ import (
 // no duration is configured. Mirrors the conventional NLM/NFSv4 grace window.
 const DefaultLockGracePeriod = 90 * time.Second
 
-// MetadataService provides all metadata operations for the filesystem.
+// Service provides all metadata operations for the filesystem.
 //
 // It manages metadata stores and routes operations to the correct store
-// based on share name. All protocol handlers should interact with MetadataService
+// based on share name. All protocol handlers should interact with Service
 // rather than accessing stores directly.
 //
 // File Locking:
-// MetadataService owns one LockManager per share for byte-range locking (SMB/NLM).
+// Service owns one LockManager per share for byte-range locking (SMB/NLM).
 // Locks are ephemeral (in-memory only) and lost on server restart.
 // This is separate from metadata stores which handle persistent data.
 //
@@ -36,9 +36,9 @@ const DefaultLockGracePeriod = 90 * time.Second
 //
 //	// Low-level operations (direct store access)
 //	file, err := metaSvc.GetFile(ctx, handle)
-type MetadataService struct {
+type Service struct {
 	mu                 sync.RWMutex
-	stores             map[string]MetadataStore          // shareName -> store
+	stores             map[string]Store                  // shareName -> store
 	lockManagers       map[string]*LockManager           // shareName -> lock manager (ephemeral, per-share)
 	unifiedViews       map[string]*UnifiedLockView       // shareName -> unified lock view (cross-protocol)
 	dirChangeNotifiers map[string]lock.DirChangeNotifier // shareName -> notifier for directory changes
@@ -100,9 +100,9 @@ type GraceCoordinator interface {
 // New creates a new empty MetadataService instance.
 // Use RegisterStoreForShare to configure stores for each share.
 // By default, deferred commits are enabled for better write performance.
-func New() *MetadataService {
-	return &MetadataService{
-		stores:             make(map[string]MetadataStore),
+func New() *Service {
+	return &Service{
+		stores:             make(map[string]Store),
 		lockManagers:       make(map[string]*LockManager),
 		unifiedViews:       make(map[string]*UnifiedLockView),
 		dirChangeNotifiers: make(map[string]lock.DirChangeNotifier),
@@ -117,7 +117,7 @@ func New() *MetadataService {
 // SetDeferredCommit enables or disables deferred metadata commits.
 // When enabled, CommitWrite batches updates until FlushPendingWrites is called.
 // This significantly improves write performance for sequential workloads.
-func (s *MetadataService) SetDeferredCommit(enabled bool) {
+func (s *Service) SetDeferredCommit(enabled bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.deferredCommit = enabled
@@ -127,7 +127,7 @@ func (s *MetadataService) SetDeferredCommit(enabled bool) {
 // that recover persisted locks at registration. A non-positive duration falls
 // back to DefaultLockGracePeriod. Must be called before RegisterStoreForShare
 // to affect a given share.
-func (s *MetadataService) SetLockGracePeriod(d time.Duration) {
+func (s *Service) SetLockGracePeriod(d time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.graceDuration = d
@@ -138,7 +138,7 @@ func (s *MetadataService) SetLockGracePeriod(d time.Duration) {
 // register (the NFS adapter does so during SetRuntime): the grace-end callback
 // reads the coordinator live, and the adapter catches up the start side for
 // shares already in grace, so registration order does not matter.
-func (s *MetadataService) SetGraceCoordinator(c GraceCoordinator) {
+func (s *Service) SetGraceCoordinator(c GraceCoordinator) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.graceCoordinator = c
@@ -149,7 +149,7 @@ func (s *MetadataService) SetGraceCoordinator(c GraceCoordinator) {
 // protocol re-drives blocked waiters on another (e.g. an SMB UNLOCK waking an
 // NLM F_SETLKW waiter). Must be called before RegisterStoreForShare to affect a
 // given share. The hook receives the string-encoded FileHandle (handle key).
-func (s *MetadataService) SetByteRangeReleaseHook(fn func(handleKey string)) {
+func (s *Service) SetByteRangeReleaseHook(fn func(handleKey string)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.byteRangeReleaseHook = fn
@@ -157,7 +157,7 @@ func (s *MetadataService) SetByteRangeReleaseHook(fn func(handleKey string)) {
 
 // SetTrashPolicy installs the per-share recycle-bin policy. A nil policy
 // (the default) disables trash: deletes destroy content as before.
-func (s *MetadataService) SetTrashPolicy(p TrashPolicy) { s.trashPolicy = p }
+func (s *Service) SetTrashPolicy(p TrashPolicy) { s.trashPolicy = p }
 
 // RegisterStoreForShare associates a metadata store with a share.
 // Each share must have exactly one store. Calling this again for the same
@@ -168,7 +168,7 @@ func (s *MetadataService) SetTrashPolicy(p TrashPolicy) { s.trashPolicy = p }
 //
 // The LockManager is automatically registered as the DirChangeNotifier for the
 // share, enabling unified directory change notifications across protocols.
-func (s *MetadataService) RegisterStoreForShare(shareName string, store MetadataStore) error {
+func (s *Service) RegisterStoreForShare(shareName string, store Store) error {
 	if store == nil {
 		return fmt.Errorf("cannot register nil store for share %q", shareName)
 	}
@@ -322,7 +322,7 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 // down.
 //
 // Thread safety: Safe to call concurrently.
-func (s *MetadataService) RemoveStoreForShare(shareName string) {
+func (s *Service) RemoveStoreForShare(shareName string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -473,7 +473,7 @@ func initLockManagerFromStore(lm *LockManager, ls lock.LockStore, shareName stri
 // during SetRuntime, which runs AFTER shares register at startup. A manager
 // built before the adapter exists must still notify the coordinator once it is
 // installed, or the v4 grace machine would never be ended in lockstep.
-func (s *MetadataService) newGraceAwareLockManager(duration time.Duration) *LockManager {
+func (s *Service) newGraceAwareLockManager(duration time.Duration) *LockManager {
 	// lm and gpm are captured by the onGraceEnd closure below. The closure only
 	// runs after EnterGracePeriod arms the timer, by which point both are set.
 	var lm *LockManager
@@ -507,7 +507,7 @@ func (s *MetadataService) newGraceAwareLockManager(duration time.Duration) *Lock
 // GetStoreForShare returns the metadata store for a specific share.
 // This is primarily for internal use and testing; protocol handlers
 // should use the high-level methods instead.
-func (s *MetadataService) GetStoreForShare(shareName string) (MetadataStore, error) {
+func (s *Service) GetStoreForShare(shareName string) (Store, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -529,7 +529,7 @@ func (s *MetadataService) GetStoreForShare(shareName string) (MetadataStore, err
 // StoreError; a well-formed handle naming an unknown share propagates
 // GetStoreForShare's ErrStaleHandle StoreError. Both are *StoreError so the
 // protocol error mappers classify them as BADHANDLE/STALE.
-func (s *MetadataService) storeForHandle(handle FileHandle) (MetadataStore, error) {
+func (s *Service) storeForHandle(handle FileHandle) (Store, error) {
 	shareName, _, err := DecodeFileHandle(handle)
 	if err != nil {
 		return nil, err
@@ -549,7 +549,7 @@ func shareNameForHandle(handle FileHandle) string {
 }
 
 // lockManagerForHandle returns the lock manager for the share that owns the handle.
-func (s *MetadataService) lockManagerForHandle(handle FileHandle) (*LockManager, error) {
+func (s *Service) lockManagerForHandle(handle FileHandle) (*LockManager, error) {
 	shareName, _, err := DecodeFileHandle(handle)
 	if err != nil {
 		return nil, err
@@ -578,7 +578,7 @@ func (s *MetadataService) lockManagerForHandle(handle FileHandle) (*LockManager,
 // pure conflict-discovery, not a lock-state mutation.
 //
 // Thread safety: Safe to call concurrently.
-func (s *MetadataService) GetLockManagerForHandle(handle FileHandle) (*LockManager, error) {
+func (s *Service) GetLockManagerForHandle(handle FileHandle) (*LockManager, error) {
 	return s.lockManagerForHandle(handle)
 }
 
@@ -588,7 +588,7 @@ func (s *MetadataService) GetLockManagerForHandle(handle FileHandle) (*LockManag
 // Returns nil if no lock manager exists for the share.
 //
 // Thread safety: Safe to call concurrently.
-func (s *MetadataService) GetLockManagerForShare(shareName string) *LockManager {
+func (s *Service) GetLockManagerForShare(shareName string) *LockManager {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -608,7 +608,7 @@ func (s *MetadataService) GetLockManagerForShare(shareName string) *LockManager 
 //   - No LockStore has been set for the share
 //
 // Thread safety: Safe to call concurrently.
-func (s *MetadataService) GetUnifiedLockView(shareName string) *UnifiedLockView {
+func (s *Service) GetUnifiedLockView(shareName string) *UnifiedLockView {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -625,7 +625,7 @@ func (s *MetadataService) GetUnifiedLockView(shareName string) *UnifiedLockView 
 // NOT call this directly - it's for internal use by the registration process.
 //
 // Thread safety: Safe to call concurrently.
-func (s *MetadataService) SetUnifiedLockView(shareName string, view *UnifiedLockView) {
+func (s *Service) SetUnifiedLockView(shareName string, view *UnifiedLockView) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -636,7 +636,7 @@ func (s *MetadataService) SetUnifiedLockView(shareName string, view *UnifiedLock
 // This is a convenience method that calls GetFile from the Base interface.
 // When deferred commits are enabled, it merges pending write state (size, mtime, ctime)
 // with the stored file metadata.
-func (s *MetadataService) GetFile(ctx context.Context, handle FileHandle) (*File, error) {
+func (s *Service) GetFile(ctx context.Context, handle FileHandle) (*File, error) {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return nil, err
@@ -670,7 +670,7 @@ func (s *MetadataService) GetFile(ctx context.Context, handle FileHandle) (*File
 // to avoid a BadgerDB read. Used on the COMMIT path where WRITE has already
 // validated and cached the file. Falls back to the full GetFile path if there
 // is no cached entry (e.g., COMMIT without prior WRITE, or cache evicted).
-func (s *MetadataService) GetFileCached(ctx context.Context, handle FileHandle) (*File, error) {
+func (s *Service) GetFileCached(ctx context.Context, handle FileHandle) (*File, error) {
 	if cached := s.pendingWrites.GetCachedFile(handle); cached != nil {
 		// Merge pending state into the cached copy (same logic as GetFile)
 		if pending, ok := s.pendingWrites.GetPending(handle); ok {
@@ -699,12 +699,12 @@ func (s *MetadataService) GetFileCached(ctx context.Context, handle FileHandle) 
 //   - Group member: Check group permission bits
 //   - Other: Check other permission bits
 //   - Anonymous: Only world permissions
-func (s *MetadataService) CheckPermissions(ctx *AuthContext, handle FileHandle, requested Permission) (Permission, error) {
+func (s *Service) CheckPermissions(ctx *AuthContext, handle FileHandle, requested Permission) (Permission, error) {
 	return s.checkFilePermissions(ctx, handle, requested)
 }
 
 // GetChild retrieves a child's handle from a directory.
-func (s *MetadataService) GetChild(ctx context.Context, dirHandle FileHandle, name string) (FileHandle, error) {
+func (s *Service) GetChild(ctx context.Context, dirHandle FileHandle, name string) (FileHandle, error) {
 	store, err := s.storeForHandle(dirHandle)
 	if err != nil {
 		return nil, err
@@ -713,7 +713,7 @@ func (s *MetadataService) GetChild(ctx context.Context, dirHandle FileHandle, na
 }
 
 // GetRootHandle returns the root handle for a share.
-func (s *MetadataService) GetRootHandle(ctx context.Context, shareName string) (FileHandle, error) {
+func (s *Service) GetRootHandle(ctx context.Context, shareName string) (FileHandle, error) {
 	store, err := s.GetStoreForShare(shareName)
 	if err != nil {
 		return nil, err
@@ -722,7 +722,7 @@ func (s *MetadataService) GetRootHandle(ctx context.Context, shareName string) (
 }
 
 // GenerateHandle generates a new file handle for a path.
-func (s *MetadataService) GenerateHandle(ctx context.Context, shareName, path string) (FileHandle, error) {
+func (s *Service) GenerateHandle(ctx context.Context, shareName, path string) (FileHandle, error) {
 	store, err := s.GetStoreForShare(shareName)
 	if err != nil {
 		return nil, err
@@ -731,14 +731,14 @@ func (s *MetadataService) GenerateHandle(ctx context.Context, shareName, path st
 }
 
 // SetQuotaForShare sets the byte quota for a share. 0 means unlimited.
-func (s *MetadataService) SetQuotaForShare(shareName string, quotaBytes int64) {
+func (s *Service) SetQuotaForShare(shareName string, quotaBytes int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.quotas[shareName] = quotaBytes
 }
 
 // GetQuotaForShare returns the byte quota for a share. 0 means unlimited.
-func (s *MetadataService) GetQuotaForShare(shareName string) int64 {
+func (s *Service) GetQuotaForShare(shareName string) int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.quotas[shareName]
@@ -747,7 +747,7 @@ func (s *MetadataService) GetQuotaForShare(shareName string) int64 {
 // GetFilesystemStatistics returns filesystem statistics.
 // When a quota is configured for the share, the returned TotalBytes and
 // AvailableBytes are overlaid with quota-adjusted values.
-func (s *MetadataService) GetFilesystemStatistics(ctx context.Context, handle FileHandle) (*FilesystemStatistics, error) {
+func (s *Service) GetFilesystemStatistics(ctx context.Context, handle FileHandle) (*FilesystemStatistics, error) {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return nil, err
@@ -774,7 +774,7 @@ func (s *MetadataService) GetFilesystemStatistics(ctx context.Context, handle Fi
 }
 
 // GetFilesystemCapabilities returns filesystem capabilities.
-func (s *MetadataService) GetFilesystemCapabilities(ctx context.Context, handle FileHandle) (*FilesystemCapabilities, error) {
+func (s *Service) GetFilesystemCapabilities(ctx context.Context, handle FileHandle) (*FilesystemCapabilities, error) {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return nil, err
@@ -787,7 +787,7 @@ func (s *MetadataService) GetFilesystemCapabilities(ctx context.Context, handle 
 // This is a lightweight operation that doesn't verify file existence,
 // allowing fast path for I/O operations.
 // openID identifies the specific open performing the I/O (empty string falls back to sessionID).
-func (s *MetadataService) CheckLockForIO(ctx context.Context, handle FileHandle, openID string, sessionID uint64, offset, length uint64, isWrite bool) error {
+func (s *Service) CheckLockForIO(ctx context.Context, handle FileHandle, openID string, sessionID uint64, offset, length uint64, isWrite bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -811,7 +811,7 @@ func (s *MetadataService) CheckLockForIO(ctx context.Context, handle FileHandle,
 //   - Verifies file exists
 //   - Verifies file is not a directory (directories cannot be locked)
 //   - Checks user has appropriate permission (read for shared, write for exclusive)
-func (s *MetadataService) LockFile(ctx *AuthContext, handle FileHandle, lock FileLock) error {
+func (s *Service) LockFile(ctx *AuthContext, handle FileHandle, lock FileLock) error {
 	if err := ctx.Context.Err(); err != nil {
 		return err
 	}
@@ -866,7 +866,7 @@ func (s *MetadataService) LockFile(ctx *AuthContext, handle FileHandle, lock Fil
 // - Open/Session ID identifies the lock owner (you can only unlock your own locks)
 // - No permission checking needed for unlock operations
 // openID identifies the specific open that owns the lock (empty string falls back to sessionID).
-func (s *MetadataService) UnlockFile(ctx context.Context, handle FileHandle, openID string, sessionID uint64, offset, length uint64) error {
+func (s *Service) UnlockFile(ctx context.Context, handle FileHandle, openID string, sessionID uint64, offset, length uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -892,7 +892,7 @@ func (s *MetadataService) UnlockFile(ctx context.Context, handle FileHandle, ope
 }
 
 // UnlockAllForSession releases all locks held by a session on a file.
-func (s *MetadataService) UnlockAllForSession(ctx context.Context, handle FileHandle, sessionID uint64) error {
+func (s *Service) UnlockAllForSession(ctx context.Context, handle FileHandle, sessionID uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -909,7 +909,7 @@ func (s *MetadataService) UnlockAllForSession(ctx context.Context, handle FileHa
 }
 
 // UnlockAllForOpen releases all locks held by a specific open on a file.
-func (s *MetadataService) UnlockAllForOpen(ctx context.Context, handle FileHandle, openID string) error {
+func (s *Service) UnlockAllForOpen(ctx context.Context, handle FileHandle, openID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -933,7 +933,7 @@ func (s *MetadataService) UnlockAllForOpen(ctx context.Context, handle FileHandl
 // Returns:
 //   - bool: true if lock would succeed, false if conflict exists
 //   - *LockConflict: Details of conflicting lock if bool is false
-func (s *MetadataService) TestLock(ctx *AuthContext, handle FileHandle, sessionID, offset, length uint64, exclusive bool) (bool, *LockConflict, error) {
+func (s *Service) TestLock(ctx *AuthContext, handle FileHandle, sessionID, offset, length uint64, exclusive bool) (bool, *LockConflict, error) {
 	if err := ctx.Context.Err(); err != nil {
 		return false, nil, err
 	}
@@ -966,7 +966,7 @@ func (s *MetadataService) TestLock(ctx *AuthContext, handle FileHandle, sessionI
 //
 // Returns:
 //   - []FileLock: All active locks on the file (empty slice if none)
-func (s *MetadataService) ListLocks(ctx *AuthContext, handle FileHandle) ([]FileLock, error) {
+func (s *Service) ListLocks(ctx *AuthContext, handle FileHandle) ([]FileLock, error) {
 	if err := ctx.Context.Err(); err != nil {
 		return nil, err
 	}
@@ -997,7 +997,7 @@ func (s *MetadataService) ListLocks(ctx *AuthContext, handle FileHandle) ([]File
 
 // RemoveFileLocks removes all locks for a file.
 // Called when a file is deleted to clean up stale lock entries.
-func (s *MetadataService) RemoveFileLocks(handle FileHandle) {
+func (s *Service) RemoveFileLocks(handle FileHandle) {
 	lm, err := s.lockManagerForHandle(handle)
 	if err != nil {
 		return // No lock manager means no locks to remove
@@ -1008,7 +1008,7 @@ func (s *MetadataService) RemoveFileLocks(handle FileHandle) {
 }
 
 // CreateShare creates a new share with its root directory.
-func (s *MetadataService) CreateShare(ctx context.Context, shareName string, share *Share) error {
+func (s *Service) CreateShare(ctx context.Context, shareName string, share *Share) error {
 	store, err := s.GetStoreForShare(shareName)
 	if err != nil {
 		return err
@@ -1017,7 +1017,7 @@ func (s *MetadataService) CreateShare(ctx context.Context, shareName string, sha
 }
 
 // GetShareOptions returns the options for a share.
-func (s *MetadataService) GetShareOptions(ctx context.Context, shareName string) (*ShareOptions, error) {
+func (s *Service) GetShareOptions(ctx context.Context, shareName string) (*ShareOptions, error) {
 	store, err := s.GetStoreForShare(shareName)
 	if err != nil {
 		return nil, err
@@ -1033,7 +1033,7 @@ func (s *MetadataService) GetShareOptions(ctx context.Context, shareName string)
 // lock.DirChangeNotifier.
 //
 // Thread safety: Safe to call concurrently.
-func (s *MetadataService) SetDirChangeNotifier(shareName string, n lock.DirChangeNotifier) {
+func (s *Service) SetDirChangeNotifier(shareName string, n lock.DirChangeNotifier) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dirChangeNotifiers[shareName] = n
@@ -1048,7 +1048,7 @@ func (s *MetadataService) SetDirChangeNotifier(shareName string, n lock.DirChang
 // The originClientID is extracted from the AuthContext's LockClientID field
 // (falling back to ClientAddr) to identify the originating client so their
 // own leases aren't broken.
-func (s *MetadataService) notifyDirChange(shareName string, parentHandle FileHandle, changeType lock.DirChangeType, ctx *AuthContext) {
+func (s *Service) notifyDirChange(shareName string, parentHandle FileHandle, changeType lock.DirChangeType, ctx *AuthContext) {
 	s.mu.RLock()
 	notifier, ok := s.dirChangeNotifiers[shareName]
 	s.mu.RUnlock()

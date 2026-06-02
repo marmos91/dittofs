@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	snap "github.com/marmos91/dittofs/bench/snapshots"
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	"github.com/marmos91/dittofs/pkg/block"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 
 // scaleCase is one (files, blocks-per-file) point on the sweep.
@@ -168,7 +168,7 @@ func BenchmarkVerify(b *testing.B) {
 // HashSet for the manifest / verify benchmarks (which time a stage
 // downstream of Backup and so need its output, not the timed Backup
 // itself).
-func buildHashSet(b *testing.B, ctx context.Context, sc scaleCase) *blockstore.HashSet {
+func buildHashSet(b *testing.B, ctx context.Context, sc scaleCase) *block.HashSet {
 	b.Helper()
 	store, _, cleanup, err := snap.NewStore(ctx, seedOpts(b, sc))
 	if err != nil {

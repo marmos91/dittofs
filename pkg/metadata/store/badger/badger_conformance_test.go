@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
@@ -17,7 +17,7 @@ import (
 )
 
 func TestConformance(t *testing.T) {
-	storetest.RunConformanceSuite(t, func(t *testing.T) metadata.MetadataStore {
+	storetest.RunConformanceSuite(t, func(t *testing.T) metadata.Store {
 		dbPath := filepath.Join(t.TempDir(), "metadata.db")
 		store, err := badger.NewBadgerMetadataStoreWithDefaults(context.Background(), dbPath)
 		if err != nil {
@@ -33,7 +33,7 @@ func TestConformance(t *testing.T) {
 }
 
 func TestBackupConformance(t *testing.T) {
-	storetest.RunBackupConformanceSuite(t, func(t *testing.T) metadata.MetadataStore {
+	storetest.RunBackupConformanceSuite(t, func(t *testing.T) metadata.Store {
 		dbPath := filepath.Join(t.TempDir(), "metadata.db")
 		store, err := badger.NewBadgerMetadataStoreWithDefaults(context.Background(), dbPath)
 		if err != nil {
@@ -49,7 +49,7 @@ func TestBackupConformance(t *testing.T) {
 }
 
 func TestResetThenRestoreConformance(t *testing.T) {
-	storetest.ResetThenRestoreConformance(t, func(t *testing.T) metadata.MetadataStore {
+	storetest.ResetThenRestoreConformance(t, func(t *testing.T) metadata.Store {
 		dbPath := filepath.Join(t.TempDir(), "metadata.db")
 		store, err := badger.NewBadgerMetadataStoreWithDefaults(context.Background(), dbPath)
 		if err != nil {
@@ -140,12 +140,12 @@ func TestBadgerStore_PutGetFile_BlocksRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	// Build deterministic BlockRef fixtures.
-	var h1, h2 blockstore.ContentHash
+	var h1, h2 block.ContentHash
 	for i := range h1 {
 		h1[i] = byte(i)
 		h2[i] = byte(0xff - i)
 	}
-	want := []blockstore.BlockRef{
+	want := []block.BlockRef{
 		{Hash: h1, Offset: 0, Size: 4 * 1024 * 1024},
 		{Hash: h2, Offset: 4 * 1024 * 1024, Size: 4 * 1024 * 1024},
 	}

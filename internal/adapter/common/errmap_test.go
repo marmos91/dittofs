@@ -8,8 +8,8 @@ import (
 	nfs3types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	nfs4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	smbtypes "github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
@@ -162,7 +162,7 @@ func TestMapContentToNFS3(t *testing.T) {
 	if got := MapContentToNFS3(nil); got != nfs3types.NFS3OK {
 		t.Errorf("MapContentToNFS3(nil) = %d, want NFS3OK", got)
 	}
-	if got := MapContentToNFS3(blockstore.ErrRemoteUnavailable); got != nfs3types.NFS3ErrIO {
+	if got := MapContentToNFS3(block.ErrRemoteUnavailable); got != nfs3types.NFS3ErrIO {
 		t.Errorf("MapContentToNFS3(ErrRemoteUnavailable) = %d, want NFS3ErrIO", got)
 	}
 	if got := MapContentToNFS3(goerrors.New("unknown")); got != nfs3types.NFS3ErrIO {
@@ -175,7 +175,7 @@ func TestMapContentToNFS4(t *testing.T) {
 	if got := MapContentToNFS4(nil); got != nfs4types.NFS4_OK {
 		t.Errorf("MapContentToNFS4(nil) = %d, want NFS4_OK", got)
 	}
-	if got := MapContentToNFS4(blockstore.ErrRemoteUnavailable); got != nfs4types.NFS4ERR_IO {
+	if got := MapContentToNFS4(block.ErrRemoteUnavailable); got != nfs4types.NFS4ERR_IO {
 		t.Errorf("MapContentToNFS4(ErrRemoteUnavailable) = %d, want NFS4ERR_IO", got)
 	}
 	if got := MapContentToNFS4(goerrors.New("unknown")); got != nfs4types.NFS4ERR_IO {
@@ -193,7 +193,7 @@ func TestMapContentToSMB(t *testing.T) {
 	if got := MapContentToSMB(goerrors.New("cache full")); got != smbtypes.StatusUnexpectedIOError {
 		t.Errorf("MapContentToSMB(cache full) = %v, want StatusUnexpectedIOError", got)
 	}
-	if got := MapContentToSMB(blockstore.ErrRemoteUnavailable); got != smbtypes.StatusUnexpectedIOError {
+	if got := MapContentToSMB(block.ErrRemoteUnavailable); got != smbtypes.StatusUnexpectedIOError {
 		t.Errorf("MapContentToSMB(ErrRemoteUnavailable) = %v, want StatusUnexpectedIOError", got)
 	}
 }

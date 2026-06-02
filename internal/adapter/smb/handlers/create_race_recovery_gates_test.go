@@ -30,7 +30,7 @@ import (
 // on parent permissions).
 func raceParentDir(
 	t *testing.T,
-	metaSvc *metadata.MetadataService,
+	metaSvc *metadata.Service,
 	rootAuth *metadata.AuthContext,
 	rootHandle metadata.FileHandle,
 	name string,

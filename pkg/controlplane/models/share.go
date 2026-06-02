@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // KerberosLevel constants for share security policy.
@@ -130,10 +130,10 @@ func (s *Share) GetDefaultPermission() SharePermission {
 
 // GetRetentionPolicy returns the parsed retention policy for this share.
 // Empty or unset defaults to LRU for backward compatibility.
-func (s *Share) GetRetentionPolicy() blockstore.RetentionPolicy {
-	p, err := blockstore.ParseRetentionPolicy(s.RetentionPolicy)
+func (s *Share) GetRetentionPolicy() block.RetentionPolicy {
+	p, err := block.ParseRetentionPolicy(s.RetentionPolicy)
 	if err != nil {
-		return blockstore.RetentionLRU
+		return block.RetentionLRU
 	}
 	return p
 }

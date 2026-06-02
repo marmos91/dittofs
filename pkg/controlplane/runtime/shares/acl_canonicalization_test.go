@@ -13,10 +13,10 @@ import (
 // runtime composition.
 type metaStoreProvider struct {
 	name  string
-	store metadata.MetadataStore
+	store metadata.Store
 }
 
-func (p *metaStoreProvider) GetMetadataStore(name string) (metadata.MetadataStore, error) {
+func (p *metaStoreProvider) GetMetadataStore(name string) (metadata.Store, error) {
 	return p.store, nil
 }
 
@@ -24,7 +24,7 @@ func (p *metaStoreProvider) GetMetadataStore(name string) (metadata.MetadataStor
 // AddShare can complete without standing up the real metadata service.
 type metaSvcRegistrar struct{}
 
-func (metaSvcRegistrar) RegisterStoreForShare(shareName string, store metadata.MetadataStore) error {
+func (metaSvcRegistrar) RegisterStoreForShare(shareName string, store metadata.Store) error {
 	return nil
 }
 

@@ -1,6 +1,6 @@
 // Package snapshot owns the on-disk hash manifest format used by the
 // snapshot lifecycle in pkg/controlplane/runtime. A manifest is the
-// authoritative list of blockstore.ContentHash values referenced by a
+// authoritative list of block.ContentHash values referenced by a
 // share at the moment a snapshot was taken; the snapshot orchestrator
 // and the GC hold provider both read manifests through ReadManifest,
 // and the orchestrator materializes them through WriteManifestAtomic.
@@ -11,7 +11,7 @@
 // comments, and no blank lines.
 //
 //   - ASCII only.
-//   - One hex-encoded blockstore.ContentHash per line, exactly 64
+//   - One hex-encoded block.ContentHash per line, exactly 64
 //     lowercase hex characters per line.
 //   - Lines terminated by '\n' (LF). Readers tolerate CRLF on input;
 //     writers always emit LF.

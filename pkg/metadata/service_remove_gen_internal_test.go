@@ -24,10 +24,10 @@ import (
 // re-add resolving to the same store — the control-plane stores.Service registry
 // keeps the same pointer across share remove/re-add).
 type removeThenRepublishStore struct {
-	MetadataStore // nil; never called during register/recovery
-	svc           *MetadataService
-	shareName     string
-	fired         bool
+	Store     // nil; never called during register/recovery
+	svc       *Service
+	shareName string
+	fired     bool
 }
 
 func (s *removeThenRepublishStore) PutLock(context.Context, *lock.PersistedLock) error { return nil }

@@ -10,7 +10,7 @@ import (
 // CreateFile creates a new regular file in a directory. The returned DirWcc
 // carries the parent's pre/post attributes captured atomically with the create
 // (H9).
-func (s *MetadataService) CreateFile(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, *DirWcc, error) {
+func (s *Service) CreateFile(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, *DirWcc, error) {
 	file, wcc, err := s.createEntry(ctx, parentHandle, name, attr, FileTypeRegular, "", 0, 0)
 	if err != nil {
 		return nil, nil, err
@@ -21,7 +21,7 @@ func (s *MetadataService) CreateFile(ctx *AuthContext, parentHandle FileHandle, 
 
 // CreateSymlink creates a new symbolic link in a directory. The returned DirWcc
 // carries the parent's pre/post attributes captured atomically (H9).
-func (s *MetadataService) CreateSymlink(ctx *AuthContext, parentHandle FileHandle, name string, target string, attr *FileAttr) (*File, *DirWcc, error) {
+func (s *Service) CreateSymlink(ctx *AuthContext, parentHandle FileHandle, name string, target string, attr *FileAttr) (*File, *DirWcc, error) {
 	// Validate symlink target
 	if err := ValidateSymlinkTarget(target); err != nil {
 		return nil, nil, err
@@ -38,7 +38,7 @@ func (s *MetadataService) CreateSymlink(ctx *AuthContext, parentHandle FileHandl
 // CreateSpecialFile creates a special file (device, socket, or FIFO). The
 // returned DirWcc carries the parent's pre/post attributes captured
 // atomically (H9).
-func (s *MetadataService) CreateSpecialFile(ctx *AuthContext, parentHandle FileHandle, name string, fileType FileType, attr *FileAttr, deviceMajor, deviceMinor uint32) (*File, *DirWcc, error) {
+func (s *Service) CreateSpecialFile(ctx *AuthContext, parentHandle FileHandle, name string, fileType FileType, attr *FileAttr, deviceMajor, deviceMinor uint32) (*File, *DirWcc, error) {
 	// Validate special file type
 	if err := ValidateSpecialFileType(fileType); err != nil {
 		return nil, nil, err
@@ -62,7 +62,7 @@ func (s *MetadataService) CreateSpecialFile(ctx *AuthContext, parentHandle FileH
 // CreateHardLink creates a hard link to an existing file. The returned DirWcc
 // carries the link directory's pre/post attributes captured atomically with the
 // mutation (H9).
-func (s *MetadataService) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name string, targetHandle FileHandle) (*DirWcc, error) {
+func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name string, targetHandle FileHandle) (*DirWcc, error) {
 	store, err := s.storeForHandle(dirHandle)
 	if err != nil {
 		return nil, err
@@ -179,7 +179,7 @@ func (s *MetadataService) CreateHardLink(ctx *AuthContext, dirHandle FileHandle,
 }
 
 // createEntry is the internal implementation for creating files, directories, symlinks, and special files.
-func (s *MetadataService) createEntry(
+func (s *Service) createEntry(
 	ctx *AuthContext,
 	parentHandle FileHandle,
 	name string,

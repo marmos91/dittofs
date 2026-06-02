@@ -5,7 +5,7 @@ import (
 	stderrors "errors"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/stretchr/testify/assert"
@@ -31,7 +31,7 @@ func (p stubTrashPolicy) TrashConfigForShare(string) (metadata.TrashConfig, bool
 // free so tests can assert block reclamation happens for permanent deletes.
 type testDeps struct {
 	shareName  string
-	svc        *metadata.MetadataService
+	svc        *metadata.Service
 	rootHandle metadata.FileHandle
 	cfg        Config
 	freed      []string
@@ -42,7 +42,7 @@ type testDeps struct {
 	freedBlocks map[string]int
 }
 
-func (d *testDeps) MetadataServiceForShare(shareName string) (*metadata.MetadataService, metadata.FileHandle, bool) {
+func (d *testDeps) MetadataServiceForShare(shareName string) (*metadata.Service, metadata.FileHandle, bool) {
 	if shareName != d.shareName {
 		return nil, nil, false
 	}
@@ -60,7 +60,7 @@ func (d *testDeps) EnabledTrashShares() []string {
 	return []string{d.shareName}
 }
 
-func (d *testDeps) FreeBlocks(_ context.Context, _ string, _ metadata.FileHandle, payloadID string, blocks []blockstore.BlockRef) error {
+func (d *testDeps) FreeBlocks(_ context.Context, _ string, _ metadata.FileHandle, payloadID string, blocks []block.BlockRef) error {
 	if payloadID == "" {
 		return nil
 	}
@@ -312,7 +312,7 @@ func TestEmptyThreadsBlocksToFreeBlocks(t *testing.T) {
 	file, err := store.GetFile(tt.ctx.Context, handle)
 	require.NoError(t, err)
 	file.PayloadID = "payload-withblocks"
-	file.Blocks = []blockstore.BlockRef{
+	file.Blocks = []block.BlockRef{
 		{Offset: 0, Size: 4096},
 		{Offset: 4096, Size: 4096},
 	}

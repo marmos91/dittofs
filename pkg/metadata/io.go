@@ -69,7 +69,7 @@ type ReadMetadata struct {
 //  1. PrepareWrite - validates and creates intent
 //  2. ContentStore.WriteAt - writes actual content
 //  3. CommitWrite - updates metadata (size, mtime, ctime)
-func (s *MetadataService) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint64) (*WriteOperation, error) {
+func (s *Service) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint64) (*WriteOperation, error) {
 	// Check context
 	if err := ctx.Context.Err(); err != nil {
 		return nil, err
@@ -191,7 +191,7 @@ func (s *MetadataService) PrepareWrite(ctx *AuthContext, handle FileHandle, newS
 // CONCURRENCY: Uses a transaction to ensure atomic read-modify-write.
 // This prevents race conditions where concurrent writes would result in
 // the smaller size being stored if it commits last.
-func (s *MetadataService) CommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
+func (s *Service) CommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
 	// Check if deferred commits are enabled
 	s.mu.RLock()
 	deferredCommit := s.deferredCommit
@@ -205,7 +205,7 @@ func (s *MetadataService) CommitWrite(ctx *AuthContext, intent *WriteOperation) 
 
 // deferredCommitWrite records the write in pending state without touching the store.
 // The actual commit happens on FlushPendingWrites (called by NFS COMMIT).
-func (s *MetadataService) deferredCommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
+func (s *Service) deferredCommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
 	// Determine if we need to clear setuid/setgid
 	clearSetuid := ctx.Identity != nil && ctx.Identity.UID != nil && *ctx.Identity.UID != 0
 
@@ -273,7 +273,7 @@ func (s *MetadataService) deferredCommitWrite(ctx *AuthContext, intent *WriteOpe
 }
 
 // immediateCommitWrite performs the traditional synchronous commit.
-func (s *MetadataService) immediateCommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
+func (s *Service) immediateCommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
 	store, err := s.storeForHandle(intent.Handle)
 	if err != nil {
 		return nil, err
@@ -340,7 +340,7 @@ func (s *MetadataService) immediateCommitWrite(ctx *AuthContext, intent *WriteOp
 // FlushPendingWrites commits all pending metadata changes to the store.
 // This should be called on NFS COMMIT or when closing a file.
 // Returns the number of files flushed and any error encountered.
-func (s *MetadataService) FlushPendingWrites(ctx *AuthContext) (int, error) {
+func (s *Service) FlushPendingWrites(ctx *AuthContext) (int, error) {
 	entries := s.pendingWrites.PopAllPending()
 	if len(entries) == 0 {
 		return 0, nil
@@ -365,7 +365,7 @@ func (s *MetadataService) FlushPendingWrites(ctx *AuthContext) (int, error) {
 // Returns true if there was pending data to flush.
 // Uses a per-file mutex to prevent concurrent flushes from causing BadgerDB
 // transaction conflicts (which trigger expensive retry loops with backoff).
-func (s *MetadataService) FlushPendingWriteForFile(ctx *AuthContext, handle FileHandle) (bool, error) {
+func (s *Service) FlushPendingWriteForFile(ctx *AuthContext, handle FileHandle) (bool, error) {
 	// Serialize flushes per file to avoid BadgerDB conflict retries
 	mu := s.pendingWrites.GetFlushLock(handle)
 	mu.Lock()
@@ -404,7 +404,7 @@ func (s *MetadataService) FlushPendingWriteForFile(ctx *AuthContext, handle File
 }
 
 // flushPendingWrite applies a single pending write to the store.
-func (s *MetadataService) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *PendingWriteState) error {
+func (s *Service) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *PendingWriteState) error {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return err
@@ -438,7 +438,7 @@ func (s *MetadataService) flushPendingWrite(ctx *AuthContext, handle FileHandle,
 
 // GetPendingSize returns the pending size for a file if there are uncommitted writes.
 // Used by GETATTR to return accurate file size before flush.
-func (s *MetadataService) GetPendingSize(handle FileHandle) (uint64, bool) {
+func (s *Service) GetPendingSize(handle FileHandle) (uint64, bool) {
 	return s.pendingWrites.GetPendingSize(handle)
 }
 
@@ -446,7 +446,7 @@ func (s *MetadataService) GetPendingSize(handle FileHandle) (uint64, bool) {
 // Used by SMB frozen timestamp support (MS-FSA 2.1.5.14.2): when SET_INFO(-1) freezes
 // Mtime, the pending state's LastMtime must reflect the frozen value so that GetFile()
 // merge returns frozen timestamps correctly.
-func (s *MetadataService) UpdatePendingMtime(handle FileHandle, mtime time.Time) bool {
+func (s *Service) UpdatePendingMtime(handle FileHandle, mtime time.Time) bool {
 	return s.pendingWrites.UpdatePendingMtime(handle, mtime)
 }
 
@@ -454,7 +454,7 @@ func (s *MetadataService) UpdatePendingMtime(handle FileHandle, mtime time.Time)
 // Unlike FlushPendingWrites, doesn't require an AuthContext and uses a
 // background context with a timeout. This should be called during graceful shutdown
 // to ensure all metadata changes are persisted before closing stores.
-func (s *MetadataService) FlushAllPendingWritesForShutdown(timeout time.Duration) (int, error) {
+func (s *Service) FlushAllPendingWritesForShutdown(timeout time.Duration) (int, error) {
 	entries := s.pendingWrites.PopAllPending()
 	if len(entries) == 0 {
 		return 0, nil
@@ -487,7 +487,7 @@ func (s *MetadataService) FlushAllPendingWritesForShutdown(timeout time.Duration
 // PrewarmWriteCache pre-populates the file metadata cache for a file.
 // Call this after CREATE to eliminate cold-start penalty on first WRITE.
 // The file parameter should be the newly created file with its attributes.
-func (s *MetadataService) PrewarmWriteCache(handle FileHandle, file *File) {
+func (s *Service) PrewarmWriteCache(handle FileHandle, file *File) {
 	if file == nil || file.Type != FileTypeRegular {
 		return
 	}
@@ -503,7 +503,7 @@ func (s *MetadataService) PrewarmWriteCache(handle FileHandle, file *File) {
 //
 // The method does NOT perform actual data reading. The protocol handler
 // coordinates between metadata and content stores.
-func (s *MetadataService) PrepareRead(ctx *AuthContext, handle FileHandle) (*ReadMetadata, error) {
+func (s *Service) PrepareRead(ctx *AuthContext, handle FileHandle) (*ReadMetadata, error) {
 	_, err := s.storeForHandle(handle)
 	if err != nil {
 		return nil, err

@@ -77,7 +77,7 @@
 //	ReadAt(ctx, payloadID, []BlockRef, dest, offset) (int, error)
 //	WriteAt(ctx, payloadID, currentBlocks []BlockRef, data, offset) ([]BlockRef, error)
 //	CopyPayload(ctx, srcPayloadID, dstPayloadID, srcBlocks []BlockRef) ([]BlockRef, error)
-//	Flush(ctx, payloadID) (*blockstore.FlushResult, error)
+//	Flush(ctx, payloadID) (*block.FlushResult, error)
 //
 // Empty / nil []BlockRef on Read/Write triggers the dual-read shim.
 // Non-empty triggers the CAS path with BLAKE3 verification (engine-internal).

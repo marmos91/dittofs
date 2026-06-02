@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/trash"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -43,7 +43,7 @@ var _ trash.Deps = (*trashDeps)(nil)
 // name (per-share stores are registered into it by AddShare), so the service
 // pointer is the runtime's shared one and the root handle comes from the
 // shares registry. ok=false when the share is unknown to the registry.
-func (d *trashDeps) MetadataServiceForShare(shareName string) (*metadata.MetadataService, metadata.FileHandle, bool) {
+func (d *trashDeps) MetadataServiceForShare(shareName string) (*metadata.Service, metadata.FileHandle, bool) {
 	root, err := d.rt.sharesSvc.GetRootHandle(shareName)
 	if err != nil {
 		return nil, nil, false
@@ -82,7 +82,7 @@ func (d *trashDeps) EnabledTrashShares() []string {
 // (#832); unlike the NFS v3 / SMB close path (which deletes a still-live file
 // whose blocks it does not have on hand), the reaper holds the removed file's
 // blocks and must thread them through.
-func (d *trashDeps) FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string, blocks []blockstore.BlockRef) error {
+func (d *trashDeps) FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string, blocks []block.BlockRef) error {
 	if payloadID == "" {
 		return nil
 	}

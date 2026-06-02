@@ -9,7 +9,7 @@ import (
 
 // asResetable is a helper that type-asserts a MetadataStore to Resetable,
 // calling t.Fatal if the assertion fails. Mirrors asBackupable.
-func asResetable(t *testing.T, store metadata.MetadataStore) metadata.Resetable {
+func asResetable(t *testing.T, store metadata.Store) metadata.Resetable {
 	t.Helper()
 	r, ok := store.(metadata.Resetable)
 	if !ok {

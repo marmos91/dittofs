@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -19,8 +19,8 @@ import (
 // invocations and lets tests inject failure on the Nth IncrementRefCount call
 // for the rollback contract.
 type fakeCoordinator struct {
-	incrementCalls    []blockstore.ContentHash
-	decrementCalls    []blockstore.ContentHash
+	incrementCalls    []block.ContentHash
+	decrementCalls    []block.ContentHash
 	reapIDs           []string
 	persistCalls      []persistCall
 	failOnNthIncrErr  error
@@ -29,11 +29,11 @@ type fakeCoordinator struct {
 
 type persistCall struct {
 	payloadID string
-	blocks    []blockstore.BlockRef
-	objectID  blockstore.ObjectID
+	blocks    []block.BlockRef
+	objectID  block.ObjectID
 }
 
-func (f *fakeCoordinator) IncrementRefCount(_ context.Context, hash blockstore.ContentHash) error {
+func (f *fakeCoordinator) IncrementRefCount(_ context.Context, hash block.ContentHash) error {
 	f.incrementCalls = append(f.incrementCalls, hash)
 	if f.failOnNthIncrTrip > 0 && len(f.incrementCalls) == f.failOnNthIncrTrip {
 		return f.failOnNthIncrErr
@@ -41,7 +41,7 @@ func (f *fakeCoordinator) IncrementRefCount(_ context.Context, hash blockstore.C
 	return nil
 }
 
-func (f *fakeCoordinator) DecrementRefCount(_ context.Context, hash blockstore.ContentHash) (uint32, error) {
+func (f *fakeCoordinator) DecrementRefCount(_ context.Context, hash block.ContentHash) (uint32, error) {
 	f.decrementCalls = append(f.decrementCalls, hash)
 	return 0, nil
 }
@@ -54,19 +54,19 @@ func (f *fakeCoordinator) DecrementRefCountAndReap(_ context.Context, payloadID 
 	return 0, nil
 }
 
-func (f *fakeCoordinator) PersistFileBlocks(_ context.Context, payloadID string, blocks []blockstore.BlockRef, objectID blockstore.ObjectID) error {
+func (f *fakeCoordinator) PersistFileBlocks(_ context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
 	f.persistCalls = append(f.persistCalls, persistCall{payloadID: payloadID, blocks: blocks, objectID: objectID})
 	return nil
 }
 
-func (f *fakeCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]blockstore.BlockRef, error) {
+func (f *fakeCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]block.BlockRef, error) {
 	return nil, nil
 }
 
 // FindByObjectID stub. Adapter-common tests don't exercise short-circuit
 // lookups (those live in pkg/blockstore/engine and pkg/metadata/storetest);
 // satisfy the interface so the fake satisfies engine.MetadataCoordinator.
-func (f *fakeCoordinator) FindByObjectID(_ context.Context, _ blockstore.ObjectID) ([]blockstore.BlockRef, error) {
+func (f *fakeCoordinator) FindByObjectID(_ context.Context, _ block.ObjectID) ([]block.BlockRef, error) {
 	return nil, nil
 }
 
@@ -74,13 +74,13 @@ func (f *fakeCoordinator) FindByObjectID(_ context.Context, _ blockstore.ObjectI
 // Syncer.Flush short-circuit path; returning the zero ObjectID + nil is
 // the "never quiesced" disposition that keeps the interface satisfied
 // without affecting any assertions.
-func (f *fakeCoordinator) GetFileObjectID(_ context.Context, _ string) (blockstore.ObjectID, error) {
-	return blockstore.ObjectID{}, nil
+func (f *fakeCoordinator) GetFileObjectID(_ context.Context, _ string) (block.ObjectID, error) {
+	return block.ObjectID{}, nil
 }
 
 // putTestFile creates a file with the given Blocks list in the metadata
 // store and returns its handle. Used to seed src/dst before CopyPayload.
-func putTestFile(t *testing.T, ms metadata.MetadataStore, path string, payloadID metadata.PayloadID, blocks []blockstore.BlockRef, size uint64) metadata.FileHandle {
+func putTestFile(t *testing.T, ms metadata.Store, path string, payloadID metadata.PayloadID, blocks []block.BlockRef, size uint64) metadata.FileHandle {
 	t.Helper()
 	ctx := context.Background()
 
@@ -133,10 +133,10 @@ func TestCopyPayload_AtomicSuccess(t *testing.T) {
 	bs := newCopyTestEngineWithMS(t, coord, ms)
 
 	// Seed src with 3 distinct BlockRefs.
-	srcBlocks := []blockstore.BlockRef{
-		{Hash: blockstore.ContentHash{0x01}, Offset: 0, Size: 4096},
-		{Hash: blockstore.ContentHash{0x02}, Offset: 4096, Size: 4096},
-		{Hash: blockstore.ContentHash{0x03}, Offset: 8192, Size: 4096},
+	srcBlocks := []block.BlockRef{
+		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096},
+		{Hash: block.ContentHash{0x02}, Offset: 4096, Size: 4096},
+		{Hash: block.ContentHash{0x03}, Offset: 8192, Size: 4096},
 	}
 	srcHandle := putTestFile(t, ms, "/src.bin", "src-pid", srcBlocks, 12288)
 
@@ -195,10 +195,10 @@ func TestCopyPayload_RollsBackOnIncrementError(t *testing.T) {
 	}
 	bs := newCopyTestEngineWithMS(t, coord, ms)
 
-	srcBlocks := []blockstore.BlockRef{
-		{Hash: blockstore.ContentHash{0x01}, Offset: 0, Size: 4096},
-		{Hash: blockstore.ContentHash{0x02}, Offset: 4096, Size: 4096},
-		{Hash: blockstore.ContentHash{0x03}, Offset: 8192, Size: 4096},
+	srcBlocks := []block.BlockRef{
+		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096},
+		{Hash: block.ContentHash{0x02}, Offset: 4096, Size: 4096},
+		{Hash: block.ContentHash{0x03}, Offset: 8192, Size: 4096},
 	}
 	srcHandle := putTestFile(t, ms, "/src2.bin", "src2-pid", srcBlocks, 12288)
 	dstHandle := putTestFile(t, ms, "/dst2.bin", "dst2-pid", nil, 0)
@@ -277,8 +277,8 @@ func TestCopyPayload_NilCacheTolerated(t *testing.T) {
 	coord := &fakeCoordinator{}
 	bs := newCopyTestEngineWithMS(t, coord, ms)
 
-	srcBlocks := []blockstore.BlockRef{
-		{Hash: blockstore.ContentHash{0xAA}, Offset: 0, Size: 4096},
+	srcBlocks := []block.BlockRef{
+		{Hash: block.ContentHash{0xAA}, Offset: 0, Size: 4096},
 	}
 	srcHandle := putTestFile(t, ms, "/src3.bin", "src3-pid", srcBlocks, 4096)
 	dstHandle := putTestFile(t, ms, "/dst3.bin", "dst3-pid", nil, 0)

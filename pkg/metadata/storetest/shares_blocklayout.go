@@ -104,7 +104,7 @@ func RunBlockLayoutSuite(t *testing.T, factory StoreFactory) {
 // it; current scenarios discard it.
 func createBlockLayoutShare(
 	t *testing.T,
-	store metadata.MetadataStore,
+	store metadata.Store,
 	shareName string,
 	layout metadata.BlockLayout,
 ) metadata.FileHandle {

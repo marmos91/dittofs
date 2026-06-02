@@ -7,17 +7,17 @@ import (
 	nfs3types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	nfs4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	smbtypes "github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // TestContentErrMap_CASMismatch verifies that a wrapped
-// blockstore.ErrCASContentMismatch maps to I/O-class
+// block.ErrCASContentMismatch maps to I/O-class
 // codes in every protocol arm. The streaming verifier rejected bytes
 // before they reached the client; the protocol surfaces this as EIO
 // (NFS) / unexpected I/O (SMB).
 func TestContentErrMap_CASMismatch(t *testing.T) {
 	wrapped := fmt.Errorf("download block cas/aa/bb/...: %w",
-		blockstore.ErrCASContentMismatch)
+		block.ErrCASContentMismatch)
 
 	if got := MapContentToNFS3(wrapped); got != nfs3types.NFS3ErrIO {
 		t.Errorf("MapContentToNFS3(ErrCASContentMismatch) = %d, want NFS3ErrIO (%d)",
@@ -36,7 +36,7 @@ func TestContentErrMap_CASMismatch(t *testing.T) {
 // TestContentErrMap_CASMismatch_Direct asserts the unwrapped sentinel
 // also maps correctly (some call paths surface it directly).
 func TestContentErrMap_CASMismatch_Direct(t *testing.T) {
-	err := blockstore.ErrCASContentMismatch
+	err := block.ErrCASContentMismatch
 
 	if got := MapContentToNFS3(err); got != nfs3types.NFS3ErrIO {
 		t.Errorf("MapContentToNFS3 direct = %d, want NFS3ErrIO", got)
@@ -50,11 +50,11 @@ func TestContentErrMap_CASMismatch_Direct(t *testing.T) {
 }
 
 // TestContentErrMap_CASKeyMalformed verifies that a wrapped
-// blockstore.ErrCASKeyMalformed maps to invalid-argument
+// block.ErrCASKeyMalformed maps to invalid-argument
 // codes — the metadata describing the CAS object is corrupt.
 func TestContentErrMap_CASKeyMalformed(t *testing.T) {
 	wrapped := fmt.Errorf("parse cas key %q: %w",
-		"cas/zz/yy/notvalid", blockstore.ErrCASKeyMalformed)
+		"cas/zz/yy/notvalid", block.ErrCASKeyMalformed)
 
 	if got := MapContentToNFS3(wrapped); got != nfs3types.NFS3ErrInval {
 		t.Errorf("MapContentToNFS3(ErrCASKeyMalformed) = %d, want NFS3ErrInval (%d)",
@@ -73,7 +73,7 @@ func TestContentErrMap_CASKeyMalformed(t *testing.T) {
 // TestContentErrMap_CASKeyMalformed_Direct asserts the unwrapped
 // sentinel maps correctly.
 func TestContentErrMap_CASKeyMalformed_Direct(t *testing.T) {
-	err := blockstore.ErrCASKeyMalformed
+	err := block.ErrCASKeyMalformed
 
 	if got := MapContentToNFS3(err); got != nfs3types.NFS3ErrInval {
 		t.Errorf("MapContentToNFS3 direct = %d, want NFS3ErrInval", got)
@@ -87,13 +87,13 @@ func TestContentErrMap_CASKeyMalformed_Direct(t *testing.T) {
 }
 
 // TestContentErrMap_BlockRefMissing verifies that a wrapped
-// blockstore.ErrBlockRefMissing maps to I/O-class codes in
+// block.ErrBlockRefMissing maps to I/O-class codes in
 // every protocol arm. A BlockRef.Hash referring to a FileBlock that
 // has been GC'd or never existed is a data-integrity failure surfaced
 // to the client identically to ErrCASContentMismatch.
 func TestContentErrMap_BlockRefMissing(t *testing.T) {
 	wrapped := fmt.Errorf("read block %x: %w",
-		[]byte{0xab, 0xcd}, blockstore.ErrBlockRefMissing)
+		[]byte{0xab, 0xcd}, block.ErrBlockRefMissing)
 
 	if got := MapContentToNFS3(wrapped); got != nfs3types.NFS3ErrIO {
 		t.Errorf("MapContentToNFS3(ErrBlockRefMissing) = %d, want NFS3ErrIO (%d)",
@@ -112,7 +112,7 @@ func TestContentErrMap_BlockRefMissing(t *testing.T) {
 // TestContentErrMap_BlockRefMissing_Direct asserts the unwrapped
 // sentinel maps correctly across protocols.
 func TestContentErrMap_BlockRefMissing_Direct(t *testing.T) {
-	err := blockstore.ErrBlockRefMissing
+	err := block.ErrBlockRefMissing
 
 	if got := MapContentToNFS3(err); got != nfs3types.NFS3ErrIO {
 		t.Errorf("MapContentToNFS3 direct = %d, want NFS3ErrIO", got)
@@ -133,7 +133,7 @@ func TestContentErrMap_BlockRefMissing_Direct(t *testing.T) {
 // candidate), ErrCASContentMismatch means bytes don't match the hash
 // (corruption candidate).
 func TestContentErrMap_BlockRefMissing_DistinctFromCASMismatch(t *testing.T) {
-	if blockstore.ErrBlockRefMissing == blockstore.ErrCASContentMismatch {
+	if block.ErrBlockRefMissing == block.ErrCASContentMismatch {
 		t.Fatal("ErrBlockRefMissing must be a distinct sentinel from ErrCASContentMismatch")
 	}
 }
@@ -143,13 +143,13 @@ func TestContentErrMap_BlockRefMissing_DistinctFromCASMismatch(t *testing.T) {
 // table — ErrRemoteUnavailable and unknown errors map to I/O codes.
 func TestContentErrMap_NonCAS_NoRegression(t *testing.T) {
 	// ErrRemoteUnavailable: existing entry, must continue to behave.
-	if got := MapContentToNFS3(blockstore.ErrRemoteUnavailable); got != nfs3types.NFS3ErrIO {
+	if got := MapContentToNFS3(block.ErrRemoteUnavailable); got != nfs3types.NFS3ErrIO {
 		t.Errorf("regression: MapContentToNFS3(ErrRemoteUnavailable) = %d, want NFS3ErrIO", got)
 	}
-	if got := MapContentToNFS4(blockstore.ErrRemoteUnavailable); got != nfs4types.NFS4ERR_IO {
+	if got := MapContentToNFS4(block.ErrRemoteUnavailable); got != nfs4types.NFS4ERR_IO {
 		t.Errorf("regression: MapContentToNFS4(ErrRemoteUnavailable) = %d, want NFS4ERR_IO", got)
 	}
-	if got := MapContentToSMB(blockstore.ErrRemoteUnavailable); got != smbtypes.StatusUnexpectedIOError {
+	if got := MapContentToSMB(block.ErrRemoteUnavailable); got != smbtypes.StatusUnexpectedIOError {
 		t.Errorf("regression: MapContentToSMB(ErrRemoteUnavailable) = %v, want StatusUnexpectedIOError", got)
 	}
 

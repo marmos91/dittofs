@@ -1074,7 +1074,7 @@ func shareNameForOpenFile(openFile *OpenFile) string {
 // FileFsAttributeInformation FileSystemAttributes mask so that clients on a
 // streams-disabled share see the FS advertise no ADS support, matching the
 // CREATE-time rejection in create.go.
-func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoClass, metaSvc *metadata.MetadataService, handle metadata.FileHandle, streamsDisabled bool) ([]byte, error) {
+func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoClass, metaSvc *metadata.Service, handle metadata.FileHandle, streamsDisabled bool) ([]byte, error) {
 	switch class {
 	case 1: // FileFsVolumeInformation [MS-FSCC] 2.5.9
 		label := encodeUTF16LE("DittoFS")

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -13,7 +13,7 @@ var _ metadata.SyncedHashStore = (*MemoryMetadataStore)(nil)
 
 // IsSynced reports whether hash has been mirrored to remote. Returns
 // (false, nil) when no entry exists for hash.
-func (s *MemoryMetadataStore) IsSynced(ctx context.Context, hash blockstore.ContentHash) (bool, error) {
+func (s *MemoryMetadataStore) IsSynced(ctx context.Context, hash block.ContentHash) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -34,14 +34,14 @@ func (s *MemoryMetadataStore) IsSynced(ctx context.Context, hash blockstore.Cont
 // would surface the most-recent re-Put time instead, which is
 // misleading when a periodic mirror loop re-checks already-synced
 // hashes.
-func (s *MemoryMetadataStore) MarkSynced(ctx context.Context, hash blockstore.ContentHash) error {
+func (s *MemoryMetadataStore) MarkSynced(ctx context.Context, hash block.ContentHash) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	s.syncedMu.Lock()
 	defer s.syncedMu.Unlock()
 	if s.synced == nil {
-		s.synced = make(map[blockstore.ContentHash]time.Time)
+		s.synced = make(map[block.ContentHash]time.Time)
 	}
 	if _, ok := s.synced[hash]; ok {
 		return nil
@@ -52,7 +52,7 @@ func (s *MemoryMetadataStore) MarkSynced(ctx context.Context, hash blockstore.Co
 
 // DeleteSynced removes the synced marker for hash. Idempotent: deleting
 // an absent hash returns nil.
-func (s *MemoryMetadataStore) DeleteSynced(ctx context.Context, hash blockstore.ContentHash) error {
+func (s *MemoryMetadataStore) DeleteSynced(ctx context.Context, hash block.ContentHash) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}

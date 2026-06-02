@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -58,7 +58,7 @@ type Config struct {
 type Deps interface {
 	// MetadataServiceForShare resolves the per-share metadata service and its
 	// root handle. ok=false when the share is unknown.
-	MetadataServiceForShare(shareName string) (svc *metadata.MetadataService, root metadata.FileHandle, ok bool)
+	MetadataServiceForShare(shareName string) (svc *metadata.Service, root metadata.FileHandle, ok bool)
 	// TrashConfigForShare returns the trash policy for the share. ok=false when
 	// the share is unknown.
 	TrashConfigForShare(shareName string) (Config, bool)
@@ -70,7 +70,7 @@ type Deps interface {
 	// required: blockStore.Delete only decrements per-block CAS RefCounts (so the
 	// GC can reclaim now-unreferenced chunks) when it is given the file's blocks
 	// — passing nil leaks the refcounts. A no-op when payloadID is empty.
-	FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string, blocks []blockstore.BlockRef) error
+	FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string, blocks []block.BlockRef) error
 }
 
 // Service lists, restores, and empties per-share recycle bins.
@@ -95,7 +95,7 @@ func New(deps Deps, reapInterval time.Duration) *Service {
 
 // resolve returns the share's metadata service and root handle, or a NotFound
 // StoreError when the share is unknown to the runtime.
-func (s *Service) resolve(shareName string) (*metadata.MetadataService, metadata.FileHandle, error) {
+func (s *Service) resolve(shareName string) (*metadata.Service, metadata.FileHandle, error) {
 	svc, root, ok := s.deps.MetadataServiceForShare(shareName)
 	if !ok {
 		return nil, nil, &metadata.StoreError{
@@ -139,7 +139,7 @@ func (s *Service) List(ctx *metadata.AuthContext, shareName string) ([]Entry, er
 // subtree: the root is listed once and its children stay hidden. Non-recycled
 // intermediary directories (the recreated original parent chain, e.g. the "a/b"
 // under #recycle/a/b/c.txt) are descended into but not themselves listed.
-func (s *Service) walkBin(ctx *metadata.AuthContext, svc *metadata.MetadataService, dirHandle metadata.FileHandle, binPrefix string, out *[]Entry) error {
+func (s *Service) walkBin(ctx *metadata.AuthContext, svc *metadata.Service, dirHandle metadata.FileHandle, binPrefix string, out *[]Entry) error {
 	var cookie uint64
 	for {
 		page, err := svc.ReadDirectory(ctx, dirHandle, cookie, 0)
@@ -186,7 +186,7 @@ func (s *Service) walkBin(ctx *metadata.AuthContext, svc *metadata.MetadataServi
 
 // entryAttr returns a directory entry's FileAttr, using the READDIRPLUS-style
 // inline attrs when present and falling back to GetFile otherwise.
-func (s *Service) entryAttr(ctx *metadata.AuthContext, svc *metadata.MetadataService, dirHandle metadata.FileHandle, e *metadata.DirEntry) (*metadata.FileAttr, error) {
+func (s *Service) entryAttr(ctx *metadata.AuthContext, svc *metadata.Service, dirHandle metadata.FileHandle, e *metadata.DirEntry) (*metadata.FileAttr, error) {
 	if e.Attr != nil {
 		return e.Attr, nil
 	}
@@ -329,7 +329,7 @@ func (s *Service) Restore(ctx *metadata.AuthContext, shareName, binPath, dest st
 // clearStamp loads the restored node and nils its DeletedAt / OriginalPath /
 // DeletedBy so it reads as live again. It writes through the share's metadata
 // store directly: these three fields are not exposed by SetFileAttributes.
-func clearStamp(ctx *metadata.AuthContext, svc *metadata.MetadataService, shareName string, parent metadata.FileHandle, name string) error {
+func clearStamp(ctx *metadata.AuthContext, svc *metadata.Service, shareName string, parent metadata.FileHandle, name string) error {
 	handle, err := svc.GetChild(ctx.Context, parent, name)
 	if err != nil {
 		return err
@@ -435,7 +435,7 @@ func (s *Service) OnDisable(ctx *metadata.AuthContext, shareName string) error {
 // caller removes a returned-empty child; dirHandle (the #recycle root passed by
 // Empty) is never removed here. Not-empty / already-gone removals are ignored
 // so a concurrent recycle racing the sweep cannot fail an Empty.
-func (s *Service) pruneEmptyDirs(ctx *metadata.AuthContext, svc *metadata.MetadataService, dirHandle metadata.FileHandle) error {
+func (s *Service) pruneEmptyDirs(ctx *metadata.AuthContext, svc *metadata.Service, dirHandle metadata.FileHandle) error {
 	page, err := svc.ReadDirectory(ctx, dirHandle, 0, 0)
 	if err != nil {
 		return err
@@ -482,7 +482,7 @@ func isNotEmpty(err error) bool {
 // real delete returning the file's PayloadID). A directory is emptied
 // depth-first — RemoveDirectory refuses a non-empty directory — then itself
 // removed.
-func (s *Service) purgeEntry(ctx *metadata.AuthContext, svc *metadata.MetadataService, shareName string, root, parent metadata.FileHandle, name string) error {
+func (s *Service) purgeEntry(ctx *metadata.AuthContext, svc *metadata.Service, shareName string, root, parent metadata.FileHandle, name string) error {
 	handle, err := svc.GetChild(ctx.Context, parent, name)
 	if err != nil {
 		return err
@@ -512,7 +512,7 @@ func (s *Service) purgeEntry(ctx *metadata.AuthContext, svc *metadata.MetadataSe
 
 // purgeChildren empties a directory inside the bin by recursively purging every
 // child, leaving the directory empty so its caller can RemoveDirectory it.
-func (s *Service) purgeChildren(ctx *metadata.AuthContext, svc *metadata.MetadataService, shareName string, root, dirHandle metadata.FileHandle) error {
+func (s *Service) purgeChildren(ctx *metadata.AuthContext, svc *metadata.Service, shareName string, root, dirHandle metadata.FileHandle) error {
 	for {
 		page, err := svc.ReadDirectory(ctx, dirHandle, 0, 0)
 		if err != nil {
@@ -534,7 +534,7 @@ func (s *Service) purgeChildren(ctx *metadata.AuthContext, svc *metadata.Metadat
 
 // resolveParent walks a bin-relative path (e.g. "a/b/c.txt") under binHandle and
 // returns the handle of the leaf's parent directory plus the leaf name.
-func resolveParent(ctx *metadata.AuthContext, svc *metadata.MetadataService, binHandle metadata.FileHandle, relPath string) (metadata.FileHandle, string, error) {
+func resolveParent(ctx *metadata.AuthContext, svc *metadata.Service, binHandle metadata.FileHandle, relPath string) (metadata.FileHandle, string, error) {
 	parts := splitPath(relPath)
 	if len(parts) == 0 {
 		return nil, "", &metadata.StoreError{
@@ -556,7 +556,7 @@ func resolveParent(ctx *metadata.AuthContext, svc *metadata.MetadataService, bin
 // ensureParent walks a share-relative destination path under root, creating any
 // missing intermediary directories, and returns the leaf's parent handle plus
 // the leaf name.
-func ensureParent(ctx *metadata.AuthContext, svc *metadata.MetadataService, root metadata.FileHandle, relPath string) (metadata.FileHandle, string, error) {
+func ensureParent(ctx *metadata.AuthContext, svc *metadata.Service, root metadata.FileHandle, relPath string) (metadata.FileHandle, string, error) {
 	parts := splitPath(relPath)
 	if len(parts) == 0 {
 		return nil, "", &metadata.StoreError{

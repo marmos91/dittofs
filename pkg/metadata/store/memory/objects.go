@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -48,7 +48,7 @@ func newFileBlockStoreData() *fileBlockStoreData {
 }
 
 // Ensure Store implements FileBlockStore
-var _ blockstore.FileBlockStore = (*MemoryMetadataStore)(nil)
+var _ block.FileBlockStore = (*MemoryMetadataStore)(nil)
 
 // ============================================================================
 // FileBlock Operations
@@ -118,7 +118,7 @@ func (s *MemoryMetadataStore) DecrementRefCountAndReap(ctx context.Context, id s
 // RefCount is the ONLY field mutated. BlockState is left
 // unchanged — no Pending→Syncing→Remote transition; no new row is
 // materialized on either the success or the ErrUnknownHash branch.
-func (s *MemoryMetadataStore) AddRef(ctx context.Context, hash blockstore.ContentHash, payloadID string, blockRef blockstore.BlockRef) error {
+func (s *MemoryMetadataStore) AddRef(ctx context.Context, hash block.ContentHash, payloadID string, blockRef block.BlockRef) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.addRefLocked(ctx, hash, payloadID, blockRef)
@@ -157,7 +157,7 @@ func (s *MemoryMetadataStore) ListFileBlocks(ctx context.Context, payloadID stri
 // the lock before invoking fn so callers can issue further metadata
 // operations. Lifted from FileBlockStore to MetadataStore —
 // implementation unchanged.
-func (s *MemoryMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
+func (s *MemoryMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(block.ContentHash) error) error {
 	s.mu.RLock()
 	snapshot := s.snapshotBlockHashesLocked()
 	s.mu.RUnlock()
@@ -171,10 +171,10 @@ func (s *MemoryMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(b
 // (manifest row without a CAS index row) would otherwise be missed by the mark
 // phase and the sweep would reap a still-live chunk (data loss). Caller MUST
 // hold at least the read lock.
-func (s *MemoryMetadataStore) snapshotBlockHashesLocked() []blockstore.ContentHash {
-	var snapshot []blockstore.ContentHash
+func (s *MemoryMetadataStore) snapshotBlockHashesLocked() []block.ContentHash {
+	var snapshot []block.ContentHash
 	if s.fileBlockData != nil {
-		snapshot = make([]blockstore.ContentHash, 0, len(s.fileBlockData.blocks))
+		snapshot = make([]block.ContentHash, 0, len(s.fileBlockData.blocks))
 		for _, b := range s.fileBlockData.blocks {
 			snapshot = append(snapshot, b.Hash)
 		}
@@ -195,7 +195,7 @@ func (s *MemoryMetadataStore) snapshotBlockHashesLocked() []blockstore.ContentHa
 // enumerateBlockHashes streams the snapshot through fn, honoring ctx
 // cancellation. Shared by the public store method and the transaction method
 // so the latter does not re-lock (WithTransaction already holds the lock).
-func enumerateBlockHashes(ctx context.Context, snapshot []blockstore.ContentHash, fn func(blockstore.ContentHash) error) error {
+func enumerateBlockHashes(ctx context.Context, snapshot []block.ContentHash, fn func(block.ContentHash) error) error {
 	for _, h := range snapshot {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("enumerate file blocks: %w", err)
@@ -245,7 +245,7 @@ func (s *MemoryMetadataStore) initFileBlockData() {
 // ============================================================================
 
 // Ensure memoryTransaction implements FileBlockStore
-var _ blockstore.FileBlockStore = (*memoryTransaction)(nil)
+var _ block.FileBlockStore = (*memoryTransaction)(nil)
 
 func (tx *memoryTransaction) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
 	return tx.store.getFileBlockLocked(ctx, id)
@@ -271,7 +271,7 @@ func (tx *memoryTransaction) DecrementRefCountAndReap(ctx context.Context, id st
 	return tx.store.decrementAndReapLocked(ctx, id)
 }
 
-func (tx *memoryTransaction) AddRef(ctx context.Context, hash metadata.ContentHash, payloadID string, blockRef blockstore.BlockRef) error {
+func (tx *memoryTransaction) AddRef(ctx context.Context, hash metadata.ContentHash, payloadID string, blockRef block.BlockRef) error {
 	return tx.store.addRefLocked(ctx, hash, payloadID, blockRef)
 }
 
@@ -287,7 +287,7 @@ func (tx *memoryTransaction) ListFileBlocks(ctx context.Context, payloadID strin
 	return tx.store.listFileBlocksLocked(ctx, payloadID)
 }
 
-func (tx *memoryTransaction) EnumerateFileBlocks(ctx context.Context, fn func(blockstore.ContentHash) error) error {
+func (tx *memoryTransaction) EnumerateFileBlocks(ctx context.Context, fn func(block.ContentHash) error) error {
 	// WithTransaction already holds the write lock; snapshot without
 	// re-locking (the public method's RLock would deadlock) so the enumerate
 	// observes uncommitted tx writes.
@@ -359,7 +359,7 @@ func (s *MemoryMetadataStore) incrementRefCountLocked(_ context.Context, id stri
 // RefCount on the resolved row. Caller MUST hold s.mu Write lock so
 // the entire resolve+mutate sequence is atomic (TOCTOU-free
 // against concurrent DecrementRefCount cascade).
-func (s *MemoryMetadataStore) addRefLocked(_ context.Context, hash blockstore.ContentHash, _ string, _ blockstore.BlockRef) error {
+func (s *MemoryMetadataStore) addRefLocked(_ context.Context, hash block.ContentHash, _ string, _ block.BlockRef) error {
 	// payloadID + blockRef accepted for future GC traceability;
 	// memory backend records ref count only — parameters intentionally
 	// blanked.

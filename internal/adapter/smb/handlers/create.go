@@ -2205,7 +2205,7 @@ func (h *Handler) overwriteFile(
 // alternate data stream propagates a ChangeTime update to the base object.
 func (h *Handler) updateBaseObjectCtime(
 	authCtx *metadata.AuthContext,
-	metaSvc *metadata.MetadataService,
+	metaSvc *metadata.Service,
 	parentHandle metadata.FileHandle,
 	baseObjectName string,
 ) {
@@ -2231,7 +2231,7 @@ func (h *Handler) updateBaseObjectCtime(
 // is frozen on the ADS handle.
 func (h *Handler) updateBaseObjectTimestampsForADSWrite(
 	authCtx *metadata.AuthContext,
-	metaSvc *metadata.MetadataService,
+	metaSvc *metadata.Service,
 	openFile *OpenFile,
 	baseObjectName string,
 ) {

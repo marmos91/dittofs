@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 )
 
 // AuditRefcounts runs the refcount reconciliation audit for the named

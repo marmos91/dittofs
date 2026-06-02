@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/blockstore/migrate"
+	"github.com/marmos91/dittofs/pkg/block/migrate"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -46,7 +46,7 @@ type MigrateStatusRuntime interface {
 	// GetMetadataStoreForShare returns the metadata store backing the
 	// named share. Used to read the share's BlockLayout and
 	// to walk the file tree for the FilesTotal field.
-	GetMetadataStoreForShare(shareName string) (metadata.MetadataStore, error)
+	GetMetadataStoreForShare(shareName string) (metadata.Store, error)
 
 	// LocalStoreDir returns the per-share on-disk data directory hosting
 	// the migration journal (new accessor). Empty string +

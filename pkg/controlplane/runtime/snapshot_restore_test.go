@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	bsmemory "github.com/marmos91/dittofs/pkg/blockstore/local/memory"
-	"github.com/marmos91/dittofs/pkg/blockstore/remote"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	bsmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/remote"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -541,14 +541,14 @@ type restoreFixture struct {
 
 	mu       sync.Mutex
 	files    []fileFixture
-	hashSeen map[blockstore.ContentHash]struct{}
-	hashList []blockstore.ContentHash
+	hashSeen map[block.ContentHash]struct{}
+	hashList []block.ContentHash
 }
 
 type fileFixture struct {
 	name   string
 	handle metadata.FileHandle
-	hashes []blockstore.ContentHash
+	hashes []block.ContentHash
 }
 
 type restoreFixtureOpts struct {
@@ -585,7 +585,7 @@ func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
 
 	mem := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	metaStoreName := "memory-restore"
-	var registered metadata.MetadataStore = mem
+	var registered metadata.Store = mem
 	var failable *failableResetable
 	if opts.useFailableResetable {
 		failable = &failableResetable{MemoryMetadataStore: mem}
@@ -667,7 +667,7 @@ func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
 		localStoreDir: localStoreDir,
 		shareName:     shareName,
 		rootHandle:    rootHandle,
-		hashSeen:      make(map[blockstore.ContentHash]struct{}),
+		hashSeen:      make(map[block.ContentHash]struct{}),
 	}
 }
 
@@ -713,7 +713,7 @@ func (f *restoreFixture) populateFiles(ctx context.Context, names []string) []fi
 				UID:    1000,
 				GID:    1000,
 				Size:   4096,
-				Blocks: []blockstore.BlockRef{{Hash: hash, Offset: 0, Size: 4096}},
+				Blocks: []block.BlockRef{{Hash: hash, Offset: 0, Size: 4096}},
 			},
 		}
 		if err := f.meta.PutFile(ctx, file); err != nil {
@@ -733,7 +733,7 @@ func (f *restoreFixture) populateFiles(ctx context.Context, names []string) []fi
 		fb := &metadata.FileBlock{
 			ID:    fileID.String() + "-blk-0",
 			Hash:  hash,
-			State: blockstore.BlockStateRemote,
+			State: block.BlockStateRemote,
 		}
 		if err := f.meta.Put(ctx, fb); err != nil {
 			f.t.Fatalf("Put FileBlock %q: %v", name, err)
@@ -744,7 +744,7 @@ func (f *restoreFixture) populateFiles(ctx context.Context, names []string) []fi
 			f.hashSeen[hash] = struct{}{}
 			f.hashList = append(f.hashList, hash)
 		}
-		ff := fileFixture{name: name, handle: handle, hashes: []blockstore.ContentHash{hash}}
+		ff := fileFixture{name: name, handle: handle, hashes: []block.ContentHash{hash}}
 		f.files = append(f.files, ff)
 		f.mu.Unlock()
 
@@ -770,20 +770,20 @@ func (f *restoreFixture) deleteFileCascade(ctx context.Context, ff fileFixture) 
 		f.t.Fatalf("deleteFileCascade DecodeFileHandle: %v", err)
 	}
 	if derr := f.meta.Delete(ctx, fileID.String()+"-blk-0"); derr != nil &&
-		!errors.Is(derr, blockstore.ErrFileBlockNotFound) {
+		!errors.Is(derr, block.ErrFileBlockNotFound) {
 		f.t.Fatalf("deleteFileCascade Delete FileBlock: %v", derr)
 	}
 }
 
-func (f *restoreFixture) allHashes() []blockstore.ContentHash {
+func (f *restoreFixture) allHashes() []block.ContentHash {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]blockstore.ContentHash, len(f.hashList))
+	out := make([]block.ContentHash, len(f.hashList))
 	copy(out, f.hashList)
 	return out
 }
 
-func (f *restoreFixture) seedRemoteAll(hashes []blockstore.ContentHash) {
+func (f *restoreFixture) seedRemoteAll(hashes []block.ContentHash) {
 	f.t.Helper()
 	for _, h := range hashes {
 		if err := f.remote.inner.Put(context.Background(), h, []byte("payload-"+h.String())); err != nil {
@@ -797,7 +797,7 @@ func (f *restoreFixture) countFiles(ctx context.Context) int {
 	// Walk via EnumerateFileBlocks as a cheap "is the store still populated"
 	// proxy; the integration tests just need a before/after delta witness.
 	n := 0
-	_ = f.meta.EnumerateFileBlocks(ctx, func(blockstore.ContentHash) error {
+	_ = f.meta.EnumerateFileBlocks(ctx, func(block.ContentHash) error {
 		n++
 		return nil
 	})
@@ -817,15 +817,15 @@ type restoreRemote struct {
 	inner *remotememory.Store
 
 	mu             sync.Mutex
-	hashCallCounts map[blockstore.ContentHash]int
-	failAfter      map[blockstore.ContentHash]int // hash -> threshold (calls < threshold pass; calls >= threshold fail)
+	hashCallCounts map[block.ContentHash]int
+	failAfter      map[block.ContentHash]int // hash -> threshold (calls < threshold pass; calls >= threshold fail)
 }
 
 func newRestoreRemote(inner *remotememory.Store) *restoreRemote {
 	return &restoreRemote{
 		inner:          inner,
-		hashCallCounts: make(map[blockstore.ContentHash]int),
-		failAfter:      make(map[blockstore.ContentHash]int),
+		hashCallCounts: make(map[block.ContentHash]int),
+		failAfter:      make(map[block.ContentHash]int),
 	}
 }
 
@@ -841,7 +841,7 @@ func newRestoreRemote(inner *remotememory.Store) *restoreRemote {
 // the harness made before arming the gate (e.g. the source snapshot's
 // own VerifyRemoteDurability ran Head() once per manifest hash during
 // CreateSnapshot, well before the test reached RestoreSnapshot).
-func (r *restoreRemote) failHashAfterCount(hash blockstore.ContentHash, threshold int) {
+func (r *restoreRemote) failHashAfterCount(hash block.ContentHash, threshold int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if threshold < 0 {
@@ -852,43 +852,43 @@ func (r *restoreRemote) failHashAfterCount(hash blockstore.ContentHash, threshol
 	r.failAfter[hash] = current + threshold
 }
 
-func (r *restoreRemote) Put(ctx context.Context, hash blockstore.ContentHash, data []byte) error {
+func (r *restoreRemote) Put(ctx context.Context, hash block.ContentHash, data []byte) error {
 	return r.inner.Put(ctx, hash, data)
 }
 
-func (r *restoreRemote) Get(ctx context.Context, hash blockstore.ContentHash) ([]byte, error) {
+func (r *restoreRemote) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
 	return r.inner.Get(ctx, hash)
 }
 
-func (r *restoreRemote) GetRange(ctx context.Context, hash blockstore.ContentHash, offset, length int64) ([]byte, error) {
+func (r *restoreRemote) GetRange(ctx context.Context, hash block.ContentHash, offset, length int64) ([]byte, error) {
 	return r.inner.GetRange(ctx, hash, offset, length)
 }
 
-func (r *restoreRemote) Delete(ctx context.Context, hash blockstore.ContentHash) error {
+func (r *restoreRemote) Delete(ctx context.Context, hash block.ContentHash) error {
 	return r.inner.Delete(ctx, hash)
 }
 
-func (r *restoreRemote) Has(ctx context.Context, hash blockstore.ContentHash) (bool, error) {
+func (r *restoreRemote) Has(ctx context.Context, hash block.ContentHash) (bool, error) {
 	return r.inner.Has(ctx, hash)
 }
 
-func (r *restoreRemote) Head(ctx context.Context, hash blockstore.ContentHash) (blockstore.Meta, error) {
+func (r *restoreRemote) Head(ctx context.Context, hash block.ContentHash) (block.Meta, error) {
 	r.mu.Lock()
 	count := r.hashCallCounts[hash]
 	r.hashCallCounts[hash] = count + 1
 	threshold, hasGate := r.failAfter[hash]
 	r.mu.Unlock()
 	if hasGate && count >= threshold {
-		return blockstore.Meta{}, blockstore.ErrChunkNotFound
+		return block.Meta{}, block.ErrChunkNotFound
 	}
 	return r.inner.Head(ctx, hash)
 }
 
-func (r *restoreRemote) Walk(ctx context.Context, fn func(hash blockstore.ContentHash, meta blockstore.Meta) error) error {
+func (r *restoreRemote) Walk(ctx context.Context, fn func(hash block.ContentHash, meta block.Meta) error) error {
 	return r.inner.Walk(ctx, fn)
 }
 
-func (r *restoreRemote) ReadBlockVerified(ctx context.Context, hash, expected blockstore.ContentHash) ([]byte, error) {
+func (r *restoreRemote) ReadBlockVerified(ctx context.Context, hash, expected block.ContentHash) ([]byte, error) {
 	return r.inner.ReadBlockVerified(ctx, hash, expected)
 }
 

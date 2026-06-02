@@ -378,7 +378,7 @@ func makeDraftWithDisposition(
 // and #565 disposition-implied tests.
 func restrictedDACLFile(
 	t *testing.T,
-	metaSvc *metadata.MetadataService,
+	metaSvc *metadata.Service,
 	rootAuth *metadata.AuthContext,
 	rootHandle metadata.FileHandle,
 	name string,

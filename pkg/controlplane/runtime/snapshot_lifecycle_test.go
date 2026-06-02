@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	"github.com/marmos91/dittofs/pkg/block"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -39,10 +39,10 @@ type lifecycleFixture struct {
 
 	// Distinct first byte per hash → distinct cas/XX prefixes; aids
 	// readability when the sweep walks the namespace.
-	hLive1  blockstore.ContentHash // referenced by live FileBlocks
-	hLive2  blockstore.ContentHash // referenced by live FileBlocks
-	hSnap   blockstore.ContentHash // referenced ONLY by the snapshot manifest
-	hOrphan blockstore.ContentHash // referenced by nothing
+	hLive1  block.ContentHash // referenced by live FileBlocks
+	hLive2  block.ContentHash // referenced by live FileBlocks
+	hSnap   block.ContentHash // referenced ONLY by the snapshot manifest
+	hOrphan block.ContentHash // referenced by nothing
 }
 
 // setupSnapshotLifecycle wires together everything the three sub-tests need.
@@ -156,7 +156,7 @@ func TestSnapshotLifecycleVsGC(t *testing.T) {
 			t.Fatalf("metadata Backup: %v", err)
 		}
 
-		manifestHS := blockstore.NewHashSet(2)
+		manifestHS := block.NewHashSet(2)
 		manifestHS.Add(fx.hLive1)
 		manifestHS.Add(fx.hSnap)
 
@@ -258,7 +258,7 @@ func TestSnapshotLifecycleVsGC(t *testing.T) {
 		if err := os.MkdirAll(snap.SnapshotDir(fx.localStoreDir), 0o755); err != nil {
 			t.Fatalf("MkdirAll: %v", err)
 		}
-		hs := blockstore.NewHashSet(1)
+		hs := block.NewHashSet(1)
 		hs.Add(fx.hLive1)
 		if err := snapshot.WriteManifestAtomic(snap.ManifestPath(fx.localStoreDir), hs); err != nil {
 			t.Fatalf("WriteManifestAtomic: %v", err)
@@ -285,8 +285,8 @@ func TestSnapshotLifecycleVsGC(t *testing.T) {
 
 // hashAll fills every byte of a ContentHash with seed for deterministic,
 // human-readable hash literals in test output.
-func hashAll(seed byte) blockstore.ContentHash {
-	var h blockstore.ContentHash
+func hashAll(seed byte) block.ContentHash {
+	var h block.ContentHash
 	for i := range h {
 		h[i] = seed
 	}
@@ -295,13 +295,13 @@ func hashAll(seed byte) blockstore.ContentHash {
 
 // mustPutBlock seeds a finalized FileBlock keyed by hash on the metadata
 // store. State=Remote so the engine treats it as live during mark.
-func mustPutBlock(t *testing.T, st metadata.MetadataStore, id string, h blockstore.ContentHash) {
+func mustPutBlock(t *testing.T, st metadata.Store, id string, h block.ContentHash) {
 	t.Helper()
-	if err := st.Put(context.Background(), &blockstore.FileBlock{
+	if err := st.Put(context.Background(), &block.FileBlock{
 		ID:            id,
 		Hash:          h,
-		State:         blockstore.BlockStateRemote,
-		BlockStoreKey: blockstore.FormatCASKey(h),
+		State:         block.BlockStateRemote,
+		BlockStoreKey: block.FormatCASKey(h),
 		LocalPath:     "/cache/" + id,
 		DataSize:      64,
 		RefCount:      1,
@@ -313,7 +313,7 @@ func mustPutBlock(t *testing.T, st metadata.MetadataStore, id string, h blocksto
 }
 
 // mustPutRemote seeds a CAS object on the remote keyed by hash.
-func mustPutRemote(t *testing.T, rs *remotememory.Store, h blockstore.ContentHash, data []byte) {
+func mustPutRemote(t *testing.T, rs *remotememory.Store, h block.ContentHash, data []byte) {
 	t.Helper()
 	if err := rs.Put(context.Background(), h, data); err != nil {
 		t.Fatalf("remote.Put(%x): %v", h[:4], err)
@@ -321,7 +321,7 @@ func mustPutRemote(t *testing.T, rs *remotememory.Store, h blockstore.ContentHas
 }
 
 // mustHave asserts the remote currently holds h, failing with msg if not.
-func mustHave(t *testing.T, ctx context.Context, rs *remotememory.Store, h blockstore.ContentHash, msg string) {
+func mustHave(t *testing.T, ctx context.Context, rs *remotememory.Store, h block.ContentHash, msg string) {
 	t.Helper()
 	if _, err := rs.Head(ctx, h); err != nil {
 		t.Fatalf("%s: Head err=%v (expected object present)", msg, err)
@@ -329,7 +329,7 @@ func mustHave(t *testing.T, ctx context.Context, rs *remotememory.Store, h block
 }
 
 // mustNotHave asserts the remote does NOT hold h, failing with msg if it does.
-func mustNotHave(t *testing.T, ctx context.Context, rs *remotememory.Store, h blockstore.ContentHash, msg string) {
+func mustNotHave(t *testing.T, ctx context.Context, rs *remotememory.Store, h block.ContentHash, msg string) {
 	t.Helper()
 	if _, err := rs.Head(ctx, h); err == nil {
 		t.Fatalf("%s: object still present (expected deleted)", msg)
@@ -341,7 +341,7 @@ func mustNotHave(t *testing.T, ctx context.Context, rs *remotememory.Store, h bl
 // HashSet for assertion. Surfaces the same call path the production snapshot
 // creator uses without coupling the test to manifest contents derived from
 // live metadata.
-func backupAndDiscard(ctx context.Context, st *metadatamemory.MemoryMetadataStore) (*blockstore.HashSet, error) {
+func backupAndDiscard(ctx context.Context, st *metadatamemory.MemoryMetadataStore) (*block.HashSet, error) {
 	var buf bytes.Buffer
 	return st.Backup(ctx, &buf)
 }
@@ -400,7 +400,7 @@ func TestSnapshotHoldProvider_DeleteVsHeldHashes_Race(t *testing.T) {
 		if err := os.MkdirAll(snap.SnapshotDir(localStoreDir), 0o755); err != nil {
 			t.Fatalf("MkdirAll[%d]: %v", s, err)
 		}
-		hs := blockstore.NewHashSet(hashesPerSnap)
+		hs := block.NewHashSet(hashesPerSnap)
 		for h := 0; h < hashesPerSnap; h++ {
 			hs.Add(hashAll(byte(s*hashesPerSnap + h + 1)))
 		}
@@ -449,7 +449,7 @@ func TestSnapshotHoldProvider_DeleteVsHeldHashes_Race(t *testing.T) {
 			for i := 0; i < iters; i++ {
 				count := 0
 				if err := provider.HeldHashes(ctx, "remote-race", []string{shareName},
-					func(h blockstore.ContentHash) error {
+					func(h block.ContentHash) error {
 						count++
 						return nil
 					}); err != nil {

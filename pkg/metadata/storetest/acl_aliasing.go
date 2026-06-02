@@ -24,7 +24,7 @@ func runACLAliasingTests(t *testing.T, factory StoreFactory) {
 // putFileWithACL creates a regular file carrying the supplied ACL and returns
 // its handle. The caller retains ownership of acl (it is set on the File passed
 // to PutFile) so tests can mutate it afterwards to probe for aliasing.
-func putFileWithACL(t *testing.T, store metadata.MetadataStore, handle metadata.FileHandle, a *acl.ACL) {
+func putFileWithACL(t *testing.T, store metadata.Store, handle metadata.FileHandle, a *acl.ACL) {
 	t.Helper()
 
 	ctx := t.Context()

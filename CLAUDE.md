@@ -90,8 +90,8 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    `ErrAccess`, `ErrExist`, `ErrNotEmpty`, …). Log expected errors at `Debug`, unexpected at `Error`.
 
 7. **Store contracts** live in `pkg/metadata/storetest/` — any new metadata backend must pass
-   that conformance suite. Same for `pkg/blockstore/local/localtest/` and
-   `pkg/blockstore/remote/remotetest/`.
+   that conformance suite. Same for `pkg/block/local/localtest/` and
+   `pkg/block/remote/remotetest/`.
 
 ## Commits & PRs
 

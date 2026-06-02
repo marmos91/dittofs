@@ -56,7 +56,7 @@ import (
 // A share with a remote-less block store (local-only) is handled
 // transparently because [engine.Store.Healthcheck] already
 // returns healthy when there is no remote configured.
-func (s *Share) Healthcheck(ctx context.Context, metaStore metadata.MetadataStore) health.Report {
+func (s *Share) Healthcheck(ctx context.Context, metaStore metadata.Store) health.Report {
 	// `start` carries the monotonic reading used to compute latency.
 	// CheckedAt is sampled at the END of the probe (from `end` below)
 	// so it reflects probe completion, matching the contract on

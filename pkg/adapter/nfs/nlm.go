@@ -199,7 +199,7 @@ func (s *nlmService) CancelBlockingLock(
 // metadataFileChecker adapts MetadataService to the fileChecker interface,
 // avoiding import cycles with the metadata package.
 type metadataFileChecker struct {
-	metaSvc *metadata.MetadataService
+	metaSvc *metadata.Service
 }
 
 func (c *metadataFileChecker) GetFile(ctx context.Context, handle []byte) (bool, bool, error) {
@@ -212,7 +212,7 @@ func (c *metadataFileChecker) GetFile(ctx context.Context, handle []byte) (bool,
 
 // createRoutingNLMService creates a routingNLMService that routes NLM operations
 // to the correct per-share lock manager.
-func (s *NFSAdapter) createRoutingNLMService(metaSvc *metadata.MetadataService) *routingNLMService {
+func (s *NFSAdapter) createRoutingNLMService(metaSvc *metadata.Service) *routingNLMService {
 	checker := &metadataFileChecker{metaSvc: metaSvc}
 
 	nlmSvc := &routingNLMService{
@@ -230,7 +230,7 @@ func (s *NFSAdapter) createRoutingNLMService(metaSvc *metadata.MetadataService) 
 
 // routingNLMService routes NLM operations to the correct per-share lock manager.
 type routingNLMService struct {
-	metaSvc     *metadata.MetadataService
+	metaSvc     *metadata.Service
 	fileChecker fileChecker
 	onUnlock    func(handle []byte)
 }
@@ -423,7 +423,7 @@ func (s *NFSAdapter) getLockManagerForHandle(handle metadata.FileHandle) *lock.M
 //   - NSM handler for processing SM_MON, SM_UNMON, etc.
 //   - NSM notifier for sending SM_NOTIFY on server restart
 //   - onClientCrash callback for lock cleanup when clients crash
-func (s *NFSAdapter) initNSMHandler(rt *runtime.Runtime, metadataService *metadata.MetadataService) {
+func (s *NFSAdapter) initNSMHandler(rt *runtime.Runtime, metadataService *metadata.Service) {
 	// Create connection tracker for client registration
 	// This is used to track active NSM clients
 	tracker := lock.NewConnectionTracker(lock.DefaultConnectionTrackerConfig())
@@ -493,7 +493,7 @@ func (s *NFSAdapter) initNSMHandler(rt *runtime.Runtime, metadataService *metada
 //   - ctx: Context for cancellation
 //   - clientID: The NSM client hostname (mon_name from SM_MON)
 //   - metadataService: Access to lock managers for all shares
-func (s *NFSAdapter) handleClientCrash(_ context.Context, clientID string, metadataService *metadata.MetadataService) error {
+func (s *NFSAdapter) handleClientCrash(_ context.Context, clientID string, metadataService *metadata.Service) error {
 	releaseCrashedClientLocks(
 		clientID,
 		s.Registry.ListShares(),

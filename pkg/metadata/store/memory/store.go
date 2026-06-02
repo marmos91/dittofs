@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/oklog/ulid/v2"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -253,7 +253,7 @@ type MemoryMetadataStore struct {
 	// Presence-of-key == synced; the time.Time value reserves capacity
 	// for future observability without a schema change. Lazily
 	// initialized on first Mark; reads treat absence as not-synced.
-	synced map[blockstore.ContentHash]time.Time
+	synced map[block.ContentHash]time.Time
 
 	// objectIndex maps FileAttr.ObjectID -> handle key (the same string
 	// used as the key in `files`) for the dedup short-circuit
@@ -268,7 +268,7 @@ type MemoryMetadataStore struct {
 	// identifier in this package is the handle string (`handleToKey`
 	// output). FindByObjectID resolves through this map -> files lookup
 	// chain (added in).
-	objectIndex map[blockstore.ContentHash]string
+	objectIndex map[block.ContentHash]string
 }
 
 // MemoryMetadataStoreConfig contains configuration for creating a memory metadata store.
@@ -337,7 +337,7 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		// rollup_offset persistence (see rollup.go).
 		rollupOffsets: make(map[string]uint64),
 		// ObjectID -> handle-key secondary index.
-		objectIndex: make(map[blockstore.ContentHash]string),
+		objectIndex: make(map[block.ContentHash]string),
 	}
 
 	// Initialize the sync.Pool for FileAttr allocations

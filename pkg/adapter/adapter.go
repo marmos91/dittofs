@@ -94,7 +94,7 @@ type Adapter interface {
 	// MapError translates a domain error into a protocol-specific ProtocolError.
 	//
 	// Each adapter must implement MapError to convert domain errors (e.g.,
-	// metadata.ErrNoEntity, blockstore.ErrContentNotFound) into the appropriate
+	// metadata.ErrNoEntity, block.ErrContentNotFound) into the appropriate
 	// wire-format error code for the protocol (NFS status codes, NTSTATUS, etc.).
 	//
 	// Returns nil if the error cannot be mapped to a protocol-specific error.

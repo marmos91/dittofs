@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	"github.com/marmos91/dittofs/pkg/blockstore/remote"
+	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/health"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -22,26 +22,26 @@ type fakeRemoteStore struct {
 // All methods on remote.RemoteStore. The fake is identity-only — it
 // never actually performs I/O; tests assert on pointer identity and
 // dedup wiring, not on byte-level behavior.
-func (f *fakeRemoteStore) Put(_ context.Context, _ blockstore.ContentHash, _ []byte) error {
+func (f *fakeRemoteStore) Put(_ context.Context, _ block.ContentHash, _ []byte) error {
 	return nil
 }
-func (f *fakeRemoteStore) Get(_ context.Context, _ blockstore.ContentHash) ([]byte, error) {
+func (f *fakeRemoteStore) Get(_ context.Context, _ block.ContentHash) ([]byte, error) {
 	return nil, nil
 }
-func (f *fakeRemoteStore) GetRange(_ context.Context, _ blockstore.ContentHash, _, _ int64) ([]byte, error) {
+func (f *fakeRemoteStore) GetRange(_ context.Context, _ block.ContentHash, _, _ int64) ([]byte, error) {
 	return nil, nil
 }
-func (f *fakeRemoteStore) Has(_ context.Context, _ blockstore.ContentHash) (bool, error) {
+func (f *fakeRemoteStore) Has(_ context.Context, _ block.ContentHash) (bool, error) {
 	return false, nil
 }
-func (f *fakeRemoteStore) Delete(_ context.Context, _ blockstore.ContentHash) error { return nil }
-func (f *fakeRemoteStore) Head(_ context.Context, _ blockstore.ContentHash) (blockstore.Meta, error) {
-	return blockstore.Meta{}, nil
+func (f *fakeRemoteStore) Delete(_ context.Context, _ block.ContentHash) error { return nil }
+func (f *fakeRemoteStore) Head(_ context.Context, _ block.ContentHash) (block.Meta, error) {
+	return block.Meta{}, nil
 }
-func (f *fakeRemoteStore) Walk(_ context.Context, _ func(blockstore.ContentHash, blockstore.Meta) error) error {
+func (f *fakeRemoteStore) Walk(_ context.Context, _ func(block.ContentHash, block.Meta) error) error {
 	return nil
 }
-func (f *fakeRemoteStore) ReadBlockVerified(_ context.Context, _ blockstore.ContentHash, _ blockstore.ContentHash) ([]byte, error) {
+func (f *fakeRemoteStore) ReadBlockVerified(_ context.Context, _ block.ContentHash, _ block.ContentHash) ([]byte, error) {
 	return nil, nil
 }
 func (f *fakeRemoteStore) HealthCheck(_ context.Context) error { return nil }

@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -77,7 +77,7 @@ func testBlockRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
 	fileHandle := createTestFile(t, store, "blockref-multipass", rootHandle, "multipass.bin", 0o644)
 
 	// Pass 1 — block list A: three contiguous 1 MiB blocks (offsets 0..2 MiB).
-	listA := []blockstore.BlockRef{
+	listA := []block.BlockRef{
 		{Hash: hashOfSeed("mp-a0"), Offset: 0, Size: 1 << 20},
 		{Hash: hashOfSeed("mp-a1"), Offset: 1 << 20, Size: 1 << 20},
 		{Hash: hashOfSeed("mp-a2"), Offset: 2 << 20, Size: 1 << 20},
@@ -89,11 +89,11 @@ func testBlockRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
 	// Pass 2 — append block list B onto A. The caller computes the complete
 	// merged list (A+B); the store must persist all of it. A REPLACE-only
 	// persist of just B would drop A's three offsets.
-	listB := []blockstore.BlockRef{
+	listB := []block.BlockRef{
 		{Hash: hashOfSeed("mp-b0"), Offset: 3 << 20, Size: 1 << 20},
 		{Hash: hashOfSeed("mp-b1"), Offset: 4 << 20, Size: 1 << 20},
 	}
-	merged := append(append([]blockstore.BlockRef(nil), listA...), listB...)
+	merged := append(append([]block.BlockRef(nil), listA...), listB...)
 	putBlocks(t, store, fileHandle, merged)
 	assertBlocks(t, store, fileHandle, merged)
 	assertBackupContains(t, store, merged)
@@ -101,7 +101,7 @@ func testBlockRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
 	// Pass 3 — in-place overlay: rewrite the block at offset 1 MiB (A1 -> A1')
 	// while keeping every other offset. The overlay must replace only that
 	// offset's hash and leave the rest of the complete list intact.
-	overlay := append([]blockstore.BlockRef(nil), merged...)
+	overlay := append([]block.BlockRef(nil), merged...)
 	overlay[1].Hash = hashOfSeed("mp-a1-overlay")
 	putBlocks(t, store, fileHandle, overlay)
 	assertBlocks(t, store, fileHandle, overlay)
@@ -115,7 +115,7 @@ func testBlockRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
 }
 
 // putBlocks loads the file, sets its complete block list, and persists it.
-func putBlocks(t *testing.T, store metadata.MetadataStore, fileHandle metadata.FileHandle, blocks []blockstore.BlockRef) {
+func putBlocks(t *testing.T, store metadata.Store, fileHandle metadata.FileHandle, blocks []block.BlockRef) {
 	t.Helper()
 	ctx := t.Context()
 
@@ -131,7 +131,7 @@ func putBlocks(t *testing.T, store metadata.MetadataStore, fileHandle metadata.F
 
 // assertBlocks asserts GetFile returns exactly want, ordered by offset, with
 // deep equality on every field.
-func assertBlocks(t *testing.T, store metadata.MetadataStore, fileHandle metadata.FileHandle, want []blockstore.BlockRef) {
+func assertBlocks(t *testing.T, store metadata.Store, fileHandle metadata.FileHandle, want []block.BlockRef) {
 	t.Helper()
 	ctx := t.Context()
 
@@ -152,7 +152,7 @@ func assertBlocks(t *testing.T, store metadata.MetadataStore, fileHandle metadat
 
 // backupHashes runs Backup and returns the referenced-hash set, discarding
 // the serialized stream.
-func backupHashes(t *testing.T, store metadata.MetadataStore) *blockstore.HashSet {
+func backupHashes(t *testing.T, store metadata.Store) *block.HashSet {
 	t.Helper()
 	ctx := t.Context()
 
@@ -170,7 +170,7 @@ func backupHashes(t *testing.T, store metadata.MetadataStore) *blockstore.HashSe
 // assertBackupContains asserts Backup's referenced-hash set includes every
 // block hash in want — the snapshot's block manifest must cover the complete
 // list, not just the latest persisted segment.
-func assertBackupContains(t *testing.T, store metadata.MetadataStore, want []blockstore.BlockRef) {
+func assertBackupContains(t *testing.T, store metadata.Store, want []block.BlockRef) {
 	t.Helper()
 
 	hs := backupHashes(t, store)
@@ -191,7 +191,7 @@ func testBlockRef_RoundTripBasic(t *testing.T, factory StoreFactory) {
 	rootHandle := createTestShare(t, store, "blockref-roundtrip")
 	fileHandle := createTestFile(t, store, "blockref-roundtrip", rootHandle, "round.bin", 0o644)
 
-	blocks := []blockstore.BlockRef{
+	blocks := []block.BlockRef{
 		{Hash: hashOfSeed("ref-0"), Offset: 0, Size: 4 << 20},
 		{Hash: hashOfSeed("ref-1"), Offset: 4 << 20, Size: 4 << 20},
 		{Hash: hashOfSeed("ref-2"), Offset: 8 << 20, Size: 1 << 20},
@@ -276,7 +276,7 @@ func testBlockRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 	fileHandle := createTestFile(t, store, "blockref-replace", rootHandle, "replace.bin", 0o644)
 
 	// Initial PutFile with 5 blocks.
-	five := []blockstore.BlockRef{
+	five := []block.BlockRef{
 		{Hash: hashOfSeed("rep-0"), Offset: 0, Size: 1 << 20},
 		{Hash: hashOfSeed("rep-1"), Offset: 1 << 20, Size: 1 << 20},
 		{Hash: hashOfSeed("rep-2"), Offset: 2 << 20, Size: 1 << 20},
@@ -303,7 +303,7 @@ func testBlockRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 	// Replace with 2 different blocks at different offsets. After the
 	// second PutFile the GetFile must return exactly the new 2 — no
 	// leftover rows from the prior list.
-	two := []blockstore.BlockRef{
+	two := []block.BlockRef{
 		{Hash: hashOfSeed("rep-X"), Offset: 0, Size: 2 << 20},
 		{Hash: hashOfSeed("rep-Y"), Offset: 2 << 20, Size: 2 << 20},
 	}
@@ -345,7 +345,7 @@ func testBlockRef_CascadeDeleteOnFileDelete(t *testing.T, factory StoreFactory) 
 	rootHandle := createTestShare(t, store, "blockref-cascade")
 	fileHandle := createTestFile(t, store, "blockref-cascade", rootHandle, "cascade.bin", 0o644)
 
-	blocks := []blockstore.BlockRef{
+	blocks := []block.BlockRef{
 		{Hash: hashOfSeed("cas-0"), Offset: 0, Size: 4 << 20},
 		{Hash: hashOfSeed("cas-1"), Offset: 4 << 20, Size: 4 << 20},
 		{Hash: hashOfSeed("cas-2"), Offset: 8 << 20, Size: 4 << 20},

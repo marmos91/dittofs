@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 
 // TestRunWorkload_AllWorkloads exercises every workload dispatcher

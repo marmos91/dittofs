@@ -23,7 +23,7 @@ func (p trashStubPolicy) TrashConfigForShare(string) (metadata.TrashConfig, bool
 // trashFixture bundles a service bootstrapped over a backend store with trash
 // enabled, plus the auth context and root handle the subtests operate against.
 type trashFixture struct {
-	svc        *metadata.MetadataService
+	svc        *metadata.Service
 	ctx        *metadata.AuthContext
 	rootHandle metadata.FileHandle
 	shareName  string

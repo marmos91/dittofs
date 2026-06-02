@@ -3,7 +3,7 @@ package common
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -49,7 +49,7 @@ func WriteToBlockStore(
 // that call so a later refactor can add BlockRef-aware plumbing once,
 // keeping protocol-handler code unchanged.
 //
-// It is currently a direct passthrough; the *blockstore.FlushResult from
+// It is currently a direct passthrough; the *block.FlushResult from
 // the engine is dropped because every existing call site already ignores
 // it (only the error is acted on). If per-file flush telemetry becomes
 // needed, widen the signature then.

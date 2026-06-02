@@ -21,16 +21,16 @@ import (
 // Service manages named metadata store instances.
 type Service struct {
 	mu       sync.RWMutex
-	registry map[string]metadata.MetadataStore
+	registry map[string]metadata.Store
 }
 
 func New() *Service {
 	return &Service{
-		registry: make(map[string]metadata.MetadataStore),
+		registry: make(map[string]metadata.Store),
 	}
 }
 
-func (s *Service) RegisterMetadataStore(name string, metaStore metadata.MetadataStore) error {
+func (s *Service) RegisterMetadataStore(name string, metaStore metadata.Store) error {
 	if metaStore == nil {
 		return fmt.Errorf("cannot register nil metadata store")
 	}
@@ -49,7 +49,7 @@ func (s *Service) RegisterMetadataStore(name string, metaStore metadata.Metadata
 	return nil
 }
 
-func (s *Service) GetMetadataStore(name string) (metadata.MetadataStore, error) {
+func (s *Service) GetMetadataStore(name string) (metadata.Store, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -80,7 +80,7 @@ func (s *Service) CountMetadataStores() int {
 // CloseMetadataStores closes all stores that implement io.Closer.
 func (s *Service) CloseMetadataStores() {
 	s.mu.RLock()
-	snapshot := make(map[string]metadata.MetadataStore, len(s.registry))
+	snapshot := make(map[string]metadata.Store, len(s.registry))
 	maps.Copy(snapshot, s.registry)
 	s.mu.RUnlock()
 
@@ -111,7 +111,7 @@ func (s *Service) CloseMetadataStores() {
 //   - "cannot swap to nil metadata store" — newStore is nil.
 //   - "cannot swap metadata store with empty name" — name is empty.
 //   - "metadata store %q not registered" — no entry for name.
-func (s *Service) SwapMetadataStore(name string, newStore metadata.MetadataStore) (metadata.MetadataStore, error) {
+func (s *Service) SwapMetadataStore(name string, newStore metadata.Store) (metadata.Store, error) {
 	if newStore == nil {
 		return nil, fmt.Errorf("cannot swap to nil metadata store")
 	}
@@ -162,7 +162,7 @@ func (s *Service) OpenMetadataStoreAtPath(
 	ctx context.Context,
 	cfg *models.MetadataStoreConfig,
 	pathOverride string,
-) (metadata.MetadataStore, error) {
+) (metadata.Store, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("cannot open metadata store: cfg is nil")
 	}
@@ -323,7 +323,7 @@ func openPostgresAtSchema(
 	_ context.Context,
 	_ *models.MetadataStoreConfig,
 	_ string,
-) (metadata.MetadataStore, error) {
+) (metadata.Store, error) {
 	return nil, errors.New(
 		"postgres schema-scoped open is not supported: the postgres metadata " +
 			"engine does not yet accept a per-instance schema override")

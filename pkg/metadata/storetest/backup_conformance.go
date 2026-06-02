@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/backup"
 )
@@ -16,7 +16,7 @@ import (
 // backup conformance test. The returned store does NOT need to implement
 // metadata.Backupable at this type level -- the suite performs the type
 // assertion internally and fails if the capability is absent.
-type BackupableStoreFactory func(t *testing.T) metadata.MetadataStore
+type BackupableStoreFactory func(t *testing.T) metadata.Store
 
 // RunBackupConformanceSuite runs the backup/restore conformance tests against
 // the provided factory. Each subtest gets a fresh store instance to ensure
@@ -92,8 +92,8 @@ func testBackup_LiveSetSupersetOfBackup(t *testing.T, factory BackupableStoreFac
 		t.Fatalf("Backup: %v", err)
 	}
 
-	liveSet := make(map[blockstore.ContentHash]struct{})
-	if err := store.EnumerateFileBlocks(ctx, func(h blockstore.ContentHash) error {
+	liveSet := make(map[block.ContentHash]struct{})
+	if err := store.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
 		liveSet[h] = struct{}{}
 		return nil
 	}); err != nil {
@@ -101,7 +101,7 @@ func testBackup_LiveSetSupersetOfBackup(t *testing.T, factory BackupableStoreFac
 	}
 
 	missing := 0
-	if err := backupHashes.ForEach(func(h blockstore.ContentHash) error {
+	if err := backupHashes.ForEach(func(h block.ContentHash) error {
 		if _, ok := liveSet[h]; !ok {
 			missing++
 			t.Errorf("hash %s in Backup HashSet but ABSENT from EnumerateFileBlocks (GC mark live set) — GC would reap a live chunk (data loss)", h)
@@ -136,14 +136,14 @@ func testBackup_LiveSetUnionsManifestNegativeControl(t *testing.T, factory Backu
 	}
 	// Manifest carries the hash; NO FileBlockStore.Put is issued, so the CAS
 	// index (file_blocks / fb: / fileBlockData.blocks) has no row for it.
-	f.Blocks = []blockstore.BlockRef{{Hash: manifestOnly, Offset: 0, Size: 4 << 20}}
+	f.Blocks = []block.BlockRef{{Hash: manifestOnly, Offset: 0, Size: 4 << 20}}
 	f.Size = 4 << 20
 	if err := store.PutFile(ctx, f); err != nil {
 		t.Fatalf("PutFile: %v", err)
 	}
 
 	found := false
-	if err := store.EnumerateFileBlocks(ctx, func(h blockstore.ContentHash) error {
+	if err := store.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
 		if h == manifestOnly {
 			found = true
 		}
@@ -158,7 +158,7 @@ func testBackup_LiveSetUnionsManifestNegativeControl(t *testing.T, factory Backu
 
 // asBackupable is a helper that type-asserts a MetadataStore to Backupable,
 // calling t.Fatal if the assertion fails.
-func asBackupable(t *testing.T, store metadata.MetadataStore) metadata.Backupable {
+func asBackupable(t *testing.T, store metadata.Store) metadata.Backupable {
 	t.Helper()
 	b, ok := store.(metadata.Backupable)
 	if !ok {
@@ -169,7 +169,7 @@ func asBackupable(t *testing.T, store metadata.MetadataStore) metadata.Backupabl
 
 // populateTestData creates a share with two files carrying BlockRef hashes.
 // Returns the share name and the list of unique hashes used.
-func populateTestData(t *testing.T, store metadata.MetadataStore, sharePrefix string) (string, []blockstore.ContentHash) {
+func populateTestData(t *testing.T, store metadata.Store, sharePrefix string) (string, []block.ContentHash) {
 	t.Helper()
 
 	shareName := sharePrefix + "-bkp"
@@ -185,7 +185,7 @@ func populateTestData(t *testing.T, store metadata.MetadataStore, sharePrefix st
 	if err != nil {
 		t.Fatalf("GetFile alpha: %v", err)
 	}
-	fA.Blocks = []blockstore.BlockRef{
+	fA.Blocks = []block.BlockRef{
 		{Hash: hashA0, Offset: 0, Size: 4 << 20},
 		{Hash: hashA1, Offset: 4 << 20, Size: 4 << 20},
 	}
@@ -201,7 +201,7 @@ func populateTestData(t *testing.T, store metadata.MetadataStore, sharePrefix st
 	if err != nil {
 		t.Fatalf("GetFile beta: %v", err)
 	}
-	fB.Blocks = []blockstore.BlockRef{
+	fB.Blocks = []block.BlockRef{
 		{Hash: hashB0, Offset: 0, Size: 2 << 20},
 		{Hash: hashA0, Offset: 2 << 20, Size: 4 << 20}, // shared with alpha
 	}
@@ -211,7 +211,7 @@ func populateTestData(t *testing.T, store metadata.MetadataStore, sharePrefix st
 	}
 
 	// Unique hashes: hashA0, hashA1, hashB0 (3 unique despite 4 block refs).
-	return shareName, []blockstore.ContentHash{hashA0, hashA1, hashB0}
+	return shareName, []block.ContentHash{hashA0, hashA1, hashB0}
 }
 
 // --------------------------------------------------------------------------
@@ -343,7 +343,7 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 	var buf bytes.Buffer
 	sw := &signalWriter{w: &buf, started: make(chan struct{})}
 	var backupErr error
-	var hashes *blockstore.HashSet
+	var hashes *block.HashSet
 
 	var wg sync.WaitGroup
 
@@ -390,7 +390,7 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 				UID:  1000,
 				GID:  1000,
 				Size: 1 << 20,
-				Blocks: []blockstore.BlockRef{
+				Blocks: []block.BlockRef{
 					{Hash: concurrentHash, Offset: 0, Size: 1 << 20},
 				},
 			},
@@ -636,7 +636,7 @@ func testBackup_HashSet_ExactMatch(t *testing.T, factory BackupableStoreFactory)
 	rootHandle := createTestShare(t, store, shareName)
 
 	// Create 3 files with a total of 5 unique hashes.
-	hashes := []blockstore.ContentHash{
+	hashes := []block.ContentHash{
 		hashOfSeed("hs-exact-0"),
 		hashOfSeed("hs-exact-1"),
 		hashOfSeed("hs-exact-2"),
@@ -650,7 +650,7 @@ func testBackup_HashSet_ExactMatch(t *testing.T, factory BackupableStoreFactory)
 	if err != nil {
 		t.Fatalf("GetFile f1: %v", err)
 	}
-	f1.Blocks = []blockstore.BlockRef{
+	f1.Blocks = []block.BlockRef{
 		{Hash: hashes[0], Offset: 0, Size: 1 << 20},
 		{Hash: hashes[1], Offset: 1 << 20, Size: 1 << 20},
 	}
@@ -664,7 +664,7 @@ func testBackup_HashSet_ExactMatch(t *testing.T, factory BackupableStoreFactory)
 	if err != nil {
 		t.Fatalf("GetFile f2: %v", err)
 	}
-	f2.Blocks = []blockstore.BlockRef{
+	f2.Blocks = []block.BlockRef{
 		{Hash: hashes[2], Offset: 0, Size: 1 << 20},
 		{Hash: hashes[3], Offset: 1 << 20, Size: 1 << 20},
 	}
@@ -678,7 +678,7 @@ func testBackup_HashSet_ExactMatch(t *testing.T, factory BackupableStoreFactory)
 	if err != nil {
 		t.Fatalf("GetFile f3: %v", err)
 	}
-	f3.Blocks = []blockstore.BlockRef{
+	f3.Blocks = []block.BlockRef{
 		{Hash: hashes[4], Offset: 0, Size: 1 << 20},
 	}
 	if err := store.PutFile(ctx, f3); err != nil {
@@ -723,7 +723,7 @@ func testBackup_HashSet_Dedup(t *testing.T, factory BackupableStoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile dup-a: %v", err)
 	}
-	fA.Blocks = []blockstore.BlockRef{
+	fA.Blocks = []block.BlockRef{
 		{Hash: sharedHash, Offset: 0, Size: 4 << 20},
 	}
 	if err := store.PutFile(ctx, fA); err != nil {
@@ -736,7 +736,7 @@ func testBackup_HashSet_Dedup(t *testing.T, factory BackupableStoreFactory) {
 	if err != nil {
 		t.Fatalf("GetFile dup-b: %v", err)
 	}
-	fB.Blocks = []blockstore.BlockRef{
+	fB.Blocks = []block.BlockRef{
 		{Hash: sharedHash, Offset: 0, Size: 4 << 20},
 	}
 	if err := store.PutFile(ctx, fB); err != nil {

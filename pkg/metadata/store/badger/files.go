@@ -8,7 +8,7 @@ import (
 	badgerdb "github.com/dgraph-io/badger/v4"
 	"github.com/google/uuid"
 
-	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -136,7 +136,7 @@ func (s *BadgerMetadataStore) GetFileByPayloadID(ctx context.Context, payloadID 
 //
 // Block list is deep-copied out of the txn-scoped decoded file to avoid
 // slice aliasing into Badger's internal buffers (discipline).
-func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID blockstore.ObjectID) ([]blockstore.BlockRef, error) {
+func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.BlockRef, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -144,7 +144,7 @@ func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID block
 		return nil, nil
 	}
 
-	var blocks []blockstore.BlockRef
+	var blocks []block.BlockRef
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		item, err := txn.Get(keyObjectID(objectID))
 		if errors.Is(err, badgerdb.ErrKeyNotFound) {
@@ -188,7 +188,7 @@ func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID block
 		// Deep-copy the BlockRef slice so the caller's view does not
 		// alias the JSON-decoded buffer.
 		if len(f.Blocks) > 0 {
-			blocks = append([]blockstore.BlockRef(nil), f.Blocks...)
+			blocks = append([]block.BlockRef(nil), f.Blocks...)
 		}
 		return nil
 	})
@@ -208,7 +208,7 @@ func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID block
 //
 // Zero-valued objectID inputs short-circuit to (0, nil) without backend
 // access, mirroring FindByObjectID's partial/skip-zero discipline.
-func (s *BadgerMetadataStore) CountObjectIDIndexRows(ctx context.Context, objectID blockstore.ObjectID) (int, error) {
+func (s *BadgerMetadataStore) CountObjectIDIndexRows(ctx context.Context, objectID block.ObjectID) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}

@@ -18,7 +18,7 @@ import (
 // of the default test lane. The full conformance suite
 // (TestConformance) remains gated by the integration tag.
 func TestBlockLayoutConformance(t *testing.T) {
-	storetest.RunBlockLayoutSuite(t, func(t *testing.T) metadata.MetadataStore {
+	storetest.RunBlockLayoutSuite(t, func(t *testing.T) metadata.Store {
 		dbPath := filepath.Join(t.TempDir(), "metadata.db")
 		store, err := badger.NewBadgerMetadataStoreWithDefaults(context.Background(), dbPath)
 		if err != nil {
