@@ -15,12 +15,20 @@ import (
 
 // Durable Handle Create Context tag constants [MS-SMB2] 2.2.13.2.
 const (
-	DurableHandleV1RequestTag          = "DHnQ"             // SMB2_CREATE_DURABLE_HANDLE_REQUEST
-	DurableHandleV1ReconnectTag        = "DHnC"             // SMB2_CREATE_DURABLE_HANDLE_RECONNECT (also V1 response tag)
-	DurableHandleV2RequestTag          = "DH2Q"             // SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2 (also V2 response tag)
-	DurableHandleV2ReconnectTag        = "DH2C"             // SMB2_CREATE_DURABLE_HANDLE_RECONNECT_V2
-	AppInstanceIdTag                   = "\x45\x17\xb6\x11" // SMB2_CREATE_APP_INSTANCE_ID
-	DH2FlagPersistent           uint32 = 0x00000002         // Persistent handle (not supported)
+	DurableHandleV1RequestTag          = "DHnQ"     // SMB2_CREATE_DURABLE_HANDLE_REQUEST
+	DurableHandleV1ReconnectTag        = "DHnC"     // SMB2_CREATE_DURABLE_HANDLE_RECONNECT (also V1 response tag)
+	DurableHandleV2RequestTag          = "DH2Q"     // SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2 (also V2 response tag)
+	DurableHandleV2ReconnectTag        = "DH2C"     // SMB2_CREATE_DURABLE_HANDLE_RECONNECT_V2
+	DH2FlagPersistent           uint32 = 0x00000002 // Persistent handle (not supported)
+
+	// AppInstanceIdTag is the 16-byte SMB2_CREATE_APP_INSTANCE_ID create-context
+	// name (MS-SMB2 2.2.13.2.8). Unlike DH2Q/RqLs, this name is a GUID, not a
+	// 4-byte ASCII tag; the value matches Samba SMB2_CREATE_TAG_APP_INSTANCE_ID.
+	// A prior 4-byte value never matched the on-wire name, so the AppInstanceId
+	// failover never fired: a same-AppInstanceId second open conflicted via an
+	// oplock break instead of silently displacing the first open
+	// (smb2.durable-v2-open.app-instance asserts break_info.count == 0).
+	AppInstanceIdTag = "\x45\xBC\xA6\x6A\xEF\xA7\xF7\x4A\x90\x08\xFA\x46\x2E\x14\x4D\x74" // SMB2_CREATE_APP_INSTANCE_ID
 )
 
 // DecodeDHnQRequest validates a V1 durable handle request (DHnQ).
