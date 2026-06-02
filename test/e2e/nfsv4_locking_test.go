@@ -366,10 +366,8 @@ func testCrossClientConflict(t *testing.T, mount1, mount2 *framework.Mount, ver 
 	framework.WriteFile(t, filePath1, content)
 	t.Cleanup(func() { _ = os.Remove(filePath1) })
 
-	// Wait for metadata sync across mounts
-	time.Sleep(500 * time.Millisecond)
-
-	// Verify file is visible from mount2
+	// Wait for the file to be visible from mount2
+	framework.WaitForFile(t, filePath2, 5*time.Second)
 	require.True(t, framework.FileExists(filePath2),
 		"File should be visible from second mount point")
 
@@ -399,10 +397,8 @@ func testCrossClientConflict(t *testing.T, mount1, mount2 *framework.Mount, ver 
 	f1 = nil
 	t.Log("Lock released via mount1")
 
-	// Wait for lock state propagation
-	time.Sleep(500 * time.Millisecond)
-
-	// Retry via mount2 -- should now succeed
+	// Retry via mount2 -- should now succeed.
+	// WaitForRangeLockRelease polls, so it absorbs lock-state propagation delay.
 	released := framework.WaitForRangeLockRelease(t, filePath2, 0, 0, true, 5*time.Second)
 	assert.True(t, released, "Lock should be available on mount2 after release on mount1")
 
@@ -449,8 +445,8 @@ func TestNFSv4BlockingLock(t *testing.T) {
 	framework.WriteFile(t, filePath1, content)
 	t.Cleanup(func() { _ = os.Remove(filePath1) })
 
-	// Wait for file visibility
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the file to be visible from mount2
+	framework.WaitForFile(t, filePath2, 5*time.Second)
 	require.True(t, framework.FileExists(filePath2), "File should be visible from mount2")
 
 	// Acquire exclusive lock via mount1

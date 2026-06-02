@@ -316,8 +316,8 @@ func TestNFSv4NoDelegationConflict(t *testing.T) {
 	framework.WriteFile(t, filePath1, testData)
 	t.Cleanup(func() { _ = os.Remove(filePath1) })
 
-	// Wait for file visibility
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the file to be visible from the second mount
+	framework.WaitForContent(t, filePath2, testData, 5*time.Second)
 
 	// Both clients read the same file concurrently
 	readData1, err := os.ReadFile(filePath1)

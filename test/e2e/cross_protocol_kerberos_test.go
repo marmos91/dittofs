@@ -156,8 +156,8 @@ func testCrossProtocolNFSCreateSMBRead(t *testing.T, kdc *framework.KDCHelper, n
 	}()
 
 	// Verify file is readable from SMB
-	time.Sleep(200 * time.Millisecond) // Allow metadata sync
 	smbPath := filepath.Join(smbMountPoint, testFile)
+	framework.WaitForContent(t, smbPath, []byte(testData), 5*time.Second)
 	content, err := os.ReadFile(smbPath)
 	require.NoError(t, err, "Should read NFS-created file from SMB Kerberos mount")
 	assert.Equal(t, testData, string(content))
@@ -200,8 +200,8 @@ func testCrossProtocolSMBCreateNFSRead(t *testing.T, kdc *framework.KDCHelper, n
 	defer nfsMount.Cleanup()
 
 	// Verify file is readable from NFS
-	time.Sleep(200 * time.Millisecond) // Allow metadata sync
 	nfsPath := nfsMount.FilePath(testFile)
+	framework.WaitForContent(t, nfsPath, []byte(testData), 5*time.Second)
 	content, err := os.ReadFile(nfsPath)
 	require.NoError(t, err, "Should read SMB-created file from NFS Kerberos mount")
 	assert.Equal(t, testData, string(content))
@@ -246,7 +246,9 @@ func testCrossProtocolBidirectionalVisibility(t *testing.T, kdc *framework.KDCHe
 	err = os.WriteFile(filepath.Join(smbMountPoint, smbFile), []byte("SMB origin"), 0644)
 	require.NoError(t, err)
 
-	time.Sleep(200 * time.Millisecond)
+	// Wait for both files to become visible across protocols
+	framework.WaitForContent(t, nfsMount.FilePath(smbFile), []byte("SMB origin"), 5*time.Second)
+	framework.WaitForContent(t, filepath.Join(smbMountPoint, nfsFile), []byte("NFS origin"), 5*time.Second)
 
 	// NFS mount should see SMB-created file
 	nfsSeesSMB, err := os.ReadFile(nfsMount.FilePath(smbFile))

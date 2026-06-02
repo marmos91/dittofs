@@ -386,8 +386,9 @@ func TestMultiClientConcurrency(t *testing.T) {
 				framework.WriteFile(t, file2, content2)
 				t.Cleanup(func() { _ = os.Remove(file2) })
 
-				// Allow NFS attribute cache to expire (actimeo=0 should make this immediate)
-				time.Sleep(500 * time.Millisecond)
+				// Wait for the cross-mount writes to become visible
+				framework.WaitForContent(t, mount1.FilePath("from_mount2.txt"), content2, 5*time.Second)
+				framework.WaitForContent(t, mount2.FilePath("from_mount1.txt"), content1, 5*time.Second)
 
 				// Mount1 should see mount2's file
 				read1 := framework.ReadFile(t, mount1.FilePath("from_mount2.txt"))
@@ -441,17 +442,24 @@ func TestMultiClientConcurrency(t *testing.T) {
 
 				wg.Wait()
 
-				// Allow caches to settle
-				time.Sleep(1 * time.Second)
+				// Resolve the on-disk path for a checksum key.
+				pathForKey := func(key string) string {
+					if strings.HasPrefix(key, "m1_") {
+						return mount1.FilePath(strings.TrimPrefix(key, "m1_"))
+					}
+					return mount2.FilePath(strings.TrimPrefix(key, "m2_"))
+				}
+
+				// Wait for all concurrently written files to be visible
+				paths := make([]string, 0, len(checksums))
+				for key := range checksums {
+					paths = append(paths, pathForKey(key))
+				}
+				framework.WaitForAllFiles(t, paths, 5*time.Second)
 
 				// Verify all files exist and have correct checksums
 				for key, expectedChecksum := range checksums {
-					var filePath string
-					if strings.HasPrefix(key, "m1_") {
-						filePath = mount1.FilePath(strings.TrimPrefix(key, "m1_"))
-					} else {
-						filePath = mount2.FilePath(strings.TrimPrefix(key, "m2_"))
-					}
+					filePath := pathForKey(key)
 
 					assert.True(t, framework.FileExists(filePath),
 						"File %s should exist after concurrent write", key)
@@ -461,13 +469,7 @@ func TestMultiClientConcurrency(t *testing.T) {
 				// Cleanup concurrent files
 				t.Cleanup(func() {
 					for key := range checksums {
-						var filePath string
-						if strings.HasPrefix(key, "m1_") {
-							filePath = mount1.FilePath(strings.TrimPrefix(key, "m1_"))
-						} else {
-							filePath = mount2.FilePath(strings.TrimPrefix(key, "m2_"))
-						}
-						_ = os.Remove(filePath)
+						_ = os.Remove(pathForKey(key))
 					}
 				})
 

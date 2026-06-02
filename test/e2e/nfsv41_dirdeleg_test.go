@@ -114,7 +114,7 @@ func TestNFSv41DirDelegationEntryAdded(t *testing.T) {
 	}
 
 	// Verify data consistency regardless of delegation behavior
-	time.Sleep(500 * time.Millisecond)
+	framework.WaitForFile(t, filepath.Join(dirPath1, "added_file.txt"), 5*time.Second)
 	entries = framework.ListDir(t, dirPath1)
 	found := false
 	for _, e := range entries {
@@ -173,8 +173,8 @@ func TestNFSv41DirDelegationEntryRemoved(t *testing.T) {
 	dirPath2 := mount2.FilePath(dirName)
 	fileToRemove := filepath.Join(dirPath2, "to_remove.txt")
 
-	// Wait for cross-client visibility
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the file to be visible from client 2
+	framework.WaitForFile(t, fileToRemove, 5*time.Second)
 
 	err := os.Remove(fileToRemove)
 	require.NoError(t, err, "Client 2: should delete file")
@@ -198,7 +198,7 @@ func TestNFSv41DirDelegationEntryRemoved(t *testing.T) {
 	}
 
 	// Verify data consistency
-	time.Sleep(500 * time.Millisecond)
+	framework.WaitForDirEntryCount(t, dirPath1, 0, 5*time.Second)
 	entries = framework.ListDir(t, dirPath1)
 	assert.Len(t, entries, 0, "Client 1 should see empty directory after client 2's deletion")
 
@@ -252,8 +252,8 @@ func TestNFSv41DirDelegationEntryRenamed(t *testing.T) {
 	srcFile := filepath.Join(dirPath2, "original_name.txt")
 	dstFile := filepath.Join(dirPath2, "renamed_file.txt")
 
-	// Wait for cross-client visibility
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the source file to be visible from client 2
+	framework.WaitForFile(t, srcFile, 5*time.Second)
 
 	err := os.Rename(srcFile, dstFile)
 	require.NoError(t, err, "Client 2: should rename file")
@@ -277,7 +277,7 @@ func TestNFSv41DirDelegationEntryRenamed(t *testing.T) {
 	}
 
 	// Verify data consistency: client 1 should see renamed file
-	time.Sleep(500 * time.Millisecond)
+	framework.WaitForFile(t, filepath.Join(dirPath1, "renamed_file.txt"), 5*time.Second)
 	entries = framework.ListDir(t, dirPath1)
 
 	foundOriginal := false
@@ -347,8 +347,8 @@ func TestNFSv41DirDelegationAttrChanged(t *testing.T) {
 	dirPath2 := mount2.FilePath(dirName)
 	fileToChmod := filepath.Join(dirPath2, "attr_test.txt")
 
-	// Wait for cross-client visibility
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the file to be visible from client 2
+	framework.WaitForFile(t, fileToChmod, 5*time.Second)
 
 	err := os.Chmod(fileToChmod, 0755)
 	require.NoError(t, err, "Client 2: should chmod file")
@@ -374,7 +374,10 @@ func TestNFSv41DirDelegationAttrChanged(t *testing.T) {
 	}
 
 	// Verify the attribute change was applied
-	time.Sleep(500 * time.Millisecond)
+	framework.WaitFor(5*time.Second, func() bool {
+		fi, err := os.Stat(attrFile)
+		return err == nil && fi.Mode().Perm()&0100 != 0
+	})
 	info := framework.GetFileInfo(t, attrFile)
 	assert.True(t, info.Mode.Perm()&0100 != 0,
 		"File should have execute permission after chmod 0755")

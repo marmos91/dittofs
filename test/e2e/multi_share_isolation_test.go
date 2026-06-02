@@ -218,16 +218,25 @@ func TestMultiShareIsolation(t *testing.T) {
 		}
 
 		wg.Wait()
-		time.Sleep(500 * time.Millisecond) // let caches settle
+
+		// Resolve the on-disk path for a checksum key.
+		pathForKey := func(key string) string {
+			if strings.HasPrefix(key, "a_") {
+				return mountA.FilePath(strings.TrimPrefix(key, "a_"))
+			}
+			return mountB.FilePath(strings.TrimPrefix(key, "b_"))
+		}
+
+		// Wait for all concurrently written files to be visible
+		paths := make([]string, 0, len(checksums))
+		for key := range checksums {
+			paths = append(paths, pathForKey(key))
+		}
+		framework.WaitForAllFiles(t, paths, 5*time.Second)
 
 		// Verify all 20 files written correctly
 		for key, expectedChecksum := range checksums {
-			var filePath string
-			if strings.HasPrefix(key, "a_") {
-				filePath = mountA.FilePath(strings.TrimPrefix(key, "a_"))
-			} else {
-				filePath = mountB.FilePath(strings.TrimPrefix(key, "b_"))
-			}
+			filePath := pathForKey(key)
 
 			assert.True(t, framework.FileExists(filePath),
 				"File %s should exist after concurrent write", key)

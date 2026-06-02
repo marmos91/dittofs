@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/test/e2e/framework"
 	"github.com/marmos91/dittofs/test/e2e/helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -173,8 +174,11 @@ func testPortConfigurationChange(t *testing.T, runner *helpers.CLIRunner) {
 	require.NoError(t, err, "Should edit NFS adapter port")
 	assert.Equal(t, portB, adapter.Port, "Port should change to B")
 
-	// Give server time to restart adapter on new port
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the adapter to report the new port
+	framework.WaitFor(5*time.Second, func() bool {
+		a, gerr := runner.GetAdapter("nfs")
+		return gerr == nil && a.Port == portB
+	})
 
 	// Verify new port via GetAdapter
 	adapter, err = runner.GetAdapter("nfs")
@@ -212,8 +216,11 @@ func testHotReloadWithoutRestart(t *testing.T, sp *helpers.ServerProcess, runner
 	_, err = runner.EditAdapter("nfs", helpers.WithAdapterPort(portB))
 	require.NoError(t, err, "Should edit NFS adapter port")
 
-	// Give adapter time to restart on new port
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the adapter to report the new port
+	framework.WaitFor(5*time.Second, func() bool {
+		a, gerr := runner.GetAdapter("nfs")
+		return gerr == nil && a.Port == portB
+	})
 
 	// Verify server PID is unchanged (no full restart)
 	pidAfter := sp.PID()

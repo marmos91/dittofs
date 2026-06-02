@@ -433,7 +433,16 @@ func TestNFSv41MultipleSessions(t *testing.T) {
 	}
 
 	// Verify cross-session visibility: each client should see files from other clients
-	time.Sleep(500 * time.Millisecond) // Allow NFS cache to settle
+	framework.WaitFor(5*time.Second, func() bool {
+		for i := range numClients {
+			for j := range numClients {
+				if !framework.FileExists(mounts[i].FilePath(fmt.Sprintf("session_%d_file.txt", j))) {
+					return false
+				}
+			}
+		}
+		return true
+	})
 
 	for i := range numClients {
 		for j := range numClients {

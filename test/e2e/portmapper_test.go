@@ -62,7 +62,9 @@ func TestPortmapper(t *testing.T) {
 	err = helpers.WaitForAdapterStatus(t, runner, "nfs", true, 5*time.Second)
 	require.NoError(t, err)
 
-	// Wait a moment for portmapper to bind
+	// Fixed grace for the portmapper socket to finish binding after the
+	// adapter reports enabled. There is no separate readiness signal for the
+	// rpcbind listener, so this stays a fixed delay.
 	time.Sleep(500 * time.Millisecond)
 
 	t.Run("NULL ping", func(t *testing.T) {

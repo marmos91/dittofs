@@ -145,8 +145,8 @@ func testNFSLockBlocksSMBLease(t *testing.T, nfsMount, smbMount *framework.Mount
 		_ = os.Remove(nfsPath)
 	})
 
-	// Wait for metadata sync
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the file to be visible before locking it
+	framework.WaitForContent(t, nfsPath, testContent, 5*time.Second)
 
 	// Step 2: Acquire exclusive lock via NFS (fcntl for NLM support)
 	// This should trigger an NLM LOCK request to the server
@@ -193,7 +193,7 @@ func testNFSLockBlocksSMBLease(t *testing.T, nfsMount, smbMount *framework.Mount
 	framework.WriteFile(t, smbPath, newContent)
 
 	// Verify via NFS
-	time.Sleep(200 * time.Millisecond)
+	framework.WaitForContent(t, nfsPath, newContent, 5*time.Second)
 	verifyContent := framework.ReadFile(t, nfsPath)
 	assert.True(t, bytes.Equal(newContent, verifyContent),
 		"NFS should see SMB write after lock release")
@@ -218,8 +218,8 @@ func testSMBLeaseBreaksForNFSLock(t *testing.T, nfsMount, smbMount *framework.Mo
 		_ = os.Remove(smbPath)
 	})
 
-	// Wait for metadata sync
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the file to be visible before opening it
+	framework.WaitForContent(t, smbPath, testContent, 5*time.Second)
 
 	t.Log("XPRO-02: File created via SMB")
 
@@ -274,7 +274,7 @@ func testSMBLeaseBreaksForNFSLock(t *testing.T, nfsMount, smbMount *framework.Mo
 	smbFile = nil
 
 	// Verify via NFS
-	time.Sleep(200 * time.Millisecond)
+	framework.WaitForContent(t, nfsPath, newContent, 5*time.Second)
 	verifyContent := framework.ReadFile(t, nfsPath)
 	assert.True(t, bytes.Equal(newContent, verifyContent),
 		"NFS should see SMB write after lock release")
@@ -299,7 +299,8 @@ func testCrossProtocolConflict(t *testing.T, nfsMount, smbMount *framework.Mount
 		_ = os.Remove(nfsPath)
 	})
 
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the file to be visible via SMB before locking
+	framework.WaitForFile(t, smbPath, 5*time.Second)
 
 	// Step 1: Acquire shared lock via NFS
 	nfsSharedLock := framework.LockFileRange(t, nfsPath, 0, 0, false) // Shared lock
@@ -380,8 +381,8 @@ func testCrossProtocolDataIntegrity(t *testing.T, nfsMount, smbMount *framework.
 
 	t.Log("XPRO-04: NFS write completed with lock")
 
-	// Wait for sync
-	time.Sleep(300 * time.Millisecond)
+	// Wait for the write to be visible via SMB
+	framework.WaitForContent(t, smbPath, nfsContent, 5*time.Second)
 
 	// Read via SMB
 	smbReadContent := framework.ReadFile(t, smbPath)
@@ -400,8 +401,8 @@ func testCrossProtocolDataIntegrity(t *testing.T, nfsMount, smbMount *framework.
 
 	t.Log("XPRO-04: SMB write completed with lock")
 
-	// Wait for sync
-	time.Sleep(300 * time.Millisecond)
+	// Wait for the write to be visible via NFS
+	framework.WaitForContent(t, nfsPath, smbContent, 5*time.Second)
 
 	// Read via NFS
 	nfsReadContent := framework.ReadFile(t, nfsPath)
@@ -417,7 +418,11 @@ func testCrossProtocolDataIntegrity(t *testing.T, nfsMount, smbMount *framework.
 	framework.WriteFile(t, nfsPath, firstHalf)
 	framework.UnlockFileRange(t, nfsLock2)
 
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the partial write to be visible via SMB
+	framework.WaitFor(5*time.Second, func() bool {
+		data, err := os.ReadFile(smbPath)
+		return err == nil && bytes.HasPrefix(data, firstHalf)
+	})
 
 	// SMB reads and verifies
 	partialContent := framework.ReadFile(t, smbPath)
@@ -533,7 +538,8 @@ func testNonOverlappingByteRangeLocks(t *testing.T, nfsMount, smbMount *framewor
 		_ = os.Remove(nfsPath)
 	})
 
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the file to be visible via SMB before locking
+	framework.WaitForFile(t, smbPath, 5*time.Second)
 
 	// NFS locks first 512 bytes
 	nfsLock := framework.LockFileRange(t, nfsPath, 0, 512, true)
@@ -576,7 +582,8 @@ func testOverlappingByteRangeLockConflict(t *testing.T, nfsMount, smbMount *fram
 		_ = os.Remove(nfsPath)
 	})
 
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the file to be visible via SMB before locking
+	framework.WaitForFile(t, smbPath, 5*time.Second)
 
 	// NFS locks bytes [256:768]
 	nfsLock := framework.LockFileRange(t, nfsPath, 256, 512, true)
