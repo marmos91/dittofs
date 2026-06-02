@@ -189,6 +189,34 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 	return lf, mu, tree, idx, nil
 }
 
+// signalPressure wakes any AppendWrite blocked in the pressure loop after log
+// budget has been freed (rollup retirement or payload delete). pressureCh is a
+// size-1 buffered channel, so the send is non-blocking and a missed pulse is
+// harmless — a blocked writer also re-checks the budget on the rollup ticker.
+func (bc *FSStore) signalPressure() {
+	select {
+	case bc.pressureCh <- struct{}{}:
+	default:
+	}
+}
+
+// releaseLogBytes subtracts n from the pressure budget and pulses pressureCh,
+// flooring the running total at zero. The exact callers (the rollup fence
+// retirement and the DeleteAppendLog mid-write reclaim) never over-release in
+// steady state, but recovery seeds logBytesTotal from the on-disk resident
+// estimate (file size - rollup_offset) which can drift by a torn-tail record
+// from the per-record frame sum; the floor keeps a benign drift from turning
+// the budget negative and defeating backpressure. n <= 0 is a no-op.
+func (bc *FSStore) releaseLogBytes(n int64) {
+	if n <= 0 {
+		return
+	}
+	if bc.logBytesTotal.Add(-n) < 0 {
+		bc.logBytesTotal.Store(0)
+	}
+	bc.signalPressure()
+}
+
 // AppendWrite writes exactly one framed record to the payload's append
 // log. The append is serialized by a per-file mutex to
 // guarantee crash-safe log ordering — a lock-free log would risk torn
@@ -596,6 +624,19 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 	// buildPayloadID), so 'unlink + create at same path' must reuse
 	// the PayloadID and must therefore succeed.
 	sh.mu.Lock()
+	// C3: release the pressure budget for any record still live in this
+	// payload's logIndex. AppendWrite reserved recordFrameOverhead+payloadLen
+	// per record in logBytesTotal; a rollup pass releases it via the fence
+	// retirement, but a payload deleted mid-write (storm create/delete churn)
+	// discards its logIndex here before those records ever roll up. Without
+	// this reclaim their reserved bytes leak permanently and the global budget
+	// ratchets to maxLogBytes, eventually wedging every writer on
+	// ErrPressureTimeout. LiveBytes counts exactly the un-retired records, so
+	// the reclaim never double-counts against the rollup's own release.
+	var reclaim int64
+	if idx := sh.logIndices[payloadID]; idx != nil {
+		reclaim = idx.LiveBytes()
+	}
 	delete(sh.logFDs, payloadID)
 	delete(sh.logLocks, payloadID)
 	delete(sh.rollupLocks, payloadID)
@@ -604,6 +645,10 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 	delete(sh.truncations, payloadID)
 	delete(sh.tombstones, payloadID)
 	sh.mu.Unlock()
+	// Release the discarded payload's reserved budget and pulse pressure so any
+	// writer blocked on the budget re-checks immediately rather than waiting
+	// for the next rollup tick.
+	bc.releaseLogBytes(reclaim)
 
 	// FIX-17: surface any step-4 unlink error after step 5 cleanup so the
 	// in-memory FSStore is left consistent regardless of whether the

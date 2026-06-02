@@ -643,14 +643,6 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 		// landed during Phase B has its own logIndex entry, NOT in
 		// consumedExtents, so the fence does not advance past it and it is
 		// rolled up by a later pass.
-		//
-		// priorFence is captured BEFORE MarkConsumed/AdvanceFence so the
-		// budget-release math below uses the in-memory fence delta (truth)
-		// rather than (targetPos - hdr.RollupOffset). The log header is
-		// derived state that can lag if a prior advanceRollupOffset failed —
-		// using it to compute reclaimed would double-decrement logBytesTotal
-		// on the recovery-from-stale-header path.
-		priorFence := idx.Fence()
 		for _, ext := range consumedExtents {
 			idx.MarkConsumed(ext.fileOff, ext.payloadLen)
 		}
@@ -659,7 +651,10 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 		// file extent we just consumed (its logPos exceeds everything we read
 		// in Phase A). Such a record's bytes were not chunked this pass; it
 		// stays in the index + dirty tree and is rolled up by a later pass.
-		targetPos := idx.AdvanceFenceUpTo(maxReadLogPos)
+		//
+		// retiredBytes is the exact framed-record total the fence retired this
+		// pass — the quantity to release from logBytesTotal below (C3).
+		targetPos, retiredBytes := idx.advanceFenceUpTo(maxReadLogPos)
 
 		// SetRollupOffset is atomic-monotone at the RollupStore layer: on
 		// attempted regression it returns ErrRollupOffsetRegression and the
@@ -709,21 +704,28 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 		// the corresponding log budget. C1: ConsumeUpToStable (not plain
 		// ConsumeUpTo) preserves any interval a write created during Phase B
 		// (Touched > phaseStart), so its bytes are rolled up by a later pass
-		// rather than silently dropped. Reclaimed bytes are measured against
-		// the in-memory priorFence, NOT hdr.RollupOffset — the log header is
-		// derived state that may lag the metadata-authoritative fence after a
-		// prior advanceRollupOffset failure, and basing reclaimed on the stale
-		// header would double-decrement budget on the next pass.
+		// rather than silently dropped.
+		//
+		// C3 budget-leak fix: release exactly the framed-record bytes the
+		// fence retired this pass (retiredBytes), NOT the compaction-fence
+		// position delta (targetPos - priorFence). The previous delta was a
+		// CONTIGUOUS high-water mark from the log head; under out-of-order
+		// overwrites a consumed record can sit behind an unconsumed
+		// lower-logPos record, so AdvanceFenceUpTo stalls and the position
+		// delta systematically under-counts the bytes actually retired. The
+		// stranded bytes then never leave logBytesTotal, the pressure budget
+		// ratchets to maxLogBytes and pins there, and every writer blocks
+		// until ErrPressureTimeout — the storm-stall reported as C3.
+		// retiredBytes sums the frame size of every entry the fence walked
+		// past — both records consumed this pass AND records released only
+		// because an overwrite's MarkConsumed covered their region (R-7) —
+		// so logBytesTotal becomes an exact running total of un-rolled-up
+		// record bytes, decoupled from fence contiguity. targetPos remains
+		// authoritative for physical log compaction below.
 		tree.ConsumeUpToStable(stableEnd, phaseStart)
-		if targetPos > priorFence {
-			bc.logBytesTotal.Add(-int64(targetPos - priorFence))
-		}
-
-		// Non-blocking signal to unblock any AppendWrite waiting on pressure.
-		select {
-		case bc.pressureCh <- struct{}{}:
-		default:
-		}
+		// releaseLogBytes also pulses pressureCh to unblock any AppendWrite
+		// waiting on the budget.
+		bc.releaseLogBytes(retiredBytes)
 
 		// #579: physical log compaction. Runs under the append mutex (mu) we
 		// hold here in Phase C. The threshold check is internal to
