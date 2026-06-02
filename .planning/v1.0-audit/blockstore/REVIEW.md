@@ -167,7 +167,7 @@ Authoritative on-disk state: CAS chunks (`blocks/<hh>/<hh>/<hex>`), append logs 
 
 Perf pass run via the B-H1 harness (`cmd/bench blockstore`, shipped #796/#803/#804/#805/#807). Profiles captured under `_profiles/blockstore/<workload>-<UTC>/{cpu,heap}.pprof`.
 
-**Environment & caveats.** Apple-silicon dev laptop, `--remote=memory`, in-memory metadata store. NOT the Scaleway macro-bench baseline — absolute throughput is indicative, not gate-grade (the >5% regression gate is decided on bench-infra per PLAN §Performance acceptance). Hotspot *ranking* (cum%/alloc%) transfers; absolute ns/op does not. Memory remote retains every uploaded byte in RAM, inflating RSS on the big-write workloads (sequential reached ~4.3 GB RSS at 800 ops before being capped). `block.pprof`/`mutex.pprof` not captured — harness wires CPU+heap only (#671 still open).
+**Environment & caveats.** Apple-silicon dev laptop, `--remote=memory`, in-memory metadata store. NOT the Scaleway macro-bench baseline — absolute throughput is indicative, not gate-grade (the >5% regression gate is decided on bench-infra per PLAN §Performance acceptance). Hotspot *ranking* (cum%/alloc%) transfers; absolute ns/op does not. Memory remote retains every uploaded byte in RAM, inflating RSS on the big-write workloads (sequential reached ~4.3 GB RSS at 800 ops before being capped). `block.pprof`/`mutex.pprof` not captured in this 2026-05-29 pass — harness wired CPU+heap only. **Superseded by §5.1** (2026-06-02): #671 closed, #680 harness now captures the full five-profile envelope + concurrent storm.
 
 ### Workload → PLAN (a)-(e) mapping + throughput
 
@@ -212,6 +212,45 @@ Pure-read workloads (b)/(d) are not first-class in the harness; `mixed-rw` (50/5
 ### Macro reuse
 
 `.planning/v1.0-audit/_baseline/` Wave 0 pprofs diffed where applicable. Fresh Scaleway macro run deferred to the post-B-fix acceptance gate.
+
+---
+
+## 5.1 Contention + re-profile pass (#680 — EXECUTED 2026-06-02)
+
+Re-run with the #680 harness (PR #983): five-profile envelope (`--full-profiles` → mutex + block + goroutine, fidelity 1/1) + the concurrent `mixed-ops-storm` workload (`--workers`). This **closes gap H3** (no mutex/block/goroutine profile, no concurrent workload — the 2026-05-29 run was CPU+heap, single-goroutine only). Profiles under `_profiles/blockstore/baseline/<workload>-<UTC>/{cpu,heap,block,mutex,goroutine}.pprof + seed.txt`. Same dev-laptop / `--remote=memory` caveats as §5 — contention *ranking* transfers, absolute ns does not.
+
+### Captured runs
+
+| Workload | Params | Result | New signal |
+|---|---|---|---|
+| `mixed-ops-storm` | w4, ops=4000, ws=64 | 252 ops/s, w2058/r1122/l627/d115 | C1 + C2 contention |
+| `mixed-ops-storm` | w8, ops=20000, ws=64 | **STALLED** `append log: pressure wait timed out` | C3 backpressure ceiling |
+| `mixed-ops-storm` | w4, ops=20000, ws=64 | **STALLED** same | C3 |
+| `mixed-rw` | ops=20000, ws=8 | 23.5 ops/s | block: 78% selectgo (transfer-queue) |
+| `flush-churn` | ops=1500 | 27.2 flush/s | B1 confirmed (50% syscall walk+fsync) |
+| `sequential-write` | 8 MiB, ops=150 | 5.9 ops/s | **B2 RESOLVED** — see below |
+| `dedup-heavy` | 8 MiB, ops=150 | 28.9 ops/s | blake3 intrinsic, no contention |
+
+### New contention findings (mutex/block)
+
+| # | Hotspot | Where | Signal | Class | Fix |
+|---|---|---|---|---|---|
+| **C1** | `rollupFile` holds the **per-file mutex** (`logLocks[payloadID]`) across the **entire** rollup pass — reconstructStream + StoreChunk + #579 log compaction — so any concurrent `AppendWrite` to the same file blocks for the full rollup duration | `local/fs/rollup.go:177-178` (lock + deferred unlock; comment:123 documents whole-pass hold) | storm w4 mutex-delay **79.4%** on `sync.Mutex.Unlock`, 90% of it via the deferred unlock in the rollup goroutine (`StartRollup.gowrap1` 71.8% cum); `AppendWrite.func2` contends the same lock (8.4%) | **HIGH (contention)** | Shorten the critical section: hold `mu` only for the tree/logIndex mutation, do reconstructStream + StoreChunk + compaction outside it (or under a separate rollup-only lock). The write path must not wait on rollup I/O. |
+| **C2** | `getOrCreateLog` takes the **store-wide** `logsMu` RWMutex as a write lock on the log-handle create/fetch path; serializes every log acquisition across all files | `local/fs/fs.go:214` (`logsMu`), `getOrCreateLog.deferwrap1` | storm w8 mutex-delay **45.4%** on `RWMutex.Unlock`, **99.4%** of it via `getOrCreateLog`; share rises 21%→45% from w4→w8 (super-linear — co-dominant at higher concurrency) | **HIGH (contention, scales)** | Per-shard log map (stripe `logsMu` by payloadID hash) or `sync.Map` for the handle lookup so handle acquisition doesn't globally serialize. |
+| **C3** | Concurrent write storm overruns the append-log backpressure ceiling: at ops≥20 000 / workers≥4 writes outpace rollup+sync drain → `append log: pressure wait timed out`, the run aborts | downstream of **B1** (full-tree walk per sync) + **C1** (rollup holds per-file lock) — rollup can't drain fast enough while walking the tree and holding the write lock | both 20 000-op storm runs stalled; w4@4000 completes | **HIGH (derived)** | Resolves once B1 (incremental unsynced set) + C1 (shortened rollup critical section) land. Re-run the 20 000-op storm as the acceptance check. |
+
+### Re-profile of §5 findings
+
+- **B2 — RESOLVED.** §5 had `reconstructStream` allocating a full per-extent buffer = **88.5 GB alloc_space (94.9%)** on sequential. Re-profile: the reconstruct buffer is now pooled (`getReconstructBuf`, `rollup.go:691-694`) → **64 MB (1.3%)**. Fix landed. **New top alloc** is `chunkstore.go:148 io.ReadAll(f)` (**49%**) reading a whole `.blk` chunk file into a fresh growth-doubling slice per load, + `readRecordAt` (`appendlog.go:203`) fresh `[]byte` per record (**24%**). Successor finding **C4 (MED, alloc):** size the read with `make([]byte, stat.Size())` + `io.ReadFull` (kills ReadAll doubling) and/or pool the record buffer.
+- **B1 — confirmed, unchanged.** flush-churn CPU still **50% `rawsyscalln` + 15.5% `fcntl`** (directory walk + per-flush fsync). Structural; stays slated for the `v1.0-perf-blockstore` follow-up.
+- **mixed-rw block profile** — 78.7% `runtime.selectgo` (transfer-queue channel coordination) + 17.6% `Mutex.Lock`. The single-thread write/read path spends most blocked-time waiting on the sync-queue channels, not on CPU.
+- **goroutine snapshot** — clean: 57% parked in `SyncQueue.downloadWorker` (idle pool), no leak.
+
+### Harness-gap status (vs §5 H1–H4)
+
+- **H3 CLOSED** — mutex/block/goroutine now captured; concurrent storm workload exists.
+- **H1/H2** (random-write 64 MiB single-call seed; gc under-seeded) still open — not exercised this pass.
+- New gap: storm `WRITE` overwrites at random mid-file offsets emit `rollup: dropping divergent stable interval (no logIndex entries)` warnings — overwrite-into-stable-interval reconciliation (akin to #668). Logged, not yet triaged.
 
 ---
 
