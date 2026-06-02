@@ -118,7 +118,10 @@ func writeFlags(buf *bytes.Buffer, title string, fs interface{ FlagUsages() stri
 func visibleSubcommands(c *cobra.Command) []*cobra.Command {
 	var out []*cobra.Command
 	for _, k := range c.Commands() {
-		if k.Hidden || k.Name() == "help" || k.Name() == "completion" {
+		// Skip hidden commands and the auto-generated "help" pseudo-command
+		// that Cobra attaches to every command. Everything else — including
+		// "completion" — is a real, documented command.
+		if k.Hidden || k.Name() == "help" {
 			continue
 		}
 		out = append(out, k)

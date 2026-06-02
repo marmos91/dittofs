@@ -200,7 +200,7 @@ DittoFS configuration has **two layers**:
 database:
   type: sqlite            # or "postgres" for HA
   sqlite:
-    path: /var/lib/dfs/controlplane.db
+    path: ~/.config/dittofs/controlplane.db   # default when omitted: $XDG_CONFIG_HOME/dittofs/controlplane.db
 
 controlplane:
   port: 8080

@@ -11,6 +11,7 @@ This page is generated from the command definitions (`go run ./cmd/gendocs`). Do
 
 ```
 dfs
+  completion     Generate shell completion script
   config         Configuration management
     edit           Open configuration in editor
     schema         Generate JSON schema for configuration
@@ -37,6 +38,54 @@ in pure Go (userspace, no FUSE required) with pluggable metadata and content sto
 Use "dfs [command] --help" for more information about a command.
 
 Flags:
+
+```
+      --config string   config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)
+```
+
+### `dfs completion`
+
+Generate shell completion script
+
+Generate shell completion script for dfs.
+
+To load completions:
+
+Bash:
+  # Linux:
+  $ dfs completion bash > /etc/bash_completion.d/dfs
+  # macOS:
+  $ dfs completion bash > $(brew --prefix)/etc/bash_completion.d/dfs
+
+Zsh:
+  # If shell completion is not already enabled in your environment,
+  # you will need to enable it. You can execute the following once:
+  $ echo "autoload -U compinit; compinit" >> ~/.zshrc
+
+  # To load completions for each session, execute once:
+  # Linux:
+  $ dfs completion zsh > "${fpath[1]}/_dfs"
+  # macOS:
+  $ dfs completion zsh > $(brew --prefix)/share/zsh/site-functions/_dfs
+
+  # You will need to start a new shell for this setup to take effect.
+
+Fish:
+  $ dfs completion fish > ~/.config/fish/completions/dfs.fish
+
+PowerShell:
+  PS> dfs completion powershell | Out-String | Invoke-Expression
+
+  # To load completions for every new session, run:
+  PS> dfs completion powershell > dfs.ps1
+  # and source this file from your PowerShell profile.
+
+
+```
+dfs completion [bash|zsh|fish|powershell]
+```
+
+Global flags:
 
 ```
       --config string   config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)
@@ -516,6 +565,7 @@ dfsctl
     sessions       Manage NFS client sessions
       destroy        Force-destroy a session
       list           List sessions for a client
+  completion     Generate shell completion script
   context        Manage server contexts
     current        Show current context
     delete         Delete a context
@@ -1471,6 +1521,58 @@ Examples:
 
 ```
 dfsctl client sessions list <client-id>
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+      --server string   Server URL (overrides stored credential)
+      --token string    Bearer token (overrides stored credential)
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl completion`
+
+Generate shell completion script
+
+Generate shell completion script for dfsctl.
+
+To load completions:
+
+Bash:
+  # Linux:
+  $ dfsctl completion bash > /etc/bash_completion.d/dfsctl
+  # macOS:
+  $ dfsctl completion bash > $(brew --prefix)/etc/bash_completion.d/dfsctl
+
+Zsh:
+  # If shell completion is not already enabled in your environment,
+  # you will need to enable it. You can execute the following once:
+  $ echo "autoload -U compinit; compinit" >> ~/.zshrc
+
+  # To load completions for each session, execute once:
+  # Linux:
+  $ dfsctl completion zsh > "${fpath[1]}/_dfsctl"
+  # macOS:
+  $ dfsctl completion zsh > $(brew --prefix)/share/zsh/site-functions/_dfsctl
+
+  # You will need to start a new shell for this setup to take effect.
+
+Fish:
+  $ dfsctl completion fish > ~/.config/fish/completions/dfsctl.fish
+
+PowerShell:
+  PS> dfsctl completion powershell | Out-String | Invoke-Expression
+
+  # To load completions for every new session, run:
+  PS> dfsctl completion powershell > dfsctl.ps1
+  # and source this file from your PowerShell profile.
+
+
+```
+dfsctl completion [bash|zsh|fish|powershell]
 ```
 
 Global flags:

@@ -175,7 +175,7 @@ Each share in DittoFS gets its own `*engine.BlockStore` instance, providing comp
 
 - **Data Isolation**: Each share's local blocks are stored in separate directories
 - **Cache Independence**: The unified `Cache` is per-share (eviction in one share does not affect others). Inside a share, the cache is keyed by `ContentHash`, so two files referencing the same chunk via dedup share one cache entry.
-- **Remote Sharing**: Multiple shares can reference the same remote store (e.g., same S3 bucket) -- blocks are namespaced by share to prevent collisions
+- **Remote Sharing**: Multiple shares can reference the same remote store (e.g., same S3 bucket). The remote keyspace is content-addressed (`cas/{hh}/{hh}/{hex}`), so identical chunks dedup across every share that targets the same bucket+prefix. For isolation, give shares different buckets or prefixes
 - **Lifecycle Independence**: Block stores are created/closed with share lifecycle
 
 ## Storage Tiers

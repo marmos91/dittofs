@@ -303,8 +303,11 @@ refuses to start a store still on the older `.blk` layout.
 
 ```bash
 sudo systemctl stop dfs
-dfs migrate-to-cas --storage-dir /var/lib/dfs/storage           # all shares
-dfs migrate-to-cas --storage-dir /var/lib/dfs/storage --share myshare
+# --storage-dir and --metadata-dir are both required
+dfs migrate-to-cas --storage-dir /var/lib/dfs/storage \
+  --metadata-dir /var/lib/dfs/metadata                          # all shares
+dfs migrate-to-cas --storage-dir /var/lib/dfs/storage \
+  --metadata-dir /var/lib/dfs/metadata --share myshare
 sudo systemctl start dfs
 ```
 
