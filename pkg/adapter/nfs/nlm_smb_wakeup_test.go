@@ -64,6 +64,9 @@ func (f *fakeNLMCallbackListener) handle(conn net.Conn) {
 		return
 	}
 	fragLen := binary.BigEndian.Uint32(header[:]) & 0x7FFFFFFF
+	if fragLen > 1*1024*1024 {
+		return // corrupt/oversized header — fail fast rather than block on a bad read
+	}
 	if fragLen > 0 {
 		if _, err := io.CopyN(io.Discard, conn, int64(fragLen)); err != nil {
 			return
