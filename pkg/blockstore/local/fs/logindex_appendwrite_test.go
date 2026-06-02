@@ -15,10 +15,11 @@ import (
 // with concurrent AppendWriters. Test-only helper.
 func snapshotLogIndex(t *testing.T, bc *FSStore, payloadID string) []logEntry {
 	t.Helper()
-	bc.logsMu.RLock()
-	idx := bc.logIndices[payloadID]
-	mu := bc.logLocks[payloadID]
-	bc.logsMu.RUnlock()
+	bcSh := bc.shardFor(payloadID)
+	bcSh.mu.RLock()
+	idx := bcSh.logIndices[payloadID]
+	mu := bcSh.logLocks[payloadID]
+	bcSh.mu.RUnlock()
 	if idx == nil || mu == nil {
 		return nil
 	}
@@ -128,10 +129,11 @@ func TestLogIndex_OutOfOrderArrivals_RecoverableByLookup(t *testing.T) {
 		}
 	}
 
-	bc.logsMu.RLock()
-	idx := bc.logIndices["file-ooo"]
-	mu := bc.logLocks["file-ooo"]
-	bc.logsMu.RUnlock()
+	bcSh := bc.shardFor("file-ooo")
+	bcSh.mu.RLock()
+	idx := bcSh.logIndices["file-ooo"]
+	mu := bcSh.logLocks["file-ooo"]
+	bcSh.mu.RUnlock()
 	mu.Lock()
 	// Query [0, 65536) — must find both fileOff=32768 (rec#0) and
 	// fileOff=0 (rec#2), the latter buried after a higher-offset record
@@ -160,9 +162,10 @@ func TestLogIndex_ClearedByDeleteAppendLog(t *testing.T) {
 	if err := bc.AppendWrite(context.Background(), "file-del", []byte("hello"), 0); err != nil {
 		t.Fatalf("AppendWrite: %v", err)
 	}
-	bc.logsMu.RLock()
-	_, exists := bc.logIndices["file-del"]
-	bc.logsMu.RUnlock()
+	bcSh := bc.shardFor("file-del")
+	bcSh.mu.RLock()
+	_, exists := bcSh.logIndices["file-del"]
+	bcSh.mu.RUnlock()
 	if !exists {
 		t.Fatalf("logIndex not populated before delete")
 	}
@@ -170,9 +173,10 @@ func TestLogIndex_ClearedByDeleteAppendLog(t *testing.T) {
 	if err := bc.DeleteAppendLog(context.Background(), "file-del"); err != nil {
 		t.Fatalf("DeleteAppendLog: %v", err)
 	}
-	bc.logsMu.RLock()
-	_, exists = bc.logIndices["file-del"]
-	bc.logsMu.RUnlock()
+	bcSh = bc.shardFor("file-del")
+	bcSh.mu.RLock()
+	_, exists = bcSh.logIndices["file-del"]
+	bcSh.mu.RUnlock()
 	if exists {
 		t.Fatalf("logIndex still present after DeleteAppendLog")
 	}
@@ -190,11 +194,12 @@ func TestLogIndex_LogPosMatchesEofPosProgress(t *testing.T) {
 			t.Fatalf("AppendWrite: %v", err)
 		}
 	}
-	bc.logsMu.RLock()
-	lf := bc.logFDs["file-pos"]
-	idx := bc.logIndices["file-pos"]
-	mu := bc.logLocks["file-pos"]
-	bc.logsMu.RUnlock()
+	bcSh := bc.shardFor("file-pos")
+	bcSh.mu.RLock()
+	lf := bcSh.logFDs["file-pos"]
+	idx := bcSh.logIndices["file-pos"]
+	mu := bcSh.logLocks["file-pos"]
+	bcSh.mu.RUnlock()
 	mu.Lock()
 	defer mu.Unlock()
 	last := idx.entries[len(idx.entries)-1]
@@ -221,10 +226,11 @@ func TestLogIndex_SeededByRecovery(t *testing.T) {
 	}
 
 	bc2 := reopenFSStore(t, bc, rs)
-	bc2.logsMu.RLock()
-	idx := bc2.logIndices["file-rec-idx"]
-	mu := bc2.logLocks["file-rec-idx"]
-	bc2.logsMu.RUnlock()
+	bc2Sh := bc2.shardFor("file-rec-idx")
+	bc2Sh.mu.RLock()
+	idx := bc2Sh.logIndices["file-rec-idx"]
+	mu := bc2Sh.logLocks["file-rec-idx"]
+	bc2Sh.mu.RUnlock()
 	if idx == nil || mu == nil {
 		t.Fatalf("logIndex / mu missing after recovery")
 	}

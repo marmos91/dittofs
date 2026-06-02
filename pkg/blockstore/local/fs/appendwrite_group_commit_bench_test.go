@@ -54,9 +54,10 @@ func BenchmarkAppendWrite_GroupCommit(b *testing.B) {
 	if err := bc.AppendWrite(ctx, payloadID, []byte("seed"), 0); err != nil {
 		b.Fatalf("seed AppendWrite: %v", err)
 	}
-	bc.logsMu.RLock()
-	lf := bc.logFDs[payloadID]
-	bc.logsMu.RUnlock()
+	bcSh := bc.shardFor(payloadID)
+	bcSh.mu.RLock()
+	lf := bcSh.logFDs[payloadID]
+	bcSh.mu.RUnlock()
 	if lf == nil || lf.groupCommit == nil {
 		b.Fatal("logFile/coordinator missing after seed AppendWrite")
 	}

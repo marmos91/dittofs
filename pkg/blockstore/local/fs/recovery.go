@@ -456,21 +456,22 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 			_ = f.Close()
 			return nil
 		}
-		bc.logsMu.Lock()
+		sh := bc.shardFor(payloadID)
+		sh.mu.Lock()
 		lf := &logFile{f: f, path: path, eofPos: uint64(eof)}
 		// Opt 2: per-file fsync coordinator
 		// matching the getOrCreateLog construction site in appendwrite.go.
 		lf.groupCommit = newGroupCommit(lf.f.Sync)
-		bc.logFDs[payloadID] = lf
-		bc.logLocks[payloadID] = &sync.Mutex{}
-		bc.rollupLocks[payloadID] = &sync.Mutex{} // C1: per-file rollup mutex
-		bc.dirtyIntervals[payloadID] = tree
+		sh.logFDs[payloadID] = lf
+		sh.logLocks[payloadID] = &sync.Mutex{}
+		sh.rollupLocks[payloadID] = &sync.Mutex{} // C1: per-file rollup mutex
+		sh.dirtyIntervals[payloadID] = tree
 		// Direction-1 redesign: publish the recovery-built logIndex.
 		// The scan above populated one entry per unconsumed record and
 		// pinned the compaction fence at effectiveOff so post-boot
 		// AdvanceFence walks start from the persisted rollup_offset.
-		bc.logIndices[payloadID] = idx
-		bc.logsMu.Unlock()
+		sh.logIndices[payloadID] = idx
+		sh.mu.Unlock()
 		// Reflect the resident (un-rolled-up) log bytes in logBytesTotal
 		// so the pressure loop sees accurate state after boot.
 		if st, serr := f.Stat(); serr == nil {

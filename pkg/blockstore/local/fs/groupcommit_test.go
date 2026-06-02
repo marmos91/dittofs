@@ -192,16 +192,20 @@ func TestGroupCommit_CtxCancel_MidWait_ReturnsCtxErr_ButFsyncStillRuns(t *testin
 	}
 }
 
-// TestGroupCommit_NoLogsMuTouch enforces the lock-order
-// invariant by grepping the source file: the coordinator must never
-// reference bc.logsMu.
+// TestGroupCommit_NoLogsMuTouch enforces the lock-order invariant by grepping
+// the source file: the coordinator must never reach the per-store map lock.
+// Pre-C2 that lock was bc.logsMu; post-C2 it is the per-payload shard lock
+// reachable only via bc.logShards / shardFor. The gate checks for any of those
+// names so a reintroduced violation under the new name is still caught.
 func TestGroupCommit_NoLogsMuTouch(t *testing.T) {
 	body, err := os.ReadFile("groupcommit.go")
 	if err != nil {
 		t.Fatalf("read groupcommit.go: %v", err)
 	}
-	if bytes.Contains(body, []byte("logsMu")) {
-		t.Fatalf("groupcommit.go must not reference logsMu (D-09 lock-order invariant)")
+	for _, banned := range []string{"logsMu", "logShards", "shardFor"} {
+		if bytes.Contains(body, []byte(banned)) {
+			t.Fatalf("groupcommit.go must not reference %q (D-09 lock-order invariant)", banned)
+		}
 	}
 }
 

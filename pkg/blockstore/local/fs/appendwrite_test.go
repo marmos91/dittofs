@@ -38,9 +38,10 @@ func TestAppendWrite_Enabled_HappyPath(t *testing.T) {
 	if got := bc.logBytesTotal.Load(); got != wantBytes {
 		t.Fatalf("logBytesTotal: got %d want %d", got, wantBytes)
 	}
-	bc.logsMu.RLock()
-	tree := bc.dirtyIntervals["file1"]
-	bc.logsMu.RUnlock()
+	sh := bc.shardFor("file1")
+	sh.mu.RLock()
+	tree := sh.dirtyIntervals["file1"]
+	sh.mu.RUnlock()
 	if tree == nil || tree.Len() != 3 {
 		t.Fatalf("interval tree: %+v want len=3", tree)
 	}
@@ -95,9 +96,10 @@ func TestAppendWrite_PerFileSerial(t *testing.T) {
 	}
 	// All 50 inserts must live in the tree — each goroutine used a
 	// distinct offset so there are no collisions.
-	bc.logsMu.RLock()
-	tree := bc.dirtyIntervals["file1"]
-	bc.logsMu.RUnlock()
+	sh := bc.shardFor("file1")
+	sh.mu.RLock()
+	tree := sh.dirtyIntervals["file1"]
+	sh.mu.RUnlock()
 	if tree == nil || tree.Len() != goroutines {
 		t.Fatalf("interval tree: len=%v want %d", tree, goroutines)
 	}
@@ -150,9 +152,10 @@ func TestLogFile_GroupCommit_NonNilAfterConstruction(t *testing.T) {
 	if err := bc.AppendWrite(context.Background(), "file1", []byte("hi"), 0); err != nil {
 		t.Fatalf("AppendWrite: %v", err)
 	}
-	bc.logsMu.RLock()
-	lf := bc.logFDs["file1"]
-	bc.logsMu.RUnlock()
+	sh := bc.shardFor("file1")
+	sh.mu.RLock()
+	lf := sh.logFDs["file1"]
+	sh.mu.RUnlock()
 	if lf == nil {
 		t.Fatal("logFile not present after AppendWrite")
 	}
@@ -173,9 +176,10 @@ func TestLogFile_GroupCommit_FsyncFn_BoundToLfFile(t *testing.T) {
 	if err := bc.AppendWrite(context.Background(), "file1", payload, 0); err != nil {
 		t.Fatalf("AppendWrite: %v", err)
 	}
-	bc.logsMu.RLock()
-	lf := bc.logFDs["file1"]
-	bc.logsMu.RUnlock()
+	sh := bc.shardFor("file1")
+	sh.mu.RLock()
+	lf := sh.logFDs["file1"]
+	sh.mu.RUnlock()
 	if lf == nil || lf.groupCommit == nil {
 		t.Fatal("logFile or coordinator missing after AppendWrite")
 	}
@@ -231,9 +235,10 @@ func TestAppendWrite_CoordinatorOnHotPath_BurstCounts(t *testing.T) {
 	if err := bc.AppendWrite(context.Background(), "file1", []byte("seed"), 0); err != nil {
 		t.Fatalf("seed AppendWrite: %v", err)
 	}
-	bc.logsMu.RLock()
-	lf := bc.logFDs["file1"]
-	bc.logsMu.RUnlock()
+	sh := bc.shardFor("file1")
+	sh.mu.RLock()
+	lf := sh.logFDs["file1"]
+	sh.mu.RUnlock()
 	if lf == nil || lf.groupCommit == nil {
 		t.Fatal("logFile/coordinator missing")
 	}
@@ -305,9 +310,10 @@ func TestAppendWrite_FsyncError_PropagatesToCaller(t *testing.T) {
 	if err := bc.AppendWrite(context.Background(), "file1", []byte("seed"), 0); err != nil {
 		t.Fatalf("seed AppendWrite: %v", err)
 	}
-	bc.logsMu.RLock()
-	lf := bc.logFDs["file1"]
-	bc.logsMu.RUnlock()
+	sh := bc.shardFor("file1")
+	sh.mu.RLock()
+	lf := sh.logFDs["file1"]
+	sh.mu.RUnlock()
 	if lf == nil || lf.groupCommit == nil {
 		t.Fatal("logFile/coordinator missing")
 	}
@@ -335,9 +341,10 @@ func TestAppendWrite_CtxCancel_StillFsyncs(t *testing.T) {
 	if err := bc.AppendWrite(context.Background(), "file1", []byte("seed"), 0); err != nil {
 		t.Fatalf("seed AppendWrite: %v", err)
 	}
-	bc.logsMu.RLock()
-	lf := bc.logFDs["file1"]
-	bc.logsMu.RUnlock()
+	sh := bc.shardFor("file1")
+	sh.mu.RLock()
+	lf := sh.logFDs["file1"]
+	sh.mu.RUnlock()
 	if lf == nil || lf.groupCommit == nil {
 		t.Fatal("logFile/coordinator missing")
 	}
@@ -461,12 +468,13 @@ func TestAppendWrite_InvalidPayloadID_RejectedBeforeFS(t *testing.T) {
 			}
 
 			// No FSStore map entries for the invalid payloadID.
-			bc.logsMu.RLock()
-			_, lfOk := bc.logFDs[tc.payloadID]
-			_, muOk := bc.logLocks[tc.payloadID]
-			_, treeOk := bc.dirtyIntervals[tc.payloadID]
-			_, idxOk := bc.logIndices[tc.payloadID]
-			bc.logsMu.RUnlock()
+			sh := bc.shardFor(tc.payloadID)
+			sh.mu.RLock()
+			_, lfOk := sh.logFDs[tc.payloadID]
+			_, muOk := sh.logLocks[tc.payloadID]
+			_, treeOk := sh.dirtyIntervals[tc.payloadID]
+			_, idxOk := sh.logIndices[tc.payloadID]
+			sh.mu.RUnlock()
 			if lfOk || muOk || treeOk || idxOk {
 				t.Fatalf("FSStore created map entries for invalid payloadID %q: lf=%v mu=%v tree=%v idx=%v",
 					tc.payloadID, lfOk, muOk, treeOk, idxOk)

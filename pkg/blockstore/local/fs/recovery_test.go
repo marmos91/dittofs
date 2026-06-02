@@ -107,9 +107,10 @@ func TestRecovery_HappyPath_NoOp(t *testing.T) {
 		t.Fatalf("AppendWrite: %v", err)
 	}
 	bc2 := reopenFSStore(t, bc, rs)
-	bc2.logsMu.RLock()
-	tree := bc2.dirtyIntervals["file1"]
-	bc2.logsMu.RUnlock()
+	bc2Sh := bc2.shardFor("file1")
+	bc2Sh.mu.RLock()
+	tree := bc2Sh.dirtyIntervals["file1"]
+	bc2Sh.mu.RUnlock()
 	if tree == nil || tree.Len() == 0 {
 		t.Fatalf("expected 1 interval rebuilt, got %v", tree)
 	}
@@ -152,9 +153,10 @@ func TestRecovery_TornRecord_TruncatesAtFirstBadCRC(t *testing.T) {
 	if st.Size() != want {
 		t.Fatalf("truncated size: got %d want %d", st.Size(), want)
 	}
-	bc2.logsMu.RLock()
-	tree := bc2.dirtyIntervals["file1"]
-	bc2.logsMu.RUnlock()
+	bc2Sh := bc2.shardFor("file1")
+	bc2Sh.mu.RLock()
+	tree := bc2Sh.dirtyIntervals["file1"]
+	bc2Sh.mu.RUnlock()
 	if tree == nil || tree.Len() != 3 {
 		t.Fatalf("interval tree: len=%d want 3", func() int {
 			if tree == nil {
@@ -399,12 +401,13 @@ func TestRecovery_RejectsLongPayloadIDFromDisk(t *testing.T) {
 	}
 
 	// No FSStore state must have been created under the over-long payloadID.
-	bc2.logsMu.RLock()
-	defer bc2.logsMu.RUnlock()
-	if _, ok := bc2.logFDs[stem]; ok {
+	bc2Sh := bc2.shardFor(stem)
+	bc2Sh.mu.RLock()
+	defer bc2Sh.mu.RUnlock()
+	if _, ok := bc2Sh.logFDs[stem]; ok {
 		t.Fatalf("FSStore created logFDs entry for over-long payloadID")
 	}
-	if _, ok := bc2.dirtyIntervals[stem]; ok {
+	if _, ok := bc2Sh.dirtyIntervals[stem]; ok {
 		t.Fatalf("FSStore created dirtyIntervals entry for over-long payloadID")
 	}
 }
@@ -440,11 +443,12 @@ func TestRecovery_PathKeyedPayloadID_RoundTrip(t *testing.T) {
 	}
 
 	bc2 := reopenFSStore(t, bc, rs)
-	bc2.logsMu.RLock()
-	_, lfOk := bc2.logFDs[payloadID]
-	_, treeOk := bc2.dirtyIntervals[payloadID]
-	_, idxOk := bc2.logIndices[payloadID]
-	bc2.logsMu.RUnlock()
+	bc2Sh := bc2.shardFor(payloadID)
+	bc2Sh.mu.RLock()
+	_, lfOk := bc2Sh.logFDs[payloadID]
+	_, treeOk := bc2Sh.dirtyIntervals[payloadID]
+	_, idxOk := bc2Sh.logIndices[payloadID]
+	bc2Sh.mu.RUnlock()
 	if !lfOk {
 		t.Fatalf("FSStore did not restore logFile for path-keyed payloadID %q", payloadID)
 	}

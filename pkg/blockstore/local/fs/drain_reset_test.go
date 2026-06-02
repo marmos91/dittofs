@@ -146,12 +146,10 @@ func TestDrainRollups_TombstonedResidualSucceeds(t *testing.T) {
 
 	// Tombstone the payload directly (mirrors a concurrent DeleteAppendLog
 	// having set the tombstone). The classifier must now exclude it.
-	bc.logsMu.Lock()
-	if bc.tombstones == nil {
-		bc.tombstones = make(map[string]struct{})
-	}
-	bc.tombstones[payloadID] = struct{}{}
-	bc.logsMu.Unlock()
+	bcSh := bc.shardFor(payloadID)
+	bcSh.mu.Lock()
+	bcSh.tombstones[payloadID] = struct{}{}
+	bcSh.mu.Unlock()
 
 	if got := bc.payloadsWithRealResidual([]string{payloadID}); len(got) != 0 {
 		t.Fatalf("payloadsWithRealResidual on tombstoned payload = %v, want empty", got)
