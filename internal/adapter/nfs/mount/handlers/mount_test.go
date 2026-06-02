@@ -44,11 +44,10 @@ func newTestMountHandler(t *testing.T, shareName string, enabled bool) (*Handler
 
 	// Flip runtime Enabled directly to model a disabled share without
 	// round-tripping through DisableShare (which would need a ShareStore).
-	share, err := rt.GetShare(shareName)
-	if err != nil {
-		t.Fatalf("GetShare: %v", err)
+	// GetShare returns a snapshot copy, so set via the locked setter.
+	if err := rt.SetEnabledForTesting(shareName, enabled); err != nil {
+		t.Fatalf("SetEnabledForTesting: %v", err)
 	}
-	share.Enabled = enabled
 
 	return &Handler{Registry: rt}, ctx
 }

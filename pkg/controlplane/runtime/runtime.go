@@ -453,6 +453,21 @@ func (r *Runtime) GetShare(name string) (*Share, error) {
 	return r.sharesSvc.GetShare(name)
 }
 
+// SetBlockStoreForTesting publishes a per-share BlockStore into the registry
+// under the share service lock. Test-only — production code sets BlockStore
+// only during AddShare. Use this instead of mutating a *Share returned by
+// GetShare, which is now a snapshot copy.
+func (r *Runtime) SetBlockStoreForTesting(name string, bs *engine.Store) error {
+	return r.sharesSvc.SetBlockStoreForTesting(name, bs)
+}
+
+// SetEnabledForTesting overrides a share's Enabled flag in the registry under
+// the share service lock. Test-only — use instead of mutating a *Share
+// returned by GetShare, which is now a snapshot copy.
+func (r *Runtime) SetEnabledForTesting(name string, enabled bool) error {
+	return r.sharesSvc.SetEnabledForTesting(name, enabled)
+}
+
 func (r *Runtime) GetRootHandle(shareName string) (metadata.FileHandle, error) {
 	return r.sharesSvc.GetRootHandle(shareName)
 }

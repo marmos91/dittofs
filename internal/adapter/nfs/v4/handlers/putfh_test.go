@@ -22,8 +22,8 @@ import (
 
 // newPutFHTestHandler builds a v4 Handler with a single share.
 // Returns the handler, the encoded share root handle (valid PUTFH input),
-// and the runtime share so tests can toggle Enabled.
-func newPutFHTestHandler(t *testing.T, shareName string) (*Handler, []byte, *runtime.Share) {
+// and the runtime so tests can toggle the share's Enabled flag.
+func newPutFHTestHandler(t *testing.T, shareName string) (*Handler, []byte, *runtime.Runtime) {
 	t.Helper()
 
 	ctx := context.Background()
@@ -47,11 +47,6 @@ func newPutFHTestHandler(t *testing.T, shareName string) (*Handler, []byte, *run
 		t.Fatalf("AddShare: %v", err)
 	}
 
-	share, err := rt.GetShare(shareName)
-	if err != nil {
-		t.Fatalf("GetShare: %v", err)
-	}
-
 	pfs := pseudofs.New()
 	pfs.Rebuild([]string{shareName})
 	h := NewHandler(rt, pfs)
@@ -60,7 +55,7 @@ func newPutFHTestHandler(t *testing.T, shareName string) (*Handler, []byte, *run
 	if err != nil {
 		t.Fatalf("GetRootHandle: %v", err)
 	}
-	return h, []byte(rootHandle), share
+	return h, []byte(rootHandle), rt
 }
 
 // encodePutFHArgsBytes encodes a filehandle as the XDR opaque arg expected
@@ -75,8 +70,10 @@ func encodePutFHArgsBytes(t *testing.T, fh []byte) []byte {
 }
 
 func TestPUTFH_DisabledShare_ReturnsStale(t *testing.T) {
-	h, rootHandle, share := newPutFHTestHandler(t, "/disabled")
-	share.Enabled = false
+	h, rootHandle, rt := newPutFHTestHandler(t, "/disabled")
+	if err := rt.SetEnabledForTesting("/disabled", false); err != nil {
+		t.Fatalf("SetEnabledForTesting: %v", err)
+	}
 
 	ctx := &types.CompoundContext{Context: context.Background(), ClientAddr: "127.0.0.1:1234"}
 	res := h.handlePutFH(ctx, bytes.NewReader(encodePutFHArgsBytes(t, rootHandle)))

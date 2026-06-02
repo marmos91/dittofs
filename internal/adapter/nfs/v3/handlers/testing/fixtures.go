@@ -117,12 +117,17 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 		t.Fatalf("Failed to add share: %v", err)
 	}
 
-	// Get share and set per-share BlockStore
-	share, err := reg.GetShare(DefaultShareName)
-	if err != nil {
-		t.Fatalf("Failed to get share: %v", err)
+	// Publish the per-share BlockStore via the locked setter. GetShare returns
+	// a snapshot copy, so mutating its BlockStore field would not reach the
+	// registry.
+	if err := reg.SetBlockStoreForTesting(DefaultShareName, blockSvc); err != nil {
+		t.Fatalf("Failed to set block store: %v", err)
 	}
-	share.BlockStore = blockSvc
+
+	rootHandle, err := reg.GetRootHandle(DefaultShareName)
+	if err != nil {
+		t.Fatalf("Failed to get root handle: %v", err)
+	}
 
 	// Create handler
 	handler := &handlers.Handler{
@@ -137,7 +142,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 		MetaStore:       metaStore,
 		BlockStore:      blockSvc,
 		ShareName:       DefaultShareName,
-		RootHandle:      share.RootHandle,
+		RootHandle:      rootHandle,
 	}
 }
 

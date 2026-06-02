@@ -107,7 +107,7 @@ func (w *SettingsWatcher) Start(ctx context.Context) {
 				logger.Debug("Settings watcher stopping (stop signal)")
 				return
 			case <-ticker.C:
-				w.poll(ctx)
+				w.pollWithRecover(ctx)
 			}
 		}
 	}()
@@ -143,6 +143,19 @@ func (w *SettingsWatcher) GetSMBSettings() *models.SMBAdapterSettings {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.smbSettings
+}
+
+// pollWithRecover runs one poll cycle, recovering from any panic so a single
+// bad tick (e.g. a panicking change callback) cannot silently kill the
+// background goroutine and freeze settings hot-reload for the process lifetime.
+// The next ticker tick re-enters the loop and resumes polling.
+func (w *SettingsWatcher) pollWithRecover(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("Settings watcher: poll panicked, recovering and continuing", "panic", r)
+		}
+	}()
+	w.poll(ctx)
 }
 
 // poll checks both NFS and SMB settings for changes.

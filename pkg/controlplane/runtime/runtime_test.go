@@ -551,12 +551,6 @@ func TestGetBlockStoreForHandle(t *testing.T) {
 		t.Fatalf("AddShare failed: %v", err)
 	}
 
-	// Get the share and set up a minimal BlockStore via injection.
-	share, err := rt.GetShare("/bs-test")
-	if err != nil {
-		t.Fatalf("GetShare failed: %v", err)
-	}
-
 	// Create a minimal BlockStore with memory local store.
 	localStore := localmemory.New()
 	localStore.Start(context.Background())
@@ -572,7 +566,12 @@ func TestGetBlockStoreForHandle(t *testing.T) {
 		_ = bs.Close()
 		_ = localStore.Close()
 	})
-	share.BlockStore = bs
+	// Publish the BlockStore into the registry via the locked setter. GetShare
+	// returns a snapshot copy, so mutating its BlockStore field would not be
+	// observed by GetBlockStoreForHandle.
+	if err := rt.sharesSvc.SetBlockStoreForTesting("/bs-test", bs); err != nil {
+		t.Fatalf("SetBlockStoreForTesting failed: %v", err)
+	}
 
 	// Get a file handle for this share.
 	handle, err := rt.GetRootHandle("/bs-test")

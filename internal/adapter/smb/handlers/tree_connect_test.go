@@ -900,12 +900,11 @@ func newTreeConnectGateHandler(t *testing.T, shareName string, enabled bool) (*H
 		t.Fatalf("AddShare: %v", err)
 	}
 
-	// Flip Enabled directly (mirrors mount_test pattern).
-	share, err := rt.GetShare(shareName)
-	if err != nil {
-		t.Fatalf("GetShare: %v", err)
+	// Flip Enabled directly (mirrors mount_test pattern). GetShare returns a
+	// snapshot copy, so set via the locked setter.
+	if err := rt.SetEnabledForTesting(shareName, enabled); err != nil {
+		t.Fatalf("SetEnabledForTesting: %v", err)
 	}
-	share.Enabled = enabled
 
 	h := NewHandler()
 	h.Registry = rt

@@ -402,6 +402,96 @@ func TestSetShareTrashConfig_UnknownShare(t *testing.T) {
 
 // TestEnabledTrashShares_FiltersByFlag verifies only trash-enabled shares are
 // returned.
+// TestGetShare_NoRace verifies GetShare hands out a snapshot, not the live
+// registry pointer: concurrent UpdateShare writers mutate the exact scalar
+// fields readers inspect off the returned *Share. Without the under-lock copy
+// in GetShare, `go test -race` flags the read of share.ReadOnly /
+// DefaultPermission against UpdateShare's write.
+func TestGetShare_NoRace(t *testing.T) {
+	const name = "/export"
+	svc, _ := makeService(t, &Share{
+		Name:              name,
+		MetadataStore:     "meta-a",
+		Enabled:           true,
+		ReadOnly:          false,
+		DefaultPermission: "read",
+	})
+
+	const iters = 5000
+	var wg sync.WaitGroup
+
+	// Writer mutating the exact fields readers copy out of GetShare.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			ro := i%2 == 0
+			perm := "read"
+			if i%3 == 0 {
+				perm = "read-write"
+			}
+			_ = svc.UpdateShare(name, &ro, &perm, nil, nil)
+		}
+	}()
+
+	// Concurrent readers reading the snapshot's scalar fields.
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				sh, err := svc.GetShare(name)
+				if err != nil {
+					t.Errorf("GetShare: %v", err)
+					return
+				}
+				_ = sh.ReadOnly
+				_ = sh.DefaultPermission
+				_ = sh.Enabled
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// TestGetShare_ReturnsSnapshotNotLivePointer verifies the returned *Share is a
+// copy: mutating it must not change registry state observed by a later
+// GetShare, and a later UpdateShare must not retroactively mutate an
+// already-returned snapshot.
+func TestGetShare_ReturnsSnapshotNotLivePointer(t *testing.T) {
+	const name = "/export"
+	svc, _ := makeService(t, &Share{
+		Name:          name,
+		MetadataStore: "meta-a",
+		Enabled:       true,
+		ReadOnly:      false,
+	})
+
+	first, err := svc.GetShare(name)
+	if err != nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+
+	// Mutating the snapshot must not leak into the registry.
+	first.ReadOnly = true
+	second, err := svc.GetShare(name)
+	if err != nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+	if second.ReadOnly {
+		t.Error("mutating a GetShare result leaked into registry state")
+	}
+
+	// A subsequent UpdateShare must not mutate the already-returned snapshot.
+	ro := true
+	if err := svc.UpdateShare(name, &ro, nil, nil, nil); err != nil {
+		t.Fatalf("UpdateShare: %v", err)
+	}
+	if second.ReadOnly {
+		t.Error("UpdateShare retroactively mutated a previously returned snapshot")
+	}
+}
+
 func TestEnabledTrashShares_FiltersByFlag(t *testing.T) {
 	svc, _ := makeService(t,
 		&Share{Name: "/on", MetadataStore: "m", Enabled: true, TrashEnabled: true},
