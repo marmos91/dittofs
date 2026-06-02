@@ -63,10 +63,17 @@ following buckets:
 4. **Distributed File System (DFS) referrals.** DFS namespace referrals
    require AD-integrated namespace coordination, deprecated in favor of
    per-share access in DittoFS.
-5. **Named Pipe FSA (WPTS-internal).** The WPTS FSA Adapter Connects to
-   the SUT via SSH to drive the FSCC layer directly; the Docker harness does
-   not expose SSH to the DittoFS container, so the test cannot run regardless
-   of pipe implementation status.
+5. **Named Pipe FSA (WPTS-internal).** Before opening the pipe over SMB2,
+   the WPTS FSA adapter must *host* a live named-pipe listener on the SUT.
+   On a non-Windows SUT it does this via PowerShell remoting over SSH
+   (`pwsh -c Invoke-Command -HostName <SUT> ... New-Object
+   System.IO.Pipes.NamedPipeServerStream`). The Docker harness exposes no
+   SSH server (and no .NET pipe runtime) inside the DittoFS container, so the
+   adapter's `CreateNamedPipeAsync` step fails before any SMB2 request is sent.
+   This is an FSA-adapter SSH transport requirement, not a named-pipe-
+   implementation gap: DittoFS serves IPC$ named-pipe CREATE/READ/WRITE over
+   SMB2 (`handlePipeCreate`, `IsPipe`) for the well-known RPC pipes (srvsvc,
+   lsarpc) the protocol actually uses.
 
 These entries remain in CI's known-failure set (so they don't break the build)
 but are explicitly outside the v1.0 conformance gate.
@@ -110,8 +117,8 @@ but are explicitly outside the v1.0 conformance gate.
 | BVT_Sqos_UpdateCounters | SQoS | Storage QoS — requires Hyper-V QoS integration on the storage layer |
 | BVT_RootAndLinkReferralDomainV4ToDFSServer | DFS | DFS namespace referrals — AD-integrated namespace not implemented |
 | BVT_RootAndLinkReferralStandaloneV4ToDFSServer | DFS | DFS namespace referrals — AD-integrated namespace not implemented |
-| BVT_FileAccess_OpenNamedPipe | NamedPipe | WPTS FSA adapter requires SSH to SUT — not available in Docker harness |
-| BVT_FileAccess_OpenNamedPipe_InvalidPathName | NamedPipe | WPTS FSA adapter requires SSH to SUT — not available in Docker harness |
+| BVT_FileAccess_OpenNamedPipe | NamedPipe | WPTS FSA-adapter SSH transport requirement, not a named-pipe-implementation gap (DittoFS implements IPC$ pipes via handlePipeCreate) |
+| BVT_FileAccess_OpenNamedPipe_InvalidPathName | NamedPipe | WPTS FSA-adapter SSH transport requirement, not a named-pipe-implementation gap (DittoFS implements IPC$ pipes via handlePipeCreate) |
 
 **Total permanently unimplementable: 39 tests.**
 
@@ -166,6 +173,7 @@ Format for Permanently Unimplementable:
 
 ## Changelog
 
+- **#997 (2026-06-02, NamedPipe reason correction):** Docs-only. Sharpened the reason for the two `BVT_FileAccess_OpenNamedPipe*` appendix rows. Source-verified against `microsoft/WindowsProtocolTestSuites` `TestSuites/FileServer/src/FSA/TestSuite/FileAccess/FileAccess_OpenNamedPipe.cs` + `FSA/Adapter/FSAAdapter.cs`: the test category is `Fsa`/`NonSmb`; `OpenNamedPipe(...)` first calls `fsaAdapter.CreateNamedPipeAsync(pipeName, direction)` to *host* a live `System.IO.Pipes.NamedPipeServerStream` listener **on the SUT**, then opens it over an SMB2 `CREATE` on `IPC$`. On a non-Windows SUT (`Platform=NonWindows`) `CreateNamedPipeAsync` runs `pwsh -c Invoke-Command -HostName <SUT> -UserName <user> -ScriptBlock { New-Object ...NamedPipeServerStream(...) }` — PowerShell remoting over SSH. The Docker harness exposes no SSH server / .NET pipe runtime in the DittoFS container, so the listener-hosting step fails before the SMB2 request is sent. This is an FSA-adapter SSH transport requirement, **not** a named-pipe-implementation gap: DittoFS serves IPC$ pipe CREATE over SMB2 (`internal/adapter/smb/v2/handlers/create.go:handlePipeCreate`, `IsPipe`) for the well-known RPC pipes (`srvsvc`, `lsarpc`) the protocol uses. Confirmed Outcome A; tally unchanged (rows stay in appendix; 39 permanent).
 - **#673 (2026-06-02, dirlease removal):** Removed `BVT_DirectoryLeasing_ReadWriteHandleCaching` from the known-failure list. Verified by running the WPTS FileServer suite against current develop (memory profile) with a byte-level pcap on the SMB wire: the test PASSES deterministically (4/4 — once in the full DirectoryLeasing class, three more in isolation). The "Flaky" classification was refuted. The wire trace is fully MS-SMB2 conformant: the directory lease is granted as Read|Handle (the Write bit is correctly dropped on a directory grant, matching the passing `RWGrantedAsR` / `RWHGrantedAsRH` cases); on a conflicting child create the server sends a Lease Break Notification (Flags=Break Ack Required, Current=0x03 Read|Handle, New=0x00) and processes the client's signed Lease Break Acknowledgment with STATUS_SUCCESS — the canonical §2.2.23.2/§2.2.24.1 handshake. The only error seen in the capture, STATUS_DIRECTORY_NOT_EMPTY (0xc0000101), occurs exclusively on framework cleanup CLOSE operations, which `CommonTestBase.TestCleanup()` wraps in an exception-swallowing `try { } catch { }` and therefore cannot affect the test outcome. Tally: Flaky 1→0, Total 40→39. CI: since `parse-results.sh` only counts `Failed`/`Error` outcomes, a passing test that was previously listed had no gate effect; removing it makes any genuine future regression register as a New Failure.
 - **#673 (2026-06-02):** Docs-only rationalization. Added a Final Tally header block. Confirmed every entry is bucketed and justified.
 - **Wave 4 (2026-05-28):** Walk back 4 confirmed PASS. Three were already passing on develop: `Algorithm_NotingFileModified_Dir_LastAccessTime`, `FileInfo_Set_FileBasicInformation_Timestamp_MinusTwo_Dir_LastWriteTime`, `BVT_DirectoryLeasing_LeaseBreakOnMultiClients`. The fourth, `FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_ChangeTime`, was flipped by an ADS-write fix that preserves the base object's frozen ChangeTime — previously, file_modify.go auto-bumped Ctime to NOW whenever `modified=true && attrs.Ctime==nil`, clobbering the freeze even when only the ADS handle's Mtime was unfrozen. Restructure with Permanently Unimplementable appendix mirroring the smbtorture file layout.
