@@ -368,3 +368,71 @@ func TestEncodePseudoFSAttrsMultipleAttributes(t *testing.T) {
 		t.Errorf("size = %d, want 0", size)
 	}
 }
+
+// TestNonZeroFileID verifies the wire-level guard that no fileid of 0 is ever
+// emitted. A fileid of 0 is illegal per RFC 7530 and kernel-panics the macOS
+// NFSv4.1 client (regression test for the pseudo-fs root fileid=0 crash).
+func TestNonZeroFileID(t *testing.T) {
+	if got := nonZeroFileID(0); got != 1 {
+		t.Errorf("nonZeroFileID(0) = %d, want 1", got)
+	}
+	for _, id := range []uint64{1, 2, 42, 1 << 40, ^uint64(0)} {
+		if got := nonZeroFileID(id); got != id {
+			t.Errorf("nonZeroFileID(%d) = %d, want %d (must pass through non-zero)", id, got, id)
+		}
+	}
+}
+
+// TestEncodePseudoFSAttrsFileIDNeverZero ensures a node whose GetFileID() yields
+// 0 is still encoded with a non-zero FATTR4_FILEID on the wire, so a buggy or
+// uninitialized source can never trigger the macOS fileid-0 panic.
+func TestEncodePseudoFSAttrsFileIDNeverZero(t *testing.T) {
+	var buf bytes.Buffer
+	node := &mockPseudoNode{
+		handle:   []byte("pseudofs:/"),
+		fsidMaj:  0,
+		fsidMin:  1,
+		fileID:   0, // deliberately zero
+		changeID: 1,
+		fileType: v4types.NF4DIR,
+	}
+
+	var requested []uint32
+	SetBit(&requested, FATTR4_FILEID)
+	SetBit(&requested, FATTR4_MOUNTED_ON_FILEID)
+
+	if err := EncodePseudoFSAttrs(&buf, requested, node); err != nil {
+		t.Fatalf("EncodePseudoFSAttrs failed: %v", err)
+	}
+
+	reader := bytes.NewReader(buf.Bytes())
+	responseBitmap, err := DecodeBitmap4(reader)
+	if err != nil {
+		t.Fatalf("decode response bitmap: %v", err)
+	}
+	if !IsBitSet(responseBitmap, FATTR4_FILEID) {
+		t.Fatal("FATTR4_FILEID not set in response bitmap")
+	}
+	if !IsBitSet(responseBitmap, FATTR4_MOUNTED_ON_FILEID) {
+		t.Fatal("FATTR4_MOUNTED_ON_FILEID not set in response bitmap")
+	}
+
+	var opaqueLen uint32
+	if err := binary.Read(reader, binary.BigEndian, &opaqueLen); err != nil {
+		t.Fatalf("read opaqueLen: %v", err)
+	}
+	// FILEID + MOUNTED_ON_FILEID = two uint64s, encoded in ascending bit order.
+	var fileID, mountedOnFileID uint64
+	if err := binary.Read(reader, binary.BigEndian, &fileID); err != nil {
+		t.Fatalf("read fileid: %v", err)
+	}
+	if err := binary.Read(reader, binary.BigEndian, &mountedOnFileID); err != nil {
+		t.Fatalf("read mounted_on_fileid: %v", err)
+	}
+	if fileID == 0 {
+		t.Error("FATTR4_FILEID encoded as 0 (illegal; crashes macOS client)")
+	}
+	if mountedOnFileID == 0 {
+		t.Error("FATTR4_MOUNTED_ON_FILEID encoded as 0 (illegal; crashes macOS client)")
+	}
+}

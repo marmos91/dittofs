@@ -115,14 +115,22 @@ func New() *PseudoFS {
 		nextID:   1, // Start at 1, reserve 0
 	}
 
-	// Create root node
+	// Create root node.
+	//
+	// FileID MUST be non-zero. A fileid of 0 is illegal per RFC 7530: clients
+	// use it as a "no such entry" sentinel. The Linux client tolerates it (logs
+	// a buggy-server warning and continues), but the macOS NFSv4.1 client builds
+	// its vnode keyed on the fileid and dereferences a NULL vnode for fileid 0,
+	// kernel-panicking the whole machine on the very first GETATTR at mount.
+	// nextID starts at 1 and children take atomic.AddUint64 (>= 2), so 1 is
+	// reserved exclusively for the root and never collides with a child.
 	rootHandle := makeHandle("/")
 	pfs.root = &PseudoNode{
 		Name:     "",
 		Path:     "/",
 		Handle:   rootHandle,
 		Children: make(map[string]*PseudoNode),
-		FileID:   0, // Root gets FileID 0
+		FileID:   1, // see comment above: must be non-zero, 1 reserved for root
 	}
 	// Root's parent is itself per NFSv4 spec
 	pfs.root.Parent = pfs.root

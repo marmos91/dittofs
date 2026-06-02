@@ -482,3 +482,37 @@ func TestFileIDStability(t *testing.T) {
 		t.Errorf("FileID changed after rebuild: %d -> %d", originalFileID, exportNode2.GetFileID())
 	}
 }
+
+// TestNodeFileIDsNonZeroAndUnique guards the macOS NFSv4.1 mount crash: a
+// fileid of 0 is illegal per RFC 7530 and null-derefs the macOS NFS client
+// (kernel panic on the first GETATTR at mount). The root must use fileid 1, and
+// every node across the tree must have a unique, non-zero fileid.
+func TestNodeFileIDsNonZeroAndUnique(t *testing.T) {
+	pfs := New()
+
+	// Fresh root, before any shares.
+	root, ok := pfs.LookupByHandle(pfs.GetRootHandle())
+	if !ok {
+		t.Fatal("root node not found")
+	}
+	if root.FileID == 0 {
+		t.Fatal("root FileID is 0 (illegal; kernel-panics macOS NFSv4.1 client at mount)")
+	}
+	if root.FileID != 1 {
+		t.Errorf("root FileID = %d, want 1", root.FileID)
+	}
+
+	// Build a tree with nested shares and assert non-zero + unique across all nodes.
+	pfs.Rebuild([]string{"/share", "/data/archive", "/data/cold"})
+
+	seen := make(map[uint64]string)
+	for _, node := range pfs.byHandle {
+		if node.FileID == 0 {
+			t.Errorf("node %q has FileID 0 (illegal; crashes macOS client)", node.Path)
+		}
+		if other, dup := seen[node.FileID]; dup {
+			t.Errorf("FileID %d reused by %q and %q (must be unique)", node.FileID, other, node.Path)
+		}
+		seen[node.FileID] = node.Path
+	}
+}
