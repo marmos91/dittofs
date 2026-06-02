@@ -2523,3 +2523,111 @@ func TestExpireSessionNotifies_CompletesPendingNotify(t *testing.T) {
 		t.Errorf("ExpireSessionNotifies must be idempotent, got %d calls", calls)
 	}
 }
+
+// TestNotifyChange_ValidReq_RemovedAddedModifiedSequence locks in the
+// smb2.notify.valid-req scenario (#750). A directory watcher armed with
+// FILE_NOTIFY_CHANGE_ALL must, when a pre-existing file is unlinked, re-created,
+// and written, observe exactly three buffered changes in order:
+// REMOVED, ADDED, MODIFIED — all naming the same file. The MODIFIED event is the
+// one a userspace VFS must synthesize from its WRITE handler (Samba gets it from
+// kernel inotify); without it the registered CHANGE_NOTIFY only ever sees two
+// changes and the test's CHECK_VAL(num_changes, 3) fails.
+func TestNotifyChange_ValidReq_RemovedAddedModifiedSequence(t *testing.T) {
+	r := newTestNotifyRegistry()
+
+	var got []FileNotifyInformation
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/",
+		ShareName:        "share1",
+		CompletionFilter: AllValidCompletionFilterFlags,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(_, _, _ uint64, resp *ChangeNotifyResponse) error {
+			if resp.GetStatus() != types.StatusSuccess {
+				t.Errorf("expected STATUS_SUCCESS, got 0x%08X", uint32(resp.GetStatus()))
+			}
+			got = decodeFileNotifyInfos(resp.Buffer)
+			return nil
+		},
+	})
+
+	// unlink(FNAME) -> create(FNAME) -> write(FNAME), as torture_setup_simple_file
+	// does when FNAME already exists. These three events accumulate in the
+	// flush window and are delivered as one response.
+	r.NotifyChange("share1", "/", "fname", FileActionRemoved, NameChangeFilterFor("fname", false))
+	r.NotifyChange("share1", "/", "fname", FileActionAdded, NameChangeFilterFor("fname", false))
+	// The WRITE-synthesized MODIFIED event (mirrors write.go).
+	r.NotifyChange("share1", "/", "fname", FileActionModified,
+		FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes)
+	r.FlushAll()
+
+	want := []FileNotifyInformation{
+		{Action: FileActionRemoved, FileName: "fname"},
+		{Action: FileActionAdded, FileName: "fname"},
+		{Action: FileActionModified, FileName: "fname"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d changes, got %d: %+v", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i].Action != want[i].Action || got[i].FileName != want[i].FileName {
+			t.Errorf("change[%d] = {action=0x%X name=%q}, want {action=0x%X name=%q}",
+				i, got[i].Action, got[i].FileName, want[i].Action, want[i].FileName)
+		}
+	}
+}
+
+// TestNotifyChange_WriteModified_RespectsNarrowFilter verifies the WRITE-path
+// MODIFIED event reaches a watcher that requested only FILE_NOTIFY_CHANGE_LAST_WRITE
+// (a strict subset of the WRITE event's size|last-write|attributes mask), and
+// does NOT reach a watcher requesting only FILE_NOTIFY_CHANGE_FILE_NAME.
+func TestNotifyChange_WriteModified_RespectsNarrowFilter(t *testing.T) {
+	r := newTestNotifyRegistry()
+
+	lastWriteFired := false
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeLastWrite,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+			lastWriteFired = true
+			return nil
+		},
+	})
+
+	nameOnlyFired := false
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{2},
+		SessionID:        1,
+		MessageID:        11,
+		AsyncId:          101,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+			nameOnlyFired = true
+			return nil
+		},
+	})
+
+	// Same mask the WRITE handler emits.
+	r.NotifyChange("share1", "/dir", "file.txt", FileActionModified,
+		FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes)
+	r.FlushAll()
+
+	if !lastWriteFired {
+		t.Error("LAST_WRITE watcher should be notified of a WRITE MODIFIED event")
+	}
+	if nameOnlyFired {
+		t.Error("FILE_NAME-only watcher must NOT be notified of a WRITE MODIFIED event")
+	}
+}

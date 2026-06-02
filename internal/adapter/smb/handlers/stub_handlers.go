@@ -574,19 +574,37 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		effectiveFilter = stored
 	}
 
-	// Per Samba: buffer_size=0 means the client cannot receive any events.
-	// Return NOTIFY_ENUM_DIR immediately without setting the sticky overflow
-	// flag and without registering a watcher. This is distinct from a real
-	// overflow (buffer>0 but too small) which latches sticky overflow.
-	// Disarm the handle so events fired between this response and the next
-	// CHANGE_NOTIFY register are dropped: ENUM_DIR tells the client to
-	// re-enumerate, so any pre-register events would diverge from the
-	// directory snapshot the client is about to take (smb2.notify.valid-req:
-	// after buffer_size=0 → ENUM_DIR, the next notify must reflect only
-	// events that occur after that next CHANGE_NOTIFY is registered). The
-	// next CHANGE_NOTIFY's Register re-arms the handle from a clean state.
+	// Per Samba: buffer_size=0 means no buffered event can be marshalled into
+	// the (zero-length) reply, so the request completes immediately with
+	// STATUS_NOTIFY_ENUM_DIR and the notify buffer is cleared
+	// (change_notify_reply → notify_marshall_changes fails → num_changes=0).
+	// This is distinct from a real overflow (buffer>0 but too small) which
+	// also latches the sticky-overflow flag.
+	//
+	// Crucially, the handle stays ARMED: Samba's notify_buffer is per-fsp and
+	// outlives individual CHANGE_NOTIFY requests, so filesystem events that
+	// occur after this ENUM_DIR but before the next CHANGE_NOTIFY accumulate
+	// and are replayed on the next request. smb2.notify.valid-req depends on
+	// this — after the buffer_size=0 → ENUM_DIR step it runs unlink→create→write
+	// on an existing file (REMOVED+ADDED+MODIFIED) with no live watcher, then
+	// the following max-sized CHANGE_NOTIFY must report all three. Disarming
+	// here would drop them. We clear the currently-buffered events (the
+	// ENUM_DIR consumed them, matching notify_marshall_changes resetting
+	// num_changes=0) and reset the overflow byte accounting against the new
+	// (zero) buffer size, but leave the armed entry in place.
 	if effectiveMax == 0 {
-		h.NotifyRegistry.Disarm(req.FileID)
+		// Reset overflow accounting against the handle's sticky captured buffer
+		// size (set by the FIRST CHANGE_NOTIFY), not against the transient
+		// zero. The zero only prevents marshalling THIS reply; the handle's
+		// buffering capacity for events that arrive before the next request is
+		// still the sticky max. Using zero here would mark the very next event
+		// as an overflow and drop it, defeating the replay that valid-req needs.
+		stickyMax, set := openFile.NotifyMaxBufferSizeValue()
+		if !set {
+			stickyMax = effectiveMax
+		}
+		h.NotifyRegistry.ClearBufferedEvents(req.FileID)
+		h.NotifyRegistry.ResetArmedOverflow(req.FileID, stickyMax)
 		respBytes, encErr := (&ChangeNotifyResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
 		}).Encode()
