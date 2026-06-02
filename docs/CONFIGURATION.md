@@ -212,10 +212,21 @@ The REST API server provides endpoints for authentication, user management, and 
 
 ```yaml
 controlplane:
-  port: 8080                 # HTTP port for API endpoints
+  host: 127.0.0.1            # Bind interface (loopback by default; see below)
+  port: 8080                 # HTTP/HTTPS port for API endpoints
   read_timeout: 10s          # Max time to read request
   write_timeout: 10s         # Max time to write response
   idle_timeout: 60s          # Max idle time for keep-alive
+
+  # Native TLS (optional). DittoFS only loads these files; it does not issue,
+  # renew, or rotate certificates. When cert_file and key_file are both set,
+  # the API serves HTTPS and hot-reloads the files when they change on disk.
+  # When unset, the API serves plain HTTP. See docs/SECURITY.md.
+  # tls:
+  #   cert_file: /etc/dittofs/tls/tls.crt
+  #   key_file: /etc/dittofs/tls/tls.key
+  #   client_ca: /etc/dittofs/tls/ca.crt   # optional: require + verify client certs (mTLS)
+  #   min_version: "1.2"                    # "1.2" (default) or "1.3"
 
   # Profiling (disabled by default; for benchmarks/diagnostics only).
   # The rate keys only take effect when pprof is true; with pprof off all
@@ -239,7 +250,8 @@ controlplane:
 | Option | Default | Description |
 |--------|---------|-------------|
 | `enabled` | `true` | Enable/disable the API server |
-| `port` | `8080` | HTTP port for API endpoints |
+| `host` | `127.0.0.1` | Bind interface. Loopback-only by default (secure-by-default for single-host). Set to `0.0.0.0` for multi-host / Kubernetes (then front it with TLS termination — see [TLS and bind address](#tls-and-bind-address)) |
+| `port` | `8080` | HTTP/HTTPS port for API endpoints |
 | `read_timeout` | `10s` | Maximum duration to read request |
 | `write_timeout` | `10s` | Maximum duration to write response |
 | `idle_timeout` | `60s` | Maximum idle time for keep-alive |
@@ -256,6 +268,38 @@ controlplane:
 | `refresh_token_duration` | `168h` | Refresh token lifetime (7 days) |
 
 > **Security Note**: The JWT secret should be kept confidential. Use the `DITTOFS_CONTROLPLANE_SECRET` environment variable in production to avoid storing secrets in config files.
+
+#### TLS and bind address
+
+The control plane API carries admin logins, the `dfsctl` remote password login, operator credentials, and JWTs. By default the server binds to `127.0.0.1` (loopback only) so a fresh `dfs start` is not reachable off-host. For any deployment that must accept connections from another machine — multi-host, Kubernetes — set `host: 0.0.0.0` and protect the listener with TLS.
+
+DittoFS offers **native, file-based TLS** as a secure-by-default floor. It is intentionally thin: DittoFS **loads** certificate files (and an optional client CA for mTLS) — it is **not a certificate authority**, does **not** generate self-signed certificates, and does **not** do ACME, issuance, renewal, or rotation. Certificate *lifecycle* is left to your platform (cert-manager, a mounted Kubernetes Secret, Vault, your PKI). When the platform rewrites the files on disk, DittoFS hot-reloads them with no restart.
+
+```yaml
+controlplane:
+  host: 0.0.0.0
+  port: 8080
+  tls:
+    cert_file: /etc/dittofs/tls/tls.crt
+    key_file: /etc/dittofs/tls/tls.key
+    client_ca: /etc/dittofs/tls/ca.crt   # optional → mutual TLS
+    min_version: "1.2"
+```
+
+**TLS Configuration Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `cert_file` | (unset) | Path to the PEM server certificate (or chain). Both `cert_file` and `key_file` must be set to enable HTTPS; setting one without the other is a fatal config error |
+| `key_file` | (unset) | Path to the PEM private key for `cert_file` |
+| `client_ca` | (unset) | Path to a PEM CA bundle. When set, the server **requires and verifies** a client certificate signed by one of these CAs (mutual TLS). Requires `cert_file`/`key_file` |
+| `min_version` | `1.2` | Minimum negotiated TLS version: `"1.2"` or `"1.3"` |
+
+When `cert_file`/`key_file` are unset, the server serves plain HTTP exactly as before (back-compatible). When set, it serves HTTPS; the files are read and parsed at startup, so a missing or malformed certificate fails fast with a clear error.
+
+**Recommended deployment model:** terminate TLS for the edge at an ingress / service mesh / reverse proxy (NGINX), and use DittoFS native TLS (or mTLS via `client_ca`) as the secure floor for non-Kubernetes hosts and direct `dfsctl` access. See [docs/SECURITY.md](SECURITY.md) and [docs/DEPLOYMENT.md](DEPLOYMENT.md). For Kubernetes, the operator renders `host: 0.0.0.0` automatically so the API `Service` can reach the pod; see [docs/DEPLOYMENT.md](DEPLOYMENT.md).
+
+Related glossary terms: [TLS / mTLS](GLOSSARY.md#authentication).
 
 **API Endpoints:**
 

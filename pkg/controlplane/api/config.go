@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"time"
 
@@ -23,6 +24,13 @@ const EnvControlPlaneSecret = "DITTOFS_CONTROLPLANE_SECRET"
 // and user management APIs. The API is always enabled as it is required for
 // managing shares, users, and other dynamic configuration.
 type APIConfig struct {
+	// Host is the interface the API server binds to.
+	// Default: 127.0.0.1 (loopback only — secure-by-default for `dfs start`).
+	// Multi-host and Kubernetes deployments must set this to 0.0.0.0 so the
+	// server is reachable from off-host (it then sits behind a Service /
+	// ingress / mesh that handles edge TLS). See docs/SECURITY.md.
+	Host string `mapstructure:"host" yaml:"host"`
+
 	// Port is the HTTP port for the API endpoints.
 	// Default: 8080
 	Port int `mapstructure:"port" validate:"omitempty,min=1,max=65535" yaml:"port"`
@@ -44,6 +52,11 @@ type APIConfig struct {
 
 	// JWT configures JWT authentication for API endpoints.
 	JWT JWTConfig `mapstructure:"jwt" yaml:"jwt"`
+
+	// TLS configures native (file-based) TLS for the API server. When the
+	// cert/key files are set the server speaks HTTPS; when unset it stays on
+	// plain HTTP (back-compat). See TLSConfig.
+	TLS TLSConfig `mapstructure:"tls" yaml:"tls"`
 
 	// Pprof enables Go pprof profiling endpoints at /debug/pprof/*.
 	// Useful for CPU, memory, and goroutine profiling during benchmarks.
@@ -86,6 +99,65 @@ type JWTConfig struct {
 	RefreshTokenDuration time.Duration `mapstructure:"refresh_token_duration" yaml:"refresh_token_duration"`
 }
 
+// TLSConfig configures native, file-based TLS for the control plane API.
+//
+// DittoFS only loads cert files — it does not act as a CA, does not generate
+// self-signed certificates, and does not do ACME/issuance/rotation. Certificate
+// lifecycle (issuance, renewal, rotation) is left to the platform
+// (cert-manager, a mounted Secret, Vault, etc.). When the platform rotates the
+// files on disk, the server hot-reloads them with no restart.
+//
+// When CertFile and KeyFile are both set, the server serves HTTPS. When both
+// are unset, the server serves plain HTTP (back-compat). Setting one without
+// the other is a configuration error (see Validate).
+type TLSConfig struct {
+	// CertFile is the path to the PEM-encoded server certificate (or chain).
+	CertFile string `mapstructure:"cert_file" yaml:"cert_file"`
+
+	// KeyFile is the path to the PEM-encoded private key for CertFile.
+	KeyFile string `mapstructure:"key_file" yaml:"key_file"`
+
+	// ClientCA is the path to a PEM bundle of CA certificates. When set, the
+	// server requires and verifies a client certificate signed by one of these
+	// CAs (mutual TLS). When empty, client certificates are not requested.
+	ClientCA string `mapstructure:"client_ca" yaml:"client_ca"`
+
+	// MinVersion is the minimum negotiated TLS version: "1.2" or "1.3".
+	// Default (empty): "1.2".
+	MinVersion string `mapstructure:"min_version" validate:"omitempty,oneof=1.2 1.3" yaml:"min_version"`
+}
+
+// Enabled reports whether TLS is configured (both cert and key set). A single
+// file set without the other is treated as "not enabled" here; Validate
+// rejects that partial configuration with a clear error.
+func (t TLSConfig) Enabled() bool {
+	return t.CertFile != "" && t.KeyFile != ""
+}
+
+// Validate checks the API config for internally inconsistent TLS settings.
+// It is fail-fast: cert without key (or vice versa) and an unsupported
+// min_version are rejected before the server starts. It does not read the
+// cert files from disk — that happens when the server builds its TLS config.
+func (c *APIConfig) Validate() error {
+	certSet := c.TLS.CertFile != ""
+	keySet := c.TLS.KeyFile != ""
+	switch {
+	case certSet && !keySet:
+		return fmt.Errorf("controlplane.tls.cert_file is set but controlplane.tls.key_file is missing; both are required to enable TLS")
+	case keySet && !certSet:
+		return fmt.Errorf("controlplane.tls.key_file is set but controlplane.tls.cert_file is missing; both are required to enable TLS")
+	}
+	if c.TLS.ClientCA != "" && !c.TLS.Enabled() {
+		return fmt.Errorf("controlplane.tls.client_ca requires controlplane.tls.cert_file and controlplane.tls.key_file (mTLS needs a server certificate)")
+	}
+	if c.TLS.MinVersion != "" {
+		if _, ok := minTLSVersions[c.TLS.MinVersion]; !ok {
+			return fmt.Errorf("controlplane.tls.min_version %q is not supported (use \"1.2\" or \"1.3\")", c.TLS.MinVersion)
+		}
+	}
+	return nil
+}
+
 // MarshalYAML redacts the JWT signing secret when the config is serialized
 // for display. Only the secret is masked; an empty secret stays empty so
 // "no secret configured" is distinguishable from a redacted one.
@@ -114,6 +186,9 @@ func (c JWTConfig) MarshalJSON() ([]byte, error) {
 // config.ApplyDefaults path call it, so a new field defaulted here cannot drift
 // between the two entry points.
 func (c *APIConfig) ApplyDefaults() {
+	if c.Host == "" {
+		c.Host = "127.0.0.1"
+	}
 	if c.Port == 0 {
 		c.Port = 8080
 	}

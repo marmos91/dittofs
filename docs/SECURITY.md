@@ -28,6 +28,8 @@
   - [Identity Mapping](#identity-mapping)
   - [Read-Only Shares](#read-only-shares)
 - [Network Security](#network-security)
+  - [Encryption in Transit](#encryption-in-transit)
+  - [Control Plane API: TLS and Bind Address](#control-plane-api-tls-and-bind-address)
 - [Kerberos Configuration](#kerberos-configuration)
   - [Server Configuration](#server-configuration)
   - [Keytab Management](#keytab-management)
@@ -58,6 +60,7 @@
 - Export-level IP-based access restrictions
 - Identity mapping (root squash, all squash)
 - AUTH_UNIX support for trusted-network deployments
+- Native, file-based TLS (and optional mutual TLS) for the control plane API, with on-disk certificate hot-reload; loopback-only bind by default ([Control Plane API: TLS and Bind Address](#control-plane-api-tls-and-bind-address))
 
 ### Remaining Limitations
 
@@ -376,6 +379,34 @@ DittoFS does not currently provide built-in TLS encryption for NFS or SMB wire t
 - File data can be intercepted without network-level encryption
 - Use VPN, IPsec, or WireGuard to protect data in transit
 - SMB message signing protects integrity but not confidentiality
+
+### Control Plane API: TLS and Bind Address
+
+The control plane REST API (default port `8080`) carries the highest-value credentials in the system: admin and operator logins, the `dfsctl` remote password login, and the JWTs issued from them. These must not travel in cleartext on a shared network.
+
+**Bind address.** The API binds to `127.0.0.1` (loopback only) by default, so a fresh `dfs start` does not expose those credentials off-host. Any deployment that must accept connections from another machine (multi-host, Kubernetes) sets `controlplane.host: 0.0.0.0` — and should pair that with TLS.
+
+**Native TLS (secure floor).** DittoFS can serve the API over TLS by loading a certificate and key from disk:
+
+```yaml
+controlplane:
+  host: 0.0.0.0
+  tls:
+    cert_file: /etc/dittofs/tls/tls.crt
+    key_file: /etc/dittofs/tls/tls.key
+    client_ca: /etc/dittofs/tls/ca.crt   # optional → mutual TLS (client-cert auth)
+    min_version: "1.2"                    # "1.2" (default) or "1.3"
+```
+
+This TLS support is deliberately thin and follows the etcd/MinIO/Vault-client norm: DittoFS **loads** the files and **hot-reloads** them when the platform rewrites them (cert-manager, a mounted Kubernetes Secret, Vault). DittoFS is **not** a certificate authority — it does not generate self-signed certificates and does not perform ACME, issuance, renewal, or rotation. **Certificate lifecycle is the platform's responsibility.** Setting `cert_file` without `key_file` (or vice versa), or `client_ca` without a server cert, is a fatal configuration error caught at startup.
+
+**Recommended deployment model:**
+
+- **Edge:** terminate TLS at an ingress, service mesh, or reverse proxy (NGINX) in front of DittoFS. This is the recommended path for Kubernetes and any internet-facing edge.
+- **Floor:** use DittoFS native TLS (or mTLS via `client_ca`) for non-Kubernetes hosts and for direct `dfsctl` access where there is no termination layer in front.
+- **Kubernetes:** the [operator](DEPLOYMENT.md) renders `controlplane.host: 0.0.0.0` so the API `Service` can reach the pod, and points its own client at `https://` when control-plane TLS is enabled.
+
+See [docs/CONFIGURATION.md](CONFIGURATION.md#tls-and-bind-address) for the full option reference and [docs/DEPLOYMENT.md](DEPLOYMENT.md) for deployment topologies. Note this covers the **control plane API only** — NFS/SMB data-plane traffic still relies on network-level encryption (below).
 
 ### Network-Level Protection
 

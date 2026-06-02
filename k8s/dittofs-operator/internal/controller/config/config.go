@@ -118,6 +118,9 @@ func buildControlPlaneConfig(ds *dittoiov1alpha1.DittoServer) ControlPlaneConfig
 	jwtCfg := getJWTConfig(ds)
 
 	return ControlPlaneConfig{
+		// Bind all interfaces: the server's 127.0.0.1 default is unreachable
+		// from the API Service, so in-cluster we always listen on 0.0.0.0.
+		Host: "0.0.0.0",
 		Port: port,
 		JWT: JWTConfig{
 			AccessTokenDuration:  stringOrDefault(jwtCfg.AccessTokenDuration, DefaultAccessDuration),

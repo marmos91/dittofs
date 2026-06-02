@@ -113,12 +113,29 @@ database:
 
 # Control plane API server configuration (always enabled)
 controlplane:
+  # Interface to bind the API server to.
+  # Default 127.0.0.1 (loopback only) — secure-by-default for single-host use.
+  # Set to 0.0.0.0 for multi-host / Kubernetes (then put it behind an
+  # ingress/mesh that terminates TLS at the edge). See docs/SECURITY.md.
+  host: "127.0.0.1"
   # Port for control plane HTTP server
   port: 8080
   # Request timeouts
   read_timeout: 10s
   write_timeout: 10s
   idle_timeout: 60s
+  # Native TLS (optional). DittoFS only LOADS these files — it is not a CA and
+  # does not issue, renew, or rotate certificates (leave that to the platform,
+  # e.g. cert-manager). When cert_file and key_file are both set, the API
+  # serves HTTPS and hot-reloads the files when they change on disk. When
+  # unset, the API serves plain HTTP. See docs/SECURITY.md.
+  # tls:
+  #   cert_file: "/etc/dittofs/tls/tls.crt"
+  #   key_file: "/etc/dittofs/tls/tls.key"
+  #   # Optional: require + verify client certificates (mutual TLS).
+  #   client_ca: "/etc/dittofs/tls/ca.crt"
+  #   # Minimum TLS version: "1.2" (default) or "1.3".
+  #   min_version: "1.2"
   # JWT authentication configuration
   jwt:
     # JWT signing secret (minimum 32 characters)
