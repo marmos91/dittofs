@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 
 // TestRunWorkerPool_CoversEveryOpOnce asserts the fan-out hands every op index
