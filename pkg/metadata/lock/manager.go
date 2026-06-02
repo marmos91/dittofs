@@ -2394,6 +2394,15 @@ func (lm *Manager) breakOpLocks(
 	// session via the shared ClientGUID, producing the intermittent
 	// smb2.dirlease.unlink_*_and_close "lease_break_info.count got 0x2" flake.
 	dispatchedKeys := make(map[[16]byte]struct{}, len(locks))
+	// canonicalByKey remembers the record whose break stage drove the single
+	// wire notification for each lease key. A sibling sharing that key (an
+	// orphaned ack-to-None record left by an unclean disconnect coexisting
+	// with the live regrant) must NOT send a second notification, but its
+	// internal break stage MUST be mirrored from the canonical record so a
+	// later scan can't treat the stale sibling as an active non-breaking
+	// lease and dispatch a fresh spurious break (per MS-SMB2 §3.3.5.9: opens
+	// sharing a lease key share one logical lease).
+	canonicalByKey := make(map[[16]byte]*OpLock, len(locks))
 	for _, lock := range locks {
 		if lock.Lease == nil {
 			continue
@@ -2431,6 +2440,12 @@ func (lm *Manager) breakOpLocks(
 		// a fresh dispatch below so the live record drives the notification and
 		// any sibling sharing its key is skipped.
 		if _, already := dispatchedKeys[lock.Lease.LeaseKey]; already {
+			// Mirror the canonical record's break stage onto this sibling
+			// (no wire notification, no second epoch advance) so its state
+			// stays consistent with the one logical lease.
+			if canonical := canonicalByKey[lock.Lease.LeaseKey]; canonical != nil {
+				lm.mirrorBreakStageLocked(lock, canonical, true)
+			}
 			continue
 		}
 
@@ -2460,8 +2475,10 @@ func (lm *Manager) breakOpLocks(
 				_ = lm.lockStore.PutLock(context.Background(), pl)
 			}
 			// This key's break is already in flight; record it so a sibling
-			// record sharing the key is not freshly dispatched below.
+			// record sharing the key is not freshly dispatched below and so
+			// later siblings mirror this record's break stage.
 			dispatchedKeys[lock.Lease.LeaseKey] = struct{}{}
+			canonicalByKey[lock.Lease.LeaseKey] = lock.Lease
 			continue
 		}
 
@@ -2484,6 +2501,7 @@ func (lm *Manager) breakOpLocks(
 			_ = lm.lockStore.PutLock(context.Background(), pl)
 		}
 		dispatchedKeys[lock.Lease.LeaseKey] = struct{}{}
+		canonicalByKey[lock.Lease.LeaseKey] = lock.Lease
 		toBreak = append(toBreak, breakEntry{lock: snapshot, breakToState: targetState})
 	}
 	lm.mu.Unlock()
@@ -2555,6 +2573,37 @@ func (lm *Manager) applyBreakStageLocked(lock *UnifiedLock, target uint32) *Unif
 		_ = lm.lockStore.PutLock(context.Background(), pl)
 	}
 	return snapshot
+}
+
+// mirrorBreakStageLocked copies the break-stage fields of a canonical lease
+// record onto a sibling that shares its lease key, WITHOUT sending a wire
+// notification or independently advancing the sibling's epoch. Per MS-SMB2
+// §3.3.5.9 opens sharing a lease key share one logical lease, so the sibling
+// must end in the same break stage (Breaking / BreakToState / BreakingToRequired
+// / BreakStarted / Epoch / LeaseState) as the canonical record. Without this,
+// the skipped sibling keeps stale pre-break values and a later scan could treat
+// it as an active non-breaking lease and dispatch a fresh spurious break.
+//
+// The canonical record's epoch was advanced exactly once on its fresh dispatch
+// (or intentionally not advanced on the concurrent-break merge path); copying it
+// keeps the sibling in lockstep rather than diverging via a second advance.
+//
+// When persist is true the sibling is persisted (the caller persists the
+// canonical too); callers whose canonical path does not persist pass false so
+// the sibling stays in lockstep with the canonical's durability. Caller must
+// hold lm.mu.
+func (lm *Manager) mirrorBreakStageLocked(sibling *UnifiedLock, canonical *OpLock, persist bool) {
+	sibling.Lease.Breaking = canonical.Breaking
+	sibling.Lease.BreakToState = canonical.BreakToState
+	sibling.Lease.BreakingToRequired = canonical.BreakingToRequired
+	sibling.Lease.BreakStarted = canonical.BreakStarted
+	sibling.Lease.Epoch = canonical.Epoch
+	sibling.Lease.LeaseState = canonical.LeaseState
+	sibling.Type = lockTypeForLeaseState(canonical.LeaseState)
+	if persist && lm.lockStore != nil {
+		pl := ToPersistedLock(sibling, 0)
+		_ = lm.lockStore.PutLock(context.Background(), pl)
+	}
 }
 
 // ============================================================================

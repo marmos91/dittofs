@@ -13,8 +13,9 @@ var dlease2Key = [16]byte{0x02, 0, 0, 0, 0, 0, 0, 0, 0xfd, 0xff, 0xff, 0xff, 0xf
 // under one handleKey: a stale ack-to-None-then-regranted record (dead session)
 // coexisting with the live record — exactly the shape an unclean disconnect
 // leaves. RequestLease dedups same-key grants, so the coexistence is built
-// directly. Returns a per-key break counter the caller asserts against.
-func twoSameKeyDirLeases(t *testing.T, lm *Manager, handleKey string, key [16]byte) (*sync.Mutex, map[[16]byte]int) {
+// directly. Returns the two injected records (in injection order) and a per-key
+// break counter the caller asserts against.
+func twoSameKeyDirLeases(t *testing.T, lm *Manager, handleKey string, key [16]byte) (*sync.Mutex, map[[16]byte]int, []*UnifiedLock) {
 	t.Helper()
 
 	mu := &sync.Mutex{}
@@ -27,8 +28,7 @@ func twoSameKeyDirLeases(t *testing.T, lm *Manager, handleKey string, key [16]by
 		},
 	})
 
-	lm.mu.Lock()
-	lm.unifiedLocks[handleKey] = []*UnifiedLock{
+	records := []*UnifiedLock{
 		{
 			Owner: LockOwner{OwnerID: "stale", ClientID: "smb:1"},
 			Lease: &OpLock{LeaseKey: key, LeaseState: LeaseStateRead | LeaseStateHandle, Epoch: 1, IsDirectory: true},
@@ -38,9 +38,46 @@ func twoSameKeyDirLeases(t *testing.T, lm *Manager, handleKey string, key [16]by
 			Lease: &OpLock{LeaseKey: key, LeaseState: LeaseStateRead | LeaseStateHandle, Epoch: 1, IsDirectory: true},
 		},
 	}
+
+	lm.mu.Lock()
+	lm.unifiedLocks[handleKey] = records
 	lm.mu.Unlock()
 
-	return mu, breaksByKey
+	return mu, breaksByKey, records
+}
+
+// assertBothSiblingsBreaking verifies that every same-key record ends in the
+// SAME break stage after a dedup'd break: Breaking=true and identical
+// BreakToState / BreakingToRequired / Epoch. Per MS-SMB2 §3.3.5.9 opens sharing
+// a lease key share one logical lease, so the sibling skipped for the wire
+// notification must still carry the canonical record's break state — otherwise a
+// later scan treats the stale sibling as an active non-breaking lease and
+// dispatches a fresh spurious break.
+func assertBothSiblingsBreaking(t *testing.T, lm *Manager, records []*UnifiedLock) {
+	t.Helper()
+
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	first := records[0].Lease
+	for i, rec := range records {
+		l := rec.Lease
+		if !l.Breaking {
+			t.Fatalf("record %d (%s): Breaking=false after dedup'd break; "+
+				"a skipped sibling must mirror the canonical break stage "+
+				"(else a later scan dispatches a fresh spurious break)", i, rec.Owner.OwnerID)
+		}
+		if l.BreakToState != first.BreakToState ||
+			l.BreakingToRequired != first.BreakingToRequired ||
+			l.Epoch != first.Epoch {
+			t.Fatalf("record %d (%s): break stage diverged from canonical: "+
+				"BreakToState=%#x BreakingToRequired=%#x Epoch=%d vs canonical "+
+				"BreakToState=%#x BreakingToRequired=%#x Epoch=%d",
+				i, rec.Owner.OwnerID,
+				l.BreakToState, l.BreakingToRequired, l.Epoch,
+				first.BreakToState, first.BreakingToRequired, first.Epoch)
+		}
+	}
 }
 
 // TestBreakLeasesOnOpenConflict_DedupsByLeaseKey is a regression test for the
@@ -68,7 +105,7 @@ func TestBreakLeasesOnOpenConflict_DedupsByLeaseKey(t *testing.T) {
 
 	lm := NewManager()
 	const handleKey = "/share:dir-uuid"
-	mu, breaksByKey := twoSameKeyDirLeases(t, lm, handleKey, dlease2Key)
+	mu, breaksByKey, records := twoSameKeyDirLeases(t, lm, handleKey, dlease2Key)
 
 	// A directory-content change (unlink) breaks the parent dir lease to None.
 	if err := lm.BreakLeasesOnOpenConflict(handleKey, nil, BreakReasonDestructive); err != nil {
@@ -83,6 +120,10 @@ func TestBreakLeasesOnOpenConflict_DedupsByLeaseKey(t *testing.T) {
 			"want exactly 1 (smbtorture unlink_*_and_close asserts lease_break_info.count==1)",
 			got, dlease2Key)
 	}
+
+	// Both same-key records must carry the break stage so a later scan can't
+	// treat the skipped sibling as an active non-breaking lease.
+	assertBothSiblingsBreaking(t, lm, records)
 }
 
 // TestOnDirChange_DedupsByLeaseKey asserts the same single-notification-per-key
@@ -94,7 +135,7 @@ func TestOnDirChange_DedupsByLeaseKey(t *testing.T) {
 
 	lm := NewManager()
 	const handleKey = "/share:dir-uuid"
-	mu, breaksByKey := twoSameKeyDirLeases(t, lm, handleKey, dlease2Key)
+	mu, breaksByKey, records := twoSameKeyDirLeases(t, lm, handleKey, dlease2Key)
 
 	// Origin client "smb:3" differs from both holders, so neither is suppressed
 	// by the origin-client rule — both records are break candidates.
@@ -106,4 +147,9 @@ func TestOnDirChange_DedupsByLeaseKey(t *testing.T) {
 	if got != 1 {
 		t.Fatalf("OnDirChange dispatched %d notifications for lease key %x; want exactly 1", got, dlease2Key)
 	}
+
+	// Both same-key records must carry the break stage (Breaking + matching
+	// BreakToState/BreakingToRequired/Epoch) so a later OnDirChange scan can't
+	// treat the skipped sibling as an active non-breaking lease.
+	assertBothSiblingsBreaking(t, lm, records)
 }
