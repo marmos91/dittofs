@@ -102,10 +102,11 @@ func allCovered(covered []bool) bool {
 // fill from the log") OR after a successful replay. Returns a non-nil
 // error only for genuine I/O failures.
 func (bc *FSStore) replayLogIntoDest(_ context.Context, payloadID string, dest []byte, reqStart, reqEnd uint64, covered []bool) error {
-	bc.logsMu.RLock()
-	lf := bc.logFDs[payloadID]
-	mu := bc.logLocks[payloadID]
-	bc.logsMu.RUnlock()
+	sh := bc.shardFor(payloadID)
+	sh.mu.RLock()
+	lf := sh.logFDs[payloadID]
+	mu := sh.logLocks[payloadID]
+	sh.mu.RUnlock()
 	if lf == nil || mu == nil {
 		return nil
 	}

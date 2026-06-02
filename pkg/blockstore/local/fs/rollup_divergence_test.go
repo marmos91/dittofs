@@ -44,10 +44,11 @@ func TestRollup_DivergentInterval_DroppedNoLoop(t *testing.T) {
 	// returns this interval (it is the earliest UNCONSUMED stable one
 	// after the real append rolls up, OR can be reached on the first
 	// pass if it sorts ahead of the real append's Touched).
-	bc.logsMu.RLock()
-	tree := bc.dirtyIntervals[payloadID]
-	mu := bc.logLocks[payloadID]
-	bc.logsMu.RUnlock()
+	bcSh := bc.shardFor(payloadID)
+	bcSh.mu.RLock()
+	tree := bcSh.dirtyIntervals[payloadID]
+	mu := bcSh.logLocks[payloadID]
+	bcSh.mu.RUnlock()
 	if tree == nil || mu == nil {
 		t.Fatalf("expected tree+mu to exist after AppendWrite")
 	}
@@ -70,9 +71,10 @@ func TestRollup_DivergentInterval_DroppedNoLoop(t *testing.T) {
 		if err := bc.rollupFile(ctx, payloadID, false); err != nil {
 			t.Fatalf("rollupFile returned error (divergence wedge regression): %v", err)
 		}
-		bc.logsMu.RLock()
-		tr := bc.dirtyIntervals[payloadID]
-		bc.logsMu.RUnlock()
+		bcSh := bc.shardFor(payloadID)
+		bcSh.mu.RLock()
+		tr := bcSh.dirtyIntervals[payloadID]
+		bcSh.mu.RUnlock()
 		mu.Lock()
 		_, hasStable := tr.EarliestStable(time.Now(), time.Duration(bc.stabilizationMS)*time.Millisecond)
 		mu.Unlock()
@@ -170,11 +172,12 @@ func TestAppendWrite_TreeAndLogIndexAtomicity(t *testing.T) {
 
 	// Walk every tree interval; assert each has a matching logIndex
 	// entry at the same fileOff with the same payloadLen.
-	bc.logsMu.RLock()
-	tree := bc.dirtyIntervals[payloadID]
-	idx := bc.logIndices[payloadID]
-	mu := bc.logLocks[payloadID]
-	bc.logsMu.RUnlock()
+	bcSh := bc.shardFor(payloadID)
+	bcSh.mu.RLock()
+	tree := bcSh.dirtyIntervals[payloadID]
+	idx := bcSh.logIndices[payloadID]
+	mu := bcSh.logLocks[payloadID]
+	bcSh.mu.RUnlock()
 	if tree == nil || idx == nil || mu == nil {
 		t.Fatalf("per-payload state missing after concurrent AppendWrite")
 	}
@@ -242,11 +245,12 @@ func TestAppendWrite_RollupConcurrent_NoDivergence(t *testing.T) {
 	// idx lookup race would leave the tree carrying an interval the
 	// logIndex cannot back. Production-path verification: every tree
 	// interval has a matching logIndex hit.
-	bc.logsMu.RLock()
-	tree := bc.dirtyIntervals[payloadID]
-	idx := bc.logIndices[payloadID]
-	mu := bc.logLocks[payloadID]
-	bc.logsMu.RUnlock()
+	bcSh := bc.shardFor(payloadID)
+	bcSh.mu.RLock()
+	tree := bcSh.dirtyIntervals[payloadID]
+	idx := bcSh.logIndices[payloadID]
+	mu := bcSh.logLocks[payloadID]
+	bcSh.mu.RUnlock()
 	if tree != nil && idx != nil && mu != nil {
 		mu.Lock()
 		tree.t.Ascend(func(iv *interval) bool {

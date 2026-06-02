@@ -48,10 +48,11 @@ func TestLogFile_EofPos_MatchesDiskSizeSequential(t *testing.T) {
 		if err != nil {
 			t.Fatalf("stat: %v", err)
 		}
-		bc.logsMu.RLock()
-		lf := bc.logFDs["file-seq"]
-		mu := bc.logLocks["file-seq"]
-		bc.logsMu.RUnlock()
+		bcSh := bc.shardFor("file-seq")
+		bcSh.mu.RLock()
+		lf := bcSh.logFDs["file-seq"]
+		mu := bcSh.logLocks["file-seq"]
+		bcSh.mu.RUnlock()
 		mu.Lock()
 		got := lf.eofPos
 		mu.Unlock()
@@ -92,10 +93,11 @@ func TestLogFile_EofPos_MatchesDiskSizeConcurrent(t *testing.T) {
 	if st.Size() != wantDisk {
 		t.Fatalf("disk size: got %d want %d", st.Size(), wantDisk)
 	}
-	bc.logsMu.RLock()
-	lf := bc.logFDs["file-conc"]
-	mu := bc.logLocks["file-conc"]
-	bc.logsMu.RUnlock()
+	bcSh := bc.shardFor("file-conc")
+	bcSh.mu.RLock()
+	lf := bcSh.logFDs["file-conc"]
+	mu := bcSh.logLocks["file-conc"]
+	bcSh.mu.RUnlock()
 	mu.Lock()
 	got := lf.eofPos
 	mu.Unlock()
@@ -124,10 +126,11 @@ func TestLogFile_EofPos_RestoredAfterRecover(t *testing.T) {
 	preCloseSize := st.Size()
 
 	bc2 := reopenFSStore(t, bc, rs)
-	bc2.logsMu.RLock()
-	lf := bc2.logFDs["file-rec"]
-	mu := bc2.logLocks["file-rec"]
-	bc2.logsMu.RUnlock()
+	bc2Sh := bc2.shardFor("file-rec")
+	bc2Sh.mu.RLock()
+	lf := bc2Sh.logFDs["file-rec"]
+	mu := bc2Sh.logLocks["file-rec"]
+	bc2Sh.mu.RUnlock()
 	if lf == nil {
 		t.Fatalf("logFile not restored after recover")
 	}

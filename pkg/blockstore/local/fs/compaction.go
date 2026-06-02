@@ -362,9 +362,10 @@ func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *l
 		if oldFd != nil {
 			_ = oldFd.Close()
 		}
-		bc.logsMu.Lock()
-		delete(bc.logFDs, payloadID)
-		bc.logsMu.Unlock()
+		sh := bc.shardFor(payloadID)
+		sh.mu.Lock()
+		delete(sh.logFDs, payloadID)
+		sh.mu.Unlock()
 		return fmt.Errorf("compaction: reopen after rename: %w", err)
 	}
 	eof, err := newFd.Seek(0, io.SeekEnd)
@@ -373,9 +374,10 @@ func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *l
 		if oldFd != nil {
 			_ = oldFd.Close()
 		}
-		bc.logsMu.Lock()
-		delete(bc.logFDs, payloadID)
-		bc.logsMu.Unlock()
+		sh := bc.shardFor(payloadID)
+		sh.mu.Lock()
+		delete(sh.logFDs, payloadID)
+		sh.mu.Unlock()
 		return fmt.Errorf("compaction: seek end after rename: %w", err)
 	}
 

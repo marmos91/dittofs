@@ -61,14 +61,15 @@ func (bc *FSStore) RollupStoreForTest() metadata.RollupStore { return bc.rollupS
 // tracked for payloadID, or 0 when the payload has no interval tree.
 //
 // Acquires the per-file mutex to serialize against rollupFile's
-// ConsumeUpTo (which mutates the btree under mu). logsMu alone is
-// insufficient because rollupFile snapshots the tree pointer under
-// logsMu.RLock and then mutates the btree later under the per-file mu.
+// ConsumeUpTo (which mutates the btree under mu). The shard lock alone is
+// insufficient because rollupFile snapshots the tree pointer under the
+// shard RLock and then mutates the btree later under the per-file mu.
 func (bc *FSStore) IntervalsLenForTest(payloadID string) int {
-	bc.logsMu.RLock()
-	t := bc.dirtyIntervals[payloadID]
-	mu := bc.logLocks[payloadID]
-	bc.logsMu.RUnlock()
+	sh := bc.shardFor(payloadID)
+	sh.mu.RLock()
+	t := sh.dirtyIntervals[payloadID]
+	mu := sh.logLocks[payloadID]
+	sh.mu.RUnlock()
 	if t == nil {
 		return 0
 	}
@@ -85,9 +86,10 @@ func (bc *FSStore) IntervalsLenForTest(payloadID string) int {
 // rollupFile would observe a stable interval — replacing brittle
 // time.Sleep calls (FIX-10).
 func (bc *FSStore) EarliestStableForTest(payloadID string) bool {
-	bc.logsMu.RLock()
-	tree := bc.dirtyIntervals[payloadID]
-	bc.logsMu.RUnlock()
+	sh := bc.shardFor(payloadID)
+	sh.mu.RLock()
+	tree := sh.dirtyIntervals[payloadID]
+	sh.mu.RUnlock()
 	if tree == nil {
 		return false
 	}

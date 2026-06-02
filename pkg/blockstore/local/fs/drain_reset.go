@@ -49,12 +49,14 @@ func (bc *FSStore) DrainRollups(ctx context.Context) error {
 		// re-reads it so newly-dirtied payloads are picked up. Per-payload
 		// emptiness is rechecked under the per-file mutex by dirtyLen
 		// below — the btree is not safe to read here without that mutex.
-		bc.logsMu.RLock()
-		pending := make([]string, 0, len(bc.dirtyIntervals))
-		for pid := range bc.dirtyIntervals {
-			pending = append(pending, pid)
+		var pending []string
+		for _, sh := range bc.logShards {
+			sh.mu.RLock()
+			for pid := range sh.dirtyIntervals {
+				pending = append(pending, pid)
+			}
+			sh.mu.RUnlock()
 		}
-		bc.logsMu.RUnlock()
 
 		progressed := false
 		anyDirty := false
@@ -114,19 +116,20 @@ func (bc *FSStore) DrainRollups(ctx context.Context) error {
 // Len() read is serialized against AppendWrite / rollupFile via the
 // per-file mutex.
 func (bc *FSStore) dirtyLen(payloadID string) int {
-	bc.logsMu.RLock()
-	tree := bc.dirtyIntervals[payloadID]
-	mu := bc.logLocks[payloadID]
-	bc.logsMu.RUnlock()
+	sh := bc.shardFor(payloadID)
+	sh.mu.RLock()
+	tree := sh.dirtyIntervals[payloadID]
+	mu := sh.logLocks[payloadID]
+	sh.mu.RUnlock()
 	if tree == nil {
 		return 0
 	}
 	if mu == nil {
 		// No per-file mutex established yet (payload registered but never
 		// written through getOrCreateLog). Guard the btree read against a
-		// racing tree mutation under the shared logsMu instead.
-		bc.logsMu.RLock()
-		defer bc.logsMu.RUnlock()
+		// racing tree mutation under the shard lock instead.
+		sh.mu.RLock()
+		defer sh.mu.RUnlock()
 		return tree.Len()
 	}
 	mu.Lock()
@@ -148,11 +151,12 @@ func (bc *FSStore) dirtyLen(payloadID string) int {
 func (bc *FSStore) payloadsWithRealResidual(candidates []string) []string {
 	var out []string
 	for _, pid := range candidates {
-		bc.logsMu.RLock()
-		tree := bc.dirtyIntervals[pid]
-		mu := bc.logLocks[pid]
-		idx := bc.logIndices[pid]
-		bc.logsMu.RUnlock()
+		sh := bc.shardFor(pid)
+		sh.mu.RLock()
+		tree := sh.dirtyIntervals[pid]
+		mu := sh.logLocks[pid]
+		idx := sh.logIndices[pid]
+		sh.mu.RUnlock()
 		if tree == nil || idx == nil {
 			continue
 		}
@@ -178,9 +182,9 @@ func (bc *FSStore) payloadsWithRealResidual(candidates []string) []string {
 			walk()
 			mu.Unlock()
 		} else {
-			bc.logsMu.RLock()
+			sh.mu.RLock()
 			walk()
-			bc.logsMu.RUnlock()
+			sh.mu.RUnlock()
 		}
 		if hasReal {
 			out = append(out, pid)
@@ -212,49 +216,53 @@ func (bc *FSStore) payloadsWithRealResidual(candidates []string) []string {
 // writes the operator is deliberately discarding.
 //
 // Concurrency: the caller MUST have quiesced writes (the share is disabled
-// during restore). ResetLocalState takes bc.logsMu for the whole teardown
-// so it does not race getOrCreateLog; it does not, however, defend against
-// a concurrent in-flight AppendWrite mid-record — that is the caller's
-// share-disabled barrier to provide.
+// during restore). ResetLocalState takes each shard lock (one at a time)
+// for that shard's teardown so it does not race getOrCreateLog; it does
+// not, however, defend against a concurrent in-flight AppendWrite
+// mid-record — that is the caller's share-disabled barrier to provide.
 func (bc *FSStore) ResetLocalState(_ context.Context) error {
 	if bc.isClosed() {
 		return ErrStoreClosed
 	}
 
-	bc.logsMu.Lock()
-	defer bc.logsMu.Unlock()
-
+	// Tear down every shard under its own lock (the caller has quiesced
+	// writes, so a one-shard-at-a-time sweep is safe and avoids holding all
+	// shard locks at once). Each shard's close+unlink+clear is atomic under
+	// its lock so no getOrCreateLog can resurrect a half-cleared payload.
 	var firstErr error
-	for pid, lf := range bc.logFDs {
-		if lf == nil {
-			continue
-		}
-		if lf.f != nil {
-			if cerr := lf.f.Close(); cerr != nil {
-				logger.Warn("ResetLocalState: log file close failed",
-					"payloadID", pid, "path", lf.path, "error", cerr)
+	for _, sh := range bc.logShards {
+		sh.mu.Lock()
+		for pid, lf := range sh.logFDs {
+			if lf == nil {
+				continue
 			}
-		}
-		if lf.path != "" {
-			if rerr := os.Remove(lf.path); rerr != nil && !os.IsNotExist(rerr) {
-				logger.Error("ResetLocalState: log file unlink failed",
-					"payloadID", pid, "path", lf.path, "error", rerr)
-				if firstErr == nil {
-					firstErr = fmt.Errorf("ResetLocalState: unlink log for payload %q: %w", pid, rerr)
+			if lf.f != nil {
+				if cerr := lf.f.Close(); cerr != nil {
+					logger.Warn("ResetLocalState: log file close failed",
+						"payloadID", pid, "path", lf.path, "error", cerr)
+				}
+			}
+			if lf.path != "" {
+				if rerr := os.Remove(lf.path); rerr != nil && !os.IsNotExist(rerr) {
+					logger.Error("ResetLocalState: log file unlink failed",
+						"payloadID", pid, "path", lf.path, "error", rerr)
+					if firstErr == nil {
+						firstErr = fmt.Errorf("ResetLocalState: unlink log for payload %q: %w", pid, rerr)
+					}
 				}
 			}
 		}
+		// Wipe this shard's per-payload maps so a subsequent AppendWrite
+		// starts from a fresh log and ReadPayloadAt finds no log to replay.
+		clear(sh.logFDs)
+		clear(sh.logLocks)
+		clear(sh.rollupLocks) // C1: keep rollupLocks 1:1 with logLocks across reset
+		clear(sh.dirtyIntervals)
+		clear(sh.logIndices)
+		clear(sh.truncations)
+		clear(sh.tombstones)
+		sh.mu.Unlock()
 	}
-
-	// Wipe every per-payload map so a subsequent AppendWrite starts from a
-	// fresh log and a subsequent ReadPayloadAt finds no log to replay.
-	clear(bc.logFDs)
-	clear(bc.logLocks)
-	clear(bc.rollupLocks) // C1: keep rollupLocks 1:1 with logLocks across reset
-	clear(bc.dirtyIntervals)
-	clear(bc.logIndices)
-	clear(bc.truncations)
-	clear(bc.tombstones)
 	bc.logBytesTotal.Store(0)
 
 	// Best-effort: remove any residual .log files left under the logs dir

@@ -208,49 +208,24 @@ type FSStore struct {
 	// along with ctx.Done() and bc.done.
 	pressureCh chan struct{}
 
-	// logsMu guards logFDs, logLocks, dirtyIntervals, logIndices, and
-	// tombstones. Double-checked locking idiom matches blocksMu /
-	// memBlocks in getOrCreateMemBlock.
-	logsMu   sync.RWMutex
-	logFDs   map[string]*logFile    // payloadID -> open log fd wrapper (one fd per file, bypasses fdPool)
-	logLocks map[string]*sync.Mutex // payloadID -> per-file append mutex
-	// rollupLocks is the per-payload ROLLUP mutex (C1 contention fix). It is
-	// held by rollupFile across its entire pass (read -> store -> commit),
-	// serializing concurrent rollups on the same payload and giving
-	// DeleteAppendLog a barrier to wait on. It is DISTINCT from logLocks
-	// (the append mutex): rollupFile releases the append mutex during its
-	// CAS-store / persister phase so a concurrent AppendWrite is not blocked
-	// on rollup I/O, but keeps rollupLocks held throughout. Lock order is
-	// rollupLocks (outer) -> logLocks (inner), matching the existing
-	// "always mu before logsMu" discipline at the next level down.
-	rollupLocks    map[string]*sync.Mutex   // payloadID -> per-file rollup mutex
-	dirtyIntervals map[string]*intervalTree // payloadID -> dirty-region tree
-	// logIndices is the per-payload log-position oracle (Direction-1
-	// rollup redesign). One entry per appended record carries the
-	// frame's log byte offset, its file_offset, and its payload length.
-	// Populated under the per-file `mu` from AppendWrite (P3) and from
-	// the recovery scan (P4). Consumed by the rollup (P5) to translate
-	// a stable file-offset interval into the set of records to pread.
-	logIndices map[string]*logIndex
-	// tombstones marks payloadIDs whose append log has been (or is being)
-	// deleted by DeleteAppendLog. rollupFile consults
-	// this BEFORE and AFTER the per-file mutex hand-off to ensure no
-	// rollup_offset gets persisted for a dead payload. Initialized in New
-	// alongside the other logs-* maps. Cleared at the end of
-	// DeleteAppendLog so subsequent AppendWrites can resurrect the
-	// payloadID (DittoFS's metadata layer derives PayloadID from
-	// shareName + path, so 'unlink + create at same path' reuses the
-	// PayloadID and must succeed).
-	tombstones map[string]struct{}
-
-	// truncations records per-payload truncation boundaries set by
-	// TruncateAppendLog. rollupFile consults this after
-	// reading the record batch and filters / clips records whose
-	// file_offset >= boundary so the emitted chunk stream never includes
-	// bytes past the truncation point. Entries are cleared when the
-	// payload is deleted; they persist otherwise so subsequent rollup
-	// passes keep honoring the boundary.
-	truncations map[string]uint64
+	// logShards stripes all per-payload append-log state across
+	// numLogShards independent RWMutex-guarded maps, keyed by payloadID
+	// hash (shardFor). Before C2 a single RWMutex (logsMu) guarded every
+	// map; getOrCreateLog's write-lock on the create path then serialized
+	// every new-payload acquisition across the WHOLE store, which the #680
+	// re-profile measured as ~60% of mutex-wait under a concurrent
+	// create/delete storm (REVIEW.md §5.1 C2). Sharding confines that
+	// write-lock to 1/numLogShards of the keyspace.
+	//
+	// Lock order is unchanged by sharding: the per-file rollup mutex (rmu)
+	// and append mutex (mu) are still acquired BEFORE a shard lock (the
+	// FIX-2 "mu before the map lock" discipline), and a shard lock is never
+	// held while acquiring a different shard's lock — cross-payload sweeps
+	// lock exactly one shard at a time. Each payloadID maps to exactly one
+	// shard, so all of a payload's state (fd, mutexes, tree, index,
+	// tombstone, truncation) lives under that single shard lock, preserving
+	// the #668 "tree and logIndex created under the same lock" invariant.
+	logShards []*logShard
 
 	// --- -06 rollup pool. ---
 	//
@@ -405,13 +380,10 @@ func newFSStore(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockst
 	// initialized; the opt-out flag was deleted with the legacy
 	// path-keyed writer.
 	bc.pressureCh = make(chan struct{}, 1)
-	bc.logFDs = make(map[string]*logFile)
-	bc.logLocks = make(map[string]*sync.Mutex)
-	bc.rollupLocks = make(map[string]*sync.Mutex)
-	bc.dirtyIntervals = make(map[string]*intervalTree)
-	bc.logIndices = make(map[string]*logIndex)
-	bc.tombstones = make(map[string]struct{})
-	bc.truncations = make(map[string]uint64)
+	bc.logShards = make([]*logShard, numLogShards)
+	for i := range bc.logShards {
+		bc.logShards[i] = newLogShard()
+	}
 	bc.maxLogBytes = 1 << 30              // 1 GiB default
 	bc.stabilizationMS = 250              // default
 	bc.rollupWorkers = 2                  // default
@@ -971,14 +943,16 @@ func (bc *FSStore) Close() error {
 	// Close append-log fds. Safe after closedFlag.Store(true) +
 	// wg.Wait above: no new AppendWrite can acquire an fd (isClosed guard)
 	// and any rollup worker (06) has already joined via wg.
-	bc.logsMu.Lock()
-	for pid, lf := range bc.logFDs {
-		if lf != nil && lf.f != nil {
-			_ = lf.f.Close()
+	for _, sh := range bc.logShards {
+		sh.mu.Lock()
+		for pid, lf := range sh.logFDs {
+			if lf != nil && lf.f != nil {
+				_ = lf.f.Close()
+			}
+			delete(sh.logFDs, pid)
 		}
-		delete(bc.logFDs, pid)
+		sh.mu.Unlock()
 	}
-	bc.logsMu.Unlock()
 	return nil
 }
 

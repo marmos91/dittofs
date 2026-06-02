@@ -10,12 +10,13 @@ import (
 )
 
 // TestAppendWrite_DeleteRace_NoDeadlock is a regression guard for FIX-2
-// the AppendWrite error-recovery path used to acquire bc.logsMu.Lock()
-// while still holding the per-file mutex. Combined with any path that
-// holds logsMu and then waits on the per-file mutex, the result was an
-// AB/BA deadlock. The fix releases the per-file mutex BEFORE acquiring
-// logsMu in the error path, so the global discipline "always mu before
-// logsMu" is preserved.
+// the AppendWrite error-recovery path used to acquire the per-store map lock
+// while still holding the per-file mutex. Combined with any path that holds
+// the map lock and then waits on the per-file mutex, the result was an AB/BA
+// deadlock. The fix releases the per-file mutex BEFORE acquiring the map lock
+// in the error path, so the discipline "always mu before the map lock" is
+// preserved. (Post-C2 the map lock is the per-payload shard lock, shardFor;
+// pre-C2 it was the single bc.logsMu — the ordering rule is identical.)
 //
 // This test exercises the AppendWrite ↔ DeleteAppendLog hot path under a
 // hard wall-clock deadline: if the lock order regresses, the test hangs

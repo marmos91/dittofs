@@ -110,12 +110,14 @@ func (bc *FSStore) chunkRollupWorker(ctx context.Context, _ int) {
 // dispatches rollupFile on each. Used by the ticker arm so payloads that
 // missed a rollupCh signal (buffer full) still get rolled up.
 func (bc *FSStore) scanAllFiles(ctx context.Context) {
-	bc.logsMu.RLock()
-	ids := make([]string, 0, len(bc.dirtyIntervals))
-	for pid := range bc.dirtyIntervals {
-		ids = append(ids, pid)
+	var ids []string
+	for _, sh := range bc.logShards {
+		sh.mu.RLock()
+		for pid := range sh.dirtyIntervals {
+			ids = append(ids, pid)
+		}
+		sh.mu.RUnlock()
 	}
-	bc.logsMu.RUnlock()
 	for _, pid := range ids {
 		if err := ctx.Err(); err != nil {
 			return
@@ -178,13 +180,14 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 		return nil
 	}
 
-	bc.logsMu.RLock()
-	lf := bc.logFDs[payloadID]
-	tree := bc.dirtyIntervals[payloadID]
-	mu := bc.logLocks[payloadID]
-	rmu := bc.rollupLocks[payloadID]
-	idx := bc.logIndices[payloadID]
-	bc.logsMu.RUnlock()
+	sh := bc.shardFor(payloadID)
+	sh.mu.RLock()
+	lf := sh.logFDs[payloadID]
+	tree := sh.dirtyIntervals[payloadID]
+	mu := sh.logLocks[payloadID]
+	rmu := sh.rollupLocks[payloadID]
+	idx := sh.logIndices[payloadID]
+	sh.mu.RUnlock()
 	if lf == nil || tree == nil || mu == nil || rmu == nil || idx == nil {
 		// Nothing to do — payload never had an AppendWrite (or was
 		// cleared by Close/DeleteAppendLog).
@@ -237,9 +240,9 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 		// (or replaced with a fresh lf on a subsequent getOrCreateLog). A
 		// stale rollup pass is benign — chunks will be retried on the next
 		// pass once the new lf is established.
-		bc.logsMu.RLock()
-		curLf := bc.logFDs[payloadID]
-		bc.logsMu.RUnlock()
+		sh.mu.RLock()
+		curLf := sh.logFDs[payloadID]
+		sh.mu.RUnlock()
 		if curLf == nil || curLf != lf {
 			return false, nil
 		}
@@ -378,9 +381,9 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 		// have their consumedExtent.payloadLen shortened to match the bytes
 		// that actually made it into a chunk — coverage MUST match the bytes
 		// chunked, not the original record size.
-		bc.logsMu.RLock()
-		trunc, hasTrunc = bc.truncations[payloadID]
-		bc.logsMu.RUnlock()
+		sh.mu.RLock()
+		trunc, hasTrunc = sh.truncations[payloadID]
+		sh.mu.RUnlock()
 		if hasTrunc {
 			filtered := recs[:0]
 			filteredExt := consumedExtents[:0]
@@ -618,9 +621,9 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 		// rows we wrote are reaped by GC / DeleteAppendLog cleanup. (The
 		// DeleteAppendLog rmu drain blocks delete's metadata clear until this
 		// pass returns, so it observes a consistent state afterwards.)
-		bc.logsMu.RLock()
-		curLf := bc.logFDs[payloadID]
-		bc.logsMu.RUnlock()
+		sh.mu.RLock()
+		curLf := sh.logFDs[payloadID]
+		sh.mu.RUnlock()
 		if curLf == nil || curLf != lf {
 			return nil
 		}
@@ -912,15 +915,13 @@ func blake3ContentHash(data []byte) blockstore.ContentHash {
 }
 
 // isTombstoned reports whether payloadID has been marked for deletion by
-// DeleteAppendLog. Through plans up to 09, bc.tombstones
-// is nil and this always returns false — which is correct, because no
-// deletion path exists yet.
+// DeleteAppendLog (which writes the entry in step 1). The read is taken under
+// the payload's shard lock; the shard's tombstones map is always allocated by
+// newLogShard, so an unknown payloadID simply returns false.
 func (bc *FSStore) isTombstoned(payloadID string) bool {
-	bc.logsMu.RLock()
-	defer bc.logsMu.RUnlock()
-	if bc.tombstones == nil {
-		return false
-	}
-	_, ok := bc.tombstones[payloadID]
+	sh := bc.shardFor(payloadID)
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	_, ok := sh.tombstones[payloadID]
 	return ok
 }

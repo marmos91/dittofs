@@ -44,13 +44,14 @@ func TestDelete_FreshPayload_UnlinksLog(t *testing.T) {
 	// fresh log (DittoFS's path-based PayloadID lifecycle — see the
 	// BlockStoreAppend.DeleteLog godoc and FSStore.DeleteAppendLog
 	// tombstone-lifecycle comment for why FIX-8 was reverted).
-	bc.logsMu.RLock()
-	_, hasFD := bc.logFDs["file1"]
-	_, hasLock := bc.logLocks["file1"]
-	_, hasTree := bc.dirtyIntervals["file1"]
-	_, hasTomb := bc.tombstones["file1"]
-	_, hasTrunc := bc.truncations["file1"]
-	bc.logsMu.RUnlock()
+	bcSh := bc.shardFor("file1")
+	bcSh.mu.RLock()
+	_, hasFD := bcSh.logFDs["file1"]
+	_, hasLock := bcSh.logLocks["file1"]
+	_, hasTree := bcSh.dirtyIntervals["file1"]
+	_, hasTomb := bcSh.tombstones["file1"]
+	_, hasTrunc := bcSh.truncations["file1"]
+	bcSh.mu.RUnlock()
 	if hasFD || hasLock || hasTree || hasTrunc {
 		t.Fatalf("per-file state not cleared: fd=%v lock=%v tree=%v trunc=%v",
 			hasFD, hasLock, hasTree, hasTrunc)
@@ -371,9 +372,10 @@ func TestTruncate_DropsIntervalsAbove(t *testing.T) {
 		t.Fatalf("TruncateAppendLog: %v", err)
 	}
 
-	bc.logsMu.RLock()
-	tree := bc.dirtyIntervals["f1"]
-	bc.logsMu.RUnlock()
+	bcSh := bc.shardFor("f1")
+	bcSh.mu.RLock()
+	tree := bcSh.dirtyIntervals["f1"]
+	bcSh.mu.RUnlock()
 	if tree == nil {
 		t.Fatal("interval tree missing after truncate")
 	}
@@ -411,9 +413,10 @@ func TestTruncate_ClipsStraddling(t *testing.T) {
 		t.Fatalf("TruncateAppendLog: %v", err)
 	}
 
-	bc.logsMu.RLock()
-	tree := bc.dirtyIntervals["f1"]
-	bc.logsMu.RUnlock()
+	bcSh := bc.shardFor("f1")
+	bcSh.mu.RLock()
+	tree := bcSh.dirtyIntervals["f1"]
+	bcSh.mu.RUnlock()
 
 	var entries []interval
 	tree.t.Ascend(func(iv *interval) bool {

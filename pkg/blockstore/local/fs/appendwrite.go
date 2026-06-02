@@ -33,7 +33,7 @@ type logFile struct {
 	// pooled, not rotated); there is no file-rotation path that would
 	// stale-capture lf.f. On error-recovery close (the writeRecord-error
 	// branch in AppendWrite), the entire *logFile is dropped from
-	// bc.logFDs and a fresh one is constructed on next touch — the
+	// the shard's logFDs and a fresh one is constructed on next touch — the
 	// coordinator goes with it.
 	//
 	// Teardown: no explicit Stop is required. The design has no
@@ -61,8 +61,8 @@ func (bc *FSStore) logPath(payloadID string) string {
 
 // getOrCreateLog returns the open log file, per-file append mutex,
 // interval tree, and logIndex for payloadID, creating them on first
-// touch. Uses the standard double-checked-locking idiom against
-// bc.logsMu (mirrors getOrCreateMemBlock in fs.go).
+// touch. Uses the standard double-checked-locking idiom against the
+// payload's shard lock (mirrors getOrCreateMemBlock in fs.go).
 //
 // On first touch it initializes a fresh log via initLogFile; if the log
 // already exists on disk it is reopened O_RDWR and seeked to EOF for
@@ -75,8 +75,8 @@ func (bc *FSStore) logPath(payloadID string) string {
 // a pessimization.
 //
 // Returning the logIndex alongside the tree lets AppendWrite use the
-// snapshot that getOrCreateLog produced under bc.logsMu rather than
-// re-reading bc.logIndices on a second RLock cycle. That second lookup
+// snapshot that getOrCreateLog produced under the shard lock rather than
+// re-reading the shard's logIndices on a second RLock cycle. That second lookup
 // could observe a nil idx if the map had been cleared between AppendWrite's
 // tree.Insert and the logIndex re-read, producing a tree/logIndex
 // divergence that wedged rollup (#668).
@@ -87,30 +87,35 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 	// otherwise place a log file outside <baseDir>/logs. Recovery already
 	// validates filenames read from disk (recovery.go ~line 254); this
 	// guard closes the symmetric write-path gap. The check is intentionally
-	// upstream of bc.logsMu so a malicious id can't take the global RLock
+	// upstream of the shard lock so a malicious id can't take a shard RLock
 	// either.
 	if !isValidPayloadID(payloadID) {
 		return nil, nil, nil, nil, fmt.Errorf("%w: %q", ErrInvalidPayloadID, payloadID)
 	}
 
+	// C2: per-payload state lives in the shard for this payloadID, so the
+	// create-path write lock below contends only with other payloads in the
+	// same shard, not the whole store.
+	sh := bc.shardFor(payloadID)
+
 	// Fast path: all four already present.
-	bc.logsMu.RLock()
-	lf, lfOk := bc.logFDs[payloadID]
-	mu, muOk := bc.logLocks[payloadID]
-	tree, treeOk := bc.dirtyIntervals[payloadID]
-	idx, idxOk := bc.logIndices[payloadID]
-	bc.logsMu.RUnlock()
+	sh.mu.RLock()
+	lf, lfOk := sh.logFDs[payloadID]
+	mu, muOk := sh.logLocks[payloadID]
+	tree, treeOk := sh.dirtyIntervals[payloadID]
+	idx, idxOk := sh.logIndices[payloadID]
+	sh.mu.RUnlock()
 	if lfOk && muOk && treeOk && idxOk {
 		return lf, mu, tree, idx, nil
 	}
 
 	// Slow path: upgrade to write lock, double-check, create missing entries.
-	bc.logsMu.Lock()
-	defer bc.logsMu.Unlock()
-	lf, lfOk = bc.logFDs[payloadID]
-	mu, muOk = bc.logLocks[payloadID]
-	tree, treeOk = bc.dirtyIntervals[payloadID]
-	idx, idxOk = bc.logIndices[payloadID]
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	lf, lfOk = sh.logFDs[payloadID]
+	mu, muOk = sh.logLocks[payloadID]
+	tree, treeOk = sh.dirtyIntervals[payloadID]
+	idx, idxOk = sh.logIndices[payloadID]
 	if !lfOk {
 		path := bc.logPath(payloadID)
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -150,35 +155,36 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 		// Bound method value captures lf.f at construction; lf.f is not
 		// rotated for the FSStore lifetime, so the binding stays valid.
 		lf.groupCommit = newGroupCommit(lf.f.Sync)
-		bc.logFDs[payloadID] = lf
+		sh.logFDs[payloadID] = lf
 	}
 	if !muOk {
 		mu = &sync.Mutex{}
-		bc.logLocks[payloadID] = mu
+		sh.logLocks[payloadID] = mu
 	}
 	// C1: pair every payload's append mutex with a rollup mutex, allocated
-	// under the same bc.logsMu write lock so rollupFile always observes a
+	// under the same shard write lock so rollupFile always observes a
 	// non-nil rollup lock whenever the append mutex exists.
-	if _, rmuOk := bc.rollupLocks[payloadID]; !rmuOk {
-		bc.rollupLocks[payloadID] = &sync.Mutex{}
+	if _, rmuOk := sh.rollupLocks[payloadID]; !rmuOk {
+		sh.rollupLocks[payloadID] = &sync.Mutex{}
 	}
 	if !treeOk {
 		tree = newIntervalTree()
-		bc.dirtyIntervals[payloadID] = tree
+		sh.dirtyIntervals[payloadID] = tree
 	}
 	// Direction-1 rollup redesign: pair every payload's interval tree
 	// with a logIndex. The logIndex is allocated on first touch (here)
-	// and from recovery's install path. Both sites run under bc.logsMu.
+	// and from recovery's install path. Both sites run under the shard's
+	// write lock.
 	//
 	// #668: the tree and logIndex MUST be allocated under the same
-	// bc.logsMu write lock so any caller that observes a non-nil tree on
+	// shard write lock so any caller that observes a non-nil tree on
 	// the fast path also observes a non-nil logIndex. A prior version
-	// re-read bc.logIndices on a second RLock cycle inside AppendWrite,
+	// re-read the shard's logIndices on a second RLock cycle inside AppendWrite,
 	// which could see nil and skip Append while tree.Insert had already
 	// landed — wedging the rollup on the next stabilization tick.
 	if !idxOk {
 		idx = newLogIndex()
-		bc.logIndices[payloadID] = idx
+		sh.logIndices[payloadID] = idx
 	}
 	return lf, mu, tree, idx, nil
 }
@@ -234,9 +240,10 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 	// DeleteAppendLog tombstones the id (DeleteAppendLog acquires the
 	// per-file mutex after tombstoning, and any pressure-blocked writer
 	// re-checks this flag each loop iteration below).
-	bc.logsMu.RLock()
-	_, isDeleted := bc.tombstones[payloadID]
-	bc.logsMu.RUnlock()
+	tsh := bc.shardFor(payloadID)
+	tsh.mu.RLock()
+	_, isDeleted := tsh.tombstones[payloadID]
+	tsh.mu.RUnlock()
 	if isDeleted {
 		return ErrDeleted
 	}
@@ -288,7 +295,7 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 
 	mu.Lock()
 	// Guarded unlock so the error path can release `mu` BEFORE acquiring
-	// bc.logsMu.Lock() (FIX-2 lock-order discipline) without risking a
+	// the shard lock (FIX-2 lock-order discipline) without risking a
 	// double-unlock panic from this deferred call.
 	muUnlocked := false
 	defer func() {
@@ -311,7 +318,7 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 	// a wasted log append; DeleteAppendLog itself acquires the same mutex
 	// immediately after tombstoning so this check is race-free.
 	//
-	// Also re-validate `lf` against the current bc.logFDs entry: if
+	// Also re-validate `lf` against the current shard's logFDs entry: if
 	// DeleteAppendLog ran fully (including step 5's logFDs+tombstones
 	// clear) BETWEEN the writer's pre-mutex tombstone check and the
 	// mutex hand-off, our snapshotted `lf` references a closed/unlinked
@@ -323,10 +330,10 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 	// the client. The recreate path is intentionally NOT followed by
 	// the same in-flight writer — it belongs to a different file
 	// lifecycle.
-	bc.logsMu.RLock()
-	_, isDeleted = bc.tombstones[payloadID]
-	curLf, curLfOk := bc.logFDs[payloadID]
-	bc.logsMu.RUnlock()
+	tsh.mu.RLock()
+	_, isDeleted = tsh.tombstones[payloadID]
+	curLf, curLfOk := tsh.logFDs[payloadID]
+	tsh.mu.RUnlock()
 	if isDeleted {
 		return ErrDeleted
 	}
@@ -343,21 +350,21 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		// LOCK ORDERING (FIX-2 / FIX-20 extension)
 		//   per-file `mu` (held by caller across this region)
 		//     → groupCommit.mu (acquired inside lf.groupCommit.Sync below)
-		// → bc.logsMu (NEVER held while waiting on groupCommit.mu
-		//                    the coordinator NEVER references logsMu
+		// → the shard lock (NEVER held while waiting on groupCommit.mu
+		//                    the coordinator NEVER references a shard lock
 		//                    directly — enforced by the
 		//                    TestGroupCommit_NoLogsMuTouch grep gate).
 		// The pre-Phase-19 rule still holds: release per-file mu BEFORE
-		// acquiring bc.logsMu.Lock() (any path that holds logsMu and
+		// acquiring the shard lock (any path that holds the shard lock and
 		// waits on mu would otherwise deadlock against us; the global
-		// rule is "always acquire mu before logsMu" — here we guarantee
-		// it by releasing mu first).
+		// rule is "always acquire mu before the shard lock" — here we
+		// guarantee it by releasing mu first).
 		//
-		// FIX-20: remove the lf entry from bc.logFDs BEFORE closing the
+		// FIX-20: remove the lf entry from the shard's logFDs BEFORE closing the
 		// fd. The previous order (close, then unlock-and-delete) opened
 		// a use-after-close window: any concurrent reader (another
 		// AppendWrite or rollupFile) that snapshotted `lf` from
-		// bc.logFDs while we held the per-file mutex could still hold
+		// the shard's logFDs while we held the per-file mutex could still hold
 		// the same `*logFile` pointer, and once we Close()d the fd they
 		// would read/write a closed descriptor. Removing the map entry
 		// first guarantees no NEW caller can retrieve this lf, and the
@@ -367,9 +374,9 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		// hold, Close() is safe.
 		mu.Unlock()
 		muUnlocked = true
-		bc.logsMu.Lock()
-		delete(bc.logFDs, payloadID)
-		bc.logsMu.Unlock()
+		tsh.mu.Lock()
+		delete(tsh.logFDs, payloadID)
+		tsh.mu.Unlock()
 		_ = lf.f.Close()
 		return fmt.Errorf("append log: %w", err)
 	}
@@ -406,7 +413,7 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 	// when records arrived out of file-offset order.
 	//
 	// #668: idx is the snapshot getOrCreateLog returned under
-	// bc.logsMu, paired with tree under the same lock. Append BEFORE
+	// the shard lock, paired with tree under the same lock. Append BEFORE
 	// tree.Insert so a future rollup pass that observes the dirty
 	// interval is guaranteed to also see the matching logIndex entry,
 	// closing the divergence window that wedged rollupFile permanently.
@@ -445,8 +452,8 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 // because
 //
 //   - Step 2's Lock/Unlock barrier waits for any goroutine that
-//     snapshotted bc.logFDs / bc.logLocks BEFORE step 1's
-//     bc.tombstones[payloadID] = struct{}{} to complete. By the time
+//     snapshotted the shard's logFDs / logLocks BEFORE step 1's
+//     tombstones[payloadID] = struct{}{} to complete. By the time
 //     step 5 runs, no in-flight AppendWrite or rollup can still be
 //     racing against the tombstone clear.
 //   - Steps 4 and 5 happen AFTER the drain — when we clear the
@@ -469,7 +476,7 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 // open/00.t).
 //
 // Ordering (Blocker 3 fix)
-//  1. Set tombstone under bc.logsMu so new AppendWrites and new rollupFile
+//  1. Set tombstone under the shard lock so new AppendWrites and new rollupFile
 //     entries short-circuit immediately.
 //  2. Acquire the per-file mutex. Because rollupFile holds the
 //     same mutex through reconstructStream → chunker → StoreChunk →
@@ -498,19 +505,17 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 		return ErrStoreClosed
 	}
 
-	// Step 1: tombstone + snapshot mutex/fd under the shared lock. We
-	// release logsMu before acquiring the per-file mutex so a concurrent
-	// rollup that already holds the per-file mutex can still RLock logsMu
-	// (e.g., inside isTombstoned) without deadlocking.
-	bc.logsMu.Lock()
-	if bc.tombstones == nil {
-		bc.tombstones = make(map[string]struct{})
-	}
-	bc.tombstones[payloadID] = struct{}{}
-	mu := bc.logLocks[payloadID]
-	rmu := bc.rollupLocks[payloadID]
-	lf := bc.logFDs[payloadID]
-	bc.logsMu.Unlock()
+	// Step 1: tombstone + snapshot mutex/fd under the shard lock. We
+	// release the shard lock before acquiring the per-file mutex so a
+	// concurrent rollup that already holds the per-file mutex can still
+	// RLock the shard (e.g., inside isTombstoned) without deadlocking.
+	sh := bc.shardFor(payloadID)
+	sh.mu.Lock()
+	sh.tombstones[payloadID] = struct{}{}
+	mu := sh.logLocks[payloadID]
+	rmu := sh.rollupLocks[payloadID]
+	lf := sh.logFDs[payloadID]
+	sh.mu.Unlock()
 
 	// Step 2: wait for any in-flight AppendWrite / rollupFile to drain.
 	// When mu is nil the payload never had a log — no race to wait for.
@@ -534,7 +539,7 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 		// as `mu.Lock(); mu.Unlock()`. The pattern is intentional: we wait
 		// for any goroutine currently holding `mu` (an AppendWrite or
 		// rollupFile pass) to complete before clearing per-payload state.
-		// Subsequent state mutation is guarded by bc.logsMu.
+		// Subsequent state mutation is guarded by the shard lock.
 		//nolint:staticcheck // SA2001: intentional in-flight drain barrier
 		mu.Lock()
 		mu.Unlock() //nolint:staticcheck // SA2001: see above
@@ -590,15 +595,15 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 	// derived from the file's path (metadata/file_helpers.go
 	// buildPayloadID), so 'unlink + create at same path' must reuse
 	// the PayloadID and must therefore succeed.
-	bc.logsMu.Lock()
-	delete(bc.logFDs, payloadID)
-	delete(bc.logLocks, payloadID)
-	delete(bc.rollupLocks, payloadID)
-	delete(bc.dirtyIntervals, payloadID)
-	delete(bc.logIndices, payloadID)
-	delete(bc.truncations, payloadID)
-	delete(bc.tombstones, payloadID)
-	bc.logsMu.Unlock()
+	sh.mu.Lock()
+	delete(sh.logFDs, payloadID)
+	delete(sh.logLocks, payloadID)
+	delete(sh.rollupLocks, payloadID)
+	delete(sh.dirtyIntervals, payloadID)
+	delete(sh.logIndices, payloadID)
+	delete(sh.truncations, payloadID)
+	delete(sh.tombstones, payloadID)
+	sh.mu.Unlock()
 
 	// FIX-17: surface any step-4 unlink error after step 5 cleanup so the
 	// in-memory FSStore is left consistent regardless of whether the
@@ -672,7 +677,7 @@ func isTransientUnlinkError(err error) bool {
 // Subsequent behavior
 //   - The per-file interval tree drops entries whose Offset >= newSize and
 //     clips entries that straddle (intervalTree.DropAbove).
-//   - rollupFile consults bc.truncations and filters / clips records
+//   - rollupFile consults the shard's truncations and filters / clips records
 //     whose file_offset + len(payload) crosses newSize so the emitted
 //     chunk stream never contains data past the truncation point.
 //   - AppendWrite is NOT blocked — writes past newSize are still accepted
@@ -692,10 +697,11 @@ func (bc *FSStore) TruncateAppendLog(_ context.Context, payloadID string, newSiz
 		return ErrStoreClosed
 	}
 
-	bc.logsMu.RLock()
-	mu := bc.logLocks[payloadID]
-	tree := bc.dirtyIntervals[payloadID]
-	bc.logsMu.RUnlock()
+	sh := bc.shardFor(payloadID)
+	sh.mu.RLock()
+	mu := sh.logLocks[payloadID]
+	tree := sh.dirtyIntervals[payloadID]
+	sh.mu.RUnlock()
 
 	// Drop / clip dirty intervals under the per-file mutex so a
 	// concurrent AppendWrite cannot observe a half-updated tree.
@@ -710,12 +716,9 @@ func (bc *FSStore) TruncateAppendLog(_ context.Context, payloadID string, newSiz
 	// by a later AppendWrite + rollup still honors the boundary for the
 	// records that existed at truncate time. (Records appended AFTER the
 	// truncate are still accepted — see method doc.)
-	bc.logsMu.Lock()
-	if bc.truncations == nil {
-		bc.truncations = make(map[string]uint64)
-	}
-	bc.truncations[payloadID] = newSize
-	bc.logsMu.Unlock()
+	sh.mu.Lock()
+	sh.truncations[payloadID] = newSize
+	sh.mu.Unlock()
 
 	return nil
 }
