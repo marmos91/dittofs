@@ -155,7 +155,6 @@ func (store *MemoryMetadataStore) DeleteShare(ctx context.Context, shareName str
 			delete(store.children, key)
 			delete(store.linkCounts, key)
 			delete(store.deviceNumbers, key)
-			delete(store.sortedDirCache, key)
 		}
 	}
 

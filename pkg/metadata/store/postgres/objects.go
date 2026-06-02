@@ -92,18 +92,19 @@ func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileBlo
 		lastSyncAttemptAt = &t
 	}
 
-	// (review iteration 1): omit ref_count from the ON
-	// CONFLICT UPDATE list so concurrent IncrementRefCount / DecrementRefCount
-	// (which run as atomic SQL `+1` / `-1` UPDATEs) cannot be silently
-	// overwritten by a stale Put-with-in-memory-RefCount. RefCount on the
-	// INSERT path is still set verbatim from the caller's *FileBlock
-	// (matches the contract for new rows). For existing rows, RefCount
-	// mutates exclusively through Increment/Decrement.
+	// Omit ref_count from the ON CONFLICT UPDATE list so concurrent
+	// IncrementRefCount / DecrementRefCount (which run as atomic SQL `+1` /
+	// `-1` UPDATEs) cannot be silently overwritten by a stale
+	// Put-with-in-memory-RefCount. RefCount on the INSERT path is still set
+	// verbatim from the caller's *FileBlock (matches the contract for new
+	// rows). For existing rows, RefCount mutates exclusively through
+	// Increment/Decrement. hash uses COALESCE so a zero-hash Put never NULLs
+	// a previously-persisted good hash.
 	query := `
 		INSERT INTO file_blocks (id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (id) DO UPDATE SET
-			hash = EXCLUDED.hash,
+			hash = COALESCE(EXCLUDED.hash, file_blocks.hash),
 			data_size = EXCLUDED.data_size,
 			cache_path = EXCLUDED.cache_path,
 			block_store_key = EXCLUDED.block_store_key,
@@ -470,7 +471,7 @@ func scanFileBlockRows(rows pgx.Rows) ([]*metadata.FileBlock, error) {
 // Ensure postgresTransaction implements FileBlockStore
 var _ blockstore.FileBlockStore = (*postgresTransaction)(nil)
 
-// (review iteration 1): the FileBlockStore methods on
+// The FileBlockStore methods on
 // postgresTransaction MUST execute against the txn's own pgx.Tx, not the
 // public store's connection-pool helpers. Previously every method just
 // called `tx.store.X(...)` which routed through the pool — defeating
@@ -519,13 +520,14 @@ func (tx *postgresTransaction) Put(ctx context.Context, block *metadata.FileBloc
 		t := block.LastSyncAttemptAt
 		lastSyncAttemptAt = &t
 	}
-	// omit ref_count from the ON CONFLICT update list (matches
-	// the pool-path Put). RefCount mutates only via Increment/Decrement.
+	// Omit ref_count from the ON CONFLICT update list (matches the pool-path
+	// Put). RefCount mutates only via Increment/Decrement. hash uses COALESCE
+	// so a zero-hash Put never NULLs a previously-persisted good hash.
 	query := `
 		INSERT INTO file_blocks (id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (id) DO UPDATE SET
-			hash = EXCLUDED.hash,
+			hash = COALESCE(EXCLUDED.hash, file_blocks.hash),
 			data_size = EXCLUDED.data_size,
 			cache_path = EXCLUDED.cache_path,
 			block_store_key = EXCLUDED.block_store_key,

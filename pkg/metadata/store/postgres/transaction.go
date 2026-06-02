@@ -401,15 +401,12 @@ func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.F
 		id, shareName,
 	).Scan(&fileType, &fileSize)
 
-	// Delete related records first
-	// Note: We only delete link_counts and children of this file (if it's a directory).
-	// We do NOT delete this file from its parent's children map here - that's the
-	// responsibility of DeleteChild, which is called separately by the service layer.
-	// This matches the behavior of memory and badger stores.
-	_, _ = tx.tx.Exec(ctx, `DELETE FROM link_counts WHERE file_id = $1`, id)
-	_, _ = tx.tx.Exec(ctx, `DELETE FROM parent_child_map WHERE parent_id = $1`, id)
-
-	// Delete the file
+	// Delete the file. link_counts.file_id and parent_child_map.parent_id both
+	// declare ON DELETE CASCADE against files(id), so deleting the file row
+	// reaps this node's link-count and (if it is a directory) its child-map
+	// rows automatically. We do NOT delete this file from its parent's children
+	// map here — that is the responsibility of DeleteChild, which the service
+	// layer calls separately. This matches the memory and badger stores.
 	result, err := tx.tx.Exec(ctx, `DELETE FROM files WHERE id = $1 AND share_name = $2`, id, shareName)
 	if err != nil {
 		return mapPgError(err, "DeleteFile", "")

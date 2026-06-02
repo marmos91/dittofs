@@ -299,8 +299,8 @@ func (store *MemoryMetadataStore) ListChildren(ctx context.Context, dirHandle me
 		return []metadata.DirEntry{}, "", nil
 	}
 
-	// Get sorted entries (with caching)
-	sortedNames := store.getSortedDirEntriesWithCache(dirHandle, childrenMap)
+	// Get sorted entries
+	sortedNames := sortedChildNames(childrenMap)
 
 	// Find start position based on cursor
 	startIdx := 0

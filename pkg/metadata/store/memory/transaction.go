@@ -46,7 +46,6 @@ type txSnapshot struct {
 	children      map[string]map[string]metadata.FileHandle
 	linkCounts    map[string]uint32
 	deviceNumbers map[string]*deviceNumber
-	sortedDirs    map[string][]string
 	objectIndex   map[blockstore.ContentHash]string
 	// hadFileBlockData records whether fileBlockData was allocated at snapshot
 	// time. If the closure lazily allocated it (initFileBlockData) and then
@@ -76,7 +75,6 @@ func (store *MemoryMetadataStore) snapshotLocked() *txSnapshot {
 		children:      make(map[string]map[string]metadata.FileHandle, len(store.children)),
 		linkCounts:    maps.Clone(store.linkCounts),
 		deviceNumbers: maps.Clone(store.deviceNumbers),
-		sortedDirs:    maps.Clone(store.sortedDirCache),
 		objectIndex:   maps.Clone(store.objectIndex),
 		serverConfig:  store.serverConfig,
 		capabilities:  store.capabilities,
@@ -111,7 +109,6 @@ func (store *MemoryMetadataStore) restoreLocked(snap *txSnapshot) {
 	store.children = snap.children
 	store.linkCounts = snap.linkCounts
 	store.deviceNumbers = snap.deviceNumbers
-	store.sortedDirCache = snap.sortedDirs
 	store.objectIndex = snap.objectIndex
 	store.serverConfig = snap.serverConfig
 	store.capabilities = snap.capabilities
@@ -320,7 +317,6 @@ func (tx *memoryTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 	delete(tx.store.children, key)
 	delete(tx.store.linkCounts, key)
 	delete(tx.store.deviceNumbers, key)
-	delete(tx.store.sortedDirCache, key)
 
 	return nil
 }
@@ -361,7 +357,6 @@ func (tx *memoryTransaction) SetChild(ctx context.Context, dirHandle metadata.Fi
 	}
 
 	tx.store.children[dirKey][name] = childHandle
-	tx.store.invalidateDirCache(dirHandle)
 
 	return nil
 }
@@ -388,7 +383,6 @@ func (tx *memoryTransaction) DeleteChild(ctx context.Context, dirHandle metadata
 	}
 
 	delete(childrenMap, name)
-	tx.store.invalidateDirCache(dirHandle)
 
 	return nil
 }
@@ -406,7 +400,7 @@ func (tx *memoryTransaction) ListChildren(ctx context.Context, dirHandle metadat
 	}
 
 	// Get sorted entries
-	sortedNames := tx.store.getSortedDirEntries(dirHandle, childrenMap)
+	sortedNames := sortedChildNames(childrenMap)
 
 	// Find start position based on cursor
 	startIdx := 0
@@ -673,7 +667,6 @@ func (tx *memoryTransaction) DeleteShare(ctx context.Context, shareName string) 
 			delete(tx.store.children, key)
 			delete(tx.store.linkCounts, key)
 			delete(tx.store.deviceNumbers, key)
-			delete(tx.store.sortedDirCache, key)
 		}
 	}
 

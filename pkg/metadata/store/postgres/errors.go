@@ -3,6 +3,7 @@ package postgres
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -64,7 +65,7 @@ func mapPgErrorCode(pgErr *pgconn.PgError, operation, path string) error {
 		// collisions (unique_share_path_hash_active) stay ErrAlreadyExists
 		// so the path uniqueness contract is preserved.
 		if pgErr.ConstraintName == "files_object_id_idx" ||
-			(pgErr.ConstraintName == "" && contains(pgErr.Message, "object_id")) {
+			(pgErr.ConstraintName == "" && strings.Contains(pgErr.Message, "object_id")) {
 			return &metadata.StoreError{
 				Code:    metadata.ErrConflict,
 				Message: fmt.Sprintf("%s: object_id already mapped to another file", operation),
@@ -88,7 +89,7 @@ func mapPgErrorCode(pgErr *pgconn.PgError, operation, path string) error {
 	// 23514: check_constraint_violation
 	case "23514":
 		// Check constraints like non-empty directory, valid mode, etc.
-		if contains(pgErr.Message, "non_empty") {
+		if strings.Contains(pgErr.Message, "non_empty") {
 			return &metadata.StoreError{
 				Code:    metadata.ErrNotEmpty,
 				Message: fmt.Sprintf("%s: directory not empty", operation),
@@ -174,23 +175,4 @@ func mapPgErrorCode(pgErr *pgconn.PgError, operation, path string) error {
 			Path:    path,
 		}
 	}
-}
-
-// contains checks if a string contains a substring (case-insensitive)
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) &&
-		(s == substr ||
-			len(s) > len(substr) &&
-				(s[:len(substr)] == substr ||
-					s[len(s)-len(substr):] == substr ||
-					findSubstring(s, substr)))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
