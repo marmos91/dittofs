@@ -47,6 +47,16 @@ type MetadataService struct {
 	cookies            *CookieManager                    // NFS/SMB cookie to store token translation
 	quotas             map[string]int64                  // shareName -> quota in bytes (0 = unlimited)
 
+	// removeGen counts RemoveStoreForShare calls per share. RegisterStoreForShare
+	// snapshots a share's counter before recovering its lock manager outside s.mu
+	// and re-checks it at publish: any removal of that share during recovery bumps
+	// its counter, so the register declines to publish. This closes the
+	// register/remove TOCTOU the store-pointer re-check alone cannot: a removal
+	// that completes mid-flight and is followed by a same-pointer re-register
+	// leaves the entry looking "still ours", which would otherwise resurrect a
+	// lock manager + notifier for a removed share.
+	removeGen map[string]uint64
+
 	// graceDuration is the lock-manager grace period applied to shares whose
 	// stores carry persisted locks at registration. Zero means use the default.
 	graceDuration time.Duration
@@ -100,6 +110,7 @@ func New() *MetadataService {
 		deferredCommit:     true, // Enable deferred commits by default
 		cookies:            NewCookieManager(),
 		quotas:             make(map[string]int64),
+		removeGen:          make(map[string]uint64),
 	}
 }
 
@@ -168,6 +179,10 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 	s.mu.Lock()
 	s.stores[shareName] = store
 	_, exists := s.lockManagers[shareName]
+	// Snapshot this share's removal generation under the same lock that publishes
+	// our store. A RemoveStoreForShare for this share that lands while we recover
+	// (outside s.mu) bumps it; the publish re-check below aborts when it advanced.
+	startGen := s.removeGen[shareName]
 	s.mu.Unlock()
 
 	if exists {
@@ -247,7 +262,12 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 	// the entry is gone or no longer ours, we must abort the publish.
 	cur, stillOurs := s.stores[shareName]
 	_, lmExists := s.lockManagers[shareName]
-	removedMidFlight := !lmExists && (!stillOurs || cur != store)
+	// A removal that landed during recovery bumps removeGen. The store-pointer
+	// check below misses the case where the same store pointer is re-published
+	// after the removal (the entry then looks "still ours"), so the generation
+	// check is the authoritative removed-mid-flight signal; the pointer check
+	// remains as a defence-in-depth for a different-store re-register.
+	removedMidFlight := !lmExists && (s.removeGen[shareName] != startGen || !stillOurs || cur != store)
 	if lmExists || removedMidFlight {
 		// Our manager may have armed a grace timer above. It was never
 		// published, so abort that timer without firing onGraceEnd — letting it
@@ -336,6 +356,11 @@ func (s *MetadataService) RemoveStoreForShare(shareName string) {
 	delete(s.unifiedViews, shareName)
 	delete(s.dirChangeNotifiers, shareName)
 	delete(s.quotas, shareName)
+
+	// Bump this share's removal generation so any RegisterStoreForShare recovering
+	// it outside s.mu declines to publish: the register snapshots removeGen before
+	// recovery and re-checks it at publish (register/remove TOCTOU guard).
+	s.removeGen[shareName]++
 }
 
 // initLockManagerFromStore stamps a fresh server epoch and replays any locks

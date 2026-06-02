@@ -2,6 +2,7 @@ package metadata_test
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -224,4 +225,49 @@ func TestRegisterStoreForShare_LostRaceDoesNotEndWinnerGrace(t *testing.T) {
 		"the winner's grace window must survive a lost concurrent register")
 	require.Same(t, lm, svc.GetLockManagerForShare(shareName),
 		"the published lock manager must remain the winner's (no replacement)")
+}
+
+// TestRemoveStoreForShare_ConcurrentRegisterDoesNotResurrect is the concurrent
+// -race reproducer the area-7 REVIEW calls for. It drives the add/remove churn
+// the static finding describes: many concurrent RemoveStoreForShare vs
+// RegisterStoreForShare for the same share, with GetLockManagerForShare reading
+// throughout. Run under -race it surfaces any unsynchronised access to the
+// per-share maps across the register/remove TOCTOU window.
+func TestRemoveStoreForShare_ConcurrentRegisterDoesNotResurrect(t *testing.T) {
+	const (
+		shareName = "/churn"
+		rounds    = 200
+	)
+
+	svc := metadata.New()
+	store := memory.NewMemoryMetadataStoreWithDefaults()
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds*4; i++ {
+			_ = svc.GetLockManagerForShare(shareName)
+			_, _ = svc.GetStoreForShare(shareName)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			_ = svc.RegisterStoreForShare(shareName, store)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			svc.RemoveStoreForShare(shareName)
+		}
+	}()
+
+	wg.Wait()
 }
