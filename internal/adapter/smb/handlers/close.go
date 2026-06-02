@@ -455,17 +455,34 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				metaSvc := h.Registry.GetMetadataService()
 				// For deferred base-file delete (via stream handle), check the
 				// actual target type — stream handles always have IsDirectory=false.
+				//
+				// Capture the delete target's metadata handle BEFORE removal so
+				// we can route its block-store payload purge afterwards (the
+				// handle encodes share identity and stays valid). The PayloadID
+				// to purge comes from RemoveFile's RETURN value, which is empty
+				// when content must survive (surviving hard link, or recycle to
+				// trash) — purging the open handle's PayloadID instead would
+				// destroy still-referenced content.
 				isDeleteTargetDir := openFile.IsDirectory
+				deleteTargetHandle := openFile.MetadataHandle
 				if isBaseFileDelete {
 					if targetFile, _, lookupErr := metaSvc.LookupCaseInsensitive(authCtx, deleteParentHandle, deleteFileName); lookupErr == nil && targetFile != nil {
 						isDeleteTargetDir = targetFile.Type == metadata.FileTypeDirectory
+						if encoded, encErr := metadata.EncodeFileHandle(targetFile); encErr == nil {
+							deleteTargetHandle = encoded
+						}
 					}
 				}
 				var deleteErr error
+				var removedPayloadID metadata.PayloadID
 				if isDeleteTargetDir {
 					deleteErr = metaSvc.RemoveDirectory(authCtx, deleteParentHandle, deleteFileName)
 				} else {
-					_, deleteErr = metaSvc.RemoveFile(authCtx, deleteParentHandle, deleteFileName)
+					var removed *metadata.File
+					removed, deleteErr = metaSvc.RemoveFile(authCtx, deleteParentHandle, deleteFileName)
+					if removed != nil {
+						removedPayloadID = removed.PayloadID
+					}
 				}
 
 				if deleteErr != nil {
@@ -496,6 +513,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 						}
 						h.cascadeDeleteADSStreams(authCtx, metaSvc, cascadeOF)
 					}
+
+					h.purgeBlockStorePayload(ctx.Context, deleteTargetHandle, removedPayloadID, openFile.Path, "CLOSE")
 					h.restoreParentDirFrozenTimestamps(authCtx, deleteParentHandle)
 
 					// Break parent directory leases: deletion changes directory
@@ -874,20 +893,18 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 
 	// Remove the regular file
 	metaSvc := h.Registry.GetMetadataService()
-	_, err = metaSvc.RemoveFile(authCtx, parentHandle, fileName)
+	removed, err := metaSvc.RemoveFile(authCtx, parentHandle, fileName)
 	if err != nil {
 		return fmt.Errorf("failed to remove MFsymlink file: %w", err)
 	}
 
-	// Delete content from block store (optional - ignore errors)
-	if openFile.PayloadID != "" {
-		if blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, openFile.MetadataHandle); bsErr == nil {
-			// Nil []BlockRef triggers the dual-read / legacy delete
-			// path. A later refactor will thread the caller's
-			// FileAttr.Blocks snapshot here.
-			_ = blockStore.Delete(ctx.Context, string(openFile.PayloadID), nil)
-		}
+	// Delete content from block store (best-effort). RemoveFile returns an
+	// empty PayloadID when content must survive (hard link / recycle).
+	var removedPayloadID metadata.PayloadID
+	if removed != nil {
+		removedPayloadID = removed.PayloadID
 	}
+	h.purgeBlockStorePayload(ctx.Context, openFile.MetadataHandle, removedPayloadID, openFile.Path, "CLOSE")
 
 	// Create the real symlink with default attributes
 	// Pass empty FileAttr - CreateSymlink will apply defaults
