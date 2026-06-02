@@ -17,7 +17,7 @@
 //     over live-data-deleted.
 //   - (sweep continue+capture): a Delete or list error in one prefix
 //     worker is recorded in GCStats but does not abort the run.
-//   - GC is opt-in: the operator enables it via gc.interval.
+//   - GC is opt-in: the operator triggers it on demand via dfsctl/REST.
 //
 // Cross-share aggregation lives in Runtime.RunBlockGC: it enumerates
 // distinct remote stores and invokes CollectGarbage once per remote

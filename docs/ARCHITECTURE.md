@@ -414,9 +414,8 @@ Mark is idempotent, so resume-on-restart is intentionally not built.
 
 ### Triggers and observability
 
-- **Periodic GC is not yet wired.** `gc.interval` is parsed and validated;
-  any non-zero value emits a startup WARN and is otherwise ignored.
-  Schedule via cron until the scheduler ships.
+- **Periodic GC is not yet wired.** There is no scheduler; schedule via
+  cron until one ships.
 - **On-demand** via `dfsctl store block gc <share> [--dry-run]`;
   `--dry-run` skips DELETEs and prints up to `gc.dry_run_sample_size`
   candidate keys (default 1000). The mark-sweep is global across every

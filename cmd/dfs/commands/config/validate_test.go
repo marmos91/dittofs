@@ -47,10 +47,18 @@ func runValidateCapture(t *testing.T, configPath string) (string, error) {
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
+	// Restore stdout and close the read end even if runConfigValidate or a
+	// later assertion calls t.Fatalf — avoids leaking FDs / leaving stdout
+	// redirected for subsequent tests in the package.
+	t.Cleanup(func() {
+		os.Stdout = old
+		_ = r.Close()
+	})
 	os.Stdout = w
 
 	runErr := runConfigValidate(cmd, nil)
 
+	// Close the write end so ReadFrom sees EOF, then restore immediately.
 	_ = w.Close()
 	os.Stdout = old
 
