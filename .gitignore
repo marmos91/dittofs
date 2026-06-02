@@ -43,6 +43,7 @@ go.work.sum
 /dfs
 /dfsctl
 /dfsbench
+/gendocs
 /main
 
 # Operator binaries and tools

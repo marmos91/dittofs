@@ -2,6 +2,17 @@
 
 DittoFS implements a unified ACL model that works seamlessly across both NFSv4 and SMB protocols. A single ACL set on a file via one protocol is immediately visible and enforceable from the other.
 
+**Terms used in this document** (see the [Glossary](GLOSSARY.md) for the full list):
+
+- **ACL** (Access Control List) — the ordered list of rules that decides who may do what to a file.
+- **ACE** (Access Control Entry) — a single rule inside an ACL, e.g. "allow user X to read and write".
+- **Security descriptor** — the Windows/SMB structure bundling a file's owner, group, DACL, and SACL together.
+- **DACL** (Discretionary ACL) — the part of a security descriptor that grants or denies access.
+- **SACL** (System ACL) — the auditing part of a security descriptor (which accesses get logged).
+- **SID** (Security Identifier) — the Windows-style unique ID for a user or group, e.g. `S-1-5-21-…`.
+
+Full definitions of these Windows structures live in [MS-DTYP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/); the NFSv4 ACL model is [RFC 7530 §6](https://www.rfc-editor.org/rfc/rfc7530#section-6).
+
 ## Architecture
 
 ```mermaid
@@ -375,18 +386,18 @@ Plus a control plane SID mapping table:
 
 ## Future Improvements
 
-The [tradeoff analysis](#tradeoff-analysis-acl-abstraction-approaches) recommends Approach C (Enhanced NFSv4 Model). The implementation roadmap:
+The [tradeoff analysis](#tradeoff-analysis-acl-abstraction-approaches) recommends Approach C (Enhanced NFSv4 Model). The improvements below are incremental and backward compatible; the first alone closes the primary gap.
 
-### Phase 1: SID Field on ACE
+### SID field on ACE
 
-Add optional `SID` field to `acl.ACE` (`json:"sid,omitempty"`). When an SMB client sets an ACL with a real AD SID, store it alongside the `Who` string. SMB reads `SID` when present, falls back to fabrication when not. NFS ignores the field entirely.
+Add an optional `SID` field to `acl.ACE` (`json:"sid,omitempty"`). When an SMB client sets an ACL with a real AD SID, store it alongside the `Who` string. SMB reads `SID` when present, falls back to fabrication when not. NFS ignores the field entirely.
 
 - **Backward compatible**: Existing stored ACLs work unchanged (field is `omitempty`)
 - **Eliminates**: SID round-trip limitation for all new ACLs
 
-### Phase 2: Control Plane SID Mapping Table
+### Control-plane SID mapping table
 
-Add a mapping table linking NFS principals, Windows SIDs, and control plane usernames:
+Add a mapping table linking NFS principals, Windows SIDs, and control-plane usernames:
 
 | Principal (NFS) | SID (Windows) | Username (CP) |
 |---|---|---|
@@ -395,15 +406,13 @@ Add a mapping table linking NFS principals, Windows SIDs, and control plane user
 
 Extend `IdentityMapper` to query this table for SID → principal resolution (and vice versa).
 
-### Phase 3: SACL Container
+### SACL container
 
-Add optional SACL field on `FileAttr` for audit/alarm ACEs separate from the DACL. This enables SMB clients to set and query system ACLs independently.
+Add an optional SACL field on `FileAttr` for audit/alarm ACEs separate from the DACL. This enables SMB clients to set and query system ACLs independently.
 
-### Phase 4: AD/LDAP Integration
+### AD/LDAP integration
 
-Extend `IdentityMapper` with an LDAP-backed implementation for real domain principal and group resolution. Combined with Phase 2, this enables full Active Directory interoperability.
-
-Each phase is incremental and backward compatible. Phase 1 alone closes the primary gap.
+Extend `IdentityMapper` with an LDAP-backed implementation for real domain principal and group resolution. Combined with the SID mapping table, this enables full Active Directory interoperability.
 
 ## References
 

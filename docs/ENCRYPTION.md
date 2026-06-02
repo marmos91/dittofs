@@ -13,7 +13,7 @@ Encryption protects block payloads against:
 Encryption does **not** protect:
 
 - **Metadata.** Filenames, directory structure, file sizes, and timestamps are stored in the metadata backend in plaintext.
-- **In-memory state.** Plaintext blocks live in the cache (RAM and disk tier) while a share is mounted. For full at-rest protection of the cache, use an encrypted filesystem under `~/.config/dfs` (FileVault / LUKS / dm-crypt).
+- **In-memory state.** Plaintext blocks live in the cache (RAM and disk tier) while a share is mounted. For full at-rest protection of the cache, place each share's local storage directory on an encrypted filesystem (FileVault / LUKS / dm-crypt).
 - **Compromised dfs daemons.** The master key bytes live in process memory for the daemon's lifetime; anyone with `ptrace` against the daemon can recover them.
 
 ## Design overview

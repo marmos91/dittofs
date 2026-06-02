@@ -2,6 +2,9 @@
 
 DittoFS uses a flexible configuration system with support for YAML/TOML files and environment variable overrides.
 
+> Unfamiliar with terms like CAS, AUTH_UNIX, NTLM, or root-squash? See the
+> [Glossary](GLOSSARY.md) for plain-language definitions.
+
 ## Table of Contents
 
 - [Configuration Files](#configuration-files)
@@ -25,7 +28,23 @@ DittoFS uses a flexible configuration system with support for YAML/TOML files an
 
 ### Default Location
 
-`$XDG_CONFIG_HOME/dittofs/config.yaml` (typically `~/.config/dittofs/config.yaml`)
+The config file is resolved per platform:
+
+| Platform | Default config file |
+| --- | --- |
+| Linux / macOS | `$XDG_CONFIG_HOME/dittofs/config.yaml` (typically `~/.config/dittofs/config.yaml`) |
+| Windows | `%APPDATA%\dittofs\config.yaml` (typically `...\AppData\Roaming\dittofs\config.yaml`) |
+
+Pass `--config <path>` to any `dfs` command to override the location.
+
+### State Directory
+
+Runtime state — the log file (`dittofs.log`) and PID file — lives in a separate state directory, also resolved per platform:
+
+| Platform | Default state directory |
+| --- | --- |
+| Linux / macOS | `$XDG_STATE_HOME/dittofs` (typically `~/.local/state/dittofs`); falls back to the system temp directory if no home is resolvable |
+| Windows | `%LOCALAPPDATA%\dittofs` |
 
 ### Initialization
 
@@ -143,7 +162,7 @@ database:
   sqlite:
     # Path to the SQLite database file
     # Default: $XDG_CONFIG_HOME/dittofs/controlplane.db
-    path: /var/lib/dfs/controlplane.db
+    path: /var/lib/dittofs/controlplane.db
 
   # PostgreSQL configuration (for HA deployments)
   postgres:
@@ -254,46 +273,44 @@ controlplane:
 
 ### 6. Block Store Configuration
 
-Per-share block storage is configured via `dfsctl store` / `dfsctl share` commands (not the server config file). Each share owns an isolated local storage directory plus a reference to a remote store (S3 or filesystem). The block store lives in `pkg/blockstore/engine/` and composes a local tier, a remote tier, the unified in-memory `Cache` (CAS-keyed; absorbed the former read-buffer + standalone prefetcher per Phase 12 / CACHE-01), a syncer (async local-to-remote transfer), and a garbage collector.
+Per-share block storage is configured via `dfsctl store` / `dfsctl share` commands (not the server config file). Each share owns an isolated local storage directory plus a reference to a remote store (S3 or filesystem). The block store lives in `pkg/blockstore/engine/` and composes a local tier, a remote tier, the unified CAS-keyed in-memory `Cache`, a syncer (async local-to-remote transfer), and a garbage collector.
 
-#### Hybrid append-log tier (Phase 10 / LSL-04/05, experimental)
+#### Append-log tier
 
-> The append-log path is the default write path in v0.15.0. Writes land in
-> per-file append-only logs, are compacted into CAS chunks (`blocks/{hh}/{hh}/{hex}`),
-> and garbage-collected by the mark-sweep GC (Phase 11). Upgrading from v0.14.x
-> requires running `dfs migrate-to-cas` to convert legacy `{payloadID}/block-{idx}`
-> blocks to the CAS layout before starting the v0.15.0 server.
+The local filesystem store writes through per-file append-only logs that are
+compacted into content-addressed chunks (`blocks/{hh}/{hh}/{hex}`) and
+garbage-collected by the mark-sweep GC. This is the only local write path —
+older servers' `{payloadID}/block-{idx}` layout must be converted with
+`dfs migrate-to-cas` before a v0.16+ server will start.
 
 These keys live inside the per-share `local` block store's `config` JSON
-(passed via `dfsctl store local add --config '{...}'` or the REST API).
-They only take effect when the local store type is `fs`.
+(passed via `dfsctl store block local add --config '{...}'` or the REST API).
+They only take effect when the local store type is `fs`. (A legacy
+`use_append_log` key is accepted but ignored — appending is mandatory — and
+logs a startup warning.)
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `use_append_log` | bool | `false` | Enable the hybrid append-log + hash-keyed blocks tier (LSL-01/02/03). |
-| `max_log_bytes` | int | `1073741824` (1 GiB) | Per-share total-log-bytes budget; writers block on pressure when exceeded (LSL-04, INV-05). Values above 2^53 (~9 PiB) lose precision through JSON parsing. |
-| `rollup_workers` | int | `2` | Number of rollup goroutines (BLAKE3 + FastCDC) per share (D-13/D-33). |
-| `stabilization_ms` | int | `250` | Dirty-interval stabilization window in milliseconds before rollup (D-16). |
-| `orphan_log_min_age_seconds` | int | `3600` (1h) | Minimum log-file mtime age before the boot-time orphan sweep may unlink it. Prevents fresh (not-yet-rolled-up) logs from being swept when metadata is absent (D-28, Warning 3). |
+| `max_log_bytes` | int | `1073741824` (1 GiB) | Per-share total-log-bytes budget; writers block on pressure when exceeded. Values above 2^53 (~9 PiB) lose precision through JSON parsing. |
+| `rollup_workers` | int | `2` | Number of rollup goroutines (BLAKE3 + FastCDC) per share. |
+| `stabilization_ms` | int | `250` | Dirty-interval stabilization window in milliseconds before rollup. |
+| `orphan_log_min_age_seconds` | int | `3600` (1h) | Minimum log-file mtime age before the boot-time orphan sweep may unlink it. Prevents fresh (not-yet-rolled-up) logs from being swept when metadata is absent. |
 
-Env-var mapping follows the existing dot-path convention:
-`DITTOFS_BLOCKSTORE_LOCAL_FS_USE_APPEND_LOG`,
+Env-var mapping follows the dot-path convention:
 `DITTOFS_BLOCKSTORE_LOCAL_FS_MAX_LOG_BYTES`,
 `DITTOFS_BLOCKSTORE_LOCAL_FS_ROLLUP_WORKERS`,
 `DITTOFS_BLOCKSTORE_LOCAL_FS_STABILIZATION_MS`,
 `DITTOFS_BLOCKSTORE_LOCAL_FS_ORPHAN_LOG_MIN_AGE_SECONDS`.
 
-**Requirement:** enabling `use_append_log` requires a metadata backend that
-implements `metadata.RollupStore` (memory, badger, and postgres all qualify
-in Phase 10). Attempting to enable the flag against a metadata backend
-without this interface yields an explicit error at share creation —
-there is no silent fallthrough (threat T-10-08-04).
+The local `fs` store requires a metadata backend that implements
+`metadata.RollupStore` to persist each log's `rollup_offset`; memory, badger,
+and postgres all qualify.
 
-#### Syncer + GC knobs (v0.15.0 Phase 11)
+#### Syncer + GC knobs
 
-v0.15.0 (Phase 11 / A2) introduces the CAS write path and a fail-closed
-mark-sweep garbage collector. The new knobs live inside the per-share
-local block store's `config` JSON under the `syncer` and `gc` sub-maps:
+The CAS write path uses an async syncer and a fail-closed mark-sweep
+garbage collector. Their knobs live inside the per-share local block store's
+`config` JSON under the `syncer` and `gc` sub-maps:
 
 ```yaml
 blockstore:
@@ -359,7 +376,7 @@ and `gc` blocks directly, with no `blockstore.` prefix):
 `DITTOFS_GC_GRACE_PERIOD`,
 `DITTOFS_GC_DRY_RUN_SAMPLE_SIZE`.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep-v0150-phase-11)
+See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep)
 for the full mark-sweep design and [CLI.md](CLI.md) for the on-demand
 `dfsctl store block gc` command.
 
@@ -700,71 +717,49 @@ In this example, `special-viewer` gets `read-write` on `/archive` (user explicit
 
 #### CLI Management Commands
 
-DittoFS provides CLI commands to manage users and groups without manually editing the config file.
+Users and groups live in the control-plane database, not the config file. Manage them with
+`dfsctl` against a running server (run `dfsctl login` first). See [CLI.md](CLI.md) for the
+complete, generated reference.
 
 **User Commands:**
 
 ```bash
-# Add a new user (prompts for password)
-dfs user add alice
-dfs user add alice --uid 1005 --gid 100 --groups editors,viewers
+# Create a user (password prompted interactively)
+dfsctl user create --username alice
+dfsctl user create --username alice --host-uid                 # map to your current host UID
+dfsctl user create --username bob --email bob@example.com --groups editors,viewers
 
-# Delete a user
-dfs user delete alice
+# Inspect and edit
+dfsctl user list
+dfsctl user get alice
+dfsctl user update alice --email alice@example.com
+dfsctl user delete alice
 
-# List all users
-dfs user list
-
-# Change password
-dfs user passwd alice
-
-# Grant share permission
-dfs user grant alice /export read-write
-
-# Revoke share permission
-dfs user revoke alice /export
-
-# List user's groups
-dfs user groups alice
-
-# Add user to group
-dfs user join alice editors
-
-# Remove user from group
-dfs user leave alice editors
+# Passwords
+dfsctl user change-password           # change your own
+dfsctl user password alice            # admin: reset another user's password
 ```
 
 **Group Commands:**
 
 ```bash
-# Add a new group
-dfs group add editors
-dfs group add editors --gid 101
-
-# Delete a group
-dfs group delete editors
-dfs group delete editors --force  # Delete even if has members
-
-# List all groups
-dfs group list
-
-# List group members
-dfs group members editors
-
-# Grant share permission
-dfs group grant editors /export read-write
-
-# Revoke share permission
-dfs group revoke editors /export
+dfsctl group create --name editors
+dfsctl group list
+dfsctl group get editors
+dfsctl group add-user editors alice
+dfsctl group remove-user editors alice
+dfsctl group delete editors
 ```
 
-**Using Custom Config File:**
+**Share Permissions:**
 
-All user and group commands support the `--config` flag:
+Permissions are granted per share to a user or group via `dfsctl share permission`:
 
 ```bash
-dfs user list --config /etc/dittofs/config.yaml
-dfs group add admins --config /etc/dittofs/config.yaml
+dfsctl share permission list  /export
+dfsctl share permission grant /export --user alice  --level read-write
+dfsctl share permission grant /export --group editors --level read
+dfsctl share permission revoke /export --user alice
 ```
 
 ### 10. Protocol Adapters
@@ -1304,7 +1299,7 @@ export DITTOFS_SERVER_SHUTDOWN_TIMEOUT=60s
 
 # Database (Control Plane)
 export DITTOFS_DATABASE_TYPE=sqlite
-export DITTOFS_DATABASE_SQLITE_PATH=/var/lib/dfs/controlplane.db
+export DITTOFS_DATABASE_SQLITE_PATH=/var/lib/dittofs/controlplane.db
 # PostgreSQL
 export DITTOFS_DATABASE_TYPE=postgres
 export DITTOFS_DATABASE_POSTGRES_HOST=localhost
@@ -1419,7 +1414,7 @@ Persistent storage with access control, structured logging, and telemetry:
 logging:
   level: WARN
   format: json
-  output: /var/log/dfs/server.log
+  output: /var/log/dittofs/server.log
 
 telemetry:
   enabled: true
@@ -1444,9 +1439,9 @@ Then create stores, shares, and enable adapters via CLI:
 ```bash
 # Create stores
 ./dfsctl store metadata add --name prod-badger --type badger \
-  --config '{"path":"/var/lib/dfs/metadata"}'
+  --config '{"path":"/var/lib/dittofs/metadata"}'
 ./dfsctl store block add --kind local --name prod-local --type fs \
-  --config '{"path":"/var/lib/dfs/blocks"}'
+  --config '{"path":"/var/lib/dittofs/blocks"}'
 ./dfsctl store block add --kind remote --name prod-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"dfs-production"}'
 
@@ -1467,11 +1462,11 @@ Different shares using different storage backends:
 # Create metadata stores
 ./dfsctl store metadata add --name fast-memory --type memory
 ./dfsctl store metadata add --name persistent-badger --type badger \
-  --config '{"path":"/var/lib/dfs/metadata"}'
+  --config '{"path":"/var/lib/dittofs/metadata"}'
 
 # Create block stores
 ./dfsctl store block add --kind local --name local-cache --type fs \
-  --config '{"path":"/var/lib/dfs/blocks"}'
+  --config '{"path":"/var/lib/dittofs/blocks"}'
 ./dfsctl store block add --kind remote --name cloud-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"my-dfs-bucket"}'
 
@@ -1496,11 +1491,11 @@ Multiple shares sharing the same metadata database:
 ```bash
 # Create shared metadata store
 ./dfsctl store metadata add --name shared-badger --type badger \
-  --config '{"path":"/var/lib/dfs/shared-metadata"}'
+  --config '{"path":"/var/lib/dittofs/shared-metadata"}'
 
 # Create block stores
 ./dfsctl store block add --kind local --name local-cache --type fs \
-  --config '{"path":"/var/lib/dfs/blocks"}'
+  --config '{"path":"/var/lib/dittofs/blocks"}'
 ./dfsctl store block add --kind remote --name s3-production --type s3 \
   --config '{"region":"us-east-1","bucket":"prod-bucket"}'
 ./dfsctl store block add --kind remote --name s3-archive --type s3 \

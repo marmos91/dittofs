@@ -110,7 +110,7 @@ Configure your metadata store accordingly:
 
 ```bash
 ./dfsctl store metadata add --name persistent --type badger \
-  --config '{"path":"/var/lib/dfs/metadata"}'
+  --config '{"path":"/var/lib/dittofs/metadata"}'
 ```
 
 ### Can I import an existing filesystem into DittoFS?
@@ -119,29 +119,23 @@ Not yet, but the path-based file handle strategy in BadgerDB enables this as a f
 handles are deterministic based on file paths (`shareName:/path/to/file`), making filesystem scanning
 and import possible.
 
-### Is content deduplication supported?
-
-Not currently, but the block store abstraction allows for implementing content-addressable storage
-with deduplication. This could be added as a custom block store or a wrapper around existing stores.
-
 ### Does DittoFS deduplicate blocks across files?
 
-Not yet in production. The v0.15.0 milestone is the refactor that puts
-content-addressable storage (CAS) and FastCDC content-defined chunking
-into place. Phase 10 ships the chunker (min=1 MiB / avg=4 MiB / max=16 MiB,
-normalization level 2), BLAKE3 hashing, and the local hybrid tier
-(append-only log + hash-keyed `blocks/{hh}/{hh}/{hex}` directory) behind
-the experimental `use_append_log` feature flag. Phase 11 wires the remote
-CAS write path and adds mark-sweep GC. Phase 13 delivers the file-level
-dedup short-circuit that's expected to drive the primary VM-workload
-40-80% storage reduction target.
+Yes. The block store is content-addressable (CAS): file content is chunked
+with FastCDC (min 1 MiB / avg 4 MiB / max 16 MiB, normalization level 2),
+each chunk is hashed with BLAKE3, and chunks are stored under a hash-keyed
+`blocks/{hh}/{hh}/{hex}` layout locally and `cas/{hh}/{hh}/{hex}` remotely.
+Two files that share a chunk reference the same stored object, so
+**chunk-level dedup is automatic** on write.
 
-Track progress: [#419](https://github.com/marmos91/dittofs/issues/419).
+On top of that, a **file-level dedup short-circuit** can skip uploading a
+file's chunks entirely when an identical file already exists (see the next
+two questions).
 
 ### What's an ObjectID and when does it get computed?
 
 An `ObjectID` is a BLAKE3 Merkle root over a file's content-defined
-chunk hashes, defined by Phase 13 (v0.15.0 A4):
+chunk hashes:
 
     ObjectID = BLAKE3("dittofs:objectid:v1\x00" || h0 || h1 || ... || hN-1)
 
@@ -162,19 +156,18 @@ short-circuit lookup never returns a half-quiesced file.
 
 A non-zero ObjectID always reflects a fully-`Remote` consistent
 state. Empty files dedup to one canonical constant
-`BLAKE3("dittofs:objectid:v1\x00")`; legacy pre-Phase-13 files keep
-the all-zero sentinel until Phase 14 backfills.
+`BLAKE3("dittofs:objectid:v1\x00")`; files written before ObjectID existed
+keep the all-zero sentinel until `dfs migrate-to-cas` backfills them.
 
 See
-[ARCHITECTURE.md — Phase 13 File-Level Dedup](ARCHITECTURE.md#phase-13-file-level-dedup-objectid--merkle-root-v0150-a4)
+[ARCHITECTURE.md — File-Level Dedup](ARCHITECTURE.md#file-level-dedup-objectid--merkle-root)
 for the full design.
 
 ### Why doesn't my file dedup until I close it?
 
-DittoFS's file-level dedup short-circuit (BSCAS-05) fires at quiesce,
-not on every write. Mid-write, blocks dedup at the *chunk* level
-(Phase 11 `GetByHash`) — if your write produces a chunk that already
-exists remotely, no PUT is issued.
+DittoFS's file-level dedup short-circuit fires at quiesce, not on every
+write. Mid-write, blocks dedup at the *chunk* level (`GetByHash`) — if your
+write produces a chunk that already exists remotely, no PUT is issued.
 
 But the savings of skipping every chunk's upload entirely (file-level
 dedup) only kick in once the full file fingerprint exists — the
@@ -186,15 +179,13 @@ This is intentional: file-level dedup targets the workflow of cloning
 a VM image or copying a large file (where the whole content arrives
 in one burst). Random in-place writes inside a running VM benefit
 from the chunk-level path and don't get penalized waiting for a
-quiesce-only fingerprint. The trigger condition (D-09) — "all blocks
-`Pending` AND no prior ObjectID" — explicitly excludes the running-VM
-hot path.
+quiesce-only fingerprint. The trigger condition — "all blocks `Pending`
+AND no prior ObjectID" — explicitly excludes the running-VM hot path.
 
-### How does garbage collection work in v0.15.0?
+### How does garbage collection work?
 
-v0.15.0 (Phase 11 / A2) replaces the previous path-prefix GC with a
-fail-closed mark-sweep over the union of every live block's
-`ContentHash`:
+The block-store GC is a fail-closed mark-sweep over the union of every live
+block's `ContentHash`:
 
 1. **Mark.** Stream every `FileBlock`'s `ContentHash` via the
    `MetadataStore.EnumerateFileBlocks(ctx, fn)` cursor across **every
@@ -213,47 +204,27 @@ garbage that survives a transient is reclaimed on the next run.
 
 Triggers:
 
-- v0.15.0 ships only on-demand GC. `gc.interval` is reserved for a
-  periodic-scheduler phase — any configured value emits a startup WARN
-  and is otherwise ignored today; schedule via cron until then.
+- Periodic GC is not yet wired. `gc.interval` is reserved for a future
+  scheduler — any configured value emits a startup WARN and is otherwise
+  ignored today; schedule via cron until then.
 - On-demand via `dfsctl store block gc <share> [--dry-run]`. Inspect the
-  most recent run with `dfsctl store block gc-status <share>`.
+  most recent run with `dfsctl store block gc-status <share>`. The
+  mark-sweep is global across every share that targets the same remote, so
+  `<share>` selects which remote(s) to scan.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep-v0150-phase-11)
+See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep)
 and [CONFIGURATION.md](CONFIGURATION.md) for the full design and every
 `gc.*` knob.
 
-### What is the dual-read window?
-
-Phase 11 introduces the CAS keyspace `cas/{hh}/{hh}/{hex}`, but
-existing data written before v0.15.0 lives at the legacy
-`{payloadID}/block-{N}` keys. Both keyspaces coexist during the
-**dual-read window** (Phase 11 → Phase 14):
-
-- Reads consult the metadata store: a `FileBlock` row with a non-zero
-  `ContentHash` is read from CAS with end-to-end BLAKE3 verification
-  (header pre-check on `x-amz-meta-content-hash` plus streaming
-  verifier over the body).
-- A `FileBlock` row with a zero `ContentHash` is read from the legacy
-  key with no verification (BLAKE3 cannot be retroactively applied).
-
-Resolution is by metadata key shape (one DB lookup per block), NOT by
-S3 trial-and-error.
-
-Phase 14 (A5) ships `dfsctl blockstore migrate`, which re-chunks all
-legacy data to CAS. Phase 15 (A6) deletes the legacy code path
-entirely. The dual-read code is intentionally on a deletion clock.
-
 ### Why is the cache cold after a write?
 
-It is **not**. v0.15.0 (Phase 12 / A3) makes cache invalidation
-**surgical** (CACHE-05): a write drops only the chunk-level entries
-that the write actually invalidated, not the entire file. Other chunks
-referenced by the file — and any chunks shared with other files via
-cross-VM dedup (CACHE-02) — stay warm.
+It is **not**. Cache invalidation is **surgical**: a write drops only the
+chunk-level entries that the write actually invalidated, not the entire
+file. Other chunks referenced by the file — and any chunks shared with
+other files via cross-file dedup — stay warm.
 
 If you are seeing whole-file cold misses after a write, that is a bug.
-File a report with the `dfsctl blockstore audit-refcounts <share>`
+File a report with the `dfsctl store block audit-refcounts <share>`
 output (see below) — refcount drift between `FileBlock.RefCount` and
 `FileAttr.Blocks` is the most common root cause.
 
@@ -264,50 +235,46 @@ removedHashes)` with **only the hashes that disappeared from the
 file**. Hashes that survived (unchanged ranges) and hashes still
 referenced by other files via dedup remain in the cache.
 
-### How do I run the INV-02 audit?
+### How do I run the refcount audit?
 
-INV-02 is the invariant `∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks)`
+The audit checks the invariant `∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks)`
 — every block reference in `FileAttr.Blocks` across all files MUST be
-matched by a refcount on the corresponding `FileBlock`. v0.15.0 (Phase
-12 / A3) ships an operator-facing audit:
+matched by a refcount on the corresponding `FileBlock`:
 
 ```bash
 # Aggregate counts to stdout (text by default)
-dfsctl blockstore audit-refcounts /archive
+dfsctl store block audit-refcounts /archive
 
 # Structured JSON for log aggregation / alerting
-dfsctl blockstore audit-refcounts /archive --output json
+dfsctl store block audit-refcounts /archive -o json
 
 # YAML if your tooling prefers it
-dfsctl blockstore audit-refcounts /archive --output yaml
+dfsctl store block audit-refcounts /archive -o yaml
 ```
 
 The output reports `share`, `started_at`, `duration_ms`,
 `total_files`, `total_refs`, `total_refcount`, and `delta`. **A non-zero
 `delta` indicates refcount drift** and SHOULD be triaged. The audit
 also persists its last-run summary at
-`<localStore>/audit-state/last-inv02.json` (mirrors Phase 11 GC's
-`last-run.json`).
+`<localStore>/audit-state/last-inv02.json`.
 
 The audit is **operator-invoked**, not periodic. Schedule via cron at
-the cadence that matches your operational risk tolerance until a
-periodic-scheduler phase ships.
+the cadence that matches your operational risk tolerance.
 
 For belt-and-braces protection, the property-based fuzzer at
-`pkg/metadata/storetest/inv02_fuzz_test.go` runs against all 3
-built-in backends in CI on every PR, asserting INV-02 at every
-quiescent point under concurrent create/delete/copy load.
+`pkg/metadata/storetest/inv02_fuzz_test.go` runs against all three
+built-in backends in CI on every PR, asserting the refcount invariant at
+every quiescent point under concurrent create/delete/copy load.
 
-See [CLI.md](CLI.md#dfsctl-blockstore-audit-refcounts-share) for the
-full reference.
+See [CLI.md](CLI.md) for the full reference.
 
 ### What's a BlockRef?
 
-A `BlockRef` is the 3-tuple of `(Hash ContentHash, Offset uint64, Size
+A `BlockRef` is the 3-tuple `(Hash ContentHash, Offset uint64, Size
 uint32)` defined in `pkg/blockstore/types.go`. `FileAttr.Blocks
-[]BlockRef` is the **authoritative content list** for every file in
-v0.15.0 Phase 12+: which chunks compose the file, where each chunk
-sits inside the file, and how big it is.
+[]BlockRef` is the **authoritative content list** for every file: which
+chunks compose the file, where each chunk sits inside the file, and how
+big it is.
 
 The list is:
 
@@ -316,79 +283,41 @@ The list is:
 - **Populated on every sync finalization** — the engine returns the
   new `[]BlockRef` from `WriteAt`/`Truncate`/`Delete`/`CopyPayload`
   and the caller persists it in the same metadata transaction.
-- **Empty/nil for legacy files** written before v0.15.0 Phase 12;
-  empty `[]BlockRef` triggers the Phase 11 dual-read shim (D-20),
-  which falls back to the metadata-driven legacy resolver until the
-  Phase 14 migration tool backfills the BlockRef list.
 
-`BlockRef.Hash` is the `ContentHash` (32-byte BLAKE3) under which
-the chunk is stored in the CAS keyspace `cas/{hh}/{hh}/{hex}`.
-Two files referencing the same chunk via dedup share one `Hash`,
-which is what makes cross-VM dedup work both for storage (CAS) and
-in the cache (CACHE-02 cross-file dedup hits the same entry).
+`BlockRef.Hash` is the `ContentHash` (32-byte BLAKE3) under which the
+chunk is stored in the CAS keyspace `cas/{hh}/{hh}/{hex}`. Two files
+referencing the same chunk via dedup share one `Hash`, which is what
+makes cross-file dedup work both for storage (CAS) and in the cache (a
+shared hash hits the same entry).
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#phase-12-engine-api--blockref--cache-v0150-a3)
-for the full Phase 12 design and
-[IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md#fileattrblocks-blockref-v0150-phase-12)
-for storage-encoding requirements.
+See [ARCHITECTURE.md](ARCHITECTURE.md#engine-api--blockref--cache)
+for the full design and
+[IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for storage-encoding
+requirements.
 
-### How do I migrate from v0.13 / v0.14 to v0.15?
+### How do I migrate an older `.blk` store to the CAS layout?
 
-Use `dfsctl blockstore migrate --share <name>` per share. The
-migration is offline (the daemon must be stopped for the share). See
-[BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md#phase-14-v015x-a5--dfsctl-blockstore-migrate-runbook)
-for the full operator runbook with worked transcripts (happy path,
-TB-scale tuning, crash + auto-resume, integrity-check failure +
-diagnosis).
+Run `dfs migrate-to-cas` against the **stopped** server's storage root.
+v0.16+ servers require the CAS layout, and the server's boot guard
+refuses to start a store still on the older `.blk` layout.
 
-Quick version:
+```bash
+sudo systemctl stop dfs
+# --storage-dir and --metadata-dir are both required
+dfs migrate-to-cas --storage-dir /var/lib/dittofs/storage \
+  --metadata-dir /var/lib/dittofs/metadata                          # all shares
+dfs migrate-to-cas --storage-dir /var/lib/dittofs/storage \
+  --metadata-dir /var/lib/dittofs/metadata --share myshare
+sudo systemctl start dfs
+```
 
-1. Stop the daemon: `sudo systemctl stop dfs`
-2. Migrate: `dfsctl blockstore migrate --share myshare --parallel 4`
-3. Verify: `dfsctl blockstore migrate status --share myshare` shows
-   `BlockLayout: cas-only`.
-4. Restart: `sudo systemctl start dfs`
-
-The migration is resumable (per-file atomic via the
-`.migration-state.jsonl` journal), dry-run-able (`--dry-run` reports
-upload byte estimates without writing), and bandwidth-cappable
-(`--bandwidth-limit 50MB` honors SI / IEC suffixes; the limit is
-aggregate across `--parallel` workers, not per-worker).
-
-> **Known Limitation (v0.15.0):** The migration tool's production
-> composition root (`openOfflineRuntime`) is not yet wired —
-> end-to-end migration on a real daemon currently exits with
-> `ErrOfflineRuntimeNotWired`. The full re-chunk + integrity +
-> cutover pipeline is unit-tested via in-memory fixtures, and the
-> per-share `block_layout` flag, the engine fail-loud routing, and
-> the `dfsctl blockstore migrate status` CLI + REST surfaces all
-> ship today. Track the production wire-up under
-> [#425](https://github.com/marmos91/dittofs/issues/425); do not
-> schedule a production migration window until it closes. See
-> [BLOCKSTORE_MIGRATION.md — Known Limitation](BLOCKSTORE_MIGRATION.md#known-limitation-openofflineruntime-production-wiring)
-> for the full operator-facing context.
-
-Phase 15 (A6) is intentionally deferred until Phase 14's migration
-tool has been rolled out across production workloads. Once every
-production share reports `BlockLayout: cas-only`, Phase 15 deletes
-the dual-read shim and every legacy `{payloadID}/block-{idx}`
-code path.
-
-### Why are residual `{payloadID}/block-{N}` keys present after upgrading to v0.15.0?
-
-Those are legacy data written before v0.15.0. Phase 11's CAS write path
-only generates `cas/{hh}/{hh}/{hex}` keys; existing `{payloadID}/block-`
-objects remain in place and are read via the dual-read shim (see
-above). The Phase 11 mark-sweep GC **does NOT delete legacy keys** — it
-only sweeps the `cas/` prefix. Legacy objects are migrated to CAS by
-the v0.15.x `dfsctl blockstore migrate` tool (Phase 14), and the
-legacy code path is removed in Phase 15.
-
-If you see residual legacy keys and want to reclaim the space before
-Phase 14 ships, you can manually delete `{payloadID}/block-` objects
-for files you have since deleted from DittoFS — but this is not
-required for correctness, and the migration tool handles it
-automatically.
+The migration is resumable (a per-share journal at
+`<storage-dir>/shares/<name>/.dittofs-migrate-to-cas.state` lets a run
+resume after a crash without re-uploading already-migrated chunks) and
+has a non-destructive preview (`--dry-run` reports file count, estimated
+dedup ratio, and bytes-per-second without writing anything). On success
+it writes the `.cas-migrated-v1` sentinel per share. See
+[BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md) for the full runbook.
 
 ## Usage Questions
 
@@ -423,11 +352,11 @@ Yes! This is a core feature. Create stores and shares via CLI:
 # Create metadata stores
 ./dfsctl store metadata add --name fast-memory --type memory
 ./dfsctl store metadata add --name persistent-db --type badger \
-  --config '{"path":"/var/lib/dfs/metadata"}'
+  --config '{"path":"/var/lib/dittofs/metadata"}'
 
 # Create block stores (local for fast access, remote for durability)
 ./dfsctl store block local add --name local-disk --type fs \
-  --config '{"path":"/var/lib/dfs/blocks"}'
+  --config '{"path":"/var/lib/dittofs/blocks"}'
 ./dfsctl store block remote add --name cloud-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
@@ -446,11 +375,11 @@ Yes! Multiple shares can reference the same store instance for resource efficien
 ```bash
 # Create one shared metadata store
 ./dfsctl store metadata add --name shared-meta --type badger \
-  --config '{"path":"/var/lib/dfs/shared-metadata"}'
+  --config '{"path":"/var/lib/dittofs/shared-metadata"}'
 
 # Create separate remote block stores
 ./dfsctl store block add --kind local --name shared-local --type fs \
-  --config '{"path":"/var/lib/dfs/blocks"}'
+  --config '{"path":"/var/lib/dittofs/blocks"}'
 ./dfsctl store block add --kind remote --name s3-prod --type s3 \
   --config '{"region":"us-east-1","bucket":"prod-bucket"}'
 ./dfsctl store block add --kind remote --name s3-archive --type s3 \
