@@ -5,6 +5,7 @@ package runtime
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -270,6 +271,99 @@ func TestSettingsWatcher_DBError(t *testing.T) {
 	}
 	if preserved.LeaseTime != initialLeaseTime {
 		t.Errorf("LeaseTime = %d, want %d (preserved after DB error)", preserved.LeaseTime, initialLeaseTime)
+	}
+}
+
+// TestSettingsWatcher_PollPanicRecovers verifies that a panic raised inside a
+// poll cycle (here from an SMB change callback) does not kill the background
+// goroutine: after the panicking tick the watcher recovers and keeps detecting
+// subsequent changes. Without the recover wrapper the goroutine would die
+// silently and hot-reload would freeze for the process lifetime.
+func TestSettingsWatcher_PollPanicRecovers(t *testing.T) {
+	dbConfig := store.Config{Type: "sqlite", SQLite: store.SQLiteConfig{Path: ":memory:"}}
+	cpStore, err := store.New(&dbConfig)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	ctx := context.Background()
+
+	smbAdapter := &models.AdapterConfig{
+		ID:      uuid.New().String(),
+		Type:    "smb",
+		Enabled: true,
+		Port:    12445,
+	}
+	if _, err := cpStore.CreateAdapter(ctx, smbAdapter); err != nil {
+		t.Fatalf("create SMB adapter: %v", err)
+	}
+	if err := cpStore.EnsureAdapterSettings(ctx); err != nil {
+		t.Fatalf("ensure adapter settings: %v", err)
+	}
+
+	watcher := NewSettingsWatcher(cpStore, 25*time.Millisecond)
+
+	// Callback panics exactly once (on the first change it observes) so we can
+	// assert recovery on later changes.
+	var panicked atomic.Bool
+	watcher.OnSMBSettingsChange(func(*models.SMBAdapterSettings) {
+		if panicked.CompareAndSwap(false, true) {
+			panic("boom from settings callback")
+		}
+	})
+
+	// Prime currentVersion > 0 so subsequent changes fire the callback.
+	if err := watcher.LoadInitial(ctx); err != nil {
+		t.Fatalf("LoadInitial: %v", err)
+	}
+
+	watcher.Start(ctx)
+	defer watcher.Stop()
+
+	// First change: triggers the panicking callback. The watcher must recover.
+	bumpSMBSessionTimeout(t, cpStore, smbAdapter.ID, 111)
+	waitFor(t, 2*time.Second, func() bool { return panicked.Load() })
+
+	// Second change AFTER the panic: if the goroutine had died this would never
+	// be observed. The callback no longer panics, so we assert the cached
+	// settings reflect the new value — proving polling resumed.
+	bumpSMBSessionTimeout(t, cpStore, smbAdapter.ID, 222)
+	waitFor(t, 2*time.Second, func() bool {
+		s := watcher.GetSMBSettings()
+		return s != nil && s.SessionTimeout == 222
+	})
+}
+
+// bumpSMBSessionTimeout updates the SMB adapter's SessionTimeout, which bumps
+// the settings Version and triggers the watcher's change path.
+func bumpSMBSessionTimeout(t *testing.T, cpStore store.Store, adapterID string, v int) {
+	t.Helper()
+	ctx := context.Background()
+	settings, err := cpStore.GetSMBAdapterSettings(ctx, adapterID)
+	if err != nil {
+		t.Fatalf("GetSMBAdapterSettings: %v", err)
+	}
+	settings.SessionTimeout = v
+	if err := cpStore.UpdateSMBAdapterSettings(ctx, settings); err != nil {
+		t.Fatalf("UpdateSMBAdapterSettings: %v", err)
+	}
+}
+
+// waitFor polls cond until true or the timeout elapses, failing the test on
+// timeout.
+func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.After(timeout)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if cond() {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("condition not met within timeout")
+		case <-tick.C:
+		}
 	}
 }
 

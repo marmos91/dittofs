@@ -80,12 +80,16 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 		t.Fatalf("add share: %v", err)
 	}
 
-	// Get share and set per-share BlockStore
-	share, err := rt.GetShare(shareName)
-	if err != nil {
-		t.Fatalf("get share: %v", err)
+	// Publish the per-share BlockStore via the locked setter (GetShare returns
+	// a snapshot copy, so mutating its field would not reach the registry).
+	if err := rt.SetBlockStoreForTesting(shareName, blockSvc); err != nil {
+		t.Fatalf("set block store: %v", err)
 	}
-	share.BlockStore = blockSvc
+
+	rootHandle, err := rt.GetRootHandle(shareName)
+	if err != nil {
+		t.Fatalf("get root handle: %v", err)
+	}
 
 	// Create pseudo-fs
 	pfs := pseudofs.New()
@@ -98,7 +102,7 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 		metaSvc:    metaSvc,
 		blockStore: blockSvc,
 		store:      metaStore,
-		rootHandle: share.RootHandle,
+		rootHandle: rootHandle,
 		shareName:  shareName,
 	}
 }

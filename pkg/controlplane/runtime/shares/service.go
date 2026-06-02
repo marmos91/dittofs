@@ -1247,7 +1247,15 @@ func (s *Service) GetShare(name string) (*Share, error) {
 	if !exists {
 		return nil, fmt.Errorf("share %q not found", name)
 	}
-	return share, nil
+	// Return a snapshot, not the live registry pointer: UpdateShare /
+	// SetShare* mutate the stored *Share under s.mu, so handing out the live
+	// pointer lets a caller race those writes (torn read of ReadOnly, Squash,
+	// Enabled, …) once the RLock is released. Copying every scalar field under
+	// the lock makes the read atomic. Pointer/slice fields (BlockStore,
+	// RootHandle) are shared by design — BlockStore is independently
+	// thread-safe and the slices are never mutated in place after AddShare.
+	snapshot := *share
+	return &snapshot, nil
 }
 
 // GetGCStateDirForShare returns the per-share gc-state directory used by
@@ -1319,6 +1327,42 @@ func (s *Service) SetLocalStoreDirForTesting(name, dir string) error {
 		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
 	}
 	share.localStoreDir = dir
+	return nil
+}
+
+// SetBlockStoreForTesting overrides the per-share BlockStore field under the
+// service lock. Test-only — used by tests that compose a minimal BlockStore
+// out of band and must publish it into the registry. Production code sets
+// BlockStore only during AddShare. Returns ErrShareNotFound if the share is
+// not registered.
+//
+// Use this instead of mutating a *Share returned by GetShare: GetShare now
+// hands back a snapshot copy, so registry state must be changed through a
+// locked setter.
+func (s *Service) SetBlockStoreForTesting(name string, bs *engine.Store) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	share, ok := s.registry[name]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
+	}
+	share.BlockStore = bs
+	return nil
+}
+
+// SetEnabledForTesting overrides the per-share Enabled flag under the service
+// lock. Test-only — production code flips Enabled via DisableShare/EnableShare
+// (which also persist the DB row). Use this instead of mutating a *Share
+// returned by GetShare, which is now a snapshot copy. Returns ErrShareNotFound
+// if the share is not registered.
+func (s *Service) SetEnabledForTesting(name string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	share, ok := s.registry[name]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
+	}
+	share.Enabled = enabled
 	return nil
 }
 

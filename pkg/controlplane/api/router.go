@@ -17,6 +17,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
+// passwordChangePath is the one endpoint a must-change-password user may reach
+// before changing their password. It is allow-listed in every
+// RequirePasswordChange gate so the chains stay consistent.
+const passwordChangePath = "/api/v1/users/me/password"
+
 // NewRouter creates and configures the chi router with all middleware and routes.
 //
 // The router is configured with:
@@ -68,9 +73,16 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 		r.Use(middleware.Timeout(30 * time.Second))
 	}
 
-	// pprof profiling endpoints (unauthenticated, gated by config)
+	// pprof profiling endpoints — gated by config AND admin-authenticated.
+	// Heap/goroutine/allocs dumps can leak in-memory secrets and request data,
+	// and /profile + /trace are CPU/IO DoS vectors, so these carry the same
+	// JWTAuth + RequireAdmin gate as every other /api/v1 admin endpoint.
 	if pprofEnabled {
 		r.Route("/debug/pprof", func(r chi.Router) {
+			r.Use(apiMiddleware.JWTAuth(jwtService))
+			r.Use(apiMiddleware.RequirePasswordChange(passwordChangePath))
+			r.Use(apiMiddleware.RequireAdmin())
+
 			r.Get("/", pprof.Index)
 			r.Get("/cmdline", pprof.Cmdline)
 			r.Get("/profile", pprof.Profile)
@@ -84,7 +96,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			r.Handle("/mutex", pprof.Handler("mutex"))
 			r.Handle("/threadcreate", pprof.Handler("threadcreate"))
 		})
-		logger.Info("pprof profiling enabled at /debug/pprof/")
+		logger.Info("pprof profiling enabled at /debug/pprof/ (admin-authenticated)")
 	}
 
 	// Health check handlers
@@ -96,9 +108,17 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 		r.Get("/ready", healthHandler.Readiness)
 	})
 
-	// Grace period status - unauthenticated (like health probes)
+	// Grace period status — admin-authenticated. It exposes NFSv4 server
+	// state (in-grace, time remaining, confirmed-client count) and pairs with
+	// the admin-only /grace/end control, so it carries the same JWTAuth +
+	// RequireAdmin gate rather than sitting open like the health probes.
 	if graceHandler := newGraceHandler(rt); graceHandler != nil {
-		r.Get("/api/v1/grace", graceHandler.Status)
+		r.Group(func(r chi.Router) {
+			r.Use(apiMiddleware.JWTAuth(jwtService))
+			r.Use(apiMiddleware.RequirePasswordChange(passwordChangePath))
+			r.Use(apiMiddleware.RequireAdmin())
+			r.Get("/api/v1/grace", graceHandler.Status)
+		})
 	}
 
 	// Root redirect to health for convenience
@@ -139,7 +159,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 		// Protected routes - require authentication and password change complete
 		r.Group(func(r chi.Router) {
 			r.Use(apiMiddleware.JWTAuth(jwtService))
-			r.Use(apiMiddleware.RequirePasswordChange("/api/v1/users/me/password"))
+			r.Use(apiMiddleware.RequirePasswordChange(passwordChangePath))
 
 			// User management
 			r.Route("/users", func(r chi.Router) {

@@ -534,7 +534,11 @@ func TestRuntimeDeleteSnapshot_RejectsPathTraversal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	for _, bad := range []string{"../escape", "a/b", `a\b`} {
+	// Includes separator-less traversal values (".", "..") that a bare
+	// separator check would miss but filepath.Join would clean into the
+	// snapshots/ parent or the share data dir — these must be rejected before
+	// any RemoveAll. snapID is validated as a strict UUID.
+	for _, bad := range []string{"../escape", "a/b", `a\b`, ".", "..", "not-a-uuid", ""} {
 		err := rt.DeleteSnapshot(ctx, "alpha", bad)
 		if !errors.Is(err, models.ErrSnapshotNotFound) {
 			t.Fatalf("DeleteSnapshot(%q) err = %v, want ErrSnapshotNotFound", bad, err)

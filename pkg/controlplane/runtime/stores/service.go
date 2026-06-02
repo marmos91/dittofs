@@ -313,31 +313,18 @@ func (s *Service) DropPostgresSchema(ctx context.Context, originalName, schemaNa
 // the schema named by pathOverride using the same connection config encoded
 // in cfg.
 //
-// Implementation approach for Phase-5 plan 04:
-//
-//	The in-tree Postgres engine today is single-schema (public by default)
-//	and does not yet accept a per-instance SchemaName override. Building a
-//	full schema-scoped engine requires non-trivial migration handling and
-//	search_path plumbing that belongs to a later plan in this phase
-//	(fresh_store.go + restore executor).
-//
-//	contract is the METHOD SIGNATURE + dispatch behavior — the
-//	four methods must exist with correct error semantics so / 07
-//	can wire the full flow. For postgres, we return a clear
-//	"not yet implemented at this call site" error; fresh_store.go
-//	replaces this stub with a real search_path-scoped construction path
-//	and the corresponding migration runner.
-//
-// This deviation is tracked as Rule 4 (architectural): schema isolation
-// semantics for the Postgres engine are an upstream design question that
-// cannot be resolved at the registry layer alone.
+// The in-tree Postgres engine is currently single-schema (public by default)
+// and does not accept a per-instance SchemaName override, so schema-scoped
+// open is not yet supported: building a schema-isolated engine needs
+// non-trivial migration handling and search_path plumbing. This stub keeps
+// the method signature + dispatch behavior in place (the registry contract)
+// and returns a clear not-supported error until that engine work lands.
 func openPostgresAtSchema(
 	_ context.Context,
 	_ *models.MetadataStoreConfig,
 	_ string,
 ) (metadata.MetadataStore, error) {
 	return nil, errors.New(
-		"postgres schema-scoped open is not yet wired in Plan 04; " +
-			"Plan 06 (fresh_store.go) replaces this stub with a real " +
-			"search_path-based construction path")
+		"postgres schema-scoped open is not supported: the postgres metadata " +
+			"engine does not yet accept a per-instance schema override")
 }
