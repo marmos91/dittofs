@@ -1014,6 +1014,27 @@ func TestOpenFile_DurableFields(t *testing.T) {
 	}
 }
 
+// TestAppInstanceIdTag_MatchesWireName pins AppInstanceIdTag to the exact
+// 16-byte SMB2_CREATE_APP_INSTANCE_ID create-context name (MS-SMB2 2.2.13.2.8,
+// Samba SMB2_CREATE_TAG_APP_INSTANCE_ID). This is a GUID, not a 4-byte ASCII
+// tag. A prior truncated value never matched the on-wire name, so the
+// AppInstanceId failover never fired and smb2.durable-v2-open.app-instance
+// failed (break_info.count == 1, expected 0). The other ProcessAppInstanceId
+// tests build their context from AppInstanceIdTag itself, so they cannot catch
+// a wrong constant — this guard asserts the literal wire bytes directly.
+func TestAppInstanceIdTag_MatchesWireName(t *testing.T) {
+	want := []byte{
+		0x45, 0xBC, 0xA6, 0x6A, 0xEF, 0xA7, 0xF7, 0x4A,
+		0x90, 0x08, 0xFA, 0x46, 0x2E, 0x14, 0x4D, 0x74,
+	}
+	if AppInstanceIdTag != string(want) {
+		t.Errorf("AppInstanceIdTag = %x, want %x", AppInstanceIdTag, want)
+	}
+	if len(AppInstanceIdTag) != 16 {
+		t.Errorf("AppInstanceIdTag length = %d, want 16 (GUID name)", len(AppInstanceIdTag))
+	}
+}
+
 func TestProcessAppInstanceId_NotPresent(t *testing.T) {
 	store := newMockDurableStore()
 
