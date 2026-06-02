@@ -681,9 +681,15 @@ We will acknowledge receipt within 48 hours and provide a timeline for a fix.
 
 ## References
 
-- [RFC 1813 - NFS Version 3 Protocol Specification](https://tools.ietf.org/html/rfc1813)
-- [RFC 2203 - RPCSEC_GSS Protocol Specification](https://tools.ietf.org/html/rfc2203)
-- [RFC 2623 - NFS Version 2 and Version 3 Security Issues](https://tools.ietf.org/html/rfc2623)
-- [RFC 4121 - The Kerberos Version 5 GSS-API Mechanism](https://tools.ietf.org/html/rfc4121)
-- [RFC 7530 - NFS Version 4 Protocol](https://tools.ietf.org/html/rfc7530)
-- [MS-SMB2 - Server Message Block Protocol Versions 2 and 3](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/)
+- [RFC 1813 - NFS Version 3 Protocol Specification](https://www.rfc-editor.org/rfc/rfc1813)
+- [RFC 2203 - RPCSEC_GSS Protocol Specification](https://www.rfc-editor.org/rfc/rfc2203)
+- [RFC 2623 - NFS Version 2 and Version 3 Security Issues](https://www.rfc-editor.org/rfc/rfc2623)
+- [RFC 2743 - Generic Security Service API (GSS-API)](https://www.rfc-editor.org/rfc/rfc2743)
+- [RFC 4120 - The Kerberos Network Authentication Service (V5)](https://www.rfc-editor.org/rfc/rfc4120)
+- [RFC 4121 - The Kerberos Version 5 GSS-API Mechanism](https://www.rfc-editor.org/rfc/rfc4121)
+- [RFC 4178 - SPNEGO (GSS-API Negotiation Mechanism)](https://www.rfc-editor.org/rfc/rfc4178)
+- [RFC 7530 - NFS Version 4 Protocol](https://www.rfc-editor.org/rfc/rfc7530)
+- [MS-SMB2 - Server Message Block Protocol Versions 2 and 3](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/)
+- [MS-NLMP - NTLM Authentication Protocol](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/)
+- [MS-DTYP - SID, ACL, and security descriptor formats](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/)
+- [Glossary](GLOSSARY.md) - Plain-language definitions of the terms above

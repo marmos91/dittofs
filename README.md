@@ -231,6 +231,7 @@ an isolated local storage directory and its own caching tiers. See
 - [Encryption](docs/ENCRYPTION.md) — client-side per-remote envelope encryption
 - [Snapshots](docs/SNAPSHOTS.md) — reference-based share snapshots and restore
 - [Windows Testing](docs/WINDOWS_TESTING.md) — SMB conformance against Windows
+- [Glossary](docs/GLOSSARY.md) — plain-language definitions of protocol, ACL, and storage terms
 
 **Architecture & development**
 
@@ -274,12 +275,18 @@ setup, code structure, and testing guidelines.
 
 ## References
 
-- [RFC 1813](https://tools.ietf.org/html/rfc1813) — NFS Version 3
-- [RFC 7530](https://tools.ietf.org/html/rfc7530) — NFS Version 4.0
-- [RFC 8881](https://tools.ietf.org/html/rfc8881) — NFS Version 4.1
-- [RFC 5531](https://tools.ietf.org/html/rfc5531) — RPC Protocol
-- [RFC 4506](https://tools.ietf.org/html/rfc4506) — XDR Standard
+New to these protocols? Start with the [Glossary](docs/GLOSSARY.md) for plain-language
+definitions, then dive into the authoritative specs below.
+
+- [RFC 1813](https://www.rfc-editor.org/rfc/rfc1813) — NFS Version 3
+- [RFC 7530](https://www.rfc-editor.org/rfc/rfc7530) — NFS Version 4.0
+- [RFC 8881](https://www.rfc-editor.org/rfc/rfc8881) — NFS Version 4.1
+- [RFC 5531](https://www.rfc-editor.org/rfc/rfc5531) — ONC RPC Protocol
+- [RFC 4506](https://www.rfc-editor.org/rfc/rfc4506) — XDR Standard
 - [MS-SMB2](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/) — SMB2/3 protocol
+- [MS-DTYP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/) — SID, ACL, ACE, and security descriptor formats
+- [MS-NLMP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/) — NTLM authentication
+- [RFC 4120](https://www.rfc-editor.org/rfc/rfc4120) — Kerberos V5 · [RFC 4178](https://www.rfc-editor.org/rfc/rfc4178) — SPNEGO · [RFC 2743](https://www.rfc-editor.org/rfc/rfc2743) — GSS-API
 
 ## License
 

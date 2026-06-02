@@ -916,15 +916,20 @@ go test -v ./test/e2e -run TestE2E/memory/BasicOperations
 | **ftype3** | File type enum (regular, directory, symlink, etc.) |
 | **FSID** | File system identifier |
 | **nfstime3** | NFS time format (seconds + nanoseconds) |
+| **NLM** | Network Lock Manager -- sideband protocol NFSv3 uses for file locking |
+| **NSM / statd** | Network Status Monitor -- tracks reboots so NLM locks can be reclaimed/released after a crash |
 | **RPCSEC_GSS** | Kerberos-based RPC security flavor (NFSv4) |
 | **RPC** | Remote Procedure Call -- foundation protocol |
 | **sattr3** | Set attributes structure (for SETATTR, CREATE) |
 | **Session** | NFSv4.1 construct tracking client connection state |
 | **Stale Handle** | A handle that is no longer valid |
+| **Stateid** | NFSv4 identifier naming a specific open/lock state on the server |
 | **Verifier** | Server-unique value that changes on restart |
-| **WCC** | Weak Cache Consistency data (pre/post attributes) |
+| **WCC** | Weak Cache Consistency -- pre/post attributes that let a client cheaply validate its cache |
 | **XDR** | External Data Representation (encoding format) |
 | **XID** | Transaction ID for matching requests/replies |
+
+For protocol-independent terms (CAS, BLAKE3, SID, ACL, …) see the project-wide [Glossary](GLOSSARY.md).
 
 ---
 
@@ -932,13 +937,15 @@ go test -v ./test/e2e -run TestE2E/memory/BasicOperations
 
 ### Specifications
 
-- [RFC 1057](https://tools.ietf.org/html/rfc1057) - RPC: Remote Procedure Call Protocol (Portmapper)
-- [RFC 1094](https://tools.ietf.org/html/rfc1094) - NFS: Network File System Protocol (Version 2)
-- [RFC 1813](https://tools.ietf.org/html/rfc1813) - NFS Version 3 Protocol Specification
-- [RFC 4506](https://tools.ietf.org/html/rfc4506) - XDR: External Data Representation Standard
-- [RFC 5531](https://tools.ietf.org/html/rfc5531) - RPC: Remote Procedure Call Protocol Specification Version 2
-- [RFC 7530](https://tools.ietf.org/html/rfc7530) - NFS Version 4 Protocol
-- [RFC 8881](https://tools.ietf.org/html/rfc8881) - NFS Version 4 Minor Version 1 Protocol
+- [RFC 1057](https://www.rfc-editor.org/rfc/rfc1057) - RPC: Remote Procedure Call Protocol (Portmapper)
+- [RFC 1094](https://www.rfc-editor.org/rfc/rfc1094) - NFS: Network File System Protocol (Version 2)
+- [RFC 1813](https://www.rfc-editor.org/rfc/rfc1813) - NFS Version 3 Protocol Specification
+- [RFC 4506](https://www.rfc-editor.org/rfc/rfc4506) - XDR: External Data Representation Standard
+- [RFC 5531](https://www.rfc-editor.org/rfc/rfc5531) - ONC RPC: Remote Procedure Call Protocol Specification Version 2
+- [RFC 7530](https://www.rfc-editor.org/rfc/rfc7530) - NFS Version 4.0 Protocol
+- [RFC 8881](https://www.rfc-editor.org/rfc/rfc8881) - NFS Version 4.1 Protocol
+- [Open Group XNFS](https://pubs.opengroup.org/onlinepubs/9629799/) - Network Lock Manager (NLM, chap. 10) and Network Status Monitor (NSM, chap. 11)
+- [RFC 2203](https://www.rfc-editor.org/rfc/rfc2203) - RPCSEC_GSS Protocol · [RFC 4120](https://www.rfc-editor.org/rfc/rfc4120) - Kerberos V5 · [RFC 2743](https://www.rfc-editor.org/rfc/rfc2743) - GSS-API
 
 ### Related Projects
 
@@ -949,5 +956,6 @@ go test -v ./test/e2e -run TestE2E/memory/BasicOperations
 
 - [Architecture](ARCHITECTURE.md) - Deep dive into design patterns and implementation
 - [Configuration](CONFIGURATION.md) - Complete configuration guide
+- [Glossary](GLOSSARY.md) - Plain-language definitions of protocol, ACL, and storage terms
 - [Troubleshooting](TROUBLESHOOTING.md) - Common issues and solutions
 - [FAQ](FAQ.md) - Frequently asked questions

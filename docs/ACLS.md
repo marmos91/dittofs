@@ -2,6 +2,17 @@
 
 DittoFS implements a unified ACL model that works seamlessly across both NFSv4 and SMB protocols. A single ACL set on a file via one protocol is immediately visible and enforceable from the other.
 
+**Terms used in this document** (see the [Glossary](GLOSSARY.md) for the full list):
+
+- **ACL** (Access Control List) — the ordered list of rules that decides who may do what to a file.
+- **ACE** (Access Control Entry) — a single rule inside an ACL, e.g. "allow user X to read and write".
+- **Security descriptor** — the Windows/SMB structure bundling a file's owner, group, DACL, and SACL together.
+- **DACL** (Discretionary ACL) — the part of a security descriptor that grants or denies access.
+- **SACL** (System ACL) — the auditing part of a security descriptor (which accesses get logged).
+- **SID** (Security Identifier) — the Windows-style unique ID for a user or group, e.g. `S-1-5-21-…`.
+
+Full definitions of these Windows structures live in [MS-DTYP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/); the NFSv4 ACL model is [RFC 7530 §6](https://www.rfc-editor.org/rfc/rfc7530#section-6).
+
 ## Architecture
 
 ```mermaid

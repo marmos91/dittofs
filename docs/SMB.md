@@ -1616,22 +1616,30 @@ See [docs/TROUBLESHOOTING.md](TROUBLESHOOTING.md) for cross-protocol troubleshoo
 | **AES-GMAC** | AES-GCM used for authentication only (no encryption) -- signing algorithm for SMB 3.1.1 |
 | **AP-REQ** | Kerberos Application Request -- contains client's service ticket |
 | **AP-REP** | Kerberos Application Reply -- provides mutual authentication |
+| **ACE** | Access Control Entry -- a single allow/deny rule inside an ACL |
 | **CIFS** | Common Internet File System -- older name for SMB |
 | **CreateGuid** | 16-byte GUID used for idempotent durable handle V2 reconnection |
 | **Credit** | Flow control unit in SMB2 |
+| **DACL** | Discretionary ACL -- the access-granting part of a security descriptor |
 | **DH2Q/DH2C** | Durable Handle V2 Request/Reconnect create contexts |
 | **DHnQ/DHnC** | Durable Handle V1 Request/Reconnect create contexts |
+| **Durable / persistent handle** | An open handle a client can reclaim after a network drop (durable) or server restart (persistent) |
 | **Dialect** | SMB protocol version (e.g., 0x0311 = SMB 3.1.1) |
 | **Epoch** | Monotonic counter on lease V2 for stale break detection |
 | **FileID** | 16-byte handle for open file (8 persistent + 8 volatile) |
 | **GUID** | 16-byte globally unique identifier |
 | **KDF** | Key Derivation Function -- derives session-specific keys from base key |
 | **Lease V2** | Enhanced lease with ParentLeaseKey and epoch tracking (SMB 3.0+) |
+| **Kerberos** | Ticket-based network authentication, carried over SMB via SPNEGO |
+| **Lease** | SMB 2.1+ caching grant (read/write/handle) succeeding oplocks |
 | **NetBIOS** | Network Basic Input/Output System -- legacy session layer |
 | **NT_STATUS** | Windows error code format |
+| **NTLM / NTLMSSP** | Microsoft challenge/response authentication; the fallback when Kerberos is unavailable |
 | **Oplock** | Opportunistic lock -- client caching hint |
 | **ParentLeaseKey** | Lease V2 field linking file lease to parent directory lease |
 | **Preauth Integrity** | SHA-512 hash chain over negotiate/session-setup messages for downgrade protection |
+| **SACL** | System ACL -- the auditing part of a security descriptor |
+| **Security descriptor** | Windows/SMB structure bundling owner, group, DACL, and SACL ([MS-DTYP §2.4.6](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/)) |
 | **SessionID** | 64-bit identifier for authenticated session |
 | **Share** | Network-accessible folder (like NFS export) |
 | **SID** | Security Identifier -- Windows user/group identity |
@@ -1645,15 +1653,18 @@ See [docs/TROUBLESHOOTING.md](TROUBLESHOOTING.md) for cross-protocol troubleshoo
 
 ### Specifications
 
-- [MS-SMB2](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/) - SMB2/3 Protocol Specification
-- [MS-NLMP](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/) - NTLM Authentication Protocol
-- [MS-FSCC](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/) - File System Control Codes
-- [MS-ERREF](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/) - Windows Error Codes
-- [RFC 4178](https://tools.ietf.org/html/rfc4178) - SPNEGO Protocol
-- [RFC 1813](https://tools.ietf.org/html/rfc1813) - NFS Version 3 Protocol Specification
-- [RFC 7530](https://tools.ietf.org/html/rfc7530) - NFS Version 4.0 Protocol Specification
-- [RFC 8881](https://tools.ietf.org/html/rfc8881) - NFS Version 4.1 Protocol Specification
+- [MS-SMB2](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/) - SMB2/3 Protocol Specification
+- [MS-NLMP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/) - NTLM Authentication Protocol
+- [MS-DTYP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/) - SID, ACL, ACE, and security descriptor formats
+- [MS-FSCC](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/) - File System Control Codes
+- [MS-ERREF](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/) - Windows Error Codes
+- [RFC 4178](https://www.rfc-editor.org/rfc/rfc4178) - SPNEGO Protocol · [RFC 4120](https://www.rfc-editor.org/rfc/rfc4120) - Kerberos V5 · [RFC 2743](https://www.rfc-editor.org/rfc/rfc2743) - GSS-API
+- [RFC 1813](https://www.rfc-editor.org/rfc/rfc1813) - NFS Version 3 Protocol Specification
+- [RFC 7530](https://www.rfc-editor.org/rfc/rfc7530) - NFS Version 4.0 Protocol Specification
+- [RFC 8881](https://www.rfc-editor.org/rfc/rfc8881) - NFS Version 4.1 Protocol Specification
 - [NIST SP800-108](https://csrc.nist.gov/publications/detail/sp/800-108/final) - Key Derivation Using Pseudorandom Functions
+
+For plain-language definitions of these terms, see the project-wide [Glossary](GLOSSARY.md).
 
 ### Related Projects
 

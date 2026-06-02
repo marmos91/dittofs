@@ -2,6 +2,12 @@
 
 This document provides a deep dive into DittoFS's architecture, design patterns, and internal implementation.
 
+**Storage terms used throughout** (see the [Glossary](GLOSSARY.md) for protocol and security terms):
+
+- **CAS** (Content-Addressed Storage) — blocks are named by the hash of their contents rather than by location, so identical data is stored once and deduplicated automatically.
+- **FastCDC** — a content-defined chunking algorithm that splits file data at content-based boundaries, so small edits only re-chunk the affected region ([FastCDC paper](https://www.usenix.org/conference/atc16/technical-sessions/presentation/xia)).
+- **BLAKE3** — the fast cryptographic hash used to address CAS blocks and verify them end-to-end ([BLAKE3 spec](https://github.com/BLAKE3-team/BLAKE3-specs)).
+
 ## Table of Contents
 
 - [Core Abstraction Layers](#core-abstraction-layers)
