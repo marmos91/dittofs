@@ -82,7 +82,7 @@ func HasRegression(cmps []Comparison) bool {
 // WriteComparison renders the comparisons as an aligned table.
 func WriteComparison(w io.Writer, cmps []Comparison) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "WORKLOAD\tBASE_NS/OP\tNEW_NS/OP\tDELTA%\tFLAG")
+	_, _ = fmt.Fprintln(tw, "WORKLOAD\tBASE_NS/OP\tNEW_NS/OP\tDELTA%\tFLAG")
 	for _, c := range cmps {
 		flag := ""
 		switch {
@@ -91,7 +91,7 @@ func WriteComparison(w io.Writer, cmps []Comparison) {
 		case c.Regression:
 			flag = "REGRESSION"
 		}
-		fmt.Fprintf(tw, "%s\t%.1f\t%.1f\t%+.1f\t%s\n", c.Name, c.BaseNsPerOp, c.NewNsPerOp, c.DeltaPct, flag)
+		_, _ = fmt.Fprintf(tw, "%s\t%.1f\t%.1f\t%+.1f\t%s\n", c.Name, c.BaseNsPerOp, c.NewNsPerOp, c.DeltaPct, flag)
 	}
 	_ = tw.Flush()
 }
@@ -99,21 +99,21 @@ func WriteComparison(w io.Writer, cmps []Comparison) {
 // WriteSummary renders a document's per-workload metrics as an aligned table —
 // a quick human-readable companion to the JSON output.
 func WriteSummary(w io.Writer, doc *Document) {
-	fmt.Fprintf(w, "run_id=%s schema_version=%d outcome=%s git_sha=%s\n",
+	_, _ = fmt.Fprintf(w, "run_id=%s schema_version=%d outcome=%s git_sha=%s\n",
 		doc.RunID, doc.SchemaVersion, doc.Outcome, doc.GitSHA)
 	if doc.AbortReason != "" {
-		fmt.Fprintf(w, "abort_reason=%s\n", doc.AbortReason)
+		_, _ = fmt.Fprintf(w, "abort_reason=%s\n", doc.AbortReason)
 	}
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "WORKLOAD\tOUTCOME\tOPS\tNS/OP\tOPS/SEC\tMB/SEC")
+	_, _ = fmt.Fprintln(tw, "WORKLOAD\tOUTCOME\tOPS\tNS/OP\tOPS/SEC\tMB/SEC")
 	for _, name := range sortedKeys(doc.Workloads) {
 		r := doc.Workloads[name]
 		if r.Metrics == nil {
-			fmt.Fprintf(tw, "%s\t%s\t-\t-\t-\t-\n", name, r.Outcome)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t-\t-\t-\t-\n", name, r.Outcome)
 			continue
 		}
 		mbps := r.Metrics.BytesPerSec / (1024 * 1024)
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%.1f\t%.1f\t%.2f\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%.1f\t%.1f\t%.2f\n",
 			name, r.Outcome, r.Metrics.Ops, r.Metrics.NsPerOp, r.Metrics.OpsPerSec, mbps)
 	}
 	_ = tw.Flush()
