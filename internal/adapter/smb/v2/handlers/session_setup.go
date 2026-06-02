@@ -423,6 +423,34 @@ func (h *Handler) verifyReauthChannelSignature(ctx *SMBHandlerContext, sess *ses
 	return NewErrorResult(types.StatusAccessDenied)
 }
 
+// rejectRebindOnBoundChannel rejects a SESSION_SETUP_BINDING that arrives on a
+// connection which ALREADY owns a bound channel for the session (MS-SMB2
+// §3.3.5.5.2; Samba source3/smbd/smb2_sesssetup.c:785-794 where
+// smbXsrv_session_find_channel returns OK with a valid signing key). It returns
+// a non-nil ACCESS_DENIED result for that re-bind and nil when the gate does not
+// apply (no channel yet — the normal first bind).
+//
+// Distinct from the in-flight bind handshake: that path carries a binding
+// PendingAuth and is routed to completeNTLMAuth before reaching here, and the
+// channel is only registered (AddChannel) once the bind completes. So a channel
+// with a valid signer on this connection means a previous bind already finished
+// — a second bind on the same transport is the smbtorture re-bind
+// (session.c:2839) that must be denied unconditionally, whether the request was
+// signed (its fresh per-bind key cannot match the live channel key anyway) or
+// encrypted (no SMB2 signature, but still not a valid re-bind).
+func (h *Handler) rejectRebindOnBoundChannel(ctx *SMBHandlerContext, sess *session.Session) *HandlerResult {
+	ch := sess.GetChannel(ctx.ConnID)
+	if ch == nil || ch.Signer == nil {
+		return nil
+	}
+
+	logger.Warn("SESSION_SETUP bind rejected: connection already bound to session",
+		"sessionID", ctx.SessionID,
+		"connID", ctx.ConnID,
+		"channelSigningAlgo", fmt.Sprintf("0x%04x", ch.SigningAlgo))
+	return NewErrorResult(types.StatusAccessDenied)
+}
+
 // recordSessionBindIdentity captures the negotiated dialect, signing
 // algorithm, cipher, and client GUID of the origin connection onto the
 // session so subsequent SESSION_SETUP bind requests can validate that a new
@@ -608,6 +636,25 @@ func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupReq
 	// branches on pending.IsBinding and calls completeSessionBind.
 	if pending, ok := h.GetPendingAuth(ctx.SessionID, ctx.ConnID); ok && pending.IsBinding {
 		return h.completeNTLMAuth(ctx, req.SecurityBuffer)
+	}
+
+	// Re-bind on an already-bound connection (MS-SMB2 §3.3.5.5.2; Samba
+	// source3/smbd/smb2_sesssetup.c:785-794, smbXsrv_session_find_channel == OK
+	// with a valid signing key). Once a connection holds a bound channel with a
+	// valid signer, a second SESSION_SETUP_BINDING on that same connection — with
+	// no in-flight bind PendingAuth (handled above) — must be rejected rather
+	// than silently replacing the live channel.
+	//
+	// This is the final rejection point in smbtorture's
+	// test_session_bind_negative_smbXtoX (session.c:2839-2842): after the
+	// CMAC<->HMAC bind was accepted, the harness re-binds the same transport and
+	// expects ACCESS_DENIED. The framing verifier skips signature checks for
+	// SESSION_SETUP (keys-not-yet-established), so without this gate the re-bind
+	// reaches completeKerberosBind / completeSessionBind and AddChannel silently
+	// REPLACES the live channel, answering STATUS_SUCCESS
+	// (bind_negative_smb3sign{CtoH,HtoC}{s,d}).
+	if rebindRejected := h.rejectRebindOnBoundChannel(ctx, sess); rebindRejected != nil {
+		return rebindRejected, nil
 	}
 
 	// Kerberos bind is single-shot: the SPNEGO AP-REQ is presented directly on
