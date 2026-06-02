@@ -95,9 +95,13 @@ func (s *Service) CreateAdapter(ctx context.Context, cfg *models.AdapterConfig) 
 
 	if err := s.startAdapter(cfg); err != nil {
 		// Roll back the persisted config so a non-startable adapter does not
-		// linger in the store. A rollback failure leaves an orphan row, so
-		// surface it rather than swallowing it silently.
-		if delErr := s.store.DeleteAdapter(ctx, cfg.Type); delErr != nil {
+		// linger in the store. Use a fresh bounded context, not the caller's:
+		// the request may already be canceled (client disconnect/timeout),
+		// and that must not abort the cleanup. A rollback failure leaves an
+		// orphan row, so surface it rather than swallowing it silently.
+		rbCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
+		defer cancel()
+		if delErr := s.store.DeleteAdapter(rbCtx, cfg.Type); delErr != nil {
 			logger.Warn("Failed to roll back adapter config after start failure",
 				"type", cfg.Type, "error", delErr)
 		}
