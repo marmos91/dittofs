@@ -35,7 +35,7 @@ const (
 // memoryBackupSnapshot is the gob-encoded payload written inside the
 // envelope. All fields are exported so gob can encode/decode them.
 // The struct mirrors the data portion of MemoryMetadataStore; transient
-// caches (sortedDirCache, sessions, attrPool) and config limits
+// caches (sessions, attrPool) and config limits
 // (maxStorageBytes, maxFiles) are excluded.
 type memoryBackupSnapshot struct {
 	Shares        map[string]*shareData
@@ -399,7 +399,6 @@ func (s *MemoryMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 	}
 
 	// Re-initialize transient state.
-	s.sortedDirCache = make(map[string][]string)
 	s.sessions = make(map[string]*metadata.ShareSession)
 
 	// Recompute usedBytes from files (only regular files count).

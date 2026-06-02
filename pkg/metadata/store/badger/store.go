@@ -75,6 +75,9 @@ type BadgerMetadataStore struct {
 
 	// capabilities stores static filesystem capabilities and limits.
 	// These are set at creation time and define what the filesystem supports.
+	// capsMu guards reads/writes of the in-memory copy against the
+	// concurrent SetFilesystemCapabilities setters.
+	capsMu       sync.RWMutex
 	capabilities metadata.FilesystemCapabilities
 
 	// maxStorageBytes is the maximum total bytes that can be stored.
@@ -528,7 +531,8 @@ func (s *BadgerMetadataStore) initializeSingletons(ctx context.Context) error {
 		// Initialize filesystem capabilities if they don't exist
 		_, err = txn.Get(keyFilesystemCapabilities())
 		if err == badger.ErrKeyNotFound {
-			capsBytes, err := encodeFilesystemCapabilities(&s.capabilities)
+			caps := s.loadCapabilities()
+			capsBytes, err := encodeFilesystemCapabilities(&caps)
 			if err != nil {
 				return err
 			}

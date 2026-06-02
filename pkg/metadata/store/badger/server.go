@@ -6,6 +6,7 @@ import (
 	"time"
 
 	badgerdb "github.com/dgraph-io/badger/v4"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -83,7 +84,8 @@ func (s *BadgerMetadataStore) GetFilesystemCapabilities(ctx context.Context, han
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		item, err := txn.Get(keyFilesystemCapabilities())
 		if err == badgerdb.ErrKeyNotFound {
-			caps = &s.capabilities
+			c := s.loadCapabilities()
+			caps = &c
 			return nil
 		}
 		if err != nil {
@@ -109,15 +111,32 @@ func (s *BadgerMetadataStore) GetFilesystemCapabilities(ctx context.Context, han
 
 // SetFilesystemCapabilities updates the filesystem capabilities for this store.
 func (s *BadgerMetadataStore) SetFilesystemCapabilities(capabilities metadata.FilesystemCapabilities) {
-	s.capabilities = capabilities
+	s.storeCapabilities(capabilities)
 
-	_ = s.db.Update(func(txn *badgerdb.Txn) error {
+	err := s.db.Update(func(txn *badgerdb.Txn) error {
 		data, err := encodeFilesystemCapabilities(&capabilities)
 		if err != nil {
 			return err
 		}
 		return txn.Set(keyFilesystemCapabilities(), data)
 	})
+	if err != nil {
+		logger.Error("badger: failed to persist filesystem capabilities", "error", err)
+	}
+}
+
+// loadCapabilities returns a copy of the in-memory capabilities under a read lock.
+func (s *BadgerMetadataStore) loadCapabilities() metadata.FilesystemCapabilities {
+	s.capsMu.RLock()
+	defer s.capsMu.RUnlock()
+	return s.capabilities
+}
+
+// storeCapabilities replaces the in-memory capabilities under a write lock.
+func (s *BadgerMetadataStore) storeCapabilities(capabilities metadata.FilesystemCapabilities) {
+	s.capsMu.Lock()
+	defer s.capsMu.Unlock()
+	s.capabilities = capabilities
 }
 
 // ============================================================================

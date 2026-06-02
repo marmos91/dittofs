@@ -19,7 +19,7 @@ CREATE TABLE files (
     share_name    TEXT NOT NULL,
     path          TEXT NOT NULL,
     path_hash     TEXT NOT NULL,              -- MD5 hash of path for indexing (solves btree 2704 byte limit)
-    file_type     SMALLINT NOT NULL,          -- 1=file, 2=dir, 3=symlink, 4=char, 5=block, 6=fifo, 7=socket
+    file_type     SMALLINT NOT NULL,          -- 0=file, 1=dir, 2=symlink, 3=block, 4=char, 5=socket, 6=fifo
     mode          INTEGER NOT NULL,           -- Unix permission bits
     uid           INTEGER NOT NULL,
     gid           INTEGER NOT NULL,

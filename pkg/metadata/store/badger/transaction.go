@@ -9,6 +9,7 @@ import (
 
 	badgerdb "github.com/dgraph-io/badger/v4"
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
@@ -598,7 +599,7 @@ func (tx *badgerTransaction) GetFilesystemMeta(ctx context.Context, shareName st
 	if err == badgerdb.ErrKeyNotFound {
 		// Return defaults
 		return &metadata.FilesystemMeta{
-			Capabilities: tx.store.capabilities,
+			Capabilities: tx.store.loadCapabilities(),
 		}, nil
 	}
 	if err != nil {
@@ -1073,7 +1074,7 @@ func (tx *badgerTransaction) GetFilesystemCapabilities(ctx context.Context, hand
 
 	item, err := tx.txn.Get(keyFilesystemCapabilities())
 	if err == badgerdb.ErrKeyNotFound {
-		caps := tx.store.capabilities
+		caps := tx.store.loadCapabilities()
 		return &caps, nil
 	}
 	if err != nil {
@@ -1097,13 +1098,16 @@ func (tx *badgerTransaction) GetFilesystemCapabilities(ctx context.Context, hand
 }
 
 func (tx *badgerTransaction) SetFilesystemCapabilities(capabilities metadata.FilesystemCapabilities) {
-	tx.store.capabilities = capabilities
+	tx.store.storeCapabilities(capabilities)
 
 	data, err := encodeFilesystemCapabilities(&capabilities)
 	if err != nil {
+		logger.Error("badger: failed to encode filesystem capabilities", "error", err)
 		return
 	}
-	_ = tx.txn.Set(keyFilesystemCapabilities(), data)
+	if err := tx.txn.Set(keyFilesystemCapabilities(), data); err != nil {
+		logger.Error("badger: failed to persist filesystem capabilities", "error", err)
+	}
 }
 
 func (tx *badgerTransaction) GetFilesystemStatistics(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemStatistics, error) {
