@@ -159,9 +159,12 @@ func (s *Server) Start(ctx context.Context) error {
 			scheme = "https"
 		}
 		logger.Info("API server listening", "addr", s.server.Addr, "scheme", scheme, "mtls", s.mTLSEnabled())
+		// Build a routable base for the example URLs: a wildcard bind
+		// (0.0.0.0 / ::) is not a destination, so show localhost there.
+		urlBase := displayAddr(s.config.Host, s.config.Port)
 		logger.Debug("API endpoints available",
-			"health", fmt.Sprintf("%s://%s/health", scheme, s.server.Addr),
-			"ready", fmt.Sprintf("%s://%s/health/ready", scheme, s.server.Addr),
+			"health", fmt.Sprintf("%s://%s/health", scheme, urlBase),
+			"ready", fmt.Sprintf("%s://%s/health/ready", scheme, urlBase),
 		)
 
 		var err error
@@ -242,4 +245,15 @@ func (s *Server) TLSEnabled() bool {
 // mTLSEnabled reports whether the server requires verified client certificates.
 func (s *Server) mTLSEnabled() bool {
 	return s.tlsConfig != nil && s.tlsConfig.ClientAuth == tls.RequireAndVerifyClientCert
+}
+
+// displayAddr returns a host:port that is routable for example/log URLs. A
+// wildcard bind (0.0.0.0, ::, or empty) is a listen address, not a
+// destination, so it is shown as localhost.
+func displayAddr(host string, port int) string {
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		host = "localhost"
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }

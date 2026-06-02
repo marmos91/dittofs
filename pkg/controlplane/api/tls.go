@@ -48,11 +48,14 @@ func newCertReloader(certFile, keyFile string) (*certReloader, error) {
 }
 
 // reload re-reads and parses the cert/key pair and atomically swaps it in.
+//
+// The mtimes are sampled BEFORE the file contents are read. If a rotation
+// races this reload, the recorded mtime is the pre-rotation one, so the next
+// changed() check still sees the newer mtime and reloads again — the reloader
+// can never latch a stale cert against a newer recorded mtime. Sampling the
+// mtime after the read would risk recording the new mtime while having read
+// the old bytes, permanently masking the rotation.
 func (r *certReloader) reload() error {
-	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
-	if err != nil {
-		return fmt.Errorf("load TLS key pair (cert=%s key=%s): %w", r.certFile, r.keyFile, err)
-	}
 	certInfo, err := os.Stat(r.certFile)
 	if err != nil {
 		return fmt.Errorf("stat TLS cert file %s: %w", r.certFile, err)
@@ -60,6 +63,11 @@ func (r *certReloader) reload() error {
 	keyInfo, err := os.Stat(r.keyFile)
 	if err != nil {
 		return fmt.Errorf("stat TLS key file %s: %w", r.keyFile, err)
+	}
+
+	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
+	if err != nil {
+		return fmt.Errorf("load TLS key pair (cert=%s key=%s): %w", r.certFile, r.keyFile, err)
 	}
 
 	r.mu.Lock()
