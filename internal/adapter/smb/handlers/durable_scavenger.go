@@ -166,9 +166,9 @@ func (s *DurableHandleScavenger) cleanupAndDelete(ctx context.Context, h *lock.P
 			systemCtx := metadata.NewSystemAuthContext(ctx)
 			var deleteErr error
 			if h.IsDirectory {
-				deleteErr = metaSvc.RemoveDirectory(systemCtx, h.ParentHandle, h.FileName)
+				_, deleteErr = metaSvc.RemoveDirectory(systemCtx, h.ParentHandle, h.FileName)
 			} else {
-				_, deleteErr = metaSvc.RemoveFile(systemCtx, h.ParentHandle, h.FileName)
+				_, _, deleteErr = metaSvc.RemoveFile(systemCtx, h.ParentHandle, h.FileName)
 			}
 			if deleteErr != nil {
 				logger.Debug("DurableHandleScavenger: delete-on-close failed",

@@ -95,7 +95,7 @@ func setupABEQueryDirTest(t *testing.T, abe bool, callerUID, callerGID uint32, c
 	}
 	metaSvc := rt.GetMetadataService()
 	for _, c := range children {
-		childFile, err := metaSvc.CreateFile(rootAuth, rootHandle, c.name, &metadata.FileAttr{
+		childFile, _, err := metaSvc.CreateFile(rootAuth, rootHandle, c.name, &metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: c.mode,
 			UID:  c.uid,
@@ -115,7 +115,7 @@ func setupABEQueryDirTest(t *testing.T, abe bool, callerUID, callerGID uint32, c
 		if err != nil {
 			t.Fatalf("EncodeFileHandle(%q): %v", c.name, err)
 		}
-		if err := metaSvc.SetFileAttributes(rootAuth, childHandle, &metadata.SetAttrs{ACL: c.acl}); err != nil {
+		if _, err := metaSvc.SetFileAttributes(rootAuth, childHandle, &metadata.SetAttrs{ACL: c.acl}); err != nil {
 			t.Fatalf("SetFileAttributes ACL(%q): %v", c.name, err)
 		}
 	}
@@ -314,7 +314,7 @@ func setupQueryDirTest(t *testing.T, names []string) (*Handler, *OpenFile, *meta
 
 	metaSvc := rt.GetMetadataService()
 	for _, name := range names {
-		_, err := metaSvc.CreateFile(authCtx, rootHandle, name, &metadata.FileAttr{
+		_, _, err := metaSvc.CreateFile(authCtx, rootHandle, name, &metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o644,
 		})
@@ -499,10 +499,10 @@ func TestQueryDirectory_ConcurrentModify_NoPanic(t *testing.T) {
 	}
 
 	// Delete "c", add "z".
-	if _, err := metaSvc.RemoveFile(authCtx, open.MetadataHandle, "c"); err != nil {
+	if _, _, err := metaSvc.RemoveFile(authCtx, open.MetadataHandle, "c"); err != nil {
 		t.Fatalf("RemoveFile c: %v", err)
 	}
-	if _, err := metaSvc.CreateFile(authCtx, open.MetadataHandle, "z",
+	if _, _, err := metaSvc.CreateFile(authCtx, open.MetadataHandle, "z",
 		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644}); err != nil {
 		t.Fatalf("CreateFile z: %v", err)
 	}

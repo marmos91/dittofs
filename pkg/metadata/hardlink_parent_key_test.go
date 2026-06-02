@@ -55,7 +55,7 @@ func TestCreateHardLink_NotifyDirChangeMatrix(t *testing.T) {
 			rootCtx := fx.rootContext()
 
 			// Source dir + file (always linked from "srcdir").
-			_, err := fx.service.CreateDirectory(rootCtx, fx.rootHandle, "srcdir", &metadata.FileAttr{
+			_, _, err := fx.service.CreateDirectory(rootCtx, fx.rootHandle, "srcdir", &metadata.FileAttr{
 				Type: metadata.FileTypeDirectory, Mode: 0o777,
 			})
 			if err != nil {
@@ -65,7 +65,7 @@ func TestCreateHardLink_NotifyDirChangeMatrix(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetChild(srcdir): %v", err)
 			}
-			srcFile, err := fx.service.CreateFile(rootCtx, srcDirHandle, "src.txt", &metadata.FileAttr{
+			srcFile, _, err := fx.service.CreateFile(rootCtx, srcDirHandle, "src.txt", &metadata.FileAttr{
 				Type: metadata.FileTypeRegular, Mode: 0o644,
 			})
 			if err != nil {
@@ -80,7 +80,7 @@ func TestCreateHardLink_NotifyDirChangeMatrix(t *testing.T) {
 			dstDirHandle := srcDirHandle
 			if tc.differentDir {
 				dstDirName := "dstdir"
-				_, err := fx.service.CreateDirectory(rootCtx, fx.rootHandle, dstDirName, &metadata.FileAttr{
+				_, _, err := fx.service.CreateDirectory(rootCtx, fx.rootHandle, dstDirName, &metadata.FileAttr{
 					Type: metadata.FileTypeDirectory, Mode: 0o777,
 				})
 				if err != nil {
@@ -109,7 +109,7 @@ func TestCreateHardLink_NotifyDirChangeMatrix(t *testing.T) {
 				HasParentLeaseKey: true,
 			}
 
-			if err := fx.service.CreateHardLink(linkCtx, dstDirHandle, "link.txt", srcHandle); err != nil {
+			if _, err := fx.service.CreateHardLink(linkCtx, dstDirHandle, "link.txt", srcHandle); err != nil {
 				t.Fatalf("CreateHardLink: %v", err)
 			}
 
@@ -150,7 +150,7 @@ func TestCreateHardLink_NFSCallerHasNoParentKey(t *testing.T) {
 
 	rootCtx := fx.rootContext()
 
-	_, err := fx.service.CreateDirectory(rootCtx, fx.rootHandle, "d", &metadata.FileAttr{
+	_, _, err := fx.service.CreateDirectory(rootCtx, fx.rootHandle, "d", &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory, Mode: 0o777,
 	})
 	if err != nil {
@@ -160,7 +160,7 @@ func TestCreateHardLink_NFSCallerHasNoParentKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetChild: %v", err)
 	}
-	srcFile, err := fx.service.CreateFile(rootCtx, dirHandle, "src.txt", &metadata.FileAttr{
+	srcFile, _, err := fx.service.CreateFile(rootCtx, dirHandle, "src.txt", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular, Mode: 0o644,
 	})
 	if err != nil {
@@ -183,7 +183,7 @@ func TestCreateHardLink_NFSCallerHasNoParentKey(t *testing.T) {
 		ParentLeaseKey:    bogus,
 		HasParentLeaseKey: false,
 	}
-	if err := fx.service.CreateHardLink(nfsCtx, dirHandle, "link.txt", srcHandle); err != nil {
+	if _, err := fx.service.CreateHardLink(nfsCtx, dirHandle, "link.txt", srcHandle); err != nil {
 		t.Fatalf("CreateHardLink: %v", err)
 	}
 

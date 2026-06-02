@@ -320,7 +320,7 @@ func (s *Service) Restore(ctx *metadata.AuthContext, shareName, binPath, dest st
 	}
 
 	// Move the entry out of the bin, then clear its deletion stamp in place.
-	if err := svc.Move(ctx, binSrcParent, binSrcName, destParent, destName); err != nil {
+	if _, err := svc.Move(ctx, binSrcParent, binSrcName, destParent, destName); err != nil {
 		return err
 	}
 	return clearStamp(ctx, svc, shareName, destParent, destName)
@@ -426,7 +426,8 @@ func (s *Service) OnDisable(ctx *metadata.AuthContext, shareName string) error {
 
 	// Empty left the bin logically empty; remove the now-empty #recycle root.
 	// A surviving non-empty / other error is surfaced, not swallowed.
-	return svc.RemoveDirectory(ctx, root, metadata.RecycleDirName)
+	_, err = svc.RemoveDirectory(ctx, root, metadata.RecycleDirName)
+	return err
 }
 
 // pruneEmptyDirs removes now-empty intermediary directories under dirHandle
@@ -461,7 +462,7 @@ func (s *Service) pruneEmptyDirs(ctx *metadata.AuthContext, svc *metadata.Metada
 			return err
 		}
 		// Attempt removal; a non-empty or already-gone directory is fine.
-		if err := svc.RemoveDirectory(ctx, dirHandle, e.Name); err != nil &&
+		if _, err := svc.RemoveDirectory(ctx, dirHandle, e.Name); err != nil &&
 			!metadata.IsNotFoundError(err) && !isNotEmpty(err) {
 			return err
 		}
@@ -495,10 +496,11 @@ func (s *Service) purgeEntry(ctx *metadata.AuthContext, svc *metadata.MetadataSe
 		if err := s.purgeChildren(ctx, svc, shareName, root, handle); err != nil {
 			return err
 		}
-		return svc.RemoveDirectory(ctx, parent, name)
+		_, err := svc.RemoveDirectory(ctx, parent, name)
+		return err
 	}
 
-	removed, err := svc.RemoveFile(ctx, parent, name)
+	removed, _, err := svc.RemoveFile(ctx, parent, name)
 	if err != nil {
 		return err
 	}
@@ -569,7 +571,7 @@ func ensureParent(ctx *metadata.AuthContext, svc *metadata.MetadataService, root
 			if !metadata.IsNotFoundError(err) {
 				return nil, "", err
 			}
-			created, cErr := svc.CreateDirectory(ctx, parent, dir, &metadata.FileAttr{
+			created, _, cErr := svc.CreateDirectory(ctx, parent, dir, &metadata.FileAttr{
 				Type: metadata.FileTypeDirectory,
 				Mode: 0o755,
 			})

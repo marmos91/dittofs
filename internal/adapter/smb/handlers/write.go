@@ -454,10 +454,10 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	now := time.Now()
 	// IsAtimeFrozen takes openFile.mu (read); see #606.
 	if !openFile.IsAtimeFrozen() {
-		_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+		_, _ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
 	}
 	if len(openFile.ParentHandle) > 0 {
-		_ = metaSvc.SetFileAttributes(authCtx, openFile.ParentHandle, &metadata.SetAttrs{Atime: &now})
+		_, _ = metaSvc.SetFileAttributes(authCtx, openFile.ParentHandle, &metadata.SetAttrs{Atime: &now})
 		// Per MS-FSA 2.1.5.14.2: Restore frozen timestamps on the parent directory
 		// if any open handle has them frozen. The SetFileAttributes call above
 		// unconditionally updates atime; if a handle has atime frozen, restore it.

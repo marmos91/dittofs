@@ -25,26 +25,26 @@ import (
 // POSIX Compliance:
 //   - When last link is removed, nlink is set to 0 (not deleted)
 //   - This allows fstat() on open file descriptors to return nlink=0
-func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name string) (*File, error) {
+func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name string) (*File, *DirWcc, error) {
 	store, err := s.storeForHandle(parentHandle)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Validate name
 	if err := ValidateName(name); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Get parent entry
 	parent, err := store.GetFile(ctx.Context, parentHandle)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Verify parent is a directory
 	if parent.Type != FileTypeDirectory {
-		return nil, &StoreError{
+		return nil, nil, &StoreError{
 			Code:    ErrNotDirectory,
 			Message: "parent is not a directory",
 			Path:    parent.Path,
@@ -54,18 +54,18 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 	// Get child handle
 	fileHandle, err := store.GetChild(ctx.Context, parentHandle, name)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Get file entry
 	file, err := store.GetFile(ctx.Context, fileHandle)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Verify it's not a directory
 	if file.Type == FileTypeDirectory {
-		return nil, &StoreError{
+		return nil, nil, &StoreError{
 			Code:    ErrIsDirectory,
 			Message: "cannot remove directory with RemoveFile, use RemoveDirectory",
 			Path:    name,
@@ -74,12 +74,12 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 
 	// Check delete permission: WRITE on parent (POSIX) or owner-of-file (Windows DELETE).
 	if err := s.checkDeletePermission(ctx, parentHandle, file); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Check sticky bit restriction
 	if err := CheckStickyBitRestriction(ctx, &parent.FileAttr, &file.FileAttr); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Recycle instead of destroying when the share has trash enabled. Deletes
@@ -90,12 +90,22 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 		if cfg, ok := s.trashPolicy.TrashConfigForShare(shareName); ok && cfg.Enabled {
 			origRel := strings.TrimPrefix(buildPath(parent.Path, name), "/")
 			if !inRecycle(origRel) && !cfg.Excluded(name) {
-				return s.recycleNode(ctx, shareName, parentHandle, name, origRel)
+				// Recycle relocates via Move (a separate metadata op). Bracket
+				// it with best-effort pre/post parent reads for WCC; this path
+				// is rare and not perf-critical.
+				wccBefore := CopyFileAttr(&parent.FileAttr)
+				recycled, rErr := s.recycleNode(ctx, shareName, parentHandle, name, origRel)
+				if rErr != nil {
+					return nil, nil, rErr
+				}
+				wcc := &DirWcc{Before: wccBefore}
+				if after, aErr := store.GetFile(ctx.Context, parentHandle); aErr == nil {
+					wcc.After = CopyFileAttr(&after.FileAttr)
+				}
+				return recycled, wcc, nil
 			}
 		}
 	}
-
-	now := time.Now()
 
 	// Prepare return value
 	returnFile := &File{
@@ -105,8 +115,26 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 		FileAttr:  file.FileAttr,
 	}
 
+	// wcc captures the parent directory attributes immediately before and after
+	// the mutation, both inside the transaction below so they atomically bracket
+	// the operation (H9: closes the WCC pre-op TOCTOU window).
+	wcc := &DirWcc{}
+
 	// Execute all write operations in a single transaction for better performance.
 	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Sample the mutation timestamp inside the transaction (after the pre-op
+		// snapshot) so the post-op directory mtime is monotonic w.r.t. Before.
+		now := time.Now()
+		// Re-read the parent INSIDE the transaction so the pre-op WCC snapshot,
+		// the timestamp mutation, and the post-op snapshot all derive from the
+		// same committed state. The in-tx read registers the key for conflict
+		// detection so a racing mutation triggers a retry, and basing the
+		// mutation on the in-tx copy guarantees After is never older than Before.
+		if txParent, pErr := tx.GetFile(ctx.Context, parentHandle); pErr == nil && txParent != nil {
+			parent = txParent
+		}
+		wcc.Before = CopyFileAttr(&parent.FileAttr)
+
 		// Read the link count INSIDE the transaction so the read, the
 		// branch decision, and the write are atomic. Reading it outside the
 		// tx is a TOCTOU race with CreateHardLink: a concurrent link bump in
@@ -166,13 +194,14 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 		parent.Mtime = now
 		parent.Ctime = now
 		parent.Atime = now
+		wcc.After = CopyFileAttr(&parent.FileAttr)
 		return tx.PutFile(ctx.Context, parent)
 	})
 
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeRemoveEntry, ctx)
-	return returnFile, nil
+	return returnFile, wcc, nil
 }

@@ -63,7 +63,7 @@ func TestCheckFileAccess_DenyACEOnOwnerDeniesWrite(t *testing.T) {
 			},
 		},
 	}
-	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "owner_denied.txt",
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "owner_denied.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o777,
@@ -102,7 +102,7 @@ func TestCheckFileAccess_AllowOnlyReadGrantsReadDeniesWrite(t *testing.T) {
 			},
 		},
 	}
-	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "ro.txt",
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "ro.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o777,
@@ -151,7 +151,7 @@ func TestCheckFileAccess_MaximumAllowedAloneNeverDenies(t *testing.T) {
 			},
 		},
 	}
-	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "max.txt",
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "max.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o777,
@@ -199,7 +199,7 @@ func TestCheckFileAccess_MaximumAllowedPlusExplicitDeniedBitDenies(t *testing.T)
 			},
 		},
 	}
-	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "mxac.txt",
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "mxac.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o777,
@@ -235,7 +235,7 @@ func TestCheckFileAccess_RootBypassGetsEverything(t *testing.T) {
 			},
 		},
 	}
-	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "root_only.txt",
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "root_only.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o000,
@@ -261,7 +261,7 @@ func TestCheckFileAccess_NilACLOwnerGrantsRequested(t *testing.T) {
 	f := newTestFixture(t)
 
 	ownerUID := uint32(1001)
-	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "posix.txt",
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "posix.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o600,
@@ -288,7 +288,7 @@ func TestCheckFileAccess_NilACLOwnerGrantsRequested(t *testing.T) {
 func TestCheckFileAccess_NilACLNonOwnerGrantsRequested(t *testing.T) {
 	f := newTestFixture(t)
 
-	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "posix_owner_only.txt",
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "posix_owner_only.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o600,
@@ -322,7 +322,7 @@ func TestCheckFileAccess_NilACLMaxAllowedReturnsGenericAll(t *testing.T) {
 	f := newTestFixture(t)
 
 	ownerUID := uint32(1001)
-	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "max_nil_acl.txt",
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "max_nil_acl.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o600,
@@ -344,7 +344,7 @@ func TestCheckFileAccess_NilACLMaxAllowedReturnsGenericAll(t *testing.T) {
 // shape (e.g., probing existence or paired solely with MAXIMUM_ALLOWED).
 func TestCheckFileAccess_ZeroDesiredAccessIsNoop(t *testing.T) {
 	f := newTestFixture(t)
-	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "empty.txt",
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "empty.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o644,
@@ -373,7 +373,7 @@ func TestCheckFileAccess_DenyErrorIsStoreError(t *testing.T) {
 			},
 		},
 	}
-	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "denied.txt",
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "denied.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o777,
@@ -420,7 +420,7 @@ func TestCheckFileAccessWithParent_DeleteOverrideViaParentDeleteChild(t *testing
 			},
 		},
 	}
-	parentCreated, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "deldir",
+	parentCreated, _, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "deldir",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o755,
@@ -488,7 +488,7 @@ func TestCheckFileAccessWithParent_OverrideDoesNotApplyToNonDeleteBits(t *testin
 			},
 		},
 	}
-	parentCreated, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "broadparent",
+	parentCreated, _, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "broadparent",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o755,
@@ -543,7 +543,7 @@ func TestCheckFileAccessWithParent_NullParentDACLGrantsDelete(t *testing.T) {
 	requesterSID := "S-1-5-21-1-2-3-2001"
 
 	// Parent: created with no explicit ACL → parent.ACL is nil.
-	parentCreated, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "nullacldir",
+	parentCreated, _, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "nullacldir",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o755,
@@ -601,7 +601,7 @@ func TestCheckFileAccessWithParent_NoOverrideWhenParentLacksDeleteChild(t *testi
 			},
 		},
 	}
-	parentCreated, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "lockedparent",
+	parentCreated, _, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "lockedparent",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o755,
@@ -669,7 +669,7 @@ func TestCheckFileAccess_ReadAttributesAlwaysGrantedFromParent(t *testing.T) {
 			},
 		},
 	}
-	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "raa.txt",
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "raa.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o644,
@@ -720,7 +720,7 @@ func createSpecificRightsFile(t *testing.T, f *testFixture, name, sid string, ma
 			},
 		},
 	}
-	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, name,
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, name,
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o777,

@@ -257,7 +257,7 @@ func (h *Handler) Link(
 	// - Incrementing the link count (nlink) on the file
 	// - Updating directory timestamps
 
-	err = metaSvc.CreateHardLink(authCtx, dirHandle, req.Name, fileHandle)
+	dirWcc, err := metaSvc.CreateHardLink(authCtx, dirHandle, req.Name, fileHandle)
 	if err != nil {
 		logError(ctx.Context, err, "LINK failed: store error", "name", req.Name, "client", clientIP)
 
@@ -290,9 +290,8 @@ func (h *Handler) Link(
 
 	nfsFileAttr := h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
 
-	// Get updated directory attributes
-	updatedDirFile, _ := metaSvc.GetFile(ctx.Context, dirHandle)
-	nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
+	// H9: use the directory attributes captured atomically with the link.
+	dirWccBefore, nfsDirAttr := h.dirWccPair(ctx, metaSvc, dirHandle, dirWcc, dirWccBefore)
 
 	logger.InfoCtx(ctx.Context, "LINK successful", "name", req.Name, "file_handle", fmt.Sprintf("%x", req.FileHandle), "nlink", nfsFileAttr.Nlink, "client", clientIP)
 

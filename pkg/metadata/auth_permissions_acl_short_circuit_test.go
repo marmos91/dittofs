@@ -36,7 +36,7 @@ func TestCheckPermissions_ACLDenyOverridesShareWritable(t *testing.T) {
 			},
 		},
 	}
-	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "denied.txt",
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "denied.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o777,
@@ -87,7 +87,7 @@ func TestCheckPermissions_AllowOnlyACLKeepsShareWritableBypass(t *testing.T) {
 			},
 		},
 	}
-	created, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "allow_only.txt",
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "allow_only.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o755,

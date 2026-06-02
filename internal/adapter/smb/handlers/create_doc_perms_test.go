@@ -139,7 +139,7 @@ func TestCreate_DeleteOnClose_ReadOnlyFile_ReturnsCannotDelete(t *testing.T) {
 
 	// Persist a regular file with the mode bits CREATE+FILE_ATTRIBUTE_READONLY
 	// would leave after the store round-trip (owner-write cleared, no DACL).
-	readonlyFile, err := metaSvc.CreateFile(rootAuth, rootHandle, "ro.txt",
+	readonlyFile, _, err := metaSvc.CreateFile(rootAuth, rootHandle, "ro.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o444,

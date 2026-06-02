@@ -1277,7 +1277,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			if authCtx.Identity.GID != nil {
 				baseAttr.GID = *authCtx.Identity.GID
 			}
-			if _, createBaseErr := metaSvc.CreateFile(authCtx, parentHandle, adsBaseFileName, baseAttr); createBaseErr != nil {
+			if _, _, createBaseErr := metaSvc.CreateFile(authCtx, parentHandle, adsBaseFileName, baseAttr); createBaseErr != nil {
 				// Concurrent stream CREATE may race on base-file creation.
 				// ErrAlreadyExists means another goroutine won — proceed.
 				var storeErr *metadata.StoreError
@@ -2140,9 +2140,9 @@ func (h *Handler) createNewFile(
 	var file *metadata.File
 	var err error
 	if isDirectory {
-		file, err = metaSvc.CreateDirectory(authCtx, parentHandle, name, fileAttr)
+		file, _, err = metaSvc.CreateDirectory(authCtx, parentHandle, name, fileAttr)
 	} else {
-		file, err = metaSvc.CreateFile(authCtx, parentHandle, name, fileAttr)
+		file, _, err = metaSvc.CreateFile(authCtx, parentHandle, name, fileAttr)
 	}
 
 	if err != nil {
@@ -2186,7 +2186,7 @@ func (h *Handler) overwriteFile(
 	setAttrs.Hidden = &hiddenVal
 
 	metaSvc := h.Registry.GetMetadataService()
-	err = metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs)
+	_, err = metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -2218,7 +2218,7 @@ func (h *Handler) updateBaseObjectCtime(
 		return
 	}
 	now := time.Now()
-	if updateErr := metaSvc.SetFileAttributes(authCtx, baseHandle, &metadata.SetAttrs{Ctime: &now}); updateErr != nil {
+	if _, updateErr := metaSvc.SetFileAttributes(authCtx, baseHandle, &metadata.SetAttrs{Ctime: &now}); updateErr != nil {
 		logger.Debug("updateBaseObjectCtime: failed",
 			"baseObject", baseObjectName, "error", updateErr)
 	}
@@ -2272,7 +2272,7 @@ func (h *Handler) updateBaseObjectTimestampsForADSWrite(
 		baseCtime := baseFile.Ctime
 		setAttrs.Ctime = &baseCtime
 	}
-	_ = metaSvc.SetFileAttributes(authCtx, baseHandle, setAttrs)
+	_, _ = metaSvc.SetFileAttributes(authCtx, baseHandle, setAttrs)
 }
 
 // isStatOnlyOpen returns true when DesiredAccess contains only stat-open bits:

@@ -70,7 +70,7 @@ func setupADSAttrPropagationTest(t *testing.T, basePOSIXMode uint32) (
 
 	// Base file with the requested POSIX mode plus modeDOSCompressed set so
 	// the test can also assert that bit survives the SET_INFO propagation.
-	baseFile, err := metaSvc.CreateFile(authCtx, rootHandle, "base.txt", &metadata.FileAttr{
+	baseFile, _, err := metaSvc.CreateFile(authCtx, rootHandle, "base.txt", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: basePOSIXMode | modeDOSCompressed,
 	})
@@ -85,7 +85,7 @@ func setupADSAttrPropagationTest(t *testing.T, basePOSIXMode uint32) (
 	// Stream as a sibling entry under the parent directory, mirroring how
 	// the CREATE handler stores ADS — name carries the colon, no special
 	// metadata flag (the colon in the name is the marker).
-	streamFile, err := metaSvc.CreateFile(authCtx, rootHandle, "base.txt:s", &metadata.FileAttr{
+	streamFile, _, err := metaSvc.CreateFile(authCtx, rootHandle, "base.txt:s", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
 	})
@@ -200,7 +200,7 @@ func TestSetInfo_ADS_PreservesBaseCompressedBitWithExistingDosBits(t *testing.T)
 	}
 	const extraDOS = modeDOSExplicit | modeDOSSystem
 	seedMode := preBase.Mode | extraDOS
-	if err := metaSvc.SetFileAttributes(authCtx, baseHandle, &metadata.SetAttrs{Mode: &seedMode}); err != nil {
+	if _, err := metaSvc.SetFileAttributes(authCtx, baseHandle, &metadata.SetAttrs{Mode: &seedMode}); err != nil {
 		t.Fatalf("SetFileAttributes(base seed): %v", err)
 	}
 

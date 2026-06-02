@@ -478,7 +478,7 @@ func TestRemove_Directory_Success(t *testing.T) {
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o755,
 	}
-	_, err := fx.metaSvc.CreateDirectory(dirAuthCtx, fx.rootHandle, "emptydir", dirAttr)
+	_, _, err := fx.metaSvc.CreateDirectory(dirAuthCtx, fx.rootHandle, "emptydir", dirAttr)
 	if err != nil {
 		t.Fatalf("create test directory: %v", err)
 	}

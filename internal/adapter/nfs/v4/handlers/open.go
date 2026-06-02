@@ -298,7 +298,7 @@ func (h *Handler) handleOpenClaimNull(
 			if createAttrs != nil && createAttrs.Mode != nil {
 				fileMode = *createAttrs.Mode
 			}
-			newFile, createErr := metaSvc.CreateFile(authCtx, parentHandle, filename, &metadata.FileAttr{
+			newFile, _, createErr := metaSvc.CreateFile(authCtx, parentHandle, filename, &metadata.FileAttr{
 				Mode: fileMode,
 				UID:  uid,
 				GID:  gid,

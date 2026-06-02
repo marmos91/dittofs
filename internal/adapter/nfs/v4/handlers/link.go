@@ -120,7 +120,7 @@ func (h *Handler) handleLink(ctx *types.CompoundContext, reader io.Reader) *type
 	beforeCtime := uint64(dirFile.Ctime.UnixNano())
 
 	// Create the hard link: dirHandle (target dir) + newName + sourceHandle (source file)
-	linkErr := metaSvc.CreateHardLink(authCtx, dirHandle, newName, sourceHandle)
+	_, linkErr := metaSvc.CreateHardLink(authCtx, dirHandle, newName, sourceHandle)
 	if linkErr != nil {
 		status := common.MapToNFS4(linkErr)
 		logger.Debug("NFSv4 LINK failed",

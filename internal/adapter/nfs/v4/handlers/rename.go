@@ -148,7 +148,7 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 	tgtBeforeCtime := uint64(tgtDirFile.Ctime.UnixNano())
 
 	// Perform the rename: Move(fromDir, fromName, toDir, toName)
-	renameErr := metaSvc.Move(authCtx, srcDirHandle, oldName, tgtDirHandle, newName)
+	_, renameErr := metaSvc.Move(authCtx, srcDirHandle, oldName, tgtDirHandle, newName)
 	if renameErr != nil {
 		status := common.MapToNFS4(renameErr)
 		logger.Debug("NFSv4 RENAME failed",

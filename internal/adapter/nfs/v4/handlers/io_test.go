@@ -117,7 +117,7 @@ func (fx *ioTestFixture) createRegularFile(t *testing.T, parentHandle metadata.F
 		},
 	}
 
-	file, err := fx.metaSvc.CreateFile(authCtx, parentHandle, name, &metadata.FileAttr{
+	file, _, err := fx.metaSvc.CreateFile(authCtx, parentHandle, name, &metadata.FileAttr{
 		Mode: mode,
 		UID:  uid,
 		GID:  gid,
@@ -165,7 +165,7 @@ func (fx *ioTestFixture) writeContent(t *testing.T, fileHandle metadata.FileHand
 		},
 	}
 	newSize := uint64(len(data))
-	if err := fx.metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{
+	if _, err := fx.metaSvc.SetFileAttributes(authCtx, fileHandle, &metadata.SetAttrs{
 		Size: &newSize,
 	}); err != nil {
 		t.Fatalf("update file size: %v", err)

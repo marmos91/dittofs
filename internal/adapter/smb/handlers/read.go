@@ -411,7 +411,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// against a concurrent SET_INFO freeze/thaw on the same handle (#606).
 	if !openFile.IsAtimeFrozen() {
 		now := time.Now()
-		_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+		_, _ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
 	}
 
 	// ========================================================================

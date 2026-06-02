@@ -263,10 +263,15 @@ func (h *Handler) SetAttr(
 	hasOtherAttrs := req.NewAttr.Mode != nil || req.NewAttr.UID != nil ||
 		req.NewAttr.GID != nil || req.NewAttr.Atime != nil || req.NewAttr.Mtime != nil
 
+	// setWcc accumulates the file's own pre/post attributes captured atomically
+	// with the SetFileAttributes mutation(s) (H9). For the two-phase size+other
+	// case, Before comes from the first (size) call and After from the second.
+	var setWcc *metadata.DirWcc
 	if hasSize && hasOtherAttrs {
 		// Apply size change first (separate call per RFC 5661)
 		sizeOnlyAttrs := metadata.SetAttrs{Size: req.NewAttr.Size}
-		err = metaSvc.SetFileAttributes(authCtx, fileHandle, &sizeOnlyAttrs)
+		var sizeWcc *metadata.DirWcc
+		sizeWcc, err = metaSvc.SetFileAttributes(authCtx, fileHandle, &sizeOnlyAttrs)
 		if err != nil {
 			// Handle size change error
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -301,10 +306,19 @@ func (h *Handler) SetAttr(
 			Atime: req.NewAttr.Atime,
 			Mtime: req.NewAttr.Mtime,
 		}
-		err = metaSvc.SetFileAttributes(authCtx, fileHandle, &otherAttrs)
+		var otherWcc *metadata.DirWcc
+		otherWcc, err = metaSvc.SetFileAttributes(authCtx, fileHandle, &otherAttrs)
+		// Before from the size call (true pre-op), After from the latest call.
+		setWcc = &metadata.DirWcc{}
+		if sizeWcc != nil {
+			setWcc.Before = sizeWcc.Before
+		}
+		if otherWcc != nil {
+			setWcc.After = otherWcc.After
+		}
 	} else {
 		// Only size or only other attributes - single call is fine
-		err = metaSvc.SetFileAttributes(authCtx, fileHandle, &req.NewAttr)
+		setWcc, err = metaSvc.SetFileAttributes(authCtx, fileHandle, &req.NewAttr)
 	}
 	if err != nil {
 		// Check if error is due to context cancellation
@@ -362,31 +376,22 @@ func (h *Handler) SetAttr(
 	// Step 6: Build success response with updated attributes
 	// ========================================================================
 
-	// Get updated file attributes for WCC data
-	updatedFile, _, err := h.getFileOrError(ctx, fileHandle, "SETATTR", req.Handle)
-	if updatedFile == nil && err != nil {
-		// Context cancelled
-		return nil, err
-	}
-	if updatedFile == nil {
-		logger.WarnCtx(ctx.Context, "SETATTR: attributes updated but cannot get new attributes",
-			"handle", fmt.Sprintf("%x", req.Handle))
-		// Continue with nil WccAfter rather than failing the entire operation
-		wccAfter = nil
-	} else {
-		wccAfter = h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
-	}
+	// H9: prefer the file's pre/post attributes captured atomically with the
+	// SetFileAttributes mutation. The wccBefore read at handler entry can race a
+	// concurrent mutation in the window; setWcc.Before is the state the op
+	// actually transitioned from. The WCC subject for SETATTR is the file itself.
+	wccBefore, wccAfter = h.dirWccPair(ctx, metaSvc, fileHandle, setWcc, wccBefore)
 
 	logger.InfoCtx(ctx.Context, "SETATTR successful",
 		"handle", fmt.Sprintf("%x", req.Handle),
 		"client", clientIP)
 
-	if updatedFile != nil {
+	if setWcc != nil && setWcc.After != nil {
 		logger.DebugCtx(ctx.Context, "SETATTR details",
 			"old_size", currentFile.Size,
-			"new_size", updatedFile.Size,
+			"new_size", setWcc.After.Size,
 			"old_mode", fmt.Sprintf("%o", currentFile.Mode),
-			"new_mode", fmt.Sprintf("%o", updatedFile.Mode))
+			"new_mode", fmt.Sprintf("%o", setWcc.After.Mode))
 	} else {
 		logger.DebugCtx(ctx.Context, "SETATTR details",
 			"old_size", currentFile.Size,

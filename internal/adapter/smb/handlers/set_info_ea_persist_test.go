@@ -46,7 +46,7 @@ func setupEATest(t *testing.T) (*Handler, *metadata.AuthContext, *OpenFile) {
 	}
 
 	metaSvc := rt.GetMetadataService()
-	file, err := metaSvc.CreateFile(authCtx, rootHandle, "ea.txt", &metadata.FileAttr{
+	file, _, err := metaSvc.CreateFile(authCtx, rootHandle, "ea.txt", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
 	})
@@ -122,7 +122,7 @@ func TestSetInfo_EA_SetGetDelete(t *testing.T) {
 
 	// Seed a pre-existing EA the way the CREATE EA buffer context would.
 	metaSvc := h.Registry.GetMetadataService()
-	if err := metaSvc.SetFileAttributes(authCtx, open.MetadataHandle, &metadata.SetAttrs{
+	if _, err := metaSvc.SetFileAttributes(authCtx, open.MetadataHandle, &metadata.SetAttrs{
 		EAMutations: []metadata.EAMutation{{Name: "EAONE", Value: []byte("one")}},
 	}); err != nil {
 		t.Fatalf("seed EAONE: %v", err)

@@ -137,7 +137,7 @@ func TestCreate_DaclEnforcement_DeniesWhenBitNotGranted(t *testing.T) {
 			},
 		},
 	}
-	existingFile, err := metaSvc.CreateFile(rootAuth, rootHandle, "deny.txt",
+	existingFile, _, err := metaSvc.CreateFile(rootAuth, rootHandle, "deny.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o777,
@@ -192,7 +192,7 @@ func TestCreate_DaclEnforcement_AllowsWhenBitGranted(t *testing.T) {
 			},
 		},
 	}
-	existingFile, err := metaSvc.CreateFile(rootAuth, rootHandle, "allow.txt",
+	existingFile, _, err := metaSvc.CreateFile(rootAuth, rootHandle, "allow.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o777,
@@ -249,7 +249,7 @@ func TestCreate_DaclEnforcement_MaximumAllowedNeverDenies(t *testing.T) {
 			},
 		},
 	}
-	existingFile, err := metaSvc.CreateFile(rootAuth, rootHandle, "max.txt",
+	existingFile, _, err := metaSvc.CreateFile(rootAuth, rootHandle, "max.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o777,
@@ -295,7 +295,7 @@ func TestCreate_DaclEnforcement_NilACLPermissive(t *testing.T) {
 
 	metaSvc := rt.GetMetadataService()
 
-	existingFile, err := metaSvc.CreateFile(rootAuth, rootHandle, "no_dacl.txt",
+	existingFile, _, err := metaSvc.CreateFile(rootAuth, rootHandle, "no_dacl.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o600, // owner rw — but no DACL stored
@@ -394,7 +394,7 @@ func restrictedDACLFile(
 			},
 		},
 	}
-	f, err := metaSvc.CreateFile(rootAuth, rootHandle, name,
+	f, _, err := metaSvc.CreateFile(rootAuth, rootHandle, name,
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o777,
@@ -640,7 +640,7 @@ func runDestructiveShareViolationCase(t *testing.T, fname string, disposition ty
 			},
 		},
 	}
-	existingFile, err := rt.GetMetadataService().CreateFile(rootAuth, rootHandle, fname,
+	existingFile, _, err := rt.GetMetadataService().CreateFile(rootAuth, rootHandle, fname,
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o777,
@@ -735,7 +735,7 @@ func TestCreate_OpenWithReadShareDoesNotConflictExistingHolder(t *testing.T) {
 			},
 		},
 	}
-	existingFile, err := rt.GetMetadataService().CreateFile(rootAuth, rootHandle, "open_share.txt",
+	existingFile, _, err := rt.GetMetadataService().CreateFile(rootAuth, rootHandle, "open_share.txt",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o777,

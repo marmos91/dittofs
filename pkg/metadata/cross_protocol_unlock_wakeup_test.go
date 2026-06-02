@@ -64,7 +64,7 @@ func TestSetByteRangeReleaseHook_FiresOnSMBUnlock(t *testing.T) {
 		ClientAddr: "127.0.0.1",
 	}
 
-	file, err := svc.CreateFile(authCtx, rootHandle, "locked.bin", &metadata.FileAttr{Mode: 0o644})
+	file, _, err := svc.CreateFile(authCtx, rootHandle, "locked.bin", &metadata.FileAttr{Mode: 0o644})
 	require.NoError(t, err)
 	handle, err := metadata.EncodeFileHandle(file)
 	require.NoError(t, err)

@@ -36,7 +36,7 @@ func TestCheckParentWriteAccess_ACLDenyReturnsAccessDenied(t *testing.T) {
 			},
 		},
 	}
-	dir, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "denied-dir",
+	dir, _, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "denied-dir",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o777,
@@ -102,7 +102,7 @@ func TestCheckParentCreateAccess_DenyAddFileBlocksFileAllowsDir(t *testing.T) {
 			},
 		},
 	}
-	dir, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "deny-add-file",
+	dir, _, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "deny-add-file",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o777,
@@ -160,7 +160,7 @@ func TestCheckParentCreateAccess_DenyAddSubdirBlocksDirAllowsFile(t *testing.T) 
 			},
 		},
 	}
-	dir, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "deny-add-subdir",
+	dir, _, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "deny-add-subdir",
 		&metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o777,

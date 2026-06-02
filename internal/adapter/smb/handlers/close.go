@@ -476,10 +476,10 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				var deleteErr error
 				var removedPayloadID metadata.PayloadID
 				if isDeleteTargetDir {
-					deleteErr = metaSvc.RemoveDirectory(authCtx, deleteParentHandle, deleteFileName)
+					_, deleteErr = metaSvc.RemoveDirectory(authCtx, deleteParentHandle, deleteFileName)
 				} else {
 					var removed *metadata.File
-					removed, deleteErr = metaSvc.RemoveFile(authCtx, deleteParentHandle, deleteFileName)
+					removed, _, deleteErr = metaSvc.RemoveFile(authCtx, deleteParentHandle, deleteFileName)
 					if removed != nil {
 						removedPayloadID = removed.PayloadID
 					}
@@ -893,7 +893,7 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 
 	// Remove the regular file
 	metaSvc := h.Registry.GetMetadataService()
-	removed, err := metaSvc.RemoveFile(authCtx, parentHandle, fileName)
+	removed, _, err := metaSvc.RemoveFile(authCtx, parentHandle, fileName)
 	if err != nil {
 		return fmt.Errorf("failed to remove MFsymlink file: %w", err)
 	}
@@ -909,7 +909,7 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 	// Create the real symlink with default attributes
 	// Pass empty FileAttr - CreateSymlink will apply defaults
 	symlinkAttr := &metadata.FileAttr{}
-	_, err = metaSvc.CreateSymlink(authCtx, parentHandle, fileName, target, symlinkAttr)
+	_, _, err = metaSvc.CreateSymlink(authCtx, parentHandle, fileName, target, symlinkAttr)
 	if err != nil {
 		return fmt.Errorf("failed to create symlink: %w", err)
 	}
@@ -962,7 +962,7 @@ func (h *Handler) cascadeDeleteADSStreams(authCtx *metadata.AuthContext, metaSvc
 
 	for _, entry := range page.Entries {
 		if len(entry.Name) > len(prefix) && strings.EqualFold(entry.Name[:len(prefix)], prefix) {
-			_, deleteErr := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, entry.Name)
+			_, _, deleteErr := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, entry.Name)
 			if deleteErr != nil {
 				logger.Debug("CLOSE: cascade ADS delete: failed to remove stream",
 					"stream", entry.Name,

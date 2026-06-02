@@ -194,6 +194,10 @@ func (h *Handler) Create(
 
 	var fileHandle metadata.FileHandle
 	var fileAttr *metadata.FileAttr
+	// createDirWcc holds the parent-directory WCC captured atomically when a new
+	// file is created (H9). Nil for the truncate-existing path (parent dir
+	// unchanged) and for early returns.
+	var createDirWcc *metadata.DirWcc
 
 	switch req.Mode {
 	case types.CreateGuarded:
@@ -212,7 +216,7 @@ func (h *Handler) Create(
 		}
 
 		// Create new file
-		fileHandle, fileAttr, err = createNewFile(authCtx, metaSvc, parentHandle, req)
+		fileHandle, fileAttr, createDirWcc, err = createNewFile(authCtx, metaSvc, parentHandle, req)
 
 	case types.CreateExclusive:
 		// EXCLUSIVE: Check idempotency token if file exists
@@ -264,7 +268,7 @@ func (h *Handler) Create(
 		}
 
 		// Create new file with idempotency token
-		fileHandle, fileAttr, err = createNewFile(authCtx, metaSvc, parentHandle, req)
+		fileHandle, fileAttr, createDirWcc, err = createNewFile(authCtx, metaSvc, parentHandle, req)
 
 	case types.CreateUnchecked:
 		// UNCHECKED: Create or truncate existing
@@ -275,7 +279,7 @@ func (h *Handler) Create(
 			fileAttr, err = truncateExistingFile(authCtx, blockStore, metaSvc, existingFile, req)
 		} else {
 			// Create new file
-			fileHandle, fileAttr, err = createNewFile(authCtx, metaSvc, parentHandle, req)
+			fileHandle, fileAttr, createDirWcc, err = createNewFile(authCtx, metaSvc, parentHandle, req)
 		}
 
 	default:
@@ -350,9 +354,10 @@ func (h *Handler) Create(
 	// Convert metadata to NFS attributes
 	nfsFileAttr := h.convertFileAttrToNFS(fileHandle, fileAttr)
 
-	// Get updated parent directory attributes
-	updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
-	nfsDirAttr := h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
+	// H9: prefer the parent-directory WCC captured atomically with the create.
+	// For the truncate-existing path (createDirWcc nil) the parent dir is
+	// unchanged, so dirWccPair falls back to a fresh read.
+	dirWccBefore, nfsDirAttr := h.dirWccPair(ctx, metaSvc, parentHandle, createDirWcc, dirWccBefore)
 
 	logger.InfoCtx(ctx.Context, "CREATE successful", "file", req.Filename, "handle", fmt.Sprintf("0x%x", fileHandle), "mode", fmt.Sprintf("0%o", fileAttr.Mode), "size", fileAttr.Size, "client", clientIP)
 
@@ -395,7 +400,7 @@ func createNewFile(
 	metaSvc *metadata.MetadataService,
 	parentHandle metadata.FileHandle,
 	req *CreateRequest,
-) (metadata.FileHandle, *metadata.FileAttr, error) {
+) (metadata.FileHandle, *metadata.FileAttr, *metadata.DirWcc, error) {
 	// Build file attributes for the new file
 	// The repository will complete these with timestamps and PayloadID
 	fileAttr := &metadata.FileAttr{
@@ -458,9 +463,9 @@ func createNewFile(
 
 	// Call metaSvc's atomic Create operation
 	// This handles file creation, parent linking, and permission checking
-	createdFile, err := metaSvc.CreateFile(authCtx, parentHandle, req.Filename, fileAttr)
+	createdFile, dirWcc, err := metaSvc.CreateFile(authCtx, parentHandle, req.Filename, fileAttr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create file: %w", err)
+		return nil, nil, nil, fmt.Errorf("create file: %w", err)
 	}
 
 	// Debug logging to trace file creation
@@ -474,10 +479,10 @@ func createNewFile(
 	// Encode the file handle for return
 	fileHandle, err := metadata.EncodeFileHandle(createdFile)
 	if err != nil {
-		return nil, nil, fmt.Errorf("encode file handle: %w", err)
+		return nil, nil, nil, fmt.Errorf("encode file handle: %w", err)
 	}
 
-	return fileHandle, &createdFile.FileAttr, nil
+	return fileHandle, &createdFile.FileAttr, dirWcc, nil
 }
 
 // truncateExistingFile truncates an existing file and updates attributes.
@@ -534,8 +539,10 @@ func truncateExistingFile(
 	}
 
 	// Update file metadata using metaSvc
-	// This includes permission checking
-	if err := metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs); err != nil {
+	// This includes permission checking. The returned WCC describes the file
+	// being truncated; the CREATE response's directory WCC is unaffected because
+	// truncating an existing entry does not modify the parent directory.
+	if _, err := metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs); err != nil {
 		return nil, fmt.Errorf("update file metadata: %w", err)
 	}
 

@@ -137,7 +137,7 @@ func rootAuthContext() *metadata.AuthContext {
 // createFile creates a regular file under parent.
 func (tt *trashTest) createFile(parent metadata.FileHandle, name string) metadata.FileHandle {
 	tt.t.Helper()
-	_, err := tt.deps.svc.CreateFile(tt.ctx, parent, name, &metadata.FileAttr{Mode: 0o644})
+	_, _, err := tt.deps.svc.CreateFile(tt.ctx, parent, name, &metadata.FileAttr{Mode: 0o644})
 	require.NoError(tt.t, err)
 	h, err := tt.deps.svc.GetChild(tt.ctx.Context, parent, name)
 	require.NoError(tt.t, err)
@@ -147,7 +147,7 @@ func (tt *trashTest) createFile(parent metadata.FileHandle, name string) metadat
 // mkdir creates a directory under parent and returns its handle.
 func (tt *trashTest) mkdir(parent metadata.FileHandle, name string) metadata.FileHandle {
 	tt.t.Helper()
-	dir, err := tt.deps.svc.CreateDirectory(tt.ctx, parent, name, &metadata.FileAttr{Mode: 0o755})
+	dir, _, err := tt.deps.svc.CreateDirectory(tt.ctx, parent, name, &metadata.FileAttr{Mode: 0o755})
 	require.NoError(tt.t, err)
 	h, err := metadata.EncodeFileHandle(dir)
 	require.NoError(tt.t, err)
@@ -159,7 +159,7 @@ func (tt *trashTest) mkdir(parent metadata.FileHandle, name string) metadata.Fil
 func (tt *trashTest) recycle(name string) {
 	tt.t.Helper()
 	tt.createFile(tt.deps.rootHandle, name)
-	_, err := tt.deps.svc.RemoveFile(tt.ctx, tt.deps.rootHandle, name)
+	_, _, err := tt.deps.svc.RemoveFile(tt.ctx, tt.deps.rootHandle, name)
 	require.NoError(tt.t, err)
 }
 
@@ -177,7 +177,7 @@ func (tt *trashTest) recycleAt(dir, name string) {
 		}
 	}
 	tt.createFile(parent, name)
-	_, err := tt.deps.svc.RemoveFile(tt.ctx, parent, name)
+	_, _, err := tt.deps.svc.RemoveFile(tt.ctx, parent, name)
 	require.NoError(tt.t, err)
 }
 
@@ -249,7 +249,8 @@ func TestListReturnsRecycledRoots(t *testing.T) {
 	// A non-empty directory subtree recycles as ONE entry.
 	dir := tt.mkdir(tt.deps.rootHandle, "docs")
 	tt.createFile(dir, "inner.txt")
-	require.NoError(t, tt.deps.svc.RemoveDirectory(tt.ctx, tt.deps.rootHandle, "docs"))
+	_, rmErr := tt.deps.svc.RemoveDirectory(tt.ctx, tt.deps.rootHandle, "docs")
+	require.NoError(t, rmErr)
 
 	entries, err := tt.svc.List(tt.ctx, tt.deps.shareName)
 	require.NoError(t, err)
@@ -318,7 +319,7 @@ func TestEmptyThreadsBlocksToFreeBlocks(t *testing.T) {
 	require.NoError(t, store.PutFile(tt.ctx.Context, file))
 
 	// Recycle it, then empty the bin.
-	_, err = tt.deps.svc.RemoveFile(tt.ctx, tt.deps.rootHandle, "withblocks.txt")
+	_, _, err = tt.deps.svc.RemoveFile(tt.ctx, tt.deps.rootHandle, "withblocks.txt")
 	require.NoError(t, err)
 	n, err := tt.svc.Empty(tt.ctx, tt.deps.shareName, false)
 	require.NoError(t, err)

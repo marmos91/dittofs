@@ -53,7 +53,7 @@ func setupACLToggleTest(t *testing.T, shareName string, canonicalize bool) (*Han
 	}
 
 	metaSvc := rt.GetMetadataService()
-	file, err := metaSvc.CreateFile(authCtx, rootHandle, "f.dat", &metadata.FileAttr{
+	file, _, err := metaSvc.CreateFile(authCtx, rootHandle, "f.dat", &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
 	})

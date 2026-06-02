@@ -57,7 +57,7 @@ func TestSUIDClearingViaSetAttr(t *testing.T) {
 	}
 
 	// 1. Root creates file with mode 04777 (SUID + world-writable)
-	_, err = svc.CreateFile(rootCtx, rootHandle, "suidfile", &metadata.FileAttr{
+	_, _, err = svc.CreateFile(rootCtx, rootHandle, "suidfile", &metadata.FileAttr{
 		Mode: 0o4777,
 		UID:  0,
 		GID:  0,
@@ -76,7 +76,7 @@ func TestSUIDClearingViaSetAttr(t *testing.T) {
 	// 2. Simulate Linux NFS client file_remove_privs(): SETATTR(mode = 0777)
 	// This is what the client sends before WRITE when SUID bits are set
 	clearedMode := uint32(0o0777)
-	err = svc.SetFileAttributes(nobodyCtx, handle, &metadata.SetAttrs{
+	_, err = svc.SetFileAttributes(nobodyCtx, handle, &metadata.SetAttrs{
 		Mode: &clearedMode,
 	})
 	t.Logf("SetFileAttributes error: %v", err)
@@ -91,7 +91,7 @@ func TestSUIDClearingViaSetAttr(t *testing.T) {
 	assert.Equal(t, uint32(0o0777), file.Mode, "SUID bits should be cleared")
 
 	// 4. Also test SGID (02777 -> 0777)
-	_, err = svc.CreateFile(rootCtx, rootHandle, "sgidfile", &metadata.FileAttr{
+	_, _, err = svc.CreateFile(rootCtx, rootHandle, "sgidfile", &metadata.FileAttr{
 		Mode: 0o2777,
 		UID:  0,
 		GID:  0,
@@ -106,7 +106,7 @@ func TestSUIDClearingViaSetAttr(t *testing.T) {
 	t.Logf("SGID file mode after creation: %04o", file2.Mode)
 
 	sgidCleared := uint32(0o0777)
-	err = svc.SetFileAttributes(nobodyCtx, handle2, &metadata.SetAttrs{
+	_, err = svc.SetFileAttributes(nobodyCtx, handle2, &metadata.SetAttrs{
 		Mode: &sgidCleared,
 	})
 	t.Logf("SGID SetFileAttributes error: %v", err)
@@ -118,7 +118,7 @@ func TestSUIDClearingViaSetAttr(t *testing.T) {
 	assert.Equal(t, uint32(0o0777), file2.Mode, "SGID bits should be cleared")
 
 	// 5. Test SUID+SGID combo (06777 -> 0777)
-	_, err = svc.CreateFile(rootCtx, rootHandle, "susgidfile", &metadata.FileAttr{
+	_, _, err = svc.CreateFile(rootCtx, rootHandle, "susgidfile", &metadata.FileAttr{
 		Mode: 0o6777,
 		UID:  0,
 		GID:  0,
@@ -129,7 +129,7 @@ func TestSUIDClearingViaSetAttr(t *testing.T) {
 	require.NoError(t, err)
 
 	bothCleared := uint32(0o0777)
-	err = svc.SetFileAttributes(nobodyCtx, handle3, &metadata.SetAttrs{
+	_, err = svc.SetFileAttributes(nobodyCtx, handle3, &metadata.SetAttrs{
 		Mode: &bothCleared,
 	})
 	require.NoError(t, err, "non-owner should be allowed to clear both SUID+SGID bits")

@@ -20,7 +20,7 @@ import (
 // eviction test can assert on it deterministically.
 func (tt *trashTest) recycleSized(name string, size uint64) {
 	tt.t.Helper()
-	_, err := tt.deps.svc.CreateFile(tt.ctx, tt.deps.rootHandle, name, &metadata.FileAttr{Mode: 0o644})
+	_, _, err := tt.deps.svc.CreateFile(tt.ctx, tt.deps.rootHandle, name, &metadata.FileAttr{Mode: 0o644})
 	require.NoError(tt.t, err)
 
 	store, err := tt.deps.svc.GetStoreForShare(tt.deps.shareName)
@@ -32,7 +32,7 @@ func (tt *trashTest) recycleSized(name string, size uint64) {
 	file.Size = size
 	require.NoError(tt.t, store.PutFile(tt.ctx.Context, file))
 
-	_, err = tt.deps.svc.RemoveFile(tt.ctx, tt.deps.rootHandle, name)
+	_, _, err = tt.deps.svc.RemoveFile(tt.ctx, tt.deps.rootHandle, name)
 	require.NoError(tt.t, err)
 }
 

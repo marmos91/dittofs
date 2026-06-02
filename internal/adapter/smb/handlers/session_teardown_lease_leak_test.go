@@ -96,7 +96,7 @@ func setupTeardownLeakEnv(t *testing.T) *teardownLeakEnv {
 // makeFile creates a regular file in the share root and returns its handle.
 func (e *teardownLeakEnv) makeFile(t *testing.T, name string) ([]byte, *metadata.File) {
 	t.Helper()
-	if _, err := e.metaSvc.CreateFile(e.rootAuth, e.root, name, &metadata.FileAttr{
+	if _, _, err := e.metaSvc.CreateFile(e.rootAuth, e.root, name, &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0o644,
 	}); err != nil {

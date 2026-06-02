@@ -57,7 +57,7 @@ func setupConcurrentDirTest(t *testing.T, nChildren int) (*Handler, *OpenFile, *
 	}
 	metaSvc := rt.GetMetadataService()
 	for i := 0; i < nChildren; i++ {
-		if _, err := metaSvc.CreateFile(authCtx, rootHandle, fmt.Sprintf("f%03d", i), &metadata.FileAttr{
+		if _, _, err := metaSvc.CreateFile(authCtx, rootHandle, fmt.Sprintf("f%03d", i), &metadata.FileAttr{
 			Type: metadata.FileTypeRegular,
 			Mode: 0o644,
 		}); err != nil {

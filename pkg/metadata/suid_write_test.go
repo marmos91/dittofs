@@ -57,7 +57,7 @@ func TestSUIDClearingOnWrite(t *testing.T) {
 
 	t.Run("SUID cleared on non-root write via deferred commit", func(t *testing.T) {
 		// 1. Root creates file with SUID + world-writable
-		_, err := svc.CreateFile(rootCtx, rootHandle, "suidfile", &metadata.FileAttr{
+		_, _, err := svc.CreateFile(rootCtx, rootHandle, "suidfile", &metadata.FileAttr{
 			Mode: 0o4777,
 			UID:  0,
 			GID:  0,
@@ -98,7 +98,7 @@ func TestSUIDClearingOnWrite(t *testing.T) {
 	})
 
 	t.Run("SGID cleared on non-root write via deferred commit", func(t *testing.T) {
-		_, err := svc.CreateFile(rootCtx, rootHandle, "sgidfile", &metadata.FileAttr{
+		_, _, err := svc.CreateFile(rootCtx, rootHandle, "sgidfile", &metadata.FileAttr{
 			Mode: 0o2777,
 			UID:  0,
 			GID:  0,
@@ -121,7 +121,7 @@ func TestSUIDClearingOnWrite(t *testing.T) {
 	})
 
 	t.Run("SUID+SGID cleared on non-root write via deferred commit", func(t *testing.T) {
-		_, err := svc.CreateFile(rootCtx, rootHandle, "bothfile", &metadata.FileAttr{
+		_, _, err := svc.CreateFile(rootCtx, rootHandle, "bothfile", &metadata.FileAttr{
 			Mode: 0o6777,
 			UID:  0,
 			GID:  0,
@@ -144,7 +144,7 @@ func TestSUIDClearingOnWrite(t *testing.T) {
 	})
 
 	t.Run("Root write does NOT clear SUID", func(t *testing.T) {
-		_, err := svc.CreateFile(rootCtx, rootHandle, "rootwrite", &metadata.FileAttr{
+		_, _, err := svc.CreateFile(rootCtx, rootHandle, "rootwrite", &metadata.FileAttr{
 			Mode: 0o4777,
 			UID:  0,
 			GID:  0,

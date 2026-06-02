@@ -103,7 +103,7 @@ func (s *MetadataService) recycleNode(ctx *AuthContext, shareName string, parent
 	//    a directory moves its whole subtree as one entry). If this fails, the
 	//    source is still live but marked-deleted: clear the stamp best-effort so
 	//    a live file is not left looking recycled, then surface the move error.
-	if err := s.Move(ctx, parentHandle, name, destParent, destName); err != nil {
+	if _, err := s.Move(ctx, parentHandle, name, destParent, destName); err != nil {
 		if clearErr := s.clearRecycleStamp(ctx, victimHandle); clearErr != nil {
 			return nil, &StoreError{
 				Code:    ErrIOError,
@@ -152,7 +152,7 @@ func (s *MetadataService) ensureChildDir(ctx *AuthContext, parentHandle FileHand
 		return h, nil
 	}
 	attr := &FileAttr{Type: FileTypeDirectory, Mode: perm}
-	if _, err := s.CreateDirectory(ctx, parentHandle, name, attr); err != nil {
+	if _, _, err := s.CreateDirectory(ctx, parentHandle, name, attr); err != nil {
 		var storeErr *StoreError
 		if !stderrors.As(err, &storeErr) || storeErr.Code != ErrAlreadyExists {
 			return nil, err

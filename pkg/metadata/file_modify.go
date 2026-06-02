@@ -186,18 +186,27 @@ func (s *MetadataService) ReadSymlink(ctx *AuthContext, handle FileHandle) (stri
 
 // SetFileAttributes updates file attributes with validation and access control.
 //
-// Only attributes with non-nil pointers in attrs are modified.
-func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *SetAttrs) error {
+// Only attributes with non-nil pointers in attrs are modified. The returned
+// DirWcc carries the target file's own pre/post attributes for protocol WCC
+// data: Before is the state the operation transitioned from (the attributes the
+// mutation observed), After is the resulting state (H9). For SETATTR the WCC
+// subject is the file itself, not a parent directory.
+func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *SetAttrs) (*DirWcc, error) {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Get file entry
 	file, err := store.GetFile(ctx.Context, handle)
 	if err != nil {
-		return err
+		return nil, err
 	}
+
+	// Capture pre-op attributes: a copy of the file as observed by this
+	// operation, before any mutation is applied below. This is exactly the
+	// state WCC "before" must describe.
+	wcc := &DirWcc{Before: CopyFileAttr(&file.FileAttr)}
 
 	// Check permissions based on what's being changed
 	identity := ctx.Identity
@@ -233,10 +242,10 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 
 	if writePermSufficient && !isOwner && !isRoot {
 		if err := s.checkWritePermission(ctx, handle); err != nil {
-			return err
+			return nil, err
 		}
 	} else if !isOwner && !isRoot {
-		return &StoreError{
+		return nil, &StoreError{
 			Code:    ErrPermissionDenied,
 			Message: "operation not permitted",
 			Path:    file.Path,
@@ -285,7 +294,7 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		// Only root can change owner to a different UID
 		// Owner can set UID to their own UID (no-op for chown(file, same_uid, new_gid))
 		if *attrs.UID != file.UID && !isRoot {
-			return &StoreError{
+			return nil, &StoreError{
 				Code:    ErrPermissionDenied,
 				Message: "only root can change owner",
 				Path:    file.Path,
@@ -308,7 +317,7 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		if !isRoot {
 			isPrimaryGroup := identity.GID != nil && *identity.GID == *attrs.GID
 			if !isPrimaryGroup && !identity.HasGID(*attrs.GID) {
-				return &StoreError{
+				return nil, &StoreError{
 					Code:    ErrPermissionDenied,
 					Message: "not a member of target group",
 					Path:    file.Path,
@@ -336,7 +345,7 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 	if attrs.Size != nil {
 		// Size change requires write permission
 		if err := s.checkWritePermission(ctx, handle); err != nil {
-			return err
+			return nil, err
 		}
 		// A size-down truncate must trim the content-addressed block list to
 		// the new size, otherwise stale-tail refs past EOF survive in
@@ -398,7 +407,7 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 	// Handle ACL setting
 	if attrs.ACL != nil {
 		if err := acl.ValidateACL(attrs.ACL); err != nil {
-			return &StoreError{
+			return nil, &StoreError{
 				Code:    ErrInvalidArgument,
 				Message: fmt.Sprintf("invalid ACL: %v", err),
 				Path:    file.Path,
@@ -420,7 +429,7 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 	if len(attrs.EAMutations) > 0 {
 		if !isOwner && !isRoot {
 			if err := s.checkWritePermission(ctx, handle); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		file.ApplyEAMutations(attrs.EAMutations)
@@ -433,7 +442,7 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 			file.Ctime = now
 		}
 		if err := store.PutFile(ctx.Context, file); err != nil {
-			return err
+			return nil, err
 		}
 
 		// Invalidate cached file in pending writes to ensure subsequent
@@ -441,36 +450,39 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		s.pendingWrites.InvalidateCache(handle)
 	}
 
-	return nil
+	// Post-op attributes reflect the resulting file state (mutated in place
+	// above; equals Before when nothing changed).
+	wcc.After = CopyFileAttr(&file.FileAttr)
+	return wcc, nil
 }
 
 // Move moves or renames a file or directory atomically.
-func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName string, toDir FileHandle, toName string) error {
+func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName string, toDir FileHandle, toName string) (*RenameWcc, error) {
 	store, err := s.storeForHandle(fromDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Validate names
 	if err := ValidateName(fromName); err != nil {
-		return err
+		return nil, err
 	}
 	if err := ValidateName(toName); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Same directory and same name - no-op (POSIX rename semantics)
 	if string(fromDir) == string(toDir) && fromName == toName {
-		return nil
+		return nil, nil
 	}
 
 	// Get source directory
 	srcDir, err := store.GetFile(ctx.Context, fromDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if srcDir.Type != FileTypeDirectory {
-		return &StoreError{
+		return nil, &StoreError{
 			Code:    ErrNotDirectory,
 			Message: "source parent is not a directory",
 		}
@@ -479,10 +491,10 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 	// Get destination directory
 	dstDir, err := store.GetFile(ctx.Context, toDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if dstDir.Type != FileTypeDirectory {
-		return &StoreError{
+		return nil, &StoreError{
 			Code:    ErrNotDirectory,
 			Message: "destination parent is not a directory",
 		}
@@ -491,30 +503,30 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 	// Validate destination path length (POSIX PATH_MAX compliance)
 	destPath := buildPath(dstDir.Path, toName)
 	if err := ValidatePath(destPath); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Check write permission on both directories
 	if err := s.checkWritePermission(ctx, fromDir); err != nil {
-		return err
+		return nil, err
 	}
 	if err := s.checkWritePermission(ctx, toDir); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Get source file
 	srcHandle, err := store.GetChild(ctx.Context, fromDir, fromName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	srcFile, err := store.GetFile(ctx.Context, srcHandle)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Check sticky bit on source directory
 	if err := CheckStickyBitRestriction(ctx, &srcDir.FileAttr, &srcFile.FileAttr); err != nil {
-		return err
+		return nil, err
 	}
 
 	// POSIX: When moving a directory to a different parent from a sticky directory,
@@ -535,7 +547,7 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 				"reason", "caller does not own directory being moved",
 				"src_file_uid", srcFile.UID,
 				"caller_uid", callerUID)
-			return &StoreError{
+			return nil, &StoreError{
 				Code:    ErrAccessDenied,
 				Message: "sticky bit set: cannot move directory you don't own to different parent",
 			}
@@ -550,18 +562,18 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 		// Destination exists - check compatibility
 		dstFile, err = store.GetFile(ctx.Context, dstHandle)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		// Check sticky bit on destination directory
 		if err := CheckStickyBitRestriction(ctx, &dstDir.FileAttr, &dstFile.FileAttr); err != nil {
-			return err
+			return nil, err
 		}
 
 		// Type compatibility checks
 		if srcFile.Type == FileTypeDirectory {
 			if dstFile.Type != FileTypeDirectory {
-				return &StoreError{
+				return nil, &StoreError{
 					Code:    ErrNotDirectory,
 					Message: "cannot overwrite non-directory with directory",
 				}
@@ -569,14 +581,14 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 			// Check if destination directory is empty
 			entries, _, err := store.ListChildren(ctx.Context, dstHandle, "", 1)
 			if err == nil && len(entries) > 0 {
-				return &StoreError{
+				return nil, &StoreError{
 					Code:    ErrNotEmpty,
 					Message: "destination directory not empty",
 				}
 			}
 		} else {
 			if dstFile.Type == FileTypeDirectory {
-				return &StoreError{
+				return nil, &StoreError{
 					Code:    ErrIsDirectory,
 					Message: "cannot overwrite directory with non-directory",
 				}
@@ -604,7 +616,7 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 						// into #recycle (the reaper frees its blocks later), so we
 						// have no blocks to release here.
 						if _, err := s.recycleNode(ctx, shareName, toDir, toName, victimRel); err != nil {
-							return err // never silently clobber
+							return nil, err // never silently clobber
 						}
 						// The victim has moved into #recycle, so the destination
 						// name is now free. Drop the cached dest-exists state so
@@ -617,11 +629,36 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 			}
 		}
 	} else if !IsNotFoundError(err) {
-		return err
+		return nil, err
+	}
+
+	// rename carries the source/destination directory pre/post attributes for
+	// WCC, captured inside the transaction below (H9). For an intra-directory
+	// move FromDir and ToDir reference the same DirWcc.
+	sameDir := string(fromDir) == string(toDir)
+	rename := &RenameWcc{FromDir: &DirWcc{}}
+	if sameDir {
+		rename.ToDir = rename.FromDir
+	} else {
+		rename.ToDir = &DirWcc{}
 	}
 
 	// Execute all write operations in a single transaction for better performance.
 	txErr := store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Re-read the source/destination directories inside the transaction so
+		// the pre-op snapshots and the timestamp mutations derive from the same
+		// committed state (After then monotonic w.r.t. Before).
+		if txSrc, sErr := tx.GetFile(ctx.Context, fromDir); sErr == nil && txSrc != nil {
+			srcDir = txSrc
+		}
+		rename.FromDir.Before = CopyFileAttr(&srcDir.FileAttr)
+		if !sameDir {
+			if txDst, dErr := tx.GetFile(ctx.Context, toDir); dErr == nil && txDst != nil {
+				dstDir = txDst
+			}
+			rename.ToDir.Before = CopyFileAttr(&dstDir.FileAttr)
+		}
+
 		// Handle destination removal if it exists
 		if dstFile != nil {
 			// Remove destination
@@ -730,13 +767,15 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 
 		srcDir.Mtime = now
 		srcDir.Ctime = now
+		rename.FromDir.After = CopyFileAttr(&srcDir.FileAttr)
 		if err := tx.PutFile(ctx.Context, srcDir); err != nil {
 			return err
 		}
 
-		if string(fromDir) != string(toDir) {
+		if !sameDir {
 			dstDir.Mtime = now
 			dstDir.Ctime = now
+			rename.ToDir.After = CopyFileAttr(&dstDir.FileAttr)
 			if err := tx.PutFile(ctx.Context, dstDir); err != nil {
 				return err
 			}
@@ -746,7 +785,7 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 	})
 
 	if txErr != nil {
-		return txErr
+		return nil, txErr
 	}
 
 	// Notify directory change after successful move
@@ -756,7 +795,7 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 		s.notifyDirChange(shareNameForHandle(toDir), toDir, lock.DirChangeAddEntry, ctx)
 	}
 
-	return nil
+	return rename, nil
 }
 
 // updateDescendantPaths recursively updates the Path field of all descendants

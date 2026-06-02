@@ -215,7 +215,7 @@ func (h *Handler) Symlink(
 	// - Updating parent directory timestamps
 	// - Respecting context cancellation internally
 
-	createdSymlink, err := metaSvc.CreateSymlink(authCtx, dirHandle, req.Name, req.Target, symlinkAttr)
+	createdSymlink, dirWcc, err := metaSvc.CreateSymlink(authCtx, dirHandle, req.Name, req.Target, symlinkAttr)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -266,17 +266,8 @@ func (h *Handler) Symlink(
 	// Generate symlink attributes for response
 	nfsSymlinkAttr := h.convertFileAttrToNFS(symlinkHandle, &createdSymlink.FileAttr)
 
-	// Get updated directory attributes for WCC data
-	updatedDirFile, err := metaSvc.GetFile(ctx.Context, dirHandle)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "SYMLINK: successful but cannot get updated directory attributes", "dir", fmt.Sprintf("0x%x", req.DirHandle), "error", err)
-		// Continue with nil WccAfter rather than failing
-	}
-
-	var wccAfter *types.NFSFileAttr
-	if updatedDirFile != nil {
-		wccAfter = h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
-	}
+	// H9: use the directory attributes captured atomically with the create.
+	wccBefore, wccAfter := h.dirWccPair(ctx, metaSvc, dirHandle, dirWcc, wccBefore)
 
 	logger.InfoCtx(ctx.Context, "SYMLINK successful", "name", req.Name, "target", req.Target, "dir", fmt.Sprintf("0x%x", req.DirHandle), "handle", fmt.Sprintf("0x%x", symlinkHandle), "client", clientIP)
 

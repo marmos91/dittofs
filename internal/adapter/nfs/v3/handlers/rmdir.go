@@ -186,7 +186,7 @@ func (h *Handler) Rmdir(
 	}
 
 	// Delegate to metaSvc for directory removal
-	err = metaSvc.RemoveDirectory(authCtx, parentHandle, req.Name)
+	dirWcc, err := metaSvc.RemoveDirectory(authCtx, parentHandle, req.Name)
 	if err != nil {
 		logger.DebugCtx(ctx.Context, "RMDIR failed: store error", "name", req.Name, "client", clientIP, "error", err)
 
@@ -208,9 +208,8 @@ func (h *Handler) Rmdir(
 	// Step 5: Build success response with updated parent attributes
 	// ========================================================================
 
-	// Get updated parent directory attributes
-	parentFile, _ = metaSvc.GetFile(ctx.Context, parentHandle)
-	wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
+	// H9: use the parent attributes captured atomically with the removal.
+	wccBefore, wccAfter = h.dirWccPair(ctx, metaSvc, parentHandle, dirWcc, wccBefore)
 
 	logger.InfoCtx(ctx.Context, "RMDIR successful", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 

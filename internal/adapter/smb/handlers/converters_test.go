@@ -492,7 +492,7 @@ func TestLoneSurrogateNames_CreateQueryRoundTrip(t *testing.T) {
 		return &metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0644}
 	}
 	for _, name := range []string{hiName, loName, pairName} {
-		if _, err := metaSvc.CreateFile(authCtx, rootHandle, name, fileAttr()); err != nil {
+		if _, _, err := metaSvc.CreateFile(authCtx, rootHandle, name, fileAttr()); err != nil {
 			t.Fatalf("CreateFile(% x) failed (spurious collision?): %v", name, err)
 		}
 	}
