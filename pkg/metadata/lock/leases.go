@@ -1118,10 +1118,38 @@ func (lm *Manager) releaseLeaseForHandleImpl(ctx context.Context, handleKey stri
 		return nil
 	}
 
+	// hadBreaking records whether any lease we remove here was in the Breaking
+	// state, so we can wake WaitForBreakCompletion waiters before they hit the
+	// 5s timeout. The releaseLeaseForHandle path is the no-ack way to complete a
+	// break (the holder closes its conflicting handle in response to the break
+	// notification instead of sending LEASE_BREAK_ACK), and the waiting party
+	// cannot make progress until either the signal fires or the deadline
+	// expires.
+	//
+	// Directory leases: a parent-dir Handle-break wait set up by SET_INFO
+	// rename / hardlink (smb2.dirlease.rename_dst_parent phase-2).
+	//
+	// File leases / traditional oplocks: a parked CREATE behind the holder's
+	// break must finalize the MOMENT the holder releases, not only on the
+	// break-wait timeout. smbtorture smb2.replay.dhv2-pending2*-sane disconnects
+	// the parked CREATE's originating channel and replays on a surviving channel
+	// before the 5s timer fires; the replay must find the finalized completion
+	// (FILE_NOT_AVAILABLE while parked → OK once the holder closes). The wake is
+	// gated on the released lease having been Breaking, so it fires only when a
+	// break was actually in flight — holders that ACK (smb2.lease.breaking3) wake
+	// via acknowledgeLeaseBreakImpl, and holders that neither ACK nor close
+	// (smb2.lease.timeout-disconnect) never reach this release path. Waking a
+	// parked file CREATE on the holder's release does not regress
+	// smb2.kernel-oplocks.kernel_oplocks7: that test explicitly accepts BOTH the
+	// re-open-first (EXCLUSIVE) and parked-create-first (NONE) orderings.
 	var remaining []*UnifiedLock
 	var deleteErrs []error
+	hadBreaking := false
 	for _, lock := range locks {
 		if lock.Lease != nil && lock.Lease.LeaseKey == leaseKey {
+			if lock.Lease.Breaking {
+				hadBreaking = true
+			}
 			if lm.lockStore != nil {
 				if err := lm.lockStore.DeleteLock(ctx, lock.ID); err != nil && !storeerrors.IsNotFoundError(err) {
 					// In-memory removal proceeds regardless: the persisted
@@ -1140,31 +1168,6 @@ func (lm *Manager) releaseLeaseForHandleImpl(ctx context.Context, handleKey stri
 			continue
 		}
 		remaining = append(remaining, lock)
-	}
-
-	// Track whether we removed any DIRECTORY lease that was in the Breaking
-	// state so we can wake WaitForBreakCompletion waiters before they hit
-	// the 5s timeout. The releaseLeaseForHandle path is the no-ack way to
-	// complete a break (the holder closes its conflicting handle in
-	// response to the break notification instead of sending LEASE_BREAK_ACK),
-	// and the waiting party (a parent-dir Handle-break wait set up by
-	// SET_INFO rename / hardlink) cannot make progress until either the
-	// signal fires or the deadline expires. Required by smbtorture
-	// smb2.dirlease.rename_dst_parent phase-2.
-	//
-	// Scoped to directory leases on purpose: file-lease parks waiting on
-	// breakWaitChans rely on the "release without signal" semantics so a
-	// holder that closes (instead of ACKing) does NOT prematurely wake a
-	// parked file CREATE — required by smb2.kernel-oplocks.kernel_oplocks7
-	// where tree2's parked CREATE must stay parked until the 5s timeout so
-	// tree1's re-open arrives first and sees an empty open table.
-	hadBreaking := false
-	for _, lock := range locks {
-		if lock.Lease != nil && lock.Lease.LeaseKey == leaseKey &&
-			lock.Lease.Breaking && lock.Lease.IsDirectory {
-			hadBreaking = true
-			break
-		}
 	}
 
 	if len(remaining) == 0 {

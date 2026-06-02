@@ -27,15 +27,18 @@ func addChannel(t *testing.T, sess *session.Session, connID uint64) {
 }
 
 // parkCreate registers a pending CREATE for sessionID.
-func parkCreate(h *handlers.Handler, sessionID, connID, asyncID uint64) {
-	_ = h.PendingCreateRegistry.Register(&handlers.PendingCreate{
+func parkCreate(t *testing.T, h *handlers.Handler, sessionID, connID, asyncID uint64) {
+	t.Helper()
+	if err := h.PendingCreateRegistry.Register(&handlers.PendingCreate{
 		ConnID:    connID,
 		SessionID: sessionID,
 		MessageID: 1,
 		AsyncId:   asyncID,
 		Cancel:    func() {},
 		Callback:  func(_, _, _ uint64, _ types.Status, _ []byte) error { return nil },
-	})
+	}); err != nil {
+		t.Fatalf("parkCreate Register failed: %v", err)
+	}
 }
 
 // snapshotTouched mirrors the snapshot-and-clear that cleanupSessions performs
@@ -88,7 +91,7 @@ func TestMultichannelSessionSurvival(t *testing.T) {
 	origin.TrackSession(sessionID)
 	secondary.BindSession(sessionID)
 
-	parkCreate(adapter.handler, sessionID, origin.ID, 0xAA)
+	parkCreate(t, adapter.handler, sessionID, origin.ID, 0xAA)
 
 	// --- Drop the ORIGIN connection (the test disconnects the originating
 	// channel mid-test). The session must SURVIVE because the secondary
@@ -194,5 +197,58 @@ func TestBoundChannelCloseKeepsSessionAndRouting(t *testing.T) {
 	}
 	if _, ok := adapter.sessionConns.Load(sessionID); ok {
 		t.Fatal("break-routing entry must be deleted when the origin closes")
+	}
+}
+
+// TestAnyTrackedSessionFallsBackToBound verifies that a connection carrying ONLY
+// a bound multichannel channel (no owned session) still surfaces a SessionID via
+// AnyTrackedSession. SendErrorResponse relies on this to sign a wrong-SessionId
+// error on a bound-only transport; without the fallback it returns 0 and the
+// error cannot be signed.
+func TestAnyTrackedSessionFallsBackToBound(t *testing.T) {
+	srv, cli := net.Pipe()
+	defer func() { _ = srv.Close() }()
+	defer func() { _ = cli.Close() }()
+
+	adapter := New(Config{})
+	c := newConnWithID(adapter, srv, 1)
+
+	const boundID = 0x4242
+	c.BindSession(boundID)
+
+	if got := c.AnyTrackedSession(); got != boundID {
+		t.Fatalf("AnyTrackedSession on bound-only connection = %d, want %d", got, boundID)
+	}
+
+	// With an owned session present, that one is preferred.
+	const ownedID = 0x1111
+	c.TrackSession(ownedID)
+	if got := c.AnyTrackedSession(); got != ownedID {
+		t.Fatalf("AnyTrackedSession with owned session = %d, want owned %d", got, ownedID)
+	}
+}
+
+// TestUntrackSessionClearsBoundChannel verifies that a LOGOFF processed on a
+// bound multichannel channel clears the boundSessions entry too. Otherwise a
+// stale bound entry makes connection-close still treat the session as
+// participating on this transport.
+func TestUntrackSessionClearsBoundChannel(t *testing.T) {
+	srv, cli := net.Pipe()
+	defer func() { _ = srv.Close() }()
+	defer func() { _ = cli.Close() }()
+
+	adapter := New(Config{})
+	c := newConnWithID(adapter, srv, 1)
+
+	const sessionID = 0x9090
+	c.BindSession(sessionID)
+
+	c.UntrackSession(sessionID)
+
+	if got := snapshotTouched(c); len(got) != 0 {
+		t.Fatalf("after UntrackSession, participating sessions = %v, want none", got)
+	}
+	if got := c.AnyTrackedSession(); got != 0 {
+		t.Fatalf("after UntrackSession, AnyTrackedSession = %d, want 0", got)
 	}
 }

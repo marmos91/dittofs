@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-06-02 (#739 — implemented SMB3 persistent durable handles on continuous-availability shares; removed the two `durable-v2-open.persistent-open-{oplock,lease}` rows now that they pass against the CA share `/smbpersistent`)
+Last updated: 2026-06-02 (#749 — parked durable CREATE now finalizes the moment the conflicting holder releases its oplock/lease, not only on the break-wait timeout; removed the 6 `dhv2-pending2*-sane` replay rows now that they pass)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -11,9 +11,9 @@ Every remaining entry is justified and falls into exactly one bucket. No
 UNJUSTIFIED entries remain — the #673 acceptance criterion is met.
 
 - **Upstream Samba known-fail** (fails on the reference Samba server too; cited) — **2**: `charset.Testing`, `session.reauth5`
-- **Deferred past v1.0 with a tracking issue** (justified by deferral) — **6**: the 6 `dhv2-pending2*-sane` replay rows (#749, parked-CREATE finalize-on-holder-release)
+- **Deferred past v1.0 with a tracking issue** (justified by deferral) — **0**: the last deferred rows (the 6 `dhv2-pending2*-sane` replay rows) flipped under #749 (parked-CREATE finalize-on-holder-release)
 - **Permanently Unimplementable / harness-only** (see [appendix](#permanently-unimplementable-out-of-scope)) — **47**
-- **Total (non-Kerberos): 55**
+- **Total (non-Kerberos): 49**
 
 (Rendered as a list, not a markdown table, so `parse-results.sh` — which ingests every line beginning with `|` — does not mistake these tally lines for known-failure rows.)
 
@@ -24,7 +24,7 @@ Bucket movements in this pass (all CI-safe — `parse-results.sh` keys off the
 test name, which is preserved in its new location):
 
 - `smb2.dirlease.oplocks` — moved Expected→appendix (smbtorture 4.22.6 **client** SIGSEGV, same class as `scan.scan`; not a DittoFS gap).
-- The 20 replay `*-windows` rows — moved Expected→appendix (architecturally Samba-incompatible; Samba's own source does not reproduce the Windows variants — see appendix bucket 10). The `*-sane` rows stay deferred under #749 (12 remaining after the 2026-06-02 #749 deferred-open flip, below).
+- The 20 replay `*-windows` rows — moved Expected→appendix (architecturally Samba-incompatible; Samba's own source does not reproduce the Windows variants — see appendix bucket 10). All `*-sane` rows now pass under #749 (the deferred-open flip removed `pending1n-vs-violation-*-sane`; the finalize-on-holder-release flip removed `pending2*-sane`).
 - `smb2.timestamp_resolution.resolution1` — removed its stale duplicate Expected row; the appendix already carries it (upstream-skipped, `selftest/skip:69-70`).
 
 ## Policy (v1.0 conformance gate, #673)
@@ -240,29 +240,23 @@ a surviving channel still finds the reservation. The deferred-open
 `pending1n-vs-violation-*-sane` pair then flipped via a wait-for-conflict-clear
 retry (the parked share-violation CREATE waits for the holder to CLOSE/ACK
 instead of force-completing the lease, which also fixed the lease-break-ack
-STATUS_UNSUCCESSFUL bug). The remaining rows are the 6 `pending2*-sane` cases,
-which additionally disconnect the parked CREATE's *originating* channel and then
-race to the replay before the parked CREATE's break-wait timer fires — these
-need the parked CREATE to finalize and clear its reservation the moment the
-holder *releases* its oplock/lease, not only on timeout. All tracked under **#749**.
+STATUS_UNSUCCESSFUL bug). The 6 `pending2*-sane` cases then flipped too: they
+additionally disconnect the parked CREATE's *originating* channel and race to
+the replay before the parked CREATE's break-wait timer fires, so the parked
+CREATE now finalizes and clears its reservation the moment the conflicting
+holder *releases* its oplock/lease (break-wake on `releaseLeaseForHandle`), not
+only on timeout — by which point the replayed CREATE on a surviving channel
+finds the finalized completion in the replay cache. All `*-sane` replay rows now
+pass; the work is tracked under **#749**.
 
-**Bucketing note (#673):** only the `*-sane` variants are listed below as
-deferred. The 20 `*-windows` variants were moved
+**Bucketing note (#673):** the 20 `*-windows` variants were moved
 to the [Permanently Unimplementable](#permanently-unimplementable-out-of-scope)
 appendix (bucket 10): they assert the **Windows-specific** ordering of a
 replayed CREATE against a pending oplock/lease break, which Samba's own source
 documents as a deliberate divergence from its server behaviour — Samba does not
 match the Windows variant either, so there is no spec-conformant target for
-DittoFS to hit. The `*-sane` rows remain genuinely fixable under #749.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.replay.dhv2-pending2n-vs-oplock-sane | Replay | Deferred: parked CREATE must finalize + clear its replay reservation when the holder *releases* the conflicting oplock/lease, not only on the break-wait timeout — its originating channel is dropped so the test races to the replay before the timer fires (the surviving-channel half is done; needs break-wake finalization) | #749 |
-| smb2.replay.dhv2-pending2n-vs-lease-sane | Replay | Deferred: parked CREATE must finalize on holder release, not break-wait timeout (originating channel dropped); see pending2n-vs-oplock-sane | #749 |
-| smb2.replay.dhv2-pending2l-vs-oplock-sane | Replay | Deferred: parked CREATE must finalize on holder release, not break-wait timeout (originating channel dropped); see pending2n-vs-oplock-sane | #749 |
-| smb2.replay.dhv2-pending2l-vs-lease-sane | Replay | Deferred: parked CREATE must finalize on holder release, not break-wait timeout (originating channel dropped); see pending2n-vs-oplock-sane | #749 |
-| smb2.replay.dhv2-pending2o-vs-oplock-sane | Replay | Deferred: parked CREATE must finalize on holder release, not break-wait timeout (originating channel dropped); see pending2n-vs-oplock-sane | #749 |
-| smb2.replay.dhv2-pending2o-vs-lease-sane | Replay | Deferred: parked CREATE must finalize on holder release, not break-wait timeout (originating channel dropped); see pending2n-vs-oplock-sane | #749 |
+DittoFS to hit. All `*-sane` rows now pass under #749, so no replay rows remain
+deferred.
 
 ## Permanently Unimplementable (Out of Scope)
 
@@ -318,12 +312,12 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.replay.dhv2-pending1l-vs-lease-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-lease ordering; Samba does not reproduce the `-windows` arm. |
 | smb2.replay.dhv2-pending1o-vs-oplock-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-oplock ordering; Samba does not reproduce the `-windows` arm. `-sane` arm tracked under #749. |
 | smb2.replay.dhv2-pending1o-vs-lease-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-lease ordering; Samba does not reproduce the `-windows` arm. `-sane` arm tracked under #749. |
-| smb2.replay.dhv2-pending2n-vs-oplock-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-oplock ordering; Samba does not reproduce the `-windows` arm. `-sane` arm tracked under #749. |
-| smb2.replay.dhv2-pending2n-vs-lease-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-lease ordering; Samba does not reproduce the `-windows` arm. `-sane` arm tracked under #749. |
-| smb2.replay.dhv2-pending2l-vs-oplock-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-oplock ordering; Samba does not reproduce the `-windows` arm. `-sane` arm tracked under #749. |
-| smb2.replay.dhv2-pending2l-vs-lease-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-lease ordering; Samba does not reproduce the `-windows` arm. `-sane` arm tracked under #749. |
-| smb2.replay.dhv2-pending2o-vs-oplock-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-oplock ordering; Samba does not reproduce the `-windows` arm. `-sane` arm tracked under #749. |
-| smb2.replay.dhv2-pending2o-vs-lease-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-lease ordering; Samba does not reproduce the `-windows` arm. `-sane` arm tracked under #749. |
+| smb2.replay.dhv2-pending2n-vs-oplock-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-oplock ordering; Samba does not reproduce the `-windows` arm. `-sane` arm now passes (#749). |
+| smb2.replay.dhv2-pending2n-vs-lease-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-lease ordering; Samba does not reproduce the `-windows` arm. `-sane` arm now passes (#749). |
+| smb2.replay.dhv2-pending2l-vs-oplock-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-oplock ordering; Samba does not reproduce the `-windows` arm. `-sane` arm now passes (#749). |
+| smb2.replay.dhv2-pending2l-vs-lease-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-lease ordering; Samba does not reproduce the `-windows` arm. `-sane` arm now passes (#749). |
+| smb2.replay.dhv2-pending2o-vs-oplock-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-oplock ordering; Samba does not reproduce the `-windows` arm. `-sane` arm now passes (#749). |
+| smb2.replay.dhv2-pending2o-vs-lease-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-lease ordering; Samba does not reproduce the `-windows` arm. `-sane` arm now passes (#749). |
 | smb2.replay.dhv2-pending3n-vs-oplock-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-oplock ordering; Samba does not reproduce the `-windows` arm. `-sane` arm tracked under #749. |
 | smb2.replay.dhv2-pending3n-vs-lease-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-lease ordering; Samba does not reproduce the `-windows` arm. `-sane` arm tracked under #749. |
 | smb2.replay.dhv2-pending3l-vs-oplock-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-oplock ordering; Samba does not reproduce the `-windows` arm. `-sane` arm tracked under #749. |
@@ -338,6 +332,37 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 `KNOWN_FAILURES_KERBEROS.md` now carries a single row (`smb2.reauth5`, an upstream Samba selftest knownfail) after the #686 Kerberos sweep harvested the stale multi-channel rows. It is loaded only when smbtorture runs with `--use-kerberos`, which the non-Kerberos v1.0 CI job (`.github/workflows/smb-conformance.yml`, running `./run.sh` without `--kerberos`) does not pass, so it does not gate v1.0.
 
 ## Changelog
+
+### 2026-06-02 — #749 finalize parked CREATE on holder release: 6 rows flipped
+
+The parked durable CREATE now finalizes the moment the conflicting holder
+*releases* its oplock/lease, not only when the 5 s break-wait timer fires. The
+no-ack break-completion path (`releaseLeaseForHandle`, taken when the holder
+closes its conflicting handle in response to a break notification instead of
+ACKing) now wakes `WaitForBreakCompletion` waiters for **file** leases and
+traditional oplocks too — previously only directory leases were woken. The wake
+is gated on the released lease having been in the `Breaking` state, so it fires
+only when a break was actually in flight; holders that ACK wake via
+`acknowledgeLeaseBreakImpl`, and holders that neither ACK nor close
+(`smb2.lease.timeout-disconnect`) never reach this release path. The parked
+CREATE's resume goroutine re-runs `completeCreateAfterBreak`, which stores the
+finalized completion in the replay cache, so the replayed CREATE on a surviving
+channel returns OK instead of `FILE_NOT_AVAILABLE`.
+
+This flips the 6 `dhv2-pending2*-sane` rows (each verified `success:` on the
+local docker smbtorture battery, `--filter` per row):
+
+- `smb2.replay.dhv2-pending2n-vs-oplock-sane` / `dhv2-pending2n-vs-lease-sane`
+- `smb2.replay.dhv2-pending2l-vs-oplock-sane` / `dhv2-pending2l-vs-lease-sane`
+- `smb2.replay.dhv2-pending2o-vs-oplock-sane` / `dhv2-pending2o-vs-lease-sane`
+
+No regression in the lease / oplock / kernel-oplocks families:
+`smb2.kernel-oplocks.kernel_oplocks7` explicitly accepts BOTH the re-open-first
+(EXCLUSIVE) and parked-create-first (NONE) orderings, so waking the parked file
+CREATE on holder release is spec-conformant for it. With this flip and the
+deferred-open retry (see the "replay-vs-pending-break: 2 rows flipped" entry
+below), all `*-sane` replay rows now pass and no replay rows remain deferred
+under #749.
 
 ### 2026-06-02 — #749 multichannel session survival: 6 rows flipped
 
@@ -357,13 +382,15 @@ docker smbtorture battery, `samba-toolbox:v0.8`):
 - `smb2.replay.dhv2-pending3l-vs-oplock-sane` / `dhv2-pending3l-vs-lease-sane`
 - `smb2.replay.dhv2-pending3o-vs-oplock-sane` / `dhv2-pending3o-vs-lease-sane`
 
-The 6 `dhv2-pending2*-sane` rows stay deferred: they additionally disconnect the
-parked CREATE's *originating* channel and then race to the replay before the
-5 s break-wait timer fires (replay.c:3119 returns FILE_NOT_AVAILABLE, should be
-OK). They need the parked CREATE to finalize and clear its reservation the
-moment the holder *releases* its oplock/lease — a deeper break-completion change
-on top of session survival. (The 2 `dhv2-pending1n-vs-violation-*-sane` rows
-flipped separately — see the next entry.) All under #749.
+At the time of this entry the 6 `dhv2-pending2*-sane` rows stayed deferred: they
+additionally disconnect the parked CREATE's *originating* channel and then race
+to the replay before the 5 s break-wait timer fires (replay.c:3119 returns
+FILE_NOT_AVAILABLE, should be OK). They needed the parked CREATE to finalize and
+clear its reservation the moment the holder *releases* its oplock/lease — a
+deeper break-completion change on top of session survival, since flipped (see the
+2026-06-02 finalize-on-holder-release entry at the top of the Changelog). (The 2
+`dhv2-pending1n-vs-violation-*-sane` rows flipped separately — see the next
+entry.) All under #749.
 
 ### 2026-06-02 — #749 replay-vs-pending-break: 2 rows flipped (deferred-open retry)
 
