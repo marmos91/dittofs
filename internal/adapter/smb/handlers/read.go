@@ -227,6 +227,20 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
 
+	// Per MS-SMB2 3.3.5.13: the server MUST fail a READ whose Length exceeds the
+	// MaxReadSize advertised in the NEGOTIATE response with
+	// STATUS_INVALID_PARAMETER. Without this clamp the request is bounded only by
+	// the 64 MB NetBIOS frame cap, letting one READ allocate up to 64× the
+	// advertised ceiling and violating the negotiated contract. Windows and Samba
+	// both reject an over-max READ. MaxReadSize is non-zero after NEGOTIATE
+	// (default 1 MB, handler.go); guard against a zero value (pre-NEGOTIATE) so
+	// the clamp never rejects every read.
+	if h.MaxReadSize > 0 && req.Length > h.MaxReadSize {
+		logger.Debug("READ: length exceeds negotiated MaxReadSize",
+			"path", openFile.Path, "length", req.Length, "maxReadSize", h.MaxReadSize)
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+	}
+
 	// ========================================================================
 	// Step 4: Get session and tree connection
 	// ========================================================================

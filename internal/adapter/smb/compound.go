@@ -109,27 +109,13 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		}
 	}
 
-	// Track the last FileID for related operations
-	var lastFileID [16]byte
-	lastSessionID := firstHeader.SessionID
-	lastTreeID := firstHeader.TreeID
-
-	// Track whether the last command failed (any error, not just session-level).
-	// Per MS-SMB2 3.3.5.2.7.2, when a related command follows a predecessor that
-	// failed at the session/tree level (USER_SESSION_DELETED, NETWORK_NAME_DELETED),
-	// the server returns INVALID_PARAMETER because there's no valid session/tree to inherit.
-	// When a non-session-level command fails and the inherited FileID is invalid,
-	// subsequent related commands get the predecessor's error status propagated.
-	lastCmdSessionFailed := false
-	lastCmdFailed := false
-	var lastCmdStatus types.Status
-
-	// Collect all responses for compound batching
-	var responses []compoundResponse
-
-	// Collect deferred post-send hooks (e.g. STATUS_NOTIFY_CLEANUP after CLOSE)
-	// that must fire strictly after the entire compound response is written.
-	var postSendHooks []func()
+	// Shared per-subcommand tracking (FileID/session/tree inheritance, failure
+	// propagation, response + post-send accumulators). Seeded from the first
+	// command below, then handed to processRemaining for the trailing commands.
+	state := compoundLoopState{
+		lastSessionID: firstHeader.SessionID,
+		lastTreeID:    firstHeader.TreeID,
+	}
 
 	// Process first command
 	logger.Debug("Processing compound request - first command",
@@ -207,7 +193,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	}
 
 	if fileID != [16]byte{} {
-		lastFileID = fileID
+		state.lastFileID = fileID
 	} else {
 		// For non-CREATE first commands, extract the FileID from the request
 		// body so subsequent related commands can inherit it. This is important
@@ -215,17 +201,17 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		// related command should inherit the handle and also get FILE_CLOSED,
 		// not INVALID_PARAMETER.
 		if extracted := ExtractFileID(firstHeader.Command, firstBody); extracted != [16]byte{} {
-			lastFileID = extracted
+			state.lastFileID = extracted
 		}
 	}
 	// Use handler context for response so handler-assigned SessionID/TreeID
 	// (e.g. from SESSION_SETUP or TREE_CONNECT) propagate to the response.
 	if handlerCtx != nil {
 		if handlerCtx.SessionID != 0 {
-			lastSessionID = handlerCtx.SessionID
+			state.lastSessionID = handlerCtx.SessionID
 		}
 		if handlerCtx.TreeID != 0 {
-			lastTreeID = handlerCtx.TreeID
+			state.lastTreeID = handlerCtx.TreeID
 		}
 	}
 
@@ -236,228 +222,23 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	if result != nil {
 		firstRelease = result.ReleaseData
 	}
-	responses = append(responses, compoundResponse{respHeader: respHeader, body: body, releaseData: firstRelease})
+	state.responses = append(state.responses, compoundResponse{respHeader: respHeader, body: body, releaseData: firstRelease})
 	if handlerCtx != nil && handlerCtx.PostSend != nil {
-		postSendHooks = append(postSendHooks, handlerCtx.PostSend)
+		state.postSendHooks = append(state.postSendHooks, handlerCtx.PostSend)
 	}
 	if result != nil {
-		lastCmdSessionFailed = isSessionLevelError(result.Status)
-		lastCmdFailed = result.Status.IsError()
-		if lastCmdFailed {
-			lastCmdStatus = result.Status
+		state.lastCmdSessionFailed = isSessionLevelError(result.Status)
+		state.lastCmdFailed = result.Status.IsError()
+		if state.lastCmdFailed {
+			state.lastCmdStatus = result.Status
 		}
 	}
 
-	// Process remaining commands from compound data
-	remaining := compoundData
-	for len(remaining) >= header.HeaderSize {
-		// Keep a reference to the current command's start for signature verification.
-		// Per MS-SMB2 3.2.4.1.4, each compound command is signed over its own bytes.
-		currentCommandData := remaining
-
-		hdr, cmdBody, nextRemaining, err := ParseCompoundCommand(remaining)
-		if err != nil {
-			// Per MS-SMB2 3.3.5.2.7: if a compound command has an invalid header
-			// (bad magic, bad structure size, bad NextCommand alignment), return
-			// STATUS_INVALID_PARAMETER for this command and stop processing.
-			logger.Debug("Error parsing compound command", "error", err)
-			// Build a minimal error response using what we can extract from the data.
-			// Since parsing failed, we create a synthetic response header.
-			errRh, errRb := buildCompoundParseErrorResponse(remaining, connInfo)
-			responses = append(responses, compoundResponse{respHeader: errRh, body: errRb})
-			break
-		}
-		remaining = nextRemaining
-
-		// Verify signature for this compound sub-command.
-		// Per MS-SMB2 3.2.5.1.1: skip signing verification when the message was
-		// received inside an encrypted (TRANSFORM_HEADER) envelope — encryption
-		// already provides integrity protection.
-		if !isEncrypted {
-			if err := VerifyCompoundCommandSignature(currentCommandData, hdr, connInfo); err != nil {
-				logger.Warn("Compound command signature verification failed", "error", err)
-				errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, types.StatusAccessDenied, connInfo)
-				responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
-				break
-			}
-		}
-
-		// Per MS-SMB2 3.3.5.2.7.2: if a related command follows a predecessor
-		// that failed at the session/tree validation level, return INVALID_PARAMETER
-		// because there is no valid session/tree context to inherit.
-		//
-		// Exception — session expiry (STATUS_NETWORK_SESSION_EXPIRED): the
-		// session itself is expired, so every command in the compound would
-		// independently fail the per-command expiry gate (prepareDispatch,
-		// response.go) with the SAME status. Samba processes each compound
-		// member through smb2_validate_sequence_number / session lookup before
-		// FileID resolution, so all members of a compound on an expired session
-		// return STATUS_NETWORK_SESSION_EXPIRED — not INVALID_PARAMETER. The
-		// CREATE+QUERY_DIRECTORY+CLOSE compound in smbtorture
-		// smb2.session.expire2s/expire2e asserts this: each recv must surface
-		// SESSION_EXPIRED. Propagate the expired status to the related
-		// followers instead of masking it as INVALID_PARAMETER.
-		if hdr.IsRelated() && lastCmdSessionFailed {
-			sessFailStatus := relatedSessionFailureStatus(lastCmdStatus)
-			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, sessFailStatus, connInfo)
-			errHeader.Flags |= types.FlagRelated
-			responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
-			// This command also failed at the session level for the next command
-			lastCmdSessionFailed = true
-			lastCmdFailed = true
-			lastCmdStatus = sessFailStatus
-			continue
-		}
-
-		// Per MS-SMB2 3.3.5.2.7.2: if a related command follows a predecessor
-		// that failed and the inherited FileID is invalid (all zeros), propagate
-		// the predecessor's error status. Windows Server propagates the original
-		// error (e.g., OBJECT_NAME_NOT_FOUND from a failed CREATE) rather than
-		// always returning INVALID_PARAMETER.
-		if hdr.IsRelated() && lastCmdFailed && lastFileID == [16]byte{} {
-			propagatedStatus := lastCmdStatus
-			if propagatedStatus == 0 {
-				propagatedStatus = types.StatusInvalidParameter
-			}
-			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, propagatedStatus, connInfo)
-			errHeader.Flags |= types.FlagRelated
-			responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
-			lastCmdFailed = true
-			continue
-		}
-
-		// Handle related operations - inherit IDs from previous command.
-		// Per MS-SMB2 2.2.3.1, related operations use 0xFFFFFFFFFFFFFFFF for
-		// SessionID and 0xFFFFFFFF for TreeID to indicate "use previous value".
-		if hdr.IsRelated() {
-			if hdr.SessionID == 0 || hdr.SessionID == 0xFFFFFFFFFFFFFFFF {
-				hdr.SessionID = lastSessionID
-			}
-			if hdr.TreeID == 0 || hdr.TreeID == 0xFFFFFFFF {
-				hdr.TreeID = lastTreeID
-			}
-		}
-
-		// Per Windows Server behavior: CHANGE_NOTIFY can only go async as the
-		// last command in a compound. When it appears in a non-last position,
-		// the server cannot split the compound response around an async operation.
-		// Windows returns STATUS_INTERNAL_ERROR in this case (validated by
-		// smbtorture compound.interim2).
-		isLastCommand := len(remaining) < header.HeaderSize
-		if hdr.Command == types.SMB2ChangeNotify && !isLastCommand {
-			logger.Debug("CHANGE_NOTIFY in non-last compound position - returning INTERNAL_ERROR",
-				"messageID", hdr.MessageID)
-			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, types.StatusInternalError, connInfo)
-			if hdr.IsRelated() {
-				errHeader.Flags |= types.FlagRelated
-			}
-			responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
-			lastCmdFailed = true
-			lastCmdStatus = types.StatusInternalError
-			lastCmdSessionFailed = false
-			continue
-		}
-
-		logger.Debug("Processing compound request - command",
-			"command", hdr.Command.String(),
-			"messageID", hdr.MessageID,
-			"isRelated", hdr.IsRelated(),
-			"usingFileID", lastFileID != [16]byte{})
-
-		// Raw wire bytes for this subcommand (header + body, up to NextCommand
-		// offset if compounded further). Passed to dispatch so handlers that
-		// hash the request (SESSION_SETUP preauth chain per [MS-SMB2] 3.3.5.5)
-		// see the exact bytes the client hashed.
-		subRaw := currentCommandData[:header.HeaderSize+len(cmdBody)]
-
-		// Process with the inherited FileID for related operations
-		var cmdResult *HandlerResult
-		var cmdCtx *handlers.SMBHandlerContext
-		if hdr.IsRelated() && lastFileID != [16]byte{} {
-			var fid [16]byte
-			cmdResult, fid, cmdCtx = ProcessRequestWithInheritedFileID(ctx, hdr, cmdBody, subRaw, lastFileID, connInfo, isEncrypted, asyncNotifyCallback)
-			// Update lastFileID if a related CREATE returned a new FileID.
-			// This is critical for compound sequences like CREATE+CLOSE+CREATE+NOTIFY
-			// where the second CREATE produces a new handle that NOTIFY must inherit.
-			if fid != [16]byte{} {
-				lastFileID = fid
-			}
-		} else {
-			var fid [16]byte
-			cmdResult, fid, cmdCtx = ProcessRequestWithFileIDAndCallback(ctx, hdr, cmdBody, subRaw, connInfo, isEncrypted, asyncNotifyCallback)
-			if fid != [16]byte{} {
-				// CREATE returns the new FileID explicitly
-				lastFileID = fid
-			} else if !hdr.IsRelated() {
-				// For non-related commands (CLOSE, READ, etc.), extract the FileID
-				// from the request body so subsequent related commands inherit it.
-				// This is critical: related commands inherit from the immediately
-				// preceding command's context, not from the last CREATE.
-				if extracted := ExtractFileID(hdr.Command, cmdBody); extracted != [16]byte{} {
-					lastFileID = extracted
-				}
-			}
-		}
-
-		// Update tracking from handler context (preserves handler-assigned IDs)
-		if cmdCtx != nil {
-			if cmdCtx.SessionID != 0 {
-				lastSessionID = cmdCtx.SessionID
-			}
-			if cmdCtx.TreeID != 0 {
-				lastTreeID = cmdCtx.TreeID
-			}
-		}
-
-		// Track session-level failures and general failures for related command error propagation
-		if cmdResult != nil {
-			lastCmdSessionFailed = isSessionLevelError(cmdResult.Status)
-			lastCmdFailed = cmdResult.Status.IsError()
-			if lastCmdFailed {
-				lastCmdStatus = cmdResult.Status
-			}
-		} else {
-			lastCmdSessionFailed = false
-			lastCmdFailed = false
-			lastCmdStatus = 0
-		}
-
-		// A tail-of-chain compound subcommand that returns STATUS_PENDING + AsyncId
-		// (parked CREATE) inherits the original standalone-completion callback —
-		// no ReplaceCallback redirect happens here, since the subcommand is
-		// already the tail of the chain. Release its resume-goroutine gate so
-		// the deferred completion is not blocked waiting for a swap that will
-		// never arrive. Non-tail parked CREATEs MUST NOT be released here:
-		// trailing related commands still need to defer behind the CREATE
-		// completion, so the chain is not split.
-		if isLastCommand && cmdResult != nil && cmdResult.Status == types.StatusPending && cmdResult.AsyncId != 0 &&
-			connInfo.Handler.PendingCreateRegistry != nil {
-			connInfo.Handler.PendingCreateRegistry.MarkStarted(cmdResult.AsyncId)
-		}
-
-		rh, rb := buildResponseHeaderAndBody(hdr, cmdCtx, cmdResult, connInfo)
-		// Per MS-SMB2 3.3.5.2.7: if the request had FLAGS_RELATED_OPERATIONS,
-		// the response MUST also have FLAGS_RELATED_OPERATIONS set.
-		if hdr.IsRelated() {
-			rh.Flags |= types.FlagRelated
-		}
-		// propagate the sub-result's ReleaseData so the composed wire
-		// write can fire it post-write (see compoundResponse doc comment).
-		var subRelease func()
-		if cmdResult != nil {
-			subRelease = cmdResult.ReleaseData
-		}
-		responses = append(responses, compoundResponse{respHeader: rh, body: rb, releaseData: subRelease})
-
-		// Collect any PostSend hook (CLOSE→CHANGE_NOTIFY cleanup) so it can
-		// fire strictly after the compound frame has been written.
-		if cmdCtx != nil && cmdCtx.PostSend != nil {
-			postSendHooks = append(postSendHooks, cmdCtx.PostSend)
-		}
-	}
+	// Process remaining commands from compound data via the shared loop.
+	state.processRemaining(ctx, compoundData, connInfo, isEncrypted, asyncNotifyCallback)
 
 	// Send all responses as a single compound response frame.
-	sendErr := sendCompoundResponses(responses, connInfo, isEncrypted)
+	sendErr := sendCompoundResponses(state.responses, connInfo, isEncrypted)
 	if sendErr != nil {
 		logger.Debug("Error sending compound responses", "error", sendErr)
 	}
@@ -468,7 +249,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	// connection is likely dead and the hooks would just log spurious
 	// SendMessage errors on a torn-down session.
 	if sendErr == nil {
-		for _, hook := range postSendHooks {
+		for _, hook := range state.postSendHooks {
 			hook()
 		}
 	}
@@ -796,6 +577,13 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 		return nil
 	}
 
+	// Unknown SessionID: skip verification here and rely on prepareDispatch to
+	// reject the command. This is safe ONLY because prepareDispatch
+	// independently rejects every NeedsSession command on an unknown/logged-off
+	// SessionID with STATUS_USER_SESSION_DELETED before the handler runs, so no
+	// dispatched mutating op escapes the signing gate (M-A2). INVARIANT: any new
+	// command that touches session-bound state MUST set NeedsSession=true (see
+	// the dispatch table) so this skip cannot become a bypass.
 	sess, ok := connInfo.Handler.GetSession(hdr.SessionID)
 	if !ok {
 		return nil
@@ -924,6 +712,248 @@ func InjectFileID(command types.Command, body []byte, fileID [16]byte) []byte {
 	return newBody
 }
 
+// compoundLoopState carries the mutable per-subcommand tracking shared by the
+// sync (ProcessCompoundRequest) and async-CREATE-resume
+// (completeCompoundAfterAsyncCreate) compound loops. Both seed it from their
+// already-processed first command, then call processRemaining to handle the
+// trailing related commands with identical MS-SMB2 §3.3.5.2.7.2 semantics.
+type compoundLoopState struct {
+	// FileID/Session/Tree inherited by the next related command.
+	lastFileID    [16]byte
+	lastSessionID uint64
+	lastTreeID    uint32
+
+	// Failure tracking for related-command error propagation.
+	lastCmdSessionFailed bool
+	lastCmdFailed        bool
+	lastCmdStatus        types.Status
+
+	// Accumulated responses + deferred post-send hooks.
+	responses     []compoundResponse
+	postSendHooks []func()
+}
+
+// processRemaining processes every command after the first in a compound,
+// appending each response to s.responses and any PostSend hook to
+// s.postSendHooks. It implements the MS-SMB2 §3.3.5.2.7.2 related-command rules
+// (session-level failure propagation, FileID inheritance, the CHANGE_NOTIFY
+// non-last gate, per-subcommand signature verification). This is the single
+// source of truth for both the sync and async-resume paths so the two cannot
+// drift (see M-A1).
+func (s *compoundLoopState) processRemaining(
+	ctx context.Context,
+	remaining []byte,
+	connInfo *ConnInfo,
+	isEncrypted bool,
+	asyncNotifyCallback handlers.AsyncResponseCallback,
+) {
+	for len(remaining) >= header.HeaderSize {
+		// Keep a reference to the current command's start for signature verification.
+		// Per MS-SMB2 3.2.4.1.4, each compound command is signed over its own bytes.
+		currentCommandData := remaining
+
+		hdr, cmdBody, nextRemaining, err := ParseCompoundCommand(remaining)
+		if err != nil {
+			// Per MS-SMB2 3.3.5.2.7: if a compound command has an invalid header
+			// (bad magic, bad structure size, bad NextCommand alignment), return
+			// STATUS_INVALID_PARAMETER for this command and stop processing.
+			logger.Debug("Error parsing compound command", "error", err)
+			// Build a minimal error response using what we can extract from the data.
+			// Since parsing failed, we create a synthetic response header.
+			errRh, errRb := buildCompoundParseErrorResponse(remaining, connInfo)
+			s.responses = append(s.responses, compoundResponse{respHeader: errRh, body: errRb})
+			break
+		}
+		remaining = nextRemaining
+
+		// Verify signature for this compound sub-command.
+		// Per MS-SMB2 3.2.5.1.1: skip signing verification when the message was
+		// received inside an encrypted (TRANSFORM_HEADER) envelope — encryption
+		// already provides integrity protection.
+		if !isEncrypted {
+			if err := VerifyCompoundCommandSignature(currentCommandData, hdr, connInfo); err != nil {
+				logger.Warn("Compound command signature verification failed", "error", err)
+				errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, types.StatusAccessDenied, connInfo)
+				s.responses = append(s.responses, compoundResponse{respHeader: errHeader, body: errBody})
+				break
+			}
+		}
+
+		// Per MS-SMB2 3.3.5.2.7.2: if a related command follows a predecessor
+		// that failed at the session/tree validation level, return INVALID_PARAMETER
+		// because there is no valid session/tree context to inherit.
+		//
+		// Exception — session expiry (STATUS_NETWORK_SESSION_EXPIRED): the
+		// session itself is expired, so every command in the compound would
+		// independently fail the per-command expiry gate (prepareDispatch,
+		// response.go) with the SAME status. Samba processes each compound
+		// member through smb2_validate_sequence_number / session lookup before
+		// FileID resolution, so all members of a compound on an expired session
+		// return STATUS_NETWORK_SESSION_EXPIRED — not INVALID_PARAMETER. The
+		// CREATE+QUERY_DIRECTORY+CLOSE compound in smbtorture
+		// smb2.session.expire2s/expire2e asserts this: each recv must surface
+		// SESSION_EXPIRED. Propagate the expired status to the related
+		// followers instead of masking it as INVALID_PARAMETER.
+		if hdr.IsRelated() && s.lastCmdSessionFailed {
+			sessFailStatus := relatedSessionFailureStatus(s.lastCmdStatus)
+			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, sessFailStatus, connInfo)
+			errHeader.Flags |= types.FlagRelated
+			s.responses = append(s.responses, compoundResponse{respHeader: errHeader, body: errBody})
+			// This command also failed at the session level for the next command
+			s.lastCmdSessionFailed = true
+			s.lastCmdFailed = true
+			s.lastCmdStatus = sessFailStatus
+			continue
+		}
+
+		// Per MS-SMB2 3.3.5.2.7.2: if a related command follows a predecessor
+		// that failed and the inherited FileID is invalid (all zeros), propagate
+		// the predecessor's error status. Windows Server propagates the original
+		// error (e.g., OBJECT_NAME_NOT_FOUND from a failed CREATE) rather than
+		// always returning INVALID_PARAMETER.
+		if hdr.IsRelated() && s.lastCmdFailed && s.lastFileID == [16]byte{} {
+			propagatedStatus := s.lastCmdStatus
+			if propagatedStatus == 0 {
+				propagatedStatus = types.StatusInvalidParameter
+			}
+			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, propagatedStatus, connInfo)
+			errHeader.Flags |= types.FlagRelated
+			s.responses = append(s.responses, compoundResponse{respHeader: errHeader, body: errBody})
+			s.lastCmdFailed = true
+			continue
+		}
+
+		// Handle related operations - inherit IDs from previous command.
+		// Per MS-SMB2 2.2.3.1, related operations use 0xFFFFFFFFFFFFFFFF for
+		// SessionID and 0xFFFFFFFF for TreeID to indicate "use previous value".
+		if hdr.IsRelated() {
+			if hdr.SessionID == 0 || hdr.SessionID == 0xFFFFFFFFFFFFFFFF {
+				hdr.SessionID = s.lastSessionID
+			}
+			if hdr.TreeID == 0 || hdr.TreeID == 0xFFFFFFFF {
+				hdr.TreeID = s.lastTreeID
+			}
+		}
+
+		// Per Windows Server behavior: CHANGE_NOTIFY can only go async as the
+		// last command in a compound. When it appears in a non-last position,
+		// the server cannot split the compound response around an async operation.
+		// Windows returns STATUS_INTERNAL_ERROR in this case (validated by
+		// smbtorture compound.interim2).
+		isLastCommand := len(remaining) < header.HeaderSize
+		if hdr.Command == types.SMB2ChangeNotify && !isLastCommand {
+			logger.Debug("CHANGE_NOTIFY in non-last compound position - returning INTERNAL_ERROR",
+				"messageID", hdr.MessageID)
+			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, types.StatusInternalError, connInfo)
+			if hdr.IsRelated() {
+				errHeader.Flags |= types.FlagRelated
+			}
+			s.responses = append(s.responses, compoundResponse{respHeader: errHeader, body: errBody})
+			s.lastCmdFailed = true
+			s.lastCmdStatus = types.StatusInternalError
+			s.lastCmdSessionFailed = false
+			continue
+		}
+
+		logger.Debug("Processing compound request - command",
+			"command", hdr.Command.String(),
+			"messageID", hdr.MessageID,
+			"isRelated", hdr.IsRelated(),
+			"usingFileID", s.lastFileID != [16]byte{})
+
+		// Raw wire bytes for this subcommand (header + body, up to NextCommand
+		// offset if compounded further). Passed to dispatch so handlers that
+		// hash the request (SESSION_SETUP preauth chain per [MS-SMB2] 3.3.5.5)
+		// see the exact bytes the client hashed.
+		subRaw := currentCommandData[:header.HeaderSize+len(cmdBody)]
+
+		// Process with the inherited FileID for related operations
+		var cmdResult *HandlerResult
+		var cmdCtx *handlers.SMBHandlerContext
+		if hdr.IsRelated() && s.lastFileID != [16]byte{} {
+			var fid [16]byte
+			cmdResult, fid, cmdCtx = ProcessRequestWithInheritedFileID(ctx, hdr, cmdBody, subRaw, s.lastFileID, connInfo, isEncrypted, asyncNotifyCallback)
+			// Update lastFileID if a related CREATE returned a new FileID.
+			// This is critical for compound sequences like CREATE+CLOSE+CREATE+NOTIFY
+			// where the second CREATE produces a new handle that NOTIFY must inherit.
+			if fid != [16]byte{} {
+				s.lastFileID = fid
+			}
+		} else {
+			var fid [16]byte
+			cmdResult, fid, cmdCtx = ProcessRequestWithFileIDAndCallback(ctx, hdr, cmdBody, subRaw, connInfo, isEncrypted, asyncNotifyCallback)
+			if fid != [16]byte{} {
+				// CREATE returns the new FileID explicitly
+				s.lastFileID = fid
+			} else if !hdr.IsRelated() {
+				// For non-related commands (CLOSE, READ, etc.), extract the FileID
+				// from the request body so subsequent related commands inherit it.
+				// This is critical: related commands inherit from the immediately
+				// preceding command's context, not from the last CREATE.
+				if extracted := ExtractFileID(hdr.Command, cmdBody); extracted != [16]byte{} {
+					s.lastFileID = extracted
+				}
+			}
+		}
+
+		// Update tracking from handler context (preserves handler-assigned IDs)
+		if cmdCtx != nil {
+			if cmdCtx.SessionID != 0 {
+				s.lastSessionID = cmdCtx.SessionID
+			}
+			if cmdCtx.TreeID != 0 {
+				s.lastTreeID = cmdCtx.TreeID
+			}
+		}
+
+		// Track session-level failures and general failures for related command error propagation
+		if cmdResult != nil {
+			s.lastCmdSessionFailed = isSessionLevelError(cmdResult.Status)
+			s.lastCmdFailed = cmdResult.Status.IsError()
+			if s.lastCmdFailed {
+				s.lastCmdStatus = cmdResult.Status
+			}
+		} else {
+			s.lastCmdSessionFailed = false
+			s.lastCmdFailed = false
+			s.lastCmdStatus = 0
+		}
+
+		// A tail-of-chain compound subcommand that returns STATUS_PENDING + AsyncId
+		// (parked CREATE) inherits the original standalone-completion callback —
+		// no ReplaceCallback redirect happens here, since the subcommand is
+		// already the tail of the chain. Release its resume-goroutine gate so
+		// the deferred completion is not blocked waiting for a swap that will
+		// never arrive. Non-tail parked CREATEs MUST NOT be released here:
+		// trailing related commands still need to defer behind the CREATE
+		// completion, so the chain is not split.
+		if isLastCommand && cmdResult != nil && cmdResult.Status == types.StatusPending && cmdResult.AsyncId != 0 &&
+			connInfo.Handler.PendingCreateRegistry != nil {
+			connInfo.Handler.PendingCreateRegistry.MarkStarted(cmdResult.AsyncId)
+		}
+
+		rh, rb := buildResponseHeaderAndBody(hdr, cmdCtx, cmdResult, connInfo)
+		// Per MS-SMB2 3.3.5.2.7: if the request had FLAGS_RELATED_OPERATIONS,
+		// the response MUST also have FLAGS_RELATED_OPERATIONS set.
+		if hdr.IsRelated() {
+			rh.Flags |= types.FlagRelated
+		}
+		// propagate the sub-result's ReleaseData so the composed wire
+		// write can fire it post-write (see compoundResponse doc comment).
+		var subRelease func()
+		if cmdResult != nil {
+			subRelease = cmdResult.ReleaseData
+		}
+		s.responses = append(s.responses, compoundResponse{respHeader: rh, body: rb, releaseData: subRelease})
+
+		// Collect any PostSend hook (CLOSE→CHANGE_NOTIFY cleanup) so it can
+		// fire strictly after the compound frame has been written.
+		if cmdCtx != nil && cmdCtx.PostSend != nil {
+			s.postSendHooks = append(s.postSendHooks, cmdCtx.PostSend)
+		}
+	}
+}
+
 // completeCompoundAfterAsyncCreate runs from the async CREATE resume goroutine
 // to finish a compound request whose first command (CREATE) went async with
 // STATUS_PENDING. It builds a compound response containing the CREATE's final
@@ -946,9 +976,6 @@ func completeCompoundAfterAsyncCreate(
 	isEncrypted bool,
 	asyncNotifyCallback handlers.AsyncResponseCallback,
 ) {
-	var responses []compoundResponse
-	var postSendHooks []func()
-
 	// Build CREATE completion response (async header format).
 	createCredits := grantConnectionCredits(connInfo, firstHeader.SessionID, firstHeader.Credits, firstHeader.CreditCharge)
 	createRespHeader := header.NewResponseHeaderWithCredits(firstHeader, createStatus, createCredits)
@@ -964,162 +991,36 @@ func completeCompoundAfterAsyncCreate(
 	if createRespBody == nil {
 		createRespBody = MakeErrorBody()
 	}
-	responses = append(responses, compoundResponse{respHeader: createRespHeader, body: createRespBody})
 
+	// Seed the shared loop state from the completed CREATE, then process the
+	// trailing related commands through the same processRemaining used by the
+	// sync path (see M-A1: keeps the two paths from drifting — e.g. the
+	// SESSION_EXPIRED propagation in relatedSessionFailureStatus now applies
+	// here too).
+	state := compoundLoopState{
+		lastSessionID:        firstHeader.SessionID,
+		lastTreeID:           firstHeader.TreeID,
+		lastCmdFailed:        createStatus.IsError(),
+		lastCmdSessionFailed: isSessionLevelError(createStatus),
+		responses:            []compoundResponse{{respHeader: createRespHeader, body: createRespBody}},
+	}
+	if state.lastCmdFailed {
+		state.lastCmdStatus = createStatus
+	}
 	// Extract the FileID from the CREATE response so related commands can inherit it.
-	var lastFileID [16]byte
 	if createStatus == types.StatusSuccess && len(createBody) >= 80 {
-		copy(lastFileID[:], createBody[64:80])
-	}
-	lastSessionID := firstHeader.SessionID
-	lastTreeID := firstHeader.TreeID
-
-	lastCmdFailed := createStatus.IsError()
-	lastCmdSessionFailed := isSessionLevelError(createStatus)
-	var lastCmdStatus types.Status
-	if lastCmdFailed {
-		lastCmdStatus = createStatus
+		copy(state.lastFileID[:], createBody[64:80])
 	}
 
-	// Process remaining compound commands (same logic as the main loop in
-	// ProcessCompoundRequest).
-	remaining := compoundData
-	for len(remaining) >= header.HeaderSize {
-		currentCommandData := remaining
-		hdr, cmdBody, nextRemaining, err := ParseCompoundCommand(remaining)
-		if err != nil {
-			logger.Debug("Error parsing compound command in async completion", "error", err)
-			errRh, errRb := buildCompoundParseErrorResponse(remaining, connInfo)
-			responses = append(responses, compoundResponse{respHeader: errRh, body: errRb})
-			break
-		}
-		remaining = nextRemaining
+	state.processRemaining(ctx, compoundData, connInfo, isEncrypted, asyncNotifyCallback)
 
-		if !isEncrypted {
-			if err := VerifyCompoundCommandSignature(currentCommandData, hdr, connInfo); err != nil {
-				logger.Warn("Compound command signature verification failed (async)", "error", err)
-				errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, types.StatusAccessDenied, connInfo)
-				responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
-				break
-			}
-		}
-
-		if hdr.IsRelated() && lastCmdSessionFailed {
-			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, types.StatusInvalidParameter, connInfo)
-			errHeader.Flags |= types.FlagRelated
-			responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
-			lastCmdSessionFailed = true
-			lastCmdFailed = true
-			continue
-		}
-
-		if hdr.IsRelated() && lastCmdFailed && lastFileID == [16]byte{} {
-			propagatedStatus := lastCmdStatus
-			if propagatedStatus == 0 {
-				propagatedStatus = types.StatusInvalidParameter
-			}
-			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, propagatedStatus, connInfo)
-			errHeader.Flags |= types.FlagRelated
-			responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
-			lastCmdFailed = true
-			continue
-		}
-
-		if hdr.IsRelated() {
-			if hdr.SessionID == 0 || hdr.SessionID == 0xFFFFFFFFFFFFFFFF {
-				hdr.SessionID = lastSessionID
-			}
-			if hdr.TreeID == 0 || hdr.TreeID == 0xFFFFFFFF {
-				hdr.TreeID = lastTreeID
-			}
-		}
-
-		isLastCommand := len(remaining) < header.HeaderSize
-		if hdr.Command == types.SMB2ChangeNotify && !isLastCommand {
-			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, types.StatusInternalError, connInfo)
-			if hdr.IsRelated() {
-				errHeader.Flags |= types.FlagRelated
-			}
-			responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
-			lastCmdFailed = true
-			lastCmdStatus = types.StatusInternalError
-			lastCmdSessionFailed = false
-			continue
-		}
-
-		subRaw := currentCommandData[:header.HeaderSize+len(cmdBody)]
-		var cmdResult *HandlerResult
-		var cmdCtx *handlers.SMBHandlerContext
-		if hdr.IsRelated() && lastFileID != [16]byte{} {
-			var fid [16]byte
-			cmdResult, fid, cmdCtx = ProcessRequestWithInheritedFileID(ctx, hdr, cmdBody, subRaw, lastFileID, connInfo, isEncrypted, asyncNotifyCallback)
-			if fid != [16]byte{} {
-				lastFileID = fid
-			}
-		} else {
-			var fid [16]byte
-			cmdResult, fid, cmdCtx = ProcessRequestWithFileIDAndCallback(ctx, hdr, cmdBody, subRaw, connInfo, isEncrypted, asyncNotifyCallback)
-			if fid != [16]byte{} {
-				lastFileID = fid
-			} else if !hdr.IsRelated() {
-				if extracted := ExtractFileID(hdr.Command, cmdBody); extracted != [16]byte{} {
-					lastFileID = extracted
-				}
-			}
-		}
-
-		if cmdCtx != nil {
-			if cmdCtx.SessionID != 0 {
-				lastSessionID = cmdCtx.SessionID
-			}
-			if cmdCtx.TreeID != 0 {
-				lastTreeID = cmdCtx.TreeID
-			}
-		}
-
-		if cmdResult != nil {
-			lastCmdSessionFailed = isSessionLevelError(cmdResult.Status)
-			lastCmdFailed = cmdResult.Status.IsError()
-			if lastCmdFailed {
-				lastCmdStatus = cmdResult.Status
-			}
-		} else {
-			lastCmdSessionFailed = false
-			lastCmdFailed = false
-			lastCmdStatus = 0
-		}
-
-		// Release any parked-CREATE goroutine for this subcommand only when it is
-		// the tail of the chain — non-tail parked CREATEs still need trailing
-		// related commands deferred behind their completion (see same guard in
-		// ProcessCompoundRequest's subcommand loop).
-		if isLastCommand && cmdResult != nil && cmdResult.Status == types.StatusPending && cmdResult.AsyncId != 0 &&
-			connInfo.Handler.PendingCreateRegistry != nil {
-			connInfo.Handler.PendingCreateRegistry.MarkStarted(cmdResult.AsyncId)
-		}
-
-		rh, rb := buildResponseHeaderAndBody(hdr, cmdCtx, cmdResult, connInfo)
-		if hdr.IsRelated() {
-			rh.Flags |= types.FlagRelated
-		}
-		var subRelease func()
-		if cmdResult != nil {
-			subRelease = cmdResult.ReleaseData
-		}
-		responses = append(responses, compoundResponse{respHeader: rh, body: rb, releaseData: subRelease})
-
-		if cmdCtx != nil && cmdCtx.PostSend != nil {
-			postSendHooks = append(postSendHooks, cmdCtx.PostSend)
-		}
-	}
-
-	sendErr := sendCompoundResponses(responses, connInfo, isEncrypted)
+	sendErr := sendCompoundResponses(state.responses, connInfo, isEncrypted)
 	if sendErr != nil {
 		logger.Debug("Error sending compound async completion responses", "error", sendErr)
 	}
 
 	if sendErr == nil {
-		for _, hook := range postSendHooks {
+		for _, hook := range state.postSendHooks {
 			hook()
 		}
 	}
