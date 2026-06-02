@@ -58,6 +58,13 @@ type CreateRequest struct {
 	//   - 0x120116: Generic write
 	DesiredAccess uint32
 
+	// GenericDerivedAccess holds the file-specific bits that DesiredAccess
+	// gained purely from GENERIC_* expansion at decode time (see
+	// acl.GenericDerivedBits). Under SEC_FLAG_MAXIMUM_ALLOWED these bits are
+	// best-effort and excluded from the strict explicit-bit enforcement gate,
+	// matching Samba (smb2.maximum_allowed vs smb2.acls.MXAC-NOT-GRANTED).
+	GenericDerivedAccess uint32
+
 	// FileAttributes specifies initial file attributes for new files.
 	// Common values:
 	//   - FileAttributeNormal (0x80): Normal file
@@ -209,6 +216,11 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 	// evaluation. Do it at decode time so every downstream consumer
 	// (permission checks, share-mode conflict, MxAc, OpenFile bookkeeping)
 	// observes resolved bits.
+	//
+	// Capture the bits introduced by GENERIC_* expansion BEFORE stripping the
+	// generic flags, so the MAXIMUM_ALLOWED access-check can treat them as
+	// best-effort (excluded from strict explicit-bit enforcement) per Samba.
+	genericDerivedAccess := acl.GenericDerivedBits(desiredAccess)
 	desiredAccess = acl.ExpandGenericMask(desiredAccess)
 	fileAttributes := types.FileAttributes(r.ReadUint32())       // FileAttributes (4)
 	shareAccess := r.ReadUint32()                                // ShareAccess (4)
@@ -221,13 +233,14 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 	}
 
 	req := &CreateRequest{
-		OplockLevel:        oplockLevel,
-		ImpersonationLevel: impersonationLevel,
-		DesiredAccess:      desiredAccess,
-		FileAttributes:     fileAttributes,
-		ShareAccess:        shareAccess,
-		CreateDisposition:  createDisposition,
-		CreateOptions:      createOptions,
+		OplockLevel:          oplockLevel,
+		ImpersonationLevel:   impersonationLevel,
+		DesiredAccess:        desiredAccess,
+		GenericDerivedAccess: genericDerivedAccess,
+		FileAttributes:       fileAttributes,
+		ShareAccess:          shareAccess,
+		CreateDisposition:    createDisposition,
+		CreateOptions:        createOptions,
 	}
 
 	// Extract filename (UTF-16LE encoded)

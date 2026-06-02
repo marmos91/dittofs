@@ -132,15 +132,6 @@ Advanced share mode enforcement and deny mode scenarios.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 
-### Maximum Allowed Access (Partial)
-
-Maximum allowed access computation is partially implemented. Read-only
-maximum_allowed works but full computation does not.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.maximum_allowed.maximum_allowed | Access checks | Full maximum allowed computation not implemented | #750 |
-
 ### Character Set (Edge Cases)
 
 Unicode and character set edge cases (partial surrogates, wide-A collision) are

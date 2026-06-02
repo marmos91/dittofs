@@ -701,6 +701,21 @@ func (s *MetadataService) CheckFileAccess(file *File, authCtx *AuthContext, desi
 //
 // When parent is nil, behavior is identical to CheckFileAccess.
 func (s *MetadataService) CheckFileAccessWithParent(file *File, parent *File, authCtx *AuthContext, desiredAccess uint32) (uint32, error) {
+	return s.CheckFileAccessWithParentGeneric(file, parent, authCtx, desiredAccess, 0)
+}
+
+// CheckFileAccessWithParentGeneric is CheckFileAccessWithParent with explicit
+// knowledge of which specific bits in desiredAccess were introduced by GENERIC_*
+// expansion (genericDerived). Under SEC_FLAG_MAXIMUM_ALLOWED those bits are
+// best-effort: the strict explicit-bit enforcement gate (which fails the open
+// when a DIRECTLY-named specific right is denied — smb2.acls.MXAC-NOT-GRANTED)
+// excludes them. This matches Samba, where MAX|GENERIC_EXECUTE against a
+// read-only DACL succeeds (smb2.maximum_allowed.maximum_allowed) but
+// MAX|FILE_WRITE_DATA against the same DACL is denied.
+//
+// genericDerived is expected to already be in file-object-specific terms (see
+// acl.GenericDerivedBits). Pass 0 when the caller has no generic bits to expand.
+func (s *MetadataService) CheckFileAccessWithParentGeneric(file *File, parent *File, authCtx *AuthContext, desiredAccess, genericDerived uint32) (uint32, error) {
 	maximumAllowed := desiredAccess&accessMaskMaximumAllowed != 0
 	// Expand MS-DTYP §2.4.3 GENERIC_* bits to their file-object-specific
 	// rights before the subset checks below (MS-DTYP §2.5.3 / MS-FSA
@@ -712,6 +727,13 @@ func (s *MetadataService) CheckFileAccessWithParent(file *File, parent *File, au
 	// actually permits (smb2.maximum_allowed). ExpandGenericMask strips the
 	// generic bits and leaves MAXIMUM_ALLOWED untouched.
 	explicit := acl.ExpandGenericMask(desiredAccess &^ accessMaskMaximumAllowed)
+
+	// Fold any GENERIC_* bits still present in the raw request into the
+	// best-effort set. Production callers pre-expand generics and pass the
+	// derived bits explicitly (effectiveAccess no longer carries the raw
+	// generic flags); direct callers that pass an un-expanded mask are handled
+	// here. Either way the MAX strict-enforcement gate below excludes these.
+	genericDerived |= acl.GenericDerivedBits(desiredAccess &^ accessMaskMaximumAllowed)
 
 	// Root bypass: identical semantics to computeMaximalAccess and
 	// evaluateACLPermissions. UID 0 gets everything; MAXIMUM_ALLOWED resolves
@@ -833,7 +855,16 @@ func (s *MetadataService) CheckFileAccessWithParent(file *File, parent *File, au
 		// MAXIMUM_ALLOWED suppresses denial only for the bits IMPLICITLY
 		// requested via the MAX flag itself, not for bits the caller named
 		// outright. Covers smb2.acls.MXAC-NOT-GRANTED.
-		if explicit != 0 && effective&explicit != explicit {
+		//
+		// Bits introduced by GENERIC_* expansion are NOT directly-named rights:
+		// Samba maps generic→specific only for the best-effort maximal set and
+		// never strict-enforces the mapped bits under MAXIMUM_ALLOWED. So
+		// MAX|GENERIC_EXECUTE (expands to FILE_EXECUTE|... which a read-only DACL
+		// lacks) still succeeds — smb2.maximum_allowed.maximum_allowed — while
+		// MAX|FILE_WRITE_DATA (a directly-named specific bit) is denied. Exclude
+		// the generic-derived bits from the strict gate to honor both.
+		named := explicit &^ genericDerived
+		if named != 0 && effective&named != named {
 			return effective, &StoreError{
 				Code:    ErrAccessDenied,
 				Message: "explicit non-MAXIMUM_ALLOWED bit denied by file DACL",

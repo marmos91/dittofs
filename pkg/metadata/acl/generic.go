@@ -116,3 +116,34 @@ func ExpandGenericMask(mask uint32) uint32 {
 
 	return expanded
 }
+
+// GenericDerivedBits returns the file-specific rights introduced by the
+// best-effort GENERIC_* bits in mask — GENERIC_READ and GENERIC_EXECUTE only.
+//
+// This matters under SEC_FLAG_MAXIMUM_ALLOWED. Samba's max_allowed.c ok_mask is
+//
+//	SEC_RIGHTS_FILE_READ | SEC_GENERIC_READ | SEC_GENERIC_EXECUTE |
+//	SEC_STD_DELETE | SEC_STD_WRITE_DAC
+//
+// so a MAX open naming GENERIC_READ or GENERIC_EXECUTE succeeds even when the
+// DACL does not grant every mapped specific right (e.g. GENERIC_EXECUTE maps to
+// FILE_EXECUTE, which a read-only DACL lacks, yet the open is OK —
+// smb2.maximum_allowed.maximum_allowed). GENERIC_WRITE and GENERIC_ALL are NOT
+// in ok_mask: a MAX open naming them must still be DENIED when their mapped
+// specific rights aren't granted, so their expansion is left under the strict
+// gate and is NOT reported here.
+//
+// Directly-named specific rights are likewise never reported — those remain
+// strictly enforced (smb2.acls.MXAC-NOT-GRANTED, #564). Callers subtract this
+// set from the explicit mask before the MAX strict-enforcement check.
+func GenericDerivedBits(mask uint32) uint32 {
+	bestEffortGeneric := mask & (genericRead | genericExecute)
+	if bestEffortGeneric == 0 {
+		return 0
+	}
+	named := mask &^ (genericRead | genericWrite | genericExecute | genericAll)
+	// Only the rights that the best-effort generics introduce beyond what was
+	// named directly (and beyond what GENERIC_WRITE/ALL would contribute, which
+	// stay enforced).
+	return ExpandGenericMask(bestEffortGeneric) &^ named
+}
