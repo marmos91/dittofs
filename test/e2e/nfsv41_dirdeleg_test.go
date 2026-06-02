@@ -374,10 +374,10 @@ func TestNFSv41DirDelegationAttrChanged(t *testing.T) {
 	}
 
 	// Verify the attribute change was applied
-	framework.WaitFor(5*time.Second, func() bool {
+	require.True(t, framework.WaitFor(5*time.Second, func() bool {
 		fi, err := os.Stat(attrFile)
 		return err == nil && fi.Mode().Perm()&0100 != 0
-	})
+	}), "chmod was not reflected on the file within timeout")
 	info := framework.GetFileInfo(t, attrFile)
 	assert.True(t, info.Mode.Perm()&0100 != 0,
 		"File should have execute permission after chmod 0755")

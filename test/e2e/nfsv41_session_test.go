@@ -433,7 +433,7 @@ func TestNFSv41MultipleSessions(t *testing.T) {
 	}
 
 	// Verify cross-session visibility: each client should see files from other clients
-	framework.WaitFor(5*time.Second, func() bool {
+	require.True(t, framework.WaitFor(5*time.Second, func() bool {
 		for i := range numClients {
 			for j := range numClients {
 				if !framework.FileExists(mounts[i].FilePath(fmt.Sprintf("session_%d_file.txt", j))) {
@@ -442,7 +442,7 @@ func TestNFSv41MultipleSessions(t *testing.T) {
 			}
 		}
 		return true
-	})
+	}), "Not all cross-session files became visible across mounts within timeout")
 
 	for i := range numClients {
 		for j := range numClients {

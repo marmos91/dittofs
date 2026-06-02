@@ -419,10 +419,10 @@ func testCrossProtocolDataIntegrity(t *testing.T, nfsMount, smbMount *framework.
 	framework.UnlockFileRange(t, nfsLock2)
 
 	// Wait for the partial write to be visible via SMB
-	framework.WaitFor(5*time.Second, func() bool {
+	require.True(t, framework.WaitFor(5*time.Second, func() bool {
 		data, err := os.ReadFile(smbPath)
 		return err == nil && bytes.HasPrefix(data, firstHalf)
-	})
+	}), "Partial NFS write did not become visible via SMB within timeout")
 
 	// SMB reads and verifies
 	partialContent := framework.ReadFile(t, smbPath)

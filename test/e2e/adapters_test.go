@@ -175,10 +175,10 @@ func testPortConfigurationChange(t *testing.T, runner *helpers.CLIRunner) {
 	assert.Equal(t, portB, adapter.Port, "Port should change to B")
 
 	// Wait for the adapter to report the new port
-	framework.WaitFor(5*time.Second, func() bool {
+	require.True(t, framework.WaitFor(5*time.Second, func() bool {
 		a, gerr := runner.GetAdapter("nfs")
 		return gerr == nil && a.Port == portB
-	})
+	}), "NFS adapter did not report new port within timeout")
 
 	// Verify new port via GetAdapter
 	adapter, err = runner.GetAdapter("nfs")
@@ -217,10 +217,10 @@ func testHotReloadWithoutRestart(t *testing.T, sp *helpers.ServerProcess, runner
 	require.NoError(t, err, "Should edit NFS adapter port")
 
 	// Wait for the adapter to report the new port
-	framework.WaitFor(5*time.Second, func() bool {
+	require.True(t, framework.WaitFor(5*time.Second, func() bool {
 		a, gerr := runner.GetAdapter("nfs")
 		return gerr == nil && a.Port == portB
-	})
+	}), "NFS adapter did not report new port within timeout")
 
 	// Verify server PID is unchanged (no full restart)
 	pidAfter := sp.PID()

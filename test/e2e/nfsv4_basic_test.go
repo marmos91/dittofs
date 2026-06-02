@@ -527,14 +527,14 @@ func TestNFSv4PseudoFSBrowsing(t *testing.T) {
 	t.Cleanup(func() { _ = runner.DeleteShare("/archive") })
 
 	// Wait for the pseudo-fs to rebuild and expose the new junction
-	framework.WaitFor(5*time.Second, func() bool {
+	require.True(t, framework.WaitFor(5*time.Second, func() bool {
 		for _, entry := range framework.ListDir(t, mount.Path) {
 			if entry == "archive" {
 				return true
 			}
 		}
 		return false
-	})
+	}), "Pseudo-fs did not expose the new 'archive' junction within timeout")
 
 	// Re-list the pseudo-fs root
 	entries = framework.ListDir(t, mount.Path)

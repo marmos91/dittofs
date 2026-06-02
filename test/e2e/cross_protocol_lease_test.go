@@ -431,10 +431,13 @@ func testCrossProtocol_ConcurrentLeaseConflicts(t *testing.T, nfsMount, smbMount
 				}
 
 				// Wait for the write to be readable via SMB
-				framework.WaitFor(5*time.Second, func() bool {
+				if !framework.WaitFor(5*time.Second, func() bool {
 					_, err := os.ReadFile(smbPath)
 					return err == nil
-				})
+				}) {
+					errChan <- fmt.Errorf("NFS goroutine %d: SMB read not visible within timeout", goroutineID)
+					return
+				}
 
 				// Read via SMB (verify cross-protocol visibility)
 				readData, err := os.ReadFile(smbPath)
@@ -467,10 +470,13 @@ func testCrossProtocol_ConcurrentLeaseConflicts(t *testing.T, nfsMount, smbMount
 				}
 
 				// Wait for the write to be readable via NFS
-				framework.WaitFor(5*time.Second, func() bool {
+				if !framework.WaitFor(5*time.Second, func() bool {
 					_, err := os.ReadFile(nfsPath)
 					return err == nil
-				})
+				}) {
+					errChan <- fmt.Errorf("SMB goroutine %d: NFS read not visible within timeout", goroutineID)
+					return
+				}
 
 				// Read via NFS (verify cross-protocol visibility)
 				readData, err := os.ReadFile(nfsPath)
@@ -517,11 +523,11 @@ func testCrossProtocol_ConcurrentLeaseConflicts(t *testing.T, nfsMount, smbMount
 		smbPath := smbMount.FilePath(fileName)
 
 		// Wait for the two protocols to converge on identical content
-		framework.WaitFor(5*time.Second, func() bool {
+		require.True(t, framework.WaitFor(5*time.Second, func() bool {
 			nfs, errN := os.ReadFile(nfsPath)
 			smb, errS := os.ReadFile(smbPath)
 			return errN == nil && errS == nil && bytes.Equal(nfs, smb)
-		})
+		}), "File %s did not converge to identical content across protocols within timeout", fileName)
 
 		nfsData := framework.ReadFile(t, nfsPath)
 		smbData := framework.ReadFile(t, smbPath)
