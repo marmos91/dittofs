@@ -28,7 +28,7 @@ func hashOfSeed(seed string) block.ContentHash {
 // newTestStore opens a fresh PostgresMetadataStore for the test. The
 // underlying database is shared across tests; each test should use unique
 // share names to avoid interference.
-func newTestStore(t *testing.T) metadata.MetadataStore {
+func newTestStore(t *testing.T) metadata.Store {
 	t.Helper()
 
 	if os.Getenv("DITTOFS_TEST_POSTGRES_DSN") == "" {
@@ -69,7 +69,7 @@ func newTestStore(t *testing.T) metadata.MetadataStore {
 
 // createShareAndFile is a local helper mirroring storetest.createTestShare/createTestFile
 // (those helpers are unexported in the storetest package).
-func createShareAndFile(t *testing.T, store metadata.MetadataStore, shareName, fileName string) metadata.FileHandle {
+func createShareAndFile(t *testing.T, store metadata.Store, shareName, fileName string) metadata.FileHandle {
 	t.Helper()
 	ctx := t.Context()
 
@@ -280,7 +280,7 @@ func TestPostgres_FileBlockRefs_CascadeDelete(t *testing.T) {
 	}
 }
 
-func mustParentHandle(t *testing.T, store metadata.MetadataStore, handle metadata.FileHandle) metadata.FileHandle {
+func mustParentHandle(t *testing.T, store metadata.Store, handle metadata.FileHandle) metadata.FileHandle {
 	t.Helper()
 	parent, err := store.GetParent(t.Context(), handle)
 	if err != nil {

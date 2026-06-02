@@ -15,7 +15,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// PostgresMetadataStore implements the metadata.MetadataStore interface using PostgreSQL
+// PostgresMetadataStore implements the metadata.Store interface using PostgreSQL
 type PostgresMetadataStore struct {
 	// pool is the PostgreSQL connection pool
 	pool *pgxpool.Pool

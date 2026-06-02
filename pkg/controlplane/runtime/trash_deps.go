@@ -39,7 +39,7 @@ type trashDeps struct {
 var _ trash.Deps = (*trashDeps)(nil)
 
 // MetadataServiceForShare resolves the share's metadata service and root
-// handle. The Runtime owns a single *metadata.MetadataService keyed by share
+// handle. The Runtime owns a single *metadata.Service keyed by share
 // name (per-share stores are registered into it by AddShare), so the service
 // pointer is the runtime's shared one and the root handle comes from the
 // shares registry. ok=false when the share is unknown to the registry.

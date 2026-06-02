@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// RunBlockLayoutSuite asserts that a metadata.MetadataStore round-trips
+// RunBlockLayoutSuite asserts that a metadata.Store round-trips
 // ShareOptions.BlockLayout across CreateShare / GetShareOptions /
 // UpdateShareOptions. Backends invoke this from their per-backend test
 // file. Conformance gate for (D-A6) — every metadata backend

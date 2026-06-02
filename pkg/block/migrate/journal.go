@@ -12,7 +12,7 @@
 //     share. Append + Snapshot + Replay support resumability after a
 //     mid-share crash (D-A1..D-A4).
 //   - WalkShareFiles: a recursive helper composing
-//     metadata.MetadataStore.GetRootHandle + ListChildren + GetFile to
+//     metadata.Store.GetRootHandle + ListChildren + GetFile to
 //     visit every regular file in a share.
 package migrate
 

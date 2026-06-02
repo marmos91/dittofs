@@ -18,7 +18,7 @@ import (
 // metadataCoordinator is the per-share implementation of
 // engine.MetadataCoordinator. It binds the engine's metadata-coordination
 // surface (RefCount mutations, FileAttr.Blocks persistence) to a concrete
-// metadata.MetadataStore so the engine package itself can satisfy the
+// metadata.Store so the engine package itself can satisfy the
 // strict-grep boundary (zero pkg/metadata imports under
 // pkg/blockstore/engine/*.go).
 //
@@ -50,7 +50,7 @@ func newMetadataCoordinator(metadataStore metadata.Store) engine.MetadataCoordin
 
 // resolveStore picks between a context-bound metadata.Transaction (when
 // the caller used metadata.WithTx, e.g. common.CopyPayload) and the
-// public metadata.MetadataStore surface (Truncate/Delete which do not
+// public metadata.Store surface (Truncate/Delete which do not
 // run inside a metadata txn). The Transaction interface embeds the
 // FileBlockStore, so GetByHash / IncrementRefCount / DecrementRefCount
 // are available on both surfaces with identical signatures.

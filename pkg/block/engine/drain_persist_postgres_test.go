@@ -54,7 +54,7 @@ func parsePostgresDSN(t *testing.T, dsn string) *postgres.PostgresMetadataStoreC
 	return cfg
 }
 
-func newPostgresStore(t *testing.T) metadata.MetadataStore {
+func newPostgresStore(t *testing.T) metadata.Store {
 	t.Helper()
 	dsn := os.Getenv("DITTOFS_TEST_POSTGRES_DSN")
 	if dsn == "" {

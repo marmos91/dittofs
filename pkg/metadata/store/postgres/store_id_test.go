@@ -58,7 +58,7 @@ func TestPostgres_StoreID_SurvivesResetAndReopen(t *testing.T) {
 
 // storeID extracts the engine-persistent store identifier via the
 // GetStoreID() surface the Postgres engine exposes.
-func storeID(t *testing.T, store metadata.MetadataStore) string {
+func storeID(t *testing.T, store metadata.Store) string {
 	t.Helper()
 	getter, ok := store.(interface{ GetStoreID() string })
 	if !ok {

@@ -9,7 +9,7 @@ import (
 )
 
 // TestResolver_GetLockManagerForShare_MissingShareReturnsNilInterface guards
-// against a typed-nil regression: metadata.MetadataService.GetLockManagerForShare
+// against a typed-nil regression: metadata.Service.GetLockManagerForShare
 // returns a concrete *metadata.LockManager that is nil for an unknown/removed
 // share. If the resolver returns that nil pointer through its lock.LockManager
 // interface return value, the interface is non-nil (it carries a type) and every

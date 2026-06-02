@@ -240,7 +240,7 @@ type MetadataServiceRegistrar interface {
 }
 
 // MetadataServiceDeregistrar deregisters a metadata store for a share. The
-// concrete *metadata.MetadataService satisfies it. AddShare's defensive
+// concrete *metadata.Service satisfies it. AddShare's defensive
 // finalize-failure path uses it to avoid leaking a metadata registration for a
 // share it refuses to finalize.
 type MetadataServiceDeregistrar interface {
@@ -687,7 +687,7 @@ func (s *Service) createBlockStoreForShare(
 	// mutations + FileAttr.Blocks persistence without importing
 	// pkg/metadata on its hot paths. The fileBlockStore on the engine
 	// seam is the per-share metadata store cast to EngineFileBlockStore;
-	// the coordinator wraps the same store as a metadata.MetadataStore
+	// the coordinator wraps the same store as a metadata.Store
 	// for the typed operations.
 	var coordinator engine.MetadataCoordinator
 	if metadataStore, ok := fileBlockStore.(metadata.Store); ok {

@@ -69,8 +69,8 @@ func newPostgresStore(t *testing.T) *postgres.PostgresMetadataStore {
 // filesystem_capabilities and server_config (store_id) on the now-empty
 // singleton tables, exercising the post-reset reopen path the restore
 // orchestration depends on.
-func newPostgresStoreFactory() func(t *testing.T) metadata.MetadataStore {
-	return func(t *testing.T) metadata.MetadataStore {
+func newPostgresStoreFactory() func(t *testing.T) metadata.Store {
+	return func(t *testing.T) metadata.Store {
 		t.Helper()
 		cfg, caps := postgresTestConfig()
 		ctx := context.Background()

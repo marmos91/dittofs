@@ -270,7 +270,7 @@ func TestGCMarkSweep_SweepHappyPath(t *testing.T) {
 }
 
 // reapCoordinator is the GC-reclaim test's MetadataCoordinator: it binds the
-// engine's refcount surface to a real metadata.MetadataStore exactly like the
+// engine's refcount surface to a real metadata.Store exactly like the
 // production runtime coordinator. Increment/Decrement are hash-keyed (CopyPayload
 // bookkeeping); the reap path is BY EXACT ID "{payloadID}/{offset}" — never
 // hash-resolved — so it removes THIS file's own row unambiguously. Only the

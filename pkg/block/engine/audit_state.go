@@ -30,7 +30,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	// justification: AuditRefcounts is the cross-file metadata-walk
 	// entrypoint for reconciliation. It MUST bind
-	// metadata.MetadataStore to enumerate FileAttr.Blocks across the share's
+	// metadata.Store to enumerate FileAttr.Blocks across the share's
 	// directory tree (GetRootHandle, GetFile, ListChildren). Lifting these
 	// helpers into pkg/blockstore would create a circular import.
 	"github.com/marmos91/dittofs/pkg/metadata"

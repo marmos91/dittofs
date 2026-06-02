@@ -566,7 +566,7 @@ func (f *orchestrationFixture) seedRemoteSubset(hashes []block.ContentHash) {
 // ----- controlledBackupable -----
 
 // controlledBackupable wraps a real MemoryMetadataStore so it still
-// satisfies the full metadata.MetadataStore interface (via embedded
+// satisfies the full metadata.Store interface (via embedded
 // pointer method promotion) but overrides Backup so the test can:
 //   - return a deterministic HashSet without seeding files through the
 //     real Put/transaction path

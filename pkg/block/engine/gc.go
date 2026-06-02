@@ -41,7 +41,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/remote"
 
 	// justification: GC is the cross-share metadata-mark
-	// entrypoint — it MUST bind metadata.MetadataStore /
+	// entrypoint — it MUST bind metadata.Store /
 	// MetadataReconciler to enumerate live FileBlocks.
 	// Lifting these to blockstore would create a circular import.
 	"github.com/marmos91/dittofs/pkg/metadata"

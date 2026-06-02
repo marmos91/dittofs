@@ -18,7 +18,7 @@ type WalkCallback func(handle metadata.FileHandle, file *metadata.File) error
 const walkPageSize = 256
 
 // WalkShareFiles walks every regular file in the named share, recursing
-// into directories via metadata.MetadataStore primitives (GetRootHandle
+// into directories via metadata.Store primitives (GetRootHandle
 // + ListChildren + GetFile). Pagination is handled internally (cursor
 // loop). Context cancellation aborts the walk and returns ctx.Err().
 // Callback errors abort the walk and are returned wrapped.
