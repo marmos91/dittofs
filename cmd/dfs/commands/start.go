@@ -188,15 +188,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 		GracePeriod:      cfg.GC.GracePeriod,
 		DryRunSampleSize: cfg.GC.DryRunSampleSize,
 	})
-	// gc.interval is parsed and validated but no periodic-GC scheduler is
-	// wired in v0.15.0 — the docs were updated to reflect the deferred
-	// status, and any operator who configured a non-zero value gets a
-	// loud startup WARN so the silent "feature non-existence" failure
-	// mode does not bite.
-	if cfg.GC.Interval > 0 {
-		logger.Warn("gc.interval is configured but no periodic-GC scheduler ships in v0.15.0 — the value is ignored. Trigger GC on demand via `dfsctl store block gc <share>` (or schedule via cron). Periodic scheduling is tracked for a follow-up phase.",
-			"configured_interval", cfg.GC.Interval)
-	}
 
 	// Thread the operator-configured lock-manager grace period into the
 	// MetadataService BEFORE loading shares: AddShare registers each share's

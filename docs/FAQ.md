@@ -204,9 +204,8 @@ garbage that survives a transient is reclaimed on the next run.
 
 Triggers:
 
-- Periodic GC is not yet wired. `gc.interval` is reserved for a future
-  scheduler — any configured value emits a startup WARN and is otherwise
-  ignored today; schedule via cron until then.
+- Periodic GC is not yet wired. There is no scheduler; schedule via cron
+  until one ships.
 - On-demand via `dfsctl store block gc <share> [--dry-run]`. Inspect the
   most recent run with `dfsctl store block gc-status <share>`. The
   mark-sweep is global across every share that targets the same remote, so

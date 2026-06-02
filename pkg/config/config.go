@@ -80,18 +80,9 @@ type Config struct {
 }
 
 // GCConfig configures the engine.CollectGarbage mark-sweep run. Knobs
-// cover the grace TTL, the fail-closed mark semantics, the
-// continue-and-capture sweep, and the disabled-by-default interval
-// (operator opt-in).
+// cover the grace TTL and the dry-run sample bound; GC is on-demand only
+// (dfsctl/REST) with no periodic scheduler.
 type GCConfig struct {
-	// Interval is reserved for a future periodic-GC scheduler. v0.15.0
-	// ships only on-demand GC (dfsctl/REST). The field is parsed and
-	// validated, but any non-zero value is reported with a startup
-	// WARN at server boot and otherwise ignored — the periodic
-	// scheduler is tracked for a follow-up. Schedule via cron in the
-	// meantime.
-	Interval time.Duration `mapstructure:"interval" yaml:"interval"`
-
 	// GracePeriod is the TTL applied during sweep: an object whose
 	// LastModified is within snapshot - GracePeriod is preserved.
 	// Defaults to 1 hour. Values in (0, 5m) are rejected at config load;
@@ -105,7 +96,6 @@ type GCConfig struct {
 
 // ApplyDefaults fills any zero-valued field with the defaults.
 func (c *GCConfig) ApplyDefaults() {
-	// Interval default is 0 (disabled — operator opt-in).
 	if c.GracePeriod <= 0 {
 		c.GracePeriod = time.Hour
 	}

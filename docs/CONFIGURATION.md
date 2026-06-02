@@ -325,15 +325,6 @@ blockstore:
                                 # Default 10m. Tune lower for workloads
                                 # with strict RPO; higher for slow links.
   gc:
-    interval: 0                 # Reserved for a future periodic-GC
-                                # scheduler. v0.15.0 ships only on-demand
-                                # GC (dfsctl store block gc <share> or
-                                # POST /api/v1/shares/{name}/blockgc):
-                                # any non-zero value is accepted by the
-                                # config validator but emits a startup
-                                # WARN and is otherwise ignored. Schedule
-                                # via cron until the periodic scheduler
-                                # ships in a follow-up phase.
     grace_period: 1h            # Objects whose LastModified is newer than
                                 # (snapshot - grace_period) are NEVER
                                 # deleted. Default 1h. Values in (0, 5m)
@@ -353,8 +344,7 @@ blockstore:
   `gc.dry_run_sample_size`) until you have measured the
   hashes_marked / objects_swept ratio for your workload, then schedule
   the real run via cron at the cadence that matches your delete rate.
-  `gc.interval` is reserved for a periodic-scheduler phase: any
-  non-zero value emits a startup WARN and is otherwise ignored today.
+  No periodic-GC scheduler ships today; trigger GC on demand or via cron.
 - `syncer.upload_concurrency` × `syncer.tick` × average chunk size
   (~4 MiB with the default FastCDC) bounds steady-state upload
   throughput per share.
@@ -372,7 +362,6 @@ and `gc` blocks directly, with no `blockstore.` prefix):
 `DITTOFS_SYNCER_CLAIM_BATCH_SIZE`,
 `DITTOFS_SYNCER_UPLOAD_CONCURRENCY`,
 `DITTOFS_SYNCER_CLAIM_TIMEOUT`,
-`DITTOFS_GC_INTERVAL`,
 `DITTOFS_GC_GRACE_PERIOD`,
 `DITTOFS_GC_DRY_RUN_SAMPLE_SIZE`.
 
