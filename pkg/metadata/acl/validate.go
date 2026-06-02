@@ -15,6 +15,10 @@ var (
 	// ErrACEEmptyWho is returned when an ACE has an empty Who field.
 	ErrACEEmptyWho = errors.New("ACE has empty Who field")
 
+	// ErrACLTooLarge is returned when an ACL's serialized size exceeds
+	// MaxDACLSize.
+	ErrACLTooLarge = errors.New("ACL exceeds maximum serialized size")
+
 	// ErrACLNotCanonical is the documented sentinel for "ACL is not in
 	// canonical (Windows-presentation) order". ValidateACL no longer
 	// returns this error — it is retained for callers that wish to
@@ -22,9 +26,17 @@ var (
 	ErrACLNotCanonical = errors.New("ACL is not in canonical order")
 )
 
+// aceWireOverhead is the fixed per-ACE NFSv4 wire footprint preceding the
+// variable-length Who string: type(4) + flag(4) + access_mask(4) +
+// who-length(4). The Who string itself is added on top. This is a lower-bound
+// estimate (it ignores 4-byte Who padding), which is the safe direction for a
+// DoS bound: a real serialization is never smaller.
+const aceWireOverhead = 16
+
 // ValidateACL validates an entire ACL, checking:
 //  1. ACE count does not exceed MaxACECount (128)
-//  2. Each individual ACE is valid (type, who)
+//  2. Estimated serialized size does not exceed MaxDACLSize (64KB)
+//  3. Each individual ACE is valid (type, who)
 //
 // ACE ordering is NOT validated. Per MS-DTYP §2.4.5 the ACL layout is
 // an unordered array of ACEs; canonical order (explicit DENY before
@@ -42,6 +54,17 @@ func ValidateACL(a *ACL) error {
 
 	if len(a.ACEs) > MaxACECount {
 		return fmt.Errorf("%w: %d ACEs (maximum %d)", ErrACETooMany, len(a.ACEs), MaxACECount)
+	}
+
+	// Enforce MaxDACLSize. ACE.Who is an unbounded Go string, so the 128-ACE
+	// count cap alone does not bound the serialized size — large Who strings
+	// can blow past 64KB. Estimate the serialized footprint and reject early.
+	size := 0
+	for i := range a.ACEs {
+		size += aceWireOverhead + len(a.ACEs[i].Who)
+		if size > MaxDACLSize {
+			return fmt.Errorf("%w: exceeds %d bytes", ErrACLTooLarge, MaxDACLSize)
+		}
 	}
 
 	for i := range a.ACEs {

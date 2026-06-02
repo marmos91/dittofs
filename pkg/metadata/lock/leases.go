@@ -462,12 +462,7 @@ func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle File
 				"epoch", locks[i].Lease.Epoch)
 
 			// Persist if store available
-			if lm.lockStore != nil {
-				pl := ToPersistedLock(locks[i], 0)
-				if err := lm.lockStore.PutLock(ctx, pl); err != nil {
-					logger.Error("RequestLease: failed to persist lease upgrade", "fileHandle", handleKey, "error", err)
-				}
-			}
+			lm.persistUnifiedLockLocked(locks[i])
 
 			epoch := locks[i].Lease.Epoch
 			lm.mu.Unlock()
@@ -579,13 +574,7 @@ func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle File
 			// re-Lock below must be skipped to avoid self-deadlock.
 			if lock.Lease.Breaking {
 				lock.Lease.BreakingToRequired &= breakTo
-				if lm.lockStore != nil {
-					pl := ToPersistedLock(lock, 0)
-					if err := lm.lockStore.PutLock(ctx, pl); err != nil {
-						logger.Error("RequestLease: failed to persist tightened break target",
-							"fileHandle", handleKey, "error", err)
-					}
-				}
+				lm.persistUnifiedLockLocked(lock)
 				logger.Debug("RequestLease: cross-key conflict on already-breaking lease, suppressed duplicate break",
 					"fileHandle", handleKey,
 					"existingKey", fmt.Sprintf("%x", lock.Lease.LeaseKey),
@@ -611,12 +600,7 @@ func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle File
 			advanceEpoch(lock.Lease)
 
 			// Persist the breaking state
-			if lm.lockStore != nil {
-				pl := ToPersistedLock(lock, 0)
-				if err := lm.lockStore.PutLock(ctx, pl); err != nil {
-					logger.Error("RequestLease: failed to persist breaking state", "fileHandle", handleKey, "error", err)
-				}
-			}
+			lm.persistUnifiedLockLocked(lock)
 
 			// Clone the lock before releasing mu so that dispatchOpLockBreak
 			// receives a snapshot. Without this, concurrent AcknowledgeLeaseBreak
@@ -875,12 +859,7 @@ func (lm *Manager) createAndGrantLease(
 
 	lm.unifiedLocks[handleKey] = append(lm.unifiedLocks[handleKey], newLock)
 
-	if lm.lockStore != nil {
-		pl := ToPersistedLock(newLock, 0)
-		if err := lm.lockStore.PutLock(ctx, pl); err != nil {
-			logger.Error("RequestLease: failed to persist new lease", "fileHandle", handleKey, "error", err)
-		}
-	}
+	lm.persistUnifiedLockLocked(newLock)
 
 	return requestedState, 1
 }
@@ -965,10 +944,7 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 		lock.Lease.BreakStarted = time.Time{}
 		lock.Type = lockTypeForLeaseState(LeaseStateNone)
 
-		if lm.lockStore != nil {
-			pl := ToPersistedLock(lock, 0)
-			_ = lm.lockStore.PutLock(ctx, pl)
-		}
+		lm.persistUnifiedLockLocked(lock)
 
 		logger.Debug("AcknowledgeLeaseBreak: lease released to None (record kept until CLOSE)",
 			"leaseKey", fmt.Sprintf("%x", leaseKey))
@@ -1007,11 +983,9 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 		// store reflects Breaking=true / BreakToState=nextTarget. Otherwise a
 		// crash between the ACK-clear (Breaking=false written above) and the
 		// next-stage-set would lose the second progressive stage on restart,
-		// leaving parked CREATEs to wait until the scanner timeout.
-		if lm.lockStore != nil {
-			pl := ToPersistedLock(lock, 0)
-			_ = lm.lockStore.PutLock(ctx, pl)
-		}
+		// leaving parked CREATEs to wait until the scanner timeout. The persist
+		// MUST land, so errors are logged (not swallowed) by the helper.
+		lm.persistUnifiedLockLocked(lock)
 
 		logger.Debug("AcknowledgeLeaseBreak: progressive break next stage",
 			"leaseKey", fmt.Sprintf("%x", leaseKey),
@@ -1057,10 +1031,7 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 	lock.Lease.BreakingToRequired = acknowledgedState
 
 	// Persist updated state
-	if lm.lockStore != nil {
-		pl := ToPersistedLock(lock, 0)
-		_ = lm.lockStore.PutLock(ctx, pl)
-	}
+	lm.persistUnifiedLockLocked(lock)
 
 	logger.Debug("AcknowledgeLeaseBreak: break acknowledged",
 		"leaseKey", fmt.Sprintf("%x", leaseKey),
@@ -1082,9 +1053,7 @@ func (lm *Manager) releaseLeaseImpl(ctx context.Context, leaseKey [16]byte) erro
 		for _, lock := range locks {
 			if lock.Lease != nil && lock.Lease.LeaseKey == leaseKey {
 				// Remove from persistent store
-				if lm.lockStore != nil {
-					_ = lm.lockStore.DeleteLock(ctx, lock.ID)
-				}
+				lm.deleteUnifiedLockLocked(lock)
 				continue // Skip (remove) this lock
 			}
 			remaining = append(remaining, lock)

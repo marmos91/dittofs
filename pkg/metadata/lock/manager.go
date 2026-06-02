@@ -1426,19 +1426,37 @@ func (lm *Manager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) bool {
 	// client carries the higher requested epoch. Subsequent break
 	// notifications then dispatch with Epoch=2 instead of requestedEpoch+2,
 	// regressing smbtorture V2 tests (break_twice, breaking*, v2_breaking3).
-	found := false
+	// Two passes so all matching records converge to the SAME epoch. A
+	// per-record `if epoch >= lock.Lease.Epoch` guard lets sibling records that
+	// start at different epochs diverge (e.g. one at 5 stays 5 while another at
+	// 1 moves to 4), and GetLeaseState / break dispatch then read whichever
+	// map-order surfaces first — a non-deterministic NewEpoch in break
+	// notifications (the break_twice / v2_breaking3 regression class). Compute
+	// the max of the requested epoch and every matching record's current epoch,
+	// then assign that single max to all of them so the lease has one epoch.
+	target := epoch
+	var matches []*UnifiedLock
 	for _, locks := range lm.unifiedLocks {
 		for _, lock := range locks {
 			if lock.Lease == nil || lock.Lease.LeaseKey != leaseKey {
 				continue
 			}
-			if epoch >= lock.Lease.Epoch {
-				lock.Lease.Epoch = epoch
+			if lock.Lease.Epoch > target {
+				target = lock.Lease.Epoch
 			}
-			found = true
+			matches = append(matches, lock)
 		}
 	}
-	return found
+	for _, lock := range matches {
+		lock.Lease.Epoch = target
+		// Persist the new epoch like every other lease state-change path.
+		// Without this, RestoreLocks rebuilds the lease at the stale grant-time
+		// epoch after a restart and a later break dispatches a NewEpoch below
+		// the client's last-seen value, violating MS-SMB2 §2.2.14.2.11 /
+		// §3.3.4.7 epoch monotonicity.
+		lm.persistUnifiedLockLocked(lock)
+	}
+	return len(matches) > 0
 }
 
 // ============================================================================
@@ -1472,17 +1490,19 @@ func SplitLock(existing *UnifiedLock, unlockOffset, unlockLength uint64) []*Unif
 		return []*UnifiedLock{existing.Clone()}
 	}
 
-	// Calculate lock end
+	// Calculate lock end. End() returns maxUint64 for unbounded (Length==0)
+	// locks, which is exactly the "treat as very large" value the coverage
+	// arithmetic below needs.
 	lockEnd := existing.End()
-	if existing.Length == 0 {
-		// Unbounded lock - treat as very large for calculation purposes
-		lockEnd = ^uint64(0) // Max uint64
-	}
 
-	// Calculate unlock end
+	// Calculate unlock end. unlockOffset/unlockLength are wire-controlled, so
+	// the sum can wrap uint64 (e.g. offset near 2^64 + a large length); a wrap
+	// would corrupt the coverage checks below (fabricate or drop a fragment).
+	// Clamp to maxUint64 on overflow — a range that reaches past 2^64 covers to
+	// EOF for our purposes, same as an unbounded unlock.
 	unlockEnd := unlockOffset + unlockLength
-	if unlockLength == 0 {
-		// Unbounded unlock - goes to EOF
+	if unlockLength == 0 || unlockEnd < unlockOffset {
+		// Unbounded unlock (length 0 = to EOF) or arithmetic overflow.
 		unlockEnd = ^uint64(0)
 	}
 
@@ -2417,10 +2437,7 @@ func (lm *Manager) forceCompleteBreaksExceptKey(handleKey string, exceptKey [16]
 		l.Lease.BrokenViaTimeout = true
 		l.Type = lockTypeForLeaseState(l.Lease.LeaseState)
 
-		if lm.lockStore != nil {
-			pl := ToPersistedLock(l, 0)
-			_ = lm.lockStore.PutLock(context.Background(), pl)
-		}
+		lm.persistUnifiedLockLocked(l)
 		logger.Debug("forceCompleteBreaks: auto-downgraded lease",
 			"handleKey", handleKey,
 			"leaseKey", fmt.Sprintf("%x", l.Lease.LeaseKey),
@@ -2570,10 +2587,7 @@ func (lm *Manager) breakOpLocks(
 			// (Samba intentionally skips the bump per its inline comment).
 			// The next progressive stage will be dispatched on ACK.
 			lock.Lease.BreakingToRequired &= targetState
-			if lm.lockStore != nil {
-				pl := ToPersistedLock(lock, 0)
-				_ = lm.lockStore.PutLock(context.Background(), pl)
-			}
+			lm.persistUnifiedLockLocked(lock)
 			// This key's break is already in flight; record it so a sibling
 			// record sharing the key is not freshly dispatched below and so
 			// later siblings mirror this record's break stage.
@@ -2596,10 +2610,7 @@ func (lm *Manager) breakOpLocks(
 		// applyBreakStageLocked only persists the fire-and-forget downgrade
 		// path; the ack-required path (which is the common case) is
 		// persisted here.
-		if lm.lockStore != nil {
-			pl := ToPersistedLock(lock, 0)
-			_ = lm.lockStore.PutLock(context.Background(), pl)
-		}
+		lm.persistUnifiedLockLocked(lock)
 		dispatchedKeys[lock.Lease.LeaseKey] = struct{}{}
 		canonicalByKey[lock.Lease.LeaseKey] = lock.Lease
 		toBreak = append(toBreak, breakEntry{lock: snapshot, breakToState: targetState})
@@ -2668,10 +2679,7 @@ func (lm *Manager) applyBreakStageLocked(lock *UnifiedLock, target uint32) *Unif
 	lock.Lease.LeaseState = target
 	lock.Lease.BreakingToRequired = target
 	lock.Type = lockTypeForLeaseState(target)
-	if lm.lockStore != nil {
-		pl := ToPersistedLock(lock, 0)
-		_ = lm.lockStore.PutLock(context.Background(), pl)
-	}
+	lm.persistUnifiedLockLocked(lock)
 	return snapshot
 }
 
@@ -2700,9 +2708,8 @@ func (lm *Manager) mirrorBreakStageLocked(sibling *UnifiedLock, canonical *OpLoc
 	sibling.Lease.Epoch = canonical.Epoch
 	sibling.Lease.LeaseState = canonical.LeaseState
 	sibling.Type = lockTypeForLeaseState(canonical.LeaseState)
-	if persist && lm.lockStore != nil {
-		pl := ToPersistedLock(sibling, 0)
-		_ = lm.lockStore.PutLock(context.Background(), pl)
+	if persist {
+		lm.persistUnifiedLockLocked(sibling)
 	}
 }
 

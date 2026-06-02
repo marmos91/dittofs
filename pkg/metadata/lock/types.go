@@ -221,10 +221,14 @@ func (ul *UnifiedLock) IsShared() bool {
 }
 
 // End returns the end offset of the lock (exclusive).
-// Returns 0 for unbounded locks (Length=0 means to EOF).
+//
+// For unbounded locks (Length==0 means to EOF) it returns maxUint64, matching
+// rangeLast/rangeEnd's inclusive-end arithmetic. Returning 0 here (the old
+// behavior) was a byte-range-math footgun: callers comparing End() against a
+// real offset would treat an unbounded lock as ending before offset 0.
 func (ul *UnifiedLock) End() uint64 {
 	if ul.Length == 0 {
-		return 0 // Unbounded
+		return ^uint64(0) // Unbounded: to EOF.
 	}
 	return ul.Offset + ul.Length
 }
