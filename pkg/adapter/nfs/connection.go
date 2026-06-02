@@ -23,6 +23,13 @@ import (
 // incoming message is a backchannel REPLY (msg_type=1) rather than a CALL.
 var errBackchannelReply = errors.New("backchannel reply routed")
 
+// errDropReply is a sentinel error signalling that no reply must be written for
+// this request: it is a duplicate of an op still in flight (DRC in-progress).
+// The original request owns the XID and will send the single authoritative
+// reply, mirroring nfsd's RC_DROPIT. handleRPCCall recognises it and returns
+// without emitting any RPC reply.
+var errDropReply = errors.New("duplicate request dropped")
+
 // NFSConnection handles a single NFS client TCP connection.
 // Requests are read sequentially from the wire but dispatched concurrently
 // via goroutines, bounded by requestSem. Replies are serialized by writeMu.

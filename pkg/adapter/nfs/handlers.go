@@ -84,6 +84,37 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 		return result.Data, nil
 	}
 
+	// Duplicate-request cache (DRC) for non-idempotent procedures.
+	//
+	// On an RPC-timeout retransmit a client re-sends the same request; for
+	// non-idempotent ops (REMOVE/RMDIR/RENAME/CREATE/MKDIR/LINK/SYMLINK/MKNOD/
+	// guarded SETATTR) re-executing yields a spurious EEXIST/ENOENT/NOT_SYNC.
+	// We replay the recorded reply instead. Idempotent ops bypass the cache.
+	useDRC := c.server.drc != nil && isCacheable(call.Procedure)
+	if useDRC {
+		switch res, reply := c.server.drc.lookup(clientAddr, call.XID, data); res {
+		case drcReplay:
+			logger.DebugCtx(ctx, "NFS duplicate request replayed from DRC",
+				"procedure", procedure.Name,
+				"client", clientAddr,
+				"xid", fmt.Sprintf("0x%x", call.XID))
+			return reply, nil
+		case drcInProgressDup:
+			// Original is still executing; drop this duplicate and let the
+			// in-flight request produce the single authoritative reply. Signal
+			// "write nothing" via errDropReply so the dispatcher does not emit a
+			// truncated success reply (or a second reply for this XID).
+			logger.DebugCtx(ctx, "NFS duplicate of in-flight request dropped",
+				"procedure", procedure.Name,
+				"client", clientAddr,
+				"xid", fmt.Sprintf("0x%x", call.XID))
+			return nil, errDropReply
+		default:
+			// drcMiss: an in-progress slot is now reserved; fall through to run
+			// the handler and record the reply below.
+		}
+	}
+
 	// Dispatch to handler
 	result, err := procedure.Handler(
 		handlerCtx,
@@ -93,7 +124,15 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	)
 
 	if result == nil {
+		if useDRC {
+			// No reply to cache (e.g. decode failure); release the slot so a
+			// later legitimate retry is not swallowed.
+			c.server.drc.abort(clientAddr, call.XID, data)
+		}
 		return nil, err
+	}
+	if useDRC {
+		c.server.drc.record(clientAddr, call.XID, data, result.Data)
 	}
 	return result.Data, err
 }
