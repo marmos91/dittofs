@@ -10,10 +10,10 @@ Only NEW failures (not in this list) will cause CI to fail.
 Every remaining entry is justified and falls into exactly one bucket. No
 UNJUSTIFIED entries remain — the #673 acceptance criterion is met.
 
-- **Upstream Samba known-fail** (fails on the reference Samba server too; cited) — **3**: `charset.Testing`, `notify.valid-req`, `session.reauth5`
-- **Deferred past v1.0 with a tracking issue** (justified by deferral) — **15**: `ioctl.copy_chunk_sparse_dest` (#750), the 14 remaining replay `*-sane` rows (#749)
-- **Permanently Unimplementable / harness-only** (see [appendix](#permanently-unimplementable-out-of-scope)) — **46**
-- **Total (non-Kerberos): 64**
+- **Upstream Samba known-fail** (fails on the reference Samba server too; cited) — **2**: `charset.Testing`, `session.reauth5`
+- **Deferred past v1.0 with a tracking issue** (justified by deferral) — **14**: the 14 remaining replay `*-sane` rows (#749)
+- **Permanently Unimplementable / harness-only** (see [appendix](#permanently-unimplementable-out-of-scope)) — **47**
+- **Total (non-Kerberos): 63**
 
 (Rendered as a list, not a markdown table, so `parse-results.sh` — which ingests every line beginning with `|` — does not mistake these tally lines for known-failure rows.)
 
@@ -79,16 +79,7 @@ not advertised — they consume no failure slots and are not listed below.
 The compress_notsup_get/set tests correctly SKIP because FILE_FILE_COMPRESSION
 is advertised.
 
-Most IOCTL sparse-family entries walked back under #718. The remaining residual
-failure is a real feature gap: SRV_COPYCHUNK on a sparse destination must surface
-zeros for the unwritten hole between the old EOF and the chunk's target offset
-(see Samba `test_ioctl_copy_chunk_sparse_dest`). DittoFS's copychunk path grows
-the destination file via `WriteAt` at the target offset but does not advertise
-or materialize the [old EOF, target offset) hole as zero-reading bytes.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.ioctl.copy_chunk_sparse_dest | IOCTL | SRV_COPYCHUNK to a 0-byte destination at offset 4096 must surface the [0, 4096) gap as zeros on subsequent reads. The block-store sparse-hole zero-fill path does not run for copychunk-extended files. | #750 |
+Most IOCTL sparse-family entries walked back under #718.
 
 Note: the standalone `smb2.set-sparse-ioctl` and `smb2.zero-data-ioctl` driver
 tests require `--option=torture:filename=` / `--option=torture:offset=` runtime
@@ -302,6 +293,7 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.kernel-oplocks.kernel_oplocks2 | Kernel oplocks | Requires Linux kernel `F_SETLEASE` on underlying fd — userspace VFS cannot |
 | smb2.kernel-oplocks.kernel_oplocks4 | Kernel oplocks | Requires Linux kernel `F_SETLEASE` on underlying fd — userspace VFS cannot |
 | smb2.kernel-oplocks.kernel_oplocks5 | Kernel oplocks | Kernel oplock vs lease downgrade semantics — DittoFS has no kernel oplock layer |
+| smb2.kernel-oplocks.kernel_oplocks7 | Kernel oplocks | Requires Linux kernel `F_SETLEASE` on underlying fd — userspace VFS cannot. Environment-dependent within the kernel-oplocks family (passes on some hosts, flaked to a New Failure on a CPU-starved runner); appendixed with its siblings so it cannot red the job. |
 | smb2.kernel-oplocks.kernel_oplocks8 | Kernel oplocks | smbtorture-side localdir check is host-FS-specific — not applicable to a virtual FS |
 | smb2.name-mangling.mangle | Name mangling | NTFS 8.3 short-name mangling — DOS/Win9x legacy, not in SMB2/3 protocol surface |
 | smb2.name-mangling.mangled-mask | Name mangling | NTFS 8.3 short-name mask search — DOS/Win9x legacy, not in SMB2/3 protocol surface |
@@ -339,7 +331,7 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.replay.dhv2-pending3o-vs-oplock-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-oplock ordering; Samba does not reproduce the `-windows` arm. `-sane` arm tracked under #749. |
 | smb2.replay.dhv2-pending3o-vs-lease-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-lease ordering; Samba does not reproduce the `-windows` arm. `-sane` arm tracked under #749. |
 
-**Total: 46 tests permanently out of scope** (25 prior + `dirlease.oplocks` + 20 replay `-windows` arms).
+**Total: 47 tests permanently out of scope** (25 prior + `dirlease.oplocks` + 20 replay `-windows` arms + `kernel_oplocks7`).
 
 ### Kerberos
 

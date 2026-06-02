@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
@@ -1333,6 +1334,30 @@ func (h *Handler) closeFilesWithFilter(
 	return closed
 }
 
+// purgeBlockStorePayload best-effort deletes a deleted file's block-store
+// payload. PayloadIDs are path-derived (metadata.buildPayloadID), so a later
+// create at the same path reuses the same PayloadID; without this purge the
+// recreated file would read stale bytes from the prior file's append log
+// (e.g. a sparse hole would surface non-zero bytes —
+// smb2.ioctl.copy_chunk_sparse_dest). Callers invoke this only AFTER the
+// metadata removal succeeds, so a block-store miss is harmless and GC reclaims
+// any straggler CAS chunks; all errors are logged at Debug and swallowed.
+func (h *Handler) purgeBlockStorePayload(ctx context.Context, handle metadata.FileHandle, payloadID metadata.PayloadID, path, caller string) {
+	if payloadID == "" || len(handle) == 0 {
+		return
+	}
+	blockStore, err := common.ResolveForWrite(ctx, h.Registry, handle)
+	if err != nil {
+		return
+	}
+	// Nil []BlockRef triggers the legacy delete path (purges the append log
+	// + tracked size).
+	if delErr := blockStore.Delete(ctx, string(payloadID), nil); delErr != nil {
+		logger.Debug(caller+": block-store payload delete failed (non-fatal)",
+			"path", path, "payloadID", payloadID, "error", delErr)
+	}
+}
+
 // handleDeleteOnClose performs the delete operation for files marked with
 // delete-on-close during session/tree/connection teardown.
 //
@@ -1380,11 +1405,19 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 			deleted = true
 		}
 	} else {
-		if _, err := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
+		removed, err := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName)
+		if err != nil {
 			logger.Debug(caller+": failed to delete file", "path", openFile.Path, "error", err)
 		} else {
 			logger.Debug(caller+": file deleted", "path", openFile.Path)
 			deleted = true
+			// Purge content via RemoveFile's RETURNED PayloadID — empty when
+			// content must survive (surviving hard link / recycle to trash).
+			var removedPayloadID metadata.PayloadID
+			if removed != nil {
+				removedPayloadID = removed.PayloadID
+			}
+			h.purgeBlockStorePayload(ctx, openFile.MetadataHandle, removedPayloadID, openFile.Path, caller)
 		}
 	}
 
