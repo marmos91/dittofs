@@ -37,6 +37,7 @@ const (
 	rightGenericRead    uint32 = 0x80000000
 	rightGenericWrite   uint32 = 0x40000000
 	rightGenericExecute uint32 = 0x20000000
+	rightGenericAll     uint32 = 0x10000000
 )
 
 // TestCheckFileAccess_DenyACEOnOwnerDeniesWrite covers smbtorture acls.OWNER /
@@ -800,24 +801,76 @@ func TestCheckFileAccess_MaximumAllowedPlusGenericExecuteGranted(t *testing.T) {
 	require.Zero(t, granted&uint32(0xF0000000), "granted mask must not retain raw GENERIC_* bits, got 0x%x", granted)
 }
 
-// TestCheckFileAccess_MaximumAllowedPlusGenericReadDeniedTrueControl is the
-// true-deny control for the GENERIC_* expansion fix: GENERIC_READ expands to a
-// set that includes specific READ rights, but the DACL here grants only
-// WRITE_DATA. The expanded explicit READ bits are not in the DACL, so the open
-// MUST still be denied — proving the expansion does not blanket-grant.
-func TestCheckFileAccess_MaximumAllowedPlusGenericReadDeniedTrueControl(t *testing.T) {
+// TestCheckFileAccess_MaximumAllowedPlusGenericReadBestEffort proves that
+// GENERIC_* bits are best-effort under MAXIMUM_ALLOWED: MAX|GENERIC_READ against
+// a DACL that grants only WRITE_DATA must SUCCEED, granting only what the DACL
+// allows rather than failing because the GENERIC_READ-expanded READ rights are
+// absent. This matches Samba's se_access_check, where the MAXIMUM_ALLOWED branch
+// computes the maximal grantable set and never strict-enforces generic-derived
+// bits (smb2.maximum_allowed.maximum_allowed grants MAX|GENERIC_EXECUTE on a
+// read-only DACL). The strict explicit-bit gate (smb2.acls.MXAC-NOT-GRANTED)
+// applies only to DIRECTLY-named specific rights — see
+// TestCheckFileAccess_MaximumAllowedPlusExplicitDeniedBitDenies.
+func TestCheckFileAccess_MaximumAllowedPlusGenericReadBestEffort(t *testing.T) {
 	f := newTestFixture(t)
 
 	requesterSID := "S-1-5-21-1-2-3-2001"
-	// DACL grants ONLY WRITE_DATA — none of the GENERIC_READ specific rights
-	// (other than the always-granted READ_ATTRIBUTES from the parent).
-	created := createSpecificRightsFile(t, f, "max_generic_read_deny.txt", requesterSID, acl.ACE4_WRITE_DATA)
+	// DACL grants ONLY WRITE_DATA — none of the GENERIC_READ specific rights.
+	created := createSpecificRightsFile(t, f, "max_generic_read_best_effort.txt", requesterSID, acl.ACE4_WRITE_DATA)
 
 	authCtx := f.authContext(1001, 1001)
 	authCtx.Identity.SID = strPtr(requesterSID)
 
-	_, err := f.service.CheckFileAccess(created, authCtx, rightMaxAllowed|rightGenericRead)
-	require.Error(t, err, "MAXIMUM_ALLOWED|GENERIC_READ against a WRITE-only DACL must deny")
+	granted, err := f.service.CheckFileAccess(created, authCtx, rightMaxAllowed|rightGenericRead)
+	require.NoError(t, err, "MAXIMUM_ALLOWED|GENERIC_READ is best-effort: generic-derived bits never force a denial")
+	require.NotZero(t, granted&acl.ACE4_WRITE_DATA, "expected the DACL-granted WRITE_DATA in granted mask, got 0x%x", granted)
+	require.Zero(t, granted&acl.ACE4_READ_DATA, "READ_DATA is not granted by the DACL and must not appear, got 0x%x", granted)
+}
+
+// TestCheckFileAccess_MaximumAllowedPlusGenericAllStrictlyEnforced proves the
+// best-effort relaxation is scoped to GENERIC_READ / GENERIC_EXECUTE only.
+// GENERIC_ALL (and GENERIC_WRITE) are NOT in Samba's max_allowed.c ok_mask, so a
+// MAX open naming GENERIC_ALL against a read-only DACL must DENY when the mapped
+// write/all-access rights aren't granted. Without this, the GENERIC_ALL open in
+// smb2.maximum_allowed.maximum_allowed (i=28) would wrongly succeed, leave a
+// share-conflicting handle open, and break the subsequent set_sd WRITE_DAC open
+// with STATUS_SHARING_VIOLATION (max_allowed.c:197).
+func TestCheckFileAccess_MaximumAllowedPlusGenericAllStrictlyEnforced(t *testing.T) {
+	f := newTestFixture(t)
+
+	requesterSID := "S-1-5-21-1-2-3-2001"
+	// FILE_GENERIC_READ specific-rights set only — no WRITE/EXECUTE/owner rights.
+	readMask := uint32(acl.ACE4_READ_DATA | acl.ACE4_READ_NAMED_ATTRS |
+		acl.ACE4_READ_ATTRIBUTES | acl.ACE4_READ_ACL | acl.ACE4_SYNCHRONIZE)
+	created := createSpecificRightsFile(t, f, "max_generic_all_deny.txt", requesterSID, readMask)
+
+	authCtx := f.authContext(1001, 1001)
+	authCtx.Identity.SID = strPtr(requesterSID)
+
+	_, err := f.service.CheckFileAccess(created, authCtx, rightMaxAllowed|rightGenericAll)
+	require.Error(t, err, "MAXIMUM_ALLOWED|GENERIC_ALL against a READ-only DACL must deny — GENERIC_ALL is not best-effort")
+	var storeErr *metadata.StoreError
+	require.ErrorAs(t, err, &storeErr)
+	require.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+}
+
+// TestCheckFileAccess_MaximumAllowedPlusExplicitWriteDeniedStillDenies is the
+// companion true-deny control: a DIRECTLY-named specific right (FILE_WRITE_DATA,
+// no generic expansion involved) that the DACL denies must still fail under
+// MAXIMUM_ALLOWED. Guards against the best-effort relaxation leaking into the
+// strict explicit-bit gate (smb2.acls.MXAC-NOT-GRANTED, #564).
+func TestCheckFileAccess_MaximumAllowedPlusExplicitWriteDeniedStillDenies(t *testing.T) {
+	f := newTestFixture(t)
+
+	requesterSID := "S-1-5-21-1-2-3-2001"
+	// DACL grants ONLY READ_DATA; the request names WRITE_DATA explicitly.
+	created := createSpecificRightsFile(t, f, "max_explicit_write_deny.txt", requesterSID, acl.ACE4_READ_DATA)
+
+	authCtx := f.authContext(1001, 1001)
+	authCtx.Identity.SID = strPtr(requesterSID)
+
+	_, err := f.service.CheckFileAccess(created, authCtx, rightMaxAllowed|uint32(acl.ACE4_WRITE_DATA))
+	require.Error(t, err, "MAXIMUM_ALLOWED|FILE_WRITE_DATA against a READ-only DACL must deny the directly-named bit")
 	var storeErr *metadata.StoreError
 	require.ErrorAs(t, err, &storeErr)
 	require.Equal(t, metadata.ErrAccessDenied, storeErr.Code)

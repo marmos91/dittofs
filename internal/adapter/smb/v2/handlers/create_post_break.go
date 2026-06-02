@@ -474,7 +474,7 @@ func (h *Handler) recheckExistingFileGates(d *createDraft, effectiveAccess uint3
 		// receives, so a DACL that grants only READ_DATA fails OVERWRITE /
 		// OVERWRITE_IF / SUPERSEDE with STATUS_ACCESS_DENIED. Covers
 		// smb2.acls.OVERWRITE_READ_ONLY_FILE fs_tcases arm (#565).
-		granted, err := metaSvc.CheckFileAccessWithParent(existingFile, parentFile, authCtx, effectiveAccess)
+		granted, err := metaSvc.CheckFileAccessWithParentGeneric(existingFile, parentFile, authCtx, effectiveAccess, req.GenericDerivedAccess)
 		if err != nil {
 			logger.Debug("CREATE: DesiredAccess denied by DACL",
 				"path", filename,
