@@ -373,6 +373,15 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, fmt.Errorf("failed to backfill shares.streams_disabled: %w", err)
 	}
 
+	// Backfill shares.continuous_availability for rows that predate the column
+	// (refs #739) — same SQLite ALTER TABLE NULL quirk as the toggles above.
+	if err := db.Exec(
+		"UPDATE shares SET continuous_availability = ? WHERE continuous_availability IS NULL",
+		false,
+	).Error; err != nil {
+		return nil, fmt.Errorf("failed to backfill shares.continuous_availability: %w", err)
+	}
+
 	// --- Post-AutoMigrate migrations ---
 	// Step 2: Migrate legacy Share payload_store_id column to local/remote block store IDs.
 	postMigrator := db.Migrator()

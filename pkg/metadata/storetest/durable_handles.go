@@ -155,6 +155,7 @@ func makeDurableHandle(id string, shareName string) *lock.PersistedDurableHandle
 		PositionInfo:       0xDEADBEEFCAFE,
 		OriginalFileID:     originalFileID,
 		RequestedAllocSize: 0x1000,
+		IsPersistent:       true,
 	}
 }
 
@@ -242,6 +243,9 @@ func assertDurableHandleEqual(t *testing.T, expected, actual *lock.PersistedDura
 	}
 	if expected.RequestedAllocSize != actual.RequestedAllocSize {
 		t.Errorf("RequestedAllocSize: got %d, want %d", actual.RequestedAllocSize, expected.RequestedAllocSize)
+	}
+	if expected.IsPersistent != actual.IsPersistent {
+		t.Errorf("IsPersistent: got %v, want %v", actual.IsPersistent, expected.IsPersistent)
 	}
 }
 

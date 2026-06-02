@@ -551,7 +551,13 @@ else
         "smb2.dirlease.unlink_different_set_and_close:dirlease"
         "smb2.durable-open:durable-open"
         "smb2.durable-open-disconnect:durable-open-disconnect"
-        "smb2.durable-v2-open:durable-v2-open"
+        # Refs #739: run durable-v2-open against the CA share /smbpersistent so
+        # the persistent-open-{oplock,lease} subtests take their CA path
+        # (SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY → durable==true &&
+        # persistent==true for every row). The non-persistent durable subtests
+        # use their own CA-independent tables (they gate on SCALEOUT, which the
+        # share does not advertise), so the CA share does not affect them.
+        "smb2.durable-v2-open:durable-v2-open:smbpersistent"
         "smb2.durable-v2-delay:durable-v2-delay"
         "smb2.durable-v2-regressions:durable-v2-regressions"
         "smb2.ea:ea"

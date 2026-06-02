@@ -51,6 +51,12 @@ type Share struct {
 	// smb2.create_no_streams.no_stream torture test. Default false leaves
 	// stream support enabled.
 	StreamsDisabled bool `gorm:"default:false;not null" json:"streams_disabled"`
+	// ContinuousAvailability advertises SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY
+	// in the TREE_CONNECT response (MS-SMB2 §2.2.10) and allows SMB3 persistent
+	// durable handles (DH2Q SMB2_DHANDLE_FLAG_PERSISTENT) on this share. When
+	// false, a persistent-handle request degrades to a plain durable handle.
+	// Default false (refs #739).
+	ContinuousAvailability bool `gorm:"default:false;not null" json:"continuous_availability"`
 	// TrashEnabled turns on the per-share recycle bin (#190). Default false.
 	TrashEnabled bool `gorm:"default:false;not null" json:"trash_enabled"`
 	// TrashRetentionDays auto-empties bin entries older than N days (0 = keep forever).

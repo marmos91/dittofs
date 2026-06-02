@@ -300,6 +300,12 @@ type TreeConnection struct {
 	// STATUS_OBJECT_NAME_INVALID — matches Samba `smbd:streams = no`
 	// and the smb2.create_no_streams.no_stream torture test.
 	StreamsDisabled bool
+	// ContinuousAvailability mirrors the share-level toggle. When true, the
+	// TREE_CONNECT response advertises SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY
+	// (MS-SMB2 §2.2.10) and a DH2Q SMB2_DHANDLE_FLAG_PERSISTENT request is
+	// granted as a persistent durable handle (#739, smbtorture
+	// smb2.durable-v2-open.persistent-open-{oplock,lease}).
+	ContinuousAvailability bool
 }
 
 // OpenFile represents an open file handle created by the CREATE command.
@@ -514,6 +520,16 @@ type OpenFile struct {
 	// smb2.replay.dhv2-pending1n-vs-{oplock,lease}-sane replay io24 against an
 	// open created with oplock_level=NONE and assert the same FileId comes back.
 	ReplayCreateGuid [16]byte
+
+	// IsPersistent indicates the handle was granted as a persistent durable
+	// handle (DH2Q SMB2_DHANDLE_FLAG_PERSISTENT) on a continuous-availability
+	// share. Persistent handles are a strict superset of durable handles
+	// (IsDurable is also set); the distinction is that the DH2Q response
+	// echoes the PERSISTENT flag and the grant is unconditional regardless of
+	// oplock/lease level (MS-SMB2 §3.3.5.9.10). Only grantable on a CA share;
+	// on a non-CA share a persistent request degrades to a plain durable grant
+	// with this flag clear.
+	IsPersistent bool
 
 	// AppInstanceId is the application instance ID for Hyper-V failover.
 	// Zero value if not set.

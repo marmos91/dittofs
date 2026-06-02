@@ -268,6 +268,7 @@ func cloneDurableHandle(h *lock.PersistedDurableHandle) *lock.PersistedDurableHa
 		LeaseEpoch:         h.LeaseEpoch,
 		CreateGuid:         h.CreateGuid,
 		AppInstanceId:      h.AppInstanceId,
+		IsPersistent:       h.IsPersistent,
 		Username:           h.Username,
 		SessionKeyHash:     h.SessionKeyHash,
 		IsV2:               h.IsV2,

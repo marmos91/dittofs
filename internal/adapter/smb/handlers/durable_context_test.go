@@ -298,7 +298,7 @@ func TestProcessDurableHandleContext_V1GrantWithBatchOplock(t *testing.T) {
 		{Name: DurableHandleV1RequestTag, Data: make([]byte, 16)},
 	}
 
-	resp := ProcessDurableHandleContext(contexts, openFile, 60000)
+	resp := ProcessDurableHandleContext(contexts, openFile, DurableGrantOptions{ConfiguredTimeoutMs: 60000})
 	if resp == nil {
 		t.Fatal("Expected V1 grant response, got nil")
 	}
@@ -323,7 +323,7 @@ func TestProcessDurableHandleContext_V1RejectWithoutBatchOplock(t *testing.T) {
 		{Name: DurableHandleV1RequestTag, Data: make([]byte, 16)},
 	}
 
-	resp := ProcessDurableHandleContext(contexts, openFile, 60000)
+	resp := ProcessDurableHandleContext(contexts, openFile, DurableGrantOptions{ConfiguredTimeoutMs: 60000})
 	if resp != nil {
 		t.Error("Expected nil response for non-batch oplock V1 request")
 	}
@@ -350,7 +350,7 @@ func TestProcessDurableHandleContext_V2GrantWithCreateGuid(t *testing.T) {
 		{Name: DurableHandleV2RequestTag, Data: dh2qData},
 	}
 
-	resp := ProcessDurableHandleContext(contexts, openFile, 60000)
+	resp := ProcessDurableHandleContext(contexts, openFile, DurableGrantOptions{ConfiguredTimeoutMs: 60000})
 	if resp == nil {
 		t.Fatal("Expected V2 grant response, got nil")
 	}
@@ -385,7 +385,7 @@ func TestProcessDurableHandleContext_V2ZeroTimeoutUsesServerDefault(t *testing.T
 		{Name: DurableHandleV2RequestTag, Data: dh2qData},
 	}
 
-	resp := ProcessDurableHandleContext(contexts, openFile, 60000)
+	resp := ProcessDurableHandleContext(contexts, openFile, DurableGrantOptions{ConfiguredTimeoutMs: 60000})
 	if resp == nil {
 		t.Fatal("Expected V2 grant response, got nil")
 	}
@@ -394,27 +394,89 @@ func TestProcessDurableHandleContext_V2ZeroTimeoutUsesServerDefault(t *testing.T
 	}
 }
 
-func TestProcessDurableHandleContext_V2RejectPersistentFlag(t *testing.T) {
-	openFile := &OpenFile{
-		FileID:      [16]byte{1, 2, 3},
-		OplockLevel: OplockLevelNone,
-	}
-
+// persistentDH2QData builds a 32-byte DH2Q request blob with the persistent
+// flag set and the given CreateGuid.
+func persistentDH2QData(createGuid [16]byte) []byte {
 	dh2qData := make([]byte, 32)
 	binary.LittleEndian.PutUint32(dh2qData[0:4], 60000)
-	binary.LittleEndian.PutUint32(dh2qData[4:8], DH2FlagPersistent) // Persistent flag
-	copy(dh2qData[16:32], []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
+	binary.LittleEndian.PutUint32(dh2qData[4:8], DH2FlagPersistent)
+	copy(dh2qData[16:32], createGuid[:])
+	return dh2qData
+}
 
-	contexts := []CreateContext{
-		{Name: DurableHandleV2RequestTag, Data: dh2qData},
-	}
+// TestProcessDurableHandleContext_PersistentNonCADegradesToDurable pins
+// MS-SMB2 §3.3.5.9.10: a persistent request on a NON-CA share is not rejected —
+// the persistent flag is ignored and the request degrades to a plain durable
+// V2 grant (still Batch/Handle gated, persistent_open=false). This is what
+// smbtorture persistent-open-{oplock,lease} expect on a non-CA share (the
+// non-CA durable_open_vs_* tables: persistent=false, durable gated on
+// Batch/Handle). On OplockLevelNone the degraded durable grant fails the gate
+// and yields nil; on Batch it grants durable but NOT persistent.
+func TestProcessDurableHandleContext_PersistentNonCADegradesToDurable(t *testing.T) {
+	createGuid := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 
-	resp := ProcessDurableHandleContext(contexts, openFile, 60000)
-	if resp != nil {
-		t.Error("Expected nil response when persistent flag is set (not supported)")
-	}
-	if openFile.IsDurable {
-		t.Error("Expected openFile.IsDurable to be false")
+	// Non-CA + no Batch/Handle: degraded durable fails the gate → nil.
+	t.Run("no batch, no handle, no CA -> nil", func(t *testing.T) {
+		openFile := &OpenFile{FileID: [16]byte{1}, OplockLevel: OplockLevelNone}
+		contexts := []CreateContext{{Name: DurableHandleV2RequestTag, Data: persistentDH2QData(createGuid)}}
+		resp := ProcessDurableHandleContext(contexts, openFile, DurableGrantOptions{ConfiguredTimeoutMs: 60000})
+		if resp != nil {
+			t.Error("expected nil: persistent on non-CA share with no Batch/Handle must not grant")
+		}
+		if openFile.IsDurable || openFile.IsPersistent {
+			t.Errorf("IsDurable=%v IsPersistent=%v, want both false", openFile.IsDurable, openFile.IsPersistent)
+		}
+	})
+
+	// Non-CA + Batch: degrades to a plain durable grant, persistent_open=false.
+	t.Run("batch oplock, no CA -> durable but not persistent", func(t *testing.T) {
+		openFile := &OpenFile{FileID: [16]byte{1}, OplockLevel: OplockLevelBatch}
+		contexts := []CreateContext{{Name: DurableHandleV2RequestTag, Data: persistentDH2QData(createGuid)}}
+		resp := ProcessDurableHandleContext(contexts, openFile, DurableGrantOptions{ConfiguredTimeoutMs: 60000})
+		if resp == nil {
+			t.Fatal("expected durable grant (degraded from persistent) on Batch oplock")
+		}
+		if !openFile.IsDurable {
+			t.Error("expected IsDurable=true")
+		}
+		if openFile.IsPersistent {
+			t.Error("expected IsPersistent=false on a non-CA share")
+		}
+		// The DH2Q response flags must NOT echo PERSISTENT.
+		flags := binary.LittleEndian.Uint32(resp.Data[4:8])
+		if flags&DH2FlagPersistent != 0 {
+			t.Errorf("response flags=%#x, must not set PERSISTENT on non-CA share", flags)
+		}
+	})
+}
+
+// TestProcessDurableHandleContext_PersistentCAGrant pins MS-SMB2 §3.3.5.9.10:
+// on a continuous-availability share, a persistent request is granted
+// UNCONDITIONALLY (no Batch/Handle gate) and the DH2Q response echoes the
+// PERSISTENT flag. smbtorture persistent-open-{oplock,lease} CA tables assert
+// durable==true && persistent==true for every oplock/lease/share-mode row,
+// including the no-oplock / no-lease rows.
+func TestProcessDurableHandleContext_PersistentCAGrant(t *testing.T) {
+	createGuid := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+
+	// Every oplock level — including None — must grant persistent on a CA share.
+	for _, oplock := range []uint8{OplockLevelNone, OplockLevelII, OplockLevelExclusive, OplockLevelBatch, OplockLevelLease} {
+		openFile := &OpenFile{FileID: [16]byte{1}, OplockLevel: oplock}
+		contexts := []CreateContext{{Name: DurableHandleV2RequestTag, Data: persistentDH2QData(createGuid)}}
+		resp := ProcessDurableHandleContext(contexts, openFile, DurableGrantOptions{
+			ConfiguredTimeoutMs:    60000,
+			ContinuousAvailability: true,
+		})
+		if resp == nil {
+			t.Fatalf("oplock=%d: expected persistent grant on CA share, got nil", oplock)
+		}
+		if !openFile.IsDurable || !openFile.IsPersistent {
+			t.Errorf("oplock=%d: IsDurable=%v IsPersistent=%v, want both true", oplock, openFile.IsDurable, openFile.IsPersistent)
+		}
+		flags := binary.LittleEndian.Uint32(resp.Data[4:8])
+		if flags&DH2FlagPersistent == 0 {
+			t.Errorf("oplock=%d: response flags=%#x, want PERSISTENT set", oplock, flags)
+		}
 	}
 }
 
@@ -434,7 +496,7 @@ func TestProcessDurableHandleContext_V2PrecedenceOverV1(t *testing.T) {
 		{Name: DurableHandleV2RequestTag, Data: dh2qData},
 	}
 
-	resp := ProcessDurableHandleContext(contexts, openFile, 60000)
+	resp := ProcessDurableHandleContext(contexts, openFile, DurableGrantOptions{ConfiguredTimeoutMs: 60000})
 	if resp == nil {
 		t.Fatal("Expected V2 response when both V1 and V2 present")
 	}
@@ -457,7 +519,7 @@ func TestProcessDurableHandleContext_NeitherPresent(t *testing.T) {
 		{Name: "MxAc", Data: make([]byte, 8)},
 	}
 
-	resp := ProcessDurableHandleContext(contexts, openFile, 60000)
+	resp := ProcessDurableHandleContext(contexts, openFile, DurableGrantOptions{ConfiguredTimeoutMs: 60000})
 	if resp != nil {
 		t.Error("Expected nil when no durable contexts present")
 	}
@@ -1481,7 +1543,10 @@ func TestProcessDurableHandleContext_V2RequiresBatchOrHandleLease(t *testing.T) 
 			contexts := []CreateContext{
 				{Name: DurableHandleV2RequestTag, Data: dh2qData},
 			}
-			resp := ProcessDurableHandleContext(contexts, openFile, 60000, c.handleLease)
+			resp := ProcessDurableHandleContext(contexts, openFile, DurableGrantOptions{
+				ConfiguredTimeoutMs: 60000,
+				LeaseIncludesHandle: c.handleLease,
+			})
 			granted := resp != nil
 			if granted != c.expectGranted {
 				t.Errorf("granted=%v want %v (oplock=%d handleLease=%v)",
@@ -1513,7 +1578,7 @@ func TestProcessDurableHandleContext_V2RejectZeroCreateGuid(t *testing.T) {
 		{Name: DurableHandleV2RequestTag, Data: dh2qData},
 	}
 
-	resp := ProcessDurableHandleContext(contexts, openFile, 60000)
+	resp := ProcessDurableHandleContext(contexts, openFile, DurableGrantOptions{ConfiguredTimeoutMs: 60000})
 	if resp != nil {
 		t.Error("Expected nil response for zero CreateGuid (V2 not granted)")
 	}

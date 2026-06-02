@@ -31,6 +31,15 @@ const SMB2ShareFlagEncryptData uint32 = 0x00008000
 // SMB2_SHARE_CAP_ASYMMETRIC, an unrelated dialect-3.0.2 feature.
 const SMB2ShareFlagAccessBasedDirectoryEnum uint32 = 0x00000800
 
+// SMB2ShareCapContinuousAvailability advertises continuous-availability on
+// the share. Set in the Capabilities field (NOT ShareFlags) of the
+// TREE_CONNECT response when the share is CA-enabled, it tells SMB3 clients
+// the share supports persistent handles (DH2Q SMB2_DHANDLE_FLAG_PERSISTENT).
+// [MS-SMB2] Section 2.2.10. smbtorture
+// smb2.durable-v2-open.persistent-open-{oplock,lease} gate their persistent
+// matrix on smb2cli_tcon_capabilities() & this bit (#739).
+const SMB2ShareCapContinuousAvailability uint32 = 0x00000010
+
 // ipcMaximalAccess defines the access rights for the IPC$ virtual share.
 // [MS-SMB2] Section 2.2.10 - MaximalAccess is a bitmask of allowed operations.
 // Value 0x1F grants the following SMB2 access rights for named pipe operations:
@@ -162,6 +171,7 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		AccessBasedEnumeration: share.AccessBasedEnumeration,
 		ChangeNotifyDisabled:   share.ChangeNotifyDisabled,
 		StreamsDisabled:        share.StreamsDisabled,
+		ContinuousAvailability: share.ContinuousAvailability,
 	}
 	h.StoreTree(tree)
 
@@ -185,8 +195,13 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		shareFlags |= SMB2ShareFlagAccessBasedDirectoryEnum
 	}
 
-	// Capabilities — no per-share caps currently emitted.
+	// Capabilities — advertise continuous-availability when the share is
+	// CA-enabled so SMB3 clients know persistent handles are supported
+	// (MS-SMB2 §2.2.10; #739).
 	var capabilities uint32
+	if share.ContinuousAvailability {
+		capabilities |= SMB2ShareCapContinuousAvailability
+	}
 
 	// Build response (16 bytes)
 	w := smbenc.NewWriter(16)

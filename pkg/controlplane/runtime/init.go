@@ -198,6 +198,7 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			AccessBasedEnumeration:           share.AccessBasedEnumeration,
 			ChangeNotifyDisabled:             share.ChangeNotifyDisabled,
 			StreamsDisabled:                  share.StreamsDisabled,
+			ContinuousAvailability:           share.ContinuousAvailability,
 			TrashEnabled:                     share.TrashEnabled,
 			TrashRetentionDays:               share.TrashRetentionDays,
 			TrashRestrictToAdmin:             share.TrashRestrictToAdmin,

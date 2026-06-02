@@ -27,7 +27,7 @@ const durableHandleColumns = `
 	username, session_key_hash, is_v2, created_at, disconnected_at,
 	timeout_ms, server_start_time,
 	delete_pending, parent_handle, file_name, is_directory,
-	position_info, original_file_id, requested_alloc_size
+	position_info, original_file_id, requested_alloc_size, is_persistent
 `
 
 func scanDurableHandle(row pgx.Row) (*lock.PersistedDurableHandle, error) {
@@ -67,6 +67,7 @@ func scanDurableHandle(row pgx.Row) (*lock.PersistedDurableHandle, error) {
 		&positionInfoSigned,
 		&originalFileIDBytes,
 		&requestedAllocSizeSigned,
+		&h.IsPersistent,
 	)
 
 	if err == pgx.ErrNoRows {
@@ -128,6 +129,7 @@ func scanDurableHandleRows(rows pgx.Rows) ([]*lock.PersistedDurableHandle, error
 			&positionInfoSigned,
 			&originalFileIDBytes,
 			&requestedAllocSizeSigned,
+			&h.IsPersistent,
 		)
 		if err != nil {
 			return nil, err
@@ -187,9 +189,9 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 			timeout_ms, server_start_time,
 			delete_pending, parent_handle, file_name, is_directory,
 			position_info, original_file_id, requested_alloc_size,
-			lease_epoch
+			lease_epoch, is_persistent
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31)
 		ON CONFLICT (id) DO UPDATE SET
 			file_id = EXCLUDED.file_id,
 			path = EXCLUDED.path,
@@ -219,7 +221,8 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 			position_info = EXCLUDED.position_info,
 			original_file_id = EXCLUDED.original_file_id,
 			requested_alloc_size = EXCLUDED.requested_alloc_size,
-			lease_epoch = EXCLUDED.lease_epoch
+			lease_epoch = EXCLUDED.lease_epoch,
+			is_persistent = EXCLUDED.is_persistent
 	`
 
 	_, err := s.pool.Exec(ctx, query,
@@ -263,6 +266,9 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 		// LeaseEpoch is the SMB3 lease-V2 epoch (uint16) stored as INTEGER.
 		// The scan path mirrors this with uint16(int32) on read.
 		int32(handle.LeaseEpoch),
+		// IsPersistent marks a persistent durable handle granted on a CA share
+		// (#739) so a reconnect re-echoes the DH2Q PERSISTENT flag.
+		handle.IsPersistent,
 	)
 	return err
 }

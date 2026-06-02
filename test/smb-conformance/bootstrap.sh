@@ -142,7 +142,7 @@ create_block_stores() {
 # (run.sh / smbtorture/run.sh), so it must stay POSIX-sh-compatible — no bash
 # arrays. Share names contain no whitespace, so a space-separated list with
 # unquoted word-splitting (`for name in $SHARE_NAMES`) is safe.
-SHARE_NAMES="/smbbasic /smbencrypted /fileshare /hideunread /change_notify_disabled /smbnoncanon /create_no_streams"
+SHARE_NAMES="/smbbasic /smbencrypted /fileshare /hideunread /change_notify_disabled /smbnoncanon /create_no_streams /smbpersistent"
 
 # share_create_args NAME — echo the per-share `dfsctl share create` flags
 # (without the common --metadata/--local/--remote flags, which the caller
@@ -171,6 +171,10 @@ share_create_args() {
         # /create_no_streams rejects SMB2 Alternate Data Stream opens with
         # STATUS_OBJECT_NAME_INVALID (Samba `smbd:streams = no` semantics).
         /create_no_streams) echo "--name /create_no_streams --streams-disabled" ;;
+        # Refs #739: /smbpersistent advertises SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY
+        # so smbtorture smb2.durable-v2-open.persistent-open-{oplock,lease} take
+        # their CA path (durable==true && persistent==true for every row).
+        /smbpersistent) echo "--name /smbpersistent --continuous-availability" ;;
         *)
             log_error "Unknown share: $1"
             return 1

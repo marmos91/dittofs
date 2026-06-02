@@ -90,6 +90,7 @@ func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error 
 		"access_based_enumeration":            share.AccessBasedEnumeration,
 		"change_notify_disabled":              share.ChangeNotifyDisabled,
 		"streams_disabled":                    share.StreamsDisabled,
+		"continuous_availability":             share.ContinuousAvailability,
 		"trash_enabled":                       share.TrashEnabled,
 		"trash_retention_days":                share.TrashRetentionDays,
 		"trash_restrict_to_admin":             share.TrashRestrictToAdmin,

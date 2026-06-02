@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-06-02 (#673 — rationalization pass: every entry is now bucketed and justified; moved the replay `-windows` variants + `dirlease.oplocks` to the Permanently Unimplementable appendix and removed the stale `timestamp_resolution.resolution1` duplicate)
+Last updated: 2026-06-02 (#739 — implemented SMB3 persistent durable handles on continuous-availability shares; removed the two `durable-v2-open.persistent-open-{oplock,lease}` rows now that they pass against the CA share `/smbpersistent`)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -11,9 +11,9 @@ Every remaining entry is justified and falls into exactly one bucket. No
 UNJUSTIFIED entries remain — the #673 acceptance criterion is met.
 
 - **Upstream Samba known-fail** (fails on the reference Samba server too; cited) — **3**: `charset.Testing`, `notify.valid-req`, `session.reauth5`
-- **Deferred past v1.0 with a tracking issue** (justified by deferral) — **22**: `ioctl.copy_chunk_sparse_dest` (#750), `durable-v2-open.persistent-open-{oplock,lease}` (#739), the 14 remaining replay `*-sane` rows (#749)
+- **Deferred past v1.0 with a tracking issue** (justified by deferral) — **15**: `ioctl.copy_chunk_sparse_dest` (#750), the 14 remaining replay `*-sane` rows (#749)
 - **Permanently Unimplementable / harness-only** (see [appendix](#permanently-unimplementable-out-of-scope)) — **46**
-- **Total (non-Kerberos): 71**
+- **Total (non-Kerberos): 64**
 
 (Rendered as a list, not a markdown table, so `parse-results.sh` — which ingests every line beginning with `|` — does not mistake these tally lines for known-failure rows.)
 
@@ -197,13 +197,11 @@ to the DH state machine — tracked under #792 / #793.
 
 ### Durable Handles V2 (Fix Candidate)
 
-Durable handle V2 open/reopen operations partially implemented but tests
-still fail due to incomplete reconnect, lease coordination, and persistence.
+Durable handle V2 open/reopen and persistent-handle operations pass; no
+outstanding known failures in this category.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Deferred past v1.0: needs continuous-availability share (SMB2_SHARE_CAP_CA) + per-share CA config + a CA-share CI harness — disproportionate plumbing for 2 tests; persisted-handle storage already exists, only the CA-share surface is missing | #739 |
-| smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Deferred past v1.0: needs continuous-availability share (SMB2_SHARE_CAP_CA) + per-share CA config + a CA-share CI harness — disproportionate plumbing for 2 tests; persisted-handle storage already exists, only the CA-share surface is missing | #739 |
 
 ### Leases (Fix Candidate)
 
@@ -405,7 +403,20 @@ the SMB adapter restores it on reconnect and pushes it back via the existing
 
 #739 stays open: `app-instance`; persistent-open rows stay deferred.
 
-### 2026-05-31 — #739 persistent-open: deferred past v1.0 (CA-share infra)
+### 2026-06-02 — #739 persistent-open: implemented (CA shares)
+
+The 2 `persistent-open-{oplock,lease}` rows are removed — persistent durable
+handles are now implemented. A per-share `ContinuousAvailability` flag is
+threaded through the full share stack (CLI → API → models → store → runtime →
+bootstrap) and TREE_CONNECT advertises `SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY`.
+On a CA share a DH2Q `SMB2_DHANDLE_FLAG_PERSISTENT` request is granted
+unconditionally as a persistent durable handle (reusing the existing
+persisted-handle storage) and the response echoes the PERSISTENT flag; on a
+non-CA share the flag degrades to a plain durable grant. The conformance harness
+runs `smb2.durable-v2-open` against a CA share `/smbpersistent`. This supersedes
+the 2026-05-31 deferral note below.
+
+### 2026-05-31 — #739 persistent-open: deferred past v1.0 (CA-share infra) [SUPERSEDED]
 
 The 2 `persistent-open-{oplock,lease}` rows are deferred. Persistent handles
 require the share to advertise `SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY`, a

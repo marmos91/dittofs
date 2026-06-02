@@ -19,7 +19,7 @@ const (
 	DurableHandleV1ReconnectTag        = "DHnC"     // SMB2_CREATE_DURABLE_HANDLE_RECONNECT (also V1 response tag)
 	DurableHandleV2RequestTag          = "DH2Q"     // SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2 (also V2 response tag)
 	DurableHandleV2ReconnectTag        = "DH2C"     // SMB2_CREATE_DURABLE_HANDLE_RECONNECT_V2
-	DH2FlagPersistent           uint32 = 0x00000002 // Persistent handle (not supported)
+	DH2FlagPersistent           uint32 = 0x00000002 // SMB2_DHANDLE_FLAG_PERSISTENT — persistent handle (CA shares only)
 
 	// AppInstanceIdTag is the 16-byte SMB2_CREATE_APP_INSTANCE_ID create-context
 	// name (MS-SMB2 2.2.13.2.8). Unlike DH2Q/RqLs, this name is a GUID, not a
@@ -189,20 +189,36 @@ func EncodeDH2QResponse(timeoutMs uint32, flags uint32) CreateContext {
 	}
 }
 
+// DurableGrantOptions carries the per-CREATE inputs that gate a durable or
+// persistent handle grant in ProcessDurableHandleContext.
+type DurableGrantOptions struct {
+	// ConfiguredTimeoutMs is the server's configured durable-handle timeout.
+	ConfiguredTimeoutMs uint32
+	// LeaseIncludesHandle is true when the granted lease includes
+	// SMB2_LEASE_HANDLE_CACHING (H). Per MS-SMB2 §3.3.5.9.10 V2 durability is
+	// grantable on a Batch oplock OR a Handle lease.
+	LeaseIncludesHandle bool
+	// ContinuousAvailability is true when the tree's share advertises
+	// SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY. A persistent-handle request
+	// (DH2Q SMB2_DHANDLE_FLAG_PERSISTENT) is only granted as persistent on a
+	// CA share, and on a CA share the grant is unconditional (no Batch/Handle
+	// gate); on a non-CA share the persistent flag is ignored and the request
+	// degrades to a plain durable grant (MS-SMB2 §3.3.5.9.10).
+	ContinuousAvailability bool
+}
+
 // ProcessDurableHandleContext processes DHnQ or DH2Q create contexts from a CREATE request.
 // V2 (DH2Q) takes precedence over V1 (DHnQ) when both are present.
 // Returns a response CreateContext to include in the CREATE response, or nil if
-// durability was not granted. Mutates openFile (IsDurable, CreateGuid, DurableTimeoutMs).
-//
-// leaseIncludesHandle indicates whether the granted lease includes Handle (H) caching.
-// Per MS-SMB2 3.3.5.9.8, V1 durability can be granted when OplockLevel is Batch OR
-// when the lease includes SMB2_LEASE_HANDLE_CACHING.
+// durability was not granted. Mutates openFile (IsDurable, IsPersistent,
+// CreateGuid, DurableTimeoutMs).
 func ProcessDurableHandleContext(
 	contexts []CreateContext,
 	openFile *OpenFile,
-	configuredTimeoutMs uint32,
-	leaseIncludesHandle ...bool,
+	opts DurableGrantOptions,
 ) *CreateContext {
+	configuredTimeoutMs := opts.ConfiguredTimeoutMs
+	hasHandle := opts.LeaseIncludesHandle
 	// Check for DH2Q first (V2 takes precedence over V1)
 	if dh2qCtx := FindCreateContext(contexts, DurableHandleV2RequestTag); dh2qCtx != nil {
 		timeout, flags, createGuid, err := DecodeDH2QRequest(dh2qCtx.Data)
@@ -222,22 +238,23 @@ func ProcessDurableHandleContext(
 			return nil
 		}
 
-		// Reject persistent flag (not supported)
-		if flags&DH2FlagPersistent != 0 {
-			logger.Debug("ProcessDurableHandleContext: persistent flag rejected (not supported)")
-			return nil
-		}
+		// SMB2_DHANDLE_FLAG_PERSISTENT (MS-SMB2 §2.2.13.2.11): a persistent
+		// handle is grantable ONLY on a continuous-availability share
+		// (§3.3.5.9.10). On a CA share the persistent grant is UNCONDITIONAL —
+		// it bypasses the Batch-oplock / Handle-lease gate that applies to
+		// plain durable V2, so every oplock/lease/share-mode combination
+		// succeeds (smbtorture persistent-open-{oplock,lease} CA tables assert
+		// durable==true && persistent==true for all rows). On a non-CA share
+		// the flag is ignored: the request degrades to a plain durable V2
+		// grant (still Batch/Handle gated) with persistent_open==false, which
+		// is exactly what the non-CA durable_open_vs_{oplock,lease}_table rows
+		// expect when smbtorture sets request_persistent on a non-CA share.
+		persistentRequested := flags&DH2FlagPersistent != 0
+		grantPersistent := persistentRequested && opts.ContinuousAvailability
 
-		// Per MS-SMB2 §3.3.5.9.10: V2 durability MUST NOT be granted unless
-		// either OplockLevel is Batch (legacy oplock-backed durable) or the
-		// granted lease includes SMB2_LEASE_HANDLE_CACHING. Matches Samba
-		// `smbd_smb2_create_durable_lease_check`. smbtorture
-		// smb2.durable-v2-open.open-oplock iterates 8 share-mode × 4 oplock-
-		// level combinations and expects `out.durable_open_v2 == false` for
-		// every non-Batch row — granting V2 unconditionally trips those
-		// assertions (line 293 / 455).
-		hasHandle := len(leaseIncludesHandle) > 0 && leaseIncludesHandle[0]
-		if openFile.OplockLevel != OplockLevelBatch && !hasHandle {
+		// MS-SMB2 §3.3.5.9.10: plain durable V2 requires Batch oplock or a
+		// Handle lease. A persistent grant on a CA share bypasses this gate.
+		if !grantPersistent && openFile.OplockLevel != OplockLevelBatch && !hasHandle {
 			logger.Debug("ProcessDurableHandleContext: V2 rejected (no Batch oplock or Handle lease)",
 				"oplockLevel", openFile.OplockLevel,
 				"hasHandleLease", hasHandle)
@@ -250,17 +267,24 @@ func ProcessDurableHandleContext(
 			grantedTimeout = timeout
 		}
 
-		// Grant V2 durability
+		// Grant V2 durability (persistent handles are durable + persistent).
 		openFile.IsDurable = true
+		openFile.IsPersistent = grantPersistent
 		openFile.CreateGuid = createGuid
 		openFile.DurableTimeoutMs = grantedTimeout
+
+		var respFlags uint32
+		if grantPersistent {
+			respFlags = DH2FlagPersistent
+		}
 
 		logger.Debug("ProcessDurableHandleContext: V2 durable handle granted",
 			"createGuid", fmt.Sprintf("%x", createGuid),
 			"requestedTimeout", timeout,
-			"grantedTimeout", grantedTimeout)
+			"grantedTimeout", grantedTimeout,
+			"persistent", grantPersistent)
 
-		resp := EncodeDH2QResponse(grantedTimeout, 0)
+		resp := EncodeDH2QResponse(grantedTimeout, respFlags)
 		return &resp
 	}
 
@@ -274,7 +298,6 @@ func ProcessDurableHandleContext(
 		// grant durability. Per MS-SMB2 3.3.5.9.8: "If the open supports
 		// leasing, the server SHOULD grant a durable handle if
 		// Open.Lease.LeaseState includes SMB2_LEASE_HANDLE_CACHING."
-		hasHandle := len(leaseIncludesHandle) > 0 && leaseIncludesHandle[0]
 		if openFile.OplockLevel != OplockLevelBatch && !hasHandle {
 			logger.Debug("ProcessDurableHandleContext: V1 rejected (no Batch oplock or Handle lease)",
 				"oplockLevel", openFile.OplockLevel,
@@ -545,16 +568,16 @@ func processV2Reconnect(
 	filename string,
 	connClientGUID [16]byte,
 ) (*OpenFile, uint32, uint16, [16]byte, types.Status, error) {
-	// Parse V2 reconnect context
-	fileID, createGuid, flags, err := DecodeDH2CReconnect(dh2cCtx.Data)
+	// Parse V2 reconnect context. The DH2C Flags field
+	// (SMB2_DHANDLE_FLAG_PERSISTENT, MS-SMB2 §2.2.13.2.12) is intentionally
+	// NOT validated here: a client reconnecting a persistent handle sets the
+	// flag, and Samba's `smbd_smb2_create_before_exec` reads only the
+	// persistent_id and create_guid from DH2C, ignoring Flags. Whether the
+	// re-established open is persistent is restored from the persisted record
+	// (handle.IsPersistent), not re-derived from the reconnect request.
+	fileID, createGuid, _, err := DecodeDH2CReconnect(dh2cCtx.Data)
 	if err != nil {
 		logger.Debug("processV2Reconnect: invalid DH2C data", "error", err)
-		return nil, 0, 0, [16]byte{}, types.StatusInvalidParameter, nil
-	}
-
-	// Reject persistent flag
-	if flags&DH2FlagPersistent != 0 {
-		logger.Debug("processV2Reconnect: persistent flag rejected")
 		return nil, 0, 0, [16]byte{}, types.StatusInvalidParameter, nil
 	}
 
@@ -833,7 +856,11 @@ func validateAndRestore(
 		// GetDurableHandleByCreateGuid lookup fails — breaking the multi-cycle
 		// reconnect that smbtorture durable-v2-open.reopen2* exercises. V1
 		// handles persist CreateGuid == 0, so this is a no-op for them.
-		CreateGuid:    handle.CreateGuid,
+		CreateGuid: handle.CreateGuid,
+		// Restore the persistent flag so a reconnect of a persistent handle
+		// re-reports persistent_open (the open stays persistent across the
+		// disconnect). Pre-#739 rows decode false → plain durable handle.
+		IsPersistent:  handle.IsPersistent,
 		OpenTime:      handle.CreatedAt,
 		DeletePending: handle.DeletePending,
 		ParentHandle:  handle.ParentHandle,
@@ -1058,6 +1085,7 @@ func buildPersistedDurableHandle(
 		LeaseEpoch:      leaseEpoch,
 		CreateGuid:      openFile.CreateGuid,
 		AppInstanceId:   openFile.AppInstanceId,
+		IsPersistent:    openFile.IsPersistent,
 		Username:        username,
 		SessionKeyHash:  sessionKeyHash,
 		IsV2:            openFile.CreateGuid != [16]byte{},
