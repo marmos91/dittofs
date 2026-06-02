@@ -422,6 +422,9 @@ func TestEncodePseudoFSAttrsFileIDNeverZero(t *testing.T) {
 		t.Fatalf("read opaqueLen: %v", err)
 	}
 	// FILEID + MOUNTED_ON_FILEID = two uint64s, encoded in ascending bit order.
+	if opaqueLen != 16 {
+		t.Fatalf("attr data length = %d, want 16 (two uint64s)", opaqueLen)
+	}
 	var fileID, mountedOnFileID uint64
 	if err := binary.Read(reader, binary.BigEndian, &fileID); err != nil {
 		t.Fatalf("read fileid: %v", err)

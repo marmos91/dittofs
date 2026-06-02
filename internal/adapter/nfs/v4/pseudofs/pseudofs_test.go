@@ -506,6 +506,7 @@ func TestNodeFileIDsNonZeroAndUnique(t *testing.T) {
 	pfs.Rebuild([]string{"/share", "/data/archive", "/data/cold"})
 
 	seen := make(map[uint64]string)
+	pfs.mu.RLock()
 	for _, node := range pfs.byHandle {
 		if node.FileID == 0 {
 			t.Errorf("node %q has FileID 0 (illegal; crashes macOS client)", node.Path)
@@ -515,4 +516,5 @@ func TestNodeFileIDsNonZeroAndUnique(t *testing.T) {
 		}
 		seen[node.FileID] = node.Path
 	}
+	pfs.mu.RUnlock()
 }
