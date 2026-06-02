@@ -133,6 +133,38 @@ func (it *intervalTree) ConsumeUpTo(endExclusive uint64) {
 	}
 }
 
+// ConsumeUpToStable is ConsumeUpTo restricted to intervals last touched at or
+// before `notAfter`. It deletes every interval fully contained in
+// [0, endExclusive) whose Touched timestamp is <= notAfter, leaving any
+// interval touched AFTER that instant in the tree.
+//
+// C1 contention fix: the rollup releases the per-file append mutex during its
+// CAS-store / persister phase, so a concurrent AppendWrite can Insert a fresh
+// dirty interval (Touched = now) into a region the rollup is about to consume.
+// Consuming that interval by offset alone (plain ConsumeUpTo) would silently
+// drop the new write's dirty marker, leaving its bytes un-rolled-up forever.
+// Passing the rollup pass's start instant as `notAfter` consumes exactly the
+// intervals that were present (and stable) when the pass began and preserves
+// any interval a racing write created mid-pass — that interval survives so a
+// later rollup pass picks it up.
+func (it *intervalTree) ConsumeUpToStable(endExclusive uint64, notAfter time.Time) {
+	var toDelete []*interval
+	it.t.Ascend(func(iv *interval) bool {
+		// Ascend visits in Offset order; once Offset reaches endExclusive no
+		// later interval can be fully contained in [0, endExclusive). Stop.
+		if iv.Offset >= endExclusive {
+			return false
+		}
+		if uint64(iv.Length)+iv.Offset <= endExclusive && !iv.Touched.After(notAfter) {
+			toDelete = append(toDelete, iv)
+		}
+		return true
+	})
+	for _, iv := range toDelete {
+		it.t.Delete(iv)
+	}
+}
+
 // DropExact removes every interval whose (Offset, Length) pair exactly
 // matches the supplied region. Used by the rollup recovery path when the
 // logIndex cannot back a stable interval the tree reported (see #668).

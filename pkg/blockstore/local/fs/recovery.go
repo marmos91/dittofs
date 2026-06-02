@@ -463,6 +463,7 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 		lf.groupCommit = newGroupCommit(lf.f.Sync)
 		bc.logFDs[payloadID] = lf
 		bc.logLocks[payloadID] = &sync.Mutex{}
+		bc.rollupLocks[payloadID] = &sync.Mutex{} // C1: per-file rollup mutex
 		bc.dirtyIntervals[payloadID] = tree
 		// Direction-1 redesign: publish the recovery-built logIndex.
 		// The scan above populated one entry per unconsumed record and

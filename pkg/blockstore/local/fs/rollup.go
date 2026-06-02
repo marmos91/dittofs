@@ -31,6 +31,16 @@ type rec struct {
 	endPos  uint64
 }
 
+// consumedExt is the FILE-OFFSET extent of a record the rollup will mark
+// consumed in the logIndex. R-7 (#580): consumption is keyed by file-offset
+// interval, not logPos. Captured in Phase A (under the append mutex) and
+// applied in Phase C, so it must be an owned value type, not a view into the
+// logIndex scratch buffer.
+type consumedExt struct {
+	fileOff    uint64
+	payloadLen uint32
+}
+
 // StartRollup launches the chunkRollup worker pool. Idempotent
 // subsequent calls after the first are no-ops. Requires a non-nil
 // RollupStore.
@@ -120,33 +130,41 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 // rollupFile consumes the earliest stable interval for payloadID, emits
 // chunks, and commits atomically.
 //
-// Concurrency: the per-file mutex (`mu`) is held through the ENTIRE
-// reconstructStream -> chunker -> StoreChunk -> CommitChunks sequence.
-// Releasing the mutex before StoreChunk/CommitChunks would break
-// DeleteAppendLog's ability to wait for in-flight rollup by acquiring
-// the same mutex.
-// Holding the mutex serializes same-file rollup against same-file
-// AppendWrite; this is acceptable because (a) rollup runs in a background
-// worker pool, (b) AppendWrite's mutex window is ~5 µs under
-// ordinary load, (c) different files have independent mutexes so
-// one file's rollup never stalls another, and (d) pressure-channel
-// blocking only trips when the log budget is exceeded.
+// Concurrency (C1): the pass runs in three phases under TWO per-payload locks.
 //
-// CommitChunks atomic ordering:
-//  1. For each emitted chunk: StoreChunk(hash, data) — idempotent, fsynced.
-//  2. ObjectIDPersister(payloadID, blocks, objectID) — writes per-chunk
-//     FileBlock manifest rows + FileAttr.Blocks. MUST land before
-//     SetRollupOffset so a manifest-persist failure leaves rollup_offset
-//     UNCHANGED and the next pass retries; the alternative (persister
-//     after SetRollupOffset) silently lost the manifest while
-//     rollup_offset already advanced past the records.
-//  3. rollupStore.SetRollupOffset(payloadID, targetPos) — atomic-monotone
-//     on ErrRollupOffsetRegression, log at Debug and return nil (benign).
+//   - rmu (the rollup mutex) is held across ALL three phases. It serializes
+//     concurrent rollups on the same payload and is the barrier
+//     DeleteAppendLog drains, so the ObjectIDPersister never writes manifest
+//     rows for a payload that is being deleted.
+//   - mu (the append mutex) is held only in Phase A and Phase C. It is
+//     RELEASED for Phase B so a concurrent AppendWrite to this same payload is
+//     not blocked on rollup I/O. Lock order: rmu (outer) -> mu (inner).
+//
+// Phase A (mu held): resolve the earliest stable interval to its backing log
+// records, pread them into owned buffers, and capture the file-offset extents
+// to consume. Only Phase A reads/mutates per-file log state (tree, idx, lf, rf).
+//
+// Phase B (no mu): reconstruct -> chunk -> StoreChunk -> ObjectIDPersister.
+// These touch only CAS and the metadata manifest, never per-file log state.
+//
+// Phase C (mu re-held): re-validate lf/tombstone, then the CommitChunks
+// sequence on log-side state:
+//  1. (done in Phase B) StoreChunk — idempotent, fsynced.
+//  2. (done in Phase B) ObjectIDPersister — writes the FileBlock manifest +
+//     FileAttr.Blocks. MUST land before SetRollupOffset so a manifest-persist
+//     failure leaves rollup_offset UNCHANGED and the next pass retries.
+//  3. rollupStore.SetRollupOffset(payloadID, targetPos) — atomic-monotone;
+//     on ErrRollupOffsetRegression, log at Debug and fall through (benign).
 //  4. advanceRollupOffset(logFile, targetPos) — idempotent derived-state.
-//     If it fails, metadata is already the source of truth and recovery
+//  5. tree.ConsumeUpToStable + logBytesTotal.Add(-reclaimed) + pressureCh +
+//     maybeCompactLog.
 //
-// will reconcile the header on next boot.
-//  5. tree.ConsumeUpTo + logBytesTotal.Add(-reclaimed) + pressureCh signal.
+// Because mu is released between A and C, Phase C consumes the dirty tree with
+// ConsumeUpToStable(stableEnd, phaseStart) — NOT plain ConsumeUpTo — so a write
+// that raced Phase B (Touched > phaseStart) keeps its dirty marker and is
+// rolled up by a later pass instead of being silently dropped. The logIndex
+// fence only advances over consumedExtents (the Phase-A records), so a
+// racing write's record stays unconsumed too.
 //
 // force=true bypasses the stabilization-window gate: the earliest dirty
 // interval is consumed regardless of how recently it was touched. This is
@@ -164,9 +182,10 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 	lf := bc.logFDs[payloadID]
 	tree := bc.dirtyIntervals[payloadID]
 	mu := bc.logLocks[payloadID]
+	rmu := bc.rollupLocks[payloadID]
 	idx := bc.logIndices[payloadID]
 	bc.logsMu.RUnlock()
-	if lf == nil || tree == nil || mu == nil || idx == nil {
+	if lf == nil || tree == nil || mu == nil || rmu == nil || idx == nil {
 		// Nothing to do — payload never had an AppendWrite (or was
 		// cleared by Close/DeleteAppendLog).
 		return nil
@@ -174,187 +193,238 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 
 	stabilization := time.Duration(bc.stabilizationMS) * time.Millisecond
 
-	mu.Lock()
-	defer mu.Unlock()
+	// C1: hold the rollup mutex across the entire pass (Phase A -> B -> C).
+	// See the function doc comment for the locking contract. The append mutex
+	// (mu) is acquired only inside Phase A and Phase C below.
+	rmu.Lock()
+	defer rmu.Unlock()
 
-	// FIX-21: re-validate lf under the per-file mutex. Between the
-	// snapshot above (RUnlock'd before we took mu) and now, a concurrent
-	// AppendWrite that hit a writeRecord error could have run the FIX-2
-	// recovery path: removed the lf from bc.logFDs and closed lf.f. If we
-	// proceed with the stale lf we'd read from a closed fd. The
-	// double-checked re-read under the per-file mutex closes that window
-	// any FIX-2 cleanup must serialize behind us via mu, and any
-	// already-completed cleanup will have left bc.logFDs[payloadID] nil
-	// (or replaced with a fresh lf on a subsequent getOrCreateLog). A
-	// stale rollup pass is benign — chunks will be retried on the next
-	// pass once the new lf is established.
-	bc.logsMu.RLock()
-	curLf := bc.logFDs[payloadID]
-	bc.logsMu.RUnlock()
-	if curLf == nil || curLf != lf {
-		return nil
-	}
+	// ---- Phase A: read snapshot under the append mutex ----
+	var (
+		stable          interval
+		stableEnd       uint64
+		recs            []rec
+		consumedExtents []consumedExt
+		trunc           uint64
+		hasTrunc        bool
+		// maxReadLogPos is the highest logPos among the records read in
+		// Phase A. Phase C passes it to AdvanceFenceUpTo so the fence never
+		// walks past a racing same-extent write that landed during Phase B
+		// (its logPos is strictly greater — log positions are monotonic).
+		maxReadLogPos uint64
+		// phaseStart anchors the Phase C dirty-interval consume. It is captured
+		// UNDER mu (below) so every interval in this pass's snapshot has
+		// Touched <= phaseStart and is consumed, while only a write that lands
+		// AFTER mu is released for Phase B has Touched > phaseStart and is
+		// preserved for a later pass. Capturing it before acquiring mu would
+		// spuriously preserve a write that completed between the timestamp and
+		// the snapshot — already chunked this pass — causing redundant rollups.
+		phaseStart time.Time
+	)
+	proceed, err := func() (bool, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		phaseStart = time.Now()
 
-	// Tombstone re-check AFTER mutex acquire. DeleteAppendLog
-	// sets the tombstone BEFORE acquiring this mutex; if we
-	// it here, delete is in flight (or completed) and we must bail out
-	// without persisting rollup state for a dead payload. The tombstones
-	// map may be nil through plans up to, which is fine
-	// ranging over a nil map is legal and the check becomes a no-op.
-	if bc.isTombstoned(payloadID) {
-		return nil
-	}
+		// FIX-21: re-validate lf under the per-file mutex. Between the
+		// snapshot above (RUnlock'd before we took mu) and now, a concurrent
+		// AppendWrite that hit a writeRecord error could have run the FIX-2
+		// recovery path: removed the lf from bc.logFDs and closed lf.f. If we
+		// proceed with the stale lf we'd read from a closed fd. The
+		// double-checked re-read under the per-file mutex closes that window:
+		// any FIX-2 cleanup must serialize behind us via mu, and any
+		// already-completed cleanup will have left bc.logFDs[payloadID] nil
+		// (or replaced with a fresh lf on a subsequent getOrCreateLog). A
+		// stale rollup pass is benign — chunks will be retried on the next
+		// pass once the new lf is established.
+		bc.logsMu.RLock()
+		curLf := bc.logFDs[payloadID]
+		bc.logsMu.RUnlock()
+		if curLf == nil || curLf != lf {
+			return false, nil
+		}
 
-	var stable interval
-	var ok bool
-	if force {
-		// Snapshot drain: take the earliest dirty interval regardless of
-		// the stabilization window. Every written byte must reach CAS.
-		stable, ok = tree.Earliest()
-	} else {
-		stable, ok = tree.EarliestStable(time.Now(), stabilization)
-	}
-	if !ok {
-		return nil
-	}
+		// Tombstone re-check AFTER mutex acquire. DeleteAppendLog sets the
+		// tombstone BEFORE its drain barrier; if we see it here, delete is in
+		// flight (or completed) and we must bail out without persisting
+		// rollup state for a dead payload. Ranging over a nil tombstones map
+		// is legal so the check is a no-op before the first delete.
+		if bc.isTombstoned(payloadID) {
+			return false, nil
+		}
 
-	// Read + validate the log header. Direction-1 no longer uses
-	// hdr.RollupOffset for any computation (the in-memory idx.Fence is
-	// the truth), but the read still serves as a corruption sanity
-	// check before we issue preads against the same fd.
-	if _, err := readLogHeader(lf.f); err != nil {
-		slog.Warn("rollup: read header", "payloadID", payloadID, "error", err)
+		var ok bool
+		if force {
+			// Snapshot drain: take the earliest dirty interval regardless of
+			// the stabilization window. Every written byte must reach CAS.
+			stable, ok = tree.Earliest()
+		} else {
+			stable, ok = tree.EarliestStable(phaseStart, stabilization)
+		}
+		if !ok {
+			return false, nil
+		}
+
+		// Read + validate the log header. Direction-1 no longer uses
+		// hdr.RollupOffset for any computation (the in-memory idx.Fence is
+		// the truth), but the read still serves as a corruption sanity
+		// check before we issue preads against the same fd.
+		if _, herr := readLogHeader(lf.f); herr != nil {
+			slog.Warn("rollup: read header", "payloadID", payloadID, "error", herr)
+			return false, herr
+		}
+
+		// Direction-1 rollup redesign: consult the per-payload logIndex to
+		// translate the stable file-offset interval into a set of records
+		// whose frames sit somewhere in the on-disk log (not necessarily
+		// contiguous at the head). Each entry carries logPos + payloadLen
+		// so we pread each frame directly instead of scanning the log
+		// sequentially. A separate read-only fd is used so we don't disturb
+		// lf.f's append position.
+		stableEnd = stable.Offset + uint64(stable.Length)
+		// A stable interval can match thousands of log entries under
+		// parallel-write workloads; lookupInterval reuses a per-index scratch
+		// buffer so this lookup does not reallocate every rollup pass. The
+		// result is valid until the next lookupInterval call on this index —
+		// safe here because we copy every entry into owned recs/consumedExtents
+		// before releasing mu, and rmu serializes any other rollup on this
+		// payload that could call lookupInterval again.
+		entries := idx.lookupInterval(stable.Offset, uint64(stable.Length))
+		if len(entries) == 0 {
+			// The tree reported a stable interval the logIndex cannot back —
+			// a tree/logIndex divergence. Causes: recovery rebuilt the tree
+			// from records the index missed; a residual dirty interval left
+			// behind by an interrupted write before AppendWrite's atomic
+			// tree+logIndex update landed; or (C1) a benign stale tree marker.
+			//
+			// The C1 stale-marker case: because the append mutex is released
+			// during Phase B, ConsumeUpToStable may preserve a dirty interval
+			// at an offset whose backing index entries were all fenced+trimmed
+			// by a concurrent same-payload pass. That is harmless — an entry is
+			// fenced only once consumedCoverage covers its extent, which only
+			// happens after StoreChunk persisted that offset's latest bytes to
+			// CAS. So the offset's data is already durable; the leftover tree
+			// marker has no bytes to roll up. Dropping it is correct, not a
+			// loss. (It cannot occur on the pre-C1 whole-pass-lock design,
+			// which is why this path is exercised only under concurrency.)
+			//
+			// #668: returning an error here re-queued the same dirty
+			// interval on every ticker pass, wedging the payload's rollup
+			// permanently in a tight Error-log loop until process restart.
+			// Drop the divergent interval from the tree so the next pass
+			// either picks up a later stable interval or finds the tree
+			// empty; log once at Warn so operators still see the divergence
+			// without the loop.
+			slog.Warn("rollup: dropping divergent stable interval (no logIndex entries)",
+				"payloadID", payloadID,
+				"offset", stable.Offset,
+				"length", stable.Length)
+			tree.DropExact(stable.Offset, stable.Length)
+			return false, nil
+		}
+
+		rf, oerr := os.Open(lf.path)
+		if oerr != nil {
+			return false, fmt.Errorf("rollup: open log for read: %w", oerr)
+		}
+		// rf is fully consumed within Phase A (the pread loop below), so close
+		// it before releasing mu: Phase B then holds no fd, and the Phase C
+		// maybeCompactLog rename never races an open read handle (Windows
+		// refuses to rename over a path with ANY open handle).
+		defer func() { _ = rf.Close() }()
+
+		recs = make([]rec, 0, len(entries))
+		consumedExtents = make([]consumedExt, 0, len(entries))
+		for _, e := range entries {
+			if e.logPos > maxReadLogPos {
+				maxReadLogPos = e.logPos
+			}
+			off, payload, rerr := readRecordAt(rf, e.logPos, e.payloadLen)
+			if rerr != nil {
+				// A CRC mismatch or pread failure at a record the logIndex
+				// claims is valid implies log-fd corruption or a logIndex/
+				// log divergence bug. Returning nil here would re-queue the
+				// interval forever — surface a hard error instead so the
+				// worker pool's error log captures the divergence and
+				// operators can inspect the log fd.
+				return false, fmt.Errorf("rollup: readRecordAt(logPos=%d): %w", e.logPos, rerr)
+			}
+			if off != e.fileOff {
+				return false, fmt.Errorf("rollup: logIndex fileOff divergence at logPos=%d (indexed=%d frame=%d)",
+					e.logPos, e.fileOff, off)
+			}
+			recs = append(recs, rec{
+				off:     off,
+				payload: payload,
+				// endPos preserved for downstream consumers that still rely
+				// on it; with the logIndex-driven path it is no longer used
+				// to advance targetPos, but reconstructStream / dedup code
+				// reads it via the rec struct.
+				endPos: e.logPos + uint64(recordFrameOverhead) + uint64(e.payloadLen),
+			})
+			consumedExtents = append(consumedExtents, consumedExt{fileOff: e.fileOff, payloadLen: e.payloadLen})
+		}
+
+		// truncation filter: drop records entirely past the truncation
+		// boundary and clip straddling records. Recorded by TruncateAppendLog
+		// consulted here so emitted chunks never contain bytes
+		// beyond the client-observed size at truncate time.
+		//
+		// Direction-1 redesign: consumedExtents is filtered in lockstep with
+		// recs so we only mark logIndex coverage for records that actually
+		// contributed payload bytes to a stored chunk. Entries that truncation
+		// dropped entirely stay unconsumed; the on-disk bytes belong to a
+		// truncated tail the operator already invalidated. Clipped records
+		// have their consumedExtent.payloadLen shortened to match the bytes
+		// that actually made it into a chunk — coverage MUST match the bytes
+		// chunked, not the original record size.
+		bc.logsMu.RLock()
+		trunc, hasTrunc = bc.truncations[payloadID]
+		bc.logsMu.RUnlock()
+		if hasTrunc {
+			filtered := recs[:0]
+			filteredExt := consumedExtents[:0]
+			for i, r := range recs {
+				if r.off >= trunc {
+					continue
+				}
+				end := r.off + uint64(len(r.payload))
+				if end > trunc {
+					r.payload = r.payload[:trunc-r.off]
+				}
+				filtered = append(filtered, r)
+				// Reflect any clipping into the consumed extent so coverage
+				// doesn't over-claim file bytes that never reached CAS.
+				ext := consumedExtents[i]
+				ext.payloadLen = uint32(len(r.payload))
+				filteredExt = append(filteredExt, ext)
+			}
+			recs = filtered
+			consumedExtents = filteredExt
+		}
+
+		if len(recs) == 0 {
+			return false, nil
+		}
+		return true, nil
+	}()
+	if err != nil || !proceed {
 		return err
 	}
 
-	// Direction-1 rollup redesign: consult the per-payload logIndex to
-	// translate the stable file-offset interval into a set of records
-	// whose frames sit somewhere in the on-disk log (not necessarily
-	// contiguous at the head). Each entry carries logPos + payloadLen
-	// so we pread each frame directly instead of scanning the log
-	// sequentially. A separate read-only fd is used so we don't disturb
-	// lf.f's append position.
-	stableEnd := stable.Offset + uint64(stable.Length)
-	// A stable interval can match thousands of log entries under
-	// parallel-write workloads; lookupInterval reuses a per-index scratch
-	// buffer so this lookup does not reallocate every rollup pass. The
-	// result is valid until the next lookupInterval call on this index —
-	// safe here because rollupFile holds the per-file mutex throughout.
-	entries := idx.lookupInterval(stable.Offset, uint64(stable.Length))
-	if len(entries) == 0 {
-		// The tree reported a stable interval the logIndex cannot back —
-		// only possible under a tree/logIndex divergence (e.g. recovery
-		// rebuilt the tree from records the index missed, or a residual
-		// dirty interval was left behind by an interrupted write before
-		// AppendWrite's atomic tree+logIndex update landed).
-		//
-		// #668: returning an error here re-queued the same dirty
-		// interval on every ticker pass, wedging the payload's rollup
-		// permanently in a tight Error-log loop until process restart.
-		// Drop the divergent interval from the tree so the next pass
-		// either picks up a later stable interval or finds the tree
-		// empty; log once at Warn so operators still see the divergence
-		// without the loop.
-		slog.Warn("rollup: dropping divergent stable interval (no logIndex entries)",
-			"payloadID", payloadID,
-			"offset", stable.Offset,
-			"length", stable.Length)
-		tree.DropExact(stable.Offset, stable.Length)
-		return nil
-	}
+	// ---- Phase B: reconstruct + chunk + store to CAS WITHOUT the append mutex ----
+	// recs/consumedExtents are owned copies; alignRecsToChunkBoundaries,
+	// reconstructStream, StoreChunk, and the ObjectIDPersister touch only CAS
+	// and the metadata manifest, never per-file log state, so a concurrent
+	// AppendWrite to this payload proceeds in parallel. rmu (still held) keeps
+	// any second rollup on this payload serialized behind us.
 
-	rf, err := os.Open(lf.path)
-	if err != nil {
-		return fmt.Errorf("rollup: open log for read: %w", err)
-	}
-	// rfClosed lets the error-path defer skip the close once the
-	// explicit close below runs. We must close rf before maybeCompactLog
-	// fires at function tail — Windows refuses to rename over a path
-	// that has ANY open handle, including this read-only one.
-	rfClosed := false
-	defer func() {
-		if !rfClosed {
-			_ = rf.Close()
-		}
-	}()
-
-	// consumedExtents tracks the FILE-OFFSET extent of every record that
-	// will be marked consumed in the logIndex below. R-7 (#580): consumption
-	// is keyed by file-offset interval, not logPos — so the rollup records
-	// (fileOff, payloadLen) per record instead of the logPos.
-	type consumedExt struct {
-		fileOff    uint64
-		payloadLen uint32
-	}
-	recs := make([]rec, 0, len(entries))
-	consumedExtents := make([]consumedExt, 0, len(entries))
-	for _, e := range entries {
-		off, payload, rerr := readRecordAt(rf, e.logPos, e.payloadLen)
-		if rerr != nil {
-			// A CRC mismatch or pread failure at a record the logIndex
-			// claims is valid implies log-fd corruption or a logIndex/
-			// log divergence bug. Returning nil here would re-queue the
-			// interval forever — surface a hard error instead so the
-			// worker pool's error log captures the divergence and
-			// operators can inspect the log fd.
-			return fmt.Errorf("rollup: readRecordAt(logPos=%d): %w", e.logPos, rerr)
-		}
-		if off != e.fileOff {
-			return fmt.Errorf("rollup: logIndex fileOff divergence at logPos=%d (indexed=%d frame=%d)",
-				e.logPos, e.fileOff, off)
-		}
-		recs = append(recs, rec{
-			off:     off,
-			payload: payload,
-			// endPos preserved for downstream consumers that still rely
-			// on it; with the logIndex-driven path it is no longer used
-			// to advance targetPos, but reconstructStream / dedup code
-			// reads it via the rec struct.
-			endPos: e.logPos + uint64(recordFrameOverhead) + uint64(e.payloadLen),
-		})
-		consumedExtents = append(consumedExtents, consumedExt{fileOff: e.fileOff, payloadLen: e.payloadLen})
-	}
-
-	// truncation filter: drop records entirely past the truncation
-	// boundary and clip straddling records. Recorded by TruncateAppendLog
-	// consulted here so emitted chunks never contain bytes
-	// beyond the client-observed size at truncate time.
-	//
-	// Direction-1 redesign: consumedExtents is filtered in lockstep with
-	// recs so we only mark logIndex coverage for records that actually
-	// contributed payload bytes to a stored chunk. Entries that truncation
-	// dropped entirely stay unconsumed; the on-disk bytes belong to a
-	// truncated tail the operator already invalidated. Clipped records
-	// have their consumedExtent.payloadLen shortened to match the bytes
-	// that actually made it into a chunk — coverage MUST match the bytes
-	// chunked, not the original record size.
-	bc.logsMu.RLock()
-	trunc, hasTrunc := bc.truncations[payloadID]
-	bc.logsMu.RUnlock()
-	if hasTrunc {
-		filtered := recs[:0]
-		filteredExt := consumedExtents[:0]
-		for i, r := range recs {
-			if r.off >= trunc {
-				continue
-			}
-			end := r.off + uint64(len(r.payload))
-			if end > trunc {
-				r.payload = r.payload[:trunc-r.off]
-			}
-			filtered = append(filtered, r)
-			// Reflect any clipping into the consumed extent so coverage
-			// doesn't over-claim file bytes that never reached CAS.
-			ext := consumedExtents[i]
-			ext.payloadLen = uint32(len(r.payload))
-			filteredExt = append(filteredExt, ext)
-		}
-		recs = filtered
-		consumedExtents = filteredExt
-	}
-
-	if len(recs) == 0 {
-		return nil
+	// rollupPhaseBHook is a test-only seam (nil in production) that fires once
+	// the append mutex has been released for Phase B. Tests use it to inject a
+	// concurrent AppendWrite into the window the rollup is committing,
+	// deterministically exercising the ConsumeUpToStable lost-write guard.
+	if rollupPhaseBHook != nil {
+		rollupPhaseBHook(payloadID)
 	}
 
 	// #953: align the reconstruction window to existing CAS chunk
@@ -485,69 +555,49 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 		pos += uint64(b)
 	}
 
-	// Tombstone re-check IMMEDIATELY before metadata commit.
-	// Even if a delete raced between the first check and now, we must not
-	// persist rollup_offset for a deleted payload. Content-addressed chunks
-	// in blocks/ are swept by GC.
+	// Tombstone re-check IMMEDIATELY before the metadata commit — and before
+	// the persister, matching the pre-C1 ordering. A delete that raced Phase B
+	// set the tombstone in DeleteAppendLog step 1 (before its drain barrier);
+	// we must not write FileBlock manifest rows or advance rollup_offset for a
+	// deleted payload. Content-addressed chunks already in blocks/ are swept
+	// by GC, and the DeleteAppendLog drain on rmu waits for this pass to
+	// finish before clearing the metadata row.
 	if bc.isTombstoned(payloadID) {
 		return nil
 	}
 
-	// R-7 (#580): mark every surviving record's FILE-OFFSET extent consumed
-	// in the logIndex and ask the index for the new compaction fence. This
-	// is the value we persist as rollup_offset — semantically the same on-
-	// disk format, but computed from the consumed file-offset coverage
-	// instead of a logPos-keyed consumption set. An entry whose file extent
-	// is fully covered by some consumed record (itself OR a later
-	// overlapping one) is dead — the fence walks past it on the next
-	// AdvanceFence call even if the entry itself was never picked up by a
-	// rollup pass.
+	// CommitChunks atomic sequence. The on-disk CAS chunks are already durable
+	// from StoreChunk above. The remaining steps must land in this order so a
+	// partial failure never advances rollup_offset past records whose
+	// FileBlock manifest rows haven't been persisted:
 	//
-	// priorFence is captured BEFORE MarkConsumed/AdvanceFence so the
-	// budget-release math at the bottom uses the in-memory fence delta
-	// (truth) rather than (targetPos - hdr.RollupOffset). The log header
-	// is derived state that can lag if a prior advanceRollupOffset
-	// failed — using it to compute reclaimed would double-decrement
-	// logBytesTotal on the recovery-from-stale-header path.
-	priorFence := idx.Fence()
-	for _, ext := range consumedExtents {
-		idx.MarkConsumed(ext.fileOff, ext.payloadLen)
-	}
-	targetPos := idx.AdvanceFence()
-
-	// CommitChunks atomic sequence. The on-disk CAS chunks are already
-	// durable from StoreChunk above. The remaining commit steps must
-	// land in this order so a partial failure never advances
-	// rollup_offset past records whose FileBlock manifest rows haven't
-	// been persisted:
-	//
-	//  1. ObjectIDPersister(payloadID, blocks, objectID) — writes the
-	//     per-chunk FileBlock rows AND the FileAttr.Blocks manifest +
-	//     ObjectID. If this fails, rollup_offset stays UNCHANGED and the
-	//     next rollup pass retries — chunks are content-addressed and
-	//     idempotent on re-store. (Persister-after-SetRollupOffset is
-	//     the wrong ordering: a persister failure leaves rollup_offset
-	//     advanced past records whose manifest never landed, and the
-	//     engine read path falls into the sparse-zero branch.)
-	//  2. rollupStore.SetRollupOffset(payloadID, targetPos) — atomic-
-	//     monotone metadata-authoritative fence advance.
-	//  3. advanceRollupOffset(logFile, targetPos) — idempotent derived
-	//     state.
+	//  1. ObjectIDPersister(payloadID, blocks, objectID) — writes the per-chunk
+	//     FileBlock rows AND the FileAttr.Blocks manifest + ObjectID. Runs here
+	//     in Phase B (still WITHOUT the append mutex) because it touches only
+	//     metadata. If it fails, rollup_offset stays UNCHANGED (Phase C never
+	//     runs) and the next pass retries — chunks are content-addressed and
+	//     idempotent on re-store. (Persister-after-SetRollupOffset is the wrong
+	//     ordering: a persister failure would leave rollup_offset advanced past
+	//     records whose manifest never landed, and the engine read path falls
+	//     into the sparse-zero branch.)
+	//  2. (Phase C) rollupStore.SetRollupOffset — atomic-monotone fence advance.
+	//  3. (Phase C) advanceRollupOffset — idempotent derived state.
 	objectID := blockstore.ComputeObjectID(blocks)
 	bc.persisterMu.RLock()
 	persister := bc.objectIDPersister
 	bc.persisterMu.RUnlock()
 	if persister != nil {
-		if err := persister(ctx, payloadID, blocks, objectID); err != nil {
-			return fmt.Errorf("rollup: ObjectIDPersister: %w", err)
+		if perr := persister(ctx, payloadID, blocks, objectID); perr != nil {
+			return fmt.Errorf("rollup: ObjectIDPersister: %w", perr)
 		}
 	}
 
 	// #669: populate the dedup LRU only AFTER persister confirms
 	// the FileBlock rows are durable. A concurrent rollup on the same
 	// payload that observes a hash here is guaranteed to find a
-	// committed row when it calls AddRef. PutMany is keyed by
-	// (hash, payloadID) so cross-payload short-circuit cannot occur.
+	// committed row when it calls AddRef. rmu serializes same-payload
+	// rollups, and PutMany is keyed by (hash, payloadID) so a cross-payload
+	// short-circuit cannot occur.
 	if bc.dedupLRU != nil && len(blocks) > 0 {
 		hashes := make([]blockstore.ContentHash, len(blocks))
 		for i, b := range blocks {
@@ -556,87 +606,137 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 		bc.dedupLRU.PutMany(hashes, payloadID)
 	}
 
-	// SetRollupOffset is atomic-monotone at the RollupStore layer: on
-	// attempted regression it returns ErrRollupOffsetRegression and the
-	// stored value is unchanged. With Direction-1 the fence is monotonic
-	// by construction (newLogIndex / recovery seed + AdvanceFence
-	// forward-walk), and the per-file mu serializes rollup workers on the
-	// same payload, so regression should be unreachable in steady state.
-	//
-	// Post-#579: after a physical compaction pass the in-memory fence
-	// resets to logHeaderSize while metadata.rollup_offset retains its
-	// pre-compaction high-water mark (monotonicity at the metadata
-	// layer cannot be regressed). Subsequent rollup passes therefore
-	// compute targetPos values BELOW the persisted metaOff and the
-	// SetRollupOffset call legitimately returns ErrRollupOffsetRegression.
-	// That is benign — we must NOT return early here, because the
-	// derived-state header advance below is the on-disk source of
-	// truth that recovery's seek() uses to position the readRecord
-	// loop. Falling through to advanceRollupOffset on the regression
-	// branch keeps the header in sync with the in-memory fence so a
-	// post-compaction reboot replays from the correct position. The
-	// LogFlagCompacted bit (set during compactLogLocked) tells recovery
-	// to trust the header over metadata.
-	_, err = bc.rollupStore.SetRollupOffset(ctx, payloadID, targetPos)
-	if errors.Is(err, metadata.ErrRollupOffsetRegression) {
-		slog.Debug("rollup: SetRollupOffset regression rejected (benign)",
-			"payloadID", payloadID, "target", targetPos)
-		// Fall through — see comment block above. The header advance
-		// below MUST run so the on-disk position stays aligned with
-		// the in-memory fence even when metadata refuses to.
-	} else if err != nil {
-		return fmt.Errorf("rollup: SetRollupOffset: %w", err)
-	}
+	// ---- Phase C: commit log-side state under the re-acquired append mutex ----
+	return func() error {
+		mu.Lock()
+		defer mu.Unlock()
 
-	// Derived-state: advance the log header. If this fails, metadata is
-	// already the source of truth and recovery will reconcile
-	// — except when LogFlagCompacted is set (post-compaction state)
-	// in which case the header IS the truth and a failure here means
-	// the next boot may re-replay records that were already chunked.
-	// CAS is idempotent so that is benign correctness-wise (only a
-	// throughput hit).
-	if err := advanceRollupOffset(lf.f, targetPos); err != nil {
-		slog.Warn("rollup: advanceRollupOffset failed; recovery will reconcile",
-			"payloadID", payloadID, "error", err)
-	}
+		// Re-validate lf (FIX-21) and the tombstone under the re-acquired
+		// mutex: a DeleteAppendLog or an AppendWrite FIX-2 recovery during
+		// Phase B may have closed/replaced lf or tombstoned the payload. If
+		// so, skip the log-side commit entirely — the CAS chunks and manifest
+		// rows we wrote are reaped by GC / DeleteAppendLog cleanup. (The
+		// DeleteAppendLog rmu drain blocks delete's metadata clear until this
+		// pass returns, so it observes a consistent state afterwards.)
+		bc.logsMu.RLock()
+		curLf := bc.logFDs[payloadID]
+		bc.logsMu.RUnlock()
+		if curLf == nil || curLf != lf {
+			return nil
+		}
+		if bc.isTombstoned(payloadID) {
+			return nil
+		}
 
-	// Consume the dirty interval(s) this rollup just covered and release
-	// the corresponding log budget. Reclaimed bytes are measured against
-	// the in-memory priorFence, NOT hdr.RollupOffset — the log header is
-	// derived state that may lag the metadata-authoritative fence after
-	// a prior advanceRollupOffset failure, and basing reclaimed on the
-	// stale header would double-decrement budget on the next pass.
-	tree.ConsumeUpTo(stableEnd)
-	if targetPos > priorFence {
-		bc.logBytesTotal.Add(-int64(targetPos - priorFence))
-	}
+		// R-7 (#580): mark every surviving record's FILE-OFFSET extent consumed
+		// in the logIndex and ask the index for the new compaction fence. This
+		// is the value we persist as rollup_offset — computed from the consumed
+		// file-offset coverage. An entry whose file extent is fully covered by
+		// some consumed record (itself OR a later overlapping one) is dead —
+		// the fence walks past it on the next AdvanceFence call even if the
+		// entry itself was never picked up by a rollup pass.
+		//
+		// Only the Phase-A records (consumedExtents) are marked; a write that
+		// landed during Phase B has its own logIndex entry, NOT in
+		// consumedExtents, so the fence does not advance past it and it is
+		// rolled up by a later pass.
+		//
+		// priorFence is captured BEFORE MarkConsumed/AdvanceFence so the
+		// budget-release math below uses the in-memory fence delta (truth)
+		// rather than (targetPos - hdr.RollupOffset). The log header is
+		// derived state that can lag if a prior advanceRollupOffset failed —
+		// using it to compute reclaimed would double-decrement logBytesTotal
+		// on the recovery-from-stale-header path.
+		priorFence := idx.Fence()
+		for _, ext := range consumedExtents {
+			idx.MarkConsumed(ext.fileOff, ext.payloadLen)
+		}
+		// AdvanceFenceUpTo(maxReadLogPos) — NOT plain AdvanceFence — so the
+		// fence never walks past a record that arrived during Phase B at a
+		// file extent we just consumed (its logPos exceeds everything we read
+		// in Phase A). Such a record's bytes were not chunked this pass; it
+		// stays in the index + dirty tree and is rolled up by a later pass.
+		targetPos := idx.AdvanceFenceUpTo(maxReadLogPos)
 
-	// Non-blocking signal to unblock any AppendWrite waiting on pressure.
-	select {
-	case bc.pressureCh <- struct{}{}:
-	default:
-	}
+		// SetRollupOffset is atomic-monotone at the RollupStore layer: on
+		// attempted regression it returns ErrRollupOffsetRegression and the
+		// stored value is unchanged. With Direction-1 the fence is monotonic
+		// by construction (newLogIndex / recovery seed + AdvanceFence
+		// forward-walk), and rmu serializes rollup workers on the same
+		// payload, so regression should be unreachable in steady state.
+		//
+		// Post-#579: after a physical compaction pass the in-memory fence
+		// resets to logHeaderSize while metadata.rollup_offset retains its
+		// pre-compaction high-water mark (monotonicity at the metadata
+		// layer cannot be regressed). Subsequent rollup passes therefore
+		// compute targetPos values BELOW the persisted metaOff and the
+		// SetRollupOffset call legitimately returns ErrRollupOffsetRegression.
+		// That is benign — we must NOT return early here, because the
+		// derived-state header advance below is the on-disk source of
+		// truth that recovery's seek() uses to position the readRecord
+		// loop. Falling through to advanceRollupOffset on the regression
+		// branch keeps the header in sync with the in-memory fence so a
+		// post-compaction reboot replays from the correct position. The
+		// LogFlagCompacted bit (set during compactLogLocked) tells recovery
+		// to trust the header over metadata.
+		_, serr := bc.rollupStore.SetRollupOffset(ctx, payloadID, targetPos)
+		if errors.Is(serr, metadata.ErrRollupOffsetRegression) {
+			slog.Debug("rollup: SetRollupOffset regression rejected (benign)",
+				"payloadID", payloadID, "target", targetPos)
+			// Fall through — see comment block above. The header advance
+			// below MUST run so the on-disk position stays aligned with
+			// the in-memory fence even when metadata refuses to.
+		} else if serr != nil {
+			return fmt.Errorf("rollup: SetRollupOffset: %w", serr)
+		}
 
-	// #579: physical log compaction. Runs under the per-file mu we
-	// still hold (deferred Unlock above). The threshold check is
-	// internal to maybeCompactLog, so this call is cheap when the
-	// fence has not advanced enough to warrant a rewrite. Errors are
-	// logged at Warn and otherwise swallowed — a failed compaction
-	// pass leaves the original log untouched; the next rollup pass
-	// retries automatically.
-	//
-	// Close rf first: Windows refuses to rename over a file with an
-	// open handle, and compaction's atomic rename would otherwise fail
-	// with ERROR_SHARING_VIOLATION. On POSIX the close is harmless
-	// rf is otherwise unused past this point.
-	_ = rf.Close()
-	rfClosed = true
-	if cerr := bc.maybeCompactLog(ctx, payloadID, lf, idx); cerr != nil {
-		slog.Warn("rollup: compaction failed; will retry next pass",
-			"payloadID", payloadID, "error", cerr)
-	}
+		// Derived-state: advance the log header. If this fails, metadata is
+		// already the source of truth and recovery will reconcile
+		// — except when LogFlagCompacted is set (post-compaction state)
+		// in which case the header IS the truth and a failure here means
+		// the next boot may re-replay records that were already chunked.
+		// CAS is idempotent so that is benign correctness-wise (only a
+		// throughput hit).
+		if aerr := advanceRollupOffset(lf.f, targetPos); aerr != nil {
+			slog.Warn("rollup: advanceRollupOffset failed; recovery will reconcile",
+				"payloadID", payloadID, "error", aerr)
+		}
 
-	return nil
+		// Consume the dirty interval(s) this rollup just covered and release
+		// the corresponding log budget. C1: ConsumeUpToStable (not plain
+		// ConsumeUpTo) preserves any interval a write created during Phase B
+		// (Touched > phaseStart), so its bytes are rolled up by a later pass
+		// rather than silently dropped. Reclaimed bytes are measured against
+		// the in-memory priorFence, NOT hdr.RollupOffset — the log header is
+		// derived state that may lag the metadata-authoritative fence after a
+		// prior advanceRollupOffset failure, and basing reclaimed on the stale
+		// header would double-decrement budget on the next pass.
+		tree.ConsumeUpToStable(stableEnd, phaseStart)
+		if targetPos > priorFence {
+			bc.logBytesTotal.Add(-int64(targetPos - priorFence))
+		}
+
+		// Non-blocking signal to unblock any AppendWrite waiting on pressure.
+		select {
+		case bc.pressureCh <- struct{}{}:
+		default:
+		}
+
+		// #579: physical log compaction. Runs under the append mutex (mu) we
+		// hold here in Phase C. The threshold check is internal to
+		// maybeCompactLog, so this call is cheap when the fence has not
+		// advanced enough to warrant a rewrite. Errors are logged at Warn and
+		// otherwise swallowed — a failed compaction pass leaves the original
+		// log untouched; the next rollup pass retries automatically. rf was
+		// already closed at the end of Phase A, so no open read handle blocks
+		// the atomic rename on Windows.
+		if cerr := bc.maybeCompactLog(ctx, payloadID, lf, idx); cerr != nil {
+			slog.Warn("rollup: compaction failed; will retry next pass",
+				"payloadID", payloadID, "error", cerr)
+		}
+
+		return nil
+	}()
 }
 
 // maxReconstructBytes caps the in-memory reconstruction buffer at 16 GiB
@@ -649,6 +749,13 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 // t.Parallel() or alongside a started rollup worker pool — rollup workers
 // read it concurrently, so a mutation under either condition races.
 var maxReconstructBytes = uint64(1) << 34
+
+// rollupPhaseBHook, when non-nil, is invoked at the start of rollupFile's
+// Phase B — after the append mutex has been released and before any CAS store.
+// Production leaves it nil; C1 concurrency tests set it (and MUST defer-restore
+// it to nil) to deterministically interleave a racing AppendWrite. It must not
+// be set while a rollup worker pool is running on an unrelated test.
+var rollupPhaseBHook func(payloadID string)
 
 // reconstructStream flattens records by file offset, later writes overwriting
 // earlier ones at the same offset. Produces a contiguous byte slice anchored

@@ -211,9 +211,19 @@ type FSStore struct {
 	// logsMu guards logFDs, logLocks, dirtyIntervals, logIndices, and
 	// tombstones. Double-checked locking idiom matches blocksMu /
 	// memBlocks in getOrCreateMemBlock.
-	logsMu         sync.RWMutex
-	logFDs         map[string]*logFile      // payloadID -> open log fd wrapper (one fd per file, bypasses fdPool)
-	logLocks       map[string]*sync.Mutex   // payloadID -> per-file append mutex
+	logsMu   sync.RWMutex
+	logFDs   map[string]*logFile    // payloadID -> open log fd wrapper (one fd per file, bypasses fdPool)
+	logLocks map[string]*sync.Mutex // payloadID -> per-file append mutex
+	// rollupLocks is the per-payload ROLLUP mutex (C1 contention fix). It is
+	// held by rollupFile across its entire pass (read -> store -> commit),
+	// serializing concurrent rollups on the same payload and giving
+	// DeleteAppendLog a barrier to wait on. It is DISTINCT from logLocks
+	// (the append mutex): rollupFile releases the append mutex during its
+	// CAS-store / persister phase so a concurrent AppendWrite is not blocked
+	// on rollup I/O, but keeps rollupLocks held throughout. Lock order is
+	// rollupLocks (outer) -> logLocks (inner), matching the existing
+	// "always mu before logsMu" discipline at the next level down.
+	rollupLocks    map[string]*sync.Mutex   // payloadID -> per-file rollup mutex
 	dirtyIntervals map[string]*intervalTree // payloadID -> dirty-region tree
 	// logIndices is the per-payload log-position oracle (Direction-1
 	// rollup redesign). One entry per appended record carries the
@@ -397,6 +407,7 @@ func newFSStore(baseDir string, maxDisk, maxMemory int64, fileBlockStore blockst
 	bc.pressureCh = make(chan struct{}, 1)
 	bc.logFDs = make(map[string]*logFile)
 	bc.logLocks = make(map[string]*sync.Mutex)
+	bc.rollupLocks = make(map[string]*sync.Mutex)
 	bc.dirtyIntervals = make(map[string]*intervalTree)
 	bc.logIndices = make(map[string]*logIndex)
 	bc.tombstones = make(map[string]struct{})
