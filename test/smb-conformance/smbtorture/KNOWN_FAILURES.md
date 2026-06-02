@@ -11,7 +11,7 @@ Every remaining entry is justified and falls into exactly one bucket. No
 UNJUSTIFIED entries remain — the #673 acceptance criterion is met.
 
 - **Upstream Samba known-fail** (fails on the reference Samba server too; cited) — **3**: `charset.Testing`, `notify.valid-req`, `session.reauth5`
-- **Deferred past v1.0 with a tracking issue** (justified by deferral) — **22**: `ioctl.copy_chunk_sparse_dest` (#750), `durable-v2-open.persistent-open-{oplock,lease}` (#739), the 19 replay `*-sane` / `replay-dhv2-oplock2` rows (#749)
+- **Deferred past v1.0 with a tracking issue** (justified by deferral) — **22**: `ioctl.copy_chunk_sparse_dest` (#750), `durable-v2-open.persistent-open-{oplock,lease}` (#739), the 14 remaining replay `*-sane` rows (#749)
 - **Permanently Unimplementable / harness-only** (see [appendix](#permanently-unimplementable-out-of-scope)) — **46**
 - **Total (non-Kerberos): 71**
 
@@ -24,7 +24,7 @@ Bucket movements in this pass (all CI-safe — `parse-results.sh` keys off the
 test name, which is preserved in its new location):
 
 - `smb2.dirlease.oplocks` — moved Expected→appendix (smbtorture 4.22.6 **client** SIGSEGV, same class as `scan.scan`; not a DittoFS gap).
-- The 20 replay `*-windows` rows — moved Expected→appendix (architecturally Samba-incompatible; Samba's own source does not reproduce the Windows variants — see appendix bucket 10). The 19 `*-sane` / `replay-dhv2-oplock2` rows stay deferred under #749.
+- The 20 replay `*-windows` rows — moved Expected→appendix (architecturally Samba-incompatible; Samba's own source does not reproduce the Windows variants — see appendix bucket 10). The 14 remaining `*-sane` rows stay deferred under #749.
 - `smb2.timestamp_resolution.resolution1` — removed its stale duplicate Expected row; the appendix already carries it (upstream-skipped, `selftest/skip:69-70`).
 
 ## Policy (v1.0 conformance gate, #673)
@@ -241,12 +241,17 @@ shape that reauth4 actually exercises.
 ### Replay Protection (Deferred past v1.0 — #749)
 
 DH2Q durable-V2 create-replay protection landed in #866 (the `replay-dhv2-lease*`
-and two pending `*-sane` rows flipped). The remaining rows are the
-deferred-open replay-vs-pending-break state-machine variants — a multi-week
-rework tracked under **#749** (deferred past the v1.0 tag).
+and `pending1l-*-sane` rows flipped); #749 then keyed the replay cache on the
+requested CreateGuid and echoed the requested oplock level on replay, flipping
+`replay-dhv2-oplock2` and the `pending1{n,o}-vs-{oplock,lease}-sane` rows. The
+remaining rows are the deferred-open replay-vs-pending-break variants — the
+`pending1n-vs-violation-*-sane` pair (parked share-violation CREATE must wait
+for the holder to release; plus a lease-break-ack state-match bug) and the
+`pending2*/3*-sane` multichannel cases (require session survival across the
+originating-channel disconnect) — tracked under **#749**.
 
-**Bucketing note (#673):** only the `*-sane` (and the `replay-dhv2-oplock2`)
-variants are listed below as deferred. The 20 `*-windows` variants were moved
+**Bucketing note (#673):** only the `*-sane` variants are listed below as
+deferred. The 20 `*-windows` variants were moved
 to the [Permanently Unimplementable](#permanently-unimplementable-out-of-scope)
 appendix (bucket 10): they assert the **Windows-specific** ordering of a
 replayed CREATE against a pending oplock/lease break, which Samba's own source
@@ -256,13 +261,8 @@ DittoFS to hit. The `*-sane` rows remain genuinely fixable under #749.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.replay.replay-dhv2-oplock2 | Replay | Deferred: replay of an oplock durable-V2 reopen not yet implemented (deferred-open replay state machine) | #749 |
 | smb2.replay.dhv2-pending1n-vs-violation-lease-close-sane | Replay | Deferred: replay-vs-pending-break (sane variant) state machine not yet implemented | #749 |
 | smb2.replay.dhv2-pending1n-vs-violation-lease-ack-sane | Replay | Deferred: replay-vs-pending-break (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending1n-vs-oplock-sane | Replay | Deferred: replay-vs-pending-oplock (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending1n-vs-lease-sane | Replay | Deferred: replay-vs-pending-lease (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending1o-vs-oplock-sane | Replay | Deferred: replay-vs-pending-oplock (sane variant) state machine not yet implemented | #749 |
-| smb2.replay.dhv2-pending1o-vs-lease-sane | Replay | Deferred: replay-vs-pending-lease (sane variant) state machine not yet implemented | #749 |
 | smb2.replay.dhv2-pending2n-vs-oplock-sane | Replay | Deferred: replay-vs-pending-oplock (sane variant) state machine not yet implemented | #749 |
 | smb2.replay.dhv2-pending2n-vs-lease-sane | Replay | Deferred: replay-vs-pending-lease (sane variant) state machine not yet implemented | #749 |
 | smb2.replay.dhv2-pending2l-vs-oplock-sane | Replay | Deferred: replay-vs-pending-oplock (sane variant) state machine not yet implemented | #749 |
