@@ -155,6 +155,16 @@ func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType
 	var leasesToBreak []*UnifiedLock
 	var delegsToBreak []*UnifiedLock
 
+	// Dedup wire break notifications by lease key. A handleKey can hold more
+	// than one directory-lease record under the same key (an orphaned
+	// ack-to-None record left by an unclean disconnect coexisting with a live
+	// regrant under the smbtorture-reused DLEASE constant). Samba breaks each
+	// holder/lease key exactly once per change; dispatching once per record
+	// sends duplicate notifications that all route to the same live session via
+	// the shared ClientGUID, producing the intermittent
+	// smb2.dirlease.unlink_*_and_close "lease_break_info.count got 0x2" flake.
+	dispatchedKeys := make(map[[16]byte]struct{}, len(locks))
+
 	for _, lock := range locks {
 		// Skip originator for the entire lock entry (covers both lease and delegation).
 		if lock.Owner.ClientID == originClientID {
@@ -178,12 +188,15 @@ func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType
 		// caller waiting on WaitForBreakCompletion until the timeout.
 		if lock.Lease != nil && lock.Lease.IsDirectory &&
 			lock.Lease.LeaseState != LeaseStateNone && !lock.Lease.Breaking {
-			lock.Lease.Breaking = true
-			lock.Lease.BreakToState = LeaseStateNone
-			lock.Lease.BreakingToRequired = LeaseStateNone
-			lock.Lease.BreakStarted = time.Now()
-			advanceEpoch(lock.Lease)
-			leasesToBreak = append(leasesToBreak, lock)
+			if _, already := dispatchedKeys[lock.Lease.LeaseKey]; !already {
+				lock.Lease.Breaking = true
+				lock.Lease.BreakToState = LeaseStateNone
+				lock.Lease.BreakingToRequired = LeaseStateNone
+				lock.Lease.BreakStarted = time.Now()
+				advanceEpoch(lock.Lease)
+				dispatchedKeys[lock.Lease.LeaseKey] = struct{}{}
+				leasesToBreak = append(leasesToBreak, lock)
+			}
 		}
 
 		// Check directory delegations

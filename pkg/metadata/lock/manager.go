@@ -2384,6 +2384,16 @@ func (lm *Manager) breakOpLocks(
 		breakToState uint32
 	}
 	var toBreak []breakEntry
+	// Dedup wire break notifications by lease key. A handleKey can hold more
+	// than one *UnifiedLock with the same lease key — e.g. an orphaned
+	// ack-to-None record left by an unclean disconnect coexisting with a live
+	// regrant under the smbtorture-reused DLEASE constant. Samba dispatches
+	// exactly one LEASE_BREAK per distinct holder/lease key per change
+	// (source3/smbd/smb2_oplock.c contend_dirleases); dispatching once per
+	// record sends duplicate notifications that all route to the same live
+	// session via the shared ClientGUID, producing the intermittent
+	// smb2.dirlease.unlink_*_and_close "lease_break_info.count got 0x2" flake.
+	dispatchedKeys := make(map[[16]byte]struct{}, len(locks))
 	for _, lock := range locks {
 		if lock.Lease == nil {
 			continue
@@ -2415,6 +2425,15 @@ func (lm *Manager) breakOpLocks(
 			continue
 		}
 
+		// One notification per distinct lease key (see dispatchedKeys above):
+		// a duplicate record under this handleKey must not produce a second
+		// wire break for the same lease. Marked once the key is accepted for
+		// a fresh dispatch below so the live record drives the notification and
+		// any sibling sharing its key is skipped.
+		if _, already := dispatchedKeys[lock.Lease.LeaseKey]; already {
+			continue
+		}
+
 		targetState := computeFreshTarget(lock.Lease.LeaseState, breakToState)
 
 		// Per Samba `delay_for_oplock_fn` (source3/smbd/open.c lines 2439-2444):
@@ -2440,6 +2459,9 @@ func (lm *Manager) breakOpLocks(
 				pl := ToPersistedLock(lock, 0)
 				_ = lm.lockStore.PutLock(context.Background(), pl)
 			}
+			// This key's break is already in flight; record it so a sibling
+			// record sharing the key is not freshly dispatched below.
+			dispatchedKeys[lock.Lease.LeaseKey] = struct{}{}
 			continue
 		}
 
@@ -2461,6 +2483,7 @@ func (lm *Manager) breakOpLocks(
 			pl := ToPersistedLock(lock, 0)
 			_ = lm.lockStore.PutLock(context.Background(), pl)
 		}
+		dispatchedKeys[lock.Lease.LeaseKey] = struct{}{}
 		toBreak = append(toBreak, breakEntry{lock: snapshot, breakToState: targetState})
 	}
 	lm.mu.Unlock()
