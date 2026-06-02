@@ -62,6 +62,20 @@ Micro runs via `go test -bench` against the library directly:
 go test -bench=. -benchmem -run=^$ ./bench/blockstore/
 ```
 
+### Orchestrated runs (versioned result JSON)
+
+`dfsbench orchestrate` runs a manifest of workloads and emits a versioned,
+machine-readable result document (schema_version 1) — run metadata, host/CPU
+info, and per-workload ns/op / throughput / pprof paths — plus a compare mode
+that flags ns/op regressions between two runs. See
+[`bench/orchestrator/README.md`](orchestrator/README.md) for the manifest
+format, schema, and version contract.
+
+```sh
+./dfsbench orchestrate --out result.json --summary
+./dfsbench orchestrate --compare-baseline base.json --compare-candidate new.json
+```
+
 Use `benchstat` to A/B compare two commits:
 
 ```sh
