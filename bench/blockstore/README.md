@@ -13,18 +13,39 @@ power both the `dfsbench blockstore` CLI subcommand and the Go
 | `dedup-heavy`      | 8 MiB      | N distinct payloadIDs  | same bytes across files; flush per op so rollup → CAS runs             |
 | `mixed-rw`         | 4 KiB      | seeded 32 MiB file/N   | 50/50 read/write at random offsets                                     |
 | `flush-churn`      | 4 KiB      | monotonic offset       | write→flush→write tight loop                                           |
-| `mixed-ops-storm`  | 4 KiB      | 1 MiB files, ≥4/worker | concurrent WRITE/READ/LIST/DELETE (50/30/15/5); `--workers N`           |
+| `mixed-ops-storm`  | 4 KiB      | 1 MiB files, ≥4/worker | concurrent WRITE/READ/LIST/DELETE (50/30/15/5); `--workers N`, `--mix`   |
+| `concurrent-small-write` | 4–64 KiB | files/worker     | (a) N workers, disjoint files; size drawn per op from seed; `--workers` |
+| `concurrent-small-read`  | 4–64 KiB | pre-seeded/worker | (b) reads the (a) fileset; seed phase excluded from timing             |
+| `concurrent-big-write`   | 64–256 MiB | files/worker   | (c) big disjoint writes; `--workers`                                   |
+| `concurrent-big-read`    | 64–256 MiB | pre-seeded/worker | (d) big reads; seed phase excluded from timing                        |
 
 Defaults match the legacy `cmd/blockstore-perf` shape so historical
 results stay comparable. Override per-op size with `--block-size`.
 
-`mixed-ops-storm` is the only concurrent workload. It partitions its
-keyspace — a fixed stable set (pre-seeded, never deleted) backs READs and
-WRITE-overwrites, while WRITE-create/DELETE churn a separate pool — so no
-op ever races a concurrent delete of its own file. Each worker uses a PRNG
-seeded from `(--seed, worker)`, so a given `(seed, workers)` reproduces the
-same *multiset* of ops; goroutine interleaving (and thus the exact per-type
-tally) is not deterministic at `--workers > 1`.
+### Concurrent workloads
+
+Five concurrent workloads fan ops across `--workers N` goroutines:
+
+- **`mixed-ops-storm`** — the (e) storm. Partitions its keyspace: a fixed
+  stable set (pre-seeded, never deleted) backs READs and WRITE-overwrites,
+  while WRITE-create/DELETE churn a separate pool — so no op ever races a
+  concurrent delete of its own file. Op weights default to 50/30/15/5
+  (WRITE/READ/LIST/DELETE); override with `--mix W,R,L,D` (e.g.
+  `--mix 70,20,5,5` for a write-heavy storm).
+- **`concurrent-small-write` / `concurrent-big-write`** — (a) / (c). Each
+  worker writes its own disjoint payloadID space (`w<worker>/<op>`), so there
+  is no shared blockref state or cross-worker lock — the scaling/contention
+  picture comes purely from the engine internals. Per-op size is drawn from
+  the worker PRNG (4–64 KiB small, 64–256 MiB big).
+- **`concurrent-small-read` / `concurrent-big-read`** — (b) / (d). One file
+  per op is pre-seeded outside the timed region (so timing is pure read
+  latency), then every worker reads back its own files.
+
+Every concurrent worker uses a PRNG seeded from `(--seed, worker)`, so a
+given `(seed, workers)` reproduces the same *multiset* of ops; goroutine
+interleaving (and thus the exact per-type storm tally) is not deterministic
+at `--workers > 1`. The seed reproduces the workload shape that drives the
+contention profiles, not a byte-exact execution.
 
 ## Profiles & replay
 
@@ -35,12 +56,17 @@ Each run writes `cpu/heap/goroutine.pprof` + `seed.txt` to
 adds per-event accounting overhead). `--phase baseline|post-fix` inserts a
 parent dir so before/after captures sit side by side. `--replay <dir>`
 reloads a recorded run's `seed.txt` (workload, ops, sizes, workers, seed,
-remote, full-profiles) so a regression can be re-captured without retyping
-flags; `--phase`/`--profile-dir` still pick the fresh output location.
+remote, mix, full-profiles) so a regression can be re-captured without
+retyping flags; `--phase`/`--profile-dir` still pick the fresh output
+location.
 
 ```sh
 ./dfsbench blockstore --workload mixed-ops-storm --ops 50000 --workers 8 \
-    --full-profiles --phase baseline --profile-dir .planning/v1.0-audit/blockstore/_profiles
+    --mix 70,20,5,5 --full-profiles --phase baseline \
+    --profile-dir .planning/v1.0-audit/blockstore/_profiles
+./dfsbench blockstore --workload concurrent-small-write --ops 20000 --workers 8 \
+    --full-profiles --phase baseline \
+    --profile-dir .planning/v1.0-audit/blockstore/_profiles
 ./dfsbench blockstore --replay <baseline-run-dir> --phase post-fix \
     --profile-dir .planning/v1.0-audit/blockstore/_profiles
 ```
@@ -112,7 +138,7 @@ profiles would be empty, since `runtime.SetMutexProfileFraction` /
 because the extra per-event accounting skews throughput.
 
 `seed.txt` records the exact parameters (workload, ops, block size,
-working set, workers, seed, remote, full-profiles) for deterministic
+working set, workers, seed, remote, mix, full-profiles) for deterministic
 replay via `--replay <dir>`.
 
 ```

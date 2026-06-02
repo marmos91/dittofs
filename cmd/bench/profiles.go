@@ -123,8 +123,8 @@ func (s *profileSession) writeSeed(opts bsbench.Opts) error {
 		return nil
 	}
 	body := fmt.Sprintf(
-		"workload=%s\nops=%d\nblock_size=%d\nworking_set=%d\nworkers=%d\nseed=%d\nremote=%s\nfull_profiles=%t\n",
-		opts.Workload, opts.Ops, opts.BlockSize, opts.WorkingSet, opts.Workers, opts.Seed, opts.Remote, s.full,
+		"workload=%s\nops=%d\nblock_size=%d\nworking_set=%d\nworkers=%d\nseed=%d\nremote=%s\nmix=%s\nfull_profiles=%t\n",
+		opts.Workload, opts.Ops, opts.BlockSize, opts.WorkingSet, opts.Workers, opts.Seed, opts.Remote, opts.Mix, s.full,
 	)
 	if err := os.WriteFile(filepath.Join(s.dir, "seed.txt"), []byte(body), 0o644); err != nil {
 		return fmt.Errorf("write seed.txt: %w", err)
@@ -159,6 +159,7 @@ func loadSeed(dir string) (bsbench.Opts, bool, error) {
 		// reproducing the wrong PRNG stream on replay).
 		Seed:   parseUintDefault(kv["seed"], 0),
 		Remote: kv["remote"],
+		Mix:    kv["mix"],
 	}
 	if opts.Workload == "" || opts.Ops <= 0 {
 		return bsbench.Opts{}, false, fmt.Errorf("seed.txt missing required workload/ops")

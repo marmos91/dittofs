@@ -77,6 +77,11 @@ type Opts struct {
 	// Remote selects the upload backend: "memory" (default) or "s3".
 	Remote string
 
+	// Mix overrides the mixed-ops-storm op weights as "W,R,L,D" (e.g.
+	// "50,30,15,5"). Empty uses the default 50/30/15/5. Ignored by every
+	// other workload.
+	Mix string
+
 	// ProfileDir is the parent dir for per-run pprof output. Optional
 	// at the library level (only the cmd layer captures profiles).
 	ProfileDir string

@@ -173,7 +173,7 @@ func TestLoadSeed_RoundTrip(t *testing.T) {
 	}{
 		{"small-seed", bsbench.Opts{
 			Workload: "mixed-ops-storm", Ops: 1234, BlockSize: 8192,
-			WorkingSet: 16, Workers: 8, Seed: 99, Remote: "memory",
+			WorkingSet: 16, Workers: 8, Seed: 99, Remote: "memory", Mix: "70,20,5,5",
 		}},
 		{"max-uint64-seed", bsbench.Opts{
 			Workload: "mixed-ops-storm", Ops: 10, BlockSize: 4096,
@@ -199,7 +199,7 @@ func TestLoadSeed_RoundTrip(t *testing.T) {
 			}
 			if got.Workload != tc.want.Workload || got.Ops != tc.want.Ops || got.BlockSize != tc.want.BlockSize ||
 				got.WorkingSet != tc.want.WorkingSet || got.Workers != tc.want.Workers || got.Seed != tc.want.Seed ||
-				got.Remote != tc.want.Remote {
+				got.Remote != tc.want.Remote || got.Mix != tc.want.Mix {
 				t.Errorf("round-trip mismatch:\n got %+v\nwant %+v", got, tc.want)
 			}
 		})
