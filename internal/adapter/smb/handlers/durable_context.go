@@ -568,16 +568,16 @@ func processV2Reconnect(
 	filename string,
 	connClientGUID [16]byte,
 ) (*OpenFile, uint32, uint16, [16]byte, types.Status, error) {
-	// Parse V2 reconnect context
-	fileID, createGuid, flags, err := DecodeDH2CReconnect(dh2cCtx.Data)
+	// Parse V2 reconnect context. The DH2C Flags field
+	// (SMB2_DHANDLE_FLAG_PERSISTENT, MS-SMB2 §2.2.13.2.12) is intentionally
+	// NOT validated here: a client reconnecting a persistent handle sets the
+	// flag, and Samba's `smbd_smb2_create_before_exec` reads only the
+	// persistent_id and create_guid from DH2C, ignoring Flags. Whether the
+	// re-established open is persistent is restored from the persisted record
+	// (handle.IsPersistent), not re-derived from the reconnect request.
+	fileID, createGuid, _, err := DecodeDH2CReconnect(dh2cCtx.Data)
 	if err != nil {
 		logger.Debug("processV2Reconnect: invalid DH2C data", "error", err)
-		return nil, 0, 0, [16]byte{}, types.StatusInvalidParameter, nil
-	}
-
-	// Reject persistent flag
-	if flags&DH2FlagPersistent != 0 {
-		logger.Debug("processV2Reconnect: persistent flag rejected")
 		return nil, 0, 0, [16]byte{}, types.StatusInvalidParameter, nil
 	}
 
