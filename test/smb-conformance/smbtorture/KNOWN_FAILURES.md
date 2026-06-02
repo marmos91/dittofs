@@ -287,7 +287,6 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.kernel-oplocks.kernel_oplocks2 | Kernel oplocks | Requires Linux kernel `F_SETLEASE` on underlying fd — userspace VFS cannot |
 | smb2.kernel-oplocks.kernel_oplocks4 | Kernel oplocks | Requires Linux kernel `F_SETLEASE` on underlying fd — userspace VFS cannot |
 | smb2.kernel-oplocks.kernel_oplocks5 | Kernel oplocks | Kernel oplock vs lease downgrade semantics — DittoFS has no kernel oplock layer |
-| smb2.kernel-oplocks.kernel_oplocks7 | Kernel oplocks | Requires Linux kernel `F_SETLEASE` on underlying fd — userspace VFS cannot. Environment-dependent within the kernel-oplocks family (passes on some hosts, flaked to a New Failure on a CPU-starved runner); appendixed with its siblings so it cannot red the job. |
 | smb2.kernel-oplocks.kernel_oplocks8 | Kernel oplocks | smbtorture-side localdir check is host-FS-specific — not applicable to a virtual FS |
 | smb2.name-mangling.mangle | Name mangling | NTFS 8.3 short-name mangling — DOS/Win9x legacy, not in SMB2/3 protocol surface |
 | smb2.name-mangling.mangled-mask | Name mangling | NTFS 8.3 short-name mask search — DOS/Win9x legacy, not in SMB2/3 protocol surface |
@@ -325,13 +324,29 @@ These entries remain in CI's known-failure set (so they don't break the build) b
 | smb2.replay.dhv2-pending3o-vs-oplock-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-oplock ordering; Samba does not reproduce the `-windows` arm. `-sane` counterpart now passes (#749). |
 | smb2.replay.dhv2-pending3o-vs-lease-windows | Windows replay ordering | Bucket 10. Windows-specific replay-vs-pending-lease ordering; Samba does not reproduce the `-windows` arm. `-sane` counterpart now passes (#749). |
 
-**Total: 47 tests permanently out of scope** (25 prior + `dirlease.oplocks` + 20 replay `-windows` arms + `kernel_oplocks7`).
+**Total: 46 tests permanently out of scope** (25 prior + `dirlease.oplocks` + 20 replay `-windows` arms).
 
 ### Kerberos
 
 `KNOWN_FAILURES_KERBEROS.md` now carries a single row (`smb2.reauth5`, an upstream Samba selftest knownfail) after the #686 Kerberos sweep harvested the stale multi-channel rows. It is loaded only when smbtorture runs with `--use-kerberos`, which the non-Kerberos v1.0 CI job (`.github/workflows/smb-conformance.yml`, running `./run.sh` without `--kerberos`) does not pass, so it does not gate v1.0.
 
 ## Changelog
+
+### 2026-06-02 — #996 remove `kernel_oplocks7`: mislabeled, passes deterministically
+
+`smb2.kernel-oplocks.kernel_oplocks7` was carrying a factually wrong appendix
+reason ("Requires Linux kernel `F_SETLEASE` on underlying fd"). Reading the test
+body (`source4/torture/smb2/oplock.c`) shows it contains **zero `F_SETLEASE`
+calls** — it is pure SMB2 protocol (open with EXCLUSIVE oplock on tree1 →
+conflicting open on tree2 → break handler closes → reopen accepting EXCLUSIVE
+*or* NONE). The `F_SETLEASE` calls belong to `do_child_process`, used only by
+`kernel_oplocks8` (the localdir test, which legitimately stays). The row was a
+flaky pass mislabeled as architecturally impossible; the earlier "New Failure on
+a CPU-starved runner" was infra noise (connection-disconnect class), not a server
+gap. Verified `success:` on the local docker smbtorture battery 3/3
+(`--filter smb2.kernel-oplocks.kernel_oplocks7`). Removed from the appendix
+(47→46). DittoFS already passes the equivalent `smb2.oplock.*` break tests that
+exercise the identical server behaviour.
 
 ### 2026-06-02 — #749 finalize parked CREATE on holder release: 6 rows flipped
 
