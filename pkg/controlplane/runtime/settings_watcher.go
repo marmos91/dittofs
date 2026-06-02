@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -152,7 +153,8 @@ func (w *SettingsWatcher) GetSMBSettings() *models.SMBAdapterSettings {
 func (w *SettingsWatcher) pollWithRecover(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Error("Settings watcher: poll panicked, recovering and continuing", "panic", r)
+			logger.Error("Settings watcher: poll panicked, recovering and continuing",
+				"panic", r, "stack", string(debug.Stack()))
 		}
 	}()
 	w.poll(ctx)

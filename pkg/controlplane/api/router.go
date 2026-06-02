@@ -17,6 +17,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
+// passwordChangePath is the one endpoint a must-change-password user may reach
+// before changing their password. It is allow-listed in every
+// RequirePasswordChange gate so the chains stay consistent.
+const passwordChangePath = "/api/v1/users/me/password"
+
 // NewRouter creates and configures the chi router with all middleware and routes.
 //
 // The router is configured with:
@@ -75,6 +80,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 	if pprofEnabled {
 		r.Route("/debug/pprof", func(r chi.Router) {
 			r.Use(apiMiddleware.JWTAuth(jwtService))
+			r.Use(apiMiddleware.RequirePasswordChange(passwordChangePath))
 			r.Use(apiMiddleware.RequireAdmin())
 
 			r.Get("/", pprof.Index)
@@ -109,6 +115,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 	if graceHandler := newGraceHandler(rt); graceHandler != nil {
 		r.Group(func(r chi.Router) {
 			r.Use(apiMiddleware.JWTAuth(jwtService))
+			r.Use(apiMiddleware.RequirePasswordChange(passwordChangePath))
 			r.Use(apiMiddleware.RequireAdmin())
 			r.Get("/api/v1/grace", graceHandler.Status)
 		})
@@ -152,7 +159,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 		// Protected routes - require authentication and password change complete
 		r.Group(func(r chi.Router) {
 			r.Use(apiMiddleware.JWTAuth(jwtService))
-			r.Use(apiMiddleware.RequirePasswordChange("/api/v1/users/me/password"))
+			r.Use(apiMiddleware.RequirePasswordChange(passwordChangePath))
 
 			// User management
 			r.Route("/users", func(r chi.Router) {

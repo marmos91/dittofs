@@ -40,10 +40,17 @@ func newTestRouter(t *testing.T, pprofEnabled bool) (http.Handler, *auth.JWTServ
 // tokenFor mints an access token for a user with the given role.
 func tokenFor(t *testing.T, jwtService *auth.JWTService, role models.UserRole) string {
 	t.Helper()
+	return tokenForUser(t, jwtService, role, false)
+}
+
+// tokenForUser mints an access token, optionally flagging MustChangePassword.
+func tokenForUser(t *testing.T, jwtService *auth.JWTService, role models.UserRole, mustChange bool) string {
+	t.Helper()
 	pair, err := jwtService.GenerateTokenPair(&models.User{
-		ID:       "test-user-id",
-		Username: "tester",
-		Role:     string(role),
+		ID:                 "test-user-id",
+		Username:           "tester",
+		Role:               string(role),
+		MustChangePassword: mustChange,
 	})
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
@@ -66,6 +73,7 @@ func TestPprofRequiresAdminAuth(t *testing.T) {
 		{"bad token -> 401", "Bearer not-a-real-token", http.StatusUnauthorized},
 		{"operator -> 403", "Bearer " + tokenFor(t, jwtService, models.RoleOperator), http.StatusForbidden},
 		{"user -> 403", "Bearer " + tokenFor(t, jwtService, models.RoleUser), http.StatusForbidden},
+		{"must-change-password admin -> 403", "Bearer " + tokenForUser(t, jwtService, models.RoleAdmin, true), http.StatusForbidden},
 		{"admin -> 200", "Bearer " + tokenFor(t, jwtService, models.RoleAdmin), http.StatusOK},
 	}
 
